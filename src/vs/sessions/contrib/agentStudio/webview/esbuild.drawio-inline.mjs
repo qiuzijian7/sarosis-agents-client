@@ -28,8 +28,10 @@ await build({
 // 双写到运行时路径：renderer（drawioInlineRenderer.ts）通过 fileService 读取
 // out/vs/sessions/contrib/agentStudio/webview/media/index-render-drawio-inline.js。
 // 不依赖 gulp 是否拷贝 webview/media 目录，确保构建即生效。
+// ⚠ 层级：webview/ 上 6 级是仓库根（sarosis-agents-client），不是 7 级
+// （7 级会指到工作区外层目录，导致「out/ target dir not present」静默跳过 —— 2026-09-24 实测踩坑）。
 const outTarget = path.join(
-	__dirname, '..', '..', '..', '..', '..', '..', '..', 'out',
+	__dirname, '..', '..', '..', '..', '..', '..', 'out',
 	'vs', 'sessions', 'contrib', 'agentStudio', 'webview', 'media',
 	'index-render-drawio-inline.js',
 );

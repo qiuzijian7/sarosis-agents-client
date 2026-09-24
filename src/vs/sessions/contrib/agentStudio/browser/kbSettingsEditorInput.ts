@@ -47,6 +47,15 @@ export interface IKbSettingsHost {
 	/** 触发飞书同步（dry-run 预览 / apply 实际写入） */
 	feishuSync(mode: 'dry-run' | 'apply'): void;
 	/**
+	 * 取**累计的同步输出**（2026-09-23）。
+	 *
+	 * 同步跑在一个独立终端里，用户之前必须切到终端才能看到进度/报错。现在视图侧
+	 * 会把终端 `onData` 的内容缓存下来，面板重建（重开设置页 / 切换后回来）时用本方法恢复显示。
+	 */
+	getSyncOutput(): string;
+	/** 订阅同步输出（实时）；返回取消订阅。面板据此把同步过程实时显示在下方。 */
+	onSyncOutput(listener: (chunk: string) => void): { dispose(): void };
+	/**
 	 * 读取用户自定义的「本地目录 ↔ 飞书知识库」映射（vault 内 `.feishu-space-map.json`；不存在 ⇒ 空数组）。
 	 * 结构内联声明以避免 Input 反向依赖 knowledge/ 模块（同一契约由 feishuSyncCore 定义）。
 	 */
@@ -73,6 +82,12 @@ export interface IKbSettingsHost {
  * 设置项较多（目录 / 构建方式 / Embedding / 飞书同步 / 统计），下拉受侧栏宽度限制
  * 显示拥挤，故改为独立的 EditorPane（对齐 VS Code 设置页的中栏形态）。
  */
+/**
+ * 设置页的**定位锚点**：打开后自动滚动到对应分组（2026-09-23 新增）。
+ * 触发场景：知识库视图的「同步飞书」按钮发现飞书未配置 ⇒ 打开设置页并要求定位到「📤 飞书同步」。
+ */
+export type KbSettingsFocus = 'feishu';
+
 export class KbSettingsEditorInput extends EditorInput {
 
 	static readonly ID = 'workbench.editor.agentStudio.kbSettings';
@@ -89,7 +104,12 @@ export class KbSettingsEditorInput extends EditorInput {
 		return EditorInputCapabilities.Singleton | EditorInputCapabilities.Readonly;
 	}
 
-	constructor(private readonly _host: IKbSettingsHost) {
+	/**
+	 * @param focusSection 打开时定位到的分组（可选）。⚠ 刻意**不改 `matches()`**：
+	 *   复用同一个设置 Tab 时框架会重新调用 `setInput()`（见 Pane 里 L159 的注释），
+	 *   定位逻辑挂在渲染收尾处，所以复用路径同样会滚动 —— 避免开出第二个设置页。
+	 */
+	constructor(private readonly _host: IKbSettingsHost, readonly focusSection?: KbSettingsFocus) {
 		super();
 	}
 

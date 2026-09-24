@@ -478,7 +478,74 @@ suite('FeishuPlatform · 入站事件解析', () => {
 		assert.ok(logs.some(l => l.includes('未处理的消息事件类型')), logs.join(' | '));
 	});
 
-	test('D-13：非文本消息（图片）不转发空消息给 Agent，并记日志', () => {
+	// ★ 2026-09-23：D-13 的旧结论「非文本消息一律不转发」已被**刻意推翻**：
+	//   图片/文件改为下载后作为附件（files）交给 Agent；语音仍不支持（用户明确决定）。
+	//   下面这组用例把新语义钉住（URL 形态 / 鉴权头 / 占位文本 / mime 归一 / 失败退化）。
+
+	/** 发一条消息事件并等一个宏任务（媒体下载走串行队列，异步完成）。 */
+	async function dispatchAndSettle(p: FeishuPlatform, msgType: string, content: string): Promise<void> {
+		p.handleWebhookEvent({
+			header: { event_type: 'im.message.receive_v1' },
+			event: {
+				message: { message_id: 'm3', chat_id: 'c3', message_type: msgType, content },
+				sender: { sender_id: { open_id: 'u3' } },
+			},
+		});
+		await new Promise(r => setTimeout(r, 5));
+	}
+
+	test('★ 图片入站：经主进程二进制出口下载 → 作为 files 附件交给 Agent（不再丢弃）', async () => {
+		const logs: string[] = [];
+		const seen: Array<{ url: string; auth?: string }> = [];
+		const r = makeRequestService(url => url.includes(TOKEN_PATH)
+			? { body: JSON.stringify({ code: 0, tenant_access_token: 'tok-media', expire: 7200 }) }
+			: { body: '{}' });
+		const p = new FeishuPlatform({
+			appId: 'a', appSecret: 'b', log: m => logs.push(m), requestService: r.svc,
+			downloadBinary: async (url, headers) => {
+				seen.push({ url, auth: headers?.Authorization });
+				return { bytes: new Uint8Array([1, 2, 3]), contentType: 'image/png; charset=binary' };
+			},
+		});
+		const got: InboundMessage[] = [];
+		p.start(m => got.push(m));
+
+		await dispatchAndSettle(p, 'image', '{"image_key":"img_x"}');
+
+		assert.strictEqual(seen.length, 1, logs.join(' | '));
+		assert.ok(seen[0].url.includes('/im/v1/messages/m3/resources/img_x?type=image'), seen[0].url);
+		assert.strictEqual(seen[0].auth, 'Bearer tok-media', '必须带 tenant token');
+		assert.strictEqual(got.length, 1);
+		assert.strictEqual(got[0].content, '[图片]', '媒体消息没有文字时给占位，避免 Agent 收到空消息');
+		assert.strictEqual(got[0].conversationId, 'c3');
+		assert.strictEqual(got[0].files?.length, 1);
+		assert.strictEqual(got[0].files?.[0]?.mimeType, 'image/png', 'charset 参数须剥掉');
+		assert.deepStrictEqual(Array.from(got[0].files?.[0]?.data ?? []), [1, 2, 3], '字节必须原样交引擎');
+	});
+
+	test('★ 文件入站：type=file、保留 file_name、mime 按扩展名兜底', async () => {
+		const seen: string[] = [];
+		const r = makeRequestService(url => url.includes(TOKEN_PATH)
+			? { body: JSON.stringify({ code: 0, tenant_access_token: 't', expire: 7200 }) }
+			: { body: '{}' });
+		const p = new FeishuPlatform({
+			appId: 'a', appSecret: 'b', requestService: r.svc,
+			// 故意不给 content-type：验证按扩展名兜底
+			downloadBinary: async url => { seen.push(url); return { bytes: new Uint8Array([7]) }; },
+		});
+		const got: InboundMessage[] = [];
+		p.start(m => got.push(m));
+
+		await dispatchAndSettle(p, 'file', '{"file_key":"file_x","file_name":"季度报表.xlsx"}');
+
+		assert.ok(seen[0].includes('/resources/file_x?type=file'), seen[0]);
+		assert.strictEqual(got.length, 1);
+		assert.strictEqual(got[0].content, '[文件：季度报表.xlsx]');
+		assert.strictEqual(got[0].files?.[0]?.fileName, '季度报表.xlsx');
+		assert.ok(got[0].files?.[0]?.mimeType.includes('spreadsheetml'), got[0].files?.[0]?.mimeType);
+	});
+
+	test('★ 语音（audio）按用户决定仍不支持：不派发、记日志说明当前支持范围', () => {
 		const logs: string[] = [];
 		const p = new FeishuPlatform({ appId: 'a', appSecret: 'b', log: m => logs.push(m) });
 		const got: InboundMessage[] = [];
@@ -487,13 +554,52 @@ suite('FeishuPlatform · 入站事件解析', () => {
 		p.handleWebhookEvent({
 			header: { event_type: 'im.message.receive_v1' },
 			event: {
-				message: { message_id: 'm3', chat_id: 'c3', message_type: 'image', content: '{"image_key":"img_x"}' },
-				sender: { sender_id: { open_id: 'u3' } },
+				message: { message_id: 'm4', chat_id: 'c4', message_type: 'audio', content: '{"file_key":"file_v2_a","duration":3000}' },
+				sender: { sender_id: { open_id: 'u4' } },
 			},
 		});
 
 		assert.strictEqual(got.length, 0);
-		assert.ok(logs.some(l => l.includes('暂不支持的消息类型')), logs.join(' | '));
+		assert.ok(logs.some(l => l.includes('暂不支持的消息类型') && l.includes('audio')), logs.join(' | '));
+	});
+
+	test('★ 下载失败不丢消息：退化为占位文本并记日志（不抛给长连接）', async () => {
+		const logs: string[] = [];
+		const r = makeRequestService(url => url.includes(TOKEN_PATH)
+			? { body: JSON.stringify({ code: 0, tenant_access_token: 't', expire: 7200 }) }
+			: { body: '{}' });
+		const p = new FeishuPlatform({
+			appId: 'a', appSecret: 'b', log: m => logs.push(m), requestService: r.svc,
+			downloadBinary: async () => { throw new Error('HTTP 404'); },
+		});
+		const got: InboundMessage[] = [];
+		p.start(m => got.push(m));
+
+		await dispatchAndSettle(p, 'image', '{"image_key":"img_y"}');
+
+		assert.strictEqual(got.length, 1, '下载失败也必须把消息交给 Agent（至少是占位文本）');
+		assert.strictEqual(got[0].content, '[图片]');
+		assert.strictEqual(got[0].files, undefined);
+		assert.ok(logs.some(l => l.includes('下载失败，退化为占位文本') && l.includes('HTTP 404')), logs.join(' | '));
+	});
+
+	test('★ 未注入 downloadBinary 时只投占位文本（并说明原因，不静默）', () => {
+		const logs: string[] = [];
+		const p = new FeishuPlatform({ appId: 'a', appSecret: 'b', log: m => logs.push(m) });
+		const got: InboundMessage[] = [];
+		p.start(m => got.push(m));
+
+		p.handleWebhookEvent({
+			header: { event_type: 'im.message.receive_v1' },
+			event: {
+				message: { message_id: 'm5', chat_id: 'c5', message_type: 'image', content: '{"image_key":"img_z"}' },
+				sender: { sender_id: { open_id: 'u5' } },
+			},
+		});
+
+		assert.strictEqual(got.length, 1);
+		assert.strictEqual(got[0].content, '[图片]');
+		assert.ok(logs.some(l => l.includes('缺少主进程二进制出口')), logs.join(' | '));
 	});
 
 	test('未 start()（无 handler）时静默忽略，不抛异常', () => {

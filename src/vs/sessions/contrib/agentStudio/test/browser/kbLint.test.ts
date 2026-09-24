@@ -108,4 +108,42 @@ suite('AgentStudio - kbLint 结构校验', () => {
 		assert.ok(r.includes('断链 [[x]]'));
 		assert.ok(r.includes('warning 1'));
 	});
+
+	// ── 规则 4/5（2026-09-23）：删除带来的悬空状态 ────────────────────────────────
+	test('来源失效：sources 指向已不存在的文件 ⇒ missing-source', async () => {
+		const libRoot = URI.file('/vault/库');
+		const fs = new MockFileService();
+		fs.addFile(URI.joinPath(libRoot, 'raw/存在.md'), '素材（无 frontmatter）');
+		fs.addFile(URI.joinPath(libRoot, 'A.md'), '---\nsources:\n  - "[[库/raw/存在.md]]"\n---\n正文');
+		fs.addFile(URI.joinPath(libRoot, 'B.md'), '---\nsources:\n  - "[[库/raw/已删除.md]]"\n  - "[[库/raw/存在.md]]"\n---\n正文');
+
+		const issues = await lintVault(fs as any, libRoot);
+		const hit = issues.filter(i => i.rule === 'missing-source');
+		assert.strictEqual(hit.length, 1, '只有引用了已删来源的那篇应报，且每篇只报一条');
+		assert.ok(hit[0].note.path.endsWith('B.md'));
+		assert.ok(hit[0].message.includes('已删除.md'), '应点名失效的来源');
+		assert.ok(!hit[0].message.includes('存在.md'), '仍存在的来源不应出现在失效列表里');
+	});
+
+	test('构建缓存孤儿：源 / 笔记已不存在 ⇒ stale-cache（两条，严重度不同）', async () => {
+		const libRoot = URI.file('/vault/库');
+		const fs = new MockFileService();
+		const srcOk = URI.joinPath(libRoot, 'src-ok.md');
+		const srcGone = URI.joinPath(libRoot, 'src-gone.md');
+		const noteOk = URI.joinPath(libRoot, 'note-ok.md');
+		const noteGone = URI.joinPath(libRoot, 'note-gone.md');
+		fs.addFile(srcOk, '---\nsources: []\n---\n源');
+		fs.addFile(noteOk, '---\nsources: []\n---\n笔记');
+		// 缓存位于 vault 根（扫描根的上一级）
+		fs.addFile(URI.file('/vault/.kb-build-cache.json'), JSON.stringify({
+			[srcOk.fsPath]: noteGone.fsPath,   // 笔记被删 ⇒ warning（会导致该素材无法批量重建）
+			[srcGone.fsPath]: noteOk.fsPath,   // 源被删 ⇒ info（同名素材重新出现会被误判已构建）
+		}));
+
+		const issues = await lintVault(fs as any, libRoot);
+		const stale = issues.filter(i => i.rule === 'stale-cache');
+		assert.strictEqual(stale.length, 2, '源失效与笔记失效应各报一条');
+		assert.ok(stale.some(i => i.severity === 'info' && i.message.includes('源文件已不存在')));
+		assert.ok(stale.some(i => i.severity === 'warning' && i.message.includes('已建笔记已不存在')));
+	});
 });

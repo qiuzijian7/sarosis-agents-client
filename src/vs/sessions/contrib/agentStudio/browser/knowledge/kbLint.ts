@@ -50,10 +50,16 @@ function isNoteFrontmatter(fm: Record<string, FrontmatterValue> | null): boolean
 }
 
 /**
- * 对扫描根（`库/` 分区，笔记与库源文件混居）跑确定性 lint。
- * 兼容旧「笔记」分区目录：库源文件仅作为链接目标登记，不参与规则检查。
+ * 对扫描根跑确定性 lint。
+ *
+ * 语义（2026-09-23 起）：`scanRoot` = **笔记区**（知识体系层，构建产物落这里），
+ * `sourceRoot` = **库**（数据源层）。二者分离后，笔记里的 `sources` 与 `[[库内路径]]`
+ * 都指向扫描根**之外** ⇒ 必须显式告知来源目录，否则规则 1/4 会把所有来源误报为「已失效」。
+ *
+ * 兼容两种布局：只传 `scanRoot` 时退化为旧的「笔记与源文件混居」模型（规则 1 用
+ * `vaultRoot` + `scanRoot` 两个基准探测路径即可覆盖）。
  */
-export async function lintVault(fileService: IFileService, scanRoot: URI): Promise<KbLintIssue[]> {
+export async function lintVault(fileService: IFileService, scanRoot: URI, sourceRoot?: URI): Promise<KbLintIssue[]> {
 	const allMd = await collectMd(fileService, scanRoot);
 	const nameToUri = new Map<string, URI>();
 	for (const n of allMd) { nameToUri.set(normName(displayName(n)), n); }
@@ -83,7 +89,9 @@ export async function lintVault(fileService: IFileService, scanRoot: URI): Promi
 		if (cached !== undefined) { return cached; }
 		const parts = clean.split('/').filter(Boolean);
 		const candidates: URI[] = [];
-		for (const base of [vaultRoot, scanRoot]) {
+		// ★ 2026-09-23：多一个 `sourceRoot`（库）基准 —— 笔记里的来源链接形如 `[[raw/x.md]]`，
+		//   那是**库内相对路径**；扫描根变成笔记区后，只有加上库这个基准才解析得到。
+		for (const base of [vaultRoot, scanRoot, ...(sourceRoot ? [sourceRoot] : [])]) {
 			candidates.push(URI.joinPath(base, ...parts));
 			if (!/\.[a-z0-9]+$/i.test(clean)) { candidates.push(URI.joinPath(base, ...parts.slice(0, -1), parts[parts.length - 1] + '.md')); }
 		}
@@ -132,7 +140,79 @@ export async function lintVault(fileService: IFileService, scanRoot: URI): Promi
 		}
 	}
 
+	// 规则 4：**来源已失效**（2026-09-23）
+	// 背景：库源文件被删除后（尤其「在系统资源管理器/手机端删」——不经知识库视图，没有删除收口），
+	// 笔记 frontmatter 的 `sources` 会留着已不存在的文件名。原来没有任何规则管这件事：
+	//  · 规则 2 的 `no-sources` 只查「**有没有** sources」，不查「**在不在**」；
+	//  · 规则 1 的 `broken-link` 只看**正文**的 `[[x]]`，而 sources 是 frontmatter 字段。
+	// ⚠ 口径：`extractSources` 归一为**小写 basename（带扩展名）**，不能用 `nameToUri`
+	//   （它经 `normName` 把扩展名去掉了）⇒ 这里单独建一份「现有文件名（小写）」集合。
+	const existingBasenames = new Set<string>();
+	for (const n of allMd) { existingBasenames.add((n.path.split('/').pop() ?? '').toLowerCase()); }
+	// ★ 2026-09-23：来源文件住**库**（`sourceRoot`），不在扫描根（笔记区）里 ——
+	//   不把库的文件名并进来，每一条 `sources` 都会被误报成「来源已失效」。
+	if (sourceRoot) {
+		for (const n of await collectMd(fileService, sourceRoot)) {
+			existingBasenames.add((n.path.split('/').pop() ?? '').toLowerCase());
+		}
+	}
+	for (const { uri: n, content } of notes) {
+		const missing = extractSources(content).filter(s => !existingBasenames.has(s));
+		if (missing.length > 0) {
+			issues.push({
+				note: n, severity: 'warning', rule: 'missing-source',
+				message: `来源已失效（源文件不存在）：${missing.join('、')}`,
+			});
+		}
+	}
+
+	// 规则 5：**构建缓存孤儿**（2026-09-23）
+	issues.push(...await collectStaleCacheIssues(fileService, scanRoot));
+
 	return issues;
+}
+
+/**
+ * 规则 5 的实现：读 `<vault>/.kb-build-cache.json`（`{源绝对路径: 已建笔记绝对路径}`），
+ * 报告其中「源」或「笔记」已不存在的条目。
+ *
+ * 为什么重要：缓存是**纯路径映射、不看内容**，且只有在「知识库视图内删除」时才被收口清理；
+ * 在系统资源管理器里删文件则会永久残留 ⇒
+ *  · 源条目残留 → 同名素材重新出现时被误判「已构建」而跳过重建；
+ *  · 笔记条目残留 → `_buildAllPendingCore` 的 pending 过滤会把它的源**永久**排除，删了笔记就再也建不出来。
+ */
+async function collectStaleCacheIssues(fileService: IFileService, scanRoot: URI): Promise<KbLintIssue[]> {
+	const out: KbLintIssue[] = [];
+	const cacheUri = URI.joinPath(dirname(scanRoot), '.kb-build-cache.json');
+	let cache: Record<string, string>;
+	try {
+		cache = JSON.parse((await fileService.readFile(cacheUri)).value.toString());
+	} catch {
+		return out; // 无缓存文件 / 解析失败 ⇒ 不算问题
+	}
+	if (!cache || typeof cache !== 'object') { return out; }
+
+	const exists = async (p: string): Promise<boolean> => fileService.resolve(URI.file(p)).then(() => true, () => false);
+	let missingSources = 0;
+	let missingNotes = 0;
+	for (const [src, note] of Object.entries(cache)) {
+		if (typeof note !== 'string') { continue; }
+		if (!(await exists(src))) { missingSources++; }
+		if (!(await exists(note))) { missingNotes++; }
+	}
+	if (missingSources > 0) {
+		out.push({
+			note: cacheUri, severity: 'info', rule: 'stale-cache',
+			message: `构建缓存有 ${missingSources} 条「源文件已不存在」的残留记录（同名素材重新出现时会被误判为已构建）`,
+		});
+	}
+	if (missingNotes > 0) {
+		out.push({
+			note: cacheUri, severity: 'warning', rule: 'stale-cache',
+			message: `构建缓存有 ${missingNotes} 条「已建笔记已不存在」的残留记录（会让对应素材无法被批量重建）`,
+		});
+	}
+	return out;
 }
 
 function extractWikilinks(body: string): string[] {

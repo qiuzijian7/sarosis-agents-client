@@ -21,6 +21,8 @@ import {
 	isNewerVersion,
 	larkCliStatusBadge,
 	parseVersion,
+	larkCliErrorText,
+	parseLarkCliJson,
 	type ILarkCliStatus,
 } from '../../common/larkCli.js';
 import { parseFeishuChatList } from '../../browser/feishuChatList.js';
@@ -33,6 +35,7 @@ const CSS_REL = 'src/vs/sessions/contrib/agentStudio/browser/media/agentSettings
 const APP_REL = 'src/vs/code/electron-main/app.ts';
 const CHANNEL_REL = 'src/vs/sessions/contrib/agentStudio/electron-main/larkCliChannel.ts';
 const SERVICE_REL = 'src/vs/sessions/contrib/agentStudio/browser/larkCliService.ts';
+const COMMON_REL = 'src/vs/sessions/contrib/agentStudio/common/larkCli.ts';
 
 // ─── 纯逻辑 ────────────────────────────────────────────────────────────────
 
@@ -124,8 +127,18 @@ suite('飞书 CLI · 接线守卫', () => {
 
 	test('★★ 通道暴露 status / install 两个 handler，且用 validatedIpcMain（channel 名须 vscode: 前缀）', () => {
 		const channel = read(CHANNEL_REL);
-		assert.ok(channel.includes("validatedIpcMain.handle('vscode:larkCliStatus'"), '必须有 vscode:larkCliStatus ✓');
-		assert.ok(channel.includes("validatedIpcMain.handle('vscode:larkCliInstall'"), '必须有 vscode:larkCliInstall ✓');
+		// ★ 2026-09-23：通道名改为**常量**（单一口径，定义在 common/larkCli.ts，供主进程与渲染侧共用）
+		//   ⇒ 断言相应改成「用常量 + 常量值正确」。这比原先写死字面量**更强**：
+		//     「通道名写错」这种情况原先无人守（消费端用常量、注册端用常量，写错就一起错），
+		//     现在由下面三条把常量值本身也钉住。
+		assert.ok(channel.includes('validatedIpcMain.handle(LARK_CLI_STATUS_CHANNEL'), '必须有 status handler ✓');
+		assert.ok(channel.includes('validatedIpcMain.handle(LARK_CLI_INSTALL_CHANNEL'), '必须有 install handler ✓');
+		assert.ok(channel.includes('validatedIpcMain.handle(LARK_CLI_RUN_CHANNEL'),
+			'必须有 run handler（2026-09-23 新增：飞书文档 → markdown 导入用）✓');
+		const common = read(COMMON_REL);
+		assert.ok(common.includes("LARK_CLI_STATUS_CHANNEL = 'vscode:larkCliStatus'"), 'status 常量值必须是 vscode:larkCliStatus ✓');
+		assert.ok(common.includes("LARK_CLI_INSTALL_CHANNEL = 'vscode:larkCliInstall'"), 'install 常量值必须是 vscode:larkCliInstall ✓');
+		assert.ok(common.includes("LARK_CLI_RUN_CHANNEL = 'vscode:larkCliRun'"), 'run 常量值必须是 vscode:larkCliRun ✓');
 		assert.ok(channel.includes('child_process'), '探测/安装必须在主进程用 child_process 执行 ✓');
 		assert.ok(!channel.includes('requestService'), 'CLI 通道不依赖 HTTP 出口（自己 spawn）✓');
 	});
@@ -364,5 +377,51 @@ suite('飞书 CLI · 两处样式一致（聊天框 ↔ editorpane，逐值比�
 			'★ 必须把 renderList 传进去（绑定后刷新列表、且保留群列表）✗✓');
 		assert.ok(!/_renderLarkCliSection[\s\S]{0,120}_renderSettingsChannelTab\(container\)/.test(dd),
 			'★ 不得用整页重渲染来刷新（会清掉群列表）✗✓');
+	});
+});
+
+/**
+ * 通用命令执行（2026-09-23）：`docs +fetch` 的 JSON 解析与错误提取。
+ *
+ * 用例里的 JSON 形态取自**真机实测**（`lark-cli docs +fetch --doc <无效 token>` 的完整输出），
+ * 不是凭空构造 —— 这正是「读不到文档」时要给用户看的那条分支。
+ */
+suite('AgentStudio - larkCli 命令输出解析（飞书文档导入）', () => {
+
+	// 本文件其它用例也不用 `ensureNoDisposablesAreLeakedInTestSuite`（未导入）；
+	// 这两个函数是纯字符串处理，不创建 disposable，无需该守卫。
+
+	test('parseLarkCliJson：纯 JSON / 夹带杂项输出 / 非 JSON 三种情形', () => {
+		assert.deepStrictEqual(parseLarkCliJson('{"a":1}'), { a: 1 });
+		// CLI 前后可能夹带 npm 警告、升级提示等 ⇒ 取首个 { 到末个 }
+		assert.deepStrictEqual(parseLarkCliJson('npm warn x\n{"ok":true,"n":2}\nnoise'), { ok: true, n: 2 });
+		assert.strictEqual(parseLarkCliJson('完全不是 JSON'), undefined);
+		assert.strictEqual(parseLarkCliJson(''), undefined);
+	});
+
+	test('larkCliErrorText：无 hint 时退到 message（真机实测的错误形态）', () => {
+		const real = JSON.stringify({
+			ok: false, identity: 'user',
+			error: {
+				type: 'api', subtype: 'unknown', code: 3380002,
+				message: 'Invalid document_id or document not found. Verify the document_id exists and is accessible.',
+				log_id: '2026…176A7D19',
+			},
+		});
+		const text = larkCliErrorText(parseLarkCliJson(real), '');
+		assert.ok(text.includes('Invalid document_id or document not found'), '应取到可读 message');
+		assert.ok(text.includes('3380002'), '应带上错误码便于排查');
+	});
+
+	test('larkCliErrorText：有 hint 时优先用 hint（权限类错误给出可操作建议）', () => {
+		const withHint = JSON.stringify({ ok: false, error: { code: 'permission_denied', message: 'denied', hint: '改用 docs +media-preview 预览' } });
+		const text = larkCliErrorText(parseLarkCliJson(withHint), '');
+		assert.ok(text.includes('改用 docs +media-preview 预览'), 'hint 优先于 message');
+		assert.ok(!text.includes('denied') || text.includes('permission_denied'));
+	});
+
+	test('larkCliErrorText：拿不到结构化错误时回退 stderr 首行（不返回空字符串）', () => {
+		assert.strictEqual(larkCliErrorText(undefined, 'spawn lark-cli ENOENT\ndetails'), 'spawn lark-cli ENOENT');
+		assert.strictEqual(larkCliErrorText(undefined, ''), '未知错误');
 	});
 });

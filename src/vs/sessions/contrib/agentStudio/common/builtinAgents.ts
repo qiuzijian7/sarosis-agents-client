@@ -523,6 +523,7 @@ General note conventions:
 1. **Link related notes** with \`[[wikilinks]]\` to build a knowledge graph.
 2. **Use frontmatter** for every note: \`title\`, \`tags\`, \`created\`, \`source\` (link back to the library source file).
 3. **Add callouts** (\`> [!note]\`, \`> [!warning]\`, \`> [!tip]\`) for important information.
+4. **Visualize key flows**: when the content describes a process, call chain, state machine, or data flow, include a mermaid code block (\`flowchart\` / \`sequenceDiagram\` / \`stateDiagram-v2\` / \`erDiagram\`); use \`![[topic.canvas]]\` embeds for topic maps. Never hand-place images, raw HTML, or html code blocks in a note body.
 
 ### 3. Categorization Rules
 - Always create logical subfolders — don't dump everything in the root.
@@ -537,6 +538,8 @@ General note conventions:
 - **defuddle**: Extract clean markdown from web pages. Use for URL imports instead of raw web fetching.
 - **obsidian-bases**: Create and edit Obsidian Bases (\`.base\`) for structured tabular data.
 - **json-canvas**: Create and edit JSON Canvas files (\`.canvas\`) for visual knowledge graphs.
+- **kb-build**: 宿主驱动的知识库构建手册 —— 收到「素材清单」时按它执行：素材 → 结构化笔记（落点复用既有目录结构）→ 维护 知识体系.md → 需要重构时小规模直接用 kb_organize、大规模输出 KB_REORG 计划交给宿主。
+- **kb-feishu-sync**: 把「笔记」同步到飞书知识库 —— 先 \`kb_feishu_sync\` dry-run 出计划给用户确认，再 apply；记账字段（feishu.*）由脚本维护，不要手改。
 
 ## Best Practices
 - **Before importing**: Check if similar content already exists in the library to avoid duplicates.
@@ -544,10 +547,19 @@ General note conventions:
 - **Be thorough but efficient**: Import/process all requested items, but don't over-engineer small requests.
 - **Report progress**: After completing operations, summarize what was imported/generated and where files are located.
 - **Handle errors gracefully**: If a URL can't be scraped, note it and move on. If a file can't be read, suggest alternatives.`,
-			skills: ['obsidian-markdown', 'obsidian-bases', 'json-canvas', 'defuddle', 'writing', 'summarize', 'analysis'],
+			// ★ 2026-09-23：加入 kb-build —— 知识库构建的完整规则移进技能（宿主消息只带素材清单等数据，
+		//   不再把整份规则塞进 prompt；发送时用 `explicitSkillIds: ['kb-build']` 挂载）。
+		// ★ 2026-09-24：加入 mermaid —— 笔记正文用 mermaid 图块表达流程/时序/状态（宿主渲染为 PNG 供飞书同步）
+		// ★ 2026-09-24：加入 kb-category-feishu —— 新建分类目录/登记类型，以及与飞书知识库建立关联
+		//   （自动建库 / 显式映射 .feishu-space-map.json / 父节点），并说明改分类后的跨库自动搬迁语义。
+		// ★ 2026-09-24：移除 `writing` —— 该 id 在 resources/.agents/skills/ 与用户技能库里都不存在，
+		//   是同名「静默空引用」（挂了等于没挂）；技能挂载完整性由测试 builtinSkillContracts.test.ts 兜住。
+		skills: ['obsidian-markdown', 'obsidian-bases', 'json-canvas', 'mermaid', 'defuddle', 'summarize', 'analysis', 'kb-build', 'kb-category-feishu', 'kb-feishu-sync'],
 			// 2026-09-22：加入 vision_analyze —— 导入小红书等图文链接后，需要**总结图片内容**
 		// （单图工具，agent 自行逐张调用；模型走 AGENT_STUDIO_AUX_VISION_* 或多模态主模型）。
-		tools: ['file_write', 'file_read', 'search_files', 'terminal', 'kb_search', 'vision_analyze'],
+		// ★ 2026-09-23：加入 kb_organize —— 允许 agent **自己动手**重构笔记区目录（checkpoint + 备份，可回滚）
+		// ★ 2026-09-24：加入 kb_feishu_sync —— 笔记区 → 飞书知识库（配技能 kb-feishu-sync；默认 dry-run）
+		tools: ['file_write', 'file_read', 'search_files', 'terminal', 'kb_search', 'vision_analyze', 'kb_organize', 'kb_feishu_sync'],
 			visibility: { userInvocable: true, agentInvocable: true },
 			source: 'builtin',
 			status: AgentStatus.Idle,

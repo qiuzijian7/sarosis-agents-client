@@ -2,7 +2,8 @@
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
-import mermaid, { MermaidConfig } from 'mermaid';
+import mermaid from 'mermaid';
+import { buildMermaidConfig, getMermaidThemeFromBody } from './mermaidTheme';
 import { VsCodeApi } from './vscodeApi';
 
 interface PanZoomState {
@@ -291,12 +292,6 @@ export class PanZoomHandler {
 	}
 }
 
-export function getMermaidTheme(): 'dark' | 'default' {
-	return document.body.classList.contains('vscode-dark') || (document.body.classList.contains('vscode-high-contrast') && !document.body.classList.contains('vscode-high-contrast-light'))
-		? 'dark'
-		: 'default';
-}
-
 /**
  * Unpersisted state
  */
@@ -321,9 +316,7 @@ async function rerenderMermaidDiagram(
 	diagramElement.textContent = diagramText;
 	delete diagramElement.dataset.processed;
 
-	mermaid.initialize({
-		theme: newTheme,
-	});
+	mermaid.initialize(buildMermaidConfig(newTheme));
 	await mermaid.run({
 		nodes: [diagramElement]
 	});
@@ -336,7 +329,7 @@ export async function initializeMermaidWebview(vscode: VsCodeApi): Promise<PanZo
 	}
 
 	// Capture diagram state
-	const theme = getMermaidTheme();
+	const theme = getMermaidThemeFromBody();
 	const diagramText = diagram.textContent ?? '';
 	let state: LocalState = {
 		mermaidSource: diagramText,
@@ -364,11 +357,7 @@ export async function initializeMermaidWebview(vscode: VsCodeApi): Promise<PanZo
 	wrapper.appendChild(content);
 
 	// Run mermaid
-	const config: MermaidConfig = {
-		startOnLoad: false,
-		theme,
-	};
-	mermaid.initialize(config);
+	mermaid.initialize(buildMermaidConfig(theme));
 	await mermaid.run({ nodes: [diagram] });
 
 	// Show the diagram now that it's rendered
@@ -387,7 +376,7 @@ export async function initializeMermaidWebview(vscode: VsCodeApi): Promise<PanZo
 
 	// Re-render when theme changes
 	new MutationObserver(() => {
-		const newTheme = getMermaidTheme();
+		const newTheme = getMermaidThemeFromBody();
 		if (state?.theme === newTheme) {
 			return;
 		}

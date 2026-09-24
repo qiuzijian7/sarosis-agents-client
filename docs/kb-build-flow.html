@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>知识库构建流程全景 · VsSaros</title>
+<style>
+  :root {
+    --bg: #0d1117; --card: #161b22; --card2: #1c2128; --border: #30363d;
+    --text: #e6edf3; --muted: #8b949e;
+    --view: #58a6ff; --host: #bc8cff; --agent: #3fb950; --main: #d29922; --user: #f85149;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif; line-height: 1.65; font-size: 14px; }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 40px 28px 80px; }
+  h1 { font-size: 26px; margin: 0 0 6px; }
+  h2 { font-size: 19px; margin: 44px 0 14px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+  h3 { font-size: 15px; margin: 20px 0 8px; }
+  .sub { color: var(--muted); margin: 0 0 24px; }
+  code, .k { font-family: "Cascadia Code", Consolas, monospace; font-size: 12.5px; background: #21262d; padding: 1.5px 6px; border-radius: 5px; color: #79c0ff; }
+  table { width: 100%; border-collapse: collapse; margin: 10px 0 18px; font-size: 13px; }
+  th, td { border: 1px solid var(--border); padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--card2); }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 14px 18px; margin: 12px 0; }
+  .actor { display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 8px; border-radius: 10px; margin-left: 8px; vertical-align: middle; }
+  .a-view { background: rgba(88,166,255,.15); color: var(--view); border: 1px solid rgba(88,166,255,.4); }
+  .a-host { background: rgba(188,140,255,.15); color: var(--host); border: 1px solid rgba(188,140,255,.4); }
+  .a-agent { background: rgba(63,185,80,.15); color: var(--agent); border: 1px solid rgba(63,185,80,.4); }
+  .a-main { background: rgba(210,153,34,.15); color: var(--main); border: 1px solid rgba(210,153,34,.4); }
+  .a-user { background: rgba(248,81,73,.15); color: var(--user); border: 1px solid rgba(248,81,73,.4); }
+  .flow { margin: 8px 0 4px; }
+  .step { background: var(--card); border: 1px solid var(--border); border-left: 4px solid var(--muted); border-radius: 8px; padding: 10px 14px; margin: 0; }
+  .step b { font-size: 13.5px; }
+  .step .io { color: var(--muted); font-size: 12.5px; margin-top: 4px; }
+  .step .io b { color: var(--text); font-weight: 600; }
+  .arrow { text-align: center; color: var(--muted); font-size: 15px; line-height: 1; margin: 2px 0 2px 24px; text-align: left; }
+  .branch { border-left: 1px dashed var(--border); margin-left: 24px; padding-left: 18px; }
+  .note { background: rgba(210,153,34,.08); border: 1px solid rgba(210,153,34,.35); border-radius: 8px; padding: 10px 14px; font-size: 13px; margin: 10px 0; }
+  .warn { background: rgba(248,81,73,.07); border: 1px solid rgba(248,81,73,.35); border-radius: 8px; padding: 10px 14px; font-size: 13px; margin: 10px 0; }
+  .ok { background: rgba(63,185,80,.07); border: 1px solid rgba(63,185,80,.35); border-radius: 8px; padding: 10px 14px; font-size: 13px; margin: 10px 0; }
+  .dim { color: var(--muted); }
+  ul { margin: 6px 0; padding-left: 22px; }
+  li { margin: 3px 0; }
+  .file { color: #ffa657; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 720px) { .grid2 { grid-template-columns: 1fr; } }
+  .tag { font-size: 11px; padding: 1px 7px; border-radius: 9px; background: #21262d; border: 1px solid var(--border); color: var(--muted); }
+  hr { border: none; border-top: 1px solid var(--border); margin: 36px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>知识库构建流程全景</h1>
+<p class="sub">VsSaros · Agent Studio · 知识库（KB）—— 截止 2026-09-24 的实现。代码位置：
+<code>src/vs/sessions/contrib/agentStudio/browser/kbImportController.ts</code>（构建主体）、
+<code>views/knowledgeBaseView.ts</code>（视图入口）、
+<code>resources/.agents/skills/kb-build/SKILL.md</code>（构建规则手册）、
+<code>browser/providers/tool/kbOrganizeTools.ts</code>（目录整理工具）。
+函数级输入/输出详见 <span class="file">docs/kb-batch-build-callchain.md</span>。</p>
+
+<div class="card">
+<b>一句话版本</b>：点「批量构建库」= <b>检查全部、只构建增量</b> —— 把「库」里需要构建的素材清单交给
+<b>一个知识库专家 agent 会话</b>（聊天框里可见），agent 按 <code>kb-build</code> 技能自己读素材、自己写笔记到「笔记」区，
+随后在同一会话里维护 <code>知识体系.md</code> 并可重构目录；宿主最后做缓存、补链、门控、导航收尾。
+</div>
+
+<h2>0. 角色与约定</h2>
+<table>
+<tr><th>概念</th><th>是什么</th><th>落点 / 载体</th></tr>
+<tr><td><b>库</b></td><td>数据源层：素材（PDF 转出的 md、导入的链接…）</td><td class="file">&lt;vault&gt;/库（raw/…）</td></tr>
+<tr><td><b>笔记</b></td><td>知识体系层：构建产物（结构化笔记）</td><td class="file">&lt;vault&gt;/笔记/…</td></tr>
+<tr><td><b>构建缓存</b></td><td>「素材路径 → 笔记路径」映射 + <b>新鲜度判定</b>（素材 mtime &gt; 笔记 mtime ⇒ 重建）</td><td class="file">&lt;vault&gt;/.kb-build-cache.json</td></tr>
+<tr><td><b>技能 kb-build</b></td><td>构建<b>规则手册</b>（落点/frontmatter/图片/重构约定）；消息里只带数据不带规则</td><td class="file">resources/.agents/skills/kb-build/SKILL.md</td></tr>
+<tr><td><b>kb_organize</b></td><td>agent 的目录整理<b>工具</b>（小规模 ≤10 项直接动手；checkpoint + vault 外备份，可 undoAll）</td><td>providers/tool/kbOrganizeTools.ts</td></tr>
+<tr><td><b>KB_REORG</b></td><td>大规模（&gt;10 项）重构的<b>计划通道</b>：LLM 出计划 → 宿主校验/备份 → 用户确认 → 执行</td><td>kbImportController.ts</td></tr>
+</table>
+
+<h2>1. 触发入口</h2>
+<table>
+<tr><th>入口</th><th>走向</th><th>说明</th></tr>
+<tr><td><b>「库」分区 🔧 批量构建库</b><span class="actor a-view">视图</span></td>
+    <td><code>_batchBuildAll()</code> → <code>this._kbImport.buildPendingAsAgentSession(vaultRoot)</code></td>
+    <td>本文主流程。前置检查：未选库 ⇒ 提示；未配「知识库专家」Provider/模型 ⇒ 通知一次并中止</td></tr>
+<tr><td>单文件右键「构建为笔记」<span class="actor a-view">视图</span></td>
+    <td><code>this._kbImport.buildNotesFromLibrary(uri)</code>（实例版：agentic FILE 块 → 失败回落直连）</td>
+    <td>也会开一个聊天会话（每次新建）。<b>落点与收口与批量完全一致</b></td></tr>
+<tr><td>工作区右键「导入知识库」<span class="actor a-view">视图</span></td>
+    <td>入口（落盘到库）→ 抽取（构建）</td><td>同一控制器的两阶段管线</td></tr>
+</table>
+<div class="note"><b>降级链</b>（批量）：无 chat 服务 / 会话创建失败 ⇒ 自动回落 <code>buildAllPendingNotes</code>（实例版，逐篇构建）；
+agentic 单篇失败 ⇒ 回落 <code>_buildNoteCore</code>（直连 2 次 LLM，宿主解析 FILE 块落盘）。
+静态入口 <code>KbImportController.buildAllPendingNotes(vaultRoot, deps)</code> 保留给无实例场景 / 单测。</div>
+
+<h2>2. 批量构建主流程</h2>
+
+<div class="flow">
+  <div class="step" style="border-left-color: var(--view)">
+    <b>① 视图侧准备</b> <code>_batchBuildAll()</code><span class="actor a-view">视图层</span>
+    <div class="io">前置检查（库/配置）→ 所有库文件行标记「构建中」→ activitybar 徽标「building」→ 调控制器</div>
+  </div>
+  <div class="arrow">↓</div>
+
+  <div class="step" style="border-left-color: var(--host)">
+    <b>② 待构建清单（pending）</b> <code>_collectPendingSources()</code><span class="actor a-host">宿主</span>
+    <div class="io"><b>输入</b>：vault 根。<b>产出</b>：{ libDir, notesDir, pending[], cache }。
+    <br>· 前置转换：PDF/docx → 同目录同名 .md（<b>仅当源比 md 新才重提取</b>；扫描件不写空 md）<span class="actor a-main">主进程 python + PyMuPDF4LLM</span>
+    <br>· 枚举「库」内全部 .md（跳过 dot 文件与 index/overview/insights/知识体系 等系统文件）
+    <br>· <b>pending 判定</b>（任一成立即构建）：缓存无此素材 ／ 缓存的笔记已不存在 ／ <b>素材 mtime &gt; 笔记 mtime</b>（素材构建后又被改过）；
+      同时排除「本身就是构建产物的笔记」（缓存值集合，防笔记→笔记递归）</div>
+  </div>
+  <div class="arrow">↓</div>
+
+  <div class="step" style="border-left-color: var(--host)">
+    <b>③ 打开构建会话</b> <code>_ensureKbBuildChatSession()</code><span class="actor a-host">宿主</span>
+    <div class="io"><code>createAgentSession('knowledge-base-expert', '知识库构建 · MM-DD HH:mm')</code>（真实登记 ⇒ 会话列表可见）
+    → <code>NativeChatEditorInput.create(...)</code> + <code>openEditor(pinned)</code> 打开绑定该 session 的聊天页签。
+    <br>批量 = <b>整批共用一个</b>会话；同会话跑下一个素材前 <code>replaceHistory</code> 清历史（否则全量历史会当 priorMessages 下发 ⇒ 平方膨胀 + 重复输出旧 FILE 块）</div>
+  </div>
+  <div class="arrow">↓</div>
+
+  <div class="step" style="border-left-color: var(--host)">
+    <b>④ 准备数据</b><span class="actor a-host">宿主</span>
+    <div class="io"><code>_getSchemaStatic()</code> 确保 <span class="file">&lt;vault&gt;/kb-schema.json</span> 存在（agent 自己 file_read）；
+    <code>_describeNoteTree()</code> 渲染笔记区<b>全量</b>目录树（含手写区，深度 ≤4 / ≤400 行）；
+    目录快照（事后 diff 用）</div>
+  </div>
+  <div class="arrow">↓</div>
+
+  <div class="step" style="border-left-color: var(--agent)">
+    <b>⑤ Phase 1：agent 自主构建笔记</b><span class="actor a-agent">agent（kb-build 技能）</span>
+    <div class="io"><b>宿主只发一条短消息</b>（触发语 + 素材清单[绝对路径+sources 引用] + 目录树 + 3 条硬约束），
+    经 <code>explicitSkillIds: ['kb-build']</code> 挂载技能全文；⚠ <b>不传 chatOnly</b> ⇒ 允许写工具。
+    <br><b>agent 依次</b>：<code>file_read</code> 读素材 → <code>file_read</code> kb-schema.json → 按落点规则 <code>file_write</code>/<code>patch</code> 写笔记
+    （<b>优先复用既有目录</b>、能复用绝不新建、同名就地更新；frontmatter 必含 type/title/sources；图片相对路径 assets/…；可选 vision_analyze 逐张看图）</div>
+  </div>
+  <div class="arrow">↓</div>
+
+  <div class="step" style="border-left-color: var(--agent)">
+    <b>⑥ Phase 2：维护知识体系</b><span class="actor a-agent">agent（kb-build 技能）</span>
+    <div class="io">宿主发一句话触发。agent：<code>search_files</code> 列目录 → 创建/完善 <span class="file">笔记/知识体系.md</span>
+    （目录总览 + 学习路径 + 知识缺口 + <b>结构评价</b>）；如需重构 ⇒ 见 §3</div>
+  </div>
+  <div class="arrow">↓</div>
+
+  <div class="step" style="border-left-color: var(--host)">
+    <b>⑦ 宿主收尾</b><span class="actor a-host">宿主</span>
+    <div class="io"><b>产出归集</b>（双保险）：工具结果串 <code>wrote N chars to &lt;path&gt;</code> ∪ 笔记区目录前后 diff；
+    <code>KB_ORGANIZE_RESULT</code> 行 ⇒ 修正缓存中被移动的路径；
+    <br>· <b>缓存回填</b>：读每篇新笔记的 frontmatter <code>sources</code> 反查来源 → 写 .kb-build-cache.json
+    <br>· <b>补链</b> <code>_enrichNewNotes</code>（整词命中其它笔记标题 ⇒ 包成 [[标题]]，只改本次产物）
+    <br>· <b>门控</b> <code>applyDeabstractionGating</code>（概念/对比/综合/实体类：sources ≥2 ⇒ active，否则 pending）
+    <br>· <b>导航</b> <code>maintainKbNavigation</code>（重写 index.md / overview.md / insights.md / 各主题 .overview.md）
+    <br>· <code>requestKbRefresh()</code> + 通知「知识库构建完成：新增/更新 N 篇笔记…」</div>
+  </div>
+  <div class="arrow">↓</div>
+
+  <div class="step" style="border-left-color: var(--view)">
+    <b>⑧ 视图收尾</b><span class="actor a-view">视图层</span>
+    <div class="io">清「构建中」标记与进度 → 有产出才亮「有新增」徽标 → 刷新「笔记」「库」两分区 → 搜索索引置脏</div>
+  </div>
+</div>
+
+<div class="ok"><b>「检查全部 vs 只构建增量」的成本</b>：未变化的文件只做「枚举 + 读缓存 JSON + mtime 比较」—— 无 LLM、无 agent 轮次；
+只有 pending 里的文件才会让 agent 动手。库文件右侧徽标（待构建/已建笔记）只是<b>展示层</b>标签（按缓存判定），与本次是否构建是两回事。</div>
+
+<h2>3. 目录重构：两条通道</h2>
+<table>
+<tr><th></th><th>kb_organize（工具直动）</th><th>KB_REORG（计划通道）</th></tr>
+<tr><td><b>适用</b></td><td>小规模（≤10 项）</td><td>大规模（&gt;10 项）</td></tr>
+<tr><td><b>谁执行</b></td><td><b>agent 自己</b>（在会话里连续搬）</td><td>宿主 <code>_applyReorgPlan()</code></td></tr>
+<tr><td><b>确认</b></td><td>无需逐条审批（沙箱内写默认免审批）</td><td>通知卡片「应用重构 / 跳过」<span class="actor a-user">用户确认</span></td></tr>
+<tr><td><b>安全</b></td><td colspan="2">域限定「笔记/」区内；拒绝 <code>..</code>；to 必须不存在（不覆盖）；执行前 checkpoint（聊天页签 undoAll）+ <b>备份到 vault 之外</b>（备份失败就跳过该项）；「删除」= 移入备份目录（回收站语义）</td></tr>
+<tr><td><b>联动</b></td><td colspan="2">执行后宿主同步修正 .kb-build-cache.json 中被移动的路径 + 重跑导航/门控</td></tr>
+</table>
+<div class="note">为什么需要工具而不是让 agent 用 terminal：agent 工具集里<b>没有</b>移动/删除/重命名工具；
+terminal 属 execute 档会逐次弹审批（不适合无人值守）⇒ 提示词里禁用 terminal，搬运一律走 kb_organize / KB_REORG。</div>
+
+<h2>4. 三条构建路径的差异</h2>
+<table>
+<tr><th>路径</th><th>读素材</th><th>提炼</th><th>写盘</th><th>过程可见</th><th>触发</th></tr>
+<tr><td><b>buildPendingAsAgentSession</b>（批量默认）</td><td><b>agent</b>（file_read，宿主只给路径）</td><td>agent 多轮（允许写工具）</td><td><b>agent</b>（file_write）</td><td>聊天页签实时可见</td><td>批量构建库按钮</td></tr>
+<tr><td><b>buildNotesFromLibrary</b>（单文件右键，agentic）</td><td>宿主把原文塞进 prompt</td><td>agent 多轮（chatOnly:true）</td><td><b>宿主</b>（解析回传的 FILE 块）</td><td>聊天页签可见</td><td>单文件右键</td></tr>
+<tr><td><b>_buildNoteCore</b>（降级/直连）</td><td>宿主</td><td>2 次直连 LLM（STAGE1 分析 + STAGE2 FILE 块）</td><td>宿主（_writeFileBlocks）</td><td>不可见</td><td>降级 / 静态入口 / 单测</td></tr>
+</table>
+<div class="ok">三条路径的<b>最终产物形态一致</b>：都落「笔记」区、都有 sources frontmatter、都经缓存/补链/门控/导航收尾；差别只在「谁读、谁写、过程能不能看见」。</div>
+
+<h2>5. 产物清单</h2>
+<table>
+<tr><th>产物</th><th>落点</th><th>执行者</th></tr>
+<tr><td>素材 md + 图片（assets/&lt;素材名&gt;/img-*.png）</td><td class="file">库/raw/…</td><td>主进程（PyMuPDF4LLM）</td></tr>
+<tr><td><b>结构化笔记</b>（frontmatter: type/title/sources/status）</td><td class="file">笔记/&lt;已有目录（含手写层级）&gt;/…</td><td>agent（新路径）/ 宿主（旧路径）</td></tr>
+<tr><td><b>知识体系.md</b>（目录总览 + 学习路径 + 缺口 + 结构评价）</td><td class="file">笔记/知识体系.md</td><td>agent（Phase 2）</td></tr>
+<tr><td>导航文档 index / overview / insights / 主题 .overview.md</td><td class="file">笔记/</td><td>宿主（insights 可选 LLM 摘要）</td></tr>
+<tr><td>构建缓存</td><td class="file">&lt;vault&gt;/.kb-build-cache.json</td><td>宿主</td></tr>
+<tr><td>构建会话（全程可见）+ checkpoint（可 undoAll）</td><td>聊天页签 / 会话历史</td><td>宿主 + agent</td></tr>
+<tr><td>重构备份（仅重构时）</td><td class="file">&lt;vault 父目录&gt;/&lt;vault 名&gt;-backup-…/</td><td>宿主 / kb_organize</td></tr>
+</table>
+
+<h2>6. 排障速查</h2>
+<table>
+<tr><th>现象</th><th>先看这里</th></tr>
+<tr><td>点了没反应</td><td>无待构建素材会发 Info 通知；未配「知识库专家」会提前中止并提示（去设置页配 Provider/模型）</td></tr>
+<tr><td>该构建的素材被跳过</td><td>.kb-build-cache.json 里是否有它的条目；素材被改过（mtime 比笔记新）⇒ 会自动重建</td></tr>
+<tr><td>笔记没落进既有目录（另起平行树）</td><td>看会话里 Phase 1 消息是否带了目录树；技能是否挂上（日志 [AgentDriver] Explicit skills added: kb-build）</td></tr>
+<tr><td>agent 写不了文件</td><td>vault 须在沙箱允许根（agentStudio.kb.vaults[].customPath 注册过）；否则弹「安全沙箱限制」卡片</td></tr>
+<tr><td>聊天框看不到过程</td><td>必须走 IAgentChatService.sendMessage（driver 只产流、不广播）；页签必须绑定同一 sessionId</td></tr>
+<tr><td>来源显示失效 / 笔记是孤儿</td><td>库分区右键「修复（清缓存孤儿 / 失效来源）」；体检（kbLint）跑 missing-source / broken-link</td></tr>
+<tr><td>双链面板显示无法读懂的 URI / 大量 ⚠</td><td>已修（路径形/URI 形目标归一到文件名匹配）；重启重建索引后刷新</td></tr>
+</table>
+
+<hr>
+<p class="dim">生成于 2026-09-24 · 同步真源：docs/kb-batch-build-callchain.md（函数级细节）与 resources/.agents/skills/kb-build/SKILL.md（构建规则手册）。</p>
+
+</div>
+</body>
+</html>

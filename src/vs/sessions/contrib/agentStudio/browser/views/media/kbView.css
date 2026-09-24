@@ -189,6 +189,10 @@
    · `.kb-section` 只在展开时固定，折叠后自动回到 header 高（否则折叠了仍占着一片空白）。 */
 .kb-scroll > [data-kb-region][data-kb-resized="1"] { flex: 0 0 auto; height: var(--kb-region-h); min-height: 0; }
 .kb-scroll > .kb-section[data-kb-region][data-kb-resized="1"]:not(.open) { height: auto; }
+/* ★ 2026-09-24（用户要求「页签展开后垂直占满」）：手风琴下**唯一展开**的分区（JS 打 .kb-solo）
+   无视拖拽保存的固定高度，占满剩余空间 —— 上面 resized 规则的优先级（0,3,0）高于
+   `.kb-section.open`（0,2,0），曾导致拖过高度的分区展开后仍卡在固定像素高、下方留白。 */
+.kb-scroll > .kb-section.kb-solo[data-kb-region][data-kb-resized="1"] { flex: 1 1 0; height: auto; }
 .kb-section-header {
 	display: flex; align-items: center; gap: 6px;
 	padding: 5px 8px;
@@ -468,22 +472,28 @@
 	padding: 2px 14px; font-size: 10px; color: var(--vscode-descriptionForeground);
 	text-transform: none; letter-spacing: 0;
 }
+/* ★ 2026-09-24（用户反馈「箭头和文本重叠」）：图标从「绝对定位压死位」改为 grid 独立列 ——
+   旧实现里图标（codicon 箭头 / ↩ / 💬）宽度随字形浮动，超过预留的 padding-left 就叠到首字符上；
+   grid 布局让图标永远独占第一列、文本从第二列开始，任何字形宽度都不会再重叠。 */
 .kb-bl-item {
-	display: flex; flex-direction: column; gap: 1px;
-	padding: 4px 14px 4px 22px; cursor: pointer; position: relative;
+	display: grid; grid-template-columns: 14px 1fr; column-gap: 6px; row-gap: 1px;
+	padding: 4px 14px 4px 10px; cursor: pointer;
 	border-radius: var(--vscode-border-radius, 4px); margin: 1px 8px;
 }
 .kb-bl-item:hover { background: var(--vscode-list-hoverBackground); }
 .kb-bl-item.missing { cursor: default; opacity: .6; }
 .kb-bl-item.missing:hover { background: transparent; }
 .kb-bl-ic {
-	position: absolute; left: 12px; top: 5px; font-size: 11px;
+	grid-column: 1; grid-row: 1; align-self: start; margin-top: 2px;
+	font-size: 11px; text-align: center;
 	color: var(--vscode-descriptionForeground);
 }
 .kb-bl-label {
+	grid-column: 2;
 	font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .kb-bl-snippet {
+	grid-column: 2;
 	font-size: 11px; line-height: 1.4; color: var(--vscode-descriptionForeground);
 	overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }

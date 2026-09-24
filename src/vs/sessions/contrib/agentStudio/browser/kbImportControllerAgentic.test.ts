@@ -114,8 +114,8 @@ suite('KbImportController._buildNoteAgentic（agentic 构建模式）', () => {
 		assert.strictEqual(captured.agentId, 'knowledge-base-expert');
 		assert.strictEqual(captured.opts.chatOnly, true, 'agentic 构建以 chatOnly 运行（落盘由控制器统一完成）');
 		assert.ok(result && result.includes('gc.md'), `应返回首篇笔记路径，实际 ${result}`);
-		assert.ok(fs.getContent('/vault/库/概念/gc.md')?.includes('GC 机制'), '笔记 1 已落盘');
-		assert.ok(fs.getContent('/vault/库/概念/jvm.md')?.includes('JVM'), '笔记 2 已落盘');
+		assert.ok(fs.getContent('/vault/笔记/概念/gc.md')?.includes('GC 机制'), '笔记 1 已落盘');
+		assert.ok(fs.getContent('/vault/笔记/概念/jvm.md')?.includes('JVM'), '笔记 2 已落盘');
 		const cache = fs.getContent('/vault/.kb-build-cache.json');
 		assert.ok(cache?.includes('src1.md'), '构建缓存已写入');
 	});
@@ -136,7 +136,7 @@ suite('KbImportController._buildNoteAgentic（agentic 构建模式）', () => {
 		const result = await (controller as any)._buildNoteAgentic(URI.file('/vault/库/raw/src2.md'), VAULT);
 		assert.ok(result?.includes('real.md'));
 		assert.ok(!fs.allPaths().some(p => p.includes('幻觉')), '作废文本未落盘');
-		assert.ok(!fs.getContent('/vault/库/概念/real.md')?.includes('作废'), '落盘笔记不含作废文本');
+		assert.ok(!fs.getContent('/vault/笔记/概念/real.md')?.includes('作废'), '落盘笔记不含作废文本');
 	});
 
 	test('空产出返回 null（调用方回退直连管线）', async () => {

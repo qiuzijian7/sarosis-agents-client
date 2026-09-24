@@ -18,6 +18,8 @@ import { ILogService } from "../../../../../platform/log/common/log.js";
 import { IRequestService } from "../../../../../platform/request/common/request.js";
 import { IMainProcessService } from "../../../../../platform/ipc/common/mainProcessService.js";
 import { createMainProcessRequestService } from "../mainProcessRequestService.js";
+// ★ 2026-09-23：入站图片/文件的二进制下载出口（飞书；文本通路会按 UTF-8 解码破坏字节）
+import { createMainProcessBinaryDownload, type BridgeBinaryDownload } from "./bridgeMediaDownload.js";
 import {
 	registerWorkbenchContribution2,
 	WorkbenchPhase,
@@ -50,6 +52,8 @@ class BridgeLifecycleContribution extends Disposable implements IWorkbenchContri
 	 */
 	private readonly _httpRequestService: IRequestService;
 	private readonly _httpLabel: string;
+	/** 入站媒体（图片/文件）的二进制下载出口；未取得主进程通道时为 undefined（媒体退化为占位文本）。 */
+	private readonly _binaryDownload?: BridgeBinaryDownload;
 
 	constructor(
 		@IBridgeService private readonly _bridge: IBridgeService,
@@ -65,6 +69,8 @@ class BridgeLifecycleContribution extends Disposable implements IWorkbenchContri
 		this._httpLabel = mpRequestService
 			? "主进程 httpRequest"
 			: "渲染进程 fetch（⚠ 桌面端会被 CORS 拦截）";
+		// 图片/文件下载必须走 binary 通路（同一主进程 channel，binary:true → base64）
+		this._binaryDownload = createMainProcessBinaryDownload(this._mainProcessService);
 
 		// 凭证就绪时注册平台适配器（配置优先，env 覆盖；无凭证则跳过）
 		this._applyFeishuPlatform();
@@ -119,6 +125,7 @@ class BridgeLifecycleContribution extends Disposable implements IWorkbenchContri
 				msg => this._log.info(msg),
 				this._httpRequestService,
 				this._httpLabel,
+				this._binaryDownload,
 			);
 			if (reloading) {
 				if (this._feishuRegistration) {

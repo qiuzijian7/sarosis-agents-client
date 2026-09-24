@@ -3038,6 +3038,10 @@ export class NativeChatEditorPane extends EditorPane {
 			this._storageService, this._agentStudioService,
 			this._viewsService, this._editorService, this._notificationService,
 			this._requestService, this._agentDriverService,
+			// ★ 2026-09-23：传入 chat 服务 ⇒ 从聊天页签发起的「构建为笔记」也会在聊天框里开可见会话
+			this._chatService,
+			// ★ 2026-09-24：构建会话页签在聊天框窗口的**新建 group** 中打开
+			this._editorGroupsService,
 		));
 
 		// Skill extraction controller — encapsulates "save skill" feature (host bridges pane state)

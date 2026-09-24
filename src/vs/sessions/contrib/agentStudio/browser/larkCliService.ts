@@ -14,7 +14,14 @@
  */
 
 import { nativeIpcBridge } from '../common/configHtmlConfig.js';
-import type { ILarkCliRunResult, ILarkCliStatus } from '../common/larkCli.js';
+import {
+	LARK_CLI_INSTALL_CHANNEL,
+	LARK_CLI_RUN_CHANNEL,
+	LARK_CLI_STATUS_CHANNEL,
+	type ILarkCliExecResult,
+	type ILarkCliRunResult,
+	type ILarkCliStatus,
+} from '../common/larkCli.js';
 
 /** 桥不可用时的统一状态（UI 据此显示灰色「不可用」）。 */
 function unavailable(error: string): ILarkCliStatus {
@@ -28,7 +35,7 @@ export async function getLarkCliStatus(): Promise<ILarkCliStatus> {
 		return unavailable('IPC 桥不可用（非 Electron 或 preload 未注入）');
 	}
 	try {
-		const r = await bridge.ipcRenderer.invoke('vscode:larkCliStatus') as Partial<ILarkCliStatus> | undefined;
+		const r = await bridge.ipcRenderer.invoke(LARK_CLI_STATUS_CHANNEL) as Partial<ILarkCliStatus> | undefined;
 		return {
 			available: true,
 			installed: !!r?.installed,
@@ -42,6 +49,26 @@ export async function getLarkCliStatus(): Promise<ILarkCliStatus> {
 	}
 }
 
+/**
+ * 执行一条 `lark-cli <args…>`（2026-09-23：为「飞书文档 → markdown」导入新增）。
+ *
+ * 与 `getLarkCliStatus` 一样**永不抛**：桥不可用 / 调用异常都返回 `ok:false`，
+ * 让调用方（知识库导入）能把「为什么读不到」直接讲给用户，而不是抛异常中断导入。
+ * 原始 stdout/stderr 原样回传 ⇒ 解析交给 `common/larkCli.ts` 的纯函数（可单测）。
+ */
+export async function runLarkCli(args: string[], opts?: { timeoutMs?: number }): Promise<ILarkCliExecResult> {
+	const bridge = nativeIpcBridge();
+	if (!bridge?.ipcRenderer?.invoke) {
+		return { ok: false, stdout: '', stderr: '', error: 'IPC 桥不可用（非 Electron 或 preload 未注入），无法在主进程执行 lark-cli' };
+	}
+	try {
+		const r = await bridge.ipcRenderer.invoke(LARK_CLI_RUN_CHANNEL, args, opts?.timeoutMs) as Partial<ILarkCliExecResult> | undefined;
+		return { ok: !!r?.ok, stdout: r?.stdout ?? '', stderr: r?.stderr ?? '', error: r?.error };
+	} catch (err) {
+		return { ok: false, stdout: '', stderr: '', error: err instanceof Error ? err.message : String(err) };
+	}
+}
+
 /** 安装 / 升级（同一条命令：重跑即升级）。 */
 export async function installLarkCli(): Promise<ILarkCliRunResult> {
 	const bridge = nativeIpcBridge();
@@ -49,7 +76,7 @@ export async function installLarkCli(): Promise<ILarkCliRunResult> {
 		return { ok: false, message: 'IPC 桥不可用（非 Electron 或 preload 未注入），无法在主进程执行安装命令' };
 	}
 	try {
-		const r = await bridge.ipcRenderer.invoke('vscode:larkCliInstall') as Partial<ILarkCliRunResult> | undefined;
+		const r = await bridge.ipcRenderer.invoke(LARK_CLI_INSTALL_CHANNEL) as Partial<ILarkCliRunResult> | undefined;
 		return { ok: !!r?.ok, message: r?.message ?? (r?.ok ? '完成' : '未知错误'), output: r?.output };
 	} catch (err) {
 		return { ok: false, message: err instanceof Error ? err.message : String(err) };

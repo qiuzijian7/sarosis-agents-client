@@ -1314,27 +1314,6 @@
 	但若日后再改该区块，请同时改两边（或用同一份样式表）。
 </div>
 
-<div class="callout ok">
-	<b>★ 2026-09-23 续查「重启后 chat_id 绑定丢失」：数据其实没丢，是列表渲染早于水合。</b><br>
-	<b>实测证据：</b>运行实例的 userData 是 <code>~/.vssaros-dev</code>（<code>.vscode/launch.json</code> 里
-	<code>userDataDir: ${userHome}/.vssaros-dev</code>；产品正式目录是 <code>~/.vssaros</code>，
-	历史目录 <code>~/.saros</code>，见 <code>common/sarosPaths.ts</code> 的迁移逻辑）——
-	<b>按 <code>%APPDATA%</code> 找是找不到的</b>（那里的 <code>VsSarosis</code>/<code>VsSaros</code> 只剩 8 月的旧日志）。
-	该目录下 <code>bridge/bindings.json</code> 与 <code>bridge/sessionMap.json</code> <b>确实已落盘且内容完整</b>：<br>
-	<code>bindings.json → {"feishu":{"oc_aad77fd3…4f1b":"knowledge-base-expert"}}</code><br>
-	<code>sessionMap.json → {"feishu":{"oc_aad77fd3…4f1b":{"agentId":"knowledge-base-expert","agentSessionId":"sess_mucnljbk_dperzk"}}}</code><br>
-	<b>根因（时序）：</b>持久化在**主进程**（IPC 读盘必然异步），而引擎的读接口是同步的
-	⇒ 启动后首次渲染绑定列表时，水合（hydrate）常常还没完成，于是读到空表；
-	列表只在重开页签/切换页签时重绘 ⇒ 用户看到的是「空的」，而磁盘上明明有数据。<br>
-	<b>修法：</b><code>IBridgeService.ensureBindingsLoaded()</code>（await 两个 store 的 <code>hydrate()</code>，幂等）；
-	UI 侧「先渲染 → <code>await</code> → 再渲染一次列表」——
-	聊天框面板新增 host 回调 <code>onEnsureBindingsLoaded</code>（<code>_renderSettingsChannelTab</code> 里
-	<code>void this._onEnsureBindingsLoaded().then(() => renderList())</code>），
-	editorpane 直接 <code>this.bridgeService.ensureBindingsLoaded().then(...)</code> + <code>_bindingsHydrated</code> 只补一次。<br>
-	<b>另一个容易误判的点：</b>绑定是 <b>per-Agent</b> 的 —— 若在别的 Agent（如「知识收集」）的页签里看，
-	列表本就为空；上例绑定属于 <code>knowledge-base-expert</code>，要看它那一页。
-</div>
-
 <div class="callout warn">
 	<b>★ 2026-09-22 追加加固：品牌色改用 inline style（防「图标位在、图形不在」）。</b>
 	原实现的品牌色只写在 SVG 的 <code>fill="…"</code> <b>presentation attribute</b> 上 —— 它在 CSS 层叠里

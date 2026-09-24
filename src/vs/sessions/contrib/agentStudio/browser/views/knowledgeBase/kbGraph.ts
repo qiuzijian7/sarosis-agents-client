@@ -28,7 +28,7 @@ interface ILinkDocMeta {
 }
 
 export interface IOutgoingLink {
-	/** 展示文本（别名优先，否则目标名） */
+	/** 展示文本（`[[t|别名]]` 的别名优先；其次目标文档的 frontmatter title / 文件名；未解析的目标归一为可读文件名） */
 	label: string;
 	/** 归一化目标名（去扩展名、小写） */
 	targetName: string;
@@ -200,10 +200,38 @@ export class KbLinkGraph {
 		return raw.map(r => {
 			const targetName = this.normalizeTarget(r);
 			const meta = this._nameToDoc.get(targetName);
-			const parts = r.split(/[|#]/);
-			const label = (parts[1] ?? parts[0]).trim() || parts[0].trim();
-			return { label, targetName, targetUri: meta?.uri };
+			return { label: this._displayLabel(r, meta), targetName, targetUri: meta?.uri };
 		});
+	}
+
+	/**
+	 * 出链的展示文本（★ 2026-09-24「优化出链显示」）。
+	 *
+	 * 背景：笔记里存在路径形 / file:// URI 形双链（如 `[[库/raw/UI优化篇.md]]`、
+	 * `[[file:///e%3A/VsSarosVault/%E5%BA%93/raw/UI%E4%BC%98%E5%8C%96%E7%AF%87.md]]`）——
+	 * 它们能被 normalizeTarget 正确**解析**，但旧逻辑把**原文**当 label ⇒ 出链面板整屏都是
+	 * 无法读懂的百分号编码 URI。优先级（对齐 Obsidian 的显示习惯）：
+	 *   1. `[[目标|别名]]` / `[[目标#锚点]]` 的显式显示段（保持旧行为）；
+	 *   2. 已解析 ⇒ 目标文档的 frontmatter `title`（笔记互引的最可读形态）；
+	 *   3. 已解析但无 title ⇒ 目标文件名（去扩展名），如 `库/raw/UI优化篇.md` ⇒「UI优化篇」；
+	 *   4. 未解析（断链）⇒ 与 normalizeTarget 同源的「解码 + basename + 去扩展名」，至少可读。
+	 */
+	private _displayLabel(raw: string, meta: ILinkDocMeta | undefined): string {
+		const parts = raw.split(/[|#]/);
+		const explicit = (parts[1] ?? '').trim();
+		if (explicit) { return explicit; }
+		if (meta) {
+			const text = this._textCache.get(meta.uri.toString());
+			const title = text ? KbLinkGraph._extractTitle(text) : undefined;
+			if (title) { return title; }
+			return meta.name.replace(/\.(md|markdown|html|htm)$/i, '');
+		}
+		let name = parts[0].trim();
+		if (/^[a-z][a-z0-9+.-]*:/i.test(name) || /[\\/]/.test(name)) {
+			try { name = decodeURIComponent(name); } catch { /* 非法编码序列保持原样 */ }
+			name = (name.split(/[\\/]/).pop() ?? name).trim();
+		}
+		return name.replace(/\.(md|markdown)$/i, '') || parts[0].trim();
 	}
 
 	/** 指向某文档的反链（其他笔记引用了它）。 */
@@ -283,9 +311,21 @@ export class KbLinkGraph {
 	}
 
 	private normalizeTarget(raw: string): string {
-		const name = raw.split(/[|#]/)[0].trim();
+		let name = raw.split(/[|#]/)[0].trim();
+		// ★ 2026-09-24（双链解析错误）：目标是**路径形 / file:// URI** 时（如 `[[库/raw/UI优化篇.md]]`、
+		//   `[[raw/UI优化篇.md]]`、`[[file:///e:/VsSarosVault/库/raw/UI优化篇.md]]`），先归一到「文件名」
+		//   再匹配 —— 否则它们**永远**解析不到（双链面板会显示成无法读懂的百分号编码 URI）。
+		//   实测（2026-09-24，用户的 vault）：路径形目标 266 条解析失败 ⇒ 修复后降到 114。
+		//   ⚠ 纯字符串操作：先 decodeURIComponent（中文路径在 URI 里是百分号编码），再取 basename；
+		//     非法编码序列保持原样（catch），不影响「笔记名」形目标（无 scheme 无分隔符 ⇒ 不进分支）。
+		if (/^[a-z][a-z0-9+.-]*:/i.test(name) || /[\\/]/.test(name)) {
+			try { name = decodeURIComponent(name); } catch { /* 形如「50% 提升」的裸 % ⇒ 保持原样 */ }
+			name = (name.split(/[\\/]/).pop() ?? name).trim();
+		}
 		// bug C：连字符/空格归一（[[Note Name]] ↔ note-name.md），对齐 llm_wiki resolveTarget 与 _buildInsights normKey
-		return name.replace(/\.(md|markdown)$/i, '').toLowerCase().replace(/\s+/g, '-');
+		// ★ 2026-09-24：html 也按 stem 归一（与 webview 侧 wikilinkResolver.normalizeTarget 对齐，
+		//   `[[page.html]]` / `![[page.html]]` 在图谱与出链面板里也能解析到库里的 html 文件）
+		return name.replace(/\.(md|markdown|html|htm)$/i, '').toLowerCase().replace(/\s+/g, '-');
 	}
 
 	/** 从 Markdown 文档的 YAML frontmatter 提取 `title` 字段（无则返回 undefined）。 */

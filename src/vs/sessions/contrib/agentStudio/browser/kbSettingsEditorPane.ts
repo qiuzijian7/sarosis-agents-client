@@ -73,6 +73,8 @@ export class KbSettingsEditorPane extends EditorPane {
 	private _syncedCount = -1;
 	/** 最近一次检查到的 Release 页面地址（供「查看版本说明」按钮使用） */
 	private _cliReleaseUrl: string | undefined;
+	/** 飞书同步实时输出的订阅（面板重建/销毁时释放，避免重复订阅）。 */
+	private _syncOutputSub: { dispose(): void } | undefined;
 
 	constructor(
 		group: IEditorGroup,
@@ -270,6 +272,10 @@ export class KbSettingsEditorPane extends EditorPane {
 
 		// ── 4. 飞书同步 ──
 		const fsSec = this._section(scroll, '📤 飞书同步');
+		// ★ 2026-09-23：留引用 + 打标，供 `_scrollToRequestedSection()` 定位
+		//（视图「同步飞书」发现未配置时会跳到这里）
+		this._feishuSection = fsSec;
+		fsSec.dataset.kbsSection = 'feishu';
 
 		const fsEnableControl = this._row(fsSec, '启用');
 		this._check(
@@ -601,6 +607,53 @@ export class KbSettingsEditorPane extends EditorPane {
 		fsBtnRow.append(previewBtn, applyBtn, logBtn);
 		fsSec.appendChild(fsBtnRow);
 
+		// ── 实时输出（2026-09-23）────────────────────────────────────────────────
+		// 需求：同步信息要在**面板下方实时显示**，而不是让用户切到终端去找。
+		// 做法：视图侧把终端 onData 镜像过来（含累计缓存），这里增量追加到一个 <pre>。
+		// ⚠ 增量追加而非整面板重渲染：同步每秒可能多行，重渲染会打断滚动位置与输入焦点。
+		const outWrap = $('div.kbs-sync-out');
+		const outHead = $('div.kbs-sync-out-head');
+		const outState = $('span.kbs-sync-state'); outState.textContent = '等待同步';
+		const outClear = $('button.kbs-btn'); outClear.textContent = '清空';
+		outHead.append(outState, outClear);
+		const outPre = document.createElement('pre');
+		outPre.className = 'kbs-sync-out-pre';
+		outPre.style.cssText = [
+			'max-height:240px', 'overflow:auto', 'margin:6px 0 0', 'padding:8px',
+			'border-radius:6px', 'font-family:var(--vscode-editor-font-family,monospace)',
+			'font-size:12px', 'line-height:1.45', 'white-space:pre-wrap', 'word-break:break-all',
+			'background:var(--vscode-textCodeBlock-background,rgba(127,127,127,.1))',
+		].join(';');
+		const initialOut = host.getSyncOutput();
+		outPre.textContent = initialOut || '（尚未运行同步。点击上方按钮后，这里会实时显示进度与报错）';
+		if (!initialOut) { outPre.dataset.placeholder = '1'; }
+		outWrap.append(outHead, outPre);
+		fsSec.appendChild(outWrap);
+
+		// ⚠ 该编译目标下 setTimeout 返回 Node 的 `Timeout`（不是 number）⇒ 用 ReturnType 推断
+		let refreshHandle: ReturnType<typeof setTimeout> | undefined;
+		const appendOut = (chunk: string): void => {
+			if (outPre.dataset.placeholder === '1') { outPre.textContent = ''; delete outPre.dataset.placeholder; }
+			outPre.textContent = ((outPre.textContent ?? '') + chunk).slice(-40000);
+			outPre.scrollTop = outPre.scrollHeight;
+			// 脚本收尾会打印「完成 N 篇…」⇒ 据此把状态切回「已完成」（tail 判断，避免分行导致的漏匹配）
+			const tail = (outPre.textContent ?? '').slice(-400);
+			outState.textContent = /完成\s*\d+\s*篇/.test(tail) ? '已完成' : '同步运行中…';
+			// 输出到达 ⇒ 稍后刷新「已同步 N 篇」（不每次输出都扫盘）
+			if (refreshHandle !== undefined) { clearTimeout(refreshHandle); }
+			refreshHandle = setTimeout(() => { refreshHandle = undefined; void this._refreshSyncedCount(); }, 2500);
+		};
+		outClear.onclick = () => {
+			outPre.textContent = '';
+			outPre.dataset.placeholder = '1';
+			outState.textContent = '等待同步';
+		};
+		this._syncOutputSub?.dispose();
+		this._syncOutputSub = host.onSyncOutput(appendOut);
+
+		// ★ 2026-09-23：说明「同步前会自动把图表渲成图片」——否则用户看到笔记被改写会困惑
+		this._hint(fsSec, '同步前会自动把笔记里的 mermaid / drawio 代码块渲染为 PNG 图片并改写为图片引用'
+			+ '（飞书不渲染图表源码，且不支持 SVG；失败时保留源码不丢内容）。');
 		this._hint(fsSec, '定时计划：工作日上午 10:00（IDE 自动化任务 kb）· 需同时勾选「启用飞书同步」与「允许定时自动同步」才会自动执行；手动同步不受开关约束');
 
 		// ── 5. 状态 ──
@@ -617,6 +670,44 @@ export class KbSettingsEditorPane extends EditorPane {
 
 		// 飞书 CLI 检测要执行外部命令（异步）：先渲染完，结果回来再局部更新文案
 		void this._refreshCliStatus();
+
+		// ★ 2026-09-23：若调用方要求定位某分组（如「同步飞书」发现未配置），渲染完再滚动过去
+		this._scrollToRequestedSection();
+	}
+
+	/** 「📤 飞书同步」分组的 DOM 引用（`_render()` 里留存，供打开时定位滚动）。 */
+	private _feishuSection?: HTMLElement;
+
+	/**
+	 * 按需滚动到指定分组（2026-09-23）。
+	 *
+	 * 场景：知识库视图的「同步飞书」按钮发现飞书未配置 ⇒ 打开本设置页并要求定位到「📤 飞书同步」，
+	 * 让用户一进来就看到该开的开关，而不是自己在一屏设置里找。
+	 * 实现要点：
+	 *  · 用 `setTimeout(0)` 等一次布局 —— 刚 append 的元素还没有几何信息，立刻 `scrollIntoView` 会落空；
+	 *  · 高亮用**内联样式**（不新增 CSS），1.8s 后自动还原，避免用户以为那是持久状态。
+	 */
+	private _scrollToRequestedSection(): void {
+		// 鸭子类型读取：设置页输入带 `focusSection`（见 KbSettingsEditorInput）；
+		// 用 `this.input` 而不是成员字段 ⇒ **复用同一个设置 Tab 时**（框架会重新 setInput）同样生效。
+		const focus = (this.input as unknown as { focusSection?: string } | undefined)?.focusSection;
+		if (!focus) { return; }
+		// 用 `_render()` 里留下的元素引用（Pane 上没有 `this.element` 可查，改用字段最稳）
+		const target = focus === 'feishu' ? this._feishuSection : undefined;
+		if (!target) { return; }
+		setTimeout(() => {
+			try {
+				target.scrollIntoView({ block: 'start' });
+				const prevOutline = target.style.outline;
+				const prevOffset = target.style.outlineOffset;
+				target.style.outline = '2px solid var(--vscode-focusBorder, #4da3ff)';
+				target.style.outlineOffset = '2px';
+				setTimeout(() => {
+					target.style.outline = prevOutline;
+					target.style.outlineOffset = prevOffset;
+				}, 1800);
+			} catch { /* 定位失败不影响设置页正常使用 */ }
+		}, 0);
 	}
 
 	/**
@@ -780,6 +871,8 @@ export class KbSettingsEditorPane extends EditorPane {
 	}
 
 	override dispose(): void {
+		this._syncOutputSub?.dispose();
+		this._syncOutputSub = undefined;
 		this._host = undefined;
 		this._container = undefined;
 		super.dispose();

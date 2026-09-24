@@ -74,4 +74,51 @@ suite('KbLinkGraph 单文档即时更新', () => {
 		// a 的原节点已移除，index.md 不进图谱
 		assert.strictEqual(g.getGraphData().nodes.length, 2);
 	});
+
+	test('路径形 / file:// URI 形目标归一到文件名后解析（★ 2026-09-24 双链解析错误修复）', () => {
+		const g = new KbLinkGraph({} as any);
+		g.buildFromDocs([
+			{ uri: URI.file('/vault/库/raw/UI优化篇.md'), name: 'UI优化篇.md', section: 'library' as const, mtime: 1, text: '# UI优化篇' },
+			{
+				uri: URI.file('/vault/笔记/索引.md'), name: '索引.md', section: 'notes' as const, mtime: 2, text: [
+					'---', 'title: 索引', '---',
+					'sources:',
+					'  - "[[raw/UI优化篇.md]]"',                                        // ① 相对路径形（构建产物的溯源写法）
+					'',
+					'正文引用：[[库/raw/UI优化篇.md]]',                                // ② 带「库/」前缀的路径形
+					'URI 形：[[file:///e:/VsSarosVault/库/raw/UI优化篇.md]]',              // ③ file:// URI（未编码）
+					'编码 URI：[[file:///e%3A/VsSarosVault/%E5%BA%93/raw/UI%E4%BC%98%E5%8C%96%E7%AF%87.md]]', // ④ 百分号编码 URI
+				].join('\n'),
+			},
+		]);
+		const out = g.outgoingLinks(URI.file('/vault/笔记/索引.md').toString());
+		assert.strictEqual(out.length, 4, '四种写法的链接都被解析出来');
+		const target = URI.file('/vault/库/raw/UI优化篇.md').toString();
+		assert.ok(out.every(o => o.targetUri?.toString() === target), '四种写法都解析到同一篇笔记');
+		});
+
+		test('出链 label 可读化（★ 2026-09-24「优化出链显示」）：URI/路径形目标不再显示编码原文', () => {
+		const g = new KbLinkGraph({} as any);
+		g.buildFromDocs([
+			{ uri: URI.file('/vault/库/raw/UI优化篇.md'), name: 'UI优化篇.md', section: 'library' as const, mtime: 1, text: '# UI优化篇\n（无 frontmatter title）' },
+			{ uri: URI.file('/vault/笔记/有标题.md'), name: '有标题.md', section: 'notes' as const, mtime: 1, text: '---\ntitle: 真正的标题\n---\n' },
+			{
+				uri: URI.file('/vault/笔记/索引.md'), name: '索引.md', section: 'notes' as const, mtime: 2, text: [
+					'编码 URI：[[file:///e%3A/VsSarosVault/%E5%BA%93/raw/UI%E4%BC%98%E5%8C%96%E7%AF%87.md]]',
+					'路径形：[[库/raw/UI优化篇.md]]',
+					'带别名：[[库/raw/UI优化篇.md|UI 优化]]',
+					'标题优先：[[有标题]]',
+					'断链 URI：[[file:///e%3A/VsSarosVault/%E5%BA%93/raw/%E4%B8%8D%E5%AD%98%E5%9C%A8.md]]',
+				].join('\n'),
+			},
+		]);
+		const labels = g.outgoingLinks(URI.file('/vault/笔记/索引.md').toString()).map(o => o.label);
+		assert.deepStrictEqual(labels, [
+			'UI优化篇',      // 编码 URI ⇒ 已解析 ⇒ 目标文件名（去扩展名）
+			'UI优化篇',      // 路径形 ⇒ 同上
+			'UI 优化',       // 显式别名优先
+			'真正的标题',     // 已解析且有 frontmatter title ⇒ title 优先于文件名
+			'不存在',        // 断链 URI ⇒ 解码 + basename + 去扩展名（至少可读）
+		]);
+		});
 });

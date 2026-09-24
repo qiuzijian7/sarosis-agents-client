@@ -24,5 +24,7 @@ export const KB_NOTE_FORMAT_RULES: string = [
 	'2. 不要手写 sources / status 字段：sources 由管线自动注入，status 由去抽象化门控自动管理。',
 	'3. 在相关笔记正文里，用 [[其他笔记的 title]] 语法引用本批次及库中相关笔记，建立双链（关系图谱依赖这些链接）；需要自定义显示文本时用 [[title|显示文本]]；仅引用确定存在的笔记标题，不要编造。',
 	'4. 正文用标准 Markdown 组织（标题/列表/表格/代码块）；需要强调的信息可用 callout 语法（> [!note] / > [!tip] / > [!warning]）。',
+	'5. 内容涉及流程、调用链、状态机、数据流或层级结构时，必须配一张图，不要用纯文字段落硬讲：用 ```mermaid 代码块表达（流程/判定用 flowchart，调用链/时序用 sequenceDiagram，状态机用 stateDiagram-v2，实体关系用 erDiagram）；主题地图用 [[<主题>.canvas]] 引用 canvas 文件。只写图表源码即可 —— 宿主在同步飞书前会自动把它渲染成 PNG 并改写引用。',
+	'6. 不要写裸 HTML 标签、<iframe> 或 html 代码块（渲染端会白名单过滤，飞书同样不认）；也不要用依赖 Obsidian 社区插件的语法（Charts / Dataview / DataviewJS 等），同步飞书与客户端预览都不渲染。',
 	'',
 ].join('\n');

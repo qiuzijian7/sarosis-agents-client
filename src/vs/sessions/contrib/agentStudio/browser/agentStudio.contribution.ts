@@ -46,6 +46,9 @@ import './chatTabRename.js';
 import { EditorExtensions, IEditorFactoryRegistry, IEditorSerializer } from '../../../../workbench/common/editor.js';
 import { IEditorPaneRegistry, EditorPaneDescriptor } from '../../../../workbench/browser/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
+// PDF / Word 只读预览（2026-09-23）：EditorPane + 「打开 *.pdf / *.docx 自动路由」的 resolver
+// ⚠ `IEditorResolverService` / `RegisteredEditorPriority` / `Schemas` 本文件已 import（勿重复引入）
+import { KbMediaViewerInput, KbMediaViewerPane } from './kbMediaViewerPane.js';
 import type { AgentStudioPanelType } from '../common/constants.js';
 
 import { ISessionsProvidersService } from '../../../services/sessions/browser/sessionsProvidersService.js';
@@ -90,6 +93,14 @@ import { WorkspaceLifecycleService } from './workspaceLifecycleService.js';
 import { ISkillLifecycleService } from '../common/skillLifecycle.js';
 import { SkillLifecycleService } from './skillLifecycleService.js';
 import { IKbNativeKernelService, KbNativeKernelService } from './kbNativeKernelService.js';
+// ── Explorer 右键「移动到知识库」(2026-09-23) 所需依赖 ──────────────────────
+import { IListService } from '../../../../platform/list/browser/listService.js';
+import { IExplorerService, getMultiSelectedResources } from '../../../../workbench/contrib/files/browser/files.js';
+import { IViewsService } from '../../../../workbench/services/views/common/viewsService.js';
+import { IRequestService } from '../../../../platform/request/common/request.js';
+import { Severity } from '../../../../platform/notification/common/notification.js';
+import { basename } from '../../../../base/common/path.js';
+import { KbImportController } from './kbImportController.js';
 import { migrateLegacyKbSessions } from './knowledge/kbLegacyMigration.js';
 import { loadActiveKbVault, resolveVaultNotesDir, resolveKbRootUri } from './knowledge/kbVaultState.js';
 import { KbVersionService, IKbVersionService } from './kbVersionService.js';
@@ -253,6 +264,8 @@ import { KbNoteEditorInput } from './kbNoteEditorInput.js';
 import { KnowledgeBaseGraphEditorPane } from './kbGraphEditorPane.js';
 import { KbGraphEditorInput } from './kbGraphEditorInput.js';
 import { CanvasEditorPane, getActiveCanvasPane } from './canvasEditor/canvasEditorPane.js';
+import { KbDiagramViewerPane } from './kbDiagramViewerPane.js';
+import { KbDiagramViewerInput } from './kbDiagramViewerInput.js';
 import { CanvasEditorInput } from './canvasEditor/canvasEditorInput.js';
 import { IMindmapData, type MindmapDirection } from '../common/mindmap/mindmapTypes.js';
 import { IEditorResolverService, RegisteredEditorPriority } from '../../../../workbench/services/editor/common/editorResolverService.js';
@@ -1106,6 +1119,65 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 	]
 );
 
+// ── PDF / Word 查看器（2026-09-23）────────────────────────────────────────────
+// 需求：知识库（以及资源管理器）里的 `.pdf` / `.docx` 不能被当文本打开（会满屏二进制乱码）。
+// ① 注册 EditorPane：KbMediaViewerInput ⇒ 只读预览（webview + pdf.js / mammoth）
+Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+	EditorPaneDescriptor.create(
+		KbMediaViewerPane,
+		KbMediaViewerPane.ID,
+		localize('kbDocumentPreview', "Document Preview"),
+	),
+	[
+		new SyncDescriptor(KbMediaViewerInput)
+	]
+);
+
+// ② 注册 resolver：打开这两个扩展名时**自动路由**到上面的预览器。
+//    ⚠ 不注册的话，`openEditor({ resource })` 会落到默认文本编辑器 ⇒ 仍是乱码。
+//    glob 比默认编辑器的 `*` 更具体 ⇒ 优先级更高（用户仍可用 workbench.editorAssociations 覆盖）。
+class KbMediaViewerResolverContribution extends Disposable implements IWorkbenchContribution {
+
+	static readonly ID = 'workbench.contrib.agentStudio.kbMediaViewerResolver';
+
+	constructor(
+		@IEditorResolverService resolverService: IEditorResolverService,
+		@IInstantiationService private readonly instantiationService: IInstantiationService,
+	) {
+		super();
+		const viewers = [
+			{ pattern: '*.pdf', label: localize('kb.pdfPreview', "PDF 预览") },
+			{ pattern: '*.docx', label: localize('kb.docxPreview', "Word 预览") },
+		];
+		for (const v of viewers) {
+			this._register(resolverService.registerEditor(
+				v.pattern,
+				{
+					id: KbMediaViewerPane.ID,
+					label: v.label,
+					priority: RegisteredEditorPriority.builtin,
+				},
+				{
+					singlePerResource: true,
+					canSupportResource: uri => uri.scheme === Schemas.file || uri.scheme === Schemas.vscodeRemote,
+				},
+				{
+					createEditorInput: ({ resource, options }) => ({
+						editor: this.instantiationService.createInstance(KbMediaViewerInput, resource),
+						options: { ...options, pinned: true },
+					}),
+				},
+			));
+		}
+	}
+}
+
+registerWorkbenchContribution2(
+	KbMediaViewerResolverContribution.ID,
+	KbMediaViewerResolverContribution,
+	WorkbenchPhase.BlockRestore,
+);
+
 // Register SettingsEditorPane so that SettingsEditorInput opens in the editor area.
 Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
 	EditorPaneDescriptor.create(
@@ -1608,6 +1680,54 @@ registerWorkbenchContribution2(
 	WorkbenchPhase.BlockStartup,
 );
 
+// ─── Diagram Viewer：把 .drawio / .mermaid / .mmd 关联到图表查看器 ──────────
+// 2026-09-24 用户反馈：库里点击这类文件没有对应面板（不在 TEXT_EXTS ⇒ 落到
+// openExternal，系统多半无关联程序 ⇒ 「点了没反应」）。查看器 = 预览（宿主渲染引擎出 SVG）
+// + 源码（可编辑、Ctrl+S 保存、防抖重渲染）。
+Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+	EditorPaneDescriptor.create(
+		KbDiagramViewerPane,
+		KbDiagramViewerPane.ID,
+		localize('kbDiagramViewer', "图表查看器"),
+	),
+	[
+		new SyncDescriptor(KbDiagramViewerInput)
+	]
+);
+
+class KbDiagramViewerResolverContribution extends Disposable {
+	constructor(
+		@IEditorResolverService editorResolverService: IEditorResolverService,
+	) {
+		super();
+		this._register(
+			editorResolverService.registerEditor(
+				'*.{drawio,mermaid,mmd}',
+				{
+					// id 必须是「编辑器面板 id」，与 KbDiagramViewerInput.editorId 一致；
+					// 否则 resolver 按此 id 找不到面板，回退默认文本编辑器（打开成源码文本）。
+					id: KbDiagramViewerPane.ID,
+					label: localize('kbDiagramViewer', "图表查看器"),
+					priority: RegisteredEditorPriority.exclusive,
+				},
+				{
+					canSupportResource: (resource) => /\.(drawio|mermaid|mmd)$/i.test(resource.path),
+				},
+				{
+					createEditorInput: async (editor) => {
+						return { editor: new KbDiagramViewerInput(editor.resource!) };
+					},
+				},
+			)
+		);
+	}
+}
+registerWorkbenchContribution2(
+	'workbench.contrib.kbDiagramViewerResolver',
+	KbDiagramViewerResolverContribution,
+	WorkbenchPhase.BlockStartup,
+);
+
 // ─── Canvas Editor 键盘命令 ──────────────────────────────────────────
 
 const canvasCmd = (
@@ -1787,6 +1907,359 @@ registerAction2(class extends Action2 {
 		logService.info(`[agentStudio.addToChat] Entry mode → pane.addContentToChat("${name}", ${content.length} chars)`);
 		pane.addContentToChat(name, content);
 		logService.debug(`[agentStudio.addToChat] Added "${name}" (${content.length} chars) to pane #${pane.paneId}`);
+	}
+});
+
+// ── Explorer 右键「移动到知识库」(2026-09-23) ─────────────────────────────────
+//
+// 需求：资源管理器选中若干文件 → 右键「移动到知识库」→ 询问「拷贝 / 移动」
+//       → 依次导入知识库「库」分区并**自动分类归档**。
+//
+// 复用既有管线 `KbImportController.importContentAndBuild`（与「工作区树右键导入」
+// 和「聊天框 write_file 卡片」同一个入口，保证行为一致）：
+//   阶段1 落盘 `库/raw/<原始文件名>` —— **原样字节复制**，二进制文件不会被破坏；
+//   阶段2 构建为结构化笔记 ⇒ 由知识库专家的 schema 分类，归档到 `库/<typeDir>/<topic>/`。
+//
+// 「拷贝 / 移动」只决定**导入成功之后**对源文件做什么：
+//   · 拷贝 = 保留源文件（默认按钮）；· 移动 = 把源文件移入**回收站**（可还原，非永久删除）。
+// ⚠ 多选：`run` 只能拿到「被点中的那一个 URI」，完整选中列表必须用
+//   `getMultiSelectedResources(...)` 主动取（与原生 revealFileInOS 同一做法）。
+/**
+ * 直接读「最后聚焦的树/列表」的选中项（取元素的 `.resource`）—— **不依赖 `IExplorerService`**。
+ *
+ * 为什么需要：`getMultiSelectedResources` 的第一道门槛是 `isActiveElement(treeElement)`，
+ * 而**右键点击后树往往已经失去焦点**（上下文菜单抢焦点）⇒ 该条件不成立 ⇒ 多选会静默退化成
+ * 「只有被点中的那一个文件」。这里直接问 list/tree 要 selection，拿不到就安静返回空。
+ *
+ * 纯读取、全程 try/catch（不同视图的元素形状各异）⇒ 失败只是兜底不生效，绝不影响主流程。
+ */
+function readSelectionFromFocusedList(listService: IListService): URI[] {
+	try {
+		const list = listService.lastFocusedList as unknown as { getSelection?: () => unknown[] };
+		const selection = list?.getSelection?.() ?? [];
+		return selection
+			.map(item => (item as { resource?: unknown } | undefined)?.resource)
+			.filter((r): r is URI => URI.isUri(r));
+	} catch {
+		return [];
+	}
+}
+
+/**
+ * 「移动到知识库」的**阶段 B**：对**已落盘**的库文件做分析归类 → 生成结构化笔记。
+ *
+ * 关键：这是**后台**任务（调用方用 `void` 启动、不 await）—— 阶段 A 搬完文件立刻给用户结果，
+ * 用户不必等 LLM。抽取是 agentic 多轮调用（真机实测单请求超时 120s，7 个 PDF 可能十几分钟），
+ * 原先「搬文件 + 抽取」串在一起 ⇒ 表现为「卡住」。
+ *
+ * 用**独立进度通知**承载，用户可继续做别的事；任一文件失败都不影响其它文件。
+ */
+async function analyzeStagedLibraryFiles(
+	staged: { name: string; savedPath: string }[],
+	kbImport: KbImportController,
+	agentStudioService: IAgentStudioService,
+	configService: IConfigurationService,
+	notificationService: INotificationService,
+	logService: ILogService,
+): Promise<void> {
+	// ★ 前置检查（2026-09-23 需求）：分析归类要调用「知识库专家」，它没配 Provider/模型时
+	//   弹**一次**通知并跳过分析（阶段 A 的文件已安全落库，不会丢）——
+	//   否则会逐个文件白跑 agent 轮次，用户只看到「一直转圈、没有产出」。
+	if (KbImportController.kbAgentConfigState(agentStudioService, configService) === 'missing') {
+		KbImportController.warnKbAgentNotConfigured(notificationService, '分析归类并生成笔记');
+		agentStudioService.reportKbProcessing({ active: false });
+		agentStudioService.requestLibraryBadge({ source: 'kb', kind: 'new', count: 1 });
+		return;
+	}
+	const failed: string[] = [];
+	let ok = 0;
+	try {
+		for (let i = 0; i < staged.length; i++) {
+			const { name, savedPath } = staged[i];
+			logService.info(`[agentStudio.kb.importToLibrary] [B ${i + 1}/${staged.length}] analyzing: ${savedPath}`);
+			try {
+				// ⚠ 必须用**实例**方法（否则是另一个 3 参的 static 版）；progressLabel 让它显示
+				//   「分析中 i/N：文件名」—— 进度由这个方法内部统一上报，避免与别处互相覆盖。
+				const notePath = await kbImport.buildNotesFromLibrary(URI.file(savedPath), undefined, {
+					progressLabel: `分析中 ${i + 1}/${staged.length}：${name}`,
+				});
+				if (notePath) {
+					ok++;
+					logService.info(`[agentStudio.kb.importToLibrary] [B ${i + 1}/${staged.length}] note: ${notePath}`);
+				} else {
+					logService.warn(`[agentStudio.kb.importToLibrary] [B ${i + 1}/${staged.length}] no note produced: ${name}`);
+					failed.push(name);
+				}
+			} catch (err) {
+				logService.warn(`[agentStudio.kb.importToLibrary] [B ${i + 1}/${staged.length}] analyze failed: ${name}`, err);
+				failed.push(name);
+			}
+		}
+	} finally {
+		// 收尾：清掉视图内「处理中」状态；把 activitybar 徽标从「转圈」转为「有新增」
+		// （提示用户回资料库查看产出）—— 这就是全部的过程反馈，没有通知弹窗。
+		agentStudioService.reportKbProcessing({ active: false });
+		agentStudioService.requestLibraryBadge({ source: 'kb', kind: 'new', count: 1 });
+	}
+	const summary = `知识库分析完成：生成笔记 ${ok}/${staged.length} 篇`
+		+ (failed.length ? `；失败 ${failed.length} 个：${failed.slice(0, 5).join('、')}${failed.length > 5 ? '…' : ''}` : '');
+	logService.info(`[agentStudio.kb.importToLibrary] stage B done: ${summary}`);
+	// ⚠ 分析失败是**真实错误**（不是过程噪声）⇒ 仍需可见
+	if (failed.length) {
+		notificationService.error(`后台分析归类：${summary}`);
+	}
+}
+
+// ⚠ 顺序执行而非并发：每个文件都会走 LLM（分类 + 抽取），并发会打爆 provider 配额。
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: 'agentStudio.kb.importToLibrary',
+			title: localize2('agentStudio.kb.importToLibrary', '移动到知识库…'),
+			f1: false,
+			menu: [{
+				id: MenuId.ExplorerContext,
+				group: '5_chat_saros',
+				order: 1,
+				// 与 `agentStudio.addToChat` 同一组、同套条件：仅在 Agent Studio 激活时出现，
+				// 且**排除文件夹**（本操作只处理文件）。
+				when: ContextKeyExpr.and(
+					AgentStudioActiveContext,
+					ExplorerFolderContext.negate(),
+					ContextKeyExpr.or(
+						ResourceContextKey.Scheme.isEqualTo(Schemas.file),
+						ResourceContextKey.Scheme.isEqualTo(Schemas.vscodeRemote)
+					)
+				),
+			}],
+		});
+	}
+
+	async run(accessor: ServicesAccessor, resource: URI | object): Promise<void> {
+		// ★★ 必须在**任何 await 之前**把所有服务取出（2026-09-23 真机报错修复）：
+		//   `ServicesAccessor` **只在目标方法的同步调用期间有效** —— 一旦 `await` 之后再
+		//   `accessor.get(...)`，会抛
+		//   `Illegal state: service accessor is only valid during the invocation of its target method`。
+		//   本命令里有 `await dialogService.prompt(...)`，而「用户选完之后」的构造/导入全都依赖这些服务
+		//   ⇒ 报错恰好落在选择之后，表现为「选完就断了、没有任何反应」。
+		const dialogService = accessor.get(IDialogService);
+		const fileService = accessor.get(IFileService);
+		const logService = accessor.get(ILogService);
+		const notificationService = accessor.get(INotificationService);
+		const configurationService = accessor.get(IConfigurationService);
+		const environmentService = accessor.get(INativeEnvironmentService);
+		const storageService = accessor.get(IStorageService);
+		const agentStudioService = accessor.get(IAgentStudioService);
+		const viewsService = accessor.get(IViewsService);
+		const editorService = accessor.get(IEditorService);
+		const requestService = accessor.get(IRequestService);
+		const agentDriverService = accessor.get(IAgentDriverService);
+		const listService = accessor.get(IListService);
+		const editorGroupsService = accessor.get(IEditorGroupsService);
+		const explorerService = accessor.get(IExplorerService);
+
+		// ★ 无条件入口日志（2026-09-23）：此前**成功路径没有任何日志** ⇒ 一旦出现
+		//   「点了没反应」，无法区分「命令压根没执行」/「多选解析失败」/「用户取消」。
+		logService.info(`[agentStudio.kb.importToLibrary] invoked (arg=${URI.isUri(resource) ? resource.toString() : typeof resource})`);
+
+		// ★ 反馈方式（2026-09-23 用户要求改）：**不发通知**（弹窗打扰观感），改为
+		//   ① activitybar「资料库」图标徽标转圈（`requestLibraryBadge`；未打开资料库也可见）
+		//   ② 知识库视图内「库 / 笔记」标题右侧 + 对应文件节点的进度（`reportKbProcessing`）
+		//   ③ 日志（排障）
+		//   它同时是「命令是否真的被执行」的探针：徽标一转就说明命令进来了。
+		agentStudioService.requestLibraryBadge({ source: 'kb', kind: 'building' });
+		agentStudioService.reportKbProcessing({ active: true, label: '准备中…' });
+
+		// ★ 多选解析必须**容错**（2026-09-23 修「多选后点右键没有任何反应」）：
+		//   `getMultiSelectedResources` 依赖 `IListService` / `IExplorerService` 等，而
+		//   **会话窗口用的是自绘 Explorer**：某个服务未注册时 `accessor.get(...)` 会直接抛，
+		//   异常被命令层吞掉 ⇒ 用户视角就是「点了没反应」（无日志、无提示）。
+		//   ⇒ 解析失败就回退到「被点中的那个文件」，最差也要给用户可见的反馈。
+		let targets: URI[] = [];
+		try {
+			targets = getMultiSelectedResources(
+				resource, listService, editorService, editorGroupsService, explorerService,
+			).filter(u => URI.isUri(u));
+			logService.info(`[agentStudio.kb.importToLibrary] multi-select resolved: ${targets.length} resource(s)`);
+		} catch (err) {
+			logService.warn('[agentStudio.kb.importToLibrary] multi-select resolution failed; falling back to the clicked resource', err);
+		}
+		// 兜底 ②：直接读「最后聚焦的树/列表」的选中项（不依赖 `IExplorerService`）。
+		//   痛点：右键后树可能已失焦（菜单抢焦点）⇒ `getMultiSelectedResources` 的
+		//   `isActiveElement` 前置条件不满足 ⇒ 多选静默退化成「只有被点中的那一个文件」。
+		if (targets.length <= 1) {
+			const fromList = readSelectionFromFocusedList(listService);
+			if (fromList.length > targets.length) {
+				targets = fromList;
+				logService.info(`[agentStudio.kb.importToLibrary] selection recovered from focused list: ${targets.length} resource(s)`);
+			}
+		}
+
+		if (!targets.length && URI.isUri(resource)) {
+			targets = [resource];
+			logService.info('[agentStudio.kb.importToLibrary] fallback → the clicked resource only');
+		}
+
+		if (!targets.length) {
+			logService.warn('[agentStudio.kb.importToLibrary] no target file; aborting');
+			agentStudioService.reportKbProcessing({ active: false });
+			agentStudioService.requestLibraryBadge({ source: 'kb', kind: 'idle' });
+			notificationService.warn(localize('agentStudio.kb.importToLibrary.none', "未选中任何文件（此操作只支持文件，不支持文件夹）。"));
+			return;
+		}
+
+		// ★ 先剔除「已在知识库目录内」的文件（2026-09-23）：
+		//   · 重复导入会污染库（去重缓存只能挡住内容完全相同的文件）；
+		//   · 更危险的是「移动」—— 知识库自己的文件（库/raw、库/<类型>/… ）全在 vault 内，
+		//     不做保护就等于用右键把库文件搬进库，越弄越乱。
+		//   判定与 `KbImportController` 落盘时的 vault 根解析**共用同一实现**（静态方法），
+		//   避免两处路径规则漂移导致「该跳过却没跳过」。
+		// vault 根解析同样容错：拿不到就**不做库内过滤**（宁可重复导入一次，也不要静默中止）
+		let vaultRoot: URI | undefined;
+		try {
+			vaultRoot = KbImportController.resolveActiveVaultRoot(storageService, environmentService);
+		} catch (err) {
+			logService.warn('[agentStudio.kb.importToLibrary] vault root resolution failed; skip inside-vault filter', err);
+		}
+		const skipped = vaultRoot ? targets.filter(u => KbImportController.isWithinVault(u, vaultRoot!)) : [];
+		const incoming = vaultRoot ? targets.filter(u => !KbImportController.isWithinVault(u, vaultRoot!)) : targets;
+
+		if (!incoming.length) {
+			agentStudioService.reportKbProcessing({ active: false });
+			agentStudioService.requestLibraryBadge({ source: 'kb', kind: 'idle' });
+			notificationService.info(localize('agentStudio.kb.importToLibrary.allInside',
+				"所选 {0} 个文件都已在知识库目录内，无需导入。", targets.length));
+			return;
+		}
+
+		const names = incoming.map(u => basename(u.path));
+		// ⚠ `prompt` 返回的是 `IPromptResult<T>`（不是裸 `T`）⇒ 必须取 `.result`；
+		//   「取消」用 `cancelButton`（按 Esc 与点取消等价，绝不会误触发导入）。
+		logService.info(`[agentStudio.kb.importToLibrary] asking user: ${incoming.length} file(s) to import, ${skipped.length} skipped`);
+		let mode: 'copy' | 'move' | undefined;
+		try {
+			mode = (await dialogService.prompt<'copy' | 'move'>({
+				type: Severity.Info,
+				message: localize('agentStudio.kb.importToLibrary.confirm', "将 {0} 个文件导入知识库「库」分区？", incoming.length),
+				detail: names.slice(0, 8).map(n => `· ${n}`).join('\n')
+					+ (names.length > 8 ? `\n…等共 ${names.length} 个文件` : '')
+					+ (skipped.length ? `\n（另有 ${skipped.length} 个文件已在知识库内，已自动跳过）` : '')
+					+ '\n\n拷贝：保留原文件（推荐）\n移动：导入成功后将原文件移入回收站（可还原）',
+				buttons: [
+					{ label: localize('agentStudio.kb.importToLibrary.copy', "拷贝到知识库"), run: () => 'copy' as const },
+					{ label: localize('agentStudio.kb.importToLibrary.move', "移动到知识库"), run: () => 'move' as const },
+				],
+				cancelButton: localize('agentStudio.kb.importToLibrary.cancel', "取消"),
+			})).result;
+		} catch (err) {
+			// 弹窗失败必须可见 —— 否则又是「点了没反应」这种最难查的静默失败
+			logService.error('[agentStudio.kb.importToLibrary] dialog prompt failed', err);
+			agentStudioService.reportKbProcessing({ active: false });
+			agentStudioService.requestLibraryBadge({ source: 'kb', kind: 'idle' });
+			notificationService.error(`移动到知识库：无法弹出选择框（${err instanceof Error ? err.message : String(err)}）。`);
+			return;
+		}
+		logService.info(`[agentStudio.kb.importToLibrary] user chose: ${mode ?? '(cancelled)'}`);
+		if (!mode) {
+			agentStudioService.reportKbProcessing({ active: false });
+			agentStudioService.requestLibraryBadge({ source: 'kb', kind: 'idle' });
+			return;
+		}
+
+		// ★★ 从这里开始的整段必须包在 try/catch 中（2026-09-23 真机日志定位到的问题）：
+		//
+		//   日志证据：`asking user: 7 file(s)` → `user chose: move` 之后就**什么都没有** ——
+		//   库里没有任何文件落盘、没有任何后续日志、没有任何 UI 提示。
+		//   原因：这段代码此前**没有异常兜底**，任一步抛错都会被命令层静默吞掉 ⇒
+		//   用户视角就是「选完之后没有反应」（最难查的一类失败）。
+		//   现在：任何异常都必有日志 + 可见的错误通知。
+		try {
+			// 构造参数与 `workspaceView` 中的实例保持一致（同一份管线、同一套服务）
+			logService.info('[agentStudio.kb.importToLibrary] constructing KbImportController…');
+			const kbImport = new KbImportController(
+				configurationService, logService, fileService,
+				environmentService, storageService,
+				agentStudioService, viewsService,
+				editorService, notificationService,
+				requestService, agentDriverService,
+			);
+			logService.info(`[agentStudio.kb.importToLibrary] stage A: copying ${incoming.length} file(s) into 库/raw (no LLM), mode=${mode}`);
+
+			const failed: string[] = [];
+			const moved: string[] = [];
+			const staged: { name: string; savedPath: string }[] = [];
+			let imported = 0;
+
+			agentStudioService.reportKbProcessing({ active: true, label: `导入中 0/${incoming.length}` });
+
+			// ── 阶段 A：**只搬文件**（纯 IO，秒级完成）─────────────────────────────
+			// 需求（2026-09-23）：「快速复制/移动文件到库，之后在库中再分析归类、生成笔记」。
+			// 所以搬文件**绝不调 LLM**；分析归类交给阶段 B 在后台做（真机实测：agentic 抽取
+			// 单请求超时就有 120s，7 个 PDF 要十几分钟 —— 串在一起就是「卡住」）。
+			for (let i = 0; i < incoming.length; i++) {
+				const uri = incoming[i];
+				const name = basename(uri.path);
+				logService.info(`[agentStudio.kb.importToLibrary] [A ${i + 1}/${incoming.length}] staging: ${uri.toString()}`);
+				try {
+					// 原样字节复制到 `库/raw`（读内容仅用于去重指纹）—— **不调 LLM**。
+					// 进度 label（`导入中 i/N：文件名`）由 `stageFileToLibrary` 内部统一上报，
+					// 这里**不要再报一次**（会把 i/N 覆盖成只有文件名）。
+					const savedPath = await kbImport.stageFileToLibrary(uri, undefined, {
+						quiet: true, progress: { index: i + 1, total: incoming.length },
+					});
+					if (!savedPath) {
+						logService.warn(`[agentStudio.kb.importToLibrary] [A ${i + 1}/${incoming.length}] staging failed: ${name}`);
+						failed.push(name);
+					} else {
+						imported++;
+						staged.push({ name, savedPath });
+						// 落盘成功**之后**才移走源文件（回收站，可还原）
+						if (mode === 'move') {
+							try {
+								await fileService.del(uri, { useTrash: true, recursive: false });
+								moved.push(name);
+							} catch (err) {
+								logService.warn(`[agentStudio.kb.importToLibrary] move to trash failed: ${uri.toString()}`, err);
+								failed.push(name);
+							}
+						}
+					}
+				} catch (err) {
+					logService.warn(`[agentStudio.kb.importToLibrary] [A ${i + 1}/${incoming.length}] staging failed: ${uri.toString()}`, err);
+					failed.push(name);
+				}
+			}
+
+			// 阶段 A 的过程反馈全部走「徽标 + 视图内状态」（用户要求不发通知）⇒ 这里只记日志。
+			const parts = [`已${mode === 'move' ? '移动' : '复制'} ${imported}/${incoming.length} 个文件到知识库「库」`];
+			if (skipped.length) { parts.push(`已跳过 ${skipped.length} 个（已在知识库内）`); }
+			if (moved.length) { parts.push(`已移入回收站 ${moved.length} 个`); }
+			if (failed.length) {
+				parts.push(`失败 ${failed.length} 个：${failed.slice(0, 5).join('、')}${failed.length > 5 ? '…' : ''}`);
+			}
+			logService.info(`[agentStudio.kb.importToLibrary] stage A done: ${parts.join('；')}`);
+			// ⚠ 阶段 A 的**真实失败**仍用通知告知：这是错误反馈而不是过程噪声，
+			//   去掉它就会退化成「静默失败」（正是之前排查了很久的问题）。
+			if (failed.length) {
+				notificationService.error(`移动到知识库：${parts.join('；')}`);
+			}
+
+			// ── 阶段 B：后台分析归类 → 生成笔记（**不 await** ⇒ 不阻塞用户）──────────
+			if (staged.length) {
+				void analyzeStagedLibraryFiles(staged, kbImport, agentStudioService, configurationService, notificationService, logService);
+			} else {
+				// 没有可分析的文件 ⇒ 收尾（否则徽标会一直转圈）
+				agentStudioService.reportKbProcessing({ active: false });
+				agentStudioService.requestLibraryBadge({ source: 'kb', kind: 'idle' });
+			}
+		} catch (err) {
+			// 这段以前没有兜底 ⇒ 任何异常都是「点了没反应」。现在必有日志 + 可见错误。
+			logService.error('[agentStudio.kb.importToLibrary] unhandled failure in import pipeline', err);
+			notificationService.error(`移动到知识库失败：${err instanceof Error ? err.message : String(err)}`);
+			// 出错也必须把「执行中」状态清掉，否则徽标会一直转圈
+			agentStudioService.reportKbProcessing({ active: false });
+			agentStudioService.requestLibraryBadge({ source: 'kb', kind: 'idle' });
+		}
 	}
 });
 

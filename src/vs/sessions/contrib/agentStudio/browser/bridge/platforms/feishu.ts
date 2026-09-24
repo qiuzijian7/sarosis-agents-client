@@ -34,6 +34,8 @@
 // 无外部 SDK 依赖：HTTP 走注入的 requestService（应为主进程出口），WS 用渲染进程全局 WebSocket。
 
 import { CancellationToken } from "../../../../../../base/common/cancellation.js";
+// ★ 2026-09-23：入站图片/文件的二进制下载出口（主进程 binary 通路；见该文件头的原因）
+import { guessMimeFromName, normalizeMime, type BridgeBinaryDownload } from "../bridgeMediaDownload.js";
 import { asText, IRequestService } from "../../../../../../platform/request/common/request.js";
 import {
 	BridgeButton,
@@ -41,6 +43,7 @@ import {
 	BridgePlatformStatus,
 	BridgeReplyCtx,
 	IBridgePlatform,
+	InboundAttachment,
 	InboundMessage,
 	OutboundType,
 } from "../../../common/bridge/bridgeTypes.js";
@@ -103,6 +106,15 @@ export interface FeishuPlatformOpts {
 	readonly requestService?: IRequestService;
 	/** IRequestService 的 callSite 标记（便于主进程侧归因，默认 'feishuPlatform'）。 */
 	readonly callSite?: string;
+	/**
+	 * 入站媒体（图片 / 文件）的**二进制**下载出口（2026-09-23）。
+	 *
+	 * 飞书 OpenAPI 不返回 CORS 头 ⇒ renderer 直连会被拦（见文件头事故记录）；
+	 * 而主进程出口的**文本**通路会按 UTF-8 解码破坏字节 ⇒ 必须走 `binary: true` 通路。
+	 * 装配侧用 `createMainProcessBinaryDownload(mainProcessService)` 注入；
+	 * 未注入时媒体消息只投递占位文本（**不静默丢消息**）。
+	 */
+	readonly downloadBinary?: BridgeBinaryDownload;
 }
 
 interface FeishuReplyCtx {
@@ -129,6 +141,10 @@ export class FeishuPlatform implements IBridgePlatform {
 	private readonly _log: (msg: string) => void;
 	private readonly _requestService?: IRequestService;
 	private readonly _callSite: string;
+	/** 入站媒体二进制下载出口（见 FeishuPlatformOpts.downloadBinary）。 */
+	private readonly _downloadBinary?: BridgeBinaryDownload;
+	/** 媒体派发串行队列：下载是异步的，串行可保证同一聊天的消息顺序不被打乱。 */
+	private _mediaChain: Promise<void> = Promise.resolve();
 	private _handler?: (msg: InboundMessage) => void;
 	private _token?: TokenCache;
 	private _ws?: any; // WebSocket 长连接
@@ -164,6 +180,7 @@ export class FeishuPlatform implements IBridgePlatform {
 		this._log = opts.log ?? ((msg: string) => console.error(msg));
 		this._requestService = opts.requestService;
 		this._callSite = opts.callSite ?? "feishuPlatform";
+		this._downloadBinary = opts.downloadBinary;
 	}
 
 	/** 最近一次入站长连接失败原因（无失败则为 undefined）。 */
@@ -518,10 +535,22 @@ export class FeishuPlatform implements IBridgePlatform {
 			}
 			return;
 		}
-		// 暂只处理文本消息：图片/文件等转发给 Agent 只会得到一条空消息（D-13 附带澄清）
+		const sender = evt?.event?.sender;
+		const userId = sender?.sender_id?.open_id ?? sender?.sender_id?.union_id ?? "unknown";
 		const messageType = msg.message_type ?? "text";
+
+		// ★ 2026-09-23：入站放开 **text / image / file**。
+		//   此前只处理 text（图片/文件直接被丢弃，D-13 的「转发过去也只是一条空消息」判断已过时）：
+		//   现在图片/文件经主进程二进制出口下载后，作为 `files` 附件交给引擎 ——
+		//   引擎会落盘到 `<workDir>/.saros/bridge/attachments/` 并把绝对路径追加进 prompt，
+		//   Agent 用内置工具读取/识别（与 Telegram 的照片同一条链，`InboundAttachment.data` 带字节）。
+		//   语音（audio）按用户 2026-09-23 的明确决定**不支持**，仍记录原因并忽略。
+		if (messageType === "image" || messageType === "file") {
+			this._handleMediaMessage(messageType, msg, userId);
+			return;
+		}
 		if (messageType !== "text") {
-			this._log(`[Feishu] 忽略暂不支持的消息类型：${messageType}（当前仅处理 text）`);
+			this._log(`[Feishu] 忽略暂不支持的消息类型：${messageType}（当前处理 text / image / file）`);
 			return;
 		}
 		let text = "";
@@ -531,8 +560,19 @@ export class FeishuPlatform implements IBridgePlatform {
 		} catch {
 			text = "";
 		}
-		const sender = evt?.event?.sender;
-		const userId = sender?.sender_id?.open_id ?? sender?.sender_id?.union_id ?? "unknown";
+		this._dispatchInbound(msg, userId, text);
+	}
+
+	/** 组装并派发一条入站消息（文本与媒体共用，避免两处字段不一致）。 */
+	private _dispatchInbound(
+		msg: { message_id?: string; chat_id?: string; content?: string },
+		userId: string,
+		text: string,
+		files?: InboundAttachment[],
+	): void {
+		if (!this._handler) {
+			return;
+		}
 		const sessionKey = `feishu:${msg.chat_id ?? "chat"}:${userId}`;
 		const replyCtx: FeishuReplyCtx = { messageId: msg.message_id, chatId: msg.chat_id };
 		this._handler({
@@ -545,6 +585,70 @@ export class FeishuPlatform implements IBridgePlatform {
 			conversationId: msg.chat_id,
 			content: text,
 			replyCtx,
+			files: files && files.length > 0 ? files : undefined,
+		});
+	}
+
+	/**
+	 * 图片 / 文件入站：解析 content → 经主进程二进制出口下载 → 作为 `files` 附件交引擎。
+	 *
+	 * - 资源接口：`GET /im/v1/messages/{message_id}/resources/{file_key}?type=image|file`（tenant token）。
+	 * - 下载是异步的 ⇒ 走 `_enqueueMedia` 串行排队，避免同一聊天的消息顺序被打乱。
+	 * - **下载失败不丢消息**：退化为占位文本（`[图片]` / `[文件：xxx]`），失败原因写日志。
+	 */
+	private _handleMediaMessage(
+		kind: "image" | "file",
+		msg: { message_id?: string; chat_id?: string; content?: string },
+		userId: string,
+	): void {
+		let key = "";
+		let fileName: string | undefined;
+		try {
+			const c = JSON.parse(msg.content ?? "{}") as { image_key?: string; file_key?: string; file_name?: string };
+			key = (kind === "image" ? c.image_key : c.file_key) ?? "";
+			if (kind === "file" && typeof c.file_name === "string" && c.file_name.trim()) {
+				fileName = c.file_name.trim();
+			}
+		} catch {
+			// content 非 JSON：按「缺 key」处理，下面走占位文本
+		}
+		const placeholder = kind === "image" ? "[图片]" : fileName ? `[文件：${fileName}]` : "[文件]";
+
+		const missing = !key
+			? `缺少 ${kind === "image" ? "image_key" : "file_key"}`
+			: !msg.message_id
+				? "缺少 message_id"
+				: !this._downloadBinary
+					? "缺少主进程二进制出口（downloadBinary 未注入）"
+					: "";
+		if (missing) {
+			this._log(`[Feishu] ${kind} 消息${missing}，仅投递占位文本 ${placeholder}`);
+			this._dispatchInbound(msg, userId, placeholder);
+			return;
+		}
+
+		const messageId = msg.message_id as string;
+		const downloadBinary = this._downloadBinary as BridgeBinaryDownload;
+		this._enqueueMedia(async () => {
+			try {
+				const url = `${this._base}/im/v1/messages/${encodeURIComponent(messageId)}/resources/${encodeURIComponent(key)}?type=${kind}`;
+				const token = await this._ensureToken();
+				const { bytes, contentType } = await downloadBinary(url, { Authorization: `Bearer ${token}` });
+				const mimeType = normalizeMime(contentType) ?? guessMimeFromName(fileName, kind);
+				this._log(`[Feishu] ${kind} 已下载 ${bytes.byteLength} bytes（${mimeType}${fileName ? `, ${fileName}` : ""}）`);
+				this._dispatchInbound(msg, userId, placeholder, [{ mimeType, data: bytes, fileName }]);
+			} catch (err) {
+				// ★ 下载失败也**不能丢消息**：退化为占位文本，原因写日志（此前只记日志、消息消失）
+				this._log(`[Feishu] ${kind} 下载失败，退化为占位文本：${err instanceof Error ? err.message : String(err)}`);
+				this._dispatchInbound(msg, userId, placeholder);
+			}
+		});
+	}
+
+	/** 媒体派发串行队列（失败只记日志，不中断后续消息）。 */
+	private _enqueueMedia(task: () => Promise<void>): void {
+		this._mediaChain = this._mediaChain.then(task).catch(err => {
+			this._log(`[Feishu] 媒体消息处理失败：${err instanceof Error ? err.message : String(err)}`);
 		});
 	}
 

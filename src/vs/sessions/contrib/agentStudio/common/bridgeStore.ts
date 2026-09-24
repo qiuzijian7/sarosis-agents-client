@@ -45,6 +45,16 @@ export function bridgeStoreFilePath(storeDir: string, file: BridgeStoreFile): st
 	return base ? `${base}${separatorOf(base)}${file}` : file;
 }
 
+/**
+ * 在 bridge 目录下拼任意段（纯函数）。用于 `attachments/` 子目录这类**不在白名单**的路径段
+ * —— 白名单 `BRIDGE_STORE_FILES` 只管「文件名」，目录段由本函数拼（仍受调用方控制，不接受 IPC 传入）。
+ */
+export function joinBridgePath(storeDir: string, segment: string): string {
+	const base = trimTrailingSeparators(storeDir);
+	const seg = trimTrailingSeparators(segment.replace(/^[\\/]+/, ''));
+	return base ? `${base}${separatorOf(base)}${seg}` : seg;
+}
+
 /** 文件名白名单校验（纯函数）：只允许 bridge 目录下的三个已知 JSON，杜绝任意路径读写。 */
 export function isAllowedBridgeStoreFile(file: unknown): file is BridgeStoreFile {
 	return typeof file === 'string' && (BRIDGE_STORE_FILES as readonly string[]).includes(file);

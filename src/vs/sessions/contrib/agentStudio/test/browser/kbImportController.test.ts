@@ -820,10 +820,11 @@ suite('AgentStudio - KbImportController GC HTML 导入（分类归档/结构抽�
 		);
 		assert.ok(notePath, '构建应成功（返回笔记路径）');
 
-		// 笔记应按 schema 归类写入库根锚定路径（库/概念/UE5垃圾回收机制/UE5垃圾回收机制.md）
-		const expectedNoteUri = URI.joinPath(vault(), '库', '概念', 'UE5垃圾回收机制', 'UE5垃圾回收机制.md');
+		// ★ 2026-09-23 语义变更：产物落**笔记区**（库 = 数据源层）。
+		// 模型给的 `概念/…` 目录仍被尊重（目录决定权归 LLM）⇒ 依旧归类在 概念/ 下
+		const expectedNoteUri = URI.joinPath(vault(), '笔记', '概念', 'UE5垃圾回收机制', 'UE5垃圾回收机制.md');
 		const note = fs.contentOf(expectedNoteUri);
-		assert.ok(note, '笔记应写入 库/概念/UE5垃圾回收机制/UE5垃圾回收机制.md');
+		assert.ok(note, '笔记应写入 笔记/概念/UE5垃圾回收机制/UE5垃圾回收机制.md');
 		assert.ok(note!.includes('# UE5 垃圾回收机制'), '笔记应含标题');
 		assert.ok(note!.includes(`- ${libRel}`), '笔记 sources 应回链库文件');
 		assert.ok(!expectedNoteUri.path.includes('DOCTYPE'), '笔记路径不得含 DOCTYPE');
@@ -859,10 +860,11 @@ suite('AgentStudio - KbImportController GC HTML 导入（分类归档/结构抽�
 		);
 		assert.ok(notePath, '兜底应产出笔记而非失败（返回笔记路径）');
 
-		// 兜底笔记落在源文件所在库目录
-		const expectedNoteUri = URI.joinPath(vault(), '库', '概念', 'UE5垃圾回收机制', 'UE5垃圾回收机制.md');
+		// ★ 2026-09-23：兜底锚点也改成**笔记区根**（产出的是笔记，不该落回素材目录）；
+		//   名字仍取库文件 frontmatter 推导出的 topic，且 salvage 不加类型目录前缀。
+		const expectedNoteUri = URI.joinPath(vault(), '笔记', 'UE5垃圾回收机制.md');
 		const note = fs.contentOf(expectedNoteUri);
-		assert.ok(note, '兜底笔记应落在 库/概念/UE5垃圾回收机制/UE5垃圾回收机制.md（分类取库文件 frontmatter）');
+		assert.ok(note, '兜底笔记应落在 笔记/UE5垃圾回收机制.md（topic 取库文件 frontmatter）');
 		assert.ok(note!.includes('title: UE5垃圾回收机制'), '兜底笔记 frontmatter 应含库分类 topic');
 		assert.ok(note!.includes('没有按 FILE 块格式输出'), '兜底笔记正文应保留模型原始输出');
 	});
@@ -907,10 +909,10 @@ suite('AgentStudio - KbImportController GC HTML 导入（分类归档/结构抽�
 		);
 		assert.ok(notePath, '兜底应产出笔记而非失败');
 
-		// 兜底笔记落在源文件旁（库/raw/未分类.md；raw 路径推导不出分类 → 未分类）
-		const expectedNoteUri = URI.joinPath(vault(), '库', 'raw', '未分类.md');
+		// ★ 2026-09-23：兜底落**笔记区根**（不再是源文件旁）；raw 路径推导不出分类 ⇒ 未分类
+		const expectedNoteUri = URI.joinPath(vault(), '笔记', '未分类.md');
 		const note = fs.contentOf(expectedNoteUri);
-		assert.ok(note, '兜底笔记应落在 库/raw/未分类.md（源文件旁，raw 无分类上下文 → 未分类）');
+		assert.ok(note, '兜底笔记应落在 笔记/未分类.md（raw 无分类上下文 → 未分类）');
 		assert.ok(note!.includes('title: 未分类'), '兜底笔记 frontmatter 应含路径推导出的 topic=未分类');
 		ctrl.dispose?.();
 	});
@@ -1059,6 +1061,49 @@ suite('AgentStudio - _writeFileBlocks 按 schema 类型目录归类落盘', () =
 		assert.ok(!normed.some(p => p.endsWith('/库/UE5 GC 机制.md')), '不得平铺到库根丢失归类：' + normed.join('; '));
 	});
 
+	// ── ★ 2026-09-23「目录由 LLM 根据当前目录结构自行决定」────────────────────
+	test('模型给的自由目录被尊重：不被 schema 类型目录改写', async () => {
+		const fs = new MockFileService();
+		// ⚠ 刻意传 `defaultTypeDir='概念'`（生产就会传）：旧实现在「首段不是类型目录」时
+		//   会把路径改写成 `概念/内存管理/GC机制分析.md` ⇒ 覆盖掉 LLM 按知识体系规划的目录。
+		const written = await (KbImportController as any)._writeFileBlocks(
+			[{ path: '内存管理/GC机制分析.md', content: '自由目录笔记' }],
+			URI.file('/vault/笔记'), URI.file('/vault'), fs, logMock, TYPE_DIRS, '概念',
+		);
+		const normed = written.map(p => norm(p));
+		assert.ok(normed.some(p => p.endsWith('/笔记/内存管理/GC机制分析.md')),
+			'模型自选的目录必须原样保留：' + normed.join('; '));
+		assert.ok(!normed.some(p => p.includes('/笔记/概念/')), '不得额外套一层类型目录：' + normed.join('; '));
+	});
+
+	test('兜底仍生效：模型只给裸文件名时按 defaultTypeDir 归位（不平铺）', async () => {
+		const fs = new MockFileService();
+		const written = await (KbImportController as any)._writeFileBlocks(
+			[{ path: 'GC机制分析.md', content: '裸文件名' }],
+			URI.file('/vault/笔记'), URI.file('/vault'), fs, logMock, TYPE_DIRS, '概念',
+		);
+		assert.strictEqual(written.length, 1);
+		assert.ok(norm(written[0]).endsWith('/笔记/概念/GC机制分析.md'),
+			'路径里完全没有目录时才兜底到 defaultTypeDir：' + norm(written[0]));
+	});
+
+	test('★ 目录候选只含引擎产出目录（排除用户手写的 01_学习 等）', async () => {
+		const fs = new MockFileService();
+		const notesRoot = URI.file('/vault/笔记');
+		// 用户手写：数字前缀惯例（PARA 风格）
+		fs.addFile(URI.joinPath(notesRoot, '01_学习', '我的读书笔记.md'), '# 手写，无 frontmatter');
+		// 用户手写：普通名字，但同样没有引擎字段（sources / status）
+		fs.addFile(URI.joinPath(notesRoot, '随手记', '灵感.md'), '# 手写');
+		// 引擎产出：带 sources（构建阶段必然注入）
+		fs.addFile(URI.joinPath(notesRoot, '内存管理', 'GC机制.md'), '---\nsources:\n  - "[[raw/x.md]]"\n---\n引擎产出');
+		// 引擎产出：只有 status（门控写入）
+		fs.addFile(URI.joinPath(notesRoot, '渲染', '批次.md'), '---\nstatus: active\n---\n引擎产出');
+
+		const dirs = await (KbImportController as any)._listEngineNoteDirs(fs, notesRoot);
+		assert.deepStrictEqual(dirs.slice().sort(), ['内存管理', '渲染'],
+			'只列引擎产出目录（手写目录必须排除）：' + JSON.stringify(dirs));
+	});
+
 	test('同一路径冲突 → 自动改名 _2，避免互相覆盖', async () => {
 		const fs = new MockFileService();
 		const written = await call([
@@ -1089,5 +1134,36 @@ suite('AgentStudio - _writeFileBlocks 按 schema 类型目录归类落盘', () =
 			{ path: '概念/UE5 GC 机制.md', content: 'x' },
 		], fs, undefined);
 		assert.ok(norm(written[0]).includes('/概念/UE5 GC 机制.md'), '无 typeDirs 时不剥前缀：' + norm(written[0]));
+	});
+});
+
+// ─── vault 内判定（2026-09-23）────────────────────────────────────────────────
+//
+// 用途：Explorer 右键「移动到知识库」在导入前**剔除已在知识库目录内**的文件。
+// 误判后果很重 —— 要么「该导入的被跳过」，要么「知识库自己的文件被搬走（移动模式）」，
+// 所以边界（尤其「兄弟目录前缀」）必须钉死。
+suite('KbImportController.isWithinVault（库内文件判定）', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	const vault = URI.file('C:\\kb\\vault1');
+
+	test('vault 根自身与其内部文件 ⇒ true', () => {
+		assert.strictEqual(KbImportController.isWithinVault(URI.file('C:\\kb\\vault1'), vault), true);
+		assert.strictEqual(KbImportController.isWithinVault(URI.file('C:\\kb\\vault1\\库\\raw\\a.md'), vault), true);
+		assert.strictEqual(KbImportController.isWithinVault(URI.file('C:\\kb\\vault1\\笔记\\01\\b.md'), vault), true);
+	});
+
+	test('★ 只有前缀相同的兄弟目录 ⇒ false（旧实现用裸 startsWith 会误判）', () => {
+		assert.strictEqual(KbImportController.isWithinVault(URI.file('C:\\kb\\vault1-backup\\a.md'), vault), false);
+		assert.strictEqual(KbImportController.isWithinVault(URI.file('C:\\kb\\vault10\\a.md'), vault), false);
+	});
+
+	test('大小写不敏感（Windows 路径）', () => {
+		assert.strictEqual(KbImportController.isWithinVault(URI.file('c:\\KB\\Vault1\\库\\a.md'), vault), true);
+	});
+
+	test('库外文件 ⇒ false', () => {
+		assert.strictEqual(KbImportController.isWithinVault(URI.file('D:\\docs\\a.md'), vault), false);
+		assert.strictEqual(KbImportController.isWithinVault(URI.file('C:\\kb\\other\\a.md'), vault), false);
 	});
 });

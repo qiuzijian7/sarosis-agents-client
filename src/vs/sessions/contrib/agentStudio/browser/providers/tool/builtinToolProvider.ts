@@ -88,6 +88,10 @@ import { registerWorkflowTool } from './workflowTool.js';
 import type { UnifiedSubAgentDispatch } from '../../../common/unifiedSubAgentDispatch.js';
 import { registerPlanModeTools } from './planModeTools.js';
 import { createKnowledgeStorageRegistrar, type IKnowledgeStorageRegistrar } from './knowledgeStorageTools.js';
+import { IMermaidInlineRenderer } from '../../mermaidInlineRenderer.js';
+import { IDrawioInlineRenderer } from '../../drawioInlineRenderer.js';
+import { svgToPng } from '../../knowledge/svgRasterizer.js';
+import { prepareDiagramsForSync } from '../../knowledge/diagramSyncPrepare.js';
 import { resolveAndCheckWorkspacePathImpl } from './workspaceSecurity.js';
 import { registerCoreTools } from './coreTools.js';
 import { executeToolImpl } from './toolExecutor.js';
@@ -286,6 +290,11 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		@IWebContentExtractorService private readonly webContentExtractorService: IWebContentExtractorService,
 		@ISearchService private readonly searchService: ISearchService,
 		@IKbNativeKernelService private readonly kbKernelService: IKbNativeKernelService,
+		// ★ 2026-09-24：图表渲染器（与笔记预览 / 聊天图表卡片同一套隐藏 webview 引擎）。
+		//   注入给 kb_feishu_sync 的「同步前图表准备」—— 此前该步骤只长在「知识库视图 → 同步飞书」
+		//   按钮路径上，agent 走工具同步时 mermaid/drawio 源码会原样发到飞书（飞书不渲染源码）。
+		@IMermaidInlineRenderer private readonly mermaidRenderer: IMermaidInlineRenderer,
+		@IDrawioInlineRenderer private readonly drawioRenderer: IDrawioInlineRenderer,
 		@IMainProcessService private readonly mainProcessService: IMainProcessService,
 	) {
 		super();
@@ -487,6 +496,19 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 				logService: this.logService,
 				kernelService: this.kbKernelService,
 				kbStoragePathKey: AGENT_STUDIO_KB_STORAGE_PATH,
+				// ★ 2026-09-23：kb_organize 依赖（checkpoint 回滚 + 解析当前 vault 根）
+				storageService: this.storageService,
+				checkpointService: this.checkpointService,
+				// ★ 2026-09-24：kb_feishu_sync 的「同步前图表准备」（mermaid/drawio/canvas → PNG）。
+				//   渲染器在这里绑定；编排与视图按钮共用 knowledge/diagramSyncPrepare.ts 一份口径。
+				prepareDiagrams: req => prepareDiagramsForSync({
+					...req,
+					fileService: this.fileService,
+					logService: this.logService,
+					renderMermaid: (src: string) => this.mermaidRenderer.renderToSvg(src, 'default'),
+					renderDrawio: (src: string) => this.drawioRenderer.renderToSvg(src, 'default'),
+					rasterize: (svg: string, scale?: number) => svgToPng(svg, { scale }),
+				}),
 			});
 		}
 		return this._knowledgeStorage;
@@ -869,6 +891,10 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		registerMermaidTools({
 			register: d => this.register(d),
 			logService: this.logService,
+			// ★ 2026-09-24：注入隐藏 webview 渲染器做「真实校验」——
+			//   语法错的图此前只会让卡片报错、模型却收到 "rendered successfully"（不会重试）。
+			//   现在失败会把 mermaid 报错回灌给模型，成功则附布局体检建议。
+			render: (markup, theme) => this.mermaidRenderer.renderToSvg(markup, theme),
 		});
 	}
 

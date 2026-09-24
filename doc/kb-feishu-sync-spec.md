@@ -133,7 +133,8 @@ drive +update-title --token <docx_token> --type docx --title "<新标题>"    # 
 | `> [!note]` callout | 高亮块 | 类型→色板映射表；不支持则退化为引用块 |
 | `[[笔记]]` 双链 | 文档链接 | 目标已同步 ⇒ `[title](feishu.url)`；未同步 ⇒ 纯文本 |
 | `![[笔记]]` 笔记 embed | 链接 + 引用块 | 降级为「链接 + 摘要引用」 |
-| Mermaid 代码块 | 不支持 | 本地渲染 PNG（复用 `mermaidInlineRenderer`）走图片链路 |
+| Mermaid 代码块 | **原生支持（转画板）** | ★ 2026-09-24 实测修正：飞书 markdown 导入会把它转成 `whiteboard type="mermaid"` 画板（活图可编辑，官方「文本绘图小组件」同源能力）⇒ **原样放行，不转 PNG** |
+| `![[x.html]]` HTML 嵌入 | **原生支持（file block + Preview）** | ★ 2026-09-24 实测：`<source path="@./x.html"/>` 上传后落成 `<figure view-type="Preview"><source mime="text/html" …/></figure>`，飞书直接渲染页面 ⇒ 同步前把 html 复制进 `<note>.attachments/` 并改写引用（见 §16） |
 | `((blockref))` / 反链 / 图谱 | 无对应物 | 降级纯文本（**诚实边界**） |
 | 目录层级 | wiki 节点树 | `库/A/B/x.md` ⇒ 节点 `A / B / x`（space 下按一级目录建父节点） |
 | overview / .overview | wiki 节点引导页 | 作为父节点描述/首屏文档 |
@@ -201,6 +202,82 @@ lark-cli doc +update --token <docx_token> --mode replace --markdown "$(cat note.
 | 16 | `docs +media-insert` 移除 `--selection-with-ellipsis`（只能插文末） | 图片改走「fetch with-ids 找占位块 → `block_replace` 为 `<img path="@./x.png"/>`」（§3.2，已真机验证） |
 | 17 | 占位必须**独占段落** | 插图是 `block_replace`（整块替换）⇒ 同段有其它文字会被一起替换掉；行内/表格内引用无法自动插图（保留占位+告警） |
 | 18 | `migrateIndexEntries` 必须**迁移**而非删除条目 | 若只删旧路径条目，而该文档本轮因「无需处理」被 `continue`，索引记录会**永久丢失** ⇒ 之后读不到 `prevSpace`，跨知识库搬迁永远不再触发（E2E 实测踩到） |
+| 19 | **`lark()` 不能走 `shell: true`**（2026-09-23 实测事故） | Windows 上 `lark-cli` 是 npm shim（`.cmd`/`.ps1`）⇒ 只能经 cmd.exe 调用，而 **cmd 不会为参数补引号** ⇒ `--title "工程实践 工具设计与 Harness"` 被拆成两个位置参数 ⇒ CLI 报 `positional arguments are not supported (got [...])` ⇒ **标题不含空格的同步成功、含空格的整批失败**（极具迷惑性：面板「已同步 0 篇」是因为失败篇没写回 frontmatter） | `lark()` 改为：从 `.cmd`/`.ps1` 解析出真实 node 入口（`node_modules/@larksuite/cli/scripts/run.js`），用 `spawnSync(process.execPath, [入口, ...args], { shell: false, env: {...process.env, ELECTRON_RUN_AS_NODE: '1'} })` 直调 ⇒ 空格 / 中文 / `& \| % ^` 全部安全；解析失败回退 shell + 手工加引号。实测 12 篇含空格标题全部 create 成功 ✓ |
+| 20 | 「同步范围留空 = 整个知识库」**曾是空文案** | 留空 ⇒ 不传 `--src` ⇒ 脚本 `args.src = []` ⇒ `collectPlan` 计划为空 ⇒ 终端只打印「完成 0 篇」 | 视图侧把留空落实为 `库` + `笔记` 两个分区（`effectiveSrcDirs`），并更新 placeholder 文案 |
+| 21 | **飞书图片不支持 SVG**（2026-09-23 实测） | `<img path="@./x.svg"/>` 被拒：`local image #1: file is not a supported BMP, GIF, JPEG, PNG, TIFF, or WebP image` ⇒ 飞书只认 **BMP / GIF / JPEG / PNG / TIFF / WebP** | `IMAGE_EXT` 移除 `svg`（原先会「提取成功但上传被拒」，且错误会中断该篇同步）；`![[x.svg]]` 现原样保留，且同步时打印 `DIAGRAM-UNRENDERED` 告警 |
+| 22 | **mermaid / drawio 在飞书里只显示为代码块**（⚠ 2026-09-24 **部分作废**，见 #23） | 飞书 markdown 导入把 ```mermaid / ```xml(`<mxfile>`) 当**普通代码块**（显示源码，不画图） | 已加 `detectUnrenderableDiagrams` + 逐篇告警（如实告知，避免误以为已渲染）。**「正确显示」已于同日实现**（见 §15）：渲染 SVG → **栅格化 PNG** → 落盘附件 → 笔记改写为 `![[x.png]]` → 走已实测可用的图片插入链路 |
+| 23 | ★★ **mermaid 其实会被飞书转成画板**（2026-09-24 lark-cli 实测，推翻 #22 的前半句） | 用 `docs +create --doc-format markdown` 导入含 ```mermaid 的 md ⇒ 读回结构得到 `<whiteboard type="mermaid" token="…">` 块，下载画板缩略图确认为**真实渲染的图表**；`+update --command append` 通道同样如此（`new_blocks[].block_type = "whiteboard"`）。⚠ 官方帮助《使用文本绘图小组件》FAQ 说「Markdown 导入不支持自动识别 mermaid」—— 那指的是**文档 UI 上传 .md** 那条通道；CLI 服务端导入不同，**以实测为准** | 管线收窄：mermaid **不再转 PNG**（转 PNG 会把可编辑活图变死图）；`![[x.mermaid]]` 嵌入改为**内联展开成围栏**（即 §16）。`detectUnrenderableDiagrams` 只保留 drawio 告警。drawio/canvas 飞书无对应格式 ⇒ 仍转 PNG |
+
+## 16. HTML 附件同步（2026-09-24）
+
+**机制（实测确认）**：飞书支持把 HTML 文件作为**附件**渲染。`docs +create/--doc-format xml` 传
+`<source path="@./live-demo.html" name="live-demo.html"/>` 后，读回结构得到：
+
+```xml
+<figure view-type="Preview"><source name="live-demo.html" mime="text/html" size="2216" token="…"/></figure>
+```
+
+即 **file block + `view-type="Preview"`**（`mime="text/html"`）—— 飞书侧直接渲染页面预览。
+`<figure view-type="Preview">` 与裸 `<source>` 两种写法结果一致。
+
+**两条硬约束（实测）**：
+1. `path="@./…"` 的相对路径基于 **cwd（= 笔记目录）**；
+2. **绝对路径会被判 unsafe**（`local file #1: file does not exist or its path is unsafe`），
+   跨目录 `../..` 同样有越界风险。
+
+⇒ 链路（宿主 + 脚本各一半，与 PNG 附件同一套约定）：
+
+| 阶段 | 位置 | 做什么 |
+|---|---|---|
+| 同步前准备 | 宿主 `knowledge/htmlAttachmentPrepare.ts`（挂在 `prepareDiagramsForSync` ⓪ 步） | `![[x.html]]`（库内任意位置）→ 复制到 `<note>.attachments/<name>.html` → 引用改写为该相对路径（不含 `..`） |
+| 正文预处理 | 脚本 `extractAttachments()` | `![[<note>.attachments/x.html]]` → 占位 `KBSYNCFILE<n>`（独占段落；行内引用告警保留） |
+| 插入 | 脚本 `insertAttachments()` | `block_replace` 占位块 → `<figure view-type="Preview"><source path="@./<相对路径>" name="x.html"/></figure>` |
+
+幂等：引用已在附件目录 ⇒ 跳过复制；目标找不到 ⇒ 保留原文 + `missing` 告警。
+dryRun：只统计（不复制、不写回）。
+
+## 15. 图表（drawio）渲染为图片后同步（2026-09-23 建 / 2026-09-24 收窄为 drawio-only）
+
+> ★★ 2026-09-24 更新：**mermaid 已从本节的「转 PNG」名单移除** —— 飞书 markdown 导入会把它
+> 转成 `whiteboard type="mermaid"` 画板（原生活图，可编辑）⇒ 原样放行更好。本节余下内容
+> （渲染 → 栅格化 → 落盘 → 改写 → 图片链路）现在只适用于 **drawio / canvas**。
+
+### 15.1 问题
+
+飞书 markdown 导入把 ```mermaid / ```xml(`<mxfile>`) 当作**普通代码块**（显示源码，不画图）；且飞书**图片不支持 SVG**
+（实测 `<img path="@./x.svg"/>` → `local image #1: file is not a supported BMP, GIF, JPEG, PNG, TIFF, or WebP image`）。
+⇒ 要让图在飞书里**正确显示**，必须走「源码 → SVG → PNG → 图片插入」。
+
+### 15.2 实现（三层，均带单测）
+
+| 层 | 文件 | 职责 | 测试 |
+|---|---|---|---|
+| ① 找块 / 换块 | `browser/knowledge/diagramBlocks.ts` | `extractDiagramBlocks`（围栏 mermaid/drawio/`<mxfile>`；**容忍自闭合** `<mxGraphModel/>`）、`replaceDiagramBlock`（引用**独占段落**） | 10 |
+| ② 栅格化 | `browser/knowledge/svgRasterizer.ts` | `svgToPng`（渲染进程 canvas：`data:image/svg+xml,<urlencoded>` → Image → `drawImage` → `toBlob('image/png')`；白底、scale 自适应单边 ≤4096）；`parseSvgSize` / `clampScale` 纯函数 | 9 |
+| ③ 编排 | `browser/knowledge/diagramRenderPipeline.ts` | `renderNoteDiagrams`：渲染 → 栅格化 → 落盘 `<note>.attachments/chart-N.png` → 改写引用 | 8 |
+
+### 15.3 关键设计点
+
+- **不需要任何新依赖**：`browser/` 层本就运行在**渲染进程**（`mermaidInlineRenderer` 用 `mainWindow`）⇒ 有完整 DOM，
+  canvas 直接可用（不必引入 `sharp`/`resvg`/`mmdc`，也不必退化成 Electron 截 JPEG）。
+- **倒序替换**：改写会改变后续块的偏移 ⇒ 从后往前处理，返回前再 `reverse()` 回原文顺序。
+- **失败不丢内容**：单个图表失败 ⇒ 保留源码块；无图表 ⇒ **不写盘**（不改 mtime、不建空附件目录）。
+- **引用独占段落**：前后补空行 —— 飞书插图走 `block_replace`（整块替换），同段有其它文字会被一起替换掉。
+
+### 15.4 接线与开关
+
+`knowledgeBaseView.syncToFeishu` 在**创建同步终端之前**调用 `_renderDiagramsBeforeSync()`：
+遍历 `库`/`笔记` 下所有 `.md` ⇒ `renderNoteDiagrams`（注入 `IMermaidInlineRenderer` / `IDrawioInlineRenderer` + `svgToPng`）
+⇒ 结果实时写入设置面板的「同步输出」区（复用 `_emitSyncOutput`）。
+
+- 整体失败**不影响同步**（catch 后继续）
+- ⚠ 会**改写笔记**（代码块 → `![[xxx.png]]`）；项目有自动 git 版本历史可回滚
+- 面板 hint 已说明该行为
+
+### 15.5 端到端验证素材
+
+`E:\VsSarosVault\笔记\_图表验证.md`（mermaid flowchart + drawio `mxGraphModel` + 表格 + 本地图片 `chart-probe.png`）
+⇒ 点「立即同步到飞书」后，核对飞书侧显示为**图**而非源码。
 
 ## 9. 事故记录：61 篇孤儿文档（2026-09-21）
 

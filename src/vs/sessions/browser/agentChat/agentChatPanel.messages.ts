@@ -20,6 +20,8 @@ import type { FullRefreshSource } from './agentChatPanel.refreshLog.js';
 // ★ 2026-09-20：函数级性能埋点（见 perf 模块头注释）。本文件是「session 切换/首屏」
 // 的耗时大头（`setMessages` 的 render 段），此前**无埋点** ⇒ 无法归因 539ms 级长任务。
 import { chatPerf } from './agentChatPanel.perf.js';
+// ★ 2026-09-24（P1 分帧渲染）：时间片渲染器（**独立纯模块** ⇒ 假时钟确定性单测 ✓ 不占继承链 ✓）
+import { RENDER_SLICE_BUDGET_MS, runTimeSlicedRender, shouldRenderFullySync } from './agentChatPanel.renderSlicer.js';
 // ★ 2026-09-22（方案 C「收纳手风琴」）：压缩分组视图（**独立函数模块** ⇒ 不占面板继承链 ✓，
 //   避免改到正被并发改动的 base.ts / iChatPanel.ts ✓）
 import { createCompactionElement } from './compactionGroupView.js';
@@ -315,52 +317,79 @@ protected override _renderMessages(): void {
 	// 用户向上滚动时按需加载更早的消息。
 	// 参考 VS Code WorkbenchObjectTree 虚拟化（只渲染可见区域）。
 	const VISIBLE_CHUNK = 30;
+	const firstBatchStart = Math.max(0, this._messages.length - VISIBLE_CHUNK);
+
+	// ★★ 2026-09-24（P1 分帧渲染）：**时间片渲染** ✓ —— 取代旧的「一次性同步渲染 30 条」✗。
+	//   背景（真机）：一条百级 parts 的重消息 ≈58ms（`render.createMessageElement=58.3ms parts=127` ✓）
+	//   ⇒ 恢复大会话时同步段独占主线程 >1s（[RenderHeartbeat] LONG_TASK worst=1256ms @ uptime=26s ✓）。
+	//   做法与不变量见 `agentChatPanel.renderSlicer.ts` 头注；本处只负责接线：
+	//     · 代次 `++this._renderSliceGen`：新一轮 _renderMessages / dispose ⇒ 旧链静默退出 ✓；
+	//     · 首片同步 ⇒ 小列表（预算内渲完）行为与旧版**逐字节一致** ✓；
+	//     · 游标读**活数组** ⇒ 分片期间的流式新消息被自然捎带、顺序不乱 ✓
+	//       （_updateMessageDom 对未渲染元素安全跳过 ✓，轮到它时用最新数据 ✓）；
+	//     · 逃生门 `__SAROSIS_SYNC_RENDER_MESSAGES=true` / 隐藏标签页 / 无 rAF ⇒ Infinity 预算全同步 ✓；
+	//     · 片间钉底（仅 `_isAtBottom`）⇒ 分帧期间内容持续增长时视图不跑位 ✗✓
+	//       （setMessages 的双重 rAF 钉底只覆盖前两帧 ✗）。
+	const gen = ++this._renderSliceGen;
+	const fullySync = shouldRenderFullySync({
+		forceSync: (globalThis as { __SAROSIS_SYNC_RENDER_MESSAGES?: boolean }).__SAROSIS_SYNC_RENDER_MESSAGES === true,
+		documentHidden: document.visibilityState === 'hidden',
+		canSchedule: typeof requestAnimationFrame === 'function',
+	});
+	runTimeSlicedRender<IAgentChatMessage>({
+		items: () => this._messages,
+		cursor0: firstBatchStart,
+		budgetMs: fullySync ? Number.POSITIVE_INFINITY : RENDER_SLICE_BUDGET_MS,
+		renderItem: (m) => {
+			// 每条都打活动标记 ⇒ LONG_TASK 归因精确到「渲染消息」（常量 tag、零分配 ✓）
+			markRenderActivity('render-messages');
+			this._appendMessageDom(m);
+		},
+		isCancelled: () => gen !== this._renderSliceGen || !this._messagesContainer,
+		schedule: (cb) => {
+			this._renderSliceRaf = requestAnimationFrame(() => {
+				this._renderSliceRaf = null;
+				cb();
+			});
+		},
+		onSlice: (info) => {
+			chatPerf.record('render.appendSlice', info.elapsedMs,
+				`slice=${info.slice} done=${info.cursor - firstBatchStart}/${info.total - firstBatchStart}`);
+		},
+		onPin: () => {
+			if (this._isAtBottom) { this._scrollbar.scrollToBottom(false); }
+		},
+		onDone: () => this._finishRenderBatch(firstBatchStart, tRenderTotal),
+	});
+}
+
+/**
+ * P1 分帧渲染的收尾（最后一片完成后**恰好一次** ✓；小列表在首片内同步走到这里 ✓）。
+ */
+private _finishRenderBatch(firstBatchStart: number, tRenderTotal: number): void {
+	if (!this._messagesContainer) { return; }
 	const total = this._messages.length;
-
-	if (total <= VISIBLE_CHUNK) {
-		// 小列表 — 同步渲染全部
-		const tAppend = chatPerf.start();
-		for (const msg of this._messages) {
-			this._appendMessageDom(msg);
-		}
-		chatPerf.end('render.appendDom', tAppend, `count=${total}`);
-		// clearNode 已移除药丸，渲染完消息后重新挂回末尾
-		this._repositionLoadingPill();
-		chatPerf.end('render.messages.total', tRenderTotal, `msgs=${total}`);
-		return;
-	}
-
-	// 大列表 — 只渲染最后 VISIBLE_CHUNK 条，其余懒加载
-	const firstBatchStart = Math.max(0, total - VISIBLE_CHUNK);
-
-	// 渲染最近的消息
-	const tAppend = chatPerf.start();
-	for (let i = firstBatchStart; i < total; i++) {
-		this._appendMessageDom(this._messages[i]);
-	}
-	chatPerf.end('render.appendDom', tAppend, `count=${total - firstBatchStart}/total=${total}`);
-
 	// 设置懒加载——观察第一个消息元素，进入视口时加载更多
 	// 药丸可能已被重新挂到末尾，取首元素时需跳过它
 	const firstEl = this._firstMessageElement() ?? this._messagesContainer.firstElementChild as HTMLElement | null;
 	if (firstEl && firstBatchStart > 0) {
 		this._setupLazyLoad(firstEl, firstBatchStart);
 	}
-
 	// clearNode 已移除药丸，渲染完消息后重新挂回末尾
 	this._repositionLoadingPill();
-
-	// ★★ 2026-09-20 性能修复：**去掉同步的 refreshScrollMarkers()** ✗ → rAF 合并版 ✓
-	//   依据（本仓自证 + 实测）：
-	//     ① `scrollbarController.refreshScrollMarkers` 的历史实测为 **535~602ms/次**
-	//        （见该方法内注释，日志 1789724924165），是首屏卡顿头号来源；成本 O(消息区 DOM)。
-	//     ② 它在**刚重建完 DOM 的同一同步块**里跑，此刻布局尚未刷新 ⇒ 读到的是**陈旧布局**
-	//        （本文件 init 路径 :268 与 setCliMode 早已因此改成 rAF 延迟，此处是漏网的一处 ✗）。
-	//     ③ 标记只需"下一帧正确"即可，用户感知不到一帧延迟；而把 500ms 级的同步工作从
-	//        session 切换/首屏的同一长任务里移出，可直接消掉一次 LONG_TASK。
+	// ★★ 2026-09-20 性能修复（旧注释保留）：**去掉同步的 refreshScrollMarkers()** ✗ → rAF 合并版 ✓
+	//   ① 历史实测 535~602ms/次（日志 1789724924165），是首屏卡顿头号来源；成本 O(消息区 DOM)。
+	//   ② 它在刚重建完 DOM 的同一同步块里跑 ⇒ 读到的是**陈旧布局** ✗。
+	//   ③ 标记只需"下一帧正确"即可；把 500ms 级同步工作从首屏长任务里移出，可直接消掉一次 LONG_TASK。
 	//   ⚠ 懒加载 chunk 插入后的同步刷新保留（那里需要立即修正 offsetTop 偏移）。
-	this._scrollbar.scheduleRefreshScrollMarkers();
-
+	//   2026-09-24 保持旧口径：仅大列表（有懒加载历史）才排刷新 ✓。
+	if (firstBatchStart > 0) {
+		this._scrollbar.scheduleRefreshScrollMarkers();
+	}
+	// 收尾钉底：分帧期间内容持续增长，setMessages 的双重 rAF 钉底只覆盖前两帧 ✗
+	if (this._isAtBottom) {
+		this._scrollbar.scrollToBottom(false);
+	}
 	chatPerf.end('render.messages.total', tRenderTotal, `msgs=${total}`);
 }
 

@@ -577,6 +577,12 @@ protected _lazyLoadObserver: IntersectionObserver | null = null;
 // 懒加载剩余可加载的历史消息数（供裁剪时重锚定懒加载）
 protected _lazyLoadRemaining = 0;
 
+// ★ 2026-09-24（P1 分帧渲染）：时间片渲染的代次与续片句柄 ✓
+//   （背景与不变量见 browser/agentChat/agentChatPanel.renderSlicer.ts 头注 ——
+//    真机 LONG_TASK worst=1256ms ⇒ 恢复渲染改时间片；代次每轮 _renderMessages 递增 ⇒ 旧链静默退出 ✓）
+protected _renderSliceGen = 0;
+protected _renderSliceRaf: number | null = null;
+
 // ── ★★★ 2026-09-19：DOM 消息窗口（根治「app 卡死」）────────────────────
 //
 // 背景（真机 ✓）：渲染进程 RSS 涨到 **3.4GB** ✗ 而 JS 堆只有 **600MB** ✓
@@ -3058,6 +3064,9 @@ override dispose(): void {
 	this._thinkingMdScheduler?.cancel();
 	this._thinkingCardState.clear();
 	if (this._streamingUpdateRaf !== null) { cancelAnimationFrame(this._streamingUpdateRaf); }
+		// ★ 2026-09-24（P1 分帧渲染）：销毁 ⇒ 作废旧链 + 取消续片 rAF ✓（否则续片回调会操作已销毁的 DOM ✗）
+		this._renderSliceGen++;
+		if (this._renderSliceRaf !== null) { cancelAnimationFrame(this._renderSliceRaf); this._renderSliceRaf = null; }
 		if (this._lazyLoadObserver) { this._lazyLoadObserver.disconnect(); }
 		if (this._domDisposalObserver) { this._domDisposalObserver.disconnect(); this._domDisposalObserver = null; }
 		if (this._contextRingTimer !== null) { clearTimeout(this._contextRingTimer); }

@@ -29,8 +29,22 @@ export function dirOf(path: string): string {
 
 function normalizeTarget(raw: string): string {
 	let t = raw.trim();
+	// ★ 2026-09-24（与宿主侧 KbLinkGraph.normalizeTarget 对齐，双链解析错误）：目标是
+	//   **file:// URI** 时（如 `[[file:///e:/VsSarosVault/库/raw/UI优化篇.md]]`，中文会被百分号编码
+	//   成 `%E5%BA%93`），先解码再取 basename —— 否则永远解析不到，预览/双链面板会显示成乱码 URI。
+	//   ⚠ 相对路径形目标（`库/raw/x.md`）**不进**这个分支：它由下面的 path-suffix 匹配处理 ✓。
+	if (/^[a-z][a-z0-9+.-]*:/i.test(t)) {
+		try { t = decodeURIComponent(t); } catch { /* 裸 % 等非法编码序列 ⇒ 保持原样 */ }
+		t = (t.split(/[\\/]/).pop() ?? t).trim();
+	}
 	if (t.toLowerCase().endsWith('.md')) t = t.slice(0, -3);
 	if (t.toLowerCase().endsWith('.markdown')) t = t.slice(0, -8);
+	// ★ 2026-09-24（活页面嵌入）：html 同样按 stem 匹配 —— `![[page.html]]` 的 html 判定
+	//   需要带扩展名书写，而文件清单匹配是按 stem 的 ⇒ 这里把扩展名归一掉，两者才能同时成立。
+	if (t.toLowerCase().endsWith('.html')) t = t.slice(0, -5);
+	if (t.toLowerCase().endsWith('.htm')) t = t.slice(0, -4);
+	// 图表文件嵌入（![[x.drawio]] / ![[x.mermaid]] / ![[x.canvas]]）同理按 stem 匹配
+	if (/\.(drawio|mermaid|mmd|canvas)$/i.test(t)) { t = t.replace(/\.(drawio|mermaid|mmd|canvas)$/i, ''); }
 	return t;
 }
 
@@ -56,6 +70,11 @@ export function resolveWikilink(
 
 	const candidates: WorkspaceFile[] = [];
 	for (const file of workspaceFiles) {
+		// ★ 2026-09-24（诊断「文件不可用或不在当前库内」）：内核索引可能返回**没有 uri**
+		//   （空串）的合成条目。它们永远打不开，却会因为「最短路径优先」的消歧规则**胜出**
+		//   并挤掉真正能用的磁盘条目（`''.length === 0` 最小）⇒ 目标"解析成功"但 uri 为空。
+		//   ⇒ 这类条目在这里直接丢弃（等价于不存在）。
+		if (typeof file.uri !== 'string' || !file.uri) { continue; }
 		if (looksLikePath) {
 			const noExt = file.uri
 				.replace(/\.[^./\\]+$/, '')

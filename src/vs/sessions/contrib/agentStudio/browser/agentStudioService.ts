@@ -19,7 +19,7 @@ import { IPathService } from '../../../../workbench/services/path/common/pathSer
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { writeFileAtomicSafe } from '../common/atomicWrite.js';
 import { IAgentStudioService } from '../common/agentStudio.js';
-import type { AgentPreset, IAgentFolderUploadFile, IAgentInstallResult, IWorkflowDirectRunStart, IWorkflowDirectRunResult, IWorkflowDirectRunProgress, ILibraryBadgeRequest } from '../../../common/agentStudioService.js';
+import type { AgentPreset, IAgentFolderUploadFile, IAgentInstallResult, IWorkflowDirectRunStart, IWorkflowDirectRunResult, IWorkflowDirectRunProgress, ILibraryBadgeRequest, IKbProcessingState } from '../../../common/agentStudioService.js';
 import { classifyContentViaSchema, safeSchemaFallback, SchemaClassifyResult } from './knowledge/classifier.js';
 import { DEFAULT_KB_SCHEMA, IKBSchema, loadKbSchema } from './knowledge/kbSchema.js';
 import { resolveChatModel, isChatProviderConfigured, resolveConfiguredChatProviderId, createAgentOsChatModel, ResolveChatModelOpts } from './knowledge/knowledgeAdapters.js';
@@ -91,6 +91,9 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	private readonly _onDidRequestKbRefresh = this._register(new Emitter<void>());
 	readonly onDidRequestKbRefresh: Event<void> = this._onDidRequestKbRefresh.event;
 
+	private readonly _onDidKbProcessing = this._register(new Emitter<IKbProcessingState>());
+	readonly onDidKbProcessing: Event<IKbProcessingState> = this._onDidKbProcessing.event;
+
 	private readonly _onDidRequestLibraryBadge = this._register(new Emitter<ILibraryBadgeRequest>());
 	readonly onDidRequestLibraryBadge: Event<ILibraryBadgeRequest> = this._onDidRequestLibraryBadge.event;
 
@@ -141,6 +144,14 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	/** 上报资料库活动（构建中 / 有新增 / 结束），驱动 activitybar「资料库」徽标。 */
 	requestLibraryBadge(request: ILibraryBadgeRequest): void {
 		this._onDidRequestLibraryBadge.fire(request);
+	}
+
+	/**
+	 * 上报知识库后台处理状态（导入 / 分析归类）—— 视图据此在「库 / 笔记」标题右侧与
+	 * 对应文件节点上显示进度。**不产生任何通知弹窗**（用户明确要求）。
+	 */
+	reportKbProcessing(state: IKbProcessingState): void {
+		this._onDidKbProcessing.fire(state);
 	}
 
 	private _globalDataUri: URI | undefined;
@@ -998,6 +1009,9 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		}
 	}
 
+	/** ★ 2026-09-23 诊断：已告警过「无 customPath 的 vault」的 id（该解析被高频调用，避免日志刷屏）。 */
+	private static readonly _warnedLegacyVaultIds = new Set<string>();
+
 	/** 解析活动 vault 根目录（与 KB 视图一致：storage kbDir + vaults + customPath）。 */
 	private async _resolveKbVaultRoot(): Promise<URI> {
 		const customRoot = this.storageService.get('agentStudio.kb.kbDir', StorageScope.APPLICATION);
@@ -1012,7 +1026,18 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 					const vaults: { id: string; customPath?: string }[] = JSON.parse(raw);
 					const activeVault = vaults.find(v => v.id === activeId);
 					if (activeVault?.customPath) { return URI.file(activeVault.customPath); }
-					if (activeVault) { return URI.joinPath(baseRoot, activeId); }
+					if (activeVault) {
+						const computed = URI.joinPath(baseRoot, activeId);
+						// ★ 2026-09-23 诊断（与 `knowledgeBaseView` / `kbImportController` 的
+						//   `[KB][vault-dir]` 日志配套）：命中 fallback ⇒ 路径解析成
+						//   `<kbDir>/<vaultId>`，后续读写就会创建出那个「凭空多出的目录」。
+						if (!AgentStudioService._warnedLegacyVaultIds.has(activeId)) {
+							AgentStudioService._warnedLegacyVaultIds.add(activeId);
+							this.logService.warn(`[AgentStudioService][vault-dir] _resolveKbVaultRoot fallback → ${computed.fsPath}`
+								+ ` (vaultId=${activeId} 无 customPath)\nstack=${new Error().stack}`);
+						}
+						return computed;
+					}
 				}
 			}
 		} catch { /* storage parse error → 回退 baseRoot */ }

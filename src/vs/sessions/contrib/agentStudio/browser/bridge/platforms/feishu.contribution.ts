@@ -26,6 +26,8 @@ import { IConfigurationService } from "../../../../../../platform/configuration/
 import { IRequestService } from "../../../../../../platform/request/common/request.js";
 import { IBridgeService } from "../../bridge/bridgeService.js";
 import { FeishuPlatform } from "./feishu.js";
+// ★ 2026-09-23：入站图片/文件的二进制下载出口（主进程 binary 通路）
+import type { BridgeBinaryDownload } from "../bridgeMediaDownload.js";
 
 /** 飞书渠道配置键（与 constants.ts 的 CHANNEL_DEFINITIONS.feishu 保持一致）。 */
 export const FEISHU_CONFIG_KEYS = {
@@ -177,6 +179,7 @@ export function registerFeishuPlatformIfConfigured(
 	log?: (msg: string) => void,
 	requestService?: IRequestService,
 	httpLabel = "注入的 HTTP 出口",
+	downloadBinary?: BridgeBinaryDownload,
 ): IDisposable | undefined {
 	const cfg = resolveFeishuConfig(configurationService);
 	if (!cfg) {
@@ -186,7 +189,8 @@ export function registerFeishuPlatformIfConfigured(
 		log(
 			`[Bridge] feishu 凭证来源=${cfg.source} appId=${cfg.appId.slice(0, 8)}… ` +
 				`useWs=${cfg.useWs} allowFrom=${cfg.allowFrom ? `${cfg.allowFrom.split(",").length} 项` : "未限制"} ` +
-				`http=${requestService ? httpLabel : "渲染进程 fetch（⚠ 桌面端会被 CORS 拦截）"}`,
+				`http=${requestService ? httpLabel : "渲染进程 fetch（⚠ 桌面端会被 CORS 拦截）"} ` +
+			`media=${downloadBinary ? "主进程 binary（图片/文件可入站）" : "⚠ 未注入（图片/文件只投占位文本）"}`,
 		);
 	}
 	return bridge.registerPlatform({
@@ -200,6 +204,7 @@ export function registerFeishuPlatformIfConfigured(
 				log,
 				requestService,
 				callSite: "feishuBridge",
+				downloadBinary,
 			}),
 	});
 }

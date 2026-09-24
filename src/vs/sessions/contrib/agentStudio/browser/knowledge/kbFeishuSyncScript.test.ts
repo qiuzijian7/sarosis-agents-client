@@ -672,6 +672,119 @@ suite('思维导图结构（buildMindmapNodes / mindmapHash）', () => {
 	});
 });
 
+// ─── 格式保真：mermaid / drawio / 流程图 / 混排（2026-09-23）────────────────────
+//
+// 背景：用户要求「图文、表格、流程图、mermaid、drawio 等格式要正确显示」。
+// 本组锁定**同步预处理阶段不破坏这些结构**（飞书侧最终形态另见 §3/§14 说明）。
+
+suite('同步格式保真 · mermaid / drawio / 混排', () => {
+	test('mermaid 围栏代码块逐字保留（不能被 wikilink / 表格处理误伤）', () => {
+		const md = '```mermaid\ngraph TD\n  A[开始] --> B{判断}\n  B -->|是| C[结束]\n```\n';
+		assert.strictEqual(sync.prepareMarkdownForSync(md), md);
+	});
+
+	test('流程图（flowchart）+ 中文标签：内容不被改写', () => {
+		const md = '```mermaid\nflowchart LR\n  A[取数] --> B[清洗]\n  B --> C[入库]\n```\n';
+		const out = sync.prepareMarkdownForSync(md);
+		assert.ok(out.includes('flowchart LR'));
+		assert.ok(out.includes('A[取数] --> B[清洗]'), '节点标签与箭头逐字保留');
+	});
+
+	test('drawio：`<mxfile>` XML 代码块与 `.drawio` 附件引用都保留（当前不同步为非图片资源）', () => {
+		const md = '```xml\n<mxfile><diagram name="架构">x</diagram></mxfile>\n```\n\n![[架构图.drawio]]\n';
+		const out = sync.prepareMarkdownForSync(md);
+		assert.ok(out.includes('<mxfile>'), 'drawio 源码块保留（飞书侧为代码块文本）');
+		assert.ok(out.includes('![[架构图.drawio]]'), 'drawio 附件引用保留（不当作图片处理 ⇒ 不会被误删）');
+	});
+
+	test('★ 图文 + 表格 + mermaid + 图片混排：结构逐字保真，且只有本地图片被换成占位', () => {
+		const md = [
+			'# 混排文档',
+			'',
+			'| 列A | 列B |',
+			'| --- | --- |',
+			'| [[双链目标|别名]] | 值 |',
+			'',
+			'```mermaid',
+			'flowchart LR',
+			'  X --> Y',
+			'```',
+			'',
+			'![本地图](pic.png)',
+			'',
+			'![](https://cdn.example.com/remote.png)',
+			'',
+		].join('\n');
+
+		// ⚠ `dirWith` 是上面「图片引用抽取」suite 的**局部** helper ⇒ 这里自建目录（helper 不跨 suite）
+		const dir = tmpVault();
+		writeFileEnsured(path.join(dir, 'pic.png'), 'x');
+		const { markdown, images, missing } = sync.extractImages(sync.prepareMarkdownForSync(md), dir);
+
+		assert.ok(markdown.includes('| 别名 | 值 |'), '表格内 wikilink 别名替换后列数不变');
+		assert.ok(markdown.includes('flowchart LR'), 'mermaid 内容保真');
+		assert.ok(markdown.includes('| 列A | 列B |'), '表头未被改动');
+		assert.strictEqual(images.length, 1, '只把**本地**图片转成占位（供后续 block_replace 插图）');
+		assert.deepStrictEqual(missing, [], '引用的本地图片存在 ⇒ 不应报缺失');
+		assert.ok(markdown.includes('https://cdn.example.com/remote.png'), '远程图片保持原样（同步侧不处理外链）');
+	});
+
+	test('★ extractAttachments：本地 html 引用 → 占位（feishu 以 file block + Preview 渲染）', () => {
+		const dir = tmpVault();
+		writeFileEnsured(path.join(dir, 'live-demo.html'), '<html/>');
+		const r = sync.extractAttachments('段落\n\n![[live-demo.html]]\n\n后续\n', dir);
+		assert.strictEqual(r.attachments.length, 1, '抽到 1 个附件');
+		assert.strictEqual(r.attachments[0].ref, 'live-demo.html');
+		assert.strictEqual(r.attachments[0].name, 'live-demo.html');
+		assert.strictEqual(r.attachments[0].standalone, true, '独占段落 ⇒ 可插入');
+		assert.ok(r.markdown.includes('KBSYNCFILE1'), '正文里换成占位');
+		assert.ok(!r.markdown.includes('![[live-demo.html]]'), '原引用已被替换');
+	});
+
+	test('extractAttachments：文件不存在 ⇒ 保留原文并记入 missing；行内 ⇒ 标 inline', () => {
+		const dir = tmpVault();
+		const missingCase = sync.extractAttachments('![[not-here.html]]\n', dir);
+		assert.deepStrictEqual(missingCase.missing, ['not-here.html']);
+		assert.ok(missingCase.markdown.includes('![[not-here.html]]'), '缺文件时原文保留');
+
+		writeFileEnsured(path.join(dir, 'inline.html'), '<html/>');
+		const inlineCase = sync.extractAttachments('见 ![[inline.html]] 说明\n', dir);
+		assert.strictEqual(inlineCase.attachments.length, 1);
+		assert.strictEqual(inlineCase.attachments[0].standalone, false);
+		assert.deepStrictEqual(inlineCase.inline, ['inline.html']);
+	});
+
+	test('extractAttachments：非 html 引用（图片/图表/笔记）一律不碰', () => {
+		const dir = tmpVault();
+		const r = sync.extractAttachments('![[a.png]]\n\n![[b.drawio]]\n\n![[笔记]]\n', dir);
+		assert.strictEqual(r.attachments.length, 0);
+		assert.ok(r.markdown.includes('![[a.png]]'));
+		assert.ok(r.markdown.includes('![[b.drawio]]'));
+	});
+
+	test('detectUnrenderableDiagrams：只识别 drawio（mermaid 由飞书转画板 ⇒ 不再告警）', () => {
+		// ★ 2026-09-24 实测更新：```mermaid 经飞书 markdown 导入会转成 whiteboard(type="mermaid")
+		//   画板（原生活图）⇒ 不再属于「飞书不会渲染」的范畴。
+		assert.deepStrictEqual(sync.detectUnrenderableDiagrams('```mermaid\ngraph TD\n  A-->B\n```\n'), [],
+			'mermaid 不再告警（飞书转画板活图）');
+		assert.deepStrictEqual(sync.detectUnrenderableDiagrams('```xml\n<mxfile>x</mxfile>\n```\n'), ['drawio']);
+		assert.deepStrictEqual(sync.detectUnrenderableDiagrams('裸 XML：<mxGraphModel>…</mxGraphModel>'), ['drawio']);
+		assert.deepStrictEqual(sync.detectUnrenderableDiagrams('```drawio\n<mxfile>x</mxfile>\n```\n'), ['drawio']);
+		assert.deepStrictEqual(sync.detectUnrenderableDiagrams('```js\nconst a = 1;\n```\n'), [],
+			'普通代码块不算图表源码（避免误报刷屏）');
+		assert.deepStrictEqual(sync.detectUnrenderableDiagrams('```mermaid\nA\n```\n\n<mxfile>x</mxfile>'),
+			['drawio'], 'mermaid 不报、drawio 报出且去重');
+	});
+
+	test('★ SVG 不得被当作可插入图片（飞书实测只认 BMP/GIF/JPEG/PNG/TIFF/WebP）', () => {
+		const dir = tmpVault();
+		writeFileEnsured(path.join(dir, 'chart.svg'), '<svg/>');
+		const { images, markdown } = sync.extractImages('![](chart.svg)', dir);
+		assert.strictEqual(images.length, 0, 'svg 不能进插图队列 —— 否则飞书会返回「not a supported … image」而整批中断');
+		assert.ok(markdown.includes('![](chart.svg)'), '应原样保留引用（不静默丢弃）');
+	});
+});
+
 suite('KB URL 导入 · 纯函数（slug / 图片路径 / HTML 兜底）', () => {
 	test('slugifyTitle：中文保留、非法字符折叠、超长截断、空标题回退 URL 末段', () => {
 		assert.strictEqual(slugifyTitle('知识库 入门指南', 'https://x.com/a'), '知识库-入门指南');

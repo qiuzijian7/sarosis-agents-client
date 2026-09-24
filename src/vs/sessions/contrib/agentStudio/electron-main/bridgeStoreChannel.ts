@@ -39,8 +39,13 @@ import {
 	MAX_BRIDGE_STORE_WRITE_BYTES,
 	bridgeStoreFilePath,
 	isAllowedBridgeStoreFile,
+	joinBridgePath,
 	resolveBridgeStoreDir,
 } from '../common/bridgeStore.js';
+import { sanitizeAttachmentFileName } from '../common/bridge/bridgeSecurity.js';
+
+/** 附件 base64 上限（≈48MB 文件；防御性上限，避免 IPC 传巨量文本）。 */
+const MAX_ATTACHMENT_BASE64_CHARS = 64 * 1024 * 1024;
 
 export interface IBridgeStoreReadResult {
 	readonly ok: boolean;
@@ -66,7 +71,13 @@ export class BridgeStoreChannel extends Disposable {
 	override dispose(): void {
 		validatedIpcMain.removeHandler('vscode:bridgeStoreRead');
 		validatedIpcMain.removeHandler('vscode:bridgeStoreWrite');
+		validatedIpcMain.removeHandler('vscode:bridgeSaveAttachment');
 		super.dispose();
+	}
+
+	/** 入站附件目录：`<userData>/bridge/attachments`。 */
+	private attachmentsDir(): string {
+		return joinBridgePath(this.dir(), 'attachments');
 	}
 
 	private dir(): string {
@@ -124,6 +135,33 @@ export class BridgeStoreChannel extends Disposable {
 			} catch (err) {
 				const error = err instanceof Error ? err.message : String(err);
 				this.logService.info(`[AgentStudio] bridgeStore:write '${path}' 失败：${error}`);
+				return { ok: false, error };
+			}
+		});
+
+		// 入站附件落盘（飞书图片/文件，2026-09-23）：渲染进程沙箱里 `nodeRequire('fs')` 必然
+		// 返回 undefined ⇒ 原先的 `saveFilesToDisk` 永远写不进去（prompt 里没有路径，Agent 读不到图）。
+		// 这里搬到主进程：写 `<userData>/bridge/attachments/`，文件名经 sanitize 防目录穿越，
+		// 并加时间戳前缀避免同名覆盖；返回**绝对路径**供 prompt 引用。
+		validatedIpcMain.handle('vscode:bridgeSaveAttachment', async (_event, payload: { name?: string; base64?: string } | undefined) => {
+			const base64 = payload?.base64;
+			if (typeof base64 !== 'string' || base64.length === 0) {
+				return { ok: false, error: 'base64 必填' };
+			}
+			if (base64.length > MAX_ATTACHMENT_BASE64_CHARS) {
+				return { ok: false, error: `附件过大（base64 ${base64.length} 字符）` };
+			}
+			try {
+				const dir = this.attachmentsDir();
+				mkdirSync(dir, { recursive: true });
+				const safe = sanitizeAttachmentFileName(payload?.name ?? 'attachment');
+				const path = joinBridgePath(dir, `${Date.now().toString(36)}-${safe}`);
+				writeFileSync(path, Buffer.from(base64, 'base64'));
+				this.logService.info(`[AgentStudio] bridgeSaveAttachment 已写入 ${path}`);
+				return { ok: true, path };
+			} catch (err) {
+				const error = err instanceof Error ? err.message : String(err);
+				this.logService.info(`[AgentStudio] bridgeSaveAttachment 失败：${error}`);
 				return { ok: false, error };
 			}
 		});

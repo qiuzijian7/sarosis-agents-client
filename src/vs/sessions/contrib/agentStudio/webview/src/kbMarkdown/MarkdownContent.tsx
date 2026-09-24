@@ -17,6 +17,8 @@ import { ImageComponent } from './components/ImageComponent';
 import { MediaAssetImage } from './components/MediaAssetImage';
 import { CodeBlockComponent } from './components/CodeBlockComponent';
 import { EmbedComponent } from './components/EmbedComponent';
+import { HtmlEmbedComponent } from './components/HtmlEmbedComponent';
+import { DiagramEmbedComponent } from './components/DiagramEmbedComponent';
 import { MarkdownHeading } from './components/MarkdownHeading';
 import { TaskListItem } from './components/TaskListItem';
 import { TaskCheckbox } from './components/TaskCheckbox';
@@ -54,6 +56,14 @@ function DivComponent(props: any): React.ReactElement {
 	}
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	const cls = (rest as any).className || '';
+	// 「活页面」嵌入（![[page.html]]）⇒ 沙箱 iframe 加载本地 html（2026-09-24）
+	if (typeof cls === 'string' && cls.includes('kb-html-embed')) {
+		return <HtmlEmbedComponent {...rest} />;
+	}
+	// 图表文件嵌入（![[x.drawio|.mermaid|.canvas]]）⇒ 渲染成图（2026-09-24）
+	if (typeof cls === 'string' && cls.includes('kb-diagram-embed')) {
+		return <DiagramEmbedComponent {...rest} />;
+	}
 	if (typeof cls === 'string' && cls.includes('katex-block')) {
 		const tex = (rest as any)['data-tex'] as string;
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any

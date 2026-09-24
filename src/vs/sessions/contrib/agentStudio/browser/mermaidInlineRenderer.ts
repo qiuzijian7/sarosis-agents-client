@@ -199,7 +199,9 @@ export class MermaidInlineRenderer extends Disposable implements IMermaidInlineR
 			}, READY_TIMEOUT_MS);
 
 			const listener = webview.onMessage((e) => {
-				const msg = e.message as { type?: string; requestId?: string; svg?: string; error?: string; diag?: { codeLen?: number; hasSvg?: boolean; normalized?: boolean; err?: string } } | undefined;
+				// diag 字段与 extensions/mermaid-chat-features/chat-webview-src/index-render.ts 保持一致
+				// （theme/themeFallback/attempts 用于排查「主题映射是否生效、走了哪层重试」）
+				const msg = e.message as { type?: string; requestId?: string; svg?: string; error?: string; diag?: { codeLen?: number; hasSvg?: boolean; normalized?: boolean; err?: string; theme?: string; themeFallback?: boolean; attempts?: number } } | undefined;
 				if (!msg || typeof msg !== 'object') {
 					return;
 				}

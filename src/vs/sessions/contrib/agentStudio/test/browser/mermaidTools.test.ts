@@ -12,21 +12,36 @@
  *--------------------------------------------------------------------------------------------*/
 import * as assert from 'assert';
 
-import { registerMermaidTools, MERMAID_TOOL_NAME } from '../../browser/providers/tool/mermaidTools.js';
+import {
+	registerMermaidTools, MERMAID_TOOL_NAME, analyzeMermaidSvg, layoutAdvice, unwrapMarkupFence,
+} from '../../browser/providers/tool/mermaidTools.js';
 import { getToolsetForTool } from '../../common/toolsetConfig.js';
 import { BUNDLED_TOOL_DEFINITIONS, BUNDLED_TOOLSETS } from '../../common/bundled-tools/bundledTools.js';
 import { GLOBAL_SYSTEM_PREFIX, getStrategyGuidance } from '../../common/chatModeConfig.js';
 
 import type { IToolResultContent } from '../../common/providers.js';
 
-/** 构造一个最小 mock，收集注册的 descriptor */
-function makeRegisterContext() {
+/**
+ * 构造一个最小 mock，收集注册的 descriptor。
+ * `render` 缺省时不注入（覆盖「无渲染器 ⇒ 跳过校验」的兼容路径）。
+ */
+function makeRegisterContext(render?: (markup: string, theme?: 'dark' | 'default') => Promise<string>) {
 	const registered: { definition: any; handler: (args: Record<string, unknown>) => Promise<IToolResultContent[]> }[] = [];
+	const warnings: string[] = [];
 	const ctx = {
 		register: (d: { definition: any; handler: (args: Record<string, unknown>) => Promise<IToolResultContent[]> }) => registered.push(d),
-		logService: { info() { }, warn() { }, error() { } },
+		logService: { info() { }, warn(msg: string) { warnings.push(msg); }, error() { } },
+		render,
 	};
-	return { registered, ctx };
+	return { registered, ctx, warnings };
+}
+
+/** 合成一份「像 mermaid 12 产物」的 SVG：计数特征与真实产物一致（见 analyzeMermaidSvg 注释）。 */
+function makeSvg(nodeCount: number, edgeCount: number, width = 600, height = 400): string {
+	const nodes = '<g class="node default"></g>'.repeat(nodeCount);
+	const edges = '<path class="edge-thickness-normal edge-pattern-solid"></path>'.repeat(edgeCount);
+	const labels = '<g class="edgeLabel"></g>'.repeat(edgeCount);
+	return `<svg viewBox="0 0 ${width} ${height}">${nodes}${edges}${labels}</svg>`;
 }
 
 async function invokeHandler(
@@ -97,6 +112,92 @@ suite('Mermaid Tool (renderMermaidDiagram)', () => {
 		const text = await invokeHandler(registered[0].handler, { markup: escaped });
 		assert.ok(text.includes('rendered successfully'), '转义换行 markup 应渲染成功');
 		assert.ok(text.includes(escaped), '应原样回显转义后的 markup');
+	});
+
+	// ── 2026-09-24：真实渲染校验 + 布局体检 ──────────────────────────────
+	test('注入 render 成功时返回成功文本，并附带超阈值图的布局体检建议', async () => {
+		const { registered, ctx } = makeRegisterContext(async () => makeSvg(25, 40, 4000, 300));
+		registerMermaidTools(ctx as any);
+
+		const text = await invokeHandler(registered[0].handler, { markup: 'graph TD\nA-->B' });
+		assert.ok(text.includes('rendered successfully'), '渲染成功应返回成功标记');
+		assert.ok(text.includes('布局体检'), '超阈值图应附布局体检');
+		assert.ok(text.includes('节点 25 个'), '应报出节点数');
+		assert.ok(text.includes('连线 40 条'), '应报出连线数');
+		assert.ok(text.includes('TD'), '画布过宽应建议改 TD');
+	});
+
+	test('注入 render 成功且图不大时不附体检建议', async () => {
+		const { registered, ctx } = makeRegisterContext(async () => makeSvg(8, 7));
+		registerMermaidTools(ctx as any);
+
+		const text = await invokeHandler(registered[0].handler, { markup: 'graph TD\nA-->B' });
+		assert.ok(text.includes('rendered successfully'), '应返回成功标记');
+		assert.ok(!text.includes('布局体检'), '小图不应附体检建议');
+	});
+
+	test('渲染失败时返回错误文本（含 mermaid 报错 + 修复检查表），且不得谎报成功', async () => {
+		const { registered, ctx } = makeRegisterContext(async () => {
+			throw new Error("Parse error on line 3: ... classDef subgraph ... Expecting 'AMP', got 'subgraph'");
+		});
+		registerMermaidTools(ctx as any);
+
+		const text = await invokeHandler(registered[0].handler, { markup: 'graph TD\nA-->B' });
+		assert.ok(text.includes('[Mermaid] Error:'), '失败应返回错误文本');
+		assert.ok(!text.includes('rendered successfully'), '失败绝不能报成功（模型会因此不再重试）');
+		assert.ok(text.includes("got 'subgraph'"), '应回灌 mermaid 原始报错，模型才能定向修复');
+		assert.ok(text.includes('修复检查表'), '应附修复检查表');
+	});
+
+	test('渲染器不可用（bundle 缺失）时不阻断：记日志并按成功放行', async () => {
+		const { registered, ctx, warnings } = makeRegisterContext(async () => {
+			throw new Error('Mermaid 渲染 bundle 不存在（请先构建 mermaid-chat-features 的 webview）');
+		});
+		registerMermaidTools(ctx as any);
+
+		const text = await invokeHandler(registered[0].handler, { markup: 'graph TD\nA-->B' });
+		assert.ok(text.includes('rendered successfully'), '基建问题不应变成图错误');
+		assert.ok(warnings.length > 0, '应留下警告日志');
+		assert.ok(warnings[0].includes('renderer unavailable'), '日志应标明是渲染器不可用');
+	});
+
+	test('校验用的是「剥掉围栏 + 还原 \\n 转义」后的 markup（与卡片渲染口径一致）', async () => {
+		const seen: string[] = [];
+		const { registered, ctx } = makeRegisterContext(async (markup) => { seen.push(markup); return makeSvg(3, 2); });
+		registerMermaidTools(ctx as any);
+
+		await invokeHandler(registered[0].handler, { markup: '```mermaid\\ngraph TD\\nA-->B\\n```' });
+		assert.strictEqual(seen.length, 1, '应真实渲染一次');
+		assert.ok(!seen[0].includes('```'), '围栏应被剥掉');
+		assert.ok(seen[0].startsWith('graph TD'), '首行应为图类型关键字');
+		assert.ok(seen[0].includes('\n'), '字面量 \\n 应还原为真换行');
+	});
+
+	test('unwrapMarkupFence 处理围栏 / 裸反引号 / 无围栏三种输入', () => {
+		assert.strictEqual(unwrapMarkupFence('```mermaid\ngraph TD\nA-->B\n```'), 'graph TD\nA-->B');
+		assert.strictEqual(unwrapMarkupFence('```\ngraph TD\nA-->B\n```'), 'graph TD\nA-->B');
+		assert.strictEqual(unwrapMarkupFence('graph TD\nA-->B'), 'graph TD\nA-->B');
+	});
+
+	test('analyzeMermaidSvg 计数与真实 mermaid 12 产物口径一致', () => {
+		// 口径来源：真实渲染 11 节点 / 12 连线的流程图，class="node 出现 11 次、
+		// 描边类名里的 \bedge\b 出现 12 次（edgeLabel / edgePath 不会被误计）。
+		const m = analyzeMermaidSvg(makeSvg(11, 12, 136, 40));
+		assert.strictEqual(m.nodes, 11);
+		assert.strictEqual(m.edges, 12);
+		assert.strictEqual(m.width, 136);
+		assert.strictEqual(m.height, 40);
+	});
+
+	test('layoutAdvice 对非 flowchart（量不到节点）保持沉默', () => {
+		// sequenceDiagram 产物里没有 class="node ⇒ 计数为 0 ⇒ 不能凭 0 给出「节点太少」之类的误判
+		const advice = layoutAdvice(analyzeMermaidSvg('<svg viewBox="0 0 450 347"></svg>'));
+		assert.deepStrictEqual(advice, []);
+	});
+
+	test('layoutAdvice 对画布过长的图建议 LR', () => {
+		const advice = layoutAdvice(analyzeMermaidSvg(makeSvg(6, 5, 200, 2000)));
+		assert.ok(advice.some(a => a.includes('LR')), '1:10 的画布应建议 LR');
 	});
 
 	test('通过小写 dispatch key 查工具归入 core toolset（LLM 始终可见）', () => {

@@ -672,17 +672,23 @@ export class NativeHostMainService extends Disposable implements INativeHostMain
 		try {
 			if (matchesSomeScheme(url, Schemas.http, Schemas.https)) {
 				this.openExternalBrowser(windowId, url, defaultApplication);
-			} else {
-				this.doOpenShellExternal(windowId, url);
+				return true;
 			}
+			// ★ 2026-09-23：这里**必须** return/await，不能让本方法无条件 `return true`
+			//   （原先就是无条件 true）⇒ 渲染侧 `workbench/electron-browser/window.ts` 里
+			//     `const success = await this.nativeHostService.openExternal(...)` 恒为真
+			//   ⇒ 它「本地文件打开失败就退回『在文件夹中显示』」的兜底是**死代码**，
+			//     而本方法的**失败**（见 `doOpenShellExternal` 的原生错误框）也永远传不回去。
+			//   透传真实结果后：成功 = true、失败 = false（渲染侧据此给可读提示）。
+			return await this.doOpenShellExternal(windowId, url);
 		} finally {
 			this.environmentMainService.restoreSnapExportedVariables();
 		}
-
-		return true;
 	}
 
-	private async openExternalBrowser(windowId: number | undefined, url: string, defaultApplication?: string): Promise<void> {
+	// ★ 2026-09-23：返回类型由 `void` 改为 `boolean` —— 它内部三处会**回退**到 `doOpenShellExternal`，
+	//   而后者现在要返回成败；不跟着改类型会直接编译报错（`void` 函数不允许 `return` 一个值）。
+	private async openExternalBrowser(windowId: number | undefined, url: string, defaultApplication?: string): Promise<boolean> {
 		const configuredBrowser = defaultApplication ?? this.configurationService.getValue<string>('workbench.externalBrowser');
 		if (!configuredBrowser) {
 			return this.doOpenShellExternal(windowId, url);
@@ -715,18 +721,51 @@ export class NativeHostMainService extends Disposable implements INativeHostMain
 				// (see also https://github.com/microsoft/vscode/issues/230636)
 				res.stderr?.once('data', (data: Buffer) => {
 					this.logService.error(`Error openening external URL '${url}' using browser '${configuredBrowser}': ${data.toString()}`);
-					return this.doOpenShellExternal(windowId, url);
+					// 事件回调的返回值无人接收 ⇒ 显式 `void`，表明是「即发即忘」的回退
+					void this.doOpenShellExternal(windowId, url);
 				});
 			}
 		} catch (error) {
 			this.logService.error(`Unable to open external URL '${url}' using browser '${configuredBrowser}' due to ${error}.`);
 			return this.doOpenShellExternal(windowId, url);
 		}
+
+		// 指定浏览器打开成功
+		return true;
 	}
 
-	private async doOpenShellExternal(windowId: number | undefined, url: string): Promise<void> {
+	private async doOpenShellExternal(windowId: number | undefined, url: string): Promise<boolean> {
+		// ★ 2026-09-23：本地文件（file://）改走 `shell.openPath()`，不再用 `shell.openExternal()`。
+		//   原因：`openExternal` 在「系统没有关联程序」时会**抛异常** ⇒ 只能落到下面的原生错误框
+		//   「An error occurred opening an external program. / Failed to open: 系统找不到指定的文件。(0x2)」，
+		//   用户看不懂，框里也没有任何可补救的操作（只有一个 OK）。
+		//   而 `shell.openPath()` **不抛异常**，失败时只**返回错误字符串** ⇒ 于是可以做到：
+		//     · 不弹原生框；
+		//     · 返回 false，把「怎么提示用户」交给渲染侧的**唯一汇聚点**统一处理
+		//       （`workbench/electron-browser/window.ts` 的默认外部打开器：先退回「在文件夹中显示」，再给一条可读通知）。
+		//   ⚠ `file:` 之外（自定义协议 / mailto 等）保持原有行为不变，避免影响面扩大。
+		if (matchesSomeScheme(url, Schemas.file)) {
+			let fsPath: string;
+			try {
+				// 与 `window.ts` 里既有的 `URI.parse(href).fsPath` 同一套写法（file URL → 本地路径）
+				fsPath = URI.parse(url).fsPath;
+			} catch (error) {
+				this.logService.error(`Unable to parse local file URL '${url}' for external open: ${error}`);
+				return false;
+			}
+
+			const openPathError = await shell.openPath(fsPath);
+			if (openPathError) {
+				this.logService.warn(`Unable to open '${fsPath}' with the system default application: ${openPathError}`);
+				return false;
+			}
+
+			return true;
+		}
+
 		try {
 			await shell.openExternal(url);
+			return true;
 		} catch (error) {
 			let isLink: boolean;
 			let message: string;
@@ -751,10 +790,13 @@ export class NativeHostMainService extends Disposable implements INativeHostMain
 			}, this.windowById(windowId)?.win ?? undefined);
 
 			if (response === 1 /* Cancel */) {
-				return;
+				return false;
 			}
 
+			// 用户点了「Copy Link」/「OK」⇒ 链接已进剪贴板，但对调用方而言**仍然是没打开成功**
+			// （返回 false 只是表示成败，不会因此再触发渲染侧的失败提示 —— 那是 file: 专属分支）
 			this.writeClipboardText(windowId, url);
+			return false;
 		}
 	}
 

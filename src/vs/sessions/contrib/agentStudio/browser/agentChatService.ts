@@ -3146,7 +3146,16 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				//   正在显示该会话的聊天框经 onDidStreamDelta 'user_message' 即时渲染气泡。
 				//   本地发送 pane 由 _localSendActiveSessionId 守卫跳过，不会重复渲染。
 				try {
-					this.fireUserMessageAdded(agentId, options.agentSessionId ?? '', userMessage);
+					// ★ 2026-09-23：广播用**完整**附件（含 image）—— 上面持久化那份刻意排除图片
+					//   （base64 会吹大会话文件），但正在显示的聊天框需要它才能立刻渲染缩略图。
+					//   于是「渠道发来的图片」（如飞书）与「本地粘贴图片」行为一致：当场可见、
+					//   重启后不恢复。不带这层，飞书图片在气泡里就只剩占位文本。
+					this.fireUserMessageAdded(agentId, options.agentSessionId ?? '', {
+						...userMessage,
+						attachments: options.attachments && options.attachments.length > 0
+							? [...options.attachments]
+							: undefined,
+					});
 				} catch (e) {
 					this.logService.warn('[AgentChatService] fireUserMessageAdded failed:', e);
 				}

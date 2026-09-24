@@ -17,10 +17,23 @@ import { IFileService } from '../../../../../../platform/files/common/files.js';
 import { VSBuffer } from '../../../../../../base/common/buffer.js';
 import { IKbNode, KbSection } from './kbTypes.js';
 
-const TEXT_EXTS = new Set([
+/**
+ * 可被**当文本读取/索引**的扩展名集合。
+ *
+ * ⚠ 2026-09-23 起同时被视图复用（`export`）：决定「点击文件时用什么打开」——
+ * 不在此列的文件（pdf / zip / 图片 / 音视频…）**绝不能**交给 KB markdown 编辑器或文本编辑器，
+ * 否则会把二进制当文本渲染成满屏乱码（用户实测：点开 PDF 显示 `%PDF-1.7 … stream …`）。
+ */
+export const TEXT_EXTS = new Set([
 	'md', 'markdown', 'txt', 'json', 'yaml', 'yml', 'html', 'htm', 'css', 'scss',
 	'js', 'ts', 'tsx', 'jsx', 'py', 'java', 'go', 'rs', 'c', 'cpp', 'h', 'sh', 'bat', 'ps1', 'xml', 'csv', 'log',
 ]);
+
+/** 是否是 **KB 笔记**（应走 react-markdown 的 `KbNoteEditorInput`）；其它文本类用普通编辑器即可。 */
+export function isKbMarkdownNote(path: string): boolean {
+	const lower = path.toLowerCase();
+	return lower.endsWith('.md') || lower.endsWith('.markdown');
+}
 
 /** 搜索命中（文件级 + 评分 + 片段）。 */
 export interface IKbSearchHit extends IKbNode {

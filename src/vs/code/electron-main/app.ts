@@ -175,6 +175,7 @@ import { MediaStoreChannel } from '../../sessions/contrib/agentStudio/electron-m
 import { MEDIA_STORE_CHANNEL } from '../../sessions/contrib/agentStudio/common/mediaStoreChannel.js';
 import { SubAgentKernelProcChannel } from '../../sessions/contrib/agentStudio/electron-main/subAgentKernelProcChannel.js';
 import { SUBAGENT_KERNEL_PROC_CHANNEL } from '../../sessions/contrib/agentStudio/common/subAgentKernelProcChannel.js';
+import { KbDocConvertChannel } from '../../sessions/contrib/agentStudio/electron-main/kbDocConvertChannel.js';
 import { VSSAROS_LLM_CHANNEL } from '../../sessions/contrib/agentStudio/common/llmBridge.js';
 import { IWebContentExtractorService } from '../../platform/webContentExtractor/common/webContentExtractor.js';
 import { NativeWebContentExtractorService } from '../../platform/webContentExtractor/electron-main/webContentExtractorService.js';
@@ -957,6 +958,12 @@ export class CodeApplication extends Disposable {
 	// 远程控制（被控端）：屏幕采集 / WebRTC 宿主窗口 / nut-js 驱动级键鼠注入。
 	// 逻辑在 sessions/contrib/agentStudio/electron-main/remoteControlChannel.ts。
 	this._register(new RemoteControlChannel(this.logService));
+
+	// 知识库「非文本素材 → 文本」：用本机 python(pypdf) 提取 PDF 文字层，
+	// 供「批量构建笔记」把 PDF 素材转成 md 再构建（素材枚举只收 md）。
+	// 逻辑在 sessions/contrib/agentStudio/electron-main/kbDocConvertChannel.ts。
+	// 必须放主进程：渲染进程没有 child_process，而提取要 spawn python。
+	this._register(new KbDocConvertChannel(this.logService, this.configurationService));
 
 	// AI 抠图（去背景）2026-09-06 起由 ComfyUI 自定义节点 saros_cutout 执行
 	// （webview 侧 comfyHost/comfyCutout.ts），主进程不再承载 ONNX 推理与模型缓存。

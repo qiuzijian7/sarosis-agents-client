@@ -868,12 +868,29 @@ export class NativeWindow extends BaseWindow {
 		// Handle external open() calls
 		this.openerService.setDefaultExternalOpener({
 			openExternal: async (href: string) => {
-				const success = await this.nativeHostService.openExternal(href, this.configurationService.getValue<string>('workbench.externalBrowser'));
+				// ★ 2026-09-23：主进程现在会**如实返回**成败 —— 本地文件（file://）改走
+				//   `shell.openPath()`，遇到「系统没有关联程序」时只返回 false、**不再弹原生错误框**
+				//   （原先那个框是「An error occurred opening an external program. / Failed to open:
+				//    系统找不到指定的文件。(0x2)」，用户看不懂、框里也没有任何补救操作）。
+				//   所以「怎么告诉用户」必须在这里补上：本方法是**所有**外部打开的汇聚点
+				//   （`openerService.open(uri, { openExternal: true })` 最终都走到这里），
+				//   放在这里即可一次覆盖知识库、编辑器等全部入口。
+				let success = false;
+				try {
+					success = await this.nativeHostService.openExternal(href, this.configurationService.getValue<string>('workbench.externalBrowser'));
+				} catch {
+					// 保持本方法的既有契约：**永不 reject**（调用方依赖它 resolve，不会写 catch）
+					success = false;
+				}
 				if (!success) {
 					const fileCandidate = URI.parse(href);
 					if (fileCandidate.scheme === Schemas.file) {
 						// if opening failed, and this is a file, we can still try to reveal it
 						await this.nativeHostService.showItemInFolder(fileCandidate.fsPath);
+						// 再补一条可读提示：说明**为什么**没打开、以及还能怎么办。
+						// ⚠ 别把这段提示挪到调用方（如 knowledgeBaseView 的 openInEditor）：本方法固定
+						//   `return true`，调用方写的 `.catch()` 永远不会触发，放过去就是死代码。
+						this.notificationService.warn(localize('openExternalFileFailed', "无法用系统程序打开「{0}」：未找到该类型的关联程序。可在系统设置中为它指定默认应用，或用应用内预览打开（PDF / Word 已支持）。", fileCandidate.path.split('/').pop() || fileCandidate.fsPath));
 					}
 				}
 

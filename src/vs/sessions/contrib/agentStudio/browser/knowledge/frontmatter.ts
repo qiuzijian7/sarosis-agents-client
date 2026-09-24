@@ -127,6 +127,69 @@ export function normalizeSourceRef(s: string): string {
 	return (t.split(/[\\/]/).pop() ?? t).toLowerCase();
 }
 
+/**
+ * 从 frontmatter 的 `sources` 中**剔除**指定来源（2026-09-23）。
+ *
+ * 用途：库源文件被删除后，清理笔记里已失效的溯源 —— 对应 KB 的「删除收口」(P0-B)。
+ * 为什么必须做：`applyDeabstractionGating` 按 `extractSources` 的**去重来源数**决定
+ * 笔记 `status`（≥2 → active）；来源被删却不清理 ⇒ 来源数**虚高** ⇒ 门控状态失真。
+ *
+ * ⚠ 匹配口径必须与 `extractSources` 完全一致 —— 即 `normalizeSourceRef` 归一后的
+ * **小写 basename**（带扩展名）。调用方传进来的集合也必须是这个口径。
+ * 行级操作：只改 `sources`，其它字段保留原始格式；块序列 / 流列表 / 单值三种写法都支持。
+ * 全部被剔除时保留 `sources: []`（而非删掉字段）：`parseFrontmatter` 对 `key: [...]`
+ * 的空内容返回 `[]`，与 `extractSources` 的「无来源」语义一致。
+ */
+export function removeSources(content: string, baseNames: ReadonlySet<string>): { content: string; changed: boolean } {
+	if (baseNames.size === 0) { return { content, changed: false }; }
+	const located = locateFrontmatterBlock(content);
+	if (!located) { return { content, changed: false }; }
+	const { rawBlock, body } = located;
+	const cleanBody = body.replace(/^\r?\n/, '');
+	const inner = extractInnerLines(rawBlock);
+	const idx = inner.findIndex(l => /^sources\s*:/.test(l.trim()));
+	if (idx === -1) { return { content, changed: false }; }
+	const lead = /^[\t ]*/.exec(inner[idx])![0] ?? '';
+
+	// 形式一：块序列（sources: 后跟连续的 `- x`）
+	let end = idx + 1;
+	while (end < inner.length && /^[\t ]+-\s+/.test(inner[end])) { end++; }
+	if (end > idx + 1) {
+		const kept: string[] = [];
+		let removed = 0;
+		for (let i = idx + 1; i < end; i++) {
+			const val = stripQuotes(inner[i].replace(/^[\t ]+-\s+/, '').trim());
+			if (baseNames.has(normalizeSourceRef(val))) { removed++; } else { kept.push(inner[i]); }
+		}
+		if (removed === 0) { return { content, changed: false }; }
+		inner.splice(idx, end - idx, ...(kept.length > 0 ? [inner[idx], ...kept] : [`${lead}sources: []`]));
+		return { content: `---\n${inner.join('\n')}\n---\n${cleanBody}`, changed: true };
+	}
+
+	// 形式二：流列表（sources: [a, "b"]）
+	const flow = /^sources\s*:\s*\[(.*)\]\s*$/.exec(inner[idx].trim());
+	if (flow) {
+		let removed = 0;
+		const kept = flow[1].split(',').map(s => stripQuotes(s.trim())).filter(s => s !== '').filter(s => {
+			if (baseNames.has(normalizeSourceRef(s))) { removed++; return false; }
+			return true;
+		});
+		if (removed === 0) { return { content, changed: false }; }
+		// wikilink 含 `[`，在 YAML 流列表里必须加引号（与 injectSources 的处理一致）
+		inner[idx] = `${lead}sources: [${kept.map(s => (s.includes('[') ? `"${s}"` : s)).join(', ')}]`;
+		return { content: `---\n${inner.join('\n')}\n---\n${cleanBody}`, changed: true };
+	}
+
+	// 形式三：单值（sources: x）
+	const single = /^[\t ]*sources\s*:\s*(\S.*)$/.exec(inner[idx]);
+	if (single) {
+		if (!baseNames.has(normalizeSourceRef(stripQuotes(single[1].trim())))) { return { content, changed: false }; }
+		inner[idx] = `${lead}sources: []`;
+		return { content: `---\n${inner.join('\n')}\n---\n${cleanBody}`, changed: true };
+	}
+	return { content, changed: false };
+}
+
 /** 笔记状态（P0-1 去抽象化门控）：pending=候选(来源不足)，active=正式(已被≥2来源确认)。 */
 export type NoteStatus = 'pending' | 'active';
 export const STATUS_ACTIVE: NoteStatus = 'active';

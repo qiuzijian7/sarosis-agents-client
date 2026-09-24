@@ -31,8 +31,13 @@ import { IAgentStudioService } from '../../../../../common/agentStudioService.js
 import { resolveKbRoot, migrateKnowledgeStorage } from '../../knowledge/knowledgeStorage.js';
 import { createBuiltinEmbeddingProvider } from '../../knowledge/builtinEmbeddingProvider.js';
 import { registerKbVaultRecallTools } from './kbVaultRecallTools.js';
+import { registerKbOrganizeTools } from './kbOrganizeTools.js';
+import { registerKbFeishuSyncTools } from './kbFeishuSyncTools.js';
+import type { KbDiagramPrepareFn } from '../../knowledge/diagramSyncPrepare.js';
 import type { IKbNativeKernelService } from '../../kbNativeKernelService.js';
 import type { IBuiltinToolRegistration } from './builtinToolProvider.js';
+import type { ICheckpointService } from '../../../common/checkpointService.js';
+import type { IStorageService } from '../../../../../../platform/storage/common/storage.js';
 
 export interface KnowledgeStorageContext {
 	/** 注册一个内置工具（kb_* 系列）。 */
@@ -50,6 +55,15 @@ export interface KnowledgeStorageContext {
 	kernelService: IKbNativeKernelService;
 	/** 配置键：KB 存储根路径（即主文件中的 AGENT_STUDIO_KB_STORAGE_PATH）。 */
 	kbStoragePathKey: string;
+	/** 变更前 checkpoint（kb_organize 用：让聊天页签可 undoAll 回滚）。 */
+	checkpointService: ICheckpointService;
+	/** 读 `agentStudio.kb.kbDir`（kb_organize 据此解析当前 vault 根）。 */
+	storageService: IStorageService;
+	/**
+	 * 同步前「图表准备」（宿主注入，见 knowledge/diagramSyncPrepare.ts）。
+	 * 由 `BuiltinToolProvider` 绑定渲染器后传入；未注入时 `kb_feishu_sync` 跳过该步（功能降级，不报错）。
+	 */
+	prepareDiagrams?: KbDiagramPrepareFn;
 }
 
 export interface IKnowledgeStorageRegistrar {
@@ -80,6 +94,31 @@ export function createKnowledgeStorageRegistrar(ctx: KnowledgeStorageContext): I
 			register: ctx.register,
 			kernelService: ctx.kernelService,
 			logService: ctx.logService,
+		});
+
+		// ★ 2026-09-23：`kb_organize` —— 让知识库专家 agent **自己动手**整理笔记区目录
+		//   （移动/重命名/建目录/「删除」=移入备份），checkpoint + vault 外备份双保险，详见 kbOrganizeTools.ts。
+		registerKbOrganizeTools({
+			register: ctx.register,
+			fileService: ctx.fileService,
+			storageService: ctx.storageService,
+			environmentService: ctx.environmentService,
+			checkpointService: ctx.checkpointService,
+			logService: ctx.logService,
+		});
+
+		// ★ 2026-09-24：`kb_feishu_sync` —— 「笔记区 → 飞书知识库」同步能力给 agent 用（配技能 kb-feishu-sync）。
+		//   复用内置脚本 + buildSyncArgs 契约；无头执行（vscode:execCode）；结果走 .feishu-sync.log 回传。
+		registerKbFeishuSyncTools({
+			register: ctx.register,
+			fileService: ctx.fileService,
+			configurationService: ctx.configurationService,
+			environmentService: ctx.environmentService,
+			storageService: ctx.storageService,
+			logService: ctx.logService,
+			// ★ 2026-09-24：apply 前把笔记图表渲染为 PNG —— 此前只有视图按钮会做，
+			//   agent 直接调本工具时图表源码会原样同步到飞书（飞书不渲染源码）。
+			prepareDiagrams: ctx.prepareDiagrams,
 		});
 
 		// Auto-migrate when the user changes the storage root setting.

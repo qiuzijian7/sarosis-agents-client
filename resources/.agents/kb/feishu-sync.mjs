@@ -137,7 +137,16 @@ export function prepareMarkdownForSync(markdown) {
 
 // ─── 图片链路（实测：飞书 markdown 导入不处理本地图片 ⇒ 需上传后定位插入）────────
 
-const IMAGE_EXT = 'png|jpe?g|gif|webp|svg|bmp|tiff?';
+/**
+ * 可插入飞书的本地图片扩展名。
+ *
+ * ⚠ **不含 `svg`**：2026-09-23 实测，`<img path="@./x.svg"/>` 会被飞书拒绝：
+ *   `local image #1: file is not a supported BMP, GIF, JPEG, PNG, TIFF, or WebP image`
+ * 即飞书只认 BMP / GIF / JPEG / PNG / TIFF / WebP。
+ * ⇒ mermaid / drawio 这类「源码 → SVG」的图**必须先栅格化成 PNG** 才能同步
+ *   （不能直接把渲染出的 SVG 落盘当图片插入）。
+ */
+const IMAGE_EXT = 'png|jpe?g|gif|webp|bmp|tiff?';
 /** Obsidian embed：`![[x.png]]`；标准 md：`![](x.png)` */
 const IMAGE_REF_RE = new RegExp(`!\\[\\[([^\\]\\n]+\\.(?:${IMAGE_EXT}))\\]\\]|!\\[[^\\]\\n]*\\]\\(([^)\\s]+\\.(?:${IMAGE_EXT}))\\)`, 'gi');
 
@@ -241,6 +250,104 @@ function insertImages(docToken, images, noteDir, interval) {
 			if (interval > 0) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, interval); }
 		} catch (e) {
 			console.warn(`        ↳ ⚠ 图片插入失败（占位 ${img.placeholder} 保留）: ${e.message}`);
+		}
+	}
+	return ok;
+}
+
+/**
+ * ★ 2026-09-24：**本地 HTML 附件链路**（实测确认的机制）。
+ *
+ * 用户实测 + 我方探针（`docs +create --doc-format xml`）双重确认：
+ *   `<source path="@./x.html" name="x.html"/>` 上传后飞书落成
+ *   `<figure view-type="Preview"><source name="x.html" mime="text/html" size="…" token="…"/></figure>`
+ *   —— 即 **file block + Preview 视图**，飞书对 `text/html` 会直接**渲染页面预览**
+ *   （这就是「html 作为附件传入即可正常渲染」的实现依据）。
+ *
+ * 链路与图片完全同构：正文里的 `![[x.html]]` → 占位 `KBSYNCFILE<n>` → 导入后
+ * 用 `block_replace` 把占位块换成 `<figure view-type="Preview"><source …/></figure>`。
+ *
+ * ⚠ 路径约束与图片相同：`path="@./…"` 基于 **cwd（= 笔记目录）** 且必须是**本地相对路径**
+ *   （实测：绝对路径会被判 `file does not exist or its path is unsafe`；跨目录 `../..`
+ *   有「越界」风险）⇒ **宿主侧负责把 html 复制到笔记同级 `<note>.attachments/`
+ *   并把引用改写成该相对路径**（见 kb-feishu-sync-spec §16）。
+ */
+const ATTACH_EXT = 'html?|htm';
+/** Obsidian embed：`![[x.html]]` */
+const ATTACH_REF_RE = new RegExp(`!\\[\\[([^\\]\\n]+\\.(?:${ATTACH_EXT}))\\]\\]`, 'gi');
+
+/**
+ * 抽取正文中的本地 HTML 附件引用并替换为占位标记。
+ * @returns `{ markdown, attachments: [{ placeholder, ref, absPath, name, standalone }], missing, inline }`
+ */
+export function extractAttachments(markdown, noteDir) {
+	const missing = [];
+	const inline = [];
+	const attachments = [];
+	let index = 0;
+	const out = markdown.replace(ATTACH_REF_RE, (_m, ref0, offset, whole) => {
+		const ref = String(ref0 ?? '').trim();
+		if (!ref || /^https?:|^data:|^file:/i.test(ref) || ref.startsWith('/')) { return _m; } // 远程/绝对引用不处理
+		const absPath = path.resolve(noteDir, ref);
+		if (!fs.existsSync(absPath)) { missing.push(ref); return _m; } // 找不到文件：保留原样并记录
+
+		// 与图片同理：block_replace 是**整块**替换 ⇒ 占位必须独占段落
+		const lineStart = whole.lastIndexOf('\n', offset - 1) + 1;
+		const lineEnd = whole.indexOf('\n', offset);
+		const line = whole.slice(lineStart, lineEnd === -1 ? whole.length : lineEnd);
+		const standalone = line.trim() === _m.trim() && !line.includes('|');
+
+		const placeholder = `KBSYNCFILE${++index}`;
+		attachments.push({ placeholder, ref, absPath, name: path.basename(ref), standalone });
+		if (!standalone) { inline.push(ref); }
+		return standalone ? `\n\n${placeholder}\n\n` : placeholder;
+	});
+	return { markdown: out.replace(/\n{3,}/g, '\n\n'), attachments, missing, inline };
+}
+
+/** 把占位块替换为 `<figure view-type="Preview"><source/></figure>`（与 insertImages 同构）。 */
+function insertAttachments(docToken, attachments, noteDir, interval) {
+	let ok = 0;
+	if (!attachments.length) { return ok; }
+
+	const f = lark(['docs', '+fetch', '--doc', docToken, '--detail', 'with-ids', '--as', 'user'], noteDir);
+	const xml = extractJson(f.stdout)?.data?.document?.content ?? '';
+	if (!xml) {
+		console.warn('        ↳ ⚠ 无法获取文档结构（with-ids）⇒ 附件未插入');
+		return 0;
+	}
+
+	for (const att of attachments) {
+		if (!att.standalone) {
+			console.warn(`        ↳ ⚠ 行内/表格内附件无法自动插入（占位 ${att.placeholder} 保留）：${att.ref}`);
+			continue;
+		}
+		try {
+			const blockId = findBlockIdByText(xml, att.placeholder);
+			if (!blockId) {
+				console.warn(`        ↳ ⚠ 未找到占位块（${att.placeholder}）⇒ 跳过 ${att.ref}`);
+				continue;
+			}
+			const replFile = `.kbsync-file-${att.placeholder}.xml`;
+			const replPath = path.join(noteDir, replFile);
+			// 显示名做 XML 转义（文件名里的 & < > 会让 XML 非法）
+			const safeName = att.name.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+			fs.writeFileSync(replPath, `<figure view-type="Preview"><source path="@./${att.ref}" name="${safeName}"/></figure>`, 'utf8');
+			try {
+				const r = lark(['docs', '+update', '--doc', docToken, '--command', 'block_replace',
+					'--block-id', blockId, '--content', `@./${replFile}`, '--doc-format', 'xml', '--as', 'user'], noteDir);
+				const payload = extractJson(r.stdout);
+				if (!payload || payload.ok === false) {
+					throw new Error(String(payload?.error?.message ?? (r.stderr || r.stdout).slice(0, 200)));
+				}
+				ok++;
+				console.log(`        ↳ 附件已插入（Preview）: ${att.ref}`);
+			} finally {
+				try { fs.unlinkSync(replPath); } catch { /* 清理失败忽略 */ }
+			}
+			if (interval > 0) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, interval); }
+		} catch (e) {
+			console.warn(`        ↳ ⚠ 附件插入失败（占位 ${att.placeholder} 保留）: ${e.message}`);
 		}
 	}
 	return ok;
@@ -797,9 +904,118 @@ export function collectPlan(vaultRoot, srcDirs, opts = {}) {
 /** 飞书 CLI 可执行名/路径：默认 `lark-cli`（走 PATH），可由 `--cli <path>` 覆盖（安装在非标准位置时）。 */
 let CLI = 'lark-cli';
 
+/**
+ * 解析 `lark-cli` 的**真实 node 入口**（绕开 shell 的转义地狱）。
+ *
+ * ## 为什么必须绕开 shell（2026-09-23 实测事故）
+ *
+ * Windows 上 `lark-cli` 是 npm 生成的 `.cmd` / `.ps1`（不是可执行文件）⇒ 只能用
+ * `shell: true` 经 cmd.exe 调用。而 **cmd.exe 不会为参数补引号** ⇒ 任何**含空格**的参数
+ * 都会被拆成多个位置参数：
+ *
+ * ```
+ * --title "工程实践 工具设计与 Harness"
+ *   ⇒ positional arguments are not supported (got ["工具设计与" "Harness"])
+ * ```
+ *
+ * 现象极具迷惑性：**标题不含空格的笔记同步成功、含空格的整批失败**（本地看起来「同步了」，飞书里却只多了几篇）。
+ *
+ * ## 做法
+ *
+ * 从 `.cmd` / `.ps1` 里抽出 `node_modules/.../*.js` 入口路径（`%dp0%` 等占位符替换为
+ * 脚本所在目录），再用 `spawnSync(<node>, [入口, ...args], { shell: false })` 直接调用
+ * —— 参数由 CreateProcess **原样传递**，空格 / 中文 / `& | % ^` 全部安全。
+ *
+ * 解析不出来时返回 null，调用方回退到旧的 shell 方式（手工加引号兜底）。
+ */
+let CLI_LAUNCH_CACHE;
+function resolveCliLaunch() {
+	if (CLI_LAUNCH_CACHE !== undefined) { return CLI_LAUNCH_CACHE; }
+	CLI_LAUNCH_CACHE = null;
+	try {
+		const candidates = [];
+		if (/[\\/]/.test(CLI)) {
+			candidates.push(CLI);                       // 用户自定义 CLI 绝对路径
+		} else {
+			candidates.push(`${CLI}.cmd`, `${CLI}.ps1`); // 同目录/ PATH 下的 shim
+			const npmDir = path.join(os.homedir(), 'AppData', 'Roaming', 'npm');
+			candidates.push(path.join(npmDir, `${CLI}.cmd`), path.join(npmDir, `${CLI}.ps1`));
+		}
+		for (const shim of candidates) {
+			let text;
+			try { text = fs.readFileSync(shim, 'utf8'); } catch { continue; }
+			// 抽第一个指向 node_modules 的 .js 入口（npm shim 的固定形态）
+			const m = /([^\s"']*node_modules[^\s"']*\.js)/.exec(text);
+			if (!m) { continue; }
+			const dir = path.dirname(shim);
+			const entry = m[1]
+				.replace(/%~dp0%?/gi, dir)
+				.replace(/^\$basedir[\\/]?/i, dir + path.sep);
+			const abs = path.isAbsolute(entry) ? entry : path.join(dir, entry);
+			if (!fs.existsSync(abs)) { continue; }
+			CLI_LAUNCH_CACHE = { exe: process.execPath, prefix: [abs] };
+			return CLI_LAUNCH_CACHE;
+		}
+	} catch { /* 解析失败 ⇒ 回退 shell 方式 */ }
+	return CLI_LAUNCH_CACHE;
+}
+
+/**
+ * 执行 lark-cli。
+ *
+ * 优先走「node 入口 + `shell:false`」（见 {@link resolveCliLaunch}，参数无需转义）；
+ * 解析失败时回退旧的 `shell:true`，并**对含空格的参数手工加引号**尽量兜住。
+ */
 function lark(args, cwd) {
-	const res = spawnSync(CLI, args, { encoding: 'utf8', shell: process.platform === 'win32', cwd });
+	const launch = resolveCliLaunch();
+	if (launch) {
+		const res = spawnSync(launch.exe, [...launch.prefix, ...args], {
+			encoding: 'utf8',
+			shell: false,
+			cwd,
+			// process.execPath 在 Electron 里是 Electron 本体 ⇒ 需以纯 node 模式运行入口脚本
+			env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+		});
+		return { code: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' };
+	}
+	// 回退：shell 模式下 cmd 不会补引号 ⇒ 含空格/特殊字符的参数手工加引号
+	const safe = args.map(a => {
+		const s = String(a);
+		return /[\s"&|^<>]/.test(s) ? `"${s.replace(/"/g, '')}"` : s;
+	});
+	const res = spawnSync(CLI, safe, { encoding: 'utf8', shell: process.platform === 'win32', cwd });
 	return { code: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' };
+}
+
+/**
+ * 检测笔记里「飞书不会渲染」的图表源码（纯函数，便于单测）。
+ *
+ * ★★ 2026-09-24 实测更新（结论收敛）：
+ *   · ```mermaid 围栏 —— **飞书会渲染成图**：markdown 导入（`docs +create/+update --doc-format markdown`）
+ *     把它转成 `whiteboard type="mermaid"` 画板（飞书原生「文本绘图」能力，官方帮助
+ *     《使用文本绘图小组件》同源；实测缩略图确认为真实图表）⇒ **不再告警、也不再转 PNG**
+ *     （抢转 PNG 会把可编辑活图变成死图）。
+ *     ⚠ 官方帮助 FAQ 说「Markdown 导入不支持自动识别 mermaid」——那指的是**文档 UI 上传 .md**
+ *     那条通道；我们走的 CLI 服务端导入实测会转画板，以实测为准。
+ *   · ```drawio / ```xml(<mxfile>) / 裸 mxGraphModel —— 仍然只会显示为**代码块**（飞书无
+ *     drawio 对应格式，官方文档亦未提及）⇒ 仍需先**栅格化成 PNG** 再插入（飞书图片格式不含 SVG）。
+ *
+ * 本函数只负责**如实告警**（避免用户以为已经渲染好了），不改变正文。
+ *
+ * @returns 检测到的种类标签（当前只会是 `['drawio']`），去重
+ */
+export function detectUnrenderableDiagrams(markdown) {
+	const kinds = new Set();
+	if (!markdown) { return []; }
+	// drawio 可能以 ```drawio / ```xml 代码块或裸 XML 形式出现
+	// ⚠ 容忍自闭合写法（`<mxGraphModel/>`）：只写 `[\s>]` 会漏掉 `/`
+	if (/<mxfile[\s/>]|<mxGraphModel[\s/>]/i.test(markdown)) { kinds.add('drawio'); }
+	const fenceRe = /^[ \t]*(?:`{3,}|~{3,})[ \t]*([A-Za-z0-9_+-]*)/gm;
+	let m;
+	while ((m = fenceRe.exec(markdown))) {
+		if ((m[1] ?? '').toLowerCase() === 'drawio') { kinds.add('drawio'); }
+	}
+	return [...kinds];
 }
 
 /** 从输出中提取首个 JSON 对象（CLI 可能混有提示行/彩色码）。 */
@@ -1115,6 +1331,17 @@ function main() {
 			// 正文预处理：不注入 `# ${title}`（文档标题已由 --title 设置，注入会造成重复 H1）
 			// 图片链路：本地图片引用 → 占位标记（同步后逐张处理）
 			const prepared = extractImages(prepareMarkdownForSync(body.trim()), path.dirname(p.file));
+			// ★ 2026-09-24：HTML 附件链路（飞书把 text/html 附件渲染成可预览的 file block ⇒
+			//   「html 作为附件传入即可正常渲染」）—— 在图片抽取之后跑，两者引号不重叠。
+			const preparedFiles = extractAttachments(prepared.markdown, path.dirname(p.file));
+			// 2026-09-23：mermaid / drawio 在飞书里只会显示为**代码块源码**（飞书不渲染、且图片不支持 SVG）
+			// ⇒ 如实告警，避免用户以为「图已经同步过去了」。
+			const diagrams = detectUnrenderableDiagrams(body);
+			if (diagrams.length) {
+				console.warn(`      ⚠ 含 ${diagrams.join(' / ')} 图表源码：飞书会显示为代码块（不渲染成图）。`
+					+ '如需图，请先渲染为 PNG 再插入（见 doc/kb-feishu-sync-spec.md §8#21）。');
+				logLines.push(`${new Date().toISOString()} DIAGRAM-UNRENDERED ${p.rel} ${diagrams.join(',')}`);
+			}
 			if (prepared.missing?.length) {
 				// ⚠ 静默保留会让用户以为「图片已同步」⇒ 必须显式告警（多为引用路径写错/图片在别处）
 				console.warn(`      ⚠ ${prepared.missing.length} 处图片引用未找到文件（保留原样，未同步）：${prepared.missing.join(', ')}`);
@@ -1122,7 +1349,14 @@ function main() {
 			if (prepared.inline?.length) {
 				console.warn(`      ⚠ ${prepared.inline.length} 处图片为行内/表格内引用（无法自动插入，保留占位）：${prepared.inline.join(', ')}`);
 			}
-			fs.writeFileSync(path.join(tmpDir, 'note.md'), `${prepared.markdown}\n`, 'utf8');
+			if (preparedFiles.missing?.length) {
+				console.warn(`      ⚠ ${preparedFiles.missing.length} 处 HTML 附件引用未找到文件（保留原样）：${preparedFiles.missing.join(', ')}`
+					+ '　提示：同步前会由「附件准备」把 html 复制到笔记同级 .attachments/ 并改写引用。');
+			}
+			if (preparedFiles.inline?.length) {
+				console.warn(`      ⚠ ${preparedFiles.inline.length} 处 HTML 附件为行内引用（无法自动插入，保留占位）：${preparedFiles.inline.join(', ')}`);
+			}
+			fs.writeFileSync(path.join(tmpDir, 'note.md'), `${preparedFiles.markdown}\n`, 'utf8');
 
 			// ⚠ CLI 1.0.9x（v2 形态）命令契约：
 			//   create → --title + --doc-format markdown + --content @file
@@ -1162,6 +1396,11 @@ function main() {
 			if (prepared.images.length) {
 				const inserted = insertImages(token, prepared.images, path.dirname(p.file), args.interval);
 				console.log(`      ${inserted}/${prepared.images.length} 张图片插入完成`);
+			}
+			// HTML 附件插入（同为 block_replace 链路；必须在「记录 remoteHash」之前）
+			if (preparedFiles.attachments.length) {
+				const insertedFiles = insertAttachments(token, preparedFiles.attachments, path.dirname(p.file), args.interval);
+				console.log(`      ${insertedFiles}/${preparedFiles.attachments.length} 个 HTML 附件插入完成`);
 			}
 
 			// 标题同步：文件名变动 ⇒ `drive +update-title`（新 CLI 无 --new-title 的替代方案）。

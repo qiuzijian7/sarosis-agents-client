@@ -46,6 +46,79 @@ export interface ILarkCliRunResult {
 	readonly output?: string;
 }
 
+// ─── 通用命令执行（2026-09-23：为「飞书文档 → markdown」导入新增）───────────────
+//
+// 背景：知识库「导入链接 / URL」遇到飞书云文档时，网页抓取只能拿到登录墙/骨架，
+// 拿不到图片、画板（思维导图）、表格 ⇒ 改走官方 CLI：
+//   · 正文（标题/列表/表格/超链接）：`docs +fetch --doc <url> --doc-format markdown`
+//   · 图片 / 文件素材：正文里的 `<img token>` / `<source token>` → `docs +media-download --token <file_token>`
+//   · 画板（思维导图）：正文里的 `<whiteboard token>` → `docs +media-download --type whiteboard --token <id>`
+//（命令与返回值形态出自 CLI 自带参考：`lark-cli skills read lark-doc/references/lark-doc-fetch.md`）
+
+/** 执行一条 `lark-cli …` 命令的 IPC 通道（真逻辑在主进程，需 child_process）。 */
+export const LARK_CLI_RUN_CHANNEL = 'vscode:larkCliRun';
+
+/** 探测 CLI 状态的 IPC 通道（渲染侧 `getLarkCliStatus()` 用）。 */
+export const LARK_CLI_STATUS_CHANNEL = 'vscode:larkCliStatus';
+
+/** 安装 / 升级 CLI 的 IPC 通道。 */
+export const LARK_CLI_INSTALL_CHANNEL = 'vscode:larkCliInstall';
+
+/** 单次命令执行的原始结果（**永不抛**：失败也返回结构化结果）。 */
+export interface ILarkCliExecResult {
+	readonly ok: boolean;
+	readonly stdout: string;
+	readonly stderr: string;
+	/** 失败原因（超时 / 非零退出 / 参数非法）。成功时为 undefined。 */
+	readonly error?: string;
+}
+
+/**
+ * 从 CLI 的 stdout 里解析 JSON。
+ *
+ * 为什么不能直接 `JSON.parse(stdout)`：CLI 在 JSON 前后可能夹带杂项输出
+ * （npm 警告、升级提示、进度行）。策略是「取第一个 `{` 到最后一个 `}`」——
+ * 对单对象输出足够稳，且**失败只返回 undefined**（由调用方决定报什么错，不抛）。
+ */
+export function parseLarkCliJson<T = unknown>(stdout: string): T | undefined {
+	const text = (stdout ?? '').trim();
+	if (!text) { return undefined; }
+	const tryParse = (s: string): T | undefined => {
+		try { return JSON.parse(s) as T; } catch { return undefined; }
+	};
+	const direct = tryParse(text);
+	if (direct !== undefined) { return direct; }
+	const start = text.indexOf('{');
+	const end = text.lastIndexOf('}');
+	if (start < 0 || end <= start) { return undefined; }
+	return tryParse(text.slice(start, end + 1));
+}
+
+/**
+ * 从 CLI 的 JSON 结果里取一段可读的错误说明（`error.hint` 优先，其次 `error.message`、
+ * `message`，再次原始 stderr 首行）。飞书的权限类错误主要靠 `hint` 给出可操作建议，
+ * 只回 `code` 对用户没用。
+ */
+export function larkCliErrorText(parsed: unknown, fallbackText: string): string {
+	// ⚠ `code` 在**真机输出里是数字**（如 `3380002`），不只字符串 ⇒ 必须一并接住，
+	//   否则错误码会被静默丢掉（实测：无效文档返回 `"code": 3380002`，只有一个 message）。
+	const pick = (v: unknown): string | undefined => {
+		if (typeof v === 'string') { return v.trim() || undefined; }
+		if (typeof v === 'number' || typeof v === 'boolean') { return String(v); }
+		return undefined;
+	};
+	const obj = parsed as { error?: unknown; message?: unknown; msg?: unknown } | undefined;
+	const err = obj?.error as { hint?: unknown; message?: unknown; msg?: unknown; code?: unknown } | undefined;
+	const hint = pick(err?.hint) ?? pick(err?.message) ?? pick(err?.msg);
+	if (hint) {
+		const code = pick(err?.code);
+		return code ? `${hint}（${code}）` : hint;
+	}
+	const direct = pick(obj?.message) ?? pick(obj?.msg);
+	if (direct) { return direct; }
+	return (fallbackText ?? '').split(/\r?\n/).map(l => l.trim()).filter(Boolean)[0] ?? '未知错误';
+}
+
 export type LarkCliTone = 'ok' | 'warn' | 'bad' | 'dim';
 
 /**

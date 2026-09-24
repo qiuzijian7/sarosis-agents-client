@@ -690,6 +690,14 @@ export function getStrategyGuidance(paradigm: string | undefined): string[] {
 		'Do NOT output a ```mermaid fenced code block in your text — it will NOT be rendered correctly.',
 		'Use the tool. The result is shown as a beautiful interactive diagram card in the chat.',
 		'',
+		// ★ 2026-09-24：渲染美化（mermaid 12 + elk 默认布局）之后，「好不好看」的瓶颈已经
+		//   转移到生成侧——节点太多/方向选错/不做分组，布局再强也救不回来。故把可读性规则
+		//   也放进常驻前缀（工程细节见 renderMermaidDiagram 的工具描述）。
+		// 详细规则在 renderMermaidDiagram 的工具描述里（避免同一段规则在提示词中重复占 token）；
+		// 这里只保留「必须做/必须重试」这两条最容易被违反的。
+		'Make the diagram READABLE, not merely valid: one idea per diagram (keep it under ~20 nodes — for a bigger system call the tool 2-3 times, one sub-diagram per subsystem), `subgraph ... end` grouping, `TD` for deep chains and `LR` for wide pipelines.',
+		'The tool render-validates your markup: if it returns a render error, fix the markup and call it again.',
+		'',
 		];
 	}
 }

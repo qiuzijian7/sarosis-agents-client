@@ -20,6 +20,7 @@ import { toggleTaskCheckbox } from './taskToggle';
 import { MarkdownSourceEditor } from './MarkdownSourceEditor';
 import { VersionHistoryPanel } from './VersionHistoryPanel';
 import { postMessage, initMessageClient } from '../bridge/messageClient';
+import { kbLog } from './kbDebug';
 // Inlined at build time by the katex-css esbuild plugin (CSS + font data URIs).
 // @ts-ignore - virtual module provided by the bundler
 import katexCss from 'katex/dist/katex.min.css';
@@ -50,8 +51,16 @@ type EditorMode = 'preview' | 'source' | 'split';
 
 const AUTO_SAVE_DELAY = 2000; // Aligned with Glyph
 
+/** 读取宿主注入的初始数据（首次创建 webview 时由 `window.__KB_INIT__` 提供）。 */
+function readInitData(): KbInitData {
+	return (window as unknown as { __KB_INIT__?: KbInitData }).__KB_INIT__ ?? { docId: 'kb:probe' };
+}
+
 export function KbMarkdownApp(): React.ReactElement {
-	const init = (window as unknown as { __KB_INIT__?: KbInitData }).__KB_INIT__;
+	// ★ 2026-09-23：`init` 由「一次性常量」改为 **state**。
+	// 宿主现在**复用同一个 webview**（不再每次打开笔记都 setHtml 重载整个 bundle），
+	// 换文档时通过 `kbblocks.loadDoc` 推送新数据 ⇒ 这里必须能接收并切换。
+	const [init, setInit] = useState<KbInitData>(readInitData);
 	const docId = init?.docId ?? 'kb:probe';
 	const diskContent = init?.markdown ?? '';
 	const workspaceFiles = init?.workspaceFiles ?? [];
@@ -76,7 +85,8 @@ export function KbMarkdownApp(): React.ReactElement {
 	// initial empty string as "not yet edited", so auto-save doesn't fire on
 	// mount for an empty file).
 	const initialDiskRef = useRef(diskContent);
-	const saveTimerRef = useRef<ReturnType<typeof setTimeout>>();
+	// ⚠ 必须显式给初值：React 19 的类型定义里 `useRef<T>()` 不再接受「无参」形式（TS2554）
+	const saveTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
 	useEffect(() => {
 		if (katexCss && !document.getElementById('kb-katex-css')) {
@@ -91,9 +101,51 @@ export function KbMarkdownApp(): React.ReactElement {
 		postMessage('kbblocks.ready', { docId });
 	}, [docId]);
 
+	// ★ 切换文档（宿主复用 webview）：重置缓冲区与视图状态。
+	// ⚠ 依赖刻意是 `docId` 而非 `init` —— 否则后台补齐 workspaceFiles（也会 setInit）
+	//   会把用户正在编辑的内容重置掉。
+	useEffect(() => {
+		const md = init.markdown ?? '';
+		setContent(md);
+		setEditContent(md);
+		setDirty(false);
+		setBacklinks(null);
+		setMode('preview');
+		initialDiskRef.current = md;
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [docId]);
+
+	// 供消息回调读取「最新值」的 ref：`initMessageClient` 只注册一次，
+	// 其闭包捕获的是挂载时的值（下面的 handler 因此读不到最新 dirty/editContent）。
+	const dirtyRef = useRef(false);
+	const editContentRef = useRef('');
+	const contentRef = useRef('');
+	useEffect(() => { dirtyRef.current = dirty; }, [dirty]);
+	useEffect(() => { editContentRef.current = editContent; }, [editContent]);
+	useEffect(() => { contentRef.current = content; }, [content]);
+
 	useEffect(() => {
 		initMessageClient((type, data) => {
 			if (type === 'kbblocks.backlinks') setBacklinks(data as IBacklinksPayload);
+			// ★ 宿主复用 webview 打开另一篇笔记（不再 setHtml 重载整个 bundle）
+			if (type === 'kbblocks.loadDoc' && typeof data === 'object' && data && 'docId' in data) {
+				// 切换前先落盘未保存的编辑：自动保存是 2s 防抖，直接切走会丢改动
+				if (dirtyRef.current && editContentRef.current !== contentRef.current) {
+					postMessage('kbblocks.save', { markdown: editContentRef.current });
+				}
+				setInit(data as KbInitData);
+				return;
+			}
+			// ★ 宿主后台补齐的文件名清单（先渲染、后推索引）⇒ wikilink 解析随之生效。
+			// ⚠ 只更新 workspaceFiles（docId 不变）⇒ 上面按 docId 的重置 effect 不会触发。
+			if (type === 'kbblocks.workspaceFiles' && Array.isArray(data)) {
+				// 空清单 ⇒ wikilink / 嵌入目标一律解析不到（排查用，正常不会出现）
+				if (data.length === 0) {
+					kbLog('workspaceFiles', '收到空清单 —— wikilink 与嵌入目标将无法解析');
+				}
+				setInit(prev => ({ ...prev, workspaceFiles: data as KbInitData['workspaceFiles'] }));
+				return;
+			}
 			// External file change: host tells us the file was modified outside
 			// (e.g. another editor saved). Reload content from the notification.
 			if (type === 'kbblocks.fileChanged' && typeof data === 'object' && data && 'markdown' in data) {
@@ -115,6 +167,12 @@ export function KbMarkdownApp(): React.ReactElement {
 				setDirty(false);
 			}
 		});
+		// ★ 2026-09-24：**监听器就绪后**主动要一次文件名清单。
+		//   宿主在 `setInput` 里的后台推送常常早于本组件挂载（那时监听器还没注册）而被丢弃，
+		//   于是 webview 只能用 INIT 里的清单（冷缓存时为空数组）⇒ wikilink 与 `![[x.html]]`
+		//   等嵌入目标全部解析不到（用户实测：`![[live-demo.html]]` 报「未在库内找到该文件」）。
+		//   这里紧接注册之后发请求 ⇒ 宿主回推，投递确定可达（幂等，重复推送无害）。
+		postMessage('kbblocks.requestWorkspaceFiles', { docId: init.docId });
 		// Deliberately exclude `dirty` from deps — the handler above reads the
 		// closure-captured value which is fine for a fire-and-forget callback.
 		// eslint-disable-next-line react-hooks/exhaustive-deps

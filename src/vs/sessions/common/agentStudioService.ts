@@ -117,6 +117,23 @@ export interface ILibraryBadgeRequest {
 	readonly count?: number;
 }
 
+/**
+ * 知识库**后台处理状态**（导入 / 分析归类 / 构建笔记）。
+ *
+ * 为什么需要（2026-09-23 用户需求）：这类操作动辄数分钟（LLM 抽取，实测单请求超时就有 120s），
+ * 但**不应该用通知弹窗打扰用户** —— 反馈应该落在「资料库」图标与知识库视图内：
+ *   · activitybar 徽标转圈：`requestLibraryBadge({ source: 'kb', kind: 'building' })`
+ *   · 视图内：「库 / 笔记」分区标题右侧显示 `分析中 3/7`，对应文件节点右侧显示转圈（由本事件驱动）
+ */
+export interface IKbProcessingState {
+	/** 是否仍在处理。`false` ⇒ 视图应清理所有「处理中」标记。 */
+	readonly active: boolean;
+	/** 展示文案（例如 `分析中 3/7`）；`active=false` 时可省略。 */
+	readonly label?: string;
+	/** 正在处理的**库文件绝对路径**（fsPath）；视图据此在这些节点右侧显示转圈。 */
+	readonly paths?: readonly string[];
+}
+
 export const IAgentStudioService =
 	createDecorator<IAgentStudioService>("agentStudioService");
 
@@ -145,6 +162,16 @@ export interface IAgentStudioService {
 	requestLibraryBadge(request: ILibraryBadgeRequest): void;
 	/** Fired when the KB view should refresh (e.g. after background KB agent import). */
 	readonly onDidRequestKbRefresh: Event<void>;
+	/**
+	 * 上报知识库后台处理状态（导入 / 分析归类）。
+	 *
+	 * ⚠ 与 `requestKbRefresh` 的区别：那个只说「内容变了、去刷新」；这个说的是
+	 * 「**现在正在处理什么、进度多少**」—— 供视图在「库 / 笔记」标题右侧与对应文件节点上
+	 * 显示进度（用户要求**不要弹通知**，反馈只落在图标与视图内）。
+	 */
+	reportKbProcessing(state: IKbProcessingState): void;
+	/** Fired when KB background processing state changes (drives in-view progress, no notifications). */
+	readonly onDidKbProcessing: Event<IKbProcessingState>;
 	/**
 	 * Fired when 知识库 / 代码库 / 记忆 有构建或新增活动。
 	 * 由 activitybar「资料库」图标的徽标聚合消费（见 libraryActivityBadge.ts）。

@@ -31,6 +31,10 @@ import { IThemeService } from '../../../../../platform/theme/common/themeService
 import { IKeybindingService } from '../../../../../platform/keybinding/common/keybinding.js';
 import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { IFileService, IFileStat, FileChangesEvent, FileKind } from '../../../../../platform/files/common/files.js';
+import { IMermaidInlineRenderer } from '../mermaidInlineRenderer.js';
+import { IDrawioInlineRenderer } from '../drawioInlineRenderer.js';
+import { prepareDiagramsForSync } from '../knowledge/diagramSyncPrepare.js';
+import { svgToPng } from '../knowledge/svgRasterizer.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
 import { INotificationService } from '../../../../../platform/notification/common/notification.js';
 import { IFileDialogService, IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
@@ -42,12 +46,14 @@ import { DataTransfers } from '../../../../../base/browser/dnd.js';
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { basename as uriBasename, extname as uriExtname, isEqual } from '../../../../../base/common/resources.js';
 import { IEditorService, SIDE_GROUP } from '../../../../../workbench/services/editor/common/editorService.js';
+import { IViewsService } from '../../../../../workbench/services/views/common/viewsService.js';
 import { IEditorGroupsService, GroupsOrder, IEditorGroup } from '../../../../../workbench/services/editor/common/editorGroupsService.js';
 import { EditorsOrder } from '../../../../../workbench/common/editor.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import { IRequestService } from '../../../../../platform/request/common/request.js';
 import { IEnvironmentService, INativeEnvironmentService } from '../../../../../platform/environment/common/environment.js';
-import { IAgentStudioService } from '../../common/agentStudio.js';
+import { IAgentChatService, IAgentStudioService } from '../../common/agentStudio.js';
+import { IAgentDriverService } from '../../common/agentDriver.js';
 import { IAgentOSService } from '../../common/agentOS.js';
 import { createMediaStoreProxy } from '../mediaStoreProxy.js';
 import type { IMediaBackend, MediaAsset, MediaListResult } from '../../common/mediaStoreChannel.js';
@@ -100,15 +106,20 @@ import {
 	isKbDirOccupied, nextVaultDirName, sanitizeVaultDirName,
 } from '../knowledge/kbVaultState.js';
 import type { IChatModel } from '../knowledge/llm.js';
-import { KbFullTextIndex, IKbSearchHit } from './knowledgeBase/kbIndex.js';
+import { KbFullTextIndex, IKbSearchHit, TEXT_EXTS, isKbMarkdownNote } from './knowledgeBase/kbIndex.js';
+import { diagramKindOfPath, KbDiagramViewerInput } from '../kbDiagramViewerInput.js';
+// PDF / Word 只读预览器（2026-09-23）：这两个类型交给它，不能当文本打开
+// ★ 2026-09-23：同时导入 input 类 —— 由**本文件**创建/复用/兜底释放（见 _openMediaViewer ✓）
+import { isKbMediaViewerFile, KbMediaViewerInput } from '../kbMediaViewerPane.js';
 import { KbLinkGraph, IKbGraphRoot } from './knowledgeBase/kbGraph.js';
 import { KbNativeKernel, INativeBacklinkResult } from './knowledgeBase/kbNativeKernel.js';
 import { IKbNativeKernelService, type IKbBuildRoot } from '../kbNativeKernelService.js';
 import { IEmbeddingService } from '../../common/embeddingProvider.js';
 import { resolveAuxEmbeddingProviderId, resolveAuxEmbeddingConfig } from '../knowledge/embeddingConfigResolver.js';
 import { KbWorkerManager } from './knowledgeBase/kbWorkerManager.js';
-import { KbSettingsEditorInput, IKbSettingsHost } from '../kbSettingsEditorInput.js';
+import { KbSettingsEditorInput, IKbSettingsHost, type KbSettingsFocus } from '../kbSettingsEditorInput.js';
 import {
+	AGENT_STUDIO_KB_FEISHU_SYNC_ENABLED,
 	AGENT_STUDIO_KB_FEISHU_CLI_PATH,
 	AGENT_STUDIO_KB_FEISHU_SYNC_SRC_DIRS,
 	AGENT_STUDIO_KB_FEISHU_SYNC_PARENT,
@@ -277,6 +288,14 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	/** 正在「构建为笔记」的库文件路径集合，用于文档 item 上显示「构建中」提示 */
 	private _buildingPaths = new Set<string>();
 
+	/**
+	 * 后台处理状态文案（例如 `分析中 3/7`），显示在「库 / 笔记」标题右侧（2026-09-23）。
+	 *
+	 * 用户要求：**不要弹通知**（影响观感），反馈只落在 ①activitybar「资料库」图标徽标
+	 * ②「库 / 笔记」文件夹右侧。本字段服务 ②（① 由 `requestLibraryBadge` 驱动）。
+	 */
+	private _kbProcessingLabel: string | undefined;
+
 	/** 搜索防竞态令牌：每次搜索自增，结果渲染前校验是否最新 */
 	private _searchToken = 0;
 	/** 侧边栏显示模式：文件树 | 最近编辑 */
@@ -309,6 +328,17 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	private _domSelectedPaths = new Set<string>();
 	/** DOM 层最后选中项（Shift+Click 范围选择的锚点） */
 	private _domLastSelectedPath: string | null = null;
+	/**
+	 * 已构建的「构建源」绝对路径集合（**小写**），来自 `<vault>/.kb-build-cache.json`（2026-09-23，P2）。
+	 * 渲染库分区节点时用它判断「待构建 / 已建笔记」—— 原先按**扩展名**猜（库内非 .md 一律
+	 * 显示「待构建」、.md 一律显示「已建笔记」），并非真实构建状态。
+	 */
+	private _builtSourcePaths = new Set<string>();
+	/**
+	 * ⚠ **临时诊断**是否已安装（2026-09-23 定位「显示 PDF 时右键无菜单」）。
+	 * 根因定位后请连同 `_installContextMenuDiagnostics` 与本字段一起删除。
+	 */
+	private _ctxDiagInstalled = false;
 	/** KB 文件剪贴板：{ uris, cut }。cut=true 表示剪切（粘贴时移动），false 表示复制。对齐 Explorer 剪贴板模型。 */
 	private _kbClipboard: { uris: URI[]; cut: boolean } | null = null;
 	/** 延迟构建标志：FTS 已就绪但提及索引/图谱未建（Worker 模式或手动延迟） */
@@ -323,6 +353,13 @@ export class KnowledgeBaseViewPane extends ViewPane {
 
 	/** 反链面板容器 */
 	private _backlinksEl?: HTMLElement;
+
+	/**
+	 * 知识库导入控制器实例（视图侧唯一入口用的那份）。
+	 * ★ 2026-09-23：视图改为**自持实例** —— 「批量构建库」走实例版 `buildAllPendingNotes`，
+	 *   它把单篇构建交给 `buildNotesFromLibrary`（默认 agent 多轮、失败自动回落直连管线）。
+	 */
+	private readonly _kbImport: KbImportController;
 
 	/** vssaros 内置内核（零外部依赖，始终可用） */
 	private _nativeKernel: KbNativeKernel | undefined;
@@ -348,6 +385,9 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		@IThemeService themeService: IThemeService,
 	@IHoverService hoverService: IHoverService,
 	@IFileService private readonly fileService: IFileService,
+		// 图表渲染（同步前把 mermaid/drawio 渲成 PNG 用）：与笔记预览用的是同一套隐藏 webview 渲染器
+		@IMermaidInlineRenderer private readonly _mermaidRenderer: IMermaidInlineRenderer,
+		@IDrawioInlineRenderer private readonly _drawioRenderer: IDrawioInlineRenderer,
 	@IModelService private readonly modelService: IModelService,
 	@ILanguageService private readonly languageService: ILanguageService,
 		@IStorageService private readonly storageService: IStorageService,
@@ -374,8 +414,26 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		@IAgentOSService private readonly _agentOSService: IAgentOSService,
 		@ITerminalService private readonly terminalService: ITerminalService,
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
+		@IViewsService private readonly viewsService: IViewsService,
+		@IAgentDriverService private readonly agentDriverService: IAgentDriverService,
+		// 「构建过程在聊天框开一个可见会话」需要它（构建会话的创建/驱动走 IAgentChatService）
+		@IAgentChatService private readonly agentChatService: IAgentChatService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
+		// ★ 2026-09-23：视图**自持一个控制器实例**（与 workspaceView / nativeChatEditorPane 的做法一致）。
+		//   原因：「批量构建库」要走**实例**版 `buildAllPendingNotes` 才能享受 agent 多轮
+		//   （静态版是直连管线、不跑 agent）；实例版把单篇构建交给 `buildNotesFromLibrary`，
+		//   于是批量与单文件右键「构建为笔记」走**同一条**路径。
+		//   ✅ 并发安全：控制器的 per-vault 互斥锁 `_vaultLocks` 是**静态**的 ⇒ 多实例之间仍然互斥。
+		this._kbImport = new KbImportController(
+			this.configurationService, this.logService, this.fileService,
+			this.environmentService as INativeEnvironmentService, this.storageService,
+			this.agentStudioService, this.viewsService, this.editorService,
+			this.notificationService, this.requestService, this.agentDriverService,
+			this.agentChatService,
+			// 构建会话要在聊天框窗口里**新建一个 group** 打开（controller 内复用 presetAgentView 的做法）
+			this.editorGroupsService,
+		);
 		this._index = new KbFullTextIndex(this.fileService);
 		this._graph = new KbLinkGraph(this.fileService);
 		this._nativeKernel = new KbNativeKernel(
@@ -400,6 +458,20 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		// 不再每次 renderAll 全量重建。
 		this._register(this.agentStudioService.onDidRequestKbRefresh(() => {
 			this._scheduleKbRequestRefresh();
+		}));
+		// 知识库后台处理状态（导入 / 分析归类 / 构建笔记）：在「库 / 笔记」标题右侧与对应文件
+		// 节点上显示进度。★ 刻意**不发通知**（用户要求反馈只落在图标徽标与视图内）。
+		this._register(this.agentStudioService.onDidKbProcessing(st => {
+			this._kbProcessingLabel = st.active ? (st.label ?? '处理中…') : undefined;
+			const next = new Set(st.paths ?? []);
+			// 清理不再处理的节点（结束时报 active=false ⇒ 全部清理）
+			for (const p of Array.from(this._buildingPaths)) {
+				if (!st.active || !next.has(p)) { this._setNodeBuilding(p, false); }
+			}
+			if (st.active) {
+				for (const p of next) { this._setNodeBuilding(p, true); }
+			}
+			this._renderKbProcessingUi();
 		}));
 		// P3-3：监听 vault 文件变化（外部编辑/外部程序改动），debounce 后刷新 + 重建导航
 		this._register(this.fileService.onDidFilesChange(e => this._onVaultFilesChange(e)));
@@ -601,10 +673,11 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		title.replaceChildren(titleIcon, titleText);
 		header.appendChild(title);
 		header.appendChild($('span.kb-spacer'));
-		header.appendChild(this._headerBtn('codicon-graph', '关系图谱（在中间栏打开）', () => this._openGraph()));
-		header.appendChild(this._headerBtn('codicon-map', '思维导图（打开或生成 .canvas）', () => void this._openMindmap()));
-		header.appendChild(this._headerBtn('codicon-refresh', '刷新', () => this.refresh()));
-		header.appendChild(this._headerBtn('codicon-tools', '批量构建笔记（将库中所有未处理文件转为笔记）', () => { void this._batchBuildAll(); }));
+		// ★ 2026-09-23 用户要求：**精简「资料库」标题栏** —— 移除 刷新 / 关系图谱 / 思维导图。
+		//   前两者已挪到「我的知识库」下拉框右侧（`renderVaultBar`），与它们作用的对象同处一行；
+		//   「批量构建笔记」同样挪到了「库」分区标题右侧（见 `renderSection`）。
+		// ⚠ 思维导图（`_openMindmap`）**没有别的 UI 入口** ⇒ 移除后只能靠已有 .canvas 文件自身打开；
+		//   若以后仍需「一键生成思维导图」，应另找位置挂回（例如「库」分区工具栏）。
 		// ⚙ 设置：在中间栏打开 KbSettingsEditorPane（原先的侧栏下拉已移除）
 		header.appendChild(this._headerBtn('codicon-settings-gear', '知识库设置（在中间栏打开）', (e) => { e.stopPropagation(); this.openSettingsEditor(); }));
 		this._body.appendChild(header);
@@ -641,7 +714,14 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		this._vaultBar = $('div.kb-vault-bar');
 		kbBody.appendChild(this._vaultBar);
 		this._vaultMenu = $('div.kb-vault-menu');
-		kbBody.appendChild(this._vaultMenu);
+		// ★ 2026-09-23 修「点下拉框打不开（点了没反应）」：
+		//   菜单 CSS 是 `position: absolute; top: 100%; left/right: 8px`，其定位基准是
+		//   **最近的 positioned 祖先**，而 `.kb-vault-bar`（`position: relative`）是这里
+		//   唯一符合条件的元素。此前菜单被挂在 `kbBody`（= `.kb-panel`，**无 position
+		//   且带 `overflow: hidden`**）上 ⇒ 菜单被定位到面板底部**之外**，再被 `overflow`
+		//   裁掉 ⇒ 视觉上完全看不到，表现得像「点了没反应」。
+		//   ⇒ 挂进 vaultBar：`top: 100%` 恰好落在下拉框这一行的正下方，仍在可视区内。
+		this._vaultBar.appendChild(this._vaultMenu);
 
 		// Search row: 搜索框 + 搜索模式切换 + 排序按钮
 		const searchRow = $('div.kb-search-row');
@@ -691,6 +771,8 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		// Scroll area（文件树）— DOM 渲染层（单一层）
 		this._scroll = $('div.kb-scroll');
 		kbBody.appendChild(this._scroll);
+		// ⚠ 临时诊断（2026-09-23 排「显示 PDF 时右键无菜单」）—— 定位后连同方法一起删
+		this._installContextMenuDiagnostics();
 
 		this._body.appendChild(kbBody);
 
@@ -1393,6 +1475,13 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		this._vaults = this.loadVaults();
 		const activeId = this.storageService.get(STORAGE_ACTIVE, StorageScope.APPLICATION);
 		this._activeVault = this._vaults.find(v => v.id === activeId && !v.closed) ?? this._vaults.find(v => !v.closed);
+		// ★ 2026-09-23 诊断日志（配合 `ensureVaultFolders` 里的 vault-dir 日志）：
+		//   把「storage 记录的 activeId」与「实际选中的 vault」并列打印。
+		//   若二者不一致（典型：activeId 丢失/指向已关闭的 vault ⇒ 回退到**第一个未关闭**的
+		//   vault），就会去激活一个**非期望的旧 vault** —— 而旧 vault 往往没有 `customPath`
+		//   ⇒ `ensureVaultFolders` 于是在 `<kbDir>` 下创建 `<vaultId>/` 目录。
+		this.logService.info(`[KB][vault-dir] initVaults: storage.activeId=${activeId ?? '(none)'} | vaults=[${this._vaults.map(v => `${v.id}|${v.name}|customPath=${v.customPath ?? '(none)'}|closed=${v.closed ? 'Y' : 'N'}`).join(' ; ')}]`);
+		this.logService.info(`[KB][vault-dir] initVaults → picked activeVault=${this._activeVault ? `${this._activeVault.id}|${this._activeVault.name}|customPath=${this._activeVault.customPath ?? '(none)'}` : '(none)'}`);
 
 		if (!this._activeVault) {
 			// 首次使用：创建一个默认 Vault（对齐 SiYuan 首次启动的默认笔记本）
@@ -1412,9 +1501,22 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			const root = this.vaultUri(v);
 			const lib = this.sectionUri(v, 'library');
 			const notes = this.sectionUri(v, 'notes');
+			// ★★ 2026-09-23 诊断日志：定位「知识库根下凭空多出 `<时间戳>-<随机>` 目录」。
+			//
+			//   该目录名 = `vault.id` ⇒ 只有**没有 `customPath` 的（旧）vault** 才会走
+			//   `vaultUri` 的 fallback（`joinPath(rootUri, v.id)`）⇒ 把「算出什么路径、
+			//   是哪个 vault、谁触发的」一次说清：
+			//     · 无 customPath ⇒ WARN + **调用栈**（一眼看出是哪个入口激活了这个旧 vault）；
+			//     · 真正执行 createFolder 时再记一条 INFO（同样带栈）。
+			if (!v.customPath) {
+				this.logService.warn(`[KB][vault-dir] legacy vault WITHOUT customPath → root=${root.fsPath} (id=${v.id}, name=${v.name})\nstack=${new Error().stack}`);
+			}
 			// Only create folders that don't already exist — createFolder is a
 			// heavy IPC call even when the folder already exists on disk.
-			if (!await this.fileService.exists(root)) { await this.fileService.createFolder(root); }
+			if (!await this.fileService.exists(root)) {
+				this.logService.info(`[KB][vault-dir] createFolder(root): ${root.fsPath} (id=${v.id}, name=${v.name}, customPath=${v.customPath ?? '(none)'})\nstack=${new Error().stack}`);
+				await this.fileService.createFolder(root);
+			}
 			if (!await this.fileService.exists(lib))  { await this.fileService.createFolder(lib); }
 			if (!await this.fileService.exists(notes)) { await this.fileService.createFolder(notes); }
 			this._vaultFoldersReady.add(v.id);
@@ -1710,6 +1812,8 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		});
 		// 标签分类区块（设计图：单一可折叠标题，内含 标签搜索 + 分组列表）
 		this._appendRegion('tagclass', () => { this._scroll.appendChild(this.renderTagClassificationSection()); });
+		// 重建后同步「唯一展开」标记（初始全开 ⇒ 无 solo，保持既有的平分/固定高度行为）
+		this._updateSoloSection();
 		const _lf = this._activeVault?.linkedFolders?.length ?? -1;
 		const _ws = this._activeVault?.linkedWorkspaces?.length ?? -1;
 		this.logService.info(`[KB perf] renderAll #${callId} total: ${(performance.now() - t0).toFixed(1)}ms linkedFolders=${_lf} linkedWS=${_ws}`);
@@ -1743,6 +1847,9 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		header.onclick = () => {
 			this._tagClassOpen = !this._tagClassOpen;
 			sec.classList.toggle('open', this._tagClassOpen);
+			// ★ 2026-09-24（用户要求）：手风琴 —— 展开「标签分类」时折叠「库 / 笔记」
+			if (this._tagClassOpen) { this._collapseOtherSections('tagclass'); }
+			this._updateSoloSection();
 		};
 		sec.append(header);
 
@@ -1912,8 +2019,10 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		// 顶部已有「记忆」Tab 可直达，该按钮纯冗余（用户要求精简）。
 
 		// 视图切换按钮：文件树 ⇄ 最近编辑
+		// 2026-09-23 用户要求：图标改为 `codicon-list-tree`（原 `codicon-folder-opened` 更像
+		// 「打开文件夹」，不足以表达「树」）。「最近编辑」仍用 `codicon-history`。
 		const viewBtn = $('span.kb-abtn');
-		const viewIcons: Record<string, string> = { tree: 'codicon-folder-opened', recent: 'codicon-history' };
+		const viewIcons: Record<string, string> = { tree: 'codicon-list-tree', recent: 'codicon-history' };
 		const viewTitles: Record<string, string> = { tree: '文件树视图', recent: '最近编辑' };
 		viewBtn.className = 'kb-abtn codicon ' + viewIcons[this._viewMode];
 		viewBtn.title = viewTitles[this._viewMode];
@@ -1925,17 +2034,25 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		};
 		this._vaultBar.appendChild(viewBtn);
 
-		const newBtn = $('span.kb-abtn.codicon.codicon-add'); newBtn.title = '新建知识库';
-		newBtn.onclick = async () => {
-		const r = await this.dialogService.input({ message: localize('kb.newVault', '新建知识库名称'), inputs: [{ value: '我的知识库' }] });
-		const name = r.values?.[0]?.trim();
-		if (r.confirmed && name) { await this.createVault(name); }
-		};
-		this._vaultBar.appendChild(newBtn);
+		// ★ 2026-09-23 用户要求：从「资料库」标题栏**挪下来**的两个按钮，位于「文件树视图」右侧。
+		//   顺带**移除**原先这里的「新建知识库」（codicon-add）与「更多」（codicon-ellipsis）：
+		//     · 「…」与点击下拉框本身完全等价（`toggleVaultMenu`）⇒ 纯冗余；
+		//     · 「新建知识库」在菜单里没有对应项，移除后改用「配置文件夹为知识库…」
+		//       （下拉框 → 菜单底部），即「挂载已有文件夹」这一更常用的路径。
+		const refreshBtn = $('span.kb-abtn.codicon.codicon-refresh');
+		refreshBtn.title = '刷新';
+		refreshBtn.onclick = (e) => { e.stopPropagation(); this.refresh(); };
+		// 图标 `graph-scatter`（散点图，2026-09-23 用户从候选中选定）—— 比原先的柱状图
+		// `graph` 更贴近「节点 + 关联」的图谱语义。⚠ 别动 L4187 的「代码图谱」（那是另一个功能）。
+		const graphBtn = $('span.kb-abtn.codicon.codicon-graph-scatter');
+		graphBtn.title = '关系图谱（在中间栏打开）';
+		graphBtn.onclick = (e) => { e.stopPropagation(); void this._openGraph(); };
+		this._vaultBar.append(refreshBtn, graphBtn);
 
-		const moreBtn = $('span.kb-abtn.codicon.codicon-ellipsis'); moreBtn.title = '更多';
-		moreBtn.onclick = (e) => { e.stopPropagation(); this.toggleVaultMenu(); };
-		this._vaultBar.appendChild(moreBtn);
+		// ⚠ `replaceChildren()` 连菜单一起清掉了 ⇒ 必须重新挂回。
+		//   菜单**必须**留在 `.kb-vault-bar` 内（它是唯一的 positioned 容器，
+		//   决定了菜单 `top: 100%` 的落点；详见 `renderBody` 处注释）。
+		this._vaultBar.appendChild(this._vaultMenu);
 
 		this.renderVaultMenu();
 	}
@@ -2005,6 +2122,9 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			}),
 			new Separator(),
 			new Action('kb.vaultLint', '体检（结构校验）', undefined, true, () => { void this._runLint(v); }),
+			// ★ 2026-09-23（P1）：体检的「一键修复」—— 清构建缓存孤儿 + 剔除已失效来源 + 重跑门控/导航。
+			// 做成独立菜单项而不是通知上的按钮：与「体检」并列、可单独/重复执行、不依赖体检先跑完。
+			new Action('kb.vaultRepair', '修复（清缓存孤儿 / 失效来源）', undefined, true, () => { void this._runRepair(v); }),
 			new Action('kb.vaultRouteLint', '隔离低质笔记（人环）', undefined, true, () => { void this._routeLintToReview(v); }),
 			new Action('kb.vaultDedup', '整理去重', undefined, true, () => { void this._runDedup(v); }),
 			new Action('kb.vaultReview', '审核队列…', undefined, true, () => { void this._showReviewQueue(v); }),
@@ -2069,22 +2189,59 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		const libDir = this.sectionUri(v, 'library');
 		const notesDir = this.sectionUri(v, 'notes');
 		try {
-			const issues = await lintVault(this.fileService, libDir);
-			const report = formatLintReport(libDir, issues);
+			// ★ 2026-09-23：**笔记区是 lint 的扫描根**（知识体系层），库作为「来源目录」传入 ——
+			//   否则规则 1（断链）与规则 4（来源失效）会把笔记里的库内引用全部误报。
+			const issues = await lintVault(this.fileService, notesDir, libDir);
+			const report = formatLintReport(notesDir, issues);
 			await this.fileService.writeFile(URI.joinPath(notesDir, 'lint-report.md'), VSBuffer.fromString(report));
-			await KbImportController.appendKbLog(this.fileService, libDir, `体检：${issues.length} 项问题`);
+			await KbImportController.appendKbLog(this.fileService, notesDir, `体检：${issues.length} 项问题`);
 			await this.refreshSection('notes');
 			const cnt = (s: string) => issues.filter(i => i.severity === s).length;
 			this.notificationService.info(`知识库体检完成：${issues.length} 项（error ${cnt('error')} / warning ${cnt('warning')} / info ${cnt('info')}），详见 lint-report.md`);
 		} catch (err) { this.notificationService.error('体检失败：' + String(err)); }
 	}
 
+	/**
+	 * 一键修复（2026-09-23，P1）：把「体检」检出的可自动修复项落地。
+	 *
+	 * 修三类（都是**删除**带来的悬空状态，尤其在系统资源管理器/手机端删文件时最需要）：
+	 *  ① 构建缓存孤儿 —— 源或已建笔记已不存在的条目（不清理会让素材被误判「已构建」而跳过重建，
+	 *     或反之让删除过笔记的素材**永远无法**被批量重建）；
+	 *  ② 笔记 `sources` 里指向不存在文件的来源（会让门控按虚高的来源数判状态）；
+	 *  ③ 重跑门控 + 刷新导航，让 ①② 的结果真正生效。
+	 *
+	 * 保守边界：**不删任何笔记** —— `cascadeDeleteLibraryNotes` 在「两阶段工作流」下是有意禁用的
+	 * stub（返回 `[]`，有契约测试守着），这里同样只做「清理引用」，不代替用户做删除决定。
+	 */
+	private async _runRepair(v: IKbVault): Promise<void> {
+		const vaultRoot = this.vaultUri(v);
+		const libDir = this.sectionUri(v, 'library');
+		const notesDir = this.sectionUri(v, 'notes');
+		try {
+			const purged = await KbImportController.purgeStaleBuildCacheEntries(this.fileService, vaultRoot);
+			const pruned = await KbImportController.pruneMissingSources(this.fileService, libDir, [notesDir]);
+			// ★ 2026-09-23：门控 / 导航 / 日志都按笔记区（笔记的新落点）—— 库只作来源目录
+			const gate = await KbImportController.applyDeabstractionGating(this.fileService, notesDir);
+			await KbImportController.maintainKbNavigation(this.fileService, notesDir);
+			await KbImportController.appendKbLog(this.fileService, notesDir,
+				`修复：清理构建缓存 ${purged} 条、剔除失效来源 ${pruned.removed} 项（${pruned.notes.length} 篇笔记）`);
+			await this._reloadBuildState();
+			await this.refreshSection('library');
+			await this.refreshSection('notes');
+			this.notificationService.info(
+				`修复完成：构建缓存清理 ${purged} 条；失效来源剔除 ${pruned.removed} 项（涉及 ${pruned.notes.length} 篇笔记）；`
+				+ `门控 active=${gate.active} / pending=${gate.pending}`);
+		} catch (err) { this.notificationService.error('修复失败：' + String(err)); }
+	}
+
 	/** P1 人环：把体检检出的低质量笔记（阈值 warning）隔离进 `.review/` 审核队列，等待人工确认后回流。 */
 	private async _routeLintToReview(v: IKbVault): Promise<void> {
 		const libDir = this.sectionUri(v, 'library');
+		const notesDir = this.sectionUri(v, 'notes');
 		const vaultRoot = this.vaultUri(v);
 		try {
-			const issues = await lintVault(this.fileService, libDir);
+			// ★ 2026-09-23：扫描根 = 笔记区，库作为来源目录（同 `_runLint`）
+			const issues = await lintVault(this.fileService, notesDir, libDir);
 			const { routed, skipped } = await routeLintToReview(this.fileService, vaultRoot, issues, 'warning');
 			await KbImportController.appendKbLog(this.fileService, libDir, `隔离低质笔记：${routed.length} 篇移入审核队列`);
 			await this.refreshSection('notes');
@@ -2198,25 +2355,72 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		const titleText = $('span'); titleText.textContent = section === 'library' ? '库' : '笔记';
 		title.replaceChildren(secIcon, titleText);
 		const count = $('span.kb-count'); count.textContent = '...';
+		// 「库 / 笔记」标题右侧的后台处理状态（2026-09-23）：转圈 + 文案（如「分析中 3/7」）。
+		// 取代原先的通知弹窗 —— 用户要求反馈只落在图标徽标与视图内。
+		const processing = $('span.kb-processing');
+		processing.style.display = 'none';
+		processing.style.alignItems = 'center';
+		processing.style.gap = '4px';
+		processing.style.marginLeft = '6px';
+		processing.style.fontSize = '11px';
+		processing.style.opacity = '0.75';
+		const processingSpinner = $('span.codicon.codicon-loading');
+		const processingText = $('span.kb-processing-text');
+		processing.append(processingSpinner, processingText);
+		// 该 section 是新建的 ⇒ 就地同步当前状态（不依赖 DOM 查询：此时还未挂到 _scroll 上）
+		if (this._kbProcessingLabel) {
+			processingText.textContent = this._kbProcessingLabel;
+			processing.style.display = 'inline-flex';
+		}
 		const spacer = $('span.kb-section-spacer');
 
 		const toolbar = $('div.kb-section-toolbar');
-		const newFileBtn = $('span.kb-tool-btn.codicon.codicon-new-file'); newFileBtn.title = '新建文件';
-		newFileBtn.onclick = (e) => { e.stopPropagation(); void this.newFile(section); };
-		const newFolderBtn = $('span.kb-tool-btn.codicon.codicon-new-folder'); newFolderBtn.title = '新建文件夹';
-		newFolderBtn.onclick = (e) => { e.stopPropagation(); void this.newFolder(section); };
-		toolbar.append(newFileBtn, newFolderBtn);
+		// ★ 2026-09-23 用户要求：**移除分区标题右侧的「新建文件 / 新建文件夹」按钮**。
+		//   这两个操作仍然可用（不删功能，只收按钮）：
+		//     · 右键菜单「新建文件 / 新建文件夹」
+		//     · 文件/文件夹节点 hover 上的同名按钮
+		//     · 快捷键 Ctrl+N / Ctrl+Shift+N（作用于当前选中分区）
 		if (section === 'library') {
+			// 「批量构建**库**」（2026-09-23 用户要求改名）：它作用于**库里的素材** ⇒ 名字与所在分区对齐，
+			// 与「笔记」分区新增的「批量构建笔记」区分开（后者是知识体系侧的入口，跑同一个批量构建）。
+			const batchBuildBtn = $('span.kb-tool-btn.codicon.codicon-tools');
+			batchBuildBtn.title = '批量构建库（把库中所有未处理素材转为笔记）';
+			batchBuildBtn.onclick = (e) => { e.stopPropagation(); void this._batchBuildAll(); };
 			// 「导入链接 / URL」（2026-09-22）：抓正文 + 图片本地化 → 落 库/raw ⇒ 再「构建为笔记」
 			const importUrlBtn = $('span.kb-tool-btn.codicon.codicon-link-external');
 			importUrlBtn.title = '导入链接 / URL（小红书 · 抖音 · 知乎 · YouTube · B站…）';
 			importUrlBtn.onclick = (e) => { e.stopPropagation(); void this.importFromUrl(); };
-			toolbar.append(importUrlBtn);
+			toolbar.append(batchBuildBtn, importUrlBtn);
+		}
+		if (section === 'notes') {
+			// ★ 「思维导图」从顶部「资料库」标题栏挪到这里（2026-09-23 用户要求精简顶部）。
+			//   它生成的 `.canvas` 正是从**笔记**分区（`_openMindmap` 用 `sectionUri(…, 'notes')`）
+			//   派生的 ⇒ 挂在「笔记」分区语义最贴切；同时避免「移除按钮」直接变成
+			//   「功能再无入口」（`_openMindmap` 会成死代码，且 tsgo 会报 TS6133）。
+			const mindmapBtn = $('span.kb-tool-btn.codicon.codicon-map');
+			mindmapBtn.title = '思维导图（打开或生成 .canvas）';
+			mindmapBtn.onclick = (e) => { e.stopPropagation(); void this._openMindmap(); };
+			// ★ 2026-09-23 用户决定：**构建入口只保留「库」页签右侧那一个**（「批量构建库」）——
+			//   同一个批量构建放两个入口只会让人怀疑两者不同；这里不再重复放「批量构建笔记」。
+			//   · 「同步飞书」保留：它不是构建入口，未配置飞书时**直接跳到设置页的飞书分组**，
+			//     而不是默默跑一个注定没结果的同步。
+			const feishuBtn = $('span.kb-tool-btn.codicon.codicon-cloud-upload');
+			feishuBtn.title = '同步飞书（未配置时会打开知识库设置的「飞书同步」分组）';
+			feishuBtn.onclick = (e) => { e.stopPropagation(); void this._syncFeishuFromToolbar(); };
+			toolbar.append(mindmapBtn, feishuBtn);
 		}
 
-		header.append(arrow, title, count, spacer, toolbar);
+		header.append(arrow, title, count, processing, spacer);
+		// 工具栏为空时（「笔记」分区已无按钮）不挂载，避免留下空元素占位、撑开标题右侧间距
+		if (toolbar.childElementCount > 0) { header.append(toolbar); }
 		// 展开态由 CSS 的 .kb-section.open 规则驱动箭头旋转，不再手改 textContent
-		header.onclick = () => { sec.classList.toggle('open'); };
+		// ★ 2026-09-24（用户要求）：手风琴 —— 展开本分区时自动折叠「库 / 笔记 / 标签分类」中的其它分区。
+		header.onclick = () => {
+			const willOpen = !sec.classList.contains('open');
+			sec.classList.toggle('open', willOpen);
+			if (willOpen) { this._collapseOtherSections(section); }
+			this._updateSoloSection();
+		};
 		sec.append(header);
 
 		const body = $('div.kb-section-body');
@@ -2247,6 +2451,35 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		return sec;
 	}
 
+	/**
+	 * 手风琴互斥（★ 2026-09-24 用户要求）：折叠「库 / 笔记 / 标签分类」中除 `except` 外的所有分区。
+	 *
+	 * 库/笔记的展开态是**纯 DOM 类**（`.kb-section.open`），标签分类额外有内存态 `_tagClassOpen`
+	 * （renderAll 重建时靠它恢复）⇒ 折叠标签分类时必须**同步复位该字段**，否则下次重渲染它会「复活」。
+	 * 折叠后的高度由 CSS 兜底（`[data-kb-resized]:not(.open) { height: auto }`），这里无需处理。
+	 */
+	private _collapseOtherSections(except: 'library' | 'notes' | 'tagclass'): void {
+		for (const el of this._scroll.querySelectorAll('.kb-section.open')) {
+			const id = el.classList.contains('kb-tagclass') ? 'tagclass' : (el.getAttribute('data-section') ?? '');
+			if (id === except || (id !== 'library' && id !== 'notes' && id !== 'tagclass')) { continue; }
+			el.classList.remove('open');
+			if (id === 'tagclass') { this._tagClassOpen = false; }
+		}
+	}
+
+	/**
+	 * 「唯一展开」标记（★ 2026-09-24 用户要求「页签展开后垂直占满」）：
+	 * 恰好只有一个分区展开时给它打 `.kb-solo` ⇒ CSS 让它**无视拖拽保存的固定高度**、占满剩余空间；
+	 * 0 个或 2+ 个展开（如初始全开）时清除标记，回到既有的「平分 / 固定高度」行为。
+	 * 每次展开态变化后都要调用（点击切换、renderAll 重建）。
+	 */
+	private _updateSoloSection(): void {
+		const sections = [...this._scroll.querySelectorAll<HTMLElement>('.kb-section')];
+		const open = sections.filter(s => s.classList.contains('open'));
+		const solo = open.length === 1 ? open[0] : undefined;
+		for (const s of sections) { s.classList.toggle('kb-solo', s === solo); }
+	}
+
 	private renderRecentView(): void {
 		const sec = $('div.kb-section');
 		const header = $('div.kb-section-header');
@@ -2268,6 +2501,8 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		// 进入即校验：若本次刷新已被更新的刷新取代，连「加载中…」都不该写
 		// （否则过期调用会把占位符留在屏幕上，等不到任何人来清）。
 		if (this._isSectionRefreshStale(section, gen)) { return; }
+		// ★ 2026-09-23（P2）：库分区要显示**真实**构建状态（查 .kb-build-cache.json）⇒ 渲染前先取一次
+		if (section === 'library') { await this._reloadBuildState(); }
 		const t0 = performance.now();
 		body.replaceChildren();
 		const loading = $('div.kb-loading'); loading.textContent = '加载中…'; body.appendChild(loading);
@@ -2457,6 +2692,35 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		return icon;
 	}
 
+	/** 重取构建缓存到本视图（2026-09-23，P2）。失败则清空（宁可显示「待构建」也不要显示假状态）。 */
+	private async _reloadBuildState(): Promise<void> {
+		const vault = this._activeVault;
+		if (!vault) { this._builtSourcePaths = new Set(); return; }
+		try {
+			this._builtSourcePaths = await KbImportController.listBuiltSourcePaths(this.fileService, this.vaultUri(vault));
+		} catch (err) {
+			this.logService.warn('[KB] 读取构建缓存失败，构建状态标记将回退为「待构建」', err);
+			this._builtSourcePaths = new Set();
+		}
+	}
+
+	/**
+	 * 该库节点对应的「构建源」是否已构建（2026-09-23，P2）。
+	 *
+	 * 判定依据是构建缓存（`源文件绝对路径 → 已建笔记路径`），而不是扩展名：
+	 *  · `.md` 素材：直接用它自己的路径查；
+	 *  · 非 md（PDF/docx）：它们**自身不是构建源** —— 先经 `_stageDocSourcesToText` 转成
+	 *    「同目录同名 .md」，那个 .md 才是构建源 ⇒ 用它的路径查。
+	 *    所以 `库/raw/x.pdf` 在 `库/raw/x.md` 构建后会正确显示「已建笔记」。
+	 */
+	private _isBuiltSource(node: IKbNode): boolean {
+		if (node.section !== 'library' || node.isDirectory) { return false; }
+		const probe = /\.(md|markdown)$/i.test(node.name)
+			? node.uri.fsPath
+			: node.uri.fsPath.replace(/\.[^./\\]+$/, '.md');
+		return this._builtSourcePaths.has(probe.toLowerCase());
+	}
+
 	private renderNode(node: IKbNode, depth: number): HTMLElement {
 		const el = $('div.kb-node');
 		el.dataset.path = node.path;
@@ -2480,15 +2744,20 @@ export class KnowledgeBaseViewPane extends ViewPane {
 
 		if (!node.isDirectory) {
 			// 库分区中区分「原始来源」与「已建笔记」：构建笔记也落在库分区（库/概念/…），
-			// 不能一律按分区显示「未索引」。非 Markdown 来源（html 等）= 未索引（待构建）；
-			// .md 笔记（构建产物）= 已建笔记（显示大小）。
+			// 不能一律按分区显示「未索引」。
+			// ★ 2026-09-23（P2）：状态点改为查**真实构建缓存**（见 `_isBuiltSource`），不再按扩展名猜
+			//   —— 原先库内非 .md 一律「待构建」、.md 一律「已建笔记」⇒ 未构建的 .md 也谎报已建，
+			//   而 PDF 即使已建也永远显示「待构建」。
 			const isRawLib = node.section === 'library' && !/\.(md|markdown)$/i.test(node.name);
+			// 非库分区（「笔记」等）不参与构建语义 ⇒ 维持原有的「已建笔记」展示
+			const built = node.section === 'library' ? this._isBuiltSource(node) : true;
 			const meta = $('span.kb-meta');
+			// meta 文案保持原语义（非 md 素材本身不参与索引，显示「未索引」）
 			meta.textContent = isRawLib ? '未索引' : `${this.fmtSize(node.size)}`;
 			el.appendChild(meta);
 			const status = $('span.kb-status');
-			status.classList.add(isRawLib ? 'raw' : 'indexed');
-			status.title = isRawLib ? '待构建为笔记' : '已建笔记';
+			status.classList.add(built ? 'indexed' : 'raw');
+			status.title = built ? '已建笔记' : '待构建为笔记';
 			el.appendChild(status);
 		}
 
@@ -2583,6 +2852,26 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		});
 	}
 
+	/**
+	 * 更新所有「库 / 笔记」标题右侧的后台处理状态（2026-09-23）。
+	 *
+	 * 与 `_setNodeBuilding`（文件节点级转圈）配合：本方法负责**分区标题右侧**的文案，
+	 * 两者共同取代原先的通知弹窗。
+	 */
+	private _renderKbProcessingUi(): void {
+		for (const sec of Array.from(this._scroll.querySelectorAll('.kb-section[data-section]'))) {
+			const el = sec.querySelector('.kb-processing') as HTMLElement | null;
+			if (!el) { continue; }
+			const text = el.querySelector('.kb-processing-text') as HTMLElement | null;
+			if (this._kbProcessingLabel) {
+				if (text) { text.textContent = this._kbProcessingLabel; }
+				el.style.display = 'inline-flex';
+			} else {
+				el.style.display = 'none';
+			}
+		}
+	}
+
 	/** 在文档 item 上应用/移除「构建中」旋转图标与样式。 */
 	private _applyBuildingUi(el: HTMLElement, building: boolean): void {
 		let badge = el.querySelector('.kb-building') as HTMLElement | null;
@@ -2664,7 +2953,19 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		if (this._activeVault) { this.saveExpanded(this._activeVault.id, section); }
 	}
 
-	private selectNode(el: HTMLElement, e?: MouseEvent): void {
+	/**
+	 * 选中节点（左键 / 右键共用）。
+	 *
+	 * ★ 2026-09-23 修「**右键点文件会把它打开**」：单选分支原本对**任何非目录节点**都会
+	 *   `_openNoteEditor` ⇒ PDF/docx 还会经 `isKbMediaViewerFile` 走媒体查看器。
+	 *   而 `nodeContextMenu` 也会调用本方法 ⇒ 右键本意是「选中这一行 + 弹菜单」，
+	 *   却顺带把文件打开了（现场：右键 `内存参考资料.pdf`，中间栏直接显示该 PDF）。
+	 *
+	 * @param e 鼠标事件（用于 Ctrl / Shift 多选判定）。**右键路径请传 `undefined`**。
+	 * @param opts.suppressOpen `true` = 只选中、**不打开文件**（右键菜单用）。
+	 *   左键点击仍保持「点文件即打开」的既有行为（调用方不传该参数）。
+	 */
+	private selectNode(el: HTMLElement, e?: MouseEvent, opts?: { suppressOpen?: boolean }): void {
 		const path = el.dataset.path;
 		if (!path) { return; }
 
@@ -2710,7 +3011,8 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		if (node) {
 			void this.updateBacklinks(node);
 			// 点击文件 → 在中间栏直接打开编辑器
-			if (!node.isDirectory) {
+			// （右键只选中不打开：见本方法签名处 `opts.suppressOpen` 的说明）
+			if (!node.isDirectory && !opts?.suppressOpen) {
 				if (node.uri.path.endsWith('.canvas')) {
 					void this._openCanvasEditor(node.uri);
 				} else {
@@ -2801,20 +3103,10 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			primaryButton: localize('kb.delete', '删除'),
 		});
 		if (!confirm.confirmed) { return; }
-		// P2c：删除「库」分区节点时，级联删除引用了它的笔记（基于 notes 的 sources[] frontmatter）
-		let cascadeDeleted = 0;
-		if (node.section === 'library' && this._activeVault) {
-			const notesDir = this.sectionUri(this._activeVault, 'notes');
-			const libDir = this.sectionUri(this._activeVault, 'library');
-			cascadeDeleted = (await KbImportController.cascadeDeleteLibraryNotes(this.fileService, node.uri, notesDir)).length;
-			if (cascadeDeleted > 0) {
-				await KbImportController.maintainKbNavigation(this.fileService, libDir);
-			}
-		}
 		try {
 			// Explorer 对齐：优先移入系统回收站（软删除，可从回收站还原）
 			await this._deleteToTrash(node.uri);
-			void this._logOp('node.delete', 'success', { target: node.uri.fsPath, detail: { section: node.section, isDirectory: node.isDirectory, cascadeNotes: cascadeDeleted } });
+			void this._logOp('node.delete', 'success', { target: node.uri.fsPath, detail: { section: node.section, isDirectory: node.isDirectory } });
 		} catch (err) {
 			void this._logOp('node.delete', 'failure', { target: node.uri.fsPath, detail: { section: node.section }, error: String(err) });
 		}
@@ -2822,10 +3114,9 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		this._purgeDeletedNodesFromIndexes([node]);
 		// 增量移除（对齐 Explorer：仅移除被删节点的 DOM，不整段重建，消除抖动）
 		this._removeNodeFromDom(node);
-		if (cascadeDeleted > 0) {
-			// 级联删除的笔记文件位于另一分区，整段重建一次（不影响当前分区视图）
-			await this.refreshSection('notes');
-		}
+		// ★ 2026-09-23 删除收口（原先只在一段**恒不成立**的级联分支里刷新导航 ⇒ 从未执行）：
+		//   刷新导航 + 清构建缓存 + 剔除失效来源 + 重跑门控。详见 `_settleAfterDelete`。
+		await this._settleAfterDelete(node);
 	}
 
 	/**
@@ -2849,16 +3140,9 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			primaryButton: localize('kb.deletePermBtn', '永久删除'),
 		});
 		if (!confirm.confirmed) { return; }
-		let cascadeDeleted = 0;
-		if (node.section === 'library' && this._activeVault) {
-			const notesDir = this.sectionUri(this._activeVault, 'notes');
-			const libDir = this.sectionUri(this._activeVault, 'library');
-			cascadeDeleted = (await KbImportController.cascadeDeleteLibraryNotes(this.fileService, node.uri, notesDir)).length;
-			if (cascadeDeleted > 0) { await KbImportController.maintainKbNavigation(this.fileService, libDir); }
-		}
 		try {
 			await this.workingCopyFileService.delete([{ resource: node.uri, recursive: true, useTrash: false }], CancellationToken.None);
-			void this._logOp('node.deletePermanent', 'success', { target: node.uri.fsPath, detail: { section: node.section, cascadeNotes: cascadeDeleted } });
+			void this._logOp('node.deletePermanent', 'success', { target: node.uri.fsPath, detail: { section: node.section } });
 		} catch (err) {
 			void this._logOp('node.deletePermanent', 'failure', { target: node.uri.fsPath, error: String(err) });
 			this.notificationService.warn(String(err));
@@ -2867,7 +3151,45 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		this._purgeDeletedNodesFromIndexes([node]);
 		// 增量移除（对齐 Explorer：仅移除被删节点的 DOM，不整段重建，消除抖动）
 		this._removeNodeFromDom(node);
-		if (cascadeDeleted > 0) { await this.refreshSection('notes'); }
+		// ★ 2026-09-23 删除收口（同 `deleteNode`，原先那段「级联」分支恒不成立 ⇒ 从未执行）
+		await this._settleAfterDelete(node);
+	}
+
+	/**
+	 * 删除后的**收口**（2026-09-23，P0-A / P0-B）。
+	 *
+	 * 为什么需要：`cascadeDeleteLibraryNotes` 在「两阶段工作流」下是**有意禁用的 stub**（返回 `[]`，
+	 * 有契约测试守着）—— 引擎不会自动删用户笔记，这是对的设计。但删掉文件后，库/笔记里会留下一堆
+	 * 悬空状态，而原先的收尾只挂在一段恒不成立的分支上：
+	 *  ① 导航（index/overview/insights）不刷新 —— 原先只在 `cascadeDeleted > 0` 时刷新，而它恒为 0；
+	 *  ② `.kb-build-cache.json` 残留条目 —— 源被删则记录无意义；**笔记被删则必须清掉**，否则
+	 *     批量构建的 `pending` 过滤会把它的源**永久**排除在外（删了笔记就再也建不出来）；
+	 *  ③ 笔记 frontmatter 的 `sources` 留着已不存在的来源 —— 门控按去重来源数决定 active/pending
+	 *     ⇒ 来源数虚高、状态失真；
+	 *  ④ 门控要重跑才能反映 ③ 的变化。
+	 * 只对「库 / 笔记」分区执行（删图片等无关节点不必付这份开销）。收口失败**不影响删除本身**。
+	 */
+	private async _settleAfterDelete(node: IKbNode): Promise<void> {
+		const vault = this._activeVault;
+		if (!vault || (node.section !== 'library' && node.section !== 'notes')) { return; }
+		const vaultRoot = this.vaultUri(vault);
+		const libDir = this.sectionUri(vault, 'library');
+		const notesDir = this.sectionUri(vault, 'notes');
+		try {
+			const purged = await KbImportController.purgeBuildCacheEntries(this.fileService, vaultRoot, [node.uri.fsPath]);
+			const pruned = await KbImportController.pruneMissingSources(this.fileService, libDir, [notesDir]);
+			// ★ 2026-09-23：笔记落点是笔记区 ⇒ 门控与导航都按笔记区扫描
+			const gate = await KbImportController.applyDeabstractionGating(this.fileService, notesDir);
+			await KbImportController.maintainKbNavigation(this.fileService, notesDir);
+			this.logService.info('[KB] 删除收口:'
+				+ ` 缓存剔除 ${purged} 条、失效来源剔除 ${pruned.removed} 项（涉及 ${pruned.notes.length} 篇笔记）、`
+				+ `门控 active=${gate.active} pending=${gate.pending}`);
+		} catch (err) {
+			this.logService.warn('[KB] 删除收口失败（文件已删除，仅收尾未完成）', err);
+		}
+		// 缓存变了 ⇒ 重取一次，让「待构建 / 已建笔记」显示真实状态
+		await this._reloadBuildState();
+		this.markSearchDirty();
 	}
 
 	private startRename(el: HTMLElement, node: IKbNode): void {
@@ -2996,6 +3318,20 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			void this._openCanvasEditor(node.uri);
 			return;
 		}
+		// ★ 非文本文件（pdf / zip / 图片 / 音视频…）**不能**交给编辑器（会被当文本渲染 ⇒ 乱码，
+		//   2026-09-23 用户反馈 PDF 乱码）⇒ 改用系统默认程序打开。
+		//   例外：图表文件（.drawio/.mermaid/.mmd）—— 它们已注册「图表查看器」resolver，
+		//   走 openEditor 由 resolver 分发（2026-09-24 用户反馈点击无对应面板）。
+		const ext = node.uri.path.split('.').pop()?.toLowerCase() ?? '';
+		if (!TEXT_EXTS.has(ext) && !isKbMediaViewerFile(node.uri) && !diagramKindOfPath(node.uri.path)) {
+			void this.openerService.open(node.uri, { openExternal: true });
+			return;
+		}
+		// 图表文件单独走（自建 input + 兜底释放，避免 resolver 形态的 LEAKED DISPOSABLE）
+		if (diagramKindOfPath(node.uri.path)) {
+			this._openDiagramViewer(node.uri);
+			return;
+		}
 		const groups = this.editorGroupsService.getGroups(GroupsOrder.CREATION_TIME);
 		const targetGroup = groups.length <= 1 ? SIDE_GROUP : groups[0];
 		this.editorService.openEditor({ resource: node.uri, options: { pinned: true } }, targetGroup);
@@ -3121,13 +3457,38 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	 * host 提供 Pane 需要的视图上下文（目录、统计、需要视图状态的动作）；
 	 * 纯配置项读写由 Pane 直接用 IConfigurationService 完成（全局服务）。
 	 */
-	private openSettingsEditor(): void {
+	private openSettingsEditor(focusSection?: KbSettingsFocus): void {
 		try {
-			const input = new KbSettingsEditorInput(this._createSettingsHost());
+			const input = new KbSettingsEditorInput(this._createSettingsHost(), focusSection);
 			void this.editorService.openEditor(input, { pinned: true });
-			void this._logOp('settings.open', 'success', {});
+			void this._logOp('settings.open', 'success', { target: focusSection ?? 'default' });
 		} catch (err) {
 			this.logService.error(`[KB] failed to open settings editor: ${err}`);
+		}
+	}
+
+	/**
+	 * 「同步飞书」按钮（2026-09-23 用户要求）。
+	 *
+	 * 未配置时**不跑同步**，而是打开知识库设置页并**定位到「📤 飞书同步」分组** ——
+	 * 否则用户点完只会看到「同步完成 0 篇」，根本不知道差的是「启用飞书同步」这个开关。
+	 * 判据用总开关 `AGENT_STUDIO_KB_FEISHU_SYNC_ENABLED`（与设置页「启用」复选框同源）。
+	 * 已配置时执行**实际同步**（apply；脚本在集成终端里跑，输出对用户可见）。
+	 */
+	private async _syncFeishuFromToolbar(): Promise<void> {
+		const enabled = this.configurationService.getValue<boolean>(AGENT_STUDIO_KB_FEISHU_SYNC_ENABLED) === true;
+		if (!enabled) {
+			this.notificationService.info(localize('kb.feishuNotEnabled',
+				'飞书同步尚未启用：已为你打开知识库设置的「飞书同步」分组，开启「启用飞书同步」后即可一键同步。'));
+			this.openSettingsEditor('feishu');
+			return;
+		}
+		try {
+			await this.syncToFeishu('apply');
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			this.logService.error(`[KB feishu] toolbar sync failed: ${msg}`);
+			this.notificationService.warn(localize('kb.feishuLaunchFailed', '飞书同步启动失败：{0}', msg));
 		}
 	}
 
@@ -3160,8 +3521,15 @@ export class KnowledgeBaseViewPane extends ViewPane {
 				void this.syncToFeishu(mode).catch(err => {
 					const msg = err instanceof Error ? err.message : String(err);
 					this.logService.error(`[KB feishu] sync launch failed: ${err instanceof Error ? err.stack ?? msg : msg}`);
+					this._emitSyncOutput(`\n[启动失败] ${msg}\n`);
 					this.notificationService.warn(localize('kb.feishuLaunchFailed', '飞书同步启动失败：{0}', msg));
 				});
+			},
+			// ★ 2026-09-23：把同步输出暴露给设置面板（实时显示在面板下方，用户不必切终端）
+			getSyncOutput: () => this._feishuSyncOutput,
+			onSyncOutput: (listener) => {
+				this._feishuSyncListeners.add(listener);
+				return { dispose: () => { this._feishuSyncListeners.delete(listener); } };
 			},
 			loadSpaceMap: () => this.loadFeishuSpaceMap(),
 			saveSpaceMap: (list) => this.saveFeishuSpaceMap(list),
@@ -3246,23 +3614,32 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		if (!r.confirmed) { return; }
 		const url = (r.values?.[0] ?? '').trim();
 		if (!url || url === 'https://') { return; }
-		this.notificationService.info(localize('kb.importUrlStart', '正在抓取并导入：{0}', url));
-		const res = await KbImportController.importUrl({
-			url,
-			vaultRoot: this.rootUri,
-			fileService: this.fileService,
-			logService: this.logService,
-			requestService: this.requestService,
-			extractor: this.webContentExtractorService,
-			imageReader: this.sharedWebContentExtractorService,
-		});
-		if (res.ok) {
-			void this._logOp('kb.importUrl', 'success', { target: url, detail: { images: res.images } });
-			this.notificationService.info(localize('kb.importUrlDone', '已导入：{0}（图片 {1} 张）', res.title ?? '', String(res.images)));
-			this.refreshSection('library');
-		} else {
-			void this._logOp('kb.importUrl', 'failure', { target: url, detail: { message: res.message } });
-			this.notificationService.warn(localize('kb.importUrlFailed', '导入失败：{0}', res.message));
+		// ★ 统一反馈（2026-09-23）：走「徽标 + 视图内状态」通道（**不发通知**），与其它导入/构建入口一致。
+		//   抓取正文 + 下载图片可能持续数十秒，原先只有一条 info 通知，用户无从感知进度。
+		this.agentStudioService.reportKbProcessing({ active: true, label: `导入链接中：${url}` });
+		this.agentStudioService.requestLibraryBadge({ source: 'kb', kind: 'building' });
+		try {
+			const res = await KbImportController.importUrl({
+				url,
+				vaultRoot: this.rootUri,
+				fileService: this.fileService,
+				logService: this.logService,
+				requestService: this.requestService,
+				extractor: this.webContentExtractorService,
+				imageReader: this.sharedWebContentExtractorService,
+			});
+			if (res.ok) {
+				void this._logOp('kb.importUrl', 'success', { target: url, detail: { images: res.images } });
+				// 成功不再弹通知（过程反馈走徽标/视图内状态）；结果可在「库」里直接看到
+				void this.refreshSection('library');
+			} else {
+				void this._logOp('kb.importUrl', 'failure', { target: url, detail: { message: res.message } });
+				this.notificationService.warn(localize('kb.importUrlFailed', '导入失败：{0}', res.message));
+			}
+		} finally {
+			// 收尾：清视图内状态；徽标转「有新增」，提示回资料库查看产出
+			this.agentStudioService.reportKbProcessing({ active: false });
+			this.agentStudioService.requestLibraryBadge({ source: 'kb', kind: 'new', count: 1 });
 		}
 	}
 
@@ -3304,6 +3681,64 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	 * 拼装并执行飞书同步脚本（在集成终端里跑，输出对用户可见）。
 	 * dry-run = 只打印计划（默认）；apply = 实际写入飞书。
 	 */
+	/**
+	 * 飞书同步的**累计输出**（终端 `onData` 的镜像，2026-09-23）。
+	 *
+	 * 为什么缓存：面板可能被重建（重开设置页 / 切走再回来），此时需要把已发生的输出
+	 * 原样恢复出来 —— 否则用户看到一片空白，误以为「没在跑」。
+	 * 截断到最近 40k 字符：同步几百篇时输出很长，面板只需看尾部的进度与报错。
+	 */
+	private _feishuSyncOutput = '';
+	private readonly _feishuSyncListeners = new Set<(chunk: string) => void>();
+	private _feishuSyncTerminalSub: { dispose(): void } | undefined;
+
+	/** 广播一段同步输出（缓存 + 通知所有面板订阅者；单个订阅者异常不影响其它）。 */
+	private _emitSyncOutput(chunk: string): void {
+		if (!chunk) { return; }
+		this._feishuSyncOutput = (this._feishuSyncOutput + chunk).slice(-40000);
+		for (const listener of [...this._feishuSyncListeners]) {
+			try { listener(chunk); } catch (err) {
+				this.logService.warn(`[KB feishu] sync output listener failed: ${err instanceof Error ? err.message : String(err)}`);
+			}
+		}
+	}
+
+	/**
+	 * 同步前把笔记里的 mermaid / drawio / canvas 渲染为 PNG 附件并改写引用（2026-09-23）。
+	 *
+	 * 飞书**不渲染图表源码**，且**图片不支持 SVG** ⇒ 不转换的话同步过去只能看到一堆源码。
+	 * 编排已抽到 `knowledge/diagramSyncPrepare.ts`（2026-09-24）—— 与 agent 的 `kb_feishu_sync`
+	 * 工具**共用同一份口径**，避免出现第二条实现漂移。这里只负责把过程实时打进同步输出。
+	 */
+	private async _renderDiagramsBeforeSync(srcDirs: readonly string[]): Promise<void> {
+		const vault = this._activeVault;
+		if (!vault) { return; }
+		// 表头惰性打印：只有真的扫到图表时才显示（无图表的 vault 不刷屏）
+		let headerDone = false;
+		const emit = (line: string): void => {
+			if (!headerDone) {
+				headerDone = true;
+				this._emitSyncOutput('\n=== 准备图表与附件（drawio/canvas → PNG；mermaid → 画板；html → 附件）===\n');
+			}
+			this._emitSyncOutput(line);
+		};
+		const result = await prepareDiagramsForSync({
+			vaultRoot: this.vaultUri(vault),
+			srcDirs,
+			fileService: this.fileService,
+			renderMermaid: (src: string) => this._mermaidRenderer.renderToSvg(src, 'default'),
+			renderDrawio: (src: string) => this._drawioRenderer.renderToSvg(src, 'default'),
+			rasterize: (svg: string, scale?: number) => svgToPng(svg, { scale }),
+			logService: this.logService,
+			onProgress: emit,
+		});
+		if (!result.charts && !result.inlined && !result.attachments && !result.failures) { return; }   // 无图表/附件 ⇒ 不打扰用户
+		emit(`图表与附件准备完成：${result.charts} 个转为图片`
+			+ `${result.inlined ? `，${result.inlined} 个 mermaid 转画板` : ''}`
+			+ `${result.attachments ? `，${result.attachments} 个 HTML 附件` : ''}`
+			+ `${result.failures ? `，${result.failures} 个失败（已保留源码）` : ''}，改动 ${result.touched} 篇笔记。\n`);
+	}
+
 	private async syncToFeishu(mode: 'dry-run' | 'apply'): Promise<void> {
 		if (!this._activeVault) {
 			this.notificationService.warn(localize('kb.feishuNoVault', '没有可用的知识库 Vault，无法同步。'));
@@ -3361,6 +3796,16 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		// 才能以纯 Node 模式跑 .mjs（否则会被当 app 入口加载后立即退出）。
 		// 取不到 Electron 路径时回退系统 `node`（保持可用，不硬失败）。
 		// ⚠ env 保留完整进程环境：脚本内部仍要调用 lark-cli，丢 PATH 会导致「CLI 装了却找不到」。
+		// ★ 2026-09-23：同步前把笔记里的 mermaid / drawio 渲染为 PNG 并改写引用。
+		// 飞书不渲染图表源码、且图片不支持 SVG ⇒ 不转换的话飞书里只会看到一堆源码。
+		try {
+			await this._renderDiagramsBeforeSync(effectiveSrcDirs);
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			this.logService.warn(`[KB feishu] diagram preparation failed (non-fatal): ${msg}`);
+			this._emitSyncOutput(`\n[图表准备] 跳过（不影响同步）：${msg}\n`);
+		}
+
 		const launch = electronNodeLaunch();
 		const runner = launch.executable ? 'electron-node' : 'system-node';
 		void this._logOp('feishu.sync', 'success', { target: mode, detail: { srcCount: srcDirs.length, parent, onConflict, cli: cli.version ?? cliPath, runner } });
@@ -3376,6 +3821,11 @@ export class KnowledgeBaseViewPane extends ViewPane {
 					waitOnExit: true, // 结束后保留终端，便于查看输出
 				},
 			});
+			// ★ 2026-09-23：把终端输出镜像给设置面板 —— 用户不必切到终端也能看到进度与报错。
+			// （终端仍保留：想看得更细/交互时依然可用。）
+			this._feishuSyncTerminalSub?.dispose();
+			this._feishuSyncTerminalSub = terminal.onData(chunk => this._emitSyncOutput(chunk));
+			this._emitSyncOutput(`\n=== 启动飞书同步（${mode === 'apply' ? '同步' : '预览'}）===\n`);
 			this.terminalService.setActiveInstance(terminal);
 			await this.terminalService.revealTerminal(terminal);
 			// ★ 2026-09-23：给一条**显式反馈**。同步是在新终端里跑（终端可能开在别的面板/被折叠），
@@ -4081,17 +4531,18 @@ export class KnowledgeBaseViewPane extends ViewPane {
 
 	/** 右键菜单：对单个库文件构建结构化笔记。 */
 	private async _buildNoteFromLibrary(node: IKbNode): Promise<void> {
+		// ★ 前置检查（2026-09-23 需求）：构建笔记需要「知识库专家」；未配 Provider/模型 ⇒
+		//   弹通知并中止（否则 agent 轮次白跑，用户以为「点了没反应」）。
+		if (KbImportController.kbAgentConfigState(this.agentStudioService, this.configurationService) === 'missing') {
+			KbImportController.warnKbAgentNotConfigured(this.notificationService, '构建笔记');
+			return;
+		}
 		this._setNodeBuilding(node.path, true);
 		try {
 			const vaultRoot = this.vaultUri(this._activeVault!);
-			const built = await KbImportController.buildNotesFromLibrary(node.uri, vaultRoot, {
-				fileService: this.fileService,
-				configService: this.configurationService,
-				logService: this.logService,
-				notificationService: this.notificationService,
-				agentStudioService: this.agentStudioService,
-				requestService: this.requestService,
-			});
+			// ★ 2026-09-23：改走**实例**版 —— 与批量构建、与「聊天框里的构建会话」保持同一条路径。
+			//   （原先走静态版 = 直连管线：既不跑 agent，也不会在聊天框里开可见会话。）
+			const built = await this._kbImport.buildNotesFromLibrary(node.uri, vaultRoot);
 			if (!built) { this.notificationService.warn('构建失败或 LLM 未生成笔记。'); return; }
 			await this.refreshSection('notes');
 			await this.refreshSection('library');
@@ -4103,6 +4554,10 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			this.notificationService.warn(`构建失败：${err}`);
 		} finally {
 			this._setNodeBuilding(node.path, false);
+			// 统一收尾（2026-09-23）：清「库/笔记」标题右侧状态 + 徽标转「有新增」，
+			// 与 Explorer 命令 / 批量构建走同一套反馈（不发通知）。
+			this.agentStudioService.reportKbProcessing({ active: false });
+			this.agentStudioService.requestLibraryBadge({ source: 'kb', kind: 'new', count: 1 });
 		}
 	}
 
@@ -4110,26 +4565,39 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	private async _batchBuildAll(): Promise<void> {
 		try {
 			if (!this._activeVault) { this.notificationService.warn('请先选择知识库。'); return; }
+			// ★ 前置检查（2026-09-23 需求）：批量构建需要「知识库专家」；未配 Provider/模型 ⇒
+			//   弹一次通知并中止（在开始前检查 ⇒ 不会逐个文件刷屏）。
+			if (KbImportController.kbAgentConfigState(this.agentStudioService, this.configurationService) === 'missing') {
+				KbImportController.warnKbAgentNotConfigured(this.notificationService, '批量构建笔记');
+				return;
+			}
 			const vaultRoot = this.vaultUri(this._activeVault);
 			// 标记所有库文件 item 为「构建中」
 			const libNodes = this._scroll.querySelectorAll('.kb-node[data-section="library"]:not(.dir)');
 			libNodes.forEach((n) => { this._setNodeBuilding((n as HTMLElement).dataset.path ?? '', true); });
 			// activitybar 徽标：批量构建是长任务，未打开资料库 sideview 时也要可见。
 			this.agentStudioService.requestLibraryBadge({ source: 'kb', kind: 'building' });
+			// ★ 2026-09-23：**必须接住返回值**（构建出的笔记数）。
+			//   原先忽略它，并在 `finally` 里**无条件**把徽标置为「有新增」⇒ 一篇都没构建时
+			//   也会亮出「有新增」，是「点了没反应」之外的另一层误导。
+			let builtCount = 0;
 			try {
-				await KbImportController.buildAllPendingNotes(vaultRoot, {
-					fileService: this.fileService,
-					configService: this.configurationService,
-					logService: this.logService,
-					notificationService: this.notificationService,
-					agentStudioService: this.agentStudioService,
-					requestService: this.requestService,
-				});
+				// ★ 2026-09-23（用户需求）：批量改为「**一个 agent 会话 + 素材路径清单**」——
+				//   宿主**只给路径**，agent 自己用 file_read 依次读、用 file_write 写笔记；
+				//   写完再在同一会话里依据「笔记区」真实目录/文件创建或完善「知识体系.md」（构建知识体系）。
+				//   （旧的「宿主读文件 + 解析 FILE 块 + 宿主落盘」路径保留为降级兜底。）
+				const res = await this._kbImport.buildPendingAsAgentSession(vaultRoot);
+				builtCount = res.built;
 			} finally {
 				// 清除全部构建中标记（避免刷新后残留）
 				Array.from(this._buildingPaths).forEach(p => this._setNodeBuilding(p, false));
-				// 构建收尾 → 转为「有新增」，提示用户回资料库查看产出
-				this.agentStudioService.requestLibraryBadge({ source: 'kb', kind: 'new', count: 1 });
+				// 统一收尾（2026-09-23）：清「库/笔记」标题右侧状态（进度文案由控制器在批量循环里上报）
+				this.agentStudioService.reportKbProcessing({ active: false });
+			}
+			// 徽标：**只有真的产出了笔记**才提示「有新增」。
+			// 空结果时保持中性（"为什么没产出"由控制器发出的 Info 通知说明，这里不重复提示）。
+			if (builtCount > 0) {
+				this.agentStudioService.requestLibraryBadge({ source: 'kb', kind: 'new', count: builtCount });
 			}
 			await this.refreshSection('notes');
 			await this.refreshSection('library');
@@ -4566,13 +5034,47 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	//  Context menus
 	// ═══════════════════════════════════════════════════════════
 
+	/**
+	 * ⚠ **临时诊断**（2026-09-23）：定位「显示 PDF 时右键点文件项无菜单」。
+	 *
+	 * 已知事实（用户实测）：关掉 PDF 后菜单正常；PDF 显示时右键，**该行连蓝色选中都没有**。
+	 * 而 `selectNode` 里 `el.classList.add('selected')` 位于任何有风险的调用**之前**
+	 * ⇒ 只要 `nodeContextMenu` 被执行过，该行必然变蓝 ⇒ **`contextmenu` 事件根本没到达那一行**。
+	 * 常规静态排查（全局监听 / 覆盖层 / webview 劫持 / 日志异常）均无果，故改用取证代替猜测：
+	 *   ① `contextmenu` **捕获相位**：事件有没有进入视图，命中哪个元素 / 哪一行；
+	 *   ② `pointerdown` 捕获相位（挂 document，**左右键都会触发**）：打印光标下的元素栈
+	 *      —— 若真有东西盖在侧栏上，`elementsFromPoint` 会直接点出它是谁。
+	 *
+	 * 只写日志、**不改行为**。定位到根因后请整体删除本方法、调用点与 `_ctxDiagInstalled`。
+	 */
+	private _installContextMenuDiagnostics(): void {
+		if (this._ctxDiagInstalled) { return; }
+		this._ctxDiagInstalled = true;
+		this._scroll.addEventListener('contextmenu', (e) => {
+			const t = e.target as HTMLElement | null;
+			const row = t?.closest?.('.kb-node') as HTMLElement | null;
+			this.logService.info(`[KB-DOM] contextmenu(捕获) target=${t?.className || t?.nodeName || '?'}`
+				+ ` rowPath=${row?.dataset.path ?? '(未命中 .kb-node)'} at=${e.clientX},${e.clientY}`);
+		}, true);
+		document.addEventListener('pointerdown', (e) => {
+			const stack = document.elementsFromPoint(e.clientX, e.clientY).slice(0, 5)
+				.map(x => { const c = (x as HTMLElement).className; return (typeof c === 'string' && c) ? c : x.nodeName; })
+				.join(' | ');
+			this.logService.info(`[KB-DOM] pointerdown(捕获) button=${e.button} at=${e.clientX},${e.clientY}`
+				+ ` 光标下元素栈(自上而下)=${stack}`);
+		}, true);
+	}
+
 	private nodeContextMenu(e: MouseEvent, el: HTMLElement, node: IKbNode): void {
+		// ⚠ 临时诊断（见 `_installContextMenuDiagnostics`）：确认处理器确实被调用
+		this.logService.info(`[KB-DOM] nodeContextMenu 进入 path=${node.path}`);
 		// 右键命中多选集合中的节点 → 弹多选批量菜单（不折叠选择），对齐原树层多选菜单
 		if (this._domSelectedPaths.size > 1 && this._domSelectedPaths.has(node.path)) {
 			this._nodeMultiContextMenu(e, node);
 			return;
 		}
-		this.selectNode(el);
+		// ⚠ 右键**只选中、不打开文件**：否则右键 PDF 会直接把它打开（见 `selectNode` 的 suppressOpen 说明）
+		this.selectNode(el, undefined, { suppressOpen: true });
 		const pasteTarget = node.isDirectory ? node : this._resolvePasteTargetDir(node);
 		const canPaste = !!this._kbClipboard?.uris.length;
 		const actions: IAction[] = [
@@ -5277,8 +5779,8 @@ export class KnowledgeBaseViewPane extends ViewPane {
 				const item = $('div.kb-bl-item');
 				const ic = $('span.kb-bl-ic.codicon.' + (o.targetUri ? 'codicon-arrow-right' : 'codicon-warning')); item.appendChild(ic);
 				const lbl = $('span.kb-bl-label'); lbl.textContent = o.label; item.appendChild(lbl);
-				if (o.targetUri) { item.onclick = () => this.openUri(o.targetUri!); }
-				else { item.classList.add('missing'); item.title = '库内未找到该笔记'; }
+				if (o.targetUri) { item.onclick = () => this.openUri(o.targetUri!); item.title = decodeURIComponent(o.targetUri.fsPath); }
+				else { item.classList.add('missing'); item.title = `库内未找到该笔记：${o.label}`; }
 				g.appendChild(item);
 			}
 			el.appendChild(g);
@@ -5315,6 +5817,16 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	}
 
 	private openUri(uri: URI): void {
+		// ★★ 2026-09-23：**本 resolver 接管的扩展名（pdf/docx）统一走"自建 input"通道** ✗→✓
+		//
+		// 本方法还有别的调用方 ✓（如反链/提及里的 `item.onclick = () => this.openUri(m.uri)` ✓）
+		// ⇒ 只要传进来的是 PDF/Word，就会走 `openEditor({ resource })` ⇒ input 由 resolver
+		// 内部创建 ✓、失败时无人释放 ✗ ⇒ `[LEAKED DISPOSABLE] new KbMediaViewerInput` ✓。
+		// 在这里**一次性收口** ✓ ⇒ 今后任何 KB 入口打开这两种类型都不会再漏 ✓。
+		if (isKbMediaViewerFile(uri)) {
+			this._openMediaViewer(uri);
+			return;
+		}
 		const groups = this.editorGroupsService.getGroups(GroupsOrder.CREATION_TIME);
 		const targetGroup = groups.length <= 1 ? SIDE_GROUP : groups[0];
 		this.editorService.openEditor({ resource: uri, options: { pinned: true } }, targetGroup);
@@ -5329,6 +5841,45 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	 * 复用 KbNoteEditorInput / KnowledgeBaseNoteEditorPane（Protyle/Lute 渲染管线）。
 	 */
 	private _openNoteEditor(node: IKbNode): void {
+		// ★ 按扩展名分流（2026-09-23 修「知识库里的 PDF 显示乱码」）：
+		//   此前**无条件**用 `KbNoteEditorInput`（react-markdown 编辑器）打开，于是 pdf/zip/图片等
+		//   二进制被当成 markdown/文本渲染 ⇒ 满屏 `%PDF-1.7 … stream …` 乱码（用户实测）。
+		//   · `.md/.markdown` ⇒ KB 笔记编辑器（本方法原逻辑）
+		//   · 其它**文本类**（txt/json/log/yaml…）⇒ 普通编辑器（不套 markdown 管线）
+		//   · **非文本**（pdf/zip/图片/音视频…）⇒ 交给**系统默认程序**；用文本编辑器打开同样是乱码
+		const ext = node.uri.path.split('.').pop()?.toLowerCase() ?? '';
+		if (!isKbMarkdownNote(node.uri.path)) {
+			if (TEXT_EXTS.has(ext)) {
+				this.openUri(node.uri);
+			} else if (diagramKindOfPath(node.uri.path)) {
+				// 图表文件（.drawio/.mermaid/.mmd）⇒ 图表查看器
+				// ★ 不走 openUri（resource 形态会让 resolver 新建 input ⇒ 泄漏，见 _openDiagramViewer）
+				this._openDiagramViewer(node.uri);
+			} else if (isKbMediaViewerFile(node.uri)) {
+				// PDF / Word：走注册好的只读查看器。
+				// ★ 2026-09-23：**不再走 `openUri`（resource 形态 ✗）** —— 那会让 resolver
+				// 内部 `createInstance(KbMediaViewerInput)` ✓、调用方拿不到引用 ✗ ⇒
+				// 每次点击新建且打不开时无人释放 ⇒ `[LEAKED DISPOSABLE] new KbMediaViewerInput` ✗。
+				this._openMediaViewer(node.uri);
+			} else {
+				// 其它二进制（zip / 图片 / 音视频…）：交给系统默认程序。
+				// ★ 2026-09-23 **更正**：此前这里的注释写「捕获后换成可读提示」—— 其实**做不到**。
+				//   默认外部打开器（`workbench/electron-browser/window.ts`）固定 `return true`，
+				//   本处 `.catch()` 永远不会触发；而原生错误框
+				//   「An error occurred opening an external program. / Failed to open: 系统找不到指定的文件。(0x2)」
+				//   是**主进程**弹的，渲染侧的 catch 拦不住。
+				//   ⇒ 真正修掉它的是主进程：`nativeHostMainService.doOpenShellExternal` 对 file://
+				//     改用 `shell.openPath()`（不抛异常 ⇒ 不弹框，只返回 false），友好提示也统一
+				//     由 `window.ts` 的默认外部打开器发出（那里是所有外部打开的汇聚点）。
+				//   这里保留 catch 仅作兜底，不会与上面的提示重复（它触发不了）。
+				void this.openerService.open(node.uri, { openExternal: true }).catch((err) => {
+					this.logService.warn(`[KB] openExternal failed: ${node.uri.toString()}`, err);
+					this.notificationService.warn(
+						`无法用系统程序打开「${node.name}」：未找到该类型的关联程序。可在系统设置中为它指定默认应用，或先用内置预览（PDF/Word 已支持）。`);
+				});
+			}
+			return;
+		}
 		const groups = this.editorGroupsService.getGroups(GroupsOrder.CREATION_TIME);
 		const targetGroup = groups.length <= 1 ? SIDE_GROUP : groups[0];
 		const resourceKey = node.uri.toString();
@@ -5353,6 +5904,107 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			input,
 			{ pinned: true },
 			openInGroup,
+		);
+	}
+
+	/**
+	 * 打开图表文件（.drawio / .mermaid / .mmd）的查看器（`KbDiagramViewerInput`）。
+	 *
+	 * ★ 2026-09-24：修 `[LEAKED DISPOSABLE] … at new KbDiagramViewerInput` —— 病因与
+	 * `_openMediaViewer`（09-23）**完全同款**：走 `openUri()` ⇒ `openEditor({ resource })` ⇒
+	 * input 由 resolver 内部 `createEditorInput` 创建，调用方拿不到引用 ⇒ 这次没真正打开时
+	 * 无人释放 ⇒ GC 报泄漏。
+	 * 解法同样：**先找已打开的同资源复用 → 没有才自己建 → 失败/未打开时由本方法释放**。
+	 * ⚠ 复用的实例（非本次新建）绝不 dispose —— 所有权在编辑器组。
+	 */
+	private _openDiagramViewer(uri: URI): void {
+		const groups = this.editorGroupsService.getGroups(GroupsOrder.CREATION_TIME);
+		const targetGroup = groups.length <= 1 ? SIDE_GROUP : groups[0];
+		const resourceKey = uri.toString();
+
+		let input: KbDiagramViewerInput | undefined;
+		let openInGroup: IEditorGroup | typeof SIDE_GROUP = targetGroup;
+		for (const g of groups) {
+			for (const ed of g.getEditors(EditorsOrder.SEQUENTIAL)) {
+				if (ed instanceof KbDiagramViewerInput && ed.resource.toString() === resourceKey) {
+					input = ed;
+					openInGroup = g;
+					break;
+				}
+			}
+			if (input) { break; }
+		}
+		const created = !input;
+		input ??= this.instantiationService.createInstance(KbDiagramViewerInput, uri);
+		const target = input;
+
+		void this.editorService.openEditor(target, { pinned: true }, openInGroup).then(
+			opened => {
+				if (!opened && created) {
+					this.logService.warn(`[KB] 图表查看器未能打开，已释放临时 input：${resourceKey}`);
+					target.dispose();
+				}
+			},
+			err => {
+				this.logService.warn(`[KB] 打开图表查看器失败：${err instanceof Error ? err.message : String(err)}`);
+				if (created) { target.dispose(); }
+			},
+		);
+	}
+
+	/**
+	 * 打开 PDF / Word 的只读预览（`KbMediaViewerInput`）。
+	 *
+	 * ★★ 2026-09-23：修 `[LEAKED DISPOSABLE] … at new KbMediaViewerInput (kbMediaViewerPane.ts:62)` ✗
+	 *
+	 * 病因 ✓：原先走 `openUri()` ⇒ `openEditor({ resource })` ⇒ input 由 **resolver 内部**
+	 * `createInstance` 创建 ✓（见 `agentStudio.contribution.ts` 的 `createEditorInput` ✓），
+	 * 调用方**拿不到引用** ✗ ⇒ ① 不复用 ⇒ **每点一次就新建一个** ✓；
+	 * ② 一旦这次没真正打开（pane 报错 / 组不可用 ✓）⇒ **没人释放它** ✗
+	 * ⇒ GC 时被 `GCBasedDisposableTracker` 报泄漏 ✓✓（真机日志即此 ✓）。
+	 *
+	 * 解法与**同文件 `_openNoteEditor` 的笔记路径完全一致** ✓（那里早有注释说明同一病因 ✓）：
+	 * **自己找复用 ✓ → 没有才自己建 ✓ → 由自己兜底释放 ✓**。
+	 * ⚠ 为什么"自己建"是安全的 ✓：直接把实例交给 `openEditor(input, …)` 会**绕过 resolver** ✓，
+	 *   因而它**不在 resolver 的 singlePerResource 缓存里** ✓ ⇒ 失败时 dispose 不会留下
+	 *   "缓存里是已释放实例"的隐患 ✓✓（pane 归属靠 `KbMediaViewerInput.editorId` 解析 ✓，
+	 *   该 getter 已于同日补齐 ✓）。
+	 * ⚠ 复用到的实例（不是自己建的）**绝不 dispose** ✗ —— 它的所有权在编辑器组 ✓。
+	 */
+	private _openMediaViewer(uri: URI): void {
+		const groups = this.editorGroupsService.getGroups(GroupsOrder.CREATION_TIME);
+		const targetGroup = groups.length <= 1 ? SIDE_GROUP : groups[0];
+		const resourceKey = uri.toString();
+
+		// ① 先找已打开的同一资源预览 ⇒ 复用（避免反复 new ✗ 与标签页堆积 ✗）
+		let input: KbMediaViewerInput | undefined;
+		let openInGroup: IEditorGroup | typeof SIDE_GROUP = targetGroup;
+		for (const g of groups) {
+			for (const ed of g.getEditors(EditorsOrder.SEQUENTIAL)) {
+				if (ed instanceof KbMediaViewerInput && ed.resource.toString() === resourceKey) {
+					input = ed;
+					openInGroup = g;
+					break;
+				}
+			}
+			if (input) { break; }
+		}
+		const created = !input;
+		input ??= this.instantiationService.createInstance(KbMediaViewerInput, uri);
+		const target = input;
+
+		// ② 必须处理打开结果：失败时由**本方法**释放自己建的那个 ✓（这是泄漏的直接堵口 ✓）
+		void this.editorService.openEditor(target, { pinned: true }, openInGroup).then(
+			opened => {
+				if (!opened && created) {
+					this.logService.warn(`[KB] 预览未能打开，已释放临时 input：${resourceKey}`);
+					target.dispose();
+				}
+			},
+			err => {
+				this.logService.warn(`[KB] 打开预览失败：${err instanceof Error ? err.message : String(err)}`);
+				if (created) { target.dispose(); }
+			},
 		);
 	}
 

@@ -140,7 +140,7 @@
   },
   "dependencies": {
     "dompurify": "^3.4.1",
-    "mermaid": "^11.12.3",
+    "mermaid": "^12.0.0",
     "vssaros": "file:../.."
   },
   "overrides": {

@@ -14,7 +14,8 @@
 
 import type { Plugin } from 'unified';
 import { visit } from 'unist-util-visit';
-import { isImageFile } from './markdownExtensions';
+import { isImageFile, isHtmlFile, diagramEmbedKindOf, type DiagramEmbedKind } from './markdownExtensions';
+import { kbLog } from './kbDebug';
 import { resolveWikilink } from './wikilinkResolver';
 import type { WorkspaceFile } from './types';
 
@@ -88,17 +89,39 @@ function parseInner(raw: string): ParsedWikilink {
 	};
 }
 
+/**
+ * 解析目标 → 「可用 uri + 是否断链」（★ 2026-09-24 诊断加固）。
+ *
+ * ⚠ 旧写法 `broken = resolved.uri === null` + `if (!broken && resolved.uri)` 写属性 ⇒ 当 uri 是
+ *   **空串 / undefined** 时两者同时为假 ⇒ 节点上「既无 path 也无 broken」，组件侧表现为
+ *   `broken=false, path=undefined` ⇒ 只显示「文件不可用或不在当前库内」，真因被完全掩盖
+ *   （用户实测现象；根因是内核索引里 `uri: ''` 的合成条目按「最短优先」抢走了候选）。
+ * 现在以「uri 是否非空」为**唯一判据** ⇒ path 与 broken 互补，结构上不可能同时缺失。
+ *
+ * 只在**可疑**失败时打点（真·目标不存在不打，避免正常断链刷屏）：
+ *   · `rawUri` 非 null 但不合格（空串等）⇒ 清单被异常条目污染；
+ *   · 清单为空 ⇒ workspaceFiles 没送达（推送竞态）。
+ */
+function resolveTarget(rawTarget: string, options: WikilinkPluginOptions, kind: string): { uri?: string; broken: boolean } {
+	const files = options.workspaceFiles ?? [];
+	const resolved = resolveWikilink(rawTarget, files, options.currentFilePath);
+	const uri = typeof resolved.uri === 'string' && resolved.uri.length > 0 ? resolved.uri : undefined;
+	if (!uri && (resolved.uri !== null || files.length === 0)) {
+		kbLog(`resolve:${kind}`, `未取到可用 uri: target=${rawTarget} files=${files.length} rawUri=${JSON.stringify(resolved.uri)}`);
+	}
+	return { uri, broken: !uri };
+}
+
 function buildLinkNode(parsed: ParsedWikilink, options: WikilinkPluginOptions): LinkNode {
-	const resolved = resolveWikilink(parsed.rawTarget, options.workspaceFiles ?? [], options.currentFilePath);
-	const broken = resolved.uri === null;
+	const { uri, broken } = resolveTarget(parsed.rawTarget, options, 'wikilink');
 	const display = parsed.alias ?? parsed.baseTarget;
 
 	const hProperties: Record<string, string | string[]> = {
 		className: broken ? ['wikilink', 'wikilink--broken'] : ['wikilink'],
 		dataWikilink: parsed.baseTarget,
 	};
-	if (!broken && resolved.uri) hProperties.dataWikilinkPath = resolved.uri;
-	if (broken) hProperties.dataWikilinkBroken = '';
+	if (uri) hProperties.dataWikilinkPath = uri;
+	else hProperties.dataWikilinkBroken = '';
 	if (parsed.heading) hProperties.dataWikilinkHeading = parsed.heading;
 
 	return {
@@ -125,16 +148,62 @@ function buildImageNode(parsed: ParsedWikilink): Node {
 	};
 }
 
+/**
+ * `![[page.html]]`（活页面 embed）→ `<div class="kb-html-embed">` 占位节点。
+ * 渲染层 HtmlEmbedComponent 向宿主请求 asWebviewUri 后用 sandbox iframe 加载（保留目标页
+ * 自己的样式与脚本）。与笔记 embed（EmbedComponent，把目标当 markdown 重渲染）刻意分开。
+ * `data.embed`/`embedParsed` 照旧带上 ⇒ Pass 2 的提升/降级逻辑对它一视同仁。
+ */
+function buildHtmlEmbedNode(parsed: ParsedWikilink, options: WikilinkPluginOptions): EmbedNode {
+	const { uri, broken } = resolveTarget(parsed.rawTarget, options, 'html-embed');
+
+	const hProperties: Record<string, string | string[]> = {
+		className: ['kb-html-embed'],
+		dataHtmlEmbedTarget: parsed.baseTarget,
+	};
+	if (uri) hProperties.dataHtmlEmbedPath = uri;
+	else hProperties.dataHtmlEmbedBroken = '';
+
+	return {
+		type: 'htmlEmbed',
+		children: [],
+		data: { embed: true, embedParsed: parsed, hName: 'div', hProperties },
+	};
+}
+
+/**
+ * `![[x.drawio]]` / `![[x.mermaid]]` / `![[x.canvas]]`（图表文件 embed）→ 占位节点。
+ * 渲染层 DiagramEmbedComponent 读目标文件内容后按 kind 渲染：
+ * mermaid/drawio 经宿主渲染服务出 SVG，canvas 走内置只读迷你渲染器。
+ * `data.embed`/`embedParsed` 照旧带上 ⇒ Pass 2 的提升/降级逻辑对它一视同仁。
+ */
+function buildDiagramEmbedNode(parsed: ParsedWikilink, kind: DiagramEmbedKind, options: WikilinkPluginOptions): EmbedNode {
+	const { uri, broken } = resolveTarget(parsed.rawTarget, options, `diagram-embed(${kind})`);
+
+	const hProperties: Record<string, string | string[]> = {
+		className: ['kb-diagram-embed'],
+		dataDiagramKind: kind,
+		dataDiagramTarget: parsed.baseTarget,
+	};
+	if (uri) hProperties.dataDiagramPath = uri;
+	else hProperties.dataDiagramBroken = '';
+
+	return {
+		type: 'diagramEmbed',
+		children: [],
+		data: { embed: true, embedParsed: parsed, hName: 'div', hProperties },
+	};
+}
+
 function buildEmbedNode(parsed: ParsedWikilink, options: WikilinkPluginOptions): EmbedNode {
-	const resolved = resolveWikilink(parsed.rawTarget, options.workspaceFiles ?? [], options.currentFilePath);
-	const broken = resolved.uri === null;
+	const { uri, broken } = resolveTarget(parsed.rawTarget, options, 'note-embed');
 
 	const hProperties: Record<string, string | string[]> = {
 		className: ['markdown-embed'],
 		dataEmbedTarget: parsed.baseTarget,
 	};
-	if (!broken && resolved.uri) hProperties.dataEmbedPath = resolved.uri;
-	if (broken) hProperties.dataEmbedBroken = '';
+	if (uri) hProperties.dataEmbedPath = uri;
+	else hProperties.dataEmbedBroken = '';
 	if (parsed.heading) hProperties.dataEmbedHeading = parsed.heading;
 
 	return {
@@ -178,6 +247,12 @@ const remarkWikilink: Plugin<[WikilinkPluginOptions?]> =
 				// `![[image.png]]` 图片 embed：渲染为 <img>（此前错误地降级为链接，图片永不显示）
 				if (bang && isImageFile(parsed.baseTarget)) {
 					replacement.push(buildImageNode(parsed));
+				} else if (bang && isHtmlFile(parsed.baseTarget) && parentNode.type === 'paragraph') {
+					// `![[page.html]]` 活页面 embed（2026-09-24）：sandbox iframe 加载本地 html
+					replacement.push(buildHtmlEmbedNode(parsed, options));
+				} else if (bang && parentNode.type === 'paragraph' && diagramEmbedKindOf(parsed.baseTarget)) {
+					// `![[x.drawio|.mermaid|.mmd|.canvas]]` 图表文件 embed（2026-09-24）
+					replacement.push(buildDiagramEmbedNode(parsed, diagramEmbedKindOf(parsed.baseTarget)!, options));
 				} else if (bang && parentNode.type === 'paragraph') {
 					replacement.push(buildEmbedNode(parsed, options));
 				} else {

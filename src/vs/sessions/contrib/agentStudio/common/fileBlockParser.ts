@@ -146,46 +146,63 @@ function fixCodeFencePairs(text: string): string {
  * 为 LLM prompt 生成 FILE 块格式说明。
  * 注入到 Agent prompt 中，告诉 LLM 使用此格式输出。
  */
-export function buildFileBlockPrompt(noteBaseDir: string): string {
+/**
+ * 生成 FILE 块输出格式提示。
+ *
+ * @param noteBaseDir 笔记落盘根目录（**笔记区** —— 2026-09-23 起构建产物落这里，而非「库」）
+ * @param existingDirs 笔记区**当前已有的目录结构**（相对路径数组，如 `内存管理`、`内存管理/GC`）。
+ *   ★ 2026-09-23 需求变更：目录**由 LLM 根据当前目录结构自行决定**（对齐「笔记区 = 用户搭建知识体系的载体」），
+ *   不再强制「必须带 schema 类型目录前缀」。把现状喂给模型并要求**优先复用、必要时才新建** ——
+ *   否则每篇都自创目录会把知识体系打散。
+ */
+export function buildFileBlockPrompt(noteBaseDir: string, existingDirs: readonly string[] = []): string {
+	const existing = existingDirs.length
+		? existingDirs.map(d => `  - ${d}`).join('\n')
+		: '  (笔记区目前为空，可自行规划顶层目录)';
 	return [
 		'### FILE Block Output Format',
 		'',
 		'Use the following format to output each wiki page:',
 		'```',
-		'---FILE: <filename relative to the current topic dir> ---',
+		'---FILE: <相对路径，含目录，如 内存管理/GC机制分析.md> ---',
 		'<page content with YAML frontmatter>',
 		'---END FILE---',
 		'```',
 		'',
-	'Each FILE path MUST include the schema type directory prefix (e.g., 概念/xxx.md, 对比/xxx.md).',
-	'The type directory matches the schema type determined in the analysis stage (概念/对比/方法/事实/问题/...).',
-	'Do NOT place notes flat in the root directory.',
-	'',
-	'Cross-reference related notes in the body using [[Note Title]] wikilink syntax. Reference other notes in this batch (by their frontmatter `title`) to build bidirectional links for the knowledge graph.',
-	'',
-	'Examples:',
-	'```',
-	'---FILE: 概念/GC机制分析.md ---',
-	'---',
-	'type: concept',
-	'title: GC机制分析',
-	'created: 2026-07-24',
-	'---',
-	'',
-	'## 概述',
-	'...',
-	'---END FILE---',
-	'',
-	'---FILE: 对比/标记清除vs引用计数.md ---',
-	'---',
-	'type: comparison',
-	'title: 标记清除 vs 引用计数',
-	'---',
-	'',
-	'## 对比',
-	'...',
-	'---END FILE---',
-	'```',
+		'**目录由你决定**（这是搭建知识体系的关键）：',
+		'1. 每个 FILE 路径**必须包含目录**，不要平铺在根目录；',
+		'2. **优先复用**下方「笔记区已有目录」里语义合适的目录 —— 结构稳定比一次分得漂亮更重要；',
+		'3. 现有结构确实不适用时，才新建目录；名字用简短中文（如 `内存管理/`、`渲染管线/`），层级不超过 2 层；',
+		'4. frontmatter 的 `type` 仍按 Schema 类型定义填写（用于筛选与门控）—— `type` 决定**语义类型**，目录决定**知识体系位置**，两者不必同名。',
+		'',
+		'笔记区已有目录（供复用参考）：',
+		existing,
+		'',
+		'Cross-reference related notes in the body using [[Note Title]] wikilink syntax. Reference other notes in this batch (by their frontmatter `title`) to build bidirectional links for the knowledge graph.',
+		'',
+		'Examples:',
+		'```',
+		'---FILE: 内存管理/GC机制分析.md ---',
+		'---',
+		'type: concept',
+		'title: GC机制分析',
+		'created: 2026-07-24',
+		'---',
+		'',
+		'## 概述',
+		'...',
+		'---END FILE---',
+		'',
+		'---FILE: 内存管理/对比/标记清除vs引用计数.md ---',
+		'---',
+		'type: comparison',
+		'title: 标记清除 vs 引用计数',
+		'---',
+		'',
+		'## 对比',
+		'...',
+		'---END FILE---',
+		'```',
 		'',
 		`Base dir: \`${noteBaseDir}\``,
 	].join('\n');

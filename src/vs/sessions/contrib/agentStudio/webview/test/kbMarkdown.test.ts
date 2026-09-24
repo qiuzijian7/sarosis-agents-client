@@ -150,6 +150,36 @@ eq(
 	'resolveWikilink strips .md extension',
 );
 
+// ── 回归：清单里的异常条目不得胜出（★ 2026-09-24「文件不可用或不在当前库内」） ──
+// 内核索引会产出 `uri: ''` 的合成条目；它永远打不开，却因「最短路径优先」（''.length === 0 最小）
+// 抢走候选 ⇒ 目标"解析成功"但 uri 为空，UI 只显示「文件不可用或不在当前库内」，真因被掩盖。
+const FILES_WITH_JUNK: WorkspaceFile[] = [
+	{ uri: '', name: 'live-demo.html' }, // 内核合成条目（无 uri）
+	{ uri: 'file:///vault/库/raw/live-demo.html', name: 'live-demo.html' },
+];
+eq(
+	resolveWikilink('live-demo.html', FILES_WITH_JUNK).uri,
+	'file:///vault/库/raw/live-demo.html',
+	'异常条目（空 uri）被跳过，真条目胜出',
+);
+eq(
+	resolveWikilink('live-demo', FILES_WITH_JUNK).uri,
+	'file:///vault/库/raw/live-demo.html',
+	'不带扩展名也命中（stem 匹配）',
+);
+eq(
+	resolveWikilink('live-demo.html', [{ uri: '', name: 'live-demo.html' }]).uri,
+	null,
+	'清单只剩异常条目 ⇒ 判为断链（而不是返回空 uri）',
+);
+eq(
+	resolveWikilink('demo-flow.mermaid', [
+		{ uri: 'file:///vault/库/raw/demo-flow.mermaid', name: 'demo-flow.mermaid' },
+	]).uri,
+	'file:///vault/库/raw/demo-flow.mermaid',
+	'图表文件（.mermaid）按 stem 解析',
+);
+
 // ── prismLanguages (PrismLight whitelist) ──────────────────────────────────
 import { PrismLight as _Prism, oneDark as _OneDark } from '../src/kbMarkdown/components/prismLanguages';
 import { createElement } from 'react';

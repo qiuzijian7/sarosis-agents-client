@@ -17,6 +17,7 @@ import {
 	extractSources,
 	normalizeSourceRef,
 	injectSources,
+	removeSources,
 } from '../../browser/knowledge/frontmatter.js';
 
 suite('AgentStudio - Frontmatter 解析与 sources 注入', () => {
@@ -158,5 +159,59 @@ suite('AgentStudio - Frontmatter 解析与 sources 注入', () => {
 		assert.strictEqual(changed, true);
 		assert.ok(content.includes('  - [[库/B.md]]'));
 		assert.ok(content.includes('body'));
+	});
+});
+
+/**
+ * removeSources：删除收口（P0-B）用 —— 源文件被删后剔除笔记里已失效的溯源。
+ * ⚠ 匹配口径必须与 extractSources 一致（normalizeSourceRef = 小写 basename）。
+ */
+suite('AgentStudio - Frontmatter removeSources（删除收口）', () => {
+
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('块序列：只剔除命中的来源，其它字段与格式保留', () => {
+		const c = '---\ntype: concept\nsources:\n  - "[[库/raw/A.md]]"\n  - "[[库/raw/B.md]]"\nstatus: active\n---\nbody';
+		const { content, changed } = removeSources(c, new Set(['a.md']));
+		assert.strictEqual(changed, true);
+		assert.ok(!content.includes('A.md'), '被删来源应移除');
+		assert.ok(content.includes('B.md'), '未命中来源应保留');
+		assert.ok(content.includes('type: concept') && content.includes('status: active'), '其它字段应原样保留');
+		assert.ok(content.endsWith('body'), '正文应保留');
+	});
+
+	test('块序列：全部命中 ⇒ 保留 sources: []（而非删掉字段）', () => {
+		const c = '---\nsources:\n  - "[[库/raw/A.md]]"\n---\nbody';
+		const { content, changed } = removeSources(c, new Set(['a.md']));
+		assert.strictEqual(changed, true);
+		assert.ok(content.includes('sources: []'));
+		// 与 extractSources 的「无来源」语义一致（否则门控会把空数组当有来源）
+		assert.deepStrictEqual(extractSources(content), []);
+	});
+
+	test('流列表：剔除命中项并保留其余（wikilink 重新加引号）', () => {
+		const c = '---\nsources: ["[[库/raw/A.md]]", "[[库/raw/B.md]]"]\n---\nbody';
+		const { content, changed } = removeSources(c, new Set(['a.md']));
+		assert.strictEqual(changed, true);
+		assert.ok(content.includes('sources: ["[[库/raw/B.md]]"]'));
+		assert.ok(!content.includes('A.md'));
+	});
+
+	test('单值：命中 ⇒ sources: []；未命中 ⇒ 原样返回', () => {
+		const one = '---\nsources: 库/raw/A.md\n---\nbody';
+		const hit = removeSources(one, new Set(['a.md']));
+		assert.strictEqual(hit.changed, true);
+		assert.ok(hit.content.includes('sources: []'));
+
+		const miss = removeSources(one, new Set(['不存在.md']));
+		assert.strictEqual(miss.changed, false);
+		assert.strictEqual(miss.content, one);
+	});
+
+	test('无 frontmatter / 空集合 ⇒ 不改动', () => {
+		const noFm = '纯正文，无 frontmatter';
+		assert.strictEqual(removeSources(noFm, new Set(['a.md'])).changed, false);
+		const withFm = '---\nsources:\n  - "[[库/raw/A.md]]"\n---\nbody';
+		assert.strictEqual(removeSources(withFm, new Set()).changed, false);
 	});
 });

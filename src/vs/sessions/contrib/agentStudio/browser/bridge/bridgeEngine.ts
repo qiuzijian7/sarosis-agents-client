@@ -34,7 +34,8 @@ import {
 	renderCardToText,
 	UnauthorizedAccessMessage,
 } from "../../common/bridge/bridgeSecurity.js";
-import { appendFileRefs, saveFilesToDisk } from "./bridgeAttachments.js";
+import { appendFileRefs, buildInboundChatAttachments, saveFilesToDiskAsync } from "./bridgeAttachments.js";
+import type { IChatAttachmentSend } from "../../../../common/agentStudioService.js";
 import { BridgeUsageReporter, IUsageStatsStore } from "./bridgeUsage.js";
 import { BridgeRelay } from "./bridgeRelay.js";
 import {
@@ -234,10 +235,20 @@ export class BridgeEngine extends Disposable implements IBridgeEngineOps {
 		const replyCtx = msg.replyCtx ?? session.replyCtx;
 
 		// 附件落盘：入站文件写入工作目录，prompt 末尾追加本地路径引用。
+		// ★ 2026-09-23：改走 async 版本 —— 优先**主进程**写盘（渲染进程沙箱无 fs，
+		//   旧同步实现生产环境恒返回空数组 ⇒ 附件等于没传）。handleInbound 本身 async，可直接 await。
 		let content = msg.content;
-		if (this._bridgeWorkDir && msg.files && msg.files.length > 0) {
-			const paths = saveFilesToDisk(this._bridgeWorkDir, msg.files);
-			content = appendFileRefs(msg.content, paths);
+		let attachments: IChatAttachmentSend[] | undefined;
+		if (msg.files && msg.files.length > 0) {
+			let paths: string[] = [];
+			if (this._bridgeWorkDir) {
+				paths = await saveFilesToDiskAsync(this._bridgeWorkDir, msg.files);
+				content = appendFileRefs(msg.content, paths);
+			}
+			// ★ 2026-09-23：同时给出**面板附件对象** —— 只拼路径文本的话，聊天框里图片不是缩略图、
+			//   文件不是可点开的 pill（只剩两行字）。图片走真 image part（模型能看图），
+			//   文件 data 保持空（二进制 base64 会被 driver 原文内联进 prompt，必须避免）。
+			attachments = buildInboundChatAttachments(msg.files, paths);
 		}
 
 		const options = {
@@ -245,6 +256,7 @@ export class BridgeEngine extends Disposable implements IBridgeEngineOps {
 			chatMode: (session.chatMode ?? "craft") as ChatMode,
 			model: session.modelOverride,
 			source: "user" as const,
+			attachments,
 		};
 
 		let textBuf = "";
