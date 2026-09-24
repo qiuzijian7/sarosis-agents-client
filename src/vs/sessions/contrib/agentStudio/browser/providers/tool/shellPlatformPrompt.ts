@@ -149,7 +149,14 @@ export function windowsDualShellGuidance(toolName: string): string {
 		// Select-Object 写法发命令。
 		' PowerShell cmdlets (Select-Object, Select-String, Get-Content, Get-ChildItem, Write-Host, Out-String, ...) do NOT exist in that shell' +
 		' and are rejected before execution — use the POSIX equivalents instead;' +
-		' use forward-slash paths (C:/dir/file); wrap Windows-native commands as cmd /c <command> or powershell -NoProfile -Command "...".' +
+		// ★ 2026-09-25（生产日志 20260925T020714）：模型给 ffprobe 传了 POSIX 风格参数
+		//   `/g/.../bili_ui.mp4` ⇒ ffprobe 报 "No such file or directory"（文件其实存在）。
+		//   根因：execute_code 刻意设了 MSYS_NO_PATHCONV/MSYS2_ARG_CONV_EXCL=*（防参数改写），
+		//   于是 **/x/ 风格的参数不会转换**；可执行文件本身能被 bash 解析（所以程序照样启动），
+		//   只有文件参数中招 —— 这层不对称必须讲清楚，否则模型会误判成"文件不存在/路径错了"。
+		' use drive-letter paths (G:/dir/file) for file arguments — POSIX-style /g/... arguments are NOT converted for native Windows programs' +
+		' (path conversion is disabled): the program itself launches fine, but a /g/... file argument fails with "No such file or directory";' +
+		' wrap Windows-native commands as cmd /c <command> or powershell -NoProfile -Command "...".' +
 		' If Git Bash is NOT installed the command falls back to PowerShell/cmd.exe, where Unix-only commands are rejected before execution' +
 		' with the PowerShell equivalent, and PowerShell cmdlets must be wrapped as powershell -NoProfile -Command "<pipeline>"' +
 		' (piping straight into a cmdlet from cmd.exe fails with exit 255).' +

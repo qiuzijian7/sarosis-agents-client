@@ -304,6 +304,31 @@ export function timeoutGuidanceMessage(timeoutSec: number, command: string): str
 	);
 }
 
+/**
+ * 「手工重造媒体管线」劝导（2026-09-25，生产日志 20260925T023847）。
+ *
+ * 事故形态：模型因同会话前几轮 video_analyze/extract_video_frames 的失败经验（60s 超时
+ * 误杀 / ffmpeg 探测在启动高峰被抖动误判），转而**全程手工 execute_code**：yt-dlp 下载 +
+ * ffmpeg for 循环抽帧（两次 exit 127）+ 逐张 vision_analyze —— 完全绕开了 video_analyze
+ * 内置的 ASR（whisper 转写）。而能力是健康的（capability facts: ffmpeg=true）——是
+ * "工具信任被毒化 + 不知道有 ASR"，不是能力缺失。
+ *
+ * 这是**成功侧的劝导**（命令已经跑成了，只是做法绕远）：追加一行提示，不阻断、不改退出码。
+ * 只匹配"干活"形态（抽帧/转写/下载视频），不匹配诊断形态（`-version`/`ffprobe` 探测是合法的）。
+ */
+export function manualMediaToolchainNudge(command: string): string | undefined {
+	const cmd = command ?? '';
+	if (!cmd.trim()) { return undefined; }
+	const didFrames = /\bffmpeg[\w.-]*(?:\.exe)?\b/i.test(cmd) && (/fps=/i.test(cmd) || /frame-\d*%?0?\d*d/i.test(cmd) || /-frames:v/i.test(cmd));
+	const didAsr = /\bwhisper-cli(?:\.exe)?\b/i.test(cmd);
+	const didDownload = /\byt-dlp(?:\.exe)?\b/i.test(cmd) && /"-o"| -o "/.test(cmd) && /https?:\/\//i.test(cmd);
+	if (!didFrames && !didAsr && !didDownload) { return undefined; }
+	return '[note] This re-implements what built-in tools already do in ONE call: `video_analyze` downloads the video, ' +
+		'extracts frames, transcribes speech with local ASR (whisper), and analyzes with a vision model; ' +
+		'`extract_video_frames` covers plain frame extraction. Earlier failures of these tools in this conversation may have been ' +
+		'transient (capability probes re-run automatically) — prefer the built-in tools over hand-written ffmpeg/whisper loops.';
+}
+
 /** Unix-only 命令 → PowerShell 等价写法（用于护栏错误消息）。 */
 export const UNIX_ONLY_COMMAND_HINTS: Record<string, string> = {
 	head: 'Select-Object -First <N>',

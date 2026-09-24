@@ -65,6 +65,14 @@ const SAFE_ARG_RE = /^[A-Za-z0-9_.,:=@/\\+-]+$/;
  * 就能在用户机器上执行任意命令。
  * 策略：安全字符集内原样；否则整体加双引号，并按 Windows 命令行解析规则转义
  * 内部 `"`（→ `\"`）与结尾的连续反斜杠（→ 双写，否则会吃掉收尾引号）。
+ *
+ * ⚠ 已知边界（2026-09-24 实测）：值里**含双引号**时，这套 `\"` 转义在 **cmd + npm `.cmd` shim**
+ * 这条路径上不可靠 —— cmd 会把 `\"` 里的 `"` 当引号开关，引号状态错乱后值里的 `&` 被当作命令
+ * 分隔符，目标程序收到被截断的串（实测 `lark-cli --content '<json>'` 报
+ * "not valid JSON: unexpected end of JSON input"，stderr 另现「系统找不到指定的路径」）。
+ * ⇒ **需要传 JSON/含引号文本的调用方走 `@file`**（把内容写临时文件，argv 里只放路径），
+ *   先例见 `browser/providers/tool/feishuDriveTools.ts` 的 `createTempJsonFile`。
+ *   根因修复（spawn 真实入口而非 .cmd shim，或给通道加 stdin 支持）留待需要时再做。
  */
 function quoteArg(arg: string): string {
 	if (SAFE_ARG_RE.test(arg)) { return arg; }

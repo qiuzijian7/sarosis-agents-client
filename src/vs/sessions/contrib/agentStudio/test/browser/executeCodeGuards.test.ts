@@ -24,6 +24,7 @@ import {
 	detectBenignSearchExit,
 	detectScriptSourceWrite,
 	scriptSourceWriteGuardMessage,
+	manualMediaToolchainNudge,
 } from '../../browser/providers/tool/executeCodeGuards.js';
 
 suite('executeCodeGuards — Windows Unix 命令护栏', () => {
@@ -737,5 +738,38 @@ suite('execute_code 运行期直播（后台 spawn + 轮询接线）', () => {
 		const src = readSrc();
 		assert.ok(src.includes('LIVE_HEARTBEAT_MS'), '必须有心跳间隔常量 ✓');
 		assert.ok(src.includes('execute_code live: taskId='), '必须有 start/done/heartbeat 日志行（[CompatTools] execute_code live: ✓）');
+	});
+});
+
+suite('executeCodeGuards — 手工重造媒体管线劝导（2026-09-25 工具信任毒化事故）', () => {
+	// 事故（日志 20260925T023847）：模型因前几轮 video_analyze 失败经验，全程手工
+	// yt-dlp 下载 + ffmpeg for 循环抽帧（两次 exit 127）+ 逐张 vision_analyze，
+	// 绕开了 video_analyze 内置 ASR。能力是健康的 —— 缺的是"告诉他有现成工具"。
+
+	test('★ 命中三种手工形态：ffmpeg 抽帧 / whisper 转写 / yt-dlp 下载视频', () => {
+		const cases = [
+			'for i in $(seq 0 13); do "G:/bin/ffmpeg.exe" -ss $i -i v.mp4 -frames:v 1 "frame-$i.png"; done',
+			'"G:/bin/ffmpeg" -y -i v.mp4 -vf fps=0.1,scale=1280:-2 frame-%02d.png',
+			'"G:/bin/whisper-cli.exe" -m models/ggml-base.bin -f a.wav -l auto',
+			'"G:/bin/yt-dlp.exe" --no-playlist -o "video.%(ext)s" -- https://b23.tv/abc',
+		];
+		for (const c of cases) {
+			const nudge = manualMediaToolchainNudge(c);
+			assert.ok(nudge, `应命中: ${c.slice(0, 60)}`);
+			assert.ok(nudge!.includes('video_analyze') && nudge!.includes('ASR'), '必须点名 video_analyze 与 ASR');
+		}
+	});
+
+	test('★ 不误伤诊断/无关形态：探测 -version、ffprobe、普通命令、空输入', () => {
+		const negatives = [
+			'"G:/bin/ffmpeg.exe" -version',
+			'"G:/bin/ffprobe.exe" -v error -show_entries format=duration v.mp4',
+			'ls -la /tmp',
+			'"G:/bin/yt-dlp.exe" --version',
+			'',
+		];
+		for (const c of negatives) {
+			assert.strictEqual(manualMediaToolchainNudge(c), undefined, `不该命中: ${c.slice(0, 60)}`);
+		}
 	});
 });

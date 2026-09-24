@@ -53,6 +53,7 @@ import { ILogService } from '../../../../../platform/log/common/log.js';
 import { IRequestService } from '../../../../../platform/request/common/request.js';
 import { IEnvironmentService, INativeEnvironmentService } from '../../../../../platform/environment/common/environment.js';
 import { IAgentChatService, IAgentStudioService } from '../../common/agentStudio.js';
+import type { IToolCardHandle } from '../../../../common/agentStudioService.js';
 import { IAgentDriverService } from '../../common/agentDriver.js';
 import { IAgentOSService } from '../../common/agentOS.js';
 import { createMediaStoreProxy } from '../mediaStoreProxy.js';
@@ -121,12 +122,10 @@ import { KbSettingsEditorInput, IKbSettingsHost, type KbSettingsFocus } from '..
 import {
 	AGENT_STUDIO_KB_FEISHU_SYNC_ENABLED,
 	AGENT_STUDIO_KB_FEISHU_CLI_PATH,
-	AGENT_STUDIO_KB_FEISHU_SYNC_SRC_DIRS,
 	AGENT_STUDIO_KB_FEISHU_SYNC_PARENT,
 	AGENT_STUDIO_KB_FEISHU_SYNC_ON_CONFLICT,
 	AGENT_STUDIO_KB_FEISHU_SYNC_INTERVAL,
 	AGENT_STUDIO_KB_FEISHU_CATEGORY_DEPTH,
-	AGENT_STUDIO_KB_FEISHU_AUTO_CREATE_SPACES,
 	AGENT_STUDIO_KB_FEISHU_PRUNE_REMOTE,
 } from '../../common/constants.js';
 import {
@@ -141,7 +140,8 @@ import {
 	createWikiSpace,
 	sanitizeSpaceName,
 	parseSpaceMap,
-	parseSrcDirs,
+	deriveMappedSrcDirs,
+	FEISHU_SYNC_SECTION,
 	resolveSyncScript,
 	serializeSpaceMap,
 	type IKbSpaceMapping,
@@ -3659,6 +3659,13 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			this.notificationService.warn(localize('kb.spaceMapOutsideVault', '请选择知识库目录（或其子目录）内的文件夹。'));
 			return undefined;
 		}
+		// ★ 2026-09-24（同步范围只认「笔记」区）：选择器同样限制在「笔记」区内 ——
+		//   否则用户可以映射一个「库」里的目录，而它**永远不会被同步**（范围外），徒增困惑。
+		const notesRoot = `${root}/${FEISHU_SYNC_SECTION}`;
+		if (full !== notesRoot && !full.startsWith(notesRoot + '/')) {
+			this.notificationService.warn(localize('kb.spaceMapOutsideNotes', '请选择「笔记」区内的文件夹（同步范围只包含「笔记」区里已关联的目录）。'));
+			return undefined;
+		}
 		return full.slice(root.length + 1);
 	}
 
@@ -3710,7 +3717,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	 * 编排已抽到 `knowledge/diagramSyncPrepare.ts`（2026-09-24）—— 与 agent 的 `kb_feishu_sync`
 	 * 工具**共用同一份口径**，避免出现第二条实现漂移。这里只负责把过程实时打进同步输出。
 	 */
-	private async _renderDiagramsBeforeSync(srcDirs: readonly string[]): Promise<void> {
+	private async _renderDiagramsBeforeSync(srcDirs: readonly string[], dryRun: boolean): Promise<void> {
 		const vault = this._activeVault;
 		if (!vault) { return; }
 		// 表头惰性打印：只有真的扫到图表时才显示（无图表的 vault 不刷屏）
@@ -3718,13 +3725,20 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		const emit = (line: string): void => {
 			if (!headerDone) {
 				headerDone = true;
-				this._emitSyncOutput('\n=== 准备图表与附件（drawio/canvas → PNG；mermaid → 画板；html → 附件）===\n');
+				this._emitSyncOutput(dryRun
+					? '\n=== 预览图表与附件（只统计，不改动任何文件）===\n'
+					: '\n=== 准备图表与附件（drawio/canvas → PNG；mermaid → 画板；html → 附件）===\n');
 			}
 			this._emitSyncOutput(line);
 		};
 		const result = await prepareDiagramsForSync({
 			vaultRoot: this.vaultUri(vault),
 			srcDirs,
+			// ★ 2026-09-25：**必须把 dryRun 传下去** —— `prepareDiagramsForSync` 内部是
+			//   `const dryRun = opts.dryRun === true;`（`diagramSyncPrepare.ts:140`）⇒ 漏传 = `false` = 真渲染，
+			//   于是设置面板的「预览」也会渲染 PNG 并**改写笔记正文**（违反该文件 32-34 行的契约：
+			//   「dryRun ⇒ 零副作用」），且与 agent 的 `kb_feishu_sync` 工具口径不一致（工具传 `mode !== 'apply'`）。
+			dryRun,
 			fileService: this.fileService,
 			renderMermaid: (src: string) => this._mermaidRenderer.renderToSvg(src, 'default'),
 			renderDrawio: (src: string) => this._drawioRenderer.renderToSvg(src, 'default'),
@@ -3733,10 +3747,15 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			onProgress: emit,
 		});
 		if (!result.charts && !result.inlined && !result.attachments && !result.failures) { return; }   // 无图表/附件 ⇒ 不打扰用户
-		emit(`图表与附件准备完成：${result.charts} 个转为图片`
-			+ `${result.inlined ? `，${result.inlined} 个 mermaid 转画板` : ''}`
-			+ `${result.attachments ? `，${result.attachments} 个 HTML 附件` : ''}`
-			+ `${result.failures ? `，${result.failures} 个失败（已保留源码）` : ''}，改动 ${result.touched} 篇笔记。\n`);
+		emit(dryRun
+			? `图表与附件预览：${result.charts} 张待转图片`
+				+ `${result.inlined ? `，${result.inlined} 个 mermaid 转画板` : ''}`
+				+ `${result.attachments ? `，${result.attachments} 个 HTML 附件` : ''}`
+				+ ` —— 点「同步」时自动处理（**预览不改动文件**）。\n`
+			: `图表与附件准备完成：${result.charts} 个转为图片`
+				+ `${result.inlined ? `，${result.inlined} 个 mermaid 转画板` : ''}`
+				+ `${result.attachments ? `，${result.attachments} 个 HTML 附件` : ''}`
+				+ `${result.failures ? `，${result.failures} 个失败（已保留源码）` : ''}，改动 ${result.touched} 篇笔记。\n`);
 	}
 
 	private async syncToFeishu(mode: 'dry-run' | 'apply'): Promise<void> {
@@ -3763,12 +3782,18 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		}
 
 		const rawInterval = this.configurationService.getValue<number>(AGENT_STUDIO_KB_FEISHU_SYNC_INTERVAL);
-		const srcDirs = parseSrcDirs(this.configurationService.getValue<string>(AGENT_STUDIO_KB_FEISHU_SYNC_SRC_DIRS));
-		// ★ 2026-09-23：「留空 = 整个知识库」此前**只是文案**：留空会把 `--src` 整个省掉
-		// ⇒ 脚本侧 `args.src = []` ⇒ `collectPlan` 得到空计划 ⇒ 终端只打印「完成 0 篇」
-		// （用户观感就是「点了没反应 / 同步了但什么都没发生」）。
-		// 这里把「留空」落实为知识库的两个标准分区：`库` 与 `笔记`。
-		const effectiveSrcDirs = srcDirs.length ? srcDirs : ['库', '笔记'];
+
+		// ★★ 2026-09-24（用户定调）：「同步到飞书」**只同步「笔记」区里已配置映射的目录**
+		//   —— 映射到哪个飞书知识库就同步到哪；未配置映射的目录不进入范围（也不自动建库）。
+		//   范围 = `.feishu-space-map.json` 中 `笔记/**` 的映射目录（父目录自动涵盖子目录，已归并）。
+		//   ⚠ 不再读 `…feishu.srcDirs`（该设置项与其 UI 已废弃；键保留仅供高级用户在 settings.json 手改）。
+		const effectiveSrcDirs = deriveMappedSrcDirs(await this.loadFeishuSpaceMap());
+		if (effectiveSrcDirs.length === 0) {
+			void this._logOp('feishu.sync', 'failure', { target: mode, error: 'no mapped dirs under 笔记' });
+			this.notificationService.warn(localize('kb.feishuNoMappedDir', '尚未把「笔记」里的任何目录关联到飞书知识库，无法同步：请到「知识库设置 → 飞书同步 → 目录映射」添加一条映射。'));
+			return;
+		}
+		this._emitSyncOutput(`\n同步范围（来自「目录映射」，仅『笔记』区）：${effectiveSrcDirs.join('、')}\n`);
 		const parent = (this.configurationService.getValue<string>(AGENT_STUDIO_KB_FEISHU_SYNC_PARENT) || 'my_library').trim();
 		const onConflict = this.configurationService.getValue<string>(AGENT_STUDIO_KB_FEISHU_SYNC_ON_CONFLICT) === 'skip' ? 'skip' : 'overwrite';
 
@@ -3780,9 +3805,11 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			parent,
 			onConflict,
 			intervalMs: Number.isFinite(rawInterval) && rawInterval >= 0 ? rawInterval : 800,
-			// 多类别 → 多知识库：类别层级 / 未映射自动建库 / 删除清理（默认关）
+			// 多类别 → 多知识库：删除清理（默认关）
 			categoryDepth: Number.isFinite(rawDepth) && rawDepth >= 0 ? rawDepth : 1,
-			autoCreateSpaces: this.configurationService.getValue<boolean>(AGENT_STUDIO_KB_FEISHU_AUTO_CREATE_SPACES) !== false,
+			// ★ 2026-09-24：范围内全是「已映射」目录 ⇒ 落点全由映射决定；这里**显式关掉自动建库**，
+			//   把「不会自动创建知识库」从"推断结论"变成"结构保证"（万一出现未映射类别 ⇒ 跳过而非建库）。
+			autoCreateSpaces: false,
 			prune: this.configurationService.getValue<boolean>(AGENT_STUDIO_KB_FEISHU_PRUNE_REMOTE) === true,
 			mode,
 		});
@@ -3799,7 +3826,8 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		// ★ 2026-09-23：同步前把笔记里的 mermaid / drawio 渲染为 PNG 并改写引用。
 		// 飞书不渲染图表源码、且图片不支持 SVG ⇒ 不转换的话飞书里只会看到一堆源码。
 		try {
-			await this._renderDiagramsBeforeSync(effectiveSrcDirs);
+			// ★ 2026-09-25：预览（dry-run）零副作用 —— 见 `_renderDiagramsBeforeSync` 的注释。
+			await this._renderDiagramsBeforeSync(effectiveSrcDirs, mode !== 'apply');
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
 			this.logService.warn(`[KB feishu] diagram preparation failed (non-fatal): ${msg}`);
@@ -3808,7 +3836,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 
 		const launch = electronNodeLaunch();
 		const runner = launch.executable ? 'electron-node' : 'system-node';
-		void this._logOp('feishu.sync', 'success', { target: mode, detail: { srcCount: srcDirs.length, parent, onConflict, cli: cli.version ?? cliPath, runner } });
+		void this._logOp('feishu.sync', 'success', { target: mode, detail: { srcCount: effectiveSrcDirs.length, parent, onConflict, cli: cli.version ?? cliPath, runner } });
 
 		try {
 			const terminal = await this.terminalService.createTerminal({
@@ -4571,6 +4599,13 @@ export class KnowledgeBaseViewPane extends ViewPane {
 				KbImportController.warnKbAgentNotConfigured(this.notificationService, '批量构建笔记');
 				return;
 			}
+			// ★ 2026-09-24：互斥（与 agent 的 `kb_build` 共用 `KbImportController.buildInFlight`）。
+			//   构建是分钟级长任务；并发发起会各建一个会话、各自回填构建缓存/补链/导航 ⇒ 互相覆盖。
+			//   此前只靠"用户不会连点"的假设，双击按钮就能触发。
+			if (KbImportController.buildInFlight) {
+				this.notificationService.info('已有一个知识库构建正在进行中，请等它结束后再试。');
+				return;
+			}
 			const vaultRoot = this.vaultUri(this._activeVault);
 			// 标记所有库文件 item 为「构建中」
 			const libNodes = this._scroll.querySelectorAll('.kb-node[data-section="library"]:not(.dir)');
@@ -4581,18 +4616,32 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			//   原先忽略它，并在 `finally` 里**无条件**把徽标置为「有新增」⇒ 一篇都没构建时
 			//   也会亮出「有新增」，是「点了没反应」之外的另一层误导。
 			let builtCount = 0;
+			// ★ 2026-09-24（用户要求「点构建按钮后聊天框显示大量文本 ⇒ 封装成一次工具调用」）：
+			//   把「合成工具卡」交给控制器去开（它才知道构建会话何时就绪 —— 会话是在构建流程内部建的），
+			//   这里只持句柄并在 finally 里**统一收尾** ⇒ 成功/失败/抛异常都不会留下「执行中」的卡片。
+			const toolCard: IToolCardHandle = {};
 			try {
 				// ★ 2026-09-23（用户需求）：批量改为「**一个 agent 会话 + 素材路径清单**」——
 				//   宿主**只给路径**，agent 自己用 file_read 依次读、用 file_write 写笔记；
 				//   写完再在同一会话里依据「笔记区」真实目录/文件创建或完善「知识体系.md」（构建知识体系）。
 				//   （旧的「宿主读文件 + 解析 FILE 块 + 宿主落盘」路径保留为降级兜底。）
-				const res = await this._kbImport.buildPendingAsAgentSession(vaultRoot);
+				const res = await this._kbImport.buildPendingAsAgentSession(vaultRoot, toolCard);
 				builtCount = res.built;
 			} finally {
 				// 清除全部构建中标记（避免刷新后残留）
 				Array.from(this._buildingPaths).forEach(p => this._setNodeBuilding(p, false));
 				// 统一收尾（2026-09-23）：清「库/笔记」标题右侧状态（进度文案由控制器在批量循环里上报）
 				this.agentStudioService.reportKbProcessing({ active: false });
+				// ★ 2026-09-24：关闭聊天里的合成工具卡（`kb_build`）。`summary` 由控制器在成功路径回填；
+				//   **未回填 ⇒ 按失败收尾**（抛异常时会走到这里，卡片不会永远停在「执行中」）。
+				if (toolCard.toolCallId) {
+					this.agentStudioService.toolCardResult({
+						toolCallId: toolCard.toolCallId,
+						ok: toolCard.summary !== undefined,
+						result: toolCard.summary,
+						error: toolCard.summary === undefined ? '构建未完成（详见通知与日志）' : undefined,
+					});
+				}
 			}
 			// 徽标：**只有真的产出了笔记**才提示「有新增」。
 			// 空结果时保持中性（"为什么没产出"由控制器发出的 Info 通知说明，这里不重复提示）。

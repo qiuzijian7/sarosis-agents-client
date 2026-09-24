@@ -17,8 +17,13 @@
  *--------------------------------------------------------------------------------------------*/
 
 interface IViewerInit {
-	kind: 'pdf' | 'docx';
+	kind: 'pdf' | 'docx' | 'image';
 	fileName: string;
+	/**
+	 * 图片 MIME（kind === 'image' 时由宿主给出，如 `image/png` / `image/svg+xml`）。
+	 * 传给 `<img src="data:${mime};base64,…">` —— 不给浏览器留嗅探余地。
+	 */
+	mime?: string;
 	/**
 	 * 文档本体（base64）—— 宿主**内联**注入。
 	 *
@@ -206,6 +211,63 @@ async function renderDocx(view: IViewerInit): Promise<void> {
 	setStatus(result.messages?.length ? `已解析（${result.messages.length} 条转换提示）` : '已解析');
 }
 
+/**
+ * 图片（png / jpg / gif / webp / bmp / avif / ico / svg）：内联 base64 → `<img>`。
+ *
+ * 为什么也内联：资源代理在本 fork 两条路都不通（见 `IViewerInit.fileBase64`），
+ * 而图片本体通常只有几十 KB～几 MB；CSP 已允许 `img-src data:`。
+ *
+ * ⚠ SVG 用 `<img>` 嵌入是**安全**的：img 里的 SVG **不会执行脚本**（浏览器规范行为）。
+ *
+ * 交互：适应窗口 / 1:1 / 缩放按钮；点击图片在「适应 ↔ 1:1」间切换（对齐常见看图工具手感）。
+ */
+function renderImage(view: IViewerInit): void {
+	const mime = view.mime || 'application/octet-stream';
+	const { add, content, setStatus } = scaffold(view.fileName);
+	// 透明区可见：棋盘底（纯 CSS 渐变，不需要额外资源）
+	styled(content, {
+		backgroundImage: [
+			'linear-gradient(45deg, rgba(128,128,128,.18) 25%, transparent 25%, transparent 75%, rgba(128,128,128,.18) 75%)',
+			'linear-gradient(45deg, rgba(128,128,128,.18) 25%, transparent 25%, transparent 75%, rgba(128,128,128,.18) 75%)',
+		].join(','),
+		backgroundSize: '16px 16px',
+		backgroundPosition: '0 0, 8px 8px',
+	});
+
+	const img = el('img');
+	img.src = `data:${mime};base64,${view.fileBase64 ?? ''}`;
+	img.alt = view.fileName;
+	img.draggable = false;
+
+	/** `'fit'` = 适应窗口；数字 = 像素缩放比（1 = 原始尺寸）。 */
+	let zoom: 'fit' | number = 'fit';
+
+	const update = (): void => {
+		if (zoom === 'fit') {
+			styled(img, { maxWidth: '100%', maxHeight: 'calc(100vh - 110px)', width: 'auto', height: 'auto', cursor: 'zoom-in' });
+		} else {
+			styled(img, {
+				maxWidth: 'none', maxHeight: 'none', height: 'auto', cursor: 'zoom-out',
+				width: `${Math.max(16, Math.round((img.naturalWidth || 0) * zoom))}px`,
+			});
+		}
+		setStatus(`${img.naturalWidth || '?'}×${img.naturalHeight || '?'} · ${zoom === 'fit' ? '适应窗口' : `${Math.round(zoom * 100)}%`}`);
+	};
+	const setZoom = (z: 'fit' | number): void => { zoom = z; update(); };
+
+	img.onload = update;
+	img.onerror = () => showError('图片解码失败：文件可能已损坏，或格式不被浏览器支持。');
+	// 点击：适应窗口 ↔ 1:1（与看图工具一致的手感）
+	img.onclick = () => setZoom(zoom === 'fit' ? 1 : 'fit');
+
+	content.appendChild(img);
+	add(button('－', '缩小', () => setZoom(zoom === 'fit' ? 0.75 : Math.max(0.1, zoom * 0.8))));
+	add(button('＋', '放大', () => setZoom(zoom === 'fit' ? 1.25 : Math.min(8, zoom * 1.25))));
+	add(button('适应', '适应窗口', () => setZoom('fit')));
+	add(button('1:1', '原始尺寸', () => setZoom(1)));
+	update();
+}
+
 if (!init) {
 	showError('缺少初始化数据（__VIEWER_INIT__）');
 } else if (init.tooLarge) {
@@ -217,6 +279,8 @@ if (!init) {
 	showError('缺少文件内容（fileBase64 为空）。');
 } else if (init.kind === 'pdf') {
 	void renderPdf(init).catch(showError);
+} else if (init.kind === 'image') {
+	try { renderImage(init); } catch (e) { showError(e); }
 } else {
 	void renderDocx(init).catch(showError);
 }

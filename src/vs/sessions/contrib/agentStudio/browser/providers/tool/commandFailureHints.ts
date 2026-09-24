@@ -144,6 +144,20 @@ const FAILURE_PATTERNS: readonly IFailurePattern[] = [
 			'Verify the directory exists (e.g. search_files with a glob like "<dir>/*"), then reissue with an existing cwd.',
 	},
 	{
+		// ★ 2026-09-25（生产日志 20260925T020714）：execute_code 刻意禁用 MSYS 参数转换
+		//   （MSYS_NO_PATHCONV / MSYS2_ARG_CONV_EXCL=*）⇒ `/g/...` 风格的参数**原样**到达
+		//   Windows 原生程序 ⇒ ffprobe 报「/g/...: No such file or directory」而文件其实存在
+		//   （程序本身能启动 —— 命令词由 bash 按 POSIX 解析，只有参数中招，这层不对称极具
+		//   迷惑性）。必须排在 no-such-file **之前**：通用文案会让模型去 search_files 找一个
+		//   本来就存在的文件（实测模型连试两次同一命令）。
+		//   指纹：报错行里路径以 `/x/` 单字母盘符开头（Git Bash 的 POSIX 盘符形式）。
+		id: 'posix-path-not-converted',
+		test: /^\s*\/[a-z]\/\S*: No such file or directory/im,
+		text: 'A /x/... POSIX-style path reached a native Windows program unconverted (MSYS argument conversion is disabled in this shell) — the file may well exist, ' +
+			'and retrying unchanged will keep failing. Rewrite the path in drive-letter form (e.g. G:/dir/file) and retry; ' +
+			'only if it STILL fails does the file genuinely not exist — then use search_files for the real path.',
+	},
+	{
 		id: 'no-such-file',
 		// 注意：中文措辞不能套 \b —— 中文字符不是 word char，`路径。` 两侧均非 word，
 		// \b 不成立会导致整条正则对中文 shell 输出失效（2026-08-21 单测捕获）。

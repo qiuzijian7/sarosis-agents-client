@@ -13,7 +13,7 @@
  *  而不是抛异常 —— LLM 据此可自行判断要让使用者打开编辑器。
  *--------------------------------------------------------------------------------------------*/
 
-import { IToolDefinition, IToolResultContent } from '../../../common/providers.js';
+import { IToolDefinition, IToolResultContent, NO_PARAMS_SCHEMA } from '../../../common/providers.js';
 import { ILogService } from '../../../../../../platform/log/common/log.js';
 
 export const UNREAL_HEALTH_TOOL_NAME = 'unreal_health';
@@ -27,17 +27,7 @@ export const UNREAL_FIND_ASSET_TOOL_NAME = 'unreal_find_asset';
 /** 默认 bridge 地址。 */
 const DEFAULT_BRIDGE_URL = 'http://127.0.0.1:8765';
 
-/**
- * 无参工具的 inputSchema。
- *
- * 不能写 `{ type: 'object', properties: {} }`：部分模型/网关（IOA）要求 object
- * 至少带一个属性，否则整份 schema 被判为不兼容。与 codebaseTools / workflowTools
- * / kanbanTools 等既有工具保持同一约定。
- */
-const NO_PARAMS_SCHEMA: IToolDefinition['inputSchema'] = {
-	type: 'object',
-	properties: { _no_params: { type: 'boolean', description: 'No parameters needed' } },
-};
+// 无参工具的 inputSchema 用共享常量 NO_PARAMS_SCHEMA（common/providers.ts，理由记在那里）。
 
 /** 各工具的默认超时（毫秒）。exec/build 耗时长，health/help 应快速失败。 */
 const TIMEOUT_MS: Readonly<Record<string, number>> = {
@@ -183,8 +173,6 @@ export function registerUnrealTools(ctx: UnrealToolContext): void {
 	register(
 		UNREAL_HEALTH_TOOL_NAME,
 		'Check that the Unreal Editor bridge is reachable. Returns status, project name, pid and uptime. Call this first if any other unreal_* tool fails.',
-		// 空 properties {} 会被 IOA 网关判为不兼容（某些模型要求 object 至少有一个
-		// 属性），此处与 codebaseTools / workflowTools 等保持一致的 `_no_params` 约定。
 		NO_PARAMS_SCHEMA,
 		'/bridge/health',
 		() => undefined,

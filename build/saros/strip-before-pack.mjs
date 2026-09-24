@@ -393,6 +393,32 @@ function ensureOptionalBin(label, stagingRel, repoRel) {
 }
 ensureOptionalBin('ffmpeg.exe', 'resources/saros/bin/ffmpeg.exe', 'build/saros/bin/ffmpeg.exe');
 ensureOptionalBin('ffprobe.exe', 'resources/saros/bin/ffprobe.exe', 'build/saros/bin/ffprobe.exe');
+ensureOptionalBin('yt-dlp.exe', 'resources/saros/bin/yt-dlp.exe', 'build/saros/bin/yt-dlp.exe');
+
+// === 5.6 whisper.cpp（本地 ASR：video_analyze 对无字幕轨视频的口播转写）===
+// 2026-09-25 用户拍板随包。exe+DLL ≈8MB；模型 ggml-base ≈141MB 显著抬包体积 ——
+// 若将来要瘦身，优先把模型改为「首用按需下载」（fetch-whisper.mjs 的下载逻辑可复用）。
+// 缺失仅警告不阻断出包（与 ffmpeg 同级：功能是降级为「口播内容不可知」，不是崩）。
+console.log('\n🗣️ [可选依赖] whisper.cpp（本地 ASR 口播转写）:');
+ensureOptionalBin('whisper-cli.exe', 'resources/saros/bin/whisper-cli.exe', 'build/saros/bin/whisper-cli.exe');
+// DLL 是运行时依赖（whisper.dll/ggml*.dll/parakeet.dll/SDL2.dll），缺一个 exe 就起不来。
+// 按名字前缀 glob 拷贝而不逐个点名：whisper.cpp 版本间 DLL 清单会变（如 v1.9 新增
+// parakeet.dll），点名会漏。build/saros/bin/ 下没有其他来源的 .dll（ffmpeg/yt-dlp 是
+// 静态 exe，rg/sqlite 是 .exe/.node）⇒ 这个 glob 不会误拷。
+{
+	const repoBin = path.join(repoRoot, 'build/saros/bin');
+	const stagingBin = path.join(buildDir, 'resources/saros/bin');
+	const dlls = existsSync(repoBin)
+		? readdirSync(repoBin).filter(f => /^(whisper|ggml|parakeet|SDL2).*\.dll$/i.test(f))
+		: [];
+	if (dlls.length === 0) {
+		console.log('  ⚠️  whisper DLL 缺失（whisper-cli 将起不来）。获取: node build/saros/fetch-whisper.mjs');
+	}
+	for (const d of dlls) {
+		ensureOptionalBin(d, `resources/saros/bin/${d}`, `build/saros/bin/${d}`);
+	}
+}
+ensureOptionalBin('ggml-base.bin (whisper 模型)', 'resources/saros/models/ggml-base.bin', 'build/saros/models/ggml-base.bin');
 
 if (criticalMissing > 0) {
 	console.error(`\n💥 ${criticalMissing} 项关键构件缺失且无法自愈——禁止带病出包！`);

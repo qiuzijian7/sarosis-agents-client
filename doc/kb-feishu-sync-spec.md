@@ -333,6 +333,10 @@ dryRun：只统计（不复制、不写回）。
 ⚠ 仅在**新建**文档时使用；已同步文档走 `docs +update --doc <token>`，**位置不变**。
 （面板标签原为「目标位置」，因自解释性差已改为「同步到」并加说明行 —— 用户反馈 2026-09-21。）
 
+★ **2026-09-24 起「同步到」不再是面板入口**：同步范围固定为「笔记」区里已配置映射的目录 ⇒
+落点全部由映射决定，`--parent` 只对**历史遗留的无映射文件**有意义（现已不会出现在计划里）。
+键 `...feishu.parent` 仍保留（settings.json 可手改）。**见 §16。**
+
 ### 11.2 飞书 CLI 检测（lark-cli 是外部依赖）
 
 - 检测：`feishuSyncCore.ts#detectLarkCli` —— 经主进程通道 `vscode:execCode`（与 `execute_code` 同一原语）
@@ -605,8 +609,8 @@ node src/vs/sessions/contrib/agentStudio/test/browser/run-browser-test.mjs \
   { "version": 1, "mappings": [{ "dir": "库/AI/01-基础概念", "spaceId": "769…", "spaceName": "01-基础概念" }] }
   ```
   兼容极简写法：`{ "mappings": { "库/AI/01-基础概念": "769…" } }`
-- **语义**：显式映射**优先于**「类别层级」推导；映射目录**及其子目录**的笔记绑定到指定知识库（**最长前缀**匹配）。
-  未映射目录仍按 `--category-depth` 推导、必要时自动建库 ⇒ 两种方式可混用（映射目录**不会**被自动建库）。
+- **语义（★ 2026-09-24 已收紧，见 §16）**：映射是**同步范围的唯一来源** —— 只有「笔记」区里已映射的目录
+  及其**子目录**会被同步（**最长前缀**匹配）；未映射目录**不进计划**（不再按 `--category-depth` 推导、也不再自动建库）。
 - **为什么落文件而不是 CLI 参数**：JSON 经 argv 在 Windows（`shell: true`）下会被引号破坏；文件还能让 UI 与脚本读写同一份契约。
 - **实现位置**：
   - 脚本：`SPACE_MAP_FILE` / `loadSpaceMap()` / `applyExplicitMappings()`（导出的纯函数，有单测）。
@@ -666,3 +670,39 @@ node src/vs/sessions/contrib/agentStudio/test/browser/run-browser-test.mjs \
   （`isDownloadableMedia` 排除）；**Playwright / headless 仍是未接的扩展点**（项目内 playwright 目前只服务 browserView 平台层）。
 - **验证**：新增纯函数（`slugifyTitle` / `planImagePath` / `htmlToPlainText`）单测 3 例 ✓；`tsgo` 0 ✓；lint 0 ✓。
   **真实抓取需在 IDE 重编译后点按钮**（依赖主进程提取器服务）。
+
+## 16. 同步范围口径变更：只同步「已映射」的笔记目录（2026-09-24 用户定调）
+
+**用户要求**：同步到飞书 = **仅同步「笔记」区中，配置了「目录 ↔ 飞书知识库」映射的内容**。
+
+**新口径（唯一真源）**：
+
+| 维度 | 规则 |
+|---|---|
+| 范围 | `.feishu-space-map.json` 里 `笔记/**` 的映射目录（父目录自动涵盖子目录） |
+| 落点 | 命中哪条映射就进哪个飞书知识库（**最长前缀**匹配） |
+| 未映射 | **不进计划**：不同步、不建库、不报错 |
+| 「库」区 | **永不参与同步**（素材层） |
+| 无任何映射 | **不执行同步**：按钮 / agent 工具直接提示「先去配目录映射」 |
+
+**实现（不改内置脚本）**：把推导出的映射目录作为 `--src` 传给脚本 —— 脚本里 `--src` 既是 walk 的根、
+又是类别推导的基准，而 `applyExplicitMappings` 会对映射目录及其子目录强制覆盖类别（最长前缀）
+⇒ 只传映射目录即可精确表达「只同步已关联内容」，且不会触发建库分支。
+推导纯函数 `feishuSyncCore.deriveMappedSrcDirs()`（**父子归并**：脚本对每个 `--src` 各 walk 一次，
+同时传祖先与后代会让后代文件被 plan 两次；另有 `\`→`/`、去尾 `/` 归一与「笔记X」不误判）。
+
+**口径漂移已消除**：视图「📤 立即同步到飞书」按钮与 agent 工具 `kb_feishu_sync` **共用同一份推导**
+（此前按钮留空 = `库+笔记`、工具留空 = 仅 `笔记`，语义相反）。
+
+**UI 变更**：面板移除四项 ——「同步范围」（`srcDirs`）、「同步到」（`parent`）、「类别层级」（`categoryDepth`）、
+「自动建库」（`autoCreateSpaces`）。前三个键与 schema **保留**（`settings.json` 仍可手改，脚本契约不变）；
+`autoCreateSpaces` 改为**调用侧显式传 `--no-auto-create-spaces`**（把「不会自动建库」从推断结论变成结构保证）。
+「目录映射」成为范围/落点的**唯一入口**，其目录选择器**限制在「笔记」区**（避免映射到永不生效的「库」目录）；
+映射区文案（空态 / 删除提示 / 说明行）同步更新。
+
+**远端影响（安全）**：`--prune` 默认关 ⇒ 缩小范围**不会**删除或搬迁已同步的远端文档；
+它们只是不再被更新（重新纳入范围后按 `feishu.hash` 增量恢复更新）。
+
+**测试**：`feishuSyncCore.test.ts` 新增 `deriveMappedSrcDirs` 7 例（只取笔记区 / 父子归并 / 同级排序 /
+映射整个笔记区 / 反斜杠归一 / 空映射 / 不误判「笔记X」）；`diagramSyncPrepare.test.ts` 的「兜底范围」
+用例按新语义重写（兜底 = 仅「笔记」）。

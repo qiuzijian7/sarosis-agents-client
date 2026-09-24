@@ -30,13 +30,9 @@ import {
 	AGENT_STUDIO_KB_AGENTIC_BUILD,
 	AGENT_STUDIO_KB_FEISHU_SYNC_ENABLED,
 	AGENT_STUDIO_KB_FEISHU_CLI_PATH,
-	AGENT_STUDIO_KB_FEISHU_SYNC_SRC_DIRS,
-	AGENT_STUDIO_KB_FEISHU_SYNC_PARENT,
 	AGENT_STUDIO_KB_FEISHU_SYNC_ON_CONFLICT,
 	AGENT_STUDIO_KB_FEISHU_SYNC_INTERVAL,
 	AGENT_STUDIO_KB_FEISHU_AUTO_SYNC,
-	AGENT_STUDIO_KB_FEISHU_CATEGORY_DEPTH,
-	AGENT_STUDIO_KB_FEISHU_AUTO_CREATE_SPACES,
 	AGENT_STUDIO_KB_FEISHU_PRUNE_REMOTE,
 } from '../common/constants.js';
 import { KbSettingsEditorInput, IKbSettingsHost } from './kbSettingsEditorInput.js';
@@ -350,64 +346,21 @@ export class KbSettingsEditorPane extends EditorPane {
 		updateHint.id = 'kbsCliUpdate';
 		fsSec.appendChild(updateHint);
 
-		const srcControl = this._row(fsSec, '同步范围');
-		const srcInput = document.createElement('input');
-		srcInput.type = 'text'; srcInput.className = 'kbs-input kbs-grow';
-		srcInput.value = this.configurationService.getValue<string>(AGENT_STUDIO_KB_FEISHU_SYNC_SRC_DIRS) ?? '';
-		// ★ 2026-09-23：把「留空」的含义写清楚 —— 现在它真的会同步「库」+「笔记」两个分区
-		// （此前留空会传空 src ⇒ 计划为空 ⇒ 终端只打印「完成 0 篇」）。
-		srcInput.placeholder = '留空 = 库 + 笔记（整个知识库）';
-		srcInput.title = '库内相对目录，多个用逗号分隔；留空 = 同步「库」与「笔记」两个分区';
-		srcInput.onchange = () => {
-			const v = srcInput.value.trim();
-			this.configurationService.updateValue(AGENT_STUDIO_KB_FEISHU_SYNC_SRC_DIRS, v);
-			host.logOp('settings.kb.feishu.srcDirs', { target: v || '<whole-vault>' });
-		};
-		srcControl.appendChild(srcInput);
+		// ★★ 2026-09-24（用户定调）：**同步范围只由下方「目录映射」决定** —— 只同步「笔记」区里
+		//   已关联到飞书知识库的目录（映射到哪个知识库就同步到哪）；未映射目录不进入范围、也不自动建库。
+		//   ⇒ 原先的三个入口已移除：
+		//     · 同步范围（`…feishu.srcDirs`）——「留空 = 整库」与「只同步已关联」的语义相反；
+		//     · 同步到（`…feishu.parent`）—— 落点改由映射决定（仅对历史遗留的无映射文件有意义）；
+		//     · 类别层级（`…feishu.categoryDepth`）—— 不再按层级推导类别/自动建库。
+		//   三个配置键与 schema **保留**（脚本契约不变，高级用户仍可在 settings.json 手改）。
+		this._hint(fsSec, '同步范围 = 下方「目录映射」里已关联到飞书知识库的「笔记」子目录（映射到哪个知识库就同步到哪）。未关联的目录不会同步，也不会自动创建知识库。');
 
-		// 「同步到」= 新建文档在飞书侧的落点（复用脚本 --parent 语义）：
-		//   my_library → `--wiki-space my_library`（飞书「个人知识库」）
-		//   其它值     → `--folder-token <token>`（飞书云空间指定文件夹）
-		// ⚠ 仅作用于**新建**文档；已同步文档走 `docs +update --doc`，位置不变。
-		const parentControl = this._row(fsSec, '同步到');
-		const parentInput = document.createElement('input');
-		parentInput.type = 'text'; parentInput.className = 'kbs-input kbs-grow';
-		parentInput.value = this.configurationService.getValue<string>(AGENT_STUDIO_KB_FEISHU_SYNC_PARENT) || 'my_library';
-		parentInput.placeholder = 'my_library（飞书个人知识库）';
-		parentInput.title = 'my_library = 飞书「个人知识库」（默认）；也可填飞书云空间文件夹 token，新建文档会落到该文件夹下';
-		parentInput.onchange = () => {
-			const v = parentInput.value.trim() || 'my_library';
-			this.configurationService.updateValue(AGENT_STUDIO_KB_FEISHU_SYNC_PARENT, v);
-			host.logOp('settings.kb.feishu.parent', { target: v });
-		};
-		parentControl.appendChild(parentInput);
-		this._hint(fsSec, '「同步到」决定新建文档在飞书的位置：my_library = 个人知识库（默认），或填云空间文件夹 token。仅影响新建文档，已同步的仍按原位置更新。');
-
-		// ── 多类别 → 多知识库 ──
-		const depthControl = this._row(fsSec, '类别层级');
-		const depthInput = document.createElement('input');
-		depthInput.type = 'number'; depthInput.className = 'kbs-input kbs-num';
-		const rawDepth = this.configurationService.getValue<number>(AGENT_STUDIO_KB_FEISHU_CATEGORY_DEPTH);
-		depthInput.value = String(Number.isFinite(rawDepth) && rawDepth >= 0 ? rawDepth : 1);
-		depthInput.min = '0'; depthInput.max = '5'; depthInput.step = '1';
-		depthInput.title = '同步源目录下第几级目录作为一个「类别」（每个类别对应一个飞书知识库）；0 = 不分类别';
-		depthInput.onchange = () => {
-			const v = parseInt(depthInput.value, 10);
-			if (Number.isFinite(v) && v >= 0) {
-				this.configurationService.updateValue(AGENT_STUDIO_KB_FEISHU_CATEGORY_DEPTH, v);
-				host.logOp('settings.kb.feishu.categoryDepth', { target: String(v) });
-				void this._refreshCliStatus();
-			}
-		};
-		depthControl.appendChild(depthInput);
-		this._hint(fsSec, '每个「类别」= 同步源目录下的第 N 级目录，各自对应一个飞书知识库；类别变化时其文档会自动跨知识库搬迁（wiki move）。0 = 不分类别。');
-
-		// ── 目录 ↔ 知识库映射（**用户显式配置**，优先于上面的「类别层级」自动推导）──
+		// ── 目录 ↔ 知识库映射（**同步范围的唯一来源**）──
 		// 落盘在 vault 内 `.feishu-space-map.json`（与内置脚本同一契约）⇒ 无需经 CLI 参数传递（避免引号转义问题）。
 		const mapRow = this._row(fsSec, '目录映射');
 		const addMapBtn = $('button.kbs-btn');
 		addMapBtn.textContent = '＋ 添加目录';
-		addMapBtn.title = '选择知识库内的一个目录，为它显式指定飞书知识库（该目录的子目录一并绑定）';
+		addMapBtn.title = '选择「笔记」区内的一个目录，把它（含子目录）绑定到一个飞书知识库';
 		const reloadMapBtn = $('button.kbs-btn');
 		reloadMapBtn.textContent = '🔄 刷新知识库列表';
 		reloadMapBtn.title = '重新拉取飞书知识库列表（lark-cli wiki +space-list）';
@@ -418,7 +371,7 @@ export class KbSettingsEditorPane extends EditorPane {
 		const mapStatus = $('p.kbs-hint');
 		mapStatus.id = 'kbsSpaceMapStatus';
 		fsSec.appendChild(mapStatus);
-		this._hint(fsSec, '显式映射**优先于**「类别层级」：映射目录（含其子目录）下的笔记会同步到你指定的飞书知识库；未映射的目录仍按类别层级自动推导（必要时自动建库）。');
+		this._hint(fsSec, '每条映射把「笔记」里的一个目录（含其子目录）绑定到一个飞书知识库 —— 这些目录就是**同步范围**：映射到哪个知识库就同步到哪，未映射的目录不同步。');
 
 		/** 可选的知识库列表（惰性拉取一次；「刷新知识库列表」可重拉）。 */
 		let spaceOptions: Array<{ spaceId: string; name: string }> = [];
@@ -435,7 +388,7 @@ export class KbSettingsEditorPane extends EditorPane {
 				: '未获取到飞书知识库列表（确认 lark-cli 已安装并登录，再点「刷新知识库列表」）';
 			if (mappings.length === 0) {
 				const empty = $('p.kbs-hint');
-				empty.textContent = '（未配置显式映射 —— 全部按类别层级自动推导）';
+				empty.textContent = '（尚未配置任何映射 —— 同步不会包含任何内容，请先「＋ 添加目录」）';
 				mapList.appendChild(empty);
 				return;
 			}
@@ -498,7 +451,7 @@ export class KbSettingsEditorPane extends EditorPane {
 				};
 				const delBtn = $('button.kbs-btn');
 				delBtn.textContent = '🗑';
-				delBtn.title = '删除该映射（删除后该目录回到「类别层级」自动推导）';
+				delBtn.title = '删除该映射（删除后该目录**不再参与同步**）';
 				delBtn.onclick = () => {
 					void (async () => {
 						const list = await host.loadSpaceMap();
@@ -534,16 +487,9 @@ export class KbSettingsEditorPane extends EditorPane {
 		reloadMapBtn.onclick = () => { void renderMapList(true); };
 		void renderMapList();
 
-		const autoCreateControl = this._row(fsSec, '自动建库');
-		this._check(
-			autoCreateControl,
-			'类别没有对应知识库时，自动创建同名知识库',
-			this.configurationService.getValue<boolean>(AGENT_STUDIO_KB_FEISHU_AUTO_CREATE_SPACES) !== false,
-			(v) => {
-				this.configurationService.updateValue(AGENT_STUDIO_KB_FEISHU_AUTO_CREATE_SPACES, v);
-				host.logOp('settings.kb.feishu.autoCreateSpaces', { target: v ? 'on' : 'off' });
-			},
-		);
+		// ★ 2026-09-24：「自动建库」开关已移除 —— 新口径下同步范围只含**已映射**目录，
+		//   落点全部由映射决定 ⇒ 建库分支永不触发（同步调用显式传 `--no-auto-create-spaces`）。
+		//   想把某个分类同步出去 ⇒ 去上面「目录映射」加一条，而不是打开自动建库。
 
 		const pruneControl = this._row(fsSec, '删除清理');
 		this._check(

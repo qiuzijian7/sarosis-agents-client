@@ -126,8 +126,41 @@ export function getBuiltinAgents(): Agent[] {
 - Ask clarifying questions when requirements are ambiguous — but when a question has an obvious default interpretation, act on it immediately instead of asking.
 - Do not execute destructive operations without confirmation.
 - If required context is missing, use the appropriate lookup tool (search, file_read, etc.) to retrieve it. Only ask the user when the information cannot be retrieved by tools.`,
-			skills: ['code-review', 'analysis', 'summarize', 'writing', 'planning'],
-			tools: ['file_read', 'file_write', 'terminal', 'search_files', 'patch', 'web_search', 'clarify',
+			// ★ 2026-09-24：加入 kb-game-teardown —— 用户说「拆分游戏 / 游戏拆解」或发来游戏视频链接、
+			//   给出游戏名并要求拆解时，按技能手册执行（素材盘点 → 七层框架 → 证据纪律 →
+			//   **落盘到知识库 `库/raw`** → 引导用户触发构建交给技能 kb-build）。
+			//   该技能自带 `activation: auto` + 关键词（含「拆分游戏」）⇒ 任意 agent 的对话里都能被自动激活；
+			//   这里作为 **required** 挂载，保证主助理拿到全文（KB agent 的技能面已恰好占满注入预算
+			//   10/10，故不在那里挂载 —— 它靠 auto 激活 + read_skill 读取）。
+			// ★ 2026-09-24：加入 web-content-import —— 用户丢来各平台链接（小红书 / 抖音 / B站 /
+			//   知乎 / 公众号 / YouTube / 博客…）并要「抓下来 / 存进知识库 / 转成 Markdown」时按手册执行
+			//   （分平台分流 → yt-dlp 取字幕 → 落 `库/raw` → 问是否 kb_build）。
+			//   该技能自带 `activation: auto` + 关键词 ⇒ 任意 agent 的对话里都能被自动激活（KB agent
+			//   的技能面已占满注入预算，故不在那里挂载，它靠 auto 激活 + read_skill 读取）；
+			//   这里作为 **required** 挂载，保证主助理拿到全文。主助理当前 6 个技能 / 约 1.7 万字符，
+			//   远低于注入预算（10 个 / 48000 字符），不会把既有技能挤成摘要。
+			skills: ['web-content-import', 'kb-game-teardown', 'code-review', 'analysis', 'summarize', 'writing', 'planning'],
+			// ★ 2026-09-24：加入 vision_analyze —— 游戏拆解的「画面证据」只能来自封面图或用户发的截图
+			//   （产品无抽帧能力）。单图工具（一次一张、≤8MB），多图需逐张调用；属 core/Always ⇒ 聚焦模式下不会被剔除。
+			// ★ 2026-09-24（补齐能力）：加入 kb_search 与 extract_video_frames ——
+			//   · kb_search：主助理此前**无法检索知识库**，写内容时无从复用用户既有笔记（toolset
+			//     `knowledge` 属 focus 推荐集，见 focusMode.ts，加入白名单即可见）。
+			//   · extract_video_frames：配合已挂的 kb-game-teardown —— 抽帧后用 vision_analyze 看画面。
+			// ★ 2026-09-24（再补）：加入 video_analyze —— 「一次调用看懂一段视频」（抽帧 + 字幕 +
+			//   多模态模型直接给结论），省掉「抽帧 → 逐张 vision_analyze」的 N 次往返；
+			//   此前它只有 bundled 定义无 handler ⇒ 模型看不到（stub）。二者同属 toolset
+			//   `video_frames`（Always）⇒ 加入白名单即可见。
+			// ★ 2026-09-24（再补）：加入 kb_build —— 「素材先落库、再构建」的链路此前断在最后一步
+			//   （构建只有视图按钮，agent 只能让用户自己去点）。kb_build 让它能**询问用户后直接发起**
+			//   （mode:'preview' 只读预检 / mode:'build' 发起，走同一条 agent 会话构建路径）。
+			//   ⚠ 刻意**不挂到 knowledge-base-expert**：构建会话正由该 agent 执行，给它构建工具
+			//   会造成「构建中再发起构建」的递归（互斥虽能拦住，但那是把护栏当设计用）。
+			// ★ 2026-09-24（再补）：加入飞书云文档 5 个工具（读文档 + 评论读/写）——
+			//   用户常直接甩一个飞书文档链接过来（「看看这个文档 / 帮我回一下这条评论」），
+			//   此前只能靠 web_extract 抓（撞登录墙）或让用户手动导入知识库。
+			//   依赖官方 CLI（lark-cli），未装时工具会返回安装指引而不是静默失败。
+			tools: ['file_read', 'file_write', 'terminal', 'search_files', 'patch', 'web_search', 'clarify', 'vision_analyze', 'kb_search', 'kb_build', 'extract_video_frames', 'video_analyze',
+				'feishu_doc_read', 'feishu_drive_list_comments', 'feishu_drive_list_comment_replies', 'feishu_drive_reply_comment', 'feishu_drive_add_comment',
 				'search_code', 'query_graph', 'get_architecture', 'trace_path', 'get_code_snippet',
 				'index_repository', 'index_status', 'detect_changes', 'search_graph'],
 			handOffs: [
@@ -186,9 +219,12 @@ export function getBuiltinAgents(): Agent[] {
 			systemPrompt: `You are an expert research analyst. Provide comprehensive, well-structured research findings.
 
 ## Search Tool
-You are associated with the **anysearch** skill (unified real-time search service). When you need to search external information, prefer using the anysearch CLI: general web search, vertical domain search, parallel batch search, and full-page content extraction. Run \`python3 scripts/anysearch_cli.py doc\` for the command spec.
+Pick the retrieval path by the FIRST rule that matches:
+1. **Generic / latest-facts question** → call the built-in \`web_search\` directly (one call, fastest).
+2. **Structured identifiers or domain-specific data** (stock quotes, papers, laws, weather, code docs, social posts) → use the **anysearch** skill: general + vertical-domain search, 2–5 parallel queries via \`batch_search\`, and full-page \`extract\`. Run \`python3 scripts/anysearch_cli.py doc\` for the command spec.
+3. **A specific URL is already known** → \`web_extract\`.
 
-**Fallback**: If AnySearch fails (API error, timeout, runtime unavailable, or quota exhausted without a key), do NOT retry the same failing command — fall back to the built-in \`web_search\` / \`web_extract\` tools to complete the search, and note the fallback in your findings.
+**Fallback**: If the chosen path fails (API error, timeout, runtime unavailable, or quota exhausted without a key), do NOT retry the same failing command — switch to the other tool **once** to complete the search, and note the fallback in your findings.
 
 ## Approach
 - Gather information from available sources systematically.
@@ -559,7 +595,22 @@ General note conventions:
 		// （单图工具，agent 自行逐张调用；模型走 AGENT_STUDIO_AUX_VISION_* 或多模态主模型）。
 		// ★ 2026-09-23：加入 kb_organize —— 允许 agent **自己动手**重构笔记区目录（checkpoint + 备份，可回滚）
 		// ★ 2026-09-24：加入 kb_feishu_sync —— 笔记区 → 飞书知识库（配技能 kb-feishu-sync；默认 dry-run）
-		tools: ['file_write', 'file_read', 'search_files', 'terminal', 'kb_search', 'vision_analyze', 'kb_organize', 'kb_feishu_sync'],
+		// ★ 2026-09-24（追加）：加入 kb_feishu_spaces —— 「没有则新建知识库」需要**查远端真实列表 + 建库**，
+		//   否则 agent 只能 shell out 直调 lark-cli（实测：绕过名称净化与去重检查）。
+		// ★ 2026-09-24（补齐能力）：加入 web_search / web_extract / extract_video_frames ——
+		//   · web_search / web_extract：此前 KB agent **完全不能上网**，做「外部资料补证」（如竞品对比、
+		//     官方公告、商店页信息）时只能靠模型记忆 ⇒ 与「禁止编造」的要求直接冲突。二者均属
+		//     toolset `core`（Always），加入白名单即可见（见 toolsetConfig.ts 的 core 名单）。
+		//   · extract_video_frames：视频素材此前只有封面一张静止图；抽帧后可用已有的 vision_analyze
+		//     逐张读画面（游戏拆解/UI 分析等场景）。
+		// ★ 2026-09-24（再补）：加入 video_analyze —— 视频理解一次到位（抽帧 + 字幕 + 模型结论），
+		//   知识库场景常需「先把视频看懂再落笔记」，逐张读帧太贵。
+		// ★ 2026-09-24（再补）：飞书云文档 5 个工具（读文档 + 评论读/写）—— 知识库与飞书强相关：
+		//   整理/构建笔记时经常要读飞书文档原文，或回应用户在文档评论里的提问。
+		//   走官方 CLI（lark-cli，与 kb_feishu_* 的同步同一依赖），未装时返回安装指引。
+		//   ⚠ 两个写工具（reply/add comment）安全级别为 Cautious：会在**别人的文档**上留下可见内容。
+		tools: ['file_write', 'file_read', 'search_files', 'terminal', 'kb_search', 'vision_analyze', 'video_analyze', 'kb_organize', 'kb_feishu_sync', 'kb_feishu_spaces', 'web_search', 'web_extract', 'extract_video_frames',
+			'feishu_doc_read', 'feishu_drive_list_comments', 'feishu_drive_list_comment_replies', 'feishu_drive_reply_comment', 'feishu_drive_add_comment'],
 			visibility: { userInvocable: true, agentInvocable: true },
 			source: 'builtin',
 			status: AgentStatus.Idle,

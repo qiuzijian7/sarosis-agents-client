@@ -14,7 +14,7 @@
 
 import assert from 'assert';
 import { IToolDefinition } from '../../common/providers.js';
-import { correctSchemaReferences } from '../../common/schemaCorrector.js';
+import { TOOL_REFERENCE_HINTS, correctSchemaReferences, ensureMentioned } from '../../common/schemaCorrector.js';
 import {
 	isCoreTool, isCoreToolset, CORE_TOOLS, CORE_TOOLSET_IDS,
 } from '../../common/toolsetConfig.js';
@@ -131,6 +131,91 @@ suite('SchemaCorrector — execute_code', () => {
 		// 不应修改（所有 sandbox 工具都可用）
 		assert.strictEqual(exec, result[0], 'should not modify when all tools available');
 	});
+});
+
+// ─── 交叉提示「可用才加」（2026-09-24 重做后的新口径）────────────────────────
+//
+// 上面那组覆盖的是旧口径的两端；这一组钉住**新口径**的细节，因为它的两种失败都是静默的：
+// 该加而不加（提示丢失，模型白多跑一轮浏览器工具）或不该加而在（模型看到指向**不可用**工具的引用
+// → 幻觉调用，正是本模块存在的理由）。
+
+suite('SchemaCorrector — 交叉提示「可用才加」', () => {
+
+	/** 规则表里那条句子 —— 直接取声明里的值，不再抄一份字面量。 */
+	const HINT = TOOL_REFERENCE_HINTS[0];
+
+	const descOf = (tools: readonly IToolDefinition[], name: string): string =>
+		String(tools.find(t => t.name === name)?.description ?? '');
+
+	test('规则表：owner / 被引用工具 / 句子都在（表被清空 ⇒ 提示静默消失）', () => {
+		assert.ok(TOOL_REFERENCE_HINTS.length > 0, '规则表不该为空');
+		assert.strictEqual(HINT.owner, 'browser_navigate');
+		assert.deepStrictEqual([...HINT.referenced], ['web_search', 'web_extract']);
+		assert.ok(HINT.text.startsWith(' '), '句子以空格开头：它直接接在描述末尾，调用方不再加分隔符');
+	});
+
+	test('★★ 两件工具都在、而描述里**没有**那句话 ⇒ 由本模块加上（这正是"可用才加"）', () => {
+		// 旧口径是"工具模块无条件写进去、这里再删"；新口径下**工具模块不再写**，
+		// 所以"加"这一步必须由本模块保证 —— 这条用例就是那个新契约。
+		const result = correctSchemaReferences([
+			makeTool('browser_navigate', 'Open a URL.'),
+			makeTool('web_search', 's'),
+			makeTool('web_extract', 'e'),
+		]);
+		assert.strictEqual(descOf(result, 'browser_navigate'), `Open a URL.${HINT.text}`);
+	});
+
+	test('★★ 缺**一个**就不加（不是"有一个就加"）—— 描述里没有 ⇒ 保持没有', () => {
+		for (const missing of HINT.referenced) {
+			const present = HINT.referenced.filter(n => n !== missing).map(n => makeTool(n, 'x'));
+			const result = correctSchemaReferences([makeTool('browser_navigate', 'Open a URL.'), ...present]);
+			assert.ok(!descOf(result, 'browser_navigate').includes(HINT.text), `缺 ${missing} 时不该出现那句话`);
+		}
+	});
+
+	test('★ 一个都没有 ⇒ 不加，且对象引用不变（不做无谓的 schema 重建）', () => {
+		const nav = makeTool('browser_navigate', 'Open a URL.');
+		const result = correctSchemaReferences([nav]);
+		assert.strictEqual(result[0], nav);
+	});
+
+	test('★★★ 幂等：连跑三次不会把句子拼三遍（每次工具装配都会调它）', () => {
+		const tools: IToolDefinition[] = [
+			makeTool('browser_navigate', 'Open a URL.'),
+			makeTool('web_search', 's'),
+			makeTool('web_extract', 'e'),
+		];
+		for (let i = 0; i < 3; i++) { correctSchemaReferences(tools); }
+		const occurrences = descOf(tools, 'browser_navigate').split(HINT.text).length - 1;
+		assert.strictEqual(occurrences, 1, '必须恰好出现一次');
+	});
+
+	test('ensureMentioned：两个方向 + 幂等 + 不留双空格', () => {
+		assert.strictEqual(ensureMentioned('A.', ' H.', true), 'A. H.');
+		assert.strictEqual(ensureMentioned('A.', ' H.', false), 'A.');
+		assert.strictEqual(ensureMentioned('A. H.', ' H.', true), 'A. H.');
+		assert.strictEqual(ensureMentioned('A. H.', ' H.', false), 'A.');
+		assert.strictEqual(ensureMentioned('A.   ', ' H.', true), 'A. H.', '加之前先 trimEnd，避免双空格');
+	});
+
+	test('★ 只动 owner：别的工具的描述一律不碰（连尾随空白都不动）', () => {
+		const result = correctSchemaReferences([
+			makeTool('web_search', 'Search the web. '),
+			makeTool('browser_navigate', 'x'),
+			makeTool('web_extract', 'e'),
+		]);
+		assert.strictEqual(descOf(result, 'web_search'), 'Search the web. ');
+	});
+
+	test('畸形输入不崩（null 项 / 无 name）', () => {
+		const tools = [
+			null as unknown as IToolDefinition,
+			{ name: '' } as IToolDefinition,
+			makeTool('browser_navigate', 'x'),
+		];
+		assert.doesNotThrow(() => correctSchemaReferences(tools));
+	});
+
 });
 
 // ─── 核心工具白名单（P3-1 双重保护第一层）────────────────────────────────

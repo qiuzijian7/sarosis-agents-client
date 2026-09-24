@@ -19,7 +19,7 @@ import { IPathService } from '../../../../workbench/services/path/common/pathSer
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { writeFileAtomicSafe } from '../common/atomicWrite.js';
 import { IAgentStudioService } from '../common/agentStudio.js';
-import type { AgentPreset, IAgentFolderUploadFile, IAgentInstallResult, IWorkflowDirectRunStart, IWorkflowDirectRunResult, IWorkflowDirectRunProgress, ILibraryBadgeRequest, IKbProcessingState } from '../../../common/agentStudioService.js';
+import type { AgentPreset, IAgentFolderUploadFile, IAgentInstallResult, IWorkflowDirectRunStart, IWorkflowDirectRunResult, IWorkflowDirectRunProgress, IToolCardStart, IToolCardProgress, IToolCardResult, ILibraryBadgeRequest, IKbProcessingState } from '../../../common/agentStudioService.js';
 import { classifyContentViaSchema, safeSchemaFallback, SchemaClassifyResult } from './knowledge/classifier.js';
 import { DEFAULT_KB_SCHEMA, IKBSchema, loadKbSchema } from './knowledge/kbSchema.js';
 import { resolveChatModel, isChatProviderConfigured, resolveConfiguredChatProviderId, createAgentOsChatModel, ResolveChatModelOpts } from './knowledge/knowledgeAdapters.js';
@@ -88,6 +88,16 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	private readonly _onDidWorkflowDirectRunProgress = this._register(new Emitter<IWorkflowDirectRunProgress>());
 	readonly onDidWorkflowDirectRunProgress: Event<IWorkflowDirectRunProgress> = this._onDidWorkflowDirectRunProgress.event;
 
+	// ─── 合成工具卡（宿主自发、绕过 LLM；见 common/agentStudioService 的 IToolCard* 注释）──
+	private readonly _onDidRequestToolCard = this._register(new Emitter<IToolCardStart>());
+	readonly onDidRequestToolCard: Event<IToolCardStart> = this._onDidRequestToolCard.event;
+
+	private readonly _onDidToolCardProgress = this._register(new Emitter<IToolCardProgress>());
+	readonly onDidToolCardProgress: Event<IToolCardProgress> = this._onDidToolCardProgress.event;
+
+	private readonly _onDidToolCardResult = this._register(new Emitter<IToolCardResult>());
+	readonly onDidToolCardResult: Event<IToolCardResult> = this._onDidToolCardResult.event;
+
 	private readonly _onDidRequestKbRefresh = this._register(new Emitter<void>());
 	readonly onDidRequestKbRefresh: Event<void> = this._onDidRequestKbRefresh.event;
 
@@ -131,6 +141,23 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	/** Notify the chat panel of live progress during a canvas "直接执行" workflow run. */
 	workflowDirectRunProgress(payload: IWorkflowDirectRunProgress): void {
 		this._onDidWorkflowDirectRunProgress.fire(payload);
+	}
+
+	/** 开一张合成工具卡（宿主自发、绕过 LLM、不发用户消息）。 */
+	requestToolCard(payload: IToolCardStart): void {
+		this.logService.info(`[AgentStudioService] requestToolCard(toolCallId=${payload.toolCallId}, name=${payload.name})`);
+		this._onDidRequestToolCard.fire(payload);
+	}
+
+	/** 合成工具卡的实时进度。 */
+	toolCardProgress(payload: IToolCardProgress): void {
+		this._onDidToolCardProgress.fire(payload);
+	}
+
+	/** 合成工具卡终态。 */
+	toolCardResult(payload: IToolCardResult): void {
+		this.logService.info(`[AgentStudioService] toolCardResult(toolCallId=${payload.toolCallId}, ok=${payload.ok})`);
+		this._onDidToolCardResult.fire(payload);
 	}
 
 	/** Request the KB view to refresh (e.g. after background agent import completes). */

@@ -455,6 +455,33 @@ html, body {
 }
 .kb-lightbox-img { max-width: 90%; max-height: 90%; box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6); }
 
+/* Lightbox 工具条（★ 2026-09-24）：显示文件名 + 「在编辑器窗格打开」（本地相对图片） */
+.kb-lightbox-bar {
+	position: fixed;
+	top: 0;
+	left: 0;
+	right: 0;
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	padding: 8px 14px;
+	background: rgba(0, 0, 0, 0.55);
+	color: #eee;
+	font-size: 12px;
+	cursor: default;
+}
+.kb-lightbox-name { margin-right: auto; opacity: 0.85; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kb-lightbox-open {
+	cursor: pointer;
+	border: 1px solid rgba(255, 255, 255, 0.35);
+	background: transparent;
+	color: inherit;
+	border-radius: 4px;
+	padding: 3px 10px;
+	font-size: 12px;
+}
+.kb-lightbox-open:hover { background: rgba(255, 255, 255, 0.14); }
+
 /* 媒体库引用图片（方案 B/C）：引用态带角标，悬停出现「保存到笔记」 */
 .kb-media-asset { position: relative; display: inline-block; max-width: 100%; }
 .kb-media-asset::after {

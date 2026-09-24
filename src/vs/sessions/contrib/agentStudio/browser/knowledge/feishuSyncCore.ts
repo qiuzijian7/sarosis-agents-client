@@ -67,6 +67,14 @@ export interface IFeishuSyncOptions {
 	autoCreateSpaces?: boolean;
 	/** 本地已删除的文档是否同时移除远端节点（默认 false） */
 	prune?: boolean;
+	/**
+	 * 本次运行报告的输出文件绝对路径（★ 2026-09-24）。
+	 *
+	 * 脚本会把「预览计划 / 实际结果（逐篇 + 失败 + 跨库搬迁）」写成 UTF-8 文件；
+	 * 宿主工具读它回报 —— 因为主进程回传的 stdout 是 GBK 解码（中文乱码），
+	 * 而 `.feishu-sync.log` 在 dry-run 下**根本不会写**（工具曾因此拿到旧尾部）。
+	 */
+	planFile?: string;
 }
 
 /**
@@ -87,6 +95,8 @@ export function buildSyncArgs(scriptPath: string, o: IFeishuSyncOptions): string
 	args.push('--category-depth', String(depth));
 	args.push(o.autoCreateSpaces === false ? '--no-auto-create-spaces' : '--auto-create-spaces');
 	if (o.prune) { args.push('--prune'); }
+	// 本次报告文件（dry-run/apply 都会写；工具据此回报计划与结果，见 IFeishuSyncOptions.planFile）
+	if (o.planFile) { args.push('--plan-file', o.planFile); }
 	args.push(o.mode === 'apply' ? '--apply' : '--dry-run');
 	return args;
 }
@@ -103,6 +113,15 @@ export function parseSrcDirs(raw: string | undefined | null): string[] {
 
 /** 映射文件名（与内置脚本 `SPACE_MAP_FILE` 保持一致）。 */
 export const FEISHU_SPACE_MAP_FILE = '.feishu-space-map.json';
+
+/**
+ * 本次运行「报告」文件名（★ 2026-09-24，与内置脚本 `--plan-file` 配套）。
+ *
+ * 脚本把「预览计划 / 实际结果（逐篇 create|update|skip、失败、跨库搬迁）」写成这个 UTF-8 文件；
+ * 宿主工具读它来回传，**不再**依赖 `.feishu-sync.log` 尾部
+ * （dry-run 从不写日志 ⇒ 以前预览只能读到旧内容；apply 也可能读到与本次无关的旧尾部）。
+ */
+export const FEISHU_SYNC_PLAN_FILE = '.feishu-sync-plan.txt';
 
 /** 一条映射：知识库内相对目录 → 飞书 wiki 知识库。 */
 export interface IKbSpaceMapping {
@@ -148,6 +167,46 @@ export function serializeSpaceMap(list: readonly IKbSpaceMapping[]): string {
 		...(m.spaceName ? { spaceName: m.spaceName } : {}),
 	}));
 	return JSON.stringify({ version: 1, mappings }, null, 2) + '\n';
+}
+
+// ─── 同步范围推导（★ 2026-09-24 用户定调）──────────────────────────────────────────
+//
+// 口径：「同步到飞书」**只同步「笔记」区里已配置映射的内容** —— 映射到哪个飞书知识库就同步到哪；
+// 未配置映射的目录**不进入同步范围**（也不再按层级自动分类别 / 自动建库）。
+//
+// 实现方式（**不改内置脚本**）：把推导结果当 `--src` 传下去 —— 脚本里 `--src` 既是 walk 的根、
+// 又是类别推导的基准，且 `applyExplicitMappings` 会对「映射目录及其子目录」强制覆盖类别
+// （前缀匹配、最长优先）⇒ 只传映射目录即可精确表达「只同步已关联的内容」。
+// 未映射目录根本不进 plan（因此也不会触发建库）；`--prune` 默认关 ⇒ 缩小范围**不会**删远端。
+
+/** 「笔记」分区名 —— 同步范围的唯一来源区（「库」是原始素材区，不同步）。 */
+export const FEISHU_SYNC_SECTION = '笔记';
+
+/** 归一化 vault 相对目录（与脚本 `applyExplicitMappings` 一致：仅 `\`→`/` + 去尾部 `/`）。 */
+function normalizeMapDir(dir: string | undefined | null): string {
+	return (dir ?? '').trim().replace(/\\/g, '/').replace(/\/+$/, '');
+}
+
+/**
+ * 从显式映射推导同步范围（`--src` 参数列表）。
+ *
+ * · 只取 `笔记` 分区内（或恰为该分区）的映射目录；
+ * · **父子归并**：脚本对每个 `--src` 各 walk 一次 ⇒ 若同时传祖先与后代，后代下的笔记会被
+ *   收集两次（重复 plan）；只保留「没有祖先也在集合里」的目录；
+ * · 无映射 / 全在「库」区 ⇒ 返回**空数组**（调用方据此提示「先去配置目录映射」并**不执行**同步，
+ *   而不是回落成「整个知识库」）。
+ */
+export function deriveMappedSrcDirs(
+	mappings: readonly IKbSpaceMapping[] | undefined | null,
+	section: string = FEISHU_SYNC_SECTION,
+): string[] {
+	const inside = new Set<string>();
+	for (const m of mappings ?? []) {
+		const dir = normalizeMapDir(m?.dir);
+		if (dir === section || dir.startsWith(section + '/')) { inside.add(dir); }
+	}
+	const list = [...inside].sort();
+	return list.filter(d => !list.some(other => other !== d && d.startsWith(other + '/')));
 }
 
 /**

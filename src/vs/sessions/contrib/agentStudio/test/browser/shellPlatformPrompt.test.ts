@@ -86,9 +86,13 @@ suite('shellPlatformPrompt — per-platform 工具映射表', () => {
 		const g = windowsDualShellGuidance('terminal');
 		assert.ok(g.includes('Git Bash (POSIX) when installed'), '应声明装了 Git Bash 时走 POSIX');
 		assert.ok(g.includes('If Git Bash is NOT installed'), '应覆盖未安装的回退路径');
-		assert.ok(g.includes('C:/dir/file'), '应给出正斜杠路径示例');
+		assert.ok(g.includes('G:/dir/file'), '应给出盘符路径示例');
 		assert.ok(g.includes('cmd /c'), '应给出 Windows 原生命令的包裹方式');
 		assert.ok(g.includes('exit 255'), '应说明裸用 cmdlet 的后果');
+		// ★ 2026-09-25（生产日志 20260925T020714）：ffprobe 收到 /g/... 参数报「No such file」，
+		//   但文件存在 —— 因为 execute_code 禁用了 MSYS 参数转换。这句必须钉住。
+		assert.ok(g.includes('NOT converted'), '必须点明 /x/ 风格参数不会被转换');
+		assert.ok(g.includes('the program itself launches fine'), '必须讲清不对称性：程序能启动、只有文件参数中招');
 		assert.ok(g.includes('search_code'), '应包含工具映射表');
 		assert.ok(!g.includes('undefined'), '不应泄漏 undefined');
 	});

@@ -193,9 +193,18 @@ export function MarkdownContent(props: MarkdownContentProps): React.ReactElement
 		(p: any) => (
 			isMediaAssetSrc(p.src as string | undefined)
 				? <MediaAssetImage {...p} onSaved={onSaveMediaToNote} />
-				: <ImageComponent {...p} src={resolveAssetSrc(p.src, effectiveAssetBaseUri)} />
+				: (
+					<ImageComponent
+						{...p}
+						src={resolveAssetSrc(p.src, effectiveAssetBaseUri)}
+						// ★ 2026-09-24：把**原始相对路径**一并给组件 —— lightbox 里的
+						// 「在编辑器窗格打开」需要它（宿主按 note 目录解析 → 编辑器 resolver → 图片查看器）。
+						rawSrc={p.src as string | undefined}
+						onOpenInEditor={onOpenRelativeFile}
+					/>
+				)
 		),
-		[effectiveAssetBaseUri, onSaveMediaToNote],
+		[effectiveAssetBaseUri, onSaveMediaToNote, onOpenRelativeFile],
 	);
 
 	return (

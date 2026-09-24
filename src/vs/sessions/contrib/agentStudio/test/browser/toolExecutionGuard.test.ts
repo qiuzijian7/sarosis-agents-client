@@ -13,6 +13,7 @@ import {
 	DEFAULT_TOOL_TIMEOUT_MS,
 	MCP_TOOL_TIMEOUT_MS,
 	DANGEROUS_TOOL_TIMEOUT_MS,
+	VIDEO_TOOL_TIMEOUT_MS,
 	DEFAULT_TOOL_RETRY_POLICY,
 	executeWithRetryAndTimeout,
 	getTimeoutForTool,
@@ -68,6 +69,14 @@ suite('toolExecutionGuard', () => {
 			assert.strictEqual(getTimeoutForTool('file_read'), DEFAULT_TOOL_TIMEOUT_MS);
 			assert.strictEqual(getTimeoutForTool('search_graph'), 30_000);
 			assert.strictEqual(getTimeoutForTool('terminal'), MCP_TOOL_TIMEOUT_MS);
+		});
+
+		test('★ 视频工具 → 15min 档（下载+抽帧+ASR+视觉模型是分钟级负载，60s 必然误杀）', () => {
+			// 2026-09-25（生产日志 20260925T020714）：video_analyze 落 60s 默认档，
+			// whisper 跑到一半被 abort；4.5min 后转写成功但结果已丢（"cancelled before completion"）。
+			assert.strictEqual(getTimeoutForTool('video_analyze'), VIDEO_TOOL_TIMEOUT_MS);
+			assert.strictEqual(getTimeoutForTool('extract_video_frames'), VIDEO_TOOL_TIMEOUT_MS);
+			assert.ok(VIDEO_TOOL_TIMEOUT_MS >= 600_000, '必须装得下 ASR 的 10min 自管上限（T_WHISPER_MS）');
 		});
 
 		test('★ MCP 暴露的 Dangerous 工具 → 300s（审批等待不得被 MCP 分支截断）', () => {

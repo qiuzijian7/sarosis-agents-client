@@ -37,6 +37,11 @@ const SKIP_DIRS = new Set(['.obsidian', '.workbuddy', '.trash', 'node_modules', 
 
 const INDEX_FILE = '.feishu-sync.json';
 const LOG_FILE = '.feishu-sync.log';
+/**
+ * 「本次报告」（`--plan-file`）逐篇条目的上限：超出只保留前 N 条 + 一行提示。
+ * 报告是给 agent/用户**看计划与结果**用的，不该因为一个超大库变成几 MB。
+ */
+export const REPORT_MAX_ITEMS = 300;
 /** 索引结构版本：v2 起含 `spaces`（类别→知识库映射）与 `files` 明细；读取时兼容 v1 扁平结构。 */
 const INDEX_VERSION = 2;
 
@@ -46,6 +51,16 @@ function parseArgs(argv) {
 	const out = {
 		src: [], parent: 'my_library', dryRun: false, apply: false, limit: 0, interval: 800,
 		vault: '', help: false, onConflict: 'overwrite', cli: '',
+		/**
+		 * ★ 2026-09-24：**本次运行报告的输出文件**（UTF-8）。
+		 *
+		 * 为什么需要它：宿主工具（`kb_feishu_sync`）只能拿到主进程按 **GBK 解码**的 stdout ⇒ 中文乱码，
+		 * 于是此前改用「读 `.feishu-sync.log` 尾部」回报 —— 但 dry-run **从不写日志**（见本文件末尾：
+		 * `if (!args.dryRun) { if (logLines.length) appendFileSync(...) }`）⇒ 预览时工具只能拿到**旧日志**；
+		 * apply 时也可能读到与本次无关的旧内容。⇒ 现在由脚本**主动写一份本次报告**（含计划/结果逐篇），
+		 * 工具读它即可准确回报「预览了什么 / 实际做了什么、有没有失败」。
+		 */
+		planFile: '',
 		/** 类别 = src 下第 N 级目录（默认 1 级）；0 = 不分类别（全部走 --parent）。 */
 		categoryDepth: 1,
 		/** 未映射类别是否自动创建飞书知识库（用户 2026-09-21 确认：默认开）。 */
@@ -70,6 +85,7 @@ function parseArgs(argv) {
 		else if (a === '--no-auto-create-spaces') { out.autoCreateSpaces = false; }
 		else if (a === '--prune') { out.prune = true; }
 		else if (a === '--refresh-remote') { out.refreshRemote = true; }
+	else if (a === '--plan-file') { out.planFile = next(); }
 		else if (a === '--space-map') { out.spaceMap = next(); }
 		else if (a === '--no-mindmap') { out.noMindmap = true; }
 		else if (a === '-h' || a === '--help') { out.help = true; }
@@ -91,6 +107,7 @@ const USAGE = `kb-feishu-sync — 知识库 → 飞书同步（规则见 doc/kb-
                                      [--parent my_library | <folderToken>] [--limit N] [--interval ms]
                                      [--on-conflict overwrite | skip]
                                      [--category-depth N] [--no-auto-create-spaces] [--prune]
+                                     [--plan-file <path>（写本次报告：计划/结果逐篇；UTF-8，dry-run 也写）]
                                     [--refresh-remote（配 --apply；重建远端指纹基线）]
 
   默认 dry-run（只打印计划，不产生任何飞书写操作）。
@@ -1187,29 +1204,45 @@ function main() {
 	// 每篇的目标知识库与搬迁判定（纯函数，见 computeTargets —— 单测覆盖此处语义）
 	computeTargets(plan, spaces, args.parent === 'my_library' ? 'my_library' : '');
 
-	console.log(`\n=== kb-feishu-sync ${args.dryRun ? '(DRY-RUN)' : '(APPLY)'} ===`);
-	console.log(`vault: ${args.vault}`);
-	console.log(`src:   ${args.src.join(', ')}`);
-	console.log(`默认落点（无类别文件）: ${args.parent}`);
-	console.log(`类别（${args.categoryDepth} 级目录）: ${categories.length} 个`);
+	// ── 本次报告（`--plan-file`）────────────────────────────────────────────────
+	// stdout 经主进程按 GBK 解码会乱码，所以「预览了什么 / 实际做了什么」写进 UTF-8 文件给宿主工具读。
+	const report = [];
+	const reportItems = [];
+	const say = (line) => { console.log(line); report.push(line); };
+	const noteItem = (p) => {
+		if (reportItems.length >= REPORT_MAX_ITEMS) { return; }
+		reportItems.push(
+			`${args.dryRun ? '计划' : '结果'} ${p.action} ${p.rel} → ${p.targetSpace ?? '(未映射，跳过)'}`
+			+ `${p.needsMove ? ` [换知识库 ← ${p.prevSpace ?? '?'}]` : ''}`,
+		);
+	};
+
+	say(`\n=== kb-feishu-sync ${args.dryRun ? '(DRY-RUN)' : '(APPLY)'} ===`);
+	say(`vault: ${args.vault}`);
+	say(`src:   ${args.src.join(', ')}`);
+	say(`默认落点（无类别文件）: ${args.parent}`);
+	say(`类别（${args.categoryDepth} 级目录）: ${categories.length} 个`);
 	for (const c of categories) {
 		const mapped = spaces[c]?.spaceId;
-		console.log(`  · ${c} → ${mapped ?? (args.autoCreateSpaces ? '(将创建知识库)' : '(未映射，跳过)')}`);
+		say(`  · ${c} → ${mapped ?? (args.autoCreateSpaces ? '(将创建知识库)' : '(未映射，跳过)')}`);
 	}
 	if (createdSpaces.length) {
-		console.log(`${args.dryRun ? '将创建' : '已创建'}知识库 ${createdSpaces.length} 个：${createdSpaces.join(', ')}`);
+		say(`${args.dryRun ? '将创建' : '已创建'}知识库 ${createdSpaces.length} 个：${createdSpaces.join(', ')}`);
 	}
 	if (unresolved.size) {
-		console.warn(`⚠ 未映射的类别（${unresolved.size} 个，其文档本次跳过）：${[...unresolved].join(', ')}`);
+		const line = `⚠ 未映射的类别（${unresolved.size} 个，其文档本次跳过）：${[...unresolved].join(', ')}`;
+		console.warn(line);
+		report.push(line);
 	}
 	const moves = plan.filter(p => p.needsMove).length;
-	if (moves) { console.log(`⚠ 需跨知识库移动 ${moves} 篇（类别变更）：${args.dryRun ? '见下方标注' : ''}`); }
-	console.log(`计划: create=${counts.create} update=${counts.update} skip=${counts.skip} (共 ${plan.length})\n`);
+	if (moves) { say(`⚠ 需跨知识库移动 ${moves} 篇（类别变更）：${args.dryRun ? '见下方标注' : ''}`); }
+	say(`计划: create=${counts.create} update=${counts.update} skip=${counts.skip} (共 ${plan.length})\n`);
 
 	let done = 0;
 	const logLines = [];
 	for (const p of plan) {
 		if (args.limit && done >= args.limit) { break; }
+		noteItem(p);
 		const title = titleOf(p.rel);
 		// 内容未变且类别也没变 ⇒ 真正跳过；「内容未变但换了类别」⇒ 仍需把节点搬到新知识库
 		const moveOnly = p.action === 'skip' && p.needsMove;
@@ -1442,6 +1475,7 @@ function main() {
 		} catch (e) {
 			console.error(`[${p.action}] ✗ ${p.rel}: ${e.message}`);
 			logLines.push(`${new Date().toISOString()} FAILED ${p.rel} ${e.message}`);
+			if (reportItems.length < REPORT_MAX_ITEMS) { reportItems.push(`失败 ${p.action} ${p.rel} — ${e.message}`); }
 			// ⚠ 失败也必须计入 done：否则 `--limit 1` 会因计数不增而把全部笔记都试一遍，
 			// 在「创建成功但解析失败」的场景下**批量产生孤儿文档**（真实事故：61 篇重复）。
 			done++;
@@ -1510,9 +1544,48 @@ function main() {
 		saveIndex(args.vault, idx);
 	}
 	console.log(`\n完成 ${done} 篇（skip ${counts.skip} 篇无需处理）。`);
+
+	// ── 落盘「本次报告」：宿主工具/agent 据此回报预览计划与实际结果（不依赖 stdout 编码）──
+	if (args.planFile) {
+		try {
+			fs.writeFileSync(args.planFile, formatSyncReport({
+				dryRun: args.dryRun, vault: args.vault, src: args.src,
+				done, skip: counts.skip, total: plan.length,
+				summary: report, items: reportItems,
+			}), 'utf8');
+		} catch (e) {
+			console.warn(`[report] ⚠ 写报告文件失败（不影响同步）：${e.message}`);
+		}
+	}
 }
 
 // 入口守卫：仅在「被当作脚本直接执行」时跑 main（被 import 时 process.argv[1] 是调用方脚本名 ⇒ 不执行）。
+/**
+ * 组装「本次运行报告」文本（★ 2026-09-24，配合 `--plan-file`）。
+ *
+ * 为什么需要：宿主工具 `kb_feishu_sync` 拿不到可用 stdout（主进程按 GBK 解码中文会乱码），
+ * 而 `.feishu-sync.log` 在 **dry-run 下根本不写** ⇒ 预览时工具只能读到旧日志，agent 无从向用户
+ * 交代「将创建/更新哪些篇」。⇒ 由脚本主动写这份 UTF-8 报告，工具读它并原样回传。
+ *
+ * 纯函数（导出以便单测）：头部（模式/vault/src/完成数）+ 汇总 + 逐篇（`计划|结果` 前缀）。
+ */
+export function formatSyncReport(o) {
+	const header = [
+		`# kb-feishu-sync ${o.dryRun ? 'DRY-RUN（预览：未写任何远端）' : 'APPLY（已写远端）'}`,
+		`# 时间: ${o.at ?? new Date().toISOString()}`,
+		`# vault: ${o.vault ?? ''}`,
+		`# src: ${(o.src ?? []).join(', ')}`,
+		`# 完成 ${o.done ?? 0} 篇（skip ${o.skip ?? 0} 篇无需处理，计划共 ${o.total ?? 0} 篇）`,
+		'',
+	];
+	const items = o.items ?? [];
+	const capped = items.length > REPORT_MAX_ITEMS
+		? [...items.slice(0, REPORT_MAX_ITEMS), `…（其余 ${items.length - REPORT_MAX_ITEMS} 条见 ${LOG_FILE}）`]
+		: items;
+	return [...header, ...(o.summary ?? []), '', `── 逐篇（最多 ${REPORT_MAX_ITEMS} 条）──`, ...capped].join('\n') + '\n';
+}
+
+
 // ⚠ 不能写死 `kb-feishu-sync.mjs`：内置副本名为 `feishu-sync.mjs`（资源目录去掉了 kb- 前缀），
 //   写死会导致资源副本**静默不执行**（真实故障：dry-run 无任何输出、退出码 0）。
 if (process.argv[1] && /(^|[\\/])[^\\/]*feishu-sync\.mjs$/.test(process.argv[1])) { main(); }

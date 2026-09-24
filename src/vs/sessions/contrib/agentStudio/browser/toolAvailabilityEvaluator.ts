@@ -9,13 +9,21 @@
  * 参考 OpenClaw 的 ToolAvailabilityExpression + evaluateToolAvailability():
  *  - 每个工具声明 availability 条件（config/env/platform/custom）
  *  - 运行时自动评估这些条件
- *  - 不满足条件的工具自动隐藏（而非执行时报错）
+ *  - 不满足条件的工具 → **由消费方决定怎么处理**（见下方 ⚠ 实际用法）
  *
  * 好处：
  *  - 未配置 API key 时自动隐藏相关工具
  *  - 特定环境下自动启用/禁用工具（如 web_search 需要搜索 API key）
  *  - 减少用户手动管理负担
  *  - 避免模型调用不可用工具浪费 token
+ *
+ * ⚠ 实际用法（2026-09-24 更正，P1-4）——此前本模块**没有任何消费方**，声明了也不生效；
+ *   而真正的"隐藏"能力由注册表的 `registration.available?: () => boolean` 提供
+ *   （`toolRegistry.listTools` / `getAllToolDefinitions` 已在强制执行）。
+ *   接进来的第一个消费方是 `providers/tool/toolAvailabilityNotes.ts`，它用的是
+ *   **标注而非隐藏**：缺依赖时在描述里追加一行"当前不可用 + 怎么装"。
+ *   为什么不全隐藏：没有任何 UI 展示"工具为何不可用"，而本产品的依赖（ffmpeg / yt-dlp /
+ *   lark-cli）都是可选件 —— 一藏，用户就永远学不到"装一下就能用"，只会看到助手说"我做不到"。
  */
 
 import type { IToolAvailability, IToolDefinition } from '../common/providers.js';

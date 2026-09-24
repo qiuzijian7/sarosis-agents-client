@@ -29,6 +29,8 @@ import { IMarketplaceService } from '../common/marketplace.js';
 import { ITerminalService, type ITerminalInstance } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import type { ITerminalLaunchError } from '../../../../platform/terminal/common/terminal.js';
 import { SarosPath, resolveSarosPath, userDataRootFromRoamingHome } from '../common/sarosPaths.js';
+// ★ 2026-09-24：MCP 供应链预检（OSV 恶意包）—— 安装命令执行前先查
+import { checkInstallCommandsAgainstOsv, buildOsvBlockedMessage } from './mcpSupplyChain.js';
 import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
 
 // ─── Unified detail model (from knot market OR bundled preset) ────────────────
@@ -637,6 +639,16 @@ export class McpDetailEditorPane extends EditorPane {
 			if (present) {
 				log.push(`✓ 已检测到 ${model.autoInstall.checkCommands.join(' / ')}，跳过安装。`);
 			} else {
+				// 1.5 ★ 2026-09-24 供应链预检（对齐 Hermes tools/osv_check.py）：这些命令会从
+				//     npm/PyPI 拉取并**执行**第三方包（`pip install …`）⇒ 命中 OSV 的 MAL-*（恶意包）
+				//     直接拒绝安装。网络失败 fail-open（只提示"未检查"，不阻断用户）。
+				const verdict = await checkInstallCommandsAgainstOsv(model.autoInstall.install);
+				if (verdict.status === 'blocked') {
+					throw new Error(buildOsvBlockedMessage(verdict));
+				}
+				if (verdict.status === 'unknown') {
+					log.push(`⚠ 供应链预检未完成（${verdict.reason ?? '未知原因'}）—— 已继续安装，请自行确认包来源可信。`);
+				}
 				// 2. install
 				for (const cmd of model.autoInstall.install) {
 					log.push(`$ ${cmd}`);

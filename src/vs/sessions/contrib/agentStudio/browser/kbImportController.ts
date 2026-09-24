@@ -47,6 +47,7 @@ import { INativeEnvironmentService } from '../../../../platform/environment/comm
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { IAgentChatService, IAgentStudioService } from '../common/agentStudio.js';
+import type { IToolCardHandle } from '../../../common/agentStudioService.js';
 import type { IChatModel } from './knowledge/llm.js';
 import { IViewsService } from '../../../../workbench/services/views/common/viewsService.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
@@ -165,6 +166,23 @@ export class KbImportController extends Disposable {
 
 	/** P1-4：per-vault 互斥锁 */
 	private static _vaultLocks = new Map<string, Promise<void>>();
+
+	/**
+	 * ★ 2026-09-24：**「正在构建」全局标记**（UI 按钮与 agent 的 `kb_build` 工具共享）。
+	 *
+	 * 为什么需要：构建是**分钟级**长任务，且现在有**两个**发起方 ——
+	 *   · 知识库视图「批量构建库」按钮（`_batchBuildAll`）；
+	 *   · agent 的 `kb_build` 工具（`mode:'build'`）。
+	 * 两者同时发起会各建一个构建会话、各自回填缓存/补链/导航 ⇒ 互相覆盖（缓存写回竞争、
+	 * 导航文档抖动、笔记被重复改写）。此前只靠"用户不会连点"的假设，双击按钮就能触发。
+	 * 计数语义：>0 即「有构建在跑」，供发起方**拒绝重复发起**并如实告知。
+	 */
+	private static _buildInFlight = 0;
+
+	/** 是否有构建正在进行（`kb_build` 与视图按钮据此避免重复发起）。 */
+	static get buildInFlight(): boolean {
+		return KbImportController._buildInFlight > 0;
+	}
 
 	/** 与 knowledgeBaseView.ts 使用一致的 storage key。 */
 	private static readonly STORAGE_KB_DIR = 'agentStudio.kb.kbDir';
@@ -1207,6 +1225,26 @@ export class KbImportController extends Disposable {
 	}
 
 	/**
+	 * ★ 2026-09-24：**只读预检** —— 列出当前待构建的素材（相对「库」的路径）。
+	 *
+	 * 供 agent 的 `kb_build` 工具（`mode:'preview'`）使用，也是「要不要构建到笔记」
+	 * 这句询问的事实依据：让 agent 给出**准确数字与清单**，而不是"大概有几份"。
+	 *
+	 * ⚠ 与真实构建**共用** `_collectPendingSources` ⇒ 口径天然一致（导航文件、已构建过的源、
+	 *   本身就是产出的笔记都会被正确排除）。副作用仅限「PDF/docx → 同名 .md」的素材暂存
+	 *   （真实构建同样要做这一步，不是额外副作用）。
+	 */
+	static async previewPendingSources(
+		fileService: IFileService, vaultRoot: URI, logService: ILogService,
+		notificationService: INotificationService, agentStudioService: IAgentStudioService,
+	): Promise<string[]> {
+		const { libDir, pending } = await KbImportController._collectPendingSources(
+			fileService, vaultRoot, logService, notificationService, agentStudioService,
+		);
+		return pending.map(u => KbImportController._relativeFromLib(u, libDir));
+	}
+
+	/**
 	 * ★ 2026-09-23（用户需求）：**一个 agent 会话搞定整批 —— 宿主只给路径，agent 自己读、自己写**。
 	 *
 	 * 与 `_buildAllPendingCore`（宿主读文件 → 解析 FILE 块 → **宿主落盘**）的本质区别：
@@ -1229,6 +1267,20 @@ export class KbImportController extends Disposable {
 	 */
 	async buildPendingAsAgentSession(
 		vaultRootUri?: URI,
+		/** 可选：合成工具卡句柄（视图传入；构建在聊天里呈现为**一次工具调用**，并由视图在 finally 收尾）。 */
+		toolCard?: IToolCardHandle,
+	): Promise<{ pending: number; built: number; skipped: number; systemDoc: string | null; usedFallback: boolean }> {
+		KbImportController._buildInFlight++;
+		try {
+			return await this._buildPendingAsAgentSessionInner(vaultRootUri, toolCard);
+		} finally {
+			KbImportController._buildInFlight--;
+		}
+	}
+
+	private async _buildPendingAsAgentSessionInner(
+		vaultRootUri?: URI,
+		toolCard?: IToolCardHandle,
 	): Promise<{ pending: number; built: number; skipped: number; systemDoc: string | null; usedFallback: boolean }> {
 		const vaultRoot = vaultRootUri ?? this._resolveKbRootUri();
 		const { libDir, notesDir, pending, cache } = await KbImportController._collectPendingSources(
@@ -1264,6 +1316,26 @@ export class KbImportController extends Disposable {
 			return { pending: pending.length, built, skipped: 0, systemDoc: null, usedFallback: true };
 		}
 
+		// ── 聊天呈现：**一张合成工具卡**（`kb_build`），而不是把清单/目录树刷成用户气泡 ──────────
+		// ★ 2026-09-24（用户要求：「点构建按钮后聊天框显示大量文本 ⇒ 优雅些，封装成一次工具调用」）：
+		//   ① 两条 prompt 改为 `hidden`（只喂模型、不落盘不渲染，见下 `sendOptions`）—— 数据仍完整到达 agent；
+		//   ② 这里开一张 `kb_build` 合成卡（通用工具卡：标题=displayName、运行中转圈、progressText 显进度、
+		//      终态显 result），里程碑进度由下面的 `report()` 推进；
+		//   ③ 终态**由调用方收尾**（视图在 `finally` 里用 `toolCard` 句柄关卡片）⇒ 抛异常也不会卡在「执行中」。
+		const toolCallId = `kb_build_${Date.now().toString(36)}`;
+		if (toolCard) { toolCard.toolCallId = toolCallId; }
+		this._agentStudioService.requestToolCard({
+			toolCallId,
+			name: 'kb_build',
+			displayName: '构建知识库',
+			args: JSON.stringify({ assets: assets.length, skipped, vault: vaultRoot.fsPath }),
+		});
+		const report = (progressText: string, progress?: number): void => {
+			this._logService.info(`[KbImportController] kb build: ${progressText}`);
+			this._agentStudioService.toolCardProgress({ toolCallId, progress, progressText });
+		};
+		report(`准备中（${assets.length} 份素材${skipped > 0 ? `，本次先处理 ${assets.length} 份` : ''}）`, 5);
+
 		const before = new Set((await KbImportController._collectMdFiles(this._fileService, notesDir))
 			.map(u => u.fsPath.toLowerCase()));
 		const agentId = KbImportController.KB_BUILD_AGENT_ID;
@@ -1286,7 +1358,10 @@ export class KbImportController extends Disposable {
 				} catch { /* 解析失败不影响构建 */ }
 			}
 		};
-		const sendOptions = { agentId, agentSessionId: sessionId, temperature: 0.3 };
+		// ★ 2026-09-24：`hidden: true` ⇒ 这两条 prompt **只喂模型，不落盘、不广播、不渲染为用户气泡**
+		//   （此前「素材清单 + 笔记区目录树」作为用户消息显示在聊天框里 ⇒ 用户反馈「显示了大量文本」）。
+		//   聊天里的可见呈现改为上面的 `kb_build` 合成工具卡。
+		const sendOptions = { agentId, agentSessionId: sessionId, temperature: 0.3, hidden: true };
 		// ★ 2026-09-23（用户要求「构建时发送太多消息 ⇒ 抽象成技能」）：规则**全部移进技能 `kb-build`**
 		//   （`resources/.agents/skills/kb-build/SKILL.md`），消息只带**数据**（素材清单 + 目录树快照 + 路径）；
 		//   经 `explicitSkillIds` 把技能挂载进本轮（它会作为独立 user message 注入）。
@@ -1296,6 +1371,7 @@ export class KbImportController extends Disposable {
 		const skillOptions = { ...sendOptions, explicitSkillIds: ['kb-build'] };
 
 		// ── Phase 1：素材路径清单 → agent 自行 read + write（注意：**不传 chatOnly** ⇒ 允许写工具）
+		report('Phase 1：读取素材并写入笔记…', 15);
 		await chat.sendMessage(agentId, KbImportController._kbAgentBuildPrompt(assets, libDir, notesDir, treeText), skillOptions, onDelta);
 
 		// ── Phase 2：同一会话里发一句话触发技能的 Phase 2（知识体系文档 + 结构重构；规则全在技能里）
@@ -1306,6 +1382,7 @@ export class KbImportController extends Disposable {
 			if (d.type === 'content_replace' && typeof d.content === 'string') { phase2Text.length = 0; phase2Text.push(d.content); return; }
 			if (d.type === 'text' && typeof d.content === 'string') { phase2Text.push(d.content); }
 		};
+		report('Phase 2：构建知识体系文档…', 70);
 		await chat.sendMessage(agentId, KbImportController._kbSystemDocPrompt(), skillOptions, onPhase2Delta);
 
 		// ── 收尾：找出本次产出（工具自报路径 ∪ 目录快照新增），再照旧做缓存/补链/门控/导航
@@ -1345,6 +1422,7 @@ export class KbImportController extends Disposable {
 			if (fixed > 0) { await KbImportController._writeBuildCache(this._fileService, vaultRoot, cache); }
 			this._logService.info(`[KbImportController] kb_organize: ${orgMoved.length} 项移动（构建缓存修正 ${fixed} 条）`);
 		}
+		report('收尾：构建缓存 / 补链 / 导航维护…', 88);
 		await KbImportController._enrichNewNotes(this._fileService, notesDir, notePaths, this._logService);
 		const gate = await KbImportController.applyDeabstractionGating(this._fileService, notesDir);
 		this._logService.info(
@@ -1374,6 +1452,13 @@ export class KbImportController extends Disposable {
 					{ label: '跳过', isSecondary: true, run: () => undefined },
 				]);
 		}
+		// 合成工具卡的**成功摘要**（由视图在 finally 里连同 toolCallId 一起提交，见 `_batchBuildAll`）
+		if (toolCard) {
+			toolCard.summary = `新增/更新 ${notePaths.length} 篇笔记`
+				+ `${systemDoc ? '，并已创建/完善知识体系文档' : ''}`
+				+ `${skipped > 0 ? `（本次处理 ${assets.length} 份，剩余 ${skipped} 份可再次构建）` : ''}`;
+		}
+		report('完成', 100);
 		return { pending: pending.length, built: notePaths.length, skipped, systemDoc, usedFallback: false };
 	}
 
@@ -1696,7 +1781,7 @@ export class KbImportController extends Disposable {
 			if (!stale && !(await KbImportController._needsBackendUpgrade(fileService, mdUri))) { continue; }
 
 			KbImportController.reportProcessing(agentStudioService, logService, true,
-				`提取 PDF 文本 ${i + 1}/${sources.length}：${name}`, [src.fsPath]);
+				`提取文档文本 ${i + 1}/${sources.length}：${name}`, [src.fsPath]);
 			try {
 				// ★ 图片落点（2026-09-23）：`<库/raw>/assets/<素材名>/`，markdown 里引用
 				//   `assets/<素材名>/img-NN.png` —— 与「导入链接」把图片本地化到
@@ -1719,10 +1804,16 @@ export class KbImportController extends Disposable {
 				}
 				// ⚠ 不再套一层 `# <素材名>` 大标题：正文现在本身已是结构化 markdown
 				//   （原文的 `# 动画优化` / `## 图解` / 列表层级都在），再包一层 H1 会抢层级。
-				const backendLabel = res.backend === 'pymupdf4llm' ? 'PyMuPDF4LLM 结构化解析' : 'pypdf 纯文本提取';
+				// ★ 2026-09-24：epub/docx 走同一出口 ⇒ 这里按后端给出**各自的单位**（页 / 章）。
+				const archive = res.backend === 'epub' || res.backend === 'docx';
+				const backendLabel = res.backend === 'pymupdf4llm' ? 'PyMuPDF4LLM 结构化解析'
+					: res.backend === 'pypdf' ? 'pypdf 纯文本提取'
+						: res.backend === 'epub' ? 'EPUB 章节解析'
+							: res.backend === 'docx' ? 'DOCX 段落解析' : '未知后端';
+				const amount = archive ? `共 ${res.pages ?? 0} 章` : `共 ${res.pages ?? 0} 页`;
 				// ⚠「提取后端：」这个标记有**功能性作用**（不只是说明文案）：`_needsBackendUpgrade`
 				//   靠它识别「旧版产物」并在下次批量构建时自动重提取 ⇒ 别删掉这个字段。
-				const header = `> 来源：\`${name}\`（${backendLabel}；提取后端：${res.backend ?? 'unknown'}，共 ${res.pages ?? 0} 页`
+				const header = `> 来源：\`${name}\`（${backendLabel}；提取后端：${res.backend ?? 'unknown'}，${amount}`
 					+ `${res.imageCount ? `，提取图片 ${res.imageCount} 张` : ''}`
 					+ `${res.truncated ? '，文本已截断' : ''}）\n\n`;
 				await fileService.writeFile(mdUri, VSBuffer.fromString(header + text + '\n'));

@@ -19,7 +19,7 @@
  */
 
 import type { IDisposable } from '../../../../../../base/common/lifecycle.js';
-import type { IToolResultContent } from '../../../common/providers.js';
+import { NO_PARAMS_SCHEMA, type IToolResultContent } from '../../../common/providers.js';
 import type { IKbNativeKernelService, IKbFulltextHit } from '../../kbNativeKernelService.js';
 import type { IKbVectorSearchHit } from '../../views/knowledgeBase/kbVectorIndex.js';
 import type { IBuiltinToolRegistration } from './builtinToolProvider.js';
@@ -254,12 +254,7 @@ export function registerKbVaultRecallTools(ctx: KbVaultRecallContext): void {
 				'列出知识库各目录的摘要（.overview.md 目录摘要中间层产物）。' +
 				'用于在深入检索前先了解库内容分布：先看目录摘要，再决定用 kb_search 对哪个主题深入。' +
 				'摘要由笔记构建管线自动维护（freshness ≥10% 才重算）；尚未生成摘要的目录不出现在结果中。',
-			inputSchema: {
-				type: 'object',
-				// 与 codebaseTools / workflowTools 等一致的 `_no_params` 约定：
-				// 空 properties {} 会触发 IOA 兼容层 sanitize 警告（自动修复但每轮打日志）。
-				properties: { _no_params: { type: 'boolean', description: 'No parameters needed' } },
-			},
+			inputSchema: NO_PARAMS_SCHEMA,
 		},
 		handler: async () => {
 			if (!ctx.kernelService.hasActiveVault()) {

@@ -24,6 +24,8 @@ import {
 	parseSrcDirs,
 	parseUpdateCheck,
 	syncScriptCandidates,
+	deriveMappedSrcDirs,
+	FEISHU_SYNC_SECTION,
 	KB_FEISHU_SYNC_SCRIPT_REL,
 	DEFAULT_LARK_CLI,
 } from './feishuSyncCore.js';
@@ -52,6 +54,17 @@ suite('feishuSyncCore', () => {
 				'--auto-create-spaces',
 				'--dry-run',
 			]);
+		});
+
+		test('★ plan-file：本次报告文件（dry-run/apply 都写；位置在 mode 之前）', () => {
+			const args = buildSyncArgs('s.mjs', { ...base, planFile: 'C:/vault/.feishu-sync-plan.txt' });
+			assert.strictEqual(args[args.indexOf('--plan-file') + 1], 'C:/vault/.feishu-sync-plan.txt');
+			assert.deepStrictEqual(args.slice(-3), ['--plan-file', 'C:/vault/.feishu-sync-plan.txt', '--dry-run'],
+				'报告参数必须紧邻 mode（契约：# 参数顺序）');
+		});
+
+		test('未传 planFile ⇒ 不产生 --plan-file（向后兼容脚本老版本）', () => {
+			assert.ok(!buildSyncArgs('s.mjs', base).includes('--plan-file'));
 		});
 
 		test('多类别参数：类别层级 / 关闭自动建库 / 删除清理', () => {
@@ -220,6 +233,56 @@ suite('feishuSyncCore', () => {
 			const launch = electronNodeLaunch();
 			assert.ok(typeof launch.executable === 'string' && launch.executable.length > 0,
 				'本测试环境应从 process.execPath 取到路径');
+		});
+	});
+
+	/**
+	 * 同步范围推导（★ 2026-09-24 用户定调：只同步「笔记」区里已配置映射的目录）。
+	 *
+	 * 这组用例锁住「同步范围 = 映射目录 ∩ 笔记区」的口径 —— 它是「同步到飞书」按钮与
+	 * `kb_feishu_sync` 工具**共用的唯一真源**（见 deriveMappedSrcDirs 的注释）。
+	 */
+	suite('deriveMappedSrcDirs', () => {
+		const m = (dir: string) => ({ dir, spaceId: 'space-1' });
+
+		test('只保留「笔记」区内的映射目录', () => {
+			assert.deepStrictEqual(
+				deriveMappedSrcDirs([m('库/AI'), m('笔记/AI'), m('库/raw/素材')]),
+				['笔记/AI'],
+				'「库」是素材层，永不进入同步范围',
+			);
+		});
+
+		test('父子归并：子目录被祖先涵盖时不重复作为 --src（否则文件被 plan 两次）', () => {
+			assert.deepStrictEqual(
+				deriveMappedSrcDirs([m('笔记/AI'), m('笔记/AI/01-基础'), m('笔记/AI/01-基础/deep')]),
+				['笔记/AI'],
+			);
+		});
+
+		test('同级多目录：全部保留且顺序稳定', () => {
+			assert.deepStrictEqual(
+				deriveMappedSrcDirs([m('笔记/B'), m('笔记/A'), m('笔记/B/sub')]),
+				['笔记/A', '笔记/B'],
+			);
+		});
+
+		test('可以直接映射整个「笔记」区（一个知识库装全部笔记）', () => {
+			assert.deepStrictEqual(deriveMappedSrcDirs([m(FEISHU_SYNC_SECTION)]), [FEISHU_SYNC_SECTION]);
+		});
+
+		test('反斜杠 / 尾部斜杠归一（面板与手写文件的两种形态都要能识别）', () => {
+			assert.deepStrictEqual(deriveMappedSrcDirs([m('笔记\\AI\\'), m('笔记/AI')]), ['笔记/AI']);
+		});
+
+		test('空映射 / 只有「库」区 ⇒ 空数组（调用方据此提示「先去配置映射」且不执行同步）', () => {
+			assert.deepStrictEqual(deriveMappedSrcDirs([]), []);
+			assert.deepStrictEqual(deriveMappedSrcDirs(undefined), []);
+			assert.deepStrictEqual(deriveMappedSrcDirs([m('库/raw')]), []);
+		});
+
+		test('不把「笔记X」误判为「笔记」区（前缀必须落在分隔符上）', () => {
+			assert.deepStrictEqual(deriveMappedSrcDirs([m('笔记归档/A')]), []);
 		});
 	});
 });

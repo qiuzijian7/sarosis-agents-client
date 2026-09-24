@@ -116,6 +116,27 @@ build/*
 # install 脚本是空操作，缺失将导致打包版图谱 SQLite 后端（search_graph/query_graph）
 # 不可用。lib/sqlite3-binding.js 硬编码 require('../build/Release/vscode-sqlite3.node')。
 !build/saros/bin/vscode-sqlite3.node
+# ★ 2026-09-24 媒体二进制（ffmpeg/ffprobe/yt-dlp）**明确不入库**：
+# 合计 ≈330MB，且与 rg.exe / sqlite 不同 —— 它们**可联网获取**，由
+# `node build/saros/fetch-ffmpeg.mjs` 在打包前拉到 build/saros/bin/。
+# ⚠ build/saros/ 与 build/saros/bin/ 被上面的 `!` 规则 un-ignore 了 ⇒ 必须在这里显式排除，
+#   否则一次 `git add -A` 就会把 330MB 二进制塞进仓库（历史里删不掉）。
+# 打包时由 build/saros/strip-before-pack.mjs 的 ensureOptionalBin 落到
+# resources/saros/bin/（缺了会让抽帧/视频理解降级为「请安装 ffmpeg」）。
+build/saros/bin/ffmpeg.exe
+build/saros/bin/ffprobe.exe
+build/saros/bin/yt-dlp.exe
+build/saros/bin/_fetch*.log
+# ★ 2026-09-25 whisper.cpp（本地 ASR）同样**明确不入库**（理由同上方 ffmpeg 一组：
+# 可联网获取，由 `node build/saros/fetch-whisper.mjs` 拉到 build/saros/bin|models）。
+# DLL 是 whisper-cli.exe 的运行时依赖；模型 base ≈142MB，一旦入库历史里删不掉。
+build/saros/bin/whisper-cli.exe
+build/saros/bin/whisper.dll
+build/saros/bin/ggml*.dll
+build/saros/bin/SDL2*.dll
+# parakeet.dll：同为 ASR 运行时依赖（与 whisper.dll / ggml*.dll 同类）
+build/saros/bin/parakeet.dll
+build/saros/models/
 
 deploy-package/*
 resources/thirdparty/*

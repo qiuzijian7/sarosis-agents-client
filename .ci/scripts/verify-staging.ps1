@@ -86,3 +86,53 @@ if ($missing.Count -gt 0) {
   exit 1
 }
 Write-Host "[OK] All critical artifacts present in staging."
+
+# === 可选依赖：媒体工具链（ffmpeg/ffprobe/yt-dlp @ resources/saros/bin/）===
+# ★ 2026-09-24：这三个 exe 让「抽帧 / 视频理解」零安装可用（agent 的 extract_video_frames
+#   与 video_analyze 靠 mediaBinaries.ts 优先解析该目录）。与 vox 的 ffmpeg 同一落点。
+# ⚠ 刻意**不放进 $required**：它们是可选依赖，下载失败只该降级（运行时回退 PATH / 环境变量），
+#   不该把整个出包判失败 —— 但必须在 CI 日志里**可见**，否则「安装包静默少了媒体能力」
+#   只能等用户报「工具说请先安装 ffmpeg」才发现。
+Write-Host ""
+Write-Host "=== Optional: media toolchain (resources/saros/bin/) ==="
+# $appRoot = <buildOut>/resources/app ⇒ 媒体二进制在其兄弟目录 <buildOut>/resources/saros/bin/
+$mediaBinDir = Join-Path $appRoot "..\saros\bin"
+$mediaMissing = @()
+foreach ($name in @('ffmpeg.exe', 'ffprobe.exe', 'yt-dlp.exe')) {
+  if (Test-Path (Join-Path $mediaBinDir $name)) {
+    Write-Host ('  [OK] resources\saros\bin\' + $name)
+  } else {
+    Write-Host ('  [WARN] resources\saros\bin\' + $name + ' MISSING - video features will degrade to PATH/env probe')
+    $mediaMissing += $name
+  }
+}
+if ($mediaMissing.Count -gt 0) {
+  Write-Host "[WARN] Installer ships WITHOUT media binaries. Fix: node build/saros/fetch-ffmpeg.mjs"
+}
+
+# === 可选依赖：本地 ASR（whisper-cli + DLL @ resources/saros/bin/，模型 @ resources/saros/models/）===
+# ★ 2026-09-25：video_analyze 的口播转写（无字幕轨视频——小红书/抖音教程——的唯一文本来源）。
+#   与媒体工具链同级策略：不进 $required（下载失败只降级为「仅帧分析」），但必须在 CI 日志
+#   **可见**，否则「安装包静默少了 ASR」只能等用户报「口播内容不可知」才发现。
+#   DLL 只抽查 whisper.dll/ggml.dll 两个哨兵（全集随 whisper.cpp 版本漂移，拷贝侧按前缀 glob）。
+Write-Host ""
+Write-Host "=== Optional: local ASR (whisper.cpp @ resources/saros/) ==="
+$asrMissing = @()
+foreach ($name in @('whisper-cli.exe', 'whisper.dll', 'ggml.dll')) {
+  if (Test-Path (Join-Path $mediaBinDir $name)) {
+    Write-Host ('  [OK] resources\saros\bin\' + $name)
+  } else {
+    Write-Host ('  [WARN] resources\saros\bin\' + $name + ' MISSING - local ASR unavailable (frame-only fallback)')
+    $asrMissing += $name
+  }
+}
+$asrModel = Join-Path $appRoot "..\saros\models\ggml-base.bin"
+if (Test-Path $asrModel) {
+  Write-Host '  [OK] resources\saros\models\ggml-base.bin'
+} else {
+  Write-Host '  [WARN] resources\saros\models\ggml-base.bin MISSING - whisper has no model to load'
+  $asrMissing += 'ggml-base.bin'
+}
+if ($asrMissing.Count -gt 0) {
+  Write-Host "[WARN] Installer ships WITHOUT local ASR. Fix: node build/saros/fetch-whisper.mjs"
+}

@@ -47,9 +47,18 @@ import {
 	type IKbExtractDocTextRequest,
 	type IKbExtractDocTextResult,
 } from '../common/kbDocConvertChannel.js';
+// epub/docx → Markdown（纯 TS、零外部依赖；见该模块头部说明）
+import { extractArchiveMarkdown } from '../common/kbArchiveExtract.js';
 
-/** 目前支持的扩展名（pymupdf/pypdf 的能力边界；docx/xlsx 需要另外的库）。 */
-const SUPPORTED_EXT = '.pdf';
+/** PDF 走 python（pymupdf/pypdf）；epub/docx 走纯 TS 解 zip（见 kbArchiveExtract）。 */
+const PDF_EXT = '.pdf';
+/** 归档类（epub/docx）：纯 TS 解 zip，**不需要 python**。 */
+const ARCHIVE_EXTS = new Set(['.epub', '.docx']);
+
+/** 该扩展名是否支持提取（与 `KB_DOC_SOURCE_EXTENSIONS` 保持一致）。 */
+function supportedExt(ext: string): boolean {
+	return ext === PDF_EXT || ARCHIVE_EXTS.has(ext);
+}
 
 /** 单次提取超时：大 PDF + 首次加载 pymupdf 都要留足余量。 */
 const TIMEOUT_MS = 300_000;
@@ -254,8 +263,9 @@ export class KbDocConvertChannel extends Disposable {
 	private async extract(req?: IKbExtractDocTextRequest): Promise<IKbExtractDocTextResult> {
 		const target = req?.filePath?.trim();
 		if (!target) { return { ok: false, error: 'filePath 必填' }; }
-		if (!target.toLowerCase().endsWith(SUPPORTED_EXT)) {
-			return { ok: false, error: `暂不支持提取该类型（目前仅 ${SUPPORTED_EXT}）：${target}` };
+		const ext = target.slice(target.lastIndexOf('.')).toLowerCase();
+		if (!supportedExt(ext)) {
+			return { ok: false, error: `暂不支持提取该类型（目前支持 ${PDF_EXT} / .epub / .docx）：${target}` };
 		}
 		try {
 			if (!existsSync(target) || !statSync(target).isFile()) {
@@ -263,6 +273,12 @@ export class KbDocConvertChannel extends Disposable {
 			}
 		} catch (err) {
 			return { ok: false, error: `无法访问文件：${String(err)}` };
+		}
+
+		// ★ 2026-09-24：epub/docx 走**纯 TS** 路径（零外部依赖、不需 python）——
+		//   放在 python 解析之前，避免用户没装 python 时整条链路不可用。
+		if (ARCHIVE_EXTS.has(ext)) {
+			return this.extractArchive(target, ext);
 		}
 
 		const script = this.ensureScript();
@@ -309,6 +325,43 @@ export class KbDocConvertChannel extends Disposable {
 			return { ok: false, error: reason };
 		} finally {
 			try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* 临时目录清理失败可忽略 */ }
+		}
+	}
+
+	/**
+	 * epub / docx → Markdown（**纯 TS**：`kbArchiveExtract`，不 spawn python）。
+	 *
+	 * 出口语义与 PDF 分支一致：`text` = Markdown 正文；`pages` 用**章节数** ⇒
+	 * 调用方那句「有页无字 ⇒ 不写空 md」的判定对「解出来是空的」同样成立。
+	 *
+	 * ⚠ v1 不导出归档内的图片（docx 的 `w:drawing` / epub 的插图）：图片需要额外落盘 +
+	 *   正文引用改写，而这两个格式的图片引用（`r:embed` 关系表 / epub 相对路径）比 PDF 复杂；
+	 *   先保证**文字可读、可检索**（这正是「给 LLM 解读」的核心需求）。
+	 */
+	private extractArchive(target: string, ext: string): IKbExtractDocTextResult {
+		const started = Date.now();
+		try {
+			const buf = readFileSync(target);
+			const r = extractArchiveMarkdown(target, buf);
+			if (!r.ok) {
+				this.logService.warn(`[KbDocConvert] archive extract failed (${target}): ${r.error}`);
+				return { ok: false, error: r.error ?? '解析失败' };
+			}
+			let text = r.markdown ?? '';
+			let truncated = false;
+			if (Buffer.byteLength(text, 'utf8') > MAX_TEXT_BYTES) {
+				text = text.slice(0, MAX_TEXT_BYTES);
+				truncated = true;
+				this.logService.warn(`[KbDocConvert] markdown truncated to ${MAX_TEXT_BYTES} bytes: ${target}`);
+			}
+			const backend: 'epub' | 'docx' = ext === '.epub' ? 'epub' : 'docx';
+			this.logService.info(`[KbDocConvert] ${backend}: ${r.chapters ?? 0} chapter(s), `
+				+ `${text.length} char(s) in ${Date.now() - started}ms: ${target}`);
+			return { ok: true, text, pages: r.chapters ?? 0, imageCount: 0, backend, truncated };
+		} catch (err) {
+			const reason = err instanceof Error ? err.message : String(err);
+			this.logService.warn(`[KbDocConvert] archive extract threw (${target}): ${reason}`);
+			return { ok: false, error: reason };
 		}
 	}
 

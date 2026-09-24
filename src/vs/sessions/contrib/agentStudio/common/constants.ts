@@ -51,6 +51,110 @@ export const AGENT_STUDIO_UNREAL_BRIDGE_URL_SETTING = 'sessions.agentStudio.unre
 /** Unreal Engine bridge 内置默认地址（配置留空时使用）。 */
 export const AGENT_STUDIO_UNREAL_BRIDGE_URL_DEFAULT = 'http://127.0.0.1:8765';
 
+// ── Configuration keys — web_search 多后端（P0-2，2026-09-24）────────────────
+//
+// 背景：`web_search` 原先只有 DuckDuckGo 一族。加 provider 抽象后，用户可切到托管 API
+// （对 LLM 更友好、抗改版）或自建 SearXNG（可控、隐私好），而 keyless 的 DuckDuckGo
+// 永远是链尾兜底。provider 实现与链路解析见
+// `browser/providers/tool/webSearchProviders.ts`；缺省值 = 仅 DuckDuckGo，与加抽象
+// 之前的行为逐字节一致（未知环境不回归）。
+
+/** web_search 的后端选择：`auto` | `duckduckgo` | `searxng` | `tavily` | `brave` | `exa`。 */
+export const AGENT_STUDIO_WEB_SEARCH_PROVIDER_SETTING = 'sessions.agentStudio.webSearch.provider';
+/** 自建 SearXNG 实例基址（需实例开启 JSON 输出格式）。 */
+export const AGENT_STUDIO_WEB_SEARCH_SEARXNG_URL_SETTING = 'sessions.agentStudio.webSearch.searxngUrl';
+/** Tavily API key。 */
+export const AGENT_STUDIO_WEB_SEARCH_TAVILY_KEY_SETTING = 'sessions.agentStudio.webSearch.tavilyApiKey';
+/** Brave Search API key。 */
+export const AGENT_STUDIO_WEB_SEARCH_BRAVE_KEY_SETTING = 'sessions.agentStudio.webSearch.braveApiKey';
+/** Exa API key。 */
+export const AGENT_STUDIO_WEB_SEARCH_EXA_KEY_SETTING = 'sessions.agentStudio.webSearch.exaApiKey';
+/**
+ * 是否启用 `web_extract` 的本地持久化页面缓存（P2，2026-09-24）。
+ *
+ * 默认开启。**只缓存页面正文，不缓存搜索结果** —— 后者的语义就是"最新"，缓存会废掉它
+ * （详见 `browser/providers/tool/webPageCache.ts` 文件头）。缓存内容落在
+ * `StorageScope.APPLICATION` + `StorageTarget.MACHINE`（跨工作区共享、不随设置同步）。
+ */
+export const AGENT_STUDIO_WEB_SEARCH_CACHE_ENABLED_SETTING = 'sessions.agentStudio.webSearch.cacheEnabled';
+
+// ── Configuration keys — browser_* 工具（CDP 驱动真实 Chrome，P1-2，2026-09-24）──
+//
+// 背景：`browser_*` 6 个名字早已在 `CORE_TOOLS` 白名单与 bundled 定义库里，但
+// `registerBundledTools` 把它们注册成 stub ⇒ `listTools` 跳过 ⇒ 模型永远看不到。
+// 现接入 CDP 真实实现（主进程 `electron-main/browserCdpChannel.ts`）。
+//
+// ⚠ 这两个键**必须注册 schema**：本仓有过"键被读取但从未注册 → 设置 UI 里看不到、
+// 无补全，用户只能手写 settings.json"的历史坑（见本文件 Tool Search 段注释）。
+
+/** 是否把 browser_* 工具暴露给模型（关闭可省下 7 个 schema 的常驻体积）。 */
+export const AGENT_STUDIO_BROWSER_CDP_ENABLED_SETTING = 'sessions.agentStudio.browserCdp.enabled';
+/**
+ * Chrome 远程调试端口（与 `--remote-debugging-port` 一致）。
+ *
+ * ⚠ 它**同时**决定两件事，改之前先读：
+ *   ① 我们去**找**你浏览器的端口 —— 探测候选里排第一的就是它（`browserCdp.ts` 的
+ *      `cdpEndpointCandidates`）；
+ *   ② 我们**自行拉起**的专属实例跑在它 **+1** 上（`dedicatedPortFor`），
+ *      也就是说这个端口本身永远留给你自己的浏览器。
+ *
+ * 为什么必须留出来：Chrome 那个 "Allow remote debugging for this browser instance" 开关**没有端口
+ * 选项**，只会监听默认的 9222（IPv6 形态是 `[::1]:9222`）。专属实例若占着 9222，那条路（带你全部
+ * 登录态）就被**静默**堵死 —— 更糟的是我们仍连得上该端口，于是模型驱动的是空 profile，
+ * 表现为"它说我没登录"。
+ */
+export const AGENT_STUDIO_BROWSER_CDP_PORT_SETTING = 'sessions.agentStudio.browserCdp.port';
+
+/**
+ * 让 yt-dlp 借用**你浏览器里的登录态**（`--cookies-from-browser <browser>`）—— 2026-09-24。
+ *
+ * 取值：空串/缺省 = **关闭**；或 `chrome` / `edge` / `firefox` / `brave` / `chromium` /
+ * `opera` / `safari` / `vivaldi` / `whale`（yt-dlp 支持的名字，代码里有白名单兜底）。
+ *
+ * ## 为什么需要它（默认关）
+ *
+ * `extract_video_frames` / `video_analyze` 走的是 **yt-dlp（独立 http 客户端）**，它**不共享**
+ * 我们在浏览器里建立的登录态 ⇒ 小红书这类"需登录才给视频流"的站点一律
+ * `下载视频失败（yt-dlp exit 1）`（实测），模型只能每次都自己绕（用 execute_code 拿直链）。
+ * 开启后 yt-dlp 直接读本机浏览器的 cookie 去请求，属业界标准做法。
+ *
+ * ## 代价（如实写进设置说明）
+ *
+ * · 这是把你的**登录态**交给外部程序使用 —— 数据只在本机、不外传，但必须由**你显式开启**；
+ * · 浏览器**正在运行**时它的 cookie 库可能被锁 ⇒ yt-dlp 会报错，需重试或临时关掉浏览器；
+ * · 与「用你自己那个 Chrome 调试」是**两条独立的路**：那条解决"浏览器里能看到"，
+ *   这条解决"yt-dlp 能抓到"。要拿到视频本体/字幕时，这条才是判据。
+ */
+export const AGENT_STUDIO_BROWSER_COOKIES_FROM_BROWSER_SETTING = 'sessions.agentStudio.browserCdp.cookiesFromBrowser';
+/**
+ * 当 Chrome 的调试端口不可达时，是否由 VsSaros **自己拉起一个可调试的 Chrome 实例**
+ * （专属 profile + `--user-data-dir`，因此**不需要**用户手动开远程调试、也**不需要**勾那个同意框）。
+ *
+ * 触发时机是**第一次真正要用浏览器工具时**，不是启动时 —— 所以不会"一开 VsSaros 就弹浏览器"。
+ * profile 落在 `~/.vssaros/browser-profile`，与你的日常 Chrome 隔离，登录一次后会留在里面累积。
+ *
+ * 端口是「Chrome 调试端口」**+1**（`dedicatedPortFor`）：那个端口要留给你自己的 Chrome
+ * —— Chrome 自己的那个同意框没有端口选项，只会用 9222。
+ *
+ * 关掉它则退回"你手动在 Chrome 里开远程调试"的老路（工具在端口不可达时对模型不可见）。
+ */
+export const AGENT_STUDIO_BROWSER_CDP_LAUNCH_DEDICATED_SETTING = 'sessions.agentStudio.browserCdp.launchDedicated';
+/**
+ * 自动拉起的专属实例是否跑在**无头**（不显示窗口）模式。
+ *
+ * ⚠ 无头下**无法交互式登录** —— 想在专属 profile 里登录站点，必须先用有窗口模式登录一次
+ * （登录态会留在 profile 里，之后切无头也能用）。所以默认关。
+ *
+ * 改动**在下次拉起该实例时生效**：已经在跑的那个不受影响（可以手动关掉它，或下次重启 VsSaros
+ * 后由发现逻辑复用/重建）。刻意不做"改设置就自动关掉正在跑的浏览器" —— 那是用户可能正在用的窗口。
+ */
+export const AGENT_STUDIO_BROWSER_CDP_HEADLESS_SETTING = 'sessions.agentStudio.browserCdp.headless';
+
+// 曾有一个 `browserCdp.autoOpenDebugSetup`（启动时自动打开 chrome://inspect 页面），2026-09-24 移除：
+// Chrome 会忽略从命令行/外部程序传来的 chrome:// URL（--new-window / 带锚点 / URL 前置 / --app=
+// 四种写法实测全部只开出空白 New Tab），也就是"打开那一页"根本做不到，留个开关只会误导。
+// 实测细节见 common/chromeDebugSetup.ts 文件头。
+
 // Configuration keys — Driver concurrency
 export const AGENT_STUDIO_DRIVER_TURN_CONCURRENCY_LIMIT_SETTING = 'sessions.agentStudio.driver.turnConcurrencyLimit';
 

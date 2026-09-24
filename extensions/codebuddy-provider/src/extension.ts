@@ -744,6 +744,8 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 	 * field is simply omitted and behavior is unchanged.
 	 */
 	private readonly _lastResponseIdBySession = new Map<string, string>();
+	/** ★ 2026-09-25 缓存命中率 0 排查：sessionId 缺失告警只打一次（防刷屏）。 */
+	private _warnedMissingSessionId = false;
 
 	constructor(
 		private readonly _auth: CodeBuddyAuth,
@@ -1301,6 +1303,13 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 		// Stable conversation id (P0) — reuse the session id so the gateway treats
 		// all turns of one chat session as the same conversation (request/message
 		// ids still rotate per turn). Fall back to a fresh uuid when no session id.
+		// ★ 2026-09-25 排查实证：http-debug 连续 4 天 100% [no-sid]（X-Conversation-Id
+		// 每请求轮换 ⇒ 网关会话级 KV 缓存/亲和路由全灭 ⇒ prompt 缓存命中率≈0）。
+		// 缺失时 warn 一次，让下一次复现自证断点位置。
+		if (!sessionId && !this._warnedMissingSessionId) {
+			this._warnedMissingSessionId = true;
+			console.warn('[CodeBuddy] modelOptions.sessionId MISSING — X-Conversation-Id will rotate per request (prompt cache affinity broken). Check LMBridge id pass-through.');
+		}
 		const conversationId = sessionId || crypto.randomUUID();
 		const requestId = crypto.randomUUID();
 

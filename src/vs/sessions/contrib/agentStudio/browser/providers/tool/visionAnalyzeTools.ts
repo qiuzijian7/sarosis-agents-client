@@ -26,7 +26,7 @@ import type { IConfigurationService } from '../../../../../../platform/configura
 import type { IFileService } from '../../../../../../platform/files/common/files.js';
 import { URI } from '../../../../../../base/common/uri.js';
 import type { IModelProvider, IChatMessage, IChatImagePart } from '../../../common/providers.js';
-import { AGENT_STUDIO_AUX_VISION_PROVIDER, AGENT_STUDIO_AUX_VISION_MODEL } from '../../../common/constants.js';
+import { selectVisionModel, NO_VISION_MODEL_MESSAGE } from './visionModelSelect.js';
 
 export const VISION_ANALYZE_TOOL_NAME = 'vision_analyze';
 
@@ -115,6 +115,30 @@ export interface IParsedImage {
 
 const DATA_URL_RE = /^data:([^;,]+);base64,(.*)$/s;
 
+/**
+ * 字节 → base64。
+ *
+ * ## 为什么不用 `Buffer`（2026-09-24 生产事故）
+ *
+ * 本工具跑在**渲染进程**，那里**没有** Node 的 `Buffer`。此前两处都用
+ * `Buffer.from(...).toString('base64')` ⇒ 实测表现是：
+ *   · 本地图：`vision_analyze error: Buffer is not defined`（抽帧出来的 PNG **一张也读不了**）；
+ *   · http 图：同一个错被下面那条 catch 包成 `could not download the image from "…"` ——
+ *     **误导性极强**（看起来像 CDN 拒绝/防盗链，实际是编码器不存在）。
+ * 两者叠加的后果就是"抽帧→逐图读→写进笔记"这条链的最后一环永远断着。
+ *
+ * 用 `btoa` + 分块：`btoa` 在渲染进程与 Node ≥16 都在；分块是为了避开
+ * `String.fromCharCode(...veryLongArray)` 的调用栈上限（大图必踩）。
+ */
+function bytesToBase64(bytes: Uint8Array): string {
+	const CHUNK = 0x8000;
+	let binary = '';
+	for (let i = 0; i < bytes.length; i += CHUNK) {
+		binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+	}
+	return btoa(binary);
+}
+
 /** 把 MIME 收敛到 `ChatImageMimeType` 允许的集合（未知一律按 png 处理）。 */
 function normalizeMime(mime: string | undefined): IChatImagePart['mimeType'] {
 	const m = (mime ?? '').toLowerCase();
@@ -149,7 +173,9 @@ export async function parseImageInput(image: string, log: ILogService): Promise<
 			}
 			const mime = normalizeMime(res.headers.get('content-type') ?? undefined);
 			const buf = await res.arrayBuffer();
-			const b64 = Buffer.from(buf).toString('base64');
+			// ⚠ 不能用 `Buffer`（渲染进程没有）—— 见 `bytesToBase64` 的注释（它会把这个错误
+			//   伪装成 "could not download the image"）。
+			const b64 = bytesToBase64(new Uint8Array(buf));
 			return { data: b64, mimeType: mime };
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
@@ -218,7 +244,9 @@ export async function readLocalImageAsBase64(
 			`image is too large (${Math.round(content.value.byteLength / 1024 / 1024)} MB, limit ${Math.round(MAX_IMAGE_BYTES / 1024 / 1024)} MB). Downscale or crop it first.`,
 		);
 	}
-	return { data: Buffer.from(content.value.buffer).toString('base64'), mimeType };
+	// ⚠ 不能用 `Buffer`（渲染进程没有）—— 这正是"抽帧出的 PNG 一张也读不了"的那处
+	//   （实测 `vision_analyze error: Buffer is not defined`）。见 `bytesToBase64` 的注释。
+	return { data: bytesToBase64(content.value.buffer), mimeType };
 }
 
 /** 该值是否已是可直接使用的图片载荷（data URL / http(s) / 纯 base64 字符集）。 */
@@ -350,66 +378,14 @@ export function registerVisionAnalyzeTools(ctx: VisionAnalyzeToolContext): void 
 			}
 
 			// ── 2. 选择 provider / model ──
-			// ① 用户级 Vision 辅助模型配置（设置面板「Vision（图像分析）」写入）——显式指定，最高优先；
-			// ② 知识库专家（knowledge-base-expert）配置的模型 —— **多模态的默认模型**（2026-09-22）；
-			// ③ 自动路由：第一个声明 supportsImages 的模型。
-			let providerId: string | undefined;
-			let modelId: string | undefined;
-			if (ctx.configurationService) {
-				try {
-					providerId = ctx.configurationService.getValue<string>(AGENT_STUDIO_AUX_VISION_PROVIDER) || undefined;
-					modelId = ctx.configurationService.getValue<string>(AGENT_STUDIO_AUX_VISION_MODEL) || undefined;
-					// 'auto' 是设置项的默认值，表示"跟随自动路由"，不是真实 provider id。
-					if (providerId === 'auto') { providerId = undefined; }
-				} catch { /* 配置读取失败 → 走自动路由 */ }
+			// 选择逻辑（① Vision 辅助模型显式配置 > ② 知识库专家模型 > ③ 自动路由第一个
+			// supportsImages 的模型）已抽到 `visionModelSelect.ts` —— 与 `video_analyze`
+			// **共用同一份**，避免两处漂移出「看图用 A 模型、看视频用 B 模型」的不一致。
+			const selected = await selectVisionModel(ctx);
+			if (!selected) {
+				return [{ type: 'text', text: `vision_analyze error: ${NO_VISION_MODEL_MESSAGE}` }];
 			}
-
-			const providers = ctx.getModelProviders();
-			let provider: IModelProvider | undefined = providerId
-				? providers.find(p => p.id === providerId)
-				: undefined;
-
-			// ② 知识库专家配置的模型（★ 2026-09-22：多模态的**默认**模型来源）。
-			//    ⚠ 仅当用户**没有**显式指定 Vision provider 时生效（显式配置优先，维持原语义）。
-			//    ⚠ 必须校验该模型 `supportsImages`：专家可能配的是纯文本模型，直接发图会 400
-			//      ⇒ 不满足时继续往下走自动路由（fail-safe，不会让多模态整体不可用）。
-			if (!providerId && (!provider || !modelId)) {
-				try {
-					const kb = ctx.getKbExpertModel?.();
-					if (kb?.providerId && kb.modelId) {
-						const kbProvider = providers.find(p => p.id === kb.providerId);
-						if (kbProvider && typeof kbProvider.chat === 'function') {
-							const kbModels = await kbProvider.listModels().catch(() => []);
-							if (kbModels.some(m => m.id === kb.modelId && m.supportsImages)) {
-								provider = kbProvider;
-								modelId = kb.modelId;
-							}
-						}
-					}
-				} catch { /* 读取专家配置失败 ⇒ 走自动路由 */ }
-			}
-
-			if (!provider || !modelId) {
-				for (const p of providers) {
-					if (typeof p.chat !== 'function') { continue; }
-					if (providerId && p.id !== providerId) { continue; }
-					const models = await p.listModels().catch(() => []);
-					const visionModel = models.find(m => m.supportsImages);
-					if (visionModel) {
-						provider = p;
-						modelId = visionModel.id;
-						break;
-					}
-				}
-			}
-
-			if (!provider || !modelId) {
-				return [{
-					type: 'text',
-					text: 'vision_analyze error: no vision-capable model available. '
-						+ 'Configure one in settings («Vision（图像分析）») or enable a provider that exposes a model with image input support.',
-				}];
-			}
+			const { provider, modelId } = selected;
 
 			// ── 3. 调用多模态推理 ──
 			const message: IChatMessage = {

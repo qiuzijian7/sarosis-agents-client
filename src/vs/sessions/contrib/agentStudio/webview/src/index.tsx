@@ -32,11 +32,8 @@ import { dispatchConfigHtmlEvent } from './features/configmd/configHtmlBridge.js
 import { handleSnapshotArchiveEvent, handleSnapshotMediaPutEvent, handleSnapshotQueryEvent, handleStageRunEvent, handleStageRunCancel, handleDirectStageRunEvent, handleDirectStageRunCancel } from './features/workflowEditor/comfyHost/workflowSnapshotBridgeWebview.js';
 import './styles/globals.css';
 import './styles/themes.css';
-import './styles/chat-enhanced.css';
-import './styles/chat-cards.css';
 import './styles/configHtml.css';
 import './styles/agent-editor.css';
-import './styles/void-tool-card.css';
 import './styles/workflow-editor.css';
 
 // Initialize the message bridge (must happen before React mounts)

@@ -4,6 +4,8 @@ import { AgentChatPanelBase, TOOL_BUILTIN_TITLES, TOOL_TERMINAL_TOOLS, TOOL_LIST
 import { parseInlineWorkflowArgs } from './agentChatPanel.workflowChip.js';
 import { parseToolArgsLoose } from './toolArgsJson.js';
 import { chatPerf } from './agentChatPanel.perf.js';
+// ★ 2026-09-25（断点④修复 ✓）：图片 URL 提取走纯模块（可单测 ✓ 签名 URL/无扩展名也匹配 ✓）
+import { extractImageGenResultUrls } from './imageGenResultUrls.js';
 
 /**
  * 解析 tc.args —— 兼容 string(JSON) / object / undefined 三种形态。
@@ -77,7 +79,13 @@ export abstract class AgentChatPanelToolCards extends AgentChatPanelBase {
 
 	protected override _maybeCreateClarifyCard(tc: IToolCall): HTMLElement | null {
 		const key = (tc.name || '').toLowerCase();
-		if (key !== 'clarify') { return null; }
+		// 允许名单（2026-09-24）：`browser_use_my_chrome` 与 clarify **同构** —— 它返回一张
+		// "去你自己 Chrome 里勾一次同意框"的引导卡（options 即按钮、选择当用户消息回传），
+		// 由 `contrib/agentStudio` 侧的 `CLARIFY_CAPABLE_TOOL_NAMES` 同步维护。
+		//
+		// ⚠ 这里**不能**放宽成"结果里含 `__clarify__` 就渲染"：普通工具的结果文本里恰好出现
+		//   这个词（本仓源码本身就含）会渲染出一张莫名其妙的卡片 —— 与 turnSignals 同一纪律。
+		if (key !== 'clarify' && key !== 'browser_use_my_chrome') { return null; }
 
 		// 解析 args（首选）。clarify 工具的协议定义（coreTools.ts）输出
 		// `JSON.stringify({ __clarify__: true, question, options })` 到 tool result，
@@ -1212,13 +1220,12 @@ protected override _maybeCreateEnhancedResult(key: string, resultText: string): 
 		* 结果文本里图片引用有两种形态：
 		*  - `data:image/...;base64,...` —— pane 侧已把媒体库短引用（`saros-media://<id>`）
 		*    解析成 data URL（**仅 UI 显示**；落盘历史仍是短引用，避免 base64 进 LLM 上下文）；
-		*  - `http(s)://….png|jpg|webp` —— provider 直接返回的外链。
+		*  - `http(s)://…` —— provider 直接返回的外链（★ 2026-09-25 起**不要求扩展名** ✓
+		*    签名 URL/无扩展名链接也能显示 ✓ 见 imageGenResultUrls.ts 头注 ✓）。
 		* 两者都渲染成可点击放大的图片网格；无图时返回 null，交回默认文本渲染（展示文字说明）。
 		*/
 		protected _createImageGenResultCard(resultText: string): HTMLElement | null {
-		const dataUrls = resultText.match(/data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/gi) ?? [];
-		const httpUrls = resultText.match(/https?:\/\/[^\s"')\]]+\.(?:png|jpe?g|webp|gif|bmp)/gi) ?? [];
-		const urls = [...dataUrls, ...httpUrls];
+		const urls = extractImageGenResultUrls(resultText);
 		if (urls.length === 0) { return null; }
 
 		const wrap = $('.image-gen-result');

@@ -59,11 +59,23 @@ import {
 	AGENT_STUDIO_CHAT_STREAM_LOG_DUMP_TOOLS_SETTING,
 	AGENT_STUDIO_UNREAL_BRIDGE_URL_SETTING,
 	AGENT_STUDIO_UNREAL_BRIDGE_URL_DEFAULT,
+	AGENT_STUDIO_WEB_SEARCH_PROVIDER_SETTING,
+	AGENT_STUDIO_WEB_SEARCH_SEARXNG_URL_SETTING,
+	AGENT_STUDIO_WEB_SEARCH_TAVILY_KEY_SETTING,
+	AGENT_STUDIO_WEB_SEARCH_BRAVE_KEY_SETTING,
+	AGENT_STUDIO_WEB_SEARCH_EXA_KEY_SETTING,
+	AGENT_STUDIO_WEB_SEARCH_CACHE_ENABLED_SETTING,
+	AGENT_STUDIO_BROWSER_CDP_ENABLED_SETTING,
+	AGENT_STUDIO_BROWSER_CDP_HEADLESS_SETTING,
+	AGENT_STUDIO_BROWSER_CDP_LAUNCH_DEDICATED_SETTING,
+	AGENT_STUDIO_BROWSER_CDP_PORT_SETTING,
 	CHANNEL_DEFINITIONS,
 	IChannelDefinition,
 	IChannelConfigField,
 	ChannelKey,
 } from '../common/constants.js';
+// 后端清单唯一真源（设置 UI 的 select 选项直接取自 provider 注册表，避免漂移）。
+import { WEB_SEARCH_PROVIDER_CHOICES } from './providers/tool/webSearchProviders.js';
 import { IBridgeService } from './bridge/bridgeService.js';
 import { ChannelStatusInputs, computeChannelStatus } from './bridge/channelStatus.js';
 import { FEISHU_CONFIG_KEYS } from './bridge/platforms/feishu.contribution.js';
@@ -270,6 +282,34 @@ const TOOL_SECTIONS: SettingSection[] = [
 		defaultCollapsed: false,
 		fields: [
 			{ key: AGENT_STUDIO_UNREAL_BRIDGE_URL_SETTING, label: 'Bridge 地址', description: `Unreal bridge 基址。留空回退内置默认 ${AGENT_STUDIO_UNREAL_BRIDGE_URL_DEFAULT}`, type: 'string', default: '', placeholder: AGENT_STUDIO_UNREAL_BRIDGE_URL_DEFAULT },
+		],
+	},
+	{
+		id: 'tools-web-search',
+		label: '网页检索（搜索后端 / 抓取缓存）',
+		icon: '🔎',
+		description: 'web_search 的检索后端，以及 web_extract 的本地页面缓存。auto = 按已配置项成链，末尾永远以无需 key 的 DuckDuckGo 兜底；显式指定某后端时只用它，缺配置会明确报错（不会静默换家）',
+		defaultCollapsed: true,
+		fields: [
+			{ key: AGENT_STUDIO_WEB_SEARCH_PROVIDER_SETTING, label: '搜索后端', description: 'auto 推荐。托管 API 返回的摘要/正文更完整且抗页面改版；DuckDuckGo 无需 key、始终兜底', type: 'select', default: 'auto', options: WEB_SEARCH_PROVIDER_CHOICES.map(c => ({ value: c.value, label: c.label })) },
+			{ key: AGENT_STUDIO_WEB_SEARCH_TAVILY_KEY_SETTING, label: 'Tavily API Key', description: '留空 = 不参与 auto 链。Tavily 返回的已是抽取过的正文片段，对模型最省一次抓取', type: 'password', default: '' },
+			{ key: AGENT_STUDIO_WEB_SEARCH_EXA_KEY_SETTING, label: 'Exa API Key', description: '留空 = 不参与 auto 链。语义/神经检索，长尾与论文场景强', type: 'password', default: '' },
+			{ key: AGENT_STUDIO_WEB_SEARCH_BRAVE_KEY_SETTING, label: 'Brave Search API Key', description: '留空 = 不参与 auto 链。独立索引（不依赖 Google/Bing），有免费档', type: 'password', default: '' },
+			{ key: AGENT_STUDIO_WEB_SEARCH_SEARXNG_URL_SETTING, label: 'SearXNG 实例地址', description: '留空 = 不参与 auto 链。⚠ 实例 settings.yml 需开启 JSON 输出格式（search.formats 含 json），否则返回 HTML、解析不出结果', type: 'string', default: '', placeholder: 'http://127.0.0.1:8888' },
+			{ key: AGENT_STUDIO_WEB_SEARCH_CACHE_ENABLED_SETTING, label: '检索缓存', description: '两级：① web_extract 页面正文（24 小时、最多 40 页，命中时输出标注捕获时间，模型可传 refresh=true 强制重抓）；② web_search 结果备忘（进程内、20 分钟，键含 provider 与查询，同 key 并发只打一次网）。关掉则每次都真打网', type: 'boolean', default: true },
+		],
+	},
+	{
+		id: 'tools-browser',
+		label: '浏览器工具（CDP）',
+		icon: '🌐',
+		description: 'browser_navigate / snapshot / get_images / click / type / scroll / back：通过 CDP 驱动 Chrome，因此可复用登录态、操作 JS 渲染的页面。默认**开箱即用** —— 端口不可达时 VsSaros 会自行拉起一个可调试 Chrome（专属 profile，见下方「自动拉起调试实例」）。若你想改用自己日常那个 Chrome，则需手动开启远程调试：地址栏**手输** chrome://inspect/#remote-debugging 并勾选 "Allow remote debugging for this browser instance"（无法自动完成：Chrome 忽略程序传来的 chrome:// 地址，实测 4 种写法都只开出空白标签页；且勾选只对当次实例有效，重启 Chrome 要重勾）。**两条路可以共存**：专属实例跑在「Chrome 调试端口」+1 上（默认 9223），把 9222 留给你日常的 Chrome；你在 9222 上开了调试就用你的（带你全部登录态），没开才用专属实例',
+		defaultCollapsed: true,
+		fields: [
+			{ key: AGENT_STUDIO_BROWSER_CDP_ENABLED_SETTING, label: '启用浏览器工具', description: '关闭则这 7 个工具对模型不可见（省 schema 体积）。开启时它们是否可见还取决于下方两项：端口可达、或允许自动拉起调试实例', type: 'boolean', default: true },
+			{ key: AGENT_STUDIO_BROWSER_CDP_LAUNCH_DEDICATED_SETTING, label: '自动拉起调试实例', description: '端口不可达时由 VsSaros 自行起一个可调试 Chrome（专属 profile + --user-data-dir），因此不需要你手动开调试或勾同意框。触发时机是第一次真要用浏览器工具时，不是启动时。它跑在「Chrome 调试端口」+1 上（默认 9223），避开 9222 —— 那个端口要留给你自己的 Chrome。profile 在 ~/.vssaros/browser-profile，首次需在该窗口里登录一次', type: 'boolean', default: true },
+			{ key: AGENT_STUDIO_BROWSER_CDP_HEADLESS_SETTING, label: '无头模式（不显示窗口）', description: '自动拉起的专属 Chrome 完全不显示窗口。⚠ 无头下无法交互式登录 —— 要登录站点请先用有窗口模式登录一次（登录态会留在 profile 里，之后切无头照样能用）。改动在下次拉起该实例时生效，已在运行的那个不受影响', type: 'boolean', default: false },
+			{ key: AGENT_STUDIO_BROWSER_CDP_PORT_SETTING, label: 'Chrome 调试端口', description: '默认 9222 —— 也是 Chrome 那个勾选框唯一会监听的端口，所以想用你日常的 Chrome 就保持 9222。我们自动拉起的专属实例跑在它 +1（默认 9223）上，刻意避开这个端口。探测顺序：你设置的端口 → 同端口的 IPv6 → 专属实例，先命中的算。⚠ Chrome 136+ 起用 --remote-debugging-port 启动必须同时带 --user-data-dir，否则对默认 profile 静默失效', type: 'number', default: 9222, min: 1, max: 65535 },
 		],
 	},
 	{

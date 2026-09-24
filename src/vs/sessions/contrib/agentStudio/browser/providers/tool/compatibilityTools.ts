@@ -11,7 +11,7 @@ import { isWindows } from '../../../../../../base/common/platform.js';
 import type { IFileService } from '../../../../../../platform/files/common/files.js';
 import type { ILogService } from '../../../../../../platform/log/common/log.js';
 import type { IAgentOSService } from '../../../common/agentOS.js';
-import { IToolResultContent, NonRetryableToolError, ToolSecurityLevel } from '../../../common/providers.js';
+import { IToolResultContent, NO_PARAMS_SCHEMA, NonRetryableToolError, ToolSecurityLevel } from '../../../common/providers.js';
 import type { IBuiltinToolRegistration } from './builtinToolProvider.js';
 // ★ 2026-09-21：随 switch_paradigm / plan_register 正式退役，以下 5 个导入一并删除
 //   （退役说明见本文件 registerCompatibilityTools 内的「已正式退役」注释块）：
@@ -20,7 +20,7 @@ import type { IBuiltinToolRegistration } from './builtinToolProvider.js';
 //   ★ 2026-09-21 第二轮：`common/paradigmOverride.ts` 已**整体下线**（其唯一运行时写入方就是本文件的
 //     switch_paradigm handler；工具退役后注册表只剩 resume 回填，还引入跨 turn 粘滞缺陷）。
 //     范式现为每 turn 就地解析：`request.resumeFrom?.paradigm ?? request.paradigm`。
-import { detectUnixOnlyCommand, UNIX_ONLY_COMMAND_HINTS, GIT_BASH_INSTALL_GUIDANCE, rewriteUnixPipelineToPowerShell, powerShellEncodedCommand, detectPowerShellOnlyCmdlet, powerShellCmdletGuardMessage, isCommandNotFoundFailure, isDeterministicScriptFailure, deterministicScriptFailureMessage, describeReadGap, hasEverReadSuccessfully, markFileModified, detectBenignSearchExit, detectExternalModification, describeExternalModification, parseTimeoutSecondsFromStderr, timeoutGuidanceMessage } from './executeCodeGuards.js';
+import { detectUnixOnlyCommand, UNIX_ONLY_COMMAND_HINTS, GIT_BASH_INSTALL_GUIDANCE, rewriteUnixPipelineToPowerShell, powerShellEncodedCommand, detectPowerShellOnlyCmdlet, powerShellCmdletGuardMessage, isCommandNotFoundFailure, isDeterministicScriptFailure, deterministicScriptFailureMessage, describeReadGap, hasEverReadSuccessfully, markFileModified, detectBenignSearchExit, detectExternalModification, describeExternalModification, parseTimeoutSecondsFromStderr, timeoutGuidanceMessage, manualMediaToolchainNudge } from './executeCodeGuards.js';
 import { buildEditedRegionContext, computeInsert, computeBatchPatch, type IBatchEdit } from '../../../common/patchMatcher.js';
 import { buildUnifiedDiff, diffStat } from '../../../common/unifiedDiff.js';
 import { runExecOutputPipeline } from './execOutputPipeline.js';
@@ -376,14 +376,15 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 			},
 		});
 
-	// ── process / session_search ─────────────────
+	// ── session_search ─────────────────
 	// 平台不适用 — 返回友好提示（web_search/web_extract 已有真实 handler，不在此注册 stub）
+	// ★ 2026-09-24（P1-5）：`process` 已有**真实实现**（`processTools.ts`：list/output/terminate/wait，
+	//   薄封装 vscode:execCode 的后台注册表）⇒ 从此占位表中移除（否则与真 handler 撞同名）。
 	for (const [name, desc, msg] of [
-		['process', 'Manage background processes.', "Process management is not natively available. To run a long-running command without blocking the turn, use execute_code with background:true (returns a taskId), then poll via execute_code({ action:'poll', taskId }) or terminate via execute_code({ action:'kill', taskId })."],
 		['session_search', 'Search past conversation sessions.', 'Session search is not yet available. Past conversations are stored in ~/.saros/sessions/.'],
 	] as const) {
 		ctx.register({
-			definition: { name, description: desc, inputSchema: { type: 'object', properties: { _no_params: { type: 'boolean', description: 'No parameters needed' } } }, category: 'utility', source: ctx.id },
+			definition: { name, description: desc, inputSchema: NO_PARAMS_SCHEMA, category: 'utility', source: ctx.id },
 			handler: async () => text(msg),
 		});
 	}
@@ -823,6 +824,16 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 					`${failureHint.id} (exit ${result.exitCode})`;
 				// 假成功是**结论性错误风险**（模型会据此判断任务完成），用 warn 便于统计
 				if (result.success) { ctx.logService.warn(hintLog); } else { ctx.logService.info(hintLog); }
+			}
+			// ── 手工重造媒体管线的劝导（成功侧，2026-09-25 日志 20260925T023847）─────────
+			// 模型因同会话旧失败经验绕开 video_analyze（内置 ASR），手工 yt-dlp+ffmpeg 循环
+			// 抽帧 + 逐张 vision_analyze。命令虽成功但绕远 ⇒ 追加一行提示（不阻断、不改退出码）。
+			if (result.success && !failureHint) {
+				const nudge = manualMediaToolchainNudge(effectiveCommand);
+				if (nudge) {
+					parts.push('', nudge);
+					ctx.logService.info('[CompatTools] execute_code nudge: manual-media-toolchain');
+				}
 			}
 			const body = parts.join('\n');
 			// 失败（非 0 exit / 启动失败 / 超时）→ 抛错触发失败熔断，避免子代理对失败命令反复重试

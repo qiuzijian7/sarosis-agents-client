@@ -24,6 +24,7 @@
 
 import type { IAgentOSService } from '../../../common/agentOS.js';
 import type { ILogService } from '../../../../../../platform/log/common/log.js';
+import { NO_PARAMS_SCHEMA } from '../../../common/providers.js';
 import type { IBuiltinToolRegistration } from './builtinToolProvider.js';
 
 export interface AdvancedMemoryToolContext {
@@ -301,7 +302,7 @@ export function registerAdvancedMemoryTools(ctx: AdvancedMemoryToolContext): voi
 		definition: {
 			name: 'memory_obsidian_export',
 			description: 'Export all active memories as an Obsidian-compatible Markdown document (grouped by memory type with wikilinks). Returns the markdown content — write it to a .md file if the user wants a vault note.',
-			inputSchema: { type: 'object', properties: { _no_params: { type: 'boolean', description: 'No parameters needed' } } },
+			inputSchema: NO_PARAMS_SCHEMA,
 			category: 'memory',
 			source,
 		},

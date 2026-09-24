@@ -88,6 +88,13 @@ stages:
         run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/bundle-ffmpeg.ps1'
         shell: powershell
 
+      # ---------- 6.4b 下载并内置 whisper.cpp（本地 ASR：video_analyze 口播转写，可选依赖，失败不阻断） ----------
+      # 与 ffmpeg 同级策略；CI 无法访问 GitHub/HuggingFace 时用 SAROS_WHISPER_URL /
+      # SAROS_WHISPER_MODEL_URL 指向内网镜像。
+      - name: 下载并内置 whisper (bundle-whisper)
+        run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/bundle-whisper.ps1'
+        shell: powershell
+
       # ---------- 6.5 打包产物关键构件验证 ----------
       - name: 验证打包关键构件
         run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/verify-staging.ps1'

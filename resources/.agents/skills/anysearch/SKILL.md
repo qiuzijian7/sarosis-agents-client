@@ -89,9 +89,9 @@ User query
   3. Retry the failed command — it now runs authenticated with higher limits.
 - **Anonymous quota exhausted (no key handed out)**: Inform the user that a key provides higher rate limits, and suggest saving one to `~/.vssaros/skills/.hub/anysearch.env` or setting the `ANYSEARCH_API_KEY` environment variable (which `execute_code` propagates to the CLI).
 
-### Fallback Strategy (降级策略)
+### Scope & Fallback Strategy (适用范围与降级策略)
 
-**AnySearch is the PREFERRED web-search method** (use it BEFORE the built-in `web_search` / `web_extract` tools). But if an AnySearch call fails — API error, timeout, runtime unavailable (no python3/node), or quota exhausted without a key:
+**Use AnySearch when the query needs vertical-domain coverage or batched queries** — structured identifiers and real-time data (stocks, papers, laws, weather, flights/hotels, code docs, social posts). For an ordinary "latest facts / news" question the built-in `web_search` is one call cheaper and is the correct first choice. But if an AnySearch call fails — API error, timeout, runtime unavailable (no python3/node), or quota exhausted without a key:
 
 1. **Do NOT retry the same failing command** (repeated failures trigger the failure circuit-breaker and waste iterations).
 2. **Fall back to the built-in `web_search` / `web_extract` tools** to complete the search.

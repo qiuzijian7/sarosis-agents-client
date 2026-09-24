@@ -82,6 +82,23 @@ export const MCP_TOOL_TIMEOUT_MS = 120_000; // 120 seconds
 /** 危险工具（需要审批）的超时时间（包含等待用户确认的时间） */
 export const DANGEROUS_TOOL_TIMEOUT_MS = 300_000; // 5 minutes
 
+/**
+ * 视频工具（`video_analyze` / `extract_video_frames`）的超时 —— 15 分钟。
+ *
+ * ★ 2026-09-25（生产日志 20260925T020714）：`video_analyze` 落进 60s 默认值，
+ *   而它的真实负载是「下载 ≤300s + 抽帧 ≤120s + 本地 ASR（whisper）≤600s + 视觉模型
+ *   数百秒」—— 实测：60s 到点 abort 时 whisper 才跑到一半；转写最终在 4.5 分钟后成功
+ *   （12000 字），但结果已被判 timeout 丢弃（用户看到 "cancelled before completion"）。
+ *
+ * 为什么不学 execute_code 禁用守卫（=0）：管线的每个**子进程**确实都有自管超时
+ * （T_DOWNLOAD/T_FFMPEG/T_WHISPER 经 runCommand 传主进程 kill），但最后一步「视觉模型
+ * 流式调用」没有自管墙钟 —— 守卫超时是给它的兜底（模型挂住时 15min 硬闸门救场）。
+ */
+export const VIDEO_TOOL_TIMEOUT_MS = 900_000; // 15 minutes
+
+/** 视频工具名（下载 + 抽帧 + ASR + 视觉模型，分钟级负载）。 */
+const VIDEO_TOOLS = new Set(['video_analyze', 'extract_video_frames']);
+
 /** 最大并发工具执行数 */
 export const MAX_CONCURRENT_EXECUTIONS = 8;
 
@@ -364,6 +381,15 @@ export function getTimeoutForTool(toolName: string, toolDef?: IToolDefinition, s
 	// 避免 `npm run compile` 这类长命令被外层提前掐断。
 	if (toolName === 'execute_code') {
 		return DELEGATION_TOOL_TIMEOUT_MS;
+	}
+	// ★ 2026-09-24（P1-5）：`process` 同理 —— 它的 `wait` 自带 deadline（封顶 WAIT_MAX_S=120s，
+	//   见 processTools.ts），外层的 60s 墙钟会把它中途掐掉 ⇒ 同样禁用守卫超时。
+	if (toolName === 'process') {
+		return DELEGATION_TOOL_TIMEOUT_MS;
+	}
+	// ★ 2026-09-25：视频工具给 15min 档（负载构成与"为什么不禁用"见 VIDEO_TOOL_TIMEOUT_MS 注释）。
+	if (VIDEO_TOOLS.has(toolName)) {
+		return VIDEO_TOOL_TIMEOUT_MS;
 	}
 	// 危险工具（可能需等待审批）
 	// ★ 2026-09-11 修复：本判定原在 MCP 判定**之后**，导致「经 MCP 暴露的

@@ -5,7 +5,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeRelativeRef, resolveAssetSrc, isMediaAssetSrc, mediaAssetId } from '../assetPath.js';
+import { encodePathSegmentIdempotent, normalizeRelativeRef, resolveAssetSrc, isMediaAssetSrc, mediaAssetId } from '../assetPath.js';
 
 const BASE = 'https://file+.vscode-resource.vscode-cdn.net/vault/库/概念';
 
@@ -28,6 +28,27 @@ test('resolveAssetSrc：相对路径拼接 assetBaseUri 并逐段编码', () => 
 	assert.equal(resolveAssetSrc('./a.png', BASE), `${BASE}/a.png`);
 	// 尾斜杠容忍
 	assert.equal(resolveAssetSrc('a.png', BASE + '/'), `${BASE}/a.png`);
+});
+
+test('★★ resolveAssetSrc：**幂等** —— 已编码的段不得再编一次（%25 双重编码就是 404 的指纹）', () => {
+	// 实测事故（2026-09-25）：react-markdown 对图片 href 会先做一次 URL 变换（编码），
+	// 本函数此前无条件再编一次 ⇒
+	//   .../库/raw/assets/GPT%25E4%25BA%2594…%25E7%25A8%258B/frame-04.png  ⇒ **404**
+	// （文件明明存在；同 URL 里 `库` 段是单次编码 %E5%BA%93 所以正常 —— 正是这个对比锁定了根因）
+	const slug = 'GPT五档欧卡画风流程';
+	const encodedInput = `assets/${encodeURIComponent(slug)}/frame-04.png`;
+	const rawInput = `assets/${slug}/frame-04.png`;
+	const expected = `${BASE}/assets/${encodeURIComponent(slug)}/frame-04.png`;
+
+	assert.equal(resolveAssetSrc(encodedInput, BASE), expected, '已编码输入 ⇒ 输出仍是单次编码');
+	assert.equal(resolveAssetSrc(rawInput, BASE), expected, '裸中文输入 ⇒ 同一个结果（这才叫幂等）');
+	assert.ok(!(resolveAssetSrc(encodedInput, BASE) ?? '').includes('%25'), '绝不能出现 %25');
+});
+
+test('★ 段里含**非转义** %（如 100%.png）不得抛异常（decode 失败就退回直接编码）', () => {
+	// decodeURIComponent('100%.png') 会抛 URIError ⇒ 必须有兜底，否则整篇笔记渲染会崩
+	assert.equal(encodePathSegmentIdempotent('100%.png'), encodeURIComponent('100%.png'));
+	assert.equal(encodePathSegmentIdempotent(''), '', '空段返回空串，不抛');
 });
 
 test('resolveAssetSrc：绝对/协议路径原样返回', () => {

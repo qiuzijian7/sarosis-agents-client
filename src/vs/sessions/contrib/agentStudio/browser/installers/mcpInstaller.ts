@@ -21,6 +21,8 @@ import { IPackageInstaller, PackageManifest, IPreparePackResult } from '../../co
 import { PackageKind, IInstallResult } from '../../common/marketplace.js';
 import { SarosPath, resolveSarosPath, userDataRootFromRoamingHome } from '../../common/sarosPaths.js';
 import { IEnvironmentService } from '../../../../../platform/environment/common/environment.js';
+// ★ 2026-09-24：供应链预检（OSV 恶意包）—— 写 mcp.json 之前拦一道
+import { checkStdioCommandAgainstOsv, buildOsvBlockedMessage } from '../mcpSupplyChain.js';
 
 const MCP_SUBDIR = 'mcp';
 
@@ -55,6 +57,25 @@ export class McpInstaller extends Disposable implements IPackageInstaller {
 		const configUri = URI.joinPath(extractedDir, 'config.json');
 		if (!await this.fileService.exists(configUri)) {
 			throw new Error('包内缺少 config.json（MCP 服务器配置）');
+		}
+
+		// ★ 2026-09-24 供应链预检（对齐 Hermes tools/osv_check.py）：
+		//   马上要写进 `~/.vssaros/mcp.json` 的可能是 `npx -y <pkg>` 这类配置 ——
+		//   MCP host **每次启动都会从 npm/PyPI 拉最新版并执行**。命中 OSV 的 MAL-*（恶意包）
+		//   就在**落盘之前**拒绝（此时还没有任何文件被写入，用户不会留下半个坏安装）。
+		//   网络失败 fail-open：只 warn 并继续（供应链检查不该成为"断网即不能装 MCP"的单点）。
+		const config = await this._readConfig(configUri);
+		const verdict = await checkStdioCommandAgainstOsv(config.command, config.args, {
+			warn: (m: string) => this.logService.warn(m),
+		});
+		if (verdict.status === 'blocked') {
+			this.logService.warn(`[McpInstaller] 已阻止安装 ${manifest.id}：命中 OSV 恶意包 ${JSON.stringify(verdict.hits)}`);
+			throw new Error(buildOsvBlockedMessage(verdict));
+		}
+		if (verdict.status === 'unknown') {
+			this.logService.warn(`[McpInstaller] ${manifest.id} 供应链预检未完成（${verdict.reason ?? '未知原因'}）—— 继续安装`);
+		} else if (verdict.scanned > 0) {
+			this.logService.info(`[McpInstaller] ${manifest.id} 供应链预检通过（${verdict.scanned} 个包）`);
 		}
 
 		await this.fileService.createFolder(targetDir);
@@ -116,6 +137,15 @@ export class McpInstaller extends Disposable implements IPackageInstaller {
 
 	private async resolveDir(id: string): Promise<URI> {
 		return resolveSarosPath(this._getSarosRoot(), MCP_SUBDIR, id);
+	}
+
+	/** 读并解析 config.json（供应链预检与注册都要用；解析失败即抛 —— 缺配置装下去也没意义）。 */
+	private async _readConfig(configUri: URI): Promise<McpConfig> {
+		try {
+			return JSON.parse((await this.fileService.readFile(configUri)).value.toString()) as McpConfig;
+		} catch (e) {
+			throw new Error(`无法解析 config.json：${(e as Error).message}`);
+		}
 	}
 
 	/** 将 config.json 转换为 ~/.vssaros/mcp.json 的 server 条目格式 */

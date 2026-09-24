@@ -897,8 +897,13 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 		if (context?.previousResponseId) {
 			requestOptions.modelOptions.previousResponseId = context.previousResponseId; // 请求体 previous_response_id
 		}
+		// ★ 2026-09-25 缓存命中率 0 排查：trace→info。http-debug 连续 4 天 100%
+		// [no-sid]（X-Conversation-Id 每请求轮换 ⇒ 网关按会话的 KV 缓存/亲和路由全灭），
+		// 静态链 5 跳却全部完好——需要 info 级实证定位断点（convId 是否有值）。
 		if (conversationId || context?.requestId || context?.previousResponseId) {
-			this._logService.trace(`[LMBridge] Passing ids to extension: convId=${conversationId ?? '(none)'} reqId=${context?.requestId ?? '(none)'} prevRespId=${context?.previousResponseId ?? '(none)'}`);
+			this._logService.info(`[LMBridge] Passing ids to extension: convId=${conversationId ?? '(none)'} reqId=${context?.requestId ?? '(none)'} prevRespId=${context?.previousResponseId ?? '(none)'}`);
+		} else {
+			this._logService.warn(`[LMBridge] NO conversation context for chat() — X-Conversation-Id will rotate per request (cache affinity dead). context=${context ? 'present-but-empty' : 'undefined'}`);
 		}
 
 		// P4: 死流重试循环（每次 attempt 独立 CancellationTokenSource——

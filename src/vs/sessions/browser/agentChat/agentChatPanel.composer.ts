@@ -846,48 +846,21 @@ protected override _appendToolbarBtn(
 		return btn;
 	}
 
-	/** ★ 2026-09-19：优雅停止待办态（`true` ⇒ 已点一次 Stop，等服务在边界处收尾 ✓）。 */
-	private _gracefulStopPending = false;
-
 	/**
 	 * 请求取消（**统一入口**：按钮点击 ✓ / Escape ✓）。
 	 *
-	 * ★ 2026-09-19：服务端的**第一次**取消是「优雅停止」（等当前 iteration 跑完 ⇒ 已生成内容不丢 ✓，
-	 * 见 `agentChatService._gracefulStopRequested` ✓）—— 但它会让用户误以为"点了没反应" ✗。
-	 * ⇒ 立刻给出**可感知**反馈：按钮脉冲 + 处理中指示旁的小条 ✓。
+	 * ★ 2026-09-24（用户要求「点停止 = LLM 立刻停」✓）：**直接转发** ⇒ 服务第一次调用即 abort ✓
+	 * （取代 2026-09-19 的优雅停止两段式 ✗ —— 「点了没停 = 点了没反应」✗✓）。
+	 * 即时反馈链（既有 ✓ 本处无需再加脉冲/小条 ✓）：pane 同步 `setSending(false)` ✓
+	 * + 气泡立即追加「⚠️ 用户取消」✓（见 nativeChatEditorPane.onCancelExecution ✓）。
 	 */
 	private _requestCancelExecution(): void {
 		if (!this._onCancelExecution) { return; }
-		this._markGracefulStopPending();
 		this._onCancelExecution();
-	}
-
-	/**
-	 * 优雅停止态的可感知反馈（幂等 ✓）。
-	 * 清除：`_renderSendButtonSvg()` 在 `_isSending=false` 时复位 ✓（turn 完成 / 硬停都会到 ✓）；
-	 * 小条随「处理中」指示一起在 turn 结束时移除 ✓。
-	 */
-	private _markGracefulStopPending(): void {
-		this._gracefulStopPending = true;
-		if (this._sendBtn) {
-			this._sendBtn.classList.add('chat-stopping-circle');
-			this._sendBtn.title = '正在停止：等当前这一步跑完（再次点击 = 立即停）';
-		}
-		// 处理中指示旁加小条（幂等 ✓；turn 结束移除整个指示时一并带走 ✓）
-		// ⚠ 泛型 `<HTMLElement>` 不能省 ✗ —— `append()` 的形参是 `HTMLElement`，而裸
-		//   `querySelector` 返回 `Element` ⇒ TS2769（实测 ✓）
-		const proc = this._messagesContainer?.querySelector<HTMLElement>('.chat-footer-processing');
-		if (proc && !proc.querySelector('.chat-footer-stopping')) {
-			const chip = append(proc, $('span.chat-footer-stopping'));
-			chip.textContent = '正在停止…（再点 = 立即停）';
-		}
 	}
 
 	protected override _renderSendButtonSvg(): void {
 		clearNode(this._sendBtn);
-		// ★ 2026-09-19：优雅停止态复位 —— turn 结束（`_isSending=false`）⇒ 撤掉"正在停止"脉冲 ✓
-		this._gracefulStopPending = this._gracefulStopPending && this._isSending;
-		this._sendBtn.classList.toggle('chat-stopping-circle', this._gracefulStopPending);
 		const hasInput = !!(this._getComposerText().trim() || this._attachments.length > 0);
 		const isQueueing = this._isSending && hasInput;
 

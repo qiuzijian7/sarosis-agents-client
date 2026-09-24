@@ -18,6 +18,7 @@ import { IPlaywrightService } from '../../../../../../platform/browserView/commo
 import { IEditorService } from '../../../../../../workbench/services/editor/common/editorService.js';
 import { ISessionsManagementService } from '../../../../../../sessions/services/sessions/common/sessionsManagement.js';
 import { BrowserEditorInput } from '../../../../../../workbench/contrib/browserView/common/browserEditorInput.js';
+import { NO_PARAMS_SCHEMA } from '../../../common/providers.js';
 import { IKanbanRecipeService, IKanbanRecipe } from './kanbanRecipeService.js';
 
 export interface KanbanToolContext {
@@ -689,11 +690,7 @@ export function registerKanbanTools(ctx: KanbanToolContext): void {
 		definition: {
 			name: 'web_recipe_list',
 			description: 'List all saved web-scraping recipes (name, URL pattern, optional board name and task cap).',
-			inputSchema: {
-				type: 'object',
-				properties: { _no_params: { type: 'boolean', description: 'No parameters needed' } },
-				required: [],
-			},
+			inputSchema: NO_PARAMS_SCHEMA,
 			category: 'kanban',
 			source: 'saros.builtin-tools',
 		},

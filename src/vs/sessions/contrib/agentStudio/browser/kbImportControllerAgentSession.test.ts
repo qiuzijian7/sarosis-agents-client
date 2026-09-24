@@ -17,6 +17,8 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as assert from 'assert';
+
+import type { IToolCardHandle } from '../../../common/agentStudioService.js';
 import { URI } from '../../../../base/common/uri.js';
 import { KbImportController } from './kbImportController.js';
 
@@ -101,13 +103,24 @@ const fp = (p: string) => URI.file(p).fsPath;   // 平台相关的 fsPath（缓�
 function createController(fs: ReturnType<typeof createFs>, opts?: { chat?: any }) {
 	const notices: { message: string }[] = [];
 	const opened: unknown[] = [];
+	// ★ 2026-09-24（用户要求「构建别刷屏，封装成一次工具调用」）：记录合成工具卡事件，
+	//   用于断言「一次 kb_build 调用 + 里程碑进度」，而不是大段文本。
+	const cardRequests: { toolCallId: string; name: string; displayName?: string; args?: string }[] = [];
+	const cardProgress: { toolCallId: string; progress?: number; progressText?: string }[] = [];
+	const cardResults: { toolCallId: string; ok: boolean; result?: string; error?: string }[] = [];
+	const agentStudioService: any = {
+		requestKbRefresh() { },
+		requestToolCard(p: any) { cardRequests.push(p); },
+		toolCardProgress(p: any) { cardProgress.push(p); },
+		toolCardResult(p: any) { cardResults.push(p); },
+	};
 	const controller = new KbImportController(
 		{ getValue: () => undefined } as any,       // configurationService
 		quietLog,
 		fs.service,                                  // fileService
 		{} as any,                                   // environmentService
 		{} as any,                                   // storageService
-		{ requestKbRefresh() { } } as any,           // agentStudioService
+		agentStudioService,                          // agentStudioService
 		{} as any,                                   // viewsService
 		{ async openEditor(i: unknown) { opened.push(i); return undefined; } } as any,  // editorService
 		{ notify(o: any) { notices.push(o); }, info() { }, warn() { }, prompt() { return { dispose() { } }; } } as any,  // notificationService
@@ -115,7 +128,7 @@ function createController(fs: ReturnType<typeof createFs>, opts?: { chat?: any }
 		undefined as any,                            // agentDriverService（本套件不走 agentic 单篇）
 		opts?.chat,                                  // agentChatService
 	);
-	return { controller, notices, opened };
+	return { controller, notices, opened, cardRequests, cardProgress, cardResults };
 }
 
 /** 模拟「知识库专家」agent 的两阶段应答：Phase 1 写笔记（带 sources frontmatter），Phase 2 写知识体系.md。 */
@@ -200,7 +213,7 @@ suite('_collectPendingSources（pending 判定）', () => {
 			'/vault/库/.hidden.md': { content: 'h', mtime: 100 },
 		});
 		const { pending } = await (KbImportController as any)._collectPendingSources(
-			fs.service, URI.file(VAULT), quietLog, { notify() { }, info() { }, warn() { } }, { requestKbRefresh() { } },
+			fs.service, URI.file(VAULT), quietLog, { notify() { }, info() { }, warn() { } }, { requestKbRefresh() { }, requestToolCard() { }, toolCardProgress() { }, toolCardResult() { } },
 		);
 		const names = pending.map((u: URI) => u.path.split('/').pop()).sort();
 		assert.deepStrictEqual(names, ['幽灵.md', '改过了.md', '新素材.md'], 'pending 恰好是这三个');
@@ -271,9 +284,11 @@ suite('buildPendingAsAgentSession（agent 自主读写：集成）', () => {
 	test('完整流程：会话创建 + 两阶段消息（挂技能）+ 产出归集 + 缓存回填 + 通知', async () => {
 		const fs = createFs(seed());
 		const chat = createChatMock(fs);
-		const { controller, notices, opened } = createController(fs, { chat: chat.svc });
+		const { controller, notices, opened, cardRequests, cardProgress } = createController(fs, { chat: chat.svc });
 
-		const res = await controller.buildPendingAsAgentSession(URI.file(VAULT));
+		// 调用方（KB 视图）持句柄：控制器回填 toolCallId + 成功摘要，视图在 finally 里据此关卡片
+		const handle: IToolCardHandle = {};
+		const res = await controller.buildPendingAsAgentSession(URI.file(VAULT), handle);
 
 		// ① 会话：只建一个，agent 是知识库专家，标题形如「知识库构建 · …」；页签打开
 		assert.strictEqual(chat.created.length, 1, '只建一个会话');
@@ -286,6 +301,19 @@ suite('buildPendingAsAgentSession（agent 自主读写：集成）', () => {
 		assert.ok(chat.calls.every(c => c.options.agentSessionId === chat.created[0].id), '同一 sessionId');
 		assert.deepStrictEqual(chat.calls[0].options.explicitSkillIds, ['kb-build'], '挂载 kb-build 技能');
 		assert.ok(!('chatOnly' in chat.calls[0].options), '绝不能传 chatOnly（会过滤掉 file_write）');
+
+		// ②′ 聊天呈现（★ 2026-09-24 用户要求「别刷屏，封装成一次工具调用」）：
+		//     · 两条 prompt 一律 `hidden: true`（只喂模型，不落盘/不渲染为用户气泡）；
+		//     · 聊天里只开**一张** `kb_build` 合成工具卡，并推进里程碑进度；
+		//     · 终态由调用方用句柄收尾（控制器回填 toolCallId + 成功摘要）。
+		assert.ok(chat.calls.every(c => c.options.hidden === true), '两条 prompt 都标了 hidden（不渲染用户气泡）');
+		assert.strictEqual(cardRequests.length, 1, '只开一张合成工具卡');
+		assert.strictEqual(cardRequests[0].name, 'kb_build');
+		assert.strictEqual(cardRequests[0].displayName, '构建知识库');
+		assert.ok(cardProgress.length >= 2, '有里程碑进度');
+		assert.strictEqual(cardProgress[cardProgress.length - 1].progress, 100, '最后推进到 100%');
+		assert.strictEqual(handle.toolCallId, cardRequests[0].toolCallId, '句柄回填了卡片 id');
+		assert.ok(handle.summary?.includes('1 篇笔记'), '成功摘要回填给调用方');
 
 		// ③ Phase 1 消息只带数据：素材绝对路径 + sources 引用 + 目录树
 		const p1 = chat.calls[0].message;

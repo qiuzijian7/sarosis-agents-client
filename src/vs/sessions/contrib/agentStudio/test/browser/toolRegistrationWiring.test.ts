@@ -44,6 +44,8 @@ import * as mDrawio from '../../browser/providers/tool/drawioTools.js';
 import * as mHandoff from '../../browser/providers/tool/handoffTools.js';
 import * as mImageGen from '../../browser/providers/tool/imageGenTools.js';
 import * as mKanban from '../../browser/providers/tool/kanbanTools.js';
+import * as mKbFeishuSync from '../../browser/providers/tool/kbFeishuSyncTools.js';
+import * as mKbOrganize from '../../browser/providers/tool/kbOrganizeTools.js';
 import * as mKbVault from '../../browser/providers/tool/kbVaultRecallTools.js';
 import * as mMediaGen from '../../browser/providers/tool/mediaGenTools.js';
 import * as mMemory from '../../browser/providers/tool/memoryTools.js';
@@ -57,6 +59,11 @@ import * as mSessionSearch from '../../browser/providers/tool/sessionSearchTools
 import * as mSkill from '../../browser/providers/tool/skillTools.js';
 import * as mUnifiedMemory from '../../browser/providers/tool/unifiedMemoryTools.js';
 import * as mUnreal from '../../browser/providers/tool/unrealTools.js';
+import * as mFeishuDrive from '../../browser/providers/tool/feishuDriveTools.js';
+import * as mProcess from '../../browser/providers/tool/processTools.js';
+import * as mKbBuild from '../../browser/providers/tool/kbBuildTools.js';
+import * as mVideoAnalyze from '../../browser/providers/tool/videoAnalyzeTools.js';
+import * as mVideoFrame from '../../browser/providers/tool/videoFrameTools.js';
 import * as mVision from '../../browser/providers/tool/visionAnalyzeTools.js';
 import * as mWeb from '../../browser/providers/tool/webTools.js';
 import * as mWorkflowTool from '../../browser/providers/tool/workflowTool.js';
@@ -66,12 +73,16 @@ const MODULES: ReadonlyArray<readonly [string, Record<string, unknown>]> = [
 	['advancedMemoryTools', mAdvancedMemory], ['bundledTools', mBundled], ['canvasTools', mCanvas],
 	['codebaseTools', mCodebase], ['compatibilityTools', mCompat], ['coreTools', mCore],
 	['delegationTools', mDelegation], ['drawioTools', mDrawio], ['handoffTools', mHandoff],
-	['imageGenTools', mImageGen], ['kanbanTools', mKanban], ['kbVaultRecallTools', mKbVault],
+	['imageGenTools', mImageGen], ['kanbanTools', mKanban],
+	// ★ 2026-09-24：kb_feishu_sync / kb_feishu_spaces / kb_organize 三个工具此前**漏接本扫描**
+	// （文件有 register*Tools 导出但不在 MODULES）⇒ ①②③ 对它们长期失效；断言④正是为抓这个而存在。
+	['feishuDriveTools', mFeishuDrive], ['processTools', mProcess], ['kbBuildTools', mKbBuild], ['kbFeishuSyncTools', mKbFeishuSync], ['kbOrganizeTools', mKbOrganize], ['kbVaultRecallTools', mKbVault],
 	['mediaGenTools', mMediaGen], ['memoryTools', mMemory], ['mermaidTools', mMermaid],
 	['mindmapTools', mMindmap], ['planExploreTool', mPlanExplore], ['planModeTools', mPlanMode],
 	['routineCrystalFacetTools', mRoutine], ['schedulerTools', mScheduler], ['sessionSearchTools', mSessionSearch],
 	['skillTools', mSkill], ['unifiedMemoryTools', mUnifiedMemory], ['unrealTools', mUnreal],
-	['visionAnalyzeTools', mVision], ['webTools', mWeb], ['workflowTool', mWorkflowTool], ['workflowTools', mWorkflow],
+	['videoAnalyzeTools', mVideoAnalyze], ['videoFrameTools', mVideoFrame], ['visionAnalyzeTools', mVision], ['webTools', mWeb],
+	['workflowTool', mWorkflowTool], ['workflowTools', mWorkflow],
 ];
 
 const ROOT = process.cwd();

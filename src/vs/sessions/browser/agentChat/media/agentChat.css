@@ -7480,33 +7480,8 @@
 	transform: scale(1.08);
 }
 
-/* 「正在停止」态（★ 2026-09-19，优雅停止的用户提示 ✓）：
-   第一次点 Stop ⇒ 服务端走**优雅停止**（等当前 iteration 跑完 ✓），用户可能误以为"点了没反应" ✗
-   ⇒ 按钮进入**灰阶脉冲** + tooltip（见 `_markGracefulStopPending` ✓）。
-   刻意用**灰**而非强调色 ✓（对齐"黑白灰"的用量药丸约定 ✓），以便与「立即停（红）」「排队（蓝）」区分 ✓。 */
-.chat-send-circle.chat-stopping-circle {
-	background: color-mix(in srgb, var(--vscode-foreground, #ccc) 45%, transparent) !important;
-	animation: cancel-pulse 1.1s ease-in-out infinite;
-}
-.chat-send-circle.chat-stopping-circle:hover {
-	background: color-mix(in srgb, var(--vscode-foreground, #ccc) 60%, transparent) !important;
-}
-
-/* 处理中指示旁的「正在停止」小条（见 `_markGracefulStopPending` ✓）：
-   随「处理中」指示一起在 turn 结束时移除 ✓；复用药丸的中性灰 ✓。 */
-.chat-footer-stopping {
-	display: inline-flex;
-	align-items: center;
-	gap: 4px;
-	font-size: 11px;
-	line-height: 1.2;
-	color: var(--vscode-foreground, #ccc);
-	opacity: 0.9;
-	border: 1px solid color-mix(in srgb, var(--vscode-foreground, #ccc) 30%, transparent);
-	border-radius: 12px;
-	padding: 3px 8px;
-	animation: footer-pill-live-pulse 1.6s ease-in-out infinite;
-}
+/* ★ 2026-09-24：「正在停止」脉冲/小条样式已随**优雅停止机制一并移除** ✗ ——
+   用户要求「点停止 = LLM 立刻停」（第一次点击即 abort ✓），不再有过渡态 ⇒ 无需这两套样式 ✓。 */
 
 /* ═══════════════════════════════════════════════════════════════════
    Char Counter (纯信息展示，不限制输入)

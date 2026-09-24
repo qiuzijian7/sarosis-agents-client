@@ -1215,6 +1215,40 @@ export interface IToolDefinition {
 	readonly toolset?: string;
 }
 
+/**
+ * **无参工具**的 inputSchema —— 唯一来源，不要再手写字面量。
+ *
+ * ## 为什么必须有这个常量
+ *
+ * 这条约定此前在 9 个文件里各抄了一份（browserTools / unrealTools / mindmapTools /
+ * workflowTools / codebaseTools / kanbanTools / compatibilityTools / advancedMemoryTools /
+ * kbVaultRecallTools），每处都要重新记一遍规则 —— 这正是"空 properties"问题**反复发生**的
+ * 根因：新工具作者写下 `properties: {}` 时并不知道有这条约定。收敛到一处后，"写对"才是最省事
+ * 的路径，而不再是"记得有这么个坑"。
+ *
+ * ## 为什么不能写空 properties
+ *
+ * IOA 网关把空 properties 判为不兼容模式并自动改写成 `_no_params`，每次请求刷一条
+ * `[CodeBuddy][sanitize] ... empty properties {} replaced with _no_params` 告警；比日志更麻烦的是
+ * "我们声明的 schema"与"模型实际收到的 schema"不再是同一份（排查 schema 问题会被误导）。
+ *
+ * ## 使用约定
+ *
+ *   · `_no_params` **不是必填**（无 `required`）：模型照常传 `{}` 即可。
+ *   · **不要把它当"死参数"删掉** —— 删掉就退回空 properties。
+ *   · 共享对象：**不要原地改**。需要 per-tool 差异时 spread 出新对象
+ *     （如 `{ ...NO_PARAMS_SCHEMA, additionalProperties: false }`）。刻意**不** `Object.freeze`：
+ *     冻结会把未知路径的原地写从"静默"变成"请求期抛错"，而本仓既有路径（如
+ *     `correctSchemaReferences`）都只读或 spread。
+ *
+ * 强制手段：`test/browser/toolSchemaShapeGuard.test.ts` —— 扫过所有声明 `inputSchema` 的文件，
+ * 空 properties 直接红。
+ */
+export const NO_PARAMS_SCHEMA: IToolDefinition['inputSchema'] = {
+	type: 'object',
+	properties: { _no_params: { type: 'boolean', description: 'No parameters needed' } },
+};
+
 export interface IToolCall {
 	readonly id: string;
 	readonly name: string;

@@ -218,15 +218,15 @@ suite('同步前图表准备（prepareDiagramsForSync）', () => {
 		assert.deepStrictEqual(r.notes.map(n => n.name), ['时序.md'], '子目录笔记被发现，纯文字笔记不打扰');
 	});
 
-	test('srcDirs 留空 ⇒ 扫描「库」与「笔记」两个标准分区', async () => {
+	test('srcDirs 留空 ⇒ 兜底只扫「笔记」区（★ 2026-09-24：库是素材层，永不参与同步）', async () => {
 		const fs = new MemFs();
 		fs.put(URI.joinPath(NOTES, '笔记A.md'), md('```drawio', '<mxfile><diagram name="a">x</diagram></mxfile>', '```'));
 		fs.put(URI.joinPath(LIB, '素材B.md'), md('```drawio', '<mxfile><diagram name="b">y</diagram></mxfile>', '```'));
 
 		const r = await run(fs, [], { dryRun: true }).promise;
 
-		assert.strictEqual(r.scanned, 2, '两个分区都要扫（视图按钮的默认口径）');
-		assert.strictEqual(r.charts, 2);
+		assert.strictEqual(r.scanned, 1, '兜底范围只有「笔记」——「库」里的素材不进同步计划');
+		assert.strictEqual(r.charts, 1);
 	});
 
 	test('渲染引擎整体不可用 ⇒ 记为失败但不抛（同步流程不该被图表拖死）', async () => {

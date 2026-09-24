@@ -11,6 +11,7 @@
 import type { ILogService } from '../../../../../../platform/log/common/log.js';
 import type { IWorkflowStorageService, IStoredWorkflow } from '../../../common/workflowStorage.js';
 import type { IAgentStudioService } from '../../../../../common/agentStudioService.js';
+import { NO_PARAMS_SCHEMA } from '../../../common/providers.js';
 import { workflowAppliedEmitter } from './workflowShared.js';
 
 export interface WorkflowToolContext {
@@ -40,7 +41,7 @@ export function registerWorkflowTools(ctx: WorkflowToolContext): void {
 		definition: {
 			name: 'workflow_list',
 			description: 'List all workflows in the current workspace. Returns workflow IDs, names, and descriptions.',
-		inputSchema: { type: 'object', properties: { _no_params: { type: 'boolean', description: 'No parameters needed' } } },
+		inputSchema: NO_PARAMS_SCHEMA,
 		category: 'workflow',
 		source: 'saros.builtin-tools',
 	},
@@ -122,7 +123,7 @@ export function registerWorkflowTools(ctx: WorkflowToolContext): void {
 			description: 'Get the schema of all available workflow node types, INCLUDING the list of ' +
 				'available agents you can reference. Use this to understand what node types are available, ' +
 				'their required data fields, valid agentId values, and positioning guidelines before creating or modifying a workflow.',
-		inputSchema: { type: 'object', properties: { _no_params: { type: 'boolean', description: 'No parameters needed' } } },
+		inputSchema: NO_PARAMS_SCHEMA,
 		category: 'workflow',
 		source: 'saros.builtin-tools',
 	},

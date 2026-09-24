@@ -36,7 +36,20 @@ interface IBgExecHandle {
 	settled: boolean;
 	exitCode: number;
 	timeoutHandle?: ReturnType<typeof setTimeout>;
+	// ★ 2026-09-24（P1-5 `process` 工具）：list 需要知道"这条任务是什么" —— 此前 handle 只记
+	//   输出收集器，任务一多就只剩一串 taskId  UUID，模型（与用户）都无从辨认。
+	command: string;
+	cwd?: string;
+	startedAt: number;
+	/** 落定时刻（结算运行时长 + 清理时限用）。 */
+	settledAt?: number;
 }
+/**
+ * 已落定任务的保留时限：超过即从 `_bgExecs` 移除（在 `list` 时顺带做）。
+ * 为什么需要：此前只有 `kill` 会删条目，正常完成的任务**永久驻留**（每条还带最长 ~200KB
+ * 的输出缓冲）⇒ 长期会话里注册表只进不出。30 分钟兼顾"事后还能看一眼退出码"与内存。
+ */
+const BG_EXEC_SETTLED_RETAIN_MS = 30 * 60_000;
 const _bgExecs = new Map<string, IBgExecHandle>();
 import { registerContextMenuListener } from '../../base/parts/contextmenu/electron-main/contextmenu.js';
 import { getDelayedChannel, ProxyChannel, StaticRouter } from '../../base/parts/ipc/common/ipc.js';
@@ -168,6 +181,7 @@ import { ComfyLaunchChannel } from '../../sessions/contrib/agentStudio/electron-
 import { ConfigHtmlServerChannel } from '../../sessions/contrib/agentStudio/electron-main/configHtmlServerChannel.js';
 import { VoxLaunchChannel } from '../../sessions/contrib/agentStudio/electron-main/voxLaunchChannel.js';
 import { LarkCliChannel } from '../../sessions/contrib/agentStudio/electron-main/larkCliChannel.js';
+import { BrowserCdpChannel } from '../../sessions/contrib/agentStudio/electron-main/browserCdpChannel.js';
 import { BridgeStoreChannel } from '../../sessions/contrib/agentStudio/electron-main/bridgeStoreChannel.js';
 import { RemoteControlChannel } from '../../sessions/contrib/agentStudio/electron-main/remoteControlChannel.js';
 import { GIT_VERSION_CHANNEL } from '../../sessions/contrib/agentStudio/common/gitVersionBackend.js';
@@ -681,13 +695,37 @@ export class CodeApplication extends Disposable {
 	// Non-interactive, single-shot with a REAL exit code + timeout kill — distinct from
 	// the pty-based `terminal` tool (interactive shell, no reliable exit code, idle-detect).
 	// Backs the agentStudio `execute_code` tool (researcher subagent runs anysearch via it).
-	validatedIpcMain.handle('vscode:execCode', async (event, payload: { command?: string; script?: string; interpreter?: string; cwd?: string; timeoutMs?: number; shell?: string; pathPrefix?: string; background?: boolean; taskId?: string; action?: 'poll' | 'kill' }) => {
+	validatedIpcMain.handle('vscode:execCode', async (event, payload: { command?: string; script?: string; interpreter?: string; cwd?: string; timeoutMs?: number; shell?: string; pathPrefix?: string; background?: boolean; taskId?: string; action?: 'poll' | 'kill' | 'list' }) => {
 		// 本地控制台编码：Windows 下探测 chcp（简中通常 cp936）。用于把 shell 自身的
 		// 非 UTF-8 错误信息正确解码（见 processOutputDecoder 头注释）。
 		// 探测走一次 `chcp` 子进程，故按进程缓存 —— execute_code 是高频工具。
 		const localEncoding = (await this._resolveExecCodeEncoding()) ?? 'utf-8';
 
 		// ── 后台执行控制面（P0-2）：poll / kill 已注册的后台任务 ──
+		// ★ 2026-09-24（P1-5 `process` 工具）：加 `list` —— 「现在有哪些任务、各是什么、
+		//   跑了多久」。此前模型只能记住 taskId（记不住就永远失联）。
+		if (payload?.action === 'list') {
+			const now = Date.now();
+			// 顺带回收已落定太久的任务（理由见 BG_EXEC_SETTLED_RETAIN_MS 的注释）
+			for (const [id, h] of _bgExecs) {
+				if (h.settled && (h.settledAt ?? now) + BG_EXEC_SETTLED_RETAIN_MS <= now) {
+					_bgExecs.delete(id);
+				}
+			}
+			return {
+				success: true,
+				tasks: [..._bgExecs.entries()].map(([taskId, h]) => ({
+					taskId,
+					pid: h.child.pid ?? -1,
+					done: h.settled,
+					exitCode: h.exitCode,
+					command: h.command,
+					cwd: h.cwd,
+					startedAt: h.startedAt,
+					settledAt: h.settledAt,
+				})),
+			};
+		}
 		if (payload?.action === 'poll' || payload?.action === 'kill') {
 			const handle = _bgExecs.get(payload.taskId ?? '');
 			if (!handle) {
@@ -765,13 +803,22 @@ export class CodeApplication extends Disposable {
 			const stderrCollector = new ProcessOutputCollector();
 			child.stdout?.on('data', (data: Buffer) => stdoutCollector.push(data));
 			child.stderr?.on('data', (data: Buffer) => stderrCollector.push(data));
-			const handle: IBgExecHandle = { child, stdoutCollector, stderrCollector, localEncoding, settled: false, exitCode: -1, timeoutHandle: undefined };
+			const handle: IBgExecHandle = {
+				child, stdoutCollector, stderrCollector, localEncoding, settled: false, exitCode: -1, timeoutHandle: undefined,
+				// ★ 2026-09-24（P1-5）：list 要认得"这是什么任务"（见 IBgExecHandle 注释）
+				command: payload?.script !== undefined
+					? `[script via ${payload?.interpreter ?? '?'}]`
+					: (payload?.command ?? ''),
+				cwd: payload?.cwd,
+				startedAt: Date.now(),
+			};
 			// 宽限落定定时器：见下方 `child.on('exit')` 的注释；统一由 `finish` 清理（幂等）。
 			let settleGraceHandle: ReturnType<typeof setTimeout> | undefined;
 			const finish = (r: { success: boolean; stdout: string; stderr: string; exitCode: number }) => {
 				if (handle.settled) { return; }
 				handle.settled = true;
 				handle.exitCode = r.exitCode;
+				handle.settledAt = Date.now();   // ★ P1-5：list 的运行时长/回收都靠它
 				if (handle.timeoutHandle) { clearTimeout(handle.timeoutHandle); }
 				if (settleGraceHandle) { clearTimeout(settleGraceHandle); }
 				onDone?.(r);
@@ -949,6 +996,11 @@ export class CodeApplication extends Disposable {
 	// 逻辑在 sessions/contrib/agentStudio/electron-main/larkCliChannel.ts。
 	// 必须放主进程：探测与安装都要 child_process（渲染进程没有）。
 	this._register(new LarkCliChannel(this.logService));
+
+	// browser_* 工具的 CDP 宿主（P1-2）：驱动用户本机真实 Chrome。
+	// 必须放主进程：renderer 的 CDP HTTP 发现会被 CORS 拦、WebSocket 握手会因 Origin 被拒
+	// （详见 common/browserCdp.ts 文件头）。逻辑在 electron-main/browserCdpChannel.ts。
+	this._register(new BrowserCdpChannel(this.logService, this.configurationService));
 
 	// 渠道绑定状态（chat_id ↔ Agent / 专属会话）的文件存储：
 	// 逻辑在 sessions/contrib/agentStudio/electron-main/bridgeStoreChannel.ts。

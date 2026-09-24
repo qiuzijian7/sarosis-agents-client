@@ -64,6 +64,19 @@ export interface IClarifySignal {
 /** clarify 工具名（与 `coreTools.ts` 的注册名保持一致）。 */
 export const CLARIFY_TOOL_NAME = 'clarify';
 
+/**
+ * 也会产出 `__clarify__` 形态**引导卡**的工具（2026-09-24 起）。
+ *
+ * 为什么是允许名单、而不是"只看载荷"：见 `findClarifySignal` 的双重判据 —— 工具名是防止
+ * "普通文件内容里恰好含 `__clarify__` 字样"被误判的**唯一**屏障（**本模块源码自身就含这个
+ * 词**：`file_read` 一读就被误判）。所以放宽只能按**名字**逐个放行，绝不能退化成
+ * "有 marker 就终止"。
+ *
+ * `browser_use_my_chrome`：它返回一张"去你自己 Chrome 里勾一次同意框"的引导卡，用户点完按钮
+ * 才算问完 —— 与 clarify 完全同构（都要**当轮结束**、等用户选择后再开一轮）。
+ */
+export const CLARIFY_CAPABLE_TOOL_NAMES: readonly string[] = [CLARIFY_TOOL_NAME, 'browser_use_my_chrome'];
+
 /** clarify 载荷的标记字段（与 `coreTools.ts` handler 及 UI 解析保持一致）。 */
 const CLARIFY_MARKER = '__clarify__';
 
@@ -136,7 +149,7 @@ function parseClarifyQuestionCount(content: unknown): number {
  * @returns 命中的 clarify 信号；未命中返回 undefined
  *
  * 双重判据（缺一不可）：
- *  1. 工具名 === 'clarify' —— 防止普通文件内容里恰好含 `__clarify__` 字样被误判
+ *  1. 工具名 ∈ `CLARIFY_CAPABLE_TOOL_NAMES` —— 防止普通文件内容里恰好含 `__clarify__` 字样被误判
  *     （例如本模块自身的源码被 file_read 读出来时！）
  *  2. content 含合法 `__clarify__` 载荷 —— 防止把参数错误当成成功提问
  */
@@ -145,7 +158,7 @@ export function findClarifySignal(
 	resolveToolName: (toolCallId: string) => string | undefined,
 ): IClarifySignal | undefined {
 	for (const tr of toolResults) {
-		if (resolveToolName(tr.toolCallId) !== CLARIFY_TOOL_NAME) { continue; }
+		if (!CLARIFY_CAPABLE_TOOL_NAMES.includes(resolveToolName(tr.toolCallId) ?? '')) { continue; }
 		const questionCount = parseClarifyQuestionCount(tr.content);
 		if (questionCount > 0) {
 			return { toolCallId: tr.toolCallId, questionCount };

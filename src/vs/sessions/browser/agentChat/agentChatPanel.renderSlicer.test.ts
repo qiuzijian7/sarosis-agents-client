@@ -6,7 +6,9 @@
 import assert from 'assert';
 import { readFileSync } from 'fs';
 import {
+	computeRestoreWindowStart,
 	RENDER_SLICE_BUDGET_MS,
+	RESTORE_USER_TURN_WINDOW,
 	runTimeSlicedRender,
 	shouldRenderFullySync,
 	type IRenderSliceInfo,
@@ -209,6 +211,58 @@ suite('agentChatPanel.renderSlicer — P1 分帧渲染（2026-09-24 ✓ LONG_TAS
 		});
 	});
 
+	suite('computeRestoreWindowStart — 恢复窗口 = 最近 2 轮问答（2026-09-24 用户要求 ✓）', () => {
+		interface IM { readonly id: string; readonly role: 'user' | 'assistant' | 'system' }
+		const U = (id: string): IM => ({ id, role: 'user' });
+		const A = (id: string): IM => ({ id, role: 'assistant' });
+		const S = (id: string): IM => ({ id, role: 'system' });
+		const isUser = (m: IM) => m.role === 'user';
+		const startOf = (msgs: IM[]) => computeRestoreWindowStart(msgs, isUser, RESTORE_USER_TURN_WINDOW);
+
+		test('典型 3 轮 ⇒ 从倒数第 2 条提问起（窗口 = u2,a2,u3,a3 ✓）', () => {
+			const msgs = [U('u1'), A('a1'), U('u2'), A('a2'), U('u3'), A('a3')];
+			assert.strictEqual(startOf(msgs), 2, '必须落在 u2 ✓');
+		});
+
+		test('末尾是流式快照（assistant 收尾）⇒ 窗口包含它 ✓', () => {
+			// 3 条提问 ⇒ 窗口从 u2 起 ⇒ 尾部流式消息自然在窗口内 ✓
+			const msgs = [U('u1'), A('a1'), U('u2'), A('a2'), U('u3'), A('a3-streaming')];
+			assert.strictEqual(startOf(msgs), 2, '落在 u2 ✓ 尾部流式消息在窗口内 ✓');
+		});
+
+		test('只有 1 条提问 ⇒ 返回 0（全渲染 ✓ 短会话 ✓）', () => {
+			assert.strictEqual(startOf([U('u1'), A('a1')]), 0);
+		});
+
+		test('无提问 ⇒ 返回 0 ✓', () => {
+			assert.strictEqual(startOf([A('a1'), A('a2')]), 0);
+		});
+
+		test('恰好 2 条提问 ⇒ 从第 1 条起 ✓', () => {
+			const msgs = [U('u1'), A('a1'), U('u2'), A('a2')];
+			assert.strictEqual(startOf(msgs), 0);
+		});
+
+		test('空列表 ⇒ 0 ✓', () => {
+			assert.strictEqual(startOf([]), 0);
+		});
+
+		test('相邻连续提问（中间无回答）⇒ 仍按提问计数 ✓', () => {
+			const msgs = [U('u1'), A('a1'), U('u2'), U('u3'), A('a3')];
+			// 从尾部扫：a3(否) → u3(第 1 条) → u2(第 2 条 ⇒ 返回其下标 2 ✓)
+			assert.strictEqual(startOf(msgs), 2, '倒数第 2 条提问 = u2（idx=2）✓');
+		});
+
+		test('system 消息不算提问 ✓', () => {
+			const msgs = [S('s1'), U('u1'), A('a1'), S('s2'), U('u2'), A('a2'), U('u3'), A('a3')];
+			assert.strictEqual(startOf(msgs), 4, '落在 u2 ✓（system 不计数 ✓）');
+		});
+
+		test('窗口常量锚定 = 2（用户要求 ✓ 改动需重新确认 ✓）', () => {
+			assert.strictEqual(RESTORE_USER_TURN_WINDOW, 2);
+		});
+	});
+
 	suite('★★ 接线断言（钉"不变量语义" ✓ 防实现漂移 ✗）', () => {
 		test('messages.ts 必须真的使用时间片渲染器（不是只在测试里转 ✗✓）', () => {
 			const src = read(MESSAGES_REL);
@@ -222,6 +276,34 @@ suite('agentChatPanel.renderSlicer — P1 分帧渲染（2026-09-24 ✓ LONG_TAS
 			]) {
 				assert.ok(src.includes(token), `messages.ts 缺少接线 token：${token} ✗✓`);
 			}
+		});
+
+		test('★★★ 分片钉底必须 force=true（2026-09-24「重启后不在底部」根因 ✗✓ 不许回退 ✗✓）', () => {
+			const src = read(MESSAGES_REL);
+			// 中间态容器会被 scrollToBottom 的「dist≥80 ⇒ 用户滚离」启发式误判 ⇒ isAtBottom=false
+			// ⇒ 后续钉底全灭 ✗ ⇒ 停在半路 ✗（且 _wasLoading 要等 setMessages 返回才置位 ✗）。
+			// 剥注释后，onPin 与 _finishRenderBatch 两处钉底都必须是 force=true ✓
+			const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+			const pinCalls = code.split('this._scrollbar.scrollToBottom(true)').length - 1;
+			assert.ok(pinCalls >= 2,
+				`onPin 与 _finishRenderBatch 都必须 scrollToBottom(true)（实际 ${pinCalls} 处 ✗✓ —— 用 false 会在分片中间态被误判「用户滚离」✗）`);
+			// 反向钉：分片渲染区域内不得出现 force=false 的钉底 ✗
+			const finishIdx = code.indexOf('_finishRenderBatch(');
+			const finishBody = code.slice(code.indexOf('{', code.indexOf('private _finishRenderBatch')));
+			assert.ok(!finishBody.includes('scrollToBottom(false)'),
+				'_finishRenderBatch 内不得用 scrollToBottom(false) ✗✓（非 force 会误判滚离 ⇒ 停在半路 ✗）');
+			assert.ok(finishIdx > 0, '_finishRenderBatch 必须存在 ✓');
+		});
+
+		test('★★★ 恢复窗口 = 最近 2 轮问答 + 保窗规则（不许回退到「最近 30 条」✗✓）', () => {
+			const src = read(MESSAGES_REL);
+			assert.ok(src.includes('computeRestoreWindowStart'), '必须用纯函数算窗口 ✓');
+			assert.ok(src.includes('RESTORE_USER_TURN_WINDOW'), '必须用窗口常量 ✓');
+			assert.ok(!src.includes('VISIBLE_CHUNK'), '旧的「最近 30 条」常量必须移除 ✗✓');
+			assert.ok(src.includes('Math.min(turnStart, this._lazyLoadRemaining)'),
+				'保窗规则必须存在 ✗✓：不在底部 ⇒ min(新窗口, 当前渲染起点) ⇒ 已加载的旧内容不收回 ✓');
+			assert.ok(/_isAtBottom[\s\S]{0,80}turnStart/.test(src) || src.includes('this._isAtBottom'),
+				'保窗必须由 _isAtBottom 门控（在底部 ⇒ 直接用新窗口 ✓）');
 		});
 
 		test('base.ts 必须声明分片字段并在 dispose 里取消续片 ✓', () => {

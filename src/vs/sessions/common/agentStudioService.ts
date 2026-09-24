@@ -101,6 +101,53 @@ export interface IWorkflowDirectRunProgress {
 	readonly stageUid?: string;
 }
 
+// ─── 合成工具卡（宿主自发、绕过 LLM、不发用户消息）────────────────────────────
+// ★ 2026-09-24（用户要求：「点知识库构建按钮后聊天框显示大量文本 ⇒ 优雅些，封装成一次工具调用」）：
+//   长任务（如知识库批量构建）此前把「素材清单 + 笔记区目录树」当**用户消息**发出去 ⇒ 聊天框被刷屏。
+//   现在：数据侧改走 `IChatSendOptions.hidden`（只喂模型、不渲染），呈现侧改走下面这组事件 ——
+//   聊天框开**一张** `kb_build` 工具卡（走 `agentChatPanel.toolCards` 的通用卡渲染：标题=displayName、
+//   运行中转圈、`progressText` 显进度、终态显 result/error）。
+
+/** 请求聊天框开一张合成工具卡。 */
+export interface IToolCardStart {
+	/** 卡片 id（进度 / 终态事件按它定位）。 */
+	readonly toolCallId: string;
+	/** 工具名（参与通用卡的标题/图标推导，如 `kb_build`）。 */
+	readonly name: string;
+	/** 卡片标题（中文可读名，如「构建知识库」）。 */
+	readonly displayName?: string;
+	/** 参数摘要（JSON 串；通用卡会从中提取一行 desc）。 */
+	readonly args?: string;
+}
+
+/** 合成工具卡的实时进度（`progress` 可省，只更新文字）。 */
+export interface IToolCardProgress {
+	readonly toolCallId: string;
+	/** 0-100。 */
+	readonly progress?: number;
+	/** 人类可读阶段描述（如「Phase 1：读取素材并写笔记…」）。 */
+	readonly progressText?: string;
+}
+
+/** 合成工具卡终态。 */
+export interface IToolCardResult {
+	readonly toolCallId: string;
+	readonly ok: boolean;
+	/** 成功摘要（通用卡展开后可见）。 */
+	readonly result?: string;
+	readonly error?: string;
+}
+
+/**
+ * 合成工具卡的**回填句柄**：长任务（如 KB 构建）把 `toolCallId`（及成功摘要）写进来，
+ * 调用方（视图，在自己的 `finally` 里）据此**关闭卡片** —— 这样任务抛异常时卡片也不会卡在「执行中」。
+ */
+export interface IToolCardHandle {
+	toolCallId?: string;
+	/** 成功摘要；未填 ⇒ 调用方按失败关闭。 */
+	summary?: string;
+}
+
 /**
  * 资料库活动通知：知识库 / 代码库 / 记忆三处的「构建中」与「有新增」统一上报，
  * 由左侧栏「资料库」图标上的徽标聚合显示。
@@ -156,6 +203,18 @@ export interface IAgentStudioService {
 	readonly onDidWorkflowDirectRunResult: Event<IWorkflowDirectRunResult>;
 	/** Fired periodically while a canvas "直接执行" workflow run is executing (ComfyUI progress). */
 	readonly onDidWorkflowDirectRunProgress: Event<IWorkflowDirectRunProgress>;
+	/** Fired when the host wants the chat panel to open a synthetic tool card (no LLM turn, no user message). */
+	readonly onDidRequestToolCard: Event<IToolCardStart>;
+	/** Fired for live progress of a synthetic tool card. */
+	readonly onDidToolCardProgress: Event<IToolCardProgress>;
+	/** Fired when a synthetic tool card reaches a terminal state. */
+	readonly onDidToolCardResult: Event<IToolCardResult>;
+	/** 开一张合成工具卡（宿主侧调用；与 `onDidRequestWorkflowDirectRun` 同类，但工具名不写死）。 */
+	requestToolCard(payload: IToolCardStart): void;
+	/** 合成工具卡的实时进度。 */
+	toolCardProgress(payload: IToolCardProgress): void;
+	/** 合成工具卡终态（认领该卡的 pane 据此收尾）。 */
+	toolCardResult(payload: IToolCardResult): void;
 	/** Request the KB view to refresh its tree (e.g. after background KB agent import completes). */
 	requestKbRefresh(): void;
 	/** 上报资料库活动（构建中 / 有新增 / 结束），驱动 activitybar「资料库」徽标。 */
@@ -687,6 +746,18 @@ export interface IChatSendOptions {
 	readonly chatMode?: ChatMode;
 	/** Chat-only 模式开关（开启时禁用写文件工具，React 范式下同时禁用 delegate_task）。默认关闭。 */
 	readonly chatOnly?: boolean;
+	/**
+	 * **隐藏消息**：只喂给模型，**不落盘、不广播、不渲染为用户气泡**（默认 false = 正常可见）。
+	 *
+	 * ★ 2026-09-24（用户反馈「点知识库构建按钮后聊天框显示大量文本」）：宿主内部的大数据注入
+	 *   （如构建时的「素材清单 + 笔记区目录树」）没有留存必要，也不该刷屏 ⇒ 这类消息用 hidden，
+	 *   聊天框只呈现一张合成工具卡（`IAgentStudioService.requestToolCard`）。
+	 *
+	 * ⚠ 语义要点（已核 `agentChatService.sendMessage`）：**当前这条消息由 driver 追加到请求**，
+	 *   与是否持久化无关 ⇒ hidden 只影响「落盘 + 广播」，模型照样收得到。
+	 *   副作用：它不会进入后续轮次的会话历史（这正是期望 —— 免得每轮重复灌入整份清单）。
+	 */
+	readonly hidden?: boolean;
 	/**
 	 * 推理/思考（thinking）配置。由聊天输入框的 thinking UI 控件产生，
 	 * 经 host 透传到 IModelOptions.reasoning，最终由各 model provider 映射到原生 API 参数。

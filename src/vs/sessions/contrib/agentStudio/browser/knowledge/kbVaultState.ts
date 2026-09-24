@@ -38,6 +38,45 @@ export function resolveVaultNotesDir(vault: IKbVault, kbRootUri: URI): URI {
 	return URI.joinPath(root, '笔记', '迁移');
 }
 
+/**
+ * 从 Vault 清单解析出各自**纳入知识库的目录集合**（跳过已关闭 / 缺 `id` 的条目）。
+ *
+ * 每个 Vault 产出 1..n 个根：
+ *   ① **Vault 根** —— 优先级与 `resolveVaultNotesDir` 一致：`customPath`（用户「配置文件夹为知识库」
+ *      指定的外部根）→ `path`（清单里已解析的根路径）→ `kbRootUri/id`（默认布局）；
+ *   ② **关联的外部文件夹**（`linkedFolders`）与**工作区分组目录**（`linkedWorkspaces[].folders`）
+ *      —— 它们在 KB 视图里挂在「库」区、其笔记同样走 `KbNoteEditorInput`（`knowledgeBaseView.ts:2524+`
+ *      与 `:5922` 是同一打开入口）⇒ 判定「在库内」必须一并覆盖，否则两侧行为漂移。
+ *
+ * 用途：判定「某个文件路径是否落在某个知识库内」—— 库内 `.md` 默认用知识库专用编辑器打开
+ * （见 `agentStudio.contribution.ts` 的 `KbNoteResolverContribution`：活动库用
+ * `KbImportController.resolveActiveVaultRoot`，其余已知库用本函数）。做成**纯函数**便于单测
+ * （`test/browser/kbVaultRoots.test.ts`）。
+ *
+ * ⚠ 只反映**存储清单**里的库；磁盘上「像 vault 但不是清单条目」的目录不会被识别（判定侧刻意不做
+ *   磁盘探测：那需要逐层 `resolve`，代价高，见 `KbNoteResolverContribution._isInsideVault` 注释）。
+ */
+export function vaultRootsOf(vaults: readonly IKbVault[] | undefined | null, kbRootUri: URI): URI[] {
+	const out: URI[] = [];
+	const pushPath = (p: unknown): void => {
+		const s = typeof p === 'string' ? p.trim() : '';
+		if (s) { out.push(URI.file(s)); }
+	};
+	for (const v of vaults ?? []) {
+		if (!v || typeof v.id !== 'string' || !v.id || v.closed) { continue; }
+		const custom = typeof v.customPath === 'string' ? v.customPath.trim() : '';
+		const resolved = typeof v.path === 'string' ? v.path.trim() : '';
+		if (custom) { out.push(URI.file(custom)); }
+		else if (resolved) { out.push(URI.file(resolved)); }
+		else { out.push(URI.joinPath(kbRootUri, v.id)); }
+		for (const p of v.linkedFolders ?? []) { pushPath(p); }
+		for (const ws of v.linkedWorkspaces ?? []) {
+			for (const p of ws?.folders ?? []) { pushPath(p); }
+		}
+	}
+	return out;
+}
+
 // ─── Vault 目录命名（2026-09-23）─────────────────────────────────────────────
 //
 // 背景：新建 Vault 原先固定用 `joinPath(kbDir, vault.id)`，而 `id` 是 21 位时间戳

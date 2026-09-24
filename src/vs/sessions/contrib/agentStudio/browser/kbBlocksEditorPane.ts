@@ -39,6 +39,9 @@ import { IStorageService } from '../../../../platform/storage/common/storage.js'
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { KbNoteEditorInput } from './kbNoteEditorInput.js';
+// ★ 2026-09-24：媒体类（图片 pdf/docx）按类型路由到只读查看器，而不是当笔记打开
+import { isKbMediaViewerFile } from './kbMediaViewerKinds.js';
+import { KbMediaViewerInput } from './kbMediaViewerPane.js';
 import { serializeBacklinks } from './kbBlocksCodec.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
@@ -81,6 +84,14 @@ export class KbBlocksEditorPane extends EditorPane {
 	private _currentMarkdown = '';
 	/** Vault note index (URI + stem) for the webview wikilink resolver. */
 	private _workspaceFiles: { uri: string; name: string }[] = [];
+	/**
+	 * 本 pane 创建/复用的**媒体预览 input**（按资源 URI 缓存）。
+	 *
+	 * ★ 2026-09-24：图片（png/svg/…）与 pdf/docx 由 `KbMediaViewerPane` 渲染；**不复用**会导致
+	 * 每点一次图片就多一个 input（泄漏），而交给 resolver 创建又拿不到引用（同样泄漏 —— 视图侧
+	 * 踩过 `[LEAKED DISPOSABLE]`）。⇒ 自己持有、按 URI 复用、`_register` 挂生命周期。
+	 */
+	private readonly _mediaInputs = new Map<string, KbMediaViewerInput>();
 	/**
 	 * `_workspaceFiles` 的**按 vault 缓存**（2026-09-23）。
 	 *
@@ -382,6 +393,18 @@ export class KbBlocksEditorPane extends EditorPane {
 	 * 迟早漂移成「首次打开正常、切换笔记却缺 assetBaseUri / workspaceFiles」这类难查问题。
 	 */
 	private _buildInitData(): Record<string, unknown> {
+		// ⚠ 临时诊断（2026-09-24，定位"笔记里图片一律裂图"）。定案后删除。
+		//   只回答一个问题：宿主**有没有**注入 assetBaseUri、它长什么样。
+		//   为什么必须打日志：六种图片写法（含 file:/// 绝对路径）在内置预览里全断，而
+		//   `resolveAssetSrc` 的逻辑本身是对的 ⇒ 断点只可能在"注入了什么"这一层，日志是唯一
+		//   能区分「没注入 / 注入了但值不对 / 注入了也对（那么断点在 webview 侧）」的手段。
+		{
+			const base = this._currentResource ? asWebviewUri(URI.joinPath(this._currentResource, '..')).toString() : '(none)';
+			this._logService.info(`[KbBlocksEditorPane][diag] resource=${this._currentResource?.toString() ?? '(none)'}`
+				+ ` currentFilePath=${this._currentFilePath ?? '(none)'} assetBaseUri=${base}`
+				+ ` markdownLen=${(this._currentMarkdown ?? '').length}`
+				+ ` hasAssetsRef=${/!\[[^\]]*\]\((?!https?:)[^)]*\)/.test(this._currentMarkdown ?? '')}`);
+		}
 		return {
 			docId: this._currentResource?.toString() ?? 'kb:probe',
 			markdown: this._currentMarkdown,
@@ -796,6 +819,38 @@ export class KbBlocksEditorPane extends EditorPane {
 				else parts.push(s);
 			}
 			const target = URI.joinPath(base, ...parts);
+			// ★★ 2026-09-24（用户要求「知识库中的 png/svg 图片要在 editorPane 中显示」）：
+			//   **按类型路由**，不要一律套 KbNoteEditorInput —— 后者会把图片当笔记渲染（满屏二进制）。
+			//
+			//   ⚠ 但媒体类**不能**走 `openEditor({ resource })`：resolver 内部 `createInstance(input)`
+			//   而调用方拿不到引用 ⇒ 失败/关闭时无人释放（知识库视图踩过 `[LEAKED DISPOSABLE]
+			//   new KbMediaViewerInput`，见 knowledgeBaseView._openMediaViewer 的注释）。
+			//   ⇒ 这里与视图同款：**自己创建、按资源复用、失败时自己释放**；并用 `_register` 挂钩
+			//     本 pane 的生命周期（pane 销毁 ⇒ input 一并释放），彻底避免泄漏。
+			if (!/\.(md|markdown)$/i.test(target.path) && isKbMediaViewerFile(target)) {
+				const key = target.toString();
+				let input = this._mediaInputs.get(key);
+				if (!input) {
+					input = this._register(new KbMediaViewerInput(target));
+					this._mediaInputs.set(key, input);
+				}
+				const opened = input;
+				void this._editorService.openEditor(opened, { pinned: true }, this.group).then(
+					(result) => {
+						if (!result) {
+							this._mediaInputs.delete(key);
+							this._logService.warn(`[KbBlocksEditorPane] 媒体预览未能打开，已释放 input：${key}`);
+							opened.dispose();
+						}
+					},
+					(err) => {
+						this._mediaInputs.delete(key);
+						this._logService.warn('[KbBlocksEditorPane] 打开媒体预览失败', err);
+						opened.dispose();
+					},
+				);
+				return;
+			}
 			this._editorService.openEditor(
 				new KbNoteEditorInput(target, target.path),
 				{ pinned: true },

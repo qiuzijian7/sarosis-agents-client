@@ -2,6 +2,54 @@ import { addDisposableListener, EventType } from '../../../base/browser/dom.js';
 import { IChatAttachment } from './agentChatTypes.js';
 import { AgentChatPanelMessages } from './agentChatPanel.messages.js';
 
+/**
+ * 文档类（需要「先转文本」才能被 LLM 读懂）的扩展名。
+ *
+ * 与主机侧 `KB_DOC_SOURCE_EXTENSIONS` 对齐；改这里时两边一起改（提取器不认的类型会被明确拒绝）。
+ */
+const DOCUMENT_EXTENSIONS = ['.pdf', '.epub', '.docx'];
+
+/** 文本类扩展名（`file.type` 常为空 —— 例如某些来源拖入的 .md/.log ⇒ 不能只看 MIME）。 */
+const TEXT_EXTENSIONS = [
+	'.txt', '.md', '.markdown', '.json', '.jsonc', '.yml', '.yaml', '.toml', '.ini', '.cfg', '.conf',
+	'.log', '.csv', '.tsv', '.xml', '.html', '.htm', '.css', '.scss', '.less',
+	'.js', '.cjs', '.mjs', '.jsx', '.ts', '.tsx', '.py', '.rb', '.go', '.rs', '.java', '.kt',
+	'.c', '.h', '.cpp', '.hpp', '.cs', '.php', '.sh', '.ps1', '.bat', '.sql', '.vue', '.svelte',
+];
+
+/** 文件是否应按文本读取（MIME 优先，扩展名兜底）。 */
+function isTextLikeFile(file: File): boolean {
+	if (file.type.startsWith('text/')) { return true; }
+	if (file.type === 'application/json' || file.type === 'application/xml') { return true; }
+	const lower = file.name.toLowerCase();
+	return TEXT_EXTENSIONS.some(ext => lower.endsWith(ext));
+}
+
+/** 文件是否是需要「先转文本」的文档（pdf/epub/docx）。 */
+function isDocumentFile(file: File): boolean {
+	const lower = file.name.toLowerCase();
+	return DOCUMENT_EXTENSIONS.some(ext => lower.endsWith(ext));
+}
+
+/**
+ * 取 `File` 对应的**本地绝对路径**（拿不到 ⇒ 空串）。
+ *
+ * 为什么不用 `file.path`：Electron ≥ 32 已移除该属性，改用 `webUtils.getPathForFile`
+ * （本仓库 Electron 39）。走 `globalThis` 探测而不是 import globals：
+ * 面板也可能跑在非 Electron 环境（web），直接 import `electron-browser/globals` 会因
+ * 该模块顶层取全局而抛错。
+ */
+function resolveLocalFilePath(file: File): string {
+	const utils = (globalThis as {
+		vscode?: { webUtils?: { getPathForFile?: (f: File) => string } };
+	}).vscode?.webUtils;
+	try {
+		return typeof utils?.getPathForFile === 'function' ? (utils.getPathForFile(file) || '') : '';
+	} catch {
+		return '';
+	}
+}
+
 // Feature: attachments. Extracted from AgentChatPanelBase.
 export class AgentChatPanelAttachments extends AgentChatPanelMessages {
 
@@ -46,6 +94,17 @@ protected override _addFiles(files: File[], isPasted = false, pathByName?: Recor
 					this._renderAttachmentPreviews();
 					this._insertInlineAttachmentChip(att);
 				}).catch(() => { /* ignore resize failures */ });
+			} else if (isTextLikeFile(file)) {
+				// ★ 2026-09-24：文本类**读原文**（此前与二进制一样走 readAsDataURL ⇒
+				//   送给 LLM 的是一段 base64，模型还得自己解，纯属浪费上下文）。
+				void file.text().then(
+					text => this._pushFileAttachment(file, text, file.type || 'text/plain', isPasted, pathByName),
+					() => { /* 读取失败：不静默 —— 下面 _attachDocumentText 之外的兜底由调用方日志可见 */ },
+				);
+			} else if (isDocumentFile(file)) {
+				// ★ 2026-09-24（用户要求「epub/pdf/doc 能直接给 LLM 解读」）：文档类先**提取成文本**
+				//   再作为文本附件送出；取不到路径/提取器不可用时给出可读提示，绝不 base64 内联。
+				void this._attachDocumentText(file, isPasted, pathByName);
 			} else {
 				const reader = new FileReader();
 				reader.onload = () => {
@@ -71,6 +130,69 @@ protected override _addFiles(files: File[], isPasted = false, pathByName?: Recor
 				}
 				}
 				}
+
+	/**
+	 * 文档（pdf/epub/docx）→ 文本附件。
+	 *
+	 * 三条分支都有明确出口，**不存在**「静默塞 base64」：
+	 *   ① 有路径 + 注入了解析器 ⇒ 提取 Markdown，作为 `text/markdown` 文本附件；
+	 *   ② 拿不到路径（粘贴/某些来源不给路径）⇒ 提示改用拖拽或走「知识库导入」；
+	 *   ③ 提取失败/为空 ⇒ 附上**失败原因**（模型与用户都能看到，而不是一片空白）。
+	 */
+protected async _attachDocumentText(file: File, isPasted: boolean, pathByName?: Record<string, string>): Promise<void> {
+		const filePath = resolveLocalFilePath(file) || pathByName?.[file.name] || '';
+		const extract = this._extractDocumentText;
+		if (!filePath || !extract) {
+			this._pushFileAttachment(file, [
+				`（未能提取文档「${file.name}」的正文：${filePath ? '当前环境不支持文档提取' : '拿不到文件路径'}。）`,
+				'可改用**拖拽**把文件放进输入框；或先走「知识库 → 导入」把它转成笔记后再说。',
+			].join('\n'), 'text/plain', isPasted, pathByName);
+			return;
+		}
+		try {
+			const text = await extract(filePath);
+			if (!text || !text.trim()) {
+				this._pushFileAttachment(file, `（文档「${file.name}」提取结果为空 —— 可能是扫描件/图片型文档。）`, 'text/plain', isPasted, pathByName);
+				return;
+			}
+			this._pushFileAttachment(file, text, 'text/markdown', isPasted, pathByName);
+		} catch (err) {
+			const reason = err instanceof Error ? err.message : String(err);
+			this._pushFileAttachment(file, `（提取文档「${file.name}」失败：${reason}）`, 'text/plain', isPasted, pathByName);
+		}
+	}
+
+	/** 统一的「加入附件」出口（尺寸保护 + 渲染 chip）。`data` 为**文本或 base64**（由 mimeType 区分）。 */
+protected _pushFileAttachment(file: File, data: string, mimeType: string, isPasted: boolean, pathByName?: Record<string, string>): void {
+		const MAX_FILE_SIZE = 30 * 1024 * 1024;  // 30MB per file
+		const MAX_TOTAL_SIZE = 30 * 1024 * 1024; // 30MB total
+		// 文本附件按**文本长度**计入总量（LLM 的成本与上下文占用由它决定，而不是原始文件字节数）
+		const size = data.length;
+		if (size > MAX_FILE_SIZE) {
+			// eslint-disable-next-line no-console
+			console.warn(`[AgentChatPanel] Attachment too large after read: ${file.name} (${(size / 1024 / 1024).toFixed(1)}MB > ${(MAX_FILE_SIZE / 1024 / 1024).toFixed(0)}MB limit)`);
+			return;
+		}
+		const currentTotal = this._attachments.reduce((sum, a) => sum + a.size, 0);
+		if (currentTotal + size > MAX_TOTAL_SIZE) {
+			// eslint-disable-next-line no-console
+			console.warn(`[AgentChatPanel] Attachment total size limit reached; dropped: ${file.name}`);
+			return;
+		}
+		const att: IChatAttachment = {
+			id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+			type: 'file',
+			name: file.name,
+			mimeType,
+			data,
+			size,
+			isPasted,
+			filePath: resolveLocalFilePath(file) || pathByName?.[file.name],
+		};
+		this._attachments.push(att);
+		this._renderAttachmentPreviews();
+		this._insertInlineAttachmentChip(att);
+	}
 
 protected override _resizeImage(file: File, maxWidth: number, maxHeight: number): Promise<string> {
 		return new Promise((resolve, reject) => {

@@ -1,7 +1,8 @@
 /*---------------------------------------------------------------------------------------------
- *  KbMediaViewerPane — 知识库的**只读文档预览**（PDF / Word），编辑器区里的一个 EditorPane。
+ *  KbMediaViewerPane — 知识库的**只读媒体预览**（PDF / Word / 图片），编辑器区里的一个 EditorPane。
  *
  *  需求（2026-09-23）：知识库里的 PDF / .docx 之前会被当**文本**打开 ⇒ 满屏二进制乱码。
+ *  需求（2026-09-24）：png / svg 等图片同样要求在 **editorPane** 里显示（用户要求）。
  *  这里给它们注册真正的查看器：宿主（本文件）建一个 sandboxed webview，注入按需打包的
  *  `media/kbviewers.js`（内含 pdf.js + mammoth），并用 `vscode-webview-resource` URL
  *  把文件本体交给 webview 渲染。
@@ -31,13 +32,14 @@ import { INativeEnvironmentService } from '../../../../platform/environment/comm
 import { IWebviewElement, IWebviewService } from '../../../../workbench/contrib/webview/browser/webview.js';
 import { encodeBase64 } from '../../../../base/common/buffer.js';
 import { escapeJsonForInlineScript } from './kbBlocksEditorPane.js';
+import { imageMimeOf, mediaKindOf } from './kbMediaViewerKinds.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 
-/** 接管的扩展名 → webview 侧的渲染器种类。 */
-const VIEW_KINDS: Record<string, 'pdf' | 'docx'> = { pdf: 'pdf', docx: 'docx' };
+/** 接管的文件类型（单一真源见 kbMediaViewerKinds.ts：pane / resolver / 单测共用）。 */
+export { isKbMediaViewerFile } from './kbMediaViewerKinds.js';
 
 /**
  * 内联文档的长度上限（30MB）。
@@ -47,12 +49,6 @@ const VIEW_KINDS: Record<string, 'pdf' | 'docx'> = { pdf: 'pdf', docx: 'docx' };
  * 不内联（见 `_render`），避免把 webview 拖死。
  */
 const MAX_INLINE_BYTES = 30 * 1024 * 1024;
-
-/** 是否由本查看器接管（`agentStudio.contribution` 的 resolver 用同一份判据）。 */
-export function isKbMediaViewerFile(resource: URI): boolean {
-	const ext = resource.path.split('.').pop()?.toLowerCase() ?? '';
-	return !!VIEW_KINDS[ext];
-}
 
 /** PDF / Word 预览的编辑器输入。 */
 export class KbMediaViewerInput extends EditorInput {
@@ -170,10 +166,9 @@ export class KbMediaViewerPane extends EditorPane {
 	private async _render(): Promise<void> {
 		const resource = this._currentResource;
 		if (!this._container || !resource) { return; }
-		const ext = resource.path.split('.').pop()?.toLowerCase() ?? '';
-		const kind = VIEW_KINDS[ext];
+		const kind = mediaKindOf(resource);
 		if (!kind) {
-			this._logService.warn(`[KbMediaViewerPane] unsupported extension: ${ext}`);
+			this._logService.warn(`[KbMediaViewerPane] unsupported extension: ${resource.path}`);
 			return;
 		}
 
@@ -205,6 +200,17 @@ export class KbMediaViewerPane extends EditorPane {
 			kind,
 			fileName: basename(resource.path),
 		};
+		// ★ 2026-09-24（图片）：MIME 由宿主给出（不留 webview 猜）。
+		//   CSP 已允许 `img-src data:` ⇒ 图片与文档一样**内联 base64**，不走资源代理
+		//   （资源代理在本 fork 的两条路都不通，见上方 pdf.js 因果链）。
+		if (kind === 'image') {
+			const mime = imageMimeOf(resource.path);
+			if (!mime) {
+				this._logService.warn(`[KbMediaViewerPane] unknown image mime for ${resource.path}`);
+				return;
+			}
+			initData.mime = mime;
+		}
 		try {
 			const bytes = (await this._fileService.readFile(resource)).value;
 			if (bytes.byteLength > MAX_INLINE_BYTES) {

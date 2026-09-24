@@ -33,7 +33,7 @@ import { IConfigurationService } from '../../../../../../platform/configuration/
 import { IWebContentExtractorService } from '../../../../../../platform/webContentExtractor/common/webContentExtractor.js';
 import { ISearchService } from '../../../../../../workbench/services/search/common/search.js';
 import { IKbNativeKernelService } from '../../kbNativeKernelService.js';
-import { IStorageService } from '../../../../../../platform/storage/common/storage.js';
+import { IStorageService, StorageScope, StorageTarget } from '../../../../../../platform/storage/common/storage.js';
 import { Registry } from '../../../../../../platform/registry/common/platform.js';
 import { IConfigurationRegistry, Extensions as ConfigurationExtensions } from '../../../../../../platform/configuration/common/configurationRegistry.js';
 import { localize } from '../../../../../../nls.js';
@@ -42,7 +42,23 @@ import { ILogService } from '../../../../../../platform/log/common/log.js';
 import { INativeEnvironmentService } from '../../../../../../platform/environment/common/environment.js';
 import { IRequestService } from '../../../../../../platform/request/common/request.js';
 import { IToolProvider, IToolDefinition, IToolCall, IToolResult } from '../../../common/providers.js';
-import { AGENT_STUDIO_UNREAL_BRIDGE_URL_SETTING } from '../../../common/constants.js';
+import {
+	AGENT_STUDIO_UNREAL_BRIDGE_URL_SETTING,
+	AGENT_STUDIO_WEB_SEARCH_PROVIDER_SETTING,
+	AGENT_STUDIO_WEB_SEARCH_SEARXNG_URL_SETTING,
+	AGENT_STUDIO_WEB_SEARCH_TAVILY_KEY_SETTING,
+	AGENT_STUDIO_WEB_SEARCH_BRAVE_KEY_SETTING,
+	AGENT_STUDIO_WEB_SEARCH_EXA_KEY_SETTING,
+	AGENT_STUDIO_WEB_SEARCH_CACHE_ENABLED_SETTING,
+	AGENT_STUDIO_BROWSER_CDP_ENABLED_SETTING,
+	AGENT_STUDIO_BROWSER_CDP_LAUNCH_DEDICATED_SETTING,
+	AGENT_STUDIO_BROWSER_CDP_PORT_SETTING,
+	AGENT_STUDIO_BROWSER_COOKIES_FROM_BROWSER_SETTING,
+} from '../../../common/constants.js';
+import { BROWSER_CDP_CHANNEL, BrowserCdpReachabilityGate, DEFAULT_CDP_PORT, dedicatedPortFor } from '../../../common/browserCdp.js';
+import type { BrowserCdpRequest, IBrowserCdpResponse, IBrowserCdpStatus } from '../../../common/browserCdp.js';
+import { registerBrowserTools, type BrowserToolContext } from './browserTools.js';
+import type { IBrowserCdpInvoker } from '../../browserCdpClient.js';
 import { getToolsetForTool, UTILITY_BUCKET_WHITELIST } from '../../../common/toolsetConfig.js';
 import { ISkillRegistry } from '../../../common/skills.js';
 import { IModelSelectorService } from '../../../common/modelSelector.js';
@@ -71,10 +87,22 @@ import { createMediaStoreProxy } from '../../mediaStoreProxy.js';
 import { IMainProcessService } from '../../../../../../platform/ipc/common/mainProcessService.js';
 import { IPlaywrightService } from '../../../../../../platform/browserView/common/playwrightService.js';
 import { IEditorService } from '../../../../../../workbench/services/editor/common/editorService.js';
+// ★ 2026-09-24：`kb_build` 要按「知识库视图」那样**造一个 KbImportController**（同一份管线、
+//   同一套服务），故需 views / notification 两个服务（前者用于打开知识库视图，后者用于
+//   「知识库专家未配置模型」的提醒与构建失败通知）。
+import { IViewsService } from '../../../../../../workbench/services/views/common/viewsService.js';
+import { INotificationService } from '../../../../../../platform/notification/common/notification.js';
 import { ISessionsManagementService } from '../../../../../../sessions/services/sessions/common/sessionsManagement.js';
 import { IKanbanRecipeService } from './kanbanRecipeService.js';
 import { SearchHelpers } from './searchHelpers.js';
-import { registerWebTools, type WebToolContext } from './webTools.js';
+import { registerWebTools, type WebToolContext, type IWebPageCacheLike } from './webTools.js';
+import { DEFAULT_WEB_SEARCH_CONFIG } from './webSearchProviders.js';
+import { WebPageCache, type IWebCacheStore } from './webPageCache.js';
+import { WebSearchMemo } from './webSearchMemo.js';
+import { selectWebExtractSpillFilesToDelete, webExtractSpillFileName } from './webExtractSpill.js';
+import { SarosPath, resolveSarosPath, userDataRootFromPath } from '../../../common/sarosPaths.js';
+import { joinPath } from '../../../../../../base/common/resources.js';
+import { VSBuffer } from '../../../../../../base/common/buffer.js';
 import { registerBundledTools, type BundledToolContext } from './bundledTools.js';
 import { registerUnifiedMemoryTools, type UnifiedMemoryToolContext } from './unifiedMemoryTools.js';
 import { registerMemoryTools, type MemoryToolContext } from './memoryTools.js';
@@ -92,6 +120,31 @@ import { IMermaidInlineRenderer } from '../../mermaidInlineRenderer.js';
 import { IDrawioInlineRenderer } from '../../drawioInlineRenderer.js';
 import { svgToPng } from '../../knowledge/svgRasterizer.js';
 import { prepareDiagramsForSync } from '../../knowledge/diagramSyncPrepare.js';
+// ★ 2026-09-24：`kb_build` —— agent 发起知识库构建（此前只有视图按钮，素材落库后就断在那里）。
+//   装配 KbImportController 需要 loadActiveKbVault/resolveKbRootUri（与视图同一套 vault 根解析）。
+import { registerKbBuildTools } from './kbBuildTools.js';
+// ★ 2026-09-24：飞书云文档工具族（读文档 / 评论 5 个）—— 从 Hermes 的 feishu_* 工具移植
+//   能力（上游那套靠"评论事件注入 client"，我们改成按需调用官方 CLI，见该文件头）。
+import { registerProcessTools } from './processTools.js';
+import { registerFeishuDriveTools } from './feishuDriveTools.js';
+// ★ 2026-09-24（P1-4）：工具依赖可用性 —— 把 `definition.availability` 接进列表路径
+//   （此前 `toolAvailabilityEvaluator` 是**孤儿模块**，声明了也不生效）。策略是**标注而非隐藏**，
+//   理由见该模块头注释（没有 UI 能解释"为什么不可用"，隐藏会让用户永远学不到怎么装）。
+import {
+	annotateToolAvailability, createCapabilityFacts,
+	CAP_MEDIA_FFMPEG, CAP_MEDIA_YTDLP, CAP_FEISHU_LARK_CLI,
+	type IToolCapabilityFacts,
+} from './toolAvailabilityNotes.js';
+import { probeMediaCapabilities } from './videoMediaPipeline.js';
+
+/** 评论内容临时文件的命名前缀与陈旧阈值（配合上面两处回收逻辑，避免残留敏感内容）。 */
+const FEISHU_CONTENT_PREFIX = 'feishu-content-';
+const FEISHU_CONTENT_STALE_MS = 10 * 60_000;
+import { getLarkCliStatus, runLarkCli } from '../../larkCliService.js';
+// 视频工具的命令通道（主进程 vscode:execCode；与知识库同步/飞书工具同一套原语）
+import { execShortCommand } from '../../knowledge/feishuSyncCore.js';
+import { KbImportController } from '../../kbImportController.js';
+import { loadActiveKbVault, resolveKbRootUri } from '../../knowledge/kbVaultState.js';
 import { resolveAndCheckWorkspacePathImpl } from './workspaceSecurity.js';
 import { registerCoreTools } from './coreTools.js';
 import { executeToolImpl } from './toolExecutor.js';
@@ -108,6 +161,8 @@ import { AgentNetworkDomainSettingId } from '../../../../../../platform/networkF
 // 主模型图片能力判定（与 agent loop 同一真源，带 provider::model 缓存 + fail-closed）
 import { resolveSupportsImages } from '../../../common/toolResultImages.js';
 import { registerMediaGenTools } from './mediaGenTools.js';
+import { registerVideoFrameTools } from './videoFrameTools.js';
+import { registerVideoAnalyzeTools } from './videoAnalyzeTools.js';
 import { registerSchedulerTools } from './schedulerTools.js';
 // 注意：`IAgentSchedulerService` 是 `createDecorator` 的返回值（**值**，非纯类型），
 // 用作 DI 装饰器时必须用普通 import —— `import type` 会触发 TS1361
@@ -184,6 +239,14 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	/** Skill Manager 工具实例 —— 提供 skill_create 能力 */
 	private _skillManagerTool!: SkillManagerTool;
 	private readonly _skillUsageTracker: SkillUsageTracker;
+
+	/** web_extract 本地页面缓存（P2）—— 懒构造，见 `_getWebPageCache`。 */
+	private _webPageCache?: WebPageCache;
+	/** web_search 结果备忘（内存 + TTL + 单飞）—— 懒构造，见 `_getSearchMemo`。 */
+	private _searchMemo?: WebSearchMemo;
+
+	/** Chrome CDP 可达性门控（懒建，见 `_getBrowserCdpGate`）。 */
+	private _browserCdpGate?: BrowserCdpReachabilityGate;
 
 	// v17: worktree path inherited from the parent agent's execution context.
 	// Set by `setParentWorktreePath()` before each turn; cleared on turn end.
@@ -296,6 +359,11 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		@IMermaidInlineRenderer private readonly mermaidRenderer: IMermaidInlineRenderer,
 		@IDrawioInlineRenderer private readonly drawioRenderer: IDrawioInlineRenderer,
 		@IMainProcessService private readonly mainProcessService: IMainProcessService,
+		// ★ 2026-09-24：`kb_build`（agent 发起知识库构建）需要按视图同样的方式装配
+		//   `KbImportController`（它有 9 个必需依赖：configuration/log/file/env/storage/
+		//   studio/views/editor/notification/request）。其余所需服务本类已有。
+		@IViewsService private readonly viewsService: IViewsService,
+		@INotificationService private readonly notificationService: INotificationService,
 	) {
 		super();
 		this._skillManagerTool = new SkillManagerTool(
@@ -312,7 +380,12 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		this._registerEmbeddingProvider();
 		this._registerCoreTools();
 		this._registerWebTools();
+		// ★ P1-2：browser_* 的真实实现（必须在 _registerBundledTools 之前，否则被注册成 stub）。
+		this._registerBrowserTools();
 		this._registerCompatibilityTools();
+		// ★ 2026-09-24（P1-5）：process 的真实实现（此前只是 compatibilityTools 里的提示占位，
+		//   占位已从那里移除）。必须在 _registerBundledTools 之前 —— bundled 里有同名 stub。
+		this._registerProcessTools();
 		this._registerUnifiedMemoryTools(); // G12: recall/improve/forget
 		this._registerMemoryTools(); // remember/search/delete/list（真实 handler，须在 bundled stub 之前注册）
 		this._registerAdvancedMemoryTools(); // 接入引擎编排/治理能力：governance/team/mesh/sentinel/obsidian/cascade
@@ -347,6 +420,15 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		// ★ 2026-09-11：cronjob 真实实现（同源半成品第 7 例）—— 调度能力与视图早已
 		// 齐备，唯独缺 LLM 工具入口；同样必须在 _registerBundledTools 之前注册。
 		this._registerSchedulerTools();
+		// ★ 2026-09-24：extract_video_frames —— 补齐「视频画面」能力（此前只有封面一张静止图，
+		//   依赖画面的任务只能靠模型编造）。同样注册在 _registerBundledTools 之前；
+		//   命令拼装/清理逻辑见 videoFrameTools.ts / videoMediaPipeline.ts 头注释。
+		this._registerVideoFrameTools();
+		// ★ 2026-09-24：video_analyze 真实实现 —— 此前只有 bundled 定义（category 'video'）无 handler，
+		//   被判为 stub ⇒ listTools 跳过 ⇒ 模型**根本看不到**这个工具。
+		//   它 = 抽帧 + 字幕 + 多模态模型一次给结论（与 extract_video_frames 互补，见其头注释）。
+		//   同样必须在 _registerBundledTools 之前，否则 stub 会把真 handler 顶掉。
+		this._registerVideoAnalyzeTools();
 		this._registerBundledTools();
 		this._registerDelegationTools();
 		this._registerPlanExploreTool(); // WorkBuddy-style plan mode: parallel exploration
@@ -358,6 +440,13 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		this._registerCanvasTools();
 		this._registerCodebaseTools();
 		this._registerKnowledgeTools(); // llm-wiki 知识内核（kb_search 工具）
+		// ★ 2026-09-24：`kb_build` —— 构建此前**只有 UI 入口**（视图「批量构建库」/ 右键「构建为笔记」），
+		//   于是「素材先落库、再构建」的链路（如 kb-game-teardown 把拆解写进 库/raw）走到最后一步就断了：
+		//   agent 只能让用户自己去点按钮。本工具补齐该入口（走同一条 agent 会话构建路径）。
+		this._registerKbBuildTools();
+		// ★ 2026-09-24：飞书文档工具族（读文档 + 评论读/写）—— 同样必须在 _registerBundledTools
+		//   之前：bundled 里有 5 个同名 stub，晚注册会被 stub 顶掉（真 handler 失效）。
+		this._registerFeishuDriveTools();
 		this._registerHandoffTools(); // supervisor 交接工具 transfer_to_agent（Step B）
 		this._registerMermaidTools(); // Mermaid 图示渲染工具
 		// _registerMcpBridgeTools() 已废弃 — MCP 工具统一走 tool_search/tool_describe/tool_call
@@ -413,11 +502,56 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	// ─── IToolProvider 实现（委托 ToolRegistry）───────────────────────
 
 	async listTools(_agentId: string): Promise<IToolDefinition[]> {
-		return this._registry.listTools(_agentId);
+		return annotateToolAvailability(await this._registry.listTools(_agentId), this._capabilityFacts());
 	}
 
 	async getAllToolDefinitions(_agentId: string): Promise<IToolDefinition[]> {
-		return this._registry.getAllToolDefinitions(_agentId);
+		return annotateToolAvailability(await this._registry.getAllToolDefinitions(_agentId), this._capabilityFacts());
+	}
+
+	/**
+	 * ★ 2026-09-24（P1-4）：能力事实表 + 一次性后台探测。
+	 *
+	 * 为什么在这里（而不是每个工具自己判断）：`availability` 的评估发生在**每次列工具**时
+	 * （agent loop 热路径），只能是**同步查表**；而"ffmpeg / lark-cli 在不在"必须 spawn 才能确定。
+	 * ⇒ 后台探一次、结果落表、列表时同步读；未探完之前事实为"未知" ⇒ **不标注**（fail-open）。
+	 *
+	 * 探测本身复用既有原语（都是进程级缓存过的，不会随对话轮次重复 spawn）：
+	 *   · 媒体：`probeMediaCapabilities` → 与两个视频工具同一份解析 + 探活缓存；
+	 *   · 飞书：`getLarkCliStatus()` → 与设置页/导入链路同一个探测。
+	 */
+	private _capabilityFacts(): IToolCapabilityFacts {
+		this._ensureCapabilityProbe();
+		return createCapabilityFacts(this._capabilityFactsMap);
+	}
+
+	private _ensureCapabilityProbe(): void {
+		if (this._capabilityProbeStarted) { return; }
+		this._capabilityProbeStarted = true;
+		void (async () => {
+			try {
+				const media = await probeMediaCapabilities({
+					fileService: this.fileService,
+					logService: this.logService,
+					appRoot: this.environmentService.appRoot,
+					runCommand: (command, timeoutMs) => execShortCommand(command, timeoutMs),
+				});
+				if (typeof media.ffmpeg === 'boolean') { this._capabilityFactsMap.set(CAP_MEDIA_FFMPEG, media.ffmpeg); }
+				if (typeof media.ytdlp === 'boolean') { this._capabilityFactsMap.set(CAP_MEDIA_YTDLP, media.ytdlp); }
+			} catch (err) {
+				// 探测失败 ⇒ 保持未知（fail-open），不标注
+				this.logService.trace(`[BuiltinTools] media capability probe failed: ${err instanceof Error ? err.message : String(err)}`);
+			}
+			try {
+				const cli = await getLarkCliStatus();
+				// ⚠ 只在**明确判为未安装**时记为 false；`available:false`（非 Electron / preload 未注入）
+				//   是"探测能力缺失"，不是"CLI 没装" ⇒ 保持未知，避免误标。
+				if (cli.available) { this._capabilityFactsMap.set(CAP_FEISHU_LARK_CLI, cli.installed); }
+			} catch (err) {
+				this.logService.trace(`[BuiltinTools] lark-cli capability probe failed: ${err instanceof Error ? err.message : String(err)}`);
+			}
+			this.logService.info(`[BuiltinTools] capability facts: ${[...this._capabilityFactsMap].map(([k, v]) => `${k}=${v}`).join(', ') || '(none)'}`);
+		})();
 	}
 
 	async isToolEnabled(_agentId: string, toolName: string): Promise<boolean> {
@@ -574,8 +708,224 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 			requestService: this.requestService,
 			logService: this.logService,
 			webContentExtractorService: this.webContentExtractorService,
+			// web_search 多后端配置（P0-2）。**每次调用现读**而不是注册时快照：
+			// 用户在设置里换了 provider / 填了 key 应当下一轮立即生效，不需要重启窗口。
+			getWebSearchConfig: () => ({
+				provider: this.configurationService.getValue<string>(AGENT_STUDIO_WEB_SEARCH_PROVIDER_SETTING) ?? DEFAULT_WEB_SEARCH_CONFIG.provider,
+				searxngUrl: this.configurationService.getValue<string>(AGENT_STUDIO_WEB_SEARCH_SEARXNG_URL_SETTING) ?? '',
+				tavilyApiKey: this.configurationService.getValue<string>(AGENT_STUDIO_WEB_SEARCH_TAVILY_KEY_SETTING) ?? '',
+				braveApiKey: this.configurationService.getValue<string>(AGENT_STUDIO_WEB_SEARCH_BRAVE_KEY_SETTING) ?? '',
+				exaApiKey: this.configurationService.getValue<string>(AGENT_STUDIO_WEB_SEARCH_EXA_KEY_SETTING) ?? '',
+			}),
+			// web_extract 的本地页面缓存（P2）。同样现读设置 ⇒ 关掉缓存下一轮即失效。
+			getWebCache: () => this._getWebPageCache(),
+			// web_search 的结果备忘（对齐 Hermes 的 search memo）。与页面缓存共用同一个"缓存"开关。
+			getSearchMemo: () => this._getSearchMemo(),
+			// 超限正文落盘（与 execute_code / terminal 同一约定，见 webExtractSpill.ts）。
+			writeExtractSpill: content => this._writeExtractSpill(content),
 		};
 		registerWebTools(ctx);
+	}
+
+	/**
+	 * `web_extract` 本地页面缓存（P2）的懒构造 + 开关门控。
+	 *
+	 * 懒构造：窗口里可能从不抓网页，没必要在启动路径上建对象。
+	 * 门控在**每次调用**读取设置（而非注册时快照）⇒ 用户在设置里关掉缓存立即生效。
+	 */
+	private _getWebPageCache(): IWebPageCacheLike | undefined {
+		if (this.configurationService.getValue<boolean>(AGENT_STUDIO_WEB_SEARCH_CACHE_ENABLED_SETTING) === false) {
+			return undefined;
+		}
+		this._webPageCache ??= new WebPageCache(this._webCacheStore(), this.logService);
+		return this._webPageCache;
+	}
+
+	/**
+	 * `web_search` 结果备忘的懒构造 + 开关门控（与页面缓存共用同一个设置）。
+	 *
+	 * 关掉时返回 undefined（而不是清空已有条目）：已缓存的生命周期由 TTL 自然收敛，
+	 * 不必为此再加一条清理路径。
+	 */
+	private _getSearchMemo(): WebSearchMemo | undefined {
+		if (this.configurationService.getValue<boolean>(AGENT_STUDIO_WEB_SEARCH_CACHE_ENABLED_SETTING) === false) {
+			return undefined;
+		}
+		this._searchMemo ??= new WebSearchMemo();
+		return this._searchMemo;
+	}
+
+	/** 落盘文件名序号：同一毫秒内多次落盘也不撞名（对齐 coreTools 的 `_terminalSpillSeq`）。 */
+	private static _extractSpillSeq = 0;
+
+	/** 飞书评论内容临时文件的序号（同上：同一毫秒内多次调用也不撞名）。 */
+	private static _feishuContentSeq = 0;
+
+	/**
+	 * 能力事实表（依赖是否就绪），供工具列表做 `availability` 标注。见 `_capabilityFacts()`。
+	 * 空白 = 尚未探到 ⇒ 一律按"可用"处理（fail-open，绝不误标可用性）。
+	 */
+	private readonly _capabilityFactsMap = new Map<string, boolean>();
+	/** 后台能力探测是否已启动（只跑一次；结果进 `_capabilityFactsMap`）。 */
+	private _capabilityProbeStarted = false;
+
+	/**
+	 * `web_extract` 超限正文落盘 —— 与 `execute_code` / `terminal` **同一约定**
+	 * （为什么必须是 `~/.vssaros/tmp/`、为什么 IO 失败要能退化，见 `webExtractSpill.ts` 头注释）。
+	 *
+	 * **任何 IO 失败都返回 undefined**（上层退化为纯截断）：落盘只是优化，不该让一次网页抓取失败。
+	 */
+	private async _writeExtractSpill(content: string): Promise<string | undefined> {
+		try {
+			const tmpDir = resolveSarosPath(userDataRootFromPath(this.environmentService.userDataPath), SarosPath.tmp);
+			await this.fileService.createFolder(tmpDir);
+			// 回收：策略常量与 exec 落盘共用（避免漂移）；目录不可读时静默跳过，不阻塞结果。
+			try {
+				const stat = await this.fileService.resolve(tmpDir, { resolveMetadata: true });
+				const files = (stat.children ?? [])
+					.filter(c => !c.isDirectory)
+					.map(c => ({ name: c.name, mtimeMs: c.mtime ?? 0 }));
+				for (const stale of selectWebExtractSpillFilesToDelete(files, Date.now())) {
+					try { await this.fileService.del(joinPath(tmpDir, stale)); } catch { /* 单个失败跳过 */ }
+				}
+			} catch { /* 目录列举失败 → 本轮不回收 */ }
+
+			const target = joinPath(tmpDir, webExtractSpillFileName(new Date(), ++BuiltinToolProvider._extractSpillSeq));
+			await this.fileService.writeFile(target, VSBuffer.fromString(content));
+			this.logService.info(`[BuiltinTools] web_extract: page spilled to ${target.fsPath} (${content.length} chars)`);
+			return target.fsPath;
+		} catch (err) {
+			this.logService.info(`[BuiltinTools] web_extract: spill failed (${err instanceof Error ? err.message : String(err)}) — degrading to plain truncation`);
+			return undefined;
+		}
+	}
+
+	/**
+	 * 把 `IStorageService` 适配成缓存要的窄接口。
+	 *
+	 * scope = APPLICATION（同一 URL 的内容与工作区无关，跨工作区共享命中）
+	 * target = MACHINE（缓存是本机产物，不该随设置同步到别的机器）。
+	 */
+	private _webCacheStore(): IWebCacheStore {
+		return {
+			get: key => this.storageService.get(key, StorageScope.APPLICATION),
+			set: (key, value) => this.storageService.store(key, value, StorageScope.APPLICATION, StorageTarget.MACHINE),
+			delete: key => this.storageService.remove(key, StorageScope.APPLICATION),
+		};
+	}
+
+	/**
+	 * `browser_*` 工具（CDP 驱动真实 Chrome，P1-2）。
+	 *
+	 * ⚠ 调用点必须在 `_registerBundledTools()` **之前**：bundled 定义库里同名项会被注册成
+	 * `isStub: true` ⇒ `listTools` 跳过 ⇒ 模型永远看不到（这就是这 7 个工具此前"在
+	 * `CORE_TOOLS` 白名单里却不可见"的原因）。
+	 */
+	private _registerBrowserTools(): void {
+		const ctx: BrowserToolContext = {
+			register: d => this.register(d),
+			logService: this.logService,
+			cdp: this._browserCdpInvoker(),
+			isEnabled: () => this._browserToolsUsable(),
+			// 「改用你自己日常的 Chrome」引导卡：用户勾完同意框后要用它切过去
+			// （理由见 BrowserToolContext.recheckEndpoint 注释）。
+			recheckEndpoint: () => this.recheckBrowserCdp(),
+			ports: () => {
+				const configuredPort = this._browserCdpConfiguredPort();
+				return { configuredPort, dedicatedPort: dedicatedPortFor(configuredPort) };
+			},
+		};
+		registerBrowserTools(ctx);
+		// 预热一次探测：让首次 listTools 就有结论（用户已开远程调试时工具能第一时间出现，
+		// 而不是等到第一个 30s 周期过去）。
+		if (this.configurationService.getValue<boolean>(AGENT_STUDIO_BROWSER_CDP_ENABLED_SETTING) !== false) {
+			this._getBrowserCdpGate().warmUp();
+		}
+	}
+
+	/** 用户设置的 CDP 端口（非法值退回默认）。只读设置、不做修正 —— 与主进程 `_port()` 同一口径。 */
+	private _browserCdpConfiguredPort(): number {
+		const raw = this.configurationService.getValue<number>(AGENT_STUDIO_BROWSER_CDP_PORT_SETTING);
+		return typeof raw === 'number' && Number.isFinite(raw) && raw >= 1 && raw <= 65535
+			? Math.floor(raw) : DEFAULT_CDP_PORT;
+	}
+
+	/**
+	 * 丢弃当前 CDP 连接并**立即**重探（`browser_use_my_chrome` 用户勾完同意框后调用）。
+	 *
+	 * 两步都不能省：
+	 *   ① `{ op: 'reset' }` —— 旧连接是在用户勾选**之前**建立的，指向专属实例；不丢就切不过去
+	 *      （候选顺序里"你自己的 Chrome"优先，但那只对**新建**连接生效）。
+	 *   ② `gate.warmUp()` —— 绕过 30s 节流，让"刚勾好"马上反映到工具可用性判定上。
+	 * 工具列表无需手动刷新：`listTools` 每轮都会重算 `isUsable()`。
+	 */
+	async recheckBrowserCdp(): Promise<void> {
+		try {
+			const invoker = this._browserCdpInvoker();
+			await invoker?.({ op: 'reset' });
+		} catch (err) {
+			this.logService.warn(`[BuiltinTools] browser CDP reset failed: ${err instanceof Error ? err.message : String(err)}`);
+		}
+		this._getBrowserCdpGate().warmUp();
+	}
+
+	/**
+	 * `browser_*` 此刻该不该出现在模型的工具列表里。
+	 *
+	 * 两条并列的判据（前者更快、后者更强）：
+	 *   ① Chrome 调试端口**已可达** —— 用用户自己开好的那个 Chrome（可能带他的登录态），不加戏；
+	 *   ② 端口不可达，但开着「自动拉起调试实例」—— 仍然暴露这 7 个工具，因为**首次真正调用时**
+	 *      主进程会用专属 profile 把浏览器带起来（Route B）。
+	 *
+	 * ② 是刻意的：工具一旦不出现，模型就永远不会调用，也就永远触发不到"首次调用" ——
+	 * 那会把 Route B 困死成死代码。所以这里必须比"可达性门控"宽一档。
+	 * 代价是：若拉起注定失败（例如机器上没装 Chrome），模型会撞一次失败并拿到明确的错误
+	 * （"找不到 Chrome 可执行文件…"），而不是事先隐身 —— 这比"工具莫名消失、无从解释"更好。
+	 *
+	 * 反过来说：若把「自动拉起调试实例」关掉，本判据就退化成纯可达性门控（回到旧行为，
+	 * 不会让模型白撞那次 net::ERR_CONNECTION_REFUSED）。
+	 */
+	private _browserToolsUsable(): boolean {
+		if (this.configurationService.getValue<boolean>(AGENT_STUDIO_BROWSER_CDP_ENABLED_SETTING) === false) { return false; }
+		if (this._getBrowserCdpGate().isUsable()) { return true; }
+		return this.configurationService.getValue<boolean>(AGENT_STUDIO_BROWSER_CDP_LAUNCH_DEDICATED_SETTING) !== false;
+	}
+
+	/** 重探周期。取值理由见 `BrowserCdpReachabilityGate` 的类注释（太长则"刚开好调试"长时间不生效）。 */
+	private static readonly _CDP_PROBE_INTERVAL_MS = 30_000;
+
+	/**
+	 * browser_* 的可达性门控（懒建）—— 语义全在 `BrowserCdpReachabilityGate` 的类注释里。
+	 *
+	 * 探测动作走 `_browserCdpInvoker()` 的 `status` op：主进程侧等价于
+	 * 「HTTP 发现 `/json/version` + WS 建连 + `Browser.getVersion`」，成功即说明**整条 CDP
+	 * 链路**可用（而不只是端口在听）。
+	 */
+	private _getBrowserCdpGate(): BrowserCdpReachabilityGate {
+		this._browserCdpGate ??= new BrowserCdpReachabilityGate(
+			async () => {
+				const invoker = this._browserCdpInvoker();
+				if (!invoker) { return false; }
+				const res = await invoker({ op: 'status' });
+				return res.ok === true && (res.result as IBrowserCdpStatus | undefined)?.ok === true;
+			},
+			BuiltinToolProvider._CDP_PROBE_INTERVAL_MS,
+			(reachable, detail) => this.logService.info(`[BuiltinTools] browser CDP reachable=${reachable}${detail ? ` — ${detail}` : ''}`),
+		);
+		return this._browserCdpGate;
+	}
+
+	/**
+	 * browser_* 的 CDP 调用通道。
+	 *
+	 * 主进程侧通道不存在时（纯 web / 测试环境）返回 undefined ⇒ 工具 `available` 为 false
+	 * ⇒ 模型看不到它们。**不注册 stub**：给模型一批必然失败的伪工具比不给更糟。
+	 */
+	private _browserCdpInvoker(): IBrowserCdpInvoker | undefined {
+		const vscodeBridge = (globalThis as { vscode?: { ipcRenderer?: { invoke?: (ch: string, payload: unknown) => Promise<unknown> } } }).vscode;
+		if (typeof vscodeBridge?.ipcRenderer?.invoke !== 'function') { return undefined; }
+		const invoke = vscodeBridge.ipcRenderer.invoke;
+		return (req: BrowserCdpRequest) => invoke.call(vscodeBridge.ipcRenderer, BROWSER_CDP_CHANNEL, req) as Promise<IBrowserCdpResponse>;
 	}
 
 	// ─── Memory 召回工具 ─────────────────────────────────────────────
@@ -964,6 +1314,178 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	 * 模型来源：设置面板「Vision（图像分析）」写入的 aux 配置 → 自动路由到
 	 * 第一个 `supportsImages` 的模型。
 	 */
+	/**
+	 * ★ 2026-09-24：`extract_video_frames` —— 从视频抽帧（yt-dlp 下载 + ffmpeg 抽帧 + 沙箱落盘）。
+	 *
+	 * 与 `vision_analyze` 是**组合关系**：本工具产出 PNG 路径，vision_analyze 逐张读。
+	 * 默认落点 `<userDataPath>/tmp/video-frames/…`（`~/.vssaros` 属允许根、不污染用户工作区）；
+	 * 调用方可传 `outDir` 落到知识库（例如 `库/<素材名>/frames/`）以便长期引用。
+	 */
+	private _registerVideoFrameTools(): void {
+		registerVideoFrameTools({
+			register: d => this.register(d),
+			fileService: this.fileService,
+			logService: this.logService,
+			resolveAndCheckWorkspacePath: (agentId, requestedPath, checkSandbox) =>
+				this._resolveAndCheckWorkspacePath(agentId, requestedPath, checkSandbox),
+			defaultOutRoot: URI.joinPath(URI.file(this.environmentService.userDataPath), 'tmp').fsPath,
+			// ★ 2026-09-24：二进制解析要能找到**随包内置**的 ffmpeg/ffprobe/yt-dlp
+			//   （见 knowledge/mediaBinaries.ts：resourcesPath → appRoot 向上找 build/saros/bin → PATH）。
+			appRoot: this.environmentService.appRoot,
+			// ★★ 2026-09-24（修复）：必须注入命令通道！
+			//   管线的探测**不会**自己兜底成真实执行（缺省是"无通道" ⇒ `no-channel`），
+			//   而这两个工具的每一步（`-version` 探测、yt-dlp 下载、ffmpeg 抽帧、ffprobe 取时长）
+			//   都要过这里。此前漏注入 ⇒ 生产环境里工具会**一律**返回
+			//   `NO_CHANNEL_HINT`（"请在 VsSaros 桌面版里使用"），而单测因为都注入了 fake runner
+			//   所以全绿 —— 典型的"测试通过、功能全废"。
+			//   （管线那句旧注释写着"默认 execShortCommand"，与实现不符，已一并更正。）
+			runCommand: (command, timeoutMs) => execShortCommand(command, timeoutMs),
+			// 需登录才给流的站点（小红书等）：yt-dlp 自身不带登录态，靠用户显式开启的设置借用
+			// 浏览器 cookie。默认关 ⇒ 返回 undefined/空串 ⇒ 一个参数都不加（见 cookiesFromBrowserArgs）。
+			cookiesFromBrowser: () => this.configurationService.getValue<string>(AGENT_STUDIO_BROWSER_COOKIES_FROM_BROWSER_SETTING),
+		});
+	}
+
+	/**
+	 * ★ 2026-09-24：`kb_build` —— agent 发起知识库构建（`mode:'preview'` 只读预检 / `mode:'build'` 发起）。
+	 *
+	 * 装配方式刻意与 `agentStudio.contribution`（工作区树右键导入）**逐项对齐**：同一份
+	 * `KbImportController` 管线、同一套服务、同一套 vault 根解析口径 —— 三处任一漂移都会让
+	 * 「agent 构建的库」与「按钮构建的库」指向不同目录。
+	 *
+	 * 两点取舍：
+	 *  · `agentDriverService` 传 `undefined`：agentic 构建改由 `agentChatService` 驱动 ⇒
+	 *    构建过程在**知识库专家的聊天会话里可见**（用户能看到进度，而不是"点完没反应"）；
+	 *  · 每次调用新建控制器、构建结束后 `dispose()`：控制器只持有 `_kbBuildSessionId` 这类
+	 *    「本次构建」的状态，不该跨调用累积（构建缓存/目录则都在磁盘上，天然持久）。
+	 */
+	private _registerKbBuildTools(): void {
+		registerKbBuildTools({
+			register: d => this.register(d),
+			logService: this.logService,
+			configurationService: this.configurationService,
+			notificationService: this.notificationService,
+			studioService: this.studioService,
+			// vault 根：与 `knowledgeBaseView.vaultUri` 同一口径（customPath 优先，否则 <kbDir>/<vaultId>）。
+			// 没有激活的库 ⇒ undefined，由工具提示用户去知识库视图选/建一个（而不是在错误目录上"空跑"）。
+			resolveVaultRoot: async () => {
+				const vault = loadActiveKbVault(this.storageService);
+				if (!vault) { return undefined; }
+				return vault.customPath
+					? URI.file(vault.customPath)
+					: URI.joinPath(resolveKbRootUri(this.storageService, this.environmentService), vault.id);
+			},
+			createRunner: vaultRoot => {
+				const controller = new KbImportController(
+					this.configurationService, this.logService, this.fileService, this.environmentService,
+					this.storageService, this.studioService, this.viewsService, this.editorService,
+					this.notificationService, this.requestService,
+					undefined,                 // agentDriverService：见方法注释（构建要在聊天会话里可见）
+					this.agentChatService,
+				);
+				return {
+					preview: () => KbImportController.previewPendingSources(
+						this.fileService, vaultRoot, this.logService, this.notificationService, this.studioService,
+					),
+					start: () => controller.buildPendingAsAgentSession(vaultRoot)
+						.finally(() => controller.dispose()),
+					isInFlight: () => KbImportController.buildInFlight,
+				};
+			},
+		});
+	}
+
+	/**
+	 * ★ 2026-09-24（P1-5）：`process` —— 后台任务管理面（list/output/terminate/wait）。
+	 *
+	 * 薄封装主进程 `vscode:execCode` 的后台注册表（`_bgExecs`）：启动归 `execute_code`
+	 * （background:true），本工具只管"已经在跑的"。主进程侧新增了 `action:'list'`
+	 * （见 `src/vs/code/electron-main/app.ts`，顺带回收落定超 30 分钟的条目）。
+	 */
+	private _registerProcessTools(): void {
+		registerProcessTools({ register: d => this.register(d), logService: this.logService });
+	}
+
+	/**
+	 * ★ 2026-09-24：飞书云文档工具族（`feishu_doc_read` + 4 个评论工具）。
+	 *
+	 * 走**官方 CLI**（`lark-cli`）—— 与知识库「飞书文档 → markdown 导入」同一条链路
+	 * （`kbImportController` 也用 `runLarkCli`），所以不引入任何新凭证/Token 管理；
+	 * CLI 自带登录态、URL 解析与 Wiki token 解包。
+	 *
+	 * 为什么用 `getLarkCliStatus` 先探一次：CLI 是**可选依赖**，未装时要么给安装指引、
+	 * 要么让工具在列表阶段就隐藏（后者需要接线 `toolAvailabilityEvaluator`，尚未做）。
+	 * 探测结果在工具内部有 30s 记忆化（见 `feishuDriveTools.LARK_CLI_STATUS_TTL_MS`），
+	 * 避免一次对话里连续调用 5 个飞书工具就 spawn 5 次 `lark-cli --version`。
+	 */
+	private _registerFeishuDriveTools(): void {
+		registerFeishuDriveTools({
+			register: d => this.register(d),
+			logService: this.logService,
+			getCliStatus: () => getLarkCliStatus(),
+			runLarkCli: (args, opts) => runLarkCli(args, opts),
+			// ★ 评论内容走 `@file`（见 feishuDriveTools 的 ctx 注释）：内联 JSON 里的引号/&
+			//   会在主进程的 cmd + `.cmd` shim 路径上被解析破坏（实测 `--content` 收到截断串）。
+			//   落点与 `_writeExtractSpill` 同一 tmp 目录，沿用"下次调用时回收陈旧文件"的纪律 ——
+			//   评论内容可能敏感，不能指望崩溃后残留的文件自己消失。
+			createTempJsonFile: async (json: string) => {
+				const tmpDir = resolveSarosPath(userDataRootFromPath(this.environmentService.userDataPath), SarosPath.tmp);
+				await this.fileService.createFolder(tmpDir);
+				try {
+					const stat = await this.fileService.resolve(tmpDir, { resolveMetadata: true });
+					const stale = (stat.children ?? [])
+						.filter(c => !c.isDirectory && c.name.startsWith(FEISHU_CONTENT_PREFIX)
+							&& Date.now() - (c.mtime ?? 0) > FEISHU_CONTENT_STALE_MS)
+						.map(c => c.name);
+					for (const name of stale) {
+						try { await this.fileService.del(joinPath(tmpDir, name)); } catch { /* 单个失败跳过 */ }
+					}
+				} catch { /* 目录列举失败 → 本轮不回收 */ }
+				const target = joinPath(tmpDir, `${FEISHU_CONTENT_PREFIX}${Date.now()}-${++BuiltinToolProvider._feishuContentSeq}.json`);
+				await this.fileService.writeFile(target, VSBuffer.fromString(json));
+				return target.fsPath;
+			},
+			deleteTempFile: async (path: string) => {
+				try { await this.fileService.del(URI.file(path)); } catch { /* 清理失败不致命（下次调用会回收） */ }
+			},
+		});
+	}
+
+	/**
+	 * ★ 2026-09-24：`video_analyze` —— 视频理解（抽帧 + 字幕 + 多模态模型一次给结论）。
+	 *
+	 * 依赖与 `extract_video_frames` 完全同源（`videoMediaPipeline`），模型选择与
+	 * `vision_analyze` 同源（`visionModelSelect`）—— 两处都不重复实现，避免口径漂移。
+	 *
+	 * ⚠ 帧图由**我们自己的 ffmpeg** 写入已过沙箱校验的产物目录，再读回来发给模型；
+	 *   因此这里直接用 `readLocalImageAsBase64`（只读我们产出的文件），
+	 *   不需要 `vision_analyze.loadLocalImage` 那套「任意用户路径」的读守卫三件套。
+	 */
+	private _registerVideoAnalyzeTools(): void {
+		registerVideoAnalyzeTools({
+			register: d => this.register(d),
+			fileService: this.fileService,
+			logService: this.logService,
+			resolveAndCheckWorkspacePath: (agentId, requestedPath, checkSandbox) =>
+				this._resolveAndCheckWorkspacePath(agentId, requestedPath, checkSandbox),
+			defaultOutRoot: URI.joinPath(URI.file(this.environmentService.userDataPath), 'tmp').fsPath,
+			appRoot: this.environmentService.appRoot,
+			// 命令通道：同上（`video_analyze` 也要下载/抽帧/取字幕，缺了同样恒报 no-channel）
+			runCommand: (command, timeoutMs) => execShortCommand(command, timeoutMs),
+			// cookie 来源：同上（两条工具共用同一份 yt-dlp 下载参数构造）
+			cookiesFromBrowser: () => this.configurationService.getValue<string>(AGENT_STUDIO_BROWSER_COOKIES_FROM_BROWSER_SETTING),
+			configurationService: this.configurationService,
+			getModelProviders: () => this.agentOS.getModelProviders(),
+			// 与 `_registerVisionAnalyzeTools` 读**同一个 key**（多模态默认模型 = 知识库专家配置的模型）
+			getKbExpertModel: () => {
+				const sel = this.modelSelectorService.getExplicitSelectionForAgent('knowledge-base-expert');
+				return (sel?.providerId && sel.modelId)
+					? { providerId: sel.providerId, modelId: sel.modelId }
+					: undefined;
+			},
+		});
+	}
+
 	private _registerVisionAnalyzeTools(): void {
 		registerVisionAnalyzeTools({
 			register: d => this.register(d),

@@ -288,7 +288,21 @@ export async function getEnabledTools(
 	// ★ 2026-09-11：禁工具轮（excludedTools 含 '*'）必须把 MCP 工具一并清掉 ——
 	// 否则 `mcpTagged` 仍进 assembly 并生成桥接工具，模型可绕过 toolChoice:none。
 	const mcpForAssembly = excludeAll ? [] : mcpTagged;
-	const assembly = assembleToolDefs([...nonMcpScoped, ...mcpForAssembly], {
+
+	// Step 3.9: 交叉提示修正（**可用才加**）—— ★ 必须在 assembly **之前**。
+	// ① 可用性要按**启用集合**判：tool_search 桥接下被 deferred 的工具仍能经
+	//    tool_search → tool_describe → tool_call 调到，按"直发列表"判会把它们误判成不可用；
+	// ② 工具搜索目录 / tool_describe 读的是 `assembly.deferredDefs`，而 dispatcher context 在
+	//    assembly 之后**立刻**建好 ⇒ 放在 assembly 之后就修不到桥接路径。
+	// 详见 common/schemaCorrector.ts 文件头（那里也写了为什么从"不可用才删"改成"可用才加"）。
+	const assemblyInput = [...nonMcpScoped, ...mcpForAssembly];
+	const beforeHints = [...assemblyInput];
+	const correctedInput = correctSchemaReferences(assemblyInput);
+	if (correctedInput.some((t, i) => t !== beforeHints[i])) {
+		deps.logService.info('[AgentOS] _getEnabledTools: tool reference hints applied (可用才加)');
+	}
+
+	const assembly = assembleToolDefs(correctedInput, {
 		contextLength: contextWindow,
 		config: tsConfig,
 	});
@@ -330,12 +344,8 @@ export async function getEnabledTools(
 	]);
 	finalTools.sort((a, b) => (BRIDGE_NAMES.has(a.name) ? 0 : 1) - (BRIDGE_NAMES.has(b.name) ? 0 : 1));
 
-	// Step 7: Schema 修正
-	const beforeCorrection = finalTools.length;
-	finalTools = correctSchemaReferences(finalTools);
-	if (finalTools.length !== beforeCorrection || finalTools.some((t, i) => t !== finalTools[i])) {
-		deps.logService.info(`[AgentOS] _getEnabledTools: schema correction applied`);
-	}
+	// （原 Step 7「Schema 修正」已上移为 Step 3.9：必须在 assembly **之前**才能既覆盖直发列表又覆盖
+	//   tool_search 目录，且可用性判定要用启用集合而不是直发列表 —— 理由见那里的注释。）
 
 	if (mcpOriginal.length) {
 		// 同上（2026-09-11）：两分支 toolDefs 相同 → 一律走桥接；原 "sent directly

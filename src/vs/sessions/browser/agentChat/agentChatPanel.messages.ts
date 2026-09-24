@@ -21,7 +21,7 @@ import type { FullRefreshSource } from './agentChatPanel.refreshLog.js';
 // 的耗时大头（`setMessages` 的 render 段），此前**无埋点** ⇒ 无法归因 539ms 级长任务。
 import { chatPerf } from './agentChatPanel.perf.js';
 // ★ 2026-09-24（P1 分帧渲染）：时间片渲染器（**独立纯模块** ⇒ 假时钟确定性单测 ✓ 不占继承链 ✓）
-import { RENDER_SLICE_BUDGET_MS, runTimeSlicedRender, shouldRenderFullySync } from './agentChatPanel.renderSlicer.js';
+import { computeRestoreWindowStart, RENDER_SLICE_BUDGET_MS, RESTORE_USER_TURN_WINDOW, runTimeSlicedRender, shouldRenderFullySync } from './agentChatPanel.renderSlicer.js';
 // ★ 2026-09-22（方案 C「收纳手风琴」）：压缩分组视图（**独立函数模块** ⇒ 不占面板继承链 ✓，
 //   避免改到正被并发改动的 base.ts / iChatPanel.ts ✓）
 import { createCompactionElement } from './compactionGroupView.js';
@@ -313,11 +313,20 @@ protected override _renderMessages(): void {
 		return;
 	}
 
-	// P2: 懒加载渲染——只渲染最近的 VISIBLE_CHUNK 条消息，
-	// 用户向上滚动时按需加载更早的消息。
-	// 参考 VS Code WorkbenchObjectTree 虚拟化（只渲染可见区域）。
-	const VISIBLE_CHUNK = 30;
-	const firstBatchStart = Math.max(0, this._messages.length - VISIBLE_CHUNK);
+	// ★★★ 2026-09-24（用户要求 ✓）：恢复窗口 = **最近 RESTORE_USER_TURN_WINDOW(2) 轮问答** ✓
+	//   —— 取代旧的「最近 30 条」✗（大会话 30 条重消息 ⇒ 恢复首屏 >1s 卡顿 ✗ 真机 LONG_TASK ✓）。
+	//   更早内容靠既有懒加载兜底：向上滚动 ⇒ IntersectionObserver 按 20 条/块加载 ✓（不动 ✓）。
+	//   参考 VS Code WorkbenchObjectTree 虚拟化（只渲染可见区域）。
+	//
+	//   ⚠⚠ 重渲染的**保窗规则** ✗✓（不许简化掉）：
+	//     · 在底部（默认/恢复/切会话 ✓）⇒ 直接用新窗口 ✓；
+	//     · 不在底部（用户正读历史 ⇒ 已经懒加载过若干块）⇒ `min(新窗口, _lazyLoadRemaining)` ——
+	//       `_lazyLoadRemaining` 语义 = 「当前未渲染的更早消息条数」⇒ 它就是当前渲染起点 ✓，
+	//       取 min ⇒ **已加载的旧内容不收回**（否则任务板 reload 会把用户正在读的内容收没 ✗✓）。
+	const turnStart = computeRestoreWindowStart(this._messages, m => m.role === 'user', RESTORE_USER_TURN_WINDOW);
+	const firstBatchStart = this._isAtBottom
+		? turnStart
+		: Math.min(turnStart, this._lazyLoadRemaining);
 
 	// ★★ 2026-09-24（P1 分帧渲染）：**时间片渲染** ✓ —— 取代旧的「一次性同步渲染 30 条」✗。
 	//   背景（真机）：一条百级 parts 的重消息 ≈58ms（`render.createMessageElement=58.3ms parts=127` ✓）
@@ -357,7 +366,15 @@ protected override _renderMessages(): void {
 				`slice=${info.slice} done=${info.cursor - firstBatchStart}/${info.total - firstBatchStart}`);
 		},
 		onPin: () => {
-			if (this._isAtBottom) { this._scrollbar.scrollToBottom(false); }
+			// ⚠⚠ 必须 `force=true`（instant ✓）✗✓ —— 2026-09-24 实测「重启后滚动条不在底部」的根因：
+			//   分片期间容器是**未渲完的中间态**，非 force 会走 `scrollToBottom` 的
+			//   「distFromBottom≥80 ⇒ 用户滚离」启发式 ⇒ 把 `_isAtBottom` 误判成 false ✗
+			//   ⇒ 后续所有钉底被门控挡掉 ✗ ⇒ 恢复停在半路 ✗✗。
+			//   （`_wasLoading=true` 要等 setMessages 返回后才置位 ⇒ 首片同步钉底等不到它 ✗；
+			//    旧世界同步渲完才滚底 ⇒ 永远 instant ✓ 所以从未暴露 ✓。）
+			//   force=true ⇒ instant 分支 ⇒ 钉底 + isAtBottom=true ✓；
+			//   仍受 `_isAtBottom` 门控 ⇒ 用户在分片期间主动滚离 ⇒ 不抢 ✓。
+			if (this._isAtBottom) { this._scrollbar.scrollToBottom(true); }
 		},
 		onDone: () => this._finishRenderBatch(firstBatchStart, tRenderTotal),
 	});
@@ -387,8 +404,9 @@ private _finishRenderBatch(firstBatchStart: number, tRenderTotal: number): void 
 		this._scrollbar.scheduleRefreshScrollMarkers();
 	}
 	// 收尾钉底：分帧期间内容持续增长，setMessages 的双重 rAF 钉底只覆盖前两帧 ✗
+	// ⚠ 必须 force=true（同 onPin 的注释 ✗✓ 中间态会被「用户滚离」启发式误判 ✗）
 	if (this._isAtBottom) {
-		this._scrollbar.scrollToBottom(false);
+		this._scrollbar.scrollToBottom(true);
 	}
 	chatPerf.end('render.messages.total', tRenderTotal, `msgs=${total}`);
 }

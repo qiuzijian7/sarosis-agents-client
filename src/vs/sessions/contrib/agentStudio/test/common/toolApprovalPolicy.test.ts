@@ -359,6 +359,12 @@ suite('toolApprovalPolicy', () => {
 				assert.strictEqual(isDestructiveToolCall('memory_governance', { action: 'bulk_delete' }), true);
 				assert.strictEqual(isDestructiveToolCall('memory_governance', { action: 'audit' }), false);
 			});
+			test('★ process（P1-5）：仅 terminate 需审批（list/output/wait 是读/等）', () => {
+				assert.strictEqual(isDestructiveToolCall('process', { action: 'terminate', pid: 't1' }), true);
+				for (const a of ['list', 'output', 'wait']) {
+					assert.strictEqual(isDestructiveToolCall('process', { action: a, pid: 't1' }), false, a);
+				}
+			});
 			test('取值大小写不敏感', () => {
 				assert.strictEqual(isDestructiveToolCall('skill_manage', { action: 'DELETE' }), true);
 			});

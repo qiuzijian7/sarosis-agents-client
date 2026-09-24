@@ -111,3 +111,32 @@ export function shouldRenderFullySync(opts: {
 }): boolean {
 	return opts.forceSync === true || opts.documentHidden === true || !opts.canSchedule;
 }
+
+// ─── 恢复窗口（2026-09-24 用户要求 ✓）─────────────────────────────────────────
+
+/**
+ * ★★★ 恢复时只渲染**最近 N 轮问答**（用户提问 + LLM 回答）✓ —— 取代旧的「最近 30 条」✗。
+ * 背景：大会话（真机 1000+ 条 ✓）恢复时 30 条重消息（单条 ≈58ms ✓）⇒ 首屏 >1s 卡顿 ✗✓。
+ * 更早的内容由既有懒加载兜底（向上滚动 ⇒ IntersectionObserver 按 20 条/块加载 ✓）。
+ */
+export const RESTORE_USER_TURN_WINDOW = 2;
+
+/**
+ * 计算恢复窗口起点：**倒数第 `userTurns` 条用户提问**的下标（含它在内的尾部全部渲染 ✓）。
+ * 不足 `userTurns` 条提问 ⇒ 返回 0（全渲染 ✓ 新/短会话 ✓）。
+ * 纯函数 ✓ 零 DOM ✓（`isUser` 谓词注入 ⇒ 与消息类型解耦 ✓）。
+ */
+export function computeRestoreWindowStart<T>(
+	items: readonly T[],
+	isUser: (item: T) => boolean,
+	userTurns: number,
+): number {
+	let seen = 0;
+	for (let i = items.length - 1; i >= 0; i--) {
+		if (isUser(items[i])) {
+			seen++;
+			if (seen >= userTurns) { return i; }
+		}
+	}
+	return 0;
+}

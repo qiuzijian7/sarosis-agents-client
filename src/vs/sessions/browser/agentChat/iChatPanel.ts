@@ -103,6 +103,16 @@ export interface IChatPanelCallbacks {
 	onApplyCode?: (code: string, language: string, filePath?: string) => void;
 	onSubmitVariables?: (executionId: string, values: Record<string, string>) => void;
 	onOpenFile?: (filePath: string, contentOrLine?: string | number) => void;
+	/**
+	 * 把本地**文档**（pdf / epub / docx）提取成纯文本（宿主注入，见 `nativeChatEditorPane`）。
+	 *
+	 * ★ 2026-09-24（用户要求「epub/pdf/doc 能直接给 LLM 解读」）：聊天框此前把**任何**非图片文件
+	 * 都按 base64 内联进 prompt（`--- File: x.epub --- <base64> ---`）—— 模型既读不懂、又极易撑爆上下文。
+	 * 现在文档类先经主进程提取器转成 Markdown 文本，再作为**文本附件**送出。
+	 *
+	 * 返回 `undefined` 或抛错 ⇒ 调用方给出可读提示（**不**回退成 base64 内联）。
+	 */
+	extractDocumentText?: (filePath: string) => Promise<string | undefined>;
 	onSearchFiles?: (query: string) => Promise<Array<{ path: string; name: string }>>;
 	onAddFileContext?: (filePath: string) => void;
 	onRunInTerminal?: (code: string) => void;

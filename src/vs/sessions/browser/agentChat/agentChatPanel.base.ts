@@ -85,6 +85,8 @@ export const TOOL_BUILTIN_TITLES: Record<string, { done: string; running: string
 	skill_manage: { done: '管理技能', running: '正在管理技能' },
 	delegate_task: { done: '委派任务', running: '正在委派任务' },
 	workflow: { done: '执行工作流', running: '正在执行工作流' },
+	// ★ 2026-09-25（F3 ✓）：图片生成专属标题（此前走通用回退「调用了 image_generate」✗）
+	image_generate: { done: '生成图片', running: '正在生成图片' },
 
 	clarify: { done: '等待用户选择', running: '正在等待用户选择' },
 	memory_remember: { done: '保存记忆', running: '正在保存记忆' },
@@ -982,6 +984,9 @@ protected readonly _onSubmitVariables?: (executionId: string, values: Record<str
 
 protected readonly _onOpenFile?: (filePath: string, contentOrLine?: string | number) => void;
 
+/** 文档（pdf/epub/docx）→ 文本的提取器（宿主注入；缺省时文档类附件给出可读提示，不做 base64 内联）。 */
+protected readonly _extractDocumentText?: (filePath: string) => Promise<string | undefined>;
+
 protected readonly _onSearchFiles?: (query: string) => Promise<Array<{ path: string; name: string }>>;
 
 protected readonly _onComposerTextChange?: (text: string) => void;
@@ -1151,6 +1156,11 @@ constructor(opts: {
 		onApplyCode?: (code: string, language: string, filePath?: string) => void;
 		onSubmitVariables?: (executionId: string, values: Record<string, string>) => void;
 		onOpenFile?: (filePath: string, contentOrLine?: string | number) => void;
+	/**
+	 * 文档（pdf/epub/docx）→ 文本（宿主注入；见 `iChatPanel.IChatPanelOptions` 同名项）。
+	 * 缺省 ⇒ 拖入文档时给出可读提示，**不**退化成 base64 内联。
+	 */
+	extractDocumentText?: (filePath: string) => Promise<string | undefined>;
 	/** P0-2: @提及文件搜索——用户输入 @ 时搜索工作区文件 */
 	onSearchFiles?: (query: string) => Promise<Array<{ path: string; name: string }>>;
 	/** 输入框文本变更（每次 input 事件触发；消费方自行 debounce）。用于 per-session 草稿持久化。 */
@@ -1274,6 +1284,7 @@ constructor(opts: {
 		this._onApplyCode = opts.onApplyCode;
 		this._onSubmitVariables = opts.onSubmitVariables;
 		this._onOpenFile = opts.onOpenFile;
+		this._extractDocumentText = opts.extractDocumentText;
 		this._onSearchFiles = opts.onSearchFiles;
 		this._onComposerTextChange = opts.onComposerTextChange;
 		this._onAddFileContext = opts.onAddFileContext;

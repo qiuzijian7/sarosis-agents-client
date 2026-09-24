@@ -22,7 +22,7 @@ import { registerSingleton, InstantiationType } from '../../../../platform/insta
 import { Codicon } from '../../../../base/common/codicons.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { registerIcon } from '../../../../platform/theme/common/iconRegistry.js';
-import { Action2, registerAction2, MenuId } from '../../../../platform/actions/common/actions.js';
+import { Action2, registerAction2, MenuId, MenuRegistry } from '../../../../platform/actions/common/actions.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { ActiveEditorContext } from '../../../../workbench/common/contextkeys.js';
 import { AuxChatSessionSideView } from '../../sessionHistory/browser/auxChatSessionSideView.js';
@@ -49,6 +49,7 @@ import { EditorInput } from '../../../../workbench/common/editor/editorInput.js'
 // PDF / Word 只读预览（2026-09-23）：EditorPane + 「打开 *.pdf / *.docx 自动路由」的 resolver
 // ⚠ `IEditorResolverService` / `RegisteredEditorPriority` / `Schemas` 本文件已 import（勿重复引入）
 import { KbMediaViewerInput, KbMediaViewerPane } from './kbMediaViewerPane.js';
+import { KB_MEDIA_VIEWER_GLOBS } from './kbMediaViewerKinds.js';
 import type { AgentStudioPanelType } from '../common/constants.js';
 
 import { ISessionsProvidersService } from '../../../services/sessions/browser/sessionsProvidersService.js';
@@ -102,7 +103,11 @@ import { Severity } from '../../../../platform/notification/common/notification.
 import { basename } from '../../../../base/common/path.js';
 import { KbImportController } from './kbImportController.js';
 import { migrateLegacyKbSessions } from './knowledge/kbLegacyMigration.js';
-import { loadActiveKbVault, resolveVaultNotesDir, resolveKbRootUri } from './knowledge/kbVaultState.js';
+import { loadActiveKbVault, resolveVaultNotesDir, resolveKbRootUri, vaultRootsOf, STORAGE_VAULTS } from './knowledge/kbVaultState.js';
+import { IKbVault } from './views/knowledgeBase/kbTypes.js';
+// ★ 2026-09-24：媒体工具链自检（命令面板）—— 探测与工具同源，见模块头注释
+import { collectMediaToolchainStatus, formatMediaToolchainReport, summarizeMediaToolchain } from './providers/tool/mediaToolchainDoctor.js';
+import { execShortCommand } from './knowledge/feishuSyncCore.js';
 import { KbVersionService, IKbVersionService } from './kbVersionService.js';
 import { SkillVersionService, ISkillVersionService } from './skillVersionService.js';
 import { AgentVersionService } from './agentVersionService.js';
@@ -191,6 +196,17 @@ import {
 	AGENT_STUDIO_TOOL_SEARCH_ENABLED_SETTING,
 	AGENT_STUDIO_TOOL_SEARCH_THRESHOLD_PCT_SETTING,
 	AGENT_STUDIO_UNREAL_BRIDGE_URL_SETTING,
+	AGENT_STUDIO_WEB_SEARCH_PROVIDER_SETTING,
+	AGENT_STUDIO_WEB_SEARCH_SEARXNG_URL_SETTING,
+	AGENT_STUDIO_WEB_SEARCH_TAVILY_KEY_SETTING,
+	AGENT_STUDIO_WEB_SEARCH_BRAVE_KEY_SETTING,
+	AGENT_STUDIO_WEB_SEARCH_EXA_KEY_SETTING,
+	AGENT_STUDIO_WEB_SEARCH_CACHE_ENABLED_SETTING,
+	AGENT_STUDIO_BROWSER_CDP_ENABLED_SETTING,
+	AGENT_STUDIO_BROWSER_CDP_HEADLESS_SETTING,
+	AGENT_STUDIO_BROWSER_CDP_LAUNCH_DEDICATED_SETTING,
+	AGENT_STUDIO_BROWSER_CDP_PORT_SETTING,
+	AGENT_STUDIO_BROWSER_COOKIES_FROM_BROWSER_SETTING,
 	AGENT_STUDIO_CUSTOM_PROVIDERS_SETTING,
 	CHANNEL_DEFINITIONS,
 } from '../common/constants.js';
@@ -269,6 +285,7 @@ import { KbDiagramViewerInput } from './kbDiagramViewerInput.js';
 import { CanvasEditorInput } from './canvasEditor/canvasEditorInput.js';
 import { IMindmapData, type MindmapDirection } from '../common/mindmap/mindmapTypes.js';
 import { IEditorResolverService, RegisteredEditorPriority } from '../../../../workbench/services/editor/common/editorResolverService.js';
+import { ITextEditorService } from '../../../../workbench/services/textfile/common/textEditorService.js';
 import { WorkflowViewPane } from './views/workflowView.js';
 import { IWikiTagService } from './services/wikiTagService.js';
 import { WikiTagServiceImpl } from './services/wikiTagServiceImpl.js';
@@ -940,6 +957,76 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			default: '',
 			description: localize('agentStudio.unreal.bridgeUrl', "Unreal Engine 工具（unreal_health/exec/build/dump 等）连接的 bridge 基址。留空则回退内置默认 http://127.0.0.1:8765。"),
 		},
+		// ── web_search 多后端（P0-2）───────────────────────────────────────────
+		// 读取方：`builtinToolProvider._registerWebTools` → webTools 的 `getWebSearchConfig`。
+		// 语义与实现见 common/constants.ts 的同名注释块 + browser/providers/tool/webSearchProviders.ts。
+		[AGENT_STUDIO_WEB_SEARCH_PROVIDER_SETTING]: {
+			type: 'string',
+			enum: WEB_SEARCH_PROVIDER_CHOICES.map(c => c.value),
+			enumDescriptions: WEB_SEARCH_PROVIDER_CHOICES.map(c => c.label),
+			default: 'auto',
+			description: localize('agentStudio.webSearch.provider', "web_search 的后端选择。auto = 按已配置项成链（tavily → exa → brave → searxng），末尾永远以无需 key 的 DuckDuckGo 兜底。显式指定某后端时只用它，缺配置会明确报错（不会静默换家）。"),
+		},
+		[AGENT_STUDIO_WEB_SEARCH_SEARXNG_URL_SETTING]: {
+			type: 'string',
+			default: '',
+			description: localize('agentStudio.webSearch.searxngUrl', "自建 SearXNG 实例基址（如 http://127.0.0.1:8888）。⚠ 实例的 settings.yml 必须开启 JSON 输出格式（search.formats 含 json），否则只能返回 HTML、解析不出结果。"),
+		},
+		[AGENT_STUDIO_WEB_SEARCH_TAVILY_KEY_SETTING]: {
+			type: 'string',
+			default: '',
+			description: localize('agentStudio.webSearch.tavilyApiKey', "Tavily API key（返回的已是抽取过的正文片段，对模型最省一次抓取）。留空 = 该后端不参与 auto 链。"),
+		},
+		[AGENT_STUDIO_WEB_SEARCH_BRAVE_KEY_SETTING]: {
+			type: 'string',
+			default: '',
+			description: localize('agentStudio.webSearch.braveApiKey', "Brave Search API key（独立索引，有免费档）。留空 = 该后端不参与 auto 链。"),
+		},
+		[AGENT_STUDIO_WEB_SEARCH_EXA_KEY_SETTING]: {
+			type: 'string',
+			default: '',
+			description: localize('agentStudio.webSearch.exaApiKey', "Exa API key（语义/神经检索，长尾与论文场景强）。留空 = 该后端不参与 auto 链。"),
+		},
+		[AGENT_STUDIO_WEB_SEARCH_CACHE_ENABLED_SETTING]: {
+			type: 'boolean',
+			default: true,
+			description: localize('agentStudio.webSearch.cacheEnabled', "启用检索侧的两级缓存：① `web_extract` 的页面正文本地缓存（24 小时、最多 40 页；命中时输出会标注捕获时间，模型可传 refresh=true 强制重抓）；② `web_search` 的**结果备忘**（进程内、20 分钟；键含 provider 与归一化查询，同 key 并发只打一次网）。关掉则每次都真的打网。"),
+		},
+		// ── browser_* 工具（CDP 驱动真实 Chrome，P1-2）────────────────────────
+		[AGENT_STUDIO_BROWSER_CDP_ENABLED_SETTING]: {
+			type: 'boolean',
+			default: true,
+			description: localize('agentStudio.browserCdp.enabled', "把 browser_navigate / browser_snapshot / browser_get_images / browser_click / browser_type / browser_scroll / browser_back 暴露给模型。⚠ 这 7 个工具**只在探测到 Chrome 调试端口可达时**才出现（默认至多 30 秒重探一次），所以没开远程调试时模型不会看到、也就不会白撞一次失败。关闭本项则无论端口是否可达都不暴露。"),
+		},
+		[AGENT_STUDIO_BROWSER_CDP_PORT_SETTING]: {
+			type: 'number',
+			default: 9222,
+			minimum: 1,
+			maximum: 65535,
+			description: localize('agentStudio.browserCdp.port', "Chrome 远程调试端口。默认 9222 —— 同时也是 Chrome 自己那个开关（chrome://inspect/#remote-debugging 里的勾选框）**唯一**会监听的端口，所以**想用你日常那个 Chrome 就保持 9222**。我们自行拉起的专属实例跑在这个端口 **+1** 上，刻意不占用它。候选端点按「你设置的端口 → 同端口的 IPv6 → 专属实例」顺序探测，先命中的算。⚠ Chrome 136+ 起用 --remote-debugging-port 启动时**必须同时带 --user-data-dir**，否则该开关对默认 profile 静默失效。"),
+		},
+		[AGENT_STUDIO_BROWSER_CDP_LAUNCH_DEDICATED_SETTING]: {
+			type: 'boolean',
+			default: true,
+			description: localize('agentStudio.browserCdp.launchDedicated', "Chrome 调试端口不可达时，由 VsSaros 自行拉起一个**可调试**的 Chrome 实例（专属 profile + --user-data-dir ⇒ 不需要你手动开远程调试、也不需要勾那个同意框）。触发时机是**第一次真正要用浏览器工具时**，不是启动时 —— 不会一开 VsSaros 就弹浏览器。它跑在「Chrome 调试端口」**+1** 上（默认 9223），以避开 9222 —— 那个端口要留给你自己的 Chrome，否则你日常 Chrome 的那个勾选框会绑不上端口、那条路被静默堵死。profile 在 ~/.vssaros/browser-profile，与你的日常 Chrome 隔离：首次要在那个窗口里登录一次，之后登录态会留在里面累积。关掉本项即退回手动模式（端口不可达时这 7 个工具对模型不可见）。"),
+		},
+		[AGENT_STUDIO_BROWSER_CDP_HEADLESS_SETTING]: {
+			type: 'boolean',
+			default: false,
+			description: localize('agentStudio.browserCdp.headless', "自动拉起的专属 Chrome 是否跑在**无头**模式（完全不显示窗口）。⚠ 无头下**无法交互式登录** —— 要在专属 profile 里登录站点，请先用有窗口模式登录一次（登录态会留在 profile 里，之后切无头照样能用）。改动**在下次拉起该实例时生效**：已在运行的那个不受影响 —— 刻意不做「改设置就自动关掉你正在用的浏览器」。"),
+		},
+		// ★ 2026-09-24：让 yt-dlp 借用浏览器登录态（抽帧/视频理解的下载环节）。
+		//   留空 = 关闭（命令行**一个参数都不加**，与旧行为逐字一致）。
+		[AGENT_STUDIO_BROWSER_COOKIES_FROM_BROWSER_SETTING]: {
+			type: 'string',
+			default: '',
+			enum: ['', 'chrome', 'edge', 'firefox', 'brave', 'chromium', 'opera', 'safari', 'vivaldi', 'whale'],
+			enumDescriptions: [
+				'关闭（默认）—— yt-dlp 不带任何浏览器 cookie。',
+				'Chrome', 'Edge', 'Firefox', 'Brave', 'Chromium', 'Opera', 'Safari', 'Vivaldi', 'Whale',
+			],
+			description: localize('agentStudio.browserCdp.cookiesFromBrowser', "让 yt-dlp **借用你浏览器的登录态**去下载需登录的视频/字幕（`extract_video_frames` / `video_analyze` 的下载环节）。**默认关闭** —— 开启意味着把你的登录态交给这个外部程序使用（数据只在本机、不外传），请自行判断是否接受。⚠ 浏览器**正在运行**时它的 cookie 库可能被锁 ⇒ yt-dlp 会报错，需重试或临时关掉浏览器。⚠ 这与「用你自己那个 Chrome 的调试端口」是**两条独立的路**：那条解决「浏览器里能看到」，这条解决「yt-dlp 能抓到」—— 小红书这类只对登录用户给视频流的站点，需要的是这一条。"),
+		},
 	},
 });
 
@@ -1145,10 +1232,10 @@ class KbMediaViewerResolverContribution extends Disposable implements IWorkbench
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
 	) {
 		super();
-		const viewers = [
-			{ pattern: '*.pdf', label: localize('kb.pdfPreview', "PDF 预览") },
-			{ pattern: '*.docx', label: localize('kb.docxPreview', "Word 预览") },
-		];
+		// 接管的类型清单 = 单一真源（`kbMediaViewerKinds.ts`）⇒ 加类型只改一处，不会出现
+		// 「pane 认识但没注册 glob」（点了还是文本编辑器）这类漂移。
+		// ★ 2026-09-24：追加 png / jpg / jpeg / jfif / gif / webp / bmp / avif / ico / svg（图片预览）。
+		const viewers = KB_MEDIA_VIEWER_GLOBS.map(v => ({ pattern: v.pattern, label: localize(v.labelKey, v.label) }));
 		for (const v of viewers) {
 			this._register(resolverService.registerEditor(
 				v.pattern,
@@ -1590,6 +1677,138 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 	[
 		new SyncDescriptor(KbNoteEditorInput)
 	]
+);
+
+// ─── 知识库笔记解析器：**vault 内的 `.md` 默认用上面这个编辑器打开** ──────────
+//
+// ★ 2026-09-24（用户要求）：从任何入口（资源管理器双击 / 命令 / 链接）打开一个**落在知识库
+//   （活动 vault 根）内**的 `.md`，都应进入知识库专用编辑器（`KbBlocksEditorPane`：块编辑 +
+//   wikilink / katex / mermaid / `![[x.html]]` 嵌入），而不是通用的 `MdFileEditorPane` 文本面板。
+//
+// 为什么必须做在 **resolver** 层（不能只改扩展名路由）：
+//   · 现状 `.md` 走 `FileEditorInput.prefersEditorPane()`（`workbench/contrib/files/browser/editors/fileEditorInput.ts:353-358`）
+//     —— 那是**纯按扩展名**选 pane，且该处没有 DI ⇒ 拿不到 vault 信息，无法区分「库内 / 库外」；
+//   · 本仓已有三个同款先例：媒体预览（`KbMediaViewerResolverContribution`，L1211）、
+//     `*.canvas`（L1708）、`*.{drawio,mermaid,mmd}`（L1770）。
+//
+// ⚠⚠ 关键坑（已读源码确认）：**必须在 `createEditorInput` 里分支，不能只靠 `canSupportResource`** ——
+//   resolver 计算 `selectedViewType` 时顺序是「setting 关联 → `find(canSupportResource)` →
+//   **回落 `possibleEditors[0]`**」（`workbench/services/editor/browser/editorResolverService.ts:483-487`）。
+//   由于文本编辑器注册的 id 是 `'default'` 且会被过滤掉（同文件 `:475`），本编辑器就是唯一候选
+//   ⇒ 即使 `canSupportResource` 返回 false（库外 `.md`），**仍然会**选中本编辑器。
+//   ⇒ 因此库外一律在工厂里显式返回**默认文本编辑器 input**（与默认编辑器自身注册的写法一致，
+//     见 `workbench/services/textfile/common/textEditorService.ts:91-106`），行为与改动前完全相同。
+class KbNoteResolverContribution extends Disposable implements IWorkbenchContribution {
+
+	static readonly ID = 'workbench.contrib.agentStudio.kbNoteResolver';
+
+	constructor(
+		@IEditorResolverService resolverService: IEditorResolverService,
+		@IStorageService private readonly _storageService: IStorageService,
+		@INativeEnvironmentService private readonly _environmentService: INativeEnvironmentService,
+		@ITextEditorService private readonly _textEditorService: ITextEditorService,
+		@ILogService private readonly _logService: ILogService,
+	) {
+		super();
+
+		// 扩展名清单与 `.md` 的既有扩展名路由保持一致
+		// （`fileEditorInput.ts:353-358` 的 `md | markdown | mdown | mkdn`），避免两处漂移。
+		this._register(resolverService.registerEditor(
+			'*.{md,markdown,mdown,mkdn}',
+			{
+				// id 必须是「编辑器面板 id」（`KbBlocksEditorPane.ID`），与 `KbNoteEditorInput.editorId`
+				// 一致；否则 resolver 按此 id 找不到面板，会静默回退默认文本编辑器
+				// （同 `CanvasEditorResolverContribution` L1719-1720 的教训注释）。
+				id: KbBlocksEditorPane.ID,
+				label: localize('kbNoteEditor', "知识库笔记编辑器"),
+				// `builtin`（rank 3）高于文本编辑器（rank 2，同文件 `:211`）⇒ 库内 `.md` 默认进本编辑器；
+				// 仍低于用户手写的 `workbench.editorAssociations`（setting 优先）⇒ 用户可自行改回去。
+				priority: RegisteredEditorPriority.builtin,
+			},
+			{
+				// ⚠ 仅供「打开方式」选择器 / 编辑器列表展示；**不作为**是否接管的判据（理由见类注释）。
+				canSupportResource: uri => uri.scheme === Schemas.file && this._isInsideVault(uri),
+			},
+			{
+				createEditorInput: ({ resource, options }) => {
+					if (this._isInsideVault(resource)) {
+						this._logService.info(`[KbNoteResolver] 库内 .md → KbBlocksEditorPane: ${resource.toString()}`);
+						return {
+							editor: new KbNoteEditorInput(resource, this._titleOf(resource)),
+							// 与知识库视图点击文件时一致（`knowledgeBaseView.ts:5924`）：固定 Tab，
+							// 避免自定义编辑器以「预览态」打开（它不支持 preview，见 EditorInputCapabilities.None）。
+							options: { ...options, pinned: true },
+						};
+					}
+					// 库外（或非 file scheme）⇒ 交回默认文本编辑器：`FileEditorInput` 再按扩展名
+					// 路由到 `MdFileEditorPane` ⇒ 与改动前完全一致。
+					return { editor: this._textEditorService.createTextEditor({ resource, options }) };
+				},
+				// 本编辑器不提供富 diff；与默认编辑器同款写法，保证 git diff / 比较视图仍走文本 diff。
+				createDiffEditorInput: diffEditor => ({ editor: this._textEditorService.createTextEditor(diffEditor) }),
+			},
+		));
+	}
+
+	/**
+	 * `uri` 是否落在**某个知识库（vault）**之内。
+	 *
+	 * 两条并集（任一命中即算库内）：
+	 *   ① **活动 vault** —— 复用导入侧的单一真源 `KbImportController.resolveActiveVaultRoot`
+	 *      ＋ `isWithinVault`（含 `customPath`、目录边界与大小写归一；`kbImportController.ts:2425 / 2480`，
+	 *      先例 `importToLibrary` L2192-2197）；
+	 *   ② **其它已知 vault** —— 解析 `STORAGE_VAULTS`（多库场景：非活动库里的笔记同样应进块编辑器），
+	 *      目录集合由纯函数 `kbVaultState.vaultRootsOf` 给出：vault 根（`customPath` → `path` → `kbRoot/id`）
+	 *      ＋ 关联的外部文件夹（`linkedFolders`）＋ 工作区分组目录（`linkedWorkspaces[].folders`）
+	 *      —— 后两者在 KB 视图里挂「库」区、笔记同样走 `KbNoteEditorInput`（`knowledgeBaseView.ts:2524+` / `:5922`），
+	 *      故判定必须一并覆盖，否则「视图能富编辑、资源管理器却是纯文本」两边漂移。
+	 *
+	 * ⚠ 为什么不用块编辑器自己的 `_findVaultRoot`（`kbBlocksEditorPane.ts:346`，从文件向上找
+	 *   「含 `笔记` 子目录的最近祖先」）：那是**异步磁盘探测**（最多 12 层 `resolve`），
+	 *   放在每次打开文件前做一遍代价偏高；此处用存储里的 vault 清单（同步、零 IO）。二者在
+	 *   正常布局下结论一致；若某 vault 完全不在清单里，则该文件按库外处理（开成文本面板）。
+	 */
+	private _isInsideVault(uri: URI): boolean {
+		if (uri.scheme !== Schemas.file) { return false; }
+		try {
+			const activeRoot = KbImportController.resolveActiveVaultRoot(this._storageService, this._environmentService, this._logService);
+			if (activeRoot && KbImportController.isWithinVault(uri, activeRoot)) { return true; }
+			for (const root of this._knownVaultRoots()) {
+				if (KbImportController.isWithinVault(uri, root)) { return true; }
+			}
+			return false;
+		} catch (e) {
+			// 判定失败按「库外」处理（宁可开成文本面板，也不要把非库文件送进块编辑器）
+			this._logService.warn('[KbNoteResolver] vault 判定失败，按库外处理', e);
+			return false;
+		}
+	}
+
+	/** 已知 vault 的根目录清单（跳过已关闭的库；解析失败 ⇒ 空数组）。纯函数在 `kbVaultState.vaultRootsOf`。 */
+	private _knownVaultRoots(): URI[] {
+		try {
+			const raw = this._storageService.get(STORAGE_VAULTS, StorageScope.APPLICATION);
+			if (!raw) { return []; }
+			return vaultRootsOf(JSON.parse(raw) as IKbVault[], resolveKbRootUri(this._storageService, this._environmentService));
+		} catch (e) {
+			this._logService.warn('[KbNoteResolver] vault 清单解析失败', e);
+			return [];
+		}
+	}
+
+	/** Tab 标题 = 文件名（与知识库视图点击时传入的 `node.name` 同形，含扩展名）。 */
+	private _titleOf(resource: URI): string {
+		const path = resource.path;
+		const idx = path.lastIndexOf('/');
+		return idx >= 0 ? path.substring(idx + 1) : path;
+	}
+}
+
+registerWorkbenchContribution2(
+	KbNoteResolverContribution.ID,
+	KbNoteResolverContribution,
+	// BlockRestore：与媒体预览 resolver 同时机 —— 需在编辑器恢复已有 Tab 之前完成注册。
+	WorkbenchPhase.BlockRestore,
 );
 
 // Register KbSettingsEditorPane — 知识库设置面板（中间栏 EditorPane）。
@@ -3138,9 +3357,11 @@ import { IKanbanRecipeService, KanbanRecipeService } from './providers/tool/kanb
 import { IKanbanScrapeService, KanbanScrapeService } from './providers/tool/kanbanScrapeService.js';
 import { SwarmService } from './providers/swarm/swarmService.js';
 import { McpToolProvider } from './providers/tool/mcpToolProvider.js';
+// web_search 的可选后端清单（唯一真源，避免设置 UI 的 enum 与 provider 注册表漂移）。
+import { WEB_SEARCH_PROVIDER_CHOICES } from './providers/tool/webSearchProviders.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IEnvironmentService, INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
-import { IStorageService } from '../../../../platform/storage/common/storage.js';
+import { IStorageService, StorageScope } from '../../../../platform/storage/common/storage.js';
 import { IMcpService } from '../../../../workbench/contrib/mcp/common/mcpTypes.js';
 import { ICheckpointService } from '../common/checkpointService.js';
 import { CheckpointService } from './checkpointService.js';
@@ -3178,6 +3399,49 @@ CommandsRegistry.registerCommand(
 	'_agentStudio.renderDrawioSvg',
 	(accessor, source: string, theme?: 'dark' | 'default') => {
 		return accessor.get(IDrawioInlineRenderer).renderToSvg(source, theme);
+	},
+);
+
+/**
+ * ★ 2026-09-24：**媒体工具链自检**（命令面板：检查媒体工具链 ffmpeg / ffprobe / yt-dlp）。
+ *
+ * 为什么要有这个入口：这些二进制**不在系统 PATH**（设计如此——随包内置，由
+ * `knowledge/mediaBinaries.ts` 在工具内解析），于是用户 `where ffmpeg` 找不到、
+ * 也不知道工具到底用了哪一份、能不能跑（用户 2026-09-24 实际提出的疑问）。
+ * 自检把「解析到哪 + 真实执行结果 + 版本 + 修复路径」一次性摊开。
+ *
+ * 实现要点：探测复用 `mediaToolchainDoctor`（与工具同源、force 绕开探活缓存），
+ * 本处只负责取服务与展示，不重复任何命令拼装逻辑。
+ */
+// ⚠ 命令面板可见性靠这条 menu 贡献（与 `agentStudio.tools.revokeAllow` 同款写法）——
+//   只 `registerCommand` 而不挂菜单项 = 注册了但用户找不到（本仓反复踩过的那类"不可见"缺陷）。
+MenuRegistry.appendMenuItem(MenuId.CommandPalette, {
+	command: {
+		id: 'agentStudio.mediaToolchain.check',
+		title: '检查媒体工具链（ffmpeg / ffprobe / yt-dlp）',
+	},
+});
+CommandsRegistry.registerCommand(
+	'agentStudio.mediaToolchain.check',
+	async (accessor) => {
+		const notificationService = accessor.get(INotificationService);
+		const logService = accessor.get(ILogService);
+		try {
+			const statuses = await collectMediaToolchainStatus({
+				fileService: accessor.get(IFileService),
+				logService,
+				// 桌面版才有命令通道；没有时 probe 会返回 no-channel，报告里如实说明（不假装"未安装"）
+				runCommand: (command, timeoutMs) => execShortCommand(command, timeoutMs),
+				// dev 下 appRoot 用于向上找 build/saros/bin；打包形态由 process.resourcesPath 兜住
+				appRoot: accessor.get(INativeEnvironmentService).appRoot,
+			});
+			logService.info(`[MediaToolchainDoctor] ${summarizeMediaToolchain(statuses)}`);
+			notificationService.info(formatMediaToolchainReport(statuses));
+		} catch (err) {
+			const reason = err instanceof Error ? err.message : String(err);
+			logService.warn(`[MediaToolchainDoctor] 自检失败: ${reason}`);
+			notificationService.warn(`媒体工具链自检失败：${reason}`);
+		}
 	},
 );
 

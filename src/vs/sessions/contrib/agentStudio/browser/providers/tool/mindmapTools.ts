@@ -12,12 +12,15 @@ import type { IBuiltinToolRegistration } from './builtinToolProvider.js';
 import type { IMindmapData } from '../../../common/mindmap/mindmapTypes.js';
 import { getActiveCanvasPane } from '../../canvasEditor/canvasEditorPane.js';
 import { buildForest, getDirectChildNodes } from '../../../common/mindmap/treeModel.js';
-import { NonRetryableToolError } from '../../../common/providers.js';
+import { NO_PARAMS_SCHEMA, NonRetryableToolError } from '../../../common/providers.js';
 
 export interface IMindmapToolContext {
 	register(reg: IBuiltinToolRegistration): IDisposable;
 	logService: ILogService;
 }
+
+// 无参工具的 inputSchema 用共享常量 NO_PARAMS_SCHEMA（common/providers.ts，理由记在那里）。
+// 这三处原先手写了 `properties: {}`（会被 IOA 网关自动改写），已由该常量取代。
 
 /** 获取活跃画布的数据引用（只读视图） */
 function getActiveCanvasData(): { data: IMindmapData; heading: string } | null {
@@ -41,11 +44,7 @@ export function registerMindmapTools(ctx: IMindmapToolContext): void {
 				'Returns root nodes with their direct child counts + full text.',
 				'Use this to understand the canvas structure before editing.',
 			].join(' '),
-			inputSchema: {
-				type: 'object',
-				properties: {},
-				additionalProperties: false,
-			},
+			inputSchema: NO_PARAMS_SCHEMA,
 			category: 'mindmap',
 			source: 'saros.builtin-tools',
 			toolset: 'canvas',
@@ -155,11 +154,7 @@ export function registerMindmapTools(ctx: IMindmapToolContext): void {
 				'Trigger automatic layout recalculation for the active mindmap/canvas.',
 				'Use after adding or moving multiple nodes to fix overlapping.',
 			].join(' '),
-			inputSchema: {
-				type: 'object',
-				properties: {},
-				additionalProperties: false,
-			},
+			inputSchema: NO_PARAMS_SCHEMA,
 			category: 'mindmap',
 			source: 'saros.builtin-tools',
 			toolset: 'canvas',
@@ -182,11 +177,7 @@ export function registerMindmapTools(ctx: IMindmapToolContext): void {
 				'List all nodes in the active canvas as a flat table (id + text + parent).',
 				'Use this to quickly find node IDs for editing.',
 			].join(' '),
-			inputSchema: {
-				type: 'object',
-				properties: {},
-				additionalProperties: false,
-			},
+			inputSchema: NO_PARAMS_SCHEMA,
 			category: 'mindmap',
 			source: 'saros.builtin-tools',
 			toolset: 'canvas',

@@ -368,6 +368,10 @@ const DESTRUCTIVE_OPERATIONS: ReadonlyArray<{
 		{ tool: 'skill_manage', argKey: 'action', values: ['delete'] },
 		// advancedMemoryTools: action ∈ delete | bulk_delete | audit（audit 只读）
 		{ tool: 'memory_governance', argKey: 'action', values: ['delete', 'bulk_delete'] },
+		// ★ 2026-09-24（P1-5）：processTools: action ∈ list | output | wait | terminate。
+		//   前三个是读/等 ⇒ 不审批；terminate 会杀掉 agent 正在跑的后台任务（可能是一次
+		//   跑了很久的构建/服务）⇒ 每次都问。多操作工具按操作参数判（与 skill_manage 同一形态）。
+		{ tool: 'process', argKey: 'action', values: ['terminate'] },
 	];
 
 /**

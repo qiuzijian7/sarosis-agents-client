@@ -223,3 +223,153 @@ export function formatWebExtractResult(url: string, title: string | undefined, c
 	const head = `# ${title || url}\n\nURL: ${url}\n\n`;
 	return head + body + (truncated ? webExtractTruncationWarning(url) : '');
 }
+
+/**
+ * 把 HTML 压成纯文本：去 script/style/head → 去标签 → 解实体 → 压空白。
+ *
+ * 从 webTools 的 renderer 回退分支内联实现抽出（同一套逻辑随后要被"主进程升级路径"
+ * 复用，抽出来保证两条路径口径一致）。
+ */
+export function htmlToPlainText(html: string): string {
+	return decodeHtmlEntities(
+		stripHtmlTags(
+			html
+				.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, ' ')
+				.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, ' ')
+				.replace(/<head[^>]*>[\s\S]*?<\/head>/gi, ' ')
+				.replace(/<[^>]+>/g, ' ')
+		)
+	).replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * 从 HTML 抽 `<title>` 与 `<meta name="description">`。
+ *
+ * 抽出复用（原先是 renderer 回退分支的内联实现）：原始 HTML 路径没有 reader-mode 给的
+ * 标题，只能自己抽；抽出来才能与 reader-mode 路径的输出形状保持一致。
+ */
+export function extractHtmlTitleAndDescription(html: string): { title: string; description: string } {
+	const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+	const title = titleMatch ? decodeHtmlEntities(stripHtmlTags(titleMatch[1])).trim() : '';
+	const metaMatch =
+		html.match(/<meta[^>]*name=["']description["'][^>]*content=["']([^"']*)["']/i)
+		?? html.match(/<meta[^>]*content=["']([^"']*)["'][^>]*name=["']description["']/i);
+	const description = metaMatch ? decodeHtmlEntities(metaMatch[1]).trim() : '';
+	return { title, description };
+}
+
+// ── web_extract 提取质量分类 ────────────────────────────────────────────────
+//
+// ★ 2026-09-24：判定真源（阈值 + 4 张特征表 + `classifyExtractQuality`）**已搬到**
+// `common/webPageQuality.ts`。原因：浏览器通道（`browser/browserCdpSnapshot.ts` 的
+// `formatSnapshot` / `formatImages`）也要用同一套判定做登录墙自诊断，而浏览器层不该反向
+// 依赖工具层；判定真源一旦有两份，就会出现"HTTP 说这是登录墙、浏览器说这是正常页"的漂移。
+//
+// 这里**只做转发**，保持既有 import 面稳定（本文件的调用方与单测都从本路径取）。
+
+import { classifyExtractQuality } from '../../../common/webPageQuality.js';
+import type { IExtractQuality } from '../../../common/webPageQuality.js';
+
+export { MIN_USEFUL_CONTENT_LENGTH, classifyExtractQuality } from '../../../common/webPageQuality.js';
+export type { IExtractQuality } from '../../../common/webPageQuality.js';
+
+export interface IExtractCandidate {
+	readonly text: string;
+	readonly title?: string;
+	/** 诊断标签（如 'reader-mode' / 'raw-html'），进日志便于归因"哪条路救回来的"。 */
+	readonly source: string;
+}
+
+export interface IExtractSelection {
+	readonly chosen: IExtractCandidate;
+	readonly chosenQuality: IExtractQuality;
+	readonly rejected: IExtractCandidate;
+	readonly rejectedQuality: IExtractQuality;
+}
+
+/**
+ * 在两个候选正文里挑更可用的那个（升级路径的裁决函数）。
+ *
+ * 规则（顺序即优先级）：
+ *   1. `blocked` 一律输给非 `blocked` —— 宁可返回短的真内容，也不要拦截页；
+ *   2. 同为非 `blocked`：取更长的（`trim()` 后长度）；
+ *   3. 完全并列：取前者 `a`（保持确定性，便于测试与日志归因）。
+ */
+export function selectBetterExtract(a: IExtractCandidate, b: IExtractCandidate): IExtractSelection {
+	const qa = classifyExtractQuality(a.text, a.title);
+	const qb = classifyExtractQuality(b.text, b.title);
+	const aBlocked = qa.verdict === 'blocked';
+	const bBlocked = qb.verdict === 'blocked';
+
+	let chooseA: boolean;
+	if (aBlocked !== bBlocked) {
+		chooseA = !aBlocked;
+	} else {
+		// 并列时 chooseA 保持 true（规则 3）。
+		chooseA = b.text.trim().length <= a.text.trim().length;
+	}
+
+	return chooseA
+		? { chosen: a, chosenQuality: qa, rejected: b, rejectedQuality: qb }
+		: { chosen: b, chosenQuality: qb, rejected: a, rejectedQuality: qa };
+}
+
+/**
+ * 「提取可能不完整」告警 —— 附在**成功但可疑**（`thin`）的结果末尾。
+ *
+ * 目的不是拒绝调用，而是**阻止模型把不完整内容当完整内容**（幻觉的主要入口之一）。
+ */
+export function webExtractIncompleteWarning(url: string, quality: IExtractQuality): string {
+	return `\n\n**Extraction may be incomplete**\n\n` +
+		`The extracted text from ${url} is suspiciously short (${quality.length} characters). ` +
+		'It may be a client-rendered page whose content had not finished loading, a paywall or consent shell, or genuinely short. ' +
+		'Do NOT present it as the complete content — state what is missing, or use web_search to find another source.';
+}
+
+/**
+ * 拦截 / 不可用页的**标签化失败**（返回文本，**不抛错**）—— 三个调用点共用这一个入口。
+ *
+ * 为什么返回文本而不是抛错：与 web_search 的"可达但无结果"同一条纪律 —— **网络层失败
+ * 才熔断**，可达但内容不可用应作为明确标注的结果回给模型（抛错会被执行器记为失败并触发
+ * 熔断，而这里的信息对模型是有用的行动依据）。
+ *
+ * 关键：**页面自身的文本一律不返回**（否则模型会基于挑战页 / 占位页内容作答 —— 那正是
+ * "看起来回答了、其实在编造"的来源）。
+ *
+ * 按 `quality.kind` 分派：反爬页与登录墙的**下一步动作不同**，一句通用的"换来源"会让模型在
+ * 无解的路上重试（实测：小红书那种登录墙，`web_extract` 重试多少次都是同一句占位页）。
+ */
+export function webExtractBlockedMessage(url: string, quality: IExtractQuality): string {
+	return quality.kind === 'unavailable'
+		? webExtractUnavailableMessage(url, quality)
+		: webExtractAntiBotMessage(url, quality);
+}
+
+/** 反爬 / 人机校验页的处置建议。 */
+export function webExtractAntiBotMessage(url: string, quality: IExtractQuality): string {
+	return `## Web Extract Blocked\n\n` +
+		`The page at ${url} returned an anti-bot / browser-check interstitial instead of its content ` +
+		`(signals: ${quality.signals.join(', ') || quality.reason}). Its text was intentionally NOT returned — it is not the page content.\n\n` +
+		`Do NOT retry this URL as-is. Instead: pick a different result from web_search, look for the site's official API or a mirror, or ask the user to open it manually. ` +
+		`If a browser tool is available to you, \`browser_navigate\` can also load it — that drives a real browser, which often passes checks a plain fetch cannot.`;
+}
+
+/**
+ * **登录墙 / 内容已删除**的处置建议。
+ *
+ * 与反爬页的关键差别：这里**重试与换来源都无效** —— 缺的是"身份"（登录态）或内容本身已不存在。
+ * 所以只给两条真出路：① 换**通道**（真浏览器 + 用户登录一次）；② 承认读不到。
+ * 明确禁止"凭标题/摘要猜内容"，那是最坏的结果（用户拿到的是一段编造）。
+ */
+export function webExtractUnavailableMessage(url: string, quality: IExtractQuality): string {
+	return `## Web Extract — content unavailable\n\n` +
+		`The page at ${url} did not return its content: it answered with a **login wall / "content is gone" notice** ` +
+		`(signals: ${quality.signals.join(', ') || quality.reason}). That notice was intentionally NOT returned — it is not the page content.\n\n` +
+		`Do NOT retry this URL with web_extract — the same wall will come back, and do NOT guess the content from its title or snippet.\n\n` +
+		`Next step (pick whichever fits):\n` +
+		`  1. If a browser tool is available to you: \`browser_navigate\` drives a **real browser window** whose profile keeps logins. ` +
+		`Ask the user to sign in **once** in that window (never ask for or type credentials yourself), then read the page — this is the usual cure for login-gated pages.\n` +
+		`  2. The item may genuinely be deleted / region- or account-restricted: say so and stop, rather than retrying or inventing content.\n` +
+		`  3. Otherwise: a mirror, the site's official API, or ask the user to paste the content.\n\n` +
+		`Then tell the user plainly which of these you need from them.`;
+}

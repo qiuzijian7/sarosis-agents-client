@@ -164,6 +164,11 @@ export function registerImageGenTools(ctx: ImageGenToolContext): void {
 
 				const items: Array<Record<string, unknown>> = [];
 				const refs: string[] = [];
+				// ★ 2026-09-25（断点③修复 ✓）：落盘失败的兜底计数 + 原因 —— 内联图会被执行层
+				//   `splitToolResultImages` 剥离、单独发给模型（不进 UI 文本 ✓）⇒ 聊天框看不到它 ✗，
+				//   文案若只说「已生成 N 张」用户必然困惑 ✗✓ ⇒ 必须明说「聊天框无法显示」✓。
+				let unstored = 0;
+				let lastStoreErr = '';
 				for (const img of result?.images ?? []) {
 					let ref: string | undefined;
 					if (img.b64 && ctx.mediaBackend) {
@@ -180,13 +185,15 @@ export function registerImageGenTools(ctx: ImageGenToolContext): void {
 							});
 							ref = `saros-media://${asset.id}`;
 						} catch (e) {
-							ctx.logService.warn(`[image_generate] importAsset failed: ${e instanceof Error ? e.message : String(e)}`);
+							lastStoreErr = e instanceof Error ? e.message : String(e);
+							ctx.logService.warn(`[image_generate] importAsset failed: ${lastStoreErr}`);
 						}
 					}
 					if (!ref && img.b64) {
-						// 落盘失败时的兜底：仍返回 image 内容项（UI 若能渲染则显示）
+						// 落盘失败时的兜底：返回 image 内容项（会被剥离发给**模型** ✓ UI 不显示 ✗ ⇒ 文案说清 ✓）
 						const norm = normalizeImagePayload(img.b64);
 						items.push({ type: 'image', data: norm.data, mimeType: norm.mimeType });
+						unstored++;
 						continue;
 					}
 					if (!ref && img.url) { ref = img.url; }
@@ -198,8 +205,11 @@ export function registerImageGenTools(ctx: ImageGenToolContext): void {
 				const lines = refs.map(r => `  - ${r}`).join('\n');
 				items.push({
 					type: 'text',
-					text: `已生成 ${refs.length || items.length} 张图片（provider=${provider.id}, model=${modelId}）。\n` +
-						(refs.length > 0 ? `图片引用（聊天框据此渲染）：\n${lines}` : ''),
+					text: `已生成 ${refs.length + unstored} 张图片（provider=${provider.id}, model=${modelId}）。\n` +
+						(refs.length > 0 ? `图片引用（聊天框据此渲染）：\n${lines}\n` : '') +
+						(unstored > 0
+							? `⚠ 其中 ${unstored} 张媒体库存储失败（${lastStoreErr}）：图片已提供给模型，但聊天框无法显示。`
+							: ''),
 				});
 				return items;
 			} catch (err) {

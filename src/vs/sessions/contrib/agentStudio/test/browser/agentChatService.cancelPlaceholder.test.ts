@@ -63,47 +63,52 @@ suite('取消且无内容 ⇒ 不得静默丢弃（消息丢失回归）', () =>
 		assert.ok(src.includes('付费但无内容'), '必须显式提示"付费但无内容"这一情形，便于下次一眼定位 ✓');
 	});
 
-	test('★★★ 优雅停止（主流做法 ✓）：第一次 Stop 不立即切，边界处才硬中止；第二次立即停 ✓', () => {
+	test('★★★ 立即中止（2026-09-24 用户要求「点停止 = LLM 立刻停」✓）：cancelStream 第一次调用即 abort ✓ 优雅停止已移除 ✗', () => {
 		const src = readSrc();
-		assert.ok(src.includes('private readonly _gracefulStopRequested'),
-			'必须有优雅停止标记集合 ✓');
-		// 第一次点：立标记 + 直接 return（不切 ✓）
-		assert.ok(src.includes('this._gracefulStopRequested.add(streamKey)') && src.includes('再次点击 = 立即停'),
-			'cancelStream 第一次必须先立标记并**立即 return**（否则还是会当场 abort ✗）');
-		// 边界处才 abort ✓（且不 break —— 让本条 delta 走完快照 ✓）
-		assert.ok(src.includes(`this._gracefulStopRequested.has(streamKey) && (delta as any).type === 'assistant_turn'`),
-			'优雅停止必须在 assistant_turn 边界触发中止 ✓（只砍后续 iteration ✓，当前内容保留 ✓）');
-		// 生命周期：回合开始 + finalize 都要清理 ✓（防泄漏到下一回合 ✗）
-		const clears = src.split('this._gracefulStopRequested.delete(streamKey)').length - 1;
-		assert.ok(clears >= 2, `优雅停止标记必须在多处清理（回合开始 + finalize ✓；实际 ${clears} 处 ✗）`);
+		// ① 优雅停止机制必须不存在 ✗✓（两段式 ⇒ 「点了没停 = 点了没反应」✗ 2026-09-24 被用户推翻 ✓）
+		assert.ok(!src.includes('_gracefulStopRequested'),
+			'优雅停止标记集合必须已移除 ✗✓（残留 ⇒ 第一次点击仍不 abort ✗）');
+		// ② cancelStream 第一次调用即 abort ✓（其前不得有「立标记即 return」的优雅分支 ✗✓）
+		// ⚠ 必须锚定**方法定义** ✗✓ —— 裸 `indexOf('cancelStream(')` 会先命中上游调用点
+		//   （sendMessage 的 stale-stream 兜底 ✓），它到 abort 之间隔着大量 return ⇒ 误报 ✗（实测 ✓）
+		const cancelBody = src.slice(src.indexOf('cancelStream(agentId: string'));
+		const abortIdx = cancelBody.indexOf('controller.abort()');
+		assert.ok(abortIdx > 0, 'cancelStream 必须立即 abort ✓');
+		assert.ok(!cancelBody.slice(0, abortIdx).includes('return'),
+			'abort 之前不得有「立标记即 return」的优雅分支 ✗✓（否则第一次点击仍不切 ✗）');
+		// ③ 善后链保留 ✓：abort ⇒ for-await break ⇒ 补发 done(canceled:true) ⇒ UI 显示「用户取消」
+		assert.ok(src.includes('canceled: true'), 'abort 后必须补发 done(canceled:true) ✓（UI 收尾链 ✓）');
 	});
 
 	test('★★★ 取消时**有内容**也必须打「已中断」标记（否则分不清完整 vs 被截断 ✗）', () => {
 		const src = readSrc();
-		assert.ok(src.includes('controller.signal.aborted || this._gracefulStopRequested.has(streamKey)'),
-			'中断标记必须同时覆盖 abort 与优雅停止两种来源 ✓');
+		assert.ok(src.includes('if (controller.signal.aborted) {'),
+			'中断标记 = aborted 单来源 ✓（优雅停止已移除 ⇒ 双来源判据随之退役 ✓ 2026-09-24）');
 		const marks = src.split('streamInterrupted: true').length - 1;
 		assert.ok(marks >= 2, `streamInterrupted 至少要在两处设置（中断草稿复用 ✓ + 取消标记 ✓；实际 ${marks} 处 ✗）`);
 	});
 
-	test('★★★ UI 必须有"正在停止"可感知反馈（否则用户误以为没反应 ✗）', () => {
+	test('★★★ 取消反馈必须**即时可见**（气泡立即显示「⚠️ 用户取消」✓ 脉冲/小条随优雅停止退役 ✗）', () => {
 		const rel = 'src/vs/sessions/browser/agentChat/agentChatPanel.composer.ts';
 		const abs = path.join(process.cwd(), rel);
 		assert.ok(fs.existsSync(abs), `源码不存在（路径基准变了？）：${abs}`);
 		const src = fs.readFileSync(abs, 'utf8');
 		assert.ok(src.includes('_requestCancelExecution()'), '取消必须走统一入口（按钮/Escape ✓）');
-		assert.ok(src.includes('_markGracefulStopPending') && src.includes('chat-stopping-circle'),
-			'必须有按钮脉冲态 ✓');
-		assert.ok(src.includes('chat-footer-stopping'), '必须在处理中指示旁加"正在停止"小条 ✓');
-		// 直接调用（绕过统一入口 ✗）只允许出现在**统一入口内部** —— 剥注释后应 ≤1 ✓
+		// 直接调用（绕过统一入口 ✗）只允许出现在**统一入口内部** —— 剥注释后应 ≤1 ✓（旧断言保留 ✓）
 		const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 		const directCalls = code.split('this._onCancelExecution()').length - 1;
 		assert.ok(directCalls <= 1,
 			`取消必须统一走 _requestCancelExecution()（直接调用应只剩统一入口内部那 1 处；实际 ${directCalls} ✗）`);
-		// CSS 也要有对应样式 ✓
-		const css = fs.readFileSync(path.join(process.cwd(), 'src/vs/sessions/browser/agentChat/media/agentChat.css'), 'utf8');
-		assert.ok(css.includes('.chat-stopping-circle') && css.includes('.chat-footer-stopping'),
-			'CSS 必须有"正在停止"的两套样式（按钮 + 小条 ✓）');
+		// ★ 2026-09-24：优雅停止的脉冲/小条必须退役 ✗✓（立即中止 ⇒ 没有"正在停止"过渡态 ✓）
+		assert.ok(!src.includes('_markGracefulStopPending') && !code.includes('chat-stopping-circle'),
+			'优雅停止的按钮脉冲必须已移除 ✗✓（残留 ⇒ 误以为还有两段式 ✗）');
+		// 即时反馈的真正落点：pane 在 onCancelExecution 里**同步**把气泡更新为「⚠️ 用户取消」✓
+		const pane = fs.readFileSync(path.join(process.cwd(), 'src/vs/sessions/contrib/agentStudio/browser/nativeChatEditorPane.ts'), 'utf8');
+		assert.ok(pane.includes(`'⚠️ 用户取消'`), '取消标记文案必须是「⚠️ 用户取消」✓（2026-09-24 用户要求 ✓）');
+		const cancelIdx = pane.indexOf('onCancelExecution');
+		const markerIdx = pane.indexOf('_buildCanceledContent', cancelIdx);
+		assert.ok(markerIdx > cancelIdx && markerIdx - cancelIdx < 4000,
+			'onCancelExecution 必须**同步**调 _buildCanceledContent（立即显示 ✓ 不等滞后的 done delta ✗）');
 	});
 });
 
@@ -188,14 +193,20 @@ suite('中断草稿消费：活跃流守卫 + 去重 + 写删串行（2026-09-20
 
 	test('★★★ 注入前必须去重（回合已正常落盘的残留草稿不得再注入 ✗）', () => {
 		const src = readSrc(SVC_REL);
-		assert.ok(src.includes('_isDraftAlreadyPersisted('),
-			'必须有草稿去重判定（尾部 assistant 拼接包含草稿 ⇒ 丢弃 ✓）');
+		// ★ 2026-09-25 同步（断言跟实现搬家 ✓）：判据 2026-09-23 已抽到
+		//   `common/interruptedDraftGuard.ts` 的纯函数 `isDraftAlreadyPersisted` ✓ ——
+		//   旧断言钉服务内的私有方法名 `_isDraftAlreadyPersisted(` ⇒ 搬家即红 ✗（本次实测 ✓）。
+		assert.ok(src.includes('isDraftAlreadyPersisted('),
+			'服务必须调草稿去重守卫（尾部 assistant 拼接覆盖草稿 ⇒ 丢弃 ✓ 实现见 common/interruptedDraftGuard.ts ✓）');
 		const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 		assert.ok(code.includes('skipped stale interrupted draft'),
 			'去重命中必须留可观测日志 ✓');
-		// 去重判定要遍历尾部连续 assistant 段（per-iteration 消息组跨多条 ✓）
-		assert.ok(code.includes("if (m.role !== 'assistant') { break; }"),
-			'去重必须只取尾部连续 assistant 段（遇到 user 即停 ✓）');
+		// 去重判定要遍历尾部连续 assistant 段（per-iteration 消息组跨多条 ✓）——
+		// 语义钉在守卫模块（纯函数 ✓ 可单测 ✓ 服务侧只剩调用 ✓）
+		const guardSrc = fs.readFileSync(path.join(process.cwd(),
+			'src/vs/sessions/contrib/agentStudio/common/interruptedDraftGuard.ts'), 'utf8');
+		assert.ok(guardSrc.includes("if (m.role !== 'assistant') { break; }"),
+			'守卫必须只取尾部连续 assistant 段（遇到 user 即停 ✓）');
 	});
 
 	test('★★★ pane 侧草稿写/删必须串行（clear 不得插在在飞写之前 ✗）', () => {

@@ -182,6 +182,24 @@ export const TOOLSET_DEFINITIONS: readonly IToolsetDefinition[] = [
 		deferrable: true,
 	},
 	{
+		// ★ 2026-09-24：飞书云文档工具族（`feishu_doc_read` + 4 个评论工具，真实 handler
+		// 见 browser/providers/tool/feishuDriveTools.ts）。
+		//
+		// 为什么必须显式定义：不登记就落 `utility`（Low + deferrable）⇒ focus 模式下**直接发
+		// 与桥接目录都进不去** —— 这个坑已依次咬过 `unreal_*` / `image_gen` /
+		// `renderMermaidDiagram` / `canvas_*`（见本文件另三处历史注释与
+		// test/browser/toolRegistrationWiring.test.ts ①）。
+		//
+		// priority 取 Always 的理由：「用户给了飞书文档链接、要求读文档/看评论」是**显式意图**，
+		// 与工作区类型无关（代码工作区里同样会发生），不属于按项目信号推荐的代码类工具集。
+		// 该集只有 5 个工具，schema 开销可控；Always 也不占 toolSearchAssembler 的软上限。
+		id: 'feishu',
+		label: 'Feishu Docs',
+		priority: ToolsetPriority.Always,
+		prefixes: ['feishu_'],
+		deferrable: false,
+	},
+	{
 		id: 'kanban',
 		label: 'Kanban',
 		priority: ToolsetPriority.Low,
@@ -251,6 +269,26 @@ export const TOOLSET_DEFINITIONS: readonly IToolsetDefinition[] = [
 		priority: ToolsetPriority.Always,
 		prefixes: [],
 		exactNames: ['image_generate'],
+		deferrable: false,
+	},
+	{
+		// ★ 2026-09-24：视频工具集（`extract_video_frames` 抽帧 / `video_analyze` 视频理解）。
+		//
+		// 为什么必须显式定义：同 `image_gen` / `unreal` —— 不登记就落 `utility`（Low + deferrable），
+		// 被 focus 模式整条剔除 ⇒ 工具**注册了但 LLM 永远看不到**（且零报错）。
+		//
+		// priority 取 Always 的理由：「用户给了视频、要求看画面/分析」是**显式意图**，
+		// 不属于按项目信号推荐的代码类工具集 ⇒ 只能靠 Always 豁免；且 Always 不占
+		// `toolSearchAssembler.MAX_VISIBLE_TOOLS` 软上限。该集仅 2 个工具，schema 开销可忽略。
+		//
+		// ★ 2026-09-24（续）：`video_analyze` 的**真 handler 已实现**（此前是 stub ⇒ 被
+		//   `isStub` 跳过 ⇒ 模型看不到）。实现后必须登记在这里，否则它会落到 `utility` 被
+		//   focus 模式剔除 —— 即「工具注册了但模型永远看不到」的复发。
+		id: 'video_frames',
+		label: 'Video Frames & Analysis',
+		priority: ToolsetPriority.Always,
+		prefixes: [],
+		exactNames: ['extract_video_frames', 'video_analyze'],
 		deferrable: false,
 	},
 ];
@@ -392,9 +430,17 @@ export const CORE_TOOLS: ReadonlySet<string> = new Set([
 	'renderdrawiodiagram',
 	// 图像分析 / 媒体生成 / 定时任务（2026-09-11 补：与 image_generate 同为用户显式意图，需 Always 豁免）
 	'vision_analyze', 'video_generate', 'text_to_speech', 'cronjob',
-	// 浏览器（用于 LLM 看到浏览器工具但实际被沙箱限制时仍可调用基础导航）
+	// 浏览器（2026-09-24 P1-2 起为**真实实现**：CDP 驱动用户本机真实 Chrome，
+	// 见 browser/providers/tool/browserTools.ts）。
+	// 旧注释「用于 LLM 看到浏览器工具但实际被沙箱限制时仍可调用基础导航」是**失真的** ——
+	// 这些名字长期只有 stub（`isStub` 被 `listTools` 跳过），模型从未看到过它们。
 	'browser_navigate', 'browser_snapshot', 'browser_click',
 	'browser_type', 'browser_scroll', 'browser_back',
+	// ★ 2026-09-24 补第 7 个：`browser_get_images`（页面图片清单）。
+	//   它一直是 reserved stub，而"图文帖的正文在图片里"（小红书尤甚）恰恰需要它 ——
+	//   `browser_snapshot` 只采集可交互元素/标题/正文摘录，拿不到任何图片 URL ⇒ 模型
+	//   既看不到图、也无法 `vision_analyze`（后者需要一个 URL）。
+	'browser_get_images',
 	// 委派 / 代码执行
 	'delegate_task', 'new_agent', 'execute_code',
 	// 工具搜索桥接工具 — 本身就不能被延迟

@@ -12,7 +12,7 @@
  */
 
 import { URI } from '../../../../../../base/common/uri.js';
-import { IToolResultContent, NonRetryableToolError } from '../../../common/providers.js';
+import { IToolResultContent, NO_PARAMS_SCHEMA, NonRetryableToolError } from '../../../common/providers.js';
 import type { ICodebaseGraphService } from '../../codebaseGraphService.js';
 import type { AdrManager } from '../../codebaseGraphAdr.js';
 import type { ILogService } from '../../../../../../platform/log/common/log.js';
@@ -511,7 +511,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 		definition: {
 			name: 'list_projects',
 			description: 'List all indexed projects in the codebase graph.',
-		inputSchema: { type: 'object', properties: { _no_params: { type: 'boolean', description: 'No parameters needed' } } },
+		inputSchema: NO_PARAMS_SCHEMA,
 		category: 'codebase',
 		source: 'saros.builtin-tools',
 	},
@@ -979,7 +979,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 		definition: {
 			name: 'get_graph_schema',
 			description: 'Get the schema of the codebase graph: node labels, edge types, and counts.',
-		inputSchema: { type: 'object', properties: { _no_params: { type: 'boolean', description: 'No parameters needed' } } },
+		inputSchema: NO_PARAMS_SCHEMA,
 		category: 'codebase',
 		source: 'saros.builtin-tools',
 	},

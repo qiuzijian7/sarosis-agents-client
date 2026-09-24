@@ -99,9 +99,23 @@ export function buildCompactToolSection(toolNames: ReadonlyArray<string>, family
 	// 第 1 条自相矛盾（授权模型把 tool call 打印出来，而打印出来的不会被执行）。
 	buildToolCallFormatDirective(family),
 	'',
+	// ★ 2026-09-24：从「无条件 PREFER anysearch」改为「按序短路的检索决策规则」。
+	// 旧措辞的实测代价：任何 agent 想搜一次网都必须走 read_skill → execute_code 起
+	// python 子进程（路径长、依赖少一个运行时即失败），而 anysearch 的增量收益
+	// （17 个垂直域、batch_search 并行）只体现在长尾查询上 —— 属于「用最重路径覆盖
+	// 最常见场景」。规则化后默认路径回到 1 次工具调用，anysearch 只在其真正更强的
+	// 场景（结构化标识符 / 垂直域）介入，且每一步都保留一次性降级 + 留痕纪律。
 	'## Web Search Strategy',
 	'',
-	'For real-time / external web search, PREFER the **anysearch** skill (unified real-time search service) over the built-in `web_search` / `web_extract` tools. Its CLI lives in the anysearch skill directory (NOT the workspace root), so run it via `execute_code` with cwd set to that skill directory: first `read_skill("anysearch")` to get its `skillDir` (absolute path), then run `python3 scripts/anysearch_cli.py doc` (command spec) and `python3 scripts/anysearch_cli.py search "your query"` with `cwd=<skillDir>` (supports general web + vertical domains, richer results). If AnySearch fails (API error, timeout, runtime unavailable, or quota exhausted without a key), do NOT retry the same failing command — fall back to the built-in `web_search` / `web_extract` tools to complete the search, and note the fallback.',
+	'Choose the retrieval path by the FIRST rule that matches. Do NOT default to the heaviest one:',
+	'',
+	'1. **Latest/current facts, news, or an ordinary question** → call the built-in `web_search` directly. One call, no extra runtime dependency.',
+	'2. **Structured identifiers or domain-specific data** (stock quotes, papers, laws, weather, flights/hotels, code docs, social posts) → use the **anysearch** skill, which covers 17 vertical domains plus parallel batch search. Its CLI lives in the anysearch skill directory (NOT the workspace root), so run it via `execute_code` with cwd set to that skill directory: first `read_skill("anysearch")` to get its `skillDir` (absolute path), then run `python3 scripts/anysearch_cli.py doc` (command spec) and `python3 scripts/anysearch_cli.py search "your query"` with `cwd=<skillDir>`.',
+	'3. **A specific URL is already known** → `web_extract` to read that page.',
+	'4. **Login-gated page, JS-rendered SPA, or page interaction is required** → a browser tool, if one is available to you.',
+	'5. **Fallback**: if the chosen path fails (API error, timeout, runtime unavailable for anysearch; network failure for `web_search`), do NOT retry the same failing command. Switch to the other tool **once** to complete the search, and note the fallback in your answer.',
+	'',
+	'Do not skip rule 1 to reach rule 2 for an ordinary query: anysearch costs an extra `read_skill` round-trip plus an `execute_code` subprocess, which only pays off in the vertical-domain and batch cases above.',
 	'',
 	'## CRITICAL ANTI-HALLUCINATION RULES (MUST FOLLOW)',
 		'',

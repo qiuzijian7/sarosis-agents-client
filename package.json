@@ -1,6 +1,6 @@
 {
   "name": "vssaros",
-  "version": "2.2.26054",
+  "version": "2.2.26055",
   "distro": "adf5d4ef5d36b1829d04e2a6f5255c5344cb0316",
   "author": {
     "name": "Microsoft Corporation"
@@ -20,6 +20,7 @@
     "test-agentstudio-common": "node src/vs/sessions/contrib/agentStudio/test/common/run-all-common-tests.mjs",
     "test-agentstudio-browser": "node src/vs/sessions/contrib/agentStudio/test/browser/run-all-browser-tests.mjs",
     "test-agentstudio-panel": "node src/vs/sessions/contrib/agentStudio/test/browser/test-server.mjs",
+    "verify-browser-cdp": "node scripts/verify-browser-cdp.mjs",
     "smoke-agent-layout": "node scripts/agent-layout-smoke.mjs",
     "smoke-agent-layout-parse": "node scripts/agent-layout-smoke.mjs --parse-only",
     "probe-agent-layout": "node scripts/agent-layout-probe.mjs",

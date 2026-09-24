@@ -49,8 +49,14 @@ import { extractDiagramEmbeds, renderNoteDiagramEmbeds } from './diagramEmbedPip
 import { renderNoteDiagrams } from './diagramRenderPipeline.js';
 import { extractHtmlEmbeds, prepareHtmlAttachmentsForNote } from './htmlAttachmentPrepare.js';
 
-/** 默认扫描范围：`srcDirs` 留空时 = 知识库的两个标准分区（与视图按钮口径一致）。 */
-export const DEFAULT_DIAGRAM_SRC_DIRS: readonly string[] = ['库', '笔记'];
+/**
+ * 兜底扫描范围：`srcDirs` 留空时用。
+ *
+ * ★ 2026-09-24：改为只含「笔记」—— 同步范围恒为「笔记」区内的映射目录
+ * （见 `feishuSyncCore.deriveMappedSrcDirs`），「库」是素材层、永不参与同步。
+ * 正常调用方（视图按钮 / `kb_feishu_sync` 工具）都会显式传入推导结果，这里只是防御性兜底。
+ */
+export const DEFAULT_DIAGRAM_SRC_DIRS: readonly string[] = ['笔记'];
 
 /** 收集上限（防御性：极端大的 vault 不至于把同步拖死）。 */
 const MAX_FILES = 20000;

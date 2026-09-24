@@ -72,6 +72,11 @@ suite('commandFailureHints — 错误文本模式（确定性 vs 瞬时）', () 
 			['fatal: The current branch feat has no upstream branch', 'git-no-upstream'],
 			['mkdir: cannot create directory: File exists', 'already-exists'],
 			['cat: /tmp/x.txt: No such file or directory', 'no-such-file'],
+			// ★ 2026-09-25（日志 20260925T020714）：/g/... POSIX 盘符路径原样到达原生 Windows
+			//   程序（execute_code 禁用了 MSYS 参数转换）—— 文件其实存在，是路径形式错了。
+			['/g/SarosWorkspace/x/.tmp-media/bili_ui.mp4: No such file or directory', 'posix-path-not-converted'],
+			// 反向：真不存在的文件（盘符形式正确）仍走通用 no-such-file
+			['G:/no/such/file.mp4: No such file or directory', 'no-such-file'],
 			['open /etc/hosts: Permission denied', 'permission-denied'],
 			["ModuleNotFoundError: No module named 'requests'", 'python-no-module'],
 			['npm ERR! Missing script: "buildx"', 'npm-missing-script'],

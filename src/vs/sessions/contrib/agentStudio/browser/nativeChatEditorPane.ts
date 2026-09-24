@@ -56,6 +56,10 @@ import { AgentMediaEditorInput } from './agentMedia/agentMediaEditorInput.js';
 import { requestCanvasOps } from './providers/tool/canvasOpsBridge.js';
 import { AgentMediaEditorPane } from './agentMedia/agentMediaEditorPane.js';
 import { buildEnsureSpec, nativeIpcBridge, normalizePanelUrl, type ConfigHtmlCfg } from '../common/configHtmlConfig.js';
+// ★ 2026-09-25：saros-media:// 短引用的提取/替换走**纯模块**（可单测 ✓ 两处不再各写正则 ✗）
+import { extractSarosMediaIds, replaceSarosMediaRefs } from './mediaRefResolver.js';
+// 文档（pdf/epub/docx）→ 文本：聊天框把拖入的文档转成可读文本附件（★ 2026-09-24）
+import { KB_EXTRACT_DOC_TEXT_CHANNEL, type IKbExtractDocTextResult } from '../common/kbDocConvertChannel.js';
 import { ensureConfigHtmlServerAndOpenPreview } from './configHtmlPreviewOpener.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { AgentChatPanel } from '../../../browser/agentChat/agentChatPanel.js';
@@ -219,6 +223,22 @@ export class NativeChatEditorPane extends EditorPane {
 	private static _injectClaimUntil = 0;
 	private static _directRunClaimFingerprint = '';
 	private static _directRunClaimUntil = 0;
+
+	/**
+	 * **合成工具卡**（宿主自发、绕过 LLM）的认领指纹与持有句柄。
+	 *
+	 * ★ 2026-09-24（用户要求「点构建按钮后聊天框显示大量文本 ⇒ 封装成一次工具调用」）：
+	 *   与 workflow 直接执行（`_directRunClaim*`）同款「单一 pane 认领」策略；不同点是卡片挂在
+	 *   一张**独立的、非流式** assistant 消息上（`isStreaming: false`），并在这里长期持有句柄
+	 *   （`_toolCards`）—— 因为构建期间 agent 自己还会推流式消息，`_streamingAssistantMsg`
+	 *   可能被重置/换新；只靠它找卡片会丢。
+	 */
+	private static _toolCardClaimFingerprint = '';
+	private static _toolCardClaimUntil = 0;
+	private readonly _toolCards = new Map<string, {
+		assistantId: string;
+		tc: { id: string; name: string; status?: 'running' | 'success' | 'error'; result?: string; error?: string; progress?: number; progressText?: string };
+	}>();
 
 	private _isInitialized = false;
 	private _defaultAgentSelected = false;
@@ -1279,7 +1299,7 @@ export class NativeChatEditorPane extends EditorPane {
 					// 不触发队列 dispatch，避免与 line 644 双重触发。
 					this._chatPanel?.setSending(false, { triggerExecuteNext: false });
 					this._isSending = false;
-					// 立即在 LLM 冒泡消息上显示「用户已取消」——cancelStream 仅中断 AbortController，
+					// 立即在 LLM 冒泡消息上显示「用户取消」——cancelStream 仅中断 AbortController，
 					// 真正的 done(canceled:true) delta 要等 for-await 循环 break 后才会发出（可能滞后数秒，
 					// 例如 LLM 正阻塞在工具调用）。这里同步更新气泡，让停止反馈即时可见。
 					// done 事件滞后到达时会再次调用本逻辑，_buildCanceledContent 保证幂等不重复追加。
@@ -1631,7 +1651,8 @@ export class NativeChatEditorPane extends EditorPane {
 				if (snapshotUsable && streamingSnapshot) {
 					adaptedHistory.push(streamingSnapshot);
 				}
-				this._chatPanel?.setMessages(adaptedHistory);
+				// ★ 2026-09-25：经包装入口 ⇒ 历史里的 saros-media:// 短引用异步解析成 data URL ✓
+				this._setMessagesAndResolveMediaRefs(adaptedHistory);
 				// ★★ 2026-09-11 补充修复「切回原会话后，原先正在输出的内容没有显示」★★
 				//
 				// `setMessages` 只整体替换 **panel 侧** 的 `_messages` 数组，**不会**清 pane
@@ -1745,7 +1766,8 @@ export class NativeChatEditorPane extends EditorPane {
 							}
 						try {
 							const history = await this._chatService.getHistory(agentId, this._currentSessionId);
-							this._chatPanel?.setMessages(this._adaptHistoryMessages(history));
+							// ★ 2026-09-25：经包装入口 ⇒ 历史媒体引用异步解析 ✓
+							this._setMessagesAndResolveMediaRefs(this._adaptHistoryMessages(history));
 						} catch {
 							this._chatPanel?.setMessages([]);
 						}
@@ -2069,6 +2091,19 @@ export class NativeChatEditorPane extends EditorPane {
 				this._workflowExecutionService.submitWorkflowVariables(executionId, values).catch(err => {
 					this._logService.error('[NativeChatEditorPane] Failed to submit variables:', err);
 				});
+			},
+			// ★ 2026-09-24（用户要求「epub/pdf/doc 能直接给 LLM 解读」）：把拖入聊天框的文档
+			//   交给主进程提取器（PDF: pymupdf/pypdf；epub/docx: 纯 TS 解 zip）转成 Markdown 文本。
+			//   ⚠ 失败必须**抛出带原因的错**（而不是返回 undefined）：聊天框据此在气泡里显示失败原因，
+			//     避免「拖进去什么都没发生」。
+			extractDocumentText: async (filePath: string): Promise<string | undefined> => {
+				const invoke = nativeIpcBridge()?.ipcRenderer?.invoke;
+				if (!invoke) { throw new Error('当前环境没有命令执行通道（非桌面版），无法提取文档文本'); }
+				const res = await invoke(KB_EXTRACT_DOC_TEXT_CHANNEL, { filePath }) as IKbExtractDocTextResult | undefined;
+				if (!res?.ok) { throw new Error(res?.error ?? '提取失败（未返回结果）'); }
+				this._logService.info(`[NativeChatEditorPane] doc → text: ${filePath} `
+					+ `(${res.backend ?? '?'}, ${res.pages ?? 0} 段/页, ${(res.text ?? '').length} chars)`);
+				return res.text;
 			},
 			onOpenFile: (filePath: string, contentOrLine?: string | number) => {
 				if (typeof contentOrLine === 'string') {
@@ -2603,6 +2638,69 @@ export class NativeChatEditorPane extends EditorPane {
 			if (last !== undefined && now - last < 250) { return; }
 			(this as any)._lastWfProgressFlush = now;
 			this._chatPanel.updateMessage(assistantId, { toolCalls: assistantMsg.toolCalls!.slice() });
+		}));
+
+		// ── 合成工具卡（宿主自发、绕过 LLM、不发用户消息）────────────────────────────
+		// ★ 2026-09-24（用户要求：「点知识库构建按钮后聊天框显示大量文本 ⇒ 优雅些，封装成一次工具调用」）：
+		//   与上面的 workflow 直接执行同款机制，但**工具名由 payload 决定**（不写死 'workflow'），
+		//   且卡片挂在一张独立的非流式 assistant 消息上 ⇒ 构建期间 agent 自己的流式工作过程
+		//   （file_read / file_write 卡 + 文本）照常在下一条消息里渲染，两者互不覆盖。
+		this._register(this._agentStudioService.onDidRequestToolCard(({ toolCallId, name, displayName, args }) => {
+			if (!this._chatPanel || !this._currentAgentId) { return; } // 未就绪 pane 不认领
+			const now = Date.now();
+			if (toolCallId === NativeChatEditorPane._toolCardClaimFingerprint && now < NativeChatEditorPane._toolCardClaimUntil) {
+				return; // 另一 pane 已认领
+			}
+			NativeChatEditorPane._toolCardClaimFingerprint = toolCallId;
+			NativeChatEditorPane._toolCardClaimUntil = now + 60_000;
+			const assistantId = `msg_${Date.now()}_toolcard`;
+			const tc = {
+				id: toolCallId,
+				name,
+				args,
+				status: 'running' as const,
+				displayName: displayName ?? name,
+				// defaultShow:false ⇒ 卡片收起（标题栏常显状态），避免长任务把聊天撑得很长
+				defaultShow: false,
+				progress: 0,
+				progressText: '准备中…',
+			};
+			const msg: IAgentChatMessage = {
+				id: assistantId,
+				role: 'assistant',
+				content: '',
+				parts: [{ kind: 'tool', tool: tc } as any],
+				timestamp: Date.now(),
+				toolCalls: [tc as any],
+				isStreaming: false,
+				isThinking: false,
+				streamPhase: 'idle',
+				turnId: `turn_${Date.now()}`,
+			};
+			this._toolCards.set(toolCallId, { assistantId, tc });
+			this._chatPanel.addMessage(msg);
+			this._logService.info(`[NativeChatEditorPane#${this._paneId}] synthetic tool card: ${toolCallId} "${name}"`);
+		}));
+
+		this._register(this._agentStudioService.onDidToolCardProgress(({ toolCallId, progress, progressText }) => {
+			const held = this._toolCards.get(toolCallId);
+			if (!held || !this._chatPanel) { return; } // 本 pane 不持有该卡
+			if (typeof progress === 'number') { held.tc.progress = progress; }
+			if (progressText) { held.tc.progressText = progressText; }
+			// updateMessage 是浅合并 + 整字段替换 ⇒ 必须把整个 toolCalls 数组传过去（同 workflow 的教训）
+			this._chatPanel.updateMessage(held.assistantId, { toolCalls: [held.tc as any] });
+		}));
+
+		this._register(this._agentStudioService.onDidToolCardResult(({ toolCallId, ok, result, error }) => {
+			const held = this._toolCards.get(toolCallId);
+			if (!held) { return; } // 本 pane 不持有该卡（别的 pane 认领了 / 面板已关闭）
+			held.tc.status = ok ? 'success' : 'error';
+			held.tc.result = ok ? (result ?? '完成') : (error ?? '构建未完成（详见通知）');
+			if (!ok) { held.tc.error = error; }
+			delete held.tc.progressText;
+			this._chatPanel?.updateMessage(held.assistantId, { toolCalls: [held.tc as any] });
+			this._toolCards.delete(toolCallId);
+			this._logService.info(`[NativeChatEditorPane#${this._paneId}] synthetic tool card closed: ${toolCallId} ok=${ok}`);
 		}));
 
 		// 监听 agent 列表变化（新建/删除/更新）——即时刷新 header 的 agent 下拉框。
@@ -3150,6 +3248,8 @@ export class NativeChatEditorPane extends EditorPane {
 				// 用户已在底部 → 正常 setMessages（保持底部跟随）
 				this._chatPanel.setMessages(adapted);
 			}
+			// ★ 2026-09-25：任务板触发的 reload 同样要解析历史媒体引用（否则刷新后图片消失 ✗）
+			void this._resolveMediaRefsInHistory(adapted);
 
 			this._restoreCompactedBaseline();
 		} catch (err) {
@@ -3310,7 +3410,8 @@ export class NativeChatEditorPane extends EditorPane {
 						}
 						this._logService.debug(`[NativeChatEditorPane][Init] setMessages START (after yield) t=${(performance.now() - t0).toFixed(1)}ms`);
 						console.info(`[ChatFlickerDiag] _selectAndLoadAgent → setMessages(${adapted.length}) gen=${gen}`);
-						this._chatPanel.setMessages(adapted);
+						// ★ 2026-09-25：启动恢复同样走包装入口（重启后图片不消失 ✓）
+						this._setMessagesAndResolveMediaRefs(adapted);
 						this._logService.debug(`[NativeChatEditorPane][Init] setMessages done t=${(performance.now() - t0).toFixed(1)}ms`);
 						// 恢复压缩基线（窗口重载后 token 进度条保持压缩后数值）
 						this._restoreCompactedBaseline();
@@ -3543,27 +3644,86 @@ private _getMediaBackend(): IMediaBackend {
  */
 private async _resolveMediaRefsInToolResult(tc: any, msgId: string, msg: any): Promise<void> {
 	const text = typeof tc?.result === 'string' ? tc.result : '';
-	if (!text.includes('saros-media://')) { return; }
-	const ids = [...text.matchAll(/saros-media:\/\/([A-Za-z0-9_-]+)/g)].map(m => m[1]);
+	const ids = extractSarosMediaIds(text);
 	if (ids.length === 0) { return; }
-	let replaced = text;
-	let resolved = 0;
-	for (const id of ids) {
+	const urlById = new Map<string, string>();
+	await Promise.all(ids.map(async id => {
 		try {
 			const dataUrl = await this._getMediaBackend().getAsDataUrl(id);
-			if (dataUrl) {
-				replaced = replaced.split(`saros-media://${id}`).join(dataUrl);
-				resolved++;
-			}
+			if (dataUrl) { urlById.set(id, dataUrl); }
 		} catch (err) {
 			this._logService.warn(`[NativeChatEditorPane] resolve media ref ${id} failed:`, err);
 		}
-	}
+	}));
+	const { text: replaced, resolved } = replaceSarosMediaRefs(text, urlById);
 	if (resolved > 0 && replaced !== text) {
 		tc.result = replaced;
 		this._chatPanel?.updateMessage(msgId, { toolCalls: (msg.toolCalls ?? []).slice() });
 		this._logService.info(`[NativeChatEditorPane#${this._paneId}] resolved ${resolved}/${ids.length} saros-media ref(s) → data URL for UI display`);
 	}
+}
+
+/**
+ * ★ 2026-09-25（修「重启后图片消失」✓ 断点①）：**历史重载路径**也要把 `saros-media://`
+ * 短引用换成 data URL —— 此前只在 live `tool_result` delta 一处解析，`getHistory → setMessages`
+ * 的恢复路径没有 ⇒ 落盘历史里的短引用让工具卡正则（只认 data:/https 图链 ✓）匹配为空 ⇒
+ * 重启后只剩一行「已生成 N 张图片」✗✗。
+ *
+ * 语义与 live 路径一致：**只改 UI 显示，不改落盘历史** ✓。
+ * 性能：先纯文本预扫（无引用 ⇒ 零 IO 返回 ✓ 绝大多数会话无图 ✓）；id 去重 + 并行取 ✓；
+ * 会话中途切换 ⇒ updateMessage 对不存在 msgId 是 no-op ✓ 安全 ✓。
+ */
+private async _resolveMediaRefsInHistory(messages: IAgentChatMessage[]): Promise<void> {
+	// ① 预扫：受影响的 (消息, 工具卡) + 全局去重 id 集
+	const affected: Array<{ msg: IAgentChatMessage; tc: any; ids: string[] }> = [];
+	const allIds = new Set<string>();
+	for (const msg of messages) {
+		for (const tc of (msg.toolCalls ?? []) as any[]) {
+			const ids = extractSarosMediaIds(typeof tc?.result === 'string' ? tc.result : '');
+			if (ids.length === 0) { continue; }
+			affected.push({ msg, tc, ids });
+			for (const id of ids) { allIds.add(id); }
+		}
+	}
+	if (affected.length === 0) { return; }
+	// ② 并行取 data URL（失败 ⇒ 该 id 缺席 ⇒ 短引用原样保留 ✓ 不丢信息 ✓）
+	const urlById = new Map<string, string>();
+	await Promise.all([...allIds].map(async id => {
+		try {
+			const dataUrl = await this._getMediaBackend().getAsDataUrl(id);
+			if (dataUrl) { urlById.set(id, dataUrl); }
+		} catch (err) {
+			this._logService.warn(`[NativeChatEditorPane] history: resolve media ref ${id} failed:`, err);
+		}
+	}));
+	if (urlById.size === 0) { return; }
+	// ③ 替换 + 每条受影响消息一次 updateMessage（UI 重渲 ✓）
+	const touchedMsgs = new Set<IAgentChatMessage>();
+	let resolvedTotal = 0;
+	for (const { msg, tc } of affected) {
+		const { text, resolved } = replaceSarosMediaRefs(tc.result, urlById);
+		if (resolved > 0 && text !== tc.result) {
+			tc.result = text;
+			touchedMsgs.add(msg);
+			resolvedTotal += resolved;
+		}
+	}
+	for (const msg of touchedMsgs) {
+		this._chatPanel?.updateMessage(msg.id, { toolCalls: (msg.toolCalls ?? []).slice() });
+	}
+	this._logService.info(
+		`[NativeChatEditorPane#${this._paneId}] history: resolved ${resolvedTotal} saros-media ref(s) ` +
+		`(${urlById.size}/${allIds.size} asset(s)) across ${touchedMsgs.size} message(s) ✓`,
+	);
+}
+
+/**
+ * `setMessages` + 异步解析历史里的媒体短引用（fire-and-forget ⇒ 不阻塞渲染 ✓）。
+ * 凡是「从 getHistory 恢复」的路径都必须走这里 ✗✓（裸 setMessages ⇒ 重启后图片消失 ✗）。
+ */
+private _setMessagesAndResolveMediaRefs(messages: IAgentChatMessage[]): void {
+	this._chatPanel?.setMessages(messages);
+	void this._resolveMediaRefsInHistory(messages);
 }
 
 /** 保存当前输入框草稿到指定 session（默认当前；空文本则清除 key）。 */
@@ -3820,13 +3980,14 @@ private async _applyAgentDefaultModelSelection(): Promise<void> {
 	}
 
 	/**
-	 * 计算「用户已取消」最终内容：已有真实内容则追加提示，否则仅提示。
+	 * 计算「用户取消」最终内容：已有真实内容则追加提示，否则仅提示。
 	 * 幂等：若内容已含取消标记则原样返回，避免 onCancelExecution 立即更新
-	 * 与滞后到达的 done(canceled:true) 事件重复追加「用户已取消」。
+	 * 与滞后到达的 done(canceled:true) 事件重复追加「用户取消」。
+	 * ★ 2026-09-24：文案按用户要求从「用户已取消」改为「用户取消」✓。
 	 */
 	private _buildCanceledContent(assistantMsg: IAgentChatMessage): string {
 		const currentContent = assistantMsg.content || '';
-		const marker = '⚠️ 用户已取消';
+		const marker = '⚠️ 用户取消';
 		if (currentContent.includes(marker)) {
 			return currentContent;
 		}
@@ -3963,6 +4124,9 @@ private async _applyAgentDefaultModelSelection(): Promise<void> {
 			if (!tc) { continue; }
 			apply(tc);
 			this._chatPanel.updateMessage(m.id, { toolCalls: (m.toolCalls ?? []).slice() });
+			// ★ 2026-09-25（断点②）：迟交的 tool_result 也要解析媒体短引用
+			//   （与 tool_result 主分支同待遇 ✓ 否则跨流补发的图片当轮也不显示 ✗）
+			if (kind === 'tool_result') { void this._resolveMediaRefsInToolResult(tc, m.id, m); }
 			this._logService.info(
 				`[NativeChatEditorPane#${this._paneId}] ${kind} for ${toolCallId} applied to EARLIER ` +
 				`message ${m.id} (late cross-stream delivery — placeholder card recovered)`
@@ -5101,7 +5265,7 @@ private _handleStreamDelta(delta: any): void {
 					}
 				}
 				const durationMs = Date.now() - (assistantMsg.timestamp || Date.now());
-					// 用户主动取消：在 bubble 末尾追加「用户已取消」提示（保留已生成内容）
+					// 用户主动取消：在 bubble 末尾追加「用户取消」提示（保留已生成内容）
 					// 若是空内容（仅"正在思考..."），则直接显示取消提示作为 content
 					const finalContent = isCanceled
 						? this._buildCanceledContent(assistantMsg)

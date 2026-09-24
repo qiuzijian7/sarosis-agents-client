@@ -862,3 +862,42 @@ suite('KB URL 导入 · 纯函数（slug / 图片路径 / HTML 兜底）', () =>
 		assert.strictEqual(htmlToPlainText(''), '');
 	});
 });
+
+/**
+ * 「本次报告」（`--plan-file`）—— ★ 2026-09-24。
+ *
+ * 这组用例锁住 `kb_feishu_sync` 工具**回报内容**的来源：以前工具读 `.feishu-sync.log` 尾部，
+ * 而 dry-run 从不写日志 ⇒ 预览只有旧内容（实测事故：agent 只凭 exit 0 就说"同步成功"）。
+ * 现在脚本写这份 UTF-8 报告，工具原样回传 ⇒ 报告必须**自包含**（头部 + 汇总 + 逐篇 + 失败）。
+ */
+suite('sync 报告（formatSyncReport）· --plan-file', () => {
+	const baseReport = {
+		dryRun: true, vault: 'C:/vault', src: ['笔记/A'],
+		done: 0, skip: 3, total: 5, at: '2026-09-24T00:00:00.000Z',
+		summary: ['计划: create=2 update=1 skip=3 (共 5)'],
+		items: ['计划 create 笔记/A/x.md → SP1111111111', '失败 update 笔记/A/y.md — boom'],
+	};
+
+	test('dry-run 报告：首行明确「未写任何远端」，含汇总与逐篇（含失败行）', () => {
+		const out: string = sync.formatSyncReport(baseReport);
+		assert.ok(out.startsWith('# kb-feishu-sync DRY-RUN（预览：未写任何远端）'), '首行必须标注 dry-run');
+		assert.ok(out.includes('# vault: C:/vault'));
+		assert.ok(out.includes('# src: 笔记/A'));
+		assert.ok(out.includes('# 完成 0 篇（skip 3 篇无需处理，计划共 5 篇）'));
+		assert.ok(out.includes('计划: create=2 update=1 skip=3 (共 5)'), '汇总行必须进报告');
+		assert.ok(out.includes('计划 create 笔记/A/x.md → SP1111111111'), '逐篇：计划行');
+		assert.ok(out.includes('失败 update 笔记/A/y.md — boom'), '逐篇：失败行（工具据此告警）');
+	});
+
+	test('apply 报告：标注「已写远端」（不能沿用 dry-run 文案）', () => {
+		const out: string = sync.formatSyncReport({ ...baseReport, dryRun: false });
+		assert.ok(out.startsWith('# kb-feishu-sync APPLY（已写远端）'));
+	});
+
+	test(`逐篇超过 ${sync.REPORT_MAX_ITEMS} 条 ⇒ 截断并提示其余条数 / 去向`, () => {
+		const items = Array.from({ length: sync.REPORT_MAX_ITEMS + 7 }, (_, i) => `计划 create n${i}.md → SP1`);
+		const out: string = sync.formatSyncReport({ ...baseReport, items });
+		assert.ok(out.includes(`…（其余 7 条见 .feishu-sync.log）`), '被截断的条数与去向必须写明');
+		assert.ok(!out.includes('n300.md'), '上限之外的条目不得出现（避免报告无限膨胀）');
+	});
+});

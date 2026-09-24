@@ -132,17 +132,11 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	declare readonly _serviceBrand: undefined;
 
 	private readonly _activeStreams = new Map<string, AbortController>();
-	/**
-	 * ★★★ 2026-09-19（用户选择"主流做法"✓）：**优雅停止**的标记集合（按 streamKey ✓）。
-	 *
-	 * 语义（对齐 OpenHands **pause** ✓ / Vercel AI SDK 的 `onAbort({steps})` 自行持久化 ✓）：
-	 *   用户第一次点 Stop ⇒ **不立即切断**当前 LLM 请求 ✓ —— 让它跑完当前 iteration，
-	 *   到 `assistant_turn` 边界（= 当前 iteration 的权威文本已确定 ✓）才硬中止 ✓
-	 *   ⇒ **已生成的内容（含其 tokens/credit ✓）照常到达并落盘** ✓✓，只砍掉**后续** iteration ✗；
-	 *   用户第二次点 Stop ⇒ 立即硬中止 ✓。
-	 * ⚠ 生命周期：回合开始与 finalize 都要 `delete(streamKey)` ✓（避免泄漏到下一回合 ✗）。
-	 */
-	private readonly _gracefulStopRequested = new Set<string>();
+	// ★ 2026-09-24（用户要求「点停止 = LLM 立刻停」✓）：**优雅停止机制已移除** ✗ ——
+	//   原两段式（第一次等 iteration 边界、第二次才硬停 ✓ 2026-09-19 决策）被用户推翻：
+	//   「点了没停 = 点了没反应」✗✓。现在 `cancelStream` 第一次调用即 `controller.abort()` ✓。
+	//   已知取舍：中止瞬间「服务端已产出但未到达」的内容丢弃（付费零痕迹窗口 ✗）——
+	//   用户接受：立刻停的确定性 > 等边界的完整性 ✓。
 	private readonly logService: ILogService;
 	private readonly driverService: IAgentDriverService;
 	private readonly fileService: IFileService;
@@ -3014,7 +3008,6 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				`This is the service-layer safety net for edit-resend / reentrant sends.`
 			);
 			this.cancelStream(agentId, options.agentSessionId);
-			this._gracefulStopRequested.delete(streamKey);	// ★ 2026-09-19：新回合 ⇒ 清掉上一回合的优雅停止标记（防泄漏 ✓）
 		}
 
 		const controller = new AbortController();
@@ -3118,7 +3111,16 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				(now - new Date(m.timestamp).getTime()) < 5000
 			);
 
-			if (!alreadyPersisted || options.source === 'task') {
+			// ★ 2026-09-24（用户反馈「点知识库构建按钮后聊天框显示大量文本」）：`hidden` 消息
+		//   **只喂模型，不落盘、不广播** —— 否则「素材清单 + 笔记区目录树」会作为用户气泡刷满聊天框。
+		//   安全性依据：当前这条消息由 driver 显式追加到请求（见下方「B 方案」注释：
+		//   driver 会在 priorMessages 之后追加当前 user 消息），与是否持久化无关 ⇒ 模型照样收得到。
+		if (options.hidden) {
+			this.logService.info(
+				`[AgentChatService] sendMessage: hidden 消息（${message.length} chars, agentId=${agentId}, `
+				+ `session=${options.agentSessionId ?? '-'}）—— 仅喂模型，不落盘/不广播 ✓`,
+			);
+		} else if (!alreadyPersisted || options.source === 'task') {
 				// ★★ 2026-09-19（用户实测：重启后气泡里的代码片段 pill 丢失 ✗✓）：
 				// 附件此前只透传给 LLM（options.attachments ✓）却**不落盘** ⇒ 重启后丢 ✗。
 				// 只持久化**可恢复**的附件：文本片段/日志/文件引用（data 小 ✓）；
@@ -3245,17 +3247,6 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				if (controller.signal.aborted) {
 					break;
 				}
-				// ★★★ 2026-09-19（主流做法 ✓）：优雅停止 —— 用户点过 Stop ⇒ 不再立即切 ✓；
-				//   到 `assistant_turn` 边界（= 当前 iteration 的权威文本已确定 ✓）才 abort ✓。
-				//   ⚠ 这里**不 break**：让本条 delta 走完快照 ✓（`assistant_turn` 的处理在后面 ✓），
-				//     下一轮迭代会被上面的 `controller.signal.aborted` 挡下 ⇒ 砍掉的是**后续** iteration ✗，
-				//     当前 iteration 的文本（含 tokens/credit ✓）照常到达并落盘 ✓✓。
-				if (this._gracefulStopRequested.has(streamKey) && (delta as any).type === 'assistant_turn') {
-					this.logService.info(
-						`[AgentChatService] ⏹ 优雅停止：已到 assistant_turn 边界 ⇒ 现在中止（当前 iteration 已跑完 ✓）`,
-					);
-					controller.abort();
-				}
 				if (delta.type === "text" && delta.content) {
 					_fullContentChunks.push(delta.content);
 					// P0: chronological parts 跟踪——更新最后一个 text part 或创建新的
@@ -3302,6 +3293,15 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 					_fullContentChunks.length = 0;
 					_fullThinkingChunks.length = 0;
 					currentTurnTextLen = 0;
+					// ★★ 2026-09-25（**真回归修复** ✗✓ sendMessage 基线抓到 ✓）：`parts` 必须同步丢弃
+					//   末尾连续 text 段 —— 2026-09-22 重构把 `discardPriorText` 抽进 streamAccumulator 时，
+					//   本内联块漏了这步 ⇒ 幻觉文本残留在 `_streamingParts`（= 重载渲染/落盘的真相源 ✗
+					//   见 :3700 装配 ✓）⇒ 污染下一轮 ✗✓。语义对齐 accumulator：只丢**尾部** text 段，
+					//   其前的工具段保留 ✓（那是真实执行过的工具 ✓）。
+					while (_streamingParts.length > 0
+						&& (_streamingParts[_streamingParts.length - 1] as any)?.kind === 'text') {
+						_streamingParts.pop();
+					}
 					// 通知 webview 同步重置（content_replace 已发，仅作冗余兜底）
 					onDelta(delta as any);
 					continue;
@@ -3490,13 +3490,11 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			}
 
 			this.logService.info(`[AgentChatService] Stream iteration done: ${_deltaCount} deltas in ${(performance.now() - tStream).toFixed(0)}ms`);
-			// ★ 2026-09-19：本次 sendMessage 结束 ⇒ 清掉优雅停止标记（防泄漏到下一回合 ✗）
-			this._gracefulStopRequested.delete(streamKey);
 
 			// 用户点击 Stop → cancelStream 调用 controller.abort() → for-await break。
 			// 此时 done/error delta 尚未被 stream 发射，UI 不会收到 setSending(false)。
 			// 这里补发 done delta，让 nativeChatEditorPane 的 done handler 清理消息状态。
-			// 如果是用户主动取消，带上 canceled:true 标记，让 UI 显示「用户已取消」并停止流式动画。
+			// 如果是用户主动取消，带上 canceled:true 标记，让 UI 显示「用户取消」并停止流式动画。
 			if (controller.signal.aborted) {
 				this.logService.info(`[AgentChatService] Stream aborted by user, emitting done delta with canceled flag for UI cleanup`);
 				const cancelDelta = { type: 'done', canceled: true } as any;
@@ -3739,7 +3737,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				// ★ 2026-09-19（主流做法 ✓）：**用户取消 ⇒ 已生成内容照常落盘**（guard 已保证 ✓），
 				//   但必须打上「已中断」标记 —— 否则用户分不清"完整回答"与"被截断的回答" ✗
 				//   （无内容的占位分支在后面另有专门处理 ✓，这里覆盖的是**有内容**的情形 ✓）。
-				if (controller.signal.aborted || this._gracefulStopRequested.has(streamKey)) {
+				if (controller.signal.aborted) {
 					chatMessage.metadata = { ...(chatMessage.metadata as Record<string, unknown> | undefined ?? {}), streamInterrupted: true };
 				}
 				if (hasVisibleContent) {
@@ -4010,21 +4008,17 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			: agentId;
 		const controller = this._activeStreams.get(streamKey);
 		if (controller) {
-			// ★★★ 2026-09-19（用户选择"主流做法"✓）：**优雅停止** —— 第一次点 Stop **不立即切断** ✓
-			// （否则落在「服务端已产出（计费 ✓）但本地未收到」窗口时 = "付费零痕迹" ✗✗，
-			//  见 `_gracefulStopRequested` 的注释 ✓）。⇒ 立标记、把决定权交给流式循环的边界处 ✓；
-			// 第二次点 Stop ⇒ 立即硬中止 ✓（用户要"现在就停"的逃生口 ✓）。
-			if (!this._gracefulStopRequested.has(streamKey)) {
-				this._gracefulStopRequested.add(streamKey);
-				this.logService.info(
-					`[AgentChatService] ⏸ 优雅停止：不切断当前请求，等当前 iteration 跑完在边界处停止 ✓（再次点击 = 立即停 ✓）`,
-				);
-				return;
-			}
-			// 第二次点 Stop ⇒ 硬中止 ✓
-			this._gracefulStopRequested.delete(streamKey);
+			// ★★★ 2026-09-24（用户要求「点停止 = LLM 立刻停」✓）：**第一次调用即硬中止** ✓ ——
+			//   取代 2026-09-19 的「优雅停止」两段式（第一次等 iteration 边界 ✗ 用户感知 = 点了没反应 ✗✗）。
+			//   ⚠ 已知取舍：中止瞬间「服务端已产出（计费 ✓）但本地未收到」的内容丢弃 ✗ ——
+			//     用户接受：立刻停的确定性 > 等边界的完整性 ✓。
+			//   善后链（既有 ✓ 不受影响）：abort ⇒ for-await break ⇒ 补发 done(canceled:true) ✓
+			//   ⇒ pane 气泡追加「⚠️ 用户取消」+ 已收内容保留 ✓ 落盘打 streamInterrupted ✓。
 			controller.abort();
 			this._activeStreams.delete(streamKey);
+			this.logService.info(
+				`[AgentChatService] ⏹ 用户停止 ⇒ 立即中止 stream（key=${streamKey}）✓（2026-09-24 起第一次点击即硬停 ✓）`,
+			);
 		}
 		// 并发修复：同步移除该流的回调与计时戳，避免内存事件桥接路由到已取消的流。
 		this._activeOnDeltas.delete(streamKey);
