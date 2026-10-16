@@ -1210,6 +1210,25 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 		}
 	});
 
+	test('★ planned 双向钉住：登记为 planned 的模块不许有插件目录，非 planned 的必须有', function () {
+		// 为什么需要（2026-10-16）：channels 曾登记在 DSH_BUILTIN_MODULES 里但 `dsh-plugins/` 下根本没有
+		// 对应目录 ⇒ 没人发现"这个模块永远不会激活"；反向更危险：写了插件却忘了登记 ⇒ 装了不出图标。
+		const root = repoRoot();
+		if (!root) {
+			this.skip();
+		}
+		const dirs = new Set(readPluginPackages(root!).map(p => p.dirName));
+		for (const m of DSH_BUILTIN_MODULES) {
+			const dirName = m.pluginName.replace(/^@vssaros\/dsh-/, 'vssaros-');
+			const exists = dirs.has(dirName);
+			if (m.planned) {
+				assert.ok(!exists, `${m.module} 标记为 planned 但插件目录 ${dirName} 已存在 ⇒ 去掉 planned 标记`);
+			} else {
+				assert.ok(exists, `${m.module}（${m.pluginName}）没有对应插件目录 ${dirName} ⇒ 要么补插件，要么标 planned: true`);
+			}
+		}
+	});
+
 	test('★ 所有模块插件随包自动安装（自发现，不是硬编码清单）', function () {
 		// 2026-10-11 用户要求"`@vssaros/*` 的插件都一起自动安装"。
 		// 判据只有一份：插件自己的 `vssaros.module`（`listBundledPlugins`）—— 宿主安装清单、插件中心
@@ -1521,10 +1540,12 @@ suite('dshHarness / 打包链：内置 dsh 运行时（缺它 = 首启要用户�
 	const REL_STRIP = 'build/saros/strip-before-pack.mjs';
 	const REL_VERIFY = '.ci/scripts/verify-staging.ps1';
 	const REL_GULP = 'build/gulpfile.vscode.ts';
+	const REL_GENERATE_EXE = '.ci/scripts/generate-exe.ps1';
+	const REL_PREPACK = 'build/prepack-dsh-runtime.mjs';
 
-	test('守卫前置：五个打包链文件都能读到（读不到就显式跳过，不许静默通过）', function () {
+	test('守卫前置：七个打包链文件都能读到（读不到就显式跳过，不许静默通过）', function () {
 		if (!root) { this.skip(); }
-		for (const rel of [REL_INSTALLER, REL_CI_PACKAGE, REL_STRIP, REL_VERIFY, REL_GULP]) {
+		for (const rel of [REL_INSTALLER, REL_CI_PACKAGE, REL_STRIP, REL_VERIFY, REL_GULP, REL_GENERATE_EXE, REL_PREPACK]) {
 			assert.ok(read(rel), `读不到 ${rel}（守卫会变成空跑）`);
 		}
 	});
@@ -1579,5 +1600,40 @@ suite('dshHarness / 打包链：内置 dsh 运行时（缺它 = 首启要用户�
 		assert.match(gulp, /dsh-runtime\/\*\/node_modules\/\*\*/, '资源流必须仍在拷 dsh-runtime 的 node_modules（否则上面两道门都会红）');
 		const channel = read('src/vs/sessions/contrib/dshHarness/electron-main/dshHarnessChannel.ts')!;
 		assert.match(channel, /join\(app\.getAppPath\(\), 'dsh-runtime'\)/, '宿主读的就是 <appPath>/dsh-runtime（两处必须同源）');
+	});
+
+	test('★★ generate-exe 必须在调 Inno **之前**硬拦缺运行时（流水线"失败也继续" ⇒ 只有这里拦得住）', () => {
+		const gen = read(REL_GENERATE_EXE)!;
+		const checkAt = gen.indexOf('dsh-runtime\\$bundledDsh\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js');
+		assert.ok(checkAt > 0, '必须按与宿主同源的路径判它进没进包');
+		const innoAt = gen.indexOf("Invoke-InnoTask 'vscode-win32-x64-inno-updater'");
+		assert.ok(innoAt > 0, '找不到 Inno 任务（守卫不能空跑）');
+		assert.ok(checkAt < innoAt, '检查必须在**调用 Inno 之前**——跑完 Inno 就已经有 exe 可上传了 ✗✗');
+		// ★ 条件与动作一起钉（2026-10-16 突变验证实测：只钉文案时，把条件改成 `Test-Path "C:\never"`
+		//   这种永假仍然绿 ✗ —— 门就形同虚设了）
+		assert.match(gen, /if \(-not \(Test-Path \$dshRuntimeBin\)\) \{\s*Write-Error[\s\S]{0,600}?exit 1/,
+			'必须真的判 $dshRuntimeBin 在不在（条件被改成永假 = 这道门白设 ✗）');
+		assert.match(gen, /ConvertFrom-Json\)\.bundled/, '版本要取自 dsh-plugins/dsh-compat.json（不许写死）');
+	});
+
+	test('★★ prepack 的删除必须健壮且裁剪失败**不许**拖垮构建（2026-10-16 CI 崩溃现场）', () => {
+		const prepack = read(REL_PREPACK)!;
+		// ① prune 里不许有裸 rmSync（那次 ENOTEMPTY 就是它抛出来的：CI 上 soffice.cfg 那层超 MAX_PATH）
+		//    ⚠ 只取**函数体**：prune 与 removeTree 之间的注释里会提到 rmSync（解释为什么不能用它）✗
+		const pruneAt = prepack.indexOf('function prune(');
+		assert.ok(pruneAt > 0, '找不到 prune（守卫不能空跑）');
+		const pruneEnd = prepack.indexOf('\n}', pruneAt);
+		assert.ok(pruneEnd > pruneAt, '找不到 prune 的结尾（守卫不能空跑）');
+		const pruneBody = prepack.slice(pruneAt, pruneEnd);
+		assert.ok(!/rmSync\(/.test(pruneBody),
+			'prune 里不许直接 rmSync —— 未捕获的 ENOTEMPTY 会让整个 prepack 崩（裁剪是可选优化，绝不能拦出包 ✗✗）');
+		assert.match(pruneBody, /removeTree\(/, 'prune 必须用不抛的 removeTree');
+		assert.match(pruneBody, /⚠ 裁剪失败/, '删不掉要**大声**说明（并说明包会变大），不许静默');
+		// ② removeTree 必须有长路径兜底（扩展长度前缀 `\\?\`）与挪开兜底
+		assert.match(prepack, /function removeTree\(/, '要有不抛的 removeTree');
+		assert.match(prepack, /toExtendedLengthPath\(/, '要用扩展长度前缀兜底（CI 未开 LongPathsEnabled ⇒ 深层路径 rmdir 必 ENOTEMPTY）');
+		assert.match(prepack, /'\\\\\\\\\?\\\\'/, '前缀本身要是 `\\\\?\\`（Windows 扩展长度路径）');
+		assert.match(prepack, /renameSync\(abs, aside\)/, '删不掉就挪开（对调用方而言"目标不存在"就够了）');
+		assert.match(prepack, /function removeTreeOrThrow\(/, '需要"必须删干净"的场景要有单独入口');
 	});
 });

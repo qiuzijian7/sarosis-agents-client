@@ -61,6 +61,31 @@ if (-not (Test-Path (Join-Path $appStaging "extensions\agent-studio\out\extensio
 }
 Write-Host "[OK] agent-studio/out 与 node_modules/typescript 已确认进包 ($appStaging)"
 
+# ===== 校验 **内置 dsh 运行时** 已进打包产物（2026-10-16 生产事故）=====
+# 现场：CI 上 prepack 崩在"裁剪 LibreOffice 内核"（ENOTEMPTY）⇒ 打包链在 gulp 之前中止 ⇒
+# 这份暂存目录还是**上一次运行留下的**（不含 dsh-runtime）⇒ 上传的安装包装完首启弹
+# 「需要准备 DeepSeek Harness 运行环境」，用户看到的正是"仍然无法找到 dsh"✗✗。
+# 为什么这里必须自己判：BK 流水线配的是"前面插件失败也继续跑"，所以 verify-staging.ps1 红了**拦不住**
+# 后面的步骤；而 Inno 任务一旦跑完就会产出/上传安装包 ⇒ 必须在**调用 Inno 之前**硬拦（exit 1 时
+# 上面第 13 行已经把旧的 VsSarosSetup*.exe 删了 ⇒ 上传步骤无物可传，不会又发一份坏包 ✓）。
+# 判据与运行时解析同源：<appPath>/dsh-runtime/<bundled>/node_modules/@deepseek-ai/dsh/lib/bin.js
+$compatFile = Join-Path $repoRoot "dsh-plugins\dsh-compat.json"
+if (-not (Test-Path $compatFile)) {
+  Write-Error "FATAL: 找不到 dsh-plugins\dsh-compat.json（无法确定该内置哪个 dsh 版本）"
+  exit 1
+}
+$bundledDsh = (Get-Content $compatFile -Raw -Encoding utf8 | ConvertFrom-Json).bundled
+if ([string]::IsNullOrWhiteSpace($bundledDsh)) {
+  Write-Error "FATAL: dsh-compat.json 的 bundled 字段为空"
+  exit 1
+}
+$dshRuntimeBin = Join-Path $appStaging "dsh-runtime\$bundledDsh\node_modules\@deepseek-ai\dsh\lib\bin.js"
+if (-not (Test-Path $dshRuntimeBin)) {
+  Write-Error ("FATAL: 打包产物缺内置 dsh 运行时（$dshRuntimeBin）—— 装完首启会弹「需要准备 DeepSeek Harness 运行环境」，禁止出包。" + [Environment]::NewLine + "       先跑 node build/prepack-dsh-runtime.mjs（两个打包入口都会自动跑；prepack 失败时看它自己的日志）")
+  exit 1
+}
+Write-Host "[OK] 内置 dsh 运行时 $bundledDsh 已确认进包 ($appStaging\dsh-runtime)"
+
 function Invoke-InnoTask {
   param([string]$Task)
   $max = 3

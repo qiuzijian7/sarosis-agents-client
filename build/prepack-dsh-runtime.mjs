@@ -32,8 +32,8 @@ const PRUNE_LIST = [
 ];
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { existsSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -63,7 +63,7 @@ if (existsSync(bin) && !force) {
 	process.exit(0);
 }
 if (existsSync(target)) {
-	rmSync(target, { recursive: true, force: true });
+	removeTreeOrThrow(target, '清掉不可用的旧安装');
 }
 
 console.log(`[prepack-dsh] installing @deepseek-ai/dsh@${version} → ${target}`);
@@ -83,7 +83,7 @@ if (!existsSync(bin)) {
 }
 const actual = execFileSync(process.execPath, [bin, '--version'], { encoding: 'utf8' }).trim().split(/\r?\n/).pop();
 if (actual !== version) {
-	rmSync(target, { recursive: true, force: true });
+	removeTree(target);
 	console.error(`[prepack-dsh] 版本不符：期望 ${version}，实际 ${actual}`);
 	process.exit(1);
 }
@@ -155,7 +155,7 @@ async function buildProfileSeed(runtimeDir, dshBin, dshVersion) {
 		}
 	}
 	console.log('[prepack-dsh] building profile seed（约 1–3 分钟，仅构建期一次性）…');
-	rmSync(seed, { recursive: true, force: true }); // dsh 要求 profile 目录不存在，由它自己创建
+	removeTreeOrThrow(seed, 'dsh 要求 profile 目录不存在，由它自己创建'); // 种子里的 node_modules 很深 ⇒ 必须走扩展长度删除
 	// copy 导入模式：node_modules 是真文件而不是指向 pnpm store 的链接——否则搬不走。
 	const env = { ...process.env, DSH_HOME: seed, npm_config_package_import_method: 'copy' };
 	const dsh = args => execFileSync(process.execPath, [dshBin, ...args], { env, stdio: 'pipe', encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
@@ -169,7 +169,7 @@ async function buildProfileSeed(runtimeDir, dshBin, dshVersion) {
 		// 与运行时 supervisor._stagePlugin 同构：暂存到 profile 内再装（避开跨盘符 file: 坑）。
 		const flat = pkg.name.replace(/^@/, '').replace(/\//g, '-');
 		const staged = join(profileDir, '.vssaros', 'plugins', `${flat}-${pkg.version}`);
-		rmSync(staged, { recursive: true, force: true });
+		removeTree(staged);
 		mkdirSync(staged, { recursive: true });
 		cpSync(src, staged, {
 			recursive: true,
@@ -233,21 +233,90 @@ async function buildProfileSeed(runtimeDir, dshBin, dshVersion) {
 	console.log(`[prepack-dsh] profile seed ready (${Math.round(dirSize(seed) / 1024 / 1024)} MB)`);
 }
 
-/** 裁剪重型可选负载（幂等：不存在即跳过）。 */
+/**
+ * 裁剪重型可选负载（幂等：不存在即跳过）。
+ *
+ * ⚠ **裁剪失败绝不能拖垮构建**（2026-10-16 生产：CI 上删 LibreOffice 内核时 `ENOTEMPTY`
+ * 未捕获抛出 ⇒ prepack 进程崩 ⇒ 打包链在 gulp 之前中止 ⇒ 上传出去的安装包仍是"上次残留的暂存目录"
+ * 打出来的（不含 dsh 运行时）⇒ 用户装完还是「找不到 dsh」✗✗）。裁掉的只是 ~182MB 的可选内核：
+ * 删不掉就让包大一点，**不许**因此不出包。
+ */
 function prune(targetDir) {
 	let prunedMB = 0;
 	for (const rel of PRUNE_LIST) {
 		const p = join(targetDir, ...rel);
-		if (existsSync(p)) {
-			const bytes = dirSize(p);
-			rmSync(p, { recursive: true, force: true });
+		if (!existsSync(p)) {
+			continue;
+		}
+		const bytes = dirSize(p);
+		if (removeTree(p)) {
 			prunedMB += bytes / 1024 / 1024;
 			console.log(`[prepack-dsh] pruned ${rel.join('/')} (${Math.round(bytes / 1024 / 1024)} MB)`);
+		} else {
+			console.log(`[prepack-dsh] ⚠ 裁剪失败（保留原样，包会大约 ${Math.round(bytes / 1024 / 1024)} MB）：${rel.join('/')}`);
 		}
 	}
 	if (prunedMB > 0) {
 		console.log(`[prepack-dsh] pruned total: ${Math.round(prunedMB)} MB`);
 	}
+}
+
+/**
+ * 删目录：**不抛**。返回是否删干净。三步兜底（Windows 上递归删的重灾区）：
+ *   ① `rmSync(recursive)` 带重试（杀软/索引器短暂占用，重试常能过）；
+ *   ② 加 `\\?\` 扩展长度前缀再删 —— CI（Windows Server 2016，未开 LongPathsEnabled）最深那层
+ *      `…\libreoffice-kit-win32-x64\program\share\config\soffice.cfg\…` 会超 MAX_PATH，
+ *      `rmdir` 直接 `ENOTEMPTY`（2026-10-16 那次崩溃的现场就是这个 ✗）；前缀绕过 260 上限 ✓；
+ *   ③ 仍失败 ⇒ 尽力而为：**把整目录改名到 `*.deleting-<pid>` 挪开**（rename 只要目标同级就行，
+ *      不受深层路径影响）——挪走后调用方看到的目标就不在了 ✓，残留目录由下次构建或人工清理。
+ */
+function removeTree(abs) {
+	// ① 普通递归删（`maxRetries` 覆盖"杀软/索引器短暂占用"）
+	try {
+		rmSync(abs, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+		if (!existsSync(abs)) {
+			return true;
+		}
+	} catch { /* 落到 ② */ }
+	// ② 扩展长度前缀（绕过 MAX_PATH；CI 上那层 soffice.cfg 超 260 字符 ⇒ 上面必然 ENOTEMPTY）
+	try {
+		const long = toExtendedLengthPath(abs);
+		rmSync(long, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+		if (!existsSync(abs)) {
+			return true;
+		}
+	} catch { /* 落到 ③ */ }
+	// ③ 删不掉就挪开（rename 不受深层路径影响）——对调用方来说"目标已不存在"就够了
+	try {
+		const aside = `${abs}.deleting-${process.pid}`;
+		renameSync(abs, aside);
+		console.log(`[prepack-dsh] 目录删不掉，已挪开：${aside}（可由下次构建或人工清理）`);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/** 与 removeTree 同一套兜底，但**必须删干净**（目标不可用于调用方时用）。 */
+function removeTreeOrThrow(abs, what) {
+	if (!removeTree(abs)) {
+		throw new Error(`无法删除 ${abs}（${what}）——请手工作业后重试`);
+	}
+}
+
+/** Windows 扩展长度路径前缀（绕过 MAX_PATH；`\\?\` 只能用在**绝对**且已规范化**的路径上）。 */
+function toExtendedLengthPath(abs) {
+	if (process.platform !== 'win32') {
+		return abs;
+	}
+	const resolved = resolve(abs);
+	if (resolved.startsWith('\\\\?\\')) {
+		return resolved;
+	}
+	if (resolved.startsWith('\\\\')) {
+		return `\\\\?\\UNC${resolved.slice(1)}`;
+	}
+	return `\\\\?\\${resolved}`;
 }
 
 function dirSize(p) {
