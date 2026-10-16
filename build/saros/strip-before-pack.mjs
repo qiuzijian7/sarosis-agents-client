@@ -40,7 +40,7 @@
  *   - @vscode/sandbox-runtime (1.5MB) — 沙箱运行时
  */
 
-import { rmSync, existsSync, readdirSync, statSync, mkdirSync, cpSync } from 'node:fs';
+import { rmSync, existsSync, readFileSync, readdirSync, statSync, mkdirSync, cpSync } from 'node:fs';
 import path from 'node:path';
 import { join, resolve, dirname } from 'node:path';
 import { execSync } from 'node:child_process';
@@ -282,6 +282,50 @@ ensureDir(
 	'dsh-plugins',
 	'vssaros-bridge/package.json',
 );
+
+// 2.5d) ★ 2026-10-16（用户报「打包出的 VsSaros.exe 找不到 dsh」，首启弹「需要准备 DeepSeek Harness
+//    运行环境」）：**构建期预装的 dsh 运行时**也是"关键构件"，必须与 dsh-plugins 同一待遇。
+//
+//    它在包里的位置是 `<appPath>/dsh-runtime/<版本>/`（`dshHarnessChannel` 用
+//    `join(app.getAppPath(), 'dsh-runtime')`；`DshRuntimeManager.resolveDsh` 的 **bundled 档**读它），
+//    是"全新安装首启零下载"的唯一来源。
+//
+//    为什么昨天那版会缺：`/dsh-runtime/` 在 **.gitignore** 里（由 `build/prepack-dsh-runtime.mjs`
+//    现生成）⇒ CI / 干净检出里**根本没有这个目录**；而 gulpfile 的 `dshRuntime` 流是
+//    `allowEmpty: true`（有意为之：本地 dev 打包可跳过，运行时退回 npm 安装引导）。
+//    两个"各自都合理"的设计叠起来 ⇒ **静默少一个 ~200MB 的关键构件**，且没有任何一处会红 ✗✗
+//    （`code.iss` 的 `[Files] Source: "*"` 是照搬暂存目录 ⇒ 暂存没有 = 装出来没有）。
+//
+//    版本以 `dsh-plugins/dsh-compat.json` 的 `bundled` 为准（与 supervisor / 运行时解析同源 ✓，
+//    不在这里写死版本号，防漂移）。sentinel 取运行时的真实入口 `node_modules/@deepseek-ai/dsh/lib/bin.js`：
+//    它同时证明**版本对**、**目录不是空壳**（与 tree-sitter 那几条同一思路 ✓）。
+//    ⚠ 自愈是**整目录** cp（含 profile-seed/），所以种子一并回来了。
+let bundledVersion = '';
+let versionKnown = false;
+try {
+	bundledVersion = String(JSON.parse(readFileSync(path.join(repoRoot, 'dsh-plugins/dsh-compat.json'), 'utf8')).bundled ?? '').trim();
+	versionKnown = /^[0-9A-Za-z.-]+$/.test(bundledVersion);
+	if (!versionKnown) {
+		console.log(`  ❌ dsh-plugins/dsh-compat.json 的 bundled 字段非法：${JSON.stringify(bundledVersion)}`);
+		criticalMissing++;
+	}
+} catch (e) {
+	console.log(`  ❌ 读不到/解析不了 dsh-plugins/dsh-compat.json（无法确定该内置哪个 dsh 版本）：${String(e?.message ?? e)}`);
+	criticalMissing++;
+}
+if (versionKnown) {
+	ensureDir(
+		`dsh-runtime/${bundledVersion}（内置运行时 ⇒ 首启零下载）`,
+		`resources/app/dsh-runtime/${bundledVersion}`,
+		`dsh-runtime/${bundledVersion}`,
+		'node_modules/@deepseek-ai/dsh/lib/bin.js',
+	);
+	// 仓库侧也没有它时（上面已计 criticalMissing）：再给一句**可执行**的补救 ——
+	// 否则现场只知道"缺"，不知道缺的那一步是"跑 prepack"（昨天那次就是这么过去的 ✗）
+	if (!existsSync(path.join(repoRoot, 'dsh-runtime', bundledVersion))) {
+		console.log(`      ⇒ 先跑 \`node build/prepack-dsh-runtime.mjs\` 生成 dsh-runtime/${bundledVersion}/（约 200MB，需能访问 npm 源）`);
+	}
+}
 
 // 2.6) @vscode/tree-sitter-wasm（2026-09-15，用户报「vssaros.exe 报错」）：
 //    codebase 图谱的解析 Worker 池按**运行时路径**读取本模块

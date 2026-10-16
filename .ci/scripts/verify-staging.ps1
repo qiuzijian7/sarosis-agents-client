@@ -128,19 +128,25 @@ if (Test-Path $repoWasmDir) {
   }
 }
 # 2026-10-10：内置 dsh 运行时 + profile 种子（README 4.29/4.32；build/prepack-dsh-runtime.mjs 生成）。
-# 策略=**条件硬性**：仓库侧跑过 prepack（dsh-runtime\ 存在）就必须进包——跑了却没带等于静默退回
-# "首启在线安装/几十秒下载"，属带病出包；仓库侧没有（本地快构）只 WARN 不拦。
+# 策略=**硬性**（2026-10-16 由"条件硬性"收紧 —— 用户报「打包出的 vssaros.exe 无法找到 dsh」）：
+#   两个打包入口（.ci/scripts/package-vscode.ps1 与 deploy-package/scripts/build-installer.ps1）
+#   现在都会先跑 prepack，所以"仓库侧没有 dsh-runtime\<bundled>"本身就是**异常**（prepack 没跑/失败）
+#   ⇒ 不能再只 WARN 放行：那样会静默出一个"首启弹准备环境、要用户自己 npm 装运行时"的包 ✗✗。
 $bundledVer = $null
 try { $bundledVer = (Get-Content -Raw -Encoding utf8 "dsh-plugins\dsh-compat.json" | ConvertFrom-Json).bundled } catch {}
-if ($bundledVer -and (Test-Path (Join-Path $repoRoot "dsh-runtime\$bundledVer"))) {
-  $required += "dsh-runtime\$bundledVer\node_modules\@deepseek-ai\dsh\lib\bin.js"
-  $required += "dsh-runtime\$bundledVer\profile-seed\seed.json"
-  $required += "dsh-runtime\$bundledVer\profile-seed\profiles\vssaros\package.json"
-  $required += "dsh-runtime\$bundledVer\profile-seed\profiles\vssaros\node_modules\@vssaros\dsh-bridge\package.json"
-  $required += "dsh-runtime\$bundledVer\node_modules\sherpa-onnx-win-x64\sherpa-onnx.node"  # 语音输入引擎（win）
-} elseif ($bundledVer) {
-  Write-Host ('  [WARN] repo has no dsh-runtime\' + $bundledVer + ' (prepack not run) - package will fall back to first-run npm install')
+if (-not $bundledVer) {
+  Write-Error "cannot read dsh-plugins\dsh-compat.json .bundled (无法确定该内置哪个 dsh 版本)"
+  exit 1
 }
+if (-not (Test-Path (Join-Path $repoRoot "dsh-runtime\$bundledVer"))) {
+  Write-Error ("repo has no dsh-runtime\" + $bundledVer + " - 先跑 node build/prepack-dsh-runtime.mjs（两个打包入口都会自动跑；手动打包时别跳过）")
+  exit 1
+}
+$required += "dsh-runtime\$bundledVer\node_modules\@deepseek-ai\dsh\lib\bin.js"
+$required += "dsh-runtime\$bundledVer\profile-seed\seed.json"
+$required += "dsh-runtime\$bundledVer\profile-seed\profiles\vssaros\package.json"
+$required += "dsh-runtime\$bundledVer\profile-seed\profiles\vssaros\node_modules\@vssaros\dsh-bridge\package.json"
+$required += "dsh-runtime\$bundledVer\node_modules\sherpa-onnx-win-x64\sherpa-onnx.node"  # 语音输入引擎（win）
 $missing = @()
 foreach ($rel in $required) {
   $p = Join-Path $appRoot $rel

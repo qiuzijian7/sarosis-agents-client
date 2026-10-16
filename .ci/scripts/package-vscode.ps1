@@ -13,6 +13,15 @@ $tsc = Join-Path $repoRoot 'node_modules\.bin\tsc.cmd'
 if (-not (Test-Path $gulp)) { Write-Error "local gulp not found at $gulp"; exit 1 }
 if (-not (Test-Path $tsc)) { Write-Error "local tsc not found at $tsc"; exit 1 }
 
+# 构建期预装 dsh 运行时（`/dsh-runtime/` 被 .gitignore ⇒ CI / 干净检出里**没有**它）：
+# 缺它 ⇒ 装出来首启弹「需要准备 DeepSeek Harness 运行环境」（2026-10-16 用户报"打包出的 vssaros.exe
+# 无法找到 dsh"）。必须在 gulp **之前**跑：gulp 的 dshRuntime 资源流是 allowEmpty（有意允许 dev 跳过），
+# 而 <appPath>/dsh-runtime 是"首启零下载"的唯一来源 ⇒ 不预装就是静默出一个坏包 ✗✗。
+# 幂等（已有同版 bin.js 时跳过安装）；strip-before-pack 阶段还有一道硬门兜底。
+Write-Host "Prepacking bundled dsh runtime"
+node build/prepack-dsh-runtime.mjs
+if ($LASTEXITCODE -ne 0) { Write-Error "prepack-dsh-runtime failed"; exit 1 }
+
 & $gulp vscode-win32-x64 --verbose
 if ($LASTEXITCODE -ne 0) { Write-Error "Packaging failed"; exit 1 }
 

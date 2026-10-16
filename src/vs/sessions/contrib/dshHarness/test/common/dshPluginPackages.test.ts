@@ -1488,3 +1488,96 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 			'⑦ 自检要认 phase==="failed" 并（延后、且只一次地）自动换进程');
 	});
 });
+
+/**
+ * ★ 打包链守卫：**内置 dsh 运行时必须进包**（2026-10-16 用户报「打包出的 vssaros.exe 无法找到 dsh」，
+ * 首启弹「需要准备 DeepSeek Harness 运行环境」⇒ 要求用户自己 npm 装运行时）。
+ *
+ * 现场与根因（两条各自都合理的设计叠起来 = 静默坏包 ✗✗）：
+ *   · `/dsh-runtime/` 在 `.gitignore` 里（由 `build/prepack-dsh-runtime.mjs` **现生成**）⇒ CI / 干净检出
+ *     里根本没有这个目录；
+ *   · `gulpfile.vscode.ts` 的 `dshRuntime` 流是 `allowEmpty: true`（有意：本地 dev 打包可以不带运行时，
+ *     退回"运行期 npm 安装引导"）；
+ *   ⇒ 谁也没红：`code.iss` 的 `[Files] Source: "*"` 照搬暂存目录 ⇒ 暂存没有 = 装出来没有。
+ *
+ * 不变量（这些都是"只要被删掉就会再次静默出坏包"的线，改动前先读 `strip-before-pack.mjs` 的 2.5d）：
+ *   ① 两个打包入口各自**在 gulp 之前**跑 prepack（幂等：已有同版 bin.js 时跳过安装）；
+ *   ② `strip-before-pack.mjs` 把内置运行时当**关键构件**（缺失且无法自愈 ⇒ criticalMissing ⇒ 禁止出包），
+ *      版本取 `dsh-plugins/dsh-compat.json` 的 `bundled`（不写死，防漂移）；
+ *   ③ `verify-staging.ps1` 对它是**硬性**（不再"仓库侧没有就只 WARN 放行"）；
+ *   ④ gulp 的资源流仍然列着 `dsh-runtime/*\/node_modules/**`（路径与宿主 `join(app.getAppPath(),'dsh-runtime')` 同源）。
+ *      （写成 `*\/` 是为了不让这个 glob 里的斜杠把本注释提前闭合 ✗——注释里出现 `*` 紧跟 `/` 就是这个下场。）
+ */
+suite('dshHarness / 打包链：内置 dsh 运行时（缺它 = 首启要用户自己装 dsh）', () => {
+	const root = repoRoot();
+	const read = (rel: string): string | undefined => {
+		if (!root) { return undefined; }
+		const abs = path.join(root, rel);
+		return fs.existsSync(abs) ? fs.readFileSync(abs, 'utf8') : undefined;
+	};
+
+	const REL_INSTALLER = 'deploy-package/scripts/build-installer.ps1';
+	const REL_CI_PACKAGE = '.ci/scripts/package-vscode.ps1';
+	const REL_STRIP = 'build/saros/strip-before-pack.mjs';
+	const REL_VERIFY = '.ci/scripts/verify-staging.ps1';
+	const REL_GULP = 'build/gulpfile.vscode.ts';
+
+	test('守卫前置：五个打包链文件都能读到（读不到就显式跳过，不许静默通过）', function () {
+		if (!root) { this.skip(); }
+		for (const rel of [REL_INSTALLER, REL_CI_PACKAGE, REL_STRIP, REL_VERIFY, REL_GULP]) {
+			assert.ok(read(rel), `读不到 ${rel}（守卫会变成空跑）`);
+		}
+	});
+
+	test('★ 两个打包入口都在 gulp 之前跑 prepack（否则 CI/干净检出必出坏包）', () => {
+		const installer = read(REL_INSTALLER)!;
+		const ci = read(REL_CI_PACKAGE)!;
+		for (const [name, src] of [['build-installer.ps1', installer], ['.ci package-vscode.ps1', ci]] as const) {
+			const prepackAt = src.indexOf('prepack-dsh-runtime.mjs');
+			assert.ok(prepackAt > 0, `${name} 必须跑 \`node build/prepack-dsh-runtime.mjs\`（dsh-runtime 被 gitignore ⇒ 干净检出里没有它）`);
+			const gulpAt = src.search(/gulp vscode-win32-x64/);
+			assert.ok(gulpAt > 0, `${name} 找不到 gulp 步骤（守卫不能空跑）`);
+			assert.ok(prepackAt < gulpAt, `${name} 里 prepack 必须在 gulp **之前**（gulp 的资源流是按目录现拷的）`);
+			assert.match(src.slice(prepackAt), /\$LASTEXITCODE -ne 0[\s\S]{0,200}?exit 1/, `${name}：prepack 失败必须中止构建（不许带病出包）`);
+		}
+	});
+
+	test('★ build-installer 装完还要**当场验**运行时在产物里（这条流程不跑 strip-before-pack）', () => {
+		const installer = read(REL_INSTALLER)!;
+		assert.match(installer, /resources\\app\\dsh-runtime\\\$bundledVersion\\node_modules\\@deepseek-ai\\dsh\\lib\\bin\.js/,
+			'必须按 <appPath>/dsh-runtime/<bundled>/node_modules/@deepseek-ai/dsh/lib/bin.js 校验（与宿主解析同源）');
+		assert.match(installer, /ConvertFrom-Json\)\.bundled/, '版本取 dsh-plugins/dsh-compat.json 的 bundled（不许写死）');
+		assert.match(installer, /if \(-not \(Test-Path \$runtimeBin\)\)[\s\S]{0,400}?exit 1/, '缺运行时必须 exit 1（否则用户首启撞"准备环境"）');
+	});
+
+	test('★ strip-before-pack：内置运行时是关键构件（缺失 ⇒ criticalMissing ⇒ 禁止出包）+ 可执行提示', () => {
+		const strip = read(REL_STRIP)!;
+		assert.match(strip, /dsh-runtime\/\$\{bundledVersion\}/, '自愈/校验的路径要带 manifest 的 bundled 版本');
+		assert.match(strip, /'node_modules\/@deepseek-ai\/dsh\/lib\/bin\.js'/, 'sentinel 用运行时真入口（同时证明版本对、目录不空壳）');
+		assert.match(strip, /dsh-plugins\/dsh-compat\.json[\s\S]{0,200}?bundled/, '版本从 dsh-compat.json 读（与 supervisor / 运行时解析同源）');
+		assert.match(strip, /node build\/prepack-dsh-runtime\.mjs/, '缺失时要给出可执行的补救（跑 prepack）—— 否则现场只知道"缺"');
+		assert.match(strip, /if \(criticalMissing > 0\)[\s\S]{0,300}?process\.exit\(1\)/, '关键构件缺失必须让脚本 exit 1');
+	});
+
+	test('★ verify-staging：内置运行时是硬性（不再"仓库侧没有就只 WARN 放行"）', () => {
+		const verify = read(REL_VERIFY)!;
+		const rel = verify.slice(verify.indexOf('dsh 运行时'));
+		assert.ok(rel.length > 0, '找不到 dsh 运行时段（守卫不能空跑）');
+		assert.ok(!/\[WARN\][^\n]*dsh-runtime/.test(rel),
+			'不许再有"仓库侧没有 dsh-runtime ⇒ 只 WARN"这条路（2026-10-16 之前它放过了坏包 ✗）');
+		// ★ 条件 + 动作一起钉：只查"有没有 Write-Error 这句话"会漏掉"条件被改成永假"这种退化
+		//   （2026-10-16 突变验证实测：只把 `if (-not (Test-Path …))` 换成 `if ($false)`，弱版本守卫照样绿 ✗）。
+		assert.match(rel,
+			/if \(-not \(Test-Path \(Join-Path \$repoRoot "dsh-runtime\\\$bundledVer"\)\)\) \{\s*Write-Error[\s\S]{0,300}?exit 1/,
+			'缺 dsh-runtime\\<bundled> 必须当场 Write-Error + exit 1（要连着条件一起，防空壳断言 ✗）');
+		assert.match(rel, /prepack-dsh-runtime\.mjs/, '错误文案要给出可执行补救（跑 prepack）');
+		assert.match(rel, /dsh-runtime\\\$bundledVer\\node_modules\\@deepseek-ai\\dsh\\lib\\bin\.js/, '仍要把运行时入口列为必需项');
+	});
+
+	test('★ gulp 资源流仍在拷 dsh-runtime（路径与宿主 appPath 同源）', () => {
+		const gulp = read(REL_GULP)!;
+		assert.match(gulp, /dsh-runtime\/\*\/node_modules\/\*\*/, '资源流必须仍在拷 dsh-runtime 的 node_modules（否则上面两道门都会红）');
+		const channel = read('src/vs/sessions/contrib/dshHarness/electron-main/dshHarnessChannel.ts')!;
+		assert.match(channel, /join\(app\.getAppPath\(\), 'dsh-runtime'\)/, '宿主读的就是 <appPath>/dsh-runtime（两处必须同源）');
+	});
+});
