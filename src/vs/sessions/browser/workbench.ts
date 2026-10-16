@@ -13,7 +13,7 @@ import { isFullscreen, onDidChangeFullscreen, isChrome, isFirefox, isSafari } fr
 import { mark } from '../../base/common/performance.js';
 import { onUnexpectedError, setUnexpectedErrorHandler } from '../../base/common/errors.js';
 import { isWindows, isLinux, isWeb, isNative, isMacintosh } from '../../base/common/platform.js';
-import { Parts, Position, PanelAlignment, IWorkbenchLayoutService, SINGLE_WINDOW_PARTS, MULTI_WINDOW_PARTS, IPartVisibilityChangeEvent } from '../../workbench/services/layout/browser/layoutService.js';
+import { AgentsEditorColumnSide, getAgentsEditorColumnTargetLocation, Parts, Position, PanelAlignment, IWorkbenchLayoutService, SINGLE_WINDOW_PARTS, MULTI_WINDOW_PARTS, IPartVisibilityChangeEvent } from '../../workbench/services/layout/browser/layoutService.js';
 import { ILayoutOffsetInfo } from '../../platform/layout/browser/layoutService.js';
 import { Part } from '../../workbench/browser/part.js';
 import { Direction, ISerializableView, ISerializedGrid, IViewSize, Orientation, SerializableGrid } from '../../base/browser/ui/grid/grid.js';
@@ -70,8 +70,8 @@ import { TokenizationRegistry } from '../../editor/common/languages.js';
 import { SyncDescriptor } from '../../platform/instantiation/common/descriptors.js';
 import { TitleService } from './parts/titlebarPart.js';
 import { SidebarPart } from './parts/sidebarPart.js';
-import { IContextKeyService } from '../../platform/contextkey/common/contextkey.js';
-import { EditorMaximizedContext, IsPhoneLayoutContext, KeyboardVisibleContext } from '../common/contextkeys.js';
+import { IContextKey, IContextKeyService } from '../../platform/contextkey/common/contextkey.js';
+import { AgentsEditorColumnAvailableContext, AgentsEditorColumnLeftContext, EditorMaximizedContext, IsPhoneLayoutContext, KeyboardVisibleContext } from '../common/contextkeys.js';
 import {
 	NotificationsPosition,
 	NotificationsSettings,
@@ -340,6 +340,15 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 	private isRightColumnCollapsed = false;
 	/** Saved width of the Agent editor before collapse (for restore) */
 	private preToggleWidth = 500;
+
+	/**
+	 * ★ 2026-10-13（用户："右上角的收缩按钮，应该负责收缩右侧栏（可能是文本编辑器栏，也可能是 agent
+	 * 聊天栏），不要固定收缩 agent 聊天栏"）：Agent 列被换到**左边**之后，"右侧那一栏"就是**编辑器列**
+	 * ⇒ 它自己的折叠态与宽度必须**单独记账** ✓（与 Agent 列混用一份状态，会在换边后"展开错的那一栏" ✗）。
+	 */
+	private isEditorColumnCollapsed = false;
+	/** 编辑器列折叠前的宽度（用于恢复） */
+	private preEditorToggleWidth = 500;
 
 	/** Whether the Panel (Output/Debug/Terminal) is currently visible */
 	private isPanelVisible = false;
@@ -627,6 +636,15 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 
 				// Phone Layout Context Key
 				const contextKeyService = accessor.get(IContextKeyService);
+
+				// ★ [Saros] 「编辑器列 ⇄ Agent 列」换位：门禁 + 启用态 context key。
+				// ⚠ 此刻 grid 尚未建立 ⇒ 这里只**绑句柄**，等 `createWorkbenchLayout()` 建好网格后
+				//   再置位（见那里）；否则会出现"可用=true 但点了没反应"的窗口期。
+				this._agentsEditorColumnCtx = {
+					available: AgentsEditorColumnAvailableContext.bindTo(contextKeyService),
+					left: AgentsEditorColumnLeftContext.bindTo(contextKeyService),
+				};
+
 				const isPhoneLayoutCtx = IsPhoneLayoutContext.bindTo(contextKeyService);
 				this._register(autorun(reader => {
 					isPhoneLayoutCtx.set(this.layoutPolicy.viewportClass.read(reader) === 'phone');
@@ -880,6 +898,21 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 	private static readonly LAYOUT_EDITOR_MAXIMIZED_KEY = 'sessions.layout.editorMaximized';
 
 	/**
+	 * ★ [Saros] 「编辑器列 ⇄ Agent 列」方位（2026-10-13）。
+	 *
+	 * ⚠ 与「IDE 底座 + Agent 布局」窗口**共用同一个 key**（那边是
+	 * `AgentLayoutWorkbench.AGENT_COLUMN_SIDE_KEY`）：两个窗口是同一份产品语义，
+	 * 用户在哪个窗口换过一次，另一个窗口也应当一致。
+	 */
+	private static readonly LAYOUT_AGENT_COLUMN_SIDE_KEY = 'vssaros.layout.agentColumnSide.v1';
+
+	/** ★ [Saros] Agent 列方位（缺省 `'right'` = 改动前的外观）。 */
+	private _agentsEditorColumnSide: AgentsEditorColumnSide = 'right';
+
+	/** ★ [Saros] 换位相关 context key（`initServices` 里绑定）。 */
+	private _agentsEditorColumnCtx: { available: IContextKey<boolean>; left: IContextKey<boolean> } | undefined;
+
+	/**
 	 * Read persisted layout preferences into in-memory fields.
 	 * Called early during startup so that `createDesktopGridDescriptor()`
 	 * sees the restored values when building the initial grid.
@@ -890,6 +923,18 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 	 * are wired up.
 	 */
 	private restoreLayoutPreferences(storageService: IStorageService): void {
+		// ★ [Saros] Agent 列方位 —— 必须在这里读（而不是建 grid 时现读），
+		// 因为 `createDesktopGridDescriptor()` 要拿它决定首帧顺序；
+		// 本方法的调用时机恰好就在 grid 建立**之前**（见其注释）。
+		// ⚠ 非法值当"没有"处理 ⇒ 脏数据不会把窗口开成意外布局。
+		const sideRaw = storageService.get(Workbench.LAYOUT_AGENT_COLUMN_SIDE_KEY, StorageScope.WORKSPACE);
+		if (sideRaw === 'left' || sideRaw === 'right') {
+			this._agentsEditorColumnSide = sideRaw;
+			this.logService.info(`[Sarosis][AgentColumnSide] restore: ${sideRaw}`);
+		} else if (sideRaw !== undefined) {
+			this.logService.warn(`[Sarosis][AgentColumnSide] restore: 非法值 ${JSON.stringify(sideRaw)} ⇒ 忽略，用默认 right`);
+		}
+
 		// Sidebar expanded width — clamp to a sensible range so a
 		// corrupted value cannot wedge the layout.
 		const widthRaw = storageService.getNumber(Workbench.LAYOUT_SIDEBAR_EXPANDED_WIDTH_KEY, StorageScope.WORKSPACE);
@@ -1412,18 +1457,32 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 
 		canvasGroup.lock(true);
 
-		// ── 伸缩按钮：折叠/展开右侧 Agent Studio 栏 ──
+		// ── 伸缩按钮：折叠/展开**右侧那一栏**（Agent 列或编辑器列，看当前方位）──
+		// ★ 2026-10-13（用户："右上角的收缩按钮，应该负责收缩右侧栏（可能是文本编辑器栏，也可能是 agent
+		//   聊天栏），不要固定收缩 agent 聊天栏"）：旧实现**写死 `agentEditorPartView`** ✗ ⇒ 一旦把 Agent
+		//   列换到**左边**，点"收缩右侧栏"照样去收**左边**那一栏 ✓（用户截图里正是这个：编辑器在右、
+		//   聊天在左，被收掉的却是聊天 ✗）。
+		//   现在**按方位选目标**：Agent 列在右 ⇒ 收 Agent 列（行为不变 ✓）；Agent 列在左 ⇒ 收**编辑器列** ✓。
+		// ⚠ 两栏的折叠态/宽度**各自记账**（见字段声明处的注释 ✓），不要共用一份 ✗。
+		// ⚠ `.agent-editor-part` 与编辑器列都是网格里的 view ⇒ 收起用 `setViewVisible(false)` ＋
+		//   `resizeView` 记宽恢复，与原先同一条路径 ✓（不动 `setPartHidden`：编辑器列在那里被显式跳过 ✓）。
 		const toggleHandler: EventListener = () => {
-			if (!this.workbenchGrid || !this.agentEditorPartView) { return; }
+			if (!this.workbenchGrid) { return; }
+			const agentOnRight = this._agentsEditorColumnSide === 'right';
+			const view = agentOnRight ? this.agentEditorPartView : this.editorPartView;
+			if (!view) { return; }
+			const collapsed = agentOnRight ? this.isRightColumnCollapsed : this.isEditorColumnCollapsed;
 			try {
-				if (this.isRightColumnCollapsed) {
-					this.workbenchGrid.setViewVisible(this.agentEditorPartView, true);
-					this.workbenchGrid.resizeView(this.agentEditorPartView, { width: this.preToggleWidth, height: 1000 });
-					this.isRightColumnCollapsed = false;
+				if (collapsed) {
+					const width = agentOnRight ? this.preToggleWidth : this.preEditorToggleWidth;
+					this.workbenchGrid.setViewVisible(view, true);
+					this.workbenchGrid.resizeView(view, { width: width > 0 ? width : 500, height: 1000 });
+					if (agentOnRight) { this.isRightColumnCollapsed = false; } else { this.isEditorColumnCollapsed = false; }
 				} else {
-					this.preToggleWidth = this.workbenchGrid.getViewSize(this.agentEditorPartView).width;
-					this.workbenchGrid.setViewVisible(this.agentEditorPartView, false);
-					this.isRightColumnCollapsed = true;
+					const width = this.workbenchGrid.getViewSize(view).width;
+					if (agentOnRight) { this.preToggleWidth = width; } else { this.preEditorToggleWidth = width; }
+					this.workbenchGrid.setViewVisible(view, false);
+					if (agentOnRight) { this.isRightColumnCollapsed = true; } else { this.isEditorColumnCollapsed = true; }
 				}
 			} catch { /* Grid 未就绪 */ }
 		};
@@ -2212,6 +2271,12 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		this.workbenchGrid = workbenchGrid;
 		this.workbenchGrid.edgeSnapping = this.mainWindowFullscreen;
 
+		// ★ [Saros] 换位 context key 置位 —— 网格已就绪，此刻才谈得上"可用"。
+		// 诊断行与 `agentColumnLayoutActions.ts` 的 "actions registered" 配对使用：
+		// 两条都在 = 入口应当可见；只有 actions 那条 = 本窗口没走到这里。
+		this._syncAgentsEditorColumnContextKeys();
+		this.logService.info(`[Sarosis][AgentColumnSide] ctx: available=true side=${this._agentsEditorColumnSide}`);
+
 		// Listen for part visibility changes (for parts in grid)
 		for (const part of [titleBar, sideBar, editorPart, agentEditorPart, panelPart]) {
 			this._register(part.onDidVisibilityChange(visible => {
@@ -2300,6 +2365,9 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 			sidebarContentExpanded: this.partVisibility.sidebar,
 			sidebarExpandedWidth: this._sidebarExpandedWidth,
 			panelVisible: this.isPanelVisible,
+			// ★ [Saros] Agent 列方位（`'left'|'right'`）：只决定 contentRow 里
+			// EditorColumn 与 AgentEditor 的先后；侧栏恒在索引 0、Panel 恒随编辑器列。
+			agentColumnSide: this._agentsEditorColumnSide,
 			// 环境常量注入 —— 让 `layoutProfile.ts` 零运行时 import（否则它 import 的
 			// `grid.js` / `layoutService.js` 在加载期引用 `window`，纯函数就无法单测）。
 			partIds: {
@@ -2802,6 +2870,90 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 
 	setPanelAlignment(_alignment: PanelAlignment): void {
 		// No-op: Panel alignment is fixed in this layout
+	}
+
+	/**
+	 * ★★ [Saros] 「编辑器列 ⇄ Agent 列」换位 —— 本布局里**唯一**允许的位置变化
+	 * （2026-10-13；`sessions/LAYOUT.md` §12 第 1 条为此写了"唯一例外"）。
+	 *
+	 * ── 语义 ──────────────────────────────────────────────────────────────
+	 * 把 `AGENT_EDITOR_PART` 这一个**叶子**在 contentRow 里换个位置；
+	 * `EditorColumn`（Editor + Panel）是 branch ⇒ **整体**让位
+	 * ⇒ 侧栏恒在最左、Panel 恒随编辑器列（无需二次搬 Panel）。
+	 * 落点下标来自**共享纯函数** `getAgentsEditorColumnTargetLocation()`
+	 * （`workbench/services/layout/browser/layoutService.ts`）——
+	 * 「IDE 底座 + Agent 布局」窗口那份 `Layout.moveAgentsEditorColumn()` 用的是**同一个函数**
+	 * ⇒ 两个窗口不会漂移。
+	 *
+	 * ── 为什么 `moveViewTo` 只会重排、不会重建 ─────────────────────────────
+	 * 目标与 Agent 列**同父级**（都是 contentRow 直接子节点）⇒ 走 `Grid.moveViewTo` 的
+	 * `equals(sourceParentLocation, targetParentLocation)` 分支（`grid.ts:629-630`）
+	 * = 纯重排：不 remove/add、不动视图实例、不碰 DOM 归属。
+	 * 已由行为级用例 `agentsColumnSwapGrid.test.ts`（真实 `SerializableGrid`）锁住。
+	 *
+	 * ⚠ 这是 `IAgentWorkbenchLayoutService` 的实现（接口上该方法是**可选**的）——
+	 * 命令层用 `layoutService.moveAgentsEditorColumn?.(side)` 调用，本窗口即有实现。
+	 */
+	moveAgentsEditorColumn(side: AgentsEditorColumnSide): void {
+		if (!this.workbenchGrid || !this.agentEditorPartView) {
+			return; // grid 尚未建立（例如启动早期）
+		}
+		if (this._agentsEditorColumnSide === side) {
+			return; // 已是目标方位：不重复重排、不写盘
+		}
+
+		try {
+			this.workbenchGrid.moveViewTo(
+				this.agentEditorPartView,
+				getAgentsEditorColumnTargetLocation(side),
+			);
+		} catch (err) {
+			this.logService.error(`[Sarosis][AgentColumnSide] moveViewTo(${side}) 失败`, err);
+			return; // 网格没动 ⇒ 状态与持久化都不该改
+		}
+
+		this._agentsEditorColumnSide = side;
+		this._syncAgentsEditorColumnContextKeys();
+		this._storeAgentsEditorColumnSide();
+
+		// 重排后两列宽度会重新分配 ⇒ 补一帧让两个 part 按**新**几何量重排
+		// （与 `expandAgentsSidebarContent()` 末尾"补一帧"同一成因：部件的 `layout()` 入参
+		//   来自网格，首帧可能与最终尺寸差一拍）。
+		mainWindow.requestAnimationFrame(() => {
+			for (const view of [this.editorPartView, this.agentEditorPartView]) {
+				try {
+					const size = this.workbenchGrid.getViewSize(view);
+					if (size.width > 0 && size.height > 0) {
+						view.layout(size.width, size.height, 0, 0);
+					}
+				} catch { /* 网格未就绪 / 窗口已关 */ }
+			}
+		});
+	}
+
+	/** ★ 落盘（只写读，无"启动早期覆盖"风险 ⇒ 不需要 ready 守卫）。 */
+	private _storeAgentsEditorColumnSide(): void {
+		const storageService = this._storageService;
+		if (!storageService) {
+			return; // 与聊天框布局同一条静默早退路径（那边已有诊断日志）
+		}
+		storageService.store(
+			Workbench.LAYOUT_AGENT_COLUMN_SIDE_KEY,
+			this._agentsEditorColumnSide,
+			StorageScope.WORKSPACE,
+			StorageTarget.MACHINE,
+		);
+		this.logService.info(`[Sarosis][AgentColumnSide] store: ${this._agentsEditorColumnSide}`);
+	}
+
+	/** ★ 同步门禁/启用态 context key（`available` 恒 true：本窗口必然有 Agent 列）。 */
+	private _syncAgentsEditorColumnContextKeys(): void {
+		const ctx = this._agentsEditorColumnCtx;
+		if (!ctx) {
+			return;
+		}
+		ctx.available.set(true);
+		ctx.left.set(this._agentsEditorColumnSide === 'left');
 	}
 
 	//#endregion

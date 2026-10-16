@@ -3,11 +3,13 @@
   "_howToRefresh": "node src/vs/sessions/contrib/agentStudio/test/browser/run-all-browser-tests.mjs 然后比对 '✗ N 个套件未通过' 段落",
   "_baselineTotals": {
     "passing": 4472,
-    "failing": 19,
+    "failing": 0,
     "runtimeCrashed": 6,
-    "built": 276
+    "built": 276,
+    "_note": "★ 2026-10-14：**本表已清空**（19 → 0）。当天销账 9 个套件（agentChatRefreshLog / chatWorkspaceAuthority / codebaseGraphStoreMemory / dagSchedulerAssignee / kbImportController / multiChatWindow / protocolConsolidation / sessionsConfigIsolation / workflowNodeTypeNormalize，共 23 例）—— 其中 **5 类是实现侧真 bug/回归**（图谱两条索引泄漏、配置隔离漏 MACHINE scope、DAG 扫描缺 assignee 兜底〔死锁〕、页面侧工作区选择到不了工具链；更早还有 XML 工具调用丢 JSON 正文）⇒ 都已修 ✓；其余是**测试停在已被有意改掉的旧契约**上，按新契约重写 ✓。passing/built 为归档时快照，仅作历史参考。"
   },
-  "_environmentCrashesNote": "以下 6 个套件依赖浏览器宿主环境（window/document/vssarosBridge），在纯 Node 下无法加载。原聚合 runner 把它们混进单进程 mocha，属于静默漏测；分片 runner 后改为显式暴露。它们需要 jsdom 或宿主注入才能真正执行，属独立课题，不计入功能回归。",
+  "_environmentCrashesNote": "以下 6 个套件依赖浏览器宿主环境（window/document/vssarosBridge），在纯 Node 下无法加载。原聚合 runner 把它们混进单进程 mocha，属于静默漏测；分片 runner 后改为显式暴露。它们需要 jsdom 或宿主注入才能真正执行，属独立课题，不计入功能回归（**这是本表清空后仅剩的已知未执行面** ✓）。",
+  "_unlistedRedNote": "2026-10-14 说明：`taskBoardExecution`（4 例）当前也是红的，但**不登记进本表** —— 原因是**别人在途**给 `agentTaskBoardService` 加跨进程写锁（`common/fileWriteLock.js` 的 acquireFileLock/fileServiceOps），而该套件的假 fileService 还没跟上 ⇒ 那是那次改动的收尾工作，不是存量缺陷 ✓（对方改完自然绿）。",
   "environmentCrashes": [
     "scheduleViewRenderer (window is not defined)",
     "workflowAskUser (vssarosBridge not initialised)",
@@ -16,15 +18,5 @@
     "workflowMediaAssets (vssarosBridge not initialised)",
     "workflowPasteImage (vssarosBridge not initialised)"
   ],
-  "failingSuites": {
-    "agentChatRefreshLog": { "failing": 1 },
-    "chatWorkspaceAuthority": { "failing": 4 },
-    "codebaseGraphStoreMemory": { "failing": 6 },
-    "dagSchedulerAssignee": { "failing": 2 },
-    "kbImportController": { "failing": 1 },
-    "multiChatWindow": { "failing": 1 },
-    "protocolConsolidation": { "failing": 1 },
-    "sessionsConfigIsolation": { "failing": 2 },
-    "workflowNodeTypeNormalize": { "failing": 1 }
-  }
+  "failingSuites": {}
 }

@@ -20,7 +20,7 @@ import { URI } from '../../../../../base/common/uri.js';
 import { autorun, IObservable } from '../../../../../base/common/observable.js';
 import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
 import { IAgentOSService } from '../../common/agentOS.js';
-import { ISkillRegistry, ISkillDefinition } from '../../common/skills.js';
+import { ISkillRegistry, ISkillDefinition, isSkillReadOnly } from '../../common/skills.js';
 import { ISkillInstallService, ISkillHubEntry, ISkillFolderUploadFile } from '../../common/skillHubTypes.js';
 import { IEventBridgeService } from '../../common/eventBridge.js';
 import { IMcpService, IMcpServer, McpConnectionState, McpServerCacheState } from '../../../../../workbench/contrib/mcp/common/mcpTypes.js';
@@ -46,6 +46,8 @@ import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { SarosPath, resolveSarosPath, userDataRootFromRoamingHome } from '../../common/sarosPaths.js';
 import { IEnvironmentService } from '../../../../../platform/environment/common/environment.js';
 import { applySavedOrder, CardDragSorter, CardOrderStore, CardPinStore, showCardContextMenu } from './cardItemBehaviors.js';
+import { isMcpSourcedTool, mcpServerIdOf } from '../../common/toolApprovalPolicy.js';
+import type { IToolDefinition } from '../../common/providers.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -150,6 +152,30 @@ export class IntegrationViewPane extends ViewPane {
 		const norm = id.replace(/[^A-Za-z0-9_]/g, '_');
 		if (IntegrationViewPane.NON_MCP_SERVER_IDS.has(norm)) { return true; }
 		return false;
+	}
+
+	/**
+	 * 由**工具定义**解析所属 MCP 服务器名（`~/.vssaros/mcp.json` 里的名字）—— **唯一解析点**。
+	 *
+	 * 单一真源是 `category = mcp:<sanitize(server.definition.id)>`（`mcpServerIdOf`）。
+	 * category 里带的是 **definition id** 的 sanitize 形式，与用户可见 server 名不一定
+	 * 字面相等（e.g. `mcp_config_usrlocal_tapd` → `tapd`）⇒ 这里按 `sarosServerNames`
+	 * 做**后缀匹配**；解析不出返回 `'unknown'`（调用方必须像主分支那样跳过它 ✓）。
+	 *
+	 * ⚠ **不得改用工具名解析**：工具名来自上游 VS Code 的 `IMcpTool.id`
+	 *   （`mcp_<server>_<tool>`，**单**下划线，且 server 名本身可能含下划线），dsh Host
+	 *   侧又是另一套 `mcp__<server>__<tool>` ⇒ `split('_')` / `split('__')` 都拆不出
+	 *   server。2026-10-12 修的正是重试补偿分支里那处 `split('__')`（恒落 `'unknown'`
+	 *   ⇒ UI 多出假服务器、且「启动中」spinner 清不掉）。
+	 */
+	private static _resolveMcpServerId(tool: IToolDefinition, sarosServerNames: ReadonlySet<string>): string {
+		const rawDefId = (mcpServerIdOf(tool) ?? '').toLowerCase();
+		if (!rawDefId) { return 'unknown'; }
+		for (const name of sarosServerNames) {
+			const sanitizedName = name.replace(/[^A-Za-z0-9_]/g, '_').toLowerCase();
+			if (rawDefId.endsWith(sanitizedName)) { return name; }
+		}
+		return 'unknown';
 	}
 
 	/**
@@ -516,7 +542,7 @@ export class IntegrationViewPane extends ViewPane {
 			menu.appendChild(item);
 		};
 
-		addItem('\u{1F6D2} 从商城安装', '浏览 Skill Marketplace', () => {
+		addItem('\u{1F6D2} 技能市场（编辑区）', '打开独立商城页浏览/安装技能（含 Cola 精选抓取批次）', () => {
 			const input = SkillMarketEditorInput.getInstance();
 			this.editorService.openEditor(input, { pinned: true });
 		});
@@ -638,7 +664,8 @@ export class IntegrationViewPane extends ViewPane {
 		const allSkills = [...this.skillRegistry.getSkills()];
 
 		// Dedup
-		const sourcePriority: Record<string, number> = { user: 3, marketplace: 3, extension: 2, memory: 1, builtin: 0 };
+		// `plugin`（dsh 插件自带技能）与内置同档 0：同内容同 id 时保留先者（内置/用户根在插件根之前 ✓）
+		const sourcePriority: Record<string, number> = { user: 3, marketplace: 3, extension: 2, memory: 1, builtin: 0, plugin: 0 };
 		const deduped = new Map<string, ISkillDefinition>();
 		for (const s of allSkills) {
 			const contentKey = `${s.id}::${s.contentHash ?? 'no-hash'}`;
@@ -771,11 +798,12 @@ export class IntegrationViewPane extends ViewPane {
 				nameRow.appendChild(pinIcon);
 			}
 
-			// 内置标识
-			if (skill.source === 'builtin') {
+			// 只读来源标识（内置 / 插件自带）：两者都不可编辑/卸载，但**必须分开显示** ——
+			// 说成"内置"会让用户以为技能随产品走，实际它随**插件包**升级（2026-10-13 P2 ✗）
+			if (isSkillReadOnly(skill.source)) {
 				const builtinBadge = $('span.builtin-badge');
-				builtinBadge.textContent = '内置';
-				builtinBadge.title = '产品内置技能';
+				builtinBadge.textContent = skill.source === 'plugin' ? '插件' : '内置';
+				builtinBadge.title = skill.source === 'plugin' ? '随 dsh 插件分发（只读，随插件升级）' : '产品内置技能';
 				nameRow.appendChild(builtinBadge);
 			}
 
@@ -796,8 +824,10 @@ export class IntegrationViewPane extends ViewPane {
 			// Unified action buttons (hover-visible)
 			const skillActions = this._createActionButtons('skill', skill.id, skill.name, {
 				// Show upload for user and builtin (not marketplace-downloaded)
+				// ⚠ 插件自带技能**不给上传**：它是第三方的，不是我们的东西（`isSkillReadOnly` 只挡"编辑/卸载"，
+				//    上架这条得在这里显式排除 —— 因此不能把 showUpload 也换成 isSkillReadOnly 的取反 ✗）
 				showUpload: skill.source === 'user' || skill.source === 'builtin',
-				// Show delete for user and marketplace (builtin skills are read-only)
+				// Show delete for user and marketplace（内置/插件自带是只读来源）
 				showDelete: skill.source === 'user' || skill.source === 'marketplace',
 			});
 			// Mark marketplace skills for async upgrade check
@@ -836,7 +866,8 @@ export class IntegrationViewPane extends ViewPane {
 					upgradeLabel: targetVersion ? `升级到 v${targetVersion}` : undefined,
 					onUpgrade: targetVersion ? () => { void this._handleUpgrade('skill', skill.id); } : undefined,
 					onUpload: isLocalSkill ? () => { void this._handleUpload('skill', skill.id); } : undefined,
-					onDelete: skill.source !== 'builtin' ? () => { void this._handleDelete('skill', skill.id, skill.name); } : undefined,
+					// 只读来源（内置 / 插件自带）不给删除入口 —— 删的是它们自己的目录 ✗（见 `isSkillReadOnly`）
+					onDelete: isSkillReadOnly(skill.source) ? undefined : () => { void this._handleDelete('skill', skill.id, skill.name); },
 				});
 			};
 
@@ -1270,19 +1301,9 @@ export class IntegrationViewPane extends ViewPane {
 			const toolList: McpToolUI[] = [];
 
 			for (const tool of mcpTools) {
-				// McpToolProvider sets category = "mcp:sanitize(server.definition.id)"
-				// e.g. "mcp:mcp_config_usrlocal_tapd" — extract serverId by matching
-				// sarosServerNames as a suffix of the sanitized definition ID.
-				const catParts = (tool.category || '').split(':');
-				const rawDefId = catParts.length >= 2 ? catParts[1].toLowerCase() : '';
-				let serverId = 'unknown';
-				for (const name of sarosServerNames) {
-					const sanitizedName = name.replace(/[^A-Za-z0-9_]/g, '_').toLowerCase();
-					if (rawDefId && rawDefId.endsWith(sanitizedName)) {
-						serverId = name;
-						break;
-					}
-				}
+				// serverId 由 category（`mcp:<sanitize(defId)>`）解析 —— **唯一解析点**见
+				// `_resolveMcpServerId`（不要从工具名拆 server，理由见那里的长注释）。
+				const serverId = IntegrationViewPane._resolveMcpServerId(tool, sarosServerNames);
 				this.logService.info(`[MCP-Debug] tool: name=${tool.name} category=${tool.category} serverId=${serverId}`);
 				// Skip non-MCP server IDs and 'unknown' (not a real MCP tool)
 				if (IntegrationViewPane._isNonMcpServer(serverId) || serverId === 'unknown') { continue; }
@@ -1408,13 +1429,22 @@ export class IntegrationViewPane extends ViewPane {
 				for (let attempt = 0; attempt < 5; attempt++) {
 					await new Promise(r => setTimeout(r, 300));
 					const retryTools = await this.agentOSService.listAllToolsWithState('viewer');
+					// 判据同主分支（`category` 前缀）—— 原写的是 `t.category === 'mcp'`，
+					// 而真值是 `mcp:<server>`（见 `MCP_TOOL_CATEGORY_PREFIX`）⇒ 恒不成立，
+					// 实际只靠 `source` 兜着。
 					const retryMcp = retryTools.filter(t =>
-						t.source?.includes?.('mcp') || t.category === 'mcp'
+						t.source?.includes?.('mcp') || isMcpSourcedTool(t)
 					);
 					if (retryMcp.length > 0) {
 						for (const tool of retryMcp) {
-							const parts = tool.name.split('__');
-							const serverId = parts.length >= 2 ? parts[0] : ((tool as any).serverId ?? 'unknown');
+							// ★ 2026-10-12 修复：此处原为 `tool.name.split('__')` —— 工具名是
+							//   `mcp_<server>_<tool>`（**单**下划线）⇒ 恒不分割 ⇒ 回落
+							//   `(tool as any).serverId`（`IToolDefinition` 上没有该字段）
+							//   ⇒ 全部判成 'unknown' ⇒ ① mcpServers 里多出一个假服务器条目；
+							//   ② 下面清 `_startingMcpIds` 的循环匹配不到真实 id（本该清掉的
+							//   "启动中" spinner 继续转）。现与主分支同口径：解析不出就跳过。
+							const serverId = IntegrationViewPane._resolveMcpServerId(tool, sarosServerNames);
+							if (serverId === 'unknown') { continue; }
 							if (IntegrationViewPane._isNonMcpServer(serverId)) { continue; }
 							const descMatch = tool.description?.match(/\[via MCP server "([^"]+)"/);
 							const serverName = descMatch ? descMatch[1] : serverId;

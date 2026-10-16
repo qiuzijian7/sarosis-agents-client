@@ -1,0 +1,206 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Saros Agents Client 架构总览",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "viewBox": [1320, 700],
+    "repository": {
+      "url": "git@git.woa.com:zijianqiu/sarosis-agents-client.git",
+      "revision": "da0903844bb27f400a092117d19798ab729e0975",
+      "link_mode": "local-only"
+    },
+    "views": [
+      {
+        "id": "session-main-path",
+        "label": "会话主链路",
+        "focus": ["desktop", "workbench", "sessions-svc", "agenthost", "agents", "models"],
+        "note": "一次会话请求从桌面壳出发，经会话编排、agentHost 协议，最终到模型推理。"
+      },
+      {
+        "id": "plugin-plane",
+        "label": "插件与 DSH 平面",
+        "focus": ["workbench", "dsh", "plugins", "sessions-svc"],
+        "note": "DSH Harness 在工作台内托管插件视图，并把插件注册为会话提供方。"
+      },
+      {
+        "id": "host-and-edge",
+        "label": "主机侧与外部集成",
+        "focus": ["agenthost", "remote", "db", "agents", "mcp"],
+        "note": "远程主机接入、会话持久化，以及模型与工具这两类外部依赖。"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "desktop",
+      "type": "frontend",
+      "label": "Electron 桌面壳",
+      "sublabel": "sessions.main.ts",
+      "pos": [40, 310],
+      "size": [140, 64],
+      "sources": [{ "path": "src/vs/workbench/electron-browser/sessions.main.ts", "label": "入口" }]
+    },
+    {
+      "id": "workbench",
+      "type": "frontend",
+      "label": "工作台视图层",
+      "sublabel": "contrib: chat · changes · worktree",
+      "pos": [250, 310],
+      "size": [140, 64],
+      "tag": "contrib",
+      "sources": [{ "path": "src/vs/workbench/contrib/chat/browser/chat.contribution.ts", "label": "聊天视图" }]
+    },
+    {
+      "id": "sessions-svc",
+      "type": "backend",
+      "label": "会话编排服务",
+      "sublabel": "sessionsManagementService",
+      "pos": [460, 310],
+      "size": [140, 64],
+      "sources": [{ "path": "src/vs/workbench/services/sessions/browser/sessionsManagementService.ts", "label": "编排" }]
+    },
+    {
+      "id": "agenthost",
+      "type": "backend",
+      "label": "agentHost 服务",
+      "sublabel": "AHP 协议服务端",
+      "pos": [670, 310],
+      "size": [140, 64],
+      "tag": "Node 进程",
+      "sources": [{ "path": "src/vs/platform/agentHost/node/agentHostServerMain.ts", "label": "服务入口" }]
+    },
+    {
+      "id": "agents",
+      "type": "backend",
+      "label": "Agent 运行时",
+      "sublabel": "claudeAgent · copilotAgent",
+      "pos": [880, 310],
+      "size": [140, 64],
+      "sources": [{ "path": "src/vs/platform/agentHost/node/claude/claudeAgent.ts", "label": "Claude 会话" }]
+    },
+    {
+      "id": "models",
+      "type": "external",
+      "label": "模型 API",
+      "sublabel": "Claude · Copilot",
+      "pos": [1090, 310],
+      "size": [140, 64],
+      "sources": [{ "path": "src/vs/platform/agentHost/node/claude/claudeProxyService.ts", "label": "代理" }]
+    },
+    {
+      "id": "dsh",
+      "type": "backend",
+      "label": "DSH Harness",
+      "sublabel": "contrib/dshHarness",
+      "pos": [250, 150],
+      "size": [140, 64],
+      "sources": [{ "path": "src/vs/workbench/contrib/dshHarness/electron-main/dshRuntimeManager.ts", "label": "运行时" }]
+    },
+    {
+      "id": "plugins",
+      "type": "backend",
+      "label": "插件层",
+      "sublabel": "17 个 vssaros-* 插件",
+      "pos": [460, 150],
+      "size": [140, 64],
+      "tag": "dsh-plugins",
+      "sources": [{ "path": "dsh-plugins/tools-snapshot.mjs", "label": "工具快照" }]
+    },
+    {
+      "id": "mcp",
+      "type": "external",
+      "label": "MCP 服务",
+      "sublabel": "外部工具供给",
+      "pos": [880, 150],
+      "size": [140, 64],
+      "sources": [{ "path": "src/vs/platform/mcp", "label": "MCP 平台" }]
+    },
+    {
+      "id": "github",
+      "type": "external",
+      "label": "GitHub",
+      "sublabel": "PR · Changes",
+      "pos": [250, 470],
+      "size": [140, 64],
+      "sources": [{ "path": "src/vs/workbench/contrib/github/browser/githubService.ts", "label": "GitHub 服务" }]
+    },
+    {
+      "id": "remote",
+      "type": "cloud",
+      "label": "远程 agentHost",
+      "sublabel": "SSH · Tunnel",
+      "pos": [670, 470],
+      "size": [140, 64],
+      "sources": [{ "path": "src/vs/platform/agentHost/common/sshRemoteAgentHost.ts", "label": "SSH 主机" }]
+    },
+    {
+      "id": "db",
+      "type": "database",
+      "label": "会话持久化",
+      "sublabel": "sessionDatabase",
+      "pos": [880, 470],
+      "size": [140, 64],
+      "sources": [{ "path": "src/vs/platform/agentHost/node/sessionDatabase.ts", "label": "存储" }]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "VsSaros 桌面端进程",
+      "wraps": ["desktop", "workbench", "sessions-svc", "dsh", "plugins"],
+      "pad": 22
+    },
+    {
+      "kind": "region",
+      "label": "agentHost 服务端进程",
+      "wraps": ["agenthost", "agents", "db"],
+      "pad": 22
+    }
+  ],
+  "connections": [
+    { "id": "desktop-to-workbench", "from": "desktop", "to": "workbench", "variant": "emphasis" },
+    { "id": "workbench-to-sessions", "from": "workbench", "to": "sessions-svc", "label": "会话请求", "variant": "emphasis" },
+    { "id": "sessions-to-agenthost", "from": "sessions-svc", "to": "agenthost", "label": "AHP 协议", "variant": "emphasis" },
+    { "id": "agenthost-to-agents", "from": "agenthost", "to": "agents", "label": "拉起会话进程", "variant": "emphasis" },
+    { "id": "agents-to-models", "from": "agents", "to": "models", "label": "推理请求", "variant": "emphasis" },
+    { "id": "agents-to-mcp", "from": "agents", "to": "mcp", "label": "工具调用", "variant": "dashed" },
+    { "id": "agenthost-to-remote", "from": "agenthost", "to": "remote", "label": "SSH / Tunnel", "variant": "dashed" },
+    { "id": "agenthost-to-db", "from": "agenthost", "to": "db", "label": "读写会话", "fromSide": "bottom", "toSide": "top" },
+    { "id": "workbench-to-dsh", "from": "workbench", "to": "dsh", "label": "插件视图容器", "variant": "dashed" },
+    { "id": "dsh-to-plugins", "from": "dsh", "to": "plugins", "label": "加载插件" },
+    { "id": "plugins-to-sessions", "from": "plugins", "to": "sessions-svc", "label": "注册 provider" },
+    { "id": "workbench-to-github", "from": "workbench", "to": "github", "label": "PR · 变更", "variant": "dashed" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "桌面与工作台",
+      "items": [
+        "Electron 壳由 sessions.main.ts 启动",
+        "Workbench contrib 提供 chat / changes / worktree / github 等视图",
+        "contrib/dshHarness 在工作台内托管 DSH 插件视图"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "会话与主机",
+      "items": [
+        "sessionsManagementService 统一编排多提供方会话",
+        "agentHost 以 AHP 协议在 Node 进程驱动 Claude / Copilot",
+        "sessionDatabase 负责会话持久化",
+        "SSH 与 Tunnel 方式接入远程 agentHost"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "扩展与外部依赖",
+      "items": [
+        "dsh-plugins 下 17 个 vssaros-* 插件，配套 dsh-runtime 0.2.0-rc.2",
+        "外部 MCP 服务提供工具能力",
+        "GitHub 供给 PR 与变更数据"
+      ]
+    }
+  ]
+}

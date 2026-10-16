@@ -15,9 +15,13 @@
  *      · mixed（小红书 / 微博）：图文 + 封面图 / 视频，两者皆抓。
  *
  * 注意：渲染进程受同源策略与反爬限制，纯 HTML 抽取对强 SPA / 登录墙站点（抖音、YouTube 等）
- * 只能拿到 OG 元数据；真正的媒体直链下载在能拿到直链时生效。如需 100% 抓取，可后续接入
- * headless 浏览器（Playwright）或外部下载器（yt-dlp）作为 KbUrlScraper 的扩展点。
+ * 只能拿到 OG 元数据；真正的媒体直链下载在能拿到直链时生效。需要"一定要抓到"时**不在本模块**做 ——
+ * agent 侧走 `browser`（CDP 驱动真实 Chrome）与随包自带的 yt-dlp，分流规则见路由真源
+ * `common/webPlatformRoutes.ts`。
  */
+
+import { WEB_PLATFORM_ROUTES, routeForUrl } from '../../../common/webPlatformRoutes.js';
+import type { IWebPlatformRoute } from '../../../common/webPlatformRoutes.js';
 
 export type KbUrlPlatformType = 'article' | 'video' | 'mixed' | 'unknown';
 
@@ -32,32 +36,30 @@ export interface IKbPlatformDef {
 	hostPatterns: RegExp[];
 }
 
-/** 支持的主流平台（顺序即优先级，通用网页放最后兜底）。 */
-export const KB_URL_PLATFORMS: IKbPlatformDef[] = [
-	{ id: 'xiaohongshu', name: '小红书', type: 'mixed', hostPatterns: [/xhslink\.com/i, /xiaohongshu\.com/i] },
-	{ id: 'douyin', name: '抖音', type: 'video', hostPatterns: [/douyin\.com/i, /iesdouyin\.com/i] },
-	{ id: 'tiktok', name: 'TikTok', type: 'video', hostPatterns: [/tiktok\.com/i] },
-	{ id: 'kuaishou', name: '快手', type: 'video', hostPatterns: [/kuaishou\.com/i, /gifshow\.com/i] },
-	{ id: 'bilibili', name: 'B站', type: 'video', hostPatterns: [/bilibili\.com/i, /b23\.tv/i] },
-	{ id: 'youtube', name: 'YouTube', type: 'video', hostPatterns: [/youtube\.com/i, /youtu\.be/i] },
-	{ id: 'weibo', name: '微博', type: 'mixed', hostPatterns: [/weibo\.com/i, /weibo\.cn/i] },
-	{ id: 'weixin', name: '微信公众号', type: 'article', hostPatterns: [/mp\.weixin\.qq\.com/i] },
-	{ id: 'zhihu', name: '知乎', type: 'article', hostPatterns: [/zhihu\.com/i] },
-	{ id: 'juejin', name: '掘金', type: 'article', hostPatterns: [/juejin\.cn/i] },
-	{ id: 'csdn', name: 'CSDN', type: 'article', hostPatterns: [/csdn\.net/i] },
-	{ id: 'feishu', name: '飞书', type: 'article', hostPatterns: [/feishu\.cn/i, /larksuite\.com/i] },
-	{ id: 'generic', name: '网页', type: 'article', hostPatterns: [/.*/] },
-];
+/**
+ * 把路由真源的一条**投影**成宿主认识的形状（本模块唯一的转换点）。
+ *
+ * 为什么投影而不是直接用真源对象：本模块的消费者（`kbImportController` 等）只关心
+ * id/name/type/hostPatterns，而真源还带 `backends` / `needsLogin` / `risks`（那是给 agent 侧的
+ * skill 与设置页看的路由说明）。多带字段没有坏处，但保持这个**窄接口**能让"宿主行为"与
+ * "路由说明"的改动彼此独立。
+ */
+function toKbPlatformDef(route: IWebPlatformRoute): IKbPlatformDef {
+	return { id: route.id, name: route.name, type: route.type, hostPatterns: [...route.hostPatterns] };
+}
 
-/** 根据 URL 识别平台（无法解析时回退到通用网页）。 */
+/**
+ * 支持的主流平台。
+ *
+ * ⚠ **真源已收敛到 `common/webPlatformRoutes.ts`（2026-10-13）**：平台清单、匹配优先级、"通用网页放最后
+ * 兜底"三条语义都只在那里写一份。本文件原先自带一份手写表，与 agent 侧 skill 里那张表格**彼此不知情**
+ * ⇒ 漂移是静默的（宿主按 A 分流、agent 按 B 分流，没有任何测试会红）。
+ */
+export const KB_URL_PLATFORMS: IKbPlatformDef[] = WEB_PLATFORM_ROUTES.map(toKbPlatformDef);
+
+/** 根据 URL 识别平台（无法解析时回退到通用网页）。实现即真源的 `routeForUrl`。 */
 export function detectPlatform(url: string): IKbPlatformDef {
-	let host = '';
-	try { host = new URL(url).hostname; } catch { /* ignore */ }
-	for (const p of KB_URL_PLATFORMS) {
-		if (p.id === 'generic') { continue; }
-		if (p.hostPatterns.some(rx => rx.test(host))) { return p; }
-	}
-	return KB_URL_PLATFORMS[KB_URL_PLATFORMS.length - 1];
+	return toKbPlatformDef(routeForUrl(url));
 }
 
 /**

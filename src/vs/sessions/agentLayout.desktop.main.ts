@@ -71,6 +71,13 @@ import './browser/paneCompositePartService.js';
 // 故此处单独按需引入 —— 该贡献点仅装一个全局函数（不写会话/不落盘/AfterRestored），
 // 且 IAgentOSService 为可选解析，服务缺失时优雅跳过而不是打爆启动（2026-09-20 实证）。
 import './contrib/agentStudio/browser/piLoopDualRun.contribution.js';
+// ③ [Saros 2026-10-13] 「编辑器列 ⇄ Agent 列」换位的入口层（3 个 action）。
+//    为什么必须在这里引入：`sessions/browser/layoutActions.js` 只被
+//    `sessions.common.main.js` 引入，而本入口**刻意不引**它（见上方 ⚠⚠ 注释）
+//    ⇒ 放在那边等于在本窗口从未注册（命令面板里搜不到、菜单项不出现）。
+//    该文件只做 `registerAction2`，菜单条目一律带
+//    `when: AgentsEditorColumnAvailableContext` 门禁 ⇒ 标准 IDE 窗口不会多出任何入口。
+import './browser/agentColumnLayoutActions.js';
 
 //#endregion
 

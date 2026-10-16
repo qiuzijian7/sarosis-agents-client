@@ -160,7 +160,7 @@ export class MediaStore {
 		if (entry.base64) {
 			const ext = entry.ext || 'png';
 			const buf = Buffer.from(entry.base64, 'base64');
-			const rel = this._writeFile(id, ext, buf);
+			const rel = await this._writeFile(id, ext, buf);
 			fileName = path.basename(rel);
 			filePath = path.join(this.opts.rootDir, rel);
 			sizeBytes = buf.byteLength;
@@ -437,13 +437,19 @@ export class MediaStore {
 		return total;
 	}
 
-	private _writeFile(id: string, ext: string, buf: Buffer): string {
+	/**
+	 * 落盘一个媒体文件（图片/视频字节）。
+	 *
+	 * 异步写：媒体文件动辄 MB 级，**主进程上的同步写**一旦撞上 I/O 卡死（2026-10-12 三次现场
+	 * 都是 `NtWriteFile` 永不返回 ⇒ 整个 IDE 假死）代价太高；两个调用点都是 async 链，直接 await。
+	 */
+	private async _writeFile(id: string, ext: string, buf: Buffer): Promise<string> {
 		const d = new Date();
 		const relDir = path.join(String(d.getFullYear()), String(d.getMonth() + 1).padStart(2, '0'));
 		const absDir = path.join(this.opts.rootDir, relDir);
-		fs.mkdirSync(absDir, { recursive: true });
+		await fs.promises.mkdir(absDir, { recursive: true });
 		const rel = path.join(relDir, `${id}.${ext}`);
-		fs.writeFileSync(path.join(this.opts.rootDir, rel), buf);
+		await fs.promises.writeFile(path.join(this.opts.rootDir, rel), buf);
 		return rel;
 	}
 
@@ -458,7 +464,7 @@ export class MediaStore {
 			const buf = Buffer.from(await res.arrayBuffer());
 			if (buf.byteLength === 0) { return null; }
 			const ext = this._extForRemote(url, res.headers.get('content-type'), fallbackExt);
-			const rel = this._writeFile(id, ext, buf);
+			const rel = await this._writeFile(id, ext, buf);
 			return {
 				fileName: path.basename(rel),
 				filePath: path.join(this.opts.rootDir, rel),

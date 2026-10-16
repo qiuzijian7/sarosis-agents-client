@@ -33,7 +33,7 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { validatedIpcMain } from '../../../../base/parts/ipc/electron-main/ipcMain.js';
 import { app } from 'electron';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, promises as fsp, readFileSync } from 'fs';
 // 纯逻辑（白名单 / 目录 / 路径拼接）放 common，便于单测且与渲染层共用同一份定义
 import {
 	MAX_BRIDGE_STORE_WRITE_BYTES,
@@ -129,8 +129,10 @@ export class BridgeStoreChannel extends Disposable {
 				return { ok: false, error: `非法 JSON：${error}` };
 			}
 			try {
-				mkdirSync(this.dir(), { recursive: true });
-				writeFileSync(path, json, 'utf8');
+				// 异步写：主进程上的同步写一旦撞上 I/O 卡死（2026-10-12 三次现场都是 NtWriteFile
+				// 永不返回）就是整个 IDE 假死 ⇒ 一律交给 libuv 线程池（详见 test/common/mainProcessSyncWrites.test.ts）。
+				await fsp.mkdir(this.dir(), { recursive: true });
+				await fsp.writeFile(path, json, 'utf8');
 				return { ok: true };
 			} catch (err) {
 				const error = err instanceof Error ? err.message : String(err);
@@ -153,10 +155,11 @@ export class BridgeStoreChannel extends Disposable {
 			}
 			try {
 				const dir = this.attachmentsDir();
-				mkdirSync(dir, { recursive: true });
+				await fsp.mkdir(dir, { recursive: true });
 				const safe = sanitizeAttachmentFileName(payload?.name ?? 'attachment');
 				const path = joinBridgePath(dir, `${Date.now().toString(36)}-${safe}`);
-				writeFileSync(path, Buffer.from(base64, 'base64'));
+				// 附件可达 MB 级：同步写在这里最容易把主线程钉住（同文件的 bridgeStore:write 注释）
+				await fsp.writeFile(path, Buffer.from(base64, 'base64'));
 				this.logService.info(`[AgentStudio] bridgeSaveAttachment 已写入 ${path}`);
 				return { ok: true, path };
 			} catch (err) {

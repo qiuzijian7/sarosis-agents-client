@@ -124,7 +124,6 @@ import {
 	allEntriesFor, addEntry, removeEntry, migrateLegacyEntries, autoApproveFor,
 	type IToolAllowFile,
 } from '../common/toolAllowStore.js';
-import { DEFAULT_AUTO_APPROVE, type ToolCategory, type ToolAutoApproveMode } from '../common/toolApprovalPolicy.js';
 import {
 	AGENT_STUDIO_TOOL_SEARCH_ENABLED_SETTING,
 	AGENT_STUDIO_TOOL_SEARCH_THRESHOLD_PCT_SETTING,
@@ -215,6 +214,7 @@ import { isMemoryInjectionEnabled } from './agentMemoryInjection.js';
 import { UserMessageEnricher } from './messageEnrichment/userMessageEnricher.js';
 import { createBuiltinTagProviders, WorkingMemoryTagProvider, KbOverviewTagProvider } from './messageEnrichment/builtinTagProviders.js';
 import { IKbNativeKernelService } from './kbNativeKernelService.js';
+import { DEFAULT_AUTO_APPROVE, ToolAutoApproveMode, ToolCategory, isMcpSourcedTool } from '../common/toolApprovalPolicy.js';
 
 export class AgentOSService extends Disposable implements IAgentOSService {
 
@@ -2758,11 +2758,20 @@ private readonly _sandboxGuard: SandboxGuard;
 		hardPermission?: IHardPermissionPolicy,
 		excludedTools?: readonly string[],
 		allowedTools?: readonly string[],
-	): Promise<string[]> {
+	): Promise<{ toolNames: string[]; bridgeVisible: boolean }> {
 		const tools = await this._getEnabledTools(agentId, agentGraph, toolsetsOverride, hardPermission, excludedTools, allowedTools);
-		return tools
-			.filter(t => !t.category?.startsWith('mcp:') && !isBridgeTool(t.name))
-			.map(t => t.name);
+		// ★ 桥接可见性直接读**真实下发集**：assembly 的两个分支都把桥接工具附在末尾
+		//   （`toolSearchAssembler.ts:413-435`），而 `allDeferrable.length === 0` 的提前
+		//   返回（`:395-404`）里**没有** ⇒ "这里有没有"就等价于"下不下发"。
+		//   刻意不复刻"有没有 deferrable 工具"的判据 —— 那要重演分类 + 两层上限
+		//   （L1 软上限 / L2 硬上限的 forcedDeferred 也会触发桥接），必然漂移 ✗。
+		const bridgeVisible = tools.some(t => isBridgeTool(t.name));
+		return {
+			toolNames: tools
+				.filter(t => !isMcpSourcedTool(t) && !isBridgeTool(t.name))
+				.map(t => t.name),
+			bridgeVisible,
+		};
 	}
 
 	/**
@@ -3060,7 +3069,7 @@ private readonly _sandboxGuard: SandboxGuard;
 
 		while (Date.now() < deadline) {
 			// 检查是否已有 MCP 工具
-			const mcpCount = tools.filter(t => t.category?.startsWith('mcp:')).length;
+			const mcpCount = tools.filter(t => isMcpSourcedTool(t)).length;
 			if (mcpCount > 0) {
 				this._logService.info(`[AgentOS] MCP tools available after waiting: ${mcpCount} MCP tool(s) found`);
 				return tools;
@@ -3071,7 +3080,7 @@ private readonly _sandboxGuard: SandboxGuard;
 		}
 
 		// 超时仍未获取到 MCP 工具
-		const mcpCount = tools.filter(t => t.category?.startsWith('mcp:')).length;
+		const mcpCount = tools.filter(t => isMcpSourcedTool(t)).length;
 		if (mcpCount === 0) {
 			this._logService.warn(`[AgentOS] No MCP tools after waiting ${timeoutMs}ms — MCP servers may not be connected or configured`);
 		}

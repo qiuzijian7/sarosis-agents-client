@@ -7,10 +7,16 @@ category: research
 ---
 
 <!-- 同步指针：本技能只讲「怎么抓、抓成什么形状、放哪」；能力边界由产品实现决定，改链路时同步：
-     · 平台表 / 输出形状：browser/views/knowledgeBase/kbUrlScraper.ts（KB_URL_PLATFORMS / detectPlatform /
-       composeArticleMarkdown / composeVideoMarkdown / slugifyTitle / planImagePath / parseSubtitlesToText）
+     · **平台表 / 路由真源**（2026-10-13 收敛）：common/webPlatformRoutes.ts 的 `WEB_PLATFORM_ROUTES` ——
+       每个平台带**有序候选通道**（`backends[0]` 即首选）。宿主 `KB_URL_PLATFORMS` / `detectPlatform`
+       **由它派生**；本文件下面那张表格由守卫 test/browser/webPlatformRoutes.test.ts 对账
+       （平台集合 + 每行的首选通道 + 不许出现已退役的 browser_* 工具名）
+     · 输出形状：browser/views/knowledgeBase/kbUrlScraper.ts（composeArticleMarkdown / composeVideoMarkdown /
+       slugifyTitle / planImagePath / parseSubtitlesToText）
      · 宿主「导入链接」全流程：browser/kbImportController.ts（importUrl：reader-mode → OG → yt-dlp 元信息
        → 字幕 → 图片本地化 → 落 库/raw/<slug>.md）
+     · agent 侧唯一的浏览器工具：`browser`（单工具 + `op` 参数；登录墙闭环是 `op: "login"` + `done: true`，
+       实现见 dsh-plugins/vssaros-browser/lib/core/loginProbe.js）
      · yt-dlp 的确切命令行：browser/knowledge/kbVideoFetch.ts（--print 模板 / 字幕 flags / 「不下载本体」）
      · 落盘语义（`库` = 数据源层 / `笔记` = 知识体系层）：宿主常量 KB_LIBRARY_SUBPATH / KB_NOTES_SUBPATH
      · 构建侧：技能 kb-build（本技能只把素材放进 `库/raw`，**不写** `笔记/`）
@@ -29,31 +35,75 @@ category: research
 - 用户要的是**深度分析/拆解**（游戏拆解、爆款结构分析）⇒ 抓取用本手册，分析交给对应技能（`kb-game-teardown` 等）；
 - 判断不清时，一句话问清「是要我把它的内容抓下来存进知识库吗」，**不要**默认开始抓。
 
+## 第 -1 步：先核对**你自己的**工具面（这一步最容易白做）
+
+同一个技能会被**两种运行环境**用到，而它们的工具面**不一样**：
+
+| 工具 | 谁有 |
+|---|---|
+| `browser`（本手册的浏览器通道） | **Host 侧**（Host 插件实现；⚠ 不可达时它会**动态从工具面消失**，见下） |
+| `web_extract` / `web_search` | **仅 IDE 侧**（VsSaros 内建的抓取与检索） |
+| `video_analyze` / `extract_video_frames` / `vision_analyze` | **仅 IDE 侧**（视频 / 图像链路，含本地 ASR） |
+| `execute_code` / `terminal` / `file_read` | **仅 IDE 侧** |
+
+⇒ **下笔之前先看自己的工具列表**，按"**实际有什么**"选路：
+
+- 本手册里出现的任何工具名，只要**不在你的列表里**，就**当作不存在** —— 不要假设它"也许能调"（调一个不存在的工具只会白失败一轮）；
+- 缺 `web_extract` ⇒ **文本抓取**用你确实拥有的那条（例如内置的 `fetch` 类工具），并按第 1 步的**质量判定**看待它的返回；
+- 缺 `video_analyze` ⇒ **本环境没有视频转写链路**（没有 ASR）⇒ 如实告诉用户拿不到口播内容，**不要**用"我记得这类视频通常……"编造；
+- 缺 `browser` ⇒ 浏览器不可用，**见下一节**。
+
+⚠ 这不是可有可无的前言：**工具面不同，"同一条路"能不能走完全不同** —— 照着手册点名一个手里没有的工具，是本技能最容易造成的整轮浪费。
+
+⚠ **`browser` 在不在你的工具列表里**：本工具集的浏览器通道会由 Host 按「本机 Chrome 调试端口是否可达」
+**动态增删**（不可达时**不暴露** —— 免得你去试一条必然失败的路）。所以：
+
+- 列表里**有** `browser` ⇒ 按下面各表正常走；
+- 列表里**没有** `browser` ⇒ 本机浏览器此刻不可用 —— **不要**假设它"过一会儿会出现"，也**不要**去找别的浏览器工具。
+  如实告诉用户："这个页面需要登录态 / JS 渲染，请在 Chrome 里开一次远程调试（地址栏**手输**
+  `chrome://inspect/#remote-debugging` 并勾选 'Allow remote debugging for this browser instance'）"。
+  然后**先用你手上的文本通道尽力回答**，取不到就承认取不到 —— 不要凭标题或摘要编内容。
+
 ## 第 0 步：先分流（这一步选错，后面全白做）
 
 ⚠ **Agent 不能触发知识库视图的「导入链接 / URL」按钮**（那是宿主留给用户点的入口：它还会做图片本地化）。
 但你**不需要它** —— 下面的工具都能直接对链接工作。
 
-| 平台（按主机名判） | 类型 | 主路径 | 拿不到的 / 降级 |
+| 平台（按主机名判） | 类型 | 主路径（首选 → 降级） | 已知坑 / 拿不到的 |
 |---|---|---|---|
-| 微信公众号 `mp.weixin.qq.com`、掘金 `juejin.cn`、CSDN、任意博客/静态文章 | article | **`web_extract`**（全文 ≤2 万字；超限会落盘并提示翻页） | 反爬拦截 → 换 `browser_navigate`；仍失败就如实说 |
-| 知乎 `zhihu.com` | article | 文章页（`/p/`）用 `web_extract`；**问答页**（`/question/`）常要求登录 ⇒ 直接 `browser_navigate` | 未登录只看得到前几条回答，别假装读了整页 |
-| 小红书 `xiaohongshu.com`、短链 `xhslink.com` | mixed | **`browser_navigate`**；图文帖正文常在**图片**里 ⇒ 必须配 `vision_analyze` **逐张**读图内文字 | 游客态多数帖子只给「你访问的页面不见了」⇒ 见第 3 步末 |
-| 抖音 `douyin.com`、快手、TikTok、微博 | video / mixed | `video_analyze`（元信息 + **口播文本** + 画面一次拿到）；只要字面信息就直接 `yt-dlp --print` | 这些站多数视频**没有字幕轨** ⇒ 口播靠 `video_analyze` 内置的**本地 ASR**（whisper），不是靠抽帧读屏上文字 |
-| B站 `bilibili.com` / `b23.tv`、YouTube `youtube.com` / `youtu.be` | video | `video_analyze` 首选（字幕轨/ASR + 帧 + 结论一次完成） | 直连 YouTube 超时（需代理的环境）⇒ 如实说明，别编内容 |
-| 其它任意网页 | article | `web_extract` 兜底 | — |
+| 小红书 `xiaohongshu.com`、短链 `xhslink.com` | mixed | **`browser`**（`op: "navigate"` → `"snapshot"`）→ 图内文字用 `vision_analyze` 逐张读 | 游客态多数帖子只给「你访问的页面不见了」⇒ 那是**缺登录态**（见第 3 步末）；正文常在图片里 |
+| 抖音 `douyin.com` / `iesdouyin.com` | video | **`video_analyze`**（元信息 + **口播文本** + 画面一次拿到）；只要字面信息就 `yt-dlp --print` | 多数视频**没有字幕轨** ⇒ 口播靠内置**本地 ASR**（whisper），不是抽帧读屏上文字 |
+| TikTok `tiktok.com` | video | **`video_analyze`**；只要字面信息就 `yt-dlp --print` | 同上（无字幕轨 ⇒ 本地 ASR） |
+| 快手 `kuaishou.com` / `gifshow.com` | video | **`video_analyze`**；只要字面信息就 `yt-dlp --print` | 同上（无字幕轨 ⇒ 本地 ASR） |
+| B站 `bilibili.com` / `b23.tv` | video | **`video_analyze`**（字幕轨/ASR + 帧 + 结论一次完成）；只要字面信息就 `yt-dlp --print` | 无字幕轨时同样走本地 ASR |
+| YouTube `youtube.com` / `youtu.be` | video | **`video_analyze`**（字幕轨通常齐备，最准的一条）；只要字面信息就 `yt-dlp --print` | 直连 YouTube 超时（需代理的环境）⇒ 如实说明，别编内容 |
+| 微博 `weibo.com` / `weibo.cn` | mixed | **`video_analyze`**（图文 + 视频混排时视频那条最值）→ 纯图文帖用 `browser` | 无字幕轨 ⇒ 本地 ASR |
+| 微信公众号 `mp.weixin.qq.com` | article | **`web_extract`**（全文 ≤2 万字；超限会落盘并提示翻页） | 反爬拦截 ⇒ 换 `browser`；仍失败就如实说 |
+| 知乎 `zhihu.com` | article | 文章页（`/p/`）用 **`web_extract`**；**问答页**（`/question/`）常要求登录 ⇒ 换 `browser` | 未登录只看得到前几条回答，别假装读了整页 |
+| 掘金 `juejin.cn` | article | **`web_extract`** | 反爬拦截 ⇒ 换 `browser`；仍失败就如实说 |
+| CSDN `csdn.net` | article | **`web_extract`** | 反爬拦截 ⇒ 换 `browser`；仍失败就如实说 |
+| 飞书 `feishu.cn` / `larksuite.com` | article | **`web_extract`** | 需要登录/权限的文档读不到就是读不到 —— 如实说明，不要编 |
+| 其它任意网页 | article | **`web_extract`** 兜底 | — |
 
 平台名以**主机名**为准，不要凭链接长相猜。
+
+⚠ 上表"主路径"里的 `web_extract` / `video_analyze` 属**仅 IDE 侧**（见第 -1 步）：不在你的工具列表里时，
+按那一节的降级办法走 —— **别照名字硬调**。
 
 ## 第 1 步：文章类 → 拿全文
 
 1. `web_extract(url)`：reader-mode 优先，且自带**质量分类**（拦截页 / 登录墙会返回**明确失败**，不会给你一段假正文）；
 2. 返回里出现 `Truncated` / 「已保存到完整文件」时，按提示用 `file_read` **读完整文件**，不要把摘要当全文；
 3. 返回 `Web Extract Blocked` 或 `content unavailable` 时**不要原样重试** —— 文案里已经写了下一步（换浏览器通道 / 换来源 / 让用户登录一次）；
-4. **已判登录墙的站点别再打 http**：如果 `browser_snapshot` / `browser_get_images` 已返回占位页结论（或输出里带 `This is NOT the page content`），就**不要再对这个 URL 调 `web_extract`** —— 实测（日志 1790262747712）：模型拿到浏览器侧结论后又对同一链接打了一次 web_extract，**2598ms 白打一面墙**。
+4. **已判登录墙的站点别再打 http**：如果 `browser`（`op: "snapshot"` 或 `op: "images"`）已返回占位页结论（或输出里带 `This is NOT the page content`），就**不要再对这个 URL 调 `web_extract`** —— 实测（日志 1790262747712）：模型拿到浏览器侧结论后又对同一链接打了一次 web_extract，**2598ms 白打一面墙**。
 5. 只回答内容问题 ⇒ 直接用结果答，不落盘。
 
 ## 第 2 步：视频类 → `video_analyze` 一次完成（文本主线是**口播转写**，不是抽帧读屏）
+
+⚠ **先确认 `video_analyze` 在不在你的工具列表里**（它**仅 IDE 侧**）：不在 ⇒ **本环境整条视频链路都不存在**
+（没有字幕抓取、没有本地 ASR、没有抽帧工具）⇒ **如实告诉用户拿不到口播内容**，并给出可选项
+（到 VsSaros 里做、或请用户提供字幕 / 文字稿）。**不要**改用"我凭印象总结这个视频"，
+也不要拿标题 / 简介冒充内容 —— 那是这类任务最坏的结果。
 
 ⚠ **正确流程：下载 → ASR/字幕（文本）→ 抽帧（画面证据）→ 写库**。
 **「下载 → 抽帧 → 从帧里读文字（OCR）」是错误流程**（2026-09-25 用户纠正）：帧里只有屏上文字
@@ -82,6 +132,15 @@ OCR 帧 = 捡了包装丢了内容。
 # 元信息（一行 TSV。刻意不用 --dump-json：含 formats 数组可达数百 KB，会被命令通道截断）
 yt-dlp --no-playlist --no-warnings --skip-download \
   --print "%(title)s|||%(duration)s|||%(thumbnail)s|||%(uploader)s|||%(upload_date)s|||%(description)s" "<url>"
+
+# 字幕（要「口播全文」而 video_analyze 那条路走不通时的旁路；与宿主
+#   browser/knowledge/kbVideoFetch.ts 的 fetchVideoSubtitles 逐字同口径）
+#   ⚠ 字幕是**文件**、不能走 stdout（大字幕会被命令通道截断）⇒ 必须 -o 落盘后再读回
+#   ⚠ 「该视频没有字幕」时 yt-dlp 可能以非 0 退出 ⇒ 以「目录里是否真有字幕文件」判定成功
+#   ⚠ 读回后按 references/output-template.md 第四节清洗（与宿主 parseSubtitlesToText 同口径）
+yt-dlp --no-playlist --no-warnings --skip-download --write-subs --write-auto-subs \
+  --sub-langs "zh.*,en.*" --sub-format "vtt/srt/best" \
+  -o "<临时目录>/%(id)s.%(ext)s" "<url>"
 ```
 
 - ⚠ 默认**不下载视频本体进库**（几十 MB~GB，会拖慢索引与飞书同步）；`video_analyze` 内部会下载到临时目录做分析，分析完即删；
@@ -89,11 +148,14 @@ yt-dlp --no-playlist --no-warnings --skip-download \
 
 ## 第 3 步：小红书 / 抖音 / 微博这类「图文 + 登录墙」
 
-- **主路径**：`browser_navigate` → `browser_snapshot`（标题 / 正文摘要 / 可交互元素）→ 需要时 `browser_scroll`、`browser_click` 翻页 → 再 `browser_snapshot`；
-- **图文帖的正文常常是图片**（小红书尤甚）：`browser_snapshot` 只能给到 alt 与少量文本，**图里的字必须 `vision_analyze` 逐张读**（一次一张、≤8MB）；
-- ⚠ 我们**没有「在页面里执行任意 JS」的工具**：需要该页面 cookie 才能取的图片/接口数据，用 `execute_code` 只能试**公开可直连**的 URL；取不到就**保留远程链接并在产物里说明**，不要伪造；
-- 游客态读到「你访问的页面不见了 / 需要登录」⇒ **这就是缺登录态**：请用户**在那个被驱动的浏览器窗口里登录一次**（专属 profile 会记住这次登录）。
-  **绝不**向用户索要账号密码或 cookie，也不要尝试绕过（这是硬纪律）。
+- **主路径**：`browser`（`op: "navigate"`）→ `browser`（`op: "snapshot"`，给标题 / 正文摘要 / 可交互元素）→ 需要时 `op: "scroll"`、`op: "click"`（`ref` 来自最近一次 snapshot）翻页 → 再 `op: "snapshot"`；
+- **图文帖的正文常常是图片**（小红书尤甚）：`op: "snapshot"` 只能给到 alt 与少量文本，**图里的字必须 `vision_analyze` 逐张读**（一次一张、≤8MB），图片清单用 `op: "images"` 取；
+- ⚠ 页面里的**数据**（SPA 挂在 `window` 上的状态、按选择器批量取属性、`localStorage` 里的公开配置）可以用 `browser`（`op: "evaluate"`）取 —— 但它**默认关闭**（需要 `allowEvaluate`）且**每次都要用户批准**，批准弹窗里会回显你要跑的那段代码。**不要**用它去搬 cookie / 凭据（那是 `op: "cookies"` 的事，且凭据值本就该留在浏览器里）；未启用或用户不批时：需要该页面 cookie 才能取的图片/接口数据，用 `execute_code` 只能试**公开可直连**的 URL；取不到就**保留远程链接并在产物里说明**，不要伪造；
+- 游客态读到「你访问的页面不见了 / 需要登录」⇒ **这就是缺登录态**（不是工具坏了）。**闭环三步**：
+  1. `browser`（`op: "login"`，带上该页面 URL）把页面开到那个窗口，然后请用户**在那个窗口里自己登录一次**（扫码也行；专属 profile 会记住这次登录）；
+  2. 用户说好了之后，用 `browser`（`op: "login"`, `done: true`）**验证**登录态 —— 它会如实告诉你成没成（cookie 证据 + 页面证据；两者冲突时它说"说不清"，不会说"成了"）；
+  3. 验证通过再 `op: "snapshot"` 读页面。
+  **绝不**向用户索要账号密码或 cookie，也不要尝试绕过（这是硬纪律）；**更不要对着同一堵墙反复重试** —— 重试**永远**无解。
 
 ## 媒体：关键图片 / 视频地址 / 视频关键帧（**归档产物必须包含**）
 
@@ -102,11 +164,11 @@ yt-dlp --no-playlist --no-warnings --skip-download \
 **① 关键图片**
 
 - **来源**：静态文章 → `web_extract` 的结果里本就带 `![alt](url)`（正文图）；
-  **SPA / 登录墙页面 → 用 `browser_get_images`**（⚠ `browser_snapshot` **不采集图片**，这也是本仓专门补这个工具的原因：图文帖的正文常常就在图里）。
+  **SPA / 登录墙页面 → 用 `browser`（`op: "images"`）**（⚠ `op: "snapshot"` **不采集图片**，这也是本仓专门补这个 op 的原因：图文帖的正文常常就在图里）。
 - **读图内文字**：`vision_analyze(image=<图片 URL>, query=...)` —— 它**直接吃 http(s) URL**，不必先下载；一次一张。
 - **入库**：`execute_code` 下载到 `<vault>/库/raw/assets/<slug>/<序号>-<名>.<ext>`，正文用**相对路径**引用；
   小红书这类图 CDN 常校验 `Referer`，脚本里带上 `Referer: <页面 URL>`；403/401 就**保留远程 URL 并说明**，别伪造本地文件。
-- **取舍**：只收正文区的**内容图**，跳过头像/图标/表情/1×1 像素/埋点图（`browser_get_images` 已按尺寸过滤）；最多 20 张，按出现位置插在正文里，不要全堆到文末。
+- **取舍**：只收正文区的**内容图**，跳过头像/图标/表情/1×1 像素/埋点图（`op: "images"` 已按尺寸过滤）；最多 20 张，按出现位置插在正文里，不要全堆到文末。
 
 **② 视频地址**（视频帖必写）
 
@@ -189,8 +251,10 @@ yt-dlp --no-playlist --no-warnings --skip-download \
 工具：
 
 - `web_extract` —— 静态文章全文（主路径）
-- `browser_navigate` / `browser_snapshot` / `browser_scroll` / `browser_click` —— SPA 与登录态页面
-- **`browser_get_images`** —— 页面图片清单（URL / 尺寸 / alt）。⚠ `browser_snapshot` **不给图片**，
+- `browser` —— **单个工具、按 `op` 分**：`navigate` / `snapshot` / `images` / `click` / `type` / `scroll` / `back` / `status`，
+  外加 `login`（登录墙闭环：先把页面开到那个窗口请用户登录，再用 `done: true` 验证）与
+  `cookies`（`action: "inspect"` 只报数量；`export` / `import` 默认关闭且每次要审批）。SPA 与登录态页面全靠它
+- **`browser`（`op: "images"`）** —— 页面图片清单（URL / 尺寸 / alt）。⚠ `op: "snapshot"` **不给图片**，
   图文帖（小红书尤甚）要拿"关键图片"只能靠它；拿到 URL 后直接用 `vision_analyze` 读图内文字
 - `vision_analyze` —— 读单张图（**直接吃 http(s) URL**，不必先下载；一次一张）
 - `video_analyze` —— 视频理解**一次完成**：下载 + 字幕轨/本地 ASR 口播转写 + 抽帧 + 视觉结论

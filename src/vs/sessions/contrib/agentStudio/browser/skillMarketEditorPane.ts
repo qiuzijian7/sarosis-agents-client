@@ -19,7 +19,8 @@ import { INotificationService } from '../../../../platform/notification/common/n
 import { SkillMarketEditorInput } from './skillMarketEditorInput.js';
 import { ResourceManagerEditorInput } from './resourceManagerEditorInput.js';
 import { ResourceManagerEditorPane } from './resourceManagerEditorPane.js';
-import { IMarketplaceService, IMarketplacePackage } from '../common/marketplace.js';
+import { IMarketplaceService, IMarketplacePackage, isColaSkillPackage, parseColaSkillMeta } from '../common/marketplace.js';
+import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import { ISkillRegistry } from '../common/skills.js';
 import { ISkillInstallService, ISkillFolderUploadFile } from '../common/skillHubTypes.js';
 
@@ -51,6 +52,7 @@ export class SkillMarketEditorPane extends EditorPane {
 		@IMarketplaceService private readonly marketplaceService: IMarketplaceService,
 		@ISkillRegistry private readonly skillRegistry: ISkillRegistry,
 		@ISkillInstallService private readonly skillInstallService: ISkillInstallService,
+		@IOpenerService private readonly openerService: IOpenerService,
 	) {
 		super(SkillMarketEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -260,6 +262,12 @@ export class SkillMarketEditorPane extends EditorPane {
 		try {
 			const result = await this.marketplaceService.listPackages({ kind: 'skill' });
 			// 过滤内置技能：商城不展示已随产品内置的技能
+			//
+			// ⚠ **只滤 builtin，不滤 `plugin`**（2026-10-13 P2 有意为之，别顺手补上）：插件自带的技能
+			//   （`source: 'plugin'`，如 `@tt-a1i/archify-dsh` 的 archify）**允许**用户在商城再装一份到
+			//   自己的用户库 —— 那一份 `source: 'user'`，rank 高于 plugin ⇒ 两端都以它为准（IDE 的
+			//   `SKILL_SOURCE_RANK`：user 3 > plugin 1；dsh 侧用户根 300 < 插件 bundled 600）✓。
+			//   滤掉反而是"用户想升级/覆盖插件那份时无路可走" ✗。
 			const builtinSkillIds = new Set(
 				this.skillRegistry.getSkills()
 					.filter(s => s.source === 'builtin')
@@ -366,6 +374,31 @@ export class SkillMarketEditorPane extends EditorPane {
 		// Click card → open ResourceManagerEditorPane
 		card.onclick = () => this._openInResourceManager(pkg);
 
+		// ── colaskill 抓取批次（tags 含 'cola-skill'）：元数据在 description 尾部标记行里 ──
+		// （packages 表无扩展字段，抓取脚本只好把 GitHub/封面/star 捎在 description 里，
+		//   见 common/marketplace.ts 的 parseColaSkillMeta）。这类包**没有可安装资产**
+		//   （只有元数据，没发 version）⇒ 卡片底部给「打开来源」而不是「安装」（见 footer 分支）。
+		const cola = isColaSkillPackage(pkg) ? parseColaSkillMeta(pkg) : undefined;
+		if (cola?.cover) {
+			// 卡片自身 padding 14px ⇒ 封面用负 margin 顶到三边（比把整卡 padding 清零再逐个补回内边距省事）
+			card.style.overflow = 'hidden';
+			const cover = $('div');
+			cover.style.aspectRatio = '16 / 9';
+			cover.style.overflow = 'hidden';
+			cover.style.margin = '-14px -14px 0';
+			cover.style.background = 'var(--vscode-editor-background)';
+			const img = $('img') as HTMLImageElement;
+			img.src = cola.cover;
+			img.alt = `${pkg.name} 封面`;
+			img.loading = 'lazy';
+			img.style.width = '100%';
+			img.style.height = '100%';
+			img.style.objectFit = 'cover';
+			img.style.display = 'block';
+			cover.appendChild(img);
+			card.appendChild(cover);
+		}
+
 		// ── Top: icon + name + meta ─────────────────────────────────
 		const top = $('div');
 		top.style.display = 'flex';
@@ -419,13 +452,28 @@ export class SkillMarketEditorPane extends EditorPane {
 			dl.style.color = 'var(--vscode-descriptionForeground)';
 			meta.appendChild(dl);
 		}
+		if (cola?.stars) {
+			const stars = $('span');
+			stars.textContent = `★ ${cola.stars}`;
+			stars.style.fontSize = '11px';
+			stars.style.color = '#FCD34D';
+			meta.appendChild(stars);
+		}
+		if (cola?.author) {
+			const author = $('span');
+			author.textContent = cola.author;
+			author.style.fontSize = '11px';
+			author.style.color = 'var(--vscode-descriptionForeground)';
+			meta.appendChild(author);
+		}
 		info.appendChild(meta);
 		top.appendChild(info);
 		card.appendChild(top);
 
 		// ── Description ─────────────────────────────────────────────
 		const desc = $('div');
-		desc.textContent = pkg.description || '(暂无描述)';
+		// cola 批次：description 尾部的来源/封面/GitHub 标记行不进正文（已在卡片别处展示）
+		desc.textContent = (cola ? cola.desc.split('\n')[0] : pkg.description) || '(暂无描述)';
 		desc.style.fontSize = '12px';
 		desc.style.color = 'var(--vscode-descriptionForeground)';
 		desc.style.lineHeight = '1.5';
@@ -465,7 +513,27 @@ export class SkillMarketEditorPane extends EditorPane {
 		footer.appendChild(tagsEl);
 
 		// Action button
-		if (isInstalled) {
+		if (cola && !pkg.latestVersion) {
+			// colaskill 抓取批次只有元数据、没发 version ⇒ 没有可下载资产，「安装」必然失败；
+			// 诚实给「打开来源」（GitHub/colaskill 页，里面有按 SKILL.md 规范的手动安装说明）。
+			const openBtn = $('button') as HTMLButtonElement;
+			openBtn.textContent = '↗ 打开来源';
+			openBtn.style.fontSize = '11px';
+			openBtn.style.padding = '3px 10px';
+			openBtn.style.background = 'rgba(56,139,253,0.12)';
+			openBtn.style.color = 'var(--vscode-textLink-foreground)';
+			openBtn.style.border = '1px solid rgba(56,139,253,0.35)';
+			openBtn.style.borderRadius = '4px';
+			openBtn.style.cursor = 'pointer';
+			openBtn.style.whiteSpace = 'nowrap';
+			openBtn.title = cola.github ?? cola.sourceUrl ?? '';
+			openBtn.onclick = (e) => {
+				e.stopPropagation();
+				const url = cola.github ?? cola.sourceUrl;
+				if (url) { void this.openerService.open(url); }
+			};
+			footer.appendChild(openBtn);
+		} else if (isInstalled) {
 			// Show delete button for installed skills
 			const deleteBtn = $('button') as HTMLButtonElement;
 			deleteBtn.textContent = '\u2715 删除';

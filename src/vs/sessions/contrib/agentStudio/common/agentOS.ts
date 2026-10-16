@@ -308,11 +308,18 @@ export interface IAgentOSService {
 
 	/**
 	 * 返回经过 focus 模式 + toolset 白名单 + hardPermission 过滤后、真正会随请求下发
-	 * function-calling schema 的非 MCP 工具名清单。
+	 * function-calling schema 的非 MCP 工具名清单，**以及工具检索桥接是否也在下发集里**。
 	 *
 	 * 用于 Prompt 组装层生成 "Built-in tools:" 文字清单——必须与真实下发的 schema
 	 * 严格一致，不能再用 listAllToolsWithState() 的全量结果（那会导致提示词点名
 	 * 但实际无 schema 的工具，模型调用必然失败或产生幻觉）。
+	 *
+	 * `bridgeVisible` 属于同一件事（2026-10-12）：`assembleToolDefs` 在
+	 * `allDeferrable.length === 0` 时**提前返回且不附桥接工具**
+	 * （`toolSearchAssembler.ts:395-404`）⇒ 只开 core / Always 工具集的会话里没有
+	 * `tool_search`/`tool_describe`/`tool_call`，而提示词此前**无条件**教模型用它 ⇒
+	 * 指向不存在的工具。判据取自**真实下发集**（assembly 结果里是否含桥接工具），
+	 * 不另建"有没有 deferrable 工具"的复刻判据。
 	 *
 	 * 参数含义与 executeAgentTurn 内部过滤一致，调用方应原样传入本轮 request 的对应字段。
 	 */
@@ -323,7 +330,7 @@ export interface IAgentOSService {
 		hardPermission?: IHardPermissionPolicy,
 		excludedTools?: readonly string[],
 		allowedTools?: readonly string[],
-	): Promise<string[]>;
+	): Promise<{ toolNames: string[]; bridgeVisible: boolean }>;
 
 	/**
 	 * 解析某次 turn 请求应生效的 hardPermission 策略（work/plan mode 驱动）。

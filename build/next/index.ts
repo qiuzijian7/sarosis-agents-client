@@ -560,6 +560,7 @@ const desktopStandaloneFiles = [
 	'vs/base/parts/sandbox/electron-browser/preload.ts',
 	'vs/base/parts/sandbox/electron-browser/preload-aux.ts',
 	'vs/platform/browserView/electron-browser/preload-browserView.ts',
+	'vs/sessions/contrib/dshHarness/electron-browser/preload-dshView.ts',
 ];
 
 async function compileStandaloneFiles(outDir: string, doMinify: boolean, target: BuildTarget): Promise<void> {

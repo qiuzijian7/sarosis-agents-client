@@ -834,6 +834,14 @@ export async function runAmV2Tests(): Promise<void> {
 		const out = await v2.recallFormatted(AGENT_ID, 'lint');
 		assert(out.includes('Lessons:'), 'lessons section present');
 		assert(out.includes('always lint before push'), 'lesson content included');
+		// ⚠⚠ **不要在这里加"返回形状"断言**（2026-10-14 实测的坑 ✗✗）：
+		//   本文件在 `src/__tests__/` 下，而 `scripts/run-unit-tests.mjs` **只扫 `out-test/test/`**
+		//   （即源 `test/` 目录）⇒ **`src/__tests__/` 整批测试都跑不到** ✗。
+		//   实测证据：在这里写 `assert(false)` 后 `npm run test:unit` **照样报 25 passed** ✗✗
+		//   —— 也就是说这里的断言是"**假覆盖**"，比没有更糟（后来人会以为它守着 ✓）。
+		//   ⇒ `searchMemory` 的返回形状由 **`poc/dsh-p0/scripts/p3-51` 的 ⑩（真机）** 守着 ✓。
+		//   ⚠ 若要让本批测试真的生效，得先修 runner 的扫描目录（那是**基础设施改动**，
+		//     影响面很大 —— 本目录下还有 `amV2Integration`/`memoryRWR`/`bm25Index` 等一大批 ✗）。
 		await v2.searchMemory(AGENT_ID, 'lint');
 		const searches = await kv.list<any>(KV.recentSearches(AGENT_ID));
 		assert(searches.some(s => s.query === 'lint'), 'recent-searches recorded by searchMemory');
@@ -2004,4 +2012,11 @@ export async function runAmV2Tests(): Promise<void> {
 		for (const f of failures) console.log(`    - ${f}`);
 	}
 	console.log(`${'═'.repeat(60)}\n`);
+	// ⚠⚠ **失败必须 throw**（2026-10-14 加）：本套件以前收尾**只 `console.log`** ⇒ 失败会被**静默吞掉** ✗
+	//   —— 调用方只能靠"劫持 console.log 解析汇总行"间接发现 ✗，而**任何绕过那个入口的调用**
+	//   （例如将来有人直接 `await runAmV2Tests()`）都会把"有失败"当成功 ✗✗。
+	//   ⇒ 与 `amReplication.test.ts` 的收尾对齐（它一直 `throw` ✓），也让"接进 runner"这件事更稳 ✓。
+	if (failed > 0) {
+		throw new Error(`${failed} amV2 test(s) failed`);
+	}
 }

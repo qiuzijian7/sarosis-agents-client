@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>cordis.patch.yml 语义详解（dsh 组合层时序与覆写规则）</title>
+<style>
+  :root{ --bg:#fff; --fg:#1c1e21; --muted:#6b7280; --line:#e5e7eb; --accent:#2563eb; --ok:#15803d; --warn:#b45309; --bad:#b91c1c; --code:#f3f4f6; }
+  *{box-sizing:border-box}
+  body{margin:0;font:15px/1.75 "Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;color:var(--fg);background:var(--bg)}
+  .wrap{max-width:1120px;margin:0 auto;padding:40px 28px 80px}
+  h1{font-size:26px;margin:0 0 4px}
+  h2{font-size:19px;margin:36px 0 10px;padding-top:14px;border-top:2px solid var(--line)}
+  h3{font-size:16px;margin:22px 0 8px}
+  .sub{color:var(--muted);font-size:13px}
+  table{border-collapse:collapse;width:100%;margin:10px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+  th{background:#f8fafc;font-weight:600}
+  code{background:var(--code);padding:1px 5px;border-radius:4px;font-size:12.5px;font-family:ui-monospace,Consolas,monospace}
+  pre{background:#0f172a;color:#e2e8f0;padding:12px 16px;border-radius:8px;font-size:12.5px;overflow:auto;line-height:1.6}
+  pre code{background:none;padding:0;color:inherit}
+  .warn{color:var(--warn);font-weight:600}.bad{color:var(--bad);font-weight:600}
+  .pill{display:inline-block;padding:1px 9px;border-radius:999px;font-size:12px;font-weight:600;margin-right:6px}
+  .pill.warn{background:#fef3c7;color:var(--warn)} .pill.bad{background:#fee2e2;color:var(--bad)}
+  .note{border-left:3px solid var(--accent);background:#eff6ff;padding:8px 14px;margin:12px 0;font-size:13.5px}
+  .risk{border-left-color:#dc2626;background:#fef2f2}
+  ul{margin:6px 0;padding-left:22px} li{margin:3px 0}
+  .toc{font-size:13.5px;color:var(--muted)} .toc a{color:var(--accent);text-decoration:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>cordis.patch.yml 语义详解</h1>
+<p class="sub">dsh 组合层的时序与覆写规则 ｜ 真源：<code>deepseek-harness/packages/bundle/base/cordis.patch.yml</code>（488 行）、<code>bundle/web-app/cordis.patch.yml</code>（~470 行）全文头注 ｜ 2026-10-15</p>
+
+<div class="toc"><b>目录</b>：
+<a href="#s1">§1 分层 patch 模型</a> · <a href="#s2">§2 五条核心语义</a> · <a href="#s3">§3 <code>!!js</code> 表达式配置</a> · <a href="#s4">§4 行级 inject 门控（配置时序编排）</a> · <a href="#s5">§5 disabled 语义与 preset 化</a> · <a href="#s6">§6 对 VsSaros 插件的约束与建议</a></div>
+
+<h2 id="s1">§1 分层 patch 模型</h2>
+<pre><code>空 profile 根
+  └─ base bundle patch     ── 单条 insert：~60 行插件行（{id, name, config?, disabled?}）
+       └─ mode bundle patch ── 按 id 覆写 / 禁用部分行（web-app 禁 25 行）
+            └─ 用户 profile 的 cordis.patch.yml ── 按 id 覆写
+                 └─ VsSaros --patch 覆盖层 ── 注入管道/token（不改用户 profile）</code></pre>
+<p>原文头注（base patch L1-13）的四句话定义了整个模型：</p>
+<ul>
+<li>base 作为<b>一条 insert</b> 打在空 profile 根上；之后的 patch 按 <code>id</code> 寻址这些行</li>
+<li><b>每行 last write wins</b>（后打的 patch 赢）</li>
+<li>覆写是<b>整行 config 替换，不是 merge</b></li>
+<li><b>行顺序不承载加载语义</b>——激活是服务可用性驱动的；行的分组只是给人看的</li>
+</ul>
+
+<h2 id="s2">§2 五条核心语义</h2>
+<table>
+<tr><th>#</th><th>语义</th><th>证据 / 后果</th></tr>
+<tr><td>1</td><td><b>按 id 寻址，last write wins</b></td><td>同 id 的后 patch 行胜出；我们的 agents 插件用此把官方 <code>agent-preset-registry</code> 的默认 preset 切到 <code>vssaros-standard</code></td></tr>
+<tr><td>2</td><td><b>config 整份替换（不 merge）</b></td><td>base L6-10 明文："A patch replaces the targeted row's whole <code>config</code> rather than merging into it"。<span class="bad">含义：只想改一个字段也必须重写整份 config</span>——漏写的字段会回到 undefined 而不是保留 base 值。base 因此把「随模式变化的行」下放给各 mode bundle 完整重述</td></tr>
+<tr><td>3</td><td><b>行序无加载语义</b></td><td>base L12-13："Row order carries no load semantics (activation is service-availability driven)"。<b>激活顺序 = cordis fiber 的服务 inject 等待，仅此而已</b>；<code>dsh.client.inject</code> 的包名边是 informational only，不参与排序（client/AGENTS.md L140）</td></tr>
+<tr><td>4</td><td><b>寻址不存在的行 = 静默忽略</b></td><td>上游官方行改名后，我们的覆写行无声失效（真实事故教训）。⇒ 覆写官方行必须配守卫（断言目标行存在）</td></tr>
+<tr><td>5</td><td><b>insert 与覆写同构</b></td><td>同一个 <code>- insert:</code> 列表，打新行 = 挂载，打已有行 = 覆写；语义统一，无独立的 update/remove 操作（禁用用 <code>disabled: true</code> 表达，见 §5）</td></tr>
+</table>
+
+<h2 id="s3">§3 <code>!!js</code> 表达式配置</h2>
+<p>dsh 对 cordis patch 的扩展：YAML 自定义标签 <code>!!js</code> 内嵌 JS 表达式，<b>在 Loader 层求值</b>（不是 YAML 解析期）。</p>
+<pre><code># base/cordis.patch.yml
+- id: session-fs
+  config:
+    root: !!js dshHomePath('sessions')                    # L113：路径解析函数
+- id: tool-fs
+  disabled: !!js process.platform === 'win32'             # L216/222：平台条件挂载
+- id: permissions
+  config:
+    policy: !!js "(process.env.DSH_PERMISSION_MODE ?? 'default') === 'danger-full-access' ? 'never' : 'ask'"  # L227：环境变量分支
+
+# web-app/cordis.patch.yml
+- id: webserver
+  inject: [webStartup]
+  config:
+    host: !!js ctx.webStartup.host ?? '127.0.0.1'         # L139：读另一个插件的服务
+    port: !!js ctx.webStartup.port ?? 3080</code></pre>
+<table>
+<tr><th>优点</th><th>代价</th></tr>
+<tr><td>组合层可编程：平台分支、环境变量、跨服务取值都不需要写新插件</td><td class="warn">patch 不再是纯数据——审计成本高，文本 diff 看不出行为差异，表达式错误在 Loader 求值期才炸</td></tr>
+<tr><td>表达式可访问 <code>ctx</code> 的服务（配合行级 inject 门控，见 §4）</td><td class="warn">配置与运行时状态耦合，形成隐式时序依赖</td></tr>
+</table>
+<div class="note risk"><b>对第三方（我们）的含义</b>：<code>!!js</code> 是 dsh Loader 的扩展，<b>不是 cordis 标准</b>。我们的 patch 里可以用（Host 是我们的 Loader 求值），但每条 <code>!!js</code> 都是一处「纯数据审计失效点」，应有注释说明求值时机与依赖的服务。</div>
+
+<h2 id="s4">§4 行级 inject 门控（配置时序编排）</h2>
+<p>行的 <code>inject: [...]</code> 字段（注意：这是<b>行级</b>字段，与插件代码里的 <code>export const inject</code> 是两个层面）使该行的求值/挂载<b>等待所列服务可用</b>：</p>
+<pre><code># web-app/cordis.patch.yml:135-141
+- id: webserver
+  name: '@deepseek-ai/dsh-host-webserver'
+  inject: [webStartup]                        # 等 webStartup 服务就位后才求值 config
+  config:
+    host: !!js ctx.webStartup.host ?? '127.0.0.1'   # 所以这里读得到 webStartup
+
+# :181-188
+- id: connection
+  inject: [webRuntime]                        # 等 webRuntime（webserver bind 后才 provide）
+  config:
+    trustedHosts: !!js ctx.webRuntime.trustedHosts</code></pre>
+<p>这构成一条<b>配置级时序链</b>：<code>web-startup（解析命令行）→ webserver（bind）→ web-runtime（provide webRuntime 服务）→ connection（读 trustedHosts）</code>。链中每一环的 <code>!!js</code> 表达式能读到上游服务，靠的就是行级 inject 门控把求值推迟到服务就位之后。</p>
+<div class="note"><b>精妙与隐晦并存</b>：这是官方处理「配置依赖运行时事实」的正规机制，比我们在插件里防御性读取干净。但它把时序藏进了数据文件——读 patch 的人必须同时看 inject 字段与 <code>!!js</code> 表达式才能重建依赖图。</div>
+
+<h2 id="s5">§5 disabled 语义与 preset 化</h2>
+<ul>
+<li><code>disabled: true</code> 是<b>保留行但禁用</b>，与「删除行」不同——web-app patch L354-359 明确注释 "disabling rather than deleting is deliberate"</li>
+<li>web-app patch L367-470 <b>显式禁用 ~25 个 base 行</b>（tool-bash/tool-fs/tool-todo/tool-web/tool-subagent…）：agent 平面从「base 固定工具集」移到「per-session preset」之后。<span class="warn">对第三方读者的含义：base patch 里挂着的行不等于激活的工具集</span>；要看「当前 profile 实际激活什么」必须叠完所有层再看 disabled 终态</li>
+<li>我们侧的行级启停（<code>dshPluginActivation.ts</code> 的 <code>setRowDisabledOverride</code>）与官方 <code>pluginManager</code> 同口径，语义一致 ✅</li>
+</ul>
+
+<h2 id="s6">§6 对 VsSaros 插件的约束与建议</h2>
+<table>
+<tr><th>#</th><th>规则 / 建议</th><th>性质</th></tr>
+<tr><td>1</td><td>我们的 <code>cordis.patch.yml</code> <b>只 insert 自己的行</b>；覆写官方行是例外（现有唯一先例：agents 覆写 <code>agent-preset-registry</code>），覆写时必须<b>重述整份 config</b>（语义 2）</td><td>官方纪律 G + 语义 2</td></tr>
+<tr><td>2</td><td>覆写官方行必须配守卫：断言目标 id 的行存在（语义 4 静默忽略）</td><td>事故教训</td></tr>
+<tr><td>3</td><td><b>不要依赖行序表达加载顺序</b>；需要顺序就声明服务 inject（语义 3）。「启用追加到 bundles 末尾」只是组合顺序，不是激活顺序承诺</td><td>语义 3</td></tr>
+<tr><td>4</td><td>patch 里使用 <code>!!js</code> 时注释求值时机与依赖服务；能用静态值就不用表达式</td><td>§3 代价</td></tr>
+<tr><td>5</td><td>需要「读另一个插件的服务来定 config」时，用行级 <code>inject: [...]</code> 门控（§4），而不是在插件代码里启动后再改</td><td>官方机制</td></tr>
+<tr><td>6</td><td>禁用官方行用 <code>disabled: true</code> 而非删行——保留可恢复性与 diff 可见性</td><td>官方先例</td></tr>
+<tr><td>7</td><td>评估「当前激活了什么」时永远看叠完所有层的终态，别看单层 patch</td><td>§5</td></tr>
+</table>
+
+<p class="sub">生成于 2026-10-15 ｜ 真源：deepseek-harness @ 0.1.3-alpha.2（base patch L1-13 头注、L113/216/222/227；web-app patch L127-198、L354-470）＋ packages/client/AGENTS.md L140（dsh.client.inject informational-only）</p>
+
+</div>
+</body>
+</html>

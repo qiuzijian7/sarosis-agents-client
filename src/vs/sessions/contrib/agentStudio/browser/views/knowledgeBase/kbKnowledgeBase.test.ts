@@ -11,6 +11,7 @@
  *   4. 提及检测 — 正文文本匹配（非 [[ ]] 形式）
  *   5. Lute 渲染器 — wikilink 提取 / blockref 提取
  *   6. 图谱数据 — 内置内核 graph 数据生成
+ *   7. **黄金表** — 与 dsh 侧 `dsh-plugins/vssaros-kb/lib/core/kbFulltext.js` 钉同一张表（2026-10-12）
  *
  *  运行方式：
  *   cd <project-root>
@@ -597,6 +598,101 @@ describe('KbFullTextIndex - URL Import → Library Tree', () => {
 		].sort();
 		assert.strictEqual(files[0], 'Bilibili_Video.md');
 		assert.strictEqual(files[files.length - 1], 'Zhihu_Question.md');
+	});
+});
+
+// ---------------------------------------------------------------------------
+// 测试 7: 黄金表 —— 与 dsh 侧实现钉同一张表（2026-10-12）
+// ---------------------------------------------------------------------------
+//
+// 为什么需要它：同一个 vault 会被两侧**同时**检索 —— IDE 的 `kb_search`（`kbVaultRecallTools.ts`）
+// 与 dsh 插件的 `kb_search mode=fulltext`（`dsh-plugins/vssaros-kb`），两者还登记在
+// `common/toolOwnership.ts` 的"同名工具"表里（共享同一个数据面）⇒ 口径一旦分叉，
+// 症状是"同一个库两套结果"，而且**两侧都不报错** ✗（最难查的一类）。
+//
+// 表怎么来的：用一次性交叉校验脚本把本类与 dsh 侧实现喂**同一份夹具**、逐条比对到 6 位小数
+// （16 条查询全一致 ✓），下面的期望值就是那次比对的读数 —— **不是手算** ✓。
+// dsh 侧钉同一张表的断言在 `poc/dsh-p0/scripts/p3-38-kb-fulltext.mjs`（13 条黄金表 + 边界用例）✓。
+// 改本表时**两个文件要一起改**（任一侧单独改 = 造出分歧 ✗）。
+describe('KbFullTextIndex - 黄金表（与 dsh 侧 dsh-plugins/vssaros-kb 口径一致）', () => {
+
+	/** 与探针 p3-38 完全相同的 5 篇夹具（文件名与正文一字不差）。 */
+	const FIXTURE: ReadonlyArray<{ uri: string; name: string; text: string }> = [
+		{ uri: 'file:///vault/alpha.md', name: 'alpha.md', text: 'alpha beta' },
+		{ uri: 'file:///vault/beta.md', name: 'beta.md', text: 'beta gamma' },
+		{ uri: 'file:///vault/gamma.md', name: 'gamma.md', text: 'gamma' },
+		{ uri: 'file:///vault/note.md', name: 'note.md', text: '机器学习很好' },
+		{ uri: 'file:///vault/tagged.md', name: 'tagged.md', text: '#底座# 这是关于 #dsh 的笔记，另有一句无关内容。' },
+	];
+
+	const buildFixtureIndex = (): KbFullTextIndex => {
+		const fs = createMockFileService();
+		const index = new KbFullTextIndex(fs);
+		for (const doc of FIXTURE) {
+			index.updateDoc(
+				{ toString: () => doc.uri, fsPath: doc.uri } as any,
+				doc.name, 'notes', 1_790_000_000, doc.text.length, doc.text,
+			);
+		}
+		return index;
+	};
+
+	const name = (uri: string): string => uri.split('/').pop() ?? uri;
+	const actual = (index: KbFullTextIndex, query: string) => index.search(query, 50)
+		.map(hit => [name(hit.uri.toString()), Number(hit.score.toFixed(6)), hit.matchedBy]);
+
+	it('should pin the same golden table as the dsh side (13 queries)', () => {
+		const index = buildFixtureIndex();
+		const golden: ReadonlyArray<[string, ReadonlyArray<ReadonlyArray<string | number>>]> = [
+			['beta', [['beta.md', 11.462809, 'name'], ['alpha.md', 1.179203, 'content']]],
+			['机器学习', [['note.md', 8.957594, 'content']]],
+			['习学', [['note.md', 2.559313, 'content']]],   // 非相邻二字仍命中 ⇒ 单字也进了索引
+			['机器', [['note.md', 3.838969, 'content']]],   // 相邻二元
+			['dsh', [['tagged.md', 0.802591, 'content']]],
+			['底座', [['tagged.md', 10, 'tag']]],           // 标签整体命中（正文里的 #底座# 不计词）
+			['note', [['note.md', 11.279656, 'name']]],
+			['alpha', [['alpha.md', 12.31634, 'name']]],
+			['al', [['alpha.md', 12.31634, 'name']]],       // ASCII 前缀展开（长度 >= 2）
+			['AL', [['alpha.md', 12.31634, 'name']]],
+			['a', []],                                       // 长度 1 不展开
+			['alpha.md', [
+				['alpha.md', 12.433539, 'name'], ['gamma.md', 0.1235, 'content'], ['beta.md', 0.117199, 'content'],
+				['note.md', 0.080318, 'content'], ['tagged.md', 0.050375, 'content'],
+			]],
+			['不存在词', []],
+		];
+		for (const [query, expected] of golden) {
+			assert.deepStrictEqual(actual(index, query), expected, `黄金表不一致：${JSON.stringify(query)}`);
+		}
+	});
+
+	it('should pin snippet windows (CJK + ASCII)', () => {
+		const index = buildFixtureIndex();
+		assert.strictEqual(index.search('机器学习', 5)[0]?.snippet, '机器学习很好');
+		assert.strictEqual(index.search('beta', 5)[0]?.snippet, 'beta gamma');
+	});
+
+	it('should treat `_`/`-` as part of an ASCII token, and require length >= 2 for prefix expansion', () => {
+		// 单独一个索引：加文档会改变 N / avgLen ⇒ 不能混进黄金表那份夹具 ✓
+		const fs = createMockFileService();
+		const index = new KbFullTextIndex(fs);
+		index.updateDoc({ toString: () => 'file:///vault/hyph.md', fsPath: 'file:///vault/hyph.md' } as any,
+			'hyph.md', 'notes', 1_790_000_000, 12, 'Alpha_Beta-9');
+		assert.strictEqual(index.search('alpha_beta-9', 10).length, 1, '连字符与下划线在词内 ⇒ 整串是一个词元');
+		assert.strictEqual(index.search('9', 10).length, 0, '`9` 不是独立词元（它被并入 alpha_beta-9）');
+		assert.strictEqual(index.search('al', 10).length, 1, 'ASCII 前缀展开（长度 >= 2）应命中');
+		assert.strictEqual(index.search('a', 10).length, 0, '长度 1 不做前缀展开');
+	});
+
+	it('should weight a whole-query tag match by +5 (on top of the tag-index bonus)', () => {
+		const fs = createMockFileService();
+		const index = new KbFullTextIndex(fs);
+		index.updateDoc({ toString: () => 'file:///vault/tagged2.md', fsPath: 'file:///vault/tagged2.md' } as any,
+			'tagged2.md', 'notes', 1_790_000_000, 20, '#底座# 无关正文');
+		const hits = index.search('底座', 10);
+		assert.strictEqual(hits.length, 1);
+		assert.strictEqual(hits[0].matchedBy, 'tag');
+		assert.strictEqual(Number(hits[0].score.toFixed(6)), 10, '标签命中权重是 5+5（与 dsh 侧同值）');
 	});
 });
 

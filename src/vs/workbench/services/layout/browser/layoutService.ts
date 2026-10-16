@@ -95,6 +95,53 @@ export const enum PartOpensMaximizedOptions {
 
 export type PanelAlignment = 'left' | 'center' | 'right' | 'justify';
 
+/**
+ * ★ [Saros] Agent 列（`Parts.AGENT_EDITOR_PART`）相对**编辑器列**的方位。
+ *
+ * 仅对「Agent 布局」（`AGENT_EDITOR_PART` 存在）有意义；标准 IDE 窗口与
+ * sessions 窗口下相关 API 不会生效（见 `IWorkbenchLayoutService.moveAgentsEditorColumn`）。
+ *
+ * ⚠ 与 `sessions/browser/layoutProfile.ts` 的 `AgentsEditorColumnSide` **必须同值**
+ * —— 那边要求零运行时 import ⇒ 两边各写一份字面量联合类型。
+ */
+export type AgentsEditorColumnSide = 'left' | 'right';
+
+/**
+ * ★ [Saros] Agent 列换位时 `Grid.moveViewTo()` 的**目标位置**（相对根，`GridLocation` 的形态）。
+ *
+ * ── 为什么抽成纯函数（而不是各自写死）──────────────────────────────────
+ * 有两个窗口都要做这件事，且它们**不是**同一个类：
+ *   1. sessions 窗口：`sessions/browser/workbench.ts` 的 `Workbench`
+ *      （**用户日常跑的就是它** —— dev 下页面是 `sessions-dev.html`）；
+ *   2. 「IDE 底座 + Agent 布局」窗口：`workbench/browser/layout.ts` 的 `Layout`
+ *      （由 `AgentLayoutWorkbench` 启用）。
+ * 各自写死下标 ⇒ 必然漂移。落点只有一处定义，两边都调本函数。
+ *
+ * ── 下标推导（两个窗口的 grid 结构**都**满足）────────────────────────────
+ * - 根 = `[0]` TitleBar / `[1]` contentRow（见 `sessions/browser/layoutProfile.ts` 的 `rootChildren`）；
+ * - contentRow = `[0]` Sidebar / 其后是「编辑器列」与「Agent 列」（谁在前由 `agentColumnSide` 决定）；
+ * - 所以落点都在 contentRow 的第 1 层：**父路径恒为 `[1]`**，末位是子下标。
+ *
+ * ⚠⚠ **末位下标不是"最终下标"** —— `BranchNode.moveChild(from, to)` 在 `from < to` 时先做
+ * `to -= 1`（把 `to` 当作"元素**尚在原位时**的下标"，`gridview.ts:545-562`），于是两个方向
+ * **不对称**：
+ *   - `'left'` ：Agent 由索引 2 → 1（**向后**移）⇒ 直接写最终下标 **1**；
+ *   - `'right'`：Agent 由索引 1 → 2（**向前**移）⇒ 必须写 **3**（= 最终下标 + 1）。
+ * 实测踩过：写成 2 时 `to` 被减成 1 ⇒ `moveChild(1,1)` 直接 return ⇒ **点了没反应**
+ * （`agentsColumnSwapGrid.test.ts` 的两个方向用例就是为此加的）。
+ *
+ * ⚠ `to = 3` 在「IDE 底座」形态下同样成立：那个形态的 contentRow 尾部多一个不可见的记账节点
+ * auxiliaryBar（`visible:false`，见 `layoutProfile.ts` 的 `includeLayoutBookkeepingParts`），
+ * 4 个子节点时 `moveChild(1,3)` → `to=2` → 移除后插入到 2 ⇒ `[Sidebar, EditorColumn, Agent, auxBar]` ✓
+ * （尾部顺序由 `layoutProfile.test.ts` 的守卫用例锁住）。
+ *
+ * ⚠ 本函数**不 import `grid.js`**（那个模块加载期引用 `window`）：返回 `[number, number]`
+ * 元组，调用处直接当 `GridLocation` 用 ⇒ 本函数可在 node 环境单测。
+ */
+export function getAgentsEditorColumnTargetLocation(side: AgentsEditorColumnSide): [number, number] {
+	return side === 'left' ? [1, 1] : [1, 3];
+}
+
 export function positionToString(position: Position): string {
 	switch (position) {
 		case Position.LEFT: return 'left';
@@ -307,6 +354,18 @@ export interface IWorkbenchLayoutService extends ILayoutService {
 	 * Gets the panel alignement.
 	 */
 	getPanelAlignment(): PanelAlignment;
+
+	/**
+	 * ★ [Saros] 把 Agent 列（`Parts.AGENT_EDITOR_PART`）移到 `side` 指定的方位
+	 * （编辑器列整体让位；侧栏恒在最左，Panel 恒随编辑器列）。
+	 *
+	 * **可选**：只有「Agent 布局」的 workbench 实现它
+	 * （`workbench/browser/layout.ts` 的 `Layout`，由 `AgentLayoutWorkbench` 启用）。
+	 * 其它实现（sessions 窗口 `Workbench`）不实现 ⇒ 调用方用 `?.()`，静默 no-op。
+	 *
+	 * 标准 IDE 窗口下方法存在但**立刻返回**（`AGENT_EDITOR_PART` 不存在）⇒ 行为零影响。
+	 */
+	moveAgentsEditorColumn?(side: AgentsEditorColumnSide): void;
 
 	/**
 	 * Sets the panel alignment.

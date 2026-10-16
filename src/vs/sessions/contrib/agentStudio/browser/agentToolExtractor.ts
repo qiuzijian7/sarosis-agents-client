@@ -225,6 +225,22 @@ function extractToolCallsFromXml(deps: ToolExtractorDeps, text: string): IToolCa
 					}
 					if (Object.keys(argsObj).length > 0) {
 						args = JSON.stringify(argsObj);
+					} else if (content.startsWith('{')) {
+						// ★ 2026-10-14 修：正文**直接就是 JSON 对象**的那种
+						//   （`<tool_call name="read_file">{"path": "/tmp/a.txt"}</tool_call>`；Hermes / Qwen 系常见，
+						//   `test/common/toolExtraction.test.ts` 的 Format 3 两条就是这个形状）原来**整段被丢掉** ✗
+						//   ⇒ 工具会按 `{}` 执行（缺参 ⇒ 校验失败或干错事），而日志只会说"found tool name from open tag"
+						//   ⇒ 现场看起来完全正常 ✗✗。
+						//   与本分支上面那条 `<parameter>` 子标签互斥：有子标签就用子标签（更明确 ✓）；
+						//   也没有的是"名字已确定但正文不是 JSON"（如裸文本）⇒ 保持 `{}` ✓。
+						//   ⚠ 必须先 `JSON.parse` 验一次再采纳：正文以 `{` 开头但不是合法 JSON 时，
+						//     把坏串原样当 arguments 塞给执行层会让下游 `JSON.parse` 抛（比 `{}` 更难查 ✗）。
+						try {
+							const parsed = JSON.parse(content);
+							if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+								args = JSON.stringify(parsed);
+							}
+						} catch { /* 不是合法 JSON ⇒ 保持 {} */ }
 					}
 				} catch { /* ignore */ }
 				results.push({

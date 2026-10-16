@@ -3,7 +3,6 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { Emitter, Event } from '../../../../../../base/common/event.js';
 import { Disposable, IDisposable } from '../../../../../../base/common/lifecycle.js';
 import { IToolProvider, IToolDefinition, IToolCall, IToolResult, IToolResultContent } from '../../../common/providers.js';
 import { ILogService } from '../../../../../../platform/log/common/log.js';
@@ -21,8 +20,6 @@ export class ToolProvider extends Disposable implements IToolProvider {
 	readonly id: string = 'default-tool-provider';
 	readonly name: string = 'Default Tool Provider';
 
-	private readonly _onDidChangeTools: Emitter<void>;
-	readonly onDidChangeTools: Event<void>;
 
 	private readonly _logService: ILogService;
 
@@ -40,8 +37,6 @@ export class ToolProvider extends Disposable implements IToolProvider {
 	) {
 		super();
 
-		this._onDidChangeTools = this._register(new Emitter<void>());
-		this.onDidChangeTools = this._onDidChangeTools.event;
 		this._logService = logService;
 
 		// 注册内置工具
@@ -61,7 +56,6 @@ export class ToolProvider extends Disposable implements IToolProvider {
 
 		this._toolDefinitions.set(definition.name, definition);
 		this._toolHandlers.set(definition.name, handler);
-		this._onDidChangeTools.fire();
 
 		this._logService.info(`[ToolProvider] Registered tool: ${definition.name}`);
 
@@ -69,7 +63,6 @@ export class ToolProvider extends Disposable implements IToolProvider {
 			dispose: () => {
 				this._toolDefinitions.delete(definition.name);
 				this._toolHandlers.delete(definition.name);
-				this._onDidChangeTools.fire();
 				this._logService.info(`[ToolProvider] Unregistered tool: ${definition.name}`);
 			},
 		};
@@ -97,7 +90,6 @@ export class ToolProvider extends Disposable implements IToolProvider {
 	async enableTool(_agentId: string, toolName: string): Promise<void> {
 		if (this._disabledTools.has(toolName)) {
 			this._disabledTools.delete(toolName);
-			this._onDidChangeTools.fire();
 			this._logService.info(`[ToolProvider] Enabled tool: ${toolName}`);
 		}
 	}
@@ -108,7 +100,6 @@ export class ToolProvider extends Disposable implements IToolProvider {
 	async disableTool(_agentId: string, toolName: string): Promise<void> {
 		if (this._toolDefinitions.has(toolName) && !this._disabledTools.has(toolName)) {
 			this._disabledTools.add(toolName);
-			this._onDidChangeTools.fire();
 			this._logService.info(`[ToolProvider] Disabled tool: ${toolName}`);
 		}
 	}
@@ -148,7 +139,6 @@ export class ToolProvider extends Disposable implements IToolProvider {
 			}
 		}
 		if (changed) {
-			this._onDidChangeTools.fire();
 			this._logService.info(`[ToolProvider] Batch updated tool enabled state`);
 		}
 	}

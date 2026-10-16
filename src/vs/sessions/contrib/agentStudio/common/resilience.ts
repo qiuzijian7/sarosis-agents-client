@@ -383,9 +383,12 @@ export interface StreamTimeoutOptions {
  * 上限 {@link ADAPTIVE_FIRST_TOKEN_CAP_MS}（不得 ≥ HTTP 层 120s 请求超时，否则
  * resilience 会在 HTTP 层之前误杀慢流）。
  *
- * 示例（base=45s，地板 90s）：16k→90s(地板)，24k→90s，32k→90s，40k→90s，56k→105s，
- * ≥72k→115s(封顶)；任意 prompt 不低于冷启动地板 90s（覆盖与 prompt 大小无关的
+ * 示例（base=45s，地板 90s）：16k→90s(地板)，24k→90s，32k→90s，40k→90s，48k→105s，
+ * >48k→115s(封顶)；任意 prompt 不低于冷启动地板 90s（覆盖与 prompt 大小无关的
  * 网关/模型实例冷启动）。
+ * ⚠ 2026-10-14 更正这份阶梯：原文写"56k→105s、≥72k→115s(封顶)"，与实现**差一档** ✗
+ *   （`steps = ceil((tokens-16k)/8k)` ⇒ 40k→3 档→90s、48k→4 档→105s、48k+1→5 档→120s 被 115s 封顶；
+ *   `test/common/resilience.test.ts` 的 'grows in steps above threshold' 现在逐档钉住 ✓）。
  */
 export const ADAPTIVE_FIRST_TOKEN_THRESHOLD = 16_000;
 export const ADAPTIVE_FIRST_TOKEN_STEP_TOKENS = 8_000;

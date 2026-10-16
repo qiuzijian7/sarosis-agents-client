@@ -149,6 +149,32 @@ export interface IListPackagesOptions {
 	readonly sort?: 'recent' | 'popular' | 'name';
 }
 
+/**
+ * colaskill 抓取批次（`saros-marketplace/scripts/import-colaskill.mjs`）把 GitHub/封面/star 数/作者
+ * 塞进了 description 的尾部标记行（packages 表没有扩展字段，zod 会剥未知字段 ⇒ 只能搭 description 的车）。
+ * 这里按行解析回来；非抓取批次的包返回原 description。
+ */
+export function parseColaSkillMeta(pkg: IMarketplacePackage): { desc: string; github?: string; cover?: string; author?: string; stars?: string; sourceUrl?: string } {
+	const lines = (pkg.description ?? '').split('\n');
+	const meta: { github?: string; cover?: string; author?: string; stars?: string; sourceUrl?: string } = {};
+	const descLines: string[] = [];
+	for (const line of lines) {
+		let m;
+		if ((m = /^GitHub: (\S+?)(?:（(.+?) stars）)?$/.exec(line))) { meta.github = m[1]; meta.stars = m[2]; }
+		else if ((m = /^封面: (\S+)$/.exec(line))) { meta.cover = m[1]; }
+		else if ((m = /^作者: (.+)$/.exec(line))) { meta.author = m[1]; }
+		else if ((m = /^来源: Cola Skill（(\S+?)）$/.exec(line))) { meta.sourceUrl = m[1]; }
+		else if (line === '---' || line.startsWith('开源许可:')) { /* 跳过分隔与许可行 */ }
+		else { descLines.push(line); }
+	}
+	return { desc: descLines.join('\n').trim(), ...meta };
+}
+
+/** 这个包是不是 colaskill 抓取批次（tags 里打了 'cola-skill' 标记）。 */
+export function isColaSkillPackage(pkg: IMarketplacePackage): boolean {
+	return (pkg.tags ?? []).includes('cola-skill');
+}
+
 export const IMarketplaceService = createDecorator<IMarketplaceService>('marketplaceService');
 
 export interface IMarketplaceService {

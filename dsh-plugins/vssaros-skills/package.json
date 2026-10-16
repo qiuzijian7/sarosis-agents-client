@@ -1,0 +1,50 @@
+{
+  "name": "@vssaros/dsh-skills",
+  "version": "0.3.18",
+  "description": "VsSaros skills module for DeepSeek Harness: registers VsSaros skill directories (~/.vssaros/skills/<id>/SKILL.md) as a dsh skill provider, exposes BM25 skill_search + gated skill_manage tools (native `skill` tool still does loading), plus a self-hosted read-only catalog page. Data contract: src/vs/sessions/contrib/agentStudio/common/skills.ts (ISkillDefinition)",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/lock.js",
+    "lib/store.js",
+    "lib/core/skills.js",
+    "lib/core/skillSearch.js",
+    "cordis.patch.yml",
+    "lib/core/skillManage.js"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/dsh": ">=0.1.7-0 <0.3.0-0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": [
+        "./cordis.patch.yml"
+      ]
+    }
+  },
+  "vssaros": {
+    "manifestVersion": 1,
+    "module": "skills",
+    "activityBar": {
+      "containerId": "agentStudio.integration",
+      "title": {
+        "zh": "工具",
+        "en": "Tools"
+      },
+      "icon": "codicon:extensions",
+      "order": 90
+    },
+    "view": {
+      "kind": "page",
+      "route": "/x/skills/"
+    },
+    "legacyCounterpart": "agentStudio.integration"
+  },
+  "license": "MIT"
+}

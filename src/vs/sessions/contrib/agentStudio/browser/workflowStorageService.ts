@@ -39,6 +39,11 @@ import {
 } from '../common/workflowSessions.js';
 import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { SarosPath, resolveSarosPath } from '../common/sarosPaths.js';
+// 原子写（temp+rename，能力探测+降级）：既有唯一入口 ✓
+import { writeFileAtomicSafe } from '../common/atomicWrite.js';
+// ★ 跨进程写锁（README 5.61）：`sessions.json` 是**整表读-改-写** ⇒ 必须与 dsh 侧共用一把锁，
+// 否则第二个写者一出现就丢更新（原子写只保证"不半截"，**不保证"不丢更新"** ✗）。
+import { acquireFileLock, fileServiceOps, lockResourceFor } from '../common/fileWriteLock.js';
 import * as path from '../../../../base/common/path.js';
 // 本地文件导入（2026-09-11）：纯函数解析/校验 + id 冲突消解（见 importWorkflowJson）。
 import { parseWorkflowImportFile, resolveImportSlug } from './workflow/workflowFileImport.js';
@@ -131,10 +136,37 @@ export class WorkflowStorageService extends Disposable implements IWorkflowStora
 		const dir = await this._resolveWorkflowsDir();
 		if (!dir) { return; }
 		await this._ensureDir(URI.joinPath(dir, workflowId));
-		await this._fileService.writeFile(
-			this._sessionsIndexUri(dir, workflowId),
-			VSBuffer.fromString(JSON.stringify(sessions, null, 2)),
-		);
+		const target = this._sessionsIndexUri(dir, workflowId);
+		// ★ 跨进程写锁 + 原子写（README 5.61）：
+		//   锁：与 dsh 侧 `vssaros-workflow/lib/lock.js` 同一把（`<file>.lock`，同协议同超时）⇒ 第二个写者
+		//   出现时**排队**而不是"各写各的" ✓。调用方是整表读-改-写（`listWorkflowSessions` → 改 → 本方法
+		//   整表写），原子写只保证"不半截"、**不保证"不丢更新"** ⇒ 锁是这条路径上唯一挡得住丢更新的东西 ✓。
+		//   原子写：复用既有 `writeFileAtomicSafe`（能力探测 + 降级，绝不因 provider 不支持而写失败 ✓）。
+		const release = await acquireFileLock(lockResourceFor(target), fileServiceOps(this._fileService), { label: '工作流会话索引' });
+		try {
+			await writeFileAtomicSafe(this._fileService, target, VSBuffer.fromString(JSON.stringify(sessions, null, 2)));
+		} finally {
+			await release();
+		}
+	}
+
+	/**
+	 * 写 `workflow.json`：**取锁 + 原子写**（README 5.61 / 5.63）。
+	 *
+	 * 锁与 dsh 侧 `dsh-plugins/vssaros-workflow/lib/lock.js` **同一把**（`<file>.lock`，同协议同超时 ✓）
+	 * ⇒ 两侧的"读-改-写"互相排队 ✓，而不是各自覆盖 ✓。
+	 *
+	 * 为什么非它不可：`updateWorkflow` 也是**读-改-写**（`getWorkflow` → 合并 patch → 整文件写，
+	 * `:402/:406/:416`），而 dsh 侧的 `workflow_update` 也改这同一个文件 ✓。原子写只保证"不半截"，
+	 * **不保证"不丢更新"** ✗；光靠 dsh 侧的指纹 CAS 只能压窗口 —— 两侧都进锁才是消掉它 ✓。
+	 */
+	private async _writeWorkflowJsonLocked(uri: URI, workflow: IStoredWorkflow): Promise<void> {
+		const release = await acquireFileLock(lockResourceFor(uri), fileServiceOps(this._fileService), { label: '工作流定义' });
+		try {
+			await writeFileAtomicSafe(this._fileService, uri, VSBuffer.fromString(JSON.stringify(workflow, null, 2)));
+		} finally {
+			await release();
+		}
 	}
 
 	async createWorkflowSession(workflowId: string, name?: string, chatSessionId?: string): Promise<IWorkflowSessionMeta> {
@@ -324,7 +356,8 @@ export class WorkflowStorageService extends Disposable implements IWorkflowStora
 		await this._ensureDir(URI.joinPath(workflowDir, WorkflowResourceDir.scripts));
 		await this._ensureDir(URI.joinPath(workflowDir, WorkflowResourceDir.bin));
 		const uri = URI.joinPath(workflowDir, WORKFLOW_FILE);
-		await this._fileService.writeFile(uri, VSBuffer.fromString(JSON.stringify(workflow, null, 2)));
+		// ★ 取锁 + 原子写（README 5.63）：dsh 侧的 `workflow_update` 也写这个文件 ⇒ 两侧必须共用 `<file>.lock`
+		await this._writeWorkflowJsonLocked(uri, workflow);
 		this._logService.info('[WorkflowStorage] Created workflow', id, 'at', uri.toString());
 		// 版本管理：新建 workflow 后异步初始化 git repo + 初始 commit（fire-and-forget）
 		this._versionService.init(id).catch(err =>
@@ -400,7 +433,9 @@ export class WorkflowStorageService extends Disposable implements IWorkflowStora
 		const workflowDir = URI.joinPath(dir, id);
 		await this._ensureDir(workflowDir);
 		const uri = URI.joinPath(workflowDir, WORKFLOW_FILE);
-		await this._fileService.writeFile(uri, VSBuffer.fromString(JSON.stringify(updated, null, 2)));
+		// ★ 取锁 + 原子写（README 5.63）：这是典型的**读-改-写**（`getWorkflow` → 合并 patch → 整文件写），
+		// 而 dsh 侧的 `workflow_update` 也改同一个文件 ⇒ 两侧都进锁才真正消掉丢更新 ✓。
+		await this._writeWorkflowJsonLocked(uri, updated);
 		// 版本管理：每次保存后异步 auto-commit（fire-and-forget，不阻塞 UI 保存）。
 		// ★ auto-save 传 opts.autoCommit=false 跳过 —— 否则 updatedAt 时间戳 + 节点
 		// 微调导致内容每次变，git 版本爆炸（历史里全是无意义的浮点坐标 commit）。

@@ -31,12 +31,11 @@ import { IThemeService } from '../../../../../platform/theme/common/themeService
 import { IKeybindingService } from '../../../../../platform/keybinding/common/keybinding.js';
 import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { IFileService, IFileStat, FileChangesEvent, FileKind } from '../../../../../platform/files/common/files.js';
-import { IMermaidInlineRenderer } from '../mermaidInlineRenderer.js';
-import { IDrawioInlineRenderer } from '../drawioInlineRenderer.js';
-import { prepareDiagramsForSync } from '../knowledge/diagramSyncPrepare.js';
-import { svgToPng } from '../knowledge/svgRasterizer.js';
+// ⚠ `IMermaidInlineRenderer` / `IDrawioInlineRenderer` 的注入随飞书同步搬进了 `IKbCommandService`（第 3 期 ✓）
+// ⚠ 图表准备（`prepareDiagramsForSync` / `svgToPng`）随飞书同步一起搬进了 `IKbCommandService`（第 3 期 ✓）
 import { IStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
 import { INotificationService } from '../../../../../platform/notification/common/notification.js';
+import { ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { IFileDialogService, IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
 import { IWorkingCopyFileService } from '../../../../../workbench/services/workingCopy/common/workingCopyFileService.js';
 import { IClipboardService } from '../../../../../platform/clipboard/common/clipboardService.js';
@@ -55,10 +54,6 @@ import { IEnvironmentService, INativeEnvironmentService } from '../../../../../p
 import { IAgentChatService, IAgentStudioService } from '../../common/agentStudio.js';
 import type { IToolCardHandle } from '../../../../common/agentStudioService.js';
 import { IAgentDriverService } from '../../common/agentDriver.js';
-import { IAgentOSService } from '../../common/agentOS.js';
-import { createMediaStoreProxy } from '../mediaStoreProxy.js';
-import type { IMediaBackend, MediaAsset, MediaListResult } from '../../common/mediaStoreChannel.js';
-import { IModelSelectorService } from '../../common/modelSelector.js';
 import { CodebaseGraphViewerEditorInput } from '../codebaseGraphViewerEditorInput.js';
 import { KbImportController } from '../kbImportController.js';
 import { lintVault, formatLintReport } from '../knowledge/kbLint.js';
@@ -70,7 +65,7 @@ import { ICodebaseGraphService } from '../codebaseGraphService.js';
 import { IIndexConfig, IndexMode, ICodebaseMemoryMcpService } from '../codebaseMemoryMcpService.js';
 import { COMMON_EXCLUDE_DIRS } from '../../common/codebaseIndexDefaults.js';
 import { IMainProcessService } from '../../../../../platform/ipc/common/mainProcessService.js';
-import { IWebContentExtractorService, ISharedWebContentExtractorService } from '../../../../../platform/webContentExtractor/common/webContentExtractor.js';
+// ⚠ `IWebContentExtractorService` / `ISharedWebContentExtractorService` 的用法随「导入链接」搬走了（第 4 期 ✓）
 import { createKbSqliteStoreProxy } from '../kbSqliteStoreProxy.js';
 import type { IKbSqliteBackend, IKbSqliteDoc } from '../../common/kbSqliteStoreChannel.js';
 import { URI } from '../../../../../base/common/uri.js';
@@ -103,10 +98,10 @@ import {
 	isAbsolutePath,
 } from './knowledgeBase/kbViewUtils.js';
 import {
-	STORAGE_VAULTS, STORAGE_ACTIVE, STORAGE_KB_DIR,
+	STORAGE_ACTIVE,
 	isKbDirOccupied, nextVaultDirName, sanitizeVaultDirName,
 } from '../knowledge/kbVaultState.js';
-import type { IChatModel } from '../knowledge/llm.js';
+// ⚠ `IChatModel` 的用法随思维导图生成搬进服务了（第 5 期 ✓ —— 取模型改成共享函数 `resolveKbChatModel`）
 import { KbFullTextIndex, IKbSearchHit, TEXT_EXTS, isKbMarkdownNote } from './knowledgeBase/kbIndex.js';
 import { diagramKindOfPath, KbDiagramViewerInput } from '../kbDiagramViewerInput.js';
 // PDF / Word 只读预览器（2026-09-23）：这两个类型交给它，不能当文本打开
@@ -116,84 +111,29 @@ import { KbLinkGraph, IKbGraphRoot } from './knowledgeBase/kbGraph.js';
 import { KbNativeKernel, INativeBacklinkResult } from './knowledgeBase/kbNativeKernel.js';
 import { IKbNativeKernelService, type IKbBuildRoot } from '../kbNativeKernelService.js';
 import { IEmbeddingService } from '../../common/embeddingProvider.js';
-import { resolveAuxEmbeddingProviderId, resolveAuxEmbeddingConfig } from '../knowledge/embeddingConfigResolver.js';
+import { resolveAuxEmbeddingProviderId } from '../knowledge/embeddingConfigResolver.js';
 import { KbWorkerManager } from './knowledgeBase/kbWorkerManager.js';
-import { KbSettingsEditorInput, IKbSettingsHost, type KbSettingsFocus } from '../kbSettingsEditorInput.js';
-import {
-	AGENT_STUDIO_KB_FEISHU_SYNC_ENABLED,
-	AGENT_STUDIO_KB_FEISHU_CLI_PATH,
-	AGENT_STUDIO_KB_FEISHU_SYNC_PARENT,
-	AGENT_STUDIO_KB_FEISHU_SYNC_ON_CONFLICT,
-	AGENT_STUDIO_KB_FEISHU_SYNC_INTERVAL,
-	AGENT_STUDIO_KB_FEISHU_CATEGORY_DEPTH,
-	AGENT_STUDIO_KB_FEISHU_PRUNE_REMOTE,
-} from '../../common/constants.js';
-import {
-	DEFAULT_LARK_CLI,
-	KB_FEISHU_SYNC_SCRIPT_REL,
-	LARK_CLI_MISSING_HINT,
-	FEISHU_SPACE_MAP_FILE,
-	buildSyncArgs,
-	detectLarkCli,
-	electronNodeLaunch,
-	listWikiSpaces,
-	createWikiSpace,
-	sanitizeSpaceName,
-	parseSpaceMap,
-	deriveMappedSrcDirs,
-	FEISHU_SYNC_SECTION,
-	resolveSyncScript,
-	serializeSpaceMap,
-	type IKbSpaceMapping,
-} from '../knowledge/feishuSyncCore.js';
-import { ITerminalService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
-import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
+// ⚠ 只需要 `KbSettingsFocus` 这个类型了（host 与 Input 的构造都在服务里 ✓）
+import { type KbSettingsFocus } from '../kbSettingsEditorInput.js';
+// ⚠ 飞书同步那一族常量 / 工具函数随同步实现一起搬进了 `IKbCommandService`（第 3 期 ✓）——
+//   本视图只剩工具栏按钮那条：判"同步开关是否打开"用的是下面这一个常量 ✓
+import { AGENT_STUDIO_KB_FEISHU_SYNC_ENABLED } from '../../common/constants.js';
 import { KbNoteEditorInput } from '../kbNoteEditorInput.js';
-import { MemoryDetailEditorInput } from '../memoryDetailEditorInput.js';
-import { CodebaseMemoryDetailEditorInput } from '../codebaseMemoryDetailEditorInput.js';
-import { MediaGalleryEditorInput } from '../mediaGalleryEditorInput.js';
-import { KbGraphEditorInput } from '../kbGraphEditorInput.js';
-import { CanvasEditorInput } from '../canvasEditor/canvasEditorInput.js';
-import type { IMindmapData } from '../../common/mindmap/mindmapTypes.js';
-import { appendKbOpLog, type IKbOpLogEntry, type KbOpChannel, type KbOpStatus } from '../knowledge/kbOpLog.js';
-import { resolveKbRoot } from '../knowledge/knowledgeStorage.js';
+// ⚠ `KbGraphEditorInput` 的用法随「关系图谱」一起搬进了 `IKbCommandService`（第 2 期 ✓）—— 别再在本视图 new ✗
+// 顶部标题栏按钮的 DOM 助手（2026-10-12 起与 memory / codebase / media 三个新面板**共用同一份**，
+// 见 `libraryStatHelpers.ts`；原先本文件自持一份私有实现 ⇒ 已删除）。
+import { headerBtn } from './libraryStatHelpers.js';
+// ⚠ `CanvasEditorInput` / `IMindmapData`（打开 .canvas 思维导图那一刻用）随第 5 期搬进服务了
+import { type KbOpChannel, type KbOpStatus } from '../knowledge/kbOpLog.js';
+// ★ 2026-10-15（README 5.138）：库清单 / 库目录 / 库增删 / op-log 的**唯一实现**搬到了这个服务（本视图委托它 ✓）
+import { IKbCommandService, resolveKbChatModel } from '../knowledge/kbCommandService.js';
 import { IKbVectorSearchHit } from './knowledgeBase/kbVectorIndex.js';
 
-const KB_ROOT_SUBPATH = '.vssaros/knowledge-base';
+// ⚠ `KB_ROOT_SUBPATH` / `resolveKbRoot` 的用法都随"知识库根"一起搬进了 `IKbCommandService`（别再在本地写一份 ✗）
 const STORAGE_SORT_PREFIX = 'agentStudio.kb.sort.';
 const STORAGE_EXPANDED_PREFIX = 'agentStudio.kb.expanded.';
 /** 分区高度（用户拖拽调整后）持久化前缀：`<prefix><vaultId>` ⇒ `{ regionId: px }` 的 JSON。 */
 const STORAGE_SECTION_HEIGHTS_PREFIX = 'agentStudio.kb.sectionHeights.';
-
-/**
- * Episodic 层的 6 个原生类型（与 memoryDetailEditorPane 的 EPISODIC_TYPES 同源）。
- * 数组顺序即「记忆」Tab 统计格子的展示顺序。
- */
-const NATIVE_MEMORY_TYPES: readonly string[] = ['pattern', 'fact', 'preference', 'architecture', 'bug', 'workflow'];
-
-/** 「代码」Tab 日志 textarea 的保留行数上限（超出丢弃最老的，避免长会话无限增长）。 */
-const CODE_LOG_MAX_LINES = 500;
-
-/** 资料库 sideview 的顶部 Tab 集合。 */
-type KbTabId = 'kb' | 'mem' | 'code' | 'media';
-
-/** 「媒体库」Tab 列表展示的最近资产条数。 */
-const MEDIA_RECENT_LIMIT = 30;
-
-/** 媒体资产 kind → codicon 类名（非图片类资产的占位图标）。 */
-function mediaKindIcon(kind: string): string {
-	switch (kind) {
-		case 'image': return 'codicon-file-media';
-		case 'video': return 'codicon-device-camera-video';
-		case 'audio': return 'codicon-unmute';
-		default: return 'codicon-file-text';
-	}
-}
-
-
-
-
-type SectionFolderName = '库' | '笔记';
 
 export class KnowledgeBaseViewPane extends ViewPane {
 
@@ -212,48 +152,6 @@ export class KnowledgeBaseViewPane extends ViewPane {
 
 	// 注：⚙ 设置入口已从「侧栏下拉面板」改为「中间栏 EditorPane」
 	// （KbSettingsEditorPane / KbSettingsEditorInput），不再需要下拉容器字段。
-
-	/**
-	 * 当前激活的顶部 Tab。
-	 * 2026-09-15 重构：原「文件树 + 记忆库 + 代码库」纵向堆叠改为平级 Tab，
-	 * 同一时刻只显示一个面板 ⇒ 空态不再挤压主内容、侧栏不再被常驻区块占满。
-	 */
-	private _activeTab: KbTabId = 'kb';
-	/** Tab 面板容器（key = tab id）。 */
-	private _tabPanels = new Map<KbTabId, HTMLElement>();
-	/** Tab 按钮容器（key = tab id）。 */
-	private _tabButtons = new Map<KbTabId, HTMLElement>();
-	/** 记忆库 Tab 的内容容器（`_renderMemoryList` 的落点）。 */
-	private _memSectionBody?: HTMLElement;
-	/** 记忆库列表容器 */
-	private _memList?: HTMLElement;
-	/** 记忆统计区容器（异步填充：总数 / 分层计数 / 原生类型计数）。 */
-	private _memStatsEl?: HTMLElement;
-	/** 记忆统计的防竞态令牌：每次刷新自增，回填前校验是否最新。 */
-	private _memStatsToken = 0;
-	/** 代码 Tab 的内容容器（统计 + 入口）。 */
-	private _codeStatsBody?: HTMLElement;
-	/** 代码 Tab 的统计区容器（异步填充）。 */
-	private _codeStatsEl?: HTMLElement;
-	/** 代码库索引的实时进度文本（`onDidIndexProgress` 推送，索引中显示）。 */
-	private _codeIndexProgress = '';
-	/** 代码 Tab 的状态行（「已就绪 / 正在索引…」）。 */
-	private _codeStatusEl?: HTMLElement;
-	/** 代码库日志缓冲（只读 textarea 的数据源，带时间戳）。 */
-	private _codeLogLines: string[] = [];
-	/** 代码库日志的只读 textarea。 */
-	private _codeLogEl?: HTMLTextAreaElement;
-
-	/** 媒体库 Tab 的内容容器。 */
-	private _mediaBody?: HTMLElement;
-	/** 媒体库统计区容器（异步填充）。 */
-	private _mediaStatsEl?: HTMLElement;
-	/** 媒体库「最近资产」列表容器。 */
-	private _mediaListEl?: HTMLElement;
-	/** 媒体库「最近资产」条数徽标。 */
-	private _mediaListCountEl?: HTMLElement;
-	/** 媒体资产库后端（懒初始化，经主进程 ProxyChannel）。 */
-	private _mediaBackend?: IMediaBackend;
 
 	private _vaults: IKbVault[] = [];
 	private _activeVault: IKbVault | undefined;
@@ -385,17 +283,14 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		@IThemeService themeService: IThemeService,
 	@IHoverService hoverService: IHoverService,
 	@IFileService private readonly fileService: IFileService,
-		// 图表渲染（同步前把 mermaid/drawio 渲成 PNG 用）：与笔记预览用的是同一套隐藏 webview 渲染器
-		@IMermaidInlineRenderer private readonly _mermaidRenderer: IMermaidInlineRenderer,
-		@IDrawioInlineRenderer private readonly _drawioRenderer: IDrawioInlineRenderer,
+		// ⚠ 图表渲染器（mermaid / drawio）的注入随飞书同步一起搬进了 `IKbCommandService`（第 3 期 ✓）
 	@IModelService private readonly modelService: IModelService,
 	@ILanguageService private readonly languageService: ILanguageService,
 		@IStorageService private readonly storageService: IStorageService,
 		@INotificationService private readonly notificationService: INotificationService,
 		@IFileDialogService private readonly fileDialogService: IFileDialogService,
 		@IDialogService private readonly dialogService: IDialogService,
-		@IWebContentExtractorService private readonly webContentExtractorService: IWebContentExtractorService,
-		@ISharedWebContentExtractorService private readonly sharedWebContentExtractorService: ISharedWebContentExtractorService,
+		// ⚠ 两个正文抽取器的注入随「导入链接」一起搬进 `IKbCommandService`（第 4 期 ✓）
 		@IEditorService private readonly editorService: IEditorService,
 		@IEditorGroupsService private readonly editorGroupsService: IEditorGroupsService,
 		@ILogService private readonly logService: ILogService,
@@ -407,17 +302,22 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	@ICodebaseGraphService private readonly _codebaseGraphService: ICodebaseGraphService,
 	@ICodebaseMemoryMcpService private readonly _cbmService: ICodebaseMemoryMcpService,
 	@IMainProcessService private readonly _mainProcessService: IMainProcessService,
-		@IModelSelectorService private readonly modelSelectorService: IModelSelectorService,
-		@IWorkingCopyFileService private readonly workingCopyFileService: IWorkingCopyFileService,
+	@IWorkingCopyFileService private readonly workingCopyFileService: IWorkingCopyFileService,
 		@IUndoRedoService private readonly undoRedoService: IUndoRedoService,
 		@IClipboardService private readonly clipboardService: IClipboardService,
-		@IAgentOSService private readonly _agentOSService: IAgentOSService,
-		@ITerminalService private readonly terminalService: ITerminalService,
-		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
+		// ⚠ 终端与工作区上下文（同步要在集成终端里跑、cwd 取工作区）也随同步搬进服务了（第 3 期 ✓）
 		@IViewsService private readonly viewsService: IViewsService,
 		@IAgentDriverService private readonly agentDriverService: IAgentDriverService,
 		// 「构建过程在聊天框开一个可见会话」需要它（构建会话的创建/驱动走 IAgentChatService）
 		@IAgentChatService private readonly agentChatService: IAgentChatService,
+		// 「加入 Agent Chat」（2026-10-14）：把该节点作为**引用**投进当前 dsh 聊天草稿 —— 走 dshHarness
+		// 既有的 `insertReferenceToChat` 命令（与编辑器右键那条**同一条落点** ✓），不在本视图里另写一份 ✗。
+		@ICommandService private readonly commandService: ICommandService,
+		// ★ 2026-10-15（README 5.138「甲」）：库清单 / 库目录 / 库增删这些**命令也要用**的动作已搬进服务
+		//   （`browser/knowledge/kbCommandService.ts`）⇒ 本视图改为**委托**它（同一份实现 ✓）。
+		//   为什么要搬：dsh 引擎下本视图**根本不会被实例化**（同一个视图 id 被 dsh 插件页接管 ✗）
+		//   ⇒ "命令 ⇒ 视图的公开动作"必然 `is not a function`（用户看到的"点了没反应" ✓）。
+		@IKbCommandService private readonly _kbCommand: IKbCommandService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 		// ★ 2026-09-23：视图**自持一个控制器实例**（与 workspaceView / nativeChatEditorPane 的做法一致）。
@@ -475,18 +375,37 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		}));
 		// P3-3：监听 vault 文件变化（外部编辑/外部程序改动），debounce 后刷新 + 重建导航
 		this._register(this.fileService.onDidFilesChange(e => this._onVaultFilesChange(e)));
-		// 代码库索引进度 / 完成 → 追加到「代码」Tab 的日志 textarea，并刷新状态行与统计。
-		this._register(this._codebaseGraphService.onDidIndexProgress(msg => {
-			this._codeIndexProgress = msg;
-			this._appendCodeLog(msg);
-			this._updateCodeStatusLine();
+		// ★ 2026-10-12（「资料库」拆分）：清除 activitybar「有新增」徽标的动作原先在 `_switchTab` 里
+		//   （切到某分区 ⇒ 清该来源）。tab 栏拆掉后，等价语义是「**该工作台被打开 / 变可见**」——
+		//   本视图即「知识库」⇒ 清 'kb' 来源；记忆 / 代码两个来源分别由 `MemoryLibraryViewPane` /
+		//   `CodebaseLibraryViewPane` 清（否则 `memoryTools` 只发 'new' 没人清，徽标会一直挂着 ✗）。
+		this._register(this.onDidChangeBodyVisibility(visible => {
+			if (visible) { this.agentStudioService.requestLibraryBadge({ source: 'kb', kind: 'idle' }); }
 		}));
-		this._register(this._codebaseGraphService.onDidIndexComplete(() => {
-			this._codeIndexProgress = '';
-			this._appendCodeLog('索引完成');
-			this._updateCodeStatusLine();
-			void this._refreshCodeStats();
-		}));
+		// ★ 2026-10-15：库清单的**真源是 storage**（现在由 `IKbCommandService` 读写）⇒ 它改完会广播，
+		//   本视图据此把**内存副本**（`_vaults` / `_activeVault`）追上去并重渲染 ✓。
+		//   ⚠ 这条是"两个入口不改说两套话"的唯一通道：视图自己那几个改清单的老路径
+		//   （新建库 / 改名 / 打开关闭 / 最后新建时间…）走的仍是本类的 `saveVaults()` ⇒ 它转手调服务 ✓。
+		this._register(this._kbCommand.onDidChangeVaults(() => { void this._reloadVaultsFromService(); }));
+	}
+
+	/**
+	 * 服务改了库清单 ⇒ 把内存副本追上真源并重渲染（见构造函数里那条订阅 ✓）。
+	 *
+	 * ⚠ 别在这里"顺便"做别的判断（谁是当前库只认 `agentStudio.kb.active` ✓）——
+	 *   dsh 引擎下没有本视图，服务那条路自己就能把清单与当前库落定 ✓。
+	 */
+	private async _reloadVaultsFromService(): Promise<void> {
+		this._vaults = this.loadVaults();
+		const activeId = this._kbCommand.activeVaultId();
+		const active = this._vaults.find(v => v.id === activeId) ?? this._vaults.find(v => !v.closed);
+		if (active) {
+			await this.activateVault(active);
+			return;
+		}
+		this._activeVault = undefined;
+		this._scroll.replaceChildren();
+		this.renderVaultBar();
 	}
 
 	// ═══════════════════════════════════════════════════════════
@@ -494,19 +413,16 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	// ═══════════════════════════════════════════════════════════
 
 	private get rootUri(): URI {
-		const custom = this.storageService.get(STORAGE_KB_DIR, StorageScope.APPLICATION);
-		if (custom) { return URI.file(custom); }
-		return URI.joinPath((this.environmentService as INativeEnvironmentService).userHome, ...KB_ROOT_SUBPATH.split('/'));
+		// ★ 2026-10-15：算法只有一份，在 `IKbCommandService`（dsh 引擎下命令侧也要算它 ✓）
+		return this._kbCommand.kbRootUri();
 	}
 
 	private vaultUri(v: IKbVault): URI {
-		if (v.customPath) { return URI.file(v.customPath); }
-		return URI.joinPath(this.rootUri, v.id);
+		return this._kbCommand.vaultRootUri(v);
 	}
 
 	private sectionUri(v: IKbVault, section: KbSection): URI {
-		const folder: SectionFolderName = section === 'library' ? '库' : '笔记';
-		return URI.joinPath(this.vaultUri(v), folder);
+		return this._kbCommand.sectionUri(v, section);
 	}
 
 	/** 由文件系统路径推断所属分区（library/notes）。 */
@@ -521,40 +437,26 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	//  Operation log (`.saros/kb/.op-log.jsonl`)
 	// ═══════════════════════════════════════════════════════════
 
-	/** 操作日志统一落盘到知识库存储根（默认 `~/.vssaros/knowledge-base`），与 Agent 工具路径共用同一份 `.op-log.jsonl`。 */
-	private get _opLogRootDir(): string {
-		const cfg = this.configurationService.getValue<string>('agentStudio.knowledge.storage.path');
-		return resolveKbRoot(cfg, (this.environmentService as INativeEnvironmentService).userDataPath);
-	}
-
+	/** ⚠ 只留这一个壳（视图里有 ~30 处调用 ✓）；"补 ts / channel 默认值 + 落盘"那份实现只在服务里 ✓。 */
 	private async _logOp(
 		op: string, status: KbOpStatus,
 		extra?: { source?: string; target?: string; detail?: Record<string, unknown>; error?: string; channel?: KbOpChannel },
 	): Promise<void> {
-		await appendKbOpLog(this.fileService, this._opLogRootDir, {
-			ts: new Date().toISOString(),
-			op, status,
-			channel: extra?.channel ?? 'vault',
-			source: extra?.source, target: extra?.target,
-			detail: extra?.detail, error: extra?.error,
-		} as IKbOpLogEntry);
+		await this._kbCommand.logOp(op, status, extra);
 	}
 
 	// ═══════════════════════════════════════════════════════════
 	//  Storage helpers
 	// ═══════════════════════════════════════════════════════════
 
+	/** ⚠ 库清单的真源 = storage（服务在读）⇒ 本类只是它的内存副本 ✓。 */
 	private loadVaults(): IKbVault[] {
-		try {
-			const raw = this.storageService.get(STORAGE_VAULTS, StorageScope.APPLICATION);
-			return raw ? JSON.parse(raw) as IKbVault[] : [];
-		} catch {
-			return [];
-		}
+		return this._kbCommand.loadVaults();
 	}
 
+	/** ⚠ 走服务 ⇒ 它写 storage **并广播** `onDidChangeVaults`（本视图据此重载；别的入口也据此跟上 ✓）。 */
 	private saveVaults(): void {
-		this.storageService.store(STORAGE_VAULTS, JSON.stringify(this._vaults), StorageScope.APPLICATION, StorageTarget.MACHINE);
+		this._kbCommand.saveVaults(this._vaults);
 	}
 
 	private loadSort(vaultId: string): KbSortMode {
@@ -662,14 +564,17 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		this._body = container;
 		this._body.classList.add('kb-view');
 
-		// ── ═══ 资料库 Header ═══ ──
+		// ── ═══ 知识库 Header ═══ ──
 		// 2026-09-11：与左侧栏页签文案保持一致（「知识库」→「资料库」）。
 		// 2026-09-15 重构：图标统一为 codicon（原 emoji / 文字符号 ⟳ 🏗️ ⚙ 与主题字体不一致）。
+		// ★ 2026-10-12：「资料库」拆成 4 个独立工作台后，本视图只是其中的**知识库** ⇒ 文案改回「知识库」
+		//   （容器 id / 视图 id / 存储键 / 命令一字未动）。原先的顶部 tab 栏与「记忆 / 代码 / 媒体库」
+		//   三块已分别搬到 `memoryLibraryView` / `codebaseLibraryView` / `mediaLibraryView`。
 		const header = $('div.kb-header');
 		const title = $('span.kb-title');
 		const titleIcon = $('span.codicon.codicon-book');
 		const titleText = $('span');
-		titleText.textContent = '资料库';
+		titleText.textContent = '知识库';
 		title.replaceChildren(titleIcon, titleText);
 		header.appendChild(title);
 		header.appendChild($('span.kb-spacer'));
@@ -679,36 +584,13 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		// ⚠ 思维导图（`_openMindmap`）**没有别的 UI 入口** ⇒ 移除后只能靠已有 .canvas 文件自身打开；
 		//   若以后仍需「一键生成思维导图」，应另找位置挂回（例如「库」分区工具栏）。
 		// ⚙ 设置：在中间栏打开 KbSettingsEditorPane（原先的侧栏下拉已移除）
-		header.appendChild(this._headerBtn('codicon-settings-gear', '知识库设置（在中间栏打开）', (e) => { e.stopPropagation(); this.openSettingsEditor(); }));
+		header.appendChild(headerBtn('codicon-settings-gear', '知识库设置（在中间栏打开）', (e) => { e.stopPropagation(); this.openSettingsEditor(); }));
 		this._body.appendChild(header);
 
-		// ── ═══ 顶部 Tab：资料 / 记忆 / 代码 ═══ ──
-		// 2026-09-15 重构：原先「文件树 + 记忆库 + 代码库」纵向堆叠，三段常驻 ⇒
-		// 空态也占满侧栏、主内容被挤压。改为平级 Tab，同一时刻只显示一个面板。
-		const tabs = $('div.kb-tabs');
-		const tabDefs: { id: KbTabId; icon: string; label: string }[] = [
-			{ id: 'kb', icon: 'codicon-library', label: '知识' },
-			{ id: 'mem', icon: 'codicon-database', label: '记忆' },
-			{ id: 'code', icon: 'codicon-code', label: '代码' },
-			{ id: 'media', icon: 'codicon-file-media', label: '媒体库' },
-		];
-		for (const def of tabDefs) {
-			const btn = $('div.kb-tab');
-			const ic = $('span.codicon.' + def.icon);
-			const lb = $('span');
-			lb.textContent = def.label;
-			btn.replaceChildren(ic, lb);
-			btn.title = def.label;
-			btn.setAttribute('role', 'tab');
-			btn.onclick = () => this._switchTab(def.id);
-			this._tabButtons.set(def.id, btn);
-			tabs.appendChild(btn);
-		}
-		this._body.appendChild(tabs);
-
-		// ── ═══ 面板：资料（文件树）═══ ──
-		const kbBody = $('div.kb-panel.kb-panel-kb');
-		this._tabPanels.set('kb', kbBody);
+		// ── ═══ 面板：知识库（文件树）═══ ──
+		// ⚠ 必须带 `active`：`.kb-panel` 的基础规则是隐藏，`.kb-panel.active` 才显示
+		// （原先是 `_switchTab('kb')` 在末尾加上的；tab 栏拆掉后在这里直接写死）。
+		const kbBody = $('div.kb-panel.kb-panel-kb.active');
 
 		// Vault switcher
 		this._vaultBar = $('div.kb-vault-bar');
@@ -831,61 +713,9 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			}
 		});
 
-		// ── ═══ 面板：记忆 ═══ ──
-		// 2026-09-15 重构：记忆库不再是「可折叠 section + 拖拽分隔条」，
-		// 而是独立 Tab 面板（拖拽调整高度在 Tab 形态下已无意义，一并移除）。
-		const memPanel = $('div.kb-panel.kb-panel-mem');
-		this._tabPanels.set('mem', memPanel);
-		// 面板工具条：`_renderMemoryList` 会清空内容容器，故工具条必须是其兄弟节点。
-		const memBar = $('div.kb-panel-bar');
-		const memBarLabel = $('span.kb-panel-bar-label');
-		memBarLabel.textContent = '记忆库';
-		memBar.replaceChildren(memBarLabel, $('span.kb-spacer'),
-			this._headerBtn('codicon-refresh', '刷新记忆库', (e) => { e.stopPropagation(); this._refreshMemoryPanel(); }));
-		memPanel.appendChild(memBar);
-		// 记忆内容容器（`_renderMemoryList` 的落点）
-		const memContent = $('div.kb-panel-content');
-		memPanel.appendChild(memContent);
-		this._memSectionBody = memContent;
-		// 记忆列表容器（由 `_renderMemoryList` 填充）
-		this._memList = $('div.kb-mem-list');
-		this._renderMemoryList();
-		this._body.appendChild(memPanel);
-
-		// ── ═══ 面板：代码 ═══ ──
-		// 2026-09-15：除入口外补充索引规模统计（节点 / 边 / 最后索引 / 实时状态）。
-		const codePanel = $('div.kb-panel.kb-panel-code');
-		this._tabPanels.set('code', codePanel);
-		const codeBar = $('div.kb-panel-bar');
-		const codeBarLabel = $('span.kb-panel-bar-label');
-		codeBarLabel.textContent = '代码库';
-		codeBar.replaceChildren(codeBarLabel, $('span.kb-spacer'),
-			this._headerBtn('codicon-refresh', '刷新代码库统计', (e) => { e.stopPropagation(); void this._refreshCodeStats(); }));
-		codePanel.appendChild(codeBar);
-		const codeContent = $('div.kb-panel-content');
-		codePanel.appendChild(codeContent);
-		this._codeStatsBody = codeContent;
-		this._renderCodePanel();
-		this._body.appendChild(codePanel);
-
-		// ── ═══ 面板：媒体库 ═══ ──
-		// 数据源 = 工作流媒体库（主进程 mediaStore，经 createMediaStoreProxy IPC 代理）。
-		const mediaPanel = $('div.kb-panel.kb-panel-media');
-		this._tabPanels.set('media', mediaPanel);
-		const mediaBar = $('div.kb-panel-bar');
-		const mediaBarLabel = $('span.kb-panel-bar-label');
-		mediaBarLabel.textContent = '媒体库';
-		mediaBar.replaceChildren(mediaBarLabel, $('span.kb-spacer'),
-			this._headerBtn('codicon-refresh', '刷新媒体库', (e) => { e.stopPropagation(); void this._refreshMediaStats(); }));
-		mediaPanel.appendChild(mediaBar);
-		const mediaContent = $('div.kb-panel-content');
-		mediaPanel.appendChild(mediaContent);
-		this._mediaBody = mediaContent;
-		this._renderMediaPanel();
-		this._body.appendChild(mediaPanel);
-
-		// 应用初始 Tab（默认「知识」）
-		this._switchTab(this._activeTab);
+		// ★ 2026-10-12：打开本视图（= 打开了「知识库」工作台）即清掉 'kb' 来源的「有新增」徽标。
+		// （`onDidChangeBodyVisibility` 那条兜住后续的可见性变化；这里兜住「首帧就已经是可见」的情形。）
+		this.agentStudioService.requestLibraryBadge({ source: 'kb', kind: 'idle' });
 
 		// Global click closes popups
 		document.addEventListener('click', this._onGlobalClick);
@@ -909,554 +739,17 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	}
 
 	// ═══════════════════════════════════════════════════════════
-	//  Tab 切换 / 通用 DOM 助手
+	//  通用 DOM 助手
 	// ═══════════════════════════════════════════════════════════
-
-	/** 构建 header 工具条上的 codicon 按钮（统一尺寸/悬停态，样式见 kbView.css 的 .kb-hbtn）。 */
-	private _headerBtn(icon: string, title: string, onclick: (e: MouseEvent) => void): HTMLElement {
-		const btn = $('span.kb-hbtn.codicon.' + icon);
-		btn.title = title;
-		btn.setAttribute('role', 'button');
-		btn.setAttribute('aria-label', title);
-		btn.onclick = onclick;
-		return btn;
-	}
+	// 2026-10-12（「资料库」拆分）：原先这里的私有 `_headerBtn` / `_statsHint` / `_statCell` 已删 ——
+	// `_statsHint` / `_statCell` 只服务已搬走的三个 tab；`_headerBtn` 改用共享实现
+	// （`libraryStatHelpers.ts` 的 `headerBtn`，与 memory / codebase / media 三个新面板同一份）。
 
 	/** 折叠箭头（统一 codicon-chevron-right；展开态由 CSS 的 .open 规则旋转 90°）。 */
 	private _arrowEl(extraClass?: string): HTMLElement {
 		const a = $('span.kb-arrow.codicon.codicon-chevron-right');
 		if (extraClass) { a.classList.add(extraClass); }
 		return a;
-	}
-
-	/**
-	 * 切换顶部 Tab（资料 / 记忆 / 代码）。
-	 * 只切显示态、不销毁面板 ⇒ 文件树滚动位置 / 展开态 / 搜索态切回时保持。
-	 * 记忆面板每次切入都刷新（记忆数据由 MemoryDetailEditorPane 独立维护，可能已变更）。
-	 */
-	private _switchTab(tab: KbTabId): void {
-		this._activeTab = tab;
-		for (const [id, panel] of this._tabPanels) {
-			panel.classList.toggle('active', id === tab);
-		}
-		for (const [id, btn] of this._tabButtons) {
-			btn.classList.toggle('active', id === tab);
-		}
-		if (tab === 'mem') { this._renderMemoryList(); }
-		if (tab === 'code') { void this._refreshCodeStats(); }
-		if (tab === 'media') { void this._refreshMediaStats(); }
-		// 用户已切到该分区 ⇒ 清除对应来源的「有新增」徽标（构建中不受影响，见聚合器）。
-		// 媒体库不在徽标来源内（它没有后台构建活动）。
-		const source: 'kb' | 'codebase' | 'memory' | undefined =
-			tab === 'kb' ? 'kb' : tab === 'mem' ? 'memory' : tab === 'code' ? 'codebase' : undefined;
-		if (source) { this.agentStudioService.requestLibraryBadge({ source, kind: 'idle' }); }
-	}
-
-	/**
-	 * 渲染记忆库列表：点击展开 MemoryDetailEditorPane 在中间栏编辑。
-	 * Memory 数据由 MemoryDetailEditorPane 独立管理；此处仅提供快捷入口。
-	 */
-	private _renderMemoryList(): void {
-		if (!this._memSectionBody || !this._memList) { return; }
-
-		this._memSectionBody.replaceChildren();
-		const list = this._memList;
-		list.replaceChildren();
-
-		// ── ① 入口置顶：打开 MemoryDetailEditorPane（用户指定的第一顺位动作）──
-		const entry = $('div.kb-entry');
-		entry.onclick = () => this._openMemoryDetailEditor();
-
-		const entryIcon = $('span.kb-entry-icon.codicon.codicon-database');
-
-		const entryText = $('div.kb-entry-text');
-		const entryTitle = $('div.kb-entry-title');
-		entryTitle.textContent = '查看完整记忆';
-		const entryMeta = $('div.kb-entry-meta');
-		entryMeta.textContent = '打开 MemoryDetailEditorPane';
-		entryText.replaceChildren(entryTitle, entryMeta);
-
-		const entryArrow = $('span.kb-entry-arrow.codicon.codicon-arrow-right');
-		entry.replaceChildren(entryIcon, entryText, entryArrow);
-
-		list.appendChild(entry);
-
-		// ── ② 统计区：先渲染骨架，再异步回填（只做计数，不渲染 9k+ 条目）──
-		this._memStatsEl = $('div.kb-stats');
-		this._memStatsEl.appendChild(this._statsHint('正在读取记忆统计…'));
-		list.appendChild(this._memStatsEl);
-		void this._loadMemoryStats();
-
-		// ── ③ 固定槽位概览（与 MemoryDetailEditorPane 的 DEFAULT_SLOTS 同源）──
-		const slotNames = ['persona', 'user_preferences', 'tool_guidelines', 'project_context',
-			'guidance', 'pending_items', 'session_patterns', 'self_notes'];
-		const slotsSection = $('div.kb-side-section');
-		const slotsHead = $('div.kb-side-section-head');
-		const slotsLabel = $('span');
-		slotsLabel.textContent = '固定槽位';
-		const slotsCount = $('span.kb-count');
-		slotsCount.textContent = String(slotNames.length);
-		slotsHead.replaceChildren(slotsLabel, slotsCount);
-		slotsSection.appendChild(slotsHead);
-		const slotsHint = $('div.kb-mem-slots');
-		for (const slot of slotNames) {
-			const tag = $('span.kb-slot-chip');
-			tag.textContent = slot.replace(/_/g, ' ');
-			slotsHint.appendChild(tag);
-		}
-		slotsSection.appendChild(slotsHint);
-		list.appendChild(slotsSection);
-
-		this._memSectionBody.appendChild(list);
-	}
-
-	/** 刷新记忆面板（统计 + 槽位 + 入口）。 */
-	private _refreshMemoryPanel(): void {
-		this._renderMemoryList();
-	}
-
-	/** 统计区提示行（占位 / 空态）。 */
-	private _statsHint(text: string): HTMLElement {
-		const el = $('div.kb-stats-hint');
-		el.textContent = text;
-		return el;
-	}
-
-	/** 单个统计格子（数值 + 标签；0 时灰显）。value 可传已格式化的字符串（如体积）。 */
-	private _statCell(label: string, value: number | string): HTMLElement {
-		const cell = $('div.kb-stat-cell');
-		if (value === 0 || value === '0') { cell.classList.add('zero'); }
-		const n = $('span.kb-stat-num');
-		n.textContent = String(value);
-		const l = $('span.kb-stat-label');
-		l.textContent = label;
-		cell.replaceChildren(n, l);
-		return cell;
-	}
-
-	/**
-	 * 异步加载记忆统计并回填 `_memStatsEl`。
-	 *
-	 * 数据源与 MemoryDetailEditorPane 同源（`IAgentOSService.getActiveMemoryProvider()`），
-	 * 但**只做计数、不渲染条目** —— 侧栏一次性渲染 9k+ 条会直接卡死。
-	 */
-	private async _loadMemoryStats(): Promise<void> {
-		const token = ++this._memStatsToken;
-		const el = this._memStatsEl;
-		if (!el) { return; }
-
-		const mp = this._agentOSService.getActiveMemoryProvider();
-		if (!mp) {
-			el.replaceChildren(this._statsHint('记忆服务未连接（AgentMemory 网关未运行？）'));
-			return;
-		}
-		try {
-			// searchAllAgents 覆盖全部 agent 的 episodic 层；无此能力时退回本 agent 的 searchMemory。
-			// 两条路径返回形状不同（Record<string,unknown> vs IMemoryEntry）⇒ 统一归一化为
-			// { type, agentId }，统计只关心这两个字段。
-			let rows: Array<{ type: string; agentId?: string }>;
-			if (mp.searchAllAgents) {
-				const raw = await mp.searchAllAgents('') ?? [];
-				rows = raw.map(e => {
-					const meta = e['metadata'] as Record<string, unknown> | undefined;
-					const aid = meta?.['agentId'] ?? e['agentId'];
-					return {
-						type: String(e['type'] ?? meta?.['memoryType'] ?? 'working'),
-						agentId: typeof aid === 'string' ? aid : undefined,
-					};
-				});
-			} else if (mp.searchMemory) {
-				const agentId = this.modelSelectorService.getSelectedAgentId() ?? 'default';
-				const raw = await mp.searchMemory(agentId, '') ?? [];
-				rows = raw.map(e => ({
-					type: String(e.type ?? (e.metadata?.['memoryType'] as string) ?? 'working'),
-					agentId: (e.metadata?.['agentId'] as string) ?? agentId,
-				}));
-			} else {
-				el.replaceChildren(this._statsHint('记忆服务不支持统计查询'));
-				return;
-			}
-			// 防竞态：并发刷新时只有最后一次可以落 DOM
-			if (token !== this._memStatsToken || this._memStatsEl !== el) { return; }
-
-			const byType = new Map<string, number>();
-			const agents = new Set<string>();
-			for (const e of rows) {
-				byType.set(e.type, (byType.get(e.type) ?? 0) + 1);
-				if (e.agentId) { agents.add(e.agentId); }
-			}
-			const countOf = (t: string) => byType.get(t) ?? 0;
-			const episodic = NATIVE_MEMORY_TYPES.reduce((sum, t) => sum + countOf(t), 0);
-
-			// 头部：总数 + Agent 数
-			const hero = $('div.kb-stat-hero');
-			const heroNum = $('span.kb-stat-hero-num');
-			heroNum.textContent = String(rows.length);
-			const heroLabel = $('span.kb-stat-hero-label');
-			heroLabel.textContent = agents.size > 0 ? `条记忆 · ${agents.size} 个 Agent` : '条记忆';
-			hero.replaceChildren(heroNum, heroLabel);
-
-			// 四层计数
-			const layerGrid = $('div.kb-stat-grid');
-			const layers: Array<[string, number]> = [
-				['Working', countOf('working')],
-				['Episodic', episodic],
-				['Semantic', countOf('semantic')],
-				['Procedural', countOf('procedural')],
-			];
-			for (const [label, count] of layers) { layerGrid.appendChild(this._statCell(label, count)); }
-
-			// Episodic 原生类型细分
-			const typeLabel = $('div.kb-stat-sub');
-			typeLabel.textContent = 'Episodic 子类型';
-			const typeGrid = $('div.kb-stat-grid');
-			for (const t of NATIVE_MEMORY_TYPES) { typeGrid.appendChild(this._statCell(t, countOf(t))); }
-
-			el.replaceChildren(hero, layerGrid, typeLabel, typeGrid);
-		} catch (err) {
-			this.logService.warn('[KB] memory stats failed', err);
-			if (this._memStatsEl === el) { el.replaceChildren(this._statsHint('读取记忆统计失败')); }
-		}
-	}
-
-	/** 打开「记忆库」编辑器面板（Memory Detail Editor Pane）。 */
-	private _openMemoryDetailEditor(): void {
-		try {
-			const agentId = this.modelSelectorService.getSelectedAgentId() ?? 'default';
-			const input = MemoryDetailEditorInput.getOrCreate(agentId);
-			void this.editorService.openEditor(input, { pinned: true });
-		} catch (err) {
-			this.logService.error(`[KB] failed to open MemoryDetailEditorPane: ${err}`);
-		}
-	}
-
-	/** 打开「代码库」编辑器面板（Codebase Memory Detail Editor Pane）。 */
-	private _openCodebaseDetailEditor(): void {
-		try {
-			const input = CodebaseMemoryDetailEditorInput.getOrCreate();
-			void this.editorService.openEditor(input, { pinned: true });
-		} catch (err) {
-			this.logService.error(`[KB] failed to open CodebaseDetailEditorPane: ${err}`);
-		}
-	}
-
-	/** 打开完整的媒体库画廊面板（MediaGalleryEditorPane）。 */
-	private _openMediaGalleryEditor(): void {
-		try {
-			const input = MediaGalleryEditorInput.getOrCreate();
-			void this.editorService.openEditor(input, { pinned: true });
-		} catch (err) {
-			this.logService.error(`[KB] failed to open MediaGalleryEditorPane: ${err}`);
-		}
-	}
-
-	// ═══════════════════════════════════════════════════════════
-	//  代码 Tab — 索引规模统计 + 实时状态
-	// ═══════════════════════════════════════════════════════════
-
-	/** 渲染「代码」面板（统计骨架 + 入口）。 */
-	private _renderCodePanel(): void {
-		const host = this._codeStatsBody;
-		if (!host) { return; }
-		host.replaceChildren();
-
-		// 入口置顶：CodebaseDetailEditorPane（与「记忆」Tab 保持同一信息顺序）
-		const entry = $('div.kb-entry');
-		entry.onclick = () => this._openCodebaseDetailEditor();
-		const icon = $('span.kb-entry-icon.codicon.codicon-code');
-		const text = $('div.kb-entry-text');
-		const title = $('div.kb-entry-title');
-		title.textContent = '查看完整代码库';
-		const meta = $('div.kb-entry-meta');
-		meta.textContent = '打开 CodebaseDetailEditorPane';
-		text.replaceChildren(title, meta);
-		const arrow = $('span.kb-entry-arrow.codicon.codicon-arrow-right');
-		entry.replaceChildren(icon, text, arrow);
-		host.appendChild(entry);
-
-		// 统计骨架（异步回填）
-		const stats = $('div.kb-stats');
-		this._codeStatsEl = stats;
-		stats.appendChild(this._statsHint('正在读取代码图谱…'));
-		host.appendChild(stats);
-
-		// 日志区：只读 textarea（可滚动看完整行，不再被状态行的单行省略号截断）
-		const logSection = $('div.kb-side-section');
-		const logHead = $('div.kb-side-section-head');
-		const logLabel = $('span');
-		logLabel.textContent = '日志';
-		const logClear = $('span.kb-log-clear.codicon.codicon-trash');
-		logClear.title = '清空日志';
-		logClear.onclick = () => { this._codeLogLines = []; this._syncCodeLog(); };
-		logHead.replaceChildren(logLabel, $('span.kb-spacer'), logClear);
-		logSection.appendChild(logHead);
-
-		const ta = document.createElement('textarea');
-		ta.className = 'kb-log';
-		ta.readOnly = true;       // 不可编辑
-		ta.spellcheck = false;
-		ta.wrap = 'off';          // 不折行：横向滚动看完整内容
-		ta.setAttribute('aria-label', '代码库日志');
-		this._codeLogEl = ta;
-		logSection.appendChild(ta);
-		host.appendChild(logSection);
-		this._syncCodeLog();
-
-		void this._refreshCodeStats();
-	}
-
-	/** 把日志缓冲同步到只读 textarea（保持在底部）。 */
-	private _syncCodeLog(): void {
-		const ta = this._codeLogEl;
-		if (!ta) { return; }
-		ta.value = this._codeLogLines.join('\n');
-		ta.scrollTop = ta.scrollHeight;
-	}
-
-	/** 追加一行代码库日志（带时间戳；超过上限丢弃最老的）。 */
-	private _appendCodeLog(message: string): void {
-		this._codeLogLines.push(`[${new Date().toLocaleTimeString()}] ${message}`);
-		if (this._codeLogLines.length > CODE_LOG_MAX_LINES) {
-			this._codeLogLines.splice(0, this._codeLogLines.length - CODE_LOG_MAX_LINES);
-		}
-		this._syncCodeLog();
-	}
-
-	/** 读取代码图谱状态并回填统计区（节点 / 边 / 体积 / 最后索引 / 实时状态）。 */
-	private async _refreshCodeStats(): Promise<void> {
-		const el = this._codeStatsEl;
-		if (!el) { return; }
-		try {
-			const status = await this._codebaseGraphService.getGraphStatus();
-			if (this._codeStatsEl !== el) { return; }
-			if (!status.exists) {
-				el.replaceChildren(this._statsHint('尚未建立代码图谱索引'));
-				return;
-			}
-
-			const hero = $('div.kb-stat-hero');
-			const heroNum = $('span.kb-stat-hero-num');
-			heroNum.textContent = formatSizeCompact(status.size ?? 0);
-			const heroLabel = $('span.kb-stat-hero-label');
-			heroLabel.textContent = '图谱体积';
-			hero.replaceChildren(heroNum, heroLabel);
-
-			const grid = $('div.kb-stat-grid');
-			grid.appendChild(this._statCell('节点', status.nodeCount ?? 0));
-			grid.appendChild(this._statCell('关系边', status.edgeCount ?? 0));
-
-			const meta = $('div.kb-stat-meta');
-			const ts = status.lastModified ? new Date(status.lastModified) : undefined;
-			meta.textContent = ts && !Number.isNaN(ts.getTime()) ? `最后索引：${ts.toLocaleString()}` : '最后索引：—';
-
-			const statusLine = $('div.kb-code-status');
-			this._codeStatusEl = statusLine;
-
-			el.replaceChildren(hero, grid, meta, statusLine);
-			this._updateCodeStatusLine();
-
-			// 首次拿到状态时补一条基线日志（否则 textarea 一直是空的）
-			if (this._codeLogLines.length === 0) {
-				this._appendCodeLog(`图谱就绪：${status.nodeCount ?? 0} 节点 / ${status.edgeCount ?? 0} 关系边`);
-			}
-		} catch (err) {
-			this.logService.warn('[KB] code stats failed', err);
-			if (this._codeStatsEl === el) { el.replaceChildren(this._statsHint('读取代码图谱失败')); }
-		}
-	}
-
-	/** 更新代码库状态行（只放短状态词；详细进度进日志 textarea）。 */
-	private _updateCodeStatusLine(): void {
-		const el = this._codeStatusEl;
-		if (!el) { return; }
-		const busy = this._codebaseGraphService.isIndexing || !!this._codeIndexProgress;
-		el.classList.toggle('busy', busy);
-		el.textContent = busy ? '正在索引…' : '已就绪';
-	}
-
-	// ═══════════════════════════════════════════════════════════
-	//  媒体库 Tab — 数据源 = 工作流媒体库（主进程 mediaStore）
-	// ═══════════════════════════════════════════════════════════
-
-	/** 懒初始化媒体资产库后端（经主进程 ProxyChannel）。 */
-	private _getMediaBackend(): IMediaBackend {
-		if (!this._mediaBackend) {
-			this._mediaBackend = createMediaStoreProxy(this._mainProcessService);
-		}
-		return this._mediaBackend;
-	}
-
-	/** 渲染「媒体库」面板（统计骨架 + 最近资产骨架）。 */
-	private _renderMediaPanel(): void {
-		const host = this._mediaBody;
-		if (!host) { return; }
-		host.replaceChildren();
-
-		// 入口置顶：打开完整媒体库画廊（中间栏 EditorPane，与工作流画布同一份数据）
-		const entry = $('div.kb-entry');
-		entry.onclick = () => this._openMediaGalleryEditor();
-		const entryIcon = $('span.kb-entry-icon.codicon.codicon-file-media');
-		const entryText = $('div.kb-entry-text');
-		const entryTitle = $('div.kb-entry-title');
-		entryTitle.textContent = '查看完整媒体库';
-		const entryMeta = $('div.kb-entry-meta');
-		entryMeta.textContent = '打开 MediaGalleryEditorPane';
-		entryText.replaceChildren(entryTitle, entryMeta);
-		const entryArrow = $('span.kb-entry-arrow.codicon.codicon-arrow-right');
-		entry.replaceChildren(entryIcon, entryText, entryArrow);
-		host.appendChild(entry);
-
-		// 统计骨架（异步回填）
-		const stats = $('div.kb-stats');
-		this._mediaStatsEl = stats;
-		stats.appendChild(this._statsHint('正在读取媒体库…'));
-		host.appendChild(stats);
-
-		// 最近资产列表
-		const listSection = $('div.kb-side-section');
-		const listHead = $('div.kb-side-section-head');
-		const listLabel = $('span');
-		listLabel.textContent = '最近资产';
-		this._mediaListCountEl = $('span.kb-count');
-		this._mediaListCountEl.textContent = '—';
-		listHead.replaceChildren(listLabel, $('span.kb-spacer'), this._mediaListCountEl);
-		listSection.appendChild(listHead);
-		this._mediaListEl = $('div.kb-media-list');
-		listSection.appendChild(this._mediaListEl);
-		host.appendChild(listSection);
-
-		void this._refreshMediaStats();
-	}
-
-	/** 读取媒体库统计 + 最近资产（工作流产出的图片/视频/音频/文本）。 */
-	private async _refreshMediaStats(): Promise<void> {
-		const statsEl = this._mediaStatsEl;
-		if (!statsEl) { return; }
-		try {
-			const backend = this._getMediaBackend();
-			const kinds = ['image', 'video', 'audio', 'text'] as const;
-			const [stats, recent, kindTotals] = await Promise.all([
-				backend.stats(),
-				backend.list({ limit: MEDIA_RECENT_LIMIT }),
-				// 分类计数：用 limit:1 只取 total，避免把全量资产拉过 IPC
-				Promise.all(kinds.map(async k => {
-					try { return (await backend.list({ kind: k, limit: 1 })).total; } catch { return 0; }
-				})),
-			]);
-			if (this._mediaStatsEl !== statsEl) { return; }
-
-			const hero = $('div.kb-stat-hero');
-			const heroNum = $('span.kb-stat-hero-num');
-			heroNum.textContent = String(stats.assetCount);
-			const heroLabel = $('span.kb-stat-hero-label');
-			heroLabel.textContent = `个资产 · ${formatSizeCompact(stats.totalBytes)}`;
-			hero.replaceChildren(heroNum, heroLabel);
-
-			const grid = $('div.kb-stat-grid');
-			kinds.forEach((k, i) => grid.appendChild(this._statCell(k, kindTotals[i])));
-			grid.appendChild(this._statCell('回收站', stats.deletedCount));
-
-			const meta = $('div.kb-stat-meta');
-			meta.textContent = `媒体目录占用：${formatSizeCompact(stats.dirSizeBytes)}`;
-
-			statsEl.replaceChildren(hero, grid, meta);
-			this._renderMediaList(recent);
-		} catch (err) {
-			this.logService.warn('[KB] media stats failed', err);
-			if (this._mediaStatsEl === statsEl) {
-				statsEl.replaceChildren(this._statsHint('读取媒体库失败（媒体存储未就绪？）'));
-			}
-		}
-	}
-
-	/** 渲染「最近资产」列表。 */
-	private _renderMediaList(result: MediaListResult): void {
-		const host = this._mediaListEl;
-		if (!host) { return; }
-		host.replaceChildren();
-		if (this._mediaListCountEl) { this._mediaListCountEl.textContent = String(result.total); }
-		if (result.items.length === 0) {
-			host.appendChild(this._statsHint('暂无媒体资产（工作流产出图片后会出现在这里）'));
-			return;
-		}
-		for (const asset of result.items) {
-			host.appendChild(this._mediaItemEl(asset));
-		}
-	}
-
-	/** 单条媒体资产（缩略图 + 名称 + 元信息；点击打开）。 */
-	private _mediaItemEl(asset: MediaAsset): HTMLElement {
-		const row = $('div.kb-media-item');
-		const label = asset.fileName ?? asset.ref;
-		row.title = label;
-
-		const thumb = $('div.kb-media-thumb');
-		if (asset.kind === 'image') {
-			if (asset.ref.startsWith('data:') || /^https:/i.test(asset.ref)) {
-				// data: / https: 可直接用（CSP 已放行）；http: 不放行 ⇒ 必须先本地化
-				const img = document.createElement('img');
-				img.src = asset.ref;
-				img.alt = '';
-				img.loading = 'lazy';
-				thumb.appendChild(img);
-			} else {
-				// 渲染进程读不到本地文件 ⇒ 走主进程 getAsDataUrl（懒加载，失败不影响列表）
-				void this._fillMediaThumb(thumb, asset.id);
-			}
-		} else {
-			thumb.appendChild($('span.codicon.' + mediaKindIcon(asset.kind)));
-		}
-
-		const text = $('div.kb-media-text');
-		const name = $('div.kb-media-name');
-		name.textContent = label;
-		const meta = $('div.kb-media-meta');
-		const size = asset.sizeBytes ? ` · ${formatSizeCompact(asset.sizeBytes)}` : '';
-		const when = asset.createdAt ? ` · ${new Date(asset.createdAt).toLocaleString()}` : '';
-		const tags = asset.tags?.length ? ` · ${asset.tags.map(t => `#${t}`).join(' ')}` : '';
-		meta.textContent = `${asset.kind}${size}${when}${tags}`;
-		text.replaceChildren(name, meta);
-
-		const open = $('span.kb-media-open.codicon.codicon-link-external');
-		open.title = '打开';
-		open.onclick = (e) => { e.stopPropagation(); void this._openMediaAsset(asset); };
-
-		row.replaceChildren(thumb, text, open);
-		row.onclick = () => void this._openMediaAsset(asset);
-		return row;
-	}
-
-	/** 异步填充缩略图（data URL；未落盘资产退化为图标占位）。 */
-	private async _fillMediaThumb(host: HTMLElement, id: string): Promise<void> {
-		try {
-			const url = await this._getMediaBackend().getAsDataUrl(id);
-			if (!host.isConnected) { return; }
-			if (!url) {
-				// 纯 URL 引用（未落盘）拿不到 data URL ⇒ 用图标占位，避免留白
-				host.replaceChildren($('span.codicon.codicon-file-media'));
-				return;
-			}
-			const img = document.createElement('img');
-			img.src = url;
-			img.alt = '';
-			host.replaceChildren(img);
-		} catch { /* 缩略图失败不阻断列表 */ }
-	}
-
-	/** 打开媒体资产：优先本地落盘文件，否则退回原始引用地址。 */
-	private async _openMediaAsset(asset: MediaAsset): Promise<void> {
-		try {
-			const path = await this._getMediaBackend().getFilePath(asset.id);
-			if (path) {
-				await this.openerService.open(URI.file(path), { openExternal: true });
-				return;
-			}
-			if (asset.ref) {
-				await this.openerService.open(URI.parse(asset.ref), { openExternal: true });
-			}
-		} catch (err) {
-			this.logService.warn('[KB] open media asset failed', err);
-		}
 	}
 
 	private _onGlobalClick = () => {
@@ -1492,37 +785,11 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		await this.activateVault(this._activeVault);
 	}
 
-	/** 已确认文件夹存在的 Vault ID 集合（避免重复 createFolder IPC 调用）。 */
-	private _vaultFoldersReady = new Set<string>();
-
+	/**
+	 * 确保库根 / `库` / `笔记` 三处目录存在（"已就绪"缓存在服务里 ✓ —— dsh 引擎下命令侧也要它 ✓）。
+	 */
 	private async ensureVaultFolders(v: IKbVault): Promise<void> {
-		if (this._vaultFoldersReady.has(v.id)) { return; }
-		try {
-			const root = this.vaultUri(v);
-			const lib = this.sectionUri(v, 'library');
-			const notes = this.sectionUri(v, 'notes');
-			// ★★ 2026-09-23 诊断日志：定位「知识库根下凭空多出 `<时间戳>-<随机>` 目录」。
-			//
-			//   该目录名 = `vault.id` ⇒ 只有**没有 `customPath` 的（旧）vault** 才会走
-			//   `vaultUri` 的 fallback（`joinPath(rootUri, v.id)`）⇒ 把「算出什么路径、
-			//   是哪个 vault、谁触发的」一次说清：
-			//     · 无 customPath ⇒ WARN + **调用栈**（一眼看出是哪个入口激活了这个旧 vault）；
-			//     · 真正执行 createFolder 时再记一条 INFO（同样带栈）。
-			if (!v.customPath) {
-				this.logService.warn(`[KB][vault-dir] legacy vault WITHOUT customPath → root=${root.fsPath} (id=${v.id}, name=${v.name})\nstack=${new Error().stack}`);
-			}
-			// Only create folders that don't already exist — createFolder is a
-			// heavy IPC call even when the folder already exists on disk.
-			if (!await this.fileService.exists(root)) {
-				this.logService.info(`[KB][vault-dir] createFolder(root): ${root.fsPath} (id=${v.id}, name=${v.name}, customPath=${v.customPath ?? '(none)'})\nstack=${new Error().stack}`);
-				await this.fileService.createFolder(root);
-			}
-			if (!await this.fileService.exists(lib))  { await this.fileService.createFolder(lib); }
-			if (!await this.fileService.exists(notes)) { await this.fileService.createFolder(notes); }
-			this._vaultFoldersReady.add(v.id);
-		} catch (err) {
-			this.logService.warn(`[KB] ensureVaultFolders failed (will retry on demand): ${err}`);
-		}
+		await this._kbCommand.ensureVaultFolders(v);
 	}
 
 	private async activateVault(v: IKbVault): Promise<void> {
@@ -1614,7 +881,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	/** 补充/完善单个思维导图：让 LLM 在保留现有节点基础上改进描述并补充缺失概念。 */
 	private async _supplementMindmap(node: IKbNode): Promise<void> {
 		if (!node.name.endsWith('.canvas')) { return; }
-		const chatModel = await this._getOrCreateChatModel();
+		const chatModel = resolveKbChatModel(this.agentStudioService);
 		if (!chatModel) {
 			this.notificationService.warn('未获取到 LLM 模型，无法补充思维导图');
 			return;
@@ -1651,7 +918,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			}
 			// 1) 优先用 LLM 建议的简短主题名；2) 否则回退到确定性内容推导
 			let newName = this._mindmapGenerator.deriveMindmapTitle(data);
-			const chatModel = await this._getOrCreateChatModel();
+			const chatModel = resolveKbChatModel(this.agentStudioService);
 			if (chatModel) {
 				const suggested = await this._mindmapGenerator.suggestMindmapTitle(chatModel, data);
 				if (suggested) { newName = suggested; }
@@ -1741,7 +1008,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		}
 		vault.path = root.fsPath;
 		vault.customPath = root.fsPath;
-		this._vaultFoldersReady.delete(vault.id);   // 新 id ⇒ 本就未就绪，这里显式保证语义
+		this._kbCommand.invalidateVaultFolders(vault.id);   // 新 id ⇒ 本就未就绪，这里显式保证语义
 
 		this._vaults.push(vault);
 		this.saveVaults();
@@ -1751,24 +1018,17 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		void this._logOp('vault.create', 'success', { target: vault.path, detail: { name, icon: vault.icon } });
 	}
 
-	private async removeVault(v: IKbVault): Promise<void> {
-		const confirm = await this.dialogService.confirm({
-			message: localize('kb.removeVault', '确定删除知识库「{0}」及其全部内容？', v.name),
-			primaryButton: localize('kb.delete', '删除'),
-		});
-		if (!confirm.confirmed) { return; }
-		const path = this.vaultUri(v).fsPath;
-		await this.fileService.del(this.vaultUri(v), { recursive: true });
-		this._vaults = this._vaults.filter(x => x.id !== v.id);
-		this.saveVaults();
-		void this._logOp('vault.delete', 'success', { target: path, detail: { name: v.name } });
-		this._activeVault = this._vaults.find(x => !x.closed);
-		if (this._activeVault) {
-			await this.activateVault(this._activeVault);
-		} else {
-			this._scroll.replaceChildren();
-			this.renderVaultBar();
-		}
+	/**
+	 * ★ 永久删除（真源语义）：确认框 → `fileService.del(recursive)` → 移出清单。
+	 *
+	 * ⚠ 2026-10-15 返回值口径：`true` = **清单真的变了**（宿主据此重启 Host 刷注入 ✓）、
+	 *   `false` = 用户取消 / 没删成 ✓（⇒ 不重启）。
+	 * ⚠ 与页面里**文件行**的删除（移入备份、可逆）**不是一回事** ✗ —— 两条并存，文案各自说清 ✓。
+	 * ★ 2026-10-15（README 5.138「甲」）：实现搬进 `IKbCommandService`（命令侧也要用 ⇒ 同一份 ✓）；
+	 *   本视图只剩这一层薄壳（右键菜单与公开壳都仍走它 ✓），重渲染由 `onDidChangeVaults` 驱动 ✓。
+	 */
+	private async removeVault(v: IKbVault): Promise<boolean> {
+		return this._kbCommand.removeVaultById(v.id);
 	}
 
 	private async renameVault(v: IKbVault, newName: string): Promise<void> {
@@ -2046,7 +1306,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		// `graph` 更贴近「节点 + 关联」的图谱语义。⚠ 别动 L4187 的「代码图谱」（那是另一个功能）。
 		const graphBtn = $('span.kb-abtn.codicon.codicon-graph-scatter');
 		graphBtn.title = '关系图谱（在中间栏打开）';
-		graphBtn.onclick = (e) => { e.stopPropagation(); void this._openGraph(); };
+		graphBtn.onclick = (e) => { e.stopPropagation(); this.openGraph(); };
 		this._vaultBar.append(refreshBtn, graphBtn);
 
 		// ⚠ `replaceChildren()` 连菜单一起清掉了 ⇒ 必须重新挂回。
@@ -2317,25 +1577,38 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		}
 	}
 
-	private async configFolderAsVault(): Promise<void> {
-		const picked = await this.fileDialogService.showOpenDialog({
-			title: localize('kb.configFolder', '选择文件夹作为知识库'),
-			canSelectFolders: true, canSelectFiles: false, canSelectMany: false,
-		});
-		if (!picked || !picked.length) { return; }
-		const folder = picked[0];
-		const name = folder.path.split('/').filter(Boolean).pop() || '知识库';
-		const vault: IKbVault = {
-			id: newVaultId(), name, icon: '📁', sort: this._vaults.length,
-			sortMode: 'createdASC', closed: false, path: folder.fsPath, customPath: folder.fsPath,
-		};
-		this._vaults.push(vault);
-		this.saveVaults();
-		// 使用外部文件夹：在其下创建 库/笔记 子目录
-		await this.ensureVaultFolders(vault);
-		await this.activateVault(vault);
-		this.notificationService.info(localize('kb.folderConfigured', '已配置文件夹为知识库：{0}', name));
-		void this._logOp('vault.configFolder', 'success', { target: folder.fsPath, detail: { name } });
+	/**
+	 * 配置文件夹为知识库（真源那一步 ✓）：**原生选目录** → 写清单 → 建 `库/笔记` → 激活。
+	 *
+	 * ⚠ 2026-10-15 返回值口径：`true` = 真加了（宿主据此重启 Host 刷注入 ✓）、`false` = 用户取消 ✓。
+	 * ⚠ 这条命令**不接受页面给的路径** ✗：选哪个目录只能由用户在原生对话框里定 ✓（协议侧无参数 ✓）。
+	 */
+	/**
+	 * 配置文件夹为知识库（真源那一步 ✓）：**原生选目录** → 写清单 → 建 `库/笔记` → 激活。
+	 *
+	 * ⚠ 2026-10-15 返回值口径：`true` = 真加了（宿主据此重启 Host 刷注入 ✓）、`false` = 用户取消 ✓。
+	 * ⚠ 这条命令**不接受页面给的路径** ✗：选哪个目录只能由用户在原生对话框里定 ✓（协议侧无参数 ✓）。
+	 * ★ 2026-10-15（README 5.138「甲」）：实现搬进 `IKbCommandService` —— 命令侧与视图侧**同一份** ✓；
+	 *   本视图只剩薄壳（下拉里那一项仍走它 ✓），界面更新由 `onDidChangeVaults` 驱动 ✓。
+	 */
+	private async configFolderAsVault(): Promise<boolean> {
+		return this._kbCommand.addVaultFromFolder();
+	}
+
+	/**
+	 * 公开壳（2026-10-15，桥 `kbAddVault`）——⚠ **命令已不再走这里**（它直接调服务 ✓，因为 dsh 引擎下
+	 * 本视图不存在）；本壳保留给"视图自持"的调用方，语义与从前逐字一致 ✓。
+	 */
+	public async addVaultFromFolder(): Promise<boolean> {
+		return this.configFolderAsVault();
+	}
+
+	/**
+	 * 公开壳（同上，桥 `kbRemoveVault`）——⚠ 命令已直接调服务 ✓（见 `addVaultFromFolder` 的说明）。
+	 * ⚠ 只认清单里**确实存在**的 id（不可逆操作 ⇒ 不猜、不删第一个 ✗）；原生确认框在服务里 ✓。
+	 */
+	public async removeVaultById(id: string): Promise<boolean> {
+		return this._kbCommand.removeVaultById(id);
 	}
 
 	// ═══════════════════════════════════════════════════════════
@@ -3338,35 +2611,12 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	}
 
 	/**
-	 * 打开 .canvas 思维导图编辑器。
-	 * 读取 JSON Canvas 文件内容 → 解析 → 创建 CanvasEditorInput → 中间栏打开。
+	 * 打开 .canvas 思维导图编辑器（读取 → 解析 → `CanvasEditorInput` → 中间栏打开 ✓）。
+	 *
+	 * ★ 2026-10-16（第 5 期）：实现搬进 `IKbCommandService.openCanvasEditor()` ✓（本视图 3 个调用点不动 ✓）。
 	 */
 	private async _openCanvasEditor(uri: URI): Promise<void> {
-		this.logService.info(`[KB canvas] _openCanvasEditor: ${uri.toString()}`);
-		try {
-			const raw = await this.fileService.readFile(uri);
-			const text = raw.value.toString();
-			this.logService.info(`[KB canvas] _openCanvasEditor: file read OK, length=${text.length}`);
-			const data: IMindmapData = JSON.parse(text);
-			// Ensure nodes/edges exist
-			if (!data.nodes) { data.nodes = []; }
-			if (!data.edges) { data.edges = []; }
-			// Ensure mindmap flag
-			if (data.mindmap === undefined) { data.mindmap = true; }
-			this.logService.info(`[KB canvas] _openCanvasEditor: parsed nodes=${data.nodes.length}, edges=${data.edges.length}, mindmapFlag=${data.mindmap}`);
-
-			const input = new CanvasEditorInput(uri, data);
-			const groups = this.editorGroupsService.getGroups(GroupsOrder.CREATION_TIME);
-			const targetGroup = groups.length <= 1 ? SIDE_GROUP : groups[0];
-			this.logService.info(`[KB canvas] _openCanvasEditor: opening CanvasEditorInput (targetGroup=${targetGroup})`);
-			await this.editorService.openEditor(input, { pinned: true }, targetGroup);
-		} catch (err) {
-			this.logService.warn(`[KB canvas] _openCanvasEditor: FALLBACK to plain text editor. Error: ${err}`);
-			// Fallback: open as plain text
-			const groups = this.editorGroupsService.getGroups(GroupsOrder.CREATION_TIME);
-			const targetGroup = groups.length <= 1 ? SIDE_GROUP : groups[0];
-			this.editorService.openEditor({ resource: uri, options: { pinned: true } }, targetGroup);
-		}
+		await this._kbCommand.openCanvasEditor(uri);
 	}
 
 	/**
@@ -3440,10 +2690,8 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		}, 300);
 	}
 
-	private async openKbFolder(): Promise<void> {
-		if (!this._activeVault) { return; }
-		await this.openerService.open(this.vaultUri(this._activeVault), { openExternal: true });
-	}
+	// ⚠ `openKbFolder()` 已搬进 `IKbCommandService`（第 3 期 ✓）
+
 
 	// ═══════════════════════════════════════════════════════════
 	//  Settings panel (⚙) — 根目录自定义
@@ -3457,14 +2705,16 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	 * host 提供 Pane 需要的视图上下文（目录、统计、需要视图状态的动作）；
 	 * 纯配置项读写由 Pane 直接用 IConfigurationService 完成（全局服务）。
 	 */
+	/**
+	 * 公开壳（2026-10-15 §16.29；**第 3 期改委托**）：host 的 21 个方法全在 `IKbCommandService` 里，
+	 * 所以「造 host + 开面板」这件事两边共用一份 ✓（命令侧直接调服务 ⇒ 不经过本视图 ✓）。
+	 */
+	public openSettings(): void {
+		this.openSettingsEditor();
+	}
+
 	private openSettingsEditor(focusSection?: KbSettingsFocus): void {
-		try {
-			const input = new KbSettingsEditorInput(this._createSettingsHost(), focusSection);
-			void this.editorService.openEditor(input, { pinned: true });
-			void this._logOp('settings.open', 'success', { target: focusSection ?? 'default' });
-		} catch (err) {
-			this.logService.error(`[KB] failed to open settings editor: ${err}`);
-		}
+		void this._kbCommand.openSettings(focusSection);
 	}
 
 	/**
@@ -3483,13 +2733,8 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			this.openSettingsEditor('feishu');
 			return;
 		}
-		try {
-			await this.syncToFeishu('apply');
-		} catch (err) {
-			const msg = err instanceof Error ? err.message : String(err);
-			this.logService.error(`[KB feishu] toolbar sync failed: ${msg}`);
-			this.notificationService.warn(localize('kb.feishuLaunchFailed', '飞书同步启动失败：{0}', msg));
-		}
+		// ★ 第 3 期：同步实现搬进了服务（命令侧 / 设置面板 / 本工具栏按钮**同一份** ✓；它自己**不抛** ✓）
+		await this._kbCommand.feishuSync('apply');
 	}
 
 	/**
@@ -3497,188 +2742,25 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	 * 每次打开时创建，取值全部惰性（方法而非快照值）⇒ 始终反映最新状态；
 	 * matches() 复用的 Tab 即便持有旧 host，行为也等价（host 闭包指向同一视图实例）。
 	 */
-	private _createSettingsHost(): IKbSettingsHost {
-		return {
-			getRootPath: () => this.rootUri.fsPath,
-			hasActiveVault: () => !!this._activeVault,
-			getDocCount: () => (this._activeVault ? (this._nativeKernel?.allDocs() ?? []).length : 0),
-			getTotalSize: () => (this._activeVault
-				? (this._nativeKernel?.allDocs() ?? []).reduce((sum, d) => sum + (d.size || 0), 0)
-				: 0),
-			isSqliteActive: () => !!this._kbSqliteStore,
-			getLinkedWorkspaceCount: () => this._activeVault?.linkedWorkspaces?.length ?? 0,
-			logOp: (code, detail) => { void this._logOp(code, 'success', detail); },
-			// ★ 2026-09-23：透传 Promise（供设置面板回填路径 + 重渲染）
-			pickDir: (current) => this.pickKbDir(current),
-			applyDir: (dir) => this.applyKbDir(dir),
-			rebuildVectorIndex: () => { void this.rebuildVectorIndex(); },
-			openKbFolder: () => { void this.openKbFolder(); },
-			feishuSync: (mode) => {
-				// ★ 2026-09-23：必须接住 rejection。
-				// 此前是 `void this.syncToFeishu(mode)` ⇒ 内部任何 await 抛错都会变成
-				// **未处理的 Promise 拒绝**，UI 上毫无反馈 —— 用户看到的就是「点了没反应」
-				// （op-log 里连 `feishu.sync` 条目都没有，无法判断到底走到哪一步）。
-				void this.syncToFeishu(mode).catch(err => {
-					const msg = err instanceof Error ? err.message : String(err);
-					this.logService.error(`[KB feishu] sync launch failed: ${err instanceof Error ? err.stack ?? msg : msg}`);
-					this._emitSyncOutput(`\n[启动失败] ${msg}\n`);
-					this.notificationService.warn(localize('kb.feishuLaunchFailed', '飞书同步启动失败：{0}', msg));
-				});
-			},
-			// ★ 2026-09-23：把同步输出暴露给设置面板（实时显示在面板下方，用户不必切终端）
-			getSyncOutput: () => this._feishuSyncOutput,
-			onSyncOutput: (listener) => {
-				this._feishuSyncListeners.add(listener);
-				return { dispose: () => { this._feishuSyncListeners.delete(listener); } };
-			},
-			loadSpaceMap: () => this.loadFeishuSpaceMap(),
-			saveSpaceMap: (list) => this.saveFeishuSpaceMap(list),
-			listSpaces: () => this.listFeishuSpaces(),
-			promptSpaceName: () => this.promptFeishuSpaceName(),
-			createSpace: (name) => this.createFeishuSpace(name),
-			pickDirForMapping: () => this.pickDirForMapping(),
-			openFile: (uri) => { void this._openSettingsFile(uri); },
-		};
-	}
+	// ⚠ `_createSettingsHost()`（21 个闭包）与它依赖的那批私有方法**已搬到 `IKbCommandService`**
+	//   （2026-10-15 第 3 期，README 5.139 ✓）：dsh 引擎下本视图不会被实例化 ⇒ host 必须在没视图时也能造 ✓。
+	//   本视图只剩 `openSettingsEditor()` 这个委托壳 ✓。
 
-	// ── 「本地目录 ↔ 飞书知识库」映射：读写 vault 内配置文件（供设置面板编辑）──────
-	// 契约与内置脚本一致：`{ version: 1, mappings: [{ dir, spaceId, spaceName }] }`，
-	// 脚本启动时读同一文件并让显式映射**覆盖**类别层级推导结果。
-
-	private _spaceMapUri(): URI {
-		return URI.joinPath(this.rootUri, FEISHU_SPACE_MAP_FILE);
-	}
-
-	/** 读取映射（文件不存在 / 读取失败 ⇒ 空数组 = 未配置）。 */
-	private async loadFeishuSpaceMap(): Promise<IKbSpaceMapping[]> {
-		try {
-			return parseSpaceMap((await this.fileService.readFile(this._spaceMapUri())).value.toString());
-		} catch {
-			return [];
-		}
-	}
-
-	private async saveFeishuSpaceMap(list: ReadonlyArray<IKbSpaceMapping>): Promise<void> {
-		try {
-			await this.fileService.writeFile(this._spaceMapUri(), VSBuffer.fromString(serializeSpaceMap(list)));
-		} catch (err) {
-			this.logService.warn(`[KB] save space map failed: ${err instanceof Error ? err.message : String(err)}`);
-		}
-	}
-
-	/** 列出可选飞书知识库（未安装 CLI / 未登录 / 解析失败 ⇒ 空数组，面板据此给出提示）。 */
-	private async listFeishuSpaces(): Promise<Array<{ spaceId: string; name: string }>> {
-		const cliPath = (this.configurationService.getValue<string>(AGENT_STUDIO_KB_FEISHU_CLI_PATH) || DEFAULT_LARK_CLI).trim() || DEFAULT_LARK_CLI;
-		try {
-			return await listWikiSpaces(cliPath);
-		} catch {
-			return [];
-		}
-	}
-
-	/** 弹出输入框获取新知识库名称（取消 / 去引号后为空 ⇒ undefined）。 */
-	private async promptFeishuSpaceName(): Promise<string | undefined> {
-		const r = await this.dialogService.input({
-			message: localize('kb.feishuNewSpace', '新建飞书知识库名称'),
-			inputs: [{ value: '我的知识库' }],
-		});
-		if (!r.confirmed) { return undefined; }
-		return sanitizeSpaceName(r.values?.[0]) || undefined;
-	}
-
-	/** 在飞书**新建**知识库（与内置脚本共用同一 lark-cli 路径；失败 ⇒ undefined 由面板提示）。 */
-	private async createFeishuSpace(name: string): Promise<{ spaceId: string; name: string } | undefined> {
-		const cliPath = (this.configurationService.getValue<string>(AGENT_STUDIO_KB_FEISHU_CLI_PATH) || DEFAULT_LARK_CLI).trim() || DEFAULT_LARK_CLI;
-		try {
-			const created = await createWikiSpace(name, cliPath);
-			if (created) {
-				this.notificationService.info(localize('kb.feishuSpaceCreated', '已新建飞书知识库：{0}', created.name));
-			}
-			return created;
-		} catch (err) {
-			this.logService.warn(`[KB] create feishu space failed: ${err instanceof Error ? err.message : String(err)}`);
-			return undefined;
-		}
-	}
+	// ⚠ 「本地目录 ↔ 飞书知识库」映射的读写（`_spaceMapUri` / load / save）与飞书知识库三件
+	//   （list / prompt / create）**已全部搬进 `IKbCommandService`**（第 3 期 ✓）—— 它们只服务设置面板。
 
 	/**
-	 * 「导入链接 / URL」：抓取网页正文 + 把网页图片下载到知识库（`库/raw/assets/<slug>/`），
-	 * 引用改写为本地相对路径后落盘 `库/raw/<slug>.md`。
-	 * 之后：① 右键「构建为笔记」产出结构化笔记；② 本地图片可被飞书同步上传（只认本地图片）。
+	 * 「导入链接 / URL」（真源菜单里那一项 ✓）：抓正文 + 下图片 → 落 `库/raw/<slug>.md`。
+	 *
+	 * ★ 2026-10-16（第 4 期）：实现搬进 `IKbCommandService`（原位编排本来就走共享的
+	 *   `KbImportController.importUrl` ✓）⇒ 本视图只剩这一层壳（菜单那条仍走它 ✓）；
+	 *   界面刷新由服务的 `requestKbRefresh()` 驱动（视图在 ⇒ debounce 后靶向刷新 ✓）。
 	 */
 	private async importFromUrl(): Promise<void> {
-		const r = await this.dialogService.input({
-			message: localize('kb.importUrlHint', '导入链接 / URL（支持小红书 · 抖音 · 知乎 · YouTube · B站…）'),
-			inputs: [{ value: 'https://', placeholder: '粘贴网页链接后回车' }],
-		});
-		if (!r.confirmed) { return; }
-		const url = (r.values?.[0] ?? '').trim();
-		if (!url || url === 'https://') { return; }
-		// ★ 统一反馈（2026-09-23）：走「徽标 + 视图内状态」通道（**不发通知**），与其它导入/构建入口一致。
-		//   抓取正文 + 下载图片可能持续数十秒，原先只有一条 info 通知，用户无从感知进度。
-		this.agentStudioService.reportKbProcessing({ active: true, label: `导入链接中：${url}` });
-		this.agentStudioService.requestLibraryBadge({ source: 'kb', kind: 'building' });
-		try {
-			const res = await KbImportController.importUrl({
-				url,
-				vaultRoot: this.rootUri,
-				fileService: this.fileService,
-				logService: this.logService,
-				requestService: this.requestService,
-				extractor: this.webContentExtractorService,
-				imageReader: this.sharedWebContentExtractorService,
-			});
-			if (res.ok) {
-				void this._logOp('kb.importUrl', 'success', { target: url, detail: { images: res.images } });
-				// 成功不再弹通知（过程反馈走徽标/视图内状态）；结果可在「库」里直接看到
-				void this.refreshSection('library');
-			} else {
-				void this._logOp('kb.importUrl', 'failure', { target: url, detail: { message: res.message } });
-				this.notificationService.warn(localize('kb.importUrlFailed', '导入失败：{0}', res.message));
-			}
-		} finally {
-			// 收尾：清视图内状态；徽标转「有新增」，提示回资料库查看产出
-			this.agentStudioService.reportKbProcessing({ active: false });
-			this.agentStudioService.requestLibraryBadge({ source: 'kb', kind: 'new', count: 1 });
-		}
+		await this._kbCommand.importFromUrl();
 	}
 
-	/** 选择知识库内的目录（返回**相对知识库根**的路径；取消/越界 ⇒ undefined）。 */
-	private async pickDirForMapping(): Promise<string | undefined> {
-		const picked = await this.fileDialogService.showOpenDialog({
-			canSelectFiles: false, canSelectFolders: true, canSelectMany: false,
-			defaultUri: this.rootUri,
-			title: '选择要映射到飞书知识库的目录（知识库内）',
-		});
-		const uri = picked?.[0];
-		if (!uri) { return undefined; }
-		// 用字符串前缀比较（避免额外引入 path 模块）；只在知识库根内选取
-		const root = this.rootUri.fsPath.replace(/\\/g, '/').replace(/\/+$/, '');
-		const full = uri.fsPath.replace(/\\/g, '/').replace(/\/+$/, '');
-		if (full === root || !full.startsWith(root + '/')) {
-			this.notificationService.warn(localize('kb.spaceMapOutsideVault', '请选择知识库目录（或其子目录）内的文件夹。'));
-			return undefined;
-		}
-		// ★ 2026-09-24（同步范围只认「笔记」区）：选择器同样限制在「笔记」区内 ——
-		//   否则用户可以映射一个「库」里的目录，而它**永远不会被同步**（范围外），徒增困惑。
-		const notesRoot = `${root}/${FEISHU_SYNC_SECTION}`;
-		if (full !== notesRoot && !full.startsWith(notesRoot + '/')) {
-			this.notificationService.warn(localize('kb.spaceMapOutsideNotes', '请选择「笔记」区内的文件夹（同步范围只包含「笔记」区里已关联的目录）。'));
-			return undefined;
-		}
-		return full.slice(root.length + 1);
-	}
-
-	/** 打开设置面板引用的文件（如同步日志）；不存在时提示而非静默失败。 */
-	private async _openSettingsFile(uri: URI): Promise<void> {
-		try {
-			await this.fileService.stat(uri);
-		} catch {
-			this.notificationService.info(localize('kb.fileMissing', '文件不存在：{0}', uri.fsPath));
-			return;
-		}
-		await this.openerService.open(uri);
-	}
+	// ⚠ `pickDirForMapping()` / `_openSettingsFile()` 已搬进 `IKbCommandService`（第 3 期 ✓）。
 
 	// ═══════════════════════════════════════════════════════════
 	//  飞书同步（可选能力）：命令拼装 + 终端执行 + 日志
@@ -3688,281 +2770,14 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	 * 拼装并执行飞书同步脚本（在集成终端里跑，输出对用户可见）。
 	 * dry-run = 只打印计划（默认）；apply = 实际写入飞书。
 	 */
-	/**
-	 * 飞书同步的**累计输出**（终端 `onData` 的镜像，2026-09-23）。
-	 *
-	 * 为什么缓存：面板可能被重建（重开设置页 / 切走再回来），此时需要把已发生的输出
-	 * 原样恢复出来 —— 否则用户看到一片空白，误以为「没在跑」。
-	 * 截断到最近 40k 字符：同步几百篇时输出很长，面板只需看尾部的进度与报错。
-	 */
-	private _feishuSyncOutput = '';
-	private readonly _feishuSyncListeners = new Set<(chunk: string) => void>();
-	private _feishuSyncTerminalSub: { dispose(): void } | undefined;
+	// ⚠ 同步输出的**缓存 + 订阅 + 终端镜像**（`_feishuSyncOutput` / `_feishuSyncListeners` /
+	//   `_feishuSyncTerminalSub` / `_emitSyncOutput`）已搬进 `IKbCommandService`（第 3 期 ✓）——
+	//   面板属于"命令侧也能开"，状态就必须留在服务里，否则面板重开时恢复不出输出 ✗。
 
-	/** 广播一段同步输出（缓存 + 通知所有面板订阅者；单个订阅者异常不影响其它）。 */
-	private _emitSyncOutput(chunk: string): void {
-		if (!chunk) { return; }
-		this._feishuSyncOutput = (this._feishuSyncOutput + chunk).slice(-40000);
-		for (const listener of [...this._feishuSyncListeners]) {
-			try { listener(chunk); } catch (err) {
-				this.logService.warn(`[KB feishu] sync output listener failed: ${err instanceof Error ? err.message : String(err)}`);
-			}
-		}
-	}
+	// ⚠ 「图表准备」`_renderDiagramsBeforeSync` 与「飞书同步」`syncToFeishu` 整段**已搬进
+	//   `IKbCommandService`**（2026-10-15 第 3 期，README 5.139 ✓）；本视图只剩工具栏按钮那条调用 ✓。
 
-	/**
-	 * 同步前把笔记里的 mermaid / drawio / canvas 渲染为 PNG 附件并改写引用（2026-09-23）。
-	 *
-	 * 飞书**不渲染图表源码**，且**图片不支持 SVG** ⇒ 不转换的话同步过去只能看到一堆源码。
-	 * 编排已抽到 `knowledge/diagramSyncPrepare.ts`（2026-09-24）—— 与 agent 的 `kb_feishu_sync`
-	 * 工具**共用同一份口径**，避免出现第二条实现漂移。这里只负责把过程实时打进同步输出。
-	 */
-	private async _renderDiagramsBeforeSync(srcDirs: readonly string[], dryRun: boolean): Promise<void> {
-		const vault = this._activeVault;
-		if (!vault) { return; }
-		// 表头惰性打印：只有真的扫到图表时才显示（无图表的 vault 不刷屏）
-		let headerDone = false;
-		const emit = (line: string): void => {
-			if (!headerDone) {
-				headerDone = true;
-				this._emitSyncOutput(dryRun
-					? '\n=== 预览图表与附件（只统计，不改动任何文件）===\n'
-					: '\n=== 准备图表与附件（drawio/canvas → PNG；mermaid → 画板；html → 附件）===\n');
-			}
-			this._emitSyncOutput(line);
-		};
-		const result = await prepareDiagramsForSync({
-			vaultRoot: this.vaultUri(vault),
-			srcDirs,
-			// ★ 2026-09-25：**必须把 dryRun 传下去** —— `prepareDiagramsForSync` 内部是
-			//   `const dryRun = opts.dryRun === true;`（`diagramSyncPrepare.ts:140`）⇒ 漏传 = `false` = 真渲染，
-			//   于是设置面板的「预览」也会渲染 PNG 并**改写笔记正文**（违反该文件 32-34 行的契约：
-			//   「dryRun ⇒ 零副作用」），且与 agent 的 `kb_feishu_sync` 工具口径不一致（工具传 `mode !== 'apply'`）。
-			dryRun,
-			fileService: this.fileService,
-			renderMermaid: (src: string) => this._mermaidRenderer.renderToSvg(src, 'default'),
-			renderDrawio: (src: string) => this._drawioRenderer.renderToSvg(src, 'default'),
-			rasterize: (svg: string, scale?: number) => svgToPng(svg, { scale }),
-			logService: this.logService,
-			onProgress: emit,
-		});
-		if (!result.charts && !result.inlined && !result.attachments && !result.failures) { return; }   // 无图表/附件 ⇒ 不打扰用户
-		emit(dryRun
-			? `图表与附件预览：${result.charts} 张待转图片`
-				+ `${result.inlined ? `，${result.inlined} 个 mermaid 转画板` : ''}`
-				+ `${result.attachments ? `，${result.attachments} 个 HTML 附件` : ''}`
-				+ ` —— 点「同步」时自动处理（**预览不改动文件**）。\n`
-			: `图表与附件准备完成：${result.charts} 个转为图片`
-				+ `${result.inlined ? `，${result.inlined} 个 mermaid 转画板` : ''}`
-				+ `${result.attachments ? `，${result.attachments} 个 HTML 附件` : ''}`
-				+ `${result.failures ? `，${result.failures} 个失败（已保留源码）` : ''}，改动 ${result.touched} 篇笔记。\n`);
-	}
-
-	private async syncToFeishu(mode: 'dry-run' | 'apply'): Promise<void> {
-		if (!this._activeVault) {
-			this.notificationService.warn(localize('kb.feishuNoVault', '没有可用的知识库 Vault，无法同步。'));
-			return;
-		}
-
-		// ① 运行环境预检：飞书 CLI 未安装时立刻给安装引导，而不是让脚本跑到一半失败
-		const cliPath = (this.configurationService.getValue<string>(AGENT_STUDIO_KB_FEISHU_CLI_PATH) || DEFAULT_LARK_CLI).trim();
-		const cli = await detectLarkCli(cliPath);
-		if (cli.state === 'missing') {
-			void this._logOp('feishu.sync', 'failure', { target: mode, error: 'lark-cli missing' });
-			this.notificationService.warn(LARK_CLI_MISSING_HINT);
-			return;
-		}
-
-		// ② 同步脚本内置：从产品资源目录定位（不再依赖工作区外部脚本）
-		const script = await resolveSyncScript(this.fileService, this.environmentService as INativeEnvironmentService);
-		if (!script) {
-			void this._logOp('feishu.sync', 'failure', { target: mode, error: 'builtin script not found' });
-			this.notificationService.warn(localize('kb.feishuScriptMissing', '未找到内置同步脚本（{0}）——安装可能不完整，请重新安装应用。', KB_FEISHU_SYNC_SCRIPT_REL));
-			return;
-		}
-
-		const rawInterval = this.configurationService.getValue<number>(AGENT_STUDIO_KB_FEISHU_SYNC_INTERVAL);
-
-		// ★★ 2026-09-24（用户定调）：「同步到飞书」**只同步「笔记」区里已配置映射的目录**
-		//   —— 映射到哪个飞书知识库就同步到哪；未配置映射的目录不进入范围（也不自动建库）。
-		//   范围 = `.feishu-space-map.json` 中 `笔记/**` 的映射目录（父目录自动涵盖子目录，已归并）。
-		//   ⚠ 不再读 `…feishu.srcDirs`（该设置项与其 UI 已废弃；键保留仅供高级用户在 settings.json 手改）。
-		const effectiveSrcDirs = deriveMappedSrcDirs(await this.loadFeishuSpaceMap());
-		if (effectiveSrcDirs.length === 0) {
-			void this._logOp('feishu.sync', 'failure', { target: mode, error: 'no mapped dirs under 笔记' });
-			this.notificationService.warn(localize('kb.feishuNoMappedDir', '尚未把「笔记」里的任何目录关联到飞书知识库，无法同步：请到「知识库设置 → 飞书同步 → 目录映射」添加一条映射。'));
-			return;
-		}
-		this._emitSyncOutput(`\n同步范围（来自「目录映射」，仅『笔记』区）：${effectiveSrcDirs.join('、')}\n`);
-		const parent = (this.configurationService.getValue<string>(AGENT_STUDIO_KB_FEISHU_SYNC_PARENT) || 'my_library').trim();
-		const onConflict = this.configurationService.getValue<string>(AGENT_STUDIO_KB_FEISHU_SYNC_ON_CONFLICT) === 'skip' ? 'skip' : 'overwrite';
-
-		// ③ 参数拼装走共享纯函数（与面板 / 脚本契约单点维护）
-		const rawDepth = this.configurationService.getValue<number>(AGENT_STUDIO_KB_FEISHU_CATEGORY_DEPTH);
-		const args = buildSyncArgs(script.fsPath, {
-			vaultPath: this.rootUri.fsPath,
-			srcDirs: effectiveSrcDirs,
-			parent,
-			onConflict,
-			intervalMs: Number.isFinite(rawInterval) && rawInterval >= 0 ? rawInterval : 800,
-			// 多类别 → 多知识库：删除清理（默认关）
-			categoryDepth: Number.isFinite(rawDepth) && rawDepth >= 0 ? rawDepth : 1,
-			// ★ 2026-09-24：范围内全是「已映射」目录 ⇒ 落点全由映射决定；这里**显式关掉自动建库**，
-			//   把「不会自动创建知识库」从"推断结论"变成"结构保证"（万一出现未映射类别 ⇒ 跳过而非建库）。
-			autoCreateSpaces: false,
-			prune: this.configurationService.getValue<boolean>(AGENT_STUDIO_KB_FEISHU_PRUNE_REMOTE) === true,
-			mode,
-		});
-		// 自定义 CLI 路径透传给脚本（脚本内部用它替代默认 lark-cli）
-		if (cliPath && cliPath !== DEFAULT_LARK_CLI) { args.push('--cli', cliPath); }
-
-		const cwd = this.workspaceContextService.getWorkspace().folders[0]?.uri.fsPath;
-
-		// 执行器：优先用 **Electron 自带的 node**（不依赖用户系统安装 node）；
-		// `process.execPath` 在 Electron 里是 Electron 二进制 ⇒ 必须配 ELECTRON_RUN_AS_NODE=1
-		// 才能以纯 Node 模式跑 .mjs（否则会被当 app 入口加载后立即退出）。
-		// 取不到 Electron 路径时回退系统 `node`（保持可用，不硬失败）。
-		// ⚠ env 保留完整进程环境：脚本内部仍要调用 lark-cli，丢 PATH 会导致「CLI 装了却找不到」。
-		// ★ 2026-09-23：同步前把笔记里的 mermaid / drawio 渲染为 PNG 并改写引用。
-		// 飞书不渲染图表源码、且图片不支持 SVG ⇒ 不转换的话飞书里只会看到一堆源码。
-		try {
-			// ★ 2026-09-25：预览（dry-run）零副作用 —— 见 `_renderDiagramsBeforeSync` 的注释。
-			await this._renderDiagramsBeforeSync(effectiveSrcDirs, mode !== 'apply');
-		} catch (err) {
-			const msg = err instanceof Error ? err.message : String(err);
-			this.logService.warn(`[KB feishu] diagram preparation failed (non-fatal): ${msg}`);
-			this._emitSyncOutput(`\n[图表准备] 跳过（不影响同步）：${msg}\n`);
-		}
-
-		const launch = electronNodeLaunch();
-		const runner = launch.executable ? 'electron-node' : 'system-node';
-		void this._logOp('feishu.sync', 'success', { target: mode, detail: { srcCount: effectiveSrcDirs.length, parent, onConflict, cli: cli.version ?? cliPath, runner } });
-
-		try {
-			const terminal = await this.terminalService.createTerminal({
-				config: {
-					name: `KB → 飞书同步（${mode === 'apply' ? '同步' : '预览'}）`,
-					executable: launch.executable ?? 'node',
-					args,
-					cwd,
-					env: launch.executable ? launch.env : undefined,
-					waitOnExit: true, // 结束后保留终端，便于查看输出
-				},
-			});
-			// ★ 2026-09-23：把终端输出镜像给设置面板 —— 用户不必切到终端也能看到进度与报错。
-			// （终端仍保留：想看得更细/交互时依然可用。）
-			this._feishuSyncTerminalSub?.dispose();
-			this._feishuSyncTerminalSub = terminal.onData(chunk => this._emitSyncOutput(chunk));
-			this._emitSyncOutput(`\n=== 启动飞书同步（${mode === 'apply' ? '同步' : '预览'}）===\n`);
-			this.terminalService.setActiveInstance(terminal);
-			await this.terminalService.revealTerminal(terminal);
-			// ★ 2026-09-23：给一条**显式反馈**。同步是在新终端里跑（终端可能开在别的面板/被折叠），
-			// 没有提示时用户只会觉得「点了没反应」（此前正是这种反馈缺失）。
-			this.notificationService.info(localize('kb.feishuLaunched',
-				'已启动飞书同步（{0}），正在终端中运行，可切到终端查看进度。', mode === 'apply' ? '同步' : '预览'));
-		} catch (err) {
-			this.logService.warn(`[KB] feishu sync launch failed: ${err instanceof Error ? err.message : String(err)}`);
-			this.notificationService.warn(localize('kb.feishuLaunchFailed', '飞书同步启动失败：{0}', err instanceof Error ? err.message : String(err)));
-		}
-	}
-
-	// 说明：「已同步篇数」统计与同步日志打开已迁入 KbSettingsEditorPane
-	// （Pane 用 IFileService 自行扫描 vault；日志经 host.openFile 打开）。
-
-	/** 调原生文件夹选择框，选取知识库目录（返回最终生效路径；取消 ⇒ undefined）。 */
-	private async pickKbDir(current: string): Promise<string | undefined> {
-		const picked = await this.fileDialogService.showOpenDialog({
-			title: localize('kb.pickRoot', '选择知识库目录'),
-			canSelectFolders: true, canSelectFiles: false, canSelectMany: false,
-			defaultUri: URI.file(current),
-		});
-		if (!picked || !picked.length) { return undefined; }
-		return this.applyKbDir(picked[0].fsPath);
-	}
-
-	/**
-	 * 应用新的知识库目录。
-	 *
-	 * ## ★ 2026-09-23 语义调整：**所选目录本身就是 Vault 根**
-	 *
-	 * 此前对「无 `customPath` 的 Vault」执行 `URI.joinPath(所选目录, v.id)` —— 而 `v.id` 是
-	 * 21 位时间戳 ID ⇒ 在用户选的目录里凭空多出一层 `<时间戳>/`，其下才是「库」「笔记」。
-	 * 用户反馈「不要在该目录中再新建一个目录，直接用该目录即可」。
-	 *
-	 * 现在统一为 `customPath` 语义（与 «配置文件夹为知识库»(`configFolderAsVault`) 一致）：
-	 * Vault 根 = 所选目录 ⇒ `vaultUri()` 直接返回它，`sectionUri()` 在此之下取「库」「笔记」。
-	 *
-	 * ## 「已有则加载、没有才创建」
-	 *
-	 * 由 `ensureVaultFolders` 保证：它对 root / 库 / 笔记 三处都是**先 `exists` 再 `createFolder`**
-	 * ⇒ 目录里已存在这些子目录（及笔记文件）时只做加载，不会清空或重建。
-	 * ⚠ 必须清掉 `_vaultFoldersReady` 缓存，否则换了目录后会被「该 Vault 已就绪」短路。
-	 *
-	 * @returns 最终生效的目录路径（供设置面板回填输入框）
-	 */
-	private async applyKbDir(dir: string): Promise<string | undefined> {
-		const fsPath = URI.file(dir).fsPath;
-		const vault = this._activeVault ?? this._vaults.find(v => !v.closed) ?? this._vaults[0];
-		if (!vault) {
-			this.notificationService.warn(localize('kb.noVaultForDir', '没有可用的知识库 Vault，请先创建。'));
-			return undefined;
-		}
-
-		this.storageService.store(STORAGE_KB_DIR, fsPath, StorageScope.APPLICATION, StorageTarget.MACHINE);
-		void this._logOp('vault.kbDir', 'success', { target: fsPath });
-
-		// 所选目录即 Vault 根；`path` 与 `customPath` 保持同一真源
-		vault.customPath = fsPath;
-		vault.path = fsPath;
-		this._vaultFoldersReady.delete(vault.id);   // 路径已变 ⇒ 重新判定「库/笔记」是否存在
-		this.saveVaults();
-
-		await this.activateVault(vault);
-		this.notificationService.info(localize('kb.rootChanged', '知识库目录已切换为：{0}', fsPath));
-		return fsPath;
-	}
-
-	/** 使用当前 Embedding 设置重新构建所有 Vault 的向量索引。 */
-	private async rebuildVectorIndex(): Promise<void> {
-		const providerId = resolveAuxEmbeddingProviderId(this.configurationService);
-		const embCfg = resolveAuxEmbeddingConfig(this.configurationService);
-		if (!this._vaults.length) {
-			this.notificationService.warn(localize('kb.rebuildEmpty', '没有可用的知识库 Vault，请先创建或导入。'));
-			return;
-		}
-		if (!this._ragEmbeddingService.getActiveTag()) {
-			this.notificationService.warn('Embedding 服务未启用。请在设置中配置模型 Provider。');
-			return;
-		}
-		this.notificationService.info(`使用模型 ${embCfg.modelId} (${embCfg.dimensions}d) 重新构建向量索引…`);
-		// activitybar 徽标：全量向量重建可能持续数分钟。
-		this.agentStudioService.requestLibraryBadge({ source: 'kb', kind: 'building' });
-		try {
-			// 失效现有内核索引，强制全量重建
-			this._kbKernelService.invalidate();
-			if (this._searchDirty) { await this.rebuildSearchAssets(); }
-			const roots = this.buildRoots();
-			if (roots.length === 0) {
-				this.notificationService.warn('没有可索引的目录。');
-				this.agentStudioService.requestLibraryBadge({ source: 'kb', kind: 'idle' });
-				return;
-			}
-			await this._kbKernelService.buildVectorIndex(roots);
-			const st = this._kbKernelService.getVectorStatus();
-			this.notificationService.info(`向量索引重建完成：${st.chunkCount} 个块（维度 ${st.dimensions}）。`);
-			void this._logOp('settings.embedding.rebuild', 'success', {
-				detail: { provider: providerId ?? 'auto', model: embCfg.modelId, dimensions: embCfg.dimensions, chunks: st.chunkCount },
-			});
-			this.agentStudioService.requestLibraryBadge({ source: 'kb', kind: 'idle' });
-		} catch (err) {
-			this.notificationService.error(`向量索引重建失败：${String((err as any)?.message ?? err)}`);
-			void this._logOp('settings.embedding.rebuild', 'failure', {
-				detail: { provider: providerId ?? 'auto', model: embCfg.modelId, dimensions: embCfg.dimensions },
-				error: String(err),
-			});
-			this.agentStudioService.requestLibraryBadge({ source: 'kb', kind: 'idle' });
-		}
-	}
+	// ⚠ `pickKbDir` / `applyKbDir` / `rebuildVectorIndex` **已搬进 `IKbCommandService`**（第 3 期 ✓）。
 
 	/** 大库（> 2000 文档）自动同步到主进程 SQLite FTS5，卸载 V8 内存文本。 */
 	private async _syncKbToSqliteIfNeeded(
@@ -4978,101 +3793,20 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		void this.openerService.open(target, { openExternal: true });
 	}
 
-	/** 导入后自动生成/更新思维导图（JSON Canvas 格式，落盘笔记目录）。
-	 *  增量扫描最近导入内容 → LLM 提取结构化图谱 → 合并到已有 .canvas 或新建。 */
+		/**
+	 * 导入后自动生成/更新思维导图（JSON Canvas 格式，落盘笔记目录）。
+	 *
+	 * ★ 2026-10-16（第 5 期）：实现搬进 `IKbCommandService` —— 它与「🧠 思维导图」按钮、
+	 *   「打开 .canvas 编辑器」三块互为一体（生成结果要交给后者打开 ✓），单独搬会是半拆 ✗。
+	 *   界面刷新由服务的 `requestKbRefresh()` 驱动 ✓（与「导入链接」同一口径 ✓）。
+	 */
 	private async _generateMindmapAfterImport(): Promise<void> {
-		if (!this._activeVault) { return; }
-		// 延迟执行，确保文件系统已落盘
-		await new Promise(r => setTimeout(r, 600));
-		try {
-			if (!this._mindmapGenerator) {
-				this._mindmapGenerator = new KbMindmapGenerator(
-					this.fileService, this.logService,
-				);
-			}
-			const notesDir = this.sectionUri(this._activeVault, 'notes');
-
-		// 增量策略：只取 mtime ≤ 5 分钟前的文件（刚导入/构建的）；少于 3 条时回退扫描全量
-		// 扫描源为「笔记分区」而非「库分区」：HTML 等导入经「构建为笔记」后结构化内容落在
-		// notes/（概念/对比/…），库分区往往只剩原始 .html，若只扫库分区会导致 libFiles 为空、
-		// 思维导图永远不生成（此前 bug）。
-		const recentCutoff = Date.now() - 5 * 60_000;
-		const noteFiles: { fileName: string; content: string }[] = [];
-		try {
-			const st = await this.fileService.resolve(notesDir);
-			const walk = async (d: typeof st) => {
-				if (!d.children) { return; }
-				for (const c of d.children) {
-					if (c.isDirectory && !c.name.startsWith('.')) {
-						try { await walk(await this.fileService.resolve(c.resource)); } catch { /* skip */ }
-					} else if (!c.isDirectory && c.name.endsWith('.md')) {
-						const isRecent = (c.mtime ?? 0) > recentCutoff;
-						if (!isRecent) { continue; }
-						try {
-							const raw = await this.fileService.readFile(c.resource);
-							const text = raw.value.toString().slice(0, 3000);
-							const relName = c.resource.fsPath.slice(notesDir.fsPath.length + 1);
-							noteFiles.push({ fileName: relName, content: text });
-						} catch { /* skip */ }
-					}
-				}
-			};
-			await walk(st);
-			// 增量太少则回退全量扫描（兜底：可能 mtime 未精确落盘）
-			if (noteFiles.length < 3) {
-				noteFiles.length = 0;
-				const fullWalk = async (d: typeof st) => {
-					if (!d.children) { return; }
-					for (const c of d.children) {
-						if (c.isDirectory && !c.name.startsWith('.')) {
-							try { await fullWalk(await this.fileService.resolve(c.resource)); } catch { /* skip */ }
-						} else if (!c.isDirectory && c.name.endsWith('.md')) {
-							try {
-								const raw = await this.fileService.readFile(c.resource);
-								noteFiles.push({ fileName: c.resource.fsPath.slice(notesDir.fsPath.length + 1), content: raw.value.toString().slice(0, 3000) });
-							} catch { /* skip */ }
-						}
-					}
-				};
-				await fullWalk(st);
-			}
-		} catch { /* 笔记区无文件 */ }
-		if (noteFiles.length === 0) { return; }
-
-			// 查找已有思维导图（笔记目录中任意 .canvas）
-			const existingMap = await this._mindmapGenerator.listMindmaps(notesDir);
-			let existingUri: URI | undefined;
-			if (existingMap.size > 0) {
-				// 优先使用 mindmap.canvas，其次第一个
-				existingUri = existingMap.get('mindmap.canvas') ?? existingMap.values().next().value;
-			}
-
-			// 获取 LLM 模型
-			const chatModel = await this._getOrCreateChatModel();
-			if (!chatModel) { return; }
-
-		const result = await this._mindmapGenerator.generateOrUpdate(
-			chatModel, notesDir, noteFiles, existingUri,
-		);
-			if (result) {
-				this.logService.info(`[mindmap] updated ${result.fsPath}`);
-				await this.refreshSection('notes');
-			}
-		} catch (err) {
-			this.logService.warn(`[mindmap] generation failed: ${err}`);
-		}
+		await this._kbCommand.generateMindmapAfterImport();
 	}
 
-	/** 获取 LLM ChatModel（复用 AgentStudioService.createKbChatModel 链）。
-	 *  优先 agentStudioService，回退到本地配置解析。 */
-	private async _getOrCreateChatModel(): Promise<IChatModel | null> {
-		try {
-			const svc = this.agentStudioService as unknown as { createKbChatModel?: () => IChatModel | null };
-			const model = svc.createKbChatModel?.();
-			if (model) { return model; }
-		} catch { /* fall through */ }
-		return null;
-	}
+// ⚠ `_getOrCreateChatModel()` 已提成共享函数 `resolveKbChatModel()`（在 `kbCommandService.ts` 里导出 ✓）——
+//   因为**服务侧的思维导图生成**也要它 ⇒ 不能只留在视图（那是两份实现 ✗）。
+
 
 	override focus(): void {
 		super.focus();
@@ -5150,6 +3884,17 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			new Action('kb.rename', localize('kb.rename', '重命名'), undefined, true, () => this.startRename(el, node)),
 			new Action('kb.delete', localize('kb.delete', '删除'), undefined, true, () => { void this.deleteNode(node); }),
 			new Action('kb.deletePerm', localize('kb.deletePerm', '永久删除'), undefined, true, () => { void this._deleteNodePermanent(node); }),
+		);
+		// 「加入 Agent Chat」（2026-10-14）：把该节点作为**引用**投进当前 dsh 聊天草稿。
+		//   · **指针**语义（不附正文）—— 对齐 dsh 上游 @file 口径（模型要内容得自己调 kb_read ✓），
+		//     也与页面版（dsh 知识库页右键「发送到聊天」）**同一个落点** ✓；
+		//   · 没有活动聊天框时由那条命令**如实提示**（不静默失败 ✓）；
+		//   · 传 `node.uri`（文件或目录都行：文件夹引用是合法的引用形态 ✓）。
+		actions.push(
+			new Separator(),
+			new Action('kb.addToChat', localize('kb.addToChat', '加入 Agent Chat'), undefined, true, () => {
+				void this.commandService.executeCommand('dshHarness.insertReferenceToChat', node.uri);
+			}),
 		);
 		// KB 专有动作
 		if (!node.isDirectory && node.section === 'library') {
@@ -6118,80 +4863,36 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	 * 数据来自已构建的双链图谱（KbLinkGraph.getGraphData），节点单击可在中心
 	 * Tab 打开对应笔记，对齐 SiYuan 的 openGraph → 中心 Tab 范式。
 	 */
-	private async _openGraph(): Promise<void> {
-		if (!this._activeVault) { return; }
-		try {
-			// 关系图谱与搜索索引是两条独立链路：图谱只覆盖库/笔记分区的文档，
-			// 直接基于磁盘重建即可（开销很小），不依赖可能失败的搜索索引/Worker 构建，
-			// 否则搜索索引构建抛错会让图谱按钮静默无响应。
-			if (this._searchDirty) {
-				// 先尝试重建搜索索引，失败不影响图谱打开
-				this.rebuildSearchAssets().catch(e => this.logService.warn('[KB graph] search index rebuild failed (non-fatal)', e));
-			}
-			await this._buildNoteGraph();
-			const { nodes, links } = this._graph.getGraphData();
-			if (nodes.length === 0) {
-				this.notificationService.info('知识库暂无可绘制的关系（先导入或创建带双链的笔记）');
-				return;
-			}
-			// 携带库/笔记分区根目录（不含关联的代码仓库），供「关系图谱」EditorPane 内的「构建图谱」按钮重新扫描
-			const roots = this.buildGraphRoots();
-			const groups = this.editorGroupsService.getGroups(GroupsOrder.CREATION_TIME);
-			const targetGroup = groups.length <= 1 ? SIDE_GROUP : groups[0];
-			await this.editorService.openEditor(
-				new KbGraphEditorInput(nodes, links, '关系图谱', roots),
-				{ pinned: true },
-				targetGroup,
-			);
-		} catch (e) {
-			this.logService.error('[KB graph] open failed', e);
-			this.notificationService.error('打开关系图谱失败：' + (e instanceof Error ? e.message : String(e)));
+	/**
+	 * 公开壳（2026-10-15 §16.29；**第 2 期改委托**）：把「打开关系图谱」整个交给 `IKbCommandService` ✓ ——
+	 * 数据不再取本视图的 `_graph`（dsh 引擎下本视图压根不存在 ⇒ 命令侧拿不到 ✓），服务用**同一个**
+	 * `KbLinkGraph` 基于磁盘现建一份 ✓（构建器是同一个类，口径仍只有一份 ✓）。
+	 *
+	 * ⚠ 唯一留在视图里的是**搜索索引那一下**（`_searchDirty` ⇒ 顺手重建）：那是视图自己的搜索链路，
+	 *   与图谱是两条独立链路（图谱只覆盖库/笔记分区、失败也不该让图谱静默无响应 ✓）⇒ 不搬 ✓。
+	 * ⚠ 本壳**不** `await`（调用方是命令 ✓ 与按钮那边同一口径 ✓）。
+	 */
+	public openGraph(): void {
+		if (this._searchDirty) {
+			this.rebuildSearchAssets().catch(e => this.logService.warn('[KB graph] search index rebuild failed (non-fatal)', e));
 		}
+		void this._kbCommand.openGraph();
 	}
 
 	/**
 	 * 点击「🧠 思维导图」按钮 → 打开或生成 .canvas 思维导图。
-	 * 如果已有 mindmap.canvas 文件 → 直接在 CanvasEditorPane 打开；
-	 * 否则先触发生成再打开。
+	 *
+	 * ★ 2026-10-16（第 5 期）：实现搬进 `IKbCommandService.openMindmap()` ✓（有 `.canvas` 就打开、
+	 *   没有先生成再打开 —— 三块一体，见该服务的注释 ✓）。本视图只剩这一层壳。
 	 */
 	private async _openMindmap(): Promise<void> {
-		if (!this._activeVault) { return; }
-		if (!this._mindmapGenerator) {
-			this._mindmapGenerator = new KbMindmapGenerator(this.fileService, this.logService);
-		}
-		try {
-			const notesDir = this.sectionUri(this._activeVault, 'notes');
-			// 查找已有思维导图
-			const existingMap = await this._mindmapGenerator.listMindmaps(notesDir);
-			let canvasUri: URI;
-			if (existingMap.size > 0) {
-				canvasUri = existingMap.get('mindmap.canvas') ?? existingMap.values().next().value!;
-			} else {
-				// 先生成
-				this.notificationService.info('正在生成思维导图…');
-				await this._generateMindmapAfterImport();
-				// 再次检查
-				const retryMap = await this._mindmapGenerator.listMindmaps(notesDir);
-				if (retryMap.size === 0) {
-					this.notificationService.warn('未找到可生成的内容，请先导入笔记。');
-					return;
-				}
-				canvasUri = retryMap.get('mindmap.canvas') ?? retryMap.values().next().value!;
-			}
-			await this._openCanvasEditor(canvasUri);
-		} catch (err) {
-			this.logService.error('[KB mindmap] open failed', err);
-			this.notificationService.error('打开思维导图失败：' + (err instanceof Error ? err.message : String(err)));
-		}
+		await this._kbCommand.openMindmap();
 	}
 
 	/** 关系图谱根目录：仅库+笔记分区（排除关联的代码仓库），供图谱构建与 EditorPane 重扫使用。 */
 	private buildGraphRoots(): IKbGraphRoot[] {
 		if (!this._activeVault) { return []; }
-		return (['library', 'notes'] as KbSection[]).map(s => ({
-			uri: this.sectionUri(this._activeVault!, s),
-			section: s,
-		}));
+		return this._kbCommand.graphRoots(this._activeVault);
 	}
 
 	/** 构建关系图谱：仅扫描库+笔记分区的 md 文件（双链），与关联的 UE 代码仓库无关，开销很小。 */

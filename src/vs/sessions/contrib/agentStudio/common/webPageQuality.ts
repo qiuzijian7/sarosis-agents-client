@@ -94,13 +94,20 @@ const STRONG_UNAVAILABLE_PATTERNS: ReadonlyArray<{ re: RegExp; label: string }> 
 ];
 
 /**
- * 登录 / 客户端墙的**弱**形态：只在整页很短时才判定。
+ * **登录墙 / 客户端墙**的**弱**形态：只在整页很短时才判定（2026-10-13 从 `unavailable` 里单列）。
  *
  * 为什么不敢收成强特征：这些是**通用句式**（教程里引用一句"请先登录后查看"完全可能），强匹配会
  * 把好文章拒掉 —— 按本模块的收录纪律，误判的代价远大于漏判。而"整页 < 600 字符"本身就是
  * "这里几乎没有内容"的独立证据，两者叠加才判。
+ *
+ * 为什么必须与 `unavailable`（内容已删 / 受限）**分开**：两者的下一步动作不同 ——
+ *   · 登录墙 ⇒ **请人在真实浏览器里登录一次**就是解药（且是唯一解药）；
+ *   · 内容已删 / 受限 ⇒ 登录也没用，只能换来源或承认读不到。
+ * 混在同一句里，模型必然在其中一条死路上重试（实测：小红书登录墙下 `web_extract` 重试多少次
+ * 都是同一张占位页）。这三种句式在"PC 浏览器里看到登录墙 / 客户端墙"这个语境下是同一件事
+ * —— 都要用户在那个窗口里完成身份，所以归为同一个 kind。
  */
-const WEAK_UNAVAILABLE_PATTERNS: ReadonlyArray<{ re: RegExp; label: string }> = [
+const LOGIN_WALL_PATTERNS: ReadonlyArray<{ re: RegExp; label: string }> = [
 	{ re: /请先登录后(查看|继续|访问)/, label: 'zh-login-required' },
 	{ re: /登录后(可)?查看/, label: 'zh-login-to-view' },
 	{ re: /请(在|用)(手机|App|客户端)(内|中)?(打开|查看)/i, label: 'zh-app-only' },
@@ -109,12 +116,15 @@ const WEAK_UNAVAILABLE_PATTERNS: ReadonlyArray<{ re: RegExp; label: string }> = 
 export interface IExtractQuality {
 	readonly verdict: 'ok' | 'thin' | 'blocked';
 	/**
-	 * `blocked` 时区分**两类成因** —— 它决定给模型的下一步动作（见 `webExtractBlockedMessage`）：
-	 *   · `interstitial` —— 反爬 / 人机校验页：换来源、换通道都可能有效；
-	 *   · `unavailable`  —— 登录墙 / 内容已删除：只能换通道（真浏览器 + 用户登录一次）或放弃。
+	 * `blocked` 时区分**三类成因** —— 它决定给模型的下一步动作（见 `webExtractBlockedMessage` /
+	 * `browserPageWallNotice`）：
+	 *   · `interstitial`   —— 反爬 / 人机校验页：换来源、换通道都可能有效；
+	 *   · `login-required` —— 登录墙 / 客户端墙：**唯一**解药是请用户在真实浏览器窗口里完成登录，
+	 *                         重试本通道与换来源都无效（2026-10-13 单列）；
+	 *   · `unavailable`    —— 内容已删除 / 区域或账号受限：登录也无效，只能换来源或承认读不到。
 	 * `ok` / `thin` 时**不设**（不要用它表达"内容好不好"）。
 	 */
-	readonly kind?: 'interstitial' | 'unavailable';
+	readonly kind?: 'interstitial' | 'unavailable' | 'login-required';
 	/** `trim()` 后的正文字符数（告警文案要用）。 */
 	readonly length: number;
 	/** 人读原因（进日志）。 */
@@ -141,8 +151,13 @@ export function classifyExtractQuality(text: string, title?: string): IExtractQu
 	const head = `${title ?? ''}\n${trimmed.slice(0, SCAN_HEAD_CHARS)}`;
 
 	const signals: string[] = [];
-	/** 命中来自哪一组 —— 决定 `kind`（因而决定给模型的下一步动作）。`unavailable` 覆盖 `interstitial`。 */
-	let kind: 'interstitial' | 'unavailable' | undefined;
+	/**
+	 * 命中来自哪一组 —— 决定 `kind`（因而决定给模型的下一步动作）。
+	 * 优先级（靠前的更强、且**不被靠后的覆盖**）：具体 → 泛化
+	 *   `login-required` ＞ `unavailable` ＞ `interstitial`
+	 * 即：强不可用覆盖强拦截（既有约定），弱登录墙覆盖弱不可用/弱拦截。
+	 */
+	let kind: 'interstitial' | 'unavailable' | 'login-required' | undefined;
 
 	for (const p of STRONG_UNAVAILABLE_PATTERNS) {
 		if (p.re.test(head)) { signals.push(p.label); kind = 'unavailable'; }
@@ -151,8 +166,8 @@ export function classifyExtractQuality(text: string, title?: string): IExtractQu
 		if (p.re.test(head)) { signals.push(p.label); kind ??= 'interstitial'; }
 	}
 	if (signals.length === 0 && length < SHORT_PAGE_LIMIT) {
-		for (const p of WEAK_UNAVAILABLE_PATTERNS) {
-			if (p.re.test(head)) { signals.push(p.label); kind = 'unavailable'; }
+		for (const p of LOGIN_WALL_PATTERNS) {
+			if (p.re.test(head)) { signals.push(p.label); kind = 'login-required'; }
 		}
 		for (const p of WEAK_BLOCK_PATTERNS) {
 			if (p.re.test(head)) { signals.push(p.label); kind ??= 'interstitial'; }
@@ -163,7 +178,7 @@ export function classifyExtractQuality(text: string, title?: string): IExtractQu
 			verdict: 'blocked',
 			kind,
 			length,
-			reason: `${kind === 'unavailable' ? 'page reports itself as unavailable / behind a login wall' : 'looks like an interstitial, not page content'} (${signals.join(', ')})`,
+			reason: `${kindReason(kind)} (${signals.join(', ')})`,
 			signals,
 		};
 	}
@@ -171,6 +186,152 @@ export function classifyExtractQuality(text: string, title?: string): IExtractQu
 		return { verdict: 'thin', length, reason: `extracted text is suspiciously short (${length} < ${MIN_USEFUL_CONTENT_LENGTH} chars)`, signals: [] };
 	}
 	return { verdict: 'ok', length, reason: 'content looks usable', signals: [] };
+}
+
+/**
+ * `kind` 的**人读原因**（日志与文案共用）。
+ *
+ * 为什么必须三分：三种成因给模型的下一步动作互不相同（见 `browserPageWallNotice`）——
+ * 共用一句话就等于把"该请人登录"和"该承认读不到"混为一谈。
+ */
+export function kindReason(kind: IExtractQuality['kind']): string {
+	switch (kind) {
+		case 'login-required': return 'page is behind a login / client-only wall';
+		case 'unavailable': return 'page reports itself as gone or restricted';
+		default: return 'looks like an interstitial, not page content';
+	}
+}
+
+/**
+ * 四张特征表的全部 label —— 供守卫断言"**每个已登记的拦截特征都被归入某个 manualAction**"
+ * （新增特征却忘了登记动作 ⇒ 红；这比"记得改两处"可靠）。
+ */
+export const WEB_PAGE_QUALITY_SIGNAL_LABELS: readonly string[] = [
+	...STRONG_UNAVAILABLE_PATTERNS, ...STRONG_BLOCK_PATTERNS, ...LOGIN_WALL_PATTERNS, ...WEAK_BLOCK_PATTERNS,
+].map(p => p.label);
+
+/**
+ * 「这一步必须由人来做」的**动作枚举**（2026-10-13，P1-2）。
+ *
+ * ## 为什么需要它（`kind` 不够用）
+ *
+ * `kind` 回答的是"这是哪一类墙"，而**下一步该谁做**是另一个问题：
+ *   · 有些墙**只有人能解**（登录 / 扫码 / 过验证码 / 在 App 里打开）⇒ 让模型自己重试是永远无解的；
+ *   · 有些墙**重试就好**（反爬拦截常能自己过 / 频率限制）⇒ 反过来把用户叫来是白折腾他一次。
+ * 不给这个区分，模型两头都会做错：实测在小红书登录墙上反复重试，或在 Cloudflare 拦截页上直接把用户叫来。
+ *
+ * 口径照 openclaw 的 `MeetingManualActionCategory`（`src/meeting-bot/platform-adapter-contract.ts:6-20`）：
+ * **枚举化 + 明确"要不要人"**，而不是一句含糊的"出错了"。
+ */
+export type ManualAction =
+	| 'login-required'       // 需要人在真实浏览器里登录一次（扫码也算）
+	| 'app-only'             // 内容只在 App / 客户端里（PC 浏览器读不到）
+	| 'captcha-required'     // 人机校验（reCAPTCHA / Turnstile / 中文"安全验证"）—— **只有人**能过
+	| 'browser-check'        // 反爬拦截（Cloudflare / DDoS-Guard 那类）—— 常能自己过，重试一次往往就好
+	| 'rate-limited'         // 频率限制 —— 等一会儿或换来源
+	| 'permission-required'  // 403 / 权限不足 —— 换来源或让用户提供（**不是**登录问题）
+	| 'content-gone'         // 内容已删 / 区域或账号受限 —— 登录也救不回来
+	| 'unknown';             // 拦住了但认不出是哪一种（如实说，别猜）
+
+/** 这一步**只有人**能解吗（true ⇒ 文案必须禁止模型反复重试）。 */
+export const MANUAL_ACTION_NEEDS_HUMAN: Readonly<Record<ManualAction, boolean>> = {
+	'login-required': true,
+	'app-only': true,
+	'captcha-required': true,
+	'browser-check': false,
+	'rate-limited': false,
+	'permission-required': false,
+	'content-gone': false,
+	unknown: false,
+};
+
+/**
+ * signal 标签 → manualAction。
+ *
+ * ⚠ **按具体标签判，不是只按 kind**：同一个 `kind` 里的下一步可以不同 ——
+ * `interstitial` 既可能是"只有人能过"的验证码，也可能是"重试就好"的反爬拦截；
+ * `login-required` 与 `app-only` 都要人，但要做的事完全不一样。
+ */
+const MANUAL_ACTION_BY_SIGNAL: Readonly<Record<string, ManualAction>> = {
+	'zh-login-required': 'login-required',
+	'zh-login-to-view': 'login-required',
+	'zh-app-only': 'app-only',
+	'captcha': 'captcha-required',
+	'human-verification': 'captcha-required',
+	'robot-check': 'captcha-required',
+	'zh-verification': 'captcha-required',
+	'cloudflare-browser-check': 'browser-check',
+	'cloudflare-block-page': 'browser-check',
+	'cloudflare-interstitial': 'browser-check',
+	'cloudflare-chl': 'browser-check',
+	'ddos-guard': 'browser-check',
+	'js-cookies-required': 'browser-check',
+	'zh-js-required': 'browser-check',
+	'rate-limited': 'rate-limited',
+	'access-denied': 'permission-required',
+	'zh-page-gone': 'content-gone',
+	'zh-note-unavailable': 'content-gone',
+	'zh-page-removed': 'content-gone',
+};
+
+/** 人读的下一步。每句都必须**说到点子上** —— 含糊的下一步等于没有下一步。 */
+const MANUAL_ACTION_HINT: Readonly<Record<ManualAction, string>> = {
+	'login-required': 'ask the user to sign in once in the browser window this toolset drives (a QR code scan is fine)',
+	'app-only': 'client/App-only content: ask the user to open it on their phone and paste it, or say so honestly',
+	'captcha-required': 'only a human can clear this check — do NOT retry in a loop',
+	'browser-check': 'anti-bot check: one retry often passes; if not, use the real browser or find another source',
+	'rate-limited': 'back off and retry later, or take the information from another source',
+	'permission-required': 'this is not a login problem — it is unavailable to this account/region; find another source',
+	'content-gone': 'the content is gone — signing in will not bring it back; find another source',
+	unknown: 'unclear which wall this is — say what you actually saw instead of guessing',
+};
+
+export interface IManualActionAssessment {
+	readonly action: ManualAction;
+	/** 这一步**只有人**能解吗（true ⇒ 别让模型反复重试）。 */
+	readonly needsHuman: boolean;
+	readonly hint: string;
+	/** 命中的信号标签（归因用；`unknown` 时缺省）。 */
+	readonly signal?: string;
+}
+
+/**
+ * 把一次提取判定翻成"谁该做下一步"。
+ *
+ * `verdict !== 'blocked'` ⇒ `undefined`：**没被拦住就不产出人工动作** ——
+ * 否则每个正常页面都会带一行"需要人工"，那就成了噪声（"狼来了"的同一教训）。
+ */
+export function assessManualAction(quality: IExtractQuality): IManualActionAssessment | undefined {
+	if (quality.verdict !== 'blocked') { return undefined; }
+	for (const signal of quality.signals) {
+		const action = MANUAL_ACTION_BY_SIGNAL[signal];
+		if (action) {
+			return { action, needsHuman: MANUAL_ACTION_NEEDS_HUMAN[action], hint: MANUAL_ACTION_HINT[action], signal };
+		}
+	}
+	return { action: 'unknown', needsHuman: false, hint: MANUAL_ACTION_HINT.unknown };
+}
+
+/**
+ * 给模型看的**机器可读一行**（守卫按固定前缀 `manualAction:` 断言；三条通道共用同一份措辞）。
+ * 正常页面返回空串（调用方直接 `if (line) push(line)`）。
+ */
+export function manualActionLine(quality: IExtractQuality): string {
+	const assessed = assessManualAction(quality);
+	if (!assessed) { return ''; }
+	return `manualAction: ${assessed.action} (needsHuman=${assessed.needsHuman ? 'yes' : 'no'}) — ${assessed.hint}`;
+}
+
+/**
+ * 通知的统一收尾：把 `manualAction` 一行追加在**最后**。
+ *
+ * 位置不是随意的：末尾才是模型开口前的**最后一句** —— 放在前面会被中间那几段"怎么用这些图/下一步"盖过去
+ * （与快照追加通知同一理由，见 `browserPageWallNotice` 的说明）。
+ */
+function finishWallNotice(lines: string[], quality: IExtractQuality): string {
+	const actionLine = manualActionLine(quality);
+	if (actionLine) { lines.push('', actionLine); }
+	return lines.join('\n');
 }
 
 /**
@@ -207,9 +368,11 @@ export function browserPageWallNotice(
 	if (quality.verdict !== 'blocked') { return ''; }
 
 	const where = url || 'this page';
-	const cause = quality.kind === 'unavailable'
-		? 'the site is answering with a "content is gone / sign in first" notice instead of the page'
-		: 'the site served an anti-bot / browser-check interstitial instead of the page';
+	const cause = quality.kind === 'login-required'
+		? 'the site is answering with a **login wall / "open in the app" notice** instead of the page'
+		: quality.kind === 'unavailable'
+			? 'the site is answering with a "content is gone / restricted" notice instead of the page'
+			: 'the site served an anti-bot / browser-check interstitial instead of the page';
 
 	const lines = [
 		'',
@@ -222,15 +385,50 @@ export function browserPageWallNotice(
 	if (opts?.imageList) {
 		lines.push('In particular, do NOT treat the list above as the page\'s images: on a login wall / interstitial the only `<img>` that render are avatars and site icons.');
 	}
+
+	// ① 登录墙：唯一解药是"有人在这个浏览器里登录一次"。这一支必须明说"重试无用"。
+	if (quality.kind === 'login-required') {
+		lines.push(
+			'',
+			'Why: the browser this toolset is driving is **not signed in** to this site — nothing is wrong with the tools or with page loading, the identity is missing.',
+			'',
+			'This is the one case where **retrying changes nothing**: the wall comes back every single time until someone signs in. Do not retry, do not fall back to a plain text fetch, and do not reconstruct the content from the title.',
+			'',
+			'Next step (ask the user for this — never ask for credentials, and never type them yourself):',
+			'  1. Get the page open in a real, visible browser window and ask the user to sign in there once (scanning a QR code with their phone is fine). If the window this toolset drives is the dedicated instance, that session stays in its profile and later calls reuse it.',
+			`  2. Or switch to the browser that already holds their logins: ask them to open \`${CHROME_REMOTE_DEBUGGING_PAGE}\` in their everyday Chrome and tick "Allow remote debugging for this browser instance". Keep the configured CDP port at 9222 — that toggle has no port option. Our tools prefer that browser over the dedicated instance we launch ourselves.`,
+			'  3. Then call `browser` with `op: "login"` together with `done: true` — it inspects the login state and tells you plainly whether it took. Only after that is a fresh snapshot worth taking.',
+			'',
+			`Then reload ${where} and take a fresh snapshot. Anything read before that is placeholder-only — say so plainly instead of reusing it.`,
+		);
+		return finishWallNotice(lines, quality);
+	}
+
+	// ② 内容已删 / 受限：与身份无关 ⇒ 明确否掉"去登录"这条死路（原先与登录墙共用一句，模型会走错）。
+	if (quality.kind === 'unavailable') {
+		lines.push(
+			'',
+			'Why: this is **not** about credentials — the resource itself is gone, or is restricted to certain accounts/regions. Signing in will not bring it back.',
+			'',
+			'Next step (pick whichever fits):',
+			'  1. Say plainly that the item is unavailable / restricted, and stop: do not retry this URL and do not reconstruct it from its title or snippet.',
+			'  2. Get the same information elsewhere (search, mirror, the site\'s official API), or ask the user to paste the content.',
+			'',
+			`A fresh snapshot of ${where} will show the same notice — take one only to confirm the situation changed.`,
+		);
+		return finishWallNotice(lines, quality);
+	}
+
+	// ③ 反爬 / 人机校验：缺的不是身份而是"看起来像不像人"。换真实浏览器或稍后重试都可能有效。
 	lines.push(
 		'',
-		'Why: the browser this toolset is driving is **not signed in** to this site — nothing is wrong with the tools or with page loading, the identity is missing.',
+		'Why: the site classified this session as automated **before** it served the page. The identity is not the issue here — the "how" is.',
 		'',
-		'Next step (pick one, then reload and snapshot again):',
-		`  1. Switch to the browser that already holds your logins: open \`${CHROME_REMOTE_DEBUGGING_PAGE}\` in your everyday Chrome and tick "Allow remote debugging for this browser instance". Keep the configured CDP port at 9222 — that toggle has no port option. Our tools prefer that browser over the dedicated instance we launch ourselves.`,
-		'  2. Or keep the dedicated instance and **sign in once inside the browser window this toolset drives** — its profile keeps the session for later calls. Never ask the user for credentials or cookies; ask them to sign in themselves.',
+		'Next step (pick whichever fits, then reload and snapshot again):',
+		`  1. Prefer the browser that already holds the user\'s logins and a normal browsing history: ask them to open \`${CHROME_REMOTE_DEBUGGING_PAGE}\` in their everyday Chrome and tick "Allow remote debugging for this browser instance" (keep the configured CDP port at 9222 — that toggle has no port option).`,
+		'  2. Retry later — rate limits and challenges are often momentary — or take the information from another source.',
 		'',
 		`Then reload ${where} and take a fresh snapshot. Anything read before that is placeholder-only — say so plainly instead of reusing it.`,
 	);
-	return lines.join('\n');
+	return finishWallNotice(lines, quality);
 }

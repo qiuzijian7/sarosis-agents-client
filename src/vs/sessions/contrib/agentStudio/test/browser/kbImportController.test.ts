@@ -16,6 +16,10 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { URI } from '../../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { KbImportController, createKbImportHandler } from '../../browser/kbImportController.js';
+// 2026-10-12：`_writeFileBlocks` / `_listEngineNoteDirs` 等静态叶子已外提到 `knowledge/kbVaultFs.ts`
+// ⇒ 本测试改为**直接引用新家**（真源），不再经 `(KbImportController as any)._x` 取私有静态
+//   （那种写法绕过类型系统，搬迁时 tsgo 抓不到，只有运行时 `is not a function` ✗）。
+import { listEngineNoteDirs, writeFileBlocks } from '../../browser/knowledge/kbVaultFs.js';
 import { DEFAULT_KB_SCHEMA, buildSchemaPromptText, findTypeById, sanitizeKbTopic } from '../../browser/knowledge/kbSchema.js';
 import { safeSchemaFallback } from '../../browser/knowledge/classifier.js';
 
@@ -681,15 +685,22 @@ suite('AgentStudio - KbImportController GC HTML 导入（分类归档/结构抽�
 
 	// ── 分类归档 ────────────────────────────────────────────────────────────
 
-	test('topic 源头封堵：HTML 首行清洗后为 undefined，绝不产生 !DOCTYPE 目录名', () => {
+	test('topic 源头封堵：HTML **内容行**一律不可当目录名（DOCTYPE / <title> 都不行）', () => {
 		const html = loadGcHtml();
 		const firstLine = html.split('\n').find(l => l.trim().length > 3)!;
 		assert.ok(firstLine.includes('DOCTYPE'), 'fixture 首个非平凡行应为 <!DOCTYPE html>');
 		assert.strictEqual(sanitizeKbTopic(firstLine), undefined, 'DOCTYPE 行清洗后应为 undefined（不可作目录名）');
-		// <title> 行清洗后是有效 topic（对照：语义文本应被保留）
+
+		// ⚠ 2026-10-14 修：原来断言"<title> 行清洗后应保留语义文本" —— 那**违反 `sanitizeKbTopic` 自己的契约** ✗：
+		//   它的输入必须是**分类产物**（LLM topic / 既有目录名），文档里明写"**禁止从内容行派生语义 topic**"；
+		//   且夹具那行 title（`GR 项目 UE5 GC 机制可视化 · 效果示意图` ≈27 字）超过
+		//   `MAX_KB_TOPIC_LENGTH=24` ⇒ 按设计就是"一句话"，必须回 undefined ✓（`looksLikeSentence`）。
+		//   真正该钉的是**更硬的那一半**：HTML 内容行（不管哪种）都不得变成目录名 ✓。
 		const titleLine = html.split('\n').find(l => l.includes('<title>'))!;
-		const t = sanitizeKbTopic(titleLine);
-		assert.ok(t && t.includes('UE5 GC'), `<title> 行清洗后应保留语义文本，实际：${t}`);
+		assert.strictEqual(sanitizeKbTopic(titleLine), undefined,
+			'超长的 <title> 行是「一句话」而非 topic ⇒ 必须 undefined（不许从内容行派生目录名 ✗）');
+		// 对照：**分类产物**那一侧仍是有效短 topic（下一条用例会拿同一个值断言归档路径 ✓）
+		assert.strictEqual(sanitizeKbTopic('UE5垃圾回收机制'), 'UE5垃圾回收机制', '短 topic 仍应保留');
 	});
 
 	test('LLM 分类归档：库文件落入 raw（分类交由构建阶段），frontmatter 正确', async () => {
@@ -1043,7 +1054,7 @@ suite('AgentStudio - _writeFileBlocks 按 schema 类型目录归类落盘', () =
 
 	// 与生产一致：落盘基准 = 库根（_buildNoteCore 的 outputDir=libDir），FILE 块路径带类型目录前缀
 	function call(blocks: { path: string; content: string }[], fs: MockFileService, typeDirs?: ReadonlySet<string>): Promise<string[]> {
-		return (KbImportController as any)._writeFileBlocks(
+		return writeFileBlocks(
 			blocks, URI.file('/vault/库'), URI.file('/vault'), fs, logMock, typeDirs,
 		);
 	}
@@ -1066,7 +1077,7 @@ suite('AgentStudio - _writeFileBlocks 按 schema 类型目录归类落盘', () =
 		const fs = new MockFileService();
 		// ⚠ 刻意传 `defaultTypeDir='概念'`（生产就会传）：旧实现在「首段不是类型目录」时
 		//   会把路径改写成 `概念/内存管理/GC机制分析.md` ⇒ 覆盖掉 LLM 按知识体系规划的目录。
-		const written = await (KbImportController as any)._writeFileBlocks(
+		const written = await writeFileBlocks(
 			[{ path: '内存管理/GC机制分析.md', content: '自由目录笔记' }],
 			URI.file('/vault/笔记'), URI.file('/vault'), fs, logMock, TYPE_DIRS, '概念',
 		);
@@ -1078,7 +1089,7 @@ suite('AgentStudio - _writeFileBlocks 按 schema 类型目录归类落盘', () =
 
 	test('兜底仍生效：模型只给裸文件名时按 defaultTypeDir 归位（不平铺）', async () => {
 		const fs = new MockFileService();
-		const written = await (KbImportController as any)._writeFileBlocks(
+		const written = await writeFileBlocks(
 			[{ path: 'GC机制分析.md', content: '裸文件名' }],
 			URI.file('/vault/笔记'), URI.file('/vault'), fs, logMock, TYPE_DIRS, '概念',
 		);
@@ -1099,7 +1110,7 @@ suite('AgentStudio - _writeFileBlocks 按 schema 类型目录归类落盘', () =
 		// 引擎产出：只有 status（门控写入）
 		fs.addFile(URI.joinPath(notesRoot, '渲染', '批次.md'), '---\nstatus: active\n---\n引擎产出');
 
-		const dirs = await (KbImportController as any)._listEngineNoteDirs(fs, notesRoot);
+		const dirs = await listEngineNoteDirs(fs, notesRoot);
 		assert.deepStrictEqual(dirs.slice().sort(), ['内存管理', '渲染'],
 			'只列引擎产出目录（手写目录必须排除）：' + JSON.stringify(dirs));
 	});

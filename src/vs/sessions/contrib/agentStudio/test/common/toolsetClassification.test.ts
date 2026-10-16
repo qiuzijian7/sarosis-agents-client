@@ -22,7 +22,7 @@
  *--------------------------------------------------------------------------------------------*/
 import * as assert from 'assert';
 
-import { getToolsetForTool, getToolsetPriority, ToolsetPriority } from '../../common/toolsetConfig.js';
+import { getToolsetForTool } from '../../common/toolsetConfig.js';
 
 suite('Toolset 归类（2026-09-11 遗漏修复锁定）', () => {
 
@@ -99,26 +99,26 @@ suite('Toolset 归类（2026-09-11 遗漏修复锁定）', () => {
 	});
 });
 
-suite('Toolset 归类（2026-09-21 遗漏修复锁定：unreal_*）', () => {
+// ─── `unreal_*` 那一族：**原锁定已整份退役**（2026-10-13 实现下移，2026-10-14 本文件销账）────────
+// 这里原来有一份 `suite('Toolset 归类（2026-09-21 遗漏修复锁定：unreal_*）')`，锁两件事：
+// `unreal_*` ⇒ `unreal` 工具集、且 `unreal` 必须 `Always`。它对应的**事故**（仍值得记住 ✓）是：
+// 实现早已存在、`builtinToolProvider` 也无条件注册，但 `toolsetConfig` 没登记前缀 ⇒ 落 `utility`
+// 兜底桶（Low + deferrable）⇒ focus 模式 Step3a 只留「推荐 toolset / 桥接 / core / Always」⇒
+// 整条被剔 ⇒ **LLM 与 tool_search 均不可见，且全程零日志** ✗。
+//
+// 现在那一族**整体搬到 dsh 侧**（`dsh-plugins/vssaros-unreal`，Host 进程内直连 `/bridge/*`，执行类
+// 挂官方审批闸 ✓）：IDE 侧不再注册同名工具（`unrealTools.ts` 与 `_registerUnrealTools()` 于
+// 2026-10-13 删除 ✓）⇒ 按本表"没有工具就没有条目"的口径，`toolsetConfig` 的 `unreal` 条目**一并删除** ✓
+// ⇒ 上面那两条锁定的**前提消失了**，而且它们与退役断言**直接矛盾**（一边要求条目在、一边要求条目不在 ✗）。
+// 退役契约由 `test/browser/unrealRetired.test.ts` 独立钉住（② 断言 `toolsetConfig` 里不再有 `unreal` 条目、
+// ① 断言 IDE 侧不再有实现/注册点，④ 钉 dsh 侧七个工具与端点的黄金表 ✓）。
+//
+// ⚠ 别把这两条加回来"顺手修绿" ✗：给不存在的工具配条目会让本表说谎，而真加回 IDE 侧实现则会变成
+//   "两边各一份同名工具"（dsh 侧同名注册是**静默顶掉** ✗）。
+// ⚠ 教训仍在：**新增工具族必须同时在"注册点"与"本表"登记**，`_warnOnUtilityBucketTools()` 会把这类
+//   静默失效变成启动 warn ✓（见 `toolsetConfig.ts` 里 `utility` 条目前那段留档 ✓）。
 
-	test('unreal_* 归入 unreal toolset（此前全部落 utility ⇒ focus 模式被整条剔除）', () => {
-		const unrealTools = [
-			'unreal_health', 'unreal_exec', 'unreal_wait', 'unreal_help',
-			'unreal_dump', 'unreal_build', 'unreal_find_asset',
-		];
-		for (const t of unrealTools) {
-			assert.strictEqual(getToolsetForTool(t), 'unreal', `${t} 应归入 unreal toolset`);
-		}
-	});
-
-	test('★ unreal toolset 必须是 Always（仅登记还不够 —— 非 Always 仍会被 focus 剔除）', () => {
-		// 事故现场（用户报「打出的版本中找不到 unreal_* 工具」，日志 `tool_describe "unreal_exec"`
-		// → `Error: Tool "unreal_exec" not found`）：`unrealTools.ts` 早已实现、`builtinToolProvider`
-		// 也**无条件注册**（2026-09-20 接线），但本表无 `unreal_` 记录 ⇒ 落 `utility`(Low) ⇒
-		// focus 模式 Step3a 只保留「推荐 toolset / 桥接 / core / Always」⇒ 被剔 ⇒ LLM 与 tool_search 均不可见。
-		assert.strictEqual(getToolsetPriority('unreal'), ToolsetPriority.Always,
-			'unreal 必须 Always —— 否则登记了也仍会被 focus 模式剔除（image_gen 同款理由）');
-	});
+suite('Toolset 归类（2026-09-21 其它既有规则不得被新前缀挤掉）', () => {
 
 	test('★ 新前缀不得挤掉既有归类（同族双前缀/精确名的既有规则仍胜出）', () => {
 		assert.strictEqual(getToolsetForTool('renderMermaidDiagram'), 'core');

@@ -34,8 +34,12 @@ export const SarosPath = {
 	mcp: 'mcp',
 	/** User-level MCP configuration file: `{root}/mcp.json` */
 	mcpConfig: 'mcp.json',
-	/** Agent memory (short-term / long-term): `{root}/memory/` */
-	memory: 'memory',
+	// ⚠ 这里**曾经**有一个 `memory: 'memory'`（`{root}/memory/`）—— 2026-10-11 复核后**删除**：
+	// 它没有任何调用点（全仓只有定义），而真记忆一个字节都不在这里 —— AgentMemory 网关的 KV 库在
+	// `<userDataPath>/.agentmemory/`（`electron-main/app.ts._initAgentMemoryEndpoint()` 定端口、
+	// `extensions/agentmemory-gateway/host/host.mjs` 定数据根），IDE 侧与 dsh 侧读的都是它。
+	// 留着这个常量的害处很具体：谁照着它去做"记忆迁移 / 清理 / 口径统一"，都会**对着一个空目录干活**。
+	// （`poc/dsh-p0/scripts/p3-07-memory-plugin.mjs` 有契约守卫钉住"别再长回来"。）
 	/** Knowledge base vaults: `{root}/knowledge-base/` */
 	knowledgeBase: 'knowledge-base',
 	/** Workflow backups: `{root}/workflows/` */

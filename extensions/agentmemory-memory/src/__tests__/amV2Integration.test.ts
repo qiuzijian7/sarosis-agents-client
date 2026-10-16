@@ -924,4 +924,9 @@ export async function runAmV2IntegrationTests(): Promise<void> {
 		for (const f of failures) console.log(`    - ${f}`);
 	}
 	console.log(`${'═'.repeat(60)}\n`);
+	// ⚠⚠ **失败必须 throw**（2026-10-14 加，与 amV2/amReplication 对齐）：以前只 `console.log`
+	//   ⇒ 失败被**静默吞掉** ✗，绕过专用入口的调用会把失败当成功 ✗✗。
+	if (failed > 0) {
+		throw new Error(`${failed} amV2Integration test(s) failed`);
+	}
 }

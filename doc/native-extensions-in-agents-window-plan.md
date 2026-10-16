@@ -186,6 +186,59 @@ L4 市场与分发（gallery 适配 / VSIX / 商城加 extension）  —— 高�
 
 ### 4.4 L4：市场与分发（需产品决策）
 
+**调研结论（2026-10-12）：dsh 侧没有"官方插件商城"——不存在 DeepSeek 托管的插件商店/目录服务。**
+"商城"的角色由**公共 npm 生态**承担。证据全部取自运行时 `poc/dsh-p0/.runtime/0.2.0-rc.2/node_modules/@deepseek-ai/`：
+
+| # | 证据 | 出处 |
+|---|---|---|
+| 1 | `dsh plugin --profile <name> <pnpm args>` 的口径是 **"通过在 profile 目录中转发给 pnpm 来管理该 profile 的插件"** ⇒ 没有自己的商店协议 | `dsh/lib/bin.js:116`、`dsh/README.zh.md:18` |
+| 2 | 包里的"官方"二字指 **npm 官方源**：导出 `OFFICIAL_NPM_REGISTRY = 'https://registry.npmjs.org/'`、`NPMMIRROR_REGISTRY = 'https://registry.npmmirror.com/'`；`fallbackRegistries` 默认 `[NPMMIRROR_REGISTRY]`，README 明说这两个是**公共注册表** | `dsh-plugin-manager/lib/types/registry.js:10,12`、`README.zh.md:52,79` |
+| 3 | 安装来源只有四类：**注册表包名 / Git 地址 / tarball / 本地绝对路径**（`inspect()`：注册表包名用 `pnpm view` 问注册表；绝对路径读 `package.json`；git/tarball 只答复自身） | `dsh-plugin-manager/README.zh.md:46` |
+| 4 | **没有任何远端插件目录抓取**：全运行时搜 `plugin-catalog / plugin-index / plugin marketplace` 零命中；插件相关包里 `api.deepseek.com` 零命中 | 全量检索 |
+| 5 | 插件管理 UI 只有 **安装 / 切换组合包 / 切换行 / 配置 / 详情页扩展点**，**没有"浏览/发现"页**；其 README 里的 `### store` 指**客户端状态仓库**（`PluginManagerController` 的组合包视图、忙碌键、安装进度），不是商城 | `dsh-client-ui-plugin-manager/README.zh.md:38–58,102` |
+| 6 | "官方"内容走**随安装包提供**：`dsh.profile.bundles` 从 dsh 安装目录解析（`dsh-base` / `dsh-web-app` / `dsh-headless` / `dsh-sdk-app`…）；`dsh-base/package.json` 里用 `"dsh": { "bundle": { "patch": "./cordis.patch.yml" } }` 声明 | `dsh/README.zh.md:46`、`dsh-base/package.json:31` |
+| 7 | `dsh-agent-preset-registry` / `dsh-skill` 里的 "registry" 都是**进程内注册表**（preset / skill **提供方**注册）；`dsh-skill` README 明说来源可以是"本地目录、嵌入式插件数据或**远程服务**"——**扩展点存在，官方没提供这样的服务**（随附的是本地提供方 `dsh-skill-filesystem`） | `dsh-skill/README.zh.md:2,12,32` |
+| 8 | 反证：官方包**确实发布在公共 npm 上**（`npm view @deepseek-ai/dsh-plugin-manager` → `0.1.6-alpha.2`，tarball 由 `registry.npmmirror.com` 提供）⇒ 想找官方 dsh 插件 = 去 npm 搜 `@deepseek-ai/dsh-*`，**没有策展/发现层** | 实跑 `npm view` |
+
+**对照我们自己的产品**：界面里的「商城」是 **VsSaros 自己的** `IMarketplaceService`（服务端地址由设置项 `saros.marketplace.url` 指定，默认线上地址）——与 dsh 无关。
+⇒ 若要做"dsh 插件的商城体验"，**只能我们自己提供策展/索引层**，落点是既有的五条安装路径（`dsh plugin add <spec>`：npm 注册表 / git / tarball / 本地路径 / 我们的随包目录）。
+
+#### 4.4.1 一页方案：自建 dsh 插件索引层（2026-10-12）
+
+**可落的接口（已核对）**：`IDshPluginCenterHost`（`agentStudio/browser/dshPluginCenterHost.ts`）——
+`inspectBundle(spec)` → `IDshInspectResult`、`installBundle(spec, requestId, approvedBuilds?)` → `IDshInstallResult`、
+`removeBundle(name)`、`loadBundles()`、`listBundledPlugins()`。**索引层只需产出 `spec` 字符串，不需要新协议。**
+
+| 形态 | 做法 | 代价 | 判断 |
+|---|---|---|---|
+| **A 清单（零工程）** ✅**已落地 2026-10-12** | 给现有「添加插件」入口喂一份**已策展的 spec 清单**：点「填入并检查」= 填好 spec + 触发既有预检（**不直接安装**：仍要用户看过预检结果后自己点「安装」，不让人一次误点就改 profile） | 无安装逻辑改动 | **已可用**：索引层退化成一份列表（内容来自运行时里真的声明 `dsh.bundle` 的官方包） |
+| **B 进我们商城（推荐）** | 在 `IMarketplaceService`（`saros.marketplace.url`）的条目模型加一类 `kind: 'dsh-plugin'`：`spec` / `sourceType`(npm\|git\|tarball\|local\|bundled) / `dshVersionRange` / `checksum` / `publisher` + 展示字段。UI 落在「插件」页签新增来源分组 **「来自商城」**（与其它来源同一套基础件），按钮直调 `installBundle`，进度复用现有 `installState` 状态机（`idle→checking→starting→running→done\|failed`、`cancelling/applying/unconfirmed`） | 索引内容 + 一段渲染 | **我们产品的正解**：复用既有服务与安装链路，**零新增安装协议** |
+| **C 自建 registry（重）** | 起一个**兼容 npm registry 协议**的服务（`/-/ping` + packument），配进 dsh 的 `registry` / `fallbackRegistries` ⇒ 用户 `dsh plugin add <name>` 直接装到我们托管的包 | 协议兼容 + 鉴权 + "我们挂了怎么办"（dsh 会顺延到 fallback，等于**悄悄换源**，需产品决策） | 留到"我们要做平台方"时再谈 |
+
+**三条必须写进方案的风险**（都来自 dsh 的现实）：
+1. **可信度没有上游兜底**——dsh **不做审批/签名** ⇒ 若把"任意 npm 包名"当默认路径，等于把 npm 当默认信任源。建议：默认只呈现**白名单条目**，"自定义 spec"留在高级入口（现状正是这个形态）。
+2. **跨盘符要暂存**——本地路径安装必须由主进程先复制进 profile 再 `dsh plugin add`（我们已踩过 pnpm 跨盘符限制，e2e 里有专门断言）。
+3. **失败会留痕**——dsh 明说失败的安装/卸载可能在 `node_modules` 或 pnpm 缓存留下已下载文件，且卸载是**三段**（移出 `dsh.profile.bundles` → 卸载运行时贡献 → `pnpm remove`），失败不继续 ⇒ UI 文案别承诺"完全清理"。
+
+**推荐路线**：先做 **A**（把策展清单接到现有入口，验证需求），需要"发现感"时做 **B**；**C 不做**，除非我们决定自己当分发方。
+
+#### 4.4.2 已落地（2026-10-13）：装 `dshmarket` + 把它的目录接进「插件商城」
+
+**① 装进本项目（dev）**：`dshmarket`（插件 id `dsh-market`，npm 名 `dshmarket`，v1.66.20）——
+`pnpm --dir <dev profile> add dshmarket` + 把它加进 `dsh.profile.bundles`（= 启停真源）。
+**dev 的 DSH_HOME = `~/.vssaros-dev/dsh-home`，profile = `vssaros`**（`DSH_DEFAULT_PROFILE`；dev 用独立目录避免与安装版争用会话）。
+验证：`dsh --profile vssaros --dump-config` **exit 0** 且树里有 `# == dshmarket / - id: dsh-market`；
+运行中的 Host **HMR 已热加载**（`GET /dsh-market/status` 带登录 token 返回 **200** ✓，`boot/pnpm:true`）。
+
+**② 目录接进商城**：新增 `browser/dshMarketCatalog.ts`——直接抓 `https://awesome-dsh-plugin.com/plugins.json`
+（**该站带 `access-control-allow-origin: *` ⇒ 渲染进程可直接取**；`dsh-market` 自己也是这份数据，只是另一个前端），
+按站点真源映射 `{name, owner, npm, version, stars, downloads, category, description.zh, capabilities[]}`；
+**安装源优先级与市场一致：npm 优先、否则回落仓库地址**。视图在**「插件商城」网格**里多一段
+**「社区插件市场（dsh-market）· 共 N 条」**：按 star 取前 12 条渲染成卡片（复用基础件），
+搜索框的词就地过滤；卡片「安装」= 既有 `inspectBundle → installBundle` 链路（**不新开安装通道**），
+状态就地显示；读失败时给一行错误 + 重试（**刻意不做内置快照兜底**：目录每天在长，过时答案就是错误）。
+实测映射：**4579 条全部解析成功**（与站点 `count` 一致）；其中 **2229 条无 npm** ⇒ 走 git url。
+
 **事实**：`product.json` 没有 `extensionsGallery` ⇒ `extensionGalleryManifestService.ts:86-89` 直接返回 ⇒ `CONTEXT_HAS_GALLERY=false`（`extensions/common/extensions.ts:259`）⇒ 原生 `marketplace / popular / recommendedList` 视图（`extensionsViewlet.ts:326, 258, 273`）全部不满足 when。这不是 bug，是**未配置**。
 
 三条路线（可并行/递进）：
@@ -401,3 +454,185 @@ L4 市场与分发（gallery 适配 / VSIX / 商城加 extension）  —— 高�
   切换后 `Reload Window` 的真实行为，以及**一个声明 `contributes.viewsContainers` 的扩展是否真的在 agents
   activitybar 出现图标**。日志锚点：`[agentsWindowPolicy] views of extension "…" visible in the agents window`
   （仅非声明式被放行时出现）+ `[AgentCapabilities ExtPoint] Discovered: …` + `[ExtensionAgentPluginDiscovery] Registered plugin: …`。
+
+---
+
+## §9 实施记录：item 样式统一（2026-10-11）
+
+**调研结论**：四个页签（`installed` / `extensions` / `marketplace` / `dsh`）的 item 样式**四套并存**——
+`installed` 是 WorkbenchList 行（`.agent-plugin-list-item`）、`extensions` 是 `.plugins-ext-*` 卡片、
+`marketplace` 是 `.mp-card-*` **第二套卡片**（与前者近乎同构）、而 `dsh` 页签的 **18 个类名一条 CSS 都没有**
+（整套样式写在内联 `style.cssText`，另有 `.plugins-ext-btn.off`、`.ellipsis` 这类悬空类）。
+字号 13/12/11/10/9px 五档、圆角 3/4/6 三档、徽标三套、按钮两套、空态四套。
+
+**已做（方案 B 第 1–3 步）**：
+
+1. **token 层 + 基础件**（`views/media/pluginsView.css` 顶部）：
+   `--plugins-radius-* / --plugins-font-* / --plugins-gap-* / --plugins-pad-* / --plugins-border / --plugins-fg / --plugins-muted`；
+   基础件 `.plugins-card`（含 `.is-market/.is-disabled`）· `.plugins-badge`（+`.is-info/ok/warn/danger/off`）·
+   `.plugins-btn`（+`.primary/.is-installed/.danger/.off`）· `.plugins-section` · `.plugins-empty` · `.plugins-notice` ·
+   `.plugins-name/-version/-meta/-row-head`。**旧类名以别名并入同一组选择器**，被并入的旧定义已删（约 150 行重复）。
+   有意保留的差异：`installed` 行内徽标 11px vs 卡片徽标 10px（行更松、卡片更紧）；版本号仍等宽+链接色。
+2. **`dsh` 页签**：新增整段 CSS（`.plugins-dsh-*`，值取原内联值）；「随包模块」段与「添加插件」段**改用基础件**
+   （卡片 / 分组标题 / 空态 / 提示条 / 按钮 / 行内件），删掉 **20 处**内联 `style.cssText`；`.plugins-ext-btn.off` 补上定义。
+3. **守卫**：新增 `dsh-plugins-view-styles`（`test/common/dshPluginsViewStyles.test.ts`）——
+   **TS 里用到的每个类名必须在 `pluginsView.css` 里有规则**（框架类走白名单），另有一条断言基础件/token 在位。
+   这条守卫第一次运行就抓出唯一的悬空类 `.ellipsis`（已补）。
+
+**验证**：`--common` 守卫 **269 passing**（含新守卫 3 条）；`tsgo --noEmit` **0 错**；
+`out/…/pluginsView.js`、`out/…/media/pluginsView.css` 已随 watch 转译（22:56 / 22:53）；CSS 侧核对：改动前的
+**108 个类名一个未丢**、花括号 123/123 配对。
+
+**第 4 步（页签归并 4 → 3）：4a / 4c 已做，4b 待做**
+
+- **4a 去掉独立的 `Marketplace` 页签**：它的搜索与「扩展」页签的**「商城结果」分组完全重复**，唯一独有的是
+  "无搜索词时按热度浏览" ⇒ 把两个商城节点（`.plugins-marketplace-status/-grid`）**并入「扩展」页签的列表末尾**
+  （同一滚动区，不再有独立容器与第二根滚动条），在**未输入搜索词**时渲染。踩到的坑：`_renderExtensions` 里有
+  "没有已安装扩展就 `return`"的早退——**全新 profile 恰恰最需要看到商城**，所以把该分支改成 if/else，商城块放在其后。
+  同时删掉 `.plugins-marketplace-container`（CSS 与字段都没了）、`layoutBody` 里的对应高度块、oninput 里的旧分支。
+- **4c 文案统一**：页签 `Installed/Extensions/DSH` → **`插件 / 扩展 / 运行时`**（与本视图其它中文串一致）；
+  搜索占位符全中文、去掉 emoji（原 `🔍 搜索商城资源...`）；「未配置扩展市场」提示条不再让人"切到商城 tab"。
+- **e2e 兼容**：`poc/dsh-p0/scripts/workbench-e2e.mjs:1478` 原来按文案 `'DSH'` 点页签 ⇒ 改为 `['运行时','DSH']`
+  都认（旧构建/新构建都能跑，不因改名假红）。
+
+**4f 把方案 B 的运行时断言补进 e2e（2026-10-11）**：静态守卫只能证明"**源码**里长这样"，证明不了"跑起来确实这样"
+⇒ 在 `workbench-e2e.mjs` 的插件中心段（`Plugins view opens…` 之后）补 4 条**只读 DOM** 断言：
+
+| 断言 | 证据 |
+|---|---|
+| 页签恰三个（插件/扩展/运行时、无商城） | `.plugins-tabs button` 的文案集合（4a/4c） |
+| 显隐来自 CSS 默认 + 显式激活 | 当前页签容器 `visible`、另两个 `hidden`（4e 的**运行时**证据） |
+| 运行时页签 item 走基础件且无内联 | `.plugins-dsh-bundled-row/_bundle` 上**没有 `style` 属性**、且是 `.plugins-card`（4d/4e） |
+| 商城浏览与扩展列表同一滚动区 | `.plugins-extensions-list` **后代**里有 `.plugins-marketplace-grid`、且 `.plugins-marketplace-container` 已不存在（4a）；断言完切回「运行时」 |
+
+**一条操作事实（本轮才想清楚，值得记）**：e2e 的三源指纹是 **`src/vs` / `dsh-plugins` / `out/`** ⇒ 并行那线在跑 harness 时，
+我改这三个地方的**任何**文件都会让它的读数作废（本轮前几步的守卫/CSS 改动就有这个副作用）；只有 **`poc/`**（探针、脚本、README）不在指纹里
+⇒ **想在不打扰别人的前提下干活，就写 `poc/`**。本节的 4f 正是这么做的。
+
+**4b 第 1 步已做（2026-10-11）：插件页签从 WorkbenchList 换成 DOM 分组列表**
+
+**换法（关键：换承载、不换外观）**——行外观一行没改：`.agent-plugin-list-item` 本来就**自洽**（flex + padding +
+hover + cursor，不依赖 `.monaco-list-row`），所以 DOM 版**复用 `PluginListRenderer` 的 `renderTemplate` /
+`renderElement`**（同一个模板、同一份 Action 装配），只是把"由列表承载"改成"由 DOM 容器承载"：
+
+| 删掉 | 补上 |
+|---|---|
+| `PluginListDelegate`（定高 72 + 单模板 id）、`PluginListAccessibilityProvider`、`PLUGIN_LIST_ELEMENT_HEIGHT`、`WorkbenchList` import | 语义化角色：宿主 `role=list`、行 `role=listitem` + `aria-label`（拼法与旧 provider 一致） |
+| `layoutBody` 里**懒创建列表**的 72 行（含 selection→详情编辑器、autorun→splice 两条接线） | 构造里的 autorun（数据/搜索变化重绘）+ `_renderInstalledTab` / `_renderPluginRow`；`_switchTab('installed')` 也重绘 |
+| 列表自带的滚动 | 容器自己滚（`.plugins-list-container` 改 `overflow-y:auto`） |
+
+**分组判据**：插件接口里唯一可靠的"来源"是 **`IAgentPlugin.fromMarketplace`**（`uri` 前缀随安装位置变、不能当来源）
+⇒ 两段：**本地与内置** / **商城安装**（段标题用基础件 `.plugins-section`，与其它页签同一套）。
+
+**顺手去掉一个副作用**：列表时代点行内**动作按钮**也会冒泡成"选中"⇒ 顺带把详情弹出来；DOM 版显式排除
+（点 `button` / `.monaco-action-bar` 不算打开详情）。**防泄漏**：整层重绘前逐个 `disposeTemplate`（ActionBar / 动作）。
+
+**验证**：`--common` **277 passing**（守卫第 7 条锁住这一换法：不许再出现 `WorkbenchList` / `IListVirtualDelegate`、
+必须有 `_renderInstalledTab` / `_renderPluginRow` / `fromMarketplace` / 新容器 CSS）；`tsgo --noEmit` **0 错**；
+`read_lints` **0**；`out/…/pluginsView.js|css` 已转译（含新代码）。
+
+**★ 已获真机证据（2026-10-12，`poc/README` 4.P35）**：一轮**指纹干净**的 e2e（`88/95 passed`）里，
+方案 B 的 **4a/4c/4d/4e + 4b 共 6 条断言全 PASS**，其中 4b 读出 `host role=list / rows:2 / items:2 / monacoRows:0 /
+sections:["本地与内置（2）"]` ⇒ **DOM 分组列表真的跑起来了，行内 markup 与列表时代一致**。
+（本轮为拿到它，先修掉我自己 3 个探针 bug：等待条件没等渲染、`.monaco-list-row` 没限定范围、页签选择器把「运行时」的段按钮也算进来了。）
+
+**4b 第 2 步的提案（待决策，2026-10-11 写出来好让你一眼定）**
+
+| | 现状 | 方案 B 的目标态 |
+|---|---|---|
+| 「插件」页签 | VsSaros 侧插件（现在分「本地与内置 / 商城安装」两段） | **所有插件的统一入口**，按来源分组：本地与内置 / 商城安装 / **随包模块（dsh）** / **已安装组合包** / **官方随附** |
+| 「运行时」页签 | 状态条 + 4 段（随包模块 / 官方 / 已安装 / 添加插件） | 只留 **状态条 + 「添加插件」段**（按 spec 装） |
+
+**代价（必须一起做）**：
+1. 5.16 批次 2/3/4 的入口**搬家**（用户习惯变）；
+2. `workbench-e2e.mjs` 里 **3 处按段名点击**（`随包模块` / `官方` / `已安装`）+ **1 处 `p.segs.length === 4`** 要改（改成"运行时只剩 2 段"，清单断言改到插件页签做）；
+3. dsh 的行有**行级启停 / 卸载 / 安装**等动作（`IDshPluginHost`）⇒ 两套数据（插件服务 + dsh Host）要并进同一个列表的渲染层（我刚做的 DOM 版正好能容纳自由高度的卡片）。
+
+**更小的一步（推荐先做这个）**：只把**「随包模块」**搬过去（它最常用：一键装随产品分发的模块），官方 / 已安装留在运行时 ⇒ 只动 1 处 e2e 段名断言，风险与收益比最好。
+
+**✅ 结论：这一小步已做（2026-10-12，按上面的推荐）**。实现要点：
+
+- **挪的是「随包模块」段**（`_renderDshBundledSegment` → 改成可指定渲染目标的 `_renderBundledInto(target, query, forInstalledTab)`）⇒ 「插件」页签的 DOM 分组列表末尾多一段 **「随包模块插件」**（同样的卡片、同样的「安装 / 已安装 / 升级」按钮）；
+- `DshMarketSegment` 去掉 `'bundled'`（**'official' | 'installed' | 'add'**），运行时页签默认段改为 **官方**，段切换条 4 → **3**；
+- 这条链**不依赖 Host 运行**（读随包目录 + profile 清单）⇒ 插件页签在 Host 没起来时也能列出并安装；
+- 数据惰性加载：首次进插件页签踢一次 `_loadBundledForInstalledTab()`（`_dshBundledLoading` 与运行时页签共用同一份，避免重复读盘）；
+- 文案：插件页签里的说明不再指"上面的重启 Host"（那里没有那个按钮），改成指「运行时」页签。
+
+**验证（2026-10-12，指纹干净的一轮）**：`88/95 passed`，其中
+`runtime tab has three segments and the bundled module plugins render in the plugins tab` **PASS**、
+`bundled list carries the shipped modules (mcp / codebase / kanban) each with a state or an action button` **PASS**、
+官方 / 已安装 / 添加插件三段 **全 PASS**、**方案 B 那 6 条断言无回归**（仍全 PASS）。
+剩余 7 条红与上一轮**逐条相同**（chat surface 的 preset chip、`DSH tab toggle`、kanban already-installed 级联）⇒ 非本次引入。
+
+**✅ 结论（2026-10-12，按用户要求"全搬"）**：剩下的**三段也全部搬走** ⇒ 「运行时」页签彻底不再有段切换条。
+
+| 页签 | 现在的内容 |
+|---|---|
+| **插件**（统一入口） | 本地与内置 → 商城安装 → **随包模块** → **已安装组合包** → **官方随附**（全部走同一套基础件；来源判据：`fromMarketplace` / `dshHost.listBundledPlugins` / `listBundles`） |
+| **扩展** | 已安装扩展 + 商城浏览（同一滚动区） |
+| **运行时** | 状态条（运行中 N/M · HMR · 重启 Host）+ **运行态现场清单（启停开关）** + **添加插件入口** |
+
+实现要点：`_renderDshBundleCard(target, b, kind)` 改为可指定渲染目标（两段现在渲染进插件页签的 DOM 列表）；
+`DshMarketSegment` / `_dshSegment` / `_dshSegmentEl` / `_renderDshSegments` **全部删除**（段条取消）；
+「添加插件」入口**常驻渲染**（不再需要切段）；死 CSS（`.plugins-dsh-segments*`）一并删除；
+守卫补 3 条（不许再出现段机制 / 组合包卡片必须可指定目标 / 插件页签必须渲染那两段）。
+
+**e2e 同步改了 5 处**：段条断言改为"不存在"（`segBars === 0`）、官方随附与已安装组合包改读插件页签、
+现场清单留运行时（同一条断言里同时核对两者）、添加插件入口两处去掉"点段"步骤。
+
+**静态验证**：`node --check` + 片段检查器（51 片段 / 0 错 / 0 内含反引号）✓、`read_lints` 0、
+`--common` **302 passing**（守卫 7 条）✓、`tsgo` 只剩**并行那线**的 1 处错（`dshActivityBarSource.test.ts:102`，非本视图）。
+**真机验证这次没等到窗口**（这一小时并行那线一直在跑 e2e / 改 `src/vs/…/dshHarness/*`，两次运行都在写 JSON 前被中断；
+两次 `--wait` 累计约 40 分钟未拿到 10 分钟静默）⇒ 判据脚本随时可用，一满足即跑。
+
+**4b 第 2 步（历史：当时未做，需产品决策）**：把「运行时」页签的三块清单**搬进**插件页签 ⇒ 会**掏空刚做好的 5.16 批次 2/3/4 段**，
+而 e2e 现有断言是按那 4 段写的（`segs.length === 4`、按段名点击）⇒ 不是纯技术改动，**故意没做**（等确认 IA）。
+
+**★ 同时纠正一个误判（重要）**：我此前把"`harness=1`"读成"并行那线在跑 e2e"，并据此**连续几轮不跑 e2e / 不做 4b**。
+实际那条命中的是**开发 watch 进程**（`npm-run-all watch-client-transpile …`，10:14 就起了）——我的正则
+`workbench-e2e|run-all` 被 **`npm-run-all`** 假命中。⇒ **判据要按"进程名 + 参数"双重确认**（`Temp\vssaros-*` 实例数为 0
+就说明没有 e2e 在跑）。真正拦住 e2e 的从来只是**三源指纹不稳定**（这一小时里是并行那线在改 `dsh-plugins`）。
+
+**4b（历史记录：待做时的判断，需要真机）**：「插件」页签现在仍是 **WorkbenchList**（虚拟列表 + 单模板渲染器），而方案 B 要求它
+按**来源分组**（随包模块 / 本地目录 / 商城 / 官方随附）并把「运行时」页签里的清单搬进来——那意味着**把
+WorkbenchList 换成 DOM 分组列表**（与「扩展」页签同一套渲染），顺带消掉最后一种渲染机制。这是渲染机制替换，
+编译期看不出来，**必须先有 Reload Window / e2e 的验证窗口再做**（当时并行那线的 harness 一直在跑）。
+
+**4d 收尾（同轮）**：`_renderDshBundleCard`（官方随附 / 已安装**组合包卡片**）也换成基础件
+（`.plugins-card` / `.plugins-row-head` / `.plugins-name` / `.plugins-version` / `.plugins-badge` + `.is-ok/.is-off`，
+错误文字用新的 `.plugins-error`）⇒ **「运行时」页签整套 item 不再有任何内联样式**，stage 2 收尾。
+
+**4e 内联样式清零（同轮）**：视图里最后 4 处静态 `style.cssText`（扩展容器 / 运行时容器 / 段切换条 / 侧栏小标题）
+全部搬进 `pluginsView.css`（那些规则本来就存在，值逐条比对过）⇒ **本视图不再有 `style.cssText`**。
+留下的 10 处 `.style.x = 值` 都是**动态**的（按页签切 `display`、`${listHeight}px` 高度），必须留在 TS。
+
+⚠ **两条必须成对记住的约定**（否则页签直接显示不出来）：
+1. `_switchTab` **只在点击时调用、构造时不调** ⇒ **初始隐藏的唯一来源是 CSS 的 `display: none`**；
+2. 所以激活时**必须给显式值**（`'flex'` / `'block'`）：写 `''` 会清掉内联后**回落到 `none`**。
+   守卫用断言把这对约定钉住，而不是只写注释。
+3. 另：`.plugins-extensions-container` 原本内联的 `overflow-y:auto` **覆盖**了 CSS 的 `overflow:hidden`
+   ⇒ 收敛时按"容器自己滚"的既有事实写成 `overflow-x:hidden; overflow-y:auto`（**不能照抄 CSS 的旧值**）。
+
+**守卫升级**：`dshPluginsViewStyles.test.ts` → **`dshPluginsView.test.ts`**（视图**源码契约**守卫，6 条）：
+类名有样式 / 基础件在位 / **页签恰好三个（插件·扩展·运行时）** / **默认隐藏 + 显式激活（无 `style.cssText`）** /
+**占位符不许再有 emoji 转义**。
+**两次假红都是同一类**：断言"代码里不许再出现某名字"会把**注释**里的引用也算进去（解释"为什么删掉 marketplace"时
+引用 `"Marketplace"`、解释"不再有 `style.cssText`"时引用它本身）⇒ 统一抽了个 `codeOnly`（滤掉 `*` / `//` 开头的行），
+所有负向断言只喂它。
+
+**验证（4a/4c/4d/4e + 守卫）**：`--common` **272 passing**（新守卫 6 条）；`tsgo --noEmit` **0 错**；
+`workbench-e2e.mjs` 语法检查通过；`read_lints` 0；全仓检索无其它地方断言旧页签名。
+
+**§9.1 4b 的两个候选设计（下次带验证窗口时执行，二选一）**
+
+- **A. 保留 WorkbenchList，走多模板**：用 `IListVirtualDelegate.getTemplateId/getHeight` 给列表加
+  `section`（分组标题行）与 `bundle`（组合包卡行）两种模板，行元素类型改成联合类型，再把 `IDshPluginHost`
+  的异步数据（随包模块 / 官方 / 已安装组合包）并进同一个 observable。**优点**：保留虚拟化与无障碍 provider，
+  是上游「扩展」视图的既有做法（`Installed` / `Recommended` 分组就是特殊行）。**代价**：渲染器要拆三份、
+  动作要改成 `ActionBar` 的 Action（现在是 DOM `<button>`）。
+- **B. 换成 DOM 分组列表**（与「扩展」页签同一套渲染）：**理由**是"统一渲染机制"本身就是这次工作的目标，
+  且插件数量很小、「扩展」页签已经在**无虚拟化**地渲染上千张商城卡片。**代价**：失去列表虚拟化与
+  `IListAccessibilityProvider`（需用语义化标签 + `aria-*` 补齐），`layoutBody` 的高度计算要重算。
+
+倾向 **B**（一致性收益 > 虚拟化收益），但两者都要**先在真机 Reload 或 e2e 窗口里看**——它是渲染机制替换，
+编译期与静态守卫都看不出来。

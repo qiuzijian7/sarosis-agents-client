@@ -1,0 +1,22 @@
+# @vssaros/dsh-media bundle patch: insert the media row.
+#
+# 挂载形态：
+#   - 页面：`/x/media/` **只读**整页（媒体库工作台 `agentStudio.media`，order 112）；
+#   - 工具：`media_list` / `media_stats`（**只读**）。
+#
+# 数据：**只读**直连 VsSaros 主进程的 `{rootDir}/media.db` —— 走 Node **内置**的 `node:sqlite`
+# （dsh 要求 Node 22.19+/24+，它就在这个范围内）⇒ 零依赖，不需要 better-sqlite3 那种原生二进制。
+# 「多进程同时访问 media.db」**是该库的既有前提**（VsSaros 侧开着 WAL + busy_timeout，注释原文：
+# 「每个窗口是一个独立 renderer ⇒ 工程里永远存在多个到 media.db 的连接」），这里再加一个只读连接
+# 与"再开一个窗口"机制相同。
+#
+# ⚠ 建表 / 迁移的真源在 VsSaros 侧（`node/mediaStore.ts` 的 `CREATE_TABLE` + `_migrate`）⇒ 本插件
+# **不写一个字节**（连打开都用 `readOnly: true`）。要放开写能力的前置纪律见 `lib/store.js` 末尾。
+#
+# 路径：媒体根 = `config.mediaRoot` → `{数据根}/media-store-config.json` 的 `rootDir` → `<数据根>/media`。
+# 「多读一层 config」是必须的：VsSaros 允许用户改媒体目录并持久化在那里，只按默认值拼会打开一个空库。
+# `config.dataRoot` 缺省走 `VSSAROS_DATA_ROOT`（VsSaros 启动 Host 时会注入子进程 env）。
+- insert:
+    - id: vssaros-media
+      name: '@vssaros/dsh-media'
+      config: {}

@@ -231,6 +231,10 @@ import './contrib/agentHost/browser/agentHostSkillButtons.js';
 // Tunnel Host (allow remote connections to local agent host)
 import './contrib/tunnelHost/electron-browser/tunnelHost.contribution.js';
 
+// DeepSeek Harness (dsh) — **默认开启**：`sessions.dshHarness.enabled / chatEngine:'dsh' / prewarm` 三个默认值
+// 一起决定"用户什么都不做也会在后台拉起 Host"（2026-10-12 更正此处的 "off by default" 过时描述）。
+import './contrib/dshHarness/electron-browser/dshHarness.contribution.js';
+
 
 //#endregion
 

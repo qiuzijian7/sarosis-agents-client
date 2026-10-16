@@ -1,0 +1,749 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>代码图谱索引（codebase 写侧）落进 dsh —— 设计方案</title>
+<style>
+	:root { color-scheme: light dark; --h: #4aa3ff; --k: #999; --ok: #2ea043; --warn: #d29922; --bad: #f85149; }
+	body { margin: 0 auto; padding: 28px 22px 60px; max-width: 1080px; font: 14px/1.75 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; }
+	h1 { font-size: 22px; margin: 0 0 6px; }
+	h2 { font-size: 17px; margin: 30px 0 8px; padding-top: 10px; border-top: 1px solid rgba(128,128,128,.28); }
+	h3 { font-size: 15px; margin: 18px 0 6px; }
+	code, pre { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
+	pre { background: rgba(128,128,128,.10); padding: 8px 10px; border-radius: 6px; overflow: auto; }
+	table { border-collapse: collapse; width: 100%; margin: 8px 0 4px; }
+	th, td { border: 1px solid rgba(128,128,128,.30); padding: 6px 8px; text-align: left; vertical-align: top; }
+	th { background: rgba(128,128,128,.10); font-weight: 600; }
+	.small { color: var(--k); font-size: 12.5px; }
+	.v { color: var(--ok); font-weight: 600; }
+	.q { color: var(--warn); font-weight: 600; }
+	.x { color: var(--bad); font-weight: 600; }
+	.box { border: 1px solid rgba(128,128,128,.30); border-radius: 6px; padding: 10px 12px; margin: 10px 0; }
+	.warnbox { border-left: 4px solid var(--warn); padding-left: 10px; }
+	.okbox { border-left: 4px solid var(--ok); padding-left: 10px; }
+	.badbox { border-left: 4px solid var(--bad); padding-left: 10px; }
+	a { color: var(--h); }
+	ul { margin: 6px 0; padding-left: 22px; }
+	li { margin: 3px 0; }
+</style>
+</head>
+<body>
+
+<h1>代码图谱索引（codebase 写侧）落进 dsh —— 设计方案</h1>
+<p class="small">
+	2026-10-12 · 与 <a href="dsh-tool-skill-mcp-report.html">dsh 工具/技能/MCP 报告</a>、
+	<a href="dsh-shell-contract.html">dsh 壳契约</a>、<a href="dsh-modules-conformance.html">模块插件合规</a> 同族。<br>
+	本文只写<strong>方案</strong>：目标/非目标、形态选择、分层、分期、每期验收与回滚、需拍板的决策。<br>
+	读者：决定"索引该归谁"的人 + 接手实现的人。<strong>动手前先读 §1 现状</strong>（三层的实测事实与数字都在那儿）。<br>
+	<span class="v">✓ 进度：§5 的 P0 / P1 / P2 / P3（覆盖与交付）/ P3-b（新鲜度）/ P4（常驻保鲜）/ P3-交接的 dsh 半边 已于 2026-10-12 落地</span> ——
+	P0（Host 能跑 tree-sitter）、P1（影子索引 v0：写侧自己产图、读侧影子优先、锁与增量、审批闸）、
+	P2（真解析建图：与真源逐条对齐 + 与 IDE 真图对账 + 四条有意差异）、
+	P3（扫描面扩到语言表 + <code>bin/vendor-assets.mjs</code> 随包交付，<strong>决策 2 = 全量 16 语言 / 21.02MB 已执行</strong>）、
+	P3-b（影子不比 IDE 新就让位，四处如实报"读图走哪一份"）、P4（<code>config.indexWatch</code> 的常驻保鲜）、
+	<strong>P3-交接（<code>config.indexTarget = 'workspace'</code> + 与 IDE 共用同一把锁/同一阈值/同一心跳口径）</strong>见 §5 对应小节。
+	探针 <code>p3-39</code>（32）/ <code>p3-40</code>（30）/ <code>p3-41</code>（24）/ <code>p3-42</code>（23）/ <code>p3-43</code>（24）/ <code>p3-11</code>（<strong>104</strong>）均已登记 <code>run-all</code>。<br>
+	<span class="v">✓ 2026-10-13 续记（插件 <code>0.6.33</code>）：页面这一层分了三版落地</span> ——
+	<strong>侧栏版</strong>（<code>?surface=sideview</code>：摘要 + 入口，走桥 <code>openModulePage</code> ✓）、
+	<strong>编辑区版</strong>（按<strong>原「Codebase Memory」面板</strong>的 DOM 分区重排：4 统计卡 + Index Configuration / Graph Details / Architecture / Query Console / Analysis Tools / Projects / Activity Log ✓）、
+	<strong>只读图浏览页</strong>（<code>?view=graph</code> ✓）—— 三版的边界与"说清没有"的部分见 §5 的「外观复刻」续记 ✓。<br>
+	<span class="v">✓ 2026-10-13 续记二（<code>0.6.34</code>）：P5 的两件大件按推荐 ② 落地了<strong>页面侧</strong></span>
+	（形状查询子集 <code>?shape=</code> ✓ + dsh 真实档位说明 ✓）；<strong>引擎侧未做</strong>（真 Cypher / 语义索引档 / 工具 <code>preset</code> 参数）
+	<span class="q">◻ 有意留着</span> ✓ —— 见 §5 的 P5 小节 ✓。
+	<span class="v">✓ 决策 1/2 已按你的拍板执行</span>；
+	<span class="v">✓ 2026-10-13：P3 的 IDE 半边已落地（按用户裁决「权限都在 dsh 侧全权处理、逻辑也都转移到 dsh 侧」）</span> ——
+	①<strong>外部产物感知 ⇒ 后台重载</strong>（<code>decideExternalArtifactReload()</code> + bootstrap 轮询）；
+	②<strong>权限在 dsh</strong>：产物自称 <code>producer=vssaros-dsh</code> ⇒ IDE 的 <code>indexWorkspace()</code> 不扫描、<code>_saveGraph()</code> 一律拒写
+	（覆盖自动 / 增量 / 延迟保存 / 显式全部来路 ✓；上一版的"让路策略"已按裁决撤掉 —— 策略不留在 IDE ✓）。
+	③<code>runIndex</code> 桩说法改正 + ④<strong>双引擎差分</strong>（探针 <code>p3-47</code>：符号命中 <strong>94.5%</strong>、无歧义符号 <code>startLine</code> <strong>100% 精确</strong> ✓）。
+	验证：IDE 单测 <strong>31</strong> + 反向突变 <strong>8/8</strong> + 三条源码级套件 <strong>122 passing</strong> + dsh 探针 p3-40/41/42/43/47 全绿 ✓。
+	<span class="v">方案内待办到此清空</span>（仅剩"删那 720 行死代码"这类可选清理 ✓）。
+</p>
+
+<div class="box okbox">
+	<strong>可信度约定（先说清证据等级，免得把猜测当契约 <span class="x">✗</span>）</strong><br>
+	· <span class="v">✓ 已核对</span>：本轮读过源码 / 跑过命令 / 有探针覆盖（文里写清是哪种）。<br>
+	· <span class="q">◻ 待核对</span>：只从文件名 / 别人的记录推得，<strong>未逐行读过</strong> —— 落地前请自己核一眼。<br>
+	· 工具面的数字<strong>一律不手写</strong>：见 <code>dsh-plugins/tools-snapshot.json</code>（机器生成 ✓）。
+	当前读数：<code>node dsh-plugins/tools-snapshot.mjs</code> ⇒ <strong>11 个插件 / 62 个工具</strong> <span class="v">✓</span>。
+</div>
+
+<h2>0. 一句话</h2>
+<div class="box">
+	<strong>读侧已经在 dsh 里了（就是现有 <code>@vssaros/dsh-codebase</code>，11 个工具 + 只读页）⇒ 真问题是"写侧（索引编排 + tree-sitter 解析）能不能也落进 dsh"。</strong><br>
+	结论：<span class="v">能，但要分期、且第一刀不是"搬索引器"而是"自证 Host 能跑 tree-sitter"</span>
+	—— <strong>P0 已做完，答案是"能"</strong>（UMD 运行时在 Node 里直接可用、<code>worker_threads</code> 里 11ms init / 20ms 解析 ✓）；
+	剩下的卡点不在算法，而在 <strong>① wasm 资产怎么交付（1.71 MB 起 / 21.1 MB 全量）</strong> 与
+	<strong>② <code>.codebase-memory/</code> 的所有权</strong>（IDE 现在独占，我们自己的纪律是"不写工作区产物"）。
+	推荐路线 = <strong>影子索引</strong>：dsh 把图写进<strong>自己的数据根</strong>、与 IDE 产物<strong>逐字同形</strong>，所有权交接留到被明确要求时再做。
+</div>
+
+<h2>1. 现状（三层，全部带证据）</h2>
+
+<h3>1.1 读侧：已经是一个合规 dsh 插件 <span class="v">✓</span></h3>
+<ul>
+	<li>落点 <code>dsh-plugins/vssaros-codebase/</code>（<code>@vssaros/dsh-codebase</code> 0.6.14），
+		<code>lib/index.js:29</code> 的 <code>TOOL_NAMES</code> 共 <strong>11 个</strong>：<code>overview / search / deps / hotspots /
+		architecture / schema / projects / trace / changes / snippet / self_index</code>。</li>
+	<li>存储层 <code>lib/store.js</code>：<strong>轻/重两条路</strong>（<code>artifact.json</code> 不解压；<code>graph.db.zst</code> 按需解压 + 缓存 + 大小上限），
+		异步 <code>gunzip</code>（走 libuv 线程池，不卡 Host 主线程 ✓）、<code>resolveRoot()</code> 用"实际用的根"并把它回传（防"读的是别人的图" ✗）。</li>
+	<li>合规项（由 <code>dshPluginPackages.test.ts</code> 机器核对）：<code>dsh.bundle.patch</code> + <code>cordis.patch.yml</code> 用 <code>insert</code> 且行 name == 包名、
+		<code>files</code> 覆盖整条 import 图、<code>peerDependencies['@deepseek-ai/dsh']</code>、<code>deps</code> 里零 <code>@deepseek-ai/*</code>、
+		<code>./client</code> ↔ <code>dsh.client</code> 成对、无跨插件工具重名。</li>
+</ul>
+
+<h3>1.2 写侧（索引）：整条仍在 IDE 渲染进程 <span class="v">✓</span></h3>
+<ul>
+	<li><strong>解析已在 Web Worker ✓，但"索引编排"在主线程 ✗</strong> —— 这是"索引期间整窗冻结"的直接原因
+		（<code>common/codebaseGraphIndexChannel.ts</code> 头注释，2026-09-19）。</li>
+	<li>解析宿主（<code>browser/codebaseGraphParserPool.ts:147-238</code>）：<code>FileAccess.asFileUri</code> +
+		<code>IFileService.readFile</code> 取 <code>tree-sitter.js</code>/<code>tree-sitter.wasm</code>/各语言 grammar ⇒
+		<code>new Blob([workerCode]) + URL.createObjectURL</code> + CSP <code>wrapWorkerUrl</code> 起 Web Worker；
+		worker 数 = <code>navigator.hardwareConcurrency</code> − 1，上限 16；池空时<strong>回退主线程解析</strong>。
+		⇒ 这套<strong>在 Node 里跑不了</strong>（无 DOM / 无 Blob URL / 无 navigator），必须换成 <code>worker_threads</code> + <code>fs</code> <span class="v">✓</span>。</li>
+	<li>IDE 侧的实测数字（同上文件，2026-09-19 真机日志 <span class="v">✓</span>）：
+		<pre>增量索引：获取索引锁=193ms | watcher变更集快路径=1ms | 解析10个文件=795ms[阻塞125ms] | BM25跳过 | 克隆检测=12ms
+          | 继承边+使用边匹配=51ms | SQLite增量补丁=747ms | 合计=1799ms
+载入路径：loadGraphMerge 合计 4731ms ⇒ 解压制品=537ms / <strong>解析 JSON=2362ms</strong> / 路径迁移=68ms / 写内存 store=940ms</pre>
+		⇒ 三条被实测<strong>推翻</strong>的直觉：① 克隆检测/边匹配增量只有 5–51ms（搬它收益≈0）；② 载入的真正大头是 <strong>JSON 解析 2.4–4.3s</strong>；
+		③ <code>[阻塞Nms]</code> 的口径是"自上次读取以来全局最长主线程占用"，<strong>不能给索引锁定罪</strong>。</li>
+	<li>IDE 自己的搬迁计划（P2-1）已拍板<strong>路线 A</strong>：同步消费者改 async、renderer 最终不持图；
+		待改的同步调用点<strong>只有两处</strong>（<code>browser/codebaseGraphVaxSearch.contribution.ts:355</code> 的 GotoImpl、<code>:560</code> 的 ListMethods）
+		<span class="v">✓</span>。⚠ 但 <code>node/codebaseGraphIndexWorkerMain.ts:66-74</code> 的 <code>runIndex</code> <strong>仍是 <code>not implemented</code> 桩</strong>
+		⇒ IDE 侧自己也还没把编排搬出 renderer <span class="v">✓</span>。</li>
+</ul>
+
+<h3>1.3 dsh 侧已有的"写侧前提"资产（别重造）<span class="v">✓</span></h3>
+<ul>
+	<li><code>lib/indexer.js</code>（46 KB）已经是一台<strong>能跑的最小索引器</strong>：<code>collectSourceFiles</code>（确定性顺序 + 跳过目录 + 上限并如实标截断）、
+		<code>buildImportGraph</code>（文件级 <code>IMPORTS</code> + 顶层符号 <code>CONTAINS</code> + <code>IMPORTS_SYMBOL</code>）、
+		增量（<code>(size, mtimeNs)</code> 判定 + <code>shouldRescan</code> 兜漏）、
+		<strong>可序列化缓存</strong>（<code>CACHE_VERSION</code> + <code>serializeCache</code>/<code>parseCache</code>，跨进程验过、且"该拒就拒"）。
+		工具 <code>codebase_self_index</code> 就是它的入口。</li>
+	<li>它的边界写在文件头（诚实的）：<strong>只用正则、只认顶层声明、边只有 <code>IMPORTS</code>/<code>CONTAINS</code>、只写 mkdtemp、
+		绝不动工作区的 <code>.codebase-memory/</code></strong>。⇒ 本方案 P1 就是把这份自证<strong>提升成真索引器</strong>（不是从零）。</li>
+	<li>Host 侧能力已自证可用：<code>worker_threads</code>（<code>vssaros-workflow/lib/engine.js</code> 起真 worker 拿回 threadId）、
+		插件进程内 Node <code>fs</code>（kb 写 vault、codebase 读图都已在真机跑通）、<code>node:sqlite</code>（media 只读直连）。</li>
+</ul>
+
+<h2>2. 目标与非目标</h2>
+<table>
+	<tr><th>目标</th><th>非目标 <span class="x">✗</span></th></tr>
+	<tr>
+		<td>
+			· dsh 侧能<strong>自己产出</strong>代码图谱（不依赖 IDE 是否开着、是否索引过）；<br>
+			· 产物与 IDE <strong>逐字同形</strong>（<code>artifact.json</code> + <code>graph.db.zst</code> 契约），读侧零改动即可消费；<br>
+			· 索引期间<strong>不冻结</strong>任何 UI（因为本来就在 Host 进程）；<br>
+			· 全程<strong>不动 <code>src/</code></strong>（那是并发会话区域 <span class="q">◻</span>）。
+		</td>
+		<td>
+			· 不做"IDE 侧 P2-1 的替代品"（两条线各有各的动机，成果可共享但目标不同）；<br>
+			· 不搬 SQLite/FTS5 后端（主进程 mmap + FTS5；dsh 侧要另立，见 P4）；<br>
+			· 不搬编辑器集成（class hierarchy / find symbol / 3D layout / LOD）—— 纯 IDE 专有；<br>
+			· 不做双写（同一目录两个写者 = 迟早互相踩 ✗）；<br>
+			· 不顺手改 IDE 索引器的行为（那边有 50 条契约测试钉着）。
+		</td>
+	</tr>
+</table>
+
+<h2>3. 形态选择：三选一，推荐"影子索引"</h2>
+<table>
+	<tr><th>形态</th><th>做法</th><th>代价</th><th>判定</th></tr>
+	<tr>
+		<td>甲 · <strong>所有权交接</strong></td>
+		<td>dsh 成为唯一索引者，IDE 侧索引器降级/关闭；dsh 写 <code>&lt;ws&gt;/.codebase-memory/</code></td>
+		<td>必须先完成 IDE 路线 A（同步消费者 async 化 + 释放内存 store）+ 共用 <code>index.lock</code> 协议；一落地 IDE 侧功能就依赖 dsh 是否在跑 <span class="x">✗</span></td>
+		<td><span class="x">本阶段不做</span>（等被明确要求）</td>
+	</tr>
+	<tr>
+		<td>乙 · <strong>影子索引</strong>（推荐）</td>
+		<td>dsh 把图写进<strong>自己的数据根</strong>（<code>&lt;dataRoot&gt;/codebase-index/&lt;workspace-hash&gt;/</code>），产物<strong>逐字同形</strong>；读侧优先影子、没有再回退 IDE 的产物；IDE 侧一行不改</td>
+		<td>两份图（磁盘 + 一次额外索引 CPU）；同一工作区"dsh 看到的图"与"IDE 页面的图"可能不同 ⇒ 必须<strong>在页面/工具里如实标出来源</strong> ✗</td>
+		<td><span class="v">推荐</span>：结构上不可能双写、不碰 <code>src/</code>、每期可独立回滚</td>
+	</tr>
+	<tr>
+		<td>丙 · dsh 产出、IDE 消费</td>
+		<td>dsh 索引后把产物交给 IDE 读（IDE 变成纯消费）</td>
+		<td>本质是甲的传输方向倒过来，同样要动 IDE 侧；且 IDE 侧载入路径的 2.4–4.3s JSON 解析一点没省</td>
+		<td><span class="x">不做</span>（收益被 IDE 自己的载入瓶颈吃掉）</td>
+	</tr>
+</table>
+<div class="box warnbox">
+	<strong>为什么推荐乙而不是甲</strong>：甲乙的<strong>必做工作完全相同</strong>（P0 的 wasm/Host 解析自证、P1 的索引器升级、P2 的真解析），
+	差别只在"最后写哪、谁放手"。乙把那个差别<strong>推到最后一刻</strong>，于是前面每一期都不需要协调并发区域、也不会让 IDE 侧功能依赖 dsh 进程是否活着 ✓。
+	而且"逐字同形"这个约束在乙里是<strong>免费</strong>拿到的：产物同形 ⇒ 将来真要交接，改动量≈改一个目录常量 <span class="v">✓</span>。
+</div>
+
+<h2>4. 分层设计（L0–L6）</h2>
+<p class="small">每层都给"落点 / 输入输出 / 怎么验"。<strong>层与层之间用现成契约接</strong>，不新增跨插件 import（本仓硬规矩：插件是独立安装进 profile 的包，相对路径依赖在 stage 后必断 ✗）。</p>
+<table>
+	<tr><th>层</th><th>落点</th><th>输入 → 输出</th><th>怎么验</th></tr>
+	<tr>
+		<td><strong>L0 运行时与资产</strong></td>
+		<td><code>vssaros-codebase/lib/parser/</code>（新）</td>
+		<td>wasm 路径 + 源码文本 → AST（<code>worker_threads</code> 池，1→N 个 worker；每个 worker 一份 wasm 实例；超时兜底）</td>
+		<td>P0 探针：真起 worker、真 parse、<strong>缺 grammar 必须显式报错</strong>（不许回退成"解析 0 个文件" ✗）</td>
+	</tr>
+	<tr>
+		<td><strong>L1 采集与增量</strong></td>
+		<td><code>lib/indexer.js</code>（升级既有 <code>collectSourceFiles</code>）</td>
+		<td>工作区根 + 排除表 → 待索引文件集；<code>(size, mtimeNs)</code> + 可选 sha256 → 变更集</td>
+		<td>既有 <code>missCheck</code>（等长改写造漏改）+ 全量/增量图摘要相等</td>
+	</tr>
+	<tr>
+		<td><strong>L2 解析</strong></td>
+		<td>P1 沿用正则顶层符号；P2 换 tree-sitter</td>
+		<td>文件 → 符号（label/name/qualifiedName/startLine/endLine）</td>
+		<td>P1：既有 <code>symbolCheck</code>（含"不该抽的缩进声明"反例）；P2：与真图<strong>抽样对账</strong></td>
+	</tr>
+	<tr>
+		<td><strong>L3 图构建</strong></td>
+		<td><code>lib/core/codebase.js</code>（读侧契约源）+ 新 <code>lib/build.js</code></td>
+		<td>符号/引用 → <code>{nodes, edges, fileHashes, bm25, layout, nextNodeId, nextEdgeId}</code>，字段逐字对齐真源</td>
+		<td>契约校验（<code>validateGraph</code> 已有）+ 节点/边类型分布对账</td>
+	</tr>
+	<tr>
+		<td><strong>L4 产物与锁</strong></td>
+		<td><code>lib/store-write.js</code>（新）：原子写 <code>.tmp</code> → rename；<code>index.lock</code>（影子目录内，与 IDE 不同目录 ⇒ 结构性无冲突）</td>
+		<td>图 → <code>artifact.json</code>（<code>{node_count, edge_count, format:'gzip-json', saved_at, project}</code>）+ <code>graph.db.zst</code>（<strong>gzip 流</strong>，文件名带 <code>.zst</code> 是历史遗留，必须跟随 ✗）</td>
+		<td>读侧 <code>readOverview</code> + <code>loadGraph</code> 读回自产新产物（真读回，不是"写成功"就算 ✓）</td>
+	</tr>
+	<tr>
+		<td><strong>L5 消费</strong></td>
+		<td>既有 11 个读工具 + 页面 + 新增写侧工具</td>
+		<td>新增 <code>codebase_index</code>（写 ⇒ <strong>过审批闸</strong> <code>tools/pre-execute</code>）、<code>codebase_index_status</code>（只读）</td>
+		<td>工具面快照重生成；闸的<strong>行为级</strong>断言（fake ctx 真发 <code>tools/pre-execute</code>）</td>
+	</tr>
+	<tr>
+		<td><strong>L6 长任务与可观测</strong></td>
+		<td>索引在后台跑（<code>ctx.jobs</code> <span class="q">◻ 能不能注入待核</span>；退路 = 插件内自持任务表 + 轮询状态）</td>
+		<td>进度（阶段名 + 数字 + 耗时）→ 页面诊断行 + <code>codebase_index_status</code></td>
+		<td>真机探针：跑一次索引，读回阶段耗时；<strong>不许"提交了但什么都没发生"</strong></td>
+	</tr>
+</table>
+
+<h3>4.1 产物归属与配置链（乙方案的关键定义）</h3>
+<pre>索引输出根：config.indexDir  →  VSSAROS_DATA_ROOT/codebase-index  →  &lt;未配置 ⇒ 不索引，工具如实报错&gt;
+读侧实际根：影子产物存在 → 用它；否则 → 现有 IDE 产物（&lt;ws&gt;/.codebase-memory/）；两者都报在返回里</pre>
+<ul>
+	<li><strong>不猜</strong>：与现有 <code>workspaceRootOf</code> 同一条纪律 —— 没配就报"未配置"，不回落去读别人的东西 <span class="v">✓</span>。</li>
+	<li>影子目录名用 <code>&lt;workspace 绝对路径的 sha256 前 16 位&gt;</code>（同一台机器上多工作区互不干扰；迁移/改名后旧目录不会被误用）。</li>
+	<li>页面与工具<strong>必须显示"图来自哪个根"</strong>（现有 <code>resolveRoot</code> 已经回传 <code>workspaceRoot</code> ⇒ 扩成 <code>graphSource: 'shadow' | 'ide'</code> 即可）。</li>
+</ul>
+
+<h3>4.2 产物契约（逐字对齐，不许"改良"）<span class="v">✓</span></h3>
+<table>
+	<tr><th>文件</th><th>格式</th><th>必须照抄的点</th></tr>
+	<tr>
+		<td><code>artifact.json</code></td>
+		<td><code>{ node_count, edge_count, format:'gzip-json', saved_at, project }</code></td>
+		<td>读侧 <code>parseManifest</code> <strong>硬校验</strong> <code>format === 'gzip-json'</code>；<code>project</code> 必须与 IDE 口径一致（防"查询反复回退"）</td>
+	</tr>
+	<tr>
+		<td><code>graph.db.zst</code></td>
+		<td><strong>gzip</strong>（名字带 <code>.zst</code> 但内容不是 zstd）</td>
+		<td>这个不一致是历史遗留，我们<strong>跟随</strong>、不"修正"（否则读侧读不了 ✗）</td>
+	</tr>
+	<tr>
+		<td>图 JSON</td>
+		<td><code>{nodes, edges, fileHashes, bm25, layout, nextNodeId, nextEdgeId}</code></td>
+		<td>节点 <code>{project,id,label,name,qualifiedName,filePath,startLine,endLine,inDegree,outDegree,community}</code>；
+			边 <code>{project,id,sourceId,targetId,type,properties}</code>；<code>filePath</code> 一律 <strong>正斜杠相对路径</strong></td>
+	</tr>
+	<tr>
+		<td><code>index.lock</code></td>
+		<td><code>{token, instanceId, acquiredAt}</code> + mtime 心跳</td>
+		<td>影子目录内<strong>自己一份</strong>；不碰 IDE 那份（甲方案落地时才需要共用）</td>
+	</tr>
+</table>
+
+<h2>5. 分期落地（每期都能独立验证 / 独立回滚）</h2>
+<p class="small">全流程<strong>不动 <code>src/</code></strong>；<strong>缺省关闭</strong>（<code>config.indexEnabled</code> 不设即不注册新工具、不写任何东西）⇒ 每期落地时用户可见行为都是"零变化"。</p>
+
+<h3>P0 · 自证：Host 能跑 tree-sitter <span class="v">✓ 已落地（2026-10-12）</span></h3>
+<ul>
+	<li><strong>范围（原计划）</strong>：在 <code>worker_threads</code> 里加载 wasm 并 parse 一个真文件，拿回一个可断言的 AST 事实。产物放 <code>lib/parser/</code>，页面加一行诊断。</li>
+	<li><strong>落地物</strong>（<code>@vssaros/dsh-codebase</code> <strong>0.6.17</strong>；全程<strong>不读工作区、不写任何产物</strong> ⇒ 缺省零行为改变 ✓）：
+		<ul>
+			<li><code>lib/parser/resolve.js</code> —— 资产解析链 <code>config.treeSitterWasmDir → env VSSAROS_TREE_SITTER_WASM_DIR → 随包 vendor/ → dev cwd 的 node_modules</code>，逐候选探测并<strong>披露试过哪些</strong>（零候选时也给出可行动理由）；另含 <code>esm-scope-risk</code> 探测。</li>
+			<li><code>lib/parser/facts.js</code>（纯函数：树 → 顶层声明事实，含 <code>export_statement</code> 下钻）、<code>lib/parser/worker.js</code>（线程内加载运行时 + grammar、按请求解析、显式释放树）、<code>lib/parser/pool.js</code>（门面：惰性建线程、超时、按线程归属清账本、失败分型）。</li>
+			<li>页面诊断行新增可断言锚点 <code>data-vssaros-codebase-parser="available|unavailable"</code> / <code>data-vssaros-codebase-parser-langs="N"</code>；新增只读端点 <code>/x/codebase/api/parse-proof?lang=…</code>（<strong>在真 Host 进程里真解析</strong>并回执 facts + 资产来源）。</li>
+			<li>探针 <code>poc/dsh-p0/scripts/p3-39-codebase-parser-host.mjs</code>（<strong>23 条</strong>，已登记进 <code>run-all</code>；不标 fast —— 它要装插件 + 起真 Host），反向突变 <strong>4/4 逐条命中预期断言</strong> + 基线真绿 + 已还原 ✓。</li>
+		</ul>
+	</li>
+	<li><strong>★ 结论 1（资产那条路已定，原"◻ 未验证"变成 ✓）</strong>：<code>@vscode/tree-sitter-wasm</code> 的运行时是 <strong>UMD</strong>，内部带 <code>ENVIRONMENT_IS_NODE</code> 分支 ⇒ Node 里 <code>require()</code> 直接拿到 <code>{ Parser, Language, … }</code>，<code>Parser.init({ locateFile })</code> 走 Node 分支用 <code>fs</code> 读 wasm。
+		⇒ <strong>不需要再引官方 <code>web-tree-sitter</code></strong>，也<strong>不需要为 Node 另找运行时</strong> ✓（原先那两条"候选路"合并成一条）。实测：init <strong>11–12ms</strong>，解析 19 行 TS 片段 <strong>21–28ms</strong>（<code>worker_threads</code> 与进程内都是这个量级）。</li>
+	<li><strong>★ 结论 2（随包陷阱，P0 最值钱的一条）</strong>：仓库根是 <code>"type": "module"</code> ⇒ 把上游 <code>tree-sitter.js</code> 原样拷进我们包时，Node 22.12+ 的 <code>require(esm)</code> 会<strong>静默</strong>把它当 ESM 求值 ⇒ UMD 走 <code>globalThis</code> 分支、<code>__filename</code> 未定义 ⇒ 报 <strong><code>Unable to determine script URL</code></strong>（一句看不出根因的话；离线字符串比对完全看不出来 ✗）。
+		⇒ <strong>纪律：进包即改名 <code>tree-sitter.cjs</code></strong>（Node 规范：<code>.cjs</code> 永远是 CJS，与所在 scope 无关 ✓ 实测跑通）；加载失败时把它<strong>翻译成人话 + 修法</strong> ✓（探针同时钉住"报风险"与"改名后跑通"两侧）。</li>
+	<li><strong>★ 结论 3（体积，决策 2 的实测依据）</strong>：运行时 <code>tree-sitter.cjs</code> + <code>tree-sitter.wasm</code> + <strong>1 种语言</strong> = <strong>1,788,796 字节 ≈ 1.71 MB</strong>；+ 常用 6 语言（JS/TS/TSX/Python/Go/Rust，含运行时）= <strong>5,434,913 字节 ≈ 5.18 MB</strong>；<strong>全量</strong> = <strong>21.02 MB</strong>（源目录里实际是 <strong>16</strong> 个 grammar：bash / c-sharp / cpp / css / go / ini / java / javascript / php / powershell / python / regex / ruby / rust / tsx / typescript ✓ —— 交付后 stat 实测）<span class="v">✓ 实测</span>。</li>
+	<li><strong>★ 结论 4（探针抓到的真 bug，值得记）</strong>：第一版"超时后门面自愈"是<strong>红的</strong> ✗ —— 请求账本原先放在池上（全局），旧线程被掐掉的 <code>exit</code> 事件会把<strong>新线程刚发出的请求</strong>一起判死 ⇒ 症状是"超时一次之后该门面永久报 <code>worker-exit</code>"。改成<strong>按线程归属</strong>（<code>slot.pending</code>）后绿 ✓。⇒ 这正是"超时/自愈必须真测"的价值（不测就留一个只在异常路径上出现的隐藏 bug ✓）。</li>
+	<li><strong>回滚</strong>：删 <code>lib/parser/</code>（含 <code>files</code> 白名单条目）与探针即可；页面锚点与端点随之消失，<strong>不影响任何现有工具</strong> ✓（没有新工具、没有新配置键被强制）。</li>
+	<li><strong>顺带收益</strong>：这一块正是 IDE 侧阻塞 1（"解析搬不走，除非重写适配层"）的同一块重写 ⇒ 成果两边都能用 ✓。</li>
+	<li><strong>诚实边界（P0 没做的事）</strong>：① 只解析<strong>内存里的片段</strong>（自证用）—— 不扫工作区、不建图、不写产物；② 只做"顶层声明 + 有没有语法错误"这一档事实，<strong>不做</strong> AST→图谱 label 映射、不做扩展名→语言映射（那两张表属 P2，届时配跨仓对账守卫 ✓）；③ 线程数固定 1、无池化调度；④ <strong>wasm 是否随包仍未定</strong>（§9 决策 2，等你拍板；本轮只用参数指向 dev 资产 ✓）。</li>
+</ul>
+
+<h3>P1 · 影子索引 v0（把现有自证提升成真索引器，仍是正则符号级）<span class="v">✓ 已落地（2026-10-12）</span></h3>
+<ul>
+	<li><strong>范围（原计划）</strong>：L1/L3/L4/L5/L6 全部落地，L2 沿用正则；产物写影子目录；<code>codebase_index</code>（过闸）+ <code>codebase_index_status</code>；读侧优先影子。</li>
+	<li><strong>落地物</strong>（<code>@vssaros/dsh-codebase</code> <strong>0.6.20</strong>）：
+		<ul>
+			<li><code>lib/shadow.js</code> —— 落点（<code>config.indexDir</code> → <code>&lt;DSH_HOME&gt;/codebase-index</code> → <strong>未配置就拒绝</strong>；工作区键 = 绝对路径 sha256 前 16 位）、锁（<code>O_EXCL</code> + mtime 判崩溃残骸、可接管、<strong>只放自己那把</strong>）、原子写（<strong>先图后清单</strong> + <code>.tmp</code>+rename）。</li>
+			<li><code>lib/indexService.js</code> —— 编排：复用既有 <code>indexer.js</code> 的增量/缓存（<code>serializeCache</code>/<code>parseCache</code>/<code>shouldRescan</code>），把产物写成<strong>与 IDE 逐字同形</strong>的 <code>artifact.json</code> + gzip <code>graph.db.zst</code>。</li>
+			<li><code>lib/store.js::graphDirOf</code> —— 读侧：<strong>影子优先</strong>（判据只有"清单在<strong>且</strong>图在"）、否则回退 IDE 产物；<code>readOverview</code>/<code>loadGraph</code> 都回传 <code>graphSource</code>；<strong>源码根与图谱根分开</strong>（切片永远读工作区 ✓）。</li>
+			<li>工具 <code>codebase_index</code>（<strong>过审批闸</strong>：<code>WRITE_TOOLS</code> + 官方 <code>tools/pre-execute</code> ⇒ <code>{kind:'ask'}</code>）/ <code>codebase_index_status</code>（只读）；页面新增锚点 <code>data-vssaros-codebase-graph-source</code>（shadow/ide）与 <code>data-vssaros-codebase-index-readable</code>，新增只读端点 <code>/x/codebase/api/index-status</code>；<strong>刻意没有"HTTP 触发索引"的端点</strong>（写动作只走<strong>过闸的工具</strong> ✓）。</li>
+			<li>探针 <code>poc/dsh-p0/scripts/p3-40-codebase-shadow-index.mjs</code>（<strong>30 条</strong>，已登记 <code>run-all</code>；不标 fast），反向突变 <strong>4/4 逐条命中</strong> + 基线真绿 + 已还原 ✓。</li>
+		</ul>
+	</li>
+	<li><strong>★ 两条与计划不同的决定（都写清了理由）</strong>：
+		<ol>
+			<li><strong>不引入数据根链、改用 <code>DSH_HOME</code></strong>：其它模块读的是那个数据根键 ⇒ 会让本插件进 <code>dshPluginPackages</code> 的"读数据根的模块"名单、必须改 <code>src/</code> 的覆盖层渲染（并发区 ✗）；而图谱产物跟着 <strong>dsh 自己的 home</strong> 走与 dashboard / sessions 同链 ✓。
+				⚠ 顺带踩到一个真坑：那个守卫是<strong>按 <code>lib/</code> 的源码文本</strong>找该键的，<strong>注释也算</strong> ✗ —— 我在注释里写全了键名 ⇒ 被判"读了数据根"（假红一次，已在注释里留下警示 ✓）。</li>
+			<li><strong>工具改为"始终注册 + 写动作过闸"，而不是"缺省不注册"</strong>：原计划写的是"不设 <code>indexEnabled</code> 就不注册新工具" ✗ —— 但本仓的<strong>审批闸台账与 p3-26/p3-40 的契约是"<code>WRITE_TOOLS</code> ⇔ 真被注册的工具"</strong>，条件注册会让"工具面/闸"随配置漂移而<strong>没有任何守卫模型能表达它</strong> ✓；而"未配置就拒绝"（<code>no-workspace</code> / <code>no-index-dir</code> 分型）已经把"零副作用"保住了 ✓。</li>
+		</ol>
+	</li>
+	<li><strong>验收（p3-40，30 条全绿）</strong>：① 产物落对地方且<strong>工作区 <code>.codebase-memory/</code> 字节不变</strong>（IDE 的所有物 ✓）；② 读侧 <code>graphSource=shadow</code> 且拿到影子的真实计数 —— <strong>带负对照</strong>：IDE 那份故意写着 999 个节点 ⇒ 只断言"有数字"排除不掉读错源 ✗；③ 删掉图 ⇒ 立刻回退 IDE 并如实报 <code>missing</code>；④ 别人持有新鲜锁 ⇒ 不排队/不抢/<strong>saved_at 不变</strong>；mtime 很老的残骸 ⇒ 接管并报出；⑤ 增量复用 + 缓存被改坏要<strong>如实报 <code>cacheRejected</code></strong> 且照常产出；⑥ 闸行为级（<code>codebase_index</code> 无论参数都 ask、只读工具必须 <code>next()</code>）；真机层：页面 <code>graph-source</code> 从 <code>ide</code> → <code>shadow</code>、<code>/api/index-status</code> 如实报告、且页面显示的是影子计数（不是 999 ✓）。</li>
+	<li><strong>守卫接线</strong>：<code>tools-snapshot --write</code>（62 → <strong>66</strong> 个工具 / 11 个插件；其中本模块 13 个）、<code>dshPluginPackages</code>（<code>files</code> 覆盖 <code>lib/shadow.js</code>/<code>lib/indexService.js</code>；台账从 <code>reason</code> 改为 <strong><code>gate: 'hook'</code></strong> ⇒ 本模块从此按"挂闸的写模块"审 ✓，并注明 <code>codebase_self_index</code> <strong>刻意不入闸</strong>的不对称 ✓）、<code>dshToolCoverage</code>（<code>COVERED_BY</code> 加 <code>p3-40</code> ✓）。</li>
+	<li><strong>顺带修掉一条既有红</strong>：<code>p3-28</code> 的"名单对账"此前红（<code>vssaros-media</code> 已带 <code>hostHalf</code> 闸但没挪进 <code>SUPPORTED</code>）⇒ 补齐后 <strong>19/19</strong> ✓（"名单不许腐烂"那条守卫正是为这种漏登记设计的 ✓）。</li>
+	<li><strong>回滚</strong>：删 <code>lib/shadow.js</code> / <code>lib/indexService.js</code> + 两个工具 + <code>graphDirOf</code> 的偏好分支 ⇒ 回到"只读 IDE 产物"的现状 ✓；或者只把 <code>indexDir</code> 配到一个空目录（影子不可读 ⇒ 自动回退 IDE ✓，行为上等于没开）。</li>
+	<li><strong>诚实边界（P1 没做）</strong>：① 正则顶层符号（非真解析）；② 边只有 <code>IMPORTS</code>/<code>CONTAINS</code>/<code>IMPORTS_SYMBOL</code>；③ 无文件监听、无后台任务（一次调用 = 一次索引）；④ 真机层<strong>没有</strong>在 Host 里触发索引（写动作只走工具 ⇒ 探针不启模型回合；那条链由"进程内调用 + 装的就是当前源码"两半支撑 ✓）；⑤ wasm 是否随包仍未定（§9 决策 2）。</li>
+</ul>
+
+<h3>P2 · 真解析（把 L2 的正则换成 tree-sitter）<span class="v">✓ 已落地（2026-10-12）</span></h3>
+<ul>
+	<li><strong>落地物</strong>（<code>@vssaros/dsh-codebase</code> <strong>0.6.23</strong>）：
+		<ul>
+			<li><code>lib/parser/extract.js</code> —— 真解析的<strong>抽取层</strong>（纯函数，跑在 worker 里）：照抄真源的两张表
+				（<code>AST_TO_NODE_TYPE</code> 23 条 / <code>EXTENSION_TO_LANGUAGE</code> 20 条）+ <code>walkAST</code> 的语义
+				（整棵 AST 递归 ⇒ 类成员也是节点；<code>qualifiedName = file::name</code> <strong>不带父级</strong>；<code>CONTAINS</code> 只有 file→symbol；
+				CALLS 的 callee 是<strong>最左标识符</strong>；USAGE 的 read/write 与目标 label 限制；INHERITS/IMPLEMENTS）。</li>
+			<li><code>lib/indexer.js</code> —— 真解析挂载点（注入式 <code>extract</code>，索引器保持可离线单测）+ 四条边的<strong>解析/去重/度数</strong>照真源；
+				缓存 <code>CACHE_VERSION 1 → 2</code>（多带 <code>calls/usages/inherits</code> 三份事实 ⇒ 增量 ≡ 全量 ✓）。</li>
+			<li><code>lib/indexService.js</code> —— <code>parser: 'regex'（缺省）| 'treesitter'</code>；真模式下<strong>先问资产在不在</strong>
+				（缺 ⇒ 当场 <code>no-parser-assets</code>，而不是"扫一遍、每文件都失败"✗），逐文件把扩展名映射成语言、未覆盖的<strong>如实计数不回落</strong> ✗。</li>
+			<li>工具 <code>codebase_index</code> 新增 <code>parser</code> 参数，并在输出里给出 <code>callEdges/usageEdges/inheritEdges/unmatched*</code>（如实报差 ✓）。</li>
+			<li>探针 <code>p3-41</code>（<strong>23 条</strong>，已登记 <code>run-all</code>，标 <code>fast</code>）+ 守卫自检 + 反向突变 <strong>6/6 命中</strong>（含"<code>files</code> 漏文件"那条守卫的<strong>自检</strong> ✓）。</li>
+		</ul>
+	</li>
+	<li><strong>★ 与 IDE 真图的对账结果（本仓库真实图谱 190,023 节点，取 <code>agentStudio/common/</code> 下 4 个真实文件）</strong>：
+		<ul>
+			<li><code>class</code> / <code>interface</code> / <code>variable</code> 三类计数 <strong>逐类相等</strong>（4 / 1 / 31 ✓）—— 这是"两套实现口径真的对上了"的最硬证据 ✓；</li>
+			<li>同名符号（<code>file::name</code>）重合 <strong>67%</strong>（55 中 37）；同名里起始行一致 <strong>76%</strong>（37 中 28）；</li>
+			<li><strong>差的性质已查清</strong>：IDE 单方多出来的符号<strong>全是 <code>function</code></strong>（<code>path</code>/<code>uri</code>/<code>IFileService</code>/<code>targetObj</code>…）⇒ 正是真源"方法名取成<strong>形参名</strong>"那条 ✗；
+				行号不一致的那批是真源对<strong>同名多次出现</strong>取<strong>最后一次</strong>位置、我们取第一次（下一条差异 ④）✓。</li>
+		</ul>
+	</li>
+	<li><strong>★ 四条<strong>有意差异</strong></strong>（都已写进 <code>extract.js</code> 注释 + 由 p3-41 逐条钉住；<strong>不是漂移</strong> ✓）：
+		<ol>
+			<li><strong>名字优先取 <code>name</code> 字段</strong>：真源 <code>extractName</code> 只按"declarator 链 + DFS 第一个标识符"，而 <code>IDENTIFIER_TYPES</code> 不含 <code>property_identifier</code>
+				⇒ TS 的 <code>method_definition</code> 会把<strong>形参名</strong>当方法名（<code>scale(input)</code> ⇒ <code>input</code> ✗），无参时干脆取不到 ⇒ 方法整条不产。我们补了字段优先 ⇒ 保住了 C/C++ 的 declarator 陷阱又不误名 ✓。</li>
+			<li><strong>额外如实计数</strong>：<code>unmatchedCalls/Usages/Inherits</code> + <code>extractErrors</code> + <code>skippedUnsupported</code>（真源丢边时只有一行 info 日志 ✗）。</li>
+			<li><strong>TS 继承子句靠回退取</strong>：真源只认 <code>heritage</code> <strong>字段</strong>，而 tree-sitter-typescript 把继承放在<strong>命名子节点</strong> <code>class_heritage</code> 上
+				⇒ 照抄的话 TS/TSX 的 <code>INHERITS</code>/<code>IMPLEMENTS</code> <strong>恒为 0</strong> ✗（实测 AST 写在代码注释里 ✓）。</li>
+			<li><strong>同名多次出现取第一次</strong>（真源 upsert 会把位置覆盖成最后一次 ✗）。</li>
+		</ol>
+	</li>
+	<li><strong>顺带钉住的边界（不是欠账，是事实 ✓）</strong>：① <code>public_field_definition</code>（类字段）不在真源表里 ⇒ 不产节点（别当漏抽 ✗）；
+		② 扫描器的 <code>SOURCE_EXT</code> 只认 TS/JS 一族 ⇒ <strong>语言表比扫描面宽</strong>
+		<span class="v">（P3 已修：真解析模式的扫描面改为语言表 ✓；正则模式的扫描面<strong>刻意不变</strong> ✓）；</span>
+		③ 真源对同一处类型标注会收<strong>两次</strong>（<code>type_annotation</code> + 它的 <code>type_identifier</code> 子节点）⇒ 边被去重掩盖、<strong>计数不会</strong>，我们照真源 ✓。</li>
+	<li><strong>回滚</strong>：不传 <code>parser</code> / 传 <code>'regex'</code> ⇒ 与从前逐字一致（p3-41 有一条专门断言它 ✓）。</li>
+	<li><strong>范围（原计划，对照用）</strong>：P0 的 parser 接进 L2；边类型从 <code>IMPORTS</code>/<code>CONTAINS</code> 扩到
+		<code>CALLS</code>/<code>USAGE</code>/<code>EXTENDS</code>（跨文件符号解析）。
+		⚠ 落地时口径按<strong>真源的真实命名</strong>定了：继承类是 <code>INHERITS</code> / <code>IMPLEMENTS</code>（真源里<strong>没有</strong> <code>EXTENDS</code> 这个类型 ✗）；
+		解析器开关落在<strong>工具参数与 <code>config.parser</code></strong>（缺省 <code>regex</code> ✓）。</li>
+</ul>
+
+<h3>P3 · 覆盖与交付（不依赖产品决策的那半）<span class="v">✓ 已落地（2026-10-12）</span></h3>
+<ul>
+	<li><strong>① 扫描面扩到语言表</strong>（此前是欠账：语言表 20 条、扫描面只有 TS/JS 6 条 ✗）：
+		真解析模式的 <code>collectSourceFiles</code> 用 <code>EXTENSION_TO_LANGUAGE</code> 当后缀集 ✓，
+		缺 grammar 的文件<strong>照样进扫描集</strong>（有 file 节点）但<strong>不产符号</strong>并计进 <code>skippedUnsupported</code> ✓ ——
+		刻意<strong>不做</strong>"只扫有 grammar 的" ✗（那会让没 grammar 的源文件<strong>静默消失</strong>，正是本仓最怕的错）。
+		<span class="q">正则模式的扫描面<strong>刻意不变</strong> ✓</span>（p3-41 有一条反向对照断言它 ⇒ 缺省零行为改变）。
+		⚠ 代价：真模式下一个"资产不全"的仓库会产生一批<strong>只有 file 节点、没有符号</strong>的条目 ⇒ 用
+		<code>skippedUnsupported</code> 与页面上的报差一起看（<strong>别把它读成"仓库就是这样"</strong> ✗）。</li>
+	<li><strong>② 资产随包交付的可执行件</strong>：<code>bin/vendor-assets.mjs</code>（<code>--all</code> = 全量档，<strong>已按决策 2 执行</strong>：
+		<strong>16 个 grammar + 运行时 = 18 个文件 / 21.02MB</strong> ✓；缺省档仍是 6 语言 ≈5.2MB ✓）——
+		把运行时<strong>改名 <code>.cjs</code></strong>（P0 的陷阱，脚本文件头写着为什么 ✓）+ 选定 grammar 拷进 <code>vendor/</code>；
+		<code>--check</code> 校验（"只有 <code>.js</code>"判不合格 ✓）、缺源文件<strong>不静默跳过</strong> ✗、
+		并在写盘前检查 <code>package.json</code> 的 <code>files</code> 是否包含 <code>vendor</code>
+		（漏了就是"本地正常、装出来没资产"的静默失效 ✗）。<code>files</code> 已加 <code>vendor</code> + <code>bin/vendor-assets.mjs</code> ✓。
+		⚠ <strong>脚本刻意不自动跑</strong>：资产进不进包是<strong>产品决策</strong>（§9 决策 2）⇒ 你点头后一条命令即可 ✓。
+		p3-39 新增 4 条把它钉住（空目录 <code>--check</code> 必须非零 ✓、拷出来必须是 <code>.cjs</code> ✓、
+		<b>端到端：解析器链认这份资产并真解析</b> ✓ —— 不提交 5MB 也能证"随包这条路能跑"）。</li>
+</ul>
+
+<h3>P3-b · 新鲜度纪律（让"能跑"变成"能信"）<span class="v">✓ 已落地（2026-10-12）</span></h3>
+<ul>
+	<li><strong>问题（P1 留下的缺口，往回看才发现的 ✗）</strong>：P1 的"影子优先"只判"影子可读吗" —— 于是<strong>一次索引之后</strong>，只要用户后来在 IDE 里又跑过索引（IDE 的图更新 ✓），我们就用<strong>旧影子静默盖住</strong>了更新的那张图 ✗✗。
+		症状是"图里的符号/行号跟当前代码对不上，而页面看不出为什么"—— 正是本仓最贵的那类<strong>静默错</strong> ✓。</li>
+	<li><strong>判据</strong>：影子<strong>只有在不比 IDE 图旧时</strong>才被采用 ✓（比 <code>saved_at</code>，那两边同一口径；读不到才退回文件 mtime ✓）；
+		<strong>平手留影子</strong>（同一次索引的两种视角，影子更全：多了符号与调用边 ✓）。
+		被顶掉时<strong>不静默</strong>：返回 <code>staleShadow</code>（谁更新、差多少 ms ✓）。</li>
+	<li><strong>四处都要答得出"读图实际走哪一份"</strong>（"有影子产物" ≠ "读的是影子" ✓）：<code>codebase_overview</code>（人读行 + json 行都带"来自哪 / 多新 / 影子被顶掉"✓）、
+		<code>codebase_index_status</code>（<code>effectiveSource</code> / <code>staleShadowAgeMs</code> ✓）、页面诊断行（"读图走 ide" + "影子比它旧 X"✓）、<code>/api/index-status</code> ✓。</li>
+</ul>
+
+<h3>P4 · 常驻保鲜（watcher）<span class="v">✓ 已落地（2026-10-12）</span></h3>
+<ul>
+	<li><strong>它解决的是</strong>：新鲜度纪律只能挡住"IDE 也更新过"那种情况；<strong>用户改了代码、两边都没重算</strong>时，
+		唯一诚实的答案就是"把它重算" ✓ ⇒ watcher 把影子索引从<strong>工具</strong>变成<strong>能力</strong> ✓（会话开着就一直是新的）。</li>
+	<li><strong>五条纪律（每条都对应一种"悄悄坏掉"）</strong>：① 缺省不启用（<code>config.indexWatch === true</code> 才起；没起时状态里要说清<strong>为什么</strong>✓）；
+		② 去抖<strong>合并</strong>连续保存，但必须有<strong>上限兜底</strong>（否则"一直在编辑 ⇒ 永远不索引" ✗）；
+		③ <strong>绝不并发</strong>（上一轮没跑完不开下一轮 ⇒ 不会两个索引抢同一把锁 ✓）；
+		④ <strong>不看自己</strong>（忽略目录 + 产物临时文件 ⇒ 破"写产物 ⇒ 触发 ⇒ 再索引"的自激 ✓）；
+		⑤ <strong>可停</strong>（<code>stop()</code> 关掉 watcher 与定时器 ✓ —— <code>fs.watch</code> 不跟着插件消失 ✗，与 worker_threads 同理 ✓）。</li>
+	<li><strong>★ p3-42 抓到的两个真 bug（都值得记）</strong>：① 去抖定时器在一次运行<strong>进行中</strong>触发时被直接丢掉 ✗ ⇒ 那次变更要等<strong>下一个事件</strong>才被看见（用户改完就切走 ⇒ 影子一直旧 ✓）；
+		② 忽略判据只查"目录段"，而 <code>fs.watch</code> 递归模式会报<strong>只到目录</strong>的路径（建 <code>node_modules/dep.js</code> 时报 <code>node_modules</code> ✓）⇒ 漏过 ⇒ 白跑一轮 ✓。
+		两条都已修 + 由 p3-42 逐条钉住（反向突变 5/5 命中 ✓）。</li>
+	<li><strong>平台差异如实处理</strong>：<code>fs.watch({ recursive })</code> 起不来时退化成"只盯一层"（<code>mode: 'shallow'</code>）并<strong>如实报出</strong> ✓，不假装看得全 ✗。</li>
+</ul>
+
+<h3>P3 · 所有权交接（决策 3 = 甲）<span class="v">✓ dsh 半边已落地（2026-10-12）</span><span class="q">◻ IDE 半边待做</span></h3>
+<ul>
+	<li><strong>dsh 半边（已完成，<code>@vssaros/dsh-codebase</code> 0.6.27）</strong>：
+		<ul>
+			<li><strong>落点是一个显式档位</strong>：<code>config.indexTarget</code> = <code>'shadow'</code>（缺省，与从前逐字一致 ✓）| <code>'workspace'</code>（交接档 ⇒ 写 <code>&lt;ws&gt;/.codebase-memory/</code> ✓）；
+				<strong>非法值当场拒</strong>（<code>bad-target</code>），不许静默退回缺省 ✗（"我以为在写工作区"是最贵的谜 ✓）。</li>
+			<li><strong>写读同一个判据</strong>：落点只由 <code>shadow.js::writeDirOf</code> 一处决定，写侧（<code>indexService</code>）与读侧（<code>store</code>）都调它 ⇒
+				"写一处、读一处"在结构上不可能 ✗✗（那种错最难查：盘上有新产物、查询一直给旧的 ✓）。</li>
+			<li><strong>与 IDE 共用同一把锁</strong>（同一个 <code>index.lock</code>、同一个 <strong>5 分钟</strong>残骸阈值、同一个 <strong>60s</strong> 心跳口径 ✓）：
+				IDE 在写 ⇒ 我们<strong>拒绝并点名</strong>"IDE 侧（锁里没有 <code>writer</code> 字段）"✓；真残骸 ⇒ <strong>接管并如实报出</strong> ✓；
+				我们写时<strong>心跳刷 mtime</strong>（真解析一轮可能分钟级，没心跳必被对方判成残骸 ✗✗）；
+				<strong>锁丢了立刻停跳</strong>（继续刷 = 给别人的锁续命 ✗，比没心跳更坏 ✓）。我们写下的锁带 <code>writer</code>/<code>instanceId</code>，
+				但 <strong>IDE 侧解析所需的 <code>token</code> + <code>acquiredAt</code> 都在</strong> ✓。</li>
+			<li><strong>换向之后旧影子不许再参与读</strong>（否则"我明明交接了、读的还是老影子" ✗），但必须<strong>报出来</strong>（<code>orphanShadow</code> ⇒
+				"盘上有两份图、不知道哪份是真的"也是谜 ✓）。</li>
+			<li><strong>验收（p3-43，23 条全绿）</strong>：① 缺省仍是影子、显式 <code>shadow</code> 与缺省<strong>逐字同路</strong>、交接档落点/来源正确、非法值当场拒；
+				② 影子档跑完<strong>工作区目录一行没写</strong>、交接档跑完产物真落到工作区且<strong>读侧同步换成 <code>workspace</code></strong>（写入回执与读回计数逐字一致 ✓）；
+				③ 锁互操作六条（新鲜 IDE 锁 ⇒ 拒 + 点名；4 分钟前的锁 ⇒ <strong>不接管</strong>；6 分钟前 ⇒ 接管并报出；锁字段可被 IDE 解析；心跳真刷 mtime；被接管 ⇒ 停跳）；
+				④ <code>orphanShadow</code> 如实；真机层：页面 <code>graph-source=workspace</code> + "已交接"、<code>/api/index-status</code> 的 <code>target</code>/<code>effectiveSource</code>/目录一致 ✓。</li>
+			<li><strong>★ 反向突变 6/6 命中</strong>（交接档失效 / 非法值静默退回 / 阈值不一致 / 读侧不认交接档 / 过期判据退回 <code>acquiredAt</code> / 心跳不检查归属）+ 基线真绿 ✓。</li>
+			<li><strong>顺带修掉两个真 bug</strong>：① <code>lockStateOf</code> 原先按 <code>acquiredAt</code> 判过期 ⇒ 有了心跳之后<strong>必然误报</strong>"正在跳的锁已过期" ✗（改成 mtime，与接管判据/IDE 侧同一个 ✓）；
+				② 心跳的 <code>intervalMs</code> 被实现里 <code>Math.max(1000, …)</code> 静默夹紧 ⇒ 传 120ms 变成 1s，探针看到"一次都没跳" ✗（教益：<strong>接受一个参数就得真用它</strong> ✓）。</li>
+		</ul>
+	</li>
+	<li><strong>IDE 半边</strong>（<code>src/vs/sessions/contrib/agentStudio/</code>）：这是"交接"真正生效的最后一刀。
+		<span class="v">✓ 2026-10-13 已落地「外部产物感知」这一刀（见下）</span>；其余三条 <span class="q">◻ 待做</span>（都属行为可见的 IDE 变更，需你单独点头）。
+		<ul>
+			<li><strong>★ 已落地：<u>外部产物感知 ⇒ 重载</u></strong>（这替代了原计划的"两处同步消费者 async 化" ✓）。
+				<br><strong>为什么换做法</strong>：async 化要动 <code>codebaseGraphService.ts</code> 的 4 个同步方法 + <code>ICodebaseGraphService</code> 接口 + <code>codebaseGraphVaxSearch.contribution.ts</code> 的 8 处调用点 ——
+				而 <code>codebaseGraphContracts.test.ts</code> 对该文件有<strong>逐字源码断言</strong>（含 <code>.hasGraphData()</code> 的顺序不变量）✗ ⇒ 改动面大且脆。
+				反过来做更小也更对：<strong>让 IDE 主动发现"盘上那份被换了" ⇒ 后台重载进内存 store</strong> ⇒ 同步读者一个字不用改 ✓✓。
+				<br><strong>判据</strong>（纯函数 <code>common/codebaseIndexDefaults.ts::decideExternalArtifactReload()</code>，可单测 ✓）：
+				① 读不出"多新" ⇒ 不猜；② 还没加载过 ⇒ 不重载（首次走既有路径）；③ 本窗口在写盘/索引 ⇒ 不重载（会丢未落盘状态）；
+				④ 磁盘不比基线新（含平手）⇒ 不重载；⑤ <strong>空制品守卫</strong>（磁盘 0 节点不许换掉内存里的好图 —— 99 字节事故同一条教训）；
+				⑥ <strong>自我写识别</strong>（盘上比基线新、但节点/边数与内存逐个一致 ⇒ 判为"本窗口自己刚落盘"⇒ 只跟基线，不做重活）；
+				⑦ 节流（重载 = "删项目 + 重新解析"的重活）。
+				<br><strong>接线</strong>（<code>codebaseGraphBootstrap.ts</code>，只用<strong>已存在的公开 API</strong> ⇒ 零接口改动 ✓）：每 10s 轮询已就绪 folder 的 <code>artifact.json</code>（几百字节，不解压图谱 ✓）；
+				命中 ⇒ <code>deleteProject(project)</code> + <code>loadGraphMerge(...)</code>（先清后合 = 真"换新"，否则旧节点会以幻影留下 ✗）；基线在三处维护（两个加载点 + <code>onDidIndexComplete</code>）。
+				<br><strong>验证</strong>：<code>codebaseIndexDefaults</code> 单测 <strong>28 passing</strong>（+9 条新断言）+ <strong>反向突变 6/6 命中</strong> + 基线真绿 ✓；
+				对 bootstrap 有源码级断言的三条套件（<code>codebaseGraphContracts</code> / <code>guardrailWiring</code> / <code>wsSwitchDiag</code>）<strong>122 passing / 0 failing</strong> ✓；lint 0 ✓。
+				<br>⚠ <strong>实机待验</strong>（需要起真 IDE + 一个外部写者）：打开工作区 → 在 dsh 侧以 <code>indexTarget: 'workspace'</code> 跑一次 <code>codebase_index</code> ⇒
+				IDE 应在 ≤10s 内出现日志 <code>[external] "X"：磁盘上的制品比内存里的新…</code> 并刷新图谱 ✓。
+				<br>⚠ <strong>它刻意不解决</strong>：IDE 侧<strong>待发的延迟保存</strong>（30s 防抖窗口）可能覆盖别人的新制品（写-写竞争 ✗）—— 那正是下面第 ① 条要解决的，这里不去 flush（提前 flush 只会让覆盖更早发生 ✗）。</li>
+			<li><strong><span class="v">✓ 已落地（2026-10-13，用户裁决「权限都在 dsh 侧全权处理、逻辑也都转移到 dsh 侧」）：权限在 dsh，IDE 只读</span></strong>。
+				<br><strong>机制</strong>：产物自己声明生产方 —— dsh 写的 <code>artifact.json</code> 带 <code>producer: 'vssaros-dsh'</code> ✓（两侧同名常量：
+				dsh <code>indexer.js::ARTIFACT_PRODUCER</code> / IDE <code>codebaseIndexDefaults.ts::DSH_ARTIFACT_PRODUCER</code>）。
+				IDE 侧据此在这两处拒动：<code>indexWorkspace()</code> <strong>连扫描都不做</strong>（省一轮分钟级索引 ✓）、
+				<code>_saveGraph()</code> <strong>一律拒写</strong> ✓。
+				<br><strong>为什么闸必须在最底层（<code>_saveGraph</code>）</strong>：落盘有几条独立来路 —— 全量收尾、<strong>增量收尾</strong>、
+				以及 <code>_scheduleSaveGraph</code> 的 <strong>30s 防抖</strong>（⚠ 它在<strong>放掉索引锁之后</strong>才触发）——
+				只挡入口挡不住"锁已释放、定时器随后才写"，那正是 99 字节事故的形态 ✗✗。一个点覆盖全部来路 ✓。
+				⇒ <strong>自动、增量、延迟保存、显式（面板/LLM）全部被挡住</strong> ✓，返回里说清"要重建请去 dsh 侧触发 <code>codebase_index</code>" ✓。
+				<br><strong>为什么不是"IDE 侧配置项"</strong>：那是把决定权留在 IDE ✗，且新增配置项还要用户手动开；
+				而"谁产出谁声明"实现上更省，还天然可逆 —— <strong>dsh 的制品被删掉、或 IDE 后来自己写了一份（不带此键）⇒ 权限自动回到 IDE</strong> ✓
+				（这是"没装 dsh 的环境不会失去索引"的保证 ✓）。
+				<br><strong>⚠ 上一版的"自动索引让路"已按裁决撤掉</strong>：那是<strong>策略留在 IDE</strong>（IDE 自己判断"该不该让"）✗ ——
+				会出现两套口径；现在策略只有一条、且在最底层 ✓。
+				<br><strong>验证</strong>：IDE 单测 31 + 反向突变 8/8（含"判据过宽 ⇒ 没装 dsh 的环境彻底失去索引"这条坏法 ✓）
+				+ 三条源码级套件 122 passing ✓；dsh 侧 p3-43 新增"产物自称生产方"契约断言 ✓（24/24）。</li>
+			<li><span class="q">历史（已撤）</span>：<s>IDE 自动索引「让路」（2026-10-13，第 ① 刀的一半）</s>。
+				<br><strong>为什么不是"直接关掉"</strong>：关掉之后 dsh 不在（或没在给这个工作区建图）时，用户就<strong>完全没索引了</strong> ✗✗ ——
+				那不是"交接"，是"功能消失"。⇒ 做成<strong>可逆的条件让路</strong> ✓。
+				<br><strong>判据</strong>（纯函数 <code>decideIdeAutoIndexYield()</code>，可单测 ✓）：
+				<strong>自动索引真正开跑之前再读一次清单</strong>；若盘上那份 <code>artifact.json</code> 自称 <code>node_count &gt; 0</code>
+				而本窗口内存里没有这个项目的图 ⇒ <strong>让路</strong>（日志写明原因 + 该 folder 仍然留在待索引集合里 ⇒ dsh 那份哪天消失，下次打开/切换就轮到 IDE 接手 ✓）。
+				<br><strong>为什么要"再读一次"</strong>：待索引集合是"打开工作区那一刻还没有制品"时排进去的，而中间隔着 <code>AUTO_INDEX_DELAY_MS</code>（5s）——
+				<strong>别人完全可能在这段时间里产出图</strong>（dsh 正在给同一个工作区建图 ✓ 正常），那次自动索引会把它整份覆盖掉 ✗✗（分钟级全量扫描 + 一次落盘）。
+				<br><strong>三条刻意保留的边界</strong>（否则会伤到既有恢复路径 ✗）：清单不存在/读不出 ⇒ 照常索引；<strong>清单自称 0 节点 ⇒ 照常索引</strong>
+				（99 字节 / 10KB 空图那条事故的恢复口 ✓）；清单缺 <code>node_count</code> ⇒ 照常索引。
+				<strong>它只挡自动路径</strong>：用户/LLM 显式触发的索引不受影响 ✓（明确意图不该被静默拦下 ✓）。
+				<br><strong>验证</strong>：单测 <strong>31 passing</strong> + 反向突变 <strong>8/8 命中</strong>（含"判据过宽 ⇒ 连残骸恢复一起挡掉"这条坏法 ✓）+ 三条源码级套件 122 passing ✓。</li>
+			<li><strong><span class="v">✓ 已落地（即原"① 的另一半"）：写-写竞争已封</span></strong> ——
+				显式索引路径（面板 / LLM 工具）走 <code>indexWorkspace()</code> 被挡 ✓；
+				IDE 侧<strong>待发的延迟保存</strong>（<code>SAVE_DEBOUNCE_MS</code>，且落盘在<strong>释放索引锁之后</strong>）走 <code>_saveGraph()</code> 被挡 ✓✓
+				（锁只能挡"同时"、挡不住"轮流"，所以闸必须落到"真写盘"那一处 ✓）。
+				<br>⚠ <strong>一条如实的副作用</strong>：被挡的那次增量结果<strong>不落盘</strong>（内存有、盘上没有）—— 这是<strong>有意</strong>的（图归 dsh ✓），
+				且会在 ≤10s 内被"外部感知重载"用 dsh 的图<strong>覆盖回一致</strong> ✓；对 dsh 侧分毫无影响 ✓。</li>
+			<li><span class="v">✓ 已落地 ③（含<strong>整条删除</strong> ~722 行）</span>：那条索引 worker 通道 ——
+				<code>common/codebaseGraphIndexChannel.ts</code>(271) + <code>node/codebaseGraphIndexWorkerMain.ts</code>(86) +
+				<code>browser/codebaseGraphIndexProxy.ts</code>(168) + <code>test/browser/codebaseGraphIndexProxy.test.ts</code>(197) ——
+				连同它的探活接线（构造期起一个 utility process 只为证明"通道能通" ✗）、
+				以及<b>契约套件里守它的那条 ⑨</b>（守的东西已不存在 ⇒ 留着只会 <code>ENOENT</code> 假红 ✗）一起删除 ✓。
+				<br>删除面<strong>全仓核过</strong>：<code>rg</code> 查 <code>codebaseGraphIndex*</code> / <code>_indexChannel</code> / <code>index-channel</code>
+				在 <code>src</code> / <code>build</code> / <code>.ci</code> / <code>package.json</code> 里 <strong>0 处残留</strong> ✓
+				（该 worker 入口按文件路径解析、无需构建登记 ✓）；服务侧连带去掉只为此存在的
+				<code>IUtilityProcessWorkerWorkbenchService</code> 注入与两个字段 ✓。
+				<br>⚠ <strong>墓碑留在契约套件里</strong>：被删的那条测试原本钉住两个<strong>真实坑</strong> ——
+				<code>ProxyChannel.toService</code> 的 <code>then</code> 陷阱会让<strong>所有调用永久挂起且不报错</strong> ✗✗；
+				<code>getDelayedChannel(getWorker().then(…))</code> 会在<strong>构造期</strong>求值 ⇒ 惰性失效 + 未处理 rejection ✗ ——
+				代码删了但这两条知识以注释形式保留 ✓（将来要重做"索引进程化"时按它重写 ✓）。
+				<br>验证：三条源码级套件 <strong>121 passing</strong>（少一条 = 被删的 ⑨ ✓）· lint 0 · 全仓 0 残留 ✓。</li>
+			<li><strong><span class="v">✓ 已落地 ④ 双引擎差分</span>（探针 <code>p3-47</code>，13/13 + 反向突变）</strong>：
+				拿<strong>仓库里 IDE 真产的图谱</strong>（190,599 节点 / 490,048 边）当参照，dsh 侧对<strong>同一批真实源码</strong>
+				（120 个文件，保持相对路径拷进临时工作区 ⇒ 两侧 <code>filePath</code> 可比 ✓）建图对账。实测：
+				<ul>
+					<li><strong>符号命中率 94.5%</strong>（IDE 侧 3008 个符号 ⇒ dsh 命中 2842；漏抽 166 = function 132 / interface 15 / variable 19）；
+						多抽 366（<strong>11.2%</strong>，样例是<strong>类成员方法</strong>——那正是 dsh 有意比 IDE 抽得更全的那一类 ✓）；</li>
+					<li><strong>无歧义符号的 <code>startLine</code> 一致率 100.0%（450/450）</strong> ✓ —— 另有 2392 个"同名在源码里出现多次"的
+						<strong>如实排除</strong>（两侧各自按 QN 去重、留的可能不是同一个实例 ⇒ 比了就是假结论 ✗）；</li>
+					<li>label 分布两侧接近：variable 1978/1910、function 808/627、interface 421/423、class 36/32、enum 16/16 ✓；</li>
+					<li>边类型：dsh 多出 <code>IMPORTS</code> 16 / <code>IMPORTS_SYMBOL</code> 13 / <code>INHERITS</code> 7 / <code>IMPLEMENTS</code> 4，
+						且 <code>CALLS</code> 1611 vs 685、<code>USAGE</code> 1895 vs 1512（<strong>更全</strong>，方差已由 P2 的"如实报差"覆盖 ✓）；</li>
+					<li>速度：dsh 解析这 120 个真实文件 <strong>1.1s</strong>（0 解析失败 / 0 未覆盖语言 ✓）。</li>
+				</ul>
+				⚠ 度量本身踩过两次坑（都写进探针里了）：① 只按 <code>file::name</code> 配对 ⇒ 把"同名多现、两侧各留不同实例"
+				记成"行号不一致"（89% 假红 ✗）；② 修好后我<strong>又猜错一次</strong>——以为 label 入键是保护行号的关键，
+				反向突变 M9 证伪了它（真正承重的是<strong>源码级同名计数过滤</strong> ✗✓）。
+				⇒ 结论：这条探针的<strong>地板值只作回归护栏</strong>（命中率 ≥75% / 行号 ≥95% / 样本量 ≥100），
+				并配"多抽占比 ≤25%"与"漏抽按 label 归类"两行<strong>如实报差</strong> ✓ —— 不做"准确率承诺" ✗。</li>
+		</ul>
+		⚠ <strong>交接的开关仍是显式的</strong>：<code>config.indexTarget = 'workspace'</code>（缺省 <code>shadow</code>）——
+			dsh 一旦这么写，IDE 侧就按 <code>producer</code> 自动让出写权 ✓，</li>
+		<li><strong><span class="v">✓ 本轮全部落地</span></strong>：③ 索引 worker 通道<strong>整条删除</strong>（<strong>722 行</strong> + 守它的那条契约测试 ⇒ 全仓 0 残留 ✓）、
+			④ 双引擎差分（探针 <code>p3-47</code> ✓）—— <span class="v">方案内的待办到此清空</span>，且<strong>无遗留清理项</strong> ✓。</li>
+</ul>
+
+<h3>P4-b ·（可选）SQLite/FTS5 后端<span class="q">◻ 未做（有意）</span></h3>
+<ul>
+	<li>dsh 侧可用 <code>node:sqlite</code>（media 插件已证可用）—— <strong>只在影子产物真被大图拖慢时再做</strong>
+		（IDE 侧的实测说明：SQLite 增量补丁 747ms、而 JSON 解析才是大头 ⇒ 别提前投资 ✗）。</li>
+</ul>
+
+<h3>P5 ·「大件」两件：Cypher 控制台 与 索引档位的 dsh 等价语义<span class="v">✓ 已按推荐 ② 落地（页面侧）</span><span class="q">◻ 引擎侧未做（有意）</span></h3>
+<p class="small">
+	共同前提：这两件<strong>都不是"页面缺个按钮"</strong>，而是 dsh 侧<strong>缺少对应引擎/语义</strong> ✗。
+	已按下面的推荐执行了<strong>页面侧的 ② 档</strong>（插件 <code>0.6.34</code> ✓）；<strong>引擎侧没做</strong>（那要看是否真要投入，见各条的 ③）。<br>
+	⚠ 两条纪律贯穿始终：<strong>不许把 IDE 的概念原样改名搬过来</strong>（假等价比没有更坏 ✗）；<strong>做不到的部分继续在页面上说清</strong> ✓。
+</p>
+<ul>
+	<li><span class="v">✓ 已落地（A②）</span>：<strong>形状查询</strong>（<code>lib/shapeQuery.js</code>，纯函数 ✓）—— 只认 6 种写法
+		（<code>type:class</code> / <code>file:&lt;片段&gt;</code> / <code>deps:&lt;符号&gt;</code> / <code>file-deps:&lt;片段&gt;</code> / <code>impact:&lt;符号&gt;#N</code> / <code>hot:20</code>，<code>#N</code> ≤ 50 ✓；
+		<code>file-deps:</code> 先把片段解析成<strong>唯一</strong>文件（<code>dependenciesOf</code> 的 <code>filePath</code> 是精确匹配 ✗）—— 命中多个就<strong>列候选、绝不猜</strong> ✓）；
+		<code>impact:</code> 的 <code>#N</code> 是<strong>跳数</strong>（缺省 2、上限 5 ✓），沿 <code>CALLS</code> <strong>反向</strong>找调用者 —— 方向语义在页面与探针里都<strong>说死</strong> ✓），
+		全部转发到既有 helper（<code>topNodes</code> / <code>dependenciesOf</code> / <code>searchNodes</code> / <code>impactOf</code> ✓ <strong>无新依赖</strong>）；
+		<strong>别的输入一律明确报错并列出支持项</strong> ✓（页面上写着"这不是 Cypher" ✓）。页内形状：<code>?shape=…</code> ✓。
+		<span class="x">◻ 未做</span>：③ 真 Cypher 引擎（要解析器 + 执行器 ⇒ 约等于一个新子系统 ✗）。</li>
+	<li><span class="v">✓ 已落地（B②，页面侧语义）</span>：页面把 dsh 的<strong>真实档位</strong>写清 ——
+		<strong>快档</strong> <code>codebase_index</code> 的 <code>parser: "regex"</code>（<strong>缺省</strong>：顶层声明近似 + <code>IMPORTS</code>/<code>CONTAINS</code> ⇒ 秒级）
+		vs <strong>真解析档</strong> <code>parser: "treesitter"</code>（符号与行号准确 + <code>CALLS</code>/<code>USAGE</code>/<code>INHERITS</code>/<code>IMPLEMENTS</code> ⇒ 全仓分钟级），
+		并<strong>明说第三档（原版 <code>full</code>：语义/相似度索引）dsh 侧没有移植</strong> ⇒ 不摆 ✗。
+		<span class="x">◻ 未做</span>：给工具加 <code>preset</code> 参数（把两档包成名字）、以及 ③ 的 <code>Exclude</code>/<code>Keep</code>（要动扫描面与 <code>.cbmignore</code> 语义 ✗）；
+		⇒ 现在页面上给出的切换方式是<strong>直接说清用哪个参数</strong>（写动作仍走审批闸 ✓）。</li>
+	<li><strong>验收</strong>：<code>p3-11</code> <strong>104 → 113</strong> ✓（形状查询 7 条：跑通 / <code>deps:</code> 就地依赖 / <code>impact:</code> 跑通且方向说死 /
+		<code>impact:</code> 找不到符号 ⇒ 明确报错 / <code>file-deps:</code> 唯一命中给依赖 / <code>file-deps:</code> 多命中 ⇒ <strong>列候选不猜</strong> /
+		<strong>不支持时明确报错 + 列出支持项</strong>；档位说明 1 条；Projects 两态 1 条 ✓）；
+		形状查询的<strong>灵敏度由两态实测覆盖</strong>（支持的写法 ⇒ <code>data-shape-ok</code> ✓；真 Cypher 写法 ⇒ <code>data-shape-error</code> ✓ —— 报错分支一旦被删，两态互换、断言必红 ✓）。</li>
+</ul>
+<ul>
+	<li><strong>A · Cypher 控制台</strong>（原 Query Console 的输入框）
+		<ul>
+			<li><strong>现状</strong>：dsh 侧有 13 个读工具（检索 / 依赖 / 调用链 / 影响面 / 模式 / 热点 ✓），但<strong>没有图查询语言</strong> ✗。</li>
+			<li><strong>选项</strong>：① <strong>不做</strong>（保持"说清没有"，查询走工具 ✓）；② <strong>子集形状</strong>：只支持原版最常用的三四种形状
+				（按 label 匹配 + 明确出入边 + 跳数 ≤3 + 条数上限 ⇒ 用既有的 <code>searchNodes</code> / <code>dependenciesOf</code> / <code>traceFrom</code> 组合实现 ✓ <strong>无新依赖</strong> ✓）；
+				③ <strong>真 Cypher 引擎</strong>（引入解析器 + 执行器 ⇒ 体量约等于一个新子系统 ✗）。</li>
+			<li><strong>我的推荐</strong>：<strong>②</strong>，但<strong>只在编辑区页做</strong>（侧栏不做 ✓），且页面上<strong>明确写"这是子集、不是 Cypher"</strong>并列出支持的形状 ✓。</li>
+		</ul></li>
+	<li><strong>B · 索引档位（Fast / Moderate / Full）与 Exclude / Keep 的 dsh 等价语义</strong>
+		<ul>
+			<li><strong>现状</strong>：dsh 侧的索引口径是 <code>parser</code>（treesitter / regex）+ 语言表 + 增量 + 上限（<code>maxFiles</code>）+ 保鲜（<code>indexWatch</code>）✓；
+				原版那三档在 IDE 侧对应的是"<strong>跳过哪些 pass</strong>" ⇒ <strong>语义不同、不能一一映射</strong> ✗（所以页面上现在只做只读展示 + 说明 ✓）。</li>
+			<li><strong>选项</strong>：① <strong>不做</strong>（现状 ✓）；② <strong>给 dsh 自己的三档</strong>（名字<strong>不借用</strong> Fast/Moderate/Full ✗）：
+				例如 <code>symbols</code>（只抽符号与 CONTAINS）/ <code>deps</code>（默认：+ IMPORTS/IMPORTS_SYMBOL）/ <code>deep</code>（+ CALLS/USAGE/INHERITS，最慢 ⇒ 约等于现在的 treesitter 档 ✓），
+				落到 <code>config</code> 与索引器参数上；③ 连 <strong>Exclude / Keep</strong> 一起做（要动扫描面与 <code>.cbmignore</code> 语义 ✗ 更大）。</li>
+			<li><strong>我的推荐</strong>：<strong>先 ②</strong>（三档改名对齐 dsh 的真实语义 ✓，页面上把"哪档花多少时间"如实标出来 ✓）；
+				<strong>Exclude / Keep 留到真有人要排除目录时再做</strong> ✓（现在扫描面已经跳过 <code>node_modules</code>/<code>.git</code>/产物目录等 ✓，够用）。</li>
+		</ul></li>
+	<li><strong>拍板后我怎么推进</strong>：按 ② 各自的"最小可验证切片"做 —— 每件都先出<strong>页面上能看见的差异</strong>（A：能跑的子集形状 + 不支持时的明确报错 ✓；B：档位切换后产物规模/耗时的实测对比 ✓），
+		各配一条探针（含反向突变 ✓），并在结束时报"验了什么 / 没验什么 / 实机待验项" ✓。</li>
+</ul>
+
+<h3>★ 外观复刻：dsh 页对齐「资料库 → 代码图谱」<span class="v">✓ 已落地（2026-10-13）</span></h3>
+<ul>
+	<li><strong>动因（用户要求）</strong>：迁移到 dsh 之后，页面若换一套皮，等于强迫用户重学一次「代码图谱」长什么样 ✗
+		⇒ 要求<b>复刻原「资料库 → 代码图谱」那个 view 的样式与功能</b> ✓。</li>
+	<li><strong>真源</strong>：<code>views/media/kbView.css</code>（样式词表）+ <code>views/libraryStatHelpers.ts</code>（<code>statCell</code> 等 DOM 助手）
+		+ <code>views/codebaseLibraryView.ts</code>（信息顺序：统计 → 入口 → 日志）✓ —— 样式<strong>值逐条抄</strong>，类名沿用 <code>kb-*</code>，便于与真源对读 ✓。</li>
+	<li><strong>落点</strong>：只改插件自己的 <code>lib/index.js</code>（<code>PAGE_CSS</code> + <code>renderPage</code> 骨架）✓ ——
+		⚠ 刻意<b>不动</b> <code>lib/pageShell.js</code>：那个文件被四个插件 <b>vendor 成逐字节相同的副本</b>（有守卫断言）✗；
+		⇒ 模块专属样式一律进本插件的 <code>extraCss</code> ✓（这也是 pageShell 注释里写明的约定 ✓）。</li>
+	<li><strong>新骨架（与原 Pane 同序）</strong>：<code>.kb-header</code>（标题 + 刷新）→ <code>.kb-panel-bar</code> → <code>.kb-panel-content</code>：
+		<code>.kb-stats</code>（<code>.kb-stat-hero</code> 图谱体积 → <code>.kb-stat-grid</code> 节点/关系边格子 → <code>.kb-stat-meta</code> 项目 · 保存于 → <code>.kb-code-status</code> 已就绪/正在索引…）
+		→ <code>.kb-entry</code>×2（深度视图 / 刷新）→ <code>.kb-search</code> → <code>.kb-side-section</code>（诊断）→ 明细分区 ✓。</li>
+	<li><strong>两处<b>有意</b>的差异</strong>（都是 dsh 页面环境的硬约束，不是偷懒 ✗）：
+		① <b>不用 codicon 字体</b> —— dsh 自托管页不在 VS Code 的 DOM 里、拿不到 codicon ⇒ 图标位用字符/emoji（与看板/工作流页同一做法 ✓）；
+		② 原 Pane 的<b>运行时索引日志</b>位，这里放的是<b>静态诊断</b> ⇒ 沿用同一套 <code>.kb-log</code> 外观、但标题诚实地写「<b>诊断（只读）</b>」✓（把静态事实叫"日志"是另一种静默失真 ✗）。</li>
+	<li><strong>验证</strong>：全部既有锚点与文案<b>逐字保留</b>（<code>data-vssaros-codebase-*</code> 一串 + <code>读图走 &lt;strong&gt;…&lt;/strong&gt;</code> / <code>已交接</code> / <code>监听中</code> / <code>影子比 IDE 的图旧</code>）
+		⇒ 会读这页的四条探针全绿：<code>p3-11</code> <b>90/90</b>、<code>p3-39</code> 32/32、<code>p3-40</code> 30/30、<code>p3-42</code> 23/23、<code>p3-43</code> 24/24 ✓；
+		另起真 Host 抓页核过版面结构（<code>.kb-header → .kb-panel-bar → .kb-stats(hero/grid/meta/status) → .kb-entry×2 → .kb-search → .kb-side-section</code>）与十二条关键文字全在位 ✓。</li>
+</ul>
+
+<h3>★ 外观复刻 · 续记（2026-10-13，插件 <code>0.6.33</code>）：一页拆成三版<span class="v">✓ 已落地</span></h3>
+<ul>
+	<li><strong>① 侧栏版</strong>（<code>?surface=sideview</code>，宿主在侧栏承载时注入）：<strong>摘要 + 入口</strong>，
+		与「主页」侧栏版同一套口径（侧栏承载摘要、<strong>完整版由编辑区承载</strong> ✓）。
+		主入口「打开代码图谱」走页面桥 <code>openModulePage(location.pathname)</code>（宿主按模块页表<strong>白名单</strong>核对，
+		<code>/x/codebase/</code> 在表里 ✓），桥不在则退化成整页跳转 / 新标签页 ✓，且<strong>点下去先置忙</strong>（"正在编辑区打开…" ✓）。<br>
+		<strong>它修的是用户报的两件事</strong>：<span class="x">✗</span>「缺少打开代码图谱的按钮」（此前侧栏渲的就是完整版本身、却没有任何"去编辑区"的入口）
+		+ <span class="x">✗</span>「点击无反应」（那两条入口是 SSR 链接：深度视图要<strong>现场解压 129MB</strong>、刷新跳的是<strong>同一个 URL</strong> ⇒ 看着就是坏了）。
+		⇒ 侧栏<strong>坚持轻路径</strong>：带 <code>?deep=1</code> 也在解压<strong>之前</strong> return ✓（侧栏存在的意义就是"不付 129MB" ✓）。</li>
+	<li><strong>② 编辑区版按<u>原「Codebase Memory」面板</u>重排</strong>：规格取自
+		<code>codebaseMemoryDetailEditorPane.ts</code> ✓ —— 4 张统计卡（Nodes / Edges / Files / Last Index）
+		→ ⚙️ Index Configuration → 🌐 Graph Details（含 Storage / Last Modified / Node Types / Edge Types + 按钮组）
+		→ 🏗️ Architecture → 🔍 Query Console → 🔬 Analysis Tools → 📦 Projects → 📋 Activity Log ✓（分区顺序照原版 ✓）。<br>
+		<strong>三处<u>如实说清</u></strong>（照搬会变成"摆着不能用的控件" ✗，这才是最贵的静默失真）：
+		① 原版 <code>View 3D Graph</code> 是<strong>三维</strong>渲染 ⇒ dsh 侧没有对应物（给的是只读图浏览 ✓）；
+		② <strong>Cypher 控制台</strong> dsh 侧没有（查询走 <code>codebase_search</code> / <code>codebase_deps</code> / <code>codebase_trace</code> ✓）；
+		③ <strong>索引三档（Fast/Moderate/Full）与 Exclude/Keep</strong> 属 IDE 索引器 ⇒ 页面<strong>不提供触发</strong>（索引是写动作、走过审批闸的工具 ✓）；
+		另：<strong>Activity Log 不保留历史</strong>（dsh 侧只有"此刻"的索引事实 ✓）。<br>
+		<span class="v">✓ 续记（0.6.36）</span>：<strong>📦 Projects 段做实</strong> —— 与工具 <code>codebase_projects</code> <strong>同一个源</strong>（<code>projectsOf</code> ✓）：
+		默认（轻路径）<strong>如实说"要列图里的项目得先加载全量图"</strong> ✓，加载后列出<strong>图里的项目</strong>与各自规模（节点/边/文件 + top 类型 ✓），
+		并沿用工具那句诚实提醒："只说明<strong>图里</strong>有什么，不代表磁盘上还有那些文件（图可能已过期 ✓）"。</li>
+	<li><strong>③ 只读图浏览页</strong>（<code>?view=graph</code>，补原版 <code>View 3D Graph</code> 那个位置）：
+		类型分布（<strong>纯 CSS 占比条</strong>，不引前端库 ✓）+ 入度/出度排行（点行 ⇒ 在编辑器打开；行带 <code>data-node-id</code> ✓）
+		+ <code>?label=</code> 按节点类型筛选 ✓ + <code>?node=&lt;id&gt;</code> 就地摊开该节点出入依赖 ✓。<br>
+		全部用<strong>现成 helper</strong> 算（<code>summarizeGraph</code> / <code>topNodes</code> / <code>dependenciesOf</code> ✓）⇒ <strong>不新增引擎</strong> ✓；
+		页内自带「<strong>这一页不是什么</strong>」边块（没有 3D / 力导向 / 拖拽 ✗ —— 不假装 ✗）。</li>
+	<li><strong>验证（续）</strong>：<code>p3-11</code> <b>90 → 104</b> ✓（侧栏版 5 条 + 原版式 4 条 + 图浏览 5 条）；
+		5 条写侧探针全绿（<code>p3-39</code> 32 / <code>p3-40</code> 30 / <code>p3-41</code> 24 / <code>p3-42</code> 23 / <code>p3-43</code> 24 ✓）；
+		新断言做了<strong>反向突变</strong>（7 条有效 ✓）+ 契约 <strong>0 违规</strong> ✓ + 工具面 12 插件/91 工具一致 ✓。</li>
+</ul>
+
+<h2>6. 必须一起成立的不变量</h2>
+<ul>
+	<li><strong>产物同形</strong>：读侧 <code>validateGraph</code> / <code>parseManifest</code> 必须能读回自产产物（P1 的第 ① 条验收）。</li>
+	<li><strong>缓存不许"悄悄用一点"</strong>：版本 / 工作区对不上 ⇒ 拒绝并说清理由（既有 <code>parseCache</code> 已实现，P1 沿用）。</li>
+	<li><strong>缺 grammar 必须显式报错</strong>（IDE 侧 8 条不变量之一，同样适用于我们）。</li>
+	<li><strong>锁有主</strong>：同一影子目录同一时刻只有一个索引者（<code>index.lock</code> + 心跳）；跨进程锁竞争必须报错而不是排队到天荒地老。</li>
+	<li><strong>不双写</strong>：与 IDE 产物目录<strong>物理隔离</strong>（乙方案下这是结构性的，不是靠纪律 ✓）。</li>
+	<li><strong>可观测</strong>：任何一次索引都要能回答"读了哪个根、解析了几个文件、写了多少节点/边、耗时多少、有没有被截断"。</li>
+</ul>
+
+<h2>7. 风险与"看起来成功其实错了"清单</h2>
+<table>
+	<tr><th>风险</th><th>它会伪装成什么样子</th><th>防线</th></tr>
+	<tr>
+		<td>wasm 资产没随包交付</td>
+		<td>"索引成功、0 个文件"（IDE 侧真出过两次：回退主线程/缺包 ⇒ 冻结）<span class="v">✓</span></td>
+		<td>P0 起就有"缺 grammar 显式报错"负例；打包侧 <code>files</code> 白名单 + <code>dshPluginPackages</code> 守卫</td>
+	</tr>
+	<tr>
+		<td>读错根（图来自 A、源码读的是 B）</td>
+		<td>切片/影响面看着正常，内容全是别人的 <span class="x">✗</span></td>
+		<td>沿用 <code>resolveRoot</code> + <code>graphSource</code> 回传 + <code>codebase_snippet</code> 的三条围栏</td>
+	</tr>
+	<tr>
+		<td>探针假绿（只看"工具注册了"、"函数调用了"）</td>
+		<td>实现全错也全绿</td>
+		<td>按本仓既有纪律：空跑断言（apply 前后集合）、行为级断言（真发 <code>tools/pre-execute</code>）、锚点现读真字节、反向突变必须逐条命中</td>
+	</tr>
+	<tr>
+		<td>版本/<code>files</code> 漏项</td>
+		<td>插件加载即失败、整站页 404（真事故，已发生过两次）<span class="v">✓</span></td>
+		<td>改内容必 bump + <code>files</code> 覆盖整条 import 图（守卫已存在）</td>
+	</tr>
+	<tr>
+		<td>两套图的语义漂移</td>
+		<td>"dsh 说 3 处影响面、IDE 说 7 处"，谁也不知道谁对</td>
+		<td>P2 的<strong>对账探针</strong>（分布 + 抽样）；页面标来源；差异如实列出</td>
+	</tr>
+	<tr>
+		<td>并发会话撞车</td>
+		<td>编辑失败/红测试（本轮前几次的常态）<span class="v">✓</span></td>
+		<td>全程不动 <code>src/</code>；改共享文件前<strong>必重读</strong>；新插件不做（见 §9 决策 4）</td>
+	</tr>
+</table>
+
+<h2>8. 与现有守卫 / 探针 / 打包的接线</h2>
+<ul>
+	<li><code>dsh-plugins/tools-snapshot.mjs --write</code>：新工具进快照（描述也进指纹 ⇒ 改描述必须重生成 <span class="v">✓ 已知</span>）。</li>
+	<li><code>dshPluginPackages.test.ts</code>：<code>files</code>/入口/import 图/审批闸台账/版本 bump。</li>
+	<li><code>check-host-config.mjs</code>：新配置链（<code>indexDir</code>）按"显式键优先，否则恰好 <code>&lt;根&gt;/&lt;子目录&gt;</code>"加契约。</li>
+	<li><code>dshProbeCoverage.test.ts</code>：新探针要么进 <code>run-all</code>，要么进 <code>EXCLUDED</code> 并写明理由（≥8 字）—— 二者必居其一 <span class="v">✓</span>。</li>
+	<li><code>p3-11</code>（codebase 真机 90/90）：索引前/后各跑一次，证明读侧行为未退化。</li>
+	<li>preset 平面：<strong>不加新行</strong>（沿用 <code>vssaros-codebase</code> 那一行）；索引能力走同一插件 ⇒ <code>preset-sync</code> 无需变更。</li>
+	<li>打包：<code>dsh-plugins/**</code> 进安装包靠 <code>build/saros/strip-before-pack.mjs</code> 的 sentinel；若 wasm 随包，需一并确认 sentinel 覆盖到 wasm 目录 <span class="q">◻</span>。</li>
+	<li><span class="x">⚠ 版本控制现状</span>：<code>git ls-files dsh-plugins</code> ⇒ <strong>0 个被跟踪</strong>（也<strong>不在 .gitignore 里</strong>）<span class="v">✓ 本轮核对</span>
+		⇒ 守卫目前只保护本机；<strong>决策 2 的 21.02MB <code>vendor/</code> 进的是这个"待交付目录"，不是 git 历史</strong> ✓
+		（真要入库，得先想清楚"包体积 vs 仓库体积"是两件事 ✓）。</li>
+</ul>
+
+<h2>9. 需要你拍板的 4 件事（其余我按推荐值执行）</h2>
+<table>
+	<tr><th>#</th><th>决策</th><th>选项</th><th>结果</th></tr>
+	<tr>
+		<td>1</td>
+		<td>所有权路线</td>
+		<td>甲 交接 / 乙 影子 / 丙 产出给 IDE 消费（原推荐 <strong>乙</strong>）</td>
+		<td><span class="v">✓ 你拍板：<strong>甲 · 交接给 dsh</strong></span><br>
+			<strong>dsh 半边已落地</strong>（<code>config.indexTarget = 'workspace'</code> ⇒ 写 <code>&lt;ws&gt;/.codebase-memory/</code> + 与 IDE <strong>共用同一把锁</strong> ✓，见 §5 P3）<br>
+			⚠ <strong>IDE 半边未做</strong>（那是 <code>src/</code> 的变更：索引器默认关闭 + 两处同步消费者 async 化）⇒ <strong>交接档缺省不开</strong> ✓<br>
+			⚠ 实践上<strong>乙仍是缺省</strong>：它俩在 dsh 侧共用同一套代码（只差一个目录常量 ✓），所以"先跑乙、最后一刻切甲"的路径<strong>一行没浪费</strong> ✓</td>
+	</tr>
+	<tr>
+		<td>2</td>
+		<td>wasm 资产交付</td>
+		<td>① 全量（实测 <strong>16 个 grammar + 运行时 = 21.02 MB</strong> <span class="v">✓ 本轮 stat</span>）<br>
+			② 只带常用 6 语言（实测 <strong>5,434,913 字节 ≈ 5.18 MB</strong> <span class="v">✓ p3-39</span>）<br>
+			③ 只带 1 种语言（实测 <strong>1,788,796 字节 ≈ 1.71 MB</strong> <span class="v">✓ p3-39</span>）<br>
+			④ 运行时去宿主 app 的 <code>node_modules</code> 找（壳耦合，<span class="x">不推荐</span>）<br>
+			⚠ 无论选哪个，运行时<strong>进包必须改名 <code>.cjs</code></strong>（见 §5 P0 结论 2）</td>
+		<td><span class="v">✓ 你拍板：<strong>① 全量</strong></span> —— 已执行（<code>bin/vendor-assets.mjs --all</code>）<br>
+			<strong>16 个 grammar + 运行时 = 18 个文件 / 21.02 MB</strong> <span class="v">✓ 交付并通过 <code>--check</code></span><br>
+			⚠ <strong>口径纠正</strong>：源目录里实际是 <strong>16</strong> 个 grammar（此前写"19 个"是我按目录条目数估的，错了 ✗）<br>
+			⚠ 代价如实说：每次 <code>plugin add</code> 要拷这 21MB；<code>dsh-plugins/</code> 目前<strong>既没被跟踪也没被忽略</strong> ⇒ 这 21MB 进的是<strong>待交付目录</strong>、不是 git 历史 ✓</td>
+	</tr>
+	<tr>
+		<td>3</td>
+		<td>索引触发</td>
+		<td>① 显式工具触发（+ 状态查询）<br>② 常驻 watcher 自动增量</td>
+		<td><span class="v">✓ 两者都落地</span>：① 缺省（P1）；② <code>config.indexWatch: true</code> 才起（P4 ✓）</td>
+	</tr>
+	<tr>
+		<td>4</td>
+		<td>落点：新插件还是并进现有插件</td>
+		<td>① 新建 <code>vssaros-codebase-index</code><br>② 并进 <code>@vssaros/dsh-codebase</code></td>
+		<td><span class="v">✓ 按推荐执行：<strong>②</strong></span>（新模块 id 要动 <code>src/</code> 的 <code>DSH_BUILTIN_MODULES</code> / 活动栏 / 三张表 = 并发区 <span class="x">✗</span>）</td>
+	</tr>
+</table>
+
+<h2>10. 已知边界（诚实边界，别当欠账）</h2>
+<p class="small"><span class="v">相关</span>：<strong>「全量移植可行性 + 分期方案」已独立成文</strong> ⇒
+	<a href="codebase-full-port-feasibility.html">codebase-full-port-feasibility.html</a>（IDE 侧 ~60 个实现文件的逐项可搬性、A/B/C 三档、P6–P10 排期、3 条待拍板）。
+	⚠ 它独立成文的原因：本文曾被并发会话整篇回写过一次，追加章节被覆盖。</p>
+<ul>
+	<li><strong>不搬 SQLite/FTS5 后端</strong>：影子产物只有 JSON+gzip 两条路；大图（本机 189,302 节点 / 489,145 边 / 解压 129 MB）在 Host 里解压 + 解析的耗时与内存尚未测量 <span class="q">◻</span> —— P1 要顺带量它（这是"影子方案能不能用"的硬指标）。</li>
+	<li><strong><code>ctx.jobs</code> 在 host plane 插件里能否注入</strong> <span class="q">◻</span>（基座 <code>dsh-tool-jobs</code> 只在 preset 平面 ON）⇒ P1 先写"自持任务表"的退路，避免被这一条卡住。</li>
+	<li><strong>边类型在 P2 之前是子集</strong>（<code>IMPORTS</code>/<code>CONTAINS</code>/<code>IMPORTS_SYMBOL</code>）：所以 P1 阶段 <code>codebase_trace</code> 的 <code>CALLS</code> 链、<code>codebase_changes</code> 的影响面<strong>只能基于影子图给出的那部分</strong> ⇒ 页面/工具必须标"图能力级别"，不许假装完整 ✗。</li>
+	<li><strong>IDE 侧 3D layout / LOD / 编辑器集成</strong>不迁（纯 UI 专有）。</li>
+	<li><strong>本方案的 P1 与 IDE 侧 P2-1 是两条线</strong>：IDE 侧搬的是"utility process 编排"，我们搬的是"Host 进程内自持"，两边共享的只有 P0 那块解析适配层 ✓。</li>
+</ul>
+
+<div class="box">
+	<strong>下一步（状态一览）</strong>：<br>
+	1. <span class="v">✓ 已完成</span>：P0 自证（<code>lib/parser/</code> + 页面诊断锚点 + <code>/api/parse-proof</code> + 探针 <code>p3-39</code> 32 条 + 反向突变）；<br>
+	2. <span class="v">✓ 已完成</span>：P1 影子索引 v0（<code>codebase_index</code> 过闸 / <code>codebase_index_status</code>；读侧影子优先；锁/增量/原子写；探针 <code>p3-40</code> 30 条）；<br>
+	3. <span class="v">✓ 已完成</span>：P2 真解析建图（探针 <code>p3-41</code> 24 条 + 与 IDE 真图对账）；<br>
+	4. <span class="v">✓ 已完成</span>：P3 覆盖与交付（扫描面扩到语言表 + <code>--all</code> 全量随包 21.02MB）、P3-b 新鲜度纪律、P4 常驻保鲜（探针 <code>p3-42</code> 23 条）；<br>
+	5. <span class="v">✓ 已完成</span>：<strong>P3 交接的 dsh 半边</strong>（<code>indexTarget = 'workspace'</code> + 与 IDE 共用同一把锁/阈值/心跳；探针 <code>p3-43</code> 23 条 + 反向突变 6/6）；<br>
+	6. <span class="v">✓ 已完成</span>：<strong>P3 的 IDE 半边</strong> —— ①外部产物感知 ⇒ 后台重载（<code>decideExternalArtifactReload()</code> + <code>codebaseGraphBootstrap</code> 轮询）；
+		②<strong>权限在 dsh</strong>（产物自称 <code>producer=vssaros-dsh</code> ⇒ IDE 不索引、不落盘，覆盖全部写盘来路 ✓；写-写竞争已封 ✓）。
+		IDE 单测 <strong>31</strong> + 反向突变 <strong>8/8</strong> + 三条源码级套件 <strong>122 passing</strong>；dsh 探针 p3-40/41/42/43 全绿 ✓；<br>
+	7. <span class="v">✓ 已完成</span>：③ <code>runIndex</code> 桩说法改正（记下"删它"的清理面 ~720 行 ✓）+ ④ <strong>双引擎差分</strong>（探针 <code>p3-47</code> 13/13；
+		符号命中 94.5% / 无歧义符号行号 100% 精确 / dsh 解析 120 个真实文件 1.1s ✓）。
+		<span class="v">方案内待办到此清空</span> —— 交接开关仍是显式的 <code>indexTarget: 'workspace'</code>；dsh 一旦这么写，IDE 就按 <code>producer</code> 自动让出写权 ✓。
+		可选清理：删掉那条再也用不上的索引 worker 通道（~720 行，零调用点 ✓）。
+</div>
+
+</body>
+</html>

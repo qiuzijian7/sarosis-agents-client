@@ -32,6 +32,7 @@ import { IMarketplaceService, IMarketplacePackage, PackageKind } from '../../com
 import { IAgentVersionService } from '../../common/agentVersionTypes.js';
 import { bumpPatch, suggestNextVersion, validatePublishVersion, isVersionConflictError } from '../publishVersioning.js';
 import { filterUserFacingAgents } from '../../common/builtinAgents.js';
+import { MCP_TOOL_CATEGORY_PREFIX } from '../../common/toolApprovalPolicy.js';
 
 // ─── Preset Data Model ────────────────────────────────────────────────────────
 
@@ -1024,7 +1025,7 @@ export class PresetAgentViewPane extends ViewPane {
 			try {
 				// Collect skill/MCP refs from preset
 				const skillRefs = preset.skills || [];
-				const mcpRefs = preset.tools?.filter(t => t.startsWith('mcp:')) || [];
+				const mcpRefs = preset.tools?.filter(t => t.startsWith(MCP_TOOL_CATEGORY_PREFIX)) || [];
 
 				// Auto-upload missing dependencies first
 				await this._uploadMissingDeps(skillRefs, version, preset.id);

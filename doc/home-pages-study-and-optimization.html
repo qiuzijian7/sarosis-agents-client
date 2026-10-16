@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>调研：Obsidian「Home Pages」—— 实现原理精读 + 结合 dsh homepage 的优化方案</title>
+<style>
+  :root{ --brand:#FF5A2E; --ok:#3FB950; --warn:#D29922; --err:#F85149; --vio:#BC8CFF;
+    --bg:#0F1115; --bg-elev:#171A20; --bg-panel:#1E2229; --bg-code:#14171C; --line:#2C3138; --line-soft:#23272E;
+    --fg:#E6E8EB; --fg-dim:#AEB4BD; --fg-faint:#7C838D; }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);line-height:1.75;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",Roboto,sans-serif}
+  .wrap{max-width:1180px;margin:0 auto;padding:36px 22px 100px}
+  h1{font-size:25px;margin:0 0 6px}
+  h2{font-size:18px;margin:42px 0 12px;padding-left:11px;border-left:4px solid var(--brand)}
+  h3{font-size:15px;margin:26px 0 8px;color:var(--fg-dim)}
+  h4{font-size:13.5px;margin:18px 0 6px;color:var(--fg-faint);font-weight:600}
+  code{background:var(--bg-code);border:1px solid var(--line-soft);padding:1px 6px;border-radius:5px;font-size:12.5px;
+    font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+  .lede{color:var(--fg-dim);font-size:13.5px}
+  table{border-collapse:collapse;width:100%;margin:10px 0 16px;font-size:12.8px}
+  th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+  th{background:var(--bg-elev);font-weight:600;color:var(--fg-dim)}
+  .tag{display:inline-block;font-size:11px;border:1px solid var(--line);border-radius:999px;padding:0 7px;color:var(--fg-faint)}
+  .tag.ok{border-color:var(--ok);color:var(--ok)} .tag.warn{border-color:var(--warn);color:var(--warn)}
+  .tag.err{border-color:var(--err);color:var(--err)} .tag.new{border-color:var(--brand);color:var(--brand)}
+  .note{border:1px solid var(--warn);border-left:4px solid var(--warn);border-radius:8px;padding:9px 11px;margin:10px 0;font-size:13px}
+  .note.bad{border-color:var(--err);border-left-color:var(--err)} .note.ok{border-color:var(--ok);border-left-color:var(--ok)}
+  .note.vio{border-color:var(--vio);border-left-color:var(--vio)}
+  .pro{color:var(--ok)} .con{color:var(--warn)}
+  pre{background:var(--bg-code);border:1px solid var(--line-soft);border-radius:8px;padding:11px 13px;overflow-x:auto;
+    font-size:12.3px;line-height:1.6;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+  ol,ul{padding-left:22px} li{margin:5px 0}
+  .src{color:var(--fg-faint);font-size:11.5px;font-family:ui-monospace,Consolas,monospace}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>调研：Obsidian「Home Pages」<span style="font-size:15px;color:var(--fg-faint)">实现原理精读 + 结合本项目（dsh homepage）的优化方案</span></h1>
+  <p class="lede">
+    仓库：<code>https://github.com/jepicaju862-lab/home-pages</code>　→ 已克隆到
+    <code>G:\CustomWorkspaces\AIProjects\home-pages</code>（<code>v0.3.1</code>，2026-10-13 拉取）。<br>
+    它跟我上一个任务（<b>dsh dashboard → 可自由增删/移动的 homepage</b>）是**同一个问题域**，
+    而且是一个已经迭代到 16 个组件、带拖拽/缩放/多页/第三方 API/用户脚本的**成熟实现** ⇒ 当参考的价值很高。
+  </p>
+
+  <div class="note bad">
+    <b>★ 先说许可证边界（这决定"能不能抄代码"）</b>：该仓库是 <b>GPL-3.0-only</b>（<code>LICENSE</code> 头为 GNU GPL v3 + <code>package.json</code> 的 <code>"license": "GPL-3.0-only"</code>）。
+    VsSaros 是 MIT 系的 VS Code fork ⇒ <b>把它的代码逐行搬进我们仓库会造成许可证冲突</b> ✗。<br>
+    结论：**下面所有"抄"都指抄<u>思路与设计</u>**（算法、状态机、生命周期约定、测试搭法）；<b>任何代码都要自己重写</b>，并避免在注释里复制它的原文段落。
+  </div>
+
+  <h2>一、TL;DR：值得抄的 8 条 + 明确不抄的 4 条</h2>
+  <table>
+    <tr><th>#</th><th>结论</th><th>为什么</th></tr>
+    <tr><td colspan="3" style="background:var(--bg-elev);color:var(--ok)"><b>值得抄（我们的 P1–P4 要按它修订）</b></td></tr>
+    <tr><td>R1</td><td><b>拖拽用 Pointer Events，不用 HTML5 DnD</b>；配 6px 阈值、克隆 ghost、FLIP 动画、Esc 取消、边缘自动滚动</td><td>它的注释明说理由：Pointer 事件在 <b>触摸 WebView</b> 里可用、且避开宿主原生拖拽。我们的页面跑在 Electron <code>WebContentsView</code> 里，正撞这条</td></tr>
+    <tr><td>R2</td><td><b>落点判定要"轴自适应 + 最近矩形兜底"</b></td><td>网格换行后纯 x 轴判定会错；卡片间有间隙时指针可能不在任何卡上 ⇒ 两处都要兜</td></tr>
+    <tr><td>R3</td><td><b>每个组件一份 <code>normalizeConfig</code></b>（逐组件迁移 + 类型纠正）</td><td>比"整份布局一个大版本号"实用得多：单个组件的配置能各自演进而不动别人</td></tr>
+    <tr><td>R4</td><td><b>组件实例有生命周期</b>：<code>registerCleanup/registerInterval</code> + <code>isAlive()</code> + 渲染 <code>token</code></td><td>重绘/换页/异步回来时**不泄漏、不写脏 DOM**。我们 P4 一旦"按卡取数"就必须有这套</td></tr>
+    <tr><td>R5</td><td><b>未知组件渲染"占位卡"而不是忽略</b>（记录 provider 插件名）</td><td>插件卸载/未加载时用户**看得见**发生了什么，还能删掉它；比"静默消失"体验好一级</td></tr>
+    <tr><td>R6</td><td><b>改布局只更新 CSS 变量，不重绘组件</b>（<code>--hp-row/--hp-gap</code> + <code>is-editing</code> class）</td><td>拖拽/缩放时组件内部状态（滚动位置、输入框、图表）不被重置</td></tr>
+    <tr><td>R7</td><td><b>保存要"合并 + 可等待"</b>：200ms 合并突发写，返回同一个 promise；卸载时冲刷</td><td>拖拽/打卡会连发几十次保存；我们跨进程写盘 + 有锁，更需要合并与"写成功"的确认语义</td></tr>
+    <tr><td>R8</td><td><b>拖拽/缩放要有专门的自动化测试</b>（真 Chromium + 真 CSS + <code>hasTouch</code> + 关动画跑位置断言）</td><td>它是本项目唯一"用测试钉住交互"的地方（<code>scripts/test-sorting.mjs</code>）—— 我们上一版方案只靠探针断言 DOM，**不够**</td></tr>
+    <tr><td colspan="3" style="background:var(--bg-elev);color:var(--warn)"><b>明确不抄</b></td></tr>
+    <tr><td>N1</td><td>多页（pages[] + 页签）的**完整 UI**</td><td>一期无必要；但 <b>schema 预留</b>（见 R10）—— 它的 <code>HomePagesSettings.pages[]</code> 已经证明这条路可扩展</td></tr>
+    <tr><td>N2</td><td>**用户脚本组件**（<code>customWidgetsFolder</code> 扫描目录 + 热重载 + 粘贴代码新建）</td><td>它的运行环境是单机 Obsidian；我们是 HTTP 页面 + 有 <code>dshWriteOwnership</code> 守卫 ⇒ 这是一条**新的执行/写入通道**，风险远大于收益，必须单独立项</td></tr>
+    <tr><td>N3</td><td>它的具体组件（天气/微信/多微表格/批注/媒体…）</td><td>都在 Obsidian 的数据模型上，与 dsh 无关</td></tr>
+    <tr><td>N4</td><td>React/原生 DOM 的命令式渲染方式</td><td>我们的页面是**服务端渲染的 HTTP 页**，没有 React 运行时；要保留"服务端出骨架"这条主线（见 §5）</td></tr>
+  </table>
+
+  <h2>二、项目身份与技术栈</h2>
+  <table>
+    <tr><th>维度</th><th>事实</th><th>出处</th></tr>
+    <tr><td>形态</td><td><b>Obsidian 插件</b>（不是独立应用）：<code>manifest.json</code> + <code>main.js</code> + <code>styles.css</code> + <code>versions.json</code></td><td><code>manifest.json</code>、<code>package.json:5</code></td></tr>
+    <tr><td>版本 / 兼容</td><td><code>0.3.1</code>，<code>minAppVersion 1.7.2</code>，<b>桌面 + 移动都支持</b>（<code>isDesktopOnly: false</code>）</td><td><code>manifest.json</code></td></tr>
+    <tr><td>栈</td><td>TypeScript 5.4 + esbuild（<code>esbuild.config.mjs</code>）+ ESLint 9（含 <code>eslint-plugin-obsidianmd</code>）+ 自写 esbuild 测试（Playwright）</td><td><code>package.json:6-14</code></td></tr>
+    <tr><td>规模</td><td><code>src/</code> 21 个 TS；最大 <code>widgets/media.ts</code> 74KB；核心 <code>view.ts</code> 32KB、<code>widgets/registry.ts</code> 4KB、<code>ui/sortable.ts</code> 14.8KB</td><td>实测 <code>Get-ChildItem</code></td></tr>
+    <tr><td>组件数</td><td><b>16 个内置</b>：hero / recent / quicklinks / countdown / pomodoro / quote / habit / kanban / stats / onthisday / note / duowei / annotations / insights / wechat / media（<b>任意字符串 kind</b> 还允许第三方）</td><td><code>src/types.ts:2-18</code>、<code>widgets/registry.ts:23-40</code></td></tr>
+    <tr><td>许可</td><td><b>GPL-3.0-only</b></td><td><code>LICENSE</code>、<code>package.json:23</code></td></tr>
+    <tr><td>测试</td><td><code>test:sorting</code>（17KB，Playwright 真浏览器测拖拽/缩放）+ <code>test</code>（<code>tests/integrations.test.ts</code> 47KB，纯函数级集成） + <code>verify-bundle.mjs</code>（打包后安全审计）</td><td><code>package.json:9-13</code></td></tr>
+  </table>
+
+  <h2>三、架构与实现原理</h2>
+
+  <h3>3.1 分层（5 层 + 1 个特殊层）</h3>
+  <pre>main.ts            插件生命周期：注册视图/命令、设置读写（合并写）、对外 API、自定义组件管理器
+  ↓
+view.ts            HomeView(ItemView)：页签 / 工具栏 / 网格 / 每卡 WidgetHost（=布局与生命周期）
+  ↓
+widgets/registry   kind → WidgetDefinition 注册表（内置 16 + 第三方 registerWidget/unregister）
+  ↓
+widgets/*.ts       每个组件：defaultConfig / normalizeConfig / render / renderSettings / liveRefresh
+  ↓
+ui/                sortable(PointerSorter+FLIP) · modals(添加/配置/确认/输入) · dom · PathSuggest · settingHelpers
+  +
+widgets/userLoader 用户脚本组件：扫描目录 → 解析 → 执行 → 热重载（★我们不抄）</pre>
+  <p class="src">证据：<code>src/main.ts:12-21</code>（settings/api/customWidgetManager）、<code>src/view.ts:115-127</code>（HomeView 字段）、<code>src/widgets/registry.ts:23-45</code>、<code>src/ui/</code> 目录</p>
+
+  <h3>3.2 ★ 精华一：<code>PointerSorter</code> —— 一套完整的"网格拖拽重排"</h3>
+  <p class="lede">项目 <code>src/ui/sortable.ts</code>。它把"拖拽"拆成 6 件必须各自处理的事，每件都有明确理由：</p>
+  <table>
+    <tr><th>要点</th><th>做法</th><th>理由（它的注释原文 / 我的解读）</th></tr>
+    <tr><td>输入通道</td><td><b>Pointer Events</b>（<code>pointerdown/move/up</code>）+ <code>setPointerCapture</code></td><td>原文："Pointer events also work in touch WebViews and avoid Obsidian's native drag handling" ⇒ 触摸 WebView 可用 + 避开宿主原生拖拽</td></tr>
+    <tr><td>点击 vs 拖拽</td><td><code>DRAG_THRESHOLD = 6</code> px 才起拖；起拖后置 <code>suppressClick</code>，在捕获阶段吞掉随后的 <code>click</code></td><td>否则"点一下手柄"会变成一次 0 距离拖拽，把正常按钮点击吃掉</td></tr>
+    <tr><td>视觉反馈</td><td>克隆一张 <b>ghost</b> 挂到<b>容器父节点</b>（保留页面 CSS 变量），拖动只改 <code>transform: translate3d()</code></td><td>transform-only ⇒ 每帧不动 layout；挂父节点 ⇒ 页面级 CSS 变量仍生效</td></tr>
+    <tr><td>落点判定</td><td>① 命中卡直接用它；② 否则取<b>到矩形距离最小</b>的卡（<code>max(...)²+max(...)²</code>）；③ <b>判断该卡是否"孤行"</b>再决定用 x 还是 y 中线；④ 换算成 <code>beforeId</code></td><td>换行后的网格用 x 轴判定会错；卡片有间隙时指针可能不在任何卡上；插入点语义（beforeId）比索引算术更稳</td></tr>
+    <tr><td>滚动</td><td><code>rAF</code> 每帧：靠近容器上下边 48px 内自动滚动（<code>delta = ceil(dist/4)</code>）</td><td>首页比一屏高时，不这么做就拖不到屏幕外的位置</td></tr>
+    <tr><td>落位动画</td><td><b>FLIP</b>：先记录所有卡矩形 → 改 DOM → 用 Web Animations 从旧位置滑到新位置；<b>尊重 <code>prefers-reduced-motion</code></b>；动画带 id 便于测量前先 cancel；可传入 ghost 的矩形让"落下的卡从预览处滑出"</td><td>没有 FLIP 就是"瞬移"，用户会怀疑自己拖错了</td></tr>
+    <tr><td>取消</td><td><code>Esc</code> / <code>pointercancel</code> / <code>lostpointercapture</code> / <code>window.blur</code> 全部收口到 <code>finish(false)</code>；离开编辑模式、换页、重建 DOM 前都显式 <code>cancel()</code></td><td>拖拽是**跨组件的全局状态**，不显式收口必然残留高亮/ghost</td></tr>
+    <tr><td>算法可测</td><td>纯函数 <code>moveBefore(items, id, beforeId)</code> 抽出来单独导出</td><td>顺序算法能脱离 DOM 单测（<code>scripts/test-sorting.mjs</code> 就在用）</td></tr>
+  </table>
+  <pre>// 插入点语义（src/ui/sortable.ts:8-17）—— 注意 before > from 时要 -1
+const to = before &gt; from ? before - 1 : before;
+const [moved] = items.splice(from, 1);
+items.splice(to, 0, moved);</pre>
+
+  <h3>3.3 ★ 精华二：<code>WidgetHost</code> —— 每张卡一个生命周期宿主</h3>
+  <p class="lede"><code>src/view.ts:18-113</code>。它解决的问题是"**组件是长期活着的、会被反复重绘的**"：</p>
+  <ul>
+    <li><b>渲染 token</b>：每次渲染自增，异步回调回来先比 token ⇒ 过期结果直接丢弃（<code>if (token === this.token)</code>）。</li>
+    <li><b><code>registerCleanup</code> / <code>registerInterval</code></b>：组件注册的清理与定时器在**重绘或卸载时自动执行**（<code>dispose()</code> 里统一跑）⇒ 组件作者不用自己管。</li>
+    <li><b><code>isAlive()</code></b>：给"异步加载完再画"的组件用。</li>
+    <li><b><code>addHeaderAction(icon,label,onClick)</code></b>：组件可在卡片标题栏加按钮，**重绘时自动清除**（不必手写 DOM 回收）。</li>
+    <li><b><code>setSubtitle</code></b>：标题栏右侧副标题（如"共 12 条 · 3 分钟前"）。</li>
+    <li><b><code>isEditing()</code></b>：组件可据编辑态改变行为（例如编辑时不自动刷新）。</li>
+  </ul>
+  <div class="note ok">
+    <b>对我们的直接含义</b>：我们服务端渲染没有"组件重绘"问题（P1–P3 用不到），但 <b>P4"按卡取数/自动刷新"会立刻需要同款约定</b>：定时器、清理、过期结果丢弃。
+    <b>建议 P1 就把契约字段留出来</b>（哪怕先不做），免得 P4 时推翻组件接口。
+  </div>
+
+  <h3>3.4 ★ 精华三：registry + provider 占位 + 配置演进</h3>
+  <p class="lede"><code>src/widgets/registry.ts</code>，4 个值得抄的具体决定：</p>
+  <ul>
+    <li><b>未知 kind 一律保留</b>：<code>isWidgetKind</code> 只要"非空字符串"就认 ⇒ 注释原话"第三方组件所属插件未加载时，<b>配置不能丢</b>"。渲染时给<b>占位卡</b>（<code>getWidgetProvider(kind)</code> 拿到提供者插件名显示给用户）。</li>
+    <li><b>内置 kind 不可被覆盖</b>（<code>registerWidget</code> 直接抛），第三方同名会覆盖自己（便于热重载）。</li>
+    <li><b>卸载用"定义同一性"校验</b>：<code>unregisterWidget(kind, definition)</code> 只在"当前注册的正是我"时才删 ⇒ 防止 A 插件卸载时误删 B 插件的同名注册。</li>
+    <li><b>注册变化可订阅</b>：<code>onRegistryChange(kind, registered)</code> ⇒ 视图据此**原地补画/移除**占位卡，而不是整页重载。</li>
+    <li><b>配置归一化两层</b>：<code>normalizeWidgetConfig()</code>（取 definition 的 <code>normalizeConfig?.</code>，缺省 <code>{...defaultConfig(), ...raw}</code>）+ 通用助手 <code>normalizeWith(defaults, raw)</code>（<b>按默认值类型纠正</b>：数字强转 + 有限性检查、布尔接受 <code>"true"</code>、字符串 <code>String()</code>、数组/对象做形状校验）。</li>
+  </ul>
+
+  <h3>3.5 ★ 精华四：保存与设置校验</h3>
+  <ul>
+    <li><b>合并写 + 可等待</b>（<code>src/main.ts:113-131</code>）：200ms 内多次 <code>saveSettings()</code> 只落一次盘，并返回**同一个 promise** ⇒ 调用方 <code>await</code> 到的是"真的写完了"；<code>onunload</code> 冲刷未决写（<code>:94-104</code>）。</li>
+    <li><b>读入即 sanitize</b>（<code>loadSettings → sanitizeSettings(raw)</code>，<code>:108-111</code>）⇒ 老数据/脏数据在**入口**被规整，后面所有代码都能假设"内存里的设置是合法的"。<span class="src">（我们上一版方案的"坏 JSON 回落默认"只覆盖了"整份坏"，这里是**逐字段**规整，更细。）</span></li>
+    <li><b>组件配置在保存时再跑一次 <code>normalizeConfig</code></b>（<code>ui/modals.ts:37-41</code>）⇒ 用户手填的值也被纠正后才落盘。</li>
+  </ul>
+
+  <h3>3.6 交互细节清单（都是"少了就难用"的那种）</h3>
+  <table>
+    <tr><th>细节</th><th>做法</th><th>出处</th></tr>
+    <tr><td>编辑态工具栏</td><td>进入编辑后顶部出工具栏：提示 + <b>添加组件</b> + <b>粘贴代码</b> + <b>完成</b></td><td><code>view.ts:245-267</code></td></tr>
+    <tr><td>每卡编辑条</td><td>前移/后移 + 宽 ±（显示当前值）+ 高 ± + 配置 + **复制组件** + 删除</td><td><code>view.ts:349-366</code></td></tr>
+    <tr><td>右下角缩放手柄</td><td>拖动时**按列/行吸附**，松手保存；<b>Esc 或指针中断 ⇒ 恢复原尺寸</b>；键盘聚焦后**方向键逐格**调；<b>窄屏（非 12 列）只允许调高</b></td><td><code>view.ts:610-624</code></td></tr>
+    <tr><td>改布局不重绘组件</td><td><code>applyLayout()</code> 只写 CSS 变量与 <code>is-editing</code> class</td><td><code>view.ts:204-210</code></td></tr>
+    <tr><td>空态有 CTA</td><td>没有组件时显示"开始编辑"引导按钮</td><td><code>view.ts:276-286</code></td></tr>
+    <tr><td>输入时不刷新</td><td>库文件变化触发的刷新（900ms 防抖）里，若焦点在 INPUT/TEXTAREA ⇒ **重新排期而不是刷新**</td><td><code>view.ts:576-581</code></td></tr>
+    <tr><td>添加组件 = 卡片画廊</td><td>不是下拉框：图标 + 名称 + 描述 + 主题色；<b>自定义组件带"自定义"角标与删除按钮</b></td><td><code>ui/modals.ts:111-156</code></td></tr>
+    <tr><td>配置面板 = 通用项 + 组件项</td><td>标题 / 宽(1–12 滑杆) / 高(1–30 滑杆) + <code>renderSettings()</code>；**草稿语义，点保存才写回**</td><td><code>ui/modals.ts:45-75</code></td></tr>
+    <tr><td>页签可右键</td><td>重命名 / 左移 / 右移 / 删除（<code>Menu</code>）</td><td><code>view.ts:529-539</code></td></tr>
+    <tr><td>命令面板可用</td><td>打开首页 / 编辑布局 / 下一页 / 加某三个组件 / 粘贴组件 / 删除自定义组件</td><td><code>main.ts:30-81</code></td></tr>
+  </table>
+
+  <h3>3.7 测试：它怎么钉住"拖拽这种交互"</h3>
+  <ul>
+    <li><b><code>scripts/test-sorting.mjs</code></b>：esbuild 把 <code>tests/sorting-fixture.ts</code> 打成 IIFE（用 <code>tests/obsidian-stub.ts</code> 顶掉 <code>obsidian</code>），塞进 <b>Playwright 真 Chromium</b>，<b>导入真实 <code>styles.css</code></b>，开 <code>hasTouch: true</code>、<code>reducedMotion: "reduce"</code>（关掉 FLIP 以便按位置断言），然后<b>模拟指针序列</b>断言卡片的 <code>boundingBox</code>；另有一条测试<b>把动画打开</b>验证"平滑反馈"。</li>
+    <li><b><code>tests/integrations.test.ts</code></b>（47KB）：大量**纯函数**级测试（<code>duoweiCore</code> / <code>habitStreak</code> / <code>weather</code> / <code>opml</code> / <code>registry</code> / <code>sanitizeSettings</code> / <code>evaluateWidgetScript</code> …）⇒ <b>把逻辑从 DOM 里拔出来</b>才好测。</li>
+    <li><b><code>scripts/verify-bundle.mjs</code></b>：生产构建后跑一遍校验（README 里叫 "security audit"）。</li>
+  </ul>
+  <div class="note ok">
+    <b>对我们的直接含义</b>：我们的 <code>core/dashboard.js</code> 已经是纯函数（好）✓，但<b>交互层完全没有测试</b>。
+    照它的做法：把"插入点算法"与"尺寸吸附算法"抽成纯函数（单测 + 可进 <code>--fast</code>），
+    再用我们已有的 CDP 探针在真浏览器里跑一遍指针序列（我们的 <code>p3-16</code> 已经在用 CDP 了）。
+  </div>
+
+  <h2>四、许可证边界（再强调一次，因为它决定行动）</h2>
+  <table>
+    <tr><th>可以</th><th>不可以</th></tr>
+    <tr>
+      <td>
+        ✓ 借鉴<b>算法与做法</b>（Pointer 事件、6px 阈值、ghost 挂父节点、FLIP、最近矩形兜底、轴自适应、beforeId 语义）<br>
+        ✓ 借鉴<b>架构与契约</b>（registry、provider 占位、normalizeConfig、生命周期宿主、合并保存）<br>
+        ✓ 借鉴<b>测试方法</b>（真浏览器 + 关动画跑位置断言）<br>
+        ✓ 在文档里<b>指路</b>（"参考该项目的 X 做法"）
+      </td>
+      <td>
+        ✗ 复制粘贴其源码/片段（GPL-3.0 传染性 ⇒ 与 MIT 系的 VsSaros 冲突）<br>
+        ✗ 复制其注释原文段落（同属受版权保护的表达）<br>
+        ✗ 复制其 <code>styles.css</code>（95KB）中的具体规则<br>
+        ✗ 把它的 <code>obsidian-stub.ts</code> / fixture 直接搬来当我们的测试脚手架
+      </td>
+    </tr>
+  </table>
+  <p class="lede">
+    ⇒ 落地时**凡"抄"必重写**：我会用我们自己的命名、自己的数据形状、自己的注释写一遍，并在文件头注明"设计参考：obsidian home-pages（GPL-3.0，仅借鉴设计）"。
+  </p>
+
+  <h2>五、与我们上一版 dsh homepage 方案的逐项对照</h2>
+  <table>
+    <tr><th>维度</th><th>home-pages（参考实现）</th><th>我们上一版方案</th><th>结论</th></tr>
+    <tr><td>页面形态</td><td>Obsidian 视图（原生 DOM + React 无关）</td><td>HTTP 服务端渲染页 + 内联 <code>script</code></td><td><b>保持我们的</b>；但组件渲染要拆成"服务端出骨架 + 客户端增强"</td></tr>
+    <tr><td>组件描述</td><td><code>{kind,name,description,icon,accent,defaultSize,defaultConfig,normalizeConfig,render,renderSettings,liveRefresh}</code></td><td><code>{id,title,desc,span,module,render(ctx)→html}</code></td><td><b>抄字段</b>：加 <code>normalizeConfig</code>（R3）+ 预留生命周期（R4）；<code>icon/accent</code> 也值得有（画廊要用）</td></tr>
+    <tr><td>网格</td><td><b>12 列</b> + <code>w/h</code> + 全局 <code>rowHeight/gap/maxWidth</code></td><td><b>4 列</b> + <code>span(1–4)</code>，无高度、无全局参数</td><td><b>改成 12 列 + h + 全局行高/间距/最大宽</b>（R4 落地：现有 5 个块映射为 12 列），但**保留 ◀▶ 按钮**作无障碍兜底</td></tr>
+    <tr><td>拖拽</td><td>Pointer 事件 + ghost + FLIP + 阈值 + Esc + 边缘滚动 + 轴自适应</td><td><b>HTML5 DnD</b>，只有 x 轴前半/后半</td><td><b>换掉</b>（R1/R2）—— 这是本次调研最确定的一条修订</td></tr>
+    <tr><td>缩放</td><td>右下角手柄自由拖 + 吸附；窄屏只调高；方向键逐格</td><td>只有 <code>◀ ▶</code> 整数档（我当时刻意不做自由拖大）</td><td><b>折中</b>：保留按钮（可断言/可键盘），<b>再加</b>手柄拖动（体验好）；两者写同一份 <code>setWidgetSize</code> 收敛</td></tr>
+    <tr><td>未知组件</td><td>保留实例 + <b>占位卡</b> + provider 提示</td><td>忽略未知 id（保留在文件里）</td><td><b>升级为占位卡</b>（R5）</td></tr>
+    <tr><td>配置演进</td><td>每组件 <code>normalizeConfig</code> + <code>normalizeWith</code> 类型纠正</td><td>整份布局一个 <code>version:1</code></td><td><b>两者都要</b>：布局版本号 + 每组件归一化</td></tr>
+    <tr><td>保存</td><td>200ms 合并 + 返回同一 promise + 卸载冲刷</td><td>客户端 400ms 防抖 POST，失败提示</td><td><b>抄语义</b>：合并 + 可等待 + **服务端返回写结果**；再补"卸载/关页时冲刷"与 <b>CAS（防多窗口后写覆盖）</b></td></tr>
+    <tr><td>持久化</td><td>Obsidian <code>loadData/saveData</code>（单进程，无并发）</td><td>数据根 JSON + 锁 + 原子写（**要新增 <code>owns</code> 签字**）</td><td><b>保持我们的</b>（我们没有"宿主替我们管盘"这回事）；但抄它"读入即 sanitize"的做法</td></tr>
+    <tr><td>刷新</td><td>库变化 900ms 防抖；输入框聚焦时**不打断**；每组件 <code>liveRefresh</code></td><td>无（服务端一次性渲染）</td><td>P4 再引入；<b>先把"不打断用户输入"这条记进需求</b></td></tr>
+    <tr><td>锚点/可断言</td><td>无此需求（它是终端用户产品）</td><td><b>锚点与布局解耦</b>（隐藏 meta 块，p3-09 不用改）</td><td><b>我们的这条更强，必须保留</b> —— 它那边不需要，我们这边是硬约束</td></tr>
+    <tr><td>测试</td><td>真浏览器交互测试 + 纯函数集成测试</td><td>探针断言 DOM 锚点（无交互测试）</td><td><b>补</b>（R8）</td></tr>
+    <tr><td>第三方扩展</td><td><code>api.registerWidget</code> + 卸载 + 注册变化事件</td><td><code>module</code> 字段（未实现）</td><td>一期不做；但 registry 的**冲突保护/卸载同一性**两条规则先写进我们的注册表（成本≈0）</td></tr>
+    <tr><td>多页</td><td>完整（页签 + 右键菜单）</td><td>无</td><td><b>schema 预留 <code>pages[]</code></b>，UI 二期</td></tr>
+  </table>
+
+  <h2>六、优化方案（对上一版 dsh homepage 方案的修订）</h2>
+  <p class="lede">按"改动成本 / 收益"排序。R1–R5 是<b>必须在 P1–P3 内做掉</b>的；R6–R10 分别落在 P1 / P2 / P4 的相应步骤里。</p>
+  <table>
+    <tr><th>#</th><th>修订</th><th>落在哪一步</th><th>为什么必须（而不是"更好"）</th></tr>
+    <tr><td><b>R1</b></td><td>拖拽改为 <b>Pointer Events</b>：6px 阈值 → 克隆 ghost（挂容器父节点、transform-only）→ rAF 跟随 + 边缘自动滚动 → 落点高亮 → 松手 FLIP 动画；Esc/pointercancel/blur 收口取消；离开编辑态/换布局前显式 cancel</td><td>P3</td><td>我们的页面在 Electron <code>WebContentsView</code> 里；HTML5 DnD 在触摸/WebView 场景不可靠，且会和宿主原生拖拽打架</td></tr>
+    <tr><td><b>R2</b></td><td>落点判定加<b>轴自适应</b>（命中卡是否"孤行"决定用 x/y 中线）+ <b>最近矩形兜底</b>；插入点用 <code>beforeId</code> 语义，纯函数抽出来</td><td>P3（纯函数部分可进 P1）</td><td>12 列网格换行后，纯 x 轴判定会插错位置；卡片间隙处指针不在任何卡上</td></tr>
+    <tr><td><b>R3</b></td><td>组件契约加 <code>normalizeConfig(raw)</code>；布局从"整份一个大版本"升级为"布局版本 + 每组件归一化"</td><td>P1（契约）/ P2（读入时用）</td><td>否则每个组件配置一变就得全局迁移；脏值会一路跑到渲染</td></tr>
+    <tr><td><b>R4</b></td><td>网格 <b>4 列 → 12 列</b>，加 <code>h</code> 与全局 <code>rowHeight/gap/maxWidth</code>；尺寸改动用 CSS 变量，**不重绘组件本体**</td><td>P1（渲染）/ P2（schema）/ P3（交互）</td><td>4 列 + 无高度表达不了"大块/小块"；改尺寸若重绘组件会丢滚动位置与输入</td></tr>
+    <tr><td><b>R5</b></td><td>未知 kind 渲染<b>占位卡</b>（显示 kind + provider）；registry 加"内置不可覆盖""卸载按定义同一性"两条规则</td><td>P1</td><td>插件装卸/未加载时用户能看见并处理，而不是卡片静默消失</td></tr>
+    <tr><td><b>R6</b></td><td>保存语义：客户端防抖 → 服务端合并 + <b>返回写结果</b>（成功/冲突/失败）；关页/卸载时冲刷；<b>加 CAS</b>（<code>updatedAt</code>/ETag，防多窗口后写覆盖）</td><td>P2</td><td>跨进程 + 有锁，比单进程 Obsidian 更容易出"半截状态"；用户必须知道有没有存上</td></tr>
+    <tr><td><b>R7</b></td><td>读入即 <b>逐字段 sanitize</b>（不只"整份坏则回落默认"）：未知字段丢、类型纠正、越界夹紧</td><td>P2</td><td>拦在入口，后面所有代码都能假设"内存里的布局合法"</td></tr>
+    <tr><td><b>R8</b></td><td>新增<b>交互测试</b>：① 纯函数单测（插入点/尺寸吸附/归一化，可进 <code>--fast</code>）；② 真浏览器指针序列断言卡片位置（用我们已有的 CDP harness）</td><td>P3（+ P5 收尾）</td><td>上一版方案只断言 DOM 锚点 ⇒ 拖拽算法写错也全绿（这是它的 <code>test-sorting.mjs</code> 存在的理由）</td></tr>
+    <tr><td><b>R9</b></td><td>键盘与无障碍：方向键逐格改尺寸、<code>◀▶/↑↓</code> 重排、Esc 取消、手柄 <code>role/tabindex/aria-label</code>；<b>窄屏只允许调高</b></td><td>P3</td><td>拖拽是唯一入口时，键盘用户与窄屏会完全用不了</td></tr>
+    <tr><td><b>R10</b></td><td>schema 预留 <code>pages[]</code> 与 <code>activePageId</code>（UI 二期）；组件加 <code>icon/accent</code> 供"添加组件"画廊使用；添加流程做成<b>卡片画廊</b>而非下拉</td><td>P2（schema）/ P3（画廊）</td><td>它已验证多页可扩展；画廊比下拉更能表达"这是什么组件"</td></tr>
+  </table>
+
+  <h3>6.1 修订后我们的组件契约（草案，**代码自写**）</h3>
+  <pre>type VariantKind = string;                       // 一期只有内置；未知 kind 允许存在
+
+interface PayloadInstance {
+  id: string;
+  kind: VariantKind;                             // 'kpi' | 'activity' | 'sessions' | 'diag' | …
+  title?: string;                                // 空 = 用目录里的默认名
+  w: number;                                     // 1..12（列）
+  h: number;                                     // 1..30（行）
+  config: Record&lt;string, unknown&gt;;
+  provider?: string;                             // 未知 kind 时用来提示"由谁提供"
+}
+
+interface VariantDefinition&lt;C&gt; {
+  kind: VariantKind;
+  name: string; description: string;
+  icon: string; accent: string;                  // 供"添加组件"画廊
+  defaultSize: { w: number; h: number };
+  defaultConfig(): C;
+  normalizeConfig?(raw: Record&lt;string, unknown&gt;): C;   // ★ R3：逐组件迁移/类型纠正
+  renderServer(ctx): string;                     // 服务端出 HTML（我们的主线）
+  // P4 预留（先不做，但契约留位）：registerCleanup / registerInterval / isAlive
+}</pre>
+
+  <h3>6.2 修订后的交互算法（要点，**代码自写**）</h3>
+  <ul>
+    <li><b>起拖</b>：<code>pointerdown</code> 落点在卡上 → 记录起点；移动 &gt; <b>6px</b> 才认定起拖（并把后续 <code>click</code> 吞掉）。</li>
+    <li><b>预览</b>：克隆卡片为 ghost，挂到网格的**父容器**（保留主题变量），只改 <code>transform</code>。</li>
+    <li><b>落点</b>：命中卡 → 用它；否则取**距离最小**的卡；据"该卡是否独占一行"决定用 <strong>y 中线</strong>还是 <strong>x 中线</strong>；换算成 <code>beforeId</code>；插回原位 = 无操作。</li>
+    <li><b>收尾</b>：松手 → 记录 ghost 矩形 → 改顺序 → 用 FLIP 把每张移动过的卡从旧位置滑到新位置（<b>读 <code>prefers-reduced-motion</code></b>，用户禁动画时直接落位）。</li>
+    <li><b>取消</b>：Esc / 指针中断 / 窗口失焦 ⇒ 不提交、恢复原样；离开编辑态 / 换页 / 重绘前一律 <code>cancel()</code>。</li>
+    <li><b>尺寸</b>：右下角手柄拖动按列/行吸附；Esc 恢复；方向键逐格；窄屏只调高；按钮 <code>◀▶</code> 与手柄<b>共用同一个 <code>setSize</code></b>。</li>
+  </ul>
+
+  <h3>6.3 执行顺序（修订）</h3>
+  <table>
+    <tr><th>步</th><th>内容（相对上一版的增量用 <span class="tag new">增</span> 标出）</th><th>验证</th></tr>
+    <tr><td><b>P1</b></td><td>服务端组件化等价重构 + 锚点解耦（不变）<span class="tag new">增</span> 12 列/行高/间距的 <b>schema 与 CSS 变量</b>；<span class="tag new">增</span> registry 规则（内置不可覆盖 / 卸载同一性 / 未知 kind 占位卡）；<span class="tag new">增</span> <code>normalizeConfig</code> 契约字段；<span class="tag new">增</span> 把"插入点算法"抽成纯函数并单测</td><td><b>p3-09 一行不改全绿</b> + 视觉与今天一致 + 新单测绿</td></tr>
+    <tr><td><b>P2</b></td><td>持久化（数据根 JSON + 锁 + 原子写 + <code>owns</code> 签字）<span class="tag new">增</span> 读入逐字段 sanitize；<span class="tag new">增</span> 保存返回结果 + CAS；<span class="tag new">增</span> schema 预留 <code>pages[]</code></td><td>进程内断言（默认/坏 JSON/未知 id/越界/类型纠正/CAS 冲突）+ <code>--common</code></td></tr>
+    <tr><td><b>P3</b></td><td>编辑交互<span class="tag new">增</span> <b>Pointer 拖拽 + FLIP</b>（替代 HTML5 DnD）；<span class="tag new">增</span> 缩放<b>手柄</b>（与 ◀▶ 共用 setSize）；<span class="tag new">增</span> 键盘/Esc/窄屏规则；<span class="tag new">增</span> 添加组件<b>画廊</b>；<span class="tag new">增</span> 空态 CTA</td><td>纯函数单测 + 真浏览器指针序列断言位置 + 探针（编辑开关/POST 后 GET 反映新序/meta 锚点始终在）</td></tr>
+    <tr><td><b>P4</b></td><td>（可选）跨模块组件<span class="tag new">增</span> 组件生命周期（cleanup/interval/isAlive）+ 刷新<b>不打断输入</b> + 每组件 <code>liveRefresh</code></td><td>探针 + 交互测试</td></tr>
+  </table>
+
+  <h2>七、参考索引（本地路径，便于复查）</h2>
+  <pre>G:\CustomWorkspaces\AIProjects\home-pages\
+  manifest.json / package.json          身份、版本、脚本、许可证（GPL-3.0-only）
+  src\types.ts                          WidgetInstance / HomePage / HomePagesSettings（★布局 schema）
+  src\ui\sortable.ts                    ★ PointerSorter + FLIP + moveBefore（拖拽全套）
+  src\view.ts                           HomeView + WidgetHost（★生命周期/布局/编辑态/缩放/页签）
+  src\widgets\registry.ts               注册表 + provider 占位 + 配置归一化
+  src\widgets\types.ts                  ★ WidgetDefinition / WidgetContext / normalizeWith / clampInt
+  src\ui\modals.ts                      ★ 添加画廊 + 草稿式配置面板（12列/30行滑杆）
+  src\main.ts                           ★ 合并保存 + sanitize 读入 + 对外 API + 命令
+  scripts\test-sorting.mjs              ★ Playwright 真浏览器测拖拽（esbuild + obsidian-stub）
+  tests\integrations.test.ts            纯函数级集成测试（47KB）
+  docs\多维表格视图结合方案.md            作者自己的设计说明（可作"他怎么做设计"的样本）</pre>
+
+</div>
+</body>
+</html>

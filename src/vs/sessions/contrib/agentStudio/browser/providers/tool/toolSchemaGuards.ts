@@ -26,10 +26,11 @@
  * inputSchema: NO_PARAMS_SCHEMA,
  * ```
  *
- * 这条约定此前在 9 个文件里各抄一份（browserTools / unrealTools / mindmapTools / workflowTools /
+ * 这条约定此前在 8 个文件里各抄一份（browserTools / mindmapTools / workflowTools /
  * codebaseTools / kanbanTools / compatibilityTools / advancedMemoryTools / kbVaultRecallTools）、
  * 没有共享常量 —— "每处都要重新记一遍规则"正是它反复发生的根因。2026-09-24 已收敛到
  * `common/providers.ts` 的 `NO_PARAMS_SCHEMA`（理由与使用约定记在那里），本文件只负责守。
+ * （★ 2026-10-13：名单从 9 个减为 8 个 —— `unrealTools.ts` 已随该族下移到 dsh 侧而删除 ✓。）
  *
  * ## 注释里出现这个写法**不算违规**
  *

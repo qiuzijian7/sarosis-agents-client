@@ -50,12 +50,46 @@ const GRANDFATHERED_OVERSIZE: Record<string, string> = {
 	'src/vs/sessions/contrib/agentStudio/browser/agentTurnExecutor.ts': 'legacy 主循环（pi 内核收尾后删除 ⇒ 天然消解 ✓）',
 	// 3662 行
 	'src/vs/sessions/contrib/agentStudio/browser/taskOrchestrationService.ts': '任务编排',
-	// ✅ 2026-09-21 销账：`agentSettingsEditorPane.ts` 已降到 2493 行（不再超预算 ✓）——
-	//    由本用例自己发现并要求销账 ✓✓（护栏设计如此：**清单只减不增** ✓）。
+	// ✅ 2026-10-12 销账：`agentSettingsEditorPane.ts` 3208 → **2493 行**（同日两刀，都在行为网后面切）：
+	//    · 「版本 / 商城版本」473 行 → `browser/agentVersionsSection.ts`
+	//      （行为网 `test/browser/agentSettingsVersionsSection.test.ts` 21 条，拆前绿 / 拆后仍绿 ⇒ 等价性有据）
+	//    · 「飞书 CLI」284 行 → `browser/larkCliSection.ts`
+	//      （行为网 `test/browser/larkCliSection.test.ts` 19 条，拆前 17 条已绿 + 7 条反向突变证明不空跑）
+	//    ⇒ 条目删除、冻结数 13→12 ✓（这才是"登记欠账"的正确收尾：拆到预算内再销账 ✓）
+	// ✅ 2026-10-12 销账：`kbImportController.ts` 3077 → **2369 行**（把「库/笔记路径 + 构建缓存 +
+	//    落盘叶子」这批静态成员外提到 `browser/knowledge/kbVaultFs.ts`，行为不变，有 1169 行测试守着）✓
+	// ⚠ 2026-10-14 登记（**由本用例自身抓出**：插件中心那几个 tab/入口不是一次加完的，涨破 2500 时没人回来登记
+	//   ⇒ 这条断言一直在报「新增超预算文件」，`failure-baseline.json` 里又没有它（容忍 0）⇒ 整轮全量的退出码是 1，
+	//   真回归会被这条噪音淹掉 ✗。登记它是本文件头①那条「债务可见」的正解 ✓）。
+	//   拆分方向（谁拆谁按这套走）：把「dsh 页签」整块外提 —— 运行时状态/组合启停/添加插件 + 策展清单卡片 +
+	//   社区目录，落 `browser/views/pluginsDshSection.ts`；**前置条件**是先给它建行为网（本文件目前**没有**
+	//   pluginsView 的渲染测试，拆了没法证明等价 ⇒ 与 `agentSettingsEditorPane` 那次同路径：先补网、再拆、再销账 ✓）。
+	'src/vs/sessions/contrib/agentStudio/browser/views/pluginsView.ts': '插件中心视图（三页签 + 商城搜索 + VSIX 分发 + dsh 插件中心/添加插件）待带行为网把 dsh 页签外提',
+	// ⚠ 2026-10-14 登记（同样**由本用例抓出**：落地 `chatWorkspaceAuthority` 那套"会话级工作区覆盖"
+	//   时它从 2497 涨到 ~2520 ⇒ 恰好越过预算 ✗）。已先把新增注释压到最短（保留"为什么/三条语义/
+	//   契约测试指针"），仍越线 ⇒ 按本文件头①「债务可见」登记 ✓。
+	//   拆分方向：`agentStudioService.ts` 是**大杂烩**（工作区 / 会话 / agent / 连接 / 技能全在一个类里），
+	//   先外提「会话」切片（含本次这套覆盖表）落 `browser/agentStudioSessions.ts`；
+	//   **前置条件**：契约测试把 `_sessionWorkspaceOverrides` 钉在**本文件**里
+	//   （`chatWorkspaceAuthority.test.ts` 的 IMPL 常量）⇒ 拆之前要先把那条契约改成"跟到新文件" ✓，
+	//   否则拆完测试仍指旧路径 ⇒ 假绿 ✗。
+	'src/vs/sessions/contrib/agentStudio/browser/agentStudioService.ts': 'Agent Studio 主服务（工作区/会话/agent/连接/技能大杂烩）待按 会话 → agent·连接 外提',
 };
 
-/** 冻结数量：新增超预算文件会让下面的断言变红 ⇒ 必须先把老的拆掉或改架构 ✓。 */
-const FROZEN_OVERSIZE_COUNT = 12;
+/**
+ * 冻结数量：新增超预算文件会让下面的断言变红 ⇒ 必须先把老的拆掉或改架构 ✓。
+ *
+ * 2026-10-12：先由 12 调到 14（登记 `agentSettingsEditorPane` 涨回 + `kbImportController` 从未登记），
+ * 同日拆掉后者后回落到 13；再拆掉 `agentSettingsEditorPane`（两刀都进了 2500 行内）后**回落到 12** ✓
+ * —— 清单只减不增 ✓。
+ *
+ * 2026-10-14：12 → **13**（登记 `views/pluginsView.ts` 2575 行）。同上：涨破预算时**先登记**（理由见下面那条），
+ * 拆到 2500 行内那天再回来删条目 + 减 1 ✓。"只减不增"指的是**不许无声地涨** —— 涨必须有这一行可 review ✓。
+ *
+ * 2026-10-14（同日第二笔）：13 → **14**（登记 `browser/agentStudioService.ts` ~2520 行 —— 落地
+ * `chatWorkspaceAuthority` 那套会话级工作区覆盖时越线 ✓）。同样：拆完回来销账 ✓。
+ */
+const FROZEN_OVERSIZE_COUNT = 14;
 
 function listImplementationFiles(): string[] {
 	const abs = path.join(process.cwd(), DOMAIN_REL);

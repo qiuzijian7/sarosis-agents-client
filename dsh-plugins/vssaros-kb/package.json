@@ -1,0 +1,70 @@
+{
+  "name": "@vssaros/dsh-kb",
+  "version": "0.2.87",
+  "description": "VsSaros knowledge-base (知识库, formerly 资料库) module for DeepSeek Harness: self-hosted read-only vault page (/x/kb/, activityBar container agentStudio.knowledgeBase) plus kb_list / kb_search / kb_read tools over ~/.vssaros/knowledge-base/<vaultId>/ (.kbkernel.json index + 笔记/ 库/ docs). kb_search gained mode=fulltext (BM25 over the indexed note text, same tokenizer/BM25 constants as the IDE-side KbFullTextIndex) on 2026-10-12; kernel docs are also read in both real shapes (metadata / FTS) now. No longer embeds the memory module's section — memory became a standalone workbench (agentStudio.memory) on 2026-10-12. 2026-10-13：页面主体复刻真源结构（「库」/「笔记」两节 + 真文件树 + 节间分隔条），并新增真 Host 渲染级核对（p3-73）与页内脚本「只解析不运行」检查（p3-69 ⓪-b）——后者咬出过一次「模板串反斜杠被吃一层 ⇒ 整段页内脚本失效」的坑。2026-10-14：页面行右键新增「发送到聊天」——经页面桥 4→5 的新命令 insertChatReference 把该笔记作为**指针引用**投进当前 dsh 聊天草稿（不附正文；目标聊天框由宿主按 activeChatViewId 决定）。2026-10-15：点**文件行** ⇒ 在**编辑器面板**里打开（用户要求）——走页面桥既有的 openFile（与「思维导图」按钮同一条命令，不新增通道），落在 IDE 侧 resolver 链上（.canvas / pdf / docx / 媒体由 resolver 决定，页面**不按扩展名分流**）；单击即开（真源绑的是 ondblclick ⇒ 这条差异如实记），Ctrl/Meta/Shift 只选中不开；**有桥时页内预览整段不挂**（面板都不建 ⇒ 同一动作只有一份实现），没桥（import 探针 / 手工浏览器打开 / 老宿主）仍由页内预览兜底。注意资料库默认在工作区之外（~/.vssaros*/knowledge-base）⇒ 宿主会按既定安全设计**先弹一次确认**。2026-10-15（B 方案，用户报「点击知识库中的文件无法显示内容」）：插件开始把**注入记录里 `path` 指向别处的库**（IDE 的「配置文件夹为知识库」/ 用户真正的库（如 e:/VsSarosVault）✓）当**库根** —— 此前本侧只扫知识库数据根 ⇒ 这类库一个都列不出来（页面上只有数据根下的遗留 uid 目录，而真源那套「库内 .md ⇒ 块编辑器富显示」的判据只认已登记的库根 ⇒ 点它们只能是普通编辑器、内容也显示不出来）。落地：store.listVaults 收 external 库根（带 source=injected/scan）、pageFingerprint 纳入它们（否则页面缓存会越用越不准）、readDoc 的围栏从单根改成**多根**（兄弟目录照旧拒 ✓，fail-closed）；index.js 里 externalVaultRecords(config)/listAllVaults(root,config,opts) 是**模块级唯一实现**（放 narrow 作用域会 500 ✗ 真踩过），页面与 16 处工具调用共用。2026-10-15（增删；用户报「下拉框UI中没有增删入口」）：库下拉底部加「＋ 配置文件夹为知识库…」（⇒ 页面桥 kbAddVault ⇒ 宿主原生选目录；桥 8），库项**右键**加「删除知识库…」—— 已登记（IDE 清单里有，data-vault-registered=yes）⇒ 桥 kbRemoveVault（宿主 removeVault 自带原生确认 ⇒ 页内不二次确认 ✗）；未登记（只在盘上）⇒ 页内两级确认（菜单项先变问句）⇒ 新路由 /api/vault-delete（**永久删除**，不可逆 ✓ 与文件行的「移入备份」不是一回事 ✗；已登记的库该路由会 400 并指路去页面桥 ✓；落点只认 kbRoot/id 拼出来的直接子目录 ✓）。归属判据用**全量注入的 id 集**（别用「带 path 的子集」—— 默认布局的已登记库没有 customPath ✗ 会被误标 ✓）。无注入时不标「未登记」（不知道不乱标 ✓）。2026-10-15（fail-closed；真机事故＝宿主把库清单注入挂到了 web-content-import 行 ⇒ 本页拿不到清单、所有库被当成未登记）：归属改为三态 yes/no/unknown，unknown（没拿到清单）时右键只给「不可用」项、/api/vault-delete 回 409，永久删除只对**确知未登记**开放；右键菜单 Enter 改走同一条点击路径（旧实现 Enter 直接 run ⇒ 绕过两级确认 ✗）。",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/lock.js",
+    "lib/pageShell.js",
+    "lib/store.js",
+    "lib/core/kb.js",
+    "lib/core/kbFulltext.js",
+    "lib/core/kbIngest.js",
+    "lib/core/kbBatchGrant.js",
+    "scripts/feishu-sync.mjs",
+    "cordis.patch.yml",
+    "lib/core/feishuSpaces.js",
+    "lib/organize.js",
+    "lib/core/kbOrganize.js",
+    "lib/core/feishuDocs.js",
+    "lib/core/kbNavigation.js",
+    "lib/core/kbFrontmatter.js",
+    "lib/core/kbAliases.js",
+    "lib/core/kbGating.js",
+    "lib/core/kbEnrich.js",
+    "lib/core/kbCommunities.js",
+    "lib/core/kbInsights.js",
+    "lib/core/kbBuildCache.js",
+    "lib/core/kbKernelBuild.js",
+    "lib/core/kbDocExtract.js",
+    "lib/core/kbArchiveExtract.js",
+    "scripts/saros-kb-extract-doc.py",
+    "lib/core/kbMindmap.js"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/dsh": ">=0.1.7-0 <0.3.0-0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": [
+        "./cordis.patch.yml"
+      ]
+    }
+  },
+  "vssaros": {
+    "manifestVersion": 1,
+    "module": "kb",
+    "activityBar": {
+      "containerId": "agentStudio.knowledgeBase",
+      "title": {
+        "zh": "知识库",
+        "en": "Knowledge Base"
+      },
+      "icon": "codicon:book",
+      "order": 110
+    },
+    "view": {
+      "kind": "page",
+      "route": "/x/kb/"
+    },
+    "legacyCounterpart": "agentStudio.knowledgeBase"
+  },
+  "license": "MIT"
+}

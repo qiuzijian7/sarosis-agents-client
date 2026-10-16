@@ -1,0 +1,19 @@
+# @vssaros/dsh-workflow bundle patch: insert the workflow row.
+#
+# **本行挂的是"只读切片"，不是工作流引擎**（方案 6.6/6.11.2 把引擎迁移列为"高/不满足"）：
+#   - 读 `~/.vssaros/workflows/<workflowId>/workflow.json`（真源 `workflowStorageService.ts` +
+#     真机核对：`{id,name,description,steps[],isActive,createdAt,updatedAt,presetId,workspaceId,
+#     nodes[{id,type,name,position,data,style}],connections[{id,from,to,fromPort,toPort}],…}`）；
+#   - 页面 `/x/workflow`：工作流列表 + **服务端渲染 SVG 画布**（不用 React 19 webview，那是待定项）；
+#   - 工具：`workflow_list` / `workflow_get` / `workflow_engine_status`；
+#   - **worker 自证**：每次渲染页面都起一个真 worker 拿回 threadId 再终止 —— 把"Host 能否承载
+#     worker_threads"（引擎迁移的前提）从假设变成页面/工具上看得到的事实。
+#
+# 未做：执行（引擎迁移）、`ctx.agents`/`ctx.subagents` 接线、市场/发布、运行卡会话节点。
+#
+# `config.workflowsRoot` 留空时走 `<数据根>/workflows`；工作区级 `.sarosworkspace/workflows/`
+# Host 进程未必可达，v0 不覆盖。
+- insert:
+    - id: vssaros-workflow
+      name: '@vssaros/dsh-workflow'
+      config: {}

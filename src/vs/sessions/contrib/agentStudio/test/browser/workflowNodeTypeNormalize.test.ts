@@ -572,11 +572,24 @@ suite('快照库 session 隔离（MediaSnapshotStore）', () => {
 		assert.strictEqual(store.byNode('alive').length, 1, '存活节点（scoped key）未被误删');
 	});
 
-	test('旧数据（无 session 前缀）在当前 session 下仍可读（兼容）', () => {
-		const store = mkStore();
-		store.setActiveSession('wfs_A');
-		// 直接按 legacy key 写入（模拟历史数据）
-		(store as unknown as { refs: Map<string, unknown> }).refs.set('legacyNode:output:0', { kind: 'image', ref: 'old' });
-		assert.strictEqual(store.byNode('legacyNode').length, 1, 'legacy key 回退可读');
+	test('★ legacy key（无 session 前缀）：仅 `default` 会话下兼容可读，真实会话下**不得**回退', () => {
+		// ⚠ 2026-10-14 修：这条原来断言"真实 session（`wfs_A`）下 legacy key 也可读" —— 那正是
+		//   2026-09-12 被**有意移除**的行为 ✗：无前缀回退在真实会话下会让新会话看到旧会话/历史产物
+		//   （用户报的"新建会话节点预览图被污染"就是它；`nodeKeyPrefixes` 的注释把来龙去脉写全了 ✓）。
+		//   现在按新契约钉**两半**：`default` 下仍兼容 ✓、真实会话下必须读不到 ✓。
+		const LEGACY = 'legacyNode:output:0';
+		const seed = (store: InstanceType<typeof MediaSnapshotStore>) =>
+			(store as unknown as { refs: Map<string, unknown> }).refs.set(LEGACY, { kind: 'image', ref: 'old' });
+
+		const asDefault = mkStore();                  // 未 setActiveSession ⇒ default
+		seed(asDefault);
+		assert.strictEqual(asDefault.byNode('legacyNode').length, 1,
+			'default 会话下 legacy key 仍应可读（那才是会话作用域引入之前的旧数据 ✓）');
+
+		const inSession = mkStore();
+		inSession.setActiveSession('wfs_A');
+		seed(inSession);
+		assert.strictEqual(inSession.byNode('legacyNode').length, 0,
+			'真实会话下**不得**回退到无前缀历史 key —— 回退就等于把别的会话/历史产物漏进新会话 ✗');
 	});
 });

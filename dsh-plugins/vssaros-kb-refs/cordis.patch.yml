@@ -1,0 +1,7 @@
+# @vssaros/dsh-kb-refs bundle patch: insert a host row so the loader mounts this package
+# (and its client module gets served). The host half is inert; the `@知识库` source is
+# registered in the browser half (lib/client.js) via ctx.inputTriggers.registerSource.
+- insert:
+    - id: vssaros-kb-refs
+      name: '@vssaros/dsh-kb-refs'
+      config: {}

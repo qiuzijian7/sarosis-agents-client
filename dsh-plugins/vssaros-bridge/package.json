@@ -1,0 +1,35 @@
+{
+  "name": "@vssaros/dsh-bridge",
+  "version": "0.2.25",
+  "description": "VsSaros companion plugin for DeepSeek Harness: control bridge (host half) and page-bridge client (browser half). Protocol: src/vs/sessions/contrib/dshHarness/common/dshBridgeProtocol.ts",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/client.js",
+    "cordis.patch.yml"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/dsh": ">=0.1.7-0 <0.3.0-0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": [
+        "./cordis.patch.yml"
+      ]
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-slots"
+      ]
+    }
+  },
+  "license": "MIT"
+}

@@ -329,3 +329,11 @@ UI优化篇.pdf
 
 # 技能使用追踪 sidecar（运行时生成并自动重建，不入库）
 resources/.agents/skills/**/.usage.json
+
+# 构建期预装的 dsh 运行时（build/prepack-dsh-runtime.mjs 生成，可重建，不入库）
+/dsh-runtime/
+.archify/
+
+# dsh 试点与诊断临时产物（运行时生成，不入库）
+/poc/
+/_diag/

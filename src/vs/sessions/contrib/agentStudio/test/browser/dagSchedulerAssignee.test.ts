@@ -80,7 +80,15 @@ function makeHarness(): IHarness {
 		getValue: () => undefined,
 		onDidChangeConfiguration: () => ({ dispose() { /* noop */ } }),
 	} as any;
-	const environmentService = { userHome: URI.file('/tmp') } as any;
+	// ⚠ 2026-10-14 修：`_getDataUri()` 走 `resolveAgentStudioDataRoot(customPath, userRoamingDataHome)`
+	//   → `userDataRootFromRoamingHome(userRoamingDataHome)`（`common/sarosPaths.ts`，2026-09-20 起
+	//   只认 `userRoamingDataHome`，`userHome` 那条旧约定已废弃 ✗）⇒ 假环境只给 `userHome` 时这里拿到
+	//   `undefined`、`URI.joinPath(undefined, …)` 直接崩 ⇒ **5 条全红且全同一堆栈**（基线里只记了 2 条，
+	//   实际是"崩在 harness 而不是断言"✗）。补上真源字段 ✓。
+	const environmentService = {
+		userHome: URI.file('/tmp'),
+		userRoamingDataHome: URI.file('/tmp/User'),
+	} as any;
 
 	let poolBehavior: (tasks: PlanTask[]) => void = () => { /* no pool by default */ };
 

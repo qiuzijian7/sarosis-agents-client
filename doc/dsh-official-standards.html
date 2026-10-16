@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>dsh 官方插件纪律镜像 + 与 VsSaros 合规基准的差异对账</title>
+<style>
+  :root{ --bg:#fff; --fg:#1c1e21; --muted:#6b7280; --line:#e5e7eb; --accent:#2563eb; --ok:#15803d; --warn:#b45309; --bad:#b91c1c; --code:#f3f4f6; }
+  *{box-sizing:border-box}
+  body{margin:0;font:15px/1.75 "Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;color:var(--fg);background:var(--bg)}
+  .wrap{max-width:1120px;margin:0 auto;padding:40px 28px 80px}
+  h1{font-size:26px;margin:0 0 4px}
+  h2{font-size:19px;margin:36px 0 10px;padding-top:14px;border-top:2px solid var(--line)}
+  h3{font-size:16px;margin:22px 0 8px}
+  .sub{color:var(--muted);font-size:13px}
+  table{border-collapse:collapse;width:100%;margin:10px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+  th{background:#f8fafc;font-weight:600}
+  code{background:var(--code);padding:1px 5px;border-radius:4px;font-size:12.5px;font-family:ui-monospace,Consolas,monospace}
+  .ok{color:var(--ok);font-weight:600}.warn{color:var(--warn);font-weight:600}.bad{color:var(--bad);font-weight:600}
+  .pill{display:inline-block;padding:1px 9px;border-radius:999px;font-size:12px;font-weight:600;margin-right:6px}
+  .pill.ok{background:#dcfce7;color:var(--ok)} .pill.warn{background:#fef3c7;color:var(--warn)} .pill.bad{background:#fee2e2;color:var(--bad)}
+  .note{border-left:3px solid var(--accent);background:#eff6ff;padding:8px 14px;margin:12px 0;font-size:13.5px}
+  .risk{border-left-color:#dc2626;background:#fef2f2}
+  ul{margin:6px 0;padding-left:22px} li{margin:3px 0}
+  .toc{font-size:13.5px;color:var(--muted)} .toc a{color:var(--accent);text-decoration:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>dsh 官方插件纪律镜像 ＋ 差异对账</h1>
+<p class="sub">真源：<code>G:\CustomWorkspaces\AIProjects\deepseek-harness</code>（dsh 官方 monorepo 本地检出 v0.1.3-alpha.2，残缺快照）的 <code>packages/AGENTS.md</code> 与 <code>packages/client/AGENTS.md</code> ｜ 对账基准：本仓 <code>doc/dsh-modules-conformance.html</code> 的 A–I 九条 ｜ 2026-10-15</p>
+
+<div class="toc"><b>目录</b>：
+<a href="#s1">§1 官方纪律镜像（服务端）</a> · <a href="#s2">§2 官方纪律镜像（客户端）</a> · <a href="#s3">§3 差异对账：哪些是官方规则、哪些是我们自加的</a> · <a href="#s4">§4 官方有而我们缺的机制</a> · <a href="#s5">§5 结论与行动项</a></div>
+
+<h2 id="s1">§1 官方纪律镜像（服务端，packages/AGENTS.md）</h2>
+<p>以下是官方成文纪律的逐条镜像（编号对应原文行号），标注 <span class="pill ok">已对齐</span><span class="pill warn">我们无等价物</span><span class="pill bad">口径冲突</span>：</p>
+<table>
+<tr><th>#</th><th>官方纪律（原文出处）</th><th>VsSaros 现状</th></tr>
+<tr><td>L5</td><td><b>导出形态</b>：服务包 default-export 服务类；函数插件 named-export <code>name/inject/Config/apply</code> 且无 default export。混用会让 Loader 丢弃函数插件（有 postmortem：0001-acp-default-export-drops-inject）</td><td class="ok">已对齐（dsh-plugins 全部 named-export）</td></tr>
+<tr><td>L6</td><td><b>可选服务用 <code>ctx.get(name)</code></b>；<code>ctx.&lt;name&gt;</code> 只留给已声明的 inject——属性代理是拓扑敏感的，<code>ctx.get</code> 读全局服务表</td><td class="ok">已对齐（我们用 <code>ctx.inject([...], scope)</code> 动态声明，等价；曾踩过 <code>try{ctx.foo}catch{}</code> 恒抛的坑）</td></tr>
+<tr><td>L7</td><td><b>产品可见插件必须有 REAL-composition 测试</b>：走 Loader 启动真实 <code>cordis.yml</code>，禁止纯手搭 <code>ctx.plugin(...)</code>；断言模型可见/持久化/用户可见输出</td><td class="bad">我们缺这一层（守卫多为静态扫描 + 真机探针，无"真组合"测试）</td></tr>
+<tr><td>L8</td><td>initiator 私有链「先 derive 再 capture」：编排入口恢复 Agent、derive <code>agent.session</code>，不为藏参数把 Session 放宽成 Context</td><td class="warn">无等价物（我们的 agents 插件未涉此层）</td></tr>
+<tr><td>L9</td><td>一个异步操作 = 一个生命周期控制器/事务；readiness/cancellation/disposal 分离需要独立 owner 或 settlement 点</td><td class="ok">原则一致（workflow 引擎的事务边界）</td></tr>
+<tr><td>L10</td><td>服务定义为所有现存消费者设计；反向坏味道：公共方法只有一个内部调用者 ⇒ 改私有 capability 闭包</td><td class="ok">vssarosBridge 符合（多个消费者）</td></tr>
+<tr><td>L13</td><td>模型可见契约从模型视角写：prompt/工具 schema/结果不含 UI、传输、实现词汇；稳定的模型可见文本要逐字钉住（快照/e2e）</td><td class="ok">已对齐（工具 description 口径）</td></tr>
+<tr><td>L14</td><td><b>决策在执行点强制</b>：schema 省略、prompt 过滤、facade 都不是强制——要经 executor 测试拒绝路径</td><td class="warn">部分对齐（审批闸在组合层 ✓；但路径围栏等靠插件自觉）</td></tr>
+<tr><td>L15</td><td>状态只在 commit 点发布；派生缓存/prompt/UI 回声从单一权威源派生</td><td class="ok">已对齐（kanban 指纹 CAS + 原子写）</td></tr>
+<tr><td>L16</td><td>对完整结果施加边界：byte/token/item/time 上限在含包装与元数据的完整值已知处强制；测试微小与精确边界、多字节截断</td><td class="warn">部分（memory 双层截断口径互相掩盖是已知偏差）</td></tr>
+<tr><td>L17</td><td><b>注册表贡献必须证明 disposal</b>：HMR-safety 测试——dispose fiber 后观察到移除</td><td class="bad">缺（我们靠 <code>ctx.effect</code> 自觉，无 dispose 断言）</td></tr>
+<tr><td>L18</td><td>spec 并发运行于 forked worker：端口/路径/子进程都要有 teardown 归属；"只在单独跑时过"的 spec 是 spec 缺陷</td><td class="warn">部分（真机探针有孤儿 Chrome 假回归的前科）</td></tr>
+<tr><td>L24-25</td><td><code>src/types.ts</code> 只放类型；测试在包级 <code>tests/</code> 而非 <code>src/__tests__/</code></td><td class="ok">已对齐</td></tr>
+</table>
+
+<h2 id="s2">§2 官方纪律镜像（客户端，packages/client/AGENTS.md）</h2>
+<h3>2.1 槽位与 props 纪律（7 条）</h3>
+<table>
+<tr><th>#</th><th>官方纪律</th><th>VsSaros 现状</th></tr>
+<tr><td>1</td><td><b>唯一 API</b>：<code>ctx.slots.register({name, children?, store?, inject?}, Component)</code>；没有单独的槽位定义调用；只有壳渲染 <code>'root'</code></td><td class="ok">已对齐（chat-surface 等全部走 register）</td></tr>
+<tr><td>2</td><td><b>children = 声明＋授权</b>：渲染未声明的槽、或声明别人已声明的槽，load 期即报错；槽名镜像组合路径 <code>&lt;domain&gt;.&lt;entry&gt;.&lt;hole&gt;</code></td><td class="ok">已对齐（我们只 register 进官方已声明的槽，不自声明）</td></tr>
+<tr><td>4</td><td>hook 只有框架造的五个席位（useSession/useSessions/useWorkspaces/useStore/renderSlot）＋ inject hooks 舱绑定的 <code>use&lt;Name&gt;</code>；业务代码永不自制 hook</td><td class="ok">已对齐</td></tr>
+<tr><td>6</td><td><b>store 必须工厂化</b>：<code>createXXXStore()</code> 导出工厂，模块级单例禁止；生产代码只在 apply 里调工厂</td><td class="ok">已对齐（chat-surface chunk 无模块级单例）</td></tr>
+<tr><td>7</td><td><b>inject 只返回 plain data + callbacks</b>；私有响应式事实走保留的 <code>hooks</code> 舱；插件只能碰 inject 声明过的依赖</td><td class="ok">已对齐</td></tr>
+</table>
+
+<h3>2.2 导出纪律（3 条红线）</h3>
+<ul>
+<li>UI 插件除 <code>apply/inject/Config</code> ＋ 类型外<b>不导出任何值</b>；新增值导出需要 user sign-off</li>
+<li>同包测试直接相对路径 import 内部文件，<b>永不</b>为测试扩公共 API</li>
+<li><b>功能插件禁止 runtime-import 或 re-export 另一个功能插件的值</b>，禁止用 <code>dsh.client.external</code> 拿别的功能插件；行为跨包走 cordis 服务，UI 跨包走 slots——都不适用就停下来升级讨论，不许加导出解围。这条与我们「插件间无 npm 级互相依赖」的现状完全一致</li>
+</ul>
+
+<h3>2.3 组件永远看不到 ctx</h3>
+<p><code>ctx</code> 只属于 apply 世界；组件经「四份 props」（PropsRuntime &amp; PropsRenderSlots &amp; PropsStore &amp; inject face）拿一切，不读 React context、不 import 服务类。我们的 chat-surface chunk 遵守。</p>
+
+<h3>2.4 依赖声明与模块图（重要澄清）</h3>
+<div class="note"><b>官方明确：<code>dsh.client.inject</code> 的包名边是 informational only</b>（preflight 展示、HMR diff），<b>不参与激活排序</b>。激活顺序只由 cordis fiber 的服务 inject 等待决定。三种「依赖」不可混用：cordis 服务 <code>inject</code>（运行时、缺则 PENDING 无超时、可替换、允许环）vs 模块图 <code>external</code>（物化时、缺则当场抛、唯一供应者、禁环）vs <code>dsh.client.inject</code>（纯信息）。</div>
+<ul>
+<li>client 包必须 cordis 同时进 <code>peerDependencies</code> 与 <code>devDependencies</code>（版本一致）</li>
+<li>浏览器/类型关系只进 devDependencies；Host 值 import 需分类导出（safeHostDependencyExports / peerRequiredHostExports）</li>
+<li><code>files</code> 必须闭合发布载荷（publint 检查）——与我们「漏 files 会加载即失败」的教训同源</li>
+<li>基线 external（React、Cordis、client/store、ui-primitives、ui-slots、ui-dockkit）隐式，<b>禁止</b>在清单里重复声明</li>
+</ul>
+
+<h3>2.5 新插件包三注册面</h3>
+<p>缺一不可（各缺一个会在不同的更晚时点炸）：① <code>tsconfig.client.json</code> 聚合 references；② <code>web-app/cordis.patch.yml</code> 的 <code>dsh.client</code> 行；③ <code>web-app/package.json</code> 依赖。我们的单插件分发形态只涉及 ② 的等价物（patch insert）。</p>
+
+<h3>2.6 测试与检查阶梯</h3>
+<ul>
+<li>client 源码包在 <b>per-file 100% coverage 门</b>内；防御分支要 <code>/* v8 ignore -- 真理由 */</code></li>
+<li>组件 spec 用真实 props 或驱动 fixture，断言用户可见行为（不断言 class 名/hook 内部/渲染次数）</li>
+<li>检查阶梯：<code>test:gui</code>（秒级内循环）→ <code>DSH_SNAPSHOT=replay test:web</code>（改动会改变装配输出时）→ PR 前 <code>dsh-pre-push-checks</code> 选最窄检查集——与我们「验证范围按改动面选」的反馈记忆同向</li>
+</ul>
+
+<h2 id="s3">§3 差异对账：哪些是官方规则、哪些是 VsSaros 自加的</h2>
+<p>对账 <code>dsh-modules-conformance.html</code> 的 A–I 九条与我们其它惯用规则：</p>
+<table>
+<tr><th>规则</th><th>官方地位</th><th>说明</th></tr>
+<tr><td>A 会话日志唯一真源</td><td class="ok">官方（practices.md P1）</td><td>官方 AGENTS.md L13/L15 亦呼应</td></tr>
+<tr><td>B prompt 正门（section/variable/context）</td><td class="ok">官方（P4/P17/P18）</td><td>—</td></tr>
+<tr><td>C sessionProjections / 禁自定义事件</td><td class="ok">官方（P21/P26）</td><td>—</td></tr>
+<tr><td>D 最弱机制优先 / 审批在组合层</td><td class="ok">官方（Stability 17）</td><td>我们的写工具审批闸缺口仍是未闭合项</td></tr>
+<tr><td>E UI token / 不 iframe</td><td class="ok">官方（UI 31-38 + web-styling.md）</td><td>官方另有 CSS Modules + clsx、禁字面量颜色、locale 字典强制——比我们严格</td></tr>
+<tr><td>F 性能（不轮询、装配期不做重活）</td><td class="ok">官方（P26-29）</td><td>—</td></tr>
+<tr><td>G 打包 files / peerDeps / patch 只 insert</td><td class="ok">官方（SKILL.md + L67 发布载荷闭合）</td><td>官方把「只 insert 不覆盖他人」表述为第三方插件纪律；自家 bundle 分层覆写是另一套（见 <code>dsh-patch-semantics.html</code>）</td></tr>
+<tr><td>H 可诊断（失败留痕）</td><td class="ok">官方精神（roster broken 行先例）</td><td>官方未单列为条文，但有 verify-* 门</td></tr>
+<tr><td>I 数据落点与启动口径一致</td><td class="warn">VsSaros 语境规则</td><td>官方统一 <code>$DSH_HOME</code>（默认 ~/.dsh）＋ persistence-catalog 登记；我们的「数据根由宿主 --patch 注入」是 IDE 托管场景的自加口径</td></tr>
+<tr><td>inject 收窄到 <code>['tools']</code>（webServer/connection 软注入）</td><td class="warn">VsSaros 自加</td><td>官方无此条文；是我们 headless profile 永久 pending 事故后的经验规则（poc 5.90）。官方 <code>dsh.client.inject</code> informational-only 的澄清支持我们的方向，但条文本身是我们立的</td></tr>
+<tr><td>owns 单写者声明 + legacyCounterpart</td><td class="bad">VsSaros 自加（官方快照 0 命中）</td><td><code>owns</code> 关键字在官方在场代码/文档中不存在；是 <code>dshPluginActivation.ts</code> 的自有机制。官方对应物是 persistence-catalog（脚本缺席无法核验细节）</td></tr>
+<tr><td>slots 禁区（sidebar/rightbar/settings/plugins）</td><td class="bad">VsSaros 自加（官方无禁区清单）</td><td>官方 <code>docs/subsystems/slots.md</code> 缺席无法最终核实；但在场证据显示 <code>sidebar.brand.mark</code>、<code>settings.general.item</code> 都是普通一级域且有官方注册。<b>禁区应重新定性为「聊天模式下被宿主裁剪 ⇒ 实际不可用作换皮面」的经验结论，而非官方禁令</b>；官方真正的硬边界是「children 声明即授权」——别人已声明的槽你再声明会 load 期报错</td></tr>
+<tr><td>87 个命名槽 / OFFICIAL_ENTRIES 登记表</td><td class="warn">VsSaros 实测产物</td><td>官方槽清单在缺席的 slots.md；我们的 87 槽清单是从 runner 源码扫出来的，官方占位表曾漏登 <code>goal</code></td></tr>
+<tr><td>版本 bump 纪律 / files 守卫</td><td class="ok">官方（L67 + plugin add no-op 语义）</td><td>完全同源</td></tr>
+</table>
+
+<h2 id="s4">§4 官方有而我们缺的机制</h2>
+<table>
+<tr><th>机制</th><th>官方出处</th><th>价值</th></tr>
+<tr><td><b>REAL-composition 测试</b>（走 Loader 起真 cordis.yml）</td><td>packages/AGENTS.md L7 + docs/testing.md</td><td>弥补「静态扫描绿得假」「断言 markup 存在 ≠ 交互可达」的结构性盲区</td></tr>
+<tr><td><b>HMR-safety 测试</b>（dispose fiber 断言移除）</td><td>AGENTS.md L17</td><td>我们热更依赖 ctx.effect 自觉，无回归断言</td></tr>
+<tr><td><b>persistence-catalog</b>（持久化文件登记在册 + verify）</td><td>根 package.json gen/verify-persistence-catalog</td><td>我们的落盘文件（taskboard.json/workflows//kb 库）无册可查</td></tr>
+<tr><td><b>30 个 verify-*/check:ci:* 门</b>（cordis-config、client-catalog、module-graph、scoped-events…）</td><td>根 package.json L74-167</td><td>目录即真相、CI freshness-gated；我们只有 2 个守卫脚本</td></tr>
+<tr><td><b>postmortem 编号归档</b>（docs/postmortem/0001-…）</td><td>AGENTS.md L5/L6 引用</td><td>我们的事故散在记忆与 poc 日志，无单一可检索归档</td></tr>
+<tr><td><b>per-file 100% coverage 门</b></td><td>client/AGENTS.md L119</td><td>对我们插件过重，可只对 core store 层采用</td></tr>
+<tr><td><b>locale 字典强制 + verify-client-ui-i18n</b></td><td>client/AGENTS.md L113</td><td>我们界面文案硬编码中文，国际化欠债</td></tr>
+</table>
+
+<h2 id="s5">§5 结论与行动项</h2>
+<div class="note"><b>结论</b>：dsh 官方源码（在场部分）自身执行纪律严格，且 <code>packages/AGENTS.md</code> 就是一份成文的官方设计标准。我们的 A–I 合规基准大方向与官方一致；<b>两处需要修正认知</b>：①「slots 禁区」不是官方禁令而是宿主裁剪的经验结论；②「owns 单写者」是我们自加的机制，官方对应物是 persistence-catalog。</div>
+<table>
+<tr><th>#</th><th>行动</th><th>优先级</th></tr>
+<tr><td>1</td><td>修正 <code>doc/dsh-slot-mechanism.html</code> 与相关守卫注释中「禁区」的定性表述（宿主裁剪 ≠ 官方禁令）</td><td>P1</td></tr>
+<tr><td>2</td><td>引入 REAL-composition 测试层：为 dsh-plugins 建一个走真 Loader 的组合测试夹具（先在 1-2 个插件试点）</td><td>P1</td></tr>
+<tr><td>3</td><td>落盘文件登记册（仿 persistence-catalog）：<code>dsh-plugins/persistence.json</code> ＋ 守卫脚本核对 owns/路径</td><td>P2</td></tr>
+<tr><td>4</td><td>事故 postmortem 归档目录 <code>doc/postmortem/</code>，把记忆中的事故教训编号固化</td><td>P2</td></tr>
+<tr><td>5</td><td>完整重新 clone 官方仓库（当前快照缺 ~80 包 + scripts/，无法构建核验）</td><td>P0（环境）</td></tr>
+</table>
+
+<p class="sub">生成于 2026-10-15 ｜ 真源：deepseek-harness @ 0.1.3-alpha.2（packages/AGENTS.md 29 行、packages/client/AGENTS.md 155 行全文已读）｜ 官方缺席部分（tools/webserver/slots.md/scripts）的结论均标注「无法核验」</p>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>codebase → dsh 移植报告 —— @vssaros/dsh-codebase 0.6.63</title>
+<style>
+	:root {
+		--bg: #f6f8fa; --card: #ffffff; --ink: #1f2328; --dim: #57606a; --line: #e5e7eb;
+		--ok: #1a7f37; --warn: #9a6700; --bad: #cf222e; --accent: #0969da;
+		--mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+	}
+	* { box-sizing: border-box; }
+	body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.7 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; }
+	.wrap { max-width: 1080px; margin: 0 auto; padding: 28px 20px 64px; }
+	h1 { font-size: 24px; margin: 0 0 4px; }
+	h2 { font-size: 18px; margin: 40px 0 12px; padding-top: 8px; border-top: 2px solid var(--line); }
+	h3 { font-size: 15px; margin: 20px 0 8px; }
+	code { font-family: var(--mono); background: #eef1f4; padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+	pre { background: #0d1117; color: #c9d1d9; padding: 14px 16px; border-radius: 8px; overflow: auto; font: 12.5px/1.6 var(--mono); }
+	pre code { background: transparent; padding: 0; color: inherit; }
+	table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 13px; background: var(--card); }
+	th, td { border: 1px solid var(--line); padding: 7px 9px; vertical-align: top; text-align: left; }
+	th { background: var(--bg); }
+	.sub { color: var(--dim); font-size: 13px; }
+	.kv { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+	.kv span { background: var(--card); border: 1px solid var(--line); border-radius: 999px; padding: 3px 12px; font-size: 12.5px; }
+	.tag { display: inline-block; border-radius: 4px; padding: 0 6px; font-size: 12px; font-weight: 600; }
+	.t-ok { color: var(--ok); background: #dafbe1; }
+	.t-warn { color: var(--warn); background: #fff8c5; }
+	.t-bad { color: var(--bad); background: #ffebe9; }
+	.note { border-left: 3px solid var(--warn); background: #fffbf0; padding: 10px 14px; border-radius: 0 8px 8px 0; margin: 12px 0; font-size: 13px; }
+	.okbox { border-left: 3px solid var(--ok); background: #f0faf3; padding: 10px 14px; border-radius: 0 8px 8px 0; margin: 12px 0; font-size: 13px; }
+	.toc { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px 18px; font-size: 13px; }
+	.toc a { color: var(--accent); text-decoration: none; }
+
+	/* ── mockup ─────────────────────────────────────────────────────────── */
+	.mock { border: 1px solid #d0d7de; border-radius: 10px; overflow: hidden; background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.06); }
+	.mock-bar { display: flex; align-items: center; gap: 6px; background: #eceef1; padding: 7px 12px; border-bottom: 1px solid #d0d7de; }
+	.mock-bar i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+	.mock-bar .r { background: #f26d6d; } .mock-bar .y { background: #f0c341; } .mock-bar .g { background: #3fc76f; }
+	.mock-url { flex: 1; margin-left: 10px; background: #fff; border: 1px solid #d0d7de; border-radius: 6px; padding: 2px 10px; font: 12px var(--mono); color: var(--dim); }
+	.mock-body { padding: 14px 16px 18px; background: #fafbfc; }
+	.mock-diag { font: 11.5px/1.7 var(--mono); background: #f0f2f5; border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; color: #444c56; white-space: pre-wrap; }
+	.mock-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 12px 0; }
+	.mock-card { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+	.mock-card .big { font-size: 20px; font-weight: 700; }
+	.mock-card .lbl { font-size: 11.5px; color: var(--dim); text-transform: uppercase; letter-spacing: .03em; }
+	.mock-card .foot { font-size: 11px; color: var(--dim); margin-top: 2px; }
+	.mock-kv { display: grid; grid-template-columns: 130px 1fr; gap: 4px 12px; background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; font-size: 12.5px; }
+	.mock-kv b { color: var(--dim); font-weight: 600; }
+	.mock-kv .bad { color: var(--bad); font-weight: 600; }
+	.mock-search { display: flex; gap: 8px; margin: 12px 0; }
+	.mock-search .in { flex: 1; border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; font: 12.5px var(--mono); color: #8b949e; background: #fff; }
+	.mock-search .btn { border: 1px solid var(--line); border-radius: 6px; padding: 6px 14px; background: var(--accent); color: #fff; font-size: 12.5px; }
+	.mock-secs { display: grid; gap: 6px; margin-top: 10px; }
+	.mock-sec { display: flex; align-items: center; gap: 8px; background: #fff; border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; font-size: 12.5px; color: #444c56; }
+	.mock-sec .chev { color: #8b949e; }
+	.mock-sec .badge { margin-left: auto; font-size: 11px; color: var(--dim); background: #f0f2f5; border-radius: 999px; padding: 1px 9px; }
+	.mock-gate { margin-top: 14px; border: 1px solid #d29922; background: #fff8e5; border-radius: 8px; padding: 10px 14px; font-size: 12.5px; }
+	.mock-gate .hd { display: flex; align-items: center; gap: 8px; font-weight: 600; color: #7d5a00; margin-bottom: 4px; }
+	.mock-gate .acts { display: flex; gap: 8px; margin-top: 8px; }
+	.mock-gate .ok { background: var(--ok); color: #fff; border-radius: 6px; padding: 3px 12px; }
+	.mock-gate .no { border: 1px solid var(--line); background: #fff; border-radius: 6px; padding: 3px 12px; color: var(--dim); }
+	.mock-cap { font-size: 12px; color: var(--dim); margin: 8px 2px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>codebase → dsh 移植报告</h1>
+<div class="sub">插件：<code>@vssaros/dsh-codebase</code> <strong>0.6.63</strong> · 2026-10-14 · 移植对象：IDE 侧 Codebase Memory（<code>src/vs/sessions/contrib/agentStudio</code>）→ dsh 插件（<code>dsh-plugins/vssaros-codebase</code>）</div>
+<div class="kv">
+	<span><span class="tag t-ok">✓</span> 21 个工具（真源 18 → 17 件 1:1 + 1 结论 + 4 件 dsh 自有）</span>
+	<span><span class="tag t-ok">✓</span> 解析器双档：regex（快档）/ tree-sitter（真解析）</span>
+	<span><span class="tag t-ok">✓</span> 所有权交接（甲档已拍板）</span>
+	<span><span class="tag t-warn">⚠</span> 唯一未验：起真机 IDE 看"确实让路"</span>
+</div>
+
+<div class="toc">
+	<strong>目录</strong> · <a href="#mockup">① 页面 Mockup</a> · <a href="#outline">② 文件大纲</a> · <a href="#usage">③ 使用说明</a> · <a href="#arch">④ 框架说明</a> · <a href="#proscons">⑤ 优缺点总结</a> · <a href="#opt">⑥ 优化方案</a> · <a href="#verify">⑦ 验证与对账</a>
+</div>
+
+<h2 id="mockup">① 页面 Mockup</h2>
+<div class="note">⚠ 这是<strong>静态示意</strong>（HTML/CSS ✓，无 JS ✓），结构与真实页面一致，<strong>数据是示例</strong>（不是真机读数 ✓）。真实页面的分区顺序：诊断行 → 统计卡 → Index Configuration → Graph Details → 检索 → Analysis Tools（21）→ Projects → Activity Log ✓。</div>
+
+<div class="mock">
+	<div class="mock-bar"><i class="r"></i><i class="y"></i><i class="g"></i><span class="mock-url">dsh /x/codebase/ · 工作区 sarosis-agents-client</span></div>
+	<div class="mock-body">
+		<div class="mock-diag">工作区 G:/SarosWorkspace/sarosis-agents-client · 图谱目录 …/.codebase-memory · 轻路径（只读 artifact.json）· 解析器 17 语言 · 来自 vendor/tree-sitter
+索引 影子 有产物（6,452 节点 / 19,860 边，2026-10-14 09:12） · 读图走 shadow（这份图 3 小时前） · 目录 <code>…/codebase-index/a1b2c3…/</code>（config.indexDir） · 保鲜：监听中（每 5s 合并变更） · ⚠ 双输风险：无</div>
+		<div class="mock-cards">
+			<div class="mock-card"><div class="big">6,452</div><div class="lbl">Nodes</div><div class="foot">functions · classes · interfaces</div></div>
+			<div class="mock-card"><div class="big">19,860</div><div class="lbl">Edges</div><div class="foot">calls · imports · defines</div></div>
+			<div class="mock-card"><div class="big">412</div><div class="lbl">Files</div><div class="foot">indexed source files</div></div>
+			<div class="mock-card"><div class="big">09:12</div><div class="lbl">Last Index</div><div class="foot">graph.db.zst · 4.9MB</div></div>
+		</div>
+		<div class="mock-kv">
+			<b>落点</b><span><code>…/codebase-index/a1b2c3…/</code>（config.indexDir 依据）</span>
+			<b>解析器</b><span>17 语言 · 来自 vendor/tree-sitter · <code>…/vendor/</code></span>
+			<b>保鲜</b><span>监听中（每 5s 合并变更）</span>
+			<b>交接状态</b><span>影子档（IDE 仍会自己索引工作区 ✓ —— 代价是双份索引 ⚠）</span>
+			<b>图的新鲜度</b><span>3 小时前 ✓（判决阈值 7 天）</span>
+			<b>产图档位</b><span><strong>treesitter</strong> · auto：本机资产可用 ⇒ 真解析 · 上次实测用了 118ms（增量 ✓）</span>
+			<b>重建代价参考</b><span>上一次 118ms（treesitter / 增量 ✓）—— 实测值，不是估算 ✓</span>
+		</div>
+		<div class="mock-search"><span class="in">🔍 按名字检索节点（会加载全量图）</span><span class="in" style="max-width:200px">限定文件路径片段</span><span class="btn">检索</span></div>
+		<div class="mock-secs">
+			<div class="mock-sec"><span class="chev">▾</span>🌐 Graph Details<span class="badge">4.9MB</span></div>
+			<div class="mock-sec"><span class="chev">▸</span>🏗️ Architecture</div>
+			<div class="mock-sec"><span class="chev">▸</span>🔍 Query Console</div>
+			<div class="mock-sec"><span class="chev">▸</span>🔬 Analysis Tools<span class="badge">21 个工具</span></div>
+			<div class="mock-sec"><span class="chev">▸</span>📦 Projects</div>
+			<div class="mock-sec"><span class="chev">▸</span>📋 Activity Log<span class="badge">空闲</span></div>
+		</div>
+		<div class="mock-gate">
+			<div class="hd">⚠ 审批闸 · codebase_index</div>
+			<div>允许 <code>codebase_index</code> 为当前工作区建<strong>影子</strong>代码图谱（增量（复用缓存），上限 1500 个文件；解析档：auto ⇒ <strong>真解析</strong>（本机资产可用 ✓）；产物只写 <code>…/codebase-index/a1b2c3…/</code>，不触碰工作区里的 .codebase-memory/ ✓）？</div>
+			<div class="acts"><span class="ok">批准</span><span class="no">拒绝</span></div>
+		</div>
+	</div>
+</div>
+<div class="mock-cap">▲ 上图：① 诊断行把"读图走哪一份 / 这份图多旧 / 保鲜开没开"全摆出来 ✓；② Index Configuration 里的"产图档位 / 重建代价"是<strong>实测值</strong> ✓；③ 底部是一张审批卡 —— 写动作（建图 / 删除 / 导入导出）都要过它 ✓。</div>
+
+<h2 id="outline">② 文件大纲</h2>
+<div class="sub">按职责分组；括号内为字节数（2026-10-14 实测 ✓）。<strong>总打包体积 ≈ 21.4MB</strong>，其中约 96% 是 tree-sitter 资产 ✓。</div>
+<table>
+	<tr><th>组</th><th>文件</th><th>一句话职责</th></tr>
+	<tr><td><strong>门面 / 页面</strong></td><td><code>lib/index.js</code>（218KB） · <code>lib/pageShell.js</code>（9.2KB） · <code>lib/client.js</code>（8.4KB） · <code>lib/shapeQuery.js</code>（13KB）</td>
+		<td>页面 + <strong>21 个工具</strong>（含审批闸与 output.render）+ 自诊断 ✓ · 共享外壳（7 份逐字同形 ✓） · 页面前端 · 结构化查询</td></tr>
+	<tr><td><strong>读侧</strong>（读产物、做图算法）</td><td><code>lib/store.js</code>（47KB） · <code>lib/core/codebase.js</code>（47KB）</td>
+		<td>落点选择（影子优先 / 回退 IDE ✓）+ 缓存 + 读图谱 ✓ · 纯逻辑（清单归一 / 图校验 / 查询 ✓）</td></tr>
+	<tr><td><strong>写侧</strong>（建图）</td><td><code>lib/indexer.js</code>（62KB） · <code>lib/indexService.js</code>（54KB） · <code>lib/shadow.js</code>（20KB） · <code>lib/watcher.js</code>（10KB）</td>
+		<td>正则档 + 增量缓存 ✓ · 编排（锁 / 兜底重扫 / meta / 覆盖率 / 删除 / 导入导出 ✓） · 落点 + 交接两档 + 锁互操作 ✓ · 保鲜（缺省关 ✓）</td></tr>
+	<tr><td><strong>解析器</strong>（真解析档）</td><td><code>lib/parser/pool.js</code> · <code>worker.js</code> · <code>extract.js</code> · <code>resolve.js</code> · <code>facts.js</code> · <code>bin/vendor-assets.mjs</code></td>
+		<td>worker 池（超时自愈 ✓） · AST 抽符号/边（CALLS/USAGE/INHERITS/IMPLEMENTS ✓） · 资产装配</td></tr>
+	<tr><td><strong>解析器资产</strong></td><td><code>vendor/tree-sitter.cjs</code> + <code>tree-sitter.wasm</code> + <strong>17 门语言</strong>的 wasm（最大 cpp 5.4MB / c-sharp 5.1MB ✓）</td>
+		<td>离线可装 ✓（不依赖网络 ✓ —— 真源那种"第一次用要拉资产"在这不存在 ✓）</td></tr>
+	<tr><td><strong>接线</strong></td><td><code>package.json</code> · <code>cordis.patch.yml</code></td><td>模块声明 + peerDependencies + <code>files</code> 白名单 ✓ · host 注册行 ✓</td></tr>
+</table>
+
+<h2 id="usage">③ 使用说明</h2>
+<h3>3.1 它是什么 / 不是什么</h3>
+<p>这是一个 <strong>dsh 插件</strong>：把"代码图谱"（节点=文件/符号，边=IMPORTS/CONTAINS/CALLS/USAGE/INHERITS/IMPLEMENTS）做成<strong>可离线安装、可复用</strong>的能力，供 dsh 侧的智能体/页面用 ✓。它<strong>不</strong>替 IDE 建图——除非走交接档（见 3.4 ✓）；平时它读 IDE 已建好的图 ✓。</p>
+<h3>3.2 安装与配置（都在 dsh 的覆盖层里，插件不动 <code>src/</code> ✓）</h3>
+<pre>vssaros-codebase:
+  workspaceRoot: &lt;工作区&gt;           # 必填 ✓
+  indexDir:      &lt;dsh 索引目录&gt;      # 可选；缺省 &lt;DSH_HOME&gt;/codebase-index/&lt;工作区哈希&gt;/
+  indexTarget:   'shadow'             # 缺省 ✓；'workspace' ⇒ 交接档（甲档 ✓）
+  indexWatch:    true                 # 可选；缺省关 ✓ ⇒ 交接档<strong>必须</strong>开（否则图静默变旧 ✗）
+  parser:        'auto'               # 缺省 auto ⇒ 资产可用就真解析、不可用如实降级 ✓</pre>
+<h3>3.3 常用动作（都是工具 ⇒ 写动作要过审批闸 ✓）</h3>
+<table>
+	<tr><th>要做什么</th><th>用哪个</th><th>说一句话</th></tr>
+	<tr><td>建 / 更新图谱</td><td><code>codebase_index</code>（写·审批 ✓）</td><td>档位/落点/上限都在审批理由里 ✓；增量为主，连续增量太多次会自动兜底全量 ✓</td></tr>
+	<tr><td>看现状（落点/档位/新鲜度/保鲜）</td><td><code>codebase_index_status</code>（只读 ✓）</td><td>甲档的两条告警（保鲜没开 / 双输）在这里能问出来 ✓</td></tr>
+	<tr><td>查（检索 / 依赖 / 热点 / 架构 / 改动 / 追踪 / Cypher）</td><td>7 个读工具 ✓</td><td>第一个会加载全量图，之后走缓存 ✓</td></tr>
+	<tr><td>看覆盖率（图里 vs 现在扫得到）</td><td><code>codebase_coverage</code>（只读 ✓）</td><td>⚠ 是<strong>集合差</strong>（没有逐文件失败原因 ✗）；扫描被截断时覆盖率只是<strong>下界</strong> ✓</td></tr>
+	<tr><td>搬图（跨机器/团队）</td><td><code>codebase_export_artifact</code> / <code>codebase_import_artifact</code>（写·审批 ✓）</td><td>导入会<strong>先验证再落盘</strong> ✓（坏图拒绝 ✓）</td></tr>
+	<tr><td>删掉本工作区的索引</td><td><code>codebase_delete_project</code>（写·审批 ✓）</td><td>三条红线：绝不删工作区根 ✓ / 有人索引时拒 ✓ / 删完如实报 ✓；<code>which="workspace"</code> = <strong>把权限还给 IDE</strong> ✓</td></tr>
+</table>
+<h3>3.4 交接（甲档）与回退</h3>
+<div class="okbox">✓ <strong>交接</strong>：设 <code>indexTarget='workspace'</code> + 跑一次 <code>codebase_index</code> + <strong>务必同时开</strong> <code>indexWatch=true</code> ✓<br>✓ <strong>回退</strong>：<code>codebase_delete_project</code> 带 <code>which="workspace"</code> 删掉工作区那份 ⇒ 权限<strong>立刻</strong>回 IDE ✓（⚠ 只改配置<strong>不够</strong> ✗ —— 权限凭据是那份<strong>清单</strong>、不是配置 ✓）</div>
+
+<h2 id="arch">④ 框架说明</h2>
+<pre>┌── dsh 插件（@vssaros/dsh-codebase）────────────────────────────────────────────┐
+│  页面（index.js）── 21 个工具 ──┬── 读侧：store.js（落点：影子优先/回退 IDE ✓）    │
+│                                 │        └─ core/codebase.js（清单归一/图校验 ✓）│
+│                                 ├── 写侧：indexer.js（正则档+增量缓存 ✓）         │
+│                                 │        └─ parser/*（真解析 worker 池 ✓）       │
+│                                 ├── indexService.js（锁/兜底/meta/删除/导入导出 ✓）│
+│                                 ├── shadow.js（落点两档 + 与 IDE 同一把锁 ✓）     │
+│                                 └── watcher.js（保鲜；缺省关 ✓）                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+                │ 产物：artifact.json + graph.db.zst（<strong>gzip 压缩 JSON</strong> ✓，与 IDE 双向同形 ✓）
+                ▼
+   影子（缺省）<DSH_HOME>/codebase-index/&lt;hash&gt;/   或   交接（甲档）&lt;ws&gt;/.codebase-memory/
+                ▲ 清单里写 <code>producer: 'vssaros-dsh'</code> ⇒ IDE 见到就<strong>让路</strong>（不扫描、不落盘 ✓）
+                │ IDE 侧<strong>轮询清单</strong>（10s）⇒ 外部换新 ⇒ <strong>自动重载</strong>内存里的图 ✓</pre>
+<table>
+	<tr><th>关键机制</th><th>一句话</th></tr>
+	<tr><td><strong>落点判据只有一个主人</strong> ✓</td><td>写/读/删除/导入导出都调 <code>shadow.js::writeDirOf</code> ⇒ 结构上不可能"写一处、读一处" ✗✗</td></tr>
+	<tr><td><strong>两档解析</strong></td><td>regex（快，只有 IMPORTS/CONTAINS ✓）/ tree-sitter（真解析：符号与行号准确 + 四种符号间边 ✓）；缺省 <code>auto</code> ✓，档位与耗时<strong>落盘可见</strong> ✓</td></tr>
+	<tr><td><strong>所有权</strong></td><td>声明（<code>producer</code> ✓）→ 让路（IDE 严格 <code>===</code> ✓）→ 回退（删清单 ✓）三段；权限凭据是<strong>清单</strong>，不是配置 ✗</td></tr>
+	<tr><td><strong>审批闸</strong></td><td>写动作（index / delete / export / import）都进 <code>WRITE_TOOLS</code> ✓，理由按工具名分岔并<strong>点名将被动的目录</strong> ✓</td></tr>
+	<tr><td><strong>诚实边界（写死在页面/输出里 ✓）</strong></td><td>覆盖率是集合差（无逐文件原因 ✗）· 截断不下"图过期"结论 ✗ · 7 天阈值是<strong>启发式</strong> ✓ · <code>ingest_traces</code> 无对应物 ✓</td></tr>
+</table>
+
+<h2 id="proscons">⑤ 优缺点总结</h2>
+<h3>优点（都有依据 ✓）</h3>
+<table>
+	<tr><th>优点</th><th>依据</th></tr>
+	<tr><td>离线可装、零网络 ✓</td><td>资产随包（17 门语言 wasm ≈21MB ✓）⇒ 没有"第一次用要拉资产" ✓</td></tr>
+	<tr><td>与 IDE 双向同形 ✓</td><td>读侧/写侧都验过（p3-40 ✓）；反向：真源按键内联读的键我们全有 ✓</td></tr>
+	<tr><td>两条"最坏的那类错"都被钉死 ✓</td><td>截断时<strong>不许</strong>说"图过期" ✓；对象/字符串都归一（否则整批被压成 <code>[object Object]</code> ✗）✓</td></tr>
+	<tr><td>交接安全 ✓</td><td>护栏三件（双输探测 / 变旧判决 / 回退出口 ✓）+ 审批理由<strong>按落点分岔</strong> ✓（已修"在甲档撒谎"那个真 bug ✓）</td></tr>
+	<tr><td>读侧闭环现成 ✓</td><td>dsh 写 ⇒ IDE 轮询 10s ⇒ 自动重载 ✓（甲档下<strong>两侧智能体读同一份图</strong> ✓）</td></tr>
+	<tr><td>自证厚实 ✓</td><td>探针 <strong>294 条</strong>（p3-11 173 · p3-40 35 · p3-41 25 · p3-42 23 · p3-43 30 · p3-47 13 ✓，每条都有负对照 ✓）+ 真源侧 31 条 ✓</td></tr>
+</table>
+<h3>缺点与边界（如实 ✗）</h3>
+<table>
+	<tr><th>缺点 / 边界</th><th>说明</th></tr>
+	<tr><td><strong>唯一未验</strong> ✗</td><td>起真机 IDE 看"确实不扫描/不落盘"与"读得到我们的图" —— 机制已查实 ✓，只差人肉看一眼 ✓（甲档唯一剩的缺口 ✓）</td></tr>
+	<tr><td>乙档的代价：双索引 + 两份答案 ✗</td><td>影子档下 IDE 看不见影子 ⇒ 白烧一轮索引 ✓；且 dsh 面板与 IDE 3D 视图可能给出不同结论 ✗（甲档消除 ✓）</td></tr>
+	<tr><td>甲档的软肋 ✗</td><td>交接后 <code>indexWatch</code> 没开 ⇒ 图<strong>静默变旧</strong> ✗（已有三处告警 ✓，但要用户开 ✓ —— 优化项 O1 ✓）</td></tr>
+	<tr><td>有意不做（不是没收尾 ✗）</td><td><code>ingest_traces</code>（结论 ✓）/ 语义·嵌入档 ✗ / SQLite 加速后端 ✗（那是 IDE 侧本地提速 ✓）</td></tr>
+	<tr><td>7 天阈值是<strong>我们定的启发式</strong> ✗</td><td>所以判定永远带两个数（<code>ageMs</code> + <code>staleAfterMs</code> ✓）⇒ 调用方可自定标准 ✓，且绝不因"旧"阻断操作 ✗</td></tr>
+	<tr><td>覆盖率没有逐文件原因 ✗</td><td>dsh 索引器只留计数 ✓ ⇒ 要"每个文件为什么"得先让索引器落逐文件结果 ✓（另立一期）</td></tr>
+	<tr><td>页面只读 ✓（有意）</td><td>建图/删除必须走审批闸（对话里或命令面板 ✓）—— 页面不给触发按钮 ✗（省掉"页面偷偷写"的口子 ✓）</td></tr>
+</table>
+
+<h2 id="opt">⑥ 优化方案</h2>
+<div class="sub">按杠杆排序 ✓；每条带 <strong>现状（实测/判据 ✓）</strong> → <strong>方案</strong> → <strong>工作量 / 收益</strong> → <strong>验证</strong>。⚠ 标<strong>"要拍板"</strong>的是<strong>行为变更</strong> ✗。本节的底稿（含"查过、不值得"表 ✓）在 <code>doc/codebase-full-port-feasibility.html</code> ✓。</div>
+<table>
+	<tr><th>#</th><th>方案</th><th>工作量 / 收益</th><th>顺序</th></tr>
+	<tr><td><strong>O1 · 甲档保鲜"硬引导"</strong></td>
+		<td>交接档 + <code>indexWatch</code> 没开时，<strong>审批理由与工具结果</strong>里直接给一段<strong>可粘贴的覆盖层 YAML</strong>（<code>indexWatch: true</code> 那行 ✓）⇒ 从"看到告警"到"照抄一行" ✓。⚠ <strong>不自动开 watcher</strong> ✗（本仓纪律：常驻监听不许偷偷开 ✓）。</td>
+		<td><strong>小</strong>（文案 + 一段固定文本 ✓）／<strong>消掉甲档唯一软肋的"忘了开"</strong> ✓</td>
+		<td><strong>先</strong> · <strong>已落地 0.6.64 ✓</strong></td></tr>
+	<tr><td><strong>O2 · 建图耗时可观测</strong></td>
+		<td><code>index-meta.json</code> 只记<strong>上一次</strong> ✗ ⇒ 加 <code>history: [{ms, parser, incremental, savedAt}]</code>（最近 10 条 ✓）⇒ 页面显示<strong>趋势</strong> ✓。⚠ IDE 不认识这个文件 ⇒ 无兼容风险 ✓。</td>
+		<td><strong>小</strong>（meta 读写处加几行 ✓）／<strong>"优化有没有用"从此有数</strong> ✓</td>
+		<td><strong>第二</strong> · <strong>已落地 0.6.64 ✓</strong></td></tr>
+	<tr><td><strong>O3 · 产物"内容没变 ⇒ 一字不写"</strong><br><span class="tag t-ok">已落地 0.6.65 ✓</span></td>
+		<td>每次 <code>codebase_index</code> 都重写 4.9MB zst ⇒ IDE 轮询每次都"发现换新" ✗（<strong>内容没变也重载</strong> ✗）。⇒ 建完与盘上逐字节比对，相同 ⇒ <strong>只跳过 <code>graph.db.zst</code> 这一个文件的写</strong> ✓，<strong>清单照常</strong>（<code>saved_at</code> 语义<strong>不变</strong> ✓ —— 最初"连 manifest 都不写"的设计会让"刚验证过"被<strong>变旧判决误报成旧</strong> ✗ ⇒ 落地时收窄 ✓）。⚠ 语义唯一变化：图文件的 <code>mtime</code> 在没变化的一轮里不刷新 ✓（新鲜度从来用 <code>saved_at</code> ✓）⇒ <strong>无行为变更</strong> ✓。</td>
+		<td><strong>小-中</strong>（多读一次 + 比对 ✓）／<strong>消掉无谓的 IDE 重载</strong> ✓</td>
+		<td><strong>已落地 0.6.65 ✓</strong></td></tr>
+	<tr><td><strong>O4 · <code>auto</code> 按规模细化</strong><br><span class="tag t-ok">已落地 0.6.65 ✓</span></td>
+		<td><code>auto</code> 只判"资产在不在" ⇒ UE 级仓库也走真解析（分钟级 ✗）。⇒ 资产在 <strong>且</strong> 规模 ≤ 阈值（如 3,000 文件）⇒ 真解析；超 ⇒ 快档并<strong>如实说为什么</strong> ✓。⚠ 代价是<strong>答案质量</strong> ✗（超大仓没 CALLS/USAGE ✓）⇒ 阈值要可调 ✓。</td>
+		<td><strong>小</strong>（一个阈值 + 回执 ✓）／<strong>超大仓建图从分钟级 → 秒级</strong> ✓</td>
+		<td><strong>已落地 0.6.65 ✓</strong></td></tr>
+</table>
+<h3>查过、不值得做（这张表比方案本身更值钱 ✓ —— 防止以后再追）</h3>
+<table>
+	<tr><td>读侧解压 / 进程内缓存</td><td><strong>已做</strong> ✓（<code>loadGraph</code> 按 path+size+mtime 缓存 ✓ + 异步解压 ✓）</td></tr>
+	<tr><td>覆盖率扫描复用缓存</td><td><strong>不值</strong> ✗ —— 扫描成本是<strong>目录遍历</strong>（IO ✓）<strong>不是哈希</strong>（<code>collectSourceFiles</code> 不哈希 ✓）⇒ 缓存帮不上 ✗</td></tr>
+	<tr><td>附加文件名与 IDE 撞名 / 自扫描</td><td><strong>已核 / 已防</strong> ✓（<code>SKIP_DIRS</code> 含 <code>.codebase-memory</code> ✓）</td></tr>
+	<tr><td>保鲜节流</td><td><strong>已有</strong> ✓（去抖 5s / 上限 60s ✓）</td></tr>
+	<tr><td>语义·嵌入档 / SQLite 加速后端</td><td><strong>有意不做</strong> ✓（见 §5）</td></tr>
+	<tr><td><strong>甲档最后一块</strong>（不是优化，是<strong>验证</strong> ✓）</td><td>起真机 IDE 看"确实让路 + 读到我们的图" ✗（机制已查实 ✓，只差人肉看一眼 ✓）</td></tr>
+</table>
+
+<h2 id="verify">⑦ 验证与对账</h2>
+<div class="sub">每条都能重跑 ✓（一行命令或一个探针 ✓ —— 没有一行是"我猜的" ✗）。</div>
+<table>
+	<tr><th>层</th><th>证据</th><th>计数</th></tr>
+	<tr><td>工具面（dsh）</td><td><code>node dsh-plugins/tools-snapshot.mjs</code>（守卫 ✓）</td><td>21 个工具 ✓（全仓 12 插件 / 105 工具 ✓）</td></tr>
+	<tr><td>自证（dsh 探针，带负对照 ✓）</td><td><code>node poc/dsh-p0/scripts/p3-XX-…</code></td><td>p3-11 <strong>174</strong> · p3-39 <strong>32</strong> · p3-40 <strong>38</strong> · p3-41 <strong>28</strong> · p3-42 <strong>23</strong> · p3-43 <strong>30</strong> · p3-47 <strong>13</strong> = <strong>338</strong> ✓（含 O1–O4 之后<strong>全家族复跑</strong> ✓）</td></tr>
+	<tr><td>真源侧（IDE 的纯判据）</td><td><code>node src/vs/sessions/contrib/agentStudio/test/common/run-codebaseIndexDefaults-tests.mjs</code>（本轮实跑 ✓）</td><td><strong>31 passing</strong> ✓</td></tr>
+	<tr><td>守卫</td><td><code>dshPluginPackages</code>（包结构）/ <code>check-host-config.mjs</code>（契约）</td><td>21 passing ✓ / 18 契约 0 违规 ✓</td></tr>
+	<tr><td>双引擎差分（与真源真图对账）</td><td><code>p3-47</code></td><td>符号命中 ≥94.5%、行号 100% ✓</td></tr>
+	<tr><td><strong>未验（如实 ✗）</strong></td><td>起真机 IDE 端到端（让路 + 读到我们的图）</td><td>✗（甲档唯一缺口 ✓）</td></tr>
+</table>
+
+<div class="sub" style="margin-top:28px">生成：2026-10-14 · 数据源：仓库实测 + 探针 + 真源源码（逐项标注 ✓）· 本文档与 <code>doc/codebase-full-port-feasibility.html</code>（决策记录 ✓）配套 ✓</div>
+</div>
+</body>
+</html>

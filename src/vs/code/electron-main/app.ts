@@ -181,7 +181,6 @@ import { ComfyLaunchChannel } from '../../sessions/contrib/agentStudio/electron-
 import { ConfigHtmlServerChannel } from '../../sessions/contrib/agentStudio/electron-main/configHtmlServerChannel.js';
 import { VoxLaunchChannel } from '../../sessions/contrib/agentStudio/electron-main/voxLaunchChannel.js';
 import { LarkCliChannel } from '../../sessions/contrib/agentStudio/electron-main/larkCliChannel.js';
-import { BrowserCdpChannel } from '../../sessions/contrib/agentStudio/electron-main/browserCdpChannel.js';
 import { BridgeStoreChannel } from '../../sessions/contrib/agentStudio/electron-main/bridgeStoreChannel.js';
 import { RemoteControlChannel } from '../../sessions/contrib/agentStudio/electron-main/remoteControlChannel.js';
 import { GIT_VERSION_CHANNEL } from '../../sessions/contrib/agentStudio/common/gitVersionBackend.js';
@@ -189,6 +188,9 @@ import { MediaStoreChannel } from '../../sessions/contrib/agentStudio/electron-m
 import { MEDIA_STORE_CHANNEL } from '../../sessions/contrib/agentStudio/common/mediaStoreChannel.js';
 import { SubAgentKernelProcChannel } from '../../sessions/contrib/agentStudio/electron-main/subAgentKernelProcChannel.js';
 import { SUBAGENT_KERNEL_PROC_CHANNEL } from '../../sessions/contrib/agentStudio/common/subAgentKernelProcChannel.js';
+import { DshHarnessChannel } from '../../sessions/contrib/dshHarness/electron-main/dshHarnessChannel.js';
+import { DshViewHost } from '../../sessions/contrib/dshHarness/electron-main/dshViewHost.js';
+import { DSH_HARNESS_CHANNEL } from '../../sessions/contrib/dshHarness/common/dshHarness.js';
 import { KbDocConvertChannel } from '../../sessions/contrib/agentStudio/electron-main/kbDocConvertChannel.js';
 import { VSSAROS_LLM_CHANNEL } from '../../sessions/contrib/agentStudio/common/llmBridge.js';
 import { IWebContentExtractorService } from '../../platform/webContentExtractor/common/webContentExtractor.js';
@@ -507,6 +509,12 @@ export class CodeApplication extends Disposable {
 			contents.on('will-navigate', event => {
 				if (BrowserViewMainService.isBrowserViewWebContents(contents)) {
 					return; // Allow navigation in integrated browser views
+				}
+
+				// dsh 插件页（WebContentsView）：导航守卫由 `DshViewHost` 自己负责（仅放行 dsh Host 同源，
+				// 跨源拒绝并外部打开）。不豁免 ⇒ 插件页的链接 / 表单 / `location.href` 全部被拦。
+				if (DshViewHost.isDshViewWebContents(contents)) {
+					return;
 				}
 
 				this.logService.error('webContents#will-navigate: Prevented webcontent navigation');
@@ -999,8 +1007,6 @@ export class CodeApplication extends Disposable {
 
 	// browser_* 工具的 CDP 宿主（P1-2）：驱动用户本机真实 Chrome。
 	// 必须放主进程：renderer 的 CDP HTTP 发现会被 CORS 拦、WebSocket 握手会因 Origin 被拒
-	// （详见 common/browserCdp.ts 文件头）。逻辑在 electron-main/browserCdpChannel.ts。
-	this._register(new BrowserCdpChannel(this.logService, this.configurationService));
 
 	// 渠道绑定状态（chat_id ↔ Agent / 专属会话）的文件存储：
 	// 逻辑在 sessions/contrib/agentStudio/electron-main/bridgeStoreChannel.ts。
@@ -1966,6 +1972,19 @@ export class CodeApplication extends Disposable {
 		// 通道只搬消息字节；工具执行/审批/凭证全在 renderer 真宿主（内核 RPC 回源）。
 		const subAgentKernelProcChannel = new SubAgentKernelProcChannel(this.logService);
 		mainProcessElectronServer.registerChannel(SUBAGENT_KERNEL_PROC_CHANNEL, subAgentKernelProcChannel);
+
+		// dsh 底座（DeepSeek Harness，P1 骨架）：全应用单个 Host + WebContentsView 池。
+		// 启动时机：通道构造时若设置了允许（enabled/prewarm）且有上次的启动选项，会**抢先**起 Host
+		// ——与窗口/工作台启动并行，否则渲染进程必须等聊天框随布局挂载（约窗口起来 5 s）才开始起 Host。
+		// 其余情况仍是懒启动：只有 renderer 调用 start/createView 才拉起。退出时 dispose 结束 Host 进程树
+		// （keepAlive 打开时保留，由桥插件的空闲 TTL 自退兜底）。方案见 doc/dsh-foundation-refactor-plan.html。
+		const dshHarnessChannel = this._register(new DshHarnessChannel(
+			{ userDataPath: this.environmentMainService.userDataPath, isBuilt: this.environmentMainService.isBuilt },
+			accessor.get(IWindowsMainService),
+			accessor.get(IAuxiliaryWindowsMainService),
+			this.logService,
+		));
+		mainProcessElectronServer.registerChannel(DSH_HARNESS_CHANNEL, dshHarnessChannel);
 
 
 		// Logger

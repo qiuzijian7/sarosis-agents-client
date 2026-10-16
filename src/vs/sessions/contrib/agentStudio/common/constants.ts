@@ -306,8 +306,27 @@ export const AGENT_STUDIO_WORKFLOW_VIEW_ID = 'agentStudio.workflowView';
 export const AGENT_STUDIO_CHANNEL_VIEW_ID = 'agentStudio.channelView';
 export const AGENT_STUDIO_WIKI_VIEW_ID = 'agentStudio.wikiView';
 export const AGENT_STUDIO_KB_VIEW_ID = 'agentStudio.knowledgeBaseView';
-/** 左侧栏「资料库」视图容器 id —— 也是 activitybar 资料库徽标的挂载点。 */
+/**
+ * 左侧栏「知识库」视图容器 id（2026-10-12 前显示名是「资料库」）—— 也是 activitybar 徽标的挂载点。
+ * ⚠ 容器 id 一字未动（改它会丢用户已存的活动栏布局），只有显示名变。
+ */
 export const AGENT_STUDIO_KB_VIEW_CONTAINER_ID = 'agentStudio.knowledgeBase';
+/**
+ * 记忆库（独立工作台，2026-10-12 从「资料库」页的 mem tab 提升）的**视图 id**。
+ *
+ * 容器 id 在静态注册处写成字面量 `'agentStudio.memory'`（`dshActivityBarSource.test.ts`
+ * 按字面量匹配静态注册，用记号常量会让那条表驱动守卫找不到 ⇒ 报「existing 没走
+ * _registerModuleToolIcon」）；这里只留视图 id 常量。
+ *
+ * ⚠ 两个 id 都是**新建**的（绝不复用 kb 的）：容器 id 一旦改动，用户在
+ * `workbench.activity.pinnedViewlets2` 里已存的活动栏布局就找不到它了（R1）。
+ */
+export const AGENT_STUDIO_MEMORY_VIEW_ID = 'agentStudio.memoryView';
+/**
+ * 媒体库（独立工作台，2026-10-12 从「资料库」页的 media tab 提升）的**视图 id**。
+ * 容器 id 同样是注册处的字面量 `'agentStudio.media'`（理由见上）。
+ */
+export const AGENT_STUDIO_MEDIA_VIEW_ID = 'agentStudio.mediaView';
 export const AGENT_STUDIO_CLASS_HIERARCHY_VIEW_ID = 'agentStudio.classHierarchyView';
 export const AGENT_STUDIO_REFERENCES_VIEW_ID = 'agentStudio.referencesView';
 export const AGENT_STUDIO_WIKI_ROOT_SETTING = 'agentStudio.wiki.root';
@@ -315,6 +334,20 @@ export const AGENT_STUDIO_WIKI_MAX_PROPOSAL_SETTING = 'agentStudio.wiki.maxPropo
 export const AGENT_STUDIO_WORKTREE_VIEW_ID = 'agentStudio.worktreeView';
 export const AGENT_STUDIO_GRAPH_VIEW_ID = 'agentStudio.graphView';
 export const AGENT_STUDIO_DASHBOARD_VIEW_ID = 'agentStudio.dashboardView';
+/**
+ * dsh 代码图谱容器的 page 宿主视图 id（`vssaros.dsh.codebase`，order 25）。
+ * 容器走 `page-only`：`engine=dsh` 时这个视图挂 `DshPluginViewPane`（插件自托管 `/x/codebase/`）；
+ * `engine=legacy` 时**故意不注册**——legacy 侧没有代码图谱视图（`agentStudio.graphView` 是 Git 提交历史图，
+ * 不是代码图谱），硬塞一个静态入口只会多一个点了没东西的图标。
+ */
+export const AGENT_STUDIO_CODEBASE_VIEW_ID = 'vssaros.dsh.codebaseView';
+/**
+ * dsh 历史会话页容器的 page 宿主视图 id（`vssaros.dsh.sessions`，order 120）。
+ * 容器走 `page-only`：`engine=dsh` 时这个视图挂 `DshPluginViewPane`（插件自托管 `/x/sessions/`）；
+ * `engine=legacy` 时**故意不注册** —— legacy 侧的历史会话是那个**常驻容器** `sessionHistory.view`
+ * （壳侧 DOM pane，容器 id / 视图 id 都不同）⇒ 两者并存，本格只负责"dsh 自绘那一版"的入口。
+ */
+export const AGENT_STUDIO_DSH_SESSIONS_VIEW_ID = 'vssaros.dsh.sessionsView';
 
 // --- TOF (Taihu OA Framework) 登录配置 ---
 // 对接 OAuthSystem 网关 (太湖 MCP 鉴权网关)

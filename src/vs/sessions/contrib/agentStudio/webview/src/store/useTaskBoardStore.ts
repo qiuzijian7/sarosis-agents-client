@@ -9,7 +9,17 @@ import { useDelegationStore, type Delegation } from './useDelegationStore';
 import { useBoardStore } from './useBoardStore';
 
 export type TaskBoardStatus = 'triage' | 'todo' | 'ready' | 'running' | 'blocked' | 'done' | 'cancelled' | 'archived';
-export type TaskSource = 'task-board' | 'delegation';
+/**
+ * ⚠ **逐项镜像宿主** `sessions/common/agentStudioTypes.ts` 的 `enum TaskSource`（README 5.120）。
+ *
+ * 2026-10-12 修的一处**真分叉** ✗：这里原先是 `'task-board' | 'delegation'` —— 而 `'task-board'`
+ * **宿主根本不产生**（宿主的"手工建卡"是 `Manual = 'manual'`）✓；更糟的是它同时被当**记录字段**与
+ * **动作来源参数**用 ✓（`onStatusChange(task.id, status, task.source)` 传的就是宿主给的值 ✓）⇒ 这份
+ * 联合两头都不对 ✗。宿主 `createTask` 写的是 `source: data.source || TaskSource.Manual`（**不校验** ✗）
+ * ⇒ 面板建卡时那个 `'task-board'` 会**真的落盘** ✓（`taskboard.json` 里出现 enum 之外的值 ✓）。
+ * 三方一致性由 `dshHarness/test/common/dshTaskboardContractParity.test.ts` 钉住 ✓。
+ */
+export type TaskSource = 'manual' | 'delegation' | 'tapd' | 'boardLink' | 'web';
 
 /** Metadata for a file attached to a task (content stored host-side, P2). */
 export interface TaskAttachment {
@@ -139,7 +149,7 @@ export const useTaskBoardStore = create<TaskBoardState>((set, get) => ({
 
 			// Merge both sources (filter out any undefined to prevent render crashes)
 			const allTasks = [
-				...safeBoardTasks.filter(Boolean).map(t => ({ ...t, source: 'task-board' as TaskSource })),
+				...safeBoardTasks.filter(Boolean).map(t => ({ ...t, source: 'manual' as TaskSource })),
 				...delegationTasks,
 			];
 
@@ -182,7 +192,7 @@ export const useTaskBoardStore = create<TaskBoardState>((set, get) => ({
 				if (active) { payload.boardId = active; }
 			}
 			const task = await sendRequest<Partial<TaskBoardRecord>, TaskBoardRecord>('taskBoard.create', payload);
-			set(state => ({ tasks: [...state.tasks, { ...task, source: 'task-board' }] }));
+			set(state => ({ tasks: [...state.tasks, { ...task, source: 'manual' }] }));
 		} catch (err) {
 			console.error('[TaskBoardStore] Failed to create task:', err);
 		}
@@ -218,7 +228,7 @@ export const useTaskBoardStore = create<TaskBoardState>((set, get) => ({
 			const updated = await sendRequest<{ taskId: string }, TaskBoardRecord>('triage.specify', { taskId });
 			if (updated && updated.id) {
 				set(state => ({
-					tasks: state.tasks.filter(Boolean).map(t => t.id === updated.id ? { ...t, ...updated, source: 'task-board' as TaskSource } : t),
+					tasks: state.tasks.filter(Boolean).map(t => t.id === updated.id ? { ...t, ...updated, source: 'manual' as TaskSource } : t),
 				}));
 			} else {
 				// Fall back to a full reload if the host returned nothing usable.

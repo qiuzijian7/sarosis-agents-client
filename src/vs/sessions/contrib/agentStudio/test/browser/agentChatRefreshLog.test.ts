@@ -94,12 +94,21 @@ suite('agentChatPanel.refreshLog — 聚合行为', () => {
 		assert.match(h.lines[1], /×21/, '第二条必须带累计次数');
 	});
 
-	test('★ 300 次高频触发只产生约 15 条日志（体积可控但事实醒目）', () => {
+	test('★ 300 次高频触发只产生约 15 条聚合日志（体积可控但事实醒目）', () => {
 		const h = harness();
 		for (let i = 0; i < 300; i++) { h.logger.record('md:incremental-failed'); }
-		assert.ok(h.lines.length <= 16, `实际 ${h.lines.length} 条`);
+		// ⚠ 2026-10-14 修：原来只断言"总行数 ≤ 16"，而 2026-09-12 加的**主动告警**
+		//   （`[FullRefresh][ALERT]`，`REBUILD_ALERT_THRESHOLD=40` 且每翻倍再报一次）会把总数顶到 18 ✗
+		//   —— 那 3 条（窗口内总量到 40 / 80 / 160 各一次）是**有意的告警**，不是刷屏。
+		//   改成两类分开数：聚合行 ≤16、告警行恰好 3 ⇒ 以后任一侧单独漂移都会被抓 ✓。
+		const aggregated = h.lines.filter(l => !l.includes('[ALERT]'));
+		const alerts = h.lines.filter(l => l.includes('[ALERT]'));
+		assert.ok(aggregated.length <= 16, `聚合日志 ${aggregated.length} 条`);
+		assert.strictEqual(alerts.length, 3, `告警 ${alerts.length} 条（总量 40/80/160 各一次；到 320 才该有第 4 条）`);
+		assert.strictEqual(h.lines.length, aggregated.length + alerts.length);
 		assert.strictEqual(h.logger.countOf('md:incremental-failed'), 300);
-		assert.match(h.lines[h.lines.length - 1], /×\d+/);
+		// 最后一条聚合日志带累计值（281 次那条；告警在 160 就停了 ⇒ 尾行仍是聚合行 ✓）
+		assert.match(aggregated[aggregated.length - 1], /×\d+/);
 	});
 
 	test('★ 不同来源各自独立计数（互不干扰）', () => {

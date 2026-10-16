@@ -31,6 +31,7 @@ import {
 	IAssemblyResult, DEFAULT_TOOL_SEARCH_CONFIG, IToolSearchConfig,
 	scopedDeferrableNames,
 } from './toolSearchAssembler.js';
+import { MCP_TOOL_CATEGORY_PREFIX } from './toolApprovalPolicy.js';
 
 // ─── Catalog ─────────────────────────────────────────────────────────────
 
@@ -65,10 +66,10 @@ function entrySearchText(td: IToolDefinition): string {
 	return `${nameWords} ${desc} ${paramNames} ${serverName}`;
 }
 
-/** 从 category 提取 MCP 服务器名（如 "mcp:codebase_memory" → "codebase memory"） */
+/** 从 category 提取 MCP 服务器名（如 `mcp:codebase_memory` → `codebase memory`）。 */
 function extractMcpServerName(category?: string): string {
-	if (!category || !category.startsWith('mcp:')) { return ''; }
-	return category.slice(4).replace(/[_\-\.]/g, ' ');
+	if (!category || !category.toLowerCase().startsWith(MCP_TOOL_CATEGORY_PREFIX)) { return ''; }
+	return category.slice(MCP_TOOL_CATEGORY_PREFIX.length).replace(/[_\-\.]/g, ' ');
 }
 
 function buildCatalog(deferred: IToolDefinition[]): ICatalogEntry[] {
@@ -227,8 +228,8 @@ export function dispatchToolSearch(
 		};
 	}
 	const lines = hits.map(h => {
-		const serverTag = h.schema.category?.startsWith('mcp:')
-			? ` [MCP:${h.schema.category.slice(4)}]` : '';
+		const serverTag = h.schema.category?.toLowerCase().startsWith(MCP_TOOL_CATEGORY_PREFIX)
+			? ` [MCP:${h.schema.category.slice(MCP_TOOL_CATEGORY_PREFIX.length)}]` : '';
 		// 清理 MCP 描述噪声
 		const cleanDesc = (h.description || '').replace(/^\[via MCP server "[^"]*"\]\s*/, '').slice(0, 120);
 		return `  - ${h.name}${serverTag}: ${cleanDesc}`;

@@ -82,7 +82,7 @@ export function TaskCard({
 	const fileInputRef = useRef<HTMLInputElement>(null);
 	const [uploading, setUploading] = useState(false);
 	// Attachments only make sense for real (task-board) tasks, not delegation mirrors.
-	const canAttach = task.source === 'task-board';
+	const canAttach = task.source === 'manual';
 
 	const handlePickFile = useCallback((e: React.MouseEvent) => {
 		e.stopPropagation();
@@ -466,7 +466,7 @@ export function TaskCard({
 					>💬</button>
 				)}
 				{/* AI 细化 / 分解：仅 triage 状态、且为 task-board 来源时可用 */}
-				{task.status === 'triage' && task.source === 'task-board' && (
+				{task.status === 'triage' && task.source === 'manual' && (
 					<>
 						<button
 							className="task-card-action ai-specify"
@@ -563,7 +563,7 @@ export function TaskCard({
 					>↩</button>
 				)}
 				{/* 删除（cancelled/archived 的手动任务） */}
-				{(task.status === 'cancelled' || task.status === 'archived') && task.source === 'task-board' && (
+				{(task.status === 'cancelled' || task.status === 'archived') && task.source === 'manual' && (
 					<button
 						className="task-card-action delete"
 						onClick={() => onDelete(task.id, task.source)}

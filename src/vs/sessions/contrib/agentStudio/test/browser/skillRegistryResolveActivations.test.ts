@@ -43,11 +43,26 @@ const mockConfig = {
 	getValue: () => false,
 } as any;
 
-const mockWorkspace = {} as any;
+// ★ 2026-10-13（P1）：SkillRegistry 构造函数**新增两个参数**（技能根 trust 门控 / 未信任提醒）⇒
+// 桩必须跟上，否则位置参数错位、`onDidChangeTrust` 为 undefined ⇒ before-each 直接抛 ✗（已踩过）。
+// 这里给"受信任 + 空工作区"的桩：本文件测的是 activation 解析，与技能根无关，空根最省事 ✓。
+const mockWorkspace = {
+	getWorkspace: () => ({ folders: [] }),
+} as any;
+
+const mockTrust = {
+	isWorkspaceTrusted: () => true,
+	onDidChangeTrust: () => ({ dispose() { } }),
+} as any;
+
+const mockNotifications = {
+	info: () => { },
+} as any;
 
 function makeRegistry(): SkillRegistry {
 	return new SkillRegistry(
 		mockFileService, mockEnv, noopLog, mockLifecycle, mockWfStorage, mockConfig, mockWorkspace,
+		mockTrust, mockNotifications,
 	);
 }
 

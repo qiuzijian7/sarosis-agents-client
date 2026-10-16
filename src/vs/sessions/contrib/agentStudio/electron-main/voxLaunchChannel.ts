@@ -19,7 +19,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { validatedIpcMain } from '../../../../base/parts/ipc/electron-main/ipcMain.js';
 import { spawn, execSync, type ChildProcess } from 'child_process';
-import { existsSync, mkdirSync, writeFileSync, readFileSync, statSync, createReadStream, readdirSync } from 'fs';
+import { existsSync, promises as fsp, readFileSync, statSync, createReadStream, readdirSync } from 'fs';
 import { join, extname, resolve, dirname } from 'path';
 import { createInterface } from 'readline';
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'http';
@@ -274,8 +274,10 @@ export class VoxLaunchChannel extends Disposable {
 				const python = this.resolvePythonPath();
 				// 输出目录：<project>/out/<projectId>/
 				const outDir = join(projectPath, 'out', projectId);
-				mkdirSync(outDir, { recursive: true });
-				writeFileSync(join(outDir, 'beats.json'), JSON.stringify(beats, null, 2), 'utf-8');
+				// 异步落盘：`beats` 由渲染侧直接传入、体积不可控 ⇒ 主线程同步写撞上 I/O 卡死
+				// 就是整个 IDE 假死（2026-10-12 三次 NtWriteFile 现场）。
+				await fsp.mkdir(outDir, { recursive: true });
+				await fsp.writeFile(join(outDir, 'beats.json'), JSON.stringify(beats, null, 2), 'utf-8');
 
 				const state: VoxRunState = { projectId, status: 'running', stage: 'keyframes', progress: 0, logs: [] };
 				const env: Record<string, string> = {

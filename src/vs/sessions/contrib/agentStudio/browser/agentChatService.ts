@@ -67,6 +67,12 @@ export interface AgentSessionMeta {
 	updatedAt: string;
 	messageCount: number;
 	/**
+	 * ★ 2026-10-13：该会话**创建时所在的工作区**（见 `sessionIndexStore.ts` 里同名声明 ——
+	 * ⚠ 本文件是**独立第二份**声明，不是注释里说的"再导出"⇒ 改字段必须**两处一起改**）。
+	 * 侧栏按工作区分组读的就是它；老会话没有 ⇒ 落未分组（未知不伪装）。
+	 */
+	workspaceId?: string;
+	/**
 	 * ★ 2026-09-20（用户需求）：**这个名字是用户手动起的**。
 	 *
 	 * 首条消息发出去时，`NativeChatEditorPane` / webview `useChatStore` 会把会话名
@@ -4079,6 +4085,12 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			createdAt: now,
 			updatedAt: now,
 			messageCount: 0,
+			// ★ 2026-10-13：把**创建时所在的工作区**记进索引 —— 侧栏按工作区分组读的就是它。
+			// 此前聊天创建的会话**从不**写工作区注册表（`AgentStudioSession.workspaceId` 只由显式调用
+			// `agentStudioService.createSession` 的那条路写），而注册表文件在真机上常常根本不存在
+			// ⇒ 所有会话都落「未分组」（2026-10-13 在真机数据上盘证过）。
+			// 取不到活动工作区时该字段为 undefined（**不写**）⇒ 读侧落未分组，未知不伪装。
+			workspaceId: this.studioService.getActiveWorkspaceId(),
 		};
 
 		if (!(await this.fileService.exists(paths.sessionsDirUri))) {

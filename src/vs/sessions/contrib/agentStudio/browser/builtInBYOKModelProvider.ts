@@ -48,6 +48,15 @@ export interface IBYOKProviderDefinition {
 	readonly apiKeyConfigKey: string;
 	/** Configuration key for base URL */
 	readonly baseUrlConfigKey: string;
+	/**
+	 * Optional: 内联 API Key（**仅自定义 provider**）。
+	 *
+	 * 自定义 provider 的 id 没有在配置注册表里注册过 `sessions.agentStudio.provider.<id>.apiKey`：
+	 * 写它必弹「not a registered configuration」的**粘性**错误通知（该通知压在聊天框上会把 dsh 聊天框
+	 * 整块隐藏 ⇒ 永久空白），读它永远 `undefined`。所以其 Key 随 `customProviders` 条目一起传进来
+	 * （见 `CustomProviderData.apiKey`）。内置 provider 不用此字段，仍走 `apiKeyConfigKey`。
+	 */
+	readonly apiKey?: string;
 	/** Default base URL */
 	readonly defaultBaseUrl: string;
 	/** Priority (higher = preferred) */
@@ -141,6 +150,9 @@ export function customProviderDataToDefinition(cp: CustomProviderData): IBYOKPro
 		name: cp.name,
 		apiKeyConfigKey: `sessions.agentStudio.provider.${cp.id}.apiKey`,
 		baseUrlConfigKey: `sessions.agentStudio.provider.${cp.id}.baseUrl`,
+		// Key 内联带上：上面两个键对自定义 id **未注册**（写它弹粘性错误通知、读它永远 undefined），
+		// 凭据的真源是 entry 自身。
+		apiKey: cp.apiKey || undefined,
 		defaultBaseUrl: cp.baseUrl || '',
 		priority: 40,
 		openAICompatible: !isAnthropic,
@@ -311,6 +323,10 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 	// ─── Internal ─────────────────────────────────────────────
 
 	protected _getApiKey(): string {
+		// 自定义 provider：Key 随定义内联传入（它的配置键未注册，`getValue` 永远读不到）。
+		if (typeof this._definition.apiKey === 'string' && this._definition.apiKey) {
+			return this._definition.apiKey.trim();
+		}
 		return (this._configurationService.getValue<string>(this._definition.apiKeyConfigKey) || '').trim();
 	}
 

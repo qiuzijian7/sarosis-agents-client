@@ -107,8 +107,37 @@ export const MCP_TOOL_CATEGORY_PREFIX = 'mcp:';
  * 两处的论证**同构**：MCP 工具不经路径沙箱、不建 checkpoint，且其 `securityLevel`
  * 来自 **server 自报的注解**（不可验证）→ 任何「免审批」通道都不适用于它。
  */
-export function isMcpSourcedTool(toolDef: IToolDefinition | undefined): boolean {
+export function isMcpSourcedTool(toolDef: { readonly category?: string } | undefined): boolean {
+	// 入参刻意只要求 `{ category }`（不是完整 `IToolDefinition`）：诊断/日志路径手里常只有
+	// `{ name, category }` 这种部分形状，为此加 `as IToolDefinition` 断言或各写一遍判据都是多余 ✗。
 	return (toolDef?.category ?? '').toLowerCase().startsWith(MCP_TOOL_CATEGORY_PREFIX);
+}
+
+/**
+ * 取 MCP 工具所属的 server（`category = mcp:<sanitize(server.definition.id)>` 的后半段，
+ * 原样大小写）；非 MCP 来源 ⇒ `undefined`。
+ *
+ * ## 为什么必须走 `category`，而不是解析工具名
+ *
+ * 我们的 MCP 工具名来自**上游 VS Code** 的 `IMcpTool.id`（`mcpToolProvider.ts` 顶部注释：
+ * 「使用 VS Code MCP 系统的 tool.id 作为路由名（含 `mcp_` 前缀 + 64 字符限制），
+ * 不自创命名方案」，形如 `mcp_<server>_<tool>`）—— **单**下划线，且 server 名里本身
+ * 就可能含下划线；dsh Host 侧又是另一套 `mcp__<server>__<tool>`。两者都不是
+ * "从名字里能可靠拆出 server/tool"的格式 ⇒ 任何 `name.split('_')` / `split('__')`
+ * 都拿不到 server。
+ *
+ * 2026-10-12 就抓到过这类解析：`integrationView.ts` 的 MCP 重试补偿分支按
+ * `tool.name.split('__')` 取 server ⇒ 恒不分割、回落 `unknown` ⇒ UI 里多出一个假服务器，
+ * 且本该清掉的「启动中」spinner 继续转。**归属只认 category**（与
+ * `agentToolAssembly` 建 `mcp-<server>` toolset 时的口径同源）。
+ */
+export function mcpServerIdOf(toolDef: IToolDefinition | undefined): string | undefined {
+	const category = toolDef?.category ?? '';
+	if (!category.toLowerCase().startsWith(MCP_TOOL_CATEGORY_PREFIX)) { return undefined; }
+	const id = category.slice(MCP_TOOL_CATEGORY_PREFIX.length);
+	// 空 id（`category === 'mcp:'`）按"拿不到 server"处理 —— 返回 `''` 会让调用方
+	// 误以为拿到了合法值（falsy 判断一旦写成 `!== undefined` 就漏 ✗）。
+	return id.length > 0 ? id : undefined;
 }
 
 // ─── 类别模型（Phase 1，2026-09-13）─────────────────────────────────────────

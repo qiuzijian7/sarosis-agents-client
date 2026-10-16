@@ -12,7 +12,12 @@
  *   - 使用 VS Code MCP 系统的 `tool.id` 作为路由名（含 `mcp_` 前缀 + 64 字符限制），
  *     不自创命名方案。例: `mcp_codebase-mem_get_architecture`。
  *   - 调用 `executeTool` 时按 `tool.id` 路由到对应 IMcpServer.tools 中的 IMcpTool。
- *   - tools 列表来自 IObservable，所以变化时通过 onDidChangeTools 通知 OS。
+
+ *   ⚠ 2026-10-12：该事件已**删除**（连同 `IToolProvider` 侧的实现与全部 fire 点）—— 因为它在
+ *   agentStudio 内**零订阅者**（全仓核实：同名事件在上游 `ILanguageModelToolsService` 才是被订阅的那个，
+ *   有 4 处订阅），而本仓工具体系是**拉模型**（每轮 + 每轮循环迭代都重新收集，见 `agentTurnExecutor`）
+ *   ⇒ 删掉不影响任何行为 ✓。将来若要"工具变更 ⇒ 失效缓存"，按需加回并**同时接一个订阅者**，
+ *   别只留发射端（那正是这次删掉的原因：看着像"会通知 OS"，其实没人听 ✗）。
  *   - 工具描述透传 MCP server 原始描述（不自加前缀），保留 server 端的自文档化引导。
  *   - 安全等级从 MCP ToolAnnotations 推断，无注解时从描述首句启发式推断。
  *
@@ -20,7 +25,6 @@
  * 但是否能跑由 IMcpService 自己决定，这里只做透明转发。
  */
 
-import { Emitter, Event } from '../../../../../../base/common/event.js';
 import { Disposable } from '../../../../../../base/common/lifecycle.js';
 import { CancellationToken } from '../../../../../../base/common/cancellation.js';
 import { IObservable, autorun } from '../../../../../../base/common/observable.js';
@@ -45,8 +49,6 @@ export class McpToolProvider extends Disposable implements IToolProvider {
 	private readonly _disabledTools = new Set<string>();
 	/** 缓存 _inferSecurityLevel 结果，避免每次 _toDefinition 调用都重新推断 */
 	private readonly _securityLevelCache = new Map<string, ToolSecurityLevel>();
-	private readonly _onDidChangeTools = this._register(new Emitter<void>());
-	readonly onDidChangeTools: Event<void> = this._onDidChangeTools.event;
 
 	constructor(
 		@IMcpService private readonly mcpService: IMcpService,
@@ -90,7 +92,6 @@ export class McpToolProvider extends Disposable implements IToolProvider {
 	async enableTool(_agentId: string, toolName: string): Promise<void> {
 		if (this._disabledTools.has(toolName)) {
 			this._disabledTools.delete(toolName);
-			this._onDidChangeTools.fire();
 			this.logService.info(`[McpToolProvider] Enabled tool: ${toolName}`);
 		}
 	}
@@ -101,7 +102,6 @@ export class McpToolProvider extends Disposable implements IToolProvider {
 	async disableTool(_agentId: string, toolName: string): Promise<void> {
 		if (this._routes.has(toolName) && !this._disabledTools.has(toolName)) {
 			this._disabledTools.add(toolName);
-			this._onDidChangeTools.fire();
 			this.logService.info(`[McpToolProvider] Disabled tool: ${toolName}`);
 		}
 	}
@@ -134,7 +134,6 @@ export class McpToolProvider extends Disposable implements IToolProvider {
 			}
 		}
 		if (changed) {
-			this._onDidChangeTools.fire();
 			this.logService.info(`[McpToolProvider] Batch updated tool enabled state`);
 		}
 	}
@@ -239,7 +238,6 @@ export class McpToolProvider extends Disposable implements IToolProvider {
 				this._routes.clear();
 				this._securityLevelCache.clear();
 				for (const [k, v] of next) { this._routes.set(k, v); }
-				this._onDidChangeTools.fire();
 				this.logService.info(`[McpToolProvider] tool routes updated: ${this._routes.size} tool(s)`);
 			} else {
 				this.logService.debug(`[McpToolProvider] routes unchanged (${this._routes.size} tool(s))`);

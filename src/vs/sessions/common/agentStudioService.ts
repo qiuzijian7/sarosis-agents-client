@@ -397,6 +397,25 @@ export interface IAgentStudioService {
 	// Sessions
 	getSessions(): Promise<AgentStudioSession[]>;
 	getSession(id: string): Promise<AgentStudioSession | undefined>;
+	/**
+	 * ★ 会话级**工作区覆盖**（2026-10-14 落地；契约见 `test/browser/chatWorkspaceAuthority.test.ts`）。
+	 *
+	 * 聊天输入框顶部那枚 workspace 下拉是「LLM 工作区」的**真源**：用户在那儿换工作区，必须真的
+	 * 影响本轮 turn 的工作区与工具沙箱（事故②：只写面板本地字段 ⇒ 选择永远到不了工具链 ✗；
+	 * worktree 绑定又按同一个 workspaceId 查 ⇒ 会跟着一起错 ✗）。
+	 *
+	 * 三条刻意的语义：**会话级**（按 sessionId 记，别的会话不受影响）✓、**内存态**
+	 * （不落盘、不参与同步，重启即回到「会话记录」口径）✓、**不改会话归属**
+	 * （只影响运行期解析，绝不把"临时选择"写成永久搬迁 ✗）。
+	 *
+	 * `workspaceId` 传空 ⇒ 清除该会话的覆盖 ✓。
+	 */
+	setSessionWorkspaceOverride(sessionId: string, workspaceId: string): void;
+	/**
+	 * 取会话级工作区覆盖（无覆盖 / `sessionId` 缺省 ⇒ `undefined`）。
+	 * 解析优先级（`agentDriverService._resolveWorkspaceId` 同源）：**覆盖 > 会话记录 > 全局游标** ✓。
+	 */
+	getSessionWorkspaceOverride(sessionId: string | undefined): string | undefined;
 	createSession(data: Partial<AgentStudioSession>): Promise<AgentStudioSession>;
 	deleteSession(id: string): Promise<void>;
 
@@ -961,7 +980,16 @@ export interface IAgentChatService {
 	 * List all sessions for an agent.
 	 * Returns array of session metadata sorted by updatedAt descending.
 	 */
-	listAgentSessions(agentId: string): Promise<Array<{ id: string; name: string; createdAt: string; updatedAt: string; messageCount: number }>>;
+	/**
+	 * List all sessions for an agent.
+	 * Returns array of session metadata sorted by updatedAt descending.
+	 *
+	 * ⚠ 这个**内联形状**是本仓同一份会话元数据的**第 4 份声明**（另见
+	 * `browser/sessionIndexStore.ts` 的 `AgentSessionMeta`、`browser/agentChatService.ts` 的同名副本，
+	 * 以及 `browser/sessionLifecycle.ts` 的用点）⇒ **加字段必须四处一起加**（2026-10-13 加
+	 * `workspaceId` 时就是这么踩过来的）。理想做法是只留一份并让其余 re-export。
+	 */
+	listAgentSessions(agentId: string): Promise<Array<{ id: string; name: string; createdAt: string; updatedAt: string; messageCount: number; workspaceId?: string }>>;
 
 	/**
 	 * Rename an agent session.

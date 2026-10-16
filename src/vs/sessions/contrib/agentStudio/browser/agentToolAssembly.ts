@@ -35,6 +35,7 @@ import {
 } from '../common/focusMode.js';
 import { applyHardPermission, type IHardPermissionPolicy } from '../common/toolPermission.js';
 import { AgentGraph, TRANSFER_TO_AGENT_TOOL } from '../common/agentGraph.js';
+import { isMcpSourcedTool, mcpServerIdOf } from '../common/toolApprovalPolicy.js';
 
 export interface ToolAssemblyDeps {
 	readonly logService: ILogService;
@@ -132,11 +133,11 @@ export async function getEnabledTools(
 	}
 
 	// Step 1: 分离 MCP 工具，按服务器创建动态 toolset
-	const mcpOriginal = enabled.filter(t => t.category?.startsWith('mcp:'));
-	const builtin = enabled.filter(t => !t.category?.startsWith('mcp:'));
+	const mcpOriginal = enabled.filter(t => isMcpSourcedTool(t));
+	const builtin = enabled.filter(t => !isMcpSourcedTool(t));
 	const mcpToolsetByServer = new Map<string, string[]>();
 	for (const t of mcpOriginal) {
-		const server = (t.category as string).replace(/^mcp:/, '');
+		const server = mcpServerIdOf(t) ?? '';
 		if (!mcpToolsetByServer.has(server)) {
 			mcpToolsetByServer.set(server, []);
 		}
@@ -164,7 +165,7 @@ export async function getEnabledTools(
 		toolset: (t.toolset ?? getToolsetForTool(t.name)) as string,
 	}));
 	const mcpTagged: TTool[] = mcpOriginal.map(t => {
-		const server = (t.category as string).replace(/^mcp:/, '');
+		const server = mcpServerIdOf(t) ?? '';
 		return { ...t, toolset: `mcp-${server}` };
 	});
 

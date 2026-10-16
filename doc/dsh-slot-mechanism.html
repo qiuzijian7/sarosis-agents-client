@@ -1,0 +1,712 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>dsh 聊天框的 Slot 机制 — 通俗原理解析</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --panel-2: #1c2128;
+    --border: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --h: #58a6ff;
+    --p: #d29922;
+    --ok: #3fb950;
+    --warn: #d29922;
+    --bad: #f85149;
+    --vio: #bc8cff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", Roboto, sans-serif;
+    line-height: 1.75;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 40px 24px 80px; }
+  header { border-bottom: 1px solid var(--border); padding-bottom: 26px; margin-bottom: 30px; }
+  h1 { font-size: 30px; margin: 0 0 10px; letter-spacing: -0.4px; }
+  .sub { color: var(--muted); font-size: 14px; }
+  h2 { font-size: 21px; margin: 52px 0 16px; padding-left: 11px; border-left: 4px solid var(--h); }
+  h3 { font-size: 16px; margin: 28px 0 10px; }
+  h4 { font-size: 14px; margin: 20px 0 8px; color: var(--h); }
+  p { margin: 9px 0; }
+  code {
+    background: var(--panel-2); border: 1px solid var(--border); padding: 1px 6px; border-radius: 5px;
+    font-size: 12.5px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    word-break: break-all;
+  }
+  pre {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 16px; overflow: auto; font-size: 12.5px; line-height: 1.6;
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace; color: #c9d1d9; margin: 12px 0;
+  }
+  pre code { background: none; border: none; padding: 0; font-size: 12.5px; }
+  table { width: 100%; border-collapse: collapse; margin: 14px 0 8px; font-size: 13.5px; }
+  th, td { border: 1px solid var(--border); padding: 9px 12px; text-align: left; vertical-align: top; }
+  th { background: var(--panel-2); font-weight: 600; }
+  tr:hover td { background: rgba(88,166,255,0.04); }
+  td.k { white-space: nowrap; font-family: ui-monospace, Consolas, monospace; color: var(--h); }
+  .small { font-size: 12.5px; color: var(--muted); }
+  ul, ol { margin: 8px 0; padding-left: 24px; }
+  li { margin: 5px 0; }
+  .note { background: var(--panel); border-left: 3px solid var(--h); padding: 12px 16px; margin: 16px 0; border-radius: 0 8px 8px 0; font-size: 14px; color: #c9d1d9; }
+  .note.warn { border-left-color: var(--warn); }
+  .note.bad { border-left-color: var(--bad); }
+  .note.ok { border-left-color: var(--ok); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; margin: 18px 0; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 15px 17px; }
+  .card .k { color: var(--muted); font-size: 12px; letter-spacing: .5px; text-transform: uppercase; }
+  .card .v { font-size: 18px; font-weight: 700; margin-top: 6px; }
+  .card .n { color: var(--muted); font-size: 12.5px; margin-top: 5px; }
+  .tag { display: inline-block; font-size: 11px; padding: 2px 9px; border-radius: 20px; border: 1px solid var(--border); background: var(--panel-2); color: var(--muted); margin-right: 6px; }
+  .tag.g { color: var(--ok); border-color: rgba(63,185,80,.4); }
+  .tag.y { color: var(--warn); border-color: rgba(210,153,34,.4); }
+  .tag.r { color: var(--bad); border-color: rgba(248,81,73,.4); }
+  .tag.v { color: var(--vio); border-color: rgba(188,140,255,.4); }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 16px 0; }
+  @media (max-width: 820px) { .two { grid-template-columns: 1fr; } }
+
+  /* ── kind 切换 ───────────────────────────────────────── */
+  .tabs { display: flex; gap: 8px; flex-wrap: wrap; margin: 18px 0 0; }
+  .tab {
+    cursor: pointer; border: 1px solid var(--border); background: var(--panel);
+    color: var(--muted); border-radius: 8px 8px 0 0; padding: 8px 15px; font-size: 13.5px;
+    font-family: ui-monospace, Consolas, monospace;
+  }
+  .tab.on { color: var(--text); background: var(--panel-2); border-bottom-color: var(--panel-2); font-weight: 600; }
+  .kindpane { display: none; border: 1px solid var(--border); border-radius: 0 10px 10px 10px; background: var(--panel); padding: 16px 20px; }
+  .kindpane.on { display: block; }
+
+  /* ── 槽位示意图 ─────────────────────────────────────── */
+  .board { display: flex; gap: 10px; flex-wrap: wrap; margin: 12px 0; }
+  .cell {
+    border: 1px dashed var(--border); border-radius: 8px; padding: 8px 10px; min-width: 110px;
+    background: rgba(88,166,255,.04);
+  }
+  .cell .lbl { font-size: 11px; color: var(--muted); font-family: ui-monospace, Consolas, monospace; margin-bottom: 6px; }
+  .occ { border-radius: 6px; padding: 6px 9px; font-size: 12px; border: 1px solid var(--border); background: var(--panel-2); margin-top: 5px; }
+  .occ.win { border-color: var(--ok); box-shadow: 0 0 0 1px rgba(63,185,80,.25) inset; }
+  .occ.lose { opacity: .45; text-decoration: line-through; }
+  .occ.ghost { border-style: dashed; color: var(--muted); }
+  .plabel { font-size: 11px; color: var(--muted); font-family: ui-monospace, Consolas, monospace; }
+
+  /* ── 仲裁演示 ───────────────────────────────────────── */
+  .arbslot { border: 1px dashed var(--border); border-radius: 10px; padding: 12px; min-height: 92px; background: rgba(88,166,255,.03); }
+  .ent { display: flex; align-items: center; gap: 10px; border: 1px solid var(--border); background: var(--panel-2); border-radius: 8px; padding: 8px 12px; margin: 6px 0; font-size: 13px; }
+  .ent.win { border-color: var(--ok); }
+  .ent.out { opacity: .4; }
+  .ent .p { margin-left: auto; font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: var(--muted); }
+  button.act {
+    cursor: pointer; font-size: 12.5px; padding: 6px 12px; border-radius: 7px;
+    border: 1px solid var(--border); background: var(--panel-2); color: var(--text); margin: 4px 6px 0 0;
+  }
+  button.act:hover { border-color: var(--h); }
+  button.act:disabled { opacity: .4; cursor: not-allowed; }
+  #arbLog { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; color: var(--muted); margin-top: 10px; min-height: 20px; }
+
+  /* ── 树 ─────────────────────────────────────────────── */
+  .tree { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12.5px; line-height: 1.85; color: #c9d1d9; }
+  .tree .vd { color: var(--h); }
+  .tree .vs { color: var(--ok); }
+  .tree .vx { color: var(--p); }
+  .tree .vv { color: var(--vio); }
+  footer { margin-top: 60px; padding-top: 20px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12.5px; }
+  details { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 16px; margin: 14px 0; }
+  summary { cursor: pointer; font-weight: 600; font-size: 14px; }
+  details[open] summary { margin-bottom: 10px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>dsh 聊天框的 Slot 机制</h1>
+  <div class="sub">
+    通俗版原理解析 · 依据 dsh <code>0.2.0-rc.2</code> 真实源码与运行时扫描（官方 web 组合共 <b>87</b> 个命名槽位）·
+    VsSaros 侧实例来自 <code>dsh-plugins/vssaros-chat-surface/lib/*.js</code> · 2026-10-11
+  </div>
+</header>
+
+<h2>0. 一句话原理</h2>
+<p>
+  dsh 的聊天框不是「一个写死的大组件」，而是<b>一块带插座的电路板</b>：
+  官方把界面拆成几十个<b>有名字、有规矩的插槽</b>（slot），每个插槽自己声明「我这儿能插几个、插什么样的东西」；
+  任何插件（包括 VsSaros 的换皮插件）都能往这些插槽里插自己的 React 组件。
+  <b>官方条目和插件条目躺在同一本账上，按优先级仲裁出「谁来渲染」。</b>
+</p>
+
+<div class="board">
+  <div class="cell">
+    <div class="lbl">conversation.input.dock <span class="tag">list / session</span></div>
+    <div class="occ win">官方：审批提示条（priority 0）</div>
+    <div class="occ win">插件：队列提示条（id 唯一，priority 0）</div>
+    <div class="plabel">list 槽：各占各的格子，互不遮蔽</div>
+  </div>
+  <div class="cell">
+    <div class="lbl">tool.call.toolview <span class="tag">keyed / session</span></div>
+    <div class="occ win">插件：VsSaros 文件卡（key=write, priority −10）</div>
+    <div class="occ lose">官方：原生文件卡（key=write, priority 0）</div>
+    <div class="plabel">keyed 槽：同 key 比 priority，数值小的赢</div>
+  </div>
+  <div class="cell">
+    <div class="lbl">conversation.hero.agentPreset <span class="tag">single / session-maybe</span></div>
+    <div class="occ win">插件：VsSaros preset chip（priority −10）</div>
+    <div class="occ lose">官方：hero preset chip（priority 0）</div>
+    <div class="plabel">single 槽：一个坑位，谁 priority 小谁占</div>
+  </div>
+</div>
+
+<h2>1. 名词地图：谁在跟谁说话</h2>
+<p>Slot 机制一共只有三个角色。把这三个角色分清，后面的规则都不用背。</p>
+
+<table>
+  <tr><th>角色</th><th>叫什么</th><th>是什么</th><th>谁负责</th></tr>
+  <tr>
+    <td class="k">插座</td>
+    <td><code>Slot</code>（槽位）</td>
+    <td>界面上的一个具名挂载点，带 <code>kind</code>（插几个）和 <code>scope</code>（什么作用域）。<b>必须先被父组件声明</b>，否则谁也别想插。</td>
+    <td>宿主组件（官方或插件）在注册自身时用 <code>children</code> 表声明</td>
+  </tr>
+  <tr>
+    <td class="k">插头</td>
+    <td><code>Entry</code>（条目 / 贡献）</td>
+    <td>插进槽里的一个 React 组件 + 选项：<code>id</code>（list 用）/<code>key</code>（keyed 用）/<code>order</code>/<code>priority</code>/<code>select</code>（chain 用）/<code>children</code>（再声明子槽）。</td>
+    <td>任何客户端插件</td>
+  </tr>
+  <tr>
+    <td class="k">账本</td>
+    <td><code>SlotCore</code> → <code>ctx.slots</code></td>
+    <td>纯注册表（无 React）。负责校验、排序、仲裁「谁生效」、通知渲染器重绘、导出拓扑快照。</td>
+    <td>dsh 的 <code>ui-slots</code>（纯逻辑）+ <code>ui-renderer</code>（绑到 React）</td>
+  </tr>
+</table>
+
+<h4>术语速查</h4>
+<table>
+  <tr><th>字段</th><th>含义</th><th>易错点</th></tr>
+  <tr><td class="k">name</td><td>要插的槽位 key，如 <code>"tool.call.toolview"</code></td><td>写错 → 直接抛 <code>slot "X" is not declared</code></td></tr>
+  <tr><td class="k">id</td><td><b>list</b> 槽的条目身份（唯一）</td><td>同 id + 同 priority 重复注册 → 抛错</td></tr>
+  <tr><td class="k">key</td><td><b>keyed</b> 槽的分格键（如工具名 <code>write</code>、节点类型）</td><td>不传 → 抛 <code>keyed slot requires options.key</code></td></tr>
+  <tr><td class="k">priority</td><td>竞争权重，默认 <code>0</code>，<b>升序，数值最小的先赢</b></td><td>想遮蔽官方（默认 0）必须用负数</td></tr>
+  <tr><td class="k">order</td><td><b>list</b> 槽内部的展示排序（priority 相同才轮到它）</td><td>不是权重，不参与遮蔽</td></tr>
+  <tr><td class="k">select</td><td><b>chain</b> 槽的选举函数，返回非 null 即「我要接管」</td><td>不传 → 抛 <code>chain slot requires options.select</code></td></tr>
+  <tr><td class="k">children</td><td>本条目要渲染的子槽声明表</td><td><b>声明即授权，声明即独占</b>：不声明就不能渲染，被别人先声明了就报错</td></tr>
+</table>
+
+<h2>2. 四种 kind：插槽分四种脾气</h2>
+<p>这是整套机制的核心。<code>kind</code> 决定「一个格子只能一个，还是可以很多个」，以及「怎么决定谁生效」。</p>
+
+<div class="tabs" id="kindTabs">
+  <div class="tab on" data-k="single">single（单个占位）</div>
+  <div class="tab" data-k="list">list（有序条目）</div>
+  <div class="tab" data-k="keyed">keyed（按键分格）</div>
+  <div class="tab" data-k="chain">chain（选举接管）</div>
+</div>
+
+<div class="kindpane on" data-k="single">
+  <p><b>一个坑位，同一时刻只有一个条目渲染。</b>后注册者若与在座条目 <code>priority</code> 相同，<b>直接抛错</b>（强迫你表态）；用更小的 priority 才能顶掉它。</p>
+  <div class="board">
+    <div class="cell">
+      <div class="lbl">single · 一个坑</div>
+      <div class="occ win">A（priority −10）→ 渲染</div>
+      <div class="occ lose">官方（priority 0）→ 出局</div>
+    </div>
+  </div>
+  <p class="small">真实例子：<code>conversation.hero.agentPreset</code>（新会话欢迎区的 agent 选择器）、<code>conversation.approval.detail</code>（审批卡）、<code>sidebar</code> / <code>rightbar</code>（布局）。</p>
+</div>
+
+<div class="kindpane" data-k="list">
+  <p><b>可以插很多条，各占各的格子，互不遮蔽。</b>身份靠唯一 <code>id</code>；渲染顺序 = <code>priority</code> 升序 → <code>order</code> 升序。想遮蔽官方某个条目，就用<b>同一个 id + 更小的 priority</b>。</p>
+  <div class="board">
+    <div class="cell">
+      <div class="lbl">list · 多格</div>
+      <div class="occ win">官方：模型选择器（id=model, p=0, order=10）</div>
+      <div class="occ win">插件：用量药丸（id=vssaros-turn-usage, order=100）</div>
+      <div class="occ win">插件：preset chip（id=vssaros-preset-chip, order=99）</div>
+    </div>
+  </div>
+  <p class="small">真实例子：<code>conversation.session.header.utilities</code>（会话头右侧工具位）、<code>conversation.input.dock</code>（输入框上方横条）、<code>conversation.input.right</code>（输入框右侧按钮）。</p>
+</div>
+
+<div class="kindpane" data-k="keyed">
+  <p><b>先按键分格，每格再按 single 的规矩竞争。</b>键通常是「类型」：工具名、聊天节点类型、来源 id。没被占用的 key 就等于新开一格（新增），已占用的 key 就能遮蔽。</p>
+  <div class="board">
+    <div class="cell">
+      <div class="lbl">keyed · key="write"</div>
+      <div class="occ win">插件卡（p=−10）</div>
+      <div class="occ lose">官方卡（p=0）</div>
+    </div>
+    <div class="cell">
+      <div class="lbl">keyed · key="bash"</div>
+      <div class="occ win">官方卡（p=0）</div>
+      <div class="plabel">没插件插入 → 官方原样</div>
+    </div>
+  </div>
+  <p class="small">真实例子：<code>tool.call.toolview</code>（工具卡，key=工具名）、<code>conversation.chat.node</code>（消息流节点，key=节点类型）、<code>main</code>（布局主体）。<b>未覆盖的 key 自动回落官方渲染器</b>——这正是「渐进换皮」的底气。</p>
+</div>
+
+<div class="kindpane" data-k="chain">
+  <p><b>不做格子竞争，改「选举」：</b>每个条目带一个 <code>select()</code> 函数，注册表按 <code>priority</code> 升序逐个询问；谁第一个返回非 null，谁就接管并拿到 <code>matched</code> prop；全都返回 null 时，由宿主自己的 fallback 渲染。典型用途是「同一位置在不同状态下换不同 UI」。</p>
+  <div class="board">
+    <div class="cell">
+      <div class="lbl">chain · 询问顺序</div>
+      <div class="occ">① VsSaros 审批卡（p=0）→ select 返回 pending 时接管</div>
+      <div class="occ ghost">② 官方审批 UI（p=1）→ 轮不到</div>
+      <div class="occ ghost">③ 宿主 fallback → 无审批时渲染输入框</div>
+    </div>
+  </div>
+  <p class="small">真实例子只有 3 个：<code>conversation.composer</code>（输入区：审批/提问时被接管）、<code>shell.quota-notice</code>（配额提示）、<code>sidebar.right.tab.guide</code>。chain 槽<b>不能用普通 renderSlot 渲染子槽</b>，要用 <code>renderSlotChain</code>。</p>
+</div>
+
+<h2>3. 仲裁规则：谁渲染？（唯一需要记住的一张图）</h2>
+
+<table>
+  <tr><th>问题</th><th>答案</th><th>源码依据</th></tr>
+  <tr><td>同格谁赢？</td><td><code>priority</code> 升序取第一个「还活着」的条目 → <b>数值最小者渲染</b>（官方默认 0，插件用负数遮蔽）</td><td><code>entriesOfSlot()</code> 投影每格首个非 abdicated 条目</td></tr>
+  <tr><td>list 内部怎么排？</td><td><code>priority</code> 升序，同级再按 <code>order</code> 升序</td><td>注册时的排序函数</td></tr>
+  <tr><td>同格同 priority 会怎样？</td><td><b>抛错</b>（single/keyed/list 都检查；chain 不检查）</td><td><code>register()</code> 的 occupant 校验</td></tr>
+  <tr><td>插件组件崩了会怎样？</td><td><b>abdicate（让位）</b>：把该条目从格子里撤下（一次性），下一次渲染自动轮到下一候选 → 官方样式回归，内容不丢；注册本身仍在账本上，disposer 依然有效</td><td><code>reportEntryError({abdicate:true})</code></td></tr>
+  <tr><td>chain 崩了会怎样？</td><td>不撤（选举在选择时就已定），只发错误通知</td><td><code>abdicate:false</code></td></tr>
+  <tr><td>没声明的槽能插吗？</td><td>不能，直接抛错。<code>children</code> 声明是唯一授权来源，且<b>声明即独占</b>（别人再声明同一子槽就报错）</td><td><code>slot "X" is not declared (a parent entry's children table must declare it)</code></td></tr>
+</table>
+
+<h3>动手看看：遮蔽与让位是怎么发生的</h3>
+<p class="small">下面模拟一个 <code>list</code> 槽（官方 <code>id="open-in-app"</code>, priority 0）被插件用「同 id + 负 priority」遮蔽，以及插件崩溃后官方自动复活的过程。</p>
+<div class="card">
+  <div class="arbslot" id="arbSlot"></div>
+  <div>
+    <button class="act" id="arbPlug">插件注册同 id，priority = −1</button>
+    <button class="act" id="arbCrash">让插件组件崩溃（abdicate）</button>
+    <button class="act" id="arbSame">再插一个同 id、priority = −1 的条目（撞车试试）</button>
+    <button class="act" id="arbReset">重置</button>
+  </div>
+  <div id="arbLog">账本状态：只有官方条目在座。</div>
+</div>
+
+<h2>4. 授权与生命周期：插座、电闸、拔插头</h2>
+
+<div class="two">
+  <div class="card">
+    <div class="k">插座是「声明」出来的</div>
+    <div class="n" style="font-size:13px;color:#c9d1d9">
+      宿主组件注册自己时，用 <code>children</code> 表列出「我允许谁在我身上开洞」。插槽的拓扑就是这么长出来的一棵树：
+      <pre><code>ctx.slots.register({
+  name: 'conversation.session.header',
+  children: {
+    'conversation.session.header.utilities': { kind: 'list', scope: 'session' },
+    'conversation.session.header.corner':    { kind: 'single', scope: 'session' },
+    ...
+  },
+}, HeaderComponent);</code></pre>
+      <span class="small">子槽由父组件决定 <code>kind</code>/<code>scope</code>，插头无权修改。</span>
+    </div>
+  </div>
+  <div class="card">
+    <div class="k">拔插头是「级联」的</div>
+    <div class="n" style="font-size:13px;color:#c9d1d9">
+      条目被 dispose 时，它声明的子槽、子槽里的贡献、以及它挂的 store 席位一起消失（递归）。
+      dsh 把 <code>ctx.slots.register()</code> 包在 Cordis 的 <code>ctx.effect()</code> 里，所以<b>插件卸载/热更新时插头自动拔掉</b>，不会留半截 UI。
+      <pre><code>// renderer 侧
+SlotRegistry.prototype.register = function (options, component) {
+  return this.ctx.effect(() => this._register(options, component), 'slots.register()');
+};</code></pre>
+    </div>
+  </div>
+</div>
+
+<h4><code>ctx.slots.inject(key, cb)</code>：插座还没装好时先排队</h4>
+<p>
+  插件加载顺序和宿主渲染顺序不保证一致（谁先谁后都可能）。<code>inject</code> 的语义是：
+  <b>「等这个槽位被声明出来了，再帮我注册」</b>。实现上盯的是槽位的<b>声明代际（declaration epoch）</b>——
+  声明出现时执行回调并接管，声明被撤掉时把回调的产物清理掉。
+</p>
+<pre><code>// VsSaros 的标准写法（每个换皮部件都是这个形状）
+ctx.slots.inject('conversation.input.dock', () => {
+  const dispose = ctx.slots.register(
+    { name: 'conversation.input.dock', id: 'vssaros-queue-hint', order: 100 },
+    QueueHint,
+  );
+  return dispose;   // 槽位消失时由 inject 负责清理
+});</code></pre>
+<div class="note">
+  <b>为什么大家不直接 register？</b>因为槽位在页面刚挂载时可能还没声明，直接 register 会抛
+  <code>is not declared</code>。用 <code>inject</code> 排队，插件就能与官方解耦、各自按自己的节奏加载。
+</div>
+
+<h2>5. 数据是怎么流进组件的：scope + 五类 props</h2>
+<p>
+  插件组件<b>不自己去订阅会话、不 import 渲染器</b>。它只是普通 React 组件，props 由框架「拼装」好递进来。
+  拼装的原料有五类（官方 README 称 five framework props shares）：
+</p>
+<table>
+  <tr><th>share</th><th>内容</th><th>例子</th></tr>
+  <tr><td class="k">runtime</td><td>父级渲染调用点的 owner props + <b>会话标准工具包</b> + 全局席位</td><td><code>sessionId</code>、<code>phase</code>、<code>toolName</code>、<code>block</code>（工具卡）、<code>node</code>（聊天节点）、<code>openFile</code>/<code>cwd</code></td></tr>
+  <tr><td class="k">child render</td><td>静态收窄后的 <code>renderSlot</code>：<b>只能渲染自己 children 里声明过的子槽</b></td><td>文件卡渲染自己声明的「展开区」</td></tr>
+  <tr><td class="k">factory render</td><td><code>renderFactorySlot</code>：渲染可复用装配的 occurrence</td><td>Component Factory 场景</td></tr>
+  <tr><td class="k">store</td><td>声明过的 store 席位的 selector 钩子与写操作</td><td><code>useDisclosure()</code> → <code>{expanded, toggle}</code></td></tr>
+  <tr><td class="k">业务 inject</td><td>父级声明的注入面（会话 hooks 等）</td><td><code>useInput()</code>、<code>useChat()</code>、<code>useSession()</code>、<code>inputActions</code></td></tr>
+</table>
+
+<h4>scope 决定「能拿到什么」</h4>
+<table>
+  <tr><th>scope</th><th>含义</th><th>会话标准工具包</th><th>官方 web 组合中的数量</th></tr>
+  <tr><td class="k">root</td><td>全局，一份</td><td>全局工具包：<code>useSessions</code> / <code>useSessionStatus</code> / <code>useWorkspaces</code> …</td><td>40</td></tr>
+  <tr><td class="k">session</td><td>绑定某个会话，<b>每个会话一份实例</b></td><td>会话工具包：<code>useSession</code> / <code>useProjection</code> / <code>useConversation</code> / <code>useInput</code> / <code>useChat</code> …</td><td>42</td></tr>
+  <tr><td class="k">session-maybe</td><td>会话可选（没有会话也能渲染）</td><td>同 session，但字段可为 undefined</td><td>5</td></tr>
+</table>
+<div class="note warn">
+  <b>scope 决定「一个还是多个」。</b>同一个组件注册到 <code>session</code> 作用域的槽，聊天框开了 5 个会话就是 5 份实例。
+  换皮时若在组件里塞了模块级可变状态，会踩到「多个实例互相串味」的坑。
+</div>
+
+<h4>变更怎么传出去（响应式三件套）</h4>
+<ul>
+  <li><b>version 同步自增</b>：每次变更立刻 +1，保证 <code>getSnapshot()</code> 永远不会读到旧值（哪怕通知还没派发）。</li>
+  <li><b>subscribe 微任务批处理</b>：同一 tick 内对同一个 key 的 N 次变更只通知一次。</li>
+  <li><b>onMutate 同步不批处理</b>：事件流需要「一次变更一次事件」，所以另开一条同步通道。</li>
+</ul>
+<p class="small">渲染器在插槽出口把注册表接到 React 的 <code>useSyncExternalStore</code> 上——这就是「插件只写 React 组件，不懂订阅」的原因。</p>
+
+<h2>6. 聊天框的真实插槽地图</h2>
+<p class="small">
+  扫描口径：<code>poc/dsh-p0/.out/slotmap-scan.mjs</code>（扫各包的 <code>declare module SlotMap</code>），dsh <code>0.2.0-rc.2</code> 的 web 组合共 <b>87</b> 个命名槽：
+  single 36 · list 33 · keyed 15 · chain 3；scope：session 42 · root 40 · session-maybe 5。
+  下图只画与聊天框相关的骨架。
+</p>
+
+<div class="card tree">
+<pre style="margin:0;background:none;border:none;padding:0">
+<span class="vd">root</span>                            single / root      ← 全程序唯一的根，渲染器调用一次，产品布局由它拥有
+├─ <span class="vd">main</span>                          keyed  / root      ← 布局主体（按视图切换）
+│   └─ <span class="vd">main.conversation</span>         single / session-maybe
+│       └─ <span class="vd">conversation.header</span>                     single / session-maybe
+│           ├─ <span class="vd">.leading</span>                             single / root
+│           └─ <span class="vs">conversation.session.header</span>           single / session
+│               ├─ <span class="vs">.lineage</span>                        single
+│               ├─ <span class="vs">.actions</span>                        list
+│               ├─ <span class="vs">.utilities</span>                      list      ← 用量药丸、preset chip、open-in-app 都在这里
+│               └─ <span class="vs">.corner</span>                         single
+├─ <span class="vx">conversation.view</span>             list   / session    ← 视图页签
+│   ├─ <span class="vv">conversation.chat.node</span>        keyed  / session    ← 消息流节点（18 种 key：文本/思考/工具/计划/待办/子代理/压缩…）
+│   └─ <span class="vv">conversation.message.images</span>  single / session
+├─ <span class="vv">tool.call.toolview</span>            keyed  / session    ← 工具卡（key = 工具名：bash / fs / write / edit / web …）
+│   -- tool.call.images / tool.view.cordis
+├─ <span class="vx">conversation.composer</span>         <b>chain</b>  / session    ← 输入区：无审批时是输入框，待审批时被审批卡接管
+│   ├─ <span class="vd">conversation.input.dock</span>       list   / session    ← 输入框上方全宽横条（排队提示等）
+│   ├─ <span class="vx">conversation.composer.bar</span>     single / session-maybe
+│   ├─ <span class="vx">conversation.input.attachments</span> single / session-maybe
+│   ├─ <span class="vd">conversation.input.left / .right / .overlay</span>  list
+│   ├─ <span class="vd">conversation.input.model / .permission / .plan / .activity</span>  single
+│   └─ <span class="vd">conversation.input.dock</span> …
+├─ <span class="vd">conversation.hero.*</span>           single / root|session-maybe   ← 新会话欢迎屏（brand.mark / workspace / agentPreset）
+├─ <span class="vd">conversation.approval.detail</span>  single / session    ← 审批详情
+├─ <span class="vx">sidebar</span> / <span class="vx">rightbar</span>            single / root       ← 左/右栏（聊天模式下被裁剪隐藏）
+└─ <span class="vd">shell.overlay / shell.leading / shell.quota-notice(chain)</span>
+</pre>
+</div>
+<p class="small">
+  颜色标注：<span style="color:#8b949e">灰</span>=中性骨架，
+  <span style="color:#58a6ff">蓝</span>=VsSaros 已插入条目的槽，
+  <span style="color:#bc8cff">紫</span>=被遮蔽（换皮）的 keyed 槽。
+  完整 87 槽清单见文末附录。
+</p>
+
+<h2>7. VsSaros 实际用它做了六件事</h2>
+<p>同一个机制，在聊天框里被用了六种「姿势」。这六段就是最好的教材。</p>
+
+<h4>① 新增（list，用唯一 id 与官方共存）—— 队列提示条</h4>
+<pre><code>// dsh-plugins/vssaros-chat-surface/lib/client.queue.js
+ctx.slots.inject('conversation.input.dock', () => {
+  const dispose = ctx.slots.register(
+    { name: 'conversation.input.dock', id: 'vssaros-queue-hint', order: 100 },
+    QueueHint,                      // 空队列时 return null（不渲染）
+  );
+  return dispose;
+});</code></pre>
+<p class="small">要点：新 id 不会与官方冲突；<code>order</code> 只影响同 priority 下的展示位置；空状态直接返回 null 最省事。</p>
+
+<h4>② 遮蔽（keyed，负 priority）—— 文件工具卡换成 VsSaros 风格</h4>
+<pre><code>// dsh-plugins/vssaros-chat-surface/lib/client.tools.js
+for (const key of ['write', 'edit']) {
+  ctx.slots.inject('tool.call.toolview', () => ctx.slots.register(
+    { name: 'tool.call.toolview', key, priority: -10 },  // 官方同 key 是 priority 0
+    VssarosFsToolCard,
+  ));
+}</code></pre>
+<p class="small">要点：只覆盖 <code>write</code>/<code>edit</code> 两个 key，其它工具（bash 等）原样用官方卡——这就是 keyed 的好处：<b>逐 key 渐进换皮</b>。组件崩溃时会 abdicate 回官方卡，聊天不至于变砖。</p>
+
+<h4>③ 遮蔽（list，同 id + 更低 priority）—— 干掉「在其他 app 中打开」按钮</h4>
+<pre><code>// 官方注册在 conversation.session.header.utilities，id="open-in-app"，priority 0
+ctx.slots.register(
+  { name: 'conversation.session.header.utilities', id: 'open-in-app', priority: -1 },
+  () => null,                        // 同 id 更低优先级 → 官方那条被遮蔽
+);                                   // 注意：同 id 同 priority 会抛错，所以必须 -1</code></pre>
+
+<h4>④ 遮蔽（single，负 priority）—— hero 区的 agent chip</h4>
+<pre><code>ctx.slots.inject('conversation.hero.agentPreset', () => ctx.slots.register(
+  { name: 'conversation.hero.agentPreset', id: 'vssaros-preset-chip-hero', priority: -10 },
+  PresetChip,
+));</code></pre>
+<p class="small">遮蔽理由很有意思：官方 chip 走「空白会话热切换 preset」，会破坏 VsSaros「会话 id 后缀 = preset」的确定性，所以必须由自己接管。</p>
+
+<h4>⑤ 选举（chain，抢占式同槽）—— 审批卡</h4>
+<pre><code>// 官方审批 UI 在 conversation.composer（chain，priority 1 + select「审批时接管」）
+// VsSaros 注册同槽、priority 0（升序先试）→ 先被询问，同样 select 语义 → 接管
+ctx.slots.inject('conversation.composer', () => ctx.slots.register(
+  { name: 'conversation.composer', priority: 0, select: (o) => (o.pending ? o.pending : null) },
+  VssarosApprovalCard,
+));</code></pre>
+<p class="small">要点：chain 的遮蔽不是「数值小的强制赢」，而是「先被问，且同样宣布接管」；放行/拒绝仍走 dsh 原生审批流（<code>pending.answer(decision)</code>），只换皮不换语义。</p>
+
+<h4>⑥ 纯换肤（不占槽）—— 主题与样式</h4>
+<p>只做视觉改动时<b>不必</b>注册条目：直接用宿主主题变量（<code>--dsw-alias-*</code> 等）写样式、或经 <code>ctx.theme.overrideTokens()</code> 叠一层调色板。少一个插槽改动面，就少一处 dsh 升级时要跟的地方。</p>
+
+<h2>8. 为什么这么设计（四条原理）</h2>
+<div class="grid">
+  <div class="card">
+    <div class="v">解耦</div>
+    <div class="n">官方不需要知道谁在扩展它，插件也不需要改官方代码。双方只依赖「槽位契约」（名字 + kind + scope + props 类型）。</div>
+  </div>
+  <div class="card">
+    <div class="v">可回退</div>
+    <div class="n">单点失败不拖垮聊天：条目崩溃 → abdicate 让位给下一候选；某个换皮部件注册失败只影响它自己（VsSaros 把每个部件拆成独立 chunk，失败原因记在 <code>window.__vssarosChatSurface.partErrors</code>）。</div>
+  </div>
+  <div class="card">
+    <div class="v">类型即契约</div>
+    <div class="n"><code>SlotMap</code> / <code>SlotFactoryMap</code> 由各包 <code>declare module</code> 声明合并：槽名拼错、kind 用错、props 取错，<b>编译期</b>就报；运行时再校验一次（未声明 / 同格冲突 / 缺 key 或缺 select）。</div>
+  </div>
+  <div class="card">
+    <div class="v">可观测</div>
+    <div class="n"><code>SlotCore.snapshot()</code> 导出整棵拓扑（kind / scope / declaredBy / occupants{id,key,order,priority,active}），成为 Slot 目录比对、覆盖率报告和 e2e 断言的数据源。</div>
+  </div>
+</div>
+
+<h2>9. 排错速查表</h2>
+<table>
+  <tr><th>症状</th><th>多半是</th><th>怎么办</th></tr>
+  <tr><td><code>slot "X" is not declared (a parent entry's children table must declare it)</code></td><td>槽名写错，或父级还没声明（加载顺序问题）</td><td>核对 <code>snapshot()</code> 里的真实槽名；用 <code>ctx.slots.inject()</code> 排队注册</td></tr>
+  <tr><td><code>single keyed list ... already has a registration at priority 0 ...</code></td><td>同格同 priority 撞车（官方默认 0）</td><td>改 priority（遮蔽用负数）；或换唯一 id</td></tr>
+  <tr><td><code>keyed slot requires options.key</code> / <code>chain slot requires options.select</code></td><td>少传必填选项</td><td>补上</td></tr>
+  <tr><td><code>SlotOwnershipError: ... use renderSlotChain</code></td><td>把 chain 槽当普通槽渲染子项</td><td>chain 用 <code>renderSlotChain</code>；或改注册到别的槽</td></tr>
+  <tr><td>注册成功但界面没变化</td><td>① 组件返回了 null；② 被更小 priority 的条目遮蔽；③ scope 不匹配（没有会话时 session 槽不渲染）；④ 改的是另一个同名面板</td><td>看 <code>snapshot()</code> 里该 slot 的 <code>occupants[].active</code>；确认当前页面/会话</td></tr>
+  <tr><td>自己注册的卡突然变回官方样式</td><td>组件抛错触发了 abdicate（一次性让位）</td><td>查 <code>onEntryError</code> / 控制台报错；修好后重新注册（同一条目不会自动复活）</td></tr>
+  <tr><td>多开会话时状态串味</td><td>session 作用域槽每会话一份实例，用了模块级可变状态</td><td>状态放进组件内或 store 席位</td></tr>
+</table>
+
+<h2>附录 A：官方 web 组合的 87 个命名槽</h2>
+<details>
+<summary>展开完整清单（名字 | kind | scope | 所属包）</summary>
+<div class="tree" style="font-size:12px;line-height:1.7">
+<pre style="margin:0;background:none;border:none;padding:0;font-size:12px">
+conversation.approval.detail          | single | session        | approval
+conversation.chat.assistant-actions   | list   | session        | chat
+conversation.chat.commandview         | keyed  | session        | chat
+conversation.chat.node                | keyed  | session        | chat
+conversation.composer                 | chain  | session        | conversation
+conversation.composer.bar             | single | session-maybe  | conversation
+conversation.composer.dock            | list   | session        | conversation
+conversation.content                  | single | session-maybe  | conversation
+conversation.header                   | single | session-maybe  | conversation
+conversation.header.leading           | single | root           | conversation
+conversation.hero.brand.mark          | single | root           | conversation
+conversation.hero.workspace           | single | root           | conversation
+conversation.hero.agentPreset         | single | session-maybe  | conversation
+conversation.input.activity           | single | session        | conversation
+conversation.input.attachments        | single | session-maybe  | conversation
+conversation.input.dock               | list   | session        | conversation
+conversation.input.left               | list   | session        | conversation
+conversation.input.model              | single | session        | conversation
+conversation.input.overlay            | list   | session        | conversation
+conversation.input.permission         | single | session        | conversation
+conversation.input.plan               | single | session        | conversation
+conversation.input.right              | list   | session        | conversation
+conversation.message.images           | single | session        | chat
+conversation.plan-review.actions      | list   | session        | user-questions
+conversation.session                  | single | session        | conversation
+conversation.session.header           | single | session        | conversation
+conversation.session.header.actions   | list   | session        | conversation
+conversation.session.header.corner    | single | session        | conversation
+conversation.session.header.lineage   | single | session        | conversation
+conversation.session.header.utilities | list   | session        | conversation
+conversation.trajectory.images        | single | session        | trajectory
+conversation.view                     | list   | session        | conversation
+deliverables.file.actions             | list   | session        | deliverables
+deliverables.review.file.actions      | list   | session        | deliverables
+main                                  | keyed  | root           | layout
+main.conversation                     | single | session-maybe  | conversation
+plugins.bundle.activation             | keyed  | root           | plugin-manager
+plugins.bundle.config                 | keyed  | root           | plugin-manager
+plugins.detail.actions                | list   | root           | plugin-manager
+plugins.detail.badge                  | list   | root           | plugin-manager
+plugins.detail.section                | list   | root           | plugin-manager
+plugins.item                          | list   | root           | plugin-manager
+plugins.row.config                    | keyed  | root           | plugin-manager
+rightbar                              | single | root           | layout
+rightbar.session                      | single | session        | sidebar-right
+root                                  | single | root           | renderer
+settings.action                       | list   | root           | settings
+settings.close                        | single | root           | settings
+settings.general.item                 | list   | root           | settings
+settings.header                       | single | root           | settings
+settings.launcher                     | single | root           | settings
+settings.models.footer                | list   | root           | settings-models
+settings.models.provider-card         | keyed  | root           | settings-models
+settings.models.sign-in               | single | root           | settings-models
+settings.onboarding                   | list   | root           | settings
+settings.plugins.tab                  | list   | root           | settings
+settings.section                      | list   | root           | settings
+settings.trigger                      | single | root           | settings
+shell.leading                         | single | root           | layout
+shell.overlay                         | list   | root           | layout
+shell.quota-notice                    | chain  | root           | chat
+sidebar                               | single | root           | layout
+sidebar.brand.mark                    | single | root           | sidebar
+sidebar.brand.name                    | single | root           | sidebar
+sidebar.chat.conversation             | single | session        | subagent
+sidebar.footer.action                 | list   | root           | sidebar
+sidebar.panellist                     | list   | root           | sidebar
+sidebar.right.pane.tab                | keyed  | session        | sidebar-right
+sidebar.right.pane.tab.title          | keyed  | session        | sidebar-right
+sidebar.right.tab.document            | keyed  | session        | sidebar-documentpreview
+sidebar.right.tab.document.action     | keyed  | session        | sidebar-documentpreview
+sidebar.right.tab.document.actions    | list   | session        | sidebar-documentpreview
+sidebar.right.tab.document.office.pdf | keyed  | session        | sidebar-documentpreview
+sidebar.right.tab.document.unpreviewable | list | session     | sidebar-documentpreview
+sidebar.right.tab.files.actions       | list   | session        | sidebar-files
+sidebar.right.tab.guide               | chain  | session        | sidebar-right
+sidebar.right.tab.guide.entry         | keyed  | session        | sidebar-right
+sidebar.right.tab.menu.item           | list   | session        | sidebar-right
+sidebar.session.row.hover             | list   | root           | workspace
+sidebar.session.row.leading           | list   | root           | workspace
+sidebar.settings                      | single | root           | sidebar
+sidebar.toggle.badge                  | single | root           | sidebar
+sidebar.workspaces                    | single | root           | sidebar
+sidebar.workspaces.session.menu.item  | list   | root           | workspace
+sidebar.workspaces.session.row.action | list   | root           | workspace
+tool.call.images                      | single | session        | tool
+tool.call.toolview                    | keyed  | session        | tool
+tool.view.cordis                      | keyed  | session        | cordis
+</pre>
+</div>
+</details>
+
+<h2>附录 B：源码与证据索引</h2>
+<table>
+  <tr><th>想确认什么</th><th>去哪看</th></tr>
+  <tr><td class="k">四种 kind 与声明纪律</td><td><code>dsh-runtime/0.2.0-rc.2/node_modules/@deepseek-ai/dsh-client-ui-slots/README.zh.md</code>（普通 Slots / Component Factory / 五类 props share / store 席位 / 声明纪律）</td></tr>
+  <tr><td class="k">账本实现（权威）</td><td><code>.../dsh-client-ui-slots/lib/index.js</code>：<code>register()</code>（校验分支 + 排序）、<code>entriesOfSlot()</code>（遮蔽投影）、<code>snapshot()</code>（拓扑导出）、<code>reportEntryError()</code>（abdicate）、<code>releaseEntry()/releaseChildren()</code>（级联释放）</td></tr>
+  <tr><td class="k">ctx.slots 服务与 React 绑定</td><td><code>.../dsh-client-ui-renderer/lib/client.js</code>：<code>SlotRegistry</code>（<code>register</code>/<code>registerFactory</code> 包 <code>ctx.effect</code>）、<code>slots.inject()</code> 的声明代际 reconcile、<code>renderSlot</code> 的 children 授权校验（<code>SlotOwnershipError</code>）、uSES 绑定</td></tr>
+  <tr><td class="k">官方 87 槽清单（可复现）</td><td><code>poc/dsh-p0/.out/slotmap-scan.mjs</code>（扫描各包 <code>declare module SlotMap</code>）；汇总文本 <code>poc/dsh-p0/.out/slotmap-dump.txt</code></td></tr>
+  <tr><td class="k">VsSaros 的换皮方案与批次</td><td><code>doc/dsh-foundation-refactor-plan.html</code> 第 5.3 节（Slot 替换表 + 两条行为约定）、第 5.14 节（能力 → Slot 归属、遮蔽/选举/新增机制、守卫）、第 5.15 节（preset 切换）</td></tr>
+  <tr><td class="k">实际注册代码（一部件一文件）</td><td><code>dsh-plugins/vssaros-chat-surface/lib/client.{queue,tools,approval,preset,usage,openInApp,hero,skin,sessionLabel,settings}.js</code></td></tr>
+</table>
+
+<div class="note ok">
+  <b>一句话总结。</b>Slot 机制 = 「<b>声明出来的插座</b>（children 授权）+ <b>两种仲裁</b>（格子比 priority／chain 跑选举）+ <b>失败自动让位</b>（abdicate 回落官方）+ <b>生命周期跟着插件走</b>（ctx.effect 级联释放）+ <b>类型与运行时双校验</b>（SlotMap 声明合并 + snapshot 可观测）」。
+  换皮、增强、新增三种需求，都能用「往哪个槽插什么 kind 的条目」这一句话表达清楚。
+</div>
+
+<footer>
+  dsh 版本：<code>0.2.0-rc.2</code>（<code>dsh-runtime/0.2.0-rc.2/node_modules/@deepseek-ai</code>，开发者预览版，官方明说会有破坏性变更）·
+  槽位统计：<code>poc/dsh-p0/.out/slotmap-scan.mjs</code> 实跑结果（87 槽）·
+  文档日期：2026-10-11 · 本文档由代码与运行时产物核对后生成，未核对项已标注来源。
+</footer>
+
+</div>
+
+<script>
+// ── kind 切换 ─────────────────────────────────────────────
+(function () {
+  var tabs = document.querySelectorAll('#kindTabs .tab');
+  var panes = document.querySelectorAll('.kindpane');
+  function show(k) {
+    tabs.forEach(function (t) { t.classList.toggle('on', t.dataset.k === k); });
+    panes.forEach(function (p) { p.classList.toggle('on', p.dataset.k === k); });
+  }
+  tabs.forEach(function (t) { t.addEventListener('click', function () { show(t.dataset.k); }); });
+})();
+
+// ── 仲裁演示 ─────────────────────────────────────────────
+(function () {
+  var slot = document.getElementById('arbSlot');
+  var log = document.getElementById('arbLog');
+  var btnPlug = document.getElementById('arbPlug');
+  var btnCrash = document.getElementById('arbCrash');
+  var btnSame = document.getElementById('arbSame');
+  var btnReset = document.getElementById('arbReset');
+
+  var state;
+  function reset() {
+    state = [
+      { id: 'open-in-app', by: '官方', p: 0, abdicated: false },
+    ];
+    render('账本状态：只有官方条目在座。');
+  }
+
+  // 模拟 SlotCore.entriesOfSlot()：同格（同 id）取 priority 最小的非 abdicated 条目（按对象身份比较，同 id 也分得清）
+  function activeEntry(list) {
+    var live = list.filter(function (e) { return !e.abdicated; });
+    if (!live.length) return null;
+    return live.slice().sort(function (a, b) { return a.p - b.p; })[0];
+  }
+
+  function render(msg) {
+    var win = activeEntry(state);
+    slot.innerHTML = '';
+    if (!state.length) {
+      var empty = document.createElement('div');
+      empty.className = 'plabel';
+      empty.textContent = '（空槽：无人渲染，界面此处没有内容）';
+      slot.appendChild(empty);
+    }
+    state.slice().sort(function (a, b) { return a.p - b.p; }).forEach(function (e) {
+      var d = document.createElement('div');
+      var isWin = (e === win);
+      d.className = 'ent' + (isWin ? ' win' : '') + (e.abdicated ? ' out' : '');
+      d.innerHTML = '<span>' + e.by + '条目 <code>id="' + e.id + '"</code></span>' +
+        '<span class="p">priority ' + e.p + (e.abdicated ? ' · 已 abdicate（退回）' : (isWin ? ' · active ✓ 渲染中' : ' · 被遮蔽')) + '</span>';
+      slot.appendChild(d);
+    });
+    if (msg) log.textContent = msg;
+    btnCrash.disabled = !state.some(function (e) { return e.by === '插件' && !e.abdicated; });
+  }
+
+  btnPlug.addEventListener('click', function () {
+    try {
+      if (state.some(function (e) { return e.id === 'open-in-app' && e.by === '插件' && !e.abdicated; })) {
+        throw new Error('slot 同 id 同 priority 已经有在座条目了（真实报错：already has a registration at priority -1 — register at a different priority to shadow it）');
+      }
+      state.push({ id: 'open-in-app', by: '插件', p: -1, abdicated: false });
+      render('插件注册同 id、priority −1 → 升序最小者赢：官方条目被遮蔽（active=false，但仍留在账本上）。');
+    } catch (err) {
+      render('抛错：' + err.message);
+    }
+  });
+
+  btnSame.addEventListener('click', function () {
+    var clash = state.filter(function (e) { return e.p === -1; }).length > 0;
+    if (clash) {
+      render('抛错：single list keyed slot 同 id 同 priority 已经有在座条目 —— "register at a different priority to shadow it (lowest renders)"。');
+    } else {
+      state.push({ id: 'open-in-app', by: '插件', p: -1, abdicated: false });
+      render('注册成功（当前 −1 档无人）。');
+    }
+  });
+
+  btnCrash.addEventListener('click', function () {
+    var e = state.filter(function (x) { return x.by === '插件' && !x.abdicated; })[0];
+    if (!e) return;
+    e.abdicated = true;
+    render('插件组件抛错 → reportEntryError({abdicate:true})：条目被移出本格（一次性），下一个候选顶上 → 官方卡原样回来，聊天内容不丢。注册仍在账本上，disposer 依然可用。');
+  });
+
+  btnReset.addEventListener('click', reset);
+  reset();
+})();
+</script>
+
+</body>
+</html>

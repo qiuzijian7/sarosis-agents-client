@@ -21,6 +21,9 @@ import type { TaskBoardRecord, TaskBoard, BoardLink, TaskAttachment } from '../c
 import { TaskBoardStatus, TaskSource, DEFAULT_BOARD_ID } from '../common/types.js';
 import { AGENT_STUDIO_DATA_PATH_SETTING } from '../common/constants.js';
 import { resolveAgentStudioDataRoot, migrateLegacyAgentStudioData } from '../common/sarosPaths.js';
+// ★ 跨进程写锁（README 5.65）：`taskboard.json` / `boards.json` 与 **dsh 侧看板**共用同一把 `<file>.lock`
+//（dsh 侧在 `dsh-plugins/vssaros-kanban/lib/store.js` 自建同款：`open('wx')` + mtime 破门，默认 5000/15000ms ✓ 同值 ✓）。
+import { acquireFileLock, fileServiceOps, lockResourceFor } from '../common/fileWriteLock.js';
 import { SAROS_CLAW_AGENT_ID } from './providers/tool/kanbanTools.js';
 
 const DATA_FILE_TASKBOARD = 'taskboard.json';
@@ -272,10 +275,19 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 	 * JSON file if the process dies mid-write). Falls back to a plain write.
 	 */
 	private async _atomicWriteFile(uri: URI, content: VSBuffer): Promise<void> {
-		if (this.fileService.hasCapability(uri, FileSystemProviderCapabilities.FileAtomicWrite)) {
-			await this.fileService.writeFile(uri, content, { atomic: { postfix: '.vsctmp' } });
-		} else {
-			await this.fileService.writeFile(uri, content);
+		// ★ 跨进程写锁 + 原子写（README 5.65）：这是 `taskboard.json` 与 `boards.json` 的**唯一咽喉** ✓
+		//（`_writeTasks` / `_writeBoards` 都走它 ✓，正好是清单里 `owns` 声明的那两条路径 ✓）。
+		// 锁：与 dsh 侧看板**同一把** `<file>.lock`（同协议、同默认超时 ✓）⇒ "两个写者、无共享锁"
+		// 这条边界（5.60 点名 ✓）到此消掉 ✓。原子写：只保证"不半截"，**不保证"不丢更新"** ✗（两件事 ✓）。
+		const release = await acquireFileLock(lockResourceFor(uri), fileServiceOps(this.fileService), { label: '看板数据' });
+		try {
+			if (this.fileService.hasCapability(uri, FileSystemProviderCapabilities.FileAtomicWrite)) {
+				await this.fileService.writeFile(uri, content, { atomic: { postfix: '.vsctmp' } });
+			} else {
+				await this.fileService.writeFile(uri, content);
+			}
+		} finally {
+			await release();
 		}
 	}
 

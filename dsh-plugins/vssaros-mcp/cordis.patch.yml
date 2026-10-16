@@ -1,0 +1,4 @@
+- insert:
+    - id: vssaros-dsh-mcp
+      name: '@vssaros/dsh-mcp'
+      config: {}

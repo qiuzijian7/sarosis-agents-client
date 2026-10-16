@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>dsh 壳契约（不依赖 VsSaros 拼装 web / desktop）</title>
+<style>
+	:root { color-scheme: light dark; --h: #4aa3ff; --k: #999; --ok: #2ea043; --warn: #d29922; }
+	body { margin: 0 auto; padding: 28px 22px 60px; max-width: 1080px; font: 14px/1.75 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; }
+	h1 { font-size: 22px; margin: 0 0 6px; }
+	h2 { font-size: 17px; margin: 30px 0 8px; padding-top: 10px; border-top: 1px solid rgba(128,128,128,.28); }
+	h3 { font-size: 15px; margin: 18px 0 6px; }
+	code, pre { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
+	table { border-collapse: collapse; width: 100%; margin: 8px 0 4px; }
+	th, td { border: 1px solid rgba(128,128,128,.30); padding: 6px 8px; text-align: left; vertical-align: top; }
+	th { background: rgba(128,128,128,.10); font-weight: 600; }
+	.small { color: var(--k); font-size: 12.5px; }
+	.v { color: var(--ok); font-weight: 600; }
+	.q { color: var(--warn); font-weight: 600; }
+	.box { border: 1px solid rgba(128,128,128,.30); border-radius: 6px; padding: 10px 12px; margin: 10px 0; }
+	.warnbox { border-left: 4px solid var(--warn); padding-left: 10px; }
+	.okbox { border-left: 4px solid var(--ok); padding-left: 10px; }
+	a { color: var(--h); }
+</style>
+</head>
+<body>
+
+<h1>dsh 壳契约 —— 一个**不依赖 VsSaros** 的壳要满足什么</h1>
+<p class="small">
+	2026-10-12 · 与 <a href="dsh-tool-skill-mcp-report.html">dsh 工具 / 技能 / MCP 机制报告</a> 同族 ·
+	本文只写"**契约**"：壳必须提供什么、证据在哪、不做会怎样 ✗。<br>
+	读者：要拿 dsh 拼自己的 web / desktop 前端的人（含"只复用 dsh、不复用 VsSaros"这条路）。
+</p>
+
+<div class="box okbox">
+	<strong>可信度约定（先说清证据等级，免得把猜测当契约 ✗）</strong><br>
+	· <span class="v">✓ 已核对</span>：本次实测读过源码 / 跑过命令 / 有探针覆盖（文里会写清是哪种）。<br>
+	· <span class="q">◻ 待核对</span>：只从文件名 / 守卫断言 / 别人的文档推得，**未逐行读过** —— 落地前请自己核一眼 ✓。<br>
+	· 工具面的数字**一律不手写**：见 <code>dsh-plugins/tools-snapshot.json</code>（机器生成 ✓，由
+	<code>dshHarness/test/common/dshToolSnapshot.test.ts</code> 钉住 ✓）。手写的清单一定会过期 ✗。
+</div>
+
+<h2>0. 一句话</h2>
+<p>
+	dsh 是一个**被壳启动的进程**（"boot a DeepSeek Harness profile —— an ordered stack of
+	plugin-bundle patch layers under your own overrides"，<code>dsh --help</code> <span class="v">✓ 已核对</span>）。
+	壳要做的事只有四类：**① 把它抬起来**、**② 跟它握手（控制桥）**、**③ 满足它反向问你的事（ide.request）**、
+	**④ 托管它自己产出的页面**。其余全是 dsh 内部（插件、工具、技能、MCP、审批默认值）✓。
+</p>
+
+<h2>1. 进程与 profile（壳必须能拼出一次启动）</h2>
+<table>
+	<tr><th>契约</th><th>壳必须提供</th><th>证据</th><th>不做会怎样 ✗</th></tr>
+	<tr>
+		<td>启动命令行</td>
+		<td><code>dsh --profile &lt;name&gt; [--patch &lt;yml&gt; …] [app-args…]</code>；<code>--dump-config</code> 自检组合；<code>--from-default-profile &lt;tpl&gt;</code> 建新 profile</td>
+		<td><code>dsh --help</code> <span class="v">✓ 已核对</span>（实测输出见探针 p3-23/24/25）</td>
+		<td>壳会去猜"组合对不对"，而 dsh 已经把答案（组合后的树）给你了 ✓</td>
+	</tr>
+	<tr>
+		<td>数据根与 profile 根</td>
+		<td><code>DSH_HOME</code>（profile / 会话 / 凭据都在这下面）；插件用它自己的 <code>dataRoot</code> 三链（<code>config → 环境变量 → ~/.vssaros</code>）</td>
+		<td><code>poc/dsh-p0/scripts/lib.mjs</code> 的 <code>DSH_HOME</code>；零覆盖层也能跑 <span class="v">✓ 已在探针验证（p3-23）</span></td>
+		<td>dev / 生产串数据根（读写到别人的库）✗</td>
+	</tr>
+	<tr>
+		<td>插件安装（幂等）</td>
+		<td>把插件目录 stage 到 <code>&lt;profile&gt;/.vssaros/plugins/&lt;name&gt;-&lt;version&gt;</code>，再 <code>dsh plugin --profile &lt;p&gt; add file:&lt;dir&gt;</code></td>
+		<td><code>dsh --help</code> 的 <code>dsh plugin … add</code> <span class="v">✓</span>；staging 口径在 <code>dshHostSupervisor</code> <span class="q">◻</span>，探针里逐字复刻过 <span class="v">✓（p3-03 / p3-04 / p3-27）</span></td>
+		<td>改了插件代码却不换版本 ⇒ 装上去的还是旧的（dsh 按版本解析 ✓）—— 探针的"逐字节一致"断言就是为这个 ✗</td>
+	</tr>
+	<tr>
+		<td>覆盖层（可选）</td>
+		<td>需要注入配置时，写 <code>- id: &lt;行 id&gt; / config:</code> 的 patch 文件；**同一行只许被一份覆盖层打**（第二份会把整份 config 替换掉 ✗）</td>
+		<td><code>dshHarness/common/dshHostConfig.ts</code> 的 <code>renderHostOverlays()</code> 是**单一真源** <span class="v">✓ 有守卫断言</span>（"supervisor 必须把 hostConfig 交给它"）</td>
+		<td>两份覆盖层打同一行 ⇒ 先写的键**静默消失** ✗（报告 2.7 的实测）</td>
+	</tr>
+</table>
+
+<h2>2. 控制桥（壳 ↔ dsh 的唯一双向通道）</h2>
+<table>
+	<tr><th>契约</th><th>壳必须提供</th><th>证据</th><th>不做会怎样 ✗</th></tr>
+	<tr>
+		<td>握手</td>
+		<td>一条本机通道（管道 / 端口）+ **token**；协议版本要能对上</td>
+		<td><code>dshHarness/common/dshBridgeProtocol.ts</code>、<code>electron-main/dshBridgeClient.ts</code> <span class="q">◻</span>；端到端探针 <code>p0-04</code>、<code>p3-20</code> <span class="v">✓</span></td>
+		<td>桥接不上 ⇒ 反向能力（12 个 IDE 工具）整片不可用 ✓</td>
+	</tr>
+	<tr>
+		<td>模型供应商注入</td>
+		<td><code>providers.sync</code>：路由名 <code>vssaros-&lt;id&gt;</code> + 每条路由的 <code>{ api, baseURL, displayName, models[], credentialRef? }</code>；**凭证只传引用名**（<code>VSSAROS_&lt;ID&gt;_KEY</code>），明文不进 dsh 配置 ✓</td>
+		<td><code>dshHarness/common/dshProviderSyncPlan.ts:27-53</code> <span class="v">✓ 已读</span></td>
+		<td>把明文 key 写进 dsh 配置 ⇒ 泄漏面扩大 ✗；不注入 ⇒ 会话没有可用模型 ✓</td>
+	</tr>
+	<tr>
+		<td>免凭据路由（本地端点的合法态）</td>
+		<td>pi-ai 的 <code>providers</code> 字典**就是它的 config 面**；**已安装目录路由**可省略 <code>apiKeyEnv</code>（configured-but-keyless ✓）；**手工声明的路由必须给 key** ✗</td>
+		<td><code>@deepseek-ai/dsh-llm-pi-ai/README.zh.md</code> <span class="v">✓ 已读</span>；手工路由那条是**实测**的 <span class="v">✓（p3-27）</span></td>
+		<td>以为"不写 key 就能连本地端点" ⇒ 报 <code>PI_AI_ERROR: No API key for provider</code> ✗</td>
+	</tr>
+</table>
+
+<h2>3. 反向通道 <code>ide.request</code>（dsh 反过来问壳）</h2>
+<table>
+	<tr><th>契约</th><th>壳必须提供</th><th>证据</th><th>不做会怎样 ✗</th></tr>
+	<tr>
+		<td>能力注册与**按插件授权**</td>
+		<td>哪些插件能调哪些 IDE 能力（最小授权面）；声明在壳侧，dsh 侧只有请求</td>
+		<td><code>dshHarness/common/dshIdeAuthorization.ts</code> / <code>dshIdeCapabilities.ts</code> / <code>dshIdeClaims.ts</code> / <code>dshIdeTargeting.ts</code>、<code>electron-main/dshIdeRequestGate.ts</code> <span class="q">◻</span>（有守卫：<code>dshIdeAuthorization.test.ts</code> / <code>dshIdeToolContract.test.ts</code> <span class="v">✓</span>）</td>
+		<td>任一插件都能驱动任意 IDE 能力 ⇒ "按清单逐项授权"退化成整族放行 ✗（报告 2.6）</td>
+	</tr>
+	<tr>
+		<td>拒绝语义</td>
+		<td>壳拒绝时必须**明确失败**（不是静默 no-op）</td>
+		<td><span class="q">◻ 未逐条核对</span>；dsh 官方对审批的口径是 fail-closed（"没有审批支持的部署 degrade to deny"）<span class="v">✓ 报告 5-1</span></td>
+		<td>"工具没反应"这类静默故障最难查 ✗</td>
+	</tr>
+</table>
+
+<h2>4. 页面托管与鉴权（dsh 自己产出的 UI）</h2>
+<table>
+	<tr><th>契约</th><th>壳必须提供</th><th>证据</th><th>不做会怎样 ✗</th></tr>
+	<tr>
+		<td>前缀路由</td>
+		<td>dsh 的 webServer 把 <code>/x/&lt;模块&gt;/</code> 前缀路由交给插件；壳只要"把这些 URL 显示出来"</td>
+		<td>各插件的 <code>ctx.inject(['webServer','connection'], …)</code> <span class="v">✓</span>（skills / kanban / kb / memory / mcp 等）；探针铺满 <span class="v">✓（p3-01/08/18/22…）</span></td>
+		<td>页 404 ⇒ "装了但看不见" ✗</td>
+	</tr>
+	<tr>
+		<td>鉴权栅栏</td>
+		<td>插件侧用 <code>connection.requestRejection(req)</code> 拒绝匿名请求 ⇒ 壳必须**带上同源 Cookie / 令牌**去加载页面（不是裸 iframe ✓）</td>
+		<td>探针里"匿名 401 / 带 Cookie 200"两侧都断言过 <span class="v">✓（如 p3-04）</span></td>
+		<td>裸加载 ⇒ 全是 401，页面上什么都没有 ✗</td>
+	</tr>
+	<tr>
+		<td>主题</td>
+		<td>把宿主主题透给 dsh 页面（<code>--vscode-*</code> 类 token 的来源）</td>
+		<td><code>dshHarness/common/dshThemeBridge.ts</code> <span class="q">◻</span></td>
+		<td>页面在深色壳里发白 ✗（观感问题，不影响功能）</td>
+	</tr>
+</table>
+
+<h2>5. 会话与事件（"看得见模型在干活"）</h2>
+<table>
+	<tr><th>契约</th><th>壳必须提供</th><th>证据</th><th>不做会怎样 ✗</th></tr>
+	<tr>
+		<td>会话投影消费</td>
+		<td>订阅 dsh 的会话事件（turn / 消息 / 工具调用 / 审批）并把它们渲染出来；dsh 原生界面（<code>dsh-web-app</code>）自带走一份，自研壳要么复用它、要么实现等价消费</td>
+		<td><code>dshHarness/common/dshChatSession.ts</code>、插件 <code>vssaros-chat-surface</code> <span class="q">◻</span></td>
+		<td>壳里"看不到推理与工具过程"⇒ 用户以为它卡住 ✗</td>
+	</tr>
+	<tr>
+		<td>工作区登记</td>
+		<td>告诉 dsh 当前工作区（<code>workspaceId</code> / 路径），否则各插件按自己的兜底口径猜</td>
+		<td><code>dshHarness/electron-main/dshWorkspaceSync.ts</code>、探针 <code>p0-22</code> <span class="v">✓</span></td>
+		<td>看板 / 图谱 / 记忆挂到错的 workspace ✗</td>
+	</tr>
+</table>
+
+<h2>6. 多实例与升级</h2>
+<table>
+	<tr><th>契约</th><th>壳必须提供</th><th>证据</th><th>不做会怎样 ✗</th></tr>
+	<tr>
+		<td>租约</td>
+		<td>同一数据根上只有一个 Host（否则插件抢同一批文件）</td>
+		<td><code>common/dshHostLease.ts</code> + <code>electron-main/dshHostLeaseStore.ts</code> <span class="q">◻</span>；报告 5.4 的全链路里有"多实例租约" <span class="v">✓</span></td>
+		<td>两个 Host 同时写看板 / 记忆 ⇒ 丢更新 ✗</td>
+	</tr>
+	<tr>
+		<td>换代</td>
+		<td>插件换了版本必须**换进程**（不许静默复用常驻 Host）</td>
+		<td>守卫断言"插件换版本后必须换进程" <span class="v">✓（dshPluginPackages）</span>；<code>electron-main/dshUpgradeGate.ts</code> <span class="q">◻</span></td>
+		<td>升级后行为还是旧的 ⇒ "我改了怎么没生效" ✗</td>
+	</tr>
+</table>
+
+<h2>7. 工具面（数字一律来自快照，不手写）</h2>
+<p>
+	当前快照：<strong id="tools-total">见 dsh-plugins/tools-snapshot.json</strong><span class="v">✓ 机器生成</span>
+	<span class="small">（写这份文档时的读数是「10 个插件 / 49 个工具」，2026-10-12 —— **这个数字会过期，以快照文件为准** ✓；
+	下面 §8 的偏差发现也是那次读数，别把它当长期数值 ✗）</span>。
+	每个插件能被 <code>ctx.tools.register</code> 的工具名 / 必填参数 / 参数名集合 / 描述指纹都在里面 ✓；
+	**新增、改名、改参数、改描述**都会让
+	<code>dshHarness/test/common/dshToolSnapshot.test.ts</code> 变红 ⇒ 必须显式
+	<code>node dsh-plugins/tools-snapshot.mjs --write</code> 并把 diff 一起进 PR ✓。
+</p>
+<p class="small">
+	为什么强调"不手写"：报告 2.x 的表是**手工测绘**的，本次用快照一跑就发现了两处偏差 ✗ ——
+	真实是 **10 个插件 / 49 个工具**（报告口径是"7 个插件 / 43 个"，漏了 <code>vssaros-browser</code>(1)
+	与 <code>vssaros-unreal</code>(4)），并且抓到 **5 处跨插件重名**（见下）✓。
+</p>
+
+<h2>8. 已知边界（照抄报告 + 本次新增，别当成 bug 才查）</h2>
+<div class="box warnbox">
+	<strong>① 平面错位（报告 2.7 ⑤）：机制已查清，落地方案与报告草图**不同**（2026-10-12 实测）</strong> ✗：<br>
+	<strong>现象</strong>：官方把工具下移到 per-agent（preset）plane，让 preset 成为"能力预算开关"；我们的模块行在
+	<strong>host plane</strong> ⇒ 任何 preset 下**全部工具都可见** ✗（minimal 的用户实际拿到全量工具面 ✓）。<br>
+	<strong>官方机制（三件事，都实测过）</strong>：<br>
+	· preset 就是**一整行**：<code>- id: preset-standard / name: '@deepseek-ai/dsh-agent-preset' / config.plugins: [完整行列表]</code>
+	（<code>dsh-web-app/presets/standard.patch.yml</code> ✓）；host 级同名行统一 <code>disabled: true</code> ✓。
+	<strong>会话在创建时选一个 preset，preset 身份（工具/模型/skills）首回合后锁定</strong> ✓。<br>
+	· ⚠ <strong>`--patch` 打 preset 是"整份替换 config"</strong> ✗（实测：给 <code>preset-standard</code> 只写一行我们的模块，
+	dump 出来的 <code>config.plugins</code> 里**官方那些行全没了** ✗）⇒ 报告 7.3 说的"在 standard / cordis 的 preset 里
+	各 insert 一份我们的行"**不能直接照做** ✗ —— 只能**生成整份 preset**（含官方行 + 我们的行）✓。<br>
+	· ✅ <strong>官方有按 agent 限制工具面的原生机制</strong>：<code>ctx.tools.restrict({ allow?, deny? })</code> ——
+	"对单个 agent **继承的全局工具**应用允许或拒绝掩码，掩码取交集，作用域注册保持可见，dispose 时解除" ✓
+	（<code>dsh-tools/lib/types/index.d.ts:505-513, 637-644</code>）；隐藏工具会为该 agent **移除其全部 schema 成本** ✓
+	（这正是"能力预算"要的效果 ✓）。<strong>而且我们已经在用它</strong>：<code>vssaros-agents</code> 的
+	<code>.agent.md</code> 工具 allowlist 走的就是这条 ✓。<br>
+	<strong>⇒ 可行的落地方案（待拍板，工作量 ≥ 2 轮）</strong>：① 生成一份"我们的 preset"（从官方 preset 复制 + 追加我们的行 ✓，
+	并配一条**守卫**比对官方 preset ⇒ 官方改了会红 ✓）；② 用 <code>restrict</code> 在每个 preset 作用域里按需掩掉我们的工具 ✓
+	（工具名清单可直接取自本页 §7 的快照 ✓ ⇒ 不用手写 ✗）；③ 把 <code>dsh-agent-preset-registry</code> 的
+	<code>config.default</code>（现为 <code>standard</code> ✓）指向我们的 preset ⇒ 默认会话才拿到我们的工具 ✓ + 掩码生效 ✓；
+	④ 新增"每个 preset 的工具面 = 期望集合"守卫 ✓。<br>
+	⚠ <strong>残差（必须一并接受，否则会以为没修好）</strong> ✗：用户**显式选官方 <code>minimal</code>** 时，那个 preset 里
+	<strong>没有我们的行</strong> ⇒ 我们的 host-plane 工具仍会全量可见 ✗ —— `restrict` 是**按作用域**的，
+	host-plane 的注册不在任何 preset 作用域内，掩不到 ✗。要彻底关掉只剩"把行真正下移"（或让官方 preset 也包含我们的行 ✗）。
+	⇒ 这条要么接受为残差并写进用户可见说明 ✓，要么改走"把工具行从 host plane 下移"的大改造 ✗。
+</div>
+<div class="box warnbox">
+	<strong>③ B1「默认 preset 切换」：补丁层已落地，运行层未验（2026-10-12）</strong> ✗：<br>
+	<strong>已做</strong> ✓：<code>dsh-plugins/vssaros-agents/cordis.patch.yml</code> 末尾加一条<strong>顶层</strong> patch 行
+	<code>- id: agent-preset-registry</code> / <code>config.default: vssaros-standard</code>（版本 0.1.8 → 0.1.9）；
+	守卫 <code>poc/dsh-p0/scripts/p3-29-preset-default.mjs</code>（<strong>13/13</strong> ✓，含"真实 profile 的离线干跑" ⇒ 那一行确实变成我们的 ✓）。
+	写法要点：必须是<strong>顶层 <code>- id:</code></strong>（= patch 已有行 ✓）；写成 <code>insert:</code> 会<strong>多插一个注册表</strong> ✗。<br>
+	<strong>★ 但 headless 环境验证不了它</strong> ✗：新探针 <code>p3-30-preset-delivers-tools.mjs</code> 把来源<strong>隔离</strong>开
+	（skills 的 host 行打 <code>hostHalf: true</code> 让出工具 ⇒ <code>skill_search</code> 只可能来自 preset 内部那一行 ✓）⇒
+	A（默认指我们的）/ B（不插注册表）/ C（<code>default</code> 指<strong>不存在的</strong> preset）三次的工具表<strong>完全一样</strong>（55 个 ✓）
+	⇒ <strong>headless app 根本不读这个注册表</strong> ✗（它 <code>--help</code> 里没有任何 preset 参数 ✓，
+	该 profile 里也没有 UI 选择器行 <code>ui-agent-preset</code> ✓ —— 两者都属 web/desktop 平面 ✓）。<br>
+	<strong>权威佐证（键没选错）</strong> ✓：<code>dsh --dump-config-schema</code> 里该行 config 的定义（<code>$defs/config96</code>）显示
+	<code>default</code> 是 <strong>required</strong> ✓、旁边还有 volatile 的 <code>selectedDefault</code>（运行时当前选中 ✓）⇒ 开关就是它 ✓。<br>
+	<strong>★ 顺序硬约束（有实测支撑，别倒过来）</strong> ✗：<strong>在 app 里验证 ① 之前，绝不能做"host 行让出工具"</strong> ——
+	host 行一旦让出而 preset 又没被选中，<strong>app 里我们的工具会整段消失</strong> ✗✗。<br>
+	<strong>交接清单（三条；前两条在 app / src 侧）</strong>：<br>
+	1. ✅ <strong>Host 启动时把 <code>VSSAROS_DATA_ROOT</code> 写进子进程 env</strong>（<strong>已做 2026-10-12</strong> ✓）。位置：<code>electron-main/dshHostSupervisor.ts</code> 的
+	<code>_doStart()</code> 里那句 <code>sanitizedEnv({ … })</code>（<code>:514</code> 附近 ✓，<code>options.dataRoot?.trim()</code> → <code>VSSAROS_DATA_ROOT</code> ✓；
+	同一 <code>env</code> 被后面的 <code>spawn</code> 使用 ✓）。守卫：<code>p3-29</code> 的"数据根接线在场"+"插件侧口径"（15/15 ✓，含反向突变 ✓）。
+	为什么必需 ✓：<code>VSSAROS_DATA_ROOT</code> <strong>全仓没有任何地方在设</strong> ✗，而 preset 内部的行<strong>拿不到</strong> VsSaros 的
+	<code>--patch</code> 注入（实测：外部补丁打不到 preset 里的行 ✓）⇒ 不接这条，工具挪到 preset 面后会<strong>读错数据根</strong> ✓✗
+	（<code>dshCli.ts:421</code> / <code>dshHarness.ts:351</code> 记的"dev 读生产"事故正是这类 ✓）。
+	验证方式（已有 ✓）：<code>node poc/dsh-p0/scripts/p3-23-env-only-root.mjs</code> 的 <strong>L3</strong>（<strong>12/12</strong> ✓ —— 真回合里
+	<code>skill_search</code> 的工具结果出现 env 根下的标记技能 <code>env-root-marker</code> ✓，反向对照换个根则不出现 ✓；反向突变也做了 ✓）。<br>
+	2. ✅ <strong>在 app 平面验证 ①</strong>（<strong>已做 2026-10-12</strong> ✓，而且**不必人工点一次** ✓）：新增探针
+	<code>poc/dsh-p0/scripts/p3-31-session-selected-preset.mjs</code>（<strong>5/5</strong> ✓）——
+	它<strong>扮演 IDE</strong>（手法同 <code>p3-12</code> ✓）发一条<strong>不带</strong> <code>agentPreset</code> 的
+	<code>session.start</code> ✓，读返回值里的 <code>agentPreset</code>（协议注释："
+	<em>会话实际运行的 preset</em>" ✓）⇒ 真机回 <code>vssaros-standard</code> ✓✓；
+	并带一条<strong>对照</strong>：显式传 <code>standard</code> ⇒ 回 <code>standard</code> ✓
+	（证明该字段反映真实选择、不是恒返回同一个值 ✗）。<br>
+	⇒ <strong>B1 ② 的前置已全部满足</strong> ✓（① 的运行层 ✔ + 数据根 env ✔）⇒ 第 3 条可以开始 ✓。
+	<strong>语义已由运行时源码证实</strong> ✓：<code>@deepseek-ai/dsh-agent-preset-registry/lib/index.js</code> 里
+	<code>get defaultId() { return this.config.selectedDefault.get() ?? this.config.default; }</code>，
+	注释原话 "<em>Default preset for a subsequently created session.</em>" ✓ ⇒ <strong>新建会话</strong>取它就是我们的 preset ✓
+	（被 UI 的 <code>selectedDefault</code> 覆盖 ✓，那是用户显式选过的 ✓）。
+	⇒ headless 里"被忽略"不是语义问题 ✗，而是 headless app 创建会话时**显式给了 preset**（绕过 <code>defaultId</code> ✓）。
+	在此之前 ② 静态待命 ✓（此时工具仍由 host 行提供 ✓，切换不会让任何工具消失 ✓）。<br>
+	3. <strong>B1 ② 的一次性落地</strong>（本侧，清单已备好 ✓）：8 个插件把"注册工具"改成<strong>显式 opt-in</strong>
+	（preset 内部的行 opt-in ✓、host 行保持默认不开 ✓）+ <code>preset-vssaros.rows.yml</code> 的 8 行加
+	<code>config: { registerTools: true }</code> + <code>preset-sync.mjs --write</code> 重生成 + 快照生成器改用 opt-in 取工具面 +
+	<code>p3-28</code>/<code>p3-29</code> 判据同步 + 受影响探针（<code>p3-03</code>/<code>p3-27</code> 等要"模型真调我们工具"的）补 opt-in。
+	回滚 = <code>git revert</code>（改动全在 <code>dsh-plugins/</code> 与 <code>poc/</code> ✓）。<code>p3-30</code> 应在那时转绿并登记进 <code>run-all.mjs</code> ✓。<br>
+	<strong>两条新测到的语义（做 ② 时必须用上）</strong> ✓：① <code>--patch</code> <strong>只替换 <code>config</code></strong> ✓，
+	<strong>行级兄弟键（<code>disabled</code> / <code>name</code>）不会被冲掉</strong> ✓（实测：<code>disabled: true</code> 能活过 app 的 dataRoot 覆盖层 ✓）；
+	② <strong>外部补丁打不到 preset 内部的行</strong> ✓ ⇒ 那里是"免疫区" ✓（所以开关只能放在 preset 行里 ✓）。
+</div>
+<div class="box warnbox">
+	<strong>② 装配期一次性（报告 R3，固有约束）</strong> ✗：组合行是静态的 ⇒ 改配置基本要**重启 Host**；
+	只能靠"说清 + 重启"管理预期 ✓。
+</div>
+<div class="box warnbox">
+	<strong>③ 技能 <code>activation: always</code> 无等价物（报告 R8）</strong> ✗：dsh 的技能来源只能
+	"提供候选"，**注入时机由消费者决定** ⇒ "每轮自动注入正文"在 dsh 侧不存在 ✓（dsh 侧语义 = 目录可见 + 模型自取 ✓）。
+</div>
+<div class="box warnbox">
+	<strong>④ 5 处跨插件工具重名（2026-10-12 本快照首次发现）—— 已闭环为"登记 + 不变量" ✓</strong>：
+	<code>browser</code>（<code>vssaros-browser</code> + <code>vssaros-ide</code>）与
+	<code>unreal_dump</code> / <code>unreal_find_asset</code> / <code>unreal_health</code> / <code>unreal_help</code>
+	（<code>vssaros-ide</code> + <code>vssaros-unreal</code>）。它们是"**同一契约的两种实现**"（直连 CDP/HTTP ↔ 走 IDE 反向通道）✓。<br>
+	<strong>为什么不活</strong>：随包自动安装的判据只有一份 —— 插件自己的 <code>vssaros.module</code>（守卫
+	<code>dshPluginPackages</code> 的原话 ✓）；实测 <code>vssaros-browser</code> / <code>vssaros-unreal</code> 的清单里
+	**没有 <code>module</code>** ✗，且 <code>dsh --profile vssaros --dump-config</code> 里只有 <code>vssaros-ide</code> ✓
+	⇒ 它们不会与 ide 同装 ⇒ **顶不掉谁** ✓。<br>
+	<strong>但重名是静默的</strong>：dsh 的 <code>ctx.tools.register</code> 重名 = **后注册者胜**，没有报错 ✗
+	⇒ 一旦有人给这两个插件加上 <code>module</code>（或手工同装），一个能力会**悄悄消失** ✓。
+	⇒ 已把它变成**机器校验的不变量**：<code>dshToolSnapshot.test.ts</code> 的例外表里，每条至少有一方必须是
+	"非模块插件"；给它们加 <code>module</code> 的那一刻守卫**立刻红** ✓（已用突变实测 ✓）。
+</div>
+<div class="box warnbox">
+	<strong>⑤ 技能**只读**：dsh 侧没有 <code>skill_manage</code>（有意，2026-10-12 决策）</strong> ✓：
+	dsh 侧的技能面 = <strong>来源</strong>（<code>vssaros-skills</code> 注册 provider ⇒ 目录可见 ✓）
+	+ <strong>检索</strong>（<code>skill_search</code>，BM25 ✓）+ <strong>加载</strong>（dsh 原生 <code>skill</code> 工具 ✓）
+	—— **没有**任何写工具 ✓。IDE 侧有 <code>SkillManagerTool</code>（create/edit/patch ✓），但那是**用户在 UI 里的动作** ✓。<br>
+	<strong>为什么不搬</strong>：<code>SKILL.md</code> 是**指令**不是数据 ✓ —— 模型写进去的内容，会成为**后续会话的可信指令**
+	⇒ 这是一条**持久化提示注入面** ✗（比"写一个文件"更难挽回，同 memory 那条闸的理由但更重 ✓）。<br>
+	<strong>若将来要开（建议顺序）</strong>：① 只允许写"草稿区"（<code>&lt;数据根&gt;/skills/.draft/</code>），用户显式提升才生效 ✓；
+	② 即使直写，也要 <strong>强制 <code>activation: manual</code></strong>（禁止模型自建的技能走 <code>auto/always</code> ⇒
+	不进后续回合的上下文 ✓）；③ 目标路径限定在 <code>&lt;数据根&gt;/skills/</code> 内（防穿越 ✓）+ 过审批闸（<code>ask</code> ✓）+ 技能页标"由 Agent 创建" ✓。
+</div>
+
+<h2>9. 相关文档与产物</h2>
+<ul>
+	<li><a href="dsh-tool-skill-mcp-report.html">dsh 工具 / 技能 / MCP 机制报告</a> —— 机制与取舍的真源（含 2.7 官方 vs 我们、7.3 建议清单）✓</li>
+	<li><a href="dsh-modules-conformance.html">dsh modules conformance</a> / <a href="dsh-slot-mechanism.html">slot 机制</a> <span class="q">◻ 未逐篇读</span></li>
+	<li><code>dsh-plugins/tools-snapshot.json</code>（机器生成）+ <code>dsh-plugins/tools-snapshot.mjs</code>（生成器 / 检查器）✓</li>
+	<li><code>dsh-plugins/check-host-config.mjs</code> —— 配置契约与"同形但各存一份"的拷贝一致性（14 项契约 + 2 组拷贝）✓</li>
+	<li>探针网：<code>poc/dsh-p0/scripts/</code>，入口 <code>run-all.mjs</code> ✓（本文里每条"已在探针验证"都能在 <code>--fast</code> 或全量里跑到 ✓）</li>
+</ul>
+
+</body>
+</html>

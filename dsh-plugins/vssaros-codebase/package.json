@@ -1,0 +1,71 @@
+{
+  "name": "@vssaros/dsh-codebase",
+  "version": "0.6.67",
+  "description": "VsSaros codebase-graph module for DeepSeek Harness: reads a code graph inside the Host process (IDE artifact <workspace>/.codebase-memory/, or its own shadow artifact) and exposes the codebase_* tools plus a read-only page. P0 (2026-10-12): lib/parser/ proves the Host (Node) can host tree-sitter in worker_threads. P1 (2026-10-12): lib/shadow.js + lib/indexService.js + codebase_index (approval-gated) write a shadow graph (regex-level: files + top-level symbols) into <indexDir>/codebase-index/<ws-hash>/, never into the workspace; the reader prefers it. P2 (2026-10-12): real tree-sitter parsing is IN — accurate symbols/line numbers plus CALLS/USAGE/INHERITS/IMPLEMENTS edges via parser: treesitter (P7, 2026-10-13: the default became `auto` — tree-sitter when the vendored assets are available, with an honest `degraded` report when they are not; the chosen tier AND the last measured build time land in index-meta.json). P3/P3-b/P4: full vendored wasm (16 grammars), freshness discipline (stale shadow yields to a newer IDE graph), indexWatch. Ownership: indexTarget: workspace writes <ws>/.codebase-memory/ behind the shared index.lock. Page (0.6.16+): sidebar summary + entry that opens the editor detail page, an editor page laid out like the original Codebase Memory pane (honest about what is NOT ported), and a read-only graph browser plus a shape-query subset (explicitly not Cypher). P6/P8/P9/P10/P11 (2026-10-13/14): 21 tools — coverage (set-difference only; explicitly NOT per-file reasons) / delete_project / export+import artifact (import is untrusted input: verify BEFORE writing, then read back) / text search (search_code + search_files; filesystem, no index needed) / manage_adr (ADRs live in the workspace .codebase-memory/adr) / a shape-query tool (the only gate that branches on the action) — plus PORT_AUDIT: all 18 upstream tools accounted for (16 mapped, 1 replaced-language, 1 written-up conclusion), and the page recomputes that audit instead of trusting a hardcoded list.",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/client.js",
+    "lib/pageShell.js",
+    "lib/indexer.js",
+    "lib/store.js",
+    "lib/shadow.js",
+    "lib/indexService.js",
+    "lib/watcher.js",
+    "lib/shapeQuery.js",
+    "lib/core/codebase.js",
+    "lib/parser/resolve.js",
+    "lib/parser/facts.js",
+    "lib/parser/extract.js",
+    "lib/parser/pool.js",
+    "lib/parser/worker.js",
+    "bin/vendor-assets.mjs",
+    "vendor",
+    "cordis.patch.yml"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/dsh": ">=0.1.7-0 <0.3.0-0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": [
+        "./cordis.patch.yml"
+      ]
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-slots"
+      ]
+    }
+  },
+  "vssaros": {
+    "manifestVersion": 1,
+    "module": "codebase",
+    "activityBar": {
+      "containerId": "vssaros.dsh.codebase",
+      "title": {
+        "zh": "代码库",
+        "en": "Codebase"
+      },
+      "icon": "codicon:type-hierarchy",
+      "order": 113
+    },
+    "view": {
+      "kind": "page",
+      "route": "/x/codebase/"
+    },
+    "ideCapabilities": [
+      "openFile"
+    ],
+    "legacyCounterpart": "vssaros.dsh.codebase"
+  },
+  "license": "MIT"
+}

@@ -1116,6 +1116,10 @@ select.binding-input option {
 	background: #ffffff;   /* 二维码必须在白底上才可扫（二维码规范要求浅底深码） */
 	border-radius: 4px;
 	padding: 6px;
+	/* ★ 2026-09-25：限制最大显示尺寸并保持像素锐利（理由同 agentChat.css 的 .chat-larkcli-qr-img）。 */
+	max-width: 240px;
+	max-height: 240px;
+	image-rendering: pixelated;
 }
 .larkcli-qr-status {
 	font-size: 12px;

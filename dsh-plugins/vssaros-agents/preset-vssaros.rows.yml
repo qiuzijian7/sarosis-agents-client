@@ -1,0 +1,41 @@
+          # ── 我们的行（R13：把"给模型用的"能力放进 preset plane）──────────────────────────────
+          # 与官方同一套做法：preset 的 `config.plugins` 里列出这个 agent 该有的行 ✓。
+          # ⚠ 缩进必须与官方 preset 的行一致（**10 空格** ✓，注释行也一样 ✗）：
+          #   0 = `- insert:` / 4 = `- id: preset-…` / 8 = `config:` `id:` `order:` `plugins:` / 10 = 行与注释 ✓。
+          #   **注释比后续项浅会被 YAML 判为 bad indentation** ✗ —— 2026-10-12 真机安装时就栽在这（离线字符串比对看不出来 ✗），
+          #   现已由守卫 `dshPresetPlane.test.ts` 的"YAML 缩进下限"断言盯住 ✓，不用等真机 ✓。
+          # 行 id 与 `dsh-plugins/*/cordis.patch.yml` 里的同名（同 id 在两层各自注册、按作用域取用 ✓）。
+          # ⚠ 目前这 8 行指向的模块**同时**还在 host plane 上挂着 ⇒ 一旦有会话选中本 preset，
+          #   它们会被**重复挂载** ✗（页面/服务重复 ✓）。⇒ 把默认 preset 切过来（第 ③ 步）之前，
+          #   必须先让 host 那几行 `disabled: true` ✓。
+          # ⚠ 本名单要**与工具面快照对齐**：`tools-snapshot.json` 里"注册了工具的**模块**插件"改了，
+          #   这里必须跟着改 —— 守卫 `dshPresetPlane.test.ts` 会红 ✓（不用靠人记 ✓）。
+          - id: vssaros-skills
+            name: '@vssaros/dsh-skills'
+          - id: vssaros-kanban
+            name: '@vssaros/dsh-kanban'
+          - id: vssaros-kb
+            name: '@vssaros/dsh-kb'
+          - id: vssaros-memory
+            name: '@vssaros/dsh-memory'
+          - id: vssaros-media
+            name: '@vssaros/dsh-media'
+          - id: vssaros-workflow
+            name: '@vssaros/dsh-workflow'
+          - id: vssaros-codebase
+            name: '@vssaros/dsh-codebase'
+          - id: vssaros-dashboard
+            name: '@vssaros/dsh-dashboard'
+          - id: vssaros-ide
+            name: '@vssaros/dsh-ide'
+          # agents 的"只挂工具"行（2026-10-13，P2 生命周期工具）：`toolsOnly: true` ⇒  preset 内这次挂载
+          # 不碰页面/preset 注册（⇒ 与 host 面双挂载时**没有**页面/服务重复的问题，只有工具一份）。
+          - id: vssaros-agents
+            name: '@vssaros/dsh-agents'
+            config:
+              toolsOnly: true
+          # web-content-import（2026-10-15 新增模块）：按 URL 抓平台文章/视频内容（HTTP+reader /
+          # yt-dlp+字幕/ASR），可写进知识库 库/raw/。纯工具、无页面 ⇒ 与 host 面双挂载只多一份
+          # 工具注册（dsh 的工具重复注册是幂等顶掉 ✓）；本插件**没有模块级状态** ⇒ 不串话 ✓。
+          - id: vssaros-web-content-import
+            name: '@vssaros/dsh-web-content-import'

@@ -1,0 +1,7 @@
+# @vssaros/dsh-chat-surface bundle patch: insert a host row so the loader mounts this
+# package (and its client module gets served). The host half is inert; the session binding
+# happens in the client (lib/client.js) via ctx.uiWorkspace.openSession.
+- insert:
+    - id: vssaros-chat-surface
+      name: '@vssaros/dsh-chat-surface'
+      config: {}

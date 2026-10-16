@@ -1,0 +1,35 @@
+{
+  "name": "@vssaros/dsh-kb-refs",
+  "version": "0.1.0",
+  "description": "VsSaros knowledge-base reference source for DeepSeek Harness (2026-10-14, P1-1): registers a `@知识库` source in the chat composer so a note can be referenced as an **atomic pointer** (the `uri` returned by /x/kb/api/search, which kb_read accepts verbatim). Client-only; the host half is inert. Candidates come from kb's own read-only route over same-origin HTTP — this package does NOT modify vssaros-kb.",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/client.js",
+    "cordis.patch.yml"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/dsh": ">=0.1.7-0 <0.3.0-0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": [
+        "./cordis.patch.yml"
+      ]
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-input-trigger"
+      ]
+    }
+  },
+  "license": "MIT"
+}

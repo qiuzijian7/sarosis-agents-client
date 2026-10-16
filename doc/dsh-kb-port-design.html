@@ -1,0 +1,560 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>知识库续搬 dsh —— 设计方案（剩余能力）</title>
+<style>
+	:root { color-scheme: light dark; --h: #4aa3ff; --k: #999; --ok: #2ea043; --warn: #d29922; --bad: #f85149; }
+	body { margin: 0 auto; padding: 28px 22px 60px; max-width: 1080px; font: 14px/1.75 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; }
+	h1 { font-size: 22px; margin: 0 0 6px; }
+	h2 { font-size: 17px; margin: 30px 0 8px; padding-top: 10px; border-top: 1px solid rgba(128,128,128,.28); }
+	h3 { font-size: 15px; margin: 18px 0 6px; }
+	code, pre { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
+	pre { background: rgba(128,128,128,.10); padding: 8px 10px; border-radius: 6px; overflow-x: auto; }
+	table { border-collapse: collapse; width: 100%; margin: 8px 0 4px; }
+	th, td { border: 1px solid rgba(128,128,128,.30); padding: 6px 8px; text-align: left; vertical-align: top; }
+	th { background: rgba(128,128,128,.10); font-weight: 600; }
+	.small { color: var(--k); font-size: 12.5px; }
+	.v { color: var(--ok); font-weight: 600; }
+	.q { color: var(--warn); font-weight: 600; }
+	.x { color: var(--bad); font-weight: 600; }
+	.box { border: 1px solid rgba(128,128,128,.30); border-radius: 6px; padding: 10px 12px; margin: 10px 0; }
+	.warnbox { border-left: 4px solid var(--warn); padding-left: 10px; }
+	.okbox { border-left: 4px solid var(--ok); padding-left: 10px; }
+	.badbox { border-left: 4px solid var(--bad); padding-left: 10px; }
+	a { color: var(--h); }
+	ul { margin: 6px 0; }
+</style>
+</head>
+<body>
+
+<h1>知识库续搬 dsh —— 设计方案</h1>
+<p class="small">
+	2026-10-12 · 承接 <a href="dsh-shell-contract.html">dsh 壳契约</a> / <a href="dsh-tool-skill-mcp-report.html">dsh 工具·技能·MCP 报告</a> ·
+	读者：决定"知识库还要不要继续往 dsh 搬、先搬哪一块"的人。<br>
+	范围：知识库（<code>@vssaros/dsh-kb</code>）<strong>已经在 dsh 侧</strong>；本文只写<strong>剩余能力</strong>怎么搬（或为什么不搬）✓。
+</p>
+
+<div class="box okbox">
+	<strong>可信度约定（同 shell-contract）</strong><br>
+	· <span class="v">✓ 已核对</span>：本轮实测读过源码 / 跑过命令 / 有探针覆盖（会写清是哪种）。<br>
+	· <span class="q">◻ 待核对</span>：只从文件名 / 守卫断言推得，落地前自己核一眼。<br>
+	· 工具面数字<strong>一律不手写</strong>：见 <code>dsh-plugins/tools-snapshot.json</code>（机器生成 ✓）。
+</div>
+
+<h2>0. 一句话与两条订正</h2>
+<p>
+	知识库<strong>不需要"移植"</strong>了 —— <code>dsh-plugins/vssaros-kb</code>（<code>@vssaros/dsh-kb</code>）已是完整 dsh 插件：自托管页 <code>/x/kb/</code>、
+	活动栏容器 <code>agentStudio.knowledgeBase</code>、<strong>12 个工具</strong>、与 IDE 侧同一份 vault 数据面、写侧已挂审批闸 ✓。
+	剩下的是三块<strong>未搬</strong>（原因各不相同）＋两块<strong>搬不动或不该搬</strong>。本方案按"改动的可控性 × 收益"排成三期，并给出每期的证据要求。
+</p>
+
+<div class="box warnbox">
+	<strong>★ 订正我上一轮的两条判断（都是"读源码才看清"的）</strong>
+	<ol>
+		<li>
+			<span class="x">订正 ①（结论不变，原因变了）</span>：我说 <code>kb_suggest_links</code> "缺整条 embedding 链" —— <strong>读侧不成立</strong> ✗。
+			source 原话（<code>kbVectorIndex.ts:420</code>）：<em>"纯本地向量运算（不需要 embedding provider）"</em> ✓
+			（<code>findSimilarDocs</code> = 双方块两两 cosine 取 max ✓ 纯数学）。真正的阻塞是<strong>向量索引只活在内存里</strong>：
+			<code>rebuildVectorIndex()</code>（<code>knowledgeBaseView.ts:3237-3276</code>）只调 <code>buildVectorIndex()</code>，
+			<strong>没有任何落盘调用</strong> ✗；本机实测两个数据根下都<strong>不存在</strong> <code>.kbrag.json</code> / <code>.kvindex</code> ✓（见 §2）。
+			⇒ 结论仍是"当前搬不了"，但出路有两条，其中一条只需 IDE 侧加一步落盘。
+		</li>
+		<li>
+			<span class="x">订正 ②（新发现的既有缺陷）</span>：<code>.kbkernel.json</code> 在真实机器上有<strong>两种形态</strong> ✓（实测）：
+			生产库是元数据形态（<code>uri/title/type/created/…/text</code>），dev 库是 FTS 形态（<code>uri/name/path/section/…/text</code>）。
+			dsh 侧 <code>normalizeDoc</code> 只按元数据形态取 <code>title/type/created</code> ⇒ 在 FTS 形态的库上
+			<strong>标题退化成文件名、type/created 全丢</strong> ✗（页面与 <code>kb_search</code> 的类型过滤都受影响）。
+			⇒ 第 1 期顺手修（一行回退），属"发现的真实缺陷"，不是新需求。
+		</li>
+	</ol>
+</div>
+
+<h2>1. 现状基线（搬之前先钉住"已经有什么"）</h2>
+<table>
+	<tr><th>维度</th><th>dsh 侧现状（<code>@vssaros/dsh-kb</code>）</th><th>证据</th></tr>
+	<tr>
+		<td>工具（12）</td>
+		<td><code>kb_list</code> / <code>kb_search</code> / <code>kb_read</code> / <code>kb_topic_overviews</code> / <code>kb_organize</code> /
+			<code>kb_feishu_sync</code> / <code>kb_feishu_spaces</code> / <code>feishu_doc_read</code> /
+			<code>feishu_drive_list_comments</code> / <code>_list_comment_replies</code> / <code>_reply_comment</code> / <code>_add_comment</code></td>
+		<td><code>lib/index.js</code> 的 <code>TOOL_NAMES</code>（导出，被 <code>p3-08</code> 与页面三方对账 ✓）</td>
+	</tr>
+	<tr>
+		<td>页面 / 容器</td>
+		<td><code>/x/kb/</code>（<code>view.kind: page</code>）＋ 容器 <code>agentStudio.knowledgeBase</code>（标题「知识库」）</td>
+		<td><code>vssaros-kb/package.json</code> <span class="v">✓</span>；探针 <code>p3-34</code>（kbRoot 注入生效）✓</td>
+	</tr>
+	<tr>
+		<td>数据面</td>
+		<td><code>&lt;数据根&gt;/knowledge-base/&lt;vaultId&gt;/</code>（<code>笔记/</code>、<code>库/&lt;分类&gt;/</code>、<code>.kbkernel.json</code>）；
+			解析链 <code>config.dataRoot → VSSAROS_DATA_ROOT → ~/.vssaros</code>、<code>config.kbRoot → &lt;数据根&gt;/knowledge-base</code></td>
+		<td><code>lib/store.js</code> ✓；<code>check-host-config.mjs</code> 的逐字节同形契约 ✓</td>
+	</tr>
+	<tr>
+		<td>写侧</td>
+		<td>5 个写工具全过闸（<code>WRITE_TOOLS</code> 导出 ✓）：<code>kb_feishu_sync</code>（看 <code>apply</code>）、<code>kb_feishu_spaces</code>（看 <code>action</code>）、
+			<code>kb_organize</code>（看项数&gt;0）、两个飞书评论写入；<code>kb_organize</code> 另有 vault 围栏（仅在 <code>笔记/</code> 内）+ <strong>vault 外备份</strong></td>
+		<td><code>lib/index.js::writeIntentOf</code> ✓；<code>p3-26</code> 写/读成对断言 ✓</td>
+	</tr>
+	<tr>
+		<td>检索口径</td>
+		<td><span class="q">只匹配索引字段</span>（标题 / 标签 / 类型 / uri）—— <strong>不搜正文</strong>；<code>searchDocs()</code> 是纯函数，无 BM25</td>
+		<td><code>lib/core/kb.js::searchDocs</code> ✓；工具描述里已如实写明 ✓（这一步是对的）</td>
+	</tr>
+</table>
+
+<h2>2. 数据面实测盘点（本期最关键的一节，决定方案空间）</h2>
+<p class="small">手段：读源码 + 在本机两个数据根跑了一次只读清单（脚本一次性，未落进仓库）。</p>
+<table>
+	<tr><th>产物</th><th>写它的地方</th><th>本机实测</th><th>对 dsh 侧的价值</th></tr>
+	<tr>
+		<td><code>&lt;vault&gt;/.kbkernel.json</code></td>
+		<td>视图把 FTS 缓存 URI 传成它（<code>knowledgeBaseView.ts:3390/4917/4927</code>）；市场包导入路径也写它</td>
+		<td><span class="v">✓ 存在</span>。生产库 13.7KB/5 docs，docKeys = <code>[uri,title,type,created,tags,length,size,mtime,text]</code>；
+			dev 库 3.3MB/103 docs，docKeys = <code>[uri,name,path,section,mtime,size,length,tags,text]</code>；空库 42B</td>
+		<td><strong>含全文 <code>text</code></strong> ⇒ 正文检索的<strong>首选数据源</strong>（零额外 I/O、口径即索引器口径）✓</td>
+	</tr>
+	<tr>
+		<td><code>&lt;vault&gt;/.ftindex.json</code></td>
+		<td>同样是 FTS 序列化（<code>kbIndex.serialize()</code> 形状）；导入路径会复制一份（<code>knowledgeBaseView.ts:4867</code>）</td>
+		<td><span class="v">✓ 存在</span>（dev 库），<strong>与同库的 <code>.kbkernel.json</code> 同样大小 3315438B</strong> ⇒ 同内容两份</td>
+		<td>同一份数据的别名 ⇒ 读盘时<strong>两者都可作候选</strong>（先 kernel，缺则 ftindex）✓</td>
+	</tr>
+	<tr>
+		<td><code>&lt;vault&gt;/.kb-ingest-cache.json</code></td>
+		<td><code>kbImportController.ts:1894/1965</code>（pending 判定用）</td>
+		<td><span class="v">✓ 存在</span>（dev 库 2B = 空对象）</td>
+		<td>第 3 期 <code>kb_build --mode preview</code> 的真实数据源 ✓</td>
+	</tr>
+	<tr>
+		<td><code>&lt;vault&gt;/kb.db</code>（SQLite <strong>FTS5</strong>）</td>
+		<td>大库（<code>&gt; 2000 docs</code>，阈值常量 <code>KB_SQLITE_AUTO_THRESHOLD</code>）增量同步到主进程</td>
+		<td><span class="q">◻ 本机没有</span>（最大库 103 docs）⇒ <strong>本轮无法实测</strong></td>
+		<td>dsh 有 <code>node:sqlite</code> ✓（media 插件已用同一手）⇒ 可行，但<strong>必须先造夹具</strong></td>
+	</tr>
+	<tr>
+		<td><code>.kbembedcache.json</code> / <code>.kbrag.json</code> / <code>.kvindex</code></td>
+		<td>前两者分别是 embed 文本缓存 / 向量库导出（<code>exportToDisk</code> / <code>exportBinaryToDisk</code>）</td>
+		<td><span class="x">✓ 两个数据根都不存在</span>；且 <code>rebuildVectorIndex()</code> <strong>只构建不落盘</strong> ✗（已逐行读过）</td>
+		<td>⇒ dsh 侧<strong>没有可读的向量产物</strong>；语义检索 / 关联建议的阻塞点就在这里 ✓</td>
+	</tr>
+</table>
+
+<div class="box">
+	<strong>由盘点得到的三条硬结论</strong>
+	<ol>
+		<li><span class="v">正文检索有现成数据源</span> ✓：<code>.kbkernel.json</code> 里就有 <code>text</code> ⇒ 不必扫盘、不必引新依赖，口径还能与 IDE 侧索引器<strong>天然一致</strong>（同一份 text ✓）。</li>
+		<li><span class="x">语义那半没有数据源</span> ✗：向量不落盘 ⇒ 要么改 IDE 侧（构建后落盘），要么 dsh 侧自己算 embedding。两条都不是"在 dsh 插件里加个工具"的量级。</li>
+		<li><span class="q">大库后端是另一条路</span> ◻：<code>kb.db</code> 存在时正文在 FTS5 里，读它不是"顺手"，要先有 <code>&gt;2000 docs</code> 的夹具才能验。</li>
+	</ol>
+</div>
+
+<h2>3. 目标与边界（先说清不做什么）</h2>
+<table>
+	<tr><th>项</th><th>判定</th><th>理由</th></tr>
+	<tr><td>正文检索（BM25 全文）</td><td class="v">做（第 1 期）</td><td>与 IDE 侧最常用的那条能力对齐；数据源已在盘上 ✓</td></tr>
+	<tr><td>kernel 双形态兼容</td><td class="v">做（第 1 期，一并）</td><td>已发现的真实缺陷（标题退化 / 类型丢失）✓</td></tr>
+	<tr><td>写正文工具（新建 / 编辑笔记）</td><td class="q">待你拍板（第 2 期）</td><td>这不是"移植"——IDE 侧<strong>也没有</strong>这个工具（写正文走编辑器 UI / 构建流程）⇒ 属<strong>新增能力</strong>，必须配闸与围栏</td></tr>
+	<tr><td><code>kb_build</code>（ingest 编排）</td><td class="q">分两半：preview 做、build 待定（第 3 期）</td><td>preview 只读盘 ✓；build 要"起子代理 + 写 vault（围栏外）"⇒ 依赖第 2 期</td></tr>
+	<tr><td>语义检索（query→vector）</td><td class="x">不做</td><td>要把查询向量化 ⇒ 必须 Provider（dsh 侧无 embedding 服务）；且盘上无向量可比较</td></tr>
+	<tr><td><code>kb_suggest_links</code></td><td class="x">不做（前置未满足）</td><td>读侧虽是纯数学 ✓，但向量不落盘 ⇒ 无源；出路见 §4.5</td></tr>
+	<tr><td>大库 <code>kb.db</code> FTS5 路线</td><td class="x">不做（本轮）</td><td>本机无大库 ⇒ 无法验收；"写了但验不了"违背本仓纪律</td></tr>
+	<tr><td>页面全库检索框</td><td class="q">待你拍板（若做，先出 mockup）</td><td>页面现有筛选只覆盖本页已渲染行（每库 ≤40 条，页面上已如实标注 ✓）；加 SSR 检索属界面改动 ⇒ 按既有流程先出 mockup</td></tr>
+</table>
+
+<h2>4. 三期方案</h2>
+
+<h3>4.1 第 1 期：正文检索（<code>kb_search</code> 加 <code>mode</code>）+ 双形态兼容 —— <span class="v">已落地 2026-10-12（见 §8）</span></h3>
+
+<p><strong>工具形态（决策点 D1）</strong>：给同一个 <code>kb_search</code> 加 <code>mode</code> 参数，而不是新开工具名。</p>
+<pre>kb_search({ query, mode?, type?, tag?, limit?, vaultId? })
+  mode: 'index'    // 缺省 = 现状行为（标题 / 标签 / 类型 / uri 匹配）⇒ 零行为改变 ✓
+      | 'fulltext' // 正文 BM25（本期新增）
+  // 明确不支持 'semantic'（IDE 侧枚举里那个）：显式报错并指路，绝不静默退化成 fulltext ✗</pre>
+<ul>
+	<li>理由：IDE 侧同名工具本身就是"同名不同义"的分叉点（已登记在 <code>toolOwnership.ts</code>）✓；
+		用<strong>一个入口 + 一个参数</strong>描述两种检索，模型只看描述就能选，比多一个 <code>kb_grep</code> 少一份漂移面。</li>
+	<li>缺省必须是 <code>index</code>：现有 12 个工具的行为、<code>tools-snapshot</code>、探针全部不动 ✓（B1 那次"缺省 = 现状"的同一纪律）。</li>
+</ul>
+
+<p><strong>实现落点（全部在 <code>dsh-plugins/vssaros-kb/</code>，不碰 <code>src/</code>）</strong></p>
+<table>
+	<tr><th>文件</th><th>内容</th><th>性质</th></tr>
+	<tr>
+		<td><code>lib/core/kbFulltext.js</code> <span class="q">新</span></td>
+		<td>
+			<code>tokenize(text)</code> —— 逐字照 <code>kbIndex.ts:369-386</code>：小写 → ASCII 词 <code>/[a-z0-9][a-z0-9_'-]*/g</code> +
+			CJK / 假名 <code>/[㐀-䶿一-鿿豈-﫿぀-ヾ゠-ヿㇰ-ㇿ㆐-㆟]+/g</code> <strong>单字 + 相邻二元</strong>；<br>
+			<code>buildPostings(docs)</code> → <code>{postings, avgLen, totalDocs}</code>（<code>length</code> 取 kernel 里的值，缺则现算）；<br>
+			<code>searchFulltext(index, query, {limit})</code> —— BM25 <code>k1=1.2, b=0.75</code>、
+			<code>idf = ln((N-n+0.5)/(n+0.5)+1)</code>、<code>gatherTerms</code> 前缀展开（仅 ASCII 且长度 ≥2）、
+			文件名命中 +10 / 标签命中 +5、<code>matchedBy</code>、<code>snippet</code>（命中位置前后 40/80 窗口，与 <code>kbIndex.ts:739-752</code> 逐字同形）
+		</td>
+		<td>纯函数、零 I/O、零 dsh 依赖 ✓（与 <code>core/kb.js</code> 同层，便于单测与探针直取）</td>
+	</tr>
+	<tr>
+		<td><code>lib/store.js</code> <span class="q">扩展</span></td>
+		<td>新增 <code>loadFulltextSource(vaultDir)</code>：① 读 <code>.kbkernel.json</code> 的 <code>docs[].text</code>（首选 ✓ 实测两形态都有）；
+			② 缺 <code>text</code>（老索引）⇒ 回退读 <code>.ftindex.json</code>；③ 都缺 ⇒ 抛"该库还没建索引"的<strong>可读指路</strong>（不静默空 ✗）；
+			返回时一并带上 <code>source</code> 与 <code>indexedAt</code>（kernel 文件 mtime）</td>
+		<td>I/O 层，沿用既有围栏与 <code>MAX_SCAN</code> 保护</td>
+	</tr>
+	<tr>
+		<td><code>lib/core/kb.js</code> <span class="q">小修</span></td>
+		<td><code>normalizeDoc</code> 兼容双形态：<code>title</code> 缺失时用 <code>name</code>（去掉 <code>.md</code>）兜底；
+			<code>section</code> 存在时如实带出（<strong>不硬塞进 <code>type</code></strong> ✗ —— 那是另一个字段，猜就是编）</td>
+		<td>一行回退，修订正 ② ✓</td>
+	</tr>
+	<tr>
+		<td><code>lib/index.js</code> <span class="q">改动</span></td>
+		<td><code>kb_search</code> 加 <code>mode</code> 分支 + 描述改写（写清 dsh 侧支持哪两个取值、<code>semantic</code> 不支持、正文来自索引快照）；
+			<code>output.render</code> 保持同形（结果仍回报 <code>count</code> / <code>items</code>，fulltext 额外带 <code>snippet</code> / <code>score</code> / <code>matchedBy</code>）</td>
+		<td>只读工具 ⇒ <strong>不过闸</strong> ✓（与现状一致）</td>
+	</tr>
+	<tr>
+		<td><code>package.json</code> / <code>tools-snapshot.json</code></td>
+		<td>版本 bump（读到的当前值 <code>0.2.14</code> ⇒ <code>0.2.15</code>，<strong>落笔前重读</strong>，并发会话可能在动）；
+			<code>files</code> 加 <code>lib/core/kbFulltext.js</code>（漏了 = 装出来的包缺文件 ⇒ 插件加载即失败 ✗ 真出过）；跑 <code>tools-snapshot.mjs --write</code></td>
+		<td>纪律项，见 §5</td>
+	</tr>
+</table>
+
+<p><strong>诚实边界（必须写进工具描述与 <code>render</code>）</strong></p>
+<ul>
+	<li>正文来自<strong>索引快照</strong>（<code>.kbkernel.json</code>），不是实时读盘 ⇒ 回报 <code>source</code> + <code>indexedAt</code>，让模型 / 用户能判断新鲜度 ✓（页面缓存那套"只影响计数、不影响索引条目"的诚实口径同理）。</li>
+	<li>结果条数 / 扫描条数封顶时<strong>如实标 <code>truncated</code></strong>（照 <code>codebase_schema</code> 那次的做法 ✓，不静默截断 ✗）。</li>
+	<li>空查询 ⇒ 明确报错；库没有索引 ⇒ 指路"先在 IDE 里打开一次知识库 / 用 <code>kb_topic_overviews</code> 看结构"。</li>
+</ul>
+
+<h3>4.2 第 1 期的验收（口径一致是重点，不只是"能搜到"）</h3>
+<table>
+	<tr><th>层</th><th>做什么</th><th>为什么必须</th></tr>
+	<tr>
+		<td>两侧钉同一张黄金表</td>
+		<td>拿同一份 fixture（含 text 的 kernel v1）分别喂 IDE 的 <code>KbFullTextIndex</code> 与 dsh 的 <code>kbFulltext</code>，
+			断言：Top-N 顺序、分数（四舍五入两位）、<code>matchedBy</code>、<code>snippet</code> 文本<strong>逐条相同</strong></td>
+		<td>两侧同一个 vault 会被两边展示 ⇒ 口径分叉就是"同一个库两套结果" ✗（<code>.overview.md</code> 那次定的规矩 ✓）</td>
+	</tr>
+	<tr>
+		<td>IDE 侧单测</td>
+		<td><code>kbKnowledgeBase.test.ts</code> 已覆盖 <code>KbFullTextIndex</code> 的分词 / 检索 / 标签 ✓ ⇒ 黄金表直接扩在那里（<strong>不是从零建覆盖</strong>）</td>
+		<td>把它变成"两侧共同的真源"，而不是我这边复制的第二份期望 ✓</td>
+	</tr>
+	<tr>
+		<td>dsh 侧真机探针</td>
+		<td>新增 <code>poc/dsh-p0/scripts/p3-38-kb-fulltext.mjs</code>：① 进程内纯逻辑（分词 / BM25 / 前缀展开 / snippet 边界）；
+			② 真 Host 上让 <code>kb_search mode=fulltext</code> 出结果（沿用 <code>p3-08</code> 起 Host 的手法）；
+			③ <strong>缺省仍是 <code>index</code></strong> 的负断言（防止"新分支顺手改了默认" ✗）</td>
+		<td>源码级守卫看不出"判据写反" ⇒ 必须有行为级证据（<code>p3-26</code> 的教训 ✓）</td>
+	</tr>
+	<tr>
+		<td>反向突变（≥3）</td>
+		<td>① 把 CJK 单字从分词里删掉 ⇒ 黄金表红；② <code>k1</code> 改 1.5 ⇒ 分数红；③ 缺省 <code>mode</code> 改成 <code>fulltext</code> ⇒ 负断言红；
+			④ 去掉 <code>truncated</code> 标注 ⇒ 诚实断言红</td>
+		<td>无反向突变的探针等于没写 ✓（本仓已固化）；锚点纪律：<strong>单行锚点 + 先现读真字节</strong>（CRLF 坑踩过多次 ✓）</td>
+	</tr>
+	<tr>
+		<td>登记面</td>
+		<td><code>run-all.mjs</code>（或 <code>EXCLUDED</code> 并写明理由，二选一 ✗ 不许都不做 ⇒ <code>dshProbeCoverage</code> 会红）；
+			<code>tools-snapshot.mjs --write</code>；<code>check:dsh-plugins</code>；可选在 <code>toolOwnership.ts</code> 的 <code>kb_search</code> 那条补一句口径说明（两侧差异已登记在册 ✓）</td>
+		<td>守卫自己会逼你对账 ✓</td>
+	</tr>
+</table>
+
+<h3>4.3 第 2 期：写正文工具（决策点 D3 —— 属新增能力，不是移植）—— <span class="v">已落地 2026-10-12（见 §8.5）</span></h3>
+<p>现状：dsh 会话<strong>改不了笔记正文</strong> —— 页面只读，原生 <code>write/edit</code> 会被 <code>fs-sandbox</code> 拒（vault 在会话工作区外 ⇒ <code>FS_SANDBOX_DENIED</code>）✗。
+IDE 侧同样是走编辑器 UI / 构建流程，<strong>没有对应工具</strong> ⇒ 这是"补齐"，不是"对齐"。</p>
+<pre>kb_write_note({ uri | path, content, mode: 'create' | 'replace' })   // 只允许落在 &lt;vault&gt;/笔记/ 内
+kb_mkdir({ path })                                                  // 同样在围栏内</pre>
+<ul>
+	<li><strong>复用 <code>kb_organize</code> 的三件套</strong>（这是本模块唯一已被验收过的写路径 ✓）：vault 围栏（仅 <code>笔记/</code>）、
+		vault <strong>外</strong>备份、<code>tools/pre-execute</code> 闸；写入前"目标已存在则拒 / 或需显式 <code>mode: 'replace'</code>"（不静默覆盖 ✗）。</li>
+	<li><code>WRITE_TOOLS</code> 加两条 ⇒ 由 <code>dshPluginPackages.test.ts</code> 机器核对（名单非空 + 名字真被注册 + 闸行为级断言）。</li>
+	<li>若第 3 期的 build 要落地，本期的写工具就是它的地基（否则子代理写完没处放）。</li>
+</ul>
+
+<h3>4.4 第 3 期：<code>kb_build</code>（preview 立即可做；build 依赖第 2 期）—— <span class="v">preview 已落地 2026-10-12（见 §10）；build 的 P0 编排已落地 2026-10-13（见 <a href="dsh-kb-build-orchestration.html">编排方案稿</a> §7）</span></h3>
+<ul>
+	<li><code>mode: preview</code>（只读）：读 <code>库/</code> 待构建素材 + <code>.kb-ingest-cache.json</code>，
+		口径照 <code>collectPendingSources</code>（跳过已构建、跳过 index / overview / insights 等导航文件 ✓）。
+		<strong>不必等第 2 期</strong>，且与 IDE 侧"点构建前会先预览"的体验对齐 ✓。</li>
+	<li><code>mode: build</code>：IDE 侧那份的实质是<strong>编排</strong>（起一个 agent 会话、工具卡显进度、宿主逐篇落盘兜底 ✗）。
+		dsh 形态应换成 dsh 自己的原语（<code>subagent</code> + 我们的写工具 + <code>jobs</code>），<strong>不照抄 toolCard 会话那套</strong> ✓。</li>
+	<li>★ 关键判断：这一期是"产品设计"而不是"移植" ⇒ 建议<strong>先出方案不动手</strong>，等第 1 / 2 期落地后再谈。</li>
+	<li>⇒ <strong>方案稿已出</strong>：<a href="dsh-kb-build-orchestration.html">kb_build 的 build 半边 —— dsh 侧编排方案</a>（2026-10-12）。
+		结论：<span class="v">能由插件自己编排</span> ✓ —— dsh 把"起子代理 / 进后台任务名册"做成了<strong>插件可注入的服务</strong>
+		（<code>ctx.subagents.start(provider, request)</code> ＋ <code>ctx.jobs.start({kind,label,owner,run})</code>，均本轮实测取证 ✓），
+		工具的执行上下文还带<strong>会话身份</strong>（<code>ToolExecutionInput.agent</code> ✓，正是 <code>owner</code> 需要的）。
+		方案里同时列了三条必须先接受的差异（不写构建缓存 / 不做导航补链 / <strong>子代理逐篇写会弹 N 张审批卡</strong> ✗ ⇒ 审批疲劳）
+		—— <span class="v">三条后来都解决了 ✓（2026-10-12/13，见 <a href="dsh-kb-build-orchestration.html">编排方案稿</a>）：
+		① 审批疲劳 ⇒ <b>有界批授权</b>（篇数 / 30 分钟 / 归属 ✓ §7.2）；② 导航补链 ⇒ <b>导航三件 ＋ 门控 ＋ 补链</b>与真源逐字节对账（§9–§12 ✓）；
+		③ 构建缓存 ⇒ dsh 收尾在锁内<b>只增不删</b>地登记，且两侧对"待构建数量"给出<b>同一个数</b>（§13 ✓）</span>。</li>
+</ul>
+
+<h3>4.5 挂起：语义检索与 <code>kb_suggest_links</code>（两条出路，都需外部前提）</h3>
+<table>
+	<tr><th>出路</th><th>要做什么</th><th>代价 / 归属</th></tr>
+	<tr>
+		<td>(a) 让向量索引落盘</td>
+		<td>IDE 侧在构建完成后调 <code>exportBinaryToDisk(&lt;vault&gt;/.kvindex)</code>（API 已存在 ✓）
+			⇒ dsh 侧读 Float32 + 纯 cosine 即可实现 <code>kb_suggest_links</code> 的<strong>完整语义</strong>（含默认 minScore 0.72、doc 级取块 max）</td>
+		<td>改 <code>src/</code>（知识库视图）+ 新增盘上产物格式承诺（版本 / 尺寸 / 损坏处理）⇒ <strong>产品决策</strong>；dsh 侧只读，风险低 ✓</td>
+	</tr>
+	<tr>
+		<td>(b) dsh 侧自带 embedding</td>
+		<td>插件里配 Provider（BYOK）+ 自己分块 / 向量化 / 持久化</td>
+		<td>等于在 dsh 侧重建一条 RAG 链（provider 配置、配额、缓存、维度变更…）⇒ 体量与"语义检索"整块相当 ✗</td>
+	</tr>
+	<tr>
+		<td>(c) 结构版"关联建议"</td>
+		<td>不看向量，用 tags / 标题重合 / 正文 wikilink 给候选</td>
+		<td><span class="x">不建议现在做</span>：语义变了（那是"文本相似"的近似冒充）⇒ 违背"不许看起来答了其实答的是别人" ✓</td>
+	</tr>
+</table>
+
+<h2>5. 工程面清单（每期共同的部分，一次列清）</h2>
+<table>
+	<tr><th>项</th><th>动作</th><th>不做会怎样 ✗</th></tr>
+	<tr><td>版本</td><td>改插件内容 ⇒ <strong>bump 版本</strong>（<code>plugin add</code> 版本未变是 no-op）</td><td>装上去的还是旧拷贝，"我改了啊"</td></tr>
+	<tr><td><code>files</code> 白名单</td><td>新增文件必须登记（<code>collectRelativeImports</code> + <code>filesCovers</code> 守卫会核 ✓）</td><td>装出来的包缺文件 ⇒ 插件加载即失败、<code>/x/kb/</code> 整站 404（真事故）</td></tr>
+	<tr><td>工具面快照</td><td><code>node dsh-plugins/tools-snapshot.mjs --write</code>（<strong>描述变化也算</strong>，哈希含 description）</td><td><code>dshToolSnapshot</code> 红；报告里的数字失去机器真源</td></tr>
+	<tr><td>审批闸台账</td><td>新增写工具 ⇒ <code>WRITE_TOOLS</code> 导出 + <code>dshPluginPackages.test.ts</code> 的 gated 名单 + <code>p3-26</code> 行为断言</td><td>"闸挂了但名单是空的"这种最像修好了的坏法</td></tr>
+	<tr><td>探针覆盖</td><td>新探针要么进 <code>run-all.mjs</code>、要么进 <code>EXCLUDED</code> 并写明理由（≥8 字）</td><td><code>dshProbeCoverage</code> 红（它就是这么设计的 ✓）</td></tr>
+	<tr><td>契约守卫</td><td><code>npm run check:dsh-plugins</code>（14 契约 + 2 组逐字节同形）</td><td>数据根 / pageShell / dataRootOf 漂移静默发生</td></tr>
+	<tr><td>文档</td><td>本文件 §4.5 的挂起项与 §6 的决策落定后，同步进 <code>dsh-shell-contract.html</code> §8 与 <code>toolOwnership.ts</code> 的口径说明</td><td>下次接手的人要重走这轮取证</td></tr>
+</table>
+
+<h2>6. 待你拍板（4 条）</h2>
+<table>
+	<tr><th>#</th><th>决策点</th><th>我的建议</th><th>备注</th></tr>
+	<tr><td>D1</td><td>正文检索是"<code>kb_search</code> 加 <code>mode</code>"还是"新工具 <code>kb_grep</code>"</td>
+		<td class="v">加 <code>mode</code>（缺省 <code>index</code>）</td><td>少一个漂移面、零行为改变；若你更想让"只搜正文"这件事更显眼，也可另开名，我照办</td></tr>
+	<tr><td>D2</td><td>页面要不要加"全库检索"框</td>
+		<td class="q">本期不加；要加就先出 mockup</td><td>现页面已有"本页筛选"且如实标注了范围 ✓；SSR 检索属界面改动，按既有流程走</td></tr>
+	<tr><td>D3</td><td>第 2 期写正文工具做不做</td>
+		<td class="q">做（它是第 3 期 build 的地基）</td><td>属<strong>新增能力</strong>不是移植 ⇒ 需要你确认"dsh 会话可以改笔记"这个产品口径</td></tr>
+	<tr><td>D4</td><td>大库 <code>kb.db</code>（FTS5）路线现在做吗</td>
+		<td class="x">不做（等夹具）</td><td>先造一个 <code>&gt;2000 docs</code> 的合成库才能验收；否则就是"写了验不了"</td></tr>
+</table>
+
+<h2>7. 附：本轮证据清单</h2>
+<ul class="small">
+	<li><strong>源码</strong>（逐行读过）：<code>dsh-plugins/vssaros-kb/{package.json,cordis.patch.yml,lib/index.js,lib/store.js,lib/core/kb.js}</code>；
+		<code>kbIndex.ts</code>（tokenize / search / gatherTerms / snippet / serialize）；
+		<code>kbVectorIndex.ts</code>（<code>findSimilarDocs</code> 纯本地 ✓、<code>.kbrag.json</code> / <code>.kvindex</code> 常量与导出 API）；
+		<code>kbNativeKernelService.ts</code>；<code>knowledgeBaseView.ts</code>（<code>rebuildVectorIndex</code> 无落盘 ✗、<code>kb.db</code> 阈值 2000、kernel 缓存 URI）；
+		<code>node/kbSqliteStore.ts</code>（FTS5 表结构 + CJK bigram 预处理）；<code>kbImportController.ts</code>（pending 缓存 + <code>kb_build</code> 编排）；
+		<code>common/toolOwnership.ts</code>（同名工具登记表）。</li>
+	<li><strong>盘上实测</strong>（只读清单，一次性脚本，未入库）：<code>~/.vssaros/knowledge-base</code> 5 库 + <code>_archive</code>、
+		<code>~/.vssaros-dev/knowledge-base</code> 3 库；<code>.kbkernel.json</code> 两种 docKeys 形态 + 均含 <code>text</code>；
+		<code>.ftindex.json</code> 与 kernel 同尺寸；<code>.kb-ingest-cache.json</code> 存在；
+		<code>.kbembedcache.json</code> / <code>.kbrag.json</code> / <code>.kvindex</code> <strong>均不存在</strong>。</li>
+	<li><strong>已有守卫</strong>：<code>p3-08</code>（kb 页与工具三方对账）、<code>p3-26</code>（写工具闸行为级）、<code>p3-34</code>（kbRoot 注入）、
+		<code>tools-snapshot</code>、<code>dshPluginPackages</code>、<code>dshProbeCoverage</code>、<code>check-host-config</code>。
+		下一可用探针编号 <code>p3-38</code>（<code>p3-37</code> 已用）。</li>
+</ul>
+
+<h2>8. 执行记录（2026-10-12：第 1 期已落地）</h2>
+
+<div class="box okbox">
+	<strong>落地清单（全部在 <code>dsh-plugins/vssaros-kb/</code>，<code>src/</code> 只加了一处测试）</strong>
+	<table>
+		<tr><th>文件</th><th>改动</th><th>状态</th></tr>
+		<tr><td><code>lib/core/kbFulltext.js</code> <span class="q">新</span></td><td>正文 BM25 纯逻辑（分词 / 标签抽取 / BM25 / 前缀展开 / 片段），口径逐字对齐 <code>kbIndex.ts</code></td><td class="v">✓ 已在 <code>files</code> 白名单（装出来的包逐字节一致 ✓）</td></tr>
+		<tr><td><code>lib/store.js</code></td><td><code>loadFulltextDocs</code>（kernel.text → <code>.ftindex.json</code> → 如实报 none）+ <code>fulltextIndexes</code>（<strong>每库一份</strong> + 按库指纹缓存）</td><td class="v">✓</td></tr>
+		<tr><td><code>lib/core/kb.js</code></td><td><code>parseKernel(text, { withText })</code>；<code>normalizeDoc</code> 兼容两种 kernel 形态（缺 <code>title</code> 时用 <code>name</code> 去 <code>.md</code> 兜底、<code>section</code> 如实带出）</td><td class="v">✓ 修订正 ②</td></tr>
+		<tr><td><code>lib/index.js</code></td><td><code>kb_search</code> 加 <code>mode</code>（缺省 <code>index</code> = 原行为）+ 三处坏法明确报错 + <code>renderFulltextResult</code></td><td class="v">✓ 13 个工具数不变（<code>mode</code> 是参数）</td></tr>
+		<tr><td><code>lib/organize.js</code></td><td><strong>顺手修掉一个数据丢失缺陷</strong>（见下）</td><td class="v">✓ 独立于本期的既有缺陷</td></tr>
+		<tr><td><code>package.json</code></td><td>0.2.14 → <strong>0.2.17</strong>（改了三次源码就 bump 了三次 ✓）；<code>files</code> 加新文件</td><td class="v">✓</td></tr>
+		<tr><td><code>kbKnowledgeBase.test.ts</code> <span class="q">src/</span></td><td>新增 4 条黄金表（与 dsh 侧钉同一张表）</td><td class="v">✓ 全绿（+4；该文件既有 7 条红在 HEAD 上同样红 ⇒ 非本次引入）</td></tr>
+		<tr><td><code>poc/.../p3-38-kb-fulltext.mjs</code> <span class="q">新</span></td><td>27 条断言（黄金表 / 双形态 / 数据源回退 / 缓存失效 / 三个坏法 / files 白名单 / 真 Host）</td><td class="v">✓ 27/27，已登记 <code>run-all.mjs</code>（不标 fast）</td></tr>
+		<tr><td><code>p3-08-kb-plugin.mjs</code></td><td>新增 1 条备份安全守卫</td><td class="v">✓ 119 → <strong>120/120</strong></td></tr>
+	</table>
+</div>
+
+<h3>8.1 ★ 一处设计订正（实测促成）：fulltext 是「每库一份索引」，不是「跨库合成一份」</h3>
+<p>
+	第一版把选中的多个 vault 的正文<strong>合成一个索引</strong>再检索 —— 探针立刻报红，查出的真因是：
+	BM25 的 <code>N</code>（文档总数）与 <code>avgLen</code> 是<strong>全局量</strong> ⇒ 同一篇笔记的分数会随
+	"这次同时选了哪些别的库"变化 ✗，而 IDE 侧一次只索引<strong>当前打开的那个</strong>库 ⇒ 两侧分数对不上，
+	且<strong>两边都不报错</strong>（本方案开头要防的正是这一类）。
+	改成每库一份后：<strong>单库检索（或 <code>vaultId</code> 限定）的分数与 IDE 逐条相同</strong> ✓
+	（黄金表就是这么钉的），跨库合并时分数不可互相比较 —— 这条写在回执里如实告知 ✓。
+</p>
+
+<h3>8.2 ★ 顺手修掉一个真·数据丢失缺陷（回归 p3-08 时抓到，非本期引入）</h3>
+<p>
+	<code>kb_organize</code> 的备份目录名时间戳精度是<strong>分钟</strong>（<code>stampOf</code> 取 12 位，照真源 ✓）⇒
+	同一分钟内的多次调用<strong>共用</strong>同一个备份目录。收尾逻辑原先只判「这次没放东西就收掉目录」⇒ 一次
+	<strong>只建目录</strong>（无备份需求）的调用会把上一次调用写下的<strong>唯一还原点整个删掉</strong> ✗✗。
+	实测复现（固定 <code>now</code> 两次调用）：第一次删除入备份 ✓ → 紧接着那次调用后备份目录消失 ✗；
+	跨分钟则正常 ✓（所以它是<strong>时间相关</strong>的，靠"顺手跑一遍"看不出来）。
+	为什么这是最坏一档：dsh 侧<strong>没有</strong>聊天页签的 undoAll ⇒ 那个备份目录是唯一还原点，删掉 = 已执行的删除/移动不可挽回 ✗。
+	修法：判据从「这次没放东西」改成「<strong>这个目录是我这次建的</strong>」（<code>backupDirExisted</code>）✓。
+	守卫：<code>p3-08</code> 新增 1 条（用固定 <code>now</code> 保证确定性），反向突变 <strong>2/2</strong> 命中
+	（新守卫 + 原有「删除入备份」断言同时变红 ✓）。
+</p>
+
+<h3>8.3 验证清单（本轮实际跑过的）</h3>
+<table>
+	<tr><th>检查</th><th>结果</th></tr>
+	<tr><td><strong>两侧口径交叉校验</strong>（IDE 真实 <code>KbFullTextIndex</code> × dsh 实现，16 条查询逐条比对到 6 位小数）</td><td class="v">16/16 完全一致 ✓（黄金表的来源）</td></tr>
+	<tr><td><code>p3-38</code>（新）</td><td class="v">27/27 ✓</td></tr>
+	<tr><td><code>p3-08</code>（kb 既有）</td><td class="v">120/120 ✓（修前 118/119：那条红就是 8.2 的缺陷）</td></tr>
+	<tr><td><code>p3-26</code>（写工具闸）/ <code>p3-34</code>（kbRoot 注入）</td><td class="v">71/71 ✓ / 7/7 ✓</td></tr>
+	<tr><td><code>dshHarness --common</code>（含插件包结构、工具面快照、预设平面、探针覆盖）</td><td class="v">397 passing / 0 failing ✓</td></tr>
+	<tr><td><code>tools-snapshot</code> / <code>check:dsh-plugins</code></td><td class="v">11 插件 / 62 工具一致 ✓；16 契约 + 2 组拷贝 0 违规 ✓</td></tr>
+	<tr><td>IDE 侧 <code>kbKnowledgeBase.test.ts</code></td><td class="q">新增 4 条全绿；该文件既有 7 条红（HEAD 基线同样 7 条 ⇒ 非本次引入，未追因）</td></tr>
+	<tr><td>反向突变</td><td class="v">p3-38 <strong>5/5</strong>（CJK 单字 / k1 / 缺省 mode / 双形态 / 空库入 sources）+ organize 守卫 <strong>2/2</strong> ✓，均逐字节还原 ✓</td></tr>
+</table>
+
+<h3>8.4 仍未做（供下轮起点）</h3>
+<ul>
+	<li>第 3 期（<code>kb_build</code>：preview 只读可做、build 依赖写工具）—— 待开 ✓；第 2 期已完成，见 §8.5。</li>
+	<li>大库 <code>kb.db</code>（FTS5）路线：仍缺 <code>&gt;2000 docs</code> 夹具 ⇒ 未做 ✓。</li>
+	<li>语义那半（<code>semantic</code> / <code>kb_suggest_links</code>）：前置未满足，仍挂起 ✓（§4.5）。</li>
+	<li><code>kb_search mode=fulltext</code> 的<strong>模型真调</strong>尚未验（探针只证到工具层与真 Host 页面 ✓）；
+		若要像 <code>p3-27</code> 那样起 mock LLM 跑真回合，可另开一条 ✓。</li>
+</ul>
+
+<h2>9. 执行记录（2026-10-12 第二轮：第 2 期已落地）</h2>
+
+<div class="box okbox">
+	<strong>落地清单（kb 插件 <code>0.2.17 → 0.2.21</code>；两个新工具 ⇒ 工具面 62 → <strong>66</strong>，其中 kb 14 个）</strong>
+	<table>
+		<tr><th>文件</th><th>改动</th><th>状态</th></tr>
+		<tr>
+			<td><code>lib/organize.js</code></td>
+			<td>新增 <code>writeNote</code> / <code>makeDir</code> / <code>MAX_NOTE_CHARS</code> —— 与 <code>runOrganize</code> <strong>同一套安全规则</strong>（同一份 <code>resolveOrganizePath</code> 围栏、同一套 vault 外备份、同样"先校验后 I/O"）</td>
+			<td class="v">✓ 复用而非重写（围栏/备份只有一份实现 ✓）</td>
+		</tr>
+		<tr>
+			<td><code>lib/index.js</code></td>
+			<td>注册 <code>kb_write_note</code>（<code>mode: create | replace</code>）/ <code>kb_mkdir</code>；<code>TOOL_NAMES</code> &amp; <code>WRITE_TOOLS</code> 各 +2；审批闸新增<b>第二类判据</b>（见下）</td>
+			<td class="v">✓</td>
+		</tr>
+		<tr><td><code>p3-08</code></td><td>+10 条行为断言（新建 / 不覆盖 / replace+备份 / 围栏三态 / 上限 / 空笔记 / mkdir 幂等 / 缺 vaultId / 共用写锁）；工具清单抽成 <code>EXPECTED_TOOLS</code> 常量（原先硬编码 12 个 ⇒ 加工具必红 ✓）</td><td class="v">✓ 120 → <strong>130/130</strong></td></tr>
+		<tr><td><code>p3-26</code></td><td>+4 条：两个新工具在写名单里、且<b>参数无关</b>地拦（空内容 / 无参数 / 建目录都拦）</td><td class="v">✓ 71 → <strong>75/75</strong></td></tr>
+		<tr><td><code>tools-snapshot.mjs</code></td><td><strong>顺手加固</strong>：apply 有失败时<b>不再写快照</b>（见 §9.2）</td><td class="v">✓ 实测踩到后加的</td></tr>
+	</table>
+</div>
+
+<h3>9.1 ★ 审批闸的<b>第二类判据</b>：参数无关的写必须一律问</h3>
+<p>
+	本模块原有五个写工具都是<b>参数敏感</b>的（<code>kb_feishu_sync</code> 看 <code>apply</code>、<code>kb_feishu_spaces</code> 看 <code>action</code>、
+	<code>kb_organize</code> 看项数、飞书评论看 <code>content</code>）—— 它们的共同点是"<b>有只读/预览形态</b>"。
+	新增的两个<b>没有</b>预览形态：<code>kb_write_note</code> 连"空内容的空笔记"也是一次真写入 ✓ ⇒ 若照旧按参数判，
+	就会开出一个 <b>"用空内容绕过审批"</b> 的口子 ✗✗。
+	⇒ 判据改成"这两个名字<b>一律 ask</b>"，并由 <code>p3-26</code> 专门钉住"空内容 / 无参数 / 建目录都要拦" ✓
+	（反向突变 M5 把判据改回"有内容才问" ⇒ 那条断言立刻红 ✓）。
+</p>
+
+<h3>9.2 ★ 顺手加固：快照生成器"有失败也照写"（本轮实测踩到）</h3>
+<p>
+	我加的两个工具里，<code>kb_write_note</code> 的描述引用了 <code>MAX_NOTE_CHARS</code>，而<b>忘了导入它</b> ✗ ⇒
+	该插件在 <code>apply</code> 期抛错 ⇒ 生成器报了一条失败，但 <code>--write</code> <b>照样</b>把一份
+	"9 个插件 / 39 个工具"的<b>残缺快照</b>覆盖到完整的那份上 ✗✗。
+	症状离真因很远：覆盖率守卫随后集体报"台账腐烂 / 映射腐烂"（说 <code>vssaros-kb</code> 不再注册任何工具 ✓）。
+	⇒ 改成：<b>只要有一个插件 apply 失败，就绝不写盘</b>（宁可留旧快照 + 非零退出 ✓），
+	以及"残缺不许被当成新基线"这条与本仓既有纪律一致 ✓。
+	（顺带一个真教训：<b>ESM 顶层不许 <code>return</code></b> ✗ —— 第一版这么写会让整个脚本变成语法错，
+	连错误信息都读不到 ✓。）
+</p>
+
+<h3>9.3 验证清单</h3>
+<table>
+	<tr><th>检查</th><th>结果</th></tr>
+	<tr><td><code>p3-08</code>（kb 全量，含 +10 条写路径断言）</td><td class="v">130/130 ✓</td></tr>
+	<tr><td><code>p3-26</code>（审批闸行为）/ <code>p3-38</code>（全文检索）</td><td class="v">75/75 ✓ / 27/27 ✓</td></tr>
+	<tr><td><code>tools-snapshot</code> / <code>check:dsh-plugins</code></td><td class="v">kb 行一致（11 插件 / 66 工具）✓；16 契约 + 2 组拷贝 0 违规 ✓</td></tr>
+	<tr><td>反向突变（写路径）</td><td class="v"><strong>5/5</strong> 命中预期断言（围栏 / 缺省覆盖 / 备份出 vault / 上限 / 闸改参数敏感）＋ 基线真绿 ＋ 逐字节还原 ✓</td></tr>
+	<tr><td><code>dshHarness --common</code></td><td class="q">395 passing / <strong>2 failing</strong> —— 两条都是<b>并发会话在飞的 <code>vssaros-codebase</code></b>（<code>codebase_index</code> 新增参数后未重生成快照；新文件 <code>lib/parser/extract.js</code> 未进 <code>files</code>）⇒ <b>不是本次改动</b>，未越界改 ✓</td></tr>
+</table>
+
+<h3>9.4 两条<b>测试自己写错</b>的（都查到真因才改，值得复用）</h3>
+<ul>
+	<li><b>备份"在 vault 之外"的判断少了一个 <code>/</code></b> ✗：备份目录是 vault 的<b>兄弟</b>、名字以 vault 目录名开头（<code>&lt;vaultId&gt;-backup-kborganize-…</code>）⇒ <code>startsWith(vault)</code> <b>恒真</b> ⇒ 那条断言本来会空跑 ✓（被我自己写红后查出 ✓）。</li>
+	<li><b>把"绝对路径"当成必须拒</b> ✗：本模块（与 <code>kb_organize</code> 共用同一助手）的既有口径是"<b>围栏内</b>的绝对路径<b>允许</b>" ✓ —— 而且有用（<code>kb_read</code> / <code>kb_search</code> 回的就是绝对路径 ✓）。要验的是"围栏<b>外</b>的绝对路径必须拒" ✓。</li>
+	<li>顺带给 <code>p3-08</code> 加了 <code>uncaughtException</code> / <code>unhandledRejection</code> 兜底，并把断言里的读盘换成<b>不抛</b>的助手：否则围栏写坏时探针会<b>崩掉、无汇总</b> ⇒ 在反向突变里会被误判成"抓住了" ✗（本仓 p3-04 的教训 ✓）。</li>
+</ul>
+
+<h2>10. 执行记录（2026-10-12 第三轮：第 3 期的 <span class="v">preview 半边</span>已落地）</h2>
+
+<div class="box okbox">
+	<strong>落地清单（kb 插件 <code>0.2.21 → 0.2.23</code>；工具面 66 → <strong>67</strong>，其中 kb 15 个）</strong>
+	<table>
+		<tr><th>文件</th><th>改动</th><th>状态</th></tr>
+		<tr>
+			<td><code>lib/core/kbIngest.js</code> <span class="q">新</span></td>
+			<td>构建预览的<strong>纯逻辑</strong>：<code>SYS_INDEX_FILES</code>（导航文件名）、<code>parseBuildCache</code>、<code>classifyPending</code>（三条判据 + 拒因 + 计数）</td>
+			<td class="v">✓ 已进 <code>files</code>（装出来逐字节一致 ✓）</td>
+		</tr>
+		<tr>
+			<td><code>lib/store.js</code></td>
+			<td><code>previewBuild(vaultDir)</code>：walk <code>库/</code>（跳点开头、只收 <code>.md</code>、跳导航名）+ 读 <code>.kb-build-cache.json</code> + 笔记 mtime（缓存复用 ✓）⇒ 交给纯逻辑分类</td>
+			<td class="v">✓ 只读，不过闸</td>
+		</tr>
+		<tr>
+			<td><code>lib/index.js</code></td>
+			<td>注册 <code>kb_build</code>（<code>mode: preview【缺省】| build</code>）；<code>build</code> <strong>明确报错并指路</strong>；<code>TOOL_NAMES</code> +1</td>
+			<td class="v">✓</td>
+		</tr>
+		<tr>
+			<td><code>common/toolOwnership.ts</code> <span class="q">src/</span></td>
+			<td>登记 <code>kb_build</code>（两侧共享同一份构建缓存 ⇒ 预览必须一致 ✓），并把 <code>kb_search</code> 那条的"同名不同口径"写在注释里</td>
+			<td class="v">✓ 守卫（<code>toolOwnership.test.ts</code>）当场核过 ✓</td>
+		</tr>
+		<tr><td><code>p3-08</code></td><td>+10 条行为断言（无缓存/新鲜/素材被改/笔记不存在/产出不算素材/导航不算素材/坏缓存如实说明/build 报错/缺 vaultId/跨仓库对账）</td><td class="v">✓ 130 → <strong>140/140</strong></td></tr>
+	</table>
+</div>
+
+<h3>10.1 口径（照真源的三条判据，逐条对齐）</h3>
+<p>
+	真源 = IDE 的 <code>collectPendingSources</code>（<code>knowledge/kbVaultFs.ts:97-122</code> ✓ 逐行读过）：
+	<b>① 入口集合</b>＝<code>&lt;vault&gt;/库/</code> 下递归的 <code>*.md</code>，跳过点开头的文件/目录、跳过系统导航名；
+	<b>② 排除构建产出</b>＝构建缓存的 <b>value</b>（已生成笔记的路径）不算素材（防"笔记 → 笔记"的递归 churn）；
+	<b>③ 新鲜度</b>＝无缓存 / 笔记不存在 / <b>笔记 mtime &lt; 素材 mtime</b>（素材在构建后又被改过）⇒ 待构建。
+</p>
+<ul>
+	<li><b>刻意照抄的两处"怪"</b>（不让它变成新的分叉 ✗）：<code>.md</code> 判定<b>区分大小写</b>（<code>.MD</code> 不算素材）、导航文件名<b>区分大小写</b> ——
+		两边必须给出<b>同一个集合</b>，宁可一起"看着怪"，也不要各答一套 ✓。</li>
+	<li><b>一处刻意不同</b> ✓：坏缓存真源静默按空处理，我们<b>多带一条 note</b>（缓存坏掉会让待构建数量全量复活，
+		用户看到"要重建 N 篇"时需要知道是缓存坏了、而不是素材真的都改过 ✓）。</li>
+	<li><b>拒因是导出的、不是猜的</b> ✓：三条判据本身就区分了 <code>未构建</code> / <code>笔记不存在</code> / <code>素材被改过</code>
+		（真源只回路径；我们把判据已经算出来的事实说出来 ✓）。</li>
+	<li><b>跨仓库对账守卫</b> ✓：<code>p3-08</code> 从 IDE 源码文本抽 <code>SYS_INDEX_FILES</code> 与 Host 侧逐项比对
+		（两边各写一份迟早分叉 ⇒ 分叉的后果是"把导航文件当素材"且两边都不报错 ✗）。</li>
+</ul>
+
+<h3>10.2 诚实边界</h3>
+<ul>
+	<li><b>只统计 <code>.md</code></b> ✗：真源在计数前会先 <code>stageDocSourcesToText</code> 把 pdf/docx 等<b>非 md 素材</b>转成文本
+		（原生 IPC 链），dsh 侧没有那条链 ⇒ 本侧不会看到它们（工具描述里写清了 ✓）。</li>
+	<li><b><code>mode: "build"</code> 未实现</b> ✗：真构建是<b>编排</b>（IDE 侧 = 在「知识库专家」agent 里新建会话，让 agent 读素材、写笔记，再补链/门控/导航）。
+		dsh 侧要用自己的原语重做（<code>subagent</code> + <code>kb_write_note</code>，后者已就位 ✓），属<b>产品设计</b>；
+		现在传 <code>build</code> 会<b>明确报错并指路</b>，绝不静默降级成 preview ✓（否则调用方会以为活儿干了 ✗）。</li>
+</ul>
+
+<h3>10.3 验证清单</h3>
+<table>
+	<tr><th>检查</th><th>结果</th></tr>
+	<tr><td><code>p3-08</code>（kb 全量，含 +10 条 <code>kb_build</code> 断言）</td><td class="v">140/140 ✓</td></tr>
+	<tr><td><code>p3-26</code> / <code>p3-38</code></td><td class="v">75/75 ✓ / 27/27 ✓</td></tr>
+	<tr><td><code>tools-snapshot</code> / <code>dshHarness --common</code></td><td class="v">11 插件 / 67 工具一致 ✓；<strong>397 passing / 0 failing</strong> ✓（含同名工具对齐表与工具面覆盖两条守卫 ✓）</td></tr>
+	<tr><td>反向突变（导航不排除 / 新鲜度写反 / 产出不排除 / build 静默降级）</td><td class="v"><strong>4/4</strong> 命中预期断言 ＋ 基线真绿 ＋ 逐字节还原 ✓</td></tr>
+</table>
+
+<h3>10.4 三轮下来的整体状态</h3>
+<table>
+	<tr><th>能力</th><th>IDE 侧</th><th>dsh 侧</th><th>口径</th></tr>
+	<tr><td>文档列表 / 读正文</td><td>—</td><td><code>kb_list</code> / <code>kb_read</code></td><td>dsh 独有</td></tr>
+	<tr><td>检索</td><td>BM25 全文 + 向量（hybrid/fulltext/semantic）</td><td>索引字段（<code>index</code>）+ 正文 BM25（<code>fulltext</code>）</td><td class="v">正文那半逐条同分（黄金表 ✓）；<code>semantic</code> 明确不实现</td></tr>
+	<tr><td>目录摘要 / 整理 / 飞书写读</td><td>✓</td><td>✓</td><td class="v">已对齐</td></tr>
+	<tr><td>写正文 / 建目录</td><td>（编辑器 UI，无工具）</td><td><code>kb_write_note</code> / <code>kb_mkdir</code></td><td>dsh 独有（新能力，已过闸 ✓）</td></tr>
+	<tr><td>构建</td><td>preview + <b>build</b></td><td>preview ＋ <b>build 的 P0</b>（起子代理）</td><td class="v">preview 同口径 ✓；build 见 <a href="dsh-kb-build-orchestration.html">编排方案稿</a> §7：批授权、子代理工具白名单（原生 write/edit 不可见 ✓）；<b>导航/补链/门控未做</b>（P2）</td></tr>
+	<tr><td>语义关联建议 / 大库 FTS5 / 模型真调</td><td>—</td><td>未做</td><td>前置未满足 / 缺夹具 / 另开一条 ✓</td></tr>
+</table>
+
+</body>
+</html>

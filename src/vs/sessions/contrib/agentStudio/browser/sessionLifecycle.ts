@@ -32,6 +32,13 @@ export interface ISessionLifecycleDeps {
 	fireSessionsChanged: (agentId: string) => void;
 	/** **专门**的"会话被删除"事件（携带 sessionId ⇒ 正显示它的面板能切走 ✓）。 */
 	fireSessionDeleted: (agentId: string, sessionId: string) => void;
+	/**
+	 * ★ 2026-10-13：会话创建时所在的工作区（`IAgentStudioService.getActiveWorkspaceId()` 的取法）。
+	 * **可选**：装配方不传 ⇒ 新建会话不写该字段（读侧落未分组，未知不伪装）。
+	 * ⚠ 本簇目前**没有被实例化**（活实现在 `agentChatService.createAgentSession`）——
+	 * 这里同步补齐是为了"将来谁把它接上线"时**不会静默丢掉归属**。
+	 */
+	activeWorkspaceId?: () => string | undefined;
 }
 
 /**
@@ -107,6 +114,8 @@ async createAgentSession(
 		createdAt: now,
 		updatedAt: now,
 		messageCount: 0,
+		// 与活实现（`agentChatService.createAgentSession`）同步：创建时记下工作区归属。
+		workspaceId: this.deps.activeWorkspaceId?.(),
 	};
 
 	if (!(await this.deps.fileService.exists(paths.sessionsDirUri))) {

@@ -3,8 +3,9 @@
   "_howToRefresh": "node src/vs/sessions/contrib/agentStudio/test/common/run-all-common-tests.mjs 然后比对 '✗ N 个套件未通过' 段落",
   "_baselineTotals": {
     "passing": 1789,
-    "failing": 20,
-    "suites": 82
+    "failing": 4,
+    "suites": 82,
+    "_note": "2026-09-19 归档时 failing=20、suites=82；2026-10-12 销账 `toolSearchAssembler`（7 例已修复）⇒ 13；2026-10-14 销账 4 个套件共 9 例 ⇒ **4**（只剩 `agentRunState`，理由见其 cause ✓）。passing/suites 为归档时快照，仅作历史参考，跑批器只读 failingSuites。"
   },
   "failingSuites": {
     "agentRunState": {
@@ -13,45 +14,7 @@
       "cases": [
         "AgentRunState - reducer (reducer 化 Step 1)"
       ],
-      "cause": "2026-09-20 排查：① 3 例断言 state.reducerMode==='reducer'（L87/L102/L735），但该字段在 common/agentRunState.ts 全文 0 处出现，且 browser/agentOSService.ts:2665-2667 注释已明确记录它「在 CreateInitialRunStateRequest 里不存在、全仓无第二处使用 ⇒ 凭想象写的字段（TS2353）」⇒ 实现侧已弃用，测试侧待裁决；② 1 例断言 incompleteTurnDiscardReason('length')==='unfinished-intent'（L505），但实现自 2026-09-18 起有意返回 undefined（保留本轮文本，见 agentRunState.ts:1586-1592 注释）。⇒ 两种读法（测试陈旧 / Step 1 未落地）都可能，属该面负责人在飞工作，勿单方面改测试。"
-    },
-    "contextCompression": {
-      "file": "test/common/contextCompression.test.ts",
-      "failing": 4,
-      "cases": [
-        "Agent Studio - Context Compression (Hermes 三段式)"
-      ]
-    },
-    "planTaskFieldContract": {
-      "file": "test/common/planTaskFieldContract.test.ts",
-      "failing": 3,
-      "cases": [
-        "Plan task field contract"
-      ]
-    },
-    "resilience": {
-      "file": "test/common/resilience.test.ts",
-      "failing": 1,
-      "cases": [
-        "computeAdaptiveFirstTokenTimeout"
-      ]
-    },
-    "toolExtraction": {
-      "file": "test/common/toolExtraction.test.ts",
-      "failing": 1,
-      "cases": [
-        "Agent Studio - Tool Call Extraction"
-      ]
-    },
-    "toolSearchAssembler": {
-      "file": "test/common/toolSearchAssembler.test.ts",
-      "failing": 7,
-      "cases": [
-        "ToolSearchAssembler — isDeferrableTool",
-        "ToolSearchAssembler — classifyTools",
-        "ToolSearchAssembler — assembleToolDefs",
-        "ToolSearchAssembler — scopedDeferrableNames"
-      ]
+      "cause": "2026-09-20 排查：① 3 例断言 state.reducerMode==='reducer'（L87/L102/L735），但该字段在 common/agentRunState.ts 全文 0 处出现，且 browser/agentOSService.ts:2665-2667 注释已明确记录它「在 CreateInitialRunStateRequest 里不存在、全仓无第二处使用 ⇒ 凭想象写的字段（TS2353）」⇒ 实现侧已弃用，测试侧待裁决；② 1 例断言 incompleteTurnDiscardReason('length')==='unfinished-intent'（L505），但实现自 2026-09-18 起有意返回 undefined（保留本轮文本，见 agentRunState.ts:1586-1592 注释）。⇒ 两种读法（测试陈旧 / Step 1 未落地）都可能，属该面负责人在飞工作，勿单方面改测试。 ⚠ 2026-10-14 复核：结论未变（这三例引用的字段在实现里确实不存在 ⇒ 要么删掉这三例、要么落地那个字段，属**产品裁决**），故继续保留在基线里 ✓。"
     }
   }
 }

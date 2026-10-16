@@ -1,0 +1,62 @@
+{
+  "name": "@vssaros/dsh-kanban",
+  "version": "0.4.15",
+  "description": "VsSaros kanban module for DeepSeek Harness: reads the same taskboard.json the IDE writes, exposes read-only tools and a self-hosted page. Data contract: src/vs/sessions/common/agentStudioTypes.ts",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/client.js",
+    "lib/pageShell.js",
+    "lib/board.js",
+    "lib/sideview.js",
+    "lib/store.js",
+    "lib/core/taskboard.js",
+    "cordis.patch.yml"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/dsh": ">=0.1.7-0 <0.3.0-0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": [
+        "./cordis.patch.yml"
+      ]
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-slots"
+      ]
+    }
+  },
+  "vssaros": {
+    "manifestVersion": 1,
+    "module": "kanban",
+    "activityBar": {
+      "containerId": "agentStudio.tasks",
+      "title": "Tasks",
+      "icon": "codicon:tasklist",
+      "order": 70
+    },
+    "view": {
+      "kind": "page",
+      "route": "/x/kanban/"
+    },
+    "ideCapabilities": [
+      "taskboard"
+    ],
+    "owns": [
+      "taskboard.json",
+      "boards.json"
+    ],
+    "legacyCounterpart": "agentStudio.tasks"
+  },
+  "license": "MIT"
+}

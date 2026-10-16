@@ -267,6 +267,7 @@ export function buildPlanSystemReminder(planFilePath?: string): string {
 		'```',
 		'## Tasks',
 		'### Task N: <title>',
+		'- Role: <one or two words, e.g. Backend Developer — the kind of agent this task needs>',
 		'- Description: <work/analysis to perform and acceptance criteria>',
 		'- Files: <comma-separated paths, data sources, or none>',
 		'- Dependencies: <task numbers/titles, or none for parallel execution>',
@@ -274,6 +275,13 @@ export function buildPlanSystemReminder(planFilePath?: string): string {
 		'- Complexity: low|medium|high',
 		'```',
 		'Independent tasks MUST declare `Dependencies: none` so they run in parallel.',
+		// ★ 2026-10-14 补：`- Role:` 这条此前**只在解析侧存在**（`workMode.parseTaskBlock` 认 `role` ⇒
+		//   `suggestedRole` ⇒ `agentFactory._calcCapabilityScore` 按词打分），而模板从不要求模型输出它
+		//   ⇒ 那个字段**永远拿不到值**、匹配恒定落到中性 0.5（"半截特征"：解析器与打分器都写好了，模型不知道要写 ✗）。
+		//   两侧的契约由 `test/common/planTaskFieldContract.test.ts` 钉住（它就是这么发现的 ✓）。
+		//   ⚠ Role 必须**短**：打分是"命中词数 / 关键词数"，长短语会把分数摊薄 ⇒ 一并写进提示 ✓。
+		'Keep `Role` to one or two words — agent matching scores it word-by-word, so a long',
+		'phrase dilutes the score and the task may land on the wrong agent.',
 		'Also include: recommended approach, critical file paths, and a verification section.',
 		'',
 		'### Phase 5: Call plan_exit',

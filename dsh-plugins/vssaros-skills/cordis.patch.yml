@@ -1,0 +1,25 @@
+# @vssaros/dsh-skills bundle patch: insert the skills row.
+#
+# Page route is registered as the loader prefix `/x/skills` (no trailing slash — a prefix route
+# matches `p` and `p/<anything>`); the manifest keeps `/x/skills/` because that is the URL VsSaros loads.
+#
+# `config.dataRoot` / `config.skillsRoot` stay empty on purpose: without them the plugin reads
+# `<dataRoot>/skills` with dataRoot defaulting to `~/.vssaros`. VsSaros injects the real data root
+# through a `--patch` overlay targeting this id when the IDE data root is customized (same mechanism
+# the vssaros-bridge and vssaros-kanban rows use).
+#
+# 容器说明：本模块与 @vssaros/dsh-mcp **共容器**（agentStudio.integration，方案 6.11.5 决议①）：
+# 清单仍 1 插件 : 1 容器，容器的可见性由 VsSaros 侧聚合表按"已激活模块集合"计算。
+- insert:
+    - id: vssaros-skills
+      name: '@vssaros/dsh-skills'
+      config: {}
+# ── 打开被随包层**关掉的消费者**（2026-10-12）──────────────────────────────────────────
+# `dsh --profile vssaros --dump-config` 里能看到：base 的 `tool-skill` 那一行被
+# `@deepseek-ai/dsh-web-app` **patch 成 `disabled: true`** ✓ ⇒ 原生 `skill` 工具**从不注册** ✗
+# ⇒ 我们的技能来源**注册了也无人使用**（技能进不了模型视野 ✗）—— 页面自诊断里
+# `data-vssaros-native-skill-tool` 长期为 `absent` 就是这个原因（**不是**"dsh 没有这个工具" ✗：
+# 包就在 runtime 里、dsh 自己还依赖它 ✓）。
+# 本模块的层在 web-app **之后** ⇒ 这一条把开关翻回来 ✓（只翻 `disabled`，不动它的其它配置 ✓）。
+- id: tool-skill
+  disabled: false

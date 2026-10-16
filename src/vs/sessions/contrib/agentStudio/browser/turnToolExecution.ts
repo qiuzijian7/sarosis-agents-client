@@ -94,9 +94,16 @@ export function createErrorToolResult(call: ITurnToolCall, message: string): ITu
  * `_executeToolCallsParallelStreaming(calls)`，没有「执行单个已准备调用」的语义。
  *
  * `resolveToolExecutionMode` 是 `prepareToolCall` 的唯一消费者，随之删除。
- * 注意 `IToolDefinition.executionMode`（`common/providers.ts:1186`）**仍然保留**：
- * 那是声明式顺序性迁移的目标形态，只是现存工具尚无一个声明，判据还全靠
- * `agentTurnExecutor.ts` 的名单（`CHURN_MULTI_TARGET_WRITE_TOOLS` 等）兜底。
+ * ⚠ 订正（2026-10-12）：本段此前写着「`IToolDefinition.executionMode`（
+ * `common/providers.ts:1186`）仍然保留」—— **该字段并不存在** ✗。`IToolDefinition`
+ * 从来没有 `executionMode`；同名的 `ToolExecutionMode` 只属于 piLoop 自己的
+ * `AgentTool`（`browser/piLoop/types.ts`，适配层在 `piLoop/toolAdapter.ts` 转换）。
+ * 顺序性/并发的现有判据是三份**按工具名维护**的集合，都在
+ * `browser/toolCallUtils.ts`：`PARALLEL_SAFE_TOOLS` / `NEVER_PARALLEL_TOOLS` /
+ * `PATH_SCOPED_TOOLS`（消费点 `shouldParallelizeToolBatch`），且主循环整体由产品
+ * 决策关闭（`MAIN_LOOP_PARALLEL_TOOLS_ENABLED = false`，2026-07-22）。
+ * 将来要做"声明式并发"，落点是 `IToolDefinition` 加字段并让这三份集合退为兜底 ——
+ * 当前**刻意不加**：主循环并行既然关闭，加一个零消费者的字段就是死代码 ✗。
  *
  * ⚠ 不要因为「pi 有三段式而我们只剩一段」就把它们加回来。留在生产的是
  * `finalizeToolCall` —— 它能接线恰恰因为收尾阶段确实是逐调用、且原本有三份

@@ -31,7 +31,7 @@ import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IRequestService, asText } from '../../../../platform/request/common/request.js';
 import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
-import { ISkillRegistry, ISkillDefinition } from '../common/skills.js';
+import { ISkillRegistry, ISkillDefinition, isSkillReadOnly } from '../common/skills.js';
 import { ISkillLifecycleService, SkillLifecycleEvent, ISkillLifecyclePayload } from '../common/skillLifecycle.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 
@@ -465,10 +465,12 @@ export class SkillInstallService extends Disposable implements ISkillInstallServ
 			return false;
 		}
 
-		// 内置技能不可卸载
-		if (skill.source === 'builtin') {
-			this.logService.warn(`[SkillInstall] uninstallSkill("${skillId}"): rejected — builtin skill is read-only`);
-			throw new Error(`内置技能 "${skillId}" 不允许卸载。`);
+		// 只读来源（内置 / dsh 插件自带）不可卸载。
+		// ⚠ 下面是**真删目录**（`fileService.del`）⇒ 插件技能（文件在插件包里）漏判 = 删掉依赖产物 ✗✗
+		//   （2026-10-13 P2 引入 `'plugin'` 来源时同步收口，见 `common/skills.ts` 的 `isSkillReadOnly`）
+		if (isSkillReadOnly(skill.source)) {
+			this.logService.warn(`[SkillInstall] uninstallSkill("${skillId}"): rejected — ${skill.source} skill is read-only`);
+			throw new Error(`技能 "${skillId}" 来自只读来源（${skill.source}），不允许卸载。`);
 		}
 
 		if (!skill.resource) {

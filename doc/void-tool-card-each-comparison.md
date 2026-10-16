@@ -2,6 +2,12 @@
 
 > 生成日期：2026-05-27
 > 逐一对比每个工具/卡片类型在两个项目中的渲染差异
+>
+> **⚠ 订正（2026-10-12）**：下文多处把 `ToolDisplayRegistry`（`webview/src/utils/toolDisplayRegistry.ts`）
+> 当作我们的"配置化标题/图标"实现来对比，但该模块**从未接线**（零消费点，`WorkflowRunCard.tsx`
+> 也从未创建），已于 2026-10-12 删除。现在的真相见 `doc/void-tool-card-comparison.md` 顶部订正块：
+> 卡片由 `browser/nativeChatEditorPane.ts` 直注入 `renderType`，dsh 侧走 `tool.call.toolview` 槽。
+> **凡提及 `ToolDisplayRegistry` 之处按"当时的设计意图"阅读。**
 
 ---
 

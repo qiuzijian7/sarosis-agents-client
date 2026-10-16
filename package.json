@@ -1,6 +1,6 @@
 {
   "name": "vssaros",
-  "version": "2.2.26055",
+  "version": "2.2.26056",
   "distro": "adf5d4ef5d36b1829d04e2a6f5255c5344cb0316",
   "author": {
     "name": "Microsoft Corporation"
@@ -15,11 +15,14 @@
     "test-browser": "npx playwright install && node test/unit/browser/index.js",
     "test-browser-no-install": "node test/unit/browser/index.js",
     "test-node": "mocha test/unit/node/index.js --delay --ui=tdd --timeout=5000 --exit",
+    "check:dsh-plugins": "node dsh-plugins/check-host-config.mjs && node dsh-plugins/check-chat-surface-chunks.mjs && node dsh-plugins/check-persistence-catalog.mjs",
+    "test:dsh-composition": "node dsh-plugins/test-real-composition.mjs",
     "test-extension": "vscode-test",
     "test-build-scripts": "cd build && npm run test",
     "test-agentstudio-common": "node src/vs/sessions/contrib/agentStudio/test/common/run-all-common-tests.mjs",
     "test-agentstudio-browser": "node src/vs/sessions/contrib/agentStudio/test/browser/run-all-browser-tests.mjs",
     "test-agentstudio-panel": "node src/vs/sessions/contrib/agentStudio/test/browser/test-server.mjs",
+    "test-session-history": "node src/vs/sessions/contrib/sessionHistory/test/run-sessionhistory-tests.mjs",
     "verify-browser-cdp": "node scripts/verify-browser-cdp.mjs",
     "smoke-agent-layout": "node scripts/agent-layout-smoke.mjs",
     "smoke-agent-layout-parse": "node scripts/agent-layout-smoke.mjs --parse-only",

@@ -138,7 +138,10 @@ export function TaskBoardPanel(): React.ReactElement {
 			worktreePath: data.worktreePath || undefined,
 			dependencies: data.dependencies,
 			status: 'todo',
-			source: 'task-board',
+			// ⚠ 必须写**宿主 enum 里有的值**（README 5.120）：原先写 `'task-board'` ✗ —— 宿主
+			// `createTask` 是 `source: data.source || TaskSource.Manual`（不校验 ✓），于是这个值
+			// 会**真的落进** `taskboard.json` ✓，而它在 `TaskSource` 里不存在 ✗（面板建卡=手工建卡 ✓）。
+			source: 'manual',
 			workspaceId: wsId,
 			workflowId: data.workflowId,
 		});

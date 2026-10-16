@@ -71,11 +71,17 @@ suite('协议解析收敛 — common 单一实现', () => {
 			);
 		});
 
-		test(`★ ${label} 必须 import common 版解析函数`, () => {
+		test(`★ ${label} 必须复用 common 版（直接 import 解析器，或 import common 编排）`, () => {
 			const source = readStudioFile(relativePath);
+			// ⚠ 2026-10-14 修：原先只认"直接 import `../common/protocols/sseParsers.js`"。此后编排又
+			//   下沉了一层：renderer 现在 import 的是 `runChatStream.js`（重试退避 → 读流 → 解析 → done
+			//   收尾，与主进程路径**共用同一实现**）+ `requestBuilder.js`，真正解析的那几个函数由 common
+			//   内部 import ⇒ 这是**更深的收敛**，不是回退 ✓（判据写死成"必须直接 import sseParsers"
+			//   会把更彻底的收敛误判成红 ✗）。这里改认"落到 common/protocols 的任一入口"✓，
+			//   并**另用一条断言钉住那条链**（见下面 suite：编排层自己必须 import sseParsers）✓。
 			assert.ok(
-				/from\s+'\.\.\/common\/protocols\/sseParsers\.js'/.test(source),
-				`${label} 未从 common/protocols/sseParsers.js 导入 —— 收敛已回退。`,
+				/from\s+'\.\.\/common\/protocols\/(?:sseParsers|runChatStream|requestBuilder)\.js'/.test(source),
+				`${label} 未复用 common/protocols 的解析/编排 —— 收敛已回退。`,
 			);
 		});
 	}
@@ -93,6 +99,18 @@ suite('协议解析收敛 — common 单一实现', () => {
 	});
 
 	suite('收敛不得丢失能力（renderer 独有行为已改为回调注入）', () => {
+
+		test('★ 收敛链不许断：common 编排层自己必须 import `./sseParsers.js`', () => {
+			// 上面那条已放宽为"import 任一 common/protocols 入口"（编排下沉后 renderer 不再直接引用
+			// 解析器 ✓）⇒ **这条负责钉住链的另一半**：编排层必须真的落到 sseParsers，否则"renderer 只
+			// import 编排"会变成"没人用 common 解析器"、两边又能各自长出私有实现 ✗。
+			for (const rel of ['common/protocols/runChatStream.ts', 'common/protocols/protocolRegistry.ts']) {
+				assert.ok(
+					/from\s+'\.\/sseParsers\.js'/.test(readStudioFile(rel)),
+					`${rel} 必须 import './sseParsers.js' —— 它是解析层的唯一上游，断了收敛链就名存实亡 ✗`,
+				);
+			}
+		});
 
 		test('★ common 版 extractUsage 必须产出 reasoning token（renderer 旧版曾丢失）', () => {
 			const source = readStudioFile('common/protocols/sseParsers.ts');

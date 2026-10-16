@@ -27,6 +27,7 @@ import type { BuiltRequest, IRequestBuilder, ParseMode, RequestBuildInput } from
 import type { IModelInfo } from '../providers.js';
 import { MessageFormatConverter } from '../adapters/messageFormatConverter.js';
 import { isStrictApplicable } from '../adapters/toolSchemaStrict.js';
+import { isMcpSourcedTool } from '../toolApprovalPolicy.js';
 
 /** 结构化日志回调（与 `ChatStreamHooks.log` 同形，便于直连调用方直接透传）。 */
 export type RequestBuildLogFn = (level: 'info' | 'warn' | 'error', message: string) => void;
@@ -251,7 +252,7 @@ export class RequestBuilder implements IRequestBuilder {
 			// 透传上层（agent loop 续跑兜底）指定的 tool_choice；默认 'auto'。
 			// 'required' 用于强制模型在续跑这一轮必须调用工具，治"宣告意图却不动手"。
 			body.tool_choice = options.toolChoice ?? 'auto';
-			const mcpToolCount = options.tools.filter(t => t.category?.startsWith('mcp:')).length;
+			const mcpToolCount = options.tools.filter(t => isMcpSourcedTool(t)).length;
 			this._log(
 				'info',
 				`sending ${options.tools.length} tools ` +

@@ -1,0 +1,18 @@
+# @vssaros/dsh-ide bundle patch: insert the IDE-capability row.
+#
+# 挂载形态：**无界面模块**（清单 `view.kind=none`）——本插件不占容器、不开页面、不注册 ActivityBar，
+# 只做一件事：把 VsSaros 的 IDE 能力注册成 dsh 工具。所以它在聚合表里**没有**承载容器
+# （`DSH_BUILTIN_MODULES` 有 `ide`、`DSH_MODULE_CONTAINERS` 没有），清单必须显式声明 `none`，
+# 由结构守卫保证"容器与 none 互斥"（README 4.53）。
+#
+# 依赖方向：本行 `inject: ['tools', 'vssarosBridge']`——`vssarosBridge` 由伴生插件 @vssaros/dsh-bridge
+# `ctx.provide`（出站原语 `callIDE`）。没有它就没有反向通道，工具会明确报"控制桥不可用"而不是假装成功。
+#
+# `config.timeoutMs` 只作**下限基线**（缺省 20000，仍可调大）。真正用的是 `lib/index.js: bridgeTimeoutMs()`：
+# 按操作语义镜像 VsSaros 的"渲染侧等待预算"（20s 默认 / 120s 慢档）再留 5s 余量，并给**需用户确认的 op**
+# 加一条 70s 下限（VsSaros 侧同意窗口 60s）。这样 renderer 侧那句能指导排查的错误总是先到，
+# 而不是被本侧一句干巴巴的超时盖掉——固定值曾导致 `browser.type` 的用户还在读确认框、Host 侧已超时。
+- insert:
+    - id: vssaros-ide
+      name: '@vssaros/dsh-ide'
+      config: {}

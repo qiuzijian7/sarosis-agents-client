@@ -16,10 +16,13 @@
  *   这里同样以 user-message 形式提供给 ExecutionProvider，让上层决定何时
  *   合并到对话中（典型路径：`/skill <name>` 或被 PlanningProvider 自动选用）。
  *
- * Skill 来源（按优先级合并，重名后注册的覆盖前者）：
- *   1. 内置目录   `extensions/.../skills/*` （随产品发布）
- *   2. 用户全局目录   `~/.vssaros/skills/<id>/SKILL.md`
- *   3. 由扩展通过 `IAgentOSService` 运行时 register 的内存 skill
+ * Skill 来源（按优先级合并，重名后注册的覆盖前者；清单与顺序的单一真源是
+ * `common/skillRoots.ts` 的 `SKILL_ROOT_SPECS`，这里只列种类）：
+ *   1. 项目级 `<工作区>/.dsh/skills`、`<工作区>/.agents/skills`（仅受信任工作区）
+ *   2. 用户全局 `~/.vssaros/skills/<id>/SKILL.md` 与官方用户级 `<DSH_HOME>/skills`
+ *   3. 内置目录 `resources/.agents/skills/*`（随产品发布）
+ *   4. **dsh 插件自带** `<插件包>/skills/<id>/SKILL.md`（`source: 'plugin'`，只读；见 `isSkillReadOnly`）
+ *   5. 由扩展通过 `IAgentOSService` 运行时 register 的内存 skill / 商城 / workflow
  */
 
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
@@ -51,8 +54,18 @@ export interface ISkillDefinition {
 	readonly recommendedTools?: readonly string[];
 	/** 注入到对话中的正文（已去除 frontmatter） */
 	readonly prompt: string;
-	/** 来源标记，用于 UI 区分内置 / 用户 / 商城 / 扩展 / 内存 / 工作流（作为可执行技能） */
-	readonly source: 'builtin' | 'user' | 'marketplace' | 'extension' | 'memory' | 'workflow';
+	/**
+	 * 来源标记，用于 UI 区分内置 / **项目级** / 用户 / 商城 / 扩展 / 内存 / 工作流（作为可执行技能）。
+	 *
+	 * `'project'`（2026-10-13 P1）：工作区里自带的技能（`<工作区>/.dsh/skills`、`<工作区>/.agents/skills`），
+	 * **只在工作区受信任时**才会被扫描（提示词注入面 ⇒ 见 `common/skillRoots.ts`）；
+	 * 优先级高于用户级/商城，低于 workflow/runtime（见 `SKILL_SOURCE_RANK`）。
+	 *
+	 * `'plugin'`（2026-10-13 P2）：**dsh 插件包自带的技能**（`<插件包>/skills/<name>/SKILL.md`，
+	 * 例如第三方插件 `@tt-a1i/archify-dsh`）。所有者是**插件包**、不是用户 ⇒ 与内置同属
+	 * {@link isSkillReadOnly} 的只读来源（不可编辑/卸载/上架 ✗：写进去就是改 `node_modules` 里的依赖产物）。
+	 */
+	readonly source: 'builtin' | 'project' | 'user' | 'marketplace' | 'extension' | 'memory' | 'workflow' | 'plugin';
 	/** Skill 文件 URI（可选，用于「在编辑器中打开」） */
 	readonly resource?: URI;
 	/**
@@ -198,6 +211,20 @@ export interface ISkillRegistry {
 
 	/** 触发一次重扫（用户安装/卸载 skill 后或文件改动）。 */
 	reload(): Promise<void>;
+}
+
+/**
+ * 该来源的技能是否**只读**（不属于用户 ⇒ 不允许编辑 / 打补丁 / 卸载 / 上架）。
+ *
+ * 为什么要有这个判定（2026-10-13）：`'plugin'` 来源（dsh 插件包自带的技能）的**所有者是插件包**，
+ * 而它落在 `node_modules` / `profile/.vssaros/plugins` 里 —— 卸载/编辑直接写那些目录 = 改依赖产物
+ * （本仓明确禁止：写入会被包管理器静默回滚，还会让插件校验失败 ✗）。
+ *
+ * ⚠ 新增只读来源时**只改这里**：各写入点一律调本函数，别再各写一遍 `source === 'builtin'`
+ * （漏一处就是"能删掉插件包里的文件"这一类 ✗，`skillRoots.test.ts` 有守卫钉住调用面）。
+ */
+export function isSkillReadOnly(source: ISkillDefinition['source']): boolean {
+	return source === 'builtin' || source === 'plugin';
 }
 
 /**

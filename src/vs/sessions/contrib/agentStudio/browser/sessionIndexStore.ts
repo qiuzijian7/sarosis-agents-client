@@ -24,6 +24,17 @@ export interface AgentSessionMeta {
 	updatedAt: string;
 	messageCount: number;
 	/**
+	 * ★ 2026-10-13：该会话**创建时所在的工作区**（`IAgentStudioService.getActiveWorkspaceId()`）。
+	 *
+	 * 为什么补这个字段：侧栏（`SessionHistoryViewPane`）按工作区分组时只能**旁路**去读全局会话
+	 * 注册表（`AgentStudioSession.workspaceId`），而**聊天创建会话这一路从来没写过那张表**
+	 * ⇒ 注册表文件在真机上往往根本不存在 ⇒ 所有会话都落「未分组」（2026-10-13 在真机数据上盘证过：
+	 * `chat-history/<agent>/sessions.json` 无该字段、全局 `sessions.json` 不存在）。
+	 *
+	 * **可选**：老会话没有这个字段 ⇒ 读侧就是"未知"（落未分组），**不猜**（沿用"未知不伪装"的家规）。
+	 */
+	workspaceId?: string;
+	/**
 	 * ★ 2026-09-20（用户需求）：**这个名字是用户手动起的**。
 	 *
 	 * 首条消息发出去时，`NativeChatEditorPane` / webview `useChatStore` 会把会话名

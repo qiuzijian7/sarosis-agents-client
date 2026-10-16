@@ -14,7 +14,7 @@
  * 5. 3D Graph Viewer 直接调用 API 获取数据（无 MCP stdio 开销）
  */
 
-import { Disposable, DisposableStore, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -37,10 +37,7 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { createCodebaseGraphSqliteBackend } from './codebaseGraphStoreProxy.js';
-import { createCodebaseGraphIndexChannel } from './codebaseGraphIndexProxy.js';
-import type { ICodebaseGraphIndexChannel } from '../common/codebaseGraphIndexChannel.js';
 import type { ICodebaseGraphSqliteBackend } from '../common/codebaseGraphStoreChannel.js';
-import { IUtilityProcessWorkerWorkbenchService } from '../../../../workbench/services/utilityProcess/electron-browser/utilityProcessWorkerWorkbenchService.js';
 import { LspCrossResolver } from './codebaseGraphLsp.js';
 import { extractInherits } from './codebaseGraphQueries.js';
 import { INDEX_LOCK_FILENAME, INDEX_LOCK_HEARTBEAT_MS, createIndexLockToken, isIndexLockStale, parseIndexLock, serializeIndexLock } from './codebaseIndexLock.js';
@@ -53,7 +50,7 @@ import { linkConfigToCode } from './codebaseGraphConfigLink.js';
 import { TraceIngester } from './codebaseGraphTraces.js';
 import { ICodebaseGraphWatcher, CodebaseGraphWatcher, CodebaseGraphChangeEvent } from './codebaseGraphWatcher.js';
 import { CodebaseGraphIncrementalIndexer } from './codebaseGraphIncremental.js';
-import { shouldRecordHashAfterParse, EXTENSION_TO_WASM_LANG, AST_TO_NODE_TYPE, planForeignProjectPrune } from '../common/codebaseIndexDefaults.js';
+import { shouldRecordHashAfterParse, EXTENSION_TO_WASM_LANG, AST_TO_NODE_TYPE, planForeignProjectPrune, isDshProducedManifest } from '../common/codebaseIndexDefaults.js';
 import { resetMaxBlockMs, takeMaxBlockMs, wsStage, wsStageEnd } from './wsSwitchDiag.js';
 import { SLICE_CHECK_EVERY, sliceBudgetExceeded, yieldToEventLoop } from '../common/asyncSlice.js';
 import { CodebaseGraphExcludeResolver } from './codebaseGraphExcludeResolver.js';
@@ -1022,7 +1019,6 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
 		@IMainProcessService private readonly _mainProcessService: IMainProcessService,
 		@IInstantiationService private readonly _instantiationService: IInstantiationService,
-		@IUtilityProcessWorkerWorkbenchService private readonly _utilityProcessWorkerService: IUtilityProcessWorkerWorkbenchService,
 	) {
 		super();
 		this._excludeResolver = this._instantiationService.createInstance(CodebaseGraphExcludeResolver);
@@ -1036,24 +1032,12 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		// renderer sandbox 不能加载原生模块，SQLite 宿主在 main 进程，这里只是透明代理。
 		this._sqliteBackend = createCodebaseGraphSqliteBackend(this._mainProcessService);
 
-		// ★★★ 2026-09-19（P2-1 Step 3「方案 B」**探活**）：证明 renderer **能起索引 worker 并取到通道**。
-		//
-		// 与 Step 2 的差别（重要）：那条路径是 renderer → **main 进程**宿主（现已被否定并删除 ✗ ——
-		// main 侧 `createWorker` 是「窗口请求的服务端」，不提供 client channel）。
-		// 现在走框架既定用法：renderer 自己 `createWorker` 直连 utility process（同 `watcherClient.ts` ✓）。
-		// ⇒ 本探活是**唯一**能证明「进程能起 + 入口模块被解析 + 通道名一致」的证据 ✓。
-		// ⚠ 代价：会在启动时真起一个 utility process（这正是 Phase 1 想要的那个进程 ✓）；
-		//   入口模块是诚实桩（`runIndex` 返回 not implemented）⇒ **不触发任何索引** ✓，对索引行为零影响。
-		// ⚠ 失败必须**响亮**：起不来/通道名漂移都会让这里 reject，绝不能静默（本仓反复踩过"静默"✗）。
-		this._indexWorkerDisposables = this._register(new DisposableStore());
-		this._indexChannel = createCodebaseGraphIndexChannel(
-			this._utilityProcessWorkerService,
-			this._logService,
-			this._indexWorkerDisposables,
-		);
-		void this._indexChannel.isRunning('_probe')
-			.then(ok => this._logService.info('[CodebaseGraph]', `[index-channel] 探活 OK：isRunning=${ok}（P2-1 Step 3：索引 utility process 直连已连通；编排尚未搬迁）`))
-			.catch(err => this._logService.warn('[CodebaseGraph]', `[index-channel] 探活失败：${err?.message || err}（索引 worker 未启动/通道未连通 ✗）`));
+		// ★★ 2026-10-13（**删除索引 worker 通道**，用户裁决「权限都在 dsh 侧全权处理、逻辑也都转移到 dsh 侧」）：
+		// 这里原有「P2-1 Step 3 探活」—— 启动时真起一个索引 utility process、只为证明"进程能起 + 通道能通"。
+		// 那个进程的 `runIndex` 是**诚实桩**（零调用点、不索引任何东西 ✓），而**编排已决定不搬进 IDE** ⇒
+		// 整条通道（契约 / 入口 / 代理 / 行为测试，~720 行）再也没有存在理由 ✗ ⇒ 连同探活一起删除 ✓
+		//（连带省掉启动时一个 utility process ✓）。索引能力本身不受影响：IDE 侧只在 dsh 缺席时于
+		//  renderer 走 `indexWorkspace()`（本文件），权限归 dsh 时则被 `_isIndexOwnedByDsh()` 挡住 ✓。
 
 		// 文件监听 → 增量重索引（P2-#8）。事件仅在 startWatching() 调用 start() 后产生。
 		this._register(this._graphWatcher.onDidChange(e =>
@@ -1091,19 +1075,6 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 	 * 启用：`"saros.codebaseGraph.sqliteBackend": true`（实验性，根治 V8 4GB 的开关之一）。
 	 */
 	private readonly _sqliteBackend: ICodebaseGraphSqliteBackend;
-
-	/**
-	 * ★ 2026-09-19（P2-1 Step 3）：渲染侧持有的**索引通道**（直连索引 utility process，方案 B ✓）。
-	 * 惰性建进程 ⇒ 构造它本身零成本；真正起 worker 的是第一次方法调用（当前只有构造期的探活 ✓）。
-	 */
-	private readonly _indexChannel: ICodebaseGraphIndexChannel;
-
-	/**
-	 * 索引 worker 句柄的归属（窗口销毁时随之终止 ✓）。
-	 * 用 `DisposableStore` 而不是直接 `_register(worker)`：worker 是**惰性**创建的，
-	 * 外部无法在构造期拿到它 ⇒ 只能把「容器」交出去，由代理在创建后往里塞 ✓。
-	 */
-	private readonly _indexWorkerDisposables: DisposableStore;
 
 	/**
 	 * 主进程 SQLite 后端是否启用：**默认开启**。
@@ -2146,6 +2117,20 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			return { success: false, message: '索引正在进行中，请稍候...', rootPath, kind: 'full' };
 		}
 
+		// ★ 2026-10-13（**权限在 dsh 侧，IDE 只读**）：这个工作区的图谱若由 dsh 负责 ⇒ 直接返回，
+		// **连扫描都不做** ✓（一轮全量索引是分钟级的；既然不落盘，跑了也只是白烧 CPU 与内存 ✗）。
+		// ⚠ 位置必须在 `this._isIndexing = true` **之前** —— 否则会置了旗又提前 return，
+		//   后续所有索引都被"索引正在进行中"永久挡住 ✗✗（本仓踩过同型的旗标泄漏 ✓）。
+		// ⚠ 这条**同时挡住显式路径**（面板按钮 / LLM 工具）：用户裁决是"全权在 dsh"，所以显式触发
+		//   也该去 dsh 侧（`codebase_index`），而不是在 IDE 里各写各的 ✗ —— 返回里的 message 会说清去处 ✓。
+		if (await this._isIndexOwnedByDsh(rootPath)) {
+			const message = '这个工作区的代码图谱由 dsh 负责（artifact.json 里 producer=vssaros-dsh）'
+				+ '⇒ 本窗口不扫描、不落盘（用户裁决：权限都在 dsh 侧）。'
+				+ '要重建图谱，请在 dsh 侧触发 codebase_index ✓';
+			this._logService.info('[CodebaseGraph]', `[ownership] indexWorkspace skipped for "${rootPath}" — owned by dsh.`);
+			return { success: false, message, rootPath, kind: 'full' };
+		}
+
 		this._isIndexing = true;
 		this._indexCts = cts;
 		// 解析期内存看门狗状态每轮重置（见 `_parseMemoryWatchdog`）；基线堆供软告警按增量判定
@@ -3155,6 +3140,8 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 	 */
 	private async _saveGraph(rootPath: string, project?: string): Promise<void> {
 		const graphDir = URI.joinPath(URI.file(rootPath), '.codebase-memory');
+		// ★ 2026-10-13（**权限在 dsh 侧**）：归 dsh 负责的目录**一次都不许写** ✓（说明见辅助方法）
+		if (await this._refuseSaveForDshOwned(rootPath, graphDir, project)) { return; }
 		try {
 			// ★★ 2026-09-22（**重放**）：目录创建**移到「真要写」之后**（见下方守卫处）✗ ——
 			// 旧顺序会在**空项目**上留下一个没有制品的 `.codebase-memory/`，而 bootstrap 正是用
@@ -6556,6 +6543,54 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			this._logService.warn('[CodebaseGraph]', `[canSkipArtifactParse] "${project}" 判据失败，按不可跳过处理: ${err?.message || err}`);
 			return false;
 		}
+	}
+
+	/**
+	 * **这个工作区的图谱是不是归 dsh 负责**（2026-10-13，用户裁决「权限都在 dsh 侧全权处理」）。
+	 *
+	 * 判据：`<ws>/.codebase-memory/artifact.json` 里 `producer === 'vssaros-dsh'` ✓（见
+	 * `common/codebaseIndexDefaults.ts` 的 `DSH_ARTIFACT_PRODUCER` —— 那个常量是两侧契约 ✓）。
+	 *
+	 * 语义（**权限在 dsh，IDE 只读**）：
+	 *   · 为 true ⇒ `indexWorkspace()` **不扫描**、`_saveGraph()` **不落盘**（含增量与延迟保存）✓；
+	 *   · 为 false ⇒ **与今天逐字一致** ✓（清单缺失/读不动/缺 `producer`/老制品/我们自己的制品都走这条 ✓）。
+	 *
+	 * ⚠ 读不动就**当成 false**（= 照旧由 IDE 负责 ✓）：权限判断失败时"继续按老规矩干"比"什么都不干"安全 ——
+	 *   后者会让用户在一个没装 dsh 的环境里**彻底失去索引** ✗✗（那正是这一刀最怕的副作用）。
+	 */
+	private async _isIndexOwnedByDsh(rootPath: string): Promise<boolean> {
+		if (!rootPath) { return false; }
+		try {
+			const metaPath = URI.joinPath(URI.file(rootPath), '.codebase-memory', 'artifact.json');
+			const raw = (await this._fileService.readFile(metaPath)).value.toString();
+			return isDshProducedManifest(JSON.parse(raw));
+		} catch {
+			// 制品不存在（从没索引过）/ 读不动 / 清单畸形 ⇒ 按"IDE 负责"处理 ✓
+			return false;
+		}
+	}
+
+	/**
+	 * **写盘前的所有权闸**（2026-10-13）：这个目录归 dsh 负责 ⇒ 本次**不要写** ✓（已记日志）。
+	 *
+	 * ## 为什么必须留在**最底层**（而不只是挡住 `indexWorkspace`）
+	 *
+	 * 落盘有几条**独立来路**：全量收尾、**增量收尾**、以及 `_scheduleSaveGraph` 排出的 **30s 防抖**
+	 * （⚠ 它在**放掉索引锁之后**才触发 ✓）。只挡入口挡不住"锁已释放、定时器随后才写"那一条 ——
+	 * 那正是本仓把 8.2MB / 176620 节点的图写成 **99 字节**那次事故的形态 ✗✗。
+	 * ⇒ 唯一（也最省）的解法是在**真正写盘的那一处**拒写 ✓：一个点覆盖全部来路 ✓。
+	 *
+	 * ⚠ 与 `indexWorkspace` 的那道闸**不是重复**：那道是"省算力"（不扫描），这道是"保安全"（不落盘）——
+	 * 增量索引与延迟保存**不经过** `indexWorkspace` ✓，只靠那道闸会漏 ✗。
+	 *
+	 * @returns true ⇒ 调用方直接 `return`（拒写已记 WARN，含目录与项目名，便于排查"为什么没落盘" ✓）
+	 */
+	private async _refuseSaveForDshOwned(rootPath: string, graphDir: URI, project?: string): Promise<boolean> {
+		if (!(await this._isIndexOwnedByDsh(rootPath))) { return false; }
+		this._logService.warn('[CodebaseGraph]',
+			`Graph save SKIPPED | artifact=${graphDir.fsPath} project=${project ?? 'all'} `
+			+ '⇒ 该目录归 dsh 负责（producer=vssaros-dsh），本窗口不写（用户裁决：权限都在 dsh 侧）✓');
+		return true;
 	}
 
 	async loadGraphMerge(sourcePath: string, projectOverride?: string, rebuildBM25: boolean = true): Promise<boolean> {

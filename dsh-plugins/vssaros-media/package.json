@@ -1,0 +1,47 @@
+{
+  "name": "@vssaros/dsh-media",
+  "version": "0.1.2",
+  "description": "VsSaros media-library module for DeepSeek Harness: a read-only self-hosted page (/x/media/) plus media_list / media_stats tools over the SAME `{rootDir}/media.db` that the VsSaros main-process MediaStore owns (bytes live at `{rootDir}/{yyyy}/{mm}/{id}.{ext}`, rootDir default `<dataRoot>/media`, overridable via `media-store-config.json`). Opens the database through Node's built-in `node:sqlite` (dsh requires Node 22.19+/24+, where it exists) in read-only mode: table creation and migrations stay single-writer on the VsSaros side, this module never creates or alters them.",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/pageShell.js",
+    "lib/store.js",
+    "cordis.patch.yml"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/dsh": ">=0.1.7-0 <0.3.0-0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": [
+        "./cordis.patch.yml"
+      ]
+    }
+  },
+  "vssaros": {
+    "manifestVersion": 1,
+    "module": "media",
+    "activityBar": {
+      "containerId": "agentStudio.media",
+      "title": {
+        "zh": "媒体库",
+        "en": "Media"
+      },
+      "icon": "codicon:file-media",
+      "order": 112
+    },
+    "view": {
+      "kind": "page",
+      "route": "/x/media/"
+    },
+    "legacyCounterpart": "agentStudio.media"
+  },
+  "license": "MIT"
+}

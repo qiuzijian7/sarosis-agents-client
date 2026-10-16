@@ -1,0 +1,37 @@
+# @vssaros/dsh-agents bundle patch: insert the agents row (top-level mount).
+#
+# 本包有两种挂载形态（同一个包、两种 config），别混：
+#   1) **顶层行**（就是这一行）：读 `~/.vssaros/agents/*/.agent.md` → 经 `ctx.agentPresets.register()`
+#      注册成 dsh agent preset，并提供只读花名册页 `/x/agents`；
+#   2) **preset 内的行**（由本模块为每个 VsSaros agent 合成，见 `lib/core/agents.js` 的
+#      `toPresetDefinition`）：`config.persona` 非空 → 只把该 agent 的人设正文注册成一条系统提示词
+#      section（`ctx.systemPrompt.section`），**不**再注册 preset、**不**开页面（否则会递归）。
+#
+# `config.defaultProvider` 留空：agent.md 的 `model` 要落到 dsh 的 provider route 才能生效，
+# 而 route 名由 VsSaros 的 providers.sync 决定——没配就不写模型行（宁可跟随默认，也不写一个不存在的
+# route 让会话创建失败）。VsSaros 侧可经 `--patch` 覆盖本行注入（与 bridge / kanban / mcp 同机制）。
+- insert:
+    - id: vssaros-agents
+      name: '@vssaros/dsh-agents'
+      config: {}
+
+# ── R13 / B1：把**默认 preset** 切到我们的（这是"会话选哪个 preset"的**唯一开关** ✓）──────────────
+# 证据（2026-10-12 `--dump-config`，真实 app profile）：那一行长这样 ——
+#   - id: agent-preset-registry
+#     name: '@deepseek-ai/dsh-agent-preset-registry'
+#     config: { default: standard }        ← 官方默认；旁边还有 UI 选择器行 `ui-agent-preset`
+# ⚠ 两条语义必须记住：
+#   ① **`--patch` 打已有行 = 整份替换 config**（不是合并 ✗）⇒ 这里要把该行的键**写全** ✓。
+#      实测该行只有一个键 `default` ✓ ⇒ 下面就是全部 ✓。将来官方给这行加新键，这里会把它**丢掉** ✗。
+#   ② 目标行**不存在时静默忽略** ✓（headless / 精简 profile 没有这个注册表 ✗）—— 那种组合里
+#      preset 平面本来就没人选，"静默"正是想要的行为 ✓，但也意味着**不要指望它报错** ✓。
+# 效果：会话默认挂上 `vssaros-standard` = 官方 standard 的**逐字副本** + 我们的模块行 ✓
+#   （生成物与守卫见 `cordis.presets.yml` 头部 + `dshPresetPlane.test.ts` ✓）。
+# ⚠ **不动 host plane** ⇒ 我们模块的工具此刻仍由 host 行提供 ✓，**不会因为这次切换而消失** ✓。
+#   真正危险的"host 半让出"（host 行加 `hostHalf: true`）是**另一步**，且必须先解决
+#   "**替换陷阱**"：VsSaros 的 dataRoot 覆盖层也 patch 这些同 id 的行 ⇒ 会把 `hostHalf` 冲掉 ✗
+#   （实测见 p3-28 / 记忆）。⇒ 在解决它之前，**不要**给 host 行加 hostHalf ✓（否则工具面可能整段消失 ✗）。
+- id: agent-preset-registry
+  config:
+    default: vssaros-standard
+

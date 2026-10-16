@@ -37,7 +37,7 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 import { validatedIpcMain } from '../../../../base/parts/ipc/electron-main/ipcMain.js';
 import { spawn } from 'child_process';
 import {
-	existsSync, statSync, writeFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, copyFileSync, rmSync,
+	existsSync, statSync, promises as fsp, mkdtempSync, readdirSync, readFileSync, rmSync,
 } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -281,7 +281,7 @@ export class KbDocConvertChannel extends Disposable {
 			return this.extractArchive(target, ext);
 		}
 
-		const script = this.ensureScript();
+		const script = await this.ensureScript();
 		if (!script) { return { ok: false, error: '无法写入提取脚本（临时目录不可用）' }; }
 
 		const python = this.resolvePythonPath();
@@ -310,7 +310,7 @@ export class KbDocConvertChannel extends Disposable {
 			}
 
 			// 图片：复制到调用方指定的目录（相对引用已在脚本内改写）
-			const imageCount = this.copyImages(join(tmpDir, 'images'), req?.targetImageDir);
+			const imageCount = await this.copyImages(join(tmpDir, 'images'), req?.targetImageDir);
 
 			this.logService.info(`[KbDocConvert] ${meta.backend}: ${meta.pages ?? '?'} page(s), `
 				+ `${text.length} char(s), ${imageCount} image(s) in ${Date.now() - started}ms: ${target}`);
@@ -365,18 +365,23 @@ export class KbDocConvertChannel extends Disposable {
 		}
 	}
 
-	/** 把导出图片复制到目标目录；未指定目标目录时返回 0（markdown 里会是无前缀的相对名）。 */
-	private copyImages(srcDir: string, dstDirRaw: string | undefined): number {
+	/**
+	 * 把导出图片复制到目标目录；未指定目标目录时返回 0（markdown 里会是无前缀的相对名）。
+	 *
+	 * 异步复制：图片是**成批的大文件**，同步 `copyFileSync` 会把主线程整片钉住
+	 * （同 2026-10-12 的 NtWriteFile 假死形态）；逐张 await 只影响这一条提取链的耗时。
+	 */
+	private async copyImages(srcDir: string, dstDirRaw: string | undefined): Promise<number> {
 		const dstDir = dstDirRaw?.trim();
 		if (!dstDir || !existsSync(srcDir)) { return 0; }
 		let copied = 0;
 		try {
-			mkdirSync(dstDir, { recursive: true });
+			await fsp.mkdir(dstDir, { recursive: true });
 			for (const name of readdirSync(srcDir)) {
 				const from = join(srcDir, name);
 				try {
 					if (!statSync(from).isFile()) { continue; }
-					copyFileSync(from, join(dstDir, name));
+					await fsp.copyFile(from, join(dstDir, name));
 					copied++;
 				} catch (err) {
 					this.logService.warn(`[KbDocConvert] copy image failed: ${from}`, err);
@@ -399,11 +404,16 @@ export class KbDocConvertChannel extends Disposable {
 		return configured || fromEnv || fromVoxEnv || 'python';
 	}
 
-	/** 把提取脚本写到系统临时目录（固定文件名，反复覆盖，不留垃圾）。 */
-	private ensureScript(): string | undefined {
+	/**
+	 * 把提取脚本写到系统临时目录（固定文件名，反复覆盖，不留垃圾）。
+	 *
+	 * 异步写：主进程上的同步写一旦撞上 I/O 卡死（2026-10-12 三次现场都是 NtWriteFile 永不返回）
+	 * 就是整个 IDE 假死，而这里只是在真正的解析工作之前落一个固定脚本。
+	 */
+	private async ensureScript(): Promise<string | undefined> {
 		try {
 			const file = join(tmpdir(), SCRIPT_NAME);
-			writeFileSync(file, EXTRACT_SCRIPT, 'utf-8');
+			await fsp.writeFile(file, EXTRACT_SCRIPT, 'utf-8');
 			return file;
 		} catch (err) {
 			this.logService.warn(`[KbDocConvert] failed to write extract script: ${String(err)}`);

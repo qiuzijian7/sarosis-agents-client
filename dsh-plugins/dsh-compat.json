@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "generatedAt": "2026-10-10T00:00:00Z",
+  "bundled": "0.2.0-rc.2",
+  "versions": [
+    {
+      "version": "0.2.0-rc.2",
+      "verifiedAt": "2026-10-09",
+      "checks": ["runtime-smoke", "bridge", "health", "workbench-e2e", "upgrade-gate", "session-start"],
+      "bridgePlugin": ">=0.1.2",
+      "notes": "npm latest/next. Chat smoke pending (needs model credentials)."
+    },
+    {
+      "version": "0.1.7-rc.2",
+      "verifiedAt": "2026-10-09",
+      "checks": ["runtime-smoke", "bridge", "health", "upgrade-gate"],
+      "bridgePlugin": ">=0.1.2",
+      "notes": "Oldest supported version."
+    }
+  ],
+  "blocked": []
+}

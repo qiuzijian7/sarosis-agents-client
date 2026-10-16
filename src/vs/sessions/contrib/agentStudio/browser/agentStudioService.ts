@@ -59,6 +59,13 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	private _activeWorkspaceId: string | undefined;
 
 	/**
+	 * ★ 会话级工作区覆盖（**内存态**，2026-10-14）：`sessionId → workspaceId`。
+	 * 写入 = 聊天输入框顶部的 workspace 下拉；读取 = `_resolveWorkspaceId`（覆盖 > 会话记录 > 全局游标 ✓）。
+	 * 只影响运行期解析：不落盘，也不改会话/工作区记录 ✓。
+	 */
+	private readonly _sessionWorkspaceOverrides = new Map<string, string>();
+
+	/**
 	 * ★ workspaceId → 数据目录 URI 缓存（2026-09-15）。
 	 * 见 `_getWorkspaceDataUri()`：该方法是**每次工具执行**都会走到热路径，
 	 * 原实现每次都读 `workspaces.json` ✗。失效由 `_writeJsonFile()` **一处统一负责**
@@ -2335,6 +2342,28 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	async getSession(id: string): Promise<AgentStudioSession | undefined> {
 		const sessions = await this._readJsonFile<AgentStudioSession>(this._getGlobalDataUri(), DATA_FILE_SESSIONS);
 		return sessions.find(s => s.id === id);
+	}
+
+	/**
+	 * ★ 会话级工作区覆盖（2026-10-14；契约与事故背景见 `test/browser/chatWorkspaceAuthority.test.ts`）。
+	 *
+	 * 用户在那枚下拉里的选择必须影响本轮 turn（事故②：只写面板本地字段 ⇒ 工具链永远看不到 ✗）。
+	 * 三条刻意语义：**会话级**（别的会话不受影响）、**内存态**（不落盘，重启回「会话记录」口径）、
+	 * **不改会话归属**（只影响运行期解析，绝不把"临时选择"写成永久搬迁 ✗）。
+	 * `workspaceId` 传空 ⇒ 清除该会话的覆盖 ✓。
+	 */
+	setSessionWorkspaceOverride(sessionId: string, workspaceId: string): void {
+		if (!sessionId) { return; }
+		if (!workspaceId) { this._sessionWorkspaceOverrides.delete(sessionId); return; }
+		this._sessionWorkspaceOverrides.set(sessionId, workspaceId);
+	}
+
+	/**
+	 * 取会话级工作区覆盖（无覆盖 / `sessionId` 缺省 ⇒ `undefined`）。
+	 * 读取口径（与 `agentDriverService._resolveWorkspaceId` 同源）：**覆盖 > 会话记录 > 全局游标** ✓。
+	 */
+	getSessionWorkspaceOverride(sessionId: string | undefined): string | undefined {
+		return sessionId ? this._sessionWorkspaceOverrides.get(sessionId) : undefined;
 	}
 
 	async createSession(data: Partial<AgentStudioSession>): Promise<AgentStudioSession> {

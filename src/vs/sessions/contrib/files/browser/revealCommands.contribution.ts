@@ -115,6 +115,22 @@ CommandsRegistry.registerCommand({
 			}
 		}
 
+		// ★ 2026-10-13 用户报障（聊天卡片的「定位」按钮）：会话窗口里**两个 Explorer 视图都拿不到**
+		// （`openView` 返回空、不抛错 ⇒ 连 "openView … failed" 都没有），于是只剩下面那句 warn，
+		// 用户端表现为"点了完全没反应" ✗（日志实证：`No explorer view available.` 之后什么都没有）。
+		// 第三级回退：交给**系统文件管理器**定位（`showItemInFolder`）—— 它不占用 IDE 的编辑器、
+		// 不抢 IDE 焦点，与这枚按钮的语义（"定位该文件"）一致 ✓；native 也失败才只剩 warn。
+		const localPath = toLocalPath(uri);
+		if (localPath) {
+			try {
+				await accessor.get(INativeHostService).showItemInFolder(localPath);
+				logService.info(`[Saros][revealInExplorer] no in-app explorer view — revealed in OS file manager: ${localPath}`);
+				return;
+			} catch (err) {
+				logService.warn('[Saros][revealInExplorer] showItemInFolder failed:', err);
+			}
+		}
+
 		logService.warn('[Saros][revealInExplorer] No explorer view available.');
 	},
 });

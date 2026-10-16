@@ -40,6 +40,7 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 import { IBridgeService } from './bridge/bridgeService.js';
 
 import { NativeChatEditorInput, type IChatRuntimeState, type ChatTabStatus } from './nativeChatEditorInput.js';
+import { getDshChatHostFactory, IDshChatBinding } from './dshChatHost.js';
 import { WorkflowTraceController } from './workflowTraceController.js';
 import { CheckpointManager } from './checkpointManager.js';
 import { KbImportController, createKbImportHandler } from './kbImportController.js';
@@ -118,6 +119,12 @@ import { clearNode } from '../../../../base/browser/dom.js';
 export class NativeChatEditorPane extends EditorPane {
 
 	static readonly ID = NativeChatEditorInput.EditorID;
+
+	/**
+	 * dsh 承载（方案 5.12 第 2 步）：electron-browser 的 dshHarness 在启动时注册工厂，
+	 * engine=dsh 时接管聊天框内容区（surface=chat 的 WebContentsView）；未注册时行为不变。
+	 */
+	private _dshBinding: IDshChatBinding | undefined;
 	/** 多实例计数器（仅调试用），每个 pane 创建时自增。 */
 	private static _nextPaneId = 1;
 	/**
@@ -895,7 +902,6 @@ export class NativeChatEditorPane extends EditorPane {
 		this._container.style.flexDirection = 'column';
 		parent.appendChild(this._container);
 
-		this._initChatPanel();
 		// LLM 流式输出记录器（默认关闭；localStorage['saros.streamRecord']='1' 启用）。
 		this._streamRecorder = this._register(new AgentStreamRecorder(this._fileService, this._logService, this._envService));
 		this._logService.debug(`[NativeChatEditorPane][Init] createEditor END t=${(performance.now() - t0).toFixed(1)}ms`);
@@ -1897,6 +1903,13 @@ export class NativeChatEditorPane extends EditorPane {
 			/** 切换工作区 → 绑定沙箱到该工作区目录，仅允许在该目录内读写 */
 			onSelectWorkspace: async (workspaceId: string, _workspaceName: string) => {
 				this._currentWorkspaceId = workspaceId;
+				// ★ 2026-10-14（事故①的正解）：**必须写进服务层** —— 原来只改面板本地字段，
+				//   工具链（memory scope / worktree binding / 提示词工作根）永远看不到这次选择 ✗，
+				//   用户就表现为"LLM 读到的 workspace 是错的"（用户 2026-09-16 报的那个 ✓）。
+				//   会话级 + 内存态 + 不改会话归属，契约见 `test/browser/chatWorkspaceAuthority.test.ts`。
+				if (this._currentSessionId) {
+					this._agentStudioService.setSessionWorkspaceOverride(this._currentSessionId, workspaceId);
+				}
 				// 切换工作区后【不得】用 ws.path 覆盖 AgentBinding.worktreePath：
 				// 1) worktreePath 语义是「worktree 沙箱绑定」（agent 运行在 git worktree
 				//    分支内），不能用 workspace.path 污染；否则会清掉用户已选的 worktree，
@@ -2554,6 +2567,14 @@ export class NativeChatEditorPane extends EditorPane {
 			const assistantId = this._streamingAssistantId;
 			if (!assistantMsg || !assistantId) { return; }
 			if (!assistantMsg.toolCalls) { assistantMsg.toolCalls = []; }
+			// ★ 工作流卡片的**真源**（2026-10-12 核实并留痕）：
+			//   计划文档里那条"配置驱动"路线（`webview/src/utils/toolDisplayRegistry.ts`
+			//   + `WorkflowRunCard.tsx`）**从未落地** —— 组件不存在、registry 零消费点
+			//   （ripgrep + git grep 两条判据一致），该模块已删除。卡片就是**这里**直注入
+			//   `renderType:'WorkflowRun'`，另有 dsh 侧 `dsh-plugins/vssaros-workflow/lib/client.js`
+			//   的工具卡走 `tool.call.toolview` 槽。
+			//   ⚠ 不要再假设"webview 有个 registry 会自动解析 emoji/renderType" ✗ ——
+			//   那个假设就是它长期被当成活代码的原因。
 			assistantMsg.toolCalls.push({
 				id: toolCallId,
 				name: 'workflow',
@@ -6276,6 +6297,21 @@ private _handleStreamDelta(delta: any): void {
 
 		await super.setInput(input, options, context, token);
 
+		// dsh 承载判定在首个 setInput 进行：createEditor 时 this.input 尚未赋值（EditorPane 先 create 后 setInput）。
+		// engine=dsh：宿主接管内容区（surface=chat 视图），不初始化 DOM 聊天面板；否则走 legacy DOM 面板。
+		if (isChatInput && !this._dshBinding) {
+			this._dshBinding = getDshChatHostFactory()?.({
+				container: this._container!,
+				input,
+				windowId: this.group.windowId,
+				// chatId → dsh 会话的 cwd：当前工作区主目录（方案 7.x）。
+				workspacePath: this._workspaceContextService.getWorkspace().folders[0]?.uri.fsPath,
+			}) ?? undefined;
+		}
+		if (!this._dshBinding && !this._isInitialized) {
+			this._initChatPanel();
+		}
+
 		if (!isChatInput) {
 			this._logService.info('[NativeChatEditorPane] setInput: not a NativeChatEditorInput, skipping');
 			return;
@@ -6295,6 +6331,9 @@ private _handleStreamDelta(delta: any): void {
 
 		// ── 2. 切换到新 chat ──
 		this._currentInputChatId = newChatId;
+		if (newChatId !== undefined) {
+			this._dshBinding?.setChatId(newChatId, input instanceof NativeChatEditorInput ? input : undefined);
+		}
 
 		// 从 NativeChatEditorInput 恢复状态（单一真相源）
 		this._currentSessionId = input.sessionId ?? null;
@@ -6576,7 +6615,14 @@ private _handleStreamDelta(delta: any): void {
 		}
 	}
 
+	protected override setEditorVisible(visible: boolean): void {
+		// dsh 承载：把编辑器显隐转发给宿主（宿主据此显隐 WebContentsView）。
+		this._dshBinding?.setVisible(visible);
+		super.setEditorVisible(visible);
+	}
+
 	override layout(dimension: DOM.Dimension): void {
+		this._dshBinding?.layout();
 		if (this._container) {
 			this._container.style.width = `${dimension.width}px`;
 			this._container.style.height = '100%';
@@ -6744,6 +6790,8 @@ private _handleStreamDelta(delta: any): void {
 	}
 
 	override clearInput(): void {
+		// dsh 承载：同组切标签时只隐藏视图，不销毁（视图按 chatId 复用，切回不重载页面）。
+		this._dshBinding?.setVisible(false);
 		// 聊天 editor 被移走/关闭且所在 group 变空时，VS Code 调用 clearInput()
 		// （而非 setInput）——必须在此把当前 chat 的运行时状态存回 input，
 		// 否则 popout 移动后独立窗口恢复到的 runtime state 是过期的（流式内容丢失）。
@@ -6753,6 +6801,7 @@ private _handleStreamDelta(delta: any): void {
 	}
 
 override dispose(): void {
+	this._dshBinding?.dispose();
 	// dispose 前保存运行时状态 + 释放流式 claim（若聊天仍在流式输出中）
 	this._saveCurrentRuntimeState();
 	this._handoffActiveStream();

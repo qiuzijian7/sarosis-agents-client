@@ -205,6 +205,7 @@ import {
 	groupToolSchemaCosts,
 	buildCheckpointSnapshot,
 } from './parts/turnHelpers.js';
+import { isMcpSourcedTool } from '../common/toolApprovalPolicy.js';
 
 /**
  * 转导出（barrel re-export）。
@@ -326,15 +327,15 @@ interface ITurnContext {
 		host._logService.info(`[AgentOS] Direct mode: initial ${enabledTools.length} enabled tools for agent ${request.agentId}`);
 
 		// 仅首次执行时，如果初始没有 MCP 工具，等待最多 3 秒让 MCP 服务器完成连接
-		const mcpToolCount0 = enabledTools.filter((t: any) => t.category?.startsWith('mcp:')).length;
+		const mcpToolCount0 = enabledTools.filter((t: any) => isMcpSourcedTool(t)).length;
 		if (mcpToolCount0 === 0 && !host._mcpToolsInitialWaitDone) {
 			host._mcpToolsInitialWaitDone = true;
 			host._logService.info(`[AgentOS] No MCP tools found initially (first turn), waiting for MCP servers to connect...`);
 			enabledTools = await host._waitForMcpTools(request.agentId, enabledTools, 3000);
 		}
 		// 诊断日志：列出所有工具名（特别标注 MCP 工具）
-		const mcpToolNames = enabledTools.filter((t: any) => t.category?.startsWith('mcp:')).map((t: any) => t.name);
-		const builtinToolNames = enabledTools.filter((t: any) => !t.category?.startsWith('mcp:')).map((t: any) => t.name);
+		const mcpToolNames = enabledTools.filter((t: any) => isMcpSourcedTool(t)).map((t: any) => t.name);
+		const builtinToolNames = enabledTools.filter((t: any) => !isMcpSourcedTool(t)).map((t: any) => t.name);
 		host._logService.info(`[AgentOS] Direct mode tools: ${enabledTools.length} total (${mcpToolNames.length} MCP: [${mcpToolNames.join(', ')}], ${builtinToolNames.length} builtin: [${builtinToolNames.slice(0, 10).join(', ')}${builtinToolNames.length > 10 ? '...' : ''}])`);
 
 		// ─── 2. 初始化消息历史 ─────────────────────────────────────
@@ -1401,7 +1402,7 @@ interface ITurnContext {
 				const refreshed = await host._getEnabledTools(request.agentId, request.agentGraph, request.toolsetsOverride,
 					host._resolveHardPermissionForWorkMode?.(runState.work.mode) ?? host._resolveHardPermission(request), request.excludedTools, request.allowedTools);
 				if (refreshed.length !== enabledTools.length) {
-					const newMcp = refreshed.filter((t: any) => t.category?.startsWith('mcp:')).map((t: any) => t.name);
+					const newMcp = refreshed.filter((t: any) => isMcpSourcedTool(t)).map((t: any) => t.name);
 					host._logService.info(`[AgentOS] Iteration ${loopState.iteration}: tools refreshed ${enabledTools.length} → ${refreshed.length} (MCP: [${newMcp.join(', ')}])`);
 				}
 				enabledTools = refreshed;

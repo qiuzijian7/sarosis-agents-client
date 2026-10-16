@@ -267,11 +267,12 @@ export function extractHtmlTitleAndDescription(html: string): { title: string; d
 //
 // 这里**只做转发**，保持既有 import 面稳定（本文件的调用方与单测都从本路径取）。
 
-import { classifyExtractQuality } from '../../../common/webPageQuality.js';
+import { classifyExtractQuality, manualActionLine } from '../../../common/webPageQuality.js';
 import type { IExtractQuality } from '../../../common/webPageQuality.js';
 
 export { MIN_USEFUL_CONTENT_LENGTH, classifyExtractQuality } from '../../../common/webPageQuality.js';
 export type { IExtractQuality } from '../../../common/webPageQuality.js';
+export type { ManualAction } from '../../../common/webPageQuality.js';
 
 export interface IExtractCandidate {
 	readonly text: string;
@@ -340,9 +341,18 @@ export function webExtractIncompleteWarning(url: string, quality: IExtractQualit
  * 无解的路上重试（实测：小红书那种登录墙，`web_extract` 重试多少次都是同一句占位页）。
  */
 export function webExtractBlockedMessage(url: string, quality: IExtractQuality): string {
-	return quality.kind === 'unavailable'
-		? webExtractUnavailableMessage(url, quality)
-		: webExtractAntiBotMessage(url, quality);
+	const base = (() => {
+		switch (quality.kind) {
+			case 'login-required': return webExtractLoginRequiredMessage(url, quality);
+			case 'unavailable': return webExtractUnavailableMessage(url, quality);
+			default: return webExtractAntiBotMessage(url, quality);
+		}
+	})();
+	// `manualAction` 一行统一在这里追加：三个分支共用本入口（原注释的"三个调用点共用这一个入口"），
+	// 所以**只需要一处收尾**；措辞真源在 `common/webPageQuality.ts`（浏览器通道用同一份）。
+	// 放在最后是有讲究的：末尾才是模型开口前的最后一句。
+	const actionLine = manualActionLine(quality);
+	return actionLine ? `${base}\n\n${actionLine}` : base;
 }
 
 /** 反爬 / 人机校验页的处置建议。 */
@@ -351,25 +361,47 @@ export function webExtractAntiBotMessage(url: string, quality: IExtractQuality):
 		`The page at ${url} returned an anti-bot / browser-check interstitial instead of its content ` +
 		`(signals: ${quality.signals.join(', ') || quality.reason}). Its text was intentionally NOT returned — it is not the page content.\n\n` +
 		`Do NOT retry this URL as-is. Instead: pick a different result from web_search, look for the site's official API or a mirror, or ask the user to open it manually. ` +
-		`If a browser tool is available to you, \`browser_navigate\` can also load it — that drives a real browser, which often passes checks a plain fetch cannot.`;
+		`If a browser tool is available to you, \`browser\` with \`op: "navigate"\` can also load it — that drives a real browser, which often passes checks a plain fetch cannot.`;
 }
 
 /**
- * **登录墙 / 内容已删除**的处置建议。
+ * **登录墙 / 客户端墙**的处置建议（2026-10-13 从 `unavailable` 里单列）。
  *
- * 与反爬页的关键差别：这里**重试与换来源都无效** —— 缺的是"身份"（登录态）或内容本身已不存在。
- * 所以只给两条真出路：① 换**通道**（真浏览器 + 用户登录一次）；② 承认读不到。
- * 明确禁止"凭标题/摘要猜内容"，那是最坏的结果（用户拿到的是一段编造）。
+ * 与"内容已删"的关键差别：这里**换来源没用、重试也没用，但有一条确定的解药** ——
+ * 让用户在真实浏览器里登录一次（扫码即可）。所以文案必须：① 明说重试无用（否则模型在同一堵墙上
+ * 反复撞）；② 把"请谁做什么"说清楚；③ 给出**可验证**的下一步（`browser` 的 `login` op），
+ * 而不是让模型自己宣布"应该好了"。
+ *
+ * 与反爬页的差别：反爬是"看起来不像人"，登录墙是"没有身份"——两者的下一步完全不同。
+ */
+export function webExtractLoginRequiredMessage(url: string, quality: IExtractQuality): string {
+	return `## Web Extract — login required\n\n` +
+		`The page at ${url} did not return its content: it answered with a **login wall / "open in the app" notice** ` +
+		`(signals: ${quality.signals.join(', ') || quality.reason}). That notice was intentionally NOT returned — it is not the page content.\n\n` +
+		`Do NOT retry this URL with web_extract, do NOT try a different text fetcher, and do NOT guess the content from its title or snippet. ` +
+		`Nothing in this HTTP channel can get past the wall — the identity is missing, not the URL.\n\n` +
+		`Next step (ask the user for this — never ask for, or type, credentials yourself):\n` +
+		`  1. \`browser\` with \`op: "login"\` opens the page in a **real browser window** whose profile keeps sessions. ` +
+		`Ask the user to sign in there **once** (scanning a QR code with their phone is fine).\n` +
+		`  2. Then \`browser\` with \`op: "login"\` and \`done: true\` **verifies** it and tells you plainly whether it worked.\n` +
+		`  3. Only after that, read the page through the browser channel (\`op: "snapshot"\`). If the user declines or the check keeps failing, say so plainly and stop.\n\n` +
+		`Then tell the user plainly what you need from them.`;
+}
+
+/**
+ * **内容已删除 / 区域或账号受限**的处置建议。
+ *
+ * 与登录墙的关键差别：这里**去登录也没用** —— 资源本身不在了。所以文案要**明确否掉**这条路，
+ * 否则模型会去请用户登录（白折腾一次），或者更糟：凭标题编内容。
  */
 export function webExtractUnavailableMessage(url: string, quality: IExtractQuality): string {
 	return `## Web Extract — content unavailable\n\n` +
-		`The page at ${url} did not return its content: it answered with a **login wall / "content is gone" notice** ` +
+		`The page at ${url} did not return its content: it answered with a **"content is gone / restricted" notice** ` +
 		`(signals: ${quality.signals.join(', ') || quality.reason}). That notice was intentionally NOT returned — it is not the page content.\n\n` +
-		`Do NOT retry this URL with web_extract — the same wall will come back, and do NOT guess the content from its title or snippet.\n\n` +
+		`Do NOT retry this URL with web_extract, and do NOT guess the content from its title or snippet.\n` +
+		`This is not a login problem: the resource itself is gone or restricted, so signing in will not bring it back — do not send the user off to log in.\n\n` +
 		`Next step (pick whichever fits):\n` +
-		`  1. If a browser tool is available to you: \`browser_navigate\` drives a **real browser window** whose profile keeps logins. ` +
-		`Ask the user to sign in **once** in that window (never ask for or type credentials yourself), then read the page — this is the usual cure for login-gated pages.\n` +
-		`  2. The item may genuinely be deleted / region- or account-restricted: say so and stop, rather than retrying or inventing content.\n` +
-		`  3. Otherwise: a mirror, the site's official API, or ask the user to paste the content.\n\n` +
+		`  1. Say plainly that the item is unavailable / restricted, and stop.\n` +
+		`  2. Get the same information elsewhere (search, mirror, the site's official API), or ask the user to paste the content.\n\n` +
 		`Then tell the user plainly which of these you need from them.`;
 }

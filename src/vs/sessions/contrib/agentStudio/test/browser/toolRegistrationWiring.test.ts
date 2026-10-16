@@ -58,7 +58,8 @@ import * as mScheduler from '../../browser/providers/tool/schedulerTools.js';
 import * as mSessionSearch from '../../browser/providers/tool/sessionSearchTools.js';
 import * as mSkill from '../../browser/providers/tool/skillTools.js';
 import * as mUnifiedMemory from '../../browser/providers/tool/unifiedMemoryTools.js';
-import * as mUnreal from '../../browser/providers/tool/unrealTools.js';
+// ★ 2026-10-13：`unrealTools` **已删除** ✗（unreal 族整份下移到 dsh 侧 `@vssaros/dsh-unreal`）
+// ⇒ 从本扫描表里一并移除 ✓（它检的是"IDE 侧工具模块有没有漏接线" ✓ —— 模块没了就没有可查的 ✓）。
 import * as mFeishuDrive from '../../browser/providers/tool/feishuDriveTools.js';
 import * as mProcess from '../../browser/providers/tool/processTools.js';
 import * as mKbBuild from '../../browser/providers/tool/kbBuildTools.js';
@@ -80,7 +81,7 @@ const MODULES: ReadonlyArray<readonly [string, Record<string, unknown>]> = [
 	['mediaGenTools', mMediaGen], ['memoryTools', mMemory], ['mermaidTools', mMermaid],
 	['mindmapTools', mMindmap], ['planExploreTool', mPlanExplore], ['planModeTools', mPlanMode],
 	['routineCrystalFacetTools', mRoutine], ['schedulerTools', mScheduler], ['sessionSearchTools', mSessionSearch],
-	['skillTools', mSkill], ['unifiedMemoryTools', mUnifiedMemory], ['unrealTools', mUnreal],
+	['skillTools', mSkill], ['unifiedMemoryTools', mUnifiedMemory],
 	['videoAnalyzeTools', mVideoAnalyze], ['videoFrameTools', mVideoFrame], ['visionAnalyzeTools', mVision], ['webTools', mWeb],
 	['workflowTool', mWorkflowTool], ['workflowTools', mWorkflow],
 ];

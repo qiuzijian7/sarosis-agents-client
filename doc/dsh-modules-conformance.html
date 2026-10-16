@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>dsh 模块插件合规评估报告（VsSaros × dsh 0.2.0-rc.2）</title>
+<style>
+  :root{ --bg:#fff; --fg:#1c1e21; --muted:#6b7280; --line:#e5e7eb; --accent:#2563eb; --ok:#15803d; --warn:#b45309; --bad:#b91c1c; --code:#f3f4f6; }
+  *{box-sizing:border-box}
+  body{margin:0;font:15px/1.75 "Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;color:var(--fg);background:var(--bg)}
+  .wrap{max-width:1120px;margin:0 auto;padding:40px 28px 80px}
+  h1{font-size:26px;margin:0 0 4px}
+  h2{font-size:19px;margin:36px 0 10px;padding-top:14px;border-top:2px solid var(--line)}
+  h3{font-size:16px;margin:22px 0 8px}
+  .sub{color:var(--muted);font-size:13px}
+  table{border-collapse:collapse;width:100%;margin:10px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+  th{background:#f8fafc;font-weight:600}
+  code{background:var(--code);padding:1px 5px;border-radius:4px;font-size:12.5px;font-family:ui-monospace,Consolas,monospace}
+  .ok{color:var(--ok);font-weight:600}.warn{color:var(--warn);font-weight:600}.bad{color:var(--bad);font-weight:600}
+  .card{border:1px solid var(--line);border-radius:10px;padding:14px 18px;margin:14px 0;background:#fcfcfd}
+  .card h3{margin-top:2px}
+  .pill{display:inline-block;padding:1px 9px;border-radius:999px;font-size:12px;font-weight:600;margin-right:6px}
+  .pill.ok{background:#dcfce7;color:var(--ok)} .pill.warn{background:#fef3c7;color:var(--warn)} .pill.bad{background:#fee2e2;color:var(--bad)}
+  .note{border-left:3px solid var(--accent);background:#eff6ff;padding:8px 14px;margin:12px 0;font-size:13.5px}
+  .risk{border-left-color:#dc2626;background:#fef2f2}
+  ul{margin:6px 0;padding-left:22px} li{margin:3px 0}
+  .toc{font-size:13.5px;color:var(--muted)} .toc a{color:var(--accent);text-decoration:none}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:900px){.grid2{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>dsh 模块插件合规评估报告</h1>
+<p class="sub">VsSaros 方案 × dsh 运行时 0.2.0-rc.2 ｜ 2026-10-12 ｜ 范围：知识库（kb）、codebase、记忆（memory）、看板（kanban）、工作流（workflow），附 dashboard；评估基准 = dsh 自带官方规范文本 + 运行期不变量（见 §1）。</p>
+
+<div class="toc"><b>目录</b>：
+<a href="#s1">§1 评估基准</a> · <a href="#s2">§2 总览结论</a> · <a href="#s3">§3 逐插件评估</a> · <a href="#s4">§4 横向发现</a> · <a href="#s5">§5 优化建议总表</a> · <a href="#s6">§6 存疑与边界</a></div>
+
+<h2 id="s1">§1 评估基准（dsh 插件标准的官方来源）</h2>
+<p>以下"规范"不是经验判断，全部来自 dsh 运行时自带的官方文本与运行期强制：</p>
+<table>
+<tr><th>#</th><th>规范</th><th>出处</th></tr>
+<tr><td>A</td><td><b>会话日志是唯一真源</b>：模型看到的一切必须能从已提交的会话事件重建；插件内存只是派生缓存</td><td><code>dsh-agent-preset/skills/cordis-plugin-development/references/practices.md</code> P1</td></tr>
+<tr><td>B</td><td>prompt 文本只经 <code>systemPrompt.section()/variable()/context()</code>；<b>禁止</b>用 <code>system-prompt/assemble</code> waterfall 加/删文本</td><td>同上 P4 / P17 / P18</td></tr>
+<tr><td>C</td><td>per-session 状态用 <code>ctx.sessionProjections</code> 单元（纯 <code>apply</code>、忽略的事件返回同一引用、<code>stateVersion</code>）；不得订阅 <code>session/event</code> 自行重扫；<b>不得新增自定义事件类型</b></td><td>同上 P21 / P26</td></tr>
+<tr><td>D</td><td><b>最弱机制优先</b>：<code>tools.restrict()</code>（只删）→ <code>tools.guard()</code>（只拒）→ waterfall → <code>system-prompt/assemble</code>（最强）。审批由组合层的 <code>tools/pre-execute</code> 返回 <code>ask</code>（→ 用户确认）给出，<b>不是工具自带</b></td><td>同上 P4 / Stability 17；<code>dsh-tools</code> 类型</td></tr>
+<tr><td>E</td><td>UI：React + slot；不 iframe 自服务页；用 <code>--dsw-alias-*</code> token；不 import 其它 Harness 客户端包；读会话数据用 selector hook；Chat 行用 <code>uiConversation.events.register</code></td><td>同上 P6 / UI 31-38</td></tr>
+<tr><td>F</td><td>性能：不轮询 <code>agent/status</code>；timer 唤醒用 <code>agent.followup()</code> 而非 <code>inject</code>；装配期别做重活</td><td>同上 P26-29</td></tr>
+<tr><td>G</td><td>打包：<code>files</code> 覆盖运行时文件齐全；<code>peerDependencies</code> 与运行时装机版本兼容；<code>cordis.patch.yml</code> 只 insert 不覆盖他人</td><td><code>cordis-plugin-development</code> SKILL.md；<code>dsh-app-boot</code> 类型</td></tr>
+<tr><td>H</td><td>可诊断：激活失败 / 配置缺失要留痕（日志 / roster broken 行 / 页面诊断）</td><td>preset registry 的 <code>diagnostic()</code> 先例</td></tr>
+<tr><td>I</td><td>数据落点与"启动时快照"口径一致（IDE 注入的目录、数据根）</td><td>本仓启动链路</td></tr>
+</table>
+
+<h2 id="s2">§2 总览结论</h2>
+<div class="note"><b>总体判定：6 个插件在"硬合规"（A/B/C/G/H）上全部 ✅，没有违反运行期不变量的行为。</b>偏差集中在两类（都可收）：<b>① 写工具没有审批闸</b>（机制上应挂组合层策略，详见 §4-1）；<b>② 两个客户端卡用了 <code>--vscode-*</code> token</b>（codebase / workflow，详见 §4-2）。另有一处会被误读的设计正确选择（§4-3）。</div>
+<table>
+<tr><th>插件</th><th>版本</th><th>A 日志真源</th><th>B prompt 正门</th><th>C 投影/事件</th><th>D 最弱机制/审批</th><th>E UI</th><th>F 性能</th><th>G 打包</th><th>H 可诊断</th></tr>
+<tr><td><code>@vssaros/dsh-kb</code>（知识库）</td><td>0.2.0</td><td class="ok">✅</td><td class="ok">✅</td><td class="ok">✅</td><td class="warn">⚠️ 写工具无闸</td><td class="ok">✅*</td><td class="ok">✅</td><td class="ok">✅</td><td class="ok">✅</td></tr>
+<tr><td><code>@vssaros/dsh-codebase</code></td><td>0.6.1</td><td class="ok">✅</td><td class="ok">✅</td><td class="ok">✅</td><td class="ok">✅（只读）</td><td class="warn">⚠️ 卡片 token</td><td class="warn">⚠️ 大文件同步解压</td><td class="ok">✅</td><td class="ok">✅</td></tr>
+<tr><td><code>@vssaros/dsh-memory</code>（记忆）</td><td>0.3.0</td><td class="ok">✅§4-4</td><td class="ok">✅</td><td class="ok">✅</td><td class="warn">⚠️ 写工具无闸</td><td class="ok">✅*</td><td class="ok">✅</td><td class="ok">✅</td><td class="ok">✅</td></tr>
+<tr><td><code>@vssaros/dsh-kanban</code>（看板）</td><td>0.4.5</td><td class="ok">✅</td><td class="ok">✅</td><td class="ok">✅</td><td class="warn">⚠️ 写工具无闸</td><td class="ok">✅</td><td class="ok">✅</td><td class="ok">✅</td><td class="ok">✅</td></tr>
+<tr><td><code>@vssaros/dsh-workflow</code>（工作流）</td><td>0.3.2</td><td class="ok">✅</td><td class="ok">✅</td><td class="ok">✅</td><td class="warn">⚠️ 写工具无闸</td><td class="warn">⚠️ 卡片 token</td><td class="warn">⚠️ 页刷新起 worker</td><td class="ok">✅</td><td class="ok">✅</td></tr>
+<tr><td><code>@vssaros/dsh-dashboard</code>（附）</td><td>0.4.0</td><td class="ok">✅</td><td class="ok">✅</td><td class="ok">✅（教科书级）</td><td class="ok">✅（只读）</td><td class="ok">✅*</td><td class="ok">✅</td><td class="ok">✅</td><td class="ok">✅</td></tr>
+</table>
+<p class="sub">* 带 <code>*</code> 的 E：这些插件的页面是自托管 HTML（<code>/x/*</code>），宿主是 VsSaros WebContentsView，<b>用 <code>--vscode-*</code> 是正确的</b>（不是偏差），详见 §4-3。</p>
+
+<h2 id="s3">§3 逐插件评估</h2>
+
+<div class="card"><h3>3.1 <code>@vssaros/dsh-kb</code> 知识库 <span class="pill ok">合规</span></h3>
+<p>5 个只读/工具（<code>kb_list/kb_search/kb_read/kb_topic_overviews/kb_feishu_sync</code>，<code>lib/index.js:497-770</code>）+ 自托管页 <code>/x/kb</code>（服务端渲染）。数据只读 <code>&lt;数据根&gt;/knowledge-base/</code>，带路径围栏（<code>lib/store.js:139-157</code>）。打包只 insert。</p>
+<p><b>唯一实质风险</b>：<code>kb_feishu_sync</code> 的 <code>apply:true</code> 是<b>有副作用的远端写</b>（<code>lib/index.js:739-747</code>），目前只有默认 dry-run 兜底——模型一句话就能触发远端写（§4-1）。</p></div>
+
+<div class="card"><h3>3.2 <code>@vssaros/dsh-codebase</code> <span class="pill ok">合规</span><span class="pill warn">2 处可收</span></h3>
+<p>5 个工具（<code>codebase_overview/search/deps/hotspots/self_index</code>）+ 页 <code>/x/codebase</code> + 客户端卡（<code>tool.call.toolview</code>，按工具名，priority -10）。读 <code>&lt;workspace&gt;/.codebase-memory/</code>；结构化数据经 <code>codebase_overview_json:</code> 文本行出结果——<b>模型可见内容可重放</b>（✅A）。轻/重分层 + mtime 缓存做得对。</p>
+<p><b>两处可收</b>：① 客户端卡的错误色用 <code>var(--vscode-errorForeground,…)</code>（<code>lib/client.js:95</code>）而非 <code>--dsw-alias-*</code>——这张卡跑在 dsh 原生界面里，该变量不存在，只能靠回退色（§4-2）。② 重路径 <code>gunzipSync+JSON.parse</code> 129MB <b>同步</b>跑在 Host 主线程（<code>lib/store.js:146-159</code>），期间同进程其它请求停摆（§4-2 性能项）。</p></div>
+
+<div class="card"><h3>3.3 <code>@vssaros/dsh-memory</code> 记忆 <span class="pill ok">合规</span></h3>
+<p><b>本评估里唯一往 prompt 注入的插件</b>：prompt section <code>vssaros-memory-working</code>，order 从中央表 <code>getSectionOrder('DEPLOYMENT_PERSONA_PREFIX')+100</code> 取，text 是<b>函数提供者</b>（装配时零 I/O 读快照），完全走正门（✅B）。5 个工具经网关（单写者），读/写都有预算与失败留痕。</p>
+<p><b>可重放性（规则 A）</b>：已核实 ✅——dsh 会把每步/每序列渲染后的 prompt 写成 <code>system/message</code> 事件（<code>dsh-agent-loop/lib/index.js:1052-1060</code> 的 <code>systemPrompt.project()</code>），所以"当时注入的记忆文本"能从日志精确重建。</p>
+<p><b>可收</b>：<code>memory_remember</code> 写操作无审批闸（§4-1）；双层截断口径（插件 8000 字符 vs 网关 1024 token）会互相掩盖。</p></div>
+
+<div class="card"><h3>3.4 <code>@vssaros/dsh-kanban</code> 看板 <span class="pill ok">合规</span></h3>
+<p>10 个工具（2 只读声明 <code>isConcurrencySafe</code>）+ 页 <code>/x/kanban</code> + 客户端卡（keyed 槽按 10 个自有工具名，priority -10，token 用 <code>--dsw-alias-*</code> 带回退 ✅）。写落 <code>&lt;数据根&gt;/taskboard.json</code>：同进程串行队列 + 文件锁（心跳 + pid 破门）+ 指纹 CAS + 原子写——与 IDE 同一把锁。</p>
+<p><b>可收</b>：8 个写工具无审批闸（§4-1）；无 <code>Config</code> schema（错型到用到才炸）。</p>
+<p class="sub">注：看板相关 e2e 红（<code>already-installed</code>）是<b>测试假设过期</b>（"随包自动安装"已装上，用例仍假设未安装），不是产品缺陷。</p></div>
+
+<div class="card"><h3>3.5 <code>@vssaros/dsh-workflow</code> 工作流 <span class="pill ok">合规</span><span class="pill warn">2 处可收</span></h3>
+<p>4 个工具（<code>workflow_update/list/get/engine_status</code>；写只动 3 个元信息字段、保留未知字段 ✅）+ 页 <code>/x/workflow</code> + 客户端卡。读 <code>&lt;数据根&gt;/workflows/</code>，路径穿越防护在（<code>store.js:35-41</code>）。</p>
+<p><b>两处可收</b>：① 客户端卡用 <code>--vscode-errorForeground</code>（<code>lib/client.js:96</code>）——与 codebase 同病（§4-2）；② 每次页面渲染都 spawn 一个真 worker 自证再 terminate（<code>index.js:571</code>），刷新成本偏高（§4-2 性能项）。另：<code>webServer/connection</code> 是硬依赖（headless profile 会整包 pending，kanban 的注释里写过这个坑，这里没跟上）。</p></div>
+
+<div class="card"><h3>3.6 <code>@vssaros/dsh-dashboard</code>（附） <span class="pill ok">合规</span></h3>
+<p>纯只读聚合：2 个工具 + 页 <code>/x/dashboard</code>。<b>教科书式的投影消费面</b>——不订阅 <code>session/event</code>，只 <code>sessionProjections.stateOf(session, unit)</code> 现读（✅C 的最佳示范）；只读 dsh 自己的 <code>session_projcache</code> 缓存目录。可收项：单会话读取 O(n)→O(1)、上限口径统一（API 1000 vs 工具 200）、<code>SUPPORTED_CACHE_VERSION</code> 硬钉的降级策略。</p></div>
+
+<h2 id="s4">§4 横向发现</h2>
+
+<h3>4-1 写工具没有审批闸（唯一实质风险，需真机验证后再定）</h3>
+<div class="note risk">dsh 的审批<b>不是工具自带</b>，而是由组合层在 <code>tools/pre-execute</code> 返回 <code>ask</code>（→ 用户确认）给出（<code>practices.md</code> Stability 17；<code>dsh-tools</code> 类型）。当前 profile（<code>cordis.patch.yml</code>）与我们所有插件<b>都没有</b>挂这条策略，而官方 preset 也没挂（<code>standard.patch.yml</code> 无 approval 行）。受影响工具：<code>kanban_create/update/complete/block/unblock/comment/link/heartbeat</code>、<code>workflow_update</code>、<code>memory_remember</code>、<code>kb_feishu_sync(apply:true)</code>。<b>下一步</b>：真机确认权限预设（composer 的 permission 档）对自定义写工具的默认行为；若默认放行，在 VsSaros 组合层挂一条 <code>tools/pre-execute</code> 审批策略（一条规则覆盖全部写工具），比逐插件改干净。</div>
+
+<h3>4-2 客户端卡的 token 口径不齐（dsh 原生界面内的偏差）</h3>
+<p>跑在 <b>dsh 原生聊天页</b>里的工具卡必须用 <code>--dsw-alias-*</code>：kanban ✅（带回退）、codebase ❌（<code>lib/client.js:95</code>）、workflow ❌（<code>lib/client.js:96</code>）。修法统一：<code>var(--dsw-alias-state-error-primary, var(--vscode-errorForeground, #f48771))</code>（双层回退）。</p>
+
+<h3>4-3 会被误读为偏差的"正确选择"（澄清）</h3>
+<ul>
+<li><b>自托管 HTML 页用 <code>--vscode-*</code> 是对的</b>：kb / memory / kanban / workflow / dashboard 的 <code>/x/*</code> 页宿主在 VsSaros 的 WebContentsView（IDE 侧托管），不是 dsh 原生 web 界面；规范的 <code>--dsw-alias-*</code> 约束的是 dsh 原生 UI（slot/React 组件）。若要这些页也进 dsh 原生壳，才需要换 token。</li>
+<li><b>无 React 客户端半 ≠ 违规</b>：kb / memory / dashboard 没有 dsh 原生 UI 需求（工具结果走文本回执）；有卡需求的（codebase/kanban/workflow）都有 React 客户端半。</li>
+<li><b><code>dsh.client</code> 是官方字段名</b>（不是 <code>dsh.bundle.client</code>）——codebase/kanban/workflow 的写法正确。</li>
+</ul>
+
+<h3>4-4 记忆注入的可重放性（关键澄清）</h3>
+<p>memory 往 prompt 注入的快照文本是否"能从日志重建"，取决于 dsh 是否把装配结果落盘——<b>已核实落盘</b>：<code>systemPrompt.project()</code> 每步/每请求序列把渲染后的 prompt 写成 <code>system/message</code> 事件（<code>dsh-agent-loop/lib/index.js:1052-1060</code>）。故规则 A 成立 ✅。</p>
+
+<h2 id="s5">§5 优化建议总表（按价值排序）</h2>
+<table>
+<tr><th>#</th><th>建议</th><th>涉及插件</th><th>依据</th></tr>
+<tr><td>1</td><td><b>组合层写工具审批策略</b>（<code>tools/pre-execute</code> → <code>ask</code>）；先真机验证权限预设对自定义写工具的默认行为</td><td>kb / memory / kanban / workflow</td><td>§4-1</td></tr>
+<tr><td>2</td><td>客户端卡 token 统一 <code>--dsw-alias-*</code>（双层回退写法）</td><td>codebase / workflow</td><td>§4-2</td></tr>
+<tr><td>3</td><td><b>重活挪出 Host 主线程</b>：129MB 同步解压用 worker_threads / 流式解析</td><td>codebase</td><td><code>lib/store.js:146-159</code></td></tr>
+<tr><td>4</td><td>页面渲染缓存 vault/kernel 扫描结果（按 mtime 失效）</td><td>kb（可抄 codebase 同款）</td><td><code>lib/index.js:407-424</code></td></tr>
+<tr><td>5</td><td>worker 自证结果做 TTL 缓存（页面刷新不再起 worker）</td><td>workflow</td><td><code>lib/index.js:571</code></td></tr>
+<tr><td>6</td><td>单会话读取 O(n)→O(1)（按 <code>&lt;id&gt;.json</code> 直接拼路径）；range 查询改并发分批</td><td>dashboard</td><td><code>lib/store.js:80-87</code></td></tr>
+<tr><td>7</td><td>记忆的双层截断只留一层（插件 8000 字符 vs 网关 1024 token 互相掩盖）；<code>memory_remember</code> 成功后主动刷新快照</td><td>memory</td><td><code>lib/core/memory.js:22</code> / <code>lib/index.js:120-124</code></td></tr>
+<tr><td>8</td><td>补 <code>Config</code> schema（错型启动期即报错，而非用到才炸）</td><td>kanban / workflow</td><td>各自 Config 全靠防御性读取</td></tr>
+<tr><td>9</td><td><code>webServer/connection</code> 收窄为可选注入（headless profile 也能用工具）</td><td>workflow（照 kanban <code>index.js:320</code>）</td><td>kanban 注释已记录此坑</td></tr>
+<tr><td>10</td><td>e2e 的 kanban "安装"用例改幂等（先查装态再断言）——测试漂移，非产品缺陷</td><td>kanban（测试侧）</td><td>§3.4 注</td></tr>
+<tr><td>11</td><td>工具回执加 <code>presentationMeta</code>（结构化元数据），卡片/探针不必再解析人读文本行</td><td>kb / codebase / workflow</td><td><code>dsh-tools</code> <code>ToolOutputDefinition</code> 支持</td></tr>
+</table>
+
+<h2 id="s6">§6 存疑与边界</h2>
+<ul>
+<li><b>权限预设对自定义写工具的默认行为</b>未在真机确认（§4-1 的"下一步"）。</li>
+<li><b>评估环境噪声</b>：本轮有并行会话在改 <code>dsh-plugins/</code> 多个包（chat-surface 已被推到 0.2.55、kanban 到 0.4.5），e2e 的看板相关红是<b>测试假设过期</b>（"随包自动安装"已装上）而非产品缺陷；报告按源码与运行时类型评估，未受环境影响。</li>
+<li>IDE 侧数据契约（<code>knowledgeStorage.ts</code>、网关 <code>mem::*</code> 参数形态）按插件自述的真源引用采信，未逐行复核 IDE 源码。</li>
+<li><code>requestActionConsent</code> 是 IDE 侧能力层的同意闸（<code>IIdeCapabilityEnv</code>），<b>不是</b> dsh 的审批 API——评估按 dsh 的组合层模型（<code>tools/pre-execute</code> → <code>ask</code>）表述。</li>
+</ul>
+
+<p class="sub">生成于 2026-10-12 ｜ 依据：dsh 运行时 0.2.0-rc.2 官方规范（<code>practices.md</code> P1-P6、Stability、Performance、UI 段；<code>dsh-system-prompt</code>/<code>dsh-agent-preset-registry</code> 的运行期不变量；<code>dsh-session/known-event-types</code>）。</p>
+
+</div>
+</body>
+</html>

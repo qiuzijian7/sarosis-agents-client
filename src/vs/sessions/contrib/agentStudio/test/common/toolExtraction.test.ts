@@ -125,10 +125,21 @@ suite('Agent Studio - Tool Call Extraction', () => {
 	// ─── 3. XML format ──────────────────────────────────────────────────────
 
 	test('Format 3: XML - <tool_call name="..."> with JSON content', () => {
-		const text = '<tool_call name="read_file">{"path": "/tmp/test.txt"}</tool_call]';
+		// ⚠ 2026-10-14 修：fixture 原来写的是 `</tool_call]` —— **闭合括号打成了方括号**，且自首个提交起
+		//   就是这样（`git show HEAD:…` 可复核）⇒ 严格正则永远匹配不上 ⇒ 这条**从来没绿过**
+		//   （所以它一直躺在 `failure-baseline.json` 里 ✗）。这类"fixture 自己写错、断言永远红"的坏法最坑：
+		//   现象看着像"提取器不支持 XML"，真因只是测试里的一个字符 ✓。
+		const text = '<tool_call name="read_file">{"path": "/tmp/test.txt"}</tool_call>';
 		const extracted = extractToolCallFromXml(text);
 		assert.ok(extracted, 'Should extract tool call from XML');
 		assert.strictEqual(extracted.name, 'read_file');
+		// ★ 再走一遍**真实现**：本文件下面那批 `extractToolCallFrom*` 是**测试内副本**（见文件尾
+		//   「Test helper functions」），只测副本证明不了出厂行为 ✗（上面的白名单守卫那几条用的才是真函数 ✓）。
+		//   同一段文本过一遍真函数，这条才真的在钉"XML 提取支持 `name=` 属性 + JSON 正文"✓。
+		const real = extractToolCallsFromText(silentDeps, text, undefined, [{ name: 'read_file' } as any]);
+		assert.strictEqual(real.length, 1, '真实现也要认这条（副本绿了而真实现不认 = 假绿 ✗）');
+		assert.strictEqual(real[0].name, 'read_file');
+		assert.strictEqual(real[0].arguments, '{"path":"/tmp/test.txt"}');
 	});
 
 	test('Format 3: XML - <function_call> with name attribute', () => {

@@ -10086,8 +10086,12 @@
 	border-radius: 6px;
 }
 .chat-larkcli-qr-img {
-	width: 132px;
-	height: 132px;
+	/* ★ 2026-09-25：原 132px 对 V5–V7（41–45 模块 + 4 模块静区）只剩 ~2.4–2.7px/模块，
+	   手机相机常扫不出（用户报「二维码飞书不识别」的**次要**原因；主因是矩阵不合法，已修）。
+	   ⇒ 放大到 200px（V6 ≈ 4.1px/模块，达可解码下限以上）；pixelated 避免非整数缩放把模块边缘糊掉。 */
+	width: 200px;
+	height: 200px;
+	image-rendering: pixelated;
 	background: #ffffff;   /* 二维码必须浅底深码，深色主题下固定白底才可扫 */
 	border-radius: 4px;
 	padding: 6px;

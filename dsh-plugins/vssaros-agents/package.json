@@ -1,0 +1,54 @@
+{
+  "name": "@vssaros/dsh-agents",
+  "version": "0.2.12",
+  "description": "VsSaros agents module for DeepSeek Harness: registers ~/.vssaros/agents/<id>/.agent.md as dsh agent presets (persona via a system-prompt section, model via @deepseek-ai/dsh-agent-default-model), offers in-session persona hot switching (durable-inbox injection + log-derived projection; preset identity stays locked), ships our own agent preset (R13: official `standard` copy + our tool-bearing rows, see preset-sync.mjs), plus a self-hosted read-only roster page. Data contract: src/vs/sessions/contrib/agentStudio/common/agentMdFormat.ts",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/store.js",
+    "lib/live.js",
+    "lib/tools.js",
+    "lib/relay.js",
+    "lib/core/agents.js",
+    "lib/core/live.js",
+    "lib/core/persona.js",
+    "lib/core/relay.js",
+    "cordis.patch.yml",
+    "cordis.presets.yml",
+    "preset-standard.baseline.yml",
+    "preset-vssaros.rows.yml"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/dsh": ">=0.1.7-0 <0.3.0-0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": [
+        "./cordis.patch.yml",
+        "./cordis.presets.yml"
+      ]
+    }
+  },
+  "vssaros": {
+    "manifestVersion": 1,
+    "module": "agents",
+    "activityBar": {
+      "containerId": "agentStudio.presetAgent",
+      "title": "Agents",
+      "icon": "codicon:robot",
+      "order": 60
+    },
+    "view": {
+      "kind": "page",
+      "route": "/x/agents/"
+    },
+    "legacyCounterpart": "agentStudio.presetAgent"
+  },
+  "license": "MIT"
+}

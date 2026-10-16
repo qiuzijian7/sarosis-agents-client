@@ -1,0 +1,43 @@
+{
+  "name": "@vssaros/dsh-web-content-import",
+  "version": "0.1.2",
+  "description": "VsSaros web-content-import module for DeepSeek Harness: a single `content_import` tool that resolves a URL (platform article / video), fetches its content (HTTP + reader for static pages, yt-dlp + whisper ASR for videos, caller-fed HTML for login-walled pages), and optionally writes it into the knowledge base (库/raw/<slug>.md). 落盘契约与 IDE 侧 kbUrlScraper / web-content-import 技能逐字对齐；方案见 doc/dsh-content-import-plan.md。",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/store.js",
+    "lib/lock.js",
+    "lib/core/routes.js",
+    "lib/core/record.js",
+    "lib/core/extract.js",
+    "lib/core/lossless.js",
+    "lib/core/video.js",
+    "lib/core/asr.js",
+    "lib/core/run.js",
+    "cordis.patch.yml"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/dsh": ">=0.1.7-0 <0.3.0-0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": [
+        "./cordis.patch.yml"
+      ]
+    }
+  },
+  "vssaros": {
+    "manifestVersion": 1,
+    "module": "web-content-import",
+    "view": {
+      "kind": "none"
+    }
+  },
+  "license": "MIT"
+}

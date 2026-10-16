@@ -104,6 +104,8 @@ import { basename } from '../../../../base/common/path.js';
 import { KbImportController } from './kbImportController.js';
 import { migrateLegacyKbSessions } from './knowledge/kbLegacyMigration.js';
 import { loadActiveKbVault, resolveVaultNotesDir, resolveKbRootUri, vaultRootsOf, STORAGE_VAULTS } from './knowledge/kbVaultState.js';
+// ★ 2026-10-15（README 5.138「甲」）：知识库"命令要用的动作"（库增删 / 目录 / op-log …）的宿主服务
+import { IKbCommandService } from './knowledge/kbCommandService.js';
 import { IKbVault } from './views/knowledgeBase/kbTypes.js';
 // ★ 2026-09-24：媒体工具链自检（命令面板）—— 探测与工具同源，见模块头注释
 import { collectMediaToolchainStatus, formatMediaToolchainReport, summarizeMediaToolchain } from './providers/tool/mediaToolchainDoctor.js';
@@ -124,6 +126,9 @@ import {
 	AGENT_STUDIO_WORKFLOW_VIEW_ID,
 	AGENT_STUDIO_DASHBOARD_VIEW_ID,
 	AGENT_STUDIO_KB_VIEW_ID,
+	AGENT_STUDIO_MEMORY_VIEW_ID,
+	AGENT_STUDIO_MEDIA_VIEW_ID,
+	AGENT_STUDIO_CODEBASE_VIEW_ID,
 	AGENT_STUDIO_DATA_PATH_SETTING,
 	AGENT_STUDIO_CHAT_STREAM_LOG_ENABLED_SETTING,
 	AGENT_STUDIO_CHAT_STREAM_LOG_DUMP_TOOLS_SETTING,
@@ -229,6 +234,9 @@ import { PluginDetailEditorPane } from './pluginDetailEditorPane.js';
 import { PluginDetailEditorInput } from './pluginDetailEditorInput.js';
 import { AgentMarketEditorPane } from './agentMarketEditorPane.js';
 import { AgentMarketEditorInput } from './agentMarketEditorInput.js';
+// dsh 插件商城页（编辑区，2026-10-14）：由侧栏「插件中心 → dsh 组合包 → 添加插件」里的按钮打开
+import { DshPluginMarketEditorPane } from './dshPluginMarketEditorPane.js';
+import { DshPluginMarketEditorInput } from './dshPluginMarketEditorInput.js';
 import { AgentSettingsEditorPane } from './agentSettingsEditorPane.js';
 import { AgentSettingsEditorInput } from './agentSettingsEditorInput.js';
 import { AgentCreateEditorPane } from './agentCreateEditorPane.js';
@@ -255,6 +263,7 @@ import './views/media/toolbarViews.css';
 import './views/media/toolsToggle.css';
 import { SessionsExplorerView, SessionsExplorerEmptyView } from '../../files/browser/filesView.js';
 import { WorkspaceFolderSyncContribution } from './workspaceFolderSync.js';
+import { DshHarnessSettings } from '../../dshHarness/common/dshHarness.js';
 import { PresetAgentViewPane } from './views/presetAgentView.js';
 import { TasksViewPane } from './views/tasksView.js';
 
@@ -270,6 +279,10 @@ import { ChannelEditorPane } from './channelEditorPane.js';
 import { ChannelEditorInput } from './channelEditorInput.js';
 
 import { KnowledgeBaseViewPane } from './views/knowledgeBaseView.js';
+// 2026-10-12：「资料库」拆分 —— 记忆 / 代码两个 tab 提升为独立工作台（各自一个新 Pane）。
+import { MemoryLibraryViewPane } from './views/memoryLibraryView.js';
+import { CodebaseLibraryViewPane } from './views/codebaseLibraryView.js';
+import { MediaLibraryViewPane } from './views/mediaLibraryView.js';
 // 资料库 activitybar 徽标聚合（知识库 / 代码库 / 记忆的构建与新增提示）。
 // 该模块在文件末尾自行 registerWorkbenchContribution2，这里只需副作用引入。
 import './libraryActivityBadge.js';
@@ -337,6 +350,7 @@ import './codebaseGraphVaxSearch.contribution.js';
 // Integrated browser "创建看板任务" right-click → kanban scrape. Self-registers.
 import './browserKanbanContextMenu.contribution.js';
 import { IAgentStudioDashboardService, AgentStudioDashboardService } from './agentStudioDashboardService.js';
+import { IWorkbenchManagerService, WorkbenchManagerService } from './workbenchManagerService.js';
 import { AgentStudioDashboardEditorPane } from './agentStudioDashboardEditorPane.js';
 import { AgentStudioDashboardEditorInput } from './agentStudioDashboardEditorInput.js';
 import { AgentStudioDashboardViewPane } from './views/agentStudioDashboardView.js';
@@ -1008,12 +1022,12 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		[AGENT_STUDIO_BROWSER_CDP_LAUNCH_DEDICATED_SETTING]: {
 			type: 'boolean',
 			default: true,
-			description: localize('agentStudio.browserCdp.launchDedicated', "Chrome 调试端口不可达时，由 VsSaros 自行拉起一个**可调试**的 Chrome 实例（专属 profile + --user-data-dir ⇒ 不需要你手动开远程调试、也不需要勾那个同意框）。触发时机是**第一次真正要用浏览器工具时**，不是启动时 —— 不会一开 VsSaros 就弹浏览器。它跑在「Chrome 调试端口」**+1** 上（默认 9223），以避开 9222 —— 那个端口要留给你自己的 Chrome，否则你日常 Chrome 的那个勾选框会绑不上端口、那条路被静默堵死。profile 在 ~/.vssaros/browser-profile，与你的日常 Chrome 隔离：首次要在那个窗口里登录一次，之后登录态会留在里面累积。关掉本项即退回手动模式（端口不可达时这 7 个工具对模型不可见）。"),
+			description: localize('agentStudio.browserCdp.launchDedicated', "Chrome 调试端口不可达时，由 VsSaros 自行拉起一个**可调试**的 Chrome 实例（专属 profile + --user-data-dir ⇒ 不需要你手动开远程调试、也不需要勾那个同意框）。触发时机是**第一次真正要用浏览器工具时**，不是启动时 —— 不会一开 VsSaros 就弹浏览器。它跑在「Chrome 调试端口」**+1** 上（默认 9223），以避开 9222 —— 那个端口要留给你自己的 Chrome，否则你日常 Chrome 的那个勾选框会绑不上端口、那条路被静默堵死。profile 在 ~/.vssaros/browser-profile，与你的日常 Chrome 隔离：首次要在那个窗口里登录一次，之后登录态会留在里面累积。**关掉本项 = 只在你自己那个 Chrome 里干活**（需要它以调试端口启动，即 chrome://inspect/#remote-debugging 里勾上那条；端口不可达时这 7 个工具对模型不可见）。⚠ 想抓**已登录**站点时建议关掉本项：专属 profile 对站点是**一台新设备**，登录态与你自己那个 Chrome 不共享（还会撞平台「设备登录超限」）。本项与端口/无头三项都经 `--patch` 覆盖层注入 Host ⇒ **Host 重启后生效**。"),
 		},
 		[AGENT_STUDIO_BROWSER_CDP_HEADLESS_SETTING]: {
 			type: 'boolean',
 			default: false,
-			description: localize('agentStudio.browserCdp.headless', "自动拉起的专属 Chrome 是否跑在**无头**模式（完全不显示窗口）。⚠ 无头下**无法交互式登录** —— 要在专属 profile 里登录站点，请先用有窗口模式登录一次（登录态会留在 profile 里，之后切无头照样能用）。改动**在下次拉起该实例时生效**：已在运行的那个不受影响 —— 刻意不做「改设置就自动关掉你正在用的浏览器」。"),
+			description: localize('agentStudio.browserCdp.headless', "自动拉起的专属 Chrome 是否跑在**无头**模式（完全不显示窗口）。⚠ 无头下**无法交互式登录** —— 要在专属 profile 里登录站点，请先用有窗口模式登录一次（登录态会留在 profile 里，之后切无头照样能用）。改动**在下次拉起该实例时生效**：已在运行的那个不受影响 —— 刻意不做「改设置就自动关掉你正在用的浏览器」。本项经 `--patch` 覆盖层注入 Host ⇒ Host 重启后生效。"),
 		},
 		// ★ 2026-09-24：让 yt-dlp 借用浏览器登录态（抽帧/视频理解的下载环节）。
 		//   留空 = 关闭（命令行**一个参数都不加**，与旧行为逐字一致）。
@@ -1046,6 +1060,32 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		'sarosis.comfyui.mainPath': {
 			type: 'string', default: '',
 			description: localize('sarosis.comfyui.mainPath', "ComfyUI 的 main.py 绝对路径（留空则自动解析：<desktopRoot>\\resources\\ComfyUI\\main.py）。"),
+		},
+	},
+});
+
+// --- 技能根（P1，2026-10-13）--------------------------------------------------------
+// 项目级技能根（`<工作区>/.dsh/skills`、`<工作区>/.agents/skills`）只在工作区**受信任**时加载
+// （它们会随 git clone 进来 ⇒ 提示词注入面 ✗）；本开关是**一键回滚**：关掉即回到"只有用户级 + 内置"。
+// ⚠ 键名与取值口径以 `common/skillRoots.ts` 的 `SKILL_PROJECT_ROOTS_SETTING_ID` 为准
+//   （这里用字面量是为了不在 contribution 里多引一层；`skillRoots.test.ts` 有一条守卫比对两处 ✓）。
+Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
+	id: 'agentStudio.skills',
+	title: localize('agentStudio.skills', "技能"),
+	// ★ 2026-10-14 补（`sessionsConfigIsolation` 抓出来的 ✗）：本文件里 5 处 `registerConfiguration`
+	//   一律要带 MACHINE scope（见上方 `id: 'sessions'` 那段说明）；这条 2026-10-13 新加时漏了 ⇒
+	//   它成了**唯一**能被工作区 `.vscode/settings.json` 覆盖的 Agent Studio 设置 ✗ ——
+	//   而这两个键管的是"加载哪些技能根"（含工作区自带的 `.dsh/skills`、`.agents/skills` 的开关 ✓）
+	//   ⇒ 让工作区能改自己的技能加载开关，正是那条隔离规则要挡的事 ✓。
+	scope: ConfigurationScope.MACHINE,
+	properties: {
+		'agentStudio.skills.projectRoots': {
+			type: 'boolean', default: true,
+			description: localize('agentStudio.skills.projectRoots', "加载工作区自带的技能（.dsh/skills、.agents/skills）。仅在信任该工作区时生效；关闭后只加载用户级与内置技能。"),
+		},
+		'agentStudio.skills.officialUserRoot': {
+			type: 'boolean', default: true,
+			description: localize('agentStudio.skills.officialUserRoot', "加载 dsh 官方用户级技能目录（<DSH_HOME>/skills，打包版即 ~/.dsh/skills）里的技能。关闭后只加载 VsSaros 自己的用户技能库与内置技能。"),
 		},
 	},
 });
@@ -1183,6 +1223,23 @@ registerSingleton(ICodebaseGraphService, CodebaseGraphService, InstantiationType
 registerSingleton(ICodebaseGraphWatcher, CodebaseGraphWatcher, InstantiationType.Delayed);
 // Dashboard Service — aggregates stats from AgentOS, ContextManager, Memory, Graph
 registerSingleton(IAgentStudioDashboardService, AgentStudioDashboardService, InstantiationType.Delayed);
+// Workbench Manager — Dashboard「管理工作台」：pin / 显隐 / 排序 / 打开（作用于活动栏容器）
+registerSingleton(IWorkbenchManagerService, WorkbenchManagerService, InstantiationType.Delayed);
+
+/**
+ * 工作台管理的一次性初始化：应用隐藏清单 + 「Dashboard 默认第一位」的顺序迁移。
+ *
+ * 时点必须是 `AfterRestored`：活动栏部件与它的 composite bar 由 `renderWorkbench()` 的部件循环创建，
+ * 早于这个阶段时 `getPart(Parts.ACTIVITYBAR_PART)` 取不到（**未注册的部件会抛错**，不是返回 undefined）。
+ */
+class WorkbenchManagerInitializer extends Disposable implements IWorkbenchContribution {
+	static readonly ID = 'sessions.agentStudio.workbenchManagerInitializer';
+	constructor(@IWorkbenchManagerService service: IWorkbenchManagerService) {
+		super();
+		void service.initialize();
+	}
+}
+registerWorkbenchContribution2(WorkbenchManagerInitializer.ID, WorkbenchManagerInitializer, WorkbenchPhase.AfterRestored);
 // Shared KB native kernel — lets the BlockSuite note editor reuse the KB view's
 // already-built backlink/mention index instead of re-scanning the vault.
 registerSingleton(IKbNativeKernelService, KbNativeKernelService, InstantiationType.Delayed);
@@ -1302,6 +1359,21 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 	),
 	[
 		new SyncDescriptor(AgentMarketEditorInput)
+	]
+);
+
+// Register DshPluginMarketEditorPane：**dsh 插件商城**页（编辑区，2026-10-14）。
+// 触发点：侧栏「插件中心 → dsh 组合包 → 添加插件」段里的「打开插件商城（编辑区）」按钮。
+// 为什么单独一页：侧栏宽约 380px，只够放"策展推荐 + 手输 spec"；社区目录 4500+ 条的**浏览**（搜索、按来源筛、
+// 看 ★/下载量）需要宽度 ⇒ 与 AgentMarket（Agent 商城）同款做法：编辑区开页面 ✓。
+Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+	EditorPaneDescriptor.create(
+		DshPluginMarketEditorPane,
+		DshPluginMarketEditorPane.ID,
+		localize('dshPluginMarketEditor', "dsh Plugin Marketplace"),
+	),
+	[
+		new SyncDescriptor(DshPluginMarketEditorInput)
 	]
 );
 
@@ -2608,6 +2680,34 @@ registerAction2(class extends Action2 {
 	}
 });
 
+// Register a command to open the Skill Market (技能商城) editor directly.
+// Invoked by the dsh **integration page** (`/x/skills/`, container `agentStudio.integration`)'s
+// primary entry button, 经页面桥 `openSkillMarket` 转过来（桥 `8 → 9`，2026-10-15）。
+// 为什么单独要一条命令：技能商城此前**只能**从集成视图那个 "+ Install ▾" 下拉进
+// （`integrationView.ts` 里直接 `editorService.openEditor(SkillMarketEditorInput.getInstance())`）——
+// 那条路要视图实例在场；dsh 页面侧没有视图 ⇒ 交宿主执行命令 ✓（与 `agentStudio.openMarket` 同款）。
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: 'agentStudio.openSkillMarket',
+			title: localize2('agentStudio.openSkillMarket', 'Open Skill Market'),
+			f1: true,
+			category: localize2('agentStudio.category', 'Agent Studio'),
+		});
+	}
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const editorService = accessor.get(IEditorService);
+		const editorGroupsService = accessor.get(IEditorGroupsService);
+		const input = SkillMarketEditorInput.getInstance();
+		const groups = editorGroupsService.getGroups(0 /* GroupsOrder.CREATION_TIME */);
+		if (groups.length <= 1) {
+			await editorService.openEditor(input, { pinned: true }, SIDE_GROUP);
+		} else {
+			await editorService.openEditor(input, { pinned: true }, groups[0]);
+		}
+	}
+});
+
 // ─── Open Dashboard Command ────────────────────────────────────────────
 // Opens the AgentStudio Dashboard in the editor area.
 registerAction2(class extends Action2 {
@@ -2896,11 +2996,20 @@ registerAction2(class extends Action2 {
 			icon: Codicon.add,
 		});
 	}
-	run(accessor: ServicesAccessor): void {
+	run(accessor: ServicesAccessor, arg?: unknown): void {
 		const editorGroupsService = accessor.get(IEditorGroupsService);
 		const editorService = accessor.get(IEditorService);
 		const logService = accessor.get(ILogService);
+		// `{ presetId }`（可选）：把新聊天页签**直接绑到该 preset 的专属会话** —— chat-surface 的
+		// Commands「Preset」行（"切换 preset = 新建一个会话"）经 `executeCommand('agentStudio.newChatInEditor',
+		// { presetId })` 传进来。⚠ 必须在 openEditor **之前**设：pane 打开时立刻按它做 `session.start` 绑定。
+		const presetId = (arg && typeof arg === 'object' && typeof (arg as { presetId?: unknown }).presetId === 'string')
+			? (arg as { presetId: string }).presetId.trim()
+			: '';
 		const input = NativeChatEditorInput.create();
+		if (presetId) {
+			input.setDshPreset(presetId);
+		}
 
 		// 聊天框的合法归属只有两个：主窗口 agentPart（右侧 agent 专区）或 popout 出的
 		// 独立窗口（aux part）。严禁落入中间栏 mainPart（file editor instance）。
@@ -3134,6 +3243,8 @@ class NativeChatEditorInputSerializer implements IEditorSerializer {
 			sessionId: editorInput.sessionId,
 			name: editorInput.name,
 			cliMode: editorInput.cliMode,
+			dshPreset: editorInput.dshPreset,
+			dshBasePreset: editorInput.dshBasePreset,
 		});
 	}
 	deserialize(_instantiationService: IInstantiationService, serialized: string): EditorInput | undefined {
@@ -3142,6 +3253,12 @@ class NativeChatEditorInputSerializer implements IEditorSerializer {
 			const input = NativeChatEditorInput.create(data.chatId, data.agentId, data.sessionId, data.name);
 			if (data.cliMode) {
 				input.setCliMode(true);
+			}
+			if (typeof data.dshPreset === 'string') {
+				input.setDshPreset(data.dshPreset);
+			}
+			if (typeof data.dshBasePreset === 'string') {
+				input.setDshBasePreset(data.dshBasePreset);
 			}
 			return input;
 		} catch {
@@ -4492,11 +4609,41 @@ registerWorkbenchContribution2(RegisterAgentStudioViewsContribution.ID, Register
 
 // --- Toolbar Icons Contribution (12 independent icons) ----------------------
 
+/**
+ * 模块 ActivityBar 是否已交给 `DshActivityBarContribution`（方案 6.8 / 9.2）：
+ * 总开关打开且 `moduleEngine=dsh` 时，模块化容器（Agents / Tasks / Workflow / Integration /
+ * 资料库 / Dashboard）由动态注册负责，静态注册必须让位——两者同时注册同一容器/视图会抛
+ * "A view with id ... is already registered"，中断整个工作台加载。
+ * 常驻容器（Workspace / Search / SCM / Session History / Plugins）不受影响，始终静态注册。
+ */
+function isDshModuleEngine(configurationService: IConfigurationService): boolean {
+	if (configurationService.getValue<boolean>(DshHarnessSettings.Enabled) === false) {
+		return false;
+	}
+	return configurationService.getValue<string>(DshHarnessSettings.ModuleEngine) === 'dsh';
+}
+
+/** Sidebar 图标容器 + 单个视图的注册参数（`_registerToolIcon` 与模块化包装共用）。 */
+interface IAgentStudioToolIconConfig {
+	readonly id: string;
+	readonly title: ILocalizedString;
+	readonly icon: ThemeIcon;
+	readonly viewId: string;
+	readonly order: number;
+	readonly viewCtor: new (...args: any[]) => any;
+}
+
 class AgentStudioToolbarContribution extends Disposable implements IWorkbenchContribution {
 	static readonly ID = 'sessions.agentStudioToolbar';
 
-	constructor() {
+	/** true = 模块化容器由本贡献静态注册（legacy 引擎，默认行为）。 */
+	private readonly _staticModuleContainers: boolean;
+
+	constructor(
+		@IConfigurationService configurationService: IConfigurationService,
+	) {
 		super();
+		this._staticModuleContainers = !isDshModuleEngine(configurationService);
 		this._registerToolbarIcons();
 	}
 
@@ -4556,6 +4703,24 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 			viewCtor: AgentStudioSearchViewPane,
 		});
 
+		// 2.5 代码库 (order: 113) —— 2026-10-12：原 dsh 侧 `vssaros.dsh.codebase`（「代码图谱」）被
+		// 提升为**两种引擎都有**的工作台：显示名改「代码库」，页面 = 索引统计 + 日志 + 图谱查看器入口。
+		// ⚠ 容器 id / 视图 id **沿用既有那两个**（改 id 会丢用户已存的活动栏布局）；
+		//   只有可见标题变了。dsh 引擎下本段让位，由 `dshActivityBarContribution` 用同一对 id 动态注册。
+		// ★ 2026-10-12（Q2 决议）：order **25 → 113**，让「资料库系」四格相邻
+		//   （知识库 110 / 记忆库 111 / 媒体库 112 / 代码库 113）—— 原值 25 是它当年作为「代码图谱」的
+		//   位置（那时不属于资料库系）。对比稿：`doc/activitybar-order-q2.html`。
+		//   ⚠ 与 `dshModuleContainers.ts` 的表**必须同值**（那里有一条守卫会抓只改一处）。
+		//   ⚠ 对已用过的窗口不生效：顺序以 storage `workbench.activity.pinnedViewlets2` 为准。
+		this._registerModuleToolIcon(viewContainerRegistry, viewsRegistry, {
+			id: 'vssaros.dsh.codebase',
+			title: localize2('agentStudio.codebase.title', "代码库"),
+			icon: Codicon.typeHierarchy,
+			viewId: AGENT_STUDIO_CODEBASE_VIEW_ID,
+			order: 113,
+			viewCtor: CodebaseLibraryViewPane,
+		});
+
 		// Note: SourceControl (order: 30) — registered in sourceControl.contribution.ts
 
 		// Note: SourceControl (order: 30) — registered in sourceControl.contribution.ts
@@ -4563,7 +4728,7 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 		// Session History (order: 50) — registered in sessionHistory.contribution.ts
 
 		// 3. Agents (order: 60)
-		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
+		this._registerModuleToolIcon(viewContainerRegistry, viewsRegistry, {
 			id: 'agentStudio.presetAgent',
 			title: localize2('agentStudio.presetAgent.title', "Agents"),
 			icon: presetAgentIcon,
@@ -4573,7 +4738,7 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 		});
 
 		// 4. Tasks (order: 70)
-		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
+		this._registerModuleToolIcon(viewContainerRegistry, viewsRegistry, {
 			id: 'agentStudio.tasks',
 			title: localize2('agentStudio.tasks.title', "Tasks"),
 			icon: tasksIcon,
@@ -4583,7 +4748,7 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 		});
 
 		// 5. Workflow (order: 80)
-		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
+		this._registerModuleToolIcon(viewContainerRegistry, viewsRegistry, {
 			id: 'agentStudio.workflow',
 			title: localize2('agentStudio.workflow.title', "Workflow"),
 			icon: workflowIcon,
@@ -4592,10 +4757,14 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 			viewCtor: WorkflowViewPane,
 		});
 
-		// 6. Integration (Skills + Tools + MCP, order: 90)
-		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
+		// 6. 工具（Skills + MCP，order: 90）
+		//   2026-10-15：显示名「集成」→「工具」（用户要求）。**容器 id / 视图 id / 存储键一字未动** ——
+		//   改 id 会丢用户已存的活动栏布局（既有纪律）；标题的 zh/en 两份分别在
+		//   `dshModuleContainers.ts` 的聚合表与 `vssaros-skills` 的清单里（两边必须同值，由
+		//   `dshPluginPackages.test.ts` 的"清单 ↔ 聚合表"对账把着 containerId/order，标题由本条守）。
+		this._registerModuleToolIcon(viewContainerRegistry, viewsRegistry, {
 			id: 'agentStudio.integration',
-			title: localize2('agentStudio.integration.title', "Integration"),
+			title: localize2('agentStudio.integration.title', "工具"),
 			icon: integrationIcon,
 			viewId: AGENT_STUDIO_INTEGRATION_VIEW_ID,
 			order: 90,
@@ -4618,16 +4787,46 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 
 		// --- Remaining icons (after Plugins) ---
 
-		// Knowledge Base (order: 110)
+		// Knowledge Base (order: 110) —— 2026-10-12：「资料库」拆分的**母体**，即「知识库」。
 		// 2026-09-11：左侧栏页签文案由「知识库」改为「资料库」（id/命令/存储键不变，
 		// 避免破坏已有配置与命令注册；仅用户可见标题变化）。
-		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
+		// 2026-10-12：拆分 —— 文案改回「知识库」，另外 3 个 tab（记忆 / 代码 / 媒体）提升为
+		// 独立工作台（记忆 / 代码见下与上；媒体库待做）。**容器 id 与存储键一字未动** ⇒
+		// 用户已有的活动栏布局与视图状态不受影响。
+		this._registerModuleToolIcon(viewContainerRegistry, viewsRegistry, {
 			id: 'agentStudio.knowledgeBase',
-			title: localize2('agentStudio.knowledgeBase.title', "资料库"),
+			title: localize2('agentStudio.knowledgeBase.title', "知识库"),
 			icon: kbIcon,
 			viewId: AGENT_STUDIO_KB_VIEW_ID,
 			order: 110,
 			viewCtor: KnowledgeBaseViewPane,
+		});
+
+		// Memory (order: 111) —— 2026-10-12：由「资料库」页的「记忆」tab 提升为独立工作台。
+		// ⚠ 容器 id / 视图 id 都是**新建**的（见 constants 的说明）：绝不复用 kb 的，
+		// 否则要么撞双注册，要么把 kb 的布局状态一并接管。
+		// ⚠ 容器 id 必须写成**字面量**：`dshActivityBarSource.test.ts` 是按字面量匹配静态注册的
+		// （表驱动守卫），用记号常量会让它找不到、报「existing 没走 _registerModuleToolIcon」。
+		this._registerModuleToolIcon(viewContainerRegistry, viewsRegistry, {
+			id: 'agentStudio.memory',
+			title: localize2('agentStudio.memory.title', "记忆库"),
+			icon: Codicon.database,
+			viewId: AGENT_STUDIO_MEMORY_VIEW_ID,
+			order: 111,
+			viewCtor: MemoryLibraryViewPane,
+		});
+
+		// Media (order: 112) —— 2026-10-12：由「资料库」页的「媒体库」tab 提升为独立工作台。
+		// 数据源 = 主进程 MediaStore（`{rootDir}/media.db`）；dsh 引擎下由 `@vssaros/dsh-media`
+		// 自托管 `/x/media/`，那一侧**直连同一个 media.db**（多连接并发是本库的既有前提，见
+		// `node/mediaStore.ts` 的 `_applyPragmas`）。
+		this._registerModuleToolIcon(viewContainerRegistry, viewsRegistry, {
+			id: 'agentStudio.media',
+			title: localize2('agentStudio.media.title', "媒体库"),
+			icon: Codicon.fileMedia,
+			viewId: AGENT_STUDIO_MEDIA_VIEW_ID,
+			order: 112,
+			viewCtor: MediaLibraryViewPane,
 		});
 
 		// ★ 2026-09-22：Channels 的 Activity Bar 入口（原 order: 130，📡）**已按要求移除** ——
@@ -4636,30 +4835,48 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 		//   `views/channelView.ts`（ChannelViewPane）保留但当前**不再注册**；
 		//   若日后需要恢复侧栏入口，照本函数其它 _registerToolIcon 调用补一段即可（含上方图标 registerIcon）。
 
-		// Dashboard (order: 150) — Agent 运维监控面板
-		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
+		// 主页 (order: 5) — Agent 运维监控面板
+		// 2026-10-12：order 由 150（最后一位）改为 **5 = 活动栏第一位**（用户要求）。
+		// 2026-10-13：**显示名与图标**改为「主页 / 小房子」（用户要求）。
+		// ⚠ 只改显示：容器 id（`agentStudio.dashboard`）与 module id 都不动 —— 活动栏顺序落在
+		//   storage `workbench.activity.pinnedViewlets2`（按容器 id 记）、探针与容器表也认它 ✗。
+		// ⚠ 与 dsh 引擎侧的 `dshModuleContainers.ts::DSH_MODULE_CONTAINERS` 里 dashboard 的
+		// `activityBar.title` / `.icon` / `.order` **必须同值**，否则两套引擎下名字/位置不一致。
+		// ⚠ 只改这里对「已用过窗口」不生效：活动栏顺序早已落在 storage
+		// `workbench.activity.pinnedViewlets2`（见 `WorkbenchManagerService` 的一次性 seed）。
+		// ⚠ 有意**没动**的：原生完整页那个编辑器标签名（`agentStudioDashboardEditor` = "AgentStudio Dashboard"）
+		//   —— 它属另一条线（原生 Dashboard 的编辑区页），要一起改说一声 ✓。
+		this._registerModuleToolIcon(viewContainerRegistry, viewsRegistry, {
 			id: 'agentStudio.dashboard',
-			title: localize2('agentStudio.dashboard.title', "Dashboard"),
-			icon: Codicon.dashboard,
+			title: localize2('agentStudio.dashboard.title', "主页"),
+			icon: Codicon.home,
 			viewId: AGENT_STUDIO_DASHBOARD_VIEW_ID,
-			order: 150,
+			order: 5,
 			viewCtor: AgentStudioDashboardViewPane,
 		});
 
 		// --- Bottom-aligned icons moved to SidebarFooter (see account.contribution.ts) --- //
 	}
 
+	/**
+	 * 模块化容器（Agents / Tasks / Workflow / Integration / 资料库 / Dashboard）的注册入口：
+	 * `moduleEngine=dsh` 时不注册，交给 `DshActivityBarContribution` 按已激活插件动态注册（方案 9.2）。
+	 */
+	private _registerModuleToolIcon(
+		viewContainerRegistry: IViewContainersRegistry,
+		viewsRegistry: IViewsRegistry,
+		config: IAgentStudioToolIconConfig
+	): void {
+		if (!this._staticModuleContainers) {
+			return;
+		}
+		this._registerToolIcon(viewContainerRegistry, viewsRegistry, config);
+	}
+
 	private _registerToolIcon(
 		viewContainerRegistry: IViewContainersRegistry,
 		viewsRegistry: IViewsRegistry,
-		config: {
-			id: string;
-			title: ILocalizedString;
-			icon: ThemeIcon;
-			viewId: string;
-			order: number;
-			viewCtor: new (...args: any[]) => any;
-		}
+		config: IAgentStudioToolIconConfig
 	): void {
 		// Register ViewContainer in Sidebar
 		// [Saros] Use WindowEnablement.Both so icons show in both main window and sessions window
@@ -4892,6 +5109,108 @@ registerAction2(class extends Action2 {
 		const notificationService = accessor.get(INotificationService);
 		await tofAuthService.logout();
 		notificationService.info('已登出');
+	}
+});
+
+// ─── 知识库：dsh 页面桥要用的两条命令（2026-10-15，§16.29 的 ④⑤）──────────────────────────
+//
+// 用户报"顶部缺设置按钮 / 缺关系图谱按钮" ✓，而这两个面板都是**中间栏 EditorPane**（dsh 侧的知识库
+// 页面没有中间栏 ✗）⇒ 只能请宿主开 ✓（桥 `openKbSettings` / `openKbGraph` ✓，桥 `6 → 7`）。
+//
+// 为什么宿主**不自己 new EditorInput** ✗ —— 两个面板的构造都**要视图状态**：
+//   · `KbSettingsEditorInput(host)` 的 host 由视图造（目录 / 统计 / 需视图状态的动作 ✓
+//     `knowledgeBaseView.ts:2775-2783` ✓）；
+//   · `KbGraphEditorInput(nodes, links, …)` 的 nodes/links 来自视图的 `_graph` ✓（`:5467-5490` ✓）。
+// ⇒ 走"命令 ⇒ 视图的**公开动作**"（`openSettings()` / `openGraph()` ✓）：**同一个动作只有一份实现** ✓
+//   （照本仓那条既有纪律 ✓ —— 否则两处必然漂移 ✗）。
+//
+// ⚠ 视图**没被实例化过**时 `getViewWithId` 给 `null` ✗ ⇒ **如实提示 ＋ 顺手把视图开出来** ✓
+//   （用户点第二次就成 ✓）；**绝不假装打开** ✗。
+// ⚠ `KB_PANEL_HINT`（"视图没打开，再点一次"）与 `kbViewForPageCommand`（判型取视图）**都已随第 3 期删掉**：
+//   四个入口现在全走 `IKbCommandService`（dsh 引擎下压根没有真源视图 ⇒ 不需要、也不该再取它 ✓）。
+//   那条坑的机理与守卫仍然有效 —— 见 `dshPageCommandWiring.test.ts` ④（现在是"零盲转型 + 落点白名单"）✓
+
+/** 打开知识库设置面板（中间栏 EditorPane；真源 ⚙ 的同一条路 ✓）。 */
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: 'agentStudio.kb.openSettings',
+			title: localize2('agentStudio.kb.openSettings', '打开知识库设置'),
+			f1: false,
+			category: localize2('agentStudio.category', 'Agent Studio'),
+		});
+	}
+	run(accessor: ServicesAccessor): void {
+		// ★ 2026-10-15（README 5.139「甲」第 3 期）：设置面板的 host 21 个方法全在服务里 ⇒ 不再取视图 ✓
+		void accessor.get(IKbCommandService).openSettings();
+	}
+});
+
+/** 打开知识库关系图谱（中间栏 EditorPane；真源 🕸 的同一条路 ✓）。 */
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: 'agentStudio.kb.openGraph',
+			title: localize2('agentStudio.kb.openGraph', '打开知识库关系图谱'),
+			f1: false,
+			category: localize2('agentStudio.category', 'Agent Studio'),
+		});
+	}
+	run(accessor: ServicesAccessor): void {
+		// ★ 2026-10-15（README 5.139「甲」第 2 期）：图谱也搬进了服务 ⇒ 不再取视图 ✓
+		void accessor.get(IKbCommandService).openGraph();
+	}
+});
+
+// ─── 知识库：下拉框的**增删**（2026-10-15；桥 `kbAddVault` / `kbRemoveVault`，桥 `7 → 8`）──────────
+//
+// 用户要求"参考原知识库 view 给下拉框加增删功能" ✓。两条都**不是新写一套** —— 直接走真源那两个方法
+// （`configFolderAsVault()` `knowledgeBaseView.ts:1635-1654` ✓ / `removeVault()` `:1069-1087` ✓）。
+// ⚠ 这两条会**改数据**（改 IDE 清单 / 删库目录）⇒ 闸在**真源那两步自带的原生对话框**上
+//   （选目录 / 确认框 ✓）：用户在原生框里按下去才落盘 ✓（协议头部 2026-10-15 的修订 ✓）。
+//
+// ⚠ 返回值有意义：`true` = 清单**真的**变了 ⇒ 宿主据此重启一次 Host 以刷新"库记录"注入 ✓
+//   （那份注入只在 Host 启动时生成 ✗）；用户在对话框里取消 ⇒ `false` ⇒ 不重启 ✓。
+// ⚠ 视图没被实例化过时 `getViewWithId` 给 `null` ✗ ⇒ 与上面两条同口径：**如实提示 ＋ 顺手开视图** ✓。
+
+/** 配置文件夹为知识库（真源 `configFolderAsVault` ✓；下拉框底部那一项）。 */
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: 'agentStudio.kb.addVault',
+			title: localize2('agentStudio.kb.addVault', '配置文件夹为知识库…'),
+			f1: false,
+			category: localize2('agentStudio.category', 'Agent Studio'),
+		});
+	}
+	async run(accessor: ServicesAccessor): Promise<boolean> {
+		// ★ 2026-10-15（README 5.138「甲」）：**不再取视图** ✓ —— 实现已搬进 `IKbCommandService`
+		//   （dsh 引擎下这个视图 id 下是插件页 ⇒ 取视图必炸；服务与视图共用同一份实现 ✓）。
+		// ⚠ 返回 false = "清单没有变" ⇒ 宿主**不重启 Host** ✓（这条口径与"用户取消"一致 ✓）
+		return accessor.get(IKbCommandService).addVaultFromFolder();
+	}
+});
+
+/** 删除知识库及其全部内容（真源 `removeVault` ✓ —— 它自己会弹**原生确认框** ✓）。 */
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: 'agentStudio.kb.removeVault',
+			title: localize2('agentStudio.kb.removeVault', '删除知识库…'),
+			f1: false,
+			category: localize2('agentStudio.category', 'Agent Studio'),
+		});
+	}
+	async run(accessor: ServicesAccessor, id?: unknown): Promise<boolean> {
+		if (typeof id !== 'string' || !id) {
+			// 参数由宿主（页面桥 handler）传下来：形状不对就**如实拒** ✓
+			// （绝不"没给就删第一个" ✗ —— 这是不可逆操作，猜错代价最大）。
+			accessor.get(INotificationService).warn(localize('agentStudio.kb.removeVaultNoId', '没收到要删除的知识库 id（内部调用缺少参数）。'));
+			return false;
+		}
+		// ★ 2026-10-15（README 5.138「甲」）：同 `kb.addVault` —— 走服务（不取视图 ✓）。
+		// ⚠ false = "清单没变" ⇒ 宿主不重启 Host ✓；**也没删任何东西** ✓（原生确认框在服务里 ✓）
+		return accessor.get(IKbCommandService).removeVaultById(id);
 	}
 });
 

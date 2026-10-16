@@ -14,6 +14,16 @@
  */
 
 // ── BM25 Skill Search ─────────────────────────────────────────────
+//
+// ⚠ 2026-10-12：**dsh 侧有一份同口径的移植** —— `dsh-plugins/vssaros-skills/lib/core/skillSearch.js`
+//   （服务 dsh 的 `skill_search` 工具：目标形态是"工具/技能/MCP 都归 dsh 侧"，技能检索就是补在 dsh 的那一层）。
+//   方案 6.9 方案 C：契约共享、实现各自一份（`src/vs` 不得 import 插件包）⇒ 两份靠
+//   `poc/dsh-p0/scripts/p3-04-skills-plugin.mjs` 的"口径对齐"断言钉在一起：
+//   k1=1.2 / b=0.75、同一条分词字符类 + `length >= 2` 过滤、limit 缺省 3 上限 10、分数四舍五入两位。
+//   ⇒ **改这里的算式、常量或默认值，必须同步改那份移植并跑 p3-04**；否则同一句查询在两个引擎里
+//   会挑出不同的技能，而这是最难解释的一类差异 ✗。
+//   另：本文件的 BM25 目前**没有任何单元测试**（2026-10-12 核查：`agentStudio/test` 下搜 `bm25|skill_search`
+//   零命中 ✗）—— 缺陷已知、登记在案，别把它当成"已被覆盖" ✓。
 
 interface SkillSearchEntry {
 	id: string;
@@ -55,7 +65,7 @@ import { NonRetryableToolError, type IToolResultContent } from '../../../common/
 import type { URI } from '../../../../../../base/common/uri.js';
 import { SkillManagerTool } from '../../skillManagerTool.js';
 import type { ISkillRegistry } from '../../../common/skills.js';
-import { renderSkillBody } from '../../../common/skills.js';
+import { isSkillReadOnly, renderSkillBody } from '../../../common/skills.js';
 import type { ILogService } from '../../../../../../platform/log/common/log.js';
 import type { IBuiltinToolRegistration } from './builtinToolProvider.js';
 import { SarosPath, resolveSarosPath, userDataRootFromRoamingHome } from '../../../common/sarosPaths.js';
@@ -405,13 +415,16 @@ export function registerSkillTools(ctx: SkillToolContext): void {
 				}
 
 				if (action === 'delete') {
-					// 内置技能不允许删除
+					// 只读来源（内置 / dsh 插件自带）不允许删除。
+					// ⚠ 这条判定不是"话术"：下面的 `fs.rm(skillPath)` 是**真删**，而插件技能的路径落在
+					//   插件包里（`node_modules` / `profile/.vssaros/plugins`）⇒ 漏判就是删掉依赖产物 ✗✗
+					//   （见 `common/skills.ts` 的 `isSkillReadOnly` 注释）。
 					try {
 						await ctx.skillRegistry.whenReady();
 					} catch { /* ignore */ }
 					const existingSkill = ctx.skillRegistry.getSkill(name);
-					if (existingSkill?.source === 'builtin') {
-						throw new NonRetryableToolError(`Skill "${name}" is a builtin skill and cannot be deleted.`);
+					if (existingSkill && isSkillReadOnly(existingSkill.source)) {
+						throw new NonRetryableToolError(`Skill "${name}" is a read-only (${existingSkill.source}) skill and cannot be deleted.`);
 					}
 					try {
 						const fs = await import('fs/promises');

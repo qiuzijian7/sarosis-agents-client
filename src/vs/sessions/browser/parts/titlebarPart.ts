@@ -294,11 +294,34 @@ export class TitlebarPart extends Part implements ITitlebarPart {
 					document.dispatchEvent(new CustomEvent('agent-studio:toggle-panel'));
 				});
 
+				// ── [Saros 2026-10-13] 交换按钮：编辑器列 ⇄ Agent 列 ──
+				// 用户把这两个按钮放在一起看（"折叠 Agent 栏"旁边就是"换个边"）。
+				//
+				// ⚠ 走**命令**而不是 DOM 事件（本文件其它按钮用的是 DOM 事件）：命令在
+				// `sessions/browser/agentColumnLayoutActions.ts` 注册，落点是
+				// `IWorkbenchLayoutService.moveAgentsEditorColumn()` —— 本窗口的
+				// `Workbench` 实现了它（`IAgentWorkbenchLayoutService` 上该方法是可选的）
+				// ⇒ 一条实现同时服务本窗口与「IDE 底座」窗口，不必再维护第二个监听器。
+				//
+				// icon 用 `arrow-both`（⇄）：与"折叠"的 `layout-sidebar-left` 明显区分。
+				const swapBtn = append(toggleContainer, $('button.titlebar-toggle-right-column'));
+				swapBtn.classList.add('codicon', 'codicon-arrow-both', 'titlebar-toggle-swap-columns-btn');
+				swapBtn.title = '交换编辑器区与 Agent 区位置';
+				swapBtn.setAttribute('aria-label', '交换编辑器区与 Agent 区位置');
+				swapBtn.addEventListener('click', (e) => {
+					e.preventDefault();
+					e.stopPropagation();
+					this._runAgentStudioCommand('vssaros.layout.toggleEditorAndAgentColumn');
+				});
+
 				// 折叠按钮
 				const toggleBtn = append(toggleContainer, $('button.titlebar-toggle-right-column'));
 				toggleBtn.classList.add('codicon', 'codicon-layout-sidebar-left', 'titlebar-toggle-sidebar-btn');
-				toggleBtn.title = 'Toggle Sidebar Content';
-				toggleBtn.setAttribute('aria-label', 'Toggle Sidebar Content');
+				// ⚠ 2026-10-13：文案要说清它收的是**右侧那一栏**（Agent 列或编辑器列，取决于方位 ✓）——
+				//   旧文案 `Toggle Sidebar Content` 含糊，配合"写死收 Agent 列"的行为更容易让人以为收错了栏 ✗
+				//   （行为修复见 `sessions/browser/workbench.ts` 的 `toggle-right-column` 处理器 ✓）。
+				toggleBtn.title = 'Collapse/Expand Right Column (Agent or Editor)';
+				toggleBtn.setAttribute('aria-label', 'Collapse/Expand Right Column (Agent or Editor)');
 				toggleBtn.addEventListener('click', (e) => {
 					e.preventDefault();
 					e.stopPropagation();

@@ -33,11 +33,14 @@ import type { ISerializedGrid, ISerializedLeafNode, ISerializedNode, Orientation
  * ├─ TitleBar                [height = titleBarHeight, 全宽]
  * └─ contentRow (HORIZONTAL) [height = height - titleBarHeight]
  *     ├─ Sidebar             [width = 展开宽 或 48px 图标条]
- *     ├─ EditorColumn (VERTICAL) [width = 剩余宽度]
+ *     ├─ EditorColumn (VERTICAL) [width = 剩余宽度]        ← 方位由 agentColumnSide 决定
  *     │   ├─ Editor（文件区）  [height = contentHeight - panelHeight]
  *     │   └─ Panel            [height = 35% × contentHeight，不可见时为 0]
- *     └─ AgentEditor         [width = max(480, width/2)]
+ *     └─ AgentEditor         [width = max(480, width/2)]   ← 方位由 agentColumnSide 决定
  * ```
+ *
+ * ★ `agentColumnSide`（默认 `'right'`）只影响 **EditorColumn 与 AgentEditor 的先后**：
+ * 侧栏永远在最左，且 **Panel 恒随 EditorColumn**（它在编辑器列的 branch 内部，换位时整体搬）。
  *
  * ⚠ 与标准 workbench 的差异（复用时必须处理）：标准 workbench 还有
  * `ACTIVITYBAR_PART` / `AUXILIARYBAR_PART` / `STATUSBAR_PART`，且侧栏与 activity bar 是**两个**
@@ -55,6 +58,18 @@ export const EDITOR_MIN_WIDTH = 320;
 
 /** 面板高度占内容高度的比例。 */
 export const PANEL_HEIGHT_RATIO = 0.35;
+
+/**
+ * ★ Agent 列（`Parts.AGENT_EDITOR_PART`）相对**编辑器列**的方位。
+ *
+ * ⚠ 与 `workbench/services/layout/browser/layoutService.ts` 的 `AgentsEditorColumnSide`
+ * **必须同值** —— 这里不能 import 它（本模块要求零运行时 import，见文件头），
+ * 所以两边各写一份字面量联合类型。改一边记得改另一边。
+ */
+export type AgentsEditorColumnSide = 'left' | 'right';
+
+/** 缺省方位：Agent 列在右（= 历史行为，改动前的外观）。 */
+export const DEFAULT_AGENT_COLUMN_SIDE: AgentsEditorColumnSide = 'right';
 
 /** 本布局用到的部件 id（由调用方注入 `Parts.*`）。 */
 export interface IAgentsLayoutPartIds {
@@ -116,6 +131,13 @@ export interface IAgentsLayoutGridInput extends IAgentsLayoutGridEnv {
 	readonly sidebarExpandedWidth: number;
 	/** 面板是否可见（隐藏时高度为 0，而不是从 grid 移除）。 */
 	readonly panelVisible: boolean;
+	/**
+	 * ★ Agent 列方位（缺省 {@link DEFAULT_AGENT_COLUMN_SIDE} = `'right'`）。
+	 *
+	 * 只决定 `contentRow` 里 **EditorColumn 与 AgentEditor 谁是第二个子节点**；
+	 * 侧栏恒为第一个，Panel 恒在 EditorColumn 内部。
+	 */
+	readonly agentColumnSide?: AgentsEditorColumnSide;
 }
 
 /**
@@ -188,8 +210,16 @@ export function createAgentsLayoutGridDescriptor(input: IAgentsLayoutGridInput):
 		visible: true
 	};
 
-	// ── Content row (HORIZONTAL): Sidebar | EditorColumn | Agent editor ──
-	const contentRowChildren: ISerializedNode[] = [sideBarNode, editorColumnNode, agentEditorNode];
+	// ── Content row (HORIZONTAL): Sidebar | (EditorColumn ⇄ AgentEditor) ──
+	//
+	// ★ `agentColumnSide` 只交换后两个节点；侧栏恒在索引 0（Q1：侧栏不动）。
+	// ⚠ **Panel 不参与交换** —— 它在 `editorColumnNode` 内部 ⇒ 换位时跟着编辑器列整体走
+	//   （Q2：Panel 跟随文件编辑器列）。运行时换位依赖这一点（见
+	//   `workbench/browser/layout.ts#moveAgentsEditorColumn`）。
+	const columns: ISerializedNode[] = input.agentColumnSide === 'left'
+		? [agentEditorNode, editorColumnNode]
+		: [editorColumnNode, agentEditorNode];
+	const contentRowChildren: ISerializedNode[] = [sideBarNode, ...columns];
 	const contentRow: ISerializedNode = {
 		type: 'branch',
 		data: contentRowChildren,

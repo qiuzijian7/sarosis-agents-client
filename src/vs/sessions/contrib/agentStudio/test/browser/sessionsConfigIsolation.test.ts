@@ -38,6 +38,8 @@ const AGENT_EDITOR_PARTS = 'src/vs/sessions/browser/parts/agentEditorParts.ts';
 const WORKBENCH_DESKTOP_MAIN = 'src/vs/workbench/workbench.desktop.main.ts';
 const WORKBENCH_COMMON_MAIN = 'src/vs/workbench/workbench.common.main.ts';
 const AGENT_LAYOUT_WORKBENCH = 'src/vs/sessions/browser/agentLayoutWorkbench.ts';
+const AGENT_COLUMN_ACTIONS = 'src/vs/sessions/browser/agentColumnLayoutActions.ts';
+const SESSIONS_TITLEBAR = 'src/vs/sessions/browser/parts/titlebarPart.ts';
 const AGENT_LAYOUT_DESKTOP_MAIN = 'src/vs/sessions/electron-browser/agentLayoutDesktopMain.ts';
 const AGENT_LAYOUT_DESKTOP_MAIN_ENTRY = 'src/vs/sessions/agentLayout.desktop.main.ts';
 const DESKTOP_MAIN = 'src/vs/workbench/electron-browser/desktop.main.ts';
@@ -461,18 +463,29 @@ suite('Sessions configuration isolation — no workspace .vscode/settings.json',
 			'不得 import `sessions.main.js` —— 那是 sessions 的窗口实现（SessionsMain）',
 		);
 
-		// ★ 允许**按需**引入具体贡献。当前恰好两处，各有明确理由（见入口注释）：
+		// ★ 允许**按需**引入具体贡献。每处都必须有明确理由（见入口注释）：
 		//   - `agentStudio.contribution`：注册 Canvas / Chat 的 editor pane，
 		//     否则右侧 `AGENT_EDITOR_PART` 只能是一块空编辑器水印（真机截图确认）；
 		//   - `paneCompositePartService`：**确实是 singleton 覆盖**（有意例外），
 		//     不加它 ChatBar 的 view container 注册会在标准 `PaneCompositePartService`
-		//     上断言失败（`sessions.common.main.ts:496-500` 记录的真机结论）。
+		//     上断言失败（`sessions.common.main.ts:496-500` 记录的真机结论）；
+		//   - `piLoopDualRun.contribution`：只装一个全局函数（不写会话/不落盘），
+		//     供 `__SAROSIS_PI_RUN` 对拍入口用（2026-09-20 实证）；
+		//   - `agentColumnLayoutActions`：★ 2026-10-13「编辑器列 ⇄ Agent 列」换位的
+		//     3 个 action。**不能**放 `sessions/browser/layoutActions.js` —— 那个文件
+		//     只被 `sessions.common.main.js` 引入，而本入口刻意不引它 ⇒ 放那边等于
+		//     在本窗口从未注册（命令面板搜不到、菜单项不出现）。
+		//     危害面被压到最小：该文件只做 `registerAction2`，且所有菜单条目都带
+		//     `when: AgentsEditorColumnAvailableContext` 门禁
+		//     （只有 `AgentLayoutWorkbench` 会把它置 true）⇒ 标准 IDE 窗口不会多出任何入口。
 		//
-		// 把它们**列明**：以后谁想再加第三个 sessions 侧 import，必须先改这条用例
+		// 把它们**列明**：以后谁想再加 sessions 侧 import，必须先改这条用例
 		// —— 也就是必须写明理由，而不是悄悄扩大底座耦合面。
 		const allowedSessionsImports = [
 			"./contrib/agentStudio/browser/agentStudio.contribution.js",
 			"./browser/paneCompositePartService.js",
+			"./contrib/agentStudio/browser/piLoopDualRun.contribution.js",
+			"./browser/agentColumnLayoutActions.js",
 		];
 		for (const item of allowedSessionsImports) {
 			assert.ok(code.includes(`import '${item}'`), `必须引入 \`${item}\``);
@@ -515,20 +528,66 @@ suite('Sessions configuration isolation — no workspace .vscode/settings.json',
 		);
 	});
 
+	test('★★ 显示 panel 前必须把运行时状态与 DOM 对齐（否则第一次点击走"隐藏"分支 ⇒ 看似没反应）', () => {
+		// ⚠⚠ 2026-10-14（用户第三次反馈"点按钮底部没弹出 panel" + 运行日志实证）：
+		// agents 布局隐藏 panel 是**纯 DOM** 的（`partsToHide` 里给它设 inline `display: none`），
+		// 而 `LayoutStateKeys.PANEL_HIDDEN` **从未被置位** ⇒ `isVisible(Parts.PANEL_PART)`
+		// （判据 = `!PANEL_HIDDEN`，`workbench/browser/layout.ts:1359-1360`）**恒为 true** ✗。
+		// 于是 `toggleAgentsPanelVisibility()` 里的 `willBeVisible = !isVisible(...)` 算出 `false`
+		// ⇒ 走**隐藏**分支（只是再设一遍 display:none）⇒ **第一次点击毫无反应**，第二次才显示 ✗✗
+		// （日志实证：`panel=已可见 location=panel` + `instanceId=1`、`2` ⇒ 建了两个看不见的终端）。
+		// 修法：转发 toggle **之前**先把状态对齐到"已隐藏"，它才会走显示分支（清 inline display +
+		// 恢复 35% 高度 + 打开容器 ✓）。
+		const src = stripAllComments(readSource(AGENT_LAYOUT_WORKBENCH)).replace(/\r\n/g, '\n');
+		assert.ok(src.includes('if (this.isVisible(Parts.PANEL_PART) && this.isPanelDomHidden())'),
+			'toggle 前必须判"状态说可见、DOM 却说隐藏"这条不一致（不对齐就永远走隐藏分支 ✗）');
+		assert.ok(src.includes('this.setPartHidden(true, Parts.PANEL_PART);'),
+			'不一致时必须先把状态对齐到"隐藏"（否则 toggle 会再隐藏一次 ✗）');
+		const normalizeAt = src.indexOf('this.setPartHidden(true, Parts.PANEL_PART);');
+		const toggleAt = src.indexOf('super.toggleAgentsPanelVisibility()');
+		assert.ok(normalizeAt > 0 && toggleAt > normalizeAt,
+			'对齐必须在转发 toggle **之前**（顺序反了等于没修 ✗）');
+		// "看不看得见"只能看 DOM：本布局的隐藏手段是 inline `display: none`，另有"高度 0"同类不可见
+		assert.ok(/private isPanelDomHidden\(\)[\s\S]{0,500}?element\.style\.display === 'none'/.test(src),
+			'DOM 判据要认 inline `display: none`（这才是本布局真正的隐藏手段 ✓）');
+		assert.ok(/private isPanelDomHidden\(\)[\s\S]{0,500}?element\.offsetHeight === 0/.test(src),
+			'也要认零高度（"网格可见但高度 0"属同一类"用户看不见" ✗）');
+	});
+
 	test('★★ agents 布局必须用 agents 默认（侧栏展开、panel 隐藏），不得复用标准窗口的折叠状态', () => {
 		// 正确布局（真机对比截图确认）：`Sidebar(展开) | Editor(空) | AgentEditor(聊天)`，
-		// 底部**没有** panel。
+		// 底部**默认不显示** panel（⚠ 不是"没有 panel" ✗ —— 它是用户可切换的部件，
+		// `toggleAgentsPanel()` 就能把它打开（含 35% 高度恢复 + 打开容器）；2026-10-13 我就是
+		// 把这条注释读成"部件不存在"而误改了一版终端落点 ✗）。
 		//
 		// ⚠ 标准 `LayoutStateKeys.SIDEBAR_HIDDEN / PANEL_HIDDEN` 属于**标准 IDE 窗口**的用法
 		// （panel 常开、侧栏常收），照搬会得到正好相反的外观
 		// （侧栏只剩 48px 图标条 + panel 占满左列）—— 实测踩过。
-		const layout = stripAllComments(readSource(WORKBENCH_LAYOUT));
-		const stateBlock = layout.slice(
-			layout.indexOf('protected getAgentsLayoutState()'),
-			layout.indexOf('protected createWorkbenchLayout()'),
-		);
+		const layout = stripAllComments(readSource(WORKBENCH_LAYOUT)).replace(/\r\n/g, '\n');
+		// ⚠⚠ 采集面必须**只覆盖 `getAgentsLayoutState()` 这一个方法**（2026-10-13 修正）。
+		//
+		// 原实现切到下一个 `protected createWorkbenchLayout()`，而那个区间里**夹着好几个
+		// 无关方法** —— 其中 `toggleAgentsPanelVisibility()` 里有**真实代码**
+		// `setRuntimeValue(LayoutStateKeys.PANEL_HIDDEN, …)` ⇒ 下面两条 `!includes` 必然假红
+		// （实测：修 `sidebarContentExpanded` 那条之后，失败就顺着链条挪到了这一条）。
+		// 改为切到「紧随其后的下一个方法声明」⇒ 真正只审 `getAgentsLayoutState()`。
+		const start = layout.indexOf('protected getAgentsLayoutState()');
+		assert.ok(start >= 0, '未找到 `getAgentsLayoutState()`');
+		const next = layout.indexOf('\n\tprotected ', start + 1);
+		const stateBlock = layout.slice(start, next === -1 ? layout.length : next);
 		assert.ok(stateBlock.length > 0, '未找到 `getAgentsLayoutState()`');
-		assert.ok(stateBlock.includes('sidebarContentExpanded: true'), 'agents 布局侧栏必须**默认展开**');
+		// ⚠ 采集面按**实际形态**枚举（2026-10-13 修正）：侧栏展开态不是字面量 `true`，
+		// 而是字段 `agentsSidebarContentExpanded`（由 expand/collapse 两条路径维护）。
+		// 只认字面量会让本用例长期假红（实测：改前就是红的）⇒ 意图（**默认**展开）
+		// 拆成两条断言：字段被使用 + 字段初值为 true。
+		assert.ok(
+			stateBlock.includes('sidebarContentExpanded: this.agentsSidebarContentExpanded'),
+			'侧栏展开态必须取自 `agentsSidebarContentExpanded` 字段',
+		);
+		assert.ok(
+			layout.includes('protected agentsSidebarContentExpanded = true'),
+			'agents 布局侧栏必须**默认展开**（字段 `agentsSidebarContentExpanded` 的**声明初值**必须是 true）',
+		);
 		assert.ok(stateBlock.includes('panelVisible: false'), 'agents 布局 panel 必须**默认隐藏**');
 		assert.ok(!stateBlock.includes('LayoutStateKeys.SIDEBAR_HIDDEN'), '不得复用标准窗口的侧栏折叠状态');
 		assert.ok(!stateBlock.includes('LayoutStateKeys.PANEL_HIDDEN'), '不得复用标准窗口的 panel 折叠状态');
@@ -597,9 +656,18 @@ suite('Sessions configuration isolation — no workspace .vscode/settings.json',
 			!code.includes('createInstance('),
 			'不得自己 `createInstance` —— `Layout`/`Workbench` 没有 instantiationService',
 		);
+		// ⚠ 采集面按**实际形态**枚举（2026-10-13 修正）：这里**故意**包了一层
+		// `AgentEditorMaxWidthView`（覆写 `maximumWidth`，否则右栏边框拖不动 ——
+		// 真机实测，理由见 `agentLayoutWorkbench.ts` 该类注释）。
+		// 只认"直接把 agentPart 交出去"会让本用例长期假红（实测：改前就是红的）
+		// ⇒ 断言拆成「键存在」+「值里确实用了 agentPart」。
 		assert.ok(
-			code.includes('[Parts.AGENT_EDITOR_PART]: agentEditorParts.agentPart'),
-			'必须把 `agentPart` 作为 `Parts.AGENT_EDITOR_PART` 的视图返回',
+			code.includes('[Parts.AGENT_EDITOR_PART]: new AgentEditorMaxWidthView('),
+			'必须把 Agent 列作为 `Parts.AGENT_EDITOR_PART` 的视图返回（允许包 maximumWidth 覆写壳）',
+		);
+		assert.ok(
+			code.includes('agentEditorParts.agentPart,'),
+			'`AgentEditorMaxWidthView` 必须包住 `agentEditorParts.agentPart`（不得换成别的视图）',
 		);
 	});
 
@@ -739,6 +807,58 @@ suite('Sessions configuration isolation — no workspace .vscode/settings.json',
 		assert.ok(
 			writer.includes('isSessionsWindow'),
 			'`configureSnippets` 命令不应再提供「为工作区新建 Snippets 文件」（那会写 `.vscode/`）',
+		);
+	});
+
+	// ── ★★ 2026-10-13「编辑器列 ⇄ Agent 列」换位 ────────────────────────────
+
+	test('★★ 换位落点下标只有一处定义：两个窗口都必须调共享函数，不得各自写死', () => {
+		// 背景（本轮踩到的真实教训）：**用户日常跑的是 sessions 窗口**
+		// （dev 页面 `sessions-dev.html`），它与「IDE 底座 + Agent 布局」窗口是**两个不同的类**
+		// （`sessions/browser/workbench.ts#Workbench` vs `workbench/browser/layout.ts#Layout`）。
+		// 只在其中一个里实现 ⇒ 用户在另一个窗口看不到任何入口（第一版就是这么错的）。
+		const sessionsWb = stripAllComments(readSource(SESSIONS_WORKBENCH));
+		const ideLayout = stripAllComments(readSource(WORKBENCH_LAYOUT));
+
+		assert.ok(
+			sessionsWb.includes('moveAgentsEditorColumn(side: AgentsEditorColumnSide)'),
+			'sessions 窗口必须**自己实现** `moveAgentsEditorColumn`（它是独立类，不继承 `Layout`）',
+		);
+		assert.ok(
+			ideLayout.includes('moveAgentsEditorColumn(side: AgentsEditorColumnSide)'),
+			'「IDE 底座」窗口的 `Layout` 必须实现 `moveAgentsEditorColumn`',
+		);
+		for (const [name, src] of [['sessions 窗口', sessionsWb], ['IDE 底座窗口', ideLayout]] as const) {
+			assert.ok(
+				src.includes('getAgentsEditorColumnTargetLocation(side)'),
+				`${name}的换位必须走共享落点函数（否则两边下标必然漂移）`,
+			);
+			assert.ok(
+				!/moveViewTo\([^,]+,\s*\[1,/.test(src),
+				`${name}不得写死 moveViewTo 的下标——下标约定有陷阱（向前移动要 +1），必须集中在共享函数里`,
+			);
+		}
+
+		// sessions 窗口必须真的把持久化/门禁接上（否则重启丢方位、菜单启用态不对）
+		assert.ok(sessionsWb.includes("'vssaros.layout.agentColumnSide.v1'"), 'sessions 窗口必须持久化方位');
+		assert.ok(sessionsWb.includes('AgentsEditorColumnAvailableContext'), 'sessions 窗口必须绑定门禁 context key');
+	});
+
+	test('★★ 标题栏 ⇄ 按钮的命令 id 必须与注册的 action id 逐字一致（拼错=静默空转）', () => {
+		// 本轮真实踩到：手写时把 `vssaros` 拼成了 `vssos`，`_runAgentStudioCommand` 只会把
+		// `command not found` 记进日志 ⇒ 按钮看着没问题、点了没反应。这条就是为此加的。
+		const titlebar = stripAllComments(readSource(SESSIONS_TITLEBAR));
+		const actions = stripAllComments(readSource(AGENT_COLUMN_ACTIONS));
+
+		const matched = /_runAgentStudioCommand\('(vssaros\.layout\.[A-Za-z0-9_.]+)'\)/.exec(titlebar);
+		assert.ok(matched, 'sessions 标题栏必须有一个走 `vssaros.layout.*` 命令的换位按钮');
+		assert.ok(
+			actions.includes(`'${matched[1]}'`),
+			`标题栏按钮的命令 id \`${matched[1]}\` 必须在 \`agentColumnLayoutActions.ts\` 里注册过`,
+		);
+		assert.ok(
+			titlebar.includes('codicon-arrow-both'),
+			'换位按钮应使用 ⇄（`arrow-both`）图标，与相邻的折叠按钮（`layout-sidebar-left`）区分',
 		);
 	});
 });

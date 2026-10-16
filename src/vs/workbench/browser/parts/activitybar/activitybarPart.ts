@@ -39,6 +39,7 @@ import { IExtensionService } from '../../../services/extensions/common/extension
 import { IWorkbenchEnvironmentService } from '../../../services/environment/common/environmentService.js';
 import { IViewsService } from '../../../services/views/common/viewsService.js';
 import { SwitchCompositeViewAction } from '../compositeBarActions.js';
+import { registerActivityBarControl } from './activityBarControl.js';
 
 export class ActivitybarPart extends Part {
 
@@ -81,6 +82,12 @@ export class ActivitybarPart extends Part {
 		super(Parts.ACTIVITYBAR_PART, { hasTitle: false }, themeService, storageService, layoutService);
 
 		this._isCompact = this.configurationService.getValue<boolean>(LayoutSettings.ACTIVITY_BAR_COMPACT) ?? false;
+
+		// [Saros] 把容器控制面登记出去（读 3 个 + 写 3 个，见 `activityBarControl.ts`），
+		// 供 Dashboard「工作台管理」在不 import 本类的前提下操作活动栏。
+		// ⚠ 在构造期登记（不是 `createContentArea()` 之后）：那时 `compositeBar.value` 还没建，
+		// 但读方法都带 `?.`/`?? []` ⇒ 返回空数组是正确语义（「活动栏还没内容」）。
+		this._register(registerActivityBarControl(this.location, this));
 
 		this._register(this.configurationService.onDidChangeConfiguration(e => {
 			if (e.affectsConfiguration(LayoutSettings.ACTIVITY_BAR_COMPACT)) {
@@ -172,6 +179,20 @@ export class ActivitybarPart extends Part {
 
 	getPaneCompositeIds(): string[] {
 		return this.compositeBar.value?.getPaneCompositeIds() ?? [];
+	}
+
+	// ─── [Saros] 工作台管理（Dashboard）用的写操作：与上面几个读方法同型，只做转发 ───
+
+	setPaneCompositePinned(compositeId: string, pinned: boolean): void {
+		this.compositeBar.value?.setPaneCompositePinned(compositeId, pinned);
+	}
+
+	setPaneCompositeHidden(compositeId: string, hidden: boolean): void {
+		this.compositeBar.value?.setPaneCompositeHidden(compositeId, hidden);
+	}
+
+	movePaneComposite(compositeId: string, toCompositeId: string, before?: boolean): void {
+		this.compositeBar.value?.movePaneComposite(compositeId, toCompositeId, before);
 	}
 
 	focus(): void {

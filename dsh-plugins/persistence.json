@@ -1,0 +1,201 @@
+{
+  "$schema": "vssaros-dsh-persistence-catalog/v1",
+  "comment": "dsh 插件落盘登记册（仿官方 persistence-catalog）。每个持久化文件/目录必须有且仅有一个 writer 条目；读者任意多。pathVars: <数据根>=VSSAROS_DATA_ROOT→~/.vssaros(-dev)；$DSH_HOME→~/.dsh；<workspace>=工作区根。守卫：check-persistence-catalog.mjs。改落盘面=先改本册+bump 插件版本。",
+  "generated": "2026-10-15",
+  "entries": [
+    {
+      "path": "<数据根>/taskboard.json",
+      "writer": "@vssaros/dsh-kanban",
+      "readers": [
+        "IDE kanbanStorage",
+        "@vssaros/dsh-dashboard"
+      ],
+      "ownsDeclared": true,
+      "concurrency": "同进程串行队列 + 文件锁(心跳+pid破门) + 指纹CAS + 原子写，与 IDE 同一把锁",
+      "evidence": "vssaros-kanban/package.json owns; lib/store.js:42"
+    },
+    {
+      "path": "<数据根>/boards.json",
+      "writer": "@vssaros/dsh-kanban",
+      "readers": [
+        "IDE"
+      ],
+      "ownsDeclared": true,
+      "concurrency": "同上",
+      "evidence": "vssaros-kanban/package.json owns; lib/store.js:87"
+    },
+    {
+      "path": "<数据根>/workflows/<name>/workflow.json",
+      "writer": "@vssaros/dsh-workflow",
+      "readers": [],
+      "ownsDeclared": false,
+      "concurrency": "锁 + 原子写",
+      "evidence": "vssaros-workflow/lib/store.js:23-40"
+    },
+    {
+      "path": "<数据根>/workflows/<name>/sessions.json",
+      "writer": "@vssaros/dsh-workflow",
+      "readers": [],
+      "ownsDeclared": false,
+      "concurrency": "锁 + 原子写",
+      "evidence": "vssaros-workflow/lib/store.js:58"
+    },
+    {
+      "path": "<数据根>/agents/<id>/.agent.md",
+      "writer": "IDE（agent 定义真源）",
+      "readers": [
+        "@vssaros/dsh-agents",
+        "@vssaros/dsh-workflow"
+      ],
+      "ownsDeclared": false,
+      "concurrency": "插件侧全部只读",
+      "evidence": "vssaros-agents/lib/store.js:1; vssaros-workflow/lib/agents.js:18"
+    },
+    {
+      "path": "<数据根>/skills/<dir>/SKILL.md",
+      "writer": "@vssaros/dsh-skills",
+      "readers": [],
+      "ownsDeclared": false,
+      "concurrency": "acquireFileLock 后写",
+      "evidence": "vssaros-skills/lib/store.js:25-71; lib/index.js:558"
+    },
+    {
+      "path": "<数据根>/knowledge-base/<vault>/（.kbkernel.json/.ftindex.json/库/笔记）",
+      "writer": "IDE kbUrlScraper 等（kb 插件主体只读）",
+      "readers": [
+        "@vssaros/dsh-kb"
+      ],
+      "ownsDeclared": false,
+      "concurrency": "插件侧只读 + 路径围栏",
+      "evidence": "vssaros-kb/lib/store.js:1,28-31"
+    },
+    {
+      "path": "<数据根>/knowledge-base/<vault>/.kb-build-cache.json",
+      "writer": "@vssaros/dsh-kb",
+      "readers": [],
+      "ownsDeclared": false,
+      "concurrency": "构建缓存登记写",
+      "evidence": "vssaros-kb/lib/store.js:602-603; core/kbIngest.js:19"
+    },
+    {
+      "path": "<数据根>/knowledge-base/<vault>/库/raw/<slug>.md",
+      "writer": "@vssaros/dsh-web-content-import",
+      "readers": [
+        "@vssaros/dsh-kb"
+      ],
+      "ownsDeclared": false,
+      "concurrency": "跨进程锁 .content-import；契约与 IDE kbUrlScraper 逐字对齐",
+      "evidence": "vssaros-web-content-import/lib/index.js:338-339; lib/store.js:23-25"
+    },
+    {
+      "path": "外部网关 http://127.0.0.1:3111（安装版）/3112（dev）",
+      "writer": "@vssaros/dsh-memory",
+      "readers": [],
+      "ownsDeclared": false,
+      "concurrency": "网关侧串行；插件不直接碰库文件",
+      "evidence": "vssaros-memory/cordis.patch.yml:37-38; lib/gateway.js；writer 经网关（网关为单写者）"
+    },
+    {
+      "path": "<数据根>/memory-audit/audit.jsonl",
+      "writer": "@vssaros/dsh-memory",
+      "readers": [],
+      "ownsDeclared": false,
+      "concurrency": "只增账本 + 轮转归档",
+      "evidence": "vssaros-memory/lib/audit.js:4,33-40"
+    },
+    {
+      "path": "<workspace>/.codebase-memory/",
+      "writer": "IDE codebaseGraphService（producer=IDE）",
+      "readers": [
+        "@vssaros/dsh-codebase"
+      ],
+      "ownsDeclared": false,
+      "concurrency": "插件缺省只读；indexTarget=workspace 交接后可写",
+      "evidence": "vssaros-codebase/lib/store.js:1,45-46"
+    },
+    {
+      "path": "$DSH_HOME/codebase-index/<ws-sha256前16>/{artifact.json,graph.db.zst,index.lock,index-cache.json}",
+      "writer": "@vssaros/dsh-codebase",
+      "readers": [],
+      "ownsDeclared": false,
+      "concurrency": "approval-gated 影子产物，刻意不走数据根",
+      "evidence": "vssaros-codebase/lib/shadow.js:7,23-25,60-63"
+    },
+    {
+      "path": "<媒体根>/media/media.db（+ <数据根>/media-store-config.json 覆盖层）",
+      "writer": "IDE 媒体库",
+      "readers": [
+        "@vssaros/dsh-media"
+      ],
+      "ownsDeclared": false,
+      "concurrency": "插件 SQLite readOnly:true 直连",
+      "evidence": "vssaros-media/lib/store.js:47,53,84"
+    },
+    {
+      "path": "$DSH_HOME/storages/session_projcache/sessions/*.json",
+      "writer": "dsh 官方 session 投影",
+      "readers": [
+        "@vssaros/dsh-dashboard",
+        "@vssaros/dsh-sessions",
+        "@vssaros/dsh-agents"
+      ],
+      "ownsDeclared": false,
+      "concurrency": "插件全部只读",
+      "evidence": "vssaros-dashboard/lib/store.js:16-23; vssaros-sessions/lib/store.js:3"
+    },
+    {
+      "path": "<数据根>/dashboard/layout.json",
+      "writer": "@vssaros/dsh-dashboard",
+      "readers": [],
+      "ownsDeclared": false,
+      "concurrency": "原子写 + layout.json.lock；dsh-only 故意不声明 owns（无 IDE 对应物）",
+      "evidence": "vssaros-dashboard/lib/layoutStore.js:7,54-60,213-229"
+    },
+    {
+      "path": "~/.vssaros/browser-cookies/<host-slug>.json",
+      "writer": "@vssaros/dsh-browser",
+      "readers": [
+        "IDE"
+      ],
+      "ownsDeclared": false,
+      "concurrency": "原子写",
+      "evidence": "vssaros-browser/lib/core/cookies.js:29-30,160-165"
+    },
+    {
+      "path": "<数据根>/tool-allow.json",
+      "writer": "IDE",
+      "readers": [
+        "@vssaros/dsh-browser"
+      ],
+      "ownsDeclared": false,
+      "concurrency": "插件只读，与 IDE 同一文件（0.4.3 起默认路径走数据根链，dev 下读 ~/.vssaros-dev 不再读错生产文件）",
+      "evidence": "vssaros-browser/lib/index.js allowRulesPath 解析链"
+    },
+    {
+      "path": "<数据根>/mcp.json",
+      "writer": "IDE / 用户",
+      "readers": [
+        "@vssaros/dsh-mcp"
+      ],
+      "ownsDeclared": false,
+      "concurrency": "插件只读",
+      "evidence": "vssaros-mcp/lib/index.js:36-50"
+    },
+    {
+      "path": "（archify）调用方指定输出路径的 HTML 产物 + .delivery*.json 旁车",
+      "writer": "@tt-a1i/archify-dsh",
+      "readers": [],
+      "ownsDeclared": false,
+      "concurrency": "delivery-lock 旁车",
+      "evidence": "vssaros-archify/skills/archify/bin/archify.mjs:14-19,120"
+    },
+    {
+      "path": "（无落盘插件）bridge/chat-surface/ide/unreal/kb-refs",
+      "writer": "—",
+      "readers": [],
+      "ownsDeclared": false,
+      "concurrency": "bridge 仅 named pipe；chat-surface 纯客户端组装；kb-refs 经 kb 的 HTTP 路由",
+      "evidence": "vssaros-bridge/lib/index.js:4; vssaros-unreal/lib/index.js:53"
+    }
+  ]
+}

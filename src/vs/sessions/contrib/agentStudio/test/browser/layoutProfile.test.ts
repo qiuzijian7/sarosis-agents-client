@@ -143,4 +143,70 @@ suite('Agents layout grid descriptor (pure)', () => {
 		);
 		assert.deepStrictEqual(input, base, '入参不得被修改');
 	});
+
+	// ─── ★★ 2026-10-13「编辑器列 ⇄ Agent 列」换位（agentColumnSide）───────────
+	//
+	// 目标语义（Q1/Q2）：
+	//   - 侧栏**恒在索引 0**（换位不影响它）；
+	//   - 只交换 EditorColumn 与 AgentEditor；
+	//   - **Panel 恒在 EditorColumn 内部**（它是那个 branch 的孩子 ⇒ 跟着整体走）。
+	suite('agentColumnSide（Agent 列方位）', () => {
+
+		const typesOf = (nodes: any[]): string[] => nodes.map(n => n.type === 'branch' ? 'branch' : n.data.type);
+
+		test('缺省（不传）时与显式 right 完全一致 —— 保住历史外观', () => {
+			const implicit = createAgentsLayoutGridDescriptor(base);
+			const explicit = createAgentsLayoutGridDescriptor({ ...base, agentColumnSide: 'right' });
+			assert.deepStrictEqual(implicit, explicit);
+		});
+
+		test('★ left：contentRow = Sidebar | AgentEditor | EditorColumn（侧栏仍在索引 0）', () => {
+			const grid = createAgentsLayoutGridDescriptor({ ...base, agentColumnSide: 'left' }) as any;
+			assert.strictEqual(kids(contentRowOf(grid)).length, 3, '换位不得增删 contentRow 的子节点');
+			assert.deepStrictEqual(
+				typesOf(kids(contentRowOf(grid))),
+				[SENTINEL_PARTS.sidebar, SENTINEL_PARTS.agentEditor, 'branch'],
+				'left 时顺序必须是 Sidebar | AgentEditor | EditorColumn',
+			);
+		});
+
+		test('★★ left：Panel 仍在 EditorColumn 内部（Q2 —— Panel 跟随文件编辑器列）', () => {
+			const grid = createAgentsLayoutGridDescriptor({ ...base, agentColumnSide: 'left', panelVisible: true }) as any;
+			const [, agentEditor, editorColumn] = kids(contentRowOf(grid));
+			assert.strictEqual(agentEditor.data.type, SENTINEL_PARTS.agentEditor, '第二个子节点应是 Agent 列（叶子）');
+			assert.deepStrictEqual(
+				kids(editorColumn).map((n: any) => n.data.type),
+				[SENTINEL_PARTS.editor, SENTINEL_PARTS.panel],
+				'编辑器列必须仍是 [Editor, Panel]（Panel 不得跟着换到 Agent 列）',
+			);
+		});
+
+		test('★ left：宽度规则不变（Agent = max(480, width/2)，Editor = max(320, 剩余)）', () => {
+			const grid = createAgentsLayoutGridDescriptor({ ...base, agentColumnSide: 'left' }) as any;
+			const [sideBar, agentEditor, editorColumn] = kids(contentRowOf(grid));
+			assert.strictEqual(sideBar.size, base.sidebarExpandedWidth, '侧栏宽度不受换位影响');
+			assert.strictEqual(agentEditor.size, Math.max(AGENT_EDITOR_MIN_WIDTH, 800));
+			assert.strictEqual(editorColumn.size, Math.max(EDITOR_MIN_WIDTH, 1600 - 300 - 800));
+		});
+
+		test('★★ 记账节点（auxiliaryBar / statusBar）必须在**尾部**，不得跟着换位跑到前面', () => {
+			// 它们以 visible:false + size:0 挂在尾部，只为让标准 `Layout` 的记账找得到；
+			// 一旦被 `agentColumnSide` 的插入位置带偏，索引会错位（`getViewCachedVisibleSize` 找不到视图）。
+			const withBookkeeping = {
+				...base,
+				agentColumnSide: 'left' as const,
+				partIds: { ...SENTINEL_PARTS, activityBar: '__activitybar__', auxiliaryBar: '__auxiliarybar__', statusBar: '__statusbar__' },
+				includeLayoutBookkeepingParts: true,
+			};
+			const grid = createAgentsLayoutGridDescriptor(withBookkeeping) as any;
+			const row = kids(contentRowOf(grid));
+			assert.strictEqual(row[row.length - 1].data.type, '__auxiliarybar__', 'auxiliary bar 必须是 contentRow 最后一个');
+			assert.strictEqual(row[row.length - 1].visible, false);
+			assert.strictEqual(row[row.length - 1].size, 0);
+
+			const root = kids(grid.root);
+			assert.strictEqual(root[root.length - 1].data.type, '__statusbar__', 'status bar 必须是 root 最后一个');
+			assert.strictEqual(root[root.length - 1].visible, false);
+		});
+	});
 });

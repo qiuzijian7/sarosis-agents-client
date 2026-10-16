@@ -25,10 +25,11 @@ import { IEditorService } from '../../../../workbench/services/editor/common/edi
 import { IAgentChatService, IAgentStudioService } from '../common/agentStudio.js';
 import { IAgentOSService } from '../common/agentOS.js';
 import { ISkillRegistry } from '../common/skills.js';
-import { IMarketplaceService, IMarketplaceVersion, PackageKind } from '../common/marketplace.js';
-import { bumpPatch, compareSemver, suggestNextVersion, validatePublishVersion, isVersionConflictError } from './publishVersioning.js';
-import { IAgentVersionService, type AgentCommitMeta } from '../common/agentVersionTypes.js';
-import { gitUnavailableReason } from './gitVersionCore.js';
+import { IMarketplaceService, PackageKind } from '../common/marketplace.js';
+import { bumpPatch, suggestNextVersion, validatePublishVersion, isVersionConflictError } from './publishVersioning.js';
+import { IAgentVersionService } from '../common/agentVersionTypes.js';
+// ⚠ 2026-10-12：`compareSemver` / `gitUnavailableReason` / `AgentCommitMeta` / `IMarketplaceVersion`
+//   的消费方已随「版本区块」外提到 `agentVersionsSection.ts`，此处不再 import（noUnusedLocals 会报）。
 import { ITofAuthService } from '../common/tofAuth.js';
 import type { Agent } from '../../../common/agentStudioTypes.js';
 import {
@@ -47,13 +48,14 @@ import { AVATAR_PRESET_GROUPS, AVATAR_PRESET_TOTAL, findAvatarPreset, type IAgen
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { IRequestService } from '../../../../platform/request/common/request.js';
 // ★ 2026-09-23：Channel 绑定页签新增「飞书 CLI」能力（安装/状态/升级 + 创建机器人 + 获取 chat_id）
-import { LARK_CLI_INSTALL_COMMAND, LARK_CLI_PACKAGE, larkCliStatusBadge, type ILarkCliStatus } from '../common/larkCli.js';
-import { getLarkCliStatus, installLarkCli } from './larkCliService.js';
-import { fetchFeishuChats } from './feishuChatList.js';
+// ★ 2026-10-12：飞书 CLI 区块（含 common/larkCli.js 的徽章与 larkCliService / feishuChatList /
+//   feishuRegistration / feishuQrCode 的调用）已整体外提到 `browser/larkCliSection.ts` ⇒
+//   这里只留一个入口 import（`createMainProcessRequestService` 仍由本文件用于 _requestService）。
+import { LarkCliSection } from './larkCliSection.js';
 import { createMainProcessRequestService } from './mainProcessRequestService.js';
-import { beginFeishuRegistration, pollFeishuRegistration } from './feishuRegistration.js';
-import { drawQrToCanvas } from './feishuQrCode.js';
 import { createChannelIcon } from './channelIcons.js';
+import { AgentVersionsSection } from './agentVersionsSection.js';
+import { MCP_TOOL_CATEGORY_PREFIX } from '../common/toolApprovalPolicy.js';
 
 const { $: $$ } = DOM;
 
@@ -162,13 +164,9 @@ export class AgentSettingsEditorPane extends EditorPane {
 	private _agentSkills: string[] = [];
 
 	// ── Versions tab ──
-	private _versionsListContainer: HTMLElement | undefined;
-	private _versionsLoading = false;
-	private _versionCommits: AgentCommitMeta[] = [];
-	private _marketplaceVersionsContainer: HTMLElement | undefined;
-	private _marketplaceVersionsLoading = false;
-	/** 本地已安装/已发布的商城版本号，用于隐藏「安装此版本」 */
-	private _localMarketVersion: string | undefined;
+	// ★ 2026-10-12：这一组状态（两个列表容器 / 两个 loading 标志 / commits / localVersion）
+	//   已随整块外提迁到 `agentVersionsSection.ts` 的 `AgentVersionsSection` —— 宿主只留
+	//   `_versionsSection` 一个引用，别再往这里加"版本相关的 UI 状态" ✗（否则又会长回 3000 行）。
 
 	// ── Channel 绑定页签 · 飞书 CLI（2026-09-23）──
 	/**
@@ -176,19 +174,12 @@ export class AgentSettingsEditorPane extends EditorPane {
 	 * 见 `mainProcessRequestService.ts` 的实测事故记录），非 Electron 宿主回退渲染进程。
 	 */
 	private readonly _requestService: IRequestService;
-	private _larkCliStatus: ILarkCliStatus | undefined;
-	private _larkCliProbing = false;
-	private _larkCliInstalling = false;
-	private _larkCliStatusEl: HTMLElement | undefined;
-	private _larkCliDetailEl: HTMLElement | undefined;
-	private _larkCliCheckBtn: HTMLButtonElement | undefined;
-	private _larkCliInstallBtn: HTMLButtonElement | undefined;
-	private _larkCliOutputEl: HTMLElement | undefined;
-	private _larkCliQrEl: HTMLElement | undefined;
-	private _larkCliQrPolling = false;
-	private _larkCliCreateBtn: HTMLButtonElement | undefined;
-	private _chatIdListEl: HTMLElement | undefined;
-	private _chatIdFetchBtn: HTMLButtonElement | undefined;
+	// ★ 2026-10-12：飞书 CLI 的 13 个字段（状态/各 DOM 容器/忙碌与轮询标志）已随整块迁到
+	//   `browser/larkCliSection.ts` 的 `LarkCliSection` —— 宿主只留 `_larkCliSectionInstance`，
+	//   别再往这里加"飞书 CLI 相关状态" ✗（否则又会长回去）。
+
+	/** 版本 / 商城版本区块（外提到 `agentVersionsSection.ts`，2026-10-12）。 */
+	private _versionsSection: AgentVersionsSection | undefined;
 
 	constructor(
 		group: IEditorGroup,
@@ -515,289 +506,32 @@ export class AgentSettingsEditorPane extends EditorPane {
 		this._tabContentContainer?.appendChild(section);
 	}
 
-	// ── Channel 绑定 · 飞书 CLI（2026-09-23）──────────────────────────────
+	// ── 飞书 CLI 区块（已外提）────────────────────────────────────────────
 	//
-	// 三件事：
-	//   ① CLI 的安装 / 状态 / 升级 —— 探测与安装都要 child_process ⇒ 走主进程
-	//      （`electron-main/larkCliChannel.ts` ← `browser/larkCliService.ts`）；
-	//   ② 创建机器人 —— 复用产品内**已验证**的 PersonalAgent 扫码流程。飞书 CLI 自己的
-	//      `config init --new` 需要浏览器交互、输出是给人看的文本（解析不稳定），不适合内联做；
-	//   ③ 获取 chat_id —— 用渠道自身 app 凭证列「机器人所在的群」（与扫码绑定/测试连接同一条链路）。
-	//      刻意不依赖 CLI：CLI 要先 `config init` / `auth login` 才有凭证，而渠道配置里已经有了。
+	// ★ 2026-10-12：整块（构建 + 探测/渲染/安装 + 扫码建机器人 + 取 chat_id）共 284 行
+	//   已迁到 `browser/larkCliSection.ts` 的 `LarkCliSection` ⇒ 宿主只保留下面两个入口，
+	//   调用点一字未动（建分组 / 切页签时静默探测）。
+	//   其余 8 个内部方法（渲染/忙碌/安装/输出/扫码/取号/延时）**不在宿主** ——
+	//   那条"宿主不得留第二套实现"的断言在 `test/browser/larkCliSection.test.ts` ✓。
+	private _larkCliSectionInstance: LarkCliSection | undefined;
 
-	/** 构建「飞书 CLI」分组（加入 Channel 绑定页签的飞书渠道分组）。 */
+	private _larkCliSection(): LarkCliSection {
+		return this._larkCliSectionInstance ??= new LarkCliSection({
+			notificationService: this.notificationService,
+			configurationService: this.configurationService,
+			requestService: this._requestService,
+			readOnly: () => this._readOnly,
+			bindingInput: () => this._bindingInput,
+			addFeishuBinding: () => this._addFeishuBinding(),
+		});
+	}
+
 	private _buildLarkCliSection(): HTMLElement {
-		const sec = $$('div.binding-section');
-		const title = $$('div.binding-section-title');
-		title.textContent = '飞书 CLI';
-		sec.appendChild(title);
-
-		const hint = $$('div.binding-hint');
-		hint.textContent = `官方 CLI（${LARK_CLI_PACKAGE}）：装好后可在终端用 lark-cli 直接操作飞书（发消息 / 查群 / 读写文档），也供 AI 技能调用。安装与升级是同一条命令 —— 官方文档未提供独立的 upgrade 子命令。`;
-		sec.appendChild(hint);
-
-		// 状态行：徽章 + 版本/路径 + 两个动作
-		const statusRow = $$('div.binding-add-row');
-		this._larkCliStatusEl = $$('span.larkcli-badge');
-		this._larkCliStatusEl.textContent = '检测中…';
-		statusRow.appendChild(this._larkCliStatusEl);
-		this._larkCliDetailEl = $$('span.larkcli-detail');
-		statusRow.appendChild(this._larkCliDetailEl);
-		this._larkCliCheckBtn = $$('button.agent-settings-btn') as HTMLButtonElement;
-		this._larkCliCheckBtn.textContent = '🔄 重新检测';
-		this._larkCliCheckBtn.onclick = () => void this._refreshLarkCliStatus(true);
-		statusRow.appendChild(this._larkCliCheckBtn);
-		this._larkCliInstallBtn = $$('button.agent-settings-btn primary') as HTMLButtonElement;
-		this._larkCliInstallBtn.onclick = () => void this._installLarkCli();
-		statusRow.appendChild(this._larkCliInstallBtn);
-		sec.appendChild(statusRow);
-
-		this._larkCliOutputEl = $$('div.larkcli-output');
-		this._larkCliOutputEl.style.display = 'none';
-		sec.appendChild(this._larkCliOutputEl);
-
-		// 创建机器人（扫码）
-		const botRow = $$('div.binding-add-row');
-		this._larkCliCreateBtn = $$('button.agent-settings-btn') as HTMLButtonElement;
-		this._larkCliCreateBtn.textContent = '🤖 创建机器人（扫码授权）';
-		this._larkCliCreateBtn.onclick = () => void this._createFeishuBotByQr();
-		botRow.appendChild(this._larkCliCreateBtn);
-		const botHint = $$('span.larkcli-detail');
-		botHint.textContent = '扫码授权后自动写入渠道凭证（app_id / app_secret），无需手工复制。';
-		botRow.appendChild(botHint);
-		sec.appendChild(botRow);
-		this._larkCliQrEl = $$('div.larkcli-qr');
-		this._larkCliQrEl.style.display = 'none';
-		sec.appendChild(this._larkCliQrEl);
-
-		// 获取 chat_id
-		const chatRow = $$('div.binding-add-row');
-		this._chatIdFetchBtn = $$('button.agent-settings-btn') as HTMLButtonElement;
-		this._chatIdFetchBtn.textContent = '📋 获取 chat_id（机器人所在的群）';
-		this._chatIdFetchBtn.onclick = () => void this._fetchChatIds();
-		chatRow.appendChild(this._chatIdFetchBtn);
-		sec.appendChild(chatRow);
-		this._chatIdListEl = $$('div.chatid-list');
-		sec.appendChild(this._chatIdListEl);
-
-		return sec;
+		return this._larkCliSection().build();
 	}
 
-	/** 刷新 CLI 状态（页签切入时静默探测；手动点击给通知）。 */
 	private async _refreshLarkCliStatus(manual: boolean): Promise<void> {
-		if (this._larkCliProbing) { return; }
-		this._larkCliProbing = true;
-		this._applyLarkCliBusy();
-		try {
-			const status = await getLarkCliStatus();
-			this._larkCliStatus = status;
-			this._renderLarkCliStatus();
-			if (manual) {
-				if (!status.available) {
-					this.notificationService.warn(`飞书 CLI 探测不可用：${status.error ?? '未知原因'}`);
-				} else if (!status.installed) {
-					this.notificationService.info(`未检测到飞书 CLI${status.latestVersion ? `（npm 最新 ${status.latestVersion}）` : ''}，可点「安装」`);
-				} else {
-					const badge = larkCliStatusBadge(status);
-					this.notificationService.info(badge.tone === 'warn'
-						? `飞书 CLI ${status.version} 可升级到 ${status.latestVersion}`
-						: `飞书 CLI 就绪：${badge.label}`);
-				}
-			}
-		} finally {
-			this._larkCliProbing = false;
-			this._applyLarkCliBusy();
-		}
-	}
-
-	/** 按状态刷新徽章 / 详情 / 按钮文案。 */
-	private _renderLarkCliStatus(): void {
-		const status = this._larkCliStatus;
-		const badge = larkCliStatusBadge(status);
-		if (this._larkCliStatusEl) {
-			this._larkCliStatusEl.textContent = badge.label;
-			this._larkCliStatusEl.className = `larkcli-badge tone-${badge.tone}`;
-			this._larkCliStatusEl.title = status?.error ?? '';
-		}
-		if (this._larkCliDetailEl) {
-			const parts: string[] = [];
-			if (status?.path) { parts.push(status.path); }
-			if (status?.latestVersion) { parts.push(`npm 最新 ${status.latestVersion}`); }
-			if (status?.available && !status.installed) { parts.push(`将执行：${LARK_CLI_INSTALL_COMMAND}`); }
-			if (!status?.available && status?.error) { parts.push(status.error); }
-			this._larkCliDetailEl.textContent = parts.join(' · ');
-		}
-		if (this._larkCliInstallBtn) {
-			this._larkCliInstallBtn.textContent = this._larkCliInstalling ? '⏳ 安装中…' : (status?.installed ? '⬆ 升级' : '⬇ 安装');
-			this._larkCliInstallBtn.disabled = this._readOnly || this._larkCliInstalling || !status?.available;
-		}
-	}
-
-	/** 忙碌态统一处理（探测 / 安装期间禁用按钮并改文案）。 */
-	private _applyLarkCliBusy(): void {
-		const busy = this._larkCliProbing || this._larkCliInstalling;
-		if (this._larkCliCheckBtn) {
-			this._larkCliCheckBtn.disabled = this._readOnly || busy;
-			this._larkCliCheckBtn.textContent = this._larkCliProbing ? '⏳ 检测中…' : '🔄 重新检测';
-		}
-		if (this._larkCliInstallBtn) {
-			this._larkCliInstallBtn.disabled = this._readOnly || busy || this._larkCliStatus?.available === false;
-		}
-	}
-
-	/** 安装 / 升级（同一命令）；完成后自动重新探测并回显输出尾部。 */
-	private async _installLarkCli(): Promise<void> {
-		if (this._larkCliInstalling) { return; }
-		this._larkCliInstalling = true;
-		this._applyLarkCliBusy();
-		this._showLarkCliOutput(`⏳ 正在执行：${LARK_CLI_INSTALL_COMMAND}\n（首次安装会下载依赖，可能 1-2 分钟）`);
-		this.notificationService.info('正在主进程执行飞书 CLI 安装 / 升级');
-		try {
-			const r = await installLarkCli();
-			this._showLarkCliOutput(`${r.ok ? '✅' : '❌'} ${r.message}${r.output ? `\n\n${r.output}` : ''}`);
-			if (r.ok) {
-				this.notificationService.info(r.message);
-			} else {
-				this.notificationService.error(`飞书 CLI 安装失败：${r.message}`);
-			}
-		} finally {
-			this._larkCliInstalling = false;
-			this._applyLarkCliBusy();
-			await this._refreshLarkCliStatus(false);
-		}
-	}
-
-	private _showLarkCliOutput(text: string): void {
-		if (!this._larkCliOutputEl) { return; }
-		this._larkCliOutputEl.textContent = text;
-		this._larkCliOutputEl.style.display = '';
-	}
-
-	/**
-	 * 创建机器人：复用 PersonalAgent 扫码流程（与渠道编辑器的「📷 扫码绑定」同一协议）。
-	 * 授权完成后把 app_id / app_secret 写入渠道配置并启用（与手工绑定同一落点）。
-	 */
-	private async _createFeishuBotByQr(): Promise<void> {
-		if (this._larkCliQrPolling) { return; }
-		const host = this._larkCliQrEl;
-		const createBtn = this._larkCliCreateBtn;
-		if (!host) { return; }
-
-		host.replaceChildren();
-		host.style.display = '';
-		const canvas = document.createElement('canvas');
-		canvas.className = 'larkcli-qr-canvas';
-		const statusEl = $$('div.larkcli-qr-status');
-		statusEl.textContent = '正在向飞书申请授权…';
-		host.appendChild(canvas);
-		host.appendChild(statusEl);
-
-		this._larkCliQrPolling = true;
-		if (createBtn) { createBtn.disabled = true; }
-		const setStatus = (msg: string): void => { statusEl.textContent = msg; };
-
-		try {
-			const begin = await beginFeishuRegistration(this._requestService);
-			drawQrToCanvas(canvas, begin.qrUrl);
-			setStatus('请用飞书扫码授权（授权后自动创建机器人并回填凭证）');
-
-			// 间隔与超时都取自服务端返回，避免写死
-			const deadline = Date.now() + begin.expiresIn * 1000;
-			let interval = begin.interval;
-			while (Date.now() < deadline) {
-				await this._larkCliSleep(interval * 1000);
-				const r = await pollFeishuRegistration(this._requestService, begin.deviceCode);
-				if (r.status === 'completed') {
-					const appId = r.appId ?? '';
-					const appSecret = r.appSecret ?? '';
-					if (!appId || !appSecret) { setStatus('❌ 飞书未返回有效凭证'); return; }
-					await this.configurationService.updateValue('sessions.channel.feishu.appId', appId);
-					await this.configurationService.updateValue('sessions.channel.feishu.appSecret', appSecret);
-					await this.configurationService.updateValue('sessions.channel.feishu.enabled', true);
-					setStatus(`✅ 机器人已创建：${appId}（凭证已写入渠道配置并启用）`);
-					this.notificationService.info(`飞书机器人已创建：${appId}`);
-					return;
-				}
-				if (r.status === 'denied') { setStatus('❌ 授权被拒绝'); return; }
-				if (r.status === 'expired') { setStatus('⌛ 授权已过期，请重新发起'); return; }
-				if (r.status === 'error') { setStatus(`❌ ${r.error ?? '授权失败'}`); return; }
-				if (r.status === 'slow_down') { interval += 5; }
-			}
-			setStatus('⌛ 等待超时，请重新发起');
-		} catch (e) {
-			setStatus(`❌ 发起失败：${e instanceof Error ? e.message : String(e)}`);
-		} finally {
-			this._larkCliQrPolling = false;
-			if (createBtn) { createBtn.disabled = false; }
-		}
-	}
-
-	/** 获取 chat_id：列「机器人所在的群」，可一键填入输入框或直接绑定到本 Agent。 */
-	private async _fetchChatIds(): Promise<void> {
-		const listEl = this._chatIdListEl;
-		if (!listEl) { return; }
-		const appId = String(this.configurationService.getValue('sessions.channel.feishu.appId') ?? '').trim();
-		const appSecret = String(this.configurationService.getValue('sessions.channel.feishu.appSecret') ?? '').trim();
-		listEl.replaceChildren();
-		if (!appId || !appSecret) {
-			const tip = $$('div.skills-empty');
-			tip.textContent = '尚未配置飞书应用凭证：先点上方「创建机器人（扫码授权）」，或手工填写 app_id / app_secret。';
-			listEl.appendChild(tip);
-			return;
-		}
-		if (this._chatIdFetchBtn) { this._chatIdFetchBtn.disabled = true; this._chatIdFetchBtn.textContent = '⏳ 拉取中…'; }
-		try {
-			const chats = await fetchFeishuChats(this._requestService, appId, appSecret);
-			if (chats.length === 0) {
-				const tip = $$('div.skills-empty');
-				tip.textContent = '机器人还没有加入任何群：把机器人拉进一个群后重新拉取。';
-				listEl.appendChild(tip);
-				return;
-			}
-			for (const chat of chats) {
-				const item = $$('div.chatid-item');
-				const info = $$('div.chatid-item-info');
-				const nameEl = $$('span.chatid-item-name');
-				nameEl.textContent = chat.name;
-				const idEl = $$('span.chatid-item-id');
-				idEl.textContent = chat.memberCount ? `${chat.chatId} · ${chat.memberCount} 人` : chat.chatId;
-				info.appendChild(nameEl);
-				info.appendChild(idEl);
-				item.appendChild(info);
-
-				const fillBtn = $$('button.agent-settings-btn') as HTMLButtonElement;
-				fillBtn.textContent = '填入';
-				fillBtn.title = '填入上方「输入飞书群聊会话 ID」输入框';
-				fillBtn.onclick = () => {
-					if (this._bindingInput) { this._bindingInput.value = chat.chatId; this._bindingInput.focus(); }
-				};
-				item.appendChild(fillBtn);
-
-				const bindBtn = $$('button.agent-settings-btn primary') as HTMLButtonElement;
-				bindBtn.textContent = '绑定到本 Agent';
-				bindBtn.disabled = this._readOnly;
-				bindBtn.onclick = () => {
-					if (this._bindingInput) { this._bindingInput.value = chat.chatId; }
-					void this._addFeishuBinding();
-				};
-				item.appendChild(bindBtn);
-				listEl.appendChild(item);
-			}
-		} catch (e) {
-			const tip = $$('div.skills-empty');
-			tip.textContent = `拉取群列表失败：${e instanceof Error ? e.message : String(e)}`;
-			listEl.appendChild(tip);
-		} finally {
-			if (this._chatIdFetchBtn) {
-				this._chatIdFetchBtn.disabled = false;
-				this._chatIdFetchBtn.textContent = '📋 获取 chat_id（机器人所在的群）';
-			}
-		}
-	}
-
-	/** 轮询间隔用的简单延时（独立命名，避免与其它页签的同名 helper 冲突）。 */
-	private _larkCliSleep(ms: number): Promise<void> {
-		return new Promise(resolve => setTimeout(resolve, ms));
+		return this._larkCliSection().refresh(manual);
 	}
 
 	// ── Channel Binding Tab ──
@@ -1128,477 +862,28 @@ export class AgentSettingsEditorPane extends EditorPane {
 	// ── Versions Tab（版本管理）──────────────────────────────────────
 
 	private _buildVersionsTab(): void {
-		const section = $$('div.agent-settings-tab-pane');
-		section.dataset.tabPane = 'versions';
-
-		const desc = $$('div.tab-pane-desc');
-		desc.textContent = '版本历史记录。每次修改 Agent 系统提示词后会自动生成版本快照，可查看差异或回滚到历史版本。';
-		section.appendChild(desc);
-
-		// 工具栏：刷新按钮
-		const toolbar = $$('div.versions-toolbar');
-		toolbar.style.display = 'flex';
-		toolbar.style.alignItems = 'center';
-		toolbar.style.gap = '8px';
-		toolbar.style.marginBottom = '12px';
-
-		const refreshBtn = $$('button.agent-settings-btn') as HTMLButtonElement;
-		refreshBtn.textContent = '🔄 刷新';
-		refreshBtn.onclick = () => {
-			this._loadVersionHistory();
-			this._loadMarketplaceVersions();
-		};
-		toolbar.appendChild(refreshBtn);
-
-		const hint = $$('span');
-		hint.textContent = '点击版本行展开 diff 详情';
-		hint.style.fontSize = '11px';
-		hint.style.color = 'var(--vscode-descriptionForeground)';
-		toolbar.appendChild(hint);
-		section.appendChild(toolbar);
-
-		// ── 商城版本区块（Releases）──
-		const mkTitle = $$('div.versions-section-title');
-		mkTitle.textContent = '商城版本（Releases）';
-		mkTitle.style.fontSize = '12px';
-		mkTitle.style.fontWeight = '600';
-		mkTitle.style.margin = '4px 0 8px 0';
-		mkTitle.style.color = 'var(--vscode-foreground)';
-		section.appendChild(mkTitle);
-
-		this._marketplaceVersionsContainer = $$('div.marketplace-versions-list');
-		this._marketplaceVersionsContainer.style.marginBottom = '16px';
-		section.appendChild(this._marketplaceVersionsContainer);
-
-		// ── 本地历史区块（Git）──
-		const localTitle = $$('div.versions-section-title');
-		localTitle.textContent = '本地历史（Git）';
-		localTitle.style.fontSize = '12px';
-		localTitle.style.fontWeight = '600';
-		localTitle.style.margin = '4px 0 8px 0';
-		localTitle.style.color = 'var(--vscode-foreground)';
-		section.appendChild(localTitle);
-
-		// 列表容器
-		this._versionsListContainer = $$('div.versions-list');
-		this._versionsListContainer.style.maxHeight = 'calc(100vh - 320px)';
-		this._versionsListContainer.style.overflowY = 'auto';
-		this._versionsListContainer.textContent = '点击上方刷新按钮加载版本历史';
-		this._versionsListContainer.style.padding = '16px';
-		this._versionsListContainer.style.textAlign = 'center';
-		this._versionsListContainer.style.color = 'var(--vscode-descriptionForeground)';
-		section.appendChild(this._versionsListContainer);
-
-		this._tabContentContainer?.appendChild(section);
+		// ★ 2026-10-12：整块外提到 `browser/agentVersionsSection.ts`（约 473 行）——
+		//   本方法只负责"把区块挂到当前 tab 容器上"，入口名与调用点保持不变 ✓。
+		if (!this._tabContentContainer) { return; }
+		this._versionsSection = new AgentVersionsSection(this._tabContentContainer, {
+			agentVersionService: this.agentVersionService,
+			marketplaceService: this.marketplaceService,
+			agentStudioService: this.agentStudioService,
+			notificationService: this.notificationService,
+			dialogService: this.dialogService,
+			// 用函数读活状态：切只读 / 换 agent 无需同步 push ✓
+			agentId: () => this._agentId,
+			readOnly: () => this._readOnly,
+			agent: () => this._agent,
+		});
 	}
 
 	private async _loadVersionHistory(): Promise<void> {
-		if (!this._agentId || this._versionsLoading) { return; }
-		this._versionsLoading = true;
-
-		if (this._versionsListContainer) {
-			this._versionsListContainer.textContent = '';
-			const loading = $$('div');
-			loading.textContent = '⏳ 加载版本历史...';
-			loading.style.padding = '16px';
-			loading.style.textAlign = 'center';
-			loading.style.color = 'var(--vscode-descriptionForeground)';
-			this._versionsListContainer.appendChild(loading);
-		}
-
-		try {
-			// Git 不可用时给出**具体**原因，避免误导为"尚未初始化"或"环境不支持"
-			// （桌面端最常见成因是主进程通道未就绪，与运行环境无关）
-			if (!this.agentVersionService.isAvailable()) {
-				const container = this._versionsListContainer;
-				if (container) {
-					const reason = gitUnavailableReason();
-					container.textContent = reason
-						? `Git 版本管理暂不可用：${reason}`
-						: '当前环境不支持 Git 版本管理（需在桌面客户端中使用）';
-					container.style.padding = '12px 4px';
-					container.style.color = 'var(--vscode-descriptionForeground)';
-				}
-				return;
-			}
-			this._versionCommits = await this.agentVersionService.history(this._agentId, 50);
-			// 兼容旧 agent（版本管理落地前创建、无 .git）：首次打开版本页自动初始化仓库，
-			// 与 autoCommit 的懒初始化行为对齐。
-			if (this._versionCommits.length === 0) {
-				await this.agentVersionService.init(this._agentId);
-				this._versionCommits = await this.agentVersionService.history(this._agentId, 50);
-			}
-			this._renderVersionList();
-		} catch (err) {
-			if (this._versionsListContainer) {
-				this._versionsListContainer.textContent = '';
-				const errEl = $$('div');
-				errEl.textContent = `加载失败: ${err instanceof Error ? err.message : String(err)}`;
-				errEl.style.color = 'var(--vscode-errorForeground)';
-				errEl.style.padding = '16px';
-				errEl.style.textAlign = 'center';
-				this._versionsListContainer.appendChild(errEl);
-			}
-		} finally {
-			this._versionsLoading = false;
-		}
+		await this._versionsSection?.refreshHistory();
 	}
-
-	private _renderVersionList(): void {
-		if (!this._versionsListContainer) { return; }
-		this._versionsListContainer.textContent = '';
-		// 有内容时左对齐（初始化时设的 center 仅用于空状态提示）
-		this._versionsListContainer.style.textAlign = 'left';
-
-		if (this._versionCommits.length === 0) {
-			const empty = $$('div');
-			empty.textContent = '暂无版本历史（可能是尚未初始化 Git 仓库）';
-			empty.style.padding = '16px';
-			empty.style.textAlign = 'center';
-			empty.style.color = 'var(--vscode-descriptionForeground)';
-			this._versionsListContainer.appendChild(empty);
-			return;
-		}
-
-		const countEl = $$('div');
-		countEl.textContent = `共 ${this._versionCommits.length} 条记录`;
-		countEl.style.color = 'var(--vscode-descriptionForeground)';
-		countEl.style.fontSize = '11px';
-		countEl.style.marginBottom = '8px';
-		countEl.style.padding = '0 4px';
-		countEl.style.textAlign = 'center';
-		this._versionsListContainer.appendChild(countEl);
-
-		for (const c of this._versionCommits) {
-			this._versionsListContainer.appendChild(this._renderVersionCommitRow(c));
-		}
-	}
-
-	private _renderVersionCommitRow(c: AgentCommitMeta): HTMLElement {
-		const row = $$('div.version-commit-row');
-		row.style.padding = '10px 12px';
-		row.style.marginBottom = '6px';
-		row.style.border = '1px solid var(--vscode-panel-border, #3c3c3c)';
-		row.style.borderRadius = '6px';
-		row.style.cursor = 'pointer';
-		row.style.transition = 'background 0.15s';
-		row.style.textAlign = 'left';
-
-		row.onmouseenter = () => { row.style.background = 'var(--vscode-list-hoverBackground, #2a2d2e)'; };
-		row.onmouseleave = () => { row.style.background = ''; };
-
-		// ── 头部：SHA + 时间 ──
-		const head = $$('div');
-		head.style.display = 'flex';
-		head.style.justifyContent = 'space-between';
-		head.style.alignItems = 'center';
-		head.style.marginBottom = '4px';
-
-		const shaBadge = $$('code');
-		shaBadge.textContent = c.shortSha;
-		shaBadge.style.fontSize = '11px';
-		shaBadge.style.fontFamily = 'monospace';
-		shaBadge.style.background = 'var(--vscode-badge-background, #4d4d4d)';
-		shaBadge.style.color = 'var(--vscode-badge-foreground, #fff)';
-		shaBadge.style.padding = '1px 6px';
-		shaBadge.style.borderRadius = '3px';
-		head.appendChild(shaBadge);
-
-		const timeEl = $$('span');
-		timeEl.textContent = this._formatVersionTime(c.time);
-		timeEl.style.fontSize = '10px';
-		timeEl.style.color = 'var(--vscode-descriptionForeground)';
-		head.appendChild(timeEl);
-		row.appendChild(head);
-
-		// ── 消息 ──
-		const msg = $$('div');
-		msg.textContent = c.message;
-		msg.style.fontSize = '12px';
-		msg.style.color = 'var(--vscode-foreground)';
-		msg.style.marginBottom = '6px';
-		msg.style.lineHeight = '1.4';
-		msg.style.textAlign = 'left';
-		row.appendChild(msg);
-
-		// ── 折叠区：diff + 操作 ──
-		const detail = $$('div.version-commit-detail');
-		detail.style.display = 'none';
-		detail.style.marginTop = '8px';
-		detail.style.textAlign = 'left';
-		row.appendChild(detail);
-
-		// Diff 文本
-		const diffPre = $$('pre');
-		diffPre.style.fontSize = '11px';
-		diffPre.style.fontFamily = 'monospace';
-		diffPre.style.padding = '8px';
-		diffPre.style.background = 'var(--vscode-editor-background, #1e1e1e)';
-		diffPre.style.borderRadius = '4px';
-		diffPre.style.maxHeight = '300px';
-		diffPre.style.overflowY = 'auto';
-		diffPre.style.whiteSpace = 'pre-wrap';
-		diffPre.style.wordBreak = 'break-all';
-		diffPre.style.margin = '0 0 8px 0';
-		detail.appendChild(diffPre);
-
-		// 操作按钮
-		const actions = $$('div');
-		actions.style.display = 'flex';
-		actions.style.gap = '8px';
-		detail.appendChild(actions);
-
-		const rollbackBtn = $$('button.agent-settings-btn') as HTMLButtonElement;
-		rollbackBtn.textContent = '回滚到此版本';
-		rollbackBtn.style.background = 'var(--vscode-inputValidation-warningBackground, #352a05)';
-		rollbackBtn.style.border = '1px solid var(--vscode-inputValidation-warningBorder, #b89500)';
-		rollbackBtn.style.color = 'var(--vscode-inputValidation-warningForeground, #ccc)';
-		rollbackBtn.style.padding = '4px 12px';
-		rollbackBtn.style.fontSize = '11px';
-		if (this._readOnly) {
-			rollbackBtn.disabled = true;
-			rollbackBtn.title = '只读模式下不可回滚';
-			rollbackBtn.style.opacity = '0.5';
-		}
-		rollbackBtn.onclick = (e) => {
-			e.stopPropagation();
-			if (!this._readOnly) { void this._handleVersionRollback(c.sha); }
-		};
-		actions.appendChild(rollbackBtn);
-		detail.appendChild(actions);
-
-		// ── 点击展开/收起 diff ──
-		let loaded = false;
-		const self = this;
-		row.onclick = async () => {
-			if (detail.style.display === 'block') {
-				detail.style.display = 'none';
-				return;
-			}
-			if (loaded) {
-				detail.style.display = 'block';
-				return;
-			}
-			detail.style.display = 'block';
-			diffPre.textContent = '加载 diff...';
-			try {
-				const result = await self.agentVersionService.diff(self._agentId!, c.sha);
-				diffPre.textContent = result?.unified || '无差异数据';
-				self._colorizeVersionDiff(diffPre);
-			} catch (err) {
-				diffPre.textContent = `加载失败: ${err instanceof Error ? err.message : String(err)}`;
-			}
-			loaded = true;
-		};
-
-		return row;
-	}
-
-	private async _handleVersionRollback(sha: string): Promise<void> {
-		if (!this._agentId) { return; }
-		try {
-			await this.agentVersionService.rollback(this._agentId, sha);
-			this.notificationService.info(`Agent 已回滚到版本 ${sha.slice(0, 7)}，请刷新 prompt 页签查看内容`);
-			await this._loadVersionHistory();
-		} catch (err) {
-			this.notificationService.error(`回滚失败: ${err instanceof Error ? err.message : String(err)}`);
-		}
-	}
-
-	// ── 商城版本（Releases）──────────────────────────────────────
 
 	private async _loadMarketplaceVersions(): Promise<void> {
-		if (!this._agentId || !this._marketplaceVersionsContainer || this._marketplaceVersionsLoading) { return; }
-		this._marketplaceVersionsLoading = true;
-		const container = this._marketplaceVersionsContainer;
-		container.textContent = '⏳ 加载商城版本...';
-		container.style.padding = '12px 4px';
-		container.style.color = 'var(--vscode-descriptionForeground)';
-		container.style.fontSize = '12px';
-		try {
-			const [detail, installed] = await Promise.all([
-				this.marketplaceService.getPackage(this._agentId),
-				this.marketplaceService.getInstalled().catch(() => [] as { kind: string; storeId: string; version?: string }[]),
-			]);
-			// 本地版本：installed-packages.json 记录优先，fallback 到 agent 声明的 version
-			const record = installed.find(e => e.kind === 'agent' && e.storeId === this._agentId);
-			this._localMarketVersion = record?.version ?? this._agent?.version;
-			this._renderMarketplaceVersions(detail.versions ?? []);
-		} catch {
-			container.textContent = '尚未发布到商城（或商城不可达）';
-		} finally {
-			this._marketplaceVersionsLoading = false;
-		}
-	}
-
-	private _renderMarketplaceVersions(versions: readonly IMarketplaceVersion[]): void {
-		const container = this._marketplaceVersionsContainer;
-		if (!container) { return; }
-		container.textContent = '';
-		container.style.padding = '0';
-		if (versions.length === 0) {
-			container.textContent = '商城暂无已发布版本';
-			container.style.padding = '12px 4px';
-			container.style.color = 'var(--vscode-descriptionForeground)';
-			container.style.fontSize = '12px';
-			return;
-		}
-		// 按版本号降序展示（最新在前）
-		const sorted = [...versions].sort((a, b) => compareSemver(b.version, a.version));
-		for (const v of sorted) {
-			container.appendChild(this._renderMarketplaceVersionRow(v));
-		}
-	}
-
-	private _renderMarketplaceVersionRow(v: IMarketplaceVersion): HTMLElement {
-		const row = $$('div.marketplace-version-row');
-		row.style.padding = '8px 12px';
-		row.style.marginBottom = '6px';
-		row.style.border = '1px solid var(--vscode-panel-border, #3c3c3c)';
-		row.style.borderRadius = '6px';
-		row.style.display = 'flex';
-		row.style.alignItems = 'center';
-		row.style.gap = '8px';
-
-		// 版本号 + latest 徽章
-		const verBadge = $$('code');
-		verBadge.textContent = `v${v.version}`;
-		verBadge.style.fontSize = '11px';
-		verBadge.style.fontFamily = 'monospace';
-		verBadge.style.background = 'var(--vscode-badge-background, #4d4d4d)';
-		verBadge.style.color = 'var(--vscode-badge-foreground, #fff)';
-		verBadge.style.padding = '1px 6px';
-		verBadge.style.borderRadius = '3px';
-		row.appendChild(verBadge);
-
-		if (v.isLatest) {
-			const latestBadge = $$('span');
-			latestBadge.textContent = 'latest';
-			latestBadge.style.fontSize = '10px';
-			latestBadge.style.padding = '1px 6px';
-			latestBadge.style.borderRadius = '3px';
-			latestBadge.style.background = 'var(--vscode-testing-iconPassed, #73c991)';
-			latestBadge.style.color = '#000';
-			row.appendChild(latestBadge);
-		}
-
-		// changelog（截断单行）
-		const changelog = $$('span');
-		changelog.textContent = v.changelog || '';
-		changelog.style.flex = '1';
-		changelog.style.fontSize = '11px';
-		changelog.style.color = 'var(--vscode-descriptionForeground)';
-		changelog.style.overflow = 'hidden';
-		changelog.style.textOverflow = 'ellipsis';
-		changelog.style.whiteSpace = 'nowrap';
-		changelog.title = v.changelog || '';
-		row.appendChild(changelog);
-
-		// 安装此版本（商城回滚：覆盖安装旧版本，并写入本地 git 历史）
-		// 本地已是该版本时不显示按钮，改为「当前版本」标记
-		if (this._localMarketVersion && v.version === this._localMarketVersion) {
-			const currentTag = $$('span');
-			currentTag.textContent = '当前版本';
-			currentTag.style.fontSize = '11px';
-			currentTag.style.padding = '2px 10px';
-			currentTag.style.borderRadius = '4px';
-			currentTag.style.background = 'var(--vscode-badge-background, #4d4d4d)';
-			currentTag.style.color = 'var(--vscode-badge-foreground, #fff)';
-			row.appendChild(currentTag);
-		} else {
-			const installBtn = $$('button.agent-settings-btn') as HTMLButtonElement;
-			installBtn.textContent = '安装此版本';
-			installBtn.style.fontSize = '11px';
-			installBtn.style.padding = '2px 10px';
-			if (this._readOnly) {
-				installBtn.disabled = true;
-				installBtn.title = '只读模式下不可安装';
-				installBtn.style.opacity = '0.5';
-			} else {
-				installBtn.onclick = (e) => { e.stopPropagation(); void this._handleInstallMarketVersion(v); };
-			}
-			row.appendChild(installBtn);
-		}
-
-		// 下架（仅作者/owner + 仅最新版本）：历史版本不允许单独下架
-		if (this._agent && this.agentStudioService.canUploadAgent(this._agent) && !this._readOnly && v.isLatest) {
-			const deleteBtn = $$('button.agent-settings-btn') as HTMLButtonElement;
-			deleteBtn.textContent = '下架';
-			deleteBtn.style.fontSize = '11px';
-			deleteBtn.style.padding = '2px 10px';
-			deleteBtn.style.color = 'var(--vscode-errorForeground, #f14c4c)';
-			deleteBtn.onclick = (e) => { e.stopPropagation(); void this._handleDeleteMarketVersion(v); };
-			row.appendChild(deleteBtn);
-		}
-
-		return row;
-	}
-
-	/** 安装商城指定版本（含旧版本回滚）：下载覆盖安装 + 本地 git 记录 */
-	private async _handleInstallMarketVersion(v: IMarketplaceVersion): Promise<void> {
-		if (!this._agentId) { return; }
-		try {
-			this.notificationService.info(`正在安装 v${v.version}...`);
-			await this.marketplaceService.download(this._agentId, v.version, 'agent' as PackageKind);
-			// 商城回滚也写入本地 git 历史，保持双轨一致
-			try {
-				await this.agentVersionService.autoCommit(this._agentId, `install: v${v.version} from marketplace`);
-			} catch { /* non-critical */ }
-			this.notificationService.info(`已安装 v${v.version}，请重新打开设置页查看内容`);
-			this._loadVersionHistory();
-			this._loadMarketplaceVersions();
-		} catch (err) {
-			this.notificationService.error(`安装 v${v.version} 失败: ${err instanceof Error ? err.message : String(err)}`);
-		}
-	}
-
-	/** 下架商城指定版本（仅作者）。删除 latest 版本时提示服务端会重算最新版本。 */
-	private async _handleDeleteMarketVersion(v: IMarketplaceVersion): Promise<void> {
-		if (!this._agentId) { return; }
-		const confirm = await this.dialogService.confirm({
-			message: `确定下架 v${v.version} 吗？`,
-			detail: v.isLatest
-				? '该版本是当前最新版本，下架后商城最新版本将回退到次新版本。已安装的用户不受影响。'
-				: '下架后其他用户将无法再下载该版本，已安装的用户不受影响。',
-			primaryButton: '下架',
-			cancelButton: '取消',
-		});
-		if (!confirm.confirmed) { return; }
-		try {
-			await this.marketplaceService.deleteVersion(this._agentId, v.version);
-			this.notificationService.info(`v${v.version} 已下架`);
-			this._loadMarketplaceVersions();
-		} catch (err) {
-			this.notificationService.error(`下架失败: ${err instanceof Error ? err.message : String(err)}`);
-		}
-	}
-
-	private _formatVersionTime(iso: string): string {
-		try {
-			const d = new Date(iso);
-			return d.toLocaleString('zh-CN', {
-				month: '2-digit', day: '2-digit',
-				hour: '2-digit', minute: '2-digit',
-			});
-		} catch { return iso.slice(0, 16); }
-	}
-
-	private _colorizeVersionDiff(pre: HTMLElement): void {
-		const text = pre.textContent || '';
-		const lines = text.split('\n');
-		pre.textContent = '';
-		for (const line of lines) {
-			const span = $$('span');
-			if (line.startsWith('+') && !line.startsWith('+++')) {
-				span.style.color = 'var(--vscode-testing-iconPassed, #73c991)';
-			} else if (line.startsWith('-') && !line.startsWith('---')) {
-				span.style.color = 'var(--vscode-testing-iconFailed, #f14c4c)';
-			} else if (line.startsWith('@@')) {
-				span.style.color = 'var(--vscode-textLink-foreground, #3794ff)';
-			}
-			span.textContent = line + '\n';
-			pre.appendChild(span);
-		}
+		await this._versionsSection?.refreshMarketplace();
 	}
 
 	// ── Runtime Config Tab (budget) ──
@@ -3045,7 +2330,7 @@ export class AgentSettingsEditorPane extends EditorPane {
 
 			// Collect skill and MCP references from the agent（依赖检查与上传共用）
 			const skillRefs = this._agent.skills || [];
-			const mcpRefs = this._agent.tools?.filter(t => t.startsWith('mcp:')) || [];
+			const mcpRefs = this._agent.tools?.filter(t => t.startsWith(MCP_TOOL_CATEGORY_PREFIX)) || [];
 
 			// 依赖 skill 冲突检查（先于 agent 自身检查）：任一依赖 slug/name 冲突则中止本次上传
 			const depConflict = await this._checkDepsConflicts(skillRefs);

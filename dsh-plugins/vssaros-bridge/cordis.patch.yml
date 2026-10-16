@@ -1,0 +1,7 @@
+# @vssaros/dsh-bridge bundle patch: insert the bridge row. Runtime values
+# (pipe path, one-shot token) arrive from VsSaros through a --patch overlay
+# targeting this id, so no user file is ever edited.
+- insert:
+    - id: vssaros-bridge
+      name: '@vssaros/dsh-bridge'
+      config: {}

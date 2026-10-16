@@ -98,7 +98,8 @@ export function getAllChatProviderDefs(config: IConfigurationService): IBYOKProv
 /** True when the given provider def has both a base URL and a non-empty API key configured. */
 function isProviderDefConfigured(config: IConfigurationService, def: IBYOKProviderDefinition): boolean {
 	const baseUrl = (config.getValue<string>(def.baseUrlConfigKey) || '').trim() || def.defaultBaseUrl;
-	const apiKey = (config.getValue<string>(def.apiKeyConfigKey) || '').trim();
+	// 自定义 provider 的 Key 内联在定义里（其配置键未注册，getValue 读不到）。
+	const apiKey = ((def.apiKey || config.getValue<string>(def.apiKeyConfigKey)) || '').trim();
 	return !!baseUrl && !!apiKey;
 }
 
@@ -133,7 +134,8 @@ export function resolveChatModel(
 
 	const configuredBase = (config.getValue<string>(def.baseUrlConfigKey) || '').trim();
 	const baseUrl = configuredBase || def.defaultBaseUrl;
-	const apiKey = (config.getValue<string>(def.apiKeyConfigKey) || '').trim();
+	// 自定义 provider 的 Key 内联在定义里（其配置键未注册，getValue 读不到）。
+	const apiKey = ((def.apiKey || config.getValue<string>(def.apiKeyConfigKey)) || '').trim();
 	const model = (opts.modelId?.trim())
 		|| DEFAULT_MODEL_BY_PROVIDER[def.id]
 		|| def.staticModels?.[0]?.id

@@ -1,0 +1,17 @@
+# @vssaros/dsh-sessions bundle patch: insert the sessions row.
+#
+# 历史会话 sideview（**由 dsh 自己绘制**）：按工作区（= 会话的 cwd）分组，每组默认 5 条空闲会话 +
+# 「展开其余」，**运行中 / 等待用户**的会话始终可见且不占配额；会话内热切换的「人格」直接读
+# dsh 自己的投影（`vssaros-persona`）—— 这条在 VsSaros 侧原本**没有任何通路**。
+#
+# 数据：dsh 自己的会话投影缓存 `<DSH_HOME>/storages/session_projcache/sessions/<sessionId>.json`
+# （冷读主路径：已结束的会话只有这里有）+ **可选** live 合并（`sessions.get(id)` →
+# 活 Session、`sessionProjections.stateOf(session, unit)` → 该单元当前值，**live 优先且逐字段**）。
+# 两条服务都走可选注入：缺任一条只少一路 live，**不影响冷读主路径**。
+#
+# 只读插件：不注册任何工具、不声明 `owns`（不写任何文件）。
+# `config.dshHome` 留空时按环境变量 `DSH_HOME`（VsSaros 启动 Host 时就会设）→ `~/.dsh`。
+- insert:
+    - id: vssaros-sessions
+      name: '@vssaros/dsh-sessions'
+      config: {}

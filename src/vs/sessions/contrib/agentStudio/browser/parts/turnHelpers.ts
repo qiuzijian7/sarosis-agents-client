@@ -45,6 +45,7 @@ import {
 	sanitizeAssistantVisibleText,
 	addSanitizeTraceSink,
 } from '../../common/assistantVisibleText.js';
+import { MCP_TOOL_CATEGORY_PREFIX } from '../../common/toolApprovalPolicy.js';
 
 /**
  * 仅声明本文件实际用到的日志成员。
@@ -270,7 +271,7 @@ export function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 		costs.push({ name, tokens });
 		// MCP 工具的 category 形如 `mcp:<server>`，与内置 toolset 分开统计更有诊断价值。
 		const category = typeof t?.category === 'string' ? t.category : '';
-		const key = category.startsWith('mcp:') ? category : (t?.toolset || getToolsetForTool(name));
+		const key = category.toLowerCase().startsWith(MCP_TOOL_CATEGORY_PREFIX) ? category : (t?.toolset || getToolsetForTool(name));
 		const g = groups.get(key) ?? { tokens: 0, count: 0 };
 		g.tokens += tokens;
 		g.count += 1;

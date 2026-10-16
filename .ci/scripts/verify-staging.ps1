@@ -24,6 +24,12 @@ function Copy-IfMissing($rel, $repoRel, $sentinel) {
 }
 Copy-IfMissing "extensions\agent-studio\out" "extensions\agent-studio\out" "extension.js"
 Copy-IfMissing "node_modules\typescript" "node_modules\typescript" "package.json"
+# 2026-10-10：dsh 底座伴生插件 `dsh-plugins/**`（@vssaros/dsh-bridge 控制桥 + @vssaros/dsh-chat-surface
+# 聊天承载 + dsh-compat.json 随包兼容清单）—— **运行时按路径读取**（DshHostSupervisor 从
+# `<appPath>/dsh-plugins/` 复制进 dsh profile 再 `dsh plugin add`；pnpm 的 file: 必须真实目录，不进 asar），
+# 从不被静态 import ⇒ 属"打包拷贝只带走它认识的文件"高危类（同 kbWorker / tree-sitter-wasm / .agents）。
+# 缺失的后果：控制桥不存在 ⇒ 工作区注册 / 会话绑定 / 升级闸门全部静默退回 URL 行兜底。
+Copy-IfMissing "dsh-plugins" "dsh-plugins" "vssaros-bridge\package.json"
 # 2026-09-15：codebase 图谱解析 Worker 池按**运行时路径**读该模块
 # （`codebaseGraphParserPool._initPool` → `<appRoot>/node_modules/@vscode/tree-sitter-wasm/wasm/tree-sitter.js`），
 # 缺则 `Worker pool init failed … fallback to main thread` ⇒ 18 万节点索引改在渲染主线程解析（UI 冻结）。
@@ -66,7 +72,53 @@ $required = @(
   "out\vs\sessions\contrib\agentStudio\webview\media\kbblocks.js",
   # 2026-09-21：能力插件清单（build/next 生成的**运行时路径加载**产物，同 wasm 一类 ✗）。
   # 缺它 ⇒ 安装版静默退到「dev 硬编码回退清单」，且每个插件的 primary import 指向 src/ ✗。
-  "out\vs\extensions\capability-plugins.js"
+  "out\vs\extensions\capability-plugins.js",
+  # 2026-09-25：内置智能体资源 `resources/.agents/**` —— **点目录**，运行时按路径读取
+  #   （skillRegistryService 扫 skills、feishuSyncCore 找 kb/feishu-sync.mjs），从不被静态 import
+  #   ⇒ 打包拷贝整棵漏掉。实测已发布包缺它 ⇒ 内置技能全不可用、点「同步飞书」报
+  #   「未找到内置同步脚本（resources/.agents/kb/feishu-sync.mjs）——安装可能不完整」。
+  #   自愈在 build/saros/strip-before-pack.mjs 的 ensureDir('resources/app/resources/.agents')；
+  #   这里做**硬性**校验：缺失即判出包失败（与 kbWorker.js / tree-sitter-wasm 同一类关键构件）。
+  "resources\.agents\kb\feishu-sync.mjs",
+  "resources\.agents\skills\kb-feishu-sync\SKILL.md",
+  "resources\.agents\skills\kb-build\SKILL.md",
+  "resources\.agents\mcp-presets",
+  "resources\.agents\builtin-workflows",
+  # 2026-10-10：dsh 底座构件（同上：运行时按路径读取，缺失即底座静默残废——硬性校验）。
+  # 伴生插件（控制桥 + 页面桥客户端）：
+  "dsh-plugins\vssaros-bridge\package.json",
+  "dsh-plugins\vssaros-bridge\cordis.patch.yml",
+  "dsh-plugins\vssaros-bridge\lib\index.js",
+  "dsh-plugins\vssaros-bridge\lib\client.js",
+  # chat-surface 插件（聊天框会话绑定 / 主题同步 / 插入引用）：
+  "dsh-plugins\vssaros-chat-surface\package.json",
+  "dsh-plugins\vssaros-chat-surface\cordis.patch.yml",
+  "dsh-plugins\vssaros-chat-surface\lib\index.js",
+  "dsh-plugins\vssaros-chat-surface\lib\client.js",
+  # 皮肤部件：lib/client.js 只是入口，各换皮点在同目录的 package-local chunk 里
+  # （dsh client-modules 契约：require.async("./client.<name>.js")，服务端按 dirname(clientPath) 取文件）。
+  # 缺任一 → 对应 UI 静默不换皮（入口把失败记进 window.__vssarosChatSurface.partErrors）。
+  "dsh-plugins\vssaros-chat-surface\lib\client.skin.js",
+  "dsh-plugins\vssaros-chat-surface\lib\client.hero.js",
+  "dsh-plugins\vssaros-chat-surface\lib\client.queue.js",
+  "dsh-plugins\vssaros-chat-surface\lib\client.usage.js",
+  "dsh-plugins\vssaros-chat-surface\lib\client.tools.js",
+  "dsh-plugins\vssaros-chat-surface\lib\client.approval.js",
+  "dsh-plugins\vssaros-chat-surface\lib\client.openInApp.js",
+  "dsh-plugins\vssaros-chat-surface\lib\client.preset.js",
+  # 随包兼容清单（稳定通道可升级到的 dsh 版本）：
+  "dsh-plugins\dsh-compat.json",
+  # ★ 2026-10-14：随包 **vendored 第三方技能包** archify（上游 `@tt-a1i/archify-dsh`，MIT）。
+  #   它的负载在 `skills/`（不在 `lib/` 里）= gulpfile 的 glob **单独列**的一行 ⇒ 打包漏掉那行时
+  #   本地开发一切正常、装出来只有个空壳（"装了插件但没技能" ✗）。这里硬性钉三件：
+  #   入口清单（package.json）+ patch（没有它技能不会挂载）+ 技能本体（SKILL.md）。
+  "dsh-plugins\vssaros-archify\package.json",
+  "dsh-plugins\vssaros-archify\cordis.patch.yml",
+  "dsh-plugins\vssaros-archify\skills\archify\SKILL.md",
+  #   上游 MIT 许可证必须随分发（合规；见该目录 VENDOR.md）：
+  "dsh-plugins\vssaros-archify\LICENSE",
+  # dsh 视图 preload（build/next 独立编译 + gulpfile.vscode.ts 资源清单）：
+  "out\vs\sessions\contrib\dshHarness\electron-browser\preload-dshView.js"
 )
 # 2026-09-20：逐语言 wasm 也进**硬性**清单（sentinel 只证包目录在 ✗ —— 那次安装版缺 10 个语言
 # 照样绿灯放行 ✗✗）。以仓库侧目录为准动态展开（防清单漂移 ✓）。
@@ -74,6 +126,20 @@ if (Test-Path $repoWasmDir) {
   foreach ($f in (Get-ChildItem $repoWasmDir -Filter *.wasm)) {
     $required += "node_modules\@vscode\tree-sitter-wasm\wasm\$($f.Name)"
   }
+}
+# 2026-10-10：内置 dsh 运行时 + profile 种子（README 4.29/4.32；build/prepack-dsh-runtime.mjs 生成）。
+# 策略=**条件硬性**：仓库侧跑过 prepack（dsh-runtime\ 存在）就必须进包——跑了却没带等于静默退回
+# "首启在线安装/几十秒下载"，属带病出包；仓库侧没有（本地快构）只 WARN 不拦。
+$bundledVer = $null
+try { $bundledVer = (Get-Content -Raw -Encoding utf8 "dsh-plugins\dsh-compat.json" | ConvertFrom-Json).bundled } catch {}
+if ($bundledVer -and (Test-Path (Join-Path $repoRoot "dsh-runtime\$bundledVer"))) {
+  $required += "dsh-runtime\$bundledVer\node_modules\@deepseek-ai\dsh\lib\bin.js"
+  $required += "dsh-runtime\$bundledVer\profile-seed\seed.json"
+  $required += "dsh-runtime\$bundledVer\profile-seed\profiles\vssaros\package.json"
+  $required += "dsh-runtime\$bundledVer\profile-seed\profiles\vssaros\node_modules\@vssaros\dsh-bridge\package.json"
+  $required += "dsh-runtime\$bundledVer\node_modules\sherpa-onnx-win-x64\sherpa-onnx.node"  # 语音输入引擎（win）
+} elseif ($bundledVer) {
+  Write-Host ('  [WARN] repo has no dsh-runtime\' + $bundledVer + ' (prepack not run) - package will fall back to first-run npm install')
 }
 $missing = @()
 foreach ($rel in $required) {

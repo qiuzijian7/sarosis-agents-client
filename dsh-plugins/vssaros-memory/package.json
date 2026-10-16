@@ -1,0 +1,57 @@
+{
+  "name": "@vssaros/dsh-memory",
+  "version": "0.3.73",
+  "description": "VsSaros memory module for DeepSeek Harness: injects the agent's working memory as a system-prompt section (read-only, via the AgentMemory gateway), exposes 23 memory tools — memory_list / memory_search / memory_stats / memory_refresh / memory_remember / memory_recall / memory_forget / memory_obsidian_export / memory_cascade / memory_crystal / memory_routine / memory_improve / memory_facet / memory_governance / memory_team / memory_mesh / memory_sentinel / memory_api / memory_slot / memory_lesson / memory_work / memory_import / memory_skill — 16 of which change user data and therefore pass the approval gate, auto-distills durable facts from user messages into a human-reviewed draft area (agent/turn-stopping), and serves its own standalone page (/x/memory/, activityBar container agentStudio.memory, order 111). The legacy /x/memory/section fragment route was removed on 2026-10-12 (the knowledge-base page no longer embeds it). Single writer stays the gateway.",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/detail.js",
+    "lib/pageShell.js",
+    "lib/gateway.js",
+    "lib/audit.js",
+    "lib/draft.js",
+    "lib/promote.js",
+    "lib/queue.js",
+    "lib/judge.js",
+    "lib/core/memory.js",
+    "lib/core/audit.js",
+    "lib/core/distill.js",
+    "lib/core/judge.js",
+    "cordis.patch.yml"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/dsh": ">=0.1.7-0 <0.3.0-0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": [
+        "./cordis.patch.yml"
+      ]
+    }
+  },
+  "vssaros": {
+    "manifestVersion": 1,
+    "module": "memory",
+    "activityBar": {
+      "containerId": "agentStudio.memory",
+      "title": {
+        "zh": "记忆库",
+        "en": "Memory"
+      },
+      "icon": "codicon:database",
+      "order": 111
+    },
+    "view": {
+      "kind": "page",
+      "route": "/x/memory/"
+    },
+    "legacyCounterpart": "agentStudio.memory"
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,648 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>工作台 ⇄ 聊天框 交互关联 · 调研与优化方案</title>
+<style>
+  /* 说明：这是**调研与方案稿**，非实现代码。所有"现状"结论都带绝对路径/行号；
+     "没有"的结论都写明搜过哪些关键词，避免假阴性。 */
+  :root{ --brand:#FF5A2E; --ok:#3FB950; --warn:#D29922; --err:#F85149; --info:#58A6FF; }
+  html[data-theme="dark"]{
+    --bg:#1B1B1D; --bg-elev:#232326; --bg-panel:#2C2C2E; --bg-code:#1F2023;
+    --fg:#E6E6E6; --fg-dim:#9BA1A6; --fg-faint:#6E7681;
+    --line:#3A3A3D; --line-soft:rgba(128,128,128,.22); --hover:#33333a;
+  }
+  html[data-theme="light"]{
+    --bg:#FFFFFF; --bg-elev:#F7F7F8; --bg-panel:#F0F0F2; --bg-code:#F6F8FA;
+    --fg:#1F2328; --fg-dim:#57606A; --fg-faint:#8C959F;
+    --line:#D8DEE4; --line-soft:rgba(0,0,0,.10); --hover:#ECEEF1;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+    font:13px/1.6 -apple-system,"Segoe UI",system-ui,"PingFang SC","Microsoft YaHei",sans-serif}
+  .wrap{max-width:1280px;margin:0 auto;padding:28px 20px 80px}
+  h1{font-size:20px;margin:0 0 6px}
+  h2{font-size:15px;margin:36px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+  h3{font-size:13px;margin:20px 0 8px;color:var(--fg-dim);font-weight:600}
+  .lede{color:var(--fg-dim);margin:0 0 14px;max-width:1060px}
+  code{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;
+    background:var(--bg-code);border:1px solid var(--line-soft);border-radius:4px;padding:1px 5px}
+  a{color:var(--info)}
+  .rev{border:1px solid var(--line);border-left:3px solid var(--brand);border-radius:8px;
+    background:var(--bg-elev);padding:10px 12px;font-size:12px;color:var(--fg-dim);margin:0 0 16px}
+  .rev b{color:var(--fg)}
+  .rev ul{margin:6px 0 0 18px;padding:0}
+  .rev li{margin:3px 0}
+  .rev.ok{border-left-color:var(--ok)}
+  .rev.warn{border-left-color:var(--warn)}
+  .rev.info{border-left-color:var(--info)}
+  table{border-collapse:collapse;width:100%;font-size:12px;margin-top:8px}
+  th,td{border:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}
+  th{background:var(--bg-panel);color:var(--fg-dim);font-weight:600}
+  th.nowrap,td.nowrap{white-space:nowrap}
+  td code{font-size:10.5px}
+  .tag{display:inline-flex;align-items:center;gap:4px;font-size:10.5px;line-height:16px;padding:0 6px;
+    border-radius:999px;border:1px solid var(--line);color:var(--fg-dim);white-space:nowrap}
+  .tag.new{border-color:var(--ok);color:var(--ok)}
+  .tag.chg{border-color:var(--brand);color:var(--brand)}
+  .tag.warn{border-color:var(--warn);color:var(--warn)}
+  .tag.del{border-color:var(--err);color:var(--err)}
+  .tag.keep{border-color:var(--line);color:var(--fg-faint)}
+  .star{color:var(--brand);letter-spacing:1px}
+  .toc{border:1px solid var(--line);border-radius:8px;background:var(--bg-elev);padding:10px 14px;
+    font-size:12px;color:var(--fg-dim);margin:0 0 8px}
+  .toc ol{margin:6px 0 0 18px;padding:0}
+  .toc li{margin:2px 0}
+  .phase{border:1px solid var(--line);border-radius:10px;background:var(--bg-elev);padding:12px 14px;margin:10px 0}
+  .phase h4{margin:0 0 4px;font-size:13px;display:flex;align-items:center;gap:8px}
+  .phase .goal{font-size:11.5px;color:var(--fg-dim);margin:0 0 8px}
+  .phase ul{margin:6px 0 0 18px;padding:0;font-size:12px;color:var(--fg-dim)}
+  .phase li{margin:4px 0}
+  .phase li b{color:var(--fg)}
+  .phase .accept{margin-top:8px;font-size:11.5px;color:var(--fg-dim);
+    border-top:1px dashed var(--line-soft);padding-top:7px}
+  .q{border:1px solid var(--line);border-left:3px solid var(--warn);border-radius:8px;background:var(--bg-elev);
+    padding:10px 12px;margin:8px 0;font-size:12px;color:var(--fg-dim)}
+  .q b{color:var(--warn)}
+  .q.ok{border-left-color:var(--ok)}
+  .q.ok b{color:var(--ok)}
+  .note{font-size:11.5px;color:var(--fg-faint);margin-top:8px}
+  .mono{font-family:ui-monospace,Consolas,monospace;font-size:10.5px}
+  .btn{display:inline-block;font-size:12px;padding:6px 12px;border-radius:6px;text-decoration:none;
+    background:var(--brand);color:#fff}
+  .btn.alt{background:transparent;color:var(--fg-dim);border:1px solid var(--line)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>工作台 ⇄ 聊天框 交互关联 · 调研与优化方案</h1>
+  <p class="lede">
+    对象：VsSaros（VS Code fork）+ dsh 宿主上的四个工作台（知识库 / 记忆库 / 代码库 / 媒体库）与 Agent 聊天框。
+    本稿回答三件事：① 现在有哪些交互通道、缺什么；② 开源项目怎么做（含优缺点对比）；③ 我们该按什么次序补。
+  </p>
+
+  <div class="rev">
+    <b>结论速览</b>
+    <ul>
+      <li>本仓<b>底层 seam 全都已具备</b>：dsh 官方的 <code>@</code> 触发源注册（<code>ctx.inputTriggers.registerSource</code>）、引用 codec、<code>dsh-resource://</code> 活值资源、IDE 页面桥 + 插入引用推送通道、用户消息富化标签。</li>
+      <li>但<b>四个工作台一个都没接上去</b>：现在只有两条互不相干的通路 ——「文件/选区 → 聊天」与「Agent 用工具读写知识库」。</li>
+      <li>缺的三件事：<b>①</b> 工作台条目 → 聊天的引用入口；<b>②</b> 聊天 → 工作台的定位回跳；<b>③</b> 引用在发送时"变成什么"的统一语义（指针 / 内容 / 快照）。</li>
+      <li>生态的取舍很一致：<b>入口</b>用 <code>@</code> 扩展源 + 知识源作用域；<b>出口</b>用引用回跳；<b>内容</b>默认走"指针 + 工具检索"而不是"把正文塞进去"。</li>
+    </ul>
+  </div>
+
+  <div class="toc">
+    <b>目录</b>
+    <ol>
+      <li>现状盘点：本仓已有的通道与缺口</li>
+      <li>三条硬约束（决定方案形态）</li>
+      <li>开源方案调研</li>
+      <li>优缺点对比（按机制范式）</li>
+      <li>优化方案（P0–P3 分期）</li>
+      <li>需要拍板的决策点</li>
+      <li>未核实项</li>
+      <li>参考来源</li>
+    </ol>
+  </div>
+
+  <h2>1. 现状盘点：本仓已有的通道与缺口</h2>
+
+  <h3>1.1 工作台 → 聊天框</h3>
+  <table>
+    <tr><th class="nowrap">通道</th><th>载体</th><th>位置</th></tr>
+    <tr>
+      <td>Explorer / 编辑器右键「Add to Agent Chat」</td>
+      <td>命令 <code>agentStudio.addToChat</code> → <code>addFileToChat</code> / <code>addContentToChat</code> → 聊天附件（内容附件，100KB 静默截断）</td>
+      <td><code>agentStudio.contribution.ts:2112</code>；<code>nativeChatEditorPane.ts:6635 / 6642</code></td>
+    </tr>
+    <tr>
+      <td>编辑器选区加入聊天</td>
+      <td>面板回调 <code>onAddSelectionToChat</code></td>
+      <td><code>nativeChatEditorPane.ts:2152</code>（<code>chatEditorIntegration.ts:335</code>）</td>
+    </tr>
+    <tr>
+      <td>编辑器右键「发送当前文件引用到聊天（dsh）」<span class="tag new">含行号</span></td>
+      <td><code>dshHarness.insertReferenceToChat</code> → IPC <code>vssaros:dsh:insert</code> → DOM 事件 <code>vssaros-dsh-insert</code> → 原子 chip</td>
+      <td><code>dshHarness.contribution.ts</code>；<code>dshPageBridgeProtocol.ts:41-43</code>；<code>dsh-plugins/vssaros-chat-surface/lib/client.js:162-192</code></td>
+    </tr>
+    <tr>
+      <td>知识库视图「批量构建库 / 构建为笔记」驱动 KB 专家 agent，并在聊天框开可见会话</td>
+      <td>视图直接注入 <code>IAgentChatService</code></td>
+      <td><code>knowledgeBaseView.ts</code>（约 :343-345、:1697）</td>
+    </tr>
+    <tr>
+      <td>隐式：目录摘要常驻注入</td>
+      <td>富化标签 <code>kb_overview</code>（10 个内置标签里唯一来自工作台的一个）</td>
+      <td><code>messageEnrichment/builtinTagProviders.ts:216</code>、<code>:346</code></td>
+    </tr>
+  </table>
+
+  <h3>1.2 聊天框 → 工作台</h3>
+  <table>
+    <tr><th class="nowrap">通道</th><th>载体</th><th>位置</th></tr>
+    <tr>
+      <td>Agent 工具读写知识库</td>
+      <td>dsh 侧 <code>kb_list / kb_search / kb_read / kb_topic_overviews / kb_organize / kb_build / kb_write_note / kb_mkdir</code>；IDE 侧同族工具</td>
+      <td><code>dsh-plugins/vssaros-kb</code>；<code>providers/tool/kbVaultRecallTools.ts</code>、<code>kbBuildTools.ts</code>、<code>kbOrganizeTools.ts</code></td>
+    </tr>
+    <tr>
+      <td>聚焦知识库 Pane</td>
+      <td><b>仅一条硬编码</b> <code>viewsService.openView('agentStudio.knowledgeBaseView')</code></td>
+      <td><code>kbImportController.ts</code>（约 :2120-2132）</td>
+    </tr>
+    <tr>
+      <td>聊天 footer / write_file 卡「导入知识库」</td>
+      <td>回调 <code>onImportToKnowledgeBase</code> / <code>onImportFileToKnowledgeBase</code></td>
+      <td><code>agentChatPanel.messages.ts</code>、<code>agentChatPanel.fileCards.ts</code></td>
+    </tr>
+  </table>
+
+  <h3>1.3 缺口（明确搜过、不存在）</h3>
+  <div class="rev warn">
+    <ul>
+      <li><b>没有</b>"知识库笔记 / 工作台条目 → 聊天"的任何引用入口：无 <code>@笔记</code>、无拖拽工作台条目入聊天、无笔记右键"发送到聊天 / 问 AI"。</li>
+      <li><b>没有</b>"工作台 / 知识库引用卡片"这类聊天消息块或组件（chat-surface 与 <code>agentChatTypes.ts</code> 均无）。</li>
+      <li><b>没有</b>面向模型的通用"打开 / 聚焦工作台"工具：只有 KB 构建这一条硬编码 <code>openView</code>。</li>
+      <li>富化标签<b>只覆盖知识库</b>（<code>kb_overview</code>）；代码库 / 媒体库 / 记忆库无对应标签。</li>
+      <li><code>@</code> 提及的作用域<b>仅工作区文件</b>（<code>searchWorkspaceFiles</code>：跳过 node_modules/.git/dist/out、深度 4、上限 50），不覆盖工作台内容。</li>
+    </ul>
+    <div class="note">
+      假阴性说明：搜索覆盖 <code>src/vs/sessions/contrib/agentStudio/</code>、<code>src/vs/sessions/browser/agentChat/</code>、
+      <code>src/vs/sessions/contrib/dshHarness/</code>、<code>dsh-plugins/vssaros-chat-surface/</code>、<code>dsh-plugins/vssaros-kb/</code>；
+      关键词 <code>sendToChat / addToChat / askAI / chatContext / attachToChat / sendToAgent / mention / attach / reference / pin / 加入聊天</code>。
+    </div>
+  </div>
+
+  <h2>2. 三条硬约束（决定方案形态，已逐条核过）</h2>
+  <table>
+    <tr><th class="nowrap">#</th><th class="nowrap">约束</th><th>证据</th><th>后果</th></tr>
+    <tr>
+      <td>1</td>
+      <td>聊天框是 <b>dsh 页</b>，不是 VS Code 的聊天面板</td>
+      <td>dsh 官方 <code>@</code>/<code>/</code> 触发流水线（<code>dsh-client-ui-input-trigger</code>）；本仓 chat-surface 作为客户端插件注入 <code>dsh-client-ui-*</code></td>
+      <td>要接的是 dsh 侧 seam（<code>registerSource</code>），<b>不是</b> VS Code 的 <code>chatParticipants</code></td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td>chat-only 模式下 <b>dsh 右侧栏被 CSS 隐藏</b></td>
+      <td><code>DSH_CHAT_ONLY_CSS</code>（<code>dshPageBridgeProtocol.ts:196</code>；preload 里同内容字面量 <code>preload-dshView.ts:41</code>）</td>
+      <td>「点引用看预览 / 回跳」<b>不能</b>依赖 dsh 右栏或文档预览，必须落 <b>IDE 编辑区</b></td>
+    </tr>
+    <tr>
+      <td>3</td>
+      <td>页面桥<b>单向</b>，且 <code>openModulePage</code> 的 route <b>拒绝查询串</b></td>
+      <td><code>DSH_PAGE_IPC_INVOKE</code> 主进程只回 <code>true</code>/<code>'pong'</code>（<code>dshViewHost.ts</code>）；形状校验 <code>/^\/[A-Za-z0-9._~\/-]+$/</code>（<code>dshPageBridgeProtocol.ts:518</code>）；宿主侧精确匹配 <code>p.route === command.route</code>（<code>dshHarness.contribution.ts:844</code>）</td>
+      <td>"打开知识库并定位到第 N 篇"<b>必须新增命令</b>，不能靠 <code>?node=</code>；"页面 → 聊天"也必须新增命令</td>
+    </tr>
+  </table>
+
+  <h2>3. 开源方案调研</h2>
+
+  <h3>3.1 显式引用体系（<code>@</code> / <code>#</code>）—— 已高度收敛的共识</h3>
+  <table>
+    <tr><th class="nowrap">项目</th><th>机制</th><th>值得抄的点</th></tr>
+    <tr>
+      <td class="nowrap">VS Code Copilot Chat</td>
+      <td><code>#</code>-mention（files / folders / symbols / <b>tools</b> / terminal / source control 等）+ <code>Add Context</code> 选择器 + 拖放 + <code>#codebase</code>；<code>@</code> 是聊天参与者，扩展可贡献</td>
+      <td>显式引用与<b>隐式</b>工作区索引<b>并存</b>；响应侧另有 <code>stream.reference / filetree / button / anchor</code> —— <b>让回答能点回源头</b></td>
+    </tr>
+    <tr>
+      <td class="nowrap">Cursor</td>
+      <td><code>@</code>：Files &amp; Folders / Terminals / Chats / Git diffs（<code>@Commit</code> / <code>@Branch</code>）/ Browser</td>
+      <td>官方口径"知道是哪些文件才用 <code>@</code>，不知道就别用，Agent 自己会找"；上下文环 + 自动压缩把<b>预算做成可见 UI</b></td>
+    </tr>
+    <tr>
+      <td class="nowrap">Zed</td>
+      <td><code>@</code>：文件 / 目录 / 符号 / <b>历史线程</b> / 技能 / 诊断 / 分支 diff / URL；选区快捷键；<b>粘贴代码自动转成带文件上下文的 @mention</b>；<code>/compact</code></td>
+      <td>写侧闭环：<code>Review Changes</code> 多缓冲 + 逐 hunk 接受 + Checkpoint + <b>Follow（编辑区跟随 agent 跳文件）</b></td>
+    </tr>
+    <tr>
+      <td class="nowrap">Continue</td>
+      <td>context providers 注册进 <code>@</code> 菜单（<code>@File / @Code / @Diff / @Tree / @Problems / @Repo-Map / @HTTP</code>）；自定义走 <code>@HTTP</code>（POST → <code>ContextItem{name,description,content}</code>）或 <b>MCP</b></td>
+      <td>已废弃 <code>@Codebase / @Folder / @Docs</code>，官方推荐<b>统一改走 MCP</b> ⇒ "每家自己造引用类型"不可持续</td>
+    </tr>
+    <tr>
+      <td class="nowrap">Roo Code / Cline</td>
+      <td><code>@file / @folder / @problems / @terminal / @url / @git-changes</code></td>
+      <td>候选由文件系统事件驱动<b>实时刷新</b>；踩过"被引用文件正文里的 <code>@</code> 误触发解析"的坑 ⇒ <b>解析只作用于用户输入层</b></td>
+    </tr>
+  </table>
+  <div class="rev info" style="margin-top:10px">
+    <b>共性</b>：生态收敛为「<code>@</code> = 参与者/源，<code>#</code> 或 <code>@文件名</code> = 上下文项」；上下文项<b>可拖放、可粘贴自动识别、可点回源头</b>；并且<b>必须有上下文预算的可见性</b>。
+  </div>
+
+  <h3>3.2 知识源作为一等公民</h3>
+  <table>
+    <tr><th class="nowrap">项目</th><th>机制</th><th>对我们的启发</th></tr>
+    <tr>
+      <td class="nowrap">Open WebUI</td>
+      <td>两条接入：① 聊天里用 <code>#</code> 引用知识库；② <b>把知识库挂到模型上</b>（作用域隔离）。两档检索：<b>Focused Retrieval（默认 RAG）</b> vs <b>Full Context</b>（全文注入每条消息）</td>
+      <td><b>最重要的教训</b>：开 <code>native function calling</code>（现为默认）后，挂在模型上的知识库<b>不会自动注入</b>，模型必须自己调知识工具；官方解药是"在系统提示里点名要求用 <code>list_knowledge</code> / <code>query_knowledge_files</code>"。这正是我们 <code>kb_overview</code> 常驻注入与 <code>kb_*</code> 工具两条路的分工问题</td>
+    </tr>
+    <tr>
+      <td class="nowrap">Open WebUI 工具链</td>
+      <td><code>query_*</code>（语义定位文档）→ <code>grep_*</code>（精确到行）→ <code>view_file</code>（行范围），回执带<b>文件名 + 1-indexed 行号</b></td>
+      <td>与 <code>kb_search(mode=fulltext)</code> 同构；<b>引用溯源要落到"文件+行"粒度</b>才有用</td>
+    </tr>
+    <tr>
+      <td class="nowrap">Obsidian Copilot</td>
+      <td>V4 已从"Chat + Vault QA 检索"整体转向 <b>Agent + Projects / Skills</b>；针对选中文本的 <code>Quick Ask</code> 是"选区 → 对话"的等价入口</td>
+      <td>"知识库插件内置一套 RAG 聊天"正在被"接 Agent"取代 ⇒ 与本仓"能力全部落 dsh 侧"的方向一致</td>
+    </tr>
+  </table>
+
+  <h3>3.3 <code>引用即什么</code> —— 最值得做的取舍（三家口径完全不同，且都是深思熟虑的结果）</h3>
+  <table>
+    <tr><th class="nowrap">形态</th><th>代表</th><th>语义</th><th>优点</th><th>代价</th></tr>
+    <tr>
+      <td class="nowrap"><span class="tag keep">指针</span></td>
+      <td>dsh 官方 <code>dsh-file-reference</code></td>
+      <td>README 原话：<b>「选中候选绝不读取或附带文件内容；模型必须调用文件系统工具才能查看文件」</b> ⇒ 引用只是提示词里的 <code>@path</code> 文本</td>
+      <td>零 token 浪费、永不过期、KV Cache 友好</td>
+      <td>模型可能"声称看过了"却没真读 ⇒ 需提供方注入 <code>FILE_REFERENCE_PROMPT</code> 约束</td>
+    </tr>
+    <tr>
+      <td class="nowrap"><span class="tag new">发送时快照</span></td>
+      <td>dsh 官方 <code>dsh-session-reference</code></td>
+      <td><code>@[label](dsh-session:…)</code>，在 <b><code>agent/pre-step</code></b> 校验并<b>捕获快照</b>进模型上下文</td>
+      <td>上下文可控且可审计；历史不被后续改动污染</td>
+      <td>需要一条 pre-step 校验/捕获链；引用失效会<b>终止该轮</b>（不是静默降级）</td>
+    </tr>
+    <tr>
+      <td class="nowrap"><span class="tag warn">内容附件</span></td>
+      <td>VS Code <code>Add to Chat</code> / Continue <code>ContextItem{content}</code> / 本仓 <code>addFileToChat</code></td>
+      <td>直接塞正文</td>
+      <td>模型一定能看到</td>
+      <td>大文件截断（本仓就是 100KB <b>静默</b>截断）、token 不可控</td>
+    </tr>
+    <tr>
+      <td class="nowrap"><span class="tag chg">两档可切</span></td>
+      <td><b>Open WebUI</b>（Focused / Full）、Zed（<code>/compact</code> 自动压缩）</td>
+      <td>用户按文档大小选档</td>
+      <td>兼顾准确与成本</td>
+      <td>多一个用户要理解的开关（必须如实标注）</td>
+    </tr>
+  </table>
+  <div class="rev ok" style="margin-top:10px">
+    <b>对知识库这一路，生态的答案是"指针 / 快照 + 工具检索"，不是"把笔记正文塞进去"</b> —— 恰好我们的 <code>kb_*</code> 工具面已经很完整。
+  </div>
+
+  <h3>3.4 反向通道：工具、回跳、活值资源</h3>
+  <table>
+    <tr><th class="nowrap">机制</th><th>代表</th><th>要点</th></tr>
+    <tr>
+      <td class="nowrap">活值资源</td>
+      <td><b>dsh 官方 <code>dsh-client-resources</code></b>（最该用的一条）</td>
+      <td><code>dsh-resource://&lt;protocol&gt;/…</code> + <code>ctx.resources.register({protocol, async *open(address,{signal}){…}})</code> + slot 组件的 <code>useResource(address)</code> + <code>ctx.resources.pin()</code>；<b>失败是帧（<code>{ok:false}</code>）不是抛错，且是活值流</b>。官方自己就用它承载"已打开 tab 的地址"</td>
+    </tr>
+    <tr>
+      <td class="nowrap">发送时捕获</td>
+      <td>dsh 官方 <code>dsh-session-reference</code></td>
+      <td><code>agent/pre-step</code> 校验 + 快照捕获 ⇒ 引用能真正进入模型上下文</td>
+    </tr>
+    <tr>
+      <td class="nowrap">逐条双向</td>
+      <td>Zed</td>
+      <td><code>Follow</code>（编辑区自动跳到 agent 摸过的文件）+ <code>Review Changes</code> + Checkpoint ⇒「聊天 → 工作区」是双向、逐条的</td>
+    </tr>
+    <tr>
+      <td class="nowrap">协议标准化</td>
+      <td>MCP resources</td>
+      <td><code>resources/list</code> / <code>read</code> / <code>templates/list</code> / <code>subscribe</code> / <code>listChanged</code>，带 <code>annotations{audience, priority, lastModified}</code>。但规范明确 <b>application-driven</b>：<b>UI 由宿主自定</b>，客户端支持度参差不齐 ⇒ 不能假设"暴露成 MCP resource 就自动有引用 UI"</td>
+    </tr>
+    <tr>
+      <td class="nowrap">本仓现状 <span class="tag del">缺口</span></td>
+      <td>—</td>
+      <td>全仓（排除 node_modules）搜 <code>resources/list|resources/read|listResources</code> = <b>0 命中</b>；MCP 只有 <b>tools</b> 那半边（<code>dsh-plugins/vssaros-mcp</code> 读 <code>mcp.json</code>，每台服务器一个 <code>@deepseek-ai/dsh-mcp-client</code> 组合行）⇒ <b>"用 MCP resources 一把梭"在本仓目前不成立</b>，工具面才是既有资产</td>
+    </tr>
+  </table>
+
+  <h3>3.5 我们自己的宿主提供了哪些扩展点（方案落地的前提，已逐条读到契约）</h3>
+  <p class="lede" style="font-size:12px">
+    以下均来自 <code>&lt;数据根&gt;/dsh-home/profiles/vssaros/node_modules/@deepseek-ai/</code> 下的官方包（读的是 <code>.d.ts</code> 与 README，不是猜）。
+  </p>
+  <table>
+    <tr><th class="nowrap">扩展点</th><th>真实契约</th><th>能干什么</th></tr>
+    <tr>
+      <td class="nowrap"><code>@</code>/<code>/</code> 触发流水线</td>
+      <td><code>ctx.inputTriggers.registerSource(src: InputTriggerSource): () =&gt; void</code>（<code>dsh-client-ui-input-trigger/lib/types/client/contract.d.ts:17</code>）</td>
+      <td><b>任何客户端插件都能注册一个 <code>@</code> 源</b>。字段：<code>trigger</code>/<code>name</code>/<code>order</code>、<code>candidates()</code>、<code>onPick()</code>、<code>codec{clipboardText, serialize}</code>、<code>lexicon()/subscribeLexicon()</code>、<code>header()</code>（面包屑 + <code>drill</code>）、<code>warm()</code>、<code>openReference()</code>、<code>matchSpace/matchEnter</code></td>
+    </tr>
+    <tr>
+      <td class="nowrap">引用 codec 的序列化</td>
+      <td><code>ReferenceCodec.serialize(ref, signal): Promise&lt;string&gt;</code>，注释原话：<b>"failure blocks the send — never a silent downgrade"</b></td>
+      <td>引用在<b>提交那一刻</b>展开成模型可见文本；失败就拦住发送（正是"发送时快照 / 校验"的落点）</td>
+    </tr>
+    <tr>
+      <td class="nowrap">活值资源</td>
+      <td><code>ctx.resources.register({protocol, async *open(address,{signal})})</code> + <code>useResource</code> + <code>pin</code>（<code>dsh-client-resources</code>）</td>
+      <td>工作台条目可寻址为 <code>dsh-resource://kb/…</code>；任何 slot 组件读<b>活值</b>，变化下一帧自动推送（治"页面已过期 / 两边错位"这类老毛病）</td>
+    </tr>
+    <tr>
+      <td class="nowrap">IDE 页面桥</td>
+      <td><code>DshPageCommand</code>（桥版本 <b>4</b>）：<code>openFile / reveal / openModulePage / setWorkbenchPinned / setWorkbenchHidden / notify / newChat / openSession / …</code>；反向推送 <code>DSH_PAGE_IPC_INSERT</code>（负载 <code>IDshInsertReference{path,startLine?,endLine?}</code>）</td>
+      <td>「IDE → 聊天输入插入引用」已有通路；「页面 → IDE」只有形状校验过的低风险命令，<b>查询串被拒</b></td>
+    </tr>
+    <tr>
+      <td class="nowrap">用户消息富化</td>
+      <td><code>createBuiltinTagProviders()</code> 返回 <b>10</b> 个标签，含 <code>kb_overview</code>（<code>builtinTagProviders.ts:346</code>）</td>
+      <td>新增隐式上下文标签成本很低（但必须配 token 预算，见 P2）</td>
+    </tr>
+  </table>
+
+  <h2>4. 优缺点对比（按机制范式）</h2>
+  <table>
+    <tr>
+      <th class="nowrap">范式</th><th class="nowrap">代表实现</th><th>优点</th><th>缺点 / 风险</th><th class="nowrap">适配度</th>
+    </tr>
+    <tr>
+      <td><b>A</b>. <code>@</code> 扩展源（注册新 source）</td>
+      <td>VS Code participant、Continue providers、Roo mentions、<b>dsh <code>registerSource</code></b></td>
+      <td>与用户心智一致；可搜索 / 可下钻 / 可加图标；官方已支持<b>第三方注册</b>；候选可实时刷新</td>
+      <td>每个源要自己实现候选排序、缓存、失效；引用多了会挤爆上下文（需预算 UI）</td>
+      <td><span class="star">★★★</span> 首选</td>
+    </tr>
+    <tr>
+      <td><b>B</b>. 知识源"挂载 / 作用域"</td>
+      <td>Open WebUI（挂到 model / <code>#</code> 引用）；本仓可做"会话级知识作用域 chip"</td>
+      <td>一次设定、多轮受益；天然做权限隔离</td>
+      <td>native function calling 下<b>不自动注入</b>（Open WebUI 实测）；作用域与工具参数容易分叉</td>
+      <td><span class="star">★★★</span> 配 A 用</td>
+    </tr>
+    <tr>
+      <td><b>C</b>. 引用即指针（不读内容）</td>
+      <td>dsh <code>dsh-file-reference</code> 的既有口径</td>
+      <td>零 token、永不过期、KV 友好</td>
+      <td>模型可能假装读过（需 prompt 约束）；用户体感"我引用了它却没看见内容"</td>
+      <td><span class="star">★★</span> 默认档</td>
+    </tr>
+    <tr>
+      <td><b>D</b>. 引用即发送时快照</td>
+      <td>dsh <code>dsh-session-reference</code>（<code>agent/pre-step</code>）</td>
+      <td>上下文可控、可审计；历史不被污染；失效<b>终止本轮</b>而非静默降级</td>
+      <td>需要 pre-step 链；实现比 C 重</td>
+      <td><span class="star">★★</span> 显式开关</td>
+    </tr>
+    <tr>
+      <td><b>E</b>. 内容附件（现有 <code>addToChat</code>）</td>
+      <td>VS Code Add to Chat；本仓 <code>addFileToChat</code>（100KB 截断）</td>
+      <td>实现最省；模型一定看得到</td>
+      <td>token 不可控；截断静默；不适合"整库"</td>
+      <td><span class="star">★</span> 单篇短笔记</td>
+    </tr>
+    <tr>
+      <td><b>F</b>. 工具检索（agent 主动查）</td>
+      <td>本仓 <code>kb_*</code> 全套；Open WebUI 的 <code>query → grep → view_file</code></td>
+      <td>最省上下文；可溯源到"文件 + 行"；<b>已有资产</b></td>
+      <td>模型不一定主动调（需系统提示点名）；每轮多一次往返</td>
+      <td><span class="star">★★★</span> 已有</td>
+    </tr>
+    <tr>
+      <td><b>G</b>. 聊天 → 工作台回跳</td>
+      <td>VS Code <code>stream.reference/filetree/button</code>；Zed Follow；dsh <code>openModulePage</code> / <code>openFile</code></td>
+      <td>闭环感最强，引用才有价值</td>
+      <td>本仓 chat-only 隐藏右栏 ⇒ 必须走 IDE；route 不支持查询串 ⇒ <b>要加命令</b></td>
+      <td><span class="star">★★★</span> 缺口最大</td>
+    </tr>
+    <tr>
+      <td><b>H</b>. MCP resources 统一暴露</td>
+      <td>MCP spec（<code>resources/*</code> + annotations）</td>
+      <td>协议标准化、可跨客户端复用、订阅能力现成</td>
+      <td>规范 application-driven，<b>客户端支持不齐</b>；本仓 MCP 只有 tools 半边，等于要先补上游</td>
+      <td><span class="star">★</span> 长期方向</td>
+    </tr>
+  </table>
+  <div class="rev ok" style="margin-top:10px">
+    <b>取舍一句话</b>：<b>A + B + F</b> 做"进入上下文的入口"，<b>G</b> 做"出来的回跳"，<b>C / D</b> 做成用户可见的一个开关；
+    <b>H</b> 只作为将来对外复用的形状参考，<b>不作为本期依赖</b>。
+  </div>
+
+  <h2>5. 优化方案（分期；每期都能独立验收）</h2>
+
+  <div class="phase">
+    <h4>P0 · 打通双向最小闭环 <span class="tag new">P0-1 / P0-1' 已实现</span><span class="tag warn">P0-2 顺延 P1</span></h4>
+    <p class="goal">目标：工作台条目能进聊天、聊天引用能回到工作台。全部复用现有通道。</p>
+    <ul>
+      <li><span class="tag new">已实现</span> <b>P0-1 工作台 → 聊天（IDE 侧）</b>：知识库 Pane 树行右键加「加入 Agent Chat」（<code>knowledgeBaseView.ts</code> 的 <code>nodeContextMenu</code>）。<b>⚠ 口径修正（2026-10-14）</b>：原稿写"复用 <code>agentStudio.addToChat</code>（内容附件）"，落地改成走 <b>dsh 的引用通道</b>（<code>dshHarness.insertReferenceToChat</code>，投出去的是<b>指针</b>）⇒ 才与 D2「指针优先」以及页面版"同一个落点"自洽 ✓（内容附件那一档留给"单篇短笔记"的场景，不在本条里）。</li>
+      <li><span class="tag new">已实现</span> <b>P0-1' 工作台 → 聊天（dsh 页面侧）</b>：<code>/x/kb/</code> 页面行右键加「发送到聊天」；新增页面桥命令 <code>insertChatReference</code>，桥版本 <code>4 → 5</code>。四处同步：协议（<code>DshPageCommand</code> + <code>validatePageCommand</code>，负载判据<b>复用</b> <code>validateInsertReference</code>）+ preload（<code>bridgeVersion</code> 字面量 + api）+ 宿主消费（<code>dshHarness.contribution._handle</code>，与编辑器右键<b>共用</b> <code>pushReferenceToActiveChat</code>）+ 单测。</li>
+      <li><span class="tag warn">顺延到 P1</span> <b>P0-2 聊天 → 工作台（回跳）</b>：<b>落地时才发现它没有触发源</b> —— 聊天里"可点的知识库引用"本身就是 P1 的产物（引用 chip / 引用卡），P0 阶段做出来会是一条<b>没有入口的通道</b>（连真机验收都无从做起）⇒ 移到 P1 与 chip 一起做，不做一个验收不了的壳 ✗。<br>
+        技术落点已探明：现有 <code>openModulePage(route)</code> <b>不能带定位参数</b>（形状校验拒查询串 <code>?</code>、宿主侧还是精确匹配）⇒ 二选一：① 新增 <code>openWorkbenchNode{route, node}</code>；② 新增"定位"推送，页面自行 <code>selectNode</code>（<b>建议 ②</b>：不动白名单语义、不动 route 校验）。⚠ 另有一条已知约束：<b>kb 插件页拿不到 sessionId</b>（plugin-page 创建时显式传 <code>undefined</code>）⇒ 目标聊天视图只能由宿主按 <code>activeChatViewId</code> 定。</li>
+      <li><b>P0-3</b>：把四个工作台的侧栏摘要版「打开完整页」（<code>openModulePage</code>）都接上（目前只有"主页"在用）。</li>
+    </ul>
+    <div class="accept">
+      <b>验收（2026-10-14 实况）</b>：新增 <code>insertChatReference</code> 协议单测<b>通过</b> ✓；<code>tsgo</code> 类型检查 <b>0</b> ✓；<code>dshHarness --common</code> <b>494 passing / 1 failing</b>（唯一那条红是并发会话的探针 <code>p3-60-host-orphan-reap.mjs</code> 未登记进 run-all，<b>非本次改动</b>）✓；<code>check:dsh-plugins</code> <b>18 契约 + 2 组拷贝、0 违规</b> ✓；kb 行为探针 <code>p3-08</code> <b>140/140</b> ✓。<br>
+      <b>★ 页面半边已有真机探针</b>：新增 <code>poc/dsh-p0/scripts/p3-81-kb-send-to-chat.mjs</code>（真 Host ＋ 真浏览器）<b>10/10</b> ✓，覆盖：菜单项在不在、<b>没有页面桥时如实说不支持且不谎报"已请求"</b>（负对照）、点两行分别发出**正确且互不相同**的绝对路径（防"路径写死"）、全程零脚本错误。跑法：<code>node poc/dsh-p0/scripts/p3-81-kb-send-to-chat.mjs</code>（不标 <code>fast</code>，要 Host）。<br>
+      <b>⚠ 仍未验（缺口已收窄到宿主侧）</b>：<b>宿主投递那一跳</b>——"VsSaros 主进程收到命令 → 投给活动聊天视图 → 聊天草稿里真出现引用"发生在 <b>VsSaros 应用内</b>，而探针只起 dsh Host ⇒ 这一跳<b>没有被任何探针覆盖</b> ✗（协议校验有单测、页面侧有 p3-81，中间那一跳靠读代码）。IDE 侧树行那条同理只在单测层证过。要闭合需起 VsSaros 应用（真机）或加一条能观测主进程分发的探针。<br>
+      <b>★ 顺带发现（<b>不是</b>本功能的 bug，归 kb 侧）</b>：<code>p3-81</code> 的行清单实测——本机（Windows）页面上每一行的 <code>data-uri</code> 都是<b>裸 fs 路径</b>，从来不是 <code>file:///</code>。机制：<code>normUri</code> 只做"去 <code>file:</code> 前缀 + 反斜杠转正斜杠 + 小写"，<b>不做百分号解码</b> ⇒ 索引键里盘符是 <code>%3A</code>、节点键里是真冒号 ⇒ 两套键<b>永不相交</b> ⇒ <code>uriIndex</code> 在 Windows 上永不命中（连带 <code>tags</code> / <code>created</code> / 索引 <code>order</code> 在树上也取不到）。已由 <code>p3-81</code> 的 ⑤ 条**特征化断言**记录在案（不改别人在飞的文件 ✓；修了会红 ⇒ 回来更新 ✓）。<br>
+      <b>守卫</b>：桥版本常量两边对账（<code>test/common/dshPageBridge.test.ts</code>，改一边必红 ✓）。
+    </div>
+  </div>
+
+  <div class="phase">
+    <h4>P1 · 让工作台条目成为聊天的「一等引用」 <span class="tag chg">核心</span><span class="tag new">P1-1 骨架已落地</span><span class="tag warn">真机未转绿</span></h4>
+    <p class="goal">目标：<code>@</code> 能引用知识库笔记；引用语义有默认档与显式档；引用是活值。</p>
+    <div class="rev ok">
+      <b>2026-10-14 实况（P1-1 骨架）</b>
+      <ul>
+        <li><b>新建插件</b> <code>dsh-plugins/vssaros-kb-refs/</code>（<code>@vssaros/dsh-kb-refs</code>，纯客户端，host 半边 inert）：用官方公开契约
+          <code>ctx.inputTriggers.registerSource({trigger:'@', name:'知识库', order, candidates, onPick, codec})</code> 注册 <code>@知识库</code> 源。</li>
+        <li><b>候选数据源 = 同源 HTTP <code>GET /x/kb/api/search?q=</code></b>（kb 既有的<b>只读</b>路由）⇒ <b>一行都没改 <code>vssaros-kb</code></b> ✓。
+          选它而不选官方 <code>workspaceFiles</code> / <code>fileReferences</code> 的原因：那两条都<b>锁死工作区</b>，够不到数据根下的 vault ✗。
+          ⚠ 代价如实记：<b>空 query 该路由会 400</b> ⇒ 空查询时返回空候选（"打开就列最近笔记"目前没有既有只读路由支撑）。</li>
+        <li><b>引用 = 指针（D2）</b>：<code>ref</code> 直接取服务端返回的 <code>uri</code> <b>原样</b> ——
+          <code>kb_read</code> 的参数说明原话就是"文档 uri（kb_search 返回的那个）或 vault 内相对路径" ✓
+          ⇒ 客户端<b>零路径改写</b>（顺带绕开了下面 §P0 顺带发现的那个 <code>normUri</code> 坑）；<code>codec.serialize</code> 只加一句"要正文请用 kb_read 读它"，且<b>永不 reject</b>（它 reject 会直接阻断发送 ✗）。</li>
+        <li><b>伴生插件三处接线</b>（漏一处 = 包在仓库里但永远不装，且几乎无报错）：<code>dshHarness.ts</code> 常量 ＋ <code>dshHarnessChannel.ts</code> 目录 ＋ <code>dshHostSupervisor.ts</code> 安装清单。</li>
+        <li><b>顺手扩了一条守卫</b>：<code>dshPluginPackages.test.ts</code> 的"客户端 chunk 语法可解析"原先<b>硬编码只扫 chat-surface</b> ⇒ 新客户端插件默认不受保护 ✗；
+          改成按<b>注册形态</b>枚举（凡声明 <code>dsh.client</code> 的包都扫），并加了一条枚举面自证 ✓。</li>
+        <li><b>验证</b>：<code>tsgo</code> 0 ✓；<code>dshHarness --common</code> <b>493 passing / 2 failing</b>（两条红均为并发会话在飞改动）✓；<code>check:dsh-plugins</code> 18 契约 0 违规 ✓。</li>
+        <li><b>★ 探针 <code>poc/dsh-p0/scripts/p3-82-kb-at-ref.mjs</code> 已转绿（6/6，已进 <code>run-all</code>）</b> —— 主证据是<b>页面自证标记</b>：
+          client 半边在 <code>registerSource</code> 成功/失败时都写 <code>document.documentElement.dataset.vssarosKbRefs</code>
+          （成功 <code>1</code>／失败 <code>no-inputTriggers</code> / <code>error:…</code>）⇒ 实测<b>标记 = 1</b>，即
+          「插件真加载 → <code>apply()</code> 真跑 → <code>ctx.get('inputTriggers')</code> 拿得到 → <code>registerSource</code> 真注册成功」这四跳全通 ✓。
+          为什么必须有它：这一跳**写错了不报错**（页面不崩、Host 不报），而官方 <code>@</code> 菜单只在 composer 里出得来 ✗。</li>
+        <li><b>⚠ 菜单/候选/pick 三条断言仍是两态</b>（照 <code>p3-30</code> 的自适应写法）——<b>真因已现场取证（并纠正过一次误判 ✓）</b>：
+          <b>裸 Host 里默认 preset 建不出会话</b>：页面 console 报 <code>SessionCreateError: session create failed:
+          agent-preset/invalid: vssaros-ide (@vssaros/dsh-ide)</code>，而<b>网络层一条 ≥400 都没有</b> ⇒ 不是被拒，是根本没建 ✗
+          ⇒ 没有会话就没有 composer（"发送消息"恒 <code>disabled</code>）。
+          <b>已逐条排除</b>（每条都实测过）：缺模型凭据 ✗（按 <code>p3-27</code> 配方接了 mock，症状一字不变）／点击没落上 ✗
+          （真鼠标、行框实测 <code>256×34 role=treeitem</code> ✓）／换 preset ✗（把 <code>agent-preset-registry.default</code>
+          覆写成内置 <code>standard</code> 后 hero chip **真变成「标准模式」**，但错误不变 ⇒ <code>@vssaros/dsh-agents</code>
+          会把 <code>vssaros-ide</code> 行**注入各个 preset**）／装不全 ✗（<code>@vssaros/dsh-ide</code> 副本完整，
+          <code>lib/index.js</code> 28.6 KB ✓）。
+          ⚠ <b><code>disabled: true</code> 不是 <code>--patch</code> 的词汇</b>（<code>p3-27</code> 记过这坑："反倒把组合弄坏了" ✗），别再试。
+          <b>转绿二选一</b>：① 查那条 preset 行为什么校验不过（要 Host 侧日志，本探针目前只留页面侧现场）；② 走真 App（<code>p3-16</code> 那条路，那边 <code>vssaros-ide</code> 有效 ✓）。
+          另记两条既得：<code>Ctrl+Alt+N</code> 是 <b>VsSaros 应用级</b>快捷键（裸 Host 没有处理者 ✗）；官方落地流程是
+          <code>预览版说明</code>（点两次「继续」）→ <code>添加一个 API Key</code>（点「<b>稍后配置</b>」——点成"保存并继续"会让弹窗**留着不走**、之后所有点击都被遮罩吃掉 ✗）→ 选工作区 → 会话。</li>
+      </ul>
+    </div>
+    <div class="rev ok">
+      <b>2026-10-14 追查：那三条 SKIP 到底卡在哪（已定案；并装上了"唯一说得清"的工具 ✓）</b>
+      <ul>
+        <li><b>★ 装上 Host 自己的日志</b>：<code>startHost()</code> 返回的 <code>log</code> 就是 Host 的 stdout + stderr 全量
+          ⇒ 探针在路由不通时直接打出来。<b>这一条比前面几轮的所有猜测都值钱</b>：它一次把两件事说清了（前几轮全是猜 ✗）。</li>
+        <li><b>① composer 起不来的正解：<code>vssaros-ide</code> 要 <code>vssarosBridge</code> 服务</b> —— Host 日志原话
+          <code>vssaros-ide (@vssaros/dsh-ide): pending (waiting for service: vssarosBridge)</code> ⇒ 裸 Host 没有这个服务
+          ⇒ 该行判 invalid ⇒ 整条 <code>vssaros-standard</code> preset 建不出会话。
+          ⇒ 探针已改成 <code>startHostWithBridge</code>（<code>USE_BRIDGE = true</code> ✓）：该行随即**通过**、错误前进到下一行 ✓。
+          &#9888; 我中途一度写成"带桥也没用/是死路" ✗ —— 那是把"错误前进"读反了，已在文件里改正并留档（这种自我纠正在本仓是硬要求 ✓）。</li>
+        <li><b>② 现在挡路的是 kb 插件自己加载不了</b>：Host 日志
+          <code>vssaros-kb (@vssaros/dsh-kb): failed to import</code>，根因已定位到**具体符号**：
+          <code>dsh-plugins/vssaros-kb/lib/index.js</code> 从 <code>./core/kbMindmap.js</code> <b>具名导入
+          <code>uniqueCanvasPath</code></b>，而那个文件<b>没有导出它</b> ⇒ ESM 具名导入解析失败 ⇒ 整个插件 load 失败
+          ⇒ <code>/x/kb/api/*</code> 整套 404 ✓。这是<b>并发会话正在做 <code>kb_mindmap</code> 的中间态</b>
+          （kb 版本这几分钟内 0.2.63 → 0.2.64 ✓），与本探针无关 ✓。</li>
+        <li><b>因此探针现在是 6/6，两条 SKIP 都"证据充分且能自动恢复"</b>：kb 一补上那个导出 ⇒ ⑴-b/c/d 自动变回硬断言 ✓；
+          会话一能建出来 ⇒ ⑵/⑷⑸ 会真跑 ✓。<b>不再是"不知道卡在哪"</b> ✗。</li>
+        <li><b>顺带留档两个坑</b>：<code>disabled: true</code> <b>不是</b> <code>--patch</code> 的词汇
+          （<code>p3-27</code> 记过："反倒把组合弄坏了" ✗）；<code>startHostWithBridge</code> 返回的是<b>包装对象</b>
+          <code>{host, bridge, hello, stop}</code>（直接当 host 用 ⇒ <code>host.authUrl</code> 为 undefined ⇒
+          <code>fetch(undefined)</code> 当场炸 ✗）。</li>
+      </ul>
+    </div>
+    <div class="rev ok">
+      <b>2026-10-14 实况（P1-2 引用语义：指针 / 附正文）</b>
+      <ul>
+        <li><b>种类编码进 <code>ref</code>（可逆前缀）</b>：指针档 = <code>ref</code> 就是服务端 <code>uri</code> <b>原样</b>（P1-1 口径不变 ⇒ 零回归 ✓）；
+          附正文档 = <code>body:&lt;uri&gt;</code>（<code>file:///…</code> 永不以 <code>body:</code> 开头 ⇒ 无歧义、可逆 ✓）。
+          <b>正文在提交期（<code>codec.serialize</code>）才取</b> ⇒ 草稿里不囤正文，语义 = "发送时快照" ✓。</li>
+        <li><b>★ 两条上游硬约束（实测过的，不是推测）</b>：
+          ① <b>附件通道走不通</b>：<code>SubmitAttachment</code> 只有 <code>image</code> 与 <code>file＋receiptId</code>，
+             receipt 由 composer 自己的上传流产生 ⇒ <b>引用源造不出附件</b> ✗；
+          ② <b>"鼠标点 chip 切换"做不到</b>：chip 的 <code>label</code>/<code>appearance</code>/<code>clipboardText</code> 是
+             <b>插入期缓存</b>（<code>Occurrence</code> 注释原话 "insert-time cache"），而外部能做的插入只有
+             <code>slash/input-insert-reference</code> / <code>-text</code>（<b>都按 span</b>）⇒ 改已有 chip 没有口子 ✗。
+          ⇒ 诚实的等价物 = <b>插入期选择</b>；又因 <code>appearance</code> 只有 <code>session|file|folder</code>（表达不了种类）
+          ⇒ 种类写进 <code>label</code>（chip 上看得见「（附正文）」✓）。
+          <b>⇒ 前面 mockup 里"点徽标切换"那一版不可实现，以本条为准</b>（mockup 其余交互不受影响）。</li>
+        <li><b>入口 = 官方面包屑（<code>header()</code>）＋ 查询前缀 <code>@+</code></b>：crumb 被点击时 pipeline 会带
+          <code>action:'drill'</code> 把 crumb 的 <code>value</code> 原样回给 <code>onPick</code> ⇒ 我返回
+          <code>{text: value, continue: true}</code> 就是"<b>换档并让菜单保持开着</b>" ✓（正好是官方 drill 的语义）。
+          ⚠ 指针档也<b>常驻</b>显示这行面包屑（官方 file source 是下钻后才出）—— 因为附正文<b>没有别的入口</b>，
+          不摆出来就是个"没人找得到的功能" ✗；代价只是菜单里多一行说明。</li>
+        <li><b>失败策略分档（不是一刀切）</b>：指针引用 <b>永不 reject</b>（就算 kb 挂了，那条 uri 本身仍是有效信息 ✓）；
+          附正文引用 <b>读不到就 reject</b> —— 契约原话 "failure blocks the send — never a silent downgrade to the
+          clipboard text" ✓，正文是这次引用<b>唯一的意义</b> ⇒ 不许悄悄降级成指针 ✗。
+          超长则<b>截断并写明</b>（<code>…（正文过长，已截断；完整正文请用 kb_read 读 …）</code>）✗ 不是静默截断。</li>
+        <li><b>数据源 = <code>GET /x/kb/api/doc?uri=</code></b>（kb 既有只读路由；kb 侧注释原话："与 <code>kb_read</code>
+          同一条围栏"）⇒ 仍然<b>一行都没改 <code>vssaros-kb</code></b> ✓。单条上限 <code>32 * 1024</code> 字符
+          （⚠ 这是<b>本包独占</b>的常数：dsh 侧没有"客户端引用"的共享预算表 ⇒ 将来要统一应从一处配置改，而不是各包各写 ✗）。</li>
+        <li><b>验证（这次是"真跑一遍"，不是只读代码）</b>：
+          ① <code>dshPluginPackages.test.ts</code> 新增一条<b>真执行</b>用例（假 <code>__ModuleLoader__</code> ＋ 假 ctx ＋ 桩 <code>fetch</code>）——
+             钉住种类编码、<b>剪贴板里不许出现内部前缀</b>、<code>serialize</code> 的分档失败策略、超长带标记截断 ✓，
+             并顺带钉住"注册成功必留自证标记" ✓（<code>496 passing</code>，比改动前 +1）✓；
+          ② <code>p3-82</code> 扩到 <b>8/8</b>：<b>⑴-c</b> 取正文路由对本夹具真读得出正文 ✓；
+             <b>⑴-d 硬断言围栏的另一半</b> —— 库外文件经同一路由 <code>HTTP 400 拒绝读取库外文件</code> ✓
+             （否则"附正文"就成了把任意文件喂给模型的<b>越权通道</b> ✗ —— 这条必须真发一次请求，不能只信注释 ✓）。</li>
+        <li><b>仍未验</b>：菜单里"点面包屑换档"与提交期取正文的<b>端到端</b>行为（要有 composer）⇒ 与 P1-1 同一条 SKIP 条件。</li>
+      </ul>
+    </div>
+    <div class="rev">
+      <b>2026-10-14 决策：P1-3（<code>dsh-resource://</code> 活值资源）<u>本期不做</u></b>
+      <ul>
+        <li><b>证伪了我自己上一轮的建议（如实记）</b>：上一轮说"P1-3 能顺带解掉'附正文是快照、没有实时状态'"，
+          真去读契约与代码后，两个前提<b>都不成立</b> ✗。</li>
+        <li><b>证据 ①：全仓没有消费者 ⇒ 是死脚手架</b>：排除 <code>node_modules</code> 后搜
+          <code>useResource</code> / <code>resources.source(</code> / <code>resources.pin(</code> /
+          <code>ResourceProtocolMap</code> = <b>0 命中</b> ⇒ 注册出来的协议<b>没有任何东西会读它</b>（用户可见变化 = 0 ✗）。
+          而消费者（聊天里的 KB 引用卡）本身是一块<b>没设计过的新 UI</b> ⇒ 那属于"先出界面稿"的事，不该塞进这一轮。</li>
+        <li><b>证据 ②：没有配得上"卡片"的数据源</b>：kb 只有 <code>search</code>/<code>doc</code>/<code>rename</code>/
+          <code>delete</code>/<code>restore</code> 五条路由 —— <code>doc</code> <b>连正文一起返回</b>（卡片只要状态，浪费 ✗）、
+          <code>search</code> 要 query ✗ ⇒ 想要"轻量元数据"就得<b>新增 kb 侧路由</b>，而 <code>vssaros-kb</code>
+          正是并发会话在动的包 ✗，也与"零改 kb"的前两步纪律冲突。</li>
+        <li><b>契约已读清（下次直接可用）</b>：<code>ctx.resources.register({protocol, open(address, {signal}):
+          AsyncIterable&lt;RemoteResult&lt;V&gt;&gt;})</code> ＋ <code>pin(address, signal)</code> ＋
+          <code>source(address)</code>；<b>失败必须是帧</b>（流里抛错不会被捕获 ✗）；协议名要在
+          <code>ResourceProtocolMap</code> 里声明合并；首个订阅者才开会话/开流、最后一个释放就 abort ✓。</li>
+      </ul>
+    </div>
+    <ul>
+      <li><b>P1-1 注册 <code>@</code> 源</b>：<code>ctx.inputTriggers.registerSource({trigger:'@', name:'知识库', candidates, onPick, codec, lexicon, subscribeLexicon, header, warm})</code>。
+        候选<b>复用 kb 页同一份数据源</b>（<code>vssaros-kb/lib/store.js</code> 的 vault 扫描 + FTS），排序可借 <code>kb_search mode=fulltext</code> 的 BM25；
+        <code>header()</code> 做 vault → 目录面包屑（照 <code>drill</code> 语义）。序列化照 <code>dsh-session:</code> 先例：<code>@[标题](dsh-kb:&lt;vault&gt;/&lt;rel&gt;)</code>。
+        ⚠ <b>解析只作用于用户输入层</b>（Roo 踩过的坑）。</li>
+      <li><b>P1-2 引用语义开关</b>：<b>（已落地，见上面那条实况块 ✓）</b> —— 原方案写的是"chip 上如实标注「指针 / 附正文」再切换"，
+        实测后改成<b>插入期选择</b>：chip 是插入期缓存、附件通道造不出附件 ⇒ 上游只给"插入期"这一个口子 ✓。
+        种类写在 <code>label</code> 上（chip 上看得见），入口 = 官方面包屑 drill ＋ <code>@+</code> 前缀；
+        默认仍是<b>指针 + 工具</b>（对齐 dsh 上游口径），超限<b>截断并写明</b>（而非静默截断 ✓）。</li>
+      <li><b>P1-3 注册 <code>dsh-resource://kb/…</code> 活值协议</b>：<b>（本期不做，证据见上一条实况块）</b><code>ctx.resources.register({protocol:'kb', async *open(address,{signal}){…}})</code>，值为笔记元数据 / 正文 / 构建状态。
+        收益：① 聊天引用卡显示<b>实时状态</b>；② 编辑器页 / 侧栏摘要可 <code>pin</code> 同一地址，天然共享活值；③ 后续"页面过期 / 两边错位"类问题有一处统一解法。</li>
+    </ul>
+    <div class="accept">
+      <b>验收</b>：真机输入 <code>@</code> 出候选并能下钻；插入的引用在真机上被 <code>kb_read</code> 读到；构建中 → 已完成状态自己翻转。<br>
+      <b>风险</b>：每个插件改动都要 bump 版本 + 同步 <code>files</code> 白名单（漏了 = 装载失败、整站 404，真出过）。
+    </div>
+  </div>
+
+  <div class="phase">
+    <h4>P2 · 隐式上下文与作用域 <span class="tag warn">省 token 的那一半</span></h4>
+    <ul>
+      <li><b>会话级"知识作用域" chip</b>：照 chat-surface 已有的工作区 chip 先例（注册在 <code>conversation.session.header.actions</code> 槽），把"本会话默认检索哪些 vault / 是否含记忆库"变成一等状态，作为 <code>kb_search</code> 的默认参数来源。</li>
+      <li><b>富化标签扩面</b>：现有 10 个标签里只有 <code>kb_overview</code> 来自工作台；补 <code>codebase</code> / <code>media</code> / <code>memory</code> 时<b>必须同时给出 token 预算与优先级</b>（对齐 <code>toolsetConfig</code> 的 Always / High / Medium / Low），并接受 Open WebUI 那条教训 ——<b>常驻注入越少，工具被调用的概率越重要</b>（要在系统提示里点名 kb 工具）。</li>
+    </ul>
+  </div>
+
+  <div class="phase">
+    <h4>P3 · 写侧与一致性</h4>
+    <ul>
+      <li>工作台页面上的写动作（kb 页已有改名 / 删除 / 撤销）<b>不进会话审计</b>（既有裁决，代价已留档）；P3 的目标是让"页面写"与"工具写"至少走<b>同一条回执 / 审计通道</b>，否则两条写路径会长期分叉。</li>
+      <li>agent 写完笔记后工作台自动刷新：优先复用 P1-3 的资源流；退路是 IDE 侧 file watcher 推页面刷新（kb 域目前<b>没有</b> file watcher，靠视图打开时按脏标记重建）。</li>
+    </ul>
+  </div>
+
+  <h2>6. 需要拍板的决策点</h2>
+  <table>
+    <tr><th class="nowrap">#</th><th>决策</th><th>建议</th></tr>
+    <tr><td>D1</td><td>做统一 <code>@资料库</code> 一个源，还是 kb / mem / code / media 四个源</td><td><b>先做 <code>@知识库</code> 一个源做透</b>（其余是复制模板，不是新设计）</td></tr>
+    <tr><td>D2</td><td>引用默认语义</td><td><b>指针 + 工具</b>（对齐 dsh 上游），"附带正文"做成显式开关并如实标注</td></tr>
+    <tr><td>D3</td><td>页面 → 聊天 是否新增桥命令（桥 4→5）</td><td>要。否则 dsh 页上的工作台永远不能"推给聊天"</td></tr>
+    <tr><td>D4</td><td>回跳实现：新命令 <code>openWorkbenchNode</code> vs 定位推送</td><td>建议<b>定位推送</b>（不动白名单语义、不动 route 校验，代价是页面多一个处理分支）</td></tr>
+    <tr><td>D5</td><td>是否把工作台暴露成 MCP resources</td><td><b>本期不做</b>（本仓 MCP 只有 tools 半边；等 H 那类需求真出现再评估）</td></tr>
+    <tr><td>D6</td><td>富化标签扩面要不要 token 上限</td><td>要，且上限与 <code>toolSearchAssembler</code> 的 80 上限同一处治理</td></tr>
+  </table>
+
+  <h2>7. 未核实项（不假装已有结论）</h2>
+  <ol class="lede" style="font-size:12px">
+    <li><code>InputTriggerCandidate.icon</code> 只内置 <code>'file' | 'folder' | 'session'</code>，自定义图标需传 <code>ComponentType</code> ⇒ 知识库图标的实际可行路径<b>要在实现前验一次</b>。</li>
+    <li>四个工作台页面（kb 之外的 memory / codebase / media）行菜单的现状只核到 kb（右键菜单已实现）⇒ 其余三个要先看一眼再定"统一菜单组件"还是各写一遍。</li>
+    <li>dsh 官方是否允许<b>两个 <code>@</code> 源同名分组</b>、以及 source 注册的 <code>order</code> 与官方 file / session 组的相对顺序，需在实现时以<b>真机候选菜单</b>实测为准。</li>
+  </ol>
+
+  <h2>8. 参考来源</h2>
+  <table>
+    <tr><th class="nowrap">来源</th><th>链接 / 位置</th></tr>
+    <tr><td>VS Code 聊天上下文</td><td><a href="https://code.visualstudio.com/docs/copilot/chat/copilot-chat-context">code.visualstudio.com/docs/copilot/chat/copilot-chat-context</a></td></tr>
+    <tr><td>VS Code Chat Participant API</td><td><a href="https://code.visualstudio.com/api/extension-guides/chat">code.visualstudio.com/api/extension-guides/chat</a></td></tr>
+    <tr><td>Continue context providers</td><td><a href="https://docs.continue.dev/customize/deep-dives/custom-providers">docs.continue.dev/customize/deep-dives/custom-providers</a></td></tr>
+    <tr><td>Cursor <code>@</code> 提及</td><td><a href="https://cursor.com/docs/context/mentions">cursor.com/docs/context/mentions</a></td></tr>
+    <tr><td>Zed Agent Panel</td><td><a href="https://zed.dev/docs/ai/agent-panel">zed.dev/docs/ai/agent-panel</a></td></tr>
+    <tr><td>Open WebUI Knowledge</td><td><a href="https://docs.openwebui.com/features/workspace/knowledge">docs.openwebui.com/features/workspace/knowledge</a></td></tr>
+    <tr><td>MCP Resources 规范</td><td><a href="https://modelcontextprotocol.io/specification/2025-06-18/server/resources">modelcontextprotocol.io/specification/2025-06-18/server/resources</a></td></tr>
+    <tr><td>Obsidian Copilot（V4 转向 agent）</td><td><a href="https://github.com/logancyang/obsidian-copilot">github.com/logancyang/obsidian-copilot</a></td></tr>
+    <tr><td>Roo Code 上下文提及</td><td><a href="https://github.com/h4k4s4m/Roo-Code">github.com/h4k4s4m/Roo-Code</a>（Context Mentions 段）</td></tr>
+    <tr><td>dsh 官方包契约（已逐条读）</td><td><span class="mono">&lt;数据根&gt;/dsh-home/profiles/vssaros/node_modules/@deepseek-ai/</span> 下的 <code>dsh-client-ui-input-trigger</code>、<code>dsh-client-ui-reference</code>、<code>dsh-file-reference</code>、<code>dsh-client-resources</code>、<code>dsh-session-reference</code></td></tr>
+    <tr><td>本仓代码</td><td><code>src/vs/sessions/contrib/agentStudio/</code>、<code>src/vs/sessions/contrib/dshHarness/</code>、<code>dsh-plugins/vssaros-chat-surface/</code>、<code>dsh-plugins/vssaros-kb/</code></td></tr>
+  </table>
+
+  <h2>9. 配套交付物</h2>
+  <p class="lede" style="font-size:12px;margin-bottom:10px">
+    五个交互步骤的可点原型（右键发送 / <code>@</code> 选择器 / 语义开关 / 发送与活值引用卡 / 回跳），底部「落点注记」随步骤切换写明该动哪个文件。
+  </p>
+  <a class="btn" href="./workbench-chat-integration-mockup.html">打开交互稿</a>
+  <span style="margin:0 8px"></span>
+  <button class="btn alt" id="themeBtn" style="cursor:pointer">切换主题</button>
+
+</div>
+<script>
+(function () {
+  var b = document.getElementById('themeBtn');
+  b.addEventListener('click', function () {
+    var cur = document.documentElement.dataset.theme;
+    document.documentElement.dataset.theme = cur === 'dark' ? 'light' : 'dark';
+  });
+})();
+</script>
+</body>
+</html>

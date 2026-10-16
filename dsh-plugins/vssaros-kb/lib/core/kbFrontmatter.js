@@ -1,0 +1,397 @@
+// @vssaros/dsh-kb — frontmatter 解析与 `sources` 源追溯的**纯逻辑**（零 I/O ✓）。
+//
+// ## 来源：VsSaros 真源 `knowledge/frontmatter.ts`（287 行）**整块逐字移植**
+//（`src/vs/sessions/contrib/agentStudio/browser/knowledge/frontmatter.ts` ✓）。
+// 原文件本身就是"零依赖纯函数 + 安全降级"的写法（文件头原话："不引入 js-yaml，采用零依赖自写解析，
+// 但复刻 llm_wiki 经 LLM 产出验证的健壮性策略" ✓），所以移植方式就是**去掉类型标注、逻辑一字不改** ✓。
+//
+// ## 为什么必须逐字（这里每一条都是"被 LLM 的真实产出打出来的"）
+//   · **两遍解析**：strict（顶锚）失败 ⇒ anywhere 回退（容忍 LLM 在 frontmatter 前塞杂行 / 用 ```yaml 栅栏包住 ✓）；
+//     但回退要求开 fence 在**前 6 行内** ⇒ 免得把正文深处的 `---` 水平线当成 frontmatter ✗。
+//   · `repairWikilinkLists`：修 `sources: [[a]], [[b]]` 这种非法 YAML（LLM 常见产出 ✓）。
+//   · 行级注入 / 改状态：**只动目标字段、保留其他字段的原始格式** ✓（agent 写的 frontmatter 不许被重排 ✗）。
+//   · `normalizeSourceRef`：来源一律归一到**小写 basename**（去 `库/` 前缀、去 wikilink/引号/括号 ✓）——
+//     门控就是按这个口径数"distinct 来源"的，口径错一格，pending/active 就跟着错 ✗。
+// ⇒ 交叉校验：`poc/dsh-p0/scripts/p3-59-kb-gating.mjs` 拿 IDE 侧**真** `applyDeabstractionGating`
+//   （它内部走真的 `extractSources` / `setStatus` / 别名归一 ✓）在同一份夹具上跑一遍 ⇒ 与本模块**逐字节**比 ✓。
+
+/** frontmatter 取值：扁平 string|string[] ✓（本项目的 KB 笔记只用扁平结构 ✓）。 */
+/** @typedef {string | string[]} FrontmatterValue */
+/** @typedef {{ frontmatter: Record<string, FrontmatterValue> | null, body: string, rawBlock: string }} FrontmatterParseResult */
+
+const FM_BLOCK_STRICT_RE = /^---\s*\r?\n([\s\S]*?)\r?\n---\s*(?:\r?\n|$)/;
+const FM_BLOCK_ANYWHERE_RE = /\n---\s*\r?\n([\s\S]*?)\r?\n---\s*(?:\r?\n|$)/;
+const MAX_PREFIX_LINES_BEFORE_FRONTMATTER = 6;
+
+/**
+ * 解析 frontmatter（两遍 + wikilink-list 修复）。
+ * @param {string} content
+ * @returns {FrontmatterParseResult}
+ */
+export function parseFrontmatter(content) {
+	const located = locateFrontmatterBlock(content);
+	if (!located) {
+		return { frontmatter: null, body: content, rawBlock: '' };
+	}
+	const { yamlPayload, rawBlock, body } = located;
+	const repaired = repairWikilinkLists(yamlPayload);
+	const frontmatter = parseFlatYaml(repaired);
+	return { frontmatter, body, rawBlock };
+}
+
+/**
+ * 定位 frontmatter 块。strict（顶锚）优先；失败则扫描 anywhere，但要求开 fence
+ * 在前 6 行内，避免把 body 深处的 `---` 水平线误判为 frontmatter。
+ * 兼容 LLM 用 ```yaml 代码栅栏包裹 frontmatter 的情况。
+ * @param {string} content
+ * @returns {{ yamlPayload: string, rawBlock: string, body: string } | null}
+ */
+export function locateFrontmatterBlock(content) {
+	const strict = content.match(FM_BLOCK_STRICT_RE);
+	if (strict) {
+		return { yamlPayload: strict[1], rawBlock: strict[0], body: content.slice(strict[0].length) };
+	}
+	const fallback = content.match(FM_BLOCK_ANYWHERE_RE);
+	if (!fallback || fallback.index === undefined) {
+		return null;
+	}
+	const openIdx = fallback.index + 1;   // 跳过前导 `\n`
+	if (lineNumberAt(content, openIdx) > MAX_PREFIX_LINES_BEFORE_FRONTMATTER) {
+		return null;
+	}
+	const rawBlock = content.slice(openIdx, openIdx + fallback[0].length - 1);
+	const bodyAfterFm = content.slice(openIdx + rawBlock.length);
+	const prefix = content.slice(0, openIdx);
+	const prefixIsYamlFence = /^\s*```(?:yaml|yml)?\s*\r?\n$/i.test(prefix);
+	if (prefixIsYamlFence) {
+		const stripped = bodyAfterFm.replace(/^\s*```\s*(?:\r?\n|$)/, '');
+		return { yamlPayload: fallback[1], rawBlock, body: stripped };
+	}
+	return { yamlPayload: fallback[1], rawBlock, body: bodyAfterFm };
+}
+
+function lineNumberAt(s, index) {
+	let line = 1;
+	for (let i = 0; i < index && i < s.length; i++) {
+		if (s.charCodeAt(i) === 10) {
+			line++;
+		}
+	}
+	return line;
+}
+
+/**
+ * 修复 `key: [[a]], [[b]]` 这种非法 YAML（LLM 常见产出），改写为
+ * `key: ["[[a]]", "[[b]]"]`。仅处理精确匹配的行，不影响合法嵌套。
+ * @param {string} payload
+ * @returns {string}
+ */
+export function repairWikilinkLists(payload) {
+	return payload.split('\n').map(line => {
+		const m = line.match(/^(\s*[A-Za-z_][\w-]*\s*:\s*)(\[\[[^\]]+\]\](?:\s*,\s*\[\[[^\]]+\]\])+)\s*$/);
+		if (!m) {
+			return line;
+		}
+		const items = m[2].split(',').map(s => s.trim()).filter(Boolean).map(s => `"${s}"`).join(', ');
+		return `${m[1]}[${items}]`;
+	}).join('\n');
+}
+
+/** 轻量扁平 YAML 解析：key: value / key: [a,b] / key: + 块序列。不支持嵌套对象（本项目不需要）。 */
+function parseFlatYaml(payload) {
+	const out = {};
+	const lines = payload.split(/\r?\n/);
+	for (let i = 0; i < lines.length; i++) {
+		const m = /^([A-Za-z_][\w-]*)\s*:\s*(.*)$/.exec(lines[i]);
+		if (!m) {
+			continue;
+		}
+		const key = m[1];
+		const val = m[2].trim();
+		if (val === '') {
+			const items = [];
+			let j = i + 1;
+			while (j < lines.length && /^[\t ]+-\s+/.test(lines[j])) {
+				items.push(stripQuotes(lines[j].replace(/^[\t ]+-\s+/, '').trim()));
+				j++;
+			}
+			out[key] = items;
+			i = j - 1;
+		} else if (val.startsWith('[')) {
+			const inner = val.replace(/^\[/, '').replace(/\]$/, '').trim();
+			out[key] = inner === '' ? [] : inner.split(',').map(s => stripQuotes(s.trim())).filter(s => s !== '');
+		} else {
+			out[key] = stripQuotes(val);
+		}
+	}
+	return Object.keys(out).length > 0 ? out : null;
+}
+
+function stripQuotes(s) {
+	return s.replace(/^["']|["']$/g, '');
+}
+
+/**
+ * 从笔记内容提取 sources[]，归一化为库文件 basename（小写，去 `库/` 前缀与 wikilink/引号/括号）。
+ * @param {string} content
+ * @returns {string[]}
+ */
+export function extractSources(content) {
+	const { frontmatter } = parseFrontmatter(content);
+	if (!frontmatter) {
+		return [];
+	}
+	const v = frontmatter['sources'];
+	if (v == null || v === '') {
+		return [];
+	}
+	const arr = Array.isArray(v) ? v : [v];
+	return arr.map(normalizeSourceRef).filter(Boolean);
+}
+
+/**
+ * 归一化单个 source 引用为库文件 basename（小写）。
+ * @param {string} s
+ * @returns {string}
+ */
+export function normalizeSourceRef(s) {
+	let t = s.trim().replace(/^["']|["']$/g, '');
+	t = t.replace(/^\[+/, '').replace(/\]+$/, '');
+	t = t.replace(/^库\//, '');
+	return (t.split(/[\\/]/).pop() ?? t).toLowerCase();
+}
+
+/**
+ * 从 frontmatter 的 `sources` 中**剔除**指定来源（2026-09-23）。
+ *
+ * 用途：库源文件被删除后，清理笔记里已失效的溯源 —— 对应 KB 的「删除收口」(P0-B)。
+ * 为什么必须做：`applyDeabstractionGating` 按 `extractSources` 的**去重来源数**决定
+ * 笔记 `status`（≥2 → active）；来源被删却不清理 ⇒ 来源数**虚高** ⇒ 门控状态失真。
+ *
+ * ⚠ 匹配口径必须与 `extractSources` 完全一致 —— 即 `normalizeSourceRef` 归一后的
+ * **小写 basename**（带扩展名）。调用方传进来的集合也必须是这个口径。
+ * 行级操作：只改 `sources`，其它字段保留原始格式；块序列 / 流列表 / 单值三种写法都支持。
+ * 全部被剔除时保留 `sources: []`（而非删掉字段）：`parseFrontmatter` 对 `key: [...]`
+ * 的空内容返回 `[]`，与 `extractSources` 的「无来源」语义一致。
+ * @param {string} content
+ * @param {ReadonlySet<string>} baseNames
+ * @returns {{ content: string, changed: boolean }}
+ */
+export function removeSources(content, baseNames) {
+	if (baseNames.size === 0) {
+		return { content, changed: false };
+	}
+	const located = locateFrontmatterBlock(content);
+	if (!located) {
+		return { content, changed: false };
+	}
+	const { rawBlock, body } = located;
+	const cleanBody = body.replace(/^\r?\n/, '');
+	const inner = extractInnerLines(rawBlock);
+	const idx = inner.findIndex(l => /^sources\s*:/.test(l.trim()));
+	if (idx === -1) {
+		return { content, changed: false };
+	}
+	const lead = /^[\t ]*/.exec(inner[idx])[0] ?? '';
+
+	// 形式一：块序列（sources: 后跟连续的 `- x`）
+	let end = idx + 1;
+	while (end < inner.length && /^[\t ]+-\s+/.test(inner[end])) {
+		end++;
+	}
+	if (end > idx + 1) {
+		const kept = [];
+		let removed = 0;
+		for (let i = idx + 1; i < end; i++) {
+			const val = stripQuotes(inner[i].replace(/^[\t ]+-\s+/, '').trim());
+			if (baseNames.has(normalizeSourceRef(val))) {
+				removed++;
+			} else {
+				kept.push(inner[i]);
+			}
+		}
+		if (removed === 0) {
+			return { content, changed: false };
+		}
+		inner.splice(idx, end - idx, ...(kept.length > 0 ? [inner[idx], ...kept] : [`${lead}sources: []`]));
+		return { content: `---\n${inner.join('\n')}\n---\n${cleanBody}`, changed: true };
+	}
+
+	// 形式二：流列表（sources: [a, "b"]）
+	const flow = /^sources\s*:\s*\[(.*)\]\s*$/.exec(inner[idx].trim());
+	if (flow) {
+		let removed = 0;
+		const kept = flow[1].split(',').map(s => stripQuotes(s.trim())).filter(s => s !== '').filter(s => {
+			if (baseNames.has(normalizeSourceRef(s))) {
+				removed++;
+				return false;
+			}
+			return true;
+		});
+		if (removed === 0) {
+			return { content, changed: false };
+		}
+		// wikilink 含 `[`，在 YAML 流列表里必须加引号（与 injectSources 的处理一致）
+		inner[idx] = `${lead}sources: [${kept.map(s => (s.includes('[') ? `"${s}"` : s)).join(', ')}]`;
+		return { content: `---\n${inner.join('\n')}\n---\n${cleanBody}`, changed: true };
+	}
+
+	// 形式三：单值（sources: x）
+	const single = /^[\t ]*sources\s*:\s*(\S.*)$/.exec(inner[idx]);
+	if (single) {
+		if (!baseNames.has(normalizeSourceRef(stripQuotes(single[1].trim())))) {
+			return { content, changed: false };
+		}
+		inner[idx] = `${lead}sources: []`;
+		return { content: `---\n${inner.join('\n')}\n---\n${cleanBody}`, changed: true };
+	}
+	return { content, changed: false };
+}
+
+/** 笔记状态（P0-1 去抽象化门控）：pending=候选(来源不足)，active=正式(已被≥2来源确认)。 */
+/** @typedef {'pending' | 'active'} NoteStatus */
+export const STATUS_ACTIVE = 'active';
+export const STATUS_PENDING = 'pending';
+
+/**
+ * 读取笔记 frontmatter 的 `status`。缺失时默认 `active`（向后兼容门控上线前的旧笔记）。
+ * @param {string} content
+ * @returns {NoteStatus}
+ */
+export function getStatus(content) {
+	const { frontmatter } = parseFrontmatter(content);
+	const v = frontmatter?.['status'];
+	if (v == null || v === '') {
+		return STATUS_ACTIVE;
+	}
+	const s = Array.isArray(v) ? v[0] : v;
+	return s === STATUS_PENDING ? STATUS_PENDING : STATUS_ACTIVE;
+}
+
+/**
+ * 行级设置 frontmatter 的 `status`，返回新内容与是否变更。
+ * 复用 injectSources 的「仅改目标字段、保留其他原始格式」策略；无 frontmatter 时直接跳过。
+ * @param {string} content
+ * @param {NoteStatus} status
+ * @returns {{ content: string, changed: boolean }}
+ */
+export function setStatus(content, status) {
+	const located = locateFrontmatterBlock(content);
+	if (!located) {
+		return { content, changed: false };
+	}
+	const { rawBlock, body } = located;
+	const cleanBody = body.replace(/^\r?\n/, '');
+	const inner = extractInnerLines(rawBlock);
+	const idx = inner.findIndex(l => /^status\s*:/.test(l.trim()));
+	if (idx !== -1) {
+		const cur = inner[idx].replace(/^[\t ]*status\s*:\s*/, '').trim().replace(/^["']|["']$/g, '');
+		if (cur === status) {
+			return { content, changed: false };
+		}
+		const lead = /^[\t ]*/.exec(inner[idx])[0];
+		inner[idx] = `${lead}status: ${status}`;
+		return { content: `---\n${inner.join('\n')}\n---\n${cleanBody}`, changed: true };
+	}
+	// 缺 status 字段：在 frontmatter 末尾追加
+	const newLines = [...inner, `status: ${status}`];
+	return { content: `---\n${newLines.join('\n')}\n---\n${cleanBody}`, changed: true };
+}
+
+/**
+ * 在 frontmatter 中确保 sources 含 refLink（如 `[[库/x.md]]`），返回新内容与是否变更。
+ * 行级操作：保留其他字段原始格式，仅修改 sources。
+ * 兼容：无 frontmatter / 缺 sources / 块序列 / 流列表 / 单值。
+ * @param {string} content
+ * @param {string} refLink
+ * @param {string} refBase
+ * @returns {{ content: string, changed: boolean }}
+ */
+export function injectSources(content, refLink, refBase) {
+	const located = locateFrontmatterBlock(content);
+	if (!located) {
+		const body = content.startsWith('\n') ? content : '\n' + content;
+		return { content: `---\nsources:\n  - ${refLink}\n---\n${body}`, changed: true };
+	}
+	const { rawBlock, body } = located;
+	const cleanBody = body.replace(/^\r?\n/, '');
+	const inner = extractInnerLines(rawBlock);
+
+	const idx = inner.findIndex(l => /^sources\s*:/.test(l.trim()));
+	if (idx === -1) {
+		const newLines = ['sources:', `  - ${refLink}`, ...inner];
+		return { content: `---\n${newLines.join('\n')}\n---\n${cleanBody}`, changed: true };
+	}
+	let end = idx + 1;
+	while (end < inner.length && /^[\t ]+- /.test(inner[end])) {
+		end++;
+	}
+	if (inner.slice(idx, end).some(l => l.includes(refLink) || l.includes(refBase))) {
+		return { content, changed: false };
+	}
+	const flow = /^sources\s*:\s*\[(.*)\]\s*$/.exec(inner[idx].trim());
+	if (flow) {
+		const innerVal = flow[1].trim();
+		// refLink 形如 [[库/x.md]]，在 YAML 流列表 [...] 里 [ 是非法起始，必须加引号
+		const newVal = innerVal === '' ? `["${refLink}"]` : `[${innerVal}, "${refLink}"]`;
+		const lead = /^[\t ]*/.exec(inner[idx])[0] ?? '';
+		inner[idx] = `${lead}sources: ${newVal}`;
+		return { content: `---\n${inner.join('\n')}\n---\n${cleanBody}`, changed: true };
+	}
+	// 单值 sources: x → 转块序列
+	const single = /^(\s*)sources\s*:\s*(\S.*)$/.exec(inner[idx]);
+	if (single && end === idx + 1) {
+		const lead = single[1];
+		const oldVal = single[2].replace(/^["']|["']$/g, '');
+		inner[idx] = `${lead}sources:`;
+		inner.splice(idx + 1, 0, `${lead}  - ${oldVal}`, `${lead}  - ${refLink}`);
+		return { content: `---\n${inner.join('\n')}\n---\n${cleanBody}`, changed: true };
+	}
+	inner.splice(end, 0, `  - ${refLink}`);
+	return { content: `---\n${inner.join('\n')}\n---\n${cleanBody}`, changed: true };
+}
+
+/**
+ * 读笔记的 frontmatter `type`（真源 `kbVaultFs.readNoteFrontmatterType` 逐字 ✓，`kbVaultFs.ts:836-849`）。
+ *
+ * ⚠ 它与同文件的 `parseFrontmatter` **不是**同一条路径 ✗：真源里门控/索引用的是这个"轻量读法"
+ *（只看**前 2048 字符**、`^---\s*\n` 开头、取 `^type:` 行 ✓），而 `frontmatterType()`（另一处）
+ * 走完整解析器 ✓。两者对"畸形 frontmatter"的容忍度不同 ⇒ **照抄哪一条由调用方决定** ✓，
+ * 所以这里两条都留（索引与门控都用这一条 ✓）。
+ *
+ * ⚠⚠ 顺序怪癖（照抄，别"顺手修好" ✗）：**先剥首尾引号、再剥 ` #注释`** ⇒
+ *   `type: "concept" # 语义类型` 得到的类型名是 **`concept"`**（结尾引号剥完后不再处于末尾 ⇒ 留下了 ✓）。
+ *   交叉校验（IDE 侧 `kbNavigationParity.test.ts` 的黄金串 `## concept"` ✓）把这条钉死了 ✓。
+ * @param {string} raw 文件全文
+ * @returns {string|undefined}
+ */
+export function readNoteFrontmatterType(raw) {
+	const head = String(raw ?? '').slice(0, 2048);
+	const fmMatch = head.match(/^---\s*\n([\s\S]*?)\n---/);
+	if (!fmMatch) {
+		return undefined;
+	}
+	const typeMatch = fmMatch[1].match(/^type:\s*(.+)$/m);
+	if (!typeMatch) {
+		return undefined;
+	}
+	let value = typeMatch[1].trim();
+	value = value.replace(/^["']|["']$/g, '');
+	value = value.replace(/\s*#.*$/, '').trim();
+	return value || undefined;
+}
+
+/** 从 rawBlock（`---\n...\n---`）提取内部行（去首尾 fence 与空行）。 */
+function extractInnerLines(rawBlock) {
+	const lines = rawBlock.split(/\r?\n/);
+	if (lines.length > 0 && lines[0].trim() === '---') {
+		lines.shift();
+	}
+	while (lines.length > 0 && lines[lines.length - 1].trim() === '') {
+		lines.pop();
+	}
+	if (lines.length > 0 && lines[lines.length - 1].trim() === '---') {
+		lines.pop();
+	}
+	return lines;
+}

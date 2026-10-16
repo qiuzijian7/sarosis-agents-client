@@ -76,6 +76,7 @@ const vscodeResourceIncludes = [
 	'out-build/vs/base/parts/sandbox/electron-browser/preload.js',
 	'out-build/vs/base/parts/sandbox/electron-browser/preload-aux.js',
 	'out-build/vs/platform/browserView/electron-browser/preload-browserView.js',
+	'out-build/vs/sessions/contrib/dshHarness/electron-browser/preload-dshView.js',
 
 	// Node Scripts
 	'out-build/vs/base/node/{terminateProcess.sh,cpuUsage.sh,ps.sh}',
@@ -360,6 +361,28 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
 
 		const telemetry = gulp.src('.build/telemetry/**', { base: '.build/telemetry', dot: true });
 
+		// dsh 底座伴生插件（@vssaros/dsh-bridge）：原样随包分发到 <appPath>/dsh-plugins/，
+		// 由 DshHostSupervisor 在首次启动时复制进 dsh profile 再经 `dsh plugin add` 安装。
+		// 不进 asar：pnpm 需要从真实目录复制。见 src/vs/sessions/contrib/dshHarness/。
+		// dsh-compat.json：随包兼容清单（稳定通道可升级到的 dsh 版本）。
+		const dshPlugins = gulp.src([
+			'dsh-plugins/dsh-compat.json',
+			'dsh-plugins/*/package.json',
+			'dsh-plugins/*/cordis.patch.yml',
+			'dsh-plugins/*/lib/**',
+			// ★ 2026-10-14：**vendored 第三方技能包**（`dsh-plugins/vssaros-archify/`）的负载在 `skills/**`
+			//   （技能本体：SKILL.md / bin / schemas / references…），不在 `lib/**` 里 ⇒ 不显式列出就会被
+			//   **静默漏掉**：本地开发时目录都在（直接从仓库跑），打包后才缺文件（"装出来能装不能跑" ✗）。
+			//   `LICENSE` 同理带上（上游 MIT 的许可证必须随分发 ✓；其它插件没这文件，allowEmpty 兜着）。
+			'dsh-plugins/*/skills/**',
+			'dsh-plugins/*/LICENSE',
+		], { base: '.', allowEmpty: true });
+
+		// 构建期预装的 dsh 运行时（build/prepack-dsh-runtime.mjs 生成，版本由 dsh-compat.json 的
+		// bundled 字段 pin 定）：原样打进 <appPath>/dsh-runtime/，全新安装首启零下载。
+		// 不进 asar（pnpm 要真实目录）；未跑 prepack 时 allowEmpty 跳过，退回运行时 npm 安装引导。
+		const dshRuntime = gulp.src(['dsh-runtime/*/node_modules/**', 'dsh-runtime/*/package.json', 'dsh-runtime/*/profile-seed/**'], { base: '.', allowEmpty: true, dot: true });
+
 		const jsFilter = util.filter(data => !data.isDirectory() && /\.js$/.test(data.path));
 		const root = path.resolve(path.join(import.meta.dirname, '..'));
 		const productionDependencies = getProductionDependencies(root);
@@ -401,6 +424,8 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
 			license,
 			api,
 			telemetry,
+			dshPlugins,
+			dshRuntime,
 			sources,
 			deps
 		];

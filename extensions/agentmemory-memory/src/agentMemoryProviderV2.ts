@@ -101,6 +101,33 @@ function _skillsDir(): string {
 	return readEnv('AGENTMEMORY_SKILLS_DIR') || _path.join(_os.homedir(), folder, 'skills');
 }
 
+/**
+ * ⚠⚠ **本类里有一批方法是"刻意留空的桩"**（2026-10-14 加这段说明）。
+ *
+ * 背景：本类对外暴露约 200 个方法，**但其中 17 个是单行体空实现** —— 它们**永远返回空**
+ * （`return null` / `[]` / `''` / `{}` / `/* no-op *​/`），因为对应实现模块**没有被接上**或功能未落地。
+ * 清单（可用 `poc/dsh-p0/scripts/p3-80-memory-api-surface.mjs` 的 ⑩ 复现 ✓）：
+ *
+ *   getTimeline · getTopLessons · searchLessons · traceProvenance · verifyProvenance · enrichFile
+ *   setWorkingMemory · getWorkingMemory · getAllWorkingMemory · getFileIndex · getActions
+ *   getSignals · restoreSnapshot · getCircuitStates · getRecentSearches · registerHook · unregisterHook
+ *
+ * ⚠ **为什么必须写在这里**：不写的话，读到「引擎有 200 个方法」的人会以为**有 200 个能力** ✗
+ *   —— 实测的教训正是如此：曾按方法清单拟了一批要接的能力，**逐个真机实测才发现一大半恒返回空** ✗
+ *   （`traceProvenance` 尤其典型：同目录的 `provenance.ts` 有 151 行 `ProvenanceTracker` 实现，
+ *    但**从没被接进本类**；而且它是**内存 Map** ⇒ 光"接上"还不够，还要在写入链路上做记录**并持久化** ✓）。
+ *
+ * ⚠ **别把它们"补"成真实现**，除非先确认数据来源真的存在 —— 有些桩**已有同义方法替代**：
+ *   `getActions`→`actionList` · `getSignals`→`signalQuery` · `restoreSnapshot`→`snapshotRestore`
+ *   · `getAllWorkingMemory`→`getSlots` · `getFileIndex`→`getFileContext`/`bugMemoriesForFiles`
+ *   · `enrichFile`→`enrich` · `setWorkingMemory`→`slotSet` · `getTopLessons`/`searchLessons`→`getLessons`
+ *   ⇒ 补成"看起来能用"的空壳只会让调用方**更迷惑** —— 它拿到的是"**合法的空**"，
+ *   比 `undefined` 更容易被误读成"查过了、确实没有" ✗。
+ *
+ * ⚠ **扫描时的一个坑**：用正则找这类桩时要容忍**返回类型里带 `{`** 的写法 ——
+ *   `getAllWorkingMemory(...): Array<{ key: string; value: string }> { return []; }` 会被
+ *   `\([^)]*\)[^;{]*\{` 这种模式**漏掉** ✗（第一版扫描就是这么漏的 ✓）。
+ */
 export class AgentMemoryProviderV2 {
 	readonly id = 'agentmemory';
 	readonly name = 'AgentMemory';
@@ -234,6 +261,19 @@ export class AgentMemoryProviderV2 {
 				id: r.id,
 				type: (r as any).type || 'fact',
 				content: r.content,
+				// ⚠⚠ **形状修复（2026-10-14）**：`IMemoryEntry`（`amTypes.ts`）把 `score?: number`
+				//   声明在**顶层**，而这里原先**只**把它塞进 `metadata` ⇒ **实现违反了自己的类型契约** ✗✗。
+				//   后果：**所有按契约读顶层的消费方都恒拿 `undefined`** —— IDE 侧有 **11 处**
+				//   （`memoryTools.ts:182/261`、`unifiedMemoryTools.ts:63`、`memoryLibraryView.ts:198`、
+				//   `agentStudioDashboardService.ts:503`、`agentStudioWebviewController.ts:5174/5195`、
+				//   `memoryDetailEditorPane.ts:348`、`memoryViewPane.ts:422` …），dsh 侧 1 处
+				//   （`normalizeSearchResults`）—— 而**两边都写成"undefined 就静默跳过"** ⇒ **永不报错** ✗
+				//   （"静默降级掩盖事实"的典型：字段错配能潜伏很久 ✓）。
+				// ⇒ 修法刻意是**纯加法**：顶层补 `score`，**`metadata` 原样保留** ⇒
+				//   ① 按契约读顶层的消费方立刻恢复 ✓；② 万一有谁在读 `metadata.score`，一个字都不受影响 ✓
+				//   （已 grep 确认：记忆语境下**没有**消费方读 `metadata.score`/`metadata.source` ✓）。
+				//   ⚠ 本修复**不替代** dsh 侧的兼容读 —— 那边保留"两个位置都读"以防 out/ 是旧编译产物 ✓。
+				score: r.score,
 				metadata: { score: r.score, source: r.source },
 			}) as IMemoryEntry);
 		}

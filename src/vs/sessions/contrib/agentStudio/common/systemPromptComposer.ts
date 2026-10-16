@@ -39,6 +39,64 @@ export interface ISystemPromptTiers {
 }
 
 /**
+ * 「## Web Search Strategy」段的**可见性联动**版本（同一病灶的第三例，2026-10-12）。
+ *
+ * 前两例（`tool_search` / `tool_describe`）已由 `buildCompactToolSection` 里的
+ * `bridgeVisible` 联动修掉，**但既有守卫只盯那两个名字** ⇒ 抓不到这一段：它原先**无条件**
+ * 点名 `web_search` / `read_skill` / `execute_code` / `web_extract` ✗。被 focus 模式剪掉
+ * 或 agent 配 `excludedTools` 时，提示词仍在教模型调一个**没下发的工具** ——
+ * 与那两例同因同果（模型据此调用 ⇒ 未知工具或幻觉）✗。
+ *
+ * 两条设计约束：
+ * · **不引入新入参**：`buildCompactToolSection` 本来就有 `toolNames`（已按 focus/toolset/
+ *   hardPermission 过滤）⇒ 直接用它 ✓；
+ * · **不破坏冻结前缀的字节稳定**：被 gate 的都是 **builtin** 工具（可见性由 agent 配置决定，
+ *   会话内不变），且本段不点名任何 MCP 工具 ⇒ 同一会话内输出恒定 ✓。
+ *
+ * 返回**行数组**（含 `##` 标题）；一个检索工具都没有时返回空数组 ⇒ 整段不出现 ✓。
+ * 规则**动态重新编号**：gate 掉规则 1 后，anysearch 就是第 1 条（否则模型看到的编号会跳号 ✗）。
+ */
+export function buildRetrievalStrategyLines(visibleToolNames: ReadonlyArray<string>): string[] {
+	const has = (name: string) => visibleToolNames.includes(name);
+	const webSearch = has('web_search');
+	const webExtract = has('web_extract');
+	const anysearch = has('read_skill') && has('execute_code');
+	// 规则 4 自带条件措辞（"if one is available to you"）且**不点名具体工具** ⇒ 不 gate：
+	// 它不可能让模型去调一个不存在的工具名 ✓。
+	const bodies: string[] = [];
+	if (webSearch) {
+		bodies.push('**Latest/current facts, news, or an ordinary question** → call the built-in `web_search` directly. One call, no extra runtime dependency.');
+	}
+	if (anysearch) {
+		bodies.push('**Structured identifiers or domain-specific data** (stock quotes, papers, laws, weather, flights/hotels, code docs, social posts) → use the **anysearch** skill, which covers 17 vertical domains plus parallel batch search. Its CLI lives in the anysearch skill directory (NOT the workspace root), so run it via `execute_code` with cwd set to that skill directory: first `read_skill("anysearch")` to get its `skillDir` (absolute path), then run `python3 scripts/anysearch_cli.py doc` (command spec) and `python3 scripts/anysearch_cli.py search "your query"` with `cwd=<skillDir>`.');
+	}
+	if (webExtract) {
+		bodies.push('**A specific URL is already known** → `web_extract` to read that page.');
+	}
+	bodies.push('**Login-gated page, JS-rendered SPA, or page interaction is required** → a browser tool, if one is available to you.');
+	// 规则 5 说"切换到**另一个**工具"⇒ 至少要有两条路径，否则这句话自相矛盾 ✗
+	const paths = [webSearch, anysearch, webExtract].filter(Boolean).length;
+	if (paths >= 2) {
+		bodies.push('**Fallback**: if the chosen path fails (API error, timeout, runtime unavailable for anysearch; network failure for `web_search`), do NOT retry the same failing command. Switch to the other tool **once** to complete the search, and note the fallback in your answer.');
+	}
+	if (paths === 0) {
+		return [];   // 一个检索工具都没有 ⇒ 整段不出现（连标题也不出现）✓
+	}
+	const lines: string[] = [
+		'## Web Search Strategy',
+		'',
+		'Choose the retrieval path by the FIRST rule that matches. Do NOT default to the heaviest one:',
+		'',
+		...bodies.map((b, i) => `${i + 1}. ${b}`),
+	];
+	// 这段对比只在**两条路径都在**时成立（少一条就是自相矛盾：让模型"别跳到规则 2"，而规则 2 不存在 ✗）
+	if (webSearch && anysearch) {
+		lines.push('', 'Do not skip rule 1 to reach rule 2 for an ordinary query: anysearch costs an extra `read_skill` round-trip plus an `execute_code` subprocess, which only pays off in the vertical-domain and batch cases above.');
+	}
+	return lines;
+}
+
+/**
  * 用空行拼接若干段落，自动跳过空白段。保证输出确定性（相同输入 → 相同字节）。
  */
 export function joinSections(...parts: ReadonlyArray<string | undefined>): string {
@@ -65,6 +123,22 @@ export function composeVolatileMessage(tiers: ISystemPromptTiers): string | unde
 	return v.length > 0 ? v : undefined;
 }
 
+/** {@link buildCompactToolSection} 的可选配置。 */
+export interface ICompactToolSectionOptions {
+	/**
+	 * 工具检索桥接（`tool_search` / `tool_describe` / `tool_call`）是否在本轮**下发集**里。
+	 *
+	 * 缺省 **true** ⇒ 字节与加本参数之前完全一致（缓存对齐 + 老调用点/既有单测不回归 ✓）。
+	 *
+	 * 为什么要这个开关：`assembleToolDefs` 在 `allDeferrable.length === 0` 时**提前返回
+	 * 且不附桥接工具**（`toolSearchAssembler.ts:395-404`）—— 只开 core / Always 工具集的
+	 * 会话里根本没有这三个工具，而本段此前**无条件**教模型"用 tool_search 发现 MCP 工具"
+	 * ⇒ 指向一个不存在的工具（正是本段反幻觉规则在防的那类失败 ✗）。
+	 * 对齐官方做法：工具相关指引按**该工具是否可见**生成。
+	 */
+	readonly bridgeVisible?: boolean;
+}
+
 /**
  * 构建「压缩工具清单」段落（stable 层）。
  *
@@ -77,10 +151,16 @@ export function composeVolatileMessage(tiers: ISystemPromptTiers): string | unde
  * @param toolNames 内置（非 MCP）工具名数组（顺序无关，函数内会排序保证确定性）
  * @param family 模型族（决定工具调用格式指令的措辞）。省略 → `generic`，
  *               字节与按族分发之前**完全一致**，保证未知模型/旧调用点不回归。
+ * @param options 见 {@link ICompactToolSectionOptions}；省略 ⇒ 与历史字节一致。
  * @returns 完整段落文本（含前后空行），可直接 push 到 stableParts
  */
-export function buildCompactToolSection(toolNames: ReadonlyArray<string>, family: ModelFamily = 'generic'): string {
+export function buildCompactToolSection(
+	toolNames: ReadonlyArray<string>,
+	family: ModelFamily = 'generic',
+	options: ICompactToolSectionOptions = {},
+): string {
 	const compactNames = [...toolNames].sort((a, b) => a.localeCompare(b)).join(', ');
+	const bridgeVisible = options.bridgeVisible ?? true;
 	return [
 		'',
 		'## Available Tools',
@@ -88,12 +168,21 @@ export function buildCompactToolSection(toolNames: ReadonlyArray<string>, family
 		'You have access to tools via the function-calling interface (their names and JSON schemas are provided with this request). When a user asks you to perform an action that requires interacting with the filesystem, executing commands, searching the web, or any other external system, you MUST use the appropriate tool instead of explaining that you cannot do it.',
 		'',
 		`Built-in tools: ${compactNames}`,
-		'MCP tools are not listed here — discover them on demand via tool_search → tool_describe → tool_call.',
+		// 可见性联动（2026-10-12）：桥接不在下发集里时**不得**再教它怎么用（也不点名，
+		// 否则模型仍会照着历史/提示词去调一个不存在的工具）。用词刻意避开
+		// `tool_search`，好让守卫能断言"不可见时整段不含该名字"。
+		bridgeVisible
+			? 'MCP tools are not listed here — discover them on demand via tool_search → tool_describe → tool_call.'
+			: 'MCP tools are not listed here. This session has NO tool-discovery bridge, so ONLY the built-in tools listed above are available — do not attempt to call tools that are not listed.',
 		'',
 		'## General Tool Usage',
 		'',
 		'When a specialized tool exists, use it directly. Do not simulate or manually reimplement what a tool does by chaining basic operations.',
-		'Review each tool\'s description (via the function-calling schema or tool_describe) to understand its capabilities and use the most efficient one.',
+		// ★ 同一处病灶的第二例（由上文那条守卫当场抓出 ✗→✓）：这里也**无条件**提了
+		// `tool_describe`。桥接不可见时它同样指向一个没下发的工具 ⇒ 一并按可见性联动。
+		bridgeVisible
+			? 'Review each tool\'s description (via the function-calling schema or tool_describe) to understand its capabilities and use the most efficient one.'
+			: 'Review each tool\'s description (via the function-calling schema) to understand its capabilities and use the most efficient one.',
 	// 工具调用格式按模型族分发（真源 modelFamilyPrompt.ts）：原生 FC 可靠的族不再
 	// 下发「不支持就打印 JSON」的退路 —— 那句对在用模型都不成立，且与下面反幻觉
 	// 第 1 条自相矛盾（授权模型把 tool call 打印出来，而打印出来的不会被执行）。
@@ -105,17 +194,13 @@ export function buildCompactToolSection(toolNames: ReadonlyArray<string>, family
 	// （17 个垂直域、batch_search 并行）只体现在长尾查询上 —— 属于「用最重路径覆盖
 	// 最常见场景」。规则化后默认路径回到 1 次工具调用，anysearch 只在其真正更强的
 	// 场景（结构化标识符 / 垂直域）介入，且每一步都保留一次性降级 + 留痕纪律。
-	'## Web Search Strategy',
-	'',
-	'Choose the retrieval path by the FIRST rule that matches. Do NOT default to the heaviest one:',
-	'',
-	'1. **Latest/current facts, news, or an ordinary question** → call the built-in `web_search` directly. One call, no extra runtime dependency.',
-	'2. **Structured identifiers or domain-specific data** (stock quotes, papers, laws, weather, flights/hotels, code docs, social posts) → use the **anysearch** skill, which covers 17 vertical domains plus parallel batch search. Its CLI lives in the anysearch skill directory (NOT the workspace root), so run it via `execute_code` with cwd set to that skill directory: first `read_skill("anysearch")` to get its `skillDir` (absolute path), then run `python3 scripts/anysearch_cli.py doc` (command spec) and `python3 scripts/anysearch_cli.py search "your query"` with `cwd=<skillDir>`.',
-	'3. **A specific URL is already known** → `web_extract` to read that page.',
-	'4. **Login-gated page, JS-rendered SPA, or page interaction is required** → a browser tool, if one is available to you.',
-	'5. **Fallback**: if the chosen path fails (API error, timeout, runtime unavailable for anysearch; network failure for `web_search`), do NOT retry the same failing command. Switch to the other tool **once** to complete the search, and note the fallback in your answer.',
-	'',
-	'Do not skip rule 1 to reach rule 2 for an ordinary query: anysearch costs an extra `read_skill` round-trip plus an `execute_code` subprocess, which only pays off in the vertical-domain and batch cases above.',
+	// ★ 2026-10-12（同一病灶的第三例）：本段原先**无条件**点名 web_search / read_skill /
+	//   execute_code / web_extract ⇒ 工具被 focus 剪掉、或 agent 配了 excludedTools 时，
+	//   提示词仍在教模型调一个**没下发的工具** ✗（前两例 tool_search / tool_describe 已修，
+	//   但那条守卫只盯那两个名字，抓不到这一段）。现按**入参里已有的** `toolNames`（已按
+	//   focus / toolset / hardPermission 过滤 ✓ 无需新增穿线）逐条 gate + 动态重编号，
+	//   一个检索工具都没有时整段不出现 ✓（详见 `buildRetrievalStrategyLines` 的注释）。
+	...buildRetrievalStrategyLines(toolNames),
 	'',
 	'## CRITICAL ANTI-HALLUCINATION RULES (MUST FOLLOW)',
 		'',

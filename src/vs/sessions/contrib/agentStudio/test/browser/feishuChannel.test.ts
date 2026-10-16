@@ -2136,4 +2136,76 @@ suite('飞书扫码绑定 · 二维码矩阵（qrMatrix）', () => {
 		// 52 个汉字 = 156 字节 > 154 ✗
 		assert.throws(() => qrMatrix('汉'.repeat(52)), /数据过长/);
 	});
+
+	// ─── ★ 2026-09-25：以下三条为「飞书扫码不识别」事故的回归锁 ──────────────────────
+	// 事故复盘：矩阵**结构性不合法**（扫码器 BCH 校验失败 / 数据流错位），两处独立缺陷：
+	//   ① 格式信息被以「转置」位置 + 反转比特序写入 ⇒ 扫出的格式串与真实掩码不符；
+	//   ② 把整行 row7 / 整列 col7 误标为「分隔符」⇒ 真数据模块被占用，V1 可写模块 208→200，
+	//      末尾 8 位无处安放、其后整条码字流错位 ⇒ 任何标准掩码都对不上。
+	// 结构断言只能证明「形状对」，扫不出这类错位 ⇒ 这里补「规范位置自洽性 + 黄金矩阵」双锁。
+	const C1_SPEC: (i: number) => [number, number] = (i) => i <= 5 ? [i, 8] : i === 6 ? [7, 8] : i === 7 ? [8, 8] : i === 8 ? [8, 7] : [8, 14 - i];
+	/** 轻量指纹（FNV-1a 32bit）：黄金锁用，不需要密码学强度（测试跑在打包后的浏览器式环境，无 node:crypto）。 */
+	const matrixFingerprint = (flat: string): string => {
+		let h = 0x811c9dc5;
+		for (let i = 0; i < flat.length; i++) { h ^= flat.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+		return h.toString(16).padStart(8, '0');
+	};
+	const C2_SPEC = (size: number, i: number): [number, number] => i <= 7 ? [8, size - 1 - i] : [size - 15 + i, 8];
+	const readFormat15 = (m: boolean[][], size: number): { v1: number; v2: number } => {
+		let v1 = 0, v2 = 0;
+		for (let i = 0; i < 15; i++) {
+			const [r1, c1] = C1_SPEC(i);
+			v1 |= (m[r1][c1] ? 1 : 0) << i;
+			const [r2, c2] = C2_SPEC(size, i);
+			v2 |= (m[r2][c2] ? 1 : 0) << i;
+		}
+		return { v1, v2 };
+	};
+
+	test('格式信息：两份副本按规范位置读出必须一致，且 BCH(15,5) 有效、EC=L', () => {
+		for (const text of ['x', 'https://accounts.feishu.cn/verify?code=dc_1', 'x'.repeat(120)]) {
+			const m = qrMatrix(text);
+			const size = m.length;
+			const { v1, v2 } = readFormat15(m, size);
+			assert.strictEqual(v1, v2, `两份格式信息副本必须一致（输入长度 ${text.length}）`);
+			const u = v1 ^ 0x5412;
+			let rem = ((u >> 10) << 10);
+			for (let i = 14; i >= 10; i--) {
+				if ((rem >> i) & 1) { rem ^= 0b10100110111 << (i - 10); }
+			}
+			assert.strictEqual(rem & 0x3ff, u & 0x3ff, '格式信息必须通过 BCH 校验');
+			assert.strictEqual((u >> 13) & 3, 1, 'EC 等级必须为 L（01）');
+		}
+	});
+
+	test('规范暗模块 (size-8, 8) 必须恒暗（且不得被格式位覆盖）', () => {
+		for (const text of ['x', 'ab', 'hello!', '0123456789', 'x'.repeat(120)]) {
+			const m = qrMatrix(text);
+			const size = m.length;
+			assert.strictEqual(m[size - 8][8], true, `输入长度 ${text.length}：暗模块必须为暗`);
+		}
+	});
+
+	test('黄金矩阵（锁定功能模块图 + 数据摆放 + 掩码 + 格式信息全链路）', () => {
+		// 黄金值来源：与成熟库 `qrcode`（EC=L、同掩码）**逐模块比对 0 差异**后取的指纹。
+		// 任何一处摆放/掩码/格式错位都会改变它 ⇒ 是这条链路的强回归锁。
+		const golden: [string, number, string, number][] = [
+			['V1', 21, 'ed09401d', 226],
+			['V3', 29, '02eb733a', 421],
+			['V6', 41, '5e1cf774', 833],
+		];
+		const texts = [
+			'x',
+			'https://accounts.feishu.cn/verify?code=dc_1',
+			'https://accounts.feishu.cn/oauth/v1/app/registration?device_code=' + 'a'.repeat(40) + '&user_code=ABCD-EFGH',
+		];
+		for (let k = 0; k < golden.length; k++) {
+			const [label, size, hash, darkCount] = golden[k];
+			const m = qrMatrix(texts[k]);
+			assert.strictEqual(m.length, size, `${label} 尺寸`);
+			assert.strictEqual(m.flat().filter(Boolean).length, darkCount, `${label} 暗模块总数`);
+			const flat = m.map(r => r.map(v => (v ? '1' : '0')).join('')).join('');
+			assert.strictEqual(matrixFingerprint(flat), hash, `${label} 黄金矩阵指纹`);
+		}
+	});
 });

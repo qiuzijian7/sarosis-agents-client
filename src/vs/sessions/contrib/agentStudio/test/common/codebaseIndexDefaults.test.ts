@@ -13,6 +13,11 @@ import {
 	extractExcludeDirNames,
 	parseCbmIgnore,
 	planForeignProjectPrune,
+	decideExternalArtifactReload,
+	isDshProducedManifest,
+	artifactProducerOf,
+	DSH_ARTIFACT_PRODUCER,
+	EXTERNAL_ARTIFACT_RELOAD_MIN_INTERVAL_MS,
 } from '../../common/codebaseIndexDefaults.js';
 
 suite('Codebase — IndexDefaults', () => {
@@ -136,6 +141,128 @@ suite('Codebase — IndexDefaults', () => {
 		test('store 里没有多余项目 ⇒ 空列表（幂等）', () => {
 			assert.deepStrictEqual(planForeignProjectPrune(['a'], ['a', 'b']), []);
 			assert.deepStrictEqual(planForeignProjectPrune([], ['a']), []);
+		});
+	});
+
+	suite('decideExternalArtifactReload（所有权交接：别人换了制品 ⇒ 重载，2026-10-13）', () => {
+
+		// 通用上下文：本窗口空闲（不在写盘/索引），没有历史重载
+		const idle = (now = 1_000_000) => ({ writeInFlight: false, now });
+
+		test('★ 磁盘上的制品更新（且图不一样）⇒ 重载 —— 这就是"IDE 会注意到 dsh 重写了图"', () => {
+			const got = decideExternalArtifactReload(
+				{ savedAt: 2000, nodeCount: 250, edgeCount: 400 }, { savedAt: 1000, nodeCount: 100, edgeCount: 120 }, idle(),
+			);
+			assert.strictEqual(got.reload, true);
+			if (got.reload) {
+				assert.strictEqual(got.onDiskFreshness, 2000);
+				assert.match(got.reason, /别人重写过/);
+			}
+		});
+
+		test('★★ 自我写识别：盘上比基线新，但**节点/边数逐个一致** ⇒ 不重载，只更新基线', () => {
+			// 场景：本窗口索引完 → 延迟落盘（SAVE_DEBOUNCE_MS）⇒ 盘上的 saved_at 比基线新，内容却是内存镜像 ✓
+			const got = decideExternalArtifactReload(
+				{ savedAt: 9000, nodeCount: 176620, edgeCount: 489145 }, { savedAt: 1000, nodeCount: 176620, edgeCount: 489145 }, idle(),
+			);
+			assert.strictEqual(got.reload, false);
+			if (!got.reload) {
+				assert.strictEqual(got.adoptAsBaseline, true);
+				assert.match(got.reason, /自己刚落盘/);
+			}
+			// 反面对照：只有节点数一致、边数不同 ⇒ **仍应重载**（单看节点数会漏判 ✓）
+			const notSelf = decideExternalArtifactReload(
+				{ savedAt: 9000, nodeCount: 100, edgeCount: 999 }, { savedAt: 1000, nodeCount: 100, edgeCount: 120 }, idle(),
+			);
+			assert.strictEqual(notSelf.reload, true);
+			// 计数拿不到（老制品）⇒ 不启用自我写识别（宁可多解析一次，也不许用落后数据 ✓）
+			const noCounts = decideExternalArtifactReload({ savedAt: 9000 }, { savedAt: 1000 }, idle());
+			assert.strictEqual(noCounts.reload, true);
+		});
+
+		test('★ 磁盘上的不比内存里的新（含**平手**）⇒ 不重载 —— 平手最常见的情形是"我们自己刚写完"', () => {
+			const older = decideExternalArtifactReload({ savedAt: 900 }, { savedAt: 1000 }, idle());
+			const tie = decideExternalArtifactReload({ savedAt: 1000 }, { savedAt: 1000 }, idle());
+			assert.strictEqual(older.reload, false);
+			assert.strictEqual(tie.reload, false);
+		});
+
+		test('★ 本窗口正在写盘/索引 ⇒ 不重载（重载会丢掉尚未落盘的内存状态 ✗）', () => {
+			const got = decideExternalArtifactReload(
+				{ savedAt: 9000 }, { savedAt: 1000 }, { writeInFlight: true, now: 1_000_000 },
+			);
+			assert.strictEqual(got.reload, false);
+			if (!got.reload) { assert.match(got.reason, /正在写盘/); }
+		});
+
+		test('★ 两侧都读不出"多新" ⇒ 不猜（磁盘侧缺；内存侧还没加载过）', () => {
+			const noDisk = decideExternalArtifactReload({}, { savedAt: 1000 }, idle());
+			const neverLoaded = decideExternalArtifactReload({ savedAt: 2000 }, undefined, idle());
+			assert.strictEqual(noDisk.reload, false);
+			assert.strictEqual(neverLoaded.reload, false);
+			if (!noDisk.reload) { assert.match(noDisk.reason, /不猜/); }
+			if (!neverLoaded.reload) { assert.match(neverLoaded.reason, /还没加载过/); }
+		});
+
+		test('缺 `savedAt` 时退回 mtime（老制品/别人手写的）—— 但**两侧必须同一口径**', () => {
+			const byMtime = decideExternalArtifactReload(
+				{ mtimeMs: 5000 }, { mtimeMs: 4000 }, idle(),
+			);
+			assert.strictEqual(byMtime.reload, true);
+			// 一侧有 savedAt、另一侧只有 mtime ⇒ 仍然可比（都经由 artifactFreshnessOf ✓）
+			const mixed = decideExternalArtifactReload({ mtimeMs: 3000 }, { savedAt: 2000 }, idle());
+			assert.strictEqual(mixed.reload, true);
+		});
+
+		test('★ 空制品守卫：磁盘 0 节点而内存里有节点 ⇒ 不拿空图换好图（99 字节事故的同一条教训）', () => {
+			const got = decideExternalArtifactReload(
+				{ savedAt: 9000, nodeCount: 0 }, { savedAt: 1000, nodeCount: 176620 }, idle(),
+			);
+			assert.strictEqual(got.reload, false);
+			if (!got.reload) { assert.match(got.reason, /空/); }
+		});
+
+		test('★ 节流：距上次外部重载不足下限 ⇒ 不重载（重载是"删项目 + 重新解析"的重活）', () => {
+			const now = 1_000_000;
+			const throttled = decideExternalArtifactReload(
+				{ savedAt: 9000 }, { savedAt: 1000 }, { writeInFlight: false, now, lastReloadAt: now - 1000 },
+			);
+			const allowed = decideExternalArtifactReload(
+				{ savedAt: 9000 }, { savedAt: 1000 }, { writeInFlight: false, now, lastReloadAt: now - EXTERNAL_ARTIFACT_RELOAD_MIN_INTERVAL_MS - 1 },
+			);
+			assert.strictEqual(throttled.reload, false);
+			assert.strictEqual(allowed.reload, true);
+		});
+
+		test('优先级：写盘进行中优先于"磁盘更新"报告（拿到的理由必须是真因 ✓）', () => {
+			const got = decideExternalArtifactReload(
+				{ savedAt: 9000 }, { savedAt: 1000 }, { writeInFlight: true, now: 1_000_000, lastReloadAt: 1_000_000 },
+			);
+			assert.strictEqual(got.reload, false);
+			if (!got.reload) { assert.match(got.reason, /正在写盘/); }
+		});
+	});
+
+	suite('isDshProducedManifest（权限在 dsh 侧：制品自称生产方，2026-10-13）', () => {
+
+		test('★ dsh 产的清单 ⇒ true（IDE 侧据此不索引、不落盘 ✓）', () => {
+			assert.strictEqual(isDshProducedManifest({ producer: DSH_ARTIFACT_PRODUCER }), true);
+			assert.strictEqual(isDshProducedManifest({ node_count: 5, producer: ' vssaros-dsh ' }), true, '容忍两侧空白 ✓');
+		});
+
+		test('★★ 保守口径：缺 producer / 老制品 / 手写制品 / 非字符串 ⇒ **false**（= 行为与今天完全一致 ✓）', () => {
+			assert.strictEqual(isDshProducedManifest({ node_count: 5, saved_at: 1 }), false);
+			assert.strictEqual(isDshProducedManifest({ producer: 'vssaros-ide' }), false);
+			assert.strictEqual(isDshProducedManifest({ producer: 42 }), false);
+			assert.strictEqual(isDshProducedManifest(undefined), false);
+			assert.strictEqual(isDshProducedManifest(null), false);
+			assert.strictEqual(isDshProducedManifest('vssaros-dsh'), false, '不是对象 ⇒ 不算');
+			assert.strictEqual(isDshProducedManifest({ producer: 'vssaros-dsh-extra' }), false, '不做前缀匹配 ✗');
+		});
+
+		test('★ 权限判断失败 ⇒ 必须落到"IDE 照旧负责"（否则没装 dsh 的环境会彻底失去索引 ✗✗）', () => {
+			assert.strictEqual(artifactProducerOf({}), undefined);
+			assert.strictEqual(isDshProducedManifest({}), false);
 		});
 	});
 });

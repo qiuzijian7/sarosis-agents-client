@@ -3,6 +3,243 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+/* ══════════════════════════════════════════════════════════════════════════
+   设计 token（**本视图唯一真源**）
+   ──────────────────────────────────────────────────────────────────────────
+   为什么要它：四个页签（installed / extensions / marketplace / dsh）各自写死过一套数值——
+   字号 13/12/11/10/9px 五档、圆角 3/4/6px 三档、内距 6/8/10/12px 混用、徽标三套、按钮两套，
+   结果同一个侧栏里"正文差 1px、卡片两套类名、dsh 那页干脆没有 CSS（全内联）"。
+   这里把可复用的尺度收到一处：**新代码只许用下面的基础件**，旧类名继续工作（见各自的"别名"分组）。
+   ══════════════════════════════════════════════════════════════════════════ */
+.plugins-view {
+    --plugins-radius-sm: 3px;
+    --plugins-radius-md: 4px;
+    --plugins-radius-lg: 6px;
+    --plugins-font-xs: 10px;
+    --plugins-font-sm: 11px;
+    --plugins-font-md: 12px;
+    --plugins-font-lg: 13px;
+    --plugins-gap-sm: 4px;
+    --plugins-gap-md: 6px;
+    --plugins-gap-lg: 8px;
+    --plugins-pad-row: 6px 8px;
+    --plugins-pad-card: 10px 12px;
+    --plugins-border: 1px solid var(--vscode-panel-border, #3c3c3c);
+    --plugins-fg: var(--vscode-foreground, #cccccc);
+    --plugins-muted: var(--vscode-descriptionForeground, #9d9d9d);
+    --plugins-surface: var(--vscode-sideBar-background, #252526);
+}
+
+/* ══ 基础件（四个页签共用）══════════════════════════════════════════════════
+   只定义一次；页面里出现的旧类名以"别名"形式并入同一组选择器，值不会各写各的。 */
+/* 卡片：extensions / marketplace / dsh 三处共用（历史上是 `.plugins-ext-card` 与 `.mp-card` 两套） */
+.plugins-card,
+.plugins-ext-card,
+.mp-card,
+.plugins-marketplace-card {
+    background: var(--plugins-surface);
+    border: var(--plugins-border);
+    border-radius: var(--plugins-radius-lg);
+    padding: var(--plugins-pad-card);
+    transition: border-color 0.15s;
+}
+
+.plugins-card:hover,
+.plugins-ext-card:hover,
+.mp-card:hover,
+.plugins-marketplace-card:hover {
+    border-color: var(--vscode-button-background, #007acc);
+    background: var(--vscode-list-hoverBackground, #2a2d2e);
+}
+
+.plugins-card.is-disabled,
+.plugins-ext-card.disabled {
+    opacity: 0.65;
+}
+
+/* 市场来源的卡片：左侧一条强调边（原来的 `.plugins-ext-card.market` 与 `.mp-card` 都在表达这件事） */
+.plugins-card.is-market,
+.plugins-ext-card.market {
+    border-left: 3px solid var(--vscode-editorInfo-foreground, #3794ff);
+}
+
+/* 标题 / 元信息 / 行头 */
+.plugins-name,
+.plugins-ext-name,
+.mp-card-name {
+    font-size: var(--plugins-font-lg);
+    font-weight: 600;
+    color: var(--plugins-fg);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.plugins-meta,
+.plugins-ext-meta,
+.mp-card-author,
+.mp-card-stats {
+    font-size: var(--plugins-font-xs);
+    color: var(--plugins-muted);
+}
+
+/* 版本号：等宽 + 链接色（两侧原本就一致，这里只并入一组） */
+.plugins-version,
+.plugins-ext-version,
+.mp-card-version {
+    font-size: var(--plugins-font-xs);
+    font-family: monospace;
+    color: var(--vscode-textLink-foreground, #569cd6);
+    flex-shrink: 0;
+}
+
+.plugins-row-head,
+.plugins-ext-top {
+    display: flex;
+    align-items: center;
+    gap: var(--plugins-gap-md);
+}
+
+/* 徽标（**卡片上下文**）：历史上两套（`.plugins-ext-badge-*` / `.mp-card-kind`）⇒ 一套 + 语义色。
+   注意 `.plugin-badge`（**列表行**里的徽标，installed 页签）**不并进来**：它 11px，卡片里 10px——
+   这个差是**有意的**（行更松、卡片更紧），保留为两档。 */
+.plugins-badge,
+.plugins-ext-badge,
+.mp-card-kind {
+    font-size: var(--plugins-font-xs);
+    padding: 1px 6px;
+    border-radius: var(--plugins-radius-sm);
+    font-weight: 600;
+    flex-shrink: 0;
+    background: var(--vscode-badge-background, #4d4d4d);
+    color: var(--vscode-badge-foreground, #ffffff);
+}
+
+.plugins-badge.is-info,
+.plugins-ext-badge-builtin,
+.mp-card-kind {
+    background: rgba(86, 156, 214, 0.2);
+    color: var(--vscode-textLink-foreground, #569cd6);
+}
+
+.plugins-badge.is-ok,
+.plugins-ext-badge-update {
+    background: rgba(78, 201, 176, 0.2);
+    color: #4ec9b0;
+}
+
+.plugins-badge.is-warn,
+.plugins-ext-badge-warn {
+    background: rgba(220, 220, 170, 0.2);
+    color: #dcdcaa;
+}
+
+.plugins-badge.is-danger,
+.plugins-ext-badge-env {
+    background: rgba(244, 135, 113, 0.22);
+    color: #f48771;
+}
+
+.plugins-badge.is-off,
+.plugins-ext-badge-off {
+    background: rgba(150, 150, 150, 0.2);
+    color: var(--plugins-muted);
+}
+
+/* 按钮：历史上两套（`.plugins-ext-btn` secondary / `.mp-card-install-btn` primary）⇒ 一套 + 变体 */
+.plugins-btn,
+.plugins-ext-btn {
+    padding: 2px 10px;
+    font-size: var(--plugins-font-sm);
+    border: none;
+    border-radius: var(--plugins-radius-sm);
+    cursor: pointer;
+    background: var(--vscode-button-secondaryBackground, #3a3d41);
+    color: var(--vscode-button-secondaryForeground, #cccccc);
+    transition: background 0.15s;
+}
+
+.plugins-btn:hover,
+.plugins-ext-btn:hover {
+    background: var(--vscode-button-secondaryHoverBackground, #45494e);
+}
+
+.plugins-btn:disabled,
+.plugins-ext-btn:disabled {
+    opacity: 0.6;
+    cursor: default;
+}
+
+.plugins-btn.primary,
+.mp-card-install-btn {
+    background: var(--vscode-button-background, #007acc);
+    color: var(--vscode-button-foreground, #fff);
+    font-weight: 500;
+}
+
+.plugins-btn.primary:hover,
+.mp-card-install-btn:hover {
+    background: var(--vscode-button-hoverBackground, #1f8ad2);
+}
+
+.plugins-btn.is-installed,
+.mp-card-install-btn.installed {
+    background: #4ec9b0;
+    color: #1e1e1e;
+}
+
+.plugins-btn.danger,
+.plugins-ext-btn.danger {
+    background: rgba(244, 135, 113, 0.15);
+    color: #f48771;
+}
+
+.plugins-btn.danger:hover,
+.plugins-ext-btn.danger:hover {
+    background: rgba(244, 135, 113, 0.28);
+}
+
+/* 工具类：单行省略。`installed` 页签的模板里用了 `.description.ellipsis`，而 `.ellipsis` 全仓
+   此前**没有任何定义**（悬空类，靠 `.description` 自己那几条属性兜住）。限定在本视图内，不外泄。 */
+.plugins-view .ellipsis {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* 分组标题 / 空态 / 提示条 */
+.plugins-section,
+.plugins-ext-section {
+    font-size: var(--plugins-font-sm);
+    font-weight: 600;
+    color: var(--plugins-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 6px 2px 2px 2px;
+    border-bottom: var(--plugins-border);
+    margin-top: 2px;
+}
+
+.plugins-empty,
+.plugins-ext-empty,
+.plugins-marketplace-message {
+    font-size: var(--plugins-font-md);
+    color: var(--plugins-muted);
+    text-align: center;
+    padding: 20px 4px;
+}
+
+.plugins-notice,
+.plugins-ext-notice {
+    font-size: var(--plugins-font-sm);
+    line-height: 1.5;
+    color: var(--plugins-muted);
+    background: var(--vscode-textBlockQuote-background, rgba(127, 127, 127, 0.1));
+    border-left: 3px solid var(--vscode-editorInfo-foreground, #3794ff);
+    padding: var(--plugins-pad-row);
+    border-radius: 2px;
+}
+
 /* Plugins View Container */
 .plugins-view {
     display: flex;
@@ -41,31 +278,100 @@
     display: none !important;
 }
 
-/* Tabs */
+/* Tabs —— **分段控件**（S1，2026-10-14；设计稿 doc/dsh-plugin-center-ia-tabs-mockup.html）
+   ──────────────────────────────────────────────────────────────────────────
+   为什么从"下划线页签"换成分段：改名后标签更长（"已装插件 / VS Code 扩展 / dsh 组合包"），下划线式在
+   窄栏里会被挤；等宽三段让"三个互斥视图"的语义更直观（下划线更像同页锚点）。
+   实测（设计稿里量的）：等宽在 300px + 长标签下会折行 ⇒ 所以这里 **nowrap + 省略号** 兜底，宁可截断不折行。
+   ⚠ 类名 `.plugins-tab` / `.active` 保持不变：e2e 与守卫按 `document.querySelectorAll('.plugins-tabs button')` 取按钮。 */
 .plugins-tabs {
     display: flex;
-    padding: 8px 12px 0 12px;
-    gap: 4px;
+    margin: 8px 12px 0 12px;
+    border: var(--plugins-border);
+    border-radius: var(--plugins-radius-lg);
+    overflow: hidden;
 }
 
 .plugins-tab {
-    padding: 6px 12px;
+    flex: 1 1 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--plugins-gap-sm);
+    min-width: 0;                 /* 允许子元素省略号（flex 项默认 min-width:auto 会撑破） */
+    padding: 5px 4px;
     border: none;
     background: transparent;
     cursor: pointer;
-    font-size: 13px;
-    color: var(--vscode-foreground);
-    border-bottom: 2px solid transparent;
+    font: inherit;
+    font-size: var(--plugins-font-md);
+    color: var(--plugins-muted);
+    white-space: nowrap;
+}
+
+.plugins-tab + .plugins-tab {
+    border-left: var(--plugins-border);
 }
 
 .plugins-tab:hover {
     background: var(--vscode-list-hoverBackground);
 }
 
-.plugins-tab.active {
-    border-bottom-color: var(--vscode-focusBorder);
-    font-weight: 600;
+.plugins-tab.active,
+.plugins-tab[aria-selected="true"] {
+    background: var(--vscode-button-background, #0e639c);
+    color: var(--vscode-button-foreground, #fff);
 }
+
+.plugins-tab:focus-visible {
+    outline: 1px solid var(--vscode-focusBorder, #007fd4);
+    outline-offset: -1px;
+}
+
+.plugins-tab-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* 页签计数（S1）：选中态下换半透明白底，避免"蓝底上再叠灰底" */
+.plugins-tab-count {
+    flex: 0 0 auto;
+    min-width: 14px;
+    padding: 0 4px;
+    border-radius: 7px;
+    font-size: var(--plugins-font-xs);
+    line-height: 14px;
+    text-align: center;
+    background: var(--vscode-badge-background, #4d4d4d);
+    color: var(--vscode-badge-foreground, #fff);
+}
+
+.plugins-tab.active .plugins-tab-count,
+.plugins-tab[aria-selected="true"] .plugins-tab-count {
+    background: rgba(255, 255, 255, 0.22);
+}
+
+.plugins-tab-count.is-zero {
+    opacity: 0.45;
+}
+
+/* Host 状态点（只在 dsh 组合包页签）：实心＝已连上 Host（能读到组合包清单） */
+.plugins-tab-dot {
+    flex: 0 0 auto;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: transparent;
+    border: 1px solid currentColor;
+    opacity: 0.5;
+}
+
+.plugins-tab-dot.on {
+    background: var(--vscode-testing-iconPassed, #3fb950);
+    border-color: transparent;
+    opacity: 1;
+}
+
 
 /* Search Input */
 .plugins-search {
@@ -86,12 +392,38 @@
 /* List Container */
 .plugins-list-container {
     flex: 1;
-    overflow: hidden;
+    /* 4b（2026-10-11）：插件页签从 WorkbenchList 换成 **DOM 分组列表** ⇒ 滚动由容器自己负责
+       （此前列表自带滚动，容器只需 `hidden` 裁切）。 */
+    overflow-x: hidden;
+    overflow-y: auto;
     position: relative;
 }
 
 .plugins-list-container.hidden {
     display: none;
+}
+
+/* ── 4b：插件页签的 DOM 分组列表（此前是 WorkbenchList；**行外观不变**）──────────────────────── */
+.plugins-installed-list {
+    display: flex;
+    flex-direction: column;
+}
+
+/* 段标题与行内文字对齐（行自带 12px 内边距；基础件 `.plugins-section` 只留 2px，偏左） */
+.plugins-installed-list .plugins-section {
+    padding: 8px 12px 4px 12px;
+    letter-spacing: normal;
+}
+
+/* 一行插件：外观由 `.agent-plugin-list-item` 给（它本来就自洽）——这里只补"行容器"该有的两件事 */
+.plugins-installed-row {
+    min-height: 72px; /* 与列表时代的行高一致（原 `PLUGIN_LIST_ELEMENT_HEIGHT`） */
+    outline: none;
+}
+
+.plugins-installed-row:focus-visible {
+    outline: 1px solid var(--vscode-focusBorder, #007fd4);
+    outline-offset: -1px;
 }
 
 /* Detail Container */
@@ -270,13 +602,7 @@
    MARKETPLACE TAB — Card Grid
    ══════════════════════════════════════════════════════════ */
 
-.plugins-marketplace-container {
-    display: flex;
-    flex-direction: column;
-    flex: 1;
-    overflow: hidden;
-}
-
+/* （原 `.plugins-marketplace-container` 已删：商城的节点并入「扩展」页签的列表里，不再有独立容器） */
 .plugins-marketplace-status {
     padding: 20px;
     text-align: center;
@@ -288,9 +614,8 @@
     padding: 12px;
 }
 
+/* 商城的卡片网格：现在挂在「扩展」页签的列表里（那层自己滚动）⇒ 不再自建滚动区 */
 .plugins-marketplace-grid {
-    flex: 1;
-    overflow-y: auto;
     padding: 0 12px 12px 12px;
 }
 
@@ -313,20 +638,7 @@
     gap: 6px;
 }
 
-/* Marketplace Card */
-.plugins-marketplace-card {
-    background: var(--vscode-sideBar-background, #252526);
-    border: 1px solid var(--vscode-panel-border, #3c3c3c);
-    border-radius: 6px;
-    padding: 12px;
-    transition: border-color 0.15s;
-    cursor: default;
-}
-
-.plugins-marketplace-card:hover {
-    border-color: var(--vscode-button-background, #007acc);
-    background: var(--vscode-list-hoverBackground, #2a2d2e);
-}
+/* Marketplace Card：外观由文件顶部的 `.plugins-card` 基础件给（原 `.plugins-marketplace-card` 已并入） */
 
 /* Card Top */
 .mp-card-top {
@@ -411,42 +723,24 @@
     color: var(--vscode-descriptionForeground, #9d9d9d);
 }
 
-/* Install Button */
-.mp-card-install-btn {
+/* Install Button：已并入顶部基础件 `.plugins-btn.primary`（旧类名 `.mp-card-install-btn` 仍是别名） */
+.plugins-marketplace-card .mp-card-install-btn {
     padding: 3px 12px;
-    background: var(--vscode-button-background, #007acc);
-    color: var(--vscode-button-foreground, #fff);
-    border: none;
-    border-radius: 3px;
-    cursor: pointer;
-    font-size: 11px;
-    font-weight: 500;
-    transition: background 0.15s;
-}
-
-.mp-card-install-btn:hover {
-    background: var(--vscode-button-hoverBackground, #1f8ad2);
-}
-
-.mp-card-install-btn:disabled {
-    opacity: 0.6;
-    cursor: default;
-}
-
-.mp-card-install-btn.installed {
-    background: #4ec9b0;
-    color: #1e1e1e;
 }
 
 /* ══════════════════════════════════════════════════════════
    VS CODE EXTENSIONS TAB（原生扩展）
    ══════════════════════════════════════════════════════════ */
 
+/* ⚠ `display:none` 是**初始隐藏的唯一来源**（`_switchTab` 只在点击时调用，构造时不调）
+   ⇒ 激活时由 JS 设显式 `display:flex`，不要改成"靠默认值显示"。
+   另外 `overflow` 取原内联的"容器自己滚"（`overflow-y:auto`，比这里的 `hidden` 优先过）； */
 .plugins-extensions-container {
-    display: flex;
+    display: none;
     flex-direction: column;
     flex: 1;
-    overflow: hidden;
+    overflow-x: hidden;
+    overflow-y: auto;
 }
 
 .plugins-extensions-header {
@@ -488,57 +782,9 @@
     gap: 6px;
 }
 
-.plugins-ext-empty {
-    padding: 20px 4px;
-    font-size: 12px;
-    color: var(--vscode-descriptionForeground, #9d9d9d);
-    text-align: center;
-}
+/* 空态 / 结果分组标题 / 提示条：均已并入顶部基础件（`.plugins-empty` / `.plugins-section` / `.plugins-notice`） */
 
-/* 结果分组标题（市场结果 / 商城结果 / 已安装） */
-.plugins-ext-section {
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--vscode-descriptionForeground, #9d9d9d);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    padding: 6px 2px 2px 2px;
-    border-bottom: 1px solid var(--vscode-panel-border, #3c3c3c);
-    margin-top: 2px;
-}
-
-/* 提示条（未配置扩展市场 / 搜索失败 / 搜索中） */
-.plugins-ext-notice {
-    font-size: 11px;
-    line-height: 1.5;
-    color: var(--vscode-descriptionForeground, #9d9d9d);
-    background: var(--vscode-textBlockQuote-background, rgba(127, 127, 127, 0.1));
-    border-left: 3px solid var(--vscode-editorInfo-foreground, #3794ff);
-    padding: 6px 8px;
-    border-radius: 2px;
-}
-
-.plugins-ext-card {
-    background: var(--vscode-sideBar-background, #252526);
-    border: 1px solid var(--vscode-panel-border, #3c3c3c);
-    border-radius: 6px;
-    padding: 10px 12px;
-    transition: border-color 0.15s;
-}
-
-.plugins-ext-card:hover {
-    border-color: var(--vscode-button-background, #007acc);
-    background: var(--vscode-list-hoverBackground, #2a2d2e);
-}
-
-.plugins-ext-card.disabled {
-    opacity: 0.65;
-}
-
-/* 市场（gallery）结果行：与"已安装"行区分（左侧一条强调边） */
-.plugins-ext-card.market {
-    border-left: 3px solid var(--vscode-editorInfo-foreground, #3794ff);
-}
+/* 扩展卡片：外观由顶部基础件 `.plugins-card` 给（`.plugins-ext-card` / `.market` / `.disabled` 均已并入） */
 
 .plugins-ext-top {
     display: flex;
@@ -562,40 +808,7 @@
     flex-shrink: 0;
 }
 
-.plugins-ext-badge {
-    font-size: 9px;
-    padding: 1px 6px;
-    border-radius: 3px;
-    font-weight: 600;
-    flex-shrink: 0;
-    background: var(--vscode-badge-background, #4d4d4d);
-    color: var(--vscode-badge-foreground, #ffffff);
-}
-
-.plugins-ext-badge-builtin {
-    background: rgba(86, 156, 214, 0.2);
-    color: var(--vscode-textLink-foreground, #569cd6);
-}
-
-.plugins-ext-badge-env {
-    background: rgba(244, 135, 113, 0.22);
-    color: #f48771;
-}
-
-.plugins-ext-badge-warn {
-    background: rgba(220, 220, 170, 0.2);
-    color: #dcdcaa;
-}
-
-.plugins-ext-badge-off {
-    background: rgba(150, 150, 150, 0.2);
-    color: var(--vscode-descriptionForeground, #9d9d9d);
-}
-
-.plugins-ext-badge-update {
-    background: rgba(78, 201, 176, 0.2);
-    color: #4ec9b0;
-}
+/* 徽标：`.plugins-ext-badge` 与 5 个语义变体均已并入顶部基础件（`.plugins-badge` + `.is-*`） */
 
 .plugins-ext-meta {
     font-size: 10px;
@@ -622,31 +835,224 @@
     gap: 6px;
 }
 
-.plugins-ext-btn {
-    padding: 2px 10px;
-    font-size: 11px;
-    border: none;
-    border-radius: 3px;
-    cursor: pointer;
-    background: var(--vscode-button-secondaryBackground, #3a3d41);
-    color: var(--vscode-button-secondaryForeground, #cccccc);
-    transition: background 0.15s;
+/* 按钮：`.plugins-ext-btn` 已并入顶部基础件 `.plugins-btn`（含 `:hover/:disabled/.danger`）。
+   ⚠ `.plugins-ext-btn.off`（"取消"按钮用）此前**没有任何 CSS** —— 这里补一条与 secondary 一致的处理，
+   见文件末尾 dsh 段。 */
+
+/* ══════════════════════════════════════════════════════════════════════════
+   「DSH」页签（方案 4.5 / 5.16）
+   ──────────────────────────────────────────────────────────────────────────
+   这一页此前**整套样式都写在内联 `style.cssText`**里（18 个类名一条 CSS 规则都没有），
+   是"每个页签长得都不一样"的最大来源。这里给它补上样式表归宿：
+   - 值取原来的内联值（行为等价）；
+   - 能对上基础件的（卡片 / 徽标 / 按钮 / 分组标题 / 空态 / 提示条）换成基础件类，见 TS 侧同步改动。
+   ══════════════════════════════════════════════════════════════════════════ */
+/* 同上：默认隐藏（初始态来源），激活时 JS 设显式 `display:block`。 */
+.plugins-dsh-container {
+    display: none;
+    flex: 1;
+    overflow-y: auto;
 }
 
-.plugins-ext-btn:hover {
-    background: var(--vscode-button-secondaryHoverBackground, #45494e);
+.plugins-dsh-status {
+    display: flex;
+    gap: var(--plugins-gap-lg);
+    align-items: center;
+    flex-wrap: wrap;
+    padding: 8px 10px;
+    font-size: var(--plugins-font-sm);
+    color: var(--plugins-muted);
 }
 
-.plugins-ext-btn:disabled {
+.plugins-dsh-status-text {
+    min-width: 0;
+}
+
+/* 段切换条：复用页签按钮外观，但更小（原来是内联的 padding/font-size）。 */
+/* 段切换条（`.plugins-dsh-segments`）已删除：方案 B「全搬」把四段全部搬进「插件」页签，
+   「运行时」只剩运行态现场 + 添加插件入口 ⇒ 不再需要切段（2026-10-12）。 */
+
+.plugins-dsh-list {
+    padding: 0 0 var(--plugins-gap-md) 0;
+}
+
+.plugins-dsh-heading {
+    padding: 10px 10px 4px 10px;
+    font-size: var(--plugins-font-sm);
+    font-weight: 600;
+    color: var(--plugins-muted);
+}
+
+/* VsSaros 侧模块行（启停开关）：行式（顶部分隔线），与 installed 页签同一语义 */
+.plugins-dsh-row {
+    display: flex;
+    gap: var(--plugins-gap-lg);
+    align-items: center;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
+}
+
+.plugins-dsh-row.disabled {
     opacity: 0.6;
-    cursor: default;
 }
 
-.plugins-ext-btn.danger {
-    background: rgba(244, 135, 113, 0.15);
-    color: #f48771;
+.plugins-dsh-info {
+    min-width: 0;
+    flex: 1;
 }
 
-.plugins-ext-btn.danger:hover {
-    background: rgba(244, 135, 113, 0.28);
+.plugins-dsh-name {
+    font-size: var(--plugins-font-md);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
+
+.plugins-dsh-meta {
+    font-size: var(--plugins-font-sm);
+    color: var(--plugins-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.plugins-dsh-empty {
+    padding: 20px 4px;
+    font-size: var(--plugins-font-md);
+    color: var(--plugins-muted);
+    text-align: center;
+}
+
+/* 「随包模块」段 */
+.plugins-dsh-bundled {
+    padding: 10px;
+    font-size: var(--plugins-font-md);
+    color: var(--plugins-muted);
+}
+
+.plugins-dsh-intro {
+    margin-bottom: var(--plugins-gap-md);
+}
+
+.plugins-dsh-off {
+    margin-top: var(--plugins-gap-sm);
+    color: var(--vscode-errorForeground, #f48771);
+}
+
+.plugins-dsh-bundled-row {
+    margin: var(--plugins-gap-md) 0;
+}
+
+.plugins-dsh-row-btn {
+    margin-left: auto;
+}
+
+.plugins-dsh-desc {
+    margin-top: 3px;
+    font-size: var(--plugins-font-sm);
+    color: var(--plugins-muted);
+}
+
+.plugins-dsh-note {
+    margin: var(--plugins-gap-sm) 0;
+    white-space: pre-wrap;
+}
+
+/* 组合包卡片（官方 / 已安装段）：外观由 `.plugins-card` 给，这里只给左右内缩（列表本身无内距）。
+   行内件（名称/版本/徽标/按钮/说明）同样走基础件。 */
+.plugins-dsh-bundle {
+    margin: var(--plugins-gap-md) 10px;
+}
+
+.plugins-dsh-card-btn {
+    margin-top: var(--plugins-gap-md);
+}
+
+.plugins-dsh-rows {
+    margin-top: var(--plugins-gap-sm);
+    font-size: var(--plugins-font-sm);
+    color: var(--plugins-muted);
+}
+
+/* 卡片里的错误文字（原为内联 red） */
+.plugins-error {
+    font-size: var(--plugins-font-sm);
+    color: var(--vscode-errorForeground, #f48771);
+}
+
+/* 「添加插件」段 */
+.plugins-dsh-add {
+    padding: 10px;
+    font-size: var(--plugins-font-md);
+    line-height: 1.7;
+    color: var(--plugins-muted);
+}
+
+/* 「添加插件」入口里的**推荐清单**（策展清单，方案 A，2026-10-12）：卡片/标题/按钮都走基础件，
+   这里只给容器与行距——该块与 `.plugins-dsh-bundled` 同级（同样在 `padding:10px` 的容器里）。 */
+.plugins-dsh-reco {
+    margin-bottom: var(--plugins-gap-md);
+}
+
+.plugins-dsh-reco-row {
+    margin: var(--plugins-gap-md) 0;
+}
+
+/* 「打开插件商城（编辑区）」入口行（2026-10-14）：按钮 + 一句理由，与输入行同款横排 */
+.plugins-dsh-add-open {
+    display: flex;
+    align-items: center;
+    gap: var(--plugins-gap-md);
+    flex-wrap: wrap;
+    margin: var(--plugins-gap-sm) 0 var(--plugins-gap-md) 0;
+}
+
+.plugins-dsh-add-row,
+.plugins-dsh-approve-row {
+    display: flex;
+    gap: var(--plugins-gap-md);
+    align-items: center;
+    flex-wrap: wrap;
+    margin: var(--plugins-gap-sm) 0;
+}
+
+.plugins-dsh-body {
+    margin-top: var(--plugins-gap-sm);
+}
+
+.plugins-dsh-spec {
+    flex: 1;
+    min-width: 0;
+    padding: 3px 6px;
+    font-size: var(--plugins-font-md);
+    background: var(--vscode-input-background);
+    color: var(--vscode-input-foreground);
+    border: 1px solid var(--vscode-input-border, transparent);
+    border-radius: var(--plugins-radius-sm);
+}
+
+.plugins-dsh-inspect {
+    margin: var(--plugins-gap-sm) 0;
+    padding: var(--plugins-pad-row);
+    border-radius: var(--plugins-radius-md);
+    border: var(--plugins-border);
+    color: var(--plugins-fg);
+}
+
+.plugins-dsh-inspect.is-refused {
+    color: var(--vscode-errorForeground, #f48771);
+}
+
+/* `.plugins-ext-btn.off`：此前**没有任何 CSS**（"取消 / 启用"这类次要动作）。
+   现在统一按"次要动作"处理：透明底 + 静音文字，与 `.plugins-btn` 的 secondary 区分开。 */
+.plugins-ext-btn.off,
+.plugins-btn.off {
+    background: transparent;
+    color: var(--plugins-muted);
+}
+
+.plugins-ext-btn.off:hover,
+.plugins-btn.off:hover {
+    background: var(--vscode-list-hoverBackground, #2a2d2e);
+}
+

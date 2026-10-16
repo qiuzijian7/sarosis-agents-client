@@ -579,14 +579,28 @@ suite('webSearchParse — web_extract 提取质量分类（P1-1 信号驱动升�
 		}
 	});
 
-	test('★ 登录句式只在**短页**生效（长文里引用一句不该被拒 —— 误判护栏）', () => {
+	test('★ 登录句式只在**短页**生效，且 kind 单列为 `login-required`（长文引用一句不该被拒 —— 误判护栏）', () => {
 		// 这类通用句式若收成强特征，任何引用它的教程都会被拒 —— 按收录纪律只能进弱组。
 		const short = classifyExtractQuality('请先登录后查看');
 		assert.strictEqual(short.verdict, 'blocked');
-		assert.strictEqual(short.kind, 'unavailable');
+		assert.strictEqual(short.kind, 'login-required', '登录墙必须与"内容已删"分开 —— 两者下一步动作不同');
 
 		const longPage = classifyExtractQuality(`教程：遇到"请先登录后查看"时该怎么做。${long(4000)}`);
 		assert.strictEqual(longPage.verdict, 'ok', `got ${longPage.verdict} / ${longPage.signals.join(',')}`);
+	});
+
+	test('★★ 三种登录/客户端墙句式都归 `login-required`（2026-10-13 从 unavailable 单列）', () => {
+		const samples: Array<[string, string]> = [
+			['请先登录后查看', 'zh-login-required'],
+			['登录后可查看全文', 'zh-login-to-view'],
+			['请在App内打开', 'zh-app-only'],
+		];
+		for (const [text, label] of samples) {
+			const q = classifyExtractQuality(text);
+			assert.strictEqual(q.verdict, 'blocked', `expected blocked for: ${text}`);
+			assert.strictEqual(q.kind, 'login-required', `${text} 的 kind 必须单列（got ${q.kind}）`);
+			assert.ok(q.signals.includes(label), `expected ${label}, got ${q.signals.join(',')}`);
+		}
 	});
 
 	test('kind 只在 blocked 时出现（ok / thin 不设 —— 它表达的是"成因"，不是"内容好坏"）', () => {
@@ -600,7 +614,7 @@ suite('webSearchParse — web_extract 提取质量分类（P1-1 信号驱动升�
 		assert.ok(webExtractBlockedMessage('https://example.com/p', q).startsWith('## Web Extract Blocked'));
 	});
 
-	test('★★ 不可用页的文案：禁止原样重试、给出真浏览器通道、不泄漏占位页文本', () => {
+	test('★★ 内容已删页的文案：禁止重试 + **明确否掉「去登录」** + 不泄漏占位页文本', () => {
 		const marker = `你访问的页面不见了 ${long(900)}`;
 		const q = classifyExtractQuality(marker);
 		const m = webExtractBlockedMessage('https://www.xiaohongshu.com/discovery/item/abc', q);
@@ -609,9 +623,24 @@ suite('webSearchParse — web_extract 提取质量分类（P1-1 信号驱动升�
 		assert.ok(m.includes('https://www.xiaohongshu.com/discovery/item/abc'));
 		assert.ok(m.includes('zh-page-gone'), '要列出命中的信号，便于归因');
 		assert.ok(m.includes('Do NOT retry this URL with web_extract'), '必须显式禁止这条无解的路');
-		assert.ok(m.includes('browser_navigate'), '要给"真浏览器"这条真出路');
-		assert.ok(m.includes('sign in **once**'), '登录动作落给用户；模型不得自己去搞凭据');
+		// ★ 与登录墙分开之后的关键断言：内容已删时**不许**把人骗去登录（那是另一条死路）
+		assert.ok(m.includes('not a login problem'), '必须显式否掉"去登录"这条路');
+		assert.ok(!m.includes('sign in **once**'), '内容已删 ≠ 缺登录态：不许给登录动作');
 		assert.ok(!m.includes(marker), '占位页自身的文本一律不外传（否则模型会基于它作答）');
+	});
+
+	test('★★ 登录墙文案：同一堵墙重试无用 → 只给「请用户登录一次 + 用 login op 验证」这条可验证的路', () => {
+		const q = classifyExtractQuality('请先登录后查看');
+		const m = webExtractBlockedMessage('https://www.zhihu.com/question/1', q);
+
+		assert.ok(m.startsWith('## Web Extract — login required'), m.slice(0, 60));
+		assert.ok(m.includes('Do NOT retry this URL with web_extract'), '重试无用必须明说（否则模型撞同一堵墙）');
+		assert.ok(m.includes('zh-login-required'), '要列出命中的信号');
+		assert.ok(/never ask for, or type, credentials/.test(m), '凭据纪律必须写进文案');
+		// 可验证性：必须点名 login op 与 done=true（否则模型会自己宣布"应该好了"）
+		assert.ok(m.includes('op: "login"'), '要点名 login op');
+		assert.ok(m.includes('done: true'), '要点名 done=true 这条验证路径');
+		assert.ok(!m.includes('请先登录后查看'), '占位页自身的文本一律不外传');
 	});
 
 	test('truncation warning hinges on strict `> LIMIT`（缓存留 +1 字符的依据）', () => {

@@ -204,7 +204,9 @@ export class ChannelEditorPane extends EditorPane {
 			qrCanvas.className = 'channel-bind-qr';
 			panel.appendChild(qrCanvas);
 			try {
-				drawQrToCanvas(qrCanvas, begin.qrUrl, { scale: 5, margin: 3 });
+				// ★ 2026-09-25：静区从 3 模块改为**规范要求的 4 模块**（3 模块时不少扫码器直接判失败）；
+		//   scale 提到 8 ⇒ 画布更细，配合 CSS 的 pixelated 缩放后模块边缘更清晰。
+		drawQrToCanvas(qrCanvas, begin.qrUrl, { scale: 8, margin: 4 });
 				qrOk = true;
 			} catch (qrErr) {
 				// QR 生成果异常时回落到链接

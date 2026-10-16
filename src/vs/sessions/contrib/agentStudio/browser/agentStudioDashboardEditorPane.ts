@@ -22,7 +22,9 @@ import { IThemeService } from '../../../../platform/theme/common/themeService.js
 import { EditorPane } from '../../../../workbench/browser/parts/editor/editorPane.js';
 import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
+import { ThemeIcon } from '../../../../base/common/themables.js';
 import { AgentStudioDashboardEditorInput } from './agentStudioDashboardEditorInput.js';
+import { IWorkbenchManagerService, IWorkbenchEntry } from './workbenchManagerService.js';
 import {
 	IAgentStudioDashboardService,
 	IDashboardData,
@@ -71,6 +73,13 @@ export class AgentStudioDashboardEditorPane extends EditorPane {
 	private _refreshTimer: IDisposable | undefined;
 	private _dateRange: 'today' | '7d' | '30d' | 'all' = '7d';
 
+	// ── 工作台管理（新增区块；其余面板一律不碰）────────────────────────────
+	private _workbenchSubscription: IDisposable | undefined;
+	/** 网格容器：筛选输入只重填它，不整页重渲染（否则输入框会丢焦点）。 */
+	private _workbenchGrid: HTMLElement | undefined;
+	private _workbenchFilter = '';
+	private _workbenchDragId: string | undefined;
+
 	constructor(
 		group: IEditorGroup,
 		@ITelemetryService telemetryService: ITelemetryService,
@@ -78,6 +87,7 @@ export class AgentStudioDashboardEditorPane extends EditorPane {
 		@IStorageService storageService: IStorageService,
 		@ILogService private readonly _logService: ILogService,
 		@IAgentStudioDashboardService private readonly _dashboardService: IAgentStudioDashboardService,
+		@IWorkbenchManagerService private readonly _workbenchManager: IWorkbenchManagerService,
 	) {
 		super(AgentStudioDashboardEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -113,6 +123,10 @@ export class AgentStudioDashboardEditorPane extends EditorPane {
 		// Dispose previous subscriptions (Singleton editor may reuse this pane)
 		this._dataSubscription?.dispose();
 		this._refreshTimer?.dispose();
+		this._workbenchSubscription?.dispose();
+
+		// 工作台区块：活动栏被本页改过（pin / 显隐 / 排序）时重渲染一次
+		this._workbenchSubscription = this._workbenchManager.onDidChange(() => this._render());
 
 		// Initial render with cached data (may be empty on first open)
 		this._data = this._dashboardService.getData();
@@ -167,6 +181,8 @@ export class AgentStudioDashboardEditorPane extends EditorPane {
 		wrapper.style.cssText = 'max-width: 1400px; margin: 0 auto; padding: 16px 24px 40px;';
 
 		wrapper.appendChild(this._renderHeader());
+		// ★ 新增：「工作台」区块。纯插入 —— 下面是原有面板，顺序与实现一律不动。
+		wrapper.appendChild(this._renderWorkbenchSection());
 		wrapper.appendChild(this._renderKpiRow());
 		wrapper.appendChild(this._renderMainGrid());
 		wrapper.appendChild(this._renderCompressionPanel());
@@ -174,6 +190,168 @@ export class AgentStudioDashboardEditorPane extends EditorPane {
 		wrapper.appendChild(this._renderBudgetAndDonut());
 
 		this._container.appendChild(wrapper);
+	}
+
+	// ─── Workbench Manager（「工作台」区块）────────────────────────────────
+	// 数据与控制面全在 `IWorkbenchManagerService`（pin / 显隐 / 排序 / 打开）。
+	// 这里只负责渲染 —— 样式是 mockup 选定的「D · 导航面板卡」：
+	// 大图标 + 名称 + 一行描述 + 三态徽章贴底，操作 hover / 聚焦才浮出右上角。
+
+	private _renderWorkbenchSection(): HTMLElement {
+		const entries = this._workbenchManager.listWorkbenches();
+		const inBar = entries.filter(e => !e.hidden).length;
+
+		const body = el('div');
+		body.style.cssText = 'padding: 12px 14px;';
+		body.appendChild(this._renderWorkbenchToolbar());
+		body.appendChild(this._renderWorkbenchGrid(entries));
+
+		return this._createPanel('🧭 工作台', `${inBar} / ${entries.length} 在活动栏`, body);
+	}
+
+	private _renderWorkbenchToolbar(): HTMLElement {
+		const bar = el('div', 'dash-wb-bar');
+
+		const search = document.createElement('input');
+		search.className = 'dash-wb-search';
+		search.type = 'text';
+		search.placeholder = '筛选工作台…';
+		search.value = this._workbenchFilter;
+		search.setAttribute('data-vssaros-workbench-filter', 'true');
+		search.addEventListener('input', () => {
+			this._workbenchFilter = search.value;
+			// 只重填网格：整页重渲染会把输入焦点弄丢 ✓（活动栏改动才走 onDidChange → 整页）。
+			this._fillWorkbenchGrid();
+		});
+		bar.appendChild(search);
+
+		const spacer = el('div');
+		spacer.style.flex = '1';
+		bar.appendChild(spacer);
+
+		bar.appendChild(this._workbenchButton('按最近使用排序', () => this._workbenchManager.sortByRecentUse()));
+		bar.appendChild(this._workbenchButton('全部显示', () => {
+			for (const entry of this._workbenchManager.listWorkbenches()) {
+				if (entry.hidden && !entry.virtual) {
+					this._workbenchManager.setHidden(entry.id, false);
+				}
+			}
+		}));
+		bar.appendChild(this._workbenchButton('恢复默认顺序', () => this._workbenchManager.resetOrder()));
+		return bar;
+	}
+
+	private _workbenchButton(label: string, run: () => void): HTMLButtonElement {
+		const button = document.createElement('button');
+		button.className = 'dash-wb-btn';
+		button.textContent = label;
+		button.addEventListener('click', run);
+		return button;
+	}
+
+	private _renderWorkbenchGrid(entries: readonly IWorkbenchEntry[]): HTMLElement {
+		const grid = el('div', 'dash-wb-grid');
+		this._workbenchGrid = grid;
+		this._fillWorkbenchGrid(entries);
+		return grid;
+	}
+
+	/** 重填网格（不带参 = 现取一次数据，供筛选输入使用）。 */
+	private _fillWorkbenchGrid(entries?: readonly IWorkbenchEntry[]): void {
+		const grid = this._workbenchGrid;
+		if (!grid) {
+			return;
+		}
+		while (grid.firstChild) {
+			grid.removeChild(grid.firstChild);
+		}
+		const all = entries ?? this._workbenchManager.listWorkbenches();
+		const needle = this._workbenchFilter.trim().toLowerCase();
+		const matched = needle
+			? all.filter(e => e.title.toLowerCase().includes(needle) || e.containerId.toLowerCase().includes(needle))
+			: all;
+		if (matched.length === 0) {
+			grid.appendChild(el('div', 'dash-wb-empty', '没有匹配的工作台。'));
+			return;
+		}
+		for (const entry of matched) {
+			grid.appendChild(this._renderWorkbenchCard(entry));
+		}
+	}
+
+	private _renderWorkbenchCard(entry: IWorkbenchEntry): HTMLElement {
+		const card = el('div', `dash-wb-card${entry.hidden ? ' hidden' : ''}${entry.pinned && !entry.hidden ? ' pinned' : ''}`);
+		// 容器 id 与副标题都进 title：卡片上只留名称（mockup 的 D 样式口径）。
+		card.title = `${entry.containerId}\n${entry.summary || '（无说明）'}\n点击打开`;
+		card.setAttribute('data-vssaros-workbench', entry.id);
+
+		// 点整卡 = 打开
+		card.addEventListener('click', () => void this._workbenchManager.open(entry.id));
+
+		// 拖拽排序（寄居条目不可拖：它们没有自己的活动栏格子）
+		if (!entry.virtual) {
+			card.draggable = true;
+			card.addEventListener('dragstart', e => {
+				this._workbenchDragId = entry.id;
+				card.classList.add('dragging');
+				e.dataTransfer?.setData('text/plain', entry.id);
+			});
+			card.addEventListener('dragend', () => {
+				this._workbenchDragId = undefined;
+				card.classList.remove('dragging');
+			});
+			card.addEventListener('dragover', e => {
+				e.preventDefault();
+				card.classList.add('dropbefore');
+			});
+			card.addEventListener('dragleave', () => card.classList.remove('dropbefore'));
+			card.addEventListener('drop', e => {
+				e.preventDefault();
+				card.classList.remove('dropbefore');
+				const from = this._workbenchDragId ?? e.dataTransfer?.getData('text/plain');
+				if (from && from !== entry.id) {
+					this._workbenchManager.move(from, entry.id, true);
+				}
+			});
+		}
+
+		// 图标用容器自己的 codicon（`ThemeIcon.asClassName`），不是 emoji。
+		card.appendChild(el('div', `dash-wb-ico ${ThemeIcon.asClassName(entry.icon)}`));
+		card.appendChild(el('div', 'dash-wb-name', entry.title));
+		card.appendChild(el('div', 'dash-wb-summary', entry.summary));
+
+		const badges = el('div', 'dash-wb-badges');
+		badges.appendChild(el('span', `dash-wb-badge ${entry.hidden ? 'warn' : entry.pinned ? 'ok' : 'dim'}`,
+			entry.hidden ? '已隐藏' : entry.pinned ? '已固定' : '在溢出菜单'));
+		if (entry.virtual) {
+			badges.appendChild(el('span', 'dash-wb-badge dim', '寄居资料库'));
+		}
+		card.appendChild(badges);
+
+		const ops = el('div', 'dash-wb-ops');
+		ops.appendChild(this._workbenchOp('↗', '打开', () => void this._workbenchManager.open(entry.id)));
+		if (!entry.virtual) {
+			ops.appendChild(this._workbenchOp('📌', entry.pinned ? '取消固定（移入溢出菜单）' : '固定到活动栏',
+				() => this._workbenchManager.setPinned(entry.id, !entry.pinned), entry.pinned));
+			ops.appendChild(this._workbenchOp('👁', entry.hidden ? '在活动栏显示' : '从活动栏隐藏（含溢出菜单）',
+				() => this._workbenchManager.setHidden(entry.id, !entry.hidden), !entry.hidden));
+		}
+		card.appendChild(ops);
+
+		return card;
+	}
+
+	private _workbenchOp(icon: string, label: string, run: () => void, on = false): HTMLButtonElement {
+		const button = document.createElement('button');
+		button.className = `dash-wb-op${on ? ' on' : ''}`;
+		button.title = label;
+		button.textContent = icon;
+		// 必须挡住冒泡：卡片的 click 是「打开工作台」，点按钮不该顺带打开。
+		button.addEventListener('click', e => {
+			e.stopPropagation();
+			run();
+		});
+		return button;
 	}
 
 	// ─── Header ──────────────────────────────────────────────────────────
@@ -918,6 +1096,64 @@ export class AgentStudioDashboardEditorPane extends EditorPane {
 			   —— 这两个变量名**根本不存在**（正确的是 -background / -hoverBackground），
 			   所以一直走的是兜底色。 */
 			.agent-studio-dashboard::-webkit-scrollbar-thumb { background-clip: padding-box; }
+
+			/* ── 工作台管理（新增区块；样式 = mockup 选定的 D · 导航面板卡）────
+			   只用 VsSaros 主题变量，不引新调色板。 */
+			.agent-studio-dashboard .dash-wb-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+			.agent-studio-dashboard .dash-wb-search {
+				background: var(--vscode-input-background, #3c3c3c); color: var(--vscode-input-foreground, #ccc);
+				border: 1px solid var(--vscode-input-border, transparent); border-radius: 4px;
+				padding: 3px 8px; font-size: 11px; width: 150px;
+			}
+			.agent-studio-dashboard .dash-wb-btn {
+				background: transparent; color: var(--vscode-foreground, #ccc);
+				border: 1px solid var(--vscode-panel-border, #3c3c3c); border-radius: 4px;
+				padding: 3px 9px; font-size: 11px; cursor: pointer; white-space: nowrap;
+			}
+			.agent-studio-dashboard .dash-wb-btn:hover { background: var(--vscode-toolbar-hoverBackground, #2a2d2e); }
+			.agent-studio-dashboard .dash-wb-grid {
+				display: grid; grid-template-columns: repeat(auto-fill, minmax(206px, 1fr)); gap: 10px;
+			}
+			.agent-studio-dashboard .dash-wb-card {
+				position: relative; display: flex; flex-direction: column; gap: 6px; min-height: 104px;
+				padding: 12px; background: var(--vscode-editor-background, #1e1e1e);
+				border: 1px solid var(--vscode-panel-border, #3c3c3c); border-radius: 6px; cursor: pointer;
+			}
+			.agent-studio-dashboard .dash-wb-card:hover { border-color: var(--vscode-focusBorder, #0078d4); }
+			.agent-studio-dashboard .dash-wb-card.pinned { border-left: 3px solid var(--vscode-button-background, #0078d4); }
+			.agent-studio-dashboard .dash-wb-card.hidden { opacity: 0.5; border-style: dashed; }
+			.agent-studio-dashboard .dash-wb-card.dragging { opacity: 0.35; }
+			.agent-studio-dashboard .dash-wb-card.dropbefore { box-shadow: inset 0 2px 0 var(--vscode-focusBorder, #0078d4); }
+			.agent-studio-dashboard .dash-wb-ico {
+				width: 34px; height: 34px; display: flex; align-items: center; justify-content: center;
+				font-size: 18px; background: var(--vscode-panel-background, #252526); border-radius: 6px;
+			}
+			.agent-studio-dashboard .dash-wb-name {
+				font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+			}
+			.agent-studio-dashboard .dash-wb-summary { font-size: 11px; color: var(--vscode-descriptionForeground, #858585); }
+			.agent-studio-dashboard .dash-wb-badges { display: flex; gap: 5px; flex-wrap: wrap; margin-top: auto; }
+			.agent-studio-dashboard .dash-wb-badge {
+				font-size: 9.5px; padding: 1px 7px; border-radius: 10px; white-space: nowrap;
+				border: 1px solid var(--vscode-panel-border, #3c3c3c); color: var(--vscode-descriptionForeground, #858585);
+			}
+			.agent-studio-dashboard .dash-wb-badge.ok { border-color: var(--vscode-button-background, #0078d4); color: var(--vscode-button-background, #0078d4); }
+			.agent-studio-dashboard .dash-wb-badge.warn { border-color: #bb8200; color: #ffb000; }
+			.agent-studio-dashboard .dash-wb-badge.dim { opacity: 0.75; }
+			.agent-studio-dashboard .dash-wb-ops {
+				position: absolute; top: 8px; right: 8px; display: flex; gap: 4px; opacity: 0; transition: opacity .12s;
+			}
+			.agent-studio-dashboard .dash-wb-card:hover .dash-wb-ops,
+			.agent-studio-dashboard .dash-wb-card:focus-within .dash-wb-ops { opacity: 1; }
+			.agent-studio-dashboard .dash-wb-op {
+				background: var(--vscode-panel-background, #252526); color: var(--vscode-foreground, #ccc);
+				border: 1px solid var(--vscode-panel-border, #3c3c3c); border-radius: 4px;
+				padding: 2px 6px; font-size: 11px; cursor: pointer; white-space: nowrap;
+			}
+			.agent-studio-dashboard .dash-wb-op.on { border-color: var(--vscode-button-background, #0078d4); color: var(--vscode-button-background, #0078d4); }
+			.agent-studio-dashboard .dash-wb-empty {
+				font-size: 12px; color: var(--vscode-descriptionForeground, #858585); padding: 16px 0; text-align: center;
+			}
 		`;
 		document.head.appendChild(style);
 	}
@@ -925,6 +1161,7 @@ export class AgentStudioDashboardEditorPane extends EditorPane {
 	override dispose(): void {
 		this._dataSubscription?.dispose();
 		this._refreshTimer?.dispose();
+		this._workbenchSubscription?.dispose();
 		super.dispose();
 	}
 }

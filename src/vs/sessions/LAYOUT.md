@@ -174,6 +174,12 @@ Orientation: VERTICAL (root)
 
 The grid is extremely simple: Titlebar at top, then a horizontal row with Sidebar on the left and Editor on the right. The Editor part internally manages two editor groups (left for files, right for Agent Studio).
 
+> **Note (2026-10-13).** The three-column profile shared with the "IDE base + Agent layout"
+> window (`browser/layoutProfile.ts#createAgentsLayoutGridDescriptor`) additionally accepts an
+> optional `agentColumnSide: 'left' | 'right'` (default `'right'`). It only swaps the
+> `EditorColumn` (Editor + Panel) and `AgentEditor` nodes; the sidebar always stays first and the
+> Panel always travels with the `EditorColumn` branch. **Both** windows expose the switch — see §12.
+
 ### 4.2 Default Sizes
 
 | Part | Default Size |
@@ -593,7 +599,34 @@ src/vs/sessions/
 
 When modifying the Agent Sessions layout:
 
-1. **Maintain fixed positions** — Do not add settings-based position customization
+1. **Maintain fixed positions** — Part positions stay fixed. **One deliberate exception
+   (2026-10-13):** the file-editor column and the Agent column
+   (`Parts.EDITOR_PART` column ⇄ `Parts.AGENT_EDITOR_PART`) may swap. It applies to **both**
+   windows, each with its own implementation because they are not the same class:
+
+   | Window | Class | Entry point for the user |
+   |---|---|---|
+   | Agent Sessions (this spec; dev page `sessions-dev.html`) | `browser/workbench.ts#Workbench` | ⇄ button in the sessions titlebar (`browser/parts/titlebarPart.ts`), next to *Toggle Sidebar Content* |
+   | "IDE base + Agent layout" | `workbench/browser/layout.ts#Layout` (enabled by `agentLayoutWorkbench.ts`) | upstream `MenuId.TitleBar` toolbar button |
+
+   Shared pieces (do **not** duplicate):
+   - **landing index**: `getAgentsEditorColumnTargetLocation(side)`
+     (`workbench/services/layout/browser/layoutService.ts`) — ⚠ the trailing index is *not* the
+     final index (`BranchNode.moveChild` does `to -= 1` when moving an item forward, so `'right'` is `3`);
+   - **persistence**: storage key `vssaros.layout.agentColumnSide.v1` (`StorageScope.WORKSPACE`,
+     `StorageTarget.MACHINE`), read early so the first grid frame is already correct;
+   - **gating/state**: context keys `vssaros.agentsEditorColumnAvailable` /
+     `vssaros.agentsEditorColumnLeft`;
+   - **commands**: `browser/agentColumnLayoutActions.ts` (`vssaros.layout.toggleEditorAndAgentColumn`,
+     `…moveAgentColumnLeft`, `…moveAgentColumnRight`), imported by **both** window entries
+     (`sessions.common.main.ts` and `agentLayout.desktop.main.ts`).
+
+   Both implementations call `grid.moveViewTo(...)` — a **same-parent reorder**, so the whole
+   `EditorColumn` branch (Editor **and** Panel) moves as a unit; the sidebar always stays first.
+   Behaviour is locked by `test/browser/agentsColumnSwapGrid.test.ts` against a real
+   `SerializableGrid` in both grid shapes.
+
+   Do not extend this exception to any other part or position.
 2. **Panel must span the right section width** — The grid structure places the panel below Chat Bar and Auxiliary Bar only
 3. **Sidebar spans full window height** — Sidebar is at the root grid level, spanning from top to bottom independently of the titlebar
 4. **New parts go in right section** — Any new parts should be added to the right section alongside Titlebar, Chat Bar, and Auxiliary Bar
@@ -679,6 +712,7 @@ Note: Panel, AuxiliaryBar, and ChatBar are removed from the grid entirely.
 
 | Date | Change |
 |------|--------|
+| 2026-10-13 | Documented the **one** allowed position customization: the file-editor column and the Agent column may swap, in **both** windows. The shared profile (`browser/layoutProfile.ts`) gained an optional `agentColumnSide: 'left' \| 'right'` (default `'right'`, sidebar still first, Panel still travels with the editor column). The landing index lives in one shared pure function (`getAgentsEditorColumnTargetLocation`); each window does the move with `grid.moveViewTo(...)` (a same-parent reorder). Persistence key `vssaros.layout.agentColumnSide.v1` (workspace scope) is shared by both windows; context keys `vssaros.agentsEditorColumnAvailable` / `…Left` gate the entries. In the sessions window the user-facing entry is a ⇄ button in the sessions titlebar (the upstream `MenuId.TitleBar` toolbar does not exist there); the "IDE base + Agent layout" window uses `MenuId.TitleBar`. Behaviour locked by `agentsColumnSwapGrid.test.ts` (real `SerializableGrid`, both grid shapes). |
 | 2026-05-06 | Updated the sessions panel title tabs to reuse the same styling as the auxiliary bar's Changes/Files tabs: title-case labels, 500 font weight, tighter pill padding, and checked-state background without a persistent active underline. |
 | 2026-05-01 | Updated the sessions main-editor lifecycle so maximized editors attached to the auxiliary bar remember their maximized state across close/reopen, while modal editor flows continue to ignore that remembered state. |
 | 2026-04-28 | Updated the sessions "Open in VS Code" titlebar widget to match the core "Open in Agents" affordance more closely: the product icon is greyscale by default, animates back to full color on hover/focus when motion is enabled, uses secondary-button hover chrome instead of quality-tinted backgrounds, and draws a separator before the Run split button. |

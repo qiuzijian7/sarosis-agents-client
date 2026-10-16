@@ -1213,6 +1213,23 @@ export interface IToolDefinition {
 	 * 如果未设置，getAllToolDefinitions() 会自动推断。
 	 */
 	readonly toolset?: string;
+	/**
+	 * 工具级执行超时（毫秒）—— 与 dsh 官方 `ToolDefinition.timeoutMs` **同名同义**。
+	 *
+	 * **优先级最高**：声明了就由 `getTimeoutForTool()`（`browser/toolExecutionGuard.ts`）
+	 * 直接返回，不再走那张**按工具名/类别维护**的分级表 —— 表是兜底，声明才是真源。
+	 * `0` = 禁用守卫 wall-clock 超时（与编排类工具同一语义：活性与收尾由 handler 自管）。
+	 *
+	 * 为什么需要这个逃生口：分级表按名字登记，新工具忘了登记就**静默**落到
+	 * `DEFAULT_TOOL_TIMEOUT_MS`（60s）—— 短了会砍掉健康的长任务（`video_analyze`
+	 * 就被 60s 砍过，见 `VIDEO_TOOL_TIMEOUT_MS` 注释），长了则让卡死更久才被发现。
+	 * 官方把这件事放在**工具自己的定义**上，于是新工具不必去改一张与它无关的表。
+	 *
+	 * ⚠ 只声明"与分级表各档都不吻合"的工具；通用档（默认 / 危险 / MCP / 视频 / 编排）
+	 * 仍在表里统一收口，别把工具定义变成第二张分散的表。
+	 * 非法值（负数 / NaN）不生效，静默回落到分级表（fail-safe，见函数注释）。
+	 */
+	readonly timeoutMs?: number;
 }
 
 /**

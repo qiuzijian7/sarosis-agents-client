@@ -1,0 +1,45 @@
+# @vssaros/dsh-memory bundle patch: insert the memory row.
+#
+# 挂载形态（一种）：
+#   - 注入工作记忆：把网关（AgentMemory，127.0.0.1:3111 / dev 3112）产出的工作记忆文本注册成一条
+#     系统提示词 section（`text` 提供者同步返回**快照**）。刷新点是**语义驱动**的（2026-10-13 改）：
+#     新装配主体首装 / `memory_refresh` 工具 / 页面请求 —— **旧的 60s TTL 已删**，因为 section 排在提示词
+#     最前面，时间驱动的变更会反复打掉 KV cache 前缀（详见 `lib/index.js` 的 `snapshotFor`）；
+#   - 工具（**23 个**，与 `lib/index.js` 的 `TOOL_NAMES` 是同一份清单）：
+#       `memory_list` / `memory_search` / `memory_stats` / `memory_refresh` / `memory_remember` /
+#       `memory_recall` / `memory_forget` / `memory_obsidian_export` / `memory_cascade` / `memory_crystal` /
+#       `memory_routine` / `memory_improve` / `memory_facet` / `memory_governance` / `memory_team` /
+#       `memory_mesh` / `memory_sentinel` / `memory_api` / `memory_slot` / `memory_lesson` / `memory_work` /
+#       `memory_import` / `memory_skill`
+#     ⚠ `memory_api` 是 **2026-10-13** 加的**通用只读入口**：一个工具覆盖 **28 个**已确证的只读方法
+#     （分页读取 / 智能检索 / 技能匹配 / 会话观察 / 课程 / 槽位 / 统计诊断），白名单见 `lib/index.js`
+#     的 `MEMORY_API_READONLY`。它**不在下面那张写清单里**（只读 ⇒ 不过闸 ✓）；表外的 `method`
+#     一律被拒（含写方法与引擎里未实现的空壳）—— 这一条由 `p3-80` 守着 ✓。
+#     —— 写入口仍是网关（本模块只读）；判据是「**会不会改用户数据**」（不是"名字像不像写"），
+#     命中 `lib/index.js` 的 `WRITE_TOOLS` 的才走审批闸
+#     （`tools/pre-execute` ⇒ ask，载荷「批准即所见」；策略 `ask|auto|off` 可在 `config.writePolicy` 上分级），即：
+#       `memory_remember` / `memory_forget` / `memory_cascade` / `memory_crystal` /
+#       `memory_routine` / `memory_improve` / `memory_facet` / `memory_governance` /
+#       `memory_team` / `memory_mesh` / `memory_sentinel` / `memory_slot` / `memory_lesson` / `memory_work` /
+#       `memory_import` / `memory_skill`
+#     ⚠ 名单里的**多 action 工具**（routine / improve / facet / governance / team / mesh / sentinel）
+#     某一次调用是否真写，还要由 `isWriteIntent` 按 action 与参数再判一遍 ✓：
+#     `governance` 的 `audit`、`bulk_delete` 的 dry-run 缺省、`team.query`、`mesh.list`、`sentinel.list`
+#     都**不**过闸 ✗；而 `sentinel.check` **算写**（它会就地评估并可能触发 ✓）。
+#     ⚠ 本节**刻意不写"共 N 个"**：这个数字被写错过三次（5 → 7 → 11，前两次都是数错的 ✗）——
+#     手写数字必然腐烂 ⇒ 只列全名单，由 `p3-78` 守住"名单 == `WRITE_TOOLS`" ✓。
+#     ⚠ 更早那版还写着「工具 5 个」—— 2026-10-13 工具从 5 涨到 17 时**漏改了这里** ✗。
+#   - 页面：`/x/memory/` **独立整页**（2026-10-12「资料库」拆分后启用）⇒ 清单用 `view.kind=page`
+#     并注册自己的 activityBar 容器 `agentStudio.memory`（order 111）。
+#     旧片段路由 `/x/memory/section` **已删** —— 知识库页不再内嵌记忆分区（`@vssaros/dsh-kb`
+#     侧的内嵌与 `data-vssaros-kb-memory-section` 锚点同步移除），它不再有调用方。
+#
+# `config.gatewayUrl` 留空：**不猜端口**（猜错会读到另一个网关的库）。VsSaros 侧按 app 形态派生端口
+# （安装版 3111 / dev 3112），经 `--patch` 注入本行；也可用 `VSSAROS_MEMORY_GATEWAY_URL`。
+# 记忆的**分区键**（网关的 `agentId`）由 `lib/core/memory.js` 的 `partitionOf` 派生（2026-10-12 起）：
+# `config.workspaceId` 存在 ⇒ `ws-<workspaceId>`（**按工作区隔离**，壳通过 `--patch` 注入）；
+# 缺省 ⇒ `default`（旧的全局分区，其历史数据可用 `memory_list` / `memory_search` 的 `partition: 'legacy'` 查回）。
+- insert:
+    - id: vssaros-memory
+      name: '@vssaros/dsh-memory'
+      config: {}

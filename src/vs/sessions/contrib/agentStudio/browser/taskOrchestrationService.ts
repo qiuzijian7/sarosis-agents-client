@@ -662,6 +662,34 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 				const maxConc = plan.maxConcurrency || DEFAULT_MAX_CONCURRENCY;
 				if (running >= maxConc) { continue; }
 
+				// ★ 2026-10-14 修（P0 回归，`dagSchedulerAssignee` 规格）：DAG 扫描路径此前**完全不做
+				//   assignee 兜底** —— 下面那条 `t.assigneeId` 是**筛选条件**⇒ "依赖已就绪但没有 assignee"
+				//   的任务永远进不了 readyTasks ⇒ **永远停在 Pending** ✗，而它后面所有任务都在等一个
+				//   不会到来的 Done ⇒ **整条计划静默死锁**（该套件头注释写的就是这个事故）。
+				//   这里与顺序路径（`_executePlanSequential` 的 P0-1 兜底）**同构**：先 materialize；
+				//   仍拿不到 assignee ⇒ 标 `Error` 并写明原因，绝不留在 Pending ✓。
+				let dirty = false;
+				for (const task of plan.tasks) {
+					if (task.status !== PlanTaskStatus.Pending || task.assigneeId) { continue; }
+					const depsReady = task.dependencies.every(depId => {
+						const dep = plan.tasks.find(d => d.id === depId);
+						return dep && dep.status === PlanTaskStatus.Done;
+					});
+					if (!depsReady) { continue; }
+					await this._materializeAssignee(task, plan);
+					if (!task.assigneeId) {
+						this.logService.error(
+							`[Orchestration] Task "${task.title}" (${task.id}) STILL has NO assignee after materialize`
+							+ ' — marking Error instead of leaving it Pending (leaving it Pending deadlocks every downstream task)',
+						);
+						task.status = PlanTaskStatus.Error;
+						task.error = 'No assignee agent available (materialize failed)';
+						task.completedAt = new Date().toISOString();
+						dirty = true;
+						this._onDidChangeTask.fire({ planId: plan.id, task });
+					}
+				}
+
 				// Find pending tasks that are ready (all deps done) and whose agent is idle
 				const readyTasks = plan.tasks
 					.filter(t => t.status === PlanTaskStatus.Pending)
@@ -706,7 +734,9 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 			}
 
 			// P0: persist Running changes BEFORE fire-and-forget
-			if (tasksToStart.length > 0) {
+			// ⚠ `dirty` 也要落盘：上面那种"materialize 拿不到 agent ⇒ 标 Error"的改动同样必须写回盘，
+			//   否则下一次 `_readPlans()` 深拷贝回来的仍是 Pending ⇒ 每轮扫描重复报错、状态永远回不去 ✗。
+			if (tasksToStart.length > 0 || dirty) {
 				for (const p of plans) {
 					if (p.id === plan.id) {
 						p.updatedAt = new Date().toISOString();

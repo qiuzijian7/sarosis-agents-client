@@ -131,6 +131,10 @@ export function dedicatedProfileDir(homeDir: string, platform: string): string {
  * `headless` 用**不带 `=new` 的** `--headless`：Chrome 132+ 起它就是"新无头"（CDP 与页面能力
  * 与有窗口一致，只是不显示窗口），而在更老的版本上 `--headless=new` 反而会因不识别而落到有窗口模式。
  * ⚠ 无头下**没法交互式登录** —— 所以默认不开；要在专属 profile 里首次登录时也必须先用有窗口模式。
+ *
+ * ⚠ **这份实现与 dsh 侧同形**（`dsh-plugins/vssaros-browser/lib/core/chrome.js` 的
+ * `buildDedicatedChromeArgs`，它按"能力在 Host 侧"的口径逐条移植自本函数）——
+ * **改这里必须同时改那边**，否则两条路拉起的实例行为不一致（用户会看到"有时能过检测、有时不能"）。
  */
 export function buildDedicatedChromeArgs(profileDir: string, port: number, headless: boolean): string[] {
 	const args = [
@@ -140,6 +144,10 @@ export function buildDedicatedChromeArgs(profileDir: string, port: number, headl
 		'--no-default-browser-check',
 	];
 	if (headless) { args.push('--headless'); }
+	// 反检测**基线**（2026-10-13，与 dsh 侧同一行）：让 Blink 不再把本实例标成自动化，
+	// `navigator.webdriver` 随之回到正常值。⚠ 只做这一条 —— **不**注入 JS 补丁
+	// （`navigator.webdriver = false` 之类会被现代检测反向识别）、**不**换内核、**不**改 UA。
+	args.push('--disable-blink-features=AutomationControlled');
 	return args;
 }
 

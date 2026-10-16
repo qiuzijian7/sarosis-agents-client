@@ -40,7 +40,8 @@ const KB_AGENT_ID = 'knowledge-base-expert';
 
 /**
  * 存量悬空挂载的**显式允许清单**（2026-09-24 实测：本仓 `resources/.agents/skills/`
- * 的 153 个技能里没有这两个 id，用户技能库 `~/.vssaros/skills`、`~/.vssaros-dev/skills` 里也没有）：
+ * 的 153 个技能里没有这两个 id（2026-10-13 拍平 obsidian 子技能后是 154 个），
+ * 用户技能库 `~/.vssaros/skills`、`~/.vssaros-dev/skills` 里也没有）：
  *   · `writing`  —— writer / designer / code-architect 等 agent 期望的写作指南
  *   · `planning` —— saros-claw / planner / workflow-agent 等期望的规划指南
  *
@@ -86,7 +87,14 @@ function readFrontmatter(text: string): { meta: Record<string, string>; body: st
 	return { meta, body: text.slice(end + 4).replace(/^\r?\n/, '') };
 }
 
-/** 递归扫描内置技能（含 `obsidian-skills/<skill>` 这种一层容器目录）。 */
+/**
+ * 扫描内置技能（**递归到一层**）。
+ *
+ * 那个一层下探是**安全网**，不是"支持嵌套布局"：2026-10-13 之前 `obsidian-skills/<skill>` 这种
+ * 容器目录真存在（5 个技能藏在里面），而 **dsh 侧的 provider 只认扫描根顶层的 `<name>/SKILL.md`**
+ * ⇒ 那 5 个在 dsh 里永远看不见 ✗。已把它们拍平到顶层，容器目录也删了；保留下探是为了将来误建一层
+ * 容器时仍能被本用例发现（`id` 唯一性 + agent 绑定可解析两条都还在把关 ✓）。
+ */
 function scanBuiltinSkills(): IScannedSkill[] {
 	const root = path.join(process.cwd(), SKILLS_REL);
 	assert.ok(fs.existsSync(root), `内置技能目录不存在（路径基准变了？）：${root}`);
@@ -156,6 +164,34 @@ suite('内置技能契约（builtinSkillContracts）', () => {
 			.map(([id, rels]) => `${id} ← ${rels.join(' + ')}`);
 		assert.deepStrictEqual(duplicated, [],
 			`技能 id 重复 ⇒ 后扫描者静默覆盖前者，技能会凭空消失：\n    ${duplicated.join('\n    ')}`);
+	});
+
+	test('★ 内置技能必须全在**顶层**（嵌套进去 = dsh 侧凭空消失）', () => {
+		// 为什么钉死（2026-10-13 实测）：dsh 的 provider（`@deepseek-ai/dsh-skill-filesystem` 的
+		// `discoverRoot`）**只 readdir 一层**、只把 `<name>/SKILL.md` 当技能（`segments.length === 2`）
+		// ⇒ 任何"再深一层"的技能**在 dsh 侧不可见** ✗，而 IDE 注册表是递归的 ⇒ 症状恰好是
+		// "IDE 技能库有、聊天里没有"这种最难查的不一致。
+		// 现场：`obsidian-skills/<5 个>`（defuddle / json-canvas / obsidian-bases / obsidian-cli /
+		// obsidian-markdown）藏了一层，其中 4 个还是 KB agent 绑定的 —— 已拍平到顶层 + 删掉空容器目录 ✓。
+		const root = path.join(process.cwd(), SKILLS_REL);
+		/** 与 `SkillRegistry.SKILL_SUPPORT_DIRS` / `EXCLUDED_SKILL_DIRS` 同口径（那两个是私有静态，
+		 *  这里只能抄一份；改了那边记得改这里，本用例是"多一层 SKILL.md"的看门人 ✓）。 */
+		const SUPPORT = new Set(['references', 'templates', 'assets', 'scripts', 'tests']);
+		const nested: string[] = [];
+		const walk = (dir: string, depth: number): void => {
+			for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+				if (!entry.isDirectory() || entry.name.startsWith('.') || SUPPORT.has(entry.name)) { continue; }
+				const full = path.join(dir, entry.name);
+				if (fs.existsSync(path.join(full, 'SKILL.md')) && depth > 0) {
+					nested.push(path.relative(root, full).replace(/\\/g, '/'));
+				}
+				if (depth < 3) { walk(full, depth + 1); }
+			}
+		};
+		walk(root, 0);
+		assert.deepStrictEqual(nested, [],
+			'以下技能藏在子目录里 ⇒ **dsh 侧看不见**（它的 provider 只认顶层 `<name>/SKILL.md`）：\n    '
+			+ nested.join('\n    ') + '\n    拍平到顶层即可（`git mv <容器>/<技能> ./<技能>`），别指望 dsh 支持嵌套 ✗');
 	});
 
 	test('★ 内置 agent 的 skills[] 全部可解析（无新增悬空 id）', () => {
@@ -477,12 +513,32 @@ suite('多平台内容导入技能（web-content-import）', () => {
 			+ `    当前关键词：${keywords.join(' / ')}`);
 	});
 
-	test('★ 能力诚实性：四条"我没有"必须写明（不写就等着模型编造）', () => {
+	test('★ 能力边界诚实性：能做什么 / 不能做什么 / 哪一步要用户批准 都必须写死', () => {
 		const text = skillText();
 
+		// ① 视图那个入口 agent 触发不了（用户点的那条是另一条路）—— 不写会让模型假装"我已经导入了"。
 		assert.match(text, /导入链接/, '必须点明：知识库视图那个「导入链接 / URL」按钮 agent 不能触发');
-		assert.match(text, /没有「在页面里执行任意 JS」的工具/,
-			'必须说明没有页面内 JS 执行能力（否则模型会以为能 in-page fetch 拿登录后的数据）');
+
+		// ② ★ 2026-10-14 口径更新（原断言写的是「我们**没有**在页面里执行任意 JS 的工具」✗）：
+		//    `browser` 工具 2026-10-13 起**有** `op: "evaluate"` ⇒ 旧声明已经**变成假话**（技能在撒谎，
+		//    比漏写更糟 ✗），必须换成新的边界 —— 通道存在、**默认关闭**、**每次都要用户批准**、
+		//    且**不许**拿它搬 cookie / 凭据（凭据值该留在浏览器里）。
+		//    ⚠ 这几条不是"文案偏好"：`evaluate` 是能改页面、能读登录态的能力；手册不写闸门与红线，
+		//      模型就会把它当成"随手可跑的一段 JS"（真闸门是批准弹窗，手册要教的是"什么时候才该去申请"）。
+		assert.match(text, /op: "evaluate"/,
+			'必须点明存在 `browser`（`op: "evaluate"`）这条通道（不写 ⇒ 模型以为只能抓公开 URL，白丢一条能力）');
+		assert.match(text, /默认关闭/,
+			'必须写明 `evaluate` **默认关闭**（不写 ⇒ 模型当成随手可用、反复白失败）');
+		assert.match(text, /每次[^。\n]*批准/,
+			'必须写明**每次都要用户批准**（批准弹窗是唯一闸门；只说"可以执行 JS"等于把闸门藏起来 ✗）');
+		assert.match(text, /不要[^。\n]*cookie/,
+			'必须写死"不要用它搬 cookie / 凭据"（与下面那条"绝不索要"同源硬纪律）');
+		// ③ **反向锁定**：旧口径不得回潮 —— 那句"没有页面内 JS 执行工具"现在是假话 ✗。
+		assert.doesNotMatch(text, /没有「在页面里执行任意 JS」的工具/,
+			'旧口径（"没有在页面里执行任意 JS 的工具"）已**不是事实**：`browser` 有 `op: "evaluate"` ⇒ '
+			+ '别把这句加回来（能力又变了的话，改上面那组"通道 + 闸门 + 红线"，别写回否定句）');
+
+		// ④ 另外三条能力边界（不写就等着模型编造）。
 		assert.match(text, /不下载视频本体/, '必须说明视频不下本体（否则会声称"已保存视频"）');
 		assert.match(text, /登录一次/, '登录墙的出路必须写成"请用户在那个窗口里登录一次"');
 		assert.match(text, /绝不[^。\n]*索要/, '必须写死"绝不向用户索要账号密码或 cookie"');
@@ -513,10 +569,13 @@ suite('多平台内容导入技能（web-content-import）', () => {
 	test('★★ 媒体硬要求：关键图片 / 视频地址 / 关键帧三条都在手册与模板里', () => {
 		const text = skillText();
 
-		// ① 关键图片：SPA 页面唯一的图片入口是 browser_get_images（snapshot 不给图片）——
+		// ① 关键图片：SPA 页面唯一的图片入口是 `browser` 的 `images` op（`snapshot` 不给图片）——
 		//    不说清的话，模型在图文帖上会以为"快照就够了"，然后基于残缺文本写结论。
-		assert.match(text, /browser_get_images/, '关键图片在 SPA 页面的唯一入口');
-		assert.match(text, /不采集图片/, '必须点明 browser_snapshot 拿不到图片');
+		//    ⚠ 2026-10-13：原断言写的是 `browser_get_images` —— 那族工具已**退役**
+		//    （IDE 侧执行注册点已删，Host 侧合并成单个 `browser` 工具的 `op`）⇒ 断言必须跟着改；
+		//    不改的话它会把"手册改用新工具名"当成回归，与 webPlatformRoutes 那条守卫直接对撞。
+		assert.match(text, /op: "images"/, '关键图片在 SPA 页面的唯一入口（browser 的 images op）');
+		assert.match(text, /不采集图片/, '必须点明 snapshot 拿不到图片');
 
 		// ② 视频地址：要给出可执行命令与"哪种 URL"的区分（页面地址长期有效 / 直链有时效）
 		assert.match(text, /webpage_url/, '必须给出拿页面地址与直链的确切 --print 字段');

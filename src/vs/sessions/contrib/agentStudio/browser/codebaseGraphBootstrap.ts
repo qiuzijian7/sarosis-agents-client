@@ -15,7 +15,7 @@
  * 4. 全部加载/索引完成后启动文件监听 → 文件变更时自动增量索引
  */
 
-import { Disposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { runWhenGlobalIdle } from '../../../../base/common/async.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -25,7 +25,13 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 import { ICodebaseGraphService, IIndexConfig } from './codebaseGraphService.js';
 import { ICodebaseMemoryMcpService, IIndexConfig as IUserIndexConfig } from './codebaseMemoryMcpService.js';
 import { URI } from '../../../../base/common/uri.js';
-import { shouldDeferGraphLoad } from '../common/codebaseIndexDefaults.js';
+import {
+	shouldDeferGraphLoad,
+	decideExternalArtifactReload,
+	artifactFreshnessOf,
+	EXTERNAL_ARTIFACT_POLL_INTERVAL_MS,
+	IArtifactFreshness,
+} from '../common/codebaseIndexDefaults.js';
 import { wsStage } from './wsSwitchDiag.js';
 
 const LOG_TAG = '[CodebaseGraph]';
@@ -66,6 +72,24 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 	 */
 	private readonly _deferredFolders = new Map<string, string>();
 
+	/**
+	 * 「内存里这份图**对应磁盘上的哪次保存**」的基线（归一化 folder → 新鲜度；2026-10-13）。
+	 *
+	 * 只在**本贡献类**里维护（不改服务接口 ✓）：加载/索引完成时记一次，之后由轮询比对。
+	 * 判据本体是纯函数 `decideExternalArtifactReload()`（可单测 ✓），这里只做 I/O 与记账 ✓。
+	 */
+	private readonly _loadedArtifactFreshness = new Map<string, IArtifactFreshness>();
+	/** 上次因**外部写入**重载的时间（节流用；本窗口自己的加载/索引**不**算 ✓）。 */
+	private _lastExternalReloadAt: number | undefined;
+	/**
+	 * 「重载开始后加载失败」的 folder（归一化 key）。
+	 *
+	 * ⚠ 必须单独记：重载是**先清空项目再加载**（`deleteProject` → `loadGraphMerge`）⇒
+	 * 加载失败时内存里那个项目已经是空的 ✗ ⇒ 若不记下来，下一轮会走"内存里没图 ⇒ 记基线"的分支、
+	 * **永远不再重试**（用户视角：图谱突然空了、而且再也不会回来 ✗✗）。记下来 ⇒ 每轮继续重试 ✓。
+	 */
+	private readonly _failedReloads = new Set<string>();
+
 	constructor(
 		@ICodebaseGraphService private readonly _graphService: ICodebaseGraphService,
 		@ICodebaseMemoryMcpService private readonly _cbmService: ICodebaseMemoryMcpService,
@@ -87,6 +111,12 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 				return;
 			}
 			this._logService.info(LOG_TAG, `Auto-index complete: ${result.message}`);
+			// ★ 2026-10-13：索引完 ⇒ **内存比盘新**（落盘是延迟的，见 SAVE_DEBOUNCE_MS）。
+			// 此刻记基线的正确口径：**新鲜度取盘上那份（旧值）、计数取内存里的（新图）** ——
+			// 等下盘时，"磁盘计数 == 内存计数"才会被 `decideExternalArtifactReload` 的第 6 条
+			// 认出来是**我们自己落的**，从而只跟基线、不做"删项目 + 重新解析"的重活 ✓
+			// （若这里记成"盘上的计数"，就会把自己的落盘当外部写 ✗）。
+			void this._rememberArtifactBaseline(this._normalize(result.rootPath || this._primaryFolder()), result.rootPath || this._primaryFolder());
 			// 启动文件监听（增量重索引触发源，P2-#8）
 			//
 			// ① 增量索引由 **watcher 自己**触发（watcher 必然已存在、排除集未变）⇒ **无需**刷新：
@@ -161,6 +191,21 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 		// 供 codebase 工具预检（`codebaseTools.ensureGraph()`）与
 		// 子代理预检（`delegationTools._ensureGraphReadyForExplore()`）调用。
 		this._register(this._graphService.registerDeferredGraphLoader(reason => this._loadDeferredGraphs(reason)));
+
+		// ★ 2026-10-13（**所有权交接的 IDE 半边**）：感知「制品被外部换新 ⇒ 把内存里的图换掉」。
+		//
+		// 为什么需要它：`<工作区>/.codebase-memory/` 的**写者可以是别人**（交接之后是 dsh 的 Host 进程，
+		// 见 `doc/codebase-index-to-dsh-plan.html` §5 P3），而 IDE 这边的图谱是**打开工作区那一刻读进内存**
+		// 的 ⇒ 没有任何东西会发现"盘上那份被换了" ✗✗ ⇒ IDE 会一直用旧图
+		// （用户视角：「dsh 明明重新索引了，IDE 里行号还是旧的」）。
+		//
+		// 为什么是**轮询**而不是监听：`.codebase-memory/` 下的写是"改名替换"（`.tmp` → rename），
+		// `IFileService.watch` 在 Windows 上对这种替换的事件语义不稳；而轮询一个几百字节的清单
+		// 每 10s 一次、代价可忽略 ✓（本模块的增量索引本来就靠 watcher 轮询式比对哈希 ✓ 同一套路）。
+		//
+		// ⚠ 缺省**无外部写入者**时它是**惰性**的：只会读到"磁盘不比基线新" ⇒ 什么都不做 ✓
+		//   （零行为改变 ✓ —— 交接档 `indexTarget: 'workspace'` 默认不开，见同名方案 §9 决策 1）。
+		this._register(this._startExternalArtifactWatch());
 	}
 
 	private _normalize(p: string): string {
@@ -201,6 +246,14 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 		}
 		for (const key of [...this._pendingIndex.keys()]) {
 			if (!current.has(key)) { this._pendingIndex.delete(key); pending++; }
+		}
+		// ★ 2026-10-13：外部重载的记账也要跟着忘掉（同一件事的第四半 ✓）——
+		// 留着会让"切走再切回"时拿**旧基线**去比新加载的图（该重载的不重载 / 该跟的不跟 ✗）。
+		for (const key of [...this._loadedArtifactFreshness.keys()]) {
+			if (!current.has(key)) { this._loadedArtifactFreshness.delete(key); }
+		}
+		for (const key of [...this._failedReloads]) {
+			if (!current.has(key)) { this._failedReloads.delete(key); }
 		}
 		if (ready || deferred || pending) {
 			this._logService.info(LOG_TAG, `forgot folders that left the workspace (${reason}): ready=${ready}, deferred=${deferred}, pendingIndex=${pending}`);
@@ -341,6 +394,10 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 				this._logService.info(LOG_TAG, `Loaded existing graph for folder "${project}".`);
 				this._readyFolders.add(key);
 				this._pendingIndex.delete(key);
+				// ★ 2026-10-13：此刻**内存 == 盘上那份** ⇒ 记下外部重载判据的基线 ✓
+				//（放在"已确认 ready"这一支里，而不是 `loadGraphMerge` 之后 —— 空图/被丢弃的那些
+				// 不算 ready，它们没有"内存镜像"可言 ✓）
+				await this._rememberArtifactBaseline(key, folder.uri.fsPath);
 				// 多 folder：每个已加载 folder 单独启动监听（增量索引，互不覆盖）
 				await this._startWatching(folder.uri.fsPath);
 				continue;
@@ -496,10 +553,156 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 			if (loaded) {
 				this._readyFolders.add(key);
 				this._logService.info(LOG_TAG, `Deferred graph for "${project}" loaded on demand.`);
+				// ★ 2026-10-13：延迟加载完成 ⇒ 同样记基线（否则这个 folder 一旦被别人换新就检测不到 ✓）
+				await this._rememberArtifactBaseline(key, fsPath);
 				await this._startWatching(fsPath);
 			} else {
 				this._logService.warn(LOG_TAG, `Deferred graph for "${project}" failed to load — keeping it unloaded (no auto-index).`);
 			}
+		}
+	}
+
+	// ── 外部产物感知（所有权交接的 IDE 半边，2026-10-13）──────────────────────────────
+
+	/** 启动轮询（`_register` 里清定时器 ✓；判据与 I/O 都在下面的 `_checkExternalArtifactFor`）。 */
+	private _startExternalArtifactWatch(): IDisposable {
+		const timer = setInterval(() => {
+			this._pollExternalArtifacts().catch(err =>
+				this._logService.warn(LOG_TAG, `[external] 轮询失败: ${err?.message || err}`));
+		}, EXTERNAL_ARTIFACT_POLL_INTERVAL_MS);
+		return toDisposable(() => clearInterval(timer));
+	}
+
+	/** 逐个**已就绪**的 folder 检查（延迟加载的那些等它们自己就绪时会记上基线 ✓）。 */
+	private async _pollExternalArtifacts(): Promise<void> {
+		for (const folder of this._workspaceService.getWorkspace().folders) {
+			const key = this._normalize(folder.uri.fsPath);
+			if (!this._readyFolders.has(key)) { continue; }
+			try {
+				await this._checkExternalArtifactFor(key, folder.uri.fsPath);
+			} catch (err: any) {
+				this._logService.warn(LOG_TAG, `[external] "${this._basename(folder.uri.fsPath)}" 检查失败: ${err?.message || err}`);
+			}
+		}
+	}
+
+	private async _checkExternalArtifactFor(key: string, rootPath: string): Promise<void> {
+		const project = this._basename(rootPath) || '_default';
+		const dirUri = URI.joinPath(URI.file(rootPath), '.codebase-memory');
+		const artifactUri = URI.joinPath(dirUri, 'artifact.json');
+		const disk = await this._readArtifactFreshness(artifactUri);
+		if (!disk) { return; } // 没有清单 ⇒ 不参与（新加入工作区的 folder 由 `_bootstrap` 原路处理 ✓）
+
+		// ① 上次重载失败（项目已被清空）⇒ 先补做加载，成功了才继续正常判据 ✓
+		if (this._failedReloads.has(key)) {
+			await this._reloadProjectFromArtifact(key, rootPath, project, disk, '重试上次失败的重载');
+			return;
+		}
+
+		const baseline = this._loadedArtifactFreshness.get(key);
+		if (!baseline) {
+			const counts = this._projectCounts(project);
+			if ((counts.nodeCount ?? 0) > 0) {
+				// 内存里有图却没有基线（本机制刚上线 / 之前漏记）⇒ 以盘上那份为准记基线，**不重载** ✓：
+				// 重载一张 129MB 的图要数十秒，用它来"对齐一次"是拿用户的启动体验换洁癖 ✗。
+				this._logService.info(LOG_TAG, `[external] "${project}" 内存里有图但无基线 ⇒ 以盘上那份为准记基线（不重载，避免数十秒重活 ✓）`);
+			}
+			this._loadedArtifactFreshness.set(key, disk);
+			return;
+		}
+
+		const decision = decideExternalArtifactReload(disk, baseline, {
+			// 本窗口在写盘/索引 ⇒ 绝不重载（见判据的注释：会丢掉尚未落盘的内存状态 ✗）
+			writeInFlight: this._graphService.isIndexing === true || this._graphService.isGraphLoading === true,
+			lastReloadAt: this._lastExternalReloadAt,
+			now: Date.now(),
+		});
+		if (!decision.reload) {
+			if (decision.adoptAsBaseline) {
+				this._loadedArtifactFreshness.set(key, disk);
+				this._logService.info(LOG_TAG, `[external] "${project}" 基线跟上自落盘 ✓`);
+			}
+			return;
+		}
+		this._logService.info(LOG_TAG, `[external] "${project}"：${decision.reason}`);
+		await this._reloadProjectFromArtifact(key, rootPath, project, disk, '外部写入');
+	}
+
+	/**
+	 * 按磁盘制品**重载**某项目：先整项目清掉、再合并加载（`loadGraphMerge` 只合并不清空 ✓）——
+	 * 这样才是"换新"，不然新图里没有的旧节点会以幻影形式留下 ✗。
+	 */
+	private async _reloadProjectFromArtifact(key: string, rootPath: string, project: string, disk: IArtifactFreshness, why: string): Promise<void> {
+		const graphFile = URI.joinPath(URI.file(rootPath), '.codebase-memory', 'graph.db.zst');
+		this._graphService.deleteProject(project);
+		let ok = false;
+		try {
+			ok = await this._graphService.loadGraphMerge(graphFile.fsPath, project, true);
+		} catch (err: any) {
+			this._logService.warn(LOG_TAG, `[external] "${project}" 重载抛错（${why}）: ${err?.message || err}`);
+		}
+		if (ok) {
+			this._failedReloads.delete(key);
+			this._loadedArtifactFreshness.set(key, disk);
+			this._lastExternalReloadAt = Date.now();
+			this._logService.info(LOG_TAG, `[external] "${project}" 重载完成（${why}；节点 ${disk.nodeCount ?? '?'} / 边 ${disk.edgeCount ?? '?'}）✓`);
+			return;
+		}
+		// ⚠ 加载失败 ⇒ 内存里这个项目**已经被清空了** ✗ —— 必须记下来并继续重试，
+		//   否则下一轮会走"内存里没图 ⇒ 记基线"的分支、永远不再试（用户视角：图谱突然空了且不再回来 ✗✗）。
+		if (!this._failedReloads.has(key)) {
+			this._failedReloads.add(key);
+			this._logService.warn(LOG_TAG, `[external] "${project}" 重载失败（${why}）：制品可能损坏或被删 —— 该项目在内存里已清空，后续轮询会继续重试 ✓`);
+		}
+		this._loadedArtifactFreshness.delete(key);
+	}
+
+	/**
+	 * 记下「内存里这份图对应磁盘上的哪次保存」（外部重载判据的基线）。
+	 *
+	 * 口径（两处都不能反）：**新鲜度取盘上那份**（内存此刻若与它同步，盘上就是基准），
+	 * **计数取内存里的** —— 索引完毕后"内存已新、盘上还没落"，此刻盘上的计数还是旧图的，
+	 * 用内存计数才能让落盘那一刻被"自我写识别"认出来 ✓（见判据第 6 条）。
+	 */
+	private async _rememberArtifactBaseline(key: string, rootPath: string): Promise<void> {
+		if (!key || !rootPath) { return; }
+		const project = this._basename(rootPath) || '_default';
+		const disk = await this._readArtifactFreshness(URI.joinPath(URI.file(rootPath), '.codebase-memory', 'artifact.json'));
+		const fresh = artifactFreshnessOf(disk);
+		this._loadedArtifactFreshness.set(key, {
+			...(fresh !== undefined ? { savedAt: fresh } : {}),
+			...(disk?.mtimeMs !== undefined ? { mtimeMs: disk.mtimeMs } : {}),
+			...this._projectCounts(project),
+		});
+	}
+
+	/** 内存 store 里某项目的节点/边数（拿不到 ⇒ 空对象 ⇒ 依赖它的那条判据自动不生效，保守 ✓）。 */
+	private _projectCounts(project: string): { nodeCount?: number; edgeCount?: number } {
+		try {
+			const found = this._graphService.listProjects().find(p => p.name === project);
+			return found ? { nodeCount: found.nodeCount, edgeCount: found.edgeCount } : {};
+		} catch {
+			return {};
+		}
+	}
+
+	/** 读 `artifact.json` 的新鲜度（**只读清单**、不解压图谱 ✓）；没有/读不动 ⇒ `undefined`。 */
+	private async _readArtifactFreshness(artifactUri: URI): Promise<IArtifactFreshness | undefined> {
+		try {
+			const stat = await this._fileService.stat(artifactUri);
+			let savedAt: number | undefined;
+			let nodeCount: number | undefined;
+			let edgeCount: number | undefined;
+			try {
+				const raw = (await this._fileService.readFile(artifactUri)).value.toString();
+				const parsed = JSON.parse(raw) as { saved_at?: number; node_count?: number; edge_count?: number };
+				savedAt = Number(parsed?.saved_at) || undefined;
+				nodeCount = Number.isFinite(Number(parsed?.node_count)) ? Number(parsed.node_count) : undefined;
+				edgeCount = Number.isFinite(Number(parsed?.edge_count)) ? Number(parsed.edge_count) : undefined;
+			} catch { /* 清单读不动/畸形 ⇒ 只用 mtime 判据（保守 ✓，且自我写识别会自动不生效 ✓） */ }
+			return { savedAt, mtimeMs: stat.mtime, nodeCount, edgeCount };
+		} catch {
+			return undefined;
 		}
 	}
 
@@ -553,6 +756,15 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 				continue;
 			}
 			const project = this._basename(rootPath) || '_default';
+
+			// ★ 2026-10-13：这里**刻意不放任何"让路"策略** ✓。
+			//
+			// 上一版我在这里加了"盘上已有人产图 ⇒ 自动索引让路"，但用户裁决是「**权限都在 dsh 侧全权处理、
+			// 逻辑也都转移到 dsh 侧**」⇒ 让路这种**策略**不该由 IDE 判断（IDE 判断就会有"两套口径" ✗）。
+			// 现在策略只有一条、且在最底层：`codebaseGraphService._isIndexOwnedByDsh()` ——
+			// 制品自己声明 `producer=vssaros-dsh` ⇒ `indexWorkspace()` 直接返回（连扫描都不做 ✓）、
+			// `_saveGraph()` 一律拒写 ✓，**自动与显式路径一起被挡住** ✓。
+			// ⇒ 本文件只需照旧调 `indexWorkspace`：被挡时它返回 `success:false` + 说清"去 dsh 侧重建" ✓。
 			const config: IIndexConfig = {
 				mode: userConfig?.mode ?? 'fast',
 				excludeDirs: userConfig?.excludeDirs ?? [], // 空 = 仅用默认；graphService 会与默认表取并集

@@ -266,6 +266,23 @@ ensureDir(
 	'package.json',
 );
 
+// 2.5b) **dsh-plugins/**（随包分发的 dsh 插件：bridge / chat-surface + 11 个模块插件，以及
+//    `dsh-compat.json`）。2026-10-12 补：`<appPath>/dsh-plugins` 是宿主解析插件与兼容清单的**唯一**
+//    位置（`dshHarnessChannel.ts` 用 `join(app.getAppPath(), 'dsh-plugins')`，兼容清单读同层
+//    `dsh-plugins/dsh-compat.json`），但**标准打包链完全不知道这个目录** —— `build/` 下 0 处 `dsh`
+//    引用、根 `gulpfile.mjs` 只 `import './build/gulpfile.ts'`、`deploy-package/scripts/build-installer.ps1`
+//    跑的也是标准 `gulp vscode-win32-x64-*-setup` ⇒ 不进包 ✗。
+//    现象（生产版）：模块插件全缺、插件中心「随包」段为空、`dsh-compat.json` 读不到；而
+//    `dshHostSupervisor` 的注释把"老构建没带 `dsh-plugins/`"当作**合法**状态 ⇒ 整件事是静默的 ✗✗。
+//    sentinel 用 `vssaros-bridge/package.json`：它证明**目录真的被灌满**（不是只有一个空壳目录 ✗），
+//    与上面 tree-sitter 那两条同一思路。缺它会让构建在收尾统计里报错（criticalMissing ✓）。
+ensureDir(
+	'dsh-plugins',
+	'resources/app/dsh-plugins',
+	'dsh-plugins',
+	'vssaros-bridge/package.json',
+);
+
 // 2.6) @vscode/tree-sitter-wasm（2026-09-15，用户报「vssaros.exe 报错」）：
 //    codebase 图谱的解析 Worker 池按**运行时路径**读取本模块
 //    （`codebaseGraphParserPool._initPool` → `FileAccess.asFileUri('<appRoot>/node_modules/@vscode/tree-sitter-wasm/wasm/…')`：
@@ -306,6 +323,43 @@ ensureDir(
 		if (added > 0) { console.log(`  ⚠ 逐语言 wasm 缺 ${added} 个（已自愈 ✓）—— 说明 bundler 又丢了对运行时路径加载的构件 ✗`); }
 	} else {
 		console.log('  ❌ 仓库侧 @vscode/tree-sitter-wasm/wasm 目录不存在（无法逐语言校验）');
+		criticalMissing++;
+	}
+}
+
+// 2.5c) ★ 2026-10-12（**决策 2 = wasm 全量随包**）：`dsh-plugins/vssaros-codebase/vendor/`（≈21MB）。
+//    为什么上面 2.5b 的 sentinel **不够**：那个 sentinel 是 `vssaros-bridge/package.json` ——
+//    它只证明 `dsh-plugins/` **被灌满**，**不证明我们插件包里那 21MB 资产在** ✗✗
+//    （这正是 2.6b 那条踩过的坑：`ensureDir` 的 sentinel 证明不了"目录里每个文件都在" ✓）。
+//    真机后果（若漏）：`lib/parser/resolve.js` 的"随包 vendor/"这一级候选不成立 ⇒ 退到 dev 的
+//    `node_modules`（生产包里没有）⇒ **要真解析就 `no-parser-assets` 当场拒**，而且用户的观感是
+//    "索引功能在开发机上好好的、装出来就不行" ✗✗（本仓最贵的那类静默失效 ✓）。
+//    ⇒ 以**仓库侧 vendor 目录为准**逐文件补齐（**不硬编码语言清单**，防漂移 ✓ —— 将来换档/加语言自动跟随 ✓）。
+{
+	const repoVendorDir = path.join(repoRoot, 'dsh-plugins/vssaros-codebase/vendor');
+	const stagingVendorRel = 'resources/app/dsh-plugins/vssaros-codebase/vendor';
+	if (existsSync(repoVendorDir)) {
+		const entries = readdirSync(repoVendorDir).filter(name => name !== 'LANGUAGES.txt');
+		// 清单文件也一起带上（它记录"这批资产是哪几档语言"，人查/守卫查都用得上 ✓；不是运行时依赖 ✓）
+		for (const name of [...entries, 'LANGUAGES.txt']) {
+			if (!existsSync(path.join(repoVendorDir, name))) { continue; }
+			const stagingAbs = path.join(buildDir, `${stagingVendorRel}/${name}`);
+			if (!existsSync(stagingAbs)) {
+				ensureFile(`vssaros-codebase/vendor/${name}`, `${stagingVendorRel}/${name}`, [`dsh-plugins/vssaros-codebase/vendor/${name}`]);
+			}
+		}
+		// 运行时**必须是 `.cjs`**（原样 `.js` 会被当 ESM 求值 ⇒ 报一句看不出根因的
+		// `Unable to determine script URL` ✗ —— 见插件里 `lib/parser/resolve.js` 文件头；这里当场判它 ✓）
+		const runtimeAbs = path.join(buildDir, `${stagingVendorRel}/tree-sitter.cjs`);
+		if (!existsSync(runtimeAbs)) {
+			console.log(`  ❌ vssaros-codebase/vendor 的运行时不是 \`tree-sitter.cjs\`（进包必须改名 `.cjs`，否则会被当 ESM 求值 ✗）`);
+			criticalMissing++;
+		} else {
+			const bytes = entries.reduce((sum, name) => sum + (statSync(path.join(repoVendorDir, name)).size || 0), 0);
+			console.log(`  ✅ vssaros-codebase/vendor（${entries.length} 个文件 / ${(bytes / 1024 / 1024).toFixed(2)}MB —— 决策 2 全量档）`);
+		}
+	} else {
+		console.log('  ❌ 仓库侧 dsh-plugins/vssaros-codebase/vendor 不存在 ⇒ 跑 `node dsh-plugins/vssaros-codebase/bin/vendor-assets.mjs --all` 生成（决策 2）');
 		criticalMissing++;
 	}
 }
@@ -370,6 +424,24 @@ ensureFile(
 	'better-sqlite3/build/Release/better_sqlite3.node (node_modules)',
 	'resources/app/node_modules/better-sqlite3/build/Release/better_sqlite3.node',
 	['build/saros/bin/sqlite/better_sqlite3.node'],
+);
+
+// 6) ★ 2026-09-25：内置智能体资源 `resources/.agents/**`（技能 / KB 同步脚本 / MCP 预设 / 内置工作流 / 工具）
+//    —— 与 kbWorker.js / tree-sitter-wasm **同一类**构件：**运行时按路径读取、从不被静态 import**
+//    ⇒ 打包拷贝只带走它认识的文件，**点目录（`.agents`）整棵被漏掉**：
+//      · 内置技能：`skillRegistryService` 用 `FileAccess.asFileUri('vs/../../resources/.agents/skills')` 扫描；
+//      · 飞书同步脚本：`feishuSyncCore.resolveSyncScript` 找 `<appRoot>/resources/.agents/kb/feishu-sync.mjs`。
+//    实测已发布包（用户报障 2026-09-25）：`resources/app/resources` 下**只有 `thirdparty`/`win32`**，
+//    `.agents` 整棵不存在 ⇒ 内置技能全部缺失，点「同步飞书」报
+//    「未找到内置同步脚本（resources/.agents/kb/feishu-sync.mjs）——安装可能不完整」。
+//    ⚠ 已核对 Inno 的 `[Files] Excludes`（build/win32/code.iss:114）**没有**排除 `.agents`
+//      ⇒ 根因在 staging 拷贝环节；这里整棵兜底自愈。
+//    sentinel 用 kb 脚本：技能可以后补，脚本缺了「同步飞书 / kb_feishu_sync」直接不可用。
+ensureDir(
+	'resources/.agents（内置技能 + KB 同步脚本 + MCP 预设 + 内置工作流）',
+	'resources/app/resources/.agents',
+	'resources/.agents',
+	'kb/feishu-sync.mjs',
 );
 
 // === 5.5 ffmpeg/ffprobe（vox 口播视频节点可选依赖）===

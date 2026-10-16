@@ -111,6 +111,15 @@ export class AgentStudioDashboardViewPane extends ViewPane {
 
 		// Alerts section
 		this._body.appendChild(this._renderAlertsSection(data));
+
+		// 「数据口径」一句（报告 B 组）：本面板的数字来自 **IDE 本地聚合**（token 用量账本 / 告警），
+		// 而 dsh 侧「Dashboard」页读的是 **dsh 自己的会话投影缓存**（checkpoint 落盘，可能略落后）
+		// ⇒ 两者**不是同一份数据**、数字不必相同 ✓ —— 两侧都明说，免得用户拿两页互相"对账" ✗。
+		// ⚠ 这句是**契约性质**的界面文案：它承诺了"哪一侧含成本与告警" ⇒ 改动前先看 README 5.115 ✓。
+		const scopeNote = el('div', undefined,
+			'数据口径：本面板来自 IDE 本地聚合（含用量与告警）；dsh 侧「主页」读的是 dsh 会话投影缓存 ⇒ 两者数字不必相同。');
+		scopeNote.style.cssText = 'font-size: 10px; color: var(--vscode-descriptionForeground, #858585); margin-top: 12px; line-height: 1.5;';
+		this._body.appendChild(scopeNote);
 	}
 
 	private _renderOpenButton(): HTMLElement {

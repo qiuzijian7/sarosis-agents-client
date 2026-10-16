@@ -69,3 +69,21 @@ export const KeyboardVisibleContext = new RawContextKey<boolean>('sessionsKeyboa
 export const AgentStudioActiveContext = new RawContextKey<boolean>('agentStudio.active', false, localize('agentStudioActive', "Whether Agent Studio multi-agent workspace is active"));
 
 //#endregion
+
+//#region < --- Agent 列方位（agents 布局） --- >
+
+/**
+ * ★ [Saros] 当前窗口是否提供「编辑器列 ⇄ Agent 列」换位能力 ——
+ * 由 `AgentLayoutWorkbench` 在网格建好后置 `true`（`wireAgentsEditorColumnSideContextKeys()`）。
+ *
+ * ⚠ 它不是"隐藏入口"用的（那 3 个 action 只由 `agentLayout.desktop.main.ts` 引入 ⇒
+ * 标准 IDE / sessions 窗口**根本没注册这些命令**，本就不会多出入口）。它的作用是：
+ * ① 给 `moveAgentColumnLeft/Right` 提供**启用态**（当前方位那一侧不显示）；
+ * ② 兜底：万一该 action 模块以后被引入到别的入口（web / sessions），门禁立刻生效。
+ */
+export const AgentsEditorColumnAvailableContext = new RawContextKey<boolean>('vssaros.agentsEditorColumnAvailable', false, localize('agentsEditorColumnAvailable', "Whether the window can swap the editor column and the Agent column"));
+
+/** ★ [Saros] Agent 列当前是否在**左**（= 编辑器列在右）。用于菜单项的启用态与文案。 */
+export const AgentsEditorColumnLeftContext = new RawContextKey<boolean>('vssaros.agentsEditorColumnLeft', false, localize('agentsEditorColumnLeft', "Whether the Agent column is currently on the left"));
+
+//#endregion

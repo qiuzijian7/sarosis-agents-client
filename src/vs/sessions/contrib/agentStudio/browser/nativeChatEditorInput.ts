@@ -130,6 +130,13 @@ export class NativeChatEditorInput extends EditorInput {
 	 * and serialized so it survives reloads.
 	 */
 	private _cliMode: boolean = false;
+	/**
+	 * dsh 引擎：当前聊天的 agent preset（方案 5.15）。缺省 = 基座会话（未显式切换过）。
+	 * 序列化持久化，重载后恢复到切换后的 preset 专属会话。
+	 */
+	private _dshPreset: string | undefined;
+	/** 无后缀基座会话实际运行的 preset（`session.start` 结果习得）；用于"切回基座"的 id 解析。 */
+	private _dshBasePreset: string | undefined;
 
 	constructor(chatId: string = 'default', agentId?: string, sessionId?: string, name?: string) {
 		super();
@@ -246,6 +253,24 @@ export class NativeChatEditorInput extends EditorInput {
 		if (this._cliMode === enabled) { return; }
 		this._cliMode = enabled;
 		(this as any)._onDidChangeLabel.fire();
+	}
+
+	/** dsh 引擎：当前聊天的 agent preset（方案 5.15）。 */
+	get dshPreset(): string | undefined {
+		return this._dshPreset;
+	}
+
+	setDshPreset(preset: string | undefined): void {
+		this._dshPreset = preset;
+	}
+
+	/** 基座（无后缀）会话实际运行的 preset。 */
+	get dshBasePreset(): string | undefined {
+		return this._dshBasePreset;
+	}
+
+	setDshBasePreset(preset: string | undefined): void {
+		this._dshBasePreset = preset;
 	}
 
 	override get typeId(): string {

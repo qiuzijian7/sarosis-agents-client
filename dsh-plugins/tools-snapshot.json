@@ -1,0 +1,1287 @@
+{
+  "note": "由 dsh-plugins/tools-snapshot.mjs 生成；被 dshHarness/test/common/dshToolSnapshot.test.ts 钉住。不要手改，跑 --write。",
+  "total": 107,
+  "plugins": {
+    "vssaros-agents": [
+      {
+        "name": "agent_list",
+        "required": [],
+        "params": [
+          "verbose"
+        ],
+        "descriptionHash": "557719270292"
+      },
+      {
+        "name": "agent_message",
+        "required": [
+          "message",
+          "to"
+        ],
+        "params": [
+          "hop",
+          "message",
+          "session",
+          "to",
+          "when"
+        ],
+        "descriptionHash": "e33add4b1d83"
+      },
+      {
+        "name": "agent_open_session",
+        "required": [
+          "agent"
+        ],
+        "params": [
+          "agent",
+          "cwd"
+        ],
+        "descriptionHash": "1b0cc8c02fac"
+      },
+      {
+        "name": "agent_read_chat",
+        "required": [],
+        "params": [
+          "limit",
+          "query"
+        ],
+        "descriptionHash": "305688cb8c2c"
+      },
+      {
+        "name": "agent_stop",
+        "required": [
+          "session"
+        ],
+        "params": [
+          "reason",
+          "session"
+        ],
+        "descriptionHash": "ad9f87b96fa5"
+      },
+      {
+        "name": "agent_switch_persona",
+        "required": [],
+        "params": [
+          "agent",
+          "clear"
+        ],
+        "descriptionHash": "3c45e2ce5060"
+      }
+    ],
+    "vssaros-browser": [
+      {
+        "name": "browser",
+        "required": [
+          "op"
+        ],
+        "params": [
+          "action",
+          "amount",
+          "append",
+          "delayMs",
+          "direction",
+          "done",
+          "expression",
+          "key",
+          "max",
+          "op",
+          "ref",
+          "regex",
+          "selector",
+          "text",
+          "textGone",
+          "timeoutMs",
+          "url",
+          "urlContains"
+        ],
+        "descriptionHash": "6d3bb84bc11e"
+      }
+    ],
+    "vssaros-codebase": [
+      {
+        "name": "codebase_architecture",
+        "required": [],
+        "params": [
+          "aspects",
+          "path",
+          "topLimit"
+        ],
+        "descriptionHash": "864e073b2528"
+      },
+      {
+        "name": "codebase_changes",
+        "required": [],
+        "params": [
+          "depth",
+          "impact",
+          "scope",
+          "since"
+        ],
+        "descriptionHash": "35d8a38669bd"
+      },
+      {
+        "name": "codebase_coverage",
+        "required": [],
+        "params": [
+          "maxFiles"
+        ],
+        "descriptionHash": "3071de16ee45"
+      },
+      {
+        "name": "codebase_delete_project",
+        "required": [],
+        "params": [
+          "force",
+          "which"
+        ],
+        "descriptionHash": "3ebbfd6c79f4"
+      },
+      {
+        "name": "codebase_deps",
+        "required": [],
+        "params": [
+          "filePath",
+          "limit",
+          "nodeId"
+        ],
+        "descriptionHash": "26dddaf109b3"
+      },
+      {
+        "name": "codebase_export_artifact",
+        "required": [
+          "toDir"
+        ],
+        "params": [
+          "toDir"
+        ],
+        "descriptionHash": "8993f8031dab"
+      },
+      {
+        "name": "codebase_hotspots",
+        "required": [],
+        "params": [
+          "by",
+          "label",
+          "limit"
+        ],
+        "descriptionHash": "2be28c0f1f15"
+      },
+      {
+        "name": "codebase_import_artifact",
+        "required": [
+          "fromDir"
+        ],
+        "params": [
+          "fromDir"
+        ],
+        "descriptionHash": "82c6696b41f2"
+      },
+      {
+        "name": "codebase_index",
+        "required": [],
+        "params": [
+          "fullRescan",
+          "incremental",
+          "maxFiles",
+          "parser"
+        ],
+        "descriptionHash": "89701646717b"
+      },
+      {
+        "name": "codebase_index_status",
+        "required": [],
+        "params": [],
+        "descriptionHash": "798e74e46102"
+      },
+      {
+        "name": "codebase_manage_adr",
+        "required": [
+          "action"
+        ],
+        "params": [
+          "action",
+          "content",
+          "id",
+          "title"
+        ],
+        "descriptionHash": "fdfac78bfe42"
+      },
+      {
+        "name": "codebase_overview",
+        "required": [],
+        "params": [],
+        "descriptionHash": "ead4a68530af"
+      },
+      {
+        "name": "codebase_projects",
+        "required": [],
+        "params": [],
+        "descriptionHash": "0147faeaccb8"
+      },
+      {
+        "name": "codebase_query_graph",
+        "required": [
+          "query"
+        ],
+        "params": [
+          "query"
+        ],
+        "descriptionHash": "cfba9340f9f3"
+      },
+      {
+        "name": "codebase_schema",
+        "required": [],
+        "params": [
+          "limit"
+        ],
+        "descriptionHash": "52595a8695cc"
+      },
+      {
+        "name": "codebase_search",
+        "required": [
+          "query"
+        ],
+        "params": [
+          "file",
+          "label",
+          "limit",
+          "query"
+        ],
+        "descriptionHash": "06ce4ba2fb3c"
+      },
+      {
+        "name": "codebase_search_code",
+        "required": [
+          "query"
+        ],
+        "params": [
+          "context",
+          "filePattern",
+          "limit",
+          "path",
+          "query",
+          "regex"
+        ],
+        "descriptionHash": "9e2977d572e4"
+      },
+      {
+        "name": "codebase_search_files",
+        "required": [
+          "pattern"
+        ],
+        "params": [
+          "context",
+          "file_glob",
+          "limit",
+          "mode",
+          "offset",
+          "path",
+          "pattern",
+          "regex"
+        ],
+        "descriptionHash": "2f7e0a638fb0"
+      },
+      {
+        "name": "codebase_self_index",
+        "required": [],
+        "params": [
+          "maxFiles"
+        ],
+        "descriptionHash": "c53932944f9c"
+      },
+      {
+        "name": "codebase_snippet",
+        "required": [
+          "qualifiedName"
+        ],
+        "params": [
+          "contextLines",
+          "qualifiedName"
+        ],
+        "descriptionHash": "a4140a8a497a"
+      },
+      {
+        "name": "codebase_trace",
+        "required": [
+          "sourceName"
+        ],
+        "params": [
+          "direction",
+          "edgeTypes",
+          "maxDepth",
+          "maxNodes",
+          "sourceName",
+          "targetName"
+        ],
+        "descriptionHash": "0a363f0b081f"
+      }
+    ],
+    "vssaros-dashboard": [
+      {
+        "name": "dashboard_session",
+        "required": [
+          "sessionId"
+        ],
+        "params": [
+          "sessionId"
+        ],
+        "descriptionHash": "c8224a7f7b15"
+      },
+      {
+        "name": "dashboard_sessions",
+        "required": [],
+        "params": [
+          "limit"
+        ],
+        "descriptionHash": "7df577c2666b"
+      }
+    ],
+    "vssaros-ide": [
+      {
+        "name": "canvas",
+        "required": [
+          "op"
+        ],
+        "params": [
+          "goal",
+          "layout",
+          "model_id",
+          "negative_prompt",
+          "node",
+          "op",
+          "ops",
+          "provider_id",
+          "run",
+          "size",
+          "variants",
+          "workflowId"
+        ],
+        "descriptionHash": "ff2315a1887c"
+      },
+      {
+        "name": "dashboard_stats",
+        "required": [],
+        "params": [],
+        "descriptionHash": "7818e56fc4f3"
+      },
+      {
+        "name": "get_diagnostics",
+        "required": [],
+        "params": [
+          "minSeverity",
+          "path",
+          "scope"
+        ],
+        "descriptionHash": "5987d3bf023c"
+      },
+      {
+        "name": "get_selection",
+        "required": [],
+        "params": [],
+        "descriptionHash": "7dc813c398d5"
+      },
+      {
+        "name": "mindmap",
+        "required": [],
+        "params": [
+          "path"
+        ],
+        "descriptionHash": "ddd4b3306884"
+      },
+      {
+        "name": "open_file",
+        "required": [
+          "path"
+        ],
+        "params": [
+          "endLine",
+          "focus",
+          "path",
+          "startLine"
+        ],
+        "descriptionHash": "b78734aded0d"
+      },
+      {
+        "name": "reveal",
+        "required": [
+          "path"
+        ],
+        "params": [
+          "path"
+        ],
+        "descriptionHash": "fe1c8134ad4c"
+      },
+      {
+        "name": "show_diff",
+        "required": [
+          "left",
+          "right"
+        ],
+        "params": [
+          "focus",
+          "left",
+          "right",
+          "title"
+        ],
+        "descriptionHash": "d0f79c720834"
+      },
+      {
+        "name": "taskboard_focus",
+        "required": [
+          "title"
+        ],
+        "params": [
+          "title"
+        ],
+        "descriptionHash": "8d34f86205c1"
+      },
+      {
+        "name": "workflow_open",
+        "required": [
+          "id"
+        ],
+        "params": [
+          "id"
+        ],
+        "descriptionHash": "7c00b7d48de2"
+      }
+    ],
+    "vssaros-kanban": [
+      {
+        "name": "kanban_block",
+        "required": [
+          "id",
+          "reason"
+        ],
+        "params": [
+          "id",
+          "reason"
+        ],
+        "descriptionHash": "3bfb9bac06be"
+      },
+      {
+        "name": "kanban_comment",
+        "required": [
+          "body",
+          "id"
+        ],
+        "params": [
+          "body",
+          "id"
+        ],
+        "descriptionHash": "9a00607f51f6"
+      },
+      {
+        "name": "kanban_complete",
+        "required": [
+          "id"
+        ],
+        "params": [
+          "id",
+          "result"
+        ],
+        "descriptionHash": "0dc3f35b0484"
+      },
+      {
+        "name": "kanban_create",
+        "required": [
+          "title"
+        ],
+        "params": [
+          "assignee",
+          "assigneeName",
+          "boardId",
+          "description",
+          "priority",
+          "status",
+          "title",
+          "url",
+          "workspaceId"
+        ],
+        "descriptionHash": "fd1220a677c2"
+      },
+      {
+        "name": "kanban_heartbeat",
+        "required": [
+          "id"
+        ],
+        "params": [
+          "id",
+          "note"
+        ],
+        "descriptionHash": "0c74d77e9e34"
+      },
+      {
+        "name": "kanban_link",
+        "required": [
+          "child_id",
+          "parent_id"
+        ],
+        "params": [
+          "child_id",
+          "parent_id"
+        ],
+        "descriptionHash": "0533955aa377"
+      },
+      {
+        "name": "kanban_list",
+        "required": [],
+        "params": [
+          "boardId",
+          "limit",
+          "query",
+          "status",
+          "workspaceId"
+        ],
+        "descriptionHash": "edd51cc1ac70"
+      },
+      {
+        "name": "kanban_show",
+        "required": [
+          "id"
+        ],
+        "params": [
+          "id"
+        ],
+        "descriptionHash": "139b0a816162"
+      },
+      {
+        "name": "kanban_unblock",
+        "required": [
+          "id"
+        ],
+        "params": [
+          "id"
+        ],
+        "descriptionHash": "610f28948e5b"
+      },
+      {
+        "name": "kanban_update",
+        "required": [
+          "id"
+        ],
+        "params": [
+          "assigneeName",
+          "boardId",
+          "description",
+          "id",
+          "priority",
+          "status",
+          "title",
+          "url"
+        ],
+        "descriptionHash": "1371df8c9474"
+      }
+    ],
+    "vssaros-kb": [
+      {
+        "name": "feishu_doc_read",
+        "required": [
+          "doc_id"
+        ],
+        "params": [
+          "cliPath",
+          "doc_id",
+          "file_type"
+        ],
+        "descriptionHash": "4951dc29d6cd"
+      },
+      {
+        "name": "feishu_drive_add_comment",
+        "required": [
+          "content",
+          "file_id"
+        ],
+        "params": [
+          "block_id",
+          "cliPath",
+          "content",
+          "file_id",
+          "file_type"
+        ],
+        "descriptionHash": "6f04c92d7c2e"
+      },
+      {
+        "name": "feishu_drive_list_comment_replies",
+        "required": [
+          "comment_id",
+          "file_id"
+        ],
+        "params": [
+          "cliPath",
+          "comment_id",
+          "file_id",
+          "file_type",
+          "page_size",
+          "page_token"
+        ],
+        "descriptionHash": "e204358f44a3"
+      },
+      {
+        "name": "feishu_drive_list_comments",
+        "required": [
+          "file_id"
+        ],
+        "params": [
+          "cliPath",
+          "comment_scope",
+          "file_id",
+          "file_type",
+          "page_size",
+          "page_token",
+          "solved_status"
+        ],
+        "descriptionHash": "f1a21f27adca"
+      },
+      {
+        "name": "feishu_drive_reply_comment",
+        "required": [
+          "comment_id",
+          "content",
+          "file_id"
+        ],
+        "params": [
+          "cliPath",
+          "comment_id",
+          "content",
+          "file_id",
+          "file_type"
+        ],
+        "descriptionHash": "99ea9701706d"
+      },
+      {
+        "name": "kb_build",
+        "required": [],
+        "params": [
+          "batch",
+          "mode",
+          "provider",
+          "vaultId"
+        ],
+        "descriptionHash": "47a7fce8fecd"
+      },
+      {
+        "name": "kb_feishu_spaces",
+        "required": [],
+        "params": [
+          "action",
+          "cliPath",
+          "name"
+        ],
+        "descriptionHash": "38f66bf73159"
+      },
+      {
+        "name": "kb_feishu_sync",
+        "required": [],
+        "params": [
+          "apply",
+          "cliPath",
+          "limit",
+          "src",
+          "vaultId"
+        ],
+        "descriptionHash": "9c69d99dbf84"
+      },
+      {
+        "name": "kb_list",
+        "required": [],
+        "params": [],
+        "descriptionHash": "2c1b00b9fc2e"
+      },
+      {
+        "name": "kb_mindmap",
+        "required": [
+          "mode"
+        ],
+        "params": [
+          "count",
+          "file",
+          "files",
+          "mode",
+          "provider",
+          "vaultId"
+        ],
+        "descriptionHash": "e9d8ba242fc1"
+      },
+      {
+        "name": "kb_mkdir",
+        "required": [
+          "path"
+        ],
+        "params": [
+          "path",
+          "vaultId"
+        ],
+        "descriptionHash": "dca86be44e0c"
+      },
+      {
+        "name": "kb_organize",
+        "required": [],
+        "params": [
+          "copies",
+          "creates",
+          "deletes",
+          "moves",
+          "reason",
+          "vaultId"
+        ],
+        "descriptionHash": "be21234f6525"
+      },
+      {
+        "name": "kb_read",
+        "required": [
+          "uri"
+        ],
+        "params": [
+          "uri"
+        ],
+        "descriptionHash": "cb7a96880090"
+      },
+      {
+        "name": "kb_search",
+        "required": [],
+        "params": [
+          "limit",
+          "mode",
+          "query",
+          "tag",
+          "type",
+          "vaultId"
+        ],
+        "descriptionHash": "c6675ab1000e"
+      },
+      {
+        "name": "kb_topic_overviews",
+        "required": [],
+        "params": [
+          "vaultId"
+        ],
+        "descriptionHash": "68c178eb4a00"
+      },
+      {
+        "name": "kb_write_note",
+        "required": [
+          "content",
+          "path"
+        ],
+        "params": [
+          "content",
+          "mode",
+          "path",
+          "vaultId"
+        ],
+        "descriptionHash": "d96a5e97755a"
+      }
+    ],
+    "vssaros-media": [
+      {
+        "name": "media_list",
+        "required": [],
+        "params": [
+          "kind",
+          "limit"
+        ],
+        "descriptionHash": "a400e57a476a"
+      },
+      {
+        "name": "media_stats",
+        "required": [],
+        "params": [],
+        "descriptionHash": "835dca4d1ab9"
+      }
+    ],
+    "vssaros-memory": [
+      {
+        "name": "memory_api",
+        "required": [],
+        "params": [
+          "args",
+          "method",
+          "verbose"
+        ],
+        "descriptionHash": "03298c7f409e"
+      },
+      {
+        "name": "memory_cascade",
+        "required": [
+          "memory_id"
+        ],
+        "params": [
+          "memory_id"
+        ],
+        "descriptionHash": "7a1e36911a38"
+      },
+      {
+        "name": "memory_crystal",
+        "required": [
+          "action"
+        ],
+        "params": [
+          "action",
+          "action_id",
+          "crystal_id"
+        ],
+        "descriptionHash": "bfe5d76d988b"
+      },
+      {
+        "name": "memory_facet",
+        "required": [
+          "action"
+        ],
+        "params": [
+          "action",
+          "dimension",
+          "target_id",
+          "target_type",
+          "value"
+        ],
+        "descriptionHash": "1b3446ecc88a"
+      },
+      {
+        "name": "memory_forget",
+        "required": [
+          "memory_id"
+        ],
+        "params": [
+          "memory_id",
+          "reason"
+        ],
+        "descriptionHash": "0ace72367f3a"
+      },
+      {
+        "name": "memory_governance",
+        "required": [
+          "action"
+        ],
+        "params": [
+          "action",
+          "checkpoint_id",
+          "concept",
+          "description",
+          "dry_run",
+          "filters",
+          "ids",
+          "limit",
+          "memory_id",
+          "name",
+          "passed",
+          "priority",
+          "session_id",
+          "snapshot_id",
+          "sub",
+          "updates"
+        ],
+        "descriptionHash": "b07a0d88edaf"
+      },
+      {
+        "name": "memory_import",
+        "required": [
+          "action"
+        ],
+        "params": [
+          "action",
+          "data",
+          "jsonl",
+          "max_events",
+          "session_id"
+        ],
+        "descriptionHash": "67aee276f712"
+      },
+      {
+        "name": "memory_improve",
+        "required": [
+          "action",
+          "memory_id"
+        ],
+        "params": [
+          "action",
+          "memory_id",
+          "new_content"
+        ],
+        "descriptionHash": "ae4df48caa2b"
+      },
+      {
+        "name": "memory_lesson",
+        "required": [
+          "action"
+        ],
+        "params": [
+          "action",
+          "confidence",
+          "content",
+          "context",
+          "lesson_id",
+          "limit",
+          "project",
+          "query"
+        ],
+        "descriptionHash": "e1b6f9793144"
+      },
+      {
+        "name": "memory_list",
+        "required": [],
+        "params": [
+          "limit",
+          "partition"
+        ],
+        "descriptionHash": "eddcd9963c1c"
+      },
+      {
+        "name": "memory_mesh",
+        "required": [
+          "action"
+        ],
+        "params": [
+          "action",
+          "direction",
+          "name",
+          "peer_id",
+          "scopes",
+          "url"
+        ],
+        "descriptionHash": "6b129384a2f0"
+      },
+      {
+        "name": "memory_obsidian_export",
+        "required": [],
+        "params": [],
+        "descriptionHash": "c71c395cd17c"
+      },
+      {
+        "name": "memory_recall",
+        "required": [
+          "query"
+        ],
+        "params": [
+          "limit",
+          "partition",
+          "query",
+          "strategy"
+        ],
+        "descriptionHash": "f387418dd8fa"
+      },
+      {
+        "name": "memory_refresh",
+        "required": [],
+        "params": [],
+        "descriptionHash": "89d7101ef794"
+      },
+      {
+        "name": "memory_remember",
+        "required": [
+          "content"
+        ],
+        "params": [
+          "content",
+          "importance",
+          "memory_type",
+          "tags"
+        ],
+        "descriptionHash": "b3eee2ebdbf3"
+      },
+      {
+        "name": "memory_routine",
+        "required": [
+          "action"
+        ],
+        "params": [
+          "action",
+          "description",
+          "error",
+          "frozen",
+          "name",
+          "result",
+          "routine_id",
+          "run_id",
+          "step_order",
+          "step_status",
+          "steps"
+        ],
+        "descriptionHash": "43a7454cc64d"
+      },
+      {
+        "name": "memory_search",
+        "required": [
+          "query"
+        ],
+        "params": [
+          "limit",
+          "partition",
+          "query"
+        ],
+        "descriptionHash": "7d8eb15d732a"
+      },
+      {
+        "name": "memory_sentinel",
+        "required": [
+          "action"
+        ],
+        "params": [
+          "action",
+          "condition",
+          "name",
+          "result",
+          "sentinel_id",
+          "type"
+        ],
+        "descriptionHash": "27dac22e4e81"
+      },
+      {
+        "name": "memory_skill",
+        "required": [
+          "action"
+        ],
+        "params": [
+          "action",
+          "session_id",
+          "skill_id"
+        ],
+        "descriptionHash": "f0302b9bb8b4"
+      },
+      {
+        "name": "memory_slot",
+        "required": [
+          "action"
+        ],
+        "params": [
+          "action",
+          "content",
+          "description",
+          "label",
+          "max_observations",
+          "pinned",
+          "session_id",
+          "size_limit",
+          "text"
+        ],
+        "descriptionHash": "2aaa08601fb5"
+      },
+      {
+        "name": "memory_stats",
+        "required": [],
+        "params": [],
+        "descriptionHash": "346bd4ea25f6"
+      },
+      {
+        "name": "memory_team",
+        "required": [
+          "action"
+        ],
+        "params": [
+          "action",
+          "item_type",
+          "memory_id",
+          "project",
+          "query"
+        ],
+        "descriptionHash": "6c77a1e75e12"
+      },
+      {
+        "name": "memory_work",
+        "required": [
+          "group"
+        ],
+        "params": [
+          "action_id",
+          "content",
+          "description",
+          "edge_type",
+          "from",
+          "group",
+          "id",
+          "limit",
+          "peer",
+          "priority",
+          "status",
+          "sub",
+          "title",
+          "to",
+          "type"
+        ],
+        "descriptionHash": "bb87392f961f"
+      }
+    ],
+    "vssaros-skills": [
+      {
+        "name": "skill_manage",
+        "required": [
+          "action",
+          "name"
+        ],
+        "params": [
+          "action",
+          "category",
+          "content",
+          "name",
+          "new_string",
+          "old_string",
+          "replace_all"
+        ],
+        "descriptionHash": "ef764efa3cca"
+      },
+      {
+        "name": "skill_search",
+        "required": [
+          "query"
+        ],
+        "params": [
+          "limit",
+          "query"
+        ],
+        "descriptionHash": "38f9df7d81d9"
+      }
+    ],
+    "vssaros-unreal": [
+      {
+        "name": "unreal_build",
+        "required": [
+          "mode"
+        ],
+        "params": [
+          "mode"
+        ],
+        "descriptionHash": "4f4fcc3e0e2f"
+      },
+      {
+        "name": "unreal_dump",
+        "required": [
+          "code"
+        ],
+        "params": [
+          "code",
+          "depth"
+        ],
+        "descriptionHash": "43bd750a9f73"
+      },
+      {
+        "name": "unreal_exec",
+        "required": [
+          "code"
+        ],
+        "params": [
+          "code",
+          "reset",
+          "timeout_seconds"
+        ],
+        "descriptionHash": "daefb987bda0"
+      },
+      {
+        "name": "unreal_find_asset",
+        "required": [],
+        "params": [
+          "class_names",
+          "max_results",
+          "name",
+          "name_contains",
+          "path",
+          "search_term"
+        ],
+        "descriptionHash": "315aca336b99"
+      },
+      {
+        "name": "unreal_health",
+        "required": [],
+        "params": [],
+        "descriptionHash": "c88a707fbdc5"
+      },
+      {
+        "name": "unreal_help",
+        "required": [],
+        "params": [
+          "filter",
+          "symbol"
+        ],
+        "descriptionHash": "45339fe51b70"
+      },
+      {
+        "name": "unreal_wait",
+        "required": [],
+        "params": [
+          "condition",
+          "log_pattern",
+          "poll_interval",
+          "timeout"
+        ],
+        "descriptionHash": "27e386ea9acd"
+      }
+    ],
+    "vssaros-web-content-import": [
+      {
+        "name": "content_import",
+        "required": [],
+        "params": [
+          "html",
+          "images",
+          "maxChars",
+          "mode",
+          "slug",
+          "url",
+          "vault"
+        ],
+        "descriptionHash": "62ec2a2c7d8a"
+      }
+    ],
+    "vssaros-workflow": [
+      {
+        "name": "workflow_apply",
+        "required": [
+          "connections",
+          "id",
+          "nodes"
+        ],
+        "params": [
+          "connections",
+          "description",
+          "id",
+          "name",
+          "nodes"
+        ],
+        "descriptionHash": "8549040b01cd"
+      },
+      {
+        "name": "workflow_engine_status",
+        "required": [],
+        "params": [
+          "id"
+        ],
+        "descriptionHash": "20507fff912f"
+      },
+      {
+        "name": "workflow_get",
+        "required": [
+          "id"
+        ],
+        "params": [
+          "id"
+        ],
+        "descriptionHash": "a4a9e6a7fe3f"
+      },
+      {
+        "name": "workflow_get_schema",
+        "required": [],
+        "params": [],
+        "descriptionHash": "d95df50417bf"
+      },
+      {
+        "name": "workflow_list",
+        "required": [],
+        "params": [
+          "limit"
+        ],
+        "descriptionHash": "0705925b25df"
+      },
+      {
+        "name": "workflow_update",
+        "required": [
+          "id"
+        ],
+        "params": [
+          "description",
+          "id",
+          "name",
+          "tags"
+        ],
+        "descriptionHash": "86b1057f7497"
+      }
+    ]
+  }
+}

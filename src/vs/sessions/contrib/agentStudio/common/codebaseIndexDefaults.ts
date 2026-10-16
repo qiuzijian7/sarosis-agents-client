@@ -387,3 +387,182 @@ export function shouldDeferGraphLoad(
 	if (folderIndex <= 0) { return false; }
 	return artifactSizeBytes > deferLargeNonPrimaryRootsMB * 1024 * 1024;
 }
+
+/** 外部产物重载的**节流下限**：连续检测到外部写入时，两次重载之间的最小间隔（见下）。 */
+export const EXTERNAL_ARTIFACT_RELOAD_MIN_INTERVAL_MS = 5000;
+
+/** 外部产物**轮询**间隔（IDE 侧 `codebaseGraphBootstrap` 的定时器用它）。 */
+export const EXTERNAL_ARTIFACT_POLL_INTERVAL_MS = 10_000;
+
+/**
+ * **dsh 侧**写进 `artifact.json` 的 `producer` 取值 —— 两侧的**所有权契约**（2026-10-13，用户裁决
+ * 「权限都在 dsh 侧全权处理、逻辑也都转移到 dsh 侧」）。
+ *
+ * 语义：**这个目录里的图谱归 dsh 负责**。IDE 侧见到它 ⇒ **不索引、不落盘、不删目录**，
+ * 只负责"读 + 发现变化就重载"（见 `codebaseGraphBootstrap` 的外部产物感知 ✓）。
+ *
+ * 为什么用"制品里带一个键"而不是"IDE 侧配置项"：
+ *   · **权限在 dsh**：谁产出谁声明 ✓ —— IDE 不需要（也不应该）自己判断"该不该让路" ✗；
+ *   · 不需要动 IDE 的配置表（那张表在并发改动区，且新增配置项 = 用户还需手动开 ✓）；
+ *   · 天然可逆：dsh 的制品被删掉、或 IDE 后来自己写了一份（不带这个键）⇒ 权限就回到 IDE ✓。
+ *
+ * ⚠ **向后兼容**：IDE 侧对 `artifact.json` 是**按键内联读取**（只认 `node_count` / `saved_at` 等 ✔），
+ * 多一个键不影响它 ✓（dsh 侧同理 ✓）。⇒ 两侧都不需要"严格 schema"的迁移 ✓。
+ */
+export const DSH_ARTIFACT_PRODUCER = 'vssaros-dsh';
+
+/** 从清单里读"谁产出的"（读不出 / 不是字符串 ⇒ `undefined`）。 */
+export function artifactProducerOf(manifest: unknown): string | undefined {
+	if (!manifest || typeof manifest !== 'object') { return undefined; }
+	const raw = (manifest as { producer?: unknown }).producer;
+	return typeof raw === 'string' && raw.trim() ? raw.trim() : undefined;
+}
+
+/**
+ * 这份清单是不是 **dsh 产出**的（⇒ IDE 侧不该写它所在的目录）。
+ *
+ * 保守口径（与判据族其它成员一致 ✓）：
+ *   · 清单不是对象 / 缺 `producer` / `producer` 不是字符串 ⇒ **false**（= 当成"本窗口的制品"，
+ *     行为与今天完全一致 ✓ —— 老制品、手写制品、我们自己的制品都走这条 ✓）；
+ *   · 只有明确等于 `DSH_ARTIFACT_PRODUCER` 才 true ✓（不做"包含/前缀"之类的宽松匹配 ✗）。
+ */
+export function isDshProducedManifest(manifest: unknown): boolean {
+	return artifactProducerOf(manifest) === DSH_ARTIFACT_PRODUCER;
+}
+
+/** 一次「这份图有多新」的观测（磁盘上的制品 / 内存里已加载的那份，**同口径** ✓）。 */
+export interface IArtifactFreshness {
+	/** `artifact.json` 自称的保存时间（ms）—— **首选判据**（IDE 与 dsh 两侧写的是同一个键 ✓） */
+	savedAt?: number;
+	/** `artifact.json` 的 mtime（ms）—— `savedAt` 缺失时的兜底（老制品 / 别人手写的） */
+	mtimeMs?: number;
+	/**
+	 * 制品里的节点数。**用途有三，都不是"新旧判据"**：
+	 *   ① 报告（"换成了多大的图"）；
+	 *   ② **空制品守卫**（磁盘 0 节点不许换掉内存里的好图）；
+	 *   ③ **自我写识别**（见下 `decideExternalArtifactReload` 的第 6 条）。
+	 */
+	nodeCount?: number;
+	/** 制品里的边数（同上，仅用于 ③ 自我写识别 —— 单看节点数可能在"重排后节点数相同"时误判）。 */
+	edgeCount?: number;
+}
+
+export interface IExternalReloadContext {
+	/**
+	 * 本窗口**正在写盘 / 正在索引** ⇒ 一律不重载。
+	 *
+	 * 为什么这条必须在最前面：重载 = `deleteProject` + 重新解析制品 ⇒ 会把**尚未落盘的内存状态**
+	 * 一起丢掉（增量索引中途 / `_saveGraph` 的 30s 防抖窗口内）✗✗。
+	 */
+	writeInFlight: boolean;
+	/** 上次因外部写入重载的时间（ms）；未重载过 ⇒ 传 `undefined` */
+	lastReloadAt?: number;
+	/** 当前时间（ms）—— 显式传入，纯函数不读时钟 ✓ */
+	now: number;
+	/** 覆盖节流下限（ms）；缺省 `EXTERNAL_ARTIFACT_RELOAD_MIN_INTERVAL_MS` */
+	minIntervalMs?: number;
+}
+
+export type ExternalReloadDecision =
+	| { reload: true; reason: string; onDiskFreshness: number }
+	/**
+	 * `adoptAsBaseline`：不重载，但**调用方必须把基线更新成磁盘那份** ✓
+	 * （唯一情形 = 判定"磁盘上这份就是本窗口自己刚落盘的内存镜像"，见第 6 条）。
+	 */
+	| { reload: false; reason: string; adoptAsBaseline?: boolean };
+
+/** 取"多新"：优先 `savedAt`，读不出才退回 mtime（**两侧必须用同一个函数**，否则判据会自相矛盾）✓。 */
+export function artifactFreshnessOf(state: IArtifactFreshness | undefined): number | undefined {
+	if (!state) { return undefined; }
+	const declared = Number(state.savedAt);
+	if (Number.isFinite(declared) && declared > 0) { return declared; }
+	const mtime = Number(state.mtimeMs);
+	return Number.isFinite(mtime) && mtime > 0 ? Math.round(mtime) : undefined;
+}
+
+/**
+ * 要不要因为「**别人把制品换新了**」而重载内存里的图（2026-10-13，所有权交接的 IDE 半边）。
+ *
+ * ## 为什么需要它
+ *
+ * 交接之后 `<工作区>/.codebase-memory/` 的**写者会变成 dsh**（Host 进程里的 `@vssaros/dsh-codebase`，
+ * 见 `doc/codebase-index-to-dsh-plan.html` §5 P3）。而 IDE 这边的图谱是**一次性读进内存**的
+ * （`CodebaseGraphService._graph`）—— 没有任何机制会去发现"盘上那份被换了" ⇒
+ * **IDE 会永远用着打开工作区那一刻的旧图** ✗✗（用户视角：「dsh 明明重新索引了，IDE 里行号还是旧的」）。
+ *
+ * ⇒ 这一层就是"感知外部写入"，它让**同步消费者一个字都不用改**（对照：把 `hasGraphData()` /
+ * `getClassHierarchy()` 那些同步读全部 async 化的代价要大得多，且会踩源码级顺序断言）。
+ *
+ * ## 判据（逐条都有理由，且**保守**）
+ *
+ *   1. 磁盘上读不出"多新" ⇒ **不重载**（不猜 ✗）；
+ *   2. 内存里还没加载过 ⇒ **不重载**（首次加载走既有 bootstrap / 延迟加载路径 ✓，这里只负责"换新"）；
+ *   3. 本窗口在写盘/索引 ⇒ **不重载**（会丢未落盘的状态 ✗）；
+ *   4. 磁盘那份**不比**内存里那份新 ⇒ 不重载（**含平手**：平手最常见的情形就是"我们自己刚写完" ✓）；
+ *   5. 磁盘制品**节点数为 0** 而内存里有节点 ⇒ **不重载**（本仓有过 8.2MB 图被覆盖成 99 字节的事故，
+ *      `_saveGraph` 的 0 节点守卫就是为它加的 ⇒ 这里同样不许拿空图换掉好图 ✗）；
+ *   6. 磁盘那份**比内存新、且节点数与边数都与内存里的**一致 ⇒ 判为「**本窗口自己刚落盘的那份**」，
+ *      不重载、但把基线跟着更新 ✓；
+ *      ⚠ 这一条必须要有：IDE 的落盘是**延迟合并**的（`SAVE_DEBOUNCE_MS`）—— 盘上的 `saved_at` 会比
+ *      我们最后一次记录的基线**新**，而内容其实就是内存里这份 ⇒ 没有这条就会把自己的写当外部写、
+ *      白做一次"删项目 + 重新解析"的重活 ✗（连续增量索引时尤其明显）；
+ *   7. 距上次外部重载不足 `minIntervalMs` ⇒ 不重载（重载是"删项目 + 重新解析"的重活，
+ *      连续外部写入时必须节流 ✓）。
+ *
+ * ⚠ **调用方的一条硬纪律**：本窗口**自己**做完一次加载/索引之后，必须把"内存里这份图对应哪次保存"
+ * 记成基线 ✓（加载完 ⇒ 基线 = 当时磁盘的 `saved_at`；索引完 ⇒ 内存比磁盘新，等落盘后由第 6 条
+ * 自动把基线跟上去 ✓）。否则第 4 条会把我们**自己的写**当成外部写 ✗。
+ *
+ * ⚠ **本函数不解决、也解决不了的**：本窗口**待发的延迟保存**（30s 防抖窗口内）可能覆盖别人才写下的
+ * 新制品（**写-写竞争**）✗ —— 那要靠"IDE 侧索引器让路/停写"那一刀（`doc/codebase-index-to-dsh-plan.html`
+ * §5 P3 待办 ①）。这里刻意**不去 flush**（`flushPendingSave()`）：把延迟写提前落下只会让那次覆盖更早发生，
+ * 并不能避免它 ✓（不如把这件事留给它该待的地方 ✓）。
+ *
+ * 纯函数（bootstrap 是 DI 贡献类、无法单测；判据下沉到这里锁死语义 —— 与 `shouldDeferGraphLoad` 同款）。
+ */
+export function decideExternalArtifactReload(
+	onDisk: IArtifactFreshness | undefined,
+	loaded: IArtifactFreshness | undefined,
+	ctx: IExternalReloadContext,
+): ExternalReloadDecision {
+	const diskFresh = artifactFreshnessOf(onDisk);
+	if (diskFresh === undefined) {
+		return { reload: false, reason: '磁盘上读不出"多新"（没有 artifact.json / 缺 saved_at 与 mtime）⇒ 不猜 ✗' };
+	}
+	const loadedFresh = artifactFreshnessOf(loaded);
+	if (loadedFresh === undefined) {
+		return { reload: false, reason: '本窗口还没加载过这个项目的图 ⇒ 首次加载走既有路径（这里只负责"换新"）' };
+	}
+	if (ctx.writeInFlight) {
+		return { reload: false, reason: '本窗口正在写盘/索引 ⇒ 不重载（会把尚未落盘的内存状态一起丢掉 ✗）' };
+	}
+	if (diskFresh <= loadedFresh) {
+		return { reload: false, reason: `磁盘上的不比内存里的新（${diskFresh} ≤ ${loadedFresh}）—— 平手最常见的情形就是"我们自己刚写完" ✓` };
+	}
+	// 空制品守卫：只在"本来有图"时生效（内存里 0 节点 ⇒ 换不换都一样，交给上面第 4 条 ✓）
+	const diskNodes = Number(onDisk?.nodeCount);
+	const loadedNodes = Number(loaded?.nodeCount);
+	if (Number.isFinite(diskNodes) && diskNodes === 0 && Number.isFinite(loadedNodes) && loadedNodes > 0) {
+		return { reload: false, reason: `磁盘制品是空的（0 节点）而内存里有 ${loadedNodes} 个 ⇒ 不拿空图换好图 ✗` };
+	}
+	// 第 6 条：自我写识别 —— 节点数**与边数**都一致 ⇒ 盘上这份就是内存镜像（延迟落盘的那次）✓
+	const diskEdges = Number(onDisk?.edgeCount);
+	const loadedEdges = Number(loaded?.edgeCount);
+	if (Number.isFinite(diskNodes) && Number.isFinite(loadedNodes) && diskNodes === loadedNodes
+		&& Number.isFinite(diskEdges) && Number.isFinite(loadedEdges) && diskEdges === loadedEdges) {
+		return {
+			reload: false,
+			adoptAsBaseline: true,
+			reason: `磁盘上的比基线新（${diskFresh} > ${loadedFresh}），但节点/边数与内存里的逐个一致（${diskNodes}/${diskEdges}）⇒ 判为**本窗口自己刚落盘**的那份 ⇒ 只更新基线，不重载 ✓`,
+		};
+	}
+	const minInterval = ctx.minIntervalMs ?? EXTERNAL_ARTIFACT_RELOAD_MIN_INTERVAL_MS;
+	if (ctx.lastReloadAt !== undefined && ctx.now - ctx.lastReloadAt < minInterval) {
+		return { reload: false, reason: `距上次外部重载不足 ${minInterval}ms（节流；重载是"删项目 + 重新解析"的重活 ✓）` };
+	}
+	return {
+		reload: true,
+		onDiskFreshness: diskFresh,
+		reason: `磁盘上的制品比内存里的新（${diskFresh} > ${loadedFresh}${Number.isFinite(diskNodes) ? `，节点 ${diskNodes}≠${Number.isFinite(loadedNodes) ? loadedNodes : '?'}` : ''}）⇒ 别人重写过这份图，重载 ✓`,
+	};
+}

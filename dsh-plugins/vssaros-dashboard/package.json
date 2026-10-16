@@ -1,0 +1,49 @@
+{
+  "name": "@vssaros/dsh-dashboard",
+  "version": "0.4.29",
+  "description": "VsSaros Dashboard module for DeepSeek Harness: read-only telemetry / token-usage summary over dsh's session projection cache (<DSH_HOME>/storages/session_projcache/sessions), merged with live sessions via sessions.get + sessionProjections.stateOf, plus a 'running state' view (turn in-flight / goal / todos / plan mode / sandbox / approval / LLM retrying / pending questions) and context-window occupancy plus the heuristic context composition (system / messages / tool definitions), queued user input (durable inbox), the durable model selection (last used / pending) the cold-session summary hints (blank / last human prompt time), the title-eligible human input aggregate and the subagent facts (self identity / active timing / durable child catalog / allowed child model routes). Tools: dashboard_sessions / dashboard_session.",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/layout.js",
+    "lib/layoutStore.js",
+    "lib/catalog.js",
+    "lib/sideview.js",
+    "lib/pageClient.js",
+    "lib/store.js",
+    "lib/core/dashboard.js",
+    "cordis.patch.yml"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/dsh": ">=0.1.7-0 <0.3.0-0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": [
+        "./cordis.patch.yml"
+      ]
+    }
+  },
+  "vssaros": {
+    "manifestVersion": 1,
+    "module": "dashboard",
+    "activityBar": {
+      "containerId": "agentStudio.dashboard",
+      "title": "主页",
+      "icon": "codicon:home",
+      "order": 5
+    },
+    "view": {
+      "kind": "page",
+      "route": "/x/dashboard/"
+    },
+    "legacyCounterpart": "agentStudio.dashboard"
+  },
+  "license": "MIT"
+}

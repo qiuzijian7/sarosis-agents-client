@@ -104,10 +104,45 @@ function patchCustomProvider(
 	patch: Partial<CustomProviderData>,
 ): void {
 	const customProviders = getCustomProviders(configurationService);
-	const idx = customProviders.findIndex(cp => cp.id === id);
-	if (idx === -1) { return; }
-	customProviders[idx] = { ...customProviders[idx], ...patch };
-	configurationService.updateValue(AGENT_STUDIO_CUSTOM_PROVIDERS_SETTING, customProviders);
+	if (!customProviders.some(cp => cp.id === id)) { return; }
+	// ⚠ 必须**不可变更新**：`getValue()` 返回的是深度冻结值，`customProviders[idx] = {...}` ✗
+	// 在 dev（未构建）形态下会抛 `Cannot assign to read only property`（modelsAutoUpdate 已记录同坑）。
+	configurationService.updateValue(AGENT_STUDIO_CUSTOM_PROVIDERS_SETTING, customProviders.map(cp => cp.id === id ? { ...cp, ...patch } : cp));
+}
+
+/**
+ * 自定义 provider 的凭据**不在** `sessions.agentStudio.provider.<id>.apiKey|baseUrl`：
+ * 那两个动态键只对**内置身份**注册过（见 `common/providerCatalog.ts`），给自定义 id 写它必然弹
+ * 「Unable to write to User Settings because … is not a registered configuration」，而
+ * **VS Code 的错误通知是粘性的** ⇒ 通知 toast 压在聊天框上会把 dsh 聊天框整块隐藏（永久空白）；
+ * 且 `getValue` 读该键永远 `undefined` ⇒ 自定义 provider 的 Key / 端点既写不进也读不出。
+ * 所以自定义 provider 的凭据落在 entry 自身（`CustomProviderData.apiKey/baseUrl`）。
+ */
+function readCredential(
+	configurationService: IConfigurationService,
+	provider: ProviderDefinition,
+	kind: 'apiKey' | 'baseUrl',
+): string {
+	if (provider.isBuiltin) {
+		const key = kind === 'apiKey' ? provider.apiKeySetting : provider.baseUrlSetting;
+		return configurationService.getValue<string>(key) || '';
+	}
+	const cp = getCustomProviders(configurationService).find(c => c.id === provider.id);
+	return (kind === 'apiKey' ? cp?.apiKey : cp?.baseUrl) || '';
+}
+
+/** 写凭据：内置走注册过的配置键，自定义就地 patch entry（绝不写未注册键）。 */
+function writeCredential(
+	configurationService: IConfigurationService,
+	provider: ProviderDefinition,
+	kind: 'apiKey' | 'baseUrl',
+	value: string,
+): void {
+	if (provider.isBuiltin) {
+		configurationService.updateValue(kind === 'apiKey' ? provider.apiKeySetting : provider.baseUrlSetting, value);
+		return;
+	}
+	patchCustomProvider(configurationService, provider.id, kind === 'apiKey' ? { apiKey: value } : { baseUrl: value });
 }
 
 // ─── Renderer State (held per render call) ─────────────────────────
@@ -259,8 +294,8 @@ function renderProviderList(
 	for (const provider of getAllProviders(configurationService)) {
 		const card = $('div.provider-card');
 		const isApiKeyOptionalProvider = provider.id === 'ollama';
-		const hasApiKey = !!configurationService.getValue<string>(provider.apiKeySetting);
-		const hasBaseUrl = !!(configurationService.getValue<string>(provider.baseUrlSetting) || provider.defaultBaseUrl);
+		const hasApiKey = !!readCredential(configurationService, provider, 'apiKey');
+		const hasBaseUrl = !!(readCredential(configurationService, provider, 'baseUrl') || provider.defaultBaseUrl);
 		const isConfigured = isApiKeyOptionalProvider ? hasBaseUrl : hasApiKey;
 		if (isConfigured) {
 			card.classList.add('configured-highlight');
@@ -340,9 +375,9 @@ function renderProviderList(
 		apiKeyInput.id = `provider-apikey-${provider.id}`;
 		apiKeyInput.className = 'provider-field-input';
 		apiKeyInput.placeholder = `粘贴你的 ${provider.name} API Key`;
-		apiKeyInput.value = configurationService.getValue<string>(provider.apiKeySetting) || '';
+		apiKeyInput.value = readCredential(configurationService, provider, 'apiKey');
 		const saveApiKey = () => {
-			configurationService.updateValue(provider.apiKeySetting, apiKeyInput.value);
+			writeCredential(configurationService, provider, 'apiKey', apiKeyInput.value);
 			state.expandedProviderId = provider.id;
 			renderProviderList(state, configurationService);
 		};
@@ -363,9 +398,10 @@ function renderProviderList(
 		baseUrlInput.id = `provider-baseurl-${provider.id}`;
 		baseUrlInput.className = 'provider-field-input';
 		baseUrlInput.placeholder = provider.defaultBaseUrl || '自定义端点地址';
-		baseUrlInput.value = configurationService.getValue<string>(provider.baseUrlSetting) || '';
+		baseUrlInput.value = readCredential(configurationService, provider, 'baseUrl');
+		// ⚠ 自定义 provider 走 entry patch：此前直写未注册键，**每敲一个字符**就弹一次粘性错误通知。
 		const saveBaseUrl = () => {
-			configurationService.updateValue(provider.baseUrlSetting, baseUrlInput.value);
+			writeCredential(configurationService, provider, 'baseUrl', baseUrlInput.value);
 		};
 		baseUrlInput.oninput = saveBaseUrl;
 		baseUrlInput.onblur = saveBaseUrl;
@@ -519,8 +555,8 @@ function renderProviderList(
 			const clearBtn = $('button.provider-card-btn.provider-card-btn-danger');
 			clearBtn.textContent = '清除';
 			clearBtn.onclick = () => {
-				configurationService.updateValue(provider.apiKeySetting, '');
-				configurationService.updateValue(provider.baseUrlSetting, provider.defaultBaseUrl);
+				writeCredential(configurationService, provider, 'apiKey', '');
+				writeCredential(configurationService, provider, 'baseUrl', provider.defaultBaseUrl);
 				state.expandedProviderId = provider.id;
 				renderProviderList(state, configurationService);
 			};
@@ -873,11 +909,10 @@ function showAddProviderForm(
 			apiType,
 		};
 
-		// 保存 API Key 到独立设置项
+		// 保存 API Key 到 **entry 自身**：不能写 `sessions.agentStudio.provider.<id>.apiKey`
+		// —— 自定义 id 没有注册过该配置键，写入必弹粘性错误通知（见 readCredential 注释）。
 		const apiKeyInput = document.getElementById('add-provider-apikey') as HTMLInputElement;
-		if (apiKeyInput?.value.trim()) {
-			configurationService.updateValue(`sessions.agentStudio.provider.${id}.apiKey`, apiKeyInput.value.trim());
-		}
+		entry.apiKey = apiKeyInput?.value.trim() ?? '';
 		if (apiType === 'anthropic') {
 			const modelsTa = document.getElementById('add-provider-models') as HTMLTextAreaElement;
 			entry.models = modelsTa.value.split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
@@ -925,9 +960,7 @@ function deleteCustomProvider(
 	const filtered = customProviders.filter(cp => cp.id !== id);
 	configurationService.updateValue(AGENT_STUDIO_CUSTOM_PROVIDERS_SETTING, filtered);
 
-	// Also clear any stored apiKey/baseUrl for this provider
-	configurationService.updateValue(`sessions.agentStudio.provider.${id}.apiKey`, undefined);
-	configurationService.updateValue(`sessions.agentStudio.provider.${id}.baseUrl`, undefined);
+	// 凭据随 entry 一起被移除（apiKey/baseUrl 存在 entry 里，不再有独立的"未注册配置键"要清）。
 
 	state.statusMessage = `✅ Provider 已删除`;
 	renderProviderList(state, configurationService);
@@ -1244,8 +1277,8 @@ function renderCardModelList(
 
 	// ── 重新拉取 ──
 	fetchBtn.onclick = async () => {
-		const apiKey = configurationService.getValue<string>(provider.apiKeySetting);
-		const baseUrl = configurationService.getValue<string>(provider.baseUrlSetting) || provider.defaultBaseUrl;
+		const apiKey = readCredential(configurationService, provider, 'apiKey');
+		const baseUrl = readCredential(configurationService, provider, 'baseUrl') || provider.defaultBaseUrl;
 		const apiType = cpEntry.apiType || 'openai';
 		if (!baseUrl) {
 			state.statusMessage = '❌ 请先配置 Base URL';
@@ -1502,8 +1535,8 @@ async function testConnection(
 	state: RendererState,
 	configurationService: IConfigurationService,
 ): Promise<void> {
-	const apiKey = configurationService.getValue<string>(provider.apiKeySetting);
-	const baseUrl = configurationService.getValue<string>(provider.baseUrlSetting) || provider.defaultBaseUrl;
+	const apiKey = readCredential(configurationService, provider, 'apiKey');
+	const baseUrl = readCredential(configurationService, provider, 'baseUrl') || provider.defaultBaseUrl;
 
 	if (!baseUrl) {
 		state.statusMessage = '❌ 请配置 Base URL';

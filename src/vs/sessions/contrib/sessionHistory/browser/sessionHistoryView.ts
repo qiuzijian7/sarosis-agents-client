@@ -1,12 +1,18 @@
 /*---------------------------------------------------------------------------------------------
  *  Session History View — sidebar ViewPane
  *
- *  Displays all Agent Studio chat sessions grouped by agent, with:
+ *  Displays all Agent Studio chat sessions **grouped by Workspace**（2026-10-12 重构），with:
+ *  - 折叠工作区分组头（计数 / 运行中绿点）；组内默认 5 条空闲会话 + 「展开其余」
+ *      · 口径与判据全在 `../common/sessionGrouping.ts`（纯函数，有单测），本文件只做 DOM
+ *      · **正在运行 / 等待用户**的会话始终显示且不占那 5 条配额
  *  - Agent filter dropdown
- *  - Workspace/search filter
+ *  - Workspace/search filter（搜索命中时不做截断，否则「搜到的行被折叠掉了」）
  *  - Expandable session items showing user messages (newest first)
  *  - Copy button per message
  *  - Click-to-navigate: jumps to the message in the Agent Studio chat editor
+ *
+ *  ★ 行首**不放圆形图标**（2026-10-12 用户要求）：agent 圆形头像已移除，会话归属由副行的
+ *    agent 名承担；会话内热切换的「人格」用**非圆形**标记表达（见 `PERSONA_MARK`）。
  *--------------------------------------------------------------------------------------------*/
 
 import './media/sessionHistoryView.css';
@@ -45,8 +51,29 @@ import { DisposableStore, isDisposable } from '../../../../base/common/lifecycle
 import { IQuickInputService } from '../../../../platform/quickinput/common/quickInput.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IBridgeService } from '../../agentStudio/browser/bridge/bridgeService.js';
+import {
+	buildSessionGroups,
+	computeGroupWindow,
+	ISessionGroup,
+	IWorkspaceRef,
+	nextExtraShown,
+	parseStringArray,
+} from '../common/sessionGrouping.js';
+import { IPersonaFact, parsePersonaMap, personaGlyphOf, personaLabelOf } from '../common/sessionPersona.js';
 
 const $ = DOM.$;
+
+/**
+ * 人格标记的落点（2026-10-12）。三种形态都**不是圆形**，等 `doc/session-sideview-workspace-mockup.html`
+ * §三的 Q1 拍板后改这一个常量即可：
+ *   - `'sub'`   —— 副行文字 `Saros · 人格：架构评审 · 26m`（**当前默认**，最干净、零新增行内元素）
+ *   - `'chip'`  —— 标题左侧圆角 chip `[架] 架构评审 标题`
+ *   - `'title'` —— 标题右侧圆角 chip `标题 [架] 架构评审 open`
+ *
+ * ⚠ 类型必须写成联合字面量（不能省略注解）：省略后 TS 会把类型收窄成 `'sub'`，
+ *   另两个分支的比较会被判为「无交集」而报错 ✗。
+ */
+const PERSONA_MARK: 'sub' | 'chip' | 'title' = 'sub';
 
 // ─── Agent color palette (aligned with Task Board agentColors.ts) ──────────
 // Deterministic per-agentId color for visual differentiation in the session list.
@@ -97,19 +124,36 @@ const ICON_LINK = 'M7.775 3.275a.75.75 0 001.06 1.06l1.25-1.25a2 2 0 112.83 2.83
 interface SessionInfo {
 	agentId: string;
 	agentName: string;
-	/**
-	 * ★ 2026-09-23（用户需求）：agent 头像 —— `Agent.avatar` 是 **SVG data URI**
-	 * （见 `common/agentAvatarPresets.ts`，预设可直接喂给 `img.src`）。
-	 *
-	 * 回退链：`avatar`（SVG 图）→ `icon`（emoji）→ 首字母。
-	 */
-	agentAvatar?: string;
-	/** ★ 2026-09-23：`Agent.icon`（emoji 字符串）—— 没有 `avatar` 时的第一回退。 */
+	/** ★ 2026-09-23：`Agent.icon`（emoji 字符串）—— 人格 chip 的 glyph 用它，缺则用名字首字。 */
 	agentIcon?: string;
 	sessionId: string;
 	sessionName: string;
 	messageCount: number;
 	updatedAt: number;
+	/**
+	 * 会话所属工作区（`AgentStudioSession.workspaceId`）。
+	 *
+	 * ⚠ 会话索引（`AgentSessionMeta`）里**没有**这个字段 ⇒ 只能由 `getSessions()`
+	 * 旁路解析一次（见 `_getSessionWorkspaceMap`）。取不到就是 `undefined`
+	 * ⇒ 落「未分组」，**不猜**归属。
+	 */
+	workspaceId?: string;
+	/**
+	 * 本会话当前生效的**人格**（会话内热切换，dsh 侧投影 key `vssaros-persona`）。
+	 *
+	 * `personaId` 其实是**另一个 agent 的 id**（见 `dsh-plugins/vssaros-agents/lib/core/persona.js`），
+	 * 所以展示名 / 字形可复用 agent 信息。
+	 * `undefined` = 该会话没切换过（跟随本 Agent 自带人设）⇒ **不渲染任何人格标记**。
+	 *
+	 * ⚠ 目前**恒为 undefined**：VsSaros 侧还没有读这条事实的通路（`AgentSessionMeta` /
+	 * `AgentStudioSession` 都没有该字段）。通路方案见
+	 * `doc/session-sideview-workspace-mockup.html` §六（三条候选，推荐「页面上报 + 落索引」）。
+	 * 本文件已经按「有值就渲染」写好，通路接通后无需再改渲染层。
+	 */
+	personaId?: string;
+	personaName?: string;
+	/** 人格（= 另一个 agent）的 `Agent.icon`（emoji）—— 人格 chip 的 glyph 用它。 */
+	personaIcon?: string;
 }
 
 interface UserMessageInfo {
@@ -124,6 +168,18 @@ interface SessionData {
 	chatOpen: boolean;
 	pinned: boolean;
 }
+
+/**
+ * 分组列表的**渲染指令**（见 `_planGroupRender`）。
+ *
+ * 为什么要有这一层：分组头、「展开其余」与会话行必须按顺序建成一棵树（行要挂进所属分组的
+ * body），而渲染是**分批 rAF 让出**的 ⇒ 扁平有序的 op 列表正好，渲染时把 `body` 一个个传下去。
+ */
+type IRenderOp =
+	| { readonly kind: 'group'; readonly group: ISessionGroup<SessionData>; readonly collapsed: boolean }
+	| { readonly kind: 'item'; readonly session: SessionData }
+	| { readonly kind: 'expand'; readonly group: ISessionGroup<SessionData>; readonly hidden: number }
+	| { readonly kind: 'collapse'; readonly group: ISessionGroup<SessionData> };
 
 /**
  * 会话运行指示灯状态（2026-09-15 用户需求）。
@@ -164,6 +220,31 @@ export class SessionHistoryViewPane extends ViewPane {
 	 * 清空/回填的高度突变即表现为抖动。重建前后各存/取一次即可消除 ✓。
 	 */
 	private _pendingScrollTop: number | undefined = undefined;
+
+	// ─── 工作区分组状态（2026-10-12 重构）───────────────────────────────────────
+	/** `getWorkspaces()` 的原始顺序 —— 分组顺序就是它（空工作区不输出，见 sessionGrouping）。 */
+	private _workspaces: readonly IWorkspaceRef[] = [];
+	/**
+	 * `sessionId → workspaceId` 的缓存。
+	 *
+	 * 为什么要缓存：`getSessions()` 是**整文件读** `~/.vssaros/sessions.json`，而本面板的
+	 * 重载是高频路径（发消息 / 切 agent / 切工作区都会触发静默重载）⇒ 每次重读是纯浪费 ✗。
+	 * 由 `onDidChangeSessions` / `onDidChangeWorkspace` 失效（同 `_agentInfoCache` 的做法）。
+	 */
+	private _sessionWorkspaceCache: ReadonlyMap<string, string> | undefined;
+	/** 折叠的分组 key（`workspaceId`；未分组用 `UNGROUPED_GROUP_KEY`），持久化。 */
+	private readonly _collapsedGroups = new Set<string>();
+	/**
+	 * 每组「展开其余」的**额外**显示条数（内存态，不持久化）。
+	 * 与 dsh desktop 一致：关闭再打开工作区即回到折叠投影（那里同样只记在浏览器内存）。
+	 */
+	private readonly _groupExtraShown = new Map<string, number>();
+	private static readonly COLLAPSED_GROUPS_KEY = 'sessionHistoryView.collapsedWorkspaces';
+	/**
+	 * 人格事实的存储键：`{"agentId::sessionId":{"id":"<personaId>","name":"<显示名>"}}`。
+	 * 由「会话内热切换人格」的通路写入（**尚未接通**，见 `_getPersonaMap()`）。
+	 */
+	private static readonly PERSONA_KEY = 'sessionHistoryView.personaBySession';
 
 	/** Pinned session keys (agentId\u0000sessionId), persisted across reloads. */
 	private readonly pinnedSessions = new Set<string>();
@@ -276,14 +357,32 @@ export class SessionHistoryViewPane extends ViewPane {
 			this._scheduleSilentReload();
 		}));
 
+		// ★ 2026-10-12（人格通路）：**人格事实的写入方在别的进程里** —— dsh 聊天的宿主经页面桥收到上报后，
+		// 按 (agentId, sessionId) 写进 PROFILE 表（`sessionPersona.writePersonaFact`）。
+		// 那条路径**不会** fire `onDidChangeAgentSessions`（切人格既不新建也不改会话）
+		// ⇒ 不订阅存储变更，用户切完人格回头看侧栏就是"没有标记"，要等下一次静默重载才出现 ✗。
+		// `onDidChangeValue(scope, key, disposable)` 的第三个参数是它要求的 disposable 容器（key 过滤也在这一层做）。
+		const personaChangeScope = this._register(new DisposableStore());
+		this._register(this.storageService.onDidChangeValue(StorageScope.PROFILE, SessionHistoryViewPane.PERSONA_KEY, personaChangeScope)(() => this._scheduleSilentReload()));
+
 		// ★ 2026-09-21（用户需求）：**切换 agent / 工作区 / provider 后 item 要同步更新**。
 		// ⚠ 这条路径**不会** fire `onDidChangeAgentSessions`（它只在会话 CRUD / 消息数变化时 fire）
 		// ⇒ 必须显式订阅，否则切了 agent/工作区列表还停在上一套数据上。
+		// ★ 2026-10-12：工作区变化 ⇒ 分组的**名字 / 路径 / 成员**都可能变 ⇒ 让工作区清单缓存失效。
 		this._register(this.agentStudioService.onDidChangeActiveWorkspace(() => {
+			this._workspaces = [];
 			this._reloadForContextChange('active workspace changed');
 		}));
 		this._register(this.agentStudioService.onDidChangeWorkspace(() => {
+			this._workspaces = [];
 			this._reloadForContextChange('workspace list changed');
+		}));
+		// ★ 2026-10-12：会话注册表变化（新建 / 删除会话、workspaceId 被改）⇒ 归属缓存失效。
+		// ⚠ 这条与 `chatService.onDidChangeAgentSessions` **不是**同一条：后者只在会话 CRUD /
+		//    消息数变化时 fire，**不覆盖** `AgentStudioService.createSession` 那一路 ✗。
+		this._register(this.agentStudioService.onDidChangeSessions(() => {
+			this._sessionWorkspaceCache = undefined;
+			this._reloadForContextChange('session registry changed');
 		}));
 		this._register(this.agentStudioService.onDidChangeAgents(() => {
 			// ★ 2026-09-23（用户需求）：显示名 / 头像可能被改了 ⇒ 必须让 `id → {name,avatar,icon}`
@@ -498,10 +597,16 @@ export class SessionHistoryViewPane extends ViewPane {
 			const sessionDataList: SessionData[] = [];
 			let totalCount = 0;
 
-			// ★ 2026-09-23（用户需求）：item 要显示 agent 名称与头像 —— `listAgentSessions()`
-			// 只返回会话索引、不含 agent 显示信息 ⇒ 这里取一次 `id → {name,avatar,icon}` 映射
+			// ★ 2026-09-23（用户需求）：item 要显示 agent 名称 —— `listAgentSessions()`
+			// 只返回会话索引、不含 agent 显示信息 ⇒ 这里取一次 `id → {name,icon}` 映射
 			// （带缓存，见 `_getAgentInfoMap`）。
 			const agentInfos = await this._getAgentInfoMap();
+
+			// ★ 2026-10-12：分组所需的工作区归属 + 人格事实（两者都带缓存，见字段注释）。
+			// ⚠ 都是**一次读取**，绝不能放进下面的会话循环（`getSessions()` 是整文件读 ✗）。
+			await this._ensureWorkspaces();
+			const sessionWorkspaceIds = await this._getSessionWorkspaceMap();
+			const personaBySession = this._getPersonaMap();
 
 			// Load only session index (fast, no history) to avoid blocking the UI
 			// when there are hundreds of sessions. History is lazy-loaded on expand.
@@ -511,14 +616,15 @@ export class SessionHistoryViewPane extends ViewPane {
 					this.logService.info(`[SessionHistoryView] agent ${agentId} has ${sessions.length} sessions`);
 					for (const session of sessions) {
 						const hasOpenChat = this._findOpenEditorForSession(agentId, session.id) !== null;
+						// ★ 2026-10-12：人格事实（另一个人格 agent 的 id/名/icon）——
+						// 与所属 agent 分开取，别把两者的 icon 混用 ✗。
+						const persona = personaBySession.get(this._sessionKey(agentId, session.id));
 						sessionDataList.push({
 							info: {
 								agentId,
 								// 显示名优先，查不到（agent 定义缺失 / 别处手写的目录）回退到 id
 								agentName: agentInfos.get(agentId)?.name ?? agentId,
-								// ★ 头像（SVG data URI）；undefined ⇒ 渲染端逐级回退 emoji → 首字母
-								agentAvatar: agentInfos.get(agentId)?.avatar,
-								// ★ emoji（`Agent.icon`）—— 没有 avatar 时的第一回退
+								// ★ emoji（`Agent.icon`）—— 人格 chip 的 glyph 用它（见 `PERSONA_MARK`）
 								agentIcon: agentInfos.get(agentId)?.icon,
 								sessionId: session.id,
 								sessionName: session.name,
@@ -526,6 +632,16 @@ export class SessionHistoryViewPane extends ViewPane {
 								updatedAt: typeof session.updatedAt === 'string'
 									? new Date(session.updatedAt).getTime()
 									: Date.now(),
+								// ★ 2026-10-12：工作区归属 + 人格（缺省 ⇒ 落「未分组」/ 不显示人格标记）
+								// ★ 2026-10-13：**会话索引里的归属优先**（`AgentSessionMeta.workspaceId`，由
+								// `agentChatService.createAgentSession` 在创建时盖章 —— 那是聊天创建会话**唯一**的
+								// 写入点），注册表（`_getSessionWorkspaceMap`）只作兜底：老会话在索引里没有该字段，
+								// 而注册表在真机上常常**整份不存在**（2026-10-13 盘证）⇒ 两者都取不到就是 undefined，
+								// 落「未分组」，**不猜**归属。
+								workspaceId: session.workspaceId ?? sessionWorkspaceIds.get(session.id),
+								personaId: persona?.id,
+								personaName: persona?.name,
+								personaIcon: persona?.id ? agentInfos.get(persona.id)?.icon : undefined,
 							},
 							messages: [],           // lazy-loaded on expand
 							_messagesLoaded: false,  // tracks whether history was fetched
@@ -565,7 +681,7 @@ export class SessionHistoryViewPane extends ViewPane {
 	}
 
 	/**
-	 * Apply filters and render session headers incrementally to avoid
+	 * Apply filters and render the **grouped** list incrementally to avoid
 	 * blocking the UI when there are hundreds of sessions.
 	 */
 	private async _applyFiltersIncremental(options: { silent?: boolean } = {}): Promise<void> {
@@ -600,45 +716,189 @@ export class SessionHistoryViewPane extends ViewPane {
 
 		DOM.clearNode(this.sessionListEl);
 
-		if (this.filteredSessions.length === 0) {
-			const empty = DOM.append(this.sessionListEl, $('.session-history-empty'));
-			DOM.append(empty, $('.session-history-empty-icon')).textContent = '💬';
-			DOM.append(empty, $('.session-history-empty-text')).textContent = 'No sessions found';
+		const plan = this._planGroupRender();
+		if (plan.length === 0) {
+			this._renderEmptyState(this.sessionListEl);
 			return;
 		}
 
-		// Render in batches: 20 items per frame, yielding to the UI between batches
+		// Render in batches: 20 **ops** per frame, yielding to the UI between batches.
+		// ⚠ 计数单位是 op（含分组头 / 「展开其余」），不是会话条数 —— 它们不占会话配额。
 		const BATCH_SIZE = 20;
-		const total = this.filteredSessions.length;
-
-		for (let i = 0; i < total; i += BATCH_SIZE) {
-			const chunk = this.filteredSessions.slice(i, i + BATCH_SIZE);
-			for (const sessionData of chunk) {
-				const item = DOM.append(this.sessionListEl, $('.session-history-item'));
-				this._renderSessionItem(item, sessionData);
+		let body: HTMLElement = this.sessionListEl;
+		for (let i = 0; i < plan.length; i += BATCH_SIZE) {
+			const chunk = plan.slice(i, i + BATCH_SIZE);
+			for (const op of chunk) {
+				body = this._renderGroupOp(body, op);
 			}
 			// Yield to the UI so the user can scroll/interact during rendering
-			if (i + BATCH_SIZE < total) {
+			if (i + BATCH_SIZE < plan.length) {
 				await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
 			}
 		}
 	}
 
 	/**
-	 * 同步渲染全部会话（含空态），供后台刷新走单帧重建使用。
+	 * 同步渲染全部分组（含空态）—— 供后台刷新 / 折叠 / 「展开其余」走单帧重建使用。
 	 * 与 `_applyFiltersIncremental` 的非静默分支共用同一套渲染逻辑。
 	 */
 	private _renderAllSessionsSync(container: HTMLElement): void {
-		if (this.filteredSessions.length === 0) {
-			const empty = DOM.append(container, $('.session-history-empty'));
-			DOM.append(empty, $('.session-history-empty-icon')).textContent = '💬';
-			DOM.append(empty, $('.session-history-empty-text')).textContent = 'No sessions found';
+		const plan = this._planGroupRender();
+		if (plan.length === 0) {
+			this._renderEmptyState(container);
 			return;
 		}
-		for (const sessionData of this.filteredSessions) {
-			const item = DOM.append(container, $('.session-history-item'));
-			this._renderSessionItem(item, sessionData);
+		let body: HTMLElement = container;
+		for (const op of plan) {
+			body = this._renderGroupOp(body, op);
 		}
+	}
+
+	private _renderEmptyState(container: HTMLElement): void {
+		const empty = DOM.append(container, $('.session-history-empty'));
+		DOM.append(empty, $('.session-history-empty-icon')).textContent = '💬';
+		DOM.append(empty, $('.session-history-empty-text')).textContent = 'No sessions found';
+	}
+
+	// ─── 工作区分组的渲染（2026-10-12）────────────────────────────────────────
+
+	/**
+	 * 算出这一帧要渲染的**有序指令列表**（分组头 → 组内可见条目 → 展开/收起）。
+	 *
+	 * 判据全部来自纯模块 `sessionGrouping`（有单测），本函数只做装配 —— 也就是说
+	 * 「哪些会话可见」这件事在这里**不可被改写**（要改口径就去改纯函数 + 它的测试）。
+	 */
+	private _planGroupRender(): IRenderOp[] {
+		const groups = buildSessionGroups(
+			this.filteredSessions,
+			this._workspaces,
+			s => s.info.workspaceId,
+			// 本模块不引入 nls 依赖（它要被单测直接 import）⇒ 文案由调用方给。
+			{ ungroupedTitle: localize('sessionHistory.ungrouped', "未分组") },
+		);
+		// 搜索 / agent 过滤命中时**不做截断**：否则「刚搜到的那条被 5 条配额折叠掉了」✗。
+		const searching = !!this.currentSearchTerm;
+
+		const plan: IRenderOp[] = [];
+		for (const group of groups) {
+			const collapsed = this._collapsedGroups.has(group.key);
+			const window = computeGroupWindow(
+				group.sessions,
+				this._groupExtraShown.get(group.key) ?? 0,
+				s => this._isActiveSession(s),
+				{ unlimited: searching },
+			);
+			plan.push({ kind: 'group', group, collapsed });
+			if (collapsed) { continue; }
+			for (const session of window.visible) { plan.push({ kind: 'item', session }); }
+			if (window.canExpand) { plan.push({ kind: 'expand', group, hidden: window.hiddenIdle }); }
+			else if (window.canCollapse) { plan.push({ kind: 'collapse', group }); }
+		}
+		return plan;
+	}
+
+	/** 执行一条渲染指令；返回「后续条目应挂到哪个容器」。 */
+	private _renderGroupOp(body: HTMLElement, op: IRenderOp): HTMLElement {
+		switch (op.kind) {
+			case 'group':
+				return this._renderGroupShell(body, op.group, op.collapsed);
+			case 'item': {
+				const item = DOM.append(body, $('.session-history-item'));
+				this._renderSessionItem(item, op.session);
+				return body;
+			}
+			case 'expand':
+				this._renderGroupMoreRow(body, op.group, localize('sessionHistory.expandMore', "展开其余 {0} 条", op.hidden), () => this._expandGroup(op.group.key));
+				return body;
+			case 'collapse':
+				this._renderGroupMoreRow(body, op.group, localize('sessionHistory.collapseGroup', "收起"), () => this._collapseGroup(op.group.key));
+				return body;
+		}
+	}
+
+	/** 分组壳（组头 + body）；返回 body 供后续条目挂载。 */
+	private _renderGroupShell(container: HTMLElement, group: ISessionGroup<SessionData>, collapsed: boolean): HTMLElement {
+		const groupEl = DOM.append(container, $('.session-history-group'));
+		groupEl.setAttribute('data-workspace-key', group.key);
+		if (group.missing) { groupEl.classList.add('missing'); }
+		if (group.ungrouped) { groupEl.classList.add('ungrouped'); }
+		if (collapsed) { groupEl.classList.add('collapsed'); }
+
+		const header = DOM.append(groupEl, $('.session-history-group-header'));
+		header.title = group.path || group.title;
+		DOM.append(header, $('.session-history-group-chevron')).textContent = collapsed ? '▶' : '▼';
+		// 图标是**几何符号**而不是圆形头像：未分组 ◇ / 已删除工作区 ⚠ / 正常 ▣。
+		DOM.append(header, $('.session-history-group-icon')).textContent = group.ungrouped ? '◇' : (group.missing ? '⚠' : '▣');
+		DOM.append(header, $('.session-history-group-name')).textContent = group.title;
+		if (group.path) {
+			DOM.append(header, $('.session-history-group-path')).textContent = group.path;
+		}
+		const meta = DOM.append(header, $('.session-history-group-meta'));
+		const activeCount = group.sessions.filter(s => this._isActiveSession(s)).length;
+		if (activeCount > 0) {
+			const live = DOM.append(meta, $('.session-history-group-live'));
+			live.title = localize('sessionHistory.groupActive', "{0} 个会话正在运行或等待你", activeCount);
+			DOM.append(live, $('.session-history-group-live-dot'));
+			DOM.append(live, $('span')).textContent = String(activeCount);
+		}
+		const countEl = DOM.append(meta, $('.session-history-group-count'));
+		// 计数 = 该工作区下**全部**会话（含被 5 条配额折叠掉的）—— 否则用户以为会话丢了。
+		countEl.textContent = String(group.sessions.length);
+		this._register(DOM.addDisposableListener(header, DOM.EventType.CLICK, () => this._toggleGroupCollapsed(group.key)));
+
+		return DOM.append(groupEl, $('.session-history-group-items'));
+	}
+
+	/** 组尾的「展开其余 N 条」/「收起」行。 */
+	private _renderGroupMoreRow(body: HTMLElement, group: ISessionGroup<SessionData>, label: string, onClick: () => void): void {
+		const row = DOM.append(body, $('.session-history-group-more'));
+		row.textContent = label;
+		row.setAttribute('data-workspace-key', group.key);
+		this._register(DOM.addDisposableListener(row, DOM.EventType.CLICK, (e) => {
+			e.stopPropagation();
+			onClick();
+		}));
+	}
+
+	/** 该会话是否「正在运行 / 等待用户」⇒ 不占 5 条配额、且**始终显示**。 */
+	private _isActiveSession(sessionData: SessionData): boolean {
+		const phase = this._runPhases.get(this._sessionKey(sessionData.info.agentId, sessionData.info.sessionId));
+		return phase === 'running' || phase === 'awaiting';
+	}
+
+	/** 折叠 / 展开一个工作区分组（持久化）。 */
+	private _toggleGroupCollapsed(key: string): void {
+		if (this._collapsedGroups.has(key)) {
+			this._collapsedGroups.delete(key);
+		} else {
+			this._collapsedGroups.add(key);
+		}
+		this._saveCollapsedGroups();
+		this._rebuildListKeepingScroll();
+	}
+
+	/** 「展开其余」：每组每次 +5 条（内存态，不持久化 —— 与 dsh desktop 一致）。 */
+	private _expandGroup(key: string): void {
+		this._groupExtraShown.set(key, nextExtraShown(this._groupExtraShown.get(key) ?? 0));
+		this._rebuildListKeepingScroll();
+	}
+
+	/** 「收起」：回到该组的默认 5 条投影。 */
+	private _collapseGroup(key: string): void {
+		this._groupExtraShown.set(key, 0);
+		this._rebuildListKeepingScroll();
+	}
+
+	/**
+	 * 整帧重建列表并**还原滚动位置**。
+	 *
+	 * 为什么必须还原：折叠 / 展开会改变列表高度，而重建是 `clearNode` + 全量回填 ⇒
+	 * `scrollTop` 归零。用户点了第 3 组的「展开其余」却被弹回列表顶部 ✗。
+	 */
+	private _rebuildListKeepingScroll(): void {
+		if (!this.sessionListEl) { return; }
+		this._pendingScrollTop = this.sessionListEl.scrollTop;
+		void this._applyFiltersIncremental({ silent: true });
 	}
 
 	/**
@@ -947,29 +1207,38 @@ export class SessionHistoryViewPane extends ViewPane {
 	private _renderSessionList(): void {
 		if (!this.sessionListEl) { return; }
 		DOM.clearNode(this.sessionListEl);
+		// 同步整帧重建（分组结构由 `_planGroupRender` 决定）⇒ 与后台刷新同一条路径。
+		this._renderAllSessionsSync(this.sessionListEl);
+	}
 
-		if (this.filteredSessions.length === 0) {
-			const empty = DOM.append(this.sessionListEl, $('.session-history-empty'));
-			const icon = DOM.append(empty, $('.session-history-empty-icon'));
-			icon.textContent = '💬';
-			const text = DOM.append(empty, $('.session-history-empty-text'));
-			text.textContent = 'No sessions found';
-			return;
-		}
-
-		for (const sessionData of this.filteredSessions) {
-			const item = DOM.append(this.sessionListEl, $('.session-history-item'));
-			this._renderSessionItem(item, sessionData);
-		}
+	/**
+	 * 人格 chip —— **圆角矩形**（不是圆形）：`[glyph] 名字`。
+	 *
+	 * 为什么不做成头像：人格表达的是「本会话按谁的人设工作」这个**状态**，不是第二个身份 ⇒
+	 * 标签既能一眼区分「会话所属 agent」与「会话内切换的人格」，又不会与头像语义打架。
+	 * glyph 取人格（= 另一个 agent）的 `Agent.icon`，缺则取名字首字。
+	 */
+	private _buildPersonaChip(info: SessionInfo, label: string): HTMLElement {
+		const chip = $<HTMLElement>('span.session-history-persona-chip');
+		chip.title = localize('sessionHistory.personaTitle', "本会话已热切换人格：{0}（只改提示词人设，工具与模型不变）", label);
+		DOM.append(chip, $('span.session-history-persona-chip-glyph')).textContent = personaGlyphOf(label, info.personaIcon);
+		DOM.append(chip, $('span.session-history-persona-chip-name')).textContent = label;
+		return chip;
 	}
 
 	private _renderSessionItem(item: HTMLElement, sessionData: SessionData): void {
 		const { info, messages, chatOpen, pinned } = sessionData;
 
+		// 人格标记的文案（`name` → `id`）；空串 = 该会话没切换过人格 ⇒ **一个标记都不画**。
+		const personaLabel = info.personaId
+			? personaLabelOf({ id: info.personaId, name: info.personaName })
+			: '';
+
 		// Allow finding this item by sessionId for lazy-load updates
 		item.setAttribute('data-session-id', info.sessionId);
 		item.setAttribute('data-agent-id', info.agentId);
 		item.setAttribute('data-session-key', this._sessionKey(info.agentId, info.sessionId));
+		if (info.personaId) { item.setAttribute('data-persona-id', info.personaId); }
 		item.draggable = true;
 
 		// F2 renaming: items are focusable so the shortcut can target the item the
@@ -1008,9 +1277,12 @@ export class SessionHistoryViewPane extends ViewPane {
 			pinEl.title = 'Pinned';
 			pinEl.appendChild(_icon(ICON_PIN, 11));
 		}
-		// ★ 2026-09-23（用户需求）：agent 头像。有 `avatar`（SVG data URI）就画图，
-		// 否则回退 emoji（`Agent.icon`），再退首字母 —— 详见 `_renderAgentAvatar`。
-		this._renderAgentAvatar(titleLine, info);
+		// ★ 2026-10-12（用户要求）：会话行**前面不放圆形图标** —— agent 圆形头像已整块删除，
+		// 会话归属由行 2 的 agent 名表达。人格是「标签」而不是第二个身份 ⇒ 用**非圆形**的
+		// 圆角 chip 或纯文字（落点由 `PERSONA_MARK` 决定，默认落副行）。
+		if (personaLabel && PERSONA_MARK === 'chip') {
+			titleLine.appendChild(this._buildPersonaChip(info, personaLabel));
+		}
 		const title = DOM.append(titleLine, $('.session-history-title'));
 		title.textContent = info.sessionName || 'Untitled Session';
 		title.title = `${info.sessionName || 'Untitled Session'} — Double-click to open chat, Ctrl/Cmd+click to multi-select, right-click for actions`;
@@ -1024,6 +1296,10 @@ export class SessionHistoryViewPane extends ViewPane {
 				: '飞书渠道默认会话（未精确绑定的消息将进入此会话）';
 			feTag.appendChild(_icon(ICON_LINK, 11));
 		}
+		// 人格 chip 的「标题右侧」落点：排在 `open` 之前（`open` 是本行最后一个标记）。
+		if (personaLabel && PERSONA_MARK === 'title') {
+			titleLine.appendChild(this._buildPersonaChip(info, personaLabel));
+		}
 		if (chatOpen) {
 			const openTag = DOM.append(titleLine, $('.session-history-open-tag'));
 			openTag.textContent = 'open';
@@ -1036,6 +1312,13 @@ export class SessionHistoryViewPane extends ViewPane {
 		const agentNameEl = DOM.append(subLine, $('.session-history-agent-name'));
 		agentNameEl.textContent = info.agentName;
 		agentNameEl.title = `Agent: ${info.agentName}`;
+		// 人格（默认落点）：`Saros · 人格：架构评审 · 26m` —— 纯文字、无图标、不进标题行。
+		if (personaLabel && PERSONA_MARK === 'sub') {
+			DOM.append(subLine, $('.session-history-sep')).textContent = '·';
+			const personaEl = DOM.append(subLine, $('.session-history-persona'));
+			personaEl.textContent = localize('sessionHistory.personaInline', "人格：{0}", personaLabel);
+			personaEl.title = localize('sessionHistory.personaTitle', "本会话已热切换人格：{0}（只改提示词人设，工具与模型不变）", personaLabel);
+		}
 		const sepEl = DOM.append(subLine, $('.session-history-sep'));
 		sepEl.textContent = '·';
 		const timeEl = DOM.append(subLine, $('.session-history-time'));
@@ -1441,18 +1724,21 @@ export class SessionHistoryViewPane extends ViewPane {
 	// ─── Session actions: pin / rename / delete / open / reorder ──────────
 
 	/**
-	 * ★ 2026-09-23（用户需求）：`agentId → { name, avatar, icon }` 的**带缓存**映射。
+	 * ★ 2026-09-23（用户需求）：`agentId → { name, icon }` 的**带缓存**映射。
 	 *
 	 * ⚠ 为什么要缓存：`_loadSessions()` 是高频路径（发消息触发的 silent 重载也走它），
 	 * 每次都 `getAgents()` 是纯浪费 ⇒ 复用缓存；由 `onDidChangeAgents`
-	 * （`updateAgent()` 一定会 fire）清掉 ⇒ 改名字 / 换头像后 item 能同步更新。
+	 * （`updateAgent()` 一定会 fire）清掉 ⇒ 改名字后 item 能同步更新。
+	 *
+	 * ★ 2026-10-12：不再收 `avatar`（SVG data URI）—— 行首**不再画圆形头像**（用户要求），
+	 * 只留 `icon`（emoji）供人格 chip 的 glyph 用（见 `PERSONA_MARK`）。
 	 */
-	private _agentInfoCache: ReadonlyMap<string, { name: string; avatar?: string; icon?: string }> | undefined;
+	private _agentInfoCache: ReadonlyMap<string, { name: string; icon?: string }> | undefined;
 
-	private async _getAgentInfoMap(): Promise<ReadonlyMap<string, { name: string; avatar?: string; icon?: string }>> {
+	private async _getAgentInfoMap(): Promise<ReadonlyMap<string, { name: string; icon?: string }>> {
 		if (this._agentInfoCache) { return this._agentInfoCache; }
 
-		const infos = new Map<string, { name: string; avatar?: string; icon?: string }>();
+		const infos = new Map<string, { name: string; icon?: string }>();
 		try {
 			const agents = await this.agentStudioService.getAgents();
 			for (const agent of agents) {
@@ -1460,8 +1746,7 @@ export class SessionHistoryViewPane extends ViewPane {
 				if (agent.name && agent.name.trim()) {
 					infos.set(agent.id, {
 						name: agent.name.trim(),
-						// `avatar` 是 SVG data URI、`icon` 是 emoji 字符串；两者都缺 ⇒ 渲染端退到首字母。
-						avatar: agent.avatar || undefined,
+						// emoji（`Agent.icon`）—— 人格 chip glyph 回退链的第一级。
 						icon: agent.icon || undefined,
 					});
 				}
@@ -1474,51 +1759,78 @@ export class SessionHistoryViewPane extends ViewPane {
 		return infos;
 	}
 
+	// ─── 工作区分组 / 人格事实（2026-10-12 重构）──────────────────────────────
+	//
+	// ⚠ 这里原先有一个 `_renderAgentAvatar()`（行首 18px 圆形头像，三级回退
+	//   avatar → icon → 首字母）。**已按用户要求整块删除**：会话行前面不放圆形图标。
+	//   若将来要恢复某个非圆形形态，数据侧只需重新收 `Agent.icon`（`_getAgentInfoMap`
+	//   已经留着它）。
+
 	/**
-	 * ★ 2026-09-23（用户需求）：渲染 agent 头像（标题行最左，**恒占 18px 位**）。
+	 * 拉取（并缓存）工作区清单。
 	 *
-	 * 三级回退：`Agent.avatar`（SVG data URI）→ `Agent.icon`（emoji）→ 首字母。
-	 *
-	 * ⚠ 三级各自的必要性：`avatar` 只有「选预设 / 上传图片」才有；手写 `.agent.md` 的旧 agent
-	 * 可能只有 `icon`（emoji）；两者都缺才落到首字母（零字体依赖的兜底）。
-	 * ⚠ 无论命中哪一级都保持 18px ⇒ 列表里图标形态混排时**行高与文字起点不抖动**。
+	 * 分组顺序 = 这个数组的顺序（`getWorkspaces()` 的返回序）⇒ **不能用 Map 替代**
+	 * （Map 会丢顺序，而"用户自己排的工作区顺序"必须稳定）。
+	 * 空数组视为「还没拉到」，由工作区变更事件清空重取。
 	 */
-	private _renderAgentAvatar(parent: HTMLElement, info: SessionInfo): void {
-		const el = DOM.append(parent, $('.session-history-agent-avatar'));
-		el.style.setProperty('--agent-color', _getAgentColor(info.agentId));
-		el.title = `Agent: ${info.agentName}`;
-
-		// 最后兜底：首字母。用 `Array.from` 取第一个「字」以兼容非 BMP 字符（emoji/生僻字）。
-		const applyInitialFallback = () => {
-			el.classList.remove('is-emoji');
-			el.textContent = Array.from(info.agentName.trim())[0] ?? '?';
-		};
-
-		// 第一回退：emoji（`Agent.icon`）。
-		const applyEmojiFallback = () => {
-			const icon = info.agentIcon?.trim();
-			if (!icon) {
-				applyInitialFallback();
-				return;
-			}
-			el.classList.add('is-emoji');
-			el.textContent = icon;
-		};
-
-		if (info.agentAvatar) {
-			const img = DOM.append(el, $<HTMLImageElement>('img.session-history-agent-avatar-img'));
-			img.src = info.agentAvatar;
-			// 纯装饰（agent 名就在同一行）⇒ alt 留空，避免读屏器重复播报。
-			img.alt = '';
-			// ⚠ data URI 损坏 / 头像被删 ⇒ 退到 emoji（再退首字母），避免留下一个**空白圆**。
-			img.onerror = () => {
-				img.remove();
-				applyEmojiFallback();
-			};
-			return;
+	private async _ensureWorkspaces(): Promise<readonly IWorkspaceRef[]> {
+		if (this._workspaces.length > 0) { return this._workspaces; }
+		try {
+			const workspaces = await this.agentStudioService.getWorkspaces();
+			this._workspaces = workspaces
+				.filter(w => !!w?.id)
+				.map(w => ({ id: w.id, name: w.name, path: w.path }));
+		} catch (err) {
+			// 失败**不缓存**（保持空数组）⇒ 下次重载会重试。本次分组全体落「未分组」，
+			// 但**不会丢会话** —— 这是有意的降级：宁可暂时没有分组头，也不能让列表空掉 ✓。
+			this.logService.warn('[SessionHistoryView] failed to resolve workspaces for grouping:', err);
 		}
+		return this._workspaces;
+	}
 
-		applyEmojiFallback();
+	/**
+	 * `sessionId → workspaceId`（一次整文件读全局 `~/.vssaros/sessions.json`）。
+	 *
+	 * ⚠ 归属**只**记在会话注册表（`AgentStudioSession.workspaceId`）里；会话索引
+	 * （`AgentSessionMeta`）没有该字段 ⇒ 只能这样旁路解析。查不到就是没有 ⇒ 未分组。
+	 */
+	private async _getSessionWorkspaceMap(): Promise<ReadonlyMap<string, string>> {
+		if (this._sessionWorkspaceCache) { return this._sessionWorkspaceCache; }
+		const map = new Map<string, string>();
+		try {
+			for (const session of await this.agentStudioService.getSessions()) {
+				const workspaceId = (session?.workspaceId ?? '').trim();
+				if (session?.id && workspaceId) { map.set(session.id, workspaceId); }
+			}
+		} catch (err) {
+			this.logService.warn('[SessionHistoryView] failed to resolve session → workspace map:', err);
+			return map;   // 失败不写缓存 ⇒ 下次重试
+		}
+		this._sessionWorkspaceCache = map;
+		return map;
+	}
+
+	/**
+	 * 人格事实的**读口子**（键 = `agentId::sessionId`）。
+	 *
+	 * 现状：dsh 侧的「会话内热切换人格」事实**还没有任何通路**能到 VsSaros
+	 * （`AgentSessionMeta` / `AgentStudioSession` 都没有该字段，`ChatMessage.source`
+	 * 也只有 `'user' | 'task'`），所以本函数先读一个**双方约定的存储键**。
+	 * 通路接通后（三条候选见 `doc/session-sideview-workspace-mockup.html` §六）
+	 * 由写入侧填这个键即可 ⇒ **渲染 / 分组 / 配额一行都不用改** ✓。
+	 *
+	 * 值格式：`{"agentId::sessionId":{"id":"<personaId>","name":"<显示名>"}}`；
+	 * 坏值一律降级为空表（`parsePersonaMap` 已有单测）。
+	 */
+	private _getPersonaMap(): ReadonlyMap<string, IPersonaFact> {
+		let raw = '';
+		try {
+			raw = this.storageService.get(SessionHistoryViewPane.PERSONA_KEY, StorageScope.PROFILE, '');
+		} catch (err) {
+			this.logService.debug('[SessionHistoryView] persona map unavailable:', err);
+			return new Map<string, IPersonaFact>();
+		}
+		return parsePersonaMap(raw);
 	}
 
 	/** `agentId → 显示名`（由 `_getAgentInfoMap()` 派生；供新建会话面板的 chips 使用）。 */
@@ -1718,7 +2030,21 @@ export class SessionHistoryViewPane extends ViewPane {
 			if (this._readKeys.delete(key)) { this._saveRead(); }
 		}
 
+		// ★ 2026-10-12（分组配额带来的新情况）：原本**被「每组 5 条空闲」折叠掉**的会话
+		//   现在开始跑了 —— 按口径「运行中始终可见」⇒ 必须重建一次把它顶出来，
+		//   否则用户看不到它在跑（就地刷点对它无效，那一行压根没渲染 ✗）。
+		//   ⚠ 只在**相位变化**时重建（prev !== phase）：长回合里每个 delta 都重建会抖动 ✗。
+		if (prev !== phase && (phase === 'running' || phase === 'awaiting') && !this._isSessionRendered(key)) {
+			this._scheduleSilentReload();
+			return;
+		}
+
 		this._syncRunStateUi();
+	}
+
+	/** 该会话当前是否真的渲染在列表里（被 5 条配额折叠掉、或所在分组被折叠时都是 false）。 */
+	private _isSessionRendered(key: string): boolean {
+		return !!this.sessionListEl?.querySelector(`.session-history-item[data-session-key="${key}"]`);
 	}
 
 	/** delta → 指示灯阶段；返回 `undefined` 表示该 delta 不改变灯的状态。 */
@@ -1876,6 +2202,12 @@ export class SessionHistoryViewPane extends ViewPane {
 			}
 		} catch { /* ignore corrupt data */ }
 		try {
+			// ★ 2026-10-12：折叠的工作区分组（坏值降级为空集 —— 最多是分组全展开，不是列表空白）。
+			for (const key of parseStringArray(this.storageService.get(SessionHistoryViewPane.COLLAPSED_GROUPS_KEY, StorageScope.PROFILE))) {
+				this._collapsedGroups.add(key);
+			}
+		} catch { /* ignore corrupt data */ }
+		try {
 			// 已读集合（运行指示灯：白色「完成未读」点，用户查看后熄灭）
 			const readRaw = this.storageService.get(SessionHistoryViewPane.READ_KEY, StorageScope.PROFILE);
 			if (readRaw) {
@@ -1900,6 +2232,22 @@ export class SessionHistoryViewPane extends ViewPane {
 				this._readKeys.delete(oldest);
 			}
 			this.storageService.store(SessionHistoryViewPane.READ_KEY, JSON.stringify([...this._readKeys]), StorageScope.PROFILE, StorageTarget.USER);
+		} catch { /* ignore quota errors */ }
+	}
+
+	/** 持久化折叠的工作区分组（空集直接删键，避免 storage 里留一个 `[]`）。 */
+	private _saveCollapsedGroups(): void {
+		try {
+			if (this._collapsedGroups.size === 0) {
+				this.storageService.remove(SessionHistoryViewPane.COLLAPSED_GROUPS_KEY, StorageScope.PROFILE);
+			} else {
+				this.storageService.store(
+					SessionHistoryViewPane.COLLAPSED_GROUPS_KEY,
+					JSON.stringify([...this._collapsedGroups]),
+					StorageScope.PROFILE,
+					StorageTarget.USER,
+				);
+			}
 		} catch { /* ignore quota errors */ }
 	}
 

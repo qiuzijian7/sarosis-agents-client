@@ -64,6 +64,12 @@ const RULES: IRule[] = [
 		disallowedTypes: NATIVE_TYPES,
 	},
 
+	// dsh view preload script (VsSaros)
+	{
+		target: '**/vs/sessions/contrib/dshHarness/electron-browser/preload-dshView.ts',
+		disallowedTypes: NATIVE_TYPES,
+	},
+
 	// Common
 	{
 		target: '**/vs/**/common/**',

@@ -1,0 +1,21 @@
+# @vssaros/dsh-dashboard bundle patch: insert the dashboard row.
+#
+# 汇总 dsh 会话遥测 / token 用量 + 「运行状态」视图（`goal` 目标 / `todos` 按轮清单 /
+# `plan` **计划模式** / `sandboxMode` 沙箱 / `permissions` 审批策略 / `llmRetry` 正在重试 /
+# `userQuestions` 待回答；形状全部照运行时 schema 核对），页面 `/x/dashboard` + 工具 `dashboard_sessions` / `dashboard_session`。
+#
+# ★ 2026-10-13（P2）起**不再是全只读**：首页的组件布局可由用户编排，落
+# `<数据根>/dashboard/layout.json`（`POST /x/dashboard/api/layout`，锁 + 原子写 + CAS，见 `lib/layoutStore.js`）。
+# ⚠ 因此本行也读 `config.dataRoot` ⇒ 必须留在 `dshCli.ts` 的**数据根覆盖层**名单里（否则 dev 实例
+# 会读到/写进生产数据根 ✗）。会话遥测那条主路径仍是只读 ✓。
+#
+# 数据：dsh 自己的会话投影缓存 `<DSH_HOME>/storages/session_projcache/sessions/<sessionId>.json`
+# （**冷读路径**：已结束的会话只能走 checkpoint 缓存）+ **live 合并**（0.1.2 起）：`sessions.get(id)`
+# 取活 Session、`sessionProjections.stateOf(session, unit)` 取该单元当前值，**live 优先且逐字段**，
+# 没覆盖到的行如实标 `cache`。两个服务都走**可选**注入，缺任一条只少一路 live、不影响冷读主路径。
+#
+# `config.dshHome` 留空时按环境变量 `DSH_HOME`（VsSaros 启动 Host 时就会设）→ `~/.dsh`。
+- insert:
+    - id: vssaros-dashboard
+      name: '@vssaros/dsh-dashboard'
+      config: {}

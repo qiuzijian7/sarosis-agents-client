@@ -1,0 +1,929 @@
+// @vssaros/dsh-bridge — host half.
+// Listens on a named pipe given by VsSaros (config.pipe). VsSaros main processes connect as
+// clients (several instances may share one Host). Newline-delimited JSON-RPC 2.0.
+// Only VsSaros-defined messages cross this pipe; no dsh event or data structure is relayed.
+import net from 'node:net';
+import { readFileSync } from 'node:fs';
+
+// 启动计时（2026-10-15，"首启慢"排查）：本行的打印时刻 ≈ node 引导 + dsh 核心 + cordis profile
+// 装载完成的时刻（cordis 在解析插件图时 import 本文件）；与 apply() 里那一条合起来，Host 冷启被拆成
+// 「核心装载 → 模块装载/装配 → apply→ready」三段。只打一行、无状态，别在这里做别的 ✓。
+console.log(`[vssaros-bridge] module loaded (host uptime ${Math.round(process.uptime() * 1000)}ms)`);
+
+export const name = 'vssaros-bridge';
+// Cordis 4: the object form of `inject` maps service names to intercept config; it has no
+// "optional" semantics. Every listed service is required before apply() runs.
+// `agents` (dsh-agent registry) is part of dsh-base in every supported version (0.1.7 – 0.2.x);
+// `sessionController` comes from dsh-api-session-controller (web template, all supported versions).
+export const inject = ['webServer', 'connection', 'workspaceRegistry', 'agents', 'sessionController', 'settings', 'credentials', 'llm'];
+
+// v2（2026-10-10）：新增**反向通道**（Host → IDE）。此前协议只有 IDE → Host 一个方向，
+// 于是方案 6.7 那句"@vssaros/dsh-ide 的工具执行经控制桥 `ide.request` 回调 VsSaros"**不成立**——
+// 实测两端都不支持：bridge 只 `send()` 响应，`DshBridgeClient` 对"id 不在自己 pending 表里"的消息直接跳过。
+// v2 约定：**Host 发起的请求用负数 id**（IDE 自己的序号是正整数，天然不相交），
+// 响应形如 `{ id: <负数>, result | error }`（没有 method）；参数里带 `token` 供 IDE 侧核验。
+const BRIDGE_VERSION = 2;
+const pluginVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+
+/** 常驻 Host 的空闲自退：最后一个 IDE 客户端断开后，超过该时长无新客户端则 Host 优雅退出。 */
+const IDLE_TTL_DEFAULT_MS = 30 * 60_000;
+
+/**
+ * 推理能力位：**pi-ai 的模型级字段是 `reasoningEfforts`**（`{ 档位 → 线上取值 }`），不是 `reasoning`。
+ *
+ * 为什么必须写对（实测症状）：`dsh-llm-pi-ai` 的 `modelFields` 只有
+ * `name / contextWindow / maxTokens / input / reasoningEfforts / compat`；`reasoning` 对它是**未知键**
+ * ⇒ 被忽略 ⇒ `resolveModelReasoning()` 落到 `{ reasoning: base?.reasoning ?? false }`（自定义路由没有
+ * catalog 基线 ⇒ **false**）⇒ 模型在 dsh 里不支持推理 ⇒ **输入框的模型选择器缺 effort 档位行**
+ * （`ModelSelect` 的档位来自 `model.reasoning.efforts` / `defaultEffort`）。
+ *
+ * 档位与线上取值：CodeBuddy 网关收 `reasoning_effort: low|medium|high`
+ * （见 `extensions/codebuddy-provider/src/extension.ts` 的请求体构造：
+ * `bodyObj.reasoning_effort = effort`，effort ∈ {low,medium,high}）；pi-ai 在 `openai-completions`
+ * 下按 `thinkingLevelMap[档位]` 发该字段，而这个 map 正是由 `reasoningEfforts` 翻译来的
+ * （默认 compat 已满足：`supportsReasoningEffort: true`、`thinkingFormat: 'openai'`
+ * —— 自定义 baseURL 落在这条默认分支上，无需额外写 compat）。
+ *
+ * 档位**只声明网关认的三个**：`resolveModelReasoning` 会把未声明的档位钉成 null（= 不支持），
+ * 所以不必也不该把 minimal/xhigh/max 塞进来（pi-ai 对 xhigh/max 还要求显式声明才算支持）。
+ *
+ * `off: null` 是**唯一允许"声明但留空"**的档（`resolveModelReasoning`：`wire === null` 只有 off 合法，
+ * 其它档位留空会 invalid）——语义是"支持，且选中时不发 reasoning 参数"。为什么要显式写它：
+ * pi-ai 把**未声明**的档位钉成 null（`if (wire === void 0) map[level] = null;` ⇒ 不支持），
+ * 于是 Omission 与 null 语义相反：
+ *   · 不写 off      ⇒ 选择器**没有 Off**，用户无法关思考（= 我们上一版的状态）；
+ *   · `off: null`   ⇒ 选择器出现 **Off** 档，等价于**原生聊天框思考开关的"关"**
+ *                     （扩展侧 `reasoningActive === false` 时也同样是**完全不发** `reasoning_effort`，
+ *                      见 `extensions/codebuddy-provider/src/extension.ts:1125`）。
+ * 位置：菜单顺序 = `getSupportedThinkingLevels()` 的 THINKING_LEVELS 顺序 ⇒ **Off 排第一**，
+ * 与官方 deepseek 适配器一致（`dsh-llm-deepseek/lib/index.js:456` 的 REASONING_EFFORTS 首项也是 Off）。
+ * 合法性已核实：schema 明写收 null（`dsh-llm-pi-ai/lib/index.js:1001`：
+ * `z.dict(z.union([z.string(), z.const(null)]), z.union(THINKING_LEVELS))`），且经 schemastery 解析/再解析后
+ * **仍是 null**（不是被抹成 undefined）⇒ 幂等比对（`sameReasoning`）不会每次都判"变了"。
+ */
+const REASONING_EFFORTS = { off: null, low: 'low', medium: 'medium', high: 'high' };
+
+/** pi-ai 允许出现在 profile 里的档位（= `dsh-llm-pi-ai` 的 THINKING_LEVELS，升序）。 */
+const REASONING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+/**
+ * 上一次打过的“默认推理档位”汇总行 —— **值没变就不再打**。
+ *
+ * Why: 这行原先每次 `providers.sync` 都打一遍，而 sync 在每次会话/工具往返里都会跑 ⇒
+ * 2026-10-11 用户在 Host 日志里看到同一行刷了几十遍，日志彻底没法用（他原话：“值没变就不重复打的去重”）。
+ * 只按**内容**去重（不按次数/时间）：档位真的变了还是要留痕 ✓。
+ */
+let lastRouteReasoningLog = '';
+
+/**
+ * 该路由的**路由级默认档位**（`profile.reasoning`）—— "用户没选档位时用哪一档"。
+ *
+ * ⚠ 为什么必须**全体模型都支持**才敢写（这是本函数存在的主要理由）：
+ * pi-ai 把 `profile.reasoning` 当**请求默认值**用：
+ * `resolveReasoningLevel(model, options.reasoningEffort ?? profile.reasoning)` —— 而它对"该模型不支持的档位"
+ * 是**直接抛错**（`UNSUPPORTED_REASONING_EFFORT`，发生在 provider I/O 之前，整个回合失败）。
+ * 非推理模型在 pi-ai 里的支持集只有 `['off']`（`getSupportedThinkingLevels()`：`!model.reasoning ⇒ ['off']`），
+ * 所以只要路由上混着一个非推理模型，写非 'off' 的默认档位就会让**那个模型**每次请求都炸。
+ * 实测（2026-10-11，本机 profile）：`vssaros-codebuddy` 34/34 都带推理位（安全），
+ * 而 `vssaros-ollama` 0/6、`vssaros-grnexus` 0/32（写默认档位会炸 ⇒ 这里直接不发）。
+ *
+ * 取值：各模型推荐档位（扩展从 `/v3/config` 的 `model.reasoning.effort` 导出）的**众数**；
+ * 平票取**更低**的一档 —— 低档更保守（扩展侧实测 'high' 会让 hy3 + 大量工具陷进 fake-completion 死循环）。
+ * 没有任何模型给推荐档位时不写（保持"provider default"，不替用户拍板）。
+ *
+ * @param {Array<{id:string, reasoning?:boolean, effort?:string}>} modelEntries - 该路由的模型条目（收集侧形状）。
+ * @returns {string|undefined} 档位（∈ REASONING_LEVELS），或 undefined = 不写。
+ */
+function routeReasoningDefault(modelEntries) {
+	if (!Array.isArray(modelEntries) || modelEntries.length === 0) { return undefined; }
+	// 守卫：有一个模型没有推理位 ⇒ 它的支持集只有 ['off'] ⇒ 任何非 'off' 默认值都会让它抛错。
+	if (!modelEntries.every(m => m && m.reasoning === true)) { return undefined; }
+	const counts = new Map();
+	for (const m of modelEntries) {
+		const effort = typeof m.effort === 'string' ? m.effort : undefined;
+		if (effort !== undefined && effort !== 'off' && REASONING_LEVELS.includes(effort)) {
+			counts.set(effort, (counts.get(effort) ?? 0) + 1);
+		}
+	}
+	let best;
+	for (const [level, count] of counts) {
+		if (best === undefined || count > best.count
+			|| (count === best.count && REASONING_LEVELS.indexOf(level) < REASONING_LEVELS.indexOf(best.level))) {
+			best = { level, count };
+		}
+	}
+	return best === undefined ? undefined : best.level;
+}
+
+export function apply(ctx, config = {}) {
+	// 启动计时（与文件顶部那条配对）：模块装载 → apply 之间是 cordis 等齐 inject 声明的服务。
+	// 2026-10-15：把进入时刻存下来，好让函数末尾那条"apply done (took …)"报出**同步部分**的耗时 ✓
+	const applyStartMs = Math.round(process.uptime() * 1000);
+	console.log(`[vssaros-bridge] apply (host uptime ${applyStartMs}ms)`);
+	/** 反向通道是否就绪（页面自诊断用；只在配了 pipe/token 时才有意义）。 */
+	let reverseReady = false;
+	let connectedClients = 0;
+	// 空闲自退定时器（VsSaros 的 hostKeepAlive 模式：IDE 退出不杀 Host，靠这里防孤儿常驻）。
+	// 0 = 不自退。只在配了 pipe（即 VsSaros 托管的 Host）时启用——浏览器直接访问的 dsh web 不受影响。
+	const idleTtlMs = config.idleTtlMs === undefined ? IDLE_TTL_DEFAULT_MS : Number(config.idleTtlMs);
+	let idleTimer;
+	const noteClients = () => {
+		connectedClients = clients.size;
+		if (!config.pipe || !idleTtlMs) {
+			return;
+		}
+		if (connectedClients > 0) {
+			clearTimeout(idleTimer);
+			idleTimer = undefined;
+		} else if (!idleTimer) {
+			idleTimer = setTimeout(() => {
+				console.log(`[vssaros-bridge] idle for ${Math.round(idleTtlMs / 60000)} min with no IDE client; shutting down the host`);
+				process.exit(0);
+			}, idleTtlMs);
+			idleTimer.unref?.();
+		}
+	};
+	// P0-8: plugin-hosted page, guarded by the Host's own fence + browser auth (always on, even outside VsSaros).
+	ctx.effect(() => ctx.webServer.register({
+		kind: 'prefix',
+		path: '/x/vssaros-bridge',
+		handler: (req, res) => {
+			const rejected = ctx.connection.requestRejection(req);
+			if (rejected) {
+				res.writeHead(rejected, { 'content-type': 'text/plain' });
+				res.end(String(rejected));
+				return;
+			}
+			res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+			res.end(`<!doctype html><meta charset="utf-8"><title>vssaros-bridge</title><main data-vssaros-page="status" data-vssaros-bridge-version="${BRIDGE_VERSION}" data-vssaros-bridge-reverse="${reverseReady ? 'ready' : 'off'}" data-vssaros-bridge-clients="${connectedClients}">vssaros-bridge ${pluginVersion} on :${ctx.webServer.port}</main>`);
+		},
+	}));
+
+	const { pipe, token } = config;
+	if (!pipe || !token) {
+		// Running outside VsSaros (e.g. plain `dsh web`): stay inert.
+		return;
+	}
+	const clients = new Map();
+	/**
+	 * 反向（Host → IDE）待答请求：id → { resolve, reject, timer }。
+	 * id 一律**负数**（见文件头的协议说明），与 IDE 自己的正数序号不相交。
+	 */
+	const outbound = new Map();
+	let outboundSeq = 0;
+
+	/** 选一个已注册的 IDE 客户端（可按 instanceId 指定；缺省取第一个）。 */
+	const pickClient = instanceId => {
+		const entries = [...clients.entries()];
+		if (instanceId) {
+			const hit = entries.find(([, info]) => info.instanceId === instanceId);
+			return hit?.[0];
+		}
+		return entries[0]?.[0];
+	};
+
+	/**
+	 * Host → IDE 的一次调用（反向通道）。
+	 * 没有客户端 / 超时都**明确报错**（不静默、不假装成功）——IDE 侧尚未实现请求分发时，
+	 * 表现就是这里超时，错误信息直接指向原因。
+	 */
+	function callIDE(method, params = {}, { timeoutMs = 10_000, instanceId } = {}) {
+		const socket = pickClient(instanceId);
+		if (!socket) {
+			return Promise.reject(new Error('控制桥没有已注册的 IDE 客户端：反向调用需要至少一个 `client.register` 过的客户端'));
+		}
+		const id = -(++outboundSeq);
+		return new Promise((resolve, reject) => {
+			const timer = setTimeout(() => {
+				outbound.delete(id);
+				reject(new Error(`控制桥反向调用超时（${timeoutMs}ms）：${method}（IDE 侧是否实现了请求分发？）`));
+			}, timeoutMs);
+			outbound.set(id, { resolve, reject, timer });
+			socket.write(JSON.stringify({ jsonrpc: '2.0', id, method, params: { token, ...params } }) + '\n');
+		});
+	}
+
+	/**
+	 * 调用方的**权威身份**：加载器那一行的 `name`（= 安装的包名，与 IDE 侧 `listPlugins()` 查的是同一个口径）。
+	 *
+	 * 依据（`@deepseek-ai/cordis-plugin-loader`）：`this.options.name` 是行里的 specifier（包名），
+	 * 而 `fiber.entry` 只在 loader 托管的纤维上存在（`Loader.locate()` 就是靠它）。
+	 * 拿不到（内部闭包调用 / 非 loader 环境）⇒ `undefined`，此时**保持原来的自报行为**。
+	 */
+	function callerIdentityOf(service) {
+		return service?.ctx?.fiber?.entry?.options?.name ?? undefined;
+	}
+
+	/**
+	 * 给 `ide.request` **盖上调用方身份**（把"自报"换成"桥盖章"）。
+	 *
+	 * 为什么要有这一步：`pluginId` 原本由**调用方自报**，而任何能拿到 `ctx.vssarosBridge` 的插件都能
+	 * 自称 `@vssaros/dsh-ide` 去要它那 10 个能力 —— 逐插件授权因此是"声明式"而不是"证明式"。
+	 * cordis 能给出真实身份（见 `bridgeService` 上的 tracker 注释），所以：
+	 *  - 拿到权威身份 ⇒ **以它为准**；自报值与之不符 ⇒ **直接拒绝**（不是"忽略"：不符只可能是写错或冒名，
+	 *    静默放过会让"按清单逐项授权"变成一句空话）；
+	 *  - 拿不到 ⇒ 原样透传（IDE 侧自检 `ide.probe` 是**桥自己**发起的，没有调用方 ctx）。
+	 */
+	function stampCallerIdentity(service, method, params) {
+		if (method !== 'ide.request' || !params || typeof params !== 'object') {
+			return params;
+		}
+		const actual = callerIdentityOf(service);
+		if (actual === undefined) {
+			return params;
+		}
+		const claimed = params.pluginId;
+		if (typeof claimed === 'string' && claimed !== actual) {
+			throw new Error(`控制桥：调用方自报 pluginId=${claimed}，实际是 ${actual} —— 拒绝（身份必须与已安装插件一致）`);
+		}
+		return { ...params, pluginId: actual };
+	}
+
+	// 兄弟插件（如 @vssaros/dsh-ide）经 `inject: ['vssarosBridge']` 取用出站原语。
+	// **必须 `ctx.provide`**（不是 `ctx.set`）：Cordis 4 里 `set` 只能改**已 provide** 的服务，
+	// 在未 provide 的名字上 set 会抛 `cannot set property "vssarosBridge" without provide`（实测踩过）。
+	//
+	// ⚠️ `callIDE` **刻意写成方法**（用 `this`）并给服务挂上 cordis 的 tracker：cordis 的
+	// `getTraceable()` / `createTraceable()` 会把服务按**访问者的 ctx** 包装，方法调用时 `this` 被重绑到
+	// "访问方 ctx 的 shadow" ⇒ **方法里 `this.ctx` 就是调用方 ctx**（`Service` 基类挂的就是同一个符号
+	// `Symbol.for('cordis.tracker')`，所以这是 cordis 里写服务的标准姿势，不是私有 hack）。
+	// 探针：`poc/dsh-p0/scripts/cordis-caller-probe.mjs`（跑一遍就能看到"自报假名字、实际拿到真身份"）。
+	const bridgeService = {
+		version: BRIDGE_VERSION,
+		callIDE(method, params, options) {
+			return callIDE(method, stampCallerIdentity(this, method, params), options);
+		},
+		clientCount: () => clients.size,
+		instances: () => [...clients.values()].map(info => info.instanceId),
+	};
+	Object.defineProperty(bridgeService, Symbol.for('cordis.tracker'), {
+		value: { property: 'ctx', noShadow: true },
+		enumerable: false,
+	});
+	ctx.provide('vssarosBridge', bridgeService);
+	reverseReady = true;
+	const hello = () => {
+		const origin = `http://127.0.0.1:${ctx.webServer.port}`;
+		return {
+			bridgeVersion: BRIDGE_VERSION,
+			pluginVersion,
+			node: process.version,
+			pid: process.pid,
+			host: { port: ctx.webServer.port, bind: ctx.webServer.host, origin, authUrl: ctx.connection.authenticatedUrl(origin + '/') },
+		};
+	};
+
+	/**
+	 * `ChangeResult` → 过桥视图（方案 5.16 批次 3/4 共用）。安装面比启停多带 pnpm 诊断：
+	 * `packageResult` 里的退出码/失败类别/超时与诊断落盘路径——失败时界面要给"日志在哪"。
+	 */
+	const shapeChange = (res, fallbackTarget, extra) => ({
+		changed: !!res?.changed,
+		application: res?.application ?? null,
+		stage: res?.stage ?? null,
+		target: res?.target ?? fallbackTarget,
+		...(res?.error?.code ? { error: res.error.code } : {}),
+		// dsh 的失败分两类：**预期拒绝**给码（`management-required` / `unknown-plugin` …），**非预期异常**
+		// 给 `operation-error` **外加一条 `diagnostic`（原始错误信息）**。只转码不转诊断 ⇒ 界面上只剩
+		// "操作失败"，看不出为什么、也看不出该查哪儿（README 4.51 就是被这条卡住的）。截断保留前 400 字符。
+		...(res?.error?.diagnostic ? { diagnostic: String(res.error.diagnostic).slice(0, 400) } : {}),
+		...(res?.warnings?.length ? { warnings: res.warnings.slice(0, 8).map(w => String(w).slice(0, 200)) } : {}),
+		...(res?.bundle ? { bundle: String(res.bundle) } : {}),
+		...(res?.packageResult ? {
+			exitCode: res.packageResult.exitCode ?? null,
+			...(res.packageResult.kind ? { failureKind: String(res.packageResult.kind) } : {}),
+			...(res.packageResult.timedOut ? { timedOut: true } : {}),
+			...(res.packageResult.logPath ? { logPath: String(res.packageResult.logPath) } : {}),
+		} : {}),
+		...(res?.pendingBuilds?.length ? { pendingBuilds: res.pendingBuilds.slice(0, 32).map(String) } : {}),
+		...(res?.registries?.length ? { registries: res.registries.slice(0, 8).map(r => r ?? null) } : {}),
+		...(extra?.requestId ? { requestId: extra.requestId } : {}),
+	});
+
+	const server = net.createServer(socket => {
+		let buf = '';
+		let registered = null;
+		const send = msg => socket.write(JSON.stringify({ jsonrpc: '2.0', ...msg }) + '\n');
+		socket.on('data', chunk => {
+			buf += chunk;
+			let nl;
+			while ((nl = buf.indexOf('\n')) >= 0) {
+				const line = buf.slice(0, nl);
+				buf = buf.slice(nl + 1);
+				let req;
+				try {
+					req = JSON.parse(line);
+				} catch {
+					send({ id: null, error: { code: -32700, message: 'parse error' } });
+					continue;
+				}
+				// 反向调用的**响应**先于一切处理：它是 `{ id: <负数>, result|error }`（没有 method），
+				// 不是请求，绝不能掉进下面的 method 分发（否则会被回一句 method not found）。
+				if (req.method === undefined && typeof req.id === 'number' && req.id < 0 && outbound.has(req.id)) {
+					const entry = outbound.get(req.id);
+					outbound.delete(req.id);
+					clearTimeout(entry.timer);
+					if (req.error) {
+						entry.reject(new Error(`IDE 侧拒绝反向调用（code ${req.error.code ?? '?'}）：${req.error.message ?? ''}`));
+					} else {
+						entry.resolve(req.result);
+					}
+					continue;
+				}
+				if (!registered && req.method !== 'client.register') {
+					send({ id: req.id ?? null, error: { code: -32001, message: 'not registered' } });
+					continue;
+				}
+				switch (req.method) {
+					case 'client.register': {
+						if (req.params?.token !== token) {
+							send({ id: req.id, error: { code: -32002, message: 'bad token' } });
+							socket.end();
+							break;
+						}
+						registered = { instanceId: String(req.params.instanceId ?? 'unknown'), windows: req.params.windows ?? [] };
+						clients.set(socket, registered);
+						noteClients();
+						send({ id: req.id, result: hello() });
+						break;
+					}
+					case 'host.ping':
+						// `instances` 让调用方**定点**反向调用（多个客户端时 `pickClient()` 取"最先注册"的那个，
+						// 而 VsSaros 的客户端注册时机不由调用方决定 ⇒ 需要能指定目标；真机 e2e 踩过）。
+						send({ id: req.id, result: { ok: true, clients: clients.size, instances: [...clients.values()].map(info => info.instanceId) } });
+						break;
+					case 'approval.request': {
+						// 客户端→Host：**要一次用户确认**。交给 Host 的审批服务（`ctx.get('approval')`）——与 dsh 侧
+						// 能力用的是**同一张**客户端 UI 卡（`dsh-client-ui-approval`）⇒ 让**留在 IDE 侧**的动作类能力
+						// （目前只有 canvas）不再各自弹通知，而与 dsh 侧统一到"聊天内 ask"（README 4.76 / 4.83）。
+						// ⚠ **fail-closed**：拿不到审批服务就回 `allowed:false`（不猜、不静默放行）。
+						const approval = (() => { try { return ctx.get?.('approval'); } catch { return undefined; } })();
+						if (!approval || typeof approval.request !== 'function') {
+							send({ id: req.id, result: { allowed: false, reason: 'no-approval-channel' } });
+							break;
+						}
+						const consentArgs = req.params ?? {};
+						Promise.resolve(approval.request({
+							toolName: typeof consentArgs.toolName === 'string' && consentArgs.toolName ? consentArgs.toolName : 'ide',
+							reason: typeof consentArgs.reason === 'string' && consentArgs.reason ? consentArgs.reason : 'IDE 侧能力请求执行有副作用的操作',
+							...(consentArgs.displayReason === undefined ? {} : { displayReason: consentArgs.displayReason }),
+						})).then(
+							outcome => send({ id: req.id, result: { allowed: outcome === 'allowed-once', outcome: String(outcome) } }),
+							error => send({ id: req.id, result: { allowed: false, reason: `approval-error: ${String(error?.message ?? error)}` } }),
+						);
+						break;
+					}
+					case 'ide.probe': {
+						// `ide.request` 的**自检**：IDE 调它 → 桥反向 `ide.request` 指定能力 → 返回结果或拒绝原因。
+						// 用途：`@vssaros/dsh-ide` 模块还没做时也能验收"授权 + 执行"整条链；
+						// 模块做好后它仍是"这条链还通不通"的健康检查（IDE 侧只做一次数据往返，不改状态）。
+						const timeoutMs = Number.isFinite(req.params?.timeoutMs) ? req.params.timeoutMs : 8000;
+						callIDE('ide.request', {
+							capability: req.params?.capability,
+							...(req.params?.pluginId === undefined ? {} : { pluginId: req.params.pluginId }),
+							...(req.params?.params === undefined ? {} : { params: req.params.params }),
+						}, { timeoutMs, ...(req.params?.instanceId === undefined ? {} : { instanceId: req.params.instanceId }) }).then(
+							result => send({ id: req.id, result }),
+							e => send({ id: req.id, result: { ok: false, error: String(e?.message ?? e) } }),
+						);
+						break;
+					}
+					case 'ide.roundtrip': {
+						// 反向通道**自检**：IDE 调本方法 → Host 反向调 `ide.echo` → 把结果回给 IDE。
+						// 用途：IDE 侧实现请求分发后，一条命令就能验收"反向通道真的通"（不必等具体能力工具）。
+						const timeoutMs = Number.isFinite(req.params?.timeoutMs) ? req.params.timeoutMs : 5000;
+						callIDE('ide.echo', { at: Date.now() }, { timeoutMs }).then(
+							// 成功时把 IDE 的返回**原样**透传（将来 `ide.request` 的结果也要这样，不套一层）
+							result => send({ id: req.id, result }),
+							e => send({ id: req.id, result: { ok: false, error: String(e?.message ?? e) } }),
+						);
+						break;
+					}
+					case 'workspace.ensure':
+					case 'workspace.list': {
+						const reg = ctx.workspaceRegistry;
+						if (!reg) {
+							send({ id: req.id, error: { code: -32003, message: 'workspaceRegistry unavailable' } });
+							break;
+						}
+						const view = w => ({ id: w.id, path: w.path, title: w.title, sessions: (w.sessionIds ?? []).length });
+						const run = req.method === 'workspace.list'
+							? Promise.resolve(reg.list().map(view))
+							: Promise.all((req.params?.paths ?? []).map(p => reg.create(p).then(view, e => ({ path: p, error: String(e?.message ?? e) }))));
+						run.then(result => send({ id: req.id, result }), e => send({ id: req.id, error: { code: -32000, message: String(e?.message ?? e) } }));
+						break;
+					}
+					case 'session.start': {
+						// Plan §7: VsSaros starts a Session (chat tab binding / background entries)
+						// without going through the IDE's own chat service. Uses dsh's official
+						// session controller: create-or-idempotently-adopt by sessionId, then prompt.
+						const { cwd, sessionId, agentPreset, prompt } = req.params ?? {};
+						const run = async () => {
+							if (!cwd || typeof cwd !== 'string') {
+								throw new Error('session.start: cwd required');
+							}
+							const reg = ctx.workspaceRegistry;
+							const workspace = reg ? await reg.create(cwd) : undefined;
+							// 竞态根治（2026-10-13 用户报"聊天框消失"）：IDE 侧 `bind(session.start)` 与 `createView` **并行**，
+							// 而 createView 加载的页面自己也在开**同一个**派生会话 ⇒ 后到的一方撞上同进程 `writers` 里的**在途
+							// claim**（`dsh-session-persistence-jsonl` 的 `claimWrite` 抛 `SessionAlreadyOwnedError: already owned
+							// by an active write handle`）。dsh 的 `create` 对**已活跃**会话本是"领养"语义 ⇒ 等那个在途句柄
+							// 物化完，再 create 就会领养成功。⇒ 遇"already owned"**有界重试领养**，而不是一次失败就放弃
+							// （此前 IDE 侧 warn 一句返回 undefined ⇒ 聊天绑不上会话 ⇒ 空白/消失）。
+							// ⚠ 只重试"在途竞态"（in-process writers 撞）；**真·跨进程**的 flock 占用（另一个 Host 拿着）
+							//   报的是锁错误、不含 'already owned' ⇒ 不会被这条吞掉，仍会抛出 ✓。
+							let created;
+							for (let attempt = 0; ; attempt++) {
+								try {
+									created = await ctx.sessionController.create({ cwd: workspace?.path ?? cwd, sessionId, agentPreset });
+									break;
+								} catch (e) {
+									const msg = String(e?.message ?? e);
+									const inFlightRace = msg.includes('already owned') || msg.includes('writer-held') || (e && e.name === 'SessionAlreadyOwnedError');
+									if (!inFlightRace || attempt >= 6) {
+										throw e;
+									}
+									await new Promise(r => setTimeout(r, 120 * (attempt + 1))); // 120/240/…/720ms，等在途 claim 物化
+								}
+							}
+							const id = created?.sessionId ?? sessionId;
+							// dsh-webhook attaches explicitly; only do it when not already attached.
+							if (workspace && id && !(workspace.sessionIds ?? []).includes(id)) {
+								await workspace.attachSession(id);
+							}
+							let prompted = false;
+							if (prompt && id) {
+								// ⚠ dsh 的 `prompt(request, signal)` **要求第二个参数**：它第一句就是
+								// `signal.throwIfAborted()` ⇒ 不传会抛 `Cannot read properties of undefined
+								// (reading 'throwIfAborted')`（TypeError，且错误消息完全看不出缺了 signal）。
+								//
+								// 2026-10-11 实测（探针 `p3-20`，带堆栈定位到
+								// `dsh-api-session-controller/lib/index.js:3097` 的 facade `prompt`）：
+								// **带 prompt 的 `session.start` 必坏**，而不带 prompt 的形态正常——而仓库既有测试
+								// （`channelProbe.ts`）只覆盖了不带 prompt 的 `{cwd, sessionId}` ⇒ 这条路径此前**无覆盖**，
+								// 也就是说 App 的"建会话并投递首条消息"一直是坏的。
+								//
+								// 语义（dsh 注释原文）：signal 只用于"**投递开始之前**的调用方取消"，不绑定回合生命周期
+								// ⇒ 这里给一个不会主动中止的 controller（真正的取消由上游 RPC 超时负责）。
+								await ctx.sessionController.prompt({
+									requestId: `vssaros-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+									sessionId: id,
+									mode: 'queue',
+									content: [{ type: 'text', text: String(prompt) }],
+								}, new AbortController().signal);
+								prompted = true;
+							}
+							// agentPreset 回传（方案 5.15）：VsSaros 据此习得基座会话实际运行的 preset，
+						// "切回基座 preset"才能解析回无后缀会话 id（幂等接管保住原历史）。
+						return { sessionId: id, workspaceId: workspace?.id, prompted, agentPreset: created?.agentPreset ?? null };
+						};
+						run().then(result => send({ id: req.id, result }), e => send({ id: req.id, error: { code: -32000, message: String(e?.message ?? e) } }));
+						break;
+					}
+					case 'host.activity': {
+						// Upgrade / exit gate (plan §3.3 `host.hasRunningWork`). Asks the same
+						// `workspace/session-activity` waterfall dsh uses for archive admission, so every
+						// provider (turn, job, subagent, schedule) answers for its own family.
+						// Only session ids and family keys cross the pipe — no session content.
+						const ids = ctx.agents.list().map(a => a.id);
+						Promise.all(ids.map(sessionId => ctx.waterfall('workspace/session-activity', { sessionId }, () => Promise.resolve([]))
+							.then(acts => ({ sessionId, kinds: acts.map(a => String(a.kind)) }), () => ({ sessionId, kinds: ['unknown'] }))))
+							.then(list => send({ id: req.id, result: { live: ids.length, sessions: list.filter(s => s.kinds.length) } }),
+								e => send({ id: req.id, error: { code: -32000, message: String(e?.message ?? e) } }));
+						break;
+					}
+					case 'providers.sync': {
+						// 模型 provider 接入（dsh 插件形式）：VsSaros 把已配置的 provider（codebuddy /
+						// lightai / openrouter / 自定义 BYOK）写成 llm-pi-ai 的 settings profile ——
+						// 休眠的 pi-ai 适配器监听配置变化，路由在线注册，模型进聊天框选择器。
+						// 我们只管理 vssaros- 前缀的路由与 VSSAROS_ 前缀的凭证，用户自加条目不动。
+						const run = async () => {
+							const { settings, credentials, llm } = ctx;
+							if (!settings || !credentials) {
+								throw new Error('providers.sync: settings/credentials service unavailable');
+							}
+							// 分段计时（2026-10-15，"首启后模型清单晚 ~17s"排查）：IDE 侧实测 collect=300ms、
+							// 耗时全在这一条桥调用里 ⇒ 必须知道是凭证/改写/默认模型/模型清点中的哪一步。
+							const tSync = Date.now();
+							const step = {};
+							const params = req.params ?? {};
+							const credList = Array.isArray(params.credentials) ? params.credentials : [];
+							const entries = Array.isArray(params.providers) ? params.providers : [];
+							// 凭证先就位（profile 的 apiKeyEnv 按请求解析引用——先写凭证再挂路由）。
+							for (const c of credList) {
+								if (c && typeof c.ref === 'string' && typeof c.value === 'string') {
+									await credentials.set(c.ref, c.value);
+								}
+							}
+							step.credMs = Date.now() - tSync;
+							const tDescribe = Date.now();
+							const desc = settings.describe().find(d => d.ns === 'llm-pi-ai');
+							if (!desc) {
+								throw new Error('providers.sync: llm-pi-ai settings namespace missing (dsh-llm-pi-ai not mounted?)');
+							}
+							step.describeMs = Date.now() - tDescribe;
+							const current = (desc.value && typeof desc.value === 'object' ? desc.value.providers : undefined) ?? {};
+							const ours = {};
+							const reasoningNotes = [];
+							for (const p of entries) {
+								const models = (p.models ?? []).map(m => ({ id: m.id, name: m.name ?? m.id, ...(m.reasoning ? { reasoningEfforts: REASONING_EFFORTS } : {}) }));
+								const routeReasoning = routeReasoningDefault(p.models ?? []);
+								ours[p.route] = {
+									api: p.api,
+									baseURL: p.baseURL,
+									displayName: p.displayName,
+									models,
+									// 路由级默认档位（用户没选档位时的取值）。见 routeReasoningDefault 的守卫说明：
+									// 只有**全体模型都支持**才写，否则会给非推理模型开出一条必抛错的请求路径。
+									...(routeReasoning ? { reasoning: routeReasoning } : {}),
+									...(p.credentialRef ? { apiKeyEnv: p.credentialRef } : {}),
+									// 额外请求头（如 codebuddy 网关的 X-IDE-* 身份头；pi-ai profile 原生支持 headers 字段）。
+									...(p.headers && typeof p.headers === 'object' && Object.keys(p.headers).length ? { headers: p.headers } : {}),
+								};
+								const total = (p.models ?? []).length;
+								const reasoned = (p.models ?? []).filter(m => m && m.reasoning === true).length;
+								reasoningNotes.push(routeReasoning
+									? `${p.route}=${routeReasoning}`
+									: `${p.route}=跳过(${reasoned}/${total} 支持推理)`);
+							}
+							if (reasoningNotes.length > 0) {
+								// 进 Host 日志：一眼看清默认档位写了没、为什么没写。
+								// **值没变就不重复打**（见 `lastRouteReasoningLog` 的注释）：sync 每轮都跑，
+								// 原先这行会把日志刷满，排查时完全没法用 ✗。
+								const line = reasoningNotes.join(' ');
+								if (line !== lastRouteReasoningLog) {
+									lastRouteReasoningLog = line;
+									console.log(`[vssaros-bridge] route reasoning default: ${line}`);
+								}
+							}
+							// 幂等：语义比对（settings 会把 profile 规范化——补 input/compat/modelOverrides 等默认字段，
+							// JSON 全量比永远不等）。只比我们管理的字段；残留 vssaros- 路由也算变化。
+							const sameHeaders = (a, b) => {
+								const ae = Object.entries(a ?? {});
+								const be = Object.entries(b ?? {});
+								return ae.length === be.length && ae.every(([k, v]) => b[k] === v);
+							};
+							/**
+							 * 比较**推理能力位**（我们写的 `reasoningEfforts` 字典）是否等价。
+							 *
+							 * ⚠ 这里必须按 `reasoningEfforts` 比，不能按旧的 `reasoning: true` 比：
+							 *   ① 旧条目（我们曾写 `reasoning: true`）与新的 `reasoningEfforts` **不等价** ⇒
+							 *      会触发一次重写（正是我们要的：把历史错误键修正掉）；
+							 *   ② 若沿用旧比较式，重写后两侧永远对不上 ⇒ **每次 sync 都重写 profile**（幂等性坏掉）。
+							 */
+							const sameReasoning = (want, got) => {
+								const a = want.reasoningEfforts;
+								const b = got && typeof got === 'object' ? got.reasoningEfforts : undefined;
+								if (a === undefined && b === undefined) { return true; }
+								if (!a || !b || typeof b !== 'object') { return false; }
+								const keys = Object.keys(a);
+								return keys.length === Object.keys(b).length && keys.every(k => b[k] === a[k]);
+							};
+							// ⚠ 2026-10-15 改写成逐条判定（**返回布尔完全不变**）——因为实测**每次启动都 changed=true**
+							//   ⇒ 每次首启都白付一次 `settings.mutate`（= 整份 profile 热重组，本机实测 ~20s）。
+							//   要修"为什么每次都重写"必须先看见**是哪个字段在漂**：`why` 收第一个不同的字段名。
+							// baseURL 漂移时要把**值**（脱敏：代理 secret 段打码）带出来——
+							// 2026-10-15 现场：字段名只知道"在漂"，看不到漂成什么，排查多走一轮。
+							const redactUrl = u => String(u ?? '').replace(/(\/r\/)[^/]+/, '$1***');
+							const sameProfile = (want, got, why) => {
+								const no = f => { why?.push(f); return false; };
+								if (!got || typeof got !== 'object') { return no('route-absent'); }
+								if (got.api !== want.api) { return no('api'); }
+								if (got.baseURL !== want.baseURL) { return no(`baseURL ${redactUrl(got.baseURL)} → ${redactUrl(want.baseURL)}`); }
+								if (got.displayName !== want.displayName) { return no('displayName'); }
+								// 路由级默认档位也要参与比对：漏比会导致"该写没写/该改没改"永远不收敛（幂等性或正确性二选一坏掉）。
+								if ((got.reasoning ?? undefined) !== (want.reasoning ?? undefined)) { return no('reasoning'); }
+								if ((got.apiKeyEnv ?? undefined) !== (want.apiKeyEnv ?? undefined)) { return no('apiKeyEnv'); }
+								if (!sameHeaders(want.headers, got.headers)) { return no('headers'); }
+								if (!Array.isArray(got.models) || got.models.length !== want.models.length) { return no('models.length'); }
+								for (let i = 0; i < want.models.length; i++) {
+									const wm = want.models[i];
+									const gm = got.models[i];
+									if (!gm || gm.id !== wm.id) { return no(`models[${i}].id`); }
+									if ((gm.name ?? gm.id) !== (wm.name ?? wm.id)) { return no(`models[${i}].name`); }
+									if (!sameReasoning(wm, gm)) { return no(`models[${i}].reasoningEfforts`); }
+								}
+								return true;
+							};
+							const stale = Object.keys(current).filter(k => k.startsWith('vssaros-') && !ours[k]);
+							const diffNotes = stale.map(k => `${k}:stale`);
+							for (const k of Object.keys(ours)) {
+								const why = [];
+								if (!sameProfile(ours[k], current[k], why)) {
+									diffNotes.push(`${k}:${why.join('+') || '?'}`);
+								}
+							}
+							const changed = diffNotes.length > 0;
+							const tMutate = Date.now();
+							if (changed) {
+								const merged = {};
+								for (const [k, v] of Object.entries(current)) {
+									if (!k.startsWith('vssaros-')) {
+										merged[k] = v;
+									}
+								}
+								for (const k of Object.keys(ours)) {
+									merged[k] = ours[k];
+								}
+								try {
+									await settings.mutate('llm-pi-ai', [{ op: 'set', path: ['providers'], value: merged }], desc.revision);
+								} catch (e) {
+									// 设置页并发编辑 → 重读 revision 重试一次。
+									if (String(e?.code ?? e?.message ?? e).includes('SETTINGS_CONFLICT')) {
+										const d2 = settings.describe().find(d => d.ns === 'llm-pi-ai');
+										await settings.mutate('llm-pi-ai', [{ op: 'set', path: ['providers'], value: merged }], d2?.revision);
+									} else {
+										throw e;
+									}
+								}
+							}
+							step.mutateMs = Date.now() - tMutate;
+							const tDefault = Date.now();
+							// ─── 默认模型对齐 ───────────────────────────────────────────────
+							// 现象：新会话（首页）的模型选择器仍显示官方 `deepseek-official/deepseek-flash`。
+							// 根因：默认值由 `agent-default-model` 插件的 Config 提供，而官方 bundle 里写死了
+							// provider/model（`@deepseek-ai/dsh-base/cordis.patch.yml`：- id: agent-default-model
+							// → config: { provider: deepseek-official, model: deepseek-flash }）。在 VsSaros 里
+							// 那个 provider **没有凭据**（官方首启引导已被我们关掉，凭据 UX 归 VsSaros），
+							// 所以选择器默认停在一个用不了的官方模型上。
+							//
+							// 这里在**路由已就位之后**把它改写成我们自己的首选路由/模型：
+							//   · 首选 `vssaros-codebuddy`（用户登录的聊天 provider），否则取第一条有模型的我们的路由；
+							//   · **只**在"当前默认仍是官方 deepseek-official"或"当前默认指向我们已失效的路由"时改写，
+							//     用户自己选过的（其它 provider / 我们仍在线上的路由）一律不动；
+							//     且官方 provider **仍可用**（用户自己配了 Key）时也不动；
+							//   · 走官方 `agentDefaultModel.saveSelection()`：它经 `configEditor` 写 profile patch
+							//     （= 我们写 llm-pi-ai 路由的同一个文件）⇒ **跨重启保留**；
+							//   · 服务/配置编辑器缺席（换 profile、更老的 dsh）时静默跳过，绝不影响 provider 接入。
+							let defaultModelNote;
+							try {
+								const defaultModel = typeof ctx.get === 'function' ? ctx.get('agentDefaultModel') : undefined;
+								if (defaultModel?.currentSelection && defaultModel?.saveSelection) {
+									const current = defaultModel.currentSelection();
+									const routeIds = Object.keys(ours);
+									// "我们的路由是否仍在线"必须看 `llm.listProviders()`（**真实在线**路由），
+									// **不能**看本次负载的 `ours`：payload 可能没带全（某个源本次被摘掉/还没同步），
+									// 用 payload 判定会把"用户自己选中的、仍然在线"的 vssaros- 路由误判成已失效而覆盖
+									// （smoke 用例 ④ 实测踩到：payload 只带 codebuddy 时，选中的 vssaros-ollama 被改写）。
+									const liveRoutes = (llm?.listProviders?.() ?? []).map(p => String(p?.provider ?? p?.id ?? p)).filter(r => r.startsWith('vssaros-'));
+									const preferred = [routeIds.includes('vssaros-codebuddy') ? 'vssaros-codebuddy' : undefined, ...routeIds]
+										.filter(r => r !== undefined)
+										.map(route => ({ route, models: ours[route].models ?? [] }))
+										.find(c => c.models.length > 0);
+									const untouchedOfficialDefault = current?.provider === 'deepseek-official';
+									const staleOwnRoute = typeof current?.provider === 'string' && current.provider.startsWith('vssaros-') && !liveRoutes.includes(current.provider);
+									// 官方 provider **仍可用**（自己列表里有模型 = 用户配过 DeepSeek 凭据，覆盖层因此没把它隐藏）
+									// ⇒ 尊重其默认值，不动。只修"默认停在一个**用不了**的官方模型上"这个 bug。
+									let officialUsable = false;
+									if (untouchedOfficialDefault) {
+										try {
+											officialUsable = (await llm.listModels('deepseek-official')).length > 0;
+										} catch {
+											officialUsable = false;
+										}
+									}
+									if (preferred && !officialUsable && (untouchedOfficialDefault || staleOwnRoute)) {
+										// 注意：`saveSelection` 在**没有 configuration editor** 时是 no-op（官方 README 明说），
+										// 所以这里只记"请求改写"，不宣称已生效（实时 config ref 也是异步落定的）。
+										await defaultModel.saveSelection({ provider: preferred.route, model: preferred.models[0].id });
+										defaultModelNote = `请求改写 ${current.provider}/${current.model} -> ${preferred.route}/${preferred.models[0].id}`;
+									}
+								}
+							} catch (e) {
+								defaultModelNote = `ERR ${String(e?.message ?? e).slice(0, 160)}`;
+							}
+							if (defaultModelNote) {
+								// 进 Host 日志（supervisor 会把它收进 dsh 日志面板）：重启后一眼能看到默认值有没有被改。
+								console.log(`[vssaros-bridge] default model: ${defaultModelNote}`);
+							}
+							step.defaultMs = Date.now() - tDefault;
+							const online = (llm?.listProviders?.() ?? []).map(p => String(p?.provider ?? p?.id ?? p)).filter(p => p.startsWith('vssaros-'));
+							// 诊断：每条路由的模型清单（目录/选择器的数据源——路由在线但模型为空时选择器不会有内容）。
+							const tProbe = Date.now();
+							const modelsOnline = {};
+							for (const route of Object.keys(ours)) {
+								try {
+									modelsOnline[route] = (await llm.listModels(route)).map(m => String(m?.id ?? m));
+								} catch (e) {
+									modelsOnline[route] = `ERR ${String(e?.message ?? e).slice(0, 120)}`;
+								}
+							}
+							step.probeMs = Date.now() - tProbe;
+							const totalMs = Date.now() - tSync;
+							// 只在"有改写"或"明显慢"时打：sync 内容没变就不该刷屏（与 route reasoning 那行同一纪律 ✓）。
+							if (changed || totalMs > 500) {
+								console.log(`[vssaros-bridge] providers.sync timing: cred=${step.credMs}ms describe=${step.describeMs}ms mutate=${step.mutateMs}ms(changed=${changed}${changed ? ` diffs=[${diffNotes.join(', ')}]` : ''}) defaultModel=${step.defaultMs}ms modelsProbe=${step.probeMs}ms total=${totalMs}ms`);
+							}
+							return { routes: Object.keys(ours), unchanged: !changed, providersOnline: online, modelsOnline, ...(defaultModelNote ? { defaultModel: defaultModelNote } : {}) };
+						};
+						run().then(result => send({ id: req.id, result }), e => send({ id: req.id, error: { code: -32000, message: String(e?.message ?? e) } }));
+						break;
+					}
+					// ─── 插件商城（方案 5.16，只读面）。服务用 reflect 探测而不是 inject 硬依赖：
+					// 管理器缺席（换 profile / 更老的 dsh）时不能让整个桥不激活 —— 只该这几个方法报不可用。
+					case 'plugins.bundles.list':
+					case 'plugins.plugins.list':
+					case 'plugins.registries':
+					case 'plugins.inventory': {
+						const run = async () => {
+							if (req.method === 'plugins.bundles.list') {
+								const mgr = ctx.reflect?.get?.('pluginManager', false);
+								if (!mgr) { throw new Error('pluginManager unavailable'); }
+								const bundles = await mgr.listBundles();
+								// 整形：只过桥 VsSaros 用得上的字段（dsh 内部结构不搬运）。
+								return bundles.map(b => ({
+									name: b.name,
+									...(b.version ? { version: b.version } : {}),
+									...(b.description ? { description: b.description } : {}),
+									enabled: !!b.enabled,
+									installed: !!b.installed,
+									optional: !!b.optional,
+									removable: !!b.removable,
+									...(b.readOnlyReason ? { readOnlyReason: b.readOnlyReason } : {}),
+									...(b.error?.code ? { error: b.error.code } : {}),
+									rows: (b.rows ?? []).map(r => ({
+										rowId: String(r.rowId ?? ''),
+										moduleName: String(r.moduleName ?? ''),
+										...(r.entryId ? { entryId: String(r.entryId) } : {}),
+									})),
+								}));
+							}
+							if (req.method === 'plugins.plugins.list') {
+								const mgr = ctx.reflect?.get?.('pluginManager', false);
+								if (!mgr) { throw new Error('pluginManager unavailable'); }
+								const rows = await mgr.listPlugins();
+								return rows.map(p => ({
+									entryId: String(p.entryId ?? p.id ?? ''),
+									...(p.patchId ? { patchId: String(p.patchId) } : {}),
+									...(p.moduleName ? { moduleName: String(p.moduleName) } : {}),
+									...(typeof p.enabled === 'boolean' ? { enabled: p.enabled } : {}),
+									...(p.phase ? { phase: String(p.phase) } : {}),
+									...(p.readOnlyReason ? { readOnlyReason: String(p.readOnlyReason) } : {}),
+								}));
+							}
+							if (req.method === 'plugins.registries') {
+								const mgr = ctx.reflect?.get?.('pluginManager', false);
+								if (!mgr) { throw new Error('pluginManager unavailable'); }
+								const r = await mgr.registries();
+								return {
+									registry: r.registry ?? null,
+									fallbackRegistries: [...(r.fallbackRegistries ?? [])],
+									resolved: r.resolved ?? null,
+								};
+							}
+							// plugins.inventory：只回计数与预设数（187 条全量过桥没意义）。
+							const inv = ctx.reflect?.get?.('pluginInventory', false);
+							if (!inv || typeof inv.list !== 'function') { throw new Error('pluginInventory unavailable'); }
+							const list = await inv.list();
+							const entries = Array.isArray(list) ? list : (Array.isArray(list?.entries) ? list.entries : []);
+							const presets = Array.isArray(list?.agentPresets) ? list.agentPresets : [];
+							return {
+								entries: entries.length,
+								enabledEntries: entries.filter(e => e?.enabled === true).length,
+								agentPresets: presets.length,
+								managementAvailable: list?.managementAvailable !== false,
+							};
+						};
+						run().then(result => send({ id: req.id, result }), e => send({ id: req.id, error: { code: -32003, message: String(e?.message ?? e) } }));
+						break;
+					}
+					// ─── 插件商城（方案 5.16 批次 3，写入面）：启停改走 Host 的 pluginManager ——
+					// 组合包级写 `dsh.profile.bundles`、行级写 `cordis.patch.yml` 的 disabled 覆盖，
+					// 都由 Host 用自己的写锁与归一化完成，并如实回传 application（applied / restart-required /
+					// overridden / failed），VsSaros 不再自己复制这套语义。
+					// 注意（批次 1 的死锁教训）：这些调用由**桥的请求处理器**发起（不在任何插件的 activation 链上），
+					// 所以 HMR 开着时的 profile reload 能正常完成。
+					case 'plugins.bundle.setEnabled':
+					case 'plugins.plugin.setEnabled': {
+						const run = async () => {
+							const mgr = ctx.reflect?.get?.('pluginManager', false);
+							if (!mgr) { throw new Error('pluginManager unavailable'); }
+							const params = req.params ?? {};
+							const enabled = params.enabled === true;
+							const id = req.method === 'plugins.bundle.setEnabled' ? params.name : params.entryId;
+							if (typeof id !== 'string' || !id.trim()) {
+								throw new Error(`${req.method}: ${req.method === 'plugins.bundle.setEnabled' ? 'name' : 'entryId'} required`);
+							}
+							const res = req.method === 'plugins.bundle.setEnabled'
+								? await mgr.setBundleEnabled(id.trim(), enabled)
+								: await mgr.setPluginEnabled(id.trim(), enabled);
+							return shapeChange(res, id);
+						};
+						run().then(result => send({ id: req.id, result }), e => send({ id: req.id, error: { code: -32000, message: String(e?.message ?? e) } }));
+						break;
+					}
+					// ─── 插件商城（方案 5.16 批次 4，安装面）：inspect / install / cancel / remove ——
+					// 与启停同理，都由**桥的请求处理器**发起（脱离 activation 链，HMR 开着也能完成）。
+					// 安装是长任务：spec 决定的 pnpm 运行可能要几分钟，调用方的超时必须自己放宽。
+					case 'plugins.bundle.inspect': {
+						const run = async () => {
+							const mgr = ctx.reflect?.get?.('pluginManager', false);
+							if (!mgr) { throw new Error('pluginManager unavailable'); }
+							const spec = typeof req.params?.spec === 'string' ? req.params.spec.trim() : '';
+							if (!spec) { throw new Error('plugins.bundle.inspect: spec required'); }
+							// 注册表查询可能挂着不返回；管理器自己有 inspectTimeoutMs，这里再加一层硬上限。
+							const signal = typeof AbortSignal?.timeout === 'function' ? AbortSignal.timeout(90_000) : undefined;
+							const r = await mgr.inspect(spec, undefined, signal);
+							if (r?.status === 'refused') {
+								return {
+									status: 'refused',
+									problem: r.problem ?? 'unknown',
+									reason: String(r.reason ?? 'refused'),
+									...(Array.isArray(r.registries) ? { registries: r.registries.map(x => x ?? null).slice(0, 8) } : {}),
+								};
+							}
+							return {
+								status: 'accepted',
+								kind: r?.kind ?? null,
+								...(r?.name ? { name: String(r.name) } : {}),
+								...(r?.version ? { version: String(r.version) } : {}),
+								...(r?.description ? { description: String(r.description).slice(0, 400) } : {}),
+								bundle: typeof r?.bundle === 'boolean' ? r.bundle : null,
+								registry: r?.registry ?? null,
+								...(r?.host ? { host: String(r.host) } : {}),
+							};
+						};
+						run().then(result => send({ id: req.id, result }), e => send({ id: req.id, error: { code: -32000, message: String(e?.message ?? e) } }));
+						break;
+					}
+					case 'plugins.bundle.install': {
+						const run = async () => {
+							const mgr = ctx.reflect?.get?.('pluginManager', false);
+							if (!mgr) { throw new Error('pluginManager unavailable'); }
+							const params = req.params ?? {};
+							const spec = typeof params.spec === 'string' ? params.spec.trim() : '';
+							const requestId = typeof params.requestId === 'string' ? params.requestId.trim() : '';
+							if (!spec) { throw new Error('plugins.bundle.install: spec required'); }
+							if (!requestId) { throw new Error('plugins.bundle.install: requestId required（取消与进度都按它关联）'); }
+							const approvedBuilds = Array.isArray(params.approvedBuilds)
+								? params.approvedBuilds.filter(x => typeof x === 'string' && x.trim()).map(x => x.trim()).slice(0, 32)
+								: undefined;
+							// requestId 在 dsh 侧是 brand 类型，运行期就是字符串——必须原样透传，
+							// Host 的 install-state 事件与 cancelInstall 都按同一个值匹配。
+							const res = await mgr.installBundle(spec, {
+								requestId,
+								...(approvedBuilds?.length ? { approvedBuilds } : {}),
+							});
+							return shapeChange(res, res?.bundle ?? spec, { requestId });
+						};
+						run().then(result => send({ id: req.id, result }), e => send({ id: req.id, error: { code: -32000, message: String(e?.message ?? e) } }));
+						break;
+					}
+					case 'plugins.bundle.install.cancel': {
+						const run = async () => {
+							const mgr = ctx.reflect?.get?.('pluginManager', false);
+							if (!mgr) { throw new Error('pluginManager unavailable'); }
+							const requestId = typeof req.params?.requestId === 'string' ? req.params.requestId.trim() : '';
+							if (!requestId) { throw new Error('plugins.bundle.install.cancel: requestId required'); }
+							const r = await mgr.cancelInstall(requestId);
+							return { status: r?.status ?? 'not-running' };
+						};
+						run().then(result => send({ id: req.id, result }), e => send({ id: req.id, error: { code: -32000, message: String(e?.message ?? e) } }));
+						break;
+					}
+					case 'plugins.bundle.remove': {
+						const run = async () => {
+							const mgr = ctx.reflect?.get?.('pluginManager', false);
+							if (!mgr) { throw new Error('pluginManager unavailable'); }
+							const name = typeof req.params?.name === 'string' ? req.params.name.trim() : '';
+							if (!name) { throw new Error('plugins.bundle.remove: name required'); }
+							const res = await mgr.removeBundle(name);
+							return shapeChange(res, name);
+						};
+						run().then(result => send({ id: req.id, result }), e => send({ id: req.id, error: { code: -32000, message: String(e?.message ?? e) } }));
+						break;
+					}
+					default:
+						send({ id: req.id ?? null, error: { code: -32601, message: `method not found: ${req.method}` } });
+				}
+			}
+		});
+		socket.on('close', () => {
+			clients.delete(socket);
+			noteClients();
+		});
+		socket.on('error', () => {
+			clients.delete(socket);
+			noteClients();
+		});
+	});
+	ctx.effect(() => {
+		server.listen(pipe);
+		return () => {
+			for (const s of clients.keys()) {
+				s.destroy();
+			}
+			server.close();
+		};
+	});
+	// ★ 2026-10-15（用户第三次催"首启卡"这件事）：把**本插件 apply 同步部分**的耗时钉成一行。
+	//
+	// 为什么需要：首启 20.9s 里有一段 9.8s（`spawn→首行 4.9s` 之后的 `首行→ready`）**没有任何日志
+	// 能归因** ✗ —— 只能靠"我们三个插件的横幅时刻"反推，而反推出的结论（我们自己的 apply 占了
+	// 5~7 秒）差点是错的：`providers.sync`（含 `route reasoning default` 那行）其实是
+	// **IDE 客户端连上后发来的请求**（见上面 `case 'providers.sync'`），不是启动路径 ✗✓。
+	// 有了这行，下次冷启就能一眼分清那段里"有没有我们的活" ✓（took 接近 0 ⇒ 全是 dsh 自身 ✓）。
+	//
+	// ⚠ 只覆盖**同步**部分，且配了 pipe/token 之外的分支会在上面提前 return（那时不打，符合预期 ✓）。
+	// ⚠ 与 `providers.sync timing` 分工不同：那条量的是**一次请求**的处理耗时 ✓，这条量的是**装载**耗时 ✓。
+	console.log(`[vssaros-bridge] apply done (host uptime ${Math.round(process.uptime() * 1000)}ms, took ${Math.round(process.uptime() * 1000) - applyStartMs}ms)`);
+}

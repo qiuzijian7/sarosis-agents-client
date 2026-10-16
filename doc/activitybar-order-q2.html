@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Q2：活动栏四个「资料库系」图标的 order 排法对比</title>
+<style>
+  :root{ --brand:#FF5A2E; --ok:#3FB950; --warn:#D29922; --err:#F85149;
+    --bg:#1B1B1D; --bg-elev:#232326; --bg-code:#1F2023; --line:#3a3a3d; --line-soft:#2f2f32;
+    --fg:#E6E6E6; --fg-dim:#B9B9BC; --fg-faint:#8A8A8E; --hover:#2C2C2E; }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);line-height:1.75;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",Roboto,sans-serif}
+  .wrap{max-width:1120px;margin:0 auto;padding:36px 22px 90px}
+  h1{font-size:25px;margin:0 0 6px}
+  h2{font-size:18px;margin:38px 0 12px;padding-left:11px;border-left:4px solid var(--brand)}
+  h3{font-size:14.5px;margin:22px 0 8px;color:var(--fg-dim)}
+  p{margin:8px 0}
+  code{background:var(--bg-code);border:1px solid var(--line-soft);padding:1px 6px;border-radius:5px;font-size:12.5px;
+    font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+  .lede{color:var(--fg-dim);font-size:13.5px}
+  table{border-collapse:collapse;width:100%;margin:10px 0 14px;font-size:13px}
+  th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+  th{background:var(--bg-elev);font-weight:600;color:var(--fg-dim)}
+  .tag{display:inline-block;font-size:11px;border:1px solid var(--line);border-radius:999px;padding:0 7px;color:var(--fg-faint)}
+  .tag.ok{border-color:var(--ok);color:var(--ok)} .tag.warn{border-color:var(--warn);color:var(--warn)}
+  .tag.err{border-color:var(--err);color:var(--err)} .tag.new{border-color:var(--brand);color:var(--brand)}
+  /* ── 活动栏示意 ── */
+  .bars{display:flex;gap:22px;flex-wrap:wrap;margin:14px 0 6px}
+  .barwrap{background:var(--bg-elev);border:1px solid var(--line);border-radius:10px;padding:12px 14px;min-width:330px}
+  .barwrap h3{margin:0 0 2px;color:var(--fg);font-size:14px}
+  .barwrap .sub{color:var(--fg-faint);font-size:11.5px;margin-bottom:9px}
+  .bar{display:flex;flex-direction:column;gap:2px;max-width:290px}
+  .ai{display:flex;align-items:center;gap:7px;border-radius:6px;padding:3px 7px;font-size:12.5px;color:var(--fg-dim);
+    border:1px solid transparent}
+  .ai .ord{width:30px;flex:none;text-align:right;font-size:11px;color:var(--fg-faint);
+    font-family:ui-monospace,Consolas,monospace}
+  .ai .ic{width:15px;text-align:center;flex:none}
+  .ai.fam{border-color:var(--brand);background:rgba(255,90,46,.10);color:var(--fg);font-weight:600}
+  .ai.fam .ord{color:var(--brand);font-weight:600}
+  .ai.moved{border-color:var(--ok);background:rgba(63,185,80,.10)}
+  .ai.moved .ord{color:var(--ok);font-weight:600}
+  .gap{height:7px;display:flex;align-items:center;color:var(--fg-faint);font-size:10.5px;padding-left:37px}
+  .gap::before{content:"";flex:1;border-top:1px dashed var(--line);margin-right:6px}
+  .note{border:1px solid var(--warn);border-left:4px solid var(--warn);border-radius:8px;padding:9px 11px;margin:10px 0;font-size:13px}
+  .note.bad{border-color:var(--err);border-left-color:var(--err)}
+  .note.ok{border-color:var(--ok);border-left-color:var(--ok)}
+  .pro{color:var(--ok)} .con{color:var(--warn)}
+  pre{background:var(--bg-code);border:1px solid var(--line-soft);border-radius:8px;padding:11px 13px;overflow-x:auto;
+    font-size:12.5px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+  .rec{background:var(--bg-elev);border:1px solid var(--brand);border-radius:10px;padding:12px 14px;margin:14px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Q2：活动栏四个「资料库系」图标要不要聚成一段 <span class="tag ok">已定：方案 B（已实现）</span></h1>
+
+  <div class="note ok">
+    <b>★ 2026-10-12 收口：已按<b>方案 B</b> 落地并验证。</b> 实际改了 <b>3 处</b>（不是本稿原先写的 2 处 ——
+    见下面「要动什么」里的第 ③ 处，是<b>守卫抓出来的</b>：`dsh 插件包结构守卫` 报
+    「<code>vssaros-codebase</code> 的 <code>activityBar.order</code> 必须与聚合表一致（113）」✓）。
+    验证：<code>tsgo</code> 0 错 ✓；<code>dshHarness --common</code> <b>396 passing / 1 failing</b>（唯一那条是并行线的
+    <code>WorkflowNodeType.IfElse</code>，与本改动无关 ✓）；<code>check-host-config</code> 16 契约 0 违规 ✓。
+    <br>⚠ 老窗口仍看不到变化 —— 原因见下面第四节（这是本方案唯一的真实代价，与选 A 还是选 B 无关）。
+  </div>
+
+  <p class="lede">
+    本稿记录「资料库」拆分留下的**最后一个界面决策**（以及它的取舍依据，留档用）。四个工作台来自同一处
+    （原来的资料库 4 个 tab），但它们的活动栏 <code>order</code> 曾是**断开的** —— 代码库在**前段**，另外三个在**后段**。
+  </p>
+
+  <h2>一、现状为什么是断开的</h2>
+  <p>
+    <code>order</code> 是**注册期**属性，决定活动栏里图标的先后。资料库系四个容器各自的来历不同 ⇒ 数字也就不同：
+  </p>
+  <table>
+    <tr><th>容器</th><th>显示名</th><th>order</th><th>来历</th></tr>
+    <tr><td><code>agentStudio.knowledgeBase</code></td><td>知识库</td><td>110</td><td>母体（原「资料库」改名，order 一直是 110）</td></tr>
+    <tr><td><code>agentStudio.memory</code></td><td>记忆库</td><td>111</td><td>拆分时新加，刻意紧跟母体</td></tr>
+    <tr><td><code>agentStudio.media</code></td><td>媒体库</td><td>112</td><td>同上</td></tr>
+    <tr><td><code>vssaros.dsh.codebase</code></td><td>代码库</td><td><b>25</b></td><td>⚠ 它**早就是 25**（原「代码图谱」，当时不属于资料库系）⇒ 拆分后才显出"离队"</td></tr>
+  </table>
+
+  <h2>二、两种排法（并排看）</h2>
+  <div class="bars">
+    <div class="barwrap">
+      <h3>方案 A · 保持现状（不动）</h3>
+      <div class="sub">代码库留在前段，另三格在后段</div>
+      <div class="bar">
+        <div class="ai"><span class="ord">5</span><span class="ic">📊</span>Dashboard</div>
+        <div class="ai"><span class="ord">10</span><span class="ic">🗂</span>工作区</div>
+        <div class="ai"><span class="ord">20</span><span class="ic">🔍</span>搜索</div>
+        <div class="ai fam"><span class="ord">25</span><span class="ic">🔗</span>代码库</div>
+        <div class="ai"><span class="ord">30</span><span class="ic">🌿</span>源代码管理</div>
+        <div class="ai"><span class="ord">50</span><span class="ic">🕘</span>会话历史</div>
+        <div class="ai"><span class="ord">60</span><span class="ic">🤖</span>Agents</div>
+        <div class="ai"><span class="ord">70</span><span class="ic">📋</span>Tasks</div>
+        <div class="ai"><span class="ord">80</span><span class="ic">🧩</span>Workflow</div>
+        <div class="ai"><span class="ord">90</span><span class="ic">🔌</span>Integration</div>
+        <div class="gap">…中间隔着 5 格…</div>
+        <div class="ai fam"><span class="ord">110</span><span class="ic">📖</span>知识库</div>
+        <div class="ai fam"><span class="ord">111</span><span class="ic">🗄</span>记忆库</div>
+        <div class="ai fam"><span class="ord">112</span><span class="ic">🖼</span>媒体库</div>
+        <div class="ai"><span class="ord">115</span><span class="ic">🧿</span>画布</div>
+        <div class="ai"><span class="ord">120</span><span class="ic">🧱</span>插件</div>
+      </div>
+    </div>
+
+    <div class="barwrap">
+      <h3>方案 B · 聚成一段 <span class="tag new">推荐</span></h3>
+      <div class="sub">代码库 25 → 113，四格相邻</div>
+      <div class="bar">
+        <div class="ai"><span class="ord">5</span><span class="ic">📊</span>Dashboard</div>
+        <div class="ai"><span class="ord">10</span><span class="ic">🗂</span>工作区</div>
+        <div class="ai"><span class="ord">20</span><span class="ic">🔍</span>搜索</div>
+        <div class="ai"><span class="ord">30</span><span class="ic">🌿</span>源代码管理</div>
+        <div class="ai"><span class="ord">50</span><span class="ic">🕘</span>会话历史</div>
+        <div class="ai"><span class="ord">60</span><span class="ic">🤖</span>Agents</div>
+        <div class="ai"><span class="ord">70</span><span class="ic">📋</span>Tasks</div>
+        <div class="ai"><span class="ord">80</span><span class="ic">🧩</span>Workflow</div>
+        <div class="ai"><span class="ord">90</span><span class="ic">🔌</span>Integration</div>
+        <div class="gap">资料库系四格在一起</div>
+        <div class="ai fam"><span class="ord">110</span><span class="ic">📖</span>知识库</div>
+        <div class="ai fam"><span class="ord">111</span><span class="ic">🗄</span>记忆库</div>
+        <div class="ai fam"><span class="ord">112</span><span class="ic">🖼</span>媒体库</div>
+        <div class="ai fam moved"><span class="ord">113</span><span class="ic">🔗</span>代码库 <span class="tag ok">移到这里</span></div>
+        <div class="ai"><span class="ord">115</span><span class="ic">🧿</span>画布</div>
+        <div class="ai"><span class="ord">120</span><span class="ic">🧱</span>插件</div>
+      </div>
+    </div>
+  </div>
+  <p class="lede">
+    橙色框 = 「资料库系」四格。<b>家族内部顺序</b>这里取「知识 → 记忆 → 媒体 → 代码」；若你更想「知识 → 记忆 → 代码 → 媒体」，
+    我再把媒体 <code>112 → 113</code>、代码库 <code>→ 112</code>（那就是改 2 个数字，同样可退）。
+  </p>
+
+  <h2>三、取舍</h2>
+  <table>
+    <tr><th></th><th>方案 A · 保持现状</th><th>方案 B · 聚成一段</th></tr>
+    <tr>
+      <td>观感</td>
+      <td><span class="con">四格被拆成"1 + 3"</span>；代码库夹在"搜索 / 源代码管理"之间，从图标上看不出它属于资料库系</td>
+      <td><span class="pro">四格相邻</span>，一眼看出是一个家族；也和「资料库拆分」的叙事一致</td>
+    </tr>
+    <tr>
+      <td>改动量</td>
+      <td><span class="pro">0</span></td>
+      <td>2 个文件各 1 个数字：<code>25 → 113</code></td>
+    </tr>
+    <tr>
+      <td>风险</td>
+      <td><span class="pro">零</span></td>
+      <td>低：只动 <b>注册期默认值</b>，不动容器 id / 视图 id / 存储键（<b>改 id 才会丢布局</b>）⇒ 随时可退</td>
+    </tr>
+    <tr>
+      <td>谁受影响</td>
+      <td>—</td>
+      <td>只影响<b>新窗口 / 新装机</b>；<b>老用户的活动栏不会自己变</b>（见下面那条警告 ✗）</td>
+    </tr>
+    <tr>
+      <td>画布那格</td>
+      <td>115，在媒体库之后</td>
+      <td>不变（115）。⚠ 画布读的是<b>同一个数据根</b>（<code>knowledge-base/**/*.canvas</code>），但它属于 <code>vssaros.dsh.canvas</code>、且是 <code>page-only</code> ⇒ 本稿<b>不</b>把它算进"资料库系四格"，你要算进去我再给第三版</td>
+    </tr>
+  </table>
+
+  <h2>四、⚠ 必须先接受的一条硬事实（两种方案都适用）</h2>
+  <div class="note bad">
+    <b>改 <code>order</code> 对"已经用过窗口的人"不生效。</b> 活动栏顺序在**第一次运行**时就写进了 storage
+    <code>workbench.activity.pinnedViewlets2</code>，往后的顺序以它为准（<code>AbstractPaneCompositeBar.updateCompositeBarItemsFromStorage()</code>），
+    注册期的 <code>order</code> 只决定**新出现**的容器插在哪 ⇒ <b>这个窗口里代码库还是老位置</b>。
+  </div>
+  <p>要看到方案 B 的效果，只有两条路：</p>
+  <ul>
+    <li><b>点 Dashboard × 工作台区块的「恢复默认顺序」</b> —— 干净，但注意它会按注册期 order **重排全部容器**，你手工拖过的顺序会一起没 ✗；</li>
+    <li>或删掉那条 storage 键（等价于"活动栏布局重来一次"）。</li>
+  </ul>
+  <p class="lede">
+    换句话说：<b>方案 B 的收益对老用户是"要先重置一次布局"才拿得到</b>。这也是它唯一的真实代价 —— 值不值由你定。
+  </p>
+
+  <h2>五、要动什么（选定后我照这个改）</h2>
+  <p>只有 <b>order 一个数字</b>，两处必须同值（一处是 dsh 引擎的动态注册，一处是 legacy 侧的静态注册；两边不一致会导致两种引擎下位置不同）：</p>
+  <table>
+    <tr><th>方案</th><th>文件</th><th>改动</th></tr>
+    <tr>
+      <td rowspan="3">B <span class="tag ok">已实现</span></td>
+      <td>① <code>src/vs/sessions/contrib/dshHarness/common/dshModuleContainers.ts</code></td>
+      <td><code>vssaros.dsh.codebase</code> 的 <code>activityBar.order</code>：<code>25 → 113</code>（**聚合表** —— 可见性的真源）</td>
+    </tr>
+    <tr>
+      <td>② <code>src/vs/sessions/contrib/agentStudio/browser/agentStudio.contribution.ts</code></td>
+      <td><code>_registerModuleToolIcon({ id: 'vssaros.dsh.codebase' })</code> 的 <code>order</code>：<code>25 → 113</code>（**legacy 侧静态注册**）</td>
+    </tr>
+    <tr>
+      <td>③ <code>dsh-plugins/vssaros-codebase/package.json</code> <span class="tag warn">本稿原先漏了</span></td>
+      <td><code>vssaros.activityBar.order</code>：<code>25 → 113</code>（**插件清单自己那份**）＋ 版本 <code>0.6.14 → 0.6.15</code>。
+        ⚠ 这一处是**守卫抓出来的**：<code>dshPluginPackages.test.ts</code> 报「<code>vssaros-codebase</code> 的 <code>activityBar.order</code> 必须与聚合表一致（113）」⇒
+        只改 ①② 会红 ✓ —— <b>改任何容器 order 都要查这三处</b>。</td>
+    </tr>
+    <tr>
+      <td>A</td>
+      <td colspan="2"><span class="con">未采纳</span>（取舍依据留档在上面「三、取舍」）</td>
+    </tr>
+  </table>
+  <p class="lede">
+    改完我会跑：<code>tsgo</code> + <code>dshHarness --common</code>（有 <code>dshModuleContainers.test.ts</code> 钉住"清单与聚合表逐项一致"，
+    order 是其中一项 ⇒ <b>只改一处会被它当场抓住</b> ✓）+ <code>check-host-config</code>。
+  </p>
+
+  <div class="rec">
+    <b>我的建议：选 B。</b> 理由：① 这四格是**同一件事**拆出来的，"聚在一起"才是它们真实的关系；② 代价只是新装/新窗口的默认值，
+    随时可退；③ 唯一代价（老窗口要重置一次布局）无论选 A 还是 B 都存在 —— 因为 A 相当于<b>放弃</b>让它们对齐。
+    <br>若你更看重"别让我动已排好的活动栏"，那选 A 也完全成立，本稿留档即可。
+  </div>
+
+</div>
+</body>
+</html>

@@ -575,7 +575,7 @@ svg text{font-family:"Segoe UI","Microsoft YaHei",sans-serif}
     <li><b>单一动画源</b>：运行态只有头部 chip pulse + 运行中进度段流动，两处动画；聊天滚动时视觉安静</li>
     <li><b>事件驱动</b>：卡片是 <code>WorkflowEngineEvent</code> 的纯投影（start/phase/agent-start/agent-end/end → UI 状态），无独立状态机，与 recorder/画布桥共享同一事件面</li>
     <li><b>失败可视化但不打扰</b>：失败的 agent 是红色段 + <code>failed → null</code> 徽标（脚本能处理），只有 fatal 才让整卡转红</li>
-    <li><b>toolDisplayRegistry 注册</b>：<code>workflow → { emoji:'🔀', title:'工作流', renderType:'WorkflowRun' }</code>，走既有工具卡片解析管线</li>
+    <li><b>卡片路由</b>：工作流卡片由原生聊天面板直注入 <code>renderType:'WorkflowRun'</code>（原计划的 webview <code>toolDisplayRegistry.ts</code> 未接线、其 <code>WorkflowRunCard.tsx</code> 从未创建，该模块已于 2026-10-12 删除）</li>
   </ul>
 
   <h3>8.2 卡片状态机与事件 → UI 映射</h3>

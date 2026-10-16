@@ -17,6 +17,7 @@
 		"../../src/**/fixtures/**",
 		"../../src/vs/base/parts/sandbox/electron-browser/preload.ts", 		// Preload scripts for Electron sandbox
 		"../../src/vs/base/parts/sandbox/electron-browser/preload-aux.ts",	// have limited access to node.js APIs
-		"../../src/vs/platform/browserView/electron-browser/preload-browserView.ts"	// Browser view preload script
+		"../../src/vs/platform/browserView/electron-browser/preload-browserView.ts",	// Browser view preload script
+		"../../src/vs/sessions/contrib/dshHarness/electron-browser/preload-dshView.ts"	// dsh view preload script
 	]
 }

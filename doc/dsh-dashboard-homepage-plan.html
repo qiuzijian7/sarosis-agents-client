@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dsh Dashboard → 可编排 homepage：设计与执行方案</title>
+<style>
+  :root{ --brand:#FF5A2E; --ok:#3FB950; --warn:#D29922; --err:#F85149; --run:#4C9AFF;
+    --bg:#0F1115; --bg-elev:#171A20; --bg-panel:#1E2229; --bg-code:#14171C; --line:#2C3138; --line-soft:#23272E;
+    --fg:#E6E8EB; --fg-dim:#AEB4BD; --fg-faint:#7C838D; }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);line-height:1.75;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",Roboto,sans-serif}
+  .wrap{max-width:1180px;margin:0 auto;padding:36px 22px 100px}
+  h1{font-size:25px;margin:0 0 6px}
+  h2{font-size:18px;margin:40px 0 12px;padding-left:11px;border-left:4px solid var(--brand)}
+  h3{font-size:14.5px;margin:24px 0 8px;color:var(--fg-dim)}
+  code{background:var(--bg-code);border:1px solid var(--line-soft);padding:1px 6px;border-radius:5px;font-size:12.5px;
+    font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+  .lede{color:var(--fg-dim);font-size:13.5px}
+  table{border-collapse:collapse;width:100%;margin:10px 0 16px;font-size:13px}
+  th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+  th{background:var(--bg-elev);font-weight:600;color:var(--fg-dim)}
+  .tag{display:inline-block;font-size:11px;border:1px solid var(--line);border-radius:999px;padding:0 7px;color:var(--fg-faint)}
+  .tag.ok{border-color:var(--ok);color:var(--ok)} .tag.warn{border-color:var(--warn);color:var(--warn)}
+  .tag.err{border-color:var(--err);color:var(--err)} .tag.new{border-color:var(--brand);color:var(--brand)}
+  .note{border:1px solid var(--warn);border-left:4px solid var(--warn);border-radius:8px;padding:9px 11px;margin:10px 0;font-size:13px}
+  .note.bad{border-color:var(--err);border-left-color:var(--err)} .note.ok{border-color:var(--ok);border-left-color:var(--ok)}
+  .pro{color:var(--ok)} .con{color:var(--warn)}
+  pre{background:var(--bg-code);border:1px solid var(--line-soft);border-radius:8px;padding:11px 13px;overflow-x:auto;
+    font-size:12.5px;line-height:1.6;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+  ol,ul{padding-left:22px} li{margin:5px 0}
+
+  /* ══════════ 可交互原型 ══════════ */
+  .proto{border:1px solid var(--line);border-radius:12px;background:var(--bg-elev);padding:14px;margin:14px 0}
+  .pbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+  .pbar .grow{flex:1}
+  button.btn{font:inherit;font-size:12.5px;background:var(--bg-panel);color:var(--fg);border:1px solid var(--line);
+    border-radius:7px;padding:4px 10px;cursor:pointer}
+  button.btn:hover{border-color:var(--brand)}
+  button.btn.on{border-color:var(--brand);color:var(--brand)}
+  button.btn:disabled{opacity:.45;cursor:not-allowed}
+  .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;background:var(--bg);border:1px dashed var(--line);
+    border-radius:10px;padding:10px;min-height:120px}
+  .ghost-empty{grid-column:1/-1;color:var(--fg-faint);font-size:12.5px;text-align:center;padding:24px 0}
+  .w{background:var(--bg-panel);border:1px solid var(--line);border-radius:9px;padding:9px 11px;position:relative;min-height:64px}
+  .w.dragging{opacity:.4}
+  .w.dropbefore{box-shadow:inset 0 3px 0 var(--brand)}
+  .w.dropafter{box-shadow:inset 0 -3px 0 var(--brand)}
+  .w h4{margin:0 0 4px;font-size:13px;display:flex;align-items:center;gap:6px}
+  .w .body{color:var(--fg-dim);font-size:12px}
+  .w .ops{position:absolute;top:6px;right:6px;display:none;gap:3px}
+  .proto.editing .w .ops{display:flex}
+  .w .ops button{font:inherit;font-size:11px;background:transparent;border:1px solid var(--line);color:var(--fg-dim);
+    border-radius:5px;padding:0 5px;cursor:pointer;line-height:1.7}
+  .w .ops button:hover{border-color:var(--brand);color:var(--fg)}
+  .w .grip{cursor:grab;color:var(--fg-faint);user-select:none;font-size:12px}
+  .proto:not(.editing) .w .grip{display:none}
+  .mini{display:flex;gap:6px;flex-wrap:wrap;margin-top:2px}
+  .mini .m{border:1px solid var(--line);border-radius:6px;padding:2px 7px;font-size:11.5px;color:var(--fg-dim)}
+  .mini .m b{color:var(--fg)}
+  .drawer{border:1px solid var(--brand);border-radius:9px;padding:9px 11px;margin-bottom:10px;background:var(--bg-panel)}
+  .drawer h4{margin:0 0 6px;font-size:13px}
+  .drawer .row{display:flex;align-items:center;gap:8px;padding:5px 0;border-top:1px solid var(--line-soft);font-size:12.5px}
+  .drawer .row:first-of-type{border-top:0}
+  .drawer .row .grow{flex:1;color:var(--fg-dim)}
+  .json{margin-top:10px}
+  .json summary{cursor:pointer;color:var(--fg-faint);font-size:12px}
+  .json pre{margin:6px 0 0;max-height:190px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>dsh Dashboard → 可编排的 homepage</h1>
+  <p class="lede">
+    目标：把 dsh 侧的自托管页 <code>/x/dashboard/</code>（插件 <code>@vssaros/dsh-dashboard</code>）从
+    <b>一张写死的服务端渲染长页</b>，改成 <b>用户可以自由增删 / 拖动 / 调跨度的组件化首页</b>。<br>
+    本稿是<b>设计与执行方案</b>（含可交互原型）。<b>尚未改任何生产代码</b> —— 下方「要你拍板的三件事」定了我就开工。
+  </p>
+
+  <h2>一、现状：页面已经"半组件化"了，只是没被拆开</h2>
+  <p>读完 <code>dsh-plugins/vssaros-dashboard/lib/index.js</code> 的 <code>renderPage()</code>（L311–385），现有页面其实是 5 块写死顺序的 HTML：</p>
+  <table>
+    <tr><th>#</th><th>现有块</th><th>出处</th><th>改造后的组件</th></tr>
+    <tr><td>1</td><td>标题 + 口径说明（"两者数字不必相同"）</td><td><code>renderPage</code> L363–365</td><td>固定页头（<b>不可移除</b>，锚点挂了它）</td></tr>
+    <tr><td>2</td><td>日期范围切换（today / 7d / 30d / all）</td><td>L366–368</td><td><b>工具条</b>（不进网格：它是全局作用域，不是一张卡）</td></tr>
+    <tr><td>3</td><td>KPI 卡片组（5 张固定 + 最多 9 张条件出现）</td><td>L369–375</td><td><code>kpi</code>（也可拆成 <code>kpi.tokens</code> / <code>kpi.activity</code> 两张）</td></tr>
+    <tr><td>4</td><td>诊断行（token 明细 / 数据目录 / 工具 / live 服务）</td><td>L376</td><td><code>diag</code>（<b>默认关闭</b>：它主要是给排障看的）</td></tr>
+    <tr><td>5</td><td>会话明细列表（50 条上限 + 截断提示）</td><td>L377–382</td><td><code>sessions</code></td></tr>
+  </table>
+  <div class="note">
+    <b>结论</b>：不需要"重写"，需要<b>把已有块抽成组件 + 加一个布局层</b>。这也是本方案 P1 敢承诺"视觉零变化、等价重构"的底气。
+  </div>
+
+  <h2>二、三个决定性前提（都已查实，其中一条直接否掉一个方案）</h2>
+
+  <h3>① dsh 的 web 端口是 <code>--port 0</code> ⇒ <span class="con">localStorage 存不住布局</span></h3>
+  <pre>dshCli.ts:21    return [bin, ...launcher, '--no-open', '--port', '0'];</pre>
+  <p class="lede">
+    <code>--port 0</code> = 每次启动由系统分配<b>随机空闲端口</b>（真机日志里见过 <code>http://127.0.0.1:7313/?token=…</code>）。
+    而 <code>localStorage</code> 按 <b>origin（scheme+host+<u>port</u>）</b>隔离 ⇒ <b>下次启动端口一变，布局就是空的</b> ✗。<br>
+    ⇒ 「布局存浏览器本地」这条路<b>不成立</b>，除非把端口固定（但 port 0 是**故意**的：避免多实例抢端口）。
+  </p>
+
+  <h3>② 页面桥是<b>封闭命令集</b>，没有通用 storage ⇒ 走 IDE 侧要扩协议</h3>
+  <p class="lede">
+    <code>window.vssarosDsh</code>（<code>dshPageBridgeProtocol.ts</code>，<code>DSH_PAGE_BRIDGE_VERSION = 2</code>）暴露的是
+    <code>ping / openFile / reveal / notify / switchPreset / openSession / newChat / newSession / switchWorktree / openAgentMarket / sessionTitle / sessionPersona</code>
+    这一组<b>具名命令</b>（<code>DshPageCommand</code> 联合类型 + <code>validatePageCommand</code>），<b>没有任何 kv/storage 方法</b>。
+    ⇒ 若把布局存回 IDE 的 storage，需要<b>动协议</b>：联合类型 + preload API + host 处理 + 校验 + 版本号，且<b>纯浏览器打开时没有桥</b>（必须另留回落）。
+  </p>
+
+  <h3>③ 仓库<b>已有</b>"谁能写数据根"的机制 —— 且它是被守卫<b>钉死</b>的决策</h3>
+  <ul>
+    <li><b>唯一声明 <code>owns</code> 的是 kanban</b>：<code>vssaros-kanban/lib/store.js</code> 自己 <code>node:fs/promises</code> 写 <code>taskboard.json / boards.json</code>（临时文件 + <code>rename</code> 原子写 + <code>&lt;file&gt;.lock</code> 独占创建）；</li>
+    <li>workflow 走<b>共用</b>的 <code>lib/lock.js</code>（<code>acquireFileLock</code> + <code>atomicWriteFile</code>，与 IDE 侧同一套协议）；</li>
+    <li><code>dshWriteOwnership.test.ts</code> 把 <b>声明集合钉死</b>为 <code>['vssaros-kanban:taskboard.json+boards.json']</code>，且"只读模块不许 import 写 API"是<b>按 import 行</b>判的。</li>
+  </ul>
+  <div class="note warn">
+    ⇒ 只要让 dashboard **落盘写布局**，就必须：新增 <code>owns</code> 声明 <b>＋ 显式改那条固定期望</b>（= 一次"新增写者"的正式决策）＋ 用锁 + 原子写。
+    这是本方案里<b>唯一需要你签字</b>的技术动作。
+  </div>
+
+  <h2>三、设计</h2>
+
+  <h3>3.1 组件模型（服务端描述 + 服务端渲染，客户端只管布局）</h3>
+  <pre>// 一个组件 = 一个纯函数（与现有 renderPage 里的块一一对应 ⇒ 可平移）
+{ id: 'kpi',            // 稳定 id：布局里引用的就是它
+  title: '关键指标',
+  desc: '会话 / turn / step / 耗时 / token',
+  span: 4,              // 默认占几列（1–4）
+  module: 'dashboard',  // 数据来源模块（一期只有 dashboard；见 P4）
+  render(ctx) { … } }   // 返回 HTML 片段</pre>
+  <p class="lede">
+    <b>数据全部由服务端一次查出</b>（沿用现在那条"一次 <code>readSessions</code> + <code>applyLiveSessions</code>"），
+    客户端**不再取数** ⇒ 拖拽/增删是纯布局操作，不会有"拖动时卡顿/串数"的问题 ✓。
+    （P4 的跨模块组件才需要按卡取数，那时再走 <code>/x/dashboard/api/*</code>。）
+  </p>
+
+  <h3>3.2 布局 schema（就是落盘的那份 JSON）</h3>
+  <pre>{
+  "version": 1,
+  "updatedAt": 1791814000000,
+  "items": [
+    { "id": "kpi",      "span": 4 },
+    { "id": "sessions", "span": 4 }
+  ]
+}</pre>
+  <p class="lede">
+    版本号是给未来迁移用的；<b>未知 id 一律忽略并保留在文件里</b>（插件装卸导致组件暂时缺席时，不该把用户布局删掉）✓。
+  </p>
+
+  <h3>3.3 ★ 锚点解耦：机器可断言的东西必须与用户布局无关</h3>
+  <div class="note bad">
+    <b>这是本次改造最大的回归风险。</b> <code>p3-09-dashboard-plugin.mjs</code> 靠一批<b>写死在页面里</b>的属性断言：
+    <code>data-vssaros-page="dashboard"</code>、<code>data-vssaros-dashboard-sessions/active/live/turns/dir/tools/range/todo-*/waiting/retrying/running/queued/subagents…</code>、
+    以及正文文案（<code>构成（估算）</code>、<code>排队待发 0</code>、<code>来源 cache</code>、<code>scope="session-telemetry"</code> …）。<br>
+    一旦用户把"诊断"卡删掉、或把组件顺序拖乱，这些断言就会<b>随机变红</b> ✗ —— 那等于探针在替用户的布局做假设。
+  </div>
+  <p><b>对策（本方案的核心设计之一）</b>：把这些锚点从"某张卡的内容"里<b>抽出来</b>，渲染成一个**永远存在、与布局无关**的隐藏元数据块：</p>
+  <pre>&lt;body data-vssaros-page="dashboard"&gt;
+&lt;div id="meta" hidden
+     data-vssaros-dashboard-scope="session-telemetry"
+     data-vssaros-dashboard-sessions="12" data-vssaros-dashboard-active="2"
+     data-vssaros-dashboard-range="all" …&gt;&lt;/div&gt;</pre>
+  <p class="lede">⇒ 探针**不用改一行**；用户怎么编排都不影响它 ✓。只有当你想改**语义**时才动它。</p>
+
+  <h3>3.4 交互设计（含下面的可交互原型）</h3>
+  <table>
+    <tr><th>动作</th><th>入口</th><th>说明</th></tr>
+    <tr><td>进入编辑</td><td>右上「自定义」开关</td><td><b>浏览态不显示任何把手</b> —— 防误拖、也无"满屏小按钮"的噪音</td></tr>
+    <tr><td>移动</td><td>卡片左上 <code>⠿</code> 拖动</td><td>HTML5 DnD；落点用"前半／后半"判定插前或插后（与 IDE 侧 <code>CardDragSorter</code> 同一套做法 ✓）</td></tr>
+    <tr><td>改宽度</td><td>卡片上 <code>◀ ▶</code></td><td>1–4 列 <b>整数跨度</b>，<b>不做自由像素拖大</b> —— 更稳、可键盘操作、可断言 ✓</td></tr>
+    <tr><td>移除</td><td>卡片上 <code>×</code></td><td>只从布局里移除，组件仍在目录里（可再加回）</td></tr>
+    <tr><td>添加</td><td>「＋ 添加组件」抽屉</td><td>列出<b>未放置</b>的组件（已放置的置灰）；一键追加到末尾</td></tr>
+    <tr><td>恢复默认</td><td>「恢复默认布局」</td><td>回到出厂顺序（= 今天这张页面的样子），**二次确认**</td></tr>
+    <tr><td>保存</td><td>自动（改完 400ms 防抖 POST）</td><td>失败时页面顶部给一条明确提示（不静默失败）；离线/只读时降级为"本次会话内有效"</td></tr>
+  </table>
+
+  <h2>四、可交互原型（拖一张卡试试）</h2>
+  <p class="lede">
+    下面是一个**真能拖 / 真能加删**的原型：点「自定义」出现把手，拖动卡片可重排，<code>◀ ▶</code> 改宽度，
+    <code>×</code> 移除，「＋ 添加组件」把移除的加回来。最下面那个「布局 JSON」就是**将来要落盘的内容**（这条对应关系是本稿最该看的地方）。
+  </p>
+
+  <div class="proto" id="proto">
+    <div class="pbar">
+      <strong style="font-size:13px">Dashboard</strong>
+      <span class="tag" id="modeTag">浏览模式</span>
+      <span class="grow"></span>
+      <button class="btn" id="btnEdit">✎ 自定义</button>
+      <button class="btn" id="btnAdd">＋ 添加组件</button>
+      <button class="btn" id="btnReset">恢复默认布局</button>
+    </div>
+    <div class="drawer" id="drawer" hidden>
+      <h4>添加组件（未放置的）</h4>
+      <div id="drawerRows"></div>
+    </div>
+    <div class="grid" id="grid"></div>
+    <div class="json">
+      <details open>
+        <summary>布局 JSON（将来落盘的就是它；拖一下看它怎么变）</summary>
+        <pre id="jsonOut"></pre>
+      </details>
+    </div>
+    <p class="lede" style="margin:8px 0 0">
+      ⚠ 原型<b>没有</b>做持久化（刷新即回到默认）—— 因为按前提①，落点必须是<b>服务端</b>，那属于 P2 的实现范围。
+    </p>
+  </div>
+
+  <h2>五、执行方案（分 5 步，每步都可独立验证 / 独立回滚）</h2>
+  <table>
+    <tr><th>步</th><th>做什么</th><th>改动面</th><th>验证 / 回滚</th></tr>
+    <tr>
+      <td><b>P1</b><br><span class="tag ok">零行为变化</span></td>
+      <td><b>服务端组件化等价重构</b>：把 5 个块抽成 <code>WIDGETS</code> 目录 + <code>renderWidget()</code>；引入"按布局渲染"；
+          锚点按 §3.3 抽进隐藏 meta 块；<b>暂不做交互、不落盘</b>（布局 = 出厂默认）</td>
+      <td><code>vssaros-dashboard/lib/index.js</code>（<code>renderPage</code> 拆解）；必要时新增 <code>lib/widgets.js</code></td>
+      <td><b>p3-09 必须全绿（一行不改）</b> + 页面视觉与今天一致 ⇒ 这是"等价重构"的判据 ✓；回滚 = 恢复单个函数</td>
+    </tr>
+    <tr>
+      <td><b>P2</b><br><span class="tag warn">要你签字</span></td>
+      <td><b>布局持久化</b>：写 <code>&lt;数据根&gt;/dashboard/layout.json</code>（<b>锁 + 原子写</b>，照 workflow 的 <code>lib/lock.js</code> 共用协议）；
+          读不到/坏 JSON/版本不认识 ⇒ <b>回落出厂默认</b>（不报错、不覆盖原文件）；<code>GET</code> 走服务端渲染，<code>POST /x/dashboard/api/layout</code> 保存</td>
+      <td>插件 <code>package.json</code> 新增 <code>vssaros.owns</code> + 版本号；
+          <b><code>dshWriteOwnership.test.ts</code> 的固定期望集合加一条</b>；
+          <code>dataRootOf(config)</code>（⚠ 见风险④）</td>
+      <td>新增探针断言（进程内）：默认等于出厂布局 / 坏 JSON 回落 / 未知 id 保留 / 保存后再读一致；
+          <code>--common</code>（含写所有权）全绿</td>
+    </tr>
+    <tr>
+      <td><b>P3</b></td>
+      <td><b>编辑交互</b>：自定义开关、拖拽排序、跨度、移除、添加抽屉、恢复默认、自动保存（防抖）
+          —— 移植 IDE 侧 <code>CardDragSorter</code> 的"前半/后半判定"做法到页面内联脚本</td>
+      <td>插件 <code>lib/index.js</code> 的 <code>script</code>（页面内联 JS）+ 少量 CSS</td>
+      <td>探针补：编辑态开关存在、布局 POST 后 <code>GET</code> 反映新顺序、<b>meta 锚点在任意布局下都在</b></td>
+    </tr>
+    <tr>
+      <td><b>P4</b><br><span class="tag">可选</span></td>
+      <td><b>跨模块组件</b>：把别的模块页当一张卡嵌（<code>&lt;iframe src="/x/kanban/"&gt;</code> 之类）或让它们各自提供一个 <code>/x/&lt;module&gt;/widget</code> 片段路由。
+          <b>建议只先做"通用 iframe 卡"一种</b>，默认关闭、由用户自己添加</td>
+      <td>dashboard 插件（组件目录 + iframe 卡）＋（若走片段路由）各模块插件各加一条只读路由</td>
+      <td>iframe 的代价必须如实展示：<b>重复外壳 / 双重滚动 / 与宿主无联动</b> ⇒ 认可后才做</td>
+    </tr>
+    <tr>
+      <td><b>P5</b></td>
+      <td>收尾：<code>p3-09</code> 增补断言、README 补站、<code>doc/</code> 落档、版本号</td>
+      <td>探针 + 文档</td>
+      <td><code>--common</code> + <code>tsgo</code> + 相关探针全绿</td>
+    </tr>
+  </table>
+  <p class="lede">
+    <b>为什么 P1 单列一步</b>：把"组件化"和"可编辑"切开，能让**回归风险落到一个零行为变化的提交**上 ——
+    如果 P1 之后 p3-09 红了，就百分百是重构错了，而不是"布局功能带来的"。
+  </p>
+
+  <h2>六、风险与边界（每条都有对策）</h2>
+  <table>
+    <tr><th>#</th><th>风险</th><th>对策</th></tr>
+    <tr><td>①</td><td><b>探针被用户布局搞红</b>（最危险）</td><td>§3.3 锚点解耦：meta 块永远存在、与布局无关 ⇒ <code>p3-09</code> 不用改</td></tr>
+    <tr><td>②</td><td>坏布局 / 未知 id / 版本不认识</td><td>一律<b>回落默认并保留原文件</b>；未知 id 只忽略、不删除（插件装卸后布局要能回来）</td></tr>
+    <tr><td>③</td><td>多窗口同时编辑 ⇒ 后写覆盖</td><td>沿用既有"最后写覆盖"口径（与 kanban/workflow 一致）；写入用锁 + 原子写，避免<b>半截 JSON</b></td></tr>
+    <tr><td>④</td><td>插件要读<b>数据根</b>（现在只读 DSH_HOME 的投影缓存）</td><td>新引入 <code>dataRootOf(config)</code> —— ⚠ <code>check-host-config</code> 有一条"<b>dataRootOf 实现 7 份同形</b>"的契约，新增第 8 份必须与其余**逐字节同形**（否则它会红）</td></tr>
+    <tr><td>⑤</td><td>拖拽与页面滚动冲突 / 触控板手势</td><td>只在<b>编辑态</b>且按在 <code>⠿</code> 上才 <code>draggable=true</code>；键盘可达性用 <code>◀ ▶</code> 与"上移/下移"按钮兜底</td></tr>
+    <tr><td>⑥</td><td>组件数据读失败（缓存目录缺失/坏文件）</td><td><b>按卡降级</b>：卡内显示原因，整页仍 200（沿用现有 <code>missing/truncated/errors</code> 的"如实说"口径）</td></tr>
+    <tr><td>⑦</td><td>iframe 卡（若做）重复外壳、双重滚动</td><td>默认不放；如做，iframe 卡改用"片段路由 + 无外壳"约定（需各模块配合）</td></tr>
+  </table>
+
+  <h2>七、要你拍板的三件事</h2>
+  <table>
+    <tr><th>#</th><th>问题</th><th>我的默认建议</th></tr>
+    <tr>
+      <td><b>Q1</b></td>
+      <td><b>布局落点</b>：① 数据根 JSON（写，需签字加 <code>owns</code>）／② IDE storage 经桥（需扩桥协议）／③ 不做持久化（刷新回默认）</td>
+      <td><b>①</b> —— 端口随机的硬约束已经排除浏览器本地存储；① 与"dsh 侧自己拥有自己的数据"一致，且写机制已有先例可抄</td>
+    </tr>
+    <tr>
+      <td><b>Q2</b></td>
+      <td><b>跨模块组件</b>（把看板 / 媒体 / 记忆 / 知识库嵌成卡）一期做还是二期做？</td>
+      <td><b>二期（P4）</b>；一期只把本页 5 个块组件化 —— 先把"布局能力"打通，再谈"内容来源"</td>
+    </tr>
+    <tr>
+      <td><b>Q3</b></td>
+      <td><b>要不要保底"零持久化"模式</b>（例如 <code>?layout=default</code> / 设置项）？</td>
+      <td><b>要</b>：成本极低，且是 P2 出问题时的逃生门 ✓</td>
+    </tr>
+  </table>
+  <div class="note ok">
+    <b>签完这三条我就按 P1 → P2 → P3 开工</b>；P1 单独交付（视觉零变化 + p3-09 全绿），让你先确认"拆得对"，再动持久化与交互。
+  </div>
+
+</div>
+
+<script>
+(function () {
+  // ── 组件目录（对应 §3.1；一期只含本页的块）────────────────────────────
+  var WIDGETS = [
+    { id: 'kpi',      title: '关键指标',   span: 4, desc: '会话 / turn / step / 模型·工具耗时', mini: [['12', '会话'], ['2', '活跃'], ['87', 'turn'], ['1.2M', 'token']] },
+    { id: 'activity', title: '运行状态',   span: 2, desc: '待办 / 待回答 / 重试 / 排队 / 子代理', mini: [['3', '进行中待办'], ['1', '待回答'], ['0', '重试']] },
+    { id: 'sessions', title: '会话明细',   span: 4, desc: '按创建时间倒序；50 条上限', mini: [['sess_…a1', '本次 · turn 12'], ['sess_…b7', 'cache · turn 4']] },
+    { id: 'diag',     title: '诊断行',     span: 4, desc: '数据目录 / 工具 / live 服务（默认关闭）', mini: [['…/session_projcache', '数据目录']] }
+  ];
+  var DEFAULT_LAYOUT = [
+    { id: 'kpi', span: 4 },
+    { id: 'activity', span: 2 },
+    { id: 'sessions', span: 4 }
+  ];
+
+  var layout = DEFAULT_LAYOUT.map(function (x) { return { id: x.id, span: x.span }; });
+  var editing = false;
+  var dragId = null;
+
+  var grid = document.getElementById('grid');
+  var drawer = document.getElementById('drawer');
+  var drawerRows = document.getElementById('drawerRows');
+  var jsonOut = document.getElementById('jsonOut');
+  var modeTag = document.getElementById('modeTag');
+  var btnEdit = document.getElementById('btnEdit');
+  var btnAdd = document.getElementById('btnAdd');
+  var btnReset = document.getElementById('btnReset');
+  var proto = document.getElementById('proto');
+
+  function meta(id) { for (var i = 0; i < WIDGETS.length; i++) { if (WIDGETS[i].id === id) { return WIDGETS[i]; } } return null; }
+  function placed(id) { return layout.some(function (x) { return x.id === id; }); }
+
+  function render() {
+    grid.replaceChildren();
+    proto.classList.toggle('editing', editing);
+    modeTag.textContent = editing ? '编辑模式' : '浏览模式';
+    modeTag.className = 'tag' + (editing ? ' new' : '');
+    btnEdit.textContent = editing ? '✓ 完成' : '✎ 自定义';
+    btnEdit.classList.toggle('on', editing);
+    btnAdd.disabled = !editing;
+
+    if (!layout.length) {
+      var empty = document.createElement('div');
+      empty.className = 'ghost-empty';
+      empty.textContent = '没有任何组件 —— 点「＋ 添加组件」加回来';
+      grid.appendChild(empty);
+    }
+
+    layout.forEach(function (item) {
+      var desc = meta(item.id);
+      if (!desc) { return; }
+      var card = document.createElement('div');
+      card.className = 'w';
+      card.style.gridColumn = 'span ' + item.span;
+      card.dataset.id = item.id;
+      card.dataset.span = String(item.span);
+
+      var h = document.createElement('h4');
+      var grip = document.createElement('span');
+      grip.className = 'grip'; grip.textContent = '⠿'; grip.title = '拖动排序';
+      h.appendChild(grip);
+      var t = document.createElement('span');
+      t.textContent = desc.title;
+      h.appendChild(t);
+      card.appendChild(h);
+
+      var body = document.createElement('div');
+      body.className = 'body';
+      body.textContent = desc.desc;
+      var mini = document.createElement('div');
+      mini.className = 'mini';
+      (desc.mini || []).forEach(function (pair) {
+        var m = document.createElement('span');
+        m.className = 'm';
+        var b = document.createElement('b');
+        b.textContent = pair[0];
+        m.appendChild(b);
+        m.appendChild(document.createTextNode(' ' + pair[1]));
+        mini.appendChild(m);
+      });
+      body.appendChild(mini);
+      card.appendChild(body);
+
+      var ops = document.createElement('div');
+      ops.className = 'ops';
+      ops.appendChild(op('◀', '变窄', function () { setSpan(item.id, -1); }));
+      ops.appendChild(op('▶', '变宽', function () { setSpan(item.id, +1); }));
+      ops.appendChild(op('↑', '上移', function () { moveBy(item.id, -1); }));
+      ops.appendChild(op('↓', '下移', function () { moveBy(item.id, +1); }));
+      ops.appendChild(op('×', '移除', function () { removeWidget(item.id); }));
+      card.appendChild(ops);
+
+      // 拖动排序（前半 / 后半判定，与 IDE 侧 CardDragSorter 同一套做法）
+      card.addEventListener('dragstart', function (e) {
+        if (!editing) { e.preventDefault(); return; }
+        dragId = item.id;
+        card.classList.add('dragging');
+        if (e.dataTransfer) { e.dataTransfer.setData('text/plain', item.id); e.dataTransfer.effectAllowed = 'move'; }
+      });
+      card.addEventListener('dragend', function () {
+        dragId = null;
+        card.classList.remove('dragging');
+        [].forEach.call(grid.children, function (c) { c.classList.remove('dropbefore', 'dropafter'); });
+      });
+      card.addEventListener('dragover', function (e) {
+        if (!editing || !dragId || dragId === item.id) { return; }
+        e.preventDefault();
+        var half = isBeforeHalf(card, e);
+        card.classList.toggle('dropbefore', half);
+        card.classList.toggle('dropafter', !half);
+      });
+      card.addEventListener('dragleave', function () { card.classList.remove('dropbefore', 'dropafter'); });
+      card.addEventListener('drop', function (e) {
+        if (!editing || !dragId || dragId === item.id) { return; }
+        e.preventDefault();
+        reorder(dragId, item.id, isBeforeHalf(card, e));
+      });
+      // 只有编辑态才允许拖（浏览态不显示把手，也禁掉 draggable）
+      card.draggable = editing;
+      grid.appendChild(card);
+    });
+
+    renderDrawer();
+    renderJson();
+  }
+
+  function op(icon, title, run) {
+    var b = document.createElement('button');
+    b.type = 'button'; b.textContent = icon; b.title = title;
+    b.addEventListener('click', function (e) { e.stopPropagation(); run(); });
+    return b;
+  }
+  function isBeforeHalf(el, e) {
+    var r = el.getBoundingClientRect();
+    return (e.clientX - r.left) < r.width / 2;
+  }
+  function reorder(from, to, before) {
+    var fromIdx = -1, toIdx = -1;
+    for (var i = 0; i < layout.length; i++) {
+      if (layout[i].id === from) { fromIdx = i; }
+      if (layout[i].id === to) { toIdx = i; }
+    }
+    if (fromIdx < 0 || toIdx < 0) { return; }
+    var moved = layout.splice(fromIdx, 1)[0];
+    toIdx = -1;
+    for (var j = 0; j < layout.length; j++) { if (layout[j].id === to) { toIdx = j; } }
+    layout.splice(before ? toIdx : toIdx + 1, 0, moved);
+    render();
+  }
+  function moveBy(id, delta) {
+    var idx = -1;
+    for (var i = 0; i < layout.length; i++) { if (layout[i].id === id) { idx = i; } }
+    var next = idx + delta;
+    if (idx < 0 || next < 0 || next >= layout.length) { return; }
+    var tmp = layout[idx]; layout[idx] = layout[next]; layout[next] = tmp;
+    render();
+  }
+  function setSpan(id, delta) {
+    layout.forEach(function (x) { if (x.id === id) { x.span = Math.max(1, Math.min(4, x.span + delta)); } });
+    render();
+  }
+  function removeWidget(id) {
+    layout = layout.filter(function (x) { return x.id !== id; });
+    render();
+  }
+  function addWidget(id) {
+    layout.push({ id: id, span: meta(id).span });
+    render();
+  }
+
+  function renderDrawer() {
+    drawerRows.replaceChildren();
+    WIDGETS.forEach(function (w) {
+      var row = document.createElement('div');
+      row.className = 'row';
+      var name = document.createElement('strong');
+      name.textContent = w.title;
+      var g = document.createElement('span');
+      g.className = 'grow';
+      g.textContent = w.desc;
+      var b = document.createElement('button');
+      b.className = 'btn';
+      b.type = 'button';
+      if (placed(w.id)) {
+        b.textContent = '已放置';
+        b.disabled = true;
+      } else {
+        b.textContent = '＋ 添加';
+        b.addEventListener('click', function () { addWidget(w.id); });
+      }
+      row.appendChild(name); row.appendChild(g); row.appendChild(b);
+      drawerRows.appendChild(row);
+    });
+  }
+
+  function renderJson() {
+    jsonOut.textContent = JSON.stringify({
+      version: 1,
+      updatedAt: 1791814000000,
+      items: layout.map(function (x) { return { id: x.id, span: x.span }; })
+    }, null, 2);
+  }
+
+  btnEdit.addEventListener('click', function () {
+    editing = !editing;
+    if (!editing) { drawer.hidden = true; }
+    render();
+  });
+  btnAdd.addEventListener('click', function () {
+    if (!editing) { return; }
+    drawer.hidden = !drawer.hidden;
+  });
+  btnReset.addEventListener('click', function () {
+    if (!editing) { return; }
+    if (!window.confirm('恢复默认布局？当前编排会丢失。')) { return; }
+    layout = DEFAULT_LAYOUT.map(function (x) { return { id: x.id, span: x.span }; });
+    render();
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

@@ -83,10 +83,16 @@ function decode(blob: Uint8Array): string {
 	return new TextDecoder().decode(blob);
 }
 
-function writeGitignore(dir: string, lines: readonly string[]): void {
+/**
+ * 首次 init 时补一个 `.gitignore`（已存在则不动；失败非致命）。
+ *
+ * 异步写：主进程上的同步写一旦撞上 I/O 卡死（2026-10-12 三次现场都是 `NtWriteFile`
+ * 永不返回 ⇒ 整个 IDE 假死）代价过高，而这里只是一次可选的初始化动作。
+ */
+async function writeGitignore(dir: string, lines: readonly string[]): Promise<void> {
 	const gi = joinRepoPath(dir, '.gitignore');
 	try { if (fs.existsSync(gi)) { return; } } catch { /* 继续尝试写入 */ }
-	try { fs.writeFileSync(gi, lines.join('\n') + '\n', 'utf8'); } catch { /* 非致命 */ }
+	try { await fs.promises.writeFile(gi, lines.join('\n') + '\n', 'utf8'); } catch { /* 非致命 */ }
 }
 
 const EMPTY_STATUS: GitWorkspaceStatus = {
@@ -112,7 +118,7 @@ export class GitVersionEngine implements IGitVersionBackend {
 		if (!_git) { return false; }
 		if (await this.isRepo(dir)) { return false; }
 		if (opts.ensureDir && !fs.existsSync(dir)) { fs.mkdirSync(dir, { recursive: true }); }
-		writeGitignore(dir, opts.gitignore);
+		await writeGitignore(dir, opts.gitignore);
 		await _git.init({ fs, dir, defaultBranch: 'main' });
 		if (opts.addPath !== null) {
 			const shouldCommit = opts.commitWhen === 'always' || fs.existsSync(joinRepoPath(dir, opts.addPath));
@@ -239,7 +245,8 @@ export class GitVersionEngine implements IGitVersionBackend {
 			const parent = joinRepoPath(absPath, '..');
 			if (!fs.existsSync(parent)) { fs.mkdirSync(parent, { recursive: true }); }
 		}
-		fs.writeFileSync(absPath, content, 'utf8');
+		// 回滚写的是**任意大小**的文件内容 ⇒ 用异步写（同文件头注释：主线程同步写 = 全 IDE 风险面）
+		await fs.promises.writeFile(absPath, content, 'utf8');
 		return content;
 	}
 }

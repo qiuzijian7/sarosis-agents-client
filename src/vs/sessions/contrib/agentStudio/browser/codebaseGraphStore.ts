@@ -246,6 +246,18 @@ class BM25Index {
 		}
 	}
 
+	/**
+	 * 倒排索引规模快照（**诊断/单测用**，2026-10-14）。
+	 * 用途：`CodebaseGraphStore.getMemoryStats()` 暴露给内存不变式测试
+	 * （`test/browser/codebaseGraphStoreMemory.test.ts`：删文档后 `postings` 必须下降 ✓）。
+	 * 纯只读 —— **不要**在这里顺手做清理/重建（那会把"有没有堆积"这件事掩盖掉 ✗）。
+	 */
+	stats(): { documents: number; terms: number; postings: number; avgDocLength: number } {
+		let postings = 0;
+		for (const ids of this._invertedIndex.values()) { postings += ids.size; }
+		return { documents: this._docCount, terms: this._invertedIndex.size, postings, avgDocLength: this._avgDocLength };
+	}
+
 	search(query: string, limit: number = 50): Map<number, number> {
 		const queryTerms = BM25Index.tokenize(query);
 		if (queryTerms.length === 0) { return new Map(); }
@@ -465,6 +477,55 @@ export class CodebaseGraphStore {
 		return this._qnDanglingHealed;
 	}
 
+	/**
+	 * 内存 / 索引规模快照（**诊断与单测用**，2026-10-14）。
+	 *
+	 * 2026-09-18 的堆快照把代码图谱里三块**纯实现开销**（边去重表字符串键、复合键字符串、
+	 * 只增不删的标签索引）优化掉了 ⇒ "去重表随边注销""派生索引不得堆积陈旧 id"这些不变式
+	 * 光看代码看不出来，只能由 `test/browser/codebaseGraphStoreMemory.test.ts` 逐条钉住 ✓
+	 * （该文件此前因为**没有这个只读入口**而整片变红 ✗）。
+	 *
+	 * ⚠ 纯只读、**不做任何清理**：在这里顺手重建索引会把"是否堆积"掩盖掉 ✗。
+	 * @returns `labelIds` = 标签索引里 id 总数（健康态应 **等于** `nodes`，每个节点恰属一个 label ✓）
+	 */
+	getMemoryStats(): {
+		nodes: number; edges: number;
+		dedupEntries: number; dedupSourceSets: number;
+		labelIds: number; terms: number; postings: number;
+	} {
+		let dedupEntries = 0;
+		for (const set of this._edgeDedup.values()) { dedupEntries += set.size; }
+		let labelIds = 0;
+		for (const ids of this._nodesByLabel.values()) { labelIds += ids.length; }
+		const bm25 = this._bm25.stats();
+		return {
+			nodes: this._nodes.size,
+			edges: this._edges.size,
+			dedupEntries,
+			dedupSourceSets: this._edgeDedup.size,
+			labelIds,
+			terms: bm25.terms,
+			postings: bm25.postings,
+		};
+	}
+
+	/** 从派生索引的某个键下摘掉一个 id（数组空了就把整条键回收 —— 空数组堆积同样是无界增长 ✗）。 */
+	private _removeFromIndex(index: Map<string, number[]>, key: string, id: number): void {
+		const arr = index.get(key);
+		if (!arr) { return; }
+		const at = arr.indexOf(id);
+		if (at < 0) { return; }
+		arr.splice(at, 1);
+		if (arr.length === 0) { index.delete(key); } else { index.set(key, arr); }
+	}
+
+	/** 登记进派生索引的某个键（**幂等**：同 id 不重复登记）。 */
+	private _addToIndex(index: Map<string, number[]>, key: string, id: number): void {
+		const arr = index.get(key) || [];
+		if (!arr.includes(id)) { arr.push(id); }
+		index.set(key, arr);
+	}
+
 	upsertNode(node: Omit<GraphNode, 'id' | 'inDegree' | 'outDegree'> & { id?: number }): GraphNode {
 		if (node.filePath && isAbsoluteGraphPath(node.filePath)) {
 			this._absPathViolations.add(node.filePath);
@@ -491,6 +552,23 @@ export class CodebaseGraphStore {
 				outDegree: existing.outDegree,
 			};
 			this._nodes.set(existingId!, updated);
+			// ★ 2026-10-14 修（`codebaseGraphStoreMemory` 第 3 条）：**文件改名/移动后重新索引**
+			//   （同 QN、不同 filePath）原来只更新 `_nodes`，而 `_nodesByFile` 里那位旧 id **永远留着** ✗
+			//   ⇒ 旧路径的数组只增不减（`findNodesByFile(旧路径)` 还会返回它 ✗），反复搬迁就持续涨内存。
+			//   这里把 id 从旧键摘掉（空数组整条回收 ✓）再登记到新键 ✓；label / project 变了同理
+			//   （标签索引历史上"只增不删" ⇒ 读侧 filter 掩盖、堆里永久堆积 ✗）。
+			const oldFileKey = existing.filePath ? `${existing.project}:${existing.filePath}` : undefined;
+			const newFileKey = updated.filePath ? `${updated.project}:${updated.filePath}` : undefined;
+			if (oldFileKey !== newFileKey) {
+				if (oldFileKey) { this._removeFromIndex(this._nodesByFile, oldFileKey, existingId!); }
+				if (newFileKey) { this._addToIndex(this._nodesByFile, newFileKey, existingId!); }
+			}
+			const oldLabelKey = `${existing.project}:${existing.label}`;
+			const newLabelKey = `${updated.project}:${updated.label}`;
+			if (oldLabelKey !== newLabelKey) {
+				this._removeFromIndex(this._nodesByLabel, oldLabelKey, existingId!);
+				this._addToIndex(this._nodesByLabel, newLabelKey, existingId!);
+			}
 			// Update BM25 index (skip if deferred — defer 期间只记脏集，结束由 rebuildBM25 增量处理)
 			if (!this._deferBM25) {
 				this._bm25.removeDocument(existingId!);
@@ -798,6 +876,10 @@ export class CodebaseGraphStore {
 			if (!node) { continue; }
 			// Remove from QN index
 			this._nodesByQN.delete(`${project}:${node.qualifiedName}`);
+			// ★ 2026-10-14 修：**标签索引同样要摘**（原来只 push 不删 ⇒ 反复"删文件 + 重新索引同一文件"
+			//   会让旧 id 永久堆积；读侧 `findNodesByLabel` 的 filter(Boolean) 只是**掩盖**它 ✗。
+			//   `getMemoryStats().labelIds` 必须等于节点数，就是这条不变式的判据 ✓）。
+			this._removeFromIndex(this._nodesByLabel, `${project}:${node.label}`, id);
 			// Remove from BM25（defer 期间只记脏集，避免全量重建时漏删）
 			if (!this._deferBM25) {
 				this._bm25.removeDocument(id);

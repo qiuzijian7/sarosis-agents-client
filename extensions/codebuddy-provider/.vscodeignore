@@ -1,0 +1,9 @@
+.gitignore
+src/**
+tsconfig*.json
+**/*.tsbuildinfo
+package-lock.json
+# 打包枚举（vsce.listFiles）不深入 node_modules：本扩展的产物是 tsc/esbuild 输出，
+# node_modules 在 fromLocalNormal 下游本来就会被过滤（见 build/lib/extensions.ts 的注释——
+# 庞大的 optionalDependencies 曾在 Windows 构建机上造成 EMFILE）。
+node_modules/**

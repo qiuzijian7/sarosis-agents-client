@@ -34,7 +34,7 @@ M1 引擎+工具（Chat 闭环）─────────────┐
 | W1.3 | host 引擎：spawn（createBlobWorker）、child RPC 桥、liveAgents 账本、cancel/grace/quiescence、terminate、事件扇出 | `browser/workflow/workflowEngine.ts` | W1.1/1.2 | L |
 | W1.4 | dispatch 子代理桥：startWorkflowChild（schema 注入 + StructuredOutputParser + fiber/预算/权限档复用，绕过 completionGate） | `common/unifiedSubAgentDispatch.ts`（增改）+ `common/workflowChildBridge.ts` | W1.1 | M |
 | W1.5 | workflow 工具：DESCRIPTION 契约、execute、事件→stream record、NonRetryableToolError 映射；toolset exactNames、系统提示 section、toolExecutionGuard 长超时档、NEVER_PARALLEL_TOOLS 登记 | `browser/providers/tool/workflowTool.ts` + 4 处注册点 | W1.3/1.4 | M |
-| W1.6 | 聊天卡片：renderType `WorkflowRun`（pending/running/completed/cancelled/error 5 态 + 折叠持久化 + per-agent 分段进度 + phase 条 + 结果 JSON 卡） | webview `toolDisplayRegistry.ts` + `WorkflowRunCard.tsx` | W1.5 | M |
+| W1.6 | 聊天卡片：renderType `WorkflowRun`（pending/running/completed/cancelled/error 5 态 + 折叠持久化 + per-agent 分段进度 + phase 条 + 结果 JSON 卡） | **实际落在原生聊天面板**（`browser/nativeChatEditorPane.ts` 直注入 `renderType:'WorkflowRun'` 卡片）+ dsh 侧 `dsh-plugins/vssaros-workflow/lib/client.js` 工具卡。原计划的 webview 路线（`toolDisplayRegistry.ts` + `WorkflowRunCard.tsx`）**从未落地**：`WorkflowRunCard.tsx` 不存在、registry 零消费点，已于 2026-10-12 删除 | W1.5 | M |
 
 **M1 验收标准（端到端场景）**
 1. 显式要求 workflow → 模型产出合法脚本 → fan-out ≥3 子代理（含 1 个失败项）→ 脚本 filter(Boolean) → 返回 JSON → 助手总结；卡片全程 5 态正确流转
@@ -241,7 +241,7 @@ test/common/workflowTestInfra.ts
 | V4 | 失败徽标 | failed agent 行含「failed → null」徽标；卡片整体非 error 态 |
 | V5 | 结果 JSON 卡 | completed → 折叠 JSON 渲染；复制按钮写剪贴板（jsdom mock） |
 | V6 | 单一动画源 | running 态 DOM 内 animated 元素 ≤2 处（chip dot + 运行段） |
-| V7 | toolDisplayRegistry | name='workflow' → {emoji:'🔀', renderType:'WorkflowRun'} |
+| V7 | 卡片路由（原 `toolDisplayRegistry`，**已删除**） | 断言工作流卡片由原生面板直注入 `renderType:'WorkflowRun'`（webview registry 路线未落地；2026-10-12 删除该未接线模块） |
 
 ### 2.7 WF-C2 · M2 画布桥用例
 

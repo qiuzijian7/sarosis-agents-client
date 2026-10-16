@@ -224,28 +224,16 @@ export const TOOLSET_DEFINITIONS: readonly IToolsetDefinition[] = [
 		prefixes: ['mindmap_', 'canvas_'],
 		deferrable: true,
 	},
-	{
-		// ★ 2026-09-21：Unreal Engine 工具集（`unreal_*`，7 个）。
-		//
-		// **事故背景（用户报「打出的版本中找不到 unreal_* 工具」）**：`unrealTools.ts` 早已实现并在
-		// `builtinToolProvider._registerUnrealTools()` 无条件注册（2026-09-20 接线），但**本表从未登记
-		// `unreal_`** ⇒ `getToolsetForTool` 兜底归入 `utility`（Low + deferrable）⇒ 被 focus 模式
-		// 收窄整条剔除（Step3a 只保留「推荐 toolset / 桥接 / core / Always」）⇒ **LLM 与 tool_search
-		// 均不可见**（日志实证：`tool_describe "unreal_exec" → Error: Tool not found`）。
-		// 这与 `image_gen` / `renderMermaidDiagram` / `canvas_*` 落 utility 的历史坑**完全同型**。
-		//
-		// priority 取 Always 的理由（同 image_gen）：Unreal 工具是**用户显式意图**（在 Unreal 项目里
-		// 让 LLM 驱动编辑器），不属于「按项目信号推荐的代码类工具集」——`focusMode.CODE_PROJECT_MARKERS`
-		// 虽已声明 `*.uproject` / `*.uplugin` 信号，但 `detectFocusModeWithProbe` 当前**只取信号、
-		// 不消费 per-marker 的 toolsets**（那份数据是死的）⇒ 挂在 focus 推荐上不可靠；且 Always 可不
-		// 受限地进入可见集（`toolSearchAssembler` 的 `MAX_VISIBLE_TOOLS` 软上限**不计数 Always**）。
-		// 代价：7 个 schema 常驻（仅前缀匹配，不与 core 名冲突）。
-		id: 'unreal',
-		label: 'Unreal Engine',
-		priority: ToolsetPriority.Always,
-		prefixes: ['unreal_'],
-		deferrable: false,
-	},
+	// ★ 2026-10-13：`unreal` 工具集条目**已删除** ✗ —— 该族（七个 `unreal_*`）现全由 dsh 侧
+	//   `@vssaros/dsh-unreal` 提供（Host 直连 `/bridge/*` ✓），IDE legacy 侧不再注册同名工具 ✓
+	//   （本表的语义就是"IDE 侧这些前缀的工具怎么归集 / 是否 deferred" ⇒ 没有工具就没有条目 ✓）。
+	//
+	// ⚠ 留档（2026-09-21 事故教训，对**将来任何新族**仍然适用）：`unrealTools.ts` 当时早已实现并在
+	//   `builtinToolProvider._registerUnrealTools()` 注册，但**本表从未登记 `unreal_` 前缀** ⇒
+	//   `getToolsetForTool` 兜底归入 `utility`（Low + deferrable）⇒ 被 focus 模式收窄整条剔除
+	//   （Step3a 只保留「推荐 toolset / 桥接 / core / Always」）⇒ **LLM 与 tool_search 均不可见**
+	//   （日志实证：`tool_describe "unreal_exec" → Error: Tool not found`），**全程零日志** ✗。
+	//   ⇒ 新增工具族必须同时在两处登记（注册点 + 本表），`_warnOnUtilityBucketTools()` 会把这类静默变成启动 warn ✓。
 	{
 		id: 'utility',
 		label: 'Utility',

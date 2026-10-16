@@ -1,0 +1,19 @@
+# @vssaros/dsh-kb bundle patch: insert the knowledge-base row.
+#
+# 本模块是 `agentStudio.knowledgeBase` 容器的**宿主**（容器显示名「知识库」）：
+#   - 自托管页面 `/x/kb`（清单 view.kind=page），只提供知识库自己的界面；
+#   - 只读工具 `kb_list` / `kb_search` / `kb_read`。
+#
+# ★ 2026-10-12（「资料库」拆分）：本页原先**内嵌** memory 模块的片段 `/x/memory/section`
+#   （决议① kb / memory 共容器）。记忆升为独立工作台后（`agentStudio.memory`，页面 `/x/memory/`），
+#   内嵌与那条片段路由已一并删除 ⇒ 现在本容器的可见性**只由 kb 决定**。
+#
+# 数据：`~/.vssaros/knowledge-base/<vaultId>/`（`笔记/`、`库/<分类>/*.md`、`.kbkernel.json` 索引）。
+# **只读**：写入/ingest 仍由 IDE 侧负责（本模块不声明 `owns`，不开直写通道）。
+#
+# `config.kbRoot` 留空时走 `<数据根>/knowledge-base`；VsSaros 侧若改过资料库存储位置
+# （`agentStudio.knowledge.storage.path`），经 `--patch` 注入本行。
+- insert:
+    - id: vssaros-kb
+      name: '@vssaros/dsh-kb'
+      config: {}

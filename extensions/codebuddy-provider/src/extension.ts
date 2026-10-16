@@ -21,7 +21,6 @@ import {
 	parseSSEStream,
 	parseModelsConfig,
 	createModelInfo,
-	getDefaultTokenLimits,
 	clampOutputTokens,
 	DEFAULT_CONTEXT_WINDOW,
 	OUTPUT_TOKEN_MAX,
@@ -335,9 +334,24 @@ async function fetchModelsFromConfigApi(
 		const rawModels: any[] = Array.isArray(json.data.models) ? json.data.models : [];
 		const agents = Array.isArray(json.data.agents) ? json.data.agents : [];
 		console.log(`${LOG} Parsed payload: ${rawModels.length} raw models, ${agents.length} agents [${agents.map(a => a?.name).filter(Boolean).join(', ')}]`);
+		// 冗余但必要（2026-10-10）：把上游全部模型 id 打出来 —— 「某个模型没出现」时，
+		// 这是唯一能区分"上游就没给"与"被我们过滤掉"的证据。含 hy4 则说明在 allow-list/启发式环节丢了。
+		console.log(`${LOG} raw model ids (${rawModels.length}): [${rawModels.map(m => m?.id).filter(Boolean).join(', ')}]`);
 
 		if (rawModels.length === 0) {
-			console.warn(`${LOG} ✗ data.models is empty — cannot resolve any chat models`);
+			// 先分清两种"空"再谈修复（2026-10-10）：(a) 该账号/token 确实拿到空列表；
+			// (b) 响应结构变了，模型在别的键下（那就该改解析，而不是加静态兜底）。
+			const dataKeys = json.data ? Object.keys(json.data).join(',') : '(no data)';
+			const modelsKind = json.data ? (Array.isArray(json.data.models) ? `array(${json.data.models.length})` : typeof json.data.models) : '(n/a)';
+			console.warn(`${LOG} ✗ data.models is empty — response shape: code=${json.code}, dataKeys=[${dataKeys}], models=${modelsKind}`);
+			if (json.data.models === null) {
+				// 2026-10-11：`null` 不是"结构变了"，而是**平台侧这个凭据没有模型目录**（实测：只用
+				// CODEBUDDY_API_KEY（32 位）时 data.models=null、agent.agents=null，但 HTTP 200）。
+				// 此时唯一来源是内置 model.json（**静态快照，缺新模型**）⇒ 表现就是"模型显示不全"。
+				// 补救说清楚：用有模型的账号登录（登录态优先级最高，覆盖环境变量 key），或清掉
+				// CODEBUDDY_API_KEY / 设 CODEBUDDY_API_KEY_DISABLED=1 后重试。
+				console.warn(`${LOG} ✗ 该凭据在平台侧**没有模型目录**（data.models=null）⇒ 本次不提供任何模型（产品口径：不回落内置 model.json 等旧快照）。若账号确有模型：登录一次（登录态优先于环境变量 key），或清掉 CODEBUDDY_API_KEY。`);
+			}
 			return null;
 		}
 
@@ -377,6 +391,38 @@ async function fetchModelsFromConfigApi(
 				console.warn(`${LOG} ⚠ ${synthesized.length} allow-list models have NO metadata in data.models (synthesized with defaults): [${synthesized.join(', ')}]`);
 			}
 			console.log(`${LOG} Resolved ${configs.length} chat models from allow-list (${configs.length - synthesized.length} with metadata, ${synthesized.length} synthesized)`);
+
+			// ── allow-list ∪ chat-capable（2026-10-10）──────────────────────────────
+			// 此前**只**输出 allow-list 里的模型 ⇒ 平台有、但 craft/ask 两个 agent 未列出的模型
+			// （实测：hy4 / Hunyuan-4）在选择器里直接消失，使用者看到的就是"模型显示不全"。
+			// 这里补上 data.models 中 `isChatCapableModel` 通过、却不在 allow-list 的模型：
+			//   · 去重（复用上面的 seen）
+			//   · allow-list 的条目仍在前面，保持原有顺序与元数据优先级
+			//   · 判断标准与"无 allow-list 的 fallback 分支"**完全一致** ⇒ 不引入新口径，
+			//     只是不再让 allow-list 成为唯一来源
+			// 日志显式列出补入项，便于核对（含 hy4）。
+			const extraChatCapable: string[] = [];
+			const skippedNotChat: string[] = [];
+			for (const m of rawModels) {
+				if (!m || !m.id || seen.has(m.id)) { continue; }
+				if (!isChatCapableModel(m)) {
+					// 记下"被判为非 chat"的 id 与判定依据：image 标签 / 无输入窗口且输出 ≤256。
+					// 「某模型没出现」时这一行直接给出原因，不必再去翻响应体。
+					const tags = Array.isArray(m.tags) ? m.tags.join('|') : '';
+					skippedNotChat.push(`${m.id}${tags ? '(tags=' + tags + ')' : ''}${(!m.maxInputTokens && (m.maxOutputTokens ?? 0) <= 256) ? '(tiny-output)' : ''}`);
+					continue;
+				}
+				seen.add(m.id);
+				configs.push(mapRawModelToConfig(m));
+				extraChatCapable.push(m.id);
+			}
+			if (skippedNotChat.length > 0) {
+				console.log(`${LOG} Union skipped ${skippedNotChat.length} non-chat raw models: [${skippedNotChat.join(', ')}]`);
+			}
+			if (extraChatCapable.length > 0) {
+				console.log(`${LOG} Union: allow-list 之外补入 ${extraChatCapable.length} 个 chat-capable 模型: [${extraChatCapable.join(', ')}]`);
+			}
+			console.log(`${LOG} Resolved ${configs.length} chat models (allow-list ∪ chat-capable)`);
 		} else {
 			// Fallback: filter the full models array heuristically
 			console.warn(`${LOG} ⚠ No craft/ask agent allow-list found — falling back to heuristic filter over ${rawModels.length} raw models`);
@@ -394,7 +440,9 @@ async function fetchModelsFromConfigApi(
 			console.warn(`${LOG} Dropped ${beforeEmptyIdFilter - configs.length} models with empty id`);
 		}
 		if (configs.length === 0) {
-			console.warn(`${LOG} ✗ No usable chat models after resolution — returning null (fallback will engage)`);
+			// 产品口径（2026-10-11）：调用方**不再回落**任何本地快照 ⇒ 这里返回 null 就等于
+			// "本次不提供 CodeBuddy 的模型"（原生选择器 / dsh 两侧一致）。
+			console.warn(`${LOG} ✗ No usable chat models after resolution — returning null（本次不提供模型）`);
 			return null;
 		}
 
@@ -423,108 +471,20 @@ async function fetchModelsFromConfigApi(
 	}
 }
 
-/**
- * Load models from a model.json file.
- * @param filePath Path to the model.json file
- * @param extensionPath Extension path for resolving relative paths
- * @returns Array of IModelConfig or null if file cannot be read/parsed
- */
-function loadModelsFromJsonFile(filePath: string, extensionPath?: string): IModelConfig[] | null {
-	try {
-		// Resolve path (support relative paths from workspace or extension directory)
-		let resolvedPath = filePath;
-		if (!path.isAbsolute(filePath)) {
-			// Try to resolve relative to extension path first
-			if (extensionPath) {
-				const extensionRelativePath = path.join(extensionPath, filePath);
-				if (fs.existsSync(extensionRelativePath)) {
-					resolvedPath = extensionRelativePath;
-				}
-			}
-			// If not found in extension path, try workspace
-			if (resolvedPath === filePath) {
-				const workspaceFolders = vscode.workspace.workspaceFolders;
-				if (workspaceFolders && workspaceFolders.length > 0) {
-					resolvedPath = path.join(workspaceFolders[0].uri.fsPath, filePath);
-				} else if (!extensionPath) {
-					console.warn(`[CodeBuddy] Cannot resolve relative path "${filePath}": no workspace folder open`);
-					return null;
-				}
-			}
-		}
-
-		// Check if file exists
-		if (!fs.existsSync(resolvedPath)) {
-			console.warn(`[CodeBuddy] model.json file not found: ${resolvedPath}`);
-			return null;
-		}
-
-		// Read and parse JSON file
-		const fileContent = fs.readFileSync(resolvedPath, 'utf8');
-		const jsonData = JSON.parse(fileContent);
-
-		// Extract models array
-		const models = jsonData.models;
-		if (!Array.isArray(models)) {
-			console.warn(`[CodeBuddy] model.json file does not contain a "models" array`);
-			return null;
-		}
-
-		// Convert each model to IModelConfig (shared mapping with /v3/config)
-		const modelConfigs: IModelConfig[] = models
-			.map((model: any) => mapRawModelToConfig(model))
-			.filter((config: IModelConfig) => config.id !== '');
-
-		console.log(`[CodeBuddy] Loaded ${modelConfigs.length} models from ${resolvedPath}:`, modelConfigs.map(m => m.id));
-		return modelConfigs;
-	} catch (error) {
-		console.error(`[CodeBuddy] Error loading model.json file: ${error}`);
-		console.error(`[CodeBuddy] Stack trace:`, error instanceof Error ? error.stack : '');
-		return null;
-	}
-}
-
-/**
- * Load models from codebuddy.models configuration.
- * Supports both old format (string) and new format (IModelConfig[]).
- */
-async function loadModelsFromConfig(config: vscode.WorkspaceConfiguration): Promise<IModelConfig[]> {
-	// Migration: support both old format (string) and new format (IModelConfig[])
-	let modelConfigs: IModelConfig[];
-	const rawModelsConfig = config.get('models');
-
-	if (Array.isArray(rawModelsConfig)) {
-		// New format: array of IModelConfig
-		modelConfigs = rawModelsConfig.length > 0 ? rawModelsConfig : [];
-	} else if (typeof rawModelsConfig === 'string' && rawModelsConfig.trim()) {
-		// Old format: comma-separated string - migrate to new format
-		const modelNames = rawModelsConfig.split(',').map(m => m.trim()).filter(m => m.length > 0);
-		const defaults = getDefaultTokenLimits();
-		modelConfigs = modelNames.map(name => {
-			return {
-				id: name,
-				name: name,
-				maxInputTokens: defaults.maxInputTokens,
-				maxAllowedSize: defaults.maxAllowedSize || defaults.maxInputTokens
-			};
-		});
-		// Auto-migrate: save in new format
-		await config.update('models', modelConfigs, vscode.ConfigurationTarget.Global);
-	} else {
-		// No config or empty - no hardcoded fallback; models come from /v3/config API
-		modelConfigs = [];
-	}
-
-	return modelConfigs;
-}
+// 注（2026-10-11，产品口径统一为"只认平台目录"）：这里原先还有两个"回落来源"助手：
+//   · `loadModelsFromJsonFile` —— 内置 `model.json`（平台目录的旧快照，缺 hy4 等新 ioa 模型）；
+//   · `loadModelsFromConfig`   —— `codebuddy.models` 配置 / 内置默认值（同属旧快照）。
+// 去掉回落链后二者已无调用方，故删除。`model.json` **文件本身仍保留**：webview 聊天沙箱的
+// provider/model 下拉（`agentStudio/webview/visual/build.mjs` → `codebuddyModels.generated.ts`）
+// 与能力启发式的 id 清单（`agentStudio/browser/languageModelsBridge.ts`）还在用它，与本列表无关。
 
 /**
  * Persist the dynamically-fetched models (from /v3/config) into the
  * `codebuddy.models` configuration property.
  *
- * Why: makes the live model list visible/editable in VSCode settings and
- * provides an offline snapshot that the fallback chain (loadModelsFromConfig)
- * can reuse when /v3/config is unreachable.
+ * Why: makes the live model list visible in VSCode settings（`codebuddy.models`）。
+ * 注意（2026-10-11 口径）：这份持久化**只作镜像/可查阅**，**不是**任何列表的来源 ——
+ * 已删除 `loadModelsFromConfig` 回落，模型列表只认平台目录（`/v3/config`）。
  *
  * Skips the write when the stored value is already identical, to avoid
  * triggering needless configuration-change events / settings.json churn.
@@ -842,26 +802,22 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 			}
 		}
 
-		// Fallback chain (only used when /v3/config is unavailable):
-		//   bundled model.json (extension directory) → codebuddy.models config → built-in defaults
-		if (!modelConfigs) {
-			const defaultModelJsonPath = path.join(this._context.extensionPath, 'model.json');
-			if (fs.existsSync(defaultModelJsonPath)) {
-				const jsonModelConfigs = loadModelsFromJsonFile(defaultModelJsonPath, this._context.extensionPath);
-				if (jsonModelConfigs && jsonModelConfigs.length > 0) {
-					modelConfigs = jsonModelConfigs;
-					console.log(`[CodeBuddy] Fallback: using bundled model.json (${defaultModelJsonPath}), total ${modelConfigs.length} models`);
-				}
-			}
-
-			if (!modelConfigs) {
-				console.log(`[CodeBuddy] Fallback: /v3/config and model.json unavailable, using models config / defaults`);
-				modelConfigs = await loadModelsFromConfig(config);
-			}
-
-			// 兜底数据也写进缓存：这样 body 组装时 getServerModelConfig /
-			// getServerModelReasoningDefaults 能命中，且下一轮直接返回、不再卡顿。
-			_modelsCache = { models: modelConfigs, fetchedAt: Date.now() };
+		// 产品口径（2026-10-11 统一）：**只认平台目录**（`/v3/config`，含其成功响应的内存缓存）。
+		// 拿不到目录 ⇒ **不返回任何模型**（模型选择器里不显示 CodeBuddy），不再回落
+		// 内置 `model.json` / `codebuddy.models` 配置 / 内置默认值 —— 前两者是平台目录的旧快照
+		// （实测缺 hy4 等新 ioa 模型），当"登录过的证据"展示只会误导使用者。
+		//
+		// 注意：`model.json` **文件本身保留**，它与本列表无关的消费方仍在用：
+		//   · webview 聊天沙箱的 provider/model 下拉由 `agentStudio/webview/visual/build.mjs`
+		//     从它生成（`codebuddyModels.generated.ts`）；
+		//   · 能力启发式的 id 清单见 `agentStudio/browser/languageModelsBridge.ts`。
+		//
+		// 也不把兜底写进 `_modelsCache`：缓存只承载**平台数据**。冷缓存时
+		// `getServerModelConfig` / `getServerModelReasoningDefaults` 返回 undefined，
+		// 各自调用方回退内置默认（已确认安全，见两函数注释）。
+		if (!modelConfigs || modelConfigs.length === 0) {
+			console.warn('[CodeBuddy] 平台未返回模型目录（/v3/config 不可用或为空）⇒ 本次不提供任何 CodeBuddy 模型（不回落内置 model.json / 配置 / 默认值）');
+			return [];
 		}
 
 		console.log(`[CodeBuddy] provideLanguageModelChatInformation returning ${modelConfigs.length} models:`, modelConfigs.map(m => m.id));
@@ -1806,6 +1762,65 @@ export function activate(context: vscode.ExtensionContext): void {
 	context.subscriptions.push(
 		vscode.commands.registerCommand('codebuddy.login', async () => {
 			await auth.login();
+		}),
+	);
+
+	// dsh 底座接入（providers.sync）：导出 { baseURL, token, models } 给 VsSaros 的 provider
+	// 收集器；拿不到平台目录时返回 undefined（收集器跳过整条 provider，桥侧随即把我们的
+	// `vssaros-codebuddy` 路由从 profile 里摘掉 ⇒ dsh 聊天框不再显示它的模型）。
+	// dsh 侧经 llm-pi-ai 的 openai-completions 路由到 {endpoint}/v2/chat/completions
+	//（pi-ai 拼 {baseURL}/chat/completions）。
+	//
+	// ⚠ 产品口径（2026-10-11 定）：dsh 侧**只认平台目录**（`/v3/config`，含其内存缓存命中）。
+	// 登录态过时 / 未登录 / 平台对当前凭据返回空目录 ⇒ **不显示** CodeBuddy 的模型，
+	// **不再回落内置 `model.json`**。原因（均为实测）：
+	//   · `model.json` 是平台目录的**旧快照**（缺 hy4 等新模型）——把它当"登录过的证据"展示，
+	//     会让人以为账号有这些模型；
+	//   · 平台确实会返回空目录：只用 `CODEBUDDY_API_KEY` 环境变量（32 位 key）时
+	//     `GET /v3/config` 返回 `code:0` 但 `data.models: null`（HTTP 200），没有任何模型可列。
+	// 旧的"回落静态清单"只在"网关超时"一种情况下救场，代价是**长期展示过时快照**；
+	// 现在宁可不显示（不显示比显示错的诚实），登录后（auth 链优先级 #1）自然恢复完整目录。
+	context.subscriptions.push(
+		vscode.commands.registerCommand('_codebuddy.dshProviderConfig', async () => {
+			const token = await auth.getAccessToken();
+			if (!token) {
+				console.log('[CodeBuddy] dsh provider config: 无可用凭据（未登录 / 登录态已过时且刷新失败）⇒ 不向 dsh 提供模型');
+				return undefined;
+			}
+			const config = vscode.workspace.getConfiguration('codebuddy');
+			const endpoint = (config.get<string>('endpoint') || 'https://copilot.tencent.com').replace(/\/+$/, '');
+			const models = await fetchModelsFromConfigApi(token, endpoint, 10_000).catch(() => null);
+			if (!models || models.length === 0) {
+				console.log('[CodeBuddy] dsh provider config: 平台未返回模型目录（/v3/config 为空或不可用）⇒ 不向 dsh 提供模型（按产品口径不回落内置 model.json）');
+				return undefined;
+			}
+			// 身份头一并导出：网关按 X-IDE-* 做归属/限流判定，dsh 侧经 pi-ai profile 的 headers 携带。
+			const identity = buildCodeBuddyIdentityHeaders(token);
+			delete identity['Authorization'];
+			console.log(`[CodeBuddy] dsh provider config: 平台目录 ${models.length} models（含 reasoning 位 ${models.filter(m => m.supportsReasoning === true).length} 个、带推荐档位 ${models.filter(m => m.reasoning?.effort).length} 个）`);
+			return {
+				baseURL: `${endpoint}/v2`,
+				token,
+				headers: identity,
+				// 能力位以 `reasoning: true` 导出（扩展侧的语义位）。**翻译成 pi-ai 认的字段由桥插件负责**：
+				// `dsh-plugins/vssaros-bridge/lib/index.js` 会把它写成模型级 `reasoningEfforts`
+				// （{low,medium,high} → 'low'/'medium'/'high'，即本网关 `reasoning_effort` 的取值）。
+				// ⚠ 直接把这个键写进 profile 是**未知键**（pi-ai 的 modelFields 里没有 `reasoning`）⇒ 被忽略 ⇒
+				//   dsh 选择器缺 effort 档位（实测症状）。所以永远不要绕过桥插件自行拼这个名字。
+				models: models.filter(m => m.id).map(m => {
+					// 平台目录给的**推荐档位**（`/v3/config` 的 `model.reasoning.effort`，如 hy3=high）。
+					// 桥侧只用它算**路由级**默认档位 —— pi-ai 的 profile 没有模型级默认档位
+					// （模型级只有 name/contextWindow/maxTokens/input/reasoningEfforts/compat）。
+					const effort = m.reasoning?.effort;
+					return {
+						id: m.id,
+						name: m.name !== m.id ? m.name : undefined,
+						reasoning: m.supportsReasoning === true || undefined,
+						// 只导网关认的三个值（= `reasoning_effort` 的取值域），其余一律不导（免得下游当真）。
+						...(effort === 'low' || effort === 'medium' || effort === 'high' ? { effort } : {}),
+					};
+				}),
+			};
 		}),
 	);
 

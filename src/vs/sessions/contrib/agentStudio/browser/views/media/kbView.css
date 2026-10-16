@@ -825,40 +825,15 @@
 .kb-linked-ws .kb-children .kb-node { padding-left: 4px; }
 
 /* ══════════════════════════════════════════════════════════
-   2026-09-15 重构：顶部 Tab（资料 / 记忆 / 代码）
-   取代原「文件树 + 记忆库 section + 代码库 section」纵向堆叠 ——
-   三段常驻会让空态也占满侧栏，并把文件树挤成一条缝。
+   面板：同一时刻只显示激活项（display 切换，不销毁 DOM）。
+   ★ 2026-10-12（「资料库」拆分）：「顶部 Tab」那套 `.kb-tabs` / `.kb-tab` 规则已删 ——
+   记忆 / 代码 / 媒体库三块连同 tab 栏一起搬去了各自的独立工作台视图
+   （`memoryLibraryView` / `codebaseLibraryView` / `mediaLibraryView`），本视图只剩「知识库」
+   一个面板，不再需要 tab 样式。
+   ⚠ `.kb-panel.active` 仍然必需：知识库面板是**直接写死**该类的（原先由 `_switchTab()` 加）。
    ══════════════════════════════════════════════════════════ */
 
-.kb-tabs {
-	display: flex;
-	align-items: stretch;
-	flex-shrink: 0;
-	border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-sideBar-border));
-}
-.kb-tab {
-	flex: 1;
-	min-width: 0;
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	gap: 5px;
-	height: 30px;
-	font-size: 12px;
-	color: var(--vscode-descriptionForeground);
-	cursor: pointer;
-	user-select: none;
-	border-bottom: 1px solid transparent;
-}
-.kb-tab:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground)); }
-.kb-tab.active {
-	color: var(--vscode-foreground);
-	border-bottom-color: var(--vscode-focusBorder, #007acc);
-	font-weight: 600;
-}
-.kb-tab .codicon { font-size: 13px; }
 
-/* Tab 面板：同一时刻只显示激活项（display 切换，不销毁 DOM ⇒ 滚动/展开/搜索态得以保留）。 */
 .kb-panel { display: none; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
 .kb-panel.active { display: flex; }
 

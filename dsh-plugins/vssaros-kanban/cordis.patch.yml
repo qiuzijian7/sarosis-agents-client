@@ -1,0 +1,14 @@
+# @vssaros/dsh-kanban bundle patch: insert the kanban row.
+#
+# The page route is registered as the loader prefix `/x/kanban` (no trailing slash —
+# a prefix route matches `p` and `p/<anything>`); the manifest's `view.route` keeps the
+# trailing-slash form `/x/kanban/` because that is the URL VsSaros loads.
+#
+# `config.dataRoot` stays empty on purpose: without it the plugin reads the default
+# `~/.vssaros/`. VsSaros injects the real data root through a `--patch` overlay
+# targeting this id when the IDE data root is customized (same mechanism the
+# vssaros-bridge row uses for its pipe + token).
+- insert:
+    - id: vssaros-kanban
+      name: '@vssaros/dsh-kanban'
+      config: {}

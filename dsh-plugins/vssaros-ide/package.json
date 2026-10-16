@@ -1,0 +1,46 @@
+{
+  "name": "@vssaros/dsh-ide",
+  "version": "0.1.15",
+  "description": "VsSaros IDE capability module for DeepSeek Harness: exposes IDE context and navigation (diagnostics / selection read-only; open_file / reveal / show_diff display-only, default not stealing focus) as dsh tools, executed through the control bridge reverse channel (Host -> VsSaros). Declares vssaros.ideCapabilities, which is what the VsSaros side authorizes against.",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "cordis.patch.yml"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/dsh": ">=0.1.7-0 <0.3.0-0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": [
+        "./cordis.patch.yml"
+      ]
+    }
+  },
+  "vssaros": {
+    "manifestVersion": 1,
+    "module": "ide",
+    "view": {
+      "kind": "none"
+    },
+    "ideCapabilities": [
+      "getDiagnostics",
+      "getSelection",
+      "openFile",
+      "reveal",
+      "showDiff",
+      "canvas",
+      "mindmap",
+      "dashboardStats",
+      "workflow",
+      "taskboard"
+    ]
+  },
+  "license": "MIT"
+}

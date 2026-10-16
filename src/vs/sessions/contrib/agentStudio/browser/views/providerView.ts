@@ -287,6 +287,43 @@ export class ProviderViewPane extends ViewPane {
 		return [...PROVIDER_DEFINITIONS, ...customDefs];
 	}
 
+	/**
+	 * 自定义 provider 的凭据**不在** `sessions.agentStudio.provider.<id>.apiKey|baseUrl`。
+	 *
+	 * 那两个动态键只有**内置身份**在配置注册表里注册过（见 `common/providerCatalog.ts` 的
+	 * `BUILTIN_PROVIDER_IDENTITIES` ⇒ `constants.ts` 里的常量键）；给自定义 id 写它必然弹
+	 * 「Unable to write to User Settings because … is not a registered configuration」，
+	 * 而 **VS Code 的错误通知是粘性的（不会自动消失）**。实测两层后果：
+	 *   1) 通知 toast 停在窗口右下角、与聊天框矩形相交 ⇒ 被浮层让位逻辑判为"遮挡" ⇒
+	 *      dsh 聊天框整块隐藏（状态层也隐藏）⇒ **聊天框永久空白，重启也不恢复**；
+	 *   2) `getValue` 读同一个未注册键永远 `undefined` ⇒ 自定义 provider 的 Key / 端点
+	 *      **既写不进也读不出**（卡片永远"未配置"、请求永远 "API key not configured"）。
+	 *
+	 * 所以自定义 provider 的凭据落在 entry 自身（`CustomProviderData.apiKey/baseUrl`）。
+	 */
+	private _customEntry(id: string): CustomProviderData | undefined {
+		return (this.configurationService.getValue<CustomProviderData[]>(AGENT_STUDIO_CUSTOM_PROVIDERS_SETTING) || []).find(cp => cp.id === id);
+	}
+
+	/** 读凭据：内置走注册过的配置键，自定义走 `customProviders` entry。 */
+	private _readCredential(provider: ProviderDefinition, kind: 'apiKey' | 'baseUrl'): string {
+		if (provider.isBuiltin) {
+			const key = kind === 'apiKey' ? provider.apiKeySetting : provider.baseUrlSetting;
+			return this.configurationService.getValue<string>(key) || '';
+		}
+		const cp = this._customEntry(provider.id);
+		return (kind === 'apiKey' ? cp?.apiKey : cp?.baseUrl) || '';
+	}
+
+	/** 写凭据：内置走注册过的配置键，自定义就地 patch entry（绝不写未注册键）。 */
+	private _writeCredential(provider: ProviderDefinition, kind: 'apiKey' | 'baseUrl', value: string): void {
+		if (provider.isBuiltin) {
+			this.configurationService.updateValue(kind === 'apiKey' ? provider.apiKeySetting : provider.baseUrlSetting, value);
+			return;
+		}
+		this._patchCustomProvider(provider.id, kind === 'apiKey' ? { apiKey: value } : { baseUrl: value });
+	}
+
 	private _renderProviders(): void {
 		// Clear children safely (Trusted Types policy blocks innerHTML)
 		while (this.listContainer.firstChild) {
@@ -297,8 +334,8 @@ export class ProviderViewPane extends ViewPane {
 			const card = $('div.provider-card');
 			// Ollama and similar local providers don't need API key — just a base URL
 			const isApiKeyOptionalProvider = provider.id === 'ollama';
-			const hasApiKey = !!this.configurationService.getValue<string>(provider.apiKeySetting);
-			const hasBaseUrl = !!(this.configurationService.getValue<string>(provider.baseUrlSetting) || provider.defaultBaseUrl);
+			const hasApiKey = !!this._readCredential(provider, 'apiKey');
+			const hasBaseUrl = !!(this._readCredential(provider, 'baseUrl') || provider.defaultBaseUrl);
 			const isConfigured = isApiKeyOptionalProvider ? hasBaseUrl : hasApiKey;
 			if (isConfigured) {
 				card.classList.add('configured-highlight');
@@ -378,10 +415,10 @@ export class ProviderViewPane extends ViewPane {
 			apiKeyInput.id = `provider-apikey-${provider.id}`;
 			apiKeyInput.className = 'provider-field-input';
 			apiKeyInput.placeholder = `粘贴你的 ${provider.name} API Key`;
-		apiKeyInput.value = this.configurationService.getValue<string>(provider.apiKeySetting) || '';
+		apiKeyInput.value = this._readCredential(provider, 'apiKey');
 		// 保存并重新渲染（更新"已配置"徽章）
 		const saveApiKey = () => {
-				this.configurationService.updateValue(provider.apiKeySetting, apiKeyInput.value);
+				this._writeCredential(provider, 'apiKey', apiKeyInput.value);
 				this.expandedProviderId = provider.id;
 				this._renderProviders();
 			};
@@ -403,10 +440,11 @@ export class ProviderViewPane extends ViewPane {
 			baseUrlInput.id = `provider-baseurl-${provider.id}`;
 			baseUrlInput.className = 'provider-field-input';
 			baseUrlInput.placeholder = provider.defaultBaseUrl || '自定义端点地址';
-		baseUrlInput.value = this.configurationService.getValue<string>(provider.baseUrlSetting) || '';
+		baseUrlInput.value = this._readCredential(provider, 'baseUrl');
 		// 使用 oninput 实时保存，onblur 作为备份
+		// ⚠ 自定义 provider 走 entry patch：此前直写未注册键，**每敲一个字符**就弹一次粘性错误通知。
 		const saveBaseUrl = () => {
-				this.configurationService.updateValue(provider.baseUrlSetting, baseUrlInput.value);
+				this._writeCredential(provider, 'baseUrl', baseUrlInput.value);
 			};
 		baseUrlInput.oninput = saveBaseUrl;
 		baseUrlInput.onblur = saveBaseUrl;
@@ -603,8 +641,8 @@ export class ProviderViewPane extends ViewPane {
 				const clearBtn = $('button.provider-card-btn.provider-card-btn-danger');
 				clearBtn.textContent = '清除';
 				clearBtn.onclick = () => {
-					this.configurationService.updateValue(provider.apiKeySetting, '');
-					this.configurationService.updateValue(provider.baseUrlSetting, provider.defaultBaseUrl);
+					this._writeCredential(provider, 'apiKey', '');
+					this._writeCredential(provider, 'baseUrl', provider.defaultBaseUrl);
 					this.expandedProviderId = provider.id;
 					this._renderProviders();
 				};
@@ -641,12 +679,12 @@ export class ProviderViewPane extends ViewPane {
 
 	private _patchCustomProvider(id: string, patch: Partial<CustomProviderData>): void {
 		const customProviders = this.configurationService.getValue<CustomProviderData[]>(AGENT_STUDIO_CUSTOM_PROVIDERS_SETTING) || [];
-		const idx = customProviders.findIndex(cp => cp.id === id);
-		if (idx === -1) {
+		if (!customProviders.some(cp => cp.id === id)) {
 			return;
 		}
-		customProviders[idx] = { ...customProviders[idx], ...patch };
-		this.configurationService.updateValue(AGENT_STUDIO_CUSTOM_PROVIDERS_SETTING, customProviders);
+		// ⚠ 必须**不可变更新**：`getValue()` 返回的是深度冻结值，`customProviders[idx] = {...}` ✗
+		// 在 dev（未构建）形态下会抛 `Cannot assign to read only property`（modelsAutoUpdate 已记录同坑）。
+		this.configurationService.updateValue(AGENT_STUDIO_CUSTOM_PROVIDERS_SETTING, customProviders.map(cp => cp.id === id ? { ...cp, ...patch } : cp));
 	}
 
 	/**
@@ -1030,11 +1068,10 @@ export class ProviderViewPane extends ViewPane {
 				apiType,
 			};
 
-			// 保存 API Key 到独立设置项
+			// 保存 API Key 到 **entry 自身**：不能写 `sessions.agentStudio.provider.<id>.apiKey`
+			// —— 自定义 id 没有注册过该配置键，写入必弹粘性错误通知（见 _readCredential 注释）。
 			const apiKeyInput = document.getElementById('add-provider-apikey') as HTMLInputElement;
-			if (apiKeyInput?.value.trim()) {
-				this.configurationService.updateValue(`sessions.agentStudio.provider.${id}.apiKey`, apiKeyInput.value.trim());
-			}
+			entry.apiKey = apiKeyInput?.value.trim() ?? '';
 			if (apiType === 'anthropic') {
 				const modelsTa = document.getElementById('add-provider-models') as HTMLTextAreaElement;
 				entry.models = modelsTa.value.split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
@@ -1080,9 +1117,7 @@ export class ProviderViewPane extends ViewPane {
 		const filtered = customProviders.filter(cp => cp.id !== id);
 		this.configurationService.updateValue(AGENT_STUDIO_CUSTOM_PROVIDERS_SETTING, filtered);
 
-		// Also clear any stored apiKey/baseUrl for this provider
-		this.configurationService.updateValue(`sessions.agentStudio.provider.${id}.apiKey`, undefined);
-		this.configurationService.updateValue(`sessions.agentStudio.provider.${id}.baseUrl`, undefined);
+		// 凭据随 entry 一起被移除（apiKey/baseUrl 存在 entry 里，不再有独立的"未注册配置键"要清）。
 
 		this.statusMessage = `✅ Provider 已删除`;
 		this._renderProviders();
@@ -1199,8 +1234,8 @@ export class ProviderViewPane extends ViewPane {
 		};
 
 		fetchBtn.onclick = async () => {
-			const apiKey = this.configurationService.getValue<string>(provider.apiKeySetting);
-			const baseUrl = this.configurationService.getValue<string>(provider.baseUrlSetting) || provider.defaultBaseUrl;
+			const apiKey = this._readCredential(provider, 'apiKey');
+			const baseUrl = this._readCredential(provider, 'baseUrl') || provider.defaultBaseUrl;
 			const apiType = cpEntry.apiType || 'openai';
 			if (!baseUrl) {
 				this.statusMessage = '❌ 请先配置 Base URL';
@@ -1249,8 +1284,8 @@ export class ProviderViewPane extends ViewPane {
 	 */
 
 private async _testConnection(provider: ProviderDefinition): Promise<void> {
-		const apiKey = this.configurationService.getValue<string>(provider.apiKeySetting);
-		const baseUrl = this.configurationService.getValue<string>(provider.baseUrlSetting) || provider.defaultBaseUrl;
+		const apiKey = this._readCredential(provider, 'apiKey');
+		const baseUrl = this._readCredential(provider, 'baseUrl') || provider.defaultBaseUrl;
 
 		if (!baseUrl) {
 			this.statusMessage = '❌ 请配置 Base URL';

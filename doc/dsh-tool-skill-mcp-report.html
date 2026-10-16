@@ -1,0 +1,2227 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>dsh 工具 / 技能 / MCP 机制报告（dsh 侧为准 · 重构后）</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --panel-2: #1c2128; --border: #30363d;
+    --text: #e6edf3; --muted: #8b949e; --h: #58a6ff; --p: #d29922;
+    --ok: #3fb950; --bad: #f85149; --vio: #bc8cff; --cyan: #39c5cf;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text); line-height: 1.75;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", Roboto, sans-serif;
+  }
+  .wrap { max-width: 1240px; margin: 0 auto; padding: 40px 24px 90px; }
+  header { border-bottom: 1px solid var(--border); padding-bottom: 26px; margin-bottom: 26px; }
+  h1 { font-size: 30px; margin: 0 0 10px; letter-spacing: -0.4px; }
+  .sub { color: var(--muted); font-size: 14px; }
+  h2 { font-size: 21px; margin: 54px 0 16px; padding-left: 11px; border-left: 4px solid var(--h); }
+  h3 { font-size: 17px; margin: 30px 0 10px; }
+  h4 { font-size: 14px; margin: 20px 0 8px; color: var(--h); }
+  p { margin: 9px 0; }
+  code {
+    background: var(--panel-2); border: 1px solid var(--border); padding: 1px 6px; border-radius: 5px;
+    font-size: 12.5px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; word-break: break-all;
+  }
+  pre {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 16px; overflow: auto; font-size: 12.5px; line-height: 1.65;
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace; color: #c9d1d9; margin: 12px 0;
+  }
+  pre code { background: none; border: none; padding: 0; }
+  table { width: 100%; border-collapse: collapse; margin: 14px 0 8px; font-size: 13.5px; }
+  th, td { border: 1px solid var(--border); padding: 9px 12px; text-align: left; vertical-align: top; }
+  th { background: var(--panel-2); font-weight: 600; }
+  tr:hover td { background: rgba(88,166,255,0.04); }
+  td.k { white-space: nowrap; font-family: ui-monospace, Consolas, monospace; color: var(--h); }
+  .small { font-size: 12.5px; color: var(--muted); }
+  ul, ol { margin: 8px 0; padding-left: 24px; }
+  li { margin: 5px 0; }
+  .note { background: var(--panel); border-left: 3px solid var(--h); padding: 12px 16px; margin: 16px 0; border-radius: 0 8px 8px 0; font-size: 14px; }
+  .note.warn { border-left-color: var(--p); }
+  .note.bad { border-left-color: var(--bad); }
+  .note.ok { border-left-color: var(--ok); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; margin: 18px 0; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 15px 17px; }
+  .card .k { color: var(--muted); font-size: 12px; letter-spacing: .5px; }
+  .card .v { font-size: 17px; font-weight: 700; margin-top: 4px; }
+  .card .n { color: var(--muted); font-size: 12.5px; margin-top: 5px; }
+  .tag { display: inline-block; font-size: 11px; padding: 2px 9px; border-radius: 20px; border: 1px solid var(--border); background: var(--panel-2); color: var(--muted); margin-right: 6px; }
+  .tag.g { color: var(--ok); border-color: rgba(63,185,80,.4); }
+  .tag.y { color: var(--p); border-color: rgba(210,153,34,.4); }
+  .tag.r { color: var(--bad); border-color: rgba(248,81,73,.4); }
+  .tag.v { color: var(--vio); border-color: rgba(188,140,255,.4); }
+  .tag.c { color: var(--cyan); border-color: rgba(57,197,207,.4); }
+  nav.toc { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px 20px; margin: 22px 0 10px; }
+  nav.toc ol { margin: 0; padding-left: 22px; columns: 2; }
+  @media (max-width: 820px) { nav.toc ol { columns: 1; } }
+  nav.toc a { color: var(--h); text-decoration: none; }
+  nav.toc a:hover { text-decoration: underline; }
+  footer { margin-top: 60px; padding-top: 20px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12.5px; }
+  .tbl-scroll { overflow-x: auto; }
+  .chain { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; margin: 14px 0; font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; line-height: 1.9; overflow-x: auto; }
+  .chain b { color: var(--h); }
+  .chain .lbl { color: var(--muted); }
+  .chain .arrow { color: var(--p); }
+  .chain .at { color: var(--ok); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>dsh 工具 / 技能 / MCP 机制报告</h1>
+  <div class="sub">
+    <b>dsh 侧为准 · 重构后源码 · 2026-10-12</b><br>
+    工具 43 个（7 插件）· 技能 152 目录（155 SKILL.md）· MCP 一行一服务器 · 8 类启动覆盖层 · 桥协议 v2<br>
+    依据：<code>dsh-plugins/*</code>（13 个 <code>@vssaros/dsh-*</code> 插件）+ <code>src/vs/sessions/contrib/dshHarness/**</code>（装配与承载）+ dsh <code>0.2.0-rc.2</code>
+  </div>
+</header>
+
+<nav class="toc">
+  <ol>
+    <li><a href="#s0">摘要与总体结论</a></li>
+    <li><a href="#s1">架构总览：以 dsh 侧为准</a></li>
+    <li><a href="#s2">工具层：43 个工具逐个说明</a></li>
+    <li><a href="#s3">技能层：来源、加载与调用</a></li>
+    <li><a href="#s4">MCP 层：配置、挂载与观察</a></li>
+    <li><a href="#s5">函数调用图（四条链路）</a></li>
+    <li><a href="#s6">扩展指南：4 个可照抄的 demo</a></li>
+    <li><a href="#s7">优缺点与建议</a></li>
+    <li><a href="#s8">与开源 dsh VS Code 项目对比</a></li>
+    <li><a href="#s9">附录：证据索引</a></li>
+  </ol>
+</nav>
+
+<h2 id="s0">0. 摘要与总体结论</h2>
+
+<div class="grid">
+  <div class="card"><div class="k">dsh 侧插件</div><div class="v">13 个</div><div class="n">11 个模块插件（有 <code>vssaros.module</code>）+ 2 个伴生插件（bridge / chat-surface）</div></div>
+  <div class="card"><div class="k">dsh 工具（我们）</div><div class="v">43 个</div><div class="n">分布在 7 个插件；另 6 个插件不注册工具（<span class="tag c">有意为之</span>）</div></div>
+  <div class="card"><div class="k">官方工具（standard preset）</div><div class="v">≈ 23 个</div><div class="n">per-agent plane（随 preset 变）；我们 43 个在 host plane（恒定可见）—— 差异与取舍见 <a href="#s2" style="color:var(--h)">2.7</a></div></div>
+  <div class="card"><div class="k">内置技能目录</div><div class="v">152 个</div><div class="n"><code>resources/.agents/skills</code>（155 个 <code>SKILL.md</code>，含嵌套）</div></div>
+  <div class="card"><div class="k">启动覆盖层</div><div class="v">8 类</div><div class="n">bridge / kanban / codebase / mcp / skills / agents / roots / memory，全部走 <code>--patch</code></div></div>
+</div>
+
+<h3>0.1 重构后"以 dsh 侧为准"的准确含义</h3>
+<p>三类能力的<b>定义与实现</b>都落在 dsh 侧插件（<code>dsh-plugins/&lt;name&gt;/lib/**</code>）：</p>
+<table>
+  <tr><th>能力</th><th>dsh 侧是谁在定义</th><th>宿主侧（<code>src/vs</code>）还剩什么</th></tr>
+  <tr>
+    <td class="k">工具</td>
+    <td>各插件的 <code>lib/index.js</code> 里 <code>ctx.tools.register(definition)</code>；实现也在插件内（本地文件 / HTTP / 子进程），只有<b>办不到的事</b>才经反向桥回宿主</td>
+    <td>① legacy 引擎那套工具（<code>providers/tool/**</code>，dsh 关闭时用）② 反向通道的被调方实现（<code>dshIdeCapabilities.ts</code>）</td>
+  </tr>
+  <tr>
+    <td class="k">技能</td>
+    <td><code>@vssaros/dsh-skills</code> 注册一个 <b>skill provider</b>；目录挂载由 <code>dsh-skill-filesystem</code> 行 + 我们的 <code>--patch</code> 覆盖层完成</td>
+    <td>只负责<b>给出目录清单</b>（<code>_skillDirs()</code>）与生成覆盖层（<code>renderSkillsOverlay</code>）</td>
+  </tr>
+  <tr>
+    <td class="k">MCP</td>
+    <td><code>dsh-mcp-client</code>（dsh 原生）一行一台服务器；<code>@vssaros/dsh-mcp</code> 只做<b>只读观察</b>；<code>bin/sync-rows.mjs</code> 可在 dsh 侧自己产行</td>
+    <td>生成 <code>renderMcpOverlay</code>（dsh 侧未登记时的兜底）+ 配置解析镜像 + 重启闸门</td>
+  </tr>
+</table>
+<p class="small">
+  权威口径来自重构方案 §6.9「<b>契约共享、实现各自一份</b>」：协议/清单/容器 id 的真源留在 <code>src/vs</code>（插件侧手写对齐 + 守卫比对），
+  模块业务逻辑（core）放 <code>dsh-plugins/&lt;name&gt;/lib/core</code> 作为<b>最终真源</b>；<code>src/vs</code> 永久禁止 import <code>dsh-plugins/</code>。
+</p>
+
+<h3>0.2 三条通道与五个结论</h3>
+<table>
+  <tr><th>通道</th><th>机制</th><th>谁拥有</th><th>本仓库用量</th></tr>
+  <tr>
+    <td class="k">① dsh 原生</td>
+    <td>插件里注册即对模型可见（<code>ctx.tools.register</code>），执行在 dsh 进程内</td>
+    <td>我们的模块插件</td>
+    <td><b>31 个工具</b>（kanban 10 / codebase 5 / kb 5 / memory 5 / workflow 4 / dashboard 2）</td>
+  </tr>
+  <tr>
+    <td class="k">② IDE 反向通道</td>
+    <td><code>bridge.callIDE('ide.request')</code> → 命名管道 → 主进程授权闸门 → 渲染进程执行</td>
+    <td>我们的插件发起，VsSaros 执行</td>
+    <td><b>12 个工具</b>（<code>@vssaros/dsh-ide</code>）+ 11 个能力名</td>
+  </tr>
+  <tr>
+    <td class="k">③ MCP</td>
+    <td><code>dsh-mcp-client</code> 原生消费外部 MCP 服务器，工具名 <code>mcp__&lt;server&gt;__&lt;tool&gt;</code></td>
+    <td>dsh 原生（我们只供配置与观察）</td>
+    <td>0 行代码挂载；<code>vssaros-mcp</code> 提供只读可观测面</td>
+  </tr>
+</table>
+
+<div class="note ok">
+  <b>五个核心结论</b>
+  <ol>
+    <li><b>工具注册已成体系</b>：43 个工具全部用<b>字面量定义 + 显式注册</b>（内联或工厂返回数组后 <code>.map(register)</code>），没有隐式注册表/魔法发现 —— 清单可从源码穷举，这是可审计的前提。</li>
+    <li><b>反向通道只用于"dsh 进程里做不到的事"</b>：编辑器诊断/选区/打开文件/reveal/diff/浏览器 CDP/画布/思维导图/Unreal —— 31 个本地工具<b>没有一个</b>走桥。</li>
+    <li><b>技能是"目录 + 按需加载"</b>：dsh 没有 <code>activation: always</code> 的等价物，技能挂进去是"目录可见、模型自取"（<code>dsh-tool-skill</code>）；且原生 <code>skill</code> 工具行被随包层关掉过，必须由我们的层<b>翻回来</b>才有意义。</li>
+    <li><b>MCP 是"组合行"模型</b>：一台服务器一个组合行、重启才生效、没有运行时注册服务 —— 所以"配置变更即时生效"在这条路上<b>不可能</b>，只能靠覆盖层 + 重启。</li>
+    <li><b>代价在"两份实现"</b>：MCP 解析/MCP 行渲染在宿主与 dsh 侧各一份（<code>dshMcpConfig.ts</code> ↔ <code>mcpConfig.js</code> / <code>mcpRows.js</code>），靠 <code>p3-18</code>/<code>p3-24</code> 差分与前缀守卫看守；这是"契约共享、实现各自一份"的既定成本（见第 7 章）。</li>
+  </ol>
+</div>
+
+<h2 id="s1">1. 架构总览：以 dsh 侧为准</h2>
+
+<h3>1.1 13 个插件与各自的能力面</h3>
+<div class="tbl-scroll">
+<table>
+  <tr><th>插件目录</th><th>包名</th><th>module</th><th>工具数</th><th>界面（<code>vssaros.view</code>）</th><th>静态 <code>inject</code></th></tr>
+  <tr><td class="k">vssaros-ide</td><td><code>@vssaros/dsh-ide</code></td><td>ide</td><td><b>12</b></td><td><code>kind:'none'</code>（只有工具，无界面）</td><td><code>['tools','vssarosBridge']</code></td></tr>
+  <tr><td class="k">vssaros-kanban</td><td><code>@vssaros/dsh-kanban</code></td><td>kanban</td><td><b>10</b></td><td><code>page</code> <code>/x/kanban/</code> + 客户端工具卡</td><td><code>['tools']</code></td></tr>
+  <tr><td class="k">vssaros-codebase</td><td><code>@vssaros/dsh-codebase</code></td><td>codebase</td><td><b>5</b></td><td><code>page</code> <code>/x/codebase/</code> + 客户端卡</td><td><code>['tools']</code></td></tr>
+  <tr><td class="k">vssaros-kb</td><td><code>@vssaros/dsh-kb</code></td><td>kb</td><td><b>5</b></td><td><code>page</code> <code>/x/kb/</code></td><td><code>['tools']</code></td></tr>
+  <tr><td class="k">vssaros-memory</td><td><code>@vssaros/dsh-memory</code></td><td>memory</td><td><b>5</b></td><td><code>section</code> 寄居 kb（<code>/x/memory/section</code>）</td><td><code>['tools']</code></td></tr>
+  <tr><td class="k">vssaros-workflow</td><td><code>@vssaros/dsh-workflow</code></td><td>workflow</td><td><b>4</b></td><td><code>page</code> <code>/x/workflow/</code> + 客户端卡</td><td><code>['tools']</code></td></tr>
+  <tr><td class="k">vssaros-dashboard</td><td><code>@vssaros/dsh-dashboard</code></td><td>dashboard</td><td><b>2</b></td><td><code>page</code> <code>/x/dashboard/</code></td><td><code>['tools']</code></td></tr>
+  <tr><td class="k">vssaros-skills</td><td><code>@vssaros/dsh-skills</code></td><td>skills</td><td>0</td><td><code>page</code> <code>/x/skills/</code>（内嵌 MCP 片段）</td><td>无（全走可选注入）</td></tr>
+  <tr><td class="k">vssaros-mcp</td><td><code>@vssaros/dsh-mcp</code></td><td>mcp</td><td>0</td><td><code>section</code> 寄居 skills（<code>/x/mcp/section</code>）</td><td><code>['tools']</code>（只为数 <code>mcp__*</code>）</td></tr>
+  <tr><td class="k">vssaros-agents</td><td><code>@vssaros/dsh-agents</code></td><td>agents</td><td>0</td><td><code>page</code> <code>/x/agents/</code></td><td>无（用 <code>child.tools.restrict</code>）</td></tr>
+  <tr><td class="k">vssaros-canvas</td><td><code>@vssaros/dsh-canvas</code></td><td>canvas</td><td>0</td><td><code>page</code> <code>/x/canvas/</code>（只读）</td><td>无</td></tr>
+  <tr><td class="k">vssaros-bridge</td><td><code>@vssaros/dsh-bridge</code></td><td>—（伴生）</td><td>0</td><td>只读页 <code>/x/vssaros-bridge</code></td><td>8 个服务（提供者）</td></tr>
+  <tr><td class="k">vssaros-chat-surface</td><td><code>@vssaros/dsh-chat-surface</code></td><td>—（伴生）</td><td>0</td><td>客户端槽位（host 半 <code>apply()</code> 为 no-op）</td><td>客户端侧 <code>['slots']</code> 等</td></tr>
+</table>
+</div>
+<p class="small">
+  <b>静态 <code>inject</code> 的收窄纪律</b>（<code>workflow/lib/index.js:18-21</code> 的注释是权威表述）：工具型插件<b>只</b>把 <code>tools</code> 写进静态 inject；
+  <code>webServer</code>/<code>connection</code> 只在 web 模板存在，写进静态 inject 会让插件在 headless / tui profile <b>永久 pending</b>，连工具一起失效 —— 所以页面一律走
+  <code>ctx.inject(['webServer','connection'], …)</code> 可选注入。这条纪律决定了"工具在哪些 profile 下可用"。
+</p>
+
+<h3>1.2 装配链路（宿主只做"把 dsh 抬起来"）</h3>
+<div class="chain">
+<b>Step 1 · 主进程装配</b>　<span class="at">dshHarnessChannel.ts:120-159</span><br>
+&nbsp;&nbsp;<span class="lbl">扫描随包插件</span> <span class="arrow">→</span> <code>listBundledPlugins()</code> <span class="at">dshBundledPlugins.ts:61</span> <span class="lbl">（判据 <code>vssaros.module</code>，不硬编码清单）</span><br>
+<b>Step 2 · 渲染进程给启动选项</b>　<span class="at">dshHarnessService.ts</span><br>
+&nbsp;&nbsp;<code>_skillDirs()</code>:616 · <code>_agentsRoot()</code>:651 · <code>_dataRoot()</code>:665 · <code>_mcpConfigPath()</code>:678<br>
+<b>Step 3 · 装插件</b>　<span class="at">dshHostSupervisor.ts:495 _doStart()</span><br>
+&nbsp;&nbsp;<span class="lbl">profile 种子</span> <code>_ensureProfile()</code>:865 <span class="arrow">→</span> <code>_repairSeededStoreMetadata()</code>:905<br>
+&nbsp;&nbsp;<span class="lbl">逐个确保</span> <code>_ensurePlugin()</code>:1002 <span class="arrow">→</span> <code>_stagePlugin()</code>:1379<br>
+&nbsp;&nbsp;<span class="lbl">复制到</span> <code>&lt;profile&gt;/.vssaros/plugins/&lt;name&gt;-&lt;version&gt;/</code> <span class="arrow">→</span> <b><code>dsh plugin --profile &lt;p&gt; add file:&lt;staged&gt;</code></b> <span class="at">dshCli.ts:30</span><br>
+<b>Step 4 · 生成覆盖层并启动</b>　<span class="at">dshHostSupervisor.ts:600-707</span><br>
+&nbsp;&nbsp;<span class="lbl">8 类</span> <code>--patch</code> <span class="arrow">→</span> <code>buildHostArgs()</code> <span class="at">dshCli.ts:16</span> <span class="arrow">→</span> <code>[dsh, --profile &lt;p&gt;, --patch …, --no-open, --port 0]</code><br>
+&nbsp;&nbsp;<span class="lbl">spawn</span>:720/724 <span class="arrow">→</span> <code>_awaitReady()</code>:1035 <span class="lbl">（日志找 URL 或等桥 <code>client.register</code>）</span> <span class="arrow">→</span> <span class="lbl">租约</span> <code>&lt;DSH_HOME&gt;/host.json</code>:735
+</div>
+<div class="tbl-scroll">
+<table>
+  <tr><th>覆盖层</th><th>生成函数</th><th>打哪些行</th></tr>
+  <tr><td class="k">bridge</td><td><code>renderBridgeOverlay</code> <code>dshCli.ts:313</code></td><td><code>vssaros-bridge</code>（pipe/token）+ 模型设置行 + 条件 <code>llm-deepseek</code></td></tr>
+  <tr><td class="k">skills</td><td><code>renderSkillsOverlay</code> <code>dshSkillDirs.ts:21</code></td><td><code>vssaros-skills-dirs</code>（<code>@deepseek-ai/dsh-skill-filesystem</code>，<code>providerName:'vssaros'</code>，<code>includeDefaultRoots:false</code>，<code>watch:true</code>）</td></tr>
+  <tr><td class="k">mcp</td><td><code>_writeMcpOverlay</code> <code>dshHostSupervisor.ts:1253</code> → <code>renderMcpOverlay</code> <code>dshMcpConfig.ts:274</code></td><td>一个 <code>- insert:</code> 加每服务器一行 <code>mcp-&lt;serverName&gt;</code></td></tr>
+  <tr><td class="k">roots</td><td><code>renderDataRootOverlay</code> <code>dshCli.ts:457</code></td><td><code>vssaros-kb</code> / <code>vssaros-dsh-canvas</code> / <code>vssaros-workflow</code> / <code>vssaros-skills</code>（<code>config.dataRoot</code>）+ 条件 <code>vssaros-dsh-mcp</code>（<code>config.path</code>）</td></tr>
+  <tr><td class="k">kanban</td><td><code>renderKanbanOverlay</code> <code>dshCli.ts:398</code></td><td><code>vssaros-kanban</code>（workspaceId + dataRoot）</td></tr>
+  <tr><td class="k">codebase</td><td><code>renderCodebaseOverlay</code> <code>dshCli.ts:367</code></td><td><code>vssaros-codebase</code>（workspaceRoot + relatedRoots）</td></tr>
+  <tr><td class="k">agents</td><td><code>renderAgentsOverlay</code> <code>dshCli.ts:431</code></td><td><code>vssaros-agents</code>（agentsRoot）</td></tr>
+  <tr><td class="k">memory</td><td><code>renderMemoryOverlay</code> <code>dshCli.ts:518</code></td><td><code>vssaros-memory</code>（gatewayUrl）</td></tr>
+</table>
+</div>
+
+<h3>1.3 控制桥（反向通道的物理形态）</h3>
+<table>
+  <tr><th>维度</th><th>事实</th><th>证据</th></tr>
+  <tr><td class="k">传输</td><td><b>Windows 命名管道</b>（<code>\\.\pipe\vssaros-dsh-&lt;instanceId&gt;</code>）上的<b>换行分隔 JSON-RPC 2.0</b>，非 HTTP/WebSocket</td><td><code>dshCli.ts:353 bridgePipePath</code>；<code>bridge/lib/index.js:293 net.createServer(pipe)</code></td></tr>
+  <tr><td class="k">协议版本</td><td><code>BRIDGE_VERSION = 2</code>（与 <code>common/dshBridgeProtocol.ts:23</code> 对账）</td><td><code>bridge/lib/index.js:20</code></td></tr>
+  <tr><td class="k">鉴权</td><td><code>client.register</code> 必须带 <code>token</code>，否则 <code>-32002</code> 并断开；未注册调用其它方法 <code>-32001</code></td><td><code>bridge/lib/index.js:330 / 324</code></td></tr>
+  <tr><td class="k">身份盖章</td><td><code>pluginId</code> 由<b>桥盖章</b>而非调用方自报 —— 任何插件都能自称 <code>@vssaros/dsh-ide</code>，所以逐插件授权必须以盖章身份为准</td><td><code>bridge/lib/index.js:210-227 stampCallerIdentity</code></td></tr>
+  <tr><td class="k">出站原语</td><td><code>ctx.vssarosBridge</code>：<code>version</code> / <code>callIDE(method, params, options)</code> / <code>clientCount()</code> / <code>instances()</code>（默认超时 10s，无客户端或超时<b>明确 reject</b>）</td><td><code>bridge/lib/index.js:241-248 / 180-194</code></td></tr>
+  <tr><td class="k">方向一（IDE→Host）</td><td>16 个方法：<code>client.register</code> / <code>host.ping</code> / <code>ide.probe</code> / <code>ide.roundtrip</code> / <code>workspace.*</code> / <code>session.start</code> / <code>host.activity</code> / <code>providers.sync</code> / <code>plugins.*</code>（含 install / remove / setEnabled）</td><td><code>bridge/lib/index.js:327-804</code></td></tr>
+  <tr><td class="k">方向二（Host→IDE）</td><td><code>ide.echo</code>（自检）+ <code>ide.request</code>（能力调用）；反向请求用<b>负数 id</b>，参数带 token</td><td><code>bridge/lib/index.js:185-192</code>；<code>dshBridgeProtocol.ts:93</code></td></tr>
+  <tr><td class="k">生命周期</td><td>最后一个 IDE 客户端断开后，<code>idleTtlMs</code>（默认 30 分钟）无新客户端则 <code>process.exit(0)</code></td><td><code>bridge/lib/index.js:118-135</code></td></tr>
+</table>
+
+<h3>1.4 职责边界（重构后的分工）</h3>
+<div class="tbl-scroll">
+<table>
+  <tr><th>维度</th><th>dsh 侧（<code>dsh-plugins/*</code>）</th><th>宿主（<code>src/vs/**</code>）</th></tr>
+  <tr><td class="k">工具定义/实现</td><td>全部 43 个工具的 schema 与执行体</td><td>只剩 legacy 引擎那套（<code>providers/tool/**</code>）与反向通道被调方（<code>dshIdeCapabilities.ts</code>）</td></tr>
+  <tr><td class="k">工具卡渲染</td><td><code>client*.js</code> 注册 <code>tool.call.toolview</code> 槽（keyed by 工具名）</td><td>宿主自绘的是 <b>legacy</b> 聊天栈（<code>agentChat/**</code>），与 dsh 侧是两套</td></tr>
+  <tr><td class="k">技能</td><td>skill provider + 目录行 + 打开被关掉的 <code>tool-skill</code></td><td>只给目录清单、渲染覆盖层</td></tr>
+  <tr><td class="k">MCP</td><td>只读观察（<code>vssaros-mcp</code>）、可选自产行（<code>sync-rows.mjs</code>）</td><td>生成覆盖层（未登记时兜底）+ 解析镜像 + 重启</td></tr>
+  <tr><td class="k">数据根</td><td><b>唯一实现</b>：<code>config.* → VSSAROS_DATA_ROOT → ~/.vssaros</code></td><td>只<b>注入</b> <code>config.*</code>，不自己解析</td></tr>
+  <tr><td class="k">契约真源</td><td>手写对齐（<code>cordis.patch.yml</code> 行 id、<code>package.json</code> 的 <code>vssaros</code> 清单）</td><td><code>dshBridgeProtocol.ts</code> / <code>vssarosPluginManifest.ts</code> / <code>dshModuleContainers.ts</code></td></tr>
+  <tr><td class="k">生命周期</td><td>无</td><td>Host 生命周期、profile 初始化、pnpm 元数据、视图池、升级闸门</td></tr>
+</table>
+</div>
+
+<h2 id="s2">2. 工具层：43 个工具逐个说明</h2>
+
+<h3>2.1 注册 API 的真实形状（两种写法）</h3>
+<p>没有 <code>defineTool</code> 包装层、没有装饰器、没有注册表扫描：<b>就是一个对象字面量 + <code>ctx.tools.register()</code></b>。两种写法覆盖全部 43 个工具。</p>
+<pre><code>// 写法 A（工厂风格 · 40 个工具）：数组字面量 + map(register)。dashboard/codebase/kb/memory/workflow/ide 都用这个形状。
+export const name = 'vssaros-dashboard';
+export const inject = ['tools'];            // 只依赖 tools：工具在任何模板里都该可用
+
+function toolDefinitions(ctx, state, config) {
+	return [{                               // ← 字面量数组：清单可穷举，是"可审计"的前提
+		name: 'dashboard_sessions',
+		description: '列出 dsh 会话及其遥测（turn/step 数、模型与工具耗时、token 用量），并给出汇总。',
+		parameters: { type: 'object', properties: { limit: { type: 'integer', description: '1–200（默认 20）' } } },
+		output: {
+			schema: { type: 'object', properties: { summary: {…}, sessions: {…} }, required: ['summary','sessions'] },
+			render: (_args, value) =&gt; [{ type: 'text', text: `会话 ${value.summary.sessions} 个…` }],  // 给模型看的短文本
+		},
+		isConcurrencySafe: () =&gt; true,      // 也可能是布尔 true（kanban 就用 true）
+		execute: async (params) =&gt; ({ … }),  // 返回值会被 output.schema 校验
+	}];
+}
+
+export function apply(ctx, config = {}) {
+	ctx.effect(() =&gt; {                      // 注册随插件激活/停用自动回收（disposer）
+		const disposers = toolDefinitions(ctx, state, config).map(d =&gt; ctx.tools.register(d));
+		return () =&gt; { for (const d of disposers) d(); };
+	});
+}</code></pre>
+<pre><code>// 写法 B（内联风格 · kanban 10 个工具）：每个工具一次 ctx.effect(() =&gt; ctx.tools.register({…}))
+// 差别只在组织方式；同样支持 exec（用于中止信号与会话 id）。
+ctx.effect(() =&gt; ctx.tools.register({
+	name: 'kanban_list', description: '列出看板任务…',
+	parameters: { type: 'object', properties: { status: { type: 'string', enum: [...], description: … }, limit: {…} } },
+	output: { schema: LIST_OUTPUT_SCHEMA, render: … },
+	isConcurrencySafe: true,
+	execute: async (params, exec) =&gt; { /* 支持 exec.signal 中止 */ },
+}));</code></pre>
+<div class="note">
+  <b>三条硬约束</b>（全部来自源码注释与实测）：
+  <ul>
+    <li><b>参数 schema 只接受受限子集</b>：没有 <code>minimum</code>/<code>maximum</code> —— 范围写进 <code>description</code>、由代码夹紧（<code>dashboard/lib/index.js:393-394</code>）。</li>
+    <li><b>返回值必须与 <code>output.schema</code> 相符</b>：声明为可选整数的字段要<b>删掉</b>而不是留 <code>undefined</code>（否则校验器判类型不符，<code>dashboard/lib/index.js:466-467</code>）。</li>
+    <li><b>工具名是跨端契约</b>：客户端工具卡的 <code>key</code> 必须与 <code>ctx.tools.register</code> 的名字<b>逐字符一致</b>（<code>kanban/lib/client.js:24-31</code> 用探针钉住）。</li>
+  </ul>
+</div>
+
+<h3>2.2 <code>@vssaros/dsh-ide</code>（12 个 · 全部走反向通道）</h3>
+<p class="small">
+  执行体一律 <code>requestIde(bridge, capability, params, timeoutMs, sessionId)</code> → <code>bridge.callIDE('ide.request', { capability, pluginId, sessionId, params })</code>
+  （<code>ide/lib/index.js:105-117</code>，<code>:671</code> 注册）。<code>sessionId</code> 取自 <code>exec.agent.session.id</code>（<code>:123-126</code>），主进程据此把请求投给"正在跑这个会话的那个窗口"，
+  拿不到才退回广播。
+</p>
+<div class="tbl-scroll">
+<table>
+  <tr><th>工具</th><th>功能</th><th>参数（★=必填）</th><th>能力名</th><th>性质</th><th>位置</th></tr>
+  <tr><td class="k">get_diagnostics</td><td>读编辑器诊断（编译/检查错误警告），可指定文件或整个工作区</td><td>path / scope('file'|'workspace') / minSeverity</td><td><code>getDiagnostics</code></td><td>只读</td><td><code>:154</code></td></tr>
+  <tr><td class="k">get_selection</td><td>读当前活动编辑器的选区文本与范围</td><td>—</td><td><code>getSelection</code></td><td>只读</td><td><code>:193</code></td></tr>
+  <tr><td class="k">open_file</td><td>在工作区打开文件（可定位行），<b>默认不抢焦点</b></td><td>path★ / startLine / endLine / focus</td><td><code>openFile</code></td><td>显示层（不写盘）</td><td><code>:227</code></td></tr>
+  <tr><td class="k">reveal</td><td>在资源管理器里定位文件</td><td>path★</td><td><code>reveal</code></td><td>显示层</td><td><code>:265</code></td></tr>
+  <tr><td class="k">browser</td><td>读/操作 VsSaros 内置 CDP 浏览器</td><td>op★（<code>status/snapshot/images</code> 只读；<code>navigate/click/type/pressEnter/pressKey/scroll/back/reset</code>） / url / ref / text / key / direction / amount / append</td><td><code>browser</code></td><td>读 op 只读；<b>写 op 需逐次用户确认</b>（<code>BROWSER_CONSENT_OPS</code>）</td><td><code>:288</code></td></tr>
+  <tr><td class="k">canvas</td><td>读/改工作流画布（LiteGraph）</td><td>op★（<code>state/task_status</code> 只读；<code>apply_ops/generate/reverse_prompt</code>） / workflowId / goal / variants / provider_id / model_id / negative_prompt / size / run / layout / node / ops</td><td><code>canvas</code></td><td>写 op 需确认；<code>generate run:true</code> 是<b>长任务 + 花钱</b></td><td><code>:358</code></td></tr>
+  <tr><td class="k">mindmap</td><td>读 <code>.canvas</code> 思维导图（节点 + 连线）</td><td>path（缺省 = 活动编辑器那张图）</td><td><code>mindmap</code></td><td>只读（&gt;4MB 直接拒）</td><td><code>:472</code></td></tr>
+  <tr><td class="k">unreal_health</td><td>查 UE nAgent bridge 可达性</td><td>—</td><td><code>unreal</code>（tool=health）</td><td>只读</td><td><code>:524</code></td></tr>
+  <tr><td class="k">unreal_help</td><td>内省 <code>unreal</code> Python 模块的 docstring / 签名</td><td>symbol / filter</td><td><code>unreal</code>（tool=help）</td><td>只读</td><td><code>:539</code></td></tr>
+  <tr><td class="k">unreal_dump</td><td>按反射递归 dump UE 对象属性</td><td>code★ / depth</td><td><code>unreal</code>（tool=dump）</td><td>只读</td><td><code>:566</code></td></tr>
+  <tr><td class="k">unreal_find_asset</td><td>在 AssetRegistry 里检索资产</td><td>name_contains（别名 search_term）/ name / path / class_names / max_results</td><td><code>unreal</code>（tool=find_asset）</td><td>只读</td><td><code>:594</code></td></tr>
+  <tr><td class="k">show_diff</td><td>打开两个工作区内文件的只读 diff</td><td>left★ / right★ / title / focus</td><td><code>showDiff</code></td><td>显示层</td><td><code>:631</code></td></tr>
+</table>
+</div>
+<p class="small">
+  <b>UE 只做只读子集是刻意的</b>：<code>exec</code> / <code>wait</code> / <code>build</code> 这类"跑引擎命令"不在 dsh 侧开放（<code>ide/lib/index.js:519-522</code>）。
+  <b>慢档超时判定必须两侧同形</b>：<code>ide/lib/index.js:84-98</code> 与宿主 <code>ideRequestTimeoutMs</code> 的口径要一致（"需确认的 op 一律慢档 + unreal 非 health"），
+  否则会出现"本侧比渲染侧早超时"（第一版曾把 <code>browser.type</code> 漏判，被契约用例当场抓住）。
+</p>
+
+<h3>2.3 <code>@vssaros/dsh-kanban</code>（10 个 · 本地 <code>taskboard.json</code>）</h3>
+<p class="small">全部经 <code>lib/store.js</code> 的 <code>readTaskboard</code> / <code>mutateTaskboard</code> 读写同一份文件；写工具独占（无 <code>isConcurrencySafe</code>），读工具声明 <code>isConcurrencySafe: true</code> 且支持 <code>exec.signal</code> 中止。</p>
+<div class="tbl-scroll">
+<table>
+  <tr><th>工具</th><th>功能</th><th>关键参数</th><th>性质</th><th>位置</th></tr>
+  <tr><td class="k">kanban_list</td><td>列任务（按看板/状态/关键字/工作区过滤）</td><td>boardId / status(enum) / query / workspaceId / limit（夹到边界）</td><td>只读 · 可并行 · 可中止</td><td><code>:450</code></td></tr>
+  <tr><td class="k">kanban_create</td><td>新建卡片（默认 triage 列）</td><td>title★ / description / status / priority / boardId / assigneeName（别名 assignee） / url / workspaceId</td><td>写 · 独占</td><td><code>:496</code></td></tr>
+  <tr><td class="k">kanban_update</td><td>更新字段（改到 done/cancelled/archived 会写完成时间）</td><td>id★ / title / description / status / priority / boardId / url / assigneeName</td><td>写 · 独占</td><td><code>:532</code></td></tr>
+  <tr><td class="k">kanban_show</td><td>看单卡完整信息（支持末 6 位短 id / <code>#</code> 前缀）</td><td>id★</td><td>只读 · 可并行</td><td><code>:576</code></td></tr>
+  <tr><td class="k">kanban_complete</td><td>标记完成（可选结果摘要覆盖 description）</td><td>id★ / result</td><td>写 · 独占</td><td><code>:600</code></td></tr>
+  <tr><td class="k">kanban_block</td><td>标记阻塞（原因以 <code>[BLOCKED] …</code> 追加描述）</td><td>id★ / reason★</td><td>写 · 独占</td><td><code>:636</code></td></tr>
+  <tr><td class="k">kanban_unblock</td><td>解除阻塞退回 todo</td><td>id★</td><td>写 · 独占</td><td><code>:673</code></td></tr>
+  <tr><td class="k">kanban_heartbeat</td><td>报"还在推进"（写 <code>[HEARTBEAT …]</code> 或只刷 updatedAt）</td><td>id★ / note</td><td>写 · 独占</td><td><code>:700</code></td></tr>
+  <tr><td class="k">kanban_comment</td><td>加评论（<code>[COMMENT agent …]</code> 追加描述）</td><td>id★ / body★</td><td>写 · 独占</td><td><code>:739</code></td></tr>
+  <tr><td class="k">kanban_link</td><td>建立 child←parent 依赖（禁自依赖、重复不写盘）</td><td>parent_id★ / child_id★</td><td>写 · 独占</td><td><code>:777</code></td></tr>
+</table>
+</div>
+<div class="note warn">
+  <b>移植纪律（<code>kanban/lib/index.js:57-59, 570-573</code>）</b>：这 10 个动词是<b>按 IDE legacy <code>kanbanTools.ts</code> 逐条移植</b>的（含文案格式），
+  因为两端写的是<b>同一份 <code>taskboard.json</code></b>——"同一个动词在两个引擎里结果不同"比缺这个工具更糟。
+  故意<b>不</b>移植 <code>specify</code> / <code>decompose</code> / <code>swarm</code> 三个，因为它们都要调模型。
+</div>
+
+<h3>2.4 其余 21 个工具（本地读 / HTTP / 子进程）</h3>
+<div class="tbl-scroll">
+<table>
+  <tr><th>插件</th><th>工具</th><th>功能</th><th>执行路径</th><th>性质</th></tr>
+  <tr>
+    <td class="k" rowspan="5">vssaros-codebase<br><span class="small">:509 注册<br>工厂 <code>:212</code></span></td>
+    <td class="k">codebase_overview</td><td>图谱总览（走轻路径 <code>artifact.json</code>，不解压全量）</td><td rowspan="5">读 <code>&lt;workspace&gt;/.codebase-memory/{artifact.json,graph.db.zst}</code>（<code>lib/store.js</code>，60s 超时 + 400MB 解压上限）</td>
+    <td>只读</td>
+  </tr>
+  <tr><td class="k">codebase_search</td><td>按名字检索符号（类型/文件/行号/出入度）</td><td>只读（首次会解压全量图，慢）</td></tr>
+  <tr><td class="k">codebase_deps</td><td>查符号/文件的出边入边（CALLS/USAGE/CONTAINS）</td><td>只读</td></tr>
+  <tr><td class="k">codebase_hotspots</td><td>入度/出度最高的节点</td><td>只读</td></tr>
+  <tr><td class="k">codebase_self_index</td><td>写侧前提自证：Host 内扫源码 → 出最小图谱 → 同读侧读回比对</td><td><b>长任务</b>（<code>spawnSync</code> 子进程 60s；只写临时目录，不碰工作区）</td></tr>
+  <tr>
+    <td class="k" rowspan="5">vssaros-kb<br><span class="small">:803 注册<br>工厂 <code>:498</code></span></td>
+    <td class="k">kb_list</td><td>列出所有 vault 及索引条目数</td><td rowspan="4">本地读 <code>&lt;数据根&gt;/knowledge-base/&lt;vaultId&gt;/</code></td>
+    <td>只读</td>
+  </tr>
+  <tr><td class="k">kb_search</td><td>检索文档（标题/标签/类型/路径），返回 <code>uri</code> 供 kb_read</td><td>只读</td></tr>
+  <tr><td class="k">kb_read</td><td>读某篇文档正文（超 <code>MAX_DOC_BYTES</code> 截断）</td><td>只读</td></tr>
+  <tr><td class="k">kb_topic_overviews</td><td>列分类目录摘要（检索前的导航层）</td><td>只读</td></tr>
+  <tr><td class="k">kb_feishu_sync</td><td>同步笔记到飞书（<b>默认 dry-run</b>，<code>apply:true</code> 才写远端）</td><td><code>spawn(process.execPath, [FEISHU_SCRIPT_PATH, …])</code>（<code>lib/index.js:48</code>）</td><td><b>有副作用 + 长任务</b>（带超时/终止）</td></tr>
+  <tr>
+    <td class="k" rowspan="5">vssaros-memory<br><span class="small">:427 注册<br>工厂 <code>:198</code></span></td>
+    <td class="k">memory_remember</td><td>写一条记忆（<code>working</code> 进核心槽位，其余进长期记忆）</td><td rowspan="5">HTTP → AgentMemory 网关（<code>lib/gateway.js</code>：<code>fetch</code> + 5s <code>AbortController</code>）</td>
+    <td><b>写</b>；有每 Host 运行<b>写预算</b>拦截（<code>:237-246</code>）</td>
+  </tr>
+  <tr><td class="k">memory_list</td><td>列出记忆条目（空查询 = 全量）</td><td>只读</td></tr>
+  <tr><td class="k">memory_search</td><td>检索记忆条目</td><td>只读</td></tr>
+  <tr><td class="k">memory_stats</td><td>查看记忆库统计</td><td>只读</td></tr>
+  <tr><td class="k">memory_refresh</td><td>强制刷新注入系统提示词的工作记忆快照</td><td>写注入快照 · 独占</td></tr>
+  <tr>
+    <td class="k" rowspan="4">vssaros-workflow<br><span class="small">:603 注册<br>工厂 <code>:236</code></span></td>
+    <td class="k">workflow_update</td><td>改工作流元信息（name/description/tags），不碰节点/边</td><td rowspan="4">本地 <code>&lt;数据根&gt;/workflows/&lt;id&gt;/workflow.json</code>；写走"取锁 → 读 → 指纹 CAS → 原子写"（<code>lib/lock.js</code> + <code>lib/store.js</code>）</td>
+    <td>写 · 独占（CAS 重试）</td>
+  </tr>
+  <tr><td class="k">workflow_list</td><td>列工作流（节点/边/会话数/分类/作者）</td><td>只读</td></tr>
+  <tr><td class="k">workflow_get</td><td>读一个工作流的节点图与连接</td><td>只读</td></tr>
+  <tr><td class="k">workflow_engine_status</td><td>自证 Host <code>worker_threads</code> 可用，并在真线程里加载一次工作流</td><td>只读（起真 worker 再终止）· <b>长任务</b>（8s 超时）</td></tr>
+  <tr>
+    <td class="k" rowspan="2">vssaros-dashboard<br><span class="small">:595 注册<br>工厂 <code>:386</code></span></td>
+    <td class="k">dashboard_sessions</td><td>列 dsh 会话及遥测（turn/step/token/耗时）并汇总</td><td rowspan="2">本地读 <code>&lt;DSH_HOME&gt;/storages/session_projcache/sessions/*.json</code> + <b>活会话合并</b>（<code>ctx.sessions</code> / <code>sessionProjections</code>，两条分别可选注入）</td>
+    <td>只读</td>
+  </tr>
+  <tr><td class="k">dashboard_session</td><td>单会话明细（上下文占用与分解、模型、子代理、标题输入…）</td><td>只读（<code>sessionId</code> 拒 <code>\</code>/<code>/</code>/<code>..</code>）</td></tr>
+</table>
+</div>
+
+<h3>2.5 执行路径的四种形态</h3>
+<div class="grid">
+  <div class="card"><div class="k">① 本地文件 / 目录读</div><div class="v">21 个</div><div class="n">kanban(10) · codebase(5) · kb(4) · workflow(4) · dashboard(2) 中的只读部分 —— 直接读 <code>&lt;数据根&gt;</code> 或 <code>DSH_HOME</code>，不经任何外部进程</div></div>
+  <div class="card"><div class="k">② 本地文件写（独占）</div><div class="v">9 个</div><div class="n">kanban 写族(7) · workflow_update · memory_refresh —— 原子写 / CAS / 锁；不声明 <code>isConcurrencySafe</code></div></div>
+  <div class="card"><div class="k">③ 反向桥（IDE 能力）</div><div class="v">12 个</div><div class="n">ide 插件的全部 —— <code>callIDE('ide.request')</code> → 授权闸门 → 渲染进程；<b>唯一"dsh 进程里做不到"的一类</b></div></div>
+  <div class="card"><div class="k">④ 子进程 / HTTP 出站</div><div class="v">3 个</div><div class="n">kb_feishu_sync（Node 子进程）· codebase_self_index（spawnSync）· memory 五件（HTTP 网关，5s 超时）</div></div>
+</div>
+
+<h3>2.6 反向通道的授权模型（12 个工具的安全边界）</h3>
+<p>这是本仓库与其他 dsh 宿主最大的差别，规则<b>全部默认拒绝</b>（<code>dshIdeAuthorization.ts:59-80 authorizeIdeRequest</code>）：</p>
+<ol>
+  <li><b>能力名必须在白名单</b>：<code>VSSAROS_IDE_CAPABILITIES</code>（<code>vssarosPluginManifest.ts:88-98</code>）—— <code>openFile</code> / <code>reveal</code> / <code>showDiff</code> / <code>getSelection</code> / <code>getDiagnostics</code> / <code>browser</code> / <code>canvas</code> / <code>mindmap</code> / <code>unreal</code> / <code>taskboard</code> / <code>workflow</code>；不是名单里的名字直接 <code>MethodNotFound</code>。</li>
+  <li><b>请求必须带 <code>pluginId</code></b>，且该插件已安装在 profile 里；缺 <code>pluginId</code> 一律拒（"逐插件授权的前提是知道谁在问"）。</li>
+  <li><b>该插件的清单里必须声明过这个能力</b>（<code>vssaros.ideCapabilities</code>）—— 不是"某个插件声明过就全局放行"。</li>
+  <li><b>身份由桥盖章</b>：<code>pluginId</code> 不采信调用方自报（<code>bridge/lib/index.js:210-227</code>），否则任何插件都能自称 IDE 插件去要那 12 个能力。</li>
+  <li><b>时间预算分层</b>：<code>ide/lib/index.js:88-98</code> 取多档最大值（配置值、渲染侧 default/slow、需确认的 consent 档、unreal 各 tool 的实测档）。</li>
+  <li><b>需确认的写操作</b>：<code>browser</code> / <code>canvas</code> 的写 op 不在插件里"偷偷做"，而是转给 IDE 侧走用户确认。</li>
+</ol>
+<div class="note warn">
+  <b>能力名为什么拆这么细</b>（<code>vssarosPluginManifest.ts:83-86</code> 的原话）：把 <code>mindmap</code> 折叠进 <code>canvas</code>、把 <code>unreal</code> 硬塞进某个桶，
+  会让"一个只声明 canvas 的插件顺带拿到 mindmap 工具"——"按清单逐项授权"就退化成"整族放行"。
+  名字多一个的代价只是清单里多一项，换来的是"这个插件到底能驱动 IDE 到什么程度"在<b>安装那一刻就可读、可审</b>。
+</div>
+
+<h3>2.7 官方工具 vs vssaros 工具（差异与取舍）</h3>
+<p class="small">
+  官方侧口径：dsh <code>0.2.0-rc.2</code> 的 <code>@deepseek-ai/dsh-tool-*</code> 等包；生效组合 = profile 的 bundle 层（<code>dsh-base</code> → <code>dsh-web-app</code> → 我们的层 → <code>--patch</code> 覆盖层）+ 会话 preset。
+  依据：<code>@deepseek-ai/dsh-web-app/cordis.patch.yml</code>、<code>dsh-web-app/presets/standard.patch.yml</code>、<code>dsh-plugins/*/cordis.patch.yml</code>、各官方包 <code>README.zh.md</code>。
+</p>
+
+<h4>① 两边不在同一"平面"（最重要的结构差异）</h4>
+<div class="tbl-scroll">
+<table>
+  <tr><th>维度</th><th>官方工具</th><th>vssaros 工具</th></tr>
+  <tr>
+    <td class="k">挂在哪</td>
+    <td><b>per-agent（preset plane）</b> —— 由会话选的 preset 决定</td>
+    <td><b>host plane</b> —— 顶层 <code>- insert:</code>（<code>dsh-plugins/*/cordis.patch.yml</code>）</td>
+  </tr>
+  <tr>
+    <td class="k">可见性</td>
+    <td>随 preset 变：standard / ptc / minimal / cordis 各不相同</td>
+    <td>与 preset <b>无关</b>：装了几个插件就有几个工具，全局会话都可见</td>
+  </tr>
+  <tr>
+    <td class="k">host 侧状态</td>
+    <td><code>dsh-web-app/cordis.patch.yml</code> 把 <code>tool-fs</code> · <code>tool-fs-search</code> · <code>tool-bash</code> · <code>tool-pwsh</code> · <code>tool-jobs</code> · <code>tool-skill</code> · <code>skill-filesystem</code> · <code>tool-todo</code> · <code>tool-web</code> · <code>tool-goal</code> · <code>command-goal</code> · <code>plan-mode</code> · <code>tool-subagent</code>(+<code>-fork</code>) · <code>tool-subagent-control</code> · <code>tool-workflow</code> · <code>workflow-ptc</code> · <code>compaction-basic</code> · <code>tool-result-pruner</code> · <code>agent-instructions</code> <b>全部 <code>disabled: true</code></b>（注释原话：only the per-agent rows move behind presets）</td>
+    <td>直接生效。我们<b>只翻回过一行</b>（<code>tool-skill</code> 的 <code>disabled: false</code>），<b>没有关过任何官方行</b></td>
+  </tr>
+  <tr>
+    <td class="k">数量</td>
+    <td>standard preset ≈ <b>23 个</b>（见 ②）；host 级另有 MCP 资源三件 + 动态 <code>mcp__*</code></td>
+    <td><b>43 个</b>（7 个插件）</td>
+  </tr>
+  <tr>
+    <td class="k">minimal preset 下</td>
+    <td>只剩 <code>pwsh</code> / <code>bash</code></td>
+    <td><b>仍然全部可见</b>（见 ⑤，这是当前最大的结构问题）</td>
+  </tr>
+  <tr>
+    <td class="k">与 dsh 语义的耦合</td>
+    <td>深：session 投影、plan mode、goal、compaction、job、subagent、UI 原生渲染都配套</td>
+    <td>浅：多数是"读写自己的数据根"，与 dsh 语义耦合只发生在反向通道（12 个）与技能/MCP 复用面</td>
+  </tr>
+</table>
+</div>
+
+<h4>② 官方工具清单（standard preset 生效 ≈ 23 个）</h4>
+<div class="tbl-scroll">
+<table>
+  <tr><th>官方包</th><th>工具</th><th>功能要点</th></tr>
+  <tr><td class="k">dsh-tool-pwsh<br>dsh-tool-bash</td><td><code>pwsh</code> / <code>bash</code></td><td>终端命令（win32 用 <code>pwsh</code>、其余用 <code>bash</code>，两行走平台互斥的 <code>disabled</code>）；另有<b>持久版</b>（<code>-persistent</code>）与 sandbox 行</td></tr>
+  <tr><td class="k">dsh-tool-fs</td><td><code>read</code> · <code>write</code> · <code>edit</code> · <code>read_image</code></td><td>带行号读 UTF-8、原子替换文件、针对性字面量编辑；读图需持久附件存储 + 支持图片输入的路由模型；配 <code>dsh-fs-observation-policy</code> 时"写入前必须先成功读取"</td></tr>
+  <tr><td class="k">dsh-tool-fs-search</td><td><code>glob</code> · <code>grep</code></td><td>工作区文件名发现与内容搜索；<b>无需宿主安装 rg</b>；结果相对工作目录，含隐藏/忽略文件但排除 VCS 元数据</td></tr>
+  <tr><td class="k">dsh-tool-jobs</td><td><code>job_list</code> · <code>job_output</code> · <code>job_kill</code></td><td>检查与控制<b>后台</b>命令、PTY 工作与 subagent；完成时给会话内通知（繁忙 agent 下一步收到，空闲 agent 由 follow-up 轮次唤醒）</td></tr>
+  <tr><td class="k">dsh-tool-skill</td><td><code>skill</code></td><td>首次请求前注入持久目录（<code>&lt;available_skills&gt;</code>：名称 + 有长度上限的描述），模型调它加载完整指令；用户可用 <code>/name</code> 调用</td></tr>
+  <tr><td class="k">dsh-tool-goal</td><td><code>get_goal</code> · <code>create_goal</code> · <code>update_goal</code></td><td>持久目标；<code>update</code> 必须带先前读到的精确 id 与 revision；自主阻塞需同一条件连续达阈值（默认 3 个 Round）</td></tr>
+  <tr><td class="k">dsh-plan-mode</td><td>（plan mode 及其退出工具）</td><td>计划模式：在 <code>exit_plan_mode</code> 成功或用户切换模式前不改代码</td></tr>
+  <tr><td class="k">dsh-tool-subagent<br>（两行）</td><td><code>subagent</code> · <code>subagent_fork</code></td><td>委派（<code>provider: spawn</code> / <code>fork</code>，<code>backgroundMode: continuable</code>，可暴露子级可用的模型路由供模型选择）</td></tr>
+  <tr><td class="k">dsh-tool-subagent-control<br>+ <code>/list-agents</code></td><td><code>send_message</code> · <code>interrupt_agent</code> · <code>list_agents</code></td><td>可继续子级的<b>中途引导</b>、打断（保留收件箱与后代）、按持久 ID 列举</td></tr>
+  <tr><td class="k">dsh-tool-workflow<br>+ dsh-workflow-ptc</td><td><code>workflow</code></td><td>运行 JS 编排脚本把工作扇出给多个 subagent 并返回最终 JSON；<b>官方自述</b>："仅当用户明确要求工作流或大型多 agent 编排时使用；一两项委派应优先使用普通 subagent 调用"</td></tr>
+  <tr><td class="k">dsh-tool-ask-user</td><td><code>ask_user_question</code></td><td>向用户请求确认/选择/缺失信息；<code>mode: timed</code> 到期后模型可继续独立工作；存活子 agent 不能调用</td></tr>
+  <tr><td class="k">dsh-tool-todo</td><td><code>todo_write</code></td><td><b>会话内</b>结构化任务清单：整表替换、跨轮与重开会话持久、每次调用把 <code>todo/write</code> 快照追加进会话（回放 last-write-wins），UI 从会话事件渲染</td></tr>
+  <tr><td class="k">dsh-tool-web</td><td><code>web_search</code> · <code>web_fetch</code></td><td>外部检索与抓取（提供方：<code>dsh-web-search-deepseek</code>、<code>dsh-web-fetch-http</code>）；提供方控制的文本被标记为<b>外部不可信数据</b>；超时与大小上限属部署设置而非模型参数</td></tr>
+  <tr><td class="k">dsh-mcp-client</td><td>动态 <code>mcp__&lt;server&gt;__&lt;tool&gt;</code></td><td>外部 MCP 服务器工具（<b>默认不启用任何服务器</b>；一台服务器一条记录）</td></tr>
+  <tr><td class="k">dsh-mcp-resources</td><td><code>list_mcp_resources</code> · <code>list_mcp_resource_templates</code> · <code>read_mcp_resource</code></td><td>MCP 资源发现与读取（<b>host 级</b>，不随 preset 关）</td></tr>
+  <tr><td class="k">dsh-tool-present</td><td><code>present</code></td><td>展示（vssaros 无对应物）</td></tr>
+  <tr><td class="k">dsh-tool-str-replace-editor</td><td><code>str_replace_editor</code></td><td>Claude Code 风格的另一套编辑器（<code>view</code>/<code>create</code>/<code>str_replace</code>/<code>insert</code>）；与 <code>dsh-tool-fs</code> 二选一</td></tr>
+  <tr><td class="k">dsh-tool-workspace-dependencies</td><td><code>load_workspace_dependencies</code></td><td>工作区依赖（base 级行）</td></tr>
+  <tr><td class="k">dsh-tool-cordis</td><td><code>cordis_inspect_list</code> · <code>cordis_inspect_query</code></td><td>只读内省 Host/Client 运行时 API（<b>仅 cordis preset</b> 挂载）</td></tr>
+  <tr><td class="k">dsh-tool-ralph</td><td><code>ralph</code></td><td>标准 preset 下 <code>disabled: true</code></td></tr>
+  <tr><td class="k">dsh-experimental-tool-agent-team</td><td><code>send_message</code> · <code>list_agents</code> · <code>interrupt_agent</code> · <code>team_task_get</code></td><td>实验态 agent team（与 <code>tool-subagent-control</code> 同名工具的另一套实现）</td></tr>
+</table>
+</div>
+
+<h4>③ 重叠只有 3 组，而且都是"不同层"</h4>
+<div class="tbl-scroll">
+<table>
+  <tr><th>能力域</th><th>官方</th><th>vssaros</th><th>判断</th></tr>
+  <tr>
+    <td class="k">任务清单</td>
+    <td><code>todo_write</code>：<b>会话内</b>、<code>todos</code> 投影 + 会话事件回放、UI 原生渲染、跨轮持久</td>
+    <td><code>kanban_*</code>（10）：共享 <code>taskboard.json</code>、<b>跨会话/跨 agent</b>、parent-child 依赖、阻塞/心跳/评论作为文本追加进 description</td>
+    <td><span class="tag y">重叠但不同层</span>按"当前这轮 vs 跨会话资产"分工</td>
+  </tr>
+  <tr>
+    <td class="k">编排</td>
+    <td><code>workflow</code>（跑 JS 扇出 subagent 返回 JSON）· <code>subagent</code>/<code>subagent_fork</code> · <code>send_message</code>/<code>interrupt_agent</code>/<code>list_agents</code></td>
+    <td><code>workflow_*</code>（4）：LiteGraph 画布<b>资产</b>（节点/边/分类/会话数）+ engine status 自证</td>
+    <td><span class="tag y">重叠但不同层</span>官方管"执行"，我们管"定义与可视化"</td>
+  </tr>
+  <tr>
+    <td class="k">检索</td>
+    <td><code>glob</code> / <code>grep</code>：工作区<b>文本与文件名</b></td>
+    <td><code>codebase_search</code>/<code>deps</code>/<code>hotspots</code>：<b>符号图谱</b>（出入度、悬空边、热点评分）</td>
+    <td><span class="tag y">重叠但不同层</span>文本 vs 关系</td>
+  </tr>
+</table>
+</div>
+<p class="small">
+  <b>没有任何同名工具</b>（<code>workflow_*</code> 与官方 <code>workflow</code> 前缀不同，不冲突）。<b>官方有我们没有</b>：终端、文件读写编辑、glob/grep、job、skill、goal/plan-mode、子代理与编排、ask-user、todo、web、present、MCP 客户端与资源、workspace-dependencies、cordis 内省。
+  <b>我们有官方没有</b>：IDE 反向能力 12 个（诊断/选区/打开/reveal/diff/browser CDP/canvas/mindmap/unreal×4）、KB 5、memory 5、dashboard 2、codebase 图谱 5、kanban 10、workflow 资产 4。
+</p>
+
+<h4>④ 结论：哪些用官方更合理</h4>
+<table>
+  <tr><th>类别</th><th>结论</th><th>理由</th></tr>
+  <tr>
+    <td class="k" rowspan="5"><span class="tag g">应改用官方</span></td>
+    <td><b>会话内的多步计划 → 官方 <code>todo_write</code></b></td>
+    <td>它是 session-projection 一等公民：<code>todos</code> 投影 + 事件回放、UI 原生渲染、与 plan mode / goal 联动。我们的 kanban 把结构化语义塞进 <code>description</code> 文本（<code>[BLOCKED] …</code> / <code>[COMMENT agent …]</code> / <code>[HEARTBEAT …]</code>），模型要多学一套动词、UI 也认不出</td>
+  </tr>
+  <tr>
+    <td><b>后台长任务 → 官方 <code>job_*</code></b></td>
+    <td>我们 3 个长任务（<code>kb_feishu_sync</code> 子进程、<code>codebase_self_index</code> <code>spawnSync</code> 60s、<code>workflow_engine_status</code> worker 8s）全是<b>同步阻塞 + 各自超时</b>，没有统一进度/取消/通知面（即 7.2 的 R9）。官方 jobs 恰好提供这三样（含"空闲 agent 由 follow-up 唤醒"）</td>
+  </tr>
+  <tr>
+    <td><b>模型侧的"多 agent 编排执行" → 官方 <code>workflow</code> / <code>subagent</code></b></td>
+    <td>官方 workflow 有 PTC 版本、有后台 <code>run_in_background</code>、与 subagent 控制三件配套；官方自述"一两项委派优先用普通 subagent"。我们的 <code>workflow_*</code> 应停在"定义/可视化/自证"，不做执行器</td>
+  </tr>
+  <tr>
+    <td><b>技能加载 → 官方 <code>skill</code> + <code>skill-filesystem</code></b>（现状已正确）</td>
+    <td>我们只提供"来源"（用户层目录 + provider）。自己注册 skill 工具会与官方重复甚至遮蔽 —— 这正是 <code>@vssaros/dsh-skills</code> 明说不注册工具的原因</td>
+  </tr>
+  <tr>
+    <td><b>MCP 挂载与资源读取 → 官方 <code>mcp-client</code> + <code>mcp-resources</code></b>（现状已正确）</td>
+    <td>我们只加"配置入口 + 可观测面"；工具名 <code>mcp__*</code> 由 dsh 生成，不该改写</td>
+  </tr>
+  <tr>
+    <td class="k" rowspan="4"><span class="tag c">保留自己实现</span></td>
+    <td><b>IDE 反向能力 12 个</b></td>
+    <td>官方进程里没有编辑器/引擎/画布 —— 只能由宿主执行（<code>ide.request</code> 的存在理由）</td>
+  </tr>
+  <tr><td><b>领域资产：KB / codebase 图谱 / memory / dashboard 遥测</b></td><td>官方没有对应物</td></tr>
+  <tr><td><b>跨会话共享看板（kanban 的持久层）</b></td><td><code>todo_write</code> 是 per-session 的，跨会话/跨 agent 协作需要外部存储 + 依赖关系</td></tr>
+  <tr><td><b>可视化工作流资产（画布 + 版本/分类/会话数）</b></td><td>官方 workflow 没有资产模型</td></tr>
+  <tr>
+    <td class="k" rowspan="2"><span class="tag y">不二选一，要写清分工</span></td>
+    <td><code>todo_write</code> ↔ <code>kanban_*</code></td>
+    <td>在两者的 description 里<b>互相指路</b>（"本轮步骤用 todo_write；跨会话任务用 kanban_*"），否则模型会把同一件事登记两遍</td>
+  </tr>
+  <tr>
+    <td><code>grep</code>/<code>glob</code> ↔ <code>codebase_*</code></td>
+    <td>写明"文本/文件名用官方，符号关系与出入度用图谱"，避免模型用 <code>grep</code> 硬找符号关系</td>
+  </tr>
+</table>
+
+<h4>⑤ 结构性问题：平面错位让 preset 失效</h4>
+<div class="note warn">
+  <b>官方把工具下移到 per-agent plane，本意就是让 preset 成为"能力预算开关"</b> —— <code>minimal</code> 的定义是"极简，只有一个持久终端"，省掉 20+ 个工具定义常驻上下文。
+  但我们的 43 个工具在 <b>host plane</b>，<b>任何 preset 下都会全部注入</b>：选 <code>minimal</code> 的用户实际拿到 43 + 2 = 45 个工具，预期落空；<code>cordis</code>（创造模式，本意是"只读内省 + 改 dsh 自身"）下我们的工具也在。
+  <br><br>
+  <b>两条可行路径</b>（可按模块分级，不是二选一）：
+  <ol>
+    <li><b>会话无关的模块留在 host plane</b>（现状正确）：不注册工具的模块（bridge / mcp 观察页 / dashboard 只读页 / canvas 页面）本就不占工具面。</li>
+    <li><b>给模型用的模块行下移到 preset plane</b>：在 <code>standard</code> / <code>cordis</code> 的 preset 里各 insert 一份我们的行（用 <code>disabled: !!js</code> 按 preset 表达式控制），<code>minimal</code> 就真的极简。代价：行要挂 4 份（或多份），需要新增守卫断言"每个 preset 的工具面 = 期望集合"。</li>
+  </ol>
+  <b>一条待实测的耦合</b>：工具呈现模式是 <code>tools</code> 服务的 host 级配置（<code>dsh-web-app/cordis.patch.yml:32-38</code> 的 <code>mode: !!js process.env.DSH_TOOLS_MODE</code>，取值 <code>native|ptc|both</code>），
+  因此 <code>ptc</code> / PTC 模式下我们的 host 级工具<b>应当同样被代码化呈现</b>（PTC 作用于 <code>tools</code> 服务层）—— 本报告<b>未</b>真机验证这一点，已记入 9.4。
+</div>
+
+<h2 id="s3">3. 技能层：来源、加载与调用</h2>
+
+<h3>3.1 四层来源（谁扫、扫哪儿、优先级）</h3>
+<div class="tbl-scroll">
+<table>
+  <tr><th>层</th><th>路径</th><th>来源标记</th><th>谁扫</th></tr>
+  <tr><td class="k">内置（随包）</td><td><code>resources/.agents/skills/**/SKILL.md</code></td><td>builtin</td><td>宿主 <code>_skillDirs()</code>（<code>dshHarnessService.ts:620</code>）+ IDE <code>SkillRegistry</code></td></tr>
+  <tr><td class="k">用户全局</td><td><code>~/.vssaros/skills/&lt;id&gt;/SKILL.md</code>（dev = <code>~/.vssaros-dev</code>）</td><td>user / marketplace</td><td>同上（<code>:623</code>）</td></tr>
+  <tr><td class="k">生态用户级（2026-10-12 新增）</td><td><code>~/.agents/skills</code> · <code>~/.copilot/skills</code> · <code>~/.claude/skills</code></td><td>user</td><td><code>ecosystemUserSkillDirPaths()</code>（<code>common/skillEcosystemDirs.ts</code>）</td></tr>
+  <tr><td class="k">运行时内存</td><td><code>registerSkill()</code> 注入 / workflow 来源</td><td>memory / workflow</td><td>仅 IDE 侧 <code>skillRegistryService</code></td></tr>
+</table>
+</div>
+<p class="small">
+  <b>刻意不扫</b>：工作区里的 <code>.agents/skills</code>、<code>.github/skills</code>、<code>.claude/skills</code> —— 它们是提示词注入面，必须先过 Workspace Trust
+  （<code>skillEcosystemDirs.ts:16-18</code>、<code>skillRegistryService.ts:606-612</code>）。
+  末尾统一 <code>existsSync</code> 过滤 + 去重（<code>dshHarnessService.ts:639</code>、<code>dshHostSupervisor.ts:653</code>）。
+</p>
+<p class="small">
+  <b>重名时的胜负（IDE 侧口径）</b>：<code>SKILL_SOURCE_RANK</code> = memory 4 &gt; workflow 3 &gt; user/marketplace 2 &gt; builtin/extension 1，
+  高 rank 覆盖低 rank，<b>同 rank first-wins</b>（<code>skillRegistryService.ts:846/861</code>）。扫描顺序为 内置 → 用户 → 生态 → workflow → 内存，
+  即"用户自营/商城技能先于生态目录"，同 id 时保住自营（<code>:614-615</code> 的注释原话）。
+</p>
+
+<h3>3.2 加载机制：两条 patch 缺一不可</h3>
+<div class="chain">
+<b>① 目录挂载</b>（宿主渲染 → <code>--patch</code>）　<span class="at">dshSkillDirs.ts:21 renderSkillsOverlay(dirs)</span><br>
+&nbsp;&nbsp;<span class="lbl">写成</span> <code>&lt;runDir&gt;/skills-&lt;random&gt;.yml</code> <span class="at">dshHostSupervisor.ts:651-661</span> <span class="lbl">（每次启动 Host 都写，mode <code>0600</code>）</span><br>
+&nbsp;&nbsp;<span class="lbl">内容</span> <code>- insert: [{ id: 'vssaros-skills-dirs', name: '@deepseek-ai/dsh-skill-filesystem', config: { providerName:'vssaros', includeDefaultRoots:false, watch:true, customSkillDirs:[…] } }]</code><br>
+<b>② 注册我们自己的来源</b>（插件自带 patch）　<span class="at">vssaros-skills/cordis.patch.yml:13-16</span><br>
+&nbsp;&nbsp;<span class="lbl">插入</span> <code>{ id: 'vssaros-skills', name: '@vssaros/dsh-skills' }</code> <span class="arrow">→</span> 运行时由 <code>ctx.skills.registerProvider()</code> <span class="at">lib/index.js:195-226</span> 接管<br>
+<b>③ 打开被随包层关掉的消费者</b>　<span class="at">vssaros-skills/cordis.patch.yml:24-25</span><br>
+&nbsp;&nbsp;<code>- id: tool-skill</code> <code>disabled: false</code>　<span class="lbl">（把 <code>@deepseek-ai/dsh-web-app</code> patch 成 <code>disabled:true</code> 的原生 <code>skill</code> 工具行翻回来）</span>
+</div>
+<div class="note warn">
+  <b>为什么第 ③ 条必须存在</b>（源码原话，<code>cordis.patch.yml:17-23</code>）：<code>dsh --profile vssaros --dump-config</code> 里能看到 base 的 <code>tool-skill</code> 行被随包层 patch 成 <code>disabled: true</code>
+  ⇒ 原生 <code>skill</code> 工具<b>从不注册</b> ⇒ 我们的技能来源"注册了也无人使用"（技能进不了模型视野）。本模块的层在 web-app <b>之后</b>，所以这一条能把开关翻回来。
+  页面自诊断里的 <code>data-vssaros-native-skill-tool</code> 长期为 <code>absent</code> 就是这个原因 —— 不是"dsh 没有这个工具"。
+</div>
+<div class="note bad">
+  <b>行 id 撞车事故（必须记住的教训）</b>：目录覆盖层的行 id 必须是 <code>vssaros-skills-dirs</code>，<b>不能</b>用 <code>vssaros-skills</code> —— 后者是插件自己 patch 插入的行 id。
+  <b>行 id 就是行身份</b>，同名时后一份会把前一份顶掉 ⇒ 技能模块的页面与 provider 可能整个消失，而<b>探针从来看不见</b>（探针不挂 IDE 这份覆盖层）。
+  现由 <code>dshPluginPackages.test.ts:377-383</code> 断言"insert 侧全局不许重名"（把两份覆盖层的行 id 一并去重）守死（<code>dshSkillDirs.ts:27-33</code>）。
+</div>
+<p><code>@vssaros/dsh-skills</code> 插件本身<b>不注册任何工具</b>（注册会与 dsh 原生 <code>skill</code> 工具重复甚至遮蔽它），它只做 dsh 自己做不到的一件事：把 VsSaros 的用户技能目录变成 dsh 的一个技能来源 ——</p>
+<pre><code>// dsh-plugins/vssaros-skills/lib/index.js:195-226
+ctx.inject(['skills'], child =&gt; child.effect(() =&gt; child.skills.registerProvider(control =&gt; ({
+	name: 'vssaros-skills',
+	list() { /* store.scanSkills → core.toCandidate；目录指纹变化时 control.invalidate() */ },
+	get(candidate) { /* readSkillFile + skillFromFile → 剥掉 frontmatter 的正文 */ },
+}))));</code></pre>
+
+<h3>3.3 调用链：从目录到"模型真的用上"</h3>
+<div class="chain">
+<b>1 · 扫描</b>　<code>store.scanSkills(root, signal)</code> <span class="at">vssaros-skills/lib/store.js:54</span><br>
+&nbsp;&nbsp;<span class="lbl">逐子目录 <code>readdir</code> + <code>stat(SKILL.md)</code> + <code>skillFromFile</code>；坏文件进 <code>errors</code>（带原因）而不丢其它技能；返回 <code>{skills, errors, root, missing, fingerprint}</code></span><br>
+<b>2 · 注册候选</b>　<code>child.skills.registerProvider(...)</code> <span class="at">lib/index.js:195</span> <span class="lbl">（进入 dsh 的技能注册表）</span><br>
+<b>3 · 进模型视野</b>　<span class="lbl">dsh 原生把候选取成</span> <code>&lt;available_skills&gt;</code> <span class="lbl">目录进上下文</span> <span class="at">dshSkillDirs.ts:9-12 的机制说明</span><br>
+<b>4 · 模型触发</b>　<span class="lbl">原生</span> <code>skill</code> <span class="lbl">工具（由 ③ 翻回来的 <code>dsh-tool-skill</code> 行提供）；</span><code>manual</code> ⇒ 用户 <code>/skill &lt;id&gt;</code>，<code>auto</code> ⇒ <code>modelInvocable</code><br>
+<b>5 · 取正文</b>　<code>provider.get(candidate)</code> <span class="arrow">→</span> <code>readSkillFile</code> <span class="at">store.js:31</span> <span class="lbl">（剥 frontmatter，返回 <code>content</code>；<code>references/</code> 等支持文件由 dsh 原生按路径读）</span><br>
+<b>6 · 脚本执行</b>　<span class="lbl">dsh 侧<b>不特殊处理</b>：技能正文里的 CLI 由模型用 dsh 的 bash / 文件工具跑（例：本仓 <code>archify</code> 走 <code>node bin/archify.mjs …</code>）</span>
+</div>
+<p><b><code>SKILL.md</code> 的 frontmatter 规范</b>（解析口径：dsh 侧 <code>core/skills.js:67 parseFrontmatter</code> 只认顶层标量，缺 <code>description</code> 直接跳过；IDE 侧 <code>skillRegistryService._parseSkillFile:917</code> 还支持内联/缩进数组）：</p>
+<pre><code>---
+name: analysis                                   # kebab-case（dsh 会拒非 kebab-case）
+description: Analyze data, code, text, or problems to extract insights and recommendations.   # 必填：dsh 用它做路由
+activation: auto                                 # manual | auto | always（缺省 manual）
+match: ["analyze", "analysis", "evaluate", "assess", "review", "examine", "break down"]
+category: reasoning
+recommended_tools: ["file_read", "terminal"]
+---
+# Analysis Skill
+…正文（模型真正会读到的部分）…</code></pre>
+
+<h3>3.4 与 IDE 侧 <code>SkillRegistry</code> 的分工（两条路并存）</h3>
+<div class="tbl-scroll">
+<table>
+  <tr><th>维度</th><th>dsh 路径（本报告主语）</th><th>IDE legacy 路径（<code>agentStudio</code>）</th></tr>
+  <tr><td class="k">注册表</td><td>dsh 的 <code>ctx.skills</code>（我们只注册 1 个 provider）</td><td><code>skillRegistryService</code>（自建，含 rank/去重/预算）</td></tr>
+  <tr><td class="k">进入模型</td><td><code>&lt;available_skills&gt;</code> 目录 + 按需调 <code>skill</code> 工具</td><td>系统提示只放<b>静态使用说明</b>（不再注入目录，<code>agentDriverService.ts:1110-1124</code>）；<code>auto/always/match</code> 由 <code>resolveActivations()</code> 以 user message 注入</td></tr>
+  <tr><td class="k">取正文</td><td>原生 <code>skill</code> 工具</td><td><code>read_skill</code>（支持 <code>path=</code> 读支持目录）/ <code>list_skills</code> / <code>skill_search</code>（BM25）/ <code>skill_manage</code></td></tr>
+  <tr><td class="k">脚本路径</td><td>自然由模型自己拼</td><td>注入 <code>Skill directory</code> 绝对路径 + <code>skillScriptAbsolutePaths()</code> 清单，声明"<code>cwd=skillDir</code>"；<code>${SKILL_DIR}</code> 占位符会被替换</td></tr>
+  <tr><td class="k">使用统计</td><td>—</td><td><code>SkillUsageTracker</code> 写 <code>&lt;skillDir&gt;/.usage.json</code>（<code>{state, readCount, patchCount, pinned}</code>，未来 curator 据此 stale→archive）</td></tr>
+</table>
+</div>
+<div class="note warn">
+  <b>语义缺口（源码自陈，<code>core/skills.js:8-13</code>）</b>：dsh 的技能来源接口里<b>没有</b> <code>activation: always</code>（每 turn 注入）的等价物 ——
+  技能挂进 dsh 后是"目录可见、模型自取"。我们的 <code>auto</code>/<code>always</code> 语义在 dsh 侧只映射成"是否允许模型/用户调用"。
+  另外插件<b>只覆盖第二层</b>（用户全局目录），内置层由目录行负责（<code>resources/.agents/skills</code>）。
+</div>
+
+<h3>3.5 内置技能清单（152 个顶层目录 / 155 个 <code>SKILL.md</code>）</h3>
+<p class="small">清单来自 <code>resources/.agents/skills/</code> 的目录枚举（含 <code>obsidian-skills/</code> 这类容器目录的嵌套）。<b>未逐条解析 155 个 frontmatter 的 description</b>（点目录无法批量检索），因此这里给全量名字、不给逐条简介。</p>
+<pre><code>act-on-feedback  airtable  analysis  anysearch  apple-notes  apple-reminders  archify
+architecture-diagram  arxiv  ascii-art  ascii-video  audiocraft-audio-generation
+baoyu-comic  baoyu-infographic  be-concise  blogwatcher  brainstorming
+claude-code  claude-design  code-gen  code-review  codebase-inspection  codex  comfyui
+commit  commit-message  concept-diagrams  confightml  create-draft-pr  create-pr
+debugging-hermes-tui-commands  design-md  diagram-design  dispatching-parallel-agents
+dogfood  dspy  evaluating-llms-harness  excalidraw  executing-plans  figma  findmy
+finishing-a-development-branch  frontend-slides  galeqin-1772594770  generate-run-commands
+gif-search  github-auth  github-code-review  github-issues  github-pr-workflow
+github-repo-management  godmode  google-workspace  heartmula  hermes-agent
+hermes-agent-skill-authoring  himalaya  huggingface-hub  humanizer  hyperframes  ideation
+imessage  jupyter-live-kernel  kanban-orchestrator  kanban-worker  kb-build
+kb-category-feishu  kb-feishu-sync  kb-game-teardown  kb-import-message  knowledge-base-expert
+linear  llama-cpp  llm-wiki  macos-computer-use  manim-video  maps  merge  mermaid
+minecraft-modpack-server  nano-pdf  native-mcp  node-inspect-debugger  notion  obliteratus
+obsidian  obsidian-skills  ocr-and-documents  opencode  openhue
+p5js  pixel-art  plan  plan-then-act  pokemon-player  polymarket  ponytail  ponytail-audit
+ponytail-debt  ponytail-gain  ponytail-help  ponytail-review  popular-web-designs  powerpoint
+pretext  python-debugpy
+qa-acceptance-report  qa-case-design  qa-context-profiling  qa-core  qa-execution-repair
+qa-quality-review  qa-risk-analysis  qa-script-generation  receiving-code-review  refactor
+requesting-code-review  research-paper-writing  segment-anything-model  serving-llms-vllm
+sketch  skill-authoring  songsee  songwriting-and-ai-music  spike  spotify
+storyboard-fountain  subagent-driven-development  summarize  sync  sync-upstream
+systematic-debugging  teams-meeting-pipeline  test-driven-development  touchdesigner-mcp
+update-pr  update-skills  using-git-worktrees  using-superpowers  verification-before-completion
+vscode-fork-ghost-js-purge  vssaros-release-pipeline  web-content-import  web-search
+webhook-subscriptions  weights-and-biases  workflow-node-dev  writing-plans  writing-skills
+xurl  youtube-content  yuanbao</code></pre>
+<p class="small">
+  <b>仓库开发自用</b>（不在 <code>resources/.agents/skills</code> 扫描面内）：<code>.github/skills/*</code>（继承自 VS Code 上游 23 个，如 <code>accessibility</code> / <code>hygiene</code> / <code>unit-tests</code>）、
+  <code>.agents/skills/launch/SKILL.md</code>（本仓启动/验证流程）。
+  <b>带更新清单的技能</b>：<code>archify</code> 额外随包 <code>skill-release.json</code>（<code>{schemaVersion, skillId, channel, version, updateManifestUrl}</code>，指向 <code>tt-a1i.github.io/…/stable.json</code>）+ <code>scripts/check-update.mjs</code> / <code>check-render-output.mjs</code>。
+</p>
+
+<h3>3.6 技能相关的守卫</h3>
+<div class="tbl-scroll">
+<table>
+  <tr><th>守卫 / 测试</th><th>守什么</th></tr>
+  <tr><td class="k">dshSkillDirs.test.ts</td><td>覆盖层只有<b>一个</b>顶层 <code>- insert:</code>、行 id 独立、<code>customSkillDirs</code> 内联、单引号双写转义、空目录不产 insert</td></tr>
+  <tr><td class="k">dshPluginPackages.test.ts:275-303,377-383</td><td>覆盖层行 id 必须与插件 patch 同名；<b>insert 侧全局不许重名</b>（防 5.86 撞行 id 事故）</td></tr>
+  <tr><td class="k">skillEcosystemDirs.test.ts</td><td>生态目录清单与上游 <code>DEFAULT_SKILL_SOURCE_FOLDERS</code> <b>双向对齐</b>（上游加目录我们变红）+ 两个消费点都真接线</td></tr>
+  <tr><td class="k">builtinSkillContracts.test.ts</td><td>内置技能四条隐式契约：agent <code>skills[]</code> 能解析到真实技能、frontmatter 齐备且 <b>id 唯一</b>、required 技能在注入预算内、文档常量与代码/脚本一致</td></tr>
+  <tr><td class="k">p3-04-skills-plugin.mjs</td><td>真机三层：L1 安装/组合/<code>--dump-config</code>；L2 真 Host（页面锚点、<code>provider=registered</code>、count、跳过原因、api JSON、单技能预览剥离 frontmatter、未知 id 404）；L3 候选逐条过 dsh <code>validateCandidate</code> + <b>零工具注册</b> + 目录变化<b>恰好一次</b> <code>invalidate</code></td></tr>
+  <tr><td class="k">check-host-config.mjs</td><td><code>dataRootOf</code> / <code>skillsRootOf</code> 的<b>行为断言</b>（config → env → 默认；<code>&lt;根&gt;/skills</code>）</td></tr>
+</table>
+</div>
+
+<h2 id="s4">4. MCP 层：配置、挂载与观察</h2>
+
+<div class="note">
+  <b>一句话</b>：MCP 的挂载<b>不在我们任何插件里做</b> —— <code>dsh-mcp-client</code> 是"<b>一台服务器一个组合行</b>"的模型，dsh 没有供别的插件注册服务器的运行时服务。
+  所以配了 MCP 但没经过"启动覆盖层"这一步，就<b>挂不上</b>；我们做的是 ① 把配置文件解析/归一化成组合行（<code>renderMcpOverlay</code>）② 把"实际挂了什么、哪些被跳过、为什么"显示出来（<code>@vssaros/dsh-mcp</code> 只读页）。
+</div>
+
+<h3>4.1 配置解析：<code>parseMcpServers</code>（两份实现，逐字段同形）</h3>
+<table>
+  <tr><th>实现</th><th>路径</th></tr>
+  <tr><td class="k">宿主侧（TS · 真源）</td><td><code>src/vs/sessions/contrib/dshHarness/common/dshMcpConfig.ts:83-224</code></td></tr>
+  <tr><td class="k">dsh 侧镜像（JS）</td><td><code>dsh-plugins/vssaros-mcp/lib/core/mcpConfig.js:37-173</code></td></tr>
+</table>
+<p class="small">
+  两份是"<b>契约共享、实现各自一份</b>"的既定形态（<code>mcpConfig.js:3-5</code> 注释）：<code>src/vs</code> 永久禁止 import <code>dsh-plugins/</code>，
+  所以只能两份手写，靠 <code>p3-18</code> L1 差分（同一批 fixture 两侧逐字段相等，<b>含原因文案</b>）看守。
+</p>
+<div class="tbl-scroll">
+<table>
+  <tr><th>规则</th><th>内容</th></tr>
+  <tr><td class="k">配置键</td><td><code>servers</code>（VS Code / dsh 口径）—— <b>不是</b> Claude 格式的 <code>mcpServers</code>（首版探针写错被 CLI 当场抓出）</td></tr>
+  <tr><td class="k">transport 映射</td><td><code>type:'stdio'</code> → <code>stdio</code>；<code>type:'http'</code> → <code>streamable-http</code>；缺 <code>type</code> 但有 <code>command</code> 视为 stdio</td></tr>
+  <tr><td class="k">明确拒绝</td><td><code>type:'sse'</code> → 跳过（"dsh 的 dsh-mcp-client 只支持 stdio 与 streamable-http"）</td></tr>
+  <tr><td class="k">serverName 约束</td><td>必须匹配 <code>/^[A-Za-z0-9_-]{1,32}$/</code>（<code>SERVER_NAME_RE</code>）</td></tr>
+  <tr><td class="k">必填</td><td>stdio 必须有 <code>command</code>；http 必须有 <code>url</code></td></tr>
+  <tr><td class="k">env 展开</td><td><code>/\$\{(?:env:)?([A-Za-z_][A-Za-z0-9_]*)\}/g</code> —— 支持 <code>${env:X}</code> 与 <code>${X}</code>；<b>不支持</b> PowerShell 的 <code>$env:X</code>；找不到的变量<b>保留原样</b>不报错</td></tr>
+  <tr><td class="k">工作区变量</td><td><code>${workspaceFolder}</code> 之类<b>解析不了就跳过这台服务器</b>（Host 只有工作区 id、没有目录；宁可跳过也不把 <code>${…}</code> 当字面量传给子进程）</td></tr>
+  <tr><td class="k">残留即跳过</td><td>替换后仍含 <code>${</code> ⇒ 该字段返回 <code>undefined</code>（字段级；<code>command</code>/<code>url</code> 缺则整台跳过）</td></tr>
+  <tr><td class="k">重名</td><td><code>seen:Set</code> 去重，理由"dsh 侧重名会导致后续那条加载失败"</td></tr>
+</table>
+</div>
+<p><b>跳过原因枚举</b>（两侧文案逐字一致，逐条记进 Host 日志 <code>mcp server skipped (&lt;name&gt;): &lt;reason&gt;</code>，<code>dshHostSupervisor.ts:1271-1274</code>）：</p>
+<div class="tbl-scroll">
+<table>
+  <tr><th>原因</th><th>触发</th></tr>
+  <tr><td class="k">mcp.json 不是合法 JSON</td><td>整体解析失败（name = <code>(整个文件)</code>）</td></tr>
+  <tr><td class="k">mcp.json 里没有 servers 对象</td><td>键缺失或不是对象</td></tr>
+  <tr><td class="k">服务器名不满足 [A-Za-z0-9_-]{1,32}</td><td>命名带点/中文/空格/超 32 字</td></tr>
+  <tr><td class="k">重名</td><td>同名两次</td></tr>
+  <tr><td class="k">配置不是对象</td><td>值是字符串/数组</td></tr>
+  <tr><td class="k">不支持 sse</td><td><code>type:'sse'</code></td></tr>
+  <tr><td class="k">stdio 服务器缺 command / command 里有无法解析的占位符</td><td>缺字段或含 <code>${…}</code></td></tr>
+  <tr><td class="k">args 不是数组 / args 里有无法解析的占位符（如 ${workspaceFolder}）</td><td>类型或占位符残留</td></tr>
+  <tr><td class="k">env 不是对象 / env.&lt;key&gt; 的值里有无法解析的占位符</td><td>同上（非 string 值静默跳过该键）</td></tr>
+  <tr><td class="k">cwd 里有无法解析的占位符</td><td>同上</td></tr>
+  <tr><td class="k">http 服务器缺 url / url 里有无法解析的占位符</td><td>同上</td></tr>
+  <tr><td class="k">headers 不是对象 / headers.&lt;key&gt; …</td><td>同上</td></tr>
+  <tr><td class="k">未识别的 type：&lt;t&gt;（dsh 侧只认 stdio / http）</td><td>其它 <code>type</code></td></tr>
+</table>
+</div>
+
+<h3>4.2 渲染与注入：一行一台服务器</h3>
+<pre><code># &lt;runDir&gt;/mcp-&lt;randomhex&gt;.yml（mode 0600，每次 Host 启动前由 _writeMcpOverlay 生成）
+# Generated by VsSaros for one Host run from ~/.vssaros/mcp.json. …
+# dsh-mcp-client is one composition row per server; changing MCP config needs a Host restart.
+- insert:                                  # ← 硬约束：只能有一个顶层 insert（多个时加载器只认第一个，后续行静默消失）
+    - id: mcp-&lt;serverName&gt;                 # 行 id 稳定可读，便于 --dump-config 核对
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: '&lt;name&gt;'
+        transport: 'stdio'                 # 或 'streamable-http'
+        # stdio: command / args(内联列表) / env(键值) / cwd
+        # http : url / headers(键值)</code></pre>
+<p class="small">
+  <b>标量一律单引号</b>（<code>yamlSingleQuoted</code>，<code>dshMcpConfig.ts:256-267</code>）：路径里的反斜杠/冒号/<code>#</code> 都不用特殊处理，<code>'</code> 写成 <code>''</code>。
+  <b>不注入任何超时/失败策略字段</b> —— 全仓搜 <code>toolCallTimeoutMs</code> / <code>failOnStartupError</code> <b>0 命中</b>，这些行为一律走 <code>dsh-mcp-client</code> 自身默认。
+  调用链：<code>_doStart</code> → <code>_writeMcpOverlay</code>（<code>dshHostSupervisor.ts:640-649</code>，实现 <code>:1253-1281</code>）→ <code>overlays.push</code> → <code>buildHostArgs</code>（<code>:707</code>）→ <code>--patch</code>；
+  停止时 <code>_cleanupRunFiles</code>（<code>:1231-1246</code>）与 <code>dispose()</code>（<code>:1347</code>）同步清理。
+</p>
+
+<h3>4.3 生效方式：必须重启 Host</h3>
+<div class="chain">
+<span class="lbl">配置变更</span> <span class="arrow">→</span> <code>sameStartOptions</code> 判据变化（含 <code>mcpConfigPath</code>，<code>common/dshHarness.ts:390</code>）<span class="arrow">→</span> <span class="at">dshHarnessChannel.ts:620-628</span><br>
+<span class="lbl">手动</span> <span class="arrow">→</span> <code>DshHostSupervisor.restart()</code> <span class="at">:463-466</span>（= <code>stop()</code> → <code>start()</code>）<br>
+<span class="lbl">UI</span> <span class="arrow">→</span> 命令「重启 Host」<code>DSH_COMMAND_RESTART_HOST</code> <span class="at">dshHarness.contribution.ts:167-175</span> <span class="arrow">→</span> 通道 <code>Restart</code> <span class="at">dshHarnessChannel.ts:636-637</span>
+</div>
+<p class="small">Host 在跑时新配置<b>不生效</b>；插件页面也直写"改这份文件后需重启 Host 才生效"（<code>mcpConfig.js:214</code>）。这是 MCP 作为"组合行"模型的固有代价，不是实现缺陷。</p>
+
+<h3>4.4 <code>@vssaros/dsh-mcp</code>：只读可观测面</h3>
+<table>
+  <tr><th>维度</th><th>事实</th></tr>
+  <tr><td class="k">职责</td><td><b>不注册工具、不挂服务器</b>，只读配置文件 + 数"模型可见的 <code>mcp__*</code> 工具"（<code>lib/index.js:10-11</code>、<code>:95-109 mcpToolNames</code> 用 <code>ctx.tools.schemas()</code>）</td></tr>
+  <tr><td class="k">路由</td><td>prefix 注册 <code>/x/mcp</code>，但<b>精确匹配</b>仅 <code>/x/mcp/section</code>，其它一律 404（<code>:31-33</code>、<code>:126-131</code>）</td></tr>
+  <tr><td class="k">鉴权</td><td><code>connection.requestRejection(req)</code> 非 0 直接写回该状态码（<code>:119-124</code>）；<code>p3-18</code> L3 断言匿名 401/403</td></tr>
+  <tr><td class="k">注入</td><td>静态只声明 <code>['tools']</code>；页面走<b>可选</b> <code>ctx.inject(['webServer','connection'], …)</code>（<code>:21-29</code>、<code>:113-115</code>）</td></tr>
+  <tr><td class="k">输出</td><td><code>renderSection</code>（<code>mcpConfig.js:199-219</code>）：根 <code>&lt;section data-vssaros-page="mcp-section"&gt;</code> 带 state（<code>missing/error/ok/empty</code>）/path/servers/skipped/stdio/http/tools 计数；正文含<b>挂载清单</b>、跳过原因分节、<b>工具全表区块</b>（每项 <code>data-vssaros-mcp-tool="&lt;全名&gt;"</code> + description 截 200 字）</td></tr>
+  <tr><td class="k">容错</td><td>数不出工具时返回 <code>count:0</code> + <code>error</code>，<b>不假装 0 个</b>（<code>:105-108</code>）；渲染放在 <code>writeHead</code> <b>之前</b>，抛错能干净回 500（<code>:135</code>）</td></tr>
+</table>
+<p class="small">
+  <b><code>toolList</code> vs <code>toolNote</code> 的区别是刻意的</b>：<code>toolNote</code> 只给前 8 个名字（<code>diag</code> 行用，<b>展示要短</b>），
+  <code>toolList</code> 给全表 <code>{name, description}</code>（结构化区块用，<b>数据不该被展示需求截断</b>）。旧版只给"计数 + 前 8 名"，导致"到底挂了哪些、各自干什么"只能靠猜。
+</p>
+
+<h3>4.5 与 dsh 原生的关系（<code>@deepseek-ai/dsh-mcp-client</code>）</h3>
+<ul>
+  <li><b>挂载模型</b>：<code>apply(ctx, config)</code> + 一个 <code>Config</code> —— <b>一台服务器一个组合行</b>，没有运行时注册服务（<code>dshMcpConfig.ts:9-18</code>）。</li>
+  <li><b>为什么不能"即时生效"</b>：<code>ctx.pluginManager</code> 只能启停<b>已存在的行</b>（<code>listPlugins</code> / <code>setPluginEnabled</code> / <code>setBundleEnabled</code> / <code>installBundle</code> / <code>removeBundle</code>），<b>没有 addRow / insertRow</b> ⇒ 加服务器只能改启动覆盖层（<code>dshMcpConfig.ts:11-14</code>）。</li>
+  <li><b>工具名由 dsh 生成</b>：我们只提供 <code>serverName</code>；<code>mcp__&lt;server&gt;__&lt;tool&gt;</code> 的拼接是 dsh 的实现细节（真机实测 <code>mcp__probe__probe_ping</code>，探针刻意<b>不写死全名</b>，只断言"以真实工具名结尾"）。</li>
+  <li><b>行 id</b>：<code>mcp-&lt;serverName&gt;</code>（<code>mcpRowId</code>，<code>dshMcpConfig.ts:227-229</code>）。</li>
+</ul>
+
+<h3>4.6 归属与"让路"：dsh 侧也能自己产行</h3>
+<p>
+  <code>dsh-plugins/vssaros-mcp/bin/sync-rows.mjs</code> 会在 dsh 侧用<b>官方</b> <code>dsh plugin add file:&lt;dir&gt;</code> 把"行"登记成一个独立 bundle（<code>@vssaros/dsh-mcp-rows</code>），
+  这样即使 IDE 侧不产覆盖层也能挂上。两条路并存会把同一台服务器<b>挂两遍</b>（<code>insert</code> 不是"同 id 后层胜出"），所以加了归属判定：
+</p>
+<div class="chain">
+<code>_writeMcpOverlay</code> <span class="arrow">→</span> <code>_isMcpRowsOwnedByDsh()</code> <span class="at">dshHostSupervisor.ts:1258 / 1289</span> <span class="arrow">→</span> 读 profile <code>dsh.profile.bundles</code> 是否含 <code>@vssaros/dsh-mcp-rows</code> <span class="at">dshMcpConfig.ts:239/252</span><br>
+<span class="lbl">登记过</span> <span class="arrow">→</span> <b>不写覆盖层，主动让路</b>　·　<span class="lbl">未登记</span> <span class="arrow">→</span> 宿主管道兜底
+</div>
+<p class="small"><code>sync-rows.mjs</code> 的纪律：只在行内容变化时 bump 补丁版本、只写自己的条目、重复跑幂等（<code>sync-rows.mjs:9-21, 93-133</code>）。</p>
+
+<h3>4.7 已知踩坑与修正（MCP 这条链的"事故清单"）</h3>
+<ol>
+  <li><b>多个顶层 <code>- insert:</code> 只认第一个</b> ⇒ 后续服务器行<b>静默消失且不报错</b>（"某台服务器莫名没挂上"的经典来源）。修：所有行挂同一个 insert + 计数断言（<code>dshMcpConfig.test.ts:112-113</code>）。</li>
+  <li><b>插件路径写死 <code>~/.vssaros/mcp.json</code>、忽略 <code>VSSAROS_DATA_ROOT</code></b> ⇒ dev 实例读生产配置（最难发现的一类不一致）。修：与 siblings 同链，由 <code>check-host-config.mjs</code> 抓出并固化。</li>
+  <li><b>MCP 行原先只在壳侧渲染</b> ⇒ "配了 MCP 但没壳就挂不上"。修：dsh 侧也能自产行（<code>mcpRows.js:4-7</code>）。</li>
+  <li><b>两条路并存挂两遍</b> ⇒ 加归属判定与让路（4.6）。</li>
+  <li><b>插件 <code>config.path</code> 与真挂载用的文件不一致</b>（页面看的 ≠ 真挂的），且被"探针都自己注入了数据根"完全掩盖。修：<code>renderDataRootOverlay</code> 写 <code>- id: vssaros-dsh-mcp / config.path</code>（<code>dshCli.ts:453-472</code>）。</li>
+  <li><b>工具清单只给"计数 + 前 8 名"</b> ⇒ 拆成 <code>toolList</code>/<code>toolNote</code>（4.4）。</li>
+  <li><b>工具全名写死造成假红</b> ⇒ 改成语义断言（4.5）。</li>
+  <li><b><code>state=error</code> 态无断言、易被伪装成 missing/empty</b> ⇒ 造法（把 mcp.json 换成目录）+ 断言"不伪装成'还没有 MCP 配置'"（<code>mcpConfig.js:203-211</code>）。</li>
+  <li><b>静态 <code>inject</code> 写 <code>webServer</code>/<code>connection</code></b> ⇒ headless/tui profile 永久 pending 连工具一起失效。修：静态只留 <code>tools</code>。</li>
+  <li><b>渲染放在 <code>writeHead</code> 之后</b> ⇒ 抛错时 socket 被切断（实测吃过）。修：先渲染后 <code>writeHead</code>。</li>
+  <li><b>配置键写成 <code>mcpServers</code></b>（Claude 口径）⇒ 首版探针写错，CLI 如实报错。</li>
+</ol>
+
+<h3>4.8 守卫与测试</h3>
+<table>
+  <tr><th>名</th><th>守什么</th></tr>
+  <tr><td class="k">p3-18-mcp-page.mjs</td><td>L1 两份 <code>parseMcpServers</code> 差分（含原因文案）；L2 profile 里装的就是当前源码；L3 页面（匿名 401 / 服务器 / 跳过原因 / 工具计数 == 全名条数 / error 态）；L4 skills 页内嵌 MCP 区块</td></tr>
+  <tr><td class="k">p3-24-mcp-rows-dsh.mjs</td><td>dsh 侧产行与宿主侧<b>逐字段同形</b>（含"键名是 servers"的口径）</td></tr>
+  <tr><td class="k">p3-25-mcp-bundle-register.mjs</td><td>bundle 登记 + 幂等 + 让路</td></tr>
+  <tr><td class="k">dshMcpConfig.test.ts</td><td>8 个用例，含"只能有一个顶层 insert"的回归</td></tr>
+  <tr><td class="k">dshMcpRowsOwnership.test.ts</td><td>归属判定：只认 <code>@vssaros/dsh-mcp-rows</code>，相近名字不算，畸形退回 false</td></tr>
+  <tr><td class="k">check-host-config.mjs</td><td><code>defaultMcpPath()</code> 行为断言：设 <code>VSSAROS_DATA_ROOT=&lt;tmp&gt;</code> ⇒ <code>&lt;tmp&gt;/mcp.json</code>；清空 ⇒ <code>~/.vssaros/mcp.json</code></td></tr>
+</table>
+
+<h2 id="s5">5. 函数调用图（四条链路）</h2>
+<p class="small">每步都标 <code>文件:行号</code>；箭头方向 = 控制流。缩进表示嵌套调用。</p>
+
+<h3>5.1 工具：从注册到执行（含反向通道全链路）</h3>
+<pre><code>[插件加载]  dsh 启动读 cordis.patch.yml → insert 行 {id:'vssaros-&lt;module&gt;', name:'@vssaros/dsh-&lt;module&gt;'}
+    ↓
+apply(ctx, config)                                    dsh-plugins/vssaros-&lt;x&gt;/lib/index.js
+    ├─ ctx.inject(['webServer','connection'], page =&gt; …)       可选：页面 / 片段路由（只读展示）
+    ├─ ctx.inject(['skills'|'sessions'|'sessionProjections'|'tools'], child =&gt; …)
+    │                                                        可选：活数据通道（缺失不致命）
+    └─ ctx.effect(() =&gt; …)
+          ├─ toolDefinitions(ctx, state, config)  → 字面量数组      写法 A（40 个工具）
+          │   或 ctx.tools.register({…})          内联单次           写法 B（kanban 10 个）
+          ├─ ctx.tools.register(definition) × N   → disposers[]
+          └─ return () =&gt; disposers.forEach(d =&gt; d())                插件停用即注销
+    ↓
+[模型调用]  tool/&lt;name&gt;(args, exec)
+    ├─ exec.agent.session.id  →  sessionIdOf(exec)        ide/lib/index.js:123-126
+    └─ definition.execute(params, exec)
+          ├─ 本地路径（31 个）
+          │     ├─ kanban/kb/codebase/workflow/dashboard：本地文件或目录读
+          │     ├─ memory：fetch(gatewayUrl + route)       lib/gateway.js:9-38（5s AbortController）
+          │     └─ kb_feishu_sync / codebase_self_index：spawn / spawnSync 子进程
+          │   → 返回值 → output.schema 校验 → output.render → 模型看到的短文本
+          │
+          └─ 反向路径（12 个，@vssaros/dsh-ide）
+                requestIde(bridge, capability, params, timeoutMs, sessionId)      ide/lib/index.js:105
+                  → bridge.callIDE('ide.request', {capability, pluginId, sessionId, params}, {timeoutMs})
+                       ↓ ctx.vssarosBridge                                     bridge/lib/index.js:241-248
+                       ↓ 命名管道 + 换行分隔 JSON-RPC 2.0（反向往返用负数 id）    :180-194
+                       ↓ 主进程 dshBridgeClient._handleReverseRequest()          dshBridgeClient.ts:155
+                            ① token 校验
+                            ② ide.echo（内建自检）
+                            ③ isVssarosIdeCapability 白名单               dshBridgeProtocol.ts:351
+                            ④ reverseRequestHandler → DshIdeRequestGate.handle()  dshIdeRequestGate.ts:51
+                                  → readCapabilityDeclarations(manifests)  dshIdeAuthorization.ts:38
+                                        （每个插件的 vssaros.ideCapabilities）
+                                  → authorizeIdeRequest(request, declarations) 同文件 :59   ← 默认拒绝
+                                  ① 能力名在白名单  ② pluginId 已安装  ③ 该插件声明过该能力
+                                  → dispatch → 渲染进程（按 sessionId 定向，无则广播）
+                                        dshHarnessService._handleIdeRequest()   dshHarnessService.ts:286
+                                          → executeIdeCapability(request, env)  dshIdeCapabilities.ts:586
+                                                unreal / browser(CDP) / canvas / mindmap /
+                                                诊断 / 选区 / 打开文件 / reveal / diff / taskboard / workflow
+                                  ← 回执 ResolveIdeRequest（多窗口认领 ClaimIdeRequest）  dshHarness.ts:552/562
+                       ↓ { ok, value } 或 { code, reason }
+                  ← 超时/无客户端一律明确报错（不静默、不假装成功）
+</code></pre>
+
+<h3>5.2 技能：从目录到"模型真的用上"</h3>
+<pre><code>[宿主渲染覆盖层]  dshHarnessService._skillDirs()                     dshHarnessService.ts:616
+    ① 内置    FileAccess.asFileUri('vs/../../resources/.agents/skills')       :620
+    ② 用户    resolveSarosPath(userDataRootFromRoamingHome(...), SarosPath.skills)  :623
+    ③ 生态    ecosystemUserSkillDirPaths(env.userHome.fsPath)              :636
+    ④ 去重 + existsSync 过滤                                                :639 / dshHostSupervisor.ts:653
+      → renderSkillsOverlay(dirs)                                          dshSkillDirs.ts:21
+          → &lt;runDir&gt;/skills-&lt;random&gt;.yml（0600，每次启动都写）              dshHostSupervisor.ts:651-661
+              → buildHostArgs(..., overlays) → --patch                     dshCli.ts:16
+    ↓
+[dsh 加载覆盖层]
+    → 行 vssaros-skills-dirs → @deepseek-ai/dsh-skill-filesystem
+          config: { providerName:'vssaros', includeDefaultRoots:false, watch:true, customSkillDirs:[…] }
+          注：includeDefaultRoots=false ⇒ 项目/用户根由 preset 行负责，不重复扫
+    → 行 vssaros-skills → @vssaros/dsh-skills          vssaros-skills/cordis.patch.yml:13-16
+          apply() → ctx.inject(['skills'], child =&gt; child.effect(() =&gt;
+                        child.skills.registerProvider(control =&gt; ({
+                            name: 'vssaros-skills',
+                            list()  → store.scanSkills(root) → core.toCandidate
+                                      → 目录指纹变化时 control.invalidate()   lib/index.js:199-208
+                            get(c)  → readSkillFile(c.locator.path) + skillFromFile
+                                      → toDefinition（剥 frontmatter）        lib/index.js:211-226
+                        }))))
+    → 行 tool-skill { disabled: false }                 vssaros-skills/cordis.patch.yml:24-25
+          把 @deepseek-ai/dsh-web-app 关掉的原生 skill 工具行**翻回来**
+    ↓
+[模型视野]  &lt;available_skills&gt; 目录进上下文（dsh 原生）
+    ↓
+[模型调用]  skill(&lt;id&gt;)  →  注册表按 provider.get 取正文
+    ↓
+[执行]  技能正文里的 CLI / 脚本由模型用 dsh 的 bash / 文件工具执行（本层不特殊处理）
+
+—— IDE legacy 路径（并存）——
+agentDriverService（系统提示只放静态说明）→ resolveActivations() 以 user message 注入
+  → 工具 read_skill / list_skills / skill_search(BM25) / skill_manage → skillRegistryService
+  → &lt;skillDir&gt;/.usage.json（SkillUsageTracker 写，gitignore）</code></pre>
+
+<h3>5.3 MCP：从 <code>mcp.json</code> 到 <code>mcp__*</code> 工具与观察页</h3>
+<pre><code>[配置变更 / Host 启动]
+    _mcpConfigPath()                                  dshHarnessService.ts:678
+        → resolveSarosPath(userDataRootFromRoamingHome(userRoamingDataHome), SarosPath.mcpConfig)
+    ↓
+    _writeMcpOverlay(mcpConfigPath, profileManifest)   dshHostSupervisor.ts:1253
+        ├─ _isMcpRowsOwnedByDsh()?  → 是 ⇒ 让路（不写覆盖层）      :1258 / :1289
+        │       判据：profile 的 dsh.profile.bundles 含 @vssaros/dsh-mcp-rows
+        ├─ parseMcpServers(text, process.env)           dshMcpConfig.ts:83
+        │        → { servers[], skipped[{name, reason}] }
+        ├─ renderMcpOverlay(servers)                    :274
+        │        → YAML：一个顶层 insert + 每服务器一行 mcp-&lt;serverName&gt;
+        ├─ 逐条记日志「mcp server skipped (&lt;name&gt;): &lt;reason&gt;」   :1271-1274
+        └─ writeFile(&lt;runDir&gt;/mcp-&lt;random&gt;.yml, mode 0600)        :1275
+    → buildHostArgs → --patch                            dshCli.ts:16
+    ↓
+[dsh 加载]  行 mcp-&lt;serverName&gt; → @deepseek-ai/dsh-mcp-client
+    → dsh 按约定生成工具 mcp__&lt;server&gt;__&lt;tool&gt;（名字由 dsh 拼，非我们改写）
+    ↓
+[模型调用]  mcp__&lt;server&gt;__&lt;tool&gt;  → dsh-mcp-client → stdio 子进程 / streamable-http
+    ↓
+[生效]  改配置 → 需重启 Host（sameStartOptions 变化触发 / 手动「重启 Host」）
+
+—— 只读观察面 ——
+GET /x/mcp/section
+    → connection.requestRejection(req) 鉴权（非 0 直接写回）        vssaros-mcp/lib/index.js:119
+    → mcpPathOf(config)：config.path → config.dataRoot → VSSAROS_DATA_ROOT → ~/.vssaros   :61-67
+    → readAndParse(path)（不存在/读不了都给可渲染状态，不抛）        :76-86
+    → mcpToolNames(ctx)：ctx.tools.schemas() 数 mcp__ 前缀          :95-109
+    → renderSection({path, exists, readError, parsed, toolCount, toolNote, toolList})   mcpConfig.js:199
+         → 挂载清单 / 跳过原因分节 / 工具全表（data-vssaros-mcp-tool=全名）
+    → writeHead(200) → res.end(html)     （渲染**先于** writeHead，抛错能干净回 500）</code></pre>
+
+<h3>5.4 宿主装配全链路（含桥握手与多实例租约）</h3>
+<pre><code>Electron 主进程启动
+    DshHarnessChannel 构造                                            dshHarnessChannel.ts:120-159
+        → listBundledPlugins(&lt;appPath&gt;/dsh-plugins)                     dshBundledPlugins.ts:61
+             判据 vssaros.module（自发现，不硬编码清单）→ modulePluginDirs
+        → new DshHostSupervisor({ runDir, bridgePluginDir, chatSurfacePluginDir,
+                                  modulePluginDirs, defaultDshHome, instanceId, reverseRequestHandler })
+渲染进程提供启动选项（经 RPC 传到主进程）
+    _skillDirs() :616 · _agentsRoot() :651 · _dataRoot() :665 · _mcpConfigPath() :678
+    ↓
+DshHostSupervisor._doStart()                                          dshHostSupervisor.ts:495
+    ① _ensureProfile() :865   种子整目录复制（_profileSeedDir）or dsh --from-default-profile web
+    ② _repairSeededStoreMetadata() :905  重写 node_modules/.modules.yaml 的 store 路径
+    ③ 插件安装（顺序敏感）:527-544
+         dsh-web-app bundle → bridge → chat-surface → modulePluginDirs… → 官方 voice bundle
+         → _ensurePlugin(name, version) :1002   已装同版本即跳过
+             → _stagePlugin() :1379   复制到 &lt;profile&gt;/.vssaros/plugins/&lt;name&gt;-&lt;version&gt;/
+                 → dsh plugin --profile &lt;p&gt; add file:&lt;staged&gt;        dshCli.ts:30
+                       ⇒ dsh 自动把包追加进 &lt;profile&gt;/package.json 的 dsh.profile.bundles
+         → _dedupeSharedPackages() :565   dsh-app-boot 在 profile 侧换成 junction（否则 HMR 重组永远失败）
+    ④ 覆盖层渲染 :600-707（8 类，见表 1.2）→ overlays[]
+    ⑤ buildHostArgs(dsh.bin, profile, overlays) :707                  dshCli.ts:16
+         = [dsh, --profile &lt;p&gt;, --patch &lt;o1&gt; …, --no-open, --port 0]
+    ⑥ spawn :720（keepAlive：detached + 日志落 runDir/host-*.log）/ :724（非常驻：pipe）
+         env = sanitizedEnv({ DSH_HOME }) :507    cwd = homedir()
+    ⑦ _awaitReady() :1035
+         条件 A：日志出现 gateway/http://127.0.0.1:&lt;port&gt;
+         条件 B：桥客户端 client.register（token 校验 → 回 hello：bridgeVersion/node/pid/origin/authUrl）
+    ⑧ 写租约 &lt;DSH_HOME&gt;/host.json :735
+    ⑨ DshBridgeClient.connect() → setReverseRequestHandler(_registerReverseHandler) :139 / :797
+         ⇒ ide.request 的反向入口在**桥客户端创建时**就挂好（不是等状态变化）
+    ↓
+渲染进程使用
+    session.start / session.prompt / providers.sync / plugins.*  → 经命名管道                bridge:385/443/630+
+    ide.request ← 来自 Host 的反向调用（第 5.1 节的链路）
+多实例复用
+    DshHostLeaseStore 读 host.json → hostLeaseBlocker + leases.probe 判定 → _adoptLease()   :570-598 / :786
+    同一份会话存储被两个 Host 写会互相破坏历史（开源项目 zhibailu/dsh-vsc 记过
+    corrupt session log: seq gap 的真实事故）⇒ 租约 + clientCount 引用计数是必需的</code></pre>
+<div class="note">
+  <b>读这四张图的三个要点</b>：
+  <ol>
+    <li><b>只有第 5.1 节的右分支会离开 dsh 进程</b>：31 个本地工具不经过桥，所以在 headless / TUI profile 下它们照样可用（这也解释了为什么静态 <code>inject</code> 只敢写 <code>tools</code>）。</li>
+    <li><b>技能与 MCP 都是"启动时一次性装配"</b>：目录与行都在 Host 启动前写进覆盖层，运行期没有注册通道 —— 所以两者的"新增内容"都需要重启（技能目录 <code>watch:true</code> 只解决文件<b>内容</b>变化，不解决<b>目录增删</b>）。</li>
+    <li><b>桥是双向的</b>：16 个 IDE→Host 方法（会话/工作区/插件管理/provider 同步）+ 2 个 Host→IDE 方法（<code>ide.echo</code> 自检、<code>ide.request</code> 能力调用），同一根命名管道、同一份 token。</li>
+  </ol>
+</div>
+
+<h2 id="s6">6. 扩展指南：4 个可照抄的 demo</h2>
+<p class="small">以下都是按<b>现有插件的真实约束</b>裁剪后的最小形态（字段名、目录、行 id 都对齐现成写法），不是示意代码。</p>
+
+<h3>6.1 Demo 1：新增一个 dsh 工具（含页面 + 工具卡）</h3>
+<h4>① 目录与文件</h4>
+<pre><code>dsh-plugins/vssaros-demo/
+├─ package.json          # 包名 / vssaros 清单 / dsh.bundle.patch
+├─ cordis.patch.yml      # 插入自己的组合行
+├─ lib/
+│  ├─ index.js           # apply() + toolDefinitions()
+│  ├─ store.js           # 数据根解析 + 读写
+│  ├─ core/demo.js       # 纯逻辑（可单测，不碰 IO）
+│  └─ client.js          # 可选：工具卡（tool.call.toolview 槽）</code></pre>
+
+<h4>② <code>package.json</code>（照 <code>vssaros-dashboard</code> 的真实形状）</h4>
+<pre><code>{
+  "name": "@vssaros/dsh-demo",
+  "version": "0.1.0",
+  "description": "VsSaros Demo module for DeepSeek Harness. Tools: demo_list / demo_add.",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": { ".": "./lib/index.js", "./package.json": "./package.json" },
+  "files": ["lib/index.js", "lib/store.js", "lib/core/demo.js", "cordis.patch.yml"],
+  "peerDependencies": { "@deepseek-ai/dsh": "&gt;=0.1.7-0 &lt;0.3.0-0" },
+  "dsh": { "bundle": { "patch": ["./cordis.patch.yml"] } },
+  "vssaros": {
+    "manifestVersion": 1,
+    "module": "demo",                                  // ← 必须与 DSH_BUILTIN_MODULES 里的 id 一致
+    "activityBar": { "containerId": "agentStudio.demo", "title": "Demo", "icon": "codicon:beaker", "order": 160 },
+    "view": { "kind": "page", "route": "/x/demo/" },   // 只注册工具、不要页面 ⇒ { "kind": "none" }
+    "legacyCounterpart": "agentStudio.demo"
+  },
+  "license": "MIT"
+}</code></pre>
+<p class="small">
+  <code>files</code> 要列全<b>运行时真正需要</b>的文件（profile 里只装这些）；<code>dsh.client</code> 只在有客户端半（<code>lib/client.js</code>）时才写
+  （如 <code>{"platform":"web","inject":["@deepseek-ai/dsh-client-ui-slots"]}</code>）。
+</p>
+
+<h4>③ <code>cordis.patch.yml</code></h4>
+<pre><code># @vssaros/dsh-demo bundle patch: insert the demo row.
+- insert:
+    - id: vssaros-demo            # ← 行 id：短名，全局唯一（守卫 dshPluginPackages.test.ts 断言不重名）
+      name: '@vssaros/dsh-demo'   # ← 必须逐字符等于 package.json 的 name
+      config: {}                  # 宿主可用 --patch 覆盖这里的 config（如 dataRoot / workspaceId）</code></pre>
+
+<h4>④ <code>lib/index.js</code>（工具注册本体）</h4>
+<pre><code>import { readRows, appendRow } from './store.js';
+import { summarize } from './core/demo.js';
+
+export const name = 'vssaros-demo';
+
+// 只依赖 tools：工具在任何 profile（含 headless / tui）都该可用。
+// webServer / connection 只在 web 模板存在 ⇒ 写进静态 inject 会让插件永久 pending，连工具一起失效。
+export const inject = ['tools'];
+
+const ROUTE_PREFIX = '/x/demo';
+
+function toolDefinitions(ctx, state, config) {
+	return [{
+		name: 'demo_list',
+		description: '列出 demo 条目。',
+		parameters: {
+			type: 'object',
+			// 注意：dsh 的参数 schema 只接受受限子集（无 minimum/maximum）——范围写描述、代码里夹紧
+			properties: { limit: { type: 'integer', description: '返回条数上限，1–100（默认 20；超出会被夹到边界）' } },
+		},
+		output: {
+			schema: {
+				type: 'object',
+				properties: {
+					count: { type: 'integer' },
+					items: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] } },
+				},
+				required: ['count', 'items'],
+			},
+			render: (_args, value) =&gt; [{ type: 'text', text: `demo 条目 ${value.count} 个\n` + value.items.map(i =&gt; `- ${i.id}`).join('\n') }],
+		},
+		isConcurrencySafe: () =&gt; true,
+		execute: async params =&gt; {
+			const limit = Math.min(100, Math.max(1, Number.isFinite(params?.limit) ? Math.floor(params.limit) : 20));
+			return summarize(await readRows(config), limit);
+		},
+	}, {
+		name: 'demo_add',
+		description: '新增一条 demo 条目（写本地文件，独占）。',
+		parameters: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
+		output: {
+			schema: { type: 'object', properties: { ok: { type: 'boolean' }, id: { type: 'string' } }, required: ['ok', 'id'] },
+			render: (_args, value) =&gt; [{ type: 'text', text: `已新增 ${value.id}` }],
+		},
+		// 写工具不声明 isConcurrencySafe ⇒ 独占执行（kanban 写族同此约定）
+		execute: async params =&gt; appendRow(config, String(params?.text ?? '')),
+	}];
+}
+
+export function apply(ctx, config = {}) {
+	const state = { tools: null };
+
+	ctx.effect(() =&gt; {                                   // 注册随插件激活/停用自动回收
+		const disposers = toolDefinitions(ctx, state, config).map(d =&gt; ctx.tools.register(d));
+		state.tools = ctx.tools;
+		return () =&gt; {
+			state.tools = null;
+			for (const dispose of disposers) { dispose(); }
+		};
+	});
+
+	// 页面（可选依赖）：不在 web 模板 ⇒ 只是没有页面，工具照常可用。
+	ctx.inject(['webServer', 'connection'], page =&gt; page.effect(() =&gt; page.webServer.register({
+		kind: 'prefix',
+		path: ROUTE_PREFIX,
+		handler: async (req, res) =&gt; {
+			const rejected = page.connection.requestRejection(req);
+			if (rejected) { res.writeHead(rejected, { 'content-type': 'text/plain; charset=utf-8' }); res.end(String(rejected)); return; }
+			const html = `&lt;section data-vssaros-page="demo"&gt;…&lt;/section&gt;`;   // 渲染必须先于 writeHead
+			res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+			res.end(html);
+		},
+	})));
+}</code></pre>
+
+<h4>⑤ <code>lib/store.js</code>：数据根解析（必须与 siblings 同链）</h4>
+<pre><code>import { homedir } from 'node:os';
+import { join } from 'node:path';
+
+// 契约（check-host-config.mjs 会真调用这个函数做行为断言）：
+//   config.dataRoot → 环境变量 VSSAROS_DATA_ROOT → ~/.vssaros
+export function dataRootOf(config) {
+	const fromConfig = typeof config?.dataRoot === 'string' ? config.dataRoot.trim() : '';
+	if (fromConfig) { return fromConfig; }
+	const fromEnv = typeof process.env.VSSAROS_DATA_ROOT === 'string' ? process.env.VSSAROS_DATA_ROOT.trim() : '';
+	return fromEnv || join(process.env.USERPROFILE || process.env.HOME || homedir(), '.vssaros');
+}
+
+export const storeFileOf = config =&gt; join(dataRootOf(config), 'demo.json');</code></pre>
+
+<h4>⑥ 客户端工具卡（可选，<code>lib/client.js</code>）</h4>
+<pre><code>window.__ModuleLoader__.load({
+	id: '@vssaros/dsh-demo',                              // ← 必须等于包名
+	factory: (require) =&gt; {
+		var module = { exports: {} };
+		var exports = module.exports;
+		const react = require('react');
+		const TOOL_SLOT = 'tool.call.toolview';
+		const DEMO_TOOLS = ['demo_list', 'demo_add'];     // ← 必须与 lib/index.js 注册名**逐字符一致**
+		const CARD_PRIORITY = -10;                        // 负值优先：遮蔽官方通用卡（同 kanban）
+		…
+		return module.exports;
+	},
+});</code></pre>
+
+<h4>⑦ 宿主接线（<b>必须同步改</b>，否则守卫会红）</h4>
+<table>
+  <tr><th>改哪儿</th><th>改什么</th><th>为什么</th></tr>
+  <tr><td class="k">dshModuleContainers.ts:35</td><td><code>DSH_BUILTIN_MODULES</code> 加 <code>'demo'</code></td><td>模块聚合表是真源；<code>dshPluginPackages.test.ts</code> 断言"清单与聚合表逐项一致"</td></tr>
+  <tr><td class="k">dshModuleContainers.ts:79</td><td><code>DSH_MODULE_CONTAINERS</code> 加容器（有 ActivityBar 时）</td><td>ActivityBar 图标按清单动态注册/注销</td></tr>
+  <tr><td class="k">dshCli.ts</td><td>需要 config（如 dataRoot / workspaceId）时加 <code>renderDemoOverlay()</code></td><td>与 <code>renderKanbanOverlay</code> 同法，把运行期参数喂给插件行</td></tr>
+  <tr><td class="k">dshHostSupervisor.ts:600-707</td><td>把新覆盖层 push 进 <code>overlays</code></td><td>覆盖层不 push 就不会进 <code>--patch</code></td></tr>
+  <tr><td class="k">check-host-config.mjs:30-67</td><td><code>TARGETS</code> 加一项（模块解析数据根时）</td><td>防"同一机 A 页读开发根、B 页读生产根"</td></tr>
+</table>
+<p class="small">
+  <b>不用改</b>：插件发现是自发现（<code>listBundledPlugins</code> 判据 <code>vssaros.module</code>）、安装是通用的 <code>dsh plugin add file:</code>、覆盖层行 id 由 <code>cordis.patch.yml</code> 自带。
+  <b>验证</b>：<code>npm run check:dsh-plugins</code> → <code>node test/run-dshharness-tests.mjs</code>（含 <code>dshPluginPackages</code> / <code>vssarosPluginManifest</code> 契约）→ 真机用 <code>poc/dsh-p0</code> 的探针套路（<code>--dump-config</code> 看行 + 页面锚点）。
+</p>
+
+<h3>6.2 Demo 2：新增一个技能</h3>
+<p><b>技能不需要写代码</b> —— 放对目录 + 写对 frontmatter 即可（加载链见 3.2/3.3）。</p>
+<h4>① 放在哪</h4>
+<table>
+  <tr><th>用途</th><th>路径</th><th>生效方式</th></tr>
+  <tr><td class="k">随包内置</td><td><code>resources/.agents/skills/&lt;id&gt;/SKILL.md</code></td><td>已在 <code>_skillDirs()</code> 第 ① 位；<b>目录是新增的要重启 Host</b></td></tr>
+  <tr><td class="k">用户 / 商城</td><td><code>~/.vssaros/skills/&lt;id&gt;/SKILL.md</code>（dev：<code>~/.vssaros-dev</code>）</td><td>同上（第 ② 位）</td></tr>
+  <tr><td class="k">生态（零改动复用）</td><td><code>~/.claude/skills/</code>、<code>~/.copilot/skills/</code>、<code>~/.agents/skills/</code></td><td>第 ③ 位，自动扫</td></tr>
+  <tr><td class="k">仓库开发自用</td><td><code>.agents/skills/&lt;id&gt;/SKILL.md</code></td><td><b>不在</b>产品扫描面内（工作区目录刻意不扫，避免提示词注入）</td></tr>
+</table>
+
+<h4>② <code>SKILL.md</code></h4>
+<pre><code>---
+name: demo-skill                                # kebab-case（dsh 拒绝非 kebab-case）
+description: One sentence telling the model when to use this skill.   # 必填：dsh 用它做路由
+activation: auto                                # manual（默认，仅用户 /skill 调）| auto（模型可调）| always（仅 IDE legacy 有语义）
+match: ["demo", "样例"]                          # activation:auto 时的关键词
+category: demo
+recommended_tools: ["file_read", "terminal"]
+---
+
+# Demo Skill
+
+什么时候用：……
+## 步骤
+1. …
+## 支持文件
+- `references/notes.md`（按需读取：dsh 原生 skill 工具按路径取）
+- `scripts/run.mjs`（脚本用 dsh 的 bash / 文件工具跑；dsh 侧不会自动注入技能目录路径，
+  正文里请写清相对路径或让模型先列出目录）</code></pre>
+
+<h4>③ 生效与验证</h4>
+<ul>
+  <li><b>重启 Host</b>（目录增删不热更；<code>watch:true</code> 只覆盖文件内容变化）。</li>
+  <li>Host 日志里应有 <code>skills overlay: N dir(s)</code>；<code>--dump-config</code> 能看到 <code>vssaros-skills-dirs</code> 行的 <code>customSkillDirs</code>。</li>
+  <li>页面 <code>/x/skills/</code> 应列出新技能；若没有，看该页的自诊断锚点 <code>data-vssaros-native-skill-tool</code>（<code>absent</code> = 原生 <code>skill</code> 工具行没被翻回来）。</li>
+  <li>契约测试会替你守：<code>builtinSkillContracts.test.ts</code>（frontmatter 齐备、<b>id 唯一</b>、required 技能在预算内）。</li>
+</ul>
+<div class="note warn">
+  <b>三个坑</b>：① <code>description</code> 缺失 ⇒ <b>该技能被静默跳过</b>（<code>skillFromFile</code> 直接丢）；② <code>name</code> 不是 kebab-case ⇒ dsh 校验失败；
+  ③ dsh 侧<b>没有</b> <code>always</code>（每 turn 注入）的等价物 —— 需要"每轮都生效"的规则请写在系统提示或插件里，别指望技能。
+</div>
+
+<h3>6.3 Demo 3：新增一个 MCP 服务器</h3>
+<h4>① 写配置（不需要改任何代码）</h4>
+<pre><code>// &lt;数据根&gt;/mcp.json   —— 生产 ~/.vssaros/mcp.json；dev ~/.vssaros-dev/mcp.json
+// 键名是 servers（VS Code / dsh 口径），不是 mcpServers（Claude 口径）
+{
+  "servers": {
+    "demo-stdio": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "G:\\CustomWorkspaces"],
+      "env": { "DEMO_TOKEN": "${env:DEMO_TOKEN}" }        // 支持 ${env:X} 与 ${X}；不支持 $env:X
+    },
+    "demo-http": {
+      "type": "http",                                     // → streamable-http
+      "url": "https://example.com/mcp",
+      "headers": { "Authorization": "Bearer ${env:DEMO_TOKEN}" }
+    }
+  }
+}</code></pre>
+
+<h4>② 生效</h4>
+<ol>
+  <li>保存文件 → <b>重启 Host</b>（命令面板「重启 Host」，或改配置触发 <code>sameStartOptions</code> 变化）。</li>
+  <li>启动时宿主管道只做两件事：<code>parseMcpServers</code> 归一化 → <code>renderMcpOverlay</code> 写成 <code>&lt;runDir&gt;/mcp-&lt;rand&gt;.yml</code> → <code>--patch</code>。</li>
+  <li>dsh 侧由 <code>dsh-mcp-client</code> 一行一服务器挂载，自动生成 <code>mcp__demo-stdio__&lt;tool&gt;</code>。</li>
+</ol>
+
+<h4>③ 排错三步（按顺序看）</h4>
+<table>
+  <tr><th>#</th><th>看哪儿</th><th>说明</th></tr>
+  <tr><td class="k">1</td><td>Host 日志 <code>&lt;userData&gt;/dsh-run/host-*.log</code> 里的 <code>mcp server skipped (&lt;name&gt;): &lt;reason&gt;</code></td><td>最常见：<code>${workspaceFolder}</code> 之类占位符无法解析、<code>type:'sse'</code>、serverName 非法、缺 <code>command</code>/<code>url</code></td></tr>
+  <tr><td class="k">2</td><td>页面 <code>/x/skills/</code> 内嵌的 MCP 片段（或直接 <code>/x/mcp/section</code>）</td><td>给"挂载清单 + 跳过原因 + 工具全表"；<code>data-vssaros-mcp-tools</code> = 实际数到的 <code>mcp__*</code> 工具数</td></tr>
+  <tr><td class="k">3</td><td>模型侧工具名</td><td>应出现 <code>mcp__demo-stdio__&lt;tool&gt;</code>；没有就是没挂上（回到第 1 步）</td></tr>
+</table>
+<div class="note warn">
+  <b>不要做</b>：① 别指望"改配置即时生效"（组合行模型，必须重启）；② 别在同一个 <code>insert</code> 外再开第二个顶层 <code>- insert:</code>（只认第一个，后续<b>静默消失</b>）；
+  ③ 别把 <code>mcp.json</code> 与插件混合管理（<code>@vssaros/dsh-mcp</code> 只读、<code>dsh-mcp-client</code> 只消费、宿主管道负责渲染）。
+  若你确实需要"脱离 IDE 也能挂"，用 <code>node dsh-plugins/vssaros-mcp/bin/sync-rows.mjs</code> 在 dsh 侧登记 bundle（宿主会自动让路，见 4.6）。
+</div>
+
+<h3>6.4 Demo 4：新增一个 IDE 反向能力</h3>
+<p>适合"dsh 进程里做不到、必须由编辑器做"的能力（读编辑器状态、驱动 UI/引擎）。共 6 步，前后端各 3 步。</p>
+<table>
+  <tr><th>#</th><th>改哪儿</th><th>改什么</th></tr>
+  <tr><td class="k">1</td><td><code>vssarosPluginManifest.ts:74</code></td><td>给 <code>VssarosIdeCapability</code> 联合类型加名字（如 <code>'demoProbe'</code>）</td></tr>
+  <tr><td class="k">2</td><td><code>vssarosPluginManifest.ts:88</code></td><td>加进 <code>VSSAROS_IDE_CAPABILITIES</code> 白名单（注释写明"新增名字时<b>同时</b>改白名单"）</td></tr>
+  <tr><td class="k">3</td><td>插件 <code>package.json</code></td><td><code>"vssaros": { …, "ideCapabilities": ["demoProbe"] }</code> —— <b>不声明就拿不到</b>（逐插件授权）</td></tr>
+  <tr><td class="k">4</td><td>插件 <code>lib/index.js</code></td><td>加工具定义 + <code>requestIde(bridge, 'demoProbe', params, timeoutMs, sessionId)</code>；并把 <code>demoProbe</code> 加进插件的慢档判定（与宿主 <code>ideRequestTimeoutMs</code> <b>同形</b>）</td></tr>
+  <tr><td class="k">5</td><td><code>dshIdeCapabilities.ts:226-233</code></td><td>加 <code>IDE_CAPABILITIES_DEMO = ['demoProbe']</code> 常量，并在 <code>executeIdeCapability</code> 的 switch 里实现分支（<code>:586</code>）</td></tr>
+  <tr><td class="k">6</td><td><code>dshIdeCapabilities.ts:925</code> 的"未实现"错误文案</td><td>把新常量并入清单（保证"名字不认识"时能报出完整可用集合）</td></tr>
+</table>
+<pre><code>// 插件侧（dsh · 第 4 步）
+{
+	name: 'demo_probe',
+	description: '读取 VsSaros 侧的 demo 状态（只读）。',
+	parameters: { type: 'object', properties: { key: { type: 'string' } } },
+	output: { schema: { type: 'object', properties: { ok: { type: 'boolean' }, text: { type: 'string' } }, required: ['ok', 'text'] },
+	          render: (_a, v) =&gt; [{ type: 'text', text: v.text }] },
+	isConcurrencySafe: () =&gt; true,
+	execute: async (params, exec) =&gt; requestIde(bridge, 'demoProbe', params, timeoutOf('demoProbe', config), sessionIdOf(exec)),
+}
+
+// 宿主侧（第 5 步 · executeIdeCapability 的 switch 分支）
+case 'demoProbe': {
+	const key = typeof request.params?.key === 'string' ? request.params.key : '';
+	return { ok: true, text: await readDemoState(key) };   // 只读、无副作用
+}</code></pre>
+<div class="note warn">
+  <b>三条纪律</b>：
+  ① <b>超时两侧必须同形</b>——插件侧的慢档判定与宿主 <code>ideRequestTimeoutMs</code> 不一致会出现"本侧比渲染侧早超时"（<code>browser.type</code> 踩过）；
+  ② <b>写操作要走用户确认</b>，不要在能力实现里"偷偷做"（<code>browser</code>/<code>canvas</code> 的写 op 就是转给 IDE 侧确认的）；
+  ③ <b>能力名要拆细</b>——折叠会让"按清单逐项授权"退化成"整族放行"（<code>mindmap</code> vs <code>canvas</code> 的原话）。
+  <b>测试</b>：<code>dshIdeAuthorization.test.ts</code>（默认拒绝四条）、<code>dshIdeCapabilities.test.ts</code>、<code>dshIdeToolContract.test.ts</code>（工具名 ↔ 能力名 ↔ 超时档一致性）。
+</div>
+
+<h2 id="s7">7. 优缺点与建议</h2>
+<p class="small">评估口径：全部基于<b>重构后源码</b>逐文件核对（不依赖 README），运行期结论引用现有探针（<code>poc/dsh-p0</code>）的既定实测，本报告<b>未</b>重跑真机。</p>
+
+<h3>7.1 优点</h3>
+<div class="grid">
+  <div class="card"><div class="k">真源唯一</div><div class="v">升级即跟随</div><div class="n">工具/技能/MCP 的定义与实现都在 dsh 侧插件里：dsh 升级、profile 变化、preset 变化都不用改宿主；宿主只保留"装配 + 承载 + 办不到的事"。</div></div>
+  <div class="card"><div class="k">可审计</div><div class="v">43 个工具可穷举</div><div class="n">没有注册表扫描/装饰器/魔法发现：全是字面量数组 + <code>ctx.tools.register</code>，工具名、schema、执行体一眼可读（本报告的工具总表就是这么得到的）。</div></div>
+  <div class="card"><div class="k">授权粒度</div><div class="v">能力级 + 逐插件</div><div class="n">反向通道默认拒绝：能力名白名单 × 插件已安装 × 清单声明过 × 桥盖章身份 × 每能力时间预算。社区同类方案是"整族布尔开关"或"单一能力域"。</div></div>
+  <div class="card"><div class="k">可观测</div><div class="v">每个模块自带只读页</div><div class="n">skills / mcp / dashboard / kanban / kb / workflow / codebase / canvas / agents 都有自托管只读页 + <code>data-vssaros-*</code> 自诊断锚点，探针可断言"页面上真的显示了什么"。</div></div>
+  <div class="card"><div class="k">守卫密度</div><div class="v">契约测试 + 真机差分</div><div class="n">包结构/清单/行 id/路由/技能目录/MCP 行 都有单测；两份实现有 <code>p3-18</code> 逐字段差分；数据根有 <code>check-host-config.mjs</code> 行为断言。</div></div>
+  <div class="card"><div class="k">profile 兼容</div><div class="v">工具永远可用</div><div class="n">静态 <code>inject</code> 只写 <code>tools</code>，页面走可选注入 —— 插件在 headless / tui profile 里不会 pending，31 个本地工具在任何模板下都活着。</div></div>
+</div>
+
+<h3>7.2 缺点与风险</h3>
+<div class="tbl-scroll">
+<table>
+  <tr><th>#</th><th>风险</th><th>具体表现（证据）</th><th>影响</th></tr>
+  <tr>
+    <td class="k">R1</td>
+    <td><b>写工具缺审批闸</b><span class="tag r">最高</span></td>
+    <td>43 个工具里 9 个是写：kanban 写族（7，改共享 <code>taskboard.json</code>）、<code>workflow_update</code>（原子写 + CAS）、<code>memory_refresh</code>（改注入快照）；再加 <code>kb_feishu_sync</code>（<b>写远端</b>）与 <code>memory_remember</code>（写长期记忆）。<b>只有</b>反向通道的 <code>browser</code>/<code>canvas</code> 写 op 走用户确认</td>
+    <td>模型可以不经确认改用户的看板、工作流、记忆与飞书文档；与 <code>doc/dsh-modules-conformance.html</code> 记录的偏差一致（"写工具无审批闸"）</td>
+  </tr>
+  <tr>
+    <td class="k">R2</td>
+    <td><b>两份实现必然漂移</b></td>
+    <td>MCP 解析（<code>dshMcpConfig.ts</code> ↔ <code>mcpConfig.js</code>）与 MCP 行渲染（<code>renderMcpOverlay</code> ↔ <code>mcpRows.js</code>）各两份，只靠 <code>p3-18</code>/<code>p3-24</code> 差分看守</td>
+    <td>改一侧忘另一侧 ⇒ 页面显示与真挂载不一致（历史上已发生过，见 4.7 第 4 条）</td>
+  </tr>
+  <tr>
+    <td class="k">R3</td>
+    <td><b>装配期一次性</b></td>
+    <td>MCP 配置与技能<b>目录</b>都在 Host 启动前写进覆盖层；运行期没有 addRow / 注册通道（<code>dshMcpConfig.ts:11-14</code>）</td>
+    <td>"加一个 MCP 服务器 / 加一个技能目录"必须重启 Host —— 用户感知为"没生效"</td>
+  </tr>
+  <tr>
+    <td class="k">R4</td>
+    <td><b>上下文成本随工具数线性增长</b></td>
+    <td>43 个工具的 name/description/parameters 常驻工具定义区；<code>dashboard_session</code> 的 output schema 有 10+ 个嵌套对象（<code>dashboard/lib/index.js:478-545</code>）</td>
+    <td>token 成本 + 描述冗长带来的选择错误；<code>dashboard_session</code> 自己也把 <code>tools</code> 拆出来单独算（<code>contextBreakdown.tools</code>）说明这点已被意识到</td>
+  </tr>
+  <tr>
+    <td class="k">R5</td>
+    <td><b>命名两套规则</b></td>
+    <td>35 个工具带前缀（<code>kanban_</code>/<code>unreal_</code>/<code>codebase_</code>/<code>memory_</code>/<code>kb_</code>/<code>workflow_</code>/<code>dashboard_</code>），8 个无前缀（<code>get_diagnostics</code>/<code>get_selection</code>/<code>open_file</code>/<code>reveal</code>/<code>browser</code>/<code>canvas</code>/<code>mindmap</code>/<code>show_diff</code>）</td>
+    <td>按前缀检索/分组要两套规则；同一能力域（编辑器）里既有 <code>open_file</code> 也有 <code>unreal_*</code></td>
+  </tr>
+  <tr>
+    <td class="k">R6</td>
+    <td><b>数据根实现 8 份拷贝</b></td>
+    <td><code>dataRootOf(config)</code> 在 agents/canvas/kanban/kb/skills/workflow + mcp 的兜底版各自一份；<code>pageShell.js</code> 有 <b>5 份同尺寸（9.03KB）拷贝</b></td>
+    <td>改一次要改 5–8 处；漏一处就是"最难发现的一类不一致"（MCP 那份正是这么出的事故）</td>
+  </tr>
+  <tr>
+    <td class="k">R7</td>
+    <td><b>桥是 12 个工具的单点</b></td>
+    <td><code>ide</code> 插件静态 <code>inject</code> 含 <code>vssarosBridge</code>；桥不在 ⇒ 插件 pending ⇒ 12 个工具<b>整体不出现</b>（不是报错）</td>
+    <td>非 Electron/无桥环境下失败是"静默缺失"，用户与模型都看不到原因</td>
+  </tr>
+  <tr>
+    <td class="k">R8</td>
+    <td><b>技能语义缺口</b></td>
+    <td>dsh 无 <code>activation: always</code>（每 turn 注入）等价物；插件只覆盖用户层目录（<code>core/skills.js:8-13</code> 自陈）</td>
+    <td>IDE 侧"每轮注入"的技能搬到 dsh 侧行为会变；文档若不写清，用户会以为"技能失效了"</td>
+  </tr>
+  <tr>
+    <td class="k">R9</td>
+    <td><b>长任务缺统一进度/取消面</b></td>
+    <td><code>kb_feishu_sync</code>（子进程）、<code>codebase_self_index</code>（spawnSync 60s）、<code>workflow_engine_status</code>（worker 8s）都是长任务；仅列表类工具支持 <code>exec.signal</code></td>
+    <td>长任务期间模型只能干等；中断能力不统一（<code>plugins.bundle.install</code> 那种 <code>requestId</code> + cancel 的约定没有下推到工具层）</td>
+  </tr>
+  <tr>
+    <td class="k">R10</td>
+    <td><b>并发语义有张力</b></td>
+    <td><code>codebase_self_index</code> 声明 <code>isConcurrencySafe: () =&gt; true</code>，但它会写临时目录并起 <code>spawnSync</code> 子进程（<code>indexer.js:705</code>）</td>
+    <td>"只读可并行"的语义被放宽使用；并发调用时会重复起子进程</td>
+  </tr>
+  <tr>
+    <td class="k">R11</td>
+    <td><b>双引擎并存成本</b></td>
+    <td>legacy 引擎（<code>providers/tool/**</code>）与 dsh 侧各有一套同名动词，靠 <code>toolOwnership.ts</code> 的 <code>SHARED_TOOL_VERBS</code>（21 条）登记"两端同名"</td>
+    <td>同一份数据两套实现 ⇒ 语义分叉风险（kanban 移植注释专门强调这点）；退役路径未定</td>
+  </tr>
+  <tr>
+    <td class="k">R12</td>
+    <td><b>"缺席即未知"约定易被违反</b></td>
+    <td><code>dashboard</code> 的 <code>ACTIVITY_SCHEMA</code> 明确"缺席即未知、不伪装成 0"（<code>dashboard/lib/index.js:38</code>）；<code>memory_list</code> 也是"空查询 = 全量"</td>
+    <td>消费方（包括模型）若把 undefined 当 0，会得到错误结论；这要求每个数据源都严格遵守，是长期纪律成本</td>
+  </tr>
+  <tr>
+    <td class="k">R13</td>
+    <td><b>平面错位：preset 失去"能力预算"作用</b><span class="tag y">结构性</span></td>
+    <td>官方工具在 <b>per-agent（preset plane）</b>——<code>dsh-web-app/cordis.patch.yml</code> 把 host 侧同名行全部 <code>disabled: true</code>（注释：only the per-agent rows move behind presets）；我们的 43 个工具在 <b>host plane</b>（<code>dsh-plugins/*/cordis.patch.yml</code> 顶层 <code>- insert:</code>）⇒ 不论会话选 <code>standard</code> / <code>ptc</code> / <code>minimal</code> / <code>cordis</code>，我们的工具都<b>全部注入</b></td>
+    <td>选 <code>minimal</code>（定义为"极简，只有一个持久终端"）的用户实际拿到 43 + 2 个工具；上下文成本与能力面预期双双落空。官方把工具下移正是为了让 preset 承担这个开关（展开见 <a href="#s2" style="color:var(--h)">2.7 ⑤</a>）</td>
+  </tr>
+</table>
+</div>
+
+<h3>7.3 建议（按优先级）</h3>
+<table>
+  <tr><th>优先级</th><th>建议</th><th>做法</th></tr>
+  <tr>
+    <td class="k"><span class="tag r">P0</span></td>
+    <td><b>给写工具补审批闸</b>（对应 R1）</td>
+    <td>复用 <code>browser</code>/<code>canvas</code> 的现成模式：把"需确认"的写 op 转给 IDE 侧走用户确认（<code>CONSENT_TIMEOUT_MS</code> 那套已经跑通）。
+      优先顺序：<code>kb_feishu_sync apply:true</code>（写远端）→ <code>memory_remember</code>（长期记忆）→ kanban 写族（共享 <code>taskboard.json</code>）。</td>
+  </tr>
+  <tr>
+    <td class="k"><span class="tag r">P0</span></td>
+    <td><b>收敛数据根与页面壳的拷贝</b>（对应 R6）</td>
+    <td>把 <code>dataRootOf</code> / <code>pageShell</code> 抽成 <code>dsh-plugins/shared/</code> 下的共享模块（插件侧允许互相依赖；<code>src/vs</code> 仍禁止 import）。
+      若暂不抽，至少把 <code>check-host-config.mjs</code> 从"8 个点"扩到"所有解析点"，让漏一份就红。</td>
+  </tr>
+  <tr>
+    <td class="k"><span class="tag y">P1</span></td>
+    <td><b>工具清单自动快照 + 守卫</b>（对应 R4/R5）</td>
+    <td>从 43 个定义导出 JSON/Markdown 快照（名字 + 描述 + 必填参数）进测试：新增/改名/改必填即红。
+      这样"清单漂移"不靠人肉报告发现（本报告的表就是手工测绘的，下次重构会立刻过期）。</td>
+  </tr>
+  <tr>
+    <td class="k"><span class="tag y">P1</span></td>
+    <td><b>给"工具静默缺失"补可观测面</b>（对应 R7）</td>
+    <td>把 <code>ide</code> 插件的页面（<code>kind:'none'</code>）改成自诊断片段：桥在不在、12 个工具注册了几个、<code>vssarosBridge.version</code> 是多少 —— 失败时"说清为什么"，而不是"不出现"。</td>
+  </tr>
+  <tr>
+    <td class="k"><span class="tag y">P1</span></td>
+    <td><b>长任务统一进度/中止约定</b>（对应 R9）</td>
+    <td>定一条工具层约定：长任务的 <code>execute</code> 接受 <code>exec.signal</code>、并把阶段写进 <code>output.render</code> 的增量文本；参照桥侧 <code>plugins.bundle.install</code> 的 <code>requestId</code> + <code>install.cancel</code> 模式。</td>
+  </tr>
+  <tr>
+    <td class="k"><span class="tag y">P1</span></td>
+    <td><b>长任务优先改用官方 job 系统</b>（对应 R9 · 见 2.7 ④）</td>
+    <td>我们的 3 个长任务（<code>kb_feishu_sync</code> / <code>codebase_self_index</code> / <code>workflow_engine_status</code>）都是<b>同步阻塞 + 各自超时</b>；官方 <code>job_*</code> 已经提供"提交即返回 id + <code>job_output</code>/<code>job_list</code>/<code>job_kill</code> + 完成通知（繁忙 agent 下一步收到、空闲 agent 由 follow-up 唤醒）"——
+      借它比自己再定一套进度/取消约定更省，也自动拿到 <code>job_list</code> 的统一视图。</td>
+  </tr>
+  <tr>
+    <td class="k"><span class="tag y">P1</span></td>
+    <td><b>给"给模型用的"工具加 preset 门控</b>（对应 R13 · 见 2.7 ⑤）</td>
+    <td>按模块分级：① 不注册工具的模块留在 host plane（现状正确）；② 给模型用的模块行<b>下移到 preset plane</b>（在 <code>standard</code> / <code>cordis</code> 的 preset 里各 insert 一份我们的行，用 <code>disabled: !!js</code> 门控），让 <code>minimal</code> 真正极简。
+      配套：新增守卫断言"每个 preset 的工具面 = 期望集合"（防漏挂某个 preset 导致模块静默消失），并实测 PTC 模式下 host 级工具的呈现形态（9.4 待确认项）。</td>
+  </tr>
+  <tr>
+    <td class="k"><span class="tag c">P2</span></td>
+    <td><b>命名规范收口</b>（对应 R5）</td>
+    <td>两条路二选一：① 给 8 个无前缀工具补域前缀（<code>ide_</code>）并对齐 legacy 名字映射；② 在 <code>doc</code> 里明确"两套规则 + 各自适用面"，并让 <code>toolOwnership.ts</code> 同时登记前缀归属。</td>
+  </tr>
+  <tr>
+    <td class="k"><span class="tag c">P2</span></td>
+    <td><b>技能 always 语义的替代方案</b>（对应 R8）</td>
+    <td>需要"每轮生效"的规则改走系统提示 / 插件侧注入；在技能页与文档里明确"dsh 侧 = 目录可见、模型自取"，避免用户误判技能失效。</td>
+  </tr>
+  <tr>
+    <td class="k"><span class="tag c">P2</span></td>
+    <td><b>legacy 双引擎的退役路径</b>（对应 R11）</td>
+    <td>按 <code>SHARED_TOOL_VERBS</code> 的 21 条逐条决定"以 dsh 侧为准 → 冻结 legacy 实现"（<code>kanban</code> 已完成移植，可作为模板：数据效果必须逐条一致）。</td>
+  </tr>
+</table>
+
+<div class="note ok">
+  <b>一句话总结</b>：这套重构把"能力面"稳稳交给了 dsh 侧（真源唯一、可穷举、可审计、可观测，且 profile 兼容性做到了工具永不 pending），
+  代价集中在三处 —— <b>写工具的授权缺口（R1）</b>、<b>"契约共享、实现各自一份"带来的重复（R2/R6）</b>、<b>装配期一次性（R3）</b>。
+  前两条是可以在现有框架内补齐的（复用已跑通的确认与守卫机制），第三条是 dsh 组合行模型的固有约束，只能靠"重启 + 说清"来管理预期。
+</div>
+
+<h2 id="s8">8. 与开源 dsh VS Code 项目对比</h2>
+<p class="small">
+  六个项目已浅克隆到 <code>G:\CustomWorkspaces\AIProjects\</code> 并逐项读源码（2026-10-12 核实）。本节只保留与本报告主题（工具/技能/MCP 由谁管、反向通道怎么做）直接相关的结论。
+</p>
+
+<h3>8.1 六个项目的定位</h3>
+<div class="tbl-scroll">
+<table>
+  <tr><th>项目</th><th>承载方式</th><th>工具 / 技能 / MCP 谁管</th><th>反向通道</th></tr>
+  <tr>
+    <td class="k">Xizhi1024/<br>dsh-vs-sidebar<br><span class="small">v1.1.3</span></td>
+    <td>webview 内 <b>iframe 直接加载 loopback URL</b>（带 token），每窗口一个 managed 子进程</td>
+    <td><b>不写配置，但注入伴生 dsh 插件</b>注册 <code>vscode_*</code> 工具全集（terminal/tasks/debug/git/editor/workspace/extensions/mcp）</td>
+    <td><span class="tag c">有 · 实现①</span>伴生插件注入</td>
+  </tr>
+  <tr>
+    <td class="k">skymecode/<br>deepseek-harness-for-vscode<br><span class="small">v0.6.1 · 155★</span></td>
+    <td>内置 runtime（dsh + node + pnpm 打进六平台 VSIX），<code>--port 0</code> 随机端口，只跑 loopback</td>
+    <td><b>只翻译 MCP</b>：<code>parseMcpServers</code> → <code>renderMcpRows</code> → <b>写 overlay + <code>--patch</code></b>（不动 profile）；技能只读（<code>skills/list</code>）</td>
+    <td>无（只有模型元数据 <code>/api/vscode.models</code>）</td>
+  </tr>
+  <tr>
+    <td class="k">zhibailu/dsh-vsc<br><span class="small">v0.2.6</span></td>
+    <td><b>纯协议客户端</b>（18 个 RPC 方法 + 事件流原始帧直通）</td>
+    <td><b>纯消费</b>：无任何工具/MCP/技能注册；设置页插件列表注释写明 "no RPC"（只读）</td>
+    <td>无</td>
+  </tr>
+  <tr>
+    <td class="k">Lixxx1/dsh-sidebar<br><span class="small">v0.0.5</span></td>
+    <td><b>自绘 vanilla HTML webview</b>（全仓无 iframe）；<code>web --port 0</code> + 复用 3080</td>
+    <td><b>不接管 <code>~/.dsh</code>、不设 <code>DSH_HOME</code></b>；插件管理委托官方 CLI <code>dsh plugin --profile web add</code>；技能只读</td>
+    <td><span class="tag c">有 · 实现②</span>自建 MCP server</td>
+  </tr>
+  <tr>
+    <td class="k">HarcoChen/<br>dsh-vsc-integration<br><span class="small">v0.10.3</span></td>
+    <td>VS Code 扩展为主 + <b>vendored 一个真 dsh/cordis 插件</b>（<code>engines.dsh</code> + <code>dsh.bundle.patch</code>）</td>
+    <td>自建 loopback Streamable-HTTP MCP server（4 个调试工具，Bearer + Host 白名单）；读 <code>~/.dsh</code> 为主、不写</td>
+    <td><span class="tag c">有 · 实现②</span>自建 MCP server</td>
+  </tr>
+  <tr>
+    <td class="k">zhou-tao/dsh-ui<br><span class="small">v0.1.3</span></td>
+    <td>协议客户端 + 多宿主（VS Code / TUI / H5；桌面 Tauri 内嵌 web UI，<b>0 处 import</b> 协议包）</td>
+    <td><b>不处理工具/技能/MCP</b>（<code>mcp</code> 0 命中、<code>apps</code> 内 <code>skill</code> 0 命中），只 insert 纯客户端 UI 插件</td>
+    <td>无</td>
+  </tr>
+</table>
+</div>
+
+<h3>8.2 反向通道的三种实现（源码级对照）</h3>
+<div class="tbl-scroll">
+<table>
+  <tr><th>维度</th><th>① 伴生插件注入<br><span class="small">Xizhi1024</span></th><th>② 自建 MCP server + patch 注入<br><span class="small">Lixxx1 / HarcoChen</span></th><th>③ 伴生插件 + 自有控制桥<br><span class="small">本仓库 VsSaros</span></th></tr>
+  <tr><td class="k">能力注册</td><td>自己的 dsh 插件里 <code>ctx.tools.register</code>，注册 <code>vscode_*</code> 全集</td><td>loopback MCP server 暴露 4 个工具（schema 由扩展定义）</td><td>伴生插件（<code>@vssaros/dsh-ide</code>）注册 12 个工具</td></tr>
+  <tr><td class="k">装进运行时</td><td>安装到 <code>&lt;profile&gt;/node_modules/</code> + 覆盖层 insert</td><td><b>生成一次性 <code>cordis.patch.yml</code></b> → <code>--patch</code> 注入 <code>dsh-mcp-client</code>，token 走 env，随启动销毁</td><td>随产品分发 + <code>dsh plugin add</code> 装进 profile</td></tr>
+  <tr><td class="k">授权模型</td><td>平台级开关逐项 opt-in（<code>lm-route</code>/<code>mcp-consume</code>/<code>terminal</code>/<code>editorRead</code>/<code>ui</code>）—— <b>整族放行</b></td><td>Bearer + Host 白名单 + 协议版本白名单 —— <b>认证强、授权粗</b>（拿到 token 即可调 4 个工具）</td><td><b>默认拒绝 + 能力名白名单 + 逐插件声明 + 每能力时间预算</b> + 桥盖章身份</td></tr>
+  <tr><td class="k">传输层</td><td>自有 bridge v3（webview <code>postMessage</code> ↔ 扩展）</td><td><b>借 dsh 原生 MCP 客户端</b>（省掉自定义协议）</td><td>自有 JSON-RPC 控制桥（命名管道 + 盖章身份 + 会话定向 + 回执认领）</td></tr>
+  <tr><td class="k">能力覆盖</td><td>平台全集（终端/任务/调试/git/编辑器/扩展/MCP）</td><td>单一能力域：调试（4 个工具）</td><td>平台（诊断/选区/打开/diff）+ <b>领域</b>（unreal / canvas / mindmap / browser CDP / taskboard / workflow）</td></tr>
+  <tr><td class="k">主要代价</td><td>shared 模式<b>写用户 <code>~/.dsh</code></b>；与第三方插件共处需显式禁重</td><td>只适合"能抽象成一次调用"的能力；patch 生命周期 / token / 版本门槛自管</td><td>协议 + 授权 + 回执 + 时间预算四层全自建（复杂度最高）</td></tr>
+  <tr><td class="k">可取之处</td><td>能力面最广、体验统一（官方 Web UI 原样）</td><td><b>挂载代价最低</b>：新增一类能力 ≈ 一个 patch 文件</td><td>授权粒度最细 + 领域能力</td></tr>
+</table>
+</div>
+
+<div class="note">
+  <b>结论（源码核实后）</b>：社区<b>确实</b>有人做平台能力的反向暴露（两家、两种通道），所以本仓库的"独有"收敛为两点：
+  <b>① 能力级授权</b>（默认拒绝 + 逐插件声明 + 每能力时间预算 + 桥盖章身份）—— 社区是"整族放行"或"单一能力域且授权粗"；
+  <b>② 领域能力</b>（Unreal / 画布 / 思维导图）—— 社区完全没有。
+  另一条值得记的差异：社区的"实现②"用<b>原生 MCP 客户端当传输层</b>，挂一门新能力只需一个 patch 文件，比我们自建控制桥省事得多（第 6.4 节 demo 4 的成本对比即由此而来）。
+</div>
+
+<h2 id="sr">R. 重新评估（2026-10-12 复核：工具 / 技能 / MCP 是否都在 dsh 侧）</h2>
+<p class="small">
+	⚠ 本节的数字是 **2026-10-12 重新取**的 ✓；<strong>§2 / §7 里那套"43 个工具"是更早的快照</strong>，
+	会过期 ⇒ 一律以 <code>dsh-plugins/tools-snapshot.json</code> 与本节为准 ✓。
+	本节只做"对账 + 缺口归类" ✓，不重复 §1–§5 的原理说明 ✓。
+</p>
+
+<h3>R.1 一句话结论</h3>
+<div class="box warnbox">
+	<strong>机制都在 dsh 侧</strong> ✓（工具的注册/快照/审批闸、技能来源+检索、MCP 读配置→生成行→交 loader ✓）；
+	<strong>但"是不是都搬过来了"要分三块答</strong> ✓：
+	工具是 <strong>两套并存、dsh 是子集 + 26 个 dsh 独有</strong> ✗（不是全量搬运 ✗）；
+	技能 <strong>机制在、语义是子集</strong> ✗（缺生命周期语义 + 一个写工具 ✓）；
+	MCP <strong>完整</strong> ✓（vs 侧那个 provider 是管理面，不是缺口 ✓）。
+</div>
+
+<h3>R.2 工具：数量与归属（以快照为准 ✓）</h3>
+<p>
+	dsh 侧：<strong>10 个插件 / 44 个工具</strong> ✓ —— <code>browser(1)、codebase(5)、dashboard(2)、ide(7)、
+	kanban(10)、kb(5)、memory(5)、skills(1)、unreal(4)、workflow(4)</code> ✓。
+	IDE 侧工具目录（<code>agentStudio/browser/providers/tool/</code>）里仍注册着 <strong>~108 个候选名</strong>（含少量杂音 ✓）⇒
+	<strong>两套并存</strong> ✓，不是单一真源 ✗。
+</p>
+<p class="small">
+	<strong>进度更新（同一晚）</strong> ✓：上面这份对账做完后，§R.7 的第 ① 与第 ④（各一项）已落地 ⇒
+	<strong>现在是 10 个插件 / 46 个工具</strong> ✓（<code>skills</code> +<code>skill_manage</code> ⇒ 2；
+	<code>workflow</code> +<code>workflow_apply</code> ⇒ 5 ✓）。两处都以
+	<code>dsh-plugins/tools-snapshot.json</code> 为准 ✓（本节的 44 是**对账当时**的读数 ✓，别再引用它 ✗）。
+</p>
+<p>
+	<strong>dsh 独有的 26 个</strong> ✓：<code>codebase_self_index、dashboard_session(s)、memory_refresh/stats、
+	get_diagnostics、get_selection、open_file、reveal、show_diff、browser、unreal_*(4)、canvas、mindmap、
+	kanban_update、kb_list/read、workflow_engine_status/update</code> ⇒ 两个引擎**服务不同形状** ✓。
+</p>
+
+<h3>R.3 工具差集：按族归类（已逐族核过关键项 ✓）</h3>
+<table>
+	<tr><th>族</th><th>IDE 侧多出来的</th><th>判定</th></tr>
+	<tr><td><strong>codebase</strong></td><td><strong>19 个</strong>（原表写的 13 个是**错的** ✗，2026-10-12 逐个数过 ✓）：
+		<strong>读图谱 10</strong>：<code>index_status、search_graph、query_graph、get_architecture、get_graph_schema、
+		trace_path、get_code_snippet、list_projects、check_index_coverage、detect_changes</code>；
+		<strong>写图谱 6</strong>：<code>index_repository、delete_project、ingest_traces、export_artifact、import_artifact、manage_adr</code>；
+		<strong>与图谱无关 2</strong>：<code>search_code、search_files</code>（ripgrep ⇒ 属**另一族**，不该算进来 ✓）</td>
+		<td>✅ <strong>可做的都做了</strong>：读侧补了 <code>snippet / schema / projects / trace / changes / architecture</code> ✓（共 11 个 ✓）；
+		<strong>不做且各有理由</strong> ✗：写图谱 6 个（<code>.codebase-memory</code> 是 VsSaros 所有物 ✓，只留 <code>self_index</code> 自证 ✓）、
+		<code>check_index_coverage</code>（图里**没有**"跳过/部分索引"那份信息 ✗）、<code>query_graph</code>（真源那套模式匹配是**单独引擎** ✗）</td></tr>
+	<tr><td><strong>memory</strong></td><td><code>forget、recall、improve、delete、cascade、governance、mesh、sentinel、team、
+		obsidian_export、crystal、facet、routine</code></td><td>✅ <strong>13 个全部搬完</strong>（2026-10-13 ✓，工具面 <strong>5 → 17</strong> ✓）——
+		分四批落地 ✓：批 1（<code>recall / forget / obsidian_export / cascade / crystal</code>）→ 批 2a（<code>routine / improve</code>）→
+		批 2b（<code>crystal</code> 升级 4 action ＋ <code>facet</code>）→ 批 2c（<code>governance / team / mesh / sentinel</code>）✓。
+		每个都①**形状从引擎源码取实** ✓（不猜 ✗）②过**审批闸** ✓ ③有探针断言 ✓（含负面用例 ✓）。
+		<br>⚠★ <strong>订正：先前那条"已判定不做"是错的</strong> ✗（2026-10-12 的⑤ 盘点 ✗）。它的前提 ——
+		"这一族要 <strong>团队 / 服务 / 索引</strong>等宿主侧设施" —— 与事实不符 ✓✗：真源三条链路**全部**只是
+		<code>ctx.agentOS.getActiveMemoryProvider()</code> ⇒ 代理 ⇒ <strong><code>POST {gateway}/provider/&lt;method&gt;</code></strong>
+		的网关 RPC ✓（真机探针已证：<code>/provider/searchMemory</code> ⇒ 200 ＋ 真条目 ✓），
+		<strong>零宿主服务依赖</strong> ✓。而"重复实现"的担心也不成立 ✓：自 2026-10-12 工具面对账起就确认
+		我们与基座<strong>逐字重名 = 0</strong> ✓，这 13 个在 dsh 侧**原本没有** ⇒ 是**能力缺口**、不是重复 ✓。
+		<br>⇒ <strong>教训</strong> ✗：判"不做"之前必须**先读依赖链** ✓（"看着像要宿主设施" ≠ 真的要 ✗）——
+		本轮就是这么翻案的 ✓。</td></tr>
+	<tr><td><strong>kb</strong></td><td><code>kb_organize、kb_suggest_links、kb_feishu_spaces</code></td>
+		<td>✅ <strong>两项已落</strong>：<code>kb_organize</code>（自建写路径 + vault 外备份 ✓）、<code>kb_feishu_spaces</code> ✓；
+		<code>kb_suggest_links</code> ⛔ <strong>不是小项</strong> ✗ —— 它要 <strong>RAG 向量索引</strong>（"纯本地相似度"但前提是先建索引 ✓）
+		⇒ 与 codebase 写/索引侧同类（缺整条 embedding 流水线 ✗）</td></tr>
+	<tr><td><strong>workflow</strong></td><td><code>workflow_apply、workflow_get_schema</code></td>
+		<td>✅ <strong>两项已落</strong>（<code>workflow_apply</code> ✓、<code>workflow_get_schema</code> ✓ —— 防漂移手段是
+		"<strong>从写侧推导 + 互相对账</strong>" ✓，不是哈希守卫 ✓）⇒ <strong>④ 全清</strong> ✓</td></tr>
+	<tr><td><strong>kanban</strong></td><td><code>web_recipe_create/list/remove、web_scrape_to_board</code>、<code>decompose/specify/swarm</code></td>
+		<td>◐ 前者需浏览器 ✓；后三个**要调模型** ⇒ 当初**有意不移植** ✓</td></tr>
+	<tr><td><strong>技能</strong></td><td><code>skill_manage</code>（写）</td><td>⚠ <strong>决策项</strong>：写操作 ⇒ 必须过审批闸 ✓（本仓惯例 ✓）</td></tr>
+	<tr><td>其它族</td><td>feishu drive(5)、media（<code>image_generate / vision_analyze / extract_video_frames</code>）、
+		<code>session_search</code>、<code>cronjob</code>、<code>process</code></td>
+		<td>✅ <strong>⑤ 已逐个分类完</strong>（2026-10-12 ✓）：<strong>feishu drive 5 件全落</strong> ✓（读侧三件 ＋ 写侧两件，写侧过闸 ✓）；
+		<code>media</code> ⛔（要**多模态 provider** ✗）；<code>session_search</code> ◐ 可做（会话正文是 <code>&lt;DSH_HOME&gt;/sessions/*.zstd</code> ✓ ＋
+		官方**版本化格式目录** <code>dsh-session-format*</code> ✓，不必逆向 ✓ —— 但先问"有没有必要自己做"✗）；
+		<strong><code>cronjob</code> 与 <code>process</code> ⇒ <code>dsh 自带</code></strong> ✓✓（<code>dsh-schedule</code> ＋ <code>ctx.schedule</code> ✓、
+		<code>dsh-tool-jobs</code> ＋ <code>ctx.jobs</code> ✓）⇒ 我们的动作只是<strong>确认 preset 里挂了它们</strong> ✓，不是实现 ✓。
+		<br><strong>★ 2026-10-12 工具面"两平面"真机对账</strong>（profile <code>vssaros</code> / runtime 0.2.0-rc.2，<code>--dump-config</code> ✓）：
+		① <strong>Host 顶层 203 行</strong>：我们 15 个 bundle 的页面/服务在 ✓，而基座<strong>工具行几乎全 <code>disabled</code></strong> ✗
+		（<code>tool-fs / -fs-search / -bash / -pwsh / -jobs / -todo / -goal / -web / -subagent* / -workflow / -ralph</code>）
+		—— web-app 注释原话 "only the per-agent rows move behind presets" ✓；只有 <code>tool-skill</code> 是我们翻回来的 ✓。
+		② <strong>preset 各自带一份完整清单</strong>：官方 <code>preset-standard</code> 32 行（27 未关 ✓）；我们的
+		<code>preset-vssaros-standard</code> <strong>40 行 = 官方那 32 行逐字 + 我们 8 行</strong> ✓。
+		③ <code>job_list / job_output / job_kill</code>（<code>dsh-tool-jobs</code>）<strong>已在 preset 里 ON</strong> ✓ ⇒ 不用我们做 ✓；
+		<code>schedule_*</code>（<code>dsh-schedule</code> 注册 4 个）在<strong>整个 profile 零命中</strong> ✗
+		（<code>dsh-schedule</code> / <code>dsh-experimental-schedule-bundle</code> 都<strong>没组合</strong> ✓，SDK 里只有类型）
+		⇒ <strong>当前不可用</strong> ✗，要就加一行 bundle ✓。
+		④ <strong>与基座逐字重名 = 0</strong> ✓（机器对账：我们 62 个工具 × 基座 <strong>21 个</strong> <code>tool-*</code> 包 ✓）；
+		只有两组<strong>前缀相邻且互补</strong>：我们的 <code>workflow_*</code>(6) ↔ 基座 <code>workflow</code>(1，JS 脚本编排)、
+		<code>skill_manage/skill_search</code> ↔ 基座 <code>skill</code> ⇒ <strong>没有重复实现基座已有能力</strong> ✓。
+		<br>✅ <strong>同日加装 schedule</strong>：bundle 只在 runtime 里有 ✗ ⇒ 按产品同款两步 stage ＋ 登记进 <strong>dev profile</strong>
+		（`plugin add file:.vssaros/plugins/deepseek-ai-dsh-experimental-schedule-bundle-0.2.0-rc.2` ✓ —— ⚠ <code>file:</code> 必须**相对 profile** ✗，
+		绝对 Windows 路径会让 pnpm 拼接两段 ⇒ <code>ENOENT</code> ✗）；<code>--dump-config</code> 已见 <code>time-context</code> / <code>schedule</code> /
+		<code>ui-schedule</code> 三行 ✓、bundles 20 个 ✓。契约（读源码 ✓）：<code>dsh-schedule</code> **自己**注册 4 个工具
+		（<code>schedule_create/_list/_update/_delete</code> ✓；<strong>没有</strong> <code>dsh-tool-schedule</code> 这个包 ✗），
+		且 <strong>对每个 root agent 都挂</strong> ✓（<strong>与 preset 无关</strong> ✓）。⚠ 生效需重启 Host ✓；
+		<strong>产品 seed 仍不含它</strong> ✗（进产品需 stage 进 seed ＋ 改 package.json/bundles ＋ 处理 lockfile ✗ —— 产品决策 ✓）。
+		<br><strong>★ 2026-10-12 追加评估：dsh 原生工具／技能／MCP 能不能"完全读写文件"</strong> —— 答案要分成**三句话**（全部有原文／dump 证据 ✓）：
+		<br><strong>① 行在场与否，只有一个来源</strong>：`dsh-web-app/cordis.patch.yml:432-439` 原文注明
+		"the Web surface disables them here and lets <strong>each session mount a preset</strong> instead" ✓，
+		于是 host plane 上 <code>tool-fs / -fs-search / -bash / -pwsh / -jobs / -todo / -goal / -subagent* / -workflow / -web / skill-filesystem / tool-skill</code>
+		<strong>全是 <code>disabled</code></strong> ✓（"禁用而非删除"是为防"别人重排组合时静默复活" ✓）⇒ Web/VsSaros 上模型面的 fs/bash/skill **只可能**来自会话挂的 preset ✓。
+		⚠ ⇒ <strong>运行层那个未证项（会话到底选没选中我们的 preset）在这里是决定性的</strong> ✗：没选中 ⇒ 会话**没有** <code>read/write/edit/glob/grep/pwsh/skill</code> ✗。
+		策略与后端仍在 host plane（两边都可见 ✓）：<code>sandbox / sandbox-policy / fs-sandbox / fs-observation-policy / pwsh-sandbox(win32)</code> ✓。
+		<br><strong>② 读 = 不受限 ✓；写 = 只在会话工作区 ＋ temp ✗</strong>（<code>dsh-fs-sandbox</code> 原文："保留本地文件系统的读取行为"、"<strong>变更</strong>围栏不限制观察" ✓）。
+		我们 profile 实际配置：<code>mode: !!js process.env.DSH_PERMISSION_MODE ?? 'workspace-write'</code> ✓、<code>workspaceRoot: !!js process.cwd()</code> ✓
+		（<code>dsh-sandbox-policy</code> 的**故障安全默认是 `read-only`** ✗，是我们显式选了可写 ✓）。
+		⇒ <strong>vault / <code>~/.vssaros</code> 数据根 / 别的仓库都在围栏外</strong> ✗ ⇒ 模型用原生 <code>write</code> 改笔记会吃 <code>FS_SANDBOX_DENIED</code> ✗；
+		Windows 上子进程（bash/PowerShell）另有 <code>dsh-sandbox-windows-acl</code> ✓（ACL ＋ Low 完整性标签，Win32 失败即**阻止不受限 spawn** ✓ fail-closed ✓）。
+		<br><strong>③ 技能与 MCP</strong>：<code>skill</code> 本身只是"目录＋加载器" ✓（注册表分层：部署级 provider 进全局层、preset 的 <code>skill-filesystem</code> 进该层 ✓，agent 读**合并后**目录 ✓）
+		⇒ 技能能否读写取决于它让模型用哪套工具 ✓；<strong>我们技能的发现/加载</strong>是 <code>vssaros-skills</code> 用 Node <code>fs</code> 读数据根 ✓（不受 dsh 围栏 ✓）。
+		<code>dsh-mcp-client</code> 把外部服务器工具注册成 <code>mcp__&lt;server&gt;__&lt;tool&gt;</code> ✓（默认不启用任何服务器 ✓），其 README <strong>无任何 fs 围栏字样</strong> ✓
+		⇒ MCP 服务器是**独立子进程、以用户权限跑** ✓ ⇒ **不受 <code>fs-sandbox</code> 管，可读写任意路径** ✓（证据等级：README 级 ✓，未真机验证 ✗）。
+		<br><strong>④ 两类工具的差别在"权限模型"而非"能力"</strong>：我们插件的 I/O 是**插件进程内 Node <code>fs</code>** ✓ ⇒ 可写**围栏外**（数据根 / vault / taskboard ✓，这正是 <code>kb_organize</code> 能搬笔记的原因 ✓）；
+		原生工具走 <code>ctx.fs</code> ⇒ 受 <code>workspace-write</code> ＋ 先读后写（<code>fs-observation-policy</code>）约束 ✓；
+		审批面也不同（我们在 <code>tools/pre-execute</code> 自建闸 ✓；原生走 <code>permission-presets</code> 的 <code>ask/never</code> ✓）。
+		⚠ ⇒ <strong>这个不对称要写进文档/工具描述</strong> ✗：模型若想动 vault 里的文件，该用**我们的工具**（<code>kb_organize</code> 等 ✓）而不是原生 <code>write</code> ✓。
+		<br><strong>★ 2026-10-13：记忆客户端的"平面错位"被真机探针抓出并修好</strong> ✓✗。
+		真契约＝<code>POST {gateway}/provider/&lt;method&gt;</code> ＋ body <code>{ args:[agentId, …] }</code> ✓
+		（方法名＝ <code>IMemoryProvider</code> 接口名、camelCase ✓；证据：代理 L7-8/L41/L208/L526 ＋ 真机 200 ✓）。
+		而客户端此前抄的是 <strong>`{base}/mem::context` / `/mem::remember` ＋ 对象信封</strong> ✗ ⇒ **真机全 404** ✗
+		（<code>/provider/mem::context</code> 直说 <code>unknown provider method</code> ✓）⇒
+		<strong>`memory_remember` 写不进去、注入恒空、`memory_list` 恒空</strong> ✗（宿主 <code>/search/&lt;id&gt;</code> 空查询恒 <code>[]</code> ✗）。
+		已修：新增 <code>providerCall()</code> ✓、读走 <code>loadContext(id,sid,undefined,{tokenBudget})</code> ⇒ <code>.systemPrompt</code> ✓、
+		写走 <code>writeMemory(agentId, entry)</code> ✓（<strong>删掉 core-add 分支</strong> ✗ —— 类型路由在网关侧 ✓）、
+		检索走 <code>searchMemory</code> ✓；<code>entry</code> 形状逐字照抄 IDE ✓。
+		守卫：<code>p3-07</code> <strong>40/40</strong> ✓、<code>p3-34</code> 29/29 ✓、<code>p3-35</code> 16/16 ✓、<code>p3-36</code> 13/13 ✓、
+		<code>p3-48</code> 24/24 ✓、<code>p3-26</code> 82/82 ✓。
+		⚠ 另一条硬教训 ✗：profile 里的插件是<strong>拷贝</strong>（<code>.vssaros/plugins/…</code> ＋ <code>node_modules/@vssaros/*</code> ✓，**不是软链** ✗）
+		⇒ 改仓库代码**不生效** ✗（"真机端到端"几条起初全红正是此因 ✓）⇒ dev profile 已刷新 ✓（需重启 Host ✓）。
+		<br><strong>★ 同日：斜杠命令报 <code>session "…" is already owned by an active write handle</code> ⇒ 壳的<strong>孤儿 Host</strong> ✗✓</strong>
+		<strong>与技能无关</strong> ✓：文案出自 <code>@deepseek-ai/dsh-session-persistence</code> 的 <code>SessionAlreadyOwnedError</code> ✓，
+		由 <code>dsh-client-ui-commands</code> 的<strong>命令目录预热</strong>抛出（<code>client.js:299 ensureReady</code> ＋
+		<code>L779 sessions.using(sessionId,{source:'commandCatalog'})</code> ✓）⇒ 斜杠命令要先有目录 ⇒ 撞上单写者守卫 ✓。
+		真因：<strong>同一目标起了 3 份 Host</strong> ✗（16:30 / 16:58 / 17:18，pid 80532 / 96452 / 87792 ✓；三份 run 覆盖层<strong>逐字相同</strong> ✓，
+		只 run id 不同 ✗）—— 两个"各有理由"的设计撞在一起 ✗：keepAlive 的 Host <strong>故意</strong>活过 IDE 退出 ✓，
+		而"插件换版本不许接管旧 Host"（<code>_pluginsStale</code> ✓）也有理（旧进程内存里是旧插件代码 ⇒ 接管会白屏 ✗）
+		⇒ 留下"<strong>没人管的那一段</strong>" ✗。
+		已修 ✓：新增 <code>common/dshHostRunOwnership.ts</code>（<code>owner-&lt;runId&gt;.json</code> 记 runId / hostPid / <strong>appPid</strong> / files ✓）
+		＋ <code>electron-main/dshHostReaper.ts</code> ✓；supervisor 在"<strong>判定不复用之后、spawn 之前</strong>"回收孤儿 ✓
+		（<strong>顺序是硬要求</strong> ✗：先复用、后回收 ⇒ 绝不误杀想接管的那份 ✓），spawn 成功后写记录 ✓、停 Host 一并清 ✓。
+		判据：拥有者<strong>已死</strong>或<strong>就是自己</strong> ⇒ 结束进程树 ＋ 清 run 文件 ✓；拥有者<strong>还活着</strong> ⇒ <strong>一个字节不许动</strong> ✓
+		（多实例：别的窗口可能正接在上面 ✗）；刚写下 &lt;15s 的也不动 ✓。
+		守卫 <code>p3-60-host-orphan-reap</code> <strong>18/18</strong> ✓（真起假 Host 进程：该杀的<strong>真被杀</strong> ✓、不该杀的<strong>真的没动</strong> ✓
+		＋ 3 条源码级<strong>接线顺序</strong>守卫 ✓）。⚠ 生效需<strong>重启 app 主进程</strong> ✓（watch 只转译 ✓）；
+		机制上线前的孤儿没有记录 ✗ ⇒ 认不出，只能手工 <code>taskkill /pid 80532 /T /F</code>（＋ 96452 ✓）。
+		<br><strong>★ 同日批 1：memory 工具 5 → 10</strong> ✓（命名/参数/回复语义**照 IDE 真源** ✓）：
+		<code>memory_recall</code>（<code>recallFormatted</code> ✓ 只读，网关不支持时**回退 <code>searchMemory</code>** ✓）、
+		<code>memory_forget</code>（<code>forgetMemory</code> ✓ <strong>写</strong>；IDE 的 <code>memory_forget</code> 与 <code>memory_delete</code>
+		调的是**同一个方法** ✗ ⇒ dsh 侧**只做一个** ✓）、<code>memory_obsidian_export</code>（<code>obsidianExport</code> ✓ 只读、
+		返回 markdown、&gt;8000 字截断预览 ✓）、<code>memory_cascade</code>（<code>cascadeUpdate</code> ✓ 写）、
+		<code>memory_crystal</code>（<code>crystallize</code> ✓ 写；list/get/auto 留批 2 ✓）。
+		<strong>闸</strong> ✓：<code>WRITE_TOOLS</code> 判据仍是"会不会改用户数据" ⇒ +forget/cascade/crystal ✓；
+		为此把审批载荷的**动词泛化**（<code>buildWriteReason({verb})</code> ✓ ＋ <code>parseWriteReason</code> 捕获动词 ✓，缺省 <code>remember</code> ⇒ 向后逐字兼容 ✓）——
+		否则新写工具的审批文案会**说谎** ✗ 且每条被记成 <code>(unparsable)</code> ✗。
+		守卫：<code>p3-07</code> <strong>45/45</strong> ✓、<code>p3-34</code> 29/29 ✓、<code>p3-35</code> 16/16 ✓、<code>p3-36</code> 13/13 ✓、
+		<code>p3-48</code> 24/24 ✓、<code>p3-26</code> 82/82 ✓；<code>check:dsh-plugins</code> 违规 0 ✓；快照 <strong>11 插件 / 78 工具</strong> ✓（73＋5 ✓）。
+		<br>★ <strong>回执形状从引擎源码取实</strong> ✓（`amFunctions.ts:1050` / `amFinal.ts:16-20` / `amAdvanced.ts:328-333` ✓）：
+		<code>forgetMemory</code> ⇒ <code>boolean</code> 且**只认 2 参**（<code>reason</code> 被忽略 ⇒ 只进审批/审计 ✓）；
+		<code>cascadeUpdate</code> ⇒ <code>{success, flagged}</code>（判据 <code>success===true</code> ✓）；
+		<code>crystallize</code> ⇒ <code>Crystal|null</code> ⇒ ⚠ <strong><code>null</code> 是失败</strong> ✗
+		（先前的兜底会把 <code>null</code> 说成成功 ✗✗ ⇒ 已修 ＋ 加负面断言 `act-missing` ⇒ <code>ok===false</code> ✓）。
+		<strong>教训</strong>：形状未核实时**写兜底比留空更危险** ✗ —— 兜底会把失败翻译成成功 ✓✗。
+		⚠ 真机端到端**未做** ✗：只读探针跑到一半网关下线（3111–3113 无监听 ✓）⇒ 需启动 app 后重跑 ✓（只读、零风险 ✓）。
+		<br>★ <strong>同日批 2a：memory 工具 10 → 12</strong> ✓ —— <code>memory_routine</code>（8 action ✓）与
+		<code>memory_improve</code>（3 action ✓），action 与参数名逐条照真源 ✓；<strong>回执形状全部从引擎源码取实</strong> ✓
+		（<code>createRoutine</code> 首参是<strong>对象</strong> ✓、<code>routineStepUpdate</code> 6 个位置参数 ✓、
+		<code>routineStatus</code> 唯一失败信号 <code>success:false</code> ✓、<code>routineFreeze</code> <code>{success,…}</code> ✓、
+		<code>routineDelete</code>/<code>reinforceMemory</code> boolean ✓）。⚠ 真源 <code>memory_improve</code> 在旧 provider 上会
+		<strong>回退写一条 <code>(reinforced)</code> 假内容</strong> ✗ ⇒ 本模块**刻意不做** ✓（如实报错更划算 ✓）。
+		<strong>闸的"参数敏感"判据</strong> ✓（先例＝kb 的 <code>writeIntentOf</code> ✓）：<code>memory_routine</code> 的
+		<code>list/get/status</code> 只读 ⇒ **不弹窗** ✗；⚠ 第一版写反了（<code>action</code> 缺失会放行 ✗）⇒ 已改成**只读白名单**
+		（安全方向朝"从严" ✓，<code>p3-07</code> 当场抓到 ✓）。⚠★ <strong>改代码必须 bump 版本</strong> ✗：探针按版本决定是否重新 stage
+		⇒ 不 bump 则真机跑旧代码 ✓（这正是"手动刷副本"的同一机制 ✓）⇒ 已 bump <code>0.3.16 → 0.3.17</code> ✓。
+		⚠⚠ 本插件<strong>被并发会话同时改</strong> ✓（0.3.13→0.3.16 ✓、<code>files</code> 多了 <code>draft.js</code>/<code>distill.js</code> ✓）⇒ 动它前必须现读 ✓。
+		守卫：<code>p3-07</code> <strong>59/59</strong> ✓、<code>p3-26</code> 82/82 ✓、<code>p3-34</code> 29/29 ✓、<code>p3-35</code> 16/16 ✓、
+		<code>p3-48</code> 24/24 ✓、<code>p3-36</code> 14/14 ✓、<code>check:dsh-plugins</code> 违规 0 ✓；快照 <strong>11 插件 / 80 工具</strong> ✓（78＋2 ✓）。
+		<br>★ <strong>同日批 2b：memory 工具 12 → 13</strong> ✓ —— <code>memory_crystal</code> 升级为 <strong>4 action</strong>
+		（<code>create/list/get/auto</code> ✓；<code>autoCrystallize</code> ⇒ <strong><code>number</code></strong> ✓）＋ 新增
+		<code>memory_facet</code>（<strong>6 action</strong> ✓：tag/query/get/untag/stats/dimensions ✓）。
+		⚠★ 两处**形状订正** ✓：<code>facetGet</code> ⇒ <strong>数组</strong> ✗（不是记录/`null` ✗；真源那句
+		<code>f ? … : 'No facet'</code> 对<strong>空数组</strong>也走"有" ✗）⇒ 我们按<strong>诚实口径</strong>：空数组＝没有标签 ✓。
+		⚠★ <strong>版本号冲突</strong> ✗：探针的"装的就是当前源码"是**逐字节比对** ⇒ <strong>并发会话用同一版本号 stage 过</strong>时
+		我的改动会永远红 ✗ ⇒ 必须再高一级（已 0.3.21 ✓）。<strong>规矩：开工先读版本号、改完一次 bump 到位</strong> ✓。
+		<strong>进度</strong>：已搬 <strong>8 个</strong>；剩 <code>governance</code>/<code>team</code>/<code>mesh</code>/<code>sentinel</code> ✓。
+		<br>★★ <strong>同日批 2c ⇒ IDE 侧那 13 个高级记忆工具全部搬完</strong> ✓（工具面 <strong>5 → 17</strong> ✓）：
+		<code>memory_governance</code>（delete/bulk_delete/audit ✓）· <code>memory_team</code>（share/query ✓）·
+		<code>memory_mesh</code>（join/list/leave/sync ✓）· <code>memory_sentinel</code>（create/list/check/cancel ✓）；
+		形状逐个从引擎取实 ✓（<code>governanceBulkDelete</code> ⇒ <code>{deleted,matched,scanned,dryRun}</code> ✓、
+		<code>sentinelCheck</code> ⇒ <code>{checked,triggered?,…}</code> ✓ …）。
+		<strong>闸按参数</strong> ✓：governance 的 <code>audit</code> 与 <code>bulk_delete</code> 的 <strong>dry-run（缺省 true）</strong> 不弹窗 ✗；
+		⚠ <code>sentinel.check</code> **算写**（会触发 ✓）。
+		⚠★ 两条**自己写坏当场抓到**的教训 ✗：① 模板串里套反引号 ⇒ <code>SyntaxError</code> ✗
+		⇒ <strong>批量写长代码后先 <code>node --check</code></strong> ✓；② <strong>staged 副本会锁住坏的那一版</strong> ✗
+		（语法坏着被 stage ⇒ 探针后面**全是 404** ✗）⇒ 修好**必须再 bump** ✓。
+		⚠ <strong>并发竞态</strong> ✗：<code>p3-07</code> 的逐字节比对在我修完后仍红，报的是 <code>core/judge.js</code>
+		（**并发会话新增的文件** ✓）⇒ 属环境竞态 ✗（其余 <strong>80/81</strong> 全绿 ✓）。
+		守卫：<code>p3-26</code> 82/82 ✓、<code>p3-34</code> 29/29 ✓、<code>p3-35</code> 16/16 ✓、<code>p3-48</code> 24/24 ✓、
+		<code>p3-36</code> 14/14 ✓、<code>check:dsh-plugins</code> 违规 0 ✓；快照 <strong>11 插件 / 85 工具</strong> ✓（81＋4 ✓）。
+		<br>★★ <strong>同日：第一次把第三方 skill-only 插件装进 dsh profile</strong>（样本＝Archify ✓）——
+		<code>@tt-a1i/archify-dsh@1.0.0</code> ✓ 是 <strong>Skill-only bundle</strong>：补丁<strong>只插一行</strong>
+		<code>archify-skill-filesystem</code> ✓（<code>providerName: archify-plugin</code> ✓、<code>includeDefaultRoots:false</code> ✓、
+		<code>bundledSkillDir: !!js …</code> ⇒ <strong>host 进程求值</strong> ✓＝host-loaded code ✓）。装后 bundles 21 → <strong>22</strong> ✓、
+		我们 <code>@vssaros/*</code> 17 个不受影响 ✓（pnpm 那句 <code>+1 -43</code> 是剪未列出的包 ✓，逐一核过 ✓）。
+		<br>★ <strong>技能层级是硬契约</strong> ✓：<code>dsh-skill-filesystem</code> 只认被扫描根<strong>顶层</strong>的
+		<code>&lt;name&gt;/SKILL.md</code> ✓，<strong>刻意不支持</strong> <code>**/SKILL.md</code> ✗ ⇒ 包内
+		<code>skills/archify/SKILL.md</code>（一层 ✓）合规 ✓；<strong>多嵌一层即静默不可见</strong> ✗（突变已证 ✓）。
+		<br>★★ <strong>最硬的门＝真浏览器</strong>：<code>finalize</code> 第四关 <code>browser-check</code> <strong>真启动 Chrome</strong> ✓
+		（CDP over <code>--remote-debugging-pipe</code> ✓）；<strong>本机全通</strong> ✓：<code>demo</code> exit 0 ✓、
+		<code>check</code> <code>ok:true</code> ✓、<strong><code>browser-check</code> exit 0 / 1.7s / <code>status:pass</code></strong> ✓
+		（Chrome 在 <code>findChrome()</code> 第一候选位 ✓，无需 <code>ARCHIFY_CHROME</code> ✓）。
+		⚠ 且：<strong>本机 ACL 沙箱"本来就没在拦"</strong> ✓ —— <code>icacls &lt;工作区&gt; /setintegritylevel Low</code>
+		⇒ <code>exit 5 Access denied</code> ✗（<code>%TEMP%</code> 下 exit 0 ✓）⇒ 壳注入 <code>sandboxMode: danger-full-access</code> ✓
+		（只降沙箱、不动审批 ✓）⇒ 子进程不受限 ⇒ Chrome 起得来 ✓。
+		<br>新增守卫 <code>p3-50-archify-skill.mjs</code> <strong>14/14</strong> ✓（补丁形态 ＋ 层级契约 ＋ 离线 render/check/真浏览器门 ✓），
+		<strong>离线 ✓ 零足迹 ✓ 未装则 SKIP 不算红</strong> ✓；反向突变 <strong>2/2 命中</strong> ✓。
+		⚠ 未做：<strong>重启 app 后</strong>的端到端（agent 真看到技能 ＋ 会话沙箱内跑 CLI ✓）。
+		<br>★★ <strong>同日：修掉"沙箱降级静默失效"</strong>（用户报障＝每条 <code>pwsh</code> 都被问
+		"escalate sandbox to danger-full-access" ✗）。
+		<strong>现象与原因</strong>：dsh 的 runner 是 <strong>fail-closed</strong>（"The child is NEVER spawned unrestricted." ✗），
+		而本机<strong>写不了 Low 完整性标签</strong> ✗（实测：工作区下 <code>icacls … /setintegritylevel Low</code> ⇒
+		<code>exit 5 Access denied</code> ✗、<code>%TEMP%</code> 下 <code>exit 0</code> ✓ ⇒ <strong>按路径</strong> ✓）
+		⇒ 建不起沙箱 ⇒ dsh 只能<strong>问人要一次完整访问</strong> ✓（<strong>机制合理</strong> ✓、<strong>粒度错了</strong> ✗：
+		环境级事实不该逐命令问 ✓）。
+		<br>★ <strong>根因＝我们壳侧口径不一致</strong> ✗✗：主进程探针用 <code>workspaceRoot ?? process.cwd()</code> ✓，
+		而渲染覆盖层要求 <code>sandboxMode &amp;&amp; workspaceRoot</code> ✓ ⇒ <strong>没有打开工作区文件夹</strong>时
+		探针报"要降级"却<strong>覆盖层什么都不发</strong> ✗ ⇒ 降级<strong>静默失效</strong> ✗ ⇒ "每次都问" ✓。
+		⚠ 那条 <code>&amp;&amp; workspaceRoot</code> 是<strong>刻意的</strong> ✓（测试里写明：<code>sandbox-policy</code> 行的
+		<code>config</code> 是<strong>整体替换</strong> ✗ ⇒ 只写 <code>mode</code> 会把 dsh-base 的 <code>workspaceRoot</code> 擦掉 ✗）
+		⇒ <strong>不能</strong>简单去掉条件 ✗（我最初的"1 行改"是错的 ✓）。
+		<br><strong>正解（已落）</strong> ✓：补一个<strong>沙箱专用根</strong> <code>SANDBOX_FALLBACK_ROOT = homedir()</code> ✓
+		（与 supervisor 起 Host 的 <code>spawn(…, { cwd: homedir() })</code> <strong>逐字同源</strong> ✓）
+		＋ 新字段 <code>sandboxWorkspaceRoot</code> ✓（interface/parse/serialize ✓）⇒ 渲染取根
+		<code>sandboxRoot = sandboxWorkspaceRoot ?? workspaceRoot</code> ✓；⚠ <strong>绝不</strong>拿它顶 <code>workspaceRoot</code> ✗
+		（那会把<strong>代码图谱</strong>指到 <code>~/.codebase-memory</code>，空着且不报错 ✗✗）。
+		守卫：<code>dshSandboxCompat</code> <strong>6 passing</strong> ✓（含"探针与覆盖层<strong>同源</strong>"✓、反向"兜底根不许顶 workspaceRoot"✗）、
+		<code>dshHostConfig</code> 6 ✓、<code>dshProbeCoverage</code> 4 ✓ —— ⚠ 改动当天旧断言<strong>当场变红</strong>（单行正则）✓ 证明守卫是活的 ✓。
+		⚠ 属 <code>src/</code> 改动 ⇒ <strong>要重建/重启 app 才生效</strong> ✓；生效后若<strong>还</strong>每次问 ⇒ 才是 dsh 侧判据问题 ✓
+		（查 run 目录有无 <code>sandbox-*.yml</code> ＋ Host 日志 <code>sandbox unusable on this machine</code> ✓）。
+		<br>⚠ <strong>数字订正</strong>：本文档早前的 "47/48/49 个工具" <strong>是错的</strong> ✗（读错了
+		<code>tools-snapshot.mjs</code> 经 <code>Select-Object -Last 1</code> 过滤后的行 ✗）；权威数字＝<strong>守卫自己打印的那行</strong>：
+		<strong>11 个插件 / 62 个工具</strong> ✓。</td></tr>
+	<tr><td>已有官方等价物</td><td><code>web_search/web_extract、delegate_task/new_agent、plan_enter/exit/explore、
+		terminal/file_read/file_write/patch/execute_code/update_plan/clarify</code></td>
+		<td>✅ <strong>不算缺口</strong> ✓（dsh 由官方 <code>tool-web / tool-subagent / plan-mode / tool-fs / tool-pwsh / tool-todo</code> 提供 ✓，真机工具表可见 ✓）</td></tr>
+</table>
+
+<h3>R.4 技能：差的是"生命周期语义"（已核到权威文件与默认值 ✓）</h3>
+<p>
+	IDE 侧（<code>agentStudio/common/skills.ts</code> + <code>common/skillInjectionBudget.ts</code> ✓）：
+	<code>activation: 'manual' | 'auto' | 'always'</code> ✓（<code>always</code> = **每轮注入全文** ✓）、
+	<code>source: builtin | user | marketplace | extension | memory | workflow</code> ✓ + <code>contentHash</code> 跨目录去重 ✓ +
+	<code>enable/disableSkill</code> ✓；注入预算优先级 <code>required &gt; explicit &gt; always &gt; auto</code> ✓、
+	<code>maxFullSkills=10</code> / <code>maxPromptChars=48_000</code> ✓、<strong>超限降级为摘要（不丢弃）</strong> ✓；
+	工具 4 个：<code>read_skill / list_skills / skill_search / skill_manage</code> ✓。
+</p>
+<p>
+	dsh 侧：<code>skill_search</code>（BM25 ✓，口径与真源对齐 ✓，有"口径对齐"守卫 ✓）+ 原生 <code>skill</code> 取正文 ✓ + 目录可见 ✓。
+	<strong>缺</strong> ✗：<code>activation: always</code> 的每轮全文注入（dsh **无等价物** ✗）、预算/降级、来源分级与去重、
+	启用开关，以及 <strong><code>skill_manage</code></strong>（写 ⇒ 决策项 ✓）。
+</p>
+
+<h3>R.5 MCP：完整 ✓</h3>
+<p>
+	dsh 侧 <code>vssaros-mcp</code>（<code>lib/index.js</code> + <code>lib/core/mcpConfig.js</code> + <code>lib/core/mcpRows.js</code> +
+	<code>bin/sync-rows.mjs</code> ✓）三件事齐 ✓：读 <code>mcp.json</code> ✓ → 每 server 生成一条挂载行 ✓ →
+	交给 dsh 原生 <code>dsh-mcp-client</code> ✓（**零 <code>--patch</code> 生效** ✓，由 <code>p3-24 / p3-25</code> 钉住 ✓）。
+	工具**调用**本身归 dsh 原生 ✓（<code>mcp__&lt;server&gt;__&lt;tool&gt;</code> ✓）。vs 侧 <code>mcpToolProvider.ts</code> 是**管理面** ✓，不是缺口 ✓。
+</p>
+
+<h3>R.6 复核过程中**推翻的两个"假缺口"**（记下来，免得下次再报 ✗）</h3>
+<ol>
+	<li>我一度写"IDE 侧没有注入预算/来源分级" ✗ —— 实际 <code>common/skillInjectionBudget.ts</code> **在** ✓（我的正则太窄 ✗）。</li>
+	<li>我一度怀疑 <code>vssaros-browser</code> / <code>vssaros-unreal</code>（**非模块**、不随包自动安装 ✗）是"装不上的缺口" ✗ ——
+		实际 <code>dshHostSupervisor.ts:563-564</code> **明确装它们** ✓。</li>
+</ol>
+
+<h3>R.7 建议的缺口优先级（按"dsh 自足"目标 ✓）</h3>
+<ol>
+	<li>✅ <strong>已落地（2026-10-12）</strong>：<code>skill_manage</code> ✓ —— <code>vssaros-skills</code> 0.3.5，四种 action（create/edit/patch/delete ✓）
+		照 IDE 真源参数名（下划线 ✓）+ 路径围栏 + 256KB 上限 + patch 唯一性 ✓；<strong>写操作必过审批闸</strong> ✓
+		（<code>WRITE_TOOLS</code> 同口径 ✓）。守卫：<code>p3-04</code> 67/67 ✓（含 7 条拒绝路径 ✓）、<code>p3-26</code> 35/35 ✓、突变 2/2 ✓。</li>
+	<li><strong>codebase 写/索引侧</strong>（13 个 op ✗）—— 影响"不依赖 VsSaros 也能索引/维护图谱" ✓；<strong>尚未做</strong> ✗；</li>
+	<li><strong>memory 高级面</strong>（forget/recall/improve/cascade… ✗）；<strong>尚未做</strong> ✗；</li>
+	<li>◐ <strong>部分落地（2026-10-12）</strong>：<code>workflow_apply</code> ✅ —— <code>vssaros-workflow</code> 0.3.12，
+		照真源语义（Start/End 必须有 ✓、<code>condition</code>/<code>branch</code>→<code>ifElse</code> ✓、顶层内容字段挪进 <code>data</code> ✓、
+		只换 nodes/connections、其它元数据保留 ✓）+ 新建路径同锁 ✓ + 过闸 ✓。守卫：<code>p3-10</code> 54/54 ✓（含 3 条拒绝路径 ✓）、
+		<code>p3-26</code> 37/37 ✓。
+		<strong>✅ 第 ④ 项已全部落地</strong>：最后一项 <code>workflow_get_schema</code> 见下 —— 它的防漂移手段**不是**"哈希守卫"，而是"**从写侧推导 + 互相对账**" ✓（比哈希更贴语义：改的是**含义**，不是字节 ✓）。</li>
+	<li>✅ <strong>④ 收口</strong>：<code>workflow_get_schema</code> —— <code>vssaros-workflow</code> 0.3.13。真源两半：静态节点目录 ＋ <strong>在线 agent 列表</strong>（后者才是值钱的一半 ✓ —— 没有它模型填不出合法的 <code>data.agentId</code> ✓）。三处<strong>故意不照抄</strong> ✗：
+		① 真源把 <code>branch</code> 当<strong>真名</strong>宣称 ✗，而我们的写侧会把它归一成 <code>ifElse</code> ✓ ⇒ 我们宣称真名 ＋ 单列别名（<strong>照抄会教错模型</strong> ✓）；
+		② 目录里的<strong>规范性</strong>内容（别名 / 顶层元键 / 必带 Start+End）全部<strong>从写侧常量推导</strong> ✓（<code>store.js</code> 导出 ✓）—— "文档与实现各写一份"正是漂移的来源 ✗，这里让它们只有<strong>一个</strong>来源 ✓；
+		③ agents <strong>从盘上读</strong>（<code>&lt;数据根&gt;/agents/*/.agent.md</code> ✓，真源 <code>getAgents()</code> 的唯一数据源 ✓；与 <code>vssaros-agents</code> <strong>同源契约、各自一份实现</strong> ✓，由探针做<strong>跨插件对账</strong> ✓），不引入任何服务依赖 ✓。
+		守卫：<code>p3-10</code> <strong>63/63</strong> ✓（14 条新断言：盘上读 agent ✓、<code>id</code> 口径（frontmatter 优先、否则目录名）✓、缺 name / 缺文件都<strong>如实列进 <code>agentErrors</code></strong> ✓、三条<strong>反漂移对账</strong>（常量逐条一致 / 别名不许当真名 / <strong>行为级</strong>：目录宣称的每个别名写侧真会归一 ✓）、跨插件解析器对账 ✓、无 agent 时的诚实口径 ✓）；
+		反向突变 <strong>3/3 命中</strong> ✓；快照守卫自报 <strong>11 个插件 / 62 个工具</strong> ✓（⚠ 此处原写"49 个工具"是**读错过滤行** ✗，2026-10-12 订正 ✓）。
+		⇒ <strong>R.7 剩余</strong>：② codebase 写/索引侧、③ memory 高级面、⑤ 先分类再决定（media / session_search / feishu drive / cronjob / process）✓。</li>
+	<li>▶ <strong>② 开工：先盘点，结论推翻了原口径</strong> ✗→✓。原以为"IDE 那族 13 个 op">实际是 <strong>19 个</strong>，且按依赖分三类：
+		<strong>读图谱</strong>（<code>index_status</code> / <code>search_graph</code> / <code>query_graph</code> / <code>get_architecture</code> /
+		<code>get_graph_schema</code> / <code>trace_path</code> / <code>get_code_snippet</code> / <code>list_projects</code> /
+		<code>check_index_coverage</code> / <code>detect_changes</code>）<strong>我们已有 4 个</strong>（overview / search / deps / hotspots ✓）；
+		<strong>写图谱</strong>（<code>index_repository</code> / <code>delete_project</code> / <code>ingest_traces</code> / <code>export_artifact</code> /
+		<code>import_artifact</code> / <code>manage_adr</code>）我们只有 <strong>self_index 自证</strong>（不碰 <code>.codebase-memory</code> ✓）；
+		<strong>与图谱无关</strong>（<code>search_code</code> / <code>search_files</code> —— ripgrep 文本搜索 ⇒ 属<strong>另一族</strong>，不该算在 codebase 里 ✓）。
+		⇒ 真正的缺口是"<strong>补廉价读图谱</strong>"，其中 <strong>最值钱的是 <code>get_code_snippet</code></strong>（按名字取源码本体 ✓）。</li>
+	<li>✅ <strong>同日落地 <code>codebase_snippet</code></strong>（<code>vssaros-codebase</code> 0.6.7）：按 <code>qualifiedName</code>
+		（<code>路径::名字</code> / <code>类::成员</code> / 光一个 <code>名字</code> ✓）定位节点 ⇒ 读回**那一段源码**（带前后文 ✓）。
+		<strong>三条反坏设计</strong>：① <strong>歧义列候选、绝不猜</strong> ✗（猜错等于把别的同名符号的源码当事实说出去 ✓）；
+		② 读盘走<strong>实际用的根</strong>（<code>resolveRoot</code> ✓，主根没图时会退到 relatedRoots ⇒ 必须按**同一个**根解析相对路径 ✓）
+		＋ 三条围栏（绝对路径 / <code>..</code> 一律拒 ✓、拼完再前缀复核 ✓、先 <code>stat</code> 再读 ✓）；
+		③ <code>endLine</code> 不可靠时<strong>如实标注</strong>（我们的自建图逐行 ⇒ 只标起始行 ✓，<strong>不冒充"整个函数体"</strong> ✗）。
+		另外：真源在图上查不到会**退回 ripgrep** ✗，我们这版<strong>不换语义</strong>，而是报错并<strong>指路</strong> <code>codebase_search</code> ✓。
+		守卫：<code>p3-11</code> <strong>60/60</strong> ✓（+10：纯定位 3 条含**歧义不猜** ✓、纯切片 2 条含**截断如实标** ✓、围栏 4 条含**正例**（不是拿"一律拒"冒充安全 ✗）✓、
+		<strong>真机端到端</strong>（真图谱取真符号 → 读回源码且文件存在 ✓）✓）；顺手把 <code>TOOL_NAMES</code> <strong>导出</strong>并对账 ✓；
+		反向突变 <strong>3/3 命中</strong> ✓；快照 ⇒ <strong>50 个工具</strong> ✓。</li>
+	<li>✅ <strong>又落两个"薄工具套现成纯函数"</strong>（<code>vssaros-codebase</code> 0.6.8，快照 ⇒ <strong>52 个工具</strong> ✓）：
+		<code>codebase_schema</code>（≈ <code>get_graph_schema</code> ✓）与 <code>codebase_projects</code>（≈ <code>list_projects</code> ✓）。
+		盘点发现 <code>summarizeGraph</code> <strong>早就产出</strong> labels / edgeTypes / files / fileHashes / communities ✓ ⇒
+		<code>codebase_schema</code> 是<strong>零新逻辑</strong>的移植 ✓（<strong>零漂移</strong> ✓）—— 但补了一层页面版没有的**诚实** ✗→✓：
+		页面那份 <code>summarizeGraph</code> 把列表各<strong>截到 top 12</strong> ✗ ⇒ 新工具给出 <code>labelsTotal</code>/<code>edgeTypesTotal</code>
+		并<strong>如实标 <code>truncated</code></strong> ✓（"拿截断当全量说"正是这类汇总最容易犯的错 ✓）。
+		<code>codebase_projects</code> 则照节点上的 <code>project</code> 归组 ✓（本模块支持 <code>relatedRoots</code> ⇒ 一张图可能覆盖**多个**根 ✓）；
+		边的归属：先看边自己的 <code>project</code> ✓、再看<strong>源节点</strong>的 ✓、都没有就标 <code>(未声明 project)</code> ✓（<strong>不猜</strong> ✗）。
+		守卫：<code>p3-11</code> <strong>64/64</strong> ✓（+4：截断如实标 ✓、项目归组含"不猜"分支 ✓、真机 schema 与图本体自洽 ✓、
+		真机的项目名与图里 <code>project</code> 字段<strong>同源</strong> ✓）；反向突变 <strong>3/3 命中</strong> ✓。</li>
+	<li>✅ <strong>再落 <code>codebase_trace</code></strong>（<code>vssaros-codebase</code> 0.6.11，快照 ⇒ <strong>53 个工具</strong> ✓）：
+		沿**调用边**追链（谁调它 / 它调谁 ✓，可给 <code>targetName</code> 找<strong>最短链</strong> ✓）。
+		⚠ <strong>只做真源的 <code>calls</code> 半边</strong> ✗ —— 这不是省事，而是<strong>前提取证</strong>：本仓真图（189,302 节点 / 489,145 边）
+		里<strong>只有</strong> <code>CONTAINS</code> / <code>CALLS</code> / <code>USAGE</code> 三种边 ✓ ⇒ 真源的 <code>data_flow</code> / <code>cross_service</code>
+		需要的 <code>DATA_FLOWS</code> / <code>HTTP_CALLS</code> <strong>图里根本没有</strong> ✗ ⇒ 承诺它们就是<strong>编</strong> ✓。
+		一条<strong>实测出来的语义坑</strong> ✗→✓：目标匹配一开始拿 <code>qualifiedName</code> 做子串 ⇒ 目标 <code>c</code> <strong>命中了 <code>src/a.js::a</code></strong>
+		（"<strong>src</strong>" 里就有个 <code>c</code> ✓）⇒ 返回了<strong>错误的"最短链"</strong> ✓ ⇒ 改成<strong>先按 <code>name</code></strong> ✓、只有查询本身像限定名（含 <code>::</code>/<code>/</code>）才比路径 ✓。
+		守卫：<code>p3-11</code> <strong>72/72</strong> ✓（+8：去重边 / 自环 / <code>maxDepth</code> 封顶 / <code>maxNodes</code> 如实标截断 /
+		<strong>最短链回溯</strong> ✓ / <strong>目标匹配不拿路径前缀当命中</strong> ✓ / 缺失边类型列可用 ✓ / 起点歧义列候选 ✓；
+		真机那条把"**缺省边类型与真图一致**"钉成事实 ✓）；反向突变 <strong>3/3 命中</strong> ✓（松目标匹配 / 忽略 maxNodes / 忽略 direction）。
+		另**订正了一处我自己的注释不实** ✗：我原写"自环会白占深度预算"——在带 visited 的 BFS 里<strong>不成立</strong> ✓
+		（那行是显式表达意图 ✓，不是省预算 ✓）⇒ 注释已改成实话 ✓。</li>
+	<li>✅ <strong>再落 <code>codebase_changes</code></strong>（<code>vssaros-codebase</code> 0.6.12，快照 ⇒ <strong>54 个工具</strong> ✓）：
+		≈ 真源 <code>detect_changes</code> ✓ —— "自某个 git 引用以来改了哪些文件" ✓ ＋ 可选**影响面**。
+		三条诚实设计：① <strong>三类失败分开报</strong>（没装 git / 不是仓库 / <strong>ref 不存在</strong> ✓）——
+		尤其"ref 不存在"**绝不能写成"没有变更"** ✗（那是最危险的误报：看起来"改动很小"，其实是查询本身错了 ✓）；
+		② **未跟踪的新文件也算变更** ✓（否则"刚加的文件"永远进不了影响面 ✗）且与已跟踪的**分列** ✓；
+		③ 图里**匹配不到**的变更文件**单独列出** ✓（图比工作区旧 ⇒ 绝不当成"没有影响" ✗）。
+		另外两处：<code>-</code> 开头的 ref 在**我们这一层就被拒** ✓（根本不进 git ⇒ 参数注入没有入口 ✓）；
+		影响面固定沿 <code>CALLS</code> **反向**（谁会被波及 = **往上找调用者** ✓ —— 真源那句 "downstream impact" 读起来像往下走 ✗，我们按语义做 ✓）。
+		<strong>顺手做了一次共用化</strong> ✓：BFS 的邻接索引提成 <code>indexAdjacency</code>，<code>traceFrom</code> 与 <code>impactOf</code> 共用 ✓
+		（两个工具问的是同一件事 ⇒ 各写一份迟早会在"去自环 / 去重 / 边类型缺失"上分叉 ✗；重构后<strong>原有 8 条 trace 断言全绿</strong> ✓ = 行为未变 ✓）。
+		守卫：<code>p3-11</code> <strong>82/82</strong> ✓（+10：ref 校验含注入拒绝 ✓、路径解析 ✓、scope 围栏 ✓、
+		"匹配不到要列出来" ✓、影响面方向与深度 ✓、<strong>失败分型两两对照</strong>（真仓库 vs 仓库外临时目录 ✓）、
+		真机"<strong>每个文件都有归宿</strong>（changed ∪ notInGraph == 变更全集 ⇒ 一个都不丢）" ✓）；
+		反向突变 <strong>3/3 命中</strong> ✓（`-` 开头不拒 / 静默丢文件 / 把 ref 不存在当没有变更 ✓）。</li>
+	<li>✅ <strong>② 最后一项也落了：<code>codebase_architecture</code></strong>（<code>vssaros-codebase</code> 0.6.13，快照 ⇒ <strong>55 个工具</strong> ✓）。
+		≈ 真源 <code>get_architecture</code>，但真源有**十几个** aspect（<code>packages</code> / <code>layers</code> / <code>services</code> /
+		<code>routes</code> / <code>crossBoundaries</code> / <code>dependencies</code> / <code>deadCode</code> / **重算 communities** … ✗）——
+		<strong>大半要索引器的进阶分析</strong> ✗，我们没有 ⇒ <strong>只做"图里真有的事实"</strong> ✓，并把边界写成**数据**：
+		<code>languages</code> 图里**没有** language 字段 ⇒ <strong>按扩展名统计</strong> ✓（附 <code>languagesMethod</code> ✓）；
+		<code>entryPoints</code> 是<strong>启发式</strong> ⇒ 附 <code>entryPointsHeuristic: true</code> ✓；
+		<code>hotspots</code>/<code>communities</code> <strong>真事实</strong> ✓（度数已算好 ✓ / 直接读索引器写的 <code>community</code> 字段 ✓，
+		<strong>不重算</strong>社区 ✓ —— 重算就是换一套结论 ✗）；<code>tree</code> <strong>按路径分组</strong> ✓；
+		没移植的用 <code>notPorted</code> <strong>列出来并指路</strong> ✓（<code>codebase_deps</code> / <code>codebase_trace</code> / <code>codebase_projects</code> ✓）。
+		<code>aspects</code> 只给要的那几项 ✓（省 token ✓）。
+		守卫：<code>p3-11</code> <strong>90/90</strong> ✓（+8：扩展名统计含"认不出照原样列" ✓、启发式自报家门 ✓、
+		<strong>社区不重算</strong> ✓、<strong>热点用已算好的度数</strong>（重算的话测试图里那条会掉到 0 ⇒ 断言正是靠这点分辨 ✓）、
+		<code>notPorted</code> 如实 ✓、<code>scopePath</code> 收敛 ✓、<code>aspects</code> 按需 ✓、真机"语言计数**求和 == 节点数**"✓）；
+		反向突变 <strong>3/3 命中</strong> ✓（不披露语言口径 / 不标启发式 / 清空 <code>notPorted</code> ✓）。
+		<strong>⇒ ② 全部收口</strong>：可做的都做了（<code>codebase_trace</code> / <code>codebase_changes</code> / <code>codebase_architecture</code> /
+		<code>codebase_schema</code> / <code>codebase_projects</code> / <code>codebase_snippet</code> ✓），<strong>不做的都有逐条理由</strong> ✓
+		（<code>check_index_coverage</code> 图里没有那份信息 ✗、<code>query_graph</code> 要单独引擎 ✗、写图谱 6 个是 VsSaros 所有物 ✗）。</li>
+	<li>📋 <strong>⑤ 分类盘点（2026-10-12；IDE 侧 78 个工具文件 / 我们 dsh 侧 55 个工具）</strong> —— 把"还没覆盖的族"逐个分类，
+		<strong>免得后面白做功</strong> ✓：</li>
+	<li>✅ <strong>已覆盖</strong>：<code>skills</code>（skill_search / skill_manage ✓）、<code>codebase</code>（11 个 ✓，②已收口 ✓）、
+		<code>workflow</code>（6 ✓）、<code>kb</code>（7 ✓）、<code>kanban</code>（10 ✓）、<code>ide</code>（7 ✓）、<code>dashboard</code>（2 ✓）、
+		<code>browser</code> / <code>canvas</code> / <code>mindmap</code>（宿主侧或 ide 插件 ✓）、<code>unreal</code>（已按 4.73 整族退役 ✓）。</li>
+	<li>▶ <strong>可做（已核过机制 ✓）</strong>：
+		<code>feishu_drive</code> 族 ✓ —— <strong>机制已核实</strong>：<code>feishu_doc_read</code> 就是 shell out <code>lark-cli</code>
+		（<code>+fetch --doc-format markdown</code> ✓，输出是 <strong>JSON 包着 markdown</strong>（<code>data.document.content</code> ✓，
+		直接回传 stdout 会把正文丢掉 ✗）、缺 CLI 时<strong>不隐藏工具、只标注安装</strong> ✓）—— 与我们 <code>kb_feishu_spaces</code>
+		完全同一套路 ✓（连"缺 CLI 给安装+登录指引"都一致 ✓）。族里 <strong>3 个只读</strong>（<code>doc_read</code> / <code>list_comments</code> /
+		<code>list_comment_replies</code> ✓）＋ <strong>2 个写</strong>（<code>reply_comment</code> / <code>add_comment</code> ✗ ⇒ 要过审批闸 ✓）。</li>
+	<li>⏸ <strong>待核</strong>：<code>session_search</code>（会话历史在 dsh 侧的落点 ✗？我们现有的是 <code>dashboard_sessions</code>，
+		语义不同 ✓）、<code>scheduler</code>（dsh 自己有没有对应的"定时/自动化"机制 ✓）、<code>process</code>（它管的是 exec 的后台进程 ✗，
+		与 dsh 的进程模型不同 ✓）、<code>mermaid</code> / <code>drawio</code>（我们已有 <code>canvas</code> / <code>mindmap</code> ⇒ 只差这两种 ✓）。</li>
+	<li>⛔ <strong>不做（依赖 IDE 专有物 ✗）</strong>：<code>media</code> 族（image/video/vision 生成与分析 ⇒ 要**多模态模型/provider** ✗）、
+		<code>advancedMemory</code> 族（<code>memory_governance</code> / <code>_team</code> / <code>_mesh</code> / <code>_sentinel</code> /
+		<code>_obsidian_export</code> / <code>_cascade</code> ⇒ 要**团队/服务/索引**那些宿主侧设施 ✗ —— 我们已有 5 个基础 memory 工具 ✓）、
+		<code>routineCrystalFacet</code>（IDE 专有分析 ✗）、<code>execute_code</code> / <code>patch</code> / <code>update_plan</code>（属 dsh **基座**的活 ✓）。</li>
+	<li>✅ <strong>⑤ 的第一个落地：飞书云文档<strong>读侧三件</strong></strong>（<code>vssaros-kb</code> 0.2.8，快照 ⇒ <strong>58 个工具</strong> ✓）：
+		<code>feishu_doc_read</code> / <code>feishu_drive_list_comments</code> / <code>feishu_drive_list_comment_replies</code> ✓。
+		<strong>落点选 kb 模块</strong>（<code>kb_feishu_sync</code> 是"本地 → 飞书"、读文档是"飞书 → 本地" ⇒ **同一个环** ✓、
+		同一个 lark-cli 依赖 ✓、同一套"缺 CLI 给安装+登录指引" ✓；新建模块要动插件数/预设行/并发区域 ✗ 不划算，族长大再拆 ✓）。
+		★ 三条<strong>照真源抄的关键点</strong>（每条都对应一种"看起来成功、其实答错了"✗）：
+		① <strong>参数名兼容</strong>（<code>file_id</code>/<code>doc_id</code> 与 <code>file_token</code>/<code>doc_token</code> 都收 ✓ ——
+		只收一边会让模型按另一种名字调时"参数缺失"，看起来像工具坏了 ✓）；
+		② 列评论<strong>默认 <code>--solved-status all</code></strong> ✓（CLI 默认只回**未解决** ⇒ 模型会因"没看到某条"
+		得出"没人提过这个问题"的<strong>静默漏读</strong> ✓）；
+		③ <strong>评论正文在 <code>reply_list.replies[0]</code></strong> ✓（不在评论对象自己的 <code>content</code> 里 ✗ —— 错了的症状正是
+		"列出了评论、每条都没内容" ✓）。文档读取同理：<code>+fetch</code> 是 **JSON 包着 markdown**（<code>data.document.content</code> ✓），
+		把原样 stdout 当正文就会"只剩一句内容为空"✗。
+		守卫：<code>p3-08</code> <strong>107/107</strong> ✓（+17：目标解析/参数拼装逐字 ✓、四种返回外壳 ✓、
+		<code>reply_list.replies[0]</code> 单独立一条 ✓、<code>parseDocFetch</code> 契约 ✓、<strong>缺 CLI 三件都给指引</strong> ✓、
+		三个工具各自的必填参数报错 ✓）；反向突变 <strong>3/3 命中</strong> ✓（丢 <code>--solved-status all</code> / 读错位置 / 把 JSON 当正文 ✓）。
+		⚠ 本切片**只做读侧** ✓；写侧两件（<code>reply_comment</code> / <code>add_comment</code>）要过审批闸（真源是 <code>Cautious</code> ✓ ——
+		会在**别人的文档**上留下可见内容 ✓），另起一轮 ✓。</li>
+	<li>✅ <strong>飞书云文档<strong>写侧两件</strong>也落了</strong>（<code>vssaros-kb</code> 0.2.10，快照 ⇒ <strong>60 个工具</strong> ✓）：
+		<code>feishu_drive_reply_comment</code> / <code>feishu_drive_add_comment</code> ✓（都会在<strong>别人的文档</strong>上留下可见内容 ⇒ 过审批闸 ✓；
+		闸判据同 organize："**有内容才问**" ✓）。三条写法要点（都是"写出去之前"的守则 ✓）：
+		① <code>--content</code> 走 **<code>@&lt;文件&gt;</code>** ✓（argv 里只有路径 ⇒ 引号 / <code>&amp;</code> 那一整类坑消失 ✓ —— 真源在 cmd + <code>.cmd</code> shim 下被咬过 ✓）；
+		② **不能只看退出码** ✓：CLI 会把业务错误写进 JSON 却仍 <code>exit 0</code> ⇒ 还要看 <code>code != 0</code> ✓（否则"权限不足"会被当成成功 ✗）；
+		③ 整篇 / <strong>已解决</strong>评论**不接受回复** ✓（飞书错误码 <code>1069302</code> ✓）⇒ 失败映射成**可执行**指引（改用 <code>feishu_drive_add_comment</code> ✓），不把裸错误码丢给模型 ✗。
+		另补一处**真实部署坑** ✓：Windows 上 npm 装的 <code>lark-cli</code> 是 <code>.cmd</code> shim，而 **Node 不经 shell 不能执行 <code>.cmd</code>** ✗
+		（报的却是 ENOENT ⇒ 读起来像"没装" ✗）⇒ 现在会**分型**报出"装了但这种方式起不来 + 换入口"✓（本模块刻意不走 shell，因为参数里有引号与 <code>&amp;</code> ✗）。
+		守卫：<code>p3-08</code> <strong>117/117</strong> ✓（+10）、<code>p3-26</code> <strong>55/55</strong> ✓；反向突变 <strong>3/3 命中</strong> ✓
+		（内联 JSON / 丢掉 <code>code != 0</code> / 丢掉失败映射 ✓）。</li>
+	<li>⚠ <strong>两个本轮踩到、值得单独记的坑</strong>：
+		① <strong>官方字段是 <code>exec.arguments</code>，不是 <code>exec.args</code></strong> ✗ —— 模块侧 2026-10-12 已修（注释里写着"两边一起用错名 ⇒ 互相掩护" ✓），
+		但 <code>p3-08</code> 的假 exec **当时漏改** ✗ ⇒ 闸三个"参数敏感"判据**全部恒假、一律放行**（"真写不弹窗"这种最坏情形被掩护住了 ✓）。
+		⇒ 探针已同步改为传 <code>arguments</code> ✓，那 6 条断言随即转绿 ✓。**教训**：契约字段名变了，**假 ctx/假 exec 也算"两边"之一** ✓。
+		② <code>runLarkCli</code> 的 error 处理一度被我写成 <code>async</code> ✗ ⇒ <strong><code>close</code> 事件先到</strong>（<code>finish</code> 只认第一次调用 ✓）
+		⇒ <code>missing</code> 被丢掉 ⇒ **"缺 CLI"被静默当成"没有内容 / 没有评论"** ✗（最误导的一类"成功" ✓）。⇒ shim 探测改**同步**（<code>existsSync</code> ✓）后恢复 ✓。</li>
+	<li>⚠⚠ <strong>⑤ 的 ⏸ 判定<strong>已订正</strong></strong>（2026-10-12，同日晚）—— 我先前的两个 ⛔ 是<strong>错的</strong> ✗，错因是**拿"没看见"当"没有"** ✗
+		（我从没枚举过 dsh 运行时自带了什么 ✓）。枚举 <code>@deepseek-ai</code>（<strong>290 个包</strong> ✓）后真相是：
+		<code>dsh-tool-*</code> 共 <strong>21 个</strong>（<code>ask-user</code> / <code>bash(+persistent)</code> / <code>fs</code> / <code>fs-search</code> / <code>goal</code> /
+		<strong><code>jobs</code></strong> / <code>present</code> / <code>pwsh(+persistent)</code> / <code>ralph</code> / <code>skill</code> / <code>call-timeout-policy</code> / <code>cordis</code> /
+		<code>str-replace-editor</code> / <code>subagent(+control)</code> / <code>todo</code> / <code>web</code> / <code>workflow</code> / <code>workspace-dependencies</code> / … ✓）。
+		<strong>订正后的判定</strong> ✓：
+		<ul>
+			<li><code>cronjob</code> ⇒ <strong>✅ dsh 自带</strong>（不用搬 ✓）：<code>dsh-schedule</code> 是宿主级持久调度服务（<code>ScheduleService</code> ✓ 6 种选择器 after/at/every/daily/weekly/cron ✓ 持久化 ✓ 冷会话恢复 ✓），
+				真源那句话在 dsh 里的对应物**不是**某个 <code>dsh-tool-*</code> 包 ✗ —— 而是 <strong><code>dsh-schedule</code></strong> ✓
+				（<strong>它自己</strong>注册 4 个工具：<code>schedule_create</code> / <code>_list</code> / <code>_update</code> / <code>_delete</code> ✓，
+				"over the Host <code>ctx.schedule</code> service" ✓，注册进**确切的 agent 作用域** ✓）。
+				⚠ <strong>2026-10-12 真机订正</strong> ✗：<code>schedule</code> 在整个 profile 的 <code>--dump-config</code> 里<strong>零命中</strong> ✗
+				⇒ <strong>当前根本没组合进来</strong> ✗（连 <code>dsh-experimental-schedule-bundle</code> 也没挂 ✓；SDK 里的
+				<code>WeeklyScheduleRecord</code> 之类只是类型 ✓）⇒ <strong>我们的动作 = 先把那一行 bundle 加上</strong> ✓（组合问题，不是实现 ✓）。</li>
+			<li><code>process</code> ⇒ <strong>✅ dsh 自带</strong>（不用搬 ✓）：<code>ctx.jobs</code> 是正式的**后台任务服务** ✓
+				（job id ✓、<strong>会话作用域授权</strong> ✓、生命周期 ✓、<strong>每 job 一个输出环</strong>＋模型游标消费 ✓ —— 与真源 list/output/wait/terminate 一一对应 ✓），
+				且 <strong><code>dsh-tool-jobs</code></strong> 已存在 ✓。</li>
+			<li><code>session_search</code> ⇒ 数据面与格式面都**官方支持** ✓：<code>dsh-session-persistence-jsonl</code>（正文持久化 ✓）＋
+				<code>dsh-session-format</code> / <code>-catalog</code> / <code>-v0→v4</code>（**版本化的会话格式目录** ✓）＋ <code>dsh-session-log-export</code> ✓
+				＋ <code>dsh-experimental-session-inspector</code> ✓ ⇒ 走"读会话存储"这条路**有官方格式兜底** ✓（不必去逆向 <code>.zstd</code> ✓）。
+				⇒ 结论：<strong>可做</strong> ✓，但仍要先核一件事：<strong>有没有必要</strong>自己在工具层做一个 ✗
+				（dsh 已有 <code>dsh-tool-skill</code> / <code>-workflow</code> / <code>-goal</code> / <code>-todo</code> 等 ✓，先确认没有现成对应物 ✗）。</li>
+			<li><code>mermaid</code> ⇒ 仍需<strong>聊天 UI 渲染支持</strong> ✓（这条判定不变 ✓：工具只回 markup ⇒ 画不出来等于没画 ✗）。</li>
+		</ul>
+		<strong>★ 由此得到一条更重要的结论</strong> ✓：<strong>通用能力大多已在 dsh 基座</strong>（schedule / jobs / web / fs-search / skill / todo / goal / subagent / workflow ✓）⇒
+		我们的插件该守的是 <strong>VsSaros 专有语义</strong>（vault 笔记 / 代码图谱 / 看板 / IDE 桥 ✓）；
+		再"搬"一遍通用能力就是**重复实现** ✗ ⇒ 每一步都该先问："**dsh 里是不是已经有了**？" ✓</li>
+	<li>（以下为**订正前**的判定，保留以记教训 ✗：）<del>cronjob ⛔ 要宿主侧有调度器 ⇒ 工具层补不了 ✗</del>；
+		<del>process ⛔ 它管的永远是别人起的任务 ⇒ 我们拿不到句柄 ✗</del> —— 两句都建立在"没枚举运行时"之上 ✓。</li>
+			<li><strong><code>mermaid</code></strong> ◐ 卡在<strong>聊天 UI 的渲染支持</strong> ✓：工具只回 markup ✓，真正的价值在"画得出来" ✓
+				（真源的卖点就是"renders … **in the chat**" ✓）⇒ 没有渲染支持的工具等于没画 ✗（服务端渲染 mermaid 又要引一份重依赖 ✗）。</li>
+			<li><strong><code>session_search</code></strong> ◐ <strong>可做，但先核一个契约</strong> ✓（四项里唯一有真实价值、且不由宿主设施决定的 ✓）：
+				真源是"搜**你自己过去的会话**，找回之前聊过的决定/上下文" ✓（这恰好是 agent 最常需要的 ✓）。
+				<strong>本轮已把数据面探明</strong> ✓：dsh 侧 <code>&lt;DSH_HOME&gt;/sessions/*.zstd</code>（142 个**压缩**的会话正文 ✓）＋
+				<code>storages/session_projcache/*.json</code>（142 个**投影**缓存 ✓，dashboard 用的就是它 ✓ —— 但它是**遥测**：
+				turns/steps/tokens/todos/plan/goal ✓，**不含消息正文** ✗）；活服务是 <code>sessions.get(id)</code> ＋
+				<code>sessionProjections.stateOf(session, unit)</code> ✓（dashboard 已证可用 ✓）。
+				⇒ <strong>下一步只有两种走法，任一被证实即可开工</strong> ✓：① <code>sessions.get(id)</code> 返回的 Session 对象里**有没有消息** ✓
+				（照 dashboard 的老办法：从运行时源码逐字核对 ✓）；② 没有就**读那批 <code>.zstd</code>** ✓ ——
+				但先要确认运行时 Node 有没有 <code>zlib.zstdDecompress</code> ✓（版本相关 ✓）且正文格式稳定 ✓。</li>
+		</ul></li>
+	<li>📋 <strong>② 剩余项的"前提判定"（逐个核过 ✓，免得重做盘点）</strong>：
+		<code>trace_path</code> ◐（要 <strong>CALLS 边</strong> ✓，尚需核真图的边类型分布 ✓）；<code>get_architecture</code> ◐
+		（languages / packages / entryPoints 大多是<strong>启发式</strong> ✗ ⇒ 必须如实标注为启发式 ✓，价值中等）；
+		<code>check_index_coverage</code> ✗（图里只有 <code>fileHashes.length</code> = <strong>已索引</strong>文件数 ✓，
+		<strong>没</strong>有"跳过/部分索引"的信息 ✗ ⇒ 做不出真覆盖率，宁可不做 ✓）；<code>detect_changes</code> ◐（要 git ✗ + 文件→节点映射 ✓）；
+		<code>query_graph</code> ✗（真源那套模式匹配查询语言是单独的引擎 ✗ ⇒ <code>codebase_deps</code> 已覆盖常见问法 ✓）。
+		<strong>写图谱</strong>那 6 个整体不做 ✓（<code>.codebase-memory</code> 是 VsSaros 所有物 ✓，只留 <code>self_index</code> 自证 ✓）。</li>
+	<li>✅ <strong>同日再落一个（④ 里的最后一项）</strong>：<code>kb_organize</code> ✓ —— <code>vssaros-kb</code> 0.2.7，dsh 侧**自建写路径**（不与 <code>kb_feishu_sync</code> 抢同一条）：
+		新 <code>lib/core/kbOrganize.js</code>（纯逻辑：路径归一化 ✓、**围栏 = `<vault>/笔记/` 之内** ✓、50 项上限 ✓、备份落点命名 ✓）
+		＋ <code>lib/organize.js</code>（写盘：creates → moves → deletes-移入备份 ✓、**`to` 已存在 ⇒ 拒项不覆盖** ✓、**备份失败就不搬** ✓）。
+		备份落在 **vault 之外**（vault 文件树会把 vault 内的一切列出来 ⇒ 备份放里面就成了"知识库内容" ✗）。
+		⚠ <strong>与 IDE 的差异（写进工具描述，不藏）</strong>：IDE 版还为每个文件写聊天页签 checkpoint（可 <code>undoAll</code> ✓），
+		dsh 侧**没有**会话回滚 ⇒ 还原点**只有备份目录** ✓ —— 这正是"没有还原点就不动手"的由来 ✓。
+		闸**按参数**判：**有操作项才 ask** ✓（全空时不碰盘 ⇒ 不弹窗 ✓）。
+		守卫：<code>p3-08</code> <strong>96/96</strong> ✓（19 条新断言：纯逻辑 5 条 + 行为 10 条，含真搬 / 真删→备份 / 不覆盖 / 围栏 / 超限不执行 ✓）、
+		<code>p3-26</code> <strong>43/43</strong> ✓、反向突变 <strong>3/3 命中</strong> ✓；快照守卫自报 <strong>11 个插件 / 62 个工具</strong> ✓（⚠ 原写"48 个工具"是读错过滤行 ✗，2026-10-12 订正 ✓）。</li>
+	<li>✅ <strong>同日又落一个</strong>：<code>kb_feishu_spaces</code> ✓ —— <code>vssaros-kb</code> 0.2.6，照 IDE 真源
+		（<code>feishuSyncCore.ts</code>）的 CLI 契约：<code>wiki +space-list --page-all --format json</code>（20s ✓）/
+		<code>wiki +space-create --name … --as user</code>（30s ✓）、同名（忽略大小写与首尾空白）⇒ **复用不重建** ✓、
+		名称净化（引号与 CR/LF）✓；<code>action: 'create'</code> 是唯一写动作 ⇒ **闸按参数判** ✓
+		（<code>list</code>/缺省一概放行 ✓，与 <code>kb_feishu_sync</code> 的 <code>apply: true</code> 同型 ✓）。
+		守卫：<code>p3-08</code> 77/77 ✓（8 条解析器契约 + missing-CLI 指引 + 输入校验 + 闸的两态 ✓）、<code>p3-26</code> 40/40 ✓、突变 2/2 ✓。
+		⚠ 顺带**订正 R.7 原来的一句分类** ✗：<code>kb_suggest_links</code> **不是"缺一个工具"** ——
+		它要的是 <strong>RAG 向量索引</strong>（"纯本地相似度"但前提是先建索引 ✓）⇒ 属于"搬整条 embedding 流水线" ✗，
+		与 <code>codebase</code> 写/索引侧同类；不该和"小项"并列 ✓。</li>
+	<li>media / session_search / feishu drive / cronjob / process —— <strong>先分类再决定</strong> ✓（模型工具 vs 页面动作 ✓）。</li>
+</ol>
+
+<h2 id="s8b">R.8 差异总表：VsSaros 工具插件 vs dsh 原生工具插件（2026-10-12 全量复核）</h2>
+
+<p class="lead">口径与证据等级：真机 <code>--dump-config</code>（profile <code>vssaros</code> / runtime <strong>0.2.0-rc.2</strong> ✓）＋ runtime 各包 README／源码原文 ✓ ＋ 工具面快照（<strong>守卫自报：我们 11 个插件 / 62 个工具</strong> ✓；基座 <strong>21 个 <code>dsh-tool-*</code> 包</strong> ✓）。凡"未真机验证"的都单独标注 ✗。</p>
+
+<h3>R.8.1 规模与构成</h3>
+<div class="tbl-scroll">
+<table>
+	<tr><th></th><th>VsSaros 侧</th><th>dsh 原生侧</th></tr>
+	<tr><td class="k">bundle 数</td><td><strong>16 个</strong>（11 个注册工具 ＋ 5 个只有页面/服务：bridge / chat-surface / agents / canvas / mcp）</td>
+		<td><strong>21 个 <code>dsh-tool-*</code> 包</strong>（另有 40+ <code>dsh-client-ui-*</code>、若干 service 包）</td></tr>
+	<tr><td class="k">工具数</td><td><strong>62 个</strong>（kb 12 / kanban 10 / codebase 11 / ide 7 / workflow 6 / memory 5 / unreal 4 / dashboard 2 / skills 2 / media 2 / browser 1）</td>
+		<td>约 <strong>30 个工具名</strong>：<code>read / write / edit / read_image / glob / grep / bash / pwsh / job_output / job_list / job_kill / todo_write / get_goal / create_goal / update_goal / ralph / web_search / web_fetch / skill / present / ask_user_question / subagent / subagent_fork / list_subagent_models / send_message / interrupt_agent / list_agents / workflow / str_replace_editor / load_workspace_dependencies / cordis_inspect_list / cordis_inspect_query</code></td></tr>
+	<tr><td class="k">命名风格</td><td>能力域前缀（<code>kb_</code>/<code>kanban_</code>/<code>codebase_</code>/<code>workflow_</code>/<code>memory_</code>…）＋ 少数裸名（<code>browser</code>/<code>canvas</code>/<code>mindmap</code>/<code>open_file</code>/<code>reveal</code>/<code>show_diff</code>/<code>get_diagnostics</code>/<code>get_selection</code>）</td>
+		<td>极短通用名（<code>read</code>/<code>write</code>/<code>grep</code>/<code>pwsh</code>…）⇒ 与模型先验最贴合</td></tr>
+	<tr><td class="k">重合度</td><td colspan="2">机器对账：<strong>逐字重名 = 0</strong> ✓；只有两组<strong>前缀相邻且语义互补</strong>：我们 <code>workflow_*</code>(6) ↔ 基座 <code>workflow</code>(1，JS 脚本编排) 、<code>skill_manage/skill_search</code> ↔ 基座 <code>skill</code></td></tr>
+</table>
+</div>
+
+<h3>R.8.2 平面（谁能看见）——这是最结构性的一条</h3>
+<p><code>dsh-web-app/cordis.patch.yml:432-439</code> 原文："…composes what <strong>ONE agent</strong> contributes to the host registries… The base keeps them for the TUI…; <strong>the Web surface disables them here and lets each session mount a preset instead.</strong>"（并注明"禁用而非删除"是为防"别人重排组合时静默复活"）。</p>
+<div class="tbl-scroll">
+<table>
+	<tr><th></th><th>VsSaros（我们的 62 个）</th><th>dsh 原生（模型面那批）</th></tr>
+	<tr><td class="k">挂在哪</td><td><strong>host plane</strong>：各插件 <code>cordis.patch.yml</code> 顶层 <code>- insert:</code> ⇒ <strong>任何 preset 下都注入</strong>（选 <code>minimal</code> 也拿到 62 个 ⇒ preset 失去"能力预算"作用；展开见 §2.7 ⑤）</td>
+		<td><strong>per-agent（preset）</strong>：host plane 上 <code>tool-fs / -fs-search / -bash / -pwsh / -jobs / -todo / -goal / -subagent* / -workflow / -web / skill-filesystem / tool-skill / tool-plugin-manager</code> <strong>全 <code>disabled</code></strong> ⇒ 模型面的 fs/bash/skill <strong>只来自所挂 preset</strong></td></tr>
+	<tr><td class="k">后端与策略</td><td>插件进程内 <strong>Node <code>fs</code></strong>（不经 <code>ctx.fs</code>）</td>
+		<td>策略与后端留在 <strong>host plane</strong>（两侧都可见）：<code>sandbox / sandbox-policy / fs-sandbox / fs-observation-policy / pwsh-sandbox</code>（注释判据：<em>"a Service a row outside its realm READS belongs to the plane both can see"</em>）</td></tr>
+	<tr><td class="k">我们的处置</td><td colspan="2">已给 10 个模块加 <code>hostHalf: true</code> 支持（只留页面/服务、让出工具）；<strong>B1 ①</strong> 已把默认 preset 切成 <code>vssaros-standard</code>（⇒ 会话会<strong>双挂载</strong>，工具重名静默顶掉，实测无害）；<strong>B1 ②（host 行真让出）仍被两条约束挡着</strong> ✗（替换陷阱 ＋ 运行层未证）</td></tr>
+</table>
+</div>
+
+<h3>R.8.3 能力覆盖：谁提供什么</h3>
+<div class="tbl-scroll">
+<table>
+	<tr><th>能力</th><th>dsh 原生</th><th>VsSaros</th><th>判定</th></tr>
+	<tr><td class="k">文件读/写/编辑</td><td><code>read / read_image / write / edit</code> ✓</td><td>✗（不作为模型工具；插件内部用 Node fs）</td><td>基座负责 ✓</td></tr>
+	<tr><td class="k">文件搜索</td><td><code>glob / grep</code> ✓</td><td>✗</td><td>基座负责 ✓</td></tr>
+	<tr><td class="k">Shell</td><td><code>bash</code> / <code>pwsh</code>（+ 持久变体 ✓）</td><td>✗</td><td>基座负责 ✓</td></tr>
+	<tr><td class="k">后台任务</td><td><code>job_output / job_list / job_kill</code> ＋ host 侧 <code>ctx.jobs</code> 注册表 ✓</td><td>✗</td><td>基座负责 ✓（<strong>已在 preset 里 ON</strong> ⇒ 不用我们做）</td></tr>
+	<tr><td class="k">待办 / 目标</td><td><code>todo_write</code> / <code>get_goal / create_goal / update_goal</code> ✓</td><td>✗（<code>kanban_*</code> 是 <strong>VsSaros 看板数据</strong>，不是待办工具）</td><td>两者并存、对象不同 ✓</td></tr>
+	<tr><td class="k">委派 / 协作</td><td><code>subagent / subagent_fork / list_subagent_models / send_message / interrupt_agent / list_agents</code> ✓</td><td>✗</td><td>基座负责 ✓</td></tr>
+	<tr><td class="k">网络</td><td><code>web_search / web_fetch</code> ✓</td><td>✗</td><td>基座负责 ✓</td></tr>
+	<tr><td class="k">计划模式</td><td><code>dsh-plan-mode</code>（命令 ＋ 模式）✓</td><td>✗</td><td>基座负责 ✓</td></tr>
+	<tr><td class="k">自省</td><td><code>cordis_inspect_list / cordis_inspect_query</code> ✓</td><td>✗</td><td>基座负责 ✓</td></tr>
+	<tr><td class="k">技能</td><td><code>skill</code> ＋ <code>skill-filesystem</code>（发现）✓</td><td><code>skill_search / skill_manage</code> ＋ <strong>技能来源 provider</strong> ✓</td><td><strong>互补</strong>：同一注册表、不同 provider ✓</td></tr>
+	<tr><td class="k">工作流</td><td><code>workflow</code>（写 JS 脚本扇出多 agent）✓</td><td><code>workflow_list/get/get_schema/update/apply/engine_status</code>（<strong>可视化图 store</strong>）✓</td><td><strong>同名不同物</strong> ⇒ 描述里必须说清 ✗</td></tr>
+	<tr><td class="k">呈现 / 图形</td><td><code>present</code> ✓</td><td><code>mindmap / canvas / show_diff</code>（走 IDE 桥）✓</td><td>互补 ✓</td></tr>
+	<tr><td class="k">VsSaros 专有</td><td>✗</td><td><strong>kb（12，含 vault 笔记 ＋ 飞书 7）／ kanban(10) ／ codebase(11，代码图谱) ／ memory(5) ／ dashboard(2) ／ ide(7，编辑器桥) ／ unreal(4) ／ browser(1) ／ media(2)</strong></td><td><strong>这才是我们该守的地盘</strong> ✓</td></tr>
+</table>
+</div>
+
+<h3>R.8.4 权限模型：dsh 侧到底能不能读写文件</h3>
+<div class="tbl-scroll">
+<table>
+	<tr><th></th><th>读到什么程度</th><th>写到什么程度</th></tr>
+	<tr><td class="k">dsh 原生</td><td>✅ <strong>不受限</strong>（<code>dsh-fs-sandbox</code> 原文"保留本地文件系统的读取行为"、"<strong>变更</strong>围栏不限制观察"）</td>
+		<td>⚠ <strong>只在会话工作区 ＋ 平台 temp</strong>：我们 profile 实际 <code>mode: !!js process.env.DSH_PERMISSION_MODE ?? 'workspace-write'</code>、<code>workspaceRoot: !!js process.cwd()</code>（<code>dsh-sandbox-policy</code> 的<strong>故障安全默认是 <code>read-only</code></strong>，是我们显式选了可写）⇒ <strong>vault / <code>~/.vssaros</code> 数据根 / 别的仓库都在围栏外</strong> ⇒ 原生 <code>write</code> 改笔记会吃 <code>FS_SANDBOX_DENIED</code>；Windows 上子进程另有 <code>dsh-sandbox-windows-acl</code>（ACL ＋ Low 完整性；Win32 失败即阻止不受限 spawn，fail-closed）</td></tr>
+	<tr><td class="k">VsSaros 插件</td><td>✅ 任意（Node fs）</td><td>✅ <strong>围栏外也能写</strong>（数据根 / vault / <code>taskboard.json</code>）—— 这正是 <code>kb_organize</code> 能搬笔记、<code>kanban_*</code> 能写同一个 <code>taskboard.json</code> 的原因</td></tr>
+	<tr><td class="k">MCP</td><td>✅ 任意</td><td>✅ 任意（<strong>不受 <code>fs-sandbox</code> 管</strong>：服务器是独立子进程、以用户权限运行；证据等级 README 级，未真机验证 ✗）</td></tr>
+	<tr><td class="k">审批</td><td colspan="2">两套并存：我们在 <code>tools/pre-execute</code> <strong>自建闸</strong>（kanban 写族 / <code>workflow_update</code> / <code>memory_remember</code> / <code>kb_feishu_sync(apply)</code> / <code>kb_feishu_spaces(create)</code> / <code>kb_organize(有操作项)</code>）；基座走 <code>permission-presets</code>（<code>ask</code>，<code>danger-full-access</code> ⇒ <code>never</code>）</td></tr>
+</table>
+</div>
+<p class="note">★ <strong>要写进文档的不对称</strong>：模型想动 <strong>vault / 数据根</strong>里的文件，必须用<strong>我们的工具</strong>（<code>kb_organize</code> 等）而不是原生 <code>write</code>，否则会反复撞 <code>FS_SANDBOX_DENIED</code>。</p>
+
+<h3>R.8.5 技能层逐项</h3>
+<div class="tbl-scroll">
+<table>
+	<tr><th>维度</th><th>dsh 原生</th><th>VsSaros</th></tr>
+	<tr><td class="k">注册表</td><td><code>dsh-skill</code>，<strong>分层</strong>：部署级 provider 进全局层，preset 的 <code>skill-filesystem</code> 进该 preset 层；每个 agent 读<strong>合并后</strong>目录</td><td>同一个注册表 —— 我们是<strong>其中一个 provider</strong>（<code>vssaros-skills</code> ⇒ <code>registerProvider</code>）</td></tr>
+	<tr><td class="k">发现范围</td><td><strong>项目 / 自定义 / 用户</strong>根目录（<code>&lt;name&gt;/SKILL.md</code> 或平铺 <code>&lt;name&gt;.md</code>；<strong>刻意不递归</strong>）；<strong>watch 目录 ⇒ 增删改无需重启</strong> ✓</td><td><strong>VsSaros 数据根</strong> <code>&lt;数据根&gt;/skills/&lt;id&gt;/SKILL.md</code>（kebab 校验；坏文件带原因进 errors 不丢其它；目录指纹变化触发 <code>invalidate()</code>）</td></tr>
+	<tr><td class="k">frontmatter</td><td>必填 <code>name</code>/<code>description</code>，可选 <code>whenToUse</code>/<code>metadata</code>/<code>disable-model-invocation</code>/<code>user-invocable</code>（拼错整个 skill 丢弃 ＋ 警告）</td><td>只认顶层标量（不引 YAML 依赖）；<code>activation</code> → dsh 调用策略（缺省 <code>manual</code>）；<code>rank=600</code>（与 <code>BUNDLED_SKILL_RANK</code> 同档，不抢打包技能）</td></tr>
+	<tr><td class="k">模型接口</td><td><code>skill</code> 工具（激活/加载正文）——但 <code>tool-skill</code> 被 web-app 在 host plane 关掉 ⇒ <strong>是我们把它翻回来的</strong>（<code>vssaros-skills/cordis.patch.yml</code> 一行）</td><td>同一个 <code>skill</code> 工具 ＋ 我们自己的 <code>skill_search</code>（读数据根）与 <code>skill_manage</code>（写，过我们的闸）</td></tr>
+	<tr><td class="k">页面</td><td><code>dsh-client-ui-skill</code></td><td>自托管 <code>/x/skills</code>（含"原生 skill 工具在不在"自诊断）</td></tr>
+</table>
+</div>
+
+<h3>R.8.6 MCP 层逐项</h3>
+<div class="tbl-scroll">
+<table>
+	<tr><th>维度</th><th>dsh 原生</th><th>VsSaros</th></tr>
+	<tr><td class="k">客户端</td><td><code>dsh-mcp-client</code>：stdio / Streamable HTTP；工具名 <code>mcp__&lt;server&gt;__&lt;tool&gt;</code>；<strong>默认不启用任何服务器</strong></td><td><strong>不做客户端</strong> ✓（正确分工）</td></tr>
+	<tr><td class="k">资源</td><td><code>dsh-mcp-resources</code>（资源发现与读取）</td><td>✗</td></tr>
+	<tr><td class="k">配置 → 行</td><td>由 profile 的 <code>mcp-&lt;server&gt;</code> 行提供</td><td><code>vssaros-dsh-mcp</code>：读 <code>~/.vssaros/mcp.json</code>、归一化（<code>sse</code> 跳过并说明、<code>${env:X}</code> 替换、名字必须 <code>[A-Za-z0-9_-]{1,32}</code>）、生成行、<code>/x/mcp</code> 页</td></tr>
+	<tr><td class="k">双份风险（已解）</td><td colspan="2">壳的 <code>--patch</code> 覆盖层与 dsh 侧 bundle 行<strong>同时存在会出现两行同名服务器 ⇒ 后到者加载失败</strong>（实测过）⇒ 现由 <code>@vssaros/dsh-mcp-rows</code> 登记判定"先问再写"解决（结构上不可能并存）</td></tr>
+	<tr><td class="k">沙箱</td><td colspan="2">两者都<strong>不受 <code>fs-sandbox</code> 管</strong>（子进程）⇒ 可读写任意路径（README 级证据）</td></tr>
+</table>
+</div>
+
+<h3>R.8.7 契约与工程面的差异</h3>
+<div class="tbl-scroll">
+<table>
+	<tr><th>维度</th><th>dsh 原生</th><th>VsSaros</th></tr>
+	<tr><td class="k">依赖面</td><td>基座包之间自由互相依赖</td><td><strong>不 import 任何 <code>@deepseek-ai/*</code></strong>（守卫强制）⇒ 升级只跟随契约，不跟实现</td></tr>
+	<tr><td class="k">参数 schema</td><td>受限 JSON Schema 子集：<code>type/oneOf/properties/required/additionalProperties/items/enum/const</code> ＋注解（<strong>无 <code>minimum</code>/<code>maximum</code></strong>）</td><td>同（踩过 <code>minimum</code> 的坑 ⇒ 范围写进 description、代码夹紧）</td></tr>
+	<tr><td class="k">输出</td><td><code>output.schema</code> ＋ 呈现层（<code>dsh-client-ui-tool</code>）</td><td><code>output.schema</code> ＋ <strong><code>output.render</code> 必需</strong>（缺则整个插件不挂载 ✗）＋ <code>client*.js</code> 注册 <code>tool.call.toolview</code> 槽</td></tr>
+	<tr><td class="k">只读并发</td><td><code>isConcurrencySafe: () =&gt; true</code></td><td>同契约</td></tr>
+	<tr><td class="k">UI 面</td><td>自带整套 <code>dsh-client-ui-*</code>（dump 里 <code>ui-jobs</code>/<code>ui-agent-preset</code>/<code>ui-permission</code> 等 ON）</td><td>自绘 <code>vssaros-chat-surface</code>（审批卡 / 工具卡）＋ 各模块自托管页 <code>/x/&lt;module&gt;</code></td></tr>
+	<tr><td class="k">治理面</td><td>按 preset 做"能力预算"（<code>minimal</code> 只留一个持久终端）</td><td>host plane 常驻 ⇒ <strong>预算作用失效</strong> ✗（§2.7 ⑤ 的平面错位；B1 就是修它）</td></tr>
+</table>
+</div>
+
+<h3>R.8.8 结论</h3>
+<ol>
+	<li><strong>我们没有重复实现基座</strong> ✓：21 个 <code>dsh-tool-*</code> 包里一个都没重做（逐字重名 0），两组相邻名是<strong>互补语义</strong>；我们守的是 <strong>VsSaros 专有语义</strong>（vault 笔记 / 代码图谱 / 看板 / IDE 桥 / 飞书 / Unreal）。</li>
+	<li><strong>技能与 MCP 是"分工"而非"两套"</strong> ✓：技能＝同一注册表的两个 provider（我们提供数据根来源 ＋ 可写管理）；MCP＝基座做客户端与资源、我们做配置解析与行生成（并已解决"双份行"风险）。</li>
+	<li><strong>"dsh 侧能不能完全读写文件"</strong> ⇒ <strong>读＝满足 ✓；写＝只在会话工作区内 ✗</strong>（<code>workspace-write</code>）；围栏外的写入（vault / 数据根）目前只有 <strong>我们的工具</strong> 与 <strong>MCP</strong> 两条路能到。</li>
+	<li><strong>最大的结构性差异是"平面"</strong> ✗：基座把模型面工具放进 preset（能力预算），我们把工具放在 host（任何 preset 都注入）⇒ B1 是把这个错位纠正过来的工程（①已落 ✓ / ②被替换陷阱与"运行层未证"挡住 ✗）。</li>
+	<li><strong>由此推出一条纪律</strong> ✓：每加一个能力前先问"<strong>dsh 里是不是已经有了</strong>"；只有 VsSaros 专有语义才该我们做（schedule/jobs 就是"确认挂上"而不是"再实现一遍"）。</li>
+</ol>
+
+<h3>R.8.9 重构后复审（2026-10-12 晚）：VsSaros 侧是否都按 dsh 插件格式封装</h3>
+<p><strong>结论：17 个插件在"结构封装"上全部合格 ✓；唯一红的是"模块归属声明" ✗ —— 那是两条机制争同一容器，不是格式错 ✓。</strong></p>
+<div class="tbl-scroll">
+<table>
+	<tr><th>封装契约（`dshPluginPackages.test.ts` 的判据）</th><th>复审结果</th></tr>
+	<tr><td class="k">`dsh.bundle.patch` 声明 ＋ 文件存在；入口 `main`/`exports` 存在且进 import 图</td><td>17/17 ✓</td></tr>
+	<tr><td class="k">`files` 声明且覆盖 patch ＋ 全部可达 import</td><td>17/17 ✓</td></tr>
+	<tr><td class="k">`peerDependencies['@deepseek-ai/dsh']` 必须声明；`dependencies/devDependencies` 里不得有 `@deepseek-ai/*`</td><td>17/17 ✓（依赖面守卫也绿 ✓）</td></tr>
+	<tr><td class="k">`./client` 导出 ↔ `dsh.client` 声明成对（`platform: web` ＋ `inject`）</td><td>✓</td></tr>
+	<tr><td class="k">patch 必须 `insert`，且行 `name` == 包名；覆盖层行 id == 插件 patch 行 id</td><td>✓（`canvas` / `mcp` 的行 id 多一个 `dsh-` 是**仓库记录过的历史例外** ✓）</td></tr>
+	<tr><td class="k">读 `config.dataRoot` 的模块必须进数据根覆盖层；一行只能被一个覆盖层打</td><td>`check-host-config` <strong>0 违规</strong> ✓</td></tr>
+	<tr><td class="k">工具面：`ctx.tools.register` ＋ `output.schema` ＋ **`output.render`**；只读声明 `isConcurrencySafe`</td><td>11 个插件 / <strong>62 个工具</strong> ✓（快照一致 ✓）</td></tr>
+	<tr><td class="k">技能：作为<strong>同一个 dsh 注册表的 provider</strong>（而不是自建一套）</td><td>`vssaros-skills` ✓（`registerProvider`）</td></tr>
+	<tr><td class="k">MCP：只做"配置 → 组合行"（客户端与资源留给基座）</td><td>`vssaros-mcp` ✓</td></tr>
+	<tr><td class="k">模块归属：`vssaros.module` 必须在 `DSH_BUILTIN_MODULES` 里</td><td>✗ <strong>唯一红</strong>：`vssaros-sessions` 声明 `sessions`，而名单（13 个：skills/mcp/kb/memory/media/canvas/codebase/kanban/workflow/agents/dashboard/ide/<strong>channels</strong>）里没有它</td></tr>
+</table>
+</div>
+<p class="note">✗ <strong>为什么这条不算"格式错"</strong>：`dshModuleContainers.ts:81-85` 已记明 —— 把 Session History 登记进容器表会被两条既有守卫否决
+（① 常驻容器不受模块引擎影响、② 容器表不得与常驻集合重叠），要改先得决定是否<strong>正式把 Session History 移出常驻集合</strong>
+（代价：不再是"两引擎都在"，独立聊天窗口左栏需另行承载）。⇒ 两条出路：(a) 走产品决策并改两处名单；(b) **撤回插件清单里的 `activityBar`（并去掉 `module` 声明）**，只留页面路由 `/x/sessions/` ✓。</p>
+<p class="note">⚠ 顺带一个对账缺口：`DSH_BUILTIN_MODULES` 里的 <code>channels</code>（<code>@vssaros/dsh-channels</code>）<strong>目录还不存在</strong> ⇒ "名单 ↔ 目录"目前只单向对账
+（名单超前不报错 ✗，反向的"插件声明了名单外模块"才报错 ✓）；上面的矩阵脚本我自写的两条判据也因此出现**假阳性** ✗（把历史例外当成违规）。</p>
+
+<h2 id="s9">9. 附录：证据索引</h2>
+
+<h3>9.1 测绘方法与可复现产物</h3>
+<table>
+  <tr><th>产物</th><th>说明</th></tr>
+  <tr><td class="k">_diag/tool-scan.mjs</td><td>工具名扫描脚本：遍历 <code>dsh-plugins/*/lib/{index,client}.js</code>，抽取每个 <code>tools.register(</code> 附近的 <code>name</code>。用途：核对"43 个工具、7 个插件"这个数字（本次 <code>kanban</code> 10 个可直出，其余靠 <code>toolDefinitions</code> 数组逐个人工核对）</td></tr>
+  <tr><td class="k">克隆路径</td><td>开源对照仓库在 <code>G:\CustomWorkspaces\AIProjects\</code>（与官方 <code>deepseek-harness</code>、<code>dsh-pocket</code> 同目录）</td></tr>
+  <tr><td class="k">旧版报告</td><td><code>doc/dsh-tool-skill-mcp-report.v1.html</code>（重构前版本，含五类工具详解 read/write/patch · unreal · web · search · terminal 与第 11 节开源对比全文）</td></tr>
+  <tr><td class="k">验证命令</td><td><code>npm run check:dsh-plugins</code>（数据根行为断言）· <code>node test/run-dshharness-tests.mjs</code>（dshHarness 契约测试）· <code>poc/dsh-p0/scripts/p3-*.mjs</code>（真机探针）</td></tr>
+</table>
+
+<h3>9.2 证据索引（按报告章节）</h3>
+<div class="tbl-scroll">
+<table>
+  <tr><th>主题</th><th>去哪看</th></tr>
+  <tr><td class="k">工具注册 API（两种写法）</td><td><code>dsh-plugins/vssaros-dashboard/lib/index.js:386</code>（工厂）<code>:594</code>（注册）；<code>vssaros-kanban/lib/index.js:449+</code>（内联）</td></tr>
+  <tr><td class="k">输出 schema 与 render</td><td><code>vssaros-dashboard/lib/index.js:397-468</code>（含"删 undefined 字段"的纪律 <code>:466</code>）</td></tr>
+  <tr><td class="k">参数 schema 受限子集</td><td><code>vssaros-dashboard/lib/index.js:393-394</code>（无 minimum/maximum）</td></tr>
+  <tr><td class="k">反向通道发起</td><td><code>vssaros-ide/lib/index.js:105-117</code>（<code>requestIde</code>）、<code>:88-98</code>（超时分层）、<code>:123-126</code>（<code>sessionIdOf</code>）、<code>:671</code>（注册）</td></tr>
+  <tr><td class="k">授权判定</td><td><code>dshHarness/common/dshIdeAuthorization.ts:38</code>（读声明）、<code>:59-80</code>（默认拒绝三条）</td></tr>
+  <tr><td class="k">能力白名单（唯一真源）</td><td><code>dshHarness/common/vssarosPluginManifest.ts:74</code>（类型）、<code>:88-98</code>（数组）、<code>:292-297</code>（清单校验）</td></tr>
+  <tr><td class="k">能力执行端</td><td><code>dshHarness/common/dshIdeCapabilities.ts:226-233</code>（常量）、<code>:586</code>（<code>executeIdeCapability</code>）、<code>:925</code>（未实现文案）</td></tr>
+  <tr><td class="k">桥协议 / 鉴权 / 盖章身份</td><td><code>dsh-plugins/vssaros-bridge/lib/index.js:20</code>（版本）、<code>:241-248</code>（出站原语）、<code>:293-330</code>（管道 + token）、<code>:210-227</code>（盖章）</td></tr>
+  <tr><td class="k">桥方法清单</td><td><code>vssaros-bridge/lib/index.js:327-804</code>（IDE→Host）；<code>common/dshBridgeProtocol.ts:23/25/77/93</code>（常量与错误码）</td></tr>
+  <tr><td class="k">反向调用宿主侧链路</td><td><code>electron-main/dshBridgeClient.ts:155</code> → <code>electron-main/dshIdeRequestGate.ts:51</code> → <code>electron-browser/dshHarnessService.ts:286</code></td></tr>
+  <tr><td class="k">插件装配</td><td><code>electron-main/dshHostSupervisor.ts:495</code>（<code>_doStart</code>）、<code>:1002</code>（<code>_ensurePlugin</code>）、<code>:1379</code>（<code>_stagePlugin</code>）；<code>common/dshCli.ts:30</code>（<code>dsh plugin add file:</code>）</td></tr>
+  <tr><td class="k">启动参数与覆盖层</td><td><code>common/dshCli.ts:16</code>（<code>buildHostArgs</code>）、<code>:313/367/398/431/457/518</code>（六类覆盖层）</td></tr>
+  <tr><td class="k">技能：目录与加载</td><td><code>common/dshSkillDirs.ts:21-51</code>（覆盖层，含行 id 纪律 <code>:27-33</code>）；<code>electron-browser/dshHarnessService.ts:616-639</code>（<code>_skillDirs</code>）；<code>electron-main/dshHostSupervisor.ts:651-661</code>（写文件）</td></tr>
+  <tr><td class="k">技能：dsh 侧插件</td><td><code>dsh-plugins/vssaros-skills/lib/index.js:3-6</code>（为何不注册工具）、<code>:195-226</code>（provider）；<code>lib/store.js:54</code>（扫描）；<code>lib/core/skills.js:8-13</code>（语义缺口）、<code>:67</code>（frontmatter）</td></tr>
+  <tr><td class="k">技能：打开被关掉的行</td><td><code>dsh-plugins/vssaros-skills/cordis.patch.yml:17-25</code>（<code>tool-skill disabled:false</code>）</td></tr>
+  <tr><td class="k">技能：IDE 侧注册表</td><td><code>agentStudio/browser/skillRegistryService.ts:846/861</code>（rank 与覆盖）、<code>:917</code>（解析）；<code>agentStudio/browser/skillUsageTracker.ts:140</code>（<code>.usage.json</code>）</td></tr>
+  <tr><td class="k">MCP：解析与渲染</td><td><code>common/dshMcpConfig.ts:83-224</code>（<code>parseMcpServers</code>）、<code>:274-316</code>（<code>renderMcpOverlay</code>）；<code>vssaros-mcp/lib/core/mcpConfig.js:37-173</code> / <code>mcpRows.js:46-83</code></td></tr>
+  <tr><td class="k">MCP：写覆盖层与让路</td><td><code>electron-main/dshHostSupervisor.ts:1253-1281</code>、<code>:1289</code>（<code>_isMcpRowsOwnedByDsh</code>）；<code>vssaros-mcp/bin/sync-rows.mjs</code></td></tr>
+  <tr><td class="k">MCP：只读观察面</td><td><code>dsh-plugins/vssaros-mcp/lib/index.js:95-109</code>（数工具）、<code>:115-158</code>（路由与鉴权）</td></tr>
+  <tr><td class="k">模块聚合表（新增模块必改）</td><td><code>dshHarness/common/dshModuleContainers.ts:35</code>（<code>DSH_BUILTIN_MODULES</code>）、<code>:79</code>（容器表）</td></tr>
+  <tr><td class="k">守卫脚本</td><td><code>dsh-plugins/check-host-config.mjs:30-67</code>（<code>TARGETS</code>）、<code>:96-149</code>（行为断言）；<code>dsh-plugins/dsh-compat.json</code>（版本白名单）</td></tr>
+  <tr><td class="k">契约测试清单</td><td><code>src/vs/sessions/contrib/dshHarness/test/</code> 下：<code>dshPluginPackages</code> / <code>vssarosPluginManifest</code> / <code>dshModuleContainers</code> / <code>dshBridgeParity</code> / <code>dshIdeAuthorization</code> / <code>dshIdeCapabilities</code> / <code>dshIdeToolContract</code> / <code>dshMcpConfig</code> / <code>dshMcpRowsOwnership</code> / <code>dshSkillDirs</code> / <code>dshBundledPlugins</code> / <code>dshWriteOwnership</code> 等</td></tr>
+  <tr><td class="k">真机探针</td><td><code>poc/dsh-p0/scripts/p3-04-skills-plugin.mjs</code>（技能三层）· <code>p3-18-mcp-page.mjs</code>（MCP 差分层）· <code>p3-24-mcp-rows-dsh.mjs</code> · <code>p3-25-mcp-bundle-register.mjs</code> · <code>p3-05-mcp-overlay.mjs</code></td></tr>
+  <tr><td class="k">官方工具的平面与清单（2.7）</td><td><code>@deepseek-ai/dsh-web-app/cordis.patch.yml</code>（host 侧工具行全 <code>disabled: true</code>，注释说明下移到 preset）、<code>dsh-web-app/presets/{standard,ptc,minimal,cordis}.patch.yml</code>（per-agent 行 + <code>toolName</code>/<code>backgroundMode</code>/<code>provider</code> 等配置）、<code>@deepseek-ai/dsh-base/cordis.patch.yml</code>（base 行清单，428 行）；工具名与语义看各官方包 <code>README.zh.md</code>；扫描脚本 <code>_diag/official-tools.mjs</code></td></tr>
+</table>
+</div>
+
+<h3>9.3 相关设计文档（同目录 <code>doc/</code>）</h3>
+<table>
+  <tr><th>文档</th><th>与本报告的关系</th></tr>
+  <tr><td class="k">dsh-foundation-refactor-plan.html</td><td>总方案。§6.9「契约共享、实现各自一份」是本报告"两份实现"的权威依据；§9 是 VsSaros 侧改造清单</td></tr>
+  <tr><td class="k">dsh-modules-conformance.html</td><td>模块插件合规评估（硬合规 A/B/C/G/H）。其中"写工具无审批闸"的偏差与本报告 R1 同源</td></tr>
+  <tr><td class="k">dsh-slot-mechanism.html</td><td>客户端 UI 槽位机制（工具卡就是 <code>tool.call.toolview</code> 槽的实例）</td></tr>
+  <tr><td class="k">void-tool-card-each-comparison.md</td><td>工具卡逐项对照（本报告 6.1 客户端卡的外围背景）</td></tr>
+  <tr><td class="k">dynamic-workflow-design-report.html</td><td>工作流引擎（<code>vssaros-workflow</code> 的执行侧未迁移，本报告 2.4 表末注）</td></tr>
+</table>
+
+<h3>9.4 范围与时效声明</h3>
+<ul>
+  <li><b>依据版本</b>：dsh <code>0.2.0-rc.2</code>（兼容白名单另含 <code>0.1.7-rc.2</code>，见 <code>dsh-compat.json</code>）；插件版本：ide 0.1.10 / dashboard 0.4.2 / skills 0.3.0 / mcp 0.3.0 等（以各 <code>package.json</code> 为准）。</li>
+  <li><b>核对方式</b>：逐文件读源码（含注释中的"为什么"），事实全部落到 <code>文件:行号</code>；<b>未</b>重跑真机探针，运行期结论引用 <code>poc/dsh-p0</code> 既有实测与源码注释。</li>
+  <li><b>已知未覆盖</b>：① 155 个内置技能的逐条 description（点目录无法批量检索，只给目录名单）；② <code>vssaros-agents</code> / <code>vssaros-canvas</code> / <code>vssaros-chat-surface</code> 的客户端槽位细节（属 UI 层，见 <code>dsh-slot-mechanism.html</code>）；③ 桥入站 16 个方法的逐个 payload 契约；④ <b>PTC（工具代码化呈现）与 host 级工具的耦合未真机验证</b> —— 呈现模式是 <code>tools</code> 服务的 host 级配置（<code>dsh-web-app/cordis.patch.yml:32-38</code> 的 <code>mode: !!js process.env.DSH_TOOLS_MODE</code>），理论上作用于全部已注册工具（含我们的 43 个），但未实测。</li>
+  <li><b>时效</b>：本报告的"43 个工具 / 7 个插件"等数字来自本次手工测绘；重构迭代很快，建议按 7.3 的 P1 建议把这份清单变成自动快照（否则下次重构后本报告即过期）。</li>
+</ul>
+
+<footer>
+  本报告依据重构后的源码逐文件核对生成（2026-10-12）：<code>dsh-plugins/*</code>（13 个插件）+ <code>src/vs/sessions/contrib/dshHarness/**</code>（装配、桥、覆盖层）+ <code>src/vs/sessions/contrib/agentStudio/**</code>（legacy 引擎与技能注册表）·
+  所有事实标注 <code>文件:行号</code>；未核对到的项标"未找到" · 旧版报告备份于 <code>doc/dsh-tool-skill-mcp-report.v1.html</code> · 工具名扫描脚本 <code>_diag/tool-scan.mjs</code>
+</footer>
+
+</div>
+</body>
+</html>

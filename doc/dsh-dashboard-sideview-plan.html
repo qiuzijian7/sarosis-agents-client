@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dsh Dashboard：侧栏对齐原生 + 编辑区完整页 —— 方案与可交互原型</title>
+<style>
+	:root {
+		--bg: #1e1e1e;
+		--bg2: #252526;
+		--bg3: #2d2d30;
+		--fg: #cccccc;
+		--fg2: #858585;
+		--fg3: #e7e7e7;
+		--border: #3c3c3c;
+		--accent: #0078d4;
+		--chip: #4d4d4d;
+		--ok: #89d185;
+		--warn: #ffb000;
+		--info: #4ec9b0;
+		--mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+	}
+	* { box-sizing: border-box; }
+	body {
+		margin: 0; background: #181818; color: var(--fg);
+		font: 13px/1.55 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+	}
+	.wrap { max-width: 1360px; margin: 0 auto; padding: 28px 24px 80px; }
+	h1 { font-size: 21px; font-weight: 600; margin: 0 0 6px; color: var(--fg3); }
+	h2 { font-size: 15px; font-weight: 600; margin: 34px 0 12px; color: var(--fg3); border-left: 3px solid var(--accent); padding-left: 9px; }
+	h3 { font-size: 13px; font-weight: 600; margin: 18px 0 8px; color: var(--fg3); }
+	.sub { color: var(--fg2); margin: 0 0 18px; }
+	code, .mono { font-family: var(--mono); font-size: 11.5px; }
+	code { background: #ffffff10; padding: 1px 5px; border-radius: 3px; }
+	.reqs { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 12px 12px 12px 30px; margin: 0 0 8px; }
+	.reqs li { margin: 3px 0; }
+	.cols { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+	.col { width: 316px; }
+	.colhead { font-size: 12px; color: var(--fg2); margin-bottom: 6px; }
+	.colhead b { color: var(--fg3); font-size: 12.5px; }
+	.colhead span { font-family: var(--mono); font-size: 10.5px; opacity: .8; }
+
+	/* ── 侧栏（sideview）通用外观：模拟 IDE 侧栏 300px 宽、无外边距 ── */
+	.sideview {
+		width: 316px; background: #1f1f1f; border: 1px solid var(--border); border-radius: 4px;
+		padding: 8px 12px 14px; min-height: 420px;
+	}
+	.sideview .vtitle { font-size: 11px; font-weight: 700; letter-spacing: .6px; color: var(--fg2); text-transform: uppercase; margin: 2px 0 8px; }
+	.btn-open {
+		width: 100%; background: var(--accent); color: #fff; border: none; padding: 7px 12px; border-radius: 4px;
+		font-size: 12px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px; margin-bottom: 14px;
+		font-family: inherit;
+	}
+	.btn-open:hover { filter: brightness(1.12); }
+	.kgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px; }
+	.kcard { background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 10px; }
+	.kcard .kl { font-size: 10px; color: var(--fg2); text-transform: uppercase; margin-bottom: 4px; }
+	.kcard .kv { font-size: 20px; font-weight: 300; color: var(--fg3); }
+	.kcard .kv .u { font-size: 11px; color: var(--fg2); margin-left: 1px; }
+	.kcard .kd { font-size: 10px; color: var(--fg2); margin-top: 2px; }
+	.kcard.plain { background: #ffffff08; }
+	.kcard.plain .kv { font-size: 17px; }
+	.sectitle { font-size: 11px; font-weight: 600; color: var(--fg2); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 8px; padding: 0 2px; display: flex; align-items: center; justify-content: space-between; }
+	.sectitle .badge { background: var(--chip); border-radius: 8px; padding: 0 6px; font-size: 10px; color: var(--fg); text-transform: none; letter-spacing: 0; }
+	.sitem { background: var(--bg); border-radius: 4px; padding: 8px 10px; margin-bottom: 6px; border-left: 3px solid var(--border); cursor: pointer; }
+	.sitem:hover { background: #232323; }
+	.sitem .n { font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 3px; color: var(--fg3); }
+	.sitem .m { display: flex; justify-content: space-between; align-items: center; font-size: 9px; color: var(--fg2); gap: 6px; }
+	.sitem .m .r { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+	.pill { font-size: 9px; padding: 0 5px; border-radius: 8px; white-space: nowrap; }
+	.pill.run { background: #4ec9b026; color: var(--info); }
+	.pill.idle { background: #dcdcaa26; color: #dcdcaa; }
+	.pill.done { background: #89d18526; color: var(--ok); }
+	.pill.warn { background: #ffb00026; color: var(--warn); }
+	.foot { font-size: 10px; color: var(--fg2); line-height: 1.5; margin-top: 12px; border-top: 1px solid #ffffff12; padding-top: 8px; }
+	.range { display: flex; gap: 4px; margin-bottom: 10px; }
+	.range button { flex: 1; background: #ffffff0d; border: 1px solid var(--border); color: var(--fg2); font-size: 10.5px; padding: 3px 0; border-radius: 3px; cursor: pointer; font-family: inherit; }
+	.range button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+	.hdr { font-size: 12.5px; color: var(--fg3); font-weight: 600; margin-bottom: 4px; }
+	.hdr .tag { font-size: 10px; color: var(--fg2); font-weight: 400; }
+	.longitem { background: var(--bg); border: 1px solid #ffffff10; border-radius: 4px; padding: 7px 9px; margin-bottom: 5px; }
+	.longitem .t1 { font-size: 10.5px; color: var(--fg3); margin-bottom: 2px; }
+	.longitem .t2 { font-size: 9px; color: var(--fg2); line-height: 1.5; word-break: break-all; }
+	.warnbox { background: #ffb00012; border: 1px solid #ffb00040; border-radius: 5px; padding: 9px 11px; margin: 10px 0; font-size: 11.5px; }
+	.warnbox b { color: var(--warn); }
+
+	/* ── 编辑区（editor area）外观 ── */
+	.editorwrap { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; background: var(--bg); }
+	.tabbar { display: flex; background: #181818; border-bottom: 1px solid var(--border); }
+	.tab { padding: 7px 14px; font-size: 12px; color: var(--fg); background: var(--bg); border-right: 1px solid var(--border); display: flex; gap: 7px; align-items: center; }
+	.tab.active { background: var(--bg); color: #fff; box-shadow: inset 0 1px 0 var(--accent); }
+	.tab .x { opacity: .5; font-size: 12px; }
+	.editorpane { padding: 16px 20px 24px; min-height: 300px; }
+	.toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+	.tbtn { background: #ffffff12; border: 1px solid var(--border); color: var(--fg); font-size: 11.5px; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-family: inherit; }
+	.tbtn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+	.tbtn.on { background: #ffffff26; color: #fff; }
+	.status { margin-left: auto; font-size: 11px; color: var(--fg2); }
+	.grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 12px; }
+	.w { background: #ffffff08; border: 1px solid #ffffff14; border-radius: 6px; padding: 12px 14px; min-height: 74px; position: relative; }
+	.w h4 { margin: 0 0 6px; font-size: 12px; color: var(--fg3); font-weight: 600; display: flex; justify-content: space-between; align-items: center; }
+	.w .sz { font-size: 10px; color: var(--fg2); font-family: var(--mono); }
+	.w.span12 { grid-column: span 12; }
+	.w.span6 { grid-column: span 6; }
+	.w.span4 { grid-column: span 4; }
+	.w.span3 { grid-column: span 3; }
+	.kvrow { display: flex; gap: 22px; flex-wrap: wrap; }
+	.kvrow .kv1 { font-size: 22px; font-weight: 300; color: var(--fg3); }
+	.kvrow .kl1 { font-size: 10px; color: var(--fg2); text-transform: uppercase; }
+	.lower .w { border-style: dashed; }
+	.editonly { display: none; }
+	.grid.editing .editonly { display: flex; }
+	.grid.editing .w { outline: 1px dashed #4ec9b055; }
+	.handles { position: absolute; right: 4px; bottom: 4px; gap: 4px; }
+	.handles span { background: #00000060; border: 1px solid #ffffff26; border-radius: 3px; font-size: 10px; padding: 0 4px; color: var(--fg2); cursor: nwse-resize; }
+	.dragdot { position: absolute; left: 6px; top: 6px; font-size: 11px; color: var(--fg2); cursor: grab; }
+
+	table { border-collapse: collapse; width: 100%; margin: 8px 0 4px; font-size: 12px; }
+	th, td { text-align: left; padding: 7px 9px; border-bottom: 1px solid #ffffff12; vertical-align: top; }
+	th { color: var(--fg2); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .4px; }
+	td.mono { font-family: var(--mono); font-size: 11px; color: var(--fg2); }
+	.tagk { display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 3px; background: #ffffff12; color: var(--fg2); margin-right: 4px; }
+	.decision { background: var(--bg2); border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 5px; padding: 12px 14px; margin: 10px 0; }
+	.decision h3 { margin-top: 0; }
+	.decision .rec { color: var(--ok); font-weight: 600; }
+	.decision .no { color: #f48771; }
+	.legend { font-size: 11.5px; color: var(--fg2); margin: 6px 0 0; }
+	.hidden { display: none; }
+	.live .editorwrap { box-shadow: 0 0 0 2px #0078d466; }
+</style>
+</head>
+<body>
+<div class="wrap">
+	<h1>dsh Dashboard：侧栏对齐原生 + 编辑区完整页</h1>
+	<p class="sub">你反馈的三点 → 三处改动 + 两条待你拍板。<b>本页只是可交互原型，尚未改任何生产代码。</b></p>
+	<ol class="reqs">
+		<li>侧栏里的样式与<b>原生 Dashboard</b> 差异太大；</li>
+		<li>缺少<b>「打开完整 Dashboard」按钮</b>；</li>
+		<li>打开后，完整页应在<b>编辑区（editor pane）</b>中显示。</li>
+	</ol>
+
+	<h2>① 三栏对照：原生 / 我们现状 / 目标</h2>
+	<p class="legend">左栏照 <code>agentStudioDashboardView.ts</code> 的真实信息层级复刻（数值为示意）；中栏是你截图里的现状（dsh 整页塞进 300px 侧栏）；右栏是目标形态。</p>
+	<div class="cols">
+
+		<!-- ── 原生 ── -->
+		<div class="col">
+			<div class="colhead"><b>原生侧栏视图</b><br><span>AgentStudioDashboardViewPane</span></div>
+			<div class="sideview">
+				<button class="btn-open" disabled>📊 打开完整 Dashboard</button>
+				<div class="kgrid">
+					<div class="kcard"><div class="kl">活跃会话</div><div class="kv">32</div><div class="kd">近 24h</div></div>
+					<div class="kcard"><div class="kl">用量</div><div class="kv">12.4<span class="u">K</span></div><div class="kd">token</div></div>
+					<div class="kcard"><div class="kl">成本</div><div class="kv">$0.42</div><div class="kd">估算</div></div>
+					<div class="kcard"><div class="kl">告警</div><div class="kv">0</div><div class="kd">无异常</div></div>
+				</div>
+				<div class="sectitle"><span>活跃会话</span><span class="badge">5</span></div>
+				<div class="sitem" style="border-left-color:#4ec9b0">
+					<div class="n">飞书渠道可用性核查</div>
+					<div class="m"><span class="pill run">运行中</span><span class="r">6K · 2m40s</span></div>
+				</div>
+				<div class="sitem" style="border-left-color:#dcdcaa">
+					<div class="n">dashboard 侧栏对齐</div>
+					<div class="m"><span class="pill idle">空闲</span><span class="r">12K · 5m10s</span></div>
+				</div>
+				<div class="sectitle" style="margin-top:14px"><span>告警通知</span><span class="badge">1</span></div>
+				<div class="sitem" style="border-left-color:#bb8200">
+					<div class="n" style="color:#ffb000;font-size:10px;font-weight:600">用量接近阈值</div>
+					<div class="m"><span class="r">今日 token 已达昨日 80%</span></div>
+				</div>
+				<div class="foot">数据口径：本面板来自 IDE 本地聚合（含用量与告警）；dsh 侧「Dashboard」页读的是 dsh 会话投影缓存 ⇒ 两者数字不必相同。</div>
+			</div>
+		</div>
+
+		<!-- ── 现状 ── -->
+		<div class="col">
+			<div class="colhead"><b>我们现状</b>　<span class="tagk">整页塞进侧栏</span><br><span>dsh /x/dashboard/ 全量渲染</span></div>
+			<div class="sideview">
+				<div class="hdr">Dashboard」dsh 会话遥测／用量<span class="tag">（只读）</span></div>
+				<div class="foot" style="border:0;padding:0;margin:0 0 8px">本页读 dsh 自己的会话投影缓存（checkpoint 落盘，可能比较略落后），因此只有会话哈希（turn／step／耗时／token 用量／子代理／计划模式）＋ IDE 侧的 Dashboard（它们有自己的聚合口径，既有成本与告警）⇒ 两者数字不必相同，不要拿两页互相对账。</div>
+				<div class="range"><button class="on">今日</button><button>7 天</button><button>30 天</button><button>全部</button></div>
+				<div class="kgrid" style="grid-template-columns:1fr 1fr 1fr;gap:6px">
+					<div class="kcard plain"><div class="kl">会话</div><div class="kv">32</div></div>
+					<div class="kcard plain"><div class="kl">turn</div><div class="kv">10</div></div>
+					<div class="kcard plain"><div class="kl">step</div><div class="kv">22</div></div>
+					<div class="kcard plain"><div class="kl">模型耗时</div><div class="kv">2m40s</div></div>
+					<div class="kcard plain"><div class="kl">工具耗时</div><div class="kv">1m21s</div></div>
+					<div class="kcard plain"><div class="kl">排队待发</div><div class="kv">3</div></div>
+				</div>
+				<div class="sectitle"><span>会话 32 个（按创建时间倒序）</span></div>
+				<div class="longitem">
+					<div class="t1">（无标题）</div>
+					<div class="t2">~/SarosWorkspace/sarosis-agents-client　·　2026-10-13 02:00</div>
+					<div class="t2">来源 空变量　·　空会话　·　参与前缀的输入 0 条　·　子代理：派出子代理 0 个</div>
+					<div class="t2">turn 0　·　step 0　·　LLM 0ms　·　工具 0ms　·　token：输入 0 输出 0 缓存 0　·　模式：普通</div>
+					<div class="t2">运行中：已完成 0 轮　·　计划模式　·　待回复 0　·　待排队 0</div>
+				</div>
+				<div class="longitem">
+					<div class="t1">（无标题）</div>
+					<div class="t2">~/SarosWorkspace/sarosis-agents-client　·　2026-10-13 02:02</div>
+					<div class="t2">来源 cache　·　空会话　·　子代理：派出子代理 0 个</div>
+					<div class="t2">turn 0　·　step 0　·　LLM 0ms　·　工具 0ms　·　token：输入 0 输出 0 缓存 0</div>
+					<div class="t2">运行中：已完成 0 轮　·　计划模式　·　会话 workspace-write　·　审批：ask</div>
+				</div>
+				<div class="foot">一处差异：<b>没有按钮</b>、<b>KPI 卡 6 张 / 每张都带口径</b>、<b>会话行 4–5 行长文本</b>、<b>无分区标题与计数</b>。</div>
+			</div>
+		</div>
+
+		<!-- ── 目标 ── -->
+		<div class="col">
+			<div class="colhead"><b>目标：dsh 侧栏紧凑版</b>　<span class="tagk">对齐原生</span><br><span>同一页，surface=sideview</span></div>
+			<div class="sideview">
+				<button class="btn-open" id="open-full">📊 打开完整 Dashboard</button>
+				<div class="kgrid">
+					<div class="kcard"><div class="kl">会话</div><div class="kv">32</div><div class="kd">今日 · 全部 128</div></div>
+					<div class="kcard"><div class="kl">turn / step</div><div class="kv">10<span class="u">/22</span></div><div class="kd">今日</div></div>
+					<div class="kcard"><div class="kl">模型耗时</div><div class="kv">2m40s</div><div class="kd">工具 1m21s</div></div>
+					<div class="kcard"><div class="kl">排队待发</div><div class="kv">3</div><div class="kd">待回复 0</div></div>
+				</div>
+				<div class="range"><button class="on">今日</button><button>7 天</button><button>30 天</button><button>全部</button></div>
+				<div class="sectitle"><span>活跃会话</span><span class="badge">32</span></div>
+				<div class="sitem" style="border-left-color:#4ec9b0">
+					<div class="n">a7234eb1　·　（无标题）</div>
+					<div class="m"><span class="pill run">运行中</span><span class="r">turn 0 · 2m40s · 12.4K</span></div>
+				</div>
+				<div class="sitem" style="border-left-color:#dcdcaa">
+					<div class="n">69177f8e　·　（无标题）</div>
+					<div class="m"><span class="pill idle">已完成</span><span class="r">turn 0 · 1m21s · 6K</span></div>
+				</div>
+				<div class="sitem" style="border-left-color:#89d185">
+					<div class="n">1b38726d　·　（无标题）</div>
+					<div class="m"><span class="pill done">已完成</span><span class="r">turn 0 · 40s · 2K</span></div>
+				</div>
+				<div class="sectitle" style="margin-top:14px"><span>待处理</span><span class="badge">3</span></div>
+				<div class="sitem" style="border-left-color:#bb8200">
+					<div class="n" style="color:#ffb000;font-size:10px;font-weight:600">3 条消息排队待发</div>
+					<div class="m"><span class="r">宿主未就绪或等审批</span></div>
+				</div>
+				<div class="foot">口径：数字来自 <b>dsh 会话投影缓存</b>（checkpoint 落盘，可能略落后）；与 IDE 侧 Dashboard 的本地聚合口径不同，两者数字不必相同。</div>
+				<div class="foot" style="border:0;padding-top:2px">会话行只留 3 个字段：<b>状态 · 耗时 · token</b>；长路径/来源/审批明细移到完整页。编排入口也只在完整页（窄栏拖拽易误触）。</div>
+			</div>
+		</div>
+	</div>
+
+	<h2>② 点「打开完整 Dashboard」→ 在编辑区打开（同一页，不同 surface）</h2>
+	<p class="legend">左侧按钮的落点就是下面这个编辑区标签页。原型里点一下就展开（真实实现见 §③ 的 P2）。</p>
+	<div id="editor-host">
+		<div class="editorwrap">
+			<div class="tabbar">
+				<div class="tab active">📊 Dashboard<span class="x">×</span></div>
+				<div class="tab" style="opacity:.6">agentStudio.dashboardView<span class="x">×</span></div>
+			</div>
+			<div class="editorpane">
+				<div class="toolbar">
+					<button class="tbtn primary" id="toggle-edit">编排</button>
+					<button class="tbtn" id="toggle-gallery">添加组件</button>
+					<button class="tbtn on">今日</button><button class="tbtn">7 天</button><button class="tbtn">30 天</button><button class="tbtn">全部</button>
+					<span class="status" id="status">就绪</span>
+				</div>
+				<div class="grid" id="grid">
+					<div class="w span3">
+						<span class="dragdot editonly">⠿</span>
+						<h4>会话 <span class="sz">3×1</span></h4>
+						<div class="kvrow"><div><div class="kl1">今日</div><div class="kv1">32</div></div><div><div class="kl1">全部</div><div class="kv1">128</div></div></div>
+						<div class="handles editonly"><span>◢</span></div>
+					</div>
+					<div class="w span3">
+						<span class="dragdot editonly">⠿</span>
+						<h4>turn / step <span class="sz">3×1</span></h4>
+						<div class="kvrow"><div><div class="kl1">turn</div><div class="kv1">10</div></div><div><div class="kl1">step</div><div class="kv1">22</div></div></div>
+						<div class="handles editonly"><span>◢</span></div>
+					</div>
+					<div class="w span3">
+						<span class="dragdot editonly">⠿</span>
+						<h4>耗时 <span class="sz">3×1</span></h4>
+						<div class="kvrow"><div><div class="kl1">模型</div><div class="kv1">2m40s</div></div><div><div class="kl1">工具</div><div class="kv1">1m21s</div></div></div>
+						<div class="handles editonly"><span>◢</span></div>
+					</div>
+					<div class="w span3">
+						<span class="dragdot editonly">⠿</span>
+						<h4>排队待发 <span class="sz">3×1</span></h4>
+						<div class="kvrow"><div><div class="kl1">排队</div><div class="kv1">3</div></div><div><div class="kl1">待回复</div><div class="kv1">0</div></div></div>
+						<div class="handles editonly"><span>◢</span></div>
+					</div>
+					<div class="w span12">
+						<span class="dragdot editonly">⠿</span>
+						<h4>诊断行 <span class="sz">12×1</span></h4>
+						<div class="t2" style="color:var(--fg2);font-size:11px">索引 0　·　输入 1　·　工具 0　·　模式：普通　·　当前档位：全新会话（计划模式）</div>
+						<div class="handles editonly"><span>◢</span></div>
+					</div>
+					<div class="w span12">
+						<span class="dragdot editonly">⠿</span>
+						<h4>会话 32 个（按创建时间倒序） <span class="sz">12×3</span></h4>
+						<div class="sitem" style="border-left-color:#4ec9b0">
+							<div class="n">session-a7234eb1-e6b3-40c1-b8de-605f2c4fa56e</div>
+							<div class="m"><span class="pill run">运行中</span><span class="r">~/SarosWorkspace/sarosis-agents-client-vssaros-standard-2026… · turn 0 · 2m40s · 12.4K</span></div>
+						</div>
+						<div class="sitem" style="border-left-color:#89d185">
+							<div class="n">session-69177f8e-ca9e-4f6b-a3a3-57463991c24f</div>
+							<div class="m"><span class="pill done">已完成</span><span class="r">来源 cache · turn 0 · 1m21s · 6K · 会话 workspace-write · 审批 ask</span></div>
+						</div>
+						<div class="handles editonly"><span>◢</span></div>
+					</div>
+				</div>
+				<div id="gallery" class="hidden" style="margin-top:12px;border:1px dashed #ffffff2a;border-radius:6px;padding:10px 12px">
+					<b style="font-size:12px">添加组件</b>
+					<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+						<button class="tbtn">＋ KPI 组</button><button class="tbtn">＋ 诊断行</button><button class="tbtn">＋ 会话明细（已在使用）</button>
+					</div>
+				</div>
+			</div>
+		</div>
+	</div>
+	<p class="legend">在编辑区里，完整页保留全部能力：<b>编排（拖拽换位 / 手柄缩放）</b>、添加组件画廊、范围切换、完整会话明细与口径全文。侧栏那份是「摘要 + 入口」。</p>
+
+	<h2>③ 三处改动与影响面</h2>
+	<table>
+		<tr><th style="width:130px">改动</th><th>做法</th><th style="width:270px">影响面 / 风险</th></tr>
+		<tr>
+			<td><b>P1 侧栏紧凑版</b><br><span class="tagk">插件侧</span></td>
+			<td>页面按<b>宿主注入的表面信号</b>渲染两态：侧栏＝摘要（按钮 + 4 mini KPI + 活跃会话 5 条 + 待处理 + 口径脚注），编辑区＝现在的完整页。信号用既有机制（<code>window.vssarosDsh.surface</code>，由 <code>--vssaros-dsh-surface=</code> 注入），新增一个取值。</td>
+			<td>★ 不变量：<b>隐藏 meta 锚点块在两种表面都渲染</b> ⇒ <code>p3-09</code> 不受影响；这条要写进守卫，否则"侧栏改版把探针搞红"是必然的。</td>
+		</tr>
+		<tr>
+			<td><b>P2 编辑区承载</b><br><span class="tagk">IDE 侧</span></td>
+			<td>新增「dsh 插件页」的 EditorInput + EditorPane（照 <code>AgentStudioDashboardEditorInput/Pane</code> 的形态），内部摆 WebContentsView 加载 <code>/x/dashboard/</code>，surface 传编辑区值。<b>这条路径当前不存在</b>（编辑区只承载聊天页）。</td>
+			<td>⚠ 与方案文档 <code>dsh-foundation-refactor-plan.html</code> §5.12/9.1「dsh 页面不进 mainPart、去掉『在完整面板中打开』类入口」<b>相冲突</b> ⇒ 需要你一句话改口径。先例：<b>聊天页本来就在编辑区</b>（surface=chat）。</td>
+		</tr>
+		<tr>
+			<td><b>P3 按钮通道</b><br><span class="tagk">桥</span></td>
+			<td>侧栏页点按钮 → 经页面桥新增一条命令（如 <code>openPluginPage</code>），照既有 <code>DshPageCommand</code> 形态（联合类型 + preload + host 校验 + 版本号）。</td>
+			<td>比"页面自己想办法"更符合既有安全模型（桥是封闭白名单）。影响 <code>dshPageBridgeProtocol.ts</code> 的版本号与 <code>validatePageCommand</code>；探针需覆盖"未知命令被拒"。</td>
+		</tr>
+	</table>
+
+	<h2>④ 两条要你拍板</h2>
+	<div class="decision">
+		<h3>D1　编辑区里的「完整页」是哪一个？</h3>
+		<p><span class="rec">推荐 A</span>：<b>我们的 dsh 可编排页</b>（同一页、不同 surface 渲染）—— 与你的意图一致，但需新增编辑区承载路径（P2），并改一句方案口径。<br>
+		<span class="no">不推荐 B</span>：<b>原生完整 Dashboard</b>（命令 <code>agentStudio.openDashboard</code> 现成，零 IDE 改动）—— 但内容是原生的，我们的可编排页仍只在侧栏，等于你要的东西没实现。</p>
+	</div>
+	<div class="decision">
+		<h3>D2　侧栏紧凑版里保留哪些控件？</h3>
+		<p><span class="rec">推荐</span>：保留<b>范围切换</b>（今日/7 天/30 天/全部，紧凑分段）＋<b>口径脚注</b>；把<b>「编排」与「添加组件」移到完整页</b>（窄栏里拖拽/缩放体验差、易误触），侧栏只留「打开完整 Dashboard」这一个动作。<br>
+		<span class="no">备选</span>：侧栏也留编排入口（我可以做，但窄栏里手柄只有几像素，误触概率高）。</p>
+	</div>
+
+	<h2>⑤ 验证计划（实现时）</h2>
+	<ul style="font-size:12px;color:var(--fg2);line-height:1.7">
+		<li><b>p3-46 扩</b>：同一布局下 <b>两种 surface 渲染的锚点集合完全一致</b>；侧栏版不出现编辑态把手；紧凑版仍给出 4 个 KPI 与「打开完整 Dashboard」按钮。</li>
+		<li><b>p3-09 不动</b>：锚点在隐藏 meta 块里、与 surface / 布局均无关（现有 89 条断言继续全绿）。</li>
+		<li><b>IDE 侧</b>：新 EditorInput/Pane 的注册与命令 + 桥版本号的既有守卫（<code>--common</code>）＋ 真机点一次按钮（这次起真 IDE 或按 p3-09 的进程内假 Host 驱动）。</li>
+	</ul>
+</div>
+
+<script>
+	// 范围切换：只切高亮（原型）
+	document.querySelectorAll('.range button').forEach(function (b) {
+		b.addEventListener('click', function () {
+			b.parentElement.querySelectorAll('button').forEach(function (x) { x.classList.remove('on'); });
+			b.classList.add('on');
+		});
+	});
+	// 打开完整 Dashboard：展开编辑区并滚过去（原型里编辑区本就可见，这里做高亮 + 滚动 + 状态位）
+	document.getElementById('open-full').addEventListener('click', function () {
+		var wrap = document.querySelector('.editorwrap');
+		wrap.scrollIntoView({ behavior: 'smooth', block: 'center' });
+		wrap.classList.add('live');
+		document.getElementById('status').textContent = '已由侧栏打开（编辑区新建标签页）';
+		setTimeout(function () { wrap.classList.remove('live'); }, 2200);
+	});
+	// 编排：切换编辑态小件
+	document.getElementById('toggle-edit').addEventListener('click', function () {
+		var grid = document.getElementById('grid');
+		var on = grid.classList.toggle('editing');
+		this.classList.toggle('on', on);
+		this.textContent = on ? '完成' : '编排';
+		document.getElementById('status').textContent = on ? '编排中：拖动换位 / 右下角手柄缩放' : '已保存';
+	});
+	document.getElementById('toggle-gallery').addEventListener('click', function () {
+		document.getElementById('gallery').classList.toggle('hidden');
+	});
+</script>
+</body>
+</html>

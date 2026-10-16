@@ -1,0 +1,34 @@
+{
+  "name": "@vssaros/dsh-unreal",
+  "version": "0.2.0",
+  "description": "VsSaros Unreal Engine bridge module for DeepSeek Harness: exposes the read-only unreal_* tools by calling the editor's local /bridge/* HTTP endpoints FROM THE HOST PROCESS, so the family keeps working when the Host runs without VsSaros. Ported from src/vs/sessions/contrib/agentStudio/browser/providers/tool/unrealTools.ts. Registers all seven unreal_* tools (the read-only four plus exec/wait/build; the three mutating ones are gated behind the official tools/pre-execute approval hook).",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/core/bridge.js",
+    "cordis.patch.yml"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/dsh": ">=0.1.7-0 <0.3.0-0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": [
+        "./cordis.patch.yml"
+      ]
+    }
+  },
+  "vssaros": {
+    "manifestVersion": 1,
+    "view": {
+      "kind": "none"
+    }
+  },
+  "license": "MIT"
+}

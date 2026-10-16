@@ -1,0 +1,8 @@
+# @vssaros/dsh-web-content-import bundle patch: insert the web-content-import row.
+#
+# `config.dataRoot` / `config.kbRoot` / `config.binDir` stay empty on purpose: VsSaros injects the real
+# roots through a `--patch` overlay targeting this id when they are customized（与 vssaros-skills 行同一机制）。
+- insert:
+    - id: vssaros-web-content-import
+      name: '@vssaros/dsh-web-content-import'
+      config: {}

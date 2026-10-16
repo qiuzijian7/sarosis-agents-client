@@ -19,6 +19,7 @@ import {
 	shouldEmitBudgetReport,
 } from '../../common/promptBudget.js';
 import { probeToolGuidance, formatToolSchemaDiagLog } from '../../common/promptDiagnostics.js';
+import { isMcpSourcedTool } from '../../common/toolApprovalPolicy.js';
 
 /** 日志宿主窄接口 —— 只声明本段实际调用的成员。 */
 export interface IRequestDiagnosticsLogger {
@@ -147,8 +148,8 @@ export function logToolsSentToLlm(deps: IToolsSentLogDeps): void {
 		return;
 	}
 
-	const mcpToolsSent = enabledTools.filter((t) => t.category?.startsWith('mcp:'));
-	const builtinToolsSent = enabledTools.filter((t) => !t.category?.startsWith('mcp:'));
+	const mcpToolsSent = enabledTools.filter((t) => isMcpSourcedTool(t));
+	const builtinToolsSent = enabledTools.filter((t) => !isMcpSourcedTool(t));
 	logService.info(
 		`[AgentOS] TOOLS SENT TO LLM: ${enabledTools.length} total\n` +
 		`  MCP tools (${mcpToolsSent.length}): [${mcpToolsSent.map((t) => t.name).join(', ')}]\n` +

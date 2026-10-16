@@ -524,6 +524,13 @@ import '../workbench/contrib/opener/browser/opener.contribution.js';
 import './browser/paneCompositePartService.js';
 import './browser/parts/menubar.contribution.js';
 import './browser/layoutActions.js';
+// ★ [Saros 2026-10-13] 「编辑器列 ⇄ Agent 列」换位的 3 个 action。
+// ⚠ 必须在这里（sessions 窗口的贡献入口）引入：**用户日常跑的就是这个窗口**
+//   （dev 页面 = `sessions-dev.html` → `sessions.js`），而该窗口**没有**上游
+//   `MenuId.TitleBar` 工具栏 ⇒ 只挂菜单根本看不见；真正的入口是
+//   `sessions/browser/parts/titlebarPart.ts` 里那个 ⇄ 按钮（走命令）。
+//   同一份 action 模块也被「IDE 底座 + Agent 布局」入口引入（见 `agentLayout.desktop.main.ts`）。
+import './browser/agentColumnLayoutActions.js';
 
 import './contrib/accountMenu/browser/account.contribution.js';
 import './contrib/aiCustomizationTreeView/browser/aiCustomizationTreeView.contribution.js';

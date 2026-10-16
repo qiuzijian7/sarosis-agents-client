@@ -43,22 +43,14 @@ import { INativeEnvironmentService } from '../../../../../../platform/environmen
 import { IRequestService } from '../../../../../../platform/request/common/request.js';
 import { IToolProvider, IToolDefinition, IToolCall, IToolResult } from '../../../common/providers.js';
 import {
-	AGENT_STUDIO_UNREAL_BRIDGE_URL_SETTING,
 	AGENT_STUDIO_WEB_SEARCH_PROVIDER_SETTING,
 	AGENT_STUDIO_WEB_SEARCH_SEARXNG_URL_SETTING,
 	AGENT_STUDIO_WEB_SEARCH_TAVILY_KEY_SETTING,
 	AGENT_STUDIO_WEB_SEARCH_BRAVE_KEY_SETTING,
 	AGENT_STUDIO_WEB_SEARCH_EXA_KEY_SETTING,
 	AGENT_STUDIO_WEB_SEARCH_CACHE_ENABLED_SETTING,
-	AGENT_STUDIO_BROWSER_CDP_ENABLED_SETTING,
-	AGENT_STUDIO_BROWSER_CDP_LAUNCH_DEDICATED_SETTING,
-	AGENT_STUDIO_BROWSER_CDP_PORT_SETTING,
 	AGENT_STUDIO_BROWSER_COOKIES_FROM_BROWSER_SETTING,
 } from '../../../common/constants.js';
-import { BROWSER_CDP_CHANNEL, BrowserCdpReachabilityGate, DEFAULT_CDP_PORT, dedicatedPortFor } from '../../../common/browserCdp.js';
-import type { BrowserCdpRequest, IBrowserCdpResponse, IBrowserCdpStatus } from '../../../common/browserCdp.js';
-import { registerBrowserTools, type BrowserToolContext } from './browserTools.js';
-import type { IBrowserCdpInvoker } from '../../browserCdpClient.js';
 import { getToolsetForTool, UTILITY_BUCKET_WHITELIST } from '../../../common/toolsetConfig.js';
 import { ISkillRegistry } from '../../../common/skills.js';
 import { IModelSelectorService } from '../../../common/modelSelector.js';
@@ -151,7 +143,9 @@ import { executeToolImpl } from './toolExecutor.js';
 import { registerHandoffTools } from './handoffTools.js';
 import { registerMermaidTools } from './mermaidTools.js';
 import { registerDrawioTools } from './drawioTools.js';
-import { registerUnrealTools } from './unrealTools.js';
+// ★ 2026-10-13：`registerUnrealTools`（`./unrealTools.js`）**已移除** ✗ —— unreal 族（七个工具）
+//   全部由 dsh 侧插件 `@vssaros/dsh-unreal` 提供（Host 直连 `/bridge/*`，带审批闸 ✓，README 4.68）。
+//   IDE 侧再留一份只会让同名工具两处注册（dsh 侧是**静默顶掉**）⇒ 已在 2026-10-13 整份删除 ✓。
 import { registerSessionSearchTools } from './sessionSearchTools.js';
 import { registerVisionAnalyzeTools, readLocalImageAsBase64 } from './visionAnalyzeTools.js';
 import {
@@ -234,7 +228,6 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	/** 工具注册表 —— 封装工具描述符集合、启用状态与变更事件（见 toolRegistry.ts）。 */
 	private readonly _registry = new ToolRegistry(this.logService);
 
-	readonly onDidChangeTools = this._registry.onDidChangeTools;
 
 	/** Skill Manager 工具实例 —— 提供 skill_create 能力 */
 	private _skillManagerTool!: SkillManagerTool;
@@ -245,8 +238,6 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	/** web_search 结果备忘（内存 + TTL + 单飞）—— 懒构造，见 `_getSearchMemo`。 */
 	private _searchMemo?: WebSearchMemo;
 
-	/** Chrome CDP 可达性门控（懒建，见 `_getBrowserCdpGate`）。 */
-	private _browserCdpGate?: BrowserCdpReachabilityGate;
 
 	// v17: worktree path inherited from the parent agent's execution context.
 	// Set by `setParentWorktreePath()` before each turn; cleared on turn end.
@@ -380,8 +371,6 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		this._registerEmbeddingProvider();
 		this._registerCoreTools();
 		this._registerWebTools();
-		// ★ P1-2：browser_* 的真实实现（必须在 _registerBundledTools 之前，否则被注册成 stub）。
-		this._registerBrowserTools();
 		this._registerCompatibilityTools();
 		// ★ 2026-09-24（P1-5）：process 的真实实现（此前只是 compatibilityTools 里的提示占位，
 		//   占位已从那里移除）。必须在 _registerBundledTools 之前 —— bundled 里有同名 stub。
@@ -401,9 +390,10 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		// （渲染器 drawioInlineRenderer / 卡片 drawioCard / 预览命令）成为永远走不到
 		// 的死代码。与 _registerImageGenTools 同一模式（见其上方注释）。
 		this._registerDrawioTools();
-		// ★ 2026-09-20：unreal_* 真实实现（BunnySeek bridge HTTP 客户端）。
-		//   此前 unrealTools.ts 只有定义、无调用点 ⇒ 7 个工具从未注册，模型看不到。
-		this._registerUnrealTools();
+		// ★ 2026-10-13：`this._registerUnrealTools()` **已移除** ✗ —— unreal 族整份下移到 dsh 侧
+		//   `@vssaros/dsh-unreal`（七个工具都由 Host 直连 `/bridge/*` 执行 ✓、执行类挂审批闸 ✓）。
+		//   ⚠ 留档（2026-09-20 的坑）：在**本文件**注册过工具但 `toolsetConfig` 没登记前缀 ⇒ 落 `utility`
+		//   兜底桶 ⇒ focus 模式整条剔除且**零日志**；所以删除族时也要一并清 `toolsetConfig` 的条目 ✓。
 		// ★ 2026-09-11：session_search 真实实现，同样必须在 _registerBundledTools 之前
 		// —— 否则 bundled 里的 session_search 定义会被注册成 stub（isStub → listTools
 		// 跳过）→ 模型永远看不到（此前正是此状态：配置项 / 工具名映射 / 白名单俱全，
@@ -814,119 +804,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		};
 	}
 
-	/**
-	 * `browser_*` 工具（CDP 驱动真实 Chrome，P1-2）。
-	 *
-	 * ⚠ 调用点必须在 `_registerBundledTools()` **之前**：bundled 定义库里同名项会被注册成
-	 * `isStub: true` ⇒ `listTools` 跳过 ⇒ 模型永远看不到（这就是这 7 个工具此前"在
-	 * `CORE_TOOLS` 白名单里却不可见"的原因）。
-	 */
-	private _registerBrowserTools(): void {
-		const ctx: BrowserToolContext = {
-			register: d => this.register(d),
-			logService: this.logService,
-			cdp: this._browserCdpInvoker(),
-			isEnabled: () => this._browserToolsUsable(),
-			// 「改用你自己日常的 Chrome」引导卡：用户勾完同意框后要用它切过去
-			// （理由见 BrowserToolContext.recheckEndpoint 注释）。
-			recheckEndpoint: () => this.recheckBrowserCdp(),
-			ports: () => {
-				const configuredPort = this._browserCdpConfiguredPort();
-				return { configuredPort, dedicatedPort: dedicatedPortFor(configuredPort) };
-			},
-		};
-		registerBrowserTools(ctx);
-		// 预热一次探测：让首次 listTools 就有结论（用户已开远程调试时工具能第一时间出现，
-		// 而不是等到第一个 30s 周期过去）。
-		if (this.configurationService.getValue<boolean>(AGENT_STUDIO_BROWSER_CDP_ENABLED_SETTING) !== false) {
-			this._getBrowserCdpGate().warmUp();
-		}
-	}
 
-	/** 用户设置的 CDP 端口（非法值退回默认）。只读设置、不做修正 —— 与主进程 `_port()` 同一口径。 */
-	private _browserCdpConfiguredPort(): number {
-		const raw = this.configurationService.getValue<number>(AGENT_STUDIO_BROWSER_CDP_PORT_SETTING);
-		return typeof raw === 'number' && Number.isFinite(raw) && raw >= 1 && raw <= 65535
-			? Math.floor(raw) : DEFAULT_CDP_PORT;
-	}
-
-	/**
-	 * 丢弃当前 CDP 连接并**立即**重探（`browser_use_my_chrome` 用户勾完同意框后调用）。
-	 *
-	 * 两步都不能省：
-	 *   ① `{ op: 'reset' }` —— 旧连接是在用户勾选**之前**建立的，指向专属实例；不丢就切不过去
-	 *      （候选顺序里"你自己的 Chrome"优先，但那只对**新建**连接生效）。
-	 *   ② `gate.warmUp()` —— 绕过 30s 节流，让"刚勾好"马上反映到工具可用性判定上。
-	 * 工具列表无需手动刷新：`listTools` 每轮都会重算 `isUsable()`。
-	 */
-	async recheckBrowserCdp(): Promise<void> {
-		try {
-			const invoker = this._browserCdpInvoker();
-			await invoker?.({ op: 'reset' });
-		} catch (err) {
-			this.logService.warn(`[BuiltinTools] browser CDP reset failed: ${err instanceof Error ? err.message : String(err)}`);
-		}
-		this._getBrowserCdpGate().warmUp();
-	}
-
-	/**
-	 * `browser_*` 此刻该不该出现在模型的工具列表里。
-	 *
-	 * 两条并列的判据（前者更快、后者更强）：
-	 *   ① Chrome 调试端口**已可达** —— 用用户自己开好的那个 Chrome（可能带他的登录态），不加戏；
-	 *   ② 端口不可达，但开着「自动拉起调试实例」—— 仍然暴露这 7 个工具，因为**首次真正调用时**
-	 *      主进程会用专属 profile 把浏览器带起来（Route B）。
-	 *
-	 * ② 是刻意的：工具一旦不出现，模型就永远不会调用，也就永远触发不到"首次调用" ——
-	 * 那会把 Route B 困死成死代码。所以这里必须比"可达性门控"宽一档。
-	 * 代价是：若拉起注定失败（例如机器上没装 Chrome），模型会撞一次失败并拿到明确的错误
-	 * （"找不到 Chrome 可执行文件…"），而不是事先隐身 —— 这比"工具莫名消失、无从解释"更好。
-	 *
-	 * 反过来说：若把「自动拉起调试实例」关掉，本判据就退化成纯可达性门控（回到旧行为，
-	 * 不会让模型白撞那次 net::ERR_CONNECTION_REFUSED）。
-	 */
-	private _browserToolsUsable(): boolean {
-		if (this.configurationService.getValue<boolean>(AGENT_STUDIO_BROWSER_CDP_ENABLED_SETTING) === false) { return false; }
-		if (this._getBrowserCdpGate().isUsable()) { return true; }
-		return this.configurationService.getValue<boolean>(AGENT_STUDIO_BROWSER_CDP_LAUNCH_DEDICATED_SETTING) !== false;
-	}
-
-	/** 重探周期。取值理由见 `BrowserCdpReachabilityGate` 的类注释（太长则"刚开好调试"长时间不生效）。 */
-	private static readonly _CDP_PROBE_INTERVAL_MS = 30_000;
-
-	/**
-	 * browser_* 的可达性门控（懒建）—— 语义全在 `BrowserCdpReachabilityGate` 的类注释里。
-	 *
-	 * 探测动作走 `_browserCdpInvoker()` 的 `status` op：主进程侧等价于
-	 * 「HTTP 发现 `/json/version` + WS 建连 + `Browser.getVersion`」，成功即说明**整条 CDP
-	 * 链路**可用（而不只是端口在听）。
-	 */
-	private _getBrowserCdpGate(): BrowserCdpReachabilityGate {
-		this._browserCdpGate ??= new BrowserCdpReachabilityGate(
-			async () => {
-				const invoker = this._browserCdpInvoker();
-				if (!invoker) { return false; }
-				const res = await invoker({ op: 'status' });
-				return res.ok === true && (res.result as IBrowserCdpStatus | undefined)?.ok === true;
-			},
-			BuiltinToolProvider._CDP_PROBE_INTERVAL_MS,
-			(reachable, detail) => this.logService.info(`[BuiltinTools] browser CDP reachable=${reachable}${detail ? ` — ${detail}` : ''}`),
-		);
-		return this._browserCdpGate;
-	}
-
-	/**
-	 * browser_* 的 CDP 调用通道。
-	 *
-	 * 主进程侧通道不存在时（纯 web / 测试环境）返回 undefined ⇒ 工具 `available` 为 false
-	 * ⇒ 模型看不到它们。**不注册 stub**：给模型一批必然失败的伪工具比不给更糟。
-	 */
-	private _browserCdpInvoker(): IBrowserCdpInvoker | undefined {
-		const vscodeBridge = (globalThis as { vscode?: { ipcRenderer?: { invoke?: (ch: string, payload: unknown) => Promise<unknown> } } }).vscode;
-		if (typeof vscodeBridge?.ipcRenderer?.invoke !== 'function') { return undefined; }
-		const invoke = vscodeBridge.ipcRenderer.invoke;
-		return (req: BrowserCdpRequest) => invoke.call(vscodeBridge.ipcRenderer, BROWSER_CDP_CHANNEL, req) as Promise<IBrowserCdpResponse>;
-	}
 
 	// ─── Memory 召回工具 ─────────────────────────────────────────────
 
@@ -1262,28 +1140,16 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	}
 
 	/**
-	 * Unreal Engine 工具（`unreal_*`，2026-09-20 接线）。
+	 * ★ 2026-10-13：`_registerUnrealTools()` **整块已删除** ✗（连同 `./unrealTools.js` 与它的定义表）。
 	 *
-	 * 实现见 unrealTools.ts：它是 BunnySeek 插件 bridge 的 HTTP 客户端
-	 * （默认 `http://127.0.0.1:8765/bridge/*`），把工具调用转成 REST 请求，
-	 * 因此**不需要知道 UE 装在哪**，也无需任何路径配置。
+	 * 为什么删：七个 `unreal_*` 现在**只有一份实现** ✓ —— dsh 侧 `dsh-plugins/vssaros-unreal`
+	 * （Host 进程内直连 `http://127.0.0.1:8765/bridge/*` ✓：Host 是 Node，连 CORS 都没有；
+	 * 而这边当初要绕 renderer 的 CORS ✗）。执行类三个（exec/wait/build）在 Host 侧挂官方
+	 * `tools/pre-execute` ⇒ `ask` 闸 ✓ —— 权限靠闸守，而不是靠"某侧不提供" ✗。
 	 *
-	 * 前置条件：Unreal Editor 已启动且启用 `BunnySeekAgent` 插件。bridge 不可达
-	 * 时各工具返回可读错误文本（而非抛异常），LLM 据此可提示用户打开编辑器。
-	 *
-	 * 注册**时机**：`unreal_*` 不在 bundledTools 定义表中，故不受
-	 * 「须在 _registerBundledTools 之前」约束；但为与其它真实实现保持一致，
-	 * 调用点同样放在 `_registerBundledTools()` 之前。
+	 * ⚠ 桥地址配置 `sessions.agentStudio.unreal.bridgeUrl` 仍**有效** ✓：它现在由 VsSaros 经
+	 * `--patch` 覆盖层注入 **Host 侧插件**的 `config.bridgeUrl`（见 `common/dshHarness.ts` 的说明 ✓）。
 	 */
-	private _registerUnrealTools(): void {
-		registerUnrealTools({
-			register: d => this.register(d),
-			logService: this.logService,
-			// bridge 基址走配置（sessions.agentStudio.unreal.bridgeUrl），
-			// 留空时 unrealTools 回退内置默认地址。
-			getBridgeUrl: () => this.configurationService.getValue<string>(AGENT_STUDIO_UNREAL_BRIDGE_URL_SETTING) ?? '',
-		});
-	}
 
 	/**
 	 * 会话历史搜索工具（`session_search`，2026-09-11 补全）。

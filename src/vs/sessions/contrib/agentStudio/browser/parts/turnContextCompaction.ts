@@ -206,6 +206,45 @@ export interface IContextCompactionState {
  */
 export type EstimateToolsSchemaTokens = (tools: ReadonlyArray<IToolDefinition>) => number;
 
+/**
+ * 从 metadata 里按**给定键序**取第一个有限数值；都没有 ⇒ `undefined`。
+ *
+ * 存在理由是「缺数据」与「0」必须可区分（与 `parts/…`、`client.usage.js` 的
+ * `num()` 守卫同一口径）：`0` 是真实读数，`undefined` 才表示该键没写。
+ */
+function numberField(meta: Record<string, unknown>, ...keys: string[]): number | undefined {
+	for (const key of keys) {
+		const value = meta[key];
+		if (typeof value === 'number' && isFinite(value)) { return value; }
+	}
+	return undefined;
+}
+
+/**
+ * 「压缩前 token」的**唯一**读取口径。
+ *
+ * ⚠ 键名在 metadata 里**天生有两个**（不是笔误，两条生产路径各写各的）：
+ *   · 成功压缩 / checkpoint 分支 → `estimatedTokensBefore`
+ *     （`common/contextManager.ts` 的 `compressContext` / `compressCheckpoint` 返回值）；
+ *   · 未压缩（skip）分支 → `estimatedTokens`（`...diagnostics` 展开）。
+ *
+ * 只认其一就会**恒取到 0**：`beforeTokens=0 ⇒ savingRatio=0 ⇒ 每次压缩都被记成
+ * 「无效」`。真机实证（2026-10-14，`dashboard/cumulative-stats.json`）：
+ * `compressionCount=1677` 与 `compressionIneffectiveCount=1677` 完全相等、
+ * `compressionBeforeTokens="0"` 而 `compressionAfterTokens="31193827"` ——
+ * 后者键名对得上所以非 0，前者取错键所以恒 0。
+ *
+ * 故这里显式**两键都认**，且新增键名时必须回到本函数（单一真源）。
+ */
+function estimateBeforeTokens(meta: Record<string, unknown>): number | undefined {
+	return numberField(meta, 'estimatedTokensBefore', 'estimatedTokens');
+}
+
+/** 「压缩后 token」的读取口径（成功/checkpoint 分支才有）。 */
+function estimateAfterTokens(meta: Record<string, unknown>): number | undefined {
+	return numberField(meta, 'estimatedTokensAfter');
+}
+
 /** 取消息的单块文本表示（压缩前后快照用）。 */
 function formatMessageBlock(message: AgentRunMessage): string {
 	const role = (message as { role?: string }).role ?? 'unknown';
@@ -723,7 +762,8 @@ export async function compactContextIfNeededImpl(
 		+ `tokenSource=${compressionMeta.tokenSource ?? 'n/a'} `
 		+ `effectiveTokens=${compressionMeta.effectiveTokens ?? 'n/a'} `
 		+ `realPromptTokens=${compressionMeta.realPromptTokens ?? 'n/a'} `
-		+ `estimatedTokens=${compressionMeta.estimatedTokens ?? 'n/a'} `
+		+ `estimatedTokens=${estimateBeforeTokens(compressionMeta) ?? 'n/a'} `
+		+ `estimatedTokensAfter=${estimateAfterTokens(compressionMeta) ?? 'n/a'} `
 		+ `toolsSchemaTokens=${compressionMeta.toolsSchemaTokens ?? 'n/a'} `
 		+ `thresholdTokens=${compressionMeta.thresholdTokens ?? 'n/a'} `
 		+ `effectiveWindow=${compressionMeta.effectiveWindow ?? 'n/a'} `
@@ -737,14 +777,22 @@ export async function compactContextIfNeededImpl(
 	if (didCompress) {
 		// ── Dashboard 统计 ──
 		host._compressionCount++;
-		const beforeTokens = (compressionMeta.estimatedTokens as number) ?? 0;
-		const afterTokens = (compressionMeta.estimatedTokensAfter as number) ?? 0;
-		const savingRatio = beforeTokens > 0 ? (beforeTokens - afterTokens) / beforeTokens : 0;
-		if (savingRatio < INEFFECTIVE_SAVING_RATIO) {
-			host._compressionIneffectiveCount++;
-		}
-		host._compressionBeforeTokens += beforeTokens;
+		// ⚠ 键名口径见 `estimateBeforeTokens` 的注释：成功分支写的是
+		// `estimatedTokensBefore`，只认 `estimatedTokens` 会恒取 0。
+		const beforeTokens = estimateBeforeTokens(compressionMeta);
+		const afterTokens = estimateAfterTokens(compressionMeta) ?? 0;
+		host._compressionBeforeTokens += beforeTokens ?? 0;
 		host._compressionAfterTokens += afterTokens;
+		// ⚠「缺数据」不等于「无效压缩」：before 缺失时节省率**无从计算**，此时不计数。
+		// 旧写法把缺失当 0 代入 ⇒ savingRatio=0 < 10% ⇒ 每次都记「无效」，
+		// 于是 Dashboard 上 ineffectiveCount 恒等于 compressionCount（真机 1677/1677）。
+		// 只有真拿到 before 且为正才判效率（`beforeTokens > 0` 同时防除零）。
+		if (beforeTokens !== undefined && beforeTokens > 0) {
+			const savingRatio = (beforeTokens - afterTokens) / beforeTokens;
+			if (savingRatio < INEFFECTIVE_SAVING_RATIO) {
+				host._compressionIneffectiveCount++;
+			}
+		}
 		host._scheduleSave();
 
 		host._lastCompressionTime = Date.now();

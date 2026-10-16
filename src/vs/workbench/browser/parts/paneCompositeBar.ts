@@ -520,6 +520,55 @@ export class PaneCompositeBar extends Disposable {
 			.map(v => v.id);
 	}
 
+	// ─── [Saros] 工作台管理（Dashboard）用的写操作 ───────────────────────────
+	// 纯新增公开面：内部用的 pin/unpin、hideComposite、move 全是本文件既有的手段，原先只是没对外暴露。
+	// 三个方法一律 **fail-soft**（容器不在本 bar 就直接返回）——调用方枚举出来的容器集可能已过期
+	// （插件装卸 / moduleEngine 切换 / 容器被别处注销），不该因此抛错中断 UI。
+
+	/** pin = 固定在活动栏；取消 pin 后进底部「…」溢出菜单（仍有访问入口）。 */
+	setPaneCompositePinned(compositeId: string, pinned: boolean): void {
+		if (!this.getViewContainer(compositeId)) {
+			return;
+		}
+		if (pinned) {
+			void this.compositeBar.pin(compositeId);
+		} else {
+			this.compositeBar.unpin(compositeId);
+		}
+	}
+
+	/**
+	 * 隐藏 = 从活动栏**完全移除**（连溢出菜单一起）。
+	 *
+	 * ⚠ VS Code 原生没有「用户隐藏容器」这个概念：`hideIfEmpty` 是注册期属性，
+	 * `getVisiblePaneCompositeIds()` 说的是「侧栏当前打开哪个容器」。所以这里用「从 composite bar
+	 * 摘掉」实现，并且**调用方必须自己记账**，恢复时还要把 pin 状态补回来 ——
+	 * `addComposite` 恢复出来的条目默认未 pin，不补的话会掉进溢出菜单（用户会以为没恢复成功）。
+	 */
+	setPaneCompositeHidden(compositeId: string, hidden: boolean): void {
+		const viewContainer = this.getViewContainer(compositeId);
+		if (!viewContainer) {
+			return;      // 不在本 bar 的容器：既不能摘也不能加，直接忽略
+		}
+		if (hidden) {
+			this.hideComposite(compositeId);
+		} else {
+			this.addComposite(viewContainer);
+			this.showOrHideViewContainer(viewContainer);
+		}
+	}
+
+	/** 排序：把 `compositeId` 移到 `toCompositeId` 之前（`before=false` 为之后）。 */
+	movePaneComposite(compositeId: string, toCompositeId: string, before = true): void {
+		if (compositeId === toCompositeId) {
+			return;
+		}
+		if (!this.getViewContainer(compositeId) || !this.getViewContainer(toCompositeId)) {
+			return;
+		}
+		this.compositeBar.move(compositeId, toCompositeId, before);
+	}
+
 	getContextMenuActions(): IAction[] {
 		return this.compositeBar.getContextMenuActions();
 	}

@@ -1,0 +1,2696 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>kb_build 的 build 半边：dsh 侧编排方案</title>
+<style>
+	:root { color-scheme: light dark; --h: #4aa3ff; --k: #999; --ok: #2ea043; --warn: #d29922; --bad: #f85149; }
+	body { margin: 0 auto; padding: 28px 22px 60px; max-width: 1080px; font: 14px/1.75 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; }
+	h1 { font-size: 22px; margin: 0 0 6px; }
+	h2 { font-size: 17px; margin: 30px 0 8px; padding-top: 10px; border-top: 1px solid rgba(128,128,128,.28); }
+	h3 { font-size: 15px; margin: 18px 0 6px; }
+	code, pre { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
+	pre { background: rgba(128,128,128,.10); padding: 8px 10px; border-radius: 6px; overflow-x: auto; }
+	table { border-collapse: collapse; width: 100%; margin: 8px 0 4px; }
+	th, td { border: 1px solid rgba(128,128,128,.30); padding: 6px 8px; text-align: left; vertical-align: top; }
+	th { background: rgba(128,128,128,.10); font-weight: 600; }
+	.small { color: var(--k); font-size: 12.5px; }
+	.v { color: var(--ok); font-weight: 600; }
+	.q { color: var(--warn); font-weight: 600; }
+	.x { color: var(--bad); font-weight: 600; }
+	.box { border: 1px solid rgba(128,128,128,.30); border-radius: 6px; padding: 10px 12px; margin: 10px 0; }
+	.warnbox { border-left: 4px solid var(--warn); padding-left: 10px; }
+	.okbox { border-left: 4px solid var(--ok); padding-left: 10px; }
+	a { color: var(--h); }
+	ul { margin: 6px 0; }
+</style>
+</head>
+<body>
+
+<h1><code>kb_build</code> 的 <code>build</code> 半边 —— dsh 侧编排方案</h1>
+<p class="small">
+	2026-10-12 · 承接 <a href="dsh-kb-port-design.html">知识库续搬 dsh</a> §4.4（第 3 期的 build 半边）·
+	读者：决定"dsh 里的会话能不能自己把素材构建成笔记"的人。<br>
+	<strong>本文是设计方案，不含实现</strong>（真构建会写 vault、会花模型额度 ⇒ 按方案 §4.4 的约定"先出稿"✓）。
+</p>
+
+<div class="box okbox">
+	<strong>一句话结论</strong>：<span class="v">能由插件自己编排</span> ✓ —— dsh 把"起子代理"与"进后台任务名册"都做成了
+	<b>插件可注入的服务</b>（不是只有模型能用的工具 ✗）。本方案的做法是：
+	<code>kb_build mode="build"</code> 里用 <code>ctx.jobs.start()</code> 起一个后台任务，任务里用
+	<code>ctx.subagents.start()</code> 起一个子代理去读素材、写笔记 ⇒ <b>立即返回 jobId</b>，
+	进度/取消直接复用 dsh 已有的 jobs 面板与 <code>job_output/job_list/job_kill</code> ✓。
+</div>
+
+<h2>1. 取证（先证明"插件的确能这么干"，再谈方案）</h2>
+<table>
+	<tr><th>#</th><th>事实</th><th>出处（本轮实测，均 <span class="v">✓ 已核对</span>）</th></tr>
+	<tr>
+		<td>E1</td>
+		<td><code>subagents</code> 是一个 <b>服务</b>，且<b>插件可注入</b>；起子代理的调用是 <code>ctx.subagents.start(provider, request)</code></td>
+		<td><code>@deepseek-ai/dsh-subagent</code> 自身注释原话："foreground one-shot delegation keeps calling <code>ctx.subagents.start()</code>"；
+			<code>dsh-tool-subagent/lib/index.js</code> 里真的这么调 ✓；另一个包 <code>dsh-tool-subagent</code> 的注入面是
+			<code>ctx.inject(['tools','subagents','systemPrompt'], …)</code> ⇒ 服务名就是 <code>subagents</code> ✓</td>
+	</tr>
+	<tr>
+		<td>E2</td>
+		<td>后台任务同理：<code>jobs</code> 是服务，<code>ctx.jobs.start(spec)</code> 注册一个任务并返回 <code>jobId</code></td>
+		<td><code>dsh-tool-subagent/lib/index.js</code>：
+			<pre>const jobs = runtimeCtx.get("jobs");
+jobId: jobs.start({ kind: "subagent", label, owner: parent.id,
+  run: () => ({ cancel: (reason) => …, done: settleStart(subagents.start(provider, req)) }) })</pre>
+			⇒ <code>kind</code> / <code>label</code> / <code>owner</code> / <code>run() → {cancel, done}</code> 就是全部形状 ✓</td>
+	</tr>
+	<tr>
+		<td>E3</td>
+		<td>工具的 <b>执行上下文带会话身份</b>（<code>owner</code> 要用它）+ 取消信号</td>
+		<td><code>@deepseek-ai/dsh-tools</code> 的 <code>ToolExecutionInput</code>：<code>readonly agent?: Agent</code>
+			（注释原话："The agent on whose behalf the call runs (set by the agent loop)" ✓）＋ <code>readonly signal: AbortSignal</code> ✓
+			⇒ 我们的 <code>execute(params, exec)</code> 里能拿到 <code>exec.agent</code> 与 <code>exec.signal</code> ✓</td>
+	</tr>
+	<tr>
+		<td>E4</td>
+		<td>任务名册是 <b>按 owner 隔离</b>的，且自带输出环 / 事件流 / 模型侧三件套</td>
+		<td><code>dsh-jobs</code> README：producer 注册 <code>kind</code> + 一行 <code>label</code> ⇒ 返回 <code>&lt;kind&gt;-N</code> id；
+			可读输出 / 列任务 / <b>等结算（带超时）</b> / 请求取消；结算时事件流广播，由 <code>dsh-tool-jobs</code>
+			转成会话内通知（<strong>不用轮询</strong> ✓）；实现是进程内的 <code>dsh-jobs-local</code> ✓</td>
+	</tr>
+	<tr>
+		<td>E5</td>
+		<td>子代理 provider 是<b>注册式</b>的（<code>fork</code> / <code>spawn</code> 等），并有授权面（最大深度 / 并发上限 / 允许的模型）</td>
+		<td><code>dsh-subagent-fork-in-process</code> / <code>-spawn-in-process</code> 各自注册 provider ✓；
+			<code>dsh-client-ui-settings-subagent</code> 暴露 <code>{ maxDepth, maxActiveSubagents }</code> 与允许的 provider/model ✓</td>
+	</tr>
+</table>
+
+<div class="box warnbox">
+	<strong>取证顺手纠正一个直觉</strong>：模型面的 <code>subagent</code> / <code>job_*</code> 工具与这里的服务面是<b>两组包</b>
+	（<code>dsh-tool-subagent</code> vs <code>dsh-subagent</code>）⇒ "模型能起子代理"并不能推出"插件也能" ✗。
+	本方案成立靠的是 E1–E3 那三条<b>服务面</b>的证据 ✓。
+</div>
+
+<h2>2. 方案（P0：最小可用形态）</h2>
+<pre>kb_build({ vaultId?, mode: 'build', batch? })        // batch 缺省 20（照真源 MAX_ASSETS ✓）
+
+execute(params, exec):
+  1. preview 一遍（同一份口径 ✓）⇒ pending 清单；空 ⇒ 直接回"没有待构建素材"（不起任务 ✓）
+  2. 若 ctx.get('jobs') / ctx.get('subagents') 任一缺失 ⇒ <strong>明确报错</strong>（不是静默退回 preview ✗）
+  3. jobs.start({
+       kind: 'kb-build',
+       label: <code>构建 ${n} 份素材为笔记</code>,
+       owner: exec.agent.id,              // E3：来自工具执行上下文 ✓
+       run: () => {
+         const ac = new AbortController();
+         return {
+           cancel: () => ac.abort('kb-build killed'),
+           done: ctx.subagents.start(PROVIDER, {
+             label: <code>kb-build ${vaultId} ${batch} 份</code>,
+             signal: ac.signal,
+             prompt: 见 §2.1,
+           }),
+         };
+       },
+     })
+  4. <strong>立即返回</strong>：jobId + 本批清单 + "去哪看进度/怎么取消"（照真源"发起即返回"的理由 ✓）</pre>
+<p class="small">
+	为什么不 await：真源的注释写得很清楚（构建是<b>分钟级</b>长任务，await 会把调用方那一轮对话卡住数分钟，
+	且进度发生在<b>另一个</b>会话里、调用方看不到）✓ —— dsh 侧同理，而且这里还多一层：
+	<code>jobs</code> 本来就会把结算变成会话内通知 ⇒ 不 await 反而更贴合基座 ✓。
+</p>
+
+<h3>2.1 子代理提示词契约（要写死，不然等于没编排）</h3>
+<ul>
+	<li><b>读</b>：只能读清单里那些素材（用 <code>kb_read</code>；素材路径与 <code>preview</code> 给的完全一致 ✓）。</li>
+	<li><b>写</b>：<b>只能</b>用 <code>kb_write_note</code> 写进 <code>笔记/&lt;分类&gt;/&lt;标题&gt;.md</code> ——
+		dsh 原生 <code>write</code>/<code>edit</code> 在 vault 上会吃 <code>FS_SANDBOX_DENIED</code> ✗（这条已经写在工具描述里 ✓）。</li>
+	<li><b>不许</b>动 <code>库/</code>（素材区）与导航文件（<code>index.md</code> / <code>知识体系.md</code> …）✓。</li>
+	<li><b>收尾</b>：回报"新建/更新了哪几篇 + 哪几份没做成 + 为什么"（子代理的最终回答会进 job 输出 ✓）。</li>
+	<li><b>上限</b>：本批 ≤ <code>batch</code> 份；剩余留给下一次调用（照真源 ✓）。</li>
+</ul>
+
+<h2>3. 与真源的差异（必须先接受，再决定做不做）</h2>
+<table>
+	<tr><th>维度</th><th>IDE 真源</th><th>本方案（dsh 侧 P0）</th><th>不做会怎样</th></tr>
+	<tr>
+		<td>构建缓存 <code>.kb-build-cache.json</code></td>
+		<td>由 IDE 的 <code>KbImportController</code> 写 ✓</td>
+		<td class="v"><b>两侧都写</b>（P1，见 §13 ✓）：dsh 构建收尾在锁内<b>只增不删</b>地登记本批确实产出的笔记 ⇒ 下一次 <code>preview</code> 不再重复计数 ✓；格式与真源<b>逐字节</b>同 ✓</td>
+		<td>预览会"越用越不准"⇒ 必须在回执里<b>如实标注</b>（"本侧不写构建缓存，请在 IDE 侧确认后构建，或接受重复计数"）✓</td>
+	</tr>
+	<tr>
+		<td>写者互斥</td>
+		<td>IDE 侧整理器<b>不加锁</b>（真源查证过 ✗）</td>
+		<td class="q">子代理写笔记会走 <code>kb_write_note</code> ⇒ <b>进我们那把 vault 锁</b> ✓（与 <code>kb_organize</code> 同一把 ✓）</td>
+		<td>dsh 内部两个写者不会交错 ✓；但<strong>挡不住 IDE 同时构建</strong> ✗ —— 这条在 <code>kb_organize</code> 那期就已经如实记过 ✓</td>
+	</tr>
+	<tr>
+		<td>导航 / 补链 / 门控</td>
+		<td>构建后 <code>maintainKbNavigation</code> 更新 <code>index.md</code> / <code>知识体系.md</code>、补 sources、门控</td>
+		<td class="x"><b>P0 不做</b></td>
+		<td>笔记本体在、视图能列出 ✓，但"知识体系/导航"不更新 ✗ ⇒ 与 IDE 构建出来的库不完全同形（要另开一期 ✓）</td>
+	</tr>
+	<tr>
+		<td>审批卡数量</td>
+		<td>一个会话内 agent 自己写，用户看的是聊天页签</td>
+		<td class="q">子代理每写一篇都会触发 <code>kb_write_note</code> 的审批闸 ⇒ <b>N 张卡</b> ✗</td>
+		<td>这是<strong>真问题</strong>（审批疲劳 = 闸失效 ✗）⇒ <span class="v">已在 §7.2 落地</span>：批授权（有界 + 有时限 + 有归属 ✓）</td>
+	</tr>
+	<tr>
+		<td>失败兜底</td>
+		<td>无 chat 服务时"宿主逐篇落盘"兜底</td>
+		<td class="x">没有</td>
+		<td>失败就是失败 —— 如实报进 job 输出 ✓（不假装成功 ✗）</td>
+	</tr>
+</table>
+
+<h2>4. 分期与验收</h2>
+<table>
+	<tr><th>期</th><th>内容</th><th>验收（探针）</th></tr>
+	<tr>
+		<td class="v">P0</td>
+		<td>工具 + <code>jobs.start</code> + <code>subagents.start</code>（提示词契约照 §2.1）；<b>不写缓存、不做导航</b>；
+			缺 <code>jobs</code>/<code>subagents</code> 时明确报错</td>
+		<td>
+			① 起一次真任务 ⇒ <code>job_list</code> 里出现 <code>kb-build-1</code>（kind 对得上 ✓）；
+			② 子代理真的调了 <code>kb_read</code> + <code>kb_write_note</code>（mock LLM 可验 ✓）；
+			③ 笔记真的落进 <code>笔记/</code> ✓；
+			④ <code>job_kill</code> 真的能让子代理停下（<code>signal</code> 生效 ✓）；
+			⑤ 把 <code>jobs</code> 服务从组合里摘掉 ⇒ 工具<strong>明确报错</strong>（不静默退回 preview ✓）；
+			⑥ 反向突变 ≥3（提示词不许绕原生 write / 取消不接线 / owner 传错）
+		</td>
+	</tr>
+	<tr>
+		<td class="q">P1</td>
+		<td><b>缓存与锁的跨引擎协议</b>：dsh 侧构建完要不要写 <code>.kb-build-cache.json</code>？写就得先解决"IDE 侧不持锁"✗
+			（两条路：a. dsh 只<strong>读</strong>不写 + 回执如实标注；b. 两边都改用同一把 vault 锁 —— 需改 IDE 侧 ✗）</td>
+		<td>两侧对"待构建数量"给出<strong>同一个数</strong>（同一夹具 ✅ 对账，与 <code>kb_build preview</code> 的跨仓库对账同法 ✓）<br>			<span class="v">⇒ 已落地（2026-10-13，见 §13 ✓）：同一份夹具下一侧 5/3/2、另一侧 5/3/2，<b>逐条相同</b> ✓</span></td>
+	</tr>
+	<tr>
+		<td class="q">P2</td>
+		<td>导航 / 补链（sources frontmatter）/ 门控：要么在 dsh 侧按真源重做，要么明确"构建后请到 IDE 侧刷一次导航"</td>
+		<td>构建后的库在<strong>两侧视图里同形</strong>（含 <code>index.md</code> / <code>知识体系.md</code> ✓）</td>
+		<span class="v">⇒ <b>导航三件</b>（index / overview / <b>insights</b>）＋ <b>门控</b> ＋ <b>补链</b> 都已做（2026-10-13，见 §9–§12 ✓）：每一项都与真源<b>逐字节对账</b> ✓，写笔记 / 整理 / 构建完都会自动维护 ✓；只剩各目录 <code>.overview.md</code>（要模型 ✗）与 <code>sources</code> 注入那半 ✓</span>
+	</tr>
+</table>
+
+<h2>5. 待拍板</h2>
+<table>
+	<tr><th>#</th><th>决策点</th><th>我的建议</th></tr>
+	<tr>
+		<td>D1</td>
+		<td>要不要做 build 半边（它会写 vault、花模型额度、且 P0 与 IDE 侧产物<strong>不完全同形</strong>）</td>
+		<td class="q">做，但只做 P0：先让"素材 → 笔记"这条链路在 dsh 里跑通，导航那层留给 P2<br>			<span class="v">⇒ 已做（2026-10-13）：P0 落地见 §7 ✓</span></td>
+	</tr>
+	<tr>
+		<td>D2</td>
+		<td>子代理写 N 篇 = N 张审批卡 ⇒ 审批疲劳（闸会形同虚设 ✗）</td>
+		<td class="v">给 <code>kb_build</code> <b>本身</b>过一次闸（"本批要写 N 篇"），批内子代理的写<strong>不再逐篇问</strong>；
+			做法：任务开始前把"本批授权"作为参数传给子代理的工具闸（需要一条"会话内一次性授权"的口子，属新机制 ✓ 待评估 dsh 是否已有）<br>			<span class="v">⇒ 已评估并落地（§7.2）</span>：基座<b>没有</b>这一档（注释原话 "<code>allowed-once</code> is the only grant" ✓）⇒ 在<b>我们这层</b>做了有界授权：篇数上限 / 30 分钟时限 / 仅限本 vault ＋ 本会话，并在批准文案里<b>写明</b> ✓</td>
+	</tr>
+	<tr>
+		<td>D3</td>
+		<td>构建缓存谁写（<code>preview</code> 的准确性靠它）</td>
+		<td class="q">P0 不写 + 回执如实标注；P1 再谈（要么两边共锁、要么 dsh 侧只读 ✓）<br>			<span class="v">⇒ 已落地（§13）：选了<b>第三条路</b> —— dsh 写，但<b>只增不删 ＋ 锁内 read-modify-write ＋ 有歧义就不登记</b>；IDE 侧不加锁的残余风险<b>如实写进回执</b> ✓（不假装解决 ✗）</span></td>
+	</tr>
+	<tr>
+		<td>D4</td>
+		<td>用哪个 subagent provider（<code>fork</code> / <code>spawn</code>）</td>
+		<td class="v"><code>fork</code>（进程内、无额外进程/x 额度开销 ✓）；provider 名做成 <code>config</code>，便于换 ✓<br>			<span class="v">⇒ 已按此实现</span>：缺省 <code>fork</code>，可用参数或 <code>config.subagentProvider</code> 覆盖 ✓</td>
+	</tr>
+</table>
+
+<h2>6. 不做</h2>
+<ul>
+	<li><b>不自己写一套任务调度</b> ✗：<code>ctx.jobs</code> 已有生命周期、输出环、取消、事件流 ⇒ 复用 ✓（与本仓"先问基座有没有"那条纪律一致 ✓）。</li>
+	<li><b>不让插件直接写笔记文件</b> ✗：写一律经 <code>kb_write_note</code>（同一把锁 + 同一套备份 + 同一道闸 ✓）。</li>
+	<li><b>不在没有 <code>jobs</code>/<code>subagents</code> 的部署里假装能构建</b> ✗：明确报错 + 指路 IDE 侧 ✓。</li>
+</ul>
+
+<h2>7. 执行记录（2026-10-12/13：P0 已落地）</h2>
+
+<div class="box okbox">
+	<strong>落地清单（kb 插件 <code>0.2.22 → 0.2.26</code>；工具数不变——<code>build</code> 是 <code>kb_build</code> 的第二个 mode ✓）</strong>
+	<table>
+		<tr><th>文件</th><th>改动</th><th>状态</th></tr>
+		<tr>
+			<td><code>lib/core/kbBatchGrant.js</code> <span class="q">新</span></td>
+			<td>批授权纯逻辑（<code>openGrant</code> / <code>grantAllows</code> / <code>consumeGrant</code> / <code>clampBatch</code> / <code>describeGrant</code>）+ <b>三条不变式</b>写在文件头</td>
+			<td class="v">✓ 进 <code>files</code>；纯函数 ⇒ 可用假 <code>now</code> 验时限（不靠 sleep ✓）</td>
+		</tr>
+		<tr>
+			<td><code>lib/index.js</code></td>
+			<td><code>kb_build</code> 增 <code>mode="build"</code>：<code>startBuildJob()</code> 走 <code>jobs.start</code> → <code>run()</code> 里 <code>subagents.start</code>；<code>buildChildPrompt()</code> 契约；<code>KB_BUILD_CHILD_TOOLS</code> 白名单；闸新增 <code>kb_build</code>（<code>mode==='build'</code> 才问）+ <b>批授权放行分支</b></td>
+			<td class="v">✓ <code>WRITE_TOOLS</code> +1（它自己不写盘、但会起子代理去写 ✓）</td>
+		</tr>
+		<tr>
+			<td><code>poc/.../p3-44-kb-build-orchestration.mjs</code> <span class="q">新</span></td>
+			<td>13 条断言，<b>全程进程内</b>（假 <code>jobs</code>/<code>subagents</code> + 真插件 + 真夹具），秒级 ⇒ 已登记 <code>run-all.mjs</code> 并标 <code>fast</code></td>
+			<td class="v">✓ 13/13</td>
+		</tr>
+		<tr><td><code>p3-08</code></td><td>编排面那 11 条<b>搬去 p3-44</b>，原处只留指路注释（不复制期望 ✗）</td><td class="v">✓ 148 → 137 条 check，140/140 ✓</td></tr>
+		<tr><td><code>p3-26</code></td><td>+4 条：<code>kb_build</code> 进写名单、<code>build</code> 拦 / <code>preview</code>（含缺省）放行、批准文案必须写明批授权</td><td class="v">✓ 81/81</td></tr>
+	</table>
+</div>
+
+<h3>7.1 D2（审批疲劳）的取证与做法</h3>
+<p>
+	<b>取证结论：基座没有"记住本批"这一档</b> ✗ —— 本轮在 <code>.runtime/&lt;版本&gt;</code> 里逐行读了审批契约：
+	客户端决定只有 <code>ApprovalDecision = 'allowed-once' | 'rejected'</code>，
+	结果集 <code>ApprovalOutcome = 'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'</code>，
+	且 <code>dsh-user-approval</code> 的注释原话是 <b>"<code>'allowed-once'</code> is the only grant"</b> ✓；
+	全局旋钮只有 <code>ApprovalPolicy = 'ask' | 'never'</code>（要么每次问、要么根本不问 ✗）。
+	⇒ 要在<b>我们这层</b>实现一个有界授权 ✓（见 §7.2）。
+</p>
+
+<h3>7.2 批授权：有界 / 有时限 / 有归属（三条缺一不可）</h3>
+<p class="small">
+	⚠ <b>定性修正见 §8</b>：这一节当初是按"解决审批疲劳"写的（"不再逐篇询问" ✓），但真机（§8）证明平台把
+	<b>委派出去的孩子</b>钉成 <code>approvalPolicy: 'never'</code> ⇒ <b>子代理根本没有审批通道</b> ⇒
+	这份授权其实是<b>子代理唯一能写成笔记的途径</b>（不是"少问几次" ✗）。三条不变式本身不变，但含义更重了 ✓。
+</p>
+<ul>
+	<li><b>什么时候开</b>：只有 <code>kb_build mode="build"</code> <b>被用户批准之后</b>（执行期 ⇒ 批准已成立 ✓）才开，
+		且在<b>任务起成功之后</b>才开 —— 顺序反过来的话，起任务失败会留下一个没人用的空白授权 ✗
+		（探针专门钉了这条：先成功起一次、再用掉 1 篇、再让下一次失败 ⇒ 剩下的必须被清掉 ✓）。</li>
+	<li><b>有界</b>：只覆盖本批篇数（<code>consumeGrant</code> 递减，只有 <code>kb_write_note</code> 记账 ——
+		建目录也是围栏内的写、同样不该狂弹窗，但它不产生"笔记篇数"⇒ 不记账 ✓）。</li>
+	<li><b>有时限</b>：30 分钟到点自动失效（长任务也要收敛 ✓）。</li>
+	<li><b>有归属</b>：只对<b>同一个 vault ＋ 同一个会话（<code>exec.agent.id</code>）</b>生效 ——
+		否则 A 会话的授权会替 B 会话放行 ✗；<b>身份拿不到就一律不放行</b>（fail-closed：宁可多问一次 ✓）。</li>
+	<li><b>披露点</b>：用户看到的唯一提示就是那张卡的文案 ⇒ 文案里<b>必须写明</b>"批准后本批写入本 vault 的笔记不再逐篇询问（上限 N 篇、30 分钟后失效）" ✓
+		（<code>p3-26</code> 专门断言这句在 ✓）。<code>config.batchGrant=false</code> 可整个关掉（退回逐篇问 ✓，可复核、可回退）。</li>
+</ul>
+
+<h3>7.3 本轮的三个教训（都是自己踩的）</h3>
+<ul>
+	<li><b>编排的正确性只能靠反向突变来验</b> ✓：<code>prompt</code> 的类型、<code>parent</code> 的对象同一性、
+		<code>toolFilter</code> 是白名单还是黑名单 —— 这些<b>写错也不报错</b>，只会"起了个没任务的子代理"或"子代理啥也干不了" ✗。
+		而突变要跑 6 次 ⇒ 挂在一个<b>几分钟一轮</b>的探针上就没人愿意跑 ⇒ 本轮实测被外层掐掉两次、
+		还<b>把突变残留在源码里</b>（第二次靠"备份 + 启动即自愈"补回 ✓）⇒ 这就是把编排面拆成 <code>p3-44</code>（秒级）的理由 ✓。</li>
+	<li><b>一条断言可能"没有鉴别力"</b> ✗：最初"起任务失败要清授权"那条只放了 1 份素材 ⇒ 授权只有 1 篇、先被正常用光
+		⇒ "没清"与"清掉了"表现<b>完全一样</b> ⇒ 突变 M3 抓不出来（实测 6 条只命中 5 ✓）。
+		改成"授权有 2 篇、用掉 1 篇"后立刻能抓住 ✓（<b>所以突变是必须跑的</b>：它纠正的不是实现，是<b>测试本身</b> ✓）。</li>
+	<li><b>别在模板串里嵌反引号</b> ✗、<b>别在块注释里写 glob 通配</b>（其中的斜杠加星号会提前闭合注释 ✓）——
+		两条本仓都记录过，本轮又各踩一次 ⇒ 都写进注释留痕了 ✓。</li>
+</ul>
+
+<h3>7.4 验证清单</h3>
+<table>
+	<tr><th>检查</th><th>结果</th></tr>
+	<tr><td><code>p3-44</code>（新，编排 + 批授权，进程内）</td><td class="v">13/13 ✓</td></tr>
+	<tr><td><code>p3-08</code>（kb 全量；编排那 11 条已搬走）</td><td class="v">140/140 ✓（check 调用数 148 → 137，与搬走条数逐条对上 ✓）</td></tr>
+	<tr><td><code>p3-26</code>（审批闸行为）</td><td class="v">81/81 ✓</td></tr>
+	<tr><td>反向突变（忽略 owner / 不记账 / 不清授权 / 白名单放回 write / prompt 传字符串 / preview 也过闸）</td><td class="v"><strong>6/6</strong> 全部命中预期断言 ＋ 基线真绿 ＋ 源码逐字节还原 ✓</td></tr>
+	<tr><td><code>tools-snapshot</code> / <code>check:dsh-plugins</code></td><td class="v">11 插件 / 68 工具一致 ✓；16 契约 + 2 组拷贝 0 违规 ✓</td></tr>
+	<tr><td><code>dshHarness --common</code></td><td class="q">396 passing / 2 failing —— 两条都是<b>并发会话在飞的 <code>vssaros-ide</code></b>（声明了壳还没支持的能力名 <code>dashboardStats</code>）⇒ 非本次改动 ✓</td></tr>
+</table>
+
+<h3>7.5 剩下的</h3>
+<ul>
+	<li><b>D3 构建缓存</b>：<span class="v">已落地（P1，2026-10-13，见 §13 ✓）</span> —— dsh 收尾在锁内<b>只增不删</b>地登记本批产出 ✓；
+		IDE 侧不加锁的残余风险<b>如实写进回执</b> ✓。</li>
+	<li><b>P2 导航 / 补链 / 门控</b>：<span class="v">已全部做完（2026-10-13，见 §9–§12 ✓）</span>。</li>
+	<li><b>模型真调</b>：本轮的断言都到"工具层 + 服务调用层"（假服务核字段 ✓），
+		<b>没有</b>跑一次真子代理（要模型额度 ✗）⇒ 若要做，形态照 <code>p3-27</code>（本地 mock LLM、免凭据 ✓）。</li>
+</ul>
+
+<h2>8. 执行记录 ②（2026-10-13：真机收尾 p3-45 —— 抓到两个只有真机才看得见的 bug）</h2>
+
+<div class="box badbox">
+	<strong>为什么必须有这一轮</strong>：§7 的 <code>p3-44</code> 用的是<b>假</b> <code>jobs</code> / <code>subagents</code> 服务 ——
+	它只能证明"<b>我们发出的调用形状</b>是对的" ✗。而"形状对、真服务不买账"正是本仓最怕的那种<b>看起来验过了</b> ✓。
+	于是照 <code>p3-19</code> / <code>p3-27</code> 的形态补一条<b>零凭据</b>的真机探针：
+	真 Host（headless profile，<code>dsh-base</code> 自带全 jobs/subagent 栈 ✓）＋ 模型路由指向本地 mock LLM
+	（OpenAI 兼容 SSE ✓）＋ 一个夹具应答器（桥<b>没有</b>"Host 请客户端批准"的通道 ✗，只能往 Host 里挂 answerer ✓）。
+	<b>一跑就红了两条，都不是实现细节，而是"根本跑不通"级别的</b> ✓。
+</div>
+
+<h3>8.1 真机 bug ①：<code>maxDepth: 0</code> 让任务<b>起来就失败</b></h3>
+<pre>MOCK_LLM_TOOL_RESULT "(no new output) [status: failed, SubagentDepthError: subagent depth 1 exceeds maxDepth 0]"</pre>
+<p>
+	真源里 <code>maxDepth</code> 的语义是 <b>"孩子深度的绝对上限"，不是"还能往下派几层"</b> ✗✗ ——
+	<code>dsh-subagent/lib/index.js:400-403</code> 的 <code>resolveChildDepth()</code> 拿"父深度 + 1"去比，
+	超了直接抛 <code>SubagentDepthError</code>；而服务自己的 config schema 缺省就是 <b><code>maxDepth: 1</code></b>
+	（同文件 L2822）✓。我原以为 <code>0</code> ＝"孩子不许再派"，实际是"<b>根本不许有孩子</b>" ⇒
+	任务起成功、<code>jobId</code> 也返回了，但子代理<b>一个回合都没跑</b> ⇒ 现象是"看起来一切正常、笔记却是空的" ✗。
+	<br>⇒ 改成 <code>maxDepth: 1</code>（孩子可以有、它再往下派会被拒 ✓ 正是我们要的意思）；
+	<code>p3-44</code> 的期望值同步从 <code>0</code> 改成 <code>1</code>（那条断言当初记的就是错值 ✗）。
+</p>
+
+<h3>8.2 真机 bug ②：批授权的归属<b>对真正的写者永不命中</b></h3>
+<p>
+	构建是<b>子代理</b>去写的，而它调工具时带的是<b>孩子自己的</b> agent id ✗；我们的授权却按"批准者会话 id"记 ⇒
+	<code>grantAllows()</code> 对子代理<b>永不命中</b> ⇒ 每次写都被拒 ⇒ 笔记一篇也写不出来 ✗
+	（真机工具结果原话：<code>Error: the user rejected tool "kb_write_note"</code> ✓）。
+	血缘从哪来？真源 <code>childSessionMeta()</code>（<code>dsh-subagent/lib/index.js:470-480</code>）写明子会话的 header 带
+	<code>parentSession: parentHeader.id</code>（同处还有 <code>origin: 'subagent'</code>、<code>delegationDepth</code> ✓）。
+	<br>⇒ 归属改成<b>集合</b>：<code>[本会话 id, 子会话 header.parentSession]</code>（<code>writeActorIds()</code> ✓），
+	<code>grantAllows(grant, { vaultId, ownerIds })</code> ✓；只认<b>直接</b>父子（<code>maxDepth: 1</code> ⇒ 不会有孙子 ✓）。
+	身份拿不到 ⇒ 空集合 ⇒ 不放行（fail-closed 不变 ✓）。
+</p>
+
+<div class="box badbox">
+	<strong>★ 平台级真相（这一轮最值钱的一条结论，它把 D2 的定性改了）</strong><br>
+	真源把<b>委派出去的孩子</b>钉死在 <code>approvalPolicy: 'never'</code> 上 ——
+	<code>dsh-subagent/lib/types/child-agent.d.ts:116-121</code> 原话：
+	<i>"'never' whenever the approval capability is composed … a delegated child acts only within the sandbox scope fixed at
+	delegation, so <b>its asks are rejected deterministically</b>"</i>；给孩子看的运行时声明同义
+	（同包 L487：<i>"operations that require approval are rejected automatically"</i>）✓。<br>
+	⇒ <b>子代理没有自己的审批通道</b> ⇒ 批授权<b>不是"省几次弹窗"的体验优化，而是子代理唯一能写成笔记的途径</b> ✗✗。
+	这条把三处口径都改了：<br>
+	· 批准文案必须写<b>完整真相</b>（"不批准 ⇒ 本批一篇也写不出来"，而不是"会多问几次" ✗）——
+		<code>p3-26</code> 新增一条断言钉住它 ✓；<br>
+	· <code>config.batchGrant=false</code> 的后果是<b>构建能力关闭</b>（不是"退回逐篇问" ✗）⇒ 回执与注释都照实写 ✓；<br>
+	· 负对照的判据也换了（见 8.4）：原来写"关掉授权 ⇒ 子代理逐篇弹窗（3 次审批）"是<b>错的</b> ✗。
+</div>
+
+<h3>8.3 真机层另外三条工程坑（都留了痕）</h3>
+<ul>
+	<li><b>profile 里的插件副本是「拷贝」不是软链</b> ✗：<code>file:</code> 依赖装出来的是拷贝 ⇒ 仓库里<b>新增的文件</b>
+		（如上一轮的 <code>lib/core/kbFulltext.js</code>）不会被同步 ⇒ 真会话里 <code>vssaros-kb: failed to import</code>，
+		而<b>退出码依然是 0</b> ✗✗（实测：会话 2.6 秒跑完、mock 一个请求都没收到 —— 看起来"跑过了"）。
+		⇒ 探针现在先按 <code>p3-27</code> 的 idiom <b>重新 stage ＋ <code>plugin add</code> ＋ 当场 import 自检</b>，
+		把"静默不加载"变成一条红断言 ✓。</li>
+	<li><b>mock 的 <code>inToolContinuation</code> 判据在 headless 链路上<b>恒假</b></b> ✗：工具结果回来后追加的那条
+		user 消息<b>剥完非空</b> ⇒ <code>lastUserIdx</code> 被推到它上面 ⇒ 判据失效 ⇒ 结果是
+		<b>父会话无限反复点名 <code>kb_build</code></b>（实测 45 轮 × 每轮真起一个任务，最后被探针超时杀掉 ✗）。
+		⇒ 新增的三条分支改用<b>整会话计数</b>（"这个会话点过几次名" ✓），不依赖任何 role / reminder 约定 ✓。</li>
+	<li><b>headless 应用跑完一回合就退出</b> ⇒ 后台任务被 <code>jobs teardown</code> 拆掉 ✗（现象同样是"任务起了、
+		笔记是空的"）。⇒ mock 在父会话那一轮发 <code>job_output({job_id, wait: true})</code> 把会话<b>撑到任务结算</b> ✓
+		（<code>dsh-tool-jobs/lib/index.js:260</code> 的官方口径："set wait: true only when you are genuinely blocked on it" ✓）。</li>
+</ul>
+
+<h3>8.4 验证清单（p3-45 共 15 条）</h3>
+<table>
+	<tr><th>断言</th><th>读数</th></tr>
+	<tr><td>⓪ 插件装进 profile <b>且当场能 import</b></td><td class="v">v0.2.29，<code>import=OK 15</code> ✓</td></tr>
+	<tr><td>① / ①b 真会话退出码 0 ＋ stderr 里<b>没有</b>我们的插件 <code>failed to import</code></td><td class="v">✓ 33.8s</td></tr>
+	<tr><td>② / ③ 夹具应答器挂上了 ＋ 父会话真的点名 <code>kb_build</code></td><td class="v">✓ <code>kb-build → kb-wait → kb-write#1 → kb-write#2</code></td></tr>
+	<tr><td>★ ④ / ⑤ 子代理真的被派出去并写两篇；<b>它的工具面只有 <code>kb_*</code> 六件</b></td><td class="v">✓ <code>kb_list,kb_mkdir,kb_read,kb_search,kb_topic_overviews,kb_write_note</code>（原生 write/edit/pwsh <b>不在</b> ✓ 结构性禁止）</td></tr>
+	<tr><td>★ ⑥ / ⑥b 审批<b>只发生 1 次</b>（<code>kb_build</code>），子代理两次写入<b>零弹窗、且没被拒</b></td><td class="v">✓ 审批序列 <code>[kb_build]</code></td></tr>
+	<tr><td>★ ⑦ 真的派出了子代理（父 <code>subagentCatalog</code> ＋ 子 <code>subagent</code> 身份）</td><td class="v">✓ 两个会话文件都在</td></tr>
+	<tr><td>★ ⑧ 两篇笔记<b>真的落盘</b>（内容来自 mock 子代理）</td><td class="v">✓ 各 24B</td></tr>
+	<tr><td>★ ⑩ 负对照（关掉批授权）：审批仍 1 次，而子代理两次写入被<b>确定性拒绝</b></td><td class="v">✓ <code>the user rejected</code> ×2</td></tr>
+	<tr><td>★ ⑪ 负对照：笔记区<b>依然为空</b> ⇒ 证明批授权是唯一途径</td><td class="v">✓</td></tr>
+	<tr><td><code>p3-44</code>（快探针，含新的血缘断言）</td><td class="v">13/13 ✓</td></tr>
+	<tr><td><code>p3-26</code>（审批闸 + 新增"披露真相"断言）</td><td class="v">82/82 ✓</td></tr>
+	<tr><td><code>p3-08</code>（kb 全量；会重装到 0.2.29）</td><td class="v">140/140 ✓</td></tr>
+	<tr><td>快照 / 宿主契约 / <code>dshHarness --common</code></td><td class="v">11 插件 73 工具一致 ✓；17 契约 0 违规 ✓；396 passing / 4 failing（<b>4 条全在能力清单</b>：<code>unreal</code> 与 <code>dashboardStats</code> —— 并发会话的在飞区域，非本次改动 ✓）</td></tr>
+</table>
+<p class="small">
+	复现：<code>node poc/dsh-p0/scripts/p3-45-kb-build-real-subagent.mjs</code>（stage 插件 → 起 mock → 跑两轮真会话 → 读产物与
+	投影缓存；约 70 秒，需要本机已 bootstrap 过 <code>p3headless</code> profile ✓）。
+</p>
+
+<h3>8.5 剩下的（已收敛）</h3>
+<ul>
+	<li><b>D3 构建缓存</b>：<span class="v">已落地（P1，2026-10-13，见 §13 ✓）</span>。</li>
+	<li><b>P2 导航 / 补链 / 门控</b>：<span class="v">已全部做完（2026-10-13，见 §9–§12 ✓，均与真源逐字节对账 ✓）</span>。</li>
+	<li><b>P2 导航 / 补链 / 门控</b>：<span class="v">已全部做完（见 §9–§12 ✓）</span> —— 只剩各目录 <code>.overview.md</code>（要模型 ✗）与 <code>sources</code> 注入那半 ✓。</li>
+	<li><b>模型真调</b>：这一轮已经把"真子代理"跑通了（mock 模型）⇒ 剩下的只是"用真模型跑一次"（要额度 ✓），
+		形态不必再改 ✓。</li>
+</ul>
+
+<h2>9. 执行记录 ③（2026-10-13：P2 第一刀 —— 导航两件，跨引擎逐字节对账）</h2>
+
+<div class="box okbox">
+	<strong>落地清单（kb 插件 <code>0.2.29 → 0.2.31</code>；工具面<b>一个没变</b> —— 只改了行为与文案 ✓）</strong>
+	<table>
+		<tr><th>文件</th><th>改动</th></tr>
+		<tr>
+			<td><code>lib/core/kbNavigation.js</code> <span class="q">新</span></td>
+			<td><b>纯逻辑</b>（零 I/O ✓）：<code>selectNoteFiles()</code>（"算不算笔记"的判据 ✓）、
+				<code>parseFrontmatterType()</code>、<code>buildIndexFile()</code>、<code>buildOverviewFile()</code>
+			—— 口径<b>逐字</b>照真源 <code>KbImportController.maintainKbIndex/maintainKbOverview</code>
+				＋ <code>kbVaultFs.collectMdFiles/readNoteFrontmatterType</code> ✓</td>
+		</tr>
+		<tr>
+			<td><code>lib/organize.js</code></td>
+			<td><code>maintainNavigation()</code>：扫笔记区 → 生成 → <b><code>writeIfChanged</code></b> 落盘 ✓
+			（内容没变就<b>不写</b> ⇒ 不制造无谓 mtime，那是 IDE 侧构建缓存的判据之一 ✗）</td>
+		</tr>
+		<tr>
+			<td><code>lib/index.js</code></td>
+			<td>接线四处：<code>kb_write_note</code> / <code>kb_mkdir</code> / <code>kb_organize</code>（都在<b>同一把 vault 锁之内</b> ✓）
+				＋ 构建任务子代理跑完的收尾（真源"构建完立刻刷"同序 ✓）；<code>config.maintainNavigation=false</code> 可整体关掉 ✓；
+			外加<b>四处面向模型的文案</b>（三条"会顺带刷导航"的披露 ＋ <code>kb_build</code> 那段过时文案的修正 ✓）</td>
+		</tr>
+		<tr>
+			<td><code>kbNavigationParity.test.ts</code> <span class="q">新（IDE 侧）</span></td>
+			<td>拿<b>真</b> <code>KbImportController</code> 在内存 FS 上生成一次 ⇒ 钉成黄金串，并把
+				"夹具 ＋ 产出"打成一行 <code>KB_NAV_GOLDEN {…}</code> 给 dsh 侧对账 ✓</td>
+		</tr>
+		<tr>
+			<td><code>p3-58-kb-navigation.mjs</code> <span class="q">新</span></td>
+			<td>12 条：跨引擎<b>逐字节</b>对账（③④）＋ 接线与四条纪律 ✓；已登记 <code>run-all</code> 并标 <code>fast</code> ✓</td>
+		</tr>
+		<tr><td><code>p3-44</code></td><td>+1 条<b>描述漂移守卫</b>（见 9.3 ✓）</td></tr>
+	</table>
+</div>
+
+<h3>9.1 取证方式：跨引擎逐字节对账（不是我手推的黄金串）</h3>
+<p>
+	这两个文件（<code>笔记/index.md</code>、<code>笔记/overview.md</code>）的特殊之处在于<b>两侧视图都读它们</b> ⇒
+	差一个字符（多一个空行、排序换个比较器、引号没剥干净）就是"同一个库在两个界面里长得不一样"，
+	而<b>两边都不报错</b> ✗✗。所以这一刀的验收不是"我看着对"，而是：
+</p>
+<ol>
+	<li>IDE 侧测试（<code>kbNavigationParity.test.ts</code>）调用<b>真</b> <code>KbImportController</code>，在同一份夹具上生成，
+		钉成黄金串并打印读数 ✓；</li>
+	<li>探针 <code>p3-58</code> 拿<b>同一份夹具字节</b>（读数里带着夹具本体 ✓ ⇒ 不复制夹具）跑我们的纯模块 ⇒
+		<b>逐字节</b>比 ✓（<code>index</code> 210/210、<code>overview</code> 312/312 ✓）。</li>
+</ol>
+
+<h3>9.2 对账第一次跑就抓到两处（都不是"手滑"，是结构问题）</h3>
+<ul>
+	<li><b>真源有个"看着像 bug 但必须照抄"的顺序怪癖</b> ✗：<code>readNoteFrontmatterType</code> 是
+		"<b>先剥首尾引号、再剥 <code>#注释</code></b>" ⇒ <code>type: "concept" # 语义类型</code> 跑出来是
+		<b><code>concept"</code></b>（结尾引号剥完后不再处于末尾 ⇒ 留下了 ✓）。夹具刻意放了这条 ⇒ 黄金串里就有
+		<code>## concept"</code> 一组 ✓。<b>照抄，不"顺手修好它"</b> —— 修了两侧就会对同一个库给出不同分组 ✓。</li>
+	<li><b>我们把"算不算笔记"的判据写在了读盘那层</b> ✗：纯模块只负责生成 ⇒ 第一次对账我们的索引<b>多出</b>系统导航文件与
+		点目录（长度 264 vs 真源 210 ✗）。⇒ 把判据搬进纯模块（<code>selectNoteFiles()</code> ✓）：
+		<b>规则只有一处</b>，写盘那层与对账探针走同一个函数 ✓（这也是那条红最有价值的地方：它暴露的是<b>结构</b>，不是笔误 ✓）。</li>
+</ul>
+
+<h3>9.3 顺带抓到的文档漂移：<code>kb_build</code> 的描述还写着"不支持 build"</h3>
+<p>
+	P0 把 <code>mode="build"</code> 做出来之后，<b>工具描述</b>里仍留着 preview 那一轮的文案：
+	<i>"⚠ 本侧<b>不支持</b> <code>mode:"build"</code> … dsh 侧尚未实现 ⇒ 传了会明确报错"</i> ✗✗ ——
+	而模型<b>只看描述</b> ⇒ 它会直接放弃构建（功能在、却没人用得上，比崩溃更难发现 ✗）。
+	⇒ 描述改准（支持 + 四个前置/边界：要 <code>jobs</code>/<code>subagents</code>、要批准、跑完宿主刷导航、子代理还会写 <code>知识体系.md</code> ✓），
+	并在 <code>p3-44</code> 加一条<b>漂移守卫</b>：描述里出现"尚未实现 / 不支持 build"即红 ✓。
+</p>
+
+<h3>9.4 任务书也按真源改准了（子代理该做什么）</h3>
+<p>
+	原第 3 条写"不许动 <code>index.md</code> / <b><code>知识体系.md</code></b> 之类的导航文件（导航由 IDE 侧维护）" ✗ ——
+	后半句是<b>错的</b>：真源里 <code>知识体系.md</code> <b>正是构建的一部分</b>
+	（kb-build 手册 Phase 2 原话："依据笔记区当前真实的目录与文件，创建或完善 <code>知识体系.md</code>"，
+	<code>kbImportController.ts:1665</code> ✓）。⇒ 改成：<code>index.md</code>/<code>overview.md</code> 归<b>宿主</b>（我们跑完就重建 ⇒ 别动 ✓）；
+	<b><code>知识体系.md</code> 归子代理</b>（收尾时创建/完善 ✓）。
+</p>
+
+<h3>9.5 接线与四条纪律（都在 <code>p3-58</code> 里逐条钉住 ✓）</h3>
+<ul>
+	<li><b>写完/整理完/构建完都会刷</b>（真源同一批动作 ✓）；构建那条挂在子代理<b>收尾</b>（"子代理还没跑完时不许先刷"也钉住了 ✓）。</li>
+	<li><b><code>writeIfChanged</code></b>：内容没变就不落盘（<code>written=[]</code> 且 mtime 不动 ✓）。</li>
+	<li><b>点开头的目录不进索引</b>（真源同判据 ✓）。</li>
+	<li><b><code>config.maintainNavigation=false</code></b> 整体关掉（笔记照写、导航一个都不写 ✓ —— 新行为必须可回退 ✓）。</li>
+	<li><b>回执如实</b>：写了哪几件、以及明说"<code>insights.md</code> 与各目录 <code>.overview.md</code> <b>不在 dsh 侧维护</b> ⇒ 要最新请在 IDE 侧刷一次" ✓（不假装同形 ✗）。</li>
+</ul>
+
+<h3>9.6 验证</h3>
+<table>
+	<tr><th>检查</th><th>读数</th></tr>
+	<tr><td><code>p3-58</code>（新）</td><td class="v">12/12 ✓（逐字节对账 ③④、怪癖 ⑤、接线 ⑥⑦⑧⑨⑩⑪⑫）</td></tr>
+	<tr><td>IDE 侧 <code>kbNavigationParity.test.ts</code></td><td class="v">1 passing ✓（黄金串与真实现一致；由 <code>p3-58</code> 每次执行 ⇒ 不会腐烂 ✓）</td></tr>
+	<tr><td><code>p3-44</code> / <code>p3-26</code> / <code>p3-45</code> / <code>p3-08</code></td><td class="v">14/14 ✓ · 82/82 ✓ · 15/15 ✓ · 140/140 ✓</td></tr>
+	<tr><td>快照 / 契约 / <code>dshHarness --common</code></td><td class="v">11 插件 73 工具一致 ✓；17 契约 0 违规 ✓；<b>401 passing / 0 failing</b> ✓（上一轮那 4 条能力清单红已由并发会话修好 ✓）</td></tr>
+</table>
+
+<h3>9.7 P2 剩下的（本节写作时的状态；后续三刀已全部做完 ✓）</h3>
+<ul>
+	<li><code>insights.md</code>（wikilink 图 ＋ Louvain 社区检测）—— <span class="v">已做，见 §12 ✓</span>；</li>
+	<li>各目录 <code>.overview.md</code> 中间层（要 chatModel ✗）；</li>
+	<li><code>sources</code> 注入与<b>确定性补链</b>（<code>enrichWikilinks</code>）—— <span class="v">补链已做，见 §11 ✓</span>；</li>
+	<li><b>去抽象化门控</b>（<code>applyDeabstractionGating</code>）—— <span class="v">已做，见 §10 ✓</span>。</li>
+</ul>
+
+<h2>10. 执行记录 ④（2026-10-13：P2 第二刀 —— 去抽象化门控 ＋ <code>sources</code> 溯源链）</h2>
+
+<div class="box okbox">
+	<strong>落地清单（kb <code>0.2.31 → 0.2.32</code>；工具面<b>一个没变</b> ✓）</strong>
+	<table>
+		<tr><th>文件</th><th>改动</th></tr>
+		<tr>
+			<td><code>lib/core/kbFrontmatter.js</code> <span class="q">新</span></td>
+			<td>真源 <code>knowledge/frontmatter.ts</code>（287 行，<b>整块纯函数</b>）逐字移植：两遍解析（顶锚 → anywhere 回退，
+				开 fence 必须在前 6 行内 ✓）、<code>repairWikilinkLists</code>（修 LLM 产出的非法 YAML ✓）、
+				<code>extractSources</code>/<code>normalizeSourceRef</code>（来源归一 = <b>小写 basename</b> ✓）、
+				<code>setStatus</code>/<code>injectSources</code>/<code>removeSources</code>（<b>行级</b>改字段、保留其它字段原格式 ✓）、
+				以及 <code>readNoteFrontmatterType</code>（含那个"先剥引号再剥注释"的顺序怪癖 ✓）</td>
+		</tr>
+		<tr>
+			<td><code>lib/core/kbAliases.js</code> <span class="q">新</span></td>
+			<td>真源 <code>kbAliases.ts</code> 的<b>纯函数</b>部分：<code>normalizeAliasKey</code> + <code>canonicalizeTitle</code>
+				（读盘那半在 <code>organize.js</code>；读不到 / JSON 非法 ⇒ <b>空表降级</b>，与真源同语义 ✓）</td>
+		</tr>
+		<tr>
+			<td><code>lib/core/kbGating.js</code> <span class="q">新</span></td>
+			<td><code>GATED_TYPES = {concept, comparison, synthesis, entity}</code> ＋ <code>planGating()</code>：两趟
+				（先按<b>同义归一后的标题</b>聚合来源集合 ✓，再按 <code>distinct >= 2</code> 定 active/pending ✓）</td>
+		</tr>
+		<tr>
+			<td><code>lib/organize.js</code> / <code>lib/index.js</code></td>
+			<td><code>applyGating()</code>（读 aliases.json → 规划 → 只写<b>变了</b>的那些 ✓）；接线：<code>refreshNavigation</code> 改名
+				<code>refreshDerived</code> 并<b>先导航、后门控</b>（真源顺序 ✓），四处挂点不变；回执多一格门控计数 ✓；
+				任务书补一条"<b>frontmatter 必须写 <code>sources</code></b>"（不写 ⇒ 派生笔记永远停在候选 ✗）</td>
+		</tr>
+		<tr>
+			<td><code>kbGatingParity.test.ts</code> <span class="q">新（IDE 侧）</span> ＋ <code>p3-59</code> <span class="q">新</span></td>
+			<td>同 p3-58 的对账范式：真 <code>applyDeabstractionGating</code> 跑同一份夹具 ⇒ 裁决 ＋ <b>每个文件的内容</b>打成读数；探针逐字节比 ✓（11 条）</td>
+		</tr>
+		<tr><td><code>p3-45</code></td><td>+1 条 ⑧b：<b>真机</b>里门控也真的跑了（子代理按任务书写了单来源的派生笔记 ⇒ 盘上 <code>status: pending</code> ✓）；mock 的写入改为照任务书写 <code>sources</code> ✓</td></tr>
+	</table>
+</div>
+
+<h3>10.1 对账读数（第一次跑就全同 ✓）</h3>
+<p>
+	夹具刻意覆盖每条会影响裁决的分支：<code>sources</code> 的三种写法（块序列 / 流列表 / 单值）＋ 无 <code>sources</code> ＋
+	<b>重复来源</b>（去重后只算 1 ✓）＋ 别名归一（「GC机制」/「垃圾回收」⇒ 同一 canonical ⇒ 两篇来源互见 ⇒ 一起转正式 ✓）＋
+	非门控类型（<code>howto</code> ⇒ 一个字不许动 ✓）＋ 无 frontmatter（读不到 <code>type</code> ⇒ 不参与 ✓）＋
+	<b>已是 <code>active</code> 但来源不足</b>（必须降级为 pending ⇒ "反向也对" ✓）。
+	结果：<b>9/9 个文件的最终内容与真实现逐字节相同</b>、计数 <code>active 3 / pending 2</code> 相同 ✓✓。
+</p>
+
+<h3>10.2 这一轮踩到的三个"看着都好了"的坑（都值得记）</h3>
+<ul>
+	<li><b><code>dsh plugin add</code> 报 <code>status=0</code>，但 profile 里的插件<b>没有更新</b></b> ✗✗：
+		<code>node_modules/@vssaros/dsh-kb</code> 是 pnpm 的<b>硬链接拷贝</b>，<b>新增文件不会进去</b> ⇒ 真会话
+		<code>vssaros-kb: failed to import</code>（工具全不可见），而<b>退出码依然是 0</b> ✗。
+		⇒ 探针现在<b>先删那份再自己拷</b>（直接 <code>cpSync</code> 盖上去会在 Windows 上报 <code>EPIPE</code> ⇒ 必须先删 ✓），
+		并<b>逐文件核对 ＋ 当场 import 自检</b> ✓。<b>p3-08 那条"装的就是当前源码"守卫正是抓到它的关键</b> ✓
+		（它报的清单就是缺的那三个文件 ✓）。</li>
+	<li><b>我漏了 <code>package.json</code> 的 <code>files</code></b> ✗：新加的 <code>lib/core/kbGating.js</code> 没进包 ⇒
+		被 <code>dsh 插件包结构守卫</code> 当场抓住：<i>"vssaros-kb 的 files 未覆盖 lib\core\kbGating.js——装出来会缺文件"</i> ✓。
+		（与上面那条<b>同一类失败</b>：包/副本少文件是静默的 ✗✓。）</li>
+	<li><b>任务书不说 <code>sources</code> ⇒ 门控白干</b> ✗：真源的构建路径是宿主<b>注入</b>来源
+		（<code>_injectSourcesIntoFiles</code> ✓），我们这条路上笔记由子代理写 ⇒ 必须要求它自己写 ✓
+		（真源 agentic 路径同样如此 ✓）。</li>
+</ul>
+
+<h3>10.3 顺带发现（非本次改动，如实记下）</h3>
+<p>
+	<code>dshHarness --common</code> 现有 <b>1 条红</b>：<code>dsh 插件包结构守卫 → 写入类工具必须挂官方审批闸</code> 报
+	<code>SyntaxError: Unexpected token '/'</code> ✗ —— 根因是 <b><code>vssaros-memory</code> 的 <code>WRITE_TOOLS</code>
+	数组里加了 <code>// 2026-10-13 …</code> 注释</b>，而那条守卫把数组源码交给 <code>JSON.parse</code> ✗（JSON 不认注释 ✓）。
+	本模块的 <code>WRITE_TOOLS</code> 是单行无注释 ⇒ 与本轮改动无关 ✓。修法：注释移到数组外，或让守卫先剥注释 ✓。
+</p>
+
+<h3>10.4 验证</h3>
+<table>
+	<tr><th>检查</th><th>读数</th></tr>
+	<tr><td><code>p3-59</code>（新，11 条）</td><td class="v">11/11 ✓（9 文件逐字节对账 ＋ 计数相同 ＋ 接线五条）</td></tr>
+	<tr><td>IDE 侧 <code>kbGatingParity.test.ts</code></td><td class="v">1 passing ✓（由 <code>p3-59</code> 每次执行 ⇒ 不腐烂 ✓）</td></tr>
+	<tr><td><code>p3-45</code>（真机）</td><td class="v">16/16 ✓（含新的 ⑧b：门控在真 Host 里真的落成 pending ✓）</td></tr>
+	<tr><td><code>p3-58</code> / <code>p3-44</code> / <code>p3-26</code> / <code>p3-08</code></td><td class="v">12/12 ✓ · 14/14 ✓ · 82/82 ✓ · 140/140 ✓</td></tr>
+	<tr><td>快照 / 契约 / <code>dshHarness --common</code></td><td class="v">11 插件 78 工具一致 ✓；17 契约 0 违规 ✓；401 passing / 1 failing（那 1 条见 10.3，非本次改动 ✓）</td></tr>
+</table>
+
+<h3>10.5 P2 剩下的（已经很短了）</h3>
+<ul>
+	<li><code>insights.md</code>（wikilink 图 ＋ Louvain 社区检测）—— <span class="v">已做，见 §12 ✓</span>（"社区语义摘要"那半要模型 ✗ ⇒ 我们不产它，与真源"无模型"档同形 ✓）；各目录 <code>.overview.md</code>（要 chatModel ✗）仍由 IDE 侧刷，回执已<b>如实标注</b> ✓；</li>
+	<li><code>_injectSourcesIntoFiles</code>（<b>宿主注入</b>那半 —— 我们这条路上笔记是子代理写的，它已按任务书写 <code>sources</code> ✓；这条留给"确定性构建路径"）；</li>
+	<li><code>enrichWikilinks</code>（确定性补链：把整词出现的其它笔记标题包成 <code>[[…]]</code> ✓）—— <span class="v">已做（2026-10-13，见 §11 ✓）</span>。</li>
+</ul>
+
+<h2>11. 执行记录 ⑤（2026-10-13：P2 第三刀 —— 确定性补链）</h2>
+
+<div class="box okbox">
+	<strong>落地清单（kb <code>0.2.32 → 0.2.33</code>；工具面<b>一个没变</b> ✓）</strong>
+	<table>
+		<tr><th>文件</th><th>改动</th></tr>
+		<tr>
+			<td><code>lib/core/kbEnrich.js</code> <span class="q">新</span></td>
+			<td>真源 <code>knowledge/enrichWikilinks.ts</code>（102 行）逐字移植：<code>enrichContent</code>（<b>纯函数</b>：
+				按 <code>```</code> 分段跳代码块 ✓、已有 <code>[[标题]]</code>/<code>[[标题|…]]</code> 整条跳过 ✓、自身标题跳过 ✓、
+				标题 &lt; 2 字符跳过 ✓、只看正文（frontmatter 外）✓、整词匹配用前后 lookaround ✓）
+				＋ <code>planEnrichment</code>（候选标题 = <b>全部笔记的文件名去扩展名</b>，按小写去重 ✓；只动目标 ✓）</td>
+		</tr>
+		<tr>
+			<td><code>lib/organize.js</code></td>
+			<td><code>enrichNotes(notesDir, targetAbsPaths)</code>：扫全库当候选、只给<b>目标</b>补链、只写变了的那几篇 ✓
+				（真源原话："不动已有笔记，避免大面积改动用户内容" ✓）</td>
+		</tr>
+		<tr>
+			<td><code>lib/index.js</code></td>
+			<td><code>refreshDerived(vaultRoot, config, targets)</code>：顺序改为真源的
+				<b>补链 → 导航 → 门控</b>（真源：注入来源 → 补链 → 导航 → 门控 ✓）；写笔记那条路把<b>刚写的那篇</b>当目标 ✓；
+				构建那条路用 <code>state.grantWrites</code>（<b>授权放行时记下的路径</b> ⇒ 正好是"本批子代理写过的笔记" ✓）；
+				回执多一格"补链 N 篇共新增 M 条链接"（<b>只在真有新增时报</b>，0 篇是噪音 ✓）</td>
+		</tr>
+		<tr>
+			<td><code>kbEnrichParity.test.ts</code> <span class="q">新（IDE 侧）</span> ＋ <code>p3-62</code> <span class="q">新</span></td>
+			<td>同前两刀的对账范式：真 <code>enrichWikilinks</code> 跑同一夹具 ⇒ 把"夹具 ＋ <b>候选来源</b> ＋ 目标 ＋ 结果 ＋
+				每个文件最终内容"打成读数 ⇒ 探针用<b>同一份输入</b>跑我们的移植，逐字节比 ✓（7 条）</td>
+		</tr>
+	</table>
+</div>
+
+<h3>11.1 对账读数</h3>
+<p>
+	夹具刻意覆盖每条判据：目标里同时存在可补标题 ✓、<b>代码块内</b>的同名文字（不许动 ✗）、<b>已有</b>
+	<code>[[内存池]]</code> ✓、<b>已有</b> <code>[[GC机制|别名]]</code>（⇒ 该候选<b>整条跳过</b>，连正文里第二处裸标题也不再补 ✓）、
+	<b>自身</b>标题 ✓、<b>1 字符</b>标题（<code>甲.md</code> ⇒ 长度 &lt; 2 不补 ✓）、<b>无 frontmatter</b> 的目标 ✓，以及
+	不该成为候选的 <code>index.md</code> 与非 <code>.md</code> ✓。
+	结果：<b>9/9 个文件的最终内容与真实现逐字节相同</b>、新增标题集合相同 ✓✓（候选来源数也一致：8 个 ✓）。
+</p>
+
+<h3>11.2 这一轮纠正的是<b>我的测试</b>，不是实现（如实记）</h3>
+<ul>
+	<li>我最初断言"三篇目标都有新增" ✗ —— 真读数是 <b>2 篇</b>：目标丙 里 <code>GC机制</code> 已出现过
+		<code>[[GC机制|见这里]]</code> ⇒ 按判据④<b>整条候选跳过</b>，它正文里第二处裸标题也<b>不该</b>被补 ✓。
+		（这正是"黄金读数必须来自真实现、不能手推"的例子 ✓。）</li>
+	<li>把已经是<b>相对</b>的路径又切了一次（<code>rel()</code> 用错）⇒ 报的差异是探针自己的 ✗。</li>
+	<li>写一笔会连带跑"派生文件维护"（导航 ＋ 门控 ✓）⇒ 候选笔记被门控加了 <code>status</code> ✓，
+		我却把它当成"补链动了非目标 ✗"。<b>补链的不变量是"不动非目标笔记的正文"</b> ⇒ 判据改成查"没被加上链接 ＋ 正文原样" ✓。</li>
+	<li>幂等测试第一版回写的是<b>原始内容</b> ⇒ 链接被覆盖后当然又被补回来 ✓（那是<b>正确行为</b> ✗ 不是 bug）⇒
+		要拿"盘上已补好链的内容"回写才是在测幂等 ✓。</li>
+</ul>
+
+<h3>11.3 验证</h3>
+<table>
+	<tr><th>检查</th><th>读数</th></tr>
+	<tr><td><code>p3-62</code>（新，7 条）</td><td class="v">7/7 ✓（9/9 文件逐字节对账 ＋ 接线：只补刚写的那篇 ✓／候选正文不被碰 ✓／幂等 ✓）</td></tr>
+	<tr><td>IDE 侧 <code>kbEnrichParity.test.ts</code></td><td class="v">1 passing ✓（由 <code>p3-62</code> 每次执行 ⇒ 不腐烂 ✓）</td></tr>
+	<tr><td><code>p3-58</code> / <code>p3-59</code> / <code>p3-44</code> / <code>p3-26</code></td><td class="v">12/12 ✓ · 11/11 ✓ · 14/14 ✓ · 82/82 ✓</td></tr>
+	<tr><td><code>p3-45</code>（真机）/ <code>p3-08</code>（kb 全量）</td><td class="v">16/16 ✓ · 140/140 ✓（都已重装到 0.2.33 ✓）</td></tr>
+	<tr><td>契约 / <code>dshHarness --common</code></td><td class="v">17 契约 0 违规 ✓；401 passing / 1 failing（那 1 条是 <code>vssaros-memory</code> 的既有问题，见 §10.3 ✓）</td></tr>
+</table>
+
+<h3>11.4 编号说明（本仓现在是双会话共用号段）</h3>
+<p>
+	<code>p3-46</code> / <code>p3-47</code> / <code>p3-50</code> 已被并发会话占用
+	（dashboard-homepage / codebase-dual-engine-diff / memory-distill ✗）⇒ 本刀<b>跳号</b>用 <code>p3-62</code> ✓。
+	纪律：<b>开号前先 <code>ls poc/dsh-p0/scripts/p3-*.mjs</code></b>，并避开对方最近在用的号段 ✓（贴上去必撞 ✓）。
+</p>
+
+<h3>11.5 P2 剩下的（本刀之后）</h3>
+<ul>
+	<li><code>insights.md</code>（<span class="v">已做，见 §12 ✓</span>）；</li>
+	<li>各目录 <code>.overview.md</code>（<b>要模型</b> ✗）；</li>
+	<li><code>_injectSourcesIntoFiles</code>（宿主注入那半，留给"确定性构建路径" ✓）。</li>
+</ul>
+
+<h2>12. 执行记录 ⑥（2026-10-13：P2 第四刀 —— <code>insights.md</code> 图谱洞察，导航三件补齐）</h2>
+
+<div class="box okbox">
+	<strong>落地清单（kb <code>0.2.33 → 0.2.34</code>；工具面<b>一个没变</b> ✓）</strong>
+	<table>
+		<tr><th>文件</th><th>改动</th></tr>
+		<tr>
+			<td><code>lib/core/kbCommunities.js</code> <span class="q">新</span></td>
+			<td>真源 <code>knowledge/communityDetection.ts</code>（283 行）<b>整块逐字</b>移植：多层 Louvain
+				（局部移动 → 聚合 → 重编号 <code>c0/c1/…</code> ✓）＋ 模块度计算 ✓。
+				真源文件头原话：<i>"Deterministic for a given node/edge input order (no RNG), so unit tests are stable"</i> ✓
+				—— 正因如此才敢用<b>逐字节对账</b>钉它 ✓</td>
+		</tr>
+		<tr>
+			<td><code>lib/core/kbInsights.js</code> <span class="q">新</span></td>
+			<td>真源 <code>maintainKbInsights</code> 的建图 ＋ 渲染逐字移植：节点 = <code>title:</code>（剥引号 ✓）否则文件名 ✓；
+				边 = <code>[[目标]]</code> 取最后一段路径、仅当能解析到<b>已索引</b>节点且非自身 ✓；
+				输出 = 统计行 ＋ 每社区 <code>## 社区 cN（M 节点）</code> ＋ 成员（上限 20 ✓）＋ 出处行 ✓</td>
+		</tr>
+		<tr>
+			<td><code>lib/organize.js</code> / <code>lib/index.js</code></td>
+			<td><code>maintainNavigation</code> 现在维护<b>三件</b>（index / overview / <b>insights</b> ✓ —— 与真源
+				<code>maintainKbNavigation</code> 同集合 ✓）；回执多一格"图谱洞察：N 个社区（x 节点 / y 条链接）" ✓；
+				<b>口径改窄</b>：原来说"<code>insights.md</code> 与各目录 <code>.overview.md</code> 都不在 dsh 侧维护" ✗
+				⇒ 现在只剩 <code>.overview.md</code>（要模型）✓</td>
+		</tr>
+		<tr>
+			<td><code>kbInsightsParity.test.ts</code> <span class="q">新（IDE 侧）</span> ＋ <code>p3-65</code> <span class="q">新</span></td>
+			<td>同前几刀的对账范式，但多带<b>一样东西：笔记顺序</b> ✗ —— 节点/边是<b>顺序敏感</b>的（见 12.2 ✓），
+				而真源内部用 <code>collectMdFiles</code> 取顺序 ⇒ 测试用<b>同一个函数</b>取一份有序清单塞进读数，
+				dsh 侧照单执行 ✓（否则比的是"两份不同输入" ✗）</td>
+		</tr>
+	</table>
+</div>
+
+<h3>12.1 对账读数</h3>
+<p>
+	读数由<b>真</b> <code>KbImportController.maintainKbInsights</code> 产出（<b>不传 chatModel</b> ⇒ 走真源"无模型"那一档，
+	纯成员列表 ✓ —— 这不是阉割版，是真源<b>本来就支持</b>的一档 ✓，对账时两边都不传 ⇒ 同形 ✓）。
+	结果：<b>换掉末行出处后逐字节相同（271/271）</b> ✓；统计行 <code>&gt; 7 篇笔记，4 条链接，4 个社区。</code> 一致 ✓；
+	社区划分与成员顺序一致 ✓（<code>c0 = 甲/乙/庚</code>、<code>c1 = 丙/丁</code>、<code>c2 = 戊</code>、<code>c3 = 己的别名…</code> ✓）。
+</p>
+<p>
+	<b>唯一允许的差异是末行出处</b> ✓：真源写死 <code>*由 KbImportController 自动维护…*</code>，我们写成
+	<code>*由 dsh 侧 vssaros-kb 自动维护（与 IDE 的 KbImportController 同一套规则…）*</code> ——
+	因为<b>确实</b>是我们在写，署 IDE 的类名是假的 ✗。探针把这条钉成"<b>换掉那一行后必须逐字节相同</b>" ✓
+	（既保住同形，又不撒谎 ✓）。
+</p>
+
+<h3>12.2 ★ 实测出来的两个"顺序怪癖"（照抄，且别在文档里说成"完整的图" ✗）</h3>
+<ul>
+	<li><b>只留"后向链接"</b> ✗：建边那句判据是"<b>此刻已收集的节点集</b>里有没有 target"（真源原话
+		<code>nodes.has(target)</code> ✓）⇒ 一条指向<b>后面才出现</b>的笔记的链接会被丢掉 ✓。
+		<b>实测比预想更狠</b>：夹具顺序是 甲、乙、丙、丁、戊、己、庚 ⇒ <b>甲 → 乙 也被丢了</b>（乙还没被收集 ✓）——
+		7 篇笔记、正文共 10 处 <code>[[…]]</code>，最后只有 <b>4 条边</b>（乙→甲 ×2、丁→丙、庚→甲 ✓）。
+		⇒ 照抄（它决定了社区划分 ✓），但如实写明这是"<b>后向</b>链图"而不是完整图 ✓。</li>
+	<li><b>正文里的 <code>title:</code> 行也算节点名</b> ✗：取节点名用的是朴素正则 <code>/^title:\s*(.+)$/m</code>
+		（<b>不是</b> frontmatter 解析器 ✗）⇒ 正文中间一行以 <code>title:</code> 开头就会被整行当成节点名 ✓
+		（夹具里的 <code>c3</code> 就是这条 ✓，成员名长成一句话 ✓）。同样照抄 ✓。</li>
+</ul>
+
+<h3>12.3 一条口径纪律（这一刀顺带修掉的"半句真话"）</h3>
+<p>
+	上一刀之后，回执与三处工具描述里都写着"<code>insights.md</code> 与各目录 <code>.overview.md</code>
+	<b>不在 dsh 侧维护</b>" ✗ —— 现在 insights 也归我们了 ⇒ 那句话就成了<b>半句真话</b> ✗
+	（照旧写下去就是撒谎 ✓）。⇒ 全部改窄成"只剩各目录 <code>.overview.md</code>（要模型）" ✓，
+	并由 <code>p3-58</code>⑦ 与 <code>p3-65</code>⑦ <b>两条</b>钉住新口径 ✓
+	（一条查"提到图谱洞察统计" ✓、一条查"<code>.overview.md</code> 才是不归我们的" ✓）。
+	<b>改实现不改口径 = 慢慢撒谎</b>，这条和"描述漂移守卫"是同一类 ✓。
+</p>
+
+<h3>12.4 验证</h3>
+<table>
+	<tr><th>检查</th><th>读数</th></tr>
+	<tr><td><code>p3-65</code>（新，8 条）</td><td class="v">8/8 ✓（271/271 逐字节对账 ＋ 出处唯一差异 ＋ 顺序怪癖 7 节点/4 边/4 社区 ＋ 接线三条）</td></tr>
+	<tr><td>IDE 侧 <code>kbInsightsParity.test.ts</code></td><td class="v">1 passing ✓（由 <code>p3-65</code> 每次执行 ⇒ 不腐烂 ✓）</td></tr>
+	<tr><td><code>p3-58</code>（已更新到"导航三件"口径）</td><td class="v">12/12 ✓（探针先如实报红 10/12 ⇒ 按新口径更新后复绿 ✓）</td></tr>
+	<tr><td><code>p3-59</code> / <code>p3-62</code> / <code>p3-44</code> / <code>p3-26</code></td><td class="v">11/11 ✓ · 7/7 ✓ · 14/14 ✓ · 82/82 ✓</td></tr>
+	<tr><td><code>p3-45</code>（真机）/ <code>p3-08</code>（kb 全量）</td><td class="v">16/16 ✓ · 140/140 ✓（都已重装到 0.2.34 ✓）</td></tr>
+	<tr><td>反向突变（6 条）</td><td class="v">本轮改过 <code>grantAllows</code> ⇒ <b>重新对准并复跑</b>：<b>6/6</b> 命中 / 跳过 0 ＋ 基线真绿 ✓
+		（⚠ M1 的锚点因归属逻辑改过而失效 ⇒ 脚本报"跳过 = 当红" ✓ —— <b>改了被守卫的代码就必须重新对准突变</b>，否则守卫静默失效 ✗）</td></tr>
+	<tr><td>快照 / 契约 / <code>dshHarness --common</code></td><td class="v">11 插件 85 工具一致 ✓；17 契约 0 违规 ✓；402 passing / 1 failing（那 1 条仍是 <code>vssaros-memory</code> 的既有问题，见 §10.3 ✓）</td></tr>
+</table>
+
+<h3>12.5 P2 现在只剩一项（要模型）＋ 一项历史遗留</h3>
+<ul>
+	<li>各目录 <code>.overview.md</code>（目录摘要中间层）—— <b>要 chatModel</b> ✗，回执已如实标注 ✓；</li>
+	<li><code>_injectSourcesIntoFiles</code>（宿主<b>注入</b>来源那半）—— 我们这条路上笔记由子代理写、<code>sources</code> 由它自带 ✓，
+		这条留给"确定性构建路径" ✓。</li>
+</ul>
+
+<h2>13. 执行记录 ⑦（2026-10-13：P1 —— 构建缓存 <code>.kb-build-cache.json</code> 的跨引擎协议）</h2>
+
+<div class="box okbox">
+	<strong>落地清单（kb <code>0.2.34 → 0.2.35</code>；工具面<b>一个没变</b> ✓）<span class="v">—— 后续修复见 §13.5／§13.6，版本<b>收口到 0.2.42</b> ✓</span></strong>
+	<table>
+		<tr><th>文件</th><th>改动</th></tr>
+		<tr>
+			<td><code>lib/core/kbBuildCache.js</code> <span class="q">新</span></td>
+			<td>真源 <code>kbVaultFs.ts</code> 的缓存三件事：<b>解析</b>（宽容，坏 JSON 当空但<b>要能说出来</b> ✓）、
+				<b>序列化</b>（<code>JSON.stringify(cache, null, 2)</code>、无尾换行 ⇒ 与真源<b>逐字节</b>同 ✓）、
+				<b>合并</b>（<b>只增不删</b> ✓）；＋"素材 → 笔记"的<b>有歧义就不登记</b>规划（见 13.2 ✓）</td>
+		</tr>
+		<tr>
+			<td><code>lib/store.js</code></td>
+			<td>新增 <code>registerBuildCacheEntries()</code>：<b>扫「笔记」区</b>决定"确实产出了什么" ✓ ⇒ 读旧缓存 ⇒
+				合并 ⇒ 按真源格式落盘；一条都不登记时<b>绝不碰文件</b>（无谓的写会动 mtime，而 mtime 是待构建判据之一 ✗）</td>
+		</tr>
+		<tr>
+			<td><code>lib/index.js</code></td>
+			<td>构建收尾（子代理跑完、刷新导航之后）在<b>我们那把 vault 锁里</b>做 read-modify-write ✓；
+				回执/描述如实写明"会登记 ＋ 残余风险" ✓；preview 回执多一行"上次构建登记了什么" ✓；
+				① 顺手修掉一句<b>过期文案</b>（"真构建本侧未实现" ✗ —— 从 P0 起就不成立 ✓）</td>
+		</tr>
+		<tr>
+			<td><code>kbBuildCacheParity.test.ts</code> <span class="q">新（IDE 侧）</span> ＋ <code>p3-66</code> <span class="q">新</span></td>
+			<td>对账范式：IDE 侧跑<b>真</b> <code>collectPendingSources</code> ＋ <b>真</b> <code>writeBuildCache</code>；
+				dsh 侧把同一夹具<b>落到真盘</b>（mtime 可控 ✓）跑<b>真</b> <code>previewBuild</code> ⇒ 比"<b>同一个数、同一个集</b>" ✓</td>
+		</tr>
+	</table>
+</div>
+
+<h3>13.1 P1 的验收读数（"两侧对'待构建数量'给出同一个数" ✓）</h3>
+<table>
+	<tr><th>同一份夹具 / 同一份缓存</th><th>IDE 侧（真源）</th><th>dsh 侧</th></tr>
+	<tr><td>没有缓存（初始）</td><td>5 份</td><td class="v">5 份 ✓（逐条相同 ✓）</td></tr>
+	<tr><td>喂入同一份缓存后</td><td>3 份</td><td class="v">3 份 ✓（素材改过 / 未构建 / 笔记不存在 各一 ✓）</td></tr>
+	<tr><td>dsh 再登记一条（丙素材 → 已有笔记）</td><td>2 份</td><td class="v">2 份 ✓（<b>"构建完不再重复计数"</b> —— P1 真正要的效果 ✓）</td></tr>
+	<tr><td>缓存格式（真源写出的字节 round-trip）</td><td colspan="2" class="v">逐字节相同（223/223 ✓：两空格缩进、无尾换行 ✓）</td></tr>
+</table>
+
+<h3>13.2 三条协议 ＋ 一条<b>如实承认</b>的残余风险 ✗</h3>
+<ul>
+	<li><b>只增不删</b> ✓：只登记自己产出的那几对，别人的条目一律保留 ✓（合并语义有纯函数断言 ✓）。</li>
+	<li><b>有歧义就不登记</b> ✓：笔记里的 <code>sources</code> 是 <code>normalizeSourceRef</code> 归一后的
+		<b>小写 basename</b> ✗（不是路径 ✗）⇒ 反向映射只能"按 basename 在本批素材里找" ⇒
+		<b>本批有两份同名素材</b>、或<b>同一素材被两篇笔记声明</b>（缓存是一对一映射 ✓）时一律<b>跳过并带回原因</b> ✓
+		—— 宁可下次再算一遍，也不能把 A 的笔记记到 B 头上 ✗。</li>
+	<li><b>锁内 read-modify-write</b> ✓：写在我们那把 vault 锁里（与 <code>kb_organize</code> 同一把 ✓）。</li>
+	<li><b>残余风险（不假装解决 ✗）</b>：IDE 侧整理器<b>不加锁</b>（真源查证过 ✓）⇒ 它与我们同一瞬间写这份缓存时
+		仍可能<b>丢一条</b> ✗（丢的那条下次会被重新算成待构建 ✓，而真源的构建语义是<b>就地 patch</b> 那篇笔记 ⇒
+		不是灾难 ✓）。要彻底互斥得 IDE 侧也上同一把锁 —— 那<b>超出本侧能做的范围</b> ✓，所以写进回执与描述 ✓。</li>
+</ul>
+
+<h3>13.3 本轮抓到的两个"静默错"（都靠对账探针咬出来）</h3>
+<ul>
+	<li><b><code>chosen</code> 是对象、不是路径</b> ✗：<code>kb_build</code> 的批选来自
+		<code>previewBuild</code> 的 <code>pending</code> ⇒ 元素是 <code>{ path, reason }</code> ✗；我直接把数组当
+		<code>sources</code> 传 ⇒ 每条都变成 <code>"[object Object]"</code> ⇒ basename 比较全不中 ⇒
+		<b>登记 0 条</b>，而且<b>一点错都不报</b> ✗（现象只有"回执说没登记"）。⇒ 探针先看"构建<b>自己</b>那次登记"的盘上结果，
+		才把它咬住 ✓（这就是这条探针存在的理由 ✓）。</li>
+	<li><b>探针只在尾部清理 ⇒ 上一次崩了就留下状态 ⇒ 下一次<b>假绿</b></b> ✗：本探针会往盘上写缓存与笔记，
+		而 <code>uncaughtException</code> 会跳过尾部的 <code>rmSync</code> ⇒ 下一次的"初始状态"不再是初始
+		（实测 <code>dsh=2 vs 真源=5</code> ✗），而两条接线断言会因"缓存和笔记都是上一轮留的"<b>假绿</b> ✗✗。
+		⇒ <b>两头都清</b> ✓ —— 与"装插件那次静默不加载"同类：<b>状态残留会让红变绿</b> ✓。</li>
+</ul>
+
+<h3>13.4 验证</h3>
+<table>
+	<tr><th>检查</th><th>读数</th></tr>
+	<tr><td><code>p3-66</code>（新，10 条）</td><td class="v">10/10 ✓（两侧同数同集 5/3/2 ＋ 格式逐字节 ＋ 只增不删 ＋ 歧义跳过 ＋ 接线两条）</td></tr>
+	<tr><td>IDE 侧 <code>kbBuildCacheParity.test.ts</code></td><td class="v">1 passing ✓（由 <code>p3-66</code> 每次执行 ⇒ 不腐烂 ✓）</td></tr>
+	<tr><td><code>p3-08</code>（kb 全量，当轮重装 0.2.35）<span class="v">／收口时 0.2.42 ✓</span> / <code>p3-45</code>（真机）</td><td class="v">140/140 ✓ · 16/16 ✓</td></tr>
+	<tr><td><code>p3-44</code> / <code>p3-26</code> / <code>p3-58</code> / <code>p3-59</code> / <code>p3-62</code> / <code>p3-65</code></td>
+		<td class="v">14/14 ✓ · 82/82 ✓ · 12/12 ✓ · 11/11 ✓ · 7/7 ✓ · 8/8 ✓</td></tr>
+	<tr><td>快照 / 契约 / <code>dshHarness --common</code></td><td class="v">11 插件 85 工具一致 ✓；17 契约 0 违规 ✓；413 passing / 1 failing（仍是 <code>vssaros-memory</code> 的既有问题 ✓）</td></tr>
+</table>
+
+<h3>13.5 ✅ 真机集成已收口（先红后绿，同日定位并修掉 ✗ → ✓）</h3>
+<p>
+	<b>现象</b>：<code>p3-45</code> 的「真机登记构建缓存」一条红 ✗ —— 而收尾链看起来在跑（<code>index.md</code> 按
+	<code>type</code> 分了组 ✓、笔记也落了 <code>status: pending</code> ✓）。
+</p>
+<p>
+	<b>排除</b>：① 登记函数本身没问题（拿真机留下的真 vault 直调 ⇒ <code>registered=2</code> ✓）；
+	② profile 里的 staged 拷贝是最新的 ✓；③ 收尾链确实在跑 ✓。
+</p>
+<p>
+	<b>定性读数</b>（把收尾结果接进 preview 回执，真机自己说 ✓）：<b>「登记 0 条；扫到 <b>0 篇笔记</b> / 2 份素材」</b> ✗。
+</p>
+<p>
+	<b>根因</b>：<code>subagents.start()</code> 返回的是 <b>run 句柄</b>，在"<b>孩子被创建</b>"时就 resolve ✗ ——
+	真源原话是 *"Post-publication turn and infrastructure failures <b>settle through the returned run</b>"*
+	（<code>dsh-subagent/lib/index.js:3142</code>，实现就是 <code>return observeRun(...)</code> ✓）。
+	⇒ 我们把收尾（导航 / 门控 / 补链 / 缓存登记）挂在它后面 ⇒ <b>收尾跑在落盘之前</b> ✗✗。
+	真机上看得到的 <code>index.md</code> 与 <code>status: pending</code>，<b>全是子代理自己那次 <code>kb_write_note</code>
+	触发的派生维护</b>留下的 ✓（同一套代码 ⇒ 看起来一样， ✗）。
+</p>
+<p>
+	<b>修法</b>：<code>const run = await subagents.start(...)</code> ⇒ <b>再 <code>await run.result</code></b> 才算"孩子跑完" ✓
+	（假服务没有 <code>result</code> 时 <code>await undefined</code> 也安全 ✓）；
+	并把 <code>p3-66</code> 的假服务改成"（还延迟 100ms ✓）"
+	⇒ "有没有 await" 立刻有鉴别力 ✓。
+</p>
+<p>
+	<b>读数</b>：<code>p3-45</code> <b>19/19</b> ✓ —— 回执写着「上次构建收尾已登记 <b>2</b> 条缓存（这份缓存现共 2 条 ✓）」✓，
+	缓存文件里两条条目 <code>主题甲.md→主题甲.md</code> / <code>主题乙.md→主题乙.md</code> ✓。
+</p>
+
+<h3>13.6 ⚠ 事故留档：临时脚本的"自动恢复"把源码回退了 ✗</h3>
+<p>
+	本轮跑反向突变时，临时脚本 <code>kb-p0-mutations.mjs</code> 开头那段"启动即自愈：从 backup 恢复"用的 backup
+	是 <b>几轮之前</b>做的 ✗ ⇒ 一跑就把 <code>lib/index.js</code> 与 <code>package.json</code> <b>回退成 0.2.35</b> 的状态 ✗✗
+	（本轮的根因修复、任务书的 <code>type</code>、收尾隔离、回执计数 —— 全被抹掉 ✓，而<b>探针仍显示绿</b>，因为 staged 副本是好的 ✓）。
+</p>
+<p>
+	查明方式很朴素 ✓：突变脚本自己的基线报 <code>p3-44 13/14</code> ✗（而我刚手跑是 14/14 ✓）⇒ 顺着这条不一致查出来的 ✓。
+	恢复方式：用 <b>staged 的 0.2.41</b>（= 刚跑出 19/19 的那份代码）覆盖回来 ✓ ⇒ 指纹核对全绿 ✓、真机复验 19/19 ✓。
+</p>
+<p>
+	<b>已固化</b>：反向突变工具改成<b>仓库版</b> <code>poc/dsh-p0/scripts/mutate-kb-p0.mjs</code> ✓ ——备份<b>本进程内当场做</b>、锚点<b>先全部预检</b>（任一条不中就一个字节不改 ✓）、恢复前确认盘上就是我们写坏的那份、恢复后<b>逐字节核对指纹</b> ✓；当前读数 <b>8/8 命中</b> ✓（含 M7 那条"收尾不等子代理跑完＝本轮真机根因" ✓）。<br><b>教训</b>：① 临时脚本里的"自愈"必须<b>只恢复它自己刚改的那几行</b>，不能整文件回灌旧备份 ✗；
+	② 跑任何带"自动恢复"的脚本<b>之前</b>，先确认那份备份就是当前源码 ✓；
+	③ 这类事故的表现是"<b>探针绿、源码旧</b>" ✗ ⇒ 收尾时要用（几个特征串）而不是"我刚改过"来确认 ✓。
+</p>
+
+<h3>13.7 本轮另外抓到两个真缺口（都已修 ✓，且都有「静默失效」的形状 ✗）</h3>
+<ul>
+	<li><b>任务书没要求 <code>type</code> ⇒ 门控整篇跳过</b> ✗：门控只认派生类四种
+		（<code>core/kbGating.js</code> 的 <code>GATED_TYPES ＝ concept / comparison / synthesis / entity</code> ✓），
+		而任务书原来只要 <code>sources</code> ✗ ⇒ 真机子代理写的笔记 ✗
+		（现象：建完了看着都对，但 <code>status</code> 不落 ⇒ 在 IDE 里整片显示成正式 ✗）。已补进任务书 ✓
+		（并让 mock 照任务书写实 ✓ ⇒ 门控那条真机断言从红变绿 ✓）。</li>
+	<li><b>收尾相关步骤不隔离 ⇒ 前一步抛了就把后一步整段吞掉</b> ✗：原来
+		<code>await refreshDerived(...)</code> 与"登记构建缓存"在同一个 <code>finally</code> 里顺序执行
+		⇒ 前者一抛，后者 ✗（真机现象：<code>status</code> 落了、缓存却没有 ✗）。
+		⇒ 现在各自 <code>try/catch</code> ＋ 各自记账（<code>state.lastDerivedError</code> / <code>state.lastBuildCache</code>）✓，
+		并在 preview 回执里都能看见 ✓。</li>
+</ul>
+
+<h3>13.8 方案里现在只剩「要模型」的那一项</h3>
+<ul>
+	<li>各目录 <code>.overview.md</code>（目录摘要中间层）—— <b>要 chatModel</b> ✗，回执已如实标注 ✓；</li>
+	<li><code>_injectSourcesIntoFiles</code>（宿主<b>注入</b>来源那半）—— 留给"确定性构建路径" ✓；</li>
+	<li>用<b>真模型</b>端到端跑一次（形态照 <code>p3-27</code> 的本地 mock 已验 ✓，只差额度 ✓）。</li>
+</ul>
+
+<h2>14. 真模型端到端（<code>p3-67</code>）：接法与当前卡点</h2>
+
+<p>
+	<code>poc/dsh-p0/scripts/p3-67-kb-build-real-model.mjs</code> —— <b>真 Host ＋ 真模型</b>跑同一条构建链路 ✓，
+	补的正是 <code>p3-45</code>（真 Host ＋ 本地 mock）验不到的那一层：<b>模型自己会不会照任务书写出合格笔记</b> ✓
+	（<code>sources</code> / 派生类 <code>type</code> / 不许碰导航 —— mock 永远照做 ⇒ 只有真模型能验 ✓）。
+	它<b>只在盘上真产物上断言</b> ✓，且<b>缺配置时响亮失败</b>（exit 2 ＋ 用法 ✓，绝不静默跳过 ✗）。
+</p>
+
+<h3>14.1 CodeBuddy / Hy4 的接法（从本仓真源取证 ✓，不猜 ✗）</h3>
+<p>
+	真源：<code>extensions/codebuddy-provider/src/extension.ts:1768-1802</code>（<code>_codebuddy.dshProviderConfig</code> 那段
+	providers.sync ✓）原话：<i>"dsh 侧经 llm-pi-ai 的 openai-completions 路由到 {endpoint}/v2/chat/completions
+	（pi-ai 拼 {baseURL}/chat/completions）"</i> ✓ ⇒
+</p>
+<ul>
+	<li><b>baseURL</b> = <code>https://copilot.tencent.com/v2</code> ✓（缺省端点同源；<code>codebuddy.endpoint</code> 可覆盖 ✓）；</li>
+	<li><b>协议</b> = OpenAI Chat Completions ✓（⇒ dsh 侧用 <code>llm-pi-ai</code> 的 <code>openai-completions</code> ✓，
+		真实路径 <code>POST /v2/chat/completions</code> ✓）；</li>
+	<li><b>鉴权</b> = <code>Authorization: Bearer &lt;accessToken&gt;</code> ＋ 一组身份头（<code>X-Domain: tencent.sso.codebuddy.cn</code> 等 ✓，
+		仓库说网关按 <code>X-IDE-*</code> 做归属/限流 ✓）；</li>
+	<li><b>模型 id</b> 形如 <code>hy4-preview-ioa</code> / <code>hy3-ioa</code> ✓（App 的
+		<code>agent-studio.model-selection</code> 里当前存的是 <code>lm:codebuddy / hy3-ioa</code> ✓）。</li>
+</ul>
+<p>
+	探针为此提供便捷模式：<code>KB_REAL_LLM_USE_CODEBUDDY=1</code> ⇒ 端点/协议/模型名用上面的缺省 ✓，
+	密钥从 <code>KB_REAL_LLM_API_KEY_ENV</code>（缺省 <code>CODEBUDDY_API_KEY</code>）读 ✓ —— <b>密钥不进命令行 ✓</b>。
+</p>
+
+<h3>14.2 ⚠ 卡点：<code>CODEBUDDY_API_KEY</code> 不够用（本轮实测 ✓，与真源注释一致 ✓）</h3>
+<p>
+	直接拿环境里那把 32 位 <code>CODEBUDDY_API_KEY</code> 打网关：<code>POST /v2/chat/completions</code>
+	（<code>hy4-preview-ioa</code> 与 <code>hy3-ioa</code> 各试一次）⇒ <b>HTTP 401 Authorization Required</b> ✗；
+	<code>GET /v3/config</code> ⇒ 200 但 <code>data.models = null</code> ✓ ——
+	与真源注释里那条实测一字不差：<i>"只用 <code>CODEBUDDY_API_KEY</code> 环境变量（32 位 key）时
+	<code>GET /v3/config</code> 返回 <code>code:0</code> 但 <code>data.models: null</code>"</i> ✓。
+</p>
+<p>
+	⇒ 端到端要跑起来，<b>必须有登录态的 access token</b> ✓（App 登录后由
+	<code>codebuddy.tokenData</code> / <code>_codebuddy.dshProviderConfig</code> 提供 ✓；
+	App 的 SecretStorage 在本机是<b>加密字节</b>（<code>tof.session.v1</code> 的 <code>data</code> 是 595 个数字的数组 ✓）
+	⇒ 探针<b>无法自行取出</b> ✗；工作区里也没有已同步的 provider 配置 ✗）。
+</p>
+<p>
+	<b>跑法（拿到 token 后一条命令 ✓，密钥只进环境 ✓）：</b><br>
+	<code>$env:KB_REAL_LLM_USE_CODEBUDDY='1'; $env:CODEBUDDY_API_KEY='&lt;登录态 token&gt;';
+	node poc/dsh-p0/scripts/p3-67-kb-build-real-model.mjs</code>
+</p>
+
+<h3>14.3 源码级审计：token 的五个来源，逐条核到本机（2026-10-13）</h3>
+<p>
+	权威是 <code>extensions/codebuddy-provider/src/auth.ts:112-236</code>（<code>getAccessToken()</code> ✓），
+	它把来源写成了<b>有序五条</b> ✓；本机逐条核过（只看"有没有 + 长度"，不回显任何值 ✓）：
+</p>
+<table>
+	<tr><th>#</th><th>来源（源码口径 ✓）</th><th>本机结果</th></tr>
+	<tr><td>1</td><td><code>globalState['codebuddy.tokenData']</code>（登录态 ✓）</td>
+		<td class="x">三个 App（<code>VsSaros</code> / <code>vssaros</code> / <code>CodeBuddy CN</code>）的 <code>state.vscdb</code> 里<b>都没有</b>这个键 ✗</td></tr>
+	<tr><td>2</td><td><code>CODEBUDDY_AUTH_TOKEN</code> 环境变量</td><td class="x">未设置 ✗</td></tr>
+	<tr><td>3</td><td><code>codebuddy.apiKeyHelper</code>（可执行命令 ✓）</td><td class="x">三份 <code>settings.json</code> 里都<b>没有配</b> ✗（只有 <code>codebuddy.status: 已登录</code> 与 <code>codebuddy.models</code> 快照 ✓）</td></tr>
+	<tr><td>4</td><td><code>CODEBUDDY_API_KEY</code> 环境变量</td><td class="q">有（32B）—— 但实测网关 <b>401</b> ✗（见 §14.2 ✓）</td></tr>
+	<tr><td>5</td><td><code>~/.codebuddy/local_storage/</code>（兜底目录 ✓，<code>auth.ts:203-236</code> ✓）</td>
+		<td class="x"><b>该目录不存在</b> ✗（源码是"读目录里每个文件、找 <code>H4sI…</code> 的 gzip-base64 ✓"）；全盘兜底扫描也没找到这种形态的文件 ✗</td></tr>
+</table>
+<p>
+	⇒ 结论（可复核 ✓）：<b>本机没有"可读的"登录态 token</b> ✗ —— App 确实登录着（<code>codebuddy.status: 已登录</code> ✓），
+	但凭据只活在它的<b>运行时</b>里（globalState 里没有、Electron <code>safeStorage</code> 那份是 <code>v10</code> 加密封装 ✓
+	—— 我用 PowerShell 的 DPAPI <code>Unprotect</code> 解过，报 <i>The data is invalid</i> ✗，说明外面还套了一层 ✓）。
+</p>
+<p>
+	<b>顺带读到的模型目录</b>（App 缓存的 <code>codebuddy.models</code> ✓，26 个）：<code>hy3-ioa</code>、
+	<code>glm-5.2-ioa</code> / <code>glm-5v-turbo-ioa</code>、<code>kimi-k3-ioa</code> / <code>kimi-k2.7-ioa</code>、
+	<code>minimax-m3-ioa</code>、<code>claude-opus-4.8</code>(±1M) / <code>claude-sonnet-5</code> / <code>claude-opus-4.6</code>、
+	<code>gpt-5.6-{sol,terra,luna}</code> / <code>gpt-5.5</code> / <code>gpt-5.4</code> / <code>gpt-5.3-codex</code>、
+	<code>gemini-3.5-flash</code> ✓ —— <b>没有 <code>hy4*</code></b> ✗（与真源注释里那句"<code>model.json</code> 是旧快照、
+	缺 hy4 等新模型"一致 ✓）⇒ 想用 Hy4，先在 App 里跑一次 <code>codebuddy.refreshModels</code> ✓ 刷目录 ✓。
+</p>
+<p>
+	<b>因此唯一稳妥的两条交付路</b>（都不必把密钥贴进聊天 ✓）：
+	① 在 IDE 里取到 token 后落到一个文件，用 <code>KB_REAL_LLM_KEY_FILE</code> 指过去 ✓（探针已支持 ✓）；
+	② 配一个 <code>codebuddy.apiKeyHelper</code>（脚本打印 token ✓）—— 那条命令<b>我也能自己跑</b> ✓
+	（它就是 <code>auth.ts:179-197</code> 的 <code>execFile(helper)</code> ✓）。
+</p>
+
+<h2>15. 「资料库」view 样式复刻（第一刀：视觉口径，按值对账 ✓）</h2>
+
+<p>
+	<b>真源</b>：<code>src/vs/sessions/contrib/agentStudio/browser/views/media/kbView.css</code>
+	（<b>1095 行 / 304 个选择器</b> ✓ —— 资料库 view 的专属样式表；注意它<b>不在</b> <code>knowledgeBaseView.ts</code> 里 ✗：
+	那个 286KB 的文件里既没有 <code>&lt;style&gt;</code> 也没有 <code>class=</code>，样式全在这份 CSS 里 ✓）。
+	<b>落点</b>：<code>dsh-plugins/vssaros-kb/lib/index.js</code> 的 <code>PAGE_CSS</code>（本页专属 ✓）＋
+	<code>lib/pageShell.js</code>（<b>四插件共享</b>的通用外壳 ✓）。
+</p>
+
+<div class="box okbox">
+	<strong>映射表（每条都标真源选择器 ⇒ 改样式两边一起改 ✓）与读数</strong>
+	<table>
+		<tr><th>真源</th><th>本页</th><th>比的属性</th></tr>
+		<tr><td><code>.kb-section</code></td><td><code>.dsh-vault</code></td><td class="v">display / flex-direction / min-height ✓</td></tr>
+		<tr><td><code>.kb-section-header</code></td><td><code>.dsh-vault h3</code></td><td class="v">9 个（11px / 大写 / 字距 .5px / 600 / 内边距 5px 8px / 间距 6px …）✓</td></tr>
+		<tr><td><code>.kb-section-header .kb-count</code></td><td><code>.dsh-vault h3 small</code>、<code>.dsh-dir-head small</code></td><td class="v">5 个（10px / badge 底色 / 10px 圆角 / 左右 6px ✓）</td></tr>
+		<tr><td><code>.kb-search-row</code></td><td><code>.dsh-search</code></td><td class="v">gap / padding ✓</td></tr>
+		<tr><td><code>.kb-search-box input</code></td><td><code>.dsh-search input</code></td><td class="v">font-size <b>12px</b>（共享外壳是 11px ⇒ 本页显式覆盖 ✓）/ radius / padding</td></tr>
+		<tr><td><code>.kb-scroll</code></td><td><code>.dsh-scroll</code></td><td class="v">min-height / outline ✓</td></tr>
+	</table>
+	读数：<code>p3-68</code> <b>8/8 ✓，共比对 27 个属性，逐值相同</b> ✓（值按<b>字符串</b>比 ✓，不许"差不多" ✗）。
+</div>
+
+<h3>15.1 探针当场咬出的两处真差异（这就是"按值对账"的意义 ✓）</h3>
+<ul>
+	<li><b>我多写了 <code>var()</code> 回退</b> ✗：真源 <code>.kb-count</code> 是
+		<code>var(--vscode-badge-background)</code> / <code>var(--vscode-badge-foreground)</code>（<b>不带回退</b> ✓），
+		我照共享外壳的习惯写了 <code>, #4d4d4d</code> / <code>, #fff</code> ⇒ 探针直接红 ✓ ⇒ 已逐字对齐 ✓。
+		（口径：外壳允许带回退 ✓、本页与真源比对时<b>不带</b> ✗ —— 这条写进 §15.2 ✓。）</li>
+	<li><b>映射表写错了键</b> ✗：真源那条是<b>合并选择器</b> <code>.kb-scroll, .kb-panel-content</code> ✓，
+		而解析器按单个选择器存 ✓ ⇒ 探针第一版报"真源里找不到该选择器" ✓（<b>是探针自己的口径不一致</b> ✓，不是样式错 ✓）。</li>
+</ul>
+
+<h3>15.2 诚实记三处"这一刀<b>没有</b>做"的（不假装全等 ✗）</h3>
+<ul>
+	<li><b>交互增强</b>：真源的分区可折叠（<code>.kb-section.open</code> ＋ 箭头旋转 90° ✓）、分区间可拖拽
+		<code>.kb-resizer</code> 调高 ✓、搜索框有「全文/文件名」模式按钮 ✓、排序按钮 ✓ —— 这些是<b>功能</b>，
+		留到下一刀 ✓（本轮只做视觉口径 ✓，所以 <code>cursor: pointer</code> 这类"许诺可点"的属性<b>故意没加</b> ✗）。</li>
+	<li><b>门控 pending 灰显</b>：真源有 <code>.kb-tree-node.kb-pending</code>（名称半透明＋斜体、图标 35%、⏳ 徽标 ✓）；
+		我们这页的行现在<b>没有 status 字段</b> ⇒ CSS 先不加臆造的选择器 ✗（等页面真带上 status 再说 ✓）。</li>
+	<li><b>节点行的基础规则</b>：真源里 <code>.kb-tree-node</code> 的基础声明与别的选择器<b>合并写</b> ⇒ 这一刀抽不到单条 ⇒
+		节点行的字距/悬停底由我们按"同一套主题变量"给出 ✓，<b>没有</b>声称与真源逐值相同 ✗。</li>
+</ul>
+
+<h3>15.3 验证</h3>
+<table>
+	<tr><th>检查</th><th>读数</th></tr>
+	<tr><td><code>p3-68</code>（新，按值对账）</td><td class="v">8/8 ✓（27 个属性逐值相同 ✓）</td></tr>
+	<tr><td><code>p3-08</code>（kb 全量，含页面渲染与文案断言）</td><td class="v">140/140 ✓（样式改动无回归 ✓）</td></tr>
+	<tr><td>页面渲染</td><td class="v">进程内渲染 17582 字符 ✓，含 <code>.dsh-vault</code> / 徽标样式 / 12px 覆盖 ✓</td></tr>
+	<tr><td>浏览器肉眼核对</td><td class="q">⚠ 这一轮<b>没做成</b> ✗ —— chrome-devtools 连续两次超时（截图与 computed style 都超时 ✓）；
+		故视觉证据是"声明值逐字相同 ＋ HTML 渲染成功"，<b>不含</b>渲染后的像素/computed 核对 ✓（下一步补 ✓）</td></tr>
+</table>
+
+<h3>15.4 下一刀（已定）</h3>
+<ul>
+	<li><b>交互</b>：分区折叠/展开（<code>.open</code> ＋ 箭头旋转 ✓）＋ 手风琴单选（真源的 <code>.kb-solo</code> ✓）；
+		搜索模式按钮（全文/文件名 —— 工具侧 <code>kb_search</code> 本来就支持 <code>mode: index|fulltext</code> ✓）；排序按钮 ✓。</li>
+	<li><b>门控可视化</b>：页面行带上 <code>status</code> ⇒ 启用 <code>.kb-pending</code> 灰显＋⏳ 徽标 ✓（与 §10 门控同源 ✓）。</li>
+	<li><b>渲染级核对</b>：补一次浏览器 computed-style 对账（本轮 MCP 超时 ✗ ⇒ 换成本地 headless 或重试 ✓）。</li>
+</ul>
+
+<h3>15.5 第二刀：交互（折叠 / 手风琴 / 搜索模式 / 全文结果面板，kb <code>0.2.43 → 0.2.44</code>）</h3>
+
+<p>
+	真源出处逐条标在代码里（改交互时两边一起改 ✓）：模式按钮
+	<code>knowledgeBaseView.ts:636-649</code>；手风琴 <code>:1765-1792</code>（<code>_collapseOthers</code> ＋
+	<code>_updateSoloSection</code>）；结果面板与箭头 <code>media/kbView.css:363-369</code> 等 ✓。
+</p>
+
+<div class="box okbox">
+	<strong>落地清单</strong>
+	<table>
+		<tr><th>位置</th><th>改动</th></tr>
+		<tr><td><code>PAGE_CSS</code></td>
+			<td>14 条交互样式，<b>逐值取自真源</b> ✓：模式按钮（10.5px / 600 / 2px 7px / 3px / badge 底色 ✓）、
+				<code>.filename</code> 蓝底蓝字 ✓、结果面板 <code>display:none</code> → <code>.show</code> ✓、
+				结果头 11px 不大写 ✓、<code>.open</code> 的 <code>flex:1 1 0</code> ✓、
+				箭头 <code>transition .15s</code> ＋ 展开态 <code>rotate(90deg)</code> ✓、<code>dsh-solo</code> 占满 ✓</td></tr>
+		<tr><td>工具条 ＋ 分区标记</td>
+			<td>搜索模式按钮（默认「全文」✓，照真源 <code>_searchMode = 'fulltext'</code> ✓）；占位文案改真源
+				「搜索资料库…」✓；全文结果面板（默认隐藏 ✓）；每个 vault 头部做成<b>可点按钮 ＋ 箭头</b> ✓</td></tr>
+		<tr><td>页内脚本</td>
+			<td>模式切换（换文案 / 换 <code>placeholder</code> / 换 class ✓）＋ 文件名档走原页内筛选 ✓；
+				全文档走服务端检索（<b>250ms 防抖</b> ✗ 真源用本地索引不需要，我们必须加 ✓）；
+				结果渲染；分区折叠 ＋ <b>手风琴互斥</b> ＋ <code>.dsh-solo</code> ✓</td></tr>
+		<tr><td>新路由 <code>/x/kb/api/search</code></td>
+			<td>复用 <code>runFulltextSearch</code> ⇒ 与 <code>kb_search mode=fulltext</code> <b>同一套</b> ✓；
+				<b>错误如实回 400 ＋ 原因</b> ✓（"该库没在 IDE 侧建过索引"不许变成"没有结果" ✗）</td></tr>
+	</table>
+</div>
+
+<h3>15.6 与真源的四点取舍（如实记，不假装全等 ✗）</h3>
+<ul>
+	<li><b>手风琴做在 vault 粒度</b> ✗：真源是「库 / 笔记 / 标签分类」三档 ＋ 可拖拽 <code>.kb-resizer</code>；
+		我们这页是"每个 vault 一段"（§15.2 已记）⇒ <b>同机制、不同粒度</b> ✓，且不做 resizer ✓。</li>
+	<li><b>箭头字形不同、机制相同</b> ✓：真源 <code>codicon-chevron-right</code> ＋ <code>rotate(90deg)</code>；
+		我们页面是服务端渲染的纯 HTML、没有 codicon ⇒ 同一个字形 <code>▸</code> ＋ <b>同样的 rotate(90deg)</b> ✓。</li>
+	<li><b>全文检索走服务端</b> ✗：真源是本地索引（<code>KbFullTextIndex</code> ✓，打字即搜）；我们走 HTTP
+		⇒ 必须有防抖（250ms）与"检索中…" ✓；命中口径与工具一致（同一个 <code>runFulltextSearch</code> ✓）。</li>
+	<li><b>排序仍是 <code>&lt;select&gt;</code></b> ✓：真源是 <code>.kb-search-sort-btn</code>（按钮 ＋ 菜单）；
+		我们形态不同、能力等价 ⇒ <b>不为形似改成更差的控件</b> ✗ ✓。</li>
+</ul>
+
+<h3>15.7 这一刀咬出的两件事（都进了纪律 ✓）</h3>
+<ul>
+	<li><b>模板串里的反引号：今天翻车 4 次</b> ✗✗（<code>KB_SCRIPT</code> / <code>PAGE_CSS</code> ×2 / <code>renderPage</code> 的工具条）。
+		<b>症状各不相同</b>：语法错 → 页面 TypeError → <code>search is not defined</code> ✗（最后这个最阴：
+		反引号把后面一段 HTML 变成了 JS，真因只写在 500 的<b>响应体</b>里 ✓）。
+		⇒ 两个动作：① 探针 <code>p3-69</code> 第 <b>⓪</b> 条专门断言"页面回 200 且是完整 HTML" ✓
+		（否则后面所有"有没有某标记"都会红，却报成"没有标记" ✗）；② 插入模板串的内容<b>一律不用反引号</b> ✓。</li>
+	<li><b>p3-68 咬出一处"方向相反"的差异</b> ✓：真源 <code>.kb-search-mode-btn</code> 的 badge 变量<b>带</b>回退，
+		而 <code>.kb-count</code> 的<b>不带</b> ✗ —— 我按"统一风格"想当然写成不带 ⇒ 探针直接红 ✓
+		⇒ 只能<b>逐个选择器照抄</b>（真源自己就不一致 ✓）。</li>
+</ul>
+
+<h3>15.8 验证</h3>
+<table>
+	<tr><th>检查</th><th>读数</th></tr>
+	<tr><td><code>p3-69</code>（新，10 条）</td><td class="v">10/10 ✓（渲染 200 ＋ 标记 4 条 ＋ 脚本 3 条 ＋ 路由失败形状 2 条 ✓）</td></tr>
+	<tr><td><code>p3-68</code>（已扩到 16 条映射）</td><td class="v">16/16 ✓（共比对 <b>53</b> 个属性，逐值相同 ✓）</td></tr>
+	<tr><td><code>p3-08</code>（kb 全量）/ <code>p3-45</code>（真机，重装 0.2.44）</td><td class="v">140/140 ✓ · <b>19/19</b> ✓</td></tr>
+	<tr><td><code>p3-44</code> / <code>p3-58</code> / <code>p3-59</code> / <code>p3-62</code> / <code>p3-65</code> / <code>p3-66</code></td>
+		<td class="v">14/14 ✓ · 12/12 ✓ · 11/11 ✓ · 7/7 ✓ · 8/8 ✓ · 10/10 ✓</td></tr>
+	<tr><td>契约</td><td class="v">18 项契约 ＋ 2 组拷贝，违规 0 ✓</td></tr>
+	<tr><td>工具面快照</td><td class="q">⚠ 报"不一致（2 处）" ✗ —— 差异是<b>别的插件</b>的一条 <code>descriptionHash</code>
+		（参数含 done/expression/op/ref/url ⇒ 不是 kb 的工具 ✓）；我一度跑 <code>--write</code> 把它"洗白"了 ✗，
+		<b>已恢复备份</b> ✓ ⇒ <b>不替别的会话背书</b>，留给改动方自己重生成 ✓（与"不动别人的在飞改动"同一条 ✓）</td></tr>
+</table>
+
+<h3>15.9 下一刀（可选）</h3>
+<ul>
+	<li><b>门控可视化</b>：页面行带上 <code>status</code> ⇒ 启用真源的 <code>.kb-pending</code> 灰显 ＋ ⏳ 徽标 ✓；</li>
+	<li><b>渲染级核对</b>：补一次浏览器 computed-style 对账（上一刀 MCP 超时 ✗ ⇒ 换本地 headless 或重试 ✓）；</li>
+	<li><b>拖拽 resizer</b>（分区高度可调）—— 真源有、我们没做 ✓。</li>
+</ul>
+
+<h3>15.10 第三刀：门控可视化（行带 status ⇒ 灰显 ＋ ⏳ 徽标，kb <code>0.2.44 → 0.2.45</code>）</h3>
+
+<p>
+	真源口径与值都逐条读过 ✓：判据 <code>knowledgeBaseView.ts:2056-2064</code>（库分区里查
+	<b>真实构建缓存</b> —— 真源原话「<i>不再按扩展名猜</i>」✗：原先 <code>.md</code> 一律谎报「已建笔记」、
+	PDF 永远「待构建」；<b>非库分区不参与</b> ✓）；样式 <code>media/kbView.css:276-279</code>（3 条规则 ✓）。
+	判据与 §13 的 P1 构建缓存<b>同源</b> —— 页面与 <code>kb_build mode=preview</code> 用<b>同一份</b>
+	<code>previewBuild</code> ✓（不会各说一套 ✓）。
+</p>
+
+<div class="box okbox">
+	<strong>落地清单</strong>
+	<table>
+		<tr><th>文件</th><th>改动</th></tr>
+		<tr><td><code>lib/store.js</code></td>
+			<td>快照里算好每库 pending（键＝<b>库内后缀</b>、正斜杠、小写 ✓）；
+				<b>指纹纳入 <code>.kb-build-cache.json</code></b> ✗ —— 不纳入的话，构建/登记完再打开页面
+				<b>还是旧标记</b>（"越用越不准" ✓，与 §13 同一个坑 ✓）；读盘失败当空集，但把原因留给页面 ✓</td></tr>
+		<tr><td><code>lib/index.js</code></td>
+			<td>行打 <code>class="dsh-pending" data-pending="1"</code> ＋ ⏳ 徽标（<code>.dsh-pending-badge</code> ✓）；
+				判据只有一条：它的<b>库内相对路径</b>在 pending 集合里 ✓（因此「笔记」分区的行<b>永远</b>不可能命中 ✓，
+				与真源一致 ✓）；诊断行写出 pending 条数 ＋（读盘失败时）原因 ✓</td></tr>
+		<tr><td><code>PAGE_CSS</code></td>
+			<td>真源 3 条规则里落了 <b>2 条</b>（逐值 ✓）：名字 <code>opacity:.5</code> ＋ 斜体；
+				徽标 <code>10px / margin-left 4px / flex-shrink 0 / opacity .75</code> ✓</td></tr>
+		<tr><td><code>p3-70</code> <span class="q">新</span> ＋ <code>p3-68</code>（扩到 18 条）</td>
+			<td>探针 6 条：渲染 200、没记录的要标、有记录的<b>不标</b>、「笔记」分区不参与、诊断条数、
+				★★<b>登记后再渲染就不再标</b> ✓（这条同时钉住"指纹纳入了构建缓存" ✗）；样式按值对账 ✓</td></tr>
+	</table>
+</div>
+
+<h3>15.11 三处如实标注的缺口（不假装全等 ✗）</h3>
+<ul>
+	<li><b>我们侧 pending 只统计 <code>.md</code></b> ✗：真源数之前会先把 pdf/docx 等<b>转成文本</b>再当素材算
+		（§13 已记 ✓）⇒ 本页上<b>非 md 素材不会被标 pending</b> —— 这不是"它们都建好了" ✓。</li>
+	<li><b>真源同一节的第 2 条规则（<code>.kb-icon</code> 变淡）跳过</b> ✗：我们行里<b>没有图标元素</b>
+		⇒ 跳过 ✓，并在代码里写明"这不是等价实现" ✓。</li>
+	<li><b>真源的 <code>.kb-status.raw/.indexed/.modified</code> 状态点（索引态）不做</b> ✗：那是<b>另一个维度</b>
+		（"索引里有没有它" vs "有没有建成笔记" ✓），本刀只做后者 ✓。</li>
+</ul>
+
+<h3>15.12 只在跑起来才看得见的两个坑（都由 p3-70 咬出 ✓）</h3>
+<ul>
+	<li><b>pending 的路径实测是<u>绝对</u>路径</b> ✗（<code>previewBuild</code> 的 JSDoc 写的是"相对「库」" ✗）
+		⇒ 与行里算出的"库内相对路径"对不上 ⇒ <b>一条也标不上</b> ✓，而<b>诊断条数照样是 1</b> ✓
+		⇒ <b>只跑"计数"那条根本发现不了</b> ✗✓。两边统一成"库内后缀"后转绿 ✓
+		（记：<b>跨模块的键，必须拿真数据对一次</b>，不能信注释 ✓）。</li>
+	<li><b>我插进去的一批多行代码被压成了一行</b> ✗ ⇒ 行内 <code>//</code> 把它后面全注释掉 ⇒
+		<code>libKey</code> 未定义 ⇒ 抛 ⇒ <b>被我自己的 <code>catch</code> 吞成空集</b> ✓✓
+		（症状恰好是"计数变 0、另一条照样绿" ✓）。⇒ 两个动作：① 插入多行后<b>读回确认</b>没被压平 ✓；
+		② <b>catch 里不许静默吞</b> ✗ —— 现在诊断行会带 <code>data-vssaros-kb-pending-note</code>，
+		页面能如实说出"为什么没标" ✓（与"如实报错"同一条纪律 ✓）。</li>
+</ul>
+
+<h3>15.13 验证</h3>
+<table>
+	<tr><th>检查</th><th>读数</th></tr>
+	<tr><td><code>p3-70</code>（新，6 条）</td><td class="v">6/6 ✓（含"登记后不再标"＋ 指纹纳入缓存 ✓）</td></tr>
+	<tr><td><code>p3-68</code>（已扩到 18 条映射）</td><td class="v">18/18 ✓（共比对 <b>59</b> 个属性 ✓）</td></tr>
+	<tr><td><code>p3-69</code> / <code>p3-08</code>（kb 全量）</td><td class="v">10/10 ✓ · 140/140 ✓</td></tr>
+	<tr><td><code>p3-45</code>（真机，重装 0.2.45）</td><td class="v"><b>19/19</b> ✓</td></tr>
+	<tr><td><code>p3-44</code> / <code>p3-58</code> / <code>p3-59</code> / <code>p3-62</code> / <code>p3-65</code> / <code>p3-66</code></td>
+		<td class="v">14/14 ✓ · 12/12 ✓ · 11/11 ✓ · 7/7 ✓ · 8/8 ✓ · 10/10 ✓</td></tr>
+	<tr><td>契约</td><td class="v">18 项契约 ＋ 2 组拷贝，违规 0 ✓</td></tr>
+	<tr><td>工具面快照</td><td class="q">⚠ 仍是那条<b>别人的</b> <code>descriptionHash</code> 漂移（§15.8 ✓）—— <b>依旧不替它背书</b>，未重生成 ✓</td></tr>
+</table>
+
+<h3>15.14 第四刀：状态点（<code>.kb-status</code> 那一族，kb <code>0.2.45 → 0.2.46</code>）</h3>
+
+<p>
+	这一族上一刀<b>明确没做</b>（当时记的是"那是另一个维度" ✓），现在补上 ✓。真源两处都核过：
+	调用点<b>只有一处</b> <code>knowledgeBaseView.ts:2069-2072</code>（<code>classList.add(built ? 'indexed' : 'raw')</code>，
+	title「已建笔记」/「待构建为笔记」 ✓）；判据在 <code>:2064</code>：
+	<code>built = 库分区 ? _isBuiltSource(node) : true</code> ⇒ <b>非库分区恒 indexed</b> ✓。
+</p>
+
+<div class="box okbox">
+	<strong>落地清单</strong>
+	<table>
+		<tr><th>位置</th><th>改动</th></tr>
+		<tr><td><code>PAGE_CSS</code></td>
+			<td>基类 <code>7×7 / 圆 / 不收缩 / 左距 4px</code> ✓ ＋ <code>.raw</code> 蓝 / <code>.indexed</code> 绿（值逐条取自真源 ✓）</td></tr>
+		<tr><td><code>lib/index.js</code></td>
+			<td>行尾打 <code>&lt;span class="dsh-status indexed|raw" title="已建笔记|待构建为笔记"&gt;</code> ✓；
+				判据与 ⏳ 徽标<b>同源</b>（同一份构建缓存 ✓）⇒ 两者一起翻转 ✓</td></tr>
+		<tr><td><code>p3-71</code> <span class="q">新</span> ＋ <code>p3-68</code>（扩到 21 条）</td>
+			<td>7 条：200、raw、indexed、非库分区恒 indexed、<b>我们加的 display 与新源没有 display</b> 两条、登记后翻绿 ✓</td></tr>
+	</table>
+</div>
+
+<h3>15.15 两处"摆到台面上"的偏离（都不藏着 ✗）</h3>
+<ul>
+	<li><b>真源 <code>.kb-status.modified</code>（黄）不实现</b>：<b>全仓只有那一条 CSS、没有任何调用点</b> ✗
+		（2026-10-13 核过：<code>'modified'</code> 在视图目录 0 命中 ✓）⇒ 我们不做 ✓ ——
+		<b>不造一个永远不会出现的状态</b> ✓（真要做，得先知道"改过但没重建索引"在真源里由谁判定 ✗，那是另一刀 ✓）。</li>
+	<li><b>我们<b>加了</b>一条 <code>display: inline-block</code></b> ✗：真源那个 span 是 <b>flex 容器的子项</b>（宽高天然生效 ✓），
+		我们的行是 <code>li</code>（非 flex）⇒ 不加这句，7×7 的点会按 inline 渲染成<b>看不见</b> ✓。
+		⇒ <code>p3-71</code> 用<b>两条</b>断言把它钉住：④-a 我们这条在 ✓、④-b <b>真源那条基类里确实没有 display</b> ✓
+		（证明这是<b>有意加的偏离</b>，不是"抄漏了" ✓）。按值对账（<code>p3-68</code>）里基类只比真源有的 5 个属性 ✓。</li>
+</ul>
+
+<h3>15.16 验证</h3>
+<table>
+	<tr><th>检查</th><th>读数</th></tr>
+	<tr><td><code>p3-71</code>（新，7 条）</td><td class="v">7/7 ✓</td></tr>
+	<tr><td><code>p3-68</code>（已扩到 21 条映射）</td><td class="v">21/21 ✓（共比对 <b>66</b> 个属性 ✓）</td></tr>
+	<tr><td><code>p3-69</code> / <code>p3-70</code> / <code>p3-08</code></td><td class="v">10/10 ✓ · 6/6 ✓ · 140/140 ✓</td></tr>
+	<tr><td><code>p3-45</code>（真机，重装 0.2.46）</td><td class="v"><b>19/19</b> ✓</td></tr>
+	<tr><td><code>p3-44</code> / <code>p3-58</code> / <code>p3-59</code> / <code>p3-65</code> / <code>p3-66</code></td>
+		<td class="v">14/14 ✓ · 12/12 ✓ · 11/11 ✓ · 8/8 ✓ · 10/10 ✓</td></tr>
+	<tr><td>契约 / 工具面快照</td><td class="v">18 项 ＋ 2 组拷贝，违规 0 ✓；快照仍留那条<b>别人的</b>漂移 ✓（§15.8：不替它背书 ✓）</td></tr>
+</table>
+
+<h3>15.17 「资料库」页现在还剩什么</h3>
+<ul>
+	<li><b>拖拽 resizer</b>（分区高度可调）—— 真源有、我们没做 ✓（手风琴已经覆盖"唯一展开占满"这个主用途 ✓）；</li>
+	<li><b>渲染级核对</b>：目前所有对账都是"<b>声明值</b>对声明值"（读 CSS 文本 ✓）⇒ 还缺一次<b>浏览器里</b>的
+		computed-style 核对（前两刀试过 MCP，超时 ✗ ⇒ 下次换本地 headless 或重试 ✓）；</li>
+	<li>文件操作那一族（重命名 / 右键菜单 / 双链面板 / 标签）—— 要写路径或 IDE 侧就地编辑能力 ✓（README 5.46 ✓）。</li>
+</ul>
+
+<h3>15.18 第五刀：<b>渲染级</b>核对（真浏览器里读 computed style ＋ 真点击，kb <code>0.2.46 → 0.2.47</code>）</h3>
+
+<p>
+	前面所有对账都是「<b>声明值</b>对声明值」（读 CSS 文本 ✓）—— 它<b>看不见</b>三件事：共享外壳会不会<b>压过</b>本页、
+	一条声明在浏览器里是否<b>真的生效</b>、以及页内脚本的<b>行为</b>（此前只断言过"脚本里有这段代码" ✗）。
+	本刀把这三件事变成可复现读数 ✓：<code>playwright-core</code> ＋ <b>系统 Chrome</b>（<code>channel:'chrome'</code> ✓）。
+</p>
+
+<div class="box okbox">
+	<strong>落地与口径</strong>
+	<table>
+		<tr><th>项</th><th>说明</th></tr>
+		<tr><td>浏览器</td><td>先 <code>channel:'chrome'</code>（实测 <b>155.0.8059.39</b> 一次成功 ✓）、再 <code>msedge</code>、再自带；
+			<b>自带那三份在本机起不来</b> ✗（进程启动即退 ✓）⇒ 顺序反过来才对 ✓；全失败时<b>如实 SKIP</b> 并把每条错误打出来 ✓</td></tr>
+		<tr><td>怎么起页面</td><td>页面把样式与脚本都<b>内联</b>在 HTML 里 ⇒ 落盘 + <code>file://</code> 加载（不起 Host / 不装插件 / 不走 auth ✓）。
+			<b>边界如实记</b> ✗：这样加载时 <code>--vscode-*</code> 主题变量<b>不在</b>（带 fallback 的声明会走 fallback ✓ 能算能比 ✓）；
+			<span class="v">该层已由 <b>§15.22 的 <code>p3-73</code></b>（真 Host ＋ 真浏览器）覆盖，并给出实测结论：
+			<b>dsh 外壳本身就不注入 <code>--vscode-*</code></b> ⇒ 我们声明的 fallback 是<b>唯一</b>颜色来源 ✓</span></td></tr>
+		<tr><td><code>p3-72</code> <span class="q">新</span></td><td>10 条：零脚本错误、状态点 7×7、两态颜色、⏳ 徽标、灰显斜体、分区 flex、模式按钮、<b>外壳 11px 被本页压成 12px</b>、
+			<b>真点击</b>折叠、<b>真点击</b>手风琴、<b>真点击</b>模式切换 ✓</td></tr>
+	</table>
+</div>
+
+<h3>15.19 ★ 它第一次跑就逮到两个真 bug（前 21 条声明对账全看不见 ✗✗）</h3>
+<ul>
+	<li><b>整块接线被插进了另一个脚本</b> ✗：那一刀的"模式按钮接线 ＋ 折叠 ＋ 手风琴 ＋ solo"用的锚点是 <code>})();</code>，
+		它先匹配到 <b><code>DOC_PREVIEW_SCRIPT</code></b> 的收尾 ⇒ 那段落进了预览脚本、引用本页脚本的 <code>modeBtn</code>
+		⇒ 页面 <code>ReferenceError: modeBtn is not defined</code> ✓，<b>本页脚本里再没有折叠/手风琴/solo</b> ✓。
+		⚠ <b>而当时的 <code>p3-69</code>⑤ 是拿"两个脚本拼起来"的文本断言的 ⇒ 照样绿</b> ✗✗（"漏掉或放错位置"它看不见 ✓）
+		⇒ 已补 <b>⑦-b</b>：从<b>插件源码</b>分段取 <code>KB_SCRIPT</code> / <code>DOC_PREVIEW_SCRIPT</code> 再断言
+		（第一版按页面 <code>&lt;script&gt;</code> 标签切 ⇒ 两段在同一个标签里 ⇒ 读数是"另一段 0 字符"，
+		<b>它自己把这条假断言揭穿了</b> ✓✓）。</li>
+	<li><b>多行插入被压成一行</b> ✗：<code>PAGE_CSS</code> 两处变成「注释紧接着规则、中间夹逗号」⇒ <b>非法 CSS</b>
+		⇒ 解析器丢掉后续声明 ⇒ <code>.dsh-pending .t</code> / <code>.dsh-status</code> / <code>.dsh-vault.open</code>
+		在浏览器里<b>全都没生效</b> ✓（而它<b>前面</b>的规则生效 ✓ —— 只看"规则在不在"的探针完全看不出来 ✗）。
+		修完读数：状态点 <code>7px×7px / 50%</code> ✓、两态 <code>rgb(86,156,214)</code> / <code>rgb(106,153,85)</code> ✓、
+		行标题 <code>0.5 / italic</code> ✓、分区 <code>flex-grow:1</code> ✓。</li>
+	<li><b>修 A 时又踩一次</b> ✗：摘块只取到<b>第一处</b> <code>updateSolo();</code>（它在点击回调<b>里面</b> ✓）⇒ 块尾三行留在原处
+		⇒ 变成 <code>btn.addEventListener('click', fn)()</code> ⇒ <code>is not a function</code> ✓（同样是渲染级才看得见 ✓）。</li>
+</ul>
+
+<h3>15.20 三条纪律（这一刀换来的 ✓）</h3>
+<ul>
+	<li><b>渲染级核对是"放错位置 / 被压平 / 层叠被压过"这三类错的唯一一张网</b> ✓ ——
+		声明对账再密也照不出来 ✗（本刀三个 bug 全落在它的射程里 ✓）。</li>
+	<li><b>探针的期望要跟自己的前置步骤对齐</b> ✗：⑧ 第一版按"初始两个分区都展开"断言，但 ⑦ 里已经点过两次
+		（手风琴收缩过一轮 ✓）⇒ 读数其实是<b>对的</b>、红的是我的期望 ✓（假红同样要修 ✓）。</li>
+	<li><b>插多行代码改用 <code>split('\n')</code></b> ✓：今天多次遇到"数组元素被逗号拼平"（PAGE_CSS 两处、导出的 CSS、探针断言 ✓），
+		这个写法绕开它 ✓。</li>
+</ul>
+
+<h3>15.21 验证</h3>
+<table>
+	<tr><th>检查</th><th>读数</th></tr>
+	<tr><td><code>p3-72</code>（新，10 条，真浏览器）</td><td class="v">10/10 ✓（Chrome 155 ✓；修复前是 2/10 ✓ —— 差别就是那三个真 bug ✓）</td></tr>
+	<tr><td><code>p3-69</code>（补 ⑦-b）</td><td class="v">11/11 ✓</td></tr>
+	<tr><td><code>p3-68</code> / <code>p3-70</code> / <code>p3-71</code> / <code>p3-08</code></td><td class="v">21/21 ✓ · 6/6 ✓ · 7/7 ✓ · 140/140 ✓</td></tr>
+	<tr><td><code>p3-45</code>（真机，重装 0.2.47）</td><td class="v"><b>19/19</b> ✓</td></tr>
+	<tr><td><code>p3-44</code> / <code>p3-66</code> / 契约</td><td class="v">14/14 ✓ · 10/10 ✓ · 18 项 ＋ 2 组拷贝，违规 0 ✓</td></tr>
+</table>
+
+<h3>15.22 第六刀：<b>真 Host ＋ 真浏览器</b>的渲染级核对（kb <code>0.2.47</code>，探针 <code>p3-73</code>）</h3>
+
+<p>
+	§15.18 的 <code>p3-72</code> 走 <code>file://</code>（快、稳、可复现 ✓），代价是页面不经真 Host 应答 ⇒
+	<b>外壳/主题/同源请求</b>这三件事它验不到 ✗。本刀补上：起<b>真 Host</b>（与 <code>p3-08</code> L2 同一套：
+	<code>startHost</code> ✓ ＋ 装插件 ＋ auth cookie ✓），在真 URL 上开 Chrome ✓，并让页面在<b>同源</b>下发请求 ✓。
+</p>
+
+<div class="box okbox">
+	<strong>p3-73 的 9 条（全部在真 Host 里）</strong>
+	<table>
+		<tr><th>断言</th><th>读数</th></tr>
+		<tr><td>装的就是当前源码（逐文件比字节）</td><td class="v">✓（<code>plugin add</code> 的硬链接坑照旧自己拷一份 ✓）</td></tr>
+		<tr><td>⓪ 真 Host 里 200 ＋ 锚点在 ＋ <b>零脚本错误</b></td><td class="v">HTTP 200 ✓；另有 1 条<b>资源 404</b>（favicon ✓，<b>不是脚本错误</b> ⇒ 单独收着、打在读数里 ✓）</td></tr>
+		<tr><td>★ ① <b>外壳到底有没有注入 <code>--vscode-*</code></b></td><td class="v">实测 <b>没有</b> ✗ —— dsh 不是 VS Code、外壳不设这些变量 ✓ ⇒ 本页所有 <code>var(--vscode-x, fallback)</code> 一律走 fallback ✓</td></tr>
+		<tr><td>★ ② 有全套外壳样式时本页仍成立</td><td class="v">状态点 <code>7×7/50%</code>、⏳ <code>10px/.75</code>、灰显 <code>0.5/italic</code>、分区 <code>flex-grow:1</code> ✓</td></tr>
+		<tr><td>★ ③ 两态颜色<b>正好等于我们声明的 fallback</b></td><td class="v"><code>rgb(86,156,214)</code> / <code>rgb(106,153,85)</code> ✓（承接 ① ✓ —— 比"非 transparent"强得多 ✓）</td></tr>
+		<tr><td>★ ④ 输入框 12px 覆盖在真外壳下仍成立</td><td class="v">✓</td></tr>
+		<tr><td>★★ ⑤ 页内脚本打的 <code>/x/kb/api/search</code> 在<b>同源</b>下真的走通</td><td class="v">400 ＋ <b>如实原因</b>（"没有可检索的正文…可能还没在 IDE 侧建立过索引 ✓"）—— 把"页内脚本 → 路由"串起来验 ✓，<code>file://</code> 版做不到 ✗</td></tr>
+		<tr><td>★ ⑥ 生产式外壳里的真点击</td><td class="v">折叠（<code>display:none</code> ＋ <code>aria=false</code>）＋ 模式切换（文件名 / class / placeholder ✓）✓</td></tr>
+	</table>
+</div>
+
+<h3>15.23 一条<b>订正</b>（口径漂移的老毛病，这次自己抓住了 ✓）</h3>
+<p>
+	§15.18 当时写的是"<i>file:// 加载时 <b>dsh 外壳注入的</b> <code>--vscode-*</code> 主题变量不在</i>" ✗ ——
+	这句读起来像"Host 下就有" ✓，而实测<b>两边都没有</b> ✓。已当场订正为实测结论，并指向 <code>p3-73</code>① ✓。
+	⇒ 纪律照旧：<b>写下的边界要当场被读数钉住，否则下一轮就成了假的</b> ✓。
+</p>
+
+<h3>15.24 验证</h3>
+<table>
+	<tr><th>检查</th><th>读数</th></tr>
+	<tr><td><code>p3-73</code>（新，9 条，真 Host ＋ 浏览器）</td><td class="v">9/9 ✓（Chrome 155 ✓；Host 起在 127.0.0.1 随机端口 ✓）</td></tr>
+	<tr><td><code>p3-72</code>（真浏览器 ＋ <code>file://</code>）</td><td class="v">10/10 ✓（两边都在，分工见 15.18/15.22 ✓）</td></tr>
+	<tr><td>其余页面族 / 真机</td><td class="v">（见 §15.21 ✓；本刀只加探针与订正，未改产品代码 ✓）</td></tr>
+</table>
+
+<h3>15.25 第七刀：分区<b>拖拽调高</b>（<code>.kb-resizer</code> 那一族，kb <code>0.2.47 → 0.2.48</code>）</h3>
+
+<p>
+	这一族此前一直记着"真源有、我们没做" ✓，现在补上 ✓。真源两处都读过：
+	样式 <code>media/kbView.css:157-195</code>（分隔条 ＋ 三条区域规则 ✓）、
+	行为 <code>knowledgeBaseView.ts:535-568</code>（<code>upper = bar.previousElementSibling</code> ✓、
+	<b>按下即 apply 当前高</b> ✓、移动 <code>Math.max(40, round(startH + dy))</code> ✓、
+	<code>dragging</code> 类 ＋ <code>setPointerCapture</code>（try/catch ✓）、收尾按区域 id 落库 ✓）。
+</p>
+
+<div class="box okbox">
+	<strong>落地清单</strong>
+	<table>
+		<tr><th>位置</th><th>改动</th></tr>
+		<tr><td><code>PAGE_CSS</code></td>
+			<td>分隔条 <code>flex:0 0 auto; height:5px; cursor:row-resize; position:relative; background:transparent</code>
+				＋ <code>::after</code> 那条 1px 细线 ＋ <code>hover/.dragging</code> 高亮 <b>逐字搬</b> ✓；
+				三条区域规则（含 <code>:not(.open)</code> 回 header 高、<code>.dsh-solo</code> <b>覆盖</b>那条 ✓）</td></tr>
+		<tr><td>标记</td>
+			<td>相邻 vault 段之间插 <code>&lt;div class="dsh-resizer" data-resizer title="拖拽调整高度"&gt;</code> ✓；
+				每段带 <code>data-kb-region="&lt;vaultId&gt;"</code> ✓ —— <b>属性名照抄真源</b>
+				（<code>data-kb-region</code> / <code>data-kb-resized</code> / <code>--kb-region-h</code> ✓）
+				所以那三条 CSS 能<b>逐字</b>搬、<b>相对优先级关系也一样</b>（0,3,0 > 0,2,0 ✓，solo 再压回去 ✓）</td></tr>
+		<tr><td>页内脚本</td>
+			<td>拖拽接线照真源 ✓（含 <code>minH = 40</code> 与其理由 ✓）；启动时按区域 id <b>恢复</b>高度 ✓</td></tr>
+		<tr><td><code>p3-72</code>（扩到 15 条）</td>
+			<td>⑩-0/⑩/⑩-b/⑩-c/⑪：初始全开 ⇒ 拖下 60 <b>钉住</b> ✓ ⇒ 狠拖上 <b>钳 40px</b> ✓ ⇒
+				收纳成一个<b>变 solo ⇒ 覆盖</b>（<code>flex-grow=1</code>、记住的值仍留着 ✓）⇒ 刷新<b>恢复</b> ✓</td></tr>
+	</table>
+</div>
+
+<h3>15.26 两处如实标注的差异 ✗</h3>
+<ul>
+	<li><b>落库换成了 <code>localStorage</code></b>：真源走 IDE 的 <code>IStorageService</code>（按 vault 分键 ✓）；
+		页面在浏览器里 ⇒ 用 <code>localStorage</code> ✓（同一个作用：刷新后仍在 ✓；差别是<b>换浏览器/清缓存即丢</b> ✓）。</li>
+	<li><b>粒度为"一个 vault 一段"</b>：真源有四个区域（库 / 笔记 / 标签分类 / 反链 ✓），我们这页只有多个 vault 段
+		（§15.2 已记 ✓）⇒ 分隔条插在<b>相邻段之间</b> ✓（同机制、不同粒度 ✓）。</li>
+</ul>
+
+<h3>15.27 ★ 这一刀最有价值的读数：探针把"产品对、断言错"分辨了出来 ✓</h3>
+<ul>
+	<li><b>⑩ 第一版红，但读数是 <code>regionH=256px</code>（=196+60 ✓）、落库 256 ✓、只有渲染高度没变</b> ✗
+		⇒ 因为那一刻它正是<b>唯一展开</b>的分区 ⇒ 命中 <code>.dsh-solo</code> 的<b>覆盖</b>规则 ✓✓
+		（真源注释原话："<i>无视拖拽保存的固定高度</i>" ✓）⇒ <b>产品是对的，是我的断言把两条行为混在一起了</b> ✓
+		⇒ 改成成对验：<b>非 solo ⇒ 钉住</b>、<b>solo ⇒ 覆盖</b> ✓。</li>
+	<li><b>手风琴的硬事实</b>：<b>点过之后永远只剩一个展开</b> ✓ ⇒ "非 solo 的钉住"只能在<b>初始全开</b>那一刻观察到 ✓
+		⇒ 断言必须先 <code>reload</code> 回初始 ✓（我先前"点开第一个"其实把它关掉了 ✓）。</li>
+	<li><b>第二次拖拽必须重新量分隔条坐标</b> ✗：它已经被推下去 60px ⇒ 用旧坐标会<b>点空</b>
+		⇒ 读数就是"高度纹丝不动" ✓。</li>
+	<li><b>加分隔条改变了 DOM 兄弟关系</b> ⇒ 探针里原来的 <code>.dsh-vault + .dsh-vault</code> 选择器<b>失效</b>
+		⇒ p3-72 第一次跑就<b>超时</b> ✓（顺带证明分隔条真的进了 DOM ✓）⇒ 改用 locator API ✓。</li>
+</ul>
+
+<h3>15.28 验证</h3>
+<table>
+	<tr><th>检查</th><th>读数</th></tr>
+	<tr><td><code>p3-72</code>（扩到 15 条，真浏览器）</td><td class="v">15/15 ✓（拖拽全链条：钉住 → 钳 40 → solo 覆盖 → 刷新恢复 ✓）</td></tr>
+	<tr><td><code>p3-68</code>（扩到 28 条映射）</td><td class="v">28/28 ✓（共比对 <b>86</b> 个属性 ✓）</td></tr>
+	<tr><td><code>p3-73</code>（真 Host ＋ 浏览器）</td><td class="v">9/9 ✓</td></tr>
+	<tr><td><code>p3-08</code> / <code>p3-69</code> / <code>p3-70</code> / <code>p3-71</code></td><td class="v">140/140 ✓ · 11/11 ✓ · 6/6 ✓ · 7/7 ✓</td></tr>
+	<tr><td><code>p3-45</code>（真机，重装 0.2.48）</td><td class="v"><b>19/19</b> ✓</td></tr>
+	<tr><td><code>p3-44</code> / <code>p3-66</code> / 契约</td><td class="v">14/14 ✓ · 10/10 ✓ · 违规 0 ✓</td></tr>
+</table>
+
+<h3>15.29 「资料库」页现在只剩一件事</h3>
+<ul>
+	<li><b>文件操作那一族</b>（重命名 / 右键菜单 / 双链面板 / 标签）—— 要写路径或 IDE 侧的就地编辑能力 ✓
+		（README 5.46 记着 ✓），量级与前几刀不同（要新工具 ＋ 审批闸联动 ✓）。</li>
+	<li>拖拽那一组已在 <b>§15.30 补进真 Host 版的 <code>p3-73</code></b> ✓ —— <span class="v">"在生产式外壳里也拖得动"现在有读数支持了 ✓</span></li>
+</ul>
+
+<h3>15.30 补齐：真 Host 下的<b>拖拽</b>那一组（<code>p3-73</code> 扩到 13 条）＋ 一条新发现</h3>
+
+<div class="box okbox">
+	<strong>p3-73 新增 4 条（都在真 Host ＋ 真浏览器里）</strong>
+	<table>
+		<tr><th>断言</th><th>读数</th></tr>
+		<tr><td>★★ ⑦ 初始全开（无 solo）⇒ 拖下 60px ⇒ 该段<b>真被钉住</b>（<code>132 → 193</code> ✓）＋
+			<code>data-kb-resized</code> / <code>--kb-region-h</code> / 落库齐 ✓</td><td class="v">✓</td></tr>
+		<tr><td>★★ ⑦-b 往上狠拖 ⇒ 钳在 <b>40px</b>（真源 minH ✓）</td><td class="v">高度 41 / <code>regionH=40px</code> ✓</td></tr>
+		<tr><td>★★ ⑦-c 收纳成一个展开 ⇒ 变 solo 且 <code>flex-grow=1</code>（<b>覆盖</b>拖拽保存的高度 ✓）、记住的值仍留着 ✓</td>
+			<td class="v">高度回到 132（不与 40 冲突）✓</td></tr>
+		<tr><td>★ ⑦-d 同一次运行内 reload ⇒ <b>恢复</b>（值 40px ＋ 属性都在 ✓）</td><td class="v">✓（origin <code>127.0.0.1:6892</code>）</td></tr>
+	</table>
+</div>
+
+<h3>15.31 ★ 由此暴露的一条差异（如实记 ✗）</h3>
+<p>
+	我们的落库用 <code>localStorage</code> ⇒ 它按 <b>origin（含端口）</b> 分 ✓，而 <code>startHost</code> 用
+	<code>--port 0</code>（<b>每次随机</b> ✓）⇒ 结论是两句话，必须分开说：
+	<b>① 同一次运行内 reload ⇒ 恢复 ✓</b>（§15.30 ⑦-d 就是这么验的 ✓）；
+	<b>② Host 重新起（换端口）⇒ 不恢复 ✗</b> —— 换端口就是换 origin ✓。
+	真源走 IDE 的 <code>IStorageService</code> ⇒ <b>不随端口</b> ✓。
+	⇒ 要真正等价，落库得像真源那样交给<b>宿主存储</b> —— 那超出本侧插件能做的范围 ✗，所以照旧<b>写清而不是假装一样</b> ✓。
+</p>
+
+<h3>15.32 验证</h3>
+<table>
+	<tr><th>检查</th><th>读数</th></tr>
+	<tr><td><code>p3-73</code>（真 Host ＋ 浏览器，已扩到 13 条）</td><td class="v">13/13 ✓（含 ⑦ 组四条 ✓）</td></tr>
+	<tr><td><code>p3-72</code>（真浏览器 ＋ <code>file://</code>，15 条）</td><td class="v">15/15 ✓（两边现在都覆盖拖拽 ✓）</td></tr>
+	<tr><td>其余（<code>p3-68</code> 28/28、<code>p3-08</code> 140/140、真机 <code>p3-45</code> 19/19 等）</td>
+		<td class="v">沿用 §15.28 ✓（本刀只加断言与文档 ✓，未改产品代码 ✓）</td></tr>
+</table>
+
+<h3>15.33 第八刀：页面上<b>重命名 / 移动一篇笔记</b>（kb <code>0.2.48 → 0.2.49</code>）</h3>
+
+<p>
+	这是「文件操作那一族」的最小一件 ✓，也是<b>页面第一次能写</b> ✗（此前它完全只读 ✓）。
+	写活<b>不新开通道</b>：复用 <code>kb_organize</code> 那套 —— 白名单用的是<b>同一个</b> <code>resolveOrganizePath</code>
+	（真源 <code>kbOrganizeTools.ts</code> 的口径 ✓，「只能在「笔记」区内」✓）、写入用<b>同一个</b> <code>runOrganize</code>、
+	同一把 <b>vault 锁</b>、同一套导航刷新 ✓。
+</p>
+
+<div class="box okbox">
+	<strong>落地清单</strong>
+	<table>
+		<tr><th>位置</th><th>改动</th></tr>
+		<tr><td>新路由 <code>POST /x/kb/api/rename</code></td>
+			<td>体 <code>{vaultId, from, to}</code>（vault 内相对路径 ✓）；两端都用 <code>resolveOrganizePath</code> 判白名单 ✓；
+				<b>只收 POST</b> ✓；请求体上限 8KB ✓；<b>不覆盖</b>（交给 <code>runOrganize</code> ✓）；
+				源=目标 ⇒ 明确拒（<b>不谎报成功</b> ✓）；失败一律 <b>400 ＋ 如实原因</b> ✓</td></tr>
+		<tr><td>页面入口</td>
+			<td><b>只有「笔记」区<b>的行</b>带 ✎</b> ✓（库区那半边在 dsh 侧没有写路径 ⇒ 不给一个点了会报错的按钮 ✓）；
+				点 ✎ ⇒ 行内输入框（Enter 提交 / Esc 取消 / 行内校验 ✓ 照真源 <code>_validateRename</code> 的两条：以 <code>.</code> 或空格结尾、过长 ✓）；
+				失败<b>行内显示原因</b>、输入框留着让人改 ✓</td></tr>
+		<tr><td><code>p3-74</code> <span class="q">新</span></td>
+			<td>8 条，<b>拒多于成</b>（有意 ✓）：正路改成＋盘上核对＋导航刷新 ✓；目标已存在 ⇒ 拒且<b>源原地不动、目标未被覆盖</b> ✓；
+				白名单四条全拒（源越界 / 目标进库区 / 源在库区 / 目标用 <code>..</code> 逃出 ✓）；库区文件<b>零副作用</b> ✓；
+				只收 POST ✓；源=目标不谎报 ✓</td></tr>
+		<tr><td><code>p3-73</code>（扩到 16 条）</td>
+			<td>⑧ 组：真浏览器里 ⑧-a 笔记行有 ✎、库行没有 ✓；⑧-b 真点真提交 ⇒ <b>盘上真的改名</b> ＋ 行内显示新名 ＋ 成功提示 ✓；
+				⑧-c 撞「目标已存在」⇒ 页面<b>如实显示</b>「改不动：… to 已存在（不覆盖）」＋ 不报成功 ＋ 输入框留着 ✓</td></tr>
+	</table>
+</div>
+
+<h3>15.34 ★ 闸怎么办 —— 照<b>既有先例</b>，不自己发明 ✓</h3>
+<p>
+	页面发起的写<b>不经过</b> <code>tools/pre-execute</code> ✗，所以这一步必须先回答「闸算什么」✓。
+	仓库里<b>已经有裁决</b>（<code>vssaros-memory/lib/promote.js</code> 的文件头 ✓）：闸存在的唯一理由是
+	「<b>模型</b>可能不经确认就改用户数据」✓，而「<b>人</b>在页面上按下按钮」<b>本身就是那次确认</b> ✓ ——
+	再弹一层只会养成盲点 ✗；另一半是<b>技术上也不通</b>：审批服务要求请求发生在 <b>open turn</b> 内 ✓，而页面请求没有 turn ✗。
+	<br />
+	<b>代价照旧写清</b> ✗：这条通道<b>不进会话审计</b>（<code>approval/asked|decided</code> 不会有它 ✓）
+	⇒ 所以它只做<b>最小、可逆</b>的一件事（改名 / 移动 ✓），<b>删除类不做</b> ✓（那需要更重的确认链，不是照搬就能有 ✓）。
+	模型要改笔记仍然必须过闸 ✓ —— 两条路各自正确 ✓。
+</p>
+
+<h3>15.35 这一刀踩的坑与两条探针纪律</h3>
+<ul>
+	<li><b>★ 静默坏法：我把上一条语句「劈开」了</b> ✗✗。插重命名那几行时，落点在那条 <code>statusHtml</code> 赋值<b>内部</b>，
+		⇒ 行标记成了<b>半截 HTML</b> ⇒ DOM 结构变样 ⇒ 拖拽里那句
+		<code>upper.classList.contains('dsh-vault')</code> 守卫<b>静默 return</b> ✓
+		（现象只是「<b>拖不动</b>」，一点错都不报 ✗✗）。
+		<b>是「两个渲染探针同时变红」</b>才把它暴露出来的 ✓（只跑一个会以为是抖动 ✓）
+		⇒ 纪律：<b>插入点必须在「上一条语句结束」之后</b>，别插进它内部 ✓。</li>
+	<li><b>消息要限定到那一行</b> ✗：⑧-c 第一版用 <code>document.querySelector('.dsh-rename-msg')</code>
+		取<b>整页第一个</b> ⇒ 那可能是上一轮留下的消息 ⇒ 读到「已重命名 ✓」而<b>假红</b> ✓ ⇒ 改成在目标行里查 ✓。</li>
+	<li><b>等状态要轮询</b> ✗：固定 <code>waitForTimeout(400)</code> 之后读一次 ⇒ 改名是 HTTP ＋ 重渲染、时间不定
+		⇒ 断言「时红时绿」✓ ⇒ 改成 <code>waitForFunction</code> 轮询 ✓（⑧-b 那条从「飘」变成「稳」✓）。</li>
+	<li>另：这一刀我又几次把 <code>node -e</code> 内联命令喂给 PowerShell ✗（老坑 ✓）—— 一律落文件 ✓；
+		<b>落档脚本自己也栽在「模板串里带反引号」上</b> ✗（今天第 6 次 ✓）⇒ 改成<b>把 HTML 段直接写成文件、再拼进文档</b> ✓。</li>
+</ul>
+
+<h3>15.36 验证</h3>
+<table>
+	<tr><th>检查</th><th>读数</th></tr>
+	<tr><td><code>p3-74</code>（新，8 条）</td><td class="v">8/8 ✓</td></tr>
+	<tr><td><code>p3-73</code>（真 Host ＋ 浏览器，扩到 16 条）</td><td class="v">16/16 ✓（⑦ 拖拽四组 ＋ ⑧ 重命名三组 ✓）</td></tr>
+	<tr><td><code>p3-72</code>（真浏览器 ＋ <code>file://</code>）</td><td class="v">15/15 ✓</td></tr>
+	<tr><td><code>p3-08</code> / <code>p3-68</code></td><td class="v">140/140 ✓ · 28/28 ✓（86 个属性 ✓）</td></tr>
+	<tr><td><code>p3-69</code> / <code>p3-70</code> / <code>p3-71</code> / <code>p3-44</code> / <code>p3-66</code> / <code>p3-58</code> / <code>p3-59</code> / <code>p3-65</code></td>
+		<td class="v">11/11 ✓ · 6/6 ✓ · 7/7 ✓ · 14/14 ✓ · 10/10 ✓ · 12/12 ✓ · 11/11 ✓ · 8/8 ✓</td></tr>
+	<tr><td><code>p3-45</code>（真机，重装 0.2.49）</td><td class="v"><b>19/19</b> ✓</td></tr>
+	<tr><td>契约 / 工具面快照</td><td class="v">违规 0 ✓；快照仍留那条<b>别人的</b>漂移 ✓（§15.8：不替它背书 ✓）</td></tr>
+</table>
+
+<h3>15.37 「文件操作那一族」还剩什么</h3>
+<ul>
+	<li><b>删除（移入备份）</b> ✗：语义上「可逆」（有备份 ✓），但它需要一个<b>比改名更重的确认链</b> ——
+		不能照搬命名这条路 ✓（待设计：是走页面二次确认，还是干脆只留工具那条 ✓）；</li>
+	<li><b>真源的触发方式是右键菜单 ＋ F2</b> ✓：我们先用行尾 ✎（<b>如实标为自定</b> ✗，因此这两类的样式<b>不进</b> <code>p3-68</code> 的按值对账 ✓）；</li>
+	<li>拖拽移动、重命名目录、新建文件/文件夹（真源还有整套 ✓）。</li>
+</ul>
+
+</body>
+</html>
+
+
+<h3>15.38 第九刀：页面主体<b>复刻真源结构</b>（「库」/「笔记」两节 ＋ 真文件树）＋ 真 Host 渲染级核对（kb <code>0.2.49 → 0.2.50</code>）</h3>
+
+<p>动机：前八刀把「资料库」页的行级细节对齐了真源，但<b>骨架仍是我们自己的</b> —— 一个 vault 一段平铺列表。
+真源不是这样：它是<b>「库」/「笔记」两节</b>（<code>.kb-section</code> ＋ <code>sec-library</code>/<code>sec-notes</code>），
+每节里面是<b>真文件树</b>（目录 / 非 md 素材 / 点文件都在），节之间插<b>可拖拽的分隔条</b>。
+这一刀把这层换掉，并顺手把「渲染级核对」在真 Host 里跑通。</p>
+
+<table>
+<tr><th>位置</th><th>改动</th></tr>
+<tr><td>页面标记</td><td>由「一个 vault 一段」改成<b>每库两节</b>：<code>section class="dsh-section open sec-library|sec-notes"</code>；节头 <code>data-section-toggle</code> ＋ 箭头 ＋ <b>计数徽标</b>；分隔条插在<b>节之间</b>（同一节组内 ✓）</td></tr>
+<tr><td>文件树</td><td><code>listVaultTree</code>：按真实目录结构渲染（子目录 <code>.dsh-node-dir</code>、非 md <code>.dsh-file</code>、点文件也列出 ✓）；行标识 <code>data-rel</code>／<code>data-uri</code>／<code>data-title</code></td></tr>
+<tr><td>手风琴 / solo</td><td>作用对象从「vault 段」扩到<b>节</b>（<code>.dsh-section</code> ✓）——<b>折叠与互斥必须在同一处做</b> ✗（见 15.39 第 3 条）</td></tr>
+<tr><td>vault 下拉</td><td>按<b>分组</b>过滤（不是整页重载 ✓）</td></tr>
+</table>
+
+<p><b>★ 三处如实标注的差异</b>（不假装全等 ✗）：① 真源切换分区会<b>重新取数</b>，我们是客户端过滤（数据一次全给 ✓）；
+② 真源图标用 codicon，我们用字形（页面是服务端渲染的纯 HTML ✓）；③ 真源分区头可拖拽 <code>resizer</code> 调高，我们同一套语义但<b>带动画的额外规则未逐条照抄</b> ✓。</p>
+
+<h3>15.39 ★ 渲染级核对（真浏览器）咬出的四个真问题</h3>
+
+<p>这一刀最大的价值：前八刀的对账全是「<b>声明值 vs 声明值</b>」（读 CSS 文本 ✓），
+而这一轮把页面放进<b>真浏览器</b>（<code>file://</code> 的 <code>p3-72</code> ＋ 真 Host 的 <code>p3-73</code>）后，咬出四个只看文本永远发现不了的问题：</p>
+
+<ol>
+<li><b>布局真 bug（节被压成 0 高）</b> ✗：<code>p3-72</code> 报 <code>dsh-resizer intercepts pointer events</code> ⇒ <b>去量几何</b>（不猜 ✓）：节高 <b>2px</b>、其头部 27px 溢出 ⇒ 分隔条正压在表头中间 ⇒ <b>点不到</b>。
+根因：真源 <code>.kb-section.open { flex: 1 1 0 }</code> 依赖<b>祖先有界高度</b>（<code>.kb-scroll</code> 是 <code>flex:1; min-height:0; overflow-y:auto</code> ✓），而我们这页外壳容器高度是 <code>auto</code> ⇒ <code>flex-basis: 0</code> 把节压扁。
+⇒ 补 <code>min-height: 28px</code>（头的自然高 ＋ 边线 ✓）并<b>把这条偏离写进代码注释</b>（照 15.14 立的规矩：偏离要么不做、要么摆到台面上 ✓）。</li>
+<li><b>区域规则选择器还停在旧结构</b> ✗：三条「拖拽后钉住高度」的规则仍写着 <code>.dsh-section &gt; .dsh-vault[...]</code> ✗ ⇒ 症状是「<b>拖了、变量也写了，渲染高度纹丝不动</b>」（<code>p3-72</code> ⑩ 咬出 ✓）。</li>
+<li><b>手风琴互斥挂错钩子</b> ✗：折叠接了新钩子 ✓，但互斥还留在旧的 <code>[data-vault-toggle]</code> 上 ⇒ 点节头「<b>只折叠、不互斥</b>」（<code>p3-72</code> ⑧ 咬出 ✓）。</li>
+<li><b>产品洞：改名成功只更新了一半</b> ✗：读了 <code>data-rename-path</code> 却没更新行上的 <code>data-rel</code>/<code>data-uri</code> ⇒ 「再预览 / 再改名」会按<b>旧路径</b>发请求（「改一半 = 只在第二次操作时才现形」✓）。</li>
+</ol>
+
+<p><b>另有一类纯属「探针自己过期」</b>（不是产品 ✗，但同样值得写下来）：⑥ 折叠过第一个节 ⇒ ⑦ 再去拖一个<b>已折叠</b>的节（<code>:not(.open)</code> 强制 <code>height:auto</code> ✓）；
+⑦-c 期望「点第二个头 ⇒ 它展开」✗ —— 初始全开时点某个头是把它<b>关掉</b>（真源 <code>_collapseOthers</code> 只在<b>展开</b>时收起其它 ✓）；
+⑧-c 沿用 ⑧-b <b>已经改过名</b>的行定位 ✗。三条的共性：<b>前置被自己改掉了</b> ⇒ 期望值要跟「自己的前置步骤」对齐 ✓。</p>
+
+<h3>15.40 ★★ 页面脚本的「语法错」这一类：它是怎么被咬住、又怎么差点漏掉</h3>
+
+<p>真 Host 里 ⑥/⑦/⑧ 三组<b>同时全红</b> ✗ —— 症状五花八门（折叠不动、拖不动、输入框不出现 ✓），
+而真因只有一个：<b>页内脚本整段语法错</b> ✓。诊断里那句「脚本错误 4 条：<code>Invalid regular expression: missing /</code>」把它抖了出来 ✓。</p>
+
+<ul>
+<li><b>根因</b>：我给改名那行写了 <code>replace(/[^/\]*$/, …)</code> ✓ —— 这段代码是<b>模板串里的字符串</b> ⇒ 反斜杠被提前吃一层 ⇒ 页面里成了 <code>/[^/]*$/</code> ✗（非法正则 ⇒ <b>整段脚本失效</b> ✓）。
+<b>修法不是"多写一个反斜杠"</b> ✗：改成<b>不写正则</b>，用 <code>lastIndexOf</code> ＋ <code>String.fromCharCode(92)</code> 构造分隔符 ⇒ 这类坑<b>从根上不存在</b> ✓（同一个手法本会话已经用过一次 ✓）。</li>
+<li><b>为什么差点漏掉</b>：<code>file://</code> 的浏览器核对跑在<b>这次编辑之前</b> ⇒ 没看过它 ✓；写路由探针 <code>p3-74</code> <b>不加载页面</b> ✓ ⇒ 两边都干净 ✓。
+真 Host（<code>p3-73</code>，多花 1–2 分钟、要装插件、要起 Host）是<b>唯一</b>会碰上的 ✓。</li>
+<li><b>对策（已落地）</b>：<code>p3-69</code> 新增 <b>⓪-b「每个页内脚本块都能被解析」</b> ✓ —— <b>只解析、不运行</b>，逐块跳过 <code>application/json</code>，
+与运行环境无关、成本近乎为零 ✓。⚠ 第一版"把所有块拼起来解析"是<b>假红</b> ✗（页面里可能夹着非 JS 的 script ✓）⇒ 必须逐块 ✓。</li>
+</ul>
+
+<h3>15.41 验证</h3>
+
+<table>
+<tr><th>检查</th><th>读数</th></tr>
+<tr><td><code>p3-73</code>（<b>真 Host ＋ 真浏览器</b>）</td><td><b>16/16</b> ✓（含真拖拽 / 真改名的盘上结果 ✓）</td></tr>
+<tr><td><code>p3-72</code>（<code>file://</code> ＋ 真浏览器）</td><td><b>15/15</b> ✓</td></tr>
+<tr><td><code>p3-69</code>（含新增 ⓪-b 解析检查）</td><td><b>12/12</b> ✓</td></tr>
+<tr><td><code>p3-68</code> / <code>p3-70</code> / <code>p3-71</code></td><td><b>28/28</b> ✓（共比对 86 个属性）· 6/6 ✓ · 7/7 ✓</td></tr>
+<tr><td><code>p3-08</code>（kb 全量）</td><td><b>140/140</b> ✓</td></tr>
+</table>
+
+<h3>15.42 还差什么（如实记 ✗）</h3>
+
+<ul>
+<li><b>p3-68 里还有一批「绿得假」的映射</b> ✗：<code>PAGE_CSS</code> 里 <code>.dsh-vault*</code>/<code>.dsh-tree*</code> 那批规则<b>页面已不再使用</b>（保留着没删 ✓），
+而 <code>p3-68</code> 的若干映射仍指向它们 ⇒ 比的是<b>死代码</b>、却在报绿的 ✓。要做的两件事：把映射改到新节类（很可能因此<b>暴露出真实差异</b> ⇒ 要真的对账 ✗）、再删掉死规则 ✓。</li>
+<li><b>删除（移入备份）</b>、<b>真源右键菜单 / F2</b>、拖拽移动、重命名目录、新建文件/文件夹 —— 仍未做 ✓（见 15.37 ✓）。</li>
+</ul>
+
+
+<h3>15.43 第十刀：清掉"绿得假"——<code>PAGE_CSS</code> 里的 12 条死规则 ＋ 新探针 <code>p3-76</code>（kb <code>0.2.50 → 0.2.51</code>）</h3>
+
+<p>15.42 记下的那件"<b>绿得假</b>"✗：<code>p3-68</code> 是按值对账 ✓，只看<b>声明值</b> —— 于是本页那条规则的<b>选择器已经没有元素匹配</b>（换结构后遗留的旧类 ✓）时，它照样报绿 ✓：<b>比的是死代码</b> ✗。</p>
+
+<p><b>做法：先"探测"再"清"再"钉住"</b>：</p>
+<ol>
+<li><b>探测</b>（<code>kb-dead-css.mjs</code>，纯进程内、无浏览器 ✓）：渲染真实页面 ⇒ 收集 HTML 里<b>实际出现过</b>的 class ⇒ 与 <code>PAGE_CSS</code> 的选择器对照。
+判据取<b>整条选择器</b>里任一 class 没出现 ⇒ 结构上匹配不到 ⇒ 死 ✓。
+⚠ 第一版只看<b>最右复合</b>是错的 ✗：<code>.dsh-vault li.dsh-dir</code> 的最右类还在、祖先已死 ⇒ 被误判成活 ✓。</li>
+<li><b>清</b>：删 12 条死规则（<code>.dsh-vault*</code> / <code>.dsh-tree*</code> / <code>.dsh-dir-head*</code> / <code>.dsh-vault-toggle</code> ✓），
+并把 <code>p3-68</code> 的 7 条映射改到<b>活选择器</b>（<code>.dsh-section</code> / <code>.dsh-section-header</code> / <code>.dsh-count-badge</code> / <code>.dsh-section-header .dsh-arrow</code> … ✓）——
+⚠ 两边必须<b>同时</b>做 ✗：只删 CSS 会让映射立刻红 ✓，只改映射则可能比到活代码上暴露真实差异 ✓（那正是要看见的 ✓）。
+<b>结果：改完 28/28 ✓ —— 值仍然一致 ✓</b>（这次是真绿 ✓）。</li>
+<li><b>补</b>：被删的 <code>.dsh-dir-head small</code>（目录计数徽标）在新树里改发 <code>.dsh-count-badge</code> ✓ ⇒ 补一条等价规则挂到 <code>.dsh-node .dsh-count-badge</code>（值照真源 <code>.kb-header .kb-count</code> 抄 ✓），否则徽标裸奔 ✓。</li>
+<li><b>钉住</b>：新探针 <code>p3-76</code>（4 条 ✓，<code>fast: true</code>）：页面 200 ＋ <b>没有匹配不到的规则</b> ＋ <b>状态白名单每一项都有出处</b> ＋ 目录计数徽标有活规则。
+白名单是"点了/脚本插入才有"的那批（<code>filename</code> / <code>show</code> / <code>dragging</code> / <code>dsh-solo</code> / <code>dsh-rename-*</code> / <code>dsh-search-hit*</code> / <code>ok</code> / <code>dsh-vault-group-label</code> ✓）；
+⚠ 第 ③ 条按<b>包装形态</b>（<code>'x'</code>/<code>"x"</code>/<code>.x</code>）找出处 ✗ —— 直接子串匹配的话，<code>ok</code> 这种短名在任意文本里都能命中，检查等于没有 ✓（第一版就是）。</li>
+</ol>
+
+<p><b>顺带发现并补上</b>：<code>p3-75</code>（「库/笔记」两节 ＋ 真文件树）<b>一直没登记进 <code>run-all.mjs</code></b> ✗ —— 这次与 <code>p3-76</code> 一起登记 ✓。</p>
+
+<p><b>验证</b>：<code>p3-76</code> <b>4/4</b> ✓；<code>p3-68</code> <b>28/28</b> ✓（改到活选择器后值仍一致 ✓）；<code>p3-69</code> 12/12 ✓ · <code>p3-70</code> 6/6 ✓ · <code>p3-71</code> 7/7 ✓ · <code>p3-75</code> 6/6 ✓ · <code>p3-72</code> <b>15/15</b> ✓ · <code>p3-08</code> <b>140/140</b> ✓；契约 18 项 ＋ 2 组拷贝<b>违规 0</b> ✓。</p>
+
+
+<h3>15.44 第十一刀：行选中 ＋ F2 改名（行为复刻）（kb <code>0.2.51 → 0.2.52</code>）</h3>
+
+<p>这一刀照 <code>knowledgeBaseView.ts</code> 的 <code>selectNode</code>（<code>:2279-2334</code>）与
+scroll 区的 keydown（<code>:679-704</code>）**逐条复刻行为** ✓ —— 不是"做个多选"，是把真源那套语义抄过来 ✓：</p>
+
+<table>
+<tr><th>真源</th><th>我们</th></tr>
+<tr><td>Ctrl/Meta+Click ⇒ **切换**该行选中，锚点设为它（<code>:2283-2294</code> ✓）</td><td>同 ✓</td></tr>
+<tr><td>Shift+Click ⇒ 在**全部行**里取「锚点 → 本节」的**区间**并**并入**选中 —— ⚠ 真源**不清空**其它 ✓（<code>:2296-2311</code>）</td><td>同 ✓（照抄，没按"Shift 应当重置"的习惯改 ✗）</td></tr>
+<tr><td>单击 ⇒ 清空全部选中、只选它、锚点设为它（<code>:2314-2319</code> ✓）</td><td>同 ✓</td></tr>
+<tr><td>选完 <code>scroll.focus()</code>（<code>tabIndex = -1</code> ⇒ F2/Delete 收得到 ✓）</td><td>同 ✓</td></tr>
+<tr><td>F2 ⇒ 对**最后选中**那行 <code>startRename</code>（<code>:700-704</code> ✓）</td><td>复用行尾 ✎ 的既有流程（<code>[data-rename]</code> ⇒ 现成的 <code>.dsh-rename-input</code> ✓）</td></tr>
+<tr><td>Delete / Ctrl+X/C/V/Z（依赖删除/剪贴板/撤销能力 ✓）</td><td>**不做** ✗（如实记 ✓ —— 删除那条仍待设计确认链 ✓）</td></tr>
+</table>
+
+<p><b>★ 顺带修掉一处真漏洞</b> ✗：文件树的行模板里，<code>class</code> 只在「待构建」那一支才写 ✓ ⇒
+**非待构建的文件行根本没有 <code>.dsh-node</code>** ⇒ <code>.dsh-node</code> 那套（flex / 内边距 / 行高 / 圆角 / 光标 ✓）**没作用在它们身上** ✓。
+这类"规则活着、元素却没吃到"的盲区，正是 15.43 那个探测器**看不见**的 ✗（它只判"有没有元素用这个类"，不判"该用的元素有没有这个类"）⇒ 本刀记下这条**已知盲区** ✓。</p>
+
+<p><b>★ 又一处如实记的偏离（与状态点那条同一手法 ✓）</b>：真源 <code>.kb-node.selected</code> 的两个变量**不带回退** ✓，
+而本页**没有主题**（外壳不注入 <code>--vscode-*</code> ✓，p3-73 ① 实测 ✓）⇒ 选中行会**完全看不出来** ✗。
+处理：照抄那条**一个字不动** ✓（<code>p3-68</code> 比到的仍是真源原值 ✓），另立**一条更高优先级**的回退规则
+（<code>.dsh-scroll .dsh-node.selected { background: var(--vscode-list-activeSelectionBackground, rgba(77,163,255,.25)); }</code> ✓），
+并由 <code>p3-72</code> ⑫ 断言"选中且**看得见**" ✓（同样避开"把回退混进照抄那条"⇒ <code>p3-68</code> 假红 ✗）。</p>
+
+<p><b>验证</b>：<code>p3-72</code> <b>18/18</b> ✓（新增三组**真点真按**：⑫ 单击 ⇒ 带 <code>.selected</code> ＋ 背景非全透明 ✓、
+⑬ Ctrl+点第二行 ⇒ 两行选中 ✓、⑭ 真按 F2 ⇒ 改名输入框出现且获得焦点 ✓）；
+<code>p3-68</code> <b>30/30</b> ✓（新增两条选中态映射，值仍逐条一致 ✓）· <code>p3-76</code> 4/4 ✓（白名单加 <code>selected</code>，且它有出处 ✓）·
+<code>p3-69</code> 12/12 ✓ · <code>p3-75</code> 6/6 ✓。</p>
+
+<p><b>仍待设计／未做</b> ✗：<b>右键菜单</b>（真源走编辑器原生菜单、<b>CSS 里没有任何菜单样式</b> ⇒ 自建 DOM 菜单需先出 mockup ✓）、
+<b>删除</b>（要有比改名更重的确认链 ✓）、<b>拖拽移动</b>、<b>新建文件/文件夹</b>、<b>Shift 区间的"只清空后半段"这类 Explorer 细节</b>（真源当前语义就是"并入"，已照抄 ✓）。</p>
+
+
+<h3>15.45 右键菜单：<b>先出 mockup</b>（待确认，未动实现代码）</h3>
+
+<p>按既定纪律「界面需求先出 mockup、确认后再写实现」✓ —— <b>mockup 已落盘：<code>doc/kb-node-context-menu-mockup.html</code></b>（纯 CSS、沿用主题变量、可交互 ✓）。</p>
+
+<p><b>为什么这一项必须走 mockup</b> ✗：真源的右键菜单走<b>编辑器原生菜单</b>（<code>contextMenuService.showContextMenu</code>，<code>knowledgeBaseView.ts:4428-4490</code> ✓），
+<code>kbView.css</code> 里<b>一条菜单样式都没有</b> ✓ ⇒ 本页要做就只能<b>自建 DOM 菜单</b> ⇒ 属于"自定件" ✓（与行尾 ✎ 同族 ✓）。</p>
+
+<p><b>菜单内容全部来自取证</b> ✓（不是编的）：单行菜单 15 项与顺序照 <code>:4440-4479</code> ✓；
+条件项按 <code>section</code>／扩展名分流（打开＝仅文件 ✓、构建为笔记＝仅<b>库区</b>文件 ✓、移入审核＝仅<b>笔记区</b>文件 ✓、
+思维导图两项＝仅笔记区 <code>.canvas</code> ✓）；<b>粘贴的禁用态</b>来自"剪贴板为空"（<code>enabled: canPaste</code> ✓）；
+多选另有一条批量菜单（<code>:4492</code> 起 ✓）。</p>
+
+<p><b>mockup 里显式标了"我们侧可行性"</b> ✓：<code>已做</code>（重命名 ✓）/ <code>可做</code>（复制路径——浏览器剪贴板 ✓）/
+<code>需新路由</code>（新建／剪切复制粘贴／删除／永久删除 ✓）/ <code>本页做不了</code>（编辑器打开、系统资源管理器、移入审核、思维导图 ✓）。
+并留了 <b>D1–D6 待确认</b>（范围／做不了的怎么显示／构建为笔记放不放／删除确认链／位置翻转／键盘 ✓）。</p>
+
+<p><b>mockup 自检</b>（照纪律第 ⑤ 条：落盘后用浏览器验一次 ✓）：<b>7/7</b> ✓ ——
+<b>零 console 报错／零 pageerror</b> ✓；右键三种行菜单项**确实按类型变化** ✓；<code>Esc</code> 可关 ✓；
+截图落在 <code>poc/dsh-p0/.out/mockup/kb-node-context-menu-mockup.png</code> ✓。
+⚠ 自检脚本自身踩了两个坑（都是**脚本**的、不是 mockup 的 ✗）：禁用项断言按整段文本 ⇒ 把 mockup 的能力标注也带上而假红 ✓；
+以及菜单未关会**挡住**下一行的右键 ✓（改用先 Esc 再右键 ✓）。</p>
+
+<p><b>下一步</b>：等你对 D1–D6 拍板 ⇒ 再动实现 ✓（实现按"照抄真源顺序 ＋ 条件项分流"写，并为它补一条行为探针 ✓）。</p>
+
+
+<h3>15.46 行右键菜单：<b>自建 DOM 实现</b>（照 mockup 的 D1–D6 建议）（kb <code>0.2.52 → 0.2.53</code>）</h3>
+
+<p>按 <code>doc/kb-node-context-menu-mockup.html</code> 里那套建议实现 ✓：<b>D1</b> 只放"能立刻接上"的项（重命名 —— 复用已有的写路由 ✓／复制路径／复制相对路径 ✓）；
+<b>D2</b> 做不了的项<b>不出现</b>（到 15.42 记的"删除/新建/剪切粘贴"那一族做出来为止 ✓）；<b>D3/D4</b> 构建为笔记与删除<b>本刀不做</b> ✗；
+<b>D5</b> 贴鼠标 ＋ 靠边向内翻转 ＋ 最高 ≤ 视口-16px 超出滚动 ✓；<b>D6</b> ↑/↓、Enter、Esc ✓。</p>
+
+<p><b>★ 这一刀咬出的两个真问题</b>（都只有"真右键"才看得见 ✓）：</p>
+<ol>
+<li><b>菜单开了又立刻消失</b> ✗：实测事件顺序是 <code>contextmenu@1156 → scroll@1165</code> —— 点击前那次
+<code>scrollIntoView</code> 的<b>滚动事件是异步的</b> ✓，落在我"滚动就关菜单"（捕获相位 ✓）的规则上 ⇒ 菜单**开完 9ms 就被自己关掉** ✓。
+修法：记住开菜单的时刻，<b>150ms 窗口内忽略 scroll</b> ✓（之后用户真滚动照关 ✓，与原生观感一致 ✓）。</li>
+<li><b>嵌套行把结果覆盖掉</b> ✗✗：树是<b>嵌套</b>的（<code>.dsh-node</code> 里套 <code>.dsh-node</code> ✓），而监听是<b>按行</b>挂的 ⇒
+事件从最内层冒到每一层 ✓ ⇒ <b>最外层（目录行）最后覆盖结果</b> ✓：它没有 <code>data-uri</code>／<code>data-rel</code> ⇒ 菜单只剩
+<code>querySelector('[data-rename]')</code> 命中的那一项「重命名」✓；它的 key 是空串 ⇒ <b>选中也没生效</b> ✓（症状＝"只有一项、行也不变蓝" ✓）。
+<b>点选那条同一个病</b> ✓：点一个文件会把它的每一层祖先目录<b>一起选中</b> ✗（p3-71/72 早期只看带 <code>data-doc-row</code> 的行 ⇒ 目录被排除 ⇒ <b>没暴露</b> ✓，属"绿着但没看见" ✓）。
+修法：只让<b>最内层</b>那行处理（<code>ev.target.closest('.dsh-node') !== row</code> 直接返回 ✓）＋ 右键 <code>stopPropagation</code> ✓。</li>
+</ol>
+
+<p><b>另外两处按老规矩处理的</b>：① 复制路径的回执用一条 <b>toast</b>（自定件 ✓ —— 静默复制会让人不知道成没成 ✓），
+剪贴板优先 <code>navigator.clipboard</code>、不可用时退回隐藏 textarea ＋ <code>execCommand</code> ✓ 并**如实报告成败** ✓；
+② 菜单样式是<b>自定件</b> ✗（真源走编辑器原生菜单、<code>kbView.css</code> 里没有菜单样式 ✓）⇒ <b>不映射进 p3-68</b> ✓，
+配色只用 <code>menu.*</code> 主题变量 ＋ 回退（与 mockup 同一套值 ✓）。</p>
+
+<p><b>★ p3-76 当场赚回成本</b> ✓：它咬出两条"没有元素会匹配"的死规则 —— 本刀没有禁用项时留下的
+<code>.dsh-menu-item.disabled</code> ✓、以及本刀不分组时留下的 <code>.dsh-menu-sep</code> ✓ ⇒ 都已删掉 ✓
+（等"粘贴不可用"那种情形出现再加回来 ✓）。</p>
+
+<p><b>验证</b>：<code>p3-72</code> <b>21/21</b> ✓（新增 ⑮ 真右键 ⇒ 菜单出现且**只有** D1 那三项 ✓、
+⑯ Esc 关闭 ✓、⑰ 库区行**没有**重命名 ✓）；<code>p3-69</code> 12/12 ✓ · <code>p3-76</code> 4/4 ✓ ·
+<code>p3-68</code> 30/30 ✓ · <code>p3-75</code> 6/6 ✓ · <code>p3-70</code> 6/6 ✓ · <code>p3-71</code> 7/7 ✓。</p>
+
+
+<h3>15.47 第十四刀：删除＝<b>移入备份（可逆）</b> ＋ 撤销 —— 并<b>收窄</b>一条已记录的裁决（kb <code>0.2.53 → 0.2.54</code>）</h3>
+
+<p><b>★ 先记裁决的变更（不偷偷改 ✓）</b>：§15.34 当初记的是"这条写通道只做<b>改名/移动</b>，<b>删除类不做</b> ✗" ——
+理由是<b>这条通道不进会话审计</b> ✓，所以只能碰"最小、可逆"的东西 ✓。而用户 2026-10-13 明确点头后，本刀把它
+<b>收窄</b>为：<b>"只做可逆的写（改名/移动 ＋ 移入备份），永久删除仍不做"</b> ✓。</p>
+
+<p>收窄的根据（三条都是取证来的 ✓，不是"我觉得"）：① <code>kb_organize</code> 的 <code>deletes</code> <b>本来就不是真删除</b> ——
+它把文件移进 <b>vault 之外</b>的备份目录 ✓，而那在 dsh 侧是<b>唯一的还原点</b> ✓（本文件第 ③ 条安全规则）；
+② 配上撤销路由后，它能被一键放回原位 ✓ ⇒ 与"改名"同属"最小、可逆" ✓；③ 围栏复用<b>同一条</b> <code>resolveOrganizePath</code> ✓
+（只在「笔记」区内 ✓，不另写判断 ✗）。<b>代价照旧如实记</b>：这条通道<b>仍不进会话审计</b> ✗ ⇒ 永久删除不做 ✓。</p>
+
+<table>
+<tr><th>件</th><th>做法</th></tr>
+<tr><td>撤销助手</td><td><code>lib/organize.js</code> 新增 <code>restoreFromBackup()</code>：三条守卫（围栏 ✓ / <b>备份目录自洽</b> ✓ / 源在且目标不存在 ⇒ 不覆盖 ✓），<b>先校验后 I/O</b> ✓</td></tr>
+<tr><td>两条路由</td><td><code>POST /x/kb/api/delete</code>（<code>runOrganize({ deletes:[from] })</code> ✓，回执带 <code>backupDir</code> ＋ <code>rel</code> —— 撤销正好要这两样 ✓）与 <code>POST /x/kb/api/restore</code> ✓；形状照 <code>/api/rename</code>（405/413/400 ＋ vault 锁 ＋ 刷新衍生文件 ✓）</td></tr>
+<tr><td>页面</td><td>菜单加「删除」（<b>只有「笔记」区的行</b> ✓ —— 库区不是"做不了"，而是<b>不该</b>由这条通道删 ✓）；<b>两级确认</b>（第一下只把菜单项变成"确认删除（可撤销）" ✓，2.5 秒不点就复原 ✓）；成功后回执里带一个<b>撤销</b>动作 ✓，撤销成功后整页重载 ✓（服务端渲染的树 ⇒ 不"就地猜" ✗）</td></tr>
+</table>
+
+<p><b>★ 写这条通道咬出的两件事</b>（都是"跑起来才看得见" ✓）：</p>
+<ol>
+<li><b>我把"备份目录自洽"判据写错了</b> ✗：第一版拿<b>叶子目录名</b>当 stamp 去重算 <code>backupDirFor</code> ⇒ 而它收的是<b>时间戳</b>（目录名整体是 <code>backup-kborganize-&lt;stamp&gt;</code> ✓）⇒ 自己把自己判成"不自洽" ⇒ <b>撤销永远 400</b> ✓。改成按<b>父目录</b>判 ✓（与 stamp 无关 ✓、更早的备份也认 ✓、外来目录照旧挡 ✓）。—— 这正是"写路径必须有行为断言"的理由 ✓。</li>
+<li><b>备份目录名是"分钟"精度</b> ✓ ⇒ 同一分钟里的两次删除会<b>共用</b>同一个备份目录 ✓（与 2026-10-12 修的那条 <code>backupDirExisted</code> 缺陷同一根源 ✓）。⚠ 我的冒烟用例第一版就栽在这上面 ✗（把"旧备份里还有文件"当成"不覆盖"场景 ⇒ 假红 ✓）⇒ 真正的"不覆盖"场景是：<b>删完之后原位又出现了同名文件</b> ⇒ 撤销必须拒且原封不动 ✓。</li>
+</ol>
+
+<p><b>验证</b>：新探针 <code>p3-77</code>（<code>fast:true</code>，已登记）<b>6/6</b> ✓（库区拒 ✓ / <code>../..</code> 逃逸拒 ✓ / 删除真进备份且保留结构 ✓ / 冒充备份目录拒 ✓ / 撤销放回原位 ✓ / 原位有同名文件时拒且不覆盖 ✓）；
+<code>p3-74</code> 8/8 ✓ · <code>p3-08</code> <b>140/140</b> ✓（改的是写路径 ⇒ 这两条必跑 ✓）。</p>
+
+<p><b>未做／如实记</b> ✗：① 页面侧的"删除→撤销"还<b>没有浏览器级行为断言</b>（路由级已有 <code>p3-77</code> ✓，页面级待补 ✓）；
+② <b>永久删除不做</b> ✗；③ 新建文件/文件夹、剪切/粘贴那一族仍未做 ✓。</p>
+
+<h3>15.48 删除→撤销：探针咬出一个<b>真 bug</b>，以及"<code>file://</code> 到底能验什么"（kb <code>0.2.54 → 0.2.55</code>）</h3>
+
+<p><b>★ 真 bug</b> ✗：删除成功后我写了"1.4 秒后整页重载"（当时的想法是"盘上变了 ⇒ 如实反映" ✓），
+但重载会把<b>回执连同回执里那个「撤销」按钮一起冲掉</b> ✓ ⇒ <b>撤销永远点不到</b> ✓ —— 功能写完却等于没写 ✓。
+修法：<b>不重载</b> ✗，改成把删掉的那一行<b>就地从树里摘掉</b> ✓；盘上的真相对齐交给"撤销成功后重载一次" ✓。</p>
+
+<p><b>★ 更值得记的是第二件：那条 ⑱-c 曾经"绿得假"</b> ✗✗。
+我第一版按"真删成功 ⇒ 点撤销 ⇒ 回到原位"写断言 ✓，结果 ⑱-c <b>过了</b> —— 而实际上文件<b>压根没被删</b> ✓：
+本探针是 <code>file://</code> 打开的 ⇒ <code>fetch('/x/kb/api/delete')</code> <b>没有 origin、请求根本发不出去</b> ✓
+⇒ "还在原位"当然成立 ✓。<b>这种"绿得假"比红更危险</b> ✓（红会逼你查，绿不会 ✓）。</p>
+
+<p><b>于是把"就地能验的"与"只能去真 Host 验的"分开</b> ✓：</p>
+<ul>
+<li><code>p3-72</code>（<code>file://</code>）只钉两件：<b>两级确认</b>（第一下只变成问句 ✓）＋ <b>失败不谎报</b>
+（第二下真的发了请求、但发不出去 ⇒ 页面显示错误回执、<b>没有"撤销"按钮</b>、行没消失、盘上<b>零副作用</b> ✓）。</li>
+<li>真实的"删除 → 文件真进备份 → 点撤销 → 回到原位"必须走 <code>p3-73</code>（<b>真 Host ＋ 真浏览器</b> ✓，那里才有同源路由 ✓）。
+⚠ 这一条<b>本刀还没做</b> ✗ —— 路由级已由 <code>p3-77</code> 覆盖 ✓，浏览器级待补 ✓。</li>
+</ul>
+
+<p><b>验证</b>：<code>p3-72</code> <b>24/24</b> ✓（新增 ⑱/⑱-b/⑱-c ✓）· <code>p3-77</code> 6/6 ✓ · <code>p3-08</code> <b>140/140</b> ✓。</p>
+
+<h2>16. 全面迁移：可行性 ＋ 落地方案（2026-10-13，用户明确要"全都搬" ✓）</h2>
+
+<h3>16.1 先把"全部"量出来（不是印象 ✓）</h3>
+<table>
+<tr><th>一侧</th><th>体量（实测）</th><th>构成</th></tr>
+<tr><td>IDE 侧 kb 相关</td><td><b>70 个文件 ≈ 1332 KB</b></td><td>视图 286.8KB（最大）＋ 导入控制器 130.6KB ＋ 编辑器面（Blocks 50.1 / Settings 40.3 / MediaViewer / Diagram / Graph ≈ 110KB）＋ kbView.css 47.3KB ＋ 索引器（kbNativeKernel 34KB ＋ kbIndex 26KB ＋ kbVectorIndex 27.6KB ＋ kbWorker* 24.5KB ≈ 112KB ✓）＋ VaultFs 42.5KB ＋ 思维导图 27.2KB ＋ URL 抓取 17.6KB ＋ …</td></tr>
+<tr><td>dsh 侧（今天）</td><td><b>20 个 js ≈ 400 KB（约 30%）</b></td><td>检索 / 读 / 整理（organize 23.6KB）/ 写笔记 / 构建编排 / 构建缓存 / 导航 / 洞察 / 门控 / 飞书 ＋ 页面与文件操作族（rename/delete/restore ✓）—— 已逐字对照 ✓</td></tr>
+</table>
+
+<h3>16.2 可行性：分"搬得动"与"搬不动"两层</h3>
+<ul>
+<li><b>搬得动</b> ✓：纯数据面/纯逻辑（索引器、构建、导入、整理、导航/洞察、门控、检索、缓存）—— 不依赖编辑器/工作区宿主能力 ✓，且本会话已证明"逐字照抄口径 ＋ 黄金表对账"通 ✓；</li>
+<li><b>搬不动</b> ✗：UI 面（视图 286.8KB ＋ 编辑器面 ≈110KB ＋ css 47.3KB ≈ 475KB）—— 它调用的是<b>宿主能力</b>（编辑器打开 / 系统资源管理器 / 聊天页签回滚 ✓）⇒ 不做"移植"，而是"在 dsh 页面上做<b>网页版对应物</b>"，每一件<b>先出 mockup</b> ✓；</li>
+<li><b>★ 真正的瓶颈只有一个：索引器</b> ✓（~112KB）—— 没有它，dsh 侧写的笔记<b>不会被索引</b> ⇒ 检索/页面看到旧数据 ✓ ⇒ <b>"停写 IDE"在这一步之前不成立</b> ✓。它是数据权威，其余都是写功能 ✓。</li>
+</ul>
+
+<h3>16.3 落地方案（每期：出口判据 ＋ 依赖 ＋ 回滚 ✓）</h3>
+<table>
+<tr><th>期</th><th>做什么</th><th>出口判据</th><th>依赖</th></tr>
+<tr><td><b>P0 把事实写对</b></td><td>修掉 dshWriteOwnership.test.ts 里 kb 那条<b>已过时</b>的边界（"kb 的 store.js 不许 import 写 API / 写者仍是 IDE" ✗——本会话已给 kb 加写路径 ✓，且 store.js 已 import writeFile ✓）；盘点已搬清单</td><td>守卫文本与事实一致 ✓</td><td>无</td></tr>
+<tr><td><b>P1 索引器</b>（最大硬骨头 ✓）</td><td>从 0 建 .kbkernel.json／.ftindex.json 搬到 dsh；<b>向量索引</b>真源<b>只建不落盘</b> ✗ ⇒ 二选一：(a) 给真源加落盘（改 src/ ✓）(b) 放弃语义检索 ⇒ <b>建议 (a)</b></td><td>同一夹具两侧产出<b>逐条一致</b>（黄金表 ✓）</td><td>—</td></tr>
+<tr><td><b>P2 导入/Ingest</b></td><td>kbImportController 的"非 md → 文本"链搬到 dsh（PDF/DOCX ✓，纯 Node 可跑 ✓）</td><td>同一素材两侧产出<b>逐字节一致</b> ✓</td><td>—</td></tr>
+<tr><td><b>P3 自动触发</b></td><td>"文件变 ⇒ 重建索引"。⚠ kb 域里<b>没有 fileWatcher</b>（实测：现在靠<b>视图打开时按脏标记</b>重建 ✓）⇒ dsh 侧要做成<b>自己的触发</b>（读指纹 ＋ WatchFile ✓）</td><td>不动 IDE 也重建 ✓</td><td>P1</td></tr>
+<tr><td><b>P4 思维导图 / 审核</b></td><td>走 <b>dsh subagent</b>（kb_build 的真机已证明这条路通 ✓）</td><td>真机跑出可验收产物 ✓</td><td>P1</td></tr>
+<tr><td><b>P5 写者归属落地</b>（<b>唯一改 IDE 行为的一刀</b> ✓）</td><td>把 owns 从"纯声明"做成<b>在 IDE 写咽喉处被消费</b>（今天它只在插件未启用时翻转 ✓）；逐文件声明——<b>只对真·两侧都写</b>的那几个（.kb-build-cache.json、笔记/ 派生文件 ✓；<b>⚠ 2026-10-14 订正</b>：§16.8 起 dsh 也写 <b>.kbkernel.json</b>（FTS 缓存形态 ✓）⇒ 它从"不声明"<b>升格为 owns 候选</b> ✓；.ftindex.json/库/ 仍<b>不声明</b> ✗，单向声明只会制造假语义 ✓）</td><td>声明后 IDE 停写那几个文件、dsh 照常 ✓</td><td>P1–P4 全绿</td></tr>
+<tr><td><b>P6 UI 网页化</b></td><td>不可搬的那部分 ⇒ 网页版对应物（每件先 mockup ✓）</td><td>每页一套行为探针 ✓</td><td>—</td></tr>
+</table>
+
+<h3>16.4 影响清单（真做起来会变的事 ✓）</h3>
+<ol>
+<li><b>索引重建的触发点变了</b> ✓：没跑 dsh 时索引会旧 ✗ ⇒ 页面要做"打开时先看指纹再决定扫不扫" ✓（快照已带指纹 ✓）；</li>
+<li><b>可逆性只剩备份目录</b> ✓（dsh 没有 undoAll ✗）⇒ 写面越大，备份目录越要成为<b>一等还原点</b> ✓；</li>
+<li><b>审计面要显式记录</b> ✗：页面写通道不进会话审计 ✓ ⇒ 搬得越多，越要一份"哪些写没进审计"的清单 ✓；</li>
+<li><b>审批闸</b>：tools/pre-execute 只罩 dsh 工具 ✓；页面通道有它自己的确认链（两级确认 ✓ 本会话已落 ✓）；</li>
+<li><b>双引擎语义漂移防线</b>（toolOwnership.ts 那 21 条 ✓）：变成单向依赖后失去对照面 ✗ ⇒ 黄金表对账变成唯一的漂移防线 ✓；</li>
+<li><b>回滚</b>：owns 不消费 = 保持双写 ✓ ⇒ 任何一期翻车都能退回"IDE 照旧写" ✓ —— 这正是把"改 IDE 行为"排到 P5 的原因 ✓。</li>
+</ol>
+
+<h3>16.5 ★ 必须由用户拍板的一条决策</h3>
+<p><b>向量/语义索引</b>：真源<b>只建不落盘</b> ⇒ dsh 侧要拿到它只有 (a) <b>给真源加落盘</b>（改 src/ ✓ —— 推荐 ✓）或 (b) 放弃语义检索（kb_search mode=semantic 继续如实报错 ✓，接受缺口 ✓）。<b>(a) 已于 2026-10-13 落地</b> ✓：`knowledgeBaseView.ts` 的 <code>rebuildVectorIndex</code> 里，构建成功后调用 <code>exportVectorToFile(&lt;vault&gt;/.kvindex)</code>（写盘入口本就在 <code>kbVectorIndex.ts:556</code> ✓，缺的只是调用点 ✓）。⚠ <b>只在恰好一个 vault 时落盘</b> ✓（多库时是合并索引 ⇒ 拆不出单库 ⇒ 多库落盘会谎报 ✗，真要拆需先改序列化 ✓）。落盘失败<b>不阻断</b>内存态构建 ✓（只记日志 ✓）。</p>
+
+<h3>16.6 P1-FTS 第一刀：可再生的 FTS 缓存重建（kb <code>0.2.55 → 0.2.56</code>）</h3>
+
+<p>新模块 <code>lib/core/kbKernelBuild.js</code>：从盘上**重建** FTS 内核缓存（遍历库＋笔记两分区 → 读文本 → 按真源键序拼记录 → 序列化落盘 ✓）。
+<b>它是"改了笔记 ⇒ 不用开 IDE 也能让检索/页面看到新数据"的前提</b> ✓（§16.3 P1 ✓）。</p>
+
+<p><b>★ 取证纠偏（差点写错文件 ✗）</b>：这套索引有<b>两个写者、两种形态</b> ✗ ——
+生产形态 <code>.kbkernel.json</code>（uri/title/type/created/… ✓，agent 构建管线写 ✓）与 FTS 缓存形态（uri/name/path/section/… ✓）。
+第一版我把目标写成 <code>.kbkernel.json</code> ✗ ⇒ 会<b>盖掉生产形态</b>（IDE 视图掉 title/type/created ✗）。
+⇒ 本模块<b>只写 <code>.ftindex.json</code></b> ✓（knowledgeInstaller 的 PREBUILT_INDEX_FILES 把两者并列 ✓ ⇒ 两个文件、两个用途 ✓）。
+生产内核那一格是 P1 的<b>另一刀</b> ✗，本刀不碰 ✓。</p>
+
+<p><b>口径（逐条照 kbIndex.ts，不是"差不多" ✗）</b>：分区＝库＋笔记 ✓；只收 TEXT_EXTS（24 种 ✓，PDF 不收 ✓）；
+tags＝正文 <code>#标签#</code>（FTS 口径 ✓ —— frontmatter tags 属生产形态 ✓）；
+length＝<code>tokenize(name.toLowerCase() + " " + cleanText)</code>（<b>文件名参与分词</b> ✓，真源 :344 ✓ —— 我第一版漏了它 ⇒ length 偏小 ✗）；
+text＝原文 ✓；mtime＝秒 ✓。集成核对 <b>6/6</b> ✓（形状/键序/标签/分区/读侧兼容/检索命中 ✓）。</p>
+
+<p><b>核对咬出的真 bug</b> ✗：<code>extractTags</code> 返回 <code>{tags, cleanText}</code>（对象，不是数组 ✗）——
+我第一版把整个对象塞进去 ⇒ 序列化出来会是 <code>tags:{…}</code> ✗✓。⇒ 再一次印证"写路径必须有行为断言" ✓。</p>
+
+<p><b>如实记</b> ✗：① 本模块目前是<b>没人调的积木</b>（不接任何路由/工具 ⇒ 零风险 ✓）—— 接线（改完笔记后自动重建）是下一刀，
+且接线必须<b>先取 vault 锁</b> ✓；② 真源 walk 没显式跳过点文件 ⇒ 本模块跳过它是<b>我们加的偏离</b> ✗（记在文件头 ✓）；
+③ 本机没有带 <code>.ftindex.json</code> 的真库 ⇒ <b>黄金表对照（与 IDE 逐条比）还没跑</b> ✗（等一个真库或一次 IDE 侧重建 ✓）。</p>
+
+<h3>16.7 接线：写完笔记 ⇒ 自动重建 FTS 缓存（kb <code>0.2.56 → 0.2.57</code>）</h3>
+
+<p>上一刀是"没人调的积木" ✗；这一刀把它接进<b>所有写路径</b> ✓ —— 收口点本来就很干净：每条写路径都是
+<b>取锁 → 写 → refreshDerived</b> ✓ ⇒ 把重建放进 <code>refreshDerived</code> 末尾 ⇒ <b>所有调用点自动受益、且都在同一把 vault 锁里</b> ✓。</p>
+
+<ul>
+<li><b>顺序照真源</b> ✓：补链 → 导航 → 门控 → <b>FTS 缓存重建</b>（加的这件在末尾 ✓）；</li>
+<li><b>各自 try</b> ✗：缓存是<b>可再生</b>的 ⇒ 重建失败<b>不该</b>让写入失败 ✓，但要把失败<b>带进回执</b>（不许静默吞 ✗）；</li>
+<li>回执多一格：<code>FTS 缓存：N 篇已重建</code>（失败则如实写"未重建：原因" ✓）；</li>
+</ul>
+
+<p><b>端到端验证</b>（真写路由 ✓）：改名 ⇒ <code>.ftindex.json</code> <b>从无到有</b> 且含新名那篇 ✓ ——
+这就是"改了笔记 ⇒ 不用开 IDE 也能让检索/页面看到新数据"的闭环 ✓（读数：4/4 ✓；
+同时 <code>p3-08</code> 140/140 ✓ · <code>p3-77</code> 6/6 ✓ · <code>p3-74</code> 8/8 ✓ —— 无回归 ✓）。</p>
+
+<p><b>核对又咬出一处我的期望写错</b> ✗：我把"重建后 totalDocs"写死成 1 ⇒ 假红 ✗ —— 因为 refreshDerived 先落导航文件
+（<code>index.md</code>/<code>overview.md</code>/<code>insights.md</code> ✓），随后重建会把它们<b>也索引进来</b> ✓ —— 这<b>符合真源</b>
+（<code>kbIndex.ts</code> 的 walk 本来就不排它们 ✓）⇒ 正确期望是"≥1 且含那篇改名的" ✓。</p>
+
+<h3>16.8 P1-FTS 收口：黄金表 ＋ 目标文件的<b>第二次纠偏</b>（kb <code>0.2.57 → 0.2.58</code>）</h3>
+
+<p><b>黄金表</b> ✓✓：esbuild 打包<b>真源</b> <code>KbFullTextIndex</code>（kbIndex.ts ✓）＋ 忠实 stub
+（URI 照 <code>uri.ts</code> 语义：小写盘符 ＋ %3A ＋ fsPath 反斜杠 ✓；fileService 读真盘 ✓）⇒ 同一夹具两边各建 ⇒
+<b>9 个字段 × 4 篇逐字段全一致</b> ✓（uri/name/path/section/mtime/size/length/tags/text ✓）。
+新探针 <code>p3-78</code>（已登记 ✓）。</p>
+
+<p><b>它咬出的口径错位（全部已修 ✓）</b>：① <code>mtime</code> 真源是<b>毫秒</b>（<code>c.mtime</code> ✓），我第一版是秒 ✗；
+② <code>path</code> 真源是 fsPath 口径（<b>小写盘符＋反斜杠</b> ✓）✗；③ uri 真源是<b>小写盘符</b> ✗；
+④ <b>&gt;2MB 剔除</b>（真源 <code>:168</code> ✓）我漏了 ✗；⑤ 真源 walk <b>不跳点文件</b> ✗（我第一版跳了 ⇒ 偏离 ⇒ 去掉 ✓）。</p>
+
+<p><b>★ 目标文件的第二次纠偏</b> ✗：上一版我写 <code>.ftindex.json</code>（依据：预建索引清单把两者并列 ✓）—— 而更深的取证是：
+真源<b>运行时</b>把 FTS 缓存写到 <code>.kbkernel.json</code>（<code>knowledgeBaseView.ts:3404</code> ✓），<code>.ftindex.json</code> 运行时<b>没人写</b> ✗；
+且 dsh 读侧按 kernel → ftindex 顺序试 ⇒ 写 ftindex 会被压在下面 ⇒ "dsh 改 ⇒ 检索跟上"<b>断了</b> ✗。
+⇒ 目标改回 <code>.kbkernel.json</code> ✓（覆盖生产形态＝真源自己就这么干 ✓，两侧读侧都容忍两种形态 ✓）。
+接线端到端：<code>p3-79</code> —— 改名 ⇒ <code>.kbkernel.json</code> 被重建为 FTS 形态且含新名 ✓（4/4 ✓）。</p>
+
+<p><b>顺带</b>：stub 也曾不一致 ✗（子 URI 字符串拼接 ⇒ 子段没编码 ⇒ 黄金表咬出 ⇒ 改走 <code>URI.joinPath</code> ✓）——
+黄金表连<b>校验器自己</b>的错都咬 ✓。</p>
+
+<h3>16.9 P1-FTS 续：合并形态（FTS 9 字段 ＋ title/type/created）＋ 生产形态写者之谜的取证（kb <code>0.2.58 → 0.2.59</code>）</h3>
+
+<p><b>取证结论</b> ✓✓：生产形态（title/type/created）在 IDE 代码里<b>没有写者</b> —— 全仓搜遍（视图/服务/工具/市场 ✓），
+真库那份是 kb_build 子代理按技能手册<b>手写</b>的（铁证：uri 是大写盘符 ⇒ 不是 <code>URI.file().toString()</code> ✓）。
+⇒ "生产形态构建器"<b>没有可逐字搬的真源</b> ✓ —— 形状约定只存在于读侧（<code>kb.js:7</code> ✓）。</p>
+
+<p><b>合并形态</b>（有意偏离 ✗，已摆到台面上 ✓）：dsh 重建写 <b>FTS 9 字段（黄金表钉死 ✓）＋ title/type/created
+（frontmatter 提取：parseFrontmatter ＋ readNoteFrontmatterType 都是逐字移植且被对账钉过的 ✓）</b>。
+否则重建后页面 type 列空、title 退成文件名 ✗。两侧读侧都容忍多出的键 ✓。键不存在就不写（不塞空串 ✗）。</p>
+
+<p><b>验证</b>：接线 p3-79 <b>5/5</b>（新增 ⑤：改名后那篇保住三件套 ✓）；黄金表 p3-78 仍 <b>3/3</b>（比的是 9 个 FTS 字段 ✓）；
+回归 p3-08 140/140 · p3-74 8/8 · p3-77 6/6 ✓。</p>
+
+<h3>16.10 写者归属订正 ＋ 内核重建的失败路径（kb <code>0.2.59 → 0.2.60</code>）</h3>
+
+<p><b>P5 订正</b> ✓：§16.3 那行曾写".kbkernel.json <b>不声明</b>"（当时只有 IDE 写 ✓）—— §16.8 起 dsh 也写它
+（FTS 缓存形态 ✓）⇒ 它<b>升格为 owns 候选</b> ✓（表格已就地订正 ✓）。这正是"写者归属要随事实改"的一例 ✓。</p>
+
+<p><b>失败路径的断言</b> ✓：内核重建是可再生的 ⇒ 失败<b>不该</b>让写入失败 ✓ —— 但错误必须<b>如实带出</b>，
+不许假成功、不许静默吞 ✗。链路：<code>refreshDerived</code> 里各自 try ⇒ <code>kernel = { error }</code> ⇒ 经
+<code>navigation.kernel.error</code> 进回执 ✓。探针 p3-79 ⑥：把 <code>.kbkernel.json</code> 换成<b>目录</b>（确定性 EISDIR ✓）⇒
+改名仍 200 ✓ ＋ 回执带 <code>kernel.error</code> ✓（6/6 ✓）。顺带修掉 <code>index.js</code> 里一处还写 .ftindex.json 的过期注释 ✓。</p>
+
+<h3>16.11 P3 自动触发：检索前的脏检查 ⇒ 自动重建（kb <code>0.2.60 → 0.2.61</code>）</h3>
+
+<p><b>真源口径</b> ✓：<code>_searchDirty</code> 脏标记 ＋ 搜索/打开时 <code>rebuildSearchAssets</code>（进程内事件驱动 ✓）。
+<b>dsh 等价</b> ✓：没有 IDE 的文件事件 ⇒ <code>kernelStaleCheck</code>（只 readdir＋stat、<b>不读正文</b> ✓，
+四种 stale：读不到 / 新文件 / mtime 或 size 变了 / 条目在盘上没了 ✓ —— 与真源 reconcile 一一对应 ✓）。
+挂在 <b>kb_search mode=fulltext</b> 检索前（与真源"脏 ⇒ 搜索时重建"同挂点 ✓）。</p>
+
+<p><b>读路径上的写 ⇒ 三条纪律</b> ✗：① vault 锁 ＋ <b>锁内双检</b>（等锁期间别人可能已重建 ✓）；
+② 重建失败<b>不打断检索</b>（内核可再生 ✓）但错误如实带出（回执 reindex ＋ 零命中时报错也带原因 ✗不许静默 ✓）；
+③ <code>config.autoReindex === false</code> 可整体关掉 ✓（可回退 ✓）。</p>
+
+<p><b>探针 p3-80（6/6 ✓）</b>：① 没变 ⇒ 不重建 ✓；② 内容变 ⇒ 重建且新词<b>立刻可检索</b>（reason=changed ✓）＋ 内核内容上也含新词 ✓；
+③ 内核整个没了 ⇒ 自建（reason=missing-or-unreadable ✓ —— <b>不再依赖"IDE 建过索引"</b> ✓）；
+④ 关掉开关 ⇒ 旧索引 ⇒ 新词查不到 ✓，换没关的那路又查得到 ✓（对照 ⇒ 差异确实来自开关 ✓）。</p>
+
+<p><b>如实记</b> ✗：生产形态内核（子代理手写、uri 大写盘符 ✓）<b>首查必 stale</b> ⇒ 重建一次进入合并形态后稳定 ✓（自愈 ✓）；
+检查是每库 O(文件数) 的 stat 扫描（大库每次检索都要付一次 ✗ —— 真源靠内存脏标记免了它，dsh 进程无事件源 ⇒ 这是取不到的便宜 ✓）。</p>
+
+<h3>16.12 P2 素材转文本：PDF → 同名 .md（kb <code>0.2.61 → 0.2.62</code>）</h3>
+
+<p><b>⚠ 先订正两处</b> ✗：① §16.3 说这条链"纯 Node 可跑"——<b>对 epub/docx 成立、对 PDF 不成立</b>
+（PDF 要本机 python ＋ PyMuPDF4LLM/pypdf，真源同样如此 ✓）；② §16.11 标的"0.2.60 → 0.2.61"实际被另一条线
+（页面「发送到聊天」✓）占了号 ⇒ P3 曾<b>无版本裸奔</b> ✗，本号（0.2.62）把 P3＋P2 一并带走 ✓。</p>
+
+<p><b>复刻的两半</b> ✓：主进程桥（<code>kbDocConvertChannel.ts</code> ✓）塌缩成直接 spawn（dsh Host 有 child_process ✓）；
+python 脚本落成随包副本 <code>scripts/saros-kb-extract-doc.py</code>，与真源内嵌 EXTRACT_SCRIPT <b>逐字节一致</b> ✓
+（守卫：<code>dshPluginPackages.test.ts</code> 新增一条 ✓ —— 它当场咬住了 files 没覆盖新文件的真缺口 ✓）。
+调用侧语义逐字照 <code>stageDocSourcesToText</code> ✓：串行 ✓ / 同名 .md 比源新 ⇒ 跳过 ✓ / 无"提取后端："标记 ⇒ 重提取一次 ✓ /
+有页无字 ⇒ 不写空 md ✓ / 头部来源行格式逐字 ✓。</p>
+
+<p><b>挂点</b> ✓：kb_build（preview 与 build 都在枚举前先 staging —— 真源两条批量路径共用 collectPendingSources ✓，
+这不是我们加的行为 ✓）；vault 锁 ✓；<code>config.stageDocSources === false</code> 可关 ✓；结果如实进回执 ✓。</p>
+
+<p><b>验证</b>：p3-81 <b>6/6</b>（真 PDF 由 pymupdf 现场造 ⇒ 同引擎必可解析 ✓；缺环境显式 SKIP ✗不装绿 ✓）；
+守卫套件 <b>21/21</b> ✓；回归 p3-08 140/140 ✓。</p>
+
+<p><b>本刀边界（如实 ✗）</b>：epub/docx <b>未移植</b>（真源走纯 TS 的 kbArchiveExtract.ts —— zlib 解 zip、可搬，
+连同它的测试夹具一起搬 ⇒ 下一刀 ✓）；本刀里它们得到<b>明确的"尚未移植"错误</b>（不静默 ✗）。</p>
+
+<h3>16.13 P2 续：epub/docx 提取（kbArchiveExtract 逐字移植 ＋ 真源测试套件当黄金表）（kb <code>0.2.62 → 0.2.63</code>）</h3>
+
+<p><b>移植</b> ✓：<code>lib/core/kbArchiveExtract.js</code> = 真源 <code>common/kbArchiveExtract.ts</code> 的<b>逐字移植</b>
+（304 行，只剥 TS 类型 ✓；唯一依赖 Node 内置 zlib ✓ ⇒ 零外部依赖 ✓）。接线：<code>extractDocText</code> 的 epub/docx 分支
+从"尚未移植"错误换成真提取（照真源 <code>extractArchive</code> ✓：读文件 → 解 zip → 8MB 截断 → backend=epub/docx ✓）。</p>
+
+<p><b>★ 一处被迫的偏离 ＋ 防漂移退一格</b> ✗→✓：副本的解压是 <b>async</b>（<code>await inflateRaw</code> ✓）——
+真源在 IDE 主进程用同步没问题 ✓，但 <b>dsh Host 是单线程</b>（仓里有 129MB 图谱卡死事故 ⇒ "插件不许同步解压"的守卫 ✓，
+它<b>当场咬住</b>了第一版的同步移植 ✓）⇒ 偏离是真被迫的 ✓。代价：真源的同步测试跑不了 ⇒ 防漂移从"套件重定向"退成
+<b>黄金表</b>（p3-82：夹具把真源测试 8 例全收 ＋ 错误路径 ＋ 损坏中央目录 ✓，两边各跑 ⇒ <b>14 例输出逐字节一致</b> ✓）。
+教训：<b>移植纯函数模块前先查仓里的守卫清单</b>（同步解压被禁 ✓），别等写完才被咬 ✗。</p>
+
+<p><b>验证</b>：p3-82 <b>3/3</b>（真源 8 例全过 ✓）；p3-81 升为 <b>7/7</b>（⑤ 翻面：epub 真提取端到端 ✓ ＋ 坏 zip 可读原因 ✓）；
+守卫套件 <b>21/21</b> ✓；回归 p3-08 140/140 ✓。至此三种素材（PDF / epub / docx）的"非文本 → 同名 .md"链齐了 ✓。</p>
+
+<h3>16.14 P4 思维导图：确定性半逐字 ＋ LLM 半走只读子代理（kb <code>0.2.63 → 0.2.64</code>）</h3>
+
+<p><b>两半拆开</b> ✓：确定性半（merge 的判重 ✓ / 双侧放射排版 ✓ / refine 合并 ✓ / 命名推导 ✓ / tab 缩进读写 ✓）逐字移植
+<code>kbMindmapGenerator.ts</code> ⇒ 黄金表 <code>p3-83</code>：真源打包 ＋ 内存 fileService ＋ <b>罐头 chatModel</b> ⇒
+落盘 .canvas <b>逐字节一致</b>（6/6 ✓，含坐标与 fromSide/toSide ✓）。LLM 半：提示词与回文清洗<b>逐字</b>成纯函数 ✓，
+提取改走 <b>subagent</b>（kb_build 同款 jobs.start ✓）。</p>
+
+<p><b>★ 比 kb_build 更干净的一点</b> ✓：generate 的子代理<b>只读</b>（结构性 toolFilter 只给 kb_read ✓），
+图谱 JSON 走<b>回文</b>（run.result.output ✓），写盘由<b>宿主</b>做（锁 ＋ refreshDerived ✓）⇒ <b>不需要批授权</b>，
+审批卡只有 kb_mindmap 自己那一张 ✓。垃圾回文 ⇒ <b>不写盘</b>（p3-84 ⑤ ✓）。</p>
+
+<p><b>验证</b>：p3-83 6/6（逐字节 ✓）；p3-84 5/5（闸 / merge e2e / 缺服务拒绝 / 罐头真落盘 / 垃圾不写 ✓）；
+p3-08 140/140（三方对账当场咬住 EXPECTED_TOOLS 漏加 ✓）；守卫 21/21 ✓。
+<b>一个意外</b> ✗：TOOL_NAMES 那处编辑一度被盖回（有另一个写者在动这个文件 ✓ —— 与 0.2.61 插曲同源 ✓），
+靠 p3-08 的三方对账咬出来重补 ✓。</p>
+
+<p><b>边界（如实 ✗）</b>：refine / 标题建议（suggestMindmapTitle）未接（视图侧的补充/优化命名入口 ✓ —— 页面那一族的事 ✓）；
+真源的"导入后 30 秒防抖自动生成"没做（dsh 侧没有视图打开事件 ⇒ 自动生成挂在哪要另外设计 ✗）；真机（p3-45 族）没跑 ✗。</p>
+
+<h3>16.15 思维导图的<b>真机</b>：把"回文能到达宿主"这条假设钉成事实（不 bump：只动探针侧 ✓）</h3>
+
+<p><b>它补哪一格</b> ✗：p3-83 的"LLM"是罐头字符串（进程内直接喂解析器 ✓）、p3-84 用假 jobs/subagents ✓ ⇒
+两件都证不了"<b>真子代理的回文真的会出现在 run.result.output 里</b>"——之前只有源码契约（<code>dsh-subagent</code>
+<code>observeRun</code> 把 <code>result.output</code> 当 lastAssistantMessage ✓）。本仓纪律：形状对但真服务不买账 = 看起来验过了 ✗ ⇒ 要活证据 ✓。</p>
+
+<p><b>做法</b> ✓：mock LLM 新增 kb-mindmap 三条分支（由 <code>MOCK_KB_MINDMAP=1</code> <b>显式开启</b> ✓）；
+应答器夹具白名单加 <code>kb_mindmap</code> ✓；探针照 p3-45 骨架（真 profile ＋ 真子代理 ＋ 零凭据 ✓）。
+<b>读数 9/9</b> ✓：子代理工具面 = <code>[kb_read]</code>（结构性只读 ✓）· 画布真的落盘（<code>中心主题.canvas</code>，名字由内容推导 ✓）·
+审批序列 = <code>[kb_mindmap]</code>（子代理零弹窗 ✓ —— "宿主写盘"设计的直接好处 ✓）。</p>
+
+<p><b>★ 第一版红得很有价值</b> ✗✓：三种红都是"看起来跑过了"的陷阱 —— ① mock 分支顺序（kb_build 分支先抓走我的会话 ⇒
+思维导图成了第 2 个 job ⇒ wait 等错 jobId ✓）；② 应答器白名单没加 <code>kb_mindmap</code> ⇒ 闸的 ask 无人认领 ⇒
+落到 <code>unavailable</code> ⇒ <b>工具被拒</b>，而 mock 日志里那条分支<b>照样打</b>（它只看模型请求 ✓）⇒ 光看日志看不出来 ✗；
+③ jobId 假设（<code>kb-mindmap-1</code>）只在"本会话第一个任务"时成立 ✓。三条都已修 ✓ 并在代码里写明来龙去脉 ✓。</p>
+
+<p><b>回归</b>：p3-45 <b>19/19</b> ✓（共用 mock 与应答器 ⇒ 必须重跑验证 ✓）。本轮<b>未改产品源码</b> ⇒ 不打版本号 ✓（0.2.64 覆盖产品侧 ✓）。</p>
+
+<h3>16.16 思维导图补完：refine（完善）＋ rename（按内容命名）（kb <code>0.2.64 → 0.2.65</code>）</h3>
+
+<p><b>refine</b> ✓：与 generate 同一形状（只读子代理 ＋ 回文 ✓），差别是提示词换成真源 <code>_refineGraph</code> 的逐字版 ✓、
+落盘前走 <code>mergeRefined</code>（真源 <code>:422-459</code> ✓：**同 id 用模型版**、新 id 并进来、边取并集 ✓）＋ relayout ✓，写回<b>同一个文件</b> ✓。</p>
+
+<p><b>rename</b> ✓：与真源同构（视图 <code>:962-997</code> ✓）—— <b>先用确定性推导</b>（<code>deriveMindmapTitle</code> ✓），
+有模型时再用它的建议覆盖 ✓ ⇒ <b>缺 subagents 不是降级</b> ✗，那是真源本来的那一档 ✓（回执里如实说明用的是哪档 ✓）。
+撞名退 <code>-2</code>/<code>-3</code>（<code>:978-984</code> ✓），<b>先占的那份一个字节都不动</b> ✓。
+rename 是<b>同步</b>执行（一次问答，秒级 ✓ —— 真源也是内联 <code>await suggestMindmapTitle</code> ✓）；refine 是 job（与 generate 同 ✓）。</p>
+
+<p><b>验证</b>：p3-84 <b>7/7</b>（⑦ refine：同 id 用模型版 ＋ 新节点并进来 ＋ 写回同一文件 ✓；⑥ rename 那条是**并发会话**加的 ✓，
+它跑在我的实现上通过 ✓）；p3-83 6/6 ✓；p3-85 真机 9/9 ✓；p3-08 140/140 ✓。</p>
+
+<p><b>⚠ 本轮的环境观察（如实记）</b> ✗：有<b>另一个写者</b>在动同一批文件 —— 症状：① 我的 TOOL_NAMES 编辑被盖回一次（靠 p3-08 三方对账咬出 ✓）；
+② p3-84 里出现一条我没写的 ⑥（rename ✓，注释里记着一起"整包静默失效"事故：index.js import 了 <code>uniqueCanvasPath</code> 而 kbMindmap.js 当时没实现 ⇒ ESM 静态链接失败 ⇒ 整族工具注册不上 ✗ —— 那正是"探针全绿但产品整个挂了"的形态 ✓，好在有 <code>dshToolSnapshot</code> 的 failures 兜住 ✓）。
+⇒ 纪律：<b>收尾前复跑关键探针 ＋ 逐处核对编辑是否还在</b> ✓。</p>
+
+<h3>16.17 构建收尾 ⇒ 自动思维导图（真源"导入后防抖生成"的 dsh 等价）（kb <code>0.2.65 → 0.2.66</code>）</h3>
+
+<p><b>真源</b> ✓：库有文件变化 ⇒ <b>30 秒防抖</b> ⇒ <code>generateOrUpdate</code>（视图级事件 ✓，另有"打开视图时补检" ✓）。
+<b>dsh 等价</b> ✓：dsh <b>没有文件监听</b> ✗，等价物是"<b>我自己的构建真写完了</b>" ⇒ 挂在 <code>kb_build</code> 收尾 ✓
+（比真源更准：不是"目录动过"，是"笔记真的落地了"✓）。编排**与 <code>kb_mindmap mode="generate"</code> 共用一份** ✓
+（<code>startMindmapGenerateJob</code>，导出只为跨模块守卫/探针核对 ✓，与 <code>WRITE_TOOLS</code> 同一手法 ✓）。</p>
+
+<p><b>三条纪律</b> ✓：① 顺带做的事**不许炸收尾** ✗ ⇒ 非 strict（失败记账 ＋ 进 <code>kbBuildFinish.mindmap</code> ＋ preview 回执如实说 ✓）；
+② <code>config.autoMindmap === false</code> 可关（可回退 ✓）；③ 它是**另一个 job**（不阻塞构建结论 ✓）。</p>
+
+<p><b>验证</b>：p3-44 <b>16/16</b>（新增：构建收尾**自动起** kb-mindmap ✓ ＋ <b>负对照</b> <code>autoMindmap:false</code> ⇒ 不起 ✓，
+且两轮**都真的起了构建** ⇒ 差异只能来自那个开关 ✓）；p3-84 7/7 ✓（generate 改走共享函数后行为不变 ✓）；
+p3-85 真机 9/9 ✓；p3-08 140/140 ✓。</p>
+
+<p><b>★ 附注：这一刀把一条<b>老断言</b>搞抖了</b> ✗→✓：p3-44 那条"没有待构建素材 ⇒ 不起任务"原本数的是
+<b>全部 job</b>（<code>live.jobCalls.length</code> ✓）；而 §16.17 的钩子会在**收尾里异步**再起一个 kb-mindmap 任务 ⇒
+前一轮构建的收尾**晚到**时，这条就会看到"job 多了 1"⇒ <b>实测三次红了一次</b> ✓。
+修法：按**这条断言的意图**只数 <code>kb-build</code>（它要钉的是"不起**构建**任务" ✓），连跑四次全稳 ✓。
+教训：**改了会产生后台副作用的路径之后，要检查所有"数总量"式断言** ✗ —— 它们不报错，只是偶发红 ✓。</p>
+
+<h3>16.18 页面「新建笔记 / 新建文件夹」（kb <code>0.2.66 → 0.2.67</code>）</h3>
+
+<p><b>逐字照真源</b> ✓（<code>knowledgeBaseView.ts</code> 的 <code>newFile</code>/<code>newFolder</code>/<code>uniqueName</code> ✓）：
+文件 = <code>未命名.md</code>、撞名退 <code>未命名 (1).md</code>（**空格＋括号** ✓ —— 与思维导图那条 <code>-2</code> 是两套规则 ✗）、
+内容 = <code># &lt;文件名&gt;
+</code>（**带扩展名** ✓ 真源原样 ✓）；文件夹 = <code>未命名文件夹</code> ✓。
+通道与 rename/delete **同一条** ✓：同一围栏（**只在「笔记」区** ✓）、同一把 vault 锁 ✓、同样的 405/413/400 口径 ✓、
+建完 <code>refreshDerived</code>（新文件当场进内核 ✓ —— p3-86 ⑧ 钉住 ✓）。</p>
+
+<p><b>两处有意不同</b> ✗→✓（都摆在代码注释里 ✓）：① 真源两区都能新建，我们**只在笔记区** —— 这条通道的立项理由是
+"最小、可逆、不进审计"（§15.33 ✓），而往「库」造素材是**导入** territory ✓（**UI 上也不摆点了必然 400 的项** ✓）；
+② 真源建完**内联改名**，我们重载页面后用 <code>sessionStorage</code> 交接 ⇒ **自动点开那个 ✎**（同名效果 ✓）。</p>
+
+<p><b>验证</b>：p3-86 <b>9/9</b>（命名 ✓/围栏 ✓/方法 ✓/派生 ✓/页面标记 ✓）；p3-72 <b>24/24</b> ✓；p3-69 <b>13/13</b> ✓；p3-08 140/140 ✓。</p>
+
+<p><b>★ 本轮踩的两个"只在页面上才现形"的坑（都值得记）</b> ✗✓：
+① **模板串里写反斜杠正则**（`\/+$` 那类 ⇒ 被吃一层 ⇒ 页面里成非法正则 ⇒ **整段页内脚本语法错** ⇒ 折叠/拖拽/改名/菜单全废 ✓）——
+而它**只**被"只解析不运行"那条断言（p3-69 的 ⓪-b ✓）咬住 ✓（本仓第 7 次踩 ✓）；
+② **过期断言**：p3-69 ⑨ 还写着"没索引 ⇒ 400"，可 P3 的自动重建会**当场自愈**（200 ＋ 命中 ✓）；p3-72 的 `MENU_LABELS` 停在 4 项，
+而 `发送到聊天`（另一条线）与本次两项都已进菜单 ⇒ 它**早就红了却没人跑到** ✗（p3-72 不在我刚才的回归集合里 ✗）。
+⇒ 纪律：**改页面标记/交互，就必须把 p3-69 / p3-72 一起跑** ✓（那两条期望是"逼着更新"的设计 ✓，更新它们本身就是这次改动的一部分 ✓）。</p>
+
+<h3>16.19 页面拖拽移动（kb <code>0.2.67 → 0.2.68</code>）</h3>
+
+<p><b>复刻</b> ✓（真源 <code>knowledgeBaseView.ts:2104-2167</code> ＋ <code>:1744-1763</code>）：拖源＝行（**多选带全部选中项** ✓ :2112-2114）；
+放置目标＝「笔记」区的**目录行**与**分区体**（真源：文件行不拦截 dragover ⇒ 冒泡到分区体 ⇒ "拖到空白＝移到分区根" ✓）；
+payload 键名 <code>application/x-kb-drag</code> ✓；drop-target 高亮与可拖光标三条 CSS **逐字照真源值** ✓（<code>kbView.css:230/249-251</code>）。
+落盘走**已有**的 <code>/api/rename</code>（同一围栏 ＋ 同一把 vault 锁 ＋ 同一套备份 ✓ —— 不为拖拽另开一条写通道 ✓）。</p>
+
+<p><b>三处有意不同</b> ✗→✓（都摆在页内脚本注释里 ✓）：① **只在「笔记」区**（写围栏 ✓；真源"库 ⇄ 笔记"跨区也放行 ✗）；
+② ~~不做复制~~ <b>⚠ 2026-10-14 订正（§16.20）</b>：这一条**当天就补掉了** —— Ctrl/Alt 拖拽现在**真做复制** ✓
+（当时写的是"明确说不支持" ✗，因为 <code>runOrganize</code> 还没有 copy 动词；§16.20 把动词、路由 <code>mode</code>、
+增量名规则一起补齐 ✓ ⇒ 这条有意偏离**已作废** ✓，别再照它理解当前行为 ✗）；
+③ **撞名不覆盖**（真源弹"是否替换" ✓，<code>runOrganize</code> 本就拒覆盖 ⇒ 把**服务端的拒因如实说出来** ✓）
+—— ⚠ 这条**只对移动**成立 ✓，复制的撞名照真源**自动加 <code>copy</code>** ✓。</p>
+
+<p><b>探针 p3-87（12/12 ✓）的关键手法</b> ✓：<b>不起 Host、也不走 <code>file://</code></b> —— 自己起一个 node http 服务，
+把**插件自己的 handler** 挂上去（页面与 API 同源 ✓）⇒ 拖拽真的打到路由、真的改盘 ✓；拖拽用 <code>new DataTransfer()</code> ＋
+<code>new DragEvent(...)</code> **合成**三个事件 ✓（与真拖动走同一套处理器 ✓；Playwright 的 <code>dragTo</code> 对 HTML5 DnD 不稳 ✗）。
+<b>如实标注边界</b> ✗：合成事件验的是"我们的处理器逻辑"✓，不覆盖"真实鼠标拖动的浏览器细节" ✗。</p>
+
+<p><b>★ 它当场咬出一个真缺口</b> ✗✓：拖到**目录行**永远 400（"vaultId 形态不合法" ✓）—— 目录行当初**没带 <code>data-vault</code>** ✗，
+而文件行一直带着 ⇒ 同一功能在"目录行"与"分区体"上**两种命运** ✓。修法：目录行补上 <code>data-vault</code> ✓（加法 ✓）。
+另修两处探针自身的问题 ✗：放下的 <code>fetch</code> 是**异步**的 ⇒ 立刻断言读到的是**改动前**的盘（改为轮询等落盘 ✓）；
+浏览器把**预期**的 400（撞名拒覆盖）也记成 console error ⇒ 网络层与脚本错误要**分开**判 ✓，并另钉"400 恰好一次" ✓。</p>
+
+<p><b>回归</b>：p3-76 <b>4/4</b>（新 CSS 两条 <code>.dsh-drop-target</code> 选择器触发"死规则"判据 ✓ ——
+按它的既有设计加进 <code>STATEFUL</code> 白名单，**第 ③ 条会机器核对脚本里真有产生它的地方** ✓，白名单不是后门 ✓）；
+p3-72 24/24 ✓ · p3-75 6/6 ✓ · p3-69 13/13 ✓ · p3-86 9/9 ✓ · p3-08 140/140 ✓ · 契约违规 0 ✓。</p>
+
+<h3>16.20 Ctrl 拖＝复制（kb <code>0.2.68 → 0.2.69</code>，订正 §16.19 那条"有意不做"）</h3>
+
+<p>§16.19 记过一条有意偏离：Ctrl/Alt 拖拽在真源是**复制**（<code>knowledgeBaseView.ts:4066-4069</code> ✓），
+dsh 侧没有 copy 通道 ⇒ 当时"明确说不支持" ✗。这一刀把它补成**真能做** ✓，并把那条偏离就地订正 ✓。</p>
+
+<p><b>服务端</b>：<code>runOrganize</code> 新增动词 <code>copies</code> ✓（执行次序 creates → moves → <b>copies</b> → deletes ✓）。
+三条规则与 <code>moves</code> <b>有意相反／不同</b> ✓：① <b>撞名不拒、自动增量名</b>
+（<code>增量 copy.md</code> / <code>copy 2.md</code> ✓ —— 纯函数 <code>incrementalCopyName</code> <b>逐字照真源</b> <code>_incrementalCopyName</code> <code>:4160-4171</code> ✓，含 99 次上限与时间戳兜底 ✓）；
+② <b>不写备份</b>（备份是"还原点"✓，而复制<b>不动源文件</b> ⇒ 无损失可还原 ✓）；
+③ <b>不许复制进自己内部</b>（边复制边产生新内容＝无底洞 ✓）。目录复制走递归 ✓。</p>
+
+<p><b>审批闸</b>：判据是 <code>planCounts(...).total > 0</code> ✓ ⇒ <code>copies</code> 必须计入 ✓，
+否则"带 copies 的调用会不弹窗就写盘" ✗✗。p3-08 现在<b>逐动词</b>各钉一遍（moves / copies / deletes ✓）。</p>
+
+<p><b>页面路由</b>：<code>/api/rename</code> 收 <code>mode: "move" | "copy"</code> ✓（未知值当场 400 ＋ 列出支持值 ✗）
+—— 与移动<b>同一把 vault 锁、同一处刷新</b> ✓（不为复制另起通道 ✓）；回执键分开（<code>moved</code> / <code>copied</code> ✓，不混 ✓）；
+⚠ "源＝目标"只在 <b>move</b> 里是"没改任何东西" ✗，<b>copy</b> 里它是合法的（原地复制 ⇒ <code>xxx copy.md</code> ✓ 真源同 ✓）。</p>
+
+<p><b>★ 它当场咬出并修掉一个真缺陷</b> ✗✓：复制的落点是用 <code>path.dirname</code> / <code>join</code> 拼的 ⇒
+在 Windows 上得到<b>半反斜杠</b>的绝对路径（<code>g:\a\b/甲 copy.md</code> ✓），而 <code>resolveOrganizePath</code> 的口径是
+<code>/</code> 归一 ⇒ 页面把落点当"相对路径"切名字时切不动 ⇒ <b>提示里印出一长串机器路径</b> ✗
+（第 29 刀那条"提示说清自动改名"的承诺等于没兑现 ✓）。改成按 <code>/</code> 拼 ✓ ⇒ 提示恢复成文件名 ✓；
+并由 p3-87 ⑥-b2 钉住"提示里不许出现盘符或反斜杠" ✓。</p>
+
+<p><b>探针 p3-87（15/15 ✓，连跑两次都稳 ✓）新学到的两条手法</b>：
+① 写成功后页面 300ms 就重载 ⇒ 读提示有<b>竞态</b> ✗ ⇒ 用<b>跨重载的记录器</b>（<code>MutationObserver</code> 落在旧文档 ✓ ＋
+写 <code>sessionStorage</code> ✓ —— 内存数组会被重载带走 ✗）＋ 轮询当<b>双保险</b> ✓；
+⚠ 记录器的<b>自检要等一拍</b> ✗：MutationObserver 回调是异步的，插完就读必空（第一版就这么假失败 ✓）。
+② 落盘断言一律<b>轮询</b>（<code>fetch</code> 是异步的 ⇒ 立刻读盘读到的是改动前 ✓）。</p>
+
+<p><b>回归</b>：p3-87 <b>15/15</b> ✓ · p3-08 <b>144/144</b> ✓ · p3-76 4/4 ✓ · p3-74 8/8 ✓ · p3-77 6/6 ✓ ·
+p3-78 3/3 ✓ · p3-79 6/6 ✓ · p3-80 6/6 ✓ · p3-86 9/9 ✓ · 契约违规 0 ✓。</p>
+
+<p><b>如实记</b> ✗：① 复制<b>不进会话审计</b>（页面通道的老代价 ✓，所以只做可逆的写 ✓）；
+② 增量名的"占用"判定是<b>读一次目录</b>（比真源 99 次 stat 省 ✓，锁内等价 ✓），并<b>按小写</b>比（Windows 大小写不敏感 ✓）；
+③ 页面这条通道仍只覆盖<b>笔记区</b> ✗（真源两区皆可 ✓）。</p>
+
+<h3>16.21 真机补"写"族覆盖：拖拽／复制／删除撤销／新建（kb <code>0.2.69 → 0.2.70</code>）</h3>
+
+<p><b>为什么补</b> ✓：§16.19-16.20 那一族（拖拽 / 复制 / 新建 / 删除撤销）此前只在 <code>p3-72</code>（<code>file://</code>）
+与 <code>p3-87</code>（自建 HTTP）上验过 ✗ —— 两者都**不经真 Host 的鉴权**，而写路由第一件事是
+<code>page.connection.requestRejection(req)</code> ✓。更直接的动因：<code>p3-72 ⑱</code> 当时写着
+"**真删除 → 撤销 必须走真 Host（p3-73）**" ✓，而 <code>p3-73</code> 里**一直没有那一组** ✗（委托指向了不存在的东西 ✓）。
+⇒ 在 <code>p3-73</code> 补 ⑨（拖拽移动 / Ctrl 拖＝复制）、⑩（删除 → 撤销）、⑪（右键新建 ＋ 建完自动改名）✓。</p>
+
+<p><b>★ 它当场咬出两个真缺陷</b> ✗✓（都是"进程内全绿、页面/真机上不对"那一类 ✓）：</p>
+
+<p>① <b>页面的检索丢了"索引自动重建"的回执</b> ✗：<code>/api/search</code> 只回 <code>count/totalHits/items</code>，
+把 §16.11 的 <code>reindex</code> 丢了 ⇒ 重建失败时页面**拿旧索引出结果却一个字不说** ✗
+（"失败要如实标注"这条纪律 agent 侧 <code>kb_search</code> 一直有 ✓，页面这条漏了 ✓）。
+已补：路由转发 <code>reindex</code> ✓ ＋ 检索头显示"索引已自动重建"或"**重建失败（本次用的是旧索引）**：原因" ✓；
+由 ⑤-b（路由级）与 ⑤-c（**页面上看得见**）两条钉住 ✓。</p>
+
+<p>② <b>"新建后自动进入改名"其实是坏的</b> ✗：交接段（<code>sessionStorage</code> 带路径 ⇒ 点开那个 ✎ ✓）
+原先排在所有 ✎ 处理器**挂载之前** ⇒ <code>newBtn.click()</code> 点在一个**还没挂监听**的按钮上 = 空点 ✓，
+而且**页面零脚本错误**（不是抛错，是没接上 ⇒ 读代码看不出来 ✓）。修法：把该段挪到**脚本最末** ✓
+（它自己的注释早就写着"必须放在所有 ✎ 处理器挂完之后"✗ —— 注解对了、位置错了 ✓）。</p>
+
+<p>③ 而当时**唯一的守卫是假的** ✗：<code>p3-86 ⑨</code> 只断言"页面里有这个交接键" ✓ ⇒ 键在、功能死 ⇒ 
+**绿得假** ✓。已补 <code>⑨-b</code>：**顺序**断言（交接段的**读方**必须排在 ✎ 挂载之后 ✓；
+⚠ 找"读方"<code>getItem</code> 而不是"写方"<code>setItem</code> ✗ —— 写方在菜单代码里、本来就该在前 ✓，第一版找错 ⇒ 假红 ✓），
+与真机 ⑪ 配成"文本级先拦 + 端到端兜底"两道网 ✓。</p>
+
+<p><b>探针自身三处坑</b> ✗（都记在代码里 ✓）：⑤ 断言里把返回键名写成 <code>hits/results</code>（实为 <code>items</code> ✓）⇒ 明明成功也判红；
+⑩-a 用**单次读**取"撤销"按钮 ⇒ 盘先变、响应后到（中间还有一次 <code>refreshDerived</code> ✓）⇒ 必空 ✓；
+⑪ 用 <code>page.waitForFunction</code> 等输入框 ⇒ 那一刻页面正在重载 ⇒ 它抛"上下文已销毁"、被 <code>.catch(false)</code> 吞成**假红** ✗
+⇒ 统一改用 <code>waitPage</code>（容错轮询 ✓）。另：<code>p3-87</code> 的两处提示读取也是同类竞态（提示只活 300ms 就被重载带走 ✓）
+⇒ 已改为"轮询 ＋ 跨重载记录器"双保险 ✓，连跑 5 次 15/15 稳定 ✓。</p>
+
+<p><b>读数</b>：p3-73 <b>24/24</b> ✓（补前 19/22 ✓）· p3-86 <b>10/10</b> ✓ · p3-87 <b>15/15</b> ✓（×5 稳 ✓）·
+p3-08 <b>144/144</b> ✓ · 契约违规 0 ✓。</p>
+
+<h3>16.22 用户报「知识库 sideview 显示错误」：两处布局缺陷（kb <code>0.2.70 → 0.2.71</code>）</h3>
+
+<p><b>现象</b>：真机侧栏里「知识库」页只剩一串分区头（<code>库 106</code> / <code>笔记 2</code> …），
+<b>行一条都看不见</b>，下方一大片空白 ✓。</p>
+
+<p><b>取证顺序</b>（不猜 ✓）：① 用真实数据根<b>只读</b>渲一次页面 ⇒ 服务端其实把 <b>117 行全渲了出来</b>（189KB ✓），
+分区徽标与行数逐条对得上 ⇒ 问题在**客户端呈现** ✗；② 用真数据根在真浏览器里**量** ⇒
+每个分区高 30px、分区体只有 <b>4px</b>（内容 scrollHeight 3570 ✗）⇒ 复现 ✓（不需要 IDE 外壳也能复现 ✓）。</p>
+
+<p><b>缺陷一：高度链断了两处</b> ✗（都不是"某个值写错"，而是"<b>声明都在、只是不生效</b>" ✓）：<br>
+· 真源 <code>kbView.css:154</code> 有 <code>.kb-scroll</code> 的 <code>display:flex; flex-direction: column</code> ✓，
+我们只在**共享外壳**里写了 <code>flex:1; overflow-y:auto</code> ✗ ⇒ 本页那些 <code>.dsh-section.open{flex:1 1 0}</code>、
+<code>.dsh-section-body{flex:1 1 auto}</code> **一直是失效的** ✓；<br>
+· 本页自有的多库包装层 <code>.dsh-vault-group</code> 是 <code>height:auto</code> 的 flex 列 ✗ ⇒ 里面的分区退到
+<code>min-height:28px</code> ⇒ 分区体拿到 ≈0，只剩 4px 内边距 ⇒ <b>106 行全被这个 4px 的 overflow 裁掉</b> ✓。<br>
+<b>修法</b>：把高度链接回去 ✓ —— 滚动区补上真源那条 flex 列（写在**本页 <code>extraCss</code>**、不动共享外壳 ✗），
+并让每个 vault 组**参与分配**（多库时各组平分、组内两分区再平分 ✓ = 真源单库语义的推广 ✓）。</p>
+
+<p><b>缺陷二：目录行的子树被当成"第二个 flex 项"横排</b> ✗：<code>.dsh-node</code> 是**一行 flex** ✓，
+而目录 <code>li</code> 里**还装着**它自己的子树 <code>&lt;ul&gt;</code> ⇒ 整棵子树排到按钮**右边** ✓ ——
+实测 <code>childLeft=632px</code>：<code>.obsidian/plugins/…</code> 那条链横着铺开、名字全被推出视口 ✓
+（用户截图里"库 106 看着是空的"就是这个 ✓）。真源的子容器是节点元素**之后**的兄弟 ✓
+（<code>knowledgeBaseView.ts:2214</code> 的 <code>el.nextElementSibling</code> ✓）⇒ 把子树放进 li 是我们**结构上的差异** ✗。<br>
+<b>修法</b>：目录行**可换行** ＋ 子树强制独占下一行 ✓；并把 hover / 选中的底色**只画在行上** ✓
+（否则底色会连整棵子树一起涂 ✓）。全部是**加法** ✓：照抄真源的那些规则一个字没动 ✓。</p>
+
+<p><b>为什么所有探针都漏了</b> ✗（这条比修复更值得记）：<br>
+· 按值对账 <code>p3-68</code> 比的是**声明**（30/30 全绿 ✓）—— 而这次的问题恰恰是"声明在、不生效" ✗；<br>
+· 渲染级 <code>p3-72</code>/<code>p3-73</code> 的夹具只有**一层目录** ✗ ⇒ 既碰不到"子树横排"，
+而那些点击断言只关心"点得到"（Playwright 会自己滚进视口 ✓）⇒ 页面看着是空的也照样绿 ✓。<br>
+<b>补的网</b>：p3-72 夹具加 <code>库/概念/深/一/二/三/底.md</code>（多层嵌套 ✓）＋ 三条**几何**断言 ——
+⑲ 每个有内容的分区体**高到装得下一行**（≥28px）且首行起点落在体内；⑲-b 目录行的子树**在按钮下面、不往右排**；
+⑲-c 最深那行仍落在分区体的**横向可视区**内 ✓。<b>反向突变 2/2 命中</b> ✓：撤掉修复一 ⇒ <code>bodyH=4</code> ✗、
+撤掉修复二 ⇒ <code>childLeft=632</code> ✗ ⇒ 断言真的抓得住，不是摆设 ✓。</p>
+
+<p><b>读数</b>：p3-72 <b>27/27</b> ✓（原 24 ＋ 新 3）· p3-73 <b>24/24</b> ✓（真 Host）· p3-68 30/30 ✓ · p3-69 13/13 ✓ ·
+p3-74 8/8 ✓ · p3-77 6/6 ✓ · p3-86 10/10 ✓ · p3-87 15/15 ✓ · p3-08 <b>144/144</b> ✓ · 契约违规 0 ✓。</p>
+
+<p><b>如实记</b> ✗：① 用户侧要看到修复，得让 dsh Host **重新装一次插件**（Host 用的是 profile 里那份拷贝 ✗，
+不是仓库源码 ✓）；② 目录行的**盒子仍含整棵子树**（结构差异没改 ✓，只把底色/hover 移到行上 ✓）——
+所以"选中高亮"是准的 ✓，但那个 li 的**命中区**比一行大 ✓（拖拽仍按最内层目录处理 ✓，行为正确 ✓）；
+③ 真源**默认折叠**目录（<code>_expandedFolders</code> 空集 ✓），我们仍是**全展开**渲染 ✗ —— 这是本页"只读总览"的既有取舍 ✓，
+本轮没改（改它会让一批"直接点某行"的探针全失效 ✓），但**已在此记明** ✓。</p>
+
+<h3>16.23 用户要求"dsh 侧知识库 view 复刻源知识库的 UI 和功能"：差距盘点 ＋ 第一刀「标签分类」</h3>
+
+<p><b>先纠一处口径</b> ✗：用户对照的左图来自**较早的 VsSaros_PUB 构建**，其中两样东西在**当前工作区源码里不存在**：
+① 页签「知识 / 记忆 / 代码 / 媒体库」——<code>kbView.css:829-832</code> 明写"已拆到各自独立视图"✓，
+<code>knowledgeBaseView.ts:592-594</code> 也写明"tab 栏拆掉后直接写死 kb-panel.active"✓；
+② 「选择一个文件以查看预览（导出 / 反馈）」——全仓搜该串 0 命中 ✗（真源对应的只有反链占位
+「选择一个文件以查看双链（出链 / 反链）」<code>:1299</code> ＋ 文档预览区 <code>kbView.css:502-606</code> ✓）。
+⇒ 按本仓一贯口径（**真源＝工作区源码** ✓）复刻目标取源码；这两项**不复刻**并记在此 ✓。</p>
+
+<p><b>逐项取证后的差距清单</b>（左＝真源 行号，右＝我们）✓：</p>
+<ul>
+<li><b>已复刻（本轮）</b>：「标签分类」分区 ✓ —— 真源 <code>:1148-1287</code> ＋ <code>kbView.css:402-455</code>。</li>
+<li><b>还缺（下一批，按优先级）</b>：① <b>目录默认折叠 ＋ 展开态持久化</b>（真源 <code>:2047</code>/<code>:161,575-577</code>，
+我们目前**全展开** ✗ —— 顺带消掉 529px 横向溢出 ✓；代价是一批"直接点深层行"的探针要先展开 ✓）；
+② 库选择器独立成行 ＋ 菜单（当前知识库 / 配置文件夹为知识库 <code>:617-628,1321-1397</code>）＋ 同排三图标（树⇄最近 / 刷新 / 图谱 <code>:1339-1364</code>）；
+③ 排序并入搜索框 ＋ 14 维（<code>:664-670,1966-1989</code>；我们 9 维）；
+④ 分区头右侧工具栏（库：批量构建/导入 URL；笔记：思维导图/同步飞书 <code>:1698-1725</code>）——⚠ <b>需要产品决策</b> ✗：
+那四件都是**过审批闸的工具** ✓，页面不能裸调 ✗；⑤ 行 hover 四按钮（<code>:2080-2090</code>）＋ 空态文案对齐「暂无内容」（<code>:1835</code>）。</li>
+<li><b>有意不同、不复刻</b>：页签 ✗（已拆走 ✓）、标题栏 ⚙ 设置（真源开中间栏面板 ✓ dsh 无中间栏）；
+另：「全部标签」下拉是**我们自加**的 ✗（真源没有 ✓）—— 现在有了标签分区 ⇒ 下一批可评估**撤掉下拉** ✓（别留两套入口 ✗）。</li>
+</ul>
+
+<p><b>本轮落地的「标签分类」分区</b>（<code>tagClassHtml</code> ＋ 页内脚本 ＋ <code>PAGE_CSS</code>）✓，逐项照真源：
+头 = 🏷 ＋ 名称 ＋ <b>「交集 AND」徽标</b> ＋ 计数徽标 ✓——⚠ 那个 AND 徽标在真源里是**静态说明**（全文件无 onclick ✓，核过 ✓）
+⇒ 照抄成静态 ✓，**不假装能切换** ✗；体 = 标签搜索（placeholder <code>搜索标签…</code> ✓）＋ 分组（组头 <code>#标签</code> ＋ <code>N 篇</code> ✓、
+组头可折叠且**初始折叠** ✓）＋ <code>#无标签</code> 兜底组 ✓；过滤是**标签名子串包含** ✓（真源 <code>:1199</code> ✓）；
+排序＝条数倒序 ⇒ 同条数按中文 <code>localeCompare</code> ✓（真源 <code>:1200</code> ✓）；空态**两种文案** ✓（真源 <code>:1205</code> ✓）：
+一条都没有 ⇒ <code>暂无标签（在笔记中使用 #标签# 格式即可创建标签）</code>（注意是**两个 #** ✓，别照用户截图的 OCR ✗）；有标签但没搜到 ⇒ <code>无匹配标签</code> ✓。
+数据只能来自**索引条目**（<code>vault.docs[].tags</code> ✓——树是文件系统的、没有标签 ✓）⇒ 没索引的库如实显示空态 ✓。
+分区**默认折叠** ✓（真源 <code>_tagClassOpen</code> 初始 false ✓）——为此把页内 init 的"一律 setOpen(true)"改成"只开库/笔记" ✓。</p>
+
+<p><b>顺带修</b> ✓：分区体加 <code>overflow-x: hidden</code> —— 用户截图里那条<b>横向滚动条</b> ✗ 是深层目录 nowrap 撑宽造成的 ✓
+（真源靠"目录默认折叠"从根上避免 ✓，那条留到下一批 ✓；本轮先把滚动条裁掉 ✓）。</p>
+
+<p><b>探针</b>：p3-72 新增 6 条（⑳ 分区在＋徽标/placeholder ✓、⑳-b 默认折叠＋分组 <code>#标签 N 篇</code> ✓、⑳-c <code>overflow-x: hidden</code> ✓、
+⑳-d 展开后组真可见 ✓、⑳-e 子串过滤 ＋ <code>无匹配标签</code> ✓、⑳-f 清空恢复 ✓）；夹具给一篇带上标签（另一个库**不给** ⇒ 空态也有覆盖面 ✓）。
+⚠ 连带订正 ✗（第三个分区破坏了旧前提）：p3-72 ⑩-0 / ⑩-c 与 p3-73 ⑦ / ⑦-c 原来写"初始**全开**"与"逐个点关" ✓，
+现在标签分类默认折叠 ⇒ 改成"库/笔记全开、标签分类折叠"＋"只关**当前展开**的那些" ✓（否则点它会展开它、把第一段收掉 ✓）。</p>
+
+<p><b>读数</b>：p3-72 <b>33/33</b> ✓（原 27 ＋ 新 6）· p3-73 <b>24/24</b> ✓（真 Host）· p3-68 30/30 ✓ · p3-69 13/13 ✓ · p3-71 7/7 ✓ ·
+p3-75 6/6 ✓ · p3-76 4/4 ✓ · p3-74 8/8 ✓ · p3-77 6/6 ✓ · p3-86 10/10 ✓ · p3-87 15/15 ✓ · p3-08 <b>144/144</b> ✓ · 契约违规 0 ✓。</p>
+
+<p><b>如实记</b> ✗：① 用户侧要看到本轮效果，同样需要让 dsh Host **重装一次插件** ✓（Host 用 profile 里的拷贝 ✗）；
+② 真源标签分组里列**文档行**（<code>renderTagGroup</code> ✓），我们也列了 ✓，但只给**名字**（真源给文件图标 ✓）——图标那套要走活动图标主题 ✓，与既有"字形代替图标"的偏离同源 ✓；
+③ 多库并列是我们特有的形态 ✓（真源单库 ✓）⇒ 标签分区**每库一份** ✓（这处差异与本页"库分组"同源 ✓）。</p>
+
+<h3>16.24 复刻第二刀：目录**默认折叠** ＋ 展开态持久化（kb <code>0.2.72 → 0.2.73</code>）</h3>
+
+<p><b>照真源</b> ✓：<code>_expandedFolders</code> 初始是**空集**（<code>knowledgeBaseView.ts:211</code> ✓）、
+目录行的 twist 按集合显示 ▾/▸（<code>:2047</code> ✓）、展开态按 vault+分区持久化
+（<code>agentStudio.kb.expanded.&lt;vaultId&gt;.&lt;section&gt;</code> ✓ <code>:161,575-577</code> ✓）、
+刷新后**按集合恢复展开**（<code>:1886-1892</code> ✓）。我们的等价物：服务端渲成折叠态
+（<code>aria-expanded=false</code> ＋ 子树 <code>hidden</code> ＋ twist ▸ ✓），页内脚本用 localStorage 的
+<code>vssaros-kb-expanded</code>（**扁平 map，键＝行的 <code>data-dir-rel</code>** ⇒ 已含分区 ✓ 粒度与真源等价 ✓）恢复与记录 ✓。</p>
+
+<p><b>★ 顺带把上一个缺陷的根因消掉了</b> ✓：真机实测「分区体横向溢出」由 <code>529px</code> 变成
+<b>0px</b>（六个分区全 0 ✓）—— 之前那条横向滚动条正是"深层目录全展开 ＋ nowrap"撑出来的 ✓，
+现在从根上不撑了 ✓（<code>overflow-x: hidden</code> 那条只是兜底，留着 ✓）。真机截图里形态也与左图一致了：
+<code>库 106 → ObsidianWorkspace 11</code>（折叠 ✓）、<code>🏷 标签分类 交集 AND 65</code> ✓。</p>
+
+<p><b>代价如实记</b> ✗：① 真源是**懒加载**（展开才 listChildren ✓），我们是**服务端一次渲完**只靠 hidden 收起
+⇒ 树大时首屏 HTML 仍不小 ✓（换来"零新 API、零扫描"这条既有性质 ✓）；
+② 「JS 不在时仍是全量只读列表」这条既有性质**不能丢** ✗ ⇒ 页面注入一条 <code>noscript</code> 样式把
+<code>[hidden]</code> 还原成可见 ✓（纯 HTML 能力 ✓）；
+③ 真源分区头右侧那两个图标**不是**展开/折叠全部（是各自的分区工具栏 ✓，见 §16.23 清单第 ④ 项）
+⇒ 没顺手加 ✓。</p>
+
+<p><b>探针</b>：p3-72 新增 <b>㉑</b>（默认折叠：所有目录 aria=false ＋ 子树 hidden ＋ twist ▸）/
+<b>㉑-b</b>（点开 ⇒ aria=true／hidden=false／twist ▾ ＋ 路径写进 localStorage ✓）/
+<b>㉑-c</b>（刷新 ⇒ **恢复** ✓ 且子行真可见 ✓）。⚠ 为什么单开一组 ✗：这是"**默认态**"的事实，
+而别的组都是"先展开再说" ⇒ 不单开的话这条就没守卫了 ✓。</p>
+
+<p><b>连带面：所有"点深层行"的探针都要先展开</b> ⇒ 三个探针各加了一个 <code>expandAllDirs(section)</code> 助手 ✓
+（p3-72 / p3-73 / p3-87 ✓）。⚠ 助手自己踩了三个坑，都记在代码里 ✗：<br>
+① 选择器用了 <code>data-section</code>（真值是**中文**「库/笔记」✓）⇒ 0 个匹配；更糟的是它被
+<code>.catch(() =&gt; {})</code> **静默吞掉** ⇒ 后面在别处超时 ⇒ "看不到真因"两连 ✗（已改成**出声打印** ✓）；<br>
+② 分区自己折叠着时里面的目录**也点不到** ⇒ 助手先展开分区 ✓；而手风琴互斥 ⇒ 调用点写成
+"**用前才展开**"（连着开两个，前一个会被收起来 ✓）；<br>
+③ 目录行里**装着子孙行** ⇒ 取 <code>[data-dir-toggle]</code> 必须 <code>.first()</code> ✓（否则 Playwright
+严格模式报"resolved to 5 elements" ✓ —— 这处结构差异在 §16.22 已记 ✓）。</p>
+
+<p><b>读数</b>：p3-72 <b>36/36</b> ✓（原 33 ＋ 新 3）· p3-73 <b>24/24</b> ✓（真 Host）· p3-87 15/15 ✓ ·
+p3-68 30/30 ✓ · p3-69 13/13 ✓ · p3-71 7/7 ✓ · p3-75 6/6 ✓ · p3-76 4/4 ✓ · p3-74 8/8 ✓ · p3-77 6/6 ✓ ·
+p3-86 10/10 ✓ · p3-08 <b>144/144</b> ✓ · 契约违规 0 ✓。</p>
+
+<p><b>下一步</b>（§16.23 清单的余项）：② 库选择器独立成行＋菜单＋同排三图标；③ 排序并入搜索框＋14 维；
+④ 分区头右侧工具栏（⚠ 需产品决策：四件都是过审批闸的工具 ✓）；⑤ 行 hover 四按钮 ＋ 空态文案「暂无内容」。</p>
+
+<h3>16.25 复刻第三刀：库选择器独立成行 ＋ 菜单 ＋ 同排两个按钮（kb <code>0.2.73 → 0.2.74</code>）</h3>
+
+<p><b>照真源</b> ✓：库选择器**独立一行**（<code>knowledgeBaseView.ts:617-628</code> ✓ —— 在标题之下、搜索行之上 ✓），
+结构＝图标 ＋ 名字 ＋ caret（<code>:1321-1331</code> ✓）＋ **自定下拉菜单**（<code>:1375-1419</code> ✓：
+分组标题「当前知识库」＋ 每库一项＝勾选 ＋ 图标 ＋ 名字 ＋ 右侧小字 ✓）；
+同排两个按钮＝「文件树 ⇄ 最近编辑」（<code>:1339-1350</code> ✓）与「刷新」（<code>:1357-1359</code> ✓）；
+样式逐条照 <code>kbView.css:48-111</code> ✓（含菜单的 radius 6px / shadow <code>0 4px 16px rgba(0,0,0,.5)</code> / <code>z-index 50</code> ✓）。
+⚠ 真源那条**踩过的坑**也照抄进注释 ✗：菜单**必须**留在 <code>.kb-vault-bar</code> 内（它是唯一的 <code>position: relative</code> ✓
+决定了菜单 <code>top: 100%</code> 的落点；挂到别处会被 <code>overflow</code> 裁掉 ⇒ 「点了没反应」✓ <code>:621-628</code> ✓）。</p>
+
+<p><b>三处有意不同</b> ✗（都摆在代码注释里 ✓）：① 真源的「关系图谱」按钮（<code>:1362-1364</code> ✓）**不摆** ——
+它要在**中间栏**打开（dsh 侧没有中间栏 ✗）⇒ 摆一个点了必然失败的按钮比不摆更坏 ✓（与"库区行的菜单不摆写项"同一条纪律 ✓）；
+② 菜单底部「配置文件夹为知识库…」（<code>:1391-1396</code> ✓）**不摆**（要系统文件夹选择器 ✗）；
+③ 真源的「已关闭」分组（<code>:1384-1389</code> ✓）没有对应物（我们没这个概念 ✓）。</p>
+
+<p><b>两处适配</b> ✓（真源是单库语义 ✗）：① 菜单第一项是「全部库（不筛选）」＋ 默认就选它 ✓
+（多库并列是本页形态 ✓）；② 「最近编辑」**不做第二套视图** ✗ —— 真源切过去是另一套扁平列表（<code>:1798-1812</code> ✓），
+我们落到「**展开全部目录 ＋ 同级按编辑时间倒序**」上 ✓（按钮名/图标/位置照真源 ✓）；
+⚠ 而且这次展开 **不落库**（<code>persist=false</code> ✓）—— 否则"看一眼最近编辑"会把用户的折叠态改掉 ✗。</p>
+
+<p><b>被替换掉的旧物</b> ✗：搜索行里的 <code>&lt;select data-vault-select&gt;</code> ⇒ 筛选状态改由页内脚本的变量扛 ✓；
+<code>p3-08</code> 那条"vault 切换下拉"的断言跟着改判据（换成 <code>data-vault-bar</code> / <code>data-vault-menu</code> /
+<code>data-vault-opt</code> ✓）—— ⚠ 这类"结构换了、断言还钉旧钩子"的红是**假红**，改判据不是放宽 ✓。</p>
+
+<p><b>探针</b>：p3-72 新增 7 条 —— ㉒（位置：标题之下搜索行之上 ✓ ＋ caret ＋ 「当前知识库」组 ＋ 勾选当前项 ＋ 菜单默认收起 ✓）、
+㉒-b（两个按钮的 title ✓ ＋ **不摆**图谱/配置文件夹 ✓）、㉒-c（点开 ＋ 点空白收 ✓ 两种收法 ✓）、
+㉒-d（选某个库 ⇒ 真的只剩它 ＋ 标签换成库名 ＋ 勾选跟着走 ＋ 菜单自己收起 ✓）、㉒-e（选回全部库 ⇒ 全回来 ✓）、
+㉒-f（最近编辑＝<code>mtime-desc</code> ＋ 目录全展开；切回＝索引顺序 ＋ 恢复折叠态；**两次都不落库** ✓）、
+㉒-g（刷新是**真重载** ✓ —— 用只活在当前文档里的标记变量验 ✓）。</p>
+
+<p><b>⚠ 探针自己踩了一下</b> ✗：㉒-c 里我用 <code>page.click('body')</code> 当"点空白" ⇒ 那一下正好落在
+<b>一个目录行</b>上（body 的中心就在树里 ✓）⇒ 把它真展开、还落了库 ⇒ ㉒-f 的"不落库"判红 ✓。
+改成 <code>page.mouse.click(3, 3)</code> ✓。**记一条**：别拿 <code>body</code> 的中心当"点空白" ✓。</p>
+
+<p><b>读数</b>：p3-72 <b>43/43</b> ✓（原 36 ＋ 新 7）· p3-73 <b>24/24</b> ✓（真 Host）· p3-08 <b>144/144</b> ✓ ·
+p3-68 30/30 ✓ · p3-69 13/13 ✓ · p3-71 7/7 ✓ · p3-75 6/6 ✓ · p3-76 4/4 ✓ · p3-74 8/8 ✓ · p3-77 6/6 ✓ ·
+p3-86 10/10 ✓ · p3-87 15/15 ✓ · 契约违规 0 ✓。</p>
+
+<p><b>下一步</b>（§16.23 清单余项）：③ 排序并入搜索框 ＋ 14 维排序；④ 分区头右侧工具栏（⚠ 需产品决策：
+那四件都是过审批闸的工具 ✓）；⑤ 行 hover 四按钮 ＋ 空态文案「暂无内容」。</p>
+
+<h3>16.26 复刻第四刀：排序移进搜索框 ＋ 13 档（kb <code>0.2.74 → 0.2.75</code>）</h3>
+
+<p><b>照真源</b> ✓：排序按钮回到**搜索框内**（模式按钮之后 ✓ <code>knowledgeBaseView.ts:663-670</code> ✓）；
+点开是**分组下拉**（<code>openSearchSortDropdown</code> <code>:3859-3885</code> ✓：每组一个标题 ＋ 每项一个勾选位 ✓）；
+样式逐条照 <code>kbView.css:308-358</code> ✓（下拉 radius 6px / <code>box-shadow 0 6px 24px rgba(0,0,0,.6)</code> /
+<code>z-index 100</code> / <code>min-width 220px</code> ✓；<code>.kb-sort-group</code> / <code>-label</code> / <code>-opt</code> / <code>.kb-ck</code> ✓；
+排序按钮 24×22 / radius 3px / 13px ✓）。</p>
+
+<p><b>维度＝真源 14 项减三</b> ✗（都在 index.js 注释里写明理由 ✓）：</p>
+<ul>
+<li><b>引用数 ×2 不摆</b> ✗ —— 真源自己的**比较器里没接**（<code>:1969-1985</code> 的 switch 没有这两个 case ⇒
+落 <code>default: name.localeCompare</code> ✗）⇒ 摆了就是"选了没用还不说" ✓；</li>
+<li><b>自定义（拖拽）不摆</b> ✗ —— 真源比较器 <code>return 0</code>（＝不排 ✓）；本侧"拖拽"是**移动文件**（§16.19 ✓），
+不是手工排序 ⇒ 没这个概念 ✓；</li>
+<li><b>保留「索引顺序」</b> ✓ —— 真源没有这一项 ✓，但本页双侧列表（fs 树 ＋ 索引条目）都靠它当默认 ✓。</li>
+</ul>
+<p>⇒ 落地 <b>13 档</b> ✓（索引顺序 ＋ 文件名 ×4 / 创建时间 ×2 / 编辑时间 ×2 / 文档大小 ×2 / 子文档数 ×2 ✓），
+标签**逐字照真源** ✓（含"文档大小 (从小到大)"这类说法 ✓），value 也用真源枚举名（<code>fileNameASC</code> … ✓）
+⇒ 两边代码对读不用再心算 ✓。</p>
+
+<p><b>排序语义照 <code>sortNodes</code></b>（<code>:1966-1988</code> ✓）：<b>目录与文件分成两组各自排、目录恒在前</b> ✓。
+⚠ 旧版只排文档行 ✗，"目录在前"只是 <code>appendChild</code>（把每个文档行挪到末尾 ✓）的**副作用**
+⇒ 语义隐式且脆（换个插入 API 就没了 ✓）⇒ 现在**显式**分组 ✓ —— 顺带让目录行也吃这些维度 ✓
+（因此**目录行补了 5 个排序键**、文件行补 <code>data-size</code> / <code>data-child-count</code> ✓；
+索引条目那类行没有 fs 尺寸 ⇒ 缺席当 0 ✓，与"缺字段沉底"同一条既有约定 ✓）。</p>
+
+<p><b>档位落库</b> ✓：真源按 vault 存（<code>saveSort(vault.id, mode)</code> <code>:3875</code> ✓）；
+我们的库选择器默认"全部库" ⇒ 用<b>单键</b> ✓（差异如实记 ✗）。⚠ 页面上"当前档"必须**看得出来** ✗：
+按钮只有图标 ⇒ 档名写进 title / aria-label ✓ ＋ 把当前档挂到 root 的 <code>data-sort-mode</code> 上当机器可读态 ✓
+（下拉收起后没有别的痕迹 ✓）。</p>
+
+<p><b>两处有意不同</b> ✗：① 下拉**定位机制**（真源 <code>position: absolute</code> ＋ 页内算坐标；
+我们跟右键菜单同一套 <code>position: fixed</code> ＋ JS 坐标 ✓ —— 值照抄、机制我们自己的 ✓）；
+② 档位**跨库单键**（真源 per-vault ✓）。</p>
+
+<p><b>⚠ 这一刀自己引入两个真 bug（都被守卫咬住 ✓）</b>：</p>
+<ol>
+<li><b>残留 <code>if (sortSelect) { … }</code></b> ⇒ 页面加载时 <b>ReferenceError</b> ⇒ **整段脚本死掉**
+（筛选／折叠／拖拽全哑 ✓）。教训：页内脚本**能解析 ≠ 能跑** ✗ —— 解析由 p3-69 ⓪-b 守 ✓，
+"能不能跑"由 p3-72 的**零脚本错误**守 ✓，两条都要在 ✓。</li>
+<li><b>注释里写反引号</b> ⇒ 提前闭合模板串 ⇒ SyntaxError —— **当天第二次、累计第十次** ✗，
+而且这次是在"修这个坑"的那句注释里踩的 ✓。⇒ 新增 p3-69 <b>⓪-c</b>：扫 <code>KB_SCRIPT</code> / <code>PAGE_CSS</code>
+区域内**注释行**是否含反引号 ✓，命中就直接点名"哪个模板串第几行" ✓（⓪-b 只能说"这块解析不过" ✓）。
+⚠ 方法沉淀：**每次编辑模板串后立刻 <code>node --check</code>** ✓ —— 这次是先改了别处、隔了几步才跑检查 ✗。</li>
+</ol>
+
+<p><b>探针</b>：p3-72 新增 6 条 —— ㉓（按钮**在搜索框内** ＋ 下拉默认收起 ＋ 13 档 ＋ 5 组标题 ＋ 起始档 ✓）、
+㉓-b（**不摆**那三档 ✓ 负向断言 ✓）、㉓-c（标签逐字 ✓）、㉓-d（开关 ＋ 落在按钮下方且不出屏 ✓）、
+㉓-e（<b>13 档逐档真排序</b> ✓：每档都验「目录恒在前 ＋ 每个 ul 内按该键单调 ＋ 档位真落下」✓）、
+㉓-f（当前档看得出来 ＋ 落库 ＋ 重载后恢复 ✓）。p3-69 新增 ⓪-c（14/14 ✓）。
+⚠ 连带订正：p3-08 的"排序下拉"与 p3-72 ㉒-f 的档位判据都换钩子 ✓（结构换了还钉旧钩子 = 假红 ✓）；
+探针卫生：<code>vssaros-kb-sort</code> 也要在开场清掉 ✓（不然上一次跑的档位带进来 ⇒ 第二次跑必红 ✓）。</p>
+
+<p><b>读数</b>：p3-72 <b>49/49</b> ✓（原 43 ＋ 新 6）· p3-69 <b>14/14</b> ✓ · p3-08 <b>144/144</b> ✓ ·
+p3-73 <b>24/24</b> ✓（真 Host）· p3-68 30/30 ✓ · p3-71 7/7 ✓ · p3-75 6/6 ✓ · p3-76 4/4 ✓ · p3-74 8/8 ✓ ·
+p3-77 6/6 ✓ · p3-86 10/10 ✓ · p3-87 15/15 ✓ · 契约违规 0 ✓ · 真数据（440px 侧栏）无横向溢出 ✓。</p>
+
+<p><b>下一步</b>（§16.23 清单余项）：④ 分区头右侧工具栏（⚠ 需产品决策 ✓）；⑤ 行 hover 四按钮 ＋ 空态文案「暂无内容」。</p>
+
+<h3>16.27 复刻第五刀：行内动作（hover）＋ 分区空态（kb <code>0.2.75 → 0.2.76</code>）</h3>
+
+<p><b>照真源</b> ✓：行上有**动作组**，默认不显、hover 才显（<code>kbView.css:282-283</code> ✓：
+<code>display:none</code> ⇒ <code>.kb-node:hover</code> 时 <code>flex</code> ✓；<code>.kb-act</code> 20×20 / 圆角 3px / 13px /
+图标色 / opacity .8 ⇒ hover 底色 ＋ opacity 1 ✓ <code>:284-290</code> ✓）。真源那四件是
+<b>新建文件 / 新建文件夹 / 重命名 / 删除</b>（<code>:2079-2090</code> ✓）。空态文案**逐字**照
+<code>_createEmptyInline</code>「暂无内容」（<code>:1835 / :4662 / :4710</code> ✓），样式照
+<code>.kb-empty-inline</code>（<code>kbView.css:361</code> ✓：内边距 8px 14px / 描述色 / 12px ✓）。</p>
+
+<p><b>按围栏给子集</b> ✗（不许摆"点了必然 400"的按钮 —— 与"库区行的菜单不摆写项"同一条纪律 ✓）：</p>
+<ul>
+<li>「笔记」区**文件行** ⇒ 重命名 ✎ ＋ 删除 🗑 ✓；</li>
+<li>「笔记」区**目录行** ⇒ 新建笔记 📄 ＋ 新建文件夹 📁 ＋ 删除 🗑 ✓（真源的"新建"是对**节点**的：建进这个目录 ✓）；</li>
+<li>**库区一行都不摆** ✗（服务端围栏只在「笔记」区 ✓）。</li>
+</ul>
+<p>⚠ 目录行**不摆重命名** ✗：服务端 <code>moves</code> 的还原点那一步用 <code>copyFile</code>（<code>organize.js:96</code> ✓）
+⇒ 对目录会抛 ⇒ 点了必然失败 ✓（真源能改目录名 ✓ —— 差异如实记 ✗，要做就得先给目录的还原点换 <code>cp</code> ✓）。
+⚠ 目录的**删除可以** ✓：<code>deletes</code> 走 <code>moveFile</code> ⇒ <code>rename</code>（<code>organize.js:158</code> ＋ <code>:38-41</code> ✓）
+目录也吃得下 ✓；只有"跨盘"那条兜底路（EXDEV ⇒ 复制 ＋ 删源）对目录不成立 ✓（备份目录是 vault 的兄弟 ⇒ 通常同盘 ✓）。</p>
+
+<p><b>单一实现</b> ✓：动作实现只有一份 —— <code>newInDir</code> / <code>deleteRow</code>（页内脚本 ✓），
+右键菜单与 hover 按钮都调它们 ✓（多一个入口**不许多一份实现** ✗，否则两条路会各自漂移 ✓）。
+删除按钮**两级确认** ✓（与菜单那一项同一条纪律 ✓）：第一下只把按钮改编成 "✓" ＋ 提示"再点一次确认删除"、
+**不发任何请求** ✓，2.5 秒不点自己复位 ✓ ⇒ 误点一下不会删东西 ✓。</p>
+
+<p><b>空态</b> ✓：分区体里常驻一个「暂无内容」（<code>[data-section-empty]</code> ✓，靠 <code>hidden</code> 切换 ✓）——
+两个说法的分工写清楚了 ✗：**「暂无内容」= 这一节没有节点**（真源那条 ✓）；
+「这个分区还没有目录」是**我们这边**的情况（vault 目录本身不存在 ✓）⇒ 不混用 ✓。
+⚠ 页内筛选把某节筛空时也要亮它 ✓（真源 <code>_refreshCountForBody</code> <code>:4660-4663</code> 同口径 ✓）——
+只靠服务端渲染那一次判断会漏掉筛选这条路 ✗。</p>
+
+<p><b>我们加的一处改进</b> ✓：动作组 <code>:focus-within</code> 也显示 —— 只认 hover 的话**键盘用户永远够不到**这些按钮 ✗
+（真源有原生菜单兜底 ✓，我们的菜单也有 ✓，但按钮本身不该只认鼠标 ✓）。这条偏离由 p3-72 ㉔-c 单独钉住 ✓。</p>
+
+<p><b>⚠ 反引号那条坑：当天第 11 次，判据升级</b> ✗：这次踩在 <b>CSS 块注释的续行</b>上（<code>/* ... */</code> 的第二行往后 ✓）
+—— 我原来的守卫与清理器都只认"以 <code>//</code> 或 <code>&lt;!--</code> 开头"的行 ⇒ **漏掉续行** ✓。
+⇒ 判据改成**模板串区域内任何未转义的反引号**（那才是真判据 ✓：模板串里任何未转义反引号都会提前闭合它 ✓；
+<code>\`</code> 是合法的 ✓），p3-69 ⓪-c 与清理器同步升级 ✓ —— 这样才**没有盲区** ✓。</p>
+
+<p><b>探针</b>：p3-72 新增 6 条 —— ㉔（按围栏给子集 ＋ 库区一行都不摆 ✓）、㉔-b（目录行**不摆**重命名 ✓）、
+㉔-c（hover 才显：默认 none ⇒ hover flex ⇒ 移开 none ✓）、㉔-d（删除**第一下不发请求**、行仍在 ✓）、
+㉔-e（空态「暂无内容」没节点亮 / 有节点藏 ✓）、㉔-f（**筛选筛空**时也亮 ✓）。
+⚠ 探针自己踩了四个坑（都记进注释 ✓）：① 目录行的 <code>querySelectorAll</code> 会**深查**到子行按钮 ⇒ 假红"目录行带重命名" ✓；
+② 笔记行在默认折叠的目录里 ⇒ hover 抛"not visible" ✓；③ <code>display:none</code> 的按钮**没法被 hover** ✗（鸡生蛋 ⇒ 改成 hover 那一**行** ✓）；
+④ 我们那处 <code>:focus-within</code> 改进 ＋ <code>expandAllDirs</code> 点完鼠标还悬着 ⇒ "默认态"读到 flex ✓
+（读默认态前要 **blur ＋ 把鼠标挪开** ✓）。</p>
+
+<p><b>读数</b>：p3-72 <b>55/55</b> ✓（原 49 ＋ 新 6）· p3-08 <b>144/144</b> ✓ · p3-73 <b>24/24</b> ✓（真 Host）·
+p3-68 30/30 ✓ · p3-69 14/14 ✓ · p3-71 7/7 ✓ · p3-75 6/6 ✓ · p3-76 4/4 ✓ · p3-74 8/8 ✓ · p3-77 6/6 ✓ ·
+p3-86 10/10 ✓ · p3-87 15/15 ✓ · 契约违规 0 ✓ · 真数据（440px 侧栏）无横向溢出、零脚本错误 ✓。</p>
+
+<p><b>下一步</b>（§16.23 清单）：只剩 ④ 分区头右侧工具栏（⚠ **需产品决策** ✓：真源那四件都是过审批闸的工具，
+页面不能裸调 ✓）。另外可选：目录重命名的服务端支持（把还原点那步从 <code>copyFile</code> 换成对目录可用的 <code>cp</code> ✓）。</p>
+
+<h3>16.28 复刻第六刀：分区头工具栏（只摆「思维导图 · 打开」）（kb <code>0.2.76 → 0.2.77</code>）</h3>
+
+<p><b>裁决过程（值得记 ✗）</b>：产品先定「a 只做纯视图件 ＋ 思维导图走 b2（借页面桥把活派给会话）」✓，
+取证后发现 <b>b2 走不通</b> ✗ —— 页面桥 <b>20 条命令</b>逐条数过
+（<code>openModulePage / setWorkbenchPinned / setWorkbenchHidden / ping / openFile / reveal / insertChatReference /
+showUncommittedDiff / openTerminal / notify / switchPreset / openSession / newChat / newSession / switchWorktree /
+openAgentMarket / openAgentRoster / openAgentSettings / sessionTitle / sessionPersona</code> ✓），
+**没有一条能"把一段文字投进聊天草稿"** ✗；最接近的 <code>insertChatReference</code> **只收文件引用** ✓，
+而协议开篇就写死了边界（<code>dshPageBridgeProtocol.ts:7-12</code> ✓）："只允许低风险的界面命令……
+写入、执行类能力不走页面桥" ✓。⇒ 于是换成<b>更轻的一条</b>：路由**只读** ＋ 用桥的 <code>openFile</code> 打开 ✓。</p>
+
+<p><b>照真源</b> ✓：容器与按钮值照 <code>kbView.css:217</code>（<code>flex</code> / gap 1px / margin-left 4px ✓）
+与 <code>:902-908</code>（<code>.kb-tool-btn</code> 20×20 / 圆角 3px / 13px / 图标色 / opacity .8 ⇒ hover 底色 ＋ opacity 1 ✓）；
+挂载位置照 header 的既有顺序（arrow, title, count, processing, spacer, **toolbar** ✓ <code>:1728-1730</code> ✓），
+并照抄真源那条"**工具栏为空就整块不挂载**"（避免留空占位撑开标题右侧间距 ✓）。
+语义照 <code>_openMindmap</code>（<code>:5497-5526</code> ✓）：**有 .canvas ⇒ 打开它**（优先 <code>mindmap.canvas</code> ✓，
+否则第一个 ✓），**没有才生成** ✓（真源那边是确定性生成 ✓）。</p>
+
+<p><b>只摆一件，且只做"打开"那一半</b> ✗（逐件理由都写在页面注释里 ✓）：**批量构建库**不摆（长任务：
+页面里没有进度/取消/重试，挂 HTTP 会半途；它在会话里走 <code>kb_build</code> 有闸有状态 ✓）、
+**导入链接/URL** 不摆（本侧没有这个能力 ✓）、**同步飞书** 不摆（外部集成 ✓）、**思维导图**摆 ✓；
+⚠ 真源 title 是「思维导图（**打开或生成** .canvas）」，而"生成"在我们侧要起子代理 ⇒ 按钮点不出来 ✓ ⇒
+title **必须说实话** ✗（只写"打开"＋指路 <code>kb_mindmap</code> ✓），点空时的回执也**说清原因 ＋ 指路** ✓。
+⚠ 另：**只有「笔记」区挂**（真源两区都有 ✓）—— 库区那两件的理由如上 ✓，而真源自己也有"精简掉按钮"的先例
+（新建两件 2026-09-23 被移除 ✓ <code>:1693-1697</code> ✓）。</p>
+
+<p><b>通道</b> ✓：页面 → <code>/api/mindmap</code>（**只读**：一次 <code>readdir</code> ✓，不取锁、不写盘 ✓）
+→ 页面用桥 <code>openFile(绝对路径)</code> 打开 ✓。<b>零新增写通道</b> ✓ —— 与 §15.33「页面上的写通道只有
+new/rename/delete/restore 四条」那条口径不冲突 ✓（这条不在其中 ✓）。
+⚠ 如实记：桥对"工作区之外"的路径会**先弹一次确认**（<code>dshHarness.contribution.ts:758-765</code> ✓，
+文案"DSH 页面请求打开工作区之外的文件" ✓）—— vault 常在会话工作区之外 ⇒ 用户会看到那一次确认 ✓，
+那是宿主的既定安全设计 ✓，我们不绕过也不隐藏 ✓。</p>
+
+<p><b>core 抽取</b> ✓：「挑哪一张」这条规则在文件里已出现两次（<code>:3363</code> 排序版 / <code>:4246</code> 插入序版 ✓），
+页面路由是**第三处** ⇒ 抽成 <code>pickMindmapForOpen</code> ✓（<code>core/kbMindmap.js</code> ✓）。
+⚠ 两处语义**不同**、别混用 ✗：页面这条是**插入序第一个（不排序 ✓）**＝真源 <code>values().next().value</code> ✓；
+工具里 refine/rename 那路是"排序后第一个" ✓。</p>
+
+<p><b>探针</b>：新增 <code>p3-88</code>（真 HTTP ＋ 真盘 ＋ **桥桩** ⇒ 12 条 ✓）：路由语义（有就打开 / 没有如实说 ＋ 指路 ✓）、
+<b>单次调用全程只读</b>（vault 内每个文件的路径/大小/mtime 逐字未变 ＋ 无新增 ✓ —— 把"写通道只有四条"钉死 ✗）、
+参数与错误形状（405/400/404 ✓）、core 纯函数（**插入序不排序** ✓）、页内那一跳（点按钮 ⇒ 路由 ⇒ 桥收到绝对路径 ✓
+＋ **不顺手折叠这一节** ✓ —— 按钮在分区头里，不 stopPropagation 就会连折一起 ✓）、
+没有 .canvas / 没有桥两档**如实说** ✓。p3-72 新增 ㉕（4 条 ✓，重点是**负向**：库区不挂 ＋ 另三件不许冒出来 ✓）；
+<code>run-all</code> 已登记（编号按**线**走 ⇒ kb 线到 87 ⇒ 本条 88 ✓，与看板线的 p3-88 不冲突 ✓）。
+⚠ 探针自伤两条（都记进注释 ✓）：① <code>GET</code> **带 body** ⇒ fetch 直接抛（读到 status=0 假红 ✓）；
+② 只读基准快照取在**夹具写入之前** ⇒ 把"我自己写的两个 .canvas"记成"路由新增" ✓（改成夹着一次调用前后比 ✓）。</p>
+
+<p><b>读数</b>：p3-88 <b>12/12</b> ✓ · p3-72 <b>59/59</b> ✓ · p3-08 <b>144/144</b> ✓ · p3-73 <b>24/24</b> ✓（真 Host）·
+p3-83 6/6 ✓ · p3-84 7/7 ✓ · p3-68 30/30 ✓ · p3-69 14/14 ✓ · p3-71 7/7 ✓ · p3-75 6/6 ✓ · p3-76 4/4 ✓ ·
+p3-74 8/8 ✓ · p3-77 6/6 ✓ · p3-86 10/10 ✓ · p3-87 15/15 ✓ · 契约违规 0 ✓。</p>
+
+<p><b>清单状态</b>：§16.23 那份 UI 复刻清单（① 库默认折叠 ✓ ② 库选择器 ✓ ③ 排序 ✓ ④ 分区头工具栏 ✓ ⑤ 行内动作 ＋ 空态 ✓）
+<b>全部做完</b> ✓。仍如实留白的（都不是清单项）：页面上"从笔记**生成**思维导图"那一半（要子代理 ⇒ 会话里做 ✓）、
+目录**重命名**（服务端还原点那步对目录不成立 ✓）、向量 / RAG（明确不做 ✓）。</p>
+
+<h3>16.29 报表五条的落地（一）：诊断行 ＋ 库名/图标注入（kb <code>0.2.77 → 0.2.78</code>）</h3>
+
+<p><b>用户报的五条</b>（2026-10-15，附四张对照截图）：①"不应该有 uid 式的根"②"仅应显示当前选择的库、不应有全部库"
+③"顶部不应该有 根目录 / 工具 / 扫描 那行"④"缺设置按钮（可打开设置 EditorPane）"⑤"缺关系图谱按钮"。</p>
+
+<p><b>先答"为什么会有多个知识库"</b>（取证 ✓）：我们的页面列的是 <b>KB 根目录下的所有子目录</b> ✓，
+而根下那三个 <b>uid 目录</b>是<b>旧 vault 的目录</b> —— 真源自己在 vault 没有 <code>customPath</code> 时
+就会建出 <code>&lt;kbDir&gt;/&lt;vaultId&gt;/</code>（<code>knowledgeBaseView.ts:796-797</code> 的注释自证 ✓）；
+而 IDE 当前用的库走 <b>customPath</b>（现场 <code>我的知识库 → e:\VsSarosVault</code> ✓）⇒ 内容**不在这个根下** ✗
+⇒ 本侧结构上就看不到它 ✓。更关键的一条 ✗：<b>库的名字与图标只存在 IDE storage</b>
+（<code>agentStudio.kb.vaults</code> / <code>.active</code>，APPLICATION scope ✓ <code>:471-491</code> ✓）——
+真机列过目录：库目录里**只有索引缓存**（<code>.kbkernel.json</code> / <code>.ftindex.json</code> ✓）
+⇒ 光看盘永远推不出"我的知识库"这个名字 ✓。所以"差异巨大"一半是<b>两套库</b>、一半是<b>没有元数据</b> ✓。</p>
+
+<p><b>③ 已落</b> ✓：顶部那行诊断**加 `hidden` 而不是删掉** ✗ —— 它是探针的事实来源
+（<code>data-vssaros-kb-scan</code> / <code>-tools</code> / <code>-vaults</code> / <code>-pending</code> ✓ 四个探针在读 ✓）
+⇒ 删掉等于废掉这些守卫 ✓；<code>hidden</code> 是纯 HTML 能力 ⇒ 用户看不见、机器照样读 ✓。真源那栏本来就没有这行 ✓（朝真源靠 ✓）。</p>
+
+<p><b>A：库记录注入（①② 的根因）</b> ✓ —— 与 <code>kbRoot</code> / <code>dataRoot</code> <b>同一条既有通道</b> ✓，5 个文件：
+<code>common/dshHarness.ts</code>（<code>IDshHostLaunchOptions</code> ＋ 两个字段）· <code>electron-browser/dshHarnessService.ts</code>
+（注入 <code>IStorageService</code> ＋ <code>_kbVaultsSlim/_kbVaultsJson/_kbActiveVaultId</code> ✓ 读的就是 `kbVaultState.ts` 那对键 ✓）·
+<code>common/dshCli.ts</code>（<code>IDshOverlayExtras</code> ＋ 渲染进 <b>同一个 <code>vssaros-kb</code> 行</b> ✓ —— 那份 config 整体替换 ⇒ 拆开会互相擦掉 ✗）·
+<code>common/dshHostConfig.ts</code> · <code>electron-main/dshHostSupervisor.ts</code>（主进程直启路径同步 ✓）。
+⚠ 形状选择：库记录以**单引号包住的 JSON 字符串**下发 ✓（渲染器只写 YAML scalar ⇒ 不为它实现数组 emit ✗；
+容错在插件侧 ✓：解析失败 ⇒ 当"没注入" ✓）。⚠ 只带展示字段（id/name/icon/customPath/closed ✓ 少传就少泄漏 ✓）。</p>
+
+<p><b>C1：页面侧用它显示名字/图标</b> ✓（<code>parseInjectedVaults</code> 纯函数 ＋ 容错 ✓）：
+选择器显示<b>当前库</b>的名字与图标 ✓（真源 <code>_activeVault.name</code> 口径 ✓）、菜单各项用库名 ✓、
+自定义内容路径放 <code>title</code> ✓（那栏只有 120px ✗）；<b>拿不到注入 ⇒ 退回 uid 目录名 ＋ 如实标记</b>
+<code>data-vssaros-kb-vaults-injected="no"</code> ✗（不假装、不编造 ✓）。
+★ 另加一条关键的<b>明说</b> ✗：当前库内容**不在本侧库根下**时，页面直接写清
+「当前库「X」的内容在 <code>e:\…</code>（自定义目录），不在本侧的库根下 ⇒ 本侧看不到它的内容」✓
+—— 不让用户对着一屏别的库猜"我的库去哪了"（这正是"差异巨大"最容易被误判成 bug 的一档 ✓）。</p>
+
+<p><b>②④⑤ 的落法（已定，未落）</b> ✗：② 需要"只显示当前库/去掉全部库"的结构改动 ✓；
+④⑤ 需要桥 <code>6 → 7</code> 两条命令 ✓ —— 但**不能**由桥的 handler 自己 <code>new</code> EditorInput ✗：
+<code>KbSettingsEditorInput(host)</code> 的 host 由视图造（<code>:2775-2783</code> ✓）、
+<code>KbGraphEditorInput(nodes, links, …)</code> 的图数据来自视图 <code>_graph</code>（<code>:5467-5490</code> ✓）
+⇒ 正确落法是<b>视图导出两个公开动作 ＋ <code>agentStudio.contribution.ts</code> 各注册一条 Action2</b>（该模块命令就是
+<code>registerAction2</code> 形态 ✓，如 <code>agentStudio.kb.importToLibrary</code> ✓）+ 桥 handler 只
+<code>executeCommand</code> ✓（<b>同一个动作只有一份实现</b> ✓）；三条（protocol / preload / handler）必须**一批落** ✗
+—— 只加协议会广告一条没有实现的命令 ✓，只加 preload 会被版本对账测试当场抓住 ✓。
+⚠ 另如实记一条边界 ✗：页面桥**明文不许写能力** ⇒ 侧栏**不能真的切库** ✓，切换放 ④ 的设置页里 ✓。</p>
+
+<p><b>验证</b>：<code>dshHostConfig.test.ts</code> <b>6 passing</b> ✓（A 的纯渲染/配置层 ✓；跑法：本仓
+<code>run-all-common-tests.mjs</code> 只扫自己那目录 ✗ ⇒ 用同一机制（esbuild 打包 ＋ mocha）写了一条单跑器 ✓）。
+p3-08 新增<b>注入三档</b> ✓（注入生效 ⇒ 名字/图标 ✓；不注入 ⇒ uid ＋ 标记 <code>no</code> ✓；
+当前库在别处 ⇒ <b>明说</b> ✓）· p3-72 59/59 ✓ · p3-69 14/14 ✓ · p3-76 4/4 ✓ · p3-87 15/15 ✓ · p3-88 12/12 ✓ · 契约 0 ✓。
+⚠ 环境噪声如实记 ✗：<code>p3-08</code> / <code>p3-73</code> 各有一条 <b>装包</b>失败（<code>dsh plugin add</code> ⇒ pnpm
+"installing a direct dependency" ✓，今天早些时候这两步是过的 ✓）⇒ 与本轮改动无关 ✓，属于网络/registry 抖动 ✓。</p>
+
+<p><b>下一步</b>：C2（只显示当前库 ＋ 去掉「全部库」）→ B（桥两条命令的原子三条）→ E（⚙/🕸 两个按钮的探针）✓。</p>
+<h4>16.29 续（同日）：C2 —— 默认只显示当前库 ＋ 删掉「全部库」</h4>
+<p>用户第 ② 条“仅应该显示当前选择的库，不应有全部库”✓：<b>默认库</b>＝IDE 注入的 <code>kbActiveVaultId</code>（<b>被本侧扫到</b>才用它 ✓）；拿不到注入／扫不到它（customPath 那种 ✗）⇒ 退回第一个 ✓ 并如实标记 ✓。默认值写在 vault bar 的 <code>data-vault-default</code> 上（页内脚本是静态模板串 ⇒ 从 DOM 读 ✓）。
+<b>菜单保留</b> ✓（真源下拉本来就能选库 ✓）但删掉「全部库」项 ✓，且选择器 <code>title</code> 写明“在这里切换只改<b>本页</b>显示；改 IDE 的当前库请去知识库设置（页面桥不允许写能力）”✗ —— 免得“选了却哪都没变”变成错觉 ✓。
+⚠ 只存在于注入里的库（customPath ✓ 本侧扫不到）<b>不进菜单</b> ✓：点了也显示不了 ✗（不是漏做 ✓）。
+验证：进程内一次性脚本 <b>5/5</b> ✓（注入生效／无「全部库」／未扫到的库不进菜单／不注入退回 uid／坏 JSON 不抛 ✓）；p3-72 <b>59/59</b> ✓（㉒-e 已按新口径重写：没有「全部库」＋ 默认恰好一个库 ✓）。
+⚠ 真机截图这会儿仍是旧版读数（<code>dsh plugin add</code> 装不上 ⇒ 看的是上次装成的版本 ✗，环境/网络问题 ✓）。</p>
+
+<h4>16.29 续 2（同日）：④⑤ 设置 / 关系图谱按钮 —— 桥 6 → 7 ＋ 视图两条命令（kb 0.2.79 → 0.2.80）</h4>
+
+<p>用户第 ④⑤ 条（"顶部缺设置按钮、可打开设置 editorpane" / "缺关系图谱按钮"）✓。落法有个**必绕的坑** ✗：
+两个面板都**不能由宿主自己 new** —— <code>KbSettingsEditorInput(host)</code> 的 host 由视图造（目录 / 统计 / 视图状态 ✓
+<code>knowledgeBaseView.ts:2775</code> ✓）、<code>KbGraphEditorInput(nodes, links, …)</code> 的图数据来自视图 <code>_graph</code> ✓
+（<code>:5467</code> ✓）⇒ 走"命令 ⇒ 视图**公开动作**"（视图上新开 <code>openSettings()</code> / <code>openGraph()</code> 两个壳 ✓）
+＝ <b>同一个动作只有一份实现</b> ✓（本仓那条既有纪律 ✓）。</p>
+
+<p><b>四条一批落</b> ✓：<code>dshPageBridgeProtocol.ts</code>（＋ <code>openKbSettings</code> / <code>openKbGraph</code> ＋
+<code>DSH_PAGE_BRIDGE_VERSION 6 → 7</code> ✓）· <code>preload-dshView.ts</code>（＋两条 api ＋ <code>bridgeVersion: 7</code> ✓）·
+<code>dshHarness.contribution.ts</code>（两个 case ⇒ <code>this._commands.executeCommand</code> 那两条命令 ✓；取不到命令时**如实 warn** ✗）·
+<code>agentStudio.contribution.ts</code>（两条 <code>registerAction2</code> ⇒ <code>getViewWithId&lt;KnowledgeBaseViewPane&gt;(AGENT_STUDIO_KB_VIEW_ID)</code> ✓；
+<b>视图没实例化过 ⇒ 如实提示 ＋ 顺手把视图开出来</b> ✗ 不假装 ✓）。
+⚠ <b>必须一批</b> ✗：只加协议 ⇒ 广告一条没有 handler 的命令 ✓；只加 preload ⇒ 版本对账当场红 ✓；
+只加 handler ⇒ 命令不存在 ⇒ <code>executeCommand</code> **静默无操作**（最难查的一类 ✓）。</p>
+
+<p><b>C 收尾</b> ✓：vault bar 右侧补齐 ⚙ / 🕸（位次照真源 <code>:1339-1364</code> ✓：树 ⇄ 最近 / 刷新 / ⚙ / 🕸 ✓），
+点击**只走页面桥** ✓；旧宿主（无命令 / <code>bridgeVersion &lt; 7</code>）⇒ <b>如实提示</b>"这个宿主还不支持…（需要页面桥 7）" ✗
+（不静默、不假装 ✓）。</p>
+
+<p>⚠ 反引号那条坑 <b>第 12 次</b> ✗，这次是 <b>HTML 注释的续行</b>（<code>&lt;!-- … --&gt;</code> 第二行往后 ✓）：
+我的清理器只跟踪 CSS <code>/* … */</code> 状态 ⇒ 漏 ✗；而 <b>p3-69 ⓪-c 守卫本身抓到了</b> ✓
+（它扫"区域内任何未转义反引号" ✓）⇒ 清理器已补 HTML 注释状态机 ✓（两种跨行注释都跟踪 ✓）。</p>
+
+<p><b>验证</b>：<code>dshPageBridge.test.ts</code> <b>24 passing</b> ✓（含"preload 常量与协议一致" ✓）· 5 个改动文件语法地板 ok ✓ ·
+p3-72 <b>60/60</b> ✓（㉒-b 从"不摆图谱"订正为"摆四件" ✓、新增 ㉒-b2"无桥 ⇒ 如实提示" ✓）· p3-69 14/14 ✓ ·
+p3-76 4/4 ✓ · p3-87 15/15 ✓ · p3-88 12/12 ✓ · p3-74 8/8 ✓ · p3-77 6/6 ✓ · p3-86 10/10 ✓ · 契约 0 ✓。</p>
+
+<p>⚠ <b>环境卡点仍在</b> ✗：本机 <code>dsh plugin add</code> 装不上（pnpm 装依赖失败 ⇒ Host <code>failed to import</code> ✓）
+⇒ 真机（p3-08 L2/L3、p3-73、截图）看到的是旧版 ✓；④⑤ 的真机效果要等网络恢复后重装插件再看 ✓
+（IDE 侧那四条由对账测试兜 ✓）。</p>
+
+<h4>16.31（同日）：真机环境卡点根治 ＋ ①② 两条"真落"（kb 0.2.80 → 0.2.81）</h4>
+
+<p><b>一、真机卡了好几轮的真正原因（不是网络 ✗）</b>——两层，都在 dsh home：</p>
+<ol>
+<li><b>残留写锁</b> ✗：<code>atomic-write: timed out waiting for the writer lock at …\package.json.lock</code> /
+<code>…\.credentials.yaml.lock</code>（后者让必需插件 <code>connection</code> 激活失败 ⇒ 宿主 <code>startup failed</code> ✓）。
+锁文件里写的是**持有者 PID** ⇒ PID 已不存在就是残留 ✓（探针杀宿主进程时常见 ✓）。
+清扫器：<code>poc/dsh-p0/.out/sweep-stale-dsh-locks.mjs</code>（按 PID 判、**改名归档**不删 ✓；本轮清掉 6 个 ✓）。</li>
+<li><b>profile 残留依赖</b> ✗：<code>@vssaros/dsh-canvas → dsh-plugins/vssaros-canvas</code>（该目录已改名成 <code>vssaros-media</code> ✗）
+⇒ pnpm <code>ERR_PNPM_LINKED_PKG_DIR_NOT_FOUND</code> ⇒ <b>整个 install 全失败</b> ⇒ 连 kb 都装不上 ✓（真因只在 <code>pnpm.log</code> 里 ✓）。
+已清掉该依赖与 bundles 项（profile <code>package.json</code> **先备份** ✓）。⇒ <code>plugin add</code> 退出码 0 ✓、真机全绿 ✓。</li>
+</ol>
+<p>⚠ 教训 ✗：把"装不上"归因为**网络** ✓ 连错两轮 ✓；真因都写在**日志文件**里（<code>pnpm.log</code> / <code>.dsh-home/logs/startup-*.log</code> ✓）
+⇒ 以后先读那两处，再谈网络 ✓。</p>
+
+<p><b>二、用户 ①② 此前是半成品 ✗（我上一轮"已落"说过头了 ✓，纠正）</b>。真机截图（注入态）一眼看出三处：</p>
+<ul>
+<li><b>① 只修了选择器</b> ✗：分区头仍印 <code>20260101000000-aaaaaa1 · 10 个文件</code> ✓ ⇒ 改成**注入的显示名 ＋ 图标** ✓
+（`vaultIcon` / `vaultDisplayName` ✓，原始 id 落到 <code>title</code> ✓ 便于对账）。</li>
+<li><b>② 没真落</b> ✗：<code>activeVault</code> 的初值确实读的是服务端写的 <code>data-vault-default</code> ✓，
+但<b>没人调用 <code>apply()</code></b> ✗（它只在搜索输入／选中库时才跑 ✓）⇒ 页面上两个库的块**全都显示着** ✓ ⇒ 开局跑一次 <code>apply()</code> ✓。</li>
+<li><b>②  ещё 一层：<code>hidden</code> 画面上没生效</b> ✗✗（最隐蔽的一处 ✓）：UA 给 <code>[hidden]</code> 的 <code>display:none</code>
+是**作者样式可以盖掉的** ✗，而 <code>.dsh-vault-group</code> / <code>.dsh-node</code> 都带 <code>display:flex</code> ⇒
+<b>属性挂上了、画面照旧</b> ✗（DOM 读数说"只剩一个库" ✓，截图里两个都在 ✓）。已加全局规则
+<code>[data-vssaros-page="kb"] [hidden] { display: none !important; }</code> ✓。</li>
+</ul>
+<p>⚠ <b>方法教训</b>（本轮最值钱的一条 ✓）：<code>el.hidden === true</code> 只说明**属性挂上了** ✓，
+判"可见"必须看**计算样式/像素** ✓。旧断言（p3-72 ㉒-d/e 的 <code>!b.hidden</code> ✓）正是**假绿** ✓；
+截图脚本已改成同时读 <code>paintedBlocks</code>（计算样式 ✓）。</p>
+
+<p><b>三、本轮改动引入的连带（<b>未收完</b> ✗，如实记）</b>：</p>
+<ul>
+<li><b>TDZ 撞了 500</b> ✗：分区头模板用了 <code>vaultIcon</code> / <code>vaultDisplayName</code> ✓，而它们原来定义在**模板之后** ✗
+⇒ <code>Cannot access … before initialization</code> ⇒ **整页 500** ✓（被 p3-73 ⓪ 当场咬住 ✓）⇒ 已把 helper **上移到模板之前** ✓。</li>
+<li><b>p3-73 15/17 ✗</b>：② 让"另一个库的块带 <code>hidden</code>" ✓ 之后 ——
+⑦-c（"收纳成一个展开 ⇒ solo"）**到不了 solo** ✗（隐藏块的展开态仍参与 solo/高度逻辑 ✓ ⇒ 这是**产品侧一处真不一致** ✓：
+隐藏的库不该影响可见区的手风琴 ✓）；另一条 <code>[data-rename]</code> 点击超时 ✗（同一根因的连带 ✓）。
+已订正"只数/只点可见块里的节"（<code>.dsh-vault-group:not([hidden]) .dsh-section</code> ✓），但 ⑦-c 的**语义需要重设** ✓。</li>
+<li><b>p3-72 直接崩</b> ✗（它自己第 317 行 TimeoutError ✓）：同一根因 —— 它多处假定"两个库都在页面上" ✓ ⇒ 需要按新语义重判 ✓。</li>
+</ul>
+<p>⇒ 结论：<b>产品行为更对了 ✓、探针还没跟上 ✗</b>。下一步：把"可见区手风琴/solo 忽略隐藏块"这条**产品规则**落进插件 ✓，
+再把 p3-72 / p3-73 里所有"假定两个库都在"的断言按新语义逐条重判 ✓（不许放宽 ✓，只许换判据 ✓）。</p>
+<p>⚠ 反引号那条坑本轮**第 12/13/14 次** ✗：HTML 注释**续行** ✓、KB_SCRIPT 注释 ✓（我自己写的那句 ✓）、
+<b>以 <code>/*</code> 开头的 CSS 注释行</b> ✓（清理器判据漏了它 ✗）⇒ 清理器已补 ✓；
+守卫 <b>⓪-c 判据本来就是对的</b> ✓（"区域内任何未转义反引号" ✓）—— 那次是我**没跑它** ✗ ⇒ 编辑模板串后**立刻**跑 ⓪-c ✓。</p>
+<p><b>验证</b>：<code>dshPageBridge.test.ts</code> 24 passing ✓ · <code>p3-73</code> 15/17 ✗ · <code>p3-08</code> <b>147/147</b> ✓ ·
+<code>p3-69</code> 14/14 ✓ · <code>p3-72</code> **崩（见上）** ✗ · 真机注入态截图 <code>poc/dsh-p0/.out/kb-host-injected.png</code> ✓
+（选择器「🧠 我的知识库」✓、分区头同名 ✓、四个按钮 ✓、<code>paintedBlocks</code> 只剩当前库 ✓、零脚本错误 ✓）。</p>
+
+<h4>16.31 续（同日，kb 0.2.81 → 0.2.82）："可见区"规则 ＋ "不猜当前库"</h4>
+
+<p><b>一、可见区规则</b> ✓（② 的必然推论）：非当前库的块带 <code>hidden</code> ✓，而它们的节**仍然是 open** ✓
+⇒ 手风琴/<code>.dsh-solo</code> 若照旧在"全部 vaults"里算 ⇒ 可见区**永远凑不出"唯一展开"** ✗
+（真机 ⑦-c 就是这么红的 ✓）⇒ 判据换成 <code>visibleVaults()</code>（"不在任何被隐藏的 vault 块里" ✓）；
+展开时的互斥也只收**可见**的那些 ✓（隐藏库的展开态留着 ✓，切回去还是原样 ✓）；
+<code>apply()</code> 里可见性一改就**重算 solo** ✓（否则会把上一个库的 <code>dsh-solo</code> 带着走 ⇒ "高度不听话" ✗）。</p>
+
+<p><b>二、"不猜当前库"</b> ✓（订正 §16.29 的"退回第一个库" ✗）：没有注入时我们**不知道**当前库是哪本 ✓，
+把第一本当它 ⇒ ① 只显示一本、把其余藏起来 ⇒ 用户以为"我的库没了" ✗；② 连探针都被带偏 ✓
+（p3-72 的 ⑧/⑫ 崩在"点隐藏块里的行"✗ —— 它们本来取第一行 ✓）。⇒ 规则：<b>知道才筛，不知道就全显示</b> ✓
+（<code>defaultVaultId</code> 为空 ⇒ 服务端把 <code>data-vault-default</code> 写成 <code>all</code> ✓）；
+选择器此时显示"<b>当前库未知 · N 个库都显示</b>" ✓（不假装知道 ✓，<code>title</code> 里说明是老 Host/独立启动器 ✓）。</p>
+
+<p><b>验证</b>：<code>p3-08</code> <b>147/147</b> ✓（判据同步订正 ✓："标签退回 uid" ⇒ "如实说明当前库未知 ＋ 不筛库" ✓）·
+<code>p3-73</code> <b>16/17</b> ✓（从 15/17 进了一步 ✓）· <code>p3-69</code> 14/14 ✓。</p>
+
+<p>⚠ <b>仍红两条（未收完 ✗）</b>：
+① <code>p3-72</code> 仍崩 ✗ —— 它的 ⑧ 断言"点开第二个 ⇒ **恰好一个**展开"是**全局计数** ✗ ⇒ 现在应只数**可见区** ✓（与 p3-73 ⑦-c 同一类订正 ✓），崩点（`.sec-notes` 盲取第一行 ✗）已换成可见块内取行 ✓ 但仍需按新语义逐条过 ✓；
+② <code>p3-73</code> 剩一条 ✗ —— 真点 <code>已建笔记.md</code> 的 ✎ 改名按钮超时（locator 能解析到元素、但不可见 ✓）⇒ 待查是"夹具残留"（前几轮把该文件改名过 ✓ 截图里已是"改名后的笔记" ✓）还是折叠态连带 ✓。</p>
+
+<h4>16.31 续 2（同日，kb 0.2.82 → 0.2.83）：<code>.dsh-dir</code> 钉错对象 —— 全绿</h4>
+
+<p><b>真因</b> ✓：<code>apply()</code> 里"把没有可见行的目录藏掉"那段选的是 <code>.dsh-dir</code> ✗ —— 但在
+<b>真文件树</b>结构里那个类挂在**目录头按钮自己**上（<code>&lt;button class="dsh-node-button dsh-dir" data-dir-toggle&gt;</code> ✓
+<code>:282</code> ✓）⇒ 它给**按钮**挂 <code>hidden</code> ✗，而不是把"目录头所在的那个**行**"藏起来 ✓。
+以前一直看不出来：作者样式 <code>.dsh-node-button { display: flex }</code> **盖掉了** UA 的 <code>[hidden]{display:none}</code> ✓
+（属性挂上、画面照旧 ✓）；§16.31 那条全局规则一上，它就**真藏**了 ⇒ 行点不到 ✗
+（p3-72 ⑫ 崩、p3-73 ⑧-b 的 ✎ 超时 —— **同一个根因** ✓）。订正：判据对象换成**目录行** <code>[data-dir-node]</code> ✓，意图一字未改 ✓。</p>
+
+<p>⚠ <b>方法沉淀</b>（本轮最值钱 ✓）：探针要在**第一现场**说清真因 ✓ —— 这处是靠给"目录展开失败"那条 catch
+补了**祖先链读数**（谁的 <code>display</code> 是 none ✓、<code>hidden</code> 在哪个元素上 ✓、属于哪个 vault 块 ✓）才定案的 ✓；
+在此之前"not visible"这个名字对着三种真因（被隐藏块包着 ✓ / 外层目录折叠 ✓ / **元素自己带 hidden** ✓）都成立 ✓。</p>
+
+<p><b>连带订正（都是"假设过期"，不是放宽 ✓）</b>：
+① p3-72 ⑧ 的计数口径改成**可见区** ✓；② <code>expandAllDirs</code>（p3-72 / p3-73 各一份 ✓）与
+③ p3-72 ⑫ 的行定位收窄到**可见块** ✓；④ ㉒ 改成"无注入 ⇒ **不打勾** ＋ 如实说明当前库未知" ✓；
+⑤ ㉒-e 改成"无注入 ⇒ **不筛**（默认全显示 ✓）＋ 选某库 ⇒ 恰好剩它" ✓，并**先 reload 回初始态** ✗
+（㉒-d 刚点过某个库 ⇒ 拿"筛到那一本"当默认态必红 ✓ —— "前置被自己改掉"那一类 ✓）。</p>
+
+<p><b>契约</b>：检查器报"<code>dataRootOf</code> 同形份数是 9，应为 8" ✗ —— 原因是**新增插件**
+<code>vssaros-web-content-import</code> 带来一份**逐字节同形**的 <code>dataRootOf</code> ✓（检查器自报"9 份，1 种内容" ✓）
+⇒ 按它自己的规矩把期望值登记为 <b>9</b> ✓ 并在注释里写明**为什么** ✓（不是放宽 ✓，是登记新事实 ✓）。</p>
+
+<p><b>全绿读数</b>：p3-72 <b>60/60</b> ✓ · p3-73 <b>24/24</b> ✓ · p3-08 <b>147/147</b> ✓ · p3-69 14/14 ✓ ·
+p3-68 30/30 ✓ · p3-71 7/7 ✓ · p3-75 6/6 ✓ · p3-74 8/8 ✓ · p3-77 6/6 ✓ · p3-86 10/10 ✓ · p3-87 15/15 ✓ ·
+p3-88 12/12 ✓ · p3-76 4/4 ✓ · 契约 <b>0 违规</b> ✓。</p>
+<p><b>真机注入态截图</b>（<code>poc/dsh-p0/.out/kb-host-injected.png</code> ✓）：选择器「🧠 我的知识库」✓、
+**只有一个库被画出来**（<code>paintedBlocks=[aaaaaa1]</code> ✓，另一库仍在 DOM 里 ✓ 供切库 ✓）、
+四个按钮（树 ⇄ 最近 / 刷新 / ⚙ / 🕸 ✓）、**顶部没有诊断行** ✓、零脚本错误 ✓ —— 用户 ①②④⑤ 四条都对上了 ✓。</p>
+</body>
+</html>

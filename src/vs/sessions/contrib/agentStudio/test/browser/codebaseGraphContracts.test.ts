@@ -1126,66 +1126,21 @@ suite('★★★ 图谱关键不变量（勿回退）', () => {
 		assert.ok(svc.includes('clearInterval(this._memTrajectoryTimer)'), 'dispose 必须清理定时器（否则泄漏 ✗）');
 	});
 
-	test('⑨ P2-1 索引通道：契约 / worker 入口 / renderer 代理**三方一致**（方案 B：worker 直连）', () => {
-		const base = 'src/vs/sessions/contrib/agentStudio/';
-		// ⚠ 三方**都必须剥注释**再断言：这三份文件的 header 里**刻意**写着反面例子
-		//（「曾用 mainProcessService.getChannel」「曾是本地字面量 'index'」「原草案是回调式 onProgress」）
-		// ⇒ 不剥注释的负向断言必然假红 ✗（本仓第 N 次踩这条，见 footerPills「黑白灰」套件的同款教训 ✓）
-		const contract = read4(base + 'common/codebaseGraphIndexChannel.ts');
-		const worker = read4(base + 'node/codebaseGraphIndexWorkerMain.ts');
-		const proxy = read4(base + 'browser/codebaseGraphIndexProxy.ts');
-
-		// ① 方法集一致：契约声明 / 入口实现，任一漏一个都是运行期「不是函数」✗
-		// ⚠ 代理侧**不再手写四方法转发** —— 它把整个服务交给 `ProxyChannel.toService` 透明代理
-		//（方法集由契约保证 ✓）。代理侧要钉的是另外两条形状约束（见 ③），
-		// 四方法的**行为**覆盖在 `test/browser/codebaseGraphIndexProxy.test.ts`（6 条，走真实 IPC 往返 ✓）。
-		for (const m of ['runIndex', 'cancel', 'isRunning', 'getProgress']) {
-			assert.ok(contract.includes(`${m}(`), `契约必须声明 ${m}`);
-			assert.ok(worker.includes(`${m}(`), `worker 入口的服务必须实现 ${m} —— 漏了调用时才炸 ✗`);
-		}
-
-		// ② worker **身份单点定义**，两侧都从它取（漂移会静默拿到 undefined ✗）
-		assert.ok(contract.includes('CODEBASE_GRAPH_INDEX_WORKER'), '契约必须导出 worker 身份常量');
-		assert.ok(contract.includes("channel: 'index'"), '常量里必须写清入口模块注册的通道名');
-		assert.ok(worker.includes('CODEBASE_GRAPH_INDEX_WORKER.channel'),
-			'入口模块必须复用契约里的通道名 —— 两边各写一份，漂移后取通道得到 undefined 且**不报错** ✗');
-		assert.ok(worker.includes('ProxyChannel.fromService'),
-			'入口模块必须用 ProxyChannel.fromService 把服务暴露成 channel（照抄 watcherMain ✓）');
-
-		// ③ 代理必须是**方案 B（worker 直连）**，且不得回退到主进程通道
-		assert.ok(proxy.includes('createWorker('),
-			'代理必须用 utilityProcessWorkerWorkbenchService.createWorker 起进程（框架既定客户端用法 ✓）');
-		assert.ok(proxy.includes('ProxyChannel.toService<ICodebaseGraphIndexChannel>'), '代理必须用 ProxyChannel 透明转发');
-		assert.ok(proxy.includes('CODEBASE_GRAPH_INDEX_WORKER'),
-			'代理必须复用 worker 身份常量（不得硬编码 moduleId / 通道名字符串 ✗）');
-		assert.ok(!proxy.includes('mainProcessService'),
-			'不得回退成「经主进程通道取代理」✗ —— main 侧 createWorker 是窗口服务端，不提供 client channel');
-		assert.ok(!/\bCODEBASE_GRAPH_INDEX_CHANNEL\b/.test(contract),
-			'旧的 main 进程通道名常量应已删除 —— 留着是死代码，且会误导后人以为还有一条 renderer→main 路径 ✗');
-		// 负向：不得回退成回调式推送 —— ProxyChannel 只做请求/响应（写代理时踩到并修正的坑 ✓）
-		assert.ok(!/\bonProgress\s*\(/.test(contract), '不得回退成回调式 onProgress（ProxyChannel 不支持宿主推送 ✗）');
-
-		// ④ ★★ 钉住两个「看起来对、实测**全部调用永久挂起**」的写法（详见代理文件头的「坑 1 / 坑 2」）
-		//  坑 1：代理是 `ProxyChannel.toService` 的返回值 = **Proxy**，它的 `get` 陷阱对**任意**字符串键
-		//        都返回函数（**包括 `then`** ✗）⇒ 一旦被 **Promise 决议过程**碰到（如 async 函数 return 它），
-		//        会被当 thenable 采纳 ⇒ 调 `then` ⇒ 宿主抛 `Method not found: then` ⇒ 而 then 的返回值
-		//        没人看 ⇒ **外层 promise 永不结算** ⇒ 所有调用挂起且不报错 ✗✗（实测：6 条用例全超时 50s）。
-		assert.ok(!/async\s*\(\s*\)\s*=>\s*[\s\S]{0,160}ProxyChannel\.toService/.test(proxy),
-			'不得用 async 箭头包装 toService —— then 陷阱会让**所有调用永久挂起**、且不报错也不超时 ✗✗');
-		assert.ok(proxy.includes('return ProxyChannel.toService<ICodebaseGraphIndexChannel>('),
-			'必须在**同步**路径 return toService(...)（配合上一条，保证不被当成 thenable ✗）');
-		//  坑 2：`getDelayedChannel(getWorker().then(...))` 会在**构造期**就调用 getWorker() ✗
-		//        ⇒ ①惰性失效（打开窗口就起进程）；②启动失败变成**无人处理的 rejection**。
-		//        ⇒ 取通道必须写成**函数**，只在第一次方法调用时才真跑 ✓。
-		assert.ok(!/getDelayedChannel\(\s*getWorker\(\)/.test(proxy),
-			'不得在构造期求值 getWorker()（惰性失效 + 未处理 rejection ✗）—— 取通道必须写成函数');
-		assert.ok(proxy.includes('const getChannel = ()'),
-			'取通道必须写成**函数式惰性**（构造零成本、首次调用才起进程 ✓）');
-		// ⚠ 写成 `call:` / `listen:`（属性定义形态）—— 用 `call(` 会**假红**（实参括号在 `:` 之后 ✗，
-		// 我第一次就写错了；「我的模式写错」是本仓高频坑 ✓）。
-		assert.ok(/\bcall\s*:/.test(proxy) && /\blisten\s*:/.test(proxy),
-			'延迟通道必须补全 IChannel 的 call / listen 两个形状（缺 listen 会在取事件时炸 ✗）');
-	});
+	/**
+	 * ⑨【**2026-10-13 已删除**：P2-1 索引通道「契约 / worker 入口 / renderer 代理三方一致」】
+	 *
+	 * 为什么删：用户裁决「**权限都在 dsh 侧全权处理、逻辑也都转移到 dsh 侧**」（见
+	 * `doc/codebase-index-to-dsh-plan.html` §5 P3）⇒ 索引编排**不再搬进 IDE** ✗，
+	 * 那条通道（`common/codebaseGraphIndexChannel.ts` / `node/codebaseGraphIndexWorkerMain.ts` /
+	 * `browser/codebaseGraphIndexProxy.ts` / `test/browser/codebaseGraphIndexProxy.test.ts`，~720 行）
+	 * 与它的探活接线**整条删除** ✓（它的 `runIndex` 本来就是**零调用点**的诚实桩 ✓）。
+	 *
+	 * ⚠ 这一条测试**跟着一起删**（它守的东西已经不存在了 —— 留着只会 ENOENT 假红 ✗）；
+	 *   将来若有人要重做"索引进程化"，请连它想钉的两个**真实坑**一起重写：
+	 *   ① `ProxyChannel.toService` 的返回值对**任意**键（含 `then`）都返回函数 ⇒ 一旦被 Promise
+	 *      决议过程碰到会被当 thenable ⇒ 调用**永久挂起且不报错** ✗✗；
+	 *   ② `getDelayedChannel(getWorker().then(...))` 会在**构造期**求值 ⇒ 惰性失效 + 未处理 rejection ✗。
+	 */
 
 	/**
 	 * ⑩ 为什么值得钉：`[阻塞Nms]` 是**排期决策的唯一依据**（本轮就是靠它推翻了"克隆检测/边匹配是首块"✗），
@@ -1318,5 +1273,43 @@ suite('★★★ 图谱关键不变量（勿回退）', () => {
 		assert.ok(svc.includes('[sqlite-patch] 慢轮次分解'), '必须有一条可直接 grep 的分解行 ✓');
 		const ignore = fs.readFileSync(path.join(process.cwd(), '.cbmignore'), 'utf8');
 		assert.ok(/^_diag\/$/m.test(ignore), '_diag/ 必须在本仓忽略清单里（临时脚本不该进图谱 ✓）');
+	});
+});
+
+// ── 所有权（甲档 · 2026-10-14，用户裁决「权限都在 dsh 侧」）──────────────────────────────
+// ⚠ 本系统里"让路"有**两个**机制，别混：⑮ = "落盘给在飞检索让路" ✗；本套件 =
+//   "**工作区归 dsh ⇒ IDE 不索引、不落盘**" ✓。
+// ⚠ 这一层是**源码契约**（服务是 DI 的、不易实例化 ✓；判据函数 `isDshProducedManifest` 的行为单测在
+//   test/common/codebaseIndexDefaults.test.ts ✓）—— 这里钉的是"**服务里真的接了它、且位置对**" ✓
+//   （接线最容易在并发改动里静默断 ✗ —— 2026-10-14 之前这一层**零覆盖** ✗）。
+suite('所有权 —— dsh 产的清单 ⇒ IDE 不索引、不落盘（2026-10-14，甲档）', () => {
+	const svcSrc = fs.readFileSync(path.join(process.cwd(), 'src/vs/sessions/contrib/agentStudio/browser/codebaseGraphService.ts'), 'utf8');
+
+	test('① 判据真的接上了：`_isIndexOwnedByDsh` 读工作区清单并调 `isDshProducedManifest` ✓', () => {
+		assert.ok(/private async _isIndexOwnedByDsh\(rootPath/.test(svcSrc), '判据函数必须在 ✓');
+		assert.ok(/\.codebase-memory/.test(svcSrc) && /artifact\.json/.test(svcSrc), '它读的必须是 <ws>/.codebase-memory/artifact.json ✓');
+		assert.ok(/isDshProducedManifest\(JSON\.parse\(raw\)\)/.test(svcSrc), '必须经那个纯判据（其行为单测在 test/common ✓）');
+	});
+
+	test('② 让路必须在 `_isIndexing = true` **之前**（置了旗又提前 return ⇒ 后续索引被"进行中"永久挡住 ✗✗ —— 本仓踩过同型旗标泄漏 ✓）', () => {
+		const call = svcSrc.indexOf('await this._isIndexOwnedByDsh(rootPath)');
+		const flagAfter = svcSrc.indexOf('this._isIndexing = true', Math.max(0, call));
+		assert.ok(call > 0, 'indexWorkspace 里必须有那次让路调用 ✓');
+		assert.ok(flagAfter > call, '让路调用必须出现在置旗**之前** ✓（顺序反了 = 每次索引都被自己挡住 ✗✗）');
+	});
+
+	test('③ 不落盘的闸在**最底层**（`_refuseSaveForDshOwned` ✓ —— 增量与 30s 防抖**不经过** indexWorkspace ✓ ⇒ 只在入口挡会漏 ✗）', () => {
+		assert.ok(/private async _refuseSaveForDshOwned\(/.test(svcSrc), '底层拒写函数必须在 ✓');
+		assert.ok(svcSrc.split('_refuseSaveForDshOwned(').length >= 3, '必须有**调用点**（只有定义 = 闸形同虚设 ✗）');
+	});
+
+	test('④ 读不动 ⇒ **false**（照旧由 IDE 负责 ✓ —— 没装 dsh 的环境不许彻底失去索引 ✗✗）', () => {
+		const fn = svcSrc.slice(svcSrc.indexOf('private async _isIndexOwnedByDsh'));
+		assert.ok(/catch \{[\s\S]{0,220}return false;/.test(fn), '清单读不动必须落到"IDE 照旧负责" ✓（保守口径 ✓）');
+	});
+
+	test('⑤ 让路时把**去处**说出来（用户不该猜"为什么不索引了" ✓）', () => {
+		assert.ok(/这个工作区的代码图谱由 dsh 负责/.test(svcSrc), 'message 必须点名 dsh ✓');
+		assert.ok(/要重建图谱，请在 dsh 侧触发 codebase_index/.test(svcSrc), 'message 必须给去处 ✓');
 	});
 });

@@ -178,3 +178,121 @@ suite('turnContextCompaction / turnEmit 采用契约', () => {
 		assert.strictEqual(result.value, undefined, 'compactContextIfNeeded 主体返回 void，return 值应为 undefined');
 	});
 });
+
+// ─── Dashboard 压缩统计的**键名口径** ────────────────────────────────────────
+//
+// 守卫对象：`turnContextCompaction.ts` 从 metadata 读「压缩前 token」的键名。
+//
+// 为什么值得单独锁：两条生产路径写的键名不同（成功/checkpoint 分支 →
+// `estimatedTokensBefore`；skip 分支 → `estimatedTokens`），而消费者此前只认后者 ⇒
+// 成功压缩时恒取 0 ⇒ savingRatio 恒 0 ⇒ 每次压缩都被记「无效」。
+// 真机实证（2026-10-14，`dashboard/cumulative-stats.json`）：
+// `compressionCount == compressionIneffectiveCount == 1677`、`compressionBeforeTokens == "0"`。
+//
+// ⚠ 反向突变验证（写完必做）：把 `estimateBeforeTokens` 的键序改回只认
+// `estimatedTokens`，第 1 条用例立刻变红（before 变 0、ineffective 变 1）。
+
+/** 可读回计数的 host（`makeHost` 的对象本身就是计数器载体）。 */
+interface ICompressionCounters {
+	_compressionCount: number;
+	_compressionIneffectiveCount: number;
+	_compressionBeforeTokens: number;
+	_compressionAfterTokens: number;
+}
+
+function makeCountedHost(): { host: IContextCompactionDeps['host']; counters: ICompressionCounters } {
+	const host = makeHost();
+	return { host, counters: host as unknown as ICompressionCounters };
+}
+
+/** 真会压缩的 manager —— 返回值由用例逐条给出（`originalMessageCount` 必须 > 压缩后条数，否则 didCompress=false）。 */
+function makeCompressingManager(metadata: Record<string, unknown>) {
+	return {
+		willAttemptCompression: () => true,
+		compressContext: async () => ({
+			originalMessageCount: 10,
+			compressedMessageCount: 3,
+			summary: 'stub summary',
+			compressedMessages: [{ role: 'user', content: 'compressed', timestamp: 2 }],
+			metadata,
+		}),
+	};
+}
+
+function makeDepsWith(host: unknown, manager: unknown): IContextCompactionDeps {
+	return {
+		host,
+		request: { agentId: 'a1', sessionId: 's1' },
+		contextManager: manager,
+		compressionWindow: 100000,
+		enabledTools: () => [],
+		estimateToolsSchemaTokens: () => 0,
+	} as unknown as IContextCompactionDeps;
+}
+
+suite('turnContextCompaction / Dashboard 压缩统计口径', () => {
+
+	test('成功分支：beforeTokens 必须来自 estimatedTokensBefore（只认 estimatedTokens 会得 0）', async () => {
+		const { host, counters } = makeCountedHost();
+		await compactContextIfNeededImpl(
+			makeEventRecorder().emit,
+			makeDepsWith(host, makeCompressingManager({
+				estimatedTokensBefore: 10000,
+				estimatedTokensAfter: 2000,
+			})),
+			makeState(),
+		);
+
+		assert.strictEqual(counters._compressionCount, 1, '成功压缩应计 1 次');
+		assert.strictEqual(
+			counters._compressionBeforeTokens, 10000,
+			'before 必须取到 estimatedTokensBefore —— 取成 estimatedTokens 会得 0（历史 bug 的形态）',
+		);
+		assert.strictEqual(counters._compressionAfterTokens, 2000, 'after 取 estimatedTokensAfter');
+		assert.strictEqual(
+			counters._compressionIneffectiveCount, 0,
+			'节省 80% 属有效压缩，不该被记成无效',
+		);
+	});
+
+	test('回落：metadata 只带旧键 estimatedTokens 时也能取到（skip 分支形状）', async () => {
+		const { host, counters } = makeCountedHost();
+		await compactContextIfNeededImpl(
+			makeEventRecorder().emit,
+			makeDepsWith(host, makeCompressingManager({
+				estimatedTokens: 8000,
+				estimatedTokensAfter: 800,
+			})),
+			makeState(),
+		);
+
+		assert.strictEqual(counters._compressionBeforeTokens, 8000, '旧键必须仍可回落取到');
+	});
+
+	test('低效判定未被改坏：节省 < 10% 仍记无效', async () => {
+		const { host, counters } = makeCountedHost();
+		await compactContextIfNeededImpl(
+			makeEventRecorder().emit,
+			makeDepsWith(host, makeCompressingManager({
+				estimatedTokensBefore: 10000,
+				estimatedTokensAfter: 9500, // 节省 5% < 10%
+			})),
+			makeState(),
+		);
+
+		assert.strictEqual(counters._compressionIneffectiveCount, 1, '真实低效必须保留判罚');
+	});
+
+	test('缺数据不等于无效：两个键都没有时不计入 ineffective（且不产生假 before/after）', async () => {
+		const { host, counters } = makeCountedHost();
+		await compactContextIfNeededImpl(
+			makeEventRecorder().emit,
+			makeDepsWith(host, makeCompressingManager({})),
+			makeState(),
+		);
+
+		assert.strictEqual(counters._compressionCount, 1, '压缩动作本身仍要计数');
+		assert.strictEqual(counters._compressionIneffectiveCount, 0, '缺数据无从计算节省率，不得记无效');
+		assert.strictEqual(counters._compressionBeforeTokens, 0, '缺数据不得写入假读数');
+	});
+});

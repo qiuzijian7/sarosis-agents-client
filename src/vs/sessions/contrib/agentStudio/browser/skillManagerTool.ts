@@ -25,7 +25,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 
-import { ISkillRegistry } from '../common/skills.js';
+import { ISkillRegistry, isSkillReadOnly } from '../common/skills.js';
 import { SarosPath, resolveSarosPath, userDataRootFromRoamingHome } from '../common/sarosPaths.js';
 import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
 
@@ -309,12 +309,15 @@ export class SkillManagerTool {
 			};
 		}
 
-		// 内置技能不允许编辑（防止用户覆写污染产品源）
-		if (existing.source === 'builtin') {
+		// 只读来源（内置 / dsh 插件自带）不允许编辑：
+		//  · 内置：防止用户覆写污染产品源；
+		//  · 插件（2026-10-13 P2）：技能文件在**插件包里**（`node_modules` / `profile/.vssaros/plugins`）
+		//    ⇒ 写进去就是改依赖产物（会被包管理器静默回滚 ✗，见 `isSkillReadOnly` 的注释）。
+		if (isSkillReadOnly(existing.source)) {
 			return {
 				success: false,
-				message: `Skill "${name}" is a builtin skill and cannot be modified. Create a new skill with a different name instead.`,
-				error: `Builtin skill "${name}" is read-only.`,
+				message: `Skill "${name}" is a read-only (${existing.source}) skill and cannot be modified. Create a new skill with a different name instead.`,
+				error: `Skill "${name}" is read-only (${existing.source}).`,
 			};
 		}
 
@@ -388,12 +391,12 @@ export class SkillManagerTool {
 			};
 		}
 
-		// 内置技能不允许编辑
-		if (existing.source === 'builtin') {
+		// 只读来源（内置 / dsh 插件自带）不允许打补丁 —— 理由同 `updateSkill` 处
+		if (isSkillReadOnly(existing.source)) {
 			return {
 				success: false,
-				message: `Skill "${name}" is a builtin skill and cannot be patched.`,
-				error: `Builtin skill "${name}" is read-only.`,
+				message: `Skill "${name}" is a read-only (${existing.source}) skill and cannot be patched.`,
+				error: `Skill "${name}" is read-only (${existing.source}).`,
 			};
 		}
 

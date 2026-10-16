@@ -113,13 +113,13 @@ export const useDiagnosticsStore = create<DiagnosticsState>((set, get) => ({
 					if (taskId) { await taskStore.decomposeTask(taskId); }
 					break;
 				case 'unblock':
-					if (taskId) { await taskStore.updateTaskStatus(taskId, 'todo', 'task-board'); }
+					if (taskId) { await taskStore.updateTaskStatus(taskId, 'todo', 'manual'); }
 					break;
 				case 'reclaim':
-					if (taskId) { await taskStore.updateTaskStatus(taskId, 'ready', 'task-board'); }
+					if (taskId) { await taskStore.updateTaskStatus(taskId, 'ready', 'manual'); }
 					break;
 				case 'cancel':
-					if (taskId) { await taskStore.updateTaskStatus(taskId, 'cancelled', 'task-board'); }
+					if (taskId) { await taskStore.updateTaskStatus(taskId, 'cancelled', 'manual'); }
 					break;
 				case 'dismiss':
 				default:

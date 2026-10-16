@@ -539,7 +539,7 @@ The default vault is stored at \`~/.vssaros/knowledge-base/<vault-id>/\`. Each v
 When asked to import content, first determine the source type and choose the appropriate method:
 - **Files (PDF, DOC, TXT, MD, etc.)**: Read the file content, then write a copy to the library root: \`<vault>/库/<categorized-folder>/<original-name>\`. Create category subfolders as needed (e.g., \`库/技术文档/\`, \`库/参考资料/\`, \`库/图片素材/\`).
 - **Images**: Save images to \`<vault>/库/images/\` or a topic-specific subfolder with descriptive filenames.
-- **URL / Web articles**: Use the **defuddle** skill to extract clean markdown content. Save the extracted article as a \`.md\` file in \`<vault>/库/articles/\` or a topic-specific subfolder. Include metadata (source URL, date retrieved, author if available) in YAML frontmatter.
+- **URL / Web articles**: Use the built-in \`web_extract\` tool to extract the readable page text (it has a local page cache, binary-payload guard, and full-text spill for long pages). Save the extracted article as a \`.md\` file in \`<vault>/库/articles/\` or a topic-specific subfolder. Include metadata (source URL, date retrieved, author if available) in YAML frontmatter.
 - **Batch imports**: Process multiple items systematically, organizing them into logical category folders under \`库/\`.
 
 ### 2. Generate Notes → Notes (笔记)
@@ -571,7 +571,6 @@ General note conventions:
 
 ## Available Skills
 - **obsidian-markdown**: Create and edit Obsidian Flavored Markdown with wikilinks, embeds, callouts, and properties. Always use this for note generation.
-- **defuddle**: Extract clean markdown from web pages. Use for URL imports instead of raw web fetching.
 - **obsidian-bases**: Create and edit Obsidian Bases (\`.base\`) for structured tabular data.
 - **json-canvas**: Create and edit JSON Canvas files (\`.canvas\`) for visual knowledge graphs.
 - **kb-build**: 宿主驱动的知识库构建手册 —— 收到「素材清单」时按它执行：素材 → 结构化笔记（落点复用既有目录结构）→ 维护 知识体系.md → 需要重构时小规模直接用 kb_organize、大规模输出 KB_REORG 计划交给宿主。
@@ -590,7 +589,10 @@ General note conventions:
 		//   （自动建库 / 显式映射 .feishu-space-map.json / 父节点），并说明改分类后的跨库自动搬迁语义。
 		// ★ 2026-09-24：移除 `writing` —— 该 id 在 resources/.agents/skills/ 与用户技能库里都不存在，
 		//   是同名「静默空引用」（挂了等于没挂）；技能挂载完整性由测试 builtinSkillContracts.test.ts 兜住。
-		skills: ['obsidian-markdown', 'obsidian-bases', 'json-canvas', 'mermaid', 'defuddle', 'summarize', 'analysis', 'kb-build', 'kb-category-feishu', 'kb-feishu-sync'],
+		// ★ 2026-10-15：移除 `defuddle` —— 与同一 agent 工具白名单里的内置 `web_extract` 重复
+		//   （URL→干净正文），且实测零使用（.usage.json readCount=1 仅为初始化）、CLI 未随包
+		//   （每次用都要先 npm i -g ⇒ 必多一跳）。URL 导入路径已改指 web_extract（见上文提示词）。
+		skills: ['obsidian-markdown', 'obsidian-bases', 'json-canvas', 'mermaid', 'summarize', 'analysis', 'kb-build', 'kb-category-feishu', 'kb-feishu-sync'],
 			// 2026-09-22：加入 vision_analyze —— 导入小红书等图文链接后，需要**总结图片内容**
 		// （单图工具，agent 自行逐张调用；模型走 AGENT_STUDIO_AUX_VISION_* 或多模态主模型）。
 		// ★ 2026-09-23：加入 kb_organize —— 允许 agent **自己动手**重构笔记区目录（checkpoint + 备份，可回滚）

@@ -7,7 +7,7 @@
  *  - renderer 侧经 ProxyChannel.toService 透明代理（browser/mediaStoreProxy.ts）
  *--------------------------------------------------------------------------------------------*/
 
-import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, promises as fsp, readFileSync } from 'fs';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { Event } from '../../../../base/common/event.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
@@ -66,11 +66,12 @@ export class MediaStoreChannel<TContext> extends Disposable implements IServerCh
 	}
 
 	private _persistRootDir(rootDir: string): void {
-		try {
-			writeFileSync(this.configPath, JSON.stringify({ rootDir }, null, 2), 'utf8');
-		} catch (err) {
+		// 异步落盘：调用方（`setRootDir`）是同步接口，而**主线程上的同步写**一旦撞上 I/O 卡死
+		// （2026-10-12 三次现场都是 NtWriteFile 永不返回）就是整个 IDE 假死。内存里的 `_rootDir`
+		// 才是权威值，配置文件只供下次启动读回 ⇒ 不必等它落盘，失败只记一条日志。
+		void fsp.writeFile(this.configPath, JSON.stringify({ rootDir }, null, 2), 'utf8').catch(err => {
 			this._log('warn', `persist media rootDir failed: ${(err as Error).message}`);
-		}
+		});
 	}
 
 	getRootDir(): string {

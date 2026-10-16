@@ -243,6 +243,19 @@ export function isDocumentComplete(raw: unknown): boolean {
 	return (raw as { readyState?: unknown } | null)?.readyState === 'complete';
 }
 
+// ─── 给 dsh 侧（Host 插件）复用的 re-export（2026-10-13）────────────────────────
+//
+// 为什么从这里转出去：Host 侧的**登录态判据**（`dsh-plugins/vssaros-browser/lib/core/loginProbe.js`）
+// 要用**同一套**页面质量判定与同一段登录墙文案。判定真源只有一份（`common/webPageQuality.ts`），
+// 而 dsh 插件不能 import 仓库的 TS 树 —— 它拿到的正是本文件经 `bin/sync-snapshot.mjs` 生成的那份
+// 产物。这里显式转出，生成物才会带上它们（原先被 esbuild 按"无人引用"摇掉）。
+// ⚠ 别在本文件重新实现"判定"，也别在 dsh 侧另抄一份 —— 那正是本模块开头反对的口径漂移。
+export {
+	browserPageWallNotice, classifyExtractQuality, kindReason,
+	assessManualAction, manualActionLine, MANUAL_ACTION_NEEDS_HUMAN,
+} from '../common/webPageQuality.js';
+export type { IExtractQuality, IManualActionAssessment, ManualAction } from '../common/webPageQuality.js';
+
 /** 读取 `document.readyState` 的注入脚本。 */
 export const READY_STATE_SCRIPT = `({ readyState: (document.readyState || '') })`;
 

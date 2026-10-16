@@ -39,6 +39,16 @@
 import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { URI } from '../../../../base/common/uri.js';
+// ★ 2026-10-12：生态用户级技能目录（SKILL.md 规范）清单 —— 与 dsh Host 侧**共用同一份**。
+//   ⚠ 该清单现已被**刻意置空** ⇒ 下面那个循环是 no-op ✓（见 common/skillEcosystemDirs.ts 头注释）。
+//   保留接线是为了"两处消费点同源"这条机制还在：将来要恢复扫描，只需往那份清单里加回目录 ✓。
+import { ecosystemUserSkillDirUris } from '../common/skillEcosystemDirs.js';
+// ★ 技能根清单的**单一真源**（顺序 / 来源 / trust 门控 / 去重；dsh 侧 `dshHarnessService` 读同一份 ✓）
+import { SKILL_OFFICIAL_USER_ROOT_SETTING_ID, SKILL_PROJECT_ROOTS_SETTING_ID, SkillRootScope, officialUserSkillRootCandidates, resolveSkillRoots } from '../common/skillRoots.js';
+// ★ 2026-10-13（P2）：**dsh 插件包自带的技能**（`<插件包>/skills`）—— IDE 侧补的来源（`ideOnly` 根 ✓）。
+//   为什么只有 IDE 侧要：dsh 侧那批技能是**插件自己**注册的（插件包里的 `dsh-skill-filesystem` 行），
+//   我们再注一遍就是"同一个技能名两个 provider 各报一份"✗ ⇒ 只给 IDE 补（理由见 dshPluginSkillRoots.ts）。
+import { dshPluginSkillRootCandidates, dshProfileDirCandidates } from '../common/dshPluginSkillRoots.js';
 import { FileOperationError, FileOperationResult, IFileService, IFileStat } from '../../../../platform/files/common/files.js';
 import { IEnvironmentService, INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
@@ -53,7 +63,10 @@ import { ISkillLifecycleService, ISkillBatchLifecyclePayload } from '../common/s
 import * as path from '../../../../base/common/path.js';
 import { FileAccess } from '../../../../base/common/network.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
-import { SarosPath, resolveSarosPath, userDataRootFromRoamingHome } from '../common/sarosPaths.js';
+// 技能根的门控：项目级根（`<工作区>/.dsh/skills` 等）**只在受信任时**扫（提示词注入面 ✗）
+import { IWorkspaceTrustManagementService } from '../../../../platform/workspace/common/workspaceTrust.js';
+import { INotificationService } from '../../../../platform/notification/common/notification.js';
+import { userDataRootFromRoamingHome } from '../common/sarosPaths.js';
 import { IWorkflowStorageService, IStoredWorkflow } from '../common/workflowStorage.js';
 import {
 	AGENT_STUDIO_SKILLS_INCLUDE_WORKFLOWS_SETTING,
@@ -222,6 +235,8 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 	private readonly _skills = new Map<string, ISkillDefinition>();
 	private readonly _runtimeSkills = new Map<string, ISkillDefinition>();
 	private readonly _onDidChangeSkills = this._register(new Emitter<void>());
+	/** "未信任 ⇒ 项目级技能没加载"这提醒每个窗口只弹一次（见 `_notifyUntrustedProjectSkills`）。 */
+	private _untrustedSkillsNotified = false;
 	readonly onDidChangeSkills: Event<void> = this._onDidChangeSkills.event;
 	private readonly _readyPromise: Promise<void>;
 	/** In-flight reload promise — coalesces concurrent reload() calls (single-flight). */
@@ -236,7 +251,11 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 		@ISkillLifecycleService private readonly skillLifecycleService: ISkillLifecycleService,
 		@IWorkflowStorageService private readonly workflowStorageService: IWorkflowStorageService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
-		@IWorkspaceContextService workspaceService: IWorkspaceContextService,
+		@IWorkspaceContextService private readonly workspaceService: IWorkspaceContextService,
+		// 技能根门控（P1，2026-10-13）：项目级根只在**受信任**的工作区里扫（见 `common/skillRoots.ts`）
+		@IWorkspaceTrustManagementService private readonly workspaceTrustService: IWorkspaceTrustManagementService,
+		// "未信任 ⇒ 项目技能没加载"必须让**用户**看得见（只写日志 = 用户永远不知道 ✗）
+		@INotificationService private readonly notificationService: INotificationService,
 		) {
 		super();
 		this.logService.info('[SkillRegistry] constructor called');
@@ -250,6 +269,12 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 		//   workflow 变更只影响 source==='workflow' 的 skill，增量刷新即可。
 		this._register(this.workflowStorageService.onDidChangeWorkflows(() => {
 			this.reloadWorkflowSkills().catch(err => this.logService.warn('[SkillRegistry] workflow skill refresh failed', err));
+		}));
+		// ★ 工作区信任变化 ⇒ 项目级技能根的可见性变了 ⇒ 立刻重扫（IDE 侧不用重启，比 Host 侧简单 ✓）。
+		// 两个方向都管：信任 ⇒ 项目技能出现 ✓；取消信任 ⇒ 项目技能**立刻消失** ✓（安全侧要求）。
+		this._register(this.workspaceTrustService.onDidChangeTrust(() => {
+			this._untrustedSkillsNotified = false;   // 状态变了 ⇒ 允许再提醒一次（例如取消信任后 ✓）
+			this.reload().catch(err => this.logService.warn('[SkillRegistry] reload after trust change failed', err));
 		}));
 
 		// 异步扫描磁盘 skill —— 失败不影响内置 skill 可用性。
@@ -502,6 +527,8 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 			this.logService.info(`[SkillRegistry] env.appRoot: ${(this.environmentService as INativeEnvironmentService).appRoot ?? 'undefined'}`);
 		} catch { /* ignore */ }
 		this._skills.clear();
+		// 内置候选路径（由下面的探测段填入）；统一派发循环要用它 ⇒ 声明在 try 之外 ✓
+		const builtinCandidates: string[] = [];
 		// 参考 Hermes-Agent 模式：技能从 .agents/skills/ 目录扫描加载，不再硬编码
 		// this._loadBuiltins(); // 已移除 - 技能现在从 .agents/skills/ 目录文件加载
 
@@ -556,48 +583,56 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 			);
 			this.logService.info(`[SkillRegistry] unique candidates: ${uniqueCandidates.map(c => c.toString()).join(' | ')}`);
 
-			// 不再 break —— 扫描所有存在的候选目录，避免漏掉错位安装的 skill
-			let scannedAny = false;
-			for (const builtinDir of uniqueCandidates) {
-				this.logService.info(`[SkillRegistry] trying builtin dir: ${builtinDir.toString()}`);
-				try {
-					await this.fileService.stat(builtinDir);
-					this.logService.info(`[SkillRegistry] stat OK, scanning builtin skills: ${builtinDir.toString()}`);
-					await this._scanFolder(builtinDir, 'builtin');
-					this.logService.info(`[SkillRegistry] after builtin scan (${builtinDir.toString()}): ${this._skills.size} skills`);
-					scannedAny = true;
-			} catch (e) {
-				// 目录不存在（如 dev 模式下 candidate3 = dirname(appRoot)/resources 必然
-				// 缺失）是正常探测结果，降级为 debug 避免误导性 INFO；真正的扫描错误保留 INFO。
-				//
-				// 2026-08-21（日志 1787319805992）：原判据只认 FileOperationError +
-				// FILE_NOT_FOUND，但 fileService.stat 在此实际抛的是
-				// `EntryNotFound (FileSystemError): ... ENOENT`，instanceof 不成立 →
-				// 每次启动都以 INFO 打出「builtin dir scan failed」，看起来像内置技能
-				// 加载坏了（实为候选路径探测未命中）。改为兼容多种「不存在」形态。
-				if (_isFileNotFoundError(e)) {
-					this.logService.debug(`[SkillRegistry] builtin candidate dir does not exist (skipped): ${builtinDir.toString()}`);
-				} else {
-					this.logService.info(`[SkillRegistry] builtin dir scan failed: ${builtinDir.toString()}, error: ${e}`);
-				}
-			}
-		}
-			if (!scannedAny) {
-				this.logService.info(`[SkillRegistry] no builtin skills dir found. tried: ${uniqueCandidates.map(c => c.toString()).join(' | ')}`);
-			}
+			// 不再 break —— 所有存在的候选目录都要扫，避免漏掉错位安装的 skill
+			// ★ 2026-10-13（P1）：这里**只算候选**，不再就地扫描 —— 扫描统一交到下面的"单一真源"
+			//   派发循环（`resolveSkillRoots` 给出根清单 + 来源 + trust 门控 ✓）。
+			//   候选的"不存在只打 debug"规矩移到了 `_scanRootIfPresent`（同一套 `_isFileNotFoundError` 判据 ✓）。
+			builtinCandidates.push(...uniqueCandidates.map(c => c.fsPath));
+			this.logService.info(`[SkillRegistry] builtin candidates: ${builtinCandidates.join(' | ')}`);
 		} catch (err) {
 			this.logService.error('[SkillRegistry] builtin skills scan failed', err);
 		}
 
-		// 用户全局技能库（统一使用 ~/.vssaros/ 路径，不扫描工作区）
-		try {
-			const userDataRoot = userDataRootFromRoamingHome(this.environmentService.userRoamingDataHome);
-			const userDir = resolveSarosPath(userDataRoot, SarosPath.skills);
-			this.logService.info(`[SkillRegistry] scanning user skills: ${userDir.toString()}`);
-			await this._scanFolder(userDir, 'user');
-			this.logService.info(`[SkillRegistry] after user scan: ${this._skills.size} skills`);
-		} catch (err) {
-			this.logService.info('[SkillRegistry] user skills scan failed or dir not found', err);
+		// ── 内置 / 用户级 / 项目级 / 生态级：**统一走单一真源**（P1，2026-10-13）──────────────
+		// 为什么必须统一：从前这里（用户级 + 生态级）与 dsh 侧 `dshHarnessService._skillDirs()`
+		// 各自拼一份 ⇒ 任何一边单独增删就是"IDE 看得见、聊天框看不见"这类**最难查**的不一致 ✗✗
+		// （方案稿 §2 不变量 1）。现在顺序 / 来源 / **trust 门控** / 去重都只有
+		// `agentStudio/common/skillRoots.ts` 一处实现 ✓，本方法只负责算**基址**。
+		//
+		// 项目级根（`<工作区>/.dsh/skills`、`<工作区>/.agents/skills`）**只在工作区受信任时**才扫：
+		// 它们会随 git clone 进来 ⇒ 是提示词注入面 ✗（`skillEcosystemDirs.ts` 从 2026-10-12 起就写着这条）。
+		const resolution = resolveSkillRoots({
+			// 非 file 方案（虚拟/远端工作区）没有本地路径 ⇒ 该根跳过
+			workspaceFolders: this.workspaceService.getWorkspace().folders.map(f => f.uri.scheme === 'file' ? f.uri.fsPath : ''),
+			dataRoot: this._userDataRootFsPath(),
+			// 官方用户级 `<DSH_HOME>/skills`（rank 400）：路径公式与 Host 侧**同一份** ✓
+			officialUserDirs: this._officialUserSkillDirs(),
+			builtinDirs: builtinCandidates,
+			// dsh 插件包自带的技能（`<插件包>/skills`）：**只给 IDE 侧**（`includeIdeOnlyRoots` 见下 ✓）
+			dshPluginSkillDirs: await this._dshPluginSkillDirs(),
+			extraUserDirs: this._ecosystemUserSkillDirs(),
+		}, {
+			trusted: this.workspaceTrustService.isWorkspaceTrusted(),
+			projectRoots: this.configurationService.getValue<boolean>(SKILL_PROJECT_ROOTS_SETTING_ID) !== false,
+			// 官方用户级根：用户拍板"支持"✓；与项目级是独立开关（它在用户主目录下 ⇒ 不需要 trust 门控 ✓）
+			officialUserRoot: this.configurationService.getValue<boolean>(SKILL_OFFICIAL_USER_ROOT_SETTING_ID) !== false,
+			// ★ IDE 侧**是**这些根的唯一消费者：dsh 侧由插件自己注册（重复注入 ⇒ 同名两份 ✗，见 skillRoots.ts 的 ideOnly）
+			includeIdeOnlyRoots: true,
+		});
+		if (resolution.skippedUntrusted.length) {
+			// 不静默：用户报"我的技能怎么少了一半"时，这行 + 那条通知就是答案 ✓
+			this.logService.info(`[SkillRegistry] 工作区未受信任 ⇒ 跳过 ${resolution.skippedUntrusted.length} 个项目级技能根：${resolution.skippedUntrusted.join('、')}（信任工作区后自动重扫 ✓）`);
+			void this._notifyUntrustedProjectSkills(resolution.skippedUntrusted);
+		}
+		for (const root of resolution.roots) {
+			try {
+				this.logService.info(`[SkillRegistry] scanning ${root.scope} skills: ${root.fsPath}（${root.label}）`);
+				await this._scanRootIfPresent(URI.file(root.fsPath), root.scope);
+				this.logService.info(`[SkillRegistry] after ${root.scope} scan: ${this._skills.size} skills`);
+			} catch (err) {
+				// 单个根失败不该影响已加载的部分（旧代码对用户级/生态级也是这么兜的 ✓）
+				this.logService.info(`[SkillRegistry] scan failed for ${root.scope} root: ${root.fsPath}`, err);
+			}
 		}
 
 		// workflow → skill 双向打通（A 向）：把工作流注册为可执行 skill
@@ -692,7 +727,7 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 	 */
 	private async _scanFolderRecursive(
 		dir: URI,
-		source: 'user' | 'builtin',
+		source: SkillRootScope,
 		depth: number = 0,
 		parentHasSkill: boolean = false,
 		relativePath: string[] = [],
@@ -743,8 +778,8 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 				if (!skill.category && relativePath.length > 0) {
 					skill = { ...skill, category: relativePath[0] }; // 最顶层的子文件夹名作为 category
 				}
-				// 内置技能默认分类
-				if (!skill.category && source === 'builtin') {
+				// 内置 / 插件自带技能默认分类（两者同属"随包分发、非用户编写"那一类，见 `isSkillReadOnly` ✓）
+				if (!skill.category && (source === 'builtin' || source === 'plugin')) {
 					skill = { ...skill, category: 'utility' };
 				}
 				// 索引支持目录文件（references/templates/assets/scripts），供模型按需读取（渐进披露）
@@ -789,9 +824,152 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 	 * 旧版单层扫描方法（已废弃 — 内部委托给 _scanFolderRecursive）。
 	 * 保留签名兼容性，行为已改为递归扫描。
 	 */
-	private async _scanFolder(dir: URI, source: 'user' | 'builtin'): Promise<void> {
+	private async _scanFolder(dir: URI, source: SkillRootScope): Promise<void> {
 		const loaded = await this._scanFolderRecursive(dir, source);
 		this.logService.info(`[SkillRegistry] _scanFolder(${source}): loaded ${loaded} skills from ${dir.toString()} (recursive)`);
+	}
+
+	/** 数据根（`~/.vssaros` / dev 的 `~/.vssaros-dev`）的本机路径；拿不到 ⇒ undefined（用户级根就不产出）✓。 */
+	private _userDataRootFsPath(): string | undefined {
+		try {
+			return userDataRootFromRoamingHome(this.environmentService.userRoamingDataHome).fsPath;
+		} catch {
+			return undefined;
+		}
+	}
+
+	/**
+	 * 官方用户级技能目录候选（`<DSH_HOME>/skills`，官方 rank 400）—— 与 Host 侧**同一份路径公式** ✓。
+	 *
+	 * `dshHome` 的设置键是 `sessions.dshHarness.dshHome`（枚举 `DshHarnessSettings.DshHome` 定义在
+	 * dshHarness 的 common 里）；这里不跨 contrib 引那个枚举，改用**字面量**，
+	 * 由 `skillRoots.test.ts` 的守卫比对两处一致 ✓（改键 = 静默失效 ✗，所以必须有那条守卫）。
+	 */
+	private _officialUserSkillDirs(): string[] {
+		try {
+			return officialUserSkillRootCandidates({
+				dshHome: this.configurationService.getValue<string>('sessions.dshHarness.dshHome')?.trim() || undefined,
+				dataRoot: this._userDataRootFsPath(),
+				userHome: (this.environmentService as INativeEnvironmentService).userHome?.fsPath,
+			});
+		} catch {
+			return [];
+		}
+	}
+
+	/**
+	 * **dsh 插件包自带的技能根**（`<插件包>/skills`）—— IDE 侧技能库的补充来源（2026-10-13 P2）。
+	 *
+	 * 为什么要 IDE 侧自己算（而不是问 Host）：这条来源在 dsh 里是**插件自己注册**的
+	 * （插件包内那行 `dsh-skill-filesystem`，`bundledSkillDir` 指到包内 `skills/`）⇒ Host 那侧问不出
+	 * "IDE 该扫哪些目录"，而且 Host 没启动时技能库也得能用 ✓。所以按**同一份约定**在本地算：
+	 * 读 profile 的 `package.json`（`dsh.profile.bundles` = 已启用插件的真源 ✓）→ 解析每个插件的包目录
+	 * → 取其下的 `skills/`（纯函数在 `common/dshPluginSkillRoots.ts` ✓）。
+	 *
+	 * 路径公式的基址与 `_officialUserSkillDirs()` **同一组** DSH_HOME 候选（设置项 → dev 默认 →
+	 * 打包版回落 `~/.dsh`），只是再拼 `/profiles/<profile>` ✓。`profile` 名同样用**字面量**读键
+	 * （`sessions.dshHarness.profile`），由 `skillRoots.test.ts` 的守卫比对两侧一致 ✓。
+	 *
+	 * 容错：profile 不存在 / 读不动一律**跳过**（dev 与打包、不同机器上 profile 名都可能不同 ⇒
+	 * 这是常态，不是错误 ✗ 别报错）；插件目录没有 `skills/` 也跳过（多数插件不给技能 ✓）。
+	 * 不存在的根**必须在这里滤掉**：`_doReload` 在扫描**之前**就会打一行 INFO（见那个循环 ✓），
+	 * 几十个插件全冒一行"scanning …"会把日志埋掉 ✗。
+	 */
+	private async _dshPluginSkillDirs(): Promise<string[]> {
+		try {
+			const profileDirs = dshProfileDirCandidates({
+				dshHome: this.configurationService.getValue<string>('sessions.dshHarness.dshHome')?.trim() || undefined,
+				dataRoot: this._userDataRootFsPath(),
+				userHome: (this.environmentService as INativeEnvironmentService).userHome?.fsPath,
+				profile: this.configurationService.getValue<string>('sessions.dshHarness.profile')?.trim() || undefined,
+			});
+			const roots: string[] = [];
+			for (const profileDir of profileDirs) {
+				let profilePackageJson: unknown;
+				try {
+					const raw = await this.fileService.readFile(URI.file(path.join(profileDir, 'package.json')));
+					profilePackageJson = JSON.parse(raw.value.toString());
+				} catch {
+					continue; // 没有这个 profile（dev/打包/profile 名不同）⇒ 跳过，不算错
+				}
+				for (const root of dshPluginSkillRootCandidates(profilePackageJson, profileDir)) {
+					try {
+						if ((await this.fileService.stat(URI.file(root))).isDirectory) {
+							roots.push(root);
+						}
+					} catch {
+						// 该插件没带 `skills/`（或还没装完）⇒ 正常情况，静默跳过
+					}
+				}
+			}
+			if (roots.length) {
+				this.logService.info(`[SkillRegistry] dsh 插件自带技能根 ${roots.length} 个：${roots.join(' | ')}`);
+			}
+			return roots;
+		} catch (err) {
+			this.logService.info('[SkillRegistry] dsh 插件技能根解析失败（按"没有"处理）', err);
+			return [];
+		}
+	}
+
+	/** 生态用户级技能目录（清单**刻意为空** ✓ ⇒ 通常空数组；保留接线以维持两处消费点同源 ✓）。 */
+	private _ecosystemUserSkillDirs(): string[] {
+		try {
+			return ecosystemUserSkillDirUris((this.environmentService as INativeEnvironmentService).userHome).map(u => u.fsPath);
+		} catch {
+			return [];
+		}
+	}
+
+	/**
+	 * 扫一个**可能不存在**的技能根（生态目录 `~/.agents/skills`、内置候选、项目级目录多数都不存在）。
+	 *
+	 * 先 `stat` 再扫，且"不存在"只打 **debug** ✓ —— 直接扫再在 catch 里记 INFO 会把
+	 * "候选目录没命中"报成"扫描失败"，2026-08-21 踩过同一个坑（见内置候选那段的注释）✗。
+	 * 其它异常仍打 INFO（真错误要可见），但不抛出：这些根是**可选/条件性**的，
+	 * 不该让它们影响已经加载好的内置/自营技能 ✓。
+	 *
+	 * ★ 2026-10-13（P1）：来源参数从 `'user'` 放开为 {@link SkillRootScope} —— 单一真源给出的
+	 * 每条根都自带 scope（含 `'project'`），本方法只负责"存在就扫、不存在就静默" ✓。
+	 */
+	private async _scanRootIfPresent(dir: URI, source: SkillRootScope): Promise<void> {
+		try {
+			await this.fileService.stat(dir);
+		} catch (e) {
+			if (_isFileNotFoundError(e)) {
+				this.logService.debug(`[SkillRegistry] ${source} skill dir does not exist (skipped): ${dir.toString()}`);
+			} else {
+				this.logService.info(`[SkillRegistry] ${source} skill dir stat failed: ${dir.toString()}, error: ${e}`);
+			}
+			return;
+		}
+		await this._scanFolder(dir, source);
+	}
+
+	/**
+	 * 未信任 ⇒ 项目级技能没加载：**只在这一类目录真的存在时**提醒一次。
+	 *
+	 * 为什么要提醒（方案稿 P1 明确要求"含未信任时如何提示用户"）：不提醒的话用户看到的就是
+	 * "我明明把技能放在 `.dsh/skills` 里，产品却说没有" ✗ —— 静默少一半是最难自查的一类问题。
+	 * 为什么加两个条件：①目录不存在 ⇒ 没有东西被门控挡掉，提醒纯属噪音 ✗；
+	 * ②每个窗口/工作区只提醒一次（`_untrustedSkillsNotified`）⇒ 否则每次 reload 都弹 ✗。
+	 */
+	private async _notifyUntrustedProjectSkills(paths: readonly string[]): Promise<void> {
+		try {
+			const existing: string[] = [];
+			for (const p of paths) {
+				try {
+					await this.fileService.stat(URI.file(p));
+					existing.push(p);
+				} catch { /* 不存在 ⇒ 这条没什么可提醒的 ✓ */ }
+			}
+			if (!existing.length || this._untrustedSkillsNotified) {
+				return;
+			}
+			this._untrustedSkillsNotified = true;
+			this.notificationService.info(
+				`工作区里有技能目录（${existing.join('、')}），但当前工作区未受信任，因此没有加载其中的技能。信任该工作区后会自动加载。`);
+		} catch { /* 提醒失败不影响技能加载 ✓ */ }
 	}
 
 	/**
@@ -799,19 +977,35 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 	 * 值越大优先级越高：用户/商城安装的技能覆盖同名内置技能；workflow/runtime 视图最高。
 	 */
 	private static readonly SKILL_SOURCE_RANK: Readonly<Record<ISkillDefinition['source'], number>> = {
+		// 只比**相对**大小（值本身不落盘、不对外暴露）⇒ 为插入 project 档把后面的整体上移一位 ✓
+		// ★ `plugin`（dsh 插件自带的技能）与 builtin 同档：dsh 侧它们也同为 bundled/600 ✓；
+		//   IDE 侧根顺序把插件根排在最后 ⇒ 撞名时先到先得 = 内置/用户技能压得住插件技能 ✓
+		//   （且它是只读来源，见 `common/skills.ts` 的 `isSkillReadOnly` ✓）。
+		plugin: 1,
 		builtin: 1,
 		extension: 1,
 		marketplace: 2,
-		user: 2,
-		workflow: 3,
-		memory: 4,
+		user: 3,
+		// ★ 2026-10-13（P1）：**项目级**（工作区自带的技能）高于用户级/商城，低于 workflow/runtime ✓。
+		// 依据：官方 rank 表里项目级（100/200）先于用户级（400）✓；dsh 侧的根顺序同样是
+		// [项目级, 用户级, 内置]（见 `agentStudio/common/skillRoots.ts` 的 `SKILL_ROOT_SPECS` ✓）。
+		project: 4,
+		workflow: 5,
+		memory: 6,
 	};
 
 	/**
 	 * 按来源优先级写入技能表（复刻 Hermes 加载期去重：不再无条件后者覆盖前者）：
 	 *   - 新来源优先级更高 → 替换并记录；
-	 *   - 优先级相同 → first-wins，保留先扫描到者并警告（附双方来源路径，便于排查同名碰撞）；
+	 *   - 优先级相同 → first-wins：**内容一致则静默**，内容不同才警告（附双方来源路径）；
 	 *   - 新来源优先级更低 → 保留既有者并记录。
+	 *
+	 * ★ 2026-10-13（决策三的降噪半边）：同级来源此前**一律警告** ✗ —— 典型现场是同一个技能在多个
+	 * 用户目录里各存一份（本机实测 `~/.agents/skills` 与 `~/.claude/skills` 有 31 个同名、`SKILL.md`
+	 * 逐字节相同 ⇒ 每次 reload 刷 31 行**无信息量**告警，正是当初决定停扫生态目录的两个理由之一 ✗）。
+	 * 现在用同文件里那个**本来就是为此写的** `computeSkillContentHash` 判内容：一致 ⇒ 静默取先者 ✓；
+	 * 不一致 ⇒ 保留**一行** WARN（这才是需要人判断的情形 ✓，消息里说清"内容不同" + 两侧路径 ✓）。
+	 * 注：dsh 侧对同名是**静默 rank 裁决**（没有对应的告警面）⇒ 这条纪律由 IDE 侧负责 ✓。
 	 */
 	private _setSkillWithPriority(skill: ISkillDefinition, fromPath?: string): void {
 		const existing = this._skills.get(skill.id);
@@ -832,7 +1026,14 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 			this._skills.set(skill.id, skill);
 			this.logService.info(`[SkillRegistry] Skill "${skill.id}" replaced by higher-priority source: ${existing.source} (${existingPath}) ← ${skill.source} (${incomingPath})`);
 		} else if (incomingRank === existingRank) {
-			this.logService.warn(`[SkillRegistry] Skill id 冲突 "${skill.id}"（同级来源 ${skill.source}）：保留 ${existingPath}，忽略 ${incomingPath}。如需共存请在 frontmatter 显式指定不同 id。`);
+			// 同级：先比内容（只比 prompt 正文 ⇒ 与 `computeSkillContentHash` 的口径一致 ✓）
+			const sameContent = computeSkillContentHash(String(existing.prompt ?? '')) === computeSkillContentHash(String(skill.prompt ?? ''));
+			if (sameContent) {
+				// 同一个技能在多个目录里各存一份（常见：用户把技能同时放在自营库与生态目录）
+				// ⇒ 保留先扫描到的那份，**不打日志**（打了就是几十行无信息量告警 ✗）。
+				return;
+			}
+			this.logService.warn(`[SkillRegistry] Skill id 冲突 "${skill.id}"（同级来源 ${skill.source}，内容不同）：保留 ${existingPath}，忽略 ${incomingPath}。如需共存请在 frontmatter 显式指定不同 id。`);
 		} else {
 			this.logService.info(`[SkillRegistry] Skill "${skill.id}" kept ${existing.source} (${existingPath}), ignored lower-priority ${skill.source} (${incomingPath})`);
 		}
@@ -869,7 +1070,7 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 		return files.sort();
 	}
 
-	private _parseSkillFile(folder: URI, text: string, source: 'user' | 'builtin'): ISkillDefinition | undefined {
+	private _parseSkillFile(folder: URI, text: string, source: SkillRootScope): ISkillDefinition | undefined {
 		const { meta, body } = parseFrontmatter(text);
 		let name = typeof meta.name === 'string' && meta.name.trim().length > 0 ? meta.name.trim() : undefined;
 		if (!name) {

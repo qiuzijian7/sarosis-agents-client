@@ -1162,52 +1162,66 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 				// 模型族：决定工具调用格式指令的措辞（真源 common/modelFamilyPrompt.ts）。
 				const promptModelFamily = detectModelFamily(activeModelSelection?.modelId);
 
+			// ★ 2026-10-12 重排：清单**先算再查缓存**。原因是缓存 key 里必须含
+			// `bridgeVisible`（工具段里"MCP 走 tool_search 桥接"那句按可见性联动，而
+			// MCP 服务器的连/断会让它变化）—— 若把清单计算留在缓存 miss 分支里，
+			// 命中缓存时就拿不到本轮真实的桥接可见性，key 也就无从包含它。
+			// 代价可忽略：`getEnabledToolNamesForPrompt → _getEnabledTools → getEnabledTools`
+			// 命中内部 LRU 时是早返回（不再跑 focus 检测 / 过滤链）。
+			let promptToolInventory: { toolNames: string[]; bridgeVisible: boolean } | undefined;
+			try {
+				// P0 修复：改用 getEnabledToolNamesForPrompt（focus 模式 + toolset 白名单 +
+				// hardPermission 过滤后的结果），而非 listAllToolsWithState 的全量 enabled 工具。
+				// 后者会导致提示词文字点名了实际未随请求下发 schema 的工具（如 kanban_*/kb_*/
+				// echo/get_time 等被 focus 模式剪掉的工具），模型据此调用必然失败或产生幻觉。
+				promptToolInventory = await this._agentOS.getEnabledToolNamesForPrompt(
+					request.agentId,
+					request.agentGraph,
+					request.toolsetsOverride,
+					this._agentOS._resolveHardPermission(request),
+					request.excludedTools,
+					request.allowedTools,
+				);
+				this._logService.info(`[AgentDriver] Tool inventory (prompt-visible, non-MCP): ${promptToolInventory.toolNames.length}, bridgeVisible=${promptToolInventory.bridgeVisible}`);
+			} catch (error) {
+				this._logService.warn('[AgentDriver] Failed to inject tool inventory:', error);
+			}
+
 			// 缓存 key 必须纳入 focus/toolset/hardPermission 等过滤条件的签名——否则同一 agent
 			// 在不同 workMode（plan/work）、不同 toolsetsOverride、不同 excludedTools/allowedTools
 			// 下会复用错误的旧文字清单，与本轮真实下发的工具 schema 脱节。
 			// ⚠ 2026-08-22 起**必须**再纳入 promptModelFamily：工具段的格式指令按族分发，
 			// 不纳入会让「切换模型」命中上一个模型族的缓存段（例如从 claude 切到 generic
 			// 模型后仍拿不到 JSON 退路说明），且因前缀字节不变而完全无从察觉。
-			const toolFilterSignature = JSON.stringify({
-				g: request.agentGraph ? Object.keys(request.agentGraph.nodes).length : 0,
-				t: request.toolsetsOverride ?? null,
-				h: request.workMode ?? request.chatMode ?? null,
-				e: request.excludedTools ?? null,
-				a: request.allowedTools ?? null,
-				f: promptModelFamily,
-			});
-			const toolCacheKey = `tools:${request.agentId}:${toolFilterSignature}`;
-		const cachedToolSection = this._toolInventoryCache.get(toolCacheKey);
-		if (cachedToolSection !== undefined) {
-			pushSeg(stableParts, 'tool-section', cachedToolSection);
-			this._logService.info(`[AgentDriver] Tool inventory CACHE HIT (key=${toolCacheKey})`);
-			} else {
-				try {
-					// P0 修复：改用 getEnabledToolNamesForPrompt（focus 模式 + toolset 白名单 +
-					// hardPermission 过滤后的结果），而非 listAllToolsWithState 的全量 enabled 工具。
-					// 后者会导致提示词文字点名了实际未随请求下发 schema 的工具（如 kanban_*/kb_*/
-					// echo/get_time 等被 focus 模式剪掉的工具），模型据此调用必然失败或产生幻觉。
-					const nonMcpToolNames = await this._agentOS.getEnabledToolNamesForPrompt(
-						request.agentId,
-						request.agentGraph,
-						request.toolsetsOverride,
-						this._agentOS._resolveHardPermission(request),
-						request.excludedTools,
-						request.allowedTools,
+			// ⚠ 2026-10-12 起还要纳入 `b`（桥接可见性），理由见上一条注释。
+			if (promptToolInventory) {
+				const toolFilterSignature = JSON.stringify({
+					g: request.agentGraph ? Object.keys(request.agentGraph.nodes).length : 0,
+					t: request.toolsetsOverride ?? null,
+					h: request.workMode ?? request.chatMode ?? null,
+					e: request.excludedTools ?? null,
+					a: request.allowedTools ?? null,
+					f: promptModelFamily,
+					b: promptToolInventory.bridgeVisible ? 1 : 0,
+				});
+				const toolCacheKey = `tools:${request.agentId}:${toolFilterSignature}`;
+				const cachedToolSection = this._toolInventoryCache.get(toolCacheKey);
+				if (cachedToolSection !== undefined) {
+					pushSeg(stableParts, 'tool-section', cachedToolSection);
+					this._logService.info(`[AgentDriver] Tool inventory CACHE HIT (key=${toolCacheKey})`);
+				} else if (promptToolInventory.toolNames.length > 0) {
+					// P0：工具清单只保留压缩后的「名称清单」（结构化 schema 已随请求下发）
+					// 工具相关的说明按**可见性**联动：无桥接工具时不得再教模型用 tool_search。
+					const toolSectionStr = buildCompactToolSection(
+						promptToolInventory.toolNames,
+						promptModelFamily,
+						{ bridgeVisible: promptToolInventory.bridgeVisible },
 					);
-					this._logService.info(`[AgentDriver] Tool inventory (prompt-visible, non-MCP): ${nonMcpToolNames.length}`);
-
-			if (nonMcpToolNames.length > 0) {
-				// P0：工具清单只保留压缩后的「名称清单」（结构化 schema 已随请求下发）
-				const toolSectionStr = buildCompactToolSection(nonMcpToolNames, promptModelFamily);
-				pushSeg(stableParts, 'tool-section', toolSectionStr);
-				this._toolInventoryCache.set(toolCacheKey, toolSectionStr);
-				this._logService.info(`[AgentDriver] Injected compact tool section (${nonMcpToolNames.length} enabled, names-only, family=${promptModelFamily}) into stable tier`);
+					pushSeg(stableParts, 'tool-section', toolSectionStr);
+					this._toolInventoryCache.set(toolCacheKey, toolSectionStr);
+					this._logService.info(`[AgentDriver] Injected compact tool section (${promptToolInventory.toolNames.length} enabled, names-only, family=${promptModelFamily}, bridgeVisible=${promptToolInventory.bridgeVisible}) into stable tier`);
+				}
 			}
-				} catch (error) {
-					this._logService.warn('[AgentDriver] Failed to inject tool inventory:', error);
-				}
-				}
 
 				// 3b. 解析本轮激活的技能内容并注入
 				let mergedMessages = [...request.messages];
@@ -1791,14 +1805,19 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 	/**
 	 * Resolve the workspace that owns a given turn.
 	 *
-	 * `IAgentTurnRequest` only carries agentId + sessionId, never workspaceId.
-	 * The owning workspace is recovered via the session record
-	 * (`getSession(sessionId).workspaceId`). When there is no sessionId (e.g.
-	 * a probe turn) we fall back to the currently-active workspace.
+	 * 三级优先级（2026-10-14 起；契约见 `test/browser/chatWorkspaceAuthority.test.ts`）：
+	 *   ① **会话级覆盖** `getSessionWorkspaceOverride(sessionId)` —— 聊天输入框顶部那枚下拉是
+	 *      「LLM 工作区」的真源，用户在那儿换工作区必须立刻生效（事故②：这一档原来**缺失** ✗
+	 *      ⇒ 换了也没用，且 worktree binding 按错的 id 查 ⇒ 一起错 ✗）；
+	 *   ② 会话记录 `getSession(sessionId).workspaceId`（`IAgentTurnRequest` 只带 agentId+sessionId，
+	 *      不带 workspaceId，所以这是"这台会话本来属于哪个工作区"的权威来源 ✓）；
+	 *   ③ 全局游标 `getActiveWorkspaceId()`（无 sessionId 的探针 turn 等场景的兜底 ✓）。
 	 *
-	 * Returns undefined only when neither path yields a workspace.
+	 * Returns undefined only when none of the three yields a workspace.
 	 */
 	private async _resolveWorkspaceId(sessionId?: string): Promise<string | undefined> {
+		const override = this._agentStudioService.getSessionWorkspaceOverride(sessionId);
+		if (override) { return override; }
 		if (sessionId) {
 			try {
 				const session = await this._agentStudioService.getSession(sessionId);
@@ -1893,12 +1912,18 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 
 			let workspaceRoot = workspace.path;
 
+			// ★ 2026-10-14（事故③的正解）：**本会话有显式工作区选择时，窗口 folder 不得覆盖/回写**。
+			//   用户已经在聊天输入框顶部选了工作区（= 真源）⇒ 这里若还按"当前打开的文件夹"改写提示词
+			//   工作根、甚至把它写回 registry，用户的选择就被悄悄改掉了 ✗（提示词说的目录与工具沙箱
+			//   又会各按一套走）。无显式选择时保留原来的 auto-sync（那是"跟着 IDE 打开目录走"的便利 ✓）。
+			const explicitWorkspaceChoice = !!this._agentStudioService.getSessionWorkspaceOverride(sessionId);
+
 			// Auto-sync: if the VS Code currently-open folder differs from the
 			// stored workspace path, update the workspace record to match.
 			const vsCodeFolders = this._workspaceContextService.getWorkspace().folders;
 			const vsCodeFolder = vsCodeFolders.length > 0 ? vsCodeFolders[0].uri.fsPath : undefined;
 
-			if (vsCodeFolder && workspaceRoot !== vsCodeFolder) {
+			if (!explicitWorkspaceChoice && vsCodeFolder && workspaceRoot !== vsCodeFolder) {
 				this._logService.info(
 					`[AgentDriver] Syncing workspace path: "${workspaceRoot}" → "${vsCodeFolder}"`
 				);

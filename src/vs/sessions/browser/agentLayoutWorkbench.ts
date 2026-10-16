@@ -9,12 +9,14 @@ import { DisposableStore, IDisposable } from '../../base/common/lifecycle.js';
 import { IntervalTimer, RunOnceScheduler } from '../../base/common/async.js';
 import { ISerializableView, ISerializedGrid, Orientation } from '../../base/browser/ui/grid/grid.js';
 import { Workbench } from '../../workbench/browser/workbench.js';
-import { Parts } from '../../workbench/services/layout/browser/layoutService.js';
+import { AgentsEditorColumnSide, Parts } from '../../workbench/services/layout/browser/layoutService.js';
 import { IPaneCompositePart } from '../../workbench/browser/parts/paneCompositePart.js';
 import { IEditorGroup, IEditorGroupsService, EditorGroupLayout } from '../../workbench/services/editor/common/editorGroupsService.js';
 import { GroupModelChangeKind } from '../../workbench/common/editor.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../platform/storage/common/storage.js';
 import { ILogService } from '../../platform/log/common/log.js';
+import { IContextKey, IContextKeyService } from '../../platform/contextkey/common/contextkey.js';
+import { AgentsEditorColumnAvailableContext, AgentsEditorColumnLeftContext } from '../common/contextkeys.js';
 import { AgentStudioEditorInput } from '../contrib/agentStudio/browser/agentStudioEditorInput.js';
 import { NativeChatEditorInput } from '../contrib/agentStudio/browser/nativeChatEditorInput.js';
 import { createAgentsLayoutGridDescriptor } from './layoutProfile.js';
@@ -109,10 +111,16 @@ export class AgentLayoutWorkbench extends Workbench {
 			[Parts.AGENT_EDITOR_PART]: new AgentEditorMaxWidthView(
 				agentEditorParts.agentPart,
 				() => {
-					// 至少留 48（侧栏折叠宽）+ 320（编辑器列最小宽）给左侧，
-					// 其余全给右栏 ⇒ 边框左右都能拖 ✓。
-					const reservedForLeft = 48 + 320;
-					return Math.max(320, window.innerWidth - reservedForLeft);
+					// 至少留 48（侧栏折叠宽）+ 320（编辑器列最小宽）给**另一侧的两列**，
+					// 其余全给 Agent 列 ⇒ 边框左右都能拖 ✓。
+					//
+					// ⚠ 与方位无关（2026-10-13 复核）：48 = 侧栏（恒在最左的 48px 图标条），
+					// 320 = 编辑器列最小宽；Agent 列无论换到哪一侧，这两块都必须让出来
+					// ⇒ 数值**不需要**跟着 `agentColumnSide` 改。仅变量名从
+					// `reservedForLeft` 改成 `reservedForOtherColumns`，免得下次读代码误解为
+					// "Agent 列恒在右"。
+					const reservedForOtherColumns = 48 + 320;
+					return Math.max(320, window.innerWidth - reservedForOtherColumns);
 				},
 			),
 		};
@@ -376,15 +384,21 @@ export class AgentLayoutWorkbench extends Workbench {
 	private _lastStoredChatLayout: string | undefined;
 	private readonly _chatLayoutDiagLogged = new Set<string>();
 	private readonly _chatLayoutDisposables = this._register(new DisposableStore());
-	private _chatLayoutServicesCache: { storage: IStorageService; log: ILogService } | undefined;
+	/**
+	 * ⚠ 命名保留了 `chatLayout`，但它现在是**布局相关共用**的服务缓存：
+	 * 聊天框布局（`_storeAgentsChatLayout`）与「编辑器列 ⇄ Agent 列」方位
+	 * （`readAgentsEditorColumnSide` / `onDidChangeAgentsEditorColumnSide`）都用它。
+	 */
+	private _chatLayoutServicesCache: { storage: IStorageService; log: ILogService; contextKey: IContextKeyService } | undefined;
 
 	/** 取持久化所需服务（借 `AgentEditorParts` 的 DI，见其 `instantiation` getter）。 */
-	private _chatLayoutServices(): { storage: IStorageService; log: ILogService } | undefined {
+	private _chatLayoutServices(): { storage: IStorageService; log: ILogService; contextKey: IContextKeyService } | undefined {
 		if (!this._chatLayoutServicesCache) {
 			const parts = getAgentEditorParts();
 			this._chatLayoutServicesCache = parts?.instantiation.invokeFunction(accessor => ({
 				storage: accessor.get(IStorageService),
 				log: accessor.get(ILogService),
+				contextKey: accessor.get(IContextKeyService),
 			}));
 		}
 		return this._chatLayoutServicesCache;
@@ -596,6 +610,110 @@ export class AgentLayoutWorkbench extends Workbench {
 	}
 	//#endregion
 
+	//#region ★★ 「编辑器列 ⇄ Agent 列」方位（2026-10-13 新增）
+	//
+	// 分工：
+	// - **机制**在 `Layout`（上游层）：`workbenchGrid` 是 private，只有它能把
+	//   `AGENT_EDITOR_PART` 在 contentRow 里换位；状态字段也在那里
+	//   （`agentsEditorColumnSide` / `moveAgentsEditorColumn()`）。
+	// - **策略**在本类：持久化 key/作用域 + context key 门禁。
+	//   为此 `Layout` 暴露两个钩子（`readAgentsEditorColumnSide` /
+	//   `onDidChangeAgentsEditorColumnSide`），默认实现是「无持久化」
+	//   ⇒ **标准 IDE 窗口零影响**。
+	//
+	// 与聊天框布局同一套写法（key 形态 / `StorageScope.WORKSPACE` /
+	// `StorageTarget.MACHINE` / 诊断日志前缀 `[Sarosis][AgentChatLayout]`）。
+
+	private static readonly AGENT_COLUMN_SIDE_KEY = 'vssaros.layout.agentColumnSide.v1';
+
+	/** context key 句柄（`_wireAgentsEditorColumnSideContextKeys()` 里创建）。 */
+	private _agentsEditorColumnCtx: { available: IContextKey<boolean>; left: IContextKey<boolean> } | undefined;
+
+	/**
+	 * ★ 启动时恢复方位 —— 由 `Layout.getAgentsEditorColumnSide()` **首次求值时**调用，
+	 * 也就是 `createGridDescriptor()` 里的 `getAgentsLayoutState()`
+	 * ⇒ **网格第一帧就是正确顺序**，不需要任何运行时重排。
+	 *
+	 * ⚠ 返回 `undefined` = "没有用户选择" ⇒ `Layout` 用默认 `'right'`（= 历史外观）。
+	 *   非法值（被改坏 / 老版本写入）同样当作没有 ⇒ 不让脏数据把窗口开成意外布局。
+	 */
+	protected override readAgentsEditorColumnSide(): AgentsEditorColumnSide | undefined {
+		const services = this._chatLayoutServices();
+		if (!services) {
+			this._chatLayoutLogOnce('colside-read-no-storage', 'columnSide restore: ABORT — 拿不到 IStorageService（AgentEditorParts 未实例化）');
+			return undefined;
+		}
+		const raw = services.storage.get(AgentLayoutWorkbench.AGENT_COLUMN_SIDE_KEY, StorageScope.WORKSPACE);
+		if (raw === 'left' || raw === 'right') {
+			this._chatLayoutLog(`columnSide restore: ${raw}`);
+			return raw;
+		}
+		if (raw !== undefined) {
+			this._chatLayoutLog(`columnSide restore: 非法值 ${JSON.stringify(raw)} ⇒ 忽略，用默认 right`);
+		}
+		return undefined;
+	}
+
+	/**
+	 * ★ 方位变化后落盘 + 同步 context key（由 `Layout.moveAgentsEditorColumn()` 调用，
+	 * **只在真正变化时** —— 重复设同值不会走到这里）。
+	 *
+	 * ⚠ 这里**只写不读**，所以不需要聊天框布局那套 `_chatLayoutReady` 守卫
+	 * （那守卫防的是「启动早期的 flush 用空布局覆盖待恢复状态」）。
+	 */
+	protected override onDidChangeAgentsEditorColumnSide(side: AgentsEditorColumnSide): void {
+		this._syncAgentsEditorColumnLeftContextKey();
+
+		const services = this._chatLayoutServices();
+		if (!services) {
+			this._chatLayoutLogOnce('colside-store-no-storage', 'columnSide store SKIPPED: 拿不到 IStorageService');
+			return;
+		}
+		services.storage.store(AgentLayoutWorkbench.AGENT_COLUMN_SIDE_KEY, side, StorageScope.WORKSPACE, StorageTarget.MACHINE);
+		this._chatLayoutLog(`columnSide store: ${side}`);
+	}
+
+	/**
+	 * ★ 绑定「换位相关」的 context key。
+	 *
+	 * ── 为什么必须有 context key ────────────────────────────────────────
+	 * 本窗口的标题栏是**上游 `MainNativeTitlebarPart`**（`agentLayout.desktop.main.ts`
+	 * 只引 `workbench.desktop.main.js` 与三处有意例外，**不引** sessions title service）
+	 * ⇒ 我们追加到 `MenuId.TitleBar` 的条目在**标准 IDE 窗口也会渲染**。
+	 * 所以入口一律加 `when: AgentsEditorColumnAvailableContext` 门禁 —— 只有本窗口为 true。
+	 *
+	 * ⚠ 时机：必须在 `createWorkbenchLayout()` 里调用（那时 `getAgentEditorParts()`
+	 * 已实例化 ⇒ 借得到 DI）；过早取不到 `IContextKeyService`。
+	 */
+	protected wireAgentsEditorColumnSideContextKeys(): void {
+		const services = this._chatLayoutServices();
+		if (!services) {
+			this._chatLayoutLogOnce('colside-ctx-no-services', 'columnSide context keys SKIPPED: 拿不到服务');
+			return;
+		}
+		if (!this._agentsEditorColumnCtx) {
+			this._agentsEditorColumnCtx = {
+				available: AgentsEditorColumnAvailableContext.bindTo(services.contextKey),
+				left: AgentsEditorColumnLeftContext.bindTo(services.contextKey),
+			};
+		}
+		this._agentsEditorColumnCtx.available.set(true);
+		this._syncAgentsEditorColumnLeftContextKey();
+		// 诊断：门禁就位（`available=true`）+ 当前方位。与 `agentColumnLayoutActions.ts` 的
+		// "actions registered" 一起看：两条都在 = 入口应当可见；只有这条 = 命令没注册。
+		this._chatLayoutLog(`columnSide ctx: available=true side=${this.getAgentsEditorColumnSide()}`);
+	}
+
+	private _syncAgentsEditorColumnLeftContextKey(): void {
+		try {
+			this._agentsEditorColumnCtx?.left.set(this.getAgentsEditorColumnSide() === 'left');
+		} catch (err) {
+			this._chatLayoutLog(`columnSide context key 同步失败: ${err}`);
+		}
+	}
+
+	//#endregion
+
 	/**
 	 * ★★ agents 布局：给根容器补上 **`agent-sessions-workbench`** 类。
 	 *
@@ -794,15 +912,24 @@ export class AgentLayoutWorkbench extends Workbench {
 			document.removeEventListener('agent-studio:toggle-panel', togglePanelHandler);
 			document.removeEventListener('agent-studio:toggle-output', togglePanelHandler);
 		} });
-		// ★★ 标题栏「Toggle Sidebar Content」按钮（`codicon-layout-sidebar-left`）
-		// → 折叠/展开**右侧 `AGENT_EDITOR_PART`（Agent Studio 栏）**。
+		// ★★ 折叠/展开**右侧 `AGENT_EDITOR_PART`（Agent Studio 栏）**。
 		//
 		// ── 为什么必须在这里注册（真机症状：点了按钮毫无反应、控制台无报错）───────
-		// 该按钮只做一件事：`document.dispatchEvent(new CustomEvent('agent-studio:toggle-right-column'))`
-		// （`sessions/browser/parts/titlebarPart.ts:258`，另见 `nativeChatEditorPane.ts:1063` 的
-		// `onToggleCollapse`）。但监听器**只**注册在 sessions 版 `Workbench`
-		// （`sessions/browser/workbench.ts:1303`），而 agents 窗口跑的是**本类**
-		// ⇒ 事件没人接 ⇒ 什么也不发生 ✓（与 panel 按钮同一根因）。
+		// 事件名是 `agent-studio:toggle-right-column`。派发方**只有**一处会在本窗口生效：
+		// `nativeChatEditorPane.ts` 的 `onToggleCollapse`（聊天框自己的折叠控件）。
+		// 而监听器**只**注册在 sessions 版 `Workbench`（`sessions/browser/workbench.ts:1303`），
+		// 本窗口跑的是**本类** ⇒ 事件没人接 ⇒ 什么也不发生 ✓（与 panel 按钮同一根因）。
+		//
+		// ⚠⚠ **勘误（2026-10-13，本次复核确认）**：上面这段注释原先还写着"标题栏
+		// `Toggle Sidebar Content` 按钮也派发该事件（`sessions/browser/parts/titlebarPart.ts:258`）"
+		// —— 那个按钮**不在本窗口**。本窗口的标题栏是**上游**的
+		// （`workbench.desktop.main.ts` → `workbench/services/title/electron-browser/titleService.js`
+		// → `MainNativeTitlebarPart`）：sessions 那套 `TitleService` 只被
+		// `sessions.desktop.main.ts` / `sessions.web.main.ts` / sessions 版 `Workbench` 引入
+		// （`agentLayout.desktop.main.ts` 刻意不引，见那里的 ⚠⚠ 注释）。
+		// ⇒ 想在本窗口的标题栏加入口，只能往**上游菜单** `MenuId.TitleBar` 追加
+		//   （上游 `BrowserTitlebarPart` 的 global toolbar 就是渲染它），
+		//   这正是 `agentColumnLayoutActions.ts` 的做法。
 		//
 		// ⚠ 标准 `Layout.setPartHidden()` **没有** `AGENT_EDITOR_PART` 分支，且 `workbenchGrid`
 		// 是 private ⇒ 真正的网格操作封装在 `Layout.toggleAgentsRightColumn()`（受保护接缝）。
@@ -811,6 +938,16 @@ export class AgentLayoutWorkbench extends Workbench {
 		};
 		document.addEventListener('agent-studio:toggle-right-column', toggleRightColumnHandler);
 		this._register({ dispose: () => document.removeEventListener('agent-studio:toggle-right-column', toggleRightColumnHandler) });
+
+		// ★★ [Saros] 「编辑器列 ⇄ Agent 列」换位：置位 context key。
+		// 网格此刻已建好（本方法末尾），且 `getAgentEditorParts()` 已实例化 ⇒ 借得到 DI。
+		//
+		// ⚠ 门禁的**真实作用范围**（2026-10-13 复核）：换位那 3 个 action 只由
+		// `agentLayout.desktop.main.ts` 引入 ⇒ 标准 IDE 窗口 / sessions 窗口**根本没注册这些命令**
+		// ⇒ 那两个窗口本就不会多出入口。所以本 key 不是为了"隐藏入口"，而是：
+		// ① 给 `moveAgentColumnLeft/Right` 提供**启用态**（当前方位那一侧不显示）；
+		// ② 一旦以后有人把该 action 模块引入到别的入口（web / sessions），门禁立刻兜住。
+		this.wireAgentsEditorColumnSideContextKeys();
 	}
 
 	/**
@@ -828,7 +965,34 @@ export class AgentLayoutWorkbench extends Workbench {
 		// 会得到"网格可见但高度 0" ⇒ 真机症状：点按钮下方什么都不出现。
 		// 因此转发到标准 `Layout` 的受保护接缝 `toggleAgentsPanelVisibility()`（`workbench/browser/layout.ts`），
 		// 它完整实现了「可见性 + 高度恢复 + 打开默认容器 + 清理 inline display」。
+		//
+		// ★★ 2026-10-14 修：**先把运行时状态与 DOM 对齐** —— 否则第一次点击会走错分支、看起来毫无反应 ✗。
+		//   本布局隐藏 panel 只用 inline `display: none`（下方 `partsToHide` 那段，L859-860）⇒
+		//   `LayoutStateKeys.PANEL_HIDDEN` **从未被置位** ⇒ `isVisible(Parts.PANEL_PART)`（判据 =
+		//   `!PANEL_HIDDEN`，`layout.ts:1359-1360`）**恒为 true**。而上面那个接缝的
+		//   `willBeVisible = !this.isVisible(Parts.PANEL_PART)` 于是算出 `false` ⇒ 走**隐藏**分支
+		//   （只是再设一遍 `display: none`）⇒ **第一次点击什么都没发生**，第二次才显示 ✗✗
+		//   （真机日志实证：用户点两次才出来，中途还多建了一个看不见的终端）。
+		//   对齐之后必然走**显示**分支：清 inline display + 恢复 35% 高度 + 打开容器 ✓。
+		if (this.isVisible(Parts.PANEL_PART) && this.isPanelDomHidden()) {
+			this.setPartHidden(true, Parts.PANEL_PART);
+		}
 		void super.toggleAgentsPanelVisibility();
+	}
+
+	/**
+	 * panel 是否被 **DOM** 挡着（`display: none` 或零高度）。
+	 *
+	 * 为什么需要它：本布局的"隐藏"是纯 DOM 的（inline `display: none`），`isVisible(Parts.PANEL_PART)`
+	 * 读的是 `PANEL_HIDDEN` **运行时状态** ⇒ 本布局下**两者会长期不一致**（见 `toggleAgentsPanel` 的注释 ✓）。
+	 * 判断"用户到底看不看得见"只能看 DOM ✓（`display` + `offsetHeight`）。
+	 */
+	private isPanelDomHidden(): boolean {
+		const element = this.getPart(Parts.PANEL_PART)?.element;
+		if (!element) {
+			return false; // 拿不到元素 ⇒ 不擅自假定隐藏（避免把用户正看着的面板关掉 ✗）
+		}
+		return element.style.display === 'none' || element.offsetHeight === 0;
 	}
 
 	protected override createGridDescriptor(): ISerializedGrid {

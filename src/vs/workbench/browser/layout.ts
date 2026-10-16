@@ -11,7 +11,7 @@ import { isWindows, isLinux, isMacintosh, isWeb, isIOS } from '../../base/common
 import { EditorInputCapabilities, GroupIdentifier, isResourceEditorInput, IUntypedEditorInput, pathsToEditors } from '../common/editor.js';
 import { SidebarPart } from './parts/sidebar/sidebarPart.js';
 import { PanelPart } from './parts/panel/panelPart.js';
-import { Position, Parts, PartOpensMaximizedOptions, IWorkbenchLayoutService, positionFromString, positionToString, partOpensMaximizedFromString, PanelAlignment, ActivityBarPosition, LayoutSettings, MULTI_WINDOW_PARTS, SINGLE_WINDOW_PARTS, ZenModeSettings, EditorTabsMode, EditorActionsLocation, shouldShowCustomTitleBar, isHorizontal, isMultiWindowPart, IPartVisibilityChangeEvent } from '../services/layout/browser/layoutService.js';
+import { Position, Parts, PartOpensMaximizedOptions, IWorkbenchLayoutService, positionFromString, positionToString, partOpensMaximizedFromString, PanelAlignment, ActivityBarPosition, LayoutSettings, MULTI_WINDOW_PARTS, SINGLE_WINDOW_PARTS, ZenModeSettings, EditorTabsMode, EditorActionsLocation, shouldShowCustomTitleBar, isHorizontal, isMultiWindowPart, IPartVisibilityChangeEvent, AgentsEditorColumnSide, getAgentsEditorColumnTargetLocation } from '../services/layout/browser/layoutService.js';
 import { isTemporaryWorkspace, IWorkspaceContextService, WorkbenchState } from '../../platform/workspace/common/workspace.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../platform/storage/common/storage.js';
 import { IConfigurationChangeEvent, IConfigurationService, isConfigured } from '../../platform/configuration/common/configuration.js';
@@ -1692,6 +1692,8 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 		sidebarExpandedWidth: number;
 		panelVisible: boolean;
 		titleBarHeight: number;
+		/** ★ [Saros] Agent 列方位（见 `getAgentsEditorColumnSide()`）。 */
+		agentColumnSide: AgentsEditorColumnSide;
 	} {
 		return {
 			width: this._mainContainerDimension.width,
@@ -1732,6 +1734,12 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 				return Math.max(280, this.stateModel.getInitializationValue(LayoutStateKeys.SIDEBAR_SIZE));
 			})(),
 			panelVisible: false,
+			// ★★ [Saros] agents 布局：Agent 列当前方位（`'left' | 'right'`）。
+			//
+			// 首次调用会从持久化里读一次（`readAgentsEditorColumnSide()`，子类实现）
+			// ⇒ 启动时 `createGridDescriptor()` 直接按它生成正确顺序，**无需任何运行时重排**
+			// （`createGridDescriptor()` 只在 `createWorkbenchLayout()` 里被调用一次）。
+			agentColumnSide: this.getAgentsEditorColumnSide(),
 			// ⚠ 必须安全读取：本方法是 `expandAgentsSidebarContent()` /
 			// `onDidChangeContentCollapsed` 监听器**算宽度前的必经之路**，
 			// 一旦 `titleBarPartView` 不可用就抛异常 ⇒ 两个调用点的 resize 全被跳过
@@ -2021,6 +2029,154 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 			}
 		} catch { /* grid 未就绪 */ }
 	}
+
+	//#region ★★ [Saros] agents 布局：编辑器列 ⇄ Agent 列的方位（2026-10-13 新增）
+	//
+	// ── 为什么状态放在 `Layout`（上游层）而不是 `AgentLayoutWorkbench` ────────────
+	//
+	// 两件事都只有 `Layout` 能做：
+	// ① `workbenchGrid` 是 `private` ⇒ 只有本类能操作网格（同 `toggleAgentsRightColumn()`）；
+	// ② `getAgentsLayoutState()`（供 descriptor 读方位）也定义在本类。
+	//
+	// 而**策略**（持久化 key / 默认值来源）留在子类：本类只暴露两个钩子
+	// （`readAgentsEditorColumnSide` / `onDidChangeAgentsEditorColumnSide`），
+	// 默认实现是「无持久化」⇒ **标准 IDE 窗口行为零影响**。
+
+	/**
+	 * ★ [Saros] Agent 列方位。缺省 `'right'`（= 改动前的外观）。
+	 *
+	 * ⚠ 不要在别处直接读这个字段 —— 用 `getAgentsEditorColumnSide()`，
+	 * 它会**首次读取时**从持久化恢复（见 `_agentsEditorColumnSideLoaded`）。
+	 */
+	protected agentsEditorColumnSide: AgentsEditorColumnSide = 'right';
+
+	/** ★ 是否已尝试从持久化恢复（只尝试一次，避免每次 `getAgentsLayoutState()` 都读盘）。 */
+	private _agentsEditorColumnSideLoaded = false;
+
+	/**
+	 * ★ [Saros] 子类钩子：从持久化读取上次的方位。默认 `undefined` ⇒ 沿用字段初值 `'right'`。
+	 *
+	 * ⚠ 调用时机：`getAgentsEditorColumnSide()` 首次被调用时 —— 也就是
+	 * `createGridDescriptor()` 里的 `getAgentsLayoutState()`，**早于网格创建**。
+	 * 子类的实现必须保证此时能拿到 storage（`AgentLayoutWorkbench` 借
+	 * `AgentEditorParts.instantiation` 取服务：Eager 单例，早于 `startup()` 的布局阶段 ✓）。
+	 */
+	protected readAgentsEditorColumnSide(): AgentsEditorColumnSide | undefined {
+		return undefined;
+	}
+
+	/**
+	 * ★ [Saros] 子类钩子：方位**变化后**落盘。默认 no-op（标准窗口不落盘）。
+	 *
+	 * 只在 `moveAgentsEditorColumn()` 真正改变了方位之后调用（重复设同值不触发）。
+	 */
+	protected onDidChangeAgentsEditorColumnSide(_side: AgentsEditorColumnSide): void {
+		// 默认无持久化 —— 标准 IDE 窗口零影响
+	}
+
+	/** ★ [Saros] 当前方位（含首次的持久化恢复）。 */
+	protected getAgentsEditorColumnSide(): AgentsEditorColumnSide {
+		if (!this._agentsEditorColumnSideLoaded) {
+			this._agentsEditorColumnSideLoaded = true;
+			try {
+				const persisted = this.readAgentsEditorColumnSide();
+				if (persisted === 'left' || persisted === 'right') {
+					this.agentsEditorColumnSide = persisted;
+				}
+			} catch (err) {
+				this.logService.error(`[Layout] readAgentsEditorColumnSide 抛异常: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
+			}
+		}
+		return this.agentsEditorColumnSide;
+	}
+
+	/**
+	 * ★★ [Saros] agents 布局：把 Agent 列移到 `side` 指定的方位 ——
+	 * **编辑器列整体让位**（Q1：侧栏恒在最左；Q2：Panel 恒随编辑器列）。
+	 *
+	 * ── 实现：一次**同父级重排**就够，不需要 `swapViews` ────────────────────
+	 *
+	 * 目标是 `Sidebar | (EditorColumn ⇄ AgentEditor)`，而 `Panel` 在 `EditorColumn`
+	 * 这个 **branch 内部** ⇒ 只要把 `AGENT_EDITOR_PART` 这个**叶子**在 contentRow 里
+	 * 换个位置，编辑器列（含 Panel）就整体让位了。
+	 *
+	 * 用 `moveViewTo(agentView, getAgentsEditorColumnTargetLocation(side))`：
+	 * 目标与 Agent 列**同父级**（都是 contentRow 的直接子节点）⇒ 走 `Grid.moveViewTo` 的
+	 * `equals(sourceParentLocation, targetParentLocation)` 分支 = 纯 `gridview.moveView`
+	 * 重排（`grid.ts:629-630`），**不 remove/add、不动实例、不碰 DOM 归属**
+	 * —— 与标准 `Layout.adjustPartPositions()` 搬侧栏用的是同一条路径。
+	 *
+	 * ⚠ 落点下标由 `getAgentsEditorColumnTargetLocation()` 统一给出（**sessions 窗口那份
+	 * 实现也用同一个函数**）⇒ 不会两边漂移。为什么不能用 `moveView(..., 锚点叶子, 方向)`：
+	 * 锚点只能取**叶子**，而「编辑器列」是 branch；`'left'` 还能拿侧栏当锚，
+	 * `'right'` 就只剩记账叶子 auxBar——但**sessions 窗口的 grid 里根本没有 auxBar**
+	 * ⇒ 那种写法在两个窗口行为不一致。显式下标 + 共享函数才是唯一对称解。
+	 *
+	 * ⚠ 标准 IDE 窗口下 `agentsEditorPartView` 为 `undefined` ⇒ 直接返回，
+	 * **行为零影响**（与 `toggleAgentsRightColumn()` 同一判据）。
+	 */
+	moveAgentsEditorColumn(side: AgentsEditorColumnSide): void {
+		const agentView = this.agentsEditorPartView;
+		if (!agentView || !this.workbenchGrid) {
+			return; // 非 agents 布局，或网格尚未就绪
+		}
+		if (this.getAgentsEditorColumnSide() === side) {
+			return; // 已是目标方位：不重复重排、不写盘
+		}
+
+		const grid = this.workbenchGrid;
+		try {
+			grid.moveViewTo(agentView, getAgentsEditorColumnTargetLocation(side));
+
+			this.agentsEditorColumnSide = side;
+
+			// 重排后两列宽度会重新分配 ⇒ 让网格按新几何量再排一帧，
+			// 否则 EditorPart / AgentEditorPart 内部可能停在旧宽度
+			// （同 `relayoutAgentsSidebarPart()` 的成因：SplitView 重排后部件的 `layout()`
+			//   入参来自网格，而部件内部容器不会自己重算）。
+			requestAnimationFrame(() => this.relayoutAgentsEditorColumns());
+		} catch (err) {
+			this.logService.error(`[Layout] moveAgentsEditorColumn(${side}) 失败: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
+			return;
+		}
+
+		// ⚠ 落盘放在**网格成功之后**、`try` 之外：钩子是子类的（可能读写 storage / 设 context key），
+		// 它抛异常不该让已经成功的网格重排被当成失败。
+		try {
+			this.onDidChangeAgentsEditorColumnSide(side);
+		} catch (err) {
+			this.logService.error(`[Layout] onDidChangeAgentsEditorColumnSide(${side}) 抛异常: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
+		}
+	}
+
+	/**
+	 * ★ [Saros] 用**新几何量**重排两个编辑器列。
+	 *
+	 * 为什么需要：`gridview.moveView` 只改 SplitView 的子节点顺序与 inline 位置，而
+	 * `EditorPart` 内部（编辑器组网格、标签栏）的高度/宽度由**它的 `layout()` 入参**决定；
+	 * 那一次调用由网格发起，可能与最终尺寸差一帧（与 `expandAgentsSidebarContent()`
+	 * 末尾「补一帧」的成因同类，见该方法的注释）。这里显式按 `getViewSize()`（**重排之后**
+	 * 的真实值）各排一次，保证两列内部内容不残留旧尺寸。
+	 */
+	protected relayoutAgentsEditorColumns(): void {
+		if (!this.workbenchGrid) {
+			return;
+		}
+		for (const part of [Parts.EDITOR_PART, Parts.AGENT_EDITOR_PART]) {
+			try {
+				const view = part === Parts.EDITOR_PART ? this.editorPartView : this.agentsEditorPartView;
+				if (!view) {
+					continue;
+				}
+				const size = this.workbenchGrid.getViewSize(view);
+				if (size.width > 0 && size.height > 0) {
+					view.layout(size.width, size.height, 0, 0);
+				}
+			} catch { /* 部件未创建 / 网格未就绪 */ }
+		}
+	}
+
+	//#endregion
 
 	/**
 	 * ★★ [Saros] agents 布局：切换**底部 `PANEL_PART`（Output / Debug Console /

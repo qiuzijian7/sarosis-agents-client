@@ -362,9 +362,23 @@ export async function executeWithRetryAndTimeout(
 }
 
 /**
- * 根据工具类型确定超时时间
+ * 根据工具类型确定超时时间。
+ *
+ * 优先级：**工具自己的声明**（`IToolDefinition.timeoutMs`，对齐 dsh 官方同名字段）
+ * → 下面那张按名字/类别的分级表（兜底）。详由见 `IToolDefinition.timeoutMs` 注释。
  */
 export function getTimeoutForTool(toolName: string, toolDef?: IToolDefinition, source?: string): number {
+	// ★ 声明优先（2026-10-12。此前只认 `toolDef.securityLevel` —— 名字/类别表是唯一
+	//   真源，于是"新工具忘了登记"没有任何提示，只有静默 60s）。
+	//
+	//   必须先于 ORCHESTRATION_TOOLS 判定：显式声明要能覆盖类别推断；反之就是
+	//   "声明了却不生效"这种最难查的静默失效 ✗。
+	//   非法值（负数 / NaN / Infinity）**不生效**，静默落到分级表 —— 一个写错的
+	//   超时不该把工具变成"永不超时"（fail-safe 方向与"未知工具 ⇒ 串行"一致）。
+	if (typeof toolDef?.timeoutMs === 'number' && Number.isFinite(toolDef.timeoutMs) && toolDef.timeoutMs >= 0) {
+		return toolDef.timeoutMs;
+	}
+
 	// 编排类工具：禁用守卫 wall-clock 超时（0；活性由子代理自身看门狗判定，
 	// 见 DELEGATION_TOOL_TIMEOUT_MS 注释与 2026-07-26 事故 1785053998262）
 	if (ORCHESTRATION_TOOLS.has(toolName)) {

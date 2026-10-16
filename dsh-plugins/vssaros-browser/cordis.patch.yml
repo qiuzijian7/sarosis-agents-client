@@ -1,0 +1,13 @@
+# @vssaros/dsh-browser bundle patch: insert the host-side browser (CDP) row.
+#
+# 为什么与 `vssaros-ide` 分开：那一族的 `browser` 工具把请求经反向通道（`ide.request`）交给
+# **IDE 进程**执行（CDP 客户端在 VsSaros 主进程里，见 `agentStudio/electron-main/browserCdpChannel.ts`）
+# ⇒ 没有 VsSaros 时整族不可用。这里把 CDP 编排搬到 **Host 自己**（README 4.66）。
+#
+# ⚠ 本包**故意不声明** `vssaros.module`：于是 VsSaros 的自发现不会把它列进"可安装模块"
+# （`dshBundledPlugins.listBundledPlugins` 只收有 module 的包）—— 否则同一份组合里会出现**两个**
+# 叫 `browser` 的工具。等 IDE 那条路退役后再决定是否收编。
+- insert:
+    - id: vssaros-browser
+      name: '@vssaros/dsh-browser'
+      config: {}

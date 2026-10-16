@@ -3,7 +3,6 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { Emitter, Event } from '../../../../../../base/common/event.js';
 import { IDisposable, toDisposable } from '../../../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../../../platform/log/common/log.js';
 import { IToolDefinition, IToolResultContent } from '../../../common/providers.js';
@@ -42,8 +41,6 @@ export interface IBuiltinToolRegistration extends IToolDescriptor { }
 export class ToolRegistry {
 	private readonly _tools = new Map<string, IToolDescriptor>();
 	private readonly _disabledTools = new Set<string>();
-	private readonly _onDidChangeTools = new Emitter<void>();
-	readonly onDidChangeTools: Event<void> = this._onDidChangeTools.event;
 
 	// ★ 性能（2026-09-15）：`getAllToolDefinitions()` 位于 **agent loop 每轮**的热路径上
 	// （经 `listAllToolsWithState` ⇒ 97 个工具），原实现**每次都以 info 级**打一行
@@ -62,11 +59,9 @@ export class ToolRegistry {
 			this.logService.debug(`[BuiltinTools] overwriting existing tool: ${name}`);
 		}
 		this._tools.set(name, descriptor);
-		this._onDidChangeTools.fire();
 		return toDisposable(() => {
 			if (this._tools.get(name) === descriptor) {
 				this._tools.delete(name);
-				this._onDidChangeTools.fire();
 			}
 		});
 	}
@@ -147,7 +142,6 @@ export class ToolRegistry {
 	async enableTool(_agentId: string, toolName: string): Promise<void> {
 		if (this._disabledTools.has(toolName)) {
 			this._disabledTools.delete(toolName);
-			this._onDidChangeTools.fire();
 			this.logService.info(`[BuiltinTools] Enabled tool: ${toolName}`);
 		}
 	}
@@ -158,7 +152,6 @@ export class ToolRegistry {
 	async disableTool(_agentId: string, toolName: string): Promise<void> {
 		if (this._tools.has(toolName) && !this._disabledTools.has(toolName)) {
 			this._disabledTools.add(toolName);
-			this._onDidChangeTools.fire();
 			this.logService.info(`[BuiltinTools] Disabled tool: ${toolName}`);
 		}
 	}
@@ -191,7 +184,6 @@ export class ToolRegistry {
 			}
 		}
 		if (changed) {
-			this._onDidChangeTools.fire();
 			this.logService.info(`[BuiltinTools] Batch updated tool enabled state`);
 		}
 	}

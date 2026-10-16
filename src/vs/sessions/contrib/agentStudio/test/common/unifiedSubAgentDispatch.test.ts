@@ -122,9 +122,12 @@ suite('UnifiedSubAgentDispatch — delegate_task propagation', () => {
 			yield { type: 'text', content: '先做了一次搜索。 ' } as any;
 			yield { type: 'tool_start', toolCallId: 'tc-1', toolName: 'search_files' } as any;
 			yield { type: 'tool_end', toolCallId: 'tc-1', toolName: 'search_files', success: true } as any;
-			// 工具活动结束后静默 120ms（> 60ms 阈值）→ 看门狗触发；
+			// 工具活动结束后静默 300ms（> 60ms 阈值）→ 看门狗触发；
 			// 随后的文本 delta 让循环评估 isStalled → 判 timeout。
-			await new Promise(r => setTimeout(r, 120));
+			// ⚠ 2026-10-14：原值 120ms（阈值的 2 倍）在机器繁忙时**偶发翻车**（实测一次
+			//   `应为 timeout，实际: completed`：看门狗那 60ms 定时器与"睡满 120ms 后的文本 delta"
+			//   同时排在事件循环上，谁先被处理取决于负载 ⇒ 边距要留够，别用 2 倍这种临界值 ✗）。
+			await new Promise(r => setTimeout(r, 300));
 			yield { type: 'text', content: '迟到的后续文本。' } as any;
 		};
 

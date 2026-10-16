@@ -2,6 +2,14 @@
 
 > 生成日期：2026-05-27
 > 分析范围：工具卡片渲染架构、状态可视化、布局策略、样式体系、交互设计
+>
+> **⚠ 订正（2026-10-12）**：文中作为"我们的机制"参与对比的 **`ToolDisplayRegistry` /
+> `webview/src/utils/toolDisplayRegistry.ts`**（配置驱动的 emoji / label / renderType 推断）
+> **从未接线** —— 它零消费点（ripgrep + `git grep` 两条判据一致），其配套组件
+> `WorkflowRunCard.tsx` 也从未创建；该模块已于 2026-10-12 删除。
+> 现在的真相：工作流卡片由 `browser/nativeChatEditorPane.ts` 直注入 `renderType:'WorkflowRun'`，
+> dsh 侧另有 `dsh-plugins/vssaros-workflow/lib/client.js` 走 `tool.call.toolview` 槽。
+> **下文凡提及 `ToolDisplayRegistry` 之处，请按"当时的设计意图"阅读，不要当成现存实现。**
 
 ---
 

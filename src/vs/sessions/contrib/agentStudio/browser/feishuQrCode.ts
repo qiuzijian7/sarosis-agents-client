@@ -249,11 +249,12 @@ export function qrMatrix(text: string): boolean[][] {
 	placeFinder(0, size - 7);
 	placeFinder(size - 7, 0);
 
-	// 分隔符（finder 与 timing 之间）
-	for (let i = 0; i < size; i++) {
-		if (!func[7][i]) { func[7][i] = true; mod[7][i] = 0; }
-		if (!func[i][7]) { func[i][7] = true; mod[i][7] = 0; }
-	}
+	// ★ 2026-09-25：**删除**原先这里「把整行 row7 / 整列 col7 全标为分隔符」的循环 ——
+	//   分隔符只是紧贴三个定位图案的**短条**（行 7 的两段 8 格 + 列 7 的两段 8 格），
+	//   而 `placeFinder` 的 `dr/dc ∈ [-1,7]` 已经把每段分隔符一起标进 `func` 了 ⇒ 此循环纯属冗余。
+	//   它的实际后果是**把 row7/col7 中段那些真正的数据模块也标成功能模块**：
+	//   V1 的可写数据模块因此从规范的 208 掉到 200 ⇒ 末尾 8 位无处安放、其后整条码字流错位
+	//   ⇒ 任何标准掩码都对不上、扫不出（与「格式信息错位」是当时并存的两个独立缺陷）。
 
 	// 定时图案
 	for (let i = 8; i < size - 8; i++) {
@@ -336,22 +337,28 @@ export function qrMatrix(text: string): boolean[][] {
 				}
 			}
 		}
-		// 格式信息
+		// 格式信息（★ 2026-09-25 按 QR 规范位置重写：此前两份副本都是「转置/镜像」错位，
+		//   导致扫出的格式串与真实掩码不符、BCH 校验失败 ⇒ 飞书 App 直接判为无效二维码，
+		//   表现为「二维码扫不出来 / 不识别」。规范位置由成熟库 qrcode 逐位反推确认。）
 		const fmt = formatBits(mask, 1 /* EC-L */);
 		for (let i = 0; i < 15; i++) {
 			const bit = (fmt >> i) & 1;
-			if (i <= 5) { m[8][i] = bit; }
-			else if (i === 6) { m[8][7] = bit; }
+			// 副本 1（左上）：bit0-5 → col8 自 (0,8) 下行；6 → (7,8)；7 → (8,8)；
+			//                        8 → (8,7)；9-14 → row8 自 (8,5) 左行至 (8,0)
+			if (i <= 5) { m[i][8] = bit; }
+			else if (i === 6) { m[7][8] = bit; }
 			else if (i === 7) { m[8][8] = bit; }
-			else { m[8][size - 15 + i] = bit; }
-			// ★ 2026-09-22 修复（D-10）：i=8 原先落到 m[14-8][8]=m[6][8] —— 那是横向定时图案
-			//   模块（i=8 为偶 ⇒ 必须为暗），被格式位覆写；而格式位 8 的正确位置 (7,8)
-			//   （QR 规范：左上副本的第 8 位写在 row 7 / col 8）从未被写入。
-			if (i < 8) { m[size - 1 - i][8] = bit; }
-			else if (i === 8) { m[7][8] = bit; }
-			else { m[14 - i][8] = bit; }
+			else if (i === 8) { m[8][7] = bit; }
+			else { m[8][14 - i] = bit; }
+			// 副本 2（右上 row8 自右向左 + 左下 col8 自下向上）：
+			//    bit0-7 → (8, size-1) … (8, size-8)；bit8-14 → (size-7,8) … (size-1,8)
+			if (i <= 7) { m[8][size - 1 - i] = bit; }
+			else { m[size - 15 + i][8] = bit; }
 		}
-		m[8][size - 8] = 1;
+		// 规范暗模块（恒暗）：位于左下副本的**末端之外** —— (size-8, 8)。
+		// ⚠ 必须在写完格式位之后再写：此前把它写在 (8, size-8)（那是副本 2 的 bit7 位置），
+		//   而真正的 (size-8,8) 被格式位 7 覆写成可变值 ⇒ 暗模块时有时无。
+		m[size - 8][8] = 1;
 		// 版本信息
 		if (version >= 7) {
 			const vb = bch18(version);

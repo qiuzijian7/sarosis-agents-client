@@ -5,7 +5,7 @@
  *  obsidianNoteFormat.ts — 知识库笔记格式约定的「单一真源」。
  *
  *  背景：笔记格式规则曾同时写在 kbImportController 的 Stage2 提示词与内置技能
- *  obsidian-markdown（resources/.agents/skills/obsidian-skills/obsidian-markdown/SKILL.md）
+ *  obsidian-markdown（resources/.agents/skills/obsidian-markdown/SKILL.md）
  *  两处，容易漂移。约定如下：
  *   - 本文件 = 「本项目 KB 笔记」格式约定的唯一真源（frontmatter 字段、双链口径、callout）；
  *   - obsidian-markdown SKILL.md = 通用 Obsidian 语法参考（聊天场景按需激活），

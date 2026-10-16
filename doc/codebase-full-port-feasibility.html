@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>codebase 全量移植到 dsh：可行性分析与落地方案</title>
+<style>
+	body { max-width: 980px; margin: 24px auto; padding: 0 16px; font: 14px/1.7 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; color: #1f2328; }
+	h1 { font-size: 22px; } h2 { font-size: 17px; margin-top: 28px; border-bottom: 1px solid #e5e7eb; padding-bottom: 4px; }
+	h3 { font-size: 14px; margin-top: 20px; }
+	table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 13px; }
+	th, td { border: 1px solid #e5e7eb; padding: 6px 8px; vertical-align: top; text-align: left; }
+	th { background: #f6f8fa; }
+	code { background: #f3f4f6; padding: 1px 4px; border-radius: 3px; font-size: 12px; }
+	small { color: #6b7280; }
+	.v { color: #0a7f45; font-weight: 600; } .q { color: #b45309; font-weight: 600; } .x { color: #b91c1c; font-weight: 600; }
+	.box { border: 1px solid #d0d7de; border-radius: 6px; padding: 10px 14px; background: #fbfcfd; }
+</style>
+</head>
+<body>
+
+<h1>codebase 全量移植到 dsh：可行性分析与落地方案</h1>
+
+<div class="box">
+	<strong>★ 现状速览（2026-10-14；<span class="v">以本框为准</span> ✓ —— 下面 §0 是 10-13 午间的快照，
+	其中"13 个工具 / 所有权待定"等说法都已被后续切片覆盖 ✓）</strong><br>
+	<strong>① 移植已闭环</strong> ✓：读侧 + 写侧（影子索引 / 真解析 / watcher / 锁与心跳）✓ + <strong>21 个工具</strong> ✓ + 页面（含侧栏摘要版 ✓）；
+	真源 <strong>18 件逐行对账</strong>：<strong>16 个 1:1</strong> ✓ · <strong>1 个换了语言</strong>（<code>query_graph</code> 是 <strong>Cypher</strong> ✗ ⇒ dsh 侧是<strong>形状语法</strong> ✓）·
+	<strong>1 个写成结论</strong>（<code>ingest_traces</code> ✓，理由在同页 ✓）；另有 dsh 侧多出的 <strong>5 个</strong>（<code>overview</code> / <code>deps</code> / <code>hotspots</code> / <code>self_index</code> + 形状查询工具 ✓）。<br>
+	<strong>② 所有权：已定，且已实现</strong> ✓（10-13 用户裁决"<strong>权限全在 dsh、IDE 只读</strong>" ✓）——产物<strong>自称生产方</strong>
+	<code>producer: 'vssaros-dsh'</code> ⇒ IDE 侧<strong>连扫描都不做、且一律拒写</strong> ✓；写落点由 <code>shadow.js::writeDirOf</code> <strong>一处决定</strong>
+	（<code>indexTarget: 'shadow'</code> 缺省 / <code>'workspace'</code> 交接档 ✓）⇒ "写一处、读一处"结构上不可能 ✗✗。<br>
+	<strong>③ 档位与代价都可见</strong> ✓：解析档缺省 <code>auto</code>（资产可用 ⇒ 真解析 ✓；不可用 ⇒ <strong>如实降级</strong> ✓）+
+	<code>index-meta.json</code> 记<strong>实测耗时</strong>（"重建要多久" = 上次真花了多少 ✓，不是拿文件数乘系数的估算 ✗）。<br>
+	<strong>④ 验证面（新会话先跑这几条）</strong>：<code>p3-11</code> <strong>167/167</strong> ✓（工具面 21 / 对账<strong>现算</strong> / 形状与搜索语义 ✓）；
+	另有 <code>p3-39/40/41/42/43/46/47</code> 与 <code>dshHarness --common</code> ✓；<code>dshPluginPackages</code> 20 ✓ · <code>dshToolSnapshot</code> 2 ✓ · 契约 0 违规 ✓ · lint 0 ✓。<br>
+	<strong>⑤ 三条反复咬人的纪律</strong>（照做即可 ✓）：<strong>改了插件任何源文件（<span class="x">含只改注释</span>）就要 bump 版本</strong> ✗（有守卫 ✓）；
+	<strong>往工具数组插对象时别自带开括号</strong> ✗（一次会话踩了 7 次 ⇒ 用 <code>%TEMP%/fix-tool-block.mjs &lt;工具名&gt;</code> 一条命令修 ✓）；
+	<strong>块注释里不许出现星号紧跟斜杠</strong> ✗（会提前闭合注释 ⇒ 讲通配符时尤其容易踩 ✓）。<br>
+	<strong>⑥ 仍不做的两件，及其"要做得先有什么"</strong>：<code>ingest_traces</code>（要 trace 来源 + 边上带来源字段 + 查询侧分开呈现 ✓）·
+	原版第三档 <code>full</code>（要 embedding 服务；⚠ <strong>绝不用词法相似冒充语义相似</strong> ✗）—— 详见同页结论段 ✓。
+</div>
+<p><small>2026-10-13 · 诉求："希望 codebase 都移植到 dsh 侧"。本文只回答两件事：<strong>能不能搬</strong>、<strong>怎么按性价比分期搬</strong>。<br>
+底稿来自一次全量盘点：IDE 侧约 60 个实现文件（含 360 KB 的 <code>codebaseGraphService.ts</code>）→ 消费方（命令 / 视图 / 工具 / pane / provider）→ dsh 侧重叠与缺口 → 测试面。<br>
+⚠ 本文与 <a href="codebase-index-to-dsh-plan.html">codebase-index-to-dsh-plan.html</a> 的关系：那篇是<strong>索引/所有权</strong>的落地方案；本文是<strong>能力完成度评估</strong>。之所以独立成文：那篇被并发会话整篇回写过一次，把我追加的章节覆盖掉了。</small></p>
+
+<h2>0. 结论先行</h2>
+<ul>
+	<li><strong>底座已经搬完</strong> ✓：索引 / 产物同形 / 所有权 / 锁与心跳 / 读图 / 页面 / 13 个工具。证据：<code>p3-39</code> 32 · <code>p3-40</code> 30 · <code>p3-41</code> 24 · <code>p3-42</code> 23 · <code>p3-43</code> 24 · <code>p3-11</code> 119 · <code>p3-47</code> 双引擎差分（符号命中 94.5% / 无歧义行号 100%）。</li>
+	<li><strong>剩下的分三类</strong>：<span class="v">A 可搬（纯工作量）12 项</span> · <span class="q">B 需重做（交互降级、不可逆）5 项</span> · <span class="x">C 不该搬（为 renderer 定制的补丁）3 项</span>，另有 <strong>1 条所有权契约</strong>要先定。</li>
+	<li><strong>卡住"全量"的不是算法</strong>，而是三件 UI / 编辑器耦合（3D 渲染 · 语言特性 provider · QuickPick/DOM 模态）+ 一条契约（谁写 <code>&lt;ws&gt;/.codebase-memory/</code>）。</li>
+</ul>
+
+<h2>1. 逐项可行性</h2>
+<h3>1.1 <span class="v">A 类：可搬（纯工作量）</span></h3>
+<table>
+	<tr><th>能力</th><th>IDE 侧实现</th><th>dsh 现状</th><th>代价</th></tr>
+	<tr><td>架构 7 个 aspect（packages / layers / services / routes / crossBoundaries / dependencies / deadCode）</td>
+		<td><code>codebaseGraphArchitecture.ts</code>（20.7 KB）</td>
+		<td><span class="v">✓ 已落地（0.6.40，按图近似）</span>：<code>ARCHITECTURE_NOT_PORTED</code> 已清空 ⇒ 共 12 个 aspect，每条带 <code>*Method</code> 说明口径</td>
+		<td>已做；真图冒烟 192,702 节点 / 491,534 边上跑全部 12 个 aspect 共 1764 ms ✓</td></tr>
+	<tr><td>真解析升为"可用的缺省"（按语言/规模自动选档）</td><td><code>codebaseGraphParserPool.ts</code> 等</td>
+		<td><span class="v">✓ 已落地</span>（0.6.46）：真解析已有（p3-41 24/24 ✓）；<strong>缺省已改 <code>auto</code></strong>（资产可用 ⇒ 真解析 ✓，不可用 ⇒ <strong>如实降级</strong> ✓）；
+		档位<strong>落盘</strong>（<code>index-meta.json</code>）并在状态 / 页面标出 —— 在这之前档位只活在<strong>那次调用的返回值</strong>里 ✗（关掉会话就查不出"这份图是哪一档建的" ✗✗）</td><td>小-中</td></tr>
+	<tr><td>Cypher 查询</td><td><code>codebaseGraphCypher.ts</code> + <code>AdvancedAnalysis.ts</code>（共 ~64 KB）</td>
+		<td><code>?shape=</code> 6 种写法的<strong>诚实子集</strong></td><td>扩子集：小-中；真引擎：≈ 新子系统 ✗</td></tr>
+	<tr><td>语义相似 / 克隆检测</td><td><code>codebaseGraphSemantic.ts</code>（6 信号）+ <code>ExtendedPasses</code>（MinHash）</td><td>无</td><td>中（产 <code>SIMILAR_TO</code> 边 ⇒ 动 pass 面 + 契约版本）</td></tr>
+	<tr><td>TESTS 边 / gRPC-GraphQL-tRPC 检测</td><td><code>codebaseGraphExtendedPasses.ts</code></td><td>无</td><td>小-中</td></tr>
+	<tr><td>跨仓库发现 / 配置链接 / env 扫描</td><td><code>CrossRepoDiscovery</code> · <code>ConfigLink</code> · <code>EnvScan</code></td><td>无</td><td>小（各自产新边）</td></tr>
+	<tr><td>ADR（架构决策记录）</td><td><code>codebaseGraphAdr.ts</code> + 工具 <code>manage_adr</code></td><td>无</td><td>小</td></tr>
+	<tr><td>运行时 trace 摄入（OTLP → 边）</td><td><code>codebaseGraphTraces.ts</code> + <code>ingest_traces</code></td><td>无</td><td>中（dsh 插件能起 HTTP 端点）</td></tr>
+	<tr><td>制品导入 / 导出</td><td>工具 <code>export_artifact</code> / <code>import_artifact</code></td>
+		<td><span class="v">✓ 已落地</span>（0.6.45，<code>codebase_export_artifact</code> / <code>codebase_import_artifact</code>；都走审批闸 ✓）</td><td>小（产物已同形 ⇒ 几乎直接可用）</td></tr>
+	<tr><td>索引覆盖率 / 删除项目</td><td>工具 <code>check_index_coverage</code> / <code>delete_project</code></td>
+		<td><span class="v">✓ 覆盖率已落地</span>（0.6.42，工具 <code>codebase_coverage</code>）<br><span class="v">✓ 删除项目已落地</span>（0.6.43，<code>codebase_delete_project</code>；破坏性 ⇒ 审批闸 ✓，三条红线 ✓）</td>
+		<td>覆盖率：小（集合差 ✓）；<br>⚠ 与真源的<strong>硬差别</strong>已在工具描述里写死：真源逐文件留结果（"这个文件为什么被跳过" ✓），dsh 索引器只有计数 ✗ ⇒ 我们给<strong>集合差</strong>，不给逐文件原因 ✗</td></tr>
+	<tr><td>排除目录解析 / 项目类型模板</td><td><code>codebaseGraphExcludeResolver.ts</code> + <code>common/codebaseProjectTemplates.ts</code></td><td>无（页面现在写的是"没有对应物"）</td><td>小</td></tr>
+	<tr><td>团队图谱 Git 共享</td><td><code>codebaseMemoryMcpService.ts</code> ⚠ <strong>名字叫 MCP，其实不含 MCP 协议</strong>（文件头写明已移除 stdio 逻辑；实为索引配置 + sync/pull）</td><td>无</td><td>小-中（dsh 已会跑 git）；⚠ 别照搬那个名字</td></tr>
+</table>
+
+<h3>1.2 <span class="q">B 类：需重做（交互降级、不可逆）</span></h3>
+<table>
+	<tr><th>能力</th><th>IDE 侧实现</th><th>dsh 现状</th><th>判定</th></tr>
+	<tr><td>3D 图谱渲染</td><td><code>codebaseGraphViewerEditorPane.ts</code>（63 KB，Three.js CDN + 力导向布局）</td>
+		<td>只读结构事实页（页内明写没有 3D）</td><td>要另起前端渲染栈 = 重写</td></tr>
+	<tr><td>VAX 命令族（5 个）+ 四个 DOM 模态</td><td><code>codebaseGraphVaxSearch.contribution.ts</code> + <code>widgets/*Modal.ts</code>（Find Symbol / Class Hierarchy / Implementations / Open File）</td>
+		<td>部分（页内表单 <code>?shape=</code>）</td><td>QuickPick/DOM 模态在 dsh 侧没有 DOM ⇒ 只能做成页内表单，<strong>交互降级不可逆</strong></td></tr>
+	<tr><td>LSP 跨文件类型推断</td><td><code>codebaseGraphLsp.ts</code>（VS Code Language Feature API）</td><td>无 LSP 客户端</td><td>退化到图内 <code>CALLS</code> 近似（页面已写清）</td></tr>
+	<tr><td>C++ 跳转 language provider</td><td><code>codebaseGraphLanguageFeatures.contribution.ts</code></td><td>只有反向能力 <code>openFile</code></td><td>IDE 专属：dsh 插件注册不了编辑器 provider</td></tr>
+	<tr><td>索引编辑器联动（跳转 / 高亮 / Ctrl+点击）</td><td>各 pane 与 provider</td><td>仅 <code>openFile</code> / <code>reveal</code> 反向能力</td><td>IDE 专属（编辑器在 IDE 里）</td></tr>
+</table>
+
+<h3>1.3 <span class="x">C 类：不该搬（为 renderer 定制的补丁）</span></h3>
+<table>
+	<tr><th>能力</th><th>为什么不该搬</th></tr>
+	<tr><td>SQLite mmap + FTS5 + 跨进程 channel（<code>node/codebaseGraphSqliteStore.ts</code> 69 KB + <code>electron-main/...StoreChannel.ts</code>）</td>
+		<td>它是为<strong>绕开 renderer 4GB 内存</strong>而生的补丁；dsh 是独立 Node 进程 ⇒ 搬过去没有意义。dsh 侧已有同形的 JSON+gzip 产物</td></tr>
+	<tr><td>V8 内存看门狗 / 内存预算硬上限</td><td>同一个原因：进程模型不同</td></tr>
+	<tr><td>并行管线中间件 <code>gbuf</code>（<code>codebaseGraphBuffer.ts</code>）</td><td>dsh 的 pool / worker 已覆盖</td></tr>
+</table>
+
+<h3>1.4 一条契约：索引所有权最终态</h3>
+<p>IDE 侧已有 <code>_isIndexOwnedByDsh()</code> 让位逻辑；dsh 侧是 <code>indexTarget: shadow（缺省）/ workspace</code>。⇒ 若定"IDE 停写"，则 IDE 的 3D / 详情面板要改成<strong>读 dsh 产物</strong>；这决定 P7/P8 的"谁是新图"验收基准。</p>
+
+<h2>2. 落地方案（每期可独立验证、独立回滚）</h2>
+<table>
+	<tr><th>期</th><th>内容</th><th>验收</th><th>回滚</th></tr>
+	<tr><td><strong>P6</strong><br><span class="v">✓ 前半完成</span></td>
+		<td><span class="v">✓ 架构 7 aspect 补齐</span>（0.6.40，按图近似）<br><span class="v">✓ 工具面已补齐</span>（覆盖率 0.6.42 ✓ / 删除项目 0.6.43 ✓ / 制品导入导出 0.6.45 ✓ —— <strong>P6 完成</strong> ✓）</td>
+		<td>✓ 已做：每个 aspect 一条断言（含"自报口径"与"别当结论"）+ 真图冒烟（12 aspect / 1764 ms）；◻ 余下三个工具各一条探针（含反向突变）</td>
+		<td>✓ <code>aspects</code> 参数按需给（不要的不出现 ⇒ 省 token）；◻ 三个新工具：删除类走审批闸、缺省不注册</td></tr>
+	<tr><td><strong>P7</strong></td><td><span class="v">✓ 已完成</span>（0.6.46 / 0.6.49）：缺省改 <code>auto</code>（<strong>按能力挑档</strong> ✓，资产不可用则<strong>如实降级</strong> ✓）+
+	档位落盘（<code>index-meta.json</code>）并在状态 / 页面标出；<strong>代价做实</strong>（0.6.49）：记的是
+	<strong>上一次的实测耗时</strong> <code>ms</code> 与它是不是<strong>增量</strong>（两件都显著影响"再来一次大概多久" ✓），
+	页面「重建代价参考」明说这是实测<strong>不是估算</strong> ✓；<strong>取不到就不许编</strong> ✗（来自 IDE 或旧一代索引器的图 ⇒ 明说"说不准" ✓）；
+	耗时另有机器可断言锚点 <code>data-vssaros-codebase-graph-ms</code> ✓。探针 <strong>136 → 157</strong> ✓（P7 共 8 条）。
+	<br>★ P12（0.6.60）：<strong>侧栏摘要版也答这一格</strong> ✓ —— 侧栏多一行「产图档位 · 上次实测 Xs（增量/全量）」✓；
+	两个数都来自 <code>index-meta.json</code> ⇒ <strong>不需要加载图谱</strong> ⇒ 侧栏的<strong>轻路径不被破坏</strong> ✓✓
+	（侧栏存在的意义就是"不付全量图代价" ✗）；图来自 IDE 时没有这两个数 ⇒ 侧栏<strong>明说"未知"、不猜</strong> ✓
+	（探针那条真机断言正好跑在这条路径上：<code>档位锚点=(空) · 有"产图档位"字样=true</code> ✓）。探针 <strong>169 → 170</strong> ✓
+	<br><strong>★ 契约变更的代价（2026-10-14 补记）</strong>：把缺省从 <code>regex</code> 改成 <code>auto</code> 是<strong>行为变更</strong> ✓ ——
+	它让家族里<strong>三条陈旧断言</strong>红了 ✗（<code>p3-41</code> 两条写着"缺省＝正则路径、"缺省零行为改变""；<code>p3-40</code> 一条写死 <code>symbols === 6</code> = 正则档时代的数字）。
+	⇒ 已按"<strong>每条事实只留一个主人</strong>"重写（档位相关的精确计数归 <code>p3-41</code> ✓；与档位无关的结构不变量留在 <code>p3-40</code>、且<strong>不写死数字</strong> ✗）。
+	<strong>家族已全部补跑并全绿</strong> ✓（O1–O4 之后<strong>又复跑一遍</strong> ✓ —— 写路径与挑档都变了 ⇒ 必须全家跑 ✓）：
+	<code>p3-11</code> <strong>174</strong> · <code>p3-39</code> <strong>32</strong> · <code>p3-40</code> <strong>38</strong> · <code>p3-41</code> <strong>28</strong> · <code>p3-42</code> <strong>23</strong> · <code>p3-43</code> <strong>30</strong> · <code>p3-47</code> <strong>13</strong> = <strong>338</strong> ✓<br><br>
+	<strong>★ 反向兼容查证（2026-10-14，0.6.61）</strong>：此前只验过"<strong>我们能读 IDE 的产物</strong>" ✓，
+	另一半（<strong>IDE 读得动我们写的产物</strong>）从未验过 ✗ —— 而这正是"交接是否安全"的判决性事实 ✓。逐条查清后，<strong>写侧义务清单</strong>是：<br>
+	· <strong>IDE 的"让路"判据</strong>（<code>codebaseGraphService._isIndexOwnedByDsh()</code>）只读 <strong>一个键</strong>：
+	<code>&lt;ws&gt;/.codebase-memory/artifact.json</code> 的 <code>producer</code> ✓，且用 <strong>严格 ===</strong> 比（不做前缀匹配 ✗）
+	⇒ 两边常量一旦分叉，"IDE 让路"会<strong>静默失效</strong>、两边同时写一份图 ✗✗。我们的 <code>ARTIFACT_PRODUCER = 'vssaros-dsh'</code> 逐字相等 ✓
+	（已用探针<strong>从真源源码里正则抽出</strong>的那个值去比 ✓ —— 不自己写一个"模拟读取器"，那是拿自己的定义证自己 ✗）。<br>
+	· <strong>保鲜判据</strong>（<code>codebaseGraphBootstrap.ts</code>）按键内联读 <code>saved_at</code>(<strong>number</strong>) / <code>node_count</code> / <code>edge_count</code> ✓ —— 我们三个全有、类型对 ✓
+	（写成 ISO 串会被 <code>Number()</code> 吞成 NaN ⇒ 判据静默失效 ✗）。<br>
+	· <strong>图文件</strong>：IDE 的 <code>graph.db.zst</code> 就是 <strong>gzip 压缩的 JSON</strong>（<code>.zst</code> 是从 C 版沿用的名字 ✓），且<strong>自动探测</strong>压缩格式 ✓ ⇒ 与我们的 gzip 流一致 ✓。<br>
+	· <strong>我们写的清单本就是 snake_case</strong> ✓（<code>node_count</code> / <code>edge_count</code> / <code>saved_at</code> ✓；camelCase 只是<strong>读侧归一之后</strong>的内存形状 ✓）。<br>
+	· 本版按"<strong>只补语义性、不补统计性</strong>"加了 <code>schema_version=1</code> / <code>compression='gzip'</code> / <code>created_at</code>（与 <code>saved_at</code> 同一瞬间 ✓）；
+	<strong>故意不写</strong> <code>original_size</code>/<code>compressed_size</code> ✗（算它得为此<strong>多序列化整张图</strong>，换两个当前无人读的字段 —— 不值 ✓）。⚠ 这是<strong>预防性</strong>补齐、<strong>不是修 bug</strong> ✗（已 grep 确认：今天<strong>没有</strong> IDE 代码读那五个键 ✓）。<br>
+	· 探针 <strong>30 → 33</strong> ✓（三条：跨侧三键 + <code>saved_at</code> 类型 / producer 严格同形 / 同形补齐与<strong>故意缺项</strong>）。<br>
+	<strong>⚠ 顺带查出一条<strong>没人写下来的代价</strong></strong>（不擅自改 ✓，记进"所有权最终态"的判决依据）：IDE 只看<strong>工作区</strong>那份清单 ✓ ——
+	它<strong>看不见</strong>我们的影子目录（在 <code>indexDir</code> ✓）⇒ <strong>影子模式下 IDE 仍会自己索引同一个工作区</strong> ✓（白烧一轮分钟级 CPU ✓），
+	且"读不动就当成 false（照旧由 IDE 负责 ✓）"是<strong>有意的安全默认</strong> ✓（没装 dsh 的环境不许失去索引 ✓）。
+	⇒ 要让 IDE 真的让路，<strong>必须</strong>走 <code>config.indexTarget='workspace'</code>（交接 ✓）—— 这就是"索引所有权最终态"要拍的那件事 ✓✓。<br><br>
+
+	<strong>★ 两种终态的代价与回退对照表（2026-10-14 给出，供拍板 ✓）</strong>：
+	<table>
+	<tr><th>维度</th><th>甲 · 所有权交接<br><code>indexTarget='workspace'</code></th><th>乙 · 影子索引（当前缺省）<br><code>indexTarget='shadow'</code></th></tr>
+	<tr><td><strong>图有几份</strong></td><td><strong>一份</strong>：工作区 <code>.codebase-memory/</code>（dsh 写、IDE 读 ✓）</td><td><strong>两份</strong>：dsh 影子（<code>DSH_HOME/codebase-index/&lt;key&gt;/</code>）+ IDE 自己那份 ✓</td></tr>
+	<tr><td><strong>IDE 还索引吗</strong></td><td><strong>不索引</strong> ✓：见 <code>producer</code> ⇒ <strong>连扫描都不做</strong> ✓；落盘层还兜住增量与 30s 延迟保存 ✓</td><td><strong>照旧索引</strong> ✗：它看不见影子目录 ⇒ <strong>白烧一轮分钟级 CPU</strong></td></tr>
+	<tr><td><strong>两边答案会不一致吗</strong></td><td>不会 ✓（IDE 读的就是 dsh 写的那一份）</td><td><strong>可能会</strong> ✗（dsh 面板看影子、IDE 3D 视图看它自己那份）</td></tr>
+	<tr><td><strong>保鲜谁负责</strong></td><td><strong>只有 dsh</strong> ✓ ⇒ 必须显式 <code>codebase_index</code> ✓ 或开 <code>config.indexWatch=true</code> ✓（⚠ 该开关<strong>缺省关</strong> ✗ ⇒ 交接后既不开也不手动索引 ⇒ 图<strong>静默变旧</strong> ✗✗）</td><td>IDE 自己保鲜 ✓ + dsh 影按需重跑 ✓（各管各的）</td></tr>
+	<tr><td><strong>dsh 不在场时</strong></td><td>⚠ <strong>最危险的一格</strong>：清单里 <code>producer</code> 还在 ⇒ IDE <strong>继续让路</strong> ⇒ <strong>没人在保鲜</strong> ⇒ 图静默变旧 ✗✗（自愈 = 删掉那份产物 ⇒ 权限立刻回 IDE ✓）</td><td>无事 ✓（IDE 一直照旧，dsh 缺席等于没装 ✓）</td></tr>
+	<tr><td><strong>依赖 IDE 侧什么</strong></td><td>依赖 <code>_isIndexOwnedByDsh</code>（读 <code>producer</code>，严格 <code>===</code>）<strong>存在且行为不变</strong> ✗ —— 旧版本 IDE / 判据被回退 ⇒ 它照旧索引 ⇒ <strong>双写同一目录</strong> ✗（共享锁会串行，但仍是后写覆盖 ✗）</td><td><strong>零依赖</strong> ✓（IDE 侧一行不改 —— 这正是当初选乙的理由 ✓）</td></tr>
+	<tr><td><strong>git / 团队</strong></td><td>产物在<strong>工作区</strong>里 ⇒ 可提交（克隆即有图 ✓）；代价：仓库多二进制 + 合并冲突需 <code>.gitattributes</code> 之类 ✓</td><td>影子在 <code>DSH_HOME</code> ⇒ <strong>纯本地、不进 git</strong> ✓；共享要显式 <code>codebase_export_artifact</code> ✓</td></tr>
+	<tr><td><strong>回退到"IDE 全权"</strong></td><td><strong>删掉工作区那份产物</strong> ✓（<code>codebase_delete_project</code> 在 workspace 档删的正是它 ✓；或 <code>codebase_import_artifact</code> 导入一份<strong>不带 <code>producer</code></strong> 的 IDE 产物 ✓）<br>⚠ <strong>只改配置回不去</strong> ✗✗：工作区那份还在 ⇒ IDE <strong>仍让路</strong>，而 dsh 又不写它 ⇒ <strong>双输</strong> ✗✗</td><td><strong>删影子</strong> ✓（读侧自动回退读 IDE 那份 ✓）；或什么都不做（影子被忽略）✓</td></tr>
+	<tr><td><strong>反向往甲交接</strong></td><td>—</td><td>改 <code>indexTarget='workspace'</code> + 跑一次 <code>codebase_index</code> ✓；旧影子<strong>不再参与读</strong> ✓ 且页面会报 <code>orphanShadow</code> ✓（要清就 <code>codebase_delete_project</code> ✓）</td></tr>
+	<tr><td><strong>现有验证强度</strong></td><td>读侧与判据<strong>已逐条查实</strong> ✓（<code>producer</code> 严格同形 / <code>saved_at</code> 是 number / gzip JSON ✓）；⚠ <strong>未验</strong>：真机 IDE 在甲档下"确实不写"的<strong>行为级</strong>证据 ✗（要真起 IDE 观察，没跑过 ✗）</td><td><strong>已验</strong> ✓（<code>p3-40</code> 全绿：<strong>不动</strong> IDE 工作区那份 ✓ 影子优先 ✓）</td></tr>
+	</table>
+	<strong>★ 已拍板：甲 · 所有权交接 ✓</strong>（2026-10-14，用户裁决），并按上表"先补两件"的要求<strong>先落地了三件护栏 + 一个回退出口</strong>（0.6.62 ✓）：
+	<table>
+	<tr><th>护栏</th><th>是什么 / 为什么</th></tr>
+	<tr><td><strong>① 双输探测</strong><br><code>orphanWorkspace</code></td>
+		<td>当前档是 <code>shadow</code>、而工作区里那份清单<strong>还是我们的</strong>（<code>producer</code> = 我们 ✓）⇒ 报出来 ✓。
+		⚠ 这是甲档最容易踩、且<strong>改配置解决不了</strong>的状态 ✗✗：IDE 见到 <code>producer</code> <strong>继续让路</strong>、dsh 又不写它 ⇒ <strong>两边都不索引</strong>。
+		判据是<strong>保守</strong>的（没有 <code>producer</code> / 读不动 ⇒ <strong>不报</strong> ✓ —— 不许把"别人产的"说成双输 ✗）。</td></tr>
+	<tr><td><strong>② 变旧判决</strong><br><code>effectiveStale</code> / <code>staleAfterMs</code></td>
+		<td>甲档下"这份图有多旧"是<strong>安全信号</strong>（IDE 不再索引 ⇒ 检索可能在拿旧事实回答 ✓），乙档只是信息 ✓。
+		⚠ 阈值（7 天）是<strong>我们定的启发式</strong> ✗ ⇒ <strong>两个数都返回</strong>（<code>ageMs</code> + <code>staleAfterMs</code>），调用方可自定标准 ✓；<strong>绝不</strong>因为"旧"阻断任何操作 ✗。</td></tr>
+	<tr><td><strong>③ 回退出口</strong><br><code>codebase_delete_project which</code></td>
+		<td><code>which</code> ∈ <code>current</code>（缺省，与从前<strong>逐字一致</strong> ✓）/ <code>shadow</code> / <code>workspace</code> / <code>both</code>。
+		<strong>为什么必须有</strong>：权限的凭据是那份<strong>清单</strong>、<strong>不是配置</strong> ✗ —— 只把 <code>indexTarget</code> 改回 <code>shadow</code>，工作区那份还在 ⇒ 双输 ⇒ 必须能<strong>指着工作区那份删</strong> ✓。
+		红线判据<strong>只在 <code>deleteOneSpot</code> 一处</strong> ✓；工作区落点<strong>只认</strong>构造出来的 <code>&lt;ws&gt;/.codebase-memory</code> ✓（不是"删任意目录" ✗）；<code>which</code> 非法值<strong>当场拒</strong> ✗。</td></tr>
+	</table>
+	<strong>④ 交接时的显式确认（0.6.63 ✓）</strong>：甲档 + 保鲜没开时，<strong>建图那一步</strong>会在两处说清楚 ——
+	① <strong>审批理由</strong>（用户唯一必看的一刻 ✓）："⚠ 交接档 + 保鲜没开 ⇒ 这次建完之后 <strong>IDE 不索引、dsh 也不自动索引</strong> ⇒ 图会<strong>静默变旧</strong> ✗"；
+	② <strong>工具结果</strong>里带 <code>handoverWatchOff</code> / <code>handoverWarning</code>（"建完就忘"是这条最大的风险 ✓）。
+	<strong>⚠ 顺带揪出一个真 bug（这条最该记 ✓）</strong>：<code>codebase_index</code> 的审批理由里<strong>写死了</strong>
+	"建<strong>影子</strong>代码图谱…产物只写进 dsh 自己的索引目录，<strong>不触碰</strong>工作区里的 <code>.codebase-memory/</code>" ✗ ——
+	在甲档<strong>这两句全是假的</strong> ✓（写的<strong>正是</strong>工作区目录 ✓）。<strong>批准理由撒谎比没有理由更坏</strong> ✗（用户以为没动工作区，其实动了）。
+	现已按<strong>落点分岔</strong>（影子档说影子 ✓ / 交接档说"更新工作区里的代码图谱 + 这份图归 dsh 负责" ✓），
+	工具输出（"影子索引完成" → 交接档改成"工作区图谱已完成" ✓）与代码注释里同样撒谎的两处也一并改 ✓。
+	<strong>探针</strong>：<code>p3-11</code> → <strong>173</strong> ✓（含"<strong>影档建图不许带交接告警</strong>"的负对照 ✓ —— 乙档 IDE 仍自己索引，说"没人自动更新"就是撒谎 ✗）；
+	<code>p3-43</code> → <strong>30</strong> ✓（真机页面：<code>handover-watch-off="yes"</code> + 文案含"保鲜没开" ✓，
+	同一条断言里带两个负对照：图刚建 ⇒ <code>effective-stale=no</code> ✓、当前档是 workspace ⇒ <code>orphan-workspace=no</code> ✓）。<br>
+	<strong>页面（"标红"落点 ✓）</strong>：诊断行 + Index Configuration 的「交接状态」「图的新鲜度」「⚠ 双输风险」三格 ✓；
+	并加 <code>data-vssaros-codebase-target / -handover-watch-off / -effective-stale / -orphan-workspace</code> 四个属性 ⇒ 探针能断言页面状态 ✓。
+	<strong>审批闸</strong>：删除的理由改成<strong>逐处列名</strong>（<code>which</code> 一来，"将被删的目录"就不止一个 ⇒ 写死单一路径会漏问 ✗），
+	回退动作还会说明"这是在<strong>把索引权限还给 IDE</strong>" ✓。<br>
+	<strong>探针</strong>：<code>p3-11</code> 170 → <strong>172</strong> ✓（<code>which=both</code> / 非法值当场拒 ✓）；<code>p3-43</code> 24 → <strong>29</strong> ✓
+	（护栏 ①②③ 各一条 + <strong>两条负对照</strong> ✓：IDE 产的清单不报双输 / 刚建的图不判旧 ✓ —— 判决不是恒真 ✓）。
+	进程内冒烟 <strong>8/8</strong> ✓（全在临时目录 ✓）。<br>
+	⚠ <strong>仍未验的那一格</strong>（照旧写在表里 ✗）：真机 IDE 在甲档下"确实不写"的<strong>行为级</strong>证据 —— 要真起 IDE 观察，没跑过 ✗。<br>
+	<strong>★ 跨侧验证矩阵（2026-10-14 补 ✓ —— "谁验了哪条缝"以前散在各处，没人能一眼看清 ✗）</strong>：
+	<table>
+	<tr><th>契约的哪一条缝</th><th>谁验</th><th>怎么验</th><th></th></tr>
+	<tr><td>IDE 见 <code>producer === 'vssaros-dsh'</code> ⇒ <strong>让路</strong>（且不做前缀匹配 ✓）</td><td><strong>真源自己</strong></td>
+		<td><code>test/common/codebaseIndexDefaults.test.ts</code> 的 4 条（含 5 种负例 ✓）；本轮<strong>实跑</strong>其 runner：<strong>31 passing</strong> ✓</td><td>✓</td></tr>
+	<tr><td>我们写出的清单里 <code>producer</code> <strong>逐字等于</strong>真源那个常量</td><td>dsh 侧</td>
+		<td><code>p3-40</code>：<strong>从真源源码正则抽出</strong> <code>DSH_ARTIFACT_PRODUCER</code> 再比 ✓（名字一改，它就红 ✓）</td><td>✓</td></tr>
+	<tr><td>我们写的清单<strong>包含真源实际会读的键</strong>、<code>saved_at</code> 是 <strong>number</strong>（ISO 串会被 <code>Number()</code> 吞掉 ⇒ 静默失效 ✗）</td><td>dsh 侧</td>
+		<td><code>p3-40</code>：键名<strong>从 <code>codebaseGraphBootstrap.ts</code> 源码里抽出</strong>（不自己写模拟读取器 ✗）</td><td>✓</td></tr>
+	<tr><td>图文件是 <strong>gzip 压缩 JSON</strong>（真源<strong>自动探测</strong>格式 ✓）</td><td>两侧</td>
+		<td>我们的 <code>encodeGraph</code> = gzip ✓；真源实现自述"纯 gzip 流、加载时自动探测" ✓</td><td>✓</td></tr>
+	<tr><td><strong>服务级接线</strong>（<code>_isIndexOwnedByDsh</code> 真的接在 <code>indexWorkspace</code> 与落盘底层 ✓；让路在置旗<strong>之前</strong> ✓；读不动落回"IDE 照旧负责" ✓）</td><td><strong>真源</strong>（2026-10-14 补 ✓）</td>
+		<td><code>test/browser/codebaseGraphContracts.test.ts</code> 新增 <strong>5 条源码契约</strong>（这轮之前这一层<strong>零覆盖</strong> ✗ —— 接线最容易在并发改动里静默断 ✗）⇒ <code>node …/test/browser/run-browser-test.mjs …/codebaseGraphContracts.test.ts</code> = <strong>70 passing</strong> ✓（含原有 65 ✓）</td><td>✓</td></tr>
+	<tr><td><strong>合起来</strong>：IDE 读得动我们这份、且会让我们 ✓</td><td>组合</td><td>上面四条 + 服务级接线 ✓</td><td>✓<strong>判据 + 接线</strong></td></tr>
+	<tr><td>⚠ <strong>端到端</strong>：真机 IDE 进程里"确实不扫描、不落盘"</td><td>—</td><td>要<strong>起 IDE</strong> 观察（本轮没做 ✗）</td><td>✗ 未验</td></tr>
+	<tr><td>⚠ 反向：真机 IDE 在甲档下<strong>读到并展示</strong>我们写的图（3D 视图 / 检索可用）</td><td>—</td><td>同上（要起 IDE ✗）</td><td>✗ 未验</td></tr>
+	</table>
+	⚠ 读法：上表<strong>没有</strong>一行是"我猜的" ✓ —— 每行都指向一个能重跑的东西（一条命令或一个探针 ✓）；
+	而"未验"那两行是<strong>同一件事</strong>（起 IDE ✓），也正是甲档与"IDE 侧行为级"之间唯一的缺口 ✓。<br>
+	<strong>★ 甲档专属复核：同一个目录里两边的东西会不会互相踩（2026-10-14 ✓，与回退路径直接相关）</strong>
+	<table>
+	<tr><th>查什么</th><th>结论</th></tr>
+	<tr><td><strong>文件名会不会撞</strong>：IDE 只放 <code>graph.db.zst</code> / <code>artifact.json</code> /（可选）<code>graph.db.sqlite</code> / <code>index.lock</code>；
+		我们放 <code>artifact.json</code> / <code>graph.db.zst</code> / <code>index-cache.json</code> / <code>index-meta.json</code> ✓</td>
+		<td>共用的两个<strong>正是产物本身</strong>（本来就要求同形 ✓）；各自的附加文件<strong>互不相识</strong> ⇒ 回退后 IDE 不会误读我们的缓存、我们也不会误读它的 ✓
+		（<code>index.lock</code> 是<strong>故意共用</strong>的互操作 ✓）。</td></tr>
+	<tr><td><strong>写者会不会同时有两个</strong></td>
+		<td>甲档：IDE <strong>不写</strong>（让路 ✓）、我们写 ✓；回退后：我们不写那个目录（转回影子 ✓）、IDE <strong>重新接管</strong> ✓
+		⇒ 任一时刻只有一个写者 ✓（锁兜底 ✓）。</td></tr>
+	<tr><td><strong>"dsh 写 ⇒ IDE 自动读新的"有没有实现</strong> ✓<br>
+		（IDE 侧 <code>codebaseGraphBootstrap._checkExternalArtifactFor</code>：<strong>轮询清单</strong> 10s 一次，发现外部换新就把内存里的图换掉 ✓）</td>
+		<td>⇒ 甲档的<strong>读侧闭环是现成的</strong> ✓（上一张表里"IDE 读的就是 dsh 写的那一份"<strong>不是愿望</strong> ✓）。<br>
+		⚠ IDE 侧一处细微行为（<strong>我们不动它</strong> ✗）：它把"盘上比内存新、且<strong>计数与内存一致</strong>"判为<strong>自己刚落盘的那份</strong> ⇒
+		若 dsh 恰好建出一份<strong>计数相同</strong>的图，那一次重载会被跳过 ✓（后果有界：内容几乎一致 ✓，下一次变化就跟上 ✓）。</td></tr>
+	<tr><td><strong>我们会不会把自己的产物扫进图</strong>（甲档它就在工作区里 ✓）</td>
+		<td>我们的扫描器 <code>SKIP_DIRS</code> <strong>已含</strong> <code>.codebase-memory</code> ✓（乙档它在 <code>DSH_HOME</code> 里本来也扫不到 ✓ —— <strong>甲档这条才真正起作用</strong> ✓）⇒ 不会自我指涉、图里不会混进产物文件 ✓。</td></tr>
+	</table>
+	<strong>★ 重新评估（2026-10-14）："codebase 是否已全部转移到 dsh 侧" —— 要分三层答 ✓</strong>
+	<table>
+	<tr><th>层</th><th>现状（都有数据 ✓）</th><th>结论</th></tr>
+	<tr><td><strong>① 能力</strong>（谁有这套本事）</td>
+		<td>真源 <strong>18 件工具</strong> → dsh <strong>17 件 1:1</strong>（含 3 处命名差异：<code>index_repository</code>→<code>codebase_index</code>、
+		<code>check_index_coverage</code>→<code>codebase_coverage</code>、<code>index_status</code>→<code>codebase_index_status</code>）
+		+ 1 件（<code>ingest_traces</code>）<strong>写成结论</strong>（无对应物 ✓）；dsh 侧另有 4 件（<code>overview</code>/<code>deps</code>/<code>hotspots</code>/<code>self_index</code>）= <strong>21</strong> ✓。
+		索引器（正则档 + 真解析档 ✓）、增量缓存 ✓、锁互操作 ✓、制品双向同形 ✓、所有权（声明/让路/回退 ✓）、保鲜 watcher ✓</td>
+		<td><strong>✓ 已转移完</strong></td></tr>
+	<tr><td><strong>② 执行权</strong>（默认谁来干）</td>
+		<td>看配置：<strong>甲档</strong>（本仓已拍 ✓）⇒ dsh 是<strong>唯一写者</strong> ✓（IDE 让路 ✓）；<strong>乙档</strong> ⇒ 两边各建一份 ✓；
+		<strong>没装 dsh</strong> ⇒ IDE <strong>照旧索引</strong> ✓（有意的安全默认 ✓）</td>
+		<td><strong>按配置</strong>（本仓 = dsh 独占 ✓）</td></tr>
+	<tr><td><strong>③ 代码 / 运行时</strong>（代码住哪）</td>
+		<td>IDE 侧<strong>仍有约 1.2MB 实现 + 4 套测试</strong> ✓：<code>codebaseGraphService.ts</code> <strong>369KB</strong> ✓、
+		viewer 面板 65KB ✓、详情面板 57KB ✓、SQLite store 71KB ✓、persistence 50KB ✓、bootstrap 48KB ✓、
+		高级分析 41KB ✓、MCP 服务 37KB ✓…… 外加工具面 <code>codebaseTools.ts</code> <strong>111KB</strong> ✓</td>
+		<td><strong>✗ 没有、也不该转移</strong>（见下）</td></tr>
+	</table>
+	<strong>为什么第三层必须留在 IDE 侧（三条硬理由 ✓，不是"没搬完" ✗）</strong>：<br>
+	① <strong>读路径 + UI</strong>（3D 视图 / 详情面板 / 检索）本来就不该搬 ✓ —— dsh 的产物<strong>就是喂给它们读的</strong> ✓；<br>
+	② <strong>兜底</strong>：没装 dsh ⇒ 让路判据读不到 <code>producer</code> ⇒ IDE <strong>照旧索引</strong> ✓
+	（这就是"不许让没装 dsh 的环境失去索引"的保证 ✓，也是那条判据<strong>必须保守</strong>的原因 ✓）；<br>
+	③ <strong>让路判据只能住在"被让的一方"</strong> ✓ —— 是 IDE 读了清单<strong>自己决定不写</strong> ✓（dsh 自称拥有 ≠ IDE 会听 ✗）。<br>
+	⇒ 一句话：<strong>能力已全在 dsh ✓；执行权按配置（本仓 = dsh 独占 ✓）；IDE 侧留下的是读路径与兜底，属设计 ✓。</strong>
+	（与用户裁决"权限都在 dsh 侧、逻辑也都转移到 dsh 侧"对得上 ✓ —— "逻辑转移" = dsh 侧<strong>有了自己那份</strong> ✓，不是把 IDE 的删掉 ✗。）<br>
+	<strong>⚠ 剩下的真实项要分类，别混成"没收尾" ✗</strong>：<code>ingest_traces</code> 无对应物（<strong>有意</strong>，写成结论 ✓）；
+	语义/嵌入档（<strong>有意不做</strong> ✓）；SQLite 加速后端（<strong>有意不做</strong> —— 那是 IDE 侧的本地提速 ✓，dsh 读侧用内存 + 自建索引 ✓）；
+	<strong>起真机 IDE 看"确实让路"</strong>（<strong>未验</strong> ✗，甲档唯一剩的 ✓，机制已查实 ✓）；IDE 侧代码保留（<strong>有意保留</strong> ✓）。<br>
+	<strong>★ 甲档的一个额外好处（容易漏说 ✓）</strong>：交接后 IDE 自己那份智能体工具（<code>codebaseTools.ts</code> ✓）读的<strong>也是</strong>
+	<code>.codebase-memory/</code> 里我们写的那份图 ✓（且它会轮询重载 ✓）⇒ <strong>两侧智能体看到同一份事实</strong> ✓，
+	不再各有一张图 ✓。<br>
+	<strong>★ 优化方案（2026-10-14；按杠杆排序；每条带 <strong>现状（实测/判据 ✓）</strong> → <strong>方案</strong> → <strong>代价</strong> → <strong>验证</strong>；⚠ 标"要拍板"的是<strong>行为变更</strong> ✗）</strong>
+	<table>
+	<tr><th>#</th><th>方案（现状 → 方案 → 代价 → 验证）</th></tr>
+	<tr><td><strong>O1 · 甲档保鲜的"硬引导"</strong>（最该做 ✓ · <strong>已落地 0.6.64</strong> ✓）</td>
+		<td><strong>现状</strong>：甲档已消双索引 ✓；唯一软肋 = 交接后 <code>indexWatch</code> 没开 ⇒ 静默变旧 ✗（页面/状态/闸门告警已有 ✓，但用户得<strong>自己想到</strong>去开 ✗）。<br>
+		<strong>方案</strong>：交接档 + 保鲜没开时，<strong>审批理由与工具结果</strong>里直接给一段<strong>可粘贴的覆盖层 YAML</strong>（<code>indexWatch: true</code> 那行 ✓）⇒ 从"看到告警"到"照抄一行" ✓。<br>
+		<strong>代价</strong>：文案 + 一段固定文本 ✓（小 ✓）。<strong>验证</strong>：<code>p3-43</code> 断言理由里含该段 ✓。<br>
+		⚠ <strong>边界</strong>：不做"自动开 watcher" ✗（本仓纪律：常驻监听不许在不知情时偷偷开 ✓）。</td></tr>
+	<tr><td><strong>O2 · 建图耗时可观测（meta 记"最近 N 次"）</strong> ✓ · <strong>已落地 0.6.64</strong> ✓</td>
+		<td><strong>现状</strong>：<code>index-meta.json</code> 只记<strong>上一次</strong>（<code>ms</code> / 档位 / 增量 ✓）⇒ 页面只能看"上次"，看不出趋势 ✗ ⇒ "优化有没有用"没数 ✗。<br>
+		<strong>方案</strong>：meta 里加 <code>history: [{ms, parser, incremental, savedAt}]</code>（最近 10 条 ✓）⇒ 页面显示<strong>趋势</strong> ✓。<br>
+		<strong>代价</strong>：小 ✓（meta 读写处加几行 ✓）。<strong>验证</strong>：<code>p3-40</code> 断言 <code>history</code> 递增且不超 10 ✓。<br>
+		⚠ <strong>边界</strong>：IDE <strong>不认识</strong>这个文件 ✓（⇒ 无兼容风险 ✓）。</td></tr>
+	<tr><td><strong>O3 · 产物"内容没变 ⇒ 不重写图文件"</strong>（✓ <strong>已落地 0.6.65</strong>；⚠ <strong>实现时收窄了设计</strong> ✗→✓）</td>
+		<td><strong>现状</strong>：每次 <code>codebase_index</code> 都<strong>重写</strong> 4.9MB 的 zst ⇒ IDE 侧的<strong>轮询</strong>每次都"发现换新" ✗（内容没变也重载 ✗）。<br>
+		<strong>方案（落地版 ✓ —— 与最初设计不同，此处更正 ✗→✓）</strong>：建完与盘上<strong>逐字节比对</strong>，相同 ⇒ <strong>只跳过 <code>graph.db.zst</code> 这一个文件的写</strong> ✓；
+		<strong>清单照常写</strong>（<code>saved_at</code> 语义 = "上次索引的时刻" <strong>不变</strong> ✓ —— 最初设计"连 manifest 都不写"会让"今天刚验证过、内容没变"被<strong>变旧判决误报成旧</strong> ✗✗ ⇒ 不许那样 ✓）。
+		IDE 侧把"盘上更新、且<strong>计数一致</strong>"判为"自己刚落盘的那份" ⇒ <strong>跳过这次重载</strong> ✓ ⇒ 零扰动成立 ✓。<br>
+		<strong>代价</strong>：多读一次盘上产物 + 一次比对（4.9MB ✓ 便宜 ✓）。<strong>验证</strong>：<code>p3-40</code> 断言（mtime 不动 ✓ + <code>saved_at</code> 照常 ✓ + 负对照"变了就重写" ✓）。<br>
+		⚠ 对可观察语义的<strong>唯一</strong>影响：图文件的 <code>mtime</code> 在"没变化的一轮"里不刷新 ✓（新鲜度从来用 <code>saved_at</code> ✓，不用 mtime ✓）⇒ <strong>无行为变更</strong> ✓。</td></tr>
+	<tr><td><strong>O4 · auto 档按<strong>规模</strong>细化</strong>（✓ <strong>已落地 0.6.65</strong>；阈值可调 ✓）</td>
+		<td><strong>现状</strong>：<code>auto</code> 只判"资产在不在" ✓ ⇒ UE 级仓库也走真解析（分钟级 ✗）。<br>
+		<strong>方案</strong>：<code>auto</code> 改为"资产在 <strong>且</strong> 规模 ≤ 阈值（如 3,000 文件 ✓）⇒ 真解析；超 ⇒ 快档并<strong>如实说为什么</strong>（回执里带规模 ✓）"。<br>
+		<strong>代价</strong>：小 ✓（一个阈值 + 回执 ✓）。<br>
+		⚠ <strong>要拍板</strong>：代价是<strong>答案质量</strong> ✗（超大仓退到快档 ⇒ 没 CALLS/USAGE ✓）⇒ 阈值要可调 ✓；档位与代价页面已可见 ✓（P12 ✓）⇒ 改完那一格会自动如实 ✓。</td></tr>
+	<tr><td><strong>"查过、不值得做"</strong>（防止以后再追 ✓）</td>
+		<td>· 读侧解压/缓存 ✓ <strong>已做</strong>（<code>loadGraph</code> 按 path+size+mtime 进程内缓存 ✓ + 异步解压 ✓）；<br>
+		· 覆盖率扫描复用缓存 ✗ <strong>不值得</strong>：扫描成本是<strong>目录遍历</strong>（IO ✓）<strong>不是哈希</strong> —— <code>collectSourceFiles</code> <strong>不做哈希</strong> ✓ ⇒ 缓存帮不上 ✗；<br>
+		· 附加文件名 ✓ <strong>已核</strong>（与 IDE 侧不撞 ✓）；自扫描 ✓ <strong>已防</strong>（<code>SKIP_DIRS</code> ✓）；保鲜节流 ✓ 已有（5s/60s ✓）；<br>
+		· 语义/嵌入档 ✗、SQLite 后端 ✗：<strong>有意不做</strong> ✓。</td></tr>
+	</table>
+	<strong>交接 / 回退的操作步骤（用户视角 ✓）</strong>：<br>
+	· <strong>交接</strong>：设 <code>config.indexTarget='workspace'</code> ⇒ 跑一次 <code>codebase_index</code>（过审批闸 ✓）⇒
+	IDE 下次启动/重载会读到我们的清单并<strong>让路</strong> ✓。<strong>务必同时开</strong> <code>config.indexWatch=true</code> ✓
+	（否则页面会一直提醒"图会静默变旧" ✗）；<br>
+	· <strong>回退</strong>：<code>codebase_delete_project</code> 带 <code>which="workspace"</code>（或 <code>"both"</code>）删掉工作区那份 ⇒
+	权限<strong>立刻</strong>回到 IDE ✓（模块不要求你改配置；改了配置<strong>也不够</strong> ✗）⇒ 要重建就在 IDE 里索引或重新交接 ✓。<br><br>
+
+	<strong>★ 甲档"起真机 IDE 看一眼" —— 可执行观察清单（2026-10-14 ✓；把"唯一缺口"变成"照做一遍" ✓）</strong><br>
+	<strong>前提</strong>：装这个版本（或 dev 模式 ✓）+ 工作区已交接（<code>config.indexTarget='workspace'</code> ✓）+ 开 <code>indexWatch=true</code> ✓。<br>
+	<strong>先看一眼现状</strong>（PowerShell，工作区根 ✓）：<br>
+	<code>Get-Content .\.codebase-memory\artifact.json -Raw -Encoding utf8 | ConvertFrom-Json | % { "$($_.producer) nodes=$($_.node_count) saved_at=$($_.saved_at)" }</code>
+	⇒ 期望 <strong>producer=vssaros-dsh</strong> ✓（这是我们的图 ✓；没有它 = 清单不是我们的 ⇒ 让路判据不会生效 ✗）。<br><br>
+	<strong>五条检查</strong>（每条都有"对了什么样 / 不对什么样" ✓）：<br>
+	① <strong>让路</strong>：让 IDE 想索引（触发一次 / 重启）⇒ 日志里应有
+	<code>[ownership] indexWorkspace skipped for "…" — owned by dsh</code> ✓。<strong>没有</strong>这句 ⇒ 判据没生效 ✗（先查清单的 <code>producer</code> ✓）。<br>
+	② <strong>不落盘</strong>：记下上面的 <code>saved_at</code> ⇒ 在 IDE 里改几个文件、等 IDE 自己的索引窗口（几分钟 ✓）⇒ 再看 ⇒
+	<strong><code>saved_at</code> 不变</strong> ✓（唯一该变它的，是我们跑 <code>codebase_index</code> 那次 ✓）。<strong>变了 = IDE 还在写</strong> ✗（让路失效 ✗✗）。<br>
+	③ <strong>读到我们的图</strong>：IDE 的 Codebase Memory 面板 / 3D 视图顶部的<strong>节点数</strong> == 清单里的 <code>node_count</code> ✓
+	（不一致 = 它读的不是这份 ✗ ⇒ 看它读的目录 ✓）。<br>
+	④ <strong>自动重载</strong>（"dsh 写 ⇒ IDE 自动读新的" ✓）：在 dsh 侧改一个文件 + 跑 <code>codebase_index</code> ⇒ 等 ~10s（轮询 ✓）⇒
+	IDE 面板里的节点数 / 时间戳<strong>跟着变</strong> ✓（这是 <code>codebaseGraphBootstrap._checkExternalArtifactFor</code> 那一路 ✓）。<br>
+	⑤ <strong>回退</strong>：<code>codebase_delete_project</code> 带 <code>which="workspace"</code> ⇒ 下一轮 IDE 日志里<strong>不再</strong>有 ① 那句 ✓、
+	且它会<strong>自己重新索引</strong> ✓（让路回到缺省 ✓）。<br>
+	<strong>把结果记回矩阵</strong> ✓：在"跨侧验证矩阵"的两行"未验"里填 —— 起 IDE 的版本 + 日期 + 每条 ①–⑤ 的 ✓/✗ ✓。</td>
+		<td><code>p3-41</code> 扩 + 与 <code>p3-47</code> 双引擎差分对账（命中率与行号精度不许退）</td><td>缺省回到 <code>regex</code>（改一个常量）</td></tr>
+	<tr><td><strong>P8</strong></td><td>语义/相似 + 扩展 pass（TESTS / gRPC…）+ 跨仓库 / 配置链接 / env 扫描</td>
+		<td><strong>双引擎差分</strong>（同源码 ⇒ 边类型与数量对得上，照 <code>p3-47</code> 范式）+ 产物契约版本 bump</td><td>各 pass 各自开关，缺省关</td></tr>
+	<tr><td><strong>P9</strong></td><td>索引配置面（排除 / 保留 / 项目模板）+ ADR + 团队 Git 共享</td>
+		<td>扫描面差异逐条实测（排除前后文件数 / 节点数对比）+ 各一条探针</td><td>配置项缺省空 ⇒ 行为不变</td></tr>
+	<tr><td><strong>P10</strong></td><td>明确不搬的那些：文档 + 页面写清（3D / QuickPick 族 / LSP / renderer 补丁）</td>
+		<td>页面与文档的"诚实边界"断言（已有先例：探针钉住"没有 3D"那句）</td><td>—（不写代码）</td></tr>
+</table>
+<p><small>⚠ 每期结束报"验了什么 / 没验什么 / 实机待验项"；⚠ 凡新增边类型就 bump 产物契约版本，并让读侧按版本拒绝（既有 <code>parseManifest</code> 与缓存判据）。</small></p>
+
+<h2>3. 需要拍板的 3 条</h2>
+<table>
+	<tr><th>#</th><th>决策</th><th>选项</th><th>我的推荐</th></tr>
+	<tr><td>1</td><td><strong>索引所有权最终态</strong>（最该早定）</td>
+		<td>① IDE 停写（dsh 独占 <code>&lt;ws&gt;/.codebase-memory/</code>）<br>② 两边并存（各写各的，靠 <code>producer</code> 让位 + 新鲜度纪律兜底）</td>
+		<td><strong>①</strong>；但停写之后 IDE 的 3D / 详情面板要改成读 dsh 产物 ⇒ 先确认那两张 panel 的消费方</td></tr>
+	<tr><td>2</td><td><strong>Cypher</strong></td>
+		<td>① 扩子集（把最常用的 ~10 种形状做齐）<br>② 上真引擎（解析器 + 执行器 ≈ 新子系统）</td>
+		<td><strong>①</strong>：子集已有 6 种，扩到 10 种的代价远低于 ②，且页面已写明"这不是 Cypher"</td></tr>
+	<tr><td>3</td><td><strong>3D 图</strong></td>
+		<td>① 保持只读结构页<br>② 在 dsh 侧另起前端渲染栈（= 重写 63 KB pane）</td>
+		<td><strong>①</strong>；真要 3D，正路是<strong>保留 IDE 侧那一版</strong>（两边并存），而不是在 dsh 重写</td></tr>
+</table>
+
+<h2>4. 已落地进展（2026-10-13，P6 前半）</h2>
+<div class="box">
+	<strong>架构 7 个 aspect 已实现</strong>（插件 <code>@vssaros/dsh-codebase</code> <code>0.6.40</code>），<code>ARCHITECTURE_NOT_PORTED</code> 清空 ⇒ <strong>12 个 aspect</strong>。
+	每条都带 <code>*Method</code> 字段写明口径与近似程度（如 <code>packagesMethod</code> 明说"路径约定、不是真包解析"）。<br>
+	<strong>真图冒烟</strong>（192,702 节点 / 491,534 边 / 1764 ms）：<code>packages</code> 53 个 · <code>layers</code> browser 111,741 / common 49,950 / node 6,119 · <code>layerFlow</code> 首条 browser→common 41,907 · <code>crossBoundaries</code> 9,968 条 · <code>services</code> 4,402 · <code>routes</code> 1,586 · <code>deadCode</code> 27,338。<br>
+	⚠ 冒烟顺手抓出两个<strong>只有真图才能暴露</strong>的坑：① <code>deadCode</code> 原按 <code>inDegree===0</code> 判 ⇒ 被 file 的 <code>CONTAINS</code> 指着，结果<strong>恒为空</strong>（改成"排除 CONTAINS 后没有入边"、不收 <code>method</code>，并把"本仓 2.7 万条里 2.6 万在 <code>src/vs</code> ⇒ <strong>别拿它当结论</strong>"写进口径）；
+	② <code>packageKeyOf</code> 原取"路径前两段" ⇒ 两层路径会把<strong>文件名当包名</strong>（改成"先去掉文件名，再取目录前两段"）。<br>
+	<strong>探针</strong>：<code>p3-11</code> <strong>113 → 119</strong> ✓（6 条新断言：packages / layers / crossBoundaries / dependencies / services+routes / deadCode ✓）。<br>
+	<strong>+ 覆盖率工具 <code>codebase_coverage</code></strong>（0.6.42）：图里的文件集合 vs 现在扫得到集合 ⇒ 两个方向
+	（<code>missingInGraph</code> 未覆盖 / <code>missingOnDisk</code> 图已过期 ✓）+ 明说"没有逐文件原因"✗。探针 <strong>119 → 123</strong> ✓
+	（4 条：方向不许反 / <strong>扫描截断时不许下"图已过期"结论</strong> ✗ / 对象与字符串数组都能吃 ✓ / 真机小上限如实报截断 ✓）。<br>
+	⚠ 冒烟又抓两个真 bug：① <code>collectSourceFiles</code> 返回的是 <code>{ relPath }</code> 对象，我只做 <code>String(value)</code>
+	⇒ 整批被压成同一个 <code>[object Object]</code>、报出"扫到 1 个文件、覆盖率 0%"（<strong>数字看着有理、其实全错</strong> ✗，现改为防御性归一 ✓）；
+	② 扫描被上限截断时，<code>missingOnDisk</code> 会把没扫到的都算成"磁盘上不存在" ⇒ <strong>假警报"图已过期"</strong> ✗（现：截断时 <code>staleGraph=false</code> + <code>missingOnDiskReliable=false</code> ✓）。<br>
+	<strong>+ 删除工具 <code>codebase_delete_project</code></strong>（0.6.43；真源 <code>delete_project</code> 的对应物 ✓ —— dsh 里"项目"即工作区）：
+	落点判据<strong>复用 <code>writeDirOf</code></strong>（那是"产物在哪"的<strong>唯一</strong>判断 ⇒ 不可能"写一处、删另一处" ✗）；
+	三条红线（绝不删工作区根 ✓ / 别人正在索引时<strong>拒</strong>、除非 <code>force</code> 且<strong>留痕</strong> <code>forcedWhileLocked</code> ✓ / 删前先清点、报告如实 ✓）
+	+ 幂等（没产物不算失败 ✓）+ <strong>审批闸理由按工具名分岔</strong>（删除若沿用"建/更新图谱"那条 ⇒ 用户批的是他<strong>没被问过</strong>的事 ✗✗）。
+	探针 <strong>123 → 129</strong> ✓（6 条；破坏性动作<strong>只在临时目录</strong>里试 ✓ —— 关键断言：删完 <strong>IDE 的 <code>.codebase-memory/</code> 一字未动</strong> ✓✓）。<br>
+	<strong>+ 文本搜索 <code>codebase_search_code</code></strong>（0.6.47；真源 <code>search_code</code> / <code>search_files</code> ✓）：
+	⚠ <strong>先纠正定位</strong> —— 真源这两个<strong>不是图查询</strong>，是 <strong>ripgrep 驱动的文件系统文本搜索</strong> ✓
+	（它自己的说明里写着"结构类问题请用图工具" ✓）⇒ 在 dsh 里<strong>不需要索引</strong> ✓（有图没图都能用 ✓），但<strong>答不了</strong>结构问题 ✗。
+	与真源的差别写死：真源 ripgrep-backed ✓ / dsh 是 <strong>Node 扫描</strong>（无外部依赖 ✓，有扫描上限且如实报 <code>truncatedScan</code> ✓）；
+	<strong>不读 <code>.gitignore</code></strong> ✗（只按排除目录集 ✓）；只搜工作区内 ✓。只读 ⇒ <strong>不进审批闸</strong> ✓（新增工具里第一个 ✓）。
+	顺手修掉一个<strong>哑炸点</strong>：<code>SKIP_DIRS</code> 原只在 <code>indexer.js</code> 私有声明 ✗，而 <code>store.js::listDir</code> 裸引用它
+	⇒ 一旦被调用就 ReferenceError ✓（它导出了但<strong>从未被调用</strong> ⇒ 一直没暴露 ✓）⇒ 已收成<strong>一份</strong>（上移到 <code>store.js</code>，索引器复用 ✓）。
+	探针 <strong>141 → 149</strong> ✓（8 条）。
+	★ 收尾（0.6.51）：<code>findFiles</code> 与 <code>searchCode</code> 原先<strong>各有一份目录遍历</strong> ✗ —— 两份遍历就是<strong>两套排除口径</strong>，
+	迟早出现"索引器不扫 <code>out/</code>、搜索却搜进去"这种只在边角上错的差异 ✗✗ ⇒ 已抽成<strong>唯一一份</strong> <code>walkWorkspace</code> ✓
+	（顺带统一 <code>scannedFiles</code> 口径 = "遍历到的文件数" ✓）；改完<strong>两套断言都重跑过</strong> ✓（搜索冒烟 9/9 + 探针 162/162 ✓）。<br>
+	<strong>+ <code>codebase_search_files</code></strong>（0.6.48；真源 <code>search_files</code> ✓ —— 它是 <code>search_code</code> 的<strong>超集</strong> ✓，
+	多出来的正是 <code>mode: files</code>，也就是它说明里那句"代替 find / ls" ✓）：<code>files</code> <strong>只读目录项</strong>（⇒ 与文件大小无关 ✓）、
+	<code>content</code> / <code>files_with_matches</code> / <code>count</code> <strong>委托同一套搜索</strong> ✓（不另造第二套语义 ✗ —— 那迟早与 <code>codebase_search_code</code> 漂移 ✓）；
+	glob 与子串两种语义<strong>如实回报</strong> <code>matchedBy</code> ✓；只读 ⇒ <strong>不进审批闸</strong> ✓。探针 <strong>149 → 154</strong> ✓（5 条）。<br>
+	<strong>+ 架构决策记录 <code>codebase_manage_adr</code></strong>（0.6.50；真源 <code>manage_adr</code> ✓，五种动作 1:1 ✓）：
+	落点在<strong>工作区内</strong>的 <code>.codebase-memory/adr/</code> ✓ —— ADR 是<strong>仓库内容</strong>（跟 git 走、要被 review ✓），
+	放进我们自己的索引数据目录就成"只有这台机器看得见的私有笔记" ✗✗；之所以敢写那里，是因为<strong>所有权已交接给 dsh</strong> ✓
+	（产物自称 <code>producer: 'vssaros-dsh'</code> ⇒ IDE 不索引、不落盘 ✓）。编号纪律：<code>create</code> 自动取下一个编号 ✓、
+	<code>update</code> <strong>保留原编号</strong> ✓（换号 = 换了一条、引用全断 ✗）、<code>id</code> 收主干或纯数字前缀 ✓（别的写法 = 路径穿越入口 ⇒ 拒 ✗）。
+	<strong>闸门</strong>：本插件<strong>唯一按 <code>action</code> 分岔</strong>的一处 ✓ —— 写动作必问 ✓，只读动作（<code>list</code> / <code>get</code>）豁免 ✓；
+	例外写在"只按工具名"判据<strong>之前</strong> ✓，理由：它不是"同一变更靠参数绕闸"✗，而是<strong>不同的操作</strong> ✓。
+	探针 <strong>157 → 162</strong> ✓（5 条）。<br>
+	<strong>剩下两件为什么不移植（写成结论，不留白 ✗）</strong><br>
+	<strong>① <code>ingest_traces</code></strong>：真源是"把<strong>运行期 trace</strong> 灌进图里、补<strong>动态调用边</strong>" ✓（吃
+	<strong>OpenTelemetry OTLP JSON</strong>，或简化数组 <code>[{caller, callee, count, edgeType}]</code> ✓）。
+	在 dsh 侧不做的理由<strong>不是</strong>"没时间"，是两条事实：<br>
+	· dsh 插件跑在 IDE 的 Host 进程里，<strong>没有"被测应用"</strong> ✓ ⇒ 没有 trace 的生产者（只能被动接受外部 OTLP ✓）；<br>
+	· 更关键：那些边在真源里也叫 <code>CALLS</code> ✓，可它<strong>来自某一次运行</strong> —— 混进同一张静态图之后，
+	"谁调用了谁"就<strong>不可证伪</strong>了 ✗✗（看图的人分不出这条边是编译期事实、还是某次跑测的观测 ✓）。<br>
+	⇒ 它要的不是"移植一个工具"，而是三件新东西：<strong>①</strong> 一个 trace 来源（或接受外部 OTLP ✓）；<strong>②</strong> 每条边带<strong>来源</strong>
+	（静态 / 动态 + 哪份 trace、何时 ✓）；<strong>③</strong> 查询侧把两类<strong>分开呈现</strong> ✓（现在 <code>codebase_deps</code> /
+	<code>codebase_trace</code> 只认静态边 ✓）。⇒ 记作<strong>独立立项</strong>，不是"移植清单上缺一件" ✓。<br>
+	<strong>② 原版第三档 <code>full</code>（语义 / 相似度索引）</strong>：真源这一档<strong>不是索引器内部件</strong>，
+	而是 <strong>embedding 服务</strong>的消费方 ✓（<code>IAiEmbeddingVectorService</code> + BYOK 的 <code>/v1/embeddings</code> ✓）。
+	而 dsh 插件随包带的是 <strong>tree-sitter wasm</strong>（21MB、纯解析、无网络 ✓）⇒ 接上语义档 = 引入
+	【模型 / API 依赖 + 向量库 + 一致性（图一变向量就得重建 ✓）+ 隐私（要把源码送出去 ⚠）】⇒ 那是<strong>一整套新能力</strong>，
+	不是"把缺的那档接上" ✓。<br>
+	⚠ <strong>绝不能用词法相似冒充语义相似</strong> ✗ —— 那会让"相似"这个词变成假话 ✓；页面现在明说"原版第三档
+	<code>full</code> 在 dsh 侧没有移植 ⇒ 不摆" ✓，这个口径保持不变 ✓。要做得先定模型来源与隐私边界 ✓。<br>
+	<strong>★★ 移植完成度对账（P10，2026-10-13 逐行核过 ✓）</strong>：真源 18 个工具现在<strong>全部有对应物</strong> ✓ ——
+	<strong>16 个 1:1</strong>（<code>index_repository→codebase_index</code> · <code>index_status→codebase_index_status</code> ·
+	<code>check_index_coverage→codebase_coverage</code> · <code>list_projects→codebase_projects</code> ·
+	<code>delete_project→codebase_delete_project</code> · <code>search_graph→codebase_search</code> ·
+	<code>get_architecture→codebase_architecture</code> · <code>get_code_snippet→codebase_snippet</code> ·
+	<code>get_graph_schema→codebase_schema</code> · <code>trace_path→codebase_trace</code> ·
+	<code>search_files→codebase_search_files</code> · <code>search_code→codebase_search_code</code> ·
+	<code>detect_changes→codebase_changes</code> · <code>manage_adr→codebase_manage_adr</code> ·
+	<code>export_artifact→codebase_export_artifact</code> · <code>import_artifact→codebase_import_artifact</code> ✓）
+	+ <strong>1 个换了语言</strong>（真源 <code>query_graph</code> 是 Cypher ✗ ⇒ dsh 侧是<strong>形状语法</strong>：能力早就在
+	<code>shapeQuery.js</code>，但此前<strong>只挂在页面上</strong>（"有能力、没出口" ✓）⇒ 这次挂成工具 <code>codebase_query_graph</code> ✓）
+	+ <strong>1 个写成结论</strong>（<code>ingest_traces</code> ✓）。另有 dsh 侧多出的 4 个（<code>overview</code> / <code>deps</code> / <code>hotspots</code> / <code>self_index</code> ✓）。<br>
+	⚠ 对账<strong>当场逼出一个既存 bug</strong> ✗✗：<code>SHAPE_HELP</code> 一直写着 <code>hot:20</code>，而解析器<strong>把数值丢掉了</strong> ✗
+	⇒ 写 <code>hot:5</code> 实际给 20 条（"<strong>文档说 5、实际给 20</strong>" ✓ —— <code>hot:20</code> 之所以看着没问题，只是<strong>碰巧</strong>撞上默认值 20 ✓）。
+	已修：<code>:N</code> <strong>就是条数</strong>（≤ 50 ✓）；裸 <code>hot</code> 仍按缺省 20 ✓（<strong>不破坏既有输入</strong> ✓）；
+	而 <code>hot:abc</code> <strong>当场拒</strong> ✓（给了参数又不是数字时，"想要什么"只有用户知道 ⇒ <strong>不猜</strong> ✗）。探针 <strong>162 → 164</strong> ✓。<br>
+	<strong>★★ 对账搬到页面上并做成守卫（P11，0.6.55）</strong>：<code>PORT_AUDIT</code>（真源 18 行 → dsh ✓）进了<strong>代码</strong> ✓，
+	页面「移植状态」区块的数字<strong>现算</strong>（不硬编码 ✗），并把"<strong>表里写着、这次部署却没注册</strong>"的工具<strong>当场列出来</strong> ✗
+	（改了工具名忘了改表 = 一眼现形 ✓）；探针里还做了<strong>反向突变</strong>（去掉某个对应工具的注册 ⇒ <code>missing</code> 必须<strong>点名它</strong> ✓），
+	证明这守卫不是"看着像在核对" ✓。⚠ 顺手修掉页面上的<strong>自相矛盾</strong>：形状查询那块标题原写着「Cypher 的子集」✗，
+	而同一块下面两行写着「这不是 Cypher」✓ —— 与 <code>shapeQuery.js</code> 的纪律直接打架 ✓，已改成「形状查询（<strong>不是 Cypher</strong> ✗）」✓。
+	探针 <strong>164 → 167</strong> ✓。
+</div>
+
+<h2>5. 一句话</h2>
+<p>能搬的 12 项都列了、按性价比排了期（<strong>P6 → P9</strong>）；<strong>真正的硬障碍是三件 UI / 编辑器耦合（3D · 语言特性 provider · QuickPick 族）+ 一条所有权契约</strong>，其余只是时间与人力。<br>
+全量搬 <strong>≠</strong> 必须删 IDE 侧 ——"两边并存 + 页面/文档诚实标注能力边界"是可接受终态。</p>
+
+</body>
+</html>

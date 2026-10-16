@@ -1,0 +1,28 @@
+# @vssaros/dsh-codebase bundle patch: insert the codebase-graph row.
+#
+# **读侧搬到 Host，写侧（索引）还没搬**（方案 6.6/6.11.2 把本模块列为"高/不满足（差距最大）"）：
+#   - 读 `<workspace>/.codebase-memory/`：`artifact.json`（轻量清单，不解压）+ `graph.db.zst`
+#     （**gzip** 压缩的 JSON；真源 `saros.*.artifactFormat` 明说 gzip-json）；
+#   - 页面 `/x/codebase`：默认轻路径（只读清单），`?q=` / `?deep=1` / `?node=` 才加载全量图
+#     （本机真实规模：8.4MB → 解压 129MB，186142 节点 / 489124 边 ⇒ 轻/重分层是必须的）；
+#   - 工具：**21 个**（只读为主 ✓；写动作走审批闸 ✓）—— 完整清单、以及"**真源 18 件的对账**"（16 映射 · 1 换语言 · 1 结论），
+#     见页面的「**移植状态**」区块 ✓（那块的数字是**现算**的，不硬编码 ✓；代码里的权威是 `lib/index.js` 的 `PORT_AUDIT` ✓）。
+#     早期只有 4 个读工具（`codebase_overview`（轻）/ `codebase_search` / `codebase_deps` / `codebase_hotspots`（重，带缓存与上限））✓。
+#
+# **2026-10-12 起**：模块自己也能**产图**了（P1 影子索引 v0，工具 `codebase_index` / `codebase_index_status`）：
+#   产物写 `<indexDir>/codebase-index/<工作区哈希>/`（`config.indexDir` → `<DSH_HOME>/codebase-index`），
+#   **不写工作区里的 `.codebase-memory/`**；读侧**影子优先**、否则回退 IDE 产物（页面标 `graph-source`）。
+#   ⚠ v0 口径：正则顶层符号（非真解析）、边只有 IMPORTS/CONTAINS/IMPORTS_SYMBOL、无文件监听、无后台任务。
+#
+# **未做**：tree-sitter 真解析（P0 只证了"Host 能跑"：`lib/parser/` ✓）与文件监听、`CALLS`/`USAGE`/`EXTENDS` 边、
+# 图谱查询结果注册为会话节点、`graph.db.sqlite` 变体（需 SQLite 驱动，页面上只列大小）。
+# （"18 个工具的全量移植"**已不再是未做项** ✓：2026-10-14 完成并逐行对账 —— 见 `PORT_AUDIT` 与页面「移植状态」✓；
+#  仍**明确不做**的两件是 `ingest_traces`（要运行时 trace 来源，且动态边会让"谁调用了谁"不可证伪 ✗）与
+#  原版第三档 `full`（要 embedding 服务；⚠ 绝不用词法相似冒充语义相似 ✗）—— 理由与"要做得先有什么"写在可行性文档里 ✓。）
+#
+# `config.workspaceRoot` **必须注入**（VsSaros 按会话 cwd 定位图谱）：Host 进程的 cwd 不是工作区，
+# 所以本模块不猜路径——没配就是"未配置"（工具报错、页面说明）。
+- insert:
+    - id: vssaros-codebase
+      name: '@vssaros/dsh-codebase'
+      config: {}

@@ -1,0 +1,15 @@
+# @vssaros/dsh-unreal bundle patch: insert the host-side Unreal (bridge HTTP) row.
+#
+# 为什么与 `vssaros-ide` 分开：那一族的 `unreal_*` 工具把请求经反向通道交给 **IDE 进程**执行
+# （HTTP 客户端在 renderer，见 `agentStudio/.../unrealTools.ts`，还专门绕了一道 renderer 的 CORS）
+# ⇒ 没有 VsSaros 时整族不可用。这里把 HTTP 调用搬到 **Host 自己**（README 4.68）——Host 是 Node，
+# 本来就不存在 CORS。
+#
+# ★ 2026-10-13：**七个 `unreal_*` 全在本模块** ✓（health / help / dump / find_asset ＋ exec / wait / build）。
+#   此前的"只注册只读四个、别补齐"口径**已作废** ✗（用户决定）：执行类确实会改编辑器状态，但权限**靠
+#   审批闸守** ✓ —— 三个都挂 `tools/pre-execute` ⇒ `ask`（见 `lib/index.js` 的 `WRITE_TOOLS`），
+#   只读四个不进闸（免得每次 dump 都弹窗 ⇒ 审批疲劳 ✗）。
+- insert:
+    - id: vssaros-unreal
+      name: '@vssaros/dsh-unreal'
+      config: {}

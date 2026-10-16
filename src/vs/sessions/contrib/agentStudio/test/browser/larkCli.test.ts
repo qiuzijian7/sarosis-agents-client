@@ -31,6 +31,10 @@ const repoRoot = process.cwd();
 const read = (rel: string): string => fs.readFileSync(path.join(repoRoot, rel), 'utf8');
 
 const PANE_REL = 'src/vs/sessions/contrib/agentStudio/browser/agentSettingsEditorPane.ts';
+// ★ 2026-10-12：「飞书 CLI」区块（构建/探测/渲染/安装/扫码/取号，284 行）已整体外提到此模块
+//   ⇒ 下面"能力接线"与"配置键落点"两条断言的**实现**目标从 PANE_REL 改为 SECTION_REL，
+//   宿主那侧则改为断言"两个入口 + 调用点仍在"（分层守卫，比原先只读一个文件更严 ✓）。
+const SECTION_REL = 'src/vs/sessions/contrib/agentStudio/browser/larkCliSection.ts';
 const CSS_REL = 'src/vs/sessions/contrib/agentStudio/browser/media/agentSettingsEditorPane.css';
 const APP_REL = 'src/vs/code/electron-main/app.ts';
 const CHANNEL_REL = 'src/vs/sessions/contrib/agentStudio/electron-main/larkCliChannel.ts';
@@ -149,23 +153,30 @@ suite('飞书 CLI · 接线守卫', () => {
 		assert.ok(/available:\s*false/.test(svc), '★ 桥不可用必须降级为 available:false，而不是抛错打断页签渲染 ✗✓');
 	});
 
-	test('★★★ 三个能力都挂进了 Channel 绑定页签（构建 + 渲染两个入口）', () => {
+	test('★★★ 三个能力都挂进了 Channel 绑定页签（宿主两个入口 + 区块内三个能力接线）', () => {
 		const pane = read(PANE_REL);
-		assert.ok(pane.includes('_buildLarkCliSection()'), '★ 页签构建必须调用 _buildLarkCliSection（漏了 = 界面完全不出现）✗✓');
+		// 宿主侧：两个入口 + 两个调用点（外提后这两处**一字未动**）+ 真的实例化了区块
 		assert.ok(pane.includes('group.appendChild(this._buildLarkCliSection())'), '必须挂到飞书渠道分组下 ✓');
 		assert.ok(pane.includes('void this._refreshLarkCliStatus(false)'), '★ 切到该页签必须触发状态探测（漏了 = 永远显示「检测中…」）✗✓');
-		assert.ok(pane.includes('getLarkCliStatus') && pane.includes('installLarkCli'),
+		assert.ok(pane.includes('new LarkCliSection('), '宿主必须真的实例化区块（只留入口不接线 = 界面仍不出现 ✗）');
+
+		// 实现侧：三个能力的真实接线（服务/扫码/群列表）在外提后的区块模块里
+		const section = read(SECTION_REL);
+		assert.ok(section.includes('getLarkCliStatus') && section.includes('installLarkCli'),
 			'① 状态 / 安装必须接上渲染层封装 ✓');
-		assert.ok(pane.includes('beginFeishuRegistration') && pane.includes('drawQrToCanvas'),
+		assert.ok(section.includes('beginFeishuRegistration') && section.includes('drawQrToCanvas'),
 			'② 创建机器人必须复用已验证的 PersonalAgent 扫码流程 ✓');
-		assert.ok(pane.includes('fetchFeishuChats'), '③ 获取 chat_id 必须接上群列表 ✓');
+		assert.ok(section.includes('fetchFeishuChats'), '③ 获取 chat_id 必须接上群列表 ✓');
 	});
 
 	test('★★ 创建机器人写入的配置键与手工绑定/渠道编辑器一致（同一落点）', () => {
-		const pane = read(PANE_REL);
+		const section = read(SECTION_REL);
 		for (const key of ['sessions.channel.feishu.appId', 'sessions.channel.feishu.appSecret', 'sessions.channel.feishu.enabled']) {
-			assert.ok(pane.includes(key), `扫码创建后必须写入 ${key}（否则「创建成功但渠道没生效」）✓`);
+			assert.ok(section.includes(key), `扫码创建后必须写入 ${key}（否则「创建成功但渠道没生效」）✓`);
 		}
+		// 反向守卫：宿主那侧不得再留一份写入（外提后只准有一个落点）
+		assert.ok(!read(PANE_REL).includes('sessions.channel.feishu.appId'),
+			'配置键写入点应只在外提后的区块模块（宿主侧不得出现第二份）✗');
 	});
 
 	test('★★ 安装命令只有一处定义（避免文档/UI/代码三份口径漂移）', () => {
