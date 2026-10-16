@@ -55,11 +55,79 @@ const target = join(root, 'dsh-runtime', version);
 const bin = join(target, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js');
 const force = process.argv.includes('--force');
 
+/**
+ * 建种子（**绝不让它拦住出包**）：`dsh plugin add` 是直接 spawn `pnpm`（运行时不自带，2026-10-16
+ * CI 现场：`'pnpm' is not recognized` ⇒ 种子建不出来），而 seed 只是**首启加速项**：
+ * 缺它 ⇒ 首启自己装 profile（慢 1-2 分钟，且有 pnpm 的机器才装得上）。运行时本体才是硬性要求，
+ * 所以这里任何失败都只告警、不让 prepack 失败（对比：安装/版本不符是真失败，见上面 exit(1) ✓）。
+ */
+async function safeBuildProfileSeed(runtimeDir, dshBin, dshVersion) {
+	const how = ensurePnpm();
+	if (!how) {
+		console.log('[prepack-dsh] ⚠ 找不到 pnpm（PATH / corepack / npm -g 都不行）⇒ **跳过** profile 种子。'
+			+ '本包仍可用：首启会自己装 profile，但要求用户机器上有 pnpm，且慢 1-2 分钟。'
+			+ 'CI 上请让 install-deps 装一个（`.ci/scripts/install-deps.ps1` 已加）。');
+		return;
+	}
+	console.log(`[prepack-dsh] pnpm OK（来自 ${how}）`);
+	try {
+		await buildProfileSeed(runtimeDir, dshBin, dshVersion);
+	} catch (e) {
+		console.log(`[prepack-dsh] ⚠ profile 种子构建失败：${String(e?.message ?? e).split('\n')[0]}`);
+		console.log('[prepack-dsh]   ⇒ 跳过种子（运行时已就绪 ✓；首启会自己装 profile，慢 1-2 分钟且要求用户有 pnpm）。');
+		// ★ 必须清掉半成品：宿主侧判"种子可用"只看 `profile-seed/profiles/<p>/package.json` 在不在
+		//（`_profileSeedDir`）——而它就创建在建种子的早期 ⇒ 半成品会被当成好种子整目录拷进 DSH_HOME，
+		// 用户拿到一个"缺依赖的 profile"（比没有种子更糟 ✗✗）。清掉 = 干净的"没种子"回退 ✓。
+		removeTree(join(runtimeDir, 'profile-seed'));
+		console.log('[prepack-dsh]   已清掉半成品种子（宁可没有，也不给一个装不起来的 profile）');
+	}
+}
+
+/**
+ * 保证 `pnpm` 可用（`dsh plugin add` 直接 spawn 它）。三级兜底，返回用上的那级（找不到 ⇒ undefined）：
+ *   ① PATH 里已有；② `corepack enable pnpm`（Node ≥16 自带 corepack）；③ `npm i -g pnpm`
+ *   （CI 里 npm 已指向内网镜像 `npm_config_registry` ⇒ 这条最可能成 ✓）。
+ */
+function ensurePnpm() {
+	const win = process.platform === 'win32';
+	const probe = () => {
+		try {
+			execFileSync(win ? 'pnpm.cmd' : 'pnpm', ['-v'], { stdio: 'pipe', shell: win });
+			return true;
+		} catch {
+			return false;
+		}
+	};
+	if (probe()) {
+		return 'PATH';
+	}
+	try {
+		execFileSync('corepack', ['enable', 'pnpm'], { stdio: 'pipe', shell: win });
+		execFileSync('corepack', ['prepare', 'pnpm@latest', '--activate'], { stdio: 'pipe', shell: win });
+		if (probe()) {
+			return 'corepack';
+		}
+	} catch { /* 落到 ③ */ }
+	try {
+		const cli = join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
+		const args = ['install', '-g', 'pnpm', '--no-audit', '--no-fund', '--loglevel=error'];
+		if (existsSync(cli)) {
+			execFileSync(process.execPath, [cli, ...args], { stdio: 'pipe' });
+		} else {
+			execFileSync(win ? 'npm.cmd' : 'npm', args, { stdio: 'pipe', shell: win });
+		}
+		if (probe()) {
+			return 'npm -g';
+		}
+	} catch { /* 全失败 */ }
+	return undefined;
+}
+
 if (existsSync(bin) && !force) {
 	prune(target); // 已有安装也补跑裁剪（幂等），保证旧产物升级裁剪清单后不用重装
 	console.log(`[prepack-dsh] dsh ${version} 已在 ${target}，跳过安装（${Math.round(dirSize(target) / 1024 / 1024)} MB）`);
 	const actual0 = execFileSync(process.execPath, [bin, '--version'], { encoding: 'utf8' }).trim().split(/\r?\n/).pop();
-	await buildProfileSeed(target, bin, actual0); // 种子缺失/过期时补建
+	await safeBuildProfileSeed(target, bin, actual0); // 种子缺失/过期时补建（失败不拦出包）
 	process.exit(0);
 }
 if (existsSync(target)) {
@@ -95,7 +163,8 @@ console.log(`[prepack-dsh] done: dsh ${actual} ready at ${target} (${Math.round(
 // 冷启动的大头不是装 dsh，而是首启时 web 模板 + 伴生插件的 pnpm 下载。
 // 这里在构建期把 profile 完整建好（copy 导入模式 → node_modules 是真实文件、可搬运），
 // 首启时 supervisor 整目录复制到 DSH_HOME——秒级完成，零网络。
-await buildProfileSeed(target, bin, actual);
+// ⚠ 失败只告警不拦出包（见 `safeBuildProfileSeed`：运行时本体才是硬性要求）。
+await safeBuildProfileSeed(target, bin, actual);
 
 /**
  * `dsh-plugins/` 下带 `vssaros.module` 清单的**模块插件**目录（agents / skills / mcp / kb / memory /

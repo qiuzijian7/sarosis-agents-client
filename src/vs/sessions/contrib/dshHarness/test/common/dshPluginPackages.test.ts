@@ -1542,10 +1542,11 @@ suite('dshHarness / 打包链：内置 dsh 运行时（缺它 = 首启要用户�
 	const REL_GULP = 'build/gulpfile.vscode.ts';
 	const REL_GENERATE_EXE = '.ci/scripts/generate-exe.ps1';
 	const REL_PREPACK = 'build/prepack-dsh-runtime.mjs';
+	const REL_INSTALL_DEPS = '.ci/scripts/install-deps.ps1';
 
 	test('守卫前置：七个打包链文件都能读到（读不到就显式跳过，不许静默通过）', function () {
 		if (!root) { this.skip(); }
-		for (const rel of [REL_INSTALLER, REL_CI_PACKAGE, REL_STRIP, REL_VERIFY, REL_GULP, REL_GENERATE_EXE, REL_PREPACK]) {
+		for (const rel of [REL_INSTALLER, REL_CI_PACKAGE, REL_STRIP, REL_VERIFY, REL_GULP, REL_GENERATE_EXE, REL_PREPACK, REL_INSTALL_DEPS]) {
 			assert.ok(read(rel), `读不到 ${rel}（守卫会变成空跑）`);
 		}
 	});
@@ -1635,5 +1636,44 @@ suite('dshHarness / 打包链：内置 dsh 运行时（缺它 = 首启要用户�
 		assert.match(prepack, /'\\\\\\\\\?\\\\'/, '前缀本身要是 `\\\\?\\`（Windows 扩展长度路径）');
 		assert.match(prepack, /renameSync\(abs, aside\)/, '删不掉就挪开（对调用方而言"目标不存在"就够了）');
 		assert.match(prepack, /function removeTreeOrThrow\(/, '需要"必须删干净"的场景要有单独入口');
+	});
+
+	test('★★ profile 种子是加速项：建不出来**不许**拦出包，且要自己解决 pnpm（2026-10-16 第二次现场）', () => {
+		const prepack = read(REL_PREPACK)!;
+		// ① 主流程与"已安装跳过"那条都必须走 safeBuildProfileSeed（裸 await buildProfileSeed 会把
+		//    `'pnpm' is not recognized` 变成"打包失败"——2026-10-16 第二次现场正是它 ✗）
+		const calls = prepack.match(/await buildProfileSeed\(/g) ?? [];
+		assert.strictEqual(calls.length, 1, `裸 buildProfileSeed 只应出现在 safeBuildProfileSeed 内部（实际 ${calls.length} 处）`);
+		const safeCalls = prepack.match(/await safeBuildProfileSeed\(/g) ?? [];
+		assert.ok(safeCalls.length >= 2, '两条路径（跳过安装 / 刚装完）都要走 safeBuildProfileSeed');
+		// ② pnpm 三级兜底：PATH → corepack → npm -g（dsh plugin add 直接 spawn pnpm，运行时不带它）
+		assert.match(prepack, /function ensurePnpm\(/, '要有 ensurePnpm');
+		assert.match(prepack, /'corepack', \['enable', 'pnpm'\]/, 'corepack 是第二级兜底（Node ≥16 自带）');
+		assert.match(prepack, /\['install', '-g', 'pnpm'/, 'npm -g 是第三级兜底（CI 的 npm 已指内网镜像）');
+		// ③ 失败要清掉半成品种子：宿主判"种子可用"只看 profiles/<p>/package.json 在不在
+		//    （`_profileSeedDir`）⇒ 半成品会被当好的整目录拷进 DSH_HOME ✗✗
+		assert.match(prepack, /removeTree\(join\(runtimeDir, 'profile-seed'\)\)/, '失败必须清掉半成品种子');
+		assert.match(prepack, /宁可没有，也不给一个装不起来的 profile/, '清理要留一行可读的说明');
+	});
+
+	test('★★ verify-staging：种子只告警、运行时本体才硬性（加速项不许拦出包）', () => {
+		const verify = read(REL_VERIFY)!;
+		const seedDeclAt = verify.indexOf('$seedWarn = @(');
+		assert.ok(seedDeclAt > 0, '种子要单独列成 $seedWarn（守卫不能空跑）');
+		const seedBlock = verify.slice(seedDeclAt, verify.indexOf(')', seedDeclAt));
+		assert.match(seedBlock, /profile-seed/, '$seedWarn 里放种子项');
+		// $required 段里不许再出现 profile-seed（放回去 = 没有 pnpm 的构建机又不许出包 ✗）
+		const requiredAt = verify.indexOf('$required += "dsh-runtime');
+		const requiredBlock = verify.slice(requiredAt, seedDeclAt);
+		assert.ok(!requiredBlock.includes('profile-seed'), 'profile-seed 不许留在 $required 里（那是硬拦）');
+		assert.match(requiredBlock, /node_modules\\@deepseek-ai\\dsh\\lib\\bin\.js/, '运行时本体仍必须是硬性');
+		assert.match(verify, /\[WARN\][^\n]*profile seed missing/, '缺种子要在日志里可见（否则"首启慢"会被当偶发）');
+	});
+
+	test('★ CI 依赖步骤要备好 pnpm（否则种子在 CI 上永远建不出来）', () => {
+		const deps = read(REL_INSTALL_DEPS)!;
+		assert.match(deps, /pnpm --version/, '要探测 pnpm 是否可用');
+		assert.match(deps, /npm install -g pnpm/, '缺了就装一个（显式带内网镜像更稳）');
+		assert.match(deps, /\[WARN\] pnpm 不可用/, '装不上要告警（不拦出包，但必须可见）');
 	});
 });

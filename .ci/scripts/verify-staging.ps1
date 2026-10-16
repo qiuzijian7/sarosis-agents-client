@@ -143,10 +143,15 @@ if (-not (Test-Path (Join-Path $repoRoot "dsh-runtime\$bundledVer"))) {
   exit 1
 }
 $required += "dsh-runtime\$bundledVer\node_modules\@deepseek-ai\dsh\lib\bin.js"
-$required += "dsh-runtime\$bundledVer\profile-seed\seed.json"
-$required += "dsh-runtime\$bundledVer\profile-seed\profiles\vssaros\package.json"
-$required += "dsh-runtime\$bundledVer\profile-seed\profiles\vssaros\node_modules\@vssaros\dsh-bridge\package.json"
 $required += "dsh-runtime\$bundledVer\node_modules\sherpa-onnx-win-x64\sherpa-onnx.node"  # 语音输入引擎（win）
+# ⚠ profile 种子是**加速项**，不是硬性（2026-10-16 收紧"运行时本体"时一并定的口径）：
+#   建种子要 pnpm（`dsh plugin add` 直接 spawn 它），CI 机器不一定有 ⇒ 缺种子只该**告警**：
+#   没有它时首启会自己装 profile（慢 1-2 分钟）。硬拦的后果是"为了一个加速项不出包" ✗✗。
+$seedWarn = @(
+  "dsh-runtime\$bundledVer\profile-seed\seed.json",
+  "dsh-runtime\$bundledVer\profile-seed\profiles\vssaros\package.json",
+  "dsh-runtime\$bundledVer\profile-seed\profiles\vssaros\node_modules\@vssaros\dsh-bridge\package.json"
+)
 $missing = @()
 foreach ($rel in $required) {
   $p = Join-Path $appRoot $rel
@@ -158,6 +163,13 @@ if ($missing.Count -gt 0) {
   exit 1
 }
 Write-Host "[OK] All critical artifacts present in staging."
+
+# 加速项（profile 种子）只告警：缺它 ⇒ 首启自己装 profile（慢 1-2 分钟，且要求用户有 pnpm）。
+# 必须在日志里可见 —— 否则"首启慢"会被当成偶发，没人知道是种子没进包 ✗。
+foreach ($rel in $seedWarn) {
+  if (Test-Path (Join-Path $appRoot $rel)) { Write-Host ('  [OK] ' + $rel) }
+  else { Write-Host ('  [WARN] ' + $rel + ' (profile seed missing - first run will install plugins itself; needs pnpm, ~1-2 min)') }
+}
 
 # === 可选依赖：媒体工具链（ffmpeg/ffprobe/yt-dlp @ resources/saros/bin/）===
 # ★ 2026-09-24：这三个 exe 让「抽帧 / 视频理解」零安装可用（agent 的 extract_video_frames

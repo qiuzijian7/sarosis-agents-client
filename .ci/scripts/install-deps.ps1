@@ -227,3 +227,20 @@ if (Test-Path ($webviewDir + '\package.json')) {
   Pop-Location
   Write-Host "[OK] Agent Studio webview dependencies installed"
 }
+
+# ===== 9. pnpm（建 dsh profile 种子要用）=====
+# 为什么需要（2026-10-16 事故）：`dsh plugin add` 是**直接 spawn `pnpm`**（dsh 运行时不自带它），
+# 而打包期的 prepack 要跑它把 profile 种子建出来。CI 没有 pnpm 时实测：
+#   'pnpm' is not recognized as an internal or external command ⇒ 种子建不出来
+# ⇒ 装出来的包首启得自己装 profile（慢 1-2 分钟，而且**要求用户机器上也有 pnpm** 才装得上）。
+# 不拦出包（种子已在 prepack/verify-staging 里降级为"加速项"）——但要在 CI 日志里看得见 ✓。
+Write-Host "=== Ensuring pnpm (used by `dsh plugin add` when building the profile seed) ==="
+$pnpmOk = $false
+try { pnpm --version | Out-Null; $pnpmOk = $true } catch { }
+if (-not $pnpmOk) {
+  # npm 已指向内网镜像（见上面 env）；这里再显式带一次，免得受执行顺序影响。
+  npm install -g pnpm --no-audit --no-fund --registry=https://registry.npmmirror.com/ 2>&1 | Out-Null
+  try { pnpm --version | Out-Null; $pnpmOk = $true } catch { }
+}
+if ($pnpmOk) { Write-Host ('[OK] pnpm ' + (pnpm --version)) }
+else { Write-Host '[WARN] pnpm 不可用 —— prepack 会跳过 profile 种子（首启变慢；不拦出包）' }
