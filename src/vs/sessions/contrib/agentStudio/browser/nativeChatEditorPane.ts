@@ -40,7 +40,7 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 import { IBridgeService } from './bridge/bridgeService.js';
 
 import { NativeChatEditorInput, type IChatRuntimeState, type ChatTabStatus } from './nativeChatEditorInput.js';
-import { getDshChatHostFactory, IDshChatBinding } from './dshChatHost.js';
+import { getDshChatHostFactory, IDshChatBinding } from '../../../common/dshChatHost.js';
 import { WorkflowTraceController } from './workflowTraceController.js';
 import { CheckpointManager } from './checkpointManager.js';
 import { KbImportController, createKbImportHandler } from './kbImportController.js';

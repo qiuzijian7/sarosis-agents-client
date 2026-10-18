@@ -200,11 +200,19 @@ suite('chat-surface header（①工作区 ②历史/新建 ③preset 去重）',
 			const h = loadChunk(`${LIB}/client.workspace.js`, makeCtx(sent, pageSwitched, WS), {});
 			// ★ 2026-10-15：工作区 + worktree 两枚 chip **已合并**为单枚入口
 			//   （方案 C：单 chip + 扁平可搜索面板；mockup `doc/dsh-workspace-worktree-merge-mockup.html`）
-			//   ⇒ 本槽现在只有**一条**注册（id `vssaros-context-entry`、order -27；两条数据源各自判据不变 ✓）。
+			//   ⇒ actions 槽里只有**一条**注册（id `vssaros-context-entry`、order -27）。
+			// ★ 2026-10-16（方案 A；mockup `doc/dsh-workspace-entry-single-mockup.html`）：本 chunk 多了**第二条**
+			//   注册 —— hero 那行的**遮蔽注册**（`conversation.hero.workspace`，priority -10 换掉官方浮层）。
+			//   为什么：hero 行三个位置由官方写死（`heroWorkspaceRow`），15 日合并后我们那枚与官方
+			//   WorkspaceChip **并排重复**都在说"工作区" ✗ ⇒ 改成"hero 只出官方那枚 chip、面板挂它的浮层槽" ✓。
 			assert.deepStrictEqual(h.registrations.map(r => r.slot),
-				['conversation.session.header.actions'],
-				'合并后只剩一条注册（同一槽、单入口 ✓；旧的两条各自会渲染一枚 chip ✗）');
-			assert.strictEqual(h.registrations.length, 1);
+				['conversation.session.header.actions', 'conversation.hero.workspace'],
+				'actions 槽仍是单入口 ✓；hero 槽是**遮蔽**注册（不是又一枚 chip ⇒ 不再重复 ✓）');
+			assert.strictEqual(h.registrations.length, 2);
+			assert.strictEqual(h.registrations[0].spec.id, 'vssaros-context-entry',
+				'header 那枚必须仍是本 chunk 的**第一条**注册（本文件与 Controls 都用 render(0) 取它 ✓）');
+			assert.strictEqual(h.registrations[1].spec.priority, -10,
+				'hero 的遮蔽注册必须用**负** priority（同槽同 id 按 priority 优先）—— 官方浮层正是靠它让位 ✓');
 			const chip = h.render(0, { sessionId: 's-a' });
 			const btn = findByAttr(chip, 'data-vssaros-context-chip');
 			assert.ok(btn, '必须渲染合并入口');
@@ -289,8 +297,8 @@ suite('chat-surface header（①工作区 ②历史/新建 ③preset 去重）',
 				const items = findAll(menu, 'data-vssaros-context-item')
 					.filter((i: any) => String(i.props['data-vssaros-context-item']).indexOf('worktree:') === 0);
 				assert.strictEqual(items.length, 2, '面板列出全部 worktree（与工作区组同槽、靠前缀区分 ✓）');
-				assert.ok(JSON.stringify(menu.children).includes('新建会话'),
-					'语义必须写在脸上：切换 worktree = 新建会话（历史独立）');
+				assert.ok(JSON.stringify(menu.children).includes('新建或接管会话'),
+					'语义必须写在脸上：切换 worktree = 新建或接管会话（历史独立）；且明说**不动 IDE 的窗口工作区**');
 				items.find((i: any) => i.props['data-vssaros-context-item'] === 'worktree:G:\\Repo').props.onClick();
 				assert.deepStrictEqual(switches, ['G:\\Repo'], '选主工作区 ⇒ bridge.switchWorktree(主目录)');
 			});
@@ -302,6 +310,751 @@ suite('chat-surface header（①工作区 ②历史/新建 ③preset 去重）',
 				// 合并口径：**两组长都空**才整体不渲染 ✓（任一有数据都要出入口 ✓）
 				assert.strictEqual(h.render(0, { sessionId: 's-a' }), null);
 			});
+		});
+	});
+
+	/**
+	 * ★ 多根工作区（2026-10-16；mockup `doc/dsh-workspace-multiroot-mockup.html` 稿 C）。
+	 *
+	 * 病根：dsh 的工作区模型**只能单目录**，宿主把 IDE 侧一个多根工作区的各根**摊平**成 N 条记录
+	 * ⇒ 页面只看 `workspaces.list()` 时"同一个窗口的 3 个根"看起来就是 3 个互不相干的工作区 ✗。
+	 * 修法：宿主新增 `DSH_PAGE_IPC_WORKSPACES`（IDE 记录，含各根）⇒ 页面按记录**分组 + 平铺各根**。
+	 * ⚠ 本套最要紧的一条是**回落契约**：没有这条推送时，输出必须与从前**逐字相同**（旧宿主/未就绪 ✓）。
+	 */
+	suite('① 多根工作区（IDE 工作区记录推送 + 稿 C 平铺）', () => {
+		/** 宿主**摊平**后的快照：一个 3 根工作区 = 3 条平级记录（病根的形态本身 ✓）。 */
+		const FLATTENED = {
+			items: [
+				{ workspaceId: 'ws-a', path: '/repo/main', title: 'main', sessionIds: ['s-a'] },
+				{ workspaceId: 'ws-b', path: '/repo/pkg-b', title: 'pkg-b', sessionIds: [] },
+				{ workspaceId: 'ws-c', path: '/repo/pkg-c', title: 'pkg-c', sessionIds: [] },
+			],
+		};
+		const RECORDS = JSON.stringify([{
+			id: 'ide-1', name: 'multi',
+			roots: [
+				{ path: '/repo/main', name: 'main', isPrimary: true },
+				{ path: '/repo/pkg-b', name: 'pkg-b', isPrimary: false },
+				{ path: '/repo/pkg-c', name: 'pkg-c', isPrimary: false },
+			],
+			codeWorkspacePath: 'G:\\ws\\multi.code-workspace',
+		}]);
+		const WT = JSON.stringify([
+			{ path: '/repo/main', name: 'main', branch: 'main', isMain: true },
+			{ path: '/repo/main/.wt/feat', name: 'feat', branch: 'feat/x', isMain: false },
+		]);
+		/** document 桩：两个 dataset 都要能单独给（缺一个 = "那条推送没到" ✓）。 */
+		const withDom = (datasets: { worktrees?: string; workspaces?: string }, run: () => void) => {
+			const ds: Record<string, string> = {};
+			if (datasets.workspaces !== undefined) { ds.vssarosWorkspaces = datasets.workspaces; }
+			if (datasets.worktrees !== undefined) { ds.vssarosWorktrees = datasets.worktrees; }
+			const doc: any = {
+				documentElement: { dataset: ds },
+				addEventListener: () => undefined, removeEventListener: () => undefined, dispatchEvent: () => undefined,
+			};
+			const prev = (globalThis as any).document;
+			(globalThis as any).document = doc;
+			try { run(); } finally { (globalThis as any).document = prev; }
+		};
+		const makeCtx = (switches: string[], snapshot: unknown, cwd: string | null) => ({
+			get: (name: string) => {
+				if (name === 'workspaces') { return { list: { getSnapshot: () => snapshot, subscribe: () => () => undefined } }; }
+				if (name === 'sessions') { return { list: { getSnapshot: () => ({ byId: { 's-a': { cwd } } }), subscribe: () => () => undefined } }; }
+				return undefined;
+			},
+			uiWorkspace: { openWorkspace: () => Promise.resolve() },
+			__bridge: { switchWorktree: (path: string) => { switches.push(path); return Promise.resolve(); } },
+		});
+		const rows = (menu: any, kind: string) => findAll(menu, 'data-vssaros-context-item')
+			.filter((n: any) => String(n.props['data-vssaros-context-item']).indexOf(kind + ':') === 0);
+
+		test('纯逻辑：parseWorkspaces —— 坏数据 / 缺 id / **一个根都没有** ⇒ 丢掉那一条（不编假根 ✗）', () => {
+			const t = loadChunk(`${LIB}/client.workspace.js`, {}, {}).exports.__test;
+			assert.strictEqual(t.parseWorkspaces(RECORDS).length, 1);
+			assert.deepStrictEqual(t.parseWorkspaces('not json'), [], '坏 JSON ⇒ 空（不猜）');
+			assert.deepStrictEqual(t.parseWorkspaces(''), [], '没推送 ⇒ 空');
+			assert.deepStrictEqual(t.parseWorkspaces(JSON.stringify([{ name: '缺 id', roots: [{ path: '/a' }] }])), [],
+				'缺 id ⇒ 丢掉（组 key 靠它兜底 ✓）');
+			assert.deepStrictEqual(t.parseWorkspaces(JSON.stringify([{ id: 'x', roots: [] }])), [],
+				'**一个根都没有** ⇒ 丢掉：编一条"没有根的工作区"只会让用户点不动 ✗');
+			assert.deepStrictEqual(
+				t.parseWorkspaces(JSON.stringify([{ id: 'good', roots: [{ path: '/g' }] }, { id: 'bad', roots: [] }])).map((x: any) => x.id),
+				['good'],
+				'⚠ 坏的只许带走它**自己**：整批丢掉会让一条脏记录把好工作区也藏起来 ✗（本用例专门钉这个）');
+			const one = t.parseWorkspaces(JSON.stringify([{ id: 'x', roots: [{ path: '/a/b' }] }]))[0];
+			assert.strictEqual(one.name, 'b', '没给名字 ⇒ 用主根末段（不编别的 ✓）');
+			assert.strictEqual(one.roots[0].name, 'b');
+			assert.strictEqual(one.codeWorkspacePath, null, '没给 .code-workspace ⇒ null（不许编 ✓）');
+			assert.strictEqual(t.parseWorkspaces(RECORDS)[0].codeWorkspacePath, 'G:\\ws\\multi.code-workspace');
+		});
+
+		test('★ 回落契约：**没有记录**时 buildTree 与"只有快照"逐字相同（旧宿主 / 未就绪不得变样 ✗）', () => {
+			const t = loadChunk(`${LIB}/client.workspace.js`, {}, {}).exports.__test;
+			const tree = t.buildTree({ workspaces: FLATTENED.items, records: [], worktrees: [], query: '' });
+			assert.strictEqual(tree.groups.length, 3, '一条快照一行（就是加这条推送之前的行为 ✓）');
+			assert.deepStrictEqual(tree.groups.map((g: any) => g.key), ['ws-a', 'ws-b', 'ws-c'],
+				'组 key 必须仍是 dsh 的 workspaceId（行锚点 `workspace:<id>` 与当前项判定都靠它 ✓）');
+			assert.deepStrictEqual(tree.groups.map((g: any) => g.multi), [false, false, false],
+				'没有记录 ⇒ 一律按单根渲染（不铺根行 ✓）');
+			assert.deepStrictEqual(tree.groups.map((g: any) => g.roots.length), [1, 1, 1]);
+			assert.deepStrictEqual(tree.groups.map((g: any) => g.ids), [['ws-a'], ['ws-b'], ['ws-c']]);
+		});
+
+		test('★ 分组：一条记录认领**摊平的 3 条** ⇒ 合成一组（不是 3 组）；未认领的条目各自成组', () => {
+			const t = loadChunk(`${LIB}/client.workspace.js`, {}, {}).exports.__test;
+			const records = t.parseWorkspaces(RECORDS);
+			const items = [...FLATTENED.items, { workspaceId: 'ws-z', path: '/other', title: 'other', sessionIds: [] }];
+			const tree = t.buildTree({ workspaces: items, records, worktrees: [], query: '' });
+			assert.strictEqual(tree.groups.length, 2, '3 条摊平记录 + 1 条外来 ⇒ **两组**（这正是病根的修法 ✓）');
+			const g = tree.groups[0];
+			assert.strictEqual(g.multi, true);
+			assert.strictEqual(g.key, 'ws-a', '组 key = **主根**对应的那条快照 id（hero 的 onPick 只认 dsh id ✓）');
+			assert.deepStrictEqual(g.ids, ['ws-a', 'ws-b', 'ws-c'], '组内全部 id 都要留着 —— 当前项判定按"任一命中" ✓');
+			assert.deepStrictEqual(g.roots.map((r: any) => r.path), ['/repo/main', '/repo/pkg-b', '/repo/pkg-c'],
+				'各根顺序照记录（主根在前 ✓）');
+			assert.strictEqual(g.codeWorkspacePath, 'G:\\ws\\multi.code-workspace', '.code-workspace 身份如实带上 ✓');
+			assert.strictEqual(tree.groups[1].key, 'ws-z', '没被任何记录认领的条目**不许丢**（各自成组 ✓）');
+			assert.strictEqual(tree.groups[1].multi, false);
+		});
+
+		test('只有 IDE 记录、dsh 一条都没登记 ⇒ 仍出一组，key 带 `ide:` 兜底（hero 里据此拒绝 ✓）', () => {
+			const t = loadChunk(`${LIB}/client.workspace.js`, {}, {}).exports.__test;
+			const records = t.parseWorkspaces(JSON.stringify([{
+				id: 'ide-x', name: 'X', roots: [{ path: '/x/main', name: 'main', isPrimary: true }, { path: '/x/lib', name: 'lib' }],
+			}]));
+			const tree = t.buildTree({ workspaces: [], records, worktrees: [], query: '' });
+			assert.strictEqual(tree.groups.length, 1);
+			assert.strictEqual(tree.groups[0].key, 'ide:ide-x', '不带 ide: 前缀的话会与真的 dsh id 混在一起 ✗');
+			assert.strictEqual(tree.groups[0].dshKnown, false);
+			assert.deepStrictEqual(tree.groups[0].ids, []);
+		});
+
+		test('搜索：根名 / 根路径 / 分支都要能命中（多根后搜索面不覆盖根就等于搜不到 ✗）', () => {
+			const t = loadChunk(`${LIB}/client.workspace.js`, {}, {}).exports.__test;
+			const records = t.parseWorkspaces(RECORDS);
+			const byRootName = t.buildTree({ workspaces: FLATTENED.items, records, worktrees: [], query: 'pkg-c' });
+			assert.strictEqual(byRootName.groups.filter((g: any) => g.matched).length, 1, '按根名搜到该组 ✓');
+			const byRootPath = t.buildTree({ workspaces: FLATTENED.items, records, worktrees: [], query: '/repo/pkg-b' });
+			assert.strictEqual(byRootPath.groups.filter((g: any) => g.matched).length, 1, '按根路径也能搜到 ✓');
+			const byBranch = t.buildTree({ workspaces: [], records: [], worktrees: t.parseWorktrees(WT), query: 'feat/x' });
+			assert.strictEqual(byBranch.worktrees.filter((w: any) => w.matched).length, 1);
+		});
+
+		test('worktree 行带**归属根名**（多根之后"feat/x 属于哪个仓"会歧义 ⇒ 不许省 ✗）', () => {
+			const t = loadChunk(`${LIB}/client.workspace.js`, {}, {}).exports.__test;
+			const withRec = t.buildTree({ workspaces: FLATTENED.items, records: t.parseWorkspaces(RECORDS), worktrees: t.parseWorktrees(WT), query: '' });
+			assert.strictEqual(withRec.worktrees[0].owner, 'multi', '归属用**记录名**（= 那个多根工作区 ✓）');
+			const noRec = t.buildTree({ workspaces: FLATTENED.items, records: [], worktrees: t.parseWorktrees(WT), query: '' });
+			assert.strictEqual(noRec.worktrees[0].owner, 'main', '没有记录时回落到 isMain 那条的路径末段（不编 ✗）');
+		});
+
+		test('渲染（稿 A 主从两栏）：左栏一行一个工作区 + 右栏该组各根 + 徽标 + 当前会话 cwd 栏', () => {
+			withDom({ workspaces: RECORDS }, () => {
+				const h = loadChunk(`${LIB}/client.workspace.js`, makeCtx([], FLATTENED, '/repo/main'), {});
+				const chip = findByAttr(h.render(0, { sessionId: 's-a' }), 'data-vssaros-context-chip');
+				assert.ok(chip, '入口照旧要出');
+				assert.ok(JSON.stringify(chip.children).includes('3 根'),
+					'chip 上要能看出多根（稿 A 的底线能力）：不然顶部只说"multi"，用户不知道它有 3 个根 ✓');
+				chip.props.onClick();
+				const menu = h.render(0, { sessionId: 's-a' }) as any;   // render 返回 unknown（假树），断言用 any 取 children
+				assert.strictEqual(rows(menu, 'workspace').length, 1, '摊平的 3 条必须合成**一行**工作区');
+				const groupRow = rows(menu, 'workspace')[0];
+				assert.ok(JSON.stringify(groupRow.children).includes('3 根'), '组行带「N 根」徽标 ✓');
+				assert.ok(JSON.stringify(groupRow.children).includes('.code-workspace'), '身份如实标出（只读展示 ✓）');
+				const rootRows = rows(menu, 'root');
+				assert.deepStrictEqual(rootRows.map((r: any) => r.props['data-vssaros-context-item']),
+					['root:/repo/main', 'root:/repo/pkg-b', 'root:/repo/pkg-c'],
+					'各根都在**右栏**、顺序 = 主根在前（稿 A：根不再平铺进列表 ✓）');
+				assert.ok(JSON.stringify(menu.children).includes('cwd = /repo/main'),
+					'★ 当前会话栏必须把 cwd 写在脸上（多根后不说清 = 用户以为在 A 根、其实在 B 根 ✗）');
+			});
+		});
+
+		/**
+		 * 稿 A 的**结构契约**（2026-10-17）：左栏只放目录（工作区 / worktree），右栏放"选中那条"的
+		 * 根与主命令。为什么值得单独钉一条：真机截图上根平铺把 4 个工作区撑成 12+ 行，用户找不到
+		 * "我在哪、点哪个会去哪" ✗ —— 这条用例就是那个结论的可执行版 ✓。
+		 */
+		test('稿 A：左栏 = 目录清单（根不在这里）、右栏 = 选中那条的根 + 主命令', () => {
+			withDom({ workspaces: RECORDS }, () => {
+				const h = loadChunk(`${LIB}/client.workspace.js`, makeCtx([], FLATTENED, '/repo/main'), {});
+				findByAttr(h.render(0, { sessionId: 's-a' }), 'data-vssaros-context-chip').props.onClick();
+				const menu = h.render(0, { sessionId: 's-a' });
+				const panes = findAll(menu, 'data-vssaros-context-pane');
+				const paneOf = (kind: string) => panes.filter((n: any) => n.props['data-vssaros-context-pane'] === kind)[0];
+				const list = paneOf('list');
+				const detail = paneOf('detail');
+				assert.ok(list && detail, '两栏都要在（稿 A：左列表 + 右详情 ✓）');
+				const attrsIn = (pane: any, prefix: string) => findAll(pane, 'data-vssaros-context-item')
+					.map((n: any) => String(n.props['data-vssaros-context-item']))
+					.filter((a: string) => a.indexOf(prefix) === 0);
+				assert.deepStrictEqual(attrsIn(list, 'workspace:'), ['workspace:ws-a'],
+					'左栏一行 = 一个工作区（摊平的 3 条合成一行 ✓）');
+				assert.deepStrictEqual(attrsIn(list, 'root:'), [],
+					'★ 根**不许**再平铺在左栏 —— 那正是"4 个工作区撑成 12+ 行"的来源 ✗');
+				assert.deepStrictEqual(attrsIn(detail, 'root:'), ['root:/repo/main', 'root:/repo/pkg-b', 'root:/repo/pkg-c'],
+					'右栏 = 选中那条的各根（顺序 = 主根在前 ✓）');
+				const action = findByAttr(detail, 'data-vssaros-context-detail-action');
+				assert.ok(action, '右栏要给主命令（"这条到底能不能切"不许靠猜 ✗）');
+				assert.strictEqual(action!.props.disabled, true, '当前那条 ⇒ 主命令禁用（文案 = ✓ 已在这里）');
+			});
+		});
+
+		test('点根行 ⇒ `bridge.switchWorktree(该根)`；点组行 ⇒ **主根**（多根时想换根就点根行 ✓）', async () => {
+			// 当前会话挂在**另一个**工作区上 ⇒ 该组既不是"当前"（组行可点）、该组也没有根是当前 cwd（根行可点）✓
+			const snapshot = {
+				items: [
+					{ workspaceId: 'ws-a', path: '/repo/main', title: 'main', sessionIds: [] },
+					{ workspaceId: 'ws-b', path: '/repo/pkg-b', title: 'pkg-b', sessionIds: [] },
+					{ workspaceId: 'ws-c', path: '/repo/pkg-c', title: 'pkg-c', sessionIds: [] },
+					{ workspaceId: 'ws-other', path: '/elsewhere', title: 'other', sessionIds: ['s-a'] },
+				],
+			};
+			const switches: string[] = [];
+			withDom({ workspaces: RECORDS }, () => {
+				const h = loadChunk(`${LIB}/client.workspace.js`, makeCtx(switches, snapshot, '/elsewhere'), {});
+				/**
+				 * 拿一个"面板开着"的树：已开就复用（**不要**再点 chip —— 那会 toggle 成关闭 ✗，
+				 * 本用例第二版就踩过这个坑 ✓）。
+				 */
+				const withMenu = (fn: (menu: any) => void) => {
+					let menu = h.render(0, { sessionId: 's-a' });
+					if (findAll(menu, 'data-vssaros-context-item').length === 0) {
+						findByAttr(menu, 'data-vssaros-context-chip').props.onClick();
+						menu = h.render(0, { sessionId: 's-a' });
+					}
+					fn(menu);
+				};
+				const click = (attr: string) => withMenu((menu) => {
+					findAll(menu, 'data-vssaros-context-item')
+						.find((n: any) => n.props['data-vssaros-context-item'] === attr).props.onClick();
+				});
+				// ★ 稿 A（2026-10-17 主从两栏）后，根行只出现在**右栏**、且只属于"当前指向的那一条"
+				//   ⇒ 想点某个组的根，先让右栏指向它（悬停预览：**只换详情、不换会话** ⇒ 安全 ✓）。
+				const hover = (attr: string) => {
+					withMenu((menu) => {
+						findAll(menu, 'data-vssaros-context-item')
+							.find((n: any) => n.props['data-vssaros-context-item'] === attr).props.onMouseEnter();
+					});
+					return h.render(0, { sessionId: 's-a' });   // 假 react 不自动重渲 ⇒ 手动再来一把 ✓
+				};
+				const afterHover = hover('workspace:ws-a');
+				assert.ok(findAll(afterHover, 'data-vssaros-context-item')
+					.some((n: any) => n.props['data-vssaros-context-item'] === 'root:/repo/pkg-c'),
+					'★ 悬停 = 右栏换详情（不换会话）⇒ 该组的根才点得到（稿 A 的交互契约 ✓）');
+				click('root:/repo/pkg-c');
+				click('workspace:ws-a');
+			});
+			await new Promise<void>(resolve => setTimeout(resolve, 0));
+			assert.deepStrictEqual(switches, ['/repo/pkg-c', '/repo/main'],
+				'根行 ⇒ 就以那个根开会话；组行 ⇒ 主根（行尾文案"以主根开会话 →"必须与它一致 ✓）');
+		});
+
+		/**
+		 * 带**事件序列**的 ctx（记 `ide:` / `sess:` 两个动作的先后）—— 用于钉"先切窗口、再起会话"的顺序 ✓。
+		 * `withIde` = 桥支不支持 `switchWorkspace`（老宿主没有这条 ⇒ 走旧路径 ✓）。
+		 */
+		const makeCtxEvents = (events: string[], snapshot: unknown, cwd: string | null, withIde = true) => ({
+			get: (name: string) => {
+				if (name === 'workspaces') { return { list: { getSnapshot: () => snapshot, subscribe: () => () => undefined } }; }
+				if (name === 'sessions') { return { list: { getSnapshot: () => ({ byId: { 's-a': { cwd } } }), subscribe: () => () => undefined } }; }
+				return undefined;
+			},
+			uiWorkspace: { openWorkspace: () => Promise.resolve() },
+			__bridge: Object.assign({
+				switchWorktree: (path: string) => { events.push('sess:' + path); return Promise.resolve(); },
+			}, withIde ? {
+				switchWorkspace: (id: string) => { events.push('ide:' + id); return Promise.resolve(); },
+				notify: (kind: string, text: string) => { events.push('notify:' + kind + ':' + text); return Promise.resolve(); },
+			} : {}),
+		});
+		/** 当前会话挂在**别的**工作区上 ⇒ 目标组既不是"当前"、也没有根是当前 cwd（可点 ✓）。 */
+		const AWAY = {
+			items: [
+				{ workspaceId: 'ws-a', path: '/repo/main', title: 'main', sessionIds: [] },
+				{ workspaceId: 'ws-b', path: '/repo/pkg-b', title: 'pkg-b', sessionIds: [] },
+				{ workspaceId: 'ws-c', path: '/repo/pkg-c', title: 'pkg-c', sessionIds: [] },
+				{ workspaceId: 'ws-other', path: '/elsewhere', title: 'other', sessionIds: ['s-a'] },
+			],
+		};
+		const clickRow = (h: any, attr: string) => {
+			findByAttr(h.render(0, { sessionId: 's-a' }), 'data-vssaros-context-chip').props.onClick();
+			const menu = h.render(0, { sessionId: 's-a' });
+			findAll(menu, 'data-vssaros-context-item')
+				.find((n: any) => n.props['data-vssaros-context-item'] === attr).props.onClick();
+		};
+
+		test('★★ 点工作区行 = **只**在目标主根起会话；**绝不**动 IDE 的窗口工作区（2026-10-17 用户要求两侧独立）', async () => {
+			const events: string[] = [];
+			withDom({ workspaces: RECORDS }, () => {
+				const h = loadChunk(`${LIB}/client.workspace.js`, makeCtxEvents(events, AWAY, '/elsewhere'), {});
+				clickRow(h, 'workspace:ws-a');
+			});
+			await new Promise<void>(resolve => setTimeout(resolve, 0));
+			assert.deepStrictEqual(events, ['sess:/repo/main'],
+				'只许发 `switchWorktree(主根)` —— 再调 `switchWorkspace` 就会把 IDE 的 ActivityBar / 文件夹树一起换掉（用户明确否决 ✗）');
+			assert.ok(!events.some(e => e.startsWith('ide:')),
+				'桥上有 `switchWorkspace` 也不许调（"能力还在" ≠ "这里该用"）');
+		});
+
+		test('★ 没有 IDE 记录（纯 dsh 条目）⇒ 只发 switchWorktree（不许编一个 ide: key 去切 ✗）', async () => {
+			const events: string[] = [];
+			withDom({}, () => {   // 没有工作区记录推送 ⇒ 全部走回落路径 ✓
+				const h = loadChunk(`${LIB}/client.workspace.js`, makeCtxEvents(events, AWAY, '/elsewhere'), {});
+				clickRow(h, 'workspace:ws-a');
+			});
+			await new Promise<void>(resolve => setTimeout(resolve, 0));
+			assert.deepStrictEqual(events, ['sess:/repo/main'], '回落契约的另一面：拿不到 IDE 记录就只起会话 ✓');
+		});
+
+		test('行尾文案**与桥无关**：一律"以主根开会话"（写"切换工作区"就是承诺窗口变化 ⇒ 假话 ✗）', () => {
+			for (const withIde of [false, true]) {
+				withDom({ workspaces: RECORDS }, () => {
+					const h = loadChunk(`${LIB}/client.workspace.js`, makeCtxEvents([], AWAY, '/elsewhere', withIde), {});
+					findByAttr(h.render(0, { sessionId: 's-a' }), 'data-vssaros-context-chip').props.onClick();
+					const menu = h.render(0, { sessionId: 's-a' });
+					const row = findAll(menu, 'data-vssaros-context-item')
+						.find((n: any) => n.props['data-vssaros-context-item'] === 'workspace:ws-a');
+					const text = JSON.stringify(row.children);
+					assert.ok(text.includes('以主根开会话'), `桥支持=${withIde}：只说"开会话"（本面板不切窗口）`);
+					assert.ok(!text.includes('切换工作区'),
+						`桥支持=${withIde}：行尾**任何时候**都不许出现"切换工作区" —— 本面板已经不动 IDE 窗口了 ✗`);
+				});
+			}
+		});
+
+		test('★ 负对照：就算桥上的 `switchWorkspace` 会 reject，点击也只走会话那一条（不许被"顺手切一下窗口"带出来）', async () => {
+			const events: string[] = [];
+			const ctx = makeCtxEvents(events, AWAY, '/elsewhere');
+			ctx.__bridge.switchWorkspace = (id: string) => { events.push('ide-fail:' + id); return Promise.reject(new Error('找不到工作区')); };
+			withDom({ workspaces: RECORDS }, () => {
+				const h = loadChunk(`${LIB}/client.workspace.js`, ctx, {});
+				clickRow(h, 'workspace:ws-a');
+			});
+			await new Promise<void>(resolve => setTimeout(resolve, 0));
+			assert.deepStrictEqual(events, ['sess:/repo/main'],
+				'只有起会话一条事件：本面板不碰窗口 ⇒ 窗口那边成功/失败/会不会弹通知，都与这里无关 ✓');
+		});
+
+		test('★ 两条记录指向同一个根 ⇒ 快照条目只被**一条**认领（不许两行都写"当前" ✗）', () => {
+			// 用户截图里的实况：`sarosis-agents-client` 与 `workspace.json` 两条记录都含同一个根
+			// ⇒ 从前两条都认领同一条 dsh 记录 ⇒ 面板上**两行都标"当前"**（看着像重复工作区 ✗）。
+			const t = loadChunk(`${LIB}/client.workspace.js`, {}, {}).exports.__test;
+			const records = t.parseWorkspaces(JSON.stringify([
+				{ id: 'r1', name: 'A', roots: [{ path: '/repo/main', name: 'main', isPrimary: true }] },
+				{ id: 'r2', name: 'B', roots: [{ path: '/repo/main', name: 'main', isPrimary: true }] },
+			]));
+			const tree = t.buildTree({
+				workspaces: [{ workspaceId: 'ws-a', path: '/repo/main', title: 'main' }],
+				records, worktrees: [], query: '',
+			});
+			assert.strictEqual(tree.groups.length, 2, '两条记录都要出行（IDE 里确实都注册过，不许吞 ✓）');
+			assert.deepStrictEqual(tree.groups[0].ids, ['ws-a'], '第一条认领那条快照 ✓');
+			assert.deepStrictEqual(tree.groups[1].ids, [], '第二条不许再认领同一条（否则"当前"出现两次 ✗）');
+			assert.strictEqual(tree.groups[1].key, 'ide:r2', '没认领到 ⇒ key 带 `ide:` 兜底（一眼看出它不在 dsh 侧 ✓）');
+		});
+
+		test('★★ hero 点工作区行 ⇒ **真的起会话**，但**不动 IDE 的窗口工作区**（2026-10-17 用户要求两侧独立）', async () => {
+			// 翻案史（别再来回改，先读）：
+			//   · 2026-10-16：英雄屏那行改成"只切窗口 + 官方 `onPick`"，理由是保住官方"先选目录再写第一句"的体验；
+			//   · 2026-10-17 上午：用户报"聊天框里仍然切不了工作区"，真机日志实证（README 5.149）：那屏正是 hero，
+			//     用户连点 4 次、每次 IDE 窗口都切过去了（15ms）但聊天框**零变化**（`hero-pick`×4、`rebinds:0`）
+			//     ⇒ "只切窗口"在用户那里就等于"切不了" ✗✗ ⇒ 改成"窗口 + 会话都切"；
+			//   · **2026-10-17 下午（本次）**：用户明确"两侧保持独立" ⇒ 删掉切窗口那一跳，只留会话。
+			//   ⚠ 唯一保留：**连主根都读不到**时才回落到官方 `onPick`（另一条用例 ✓）。
+			const events: string[] = [];
+			const picked: string[] = [];
+			withDom({ workspaces: RECORDS }, () => {
+				const h = loadChunk(`${LIB}/client.workspace.js`, makeCtxEvents(events, AWAY, null), {});
+				const tree = h.render(1, {
+					open: true, selectedId: 'ws-other', anchorRef: { current: null },
+					onPick: (id: string) => picked.push(id), onClose: () => undefined,
+				});
+				findAll(tree, 'data-vssaros-context-item')
+					.find((n: any) => n.props['data-vssaros-context-item'] === 'workspace:ws-a').props.onClick();
+			});
+			await new Promise<void>(resolve => setTimeout(resolve, 0));
+			assert.deepStrictEqual(events, ['sess:/repo/main'],
+				'hero 里点工作区 = 只在它的主根起会话；**不许**再发 `switchWorkspace`（会把 IDE 的 ActivityBar 一起换掉 ✗）');
+			assert.deepStrictEqual(picked, ['ws-a'],
+				'★ 顺带把**官方选中**对齐（hero 屏那枚 chip 显示的就是它；不对齐就可能"UI 没刷新" ✗）'
+				+ '—— 但官方选中**不是**替代品，切换本身仍走宿主 ✓');
+		});
+
+		test('★ hero 的组行**连主根都没有** ⇒ 才回落到官方 onPick（唯一保留点，且不静默）', () => {
+			const records = JSON.stringify([{ id: 'ide-nopath', name: '没有根', roots: [{ path: '/x/noroot', name: 'noroot', isPrimary: true }] }]);
+			withDom({ workspaces: records }, () => {
+				const picked: string[] = [];
+				const switches: string[] = [];
+				const h = loadChunk(`${LIB}/client.workspace.js`, makeCtx(switches, { items: [{ workspaceId: 'ws-nopath', path: '', title: '空路径', sessionIds: ['s-a'] }] }, null), {});
+				const tree = h.render(1, {
+					open: true, selectedId: 'ws-other', anchorRef: { current: null },
+					onPick: (id: string) => picked.push(id), onClose: () => undefined,
+				});
+				const row = findAll(tree, 'data-vssaros-context-item').find((n: any) => n.props['data-vssaros-context-item'] === 'workspace:ws-nopath');
+				assert.ok(row, '没有根的组行也要出（否则用户在这屏彻底看不到它 ✗）');
+				row.props.onClick();
+				assert.deepStrictEqual(switches, [], '没有目录 ⇒ 起不了会话（不许瞎发 path ✗）');
+				assert.deepStrictEqual(picked, ['ws-nopath'], '这时才用官方 `onPick` 选中（该行在 dsh 有登记 ✓）');
+			});
+		});
+
+		test('★ hero 里只有 IDE 记录（dsh 未登记）⇒ 现在也能切（按**路径**起会话，不需要 dsh 登记 ✓）', () => {
+			// 2026-10-17 口径变更的顺带收益：从前这条分支只能"如实拒绝"（`onPick` 只认 dsh workspaceId ✗）；
+			// 现在走的是**路径**（`switchWorktree(主根)`，与 worktree 行同一条命令）⇒ 只有 IDE 记录也能切过去 ✓。
+			const records = JSON.stringify([{ id: 'ide-x', name: 'X', roots: [{ path: '/x/main', name: 'main', isPrimary: true }] }]);
+			withDom({ workspaces: records }, () => {
+				const picked: string[] = [];
+				const switches: string[] = [];
+				const h = loadChunk(`${LIB}/client.workspace.js`, makeCtx(switches, { items: [] }, null), {});
+				const tree = h.render(1, {
+					open: true, selectedId: 'ws-1', anchorRef: { current: null },
+					onPick: (id: string) => picked.push(id), onClose: () => undefined,
+				});
+				const row = rows(tree, 'workspace')[0];
+				assert.ok(row, '只有 IDE 记录时**也要出面板**（否则这个窗口里根本点不到工作区 ✗）');
+				row.props.onClick();
+				assert.deepStrictEqual(switches, ['/x/main'], '按主根路径起会话 ⇒ dsh 那边没登记也能切 ✓');
+				assert.deepStrictEqual(picked, [], '走的是宿主那条路，不需要（也不该）编一个 dsh id 传给官方 ✗');
+			});
+		});
+	});
+
+	/**
+	 * ① 工作区 UI 的**刷新与取证**（2026-10-17；用户报「切工作区后聊天框里的工作区 UI 没刷新」）。
+	 *
+	 * 这条链有五跳：页面点击 → 桥 `switchWorktree` → 宿主 `session.start` → `rebindSession` → preload 派
+	 * `vssaros-dsh-rebind` → 页面 `client.js` 写 `state.sessionId`（**裸字段**）→ 我们的入口按它算"当前工作区"。
+	 * 本轮在页面侧补两件：
+	 *   ① **入口自己订阅 rebind**：`client.js` 那条处理只改字段、**不触发任何 React 重渲** ✗
+	 *      ⇒ 从前完全靠"框架为这次换绑重渲 header 槽"；那一步落空，chip 就会一直显示**换绑前**的工作区
+	 *      （= 用户报障的形态）⇒ 自己做主，收到事件就逼一次重渲 ✓。
+	 *   ② **诊断位 `state.workspaceUi` / `workspaceUiLog`**：宿主自证快照会把它带进 IDE 日志
+	 *      （`dshViewHost.ts` 的 `PAGE_SURFACE_REPORT`）⇒ 下次报障一眼归因到"哪一跳没走" ✓。
+	 * ⚠ 判据仍是**会话归属**（`workspaceIdOfSession`）：**IDE 活动工作区是另一个概念**，不许拿它当"当前" ✗
+	 *   （拿了就是"切了窗口就谎报会话也过去了" —— 比不刷新更坏）。
+	 */
+	suite('① 工作区 UI 的刷新与取证（rebind / 诊断位；2026-10-17）', () => {
+		const SNAP = {
+			items: [
+				{ workspaceId: 'ws-1', path: 'g:\\SarosWorkspace\\sarosis-agents-client', title: 'sarosis-agents-client', sessionIds: ['s-a'] },
+				{ workspaceId: 'ws-2', path: '/home/u/other-repo', title: 'other-repo', sessionIds: ['s-b'] },
+			],
+		};
+		const RECORDS_PUSH = JSON.stringify([
+			{ id: 'ide-9', name: 'other', roots: [{ path: '/home/u/other-repo', name: 'other-repo', isPrimary: true }] },
+		]);
+		/** 至少让"推送没到"与"推送到了"两种态都能造（`readPushedWorkspaces` 读的是 dataset ✓）。 */
+		const withRebindDom = (run: (fire: (type: string, detail: unknown) => void, listeners: string[]) => void) => {
+			const listeners = new Map<string, ((ev: any) => void)[]>();
+			const names: string[] = [];
+			const doc: any = {
+				documentElement: { dataset: {} as Record<string, string> },
+				addEventListener: (name: string, fn: any) => { names.push(name); listeners.set(name, [...(listeners.get(name) ?? []), fn]); },
+				removeEventListener: (name: string, fn: any) => { listeners.set(name, (listeners.get(name) ?? []).filter(f => f !== fn)); },
+				dispatchEvent: (ev: any) => { for (const fn of listeners.get(ev && ev.type) ?? []) { fn(ev); } return true; },
+			};
+			const prev = (globalThis as any).document;
+			(globalThis as any).document = doc;
+			try {
+				run((type, detail) => doc.dispatchEvent({ type, detail }), names);
+			} finally {
+				(globalThis as any).document = prev;
+			}
+		};
+		const makeCtx = (bridgeOverride?: Record<string, unknown>) => ({
+			get: (name: string) => (name === 'workspaces' ? { list: { getSnapshot: () => SNAP, subscribe: () => () => undefined } } : undefined),
+			uiWorkspace: { openWorkspace: () => Promise.resolve() },
+			__bridge: bridgeOverride ?? { switchWorktree: () => Promise.resolve() },
+		});
+		// ⚠ 必须 `JSON.stringify`（会**递归**进 children）—— `String(...)` 只对顶层字符串有效，
+		//   而文案在嵌套的 span 里 ⇒ 会假红（本用例第一版就这么写，当场被自己抓到 ✓）。
+		const chipText = (tree: unknown) => JSON.stringify(findByAttr(tree, 'data-vssaros-context-chip')?.children ?? null);
+		const tick = () => new Promise<void>(r => setTimeout(r, 0));
+		/** 打开面板 → 点某条工作区行（与既有用例同一手法：`data-vssaros-context-item = workspace:<id>` ✓）。 */
+		const clickWorkspaceRow = (h: ReturnType<typeof loadChunk>, props: Record<string, unknown>, key: string) => {
+			findByAttr(h.render(0, props), 'data-vssaros-context-chip').props.onClick();
+			const row = findAll(h.render(0, props), 'data-vssaros-context-item')
+				.find((n: any) => n.props['data-vssaros-context-item'] === key);
+			assert.ok(row, `应有 ${key} 这一行`);
+			row.props.onClick();
+		};
+
+		test('★ 入口自己订阅宿主换绑（vssaros-dsh-rebind）⇒ chip 立刻跟着**新会话**的工作区（不等框架重渲）', () => {
+			withRebindDom((fire, listeners) => {
+				const state: any = { sessionId: 's-a' };
+				const h = loadChunk(`${LIB}/client.workspace.js`, makeCtx(), state);
+				const first = h.render(0, {});
+				assert.ok(chipText(first).includes('sarosis-agents-client'), '初始 = 会话 s-a 所属工作区 ws-1');
+				assert.ok(listeners.indexOf('vssaros-dsh-rebind') >= 0,
+					'★ 必须注册 rebind 监听：`client.js` 那条 rebind 只改 `state.sessionId`（**不触发重渲** ✗）'
+					+ '——只靠"框架为这次换绑重渲 header 槽"会漏，漏了就是用户报的"切了工作区 UI 没刷新"');
+				assert.strictEqual(state.workspaceUi.rebinds, undefined, '还没换绑过 ⇒ 计数不存在（不许编）');
+
+				// 宿主换绑：**先** client.js 写裸字段（同一事件的另一个监听器），**再**派事件（顺序与真机一致 ✓）
+				state.sessionId = 's-b';
+				fire('vssaros-dsh-rebind', { sessionId: 's-b' });
+				assert.strictEqual(state.workspaceUi.rebinds, 1, '换绑必须记进诊断位（取证用）');
+				assert.strictEqual(state.workspaceUi.lastRebind.sid, 's-b');
+				assert.strictEqual(state.workspaceUi.lastRebind.stateSid, 's-b', '入口 chunk 的监听器应看到 client.js 已写入的新值 ✓');
+
+				const second = h.render(0, {});
+				assert.ok(chipText(second).includes('other-repo'),
+					'★ 换绑后 chip 必须显示**新会话**所属工作区（ws-2）—— 这就是"UI 刷新"本身');
+				assert.strictEqual(state.workspaceUi.currentId, 'ws-2');
+				assert.ok((state.workspaceUiLog ?? []).indexOf('rebind') >= 0, '事件环里要能看见 rebind（宿主日志里据此判"页面收到了" ✓）');
+			});
+		});
+
+		test('★ 诊断位如实记录：sid 的来源（props 遮蔽 state）/ 当前工作区 / 三条数据源计数', () => {
+			withRebindDom(() => {
+				const state: any = { sessionId: 's-a' };
+				const h = loadChunk(`${LIB}/client.workspace.js`, makeCtx(), state);
+				h.render(0, { sessionId: 's-b' });
+				assert.strictEqual(state.workspaceUi.sidFrom, 'props',
+					'props 给了会话 id ⇒ 记 props：★ 它会**遮蔽** state.sessionId —— 换绑后仍显示旧工作区就是这么来的');
+				assert.strictEqual(state.workspaceUi.currentId, 'ws-2');
+				h.render(0, {});
+				assert.strictEqual(state.workspaceUi.sidFrom, 'state', '没给 props ⇒ 回落 state.sessionId（换绑更新的是它 ✓）');
+				assert.strictEqual(state.workspaceUi.currentId, 'ws-1');
+				assert.strictEqual(state.workspaceUi.workspaces, 2, '快照条数要记（"一条都没有"是另一类故障 ✓）');
+				assert.strictEqual(state.workspaceUi.records, 0);
+				assert.strictEqual(state.workspaceUi.worktrees, 0);
+				// ⚠ 诊断位里**故意没有**"每帧都变"的时间戳：宿主自证是"变了才写日志"，
+				//   加一个 `at: Date.now()` 会让安静的页面每 15 秒都吐一行噪声 ✗（时间戳只在事件里 ✓）。
+				assert.ok(!('at' in state.workspaceUi), '顶层不许有时间戳（时间戳归 lastRebind / lastSwitch ✓）');
+				assert.strictEqual(typeof state.workspaceUi.currentLabel, 'string');
+			});
+		});
+
+		test('★ IDE 工作区记录重推 ⇒ 计数刷新，但**不改**"当前工作区"（判据仍是会话归属 ✓）', () => {
+			withRebindDom((fire) => {
+				const state: any = { sessionId: 's-a' };
+				const h = loadChunk(`${LIB}/client.workspace.js`, makeCtx(), state);
+				h.render(0, {});
+				assert.strictEqual(state.workspaceUi.currentId, 'ws-1', '当前工作区 = **会话归属**（不是 IDE 活动工作区 ✓）');
+				const before = state.workspaceUi.currentLabel;
+				// 模拟"用户在 IDE 里切到另一个工作区" ⇒ 宿主重推记录（负载指向 ws-2）
+				(globalThis as any).document.documentElement.dataset.vssarosWorkspaces = RECORDS_PUSH;
+				fire('vssaros-dsh-workspaces', undefined);
+				h.render(0, {});
+				assert.strictEqual(state.workspaceUi.records, 1, '推送到了就要记（诊断位是"数据到没到页面"的证据 ✓）');
+				assert.strictEqual(state.workspaceUi.currentId, 'ws-1',
+					'★ 只认会话归属：IDE 切窗口不该让 chip 谎报"会话也过去了"（那比不刷新更坏 ✗）');
+				assert.strictEqual(state.workspaceUi.currentLabel, before);
+			});
+		});
+
+		test('★ 切换请求与结果进诊断位（sent → ok；失败时带原因）', async () => {
+			const okState: any = { sessionId: 's-a' };
+			withRebindDom(() => {
+				const sent: string[] = [];
+				const h = loadChunk(`${LIB}/client.workspace.js`, makeCtx({ switchWorktree: (p: string) => { sent.push(p); return Promise.resolve(); } }), okState);
+				clickWorkspaceRow(h, {}, 'workspace:ws-2');
+				assert.strictEqual(okState.workspaceUi.lastSwitch.result, 'sent');
+				assert.strictEqual(okState.workspaceUi.lastSwitch.fromSid, 's-a', '记下"从哪个会话切的"（后面 rebind 的对比基准 ✓）');
+				assert.deepStrictEqual(sent, ['/home/u/other-repo'], '切的**必须**是 path（与既有用例同判据 ✓）');
+			});
+			await tick();
+			assert.strictEqual(okState.workspaceUi.lastSwitch.result, 'ok', '成功与否只记服务真回来的那个信号 ✓');
+
+			const failState: any = { sessionId: 's-a' };
+			withRebindDom(() => {
+				const h = loadChunk(`${LIB}/client.workspace.js`, makeCtx({ switchWorktree: () => Promise.reject(new Error('宿主拒绝')) }), failState);
+				clickWorkspaceRow(h, {}, 'workspace:ws-2');
+			});
+			await tick();
+			assert.strictEqual(failState.workspaceUi.lastSwitch.result, 'failed');
+			assert.strictEqual(failState.workspaceUi.lastSwitchError, '宿主拒绝',
+				'★ 失败原因必须进诊断位（页面侧 fail() 只弹通知，日志里从前什么都没有 ✗）');
+		});
+
+		test('★ hero 点工作区行：只起会话，且诊断位记**全**目标（key/ids/path）', async () => {
+			// 2026-10-17 真机报障（"聊天框里的 UI 切不了工作区"）复盘出两件事：
+			//   ① **口径**：hero 的组行从前**只切窗口**（用户看到"切不了"并连点 4 次 ✗）⇒ 改成起会话；
+			//      下午用户又要求"两侧保持独立" ⇒ **切窗口那一跳已删**，只剩会话；
+			//   ② **取证缺口**：从前这条只记 `row.id` —— 而**组行没有 `id` 字段**（只有 `key`/`ids`）⇒ 永远记成
+			//      `id: null`，等于没记 ✗（真机日志就是这样，白白烧了一轮排查）。
+			const bridgeCalls: string[] = [];
+			const picked: string[] = [];
+			const state: any = { sessionId: 'vssaros-chat-default' };
+			withRebindDom(() => {
+				(globalThis as any).document.documentElement.dataset.vssarosWorkspaces = JSON.stringify([
+					{ id: 'ide-1', name: 'other', roots: [{ path: '/home/u/other-repo', name: 'other-repo', isPrimary: true }] },
+				]);
+				const ctx = {
+					get: (name: string) => (name === 'workspaces' ? { list: { getSnapshot: () => SNAP, subscribe: () => () => undefined } } : undefined),
+					__bridge: {
+						switchWorkspace: (id: string) => { bridgeCalls.push('WS:' + id); return Promise.resolve(); },
+						switchWorktree: (p: string) => { bridgeCalls.push('WT:' + p); return Promise.resolve(); },
+					},
+				};
+				const h = loadChunk(`${LIB}/client.workspace.js`, ctx, state);
+				const props = {
+					open: true, selectedId: 'ws-1', anchorRef: { current: null },
+					onPick: (id: string) => picked.push(id), onClose: () => undefined,
+				};
+				const tree = h.render(1, props);
+				assert.strictEqual(state.workspaceUi.heroSelected, 'ws-1', '渲染时记下**官方给的**选中态（诊断位 ✓）');
+				assert.strictEqual(state.workspaceUi.heroMounted, true);
+				const row = findAll(tree, 'data-vssaros-context-item')
+					.find((n: any) => n.props['data-vssaros-context-item'] === 'workspace:ws-2');
+				assert.ok(row, 'hero 里应有 ws-2 那一行（快照 + IDE 记录都指向 /home/u/other-repo ✓）');
+				row.props.onClick();
+				assert.ok(!bridgeCalls.some(c => c.startsWith('WS:')),
+					'同步那一半**不该有**：本面板不动 IDE 窗口 ⇒ 桥上有 `switchWorkspace` 也不许调 ✗');
+				assert.strictEqual(state.workspaceUi.lastSwitch.result, 'sent');
+				assert.strictEqual(state.workspaceUi.lastSwitch.id, 'ws-2',
+					'★ 目标 id 必须记到：组行只有 `key` ⇒ 从前记成 null 等于没记 ✗（真机吃过这个亏）');
+				assert.deepStrictEqual(state.workspaceUi.lastSwitch.targetIds, ['ws-2']);
+				assert.deepStrictEqual(state.workspaceUi.lastSwitch.path, '/home/u/other-repo');
+				assert.deepStrictEqual(picked, ['ws-2'],
+					'★ hero 里**顺带对齐官方选中态**：切完仍停在 hero 屏时，屏上那枚官方 chip 显示的就是它 ⇒ '
+					+ '不对齐就可能"切了但 UI 没刷新" ✗（真机实测：切完 `contextHeroEntry` 仍为 true ✓）');
+			});
+			await tick();
+			assert.deepStrictEqual(bridgeCalls, ['WT:/home/u/other-repo'],
+				'hero 里点工作区 = **只有**会话那一条（窗口那条已经删掉，两侧独立 ✓）');
+			assert.strictEqual(state.workspaceUi.lastSwitch.result, 'ok', '会话那条成功也记 ✓');
+		});
+
+		test('★ 目标工作区在 dsh 侧还没登记（`ide:` 兜底）⇒ 面板仍标"当前"、chip 显示**会话 cwd 的目录名**', () => {
+			// 真机现场（`logs/20261017T093033`）：最后一次点击是 **IDE-only** 工作区
+			// （`lastSwitch.id = "ide:vssaros-pjdb-hglrw"`、`targetIds: []`、`rebinds: 2` ⇒ 切换本身成功 ✓），
+			// 而 dsh 侧还没有它的条目 ⇒ ① 面板光比 workspaceId ⇒ **一个都不标"当前"**；
+			// ② chip 的 `workspaceIdOfSession` 也读不到 ⇒ 继续显示**旧**工作区 ⇒ 用户看到"切了但 UI 没刷新" ✗✗。
+			// 修法：两条判据都加**会话 cwd 兜底**（会话 cwd 是宿主持有的事实 ⇒ 与组的主根相等就是真话 ✓）。
+			const CWD = 'f:\\PJDB_qiuzijian_main\\S1Game';
+			// 快照里**没有**本会话所属的工作区（这正是真机那台的状态：宿主刚在新目录起了会话，dsh 还没登记）
+			const SNAP_NO_SESSION = {
+				items: [{ workspaceId: 'ws-other', path: '/elsewhere', title: '别处', sessionIds: [] }],
+			};
+			withRebindDom(() => {
+				// ⚠ **两条记录共用同一个主根**（真机截图实况：`… · 4 根`、`… · 3 根`、单根那条都是同一目录）
+				//   ⇒ 按"路径相等"逐行判会把多行都标成"当前" ✗✗（用户截图就是这么两行带 ✓ 的）。
+				(globalThis as any).document.documentElement.dataset.vssarosWorkspaces = JSON.stringify([
+					{ id: 'ide-9', name: 'pjdb', roots: [{ path: CWD, name: 'S1Game', isPrimary: true }] },
+					{
+						id: 'ide-10', name: 'pjdb-ws', roots: [
+							{ path: CWD, name: 'S1Game', isPrimary: true },
+							{ path: CWD + '\\UE5EA', name: 'UE5EA', isPrimary: false },
+							{ path: CWD + '\\docs', name: 'docs', isPrimary: false },
+						],
+					},
+				]);
+				const ctx = {
+					get: (name: string) => {
+						if (name === 'workspaces') { return { list: { getSnapshot: () => SNAP_NO_SESSION, subscribe: () => () => undefined } }; }
+						if (name === 'sessions') { return { list: { getSnapshot: () => ({ byId: { 's-a': { cwd: CWD } } }), subscribe: () => () => undefined } }; }
+						return undefined;
+					},
+					__bridge: { switchWorktree: () => Promise.resolve() },
+				};
+				const state: any = { sessionId: 's-a' };
+				const h = loadChunk(`${LIB}/client.workspace.js`, ctx, state);
+				// ① header chip：dsh 未登记 ⇒ 名字回落**会话 cwd 的末段**（真话），不再显示旧工作区
+				const chipTree = h.render(0, {});
+				assert.ok(chipText(chipTree).includes('S1Game'),
+					'★ dsh 未登记本会话的工作区时，chip 必须显示**会话实际所在的目录名**（cwd 末段 ✓）');
+				assert.ok(!chipText(chipTree).includes('other-repo'), '不许继续显示任何**旧**工作区（那就是"没刷新" ✗）');
+				assert.strictEqual(state.workspaceUi.currentId, null, '此刻 dsh 侧确实没有本会话的工作区（诊断位如实 ✓）');
+				// ② 面板：IDE-only 那条组必须被标成"当前"（否则用户点完在界面上看不到任何变化 ✗）
+				// ⚠ `selectedId: null` = **真机那一屏的实际形态**（`heroSelected: null`）⇒ 官方选中态没给东西时，
+				//   "当前"只能靠**会话 cwd** 判（这正是本次修法要守住的那一条 ✓）。
+				const panel = h.render(1, {
+					open: true, selectedId: null, anchorRef: { current: null },
+					onPick: () => undefined, onClose: () => undefined,
+				});
+				const rowKeys = findAll(panel, 'data-vssaros-context-item').map((n: any) => String(n.props['data-vssaros-context-item']));
+				// 行标记的构造是 `data-vssaros-context-item = "<kind>:<组 key>"` ⇒ IDE-only 那条就是
+				// `workspace:ide:<记录id>`（只认这个前缀，不硬绑具体 id —— key 的拼法属 buildTree 细节 ✓）
+				// ⚠ 断**行首那枚"当前"标记本身**（`flex: 0 0 14px` 那个 span 的 color），不要断背景色、
+				//   也不要在整行 markup 里搜 `brand-primary`：两者都会被别的东西带上 ⇒ 写出来的是
+				//   **没有判别力**的断言（本用例前两版都这么错过，靠反向突变才看出来 ✓）。
+				const isMarked = (n: any) => {
+					const m = (n.children ?? []).find((c: any) => c && c.props && c.props.style && c.props.style.flex === '0 0 14px');
+					return !!m && String(m.props.style.color).includes('brand-primary');
+				};
+				const ideRows = findAll(panel, 'data-vssaros-context-item')
+					.filter((n: any) => String(n.props['data-vssaros-context-item']).indexOf('workspace:ide:') === 0);
+				assert.strictEqual(ideRows.length, 2, `两条 IDE-only 记录都要出行；实际行：${rowKeys.join(' | ')}`);
+				assert.strictEqual(ideRows.filter(isMarked).length, 1,
+					'★ 会话就跑在它们的主根上 ⇒ **恰有一行**被标"当前"（一个都不标 = 用户看到的"没刷新" ✗；多标 = 重复工作区 ✗）');
+				// ★ 另一半同样重要：**旧**工作区（官方选中态还停在它上面）不许被标成"当前" ——
+				//   真机现场就是"选中态滞后一拍 + 用选中态判当前" ⇒ 面板把旧的标成当前 ⇒ 用户说"没刷新" ✗✗。
+				const stale = findAll(panel, 'data-vssaros-context-item')
+					.find((n: any) => n.props['data-vssaros-context-item'] === 'workspace:ws-other');
+				const staleMarker = (stale?.children ?? []).find((c: any) => c && c.props && c.props.style && c.props.style.flex === '0 0 14px');
+				assert.ok(stale && staleMarker && !String(staleMarker.props.style.color).includes('brand-primary'),
+					'★ 会话 cwd 不在 ws-other 上 ⇒ 它**不许**被标成当前（否则用户看到的还是旧工作区 ✗）');
+				// ★ 只允许**一个**组标"当前"（同一个主根被多条记录共用时最容易冒出多个 ✓）：
+				//   这里两条记录主根都是 CWD ⇒ 必须恰好一行带标记，且取"根更多"的那条（3 根 ✓）。
+				const groupRows = findAll(panel, 'data-vssaros-context-item')
+					.filter((n: any) => String(n.props['data-vssaros-context-item']).indexOf('workspace:') === 0);
+				const marked = groupRows.filter((n: any) => {
+					const m = (n.children ?? []).find((c: any) => c && c.props && c.props.style && c.props.style.flex === '0 0 14px');
+					return !!m && String(m.props.style.color).includes('brand-primary');
+				});
+				assert.strictEqual(marked.length, 1,
+					`★ 只能有**一个**组标"当前"（实际 ${marked.length} 个：${marked.map((n: any) => n.props['data-vssaros-context-item']).join(' | ')}）`);
+				assert.strictEqual(marked[0].props['data-vssaros-context-item'], 'workspace:ide:ide-10',
+					'多条记录指向同一个根时，取**根更多**的那条（与真机截图的"· 4 根"那条同口径 ✓）');
+			});
+		});
+
+		test('★ 已经是当前项 ⇒ 什么也不发，但**记一笔 skip**（"点了没反应"最容易被误判的就是这一种）', () => {
+			withRebindDom(() => {
+				const sent: string[] = [];
+				const state: any = { sessionId: 's-a' };
+				const h = loadChunk(`${LIB}/client.workspace.js`, makeCtx({ switchWorktree: (p: string) => { sent.push(p); return Promise.resolve(); } }), state);
+				clickWorkspaceRow(h, {}, 'workspace:ws-1');
+				assert.deepStrictEqual(sent, [], '点当前项不许发请求（幂等 ✓）');
+				assert.strictEqual(state.workspaceUi.lastSwitch.result, 'skip-current',
+					'★ 但必须留下痕迹：用户报"点了没反应"时，这一条能让判据自己说话（本来就是当前项 ⇒ 不该有反应 ✓）');
+			});
+		});
+	});
+
+	/**
+	 * ① 取证**接线**（源码级）：诊断位是本轮的交付物之一 —— "加了字段但没人读"就等于没加 ✗
+	 * （页面侧写进 `state.workspaceUi`，宿主侧 `PAGE_SURFACE_REPORT` 必须读它并进日志 ✓）。
+	 */
+	suite('① 取证接线（源码级）', () => {
+		test('宿主自证快照必须带上页面侧诊断位（workspaceUi / workspaceUiLog / rebinds）', () => {
+			const src = read('src/vs/sessions/contrib/dshHarness/electron-main/dshViewHost.ts');
+			assert.ok(/workspaceUi:\s*s\.workspaceUi/.test(src),
+				'`PAGE_SURFACE_REPORT` 必须读页面 `state.workspaceUi`（否则那 15 秒一轮的自证日志里没有归因依据 ✗）');
+			assert.ok(/workspaceUiLog:\s*s\.workspaceUiLog/.test(src), '最近事件环也要带（rebind / switch / switch-fail ✓）');
+			assert.ok(/rebinds:\s*\(typeof s\.workspaceRebinds/.test(src), '换绑计数要带（"宿主到底换绑过没有"的唯一证据 ✓）');
+		});
+
+		test('宿主 switchWorktree 的幂等判据必须**同时**比目录（只看 id 会把"切了没反应"变成静默黑洞 ✗）', () => {
+			// 真机（`logs/20261017T094943`）：`switchWorktree f:\PJDB_… 已在该目录的会话上（幂等，无动作）`，
+			// 而上一条刚切到 `g:\SarosWorkspace\sarosis-agents-client` ⇒ 派生 id 撞了、目录完全不同 ⇒
+			// 宿主不 startSession/不 rebind ⇒ 页面会话没换 ⇒ 用户看到"切了但 UI 不刷新" ✗✗。
+			const host = read('src/vs/sessions/contrib/dshHarness/electron-browser/dshChatInstanceHost.ts');
+			assert.ok(/_sameDir\(a: string, b: string\)/.test(host), '必须有个目录比较助手（与 `_isWorktreeDir` 同口径 ✓）');
+			assert.ok(/target === this\._placeholder\.dataset\.sessionId && sameDir/.test(host),
+				'★ 幂等早退必须**同时**要求目录相同（`&& sameDir`）—— 只看 id 就是这个 bug 的形状 ✗');
+			assert.ok(/派生 id 与当前会话相同/.test(host), '撞 id 但目录不同要留一行 warn（否则下次还是靠猜 ✓）');
+			// ★ 2026-10-17 真机（切 VsSaros_PJDB "无法切换"）：根源是 preset 映射表被 worktree 会话 id 污染
+			//   ⇒ 主工作区分支的 `resolvePresetSessionId` 命中表、拿到别的目录的 `--wt-` id ⇒ 撞当前会话。
+			assert.ok(/if \(!sessionId\.includes\('--wt-'\)\) \{\s*\n\s*this\._presetSessions\.set\(/.test(host),
+				'★ `_recordSession` 必须**拒绝**把 worktree 会话 id 记进 preset 映射表（那张表只服务主工作区 ✓）');
+			// ★ 再加一条：**离开当前绑定目录**时 id 必须按目录派生（主目录分支的 id 不含目录信息 ⇒ 会拿回
+			//   cwd 在别处的旧会话）。记账口径也必须跟着 id 走，否则"同目录来回点"会乒乓换会话 ✗。
+			assert.ok(/const leavingBoundDir = !!target && !!boundDir && !this\._sameDir\(boundDir, target\)/.test(host),
+				'★ `_sessionIdFor` 必须在"离开当前绑定目录"时走按目录派生（`leavingBoundDir` ✓）');
+			assert.ok(/this\._worktree = String\(target\)\.includes\('--wt-'\) \? worktreePath : undefined/.test(host),
+				'★ `_worktree` 记账必须与 id 来源一致（`--wt-` ⇒ 记该目录；否则清空 ✓）');
+		});
+
+		test('事件名必须与 preload 派发的那一个**逐字**一致（写错一个字母 = 永远收不到 ✗）', () => {
+			const chunk = read(`${LIB}/client.workspace.js`);
+			const preload = read(PRELOAD_REL);
+			assert.ok(/const REBIND_EVENT = "vssaros-dsh-rebind"/.test(chunk), '页面侧事件名');
+			assert.ok(/const REBIND_EVENT = 'vssaros-dsh-rebind'/.test(preload), 'preload 侧事件名');
+			assert.ok(/addEventListener\(REBIND_EVENT/.test(chunk), '页面侧必须真的注册这个监听（不是只定义常量 ✓）');
 		});
 	});
 
@@ -954,6 +1707,25 @@ suite('chat-surface header（①工作区 ②历史/新建 ③preset 去重）',
 			assert.ok(parseInt(entry.fitMenuSize({ width: 1000, height: 800 }).maxWidth) < 1000, '正常情况留边');
 		});
 
+		test('★★ fitMenuSize 的**锚点**口径：向下按"到视口底部的距离"、向上按"到顶部的距离"', () => {
+			// 2026-10-16 用户报障：「下拉框显示不全…无法操作下面的按钮」。
+			// 病根：只按"整页高 − 72"算 ⇒ 菜单锚点在页面中部时，算出的高度**大于**锚点到底部的距离
+			// ⇒ 下半截落到视口外，而菜单自身又是滚动容器 ⇒ 既看不到也滚不到 ✗。
+			// ⚠ 这条必须钉**绝对期望值**（不是"两次调用相等"这类会恒真的比较 ✓）：
+			//   向下 = 视口高 − 锚点底边 − 间隙4 − 留边12；向上 = 锚点顶边 − 间隙4 − 留边12。
+			assert.strictEqual(entry.fitMenuSize({ width: 1000, height: 800 }, { bottom: 500 }).maxHeight, '284px',
+				'向下展开：800 − 500 − 4 − 12 = 284（锚点以下的可用空间 ✓）');
+			assert.strictEqual(entry.fitMenuSize({ width: 1000, height: 800 }, { up: true, top: 600 }).maxHeight, '584px',
+				'向上展开：600 − 4 − 12 = 584（锚点以上的可用空间 ✓）');
+			// 锚点贴近底部 ⇒ 夹到 96 的下限（贴着视口走，与 maxWidth 同口径 ✓）；绝不超出视口
+			assert.strictEqual(entry.fitMenuSize({ width: 1000, height: 800 }, { bottom: 790 }).maxHeight, '96px');
+			assert.ok(parseInt(entry.fitMenuSize({ width: 1000, height: 800 }, { bottom: 100 }).maxHeight) <= 800,
+				'任何锚点下都不得超出视口（超了就会被 WebContentsView 裁掉 ✓）');
+			// 不给锚点（老调用点 / 拿不到 rect）⇒ 与从前**逐字相同**（整页 − 72）
+			assert.strictEqual(entry.fitMenuSize({ width: 1000, height: 800 }).maxHeight,
+				entry.fitMenuSize({ width: 1000, height: 800 }, null).maxHeight, '不传锚点 = 既有口径 ✓');
+		});
+
 		test('★ 菜单有最小宽度（否则被 `width:100%` 条目挤成每行 1–2 个字）', () => {
 			assert.ok(parseInt(entry.fitMenuSize({ width: 900, height: 600 }).minWidth) >= 200,
 				'正常视口下最小宽度必须够放一个菜单条目');
@@ -1028,11 +1800,33 @@ suite('chat-surface header（①工作区 ②历史/新建 ③preset 去重）',
 				'条目只能来自 dsh 自带 preset（VsSaros agent 的入口是 + 菜单 → Commands → Agents）');
 		});
 
-		test('源码契约：四个自绘菜单都夹了视口（新菜单别漏）', () => {
+		test('★ 源码契约：菜单夹视口时**必须交出锚点**（只按整页高算 ⇒ 面板底部溢出且滚不到）', () => {
+			// 2026-10-16 用户报障：「下拉框显示不全，当有大量工作区时，无法操作下面的按钮」。
+			// 根因：`fitMenuSize` 从前只按"**整页高 − 72**"算，而菜单锚点在页面中部（聊天 header / 输入框）
+			// ⇒ 算出来的高度大于"锚点到视口底部"的距离 ⇒ 下半截（含「＋ 添加工作区…」）落到视口外；
+			// 而面板自身又是滚动容器（`overflowY:auto`）⇒ 那一截**既看不到也滚不到** ✗（截图实证）。
+			// ⇒ 向下展开的菜单必须把**触发器矩形**交出去（`shell.fitMenu(<rect>)`）——
+			//   本断言是它的永久守卫（删掉参数即红 ✓）。
 			for (const rel of ['client.workspace.js', 'client.sessions.js', 'client.preset.js', 'client.settings.js']) {
 				const code = read(`${LIB}/${rel}`).replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
-				assert.ok(code.includes('shell.fitMenu ? shell.fitMenu() : {}'), `${rel} 的菜单必须合并 fitMenu（视口适配）`);
+				assert.ok(/shell\.fitMenu \? shell\.fitMenu\(.+\) : \{\}/.test(code),
+					`${rel} 必须把**锚点矩形**交给 fitMenu（只按整页高算 ⇒ 面板底部溢出、按钮点不到 ✗）`);
+				// ⚠ **负向**那一半同样必须钉住：上面那条只看"文件里至少有一处交了锚点" ⇒
+				//   一个文件里两处菜单、只改一处也能过（反向突变 M1 就是这么假绿的 ✗）⇒ 一律不许留裸调用。
+				assert.ok(!/shell\.fitMenu \? shell\.fitMenu\(\)/.test(code),
+					`${rel} 里**不许**有"不交锚点"的 fitMenu 调用（同一文件另一处漏了照样会溢出 ✗）`);
+				assert.ok(code.includes('getBoundingClientRect()'),
+					`${rel} 交出去的必须是**真实 rect**（读触发器自己的 ✓；不许拿 0 坐标硬凑）`);
 				assert.ok(code.includes('shell.menus.closeOthers('), `${rel} 打开菜单时必须登记互斥`);
+			}
+			// 向上展开的那两个（`bottom:100%`）："整页 − 72"这个口径**对它们不成立**（锚点靠近页面底部、
+			// 菜单往上长）⇒ 必须**自带确定上限**，且排在 fitMenu **之后**（从前写在前 ⇒ 被 fit 顶掉，
+			// 等于白写 ✗ —— 2026-10-16 一并修）。
+			for (const rel of ['client.agents.js', 'client.persona.js']) {
+				const code = read(`${LIB}/${rel}`).replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+				assert.ok(code.includes('shell.fitMenu ? shell.fitMenu() : {}, { maxHeight:')
+					|| code.includes('shell.fitMenu(), { maxHeight:'),
+					`${rel} 向上展开 ⇒ 必须自带确定上限，且排在 fitMenu **之后**（被 fit 顶掉就等于没写 ✗）`);
 			}
 		});
 	});
@@ -1202,6 +1996,81 @@ suite('chat-surface header（①工作区 ②历史/新建 ③preset 去重）',
 			const entry = read(ENTRY_REL);
 			assert.ok(entry.includes('./client.workspace.js'), 'PART_CHUNKS 缺少 workspace chunk');
 			assert.ok(entry.includes('./client.sessions.js'), 'PART_CHUNKS 缺少 sessions chunk');
+		});
+	});
+
+	/**
+	 * 装载门（新会话首屏）。
+	 *
+	 * 2026-10-17 用户报"与 mockup 不一致"：**hero 屏**（还没选工作区 ⇒ 宿主创建视图时 `cwdAtBind` 为空 ⇒
+	 * `--vssaros-dsh-session=` 里没有会话 id ⇒ `window.vssarosDsh.sessionId` 是空串）看到的是
+	 * **官方那条英文扁平根列表** + 「Add workspace…」。真因：入口 apply 的门写成
+	 * `if (!bridge || bridge.surface !== 'chat' || !bridge.sessionId) return;` ⇒ 新会话首屏
+	 * **一个皮肤部件都不装** ⇒ 没人去顶掉官方 `conversation.hero.workspace` 浮层。
+	 *
+	 * 守卫口径：空白会话必须装"不依赖会话"的部件（工作区面板是必须的），且**不能**装那些
+	 * 要吃会话事实的（sessions/agents/… 等真会话 id 到齐再补装）。
+	 */
+	suite('chat-surface 装载门（新会话首屏也要装工作区面板）', () => {
+		const WS_PART = './client.workspace.js';
+		const SESSION_DEPENDENT = './client.sessions.js';
+
+		/** 跑一遍入口 apply，返回被 `require.async` 请求的 chunk 清单。 */
+		const runApply = async (bridge: Record<string, unknown>): Promise<string[]> => {
+			let definition: any;
+			const requested: string[] = [];
+			const pageHandlers: Record<string, (() => void)[]> = {};
+			const windowStub: any = {
+				__ModuleLoader__: { load: (d: any) => { definition = d; } },
+				vssarosDsh: bridge,
+				addEventListener: (name: string, fn: () => void) => { (pageHandlers[name] = pageHandlers[name] || []).push(fn); },
+				innerWidth: 420, innerHeight: 760,
+			};
+			const docHandlers: Record<string, ((e: unknown) => void)[]> = {};
+			const docStub: any = {
+				body: { dataset: {} as Record<string, string> },
+				addEventListener: (name: string, fn: (e: unknown) => void) => { (docHandlers[name] = docHandlers[name] || []).push(fn); },
+				removeEventListener: () => undefined,
+				dispatchEvent: () => true,
+				querySelector: () => null,
+			};
+			const anyGlobal = globalThis as any;
+			const prevDoc = anyGlobal.document;
+			anyGlobal.document = docStub;
+			try {
+				new Function('window', read(ENTRY_REL))(windowStub);
+				const asyncRequire: any = () => { throw new Error('client.js 不应 require 任何模块'); };
+				asyncRequire.async = (file: string) => { requested.push(file); return Promise.resolve({ install: () => undefined }); };
+				const entry = definition.factory(asyncRequire);
+				entry.apply({
+					get: () => undefined,
+					uiWorkspace: { openSession: () => Promise.resolve(), openWorkspace: () => Promise.resolve() },
+				});
+				// PART_CHUNKS 是并行 `require.async` + Promise.all ⇒ 冲几轮微任务让请求都发出来。
+				for (let i = 0; i < 6; i++) { await Promise.resolve(); }
+			} finally {
+				// apply 里那个 500ms 轮询会吊住事件循环 ⇒ 走它自己的 pagehide 收尾（= 真实关页路径）。
+				for (const fn of pageHandlers.pagehide || []) { fn(); }
+				anyGlobal.document = prevDoc;
+			}
+			return requested;
+		};
+
+		test('★ 空白会话（sessionId 为空）⇒ 必须请求工作区面板，且不请求吃会话事实的部件', async () => {
+			const requested = await runApply({ surface: 'chat', sessionId: '' });
+			assert.ok(requested.includes(WS_PART),
+				'新会话首屏必须装工作区面板 —— 否则 hero 上露出的就是官方那条扁平根列表（用户看到的"与 mockup 不一致"）');
+			assert.ok(!requested.includes(SESSION_DEPENDENT),
+				'没有会话 id 时不该装吃会话事实的部件（等首次重绑补装 ✓）');
+			assert.ok(requested.length > 0 && requested.length < 23,
+				`空白会话只装少量部件（实际请求 ${requested.length} 个）`);
+		});
+
+		test('对照：有会话 id ⇒ 全部部件都请求（装载门不能把正常聊天挡掉）', async () => {
+			const requested = await runApply({ surface: 'chat', sessionId: 's-a' });
+			assert.ok(requested.includes(WS_PART), '正常聊天当然要装工作区面板');
+			assert.ok(requested.includes(SESSION_DEPENDENT), '有会话 id ⇒ 会话列表等部件照旧装');
+			assert.ok(requested.length >= 20, `正常聊天应请求全部部件（实际 ${requested.length} 个）`);
 		});
 	});
 });

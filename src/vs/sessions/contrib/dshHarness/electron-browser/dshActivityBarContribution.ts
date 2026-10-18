@@ -36,9 +36,9 @@ import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase 
 import { ViewPane } from '../../../../workbench/browser/parts/views/viewPane.js';
 import { ViewPaneContainer } from '../../../../workbench/browser/parts/views/viewPaneContainer.js';
 import { DshHarnessSettings, IDshPluginInfo } from '../common/dshHarness.js';
-import { DSH_MODULE_CONTAINERS, IDshModuleContainer, planModuleContainers } from '../common/dshModuleContainers.js';
+import { containersFromPlugins, DSH_MODULE_CONTAINERS, IDshModuleContainer, planModuleContainers } from '../common/dshModuleContainers.js';
 import { IDshHarnessService } from './dshHarnessService.js';
-import { AGENT_STUDIO_CODEBASE_VIEW_ID, AGENT_STUDIO_DASHBOARD_VIEW_ID, AGENT_STUDIO_DSH_SESSIONS_VIEW_ID, AGENT_STUDIO_INTEGRATION_VIEW_ID, AGENT_STUDIO_KB_VIEW_ID, AGENT_STUDIO_MEDIA_VIEW_ID, AGENT_STUDIO_MEMORY_VIEW_ID, AGENT_STUDIO_PRESET_AGENT_VIEW_ID, AGENT_STUDIO_TASKS_VIEW_ID, AGENT_STUDIO_WORKFLOW_VIEW_ID } from '../../agentStudio/common/constants.js';
+import { AGENT_STUDIO_CODEBASE_VIEW_ID, AGENT_STUDIO_DASHBOARD_VIEW_ID, AGENT_STUDIO_DSH_SESSIONS_VIEW_ID, AGENT_STUDIO_INTEGRATION_VIEW_ID, AGENT_STUDIO_KB_VIEW_ID, AGENT_STUDIO_MEDIA_VIEW_ID, AGENT_STUDIO_MEMORY_VIEW_ID, AGENT_STUDIO_PRESET_AGENT_VIEW_ID, AGENT_STUDIO_SCHEDULER_VIEW_ID, AGENT_STUDIO_TASKS_VIEW_ID, AGENT_STUDIO_WORKFLOW_VIEW_ID } from '../../../common/agentStudioConstants.js';
 import { DynamicActivityBarContainers } from '../../agentStudio/browser/dynamicActivityBarContainers.js';
 import { DshPluginViewPane } from './dshPluginViewPane.js';
 
@@ -61,6 +61,11 @@ function pageHost(viewId: string, containerId: string): IModuleViewHost {
 	return { viewId, ctorDescriptor: new SyncDescriptor(DshPluginViewPane, [containerId]) };
 }
 
+/**
+ * 已知容器的视图 id 映射（R1：布局/视图状态按 id 持久化，**已有容器的 id 不能改**）。
+ * 清单驱动后（重构 1.1）：**新容器不在这张表里也有宿主**——见 {@link moduleViewHostOf} 的派生规则，
+ * 新增模块不再需要改壳代码。
+ */
 const MODULE_VIEW_HOSTS: Readonly<Record<string, IModuleViewHost>> = {
 	// 代码图谱：`page-only`（静态/legacy 侧故意没有——那儿的 graphView 是 Git 历史图，见容器表 note）
 	'vssaros.dsh.codebase': pageHost(AGENT_STUDIO_CODEBASE_VIEW_ID, 'vssaros.dsh.codebase'),
@@ -76,7 +81,18 @@ const MODULE_VIEW_HOSTS: Readonly<Record<string, IModuleViewHost>> = {
 	// 媒体库同理：插件自托管页 `/x/media/`（只读直连主进程 media.db）。
 	'agentStudio.media': pageHost(AGENT_STUDIO_MEDIA_VIEW_ID, 'agentStudio.media'),
 	'agentStudio.dashboard': pageHost(AGENT_STUDIO_DASHBOARD_VIEW_ID, 'agentStudio.dashboard'),
+	// 定时任务（重构 2.1）：插件自托管页 `/x/scheduler/`。已知容器显式登记 ⇒ 视图 id 稳定（R1）✓。
+	'vssaros.dsh.scheduler': pageHost(AGENT_STUDIO_SCHEDULER_VIEW_ID, 'vssaros.dsh.scheduler'),
 };
+
+/**
+ * 容器 → 视图宿主（清单驱动）。已知容器走 `MODULE_VIEW_HOSTS`（id 稳定 ✓）；
+ * **未知容器**（新模块）派生一个确定性的视图 id（`vssaros.dsh.pv.<containerId>`），宿主同样是
+ * `DshPluginViewPane`——宿主对任何容器都同形，只是路由不同（由 Pane 向服务现算）。
+ */
+function moduleViewHostOf(containerId: string): IModuleViewHost {
+	return MODULE_VIEW_HOSTS[containerId] ?? pageHost(`vssaros.dsh.pv.${containerId}`, containerId);
+}
 
 /** `title` 支持 `string | { zh, en }`；ActivityBar 只认一个显示名（中文优先）。 */
 function localizedTitle(title: string | { readonly zh: string; readonly en: string }): ILocalizedString {
@@ -144,12 +160,18 @@ export class DshActivityBarContribution extends Disposable implements IWorkbench
 			this._log.warn(`[DshActivityBar] 读取插件清单失败，保留当前图标：${e instanceof Error ? e.message : String(e)}`);
 			return;
 		}
+		// 清单驱动（重构 1.1）：容器表与插件→模块映射都从已装插件的清单派生；
+		// 新增模块插件 ⇒ 壳代码改动为 0（两张硬编码表只作守卫基准，不再是运行期数据源）。
+		const containers = containersFromPlugins(plugins);
+		const pluginModules = new Map(plugins.filter(p => p.manifest?.module).map(p => [p.name, p.manifest!.module!]));
 		const plan = planModuleContainers({
 			engine: 'dsh',
 			installedPlugins: plugins.map(p => p.name),
 			// 插件中心停用（`enabled === false`）的插件视同未激活（方案 4.3「停用」）。
 			disabledPlugins: plugins.filter(p => p.enabled === false).map(p => p.name),
 			registeredContainerIds: this._containers.ids,
+			containers,
+			pluginModules,
 		});
 		for (const id of plan.deregistrations) {
 			this._containers.deregister(id);
@@ -177,11 +199,8 @@ export class DshActivityBarContribution extends Disposable implements IWorkbench
 	}
 
 	private _registerContainer(container: IDshModuleContainer): void {
-		const host = MODULE_VIEW_HOSTS[container.containerId];
-		if (!host) {
-			this._log.warn(`[DshActivityBar] 没有可用的视图宿主：${container.containerId}`);
-			return;
-		}
+		// 清单驱动（1.1）：未知容器也有派生宿主（moduleViewHostOf）——不再是"没有就跳过"。
+		const host = moduleViewHostOf(container.containerId);
 		const { containerId, title, icon, order } = container.activityBar;
 		// 幂等守卫（双注册会抛 "A view with id ... is already registered" 并中断工作台加载）已在封装内。
 		this._containers.register({
@@ -200,7 +219,7 @@ export class DshActivityBarContribution extends Disposable implements IWorkbench
 	describe(): { readonly containerId: string; readonly viewId: string; readonly modules: readonly string[] }[] {
 		return this._containers.ids.map(containerId => ({
 			containerId,
-			viewId: MODULE_VIEW_HOSTS[containerId]?.viewId ?? '',
+			viewId: moduleViewHostOf(containerId).viewId,
 			modules: DSH_MODULE_CONTAINERS.find(c => c.containerId === containerId)?.modules ?? [],
 		}));
 	}

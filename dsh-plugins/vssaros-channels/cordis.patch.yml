@@ -1,0 +1,11 @@
+# @vssaros/dsh-channels bundle patch: insert the channels row.
+#
+# IM 渠道（重构 2.3）：入站消息 → 专属会话 → runs 驱动 → 回传。
+# 本轮落地核心环 + loopback 适配器（`channels.loopback.enabled` 默认关——只给探针/演示开 ✓）。
+# 飞书/Telegram 真机适配器待真凭据对接（真机回归需要真实机器人，不在本轮）。
+#
+# 无图标模块（manifest view.kind=none）：渠道没有自己的 ActivityBar 格——它的状态在设置页。
+- insert:
+    - id: vssaros-channels
+      name: '@vssaros/dsh-channels'
+      config: {}

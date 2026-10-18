@@ -211,6 +211,15 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 
 	private readonly windows = new Map<number, ICodeWindow>();
 
+	/**
+	 * `openAgentsWindow` 建过（或复用记下）的 agents 窗口 id。
+	 *
+	 * 用途：agents 窗口**单例复用**（2026-10-16，用户报「点 agent 条目后叠出一堆窗口」）。
+	 * `ensureAgentsWindow` 的所有分支都硬编码 `forceNewWindow: true` ⇒ 每调一次就新开一个，
+	 * 旧窗口不关就累积。有了这份名册，`openAgentsWindow` 就能先找到**存活的**那个并聚焦它。
+	 */
+	private readonly _agentsWindowIds = new Set<number>();
+
 	private readonly windowsStateHandler: WindowsStateHandler;
 
 	constructor(
@@ -295,8 +304,33 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 	async openAgentsWindow(openConfig: IOpenConfiguration, folderUri?: URI): Promise<ICodeWindow[]> {
 		this.logService.trace('windowsManager#openAgentsWindow');
 
+		// ★ 2026-10-16（用户报「点 agent 条目后叠出一堆窗口」）：agents 窗口**单例复用**。
+		//
+		// 此前 `ensureAgentsWindow` 的每个分支都硬编码 `forceNewWindow: true` ⇒ 每次调用
+		// `openAgentsWindow`（启动保证 / 「Open in Agents」入口 / 横幅）都**新开一个** agents 窗口；
+		// 旧窗口不关就累积成一屏重叠窗口，且每个窗口各渲染一份插件页（截图现象）。
+		//
+		// 现在：**已有存活的 agents 窗口 ⇒ 聚焦它**（带 folderUri 就让它切过去），不再新开。
+		// 逃生口：显式 `--new-window` 仍按原样开新窗口（想并行开另一个工作区的 agents 窗口时用）。
+		if (!openConfig.cli?.['new-window']) {
+			const existing = this._findLiveAgentsWindow();
+			if (existing) {
+				this.logService.info(`[windowsManager] agents window already open (id=${existing.id}) → reuse instead of opening a new one`);
+				if (folderUri) {
+					existing.sendWhenReady('vscode:selectAgentsFolder', CancellationToken.None, folderUri.toJSON());
+				}
+				existing.focus();
+				return [existing];
+			}
+		}
+
 		// Open in a new browser window with the agent sessions workspace
 		const windows = await this.open(await this.ensureAgentsWindow(openConfig));
+
+		// 记住本次建出来的 agents 窗口，供之后的「复用」判定
+		for (const window of windows) {
+			this._agentsWindowIds.add(window.id);
+		}
 
 		// Tell the agents window to select the given folder in the new chat workspace picker
 		if (folderUri && windows.length > 0) {
@@ -304,6 +338,17 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 		}
 
 		return windows;
+	}
+
+	/** 找一个**存活的**、由本服务建过的 agents 窗口（顺带把已关闭的 id 从名册里清掉）。 */
+	private _findLiveAgentsWindow(): ICodeWindow | undefined {
+		const live = this.getWindows();
+		for (const id of [...this._agentsWindowIds]) {
+			if (!live.some(window => window.id === id)) {
+				this._agentsWindowIds.delete(id);
+			}
+		}
+		return live.find(window => this._agentsWindowIds.has(window.id));
 	}
 
 	private async ensureAgentsWindow(openConfig: IOpenConfiguration): Promise<IOpenConfiguration> {

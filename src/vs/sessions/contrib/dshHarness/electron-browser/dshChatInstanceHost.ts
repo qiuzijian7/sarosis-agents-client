@@ -21,9 +21,11 @@ import { ICommandService } from '../../../../platform/commands/common/commands.j
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+// 切换工作区 / worktree 失败的**用户可见**出口（2026-10-16：见 `_notifySwitchFailure` 的注释）
+import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { BrowserOverlayManager, BrowserOverlayType } from '../../../../workbench/contrib/browserView/electron-browser/overlayManager.js';
-import { IDshChatBinding, IDshChatHostContext, IDshChatInput, setDshChatHostFactory } from '../../agentStudio/browser/dshChatHost.js';
+import { IDshChatBinding, IDshChatHostContext, IDshChatInput, setDshChatHostFactory } from '../../../common/dshChatHost.js';
 import { DshHarnessSettings } from '../common/dshHarness.js';
 import { dshChatNewSessionId, dshChatSessionId, dshChatWorktreeSessionId, resolvePresetSessionId } from '../common/dshChatSession.js';
 // 人格事实的**落表**（2026-10-12）：页面侧经桥上报 → 本宿主按 (agentId, sessionId) 写进
@@ -104,6 +106,12 @@ class DshChatBinding extends Disposable implements IDshChatBinding {
 	private readonly _presetSessions = new Map<string, string>();
 	/** 进行中的切换（并发点选去重）。 */
 	private _switching: Promise<void> | undefined;
+	/**
+	 * 进行中的 **IDE 工作区切换**（桥 `10 → 11`；2026-10-16）。
+	 * 与 `_switching`（换会话绑定）**分开去重**：两者是不同的动作，混在一起会让"先切窗口、再起会话"
+	 * 这条序列互相顶掉 ✗（页面是**先后发两条命令**的 ✓）。
+	 */
+	private _switchingWorkspace: Promise<void> | undefined;
 	/** 当前聊天输入（pane 切标签时经 setChatId 更新；preset 状态随 input 持久化）。 */
 	private _input: IDshChatInput;
 	/** 隐藏自愈定时器：视图应显示却因遮挡/零宽判定隐藏时，每秒重算一次直到恢复（事件漏网的兜底）。 */
@@ -123,6 +131,7 @@ class DshChatBinding extends Disposable implements IDshChatBinding {
 		private readonly _commands: ICommandService,
 		private readonly _log: ILogService,
 		private readonly _storage: IStorageService,
+		private readonly _notifications: INotificationService,
 	) {
 		super();
 		this._chatId = _ctx.input.chatId;
@@ -186,6 +195,11 @@ class DshChatBinding extends Disposable implements IDshChatBinding {
 			} else if (e.kind === 'command' && e.command.method === 'switchWorktree') {
 				// header 的 worktree 下拉（方案 C）：**本会话**换到那个 worktree（新会话 + 沿用当前 preset）。
 				void this._switchWorktree(e.command.path);
+			} else if (e.kind === 'command' && e.command.method === 'switchWorkspace') {
+				// 工作区下拉里点了**别的工作区**（桥 `10 → 11`，2026-10-16）：让 IDE 窗口**原地进**那个工作区
+				// （多根一起进、不重载）。⚠ 与 `switchWorktree` 分工明确：这条**不**碰会话 ——
+				// 会话由页面随后发的那条 `switchWorktree(根路径)` 负责（每个目录一段历史 ✓）。
+				void this._switchWorkspace(e.command.workspaceId);
 			} else if (e.kind === 'command' && e.command.method === 'sessionTitle') {
 				// 外层页签文案 = dsh 会话标题（页面侧读到后经 `window.vssarosDsh.sessionTitle` 上报）。
 				// `NativeChatEditorInput.setSessionName` 正是为此提供的：其注释写明"重命名来自别处
@@ -428,7 +442,19 @@ class DshChatBinding extends Disposable implements IDshChatBinding {
 	 */
 	private _sessionIdFor(preset: string | undefined, dir?: string): string {
 		const target = dir ?? this._ctx.workspacePath;
-		if (target && this._isWorktreeDir(target)) {
+		/**
+		 * ★ 2026-10-17（真机：切 `VsSaros_PJDB` 无反应）：**离开当前绑定目录**时也必须走"按目录派生"。
+		 *
+		 * 只按 `_isWorktreeDir`（≠ 窗口主目录）判是不够的：主目录分支返回的 id（基座/preset 专属）
+		 * **不含目录信息** ⇒ 从别的目录切回"窗口主目录"时，会拿回一个 **cwd 在别处**的旧会话
+		 * （或与当前会话撞 id）⇒ `session.start` 撞已存在会话 ⇒ 不 rebind ⇒ 用户看到"点了没反应" ✗✗
+		 * （真机 warn 原话：`派生 id 与当前会话相同（…--wt-sarosis-agents-client-42477a）但目录不同`）。
+		 * ⇒ 判据：**目标目录 ≠ 当前绑定目录** 就按目录派生（每个目录一段历史、id 唯一 ✓）；
+		 *   只有"本来就在这个目录上"才继续用基座/preset 那套（保留主干历史 ✓）。
+		 */
+		const boundDir = this._worktree ?? this._ctx.workspacePath;
+		const leavingBoundDir = !!target && !!boundDir && !this._sameDir(boundDir, target);
+		if (target && (this._isWorktreeDir(target) || leavingBoundDir)) {
 			return dshChatWorktreeSessionId(this._chatId, preset, target);
 		}
 		if (!preset) {
@@ -451,14 +477,34 @@ class DshChatBinding extends Disposable implements IDshChatBinding {
 		return a !== b && a.toLowerCase() !== b.toLowerCase();
 	}
 
+	/** 两个目录是否同一个（与 `_isWorktreeDir` 同口径：分隔符归一 + 去尾斜杠 + 大小写不敏感 ✓）。 */
+	private _sameDir(a: string, b: string): boolean {
+		const norm = (p: string) => p.replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
+		return norm(a) === norm(b);
+	}
+
 	/** 习得一条 preset → 会话映射；基座会话额外习得它实际运行的 preset 并持久化。 */
 	private _recordSession(requestedPreset: string | undefined, sessionId: string, actualPreset: string | undefined): void {
 		const preset = actualPreset ?? requestedPreset;
 		if (!preset) {
 			return;
 		}
-		this._presetSessions.set(preset, sessionId);
+		/**
+		 * ★ 2026-10-17 真机（切 `VsSaros_PJDB` "无法切换"）：**worktree 会话 id 不许进 preset 映射表**。
+		 *
+		 * 那张表的语义是"某个 preset 在**主工作区**上的专属会话"（`resolvePresetSessionId` 命中即直接返回它），
+		 * 而 worktree 会话 id 是**按目录纯函数派生**的（每目录一段历史，不需要表 ✓）。
+		 * 两者一混就会出现这个死循环：
+		 *   切到 A 目录 ⇒ 记下 `…--wt-a` → 再切到**窗口主目录/主工作区**（走 `_isWorktreeDir === false` 分支）
+		 *   ⇒ `resolvePresetSessionId` 命中表 ⇒ 拿到 `…--wt-a` ⇒ 与当前会话**撞 id**（真机 warn 的原话：
+		 *   `派生 id 与当前会话相同（…--wt-sarosis-agents-client-42477a）但目录不同`）⇒ `session.start` 撞已存在
+		 *   会话 ⇒ 不 rebind ⇒ 页面上"点了没反应/无法切换" ✗✗。
+		 * ⇒ worktree 会话只更新"当前 preset"标记，**不写映射表** ✓。
+		 */
 		this._placeholder.dataset.dshPreset = preset;
+		if (!sessionId.includes('--wt-')) {
+			this._presetSessions.set(preset, sessionId);
+		}
 		if (sessionId === dshChatSessionId(this._chatId) && this._basePreset !== preset) {
 			this._basePreset = preset;
 			this._input.setDshBasePreset?.(preset);
@@ -512,10 +558,32 @@ class DshChatBinding extends Disposable implements IDshChatBinding {
 	private _switchWorktree(worktreePath: string): Promise<void> {
 		if (!this._switching) {
 			this._switching = this._doSwitchWorktree(worktreePath)
-				.catch(e => this._log.warn(`[dshHarness] switchWorktree ${worktreePath} failed for chat ${this._chatId}`, e))
+				.catch(e => this._notifySwitchFailure(`切换会话到 ${worktreePath}`, e))
 				.finally(() => this._switching = undefined);
 		}
 		return this._switching;
+	}
+
+	/**
+	 * 切换（工作区 / worktree）失败的**用户可见**出口（2026-10-16 用户报"点击工作区 item 无法切换"时补）。
+	 *
+	 * 为什么非它不可：页面桥是**单向**的 —— 页面 `bridge.switchWorktree(...)` 的 promise 在主进程那边
+	 * 就 resolve 了（主进程只负责把事件转给渲染进程），**渲染侧真正的失败传不回页面** ✗。
+	 * 于是用户点了没反应、界面上没有任何提示、日志里只有一行 warn（2026-10-16 实测：真因是
+	 * dsh 侧 `session.start` 抛 `agent-preset/invalid`，而用户在界面上**完全看不到**）⇒
+	 * 失败必须在**知道它的这一层**（渲染进程）弹出来 ✓。
+	 *
+	 * ⚠ 日志仍然照打（warn + `e`）——通知可能被用户关掉，日志是复盘用的 ✓。
+	 */
+	private _notifySwitchFailure(what: string, reason: unknown): void {
+		const detail = String((reason as Error)?.message ?? reason);
+		this._log.warn(`[dshHarness] ${what} failed for chat ${this._chatId}: ${detail}`, reason);
+		try {
+			this._notifications.notify({
+				severity: Severity.Warning,
+				message: `VsSaros：${what} 失败 —— ${detail}`,
+			});
+		} catch { /* 通知失败不影响别的（日志里已经有真因 ✓） */ }
 	}
 
 	/**
@@ -540,16 +608,38 @@ class DshChatBinding extends Disposable implements IDshChatBinding {
 		}
 		const isWorktree = this._isWorktreeDir(worktreePath);
 		const target = this._sessionIdFor(preset, worktreePath);
+		/**
+		 * 幂等判据：**id 相同 且 目录也相同**才算"已在该目录的会话上"。
+		 *
+		 * ★ 2026-10-17 真机抓到的错判（`logs/20261017T094943`）：
+		 *   `switchWorktree f:\PJDB_qiuzijian_main\S1Game 已在该目录的会话上（幂等，无动作）`
+		 *   —— 而上一条是 `switched to worktree g:\SarosWorkspace\sarosis-agents-client (session …--wt-sarosis-agents-client-42477a)`
+		 *   ⇒ 派生 id 撞上了当前会话 id（basename/hash 口径与目录不同步），宿主判定"已经在那"，于是
+		 *   **不 startSession、不 rebind** ⇒ 页面会话没换 ⇒ 用户看到"切了工作区但 UI 不刷新" ✗✗。
+		 *   ⇒ 只看 id 不够：**目录不同就说明不是幂等**，必须真的切（否则这个早退就是个静默黑洞 ✓）。
+		 */
+		const currentDir = this._worktree ?? this._ctx.workspacePath;
+		const sameDir = !!currentDir && this._sameDir(currentDir, worktreePath);
+		if (target === this._placeholder.dataset.sessionId && sameDir) {
+			// 已在该目录的会话上（幂等：菜单里再点一次当前项不该有任何动静）。
+			// ⚠ 2026-10-16 补这一行日志：这个早退 + 上面那条 "not ready" 早退从前都是**静默**的，
+			//   于是"点了没反应"完全没有痕迹（用户报障时只能靠猜 ✗）。
+			this._log.info(`[dshHarness] chat ${this._chatId} switchWorktree ${worktreePath} 已在该目录的会话上（幂等，无动作；session=${target}）`);
+			return;
+		}
 		if (target === this._placeholder.dataset.sessionId) {
-			return;   // 已在该目录的会话上（幂等：菜单里再点一次当前项不该有任何动静）
+			// id 撞了但目录不同 ⇒ 仍然切，并留一行 warn（这种"撞 id"本身就是个坑，值得被看见 ✓）
+			this._log.warn(`[dshHarness] chat ${this._chatId} switchWorktree ${worktreePath}：派生 id 与当前会话相同（${target}）但目录不同（当前=${currentDir ?? '(未知)'}）⇒ 仍执行切换（幂等判据不能只看 id ✗）`);
 		}
 		this._bindSeq++;
 		const res = await this._dsh.startSession({ cwd: worktreePath, sessionId: target, agentPreset: preset });
 		this._recordSession(preset, res.sessionId, res.agentPreset ?? undefined);
 		this._preset = res.agentPreset ?? preset;
-		// 主工作区 ⇒ 清掉 worktree 记账（等价于"切回主干的老会话"）；
+		// 记账口径：**id 是怎么来的，目录就怎么记**（★ 2026-10-17 起 `_sessionIdFor` 也可能对
+		// "窗口主目录"派生 `--wt-` id ⇒ 不能再按 `_isWorktreeDir` 判，否则两者不一致会出现
+		// "同目录来回点、每次都在换会话"的乒乓 ✗）。
 		// ⚠ 记录的是**用户选的那个目录**（不是 `res.sessionId` 反推 —— id 里只有哈希，反推不可靠）。
-		this._worktree = isWorktree ? worktreePath : undefined;
+		this._worktree = String(target).includes('--wt-') ? worktreePath : undefined;
 		this._input.setDshPreset?.(this._preset === this._basePreset ? undefined : this._preset);
 		this._savePresetState();
 		await this._dsh.rebindSession(viewId, res.sessionId);
@@ -560,6 +650,39 @@ class DshChatBinding extends Disposable implements IDshChatBinding {
 			delete this._placeholder.dataset.dshWorktree;
 		}
 		this._log.info(`[dshHarness] chat ${this._chatId} switched to ${isWorktree ? 'worktree' : 'main dir'} ${worktreePath} (session ${res.sessionId}, preset ${this._preset ?? '(base)'})`);
+	}
+
+	/**
+	 * 让 **IDE 窗口原地进**某个工作区（页面工作区下拉里点了别的工作区；桥 `10 → 11`，2026-10-16）。
+	 *
+	 * ⚠ 只做"窗口进工作区"，**不**碰会话：页面随后会发 `switchWorktree(根路径)` 去起/接管那个目录的会话
+	 * （每个目录一段历史 ✓）。两条命令各管一件事 ⇒ 任一条失败都能单独说清是哪一半 ✗→✓
+	 * （合成一条的话，"窗口切了但会话没切"就变成一种没法命名、也没法归因的中间态）。
+	 *
+	 * 为什么不在这里自己改窗口 folders：folder 列表的合法写者只有少数几处
+	 * （`workspaceFolderWriters.test.ts` 的 ALLOWED_FOLDER_WRITERS），且历史上"追加式注入 folder"
+	 * 引发过跨工作区污染事故 ⇒ **只转成 IDE 自己的命令**（`agentStudio.workspace.activate`，
+	 * 实现在 `sidebarPart`：那儿的 `_switchWorkspace` 是原生优先、**不重载窗口**的既有实现 ✓）。
+	 */
+	private _switchWorkspace(workspaceId: string): Promise<void> {
+		if (!this._switchingWorkspace) {
+			this._switchingWorkspace = this._doSwitchWorkspace(workspaceId)
+				.catch(e => this._notifySwitchFailure(`进 IDE 工作区 ${workspaceId}`, e))
+				.finally(() => { this._switchingWorkspace = undefined; });
+		}
+		return this._switchingWorkspace;
+	}
+
+	/** 见 {@link _switchWorkspace}。⚠ 收到就记一行日志：命令"没到宿主"与"到了但没做成"必须区分得开 ✓。 */
+	private async _doSwitchWorkspace(workspaceId: string): Promise<void> {
+		this._log.info(`[dshHarness] chat ${this._chatId} 收到 switchWorkspace(${workspaceId}) ⇒ 交给 IDE 侧命令 agentStudio.workspace.activate`);
+		await this._commands.executeCommand('agentStudio.workspace.activate', workspaceId);
+		// ⚠ 2026-10-17 说明（用户报「切工作区后聊天框的工作区 UI 不刷新」时必看）：
+		//   这条命令**只让 IDE 窗口进工作区**，**不动会话** ⇒ 页面那枚入口仍按**会话归属**显示（= 旧工作区）✓
+		//   这是**对的**：会话还跑在旧目录上，chip 说"旧工作区"才是真话。
+		//   要让页面跟着换，必须再有 `switchWorktree(新工作区的根路径)`（页面点工作区行就是这两条连发）✓。
+		//   ⇒ 日志里把这一跳写清楚：只有 switchWorkspace 而**没有** switchWorktree 时，UI 不变是预期行为。
+		this._log.info(`[dshHarness] chat ${this._chatId} 已请求 IDE 进工作区 ${workspaceId}（本命令不动会话：页面工作区入口仍按会话归属显示，要跟着换需随后 switchWorktree）`);
 	}
 
 	/**
@@ -889,6 +1012,7 @@ export class DshChatHostContribution extends Disposable {
 		@ICommandService commands: ICommandService,
 		@ILogService log: ILogService,
 		@IStorageService storage: IStorageService,
+		@INotificationService notifications: INotificationService,
 	) {
 		super();
 		setDshChatHostFactory(ctx => {
@@ -897,7 +1021,7 @@ export class DshChatHostContribution extends Disposable {
 			if (!enabled || engine !== 'dsh') {
 				return undefined;
 			}
-			return new DshChatBinding(ctx, dsh, keybinding, commands, log, storage);
+			return new DshChatBinding(ctx, dsh, keybinding, commands, log, storage, notifications);
 		});
 	}
 

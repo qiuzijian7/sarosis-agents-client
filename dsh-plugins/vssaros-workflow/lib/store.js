@@ -5,24 +5,40 @@
 // 工作区级还有 `<workspace>/.sarosworkspace/workflows/`——Host 进程未必可达，v0 不覆盖（如实记录）。
 
 import { mkdir, readFile, readdir, stat } from 'node:fs/promises';
+import { foundation } from './foundationRef.js';
 import { homedir } from 'node:os';
+
 import { dirname, join } from 'node:path';
+
 import { parseWorkflow } from './core/workflow.js';
+
 // 写侧（README 5.62）：锁 + 原子写 —— 与 IDE 侧 `agentStudio/common/fileWriteLock.ts` 同一套协议 ✓
 import { FILE_LOCK_STALE_MS, FILE_LOCK_WAIT_MS, acquireFileLock, atomicWriteFile, lockFileFor } from './lock.js';
 
+
 export function dataRootOf(config) {
-	const configured = typeof config?.dataRoot === 'string' ? config.dataRoot.trim() : '';
-	if (configured) {
-		return configured;
-	}
-	const fromEnv = typeof process.env.VSSAROS_DATA_ROOT === 'string' ? process.env.VSSAROS_DATA_ROOT.trim() : '';
-	return fromEnv || join(homedir(), '.vssaros');
+	// 委托到 @vssaros/dsh-foundation（重构 1.3：真源只有一份）；调用签名不变。
+	return foundation().dataRootOf(config);
 }
 
 export function workflowsRootOf(config) {
 	const configured = typeof config?.workflowsRoot === 'string' ? config.workflowsRoot.trim() : '';
 	return configured || join(dataRootOf(config), 'workflows');
+}
+
+/**
+ * checkpoint 目录（重构 3.1）：`<dataRoot>/workflows/.checkpoints/`（与工作流定义同根 ⇒ 跟着数据根走 ✓）。
+ * legacy 写在 `<workspace>/.sarosworkspace/checkpoints/`——那是壳侧的路径约定；dsh 侧没有
+ * "工作区"概念（引擎跑在 Host），统一落数据根 ✓。
+ */
+export function checkpointDirOf(config) {
+	return join(workflowsRootOf(config), '.checkpoints');
+}
+
+/** 回合的工作目录（重构 3.1）：config.workspacePath → 数据根（兜底）。 */
+export function workspacePathOf(config) {
+	const configured = typeof config?.workspacePath === 'string' ? config.workspacePath.trim() : '';
+	return configured || dataRootOf(config);
 }
 
 /**

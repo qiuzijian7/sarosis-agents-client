@@ -7,22 +7,26 @@
 // `ReferenceError: writeFile is not defined`，而且**只在"真的登记成功"那条路上**才炸 ✓
 // （p3-66 抓到的 ✓：登记函数先跑通、到了落盘那一步才抛 ⇒ 若不跑那条路，这个 bug 会一直躺着 ✓）。
 import { readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import { foundation } from './foundationRef.js';
 import { homedir } from 'node:os';
+
 import { join, resolve, sep } from 'node:path';
+
 import { fileURLToPath } from 'node:url';
+
 import { FTINDEX_FILE, KERNEL_FILE, LIBRARY_DIR, MAX_DOC_BYTES, NOTES_DIR, TOPIC_OVERVIEW_FILE, isVaultId, normalizeOverview, parseKernel } from './core/kb.js';
+
 import { MAX_FULLTEXT_TOTAL_CHARS, buildIndex } from './core/kbFulltext.js';
+
 import { BUILD_CACHE_FILE, MAX_LIB_SCAN, classifyPending, isSystemNavFile, parseBuildCache } from './core/kbIngest.js';
+
 // P1 构建缓存写入（只增不删 + 只登记'确实产出'的 ✓）：纯逻辑在 core/kbBuildCache.js ✓
 import { mergeBuildCache, planBuildCacheEntries, serializeBuildCache } from './core/kbBuildCache.js';
 
+
 export function dataRootOf(config) {
-	const configured = typeof config?.dataRoot === 'string' ? config.dataRoot.trim() : '';
-	if (configured) {
-		return configured;
-	}
-	const fromEnv = typeof process.env.VSSAROS_DATA_ROOT === 'string' ? process.env.VSSAROS_DATA_ROOT.trim() : '';
-	return fromEnv || join(homedir(), '.vssaros');
+	// 委托到 @vssaros/dsh-foundation（重构 1.3：真源只有一份）；调用签名不变。
+	return foundation().dataRootOf(config);
 }
 
 /** vault 根：`config.kbRoot` → `<数据根>/knowledge-base`。 */

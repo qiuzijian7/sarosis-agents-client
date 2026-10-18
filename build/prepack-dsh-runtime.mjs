@@ -298,6 +298,15 @@ async function buildProfileSeed(runtimeDir, dshBin, dshVersion) {
 		}
 	}
 	console.log(`[prepack-dsh] seed path rewrite: ${rewritten} file(s) de-absolutized`);
+	// ★ 安全（2026-10-17）：上面那次"试启动"会在种子里生成 `.credentials.yaml`
+	// （`client-connection/browser-session` 的 kind=grant 记录）——**绝不能烘进安装包**：
+	// 所有用户的种子会共用同一个 grant 密钥，且它是构建机的产物。
+	// 实测（隔离副本）：删掉后 Host 照常启动、首启**自己重建**该文件 ✓ ⇒ 只删、不需要补。
+	const seedCreds = join(seed, '.credentials.yaml');
+	if (existsSync(seedCreds)) {
+		rmSync(seedCreds, { force: true });
+		console.log('[prepack-dsh] seed credentials scrubbed（首启自生成 ✓）');
+	}
 	writeFileSync(markerPath, JSON.stringify({ dsh: dshVersion, plugins: wantPlugins, createdAt: new Date().toISOString() }, undefined, 2));
 	console.log(`[prepack-dsh] profile seed ready (${Math.round(dirSize(seed) / 1024 / 1024)} MB)`);
 }

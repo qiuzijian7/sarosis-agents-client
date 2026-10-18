@@ -25,7 +25,6 @@ import { useThemeStore } from './store/useThemeStore.js';
 import { useWorkspaceSessionStore } from './store/useWorkspaceSessionStore.js';
 import { useChatStore } from './store/useChatStore.js';
 import { useOrchestrationStore } from './store/useOrchestrationStore.js';
-import { useDiagnosticsStore } from './store/useDiagnosticsStore.js';
 import { useSwarmStore } from './store/useSwarmStore.js';
 import { useDebugTraceStore } from './store/useDebugTraceStore.js';
 import { dispatchConfigHtmlEvent } from './features/configmd/configHtmlBridge.js';
@@ -249,19 +248,8 @@ initMessageClient((type, data) => {
 		case 'taskBoard.focusTask':
 			window.dispatchEvent(new CustomEvent('agentStudio:focusTask', { detail: data }));
 			break;
-		case 'diagnostics.detected': {
-			const diagnostic = data as import('./store/useDiagnosticsStore.js').Diagnostic;
-			if (diagnostic?.id) {
-				useDiagnosticsStore.getState().onDetected(diagnostic);
-				window.dispatchEvent(new CustomEvent('agentStudio:diagnostic-detected', { detail: diagnostic }));
-			}
-			break;
-		}
-		case 'diagnostics.changed': {
-			const diagnostics = data as import('./store/useDiagnosticsStore.js').Diagnostic[];
-			useDiagnosticsStore.getState().onChanged(Array.isArray(diagnostics) ? diagnostics : []);
-			break;
-		}
+		// 5.2（2026-10-17）：diagnostics.detected / diagnostics.changed 的接收端删了
+		//   （useDiagnosticsStore 是 taskboard 面板的诊断 store——面板已退役 ✓）。
 		case 'swarm.updated': {
 			const status = data as import('./store/useSwarmStore.js').SwarmStatus;
 			if (status?.swarmId) {

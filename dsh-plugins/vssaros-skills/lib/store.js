@@ -7,18 +7,18 @@
 // （方案 6.9 方案 C：契约共享、实现各自一份——两处各写一遍，由契约守卫与探针对齐。）
 
 import { readFile, readdir, stat } from 'node:fs/promises';
+import { foundation } from './foundationRef.js';
 import { homedir } from 'node:os';
+
 import { basename, dirname, join } from 'node:path';
+
 import { SKILL_FILE, skillFromFile } from './core/skills.js';
+
 
 /** 数据根。优先级：`config.dataRoot` → 环境变量 → `~/.vssaros`。 */
 export function dataRootOf(config) {
-	const configured = typeof config?.dataRoot === 'string' ? config.dataRoot.trim() : '';
-	if (configured) {
-		return configured;
-	}
-	const fromEnv = typeof process.env.VSSAROS_DATA_ROOT === 'string' ? process.env.VSSAROS_DATA_ROOT.trim() : '';
-	return fromEnv || join(homedir(), '.vssaros');
+	// 委托到 @vssaros/dsh-foundation（重构 1.3：真源只有一份）；调用签名不变。
+	return foundation().dataRootOf(config);
 }
 
 /** 技能根：`config.skillsRoot`（测试/特殊部署用）→ `<数据根>/skills`。 */

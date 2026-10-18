@@ -9,17 +9,17 @@
 // 活会话由 index.js 的 live 路径覆盖（页面上标出来源）。
 
 import { readFile, readdir, stat } from 'node:fs/promises';
+import { foundation } from './foundationRef.js';
 import { homedir } from 'node:os';
+
 import { join } from 'node:path';
+
 import { parseSessionCache } from './core/dashboard.js';
 
+
 export function dshHomeOf(config) {
-	const configured = typeof config?.dshHome === 'string' ? config.dshHome.trim() : '';
-	if (configured) {
-		return configured;
-	}
-	const fromEnv = typeof process.env.DSH_HOME === 'string' ? process.env.DSH_HOME.trim() : '';
-	return fromEnv || join(homedir(), '.dsh');
+	// 委托到 @vssaros/dsh-foundation（重构 1.3：真源只有一份）；调用签名不变。
+	return foundation().dshHomeOf(config);
 }
 
 /** 投影缓存目录。 */

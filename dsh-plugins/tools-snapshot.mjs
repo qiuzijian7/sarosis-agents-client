@@ -22,11 +22,13 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const SNAPSHOT_PATH = path.join(HERE, 'tools-snapshot.json');
 
 /** 进程内最小 fake ctx：只实现插件真正用到的成员，并**忠实模拟"服务不存在就不激活"**。 */
-function fakeContext() {
+function fakeContext(foundationSvc) {
 	const tools = [];
 	const events = [];
 	const provided = {};
-	const availability = { tools: true, webServer: true, connection: true };
+	// 重构 1.3：消费插件的委托层经 cordis 服务 `vssarosFoundation` 拿真源 ⇒ fake ctx 要带上**真服务**
+	// （否则 memory 这类在 apply 同步段就建 store 的插件会抛"服务未绑定" ✗）。
+	const availability = { tools: true, webServer: true, connection: true, vssarosFoundation: true };
 	const ctx = {
 		effect: fn => { fn(); return () => { }; },
 		// Cordis 4 的可选注入：依赖不齐就**不调** cb（真 ctx 同语义）——否则 fake 会造出真环境不存在的路径 ✗
@@ -40,9 +42,10 @@ function fakeContext() {
 		// ⇒ fake 少了它，这两个插件会抛 `ctx.provide is not a function`，于是它们的工具**一条都抽不到** ✓。
 		// 好在守卫的"失败数组必须为空"那条会把这种**静默缺一块**变成红 ✓（2026-10-12 实测抓到 ✓）。
 		provide: name => { provided[name] = true; return () => { }; },
-		get: name => (provided[name] ? {} : undefined),
+		get: name => (name === 'vssarosFoundation' ? foundationSvc : (provided[name] ? {} : undefined)),
 		set: () => { },
 		logger: { info: () => { }, warn: () => { }, error: () => { }, debug: () => { } },
+		vssarosFoundation: foundationSvc,
 		webServer: { port: 1, host: '127.0.0.1', register: () => () => { } },
 		connection: { requestRejection: () => undefined },
 		tools: {
@@ -77,6 +80,9 @@ function entryOf(definition) {
 export async function extractToolSnapshot() {
 	const plugins = {};
 	const failures = [];
+	// 重构 1.3：所有 fake ctx 共享一份真源服务（与真机"一个 Host 一个 foundation"同形态 ✓）。
+	const { createFoundationService } = await import(pathToFileURL(path.join(HERE, 'vssaros-foundation', 'lib', 'index.js')).href);
+	const foundationSvc = createFoundationService();
 	let total = 0;
 	const dirs = fs.readdirSync(HERE, { withFileTypes: true })
 		.filter(d => d.isDirectory() && d.name.startsWith('vssaros-'))
@@ -89,7 +95,7 @@ export async function extractToolSnapshot() {
 			const mod = await import(pathToFileURL(entry).href);
 			if (typeof mod.apply !== 'function') { continue; }
 			// 每个插件用自己的默认 config 跑（与真机"没写覆盖层"时的形态一致 ✓）
-			const { ctx, tools } = fakeContext();
+			const { ctx, tools } = fakeContext(foundationSvc);
 			mod.apply(ctx, {});
 			const entries = tools.map(entryOf).sort((a, b) => String(a.name).localeCompare(String(b.name)));
 			if (entries.length === 0) { continue; }

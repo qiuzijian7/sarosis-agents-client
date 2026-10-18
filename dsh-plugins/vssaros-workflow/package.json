@@ -1,6 +1,6 @@
 {
   "name": "@vssaros/dsh-workflow",
-  "version": "0.3.18",
+  "version": "0.5.1",
   "description": "VsSaros workflow module for DeepSeek Harness — read-only slice: lists ~/.vssaros/workflows/<id>/workflow.json, renders the node graph as a server-side SVG canvas, exposes workflow_list / workflow_get / workflow_engine_status tools, and self-proves the Host's worker_threads capability (the prerequisite for migrating the engine). Engine migration itself is NOT done. Sideview is a compact list (search / filter chips / sort / collapsible self-diagnostics); the canvas moved into a collapsed section at the bottom so the list owns the first screen (doc/workflow-sideview-refactor-mockup.html option A).",
   "private": true,
   "type": "module",
@@ -10,19 +10,7 @@
     "./client": "./lib/client.js",
     "./package.json": "./package.json"
   },
-  "files": [
-    "lib/index.js",
-    "lib/client.js",
-    "lib/pageShell.js",
-    "lib/lock.js",
-    "lib/store.js",
-    "lib/engine.js",
-    "lib/worker.js",
-    "lib/core/workflow.js",
-    "cordis.patch.yml",
-    "lib/agents.js",
-    "lib/core/schema.js"
-  ],
+  "files": ["lib/index.js", "lib/client.js", "lib/pageShell.js", "lib/lock.js", "lib/store.js", "lib/engine.js", "lib/worker.js", "lib/core/workflow.js", "lib/core/checkpoint.js", "lib/core/dag.js", "lib/core/engineCore.js", "cordis.patch.yml", "lib/agents.js", "lib/core/schema.js", "lib/foundationRef.js"],
   "peerDependencies": {
     "@deepseek-ai/dsh": ">=0.1.7-0 <0.3.0-0"
   },

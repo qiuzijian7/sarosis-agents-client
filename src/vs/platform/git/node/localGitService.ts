@@ -21,7 +21,8 @@ export class LocalGitService implements ILocalGitService {
 	private _exec(operationId: string, args: string[], cwd?: string): Promise<string> {
 		return new Promise((resolve, reject) => {
 			this._logService.trace(`[LocalGitService] git ${args.join(' ')}${cwd ? ` (cwd: ${cwd})` : ''}`);
-			const proc = cp.execFile('git', args, { cwd, encoding: 'utf8' }, (err, stdout, stderr) => {
+			// ★ 2026-10-17：Windows 上不设 windowsHide ⇒ git.exe 会闪一个黑色 conhost 框（与「点 agent 条目闪 git 窗口」同因）。
+			const proc = cp.execFile('git', args, { cwd, encoding: 'utf8', windowsHide: true }, (err, stdout, stderr) => {
 				if (!this._runningProcesses.delete(operationId)) {
 					reject(new CancellationError());
 					return;

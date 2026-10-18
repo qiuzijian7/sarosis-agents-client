@@ -151,6 +151,8 @@ function executeHookCommand(hook: IParsedHookCommand, stdin?: string): Promise<s
 			env: { ...process.env, ...hook.env },
 			stdio: ['pipe', 'pipe', 'pipe'],
 			timeout,
+			// ★ 2026-10-17：hook 经 cmd.exe 运行，Windows 上不加 windowsHide 会闪控制台黑框。
+			windowsHide: true,
 		});
 
 		let stdout = '';

@@ -66,7 +66,7 @@ const SIDEBAR_CSS = `
  *
  * 吃**原始任务记录**（要看 `status` 与 `updatedAt`；描述不进这一页 —— 与看板页同一口径）。
  */
-export function renderSideviewPage({ tasks, missing, registeredTools, expectedTools, dataFile, workspaceId }) {
+export function renderSideviewPage({ tasks, missing, registeredTools, expectedTools, dataFile, workspaceId, runner = false, runnerWhy = 'init' }) {
 	const all = (Array.isArray(tasks) ? tasks : []).filter(t => t && typeof t === 'object');
 	const counts = countsByStatus(all);
 	const total = counts.total;
@@ -97,7 +97,7 @@ export function renderSideviewPage({ tasks, missing, registeredTools, expectedTo
 			+ '</div></div>';
 	}).join('');
 
-	const diag = diagHtml({ registeredTools, expectedTools, workspaceId, dataFile });
+	const diag = diagHtml({ registeredTools, expectedTools, workspaceId, dataFile, runner, runnerWhy });
 	const more = focus.length > shown.length
 		? `<p class="kb-foot">另有 ${focus.length - shown.length} 张未完成卡片 —— 完整看板里看。</p>`
 		: '';

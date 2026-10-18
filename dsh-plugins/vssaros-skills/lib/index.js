@@ -17,12 +17,17 @@
 // 数据契约与覆盖缺口见 `lib/core/skills.js` 文件头（三层来源只覆盖中间那层；always 的自动注入语义无等价物）。
 
 import { skillFromFile, summarizeCatalog, toCandidate, toDefinition, VSAROS_SKILL_PROVIDER } from './core/skills.js';
+import { bindFoundation } from './foundationRef.js';
 import { rankSkills, SKILL_SEARCH_DEFAULT_LIMIT, SKILL_SEARCH_MAX_LIMIT } from './core/skillSearch.js';
+
 import { MAX_SKILL_BYTES, SKILL_MANAGE_ACTIONS, skillManage } from './core/skillManage.js';
+
 import { readSkillFile, scanSkills, skillDirOf, skillIdOf, skillsRootOf } from './store.js';
+
 // 跨进程写锁（协议 v2，与 workflow / kanban / IDE 同一套 ✓；**逐字复制的副本** —— 插件间不能互相
 // import ✓，包各自独立 ✓）。互通性由 `dshWorkflowWriteLock.test.ts` 拿真文件互抢验证 ✓。
 import { acquireFileLock, lockFileFor } from './lock.js';
+
 
 /** 与 cordis.patch.yml 的行 id 一致（值来自 core 的单一真源，见那里的注释）。 */
 export const name = VSAROS_SKILL_PROVIDER;
@@ -64,6 +69,9 @@ function createState() {
 		 * `mcp__probe__probe_ping` 那种形式 ✓）。把看到的名字报出来，就不用猜 ✓。
 		 */
 		skillishTools: [],
+		// 重构 4（2026-10-17）：skill_market_list 要经桥回 IDE 拉远端清单（远端认证在壳侧 ✓）。
+		// 可选注入：vssarosBridge 不在 ⇒ 市场工具如实报"桥不在" ✓，其余照常 ✓。
+		bridge: null,
 	};
 }
 
@@ -477,8 +485,30 @@ function renderPage({ skills, errors, missing, root, nativeSkillTool, provider, 
 
 
 export function apply(ctx, config = {}) {
+	// 重构 1.3：绑定 foundation 共享服务（dataRoot/dshHome/pageShell/lock 的真源）。
+	{
+		// 同步直读在前：有插件在 apply 的**同步段**就建 store（inject 回调是异步的，会来不及 ✗）。
+		let ready = null;
+		try { ready = ctx.get?.('vssarosFoundation') ?? ctx.vssarosFoundation ?? null; } catch { /* 探针的 Proxy 假 ctx 对未知属性抛错 ⇒ 当不存在 */ }
+		if (ready) { bindFoundation(ready); }
+		ctx.inject(['vssarosFoundation'], child => {
+		let svc = null;
+		try { svc = child.vssarosFoundation ?? null; } catch { /* 探针的假 ctx（Proxy）对未知属性抛错 ⇒ 当不存在 */ }
+		if (svc) { bindFoundation(svc); }
+	});
+	}
 	// ⚠ 状态**每次挂载一份**（见 `createState` 注释：preset plane 下同一个包会被多次挂载 ✓）
 	const state = createState();
+	// 桥（可选注入：vssarosBridge 不在 ⇒ 市场工具如实报"桥不在" ✓，其余照常 ✓）。
+	ctx.inject(['vssarosBridge'], scope => {
+		let svc = null;
+		try { svc = scope.vssarosBridge ?? null; } catch { /* 探针的 Proxy 假 ctx 对未知属性抛错 ⇒ 当不存在 */ }
+		if (svc && typeof svc.callIDE === 'function') {
+			state.bridge = svc;
+			return () => { state.bridge = null; };
+		}
+		return undefined;
+	});
 	// ── R13（preset plane）第 ① 类：分半边注册 ────────────────────────────────────────────────
 	// 同一个包会被挂**两次**（host plane 一行 + 我们的 preset 里一行 ✓）。`hostHalf: true` ⇒
 	// 这一次**只**注册页面/技能来源，**不注册工具**（`skill_search` 交给 preset 里那次 ✓）；
@@ -686,6 +716,159 @@ export function apply(ctx, config = {}) {
 				} finally {
 					await release();
 				}
+			},
+		}, {
+			// 重构 4（2026-10-17）：`skill_market_list`——浏览技能市场（只读：经桥回 IDE 拉远端清单，
+			// 远端服务在壳侧的 marketplaceService ✓）。安装入口是 skill_manage（草稿区 ✓——本工具
+			// 只浏览 ✓，不安装 ✗）。
+			name: 'skill_market_list',
+			description: '浏览技能市场：列出远端可装的技能（名称 / 描述 / 版本 / 作者）。只读（不安装——安装用 skill_manage 的 create，写草稿区后手动提升才生效）。远端服务要登录（经 IDE 侧的 marketplaceService）。',
+			parameters: {
+				type: 'object',
+				properties: {
+					query: { type: 'string', description: '搜索关键词（可选）' },
+					limit: { type: 'number', description: '最多返回几条（默认 20，上限 100）' },
+				},
+			},
+			output: {
+				schema: {
+					type: 'object',
+					properties: {
+						count: { type: 'integer' },
+						items: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, description: { type: 'string' }, version: { type: 'string' }, author: { type: 'string' } } } },
+						error: { type: 'string' },
+					},
+				},
+				render: (_args, value) => [{
+					type: 'text',
+					text: value.error
+						? `市场不可用：${value.error}`
+						: (value.count ? `${value.count} 个技能：\n${value.items.map(i => `  • ${i.name}@${i.version ?? '?'} — ${i.description ?? ''}`).join('\n')}` : '没有匹配的技能'),
+				}],
+			},
+			isConcurrencySafe: () => true,  // 只读 ✓
+			execute: async (params) => {
+				// 经桥回 IDE（远端清单要认证——壳侧的 marketplaceService 有 token ✓）
+				if (!state.bridge || typeof state.bridge.callIDE !== 'function') {
+					return { count: 0, items: [], error: '市场要经桥回 IDE（远端清单的认证在壳侧），但 vssarosBridge 不在（bridge 插件没装/没连）' };
+				}
+				const reply = await state.bridge.callIDE('ide.request', {
+					capability: 'skills',
+					pluginId: 'vssaros-skills',
+					params: { op: 'marketList', query: String(params?.query ?? '').trim() || undefined, limit: Number.isFinite(params?.limit) ? Math.min(100, Math.max(1, Math.floor(params.limit))) : 20 },
+				}, { timeoutMs: 30 * 1000 });
+				const items = Array.isArray(reply?.items) ? reply.items : [];
+				return { count: items.length, items, ...(reply?.error ? { error: String(reply.error) } : {}) };
+			},
+		}, {
+			// 重构 4（2026-10-17）：`read_skill`——读技能全文（SKILL.md 正文 + 可选的支持文件）。
+			// 与 legacy `skillTools.ts` 同语义（读文件系统——dsh 侧的 skills 是文件扫描 ✓，
+			//   不是壳侧的 skillRegistry 服务 ✓）。只读 ⇒ 不挂审批闸（与 skill_search 同口径 ✓）。
+			name: 'read_skill',
+			description: '按 id 读一个已安装技能的完整指引（SKILL.md 正文）。要读技能的支持文件（references/scripts/assets/templates）时传 path（相对路径，如 "references/api.md"）。',
+			parameters: {
+				type: 'object',
+				properties: {
+					skill_id: { type: 'string', description: '技能 id（目录名 / frontmatter 的 name）' },
+					path: { type: 'string', description: '可选：技能内的支持文件相对路径（如 "references/api.md"）——给了就读那个文件而不是 SKILL.md' },
+				},
+				required: ['skill_id'],
+			},
+			output: {
+				schema: {
+					type: 'object',
+					properties: {
+						ok: { type: 'boolean' },
+						id: { type: 'string' },
+						name: { type: 'string' },
+						path: { type: 'string' },
+						content: { type: 'string' },
+						skillDir: { type: 'string' },
+						supportFiles: { type: 'array', items: { type: 'string' } },
+						error: { type: 'string' },
+					},
+				},
+				render: (_args, value) => [{
+					type: 'text',
+					text: value.ok
+						? `# ${value.name}（${value.id}）\n\n${String(value.content ?? '').slice(0, 2000)}${String(value.content ?? '').length > 2000 ? '\n\n…（截断）' : ''}`
+						: `读技能失败：${value.error ?? '未知原因'}`,
+				}],
+			},
+			isConcurrencySafe: () => true,  // 只读 ✓
+			execute: async (params) => {
+				const skillId = String(params?.skill_id ?? '').trim();
+				if (!skillId) { throw new Error('skill_id 必填（技能 id——目录名 / frontmatter 的 name）'); }
+				const supportPath = String(params?.path ?? '').trim();
+				const scan = await scanSkills(skillsRootOf(config));
+				// 按 id（目录名）或 name（frontmatter）找
+				const skill = scan.skills.find(s => s.id === skillId || s.name === skillId);
+				if (!skill) {
+					return { ok: false, error: `技能没找到：${skillId}（用 list_skills 看可用的 id）` };
+				}
+				// 读支持文件（references/scripts/assets/templates——相对路径，围栏 ✓）
+				if (supportPath) {
+					const { readFile } = await import('node:fs/promises');
+					const { resolve, sep } = await import('node:path');
+					const skillDir = resolve(skillsRootOf(config), skill.id);
+					const target = resolve(skillDir, supportPath);
+					if (target !== skillDir && !target.startsWith(skillDir + sep)) {
+						throw new Error(`路径越界：${supportPath} 解析后不在技能目录之内（已拒绝）。`);
+					}
+					try {
+						const content = await readFile(target, 'utf8');
+						return { ok: true, id: skill.id, name: skill.name, path: supportPath, content };
+					} catch (e) {
+						return { ok: false, error: `读支持文件失败：${supportPath}（${String(e?.message ?? e)}）`, supportFiles: [] };
+					}
+				}
+				return { ok: true, id: skill.id, name: skill.name, content: skill.content ?? '', skillDir: skill.path, supportFiles: [] };
+			},
+		}, {
+			// 重构 4（2026-10-17）：`list_skills`——列所有已安装技能（id / name / description / activation）。
+			// 与 legacy `skillTools.ts` 同语义（读文件系统 ✓）。只读 ⇒ 不挂审批闸 ✓。
+			name: 'list_skills',
+			description: '列出所有已安装的技能（id / 名称 / 描述 / 激活方式）。要浏览或搜索可用技能时用它。',
+			parameters: {
+				type: 'object',
+				properties: {
+					filter: { type: 'string', description: '可选：按名称或描述过滤（大小写不敏感）' },
+					category: { type: 'string', description: '可选：按分类过滤' },
+				},
+			},
+			output: {
+				schema: {
+					type: 'object',
+					properties: {
+						count: { type: 'integer' },
+						skills: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, name: { type: 'string' }, description: { type: 'string' }, activation: { type: 'string' } } } },
+					},
+				},
+				render: (_args, value) => [{
+					type: 'text',
+					text: value.count ? `${value.count} 个技能：\n${value.skills.map(s => `  • ${s.id} — ${s.description ?? ''}`).join('\n')}` : '没有匹配的技能',
+				}],
+			},
+			isConcurrencySafe: () => true,  // 只读 ✓
+			execute: async (params) => {
+				const filter = String(params?.filter ?? '').toLowerCase().trim();
+				const category = String(params?.category ?? '').toLowerCase().trim();
+				const scan = await scanSkills(skillsRootOf(config));
+				let skills = scan.skills;
+				if (filter) {
+					skills = skills.filter(s =>
+						(s.name ?? '').toLowerCase().includes(filter)
+						|| (s.description ?? '').toLowerCase().includes(filter)
+						|| (s.metadata?.match ?? []).some(m => String(m).toLowerCase().includes(filter))
+					);
+				}
+				if (category) {
+					skills = skills.filter(s => String(s.metadata?.category ?? '').toLowerCase() === category);
+				}
+				return {
+					count: skills.length,
+					skills: skills.map(s => ({ id: s.id, name: s.name, description: s.description ?? '', activation: s.activation ?? 'manual' })),
+				};
 			},
 		}];
 		// ⚠ 只闸**注册**这一步 ✓：上面的消费者探测（`nativeSkillToolPresent` / `skillishTools`）必须照跑 ✓ ——

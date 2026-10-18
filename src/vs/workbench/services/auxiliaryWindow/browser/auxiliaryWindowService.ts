@@ -20,6 +20,7 @@ import { localize } from '../../../../nls.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
+import { ILogService } from '../../../../platform/log/common/log.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
@@ -257,12 +258,32 @@ export class BrowserAuxiliaryWindowService extends Disposable implements IAuxili
 		@IHostService protected readonly hostService: IHostService,
 		@IWorkbenchEnvironmentService protected readonly environmentService: IWorkbenchEnvironmentService,
 		@IContextMenuService protected readonly contextMenuService: IContextMenuService,
+		@ILogService protected readonly logService: ILogService,
 	) {
 		super();
+		// ★ 2026-10-17 诊断：记住主窗口里**最近一次用户输入**（捕获阶段，不改事件）。
+		//   开窗栈是异步栈，看不到最初的点击；配上这条就能回答「开窗前用户最后点了哪里 / 按了什么键」。
+		//   ⚠ 落在原生 WebContentsView（插件页 / 聊天框）里的点击**不会**进主窗口 DOM ⇒ 那种情况这里记的是更早的事件，
+		//   日志里的「距今毫秒」能看出来。
+		const remember = (e: UIEvent) => {
+			const t = e.target as HTMLElement | null;
+			const desc = t ? `${t.tagName}${t.id ? '#' + t.id : ''}.${String(t.className ?? '').slice(0, 60)}` : '(none)';
+			const extra = e instanceof KeyboardEvent ? ` key=${e.key}` : (e instanceof MouseEvent ? ` at=(${Math.round(e.clientX)},${Math.round(e.clientY)}) detail=${e.detail}` : '');
+			this.lastUserInput = { at: Date.now(), text: `${e.type}${extra} target=${desc} title=${JSON.stringify(t?.title ?? '')}` };
+		};
+		for (const type of ['pointerdown', 'click', 'keydown']) {
+			this._register(addDisposableListener(mainWindow, type, remember, true));
+		}
 	}
+
+	private lastUserInput: { at: number; text: string } | undefined;
 
 	async open(options?: IAuxiliaryWindowOpenOptions): Promise<IAuxiliaryWindow> {
 		mark('code/auxiliaryWindow/willOpen');
+		// ★ 2026-10-17（用户报「点 agent 条目弹出一叠透明窗口」）：所有辅助窗口（弹出的聊天 /
+		//   dsh 全窗 / 浮动编辑器组…）都经过这里 ⇒ 记调用栈 + 开窗前最近一次用户输入，复现时能对上是谁开的。
+		const input = this.lastUserInput ? `${this.lastUserInput.text}（${Date.now() - this.lastUserInput.at}ms 前）` : '(主窗口里还没有用户输入)';
+		this.logService.info(`[auxWindow] open (compact=${options?.compact ?? false}, nativeTitlebar=${options?.nativeTitlebar ?? false}) lastUserInput=${input}\n${new Error('caller trace').stack ?? '(no stack)'}`);
 
 		const targetWindow = await this.openWindow(options);
 		if (!targetWindow) {

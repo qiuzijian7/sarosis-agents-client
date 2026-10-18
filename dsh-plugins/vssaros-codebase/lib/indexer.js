@@ -929,7 +929,9 @@ async function cacheCheck(root) {
 	].join('\n'));
 	// 只在自证里起子进程 ⇒ 用**动态 import**，别把 `node:child_process` 带进插件的主路径 ✓
 	const { spawnSync } = await import('node:child_process');
-	const child = spawnSync(process.execPath, [childFile, root, cacheFile], { encoding: 'utf8', timeout: 60_000 });
+	// ⚠ windowsHide 必带（见 vssaros-agents/lib/memory.js 的同类注释）：dsh Host 没有
+	// 可继承的控制台，不带就会为这条子进程新分配一个控制台窗口 ⇒ 自证时闪黑框。
+	const child = spawnSync(process.execPath, [childFile, root, cacheFile], { encoding: 'utf8', timeout: 60_000, windowsHide: true });
 	let out = {};
 	try {
 		out = JSON.parse(String(child.stdout ?? '').trim().split('\n').filter(Boolean).pop() ?? '{}');

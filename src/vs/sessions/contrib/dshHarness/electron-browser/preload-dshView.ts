@@ -27,6 +27,12 @@
 	const surface = surfaceArg ? surfaceArg.slice(SURFACE_ARG.length) : 'full';
 	const chatOnlyArg = process.argv.find(a => a.startsWith(CHAT_ONLY_ARG));
 	const chatOnly = chatOnlyArg ? chatOnlyArg.slice(CHAT_ONLY_ARG.length) !== '0' : false;
+	// 2026-10-18：把 chatOnly 暴露成 DOM 事实 —— 页面侧 chunk（是否装载工作台/多根侧栏）与
+	// e2e（断言"官方整套 chrome 在不在"）都要判它，别再靠猜 CSS 有没有被插进去 ✓。
+	try {
+		const mark = () => { try { document.documentElement.dataset.vssarosChatOnly = chatOnly ? '1' : '0'; } catch { /* 文档还没就绪 */ } };
+		if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', mark, { once: true }); } else { mark(); }
+	} catch { /* 诊断位不影响任何功能 */ }
 	// 本视图绑定的 dsh 会话 id（chatId → vssaros-chat-<chatId>，方案 7.x）；前端插件据此切会话。
 	const sessionArg = process.argv.find(a => a.startsWith(SESSION_ARG));
 	const sessionId = sessionArg ? sessionArg.slice(SESSION_ARG.length) : '';
@@ -108,8 +114,14 @@
 	const api = {
 		// ⚠ 与 `common/dshPageBridgeProtocol.ts` 的 `DSH_PAGE_BRIDGE_VERSION` **必须同值**
 		//   （`test/common/dshPageBridge.test.ts` 拿那个常量对账这里的字面量，只改一边必红 ✓）。
-		bridgeVersion: 10,
+		bridgeVersion: 11,
 		surface,
+		// ★ 2026-10-18：`chatOnly` 也放进 bridge（**同步可知**）。
+		//   为什么不能只靠 `data-vssaros-chat-only`：那个 DOM 标记要等 DOMContentLoaded 才写，
+		//   而插件 `apply()` 在 bundle 执行时就会跑 —— 早于标记 ⇒ 页面侧判不出"带官方 chrome"，
+		//   工作台/多根侧栏 chunk 不装载 ⇒ 真机截图里工作区回到官方摊平态（UE5EA×2）、
+		//   也没有「🗂 工作台」行 ✗。bridge 字段在 document-start 就有，判据必须用它 ✓。
+		chatOnly,
 		sessionId: sessionId || null,
 		// plugin-page 页面用它识别"我是哪个视图"（诊断 / 上报），与 location.pathname（路由）互补。
 		viewId: viewId || null,
@@ -164,6 +176,10 @@
 		// 宿主派生带 `--wt-` 段的会话 id → `session.start({cwd})` → rebind 回推。
 		// ⚠ 语义是"新开会话"（历史独立），preset 沿用当前值 —— UI 要如实写明（见协议注释）。
 		switchWorktree: (path: string) => invoke({ method: 'switchWorktree', path }),
+		// 让 **IDE 窗口原地进**某个工作区（桥 `10 → 11`，2026-10-16）：参数是 **IDE 侧** `Workspace.id`
+		// （不是 dsh 的 workspaceId ✗）。与 `switchWorktree` 分工：这条只负责"窗口换工作区（多根一起进、
+		// 不重载）"，会话仍由 `switchWorktree(根路径)` 起 ⇒ 两条各管一件事 ✓（见协议里的注释）。
+		switchWorkspace: (workspaceId: string) => invoke({ method: 'switchWorkspace', workspaceId }),
 		// 打开 Agent 商城（输入框 Agents 面板的底部动作）：商城是编辑器页，页面自己开不了 ⇒ 交宿主。
 		openAgentMarket: () => invoke({ method: 'openAgentMarket' }),
 		// 打开原生 Agent 列表（花名册的宿主等价入口）；宿主找不到该视图时会回落资源管理页。
@@ -232,6 +248,21 @@
 			document.documentElement.dataset.vssarosWorktrees = JSON.stringify(list);
 		}
 		document.dispatchEvent(new CustomEvent(WORKTREES_EVENT, { detail: list }));
+	});
+
+	// IDE **工作区记录**（多根工作区；2026-10-16）：与 worktree 同机制（宿主侧事实 + 单向桥 ⇒ 只能推）。
+	// 页面拿它把 dsh 那边被**摊平**的 N 条记录合成"一个工作区 + 各根"（见协议里的长注释 ✓）。
+	// ⚠ 推送缺席（旧宿主）时页面必须**回落**成"一条记录一行" ⇒ 这里不做任何兜底数据 ✓。
+	const WORKSPACES_CH = 'vssaros:dsh:workspaces';
+	const WORKSPACES_EVENT = 'vssaros-dsh-workspaces';
+	ipcRenderer.on(WORKSPACES_CH, (_e: unknown, list: unknown) => {
+		if (!Array.isArray(list)) {
+			return;
+		}
+		if (document.documentElement) {
+			document.documentElement.dataset.vssarosWorkspaces = JSON.stringify(list);
+		}
+		document.dispatchEvent(new CustomEvent(WORKSPACES_EVENT, { detail: list }));
 	});
 
 	// 插入文件引用（方案 5.5 onInsertReference）：工作台 → 页面插件（chat-surface 客户端

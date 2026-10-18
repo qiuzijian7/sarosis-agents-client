@@ -6,8 +6,6 @@
  *--------------------------------------------------------------------------------------------*/
 
 import React, { useEffect, useState, useCallback, Component } from 'react';
-import { AgentEditorPane } from './features/agentEditor/AgentEditorPane';
-import { TaskBoardPanel } from './features/taskboard/TaskBoardPanel';
 import { useWorkspaceStore } from './store/useWorkspaceStore';
 
 // Lazy-load the workflow editor — it pulls in LiteGraph (~large input) which is
@@ -61,133 +59,6 @@ class PanelErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryStat
  * Independent panel components (rendered when panelType is set)
  * ═══════════════════════════════════════════════════════════════════════════════ */
 
-function TaskboardPanel(): React.ReactElement {
-	const { loadWorkspaces, activeWorkspaceId, setActiveWorkspace } = useWorkspaceStore();
-
-	useEffect(() => {
-		loadWorkspaces().then(() => {
-			const store = useWorkspaceStore.getState();
-			if (store.workspaces.length > 0 && !store.activeWorkspaceId) {
-				const pick = store.workspaces.find(w => !!(w as any).path) ?? store.workspaces[0];
-				store.setActiveWorkspace(pick.id);
-			}
-		});
-	}, []);
-
-	useEffect(() => {
-		if (activeWorkspaceId) {
-			useAgentStore.getState().loadAgents(activeWorkspaceId);
-		}
-	}, [activeWorkspaceId]);
-
-	useEffect(() => {
-		const onActiveWorkspaceChanged = (e: Event) => {
-			const detail = (e as CustomEvent).detail;
-			if (detail?.workspaceId && detail.workspaceId !== useWorkspaceStore.getState().activeWorkspaceId) {
-				setActiveWorkspace(detail.workspaceId);
-			}
-		};
-		window.addEventListener('agentStudio:workspace-active-changed', onActiveWorkspaceChanged);
-		return () => window.removeEventListener('agentStudio:workspace-active-changed', onActiveWorkspaceChanged);
-	}, [setActiveWorkspace]);
-
-	return (
-		<div className="panel-standalone">
-			<div className="panel-standalone-content">
-				<PanelErrorBoundary panelType="TaskboardPanel">
-					<TaskBoardPanel />
-				</PanelErrorBoundary>
-			</div>
-		</div>
-	);
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════════
- * AgentSettingsPanel — standalone panel for agent settings (editor pane)
- * ═══════════════════════════════════════════════════════════════════════════════ */
-
-function AgentSettingsPanel(): React.ReactElement {
-	const { loadWorkspaces, activeWorkspaceId, setActiveWorkspace } = useWorkspaceStore();
-	const { loadProviders } = useProviderStore();
-
-	// Read agentId from host-injected initial data (set by App component)
-	const agentId = (() => {
-		const data = (window as unknown as Record<string, unknown>).__AGENT_STUDIO_INITIAL_DATA__ as
-			{ type: string; agentId: string } | null | undefined;
-		if (data?.type === 'agent-settings' && data.agentId) {
-			return data.agentId;
-		}
-		return null;
-	})();
-
-	useEffect(() => {
-		console.log('[AgentSettingsPanel] init useEffect fired, agentId:', agentId);
-		loadWorkspaces().then(() => {
-			const store = useWorkspaceStore.getState();
-			if (store.workspaces.length > 0 && !store.activeWorkspaceId) {
-				const pick = store.workspaces.find(w => !!(w as any).path) ?? store.workspaces[0];
-				store.setActiveWorkspace(pick.id);
-			}
-		});
-		loadProviders();
-		// Load agents so AgentEditorPane can read systemPrompt/skills
-		console.log('[AgentSettingsPanel] calling loadAgents...');
-		useAgentStore.getState().loadAgents().then(() => {
-			const { agents } = useAgentStore.getState();
-			console.log('[AgentSettingsPanel] loadAgents completed, agents count:', agents.length);
-		});
-	}, [agentId]);
-
-	useEffect(() => {
-		if (activeWorkspaceId) {
-			useAgentStore.getState().loadAgents(activeWorkspaceId);
-		}
-	}, [activeWorkspaceId]);
-
-	useEffect(() => {
-		const onAgentsChanged = () => {
-			const currentActiveId = useWorkspaceStore.getState().activeWorkspaceId;
-			useAgentStore.getState().loadAgents(currentActiveId || undefined);
-		};
-		const onActiveWorkspaceChanged = (e: Event) => {
-			const detail = (e as CustomEvent).detail;
-			if (detail?.workspaceId && detail.workspaceId !== useWorkspaceStore.getState().activeWorkspaceId) {
-				setActiveWorkspace(detail.workspaceId);
-			}
-		};
-		window.addEventListener('agentStudio:agents-changed', onAgentsChanged);
-		window.addEventListener('agentStudio:workspace-active-changed', onActiveWorkspaceChanged);
-		return () => {
-			window.removeEventListener('agentStudio:agents-changed', onAgentsChanged);
-			window.removeEventListener('agentStudio:workspace-active-changed', onActiveWorkspaceChanged);
-		};
-	}, [setActiveWorkspace]);
-
-	const handleClose = useCallback(() => {
-		// Post a message to the host to close the editor pane
-		window.postMessage({ type: 'agentStudio:close-self' }, '*');
-	}, []);
-
-	if (!agentId) {
-		return (
-			<div className="panel-standalone">
-				<div style={{ padding: 20, color: '#888' }}>Loading agent settings...</div>
-			</div>
-		);
-	}
-
-	return (
-		<div className="panel-standalone">
-			<PanelErrorBoundary panelType="AgentSettingsPanel">
-				<AgentEditorPane
-					agentId={agentId}
-					onClose={handleClose}
-				/>
-			</PanelErrorBoundary>
-		</div>
-	);
-}
-
 /* ═══════════════════════════════════════════════════════════════════════════════
  * App entry — routes to the correct panel based on panelType.
  * panelType is reactive: when a pooled webview is activated via the
@@ -227,8 +98,9 @@ export function App(): React.ReactElement {
 	}
 
 	switch (panelType) {
-		case 'taskboard':
-			return <TaskboardPanel />;
+		// 5.2（2026-10-17）：taskboard / agent-settings 面板已退役（webview 里删了——它们已有
+		// 插件页替代：vssaros-kanban 的看板页 + vssaros-agents 的设置页 ✓；webviewController 的
+		// panelType='taskboard'/'agent-settings' 没有触发方 ✓——死代码）。workflow-editor 保留（D6）。
 		case 'workflow-editor':
 			return (
 				<div className="panel-standalone" style={{ width: '100vw', height: '100vh' }}>
@@ -239,11 +111,6 @@ export function App(): React.ReactElement {
 					</PanelErrorBoundary>
 				</div>
 			);
-		case 'agent-settings': {
-			// Use initialData as key to force re-mount when agentId changes (pool reuse)
-			const agentId = (initialData as { type?: string; agentId?: string } | null)?.agentId;
-			return <AgentSettingsPanel key={agentId ?? 'no-agent'} />;
-		}
 		default:
 			// Chat is now handled natively by NativeChatEditorPane.
 			// If we reach here, the webview was activated without a valid panel type.

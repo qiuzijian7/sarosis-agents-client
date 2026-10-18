@@ -21,26 +21,26 @@ import { IEditorService } from '../../../../workbench/services/editor/common/edi
 import { IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IIdeCapabilityEnv, IIdeSelectionRange, executeIdeCapability, ideFailureSummary } from '../common/dshIdeCapabilities.js';
 import { isPathInside } from '../common/dshPageBridgeProtocol.js';
-import { DSH_MODULE_CONTAINERS, IDshModulePageState, activeModulesOf, resolveContainerPageState } from '../common/dshModuleContainers.js';
+import { DSH_MODULE_CONTAINERS, DshModuleId, IDshModulePageState, activeModulesFromPlugins, activeModulesOf, containersFromPlugins, pagesFromPlugins, resolveContainerPageState } from '../common/dshModuleContainers.js';
 // `taskboard` 能力（看板"定位卡片"）：与原 `TasksViewPane` 点条目**同一套实现**（同一个 EditorInput
 // 与同一个 focusTaskInBoard），不另开一条"看起来能跳"的路径。
 import { TaskOverviewEditorInput } from '../../agentStudio/browser/taskOverviewEditorInput.js';
 import { WorkflowEditorInput } from '../../agentStudio/browser/workflowEditorInput.js';
-import { ITaskOrchestrationService } from '../../agentStudio/common/agentStudio.js';
+import { ITaskOrchestrationService } from '../../../common/agentStudioOrchestration.js';
 // 生态用户级技能目录（SKILL.md 规范）：与 IDE 侧 skillRegistryService **共用同一份清单**
 // （少一侧就会出现"IDE 看得见、Host 看不见"的不一致 ✗）。
-import { ecosystemUserSkillDirPaths } from '../../agentStudio/common/skillEcosystemDirs.js';
+import { ecosystemUserSkillDirPaths } from '../../../common/agentStudioSkillDirs.js';
 // ★ 技能根清单的**单一真源**（顺序 / 来源 / trust 门控 / 去重都在它里面，IDE 侧注册表读同一份 ✓）
-import { SKILL_OFFICIAL_USER_ROOT_SETTING_ID, SKILL_PROJECT_ROOTS_SETTING_ID, officialUserSkillRootCandidates, resolveSkillRoots } from '../../agentStudio/common/skillRoots.js';
+import { SKILL_OFFICIAL_USER_ROOT_SETTING_ID, SKILL_PROJECT_ROOTS_SETTING_ID, officialUserSkillRootCandidates, resolveSkillRoots } from '../../../common/agentStudioSkillRoots.js';
 // worktree 列表（dsh 聊天 header 的 worktree 下拉）：宿主侧 git 事实的唯一真源。
 import { IWorktreeService } from '../../worktree/common/worktreeService.js';
-import { IWorkflowStorageService } from '../../agentStudio/common/workflowStorage.js';
+import { IWorkflowStorageService } from '../../../common/agentStudioWorkflowStorage.js';
 import { canvasContextStore } from '../../agentStudio/browser/messageEnrichment/canvasContextStore.js';
 import { requestCanvasOps } from '../../agentStudio/browser/providers/tool/canvasOpsBridge.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 // A 组缺口（2026-10-12）：unreal 的 bridge 设置键 + 知识库存储根解析 —— 后者**复用 IDE 同一份实现** ✓
 //（`knowledgeBaseView.rootUri` 用的就是它 ✓；本文件已有从 `agentStudio/browser/**` import 的先例 ✓）。
-import { AGENT_STUDIO_BROWSER_CDP_HEADLESS_SETTING, AGENT_STUDIO_BROWSER_CDP_LAUNCH_DEDICATED_SETTING, AGENT_STUDIO_BROWSER_CDP_PORT_SETTING, AGENT_STUDIO_UNREAL_BRIDGE_URL_SETTING } from '../../agentStudio/common/constants.js';
+import { AGENT_STUDIO_BROWSER_CDP_HEADLESS_SETTING, AGENT_STUDIO_BROWSER_CDP_LAUNCH_DEDICATED_SETTING, AGENT_STUDIO_BROWSER_CDP_PORT_SETTING, AGENT_STUDIO_UNREAL_BRIDGE_URL_SETTING } from '../../../common/agentStudioConstants.js';
 import { resolveKbRoot } from '../../agentStudio/browser/knowledge/knowledgeStorage.js';
 // ★ 库记录（2026-10-15，用户报"不该有 uid 式的根 / 只应显示当前库"）：与 KB 视图**同一对** storage 键
 // —— `kbVaultState.ts` 是那对键的唯一定义处 ✓（自己再硬编码一遍字符串就会与 IDE 侧漂移 ✗）。
@@ -57,13 +57,20 @@ import { IMainProcessService } from '../../../../platform/ipc/common/mainProcess
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { DSH_HARNESS_CHANNEL, DshColorScheme, DshHarnessChannelCommand, DshHarnessChannelEvent, DshHarnessSettings, DshPageSurface, DshViewSurface, IDshBootstrapArgs, IDshBundledInstallResult, IDshBundledPluginRow, IDshHostStartOptions, IDshHostStatus, IDshIdeClaimReply, IDshIdeRequest, IDshPluginActivationSnapshot, IDshPluginInfo, IDshPluginRowSetResult, IDshPluginSetResult, IDshRuntimeInfo, IDshUpdateDiscoveryResult, IDshUpdatePolicy, IDshUpgradeArgs, IDshViewBounds, IDshViewInfo, IDshWorkspaceSyncState, IDshWorkspaceSyncSummary, shouldRestartForWorkspaceChange } from '../common/dshHarness.js';
 import { DshUpdateChannel } from '../common/dshCompat.js';
-import { IBridgeBundleInfo, IBridgeInspectResult, IBridgeInstallCancelResult, IBridgeInstallResult, IBridgePluginInventory, IBridgePluginRegistries, IBridgePluginRow, IBridgeProvidersSyncArgs, IBridgeProvidersSyncResult, IBridgeSessionStartArgs, IBridgeSessionStartResult, IBridgeWorkspace } from '../common/dshBridgeProtocol.js';
+import { IBridgeBundleInfo, IBridgeInspectResult, IBridgeInstallCancelResult, IBridgeInstallResult, IBridgePluginInventory, IBridgePluginRegistries, IBridgePluginRow, IBridgeProvidersSyncArgs, IBridgeProvidersSyncResult, IBridgeSessionCancelArgs, IBridgeSessionCancelResult, IBridgeSessionRunArgs, IBridgeSessionRunResult, IBridgeSessionStartArgs, IBridgeSessionStartResult, IBridgeWorkspace, IBridgeWorkspaceContextArgs, IBridgeWorkspaceContextResult } from '../common/dshBridgeProtocol.js';
 import { DshChatViewAllocator } from '../common/dshChatViewIds.js';
-import { DSH_WORKTREE_OPTION_LIMIT, DshPageEvent, IDshInsertReference, IDshWorktreeOption } from '../common/dshPageBridgeProtocol.js';
+import { DSH_WORKSPACE_OPTION_LIMIT, DSH_WORKSPACE_ROOT_LIMIT, DSH_WORKTREE_OPTION_LIMIT, DshPageCommand, DshPageEvent, IDshInsertReference, IDshWorkspaceOption, IDshWorktreeOption } from '../common/dshPageBridgeProtocol.js';
+// 多根工作区（2026-10-16）：记录里的 `path` 可能是**工作区文件**（`.code-workspace`）
+// ⇒ 必须与 IDE 侧同一份判据（`hasWorkspaceFileExtension`）把它排除在"可当 cwd 的目录"之外 ✓。
+import { hasWorkspaceFileExtension } from '../../../../platform/workspace/common/workspace.js';
+import { basename } from '../../../../base/common/path.js';
 import { buildDshThemeTokens, IDshViewBackgrounds } from '../common/dshThemeBridge.js';
 import { IDshUpgradeResult, IHostActivity, blockingSessions } from '../common/dshUpgrade.js';
 import { IAgentStudioService } from '../../../common/agentStudioService.js';
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
+// 推运行期工作区上下文时带上**本窗口**的 id（2026-10-17）：Host 是多窗口共享的 ⇒ 那只是诊断标签
+// （"最后推的是谁"要答得出来 ✓，与 `setWindowWorkspaces` 用的是同一个窗口身份 ✓）。
+import { mainWindow } from '../../../../base/browser/window.js';
 
 /**
  * 多根工作区里最多探几个根去找 git 仓库（每根一次 `git worktree list` ⇒ 有界）。
@@ -72,7 +79,7 @@ import { IWorkbenchEnvironmentService } from '../../../../workbench/services/env
  * 会推 0 条 ⇒ 页面那枚 worktree chip（空列表时按设计 `return null`）永远不出现 ✗（2026-10-13）。
  */
 const DSH_WORKTREE_FOLDER_PROBE_LIMIT = 3;
-import { SarosPath, resolveSarosPath, userDataRootFromRoamingHome } from '../../agentStudio/common/sarosPaths.js';
+import { SarosPath, resolveSarosPath, userDataRootFromRoamingHome } from '../../../common/sarosPaths.js';
 
 export const IDshHarnessService = createDecorator<IDshHarnessService>('dshHarnessService');
 
@@ -192,14 +199,19 @@ export interface IDshHarnessService {
 	listWorkspaces(): Promise<IBridgeWorkspace[]>;
 	/** 经控制桥建/接管一个 dsh 会话（`sessionId` 给定时幂等接管）；控制桥不可用时抛错。 */
 	startSession(args: IBridgeSessionStartArgs): Promise<IBridgeSessionStartResult>;
+	/** 后台回合（重构 1.4 `session.run`）：投 prompt、等回合跑完、回传结果；控制桥不可用时抛错。 */
+	runSession(args: IBridgeSessionRunArgs): Promise<IBridgeSessionRunResult>;
+	/** 取消一条会话当前的活动（重构 1.4 `session.cancel`）。 */
+	cancelSession(args: IBridgeSessionCancelArgs): Promise<IBridgeSessionCancelResult>;
 	getWorkspaceSync(): Promise<IDshWorkspaceSyncState>;
 	getActivity(): Promise<IHostActivity | undefined>;
 	/**
 	 * 活动工作区变了（`DshWorkspaceReportContribution` 在监听里调）。
 	 *
-	 * 为什么要它：Host 的启动选项是**快照**（在跑时 `start()` 原样复用、忽略新 options），而看板插件的
-	 * `config.workspaceId` 只在启动时注入一次 ⇒ 不重启的话，这段期间建的卡片会**静默写进旧工作区**。
-	 * 所以**空闲才重启**（有会话在跑就不打断——那等于把人家的活杀了；这种情况由 supervisor 留一行日志说明）。
+	 * ★ 2026-10-17：**先推运行期上下文**（桥 `workspace.context`）——推成了就**不重启 Host**
+	 * （看板 / 记忆 / 图谱在 Host 侧按调用读它 ⇒ 切工作区立即生效，在跑的会话不被打断 ✓）。
+	 * 只有推不动（老 Host / 老插件：`applied:false`）才退回旧路径：空闲时重启 Host，让下一次
+	 * 启动覆盖层里的新值生效 ✓（见 `shouldRestartForWorkspaceChange` 的注释）。
 	 */
 	noteActiveWorkspace(workspaceId: string | undefined): Promise<void>;
 	readonly onDidProgress: Event<string>;
@@ -207,7 +219,14 @@ export interface IDshHarnessService {
 	readonly onDidWorkspaceSync: Event<void>;
 
 	/** `surface=plugin-page` 时必须给 `route`（插件自托管路由，如 `/x/<module>/`）。 */
-	createView(viewId: string, windowId: number, surface: DshViewSurface, sessionId?: string, route?: string, pageSurface?: DshPageSurface): Promise<void>;
+	/**
+	 * 建视图。
+	 *
+	 * `overrideChatOnlyUi`（2026-10-18 拼装式弹窗）：临时覆盖 `sessions.dshHarness.chatOnlyUi`。
+	 * `surface='chat'` + `false` ⇒ **保留官方侧栏/品牌顶栏/右栏** —— 弹窗要复刻官方 desktop 布局时用；
+	 * 主窗口聊天框仍按全局配置（默认 chat-only）✓。
+	 */
+	createView(viewId: string, windowId: number, surface: DshViewSurface, sessionId?: string, route?: string, pageSurface?: DshPageSurface, overrideChatOnlyUi?: boolean, isolatedPool?: boolean): Promise<void>;
 	layoutView(viewId: string, bounds: IDshViewBounds): Promise<void>;
 	setViewVisible(viewId: string, visible: boolean, focus?: boolean): Promise<void>;
 	/**
@@ -236,6 +255,13 @@ export interface IDshHarnessService {
 	clearActiveChatView(viewId: string, token: object): void;
 	/** 最近聚焦的聊天视图 id；没有则为 undefined。 */
 	readonly activeChatViewId: string | undefined;
+	/**
+	 * 把一条页面命令**转交**给本窗口的另一个视图的宿主（渲染进程本地，不走 IPC）：以该视图的名义
+	 * 触发一次 `onDidPageEvent`。用途（2026-10-16，agents 方案 A）：插件页（侧栏/编辑区）请求
+	 * `openSession` ⇒ 交给**活动聊天框**的宿主切会话 —— 会话绑定的权威在聊天宿主，插件页自己做不了。
+	 * 只认本窗口登记过的视图；不是 ⇒ 返回 false、什么都不发。
+	 */
+	dispatchPageCommand(viewId: string, command: Exclude<DshPageCommand, { method: 'ping' }>): boolean;
 	/**
 	 * 认领聊天的视图 id（方案第 7 章多开仲裁）：base = `dsh-chat-w<win>-<chatId>`；
 	 * 被别的在场 pane 占用时分配后缀 id。每次进入在场状态时都应重认（冲突自愈）。
@@ -317,6 +343,11 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 		this._register(this._themeService.onDidColorThemeChange(() => this._pushThemeToAll()));
 		// worktree 列表：git 侧变化（新建 / 删除 / prune / 切分支）时重推，页面下拉跟着刷新。
 		this._register(this._worktreeService.onDidChangeWorktrees(() => this._pushWorktreesToAll()));
+		// IDE 工作区记录（多根工作区，2026-10-16）：**注册表变化**（新建 / 改记录 / 加关联根）与
+		// **活动工作区切换**都要重推 —— 页面下拉的"一个工作区 + 各根"分组据此刷新 ✓
+		// （两个事件都要接：切活动工作区不必然改记录，改记录也不必然切活动 ✓）。
+		this._register(this._studio.onDidChangeWorkspace(() => this._pushWorkspacesToAll()));
+		this._register(this._studio.onDidChangeActiveWorkspace(() => this._pushWorkspacesToAll()));
 		// 工作区信任变化 ⇒ 技能根集合可能变（项目级根只在受信任时进）⇒ 变了才重启 Host（见 `_lastSkillDirs`）
 		this._register(this._workspaceTrustService.onDidChangeTrust(() => void this._onTrustChanged()));
 		this._register(this._channel.listen<IDshHostStatus>(DshHarnessChannelEvent.OnDidChangeStatus)(s => this._update(s)));
@@ -979,13 +1010,23 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 	}
 
 	async resolveModulePage(containerId: string): Promise<IDshModulePageState | undefined> {
-		const container = DSH_MODULE_CONTAINERS.find(c => c.containerId === containerId);
-		if (!container) {
-			return undefined;   // 常驻容器：静态注册负责，没有"插件页面"这回事
-		}
 		const plugins = await this.listPlugins();
-		// 与 ActivityBar 同一口径：停用（`enabled === false`）视同未激活，缺省视为启用
-		return resolveContainerPageState(container, activeModulesOf(plugins.filter(p => p.enabled !== false).map(p => p.name)));
+		// 清单驱动（重构 1.1）：容器与页面都按清单派生，新模块插件不再需要改这两张壳侧表。
+		// 表里没有的容器（常驻容器）返回 undefined：静态注册负责，没有"插件页面"这回事。
+		const containers = containersFromPlugins(plugins);
+		const container = containers.find(c => c.containerId === containerId)
+			?? DSH_MODULE_CONTAINERS.find(c => c.containerId === containerId);
+		if (!container) {
+			return undefined;
+		}
+		// 与 ActivityBar 同一口径：停用（`enabled === false`）视同未激活，缺省视为启用。
+		// 激活模块 = 清单派生 ∪ 硬编码反查（清单读不到的内置插件仍有旧路径兜底，不制造新故障）。
+		const enabled = plugins.filter(p => p.enabled !== false);
+		const active = [...new Set([
+			...activeModulesOf(enabled.map(p => p.name)),
+			...activeModulesFromPlugins(enabled),
+		])] as DshModuleId[];
+		return resolveContainerPageState(container, active, pagesFromPlugins(plugins));
 	}
 
 	getPluginActivation(): Promise<IDshPluginActivationSnapshot> {
@@ -1076,6 +1117,16 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 		return this._channel.call<IBridgeSessionStartResult>(DshHarnessChannelCommand.StartSession, args);
 	}
 
+	/** 后台回合（重构 1.4 `session.run`）：投 prompt、等回合跑完、回传结果。 */
+	runSession(args: IBridgeSessionRunArgs): Promise<IBridgeSessionRunResult> {
+		return this._channel.call<IBridgeSessionRunResult>(DshHarnessChannelCommand.RunSession, args);
+	}
+
+	/** 取消一条会话当前的活动（重构 1.4 `session.cancel`）。 */
+	cancelSession(args: IBridgeSessionCancelArgs): Promise<IBridgeSessionCancelResult> {
+		return this._channel.call<IBridgeSessionCancelResult>(DshHarnessChannelCommand.CancelSession, args);
+	}
+
 	get workspaceSync(): IDshWorkspaceSyncSummary {
 		return this._workspaceSync;
 	}
@@ -1119,9 +1170,26 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 
 	async noteActiveWorkspace(workspaceId: string | undefined): Promise<void> {
 		const previous = this._observedWorkspaceId;
+		// ★ 首记（`previous === undefined`）也推：切工作区在"切窗口"那条路径上时，新窗口的第一次进来
+		//   previous 还没值 ⇒ 从前这里**什么都不做** ⇒ Host 里那份启动快照永远是旧的（静默 ✗）。
+		if (previous === workspaceId) {
+			return;
+		}
 		this._observedWorkspaceId = workspaceId;
-		// 先做三个便宜的排除（它们都蕴含"不重启"，与纯函数口径一致），省一次活动查询的 IPC
-		if (previous === undefined || previous === workspaceId || this.status.state !== 'running') {
+		// ① 运行期上下文（首选，不重启）：Host 在跑就推；没在跑 ⇒ 下次 Start 自然带上新值 ✓
+		const applied = await this._pushWorkspaceContext(workspaceId)
+			.catch(e => {
+				this._logService.warn(`[dshHarness] push workspace context failed: ${String((e as Error)?.message ?? e)}`);
+				return false;
+			});
+		if (applied) {
+			if (previous !== undefined) {
+				this._logService.info('[dshHarness] active workspace changed — runtime context pushed (no Host restart needed)');
+			}
+			return;
+		}
+		// ② 兜底：老 Host / 老插件不认这条（`applied:false`）⇒ 与从前逐字一致的重启路径
+		if (previous === undefined || this.status.state !== 'running') {
 			return;
 		}
 		const activity = await this.getActivity().catch(() => undefined);
@@ -1140,18 +1208,80 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 		await this.restart();
 	}
 
-	createView(viewId: string, windowId: number, surface: DshViewSurface, sessionId?: string, route?: string, pageSurface?: DshPageSurface): Promise<void> {
+	/**
+	 * 把当前工作区上下文推给 Host（`workspace.context`）——切工作区**不必重启**的落点。
+	 *
+	 * 载荷口径与启动覆盖层**同源**（`_startOptions` 的 workspaceId / workspaceRoot / relatedRoots）✓：
+	 *   · `workspaceId`   —— Agent Studio 当前活动工作区（看板过滤 + 记忆分区）；
+	 *   · `workspaceRoot` —— **该工作区记录的主根**（代码图谱按 `<root>/.codebase-memory/` 定位）；
+	 *   · `relatedRoots`  —— 主根 + 关联根（`_relatedRoots()`，与图谱面板同一份取值）。
+	 *
+	 * ★ 2026-10-17 真机日志抓到并修掉的一个**自相矛盾载荷**：`workspaceRoot` 从前取的是
+	 *   **本窗口的第一个 folder**（`_workspaceContextService`），而 `workspaceId` 取 **studio 的活动工作区 id**
+	 *   —— 这两者在切换过程中**不同步**（studio 的活动 id 立刻变，IDE 窗口 folders 异步跟随）
+	 *   ⇒ 真机实测推出过 `workspaceId=sarosis-agents-client-ncshv` 配 `root=f:\GR_qiuzijian_main\S1Game`（另一个工作区的根 ✗），
+	 *   紧接着又是反过来的组合 ✗✗（Host 日志 `[vssaros-bridge] workspace context applied: …` 四条里两条是错配 ✓）。
+	 *   消费方（图谱根 / runner cwd / 看板页）拿到这种上下文只会"看着切了、东西没跟着走" ✗。
+	 *   ⇒ 现在**两者同源同刻**：都从 studio 那条工作区记录取（主根 = `relatedRoots[0]`，与 `_relatedRoots` 同一份 ✓）；
+	 *   只有"没有活动工作区 / 记录里一个根都没有"时才回落到窗口 folder（那才是"用窗口自己的根"的语义 ✓）。
+	 *   两者不一致时**留一行 warn**（这种错配从前只能靠 Host 日志逐条比对才看得出来 ✗）。
+	 *
+	 * ⚠ 三项**一起**推：Host 侧以整份为准、不做逐字段回落 ⇒ "切到没有关联根的工作区"才不会留着旧根 ✓
+	 *   （纪律见 `dsh-plugins/vssaros-foundation/lib/workspaceContext.js`）。
+	 *
+	 * @returns `true` = 真的生效（或 Host 没在跑，下次启动自然带上）；`false` = 调用方应退回重启路径。
+	 */
+	private async _pushWorkspaceContext(workspaceId: string | undefined): Promise<boolean> {
+		if (this.status.state !== 'running') {
+			return true;
+		}
+		// `_relatedRoots()` 的第一项就是该工作区的**主根**（`[ws.path, ...relatedFolders]` 去重 ✓），
+		// 与 `renderCodebaseOverlay` 用的是同一份取值 ⇒ 同源同刻 ✓。
+		const relatedRoots = await this._relatedRoots(workspaceId);
+		const studioRoot = relatedRoots?.[0];
+		const windowRoot = this._workspaceContextService.getWorkspace().folders[0]?.uri.fsPath;
+		if (studioRoot && windowRoot && !this._sameFsPath(studioRoot, windowRoot)) {
+			this._logService.warn(`[dshHarness] 工作区根与窗口 folder 不一致（推工作区记录那份：记录=${studioRoot}，窗口=${windowRoot}）`
+				+ '—— 切换过程中窗口 folders 会滞后，属预期；但若这行**持续刷**，说明工作区记录本身不对');
+		}
+		const args: IBridgeWorkspaceContextArgs = {
+			// 三样都可能"没有"（没有活动工作区 / 没有可用根 / 没有关联根）—— 空值**照推**，
+			// 那是权威的"当前没有"，不是"没给"（Host 侧的纪律 ①）✓
+			...(workspaceId ? { workspaceId } : {}),
+			workspaceRoot: studioRoot ?? windowRoot,
+			relatedRoots: relatedRoots ?? [],
+			windowId: mainWindow?.vscodeWindowId,
+			at: Date.now(),
+		};
+		this._logService.info(`[dshHarness] workspace context push → Host：workspaceId=${workspaceId ?? '(none)'} root=${args.workspaceRoot ?? '(none)'} related=${args.relatedRoots?.length ?? 0}（窗口 folder=${windowRoot ?? '(none)'}）`);
+		const result = await this._channel.call<IBridgeWorkspaceContextResult>(DshHarnessChannelCommand.SetWorkspaceContext, args);
+		if (result?.applied !== true) {
+			this._logService.info(`[dshHarness] runtime workspace context not applied (${result?.reason ?? 'unknown'}) — falling back to the restart path`);
+		}
+		return result?.applied === true;
+	}
+
+	/** 两个文件系统路径是否指同一处（大小写不敏感 + 分隔符归一 + 去尾斜杠）——只给上面那行**判噪**用 ✓。 */
+	private _sameFsPath(a: string, b: string): boolean {
+		const norm = (p: string) => p.replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
+		return norm(a) === norm(b);
+	}
+
+	createView(viewId: string, windowId: number, surface: DshViewSurface, sessionId?: string, route?: string, pageSurface?: DshPageSurface, overrideChatOnlyUi?: boolean, isolatedPool?: boolean): Promise<void> {
 		this._ownViews.add(viewId);
 		// 聊天框只保留聊天 UI（方案 5.13）：把设置交给 preload，在页面里隐藏 dsh 的侧栏 / 顶栏 / 右侧栏。
-		const chatOnlyUi = this._configurationService.getValue<boolean>(DshHarnessSettings.ChatOnlyUi) !== false;
+		// `overrideChatOnlyUi` 供「拼装式弹窗」按视图覆盖（弹窗要复刻官方 desktop ⇒ 保留官方整套 chrome ✓）。
+		const chatOnlyUi = overrideChatOnlyUi ?? (this._configurationService.getValue<boolean>(DshHarnessSettings.ChatOnlyUi) !== false);
 		return this._channel.call(DshHarnessChannelCommand.CreateView, {
 			viewId, windowId, surface, chatOnlyUi, sessionId, colorScheme: this._colorScheme(),
+			// 弹窗走**独立网络分区**（不与主窗口争同一个 host:port 的 6 条并发连接），见 `DSH_VIEW_PARTITION_DESKTOP`。
+			...(isolatedPool ? { isolatedPool: true } : {}),
 			// ★ 底色候选（2026-10-13「初次打开侧栏视图白屏一下」）：随**创建**一起给 ⇒
 			//   主进程建视图时就染色，页面画出第一帧之前不会露 Electron 默认白 ✓（只靠 pushTheme 会晚一拍 ✗）。
 			backgrounds: this._viewBackgrounds(),
 			// 承载表面（2026-10-13）与 route 一起只在 plugin-page 下有意义 ✓（主进程再白名单校验一次）
 			...(surface === 'plugin-page' ? { route, pageSurface } : {}),
-		}).then(() => { this._pushTheme(viewId); this._pushWorktrees(viewId); });
+		}).then(() => { this._pushTheme(viewId); this._pushWorktrees(viewId); this._pushWorkspaces(viewId); });
 	}
 
 	/** 当前主题 → dsh token 覆盖层（两形态同值，页面始终跟 IDE 一致）；推给指定视图。 */
@@ -1237,6 +1367,45 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 		return [];
 	}
 
+	/**
+	 * **IDE 工作区记录（含各根）** → 页面（多根工作区；2026-10-16 用户拍板稿 C）。
+	 *
+	 * 为什么真源必须是它、而不是页面已经在读的 `workspaces.list()`：dsh 的工作区模型**只能单目录**，
+	 * 宿主上报时把 IDE 侧一个多根工作区的各根**摊平**成 N 条 dsh 记录
+	 * （`dshHarness.contribution.ts::_collect`）⇒ 页面只看快照时，同一个窗口的 3 个根看起来就是
+	 * "3 个互不相干的工作区" ✗（用户报的"工作区 UI 不对"根因之一）。
+	 * 各根 / 主根身份 / `.code-workspace` 身份只有 IDE 记录知道 ⇒ 只能在这里读、经推送交给页面 ✓。
+	 *
+	 * 取值口径与 `_relatedRoots()` **同一份**（`ws.path` + `ws.relatedFolders`）——两处若分叉，
+	 * 会出现"图谱认一个根集合、下拉认另一个"✗。
+	 *
+	 * ⚠ 空表也照推（幂等快照，与 worktree / 主题同口径 ✓）：否则页面会停在上一份快照上。
+	 * ⚠ `.code-workspace` 身份只在有值时才带（`codeWorkspacePath`）—— 页面**本轮只读展示**它（拍板 ④-i）。
+	 */
+	private async _currentWorkspaceOptions(): Promise<IDshWorkspaceOption[]> {
+		const workspaces = await this._studio.getWorkspaces().catch(() => []);
+		const out: IDshWorkspaceOption[] = [];
+		for (const ws of workspaces) {
+			if (out.length >= DSH_WORKSPACE_OPTION_LIMIT) { break; }
+			// 主根：`ws.path` 可能是**工作区文件**本身（`.code-workspace`）—— 那不是目录、不能当 `cwd` ✗
+			// ⇒ 与 `workspaces` 上报口径一致地只收目录（文件身份另走 `codeWorkspacePath` ✓）。
+			const dirs = [ws.path, ...(ws.relatedFolders ?? []).map(f => f?.path)]
+				.filter((p): p is string => typeof p === 'string' && p.length > 0 && !hasWorkspaceFileExtension(p));
+			const roots = [...new Set(dirs)].slice(0, DSH_WORKSPACE_ROOT_LIMIT);
+			if (roots.length === 0) {
+				continue;   // 一个可用目录都没有 ⇒ 不编一条假记录 ✓
+			}
+			const name = typeof ws.name === 'string' && ws.name.trim() ? ws.name.trim() : basename(roots[0]);
+			out.push({
+				id: ws.id,
+				name,
+				roots: roots.map((p, i) => ({ path: p, name: basename(p), isPrimary: i === 0 })),
+				...(ws.codeWorkspacePath ? { codeWorkspacePath: ws.codeWorkspacePath } : {}),
+			});
+		}
+		return out;
+	}
+
 	private _pushWorktrees(viewId: string): void {
 		void this._currentWorktreeOptions()
 			.then(options => {
@@ -1252,6 +1421,29 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 	private _pushWorktreesToAll(): void {
 		for (const viewId of this._ownViews) {
 			this._pushWorktrees(viewId);
+		}
+	}
+
+	/**
+	 * IDE 工作区记录（含各根）→ 页面。与 `_pushWorktrees` 同口径（空表也推、失败留一行 ✓），
+	 * 差别只在数据源是异步的 `getWorkspaces()`（工作区注册表）而不是 git。
+	 */
+	private _pushWorkspaces(viewId: string): void {
+		void this._currentWorkspaceOptions()
+			.then(options => {
+				// ★ 2026-10-17：日志里带上 **IDE 的活动工作区 id**（用户报「切工作区后聊天框的工作区 UI 不刷新」）。
+				//   页面那枚入口的"当前工作区"判据是**会话归属**（`workspaceIdOfSession`），与这里的"活动工作区"
+				//   是**两个不同的概念**（前者 = 会话跑在哪，后者 = 窗口在看哪）⇒ 报障时这两者必须能一起看到，
+				//   否则分不清是"推错了"还是"页面按会话显示（本来就该那样）"✓。
+				this._logService.info(`[dshHarness] workspace record push: ${options.length} item(s) → ${viewId}（IDE 活动工作区=${this._studio.getActiveWorkspaceId() ?? '(none)'}）`);
+				return this._channel.call(DshHarnessChannelCommand.PushWorkspaces, { viewId, options });
+			})
+			.catch(e => this._logService.warn(`[dshHarness] workspace record push skipped: ${String((e as Error)?.message ?? e)}`));
+	}
+
+	private _pushWorkspacesToAll(): void {
+		for (const viewId of this._ownViews) {
+			this._pushWorkspaces(viewId);
 		}
 	}
 
@@ -1290,6 +1482,14 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 	private _activeChatViewId: string | undefined;
 	get activeChatViewId(): string | undefined {
 		return this._activeChatViewId;
+	}
+
+	dispatchPageCommand(viewId: string, command: Exclude<DshPageCommand, { method: 'ping' }>): boolean {
+		if (!this._ownViews.has(viewId)) {
+			return false;
+		}
+		this._onDidPageEvent.fire({ viewId, kind: 'command', command });
+		return true;
 	}
 
 	private readonly _chatViewAllocator = new DshChatViewAllocator();

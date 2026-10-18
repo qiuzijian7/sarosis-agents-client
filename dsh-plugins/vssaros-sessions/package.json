@@ -1,6 +1,6 @@
 {
   "name": "@vssaros/dsh-sessions",
-  "version": "0.1.5",
+  "version": "0.2.0",
   "description": "VsSaros Sessions module for DeepSeek Harness: the history-session side view rendered by dsh itself — sessions grouped by workspace (cwd), each group showing 5 idle sessions with 'expand more', running / waiting-for-user sessions always visible and not counting against the quota, plus the in-session persona mark (vssaros-persona projection). Read-only over dsh's session projection cache (<DSH_HOME>/storages/session_projcache/sessions), optionally merged field-by-field with live sessions via sessions.get + sessionProjections.stateOf. No tools. ⚠ 2026-10-12：入口是**自己的容器** `vssaros.dsh.sessions`（page-only，order 120）—— 刻意**不借用**常驻容器 `sessionHistory.view`：那是 `DSH_ALWAYS_REGISTERED_CONTAINERS` 的一员，两条既有守卫禁止它与模块容器表重叠；而且让常驻那格改挂插件页等于把另一条流**正在改**的壳侧 DOM pane 就地换掉（协调决定，不是实现细节）⇒ 两个入口暂时并存：常驻的「历史会话」+ 本页「历史会话（插件页）」。",
   "private": true,
   "type": "module",
@@ -9,13 +9,7 @@
     ".": "./lib/index.js",
     "./package.json": "./package.json"
   },
-  "files": [
-    "lib/index.js",
-    "lib/store.js",
-    "lib/core/sessionList.js",
-    "lib/pageShell.js",
-    "cordis.patch.yml"
-  ],
+  "files": ["lib/index.js", "lib/store.js", "lib/core/sessionList.js", "lib/pageShell.js", "cordis.patch.yml", "lib/foundationRef.js"],
   "peerDependencies": {
     "@deepseek-ai/dsh": ">=0.1.7-0 <0.3.0-0"
   },

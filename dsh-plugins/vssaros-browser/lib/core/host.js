@@ -106,7 +106,10 @@ export async function connectPreferredEndpoint(candidates, connect, dispose) {
 
 /** 拉起一个带专属 profile 的可调试 Chrome；`detached + unref` ⇒ 不随 Host 退出被杀。真源：`browserCdpChannel.ts:292-338`。 */
 export function launchDedicatedChrome(exe, args) {
-	const child = spawn(exe, args, { detached: true, stdio: 'ignore' });
+	// ⚠ windowsHide 必带：dsh Host 本身没有可继承的控制台 ⇒ 不带的话 Chrome 启动时
+	// 会新分配一个控制台窗口（闪一下黑框）。detached 是为了不随 Host 退出被杀，与
+	// windowsHide 不冲突（CREATE_NO_WINDOW 只影响控制台，不影响进程独立性）。
+	const child = spawn(exe, args, { detached: true, stdio: 'ignore', windowsHide: true });
 	child.unref();
 	return child.pid;
 }

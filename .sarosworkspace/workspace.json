@@ -1,12 +1,42 @@
 [
   {
-    "id": "sarosis-agents-client-h6rqu",
+    "id": "sarosis-agents-client-ncshv",
     "name": "sarosis-agents-client",
-    "path": "g:\\CustomWorkspaces\\AIProjects\\sarosis-agents-client",
-    "relatedFolders": [],
+    "path": "g:\\SarosWorkspace\\sarosis-agents-client",
+    "relatedFolders": [
+      {
+        "path": "g:\\SarosWorkspace\\Saros-agents-pocket",
+        "name": "Saros-agents-pocket",
+        "addedAt": "2026-10-17T03:05:03.656Z"
+      },
+      {
+        "path": "g:\\SarosWorkspace\\saros-marketplace",
+        "name": "saros-marketplace",
+        "addedAt": "2026-10-17T03:05:03.656Z"
+      },
+      {
+        "path": "g:\\SarosWorkspace\\vssaros-homepage",
+        "name": "vssaros-homepage",
+        "addedAt": "2026-10-17T03:05:03.656Z"
+      }
+    ],
     "agents": [],
     "connections": [],
-    "createdAt": "2026-08-09T03:35:55.939Z",
-    "updatedAt": "2026-08-09T03:35:55.939Z"
+    "createdAt": "2026-09-14T16:24:26.573Z",
+    "updatedAt": "2026-10-17T03:05:03.803Z",
+    "filesExclude": {
+      "**/.git": true,
+      "**/.worktrees": true,
+      "**/.claude": true,
+      "**/.codebuddy": true,
+      "**/node_modules": true,
+      "**/out": true,
+      "**/out-build": true,
+      "**/out-test": true,
+      "**/out-vscode": true,
+      "**/dist": true,
+      "**/tmp": true
+    },
+    "codeWorkspacePath": "g:\\SarosWorkspace\\sarosis-agents-client\\sarosis-agents-client.code-workspace"
   }
 ]

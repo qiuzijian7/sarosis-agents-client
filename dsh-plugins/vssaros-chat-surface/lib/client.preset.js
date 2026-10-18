@@ -9,15 +9,13 @@ window.__ModuleLoader__.load({
 		var exports = module.exports;
 		const react = require("react");
 		/**
-		 * "worktree chip 组件已就绪"的 DOM 事件名（与 `client.workspace.js` 里的同名常量必须一致 ✓）。
-		 *
-		 * 为什么需要：hero 区要显示 worktree，但 `conversation.hero.workspace` 是 **single** 槽
-		 * （官方工作区选择器独占 ⇒ 加不了兄弟 ✗），只能把它放进**我们已接管**的
-		 * `conversation.hero.agentPreset` 槽内部（本组件）⇒ 组件本体得从 `client.workspace.js` 传过来。
-		 * 而两个 chunk 是**并行装载**（`PART_CHUNKS` + `Promise.all`）⇒ 谁先 install 不定：
-		 * 本组件可能先挂载、后拿到组件 ⇒ 靠这个事件让已挂载的实例重渲染一次 ✓。
+		 * ⚠ 2026-10-16：本组件**不再**在 hero 里并排渲染"工作区/worktree"入口 ——
+		 * 用户报「工作区 UI 重复了（hero 行里两枚都在说工作区）」，拍板方案 A
+		 * （mockup `doc/dsh-workspace-entry-single-mockup.html`）：hero 仍只出**官方那枚** WorkspaceChip，
+		 * 我们把自己的合并面板挂到 `conversation.hero.workspace` 槽上（`priority: -10` 遮蔽官方浮层）✓。
+		 * ⇒ 从前那条"跨 chunk 传组件"的通道（`shell.heroWorktreeChip` + `WORKTREE_CHIP_EVENT`）**已作废**：
+		 *   面板由**槽**渲染，不需要谁来传；本文件只剩 preset chip 这一件事 ✓。
 		 */
-		const WORKTREE_CHIP_EVENT = "vssaros-dsh-worktreechip";
 		/**
 		 * 安装本部件：注册 slot / 注入样式。ctx = 插件上下文；shell = 入口侧共享状态
 		 * （bridge / state / sessionId / mark / rebind）。段内代码与拆分前逐字一致。
@@ -87,22 +85,12 @@ window.__ModuleLoader__.load({
 						shell.menus.closeOthers(MENU_ID);
 						return shell.menus.register(MENU_ID, () => setOpenMenu(false));
 					}, [openMenu]);
-					// ── hero 区**工作区右侧**的 worktree 控件（2026-10-13 用户要求）─────────────────
-					// 布局事实：hero 槽是 `[conversation.hero.workspace]`（single，官方工作区选择器）
-					// 紧跟 `[conversation.hero.agentPreset]`（single，**本组件**，priority -10 遮蔽官方）
-					// ⇒ 唯一能实现"工作区右侧加 worktree"的位置就是**本组件内部、preset 之前**
-					// ⇒ 视觉顺序变成 `[工作区][worktree][preset]` ✓（与 header 那排同序 ✓）。
-					// 组件本体复用 `client.workspace.js` 的 `WorktreeChip`（header 那枚也是它）——
-					// 不复制第二份实现（切 worktree 的语义/校验只在宿主一处，UI 也该只一份 ✓）。
-					const [, setChipTick] = react.useState(0);
-					react.useEffect(() => {
-						if (typeof document === "undefined") { return undefined; }
-						// 并行装载：workspace chunk 可能晚于本组件 ⇒ 它一到就重渲染一次 ✓
-						const onReady = () => setChipTick((n) => n + 1);
-						document.addEventListener(WORKTREE_CHIP_EVENT, onReady);
-						return () => document.removeEventListener(WORKTREE_CHIP_EVENT, onReady);
-					}, []);
-					const worktreeChip = shell && shell.heroWorktreeChip ? shell.heroWorktreeChip : null;
+					// ── 2026-10-16：hero 里的"工作区 / worktree"入口**已不在这里** ─────────────────
+					// 用户报「工作区 UI 重复了，使用一个即可，但要有 add workspace」⇒ 方案 A（顶部常量注释）：
+					// hero 行的三个位置是官方写死的（`heroWorkspaceRow`）＝ `[官方 WorkspaceChip][hero.workspace 浮层][hero.agentPreset]`，
+					// 我们从前在最后那一格里**又**放了一枚"工作区 + worktree"入口 ⇒ 与官方那枚重复 ✗。
+					// 现在：hero 仍只有**官方那枚 chip**，面板由 `client.workspace.js` 注册到 `conversation.hero.workspace`
+					// （priority -10 遮蔽官方浮层）⇒ 本组件只负责 preset chip ✓，视觉顺序 `[工作区][preset]` ✓。
 					if (!roster || roster.length === 0) {
 						return null;
 					}
@@ -135,8 +123,7 @@ window.__ModuleLoader__.load({
 						});
 					};
 					const children = [
-						// worktree 在前（左）、preset 在后（右）⇒ 视觉 `[工作区][worktree][preset]` ✓
-						worktreeChip ? react.createElement(worktreeChip, { key: "wt" }) : null,
+						// 只剩 preset 一枚（2026-10-16 方案 A：工作区/worktree 入口不再由本组件渲染，见上方注释 ✓）
 						react.createElement("button", {
 							key: "b",
 							type: "button",
@@ -205,11 +192,13 @@ window.__ModuleLoader__.load({
 								border: "1px solid var(--dsw-alias-border-l1, transparent)",
 								background: "var(--dsw-alias-bg-layer-1, var(--dsw-alias-bg-base))",
 								boxShadow: "0 8px 24px rgba(0,0,0,.35)",
-							}, shell.fitMenu ? shell.fitMenu() : {}),
+								// ⚠ 触发器矩形也要交出去（本 chip 在输入框上方、页面中部）：只按"整页 − 72"算
+								//   ⇒ 面板底部落到视口外、下半截滚不到 ✗（2026-10-16 用户报障，见 client.js 注释）。
+							}, shell.fitMenu ? shell.fitMenu(rootRef.current ? rootRef.current.getBoundingClientRect() : null) : {}),
 						}, ...rows));
 					}
-					// `gap: 6`：本容器现在可能并排放两枚（worktree + preset，见上面的注释）⇒ 给一点间距 ✓
-					// （没有 worktree 时 gap 无副作用 ✓）
+					// 容器现在只装 preset 一枚（工作区/worktree 入口已交给 `conversation.hero.workspace` 的面板 ✓）；
+					// `gap: 6` 保留无副作用（该槽里若日后又并排出现东西，间距已经在位 ✓）。
 					return react.createElement("span", { ref: rootRef, style: { position: "relative", display: "inline-flex", alignItems: "center", gap: 6 } }, ...children);
 				}
 				// ── 会话头部那枚 preset chip：**已按用户要求移除**（2026-10-11 方案 B 定稿）──────────

@@ -84,7 +84,9 @@ function findSpecificGit(path: string, onValidate: (path: string) => boolean): P
 		}
 
 		const buffers: Buffer[] = [];
-		const child = cp.spawn(path, ['--version']);
+		// ★ 2026-10-17：Windows 上 GUI 进程 spawn 控制台程序（git.exe）不设 windowsHide ⇒ 闪控制台窗口
+		// （用户报「切换 agent 时弹出 git 窗口后消失」，本机 Win11 → 闪的是 Windows Terminal 窗口）。
+		const child = cp.spawn(path, ['--version'], { windowsHide: true });
 		child.stdout.on('data', (b: Buffer) => buffers.push(b));
 		child.on('error', cpErrorHandler(e));
 		child.on('close', code => code ? e(new Error(`Not found. Code: ${code}`)) : c({ path, version: parseVersion(Buffer.concat(buffers).toString('utf8').trim()) }));
@@ -700,6 +702,13 @@ export class Git {
 		if (!options.stdio && !options.input) {
 			options.stdio = ['ignore', null, null]; // Unless provided, ignore stdin and leave default streams for stdout and stderr
 		}
+
+		// ★ 2026-10-17：Windows 上不隐藏子进程的控制台窗口 ⇒ 每条 git 命令都可能闪一个黑框。
+		// 保留为防御（本仓约定：fork 里 spawn 外部程序一律带 windowsHide）。
+		// 注意：「切 agent 闪 git 窗口」的真因**不在这里** —— 是 dsh Host（node.exe，无控制台）
+		// 的 git 调用缺 windowsHide（见 dsh-plugins/vssaros-agents/lib/memory.js；守卫
+		// dsh-plugins/check-spawn-hide.mjs 看守这类遗漏）。
+		options.windowsHide = true;
 
 		options.env = assign({}, process.env, this.env, options.env || {}, {
 			VSCODE_GIT_COMMAND: args[0],

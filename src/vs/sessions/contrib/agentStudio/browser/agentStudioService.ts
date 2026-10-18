@@ -852,7 +852,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 								role: p.role ?? 'assistant',
 								icon: p.icon ?? '🤖',
 								description: p.description ?? '',
-								model: p.model ?? 'claude-sonnet-4-20250514',
+								model: p.model ?? '',
 								systemPrompt: parsed.systemPrompt,
 								skills: p.skills?.length ? p.skills : undefined,
 								tools: p.tools?.length ? p.tools : undefined,
@@ -883,7 +883,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 						role: a.role || 'assistant',
 						icon: a.icon || '🤖',
 						description: a.description || '',
-						model: a.model || 'claude-sonnet-4-20250514',
+						model: a.model || '',
 						systemPrompt: a.systemPrompt || '',
 						skills: a.skills?.length ? a.skills : undefined,
 						tools: a.tools?.length ? a.tools : undefined,
@@ -923,7 +923,12 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		const agent: Agent = {
 			id, name: data.name || 'New Agent', role: data.role || 'assistant',
 			description: data.description || '', icon: data.icon || '🤖',
-			model: data.model || 'claude-sonnet-4-20250514',
+			// ★ 2026-10-16（Agents 方案 A 第 4 步 / Q10）：**不再兜底写 `claude-sonnet-4-20250514`**。
+			//   空串 = 跟随默认模型：`serializeAgentMd` 只在有值时才写 `model:`（agentMdFormat.ts），
+			//   dsh 侧读到"没写 model"即跟随默认 preset 模型；原生聊天 `_applyAgentDefaultModelSelection`
+			//   也是 `if (agent?.model)` 才覆盖 ⇒ 两个引擎都退回当前选中的模型 ✓。
+			//   原兜底在 dsh 引擎下**没有路由** ⇒ 新建出来的 Agent 一律「模型未映射」（用户截图里那排黄 chip）✗。
+			model: data.model || '',
 			skills: data.skills || [], tools: data.tools,
 			category: data.category || 'General',
 			systemPrompt: data.systemPrompt, temperature: data.temperature,

@@ -23,7 +23,7 @@ import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IAuxiliaryWindowsMainService } from '../../../../platform/auxiliaryWindow/electron-main/auxiliaryWindows.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IWindowsMainService } from '../../../../platform/windows/electron-main/windows.js';
-import { DshBridgeMethod, IBridgeBundleInfo, IBridgeBundleToggleArgs, IBridgeInspectResult, IBridgeInstallArgs, IBridgeInstallCancelArgs, IBridgeInstallCancelResult, IBridgeInstallResult, IBridgePluginChangeResult, IBridgePluginInventory, IBridgePluginRegistries, IBridgePluginRow, IBridgePluginRowToggleArgs, IBridgeProvidersSyncArgs, IBridgeProvidersSyncResult, IBridgeRemoveArgs, IBridgeSessionStartArgs, IBridgeSessionStartResult, IBridgeWorkspace, validateBundleInspectArgs, validateBundleInstallArgs, validateBundleRemoveArgs, validateBundleToggleArgs, validateInstallCancelArgs, validatePluginRowToggleArgs, validateProvidersSyncArgs } from '../common/dshBridgeProtocol.js';
+import { DshBridgeMethod, IBridgeBundleInfo, IBridgeBundleToggleArgs, IBridgeInspectResult, IBridgeInstallArgs, IBridgeInstallCancelArgs, IBridgeInstallCancelResult, IBridgeInstallResult, IBridgePluginChangeResult, IBridgePluginInventory, IBridgePluginRegistries, IBridgePluginRow, IBridgePluginRowToggleArgs, IBridgeProvidersSyncArgs, IBridgeProvidersSyncResult, IBridgeRemoveArgs, IBridgeSessionCancelArgs, IBridgeSessionCancelResult, IBridgeSessionRunArgs, IBridgeSessionRunResult, IBridgeSessionStartArgs, IBridgeSessionStartResult, IBridgeWorkspace, IBridgeWorkspaceContextArgs, validateBundleInspectArgs, validateBundleInstallArgs, validateBundleRemoveArgs, validateBundleToggleArgs, validateInstallCancelArgs, validatePluginRowToggleArgs, validateProvidersSyncArgs, validateWorkspaceContextArgs } from '../common/dshBridgeProtocol.js';
 import { DshCreditProxy, IDshCreditSample } from './dshCreditProxy.js';
 import { localPluginDir, selectRuntimeVersion } from '../common/dshCli.js';
 import { discoverUpdates, resolveCurrentVersion, selectInstallTarget } from '../common/dshCompat.js';
@@ -31,11 +31,12 @@ import { DSH_HARNESS_CHANNEL, DshHarnessChannelCommand, DshHarnessChannelEvent, 
 import { IdeRequestClaims } from '../common/dshIdeClaims.js';
 import { IIdeTargetPick, pickIdeTargetWindow } from '../common/dshIdeTargeting.js';
 import { readCapabilityDeclarations } from '../common/dshIdeAuthorization.js';
-import { validateInsertReference, validateWorktreeOptions } from '../common/dshPageBridgeProtocol.js';
+import { validateInsertReference, validateWorkspaceOptions, validateWorktreeOptions } from '../common/dshPageBridgeProtocol.js';
 import { isDshChatSessionId } from '../common/dshChatSession.js';
 import { validatePluginRoute } from '../common/dshPluginPage.js';
 import { isBundleDisableForbidden, isBundleEnabled } from '../common/dshPluginActivation.js';
 import { listBundledPlugins, mergeBundledWithInstalled } from './dshBundledPlugins.js';
+import { IVssarosPluginManifest, isBuiltinPluginName, tryParseVssarosManifest } from '../common/vssarosPluginManifest.js';
 import { DshPluginActivationStore } from './dshPluginActivationStore.js';
 import { DshIdeRequestGate } from './dshIdeRequestGate.js';
 import { IDshViewBackgrounds, validateThemeTokens, validateViewBackgrounds } from '../common/dshThemeBridge.js';
@@ -139,6 +140,9 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 		// 随包 **vendored 第三方技能包**（archify，MIT）：与上面几个同一条"存在才装"路径 ✓。
 		// 它没有 `vssaros.module`（技能 bundle，不是我们的 UI 模块）⇒ 不进模块自发现，也不算进「随包」列表 ✓。
 		const bundledArchify = join(this._bundledPluginsRoot, 'vssaros-archify');
+		// 共享运行时服务插件（重构 1.3）：所有模块插件的底座（dataRoot/dshHome/pageShell/lock 的唯一真源），
+		// 同一条"存在才装"路径；安装顺序上它排在模块插件之前（见 supervisor 的插件清单）。
+		const bundledFoundation = join(this._bundledPluginsRoot, 'vssaros-foundation');
 		// 模块插件（agents / skills / mcp / kb / memory / codebase / kanban / workflow / dashboard / ide）：
 		// **全部随包自动安装**（2026-10-11 用户要求）。清单**自发现**而不是在这里列名 —— 判据是插件自己的
 		// `vssaros.module` 清单（`listBundledPlugins`，与插件中心「随包」段、容器聚合表同一真源）
@@ -154,6 +158,7 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 			runtime: this._runtime,
 			runDir: join(options.userDataPath, 'dsh-run'),
 			bridgePluginDir: existsSync(join(bundledBridge, 'package.json')) ? bundledBridge : undefined,
+			foundationPluginDir: existsSync(join(bundledFoundation, 'package.json')) ? bundledFoundation : undefined,
 			chatSurfacePluginDir: existsSync(join(bundledChatSurface, 'package.json')) ? bundledChatSurface : undefined,
 			kbRefsPluginDir: existsSync(join(bundledKbRefs, 'package.json')) ? bundledKbRefs : undefined,
 			browserPluginDir: existsSync(join(bundledBrowser, 'package.json')) ? bundledBrowser : undefined,
@@ -555,7 +560,31 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 	/** 已装插件 + 启停状态（= 是否在 profile 的 `dsh.profile.bundles` 里）；插件中心的行数据。 */
 	private async _listPluginsWithActivation(): Promise<IDshPluginInfo[]> {
 		const pkg = await this._pluginActivation.read();
-		return this._supervisor.listPlugins().map(p => ({ ...p, enabled: isBundleEnabled(pkg, p.name) }));
+		return this._supervisor.listPlugins().map(p => ({
+			...p,
+			enabled: isBundleEnabled(pkg, p.name),
+			// 2026-10-16（重构 1.1，清单驱动的壳）：清单一并下发，渲染端的 ActivityBar / 页面路由都按它算，
+			// 不再靠壳里的硬编码表。读不动/不合法 ⇒ 不带 manifest（该插件不激活模块，不猜字段）。
+			manifest: this._readPluginManifest(p.name),
+		}));
+	}
+
+	/** 读一个已装插件的 `vssaros` 清单并校验；不合法返回 undefined 并记日志。 */
+	private _readPluginManifest(name: string): IVssarosPluginManifest | undefined {
+		try {
+			const raw = JSON.parse(readFileSync(join(this._supervisor.profileDirectory(), 'node_modules', ...name.split('/'), 'package.json'), 'utf8'))?.vssaros;
+			if (raw === undefined) {
+				return undefined;
+			}
+			const { manifest, error } = tryParseVssarosManifest(raw, { pluginName: name, builtin: isBuiltinPluginName(name) });
+			if (!manifest) {
+				this._logService.info(`[dshHarness] ${name} 的 vssaros 清单不合法（不激活它的模块）：${error}`);
+				return undefined;
+			}
+			return manifest;
+		} catch {
+			return undefined;
+		}
 	}
 
 	/**
@@ -727,6 +756,14 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 				}
 				return this._workspaces.setWindowWorkspaces(a.windowId, a.paths);
 			}
+			case DshHarnessChannelCommand.SetWorkspaceContext: {
+				// 运行期工作区上下文（2026-10-17）：形状先在这里卡住（畸形载荷不出进程 ✓），
+				// 能不能**真的生效**由 Host 回执（`applied`）说了算 —— 见 supervisor 的同名方法 ✓。
+				if (!validateWorkspaceContextArgs(arg)) {
+					throw new Error('[dshHarness] setWorkspaceContext: 载荷形状不合法（workspaceId/workspaceRoot/relatedRoots/windowId/at）');
+				}
+				return this._supervisor.setWorkspaceContext(arg as IBridgeWorkspaceContextArgs);
+			}
 			case DshHarnessChannelCommand.GetWorkspaceSync:
 				return this._workspaces.state;
 			case DshHarnessChannelCommand.ListWorkspaces: {
@@ -745,6 +782,26 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 				// 诊断：这条与 workspace 注册共用 dsh 的注册表排队器，耗时能直接看出"聊天要等多久"。
 				this._logService.info(`[dshHarness] session.start: ${Date.now() - ts} ms (${a?.sessionId ?? ''})`);
 				return r;
+			}
+			case DshHarnessChannelCommand.RunSession: {
+				const a = arg as IBridgeSessionRunArgs;
+				const bridge = this._supervisor.bridge;
+				if (!bridge) {
+					throw new Error('[dshHarness] runSession: 控制桥不可用（未安装伴生插件或 Host 未运行）');
+				}
+				// 要等整个回合跑完：超时给足（桥侧 runs.run 自身有 120s 默认上限，这里再加余量）。
+				const ts = Date.now();
+				const r = await bridge.call<IBridgeSessionRunResult>(DshBridgeMethod.SessionRun, a, (a?.timeoutMs ?? 120_000) + 30_000);
+				this._logService.info(`[dshHarness] session.run: ${Date.now() - ts} ms (${a?.sessionId ?? ''}, stop=${r?.stopReason ?? '?'})`);
+				return r;
+			}
+			case DshHarnessChannelCommand.CancelSession: {
+				const a = arg as IBridgeSessionCancelArgs;
+				const bridge = this._supervisor.bridge;
+				if (!bridge) {
+					throw new Error('[dshHarness] cancelSession: 控制桥不可用（未安装伴生插件或 Host 未运行）');
+				}
+				return bridge.call<IBridgeSessionCancelResult>(DshBridgeMethod.SessionCancel, a, 10_000);
 			}
 			// ─── 插件商城（方案 5.16 批次 2，只读面）：数据源是 Host 的 pluginManager。
 			// 控制桥不可用时**明确报错**（不静默返回空——UI 要能区分"没插件"与"Host 没起来"）。
@@ -1083,7 +1140,7 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 				// 页面画出第一帧之前不会露 Electron 默认白。形状非法 ⇒ 当没给（宁可少染一次，
 				// 也不把没校验过的字符串塞进原生 API ✗）。
 				const backgrounds: IDshViewBackgrounds | undefined = validateViewBackgrounds(a.backgrounds) ? a.backgrounds : undefined;
-				this._views.create(a.viewId, a.windowId, a.surface, a.chatOnlyUi !== false, a.sessionId || undefined, a.colorScheme, route, pageSurface, backgrounds);
+				this._views.create(a.viewId, a.windowId, a.surface, a.chatOnlyUi !== false, a.sessionId || undefined, a.colorScheme, route, pageSurface, backgrounds, a.isolatedPool === true);
 				return;
 			}
 			case DshHarnessChannelCommand.LayoutView: {
@@ -1127,6 +1184,20 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 					// ⚠ 从前这里是**静默**的 ✗：形状不合法 ⇒ 页面永远拿不到列表 ⇒ worktree UI 不出现，
 					//   而日志里一片安静（2026-10-13 排查"没有显示 worktree ui"的教训）⇒ 至少要留一行。
 					this._logService.warn(`[dshHarness] pushWorktrees ignored: 选项形状不合法（viewId=${String(a.viewId)}）`);
+				}
+				return;
+			}
+			case DshHarnessChannelCommand.PushWorkspaces: {
+				// IDE 工作区记录（多根工作区；2026-10-16）：与 PushWorktrees 同口径 —— 渲染进程给的是
+				// `Workspace` 记录的**投影**，这里再校验一遍形状（主进程是信任边界；`dataset` 会被页面
+				// 当作可信数据解析）。⚠ 不合法**必须留一行**：静默会让页面永远看不到多根，
+				// 而日志里一片安静（2026-10-13 worktree 的教训 ✓）。
+				const a = arg as { viewId: unknown; options: unknown };
+				const options = typeof a.viewId === 'string' ? validateWorkspaceOptions(a.options) : undefined;
+				if (options) {
+					this._views.pushWorkspaces(a.viewId as string, options);
+				} else {
+					this._logService.warn(`[dshHarness] pushWorkspaces ignored: 选项形状不合法（viewId=${String(a.viewId)}）`);
 				}
 				return;
 			}

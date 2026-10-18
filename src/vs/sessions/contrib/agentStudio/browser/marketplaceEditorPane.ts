@@ -579,6 +579,10 @@ export class MarketplaceEditorPane extends EditorPane {
 		try {
 			const output = cp.execSync(`git ls-remote --heads ${MarketplaceEditorPane.GRAPH_REMOTE}`, {
 				encoding: 'utf-8', timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'],
+				// ★ 2026-10-17（用户报「点 agent 条目闪出 git 窗口」并指出和 git 记忆有关）：
+				//   这里 execSync 字符串命令经 cmd.exe 跑 `git ls-remote`（列记忆图谱 GRAPH_REMOTE 的远程分支），
+				//   Windows 上不加 windowsHide 必闪控制台窗口；且是网络操作耗时更久、窗口停留更明显。
+				windowsHide: true,
 			}).trim();
 			branches = output.split('\n').filter((l: string) => l.trim()).map((line: string) => {
 				const [hash, ref] = line.split('\t');
@@ -2150,7 +2154,7 @@ export class MarketplaceEditorPane extends EditorPane {
 					try {
 						const cp = (globalThis as any).require?.('child_process');
 						if (cp) {
-							cp.execSync('powershell -Command "Expand-Archive -Path \'' + data._zipPath + '\' -DestinationPath \'' + targetDir.fsPath + '\' -Force"', { timeout: 15000 });
+							cp.execSync('powershell -Command "Expand-Archive -Path \'' + data._zipPath + '\' -DestinationPath \'' + targetDir.fsPath + '\' -Force"', { timeout: 15000, windowsHide: true });
 							console.log('[Crawl] child_process 解压完成');
 						}
 					} catch { /* ignore */ }

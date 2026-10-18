@@ -15,6 +15,7 @@ import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { CodeWindow } from '../../../../base/browser/window.js';
 import { mark } from '../../../../base/common/performance.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
+import { ILogService } from '../../../../platform/log/common/log.js';
 import { ShutdownReason } from '../../lifecycle/common/lifecycle.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { Barrier } from '../../../../base/common/async.js';
@@ -149,8 +150,9 @@ export class NativeAuxiliaryWindowService extends BrowserAuxiliaryWindowService 
 		@IHostService hostService: IHostService,
 		@IWorkbenchEnvironmentService environmentService: IWorkbenchEnvironmentService,
 		@IContextMenuService contextMenuService: IContextMenuService,
+		@ILogService logService: ILogService,
 	) {
-		super(layoutService, dialogService, configurationService, telemetryService, hostService, environmentService, contextMenuService);
+		super(layoutService, dialogService, configurationService, telemetryService, hostService, environmentService, contextMenuService, logService);
 	}
 
 	protected override async resolveWindowId(auxiliaryWindow: NativeCodeWindow): Promise<number> {

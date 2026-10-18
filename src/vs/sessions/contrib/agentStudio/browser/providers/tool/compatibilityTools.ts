@@ -11,7 +11,7 @@ import { isWindows } from '../../../../../../base/common/platform.js';
 import type { IFileService } from '../../../../../../platform/files/common/files.js';
 import type { ILogService } from '../../../../../../platform/log/common/log.js';
 import type { IAgentOSService } from '../../../common/agentOS.js';
-import { IToolResultContent, NO_PARAMS_SCHEMA, NonRetryableToolError, ToolSecurityLevel } from '../../../common/providers.js';
+import { IToolResultContent, NonRetryableToolError, ToolSecurityLevel } from '../../../common/providers.js';
 import type { IBuiltinToolRegistration } from './builtinToolProvider.js';
 // ★ 2026-09-21：随 switch_paradigm / plan_register 正式退役，以下 5 个导入一并删除
 //   （退役说明见本文件 registerCompatibilityTools 内的「已正式退役」注释块）：
@@ -380,14 +380,8 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 	// 平台不适用 — 返回友好提示（web_search/web_extract 已有真实 handler，不在此注册 stub）
 	// ★ 2026-09-24（P1-5）：`process` 已有**真实实现**（`processTools.ts`：list/output/terminate/wait，
 	//   薄封装 vscode:execCode 的后台注册表）⇒ 从此占位表中移除（否则与真 handler 撞同名）。
-	for (const [name, desc, msg] of [
-		['session_search', 'Search past conversation sessions.', 'Session search is not yet available. Past conversations are stored in ~/.saros/sessions/.'],
-	] as const) {
-		ctx.register({
-			definition: { name, description: desc, inputSchema: NO_PARAMS_SCHEMA, category: 'utility', source: ctx.id },
-			handler: async () => text(msg),
-		});
-	}
+	// ★ 2026-10-16（重构 4）：`session_search` 已有**真实现**（dsh 侧 `@vssaros/dsh-sessions` 插件：
+	//   读投影缓存 + 全文匹配）⇒ 从此占位表中移除（否则与真 handler 撞同名，dsh 侧的被 stub 顶掉 ✗）。
 
 	// ── execute_code：真实代码执行沙箱（主进程 spawn，非交互式，真实 exit code）─────
 	// 区别于 terminal（pty 交互 shell，1.5s idle 判完成、无可靠 exit code、无资源限制）：

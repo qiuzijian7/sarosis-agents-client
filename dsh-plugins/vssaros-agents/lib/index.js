@@ -24,12 +24,22 @@
 //   人格全文随消息落日志，所以历史可精确重放；工具/模型**不受影响**（要换能力只能新建会话，走 preset）。
 
 import { randomUUID } from 'node:crypto';
+import { askAssignment, cancelAssignment, createAssignment, installAssignmentTracker, listAssignments } from './assignments.js';
 import { avatarColorOf, presetIdOf, summarizeAgents, toPresetDefinition } from './core/agents.js';
+import { createAgentFromDraft, previewAgentDraft, resetAgentModel } from './create.js';
+import { draftFromAgentMd, modelCandidatesOf } from './core/create.js';
 import { aggregateByPreset, liveForAgents, usageByAgent } from './core/live.js';
 import { PERSONA_PROJECTION_KEY, personaProjection, personaSwitchMessage, switchedPersonaText } from './core/persona.js';
+import { renderDetailPage } from './detail.js';
+import { createGroup, deleteGroup, installGroupTracker, listGroups, postGroupMessage } from './groups.js';
 import { readLiveSessions } from './live.js';
+import { markSeen, unreadSnapshot } from './seen.js';
+import { enableGit, gitLogOf, gitStatusOf, listMemoryFiles, readMemoryFile, readMemorySnapshot, snapshotGit } from './memory.js';
+import { ensureOutboxLoaded, outboxList, outboxRetry } from './outbox.js';
 import { installRelay } from './relay.js';
+import { renderSideviewPage } from './sideview.js';
 import { agentsRootOf, scanAgents } from './store.js';
+import { addApprovalTemplate, listApprovalTemplates, removeApprovalTemplate, templateGate } from './templates.js';
 import { registerAgentTools } from './tools.js';
 
 /** 与 cordis.patch.yml 的行 id 一致。 */
@@ -48,10 +58,6 @@ const ROUTE_PREFIX = '/x/agents';
 const PERSONA_SECTION_NAME = 'vssaros-agent-persona';
 /** 人设 section 的位置：dsh 有中央 order 表，`DEPLOYMENT_PERSONA_PREFIX` 就是"部署级人设"该待的位置。 */
 const PERSONA_ORDER_NAME = 'DEPLOYMENT_PERSONA_PREFIX';
-
-function escapeHtml(value) {
-	return String(value).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
-}
 
 /** dsh 的 section order 由中央表分配（`getSectionOrder`）；拿不到就退回 0。 */
 function sectionOrderOf(child) {
@@ -77,12 +83,30 @@ function applyPersona(ctx, config) {
 			projections = undefined;
 		};
 	}));
+	// 记忆快照注入（2026-10-16，二期）：MEMORY.md 前 2KB 追加在人设段后。装配是同步的 ⇒
+	// 快照走缓存（挂载即刷 + 每分钟定时刷）；口径 = 冻结快照，最多滞后一个刷新周期 ✓。
+	let memoryCache = '';
+	const refreshMemory = () => {
+		readMemorySnapshot(config, config.agentId).then(text => {
+			memoryCache = text;
+		}).catch(() => {
+			memoryCache = '';
+		});
+	};
+	refreshMemory();
+	const memoryTimer = setInterval(refreshMemory, 60_000);
+	memoryTimer.unref?.();
+	ctx.effect(() => () => clearInterval(memoryTimer));
+
 	ctx.inject(['systemPrompt'], child => child.effect(() => child.systemPrompt.section({
 		name: PERSONA_SECTION_NAME,
 		order: sectionOrderOf(child),
 		// **函数形式**：每次装配按 `context.agent` 取该会话的当前人格（会话内切换过就是新的）；
-		// 没切换过 / 取不到 → 退回 preset 自带人设，行为与从前完全一致。
-		text: (context) => switchedPersonaText(projections, context) ?? staticPersona,
+		// 没切换过 / 取不到 → 退回 preset 自带人设，行为与从前完全一致。有记忆快照就追加 ✓。
+		text: (context) => {
+			const base = switchedPersonaText(projections, context) ?? staticPersona;
+			return memoryCache ? base + memoryCache : base;
+		},
 	})));
 
 	// 工具 allowlist：`.agent.md` 的 `tools` 是 VS Code 口径，dsh 侧未必同名。
@@ -206,246 +230,6 @@ async function syncPresets(state, presets, config) {
 	return scan;
 }
 
-/** 用量/实况的展示格式化（页面与 mockup 同口径：四桶全算；时间精确到分）。 */
-const fmtTokens = n => (n >= 10000 ? `${(n / 10000).toFixed(1)} 万` : String(n));
-const fmtTime = ms => (Number.isFinite(ms) ? new Date(ms).toISOString().slice(0, 16).replace('T', ' ') : '—');
-
-/* =====================================================================
- * 页面（A 款 · 紧凑行式）
- * 2026-10-14：用户从 4 款样式 mockup（doc/dsh-agents-sideview-styles-mockup.html）选定 A。
- * 相对旧版（平铺 <ul> + 标题下一长条 diag 行）的改动口径：
- *   ① 吸顶标题行 +「名册 / 用量」分段控件 + 筛选框；
- *   ② 每行 = 3px 状态条（琥珀 = 模型未映射）+ 圆角方头像（不再用圆形，沿用会话列表那次的口径）
- *      + 名称 / 副行（模型 · 工具 · 人设 · token）+ 右侧会话数；点行展开抽屉；
- *   ③ 花名册 / 目录那条长 diag 收进页脚 —— 四个探针锚点原样保留（p3-06 钉住）；
- *   ④ 「映射说明 / 问题」不再重复列一遍 presetId：每行就地琥珀标 + 页尾一条默认收起的 details；
- *   ⑤ 只读不变：本页自己不写盘（新建 / 编辑 / 开新会话仍未拍板）。
- *   ⑥ 2026-10-14 追加：每行右侧**常显**齿轮 + 抽屉里的「Agent 设置」按钮 —— 经页面桥 `openAgentSettings`
- *      （桥 `5 → 6`）请宿主打开该 bot 的 VsSaros Agent 设置编辑器页（页面自己开不了编辑器）；
- *      宿主版本旧（preload 没这个 key）时在头部提示一行，**不静默失败** ✓。
- * 探针锚点（p3-06 逐条钉住，别改名、别删）：
- *   data-vssaros-page / -agents-count / -presets-registered / -roster / -agents-root / data-live-sessions /
- *   data-vssaros-usage-tab / id="usage" / tr 上的 data-usage-agent 与 data-usage-tokens（两属性相邻、单空格、
- *   顺序不变）/ class="avatar" style="background:hsl(N 45% 42%)"（≥ 2 个）/ 头像正文 emoji 直接跟收尾标签 /
- *   'allowlist' / '映射说明'；且在「花名册里没有我们 preset」的场景里，「未注册」必须恰好出现 2 次。
- * 本段含模板串：注释里不许出现反引号（会提前闭合、整文件语法错 —— 本仓已踩 5 次）。
- * ===================================================================== */
-const PAGE_CSS = `:root { color-scheme: light dark; }
-body { margin: 0; padding: 0 0 10px; font: 13px/1.5 system-ui, "Segoe UI", sans-serif; color: var(--vscode-foreground, #ccc); background: var(--vscode-sideBar-background, #1e1e1e); }
-header { position: sticky; top: 0; z-index: 2; padding: 9px 10px 8px; background: var(--vscode-sideBar-background, #1e1e1e); border-bottom: 1px solid var(--vscode-panel-border, rgba(128,128,128,.35)); }
-h1 { display: flex; align-items: center; gap: 6px; margin: 0; font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
-h1 .n { margin-left: auto; font-weight: 400; color: var(--vscode-descriptionForeground, #999); letter-spacing: 0; }
-.tag { font-size: 10px; line-height: 15px; padding: 0 5px; border-radius: 3px; background: var(--vscode-badge-background, #4d4d4d); color: var(--vscode-badge-foreground, #fff); }
-.tag.gray { background: transparent; border: 1px solid var(--vscode-panel-border, #555); color: var(--vscode-descriptionForeground, #999); }
-.tag.off { background: #7a3d2b; color: #fff; }
-.seg { display: flex; margin: 8px 0 7px; border: 1px solid var(--vscode-panel-border, #555); border-radius: 6px; overflow: hidden; }
-.seg button { flex: 1; padding: 3px 0; font: inherit; font-size: 12px; color: var(--vscode-descriptionForeground, #999); background: transparent; border: 0; cursor: pointer; }
-.seg button + button { border-left: 1px solid var(--vscode-panel-border, #555); }
-.seg button.on { background: var(--vscode-button-background, #0e639c); color: #fff; }
-.search { display: flex; align-items: center; gap: 5px; padding: 2px 6px; background: var(--vscode-input-background, #3c3c3c); border: 1px solid var(--vscode-input-border, transparent); border-radius: 4px; }
-.search input { flex: 1; min-width: 0; padding: 2px 0; font: inherit; font-size: 12px; color: inherit; background: transparent; border: 0; outline: 0; }
-.search .mag, .search .n { color: var(--vscode-descriptionForeground, #999); font-size: 11px; }
-ul { margin: 0; padding: 0; list-style: none; }
-li.item { border-bottom: 1px solid var(--vscode-panel-border, rgba(128,128,128,.2)); }
-.row { display: flex; gap: 7px; padding: 5px 10px 5px 0; cursor: pointer; }
-.row:hover, li.item.open > .row { background: var(--vscode-list-hoverBackground, #2a2d2e); }
-.bar { flex: 0 0 3px; align-self: stretch; background: transparent; }
-li.warned .bar { background: #cca700; }
-.avatar { flex: 0 0 18px; width: 18px; height: 18px; margin-top: 1px; border-radius: 5px; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; line-height: 1; color: #fff; }
-.main { flex: 1; min-width: 0; }
-.l1 { display: flex; align-items: baseline; gap: 6px; }
-.name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.l1 .sp { margin-left: auto; color: var(--vscode-textLink-foreground, #6aa9e8); font-size: 11px; white-space: nowrap; }
-.l1 .sp.dim { color: var(--vscode-descriptionForeground, #999); }
-.l2 { color: var(--vscode-descriptionForeground, #999); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chev { align-self: center; color: var(--vscode-descriptionForeground, #999); font-size: 10px; }
-li.item.open .chev { transform: rotate(90deg); }
-.drawer { display: none; padding: 5px 10px 8px 28px; border-top: 1px solid var(--vscode-panel-border, rgba(128,128,128,.2)); background: rgba(128,128,128,.08); color: var(--vscode-descriptionForeground, #999); font-size: 11.5px; }
-li.item.open > .drawer { display: block; }
-.drawer dl { display: grid; grid-template-columns: 52px 1fr; gap: 3px 8px; margin: 0; }
-.drawer dd { margin: 0; color: var(--vscode-foreground, #ccc); overflow-wrap: anywhere; }
-.mono, code { font-family: ui-monospace, Consolas, monospace; font-size: 11px; }
-.unmapped { color: #cca700; }
-details.warn { margin: 10px; border: 1px solid rgba(204,167,0,.45); border-radius: 6px; background: rgba(204,167,0,.1); }
-details.warn > summary { padding: 6px 9px; color: #cca700; font-size: 12px; cursor: pointer; list-style: none; }
-details.warn > summary::-webkit-details-marker { display: none; }
-details.warn .wbody { padding: 0 9px 2px; }
-details.warn li { margin-bottom: 4px; padding: 3px 0 3px 8px; border-left: 2px solid rgba(204,167,0,.5); color: var(--vscode-descriptionForeground, #999); font-size: 11.5px; }
-section.pad { padding: 0 10px; }
-h2 { margin: 8px 0 5px; font-size: 11px; font-weight: 400; letter-spacing: .04em; text-transform: uppercase; color: var(--vscode-descriptionForeground, #999); }
-h2 small { text-transform: none; letter-spacing: 0; }
-table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
-th, td { padding: 3px 6px 3px 0; text-align: left; vertical-align: top; }
-tr.head th { color: var(--vscode-descriptionForeground, #999); font-weight: 400; }
-tr td { border-top: 1px solid var(--vscode-panel-border, rgba(128,128,128,.2)); }
-tr.unknown td { color: var(--vscode-descriptionForeground, #999); }
-.empty, .diag { color: var(--vscode-descriptionForeground, #999); }
-.empty { padding: 28px 14px; text-align: center; }
-.diag { margin: 6px 0 0; font-size: 11.5px; }
-footer { margin-top: 10px; padding: 8px 10px 0; border-top: 1px solid var(--vscode-panel-border, rgba(128,128,128,.2)); color: var(--vscode-descriptionForeground, #999); font-size: 11px; overflow-wrap: anywhere; }
-.iconbtn { flex: 0 0 auto; align-self: center; padding: 1px 4px; font: inherit; font-size: 12px; line-height: 1; color: var(--vscode-icon-foreground, var(--vscode-descriptionForeground, #999)); background: transparent; border: 0; border-radius: 4px; cursor: pointer; }
-.iconbtn:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,.25)); color: var(--vscode-foreground, #ccc); }
-.acts { margin: 6px 0 0; }
-.act { padding: 2px 8px; font: inherit; font-size: 11.5px; color: inherit; background: var(--vscode-button-secondaryBackground, #3a3d41); border: 1px solid var(--vscode-panel-border, #555); border-radius: 4px; cursor: pointer; }
-.act:hover { background: var(--vscode-button-secondaryHoverBackground, #45494e); }
-.note { margin: 0; padding: 6px 10px; color: var(--vscode-editorWarning-foreground, #cca700); }`;
-
-function renderPage({ agents, summary, root, missing, diagnostics, roster, errors, liveRows, usage }) {
-	const liveOf = new Map((liveRows ?? []).map(row => [row.agentId, row]));
-	// 「模型未映射」的琥珀标来自宿主给的诊断（不由页面猜）：diagnostics 每项是 { agentId, presetId, notes, ... }
-	const notesOf = new Map((diagnostics ?? []).map(d => [d.agentId, d.notes ?? []]));
-	const rows = agents.map(a => {
-		const presetId = presetIdOf(a.id);
-		const registered = roster.includes(presetId);
-		const live = liveOf.get(a.id);
-		const unmapped = (notesOf.get(a.id) ?? []).some(n => n.startsWith('模型未映射'));
-		// 副行：模型 · 工具 · 人设 · token（token 只在有会话时出现 —— 没有会话就不显示 0）
-		const sub = [
-			a.model ? (unmapped ? '模型未映射' : 'model ' + escapeHtml(a.model)) : 'model 未设',
-			a.tools.length ? a.tools.length + ' tools' : '无 tools',
-			a.persona ? '人设 ' + a.persona.length + ' 字' : '无人设正文',
-		];
-		if (live && live.sessions > 0) {
-			sub.push('token ' + fmtTokens(live.tokens));
-		}
-		// 头像：icon 是 emoji 原样显示；没写 icon 就退到名字首字（底色按 id 哈希恒定）。圆角方块，不用圆形。
-		const avatar = '<span class="avatar" style="background:' + avatarColorOf(a.id) + '" data-agent-icon="' + escapeHtml(a.icon ?? '') + '">' + escapeHtml(a.icon ?? a.name.slice(0, 1)) + '</span>';
-		const facts = '<dl>'
-			+ '<dt>preset</dt><dd class="mono">' + escapeHtml(presetId) + '</dd>'
-			+ '<dt>定义</dt><dd class="mono">' + escapeHtml(a.file ?? '(未知)') + '</dd>'
-			+ '<dt>模型</dt><dd>' + (a.model
-				? escapeHtml(a.model) + (unmapped ? ' <span class="unmapped">未映射 → 跟随默认模型</span>' : '')
-				: '未设（跟随默认模型）') + '</dd>'
-			+ '<dt>工具</dt><dd>' + (a.tools.length ? escapeHtml(a.tools.join('、')) : '无（该 agent 不限制工具）') + '</dd>'
-			+ '<dt>人设</dt><dd>' + (a.persona ? a.persona.length + ' 字' : '无人设正文') + '</dd>'
-			+ (live && live.sessions > 0
-				? '<dt>实况</dt><dd>' + live.sessions + ' 会话 · ' + fmtTokens(live.tokens) + ' token · ' + live.turns + ' 回合 · 最近 ' + escapeHtml(fmtTime(live.lastActiveAt)) + '</dd>'
-				: '')
-			+ '</dl>'
-			// 2026-10-14：抽屉里的显式入口（行上的齿轮是快路径，这里不依赖悬停/小图标能被看见）
-			+ '<p class="acts"><button class="act" onclick="openAgentSettingsFrom(this)" title="打开该 bot 在 VsSaros 里的 Agent 设置页">Agent 设置</button></p>';
-		// data-search：筛选框的匹配面（id / 名称 / 描述），在服务端算好，页面只做子串匹配
-		return '<li class="item' + (unmapped ? ' warned' : '') + '" data-agent-id="' + escapeHtml(a.id) + '" data-live-sessions="' + (live?.sessions ?? 0) + '" data-search="' + escapeHtml((a.id + ' ' + a.name + ' ' + (a.description ?? '')).toLowerCase()) + '">'
-			+ '<div class="row" onclick="toggleRow(this)"><span class="bar"></span>' + avatar
-			+ '<div class="main"><div class="l1"><span class="name">' + escapeHtml(a.name) + '</span>'
-			+ (registered ? '' : '<span class="tag off">未注册</span>')
-			+ '<span class="sp' + (live && live.sessions > 0 ? '' : ' dim') + '">' + (live && live.sessions > 0 ? '会话 ' + live.sessions : '—') + '</span></div>'
-			+ '<div class="l2">' + sub.join(' · ') + '</div></div>'
-			+ '<button class="iconbtn" title="Agent 设置" aria-label="Agent 设置" onclick="openAgentSettingsFrom(this)">⚙</button>'
-			+ '<span class="chev">›</span></div>'
-			+ '<div class="drawer">' + facts + '</div></li>';
-	}).join('');
-	const body = missing
-		? '<p class="empty">agent 目录还不存在：<code>' + escapeHtml(missing) + '</code><br>在 VsSaros 里建过自定义 agent 后这里会出现。</p>'
-		: (rows ? '<ul>' + rows + '</ul>' : '<p class="empty">还没有可用的 agent（每个子目录需要一个带 name 的 .agent.md）。</p>');
-	const notes = diagnostics.flatMap(d => (d.notes ?? []).map(n => d.presetId + '：' + n));
-	// 映射说明 / 问题：默认收起（原生 details，不依赖脚本）；有 errors 时默认展开（那是真出事了）
-	const problems = (notes.length || errors.length)
-		? '<details class="warn"' + (errors.length ? ' open' : '') + '><summary>映射说明 / 问题 ' + (notes.length + errors.length) + '</summary><div class="wbody"><ul>'
-			+ [...notes, ...errors].map(t => '<li>' + escapeHtml(t) + '</li>').join('') + '</ul></div></details>'
-		: '';
-	const ours = roster.filter(id => id.startsWith('vssaros-'));
-	// 页脚：把旧版标题下那长条 diag 行收进来（四个探针锚点挂在这里）
-	const footer = '<footer data-vssaros-agents-count="' + summary.count + '" data-vssaros-presets-registered="' + ours.length
-		+ '" data-vssaros-roster="' + escapeHtml(roster.join(',')) + '" data-vssaros-agents-root="' + escapeHtml(root) + '">'
-		+ '已注册 preset ' + ours.length + ' / 花名册 ' + roster.length + ' · <code>' + escapeHtml(root) + '</code></footer>';
-
-	// 用量页签（P5）：按 agent / 按模型；名册外会话单列「未归属」。口径注释与 mockup 一致。
-	const usageRows = (usage?.agents ?? []).map(u => {
-		const agent = agents.find(a => a.id === u.agentId);
-		const models = u.models.length ? u.models.map(m => escapeHtml(m.ref) + '（' + fmtTokens(m.tokens) + '）').join('<br>') : '—';
-		const avatar = agent ? '<span class="avatar" style="background:' + avatarColorOf(agent.id) + '">' + escapeHtml(agent.icon ?? agent.name.slice(0, 1)) + '</span>' : '';
-		return '<tr data-usage-agent="' + escapeHtml(u.agentId) + '" data-usage-tokens="' + u.tokens + '"><td>' + avatar + '<b>' + escapeHtml(agent?.name ?? u.agentId) + '</b></td><td>' + u.sessions + '</td><td>' + fmtTokens(u.tokens) + '</td><td>' + u.turns + '</td><td>' + escapeHtml(fmtTime(u.lastActiveAt)) + '</td><td>' + models + '</td></tr>';
-	}).join('');
-	const unknown = usage?.unknown;
-	const unknownRow = unknown && unknown.sessions > 0
-		? '<tr class="unknown"><td>未归属（standard / 已删 agent 的残留）</td><td>' + unknown.sessions + '</td><td>' + fmtTokens(unknown.tokens) + '</td><td>' + unknown.turns + '</td><td>—</td><td>—</td></tr>'
-		: '';
-	const usageSection = usage
-		? '<div id="usage" hidden><section class="pad"><h2>用量 <small>按 agent / 按模型 · 只读（projcache）</small></h2>'
-			+ '<table><tr class="head"><th>Agent</th><th>会话</th><th>token</th><th>回合</th><th>最近活跃</th><th>按模型</th></tr>' + usageRows + unknownRow + '</table>'
-			+ '<p class="diag">token = 输入+输出+读缓存+写缓存；「最近活跃」= 最后一条用户输入。按时间的趋势视图在 Dashboard 页。</p></section></div>'
-		: '';
-	// 页签（与旧版同一套 id/锚点，只是换成 A 款的分段控件形态）
-	const tabNav = usage
-		? '<nav class="seg"><button id="tabRoster" class="on" onclick="showTab(\'roster\')">名册 ' + summary.count + '</button>'
-			+ '<button id="tabUsage" data-vssaros-usage-tab onclick="showTab(\'usage\')" data-usage-sessions="' + usage.totals.sessions + '" data-usage-tokens="' + usage.totals.tokens + '">用量 ' + usage.totals.sessions + '</button></nav>'
-		: '';
-	// 页面脚本：页签 + 行展开 + 筛选。都是纯前端增强，关掉 JS 也读得到全部内容。
-	const script = '<script>'
-		// 打开该 bot 的 VsSaros「Agent 设置」编辑器页（桥 `5 → 6`）。页面开不了编辑器 ⇒ 只能请宿主开。
-		// 宿主版本旧（preload 没暴露这个 key）时给一行提示 —— **不静默失败**（点了没反应最难查 ✗）。
-		+ 'function openAgentSettings(id, name) {'
-		+ 'var bridge = window.vssarosDsh;'
-		+ "if (!bridge || typeof bridge.openAgentSettings !== 'function') { note('当前宿主不支持从这里打开 Agent 设置（需要桥版本 6 的宿主）'); return; }"
-		+ "try { bridge.openAgentSettings(id, name); note(''); } catch (e) { note('打开 Agent 设置失败：' + e); }"
-		+ '}'
-		// 从行上的齿轮 / 抽屉按钮取 id（`li.item[data-agent-id]` 是行的身份锚点 ✓），顺便把显示名带上
-		+ 'function openAgentSettingsFrom(el) {'
-		+ "var li = el && el.closest ? el.closest('li.item') : null;"
-		+ 'if (!li) { return; }'
-		+ "var n = li.querySelector('.name');"
-		+ "openAgentSettings(li.getAttribute('data-agent-id'), n ? n.textContent : undefined);"
-		+ '}'
-		+ 'function note(text) {'
-		+ "var el = document.getElementById('pageNote');"
-		+ 'if (!el) { return; }'
-		+ "if (!text) { el.hidden = true; el.textContent = ''; return; }"
-		+ 'el.textContent = text;'
-		+ 'el.hidden = false;'
-		+ '}'
-		+ 'function showTab(which) {'
-		+ "var r = document.getElementById('roster');"
-		+ "var u = document.getElementById('usage');"
-		+ "if (r) { r.hidden = which !== 'roster'; }"
-		+ "if (u) { u.hidden = which !== 'usage'; }"
-		+ "var a = document.getElementById('tabRoster');"
-		+ "var b = document.getElementById('tabUsage');"
-		+ "if (a) { a.classList.toggle('on', which === 'roster'); }"
-		+ "if (b) { b.classList.toggle('on', which === 'usage'); }"
-		+ '}'
-		+ 'function toggleRow(el) { var li = el.parentElement; if (li) { li.classList.toggle(\'open\'); } }'
-		+ 'function filterRows() {'
-		+ "var box = document.getElementById('q');"
-		+ "var out = document.getElementById('qCount');"
-		+ 'var q = box ? String(box.value || \'\').trim().toLowerCase() : \'\';'
-		+ "var all = document.querySelectorAll('#roster li.item');"
-		+ 'var hit = 0;'
-		+ 'for (var i = 0; i < all.length; i++) {'
-		+ "var t = all[i].getAttribute('data-search') || '';"
-		+ 'var show = !q || t.indexOf(q) >= 0;'
-		+ 'all[i].hidden = !show;'
-		+ 'if (show) { hit++; }'
-		+ '}'
-		+ 'if (out) { out.textContent = q ? hit + \'/\' + all.length : String(all.length); }'
-		+ '}'
-		+ '</script>';
-
-	return `<!doctype html>
-<html lang="zh">
-<head>
-<meta charset="utf-8">
-<title>Agents · VsSaros</title>
-<style>
-${PAGE_CSS}
-</style>
-</head>
-<body data-vssaros-page="agents">
-<header>
-	<h1>Agents <span class="tag gray">只读</span><span class="n">${summary.count}</span></h1>
-	${tabNav}
-	<label class="search"><span class="mag">⌕</span><input id="q" placeholder="筛选 name / id / 描述" oninput="filterRows()"><span class="n" id="qCount">${summary.count}</span></label>
-</header>
-<p class="diag note" id="pageNote" hidden></p>
-<div id="roster">${body}</div>
-${usageSection}
-${problems}
-${footer}
-${script}
-</body>
-</html>`;
-}
-
 /** 读请求体并解析 JSON（空体 → `{}`）。 */
 async function readJsonBody(req) {
 	const chunks = [];
@@ -562,6 +346,8 @@ async function switchPersona(state, config, body) {
 /** 角色 1：顶层（注册 preset + 页面）。 */
 function applyTopLevel(ctx, config) {
 	const state = createState();
+	// 审批模板闸谓词（2026-10-16，P2）：tools.js 的 pre-execute 先查它；读失败按"没有"（照常问 ✓）。
+	state.approvalTemplates = templateGate(config);
 
 	// 会话投影（顶层再注册一份，与 preset 作用域那份共享同一个单元）——切换后 UI/诊断按 sessionId 读它。
 	ctx.inject(['sessionProjections'], child => child.effect(() => {
@@ -611,6 +397,16 @@ function applyTopLevel(ctx, config) {
 	// 回复自动回传（2026-10-13，P3.2）：宿主面监听全部会话的 turn-stopping（与 memory 自动沉淀
 	// 同一钩子 ✓）。只装顶层角色——toolsOnly（preset 内）的事件视野未证，不装 ✓。
 	ctx.effect(() => installRelay(ctx, config, state));
+	// 委派台账跟踪（2026-10-16，P1）：同一钩子、同一事件视野判据 ✓（lib/assignments.js 头注释）。
+	ctx.effect(() => installAssignmentTracker(ctx, config, state));
+	// 群聊回复回收（2026-10-16，二期）：同一钩子（lib/groups.js 头注释——承载面为何自托管写在那里 ✓）。
+	ctx.effect(() => installGroupTracker(ctx, config, state));
+	// Outbox 读回（2026-10-16 二期）：启动即把盘上"等回收"的条目读回内存——relay/群聊的 tracker
+	// 按 messageId 从 outbox 取 pending ⇒ 重启后回收自动续上 ✓（读失败按空队列，不炸激活 ✓）。
+	ctx.effect(() => {
+		void ensureOutboxLoaded(config);
+		return undefined;
+	});
 
 	ctx.inject(['agentPresets'], child => child.effect(() => {
 		state.presets = child.agentPresets; // ← 回调内取服务对象（子 ctx 事后就 inactive 了）
@@ -665,6 +461,209 @@ function applyTopLevel(ctx, config) {
 				}
 				return;
 			}
+			// 委派 API（2026-10-16，P1）：GET 列表 / POST 创建（默认）· ask 追问 · cancel 中断。
+			// 错误带 HTTP 语义（assignments.js 的 httpError：409 = 并发满/状态冲突，404 = 无此委派）✓。
+			if (pathname === `${ROUTE_PREFIX}/api/assignments`) {
+				try {
+					if (req.method === 'GET') {
+						res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(await listAssignments(config)));
+					} else if (req.method === 'POST') {
+						const body = await readJsonBody(req);
+						const action = typeof body?.action === 'string' && body.action.trim() ? body.action.trim() : 'create';
+						const result = action === 'create' ? await createAssignment(config, state, body)
+							: action === 'ask' ? await askAssignment(config, state, body)
+								: action === 'cancel' ? await cancelAssignment(config, state, body)
+									: (() => { throw Object.assign(new Error(`未知 action：${action}（支持 create/ask/cancel）`), { httpStatus: 400 }); })();
+						res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(result));
+					} else {
+						res.writeHead(405, { 'content-type': 'text/plain; charset=utf-8', allow: 'GET, POST' });
+						res.end('GET or POST');
+					}
+				} catch (e) {
+					const status = Number.isInteger(e?.httpStatus) ? e.httpStatus : 400;
+					res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
+					res.end(JSON.stringify({ error: String(e?.message ?? e), ...(e?.code ? { code: e.code } : {}) }));
+				}
+				return;
+			}
+			// 审批模板 API（2026-10-16，P2）：GET 清单 + 可模板化封闭集 / POST add·remove。
+			// 只覆盖本包 WRITE_TOOLS（templates.js ① ✓）；加删走插件自己的配置文件（写口同 kanban 判据 ✓）。
+			if (pathname === `${ROUTE_PREFIX}/api/approval-templates`) {
+				try {
+					if (req.method === 'GET') {
+						res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(await listApprovalTemplates(config)));
+					} else if (req.method === 'POST') {
+						const body = await readJsonBody(req);
+						const action = typeof body?.action === 'string' && body.action.trim() ? body.action.trim() : '';
+						const templates = action === 'add' ? await addApprovalTemplate(config, body)
+							: action === 'remove' ? await removeApprovalTemplate(config, body)
+								: (() => { throw Object.assign(new Error(`未知 action：${action || '(空)'}（支持 add/remove）`), { httpStatus: 400 }); })();
+						res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify({ templates }));
+					} else {
+						res.writeHead(405, { 'content-type': 'text/plain; charset=utf-8', allow: 'GET, POST' });
+						res.end('GET or POST');
+					}
+				} catch (e) {
+					const status = Number.isInteger(e?.httpStatus) ? e.httpStatus : 400;
+					res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
+					res.end(JSON.stringify({ error: String(e?.message ?? e) }));
+				}
+				return;
+			}
+			// 群聊 API（2026-10-16，二期）：GET 清单 / POST create·message·delete。
+			// 承载面为何是"自托管群对话区"而不是 dsh 群会话：lib/groups.js 头注释 ★ 留痕 ✓。
+			if (pathname === `${ROUTE_PREFIX}/api/groups`) {
+				try {
+					if (req.method === 'GET') {
+						res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(await listGroups(config)));
+					} else if (req.method === 'POST') {
+						const body = await readJsonBody(req);
+						const action = typeof body?.action === 'string' && body.action.trim() ? body.action.trim() : '';
+						const result = action === 'create' ? await createGroup(config, body)
+							: action === 'message' ? await postGroupMessage(config, state, body)
+								: action === 'delete' ? await deleteGroup(config, body)
+									: (() => { throw Object.assign(new Error(`未知 action：${action || '(空)'}（支持 create/message/delete）`), { httpStatus: 400 }); })();
+						res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(result));
+					} else {
+						res.writeHead(405, { 'content-type': 'text/plain; charset=utf-8', allow: 'GET, POST' });
+						res.end('GET or POST');
+					}
+				} catch (e) {
+					const status = Number.isInteger(e?.httpStatus) ? e.httpStatus : 400;
+					res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
+					res.end(JSON.stringify({ error: String(e?.message ?? e) }));
+				}
+				return;
+			}
+			// 记忆 API（2026-10-16，二期）：GET ?agent= 文件+Git 状态（&file= 读内容）/ POST enable-git·snapshot。
+			// 写口只有「启用 Git」与「提交快照」两个（git 子进程）；模型没有记忆 CRUD 工具 ✗（拍板点 ③⑤）。
+			if (pathname === `${ROUTE_PREFIX}/api/memory`) {
+				try {
+					const agentId = String(url.searchParams.get('agent') ?? '').trim();
+					if (!agentId) {
+						throw Object.assign(new Error('需要 agent 参数'), { httpStatus: 400 });
+					}
+					if (req.method === 'GET') {
+						const file = url.searchParams.get('file');
+						const [listing, git, log] = await Promise.all([
+							listMemoryFiles(config, agentId),
+							gitStatusOf(config, agentId),
+							gitLogOf(config, agentId),
+						]);
+						const content = file ? await readMemoryFile(config, agentId, file) : null;
+						res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify({ agent: agentId, ...listing, git, log: log.log, content }));
+					} else if (req.method === 'POST') {
+						const body = await readJsonBody(req);
+						const action = typeof body?.action === 'string' ? body.action.trim() : '';
+						const target = String(body?.agent ?? '').trim();
+						if (!target) {
+							throw Object.assign(new Error('需要 agent'), { httpStatus: 400 });
+						}
+						const result = action === 'enable-git' ? await enableGit(config, target)
+							: action === 'snapshot' ? await snapshotGit(config, target, body?.message)
+								: (() => { throw Object.assign(new Error(`未知 action：${action || '(空)'}（支持 enable-git/snapshot）`), { httpStatus: 400 }); })();
+						res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(result));
+					} else {
+						res.writeHead(405, { 'content-type': 'text/plain; charset=utf-8', allow: 'GET, POST' });
+						res.end('GET or POST');
+					}
+				} catch (e) {
+					const status = Number.isInteger(e?.httpStatus) ? e.httpStatus : 400;
+					res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
+					res.end(JSON.stringify({ error: String(e?.message ?? e) }));
+				}
+				return;
+			}
+			// Outbox API（2026-10-16，二期）：GET 队列 / POST retry（手动重发 unknown-outcome，
+			// **没有自动重发口** ✗——结果不确定时自动重发会重复 ✓）。
+			if (pathname === `${ROUTE_PREFIX}/api/outbox`) {
+				try {
+					if (req.method === 'GET') {
+						res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(await outboxList(config)));
+					} else if (req.method === 'POST') {
+						const body = await readJsonBody(req);
+						if (body?.action !== 'retry') {
+							throw Object.assign(new Error(`未知 action：${body?.action ?? '(空)'}（只支持 retry——重发必须是人点的）`), { httpStatus: 400 });
+						}
+						res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(await outboxRetry(config, state, body)));
+					} else {
+						res.writeHead(405, { 'content-type': 'text/plain; charset=utf-8', allow: 'GET, POST' });
+						res.end('GET or POST');
+					}
+				} catch (e) {
+					const status = Number.isInteger(e?.httpStatus) ? e.httpStatus : 400;
+					res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
+					res.end(JSON.stringify({ error: String(e?.message ?? e) }));
+				}
+				return;
+			}
+			// 新建 Agent（2026-10-16，方案 A / Q7 ①：插件直接写 .agent.md，只新建不覆盖 —— lib/create.js 头注释）。
+			// POST { action: 'validate', draft } ⇒ 只校验，返回 errors / warnings / 序列化原文（向导实时预览）；
+			// POST { action: 'create', draft } ⇒ 写盘 + 立刻增量同步 preset（不用重启 Host）。GET 仍走下面的花名册。
+			if (pathname === `${ROUTE_PREFIX}/api/agents` && req.method === 'POST') {
+				try {
+					const body = await readJsonBody(req);
+					const action = typeof body?.action === 'string' ? body.action.trim() : '';
+					let result;
+					if (action === 'validate') {
+						result = await previewAgentDraft(config, body?.draft);
+					} else if (action === 'parse') {
+						// 导入 .agent.md：服务端解析（与扫描目录同一个解析器），再走同一套校验 ✓
+						const parsed = draftFromAgentMd(body?.text);
+						if (parsed.error) {
+							throw Object.assign(new Error(parsed.error), { httpStatus: 400 });
+						}
+						result = await previewAgentDraft(config, parsed.draft);
+					} else if (action === 'create') {
+						const created = await createAgentFromDraft(config, body?.draft);
+						if (state.presets) {
+							await syncPresets(state, state.presets, config).catch(e => {
+								state.errors = [...state.errors, `同步 preset 失败：${String(e?.message ?? e)}`];
+							});
+						}
+						result = { ...created, registered: state.roster.includes(created.presetId) };
+					} else if (action === 'seen') {
+						// 点开一个 Agent ⇒ 记「看到了此刻」（侧栏未读角标清零；lib/seen.js 头注释有口径）
+						const id = typeof body?.id === 'string' ? body.id.trim() : '';
+						if (!id) {
+							throw Object.assign(new Error('seen 需要 id'), { httpStatus: 400 });
+						}
+						await markSeen(config, id);
+						const live = await readLiveSessions(config).catch(() => null);
+						// ⚠ 这个 POST 分支在 GET 页面段的 `scan` 之前 ⇒ 自己扫（p3-115 C2 抓到过 ✗「scan is not defined」）
+						const scanNow = live ? await scanAgents(agentsRootOf(config), undefined) : null;
+						result = { ok: true, counts: live && scanNow ? await unreadSnapshot(config, scanNow.agents, live.rows) : {} };
+					} else if (action === 'resetModel') {
+						// 「映射说明」里的「改为跟随默认」：只删未映射的 model 行（lib/create.js 头注释）⇒ 立刻重注册 preset
+						const reset = await resetAgentModel(config, body?.id);
+						if (state.presets) {
+							await syncPresets(state, state.presets, config).catch(e => {
+								state.errors = [...state.errors, `同步 preset 失败：${String(e?.message ?? e)}`];
+							});
+						}
+						result = reset;
+					} else {
+						throw Object.assign(new Error(`未知 action：${action || '(空)'}（支持 validate/parse/create/resetModel）`), { httpStatus: 400 });
+					}
+					res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+					res.end(JSON.stringify(result));
+				} catch (e) {
+					const status = Number.isInteger(e?.httpStatus) ? e.httpStatus : 400;
+					res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
+					res.end(JSON.stringify({ error: String(e?.message ?? e), ...(Array.isArray(e?.errors) ? { errors: e.errors } : {}) }));
+				}
+				return;
+			}
 			try {
 				// 每次请求都做增量同步（新加/改动/删掉 agent 不必重启 Host）。同步失败不影响读页面。
 				const scan = state.presets
@@ -693,6 +692,20 @@ function applyTopLevel(ctx, config) {
 				}));
 				return;
 			}
+			// 未读角标（2026-10-17，方案 A 收尾）：**轻量**读口——只读 projcache 行 + seen 表，
+			// 不做 syncPresets（侧栏每 15s 轮询，同步太重 ✗）。404 只在老版本插件 ⇒ 页面停轮询 ✓
+			if (pathname === `${ROUTE_PREFIX}/api/unread` && req.method === 'GET') {
+				try {
+					const live = await readLiveSessions(config).catch(() => null);
+					const counts = live ? await unreadSnapshot(config, scan.agents, live.rows) : {};
+					res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+					res.end(JSON.stringify({ counts }));
+				} catch (e) {
+					res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
+					res.end(JSON.stringify({ error: String(e?.message ?? e) }));
+				}
+				return;
+			}
 			if (pathname === `${ROUTE_PREFIX}/api/agents`) {
 					// 实况（2026-10-13）：会话归属与用量**不另建状态文件**——projcache 里 `agentPreset` /
 					// `tokenUsage` / `sessionStats` 都是现成的（ds-bot 的 state.json 名册在我们这里不需要）。
@@ -712,6 +725,11 @@ function applyTopLevel(ctx, config) {
 							name: a.name,
 							description: a.description,
 							icon: a.icon,
+							// 聊天框欢迎卡（方案 A 第 3 步，chat-surface 的 client.welcome.js）要的三个字段：
+							// 角色标签、技能、头像底色（底色只有服务端会算 ⇒ 直接给，前端不再抄一份公式 ✓）
+							role: a.role ?? null,
+							skills: a.skills ?? [],
+							color: avatarColorOf(a.id),
 							model: a.model,
 							tools: a.tools,
 							personaBytes: Buffer.byteLength(a.persona, 'utf8'),
@@ -738,8 +756,13 @@ function applyTopLevel(ctx, config) {
 				const live = await readLiveSessions(config).catch(() => null);
 				const liveRows = live ? liveForAgents(scan.agents, aggregateByPreset(live.rows)).rows : [];
 				const usage = live ? usageByAgent(scan.agents, live.rows) : null;
+				// 双表面分派（2026-10-16，方案 D；与 kanban 同惯例）：宿主在**侧栏**承载时带
+				// `?surface=sideview` ⇒ 名册摘要版（lib/sideview.js）；其余（编辑区完整页、探针的默认
+				// 请求）⇒ 完整页（lib/detail.js）。两个表面吃同一份数据（上面这一份 input）⇒ 不会漂 ✓。
+				const surface = url.searchParams.get('surface') === 'sideview' ? 'sideview' : 'editor';
+				const render = surface === 'sideview' ? renderSideviewPage : renderDetailPage;
 				// 渲染先于 writeHead：渲染抛错还能干净回 500（教训：顺序反了会切断 socket）
-				const html = renderPage({
+				const html = render({
 					agents: scan.agents,
 					summary,
 					root,
@@ -748,8 +771,25 @@ function applyTopLevel(ctx, config) {
 					roster: state.roster,
 					errors: [...scan.errors, ...state.errors],
 					liveRows,
+					// Bot 主页（方案 A 第 2 步）：「会话」面板要逐条会话（标题/最近活跃/回合），不是聚合值 ✓
+					sessionRows: live?.rows ?? [],
+					// 未读角标（方案 A 收尾）：侧栏首屏就要带上（轮询是补新活动，不是补首屏 ✗）
+					unread: live ? await unreadSnapshot(config, scan.agents, live.rows) : {},
 					usage,
-				});
+					assignments: await listAssignments(config),
+					// 授权页签的模板清单（读失败按空 ⇒ 页面照出，模板区显示空 ✓）
+					templates: await listApprovalTemplates(config).catch(() => ({ tools: [], templates: [] })),
+					// 群聊页签（读失败按空 ⇒ 同上口径 ✓）
+					groups: await listGroups(config).catch(() => ({ groups: [], keep: 0 })),
+					// 授权页签的 outbox 队列（同口径 ✓）
+					outbox: await outboxList(config).catch(() => ({ entries: [], keep: 0 })),
+					// 新建向导（2026-10-16，方案 A）：模型候选 = 真实会话里跑过的 provider/model ✓；
+					// 没配 defaultProvider 时裸模型名不可路由（口径 = toPresetDefinition）
+					create: {
+						modelCandidates: modelCandidatesOf(live?.rows, scan.agents),
+						hasDefaultProvider: typeof config.defaultProvider === 'string' && config.defaultProvider.trim() !== '',
+					},
+					});
 				res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
 				res.end(html);
 			} catch (e) {
@@ -770,7 +810,7 @@ function applyTopLevel(ctx, config) {
  *  这样 B1 ②（host 行让出工具）之后，选中我们 preset 的会话仍有这套工具。
  *  ⚠ 不读 `config.hostHalf`：hostHalf 管的是 host 面那一半，preset 面必须始终有工具。 */
 function applyToolsOnly(ctx, config) {
-	const state = { agents: undefined, sessionController: undefined, sessionQuery: undefined };
+	const state = { agents: undefined, sessionController: undefined, sessionQuery: undefined, approvalTemplates: templateGate(config) };
 	ctx.inject(['agents'], child => child.effect(() => {
 		state.agents = child.agents;
 		return () => {

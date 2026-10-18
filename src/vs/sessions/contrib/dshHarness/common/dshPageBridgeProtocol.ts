@@ -41,10 +41,14 @@
  *   MCP → 打开**真源文件** `<数据根>/mcp.json`（⚠ IDE 那套 MCP 页读的是 `{root}/mcp/<slug>/config.json`，
  *   是**另一条通道** ⇒ 指过去会"看到另一个列表"✗，所以这里刻意不用它）。
  *   两条都只是"把 IDE 自己的界面显示出来" ✓（不在宿主里 new 编辑器输入、不新增写能力 ✓）。
+ * 2026-10-16：`10 → 11`，新增 `switchWorkspace` —— dsh 聊天页的工作区下拉里点**别的工作区**
+ *   时，除了在该根目录起会话，还要让 **IDE 窗口原地进那个工作区**（多根一起进、不重载窗口）。
+ *   用户 2026-10-16 报障："点击其他工作区后，没有切换对应的工作区" ⇒ 补齐这一条 ✓。
+ *   ⚠ 它**只**做"窗口进工作区"；起/接管会话仍走既有的 `switchWorktree(path)`（两条命令各管一件事 ✓）。
  * ⚠ `test/common/dshPageBridge.test.ts` 会拿这个常量去对账 preload 里的 `bridgeVersion`，
  *   只改一边必红 ✓（这正是它存在的意义）。
  */
-export const DSH_PAGE_BRIDGE_VERSION = 10;
+export const DSH_PAGE_BRIDGE_VERSION = 11;
 
 /** preload → 主进程的 IPC 通道（经 webContents.ipc，作用域限于该视图）。 */
 export const DSH_PAGE_IPC_INVOKE = 'vssaros:dsh:page';
@@ -116,6 +120,95 @@ export function validateWorktreeOptions(raw: unknown): IDshWorktreeOption[] | un
 			name: r.name,
 			...(typeof r.branch === 'string' ? { branch: r.branch } : {}),
 			isMain: r.isMain === true,
+		});
+	}
+	return out;
+}
+
+/**
+ * 工作台 → 页面的 **IDE 工作区记录**推送通道（多根工作区；2026-10-16，用户拍板稿 C）。
+ *
+ * 为什么非有这条不可：dsh 的工作区模型**只能是单目录**（`WorkspaceCreateRequest = { path }`，
+ * 见 `@deepseek-ai/dsh-api-workspace-controller`），宿主上报时把 IDE 侧一个多根工作区的各根
+ * **摊平**成 N 条记录（`dshHarness.contribution.ts` 的 `_collect()`）⇒ 页面光看 `workspaces.list()`
+ * 只能看到"三个互不相干的工作区"，**不知道它们其实是同一个窗口的三个根** ✗
+ * （用户报的"工作区 UI 不对"的根因之一）。
+ * 而"哪几条属于同一个工作区 / 哪个是主根 / 有没有 `.code-workspace` 身份"只有 IDE 侧记录知道
+ * （`Workspace.relatedFolders` / `codeWorkspacePath`）⇒ 只能由宿主推 ✓（页面桥是**单向**的：
+ * `DSH_PAGE_IPC_INVOKE` 只回 `true`/`'pong'`，页面拿不到任何返回值 ✓）。
+ *
+ * ⚠ 页面**不许把它当第二套真源**：下拉框的条目仍然来自 `workspaces.list()`（会话归属、切换命令都认它 ✓），
+ *   这条推送只回答"该把哪几条合成一组、组里哪个是主根"✓。推送没到（旧宿主 / 服务未就绪）⇒
+ *   页面回落到"一条记录一行"，与加这条之前**逐字相同** ✓。
+ * 机制与 {@link DSH_PAGE_IPC_WORKTREES} 逐字同款（preload 写 `dataset` + 派 DOM 事件）；
+ * ⚠ 这是**推送**不是命令 ⇒ 不参与 `DSH_PAGE_BRIDGE_VERSION` 的对账（页面按"dataset 里有没有"判断
+ *   宿主是否会推 ✓，与主题 / worktree 两条同口径 ✓）。
+ */
+export const DSH_PAGE_IPC_WORKSPACES = 'vssaros:dsh:workspaces';
+/** 同上：preload 派发给页面插件的 DOM 事件名（`detail` = {@link IDshWorkspaceOption}[]）。 */
+export const DSH_PAGE_WORKSPACES_EVENT = 'vssaros-dsh-workspaces';
+
+/** 多根工作区里的一个根（**只含展示必需字段** —— 页面拿不到 IDE 记录的其余部分 ✓）。 */
+export interface IDshWorkspaceRootOption {
+	/** 绝对路径（= 可以拿来给新会话当 `cwd` 的目录）。 */
+	readonly path: string;
+	/** 展示名（目录名）。 */
+	readonly name: string;
+	/** 主根 = 宿主给 dsh 登记的那一条（`Workspace.path`）⇒ 页面拿它当"整组默认 cwd" ✓。 */
+	readonly isPrimary: boolean;
+}
+
+/** 推给页面的 IDE 工作区记录（含各根；2026-10-16 多根工作区专稿）。 */
+export interface IDshWorkspaceOption {
+	/** IDE 侧工作区 id（`Workspace.id`）。⚠ 仅供分组的 React key 与诊断，**不是** dsh 的 workspaceId ✓。 */
+	readonly id: string;
+	/** 展示名（`Workspace.name`）。 */
+	readonly name: string;
+	/** 各根（含主根；顺序即展示顺序，第一项恒为主根）。 */
+	readonly roots: readonly IDshWorkspaceRootOption[];
+	/**
+	 * 来源 `.code-workspace` 文件路径（有就如实显示）。
+	 * ⚠ 本轮**只读展示**（用户拍板 ④-i）：页面不许拿它去"打开 / 切换工作区" ——
+	 *   `.code-workspace` + sideview 关联那条链是另一刀 ✓。
+	 */
+	readonly codeWorkspacePath?: string;
+}
+
+/** 列表上限：工作区不会很多，但推送是外部输入面 ⇒ 给个硬上限（与 `DSH_WORKTREE_OPTION_LIMIT` 同口径）。 */
+export const DSH_WORKSPACE_OPTION_LIMIT = 30;
+/** 单个工作区的根上限（再多也不该有几十个根；超了**整批丢弃**，不掺半份脏数据 ✓）。 */
+export const DSH_WORKSPACE_ROOT_LIMIT = 16;
+
+/**
+ * 校验 IDE 工作区列表（主进程发出前校验一次；preload 与页面共享 DOM，而 `dataset` 是字符串 ⇒
+ * 页面侧解析时形状要能信任）。任一项不合法 ⇒ `undefined`（**整批丢弃**，与 worktree 同口径 ✓）。
+ */
+export function validateWorkspaceOptions(raw: unknown): IDshWorkspaceOption[] | undefined {
+	if (!Array.isArray(raw) || raw.length > DSH_WORKSPACE_OPTION_LIMIT) { return undefined; }
+	const out: IDshWorkspaceOption[] = [];
+	for (const item of raw) {
+		if (!item || typeof item !== 'object') { return undefined; }
+		const r = item as Record<string, unknown>;
+		if (typeof r.id !== 'string' || !r.id.trim() || r.id.length > 200) { return undefined; }
+		if (typeof r.name !== 'string' || !r.name.trim() || r.name.length > 200) { return undefined; }
+		if (r.codeWorkspacePath !== undefined) {
+			// 身份文件：必须是**绝对路径**（不做"文件是否真的存在"的查询 —— 页面桥不做 fs ✓）
+			if (typeof r.codeWorkspacePath !== 'string' || !isAbsoluteFsPath(r.codeWorkspacePath)) { return undefined; }
+		}
+		if (!Array.isArray(r.roots) || r.roots.length === 0 || r.roots.length > DSH_WORKSPACE_ROOT_LIMIT) { return undefined; }
+		const roots: IDshWorkspaceRootOption[] = [];
+		for (const rawRoot of r.roots) {
+			if (!rawRoot || typeof rawRoot !== 'object') { return undefined; }
+			const rr = rawRoot as Record<string, unknown>;
+			if (typeof rr.path !== 'string' || !isAbsoluteFsPath(rr.path)) { return undefined; }
+			if (typeof rr.name !== 'string' || !rr.name.trim() || rr.name.length > 200) { return undefined; }
+			roots.push({ path: rr.path, name: rr.name, isPrimary: rr.isPrimary === true });
+		}
+		out.push({
+			id: r.id,
+			name: r.name,
+			roots,
+			...(typeof r.codeWorkspacePath === 'string' ? { codeWorkspacePath: r.codeWorkspacePath } : {}),
 		});
 	}
 	return out;
@@ -451,7 +544,20 @@ export type DshPageCommand =
  * 只校验**形状**（"是否真的存在"由落点那一侧回答：技能详情页对不存在的 id 显示空表单、mcp.json 打开后
  * 用户自己看得见 ✓）—— 页面桥不做 fs 查询 ✓。
  */
-| { readonly method: 'openResourceSettings'; readonly kind: 'skill' | 'mcp'; readonly id: string };
+| { readonly method: 'openResourceSettings'; readonly kind: 'skill' | 'mcp'; readonly id: string }
+/**
+ * 让 **IDE 窗口原地进**某个工作区（多根一起进、不重载窗口；2026-10-16，桥 `10 → 11`）。
+ *
+ * 为什么要有这条：dsh 聊天页的工作区下拉现在会把"被宿主编排成 N 条记录的多根工作区"合成一行
+ * （见 `DSH_PAGE_IPC_WORKSPACES`），用户点它**期望**的是"进这个工作区"，而不只是"在这个目录起一段会话"
+ * —— 后者会让左边的资源管理器 / 标题 / SCM 全停在旧工作区，用户看到的就是"点了没反应" ✗（用户报障原话）。
+ *
+ * 口径：`workspaceId` = **IDE 侧** `Workspace.id`（不是 dsh 的 workspaceId ✗，两者没有映射关系）。
+ * 宿主只把它转成 IDE 自己的命令（`agentStudio.workspace.activate`），**不**在这里自己改窗口 folders
+ * —— folder 列表的合法写者只有少数几处（`workspaceFolderWriters.test.ts` 的 ALLOWED_FOLDER_WRITERS），
+ * 且历史上"追加式注入 folder"引发过跨工作区污染（见 `sourceControl.contribution.ts` 的事故记录）✗。
+ */
+| { readonly method: 'switchWorkspace'; readonly workspaceId: string };
 
 export interface IDshPageKeyEvent {
 	readonly key: string;
@@ -594,6 +700,20 @@ export function validatePageCommand(raw: unknown): DshPageCommand | undefined {
 				}
 			}
 			return { method: 'openTerminal', ...(cwd !== undefined ? { cwd } : {}), ...(text !== undefined ? { command: text } : {}) };
+		}
+		case 'switchWorkspace': {
+			// ⚠ 它**不是路径**（是 IDE registry 的查找键）⇒ 刻意**不**套 `isAbsoluteFsPath` / 路径字符集：
+			//   `Workspace.id` 由工作区名派生（可能是中文 / 空格，如 `我的仓-abc12`）⇒ 按路径收紧会把合法
+			//   工作区全拒掉 ✗（那又变成"点了没反应" ✓）。只放形状：非空 + 长度 + 无控制字符。
+			//   "这个 id 存不存在"由 IDE 侧命令回答（找不到就**如实抛**，宿主记 warn ✓）—— 页面桥不做 registry 查询 ✓。
+			if (typeof r.workspaceId !== 'string') {
+				return undefined;
+			}
+			const workspaceId = r.workspaceId.trim();
+			if (!workspaceId || workspaceId.length > 200 || /[\u0000-\u001f]/.test(workspaceId)) {
+				return undefined;
+			}
+			return { method: 'switchWorkspace', workspaceId };
 		}
 		case 'newSession': {
 			// 「＋ 新建会话」= 给**当前页签**换一段新对话：不需要任何参数（id 由宿主派生）。

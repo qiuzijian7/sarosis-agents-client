@@ -22,16 +22,15 @@
 // 打开一个**空库**（甚至建出一个新的空库 ✗）⇒ 必须先把这一层读进来。
 
 import { existsSync, readFileSync } from 'node:fs';
+import { foundation } from './foundationRef.js';
 import { homedir } from 'node:os';
+
 import { join } from 'node:path';
 
+
 export function dataRootOf(config) {
-	const configured = typeof config?.dataRoot === 'string' ? config.dataRoot.trim() : '';
-	if (configured) {
-		return configured;
-	}
-	const fromEnv = typeof process.env.VSSAROS_DATA_ROOT === 'string' ? process.env.VSSAROS_DATA_ROOT.trim() : '';
-	return fromEnv || join(homedir(), '.vssaros');
+	// 委托到 @vssaros/dsh-foundation（重构 1.3：真源只有一份）；调用签名不变。
+	return foundation().dataRootOf(config);
 }
 
 /** 媒体根：`config.mediaRoot` → `media-store-config.json` 的 `rootDir` → `<数据根>/media`。 */

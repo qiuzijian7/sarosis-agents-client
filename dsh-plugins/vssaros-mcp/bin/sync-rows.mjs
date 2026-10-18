@@ -120,7 +120,7 @@ const spec = `file:${bundleDir.replace(/\\/g, '/')}`;
 const add = spawnSync(dshBin === 'dsh' ? 'dsh' : process.execPath, [
 	...(dshBin === 'dsh' ? [] : [dshBin]),
 	'plugin', '--profile', profile, 'add', spec,
-], { encoding: 'utf8', env: { ...process.env, DSH_HOME: dshHome }, timeout: 180_000, shell: dshBin === 'dsh' });
+], { encoding: 'utf8', env: { ...process.env, DSH_HOME: dshHome }, timeout: 180_000, shell: dshBin === 'dsh', windowsHide: true });
 
 if (add.status !== 0) {
 	console.error(`登记失败（dsh plugin add，exit=${add.status}）：${String(add.stdout ?? '').trim()} ${String(add.stderr ?? '').trim()}`);

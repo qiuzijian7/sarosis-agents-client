@@ -13,18 +13,18 @@
 
 import { ChildProcess, execFile, execFileSync, spawn } from 'child_process';
 import { createHash, randomBytes } from 'crypto';
-import { existsSync, promises as fsp, readFileSync, rmSync } from 'fs';
+import { existsSync, promises as fsp, readFileSync, rmSync, utimesSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import { pathToFileURL } from 'url';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { basename, delimiter, join, resolve } from '../../../../base/common/path.js';
-import { DshBridgeMethod, IBridgeHello, IBridgePluginRow, IBridgeReverseRequest } from '../common/dshBridgeProtocol.js';
+import { DshBridgeMethod, IBridgeHello, IBridgePluginRow, IBridgeReverseRequest, IBridgeWorkspaceContextArgs, IBridgeWorkspaceContextResult } from '../common/dshBridgeProtocol.js';
 import { bridgePipePath, buildHostArgs, buildPluginAddArgs, buildPluginAddArgsMany, buildProfileInitArgs, DSH_SHARED_INSTANCE_PACKAGES, memoryGatewayUrlFromEnv, parseAuthUrl, resolveSiblingPackage, toFileSpec } from '../common/dshCli.js';
 import { isDshRowsBundleRegistered, parseMcpServers, renderMcpOverlay } from '../common/dshMcpConfig.js';
 import { DSH_HOST_IDLE_TTL_MS, DshHostOverlayKind, hostOverlayFileName, IDshHostConfig, renderHostOverlays } from '../common/dshHostConfig.js';
-import { hostRunOwnershipFileName } from '../common/dshHostRunOwnership.js';
-import { DSH_ARCHIFY_PLUGIN_NAME, DSH_BRIDGE_PLUGIN_NAME, DSH_BROWSER_PLUGIN_NAME, DSH_CHAT_SURFACE_PLUGIN_NAME, DSH_DEFAULT_PROFILE, DSH_KB_REFS_PLUGIN_NAME, DSH_UNREAL_PLUGIN_NAME, DSH_VOICE_BUNDLE_PLUGIN_NAME, DSH_WEB_APP_BUNDLE_NAME, IDshBundledInstallResult, IDshHostStartOptions, IDshHostStatus, IDshPluginInfo, sameStartOptions } from '../common/dshHarness.js';
+import { HOST_RUN_OWNERSHIP_HEARTBEAT_MS, hostRunOwnershipFileName } from '../common/dshHostRunOwnership.js';
+import { DSH_ARCHIFY_PLUGIN_NAME, DSH_BRIDGE_PLUGIN_NAME, DSH_BROWSER_PLUGIN_NAME, DSH_CHAT_SURFACE_PLUGIN_NAME, DSH_DEFAULT_PROFILE, DSH_FOUNDATION_PLUGIN_NAME, DSH_KB_REFS_PLUGIN_NAME, DSH_SCHEDULE_BUNDLE_PLUGIN_NAME, DSH_UNREAL_PLUGIN_NAME, DSH_VOICE_BUNDLE_PLUGIN_NAME, DSH_WEB_APP_BUNDLE_NAME, IDshBundledInstallResult, IDshHostStartOptions, IDshHostStatus, IDshPluginInfo, sameStartOptions } from '../common/dshHarness.js';
 import { hostLeaseBlocker, IDshHostLease } from '../common/dshHostLease.js';
 import { SANDBOX_FALLBACK_MODE, SANDBOX_FALLBACK_ROOT } from '../common/dshSandboxCompat.js';
 import { probeLabelWriteOnce } from './dshSandboxProbe.js';
@@ -92,6 +92,8 @@ export interface IDshHostSupervisorOptions {
 	readonly runDir: string;
 	/** 随产品分发的伴生插件目录（含 package.json）；不存在时跳过安装，以 URL 行兜底。 */
 	readonly bridgePluginDir: string | undefined;
+	/** 随产品分发的 foundation 插件目录（重构 1.3 共享服务）；不存在时跳过安装。 */
+	readonly foundationPluginDir: string | undefined;
 	/** 随产品分发的 chat-surface 插件目录（聊天框绑定会话用）；不存在时跳过安装。 */
 	readonly chatSurfacePluginDir: string | undefined;
 	/**
@@ -251,6 +253,8 @@ export class DshHostSupervisor extends Disposable {
 	private _leaseStore: DshHostLeaseStore | undefined;
 	/** 本次 run 的**拥有者记录**文件（`owner-<runId>.json`；清理时一并删 ✓）。 */
 	private _ownershipFile: string | undefined;
+	/** 拥有者记录的**心跳**定时器（间隔见 `HOST_RUN_OWNERSHIP_HEARTBEAT_MS`；桥插件据此判"宿主还在"✓）。 */
+	private _ownershipHeartbeat: ReturnType<typeof setInterval> | undefined;
 	private _starting: Promise<IDshHostStatus> | undefined;
 	private _stopping: Promise<void> | undefined;
 	private _generation = 0;
@@ -580,6 +584,30 @@ export class DshHostSupervisor extends Disposable {
 	}
 
 	/**
+	 * 把**运行期工作区上下文**推给 Host（2026-10-17：切工作区不必重启 Host 的落点）。
+	 *
+	 * 为什么要它：工作区上下文（Agent Studio 的工作区 id / 工作区根 / 关联根）从前只在 Host **启动时**
+	 * 经 `--patch` 注入一次 ⇒ 切工作区必须重启才能生效（而重启会连在跑的会话一起杀掉）。
+	 *
+	 * ⚠ 这里**只回执、不抛**：认不认得这条调用是调用方**唯一**能据以决定"要不要退回重启"的信号 ✓
+	 *   —— 老 Host 的桥会回 `-32601 method not found`（当成 `applied:false`），foundation 缺席 /
+	 *   载荷被拒也是 `applied:false`。把它抛上去只会让调用方多一层 try，语义还一样 ✗。
+	 */
+	async setWorkspaceContext(args: IBridgeWorkspaceContextArgs): Promise<IBridgeWorkspaceContextResult> {
+		const bridge = this.bridge;
+		if (!bridge) {
+			return { applied: false, reason: 'no-bridge' };
+		}
+		try {
+			const result = await bridge.call<IBridgeWorkspaceContextResult>(DshBridgeMethod.WorkspaceContext, args, 10_000);
+			return result?.applied ? result : { applied: false, reason: result?.reason ?? 'not-applied' };
+		} catch (e) {
+			// 老 Host（-32601）/ 桥超时 / Host 刚挂：都按"这次没推成"处理 ⇒ 调用方会退回旧路径 ✓
+			return { applied: false, reason: String((e as Error)?.message ?? e) };
+		}
+	}
+
+	/**
 	 * 升级后的健康检查（方案第 3.3 节，去掉需要模型凭据的"发一条消息"那项）：
 	 * Host 运行、控制桥握手（插件随包分发时）、认证换 Cookie、首页带 `__DSH_BOOT__` 且启动图里有伴生插件前端。
 	 */
@@ -750,6 +778,9 @@ export class DshHostSupervisor extends Disposable {
 				// 控制桥管道 ⇒ VsSaros 侧 `DshBridgeClient.connect` 60s 超时（ENOENT）⇒ **Host 退出 code 1**。
 				// 2026-10-11 实测根因：App 侧 profile 缺它、探针侧有它（README 4.79）。
 				[DSH_WEB_APP_BUNDLE_NAME, resolveSiblingPackage(dsh.bin, DSH_WEB_APP_BUNDLE_NAME), 'web-app bundle'],
+				// foundation（重构 1.3）：所有模块插件的共享服务（dataRoot/dshHome/pageShell/lock 真源），
+				// **必须在模块插件之前**装上——消费者 apply 时 inject 它，缺了它们会永远 pending。
+				[DSH_FOUNDATION_PLUGIN_NAME, this._opts.foundationPluginDir, 'foundation plugin'],
 				[DSH_BRIDGE_PLUGIN_NAME, this._opts.bridgePluginDir, 'companion plugin'],
 				// chat-surface（聊天框绑定会话）：装不上不影响启动，聊天框退回官方默认形态（不绑定会话）。
 				[DSH_CHAT_SURFACE_PLUGIN_NAME, this._opts.chatSurfacePluginDir, 'chat-surface plugin'],
@@ -774,6 +805,9 @@ export class DshHostSupervisor extends Disposable {
 				// 语音输入（官方实验 bundle，随 dsh 运行时分发）：本地 SenseVoice 识别，麦克风按钮进 composer。
 				// 装不上不影响启动，聊天框只是没有语音入口。模型权重首次使用时下载到 DSH_HOME。
 				[DSH_VOICE_BUNDLE_PLUGIN_NAME, resolveSiblingPackage(dsh.bin, DSH_VOICE_BUNDLE_PLUGIN_NAME), 'voice-input bundle'],
+				// 调度（官方实验 bundle，重构 2.1；S3 已验证）：time-context / schedule 服务 / ui-schedule。
+				// 装不上不影响启动，只是没有定时任务能力（legacy 调度器本来就不执行 ⇒ 无回归）。
+				[DSH_SCHEDULE_BUNDLE_PLUGIN_NAME, resolveSiblingPackage(dsh.bin, DSH_SCHEDULE_BUNDLE_PLUGIN_NAME), 'schedule bundle'],
 			];
 			// ★ 2026-10-12：本次启动要装的伴生插件若**没装上**，就记一笔 —— `_ensurePlugin` 失败时
 			//   只写日志并继续，于是缺包的 profile 最终表现为"60 秒没有任何进展"✗（真因埋在 Host 日志里）。
@@ -921,6 +955,11 @@ export class DshHostSupervisor extends Disposable {
 				// 官方「Preview Notice」弹窗的抑制版本（从运行时包读常量；读不到就不抑制）。
 				const welcomeNoticeVersion = this._welcomeNoticeVersion(dsh);
 				const runId = randomBytes(6).toString('hex');
+				// ★ 2026-10-16：拥有者记录的**路径**要在 spawn 之前就定下来 ✗ —— 它随 `client.register`
+				//   的握手交给桥插件（= 看门狗的目标），而那次握手发生在 `_awaitReady` 里，比"写记录"
+				//   那一步更早 ⇒ 晚定就只能给一个 undefined ✓（那时插件保持原目标，等于看门狗不工作 ✗）。
+				//   文件本身仍等 ready 之后才写（那时才知道 hostPid ✓）；插件读不到记录时**一律不动** ✓。
+				this._ownershipFile = join(this._opts.runDir, hostRunOwnershipFileName(runId));
 				if (bridgeVersion) {
 					pipe = bridgePipePath(process.platform, runId, this._opts.runDir || tmpdir());
 					token = randomBytes(24).toString('base64url');
@@ -1113,13 +1152,7 @@ export class DshHostSupervisor extends Disposable {
 					//   ⇒ 下一次 start 无从判定"可以回收哪些" ✗（症状：同一会话被两份 Host 同时写 ⇒ 斜杠命令
 					//   目录预热直接 `SessionAlreadyOwnedError` ✗）。判据与回收见 `common/dshHostRunOwnership.ts`
 					//   与 `electron-main/dshHostReaper.ts` ✓。
-					this._ownershipFile = join(this._opts.runDir, hostRunOwnershipFileName(runId));
-					await fsp.writeFile(this._ownershipFile, JSON.stringify({
-						format: 1, runId, appPid: process.pid, hostPid: child.pid,
-						instanceId: this._opts.instanceId, profile,
-						startedAt: Date.now(),
-						files: overlays.map(f => basename(f)),
-					}), { mode: 0o600 }).catch(() => undefined);
+					await this._writeOwnershipRecord({ runId, hostPid: child.pid, profile, files: overlays.map(f => basename(f)) });
 				}
 
 				this._setStatus({
@@ -1229,13 +1262,23 @@ export class DshHostSupervisor extends Disposable {
 	 * 有控制桥管道时照常连接并 `client.register`（vssaros-bridge 支持多客户端）。
 	 */
 	private async _adoptLease(lease: IDshHostLease, generation: number, profile: string, dshHome: string | undefined, t0: number): Promise<boolean> {
+		// ★ 2026-10-16：**接管前先写下自己那份拥有者记录**（顺序要紧 ✗ —— 两个用途都要求它在
+		//   `client.register` 之前就位）：
+		//   ① 给回收器一个"这个 Host 有人正在用"的证据：原拥有者 A 优雅分离后它那份记录里 `appPid`
+		//      已死 ⇒ 只看那条就会判"可回收"⇒ 插件换版本时新起的 C 会 `taskkill /T` 掉**我们正在用**
+		//      的 Host ✗✗（`planOrphanHosts` 靠"同一 hostPid 整组收敛"避免它，前提是有这一条 ✓）。
+		//   ② 作为桥插件**看门狗的目标**随握手给下去 ⇒ 换成"当前拥有者"那份 ✓（这正是载体必须是
+		//      握手、不能是 spawn 时环境变量的原因：同一个 Host 会被后续窗口反复接管 ✗）。
+		//   ⚠ `files: []`：这次没写过任何覆盖层，run 目录与覆盖层都是原拥有者的 ⇒ 绝不能替它清 ✗。
+		await this._writeOwnershipRecord({ hostPid: lease.pid, profile, files: [] });
 		let hello: IBridgeHello | undefined;
 		if (lease.pipe && lease.bridgeToken) {
 			try {
 				const bridge = await DshBridgeClient.connect(lease.pipe, 10_000, () => generation !== this._generation, this._opts.log);
-				hello = await bridge.register({ token: lease.bridgeToken, instanceId: this._opts.instanceId });
+				hello = await bridge.register({ token: lease.bridgeToken, instanceId: this._opts.instanceId, ownerRecord: this._ownershipFile });
 				if (generation !== this._generation) {
 					bridge.dispose();
+					this._dropOwnershipRecord();
 					return false;
 				}
 				this._bridge = bridge;
@@ -1266,7 +1309,105 @@ export class DshHostSupervisor extends Disposable {
 		// 接管别人的 Host 后**先体检插件图**：2026-10-12 白屏就是接管了一个"插件 import 失败"的进程
 		// （它内存里那两个条目永久不可用，页面怎么刷新都救不回来）—— 见 `_auditPluginGraph`。
 		void this._auditPluginGraph('接管既有 Host');
+		// 拥有者记录已在函数**开头**写下（Why 与两条用途见那里的注释 ✓；重复接管时 `_writeOwnershipRecord`
+		// 会先删旧记录 —— 否则旧 `hostPid` 上会永久挂着"拥有者还活着"⇒ 那个已死的 Host 再也回收不掉 ✗）。
 		return true;
+	}
+
+	/**
+	 * 写下本次 run 的拥有者记录（spawn 与接管两条路共用；`files` = 本次写过的覆盖层文件名 ✓）。
+	 *
+	 * @param init.runId - 覆盖层/管道那套**同一个** runId（spawn 路必须传 ✓：回收器是按
+	 *   `record.runId` 与覆盖层文件名里的 runId 对账的，两条路用不同 id 会让"活着的 Host 的覆盖层"
+	 *   被当成无主文件清掉）；接管路没有自己的覆盖层 ⇒ 省略、另取一个 ✓。
+	 */
+	private async _writeOwnershipRecord(init: { runId?: string; hostPid: number; profile: string; files: readonly string[] }): Promise<void> {
+		const previous = this._ownershipFile;
+		if (previous) {
+			try {
+				rmSync(previous, { force: true });
+			} catch { /* best effort */ }
+		}
+		const runId = init.runId ?? randomBytes(6).toString('hex');
+		const file = join(this._opts.runDir, hostRunOwnershipFileName(runId));
+		this._ownershipFile = file;
+		await fsp.writeFile(file, JSON.stringify({
+			format: 1, runId, appPid: process.pid, hostPid: init.hostPid,
+			instanceId: this._opts.instanceId, profile: init.profile,
+			startedAt: Date.now(),
+			files: [...init.files],
+		}), { mode: 0o600 }).catch(() => undefined);
+		// 写盘之后立刻开始心跳（见 `_startOwnershipHeartbeat`）。⚠ 顺序：**先有记录再有心跳** ✓ ——
+		// 记录刚写下的 mtime 本来就是新的 ⇒ 即使插件在这一瞬间巡检也不会误判 ✓。
+		this._startOwnershipHeartbeat();
+	}
+
+	/**
+	 * 拥有者记录的**心跳**：定期碰一次它的 mtime（**只碰 mtime、不改内容** ✓）。
+	 *
+	 * 为什么必须有 ✗（这是桥插件"孤儿自退"的判据来源）：宿主进程崩掉时**没有**任何退出路径会跑，
+	 * 而常驻 Host 会一直活着并攥着会话写租约（= `session.lock` 的 OS 文件锁，只有关句柄/退进程才
+	 * 释放 ✗）⇒ 与官方 DSH 桌面端共用 `~/.dsh` 时表现为"这个会话已被占用"。
+	 * 判"宿主还在不在"**不能只看 pid**：pid 会被复用 ⇒ 必须有一个"**一直在动**"的证据，就是这里 ✓。
+	 */
+	private _startOwnershipHeartbeat(): void {
+		this._stopOwnershipHeartbeat();
+		const file = this._ownershipFile;
+		if (!file) {
+			return;
+		}
+		this._ownershipHeartbeat = setInterval(() => {
+			void fsp.utimes(file, new Date(), new Date()).catch(() => undefined);
+		}, HOST_RUN_OWNERSHIP_HEARTBEAT_MS);
+		this._ownershipHeartbeat.unref?.();
+	}
+
+	private _stopOwnershipHeartbeat(): void {
+		if (this._ownershipHeartbeat) {
+			clearInterval(this._ownershipHeartbeat);
+			this._ownershipHeartbeat = undefined;
+		}
+	}
+
+	/**
+	 * 丢弃本次的拥有者记录（**接管失败时回滚** ✓）：删文件 + 停心跳。
+	 *
+	 * 为什么必须有 ✗：接管路是"**先写记录再握手**"（顺序原因见 `_adoptLease`）⇒ 握手失败或代际过期时
+	 * 不回滚，就会留下一份"我们拥有一个其实没接上的 Host"的记录 ⇒ 那个 Host 在我们活着的期间
+	 * **永远不会被回收** ✗。
+	 */
+	private _dropOwnershipRecord(): void {
+		this._stopOwnershipHeartbeat();
+		const file = this._ownershipFile;
+		this._ownershipFile = undefined;
+		if (!file) {
+			return;
+		}
+		try {
+			rmSync(file, { force: true });
+		} catch { /* best effort */ }
+	}
+
+	/**
+	 * **优雅分离**：把记录 mtime 推到空闲 TTL 之后，向桥插件表达"这次分离是优雅的、没人要求它自退" ✓。
+	 *
+	 * 为什么用 mtime 而不是读-改-写一个 `detachedAt` 字段 ✗：本方法跑在 `dispose()` 的**同步**路径上，
+	 * 而本仓有"同步文件写被内核挂住 ⇒ 主进程零 CPU 假死"的事故史（同一指纹 4 次）⇒ 这里只做**一次
+	 * `utimes` 系统调用**，不读文件、不做 JSON 往返、不引入窗口 ✓。
+	 * ⚠ 其它读取者都不看 mtime：回收器只看 `startedAt`/`appPid` ✓；判"陈旧"的只有桥插件看门狗 ✓。
+	 * ⚠ 后续窗口**接管**这个 Host 时会经 `client.register` 换成**它自己那份**记录 ⇒ 不受这里的未来
+	 *   mtime 影响 ✓（这正是"载体必须是握手"的原因）。
+	 */
+	private _markOwnershipDetachedSync(): void {
+		this._stopOwnershipHeartbeat();
+		const file = this._ownershipFile;
+		if (!file) {
+			return;
+		}
+		try {
+			const until = new Date(Date.now() + DSH_HOST_IDLE_TTL_MS);
+			utimesSync(file, until, until);
+		} catch { /* best effort：写不成最多是"常驻 Host 提前自退"，不该影响退出 ✓ */ }
 	}
 
 	/** 复用中的桥断开：拥有者可能刚重启/升级了 Host（租约会换新）→ 轮询等新租约并重挂；超时视为 Host 已停。 */
@@ -1658,7 +1799,7 @@ export class DshHostSupervisor extends Disposable {
 			if (pipe && token) {
 				DshBridgeClient.connect(pipe, STARTUP_TIMEOUT_MS, () => settled || generation !== this._generation, this._opts.log).then(async bridge => {
 					try {
-						const hello = await bridge.register({ token, instanceId: this._opts.instanceId });
+						const hello = await bridge.register({ token, instanceId: this._opts.instanceId, ownerRecord: this._ownershipFile });
 						if (settled) {
 							bridge.dispose();
 							return;
@@ -1859,12 +2000,19 @@ export class DshHostSupervisor extends Disposable {
 	/** 应用退出时同步结束进程树：异步 kill 来不及在进程退出前完成。keepAlive 时保留 Host 与租约。 */
 	override dispose(): void {
 		this._generation++;
+		// 心跳**一定先停** ✗：dispose 之后这条记录要么被删（非常驻），要么被显式标记"已优雅分离"
+		// （常驻）⇒ 让它继续被碰会把"宿主已经退出"这个事实抹掉，看门狗就再也判不出孤儿了 ✗。
+		this._stopOwnershipHeartbeat();
 		const child = this._child;
 		this._child = undefined;
 		this._bridge?.dispose();
 		if (this._keepAlive && child && child.exitCode === null) {
 			// 常驻模式：不杀进程、不撤租约——下个实例经 host.json 探活直接接管；
 			// Host 侧由桥插件的空闲 TTL 自退兜底（防孤儿常驻）。
+			// ★ 2026-10-16：**优雅分离要明确告诉桥插件"别自退"** ✗ 不说的后果：看门狗会把这次正常
+			//   退出当成"宿主崩了"⇒ 分钟内就把**刻意常驻**的 Host 收掉 ⇒ 解法 A 的热启动白做 ✗。
+			//   做法与"为什么用 mtime 而不是写字段"见 `_markOwnershipDetachedSync` ✓。
+			this._markOwnershipDetachedSync();
 			this._appendLog(`keepAlive: Host pid ${child.pid} keeps running after IDE exit (idle TTL applies)`);
 			this._leaseStore?.releaseStartLockSync();
 			super.dispose();

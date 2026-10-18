@@ -19,12 +19,19 @@
 // （live 侧就是活跃会话的实时状态）。
 
 import { activityTally, aggregate, applyLiveSessions, DATE_RANGES, filterSessionsByRange, formatMs, formatTokens, isActive } from './core/dashboard.js';
+import { bindFoundation } from './foundationRef.js';
 import { projCacheDirOf, readSession, readSessions } from './store.js';
+
 import { readFileSync } from 'node:fs';
+
 import { activityText, contextUsageText, escapeHtml, getWidget, isoOf, listMetaText, metaBlock, modelText, normalizeWidgetConfig, SESSIONS_LIMIT_DEFAULT, serializeCatalog, summarizeModel } from './catalog.js';
+
 import { defaultLayout, LAYOUT_VERSION, layoutCssVars, normalizeLayout, normalizeSettings } from './layout.js';
+
 import { layoutPath, mutateLayout, readLayout } from './layoutStore.js';
+
 import { renderSideviewPage } from './sideview.js';
+
 
 // ★ 2026-10-13（「dashboard → 可编排首页」P1：服务端组件化**等价重构**）：本文件从
 //   「一整块写死顺序的 renderPage」改成**按布局渲染**：
@@ -614,6 +621,18 @@ function toolDefinitions(ctx, state, config) {
 }
 
 export function apply(ctx, config = {}) {
+	// 重构 1.3：绑定 foundation 共享服务（dataRoot/dshHome/pageShell/lock 的真源）。
+	{
+		// 同步直读在前：有插件在 apply 的**同步段**就建 store（inject 回调是异步的，会来不及 ✗）。
+		let ready = null;
+		try { ready = ctx.get?.('vssarosFoundation') ?? ctx.vssarosFoundation ?? null; } catch { /* 探针的 Proxy 假 ctx 对未知属性抛错 ⇒ 当不存在 */ }
+		if (ready) { bindFoundation(ready); }
+		ctx.inject(['vssarosFoundation'], child => {
+		let svc = null;
+		try { svc = child.vssarosFoundation ?? null; } catch { /* 探针的假 ctx（Proxy）对未知属性抛错 ⇒ 当不存在 */ }
+		if (svc) { bindFoundation(svc); }
+	});
+	}
 	const state = { tools: null, live: false, sessions: null, projections: null };
 
 	// live 通道①：`sessions`（`get(id)` → 活 Session 对象）。

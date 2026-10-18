@@ -102,6 +102,10 @@ export class NodeExtHostMpcService extends ExtHostMcpService {
 				cwd,
 				env,
 				shell,
+				// ★ 2026-10-17（用户报「点 agent 条目闪出一叠 console 窗口」）：带 MCP 工具的 agent 打开时会把它的
+				//   MCP server 逐个 spawn 起来；配 shell 选项会经 cmd.exe，Windows 上每个都会闪一个控制台黑框
+				//   （多个 server = 多个闪窗，正是用户看到的「一叠」）。windowsHide 隐藏该控制台窗口，不影响 stdio 通信。
+				windowsHide: true,
 			});
 		} catch (e) {
 			onError(e);

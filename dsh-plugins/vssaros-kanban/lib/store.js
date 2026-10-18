@@ -14,9 +14,13 @@
 //   保证不丢更新 ✓，而不是靠"停写" ✓（归属已可由 `common/dshPluginActivation.ts` 的 `resolveWriteOwnership` 派生 ✓）。
 
 import { mkdir, open, readFile, readdir, rename, stat, unlink, utimes, writeFile } from 'node:fs/promises';
+import { foundation } from './foundationRef.js';
 import { homedir } from 'node:os';
+
 import { dirname, join } from 'node:path';
+
 import { parseBoards, parseTaskboard, serializeTaskboard } from './core/taskboard.js';
+
 
 export const TASKBOARD_FILE = 'taskboard.json';
 /** 看板**元数据**（有哪些板、叫什么）—— IDE 写，dsh **只读** ✓（README 5.117）。 */
@@ -31,12 +35,8 @@ const DEFAULT_RETRIES = 3;
  * 覆盖本行 config 注入（与 bridge 注入 pipe/token 同一机制）。
  */
 export function dataRootOf(config) {
-	const configured = typeof config?.dataRoot === 'string' ? config.dataRoot.trim() : '';
-	if (configured) {
-		return configured;
-	}
-	const fromEnv = typeof process.env.VSSAROS_DATA_ROOT === 'string' ? process.env.VSSAROS_DATA_ROOT.trim() : '';
-	return fromEnv || join(homedir(), '.vssaros');
+	// 委托到 @vssaros/dsh-foundation（重构 1.3：真源只有一份）；调用签名不变。
+	return foundation().dataRootOf(config);
 }
 
 export function taskboardPath(config) {
@@ -50,15 +50,74 @@ export function lockPath(config) {
 /**
  * 工作区 id。**必须拿到**才能建卡：IDE 的 `getTasks(workspaceId)` 会按它过滤，
  * 空/错值的卡片在看板界面里不可见（只能靠直接读 JSON 发现）。
- * 优先级：工具参数 → `config.workspaceId`（VsSaros 经 `--patch` 注入）→ 环境变量。
+ *
+ * 优先级：工具参数（在调用方 `requireWorkspaceId` 里判）→ **运行期上下文** →
+ * `config.workspaceId`（VsSaros 经 `--patch` 注入的**启动快照**）→ 环境变量。
+ *
+ * ★ 2026-10-17 为什么加"运行期上下文"这一级：config 那份是**启动时**注入的快照 ⇒ 从前切工作区
+ *   必须重启 Host 才能跟上（否则这张卡会静默写进**旧**工作区 ✗，重启又会把在跑的会话一起杀掉）。
+ *   运行期上下文的真源与三条纪律见 `@vssaros/dsh-foundation/lib/workspaceContext.js` ✓。
+ *   ⚠ 有上下文就**以它为准**（`undefined` 的 workspaceId = "当前没有活动工作区" ⇒ 这时**不能**回落
+ *     到 config 那份旧 id，否则就是上面那个静默错 ✗）；没有上下文才回落 config/env ✓。
  */
 export function workspaceIdOf(config) {
+	const runtime = workspaceContext();
+	if (runtime) {
+		return runtime.workspaceId ?? '';
+	}
 	const fromConfig = typeof config?.workspaceId === 'string' ? config.workspaceId.trim() : '';
 	if (fromConfig) {
 		return fromConfig;
 	}
 	const fromEnv = typeof process.env.VSSAROS_WORKSPACE_ID === 'string' ? process.env.VSSAROS_WORKSPACE_ID.trim() : '';
 	return fromEnv;
+}
+
+/**
+ * runner 的**工作目录**解析（2026-10-17 重做）：按**卡**解析，而不是"apply 时算一次"。
+ *
+ * 语义（顺序很重要，写反了就会**拿错目录跑任务** ✗✗）：
+ *   ① **有运行期上下文**（`workspace.context` 推过）⇒ 只认"**属于当前工作区**"的卡：
+ *        `context.workspaceId === taskWorkspaceId` ⇒ 用 `context.workspaceRoot`（空/缺 ⇒ `''`，调用方**跳过该卡** ✓）；
+ *        否则 `''` —— ★ 绝不用当前工作区的目录去跑**别的**工作区的卡（在 A 的代码库里执行 B 的任务 = 最坏形态）。
+ *   ② **没有上下文**（老 Host / 探针 / 从未推过）⇒ 老口径**逐字不变**：
+ *        `registry.list()` 里 id 命中的那份 `path` → `config.workspacePath`（探针后门）→ `''`（不跑 ✓）。
+ *
+ * ⚠ ② 里"按 id 命中"在产品里基本命不中（**已知**）：`taskWorkspaceId` 是 Agent Studio 的 slug id，而 dsh
+ *   注册表里的 id 是 dsh 自己生成的（两套 id 空间）⇒ 老口径是死的（`p3-100` 能跑是因为它自己注了
+ *   `config.workspacePath`）✓ —— **①才是产品路径**。
+ *
+ * @param {any} config - 插件 config（兜底用 `config.workspacePath`）。
+ * @param {string|undefined} taskWorkspaceId - 卡自己的 `workspaceId`（runner 逐卡传 ✓）。
+ * @param {any[]} [list] - dsh 工作区注册表快照（`registry.list()`）。
+ * @returns {string} 目录；`''` = 拿不到**可靠**目录 ⇒ 调用方必须**跳过这张卡**，别硬跑 ✗。
+ */
+export function runnerCwdOf(config, taskWorkspaceId, list = []) {
+	const runtime = workspaceContext();
+	if (runtime) {
+		return runtime.workspaceId && taskWorkspaceId === runtime.workspaceId
+			? (typeof runtime.workspaceRoot === 'string' ? runtime.workspaceRoot.trim() : '')
+			: '';
+	}
+	const wanted = typeof taskWorkspaceId === 'string' && taskWorkspaceId ? taskWorkspaceId : workspaceIdOf(config);
+	const hit = Array.isArray(list) ? list.find(w => w && w.id === wanted) : undefined;
+	if (hit && typeof hit.path === 'string' && hit.path.trim()) {
+		return hit.path.trim();
+	}
+	return typeof config?.workspacePath === 'string' ? config.workspacePath.trim() : '';
+}
+
+/**
+ * 运行期工作区上下文（读不到就是 `undefined` —— foundation 缺席 / 从未推过都算"没有" ✓）。
+ * 为什么要包一层 try：`foundation()` 在服务未绑定时**故意抛错**（fail-fast ✓），而本函数在
+ * 工具与页面的热路径上 ⇒ 不能让它把"看板读一眼工作区 id"变成整页报错 ✗（与 config 回落同语义 ✓）。
+ */
+function workspaceContext() {
+	try {
+		return foundation().workspaceContext?.() ?? undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 /** 文件指纹：`mtimeMs:size`；不存在时 `absent`。 */
@@ -112,12 +171,8 @@ export async function readBoards(config) {
  *   由 `check-host-config.mjs` 的一致性守卫约束 ✓（改一处必须同步另一处 ✓）。
  */
 export function dshHomeOf(config) {
-	const configured = typeof config?.dshHome === 'string' ? config.dshHome.trim() : '';
-	if (configured) {
-		return configured;
-	}
-	const fromEnv = typeof process.env.DSH_HOME === 'string' ? process.env.DSH_HOME.trim() : '';
-	return fromEnv || join(homedir(), '.dsh');
+	// 委托到 @vssaros/dsh-foundation（重构 1.3：真源只有一份）；调用签名不变。
+	return foundation().dshHomeOf(config);
 }
 
 /** dsh 的会话投影缓存目录（dsh 自己的 checkpoint：`<DSH_HOME>/storages/session_projcache/sessions`）。 */

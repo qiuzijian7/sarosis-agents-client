@@ -9,7 +9,7 @@ import * as path from 'path';
 
 import {
 	DSH_HOST_CONFIG_FILENAME, DSH_HOST_OVERLAY_PREFIX, DshHostOverlayKind, IDshHostConfig,
-	hostOverlayFileName, parseDshHostConfig, renderHostOverlays, serializeDshHostConfig,
+	hostIdleTtlText, hostOverlayFileName, parseDshHostConfig, renderHostOverlays, serializeDshHostConfig,
 } from '../../common/dshHostConfig.js';
 import {
 	renderAgentsOverlay, renderBridgeOverlay, renderCodebaseOverlay, renderDataRootOverlay,
@@ -218,5 +218,20 @@ suite('dshHostConfig（中立配置源：配置 → 覆盖层）', () => {
 			assert.ok(!supervisor.includes(bad),
 				`dshHostSupervisor.ts 里出现了 \`${bad}\` ⇒ 打包产物里它是 undefined ⇒ Host 启动必挂（2026-10-15 实测）。定位仓库根用 process.cwd() / process.resourcesPath`);
 		}
+	});
+
+	/**
+	 * ★ **用户可见文案不许与常量脱钩**（2026-10-16）：`hostKeepAlive` 的设置说明里**曾经写死**"空闲 30 分钟
+	 * 自动退出"，而解法 A（2026-10-15）把值改成 12 小时之后它就变成了**假话**（用户照设置读到的是 30 分钟，
+	 * 实际是 12 小时 ✗）。现在文案由 `hostIdleTtlText()` 从常量派生 ⇒ 结构上不会再漂移；
+	 * 下面这条再钉住**默认值本身**：谁改 `DSH_HOST_IDLE_TTL_MS`，谁就必须回来复审那句用户可见文案
+	 * （红了不是"测试过期"，是"这句文案要重新过一遍" ✓）。
+	 */
+	test('★ 设置文案的时长由常量派生，默认值被钉住（改常量 ⇒ 强制复审文案）', () => {
+		assert.strictEqual(hostIdleTtlText(30 * 60_000), '30 分钟', '整小时以下用"分钟"（更短的取值也要读得通）');
+		assert.strictEqual(hostIdleTtlText(60 * 60_000), '1 小时', '整小时用"小时"，不许写成"60 分钟"');
+		assert.strictEqual(hostIdleTtlText(), '12 小时',
+			'Host 空闲自退的**默认**时长（解法 A：12h 覆盖一个工作日的多次重启）—— 改了常量就要来改这条，'
+			+ '并回头复审 `dshHarness.contribution.ts` 里 `hostKeepAlive` 的那句用户可见文案');
 	});
 });

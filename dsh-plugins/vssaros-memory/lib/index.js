@@ -27,14 +27,19 @@
 //   ② 用 `ctx.inject(...)` 的子 ctx 读工具表 → 拿不到（子 ctx 的可见范围与根不同）。
 
 import { readFileSync } from 'node:fs';
+import { bindFoundation, foundation } from './foundationRef.js';
 import { buildAuditRow } from './core/audit.js';
+
 import { DEFAULT_TOKEN_BUDGET, LEGACY_PARTITION, MAX_INJECT_CHARS, REQUEST_MARKER, SECTION_NAME, SEARCH_CONFIDENCE_THRESHOLD, SECTION_ORDER_FALLBACK, admitSnapshot, buildWriteReason, createSnapshot, isMemoryWriteRequest, isWriteIntent, normalizeSearchResults, parseWriteReason, partitionOf, renderWorkingContext, resolveWritePolicy, snapshotKeyOf, splitByConfidence, summarizeStats, targetKeyOf, targetLabelOf, validateWritePolicies, validateWritePolicy } from './core/memory.js';
+
 import { createAuditWriter } from './audit.js';
+
 // ★ 2026-10-14：「记忆详情」页（dsh 侧复刻 IDE 的 `MemoryDetailEditorPane`）—— 独立文件，理由见其文件头。
 // ⚠ 为什么单独成文件：本文件已 3300+ 行，而详情页自带约 200 行 CSS + 十几个渲染函数 ⇒ 混进来会让
 //   "页面"这件事在 index 里更难找 ✓；且它是**纯函数**（不碰 I/O ✓）⇒ 那个新文件能被探针直接喂数据测 ✓。
 // ⚠ 已登记进 `package.json` 的 `files`（白名单式，不加进去不会随包分发 ✗）。
 import { DETAIL_ROUTE, renderDetailPage } from './detail.js';
+
 
 // ★ 2026-10-15：把**版本号**写进页面副标题 —— 因为"点了没反应"这类问题的根因**屡屡是"用户看到的是旧版"**，
 //   而新旧两版**视觉上一模一样** ⇒ 没有版本号就只能靠猜 ✗。⇒ 副标题带版本 ⇒ 用户刷新后**一眼**能确认 ✓。
@@ -45,11 +50,17 @@ const PKG_VERSION = (() => {
 	} catch { return '(未知)'; }
 })();
 import { extractCandidates, parseFormUrlEncoded, userTextsOf } from './core/distill.js';
+
 import { createDraftStore, draftRowsOf } from './draft.js';
+
 import { createJudge } from './judge.js';
+
 import { createPromoter } from './promote.js';
+
 import { createTaskQueue } from './queue.js';
+
 import { autoCrystallize, cascadeUpdate, compressSession, createRoutine, crystalGet, crystalList, crystallize, facetDimensions, facetGet, facetQuery, facetStats, facetTag, facetUntag, forgetMemory, frontierAdd, gatewayUrlOf, getRoutine, getRoutines, governanceAuditQuery, governanceBulkDelete, governanceDelete, meshJoin, meshLeave, meshList, meshSync, obsidianExport, providerCall, recallFormatted, reinforceMemory, remember, requireGateway, routineDelete, routineFreeze, routineStatus, routineStepUpdate, runRoutine, search, sentinelCancel, sentinelCheck, sentinelCreate, sentinelList, sentinelTrigger, stats, teamQuery, teamShare, workingContext } from './gateway.js';
+
 
 export const name = 'vssaros-memory';
 
@@ -156,8 +167,47 @@ function writeBudgetOf(config, agentId) {
  *   （写入时没有记录来源）⇒ 那些记忆**不再被注入**，但可以用 `memory_list` / `memory_search` 的
  *   `partition: 'legacy'` **显式查回来** ✓（`LEGACY_PARTITION`）。
  */
-const agentIdOf = config => partitionOf(config);
+const agentIdOf = config => partitionOf(workspaceScoped(config));
 const tokenBudgetOf = config => (Number.isInteger(config?.tokenBudget) && config.tokenBudget > 0 ? config.tokenBudget : DEFAULT_TOKEN_BUDGET);
+
+/**
+ * 把**运行期**工作区上下文叠进 config（2026-10-17）。
+ *
+ * 为什么必须叠（这是"切工作区不必重启"在本模块的落点）：`config.workspaceId` 只在 Host 启动时注入
+ * 一次 ⇒ 不重启的话，切换工作区后新写入的记忆会静默落进**旧**分区 `ws-<旧id>` ✗（读取时"记忆不见了"
+ * 只是表象，真身在旧分区）。运行期上下文的真源与三条纪律见
+ * `@vssaros/dsh-foundation/lib/workspaceContext.js` ✓。
+ *
+ * ⚠ 有上下文就**以它为准**：上下文里没有 workspaceId（＝当前没有活动工作区）时**不**回落 config 的旧值，
+ *   而是让 `partitionOf` 走它自己的兜底（旧分区 `default` ✓）——与"config 里没注入"同口径 ✓。
+ * ⚠ 读不到上下文（foundation 未绑定 / 从未推过 / 老 Host）⇒ **原样返回** ⇒ 与从前逐字相同 ✓。
+ */
+function workspaceScoped(config) {
+	const runtime = workspaceContext();
+	return runtime ? { ...config, workspaceId: runtime.workspaceId } : config;
+}
+
+/** 运行期工作区上下文；`undefined` = 没有（foundation 缺席也算"没有" ⇒ 回落 config ✓）。 */
+function workspaceContext() {
+	// 为什么要 try：`foundation()` 在服务未绑定时**故意抛错**（fail-fast ✓），而本函数在工具/页面的
+	// 热路径上 ⇒ 不能让它把"记忆按哪个分区挂"变成整页报错 ✗（与 config 回落同语义 ✓）。
+	try {
+		return foundation().workspaceContext?.() ?? undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * 本插件实例的**记忆分区键**（＝ 生产用的 `agentIdOf` 的对外形态）。
+ *
+ * 为什么导出：它是**写路径**上的判据（分区认错 = 记忆静默落进旧工作区的分区 ✗）⇒ 必须能被守卫
+ * 直接断言"运行期上下文优先 / 上下文说没有就不回落旧值"，而不是靠读源码猜 ✓
+ * （`dsh-plugins/check-host-config.mjs` 的 `partition` 链就是它 ✓）。
+ */
+export function partitionKeyOf(config) {
+	return agentIdOf(config);
+}
 
 function createState() {
 	return {
@@ -296,6 +346,7 @@ function snapshotFor(state, config, context) {
 // 页面外壳（标题 / 工具条 / 分区 / 空态 / 诊断行）逐条移植自 VsSaros 原容器 Pane，
 // 见 `lib/pageShell.js` 顶部注释（真源行号 + 分发约定）。`escapeHtml` 由它提供。
 import { escapeHtml, renderShell } from './pageShell.js';
+
 
 /**
  * 固定槽位（**逐字照抄** `memoryLibraryView.ts:45-48` 的 `SLOT_NAMES` —— 它与记忆引擎的
@@ -3528,6 +3579,18 @@ export const WRITE_TOOLS = [
 ];
 
 export function apply(ctx, config = {}) {
+	// 重构 1.3：绑定 foundation 共享服务（dataRoot/dshHome/pageShell/lock 的真源）。
+	{
+		// 同步直读在前：有插件在 apply 的**同步段**就建 store（inject 回调是异步的，会来不及 ✗）。
+		let ready = null;
+		try { ready = ctx.get?.('vssarosFoundation') ?? ctx.vssarosFoundation ?? null; } catch { /* 探针的 Proxy 假 ctx 对未知属性抛错 ⇒ 当不存在 */ }
+		if (ready) { bindFoundation(ready); }
+		ctx.inject(['vssarosFoundation'], child => {
+		let svc = null;
+		try { svc = child.vssarosFoundation ?? null; } catch { /* 探针的假 ctx（Proxy）对未知属性抛错 ⇒ 当不存在 */ }
+		if (svc) { bindFoundation(svc); }
+	});
+	}
 	const state = createState();
 
 	// ★ 写策略（移植 `dsh-memento` 的 `lib/gate.mjs`）—— 在**挂载期**校验并**响亮失败** ✗：

@@ -141,6 +141,7 @@ function writeFakePlugin(root: string, name: string, claimedPluginId: string): s
 		supervisor = new DshHostSupervisor({
 			runtime: new DshRuntimeManager(RUNTIME_ROOT, l => lines.push(l)),
 			runDir,
+			foundationPluginDir: undefined,
 			bridgePluginDir: BRIDGE_DIR,
 			chatSurfacePluginDir: undefined,
 			// 两个假插件都**真装**进 profile（起 Host 之前装好，Host 启动时真装载）

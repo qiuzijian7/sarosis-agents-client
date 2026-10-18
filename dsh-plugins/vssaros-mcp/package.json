@@ -1,6 +1,6 @@
 {
   "name": "@vssaros/dsh-mcp",
-  "version": "0.3.2",
+  "version": "0.3.1",
   "description": "VsSaros MCP module for DeepSeek Harness: read-only view of what <data-root>/mcp.json actually mounts (server list + skip reasons + tool count). Data root follows the shared chain (config.dataRoot -> VSSAROS_DATA_ROOT -> ~/.vssaros), aligned with the sibling modules since 0.2.2. Servers themselves are mounted by the host at start (one dsh-mcp-client row per server via --patch); this package only reads the same file with the same normalization rules.",
   "private": true,
   "type": "module",
@@ -13,6 +13,7 @@
     "lib/index.js",
     "lib/core/mcpConfig.js",
     "lib/core/mcpRows.js",
+    "bin/sync-rows.mjs",
     "cordis.patch.yml"
   ],
   "peerDependencies": {

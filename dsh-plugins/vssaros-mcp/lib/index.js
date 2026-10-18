@@ -109,6 +109,149 @@ function mcpToolNames(ctx) {
 }
 
 export function apply(ctx, config = {}) {
+	// 重构 4（2026-10-17）：state + 桥的可选注入（mcp_market_list 要经桥回 IDE 拉远端清单 ✓；
+	// vssarosBridge 不在 ⇒ 市场工具如实报"桥不在" ✓，其余照常 ✓）。
+	const state = { bridge: null };
+	ctx.inject(['vssarosBridge'], scope => {
+		let svc = null;
+		try { svc = scope.vssarosBridge ?? null; } catch { /* 探针的 Proxy 假 ctx 对未知属性抛错 ⇒ 当不存在 */ }
+		if (svc && typeof svc.callIDE === 'function') {
+			state.bridge = svc;
+			return () => { state.bridge = null; };
+		}
+		return undefined;
+	});
+	// 审批闸（与 kanban/kb/memory 同一把 ✓）：mcp_install 写 mcp.json ⇒ 重启后新服务器挂载 ⇒ 能跑
+	// 任意命令（stdio 的 command 是任意可执行文件 ✗）⇒ 写类挂闸 ✓。官方契约：ask 只有审批服务返回
+	// allowed-once 才执行 ✓；没有审批支持的部署（headless）⇒ deny ✓（fail-closed ✓）。
+	ctx.effect(() => ctx.on('tools/pre-execute', (exec, next) => {
+		if (exec && exec.name === 'mcp_install') {
+			return {
+				kind: 'ask',
+				reason: `mcp_install 会写入 mcp.json（重启 Host 后挂载新服务器 ⇒ 能跑任意命令）`,
+				displayReason: { en: 'Allow mcp_install to write mcp.json (new server mounts on restart)?', zh: '允许 mcp_install 写入 mcp.json（重启后挂载新服务器）？' },
+			};
+		}
+		return next();
+	}));
+	// 重构 4（2026-10-16）：`mcp_install` 工具——写 `mcp.json` 的 `mcpServers` 段（方案 2.x：
+	// "写 mcp.json 后由 sync-rows 重新生成 bundle"——sync-rows 是宿主启动链的事，本工具只写配置 ✓）。
+	// 写类 ⇒ 挂审批闸 ✓。**供应链预检（OSV 恶意包）没做**：那是壳侧的远端调用（`mcpSupplyChain.ts`），
+	// 本侧如实写明"没拦"（不假装拦了 ✗）——要拦那道，经桥回 IDE 做（留待）。
+	ctx.effect(() => ctx.tools.register({
+		name: 'mcp_install',
+		description: '安装一个 MCP 服务器：把它的配置写进 mcp.json 的 mcpServers 段（stdio/sse/http）。写完要重启 Host 才生效（sync-rows 在启动链里重新生成 bundle——这是固有约束 ✓）。⚠ 本侧**不做供应链预检**（OSV 恶意包拦截是壳侧的远端调用，没迁过来）——装来路不明的包前自己掂量。',
+		parameters: {
+			type: 'object',
+			properties: {
+				name: { type: 'string', description: '服务器名（mcpServers 的键；小写字母/数字/连字符/下划线）' },
+				transport: { type: 'string', enum: ['stdio', 'sse', 'http'], description: '传输方式' },
+				command: { type: 'string', description: 'stdio 的启动命令（如 "npx"）' },
+				args: { type: 'array', items: { type: 'string' }, description: 'stdio 的命令参数（如 ["-y", "pkg"]）' },
+				url: { type: 'string', description: 'sse/http 的端点 URL' },
+				env: { type: 'object', description: '环境变量（可选）' },
+			},
+			required: ['name', 'transport'],
+		},
+		output: {
+			schema: {
+				type: 'object',
+				properties: {
+					ok: { type: 'boolean' },
+					name: { type: 'string' },
+					path: { type: 'string' },
+					restartNeeded: { type: 'boolean' },
+				},
+			},
+			render: (_args, value) => [{
+				type: 'text',
+				text: value.ok
+					? `已写入 ${value.name}（${value.path}）——重启 Host 后生效（sync-rows 会重新生成 bundle）。`
+					: `安装失败：${value.error ?? '未知原因'}`,
+			}],
+		},
+		// 写类 ⇒ 不声明 isConcurrencySafe（默认独占 ✓）。
+		execute: async (params) => {
+			const name = String(params?.name ?? '').trim();
+			if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(name)) {
+				throw new Error(`name 不合法：${name} —— 只允许小写字母/数字/连字符/下划线（如 my-server）。`);
+			}
+			const transport = String(params?.transport ?? '').trim();
+			if (!['stdio', 'sse', 'http'].includes(transport)) {
+				throw new Error(`transport 必须是 stdio / sse / http 之一（收到 ${transport || '(空)'}）。`);
+			}
+			const path = mcpPathOf(config);
+			// ⚠ 读**原始文件**（不是 readAndParse 的摘要——那是 {servers, skipped} 的展示形状 ✗，
+			//   把它铺进写回的对象会把摘要写进 mcp.json ✗，p3-109 实测抓到 ✓）。
+			const { readFile } = await import('node:fs/promises');
+			let raw = {};
+			try {
+				const text = await readFile(path, 'utf8');
+				const parsed = JSON.parse(text);
+				if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) { raw = parsed; }
+			} catch { /* 文件不存在/坏 JSON ⇒ 从空写起（如实的空 ✓） */ }
+			const servers = raw.mcpServers && typeof raw.mcpServers === 'object' && !Array.isArray(raw.mcpServers) ? { ...raw.mcpServers } : {};
+			if (servers[name]) { throw new Error(`MCP 服务器 ${name} 已存在（不会覆盖 ✓；要改先删掉再装）。`); }
+			// 按传输方式组装条目（与 mcp.json 的上游格式一致 ✓）。
+			const entry = transport === 'stdio'
+				? { command: String(params?.command ?? '').trim(), args: Array.isArray(params?.args) ? params.args.map(String) : [], ...(params?.env && typeof params.env === 'object' ? { env: params.env } : {}) }
+				: { url: String(params?.url ?? '').trim(), ...(params?.env && typeof params.env === 'object' ? { env: params.env } : {}) };
+			if (transport === 'stdio' && !entry.command) { throw new Error('stdio 需要 command（启动命令，如 "npx"）。'); }
+			if (transport !== 'stdio' && !entry.url) { throw new Error(`${transport} 需要 url（端点 URL）。`); }
+			servers[name] = entry;
+			const { writeFile, mkdir } = await import('node:fs/promises');
+			const { dirname } = await import('node:path');
+			await mkdir(dirname(path), { recursive: true });
+			// 只改 mcpServers 段，其余键原样保留（raw 是原始文件的形状 ✓）。
+			await writeFile(path, JSON.stringify({ ...raw, mcpServers: servers }, null, 2));
+			return { ok: true, name, path, restartNeeded: true };
+		},
+	}));
+
+	// 重构 4（2026-10-17）：`mcp_market_list`——浏览 MCP 市场（只读：经桥回 IDE 拉远端清单，
+	// 远端服务在壳侧的 marketplaceService ✓）。安装入口是 mcp_install（写 mcp.json ✓——本工具
+	// 只浏览 ✓，不安装 ✗）。
+	ctx.effect(() => ctx.tools.register({
+		name: 'mcp_market_list',
+		description: '浏览 MCP 市场：列出远端可装的 MCP 服务器（名称 / 描述 / 版本 / 作者）。只读（不安装——安装用 mcp_install，写 mcp.json 后重启生效）。远端服务要登录（经 IDE 侧的 marketplaceService）。',
+		parameters: {
+			type: 'object',
+			properties: {
+				query: { type: 'string', description: '搜索关键词（可选）' },
+				limit: { type: 'number', description: '最多返回几条（默认 20，上限 100）' },
+			},
+		},
+		output: {
+			schema: {
+				type: 'object',
+				properties: {
+					count: { type: 'integer' },
+					items: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, description: { type: 'string' }, version: { type: 'string' }, author: { type: 'string' } } } },
+					error: { type: 'string' },
+				},
+			},
+			render: (_args, value) => [{
+				type: 'text',
+				text: value.error
+					? `市场不可用：${value.error}`
+					: (value.count ? `${value.count} 个 MCP 服务器：\n${value.items.map(i => `  • ${i.name}@${i.version ?? '?'} — ${i.description ?? ''}`).join('\n')}` : '没有匹配的 MCP 服务器'),
+			}],
+		},
+		isConcurrencySafe: () => true,  // 只读 ✓
+		execute: async (params) => {
+			// 经桥回 IDE（远端清单要认证——壳侧的 marketplaceService 有 token ✓）
+			if (!state.bridge || typeof state.bridge.callIDE !== 'function') {
+				return { count: 0, items: [], error: '市场要经桥回 IDE（远端清单的认证在壳侧），但 vssarosBridge 不在（bridge 插件没装/没连）' };
+			}
+			const reply = await state.bridge.callIDE('ide.request', {
+				capability: 'mcp',
+				pluginId: 'vssaros-mcp',
+				params: { op: 'marketList', query: String(params?.query ?? '').trim() || undefined, limit: Number.isFinite(params?.limit) ? Math.min(100, Math.max(1, Math.floor(params.limit))) : 20 },
+			}, { timeoutMs: 30 * 1000 });
+			const items = Array.isArray(reply?.items) ? reply.items : [];
+			return { count: items.length, items, ...(reply?.error ? { error: String(reply.error) } : {}) };
+		},
+	}));
 	// 片段路由：与 memory 的区块同法——Host 自己的鉴权栅栏 + 客户端请求带的 Cookie。
 	// 片段路由（**可选**依赖）：`webServer` / `connection` 只在 web 模板里存在（见静态 `inject` 的注释）。
 	// 不在 web 模板 ⇒ 只是**没有片段** ✓，工具照常可用 ✓。

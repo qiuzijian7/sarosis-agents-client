@@ -733,7 +733,8 @@ export class CodebaseMemoryMcpService extends Disposable implements ICodebaseMem
 		const cmd = `git ${args}`;
 		this.logService.info(LOG_TAG, `$ ${cmd}`);
 		try {
-			return cp.execSync(cmd, { cwd, encoding: 'utf-8', timeout: 30000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+			// ★ 2026-10-17：Windows 上 execSync 走 cmd.exe + git.exe 都是控制台程序 ⇒ 不设 windowsHide 必闪黑框。
+			return cp.execSync(cmd, { cwd, encoding: 'utf-8', timeout: 30000, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }).trim();
 		} catch (err: any) {
 			throw new Error(err.stderr?.trim() || err.message);
 		}

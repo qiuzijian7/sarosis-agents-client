@@ -49,6 +49,22 @@ export interface IDshBridgeConfig {
 export const DSH_HOST_IDLE_TTL_MS = 12 * 60 * 60_000;
 
 /**
+ * {@link DSH_HOST_IDLE_TTL_MS} 的**人话说法**（给设置项的 `markdownDescription` 用）。
+ *
+ * 为什么做成函数而不是在文案里写死 ✗：这段文案**曾经**写的是"空闲 30 分钟自动退出"，而解法 A
+ * （2026-10-15）把值改成 12 小时之后它就**变成假话**了（用户按设置看到的是 30 分钟，实际 12 小时）
+ * ⇒ 由常量派生就**结构性**不会再漂移 ✓；`dshHostConfig.test.ts` 里另有一条把默认值钉住的断言
+ * （改动常量会红 ⇒ 强制复审这条用户可见文案 ✓）。
+ */
+export function hostIdleTtlText(ms: number = DSH_HOST_IDLE_TTL_MS): string {
+	// 整小时才用"小时"，否则用"分钟"（30 分钟那种既有的更短取值仍读得通 ✓）。
+	if (ms > 0 && ms % 3_600_000 === 0) {
+		return `${ms / 3_600_000} 小时`;
+	}
+	return `${Math.max(1, Math.round(ms / 60_000))} 分钟`;
+}
+
+/**
  * 一个 dsh Host 的**全部**可注入配置。字段名与主进程的 `IDshHostLaunchOptions` 同口径
  * （`dataRoot` / `workspaceId` / `workspaceRoot` / `relatedRoots` / `agentsRoot` / `skillDirs` /
  * `mcpConfigPath`），新增字段时**两侧一起改**并由 `dshHostConfigContract` 守卫兜住。

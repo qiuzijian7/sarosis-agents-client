@@ -39,3 +39,14 @@
           # 工具注册（dsh 的工具重复注册是幂等顶掉 ✓）；本插件**没有模块级状态** ⇒ 不串话 ✓。
           - id: vssaros-web-content-import
             name: '@vssaros/dsh-web-content-import'
+          - id: vssaros-sessions
+            name: '@vssaros/dsh-sessions'
+          - id: vssaros-mcp
+            name: '@vssaros/dsh-mcp'
+          # ★ 官方 `working_directory` 工具（2026-10-19 用户报 `unknown tool "working_directory"`）：
+          #   包 `@deepseek-ai/dsh-tool-working-directory` 在 runtime 里，但**官方 standard preset 默认没有装配它**
+          #   （`preset-standard.baseline.yml` 里没有这行）⇒ 模型按别的 harness 的习惯调用就报 unknown tool ✗。
+          #   这里补上这一行把它挂进我们的 preset（= 官方 standard 逐字副本 + 我们的行）✓。
+          #   ⚠ 它是官方模块、不是我们的插件 ⇒ 不在 `tools-snapshot.json` 的覆盖范围内（快照只收 dsh-plugins/*）✓。
+          - id: tool-working-directory
+            name: '@deepseek-ai/dsh-tool-working-directory'

@@ -1,0 +1,31 @@
+{
+  "name": "@vssaros/dsh-channels",
+  "version": "0.1.0",
+  "description": "VsSaros Channels module for DeepSeek Harness: IM 渠道（飞书/Telegram）入站消息 → 专属会话（chat:<platform>:<chatId>）→ vssarosRuns 驱动 → 回传（重构 2.3）。本轮落地核心环 + loopback 适配器（进程内可验证）；飞书/Telegram 真机适配器与审批 IM 卡片待真凭据对接（真机回归需要真实机器人）。",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": ["lib/index.js", "lib/core/router.js", "lib/core/ports.js", "lib/adapters/loopback.js", "cordis.patch.yml"],
+  "peerDependencies": {
+    "@deepseek-ai/dsh": ">=0.1.7-0 <0.3.0-0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": [
+        "./cordis.patch.yml"
+      ]
+    }
+  },
+  "vssaros": {
+    "manifestVersion": 1,
+    "module": "channels",
+    "view": {
+      "kind": "none"
+    }
+  },
+  "license": "MIT"
+}

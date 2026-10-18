@@ -41,6 +41,7 @@ import { IUriIdentityService } from '../../../../platform/uriIdentity/common/uri
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IAgentStudioService } from '../../agentStudio/common/agentStudio.js';
+import { IGitService } from '../../../../workbench/contrib/git/common/gitService.js';
 import { IWorktreeService } from '../../worktree/common/worktreeService.js';
 import { WorktreeViewPane } from '../../worktree/browser/worktreeView.js';
 import { WorktreeCommands } from '../../worktree/common/worktreeTypes.js';
@@ -196,6 +197,7 @@ class SourceControlWorkspaceSyncContribution extends Disposable implements IWork
 		@IWorkspaceTrustManagementService private readonly workspaceTrustManagementService: IWorkspaceTrustManagementService,
 		@ISCMViewService private readonly scmViewService: ISCMViewService,
 		@ISCMService private readonly scmService: ISCMService,
+		@IGitService private readonly gitService: IGitService,
 	) {
 		super();
 
@@ -370,6 +372,19 @@ class SourceControlWorkspaceSyncContribution extends Disposable implements IWork
 
 		const targetUris = targets.map(t => t.uri);
 
+		// VsSaros fork: open every target root explicitly through the Git
+		// extension API BEFORE the folder swap below. Explicitly-opened
+		// repositories are marked by the git extension and are therefore NOT
+		// reaped by `onDidChangeWorkspaceFolders` when their folder is removed —
+		// which previously forced a full rediscover (`rev-parse --show-toplevel`)
+		// plus a status refresh (`status -z -uall`, `for-each-ref`, …) on every
+		// switch back to this workspace. On warm switches these opens
+		// early-return (repository already open ⇒ no git spawned at all); on the
+		// first visit they perform the one-time discovery/status the SCM view
+		// needs anyway. Non-git roots (e.g. the workspace home dir) resolve to
+		// undefined and are simply skipped.
+		await this._openTargetRepositories(targetUris);
+
 		// ★★ 2026-09-14 修订（方案 B' Step 1 的补丁，**血的教训**）：
 		//
 		// 「窗口是真源」时，SCM 同步**不得**再把 registry 的 root 注入 folder 列表。
@@ -394,14 +409,36 @@ class SourceControlWorkspaceSyncContribution extends Disposable implements IWork
 		// After folder sync, update git context key
 		await this._updateGitContextKey();
 
-		// Folder sync replaced the VS Code workspace folders, but the git extension
-		// does NOT close SCM providers for removed folders (and sessions opens some
-		// repositories explicitly via gitService.openRepository, which are never
-		// auto-closed). Hide any visible repository whose root is not part of the
+		// Folder sync replaced the VS Code workspace folders. Repositories that
+		// were opened explicitly (all target roots via _openTargetRepositories,
+		// plus the session/worktree repositories) are marked `explicit` in the
+		// git extension and are never auto-closed on folder removal; they stay
+		// registered so switching back does not re-run discovery or a status
+		// refresh. Hide any visible repository whose root is not part of the
 		// active workspace's target roots so the Changes view never shows another
 		// workspace's repositories. New repositories for the active workspace are
 		// registered asynchronously, so also prune on the next registrations.
 		this._pruneVisibleRepositories(targetUris);
+	}
+
+	/**
+	 * Explicitly open each target root through the Git extension API
+	 * (`IGitService.openRepository` → `API.openRepository`). The git extension
+	 * marks these as `explicit`, so they survive `onDidChangeWorkspaceFolders`
+	 * reaping when the folder swap removes them — eliminating the per-switch
+	 * dispose → rediscover → status-refresh cycle. Already-open repositories
+	 * early-return inside the extension without spawning any git process.
+	 */
+	private async _openTargetRepositories(uris: readonly URI[]): Promise<void> {
+		for (const uri of uris) {
+			try {
+				await this.gitService.openRepository(uri);
+			} catch (err) {
+				// Non-git roots resolve to undefined without throwing; a real
+				// failure must never break the workspace switch itself.
+				console.warn('[SourceControlWorkspaceSync] Failed to open repository for target root:', uri.toString(), err);
+			}
+		}
 	}
 
 	/**

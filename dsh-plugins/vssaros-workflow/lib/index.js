@@ -10,13 +10,23 @@
 // 未做：执行（引擎迁移）、`ctx.agents` 接线、市场/发布、运行卡会话节点。
 
 import { countIsolatedNodes, renderSvgCanvas, summarizeWorkflows } from './core/workflow.js';
+import { bindFoundation } from './foundationRef.js';
 import { buildSchema } from './core/schema.js';
+
 import { probeWorkerThreads, runWorkflowLoad } from './engine.js';
+// 重构 3.1：引擎核心环（DAG 编排 + checkpoint + 断点续跑 + 分支剪枝）。
+import { createEngineCore } from './core/engineCore.js';
+import { parseWorkflowCheckpoint } from './core/checkpoint.js';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+
 // `NODE_META_KEYS` / `NODE_TYPE_ALIASES` **导出**是为 `workflow_get_schema` 用 ✓：schema 里那些规范性内容
 // **从写侧常量推导** ✓（不是手写副本 ✗），`p3-10` 再拿两份互相对账 ⇒ 写侧改了目录会红 ✓。
-import { NODE_META_KEYS, NODE_TYPE_ALIASES, applyWorkflow, listWorkflows, mutateWorkflow, readWorkflow, workflowFilePathOf } from './store.js';
+import { NODE_META_KEYS, NODE_TYPE_ALIASES, applyWorkflow, checkpointDirOf, listWorkflows, mutateWorkflow, readWorkflow, workflowFilePathOf, workspacePathOf } from './store.js';
+
 // 只读 agent 花名册（`<数据根>/agents/*/.agent.md` ✓，与 `vssaros-agents` 同源契约、各自一份实现 ✓）
 import { listAgents } from './agents.js';
+
 
 export const name = 'vssaros-workflow';
 
@@ -64,6 +74,7 @@ const CANVAS_NODE_LIMIT = 120;
 // `renderChips` 是它的**共享筛选 chips 构建器** ✓（口径同 tasksView：`data-chip` + `active`），
 // A 稿的「全部 / 有图 / 运行中 / 待整理」直接用它 ⇒ 不在本模块再抄一份 chips 标记 ✗。
 import { escapeHtml, renderChips, renderShell } from './pageShell.js';
+
 
 const isoOf = ms => (typeof ms === 'number' && Number.isFinite(ms) ? new Date(ms).toISOString().replace('T', ' ').slice(0, 16) : '未知');
 
@@ -165,6 +176,7 @@ function workflowRow(workflow, order) {
 	</div>
 	<div class="wf-acts">
 		<button type="button" data-wf-act="open" title="在编辑器区打开画布">⧉</button>
+		<button type="button" data-wf-act="run" title="执行（dsh 引擎跑这条工作流，结果写进轨迹）">▶</button>
 		<button type="button" data-wf-act="export" aria-disabled="true" title="导出 JSON —— 未迁到 Host（选文件对话框是 IDE 能力，要新的反向通道 capability）">⤓</button>
 		<button type="button" data-wf-act="delete" aria-disabled="true" title="删除 —— 未迁到 Host（需要一个新 Host 工具 + 审批闸）">🗑</button>
 	</div>
@@ -206,6 +218,17 @@ const WORKFLOW_SCRIPT = `
 				else { say('打开失败：' + String((out.body && out.body.error) || '未知原因'), true); }
 			})
 			.catch(function (err) { say('打开失败：' + String(err && err.message ? err.message : err), true); });
+	}
+	// 重构 3.2：执行入口（dsh 引擎跑这条工作流，结果写进轨迹）。
+	function run(id) {
+		say('正在执行：' + id + ' …（dsh 引擎，结果写进轨迹）', false);
+		fetch('/x/workflow/api/run', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ workflowId: id }) })
+			.then(function (res) { return res.json().then(function (body) { return { ok: res.ok && body && body.ok, body: body }; }); })
+			.then(function (out) {
+				if (out.ok) { say('执行完成：' + id + '（' + String((out.body && out.body.executionId) || '') + '）', false); }
+				else { say('执行失败：' + String((out.body && out.body.error) || '未知原因'), true); }
+			})
+			.catch(function (err) { say('执行失败：' + String(err && err.message ? err.message : err), true); });
 	}
 	// 未迁到 Host 的写出入口：点了**说清原因**（不是静默失败，也不是假装成功）。
 	function notMigrated(what, why) { say(what + '还没迁到 Host：' + why, true); }
@@ -284,6 +307,7 @@ const WORKFLOW_SCRIPT = `
 				event.stopPropagation();   // 别让动作按钮连带触发"打开画布" ✗
 				var act = String(button.getAttribute('data-wf-act') || '');
 				if (act === 'open') { open(id); return; }
+				if (act === 'run') { run(id); return; }
 				if (act === 'export') { notMigrated('导出', '选文件对话框是 IDE 能力，需要新的反向通道 capability。'); return; }
 				notMigrated('删除', '需要一个新 Host 工具 + 审批闸（现在 store.js 只有 list / read / mutate / apply）。');
 			});
@@ -910,6 +934,19 @@ export function apply(ctx, config = {}) {
 	// 时机自己做到它 ✓：装配期就把错型拒掉，且**指得出是哪个键** ✓（别等第一次读配置才炸 ✗）。
 	// 其余模块若加配置，照这一段抄 ✓（配置键清单与本模块 `store.js` 真正读的键一一对应 ✓）。
 	validateConfig(config);
+	// 重构 1.3：绑定 foundation 共享服务（dataRoot/dshHome/pageShell/lock 的真源）。
+	// ⚠ 位置在校验**之后** ✓：错型配置必须装配期第一个抛（守卫看的就是"报的是哪个键" ✓）。
+	{
+		// 同步直读在前：有插件在 apply 的**同步段**就建 store（inject 回调是异步的，会来不及 ✗）。
+		let ready = null;
+		try { ready = ctx.get?.('vssarosFoundation') ?? ctx.vssarosFoundation ?? null; } catch { /* 探针的 Proxy 假 ctx 对未知属性抛错 ⇒ 当不存在 */ }
+		if (ready) { bindFoundation(ready); }
+		ctx.inject(['vssarosFoundation'], child => {
+		let svc = null;
+		try { svc = child.vssarosFoundation ?? null; } catch { /* 探针的假 ctx（Proxy）对未知属性抛错 ⇒ 当不存在 */ }
+		if (svc) { bindFoundation(svc); }
+	});
+	}
 	// ★ 写入类工具的**审批闸**（报告 §5-1 / README 5.104）：官方派发前决策钩子是 `tools/pre-execute`
 	// 这条 **waterfall 事件** ✓（`dsh-tools` 类型 L37-47 ✓）；返回 `{ kind: 'ask' }` ＝ "先问用户" ✓。
 	// 官方契约：`ask` **只有审批服务返回 `allowed-once` 才执行，否则 deny** ✓；**没有审批支持的部署会
@@ -929,7 +966,8 @@ export function apply(ctx, config = {}) {
 		}
 		return next(); // 只读工具交回默认 allow ✓（否则每次读也要弹窗 ⇒ 工具没法用 ✗）
 	}));
-	const state = { tools: null };
+	const state = { tools: null, engine: null };
+	stateRef.current = state;  // 路由辅助（runWorkflow/listRuns）经它拿引擎（见文件尾）
 
 	ctx.effect(() => {
 		// ── R13（preset plane）：同一个包会被挂**两次**（host plane 一行 + 我们的 preset 里一行 ✓）──
@@ -962,6 +1000,71 @@ export function apply(ctx, config = {}) {
 	//   的服务"访问方 ctx"是我们自己 ⇒ 桥的 `stampCallerIdentity`（把自报 pluginId 换成盖章真身份）仍生效 ✓；
 	//   ② `ctx.reflect.get('vssarosBridge', false)`（文档里的"不经 inject 要求地读" ✓，桥自己读
 	//   `pluginManager` 就用它）—— 但经它拿到的服务其 `ctx` 是**根 ctx** ⇒ 盖章失效 ✗ ⇒ 不用它。
+	// 重构 3.1（2026-10-16）：工作流引擎服务 `vssarosWorkflowEngine`（cordis 服务）。
+	// 核心环在 `lib/core/engineCore.js`（DAG 编排 + checkpoint + 断点续跑 + 分支剪枝）；
+	// checkpoint 三件套在 `lib/core/checkpoint.js`（移植自 legacy `workflowCheckpoint.ts`，逐字同逻辑 ✓）。
+	// 可选注入 vssarosRuns：bridge 0.2.26+ 提供；不在 ⇒ 服务照样注册，agent/prompt 节点会如实失败
+	// （"回合驱动不可用"），纯数据节点（start/end/ifElse/switch）照跑 ✓。
+	{
+		// runs 是可选注入（inject 回调异步 ⇒ 先给 null，到了回填）。引擎核心读的是 deps 对象的属性
+		// （`deps.runs`），不是闭包快照 ⇒ 回填生效 ✓。
+		const deps = {
+			loadWorkflow: async id => {
+				const wf = await readWorkflow(config, id);
+				if (!wf) { throw new Error(`找不到工作流：${id}`); }
+				return wf;
+			},
+			saveCheckpoint: async (id, cp) => {
+				const dir = checkpointDirOf(config);
+				await mkdir(dir, { recursive: true });
+				await writeFile(join(dir, `${id}.json`), JSON.stringify(cp, null, 2));
+			},
+			loadCheckpoint: async id => {
+				try {
+					const raw = await readFile(join(checkpointDirOf(config), `${id}.json`), 'utf8');
+					const parsed = parseWorkflowCheckpoint(raw);
+					return parsed.ok ? parsed.checkpoint : null;
+				} catch { return null; }
+			},
+			runs: null,
+			// 重构 3.3：节点分流的留壳侧（可选注入；不在 ⇒ 保持如实失败 ✓）
+			officialWorkflow: null,   // 官方 workflowEngine（script 节点转交）
+			bridge: null,             // vssarosBridge（comfy/askUser 回 IDE）
+			cwdOf: () => workspacePathOf(config),
+			log: (level, msg) => (typeof ctx.logger === 'function' ? ctx.logger('vssaros-workflow') : console)[level === 'warn' ? 'warn' : 'info'](msg),
+		};
+		ctx.inject(['vssarosRuns'], scope => {
+			deps.runs = scope.vssarosRuns;
+			return () => { deps.runs = null; };
+		});
+		ctx.inject(['workflowEngine'], scope => {
+			deps.officialWorkflow = scope.workflowEngine;
+			return () => { deps.officialWorkflow = null; };
+		});
+		ctx.inject(['vssarosBridge'], scope => {
+			deps.bridge = scope.vssarosBridge;
+			return () => { deps.bridge = null; };
+		});
+		// 引擎实例存进 state：页面路由（/api/run）与别的插件（cordis 服务）都拿同一个 ✓。
+		state.engine = createEngineCore(deps);
+		// ⚠⚠ **必须幂等**：本插件**同时**挂在两个 plane 上 ——
+		//   host plane：`vssaros-workflow/cordis.patch.yml` 把本行插进 profile（Host 启动即装 ✓）；
+		//   preset plane：`vssaros-agents/preset-vssaros.rows.yml` 的 vssaros-workflow 行（⇒ 生成物
+		//     `cordis.presets.yml`）—— 会话选中那个 preset 时**再 apply 一次** ✓。
+		//   而 `ctx.provide` 第二次会抛 `service "vssarosWorkflowEngine" has been registered at <vssaros-workflow>`
+		//   ⇒ **整个 preset 被判 invalid** ⇒ `session.start` 直接失败 ✗✗
+		//   （2026-10-16 真机：报 `agent-preset/invalid: vssaros-workflow (@vssaros/dsh-workflow)`，
+		//    表现就是"点工作区 / worktree 切不过去"、且界面上**一句提示都没有** —— 见
+		//    `dshChatInstanceHost._notifySwitchFailure` 那条补出来的通知出口 ✓）。
+		// ⇒ 先"不经 inject 要求地读"探一次（`ctx.reflect.get(name, false)` 是文档口径：服务不在时返回
+		//   undefined 而**不抛** ✓；桥插件读 `pluginManager` 用的就是它 ✓）：已经有就别再 provide
+		//   —— 两层拿到同一个引擎实例，正合上面"都拿同一个"的意图 ✓。
+		const existingEngine = ctx.reflect && typeof ctx.reflect.get === 'function'
+			? ctx.reflect.get('vssarosWorkflowEngine', false)
+			: undefined;
+		if (!existingEngine) { ctx.provide('vssarosWorkflowEngine', state.engine); }
+	}
+
 	let bridge;
 	ctx.inject(['vssarosBridge'], scope => {
 		bridge = scope.vssarosBridge;
@@ -1016,6 +1119,19 @@ export function apply(ctx, config = {}) {
 					}
 					return;
 				}
+				// 重构 3.2：执行入口（POST /api/run）+ 运行轨迹（GET /api/runs）。
+				if (url.pathname === `${ROUTE_PREFIX}/api/run` && req.method === 'POST') {
+					const body = JSON.parse(await readBody(req));
+					const out = await runWorkflow(config, body);
+					res.writeHead(out.ok ? 200 : 500, JSON_HEADERS);
+					res.end(JSON.stringify(out));
+					return;
+				}
+				if (url.pathname === `${ROUTE_PREFIX}/api/runs` && req.method === 'GET') {
+					res.writeHead(200, JSON_HEADERS);
+					res.end(JSON.stringify({ runs: await listRuns(config) }));
+					return;
+				}
 				const data = await listWorkflows(config, { limit: 200 });
 				const summary = summarizeWorkflows(data.workflows);
 				// 选画布目标：`?id=` 指定的，否则节点最多的那个
@@ -1044,3 +1160,68 @@ export function apply(ctx, config = {}) {
 		},
 	})));
 }
+
+// ─── 重构 3.2：执行入口与运行轨迹的辅助（页面路由用）─────────────────────────
+
+/** 读请求体（上限 64KB——工作流定义里没有更大的东西）。 */
+function readBody(req) {
+	return new Promise((resolveBody, reject) => {
+		let buf = '';
+		req.on('data', c => { buf += c; if (buf.length > 64 * 1024) { req.destroy(); reject(new Error('body too large')); } });
+		req.on('end', () => resolveBody(buf));
+		req.on('error', reject);
+	});
+}
+
+/** 执行一条工作流（经引擎核心；缺参/没引擎/没 runs 都如实报错）。导出给探针测（p3-104）。 */
+export async function runWorkflow(config, body) {
+	const workflowId = String(body?.workflowId ?? '').trim();
+	if (!workflowId) { return { ok: false, error: '缺 workflowId' }; }
+	if (!stateRef.current?.engine) { return { ok: false, error: '引擎不可用（插件没激活？）' }; }
+	const executionId = `exec-${Date.now().toString(36)}`;
+	const input = typeof body?.input === 'object' && body.input !== null ? body.input : {};
+	const resumeFrom = typeof body?.resumeFromExecutionId === 'string' ? body.resumeFromExecutionId.trim() : '';
+	try {
+		const result = await stateRef.current.engine.run({
+			workflowId,
+			executionId,
+			input,
+			resumeFromExecutionId: resumeFrom || undefined,
+		});
+		return { ok: result.status === 'completed', executionId, status: result.status, failedNode: result.failedNode ?? null, resumed: result.resumed === true };
+	} catch (e) {
+		return { ok: false, executionId, error: String(e?.message ?? e) };
+	}
+}
+
+/** 列运行轨迹（checkpoint 文件 ⇒ 每条执行一份）。导出给探针测（p3-104）。 */
+export async function listRuns(config) {
+	const dir = checkpointDirOf(config);
+	let files = [];
+	try {
+		const { readdir } = await import('node:fs/promises');
+		files = (await readdir(dir)).filter(f => f.endsWith('.json'));
+	} catch {
+		return [];  // 目录不存在 ⇒ 没跑过（如实的空 ✓）
+	}
+	const out = [];
+	for (const f of files.slice(0, 100)) {
+		try {
+			const raw = await readFile(join(dir, f), 'utf8');
+			const parsed = parseWorkflowCheckpoint(raw);
+			if (parsed.ok) {
+				out.push({
+					executionId: parsed.checkpoint.executionId,
+					workflowId: parsed.checkpoint.workflowId,
+					status: parsed.checkpoint.status ?? 'unknown',
+					timestamp: parsed.checkpoint.timestamp ?? null,
+					nodes: Object.keys(parsed.checkpoint.nodeStates).length,
+				});
+			}
+		} catch { /* 单条坏了不拖垮整列 */ }
+	}
+	return out.sort((a, b) => String(b.timestamp ?? '').localeCompare(String(a.timestamp ?? '')));
+}
+
+/** 引擎实例的进程内引用（apply 里装，路由里用）。 */
+const stateRef = { current: null };

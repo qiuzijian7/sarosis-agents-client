@@ -75,12 +75,9 @@ import { AgentInstanceService } from './agentInstanceService.js';
 import { AgentGalleryService } from './agentGalleryService.js';
 import { AgentDelegationService } from './agentDelegationService.js';
 import { IGitCommitService, GitCommitService } from './gitCommitService.js';
-import { IAgentSchedulerService } from '../common/agentScheduler.js';
-import { AgentSchedulerService } from './agentSchedulerService.js';
+// 2026-10-17（5.5 前置）：IAgentSchedulerService / AgentSchedulerService 的 import 摘了——注册注释掉了（见下面）。
 import { IHealthMonitorService } from '../common/healthMonitor.js';
 import { HealthMonitorService } from './healthMonitorService.js';
-import { ICrewTeamService } from '../common/crewTeam.js';
-import { CrewTeamService } from './crewTeamService.js';
 import { IWorkflowStorageService } from '../common/workflowStorage.js';
 import { WorkflowStorageService } from './workflowStorageService.js';
 import { IWorkflowExecutionService } from '../common/workflowExecutionService.js';
@@ -226,6 +223,7 @@ import { IModelsAutoUpdateService, ModelsAutoUpdateService, type IProviderHint }
 import { VSSAROS_LLM_CHANNEL } from '../common/llmBridge.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { AgentStudioActiveContext } from '../../../common/contextkeys.js';
+import { getDshFullWindowOpener } from '../../../common/dshFullWindow.js';
 import { AgentStudioEditorPane } from './agentStudioEditorPane.js';
 import { AgentStudioEditorInput, setConfigService } from './agentStudioEditorInput.js';
 import { SettingsEditorPane } from './settingsEditorPane.js';
@@ -241,6 +239,7 @@ import { AgentSettingsEditorPane } from './agentSettingsEditorPane.js';
 import { AgentSettingsEditorInput } from './agentSettingsEditorInput.js';
 import { AgentCreateEditorPane } from './agentCreateEditorPane.js';
 import { AgentCreateEditorInput } from './agentCreateEditorInput.js';
+import { DshPluginPageEditorInput } from '../../dshHarness/electron-browser/dshPluginPageEditorInput.js';
 import { McpServerEditorPane } from './mcpServerEditorPane.js';
 import { McpServerEditorInput } from './mcpServerEditorInput.js';
 import { McpDetailEditorPane } from './mcpDetailEditorPane.js';
@@ -266,6 +265,19 @@ import { WorkspaceFolderSyncContribution } from './workspaceFolderSync.js';
 import { DshHarnessSettings } from '../../dshHarness/common/dshHarness.js';
 import { PresetAgentViewPane } from './views/presetAgentView.js';
 import { TasksViewPane } from './views/tasksView.js';
+
+/**
+ * 「弹出独立窗口」的重入闸门（2026-10-18 真机日志实证的递归）。
+ *
+ * 现场：`popoutChat` 执行到 `await createAuxiliaryEditorPart(...)` 期间，**又**触发了一次
+ * `agentStudio.popoutChat`（新建 aux 窗口时标题栏按钮收到一次点击/重放；日志栈里
+ * `popoutChat → _runAgentStudioCommand → createAuxiliaryEditorPart → popoutChat …` 成链），
+ * 旧实现没有闸门 ⇒ 一直递归到把窗口叠满，用户看到的就是"点了没反应 / 一叠窗口" ✗。
+ *
+ * 5 秒窗口足够覆盖一次建窗（实测 < 1s），也顺手挡住连击标题栏按钮 ✓。
+ */
+let lastPopoutAt = 0;
+const POPOUT_REENTRY_WINDOW_MS = 5000;
 
 import { IntegrationViewPane } from './views/integrationView.js';
 import { AgentStudioSearchViewPane } from './views/searchView.js';
@@ -1168,9 +1180,13 @@ registerSingleton(IWorkspaceRegistry, WorkspaceRegistryService as any, Instantia
 registerSingleton(IAgentInstanceService, AgentInstanceService, InstantiationType.Delayed);
 registerSingleton(IAgentGalleryService, AgentGalleryService, InstantiationType.Delayed);
 registerSingleton(IGitCommitService, GitCommitService, InstantiationType.Delayed);
-registerSingleton(IAgentSchedulerService, AgentSchedulerService, InstantiationType.Delayed);
+// 2026-10-17（5.5 前置）：`IAgentSchedulerService` 不再注册——legacy 的自研调度器**从来没有执行过**
+//   （`agentSchedulerService.ts:356` 对 async 生成器只 await 不迭代 ⇒ 函数体没跑 ✗）；dsh 侧的调度器是
+//   官方 bundle（`dsh-schedule` 的 `schedule_create`，Phase 2 的 2.1 已接管 ✓）。调用方的守卫已加
+//   （`taskOverviewEditorPane._wireScheduleEvents`：服务不在 ⇒ 不绑事件 ✓——点按钮没反应 ✓，它本来就连着
+//   一个从没执行过的服务 ✓；509 行的 badge 列表在 try-catch 里 ✓）。文件留着等 5.5 真删。
+// registerSingleton(IAgentSchedulerService, AgentSchedulerService, InstantiationType.Delayed);
 registerSingleton(IHealthMonitorService, HealthMonitorService, InstantiationType.Delayed);
-registerSingleton(ICrewTeamService, CrewTeamService, InstantiationType.Delayed);
 registerSingleton(IWorkflowStorageService, WorkflowStorageService, InstantiationType.Delayed);
 registerSingleton(IWorkflowExecutionService, WorkflowExecutionService, InstantiationType.Delayed);
 registerSingleton(IWorkflowVersionService, WorkflowVersionService, InstantiationType.Delayed);
@@ -2577,6 +2593,40 @@ registerAction2(class extends Action2 {
 	}
 });
 
+// ─── 命令面板「新建 Agent」（2026-10-17，Agents 方案 A 待定项 ② = 乙：命令只开 Agents 页）────────
+// dsh 引擎：原生新建页（AgentCreateEditorPane）的唯一入口在旧原生侧栏上，已不可达 ⇒ 改开
+//   Agents 插件页的编辑区页，新建向导的入口（页头「＋ 新建」）在第一眼位置；**零新通道** ——
+//   不做「命令直达向导」（那要新增宿主→插件页的推送通道，见 doc/agents-botmode-decisions.html ②甲）。
+// 原生引擎：照旧开原生新建页。
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: 'agentStudio.createAgent',
+			title: localize2('agentStudio.createAgent', '新建 Agent'),
+			f1: true,
+			category: localize2('agentStudio.category', 'Agent Studio'),
+		});
+	}
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const editorService = accessor.get(IEditorService);
+		const configurationService = accessor.get(IConfigurationService);
+		if (isDshModuleEngine(configurationService)) {
+			// 与 openModulePage 同一落点：容器单例输入（dshModuleContainers.ts 的 agents 容器）✓
+			const input = DshPluginPageEditorInput.getOrCreate('agentStudio.presetAgent', 'Agents');
+			await editorService.openEditor(input, { pinned: true });
+			return;
+		}
+		const editorGroupsService = accessor.get(IEditorGroupsService);
+		const groups = editorGroupsService.getGroups(0 /* GroupsOrder.CREATION_TIME */);
+		const input = AgentCreateEditorInput.getInstance();
+		if (groups.length <= 1) {
+			await editorService.openEditor(input, { pinned: true }, SIDE_GROUP);
+		} else {
+			await editorService.openEditor(input, { pinned: true }, groups[0]);
+		}
+	}
+});
+
 // ─── 迁移旧版知识库（系统 A / Hyper-Extract）到 llm-wiki ───────────────
 // 一次性迁移命令：把 `<kb-storage-root>/<id>/kb.json` 旧 session 转成 Markdown
 // 笔记写入激活 Vault 的「笔记 / 迁移」目录，并把旧目录安全归档（不硬删）。
@@ -2829,10 +2879,46 @@ registerAction2(class extends Action2 {
 		const instantiationService = accessor.get(IInstantiationService);
 		const auxiliaryWindowService = accessor.get(IAuxiliaryWindowService);
 
+		// ★ 2026-10-17（用户报「点 agent 条目弹出一叠透明窗口」）：定位触发源 ——
+		//   正常只有标题栏「弹出独立窗口」按钮会调本命令；日志里出现而用户没点按钮时，栈就是真凶。
+		accessor.get(ILogService).info(`[agentStudio] popoutChat ENTER\n${new Error('caller trace').stack ?? '(no stack)'}`);
+		// ★ 2026-10-18：重入闸门（见文件头 `lastPopoutAt` 的注释）——建窗期间被二次触发时直接返回，
+		//   否则会递归开出多扇窗（真机实测：`createAuxiliaryEditorPart` 期间又触发本命令）。
+		const nowPop = Date.now();
+		if (nowPop - lastPopoutAt < POPOUT_REENTRY_WINDOW_MS) {
+			accessor.get(ILogService).warn('[agentStudio] popoutChat ignored: 上一次弹出仍在进行（重入闸门，2026-10-18）');
+			return;
+		}
+		lastPopoutAt = nowPop;
+
 		// 继承「被点击的那个聊天框」的 agent：独立窗口直接就是同一个 agent 的
 		// **空白**对话，用户不必再选一次 agent（会话内容仍是全新的）。
 		const activeEditor = editorService.activeEditor;
 		const sourceAgentId = activeEditor instanceof NativeChatEditorInput ? activeEditor.agentId : undefined;
+
+		// ★ 2026-10-17（用户拍板）：dsh 引擎下弹出窗口改放 **dsh 官方客户端完整 UI**
+		// （`surface='full'`，带官方侧栏/顶栏），并**跟随当前聊天会话** —— 实现经
+		// `dshFullWindow` 钩子由 electron-browser 层注入（分层约束：这里不能 import
+		// dsh 通道服务）。钩子未注册（legacy 引擎/总开关关闭）或抛错 ⇒ 回落下面的旧实现。
+		// ★ 2026-10-18（用户拍板）：默认走**拼装式 desktop**（aux editor part + 左侧会话栏 +
+		//   中间 dsh 聊天 + 右侧工作台页签）——官方 dsh Web 整页在真机上会整页同步阻塞
+		//   （渲染线程卡死、输入框点不动），不再是默认。要对照排查时可把
+		//   `sessions.dshHarness.popoutStyle` 设为 `web` 回到整页形态 ✓。
+		// ⚠ 形态（composed / web）的判定在 `dshFullWindow` 的 opener 里（`dshFullWindowContribution`）——
+		//   这里只负责"把弹窗交给 dsh"；`web` 形态失败时会返回 false 让我们回落旧实现 ✓。
+		const dshFullWindowOpener = getDshFullWindowOpener();
+		if (dshFullWindowOpener) {
+			try {
+				const opened = await dshFullWindowOpener({
+					chatId: activeEditor instanceof NativeChatEditorInput ? activeEditor.chatId : undefined,
+				});
+				if (opened) {
+					return;
+				}
+			} catch (err) {
+				accessor.get(ILogService).warn('[agentStudio] dsh 全窗弹出失败，回落旧弹窗实现', err);
+			}
+		}
 
 		// [Saros] 独立窗口左侧的「会话侧栏」（可拖拽调宽 / 可折叠），复用主窗口
 		// 左侧栏的会话列表面板。提到 try 外声明，便于失败路径释放。
@@ -2906,7 +2992,11 @@ registerAction2(class extends Action2 {
 				// [Saros] 独立窗口关闭 ⇒ 释放左侧会话侧栏（含其内部面板）
 				sideView?.dispose();
 			}));
-		} catch {
+		} catch (err) {
+			// ★ 2026-10-18：这个 catch 从前是**静默**的（只派发 legacy 事件）⇒ 拼装式弹窗失败时
+			//   日志里只有一句 `popoutChat ENTER`、然后什么都没有（真机排查白跑一轮 ✗）。
+			//   「点了没反应」的兜底路径必须留痕，否则无法区分"没执行"与"执行了但抛错"。
+			accessor.get(ILogService).warn('[agentStudio] 拼装式弹窗失败，回落 legacy 浮层事件', err);
 			// Last-resort fallback: dispatch the legacy in-window overlay event
 			// (kept for backward compatibility with the older floating-overlay impl).
 			sideView?.dispose();

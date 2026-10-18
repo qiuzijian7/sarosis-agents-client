@@ -49,6 +49,52 @@ export interface IRuntimeLog {
 	(line: string): void;
 }
 
+/**
+ * 环回地址必须绕过代理（★ 2026-10-16，借对照样本 `deepseek-harness-for-vscode` 的同名做法）。
+ *
+ * 为什么要有：Host 的插件页是经 `http://127.0.0.1:<port>/…` 加载的 ⇒ 用户环境里若配了系统代理
+ * （Clash 一类）而 `NO_PROXY` 没排除环回，请求会被代理**劫持** ⇒ 页面白屏 / `/x/...` 全 404，
+ * 而日志里看不出是代理干的 ✗（样本项目专门为此强制了这条）。
+ *
+ * 语义是**追加**而不是覆盖：用户已有条目原样保留（不夺用户的设置权 ✓）；`NO_PROXY=*`（全绕）
+ * 视为已满足 ✓。
+ */
+export const LOOPBACK_NO_PROXY = ['127.0.0.1', 'localhost', '::1'] as const;
+
+/**
+ * 保证 env 的 `NO_PROXY` 覆盖环回；原地改并返回同一个对象。
+ *
+ * ⚠ Windows 的环境变量名**大小写不敏感** ⇒ 同一件事可能同时存在 `NO_PROXY` 与 `no_proxy` 两个键
+ * （`extra` 里换个大小写写就会造出来）⇒ 这里先**合并成一个键**，否则 spawn 出去的子进程里两条都在、
+ * 谁生效说不清 ✗。
+ */
+export function ensureLoopbackNoProxy(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+	const keys = Object.keys(env).filter(k => k.toLowerCase() === 'no_proxy');
+	const primary = keys[0] ?? 'NO_PROXY';
+	const entries: string[] = [];
+	for (const key of keys) {
+		for (const raw of String(env[key] ?? '').split(',')) {
+			const entry = raw.trim();
+			if (entry !== '' && !entries.some(x => x.toLowerCase() === entry.toLowerCase())) {
+				entries.push(entry);
+			}
+		}
+	}
+	for (const key of keys.slice(1)) {
+		delete env[key];
+	}
+	const lowered = entries.map(e => e.toLowerCase());
+	if (!lowered.includes('*')) {
+		for (const token of LOOPBACK_NO_PROXY) {
+			if (!lowered.includes(token)) {
+				entries.push(token);
+			}
+		}
+	}
+	env[primary] = entries.join(',');
+	return env;
+}
+
 /** 进程环境：去掉会改变子 Node 行为的变量（Electron 主进程里可能带着它们）。 */
 export function sanitizedEnv(extra: Record<string, string | undefined> = {}): NodeJS.ProcessEnv {
 	const env: NodeJS.ProcessEnv = { ...process.env };
@@ -62,6 +108,8 @@ export function sanitizedEnv(extra: Record<string, string | undefined> = {}): No
 			env[k] = v;
 		}
 	}
+	// 环回绕代理放在 `extra` 合并**之后**：即便调用方显式传了 `NO_PROXY`，也保证环回不被代理劫持 ✓。
+	ensureLoopbackNoProxy(env);
 	return env;
 }
 

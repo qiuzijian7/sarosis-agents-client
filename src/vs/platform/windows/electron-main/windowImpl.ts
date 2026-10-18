@@ -408,6 +408,12 @@ export abstract class BaseWindow extends Disposable implements IBaseWindow {
 	private windowControlsDimmed = false;
 	private lastWindowControlColors: { backgroundColor?: string; foregroundColor?: string } | undefined;
 
+	// ★ 2026-10-17（用户报「点 agent 条目弹出透明窗口」，日志里有 uncaught "Titlebar overlay is not enabled"）：
+	//   原生标题栏的辅助窗口（dsh 全窗，`nativeTitlebar: true`）没有 titleBarOverlay ⇒ `setTitleBarOverlay` 必抛，
+	//   而且抛在 `setWin()` 中途 ⇒ 认领流程被截断（窗口菜单没去掉、没登记进生命周期——弹窗带着系统菜单栏）。
+	//   辅助窗口认领时拿不到它的创建参数 ⇒ 不知道有没有 overlay ⇒ 先试一次：成功记 true，抛了记 false 并别再调。
+	private windowControlsOverlay: boolean | undefined = undefined;
+
 	updateWindowControls(options: { height?: number; backgroundColor?: string; foregroundColor?: string; dimmed?: boolean }): void {
 		const win = this.win;
 		if (!win) {
@@ -420,7 +426,7 @@ export abstract class BaseWindow extends Disposable implements IBaseWindow {
 		}
 
 		// Windows/Linux: update window controls via setTitleBarOverlay()
-		if (!isMacintosh && useWindowControlsOverlay(this.configurationService)) {
+		if (!isMacintosh && this.windowControlsOverlay !== false && useWindowControlsOverlay(this.configurationService)) {
 
 			// Update dimmed state if explicitly provided
 			if (options.dimmed !== undefined) {
@@ -437,11 +443,18 @@ export abstract class BaseWindow extends Disposable implements IBaseWindow {
 			const effectiveBackgroundColor = this.windowControlsDimmed && backgroundColor ? this.dimColor(backgroundColor) : backgroundColor;
 			const effectiveForegroundColor = this.windowControlsDimmed && foregroundColor ? this.dimColor(foregroundColor) : foregroundColor;
 
-			win.setTitleBarOverlay({
-				color: effectiveBackgroundColor?.trim() === '' ? undefined : effectiveBackgroundColor,
-				symbolColor: effectiveForegroundColor?.trim() === '' ? undefined : effectiveForegroundColor,
-				height: options.height ? options.height - 1 : undefined // account for window border
-			});
+			try {
+				win.setTitleBarOverlay({
+					color: effectiveBackgroundColor?.trim() === '' ? undefined : effectiveBackgroundColor,
+					symbolColor: effectiveForegroundColor?.trim() === '' ? undefined : effectiveForegroundColor,
+					height: options.height ? options.height - 1 : undefined // account for window border
+				});
+				this.windowControlsOverlay = true;
+			} catch (e) {
+				// 原生标题栏的窗口（nativeTitlebar 辅助窗口）没有 overlay ⇒ 记住并跳过，别刷 uncaught exception
+				this.windowControlsOverlay = false;
+				this.logService.warn(`[windowImpl] setTitleBarOverlay skipped for window without overlay: ${String((e as Error)?.message ?? e)}`);
+			}
 		}
 
 		// macOS: update window controls via setWindowButtonPosition()

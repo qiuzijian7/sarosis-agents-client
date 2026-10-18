@@ -119,6 +119,7 @@ export function skillFromFile(text, { id, file }) {
 	const activation = ['manual', 'auto', 'always'].includes(meta.activation) ? meta.activation : DEFAULT_ACTIVATION;
 	return {
 		skill: {
+			id: id || name,  // 2026-10-17（重构 4）：read_skill / list_skills 要按 id 找（目录名 / frontmatter 的 name）⇒ 放进 skill ✓
 			name,
 			description,
 			whenToUse: (meta.whenToUse || meta['when-to-use'] || '').trim() || undefined,

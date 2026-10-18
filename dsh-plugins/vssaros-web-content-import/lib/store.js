@@ -5,18 +5,18 @@
 // `<数据根>/knowledge-base`（与 IDE 侧 `knowledgeStorage.ts` 的默认一致 ✓）。
 
 import { mkdir, readdir, stat } from 'node:fs/promises';
+import { foundation } from './foundationRef.js';
 import { homedir } from 'node:os';
+
 import { join } from 'node:path';
+
 import { atomicWriteFile } from './lock.js';
+
 
 /** 数据根。优先级：`config.dataRoot` → 环境变量 → `~/.vssaros`。 */
 export function dataRootOf(config) {
-	const configured = typeof config?.dataRoot === 'string' ? config.dataRoot.trim() : '';
-	if (configured) {
-		return configured;
-	}
-	const fromEnv = typeof process.env.VSSAROS_DATA_ROOT === 'string' ? process.env.VSSAROS_DATA_ROOT.trim() : '';
-	return fromEnv || join(homedir(), '.vssaros');
+	// 委托到 @vssaros/dsh-foundation（重构 1.3：真源只有一份）；调用签名不变。
+	return foundation().dataRootOf(config);
 }
 
 /** 知识库根：`config.kbRoot` → `<数据根>/knowledge-base`（与 `@vssaros/dsh-kb` 的 `kbRootOf` 同口径）。 */

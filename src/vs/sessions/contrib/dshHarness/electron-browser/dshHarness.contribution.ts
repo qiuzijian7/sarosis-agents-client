@@ -38,6 +38,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { isRuntimeVersionDir } from '../common/dshCli.js';
+import { hostIdleTtlText } from '../common/dshHostConfig.js';
 import { DshPageCommand, IDshInsertReference, isPathInside } from '../common/dshPageBridgeProtocol.js';
 import { IDshUpgradeResult } from '../common/dshUpgrade.js';
 import { DSH_MODULE_CONTAINERS, DSH_MODULE_PAGES } from '../common/dshModuleContainers.js';
@@ -46,7 +47,7 @@ import { DSH_MODULE_CONTAINERS, DSH_MODULE_PAGES } from '../common/dshModuleCont
 import { IWorkbenchManagerService } from '../../agentStudio/browser/workbenchManagerService.js';
 // Agents 视图 id（`openAgentRoster` 用它聚焦侧栏那个视图；见该分支的注释 —— 用视图 id 而不是
 // 曾经的 `agentStudio.presetAgent.focus` 假命令 id ✓）
-import { AGENT_STUDIO_PRESET_AGENT_VIEW_ID } from '../../agentStudio/common/constants.js';
+import { AGENT_STUDIO_PRESET_AGENT_VIEW_ID } from '../../../common/agentStudioConstants.js';
 // 单个 bot 的「Agent 设置」编辑器页输入（`openAgentSettings` 用它；页面自己开不了编辑器 ⇒ 宿主来开）。
 // 与上面几行同属**跨层 import（electron-browser → agentStudio/browser）**，先例见上一条注释 ✓。
 import { AgentSettingsEditorInput } from '../../agentStudio/browser/agentSettingsEditorInput.js';
@@ -55,7 +56,7 @@ import { AgentSettingsEditorInput } from '../../agentStudio/browser/agentSetting
 // 用的是同一对 ✓）。跨层 import（electron-browser → agentStudio/browser|common）先例同上 ✓。
 import { ResourceManagerEditorInput } from '../../agentStudio/browser/resourceManagerEditorInput.js';
 import { ResourceManagerEditorPane } from '../../agentStudio/browser/resourceManagerEditorPane.js';
-import { resolveSarosPath, SarosPath, userDataRootFromRoamingHome } from '../../agentStudio/common/sarosPaths.js';
+import { resolveSarosPath, SarosPath, userDataRootFromRoamingHome } from '../../../common/sarosPaths.js';
 import { DshPluginPageEditorInput } from './dshPluginPageEditorInput.js';
 // side-effect import：注册「dsh 插件页的编辑区承载」（editor pane），见该文件头注释 ✓
 import './dshPluginPageEditor.contribution.js';
@@ -77,6 +78,7 @@ const DSH_COMMAND_CHECK_UPDATES = 'dshHarness.checkUpdates';
 import { DshHarnessSettings, DSH_DEFAULT_PROFILE, IDshHostStatus } from '../common/dshHarness.js';
 import { DshHarnessService, IDshHarnessService } from './dshHarnessService.js';
 import { DshChatHostContribution } from './dshChatInstanceHost.js';
+import { DshFullWindowContribution } from './dshFullWindowContribution.js';
 import { DshPluginCenterHostContribution } from './dshPluginCenterHost.js';
 import { DshActivityBarContribution } from './dshActivityBarContribution.js';
 import { DSH_COMMAND_OPEN_SETTINGS, DSH_COMMAND_RESTART_HOST, DSH_COMMAND_SHOW_LOG } from './dshCommands.js';
@@ -143,7 +145,17 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		[DshHarnessSettings.HostKeepAlive]: {
 			type: 'boolean',
 			default: true,
-			markdownDescription: localize('dshHarness.config.hostKeepAlive', "关闭 VsSaros 时保留 dsh Host 常驻（默认开启）：再次打开时直接接管（聊天框零等待）；Host 空闲 30 分钟无客户端会自动退出，不会长期占内存。关闭则每次退出都结束 Host。"),
+			markdownDescription: localize('dshHarness.config.hostKeepAlive', "关闭 VsSaros 时保留 dsh Host 常驻（默认开启）：再次打开时直接接管（聊天框零等待）；Host 空闲 {0} 无客户端会自动退出，不会长期占内存。关闭则每次退出都结束 Host。", hostIdleTtlText()),
+		},
+		[DshHarnessSettings.PopoutStyle]: {
+			type: 'string',
+			enum: ['composed', 'web'],
+			enumDescriptions: [
+				localize('dshHarness.config.popoutStyle.composed', "拼装式 desktop（默认）：左侧 VsSaros 会话栏 + 中间 dsh 聊天 + 右侧工作台页签，布局照官方 desktop。"),
+				localize('dshHarness.config.popoutStyle.web', "官方 dsh Web 客户端整页（带官方侧栏/顶栏）。注意：真机上曾出现整页卡死（输入框无响应），保留此档仅供对照。"),
+			],
+			default: 'composed',
+			markdownDescription: localize('dshHarness.config.popoutStyle', "「弹出独立窗口」用哪种形态。改动后需重载窗口。"),
 		},
 		[DshHarnessSettings.SkipPluginInstall]: {
 			type: 'boolean',
@@ -164,16 +176,28 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'string',
 			enum: ['legacy', 'dsh'],
 			enumDescriptions: [
-				localize('dshHarness.config.moduleEngine.legacy', "模块 ActivityBar 图标由静态注册负责（现状，默认）。"),
-				localize('dshHarness.config.moduleEngine.dsh', "按已激活的模块插件动态注册 / 注销模块图标（方案 6.4 / 6.11.5）。Host 未启动或模块插件未安装时对应图标不显示。"),
+				localize('dshHarness.config.moduleEngine.legacy', "模块 ActivityBar 图标由静态注册负责（回退用）。"),
+				localize('dshHarness.config.moduleEngine.dsh', "按已激活的模块插件动态注册 / 注销模块图标（方案 6.4 / 6.11.5；重构 1.1 起按插件清单驱动，新增模块不改壳代码）。"),
 			],
-			default: 'legacy',
-			markdownDescription: localize('dshHarness.config.moduleEngine', "模块引擎（方案 6.8 / 9.2）：`dsh` 时模块图标改为按插件动态注册（容器可见性经 VsSaros 侧聚合表计算）；`legacy` 保持现有静态注册。改动后需重载窗口；只在总开关打开时生效。"),
+			// 重构 1.2（2026-10-16）：默认翻成 dsh。1.1 已把数据源换成插件清单（读 profile，不拉 Host）；
+			// Host 没起来时页面显示状态说明（DshPluginViewPane 的状态区），图标照常出现。
+			default: 'dsh',
+			markdownDescription: localize('dshHarness.config.moduleEngine', "模块引擎（方案 6.8 / 9.2）：`dsh` 时模块图标按插件清单动态注册（容器可见性经聚合计算）；`legacy` 为回退（静态注册）。改动后需重载窗口；只在总开关打开时生效。"),
 		},
 		[DshHarnessSettings.ChatOnlyUi]: {
 			type: 'boolean',
 			default: true,
 			markdownDescription: localize('dshHarness.config.chatOnlyUi', "聊天框里只保留聊天 UI（方案 5.13）：在 dsh 页面里隐藏侧边栏（含品牌行与会话列表）与右侧面板（轨迹 / 任务 / 交付物），只留会话、输入框、审批与用量。关闭即回到官方整页形态。改动后需重载窗口。"),
+		},
+		[DshHarnessSettings.EntryKanban]: {
+			type: 'string',
+			enum: ['dsh', 'legacy'],
+			enumDescriptions: [
+				localize('dshHarness.config.entryKanban.dsh', "看板「进行中」由 dsh 侧 runner 驱动（Host 里的 kanban 插件，重构 2.2）。"),
+				localize('dshHarness.config.entryKanban.legacy', "回退到旧的壳侧执行链（executeTaskForBoard）。"),
+			],
+			default: 'dsh',
+			markdownDescription: localize('dshHarness.config.entryKanban', "看板自动执行的入口归属（重构 2.2）：两边同时跑会双执行 ⇒ 只能二选一；出问题回退到 `legacy`。"),
 		},
 		[DshHarnessSettings.DshHome]: {
 			type: 'string',
@@ -541,8 +565,12 @@ class DshHarnessWorkbenchContribution extends Disposable implements IWorkbenchCo
 registerWorkbenchContribution2(DshHarnessWorkbenchContribution.ID, DshHarnessWorkbenchContribution, WorkbenchPhase.BlockStartup);
 // 聊天宿主必须在恢复的聊天标签创建 pane 之前注册工厂。
 registerWorkbenchContribution2(DshChatHostContribution.ID, DshChatHostContribution, WorkbenchPhase.BlockRestore);
+// 「弹出窗口 = dsh 官方客户端完整 UI」的开窗钩子（engine=dsh 才接管 popout；否则 popout 走旧实现）。
+registerWorkbenchContribution2(DshFullWindowContribution.ID, DshFullWindowContribution, WorkbenchPhase.BlockRestore);
 // 模块 ActivityBar 的动态注册（方案 6.4）；moduleEngine=legacy 时空操作（静态注册负责）。
-registerWorkbenchContribution2(DshActivityBarContribution.ID, DshActivityBarContribution, WorkbenchPhase.BlockStartup);
+// ⚠ 不在此注册：dshActivityBarContribution.ts 文件末尾已自注册（2026-10-16 前这里又注册了一次 ⇒
+//   同一 ID 双注册；registerWorkbenchContribution2 对重复 ID 会抛错/告警 ⇒ 保留模块内那一处）。
+void DshActivityBarContribution;
 // 插件中心「DSH」来源的数据钩子（方案 4.5）；总开关关闭时不注册，页签不出现。
 registerWorkbenchContribution2(DshPluginCenterHostContribution.ID, DshPluginCenterHostContribution, WorkbenchPhase.BlockStartup);
 
@@ -566,14 +594,16 @@ class DshWorkspaceReportContribution extends Disposable implements IWorkbenchCon
 	) {
 		super();
 		const schedule = () => this._config.getValue<boolean>(DshHarnessSettings.Enabled) && this._scheduler.schedule();
-		// 工作区换了要做两件事：重报目录（`schedule`）**和**让 Host 里那份 `config.workspaceId` 跟上。
-		// 后者是启动时快照 ⇒ 空闲时重启（`noteActiveWorkspace`；有会话在跑就不打断，由 supervisor 留日志）。
+		// 工作区换了要做两件事：重报目录（`schedule`）**和**让 Host 里那份工作区上下文跟上。
+		// 后者走**运行期**路径（`noteActiveWorkspace` 推 `workspace.context`）⇒ 切工作区**不重启 Host** ✓；
+		// 只有老 Host / 老插件不认那条调用时才退回"空闲时重启"（见 service 里那两个方法的注释 ✓）。
 		const onWorkspaceChange = () => {
 			void this._dsh.noteActiveWorkspace(_studio.getActiveWorkspaceId())
 				.catch(err => this._log.warn(`[dshHarness] 切换工作区后的 Host 处理失败：${String((err as Error)?.message ?? err)}`));
 			schedule();
 		};
-		// 先记一次当前值：第一次**真**切换才有"上一个"可比（记的时候不会重启——那时还不知道 Host 里是什么）
+		// 先记一次当前值 **并把上下文推给已在跑的 Host**：从前这一步什么都没做（那时还没观测过"上一个"）
+		// ⇒ Host 带着旧快照跑到底 ✗；现在首记也推（幂等：值没变 Host 侧不会广播 ✓）。
 		void this._dsh.noteActiveWorkspace(_studio.getActiveWorkspaceId()).catch(() => undefined);
 		this._register(_studio.onDidChangeActiveWorkspace(onWorkspaceChange));
 		this._register(_studio.onDidChangeWorkspace(id => id === _studio.getActiveWorkspaceId() && onWorkspaceChange()));
@@ -755,13 +785,45 @@ class DshPageCommandContribution extends Disposable implements IWorkbenchContrib
 		const dsh = instantiationService.invokeFunction(accessor => accessor.get(IDshHarnessService));
 		this._register(dsh.onDidPageEvent(e => {
 			if (e.kind === 'command') {
-				void this._handle(e.command).catch(err => this._notifications.error(String((err as Error)?.message ?? err)));
+				void this._handle(e.command, e.viewId).catch(err => this._notifications.error(String((err as Error)?.message ?? err)));
 			}
 		}));
 	}
 
-	private async _handle(command: Exclude<DshPageCommand, { method: 'ping' }>): Promise<void> {
+	/**
+	 * 插件页（侧栏 `dsh-plugin-w…` / 编辑区 `dsh-plugin-editor-w…`）发来的 `newChat` / `openSession`。
+	 *
+	 * ★ 2026-10-16（agents 方案 A 第 2 步时查出）：这两条原来**只有聊天宿主**（`DshChatInstanceHost`，按自己的
+	 *   viewId 过滤）消费 ⇒ 插件页发出来**没人接**，agents 页的「发起会话」「打开对话」在真机里是静默空操作 ✗
+	 *   （进程内探针只断"调了桥"，看不见宿主侧没人接 ✗）。
+	 * 分工：聊天视图自己的 newChat/openSession 仍归聊天宿主（这里按 viewId 前缀放行，**不会**双开 ✓）。
+	 */
+	private async _handlePluginChatCommand(command: { method: 'newChat'; agentPreset?: string } | { method: 'openSession'; sessionId: string; agentPreset?: string }, viewId: string): Promise<void> {
+		if (command.method === 'newChat') {
+			this._logService.info(`[dshHarness] plugin page ${viewId} newChat${command.agentPreset ? ` preset=${command.agentPreset}` : ''} ⇒ agentStudio.newChatInEditor`);
+			await this._commands.executeCommand('agentStudio.newChatInEditor', command.agentPreset ? { presetId: command.agentPreset } : undefined);
+			return;
+		}
+		// openSession：会话绑定的权威在聊天宿主 ⇒ 转交给**活动聊天框**切过去（右侧 Agent 栏 ✓）。
+		const target = this._dsh.activeChatViewId;
+		if (target && this._dsh.dispatchPageCommand(target, command)) {
+			this._logService.info(`[dshHarness] plugin page ${viewId} openSession ${command.sessionId} ⇒ 交给活动聊天框 ${target}`);
+			return;
+		}
+		// 没有在场的聊天框：如实降级 —— 新开一个绑该 agent 的聊天（**不是**那条旧会话，提示说清楚 ✓）
+		this._logService.info(`[dshHarness] plugin page ${viewId} openSession ${command.sessionId}：没有活动聊天框 ⇒ 降级为新开聊天`);
+		await this._commands.executeCommand('agentStudio.newChatInEditor', command.agentPreset ? { presetId: command.agentPreset } : undefined);
+		this._notifications.info(localize('dshHarness.page.openSessionFallback', "没有打开着的聊天框，已为该 Agent 新开一个聊天；要回到那条历史会话，请在聊天框的「历史会话」里选它。"));
+	}
+
+	private async _handle(command: Exclude<DshPageCommand, { method: 'ping' }>, viewId: string): Promise<void> {
 		switch (command.method) {
+			case 'newChat':
+			case 'openSession':
+				if (viewId.startsWith('dsh-plugin-')) {
+					await this._handlePluginChatCommand(command, viewId);
+				}
+				return;
 			case 'openFile':
 			case 'reveal': {
 				const uri = URI.file(command.path);

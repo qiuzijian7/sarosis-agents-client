@@ -268,8 +268,30 @@ export class TitlebarPart extends Part implements ITitlebarPart {
 				popoutBtn.addEventListener('click', (e) => {
 					e.preventDefault();
 					e.stopPropagation();
+					// ★ 2026-10-17 诊断（用户报「点 agent 条目就弹出透明窗口」，而调用栈落在这枚按钮的原生 click）：
+					//   记下这次 click 的**物理来源**，用来区分三种可能 ——
+					//   ① 真的点中了按钮（detail≥1、坐标在按钮矩形内、pointerType=mouse）；
+					//   ② 键盘触发（detail=0：按钮持有焦点时按了 Enter/空格，焦点可能是很久前点这枚按钮留下的）；
+					//   ③ 程序合成（isTrusted=false）。
+					const win = getWindow(popoutBtn);
+					const r = popoutBtn.getBoundingClientRect();
+					const pe = e as PointerEvent;
+					const active = win.document.activeElement;
+					this.instantiationService.invokeFunction(accessor => accessor.get(ILogService).info(
+						`[Titlebar] popout button click: isTrusted=${e.isTrusted} detail=${e.detail} pointerType=${pe.pointerType ?? '(n/a)'} `
+						+ `client=(${Math.round(e.clientX)},${Math.round(e.clientY)}) btnRect=(${Math.round(r.left)},${Math.round(r.top)},${Math.round(r.width)}x${Math.round(r.height)}) `
+						+ `activeElement=${active ? `${active.tagName}.${(active as HTMLElement).className}`.slice(0, 80) : '(none)'} hasFocus=${win.document.hasFocus()}`));
+					// 键盘触发（detail=0 且焦点就在这枚按钮上）⇒ 不是用户想点它：只记日志、**不执行** ✓
+					//   （WebContentsView 里点击不会把焦点从这枚按钮上移走 ⇒ 之后在插件页里按回车/空格会"按到"它 ✗）
+					if (e.detail === 0 && active === popoutBtn) {
+						this.instantiationService.invokeFunction(accessor => accessor.get(ILogService).warn('[Titlebar] popout button: 键盘触发（焦点残留在按钮上）⇒ 忽略，不弹窗'));
+						popoutBtn.blur();
+						return;
+					}
 					this._runAgentStudioCommand('agentStudio.popoutChat');
 				});
+				// 点完立刻交还焦点：否则焦点一直留在按钮上，之后任何「回车/空格」都会再触发它 ✗
+				popoutBtn.addEventListener('mouseup', () => popoutBtn.blur());
 
 				// 反馈按钮 — opens logs folder in OS file explorer + TAPD feedback page
 				const feedbackBtn = append(toggleContainer, $('button.titlebar-toggle-right-column'));

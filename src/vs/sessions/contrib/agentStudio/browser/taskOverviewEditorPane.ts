@@ -1006,6 +1006,12 @@ export class TaskOverviewEditorPane extends EditorPane {
 	/** Wire schedule-renderer UI events and the scheduler-service events. */
 	private _wireScheduleEvents(): void {
 		if (!this._scheduleRenderer) { return; }
+		// 2026-10-17（5.5 前置）：`IAgentSchedulerService` 的注册注释掉了（legacy 调度器从没执行过 ⇒
+		//   死代码 ✓）⇒ `this._schedulerService` 是 undefined（DI 非 strict ⇒ 不抛，注入 undefined ✓）。
+		//   事件处理器没守卫 ⇒ 点按钮崩 ✗。加守卫：服务不在 ⇒ 不绑事件（调度 tab 的按钮点了没反应 ✓——
+		//   它本来就连着一个从没执行过的服务 ✓）。
+		const scheduler = this._schedulerService;
+		if (!scheduler) { return; }
 
 		// Renderer → CRUD
 		this._register(this._scheduleRenderer.onCreateRequest(() => {
@@ -1015,15 +1021,15 @@ export class TaskOverviewEditorPane extends EditorPane {
 			void this._handleEditSchedule(ruleId);
 		}));
 		this._register(this._scheduleRenderer.onDeleteRequest(({ ruleId }) => {
-			this._schedulerService.removeSchedule(ruleId);
+			scheduler.removeSchedule(ruleId);
 		}));
 		this._register(this._scheduleRenderer.onToggleRequest(({ ruleId }) => {
-			const rule = this._schedulerService.listAllSchedules(this._currentWorkspaceId()).find(r => r.id === ruleId);
+			const rule = scheduler.listAllSchedules(this._currentWorkspaceId()).find(r => r.id === ruleId);
 			if (!rule) { return; }
 			if (rule.state === ScheduleState.Active) {
-				this._schedulerService.pauseSchedule(ruleId);
+				scheduler.pauseSchedule(ruleId);
 			} else if (rule.state === ScheduleState.Paused) {
-				this._schedulerService.resumeSchedule(ruleId);
+				scheduler.resumeSchedule(ruleId);
 			}
 		}));
 

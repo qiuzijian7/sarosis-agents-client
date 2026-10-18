@@ -5,8 +5,8 @@
 
 import assert from 'assert';
 import {
-	DSH_ALWAYS_REGISTERED_CONTAINERS, DSH_BUILTIN_MODULES, DSH_MODULE_CONTAINERS, DSH_MODULE_PAGES,
-	activeModulesOf, defaultPageRoute, moduleContainerOf, moduleContextKey, moduleIdForPluginName, pageRouteForActiveModules, planModuleContainers, resolveContainerPageState,
+	DSH_ALWAYS_REGISTERED_CONTAINERS, DSH_BUILTIN_MODULES, DSH_MODULE_CONTAINERS, DSH_MODULE_PAGES, DshModuleId, IPluginWithManifest,
+	activeModulesFromPlugins, activeModulesOf, containersFromPlugins, defaultPageRoute, moduleContainerOf, moduleContextKey, moduleIdForPluginName, pageRouteForActiveModules, pagesFromPlugins, planModuleContainers, resolveContainerPageState,
 } from '../../common/dshModuleContainers.js';
 
 suite('dshModuleContainers（容器聚合与注册计划）', () => {
@@ -230,7 +230,110 @@ suite('dshModuleContainers（容器聚合与注册计划）', () => {
 				// `vssaros.dsh.*` 自建容器：代码库 2026-10-12 起是 `existing`（两种引擎都有）；历史会话 dsh 页
 				// 2026-10-12 新增，`page-only`（legacy 侧的历史会话是**另一个**常驻容器 `sessionHistory.view`，两者并存）。
 				// （画布模块已于 2026-10-15 移除 —— `.canvas` 文件仍走 legacy **编辑器**，不受影响 ✓）
-				'vssaros.dsh.codebase', 'vssaros.dsh.sessions']);
+				// `vssaros.dsh.scheduler`：定时任务（重构 2.1，page-only —— legacy 调度器从不执行，无静态对应物）。
+				'vssaros.dsh.codebase', 'vssaros.dsh.scheduler', 'vssaros.dsh.sessions']);
 		assert.deepStrictEqual(plan.pending, [], '没有 planned 容器了（语义保留给"规划了图标但还没有页面"的下一个模块）');
+	});
+
+	suite('清单驱动（重构 1.1：containersFromPlugins / pagesFromPlugins / 派生计划）', () => {
+
+		/** 造一个带清单的插件夹具。 */
+		function fixturePlugin(name: string, module: string, containerId: string, order: number, route: string): IPluginWithManifest {
+			return {
+				name,
+				manifest: {
+					manifestVersion: 1,
+					module,
+					activityBar: { containerId, title: { zh: module, en: module }, icon: 'codicon:symbol-misc', order },
+					view: { kind: 'page', route },
+				},
+			};
+		}
+
+		test('★ 从清单派生容器与页面：内置插件集合派生出的表与硬编码表逐项一致（双轨对账）', () => {
+			// 这条是整个 1.1 的**对账锚点**：派生 ≠ 表 ⇒ 说明有人改了清单忘了同步（或反之）。
+			// channels 是 planned 预留位（没有插件目录）⇒ 夹具里不带它。
+			const plugins: IPluginWithManifest[] = [
+				fixturePlugin('@vssaros/dsh-skills', 'skills', 'agentStudio.integration', 90, '/x/skills/'),
+				{ name: '@vssaros/dsh-mcp', manifest: { manifestVersion: 1, module: 'mcp', view: { kind: 'section', host: 'skills', route: '/x/mcp/section' } } },
+				fixturePlugin('@vssaros/dsh-kb', 'kb', 'agentStudio.knowledgeBase', 110, '/x/kb/'),
+				fixturePlugin('@vssaros/dsh-memory', 'memory', 'agentStudio.memory', 111, '/x/memory/'),
+				fixturePlugin('@vssaros/dsh-media', 'media', 'agentStudio.media', 112, '/x/media/'),
+				fixturePlugin('@vssaros/dsh-codebase', 'codebase', 'vssaros.dsh.codebase', 113, '/x/codebase/'),
+				fixturePlugin('@vssaros/dsh-kanban', 'kanban', 'agentStudio.tasks', 70, '/x/kanban/'),
+				fixturePlugin('@vssaros/dsh-workflow', 'workflow', 'agentStudio.workflow', 80, '/x/workflow/'),
+				fixturePlugin('@vssaros/dsh-agents', 'agents', 'agentStudio.presetAgent', 60, '/x/agents/'),
+				fixturePlugin('@vssaros/dsh-dashboard', 'dashboard', 'agentStudio.dashboard', 5, '/x/dashboard/'),
+				fixturePlugin('@vssaros/dsh-sessions', 'sessions', 'vssaros.dsh.sessions', 120, '/x/sessions/'),
+				// 重构 2.1：定时任务（官方 dsh-schedule 的薄壳；page-only，legacy 侧无对应物）。
+				fixturePlugin('@vssaros/dsh-scheduler', 'scheduler', 'vssaros.dsh.scheduler', 95, '/x/scheduler/'),
+			];
+			const containers = containersFromPlugins(plugins);
+			// 容器集合与硬编码表一致（containerId + 成员模块）
+			assert.deepStrictEqual(
+				containers.map(c => ({ id: c.containerId, modules: [...c.modules].sort() })).sort((a, b) => a.id.localeCompare(b.id)),
+				DSH_MODULE_CONTAINERS.map(c => ({ id: c.containerId, modules: [...c.modules].sort() })).sort((a, b) => a.id.localeCompare(b.id)),
+				'派生容器表与硬编码表不一致');
+			// 页面表一致（kind + route；section 带 host）
+			const pages = pagesFromPlugins(plugins);
+			for (const expected of DSH_MODULE_PAGES.filter(p => p.kind !== 'none')) {
+				const actual = pages.find(p => p.module === expected.module);
+				assert.ok(actual, `派生页面表缺 ${expected.module}`);
+				assert.strictEqual(actual!.kind, expected.kind);
+				assert.strictEqual(actual!.route, expected.route);
+			}
+			// 共容器（skills+mcp）聚合语义保留：integration 的成员是两个模块
+			// （mcp 是寄居模块：没自己的 activityBar，但 view.host=skills ⇒ 并入宿主容器）。
+			const integration = containers.find(c => c.containerId === 'agentStudio.integration');
+			assert.deepStrictEqual(integration?.modules, ['skills', 'mcp'], '寄居模块必须并入宿主容器（否则只装 mcp 时图标不显示）');
+		});
+
+		test('★★ 新模块零壳改动：一个从没见过的插件清单就能产出容器注册计划', () => {
+			// 这是 1.1 的**验收**：加一个全新模块（`totally-new`），不改任何壳代码，计划里就出现它的容器。
+			const plugins: IPluginWithManifest[] = [
+				fixturePlugin('@acme/dsh-totally-new', 'totally-new', 'dsh-totally-new.main', 300, '/x/totally-new/'),
+			];
+			const containers = containersFromPlugins(plugins);
+			const pluginModules = new Map(plugins.map(p => [p.name, p.manifest!.module!]));
+			const plan = planModuleContainers({
+				engine: 'dsh',
+				installedPlugins: plugins.map(p => p.name),
+				registeredContainerIds: [],
+				containers,
+				pluginModules,
+			});
+			assert.deepStrictEqual(plan.registrations.map(c => c.containerId), ['dsh-totally-new.main']);
+			assert.strictEqual(plan.contextKeys['vssaros.dsh.plugin.totally-new.active'], true);
+			// 页面也能解析（不落在硬编码页面表上）
+			const pages = pagesFromPlugins(plugins);
+			const state = resolveContainerPageState(containers[0], ['totally-new' as DshModuleId], pages);
+			assert.strictEqual(state.page?.route, '/x/totally-new/');
+		});
+
+		test('清单缺失/无 module 的插件不参与派生（bridge 这类基础插件）', () => {
+			const plugins: IPluginWithManifest[] = [
+				{ name: '@vssaros/dsh-bridge' },
+				{ name: '@acme/dsh-no-manifest', manifest: undefined },
+			];
+			assert.deepStrictEqual(containersFromPlugins(plugins), []);
+			assert.deepStrictEqual(pagesFromPlugins(plugins), []);
+			assert.deepStrictEqual(activeModulesFromPlugins(plugins), []);
+		});
+
+		test('停用的插件不激活模块（enabled=false 视同未装）', () => {
+			const plugins: IPluginWithManifest[] = [
+				{ ...fixturePlugin('@acme/dsh-totally-new', 'totally-new', 'dsh-totally-new.main', 300, '/x/totally-new/'), enabled: false },
+			];
+			assert.deepStrictEqual(activeModulesFromPlugins(plugins), []);
+		});
+
+		test('派生容器排序稳定：按 order，再按 containerId', () => {
+			const plugins: IPluginWithManifest[] = [
+				fixturePlugin('@acme/dsh-b', 'b', 'dsh-b.main', 300, '/x/b/'),
+				fixturePlugin('@acme/dsh-a', 'a', 'dsh-a.main', 200, '/x/a/'),
+				fixturePlugin('@acme/dsh-c', 'c', 'dsh-c.main', 200, '/x/c/'),
+			];
+			assert.deepStrictEqual(containersFromPlugins(plugins).map(c => c.containerId), ['dsh-a.main', 'dsh-c.main', 'dsh-b.main']);
+		});
 	});
 });

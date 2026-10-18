@@ -18,7 +18,7 @@
  */
 
 import { DshBridgeErrorCode, isVssarosIdeCapability } from './dshBridgeProtocol.js';
-import { tryParseVssarosManifest, VssarosIdeCapability } from './vssarosPluginManifest.js';
+import { isBuiltinPluginName, tryParseVssarosManifest, VssarosIdeCapability } from './vssarosPluginManifest.js';
 
 /** 一个插件声明的 IDE 能力。 */
 export interface IIdeCapabilityDeclaration {
@@ -31,15 +31,31 @@ export type IIdeAuthorization =
 	| { readonly allowed: true; readonly declaration: IIdeCapabilityDeclaration }
 	| { readonly allowed: false; readonly code: number; readonly reason: string };
 
+/** {@link readCapabilityDeclarations} 的可选参数。 */
+export interface IReadCapabilityDeclarationsOptions {
+	/**
+	 * 判定某个包名是不是 **VsSaros 自己的内置模块插件**（缺省 {@link isBuiltinPluginName}）。
+	 *
+	 * ★ 2026-10-17 真机事故：这里原先**不带任何 options** 解析，于是内置模块插件被按
+	 *   **第三方**规则校验 —— `activityBar.order` 90/80/60/5 全部越界、`containerId`
+	 *   `vssaros.dsh.*` 命中"常驻命名空间"禁令 ⇒ 整份清单判废 ⇒ **该插件零 IDE 能力** ⇒
+	 *   所有「在 IDE 打开」类反向调用被主进程拒绝（`插件未安装或没有可读清单：@vssaros/dsh-workflow`），
+	 *   而工作流页面只会在**页尾那一行小红字**里报出来（用户看到的就是"点了没反应"）。
+	 *   同一个文件的 `_readPluginManifest` 一直传 `builtin`，只有这条授权读取漏了。
+	 */
+	readonly isBuiltin?: (pluginId: string) => boolean;
+}
+
 /**
  * 从"插件名 → `package.json` 内容"抽出各家声明的 IDE 能力。
  * 读不了/坏清单 ⇒ 该插件**零能力**（同时留一条 note 给日志），绝不因此放行。
  */
-export function readCapabilityDeclarations(manifests: ReadonlyMap<string, unknown>): { declarations: Map<string, IIdeCapabilityDeclaration>; notes: string[] } {
+export function readCapabilityDeclarations(manifests: ReadonlyMap<string, unknown>, options: IReadCapabilityDeclarationsOptions = {}): { declarations: Map<string, IIdeCapabilityDeclaration>; notes: string[] } {
 	const declarations = new Map<string, IIdeCapabilityDeclaration>();
 	const notes: string[] = [];
+	const isBuiltin = options.isBuiltin ?? isBuiltinPluginName;
 	for (const [pluginId, json] of manifests) {
-		const parsed = tryParseVssarosManifest((json as { vssaros?: unknown } | undefined)?.vssaros);
+		const parsed = tryParseVssarosManifest((json as { vssaros?: unknown } | undefined)?.vssaros, { pluginName: pluginId, builtin: isBuiltin(pluginId) });
 		if (parsed.manifest === undefined) {
 			// 没有 `vssaros` 清单 = 不是模块插件（如伴生插件）：零能力，不是错误
 			if (/清单必须是对象/.test(parsed.error) && (json as { vssaros?: unknown } | undefined)?.vssaros === undefined) {

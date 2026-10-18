@@ -12,14 +12,20 @@
 // 不 import 就避免了 profile 侧对 dsh 包的解析依赖，跨版本更稳。
 
 import { DEFAULT_BOARD_ID, DETAIL_DESCRIPTION_LIMIT, PRIORITIES, STATUSES, applyUpdate, createRecord, project, projectDetail, selectTasks } from './core/taskboard.js';
+import { bindFoundation, foundation } from './foundationRef.js';
 // 两种承载表面（2026-10-14）：
 //   · 侧栏（宿主注入 `?surface=sideview`）⇒ `lib/sideview.js` 的**摘要 + 入口**；
 //   · 编辑区（不带该参数）⇒ `lib/board.js` 的**多列看板**（探针 p3-01 走的正是这条）。
 // 渲染与样式都在那两个文件里（它们各自 import `pageShell.js`）；**本文件只负责取数 + 分派路由**，
 // 免得两个表面的渲染混在一处。看板页的列口径 / 卡片视图模型 / 描述拆分都是纯函数，可被探针直接验。
 import { columnKeyForStatus, moveOutcome, renderBoardPage, resolveDrop, splitNotes, statusLabel } from './board.js';
+
 import { renderSideviewPage } from './sideview.js';
-import { dataRootOf, mutateTaskboard, readBoards, readDshTodoMirrors, readTaskboard, TASKBOARD_FILE, taskboardPath, workspaceIdOf } from './store.js';
+
+import { dataRootOf, mutateTaskboard, readBoards, readDshTodoMirrors, readTaskboard, runnerCwdOf, TASKBOARD_FILE, taskboardPath, workspaceIdOf } from './store.js';
+import { createKanbanRunner } from './runner.js';
+import { join } from 'node:path';  // 重构 4：web-recipes.json 的路径拼接
+
 
 export const name = 'vssaros-kanban';
 // 只依赖 tools：工具在任何模板里都该可用。webServer / connection 只在 web 模板里存在，
@@ -43,7 +49,24 @@ const EXPECTED_TOOLS = [
 	// 与 IDE legacy 工具族对齐的动词（逐条按 `kanbanTools.ts` 的语义与**文案格式**移植）
 	'kanban_show', 'kanban_complete', 'kanban_block', 'kanban_unblock',
 	'kanban_heartbeat', 'kanban_comment', 'kanban_link',
+	// 重构 4（2026-10-16）：decompose（LLM 分解父任务为子任务，写 taskboard 带父依赖）。
+	'kanban_decompose',
+	// 重构 4（2026-10-16）：swarm（建拓扑：root → workers → verifier/synthesizer，写 taskboard；
+	//   跑的部分由 runner 接住——拖到 running 就驱动 ✓，与 decompose 同一条链 ✓）。
+	'kanban_swarm',
+	// 重构 4（2026-10-16）：specify（LLM 细化任务为结构化规格：Goal/Approach/Acceptance/Out of scope，
+	//   移到 todo）。与 decompose 同构（读任务 + 经 runs 驱动 + 写回 ✓）。
+	'kanban_specify',
+	// 重构 4（2026-10-16）：web_recipe（URL 模式 → 抽取函数的配方；数据面：create/list/remove，
+	//   存 `<dataRoot>/web-recipes.json`）。抽取执行经桥回 IDE（browser 插件，留待）。
+	'web_recipe_create', 'web_recipe_list', 'web_recipe_remove',
+	// 重构 4（2026-10-16）：web_scrape_to_board（刮当前打开的浏览器页面 ⇒ 任务进看板）。
+	// 执行经桥回 IDE（壳侧的 browser 插件有页面 + Playwright ✓）；回执是任务清单 ⇒ 本侧写 taskboard ✓。
+	'web_scrape_to_board',
 ];
+
+/** runs 服务的模块级引用（runner 的 inject 回调装，decompose 工具用——同一份 ✓）。 */
+const runsRef = { current: null };
 
 const text = value => (typeof value === 'string' ? value.trim() : '');
 
@@ -217,8 +240,16 @@ function refusal(httpStatus, message) {
 	return Object.assign(new Error(message), { httpStatus });
 }
 
-/** 建卡前必须拿到工作区 id，否则卡片在看板界面里不可见（见 store.workspaceIdOf 注释）。 */
-function requireWorkspaceId(config, fromArgs) {
+/**
+ * 建卡前必须拿到工作区 id，否则卡片在看板界面里不可见（见 `store.workspaceIdOf` 注释）。
+ *
+ * ★ 2026-10-17 **导出**：这是**写路径**上"卡片归哪个工作区"的唯一来源（`kanban_create` / `update` /
+ *   `decompose` / `swarm` / `specify` 都经它）—— 切工作区要不要重启 Host，靠的就是它认不认运行期上下文 ✓。
+ *   为什么要能被守卫断到：dsh 侧的**读**路径根本不按工作区过滤（`kanban_list` 缺省 = 全部工作区，
+ *   过滤在 IDE 侧用它自己的活动工作区 id 做）⇒ 只断读路径会得出"运行期上下文没用"的**错误**结论 ✗
+ *   （`dsh-plugins/check-host-config.mjs` 的 `writeStamp` 链就是它 ✓）。
+ */
+export function requireWorkspaceId(config, fromArgs) {
 	const workspaceId = text(fromArgs) || workspaceIdOf(config);
 	if (!workspaceId) {
 		throw new Error('拿不到工作区 id：这样建出来的卡片在看板界面里不可见。'
@@ -258,6 +289,19 @@ function validateConfig(config) {
 export function apply(ctx, config = {}) {
 	// ── 配置校验（fail-fast，报告 §5-8）：装配期即拒错型，别等第一次读配置才炸 ✗
 	validateConfig(config);
+	// 重构 1.3：绑定 foundation 共享服务（dataRoot/dshHome/pageShell/lock 的真源）。
+	// ⚠ 位置在校验**之后** ✓：错型配置必须装配期第一个抛（守卫看的就是"报的是哪个键" ✓）。
+	{
+		// 同步直读在前：有插件在 apply 的**同步段**就建 store（inject 回调是异步的，会来不及 ✗）。
+		let ready = null;
+		try { ready = ctx.get?.('vssarosFoundation') ?? ctx.vssarosFoundation ?? null; } catch { /* 探针的 Proxy 假 ctx 对未知属性抛错 ⇒ 当不存在 */ }
+		if (ready) { bindFoundation(ready); }
+		ctx.inject(['vssarosFoundation'], child => {
+		let svc = null;
+		try { svc = child.vssarosFoundation ?? null; } catch { /* 探针的假 ctx（Proxy）对未知属性抛错 ⇒ 当不存在 */ }
+		if (svc) { bindFoundation(svc); }
+	});
+	}
 	// ── R13（preset plane）：同一个包会被挂**两次**（host plane 一行 + 我们的 preset 里一行 ✓）──
 	// `hostHalf: true` ⇒ 这一次只注册页面/路由，**不注册工具**（工具交给 preset 里那次 ✓）；
 	// 缺省（不写）⇒ **与从前完全一样**（页面 + 工具都注册 ✓）⇒ 加这个闸本身零行为改变 ✓。
@@ -308,6 +352,94 @@ export function apply(ctx, config = {}) {
 	ctx.inject(['vssarosBridge'], scope => {
 		bridge = scope.vssarosBridge;
 		return () => { bridge = undefined; };
+	});
+	// 重构 2.2：看板自动执行 runner（拖到「进行中」⇒ 驱动专属会话跑完并回写，见 lib/runner.js）。
+	// 可选注入 vssarosRuns：bridge 0.2.26+ 提供；不在（旧桥/没装）⇒ runner 不启动，看板照常 ✓。
+	// cwd：看板的工作区路径 = VsSaros 注入的 workspaceId 对应的 dsh 工作区路径；拿不齐就不启动
+	// （拿错目录跑任务是比"不跑"更差的失败 ✗）。
+	let runner;
+	// 自动执行 runner 的**可断言状态**（2026-10-17）：页面自诊断（`data-kanban-runner`）读它 ⇒
+	// "产品口径下 runner 起不起来"这条不再只能读代码判定 ✓（那个 warn 走 `ctx.logger`，探针抓不到 ✗）。
+	// ⚠ 声明在 **apply 作用域**里（不挂模块级）：p3-110 抓到过模块级状态泄漏（上一个夹具的 runs 被下一个读到 ✗）。
+	const runnerState = { on: false, why: 'init' };
+	ctx.inject(['vssarosRuns', 'workspaceRegistry'], scope => {
+		// 防御：探针的假 ctx 不忠实模拟"依赖不齐就不调 cb"（直接调）⇒ 服务不齐时如实不启动，
+		// 不抛错（抛错会让整个插件 apply 失败 ✗，看板工具陪葬 ✗）。
+		let runsSvc, registry;
+		try { runsSvc = scope.vssarosRuns; registry = scope.workspaceRegistry; } catch { /* Proxy 假 ctx */ }
+		if (!runsSvc || typeof runsSvc.run !== 'function' || !registry || typeof registry.list !== 'function') {
+			runnerState.why = 'deps-missing';
+			const log = typeof ctx.logger === 'function' ? ctx.logger('vssaros-kanban') : console;
+			log.warn('runner 未启动：vssarosRuns / workspaceRegistry 不齐（旧桥 / 探针假 ctx）');
+			return undefined;
+		}
+		// 重构 4（2026-10-16）：runs 也存到模块级（decompose 工具要用它驱动 LLM 分解 ✓——
+		//   与 runner 同一份 ✓，不是另起一份 ✗）。
+		runsRef.current = runsSvc;
+		// ★ 2026-10-17 **重做**（本刀：切工作区不必重启 Host 的最后一块）：从前这里是"apply 时算一次 cwd"，
+		//   而那次几乎**必然拿不到**（`workspaceId` 是 Agent Studio 的 slug id，dsh 注册表里是 dsh 自己的 id
+		//   = 两套 id 空间 ⇒ 匹配不上；兜底 `config.workspacePath` 产品侧没人注入）⇒ **runner 在真机上从未起来过**
+		//   （只有一行 `ctx.logger` 的 warn，且它不在 Host stdout 里 ⇒ 之前连探针都钉不住）。
+		//   现在三件事一起改：① 目录**逐卡**按运行期上下文解析（`runnerCwdOf`）；② 起停**跟着上下文走**
+		//   （切工作区不重启 Host 就能换根 ✓）；③ 只把**当前工作区**的卡交给 runner（别的工作区的卡既不该在
+		//   今天的目录里跑，也不该被"看不见 ⇒ 取消"误伤 ✓）。
+		if (config.runner === false) {
+			// 显式关闭的逃生口（IDE 侧要是将来给用户一个"不要自动执行"的开关，注 `runner: false` 即可 ✓）
+			runnerState.why = 'disabled';
+			return undefined;
+		}
+		const readBoardForCurrentWorkspace = async () => {
+			const current = workspaceIdOf(config);
+			const all = (await readTaskboard(config)).tasks;
+			return current ? all.filter(t => t && t.workspaceId === current) : [];
+		};
+		/**
+		 * 起停判定（幂等）：拿得到当前工作区的**可靠**目录 ⇒ 起（没有就停）；每次判定后立刻对账一轮，
+		 * 这样"切工作区 ⇒ 旧工作区的在跑卡被取消 / 新工作区的卡被拾取"不必等 15s 轮询 ✓。
+		 */
+		const sync = () => {
+			const cwd = runnerCwdOf(config, workspaceIdOf(config), registry.list());
+			if (!cwd) {
+				if (runner) { runner.stop(); runner = undefined; }
+				runnerState.on = false;
+				runnerState.why = 'no-cwd';
+				return false;
+			}
+			if (!runner) {
+				runner = createKanbanRunner({
+					readBoard: readBoardForCurrentWorkspace,
+					mutateTaskboard: mutator => mutateTaskboard(config, mutator),
+					runs: runsSvc,
+					// ⚠ **逐卡**解析（runner 就是这么调的 ✓）：`cwdOf(task.workspaceId)`
+					cwdOf: taskWorkspaceId => runnerCwdOf(config, taskWorkspaceId, registry.list()),
+					log: (level, msg) => ctx.logger('vssaros-kanban')[level === 'warn' ? 'warn' : 'info'](msg),
+					config,
+				});
+				runner.start();
+			}
+			runnerState.on = true;
+			runnerState.why = 'ok';
+			void runner.kick();
+			return true;
+		};
+		if (!sync()) {
+			ctx.logger('vssaros-kanban').warn('runner 未启动：当前工作区拿不到**可靠**目录（运行期上下文的 workspaceRoot 与 config.workspacePath 都没有）'
+				+ '—— 这是产品口径下的**正常**状态（推上下文后会自动起来 ✓；或注 config.runner === false 表示"不要自动执行"）。');
+		}
+		// 上下文变了（IDE 切工作区）⇒ 重新判定起停 + 立即对账（**不重启 Host** ✓，与本刀其余部分同一条纪律）
+		let offWorkspaceContext;
+		try {
+			offWorkspaceContext = foundation().onDidChangeWorkspaceContext?.(() => { sync(); });
+		} catch { /* 没有 foundation（老 Host / 探针假 ctx）⇒ 只在启动那一刻判一次，与从前同口径 ✓ */ }
+		// dispose 时清掉模块级的 runsRef（否则探针的下一个夹具会读到上一个的 runs ✗——
+		//   模块级状态泄漏，p3-110 ② 抓到：没 runs 的夹具静默跑过了 ✗）。
+		return () => {
+			try { offWorkspaceContext?.(); } catch { /* 退订失败不值得打扰用户 ✓ */ }
+			if (runner) { runner.stop(); runner = undefined; }
+			runsRef.current = null;
+			runnerState.on = false;
+			runnerState.why = 'disposed';
+		};
 	});
 	function bridgeOf() {
 		return bridge && typeof bridge.callIDE === 'function' ? bridge : undefined;
@@ -517,6 +649,9 @@ export function apply(ctx, config = {}) {
 					registeredTools: EXPECTED_TOOLS.filter(name => !!ctx.tools.get(name)),
 					dataFile: taskboardPath(config),
 					workspaceId: workspaceIdOf(config) ?? '',
+					// 自动执行状态（2026-10-17）：页面自诊断把它写成 `data-kanban-runner` ⇒ 探针/用户都看得见 ✓
+					runner: runnerState.on,
+					runnerWhy: runnerState.why,
 					// dsh 任务镜像（**只读**；`board.js` 只认 `mirrors`/`mirrorsNote` 两个键 ✓，sideview 忽略 ✓）
 					mirrors: mirrorRead.mirrors,
 					mirrorsNote: mirrorRead.note,
@@ -918,4 +1053,479 @@ export function apply(ctx, config = {}) {
 			}, storeOptions(exec));
 		},
 	}));
+
+	// 重构 4（2026-10-16）：`kanban_decompose`——LLM 分解父任务为子任务（写 taskboard 带父依赖）。
+	// 与 runner 同一份 runs（`runsRef` ✓——inject 回调装的，见上面 ✓）。写类 ⇒ 挂审批闸 ✓
+	//（kanban 的闸已拦所有写工具 ✓——decompose 在 WRITE_TOOL_NAMES 里 ✓）。
+	// 分解是模型的事（LLM 出子任务清单）⇒ 经 runs 驱动一回合；解析不了 ⇒ 如实报错（不静默建空任务 ✗）。
+	ctx.effect(() => hostHalf ? undefined : ctx.tools.register({
+		name: 'kanban_decompose',
+		description: '把一张看板卡片分解成 2-N 个具体子任务（LLM 分解），创建带父依赖的子卡片。fanout=true（默认）⇒ 独立/并行子任务；false ⇒ 顺序子任务（后一个依赖前一个）。',
+		parameters: {
+			type: 'object',
+			properties: {
+				task_id: { type: 'string', description: '父卡片 id（完整或末 6 位）' },
+				fanout: { type: 'boolean', description: 'true=并行/独立子任务（默认），false=顺序' },
+				max_subtasks: { type: 'number', description: '最多几个子任务（默认 6，上限 12）' },
+				assignee: { type: 'string', description: '子任务的默认指派（可选）' },
+				workspaceId: { type: 'string', description: '工作区 id（缺省用 Host 注入的当前工作区）' },
+			},
+			required: ['task_id'],
+		},
+		output: {
+			schema: {
+				type: 'object',
+				properties: {
+					ok: { type: 'boolean' },
+					parentId: { type: 'string' },
+					children: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, title: { type: 'string' } } } },
+					error: { type: 'string' },
+				},
+			},
+			render: (_args, value) => [{
+				type: 'text',
+				text: value.ok
+					? `已把 #${String(value.parentId ?? '').slice(-6)} 分解成 ${value.children?.length ?? 0} 个子任务：\n${(value.children ?? []).map(c => `  #${String(c.id ?? '').slice(-6)} — ${c.title}`).join('\n')}`
+					: `分解失败：${value.error ?? '未知原因'}`,
+			}],
+		},
+		// 写类 ⇒ 不声明 isConcurrencySafe（默认独占 ✓）。
+		async execute(args = {}) {
+			const taskId = String(args?.task_id ?? '').trim();
+			if (!taskId) { throw new Error('task_id 必填（父卡片 id）'); }
+			const workspaceId = requireWorkspaceId(config, args.workspaceId);
+			// 读父任务
+			const { tasks } = await readTaskboard(config);
+			const resolved = resolveTaskId(tasks, taskId);
+			if (resolved.error) { throw new Error(resolved.error); }
+			const parent = tasks.find(t => t.id === resolved.id);
+			// 经 runs 驱动 LLM 分解（与 runner 同一份 ✓；没有 ⇒ 如实报错 ✗）
+			const runs = runsRef.current;
+			if (!runs || typeof runs.run !== 'function') {
+				throw new Error('分解要 LLM（经 vssarosRuns 驱动一回合），它不在（bridge 0.2.26+ 才有）——runner 没启动时这个工具用不了 ✓');
+			}
+			const maxSubTasks = Math.min(12, Math.max(2, Number.isFinite(args?.max_subtasks) ? Math.floor(args.max_subtasks) : 6));
+			const fanout = args?.fanout !== false;
+			const prompt = [
+				`把下面这张看板卡片分解成 ${Math.min(4, maxSubTasks)}–${maxSubTasks} 个具体、可执行的子任务。`,
+				`父卡片标题：${parent.title}`,
+				parent.description ? `父卡片描述：${parent.description}` : '',
+				'只回 JSON 数组，每项 {title, body}（body 是这个子任务要做什么）。不要别的文字。',
+			].filter(Boolean).join('\n');
+			const result = await runs.run({
+				sessionId: `kanban-decompose-${parent.id.slice(-6)}`,
+				cwd: workspaceId,
+				prompt,
+			});
+			if (result.stopReason !== 'completed') {
+				throw new Error(`分解回合未完成（stopReason=${result.stopReason ?? '未知'}）`);
+			}
+			// 解析 LLM 的输出（JSON 数组）；解析不了 ⇒ 如实报错（不静默建空任务 ✗）
+			let children;
+			try {
+				const text = String(result.finalText ?? '').trim();
+				const jsonMatch = text.match(/\[[\s\S]*\]/);
+				children = jsonMatch ? JSON.parse(jsonMatch[0]) : null;
+			} catch { children = null; }
+			if (!Array.isArray(children) || children.length === 0) {
+				throw new Error(`分解回合没产出可解析的子任务清单（要 JSON 数组 [{title, body}, …]）：${String(result.finalText ?? '').slice(0, 120)}`);
+			}
+			children = children.slice(0, maxSubTasks);
+			// 写子任务（带父依赖：fanout ⇒ 都依赖父；顺序 ⇒ 后一个依赖前一个）
+			const created = [];
+			let prevId = parent.id;
+			for (const child of children) {
+				const title = String(child?.title ?? '').trim();
+				if (!title) { continue; }
+				const record = createRecord({
+					title,
+					description: String(child?.body ?? '').trim() || undefined,
+					assigneeName: typeof args?.assignee === 'string' ? args.assignee : undefined,
+					workspaceId,
+				});
+				// 依赖：fanout ⇒ 都依赖父；顺序 ⇒ 后一个依赖前一个（第一个还是依赖父 ✓）
+				record.dependencies = [prevId];
+				if (!fanout) { prevId = record.id; }
+				const createdRecord = await mutateTaskboard(config, tasks => ({ tasks: [...tasks, record], value: record }), {});
+				created.push({ id: createdRecord.id, title: createdRecord.title });
+			}
+			return { ok: true, parentId: parent.id, children: created };
+		},
+	}));
+
+	// 重构 4（2026-10-16）：`kanban_swarm`——建多代理拓扑（root → workers → verifier → synthesizer），
+	// 写进 taskboard。**跑的部分由 runner 接住**（拖到 running 就驱动 ✓——与 decompose 同一条链 ✓，
+	// 本工具只建拓扑 ✓，不自己跑 ✗）。写类 ⇒ 挂审批闸 ✓（kanban 的闸已拦所有写工具 ✓）。
+	ctx.effect(() => hostHalf ? undefined : ctx.tools.register({
+		name: 'kanban_swarm',
+		description: '建一个多代理协作拓扑：root 任务 → 并行 worker 任务 → verifier（验证）→ synthesizer（综合）。写进看板后由 runner 驱动（拖到「进行中」就跑）。workers 至少 1 个（每个要 title + body）。enable_verifier / enable_synthesizer 控制要不要验证/综合阶段（缺省：≥2 个 worker 时开 verifier，总是开 synthesizer）。',
+		parameters: {
+			type: 'object',
+			properties: {
+				title: { type: 'string', description: 'Swarm 标题（成为 root 任务的标题）' },
+				goal: { type: 'string', description: '总目标（注入每个 worker 的上下文）' },
+				workers: {
+					type: 'array',
+					description: 'Worker 规格（至少 1 个）',
+					items: {
+						type: 'object',
+						properties: {
+							title: { type: 'string', description: 'Worker 卡片标题' },
+							body: { type: 'string', description: '这个 worker 要做什么' },
+							profile: { type: 'string', description: 'Worker 角色/人设（可选）' },
+							priority: { type: 'string', enum: ['low', 'medium', 'high'], description: '优先级' },
+						},
+						required: ['title', 'body'],
+					},
+				},
+				enable_verifier: { type: 'boolean', description: '要不要验证阶段（缺省：≥2 个 worker 时开）' },
+				enable_synthesizer: { type: 'boolean', description: '要不要综合阶段（缺省：开）' },
+				workspaceId: { type: 'string', description: '工作区 id（缺省用 Host 注入的当前工作区）' },
+			},
+			required: ['title', 'workers'],
+		},
+		output: {
+			schema: {
+				type: 'object',
+				properties: {
+					ok: { type: 'boolean' },
+					swarmId: { type: 'string' },
+					rootId: { type: 'string' },
+					workerIds: { type: 'array', items: { type: 'string' } },
+					verifierId: { type: 'string' },
+					synthesizerId: { type: 'string' },
+					error: { type: 'string' },
+				},
+			},
+			render: (_args, value) => [{
+				type: 'text',
+				text: value.ok
+					? `已建 swarm「${value.swarmId}」（root #${String(value.rootId ?? '').slice(-6)} · ${value.workerIds?.length ?? 0} 个 worker${value.verifierId ? ' · 含验证' : ''}${value.synthesizerId ? ' · 含综合' : ''}）——拖到「进行中」由 runner 驱动`
+					: `建 swarm 失败：${value.error ?? '未知原因'}`,
+			}],
+		},
+		// 写类 ⇒ 不声明 isConcurrencySafe（默认独占 ✓）。
+		async execute(args = {}) {
+			const title = String(args?.title ?? '').trim();
+			if (!title) { throw new Error('title 必填（swarm 标题）'); }
+			const rawWorkers = Array.isArray(args?.workers) ? args.workers : [];
+			if (rawWorkers.length === 0) { throw new Error('workers 必填（至少 1 个 worker，每个要 title + body）'); }
+			const workspaceId = requireWorkspaceId(config, args.workspaceId);
+			// 校验 worker 规格（缺 title/body 的跳过 ✓——legacy 同款）
+			const workers = [];
+			for (const w of rawWorkers) {
+				const wTitle = String(w?.title ?? '').trim();
+				const wBody = String(w?.body ?? '').trim();
+				if (!wTitle || !wBody) { continue; }
+				workers.push({ title: wTitle, body: wBody, profile: String(w?.profile ?? '').trim() || undefined, priority: w?.priority });
+			}
+			if (workers.length === 0) { throw new Error('没有有效的 worker（每个要 title + body）'); }
+			const goal = String(args?.goal ?? '').trim();
+			const enableVerifier = typeof args?.enable_verifier === 'boolean' ? args.enable_verifier : workers.length >= 2;
+			const enableSynthesizer = typeof args?.enable_synthesizer === 'boolean' ? args.enable_synthesizer : true;
+			// 建拓扑（顺序：root → workers → verifier → synthesizer；依赖关系见下）
+			const swarmId = `swarm-${Date.now().toString(36)}`;
+			const created = [];
+			// root
+			const root = createRecord({ title, description: goal || undefined, workspaceId, status: 'todo' });
+			await mutateTaskboard(config, tasks => ({ tasks: [...tasks, root], value: root }), {});
+			created.push(root);
+			// workers（都依赖 root）
+			const workerIds = [];
+			for (const w of workers) {
+				const record = createRecord({
+					title: w.title,
+					description: [w.body, goal ? `\n\n总目标：${goal}` : '', w.profile ? `\n\n角色：${w.profile}` : ''].filter(Boolean).join(''),
+					priority: w.priority,
+					workspaceId,
+					status: 'todo',
+				});
+				record.dependencies = [root.id];
+				await mutateTaskboard(config, tasks => ({ tasks: [...tasks, record], value: record }), {});
+				workerIds.push(record.id);
+				created.push(record);
+			}
+			// verifier（依赖所有 worker）
+			let verifierId;
+			if (enableVerifier) {
+				const record = createRecord({ title: `验证：${title}`, description: '核对所有 worker 的产出是否满足总目标', workspaceId, status: 'todo' });
+				record.dependencies = [...workerIds];
+				await mutateTaskboard(config, tasks => ({ tasks: [...tasks, record], value: record }), {});
+				verifierId = record.id;
+				created.push(record);
+			}
+			// synthesizer（依赖 verifier 或所有 worker）
+			let synthesizerId;
+			if (enableSynthesizer) {
+				const record = createRecord({ title: `综合：${title}`, description: '把所有产出综合成最终结果', workspaceId, status: 'todo' });
+				record.dependencies = verifierId ? [verifierId] : [...workerIds];
+				await mutateTaskboard(config, tasks => ({ tasks: [...tasks, record], value: record }), {});
+				synthesizerId = record.id;
+				created.push(record);
+			}
+			return { ok: true, swarmId, rootId: root.id, workerIds, verifierId, synthesizerId };
+		},
+	}));
+
+	// 重构 4（2026-10-16）：`kanban_specify`——LLM 细化任务为结构化规格（Goal / Approach /
+	// Acceptance criteria / Out of scope），移到 todo。与 decompose 同构（读任务 + 经 runs 驱动 +
+	// 写回 ✓；与 runner 同一份 runs ✓——`runsRef`）。写类 ⇒ 挂审批闸 ✓（kanban 的闸已拦所有写工具 ✓）。
+	ctx.effect(() => hostHalf ? undefined : ctx.tools.register({
+		name: 'kanban_specify',
+		description: '把一张粗略的看板卡片细化成结构化规格（目标 / 方案 / 验收标准 / 不做的事），移到「待办」。细化是模型的事（LLM 出规格）⇒ 经 vssarosRuns 驱动一回合；解析不了 ⇒ 如实报错（不静默写空规格 ✗）。',
+		parameters: {
+			type: 'object',
+			properties: {
+				task_id: { type: 'string', description: '要细化的卡片 id（完整或末 6 位）' },
+				workspaceId: { type: 'string', description: '工作区 id（缺省用 Host 注入的当前工作区）' },
+			},
+			required: ['task_id'],
+		},
+		output: {
+			schema: {
+				type: 'object',
+				properties: {
+					ok: { type: 'boolean' },
+					taskId: { type: 'string' },
+					status: { type: 'string' },
+					spec: { type: 'string', description: '结构化规格（Goal / Approach / Acceptance criteria / Out of scope）' },
+					error: { type: 'string' },
+				},
+			},
+			render: (_args, value) => [{
+				type: 'text',
+				text: value.ok
+					? `已细化 #${String(value.taskId ?? '').slice(-6)}（移到 ${value.status}）：\n${String(value.spec ?? '').slice(0, 300)}`
+					: `细化失败：${value.error ?? '未知原因'}`,
+			}],
+		},
+		// 写类 ⇒ 不声明 isConcurrencySafe（默认独占 ✓）。
+		async execute(args = {}) {
+			const taskId = String(args?.task_id ?? '').trim();
+			if (!taskId) { throw new Error('task_id 必填（要细化的卡片 id）'); }
+			requireWorkspaceId(config, args.workspaceId);
+			// 读任务
+			const { tasks } = await readTaskboard(config);
+			const resolved = resolveTaskId(tasks, taskId);
+			if (resolved.error) { throw new Error(resolved.error); }
+			const task = tasks.find(t => t.id === resolved.id);
+			// 经 runs 驱动 LLM 细化（与 runner 同一份 ✓；没有 ⇒ 如实报错 ✗）
+			const runs = runsRef.current;
+			if (!runs || typeof runs.run !== 'function') {
+				throw new Error('细化要 LLM（经 vssarosRuns 驱动一回合），它不在（bridge 0.2.26+ 才有）——runner 没启动时这个工具用不了 ✓');
+			}
+			const prompt = [
+				'把下面这张看板卡片细化成结构化规格。用这四个标题（逐字）：',
+				'**目标** / **方案** / **验收标准** / **不做的事**',
+				`卡片标题：${task.title}`,
+				task.description ? `卡片描述：${task.description}` : '',
+				'只回规格正文（Markdown），不要别的文字。',
+			].filter(Boolean).join('\n');
+			const result = await runs.run({
+				sessionId: `kanban-specify-${task.id.slice(-6)}`,
+				cwd: requireWorkspaceId(config, args.workspaceId),
+				prompt,
+			});
+			if (result.stopReason !== 'completed') {
+				throw new Error(`细化回合未完成（stopReason=${result.stopReason ?? '未知'}）`);
+			}
+			const spec = String(result.finalText ?? '').trim();
+			if (!spec || !spec.includes('**目标**')) {
+				throw new Error(`细化回合没产出结构化规格（要含「**目标**」标题）：${spec.slice(0, 120)}`);
+			}
+			// 写回（规格进描述 + 移到 todo）
+			const updated = await mutateTaskboard(config, tasks => {
+				const index = tasks.findIndex(t => t.id === task.id);
+				if (index < 0) { throw new Error(`卡片 ${task.id} 在写回时不在了（并发改？）`); }
+				const { task: next, changed } = applyUpdate(tasks[index], { description: spec, status: 'todo' });
+				const nextTasks = [...tasks];
+				nextTasks[index] = next;
+				return { tasks: nextTasks, value: { task: projectDetail(next), changed } };
+			}, {});
+			return { ok: true, taskId: task.id, status: updated.task.status, spec };
+		},
+	}));
+
+	// 重构 4（2026-10-16）：web_recipe 三件套——URL 模式 → 抽取函数的配方（数据面：存文件）。
+	// 抽取执行经桥回 IDE（browser 插件的 Playwright，留待——本工具只存配方 ✓，不执行 ✗）。
+	// create/remove 是写类 ⇒ 挂审批闸 ✓（kanban 的闸已拦所有写工具 ✓）；list 只读 ✓。
+	const recipesPath = () => join(dataRootOf(config), 'web-recipes.json');
+	const readRecipes = async () => {
+		try {
+			const raw = await import('node:fs/promises').then(m => m.readFile(recipesPath(), 'utf8'));
+			const parsed = JSON.parse(raw);
+			return Array.isArray(parsed?.recipes) ? parsed.recipes : [];
+		} catch { return []; }
+	};
+	const writeRecipes = async (recipes) => {
+		const { writeFile, mkdir } = await import('node:fs/promises');
+		const { dirname } = await import('node:path');
+		await mkdir(dirname(recipesPath()), { recursive: true });
+		await writeFile(recipesPath(), JSON.stringify({ recipes }, null, 2));
+	};
+
+	ctx.effect(() => hostHalf ? undefined : ctx.tools.register({
+		name: 'web_recipe_create',
+		description: '存一个可复用的抓取配方：把 URL 模式（正则）绑到一个 Playwright 抽取函数。存好后，打开匹配的页面调 web_scrape_to_board 就会用这个配方（确定性抽取，不用 LLM 每次解析）。适合固定站点（TAPD / Jira / GitHub Issues）。抽取执行在 IDE 侧（browser 插件）——本工具只存配方。',
+		parameters: {
+			type: 'object',
+			properties: {
+				name: { type: 'string', description: '配方名（唯一，后面用它引用）' },
+				url_pattern: { type: 'string', description: 'URL 正则（匹配页面 URL）' },
+				url_flags: { type: 'string', description: '正则标志（如 "i"；缺省空）' },
+				extract_fn: { type: 'string', description: 'JS 函数串：async (page, args) => ({ boardName, sourceUrl, tasks }) 或裸任务数组' },
+				board_name: { type: 'string', description: '固定看板名（覆盖函数输出；可选）' },
+				max_tasks: { type: 'number', description: '单配方任务上限（默认 30，硬上限 100）' },
+			},
+			required: ['name', 'url_pattern', 'extract_fn'],
+		},
+		output: {
+			schema: { type: 'object', properties: { ok: { type: 'boolean' }, name: { type: 'string' } } },
+			render: (_args, value) => [{ type: 'text', text: value.ok ? `已存配方「${value.name}」` : '存配方失败' }],
+		},
+		async execute(args = {}) {
+			const name = String(args?.name ?? '').trim();
+			const urlPattern = String(args?.url_pattern ?? '').trim();
+			const extractFn = String(args?.extract_fn ?? '').trim();
+			if (!name) { throw new Error('name 必填（配方名）'); }
+			if (!urlPattern) { throw new Error('url_pattern 必填（URL 正则）'); }
+			if (!extractFn) { throw new Error('extract_fn 必填（抽取函数串）'); }
+			// 正则要能编译（存一个跑不起来的配方是没意义的 ✗）
+			try { new RegExp(urlPattern, String(args?.url_flags ?? '')); } catch (e) { throw new Error(`url_pattern 编译不了：${String(e?.message ?? e)}`); }
+			const recipes = await readRecipes();
+			if (recipes.some(r => r.name === name)) { throw new Error(`配方 ${name} 已存在（不会覆盖 ✓；要改先删掉再建）。`); }
+			recipes.push({
+				name,
+				urlPattern,
+				urlFlags: String(args?.url_flags ?? '').trim() || undefined,
+				extractFn,
+				boardName: String(args?.board_name ?? '').trim() || undefined,
+				maxTasks: Number.isFinite(args?.max_tasks) ? Math.min(100, Math.max(1, Math.floor(args.max_tasks))) : undefined,
+			});
+			await writeRecipes(recipes);
+			return { ok: true, name };
+		},
+	}));
+
+	ctx.effect(() => hostHalf ? undefined : ctx.tools.register({
+		name: 'web_recipe_list',
+		description: '列出所有已存的抓取配方（名字 / URL 模式 / 看板名 / 任务上限）。',
+		parameters: { type: 'object', properties: {} },
+		output: {
+			schema: { type: 'object', properties: { count: { type: 'integer' }, recipes: { type: 'array', items: { type: 'object' } } } },
+			render: (_args, value) => [{
+				type: 'text',
+				text: value.count ? `${value.count} 个配方：\n${value.recipes.map(r => `  • ${r.name}  —  /${r.urlPattern}/${r.urlFlags ?? ''}${r.boardName ? `  (看板: ${r.boardName})` : ''}${r.maxTasks ? `  (上限: ${r.maxTasks})` : ''}`).join('\n')}` : '还没有配方（用 web_recipe_create 存一个）。',
+			}],
+		},
+		isConcurrencySafe: () => true,  // 只读 ✓
+		execute: async () => ({ count: (await readRecipes()).length, recipes: await readRecipes() }),
+	}));
+
+	ctx.effect(() => hostHalf ? undefined : ctx.tools.register({
+		name: 'web_recipe_remove',
+		description: '删掉一个抓取配方（按名字）。',
+		parameters: {
+			type: 'object',
+			properties: { name: { type: 'string', description: '要删的配方名' } },
+			required: ['name'],
+		},
+		output: {
+			schema: { type: 'object', properties: { ok: { type: 'boolean' }, name: { type: 'string' } } },
+			render: (_args, value) => [{ type: 'text', text: value.ok ? `已删配方「${value.name}」` : '删配方失败' }],
+		},
+		async execute(args = {}) {
+			const name = String(args?.name ?? '').trim();
+			if (!name) { throw new Error('name 必填（要删的配方名）'); }
+			const recipes = await readRecipes();
+			const index = recipes.findIndex(r => r.name === name);
+			if (index < 0) { throw new Error(`配方 ${name} 不存在（remove 要求目标在 ✓——免得"以为删了"）。`); }
+			recipes.splice(index, 1);
+			await writeRecipes(recipes);
+			return { ok: true, name };
+		},
+	}));
+
+	// 重构 4（2026-10-16）：`web_scrape_to_board`——刮当前打开的浏览器页面 ⇒ 任务进看板。
+	// 执行经桥回 IDE（壳侧的 browser 插件有页面 + Playwright ✓；本侧没有浏览器 ✗——如实说 ✓）。
+	// 回执是任务清单 ⇒ 本侧写进 taskboard（与 kanban_create 同款写法 ✓）。写类 ⇒ 挂审批闸 ✓。
+	ctx.effect(() => hostHalf ? undefined : ctx.tools.register({
+		name: 'web_scrape_to_board',
+		description: '刮当前打开的浏览器页面，把页面上的任务/待办/TODO 列表自动建成看板卡片。有配方匹配 URL 时用配方（确定性抽取，不用 LLM）；否则 LLM 解析页面快照。用 web_recipe_create 存配方后可复用。执行在 IDE 侧（browser 插件的 Playwright）——本侧只接收任务清单并写进看板。',
+		parameters: {
+			type: 'object',
+			properties: {
+				board_name: { type: 'string', description: '看板名（缺省 = 页面标题 / 配方的看板名）' },
+				max_tasks: { type: 'number', description: '最多建几张卡（默认 30，硬上限 100）' },
+				recipe: { type: 'string', description: '强制用某个配方（跳过 URL 自动匹配）' },
+				auto_match: { type: 'boolean', description: '自动按 URL 匹配配方（默认 true；false = 总是 LLM 解析）' },
+				workspaceId: { type: 'string', description: '工作区 id（缺省用 Host 注入的当前工作区）' },
+			},
+		},
+		output: {
+			schema: {
+				type: 'object',
+				properties: {
+					ok: { type: 'boolean' },
+					boardName: { type: 'string' },
+					created: { type: 'integer' },
+					tasks: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, title: { type: 'string' } } } },
+					error: { type: 'string' },
+				},
+			},
+			render: (_args, value) => [{
+				type: 'text',
+				text: value.ok
+					? `已建 ${value.created} 张卡片到「${value.boardName}」：\n${(value.tasks ?? []).map(t => `  #${String(t.id ?? '').slice(-6)} — ${t.title}`).join('\n')}`
+					: `刮取失败：${value.error ?? '未知原因'}`,
+			}],
+		},
+		// 写类 ⇒ 不声明 isConcurrencySafe（默认独占 ✓）。
+		async execute(args = {}) {
+			const workspaceId = requireWorkspaceId(config, args.workspaceId);
+			// 经桥回 IDE（壳侧的 browser 插件跑 Playwright 抽取或 LLM 解析 ✓；本侧没有浏览器 ✗）
+			if (!bridge || typeof bridge.callIDE !== 'function') {
+				throw new Error('刮取要经桥回 IDE（browser 插件的 Playwright 在壳侧），但 vssarosBridge 不在（bridge 插件没装/没连）');
+			}
+			// capability 是 `browser`（不是 `kanban`）——刮取用的是 browser 插件的 Playwright ✓
+			// （清单支持的能力名里有 `browser`，没有 `kanban` ✗——p3-110 的守卫抓到 ✓）。
+			const reply = await bridge.callIDE('ide.request', {
+				capability: 'browser',
+				pluginId: 'vssaros-kanban',
+				params: {
+					op: 'scrapeToBoard',
+					boardName: String(args?.board_name ?? '').trim() || undefined,
+					maxTasks: Number.isFinite(args?.max_tasks) ? Math.min(100, Math.max(1, Math.floor(args.max_tasks))) : undefined,
+					recipe: String(args?.recipe ?? '').trim() || undefined,
+					autoMatch: args?.auto_match !== false,
+				},
+			}, { timeoutMs: 5 * 60 * 1000 });  // 刮取 + LLM 解析可能慢
+			const taskSpecs = Array.isArray(reply?.tasks) ? reply.tasks : null;
+			if (!taskSpecs) {
+				throw new Error(`IDE 没回任务清单（没打开浏览器页面？或 browser 插件没实现 scrapeToBoard）：${JSON.stringify(reply)?.slice(0, 120)}`);
+			}
+			if (taskSpecs.length === 0) {
+				return { ok: true, boardName: String(reply?.boardName ?? args?.board_name ?? ''), created: 0, tasks: [] };
+			}
+			// 写进 taskboard（与 kanban_create 同款写法 ✓）
+			const boardName = String(reply?.boardName ?? args?.board_name ?? '刮取').trim();
+			const created = [];
+			for (const spec of taskSpecs.slice(0, 100)) {
+				const title = String(spec?.title ?? '').trim();
+				if (!title) { continue; }
+				const record = createRecord({
+					title,
+					description: String(spec?.description ?? '').trim() || undefined,
+					priority: spec?.priority,
+					assigneeName: String(spec?.assignee ?? '').trim() || undefined,
+					url: String(spec?.sourceUrl ?? '').trim() || undefined,
+					workspaceId,
+				});
+				const createdRecord = await mutateTaskboard(config, tasks => ({ tasks: [...tasks, record], value: record }), {});
+				created.push({ id: createdRecord.id, title: createdRecord.title });
+			}
+			return { ok: true, boardName, created: created.length, tasks: created };
+		},
+	}));
+
 }

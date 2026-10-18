@@ -59,6 +59,15 @@ export interface OriginalResourceChangeEvent {
 
 interface OpenRepository extends Disposable {
 	repository: Repository;
+	/**
+	 * VsSaros fork: whether this repository was opened through the public Git
+	 * extension API (`API.openRepository`) rather than by workspace-folder
+	 * scanning. Explicitly-opened repositories are owned by the API caller
+	 * (e.g. the Sessions window's agent-workspace sync) and are NOT reaped
+	 * when their workspace folder is later removed, so switching agent
+	 * workspaces does not dispose + rediscover + refresh them.
+	 */
+	explicit?: boolean;
 }
 
 class ClosedRepositoriesManager {
@@ -477,6 +486,12 @@ export class Model implements IRepositoryResolver, IBranchProtectionProviderRegi
 			const openRepositoriesToDispose = removed
 				.map(folder => this.getOpenRepository(folder.uri))
 				.filter(r => !!r)
+				// VsSaros fork: explicitly-opened repositories (public API opens, e.g.
+				// the Sessions window's agent-workspace repositories) are owned by
+				// their opener and must survive workspace-folder removal. Reaping
+				// them here forced a full rediscover (`rev-parse --show-toplevel`)
+				// plus status refresh on every switch back to the workspace.
+				.filter(r => !r!.explicit)
 				.filter(r => !activeRepositories.has(r!.repository))
 				.filter(r => !(workspace.workspaceFolders || []).some(f => isDescendant(f.uri.fsPath, r!.repository.root))) as OpenRepository[];
 
@@ -594,11 +609,18 @@ export class Model implements IRepositoryResolver, IBranchProtectionProviderRegi
 	}
 
 	@sequentialize
-	async openRepository(repoPath: string, openIfClosed = false, openIfParent = false): Promise<void> {
+	async openRepository(repoPath: string, openIfClosed = false, openIfParent = false, explicit = false): Promise<void> {
 		this.logger.trace(`[Model][openRepository] Repository: ${repoPath}`);
 		const existingRepository = await this.getRepositoryExact(repoPath);
 		if (existingRepository) {
 			this.logger.trace(`[Model][openRepository] Repository for path ${repoPath} already exists: ${existingRepository.root}`);
+			if (explicit) {
+				// VsSaros fork: an API-requested open must upgrade an existing
+				// (possibly scan-opened) record to explicit, otherwise the
+				// repository is later reaped on folder removal and the
+				// explicit early-return silently loses its protection.
+				this.markExplicit(existingRepository);
+			}
 			return;
 		}
 
@@ -617,6 +639,9 @@ export class Model implements IRepositoryResolver, IBranchProtectionProviderRegi
 			const existingRepository = await this.getRepositoryExact(repositoryRoot);
 			if (existingRepository) {
 				this.logger.trace(`[Model][openRepository] Repository for path ${repositoryRoot} already exists: ${existingRepository.root}`);
+				if (explicit) {
+					this.markExplicit(existingRepository);
+				}
 				return;
 			}
 
@@ -684,7 +709,7 @@ export class Model implements IRepositoryResolver, IBranchProtectionProviderRegi
 			const gitRepository = this.git.open(repositoryRoot, repositoryRootRealPath, dotGit, this.logger);
 			const repository = new Repository(gitRepository, this, this, this, this, this, this, this.globalState, this.logger, this.telemetryReporter, this._repositoryCache);
 
-			this.open(repository);
+			this.open(repository, explicit);
 			this._closedRepositoriesManager.deleteRepository(repository.root);
 
 			this.logger.info(`[Model][openRepository] Opened repository (path): ${repository.root}`);
@@ -756,8 +781,8 @@ export class Model implements IRepositoryResolver, IBranchProtectionProviderRegi
 		return false;
 	}
 
-	private open(repository: Repository): void {
-		this.logger.trace(`[Model][open] Repository: ${repository.root}`);
+	private open(repository: Repository, explicit = false): void {
+		this.logger.trace(`[Model][open] Repository: ${repository.root}${explicit ? ' (explicit)' : ''}`);
 
 		const onDidDisappearRepository = filterEvent(repository.onDidChangeState, state => state === RepositoryState.Disposed);
 		const disappearListener = onDidDisappearRepository(() => dispose());
@@ -874,10 +899,25 @@ export class Model implements IRepositoryResolver, IBranchProtectionProviderRegi
 			this._onDidCloseRepository.fire(repository);
 		};
 
-		const openRepository = { repository, dispose };
+		const openRepository = { repository, dispose, explicit };
 		this.openRepositories.push(openRepository);
 		updateMergeChanges();
 		this._onDidOpenRepository.fire(repository);
+	}
+
+	/**
+	 * VsSaros fork: mark an already-open repository as explicitly opened so it
+	 * survives `onDidChangeWorkspaceFolders` reaping. Used when an API-requested
+	 * `openRepository` early-returns because the repository is already open
+	 * (possibly opened non-explicitly by a workspace-folder scan that won the
+	 * race).
+	 */
+	private markExplicit(repository: Repository): void {
+		const openRepository = this.getOpenRepository(repository);
+		if (openRepository && !openRepository.explicit) {
+			openRepository.explicit = true;
+			this.logger.trace(`[Model][markExplicit] Repository for path ${repository.root} is now explicit`);
+		}
 	}
 
 	close(repository: Repository): void {

@@ -481,7 +481,10 @@ export class ApiImpl implements API {
 			return null;
 		}
 
-		await this.#model.openRepository(root.fsPath, true, true);
+		// VsSaros fork: the trailing `true` marks the open as explicit so the
+		// repository survives `onDidChangeWorkspaceFolders` reaping (the caller
+		// owns its lifecycle, e.g. the Sessions window's agent-workspace sync).
+		await this.#model.openRepository(root.fsPath, true, true, true);
 		return this.getRepository(root) || null;
 	}
 

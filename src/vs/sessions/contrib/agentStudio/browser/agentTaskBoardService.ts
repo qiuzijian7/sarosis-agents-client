@@ -25,6 +25,8 @@ import { resolveAgentStudioDataRoot, migrateLegacyAgentStudioData } from '../com
 //（dsh 侧在 `dsh-plugins/vssaros-kanban/lib/store.js` 自建同款：`open('wx')` + mtime 破门，默认 5000/15000ms ✓ 同值 ✓）。
 import { acquireFileLock, fileServiceOps, lockResourceFor } from '../common/fileWriteLock.js';
 import { SAROS_CLAW_AGENT_ID } from './providers/tool/kanbanTools.js';
+// 重构 2.2：看板自动执行的入口开关（`dsh` = Host 里的 kanban runner 驱动；`legacy` = 本服务的旧执行链）。
+import { DshHarnessSettings } from '../../dshHarness/common/dshHarness.js';
 
 const DATA_FILE_TASKBOARD = 'taskboard.json';
 const DATA_FILE_BOARDS = 'boards.json';
@@ -553,6 +555,13 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 		console.info(`[ChatFlickerDiag] TaskBoard updateTask FIRE id=${id} status=${data.status ?? 'unchanged'} fireSkipped=${isTransitioningToRunning}`);
 		// may be slow (network / spawn) and must not block other task mutations.
 		// The agent assignment is persisted via a second small queued update.
+		// 重构 2.2：入口开关。`entry.kanban=dsh`（默认）时看板自动执行交给 Host 里的 kanban runner
+		//（它盯着 taskboard.json 的 running 卡自己拾取）；本服务**不再**走旧执行链，否则两边双执行 ✗。
+		const kanbanEntryIsLegacy = this.configurationService.getValue<string>(DshHarnessSettings.EntryKanban) === 'legacy';
+		if (data.status === TaskBoardStatus.Running && updated.workspaceId && !kanbanEntryIsLegacy) {
+			this.logService.info(`[AgentStudio] TaskBoard: task ${id} → Running，由 dsh runner 拾取（entry.kanban=dsh），legacy 执行链不介入`);
+			return updated;   // 方法的返回契约是 TaskBoardRecord ✓（不带值返回会让调用方拿到 undefined ✗）
+		}
 		if (data.status === TaskBoardStatus.Running && updated.workspaceId) {
 			const tStart = performance.now();
 			try {

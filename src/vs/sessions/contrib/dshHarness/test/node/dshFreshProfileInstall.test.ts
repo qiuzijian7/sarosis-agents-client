@@ -88,6 +88,7 @@ suite('dshHarness / 全新 profile 上的模块插件安装', function () {
 		const sup = new DshHostSupervisor({
 			runtime: new DshRuntimeManager(RUNTIME_ROOT, l => lines.push(l)),
 			runDir: join(root, 'run'),
+			foundationPluginDir: undefined,
 			bridgePluginDir: join(REPO, 'dsh-plugins', 'vssaros-bridge'),
 			chatSurfacePluginDir: join(REPO, 'dsh-plugins', 'vssaros-chat-surface'),
 			// 模块插件（2026-10-11 起随包）：这里只真机装 agents 一条 —— 全量 10 个模块太慢，

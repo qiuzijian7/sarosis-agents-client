@@ -22,10 +22,10 @@ import { IAuxiliaryWindowsMainService } from '../../../../platform/auxiliaryWind
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IWindowsMainService } from '../../../../platform/windows/electron-main/windows.js';
 import { isSameOrigin } from '../common/dshCli.js';
-import { DSH_VIEW_PARTITION, DshColorScheme, DshViewSurface, IDshViewBounds, IDshViewInfo } from '../common/dshHarness.js';
+import { DSH_VIEW_PARTITION, DSH_VIEW_PARTITION_DESKTOP, DshColorScheme, DshViewSurface, IDshViewBounds, IDshViewInfo } from '../common/dshHarness.js';
 import { resolveViewUrl } from '../common/dshPluginPage.js';
 import { IViewLoadRetryState, newViewLoadRetryState, onDocumentFinishedLoad, onMainFrameNavigated, planLoadRetry, resetViewLoadRetry, shouldResetRetryBudget, VIEW_LOAD_MAX_RETRIES, withAuthRetry } from '../common/dshViewLoadRetry.js';
-import { DSH_PAGE_CHAT_ONLY_ARG, DSH_PAGE_IPC_CREDIT, DSH_PAGE_IPC_INSERT, DSH_PAGE_IPC_INVOKE, DSH_PAGE_IPC_KEYDOWN, DSH_PAGE_IPC_REBIND, DSH_PAGE_IPC_RENAME, DSH_PAGE_IPC_THEME, DSH_PAGE_IPC_WORKTREES, DSH_PAGE_SESSION_ARG, DSH_PAGE_SURFACE_ARG, DSH_PAGE_VIEW_ARG, DshPageEvent, IDshCreditPush, IDshInsertReference, IDshWorktreeOption, validateKeyEvent, validatePageCommand } from '../common/dshPageBridgeProtocol.js';
+import { DSH_PAGE_CHAT_ONLY_ARG, DSH_PAGE_IPC_CREDIT, DSH_PAGE_IPC_INSERT, DSH_PAGE_IPC_INVOKE, DSH_PAGE_IPC_KEYDOWN, DSH_PAGE_IPC_REBIND, DSH_PAGE_IPC_RENAME, DSH_PAGE_IPC_THEME, DSH_PAGE_IPC_WORKSPACES, DSH_PAGE_IPC_WORKTREES, DSH_PAGE_SESSION_ARG, DSH_PAGE_SURFACE_ARG, DSH_PAGE_VIEW_ARG, DshPageEvent, IDshCreditPush, IDshInsertReference, IDshWorkspaceOption, IDshWorktreeOption, validateKeyEvent, validatePageCommand } from '../common/dshPageBridgeProtocol.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { backgroundForPageSurface, DshThemeTokens, IDshViewBackgrounds } from '../common/dshThemeBridge.js';
 import { IIdeViewSlotForTargeting } from '../common/dshIdeTargeting.js';
@@ -111,15 +111,28 @@ const PAGE_SURFACE_REPORT = `(() => { try {
   const s = window.__vssarosChatSurface || {};
   const d = (document.documentElement && document.documentElement.dataset) || {};
   const raw = d.vssarosWorktrees || "";
+  // ★ 2026-10-16（多根工作区）：IDE 工作区记录那条推送的**到页面**自证 —— 与 worktrees 同一口径
+  //   （只证明"负载进了 preload 的 dataset"，不证明面板渲染了；两者分开看才能归因 ✓）。
+  //   workspaceRoots 数的是根数（每条根一个 isPrimary 字段 ✓）⇒ 多根工作区能从这行日志直接看出来。
+  const wraw = d.vssarosWorkspaces || "";
   return JSON.stringify({
     worktrees: raw.length,
     worktreeItems: (raw.match(/\"path\"/g) || []).length,
+    workspaces: wraw.length,
+    workspaceRoots: (wraw.match(/\"isPrimary\"/g) || []).length,
     // ★ 2026-10-15：两枚 chip（🗂 工作区 / 🌿 worktree）已**合并**为单枚入口
     //   （client.workspace.js 的 vssaros-context-entry，方案 C：单 chip + 可搜索面板）
     //   ⇒ 自证只认这一个标记 ✓（旧的两个标记不再存在 ✗，认它们会永远 false ⇒ 假告警）。
     // ⚠ 本段是**模板字符串**：注释里绝不能出现反引号 ✗（会提前闭合 ⇒ 整个文件语法错；
     //   2026-10-15 我又踩了一次，被 tsgo 的 TS1005 当场抓到 ✓）。
     contextChip: !!document.querySelector("[data-vssaros-context-chip]"),
+   // ★ 2026-10-16（方案 A：hero 里"借官方触发器"，用户报「工作区 UI 重复了，使用一个即可」）：
+   //   hero（空白会话屏）那一行**没有我们自己的 chip** —— 官方 WorkspaceChip 是写死在 heroWorkspaceRow
+   //   里的组件（走不了 slot），我们的面板挂在它的**浮层槽**上（priority -10 遮蔽）⇒
+   //   只认 contextChip 会在空白会话屏报"我们的入口没出来"的**假告警** ✗
+   //   ⇒ 补一个 hero 壳标记（client.workspace.js 里常驻的零尺寸 fixed 壳）。
+   // ⚠ 本段是**模板字符串**：注释里绝不能出现反引号 ✗（会提前闭合整段，已踩过两次）。
+   contextHeroEntry: !!document.querySelector("[data-vssaros-context-hero]"),
     presetChip: !!document.querySelector("[data-vssaros-preset-chip]"),
     // ★ 卡片动作自证（2026-10-13 用户报「点定位 / 点条目没反应」）：
     //   页面侧本来就记着计数与最近一次失败原因（client.cardActions.js 的 state.reveals /
@@ -164,8 +177,92 @@ const PAGE_SURFACE_REPORT = `(() => { try {
       } catch (e) { return null; }
     })(),
     composer: !!document.querySelector("[data-composer-card]"),
-    opened: s.opened === true, sessionId: s.sessionId || null
-  });
+    opened: s.opened === true, sessionId: s.sessionId || null,
+    // ★ 2026-10-17（用户报「切工作区后聊天框里的工作区 UI 没刷新」）：页面侧那把**归因尺子** ——
+    //   workspaceUi = sid 的来源（props 会遮蔽 state ✗）/ 算出的当前工作区与文案 / 三条数据源各到了几条 /
+    //   宿主到底换绑过没有（rebinds）；workspaceUiLog = 最近 8 条事件（rebind / switch / switch-ok / switch-fail）。
+    //   没有它，这条链（点击 → 桥 → 宿主 session.start → rebind → 页面重渲）的任何一跳出问题都只能靠猜 ✗。
+    //（源码在 dsh-plugins/vssaros-chat-surface/lib/client.workspace.js 的 noteWorkspaceUi ✓）
+    // ⚠ 本段是**模板字符串**：注释里绝不能出现反引号 ✗。
+    workspaceUi: s.workspaceUi || null,
+    workspaceUiLog: s.workspaceUiLog || null,
+    rebinds: (typeof s.workspaceRebinds === "number" ? s.workspaceRebinds : 0),
+    // ★ 2026-10-17（真机「弹窗停在 hero，选了工作区也不能输入」）：全窗视图被这条自证**跳过**了
+    //   （调用点只看 surface === 'chat'）⇒ 页面侧一切判据都拿不到，只能猜 ✗。
+    //   补：视图 surface / preload 给出的会话 id / 页面绑定进度 / 救援记录 / hero 是否可见。
+    surface: (window.vssarosDsh && window.vssarosDsh.surface) || null,
+    viewSessionId: (window.vssarosDsh && window.vssarosDsh.sessionId) || null,
+    bodySessionId: (document.body && document.body.dataset.vssarosSessionId) || null,
+    bodyOpened: (document.body && document.body.dataset.vssarosOpened) || null,
+    autoEnter: (document.body && document.body.dataset.vssarosAutoEnter) || null,
+    rescue: s.rescue || null,
+   // 主包绑定轮询的进度（全窗也跑，见 client.js 的 surface 分支）——"一次都没试"与"一直在试"要分得开 ✓
+   attempts: (typeof s.attempts === 'number' ? s.attempts : 0),
+   openRetries: (typeof s.openRetries === 'number' ? s.openRetries : 0),
+   lastOpenError: s.lastOpenError || null,
+   giveUps: (typeof s.openGiveUps === 'number' ? s.openGiveUps : 0),
+   rosterSize: (typeof s.rosterSize === 'number' ? s.rosterSize : null),
+   rosterAfter: (typeof s.rosterSizeAfterRefresh === 'number' ? s.rosterSizeAfterRefresh : null),
+   rosterVia: s.rosterRefreshVia || null,
+   rosterHasList: typeof s.rosterHasList === 'boolean' ? s.rosterHasList : null,
+   rosterRefreshing: typeof s.rosterRefreshing === 'boolean' ? s.rosterRefreshing : null,
+   rosterState: s.rosterState || null,
+   rosterPhase: s.rosterPhase || null,
+   rosterTimeouts: typeof s.rosterRefreshTimeouts === 'number' ? s.rosterRefreshTimeouts : 0,
+   rosterAttempts: typeof s.rosterAttempts === 'number' ? s.rosterAttempts : 0,
+   // ★ 2026-10-18「登记自己的会话」（sessions.create({sessionId, workspaceId}) → 立即 merge 进 roster，
+   //   不等 ~22s 的全量 refresh）。真机一眼判定修复是否生效：
+   //   registered=true 且 registerMs 为秒级 ⇒ 修复生效；registerError 有值 ⇒ 看错误原文（多半是归属不符）；
+   //   registerWaitingOwner=true ⇒ workspaces 快照里还没出现这条会话（在等）。
+   registered: s.registered === true,
+   registerMs: typeof s.registerMs === 'number' ? s.registerMs : null,
+   registerError: s.registerError || null,
+   registerOwner: s.registerOwner || null,
+   registerWaitingOwner: s.registerWaitingOwner === true,
+   registerTries: typeof s.registerTries === 'number' ? s.registerTries : 0,
+   // ★ 2026-10-18「长请求熔断」（0.2.127）：连续超时说明到 Host 的连接已经没有回应，
+   //   broken=true 时我们**停止发送**长请求（再发只会继续占满连接）；状态条会写明原因与出路。
+   //   ⚠ 这段整体在模板字符串里 —— 注释中**不能出现反引号**（会提前截断字符串，TS1005）✗。
+   longCallTimeouts: typeof s.longCallTimeouts === 'number' ? s.longCallTimeouts : 0,
+   longCallsBroken: s.longCallsBroken === true,
+   longCallError: s.longCallError || null,
+   connectStatus: s.connectStatus || null,
+   rosterRefreshError: s.rosterRefreshError || null,
+    heroVisible: !!document.querySelector("[data-hero], .wSkVaW_composerHero, textarea[placeholder]"),
+    inputDisabled: (function () {
+      try {
+        var t = document.querySelector("textarea, [contenteditable='true']");
+        if (!t) { return null; }
+        return t.disabled === true || t.getAttribute("aria-disabled") === "true";
+      } catch (e) { return null; }
+    })(),
+    // ★ 2026-10-17（真机「输入框无法输入」而 disabled=false）：输入三判据一起采 ——
+    //   ① 键盘事件到没到页面（inputDiag.keys；0 ⇒ 焦点根本不在这个 WebContents 上）；
+    //   ② 焦点在谁身上（input.active / inputDiag.activeTag）；
+    //   ③ 输入框自身是否可写（disabled/readOnly/contenteditable/pointer-events/尺寸）。
+    //   缺任何一条都无法区分"没收到键盘"与"收到了但进不去"✗。
+    inputDiag: s.inputDiag || null,
+    input: (function () {
+      try {
+        var el = document.querySelector("textarea") || document.querySelector("[contenteditable='true']");
+        if (!el) { return null; }
+        var r = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+        var cs = getComputedStyle(el);
+        var a = document.activeElement;
+        return {
+          tag: el.tagName,
+          disabled: el.disabled === true,
+          readOnly: el.readOnly === true,
+          ce: el.getAttribute("contenteditable"),
+          pe: cs.pointerEvents,
+          vis: cs.visibility,
+          rect: r ? [Math.round(r.width), Math.round(r.height)] : null,
+          active: a ? a.tagName + "." + String(a.className || '').slice(0, 32) : null,
+          docFocus: typeof document.hasFocus === 'function' ? document.hasFocus() : null
+        };
+      } catch (e) { return null; }
+    })()
+    });
 } catch (e) { return "report failed: " + String((e && e.message) || e); } })()`;
 
 /** 页面就绪到跑 {@link PAGE_SURFACE_REPORT} 的延时：给 dsh 应用把首屏（含插件 chunk）渲染完的时间。 */
@@ -231,6 +328,26 @@ interface IViewSlot {
 	 */
 	 watchdog?: ReturnType<typeof setInterval>;
 	 /**
+	 * **键盘焦点自愈**（2026-10-17 真机「输入框无法输入」第二轮）：full 视图专用。
+	 *
+	 * 实测：视图 `FOCUS → BLUR` 反复几次后长期 BLUR；页面侧 `keys=0`（键盘事件一个都没到）
+	 * 而 `mousedown=9`（鼠标正常）⇒ 典型"窗口在前台、键盘却在窗口的 workbench 层"。
+	 * 谁抢的焦点不确定（窗口自己的渲染层 / 布局回调都可能）⇒ 不猜，改成**检测并纠正**：
+	 * 每秒一次，窗口前台而视图非焦点 ⇒ `webContents.focus()` 补回（日志留痕：
+	 * 若每秒都在纠偏，日志本身即证据 ⇒ 有东西在持续抢焦点 ✓）。
+	 */
+	 refocus?: ReturnType<typeof setInterval>;
+	 /** roster 拉取连续超时后是否已记过一次日志（只记一次，避免刷屏 ✓）。 */
+	  rosterReloaded?: boolean;
+	  /** 该视图所属的 Electron 分区（弹窗走独立分区；`_load` 查 cookie 要看**它自己**的分区 ✓）。 */
+	  session?: Session;
+	 /** 页面自证连续超时（渲染线程被同步阻塞）计数；≥2 触发一次自动重载（2026-10-18）。 */
+	 unresponsiveCount?: number;
+	 /** 是否已因"页面无响应"重载过（只做一次，防重载风暴 ✓）。 */
+	 unresponsiveReloaded?: boolean;
+	 /** 是否已因"重载后仍无响应"强杀过渲染进程（只做一次，防崩溃循环 ✓）。 */
+	 unresponsiveCrashed?: boolean;
+	 /**
 	 * **客户端连接抖动**记账（2026-10-15 加，用户报"初次启动该页面卡了一段时间才加载出 session"）。
 	 *
 	 * 实测这才是首启最后一段**可感知**等待：页面在 `ready+3.9s` 就加载完（`replayed … after page load` ✓）、
@@ -271,10 +388,17 @@ interface IViewSlot {
 	 * 顺带覆盖"页面重载 / 白屏自愈之后"——那之后同样需要这两份数据 ✓。
 	 */
 	lastWorktrees?: readonly IDshWorktreeOption[];
+	/**
+	 * 最近一次推送的 **IDE 工作区记录**（多根工作区；与 `lastWorktrees` 同一补发口径 ✓）。
+	 * ⚠ 它**不是**页面列条目的来源（那是 `workspaces.list()`）—— 只用于"把被摊平的 N 条记录合成一组"✓。
+	 */
+	lastWorkspaces?: readonly IDshWorkspaceOption[];
 	lastThemeTokens?: DshThemeTokens;
 	lastColorScheme?: DshColorScheme;
 	/** 最近一次页面侧自证的**原文**（见 `_reportPageSurface`）：内容没变就不再写日志 ⇒ 低频轮询也不吵 ✓。 */
 	lastSurfaceReport?: string;
+	/** 自证跑过一次没有（只打一次 START 日志，见 `_reportPageSurface`）。 */
+	surfaceReportStarted?: boolean;
 	/**
 	 * 页面 console 里去重过的消息（只用于**降噪**：同一句错误反复刷屏时只留第一次）。
 	 * 见 `_wire` 里的 `console-message` 处理器。
@@ -323,6 +447,8 @@ export class DshViewHost extends Disposable {
 	private _authRefreshed = false;
 	private readonly _watchedWindows = new Set<BrowserWindow>();
 	private _session: Session | undefined;
+	/** 弹窗（拼装式 desktop）专用分区；见 `desktopSession` getter 的取证注释。 */
+	private _desktopSession: Session | undefined;
 	private _connection: IDshHostConnection | undefined;
 
 	private readonly _onDidPageEvent = this._register(new Emitter<DshPageEvent>());
@@ -341,28 +467,54 @@ export class DshViewHost extends Disposable {
 	private get session(): Session {
 		if (!this._session) {
 			// 仅测试使用：可用环境变量换成分区，避免多次运行共用持久分区里累积的 dsh-auth Cookie。
-			const ses = electronSession.fromPartition(process.env.DSH_TEST_VIEW_PARTITION || DSH_VIEW_PARTITION);
-			// 权限默认全拒；例外只有两个，且都只放行我们自己的 dsh Host（环回 origin）：
-			// ① `media`：语音输入（voice-input bundle 的本地 SenseVoice）需要麦克风；
-			// ② ★ 2026-10-15 剪贴板**写**（用户报"聊天框 copy 按钮点击没反应"）：CDP 实测 ——
-			//    dsh 的复制按钮走 `navigator.clipboard.writeText`（**无降级** ✗），而本 partition 默认
-			//    拒绝 ⇒ `permissions.query('clipboard-write')="denied"` + `writeText` 抛 NotAllowedError
-			//    + `execCommand('copy')` 也 false ⇒ 静默失败 ✗✓。我们的皮**没有**吞点击
-			//    （click path 全在 dsh 自己的 DOM、defaultPrevented=false ✓）⇒ 只能在这里放行。
-			//    Chromium 新名 `clipboard-sanitized-write` / 旧名 `clipboard-write` 都要 ✓。
-			const isOurHost = (requestingUrl?: string) =>
-				!!this._connection && !!requestingUrl && requestingUrl.startsWith(this._connection.origin);
-			const allow = (permission: string, requestingUrl?: string) =>
-				isOurHost(requestingUrl) && (permission === 'media' || permission === 'clipboard-write' || permission === 'clipboard-sanitized-write');
-			ses.setPermissionRequestHandler((_wc, permission, callback, details) => {
-				const d = details as { requestingUrl?: string } | undefined;
-				callback(allow(permission, d?.requestingUrl));
-			});
-			ses.setPermissionCheckHandler((_wc, permission, requestingOrigin) => allow(permission, requestingOrigin));
-			DshViewHost._knownSessions.add(ses);
-			this._session = ses;
+			this._session = this._configureViewSession(electronSession.fromPartition(process.env.DSH_TEST_VIEW_PARTITION || DSH_VIEW_PARTITION));
 		}
 		return this._session;
+	}
+
+	/**
+	 * **桌面弹窗专用分区**（2026-10-18 真机定案的根治手段）。
+	 *
+	 * 现场证据链：弹窗页 + 主窗口两个 dsh 页同时存在时，**三个页面的 `fetch` 全部 10s 超时**；
+	 * 而把弹窗窗口关掉之后，主窗口页面**立刻恢复**（`HTTP404 4ms`）；同时 Host 从外部访问一直是
+	 * 40–50ms。⇒ Chromium 对同一 `host:port` 的 HTTP/1.1 并发连接上限是 **6**，而 dsh 每个页面都会
+	 * 长期占住若干条连接（状态同步流）；弹窗页一进来就把这 6 条占满 ⇒ 之后**任何**新请求
+	 * （`session.list` / `session.create`）只能永远排队 ⇒ 表现为"页面已加载但 create 永不返回"、
+	 * "reload 也救不回来"（reload 的主文档同样排队）。
+	 *
+	 * 修法：让弹窗用一个**独立 partition** ⇒ 独立的 socket 池与 cookie 罐，一个页面再坏也
+	 * 不会饿死其它窗口 ✓（顺带让弹窗的登录态与主窗口隔离，符合"独立会话"的产品口径）。
+	 */
+	private get desktopSession(): Session {
+		if (!this._desktopSession) {
+			// 非 persist：弹窗关掉即释放，避免长期累积 cookie/缓存；`DSH_TEST_*` 仅测试可覆盖。
+			const partition = process.env.DSH_TEST_DESKTOP_PARTITION || DSH_VIEW_PARTITION_DESKTOP;
+			this._desktopSession = this._configureViewSession(electronSession.fromPartition(partition));
+		}
+		return this._desktopSession;
+	}
+
+	/** 给一个分区配上我们的权限策略（多个分区共用同一套；见 `session` getter 的注释）。 */
+	private _configureViewSession(ses: Session): Session {
+		// 权限默认全拒；例外只有两个，且都只放行我们自己的 dsh Host（环回 origin）：
+		// ① `media`：语音输入（voice-input bundle 的本地 SenseVoice）需要麦克风；
+		// ② ★ 2026-10-15 剪贴板**写**（用户报"聊天框 copy 按钮点击没反应"）：CDP 实测 ——
+		//    dsh 的复制按钮走 `navigator.clipboard.writeText`（**无降级** ✗），而本 partition 默认
+		//    拒绝 ⇒ `permissions.query('clipboard-write')="denied"` + `writeText` 抛 NotAllowedError
+		//    + `execCommand('copy')` 也 false ⇒ 静默失败 ✗✓。我们的皮**没有**吞点击
+		//    （click path 全在 dsh 自己的 DOM、defaultPrevented=false ✓）⇒ 只能在这里放行。
+		//    Chromium 新名 `clipboard-sanitized-write` / 旧名 `clipboard-write` 都要 ✓。
+		const isOurHost = (requestingUrl?: string) =>
+			!!this._connection && !!requestingUrl && requestingUrl.startsWith(this._connection.origin);
+		const allow = (permission: string, requestingUrl?: string) =>
+			isOurHost(requestingUrl) && (permission === 'media' || permission === 'clipboard-write' || permission === 'clipboard-sanitized-write');
+		ses.setPermissionRequestHandler((_wc, permission, callback, details) => {
+			const d = details as { requestingUrl?: string } | undefined;
+			callback(allow(permission, d?.requestingUrl));
+		});
+		ses.setPermissionCheckHandler((_wc, permission, requestingOrigin) => allow(permission, requestingOrigin));
+		DshViewHost._knownSessions.add(ses);
+		return ses;
 	}
 
 	/** Host 起停或重启（端口会变）时调用；已有视图重新加载到新的 Host，或在 Host 停止时清空页面。 */
@@ -436,7 +588,7 @@ export class DshViewHost extends Disposable {
 		}
 	}
 
-	create(viewId: string, ownerWindowId: number, surface: DshViewSurface, chatOnlyUi = true, sessionId?: string, colorScheme?: DshColorScheme, route?: string, pageSurface?: string, backgrounds?: IDshViewBackgrounds): void {
+	create(viewId: string, ownerWindowId: number, surface: DshViewSurface, chatOnlyUi = true, sessionId?: string, colorScheme?: DshColorScheme, route?: string, pageSurface?: string, backgrounds?: IDshViewBackgrounds, isolatedPool = false): void {
 		if (this._views.has(viewId)) {
 			return;
 		}
@@ -449,9 +601,16 @@ export class DshViewHost extends Disposable {
 				this._logService.warn(`[dshHarness] 会话 ${sessionId} 已在窗口 ${other.ownerWindowId} 打开，本窗口 ${ownerWindowId} 也开了同一个：该会话的 IDE 能力请求会被拒绝（分不清该落在哪）`);
 			}
 		}
+		// 弹窗（拼装式 desktop）走**独立分区**：它与主窗口共享同一个 `host:port` 的 6 条并发连接配额，
+		// 一起用会把池占满、互相饿死（见 `desktopSession` 的取证注释）⇒ 隔离 ✓。
+		const viewSession = isolatedPool ? this.desktopSession : this.session;
+		if (isolatedPool) {
+			// 可观测 + 可断言：这是"弹窗不再与主窗口争 6 条连接"的唯一现场证据 ✓
+			this._logService.info(`[dshHarness] view ${viewId} uses an isolated network partition (${process.env.DSH_TEST_DESKTOP_PARTITION || DSH_VIEW_PARTITION_DESKTOP})`);
+		}
 		const view = new WebContentsView({
 			webPreferences: {
-				session: this.session,
+				session: viewSession,
 				nodeIntegration: false,
 				contextIsolation: true,
 				sandbox: true,
@@ -463,7 +622,7 @@ export class DshViewHost extends Disposable {
 		});
 		view.setBounds(OFFSCREEN);
 		view.setVisible(false);
-		const slot: IViewSlot = { id: viewId, view, ownerWindowId, surface, route: surface === 'plugin-page' ? route : undefined, pageSurface: surface === 'plugin-page' ? pageSurface : undefined, attachedTo: undefined, visible: false, retry: newViewLoadRetryState(), blankChecks: 0, blankReloads: 0, colorScheme, sessionId: sessionId || undefined, backgrounds };
+		const slot: IViewSlot = { id: viewId, view, ownerWindowId, surface, route: surface === 'plugin-page' ? route : undefined, pageSurface: surface === 'plugin-page' ? pageSurface : undefined, attachedTo: undefined, visible: false, retry: newViewLoadRetryState(), blankChecks: 0, blankReloads: 0, colorScheme, sessionId: sessionId || undefined, backgrounds, session: viewSession };
 		// ★ 染色必须在**任何一次 attach / setVisible(true) 之前**（否则中间那几毫秒照样露白 ✗）
 		this._applyViewBackground(slot);
 		this._wire(slot);
@@ -478,11 +637,26 @@ export class DshViewHost extends Disposable {
 		if (!slot) {
 			return;
 		}
-		if (slot.attachedTo?.id !== bounds.windowId || slot.attachedTo.isDestroyed()) {
-			const target = this._windowById(bounds.windowId);
+		// ★★ 2026-10-18 真凶（弹窗「roster 恒 0 / 会话打不开 / 输入无效 / 无右栏」的上游）：
+		//   这里原来写的是 `slot.attachedTo?.id !== bounds.windowId` —— 比较的是 **BrowserWindow.id**
+		//   与 **VS Code 的 windowId**，两者是**不同的 id 空间**（主窗口恰好都是 1 所以一直没暴露；
+		//   aux 窗口 BrowserWindow.id=2 而 vscodeWindowId=5 ⇒ 永远不相等）。
+		//   后果：弹窗视图**每次 layout 都被判成"窗口变了"**，一次次 `removeChildView → addChildView`
+		//   重挂载 —— 日志里 0.1s 内 attach 了 4 次；重挂会打断页面加载（`did-finish-load` 从未触发，
+		//   `surface report START` 一条都没有），页面停在半加载态（官方 shell 画得出来，连接/脚本却没跑通）。
+		//   ⇒ 改为：先解析出**目标窗口对象**，再与当前挂载窗口比对象，只有真的换窗口才重挂 ✓。
+		const target = this._windowById(bounds.windowId);
+		const current = slot.attachedTo && !slot.attachedTo.isDestroyed() ? slot.attachedTo : undefined;
+		if (!current || (target && current !== target)) {
+			// ★ 2026-10-17 诊断（「点 agent 条目弹出透明窗口」，窗口里画的正是 agents 页）：视图**换挂窗口**时留一行 ——
+			//   挂到了哪个 BrowserWindow（id / 标题 / 尺寸）、从哪个窗口挪过来、请求的 windowId 是多少。
+			//   正常只有「首次挂到主窗口」与「dsh 全窗挂到它自己的辅助窗口」两种；出现别的就是问题现场。
+			const from = current ? `${current.id}` : '(none)';
+			const desc = target ? `${target.id} title=${JSON.stringify(target.getTitle())} bounds=${JSON.stringify(target.getBounds())}` : '(找不到 ⇒ 不挂)';
+			this._logService.info(`[dshHarness] view ${viewId} attach: requested windowId=${bounds.windowId} from=${from} → ${desc}`);
 			if (target) {
-				if (slot.attachedTo && !slot.attachedTo.isDestroyed()) {
-					slot.attachedTo.contentView.removeChildView(slot.view);
+				if (current) {
+					current.contentView.removeChildView(slot.view);
 				}
 				target.contentView.addChildView(slot.view);
 				slot.attachedTo = target;
@@ -548,6 +722,16 @@ export class DshViewHost extends Disposable {
 	focus(viewId: string): void {
 		const slot = this._views.get(viewId);
 		if (slot?.visible && !slot.view.webContents.isDestroyed()) {
+			// ★ 2026-10-18（真机「输入框无法输入」第四轮）：页面本身已被证实可输入
+			//   （CDP 在同一弹窗里 insertText 成功、`pageFocus` 变 true），`before-input-event`
+			//   也收到过硬件按键 ⇒ 剩下的断点只可能是**窗口不是 OS 前台**：
+			//   那样鼠标照样命中（窗口在光标下），硬件键盘却路由到别处 ✗。
+			//   ⇒ 聚焦视图的同时把**窗口**也激活（BrowserWindow.focus() 才会真正抢到前台）。
+			const win = slot.attachedTo;
+			if (win && !win.isDestroyed() && !win.isFocused()) {
+				win.focus();
+				this._logService.info(`[dshHarness] view ${slot.id} window was not focused ⇒ BrowserWindow.focus() (after=${win.isFocused()})`);
+			}
 			slot.view.webContents.focus();
 		}
 	}
@@ -607,14 +791,23 @@ export class DshViewHost extends Disposable {
 		if (!conn) {
 			return;
 		}
+		// 弹窗的独立分区也要续期（否则它自己的 cookie 过期后弹窗单独 401）✓
+		if (this._desktopSession) {
+			await this._refreshAuthIn(this._desktopSession, conn).catch(() => { /* warning 已在内部记 */ });
+		}
+		await this._refreshAuthIn(this.session, conn);
+	}
+
+	/** 在指定分区里续期 dsh-auth cookie（`_refreshAuth` 的分区版本）。 */
+	private async _refreshAuthIn(ses: Session, conn: IDshHostConnection): Promise<void> {
 		try {
 			// ⚠⚠ **必须 `redirect: 'follow'`**（2026-10-12 日志实证的坑）：上一版写 `redirect: 'manual'`，
 			// 而 Electron 的 `net.fetch` 对 manual 的语义是"**取消**这次重定向并 reject"⇒ 每 3 分钟一条
 			// `[dshHarness] auth refresh failed: Redirect was cancelled`，dsh 的 303 **永远走不完**、
 			// `Set-Cookie` 落不到分区 ⇒ 续期形同没写（cookie 一直用旧的 ⇒ 到点就被 dsh 判未认证）✗✗。
 			// 跟随 303 只是多下载一次应用外壳 HTML（本机回环、3 分钟一次，可忽略），换来 cookie 真的续上 ✓。
-			const res = await this.session.fetch(conn.authUrl, { redirect: 'follow' });
-			const cookies = await this.session.cookies.get({ url: conn.origin }).catch(() => []);
+			const res = await ses.fetch(conn.authUrl, { redirect: 'follow' });
+			const cookies = await ses.cookies.get({ url: conn.origin }).catch(() => []);
 			const auth = cookies.filter(c => c.name.startsWith('dsh-auth')).length;
 			if (res.status >= 400) {
 				this._logService.warn(`[dshHarness] auth refresh got HTTP ${res.status} (dsh-auth cookies: ${auth})— cookie 可能已失效，页面会显示 authentication required`);
@@ -644,6 +837,21 @@ export class DshViewHost extends Disposable {
 		slot.lastWorktrees = options;
 		if (!slot.view.webContents.isDestroyed()) {
 			slot.view.webContents.send(DSH_PAGE_IPC_WORKTREES, options);
+		}
+	}
+
+	/**
+	 * 向页面推 **IDE 工作区记录**（多根工作区：让页面把 dsh 那边被摊平的 N 条记录合成"一个工作区 + 各根"；
+	 * 机制与 {@link pushWorktrees} 逐字同款：先留快照、`did-finish-load` 补发 ✓）。
+	 */
+	pushWorkspaces(viewId: string, options: readonly IDshWorkspaceOption[]): void {
+		const slot = this._views.get(viewId);
+		if (!slot) {
+			return;
+		}
+		slot.lastWorkspaces = options;
+		if (!slot.view.webContents.isDestroyed()) {
+			slot.view.webContents.send(DSH_PAGE_IPC_WORKSPACES, options);
 		}
 	}
 
@@ -779,6 +987,11 @@ export class DshViewHost extends Disposable {
 			clearInterval(slot.watchdog);
 			slot.watchdog = undefined;
 		}
+		// 焦点自愈定时器同样清（否则视图没了还在每秒 focus 一个死 webContents ✗）
+		if (slot?.refocus !== undefined) {
+			clearInterval(slot.refocus);
+			slot.refocus = undefined;
+		}
 		// 抖动判稳的定时器也要清（否则视图没了还会去打那行小结 ✗；回调里虽有 _views 检查兜底，但别把垃圾留着 ✓）
 		if (slot?.connChurn?.timer) {
 			clearTimeout(slot.connChurn.timer);
@@ -830,6 +1043,7 @@ export class DshViewHost extends Disposable {
 			...(s.route ? { route: s.route } : {}),
 			ownerWindowId: s.ownerWindowId,
 			attachedWindowId: s.attachedTo && !s.attachedTo.isDestroyed() ? s.attachedTo.id : undefined,
+			...(s.sessionId ? { sessionId: s.sessionId } : {}),
 			visible: s.visible,
 			nativeVisible: s.view.getVisible(),
 			bounds: s.view.getBounds(),
@@ -851,12 +1065,21 @@ export class DshViewHost extends Disposable {
 		// 把 cookie **可靠地**提交进分区（303 follow 会同步落 cookie，见 `_refreshAuth` 的实证注释），
 		// 再按"cookie 已在"选 URL。⚠ 不要再赌 `loadURL(authUrl)` 的 HTTP 重定向去给 webview 写 cookie ——
 		// 2026-10-13 用户报"聊天框空白"：Host 重启后那一步写了但没生效 ⇒ 永远 401 ⇒ 白屏（探针也复现）。
+		// ⚠ 一律用**该视图自己的分区**（弹窗是独立分区，用主分区查 cookie 会误判"已登录"⇒ 401 ✗）
+		const viewSession = slot.session ?? this.session;
 		if (slot.retry.retriedAuth) {
-			await this.session.fetch(conn.authUrl, { redirect: 'follow' })
+			await viewSession.fetch(conn.authUrl, { redirect: 'follow' })
 				.catch(() => { /* fetch 失败就交给下面的 loadURL（回退 authUrl）与有界重试兜底 */ });
 		}
-		const cookies = await this.session.cookies.get({ url: conn.origin }).catch(() => []);
-		const hasAuth = cookies.some(c => c.name.startsWith('dsh-auth'));
+		let cookies = await viewSession.cookies.get({ url: conn.origin }).catch(() => []);
+		let hasAuth = cookies.some(c => c.name.startsWith('dsh-auth'));
+		// 首次加载到新分区（弹窗的独立分区）时它一个 cookie 都没有 ⇒ 用 authUrl 走一次 token 交换把 cookie 落进去，
+		// 之后每次加载都是"已登录"直连 origin，不重复跳转 ✓。
+		if (!hasAuth) {
+			await viewSession.fetch(conn.authUrl, { redirect: 'follow' }).catch(() => { /* 失败则下面的 loadURL 用 authUrl 兜底 */ });
+			cookies = await viewSession.cookies.get({ url: conn.origin }).catch(() => []);
+			hasAuth = cookies.some(c => c.name.startsWith('dsh-auth'));
+		}
 		const url = resolveViewUrl({
 			origin: conn.origin,
 			authUrl: conn.authUrl,
@@ -944,6 +1167,11 @@ export class DshViewHost extends Disposable {
 				wc.send(DSH_PAGE_IPC_WORKTREES, slot.lastWorktrees);
 				this._logService.info(`[dshHarness] view ${slot.id} replayed ${slot.lastWorktrees.length} worktree option(s) after page load`);
 			}
+			if (slot.lastWorkspaces) {
+				// 多根工作区（2026-10-16）：与 worktree 同口径补发 —— 页面据此把被摊平的记录合成"一工作区 + 各根"。
+				wc.send(DSH_PAGE_IPC_WORKSPACES, slot.lastWorkspaces);
+				this._logService.info(`[dshHarness] view ${slot.id} replayed ${slot.lastWorkspaces.length} workspace record(s) after page load`);
+			}
 			if (slot.lastThemeTokens) {
 				wc.send(DSH_PAGE_IPC_THEME, slot.lastThemeTokens);
 			}
@@ -963,8 +1191,25 @@ export class DshViewHost extends Disposable {
 		if (this._views.get(slot.id) !== slot || slot.view.webContents.isDestroyed()) {
 			return;
 		}
+		// ★ 2026-10-17：**先留一行"跑到了"**。此前这条自证在 dev 日志里从来没有出现过
+		//   （连 chat 视图都没有），而 catch 用的是 trace 级（默认不落盘）⇒ 完全无法区分
+		//   "没执行" / "执行了但抛错" ✗。这条只打一次（每个视图），不会刷屏 ✓。
+		if (!slot.surfaceReportStarted) {
+			slot.surfaceReportStarted = true;
+			this._logService.info(`[dshHarness] view ${slot.id} surface report START (surface=${slot.surface})`);
+		}
 		try {
-			const text = String(await slot.view.webContents.executeJavaScript(PAGE_SURFACE_REPORT, true));
+			// ★★ 2026-10-18 真机（`输入框无法输入` 的**真正**形态）：弹窗页的渲染线程会被**同步阻塞**
+			//   —— `executeJavaScript` 永不 resolve、CPU 0%、`Page.enable/Debugger.enable` 全超时、
+			//   无 JS 弹窗、无崩溃（另一条独立通道验证过）。此时页面侧一切逻辑（roster 拉取、openSession、
+			//   键盘处理、输入框）都是死的 ⇒ 表现为"停在 hero / 打不进字" ✗✗。
+			//   ⇒ 自证必须**带超时**：超时即判定"页面无响应"，记 warn（含连续次数）并触发一次自动重载；
+			//   仍无响应则 dispose 由贡献重开（不无限重载）。以前这里无超时 ⇒ 自证自己永远挂住、
+			//   轮询链从此断掉（日志再也不更新），现场全丢。
+			const text = String(await Promise.race([
+				slot.view.webContents.executeJavaScript(PAGE_SURFACE_REPORT, true),
+				new Promise<string>((_, reject) => setTimeout(() => reject(new Error('surface report timeout (renderer blocked?)')), 8000)),
+			]));
 			// ★ 2026-10-15（用户报"积分 chip 一直 —"）：自证成功 = 页面里我们的 chunk 已挂载（监听器在 ✓）
 			//   ⇒ 此刻把最近的计费样本**补发**一遍 —— 页面侧池是"活推送"、重载即清零 ✗，历史回合的
 			//   「积分」chip 靠这次补发点亮 ✓。每次导航只补一次（`did-navigate` 复位 ✓；重复补发会
@@ -982,11 +1227,34 @@ export class DshViewHost extends Disposable {
 			if (slot.lastSurfaceReport !== text) {
 				// 只在**快照变化**时写日志 ⇒ 15 秒一轮也不吵，而"用户点了一下"必然让计数变化 ⇒ 一定被记下 ✓
 				slot.lastSurfaceReport = text;
+				// ★ 2026-10-17（真机「输入框无法输入」第三轮）：全窗页在**很早期**发起的
+				//   `sessions.refresh()` 可能永不返回（页面侧 `rosterRefreshing` 恒 true、roster 恒 0）
+				//   ⇒ 会话进不了 roster ⇒ 停在 hero ⇒ 输入框被官方 inert 禁用。
+				//   页面侧已加 8s 超时+重试；这里再兜一道**换连接**：连续多次超时且 roster 仍空
+				//   ⇒ 自动 reload 该视图一次（新页面通常能重新建连），并留日志（不静默、不无限重载 ✓）。
+				const timeouts = /"rosterTimeouts":(\d+)/.exec(text);
+				const rosterNow = /"rosterSize":(\d+)/.exec(text);
+				// ★★ 2026-10-18 **撤销**：此处曾在"roster 拉取连续 ≥3 次超时且为空"时 `_recreate` 视图。
+				//   在线实测推翻了当初的前提：`sessions.refresh()` 在 757 条会话上**单次就要 ~22 秒**
+				//   （主窗口 chat 页实测 `refreshMs: 22115`），并不是"连接僵死"；页面本来就活着
+				//   （attach 仅 1 次、自证每 30s 更新）。而 `recreated` 标志挂在 slot 上、随重建一起清零，
+				//   结果每 ~90s 把页面杀掉重来一次，页面**永远活不到 refresh 返回** ⇒ 比原问题更糟 ✗✗。
+				//   这里只保留**观测**（超时计数仍写进快照，供排查），不再动视图。
+				if (!slot.rosterReloaded && timeouts && Number(timeouts[1]) >= 3
+					&& (!rosterNow || Number(rosterNow[1]) === 0)) {
+					slot.rosterReloaded = true;
+					this._logService.warn(`[dshHarness] view ${slot.id} roster 拉取已连续 ${timeouts[1]} 次未在时限内返回（仅记录，不重建；单次 refresh 在大会话量下可达 20s+）`);
+				}
 				const items = /"worktreeItems":(\d+)/.exec(text);
 				const chip = /"contextChip":(true|false)/.exec(text);
+				// ★ 2026-10-16：hero（空白会话屏）**本来就没有我们自己的 chip**（方案 A：hero 里借用官方那枚
+				//   触发器，我们的面板挂在它的浮层槽上）⇒ 只认 `contextChip` 会把这一屏报成"页面侧问题"的
+				//   **假告警** ✗（真机实测：用户那屏正是 hero，日志里刷的正是这条 warn —— 反而把真因盖住了）。
+				//   ⇒ 必须同时看 hero 壳标记（它就是为这种"这一屏我们的入口到过没有"而加的 ✓）。
+				const hero = /"contextHeroEntry":(true|false)/.exec(text);
 				// 卡片动作的失败原因（页面 `fail()` 写进 state.cardActionError）——含引号也吃得下
 				const cardErr = /"cardActionError":"((?:[^"\\]|\\.)*)"/.exec(text);
-				if (items && chip && Number(items[1]) > 0 && chip[1] === 'false') {
+				if (items && chip && hero && Number(items[1]) > 0 && chip[1] === 'false' && hero[1] === 'false') {
 					this._logService.warn(`[dshHarness] view ${slot.id} worktree 数据已到页面但合并入口未渲染（页面侧问题，见 client.workspace.js 的「两组长都空才不渲染」口径）: ${text}`);
 				} else if (cardErr) {
 					// ★ 卡片动作在页面侧失败过（2026-10-13）：这是"点了没反应"的**页面侧**答案 ——
@@ -997,12 +1265,62 @@ export class DshViewHost extends Disposable {
 				}
 				}
 		} catch (e) {
-			this._logService.trace(`[dshHarness] view ${slot.id} surface report failed: ${String((e as Error)?.message ?? e)}`);
+			// ★ 2026-10-17：全窗视图的失败必须是 **warn**（trace 不落盘 ⇒ 排查时什么都看不到 ✗）。
+			const msg = `[dshHarness] view ${slot.id} surface report failed: ${String((e as Error)?.message ?? e)}`;
+			const blocked = /timeout/i.test(String((e as Error)?.message ?? e));
+			if (slot.surface === 'full') {
+				this._logService.warn(msg);
+			} else {
+				this._logService.trace(msg);
+			}
+			// ★ 页面无响应（渲染线程被同步阻塞，见上面 8s 超时处的注释）⇒ 计次并**自动重载一次**。
+			//   这是用户唯一能感知的坏法（"点不动、打不进字"），必须能自愈；只重载一次，不搞重载风暴 ✓。
+			if (blocked) {
+				slot.unresponsiveCount = (slot.unresponsiveCount || 0) + 1;
+				if (slot.unresponsiveCount >= 2 && !slot.unresponsiveReloaded) {
+					slot.unresponsiveReloaded = true;
+					this._logService.warn(`[dshHarness] view ${slot.id} 页面连续 ${slot.unresponsiveCount} 次无响应 ⇒ 自动重载一次（渲染线程被阻塞）`);
+					this.reload(slot.id);
+				} else if (slot.unresponsiveCount >= 4 && !slot.unresponsiveCrashed) {
+					// ★ 第二级：普通 reload 对"同步阻塞"无效（实测：force-crash+reload 后仍 66s 无响应），
+					//   这时只能**换掉渲染进程**：forcefullyCrashRenderer 再重载（Electron 会起新进程）。
+					//   只做一次（`unresponsiveCrashed`），避免崩溃循环 ✗。
+					slot.unresponsiveCrashed = true;
+					try {
+						this._logService.warn(`[dshHarness] view ${slot.id} 重载后仍无响应 ⇒ 强杀渲染进程再重载（第二级自愈）`);
+						slot.view.webContents.forcefullyCrashRenderer();
+						setTimeout(() => { if (this._views.get(slot.id) === slot) { this.reload(slot.id); } }, 1500);
+					} catch (e) {
+						this._logService.warn(`[dshHarness] view ${slot.id} 强杀渲染进程失败: ${String((e as Error)?.message ?? e)}`);
+					}
+				}
+			}
 		}
 		// 继续轮询：视图还在就续期（被关掉/换掉时上面已 return ⇒ 定时器自然停 ✓）
 		if (this._views.get(slot.id) === slot) {
 			setTimeout(() => void this._reportPageSurface(slot, PAGE_SURFACE_REPORT_INTERVAL_MS), PAGE_SURFACE_REPORT_INTERVAL_MS);
 		}
+	}
+
+	/**
+	 * 键盘焦点自愈（full 视图专用；见 {@link IViewSlot.refocus}）。
+	 * 1s 轮询，只在"窗口前台 + 视图非焦点"时补一次；视图被释放时随 disposeView 清掉。
+	 */
+	private _startRefocusWatchdog(slot: IViewSlot): void {
+		if (slot.surface !== 'full' || slot.refocus !== undefined) {
+			return;
+		}
+		slot.refocus = setInterval(() => {
+			try {
+				const win = slot.attachedTo;
+				const wc = slot.view.webContents;
+				if (!win || win.isDestroyed() || wc.isDestroyed()) { return; }
+				if (!win.isFocused() || wc.isFocused()) { return; }
+				wc.focus();
+				this._logService.info(`[dshHarness] view ${slot.id} refocused (window focused, view was not)`);
+			} catch { /* 自愈失败不致命，下一轮再试 */ }
+		}, 1000);
+		slot.refocus.unref?.();
 	}
 
 	private _startPageWatchdog(slot: IViewSlot): void {
@@ -1180,14 +1498,46 @@ export class DshViewHost extends Disposable {
 			slot.blankChecks = 0;
 			// ★ 页面**就绪**了 ⇒ 补发渲染进程早先推来的快照（那时 preload 还没注册监听 ⇒ 被丢弃）✓
 			this._replayPushedSnapshots(slot);
-			// ★ 稍后自证一次"页面侧到底渲染出什么"（一次性；只有聊天页有 worktree/preset 这些 chip）✓
-			if (slot.surface === 'chat') {
+			// ★ 稍后自证一次"页面侧到底渲染出什么"（chat 有 chip 那些字段；**full 也要**——
+			//   2026-10-17：全窗「停在 hero、不能输入」排查时这条自证被跳过 ⇒ 页面侧判据全拿不到 ✗，
+			//   现在 full 也跑，快照里带 surface/viewSessionId/bodyOpened/autoEnter/rescue ✓）。
+			if (slot.surface === 'chat' || slot.surface === 'full') {
 				void this._reportPageSurface(slot, PAGE_SURFACE_REPORT_DELAY_MS);
 			}
 			// 首次加载成功后才开始体检：启动期的 DOM 中间态不该被当成白屏。
 			this._startPageWatchdog(slot);
+			// 全窗视图：键盘焦点自愈（见 _startRefocusWatchdog 的缘由）
+			this._startRefocusWatchdog(slot);
 		});
-		wc.on('focus', () => this._onDidPageEvent.fire({ viewId: slot.id, kind: 'focus' }));
+		// ★ 2026-10-17（真机「输入框无法输入」第二轮：页面侧 keys=0，mousedown=9）：
+		// `before-input-event` 是**键盘到达 webContents 之前**的钩子 ——
+		//   · 它都不触发 ⇒ 键盘根本没进这个原生视图（OS/窗口焦点问题）；
+		//   · 它触发但页面 keys=0 ⇒ 被页面里的某个监听器吞掉了。
+		// 两者修法完全不同，必须分开看 ✗。只对 full 视图记（聊天视图本来就正常），节流避免刷屏。
+		if (slot.surface === 'full') {
+			let inputs = 0;
+			wc.on('before-input-event', (_e, input) => {
+				if (input.type !== 'keyDown') { return; }
+				inputs += 1;
+				if (inputs <= 20 || inputs % 50 === 0) {
+					this._logService.info(`[dshHarness] view ${slot.id} KEY REACHED webContents #${inputs} key=${input.key} code=${input.code} ctrl=${input.control} meta=${input.meta}`);
+				}
+			});
+		}
+		// Chromium 自己的"页面卡死"信号（渲染线程长时间不响应）——比我们轮询更早、更准。
+		// 2026-10-18 真机：弹窗页会进入这种状态（executeJavaScript/Page.enable 全超时、CPU 0%）⇒
+		// 必须落日志（否则只能看到"输入框没反应"这种下游症状 ✗）。
+		wc.on('unresponsive', () => this._logService.warn(`[dshHarness] view ${slot.id} UNRESPONSIVE (surface=${slot.surface})`));
+		wc.on('responsive', () => this._logService.info(`[dshHarness] view ${slot.id} responsive again`));
+		wc.on('focus', () => {
+			// ★ 2026-10-17（真机「输入框无法输入」）：全窗视图的**焦点进出**必须落日志 ——
+			//   页面侧 keys 恒 0 时，唯一能区分"焦点没到视图"与"到了但进不去输入框"的就是这一对 ✓。
+			if (slot.surface === 'full') { this._logService.info(`[dshHarness] view ${slot.id} webContents FOCUS`); }
+			this._onDidPageEvent.fire({ viewId: slot.id, kind: 'focus' });
+		});
+		wc.on('blur', () => {
+			if (slot.surface === 'full') { this._logService.info(`[dshHarness] view ${slot.id} webContents BLUR`); }
+		});
 
 		// palette 模式对齐：页面 DOM 就绪后（此时 debugger 可用）再 emulation prefers-color-scheme，
 		// 避免在 about:blank 上挂起。emulatedScheme 幂等，did-navigate 401 重载等重复触发安全。
@@ -1237,6 +1587,11 @@ export class DshViewHost extends Disposable {
 		}
 		this._watchedWindows.add(win);
 		const id = win.id;
+		// ★ 2026-10-18：窗口级焦点记录（**主进程**是权威口径 —— 渲染进程里 aux 窗口的
+		//   `window.addEventListener('focus')` 一次都没触发过，不能拿来判断）。
+		//   排查「输入框无法输入」时需要回答的就是："这个窗口到底有没有成为 OS 前台"。
+		win.on('focus', () => this._logService.info(`[dshHarness] window ${id} FOCUS (isFocused=${win.isFocused()})`));
+		win.on('blur', () => this._logService.info(`[dshHarness] window ${id} BLUR`));
 		win.once('closed', () => {
 			this._watchedWindows.delete(win);
 			for (const slot of [...this._views.values()]) {

@@ -19,13 +19,18 @@
 // **永久 pending**（见 `vssaros-dashboard/lib/index.js:26-29` 的注释与 `doc/dsh-modules-conformance.html` §5-9）。
 
 import { escapeHtml, renderShell } from './pageShell.js';
+import { bindFoundation } from './foundationRef.js';
 import { applyPresetNames, buildSessionGroups, computeGroupWindow, displayTitleOf, isActiveSession, normalizeGroupBy, personaLabelOf, presetNamesOf, SESSION_GROUP_BY, sessionFromCacheRows, statusOf, subagentDisplayName, subagentDurationText, subagentModeLabel, subagentRowsOf } from './core/sessionList.js';
+
 import { projCacheDirOf, readSessionCaches } from './store.js';
+
 
 export const name = 'vssaros-sessions';
 
 /** 没有工具、也不硬依赖任何服务（页面路由走可选注入）。 */
-export const inject = [];
+// 重构 4（2026-10-16）：本插件现在有工具（session_search）⇒ 静态声明 tools（与 kanban 同口径：
+// tools 在任何模板都该可用 ✓；webServer/connection 仍走可选注入——它们只在 web 模板里有 ✓）。
+export const inject = ['tools'];
 
 const ROUTE_PREFIX = '/x/sessions';
 /** 一页最多列出的会话数（本地缓存读，够用）。 */
@@ -479,6 +484,18 @@ function pageHtml(scan, config, groupBy) {
 // ─── 插件入口 ───────────────────────────────────────────────────────────────
 
 export function apply(ctx, config = {}) {
+	// 重构 1.3：绑定 foundation 共享服务（dataRoot/dshHome/pageShell/lock 的真源）。
+	{
+		// 同步直读在前：有插件在 apply 的**同步段**就建 store（inject 回调是异步的，会来不及 ✗）。
+		let ready = null;
+		try { ready = ctx.get?.('vssarosFoundation') ?? ctx.vssarosFoundation ?? null; } catch { /* 探针的 Proxy 假 ctx 对未知属性抛错 ⇒ 当不存在 */ }
+		if (ready) { bindFoundation(ready); }
+		ctx.inject(['vssarosFoundation'], child => {
+		let svc = null;
+		try { svc = child.vssarosFoundation ?? null; } catch { /* 探针的假 ctx（Proxy）对未知属性抛错 ⇒ 当不存在 */ }
+		if (svc) { bindFoundation(svc); }
+	});
+	}
 	const state = { sessions: null, projections: null, presets: null };
 
 	// live 通道①：`sessions`（`get(id)` → 活 Session 对象）。
@@ -545,6 +562,54 @@ export function apply(ctx, config = {}) {
 			}
 		},
 	})));
+
+	// 重构 4（2026-10-16）：`session_search` 工具——全文检索历史会话（标题 / cwd / 投影文本）。
+	// legacy 侧那个是 stub（"还没实现"）；这里实现真的：读投影缓存 + 大小写不敏感匹配。
+	// 可选注入 `tools`（只在有工具服务的模板里注册；headless/tui 里没有 ⇒ 只是没这个工具 ✓）。
+	// 工具同步注册（与 kanban 同口径：ctx.effect 立即执行 ⇒ REAL-composition boot 后即读得到 ✓；
+	// 别用 inject 回调——它是异步的，boot 后立刻读会读不到 ✗，实测踩到）。
+	ctx.effect(() => ctx.tools.register({
+		name: 'session_search',
+		description: '搜索历史会话：按标题与工作区路径做大小写不敏感的全文匹配（投影缓存只有元数据，没有正文 ⇒ 不搜内容，如实说 ✓），返回匹配的会话列表（id / 标题 / 工作区 / 更新时间）。',
+		parameters: {
+			type: 'object',
+			properties: {
+				query: { type: 'string', description: '搜索关键词（匹配标题 / 路径 / 内容）' },
+				limit: { type: 'number', description: '最多返回几条（默认 20，上限 100）' },
+			},
+			required: ['query'],
+		},
+		// 官方契约：工具必须声明 output { schema, render }（注册期就拒 ✗——REAL-composition 抓到的 ✓）。
+		output: {
+			schema: {
+				type: 'object',
+				properties: {
+					query: { type: 'string' },
+					count: { type: 'number' },
+					sessions: { type: 'array', items: { type: 'object', properties: {
+						sessionId: { type: 'string' }, title: { type: 'string' }, cwd: { type: 'string' }, updatedAt: { type: 'string' },
+					} } },
+				},
+			},
+			render: (_args, value) => [{ type: 'text', text: `找到 ${value.count} 条匹配「${value.query}」的会话` }],
+		},
+		async execute(args = {}) {
+			const query = String(args.query ?? '').trim();
+			if (!query) { throw new Error('query 必填（搜索关键词）'); }
+			const limit = Math.min(100, Math.max(1, Number(args.limit ?? 20)));
+			const { sessions } = await readSessionCaches(config, { limit: 300 });
+			const q = query.toLowerCase();
+			const hits = sessions
+				.filter(s => {
+					// 只匹配元数据（title/cwd）——投影缓存没有正文 ✓（描述里已如实写清）
+					const hay = [s.title, s.cwd].filter(Boolean).join('\n').toLowerCase();
+					return hay.includes(q);
+				})
+				.slice(0, limit)
+				.map(s => ({ sessionId: s.id, title: s.title ?? '', cwd: s.cwd ?? '', ...(s.updatedAt ? { updatedAt: s.updatedAt } : {}) }));
+			return { query, count: hits.length, sessions: hits };
+		},
+	}));
 
 	// 诊断用：当前数据源可达性（不读盘、不拉服务，只报告注入状态）。
 	return { describe: () => ({ route: ROUTE_PREFIX, live: Boolean(state.sessions && state.projections) }) };

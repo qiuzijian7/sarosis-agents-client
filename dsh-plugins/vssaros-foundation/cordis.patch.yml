@@ -1,0 +1,5 @@
+# @vssaros/dsh-foundation — 共享运行时服务（重构 1.3）。
+# 只插入一行；必须在所有消费插件**之前**加载（它们是可选注入，cordis 会等服务就绪再激活）。
+- insert:
+    - id: vssaros-foundation
+      name: '@vssaros/dsh-foundation'

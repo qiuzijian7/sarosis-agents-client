@@ -16,7 +16,14 @@
  * 输出是一份可执行的注册/注销计划；注册表操作留给渲染进程贡献（`dshActivityBarContribution.ts`）。
  */
 
-import type { IVssarosActivityBar } from './vssarosPluginManifest.js';
+import type { IVssarosActivityBar, IVssarosPluginManifest } from './vssarosPluginManifest.js';
+
+/** 参与计划计算的插件信息（渲染端拿到的就是 `IDshPluginInfo`；这里只取需要的字段，便于单测夹具）。 */
+export interface IPluginWithManifest {
+	readonly name: string;
+	readonly enabled?: boolean;
+	readonly manifest?: IVssarosPluginManifest;
+}
 
 export type DshModuleEngine = 'legacy' | 'dsh';
 
@@ -28,7 +35,12 @@ export type DshModuleId =
 	| 'sessions'
 	// 2026-10-15：多平台内容导入（`@vssaros/dsh-web-content-import`）。**纯工具、无页面** ⇒ 无图标模块形态
 	// （同 ide / channels：在 DSH_BUILTIN_MODULES、不在容器表、清单 view.kind='none'）。
-	| 'web-content-import';
+	| 'web-content-import'
+	// 2026-10-16（重构 2.1 试点）：定时任务（`@vssaros/dsh-scheduler`，官方 dsh-schedule 的薄壳）。
+	// 自带容器 `vssaros.dsh.scheduler`（`page-only` —— legacy 调度器从不执行，无静态对应物）。
+	| 'scheduler'
+	// 2026-10-16（重构 2.4）：Saros Pocket 的 Host 路由（`/x/pocket/api/*`）。无图标模块（view.kind=none）。
+	| 'pocket';
 
 export interface IDshBuiltinModule {
 	readonly module: DshModuleId;
@@ -36,6 +48,12 @@ export interface IDshBuiltinModule {
 	readonly pluginName: string;
 	/** 方案 6.6 的模块级职责一句话说明（诊断与插件中心展示用）。 */
 	readonly summary: string;
+	/**
+	 * `true` = 已登记但**插件还没写**（dsh-plugins/ 下没有对应目录）——预留位。
+	 * 影响：激活判据照旧按"已装插件名"算（没装就不激活 ✓ 天然安全）；
+	 * 守卫会反向钉住"planned 的模块不许有插件目录 / 非 planned 的必须有"（dshPluginPackages.test.ts）。
+	 */
+	readonly planned?: boolean;
 }
 
 export const DSH_BUILTIN_MODULES: readonly IDshBuiltinModule[] = [
@@ -51,7 +69,14 @@ export const DSH_BUILTIN_MODULES: readonly IDshBuiltinModule[] = [
 	{ module: 'agents', pluginName: '@vssaros/dsh-agents', summary: '.agent.md 注册为 dsh agent preset' },
 	{ module: 'dashboard', pluginName: '@vssaros/dsh-dashboard', summary: '会话遥测 / 用量汇总（可选）' },
 	{ module: 'ide', pluginName: '@vssaros/dsh-ide', summary: 'IDE 能力工具（无 ActivityBar 图标）' },
-	{ module: 'channels', pluginName: '@vssaros/dsh-channels', summary: '飞书 / Telegram 渠道适配器（无 ActivityBar 图标）' },
+	// 2026-10-16（重构 2.3）：渠道插件已建（`dsh-plugins/vssaros-channels`）——核心环（路由 + loopback
+	// 适配器）落地；飞书/Telegram 真机适配器待真凭据对接。无图标模块（view.kind=none）。
+	{ module: 'channels', pluginName: '@vssaros/dsh-channels', summary: 'IM 渠道（入站 → 专属会话 → runs 驱动 → 回传；无 ActivityBar 图标）' },
+	// 2026-10-16（重构 2.1 试点）：定时任务模块 —— 官方 dsh-schedule 的薄壳（图标 + `/x/scheduler/` 页面 +
+	// legacy agent.yaml 迁移入口）；调度本身是官方 bundle（宿主安装链登记，见 dshHostSupervisor）。
+	{ module: 'scheduler', pluginName: '@vssaros/dsh-scheduler', summary: '定时任务（官方 dsh-schedule 薄壳：图标 + 清单页 + legacy 迁移）' },
+	// 2026-10-16（重构 2.4）：Saros Pocket 的 Host 路由（token 鉴权；无 ActivityBar 图标）。
+	{ module: 'pocket', pluginName: '@vssaros/dsh-pocket', summary: 'Pocket 手机端的 Host 路由（列会话 + 发消息；无 ActivityBar 图标）' },
 	// 2026-10-12：历史会话 sideview 的 dsh 页面（`@vssaros/dsh-sessions`，只读，页面 + `/x/sessions/api/sessions`）。
 	// ⚠ 它**不借用常驻容器** `sessionHistory.view`（那是 `DSH_ALWAYS_REGISTERED_CONTAINERS` 的一员，两条既有守卫
 	//   明确要求"常驻容器不受模块引擎影响、且不得与模块容器表重叠"）—— 而是**自带一个容器**
@@ -78,8 +103,11 @@ export type DshModuleContainerStatus = 'existing' | 'page-only' | 'planned' | 'a
 
 export interface IDshModuleContainer {
 	readonly containerId: string;
-	/** 任一依赖模块激活即显示；全部停用即注销（决议①聚合语义）。 */
-	readonly modules: readonly DshModuleId[];
+	/**
+	 * 任一依赖模块激活即显示；全部停用即注销（决议①聚合语义）。
+	 * 清单驱动后（1.1）这里是**字符串**：第三方/未来模块的 id 不在 DshModuleId 联合里也能进表。
+	 */
+	readonly modules: readonly string[];
 	readonly status: DshModuleContainerStatus;
 	readonly activityBar: IVssarosActivityBar;
 	/** 计划采纳与否的说明（诊断 / 插件中心展示）。 */
@@ -157,6 +185,13 @@ export const DSH_MODULE_CONTAINERS: readonly IDshModuleContainer[] = [
 		note: '2026-10-12：内容由 `@vssaros/dsh-sessions` 的 `/x/sessions/` 承载（分组 / 5 条空闲配额 / 人格标记 / 运行+等待指示灯，只读）。与常驻的历史会话**并存**：后者仍是壳侧 DOM pane（另一条流在维护），本格不接管它（接管 = 换掉别人正在改的 UI，属协调决定）。',
 	},
 	{
+		// 定时任务（重构 2.1 试点）：官方 dsh-schedule 的薄壳。`page-only` —— legacy 侧的自研调度器
+		// **从来没有执行过**（`agentSchedulerService.ts:356` 对 async 生成器只 await 不迭代 ⇒ 没有任何
+		// 存量行为要对齐）；legacy 侧的任务管理页是 taskOverviewEditorPane 里的一个 tab，与这格并存。
+		containerId: 'vssaros.dsh.scheduler', modules: ['scheduler'], status: 'page-only',
+		activityBar: { containerId: 'vssaros.dsh.scheduler', title: { zh: '定时任务', en: 'Scheduled Tasks' }, icon: 'codicon:clock', order: 95 },
+	},
+	{
 		containerId: 'agentStudio.dashboard', modules: ['dashboard'], status: 'existing',
 		// order 5 = **活动栏第一位**（2026-10-12 用户要求；原 150 = 最后一位）。
 		// 静态注册侧（`agentStudio.contribution.ts` 的 `_registerModuleToolIcon`）必须同值，
@@ -181,12 +216,12 @@ export const DSH_MODULE_CONTAINERS: readonly IDshModuleContainer[] = [
  * 路由尾斜杠与清单一致（比对时归一化）；`section` 记下宿主模块（清单 `view.host`）。
  */
 export interface IDshModulePage {
-	readonly module: DshModuleId;
+	readonly module: string;
 	readonly kind: 'page' | 'section' | 'none';
 	/** `page` / `section` 的清单路由；`none` 没有。 */
 	readonly route?: string;
 	/** `section` 的宿主模块（清单 `view.host`）。 */
-	readonly host?: DshModuleId;
+	readonly host?: string;
 }
 
 export const DSH_MODULE_PAGES: readonly IDshModulePage[] = [
@@ -210,13 +245,15 @@ export const DSH_MODULE_PAGES: readonly IDshModulePage[] = [
 	{ module: 'mcp', kind: 'section', route: '/x/mcp/section', host: 'skills' },
 	{ module: 'ide', kind: 'none' },
 	{ module: 'channels', kind: 'none' },
+	{ module: 'scheduler', kind: 'page', route: '/x/scheduler/' },
+	{ module: 'pocket', kind: 'none' },
 	// 2026-10-15：多平台内容导入（纯工具、无页面）⇒ kind='none'（与插件清单 view.kind 一致 ✓）。
 	{ module: 'web-content-import', kind: 'none' },
 ];
 
 /** 容器页路由的解析结果（见 {@link pageRouteForActiveModules}）。 */
 export interface IDshModulePageResolution {
-	readonly module: DshModuleId;
+	readonly module: string;
 	readonly kind: 'page' | 'section';
 	readonly route: string;
 }
@@ -233,7 +270,7 @@ export interface IDshModulePageResolution {
  */
 export function pageRouteForActiveModules(
 	container: IDshModuleContainer,
-	activeModules: readonly DshModuleId[],
+	activeModules: readonly string[],
 	pages: readonly IDshModulePage[] = DSH_MODULE_PAGES,
 ): IDshModulePageResolution | undefined {
 	const active = new Set(activeModules);
@@ -250,13 +287,13 @@ export function pageRouteForActiveModules(
 /** 容器页状态：该加载的页面（可能没有）+ 各模块的激活/页面情况（给"点开为什么是空的"这类说明用）。 */
 export interface IDshModulePageState {
 	readonly page?: IDshModulePageResolution;
-	readonly modules: readonly { readonly module: DshModuleId; readonly active: boolean; readonly route?: string }[];
+	readonly modules: readonly { readonly module: string; readonly active: boolean; readonly route?: string }[];
 }
 
 /** 由"容器 + 已激活模块"算出页面状态（纯函数；说明文案也由它派生，免得两处各判一次）。 */
 export function resolveContainerPageState(
 	container: IDshModuleContainer,
-	activeModules: readonly DshModuleId[],
+	activeModules: readonly string[],
 	pages: readonly IDshModulePage[] = DSH_MODULE_PAGES,
 ): IDshModulePageState {
 	const active = new Set(activeModules);
@@ -286,6 +323,95 @@ const MODULE_BY_PLUGIN_NAME = new Map<string, DshModuleId>(DSH_BUILTIN_MODULES.m
 /** 已装插件包名 → 内置模块 id；不是内置模块（第三方 / 基础插件）返回 undefined。 */
 export function moduleIdForPluginName(pluginName: string): DshModuleId | undefined {
 	return MODULE_BY_PLUGIN_NAME.get(pluginName.trim());
+}
+
+// ─── 清单驱动的派生（重构 1.1，2026-10-16）─────────────────────────────────────
+// 目标：新增一个模块插件 ⇒ 壳代码改动为 0。容器、页面、激活集合全部从已装插件的
+// `vssaros` 清单派生；上面的两张表降级为「legacy 静态注册的基准」与「守卫的比对基准」。
+//
+// 派生规则（与表逐项对齐，守卫 `dshPluginPackages.test.ts` 会双向核对）：
+// - 容器成员 = 清单里 `activityBar.containerId` 相同的模块聚合（skills+mcp 共容器 ⇒ 两份清单
+//   写同一个 containerId；这与"决议①由 VsSaros 侧聚合"不冲突——聚合键本来就在清单里）。
+// - 页面 = 清单 `view`（page→route、section→route+host、none→无）。
+// - 模块激活 = 插件已装且未停用且清单带 module。
+// 缺 manifest 或 manifest 不合法（主进程已过滤）⇒ 不参与派生，不猜字段。
+
+/** 从已装插件清单派生模块容器表。 */
+export function containersFromPlugins(plugins: readonly IPluginWithManifest[]): readonly IDshModuleContainer[] {
+	const byContainer = new Map<string, { modules: string[]; activityBar: IVssarosActivityBar }>();
+	// 第一遍：有自己 activityBar 的模块先落位（拿到容器键）。
+	for (const plugin of plugins) {
+		const manifest = plugin.manifest;
+		if (!manifest?.module || !manifest.activityBar) {
+			continue;
+		}
+		const containerId = manifest.activityBar.containerId;
+		const entry = byContainer.get(containerId) ?? { modules: [], activityBar: manifest.activityBar };
+		if (!entry.modules.includes(manifest.module)) {
+			entry.modules.push(manifest.module);
+		}
+		byContainer.set(containerId, entry);
+	}
+	// 第二遍：寄居模块（view.kind=section）并入**宿主模块所在容器**——它没有自己的图标，
+	// 但它的激活要让宿主容器显示出来（与硬编码表的"容器 members 含 mcp"同语义 ✓）。
+	const containerOfModule = new Map<string, string>();
+	for (const [containerId, entry] of byContainer) {
+		for (const m of entry.modules) {
+			containerOfModule.set(m, containerId);
+		}
+	}
+	for (const plugin of plugins) {
+		const manifest = plugin.manifest;
+		if (!manifest?.module || manifest.view.kind !== 'section') {
+			continue;
+		}
+		const hostContainer = containerOfModule.get(manifest.view.host);
+		if (!hostContainer) {
+			continue; // 宿主没装/没图标 ⇒ 寄居模块没有落点（容器不显示，页面路由仍在）
+		}
+		const entry = byContainer.get(hostContainer)!;
+		if (!entry.modules.includes(manifest.module)) {
+			entry.modules.push(manifest.module);
+		}
+	}
+	// 与硬编码表同序：按 order 排序（order 相同按 containerId 字典序，保证稳定）。
+	return [...byContainer.entries()]
+		.map(([containerId, { modules, activityBar }]) => ({
+			containerId,
+			modules,
+			// 清单驱动的容器没有「legacy 侧已有静态宿主」的概念（那是静态注册的事）⇒ 一律按 existing 注册。
+			status: 'existing' as const,
+			activityBar,
+		}))
+		.sort((a, b) => a.activityBar.order - b.activityBar.order || a.containerId.localeCompare(b.containerId));
+}
+
+/** 从已装插件清单派生页面表。 */
+export function pagesFromPlugins(plugins: readonly IPluginWithManifest[]): readonly IDshModulePage[] {
+	const pages: IDshModulePage[] = [];
+	for (const plugin of plugins) {
+		const manifest = plugin.manifest;
+		if (!manifest?.module) {
+			continue;
+		}
+		const view = manifest.view;
+		if (view.kind === 'page') {
+			pages.push({ module: manifest.module, kind: 'page', route: view.route });
+		} else if (view.kind === 'section') {
+			pages.push({ module: manifest.module, kind: 'section', route: view.route, host: view.host });
+		} else if (view.kind === 'none') {
+			pages.push({ module: manifest.module, kind: 'none' });
+		}
+		// native：壳侧原生视图，不在插件页体系内，不进表
+	}
+	return pages;
+}
+
+/** 清单驱动的模块激活集合：插件已装且未停用且清单带 module。 */
+export function activeModulesFromPlugins(plugins: readonly IPluginWithManifest[]): string[] {
+	return plugins
+		.filter(p => p.enabled !== false && p.manifest?.module)
+		.map(p => p.manifest!.module!);
 }
 
 /** 容器反查（贡献侧按容器 id 取依赖与默认路由；找不到即 fail-fast，避免静默注册错容器）。 */
@@ -335,11 +461,18 @@ export interface IModuleContainerPlanInput {
 	readonly disabledPlugins?: readonly string[];
 	/** 当前已注册的容器 id（用于算出需要注销的部分）。 */
 	readonly registeredContainerIds: readonly string[];
+	/**
+	 * 清单驱动（重构 1.1）：给出时**替代** `DSH_MODULE_CONTAINERS` 参与计算。
+	 * 调用方用 `containersFromPlugins()` 从已装插件清单派生。
+	 */
+	readonly containers?: readonly IDshModuleContainer[];
+	/** 清单驱动下插件→模块的映射（给出时替代 `DSH_BUILTIN_MODULES` 的插件名反查）。 */
+	readonly pluginModules?: ReadonlyMap<string, string>;
 }
 
 export interface IModuleContainerPlan {
 	readonly engine: DshModuleEngine;
-	readonly activeModules: readonly DshModuleId[];
+	readonly activeModules: readonly string[];
 	/** 需要注册的容器（依赖已激活、状态 existing、当前未注册）。 */
 	readonly registrations: readonly IDshModuleContainer[];
 	/** 需要注销的容器 id（依赖全部停用、或插件被卸载）。 */
@@ -360,15 +493,19 @@ export function planModuleContainers(input: IModuleContainerPlanInput): IModuleC
 	if (input.engine !== 'dsh') {
 		return { engine: input.engine, activeModules: [], registrations: [], deregistrations: [], pending: [], contextKeys: {} };
 	}
+	const containers = input.containers ?? DSH_MODULE_CONTAINERS;
+	const pluginModules = input.pluginModules ?? MODULE_BY_PLUGIN_NAME;
 	const disabled = new Set((input.disabledPlugins ?? []).map(name => name.trim()));
-	const activeModules = activeModulesOf(input.installedPlugins.filter(name => !disabled.has(name.trim())));
+	const activeModules = input.installedPlugins.filter(name => !disabled.has(name.trim()))
+		.map(name => pluginModules.get(name.trim()))
+		.filter((m): m is string => !!m);
 	const active = new Set(activeModules);
 	const registered = new Set(input.registeredContainerIds);
 
 	const registrations: IDshModuleContainer[] = [];
 	const deregistrations: string[] = [];
 	const pending: IDshModuleContainer[] = [];
-	for (const container of DSH_MODULE_CONTAINERS) {
+	for (const container of containers) {
 		const isActive = container.modules.some(m => active.has(m));
 		const isRegistered = registered.has(container.containerId);
 		if (!isActive) {
@@ -386,9 +523,12 @@ export function planModuleContainers(input: IModuleContainerPlanInput): IModuleC
 		}
 	}
 
+	// 上下文键集合：清单驱动时用派生的模块集合（新模块不进 DSH_BUILTIN_MODULES 也有键 ✓）；
+	// 否则用内置表（旧口径不变）。
+	const keyModules = input.pluginModules ? [...new Set(input.pluginModules.values())] : DSH_BUILTIN_MODULES.map(m => m.module as string);
 	const contextKeys: Record<string, boolean> = {};
-	for (const m of DSH_BUILTIN_MODULES) {
-		contextKeys[moduleContextKey(m.module)] = active.has(m.module);
+	for (const m of keyModules) {
+		contextKeys[moduleContextKey(m as DshModuleId)] = active.has(m);
 	}
 	return { engine: input.engine, activeModules, registrations, deregistrations, pending, contextKeys };
 }

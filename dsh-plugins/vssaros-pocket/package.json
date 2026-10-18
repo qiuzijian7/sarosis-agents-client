@@ -1,0 +1,31 @@
+{
+  "name": "@vssaros/dsh-pocket",
+  "version": "0.1.0",
+  "description": "VsSaros Pocket module for DeepSeek Harness: Host 路由 /x/pocket/api/*（token 鉴权）——列 dsh 会话 + 发消息（重构 2.4）。Saros-agents-pocket 扩展改为调这个路由（跨仓那半在 Saros-agents-pocket 仓）；sarosPocket.* 命令保留一个版本做兼容（D8）。",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": ["lib/index.js", "lib/foundationRef.js", "lib/pageShell.js", "cordis.patch.yml"],
+  "peerDependencies": {
+    "@deepseek-ai/dsh": ">=0.1.7-0 <0.3.0-0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": [
+        "./cordis.patch.yml"
+      ]
+    }
+  },
+  "vssaros": {
+    "manifestVersion": 1,
+    "module": "pocket",
+    "view": {
+      "kind": "none"
+    }
+  },
+  "license": "MIT"
+}

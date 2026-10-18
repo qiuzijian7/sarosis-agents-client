@@ -124,19 +124,22 @@ window.__ModuleLoader__.load({
 						children.push(react.createElement("div", {
 							key: "menu", role: "menu",
 							// 尺寸夹在页面视口内（超出 WebContentsView 矩形会被裁掉 ⇒ 露出后面的编辑器）。
+							// ⚠ 还要把**触发器矩形**交给 fitMenu：只按"整页 − 72"算 ⇒ 面板底部落到视口外、
+							//   下半截（含底部动作行）**既看不到也滚不到** ✗（2026-10-16 用户报障，见 client.js 的注释）。
 							style: Object.assign({
 								position: "absolute", top: "100%", right: 0, marginTop: 4, zIndex: 1000,
 								padding: 5, borderRadius: 10,
 								border: "1px solid var(--dsw-alias-border-l1, transparent)",
 								background: "var(--dsw-alias-bg-layer-1, var(--dsw-alias-bg-base))",
 								boxShadow: "0 8px 24px rgba(0,0,0,.35)",
-							}, shell.fitMenu ? shell.fitMenu() : {}),
+							}, shell.fitMenu ? shell.fitMenu(rootRef.current ? rootRef.current.getBoundingClientRect() : null) : {}),
 						},
 							react.createElement("div", { style: { fontSize: 10.5, letterSpacing: ".03em", color: "var(--dsw-alias-label-secondary, currentColor)", padding: "6px 8px 3px" } }, "聊天框设置"),
 							row("skin", "换皮样式", skinOn() ? "已开启（品牌标/工具卡/皮肤规则）" : "已关闭（回到 dsh 官方外观）", skinOn(),
 								() => { setSkin(!skinOn()); rerender(); }),
 							row("usage", "用量页脚", usageOn() ? "助手气泡底部显示 耗时/tokens/积分" : "已隐藏", usageOn(),
 								() => { setUsage(!usageOn()); rerender(); }),
+
 							react.createElement("div", { key: "sep", style: { height: 1, margin: "5px 4px", background: "var(--dsw-alias-border-l1, transparent)" } }),
 							row("export", "导出对话到剪贴板", "把当前消息流正文复制为 Markdown", false,
 								() => { exportChat().then(() => { setNote("已复制到剪贴板"); rerender(); }, (e) => { setNote(String((e && e.message) || e)); rerender(); }); }),

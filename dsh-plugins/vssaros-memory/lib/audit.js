@@ -17,17 +17,17 @@
 //   或改成"每进程一个文件"，而不是给这个只增账本上文件锁（那会引入新的卡死面 ✗）。
 
 import { appendFile, mkdir, readFile, readdir, rename, rm, stat } from 'node:fs/promises';
+import { foundation } from './foundationRef.js';
 import { homedir } from 'node:os';
+
 import { join } from 'node:path';
+
 import { AUDIT_DIR_NAME, AUDIT_FILE_NAME, AUDIT_MAX_BYTES_DEFAULT, rotationSuffixOf, shouldRotate } from './core/audit.js';
 
+
 export function dataRootOf(config) {
-	const configured = typeof config?.dataRoot === 'string' ? config.dataRoot.trim() : '';
-	if (configured) {
-		return configured;
-	}
-	const fromEnv = typeof process.env.VSSAROS_DATA_ROOT === 'string' ? process.env.VSSAROS_DATA_ROOT.trim() : '';
-	return fromEnv || join(homedir(), '.vssaros');
+	// 委托到 @vssaros/dsh-foundation（重构 1.3：真源只有一份）；调用签名不变。
+	return foundation().dataRootOf(config);
 }
 
 /** 账本目录：`<数据根>/memory-audit`。 */

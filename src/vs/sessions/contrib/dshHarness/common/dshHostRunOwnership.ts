@@ -22,6 +22,17 @@
  *   · `appPid` 活着且不是自己 ⇒ **保留** ✓（真·多实例：另一个 VsSaros 正接在上面 ✓）。
  */
 
+/**
+ * 拥有者记录的**心跳间隔**：宿主主进程活着就定期碰一下记录的 mtime（只碰 mtime、不改内容 ✓）。
+ *
+ * 谁在用：桥插件的看门狗（`dsh-plugins/vssaros-bridge/lib/index.js` 的 `OWNER_STALE_MS`）——
+ *   · 只信 `appPid` 存活会被 **pid 复用**骗过 ✗；
+ *   · 只信 mtime 就需要有人定期"碰"，就是这里 ✓。
+ * ★ 两侧是一对常量：插件的陈旧阈值必须 ≥ 本值的 3 倍（留足余量），由
+ *   `test/common/dshOwnerWatchdog.test.ts` 的配对守卫钉住 ✓。
+ */
+export const HOST_RUN_OWNERSHIP_HEARTBEAT_MS = 20_000;
+
 /** 拥有者记录的文件名前缀。 */
 export const HOST_RUN_OWNERSHIP_PREFIX = 'owner-';
 /** 拥有者记录的扩展名。 */
@@ -104,6 +115,30 @@ export interface IHostRunPlan {
 	readonly keep: readonly IHostRunVerdict[];
 }
 
+/** 单条记录的判定（`keep` = 不许动）。 */
+interface IRunOwnershipJudgement {
+	readonly keep: boolean;
+	readonly reason: string;
+}
+
+/** 单条记录的判定规则（文件头那四条；原因必须可解释 ⇒ 原样进日志 ✓）。 */
+function judgeRunOwnership(
+	record: IHostRunOwnership,
+	options: { readonly selfAppPid: number; readonly isAlive: (pid: number) => boolean; readonly now: number; readonly graceMs: number },
+): IRunOwnershipJudgement {
+	const age = options.now - record.startedAt;
+	if (Number.isFinite(record.startedAt) && age >= 0 && age < options.graceMs) {
+		return { keep: true, reason: `刚写下 ${age}ms（保护期 ${options.graceMs}ms 内），可能与并发实例正在使用中` };
+	}
+	if (record.appPid === options.selfAppPid) {
+		return { keep: false, reason: `本进程（pid ${record.appPid}）上一轮留下的 Host（已不再使用）` };
+	}
+	if (!options.isAlive(record.appPid)) {
+		return { keep: false, reason: `拥有者 VsSaros（pid ${record.appPid}）已退出 ⇒ 没有窗口接在这个 Host 上` };
+	}
+	return { keep: true, reason: `拥有者 VsSaros（pid ${record.appPid}）仍在运行，可能正接在它上面（多实例）` };
+}
+
 /**
  * 把拥有者记录分成"可回收"与"别动"两堆。
  *
@@ -116,23 +151,41 @@ export function planOrphanHosts(
 	records: readonly IHostRunOwnership[],
 	options: { readonly selfAppPid: number; readonly isAlive: (pid: number) => boolean; readonly now: number; readonly graceMs: number },
 ): IHostRunPlan {
+	// ① 先逐条判"这条记录**自己**该不该回收"（规则见文件头）。
+	const judged = records.map(record => ({ record, judgement: judgeRunOwnership(record, options) }));
+	// ② ★ 2026-10-16：再按 **hostPid 分组**收敛 —— 同一个 Host 可以有**多份**拥有者记录 ✗：
+	//   原拥有者优雅分离后，另一个窗口经 `host.json` 接管了它（`dshHostSupervisor._adoptLease` 也会写下
+	//   自己那份 ✓）⇒ **只要组里有一条说"还在用"，这个 Host 整体不许动** ✓。
+	//   不收敛会怎样（真机可达 ✗✗）：A 优雅退出后 B 接管了同一个 Host；A 的记录里 `appPid` 已死 ⇒
+	//   按单条判就是"可回收"⇒ 插件版本变化时新起的 C 走回收分支、`taskkill /T` 掉**B 正在用**的 Host ✗。
+	const groups = new Map<number, { record: IHostRunOwnership; judgement: IRunOwnershipJudgement }[]>();
+	for (const item of judged) {
+		const group = groups.get(item.record.hostPid);
+		if (group) {
+			group.push(item);
+		} else {
+			groups.set(item.record.hostPid, [item]);
+		}
+	}
 	const reap: IHostRunVerdict[] = [];
 	const keep: IHostRunVerdict[] = [];
-	for (const record of records) {
-		const age = options.now - record.startedAt;
-		if (Number.isFinite(record.startedAt) && age >= 0 && age < options.graceMs) {
-			keep.push({ record, reason: `刚写下 ${age}ms（保护期 ${options.graceMs}ms 内），可能与并发实例正在使用中` });
+	for (const group of groups.values()) {
+		const blocker = group.find(item => item.judgement.keep);
+		if (!blocker) {
+			for (const item of group) {
+				reap.push({ record: item.record, reason: item.judgement.reason });
+			}
 			continue;
 		}
-		if (record.appPid === options.selfAppPid) {
-			reap.push({ record, reason: `本进程（pid ${record.appPid}）上一轮留下的 Host（已不再使用）` });
-			continue;
+		for (const item of group) {
+			keep.push({
+				record: item.record,
+				// 单条时原样透传原因（日志里的关键字与既有排查习惯都依赖它 ✓）；成组时点明是谁挡住的 ✓。
+				reason: group.length === 1
+					? item.judgement.reason
+					: `同一 Host（pid ${item.record.hostPid}）有 ${group.length} 份拥有者记录，其中一份不该动 ⇒ 整组保留：${blocker.judgement.reason}`,
+			});
 		}
-		if (!options.isAlive(record.appPid)) {
-			reap.push({ record, reason: `拥有者 VsSaros（pid ${record.appPid}）已退出 ⇒ 没有窗口接在这个 Host 上` });
-			continue;
-		}
-		keep.push({ record, reason: `拥有者 VsSaros（pid ${record.appPid}）仍在运行，可能正接在它上面（多实例）` });
 	}
 	return { reap, keep };
 }

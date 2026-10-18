@@ -23,8 +23,11 @@
 //   · 丢更新防护：读时记指纹（mtime:size），写前重新比对；不一致 ⇒ 重做 ✓。
 
 import { mkdir, open, readFile, rename, stat, unlink, utimes, writeFile } from 'node:fs/promises';
+import { foundation } from './foundationRef.js';
 import { homedir } from 'node:os';
+
 import { dirname, join } from 'node:path';
+
 
 /** 数据根下的模块目录名（与其它模块同构：`<根>/knowledge-base/`、`<根>/skills/` …）。 */
 export const MODULE_DIR = 'dashboard';
@@ -43,12 +46,8 @@ const DEFAULT_LOCK_HEARTBEAT_MS = 2000;
  * 覆盖本行 config 注入（与 bridge 注入 pipe/token 同一机制）。
  */
 export function dataRootOf(config) {
-	const configured = typeof config?.dataRoot === 'string' ? config.dataRoot.trim() : '';
-	if (configured) {
-		return configured;
-	}
-	const fromEnv = typeof process.env.VSSAROS_DATA_ROOT === 'string' ? process.env.VSSAROS_DATA_ROOT.trim() : '';
-	return fromEnv || join(homedir(), '.vssaros');
+	// 委托到 @vssaros/dsh-foundation（重构 1.3：真源只有一份）；调用签名不变。
+	return foundation().dataRootOf(config);
 }
 
 export function layoutPath(config) {

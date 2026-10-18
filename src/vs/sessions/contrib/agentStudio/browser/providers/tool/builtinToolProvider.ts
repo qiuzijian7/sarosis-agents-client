@@ -49,43 +49,43 @@ import {
 	AGENT_STUDIO_WEB_SEARCH_BRAVE_KEY_SETTING,
 	AGENT_STUDIO_WEB_SEARCH_EXA_KEY_SETTING,
 	AGENT_STUDIO_WEB_SEARCH_CACHE_ENABLED_SETTING,
-	AGENT_STUDIO_BROWSER_COOKIES_FROM_BROWSER_SETTING,
+	// 2026-10-17（5.5 前置）：AGENT_STUDIO_BROWSER_COOKIES_FROM_BROWSER_SETTING 摘了——
+	//   web_scrape_to_board 退役（它不再被读 ✓）。
 } from '../../../common/constants.js';
 import { getToolsetForTool, UTILITY_BUCKET_WHITELIST } from '../../../common/toolsetConfig.js';
-import { ISkillRegistry } from '../../../common/skills.js';
-import { IModelSelectorService } from '../../../common/modelSelector.js';
+// 2026-10-17（5.5 前置）：ISkillRegistry 的 import 摘了——skills 工具退役（`_registerSkillTools` 删了 ⇒
+//   没人读它 ✓）。
+// 2026-10-17（5.5 前置）：IModelSelectorService 的 import 摘了——modelSelectorService 的注入摘了（没人读 ✓）。
 import { IWorkspaceContextService } from '../../../../../../platform/workspace/common/workspace.js';
 import { URI } from '../../../../../../base/common/uri.js';
 import { resolveToolMutationKey, withFileMutationQueue } from '../../../common/fileMutationQueue.js';
 import { ITerminalService } from '../../../../../../workbench/contrib/terminal/browser/terminal.js';
-import { IAgentStudioService, ITaskOrchestrationService, IAgentTaskBoardService, IAgentChatService } from '../../../../../common/agentStudioService.js';
-import { ITriageService } from '../../../common/triageService.js';
-import { ISwarmService } from '../../../common/swarmService.js';
+import { IAgentStudioService, ITaskOrchestrationService } from '../../../../../common/agentStudioService.js';
+// 2026-10-17（5.5 前置）：IAgentChatService 的 import 摘了——agentChatService 的注入摘了（没人读 ✓）。
+// 2026-10-17（5.5 前置）：kanban 工具退役（见构造函数的注释）——IAgentTaskBoardService / ITriageService /
+//   ISwarmService / registerKanbanTools / IPlaywrightService / ISessionsManagementService 的 import 摘了
+//   （kanban 工具是它们的唯一使用方 ✓）。
 import { ICheckpointService } from '../../../common/checkpointService.js';
 import { IAgentOSService } from '../../../common/agentOS.js';
-import { IWorkflowStorageService } from '../../../common/workflowStorage.js';
+// 2026-10-17（5.5 前置）：IWorkflowStorageService 的 import 摘了——workflowStorageService 的注入摘了（没人读 ✓）。
 import { resolveEffectiveWorktreeRoot } from '../../../common/worktreeBinding.js';
-import { SkillManagerTool } from '../../skillManagerTool.js';
-import { SkillUsageTracker } from '../../skillUsageTracker.js';
+// 2026-10-17（5.5 前置）：SkillManagerTool / SkillUsageTracker 的 import 摘了——skills 工具退役
+//   （_registerSkillTools 删了 ⇒ 没人读它们 ✓）。
 import { ICodebaseGraphService } from '../../codebaseGraphService.js';
-import { AdrManager } from '../../codebaseGraphAdr.js';
-import { registerCodebaseTools } from './codebaseTools.js';
-import { registerKanbanTools } from './kanbanTools.js';
-import { registerWorkflowTools } from './workflowTools.js';
+// 2026-10-17（5.5 前置）：AdrManager 的 import 摘了——_adrManager 摘了（codebase 工具是它的唯一使用方 ✓）。
+// 2026-10-17（5.5 前置）：registerCodebaseTools 的 import 摘了——codebase 工具族退役（见构造函数的注释）。
+// 2026-10-17（5.5 前置）：registerWorkflowTools 的 import 摘了——workflow 工具族退役（见构造函数的注释）。
 import { registerCanvasTools } from './canvasTools.js';
-import { registerImageGenTools } from './imageGenTools.js';
+// 2026-10-17（5.5 前置）：registerImageGenTools 的 import 摘了——image_generate 退役（见构造函数的注释）。
 import { registerMindmapTools } from './mindmapTools.js';
-import { createMediaStoreProxy } from '../../mediaStoreProxy.js';
-import { IMainProcessService } from '../../../../../../platform/ipc/common/mainProcessService.js';
-import { IPlaywrightService } from '../../../../../../platform/browserView/common/playwrightService.js';
-import { IEditorService } from '../../../../../../workbench/services/editor/common/editorService.js';
+// 2026-10-17（5.5 前置）：createMediaStoreProxy 的 import 摘了——media 工具退役（见构造函数的注释）。
+// 2026-10-17（5.5 前置）：IMainProcessService / IEditorService 的 import 摘了——mainProcessService / editorService 的注入摘了（没人读 ✓）。
 // ★ 2026-09-24：`kb_build` 要按「知识库视图」那样**造一个 KbImportController**（同一份管线、
 //   同一套服务），故需 views / notification 两个服务（前者用于打开知识库视图，后者用于
 //   「知识库专家未配置模型」的提醒与构建失败通知）。
-import { IViewsService } from '../../../../../../workbench/services/views/common/viewsService.js';
-import { INotificationService } from '../../../../../../platform/notification/common/notification.js';
-import { ISessionsManagementService } from '../../../../../../sessions/services/sessions/common/sessionsManagement.js';
-import { IKanbanRecipeService } from './kanbanRecipeService.js';
+// 2026-10-17（5.5 前置）：IViewsService / INotificationService 的 import 摘了——viewsService / notificationService 的注入摘了（没人读 ✓）。
+// 2026-10-17（5.5 前置）：recipeService 的注入摘了（kanban 工具是它的唯一使用方 ✓）——
+//   IKanbanRecipeService 的 import 留着（类型还被别处用 ⇒ 5.5 真删时一起删）。
 import { SearchHelpers } from './searchHelpers.js';
 import { registerWebTools, type WebToolContext, type IWebPageCacheLike } from './webTools.js';
 import { DEFAULT_WEB_SEARCH_CONFIG } from './webSearchProviders.js';
@@ -96,11 +96,9 @@ import { SarosPath, resolveSarosPath, userDataRootFromPath } from '../../../comm
 import { joinPath } from '../../../../../../base/common/resources.js';
 import { VSBuffer } from '../../../../../../base/common/buffer.js';
 import { registerBundledTools, type BundledToolContext } from './bundledTools.js';
-import { registerUnifiedMemoryTools, type UnifiedMemoryToolContext } from './unifiedMemoryTools.js';
-import { registerMemoryTools, type MemoryToolContext } from './memoryTools.js';
-import { registerAdvancedMemoryTools, type AdvancedMemoryToolContext } from './advancedMemoryTools.js';
-import { registerRoutineCrystalFacetTools, type RoutineCrystalFacetToolContext } from './routineCrystalFacetTools.js';
-import { registerSkillTools, type SkillToolContext } from './skillTools.js';
+// 2026-10-17（5.5 前置）：memory 工具全族退役（见构造函数的注释）——unifiedMemoryTools /
+//   memoryTools / advancedMemoryTools / routineCrystalFacetTools 的 import 摘了。
+// 2026-10-17（5.5 前置）：registerSkillTools 的 import 摘了——skills 工具退役（见构造函数的注释）。
 import { registerCompatibilityTools, type CompatToolContext } from './compatibilityTools.js';
 import { registerDelegationTools, type DelegationToolContext } from './delegationTools.js';
 import { registerPlanExploreTool } from './planExploreTool.js';
@@ -114,11 +112,11 @@ import { svgToPng } from '../../knowledge/svgRasterizer.js';
 import { prepareDiagramsForSync } from '../../knowledge/diagramSyncPrepare.js';
 // ★ 2026-09-24：`kb_build` —— agent 发起知识库构建（此前只有视图按钮，素材落库后就断在那里）。
 //   装配 KbImportController 需要 loadActiveKbVault/resolveKbRootUri（与视图同一套 vault 根解析）。
-import { registerKbBuildTools } from './kbBuildTools.js';
+// 2026-10-17（5.5 前置）：registerKbBuildTools 的 import 摘了——kb_build 退役（见构造函数的注释）。
 // ★ 2026-09-24：飞书云文档工具族（读文档 / 评论 5 个）—— 从 Hermes 的 feishu_* 工具移植
 //   能力（上游那套靠"评论事件注入 client"，我们改成按需调用官方 CLI，见该文件头）。
 import { registerProcessTools } from './processTools.js';
-import { registerFeishuDriveTools } from './feishuDriveTools.js';
+// 2026-10-17（5.5 前置）：registerFeishuDriveTools 的 import 摘了——feishu 工具族退役（见构造函数的注释）。
 // ★ 2026-09-24（P1-4）：工具依赖可用性 —— 把 `definition.availability` 接进列表路径
 //   （此前 `toolAvailabilityEvaluator` 是**孤儿模块**，声明了也不生效）。策略是**标注而非隐藏**，
 //   理由见该模块头注释（没有 UI 能解释"为什么不可用"，隐藏会让用户永远学不到怎么装）。
@@ -130,13 +128,13 @@ import {
 import { probeMediaCapabilities } from './videoMediaPipeline.js';
 
 /** 评论内容临时文件的命名前缀与陈旧阈值（配合上面两处回收逻辑，避免残留敏感内容）。 */
-const FEISHU_CONTENT_PREFIX = 'feishu-content-';
-const FEISHU_CONTENT_STALE_MS = 10 * 60_000;
-import { getLarkCliStatus, runLarkCli } from '../../larkCliService.js';
+// 2026-10-17（5.5 前置）：FEISHU_CONTENT_PREFIX / FEISHU_CONTENT_STALE_MS / runLarkCli 摘了——
+//   feishu 工具族退役（见构造函数的注释）。getLarkCliStatus 留着（能力探测还在用 ✓——543 行）。
+import { getLarkCliStatus } from '../../larkCliService.js';
 // 视频工具的命令通道（主进程 vscode:execCode；与知识库同步/飞书工具同一套原语）
 import { execShortCommand } from '../../knowledge/feishuSyncCore.js';
-import { KbImportController } from '../../kbImportController.js';
-import { loadActiveKbVault, resolveKbRootUri } from '../../knowledge/kbVaultState.js';
+// 2026-10-17（5.5 前置）：KbImportController / loadActiveKbVault / resolveKbRootUri 的 import 摘了——
+//   kb 工具族退役（见构造函数的注释）。
 import { resolveAndCheckWorkspacePathImpl } from './workspaceSecurity.js';
 import { registerCoreTools } from './coreTools.js';
 import { executeToolImpl } from './toolExecutor.js';
@@ -146,22 +144,14 @@ import { registerDrawioTools } from './drawioTools.js';
 // ★ 2026-10-13：`registerUnrealTools`（`./unrealTools.js`）**已移除** ✗ —— unreal 族（七个工具）
 //   全部由 dsh 侧插件 `@vssaros/dsh-unreal` 提供（Host 直连 `/bridge/*`，带审批闸 ✓，README 4.68）。
 //   IDE 侧再留一份只会让同名工具两处注册（dsh 侧是**静默顶掉**）⇒ 已在 2026-10-13 整份删除 ✓。
-import { registerSessionSearchTools } from './sessionSearchTools.js';
-import { registerVisionAnalyzeTools, readLocalImageAsBase64 } from './visionAnalyzeTools.js';
-import {
-	detectDevicePath, detectSensitivePath, devicePathBlockedMessage, sensitiveReadBlockedMessage,
-} from './sensitivePaths.js';
-import { AgentNetworkDomainSettingId } from '../../../../../../platform/networkFilter/common/settings.js';
+// 2026-10-17（5.5 前置）：registerSessionSearchTools 的 import 摘了——session_search 退役（见构造函数的注释）。
+// 2026-10-17（5.5 前置）：registerVisionAnalyzeTools / readLocalImageAsBase64 的 import 摘了——vision_analyze 退役（见构造函数的注释）。
+// 2026-10-17（5.5 前置）：sensitivePaths 的 import 摘了——media 工具退役（它不再被读 ✓）。
+// 2026-10-17（5.5 前置）：AgentNetworkDomainSettingId 的 import 摘了——media 工具退役（见构造函数的注释）。
 // 主模型图片能力判定（与 agent loop 同一真源，带 provider::model 缓存 + fail-closed）
-import { resolveSupportsImages } from '../../../common/toolResultImages.js';
-import { registerMediaGenTools } from './mediaGenTools.js';
-import { registerVideoFrameTools } from './videoFrameTools.js';
-import { registerVideoAnalyzeTools } from './videoAnalyzeTools.js';
-import { registerSchedulerTools } from './schedulerTools.js';
-// 注意：`IAgentSchedulerService` 是 `createDecorator` 的返回值（**值**，非纯类型），
-// 用作 DI 装饰器时必须用普通 import —— `import type` 会触发 TS1361
-// （"cannot be used as a value because it was imported using 'import type'"）。
-import { IAgentSchedulerService } from '../../../common/agentScheduler.js';
+// 2026-10-17（5.5 前置）：resolveSupportsImages / registerMediaGenTools / registerVideoFrameTools /
+//   registerVideoAnalyzeTools 的 import 摘了——media 工具退役（见构造函数的注释）。
+// 2026-10-17（5.5 前置）：cronjob 工具退役（见构造函数的注释）——schedulerTools / IAgentSchedulerService 的 import 摘了。
 import { ToolRegistry, type IBuiltinToolRegistration } from './toolRegistry.js';
 
 /** Config key controlling where knowledge bases are persisted. Empty = `<userHome>/.saros/kb`. */
@@ -229,9 +219,9 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	private readonly _registry = new ToolRegistry(this.logService);
 
 
-	/** Skill Manager 工具实例 —— 提供 skill_create 能力 */
-	private _skillManagerTool!: SkillManagerTool;
-	private readonly _skillUsageTracker: SkillUsageTracker;
+	// 2026-10-17（5.5 前置）：_skillManagerTool / _skillUsageTracker 的声明删了——skills 工具退役
+	//   （`_registerSkillTools` 删了 ⇒ 没人读它们 ✓）。SkillManagerTool / SkillUsageTracker 的 import 留着
+	//   （类型还被别处用 ⇒ 5.5 真删时一起删）。
 
 	/** web_extract 本地页面缓存（P2）—— 懒构造，见 `_getWebPageCache`。 */
 	private _webPageCache?: WebPageCache;
@@ -306,7 +296,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 
 
 	/** ADR Manager 实例 —— 提供 manage_adr 能力 */
-	private _adrManager!: AdrManager;
+	// 2026-10-17（5.5 前置）：_adrManager 摘了——codebase 工具是它的唯一使用方 ✓。
 
 	/** 搜索相关 helper 集合（从本文件抽取到 searchHelpers.ts，降低主文件体积） */
 	private readonly _searchHelpers: SearchHelpers;
@@ -317,26 +307,21 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	constructor(
 		@IFileService private readonly fileService: IFileService,
 		@ILogService private readonly logService: ILogService,
-		@ISkillRegistry private readonly skillRegistry: ISkillRegistry,
+		// 2026-10-17（5.5 前置）：skillRegistry 的注入摘了——skills 工具退役（`_registerSkillTools` 删了 ⇒
+		//   没人读它 ✓）。ISkillRegistry 的 import 留着（类型还被别处用 ⇒ 5.5 真删时一起删）。
 		@IWorkspaceContextService private readonly workspaceService: IWorkspaceContextService,
 		@ITerminalService private readonly terminalService: ITerminalService,
 		@IAgentStudioService private readonly studioService: IAgentStudioService,
-		@IAgentChatService private readonly agentChatService: IAgentChatService,
-		@IAgentSchedulerService private readonly schedulerService: IAgentSchedulerService,
+		// 2026-10-17（5.5 前置）：`schedulerService` 摘了——cronjob 工具退役（见构造函数的注释）。
 		@IAgentOSService private readonly agentOS: IAgentOSService,
-		@IModelSelectorService private readonly modelSelectorService: IModelSelectorService,
 		@ITaskOrchestrationService private readonly orchestrationService: ITaskOrchestrationService,
-		@IAgentTaskBoardService private readonly taskBoardService: IAgentTaskBoardService,
-		@ITriageService private readonly triageService: ITriageService,
-		@ISwarmService private readonly swarmService: ISwarmService,
+		// 2026-10-17（5.5 前置）：kanban 工具退役（见构造函数的注释）——taskBoardService / triageService /
+		//   swarmService / playwrightService / sessionsManagement 的注入摘了（kanban 工具是它们的唯一使用方 ✓）。
 	@ICheckpointService private readonly checkpointService: ICheckpointService,
 	@INativeEnvironmentService private readonly environmentService: INativeEnvironmentService,
-	@IWorkflowStorageService private readonly workflowStorageService: IWorkflowStorageService,
+		// 2026-10-17（5.5 前置）：workflowStorageService 的注入摘了——workflow 工具族是它的唯一使用方 ✓。
 		@ICodebaseGraphService private readonly codebaseGraphService: ICodebaseGraphService,
-	@IPlaywrightService private readonly playwrightService: IPlaywrightService,
-	@IEditorService private readonly editorService: IEditorService,
-	@ISessionsManagementService private readonly sessionsManagement: ISessionsManagementService,
-		@IKanbanRecipeService private readonly recipeService: IKanbanRecipeService,
+		// 2026-10-17（5.5 前置）：recipeService 的注入摘了（kanban 工具是它的唯一使用方 ✓）。
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IStorageService private readonly storageService: IStorageService,
 		@IAiEmbeddingVectorService private readonly embeddingService: IAiEmbeddingVectorService,
@@ -349,22 +334,14 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		//   按钮路径上，agent 走工具同步时 mermaid/drawio 源码会原样发到飞书（飞书不渲染源码）。
 		@IMermaidInlineRenderer private readonly mermaidRenderer: IMermaidInlineRenderer,
 		@IDrawioInlineRenderer private readonly drawioRenderer: IDrawioInlineRenderer,
-		@IMainProcessService private readonly mainProcessService: IMainProcessService,
 		// ★ 2026-09-24：`kb_build`（agent 发起知识库构建）需要按视图同样的方式装配
 		//   `KbImportController`（它有 9 个必需依赖：configuration/log/file/env/storage/
 		//   studio/views/editor/notification/request）。其余所需服务本类已有。
-		@IViewsService private readonly viewsService: IViewsService,
-		@INotificationService private readonly notificationService: INotificationService,
 	) {
 		super();
-		this._skillManagerTool = new SkillManagerTool(
-			this.environmentService,
-			this.fileService,
-			this.skillRegistry,
-			this.logService,
-		);
-		this._skillUsageTracker = new SkillUsageTracker(this.fileService, this.logService);
-		this._adrManager = new AdrManager(this.fileService);
+		// 2026-10-17（5.5 前置）：_skillManagerTool / _skillUsageTracker 的赋值删了——skills 工具退役
+		//   （`_registerSkillTools` 删了 ⇒ 没人读它们 ✓）。
+		// 2026-10-17（5.5 前置）：_adrManager 的赋值摘了——codebase 工具退役（见构造函数的注释）。
 		this._searchHelpers = new SearchHelpers(this.fileService, this.searchService, this.logService, this.configurationService);
 		// Phase 1: 注册内置 embedding provider（复用 BYOK API → /v1/embeddings）
 		// 使 kb_* 工具无需扩展即可工作
@@ -375,15 +352,26 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		// ★ 2026-09-24（P1-5）：process 的真实实现（此前只是 compatibilityTools 里的提示占位，
 		//   占位已从那里移除）。必须在 _registerBundledTools 之前 —— bundled 里有同名 stub。
 		this._registerProcessTools();
-		this._registerUnifiedMemoryTools(); // G12: recall/improve/forget
-		this._registerMemoryTools(); // remember/search/delete/list（真实 handler，须在 bundled stub 之前注册）
-		this._registerAdvancedMemoryTools(); // 接入引擎编排/治理能力：governance/team/mesh/sentinel/obsidian/cascade
-		this._registerRoutineCrystalFacetTools(); // 接入高阶记忆能力：routine/crystal/facet
-		this._registerSkillTools();
+		// 2026-10-17（5.5 前置）：memory 工具全族**退役**——dsh 侧的 memory 插件已迁（23 个工具都在
+		//   `vssaros-memory` 里 ✓——工具快照里都有 ✓：remember/recall/forget/search/delete/list +
+		//   governance/team/mesh/sentinel/obsidian_export/cascade + routine/crystal/facet + improve +
+		//   skill/slot/stats/work/lesson/refresh/import/api）。legacy 侧的注册注释掉 ⇒ 模型看不到了 ✓
+		//   （dsh 侧的还在 ✓）。文件留着（memoryTools / unifiedMemoryTools / advancedMemoryTools /
+		//   routineCrystalFacetTools 等）等 5.5 真删。
+		// this._registerUnifiedMemoryTools(); // G12: recall/improve/forget
+		// this._registerMemoryTools(); // remember/search/delete/list（真实 handler，须在 bundled stub 之前注册）
+		// this._registerAdvancedMemoryTools(); // 接入引擎编排/治理能力：governance/team/mesh/sentinel/obsidian/cascade
+		// this._registerRoutineCrystalFacetTools(); // 接入高阶记忆能力：routine/crystal/facet
+		// 2026-10-17（5.5 前置）：skills 工具**退役**——dsh 侧的 skills 全族已迁（4 个工具都在
+		//   `vssaros-skills` 插件里 ✓：skill_manage + skill_search + skill_market_list + read_skill +
+		//   list_skills——工具快照里都有 ✓）。legacy 侧的注册注释掉 ⇒ 模型看不到了 ✓（dsh 侧的还在 ✓）。
+		//   文件留着（skillTools.ts）等 5.5 真删。
+		// this._registerSkillTools();
 		// ★ 2026-09-10：image_generate 真实实现，必须在 _registerBundledTools 之前 ——
 		// 后者对未注册的 bundled 定义注册 stub（isStub → listTools 跳过），
 		// 先注册真实 handler 才能让 LLM 看到并调用该工具（ctx.hasTool 判据）。
-		this._registerImageGenTools();
+		// 2026-10-17（5.5 前置）：image_generate 退役——dsh 侧的 vssaros-media 已迁 ✓。
+		// this._registerImageGenTools();
 		// ★ 2026-09-11：drawio 真实实现，同样**必须在 _registerBundledTools 之前** ——
 		// 否则 bundled 里的 renderDrawioDiagram 定义会因 ctx.hasTool() 未命中而被
 		// 注册成 stub（isStub → listTools 跳过）→ 模型看不到该工具，整条 drawio 链路
@@ -398,45 +386,70 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		// —— 否则 bundled 里的 session_search 定义会被注册成 stub（isStub → listTools
 		// 跳过）→ 模型永远看不到（此前正是此状态：配置项 / 工具名映射 / 白名单俱全，
 		// 唯独缺 handler）。
-		this._registerSessionSearchTools();
+		// 2026-10-17（5.5 前置）：session_search 退役——dsh 侧的 vssaros-sessions 已迁 ✓。
+		// this._registerSessionSearchTools();
 		// ★ 2026-09-11：vision_analyze 真实实现（同源半成品第 4 例），同样必须在
 		// _registerBundledTools 之前 —— 否则 bundled 定义被注册成 stub 并被 listTools
 		// 跳过 → 模型看不到（此前正是此状态）。
-		this._registerVisionAnalyzeTools();
+		// 2026-10-17（5.5 前置）：vision_analyze 退役——dsh 侧的 vssaros-media 已迁 ✓。
+		// this._registerVisionAnalyzeTools();
 		// ★ 2026-09-11：video_generate / text_to_speech 真实实现（同源半成品第 5、6 例），
 		// 同样必须在 _registerBundledTools 之前 —— 否则 bundled 定义被注册成 stub
 		// 并被 listTools 跳过 → 模型看不到（此前正是此状态）。
-		this._registerMediaGenTools();
+		// 2026-10-17（5.5 前置）：media 生成三件套（video_generate / text_to_speech）退役——dsh 侧的 vssaros-media 已迁 ✓。
+		// this._registerMediaGenTools();
 		// ★ 2026-09-11：cronjob 真实实现（同源半成品第 7 例）—— 调度能力与视图早已
 		// 齐备，唯独缺 LLM 工具入口；同样必须在 _registerBundledTools 之前注册。
-		this._registerSchedulerTools();
+		// 2026-10-17（5.5 前置）：cronjob 工具**退役**——dsh 侧的调度器是官方 bundle
+		//   （`dsh-schedule` 的 `schedule_create`，Phase 2 的 2.1 已接管 ✓）；legacy 的
+		//   `agentSchedulerService` **从来没有执行过**（`await async *` 不迭代 ⇒ 函数体没跑 ✗，
+		//   `dshModuleContainers.ts` 的注释写清了）⇒ 它是死代码 ✓。不再注册 ⇒ 模型看不到了 ✓；
+		//   文件留着（`schedulerTools.ts` / `agentSchedulerService.ts` / `common/agentScheduler.ts`）
+		//   等 5.5 真删。
+		// this._registerSchedulerTools();
 		// ★ 2026-09-24：extract_video_frames —— 补齐「视频画面」能力（此前只有封面一张静止图，
 		//   依赖画面的任务只能靠模型编造）。同样注册在 _registerBundledTools 之前；
 		//   命令拼装/清理逻辑见 videoFrameTools.ts / videoMediaPipeline.ts 头注释。
-		this._registerVideoFrameTools();
+		// 2026-10-17（5.5 前置）：extract_video_frames 退役——dsh 侧的 vssaros-media 已迁 ✓。
+		// this._registerVideoFrameTools();
 		// ★ 2026-09-24：video_analyze 真实实现 —— 此前只有 bundled 定义（category 'video'）无 handler，
 		//   被判为 stub ⇒ listTools 跳过 ⇒ 模型**根本看不到**这个工具。
 		//   它 = 抽帧 + 字幕 + 多模态模型一次给结论（与 extract_video_frames 互补，见其头注释）。
 		//   同样必须在 _registerBundledTools 之前，否则 stub 会把真 handler 顶掉。
-		this._registerVideoAnalyzeTools();
+		// 2026-10-17（5.5 前置）：video_analyze 退役——dsh 侧的 vssaros-media 已迁 ✓。
+		// this._registerVideoAnalyzeTools();
 		this._registerBundledTools();
 		this._registerDelegationTools();
 		this._registerPlanExploreTool(); // WorkBuddy-style plan mode: parallel exploration
 		this._registerDynamicWorkflowTool(); // dynamic workflows: 模型写 JS 脚本编排子代理
 		this._registerPlanModeTools(); // MiMo-style plan_enter/plan_exit tools
-		this._registerKanbanTools();
+		// 2026-10-17（5.5 前置）：kanban 工具**退役**——dsh 侧的 kanban 全族已迁（17 个工具都在
+		//   `vssaros-kanban` 插件里 ✓——工具快照里都有 ✓）。legacy 侧的注册注释掉 ⇒ 模型看不到了 ✓
+		//   （dsh 侧的还在 ✓）。文件留着（`kanbanTools.ts` 的常量/函数还被别处用：`SAROS_CLAW_AGENT_ID` /
+		//   `resolveScrapeSessionId` 被 kanbanScrapeService / browserKanbanContextMenu 用 ✓）等 5.5 真删。
+		// this._registerKanbanTools();
 		this._registerMindmapTools();
-		this._registerWorkflowTools();
+		// 2026-10-17（5.5 前置）：workflow 工具族（workflow_list / workflow_get / workflow_get_schema /
+		//   workflow_apply）退役——dsh 侧的 vssaros-workflow 已迁 ✓（4 个都在 ✓——工具快照里都有 ✓）。
+		// this._registerWorkflowTools();
 		this._registerCanvasTools();
-		this._registerCodebaseTools();
-		this._registerKnowledgeTools(); // llm-wiki 知识内核（kb_search 工具）
+		// 2026-10-17（5.5 前置）：codebase 工具族退役——dsh 侧的 vssaros-codebase 已迁 ✓
+		//   （18 个里 17 个迁了 ✓；ingest_traces 刻意不迁：dsh 里没有被测应用 + 动态边混进静态图
+		//   不可证伪 ✗——`vssaros-codebase/lib/index.js:121` 的注释写清了 ✓）。
+		// this._registerCodebaseTools();
+		// 2026-10-17（5.5 前置）：kb 工具族（kb_search 等）退役——dsh 侧的 vssaros-kb 已迁 ✓。
+		// this._registerKnowledgeTools(); // llm-wiki 知识内核（kb_search 工具）
 		// ★ 2026-09-24：`kb_build` —— 构建此前**只有 UI 入口**（视图「批量构建库」/ 右键「构建为笔记」），
 		//   于是「素材先落库、再构建」的链路（如 kb-game-teardown 把拆解写进 库/raw）走到最后一步就断了：
 		//   agent 只能让用户自己去点按钮。本工具补齐该入口（走同一条 agent 会话构建路径）。
-		this._registerKbBuildTools();
+		// 2026-10-17（5.5 前置）：kb_build 退役——dsh 侧的 vssaros-kb 已迁 ✓。
+		// this._registerKbBuildTools();
 		// ★ 2026-09-24：飞书文档工具族（读文档 + 评论读/写）—— 同样必须在 _registerBundledTools
 		//   之前：bundled 里有 5 个同名 stub，晚注册会被 stub 顶掉（真 handler 失效）。
-		this._registerFeishuDriveTools();
+		// 2026-10-17（5.5 前置）：feishu 工具族（feishu_doc_read / feishu_drive_list_comments /
+		//   feishu_drive_list_comment_replies / feishu_drive_reply_comment / feishu_drive_add_comment）
+		//   退役——dsh 侧的 vssaros-kb 已迁 ✓（5 个都在 ✓——工具快照里都有 ✓）。
+		// this._registerFeishuDriveTools();
 		this._registerHandoffTools(); // supervisor 交接工具 transfer_to_agent（Step B）
 		this._registerMermaidTools(); // Mermaid 图示渲染工具
 		// _registerMcpBridgeTools() 已废弃 — MCP 工具统一走 tool_search/tool_describe/tool_call
@@ -642,9 +655,6 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		this._getKnowledgeStorage().registerEmbeddingProvider();
 	}
 
-	private _registerKnowledgeTools(): void {
-		this._getKnowledgeStorage().registerKnowledgeTools();
-	}
 
 
 	// ─── 内置工具集 ─────────────────────────────────────────────────────
@@ -749,7 +759,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	private static _extractSpillSeq = 0;
 
 	/** 飞书评论内容临时文件的序号（同上：同一毫秒内多次调用也不撞名）。 */
-	private static _feishuContentSeq = 0;
+	// 2026-10-17（5.5 前置）：_feishuContentSeq 摘了——feishu 工具族退役（见构造函数的注释）。
 
 	/**
 	 * 能力事实表（依赖是否就绪），供工具列表做 `availability` 标注。见 `_capabilityFacts()`。
@@ -856,88 +866,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 
 	// ─── G12: Unified Memory API (recall/improve/forget) ─────────────
 
-	/**
-	 * G12: 注册统一记忆 API 工具 — 对齐 cognee remember/recall/improve/forget
-	 */
-	private _registerUnifiedMemoryTools(): void {
-		const ctx: UnifiedMemoryToolContext = {
-			register: (d) => this.register(d),
-			agentOS: this.agentOS,
-			logService: this.logService,
-		};
-		registerUnifiedMemoryTools(ctx);
-	}
-
-	/**
-	 * 基础记忆工具（memory_remember/search/delete/list）。
-	 * 必须在 _registerBundledTools 之前注册——否则 bundled 目录中的
-	 * memory_remember/memory_list 会被注册为 stub（isStub=true，LLM 不可调用）。
-	 */
-	private _registerMemoryTools(): void {
-		const ctx: MemoryToolContext = {
-			register: (d) => this.register(d),
-			agentOS: this.agentOS,
-			logService: this.logService,
-			// 记忆新增 → activitybar「资料库」徽标提示（见 libraryActivityBadge.ts）
-			agentStudioService: this.studioService,
-		};
-		registerMemoryTools(ctx);
-	}
-
-	/**
-	 * 高级记忆工具 — 接入引擎已移植但休眠的编排/治理能力：
-	 * governance（删除/批量/审计）、team（共享池）、mesh（对等节点）、
-	 * sentinel（条件监视）、obsidianExport（导出）、cascade（级联修复）。
-	 */
-	private _registerAdvancedMemoryTools(): void {
-		const ctx: AdvancedMemoryToolContext = {
-			register: (d) => this.register(d),
-			agentOS: this.agentOS,
-			logService: this.logService,
-		};
-		registerAdvancedMemoryTools(ctx);
-	}
-
-	/**
-	 * 注册高阶记忆工具：routine（可复用工作流）、crystal（行动链结晶）、facet（多维标签）。
-	 * 引擎方法由 AgentMemoryProviderV2 暴露 + 网关转发，此处注册为 LLM 内置工具。
-	 */
-	private _registerRoutineCrystalFacetTools(): void {
-		const ctx: RoutineCrystalFacetToolContext = {
-			register: (d) => this.register(d),
-			agentOS: this.agentOS,
-			logService: this.logService,
-		};
-		registerRoutineCrystalFacetTools(ctx);
-	}
-
 	// ─── Skill 按需读取工具（已抽到 skillTools.ts）───────────────
-
-	private _registerSkillTools(): void {
-		const tracker = this._skillUsageTracker;
-		const ctx: SkillToolContext = {
-			register: (d) => this.register(d),
-			skillRegistry: this.skillRegistry,
-			skillManagerTool: this._skillManagerTool,
-			logService: this.logService,
-			environmentService: this.environmentService,
-			onSkillRead: (skillId, skillResource) => {
-				if (skillResource) {
-					tracker.recordRead(skillResource).catch(err =>
-						this.logService.warn(`[BuiltinToolProvider] onSkillRead fail: ${err}`)
-					);
-				}
-			},
-			onSkillMutated: (_skillName, skillDir) => {
-				if (skillDir) {
-					tracker.recordPatch(skillDir).catch(err =>
-						this.logService.warn(`[BuiltinToolProvider] onSkillMutated fail: ${err}`)
-					);
-				}
-			},
-		};
-		registerSkillTools(ctx);
-	}
 
 
 	private _registerBundledTools(): void {
@@ -1000,39 +929,9 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		});
 	}
 
-	/**
-	 * 注册看板（kanban）核心工具的真实 handler。
-	 * 参考 Hermes-Agent 的 kanban 工具语义，落地到本项目的 IAgentTaskBoardService。
-	 *
-	 * 实现的 9 个工具（Hermes 全集）：
-	 *  - kanban_create：创建任务卡（编排者用），默认进入 triage 待规划
-	 *  - kanban_complete：标记任务完成（写入 result 摘要）
-	 *  - kanban_block：阻塞任务（记录原因），状态 → blocked
-	 *  - kanban_unblock：解除阻塞，状态 → todo
-	 *  - kanban_show：查看单个任务详情
-	 *  - kanban_list：列出当前 workspace 任务（可按状态过滤）
-	 *  - kanban_heartbeat：刷新任务活跃时间（updatedAt），避免被诊断判为 stranded/stuck
-	 *  - kanban_comment：向任务追加一条结构化评论（写入 description）
-	 *  - kanban_link：建立父子依赖（child.dependencies += parent）
-	 *
-	 * agentId → workspaceId 通过 studioService.getAgent(agentId) 解析。
-	 */
-	private _registerKanbanTools(): void {
-		registerKanbanTools({
-			register: (def) => this.register(def),
-			studioService: this.studioService,
-			taskBoardService: this.taskBoardService,
-			orchestrationService: this.orchestrationService,
-			swarmService: this.swarmService,
-			triageService: this.triageService,
-			logService: this.logService,
-			playwrightService: this.playwrightService,
-			editorService: this.editorService,
-			sessionsManagement: this.sessionsManagement,
-			agentOS: this.agentOS,
-			recipeService: this.recipeService,
-		});
-	}
+	// 2026-10-17（5.5 前置）：`_registerKanbanTools` 删了——kanban 工具退役（见构造函数的注释）。
+	//   kanbanTools.ts 的常量/函数（SAROS_CLAW_AGENT_ID / resolveScrapeSessionId）还被别处用 ⇒ 文件留着等 5.5 真删。
+
 
 	private _registerMindmapTools(): void {
 		registerMindmapTools({
@@ -1041,15 +940,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		});
 	}
 
-	private _registerWorkflowTools(): void {
-		registerWorkflowTools({
-			register: (def) => this.register(def),
-			workflowStorageService: this.workflowStorageService,
-			studioService: this.studioService,
-			logService: this.logService,
-		});
-	}
-
+	// 2026-10-17（5.5 前置）：`_registerWorkflowTools` 删了——workflow 工具族退役（见构造函数的注释）。
 	private _registerCanvasTools(): void {
 		registerCanvasTools({
 			register: (def) => this.register(def),
@@ -1063,21 +954,6 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	 * 模型来源优先级：调用参数 > 当前 agent 配置（imageProviderId/imageModel，
 	 * 由 agent 设置页与聊天框「图片模型」选择器共同写入）> 自动路由。
 	 */
-	private _registerImageGenTools(): void {
-		registerImageGenTools({
-			register: (def) => this.register(def),
-			agentOS: this.agentOS,
-			studioService: this.studioService,
-			logService: this.logService,
-			// 生成结果落盘到媒体资产库（renderer → 主进程 IPC）。落盘而非把 base64
-			// 塞进工具结果字符串：后者会随 tool_result 进入 LLM 上下文，一张 1MP
-			// PNG 的 base64 ≈ 1–2MB，直接爆掉上下文预算。
-			mediaBackend: createMediaStoreProxy(this.mainProcessService),
-			// 用户级图片模型默认（内置 agent 只读时 agent 配置恒为空 → 靠它兜底，
-			// 否则会掉进自动路由选中不支持 Images API 的 provider）
-			configurationService: this.configurationService,
-		});
-	}
 
 
 	// ─── Codebase Tools (built-in, no external MCP binary) ─────────────────
@@ -1085,26 +961,6 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	// Extracted to codebaseTools.ts for maintainability.
 	// See codebaseTools.ts for the full implementation.
 	//
-	private _registerCodebaseTools(): void {
-		registerCodebaseTools({
-			register: (def) => this.register(def),
-			codebaseGraphService: this.codebaseGraphService,
-			workspaceService: this.workspaceService,
-			fileService: this.fileService,
-			logService: this.logService,
-			adrManager: this._adrManager,
-			searchHelpers: this._searchHelpers,
-			id: this.id,
-			resolveAndCheckWorkspacePath: (agentId, p, req) => this._resolveAndCheckWorkspacePath(agentId, p, req),
-			// 2026-08-09：注入 studioService，让搜索/索引根基于当前激活的 agent 工作区
-			//（用户在工作区下拉中选定的 sarosis-agents-client），避免 multi-workspace folders
-			// 合并把已切换走的工作区如 S1Game/UE5EA 一起带回来。
-			studioService: this.studioService,
-			// 2026-08-17：注入 worktree 路径（每轮 turn 前由 agentOSService 设置），
-			// 让 search_code/search_files 在 agent 绑定的 worktree 分支内搜索。
-			getParentWorktreePath: () => this.getParentWorktreePath(),
-		});
-	}
 
 	// ── Memory helpers ──────────────────────────────────────────
 	// ── Memory helpers ──────────────────────────────────────────
@@ -1161,14 +1017,6 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	 * 注册**时机**：调用点在 `_registerBundledTools()` 之前（见构造函数），
 	 * 否则 bundled 里的同名定义会先注册成 stub 并被 `listTools` 跳过。
 	 */
-	private _registerSessionSearchTools(): void {
-		registerSessionSearchTools({
-			register: d => this.register(d),
-			logService: this.logService,
-			listSessions: agentId => this.agentChatService.listAgentSessions(agentId),
-			loadMessages: (agentId, sessionId) => this.agentChatService.getHistory(agentId, sessionId),
-		});
-	}
 
 	/**
 	 * 图像分析工具（`vision_analyze`，2026-09-11 补全）。
@@ -1187,30 +1035,6 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	 * 默认落点 `<userDataPath>/tmp/video-frames/…`（`~/.vssaros` 属允许根、不污染用户工作区）；
 	 * 调用方可传 `outDir` 落到知识库（例如 `库/<素材名>/frames/`）以便长期引用。
 	 */
-	private _registerVideoFrameTools(): void {
-		registerVideoFrameTools({
-			register: d => this.register(d),
-			fileService: this.fileService,
-			logService: this.logService,
-			resolveAndCheckWorkspacePath: (agentId, requestedPath, checkSandbox) =>
-				this._resolveAndCheckWorkspacePath(agentId, requestedPath, checkSandbox),
-			defaultOutRoot: URI.joinPath(URI.file(this.environmentService.userDataPath), 'tmp').fsPath,
-			// ★ 2026-09-24：二进制解析要能找到**随包内置**的 ffmpeg/ffprobe/yt-dlp
-			//   （见 knowledge/mediaBinaries.ts：resourcesPath → appRoot 向上找 build/saros/bin → PATH）。
-			appRoot: this.environmentService.appRoot,
-			// ★★ 2026-09-24（修复）：必须注入命令通道！
-			//   管线的探测**不会**自己兜底成真实执行（缺省是"无通道" ⇒ `no-channel`），
-			//   而这两个工具的每一步（`-version` 探测、yt-dlp 下载、ffmpeg 抽帧、ffprobe 取时长）
-			//   都要过这里。此前漏注入 ⇒ 生产环境里工具会**一律**返回
-			//   `NO_CHANNEL_HINT`（"请在 VsSaros 桌面版里使用"），而单测因为都注入了 fake runner
-			//   所以全绿 —— 典型的"测试通过、功能全废"。
-			//   （管线那句旧注释写着"默认 execShortCommand"，与实现不符，已一并更正。）
-			runCommand: (command, timeoutMs) => execShortCommand(command, timeoutMs),
-			// 需登录才给流的站点（小红书等）：yt-dlp 自身不带登录态，靠用户显式开启的设置借用
-			// 浏览器 cookie。默认关 ⇒ 返回 undefined/空串 ⇒ 一个参数都不加（见 cookiesFromBrowserArgs）。
-			cookiesFromBrowser: () => this.configurationService.getValue<string>(AGENT_STUDIO_BROWSER_COOKIES_FROM_BROWSER_SETTING),
-		});
-	}
 
 	/**
 	 * ★ 2026-09-24：`kb_build` —— agent 发起知识库构建（`mode:'preview'` 只读预检 / `mode:'build'` 发起）。
@@ -1225,41 +1049,6 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	 *  · 每次调用新建控制器、构建结束后 `dispose()`：控制器只持有 `_kbBuildSessionId` 这类
 	 *    「本次构建」的状态，不该跨调用累积（构建缓存/目录则都在磁盘上，天然持久）。
 	 */
-	private _registerKbBuildTools(): void {
-		registerKbBuildTools({
-			register: d => this.register(d),
-			logService: this.logService,
-			configurationService: this.configurationService,
-			notificationService: this.notificationService,
-			studioService: this.studioService,
-			// vault 根：与 `knowledgeBaseView.vaultUri` 同一口径（customPath 优先，否则 <kbDir>/<vaultId>）。
-			// 没有激活的库 ⇒ undefined，由工具提示用户去知识库视图选/建一个（而不是在错误目录上"空跑"）。
-			resolveVaultRoot: async () => {
-				const vault = loadActiveKbVault(this.storageService);
-				if (!vault) { return undefined; }
-				return vault.customPath
-					? URI.file(vault.customPath)
-					: URI.joinPath(resolveKbRootUri(this.storageService, this.environmentService), vault.id);
-			},
-			createRunner: vaultRoot => {
-				const controller = new KbImportController(
-					this.configurationService, this.logService, this.fileService, this.environmentService,
-					this.storageService, this.studioService, this.viewsService, this.editorService,
-					this.notificationService, this.requestService,
-					undefined,                 // agentDriverService：见方法注释（构建要在聊天会话里可见）
-					this.agentChatService,
-				);
-				return {
-					preview: () => KbImportController.previewPendingSources(
-						this.fileService, vaultRoot, this.logService, this.notificationService, this.studioService,
-					),
-					start: () => controller.buildPendingAsAgentSession(vaultRoot)
-						.finally(() => controller.dispose()),
-					isInFlight: () => KbImportController.buildInFlight,
-				};
-			},
-		});
-	}
 
 	/**
 	 * ★ 2026-09-24（P1-5）：`process` —— 后台任务管理面（list/output/terminate/wait）。
@@ -1281,41 +1070,6 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	 *
 	 * 为什么用 `getLarkCliStatus` 先探一次：CLI 是**可选依赖**，未装时要么给安装指引、
 	 * 要么让工具在列表阶段就隐藏（后者需要接线 `toolAvailabilityEvaluator`，尚未做）。
-	 * 探测结果在工具内部有 30s 记忆化（见 `feishuDriveTools.LARK_CLI_STATUS_TTL_MS`），
-	 * 避免一次对话里连续调用 5 个飞书工具就 spawn 5 次 `lark-cli --version`。
-	 */
-	private _registerFeishuDriveTools(): void {
-		registerFeishuDriveTools({
-			register: d => this.register(d),
-			logService: this.logService,
-			getCliStatus: () => getLarkCliStatus(),
-			runLarkCli: (args, opts) => runLarkCli(args, opts),
-			// ★ 评论内容走 `@file`（见 feishuDriveTools 的 ctx 注释）：内联 JSON 里的引号/&
-			//   会在主进程的 cmd + `.cmd` shim 路径上被解析破坏（实测 `--content` 收到截断串）。
-			//   落点与 `_writeExtractSpill` 同一 tmp 目录，沿用"下次调用时回收陈旧文件"的纪律 ——
-			//   评论内容可能敏感，不能指望崩溃后残留的文件自己消失。
-			createTempJsonFile: async (json: string) => {
-				const tmpDir = resolveSarosPath(userDataRootFromPath(this.environmentService.userDataPath), SarosPath.tmp);
-				await this.fileService.createFolder(tmpDir);
-				try {
-					const stat = await this.fileService.resolve(tmpDir, { resolveMetadata: true });
-					const stale = (stat.children ?? [])
-						.filter(c => !c.isDirectory && c.name.startsWith(FEISHU_CONTENT_PREFIX)
-							&& Date.now() - (c.mtime ?? 0) > FEISHU_CONTENT_STALE_MS)
-						.map(c => c.name);
-					for (const name of stale) {
-						try { await this.fileService.del(joinPath(tmpDir, name)); } catch { /* 单个失败跳过 */ }
-					}
-				} catch { /* 目录列举失败 → 本轮不回收 */ }
-				const target = joinPath(tmpDir, `${FEISHU_CONTENT_PREFIX}${Date.now()}-${++BuiltinToolProvider._feishuContentSeq}.json`);
-				await this.fileService.writeFile(target, VSBuffer.fromString(json));
-				return target.fsPath;
-			},
-			deleteTempFile: async (path: string) => {
-				try { await this.fileService.del(URI.file(path)); } catch { /* 清理失败不致命（下次调用会回收） */ }
-			},
-		});
-	}
 
 	/**
 	 * ★ 2026-09-24：`video_analyze` —— 视频理解（抽帧 + 字幕 + 多模态模型一次给结论）。
@@ -1327,91 +1081,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	 *   因此这里直接用 `readLocalImageAsBase64`（只读我们产出的文件），
 	 *   不需要 `vision_analyze.loadLocalImage` 那套「任意用户路径」的读守卫三件套。
 	 */
-	private _registerVideoAnalyzeTools(): void {
-		registerVideoAnalyzeTools({
-			register: d => this.register(d),
-			fileService: this.fileService,
-			logService: this.logService,
-			resolveAndCheckWorkspacePath: (agentId, requestedPath, checkSandbox) =>
-				this._resolveAndCheckWorkspacePath(agentId, requestedPath, checkSandbox),
-			defaultOutRoot: URI.joinPath(URI.file(this.environmentService.userDataPath), 'tmp').fsPath,
-			appRoot: this.environmentService.appRoot,
-			// 命令通道：同上（`video_analyze` 也要下载/抽帧/取字幕，缺了同样恒报 no-channel）
-			runCommand: (command, timeoutMs) => execShortCommand(command, timeoutMs),
-			// cookie 来源：同上（两条工具共用同一份 yt-dlp 下载参数构造）
-			cookiesFromBrowser: () => this.configurationService.getValue<string>(AGENT_STUDIO_BROWSER_COOKIES_FROM_BROWSER_SETTING),
-			configurationService: this.configurationService,
-			getModelProviders: () => this.agentOS.getModelProviders(),
-			// 与 `_registerVisionAnalyzeTools` 读**同一个 key**（多模态默认模型 = 知识库专家配置的模型）
-			getKbExpertModel: () => {
-				const sel = this.modelSelectorService.getExplicitSelectionForAgent('knowledge-base-expert');
-				return (sel?.providerId && sel.modelId)
-					? { providerId: sel.providerId, modelId: sel.modelId }
-					: undefined;
-			},
-		});
-	}
 
-	private _registerVisionAnalyzeTools(): void {
-		registerVisionAnalyzeTools({
-			register: d => this.register(d),
-			logService: this.logService,
-			configurationService: this.configurationService,
-			getModelProviders: () => this.agentOS.getModelProviders(),
-			// ★ 2026-09-13：主模型是否支持图片输入 —— 决定 `mode:auto` 走「附上图像」还是
-			// 「aux 模型给文本答案」。复用 `toolResultImages.resolveSupportsImages`
-			// （按 provider::model 缓存 + fail-closed），与 agent loop 里的判定**同一真源**。
-			mainModelSupportsImages: async () => {
-				const sel = this.agentOS.getActiveModelSelection();
-				const provider = this.agentOS.getModelProviders().find(p => p.id === sel?.providerId);
-				return resolveSupportsImages(provider, sel?.modelId);
-			},
-			// ★ 2026-09-22：多模态的**默认**模型 = 「知识库专家」配置的模型。
-			//
-			// 需求：用户在知识库专家里配了看图能力强的模型，图片分析就应当用它 ——
-			// 此前两者完全脱节（本工具只读 Vision 辅助设置 + 自动路由）。
-			//
-			// ⚠ 只取**显式配置**的选择（`getExplicitSelectionForAgent`，与
-			//   `agentStudioService._resolveKbChatModel` 读同一个 key）：未配置时返回 undefined，
-			//   由 `visionAnalyzeTools` 继续走自动路由 ⇒ 无专家配置时行为与改动前**完全一致**。
-			// ⚠ 是否支持图片由 `visionAnalyzeTools` 侧校验（专家可能配的是纯文本模型）。
-			getKbExpertModel: () => {
-				const sel = this.modelSelectorService.getExplicitSelectionForAgent('knowledge-base-expert');
-				return (sel?.providerId && sel.modelId)
-					? { providerId: sel.providerId, modelId: sel.modelId }
-					: undefined;
-			},
-			// ★ 2026-09-13：本地图片路径支持 —— **复用 `file_read` 的同一套读护栏**
-			// （沙箱路径解析 / 设备伪文件系统 / 敏感路径读守卫）。
-			//
-			// 为什么必须同源：本工具把字节**发给外部模型 provider**，与 `file_read` 的
-			// 出网面完全一致。若这里不跑那三件套，它就成了一条**绕过读守卫的通道**
-			// （image 后缀不在敏感名表里，但目录级敏感项如 `.ssh/` `.aws/` `.config/gcloud/`
-			// 仍会被 `detectSensitivePath` 命中 —— 漏掉就是又一个「另一条出口没挂检查」，
-			// 那是今天最高频的缺陷形态）。
-			loadLocalImage: async (requestedPath, agentId) => {
-				// 读操作：与 `file_read` 一致，只解析、不触发沙箱拒绝（checkSandbox=false）
-				const resolved = await this._resolveAndCheckWorkspacePath(agentId, requestedPath, false);
-				const deviceHit = detectDevicePath(resolved);
-				if (deviceHit) {
-					throw new Error(devicePathBlockedMessage(deviceHit, 'read'));
-				}
-				const guardEnabled = this.configurationService.getValue<boolean>(
-					AgentNetworkDomainSettingId.SensitiveReadGuard,
-				) ?? true;
-				if (guardEnabled) {
-					const sensitiveHit = detectSensitivePath(resolved);
-					if (sensitiveHit) {
-						this.logService.warn(
-							`[BuiltinTools] vision_analyze BLOCKED: ${requestedPath} matches sensitive ${sensitiveHit.kind} "${sensitiveHit.matched}"`,
-						);
-						throw new Error(sensitiveReadBlockedMessage(sensitiveHit));
-					}
-				}
-				return readLocalImageAsBase64(this.fileService, resolved);
-			},
-		});
-	}
 
 	/**
 	 * 视频 / 语音生成工具（`video_generate`、`text_to_speech`，2026-09-11 补全）。
@@ -1422,13 +1092,6 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	 *
 	 * 注册**时机**：调用点在 `_registerBundledTools()` 之前（见构造函数）。
 	 */
-	private _registerMediaGenTools(): void {
-		registerMediaGenTools({
-			register: d => this.register(d),
-			logService: this.logService,
-			getModelProviders: () => this.agentOS.getModelProviders(),
-		});
-	}
 
 	/**
 	 * 定时任务工具（`cronjob`，2026-09-11 补全）。
@@ -1438,13 +1101,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	 *
 	 * 注册**时机**：调用点在 `_registerBundledTools()` 之前（见构造函数）。
 	 */
-	private _registerSchedulerTools(): void {
-		registerSchedulerTools({
-			register: d => this.register(d),
-			logService: this.logService,
-			scheduler: this.schedulerService,
-		});
-	}
+	// 2026-10-17（5.5 前置）：`_registerSchedulerTools` 删了——cronjob 工具退役（见上面构造函数的注释）。
 
 	private _registerHandoffTools(): void {
 		registerHandoffTools({

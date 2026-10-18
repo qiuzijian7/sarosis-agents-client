@@ -30,7 +30,7 @@ import { ActionsOrientation } from '../../../base/browser/ui/actionbar/actionbar
 import { HoverPosition } from '../../../base/browser/ui/hover/hoverWidget.js';
 import { IPaneCompositeBarOptions } from '../../../workbench/browser/parts/paneCompositeBar.js';
 import { IMenuService } from '../../../platform/actions/common/actions.js';
-import { ICommandService } from '../../../platform/commands/common/commands.js';
+import { CommandsRegistry, ICommandService } from '../../../platform/commands/common/commands.js';
 import { IJSONEditingService } from '../../../workbench/services/configuration/common/jsonEditing.js';
 import { planAppendWorkspaceFolders, normalizeFolderPathForCompare } from '../../contrib/agentStudio/common/workspaceFileFolders.js';
 import { Separator } from '../../../base/common/actions.js';
@@ -522,6 +522,37 @@ export class SidebarPart extends AbstractPaneCompositePart {
 		} catch {
 			return false;
 		}
+	}
+
+	/**
+	 * 页面桥（dsh 聊天页的工作区下拉）请求"进某个工作区"（桥 `10 → 11`，2026-10-16）。
+	 *
+	 * 找到记录后走**既有的** {@link _switchWorkspace}（`entry` 只用于日志归因）——
+	 * 不另写一条切换实现：那条已经把"原生 `enterWorkspace` 优先 → 内存替换 → `openWindow` 回退"
+	 * 三级降级与"记住 last-user-workspace"都做完了 ✓，另写一份必然漂移 ✗。
+	 *
+	 * ⚠ 失败**必须抛**（不静默 return）：宿主那边 `switchWorkspace` 会把异常记成 warn，
+	 * 而"点一下没反应、日志里也没有"正是本仓最难查的一类故障（见 dshChatInstanceHost 的注释 ✓）。
+	 */
+	private async _activateWorkspaceById(rawId: unknown): Promise<void> {
+		const id = typeof rawId === 'string' ? rawId.trim() : '';
+		if (!id) {
+			throw new Error('workspace.activate: 空的 workspaceId');
+		}
+		if (!this._wsAgentStudioService) {
+			// 侧栏还没连上服务（窗口刚起）：宁可如实报错，也别假装切过 ✗
+			throw new Error('workspace.activate: 工作区服务尚未就绪（侧栏 connect 还没完成）');
+		}
+		// 列表可能还没加载过（命令由 dsh 页面触发，可能与侧栏首帧竞争）⇒ 先补一次加载再找
+		if (this._workspaces.length === 0) {
+			await this._loadWorkspaces().catch(() => undefined);
+		}
+		const ws = this._workspaces.find(w => w.id === id);
+		if (!ws) {
+			// 页面给的是**它的记录**，本窗口的列表未必含它（多窗口各有一套 registry 视图）⇒ 如实拒绝
+			throw new Error(`workspace.activate: 本窗口的工作区列表里没有 "${id}"（列表里现有 ${this._workspaces.length} 个）`);
+		}
+		await this._switchWorkspace(ws, 'dsh-page');
 	}
 
 	/**
@@ -1188,6 +1219,28 @@ export class SidebarPart extends AbstractPaneCompositePart {
 				accessor => accessor.get(IAgentStudioService)
 			);
 			this._wsAgentStudioService = agentStudioService;
+
+			// ── 页面桥的「进某个工作区」入口（桥 `10 → 11`，2026-10-16）──────────────────────────
+			// dsh 聊天页的工作区下拉里点**别的工作区**时，宿主（`dshChatInstanceHost`）执行本命令 ⇒
+			// 窗口**原地进**那个工作区（多根一起进、不重载窗口 ✓）。用户 2026-10-16 报障原话：
+			// "点击其他工作区后，没有切换对应的工作区"。
+			// ⚠ 命令注册在**本 Part**（不是 agentStudio.contribution）：切工作区要改窗口 folder 列表，
+			//   而 folder 列表的合法写者只有少数几处（`workspaceFolderWriters.test.ts` 的
+			//   ALLOWED_FOLDER_WRITERS ✓）—— 本 Part 的 `_switchWorkspace` 正是其中一处。
+			//   在别处自己写 folders 会重演历史事故（"追加式注入 folder"跨工作区污染，见
+			//   `contrib/sourceControl/browser/sourceControl.contribution.ts` 的复盘注释 ✗）。
+			// ⚠ 每个窗口一个渲染进程 ⇒ 各进程各注册一份、handler 绑到自己这个实例，不会串到别的窗口 ✓。
+			// ⚠ 注册点必须在上面 `this._wsAgentStudioService = ...` **之后**：本方法可在服务未就绪时被
+			//   重试调用（见开头 1179-1185 的幂等注释），提前注册会在服务从未就绪的窗口里留下一条
+			//   "存在但永远抛"的命令 ✗。
+			// ⚠ 命令 id 这里必须写成**字面量**（不抽常量）：接线守卫 `dshPageCommandWiring.test.ts` ② 是按
+			//   `registerCommand('<id>'` 这个**字面形态**去核"宿主 executeCommand 的那个 id 到底有没有人注册"的
+			//   ⇒ 抽成常量它扫不到，会报成"这条命令没人注册"（守卫当场抓到了我第一版 ✗）。两处 id 的字面量
+			//   由该守卫对账，不需要再抽一层常量 ✓。
+			// ⚠ id 与 `registerCommand(` 必须**同一行**：守卫按 `registerCommand('<id>'` 的字面形态采集
+			//   （换行/缩进会让它扫不到 ⇒ 误报"这条命令没人注册" ✗，第一版就这么栽的）。
+			this._register(CommandsRegistry.registerCommand('agentStudio.workspace.activate',
+				(_accessor, workspaceId: unknown) => this._activateWorkspaceById(workspaceId)));
 
 			// Subscribe to workspace changes
 			this._register(agentStudioService.onDidChangeWorkspace(() => {

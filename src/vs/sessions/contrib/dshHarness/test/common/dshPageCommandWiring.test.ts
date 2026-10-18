@@ -61,7 +61,11 @@ const CHAT_SURFACE_DIR = 'dsh-plugins/vssaros-chat-surface/lib';
  * ⚠ 加新页时把它的**页面入口文件**登记进来（别只写在注释里 ✗）：漏登记 = 该页的新桥调用不受 ③ 保护。
  */
 const PLUGIN_PAGE_SOURCES = [
-	'dsh-plugins/vssaros-agents/lib/index.js',
+	// 2026-10-16 修订（方案 D 双表面拆分）：agents 页的桥调用**搬出了 index.js**——
+	// 「Agent 设置」（openAgentSettings）在完整页 detail.js，「编辑区打开 / 群条目」（openModulePage）
+	// 在 sideview.js ⇒ 采集面登记**两个页面文件**（index.js 只剩路由/逻辑，没有桥调用 ✓）。
+	'dsh-plugins/vssaros-agents/lib/detail.js',
+	'dsh-plugins/vssaros-agents/lib/sideview.js',
 	// 2026-10-15 加：**集成页**（`/x/skills/`）—— 标题栏 ↗ 调 `bridge.openModulePage(location.pathname)`，
 	// 置顶主入口调 `bridge.openSkillMarket()`（打开 VsSaros 技能商城，桥 `8 → 9`）。
 	// ⚠ 它页面侧刻意把桥对象命名为 `bridge`（不是 `pageBridge` 之类）：本守卫按 `bridge.<方法名>(`
@@ -80,6 +84,19 @@ const COMMAND_ROOTS = ['src', 'extensions/agent-studio/src', 'extensions/agent-s
  *
  * ⚠ 只加"确实有人处理、只是不在这两个宿主里"的项；"忘了写 case"不许塞进来 ✗（那正是本守卫要抓的）。
  */
+/**
+ * **不是页面桥**的同形调用：`bridge.<x>(` 这个**字面形态**在别的语义里也出现 ⇒ 逐条登记，理由必须写明。
+ *
+ * ⚠ 为什么需要：③ 的采集面是"字面形态"（这是它设计上就该有的粗粒度）—— 而 `vssaros-kb/lib/index.js`
+ *   这个文件**既是 dsh 宿主侧插件模块、又内嵌页面脚本**：宿主侧那段里 `bridge` 是
+ *   **桥插件自己的客户端对象**（`ctx.vssarosBridge`），它上面有 `callIDE(...)`
+ *   ⇒ 会被误采成"页面调了 preload 没暴露的桥方法"（2026-10-16 实测：该文件长出新调用后本守卫即红，
+ *   而它压根不是页面桥 ✗）。
+ * ⚠ 登记进来的必须是**别的东西的方法名**；页面桥自己的方法名（哪怕暂时没人调）**不许**塞进来 ——
+ *   那等于把"键名写错 ⇒ `bridge.x is not a function`"这条守卫挖个洞 ✗。
+ */
+const NOT_PAGE_BRIDGE_CALLS = new Set(['callIDE']);
+
 const HANDLED_ELSEWHERE: Record<string, string> = {
 	ping: 'Host 侧答（页面桥的存活探测）；页面侧另由 `client.hideBridgePing.js` 遮蔽官方指示器 ⇒ 不需要 IDE 处理器 ✓',
 };
@@ -241,7 +258,7 @@ suite('聊天页按钮 → IDE 接线（协议 / preload / 处理器 / 命令 id
 		const calls = new Set<string>();
 		for (const f of files) {
 			const src = stripComments(fs.readFileSync(path.join(process.cwd(), CHAT_SURFACE_DIR, f), 'utf8'));
-			for (const m of matchAll(src, /\bbridge\.([a-zA-Z]+)\(/g)) { calls.add(m); }
+			for (const m of matchAll(src, /\bbridge\.([a-zA-Z]+)\(/g)) { if (!NOT_PAGE_BRIDGE_CALLS.has(m)) { calls.add(m); } }
 		}
 		// 2026-10-14：**插件页**（不只是聊天页）也会调页面桥 —— 第一条是 dsh 的 Agents 页 `/x/agents`
 		// 行内「设置」（`bridge.openAgentSettings(...)`，打开该 bot 的 Agent 设置编辑器页）。
@@ -255,7 +272,7 @@ suite('聊天页按钮 → IDE 接线（协议 / preload / 处理器 / 命令 id
 			//注册形态枚举"教训 ✓）。
 			// ⚠ 动态取法（`bridge[method](…)`，kb 页的 `openHostPanel` 就是）**扫不到也不该扫** ✗ ——
 			//   方法名那时是运行时值；它的接线由协议/preload 两段的对账覆盖 ✓。
-			for (const m of matchAll(src, /\bbridge\.([a-zA-Z]+)\(/g)) { calls.add(m); found++; }
+			for (const m of matchAll(src, /\bbridge\.([a-zA-Z]+)\(/g)) { if (!NOT_PAGE_BRIDGE_CALLS.has(m)) { calls.add(m); } found++; }
 			for (const m of matchAll(src, /window\.vssarosDsh\.([a-zA-Z]+)\(/g)) { calls.add(m); found++; }
 			assert.ok(found >= 1, `${rel} 一个 bridge 调用都没扫到 —— 采集面缩水了（该页确实有桥调用 ✗）`);
 		}
@@ -326,6 +343,26 @@ suite('聊天页按钮 → IDE 接线（协议 / preload / 处理器 / 命令 id
 		assert.deepStrictEqual(silent, [],
 			'这些页面命令**转发了别的命令却没留痕** ⇒ 真机"点了没反应"时无法区分"点击没到宿主"/"转发失败" ✗'
 			+ '（补一行 `this._logService.info(`[dshHarness] page <method> ⇒ …`)` 即可 ✓）：\n' + silent.join('\n'));
+	});
+
+	test('⑧ 聊天宿主的"切换类"失败必须**用户可见**（只写日志 = 用户点完什么都没有 ✗）', function () {
+		// 2026-10-16（用户报"点击工作区 item 无法切换"）：真因是 dsh 侧 `session.start` 抛
+		// `agent-preset/invalid: …`，而**界面上一点提示都没有** —— 因为页面桥是**单向**的：
+		// 页面 `bridge.switchWorktree(…)` 的 promise 在**主进程**那头就 resolve 了（它只负责把事件转给
+		// 渲染进程），渲染侧真正的失败**传不回页面** ✗ ⇒ 页面无从提示 ⇒ 用户只看到"点了没反应"。
+		// ⇒ 失败必须在**知道它的那一层**（渲染进程）弹出来：统一走 `_notifySwitchFailure`（日志 + 通知 ✓）。
+		const chatHost = stripComments(read(CHAT_HOST));
+		assert.ok(/_notifySwitchFailure\(/.test(chatHost),
+			'聊天宿主必须有统一的"切换失败"出口（否则真因只留在 renderer.log 里，用户看不见 ✗）');
+		assert.ok(/_notifications\.notify\(/.test(chatHost),
+			'失败出口里必须**真的弹通知**（`_notifications.notify(`）—— 只写日志等于用户看不见 ✗');
+		const catches = [...chatHost.matchAll(/private _switch(?:Worktree|Workspace)\([\s\S]{0,600}?\.catch\(([^)]*)\)/g)].map(m => m[1]);
+		assert.ok(catches.length >= 2,
+			`只扫到 ${catches.length} 个切换类方法的 catch ⇒ 采集面缩水（方法改名/改写了吗？）✗`);
+		for (const c of catches) {
+			assert.ok(/_notifySwitchFailure/.test(c),
+				`切换类的 catch 必须走通知出口（现在是 \`${c.trim()}\`）⇒ 否则用户点完看见的仍是"没反应" ✗`);
+		}
 	});
 
 	test('⑥ **全族**纪律：被 dsh 插件页接管的视图 id，谁都不许拿去"取 Pane"', function () {

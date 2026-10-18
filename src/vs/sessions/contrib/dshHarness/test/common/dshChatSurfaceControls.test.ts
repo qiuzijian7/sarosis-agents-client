@@ -530,14 +530,217 @@ suite('聊天页控件 · 工作区 chip 的切换通路（client.workspace.js�
 		});
 	});
 
-	test('菜单文案如实写明"切换 = 新建会话"（不让人以为只是换个视角 ✗）', () => {
+	test('菜单文案如实写明"切换 = 新建或接管会话"，并且**不承诺动窗口工作区**（两侧独立 ✗ 假话）', () => {
 		withChip({ bridge: {} }, h => {
 			const tree = (() => {
 				findByAttr(h.render(0, { sessionId: 's1' }), 'data-vssaros-context-chip').props.onClick();
 				return h.render(0, { sessionId: 's1' });
 			})();
-			assert.ok(JSON.stringify(tree).includes('新建会话'),
-				'语义代价必须写在菜单里（与 worktree 下拉同一要求：宿主会在目标目录 session.start 一个会话 ✓）');
+			const text = JSON.stringify(tree);
+			assert.ok(text.includes('新建或接管会话'),
+				'语义代价必须写在菜单里（宿主会在目标目录 session.start / 接管一个会话 ✓）');
+			assert.ok(text.includes('不动'),
+				'必须明说"IDE 的窗口工作区不动" —— 用户要求的正是这条（2026-10-17）');
+			assert.ok(!text.includes('切换工作区'),
+				'不许再出现"切换工作区"这种会让人以为整窗跟着换的说法 ✗');
+		});
+	});
+});
+
+/**
+ * hero（空白会话屏）里的工作区入口 —— 方案 A（2026-10-16；mockup `doc/dsh-workspace-entry-single-mockup.html`）。
+ *
+ * 现场（用户截图报「工作区 UI 重复了，使用一个即可，但是要有 add workspace 功能」）：hero 那一行的三个位置
+ * 是官方**写死**的（`dsh-client-ui-conversation/lib/client.js:16256` 的 `heroWorkspaceRow`）＝
+ *   [官方 WorkspaceChip] → `conversation.hero.workspace`（官方浮层）→ `conversation.hero.agentPreset`（我们接管）
+ * 15 日把 worktree chip 换成"工作区 + worktree 合并入口"之后，最后那格里也成了一枚**工作区**入口
+ * ⇒ 与官方那枚并排重复 ✗（合并前那里是 🌿 worktree，语义不同 ⇒ 没人报重复）。官方那枚是写死的组件
+ * （走不了 slot ⇒ 遮蔽不了）⇒ 只能从我们这侧改。
+ *
+ * 方案 A：hero 仍只出**官方那枚 chip**；我们的合并面板注册到官方**浮层槽** `conversation.hero.workspace`
+ * （priority -10 遮蔽 `WorkspacePickFlow`）⇒ 一枚 chip、点开却是我们的面板（工作区 + worktree + 添加工作区）✓。
+ * 本套钉四件事：① 遮蔽注册形态 + hero 里**不再有我们自己的 chip**；② 当前项判据（hero 用官方 `selectedId`，
+ * 不能用会话归属 ✗）；③ 两个表面的点击语义各自正确（hero 工作区行 = 官方 `onPick`；worktree 行 = 必须经宿主）；
+ * ④ 「添加工作区」的通路与失败如实化（不新增桥命令、不假装能加）。
+ */
+suite('聊天页控件 · hero 工作区入口（遮蔽官方浮层 + 添加工作区；2026-10-16）', () => {
+
+	/** 宿主推送（worktree 来自推送，不在 ctx 里）。 */
+	const PUSH = JSON.stringify([
+		{ path: 'G:\\Repo', name: 'main', branch: 'main', isMain: true },
+		{ path: 'G:\\Repo-wt\\feature-auth', name: 'feature-auth', branch: 'worktree/feature-auth', isMain: false },
+	]);
+	const WS_ITEMS = [
+		{ workspaceId: 'ws-1', path: 'G:\\Repo', title: '仓一', sessionIds: ['s-a'] },
+		{ workspaceId: 'ws-2', path: 'G:\\Repo-wt\\feature-auth', title: '仓二', sessionIds: ['s-b'] },
+	];
+
+	/**
+	 * 装 chunk 并**真执行 install**：`ctx.get` 同时供 workspaces / sessions / remote.directoryPicker
+	 * （三个都走**运行时可选取** —— 不进 inject，宿主缺哪个都不会让整块皮肤不 apply ✓）。
+	 * `document` 桩：worktree 走 dataset ✓（同步用例与 async 用例都覆盖：返回 thenable 时等它落定再还原）。
+	 */
+	function mount(opts: { bridge?: Record<string, any>; picker?: any; create?: (input: any) => Promise<any>; pushed?: string },
+		body: (h: any, state: Record<string, unknown>) => unknown): unknown {
+		const state: Record<string, unknown> = { sessionId: 's-a' };
+		const doc: any = {
+			documentElement: { dataset: { vssarosWorktrees: opts.pushed ?? PUSH } },
+			addEventListener: () => undefined,
+			removeEventListener: () => undefined,
+		};
+		const prev = (globalThis as any).document;
+		(globalThis as any).document = doc;
+		const restore = () => { (globalThis as any).document = prev; };
+		const h = loadChunk(`${LIB}/client.workspace.js`, {
+			__bridge: opts.bridge ?? {},
+			get: (name: string) => {
+				if (name === 'workspaces') {
+					return {
+						list: { getSnapshot: () => ({ items: WS_ITEMS }), subscribe: () => () => undefined },
+						create: opts.create,
+					};
+				}
+				if (name === 'sessions') {
+					// cwd 刻意与所有推送项都不同 ⇒ 没有"当前 worktree"（否则那行会被禁用、点不动 ✗）
+					return { list: { getSnapshot: () => ({ byId: { 's-a': { cwd: 'G:\\Elsewhere' } } }), subscribe: () => () => undefined } };
+				}
+				if (name === 'remote.directoryPicker') { return opts.picker; }
+				return undefined;
+			},
+		}, { state, menus: { closeOthers: () => undefined, register: () => () => undefined } });
+		let out: unknown;
+		try { out = body(h, state); } catch (e) { restore(); throw e; }
+		if (out && typeof (out as any).then === 'function') {
+			return (out as Promise<unknown>).then(v => { restore(); return v; }, e => { restore(); throw e; });
+		}
+		restore();
+		return out;
+	}
+
+	/** hero 槽 = 本 chunk 的**第 2 条**注册 ⇒ 一律 `render(1)` ✓（第 1 条永远是 header 入口）。 */
+	function heroTree(h: any, props: Record<string, unknown> = {}, onPick?: (id: string) => void, onClose?: () => void): any {
+		return h.render(1, {
+			open: true, selectedId: 'ws-1', anchorRef: { current: null },
+			onPick: onPick ?? (() => undefined), onClose: onClose ?? (() => undefined),
+			...props,
+		});
+	}
+	/** Promise 链（pick → create → 计数）跑完：多等几轮 microtask/timer ✓。 */
+	async function settle(): Promise<void> { for (let i = 0; i < 5; i++) { await tick(); } }
+
+	test('★ 注册：header 仍是第一条、hero 槽是 priority -10 的**遮蔽**注册；hero 里不再有我们自己的 chip', () => {
+		mount({}, h => {
+			assert.deepStrictEqual(h.registrations.map((r: any) => r.slot),
+				['conversation.session.header.actions', 'conversation.hero.workspace'],
+				'hero 只能靠**浮层槽**介入 —— 官方那枚 WorkspaceChip 写死在 heroWorkspaceRow 里（不是 slot）✗');
+			assert.strictEqual(h.registrations[1].spec.priority, -10,
+				'负 priority 才能让官方 WorkspacePickFlow 让位（同槽按 priority 取先 ✓）');
+			const tree = heroTree(h);
+			assert.ok(findByAttr(tree, 'data-vssaros-context-hero'),
+				'零尺寸壳要**常驻**：hero 屏没有我们自己的 chip ⇒ 宿主自证靠这个标记认出"我们的入口到过这一屏" ✓');
+			assert.strictEqual(findByAttr(tree, 'data-vssaros-context-chip'), null,
+				'hero 里**不许**再出现我们自己的 chip —— 那正是与官方那枚重复的来源 ✗（就是用户截图那两枚）');
+		});
+		// 负对照（按**注册形态**采集：注释里提旧通道名是允许的 ✓）
+		const ws = read(`${LIB}/client.workspace.js`);
+		const preset = read(`${LIB}/client.preset.js`);
+		assert.ok(!/shell\.heroWorktreeChip\s*=/.test(ws), '跨 chunk 传组件那条通道必须删除（留着就是第二枚 chip 回来 ✗）');
+		assert.ok(!/createElement\(worktreeChip/.test(preset), 'hero 装配里不许再渲染 worktree chip ✗');
+	});
+
+	test('hero 面板：没打开只有自证壳；打开后按**官方给的 selectedId** 判当前工作区（不能用会话归属 ✗）', () => {
+		mount({}, h => {
+			const closed = heroTree(h, { open: false });
+			assert.strictEqual(findAll(closed, 'role').filter((n: any) => n.props.role === 'menu').length, 0,
+				'没打开就不许出菜单（面板常驻挂载只是为了保住 note/query，不是让它一直显示 ✓）');
+			const open = heroTree(h);
+			const items = findAll(open, 'data-vssaros-context-item');
+			const cur = items.find((n: any) => n.props['data-vssaros-context-item'] === 'workspace:ws-1');
+			const other = items.find((n: any) => n.props['data-vssaros-context-item'] === 'workspace:ws-2');
+			assert.ok(cur && other, '两个数据源的行都要列出来');
+			assert.strictEqual(cur.props.style.background, 'var(--dsw-alias-bg-layer-2, transparent)',
+				'hero 里"当前工作区"的权威是官方给的 selectedId（空白屏还没有会话 ⇒ 用 sessionIds 会永远读不到 ✓）');
+			assert.strictEqual(other.props.style.background, 'transparent', '非当前项不许画成选中态');
+		});
+	});
+
+	test('★ hero 点工作区行 ⇒ **经宿主切换**（`switchWorktree(主根)`）—— 2026-10-17 口径变更', async () => {
+		// 翻案史（先读再改）：
+		//   · 2026-10-16：hero 那行改成"只官方 `onPick`、不经宿主"，理由是别当场建空会话把人踢出 hero；
+		//   · **2026-10-17 用户报"聊天框里仍然切不了工作区"**，真机日志实证（README 5.149）：那屏正是 hero，
+		//     用户连点 4 次、IDE 窗口每次 15ms 就切过去了，而聊天框**零变化**（`hero-pick`×4、`rebinds:0`）
+		//     ⇒ "只切窗口/只选中"在用户那里就等于"切不了" ✗✗ ⇒ 现在与 header 同口径：**经宿主真的切** ✓。
+		//   ⚠ 唯一保留：组行**连主根都读不到**时才回落到官方 `onPick`（header 套件里有专门用例 ✓）。
+		const picked: string[] = [];
+		const switches: string[] = [];
+		await mount({ bridge: { switchWorktree: (p: string) => { switches.push(p); return Promise.resolve(); } } }, async (h: any) => {
+			const tree = heroTree(h, {}, id => picked.push(id));
+			findAll(tree, 'data-vssaros-context-item')
+				.find((n: any) => n.props['data-vssaros-context-item'] === 'workspace:ws-2').props.onClick();
+			await settle();
+			assert.deepStrictEqual(switches, ['G:\\Repo-wt\\feature-auth'],
+				'经宿主在**主根**起/接管会话（与 header 同一条命令 ⇒ 点了真的切过去 ✓）');
+			assert.deepStrictEqual(picked, ['ws-2'],
+				'★ 顺带对齐官方选中态：hero 屏上那枚是**官方**的（我们只挂浮层）⇒ 不对齐就可能是"切了但 UI 没刷新" ✗ '
+				+ '（切换本身仍走宿主 —— 上面那条 switches 断言才是主证据 ✓）');
+		});
+	});
+
+	test('★ hero 点 worktree 行 ⇒ 必须经宿主 `bridge.switchWorktree(path)`（onPick 只认 workspaceId ✓）', async () => {
+		const picked: string[] = [];
+		const switches: string[] = [];
+		await mount({ bridge: { switchWorktree: (p: string) => { switches.push(p); return Promise.resolve(); } } }, async (h: any) => {
+			const tree = heroTree(h, {}, id => picked.push(id));
+			findAll(tree, 'data-vssaros-context-item')
+				.find((n: any) => n.props['data-vssaros-context-item'] === 'worktree:G:\\Repo').props.onClick();
+			await settle();
+			assert.deepStrictEqual(switches, ['G:\\Repo'], '经宿主切（宿主要在目标目录接管其专属会话 ✓）');
+			assert.deepStrictEqual(picked, [], 'worktree 行不是"选工作区" ⇒ 不许走 onPick ✗');
+		});
+	});
+
+	test('★ hero「添加工作区…」⇒ directoryPicker.pick() + workspaces.create({path})（不新增桥命令），成功后采纳即选中', async () => {
+		const made: any[] = [];
+		const picked: string[] = [];
+		await mount({
+			bridge: {},
+			picker: { pick: () => Promise.resolve({ ok: true, value: { path: 'G:\\NewRepo' } }) },
+			create: (input: any) => { made.push(input); return Promise.resolve({ workspaceId: 'ws-new' }); },
+		}, async (h: any, state: Record<string, unknown>) => {
+			findByAttr(heroTree(h, {}, id => picked.push(id)), 'data-vssaros-context-add').props.onClick();
+			await settle();
+			assert.deepStrictEqual(made, [{ path: 'G:\\NewRepo' }],
+				'与官方 `createWorkspace: (input) => workspaces.create(input)` **同一条链**（不新增桥命令 ✓）');
+			assert.deepStrictEqual(picked, ['ws-new'], 'hero：采纳即选中（与官方 adoptDirectory → onPick 同语义 ✓）');
+			assert.strictEqual(state.contextAdds, 1, '成功要如实计数（诊断依赖它 ✓）');
+		});
+	});
+
+	test('★ 没有目录选择器 ⇒ 如实说清、不记成功；header 里添加成功后**不**自动切会话（只提示）', async () => {
+		// ① hero：宿主没装 directoryPicker（服务不进 inject ⇒ 只能运行时取 ✓）
+		await mount({ bridge: {} }, async (h: any, state: Record<string, unknown>) => {
+			findByAttr(heroTree(h), 'data-vssaros-context-add').props.onClick();
+			await settle();
+			assert.ok(JSON.stringify(heroTree(h)).includes('没有目录选择器'),
+				'要说清为什么加不了（不能"点了没反应" ✗）');
+			assert.strictEqual(state.contextAdds, undefined, '没成功不许记成功 ✓');
+		});
+		// ② header：同样的行，成功后只提示、不换会话
+		const switches: string[] = [];
+		const made: any[] = [];
+		await mount({
+			bridge: { switchWorktree: (p: string) => { switches.push(p); return Promise.resolve(); } },
+			picker: { pick: () => Promise.resolve({ ok: true, value: { path: 'G:\\NewRepo' } }) },
+			create: (input: any) => { made.push(input); return Promise.resolve({ workspaceId: 'ws-new' }); },
+		}, async (h: any) => {
+			findByAttr(h.render(0, { sessionId: 's-a' }), 'data-vssaros-context-chip').props.onClick();
+			findByAttr(h.render(0, { sessionId: 's-a' }), 'data-vssaros-context-add').props.onClick();
+			await settle();
+			assert.deepStrictEqual(made, [{ path: 'G:\\NewRepo' }]);
+			assert.deepStrictEqual(switches, [],
+				'添加**不许**顺带换会话（否则"添加工作区"变成一个会踢人的动作 ✗）');
+			assert.ok(JSON.stringify(h.render(0, { sessionId: 's-a' })).includes('已添加工作区'),
+				'结果要就地可见（用户据此决定要不要切过去 ✓）');
 		});
 	});
 });

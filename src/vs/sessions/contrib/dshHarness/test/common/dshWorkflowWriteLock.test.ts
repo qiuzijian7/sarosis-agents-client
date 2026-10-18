@@ -21,7 +21,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { URI } from '../../../../../base/common/uri.js';
-import type { IExclusiveFileOps } from '../../../agentStudio/common/fileWriteLock.js';
+import type { IExclusiveFileOps } from '../../../../common/agentStudioFileWriteLock.js';
 import {
 	FILE_LOCK_POLL_MS,
 	FILE_LOCK_STALE_MS,
@@ -29,7 +29,7 @@ import {
 	FILE_LOCK_WAIT_MS,
 	acquireFileLock,
 	lockResourceFor,
-} from '../../../agentStudio/common/fileWriteLock.js';
+} from '../../../../common/agentStudioFileWriteLock.js';
 
 /** 从 cwd 往上找仓库根（同 `dshWriteOwnership.test.ts` 的约定）。 */
 function repoRoot(): string | undefined {
@@ -90,7 +90,9 @@ interface IPluginLock {
 async function loadPluginLock(): Promise<IPluginLock | undefined> {
 	const root = repoRoot();
 	if (!root) { return undefined; }
-	const file = path.join(root, 'dsh-plugins', 'vssaros-workflow', 'lib', 'lock.js');
+	// 重构 1.3（2026-10-16）：锁的真源收编进 @vssaros/dsh-foundation；各插件的 lib/lock.js 是委托层
+	//（行为断言跑真源，委托形态由下面的同形断言把住）。
+	const file = path.join(root, 'dsh-plugins', 'vssaros-foundation', 'lib', 'lock.js');
 	if (!fs.existsSync(file)) { return undefined; }
 	return await import(pathToFileURL(file).href) as IPluginLock;
 }
@@ -104,15 +106,17 @@ test('★ 插件侧的锁实现是**逐字副本**（README 5.114：插件之间
 	if (!root) {
 		this.skip();
 	}
-	const files = ['vssaros-workflow', 'vssaros-kb', 'vssaros-skills']
+	// 复制件的完整名单（2026-10-16 补 web-content-import —— 它那份曾只改了首行包名就脱离了守卫 ✗）：
+	// 四份必须逐字一致（含首行注释里的包名：一律写 workflow，它是被互抢验证的那份）。
+	const files = ['vssaros-workflow', 'vssaros-kb', 'vssaros-skills', 'vssaros-web-content-import']
 		.map(dir => path.join(root!, 'dsh-plugins', dir, 'lib', 'lock.js'));
 	for (const file of files) {
-		assert.ok(fs.existsSync(file), `${file} 不存在 ✗（kb / skills 的锁是复制件，删了就得重新引入）`);
+		assert.ok(fs.existsSync(file), `${file} 不存在 ✗（kb / skills / web-content-import 的锁是复制件，删了就得重新引入）`);
 	}
 	const [first, ...rest] = files.map(file => fs.readFileSync(file, 'utf8'));
 	for (let i = 0; i < rest.length; i++) {
 		assert.strictEqual(rest[i], first,
-			`${files[i + 1]} 与 ${files[0]} **不再逐字一致** ✗ ⇒ 协议可能已漂：要么把改动同步到三份，要么把新行为并进被互抢验证的那份`);
+			`${files[i + 1]} 与 ${files[0]} **不再逐字一致** ✗ ⇒ 协议可能已漂：要么把改动同步到全部 ${files.length} 份，要么把新行为并进被互抢验证的那份`);
 	}
 });
 

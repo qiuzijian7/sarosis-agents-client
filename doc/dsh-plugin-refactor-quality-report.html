@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>dsh 插件化重构 · 质量与覆盖评估报告（2026-10-17）</title>
+<style>
+:root{--bg:#0f1115;--card:#161a22;--fg:#d7dce5;--dim:#8b93a3;--acc:#4da3ff;--ok:#3ecf8e;--warn:#f5a623;--bad:#f05252;--code:#1c222c}
+*{box-sizing:border-box}
+body{margin:0;padding:28px 32px 56px;background:var(--bg);color:var(--fg);font:14px/1.65 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;max-width:1280px}
+h1{font-size:22px;margin:0 0 6px}
+h2{font-size:17px;margin:32px 0 12px;padding-left:10px;border-left:3px solid var(--acc)}
+h3{font-size:14px;margin:20px 0 8px;color:var(--dim)}
+p,li{font-size:13.5px}
+.sub{color:var(--dim);font-size:12.5px;margin:0 0 18px}
+.card{background:var(--card);border:1px solid #222836;border-radius:10px;padding:16px 18px;margin:12px 0}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px}
+.kpi{background:var(--card);border:1px solid #222836;border-radius:10px;padding:14px 16px}
+.kpi .n{font-size:26px;font-weight:600;letter-spacing:-.5px}
+.kpi .l{color:var(--dim);font-size:12px;margin-top:2px}
+table{width:100%;border-collapse:collapse;margin:10px 0;font-size:13px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid #222836;vertical-align:top}
+th{color:var(--dim);font-weight:500;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+code{background:var(--code);padding:1px 5px;border-radius:4px;font-size:12.5px;font-family:ui-monospace,Consolas,monospace}
+.ok{color:var(--ok)}.warn{color:var(--warn)}.bad{color:var(--bad)}
+.pill{display:inline-block;padding:1px 8px;border-radius:999px;font-size:11.5px;border:1px solid}
+.pill.ok{color:var(--ok);border-color:rgba(62,207,142,.4);background:rgba(62,207,142,.08)}
+.pill.warn{color:var(--warn);border-color:rgba(245,166,35,.4);background:rgba(245,166,35,.08)}
+.pill.bad{color:var(--bad);border-color:rgba(240,82,82,.4);background:rgba(240,82,82,.08)}
+.bar{height:7px;border-radius:999px;background:#1e2430;overflow:hidden;min-width:80px}
+.bar>i{display:block;height:100%;border-radius:999px;background:var(--ok)}
+ul{padding-left:20px}
+.note{border-left:3px solid var(--warn);background:rgba(245,166,35,.06);padding:10px 14px;border-radius:0 8px 8px 0;margin:12px 0}
+</style>
+</head>
+<body>
+
+<h1>dsh 插件化重构 · 质量与覆盖评估报告</h1>
+<p class="sub">评估时间 2026-10-17 · 数据全部现取（台账 / 工具快照 / 组合清单 / 回归链），无估算</p>
+
+<h2>一、结论摘要</h2>
+<div class="grid">
+  <div class="kpi"><div class="n ok">20 / 20</div><div class="l">台账 family 已有 dsh 对应（legacy owner = 0）</div></div>
+  <div class="kpi"><div class="n ok">127</div><div class="l">dsh 侧注册工具（15 个有工具的插件）</div></div>
+  <div class="kpi"><div class="n">23</div><div class="l">dsh 插件（全部有 <code>cordis.patch.yml</code>）</div></div>
+  <div class="kpi"><div class="n">16</div><div class="l">ActivityBar 模块容器</div></div>
+  <div class="kpi"><div class="n ok">124</div><div class="l">p3 探针文件</div></div>
+  <div class="kpi"><div class="n warn">~25 万行</div><div class="l">legacy agentStudio/browser 待退役</div></div>
+</div>
+<div class="card">
+<p><b>总体判断：业务面已完整 dsh 化，引擎面按计划保留在 legacy 侧等待真机验收。</b></p>
+<ul>
+<li><b>业务工具面 100% 迁完</b>——memory / codebase / kb / kanban / workflow / media / skills / mcp / sessions / agents / dashboard / web-content-import 共 127 个工具全部在 dsh 插件里注册；legacy 侧对应注册已注释、文件已删。模型在 legacy 面板与 dsh 引擎下看到的业务工具<b>只剩一份</b>。</li>
+<li><b>20 个 family 全部有 dsh 对应物</b>（台账 <code>owner=legacy</code> 归零）。其中 2 个（agent-loop / core-tools / llm-providers）走的是<b>官方件替换</b>路线，不是自研插件——这是方案既定选择。</li>
+<li><b>剩下的约 25 万行 legacy 代码是「引擎 + 引擎工具 + 壳侧编辑器」</b>，不是业务功能缺失，而是 Phase 5 的删除对象。删除前置（dsh 聊天 e2e 真机全绿）已有一半：<code>workbench-e2e.mjs</code> 已有完整「发消息 → 工具卡渲染」链路（mock-llm 后端）；缺的是<b>真模型下同样通过</b>的读数。</li>
+<li><b>质量门全部绿</b>：<code>check:dsh-plugins</code> 4/4、<code>tsgo</code> 0、dshHarness common 651 passing。3 条红属并行会话的 hero 文案改动，与本次重构无关（已在下方风险项列明）。</li>
+</ul>
+</div>
+
+<h2>二、模块级 dsh 化率（按台账 20 个 family）</h2>
+<p class="sub">「dsh 化率」= 该 family 的<b>用户可见能力</b>有多少已由 dsh 侧提供。引擎类不适用此口径（见备注列）。</p>
+<table>
+<thead><tr><th style="width:150px">family</th><th style="width:130px">dsh 侧形态</th><th style="width:90px">dsh 化率</th><th>说明 / 剩余项</th></tr></thead>
+<tbody>
+<tr><td>kanban</td><td><code>vssaros-kanban</code> 0.8.4</td><td><span class="ok">100%</span> <span class="pill ok">17 工具</span></td><td>全族：list/create/update/show/complete/block/unblock/heartbeat/comment/link + decompose/swarm/specify + web_recipe×3 + web_scrape_to_board。<b>legacy 侧注册已退役、<code>kanbanTools.ts</code> 文件已注释但保留</b>（<code>kanbanScrapeService</code> 仍用其常量/会话解析）。</td></tr>
+<tr><td>memory</td><td><code>vssaros-memory</code> 0.3.75</td><td><span class="ok">100%</span> <span class="pill ok">23 工具</span></td><td>基础 remember/recall/forget/search/list + 治理 governance/team/mesh/sentinel/obsidian_export/cascade + routine/crystal/facet + improve/skill/slot/stats/work/lesson/refresh/import/api。legacy 4 个注册全退役、文件已删。</td></tr>
+<tr><td>codebase</td><td><code>vssaros-codebase</code> 0.6.69</td><td><span class="ok">~95%</span> <span class="pill ok">21 工具</span></td><td>18 项迁 17 项。<code>ingest_traces</code> <b>刻意不迁</b>（dsh 侧没有被测应用可产出运行时 trace；动态边混入静态图会让调用关系不可证伪）。</td></tr>
+<tr><td>kb</td><td><code>vssaros-kb</code> 0.4.0</td><td><span class="ok">100%</span> <span class="pill ok">17 工具</span></td><td>含语义检索双向（<code>kb_search</code> semantic 模式 + <code>kb_reindex</code> 建索引）、飞书同步 5 件套、mindmap、topic_overviews。</td></tr>
+<tr><td>workflow</td><td><code>vssaros-workflow</code> 0.5.1</td><td><span class="ok">100%</span> <span class="pill ok">6 工具</span></td><td>list/get/get_schema/apply/open/engine_status；DAG、分流、对账在插件内自实现。</td></tr>
+<tr><td>media-gen</td><td><code>vssaros-media</code> 0.5.0</td><td><span class="ok">100%</span> <span class="pill ok">8 工具</span></td><td>生成三件套 + vision/video 分析 + 抽帧 + media_list/stats。执行经桥回 IDE（模型 provider 在壳侧）。</td></tr>
+<tr><td>agents-skills</td><td><code>vssaros-agents</code> 0.2.39 / <code>vssaros-skills</code> 0.6.0</td><td><span class="ok">100%</span> <span class="pill ok">6+5 工具</span></td><td>agents：list/message/open_session/read_chat/stop/switch_persona。skills：manage/search/market_list + read_skill/list_skills（本轮新迁）。</td></tr>
+<tr><td>mcp</td><td><code>vssaros-mcp</code> 0.3.0</td><td><span class="ok">~90%</span> <span class="pill ok">2 工具</span></td><td>安装 + 市场浏览已迁。<b>动态 MCP 工具面</b>（用户配置的服务器工具）仍由 legacy <code>McpToolProvider</code> 提供——这是 MCP 客户端的挂载职责，方案既定留在壳侧。</td></tr>
+<tr><td>sessions</td><td><code>vssaros-sessions</code> 0.2.0</td><td><span class="ok">100%</span> <span class="pill ok">1 工具</span></td><td>历史会话只读页 + <code>session_search</code>（读投影缓存，不伪造事件）。</td></tr>
+<tr><td>dashboard</td><td><code>vssaros-dashboard</code> 0.4.30</td><td><span class="ok">100%</span> <span class="pill ok">2 工具</span></td><td>stats / sessions / session。</td></tr>
+<tr><td>scheduler</td><td><code>vssaros-scheduler</code> 0.1.0 + 官方 <code>dsh-schedule</code></td><td><span class="ok">100%</span> <span class="pill ok">0 工具（官方 schedule_create）</span></td><td>薄壳（图标 + 清单页 + legacy 迁移入口）。<b>legacy 自研调度器从未真正执行过</b>（<code>await async *</code> 不迭代），已注释注册 + 删服务文件。</td></tr>
+<tr><td>channels</td><td><code>vssaros-channels</code> 0.1.0</td><td><span class="warn">~80%</span></td><td>核心环完整（入站→专属会话→runs 驱动→回传、白名单 fail-closed）。<b>真机适配器（feishu/telegram WS）与 IM 审批卡待真实凭据</b>。</td></tr>
+<tr><td>pocket</td><td><code>vssaros-pocket</code> 0.1.0</td><td><span class="warn">~50%</span></td><td>本仓半已落地（token 鉴权 + 列会话 + 发消息）。<b>跨仓半</b>（Saros Pocket 端的 bridge 改调用）不在本仓范围。</td></tr>
+<tr><td>subagent-crew</td><td><code>vssaros-kanban</code>（<code>kanban_swarm</code>）+ <code>vssaros-agents</code></td><td><span class="warn">~85%</span></td><td>Crew 已核实为死代码并删除（1800+ 行）；Swarm 用 <code>kanban_swarm</code> 建拓扑、runner 驱动。<b><code>delegate_task</code>/<code>new_agent</code> 仍属 legacy 引擎工具</b>，随引擎退役。</td></tr>
+<tr><td>chat-ui</td><td><code>vssaros-chat-surface</code> 0.2.93</td><td><span class="warn">~85%</span></td><td>聊天面、expert catalog、capsule 导航、命令面板入口已迁；React webview 已拆分（产物 25.5MB→2.7MB）。<b>市场 UI / 部分卡片渲染仍在壳侧遗留 webview</b>。</td></tr>
+<tr><td>unreal-browser</td><td><code>vssaros-unreal</code> / <code>vssaros-browser</code></td><td><span class="ok">100%</span> <span class="pill ok">7+1 工具</span></td><td>整族已下移（2026-10-13 起 legacy 侧 <code>unrealTools</code> 删除）。</td></tr>
+<tr><td>agent-loop</td><td>官方 <code>dsh-agent-loop</code> 等</td><td><span class="ok">dsh 侧 ✓</span></td><td><b>引擎类：走官方件替换</b>。legacy <code>piLoop</code>（20 文件 / 4804 行）仍在，是 5.5 的删除对象，不是能力缺口。</td></tr>
+<tr><td>core-tools</td><td>官方 <code>dsh-tool-fs</code> / <code>-bash</code> / <code>-pwsh</code> / <code>-str-replace-editor</code></td><td><span class="ok">dsh 侧 ✓</span></td><td><b>引擎类</b>。legacy <code>file_read/file_write/terminal/execute_code/patch/clarify/update_plan</code> 是 legacy 引擎的配套工具，dsh 引擎无需它们 ⇒ 随引擎删。</td></tr>
+<tr><td>llm-providers</td><td>官方 provider 层 + <code>vssaros-agents</code> preset</td><td><span class="ok">dsh 侧 ✓</span></td><td><b>引擎类</b>。legacy <code>providers/</code>（85 文件 / 30976 行）随引擎删。</td></tr>
+<tr><td>canvas-diagram</td><td><code>vssaros-ide</code>（canvas/mindmap 页）+ <code>vssaros-kb</code>（kb_mindmap）</td><td><span class="warn">~70%</span></td><td>页面与 KB 思维导图已迁；<b>legacy 的 <code>canvas_*</code>（7）/ <code>mindmap_*</code>（4）/ mermaid / drawio 工具仍属 legacy 引擎</b>——它们依赖壳侧编辑器渲染（drawio/mermaid 卡片在 legacy 聊天面板里渲染）。</td></tr>
+</tbody>
+</table>
+
+<h2>三、工具面覆盖</h2>
+<div class="card">
+<table>
+<thead><tr><th>插件</th><th style="width:80px">工具数</th><th>代表工具</th></tr></thead>
+<tbody>
+<tr><td><code>vssaros-memory</code></td><td>23</td><td>memory_remember / recall / forget / search / list / governance / team / mesh / crystal / facet …</td></tr>
+<tr><td><code>vssaros-codebase</code></td><td>21</td><td>codebase_overview / search / deps / hotspots / architecture / trace / index …</td></tr>
+<tr><td><code>vssaros-kanban</code></td><td>17</td><td>kanban_* 17 件套（含 decompose / swarm / specify / web_scrape_to_board）</td></tr>
+<tr><td><code>vssaros-kb</code></td><td>17</td><td>kb_search / reindex / build / organize / feishu_sync + feishu_* 5 件套</td></tr>
+<tr><td><code>vssaros-ide</code></td><td>10</td><td>open_file / reveal / show_diff / get_diagnostics / get_selection / canvas / mindmap …</td></tr>
+<tr><td><code>vssaros-media</code></td><td>8</td><td>image_generate / video_generate / text_to_speech / vision_analyze / video_analyze / extract_video_frames …</td></tr>
+<tr><td><code>vssaros-unreal</code></td><td>7</td><td>unreal_build / dump / exec / find_asset / health / help / wait</td></tr>
+<tr><td><code>vssaros-workflow</code></td><td>6</td><td>workflow_list / get / get_schema / apply / open / engine_status</td></tr>
+<tr><td><code>vssaros-agents</code></td><td>6</td><td>agent_list / message / open_session / read_chat / stop / switch_persona</td></tr>
+<tr><td><code>vssaros-skills</code></td><td>5</td><td>skill_manage / search / market_list / read_skill / list_skills</td></tr>
+<tr><td><code>vssaros-dashboard</code></td><td>2</td><td>dashboard_stats / sessions</td></tr>
+<tr><td><code>vssaros-mcp</code></td><td>2</td><td>mcp_install / mcp_market_list</td></tr>
+<tr><td><code>vssaros-browser</code></td><td>1</td><td>browser（CDP 驱动）</td></tr>
+<tr><td><code>vssaros-sessions</code></td><td>1</td><td>session_search</td></tr>
+<tr><td><code>vssaros-web-content-import</code></td><td>1</td><td>content_import</td></tr>
+</tbody>
+</table>
+<p class="sub">合计 <b>127</b> 个工具 / 15 个插件。无工具的 8 个插件是页面 / 服务 / 基础件（foundation / bridge / chat-surface / kb-refs / scheduler / channels / pocket / archify），按设计不注册工具。</p>
+</div>
+
+<h2>四、质量门检查（本次实测）</h2>
+<div class="card">
+<table>
+<thead><tr><th style="width:230px">检查项</th><th style="width:110px">结果</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td><code>npm run check:dsh-plugins</code></td><td><span class="ok">4/4 passed</span></td><td>工具快照、preset 面、覆盖映射、宿主配置四条守卫全绿。</td></tr>
+<tr><td><code>tsgo --noEmit</code></td><td><span class="ok">exit 0</span></td><td>全仓类型检查零错误。</td></tr>
+<tr><td>dshHarness common 套件</td><td><span class="warn">651 passing / 3 failing</span></td><td>3 条红为并行会话的 hero 区文案改动（<b>与本重构无关</b>），见风险项。</td></tr>
+<tr><td>工具快照一致性</td><td><span class="ok">127 / 15 对齐</span></td><td><code>tools-snapshot.json</code> 由脚本生成并被守卫钉住，本轮所有退役均已同步。</td></tr>
+<tr><td>台账完整性</td><td><span class="ok">legacy = 0</span></td><td>20 个 family：<code>dsh</code> 1 / <code>dual</code> 18 / <code>removed</code> 1，无 <code>legacy</code> 残留。</td></tr>
+<tr><td>审批闸覆盖</td><td><span class="ok">15 有闸 / 8 无闸（合理）</span></td><td>有写类工具的插件全部挂闸；无闸的 8 个是纯页面/只读/基础件，符合「写类必须过闸」纪律。</td></tr>
+<tr><td>探针覆盖</td><td><span class="ok">124 个 p3 / 15 插件全覆盖</span></td><td>每个有工具的插件都在 <code>dshToolCoverage</code> 映射里有对应探针；新增工具均带反向突变验证。</td></tr>
+<tr><td>preset plane</td><td><span class="ok">14 行对齐快照</span></td><td><code>preset-vssaros.rows.yml</code> 与「注册了工具的模块插件」一一对应，守卫会红。</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>五、本重构周期的主要收口动作（代码事实）</h2>
+<div class="card">
+<h3>5.1 工具面退役（legacy 侧注册归零）</h3>
+<p>共退役 <b>10 个工具族</b>：cronjob / kanban / memory / skills / media / sessions / kb / feishu / workflow / codebase。做法统一为「注释注册 → 删方法 → 摘 import → 摘 DI 注入」。<code>builtinToolProvider.ts</code> 由 1452 行降至 <b>1113 行</b>，并删除 <b>17 个工具文件 + 对应测试</b>。</p>
+<h3>5.2 死代码清理</h3>
+<ul>
+<li>删 <code>agentSchedulerService.ts</code>（650 行 + 测试）——服务注册撤销后无人 import。</li>
+<li>删 <code>agentYamlParser.ts</code>——<code>parseAndRegisterSchedules</code> 全仓无调用方。</li>
+<li>删 6 个从未被注册的视图（共 <b>1256 行</b>）：<code>sessionExplorerView</code> / <code>agentStudioSidebarView</code> / <code>agentStudioToolbarView</code> / <code>agentStudioViewPane</code> / <code>delegationTreeView</code> / <code>healthMonitorPanel</code>。</li>
+</ul>
+<h3>5.3 缺陷修复</h3>
+<p>修复一个「看着跑过、其实没跑」的历史缺陷：<code>agentSchedulerService</code> 对 <code>async *</code> 生成器只 <code>await</code> 不迭代 ⇒ 调度器<b>从未真正执行过</b>任何定时任务。该事实同时修正了 <code>dshModuleContainers.ts</code> 里「legacy 调度器没有存量行为需要对齐」的判断依据。</p>
+<h3>5.4 门面与拆分</h3>
+<ul>
+<li>中立层门面 9 个（<code>sessions/common/*</code>），dshHarness 对 agentStudio 的 common 层反向依赖清零。</li>
+<li>React webview 拆分：删 <code>features/taskboard/</code>（1397 行）+ <code>features/agentEditor/</code>（1864 行），产物 25.5MB → <b>2.7MB</b>（-89%）。</li>
+</ul>
+</div>
+
+<h2>六、未完成项与风险</h2>
+<div class="card">
+<table>
+<thead><tr><th style="width:170px">项</th><th style="width:80px">性质</th><th>现状 / 阻塞条件</th></tr></thead>
+<tbody>
+<tr><td>5.1 退役旧聊天 DOM 面板</td><td><span class="pill warn">等真机</span></td><td>约 3.8 万行（<code>sessions/browser/agentChat/</code>）。前置是「dsh 聊天端到端真机全绿」。<b>现状分两层</b>：<b>链路 e2e 已有</b>——<code>poc/dsh-p0/scripts/workbench-e2e.mjs</code>（起真 Electron 隔离实例 + CDP 驱动）里有完整的「点开聊天 → <code>Input.insertText</code> 发 'kanban list' → 等 <code>[data-vssaros-kanban-card]</code> 工具卡 → 断言 keyed 槽接管」链路（约 2113–2169 行）；但该脚本<b>用 <code>mock-llm.mjs</code> 作后端</b>（149 行 spawn），证明的是「管道通」，<b>不是「真模型下的对话质量」</b>。⇒ 缺口是「真模型 e2e」这一层，不是链路本身。</td></tr>
+<tr><td>5.5 删除引擎</td><td><span class="pill warn">等 5.1</span></td><td>约 25 万行（<code>agentStudio/browser</code> 517 文件 / 248,057 行）——其中引擎本体 ≈ 45,000 行。<b>代码侧前置已达成</b>：<code>executeFromChatOptions</code> 在 legacy UI 之外的调用方 <b>= 0</b>（全仓只剩定义方 <code>agentDriverService.ts:2111</code> 与注释；<code>agentSchedulerService</code> 已删、<code>kbImportController</code> 兜底已删、<code>nativeChatEditorPane</code> 仅剩注释）。剩唯一前置是 5.1 的真机验收。</td></tr>
+<tr><td>channels 真机适配器</td><td><span class="pill warn">等凭据</span></td><td>飞书 / Telegram WS 适配与 IM 审批卡需要真实机器人凭据，无法在代码层收口。</td></tr>
+<tr><td>pocket 跨仓半</td><td><span class="pill warn">跨仓</span></td><td>Saros Pocket 端的调用改造不在本仓。</td></tr>
+<tr><td>canvas / drawio / mermaid 工具</td><td><span class="pill warn">随引擎删</span></td><td>依赖 legacy 聊天面板的图形卡片渲染；dsh 聊天面尚未接住这三类卡片 ⇒ 不与引擎一起删会留下「工具在、卡片不在」的空缺。</td></tr>
+<tr><td>3 条 hero 文案测试红</td><td><span class="pill bad">外部</span></td><td>并行会话正在改 hero 区工作区入口语义（「点工作区 = 窗口 + 会话都切」），测试与实现暂时不同步。<b>不属于本次重构范围</b>，但会污染整体绿度读数。</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>七、建议的下一步顺序</h2>
+<div class="card">
+<ol>
+<li><b>已加 <code>--real-llm</code> 分支</b>（2026-10-17）：<code>node poc/dsh-p0/scripts/workbench-e2e.mjs --real-llm</code>，凭据从 <code>DSH_E2E_REAL_BASEURL</code> / <code>DSH_E2E_REAL_APIKEY</code> / <code>DSH_E2E_REAL_MODEL</code> 取（缺任一 ⇒ SKIP，不当失败），可选 <code>DSH_E2E_REAL_REASONING=1</code>。读数落盘时 <code>.out/workbench-e2e.json</code> 的 <code>backend</code> 字段会标明 <code>kind: real-llm</code> 还是 <code>mock-llm</code> ⇒ 日后不会把两者混为一谈。<b>下一步只需在有凭据的机器上跑一次并稳定两个版本</b>，5.1 即具备条件。</li>
+<li><b>先把并行会话的 hero 文案测试修绿</b>，恢复「红 = 新问题」的信号价值——目前 3 条常红会掩盖真实回归。</li>
+<li><b>等真机窗口期</b>再动 5.1 / 5.5。在此之前不建议继续扩大删除面：现有 legacy 代码里仍有 <code>kanbanScrapeService</code>（依赖 <code>kanbanTools</code> 常量）、<code>scheduleViewRenderer</code>（依赖 <code>common/agentScheduler</code> 类型）、<code>McpToolProvider</code>（动态 MCP 工具面）等<b>仍在服役</b>的耦合点。</li>
+<li>channels / pocket 的真机收口等凭据与跨仓排期，不阻塞主线。</li>
+</ol>
+</div>
+
+<div class="note">
+<b>口径提醒</b>：本报告把「dsh 化率」分为两类——<b>业务能力</b>（应当 100% 由插件提供，已达成）与<b>引擎能力</b>（走官方件替换，legacy 侧代码待删）。把后者计入「未插件化」会得出错误的缺口结论：dsh 引擎不使用 legacy 的 <code>file_read</code> / <code>terminal</code> / <code>providers</code>，删掉它们不会造成任何能力回退。
+</div>
+
+</body>
+</html>

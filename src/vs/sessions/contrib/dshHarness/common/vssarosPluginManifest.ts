@@ -166,6 +166,18 @@ export function containerPrefixOf(pluginName: string): string {
 	return slash >= 0 ? pluginName.slice(slash + 1) : pluginName;
 }
 
+/**
+ * 该包名是不是 **VsSaros 自己的内置模块插件**（⇒ 解析清单时允许沿用 `agentStudio.*`
+ * 容器 ID 与小 order 等"自家担保"的写法）。
+ *
+ * 真源只此一处：`dshHarnessChannel._readPluginManifest`（UI 注册）与
+ * `readCapabilityDeclarations`（IDE 能力授权）必须同口径 —— 2026-10-17 的事故正是
+ * 两条路径口径不一致（后者漏传 `builtin`）导致内置插件全部零能力。
+ */
+export function isBuiltinPluginName(pluginName: string): boolean {
+	return pluginName.startsWith('@vssaros/');
+}
+
 function parseTitle(raw: unknown, field: string): string | { zh: string; en: string } {
 	if (typeof raw === 'string' && raw.trim()) {
 		return raw;

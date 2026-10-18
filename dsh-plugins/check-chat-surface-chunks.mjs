@@ -36,6 +36,12 @@ const OFFICIAL_ENTRIES = [
 	// dsh-client-ui-subagent/lib/client.js:968-974 / dsh-client-ui-jobs/lib/client.js:610-621
 	{ slot: 'conversation.session.header.actions', id: 'subagent-catalog', order: -30, owner: '官方子代理目录' },
 	{ slot: 'conversation.session.header.actions', id: 'job-list', order: 20, owner: '官方 jobs 名单' },
+	// 2026-10-17 新增（工作台导航 client.workbenchNav.js 的同槽官方占用者）：
+	// dsh-client-ui-plugin-manager/lib/client.js:4239-4246（plugins, order 0）/
+	// dsh-client-ui-schedule/lib/client.js:7484-7491（schedules, order 10）。
+	// 我们的条目从 order 20 起、步长 2，重排序时整组平移 ⇒ 永不撞这两条 ✓。
+	{ slot: 'sidebar.panellist', id: 'plugins', order: 0, owner: '官方 Plugins 面板入口' },
+	{ slot: 'sidebar.panellist', id: 'schedules', order: 10, owner: '官方 Automation tasks 入口' },
 ];
 
 /**
@@ -51,6 +57,9 @@ const OUR_BASELINE = [
 	{ slot: 'conversation.session.header.actions', id: 'vssaros-context-entry', order: -27 },
 	{ slot: 'conversation.session.header.actions', id: 'vssaros-subagents', order: -25 },
 	{ slot: 'conversation.session.header.actions', id: 'agent-preset', order: -10 },
+	// ⚠ 2026-10-16 新增的 `vssaros-delegate`（conversation.input.dock, order 15）**刻意不进本表**：
+	//   进基线 = 跳过"与官方撞 id/tie order"检查 ⇒ 官方日后在 15 加条目就静默 tie（goal=10 那次正是
+	//   这种漏检 ✗）。保持"新条目"身份 ⇒ 每次跑守卫都对它做全量对账 ✓。
 ];
 
 /**
@@ -66,6 +75,10 @@ const MULTI_ENTRY_SLOTS = new Set([
 	'conversation.session.header.utilities',
 	'conversation.input.left',
 	'conversation.input.overlay',
+	// 官方已有 10 枚条目（toast / 对话框 / 快捷键参考…，CLIENT_SLOT_API 4856-4866）⇒ 必须带 id，且不许撞官方 id ✓
+	'shell.overlay',
+	// 2026-10-17 新增：侧栏全局面板图标（官方 plugins=0 / schedules=10 已登记进 OFFICIAL_ENTRIES ✓）
+	'sidebar.panellist',
 ]);
 
 /**
@@ -74,6 +87,15 @@ const MULTI_ENTRY_SLOTS = new Set([
  * 为什么要登记而不是"顺手修"：这些 tie 是线上正在跑的形态，改 order 等于改显示顺序 ⇒ 属于
  * 视觉变更，要单独走一次评审 ✗（本脚本只负责"不许再增加" ✓）。
  */
+/**
+ * **keyed 槽**：条目身份是 `key` 而不是 `id`（官方文档："the entry renders where the owner
+ * dispatches this exact key"）⇒ 撞 **key** 才是互相顶掉；`id`/`order` 对它们无意义。
+ * 2026-10-17：工作台导航往 `main` 注册了 11 枚 keyed 面板，守卫第一版把它们按 id=undefined
+ * 两两判重 ⇒ 55 条假阳性 ✗。
+ * 同日第二刀：`sidebar.right.pane.tab`（右侧栏页签体，key = tab kind）同规律 ✓。
+ */
+const KEYED_SLOTS = new Set(['main', 'sidebar.right.pane.tab']);
+
 const KNOWN_TIES = [
 	// ★ 2026-10-15 已消解：`vssaros-workspace-chip` 与官方 `subagent-catalog` 曾在 -30 tie；
 	//   两枚 chip 合并为 `vssaros-context-entry`（-27）后该 tie 不复存在 ⇒ 这条登记**已删除** ✓
@@ -193,6 +215,23 @@ function makeShell() {
 	};
 }
 
+// ── ⓪ 语法守卫：主包 + 每个 chunk 都必须能被 JS 引擎**编译**（2026-10-18）──────────────────────
+// 为什么：此前守卫只读 client.js 的**源码文本**找 PART_CHUNKS，从不解析它——一次手滑留下的残留
+// 标识符（`id\t\t\tidleTicks = 0;`）能让整个主包语法错误，守卫照样"通过"，直到手动 `node --check` 才发现。
+// 主包是整个换皮的入口，它坏了 = 弹窗/聊天框的所有定制一个都不加载，必须在守卫里就红。
+{
+	const targets = ['client.js', ...fs.readdirSync(LIB).filter(f => /^client\..+\.js$/.test(f)).sort()];
+	for (const f of targets) {
+		try {
+			// 与 chunk 加载同款的 Function 编译（只编译不执行）
+			new Function('window', 'document', 'require', 'module', 'exports', fs.readFileSync(path.join(LIB, f), 'utf8'));
+		} catch (e) {
+			problems.push(`${f} 语法错误（编译失败）: ${String((e && e.message) || e)}`);
+		}
+	}
+	notes.push(`语法编译检查 ${targets.length} 个文件`);
+}
+
 // ── ① 接线守卫：磁盘上每个 client.*.js 都必须在 PART_CHUNKS 里（反之也要在） ────────────────
 const clientSrc = fs.readFileSync(path.join(LIB, 'client.js'), 'utf8');
 const arrMatch = /const PART_CHUNKS = \[([\s\S]*?)\];/.exec(clientSrc);
@@ -232,6 +271,7 @@ for (const file of fs.readdirSync(LIB).filter(f => /^client\..+\.js$/.test(f)).s
 		const entry = (r.entry && r.entry.entry) ? r.entry.entry : r.entry;
 		const name = (entry && entry.name) || r.slot;
 		const id = entry && entry.id;
+		const key = entry && entry.key;
 		const order = entry && entry.order;
 		if (MULTI_ENTRY_SLOTS.has(name)) {
 			// 多条目槽：必须显式（不然 id 撞了会顶掉、order 撞了顺序无保证，且都不报错 ✗）
@@ -241,11 +281,11 @@ for (const file of fs.readdirSync(LIB).filter(f => /^client\..+\.js$/.test(f)).s
 			if (!id) { problems.push(`${file}: 注册到多条目槽 ${name} 却没写 id（与官方/其它条目并存必须有 id ✗）`); }
 			if (typeof order !== 'number' && !legacy) { problems.push(`${file}: 注册到多条目槽 ${name} 却没写 order（顺序无保证 ✗）`); }
 			if (legacy && typeof order !== 'number') { notes.push(`${file}: ${name} 的 order 省略属**已登记**的历史遗留（见 KNOWN_TIES ✓）`); }
-		} else {
-			// 单条目槽：省略是正常的 ✓（只记一行说明，不当问题）
+		} else if (!KEYED_SLOTS.has(name)) {
+			// 单条目槽：省略是正常的 ✓（只记一行说明，不当问题）；keyed 槽的身份是 key，id/order 本就无意义
 			if (!id || typeof order !== 'number') { notes.push(`${file}: 单条目槽 ${name} 省略了 ${!id ? 'id' : ''}${(!id && typeof order !== 'number') ? ' + ' : ''}${typeof order !== 'number' ? 'order' : ''}（该槽只我们一家占，正常 ✓）`); }
 		}
-		ourEntries.push({ file, slot: name, id, order });
+		ourEntries.push({ file, slot: name, id, key, order });
 	}
 	const t = loaded.exports.__test;
 	if (t && typeof t.progressLabel === 'function') {
@@ -277,11 +317,15 @@ for (const ours of ourEntries.filter(isNew)) {
 		}
 	}
 }
-// 我们**自己之间**撞 id / tie order（同槽）
+// 我们**自己之间**撞 id / tie order（同槽）；keyed 槽的身份是 key（见 KEYED_SLOTS）
 for (let i = 0; i < ourEntries.length; i++) {
 	for (let j = i + 1; j < ourEntries.length; j++) {
 		const a = ourEntries[i], b = ourEntries[j];
 		if (a.slot !== b.slot) { continue; }
+		if (KEYED_SLOTS.has(a.slot)) {
+			if (a.key && a.key === b.key) { problems.push(`key "${a.key}" 在 keyed 槽 ${a.slot} 里被重复注册（${a.file} / ${b.file}）⇒ 互相顶掉 ✗`); }
+			continue;
+		}
 		if (a.id === b.id) { problems.push(`id "${a.id}" 被两个 chunk 重复注册（${a.file} / ${b.file}）✗`); continue; }
 		if (a.order === b.order && (isNew(a) || isNew(b)) && !(isBaseline(a) && isBaseline(b)) && tieMatters(a) && tieMatters(b)) {
 			problems.push(`order ${a.order} 在槽 ${a.slot} 里 tie（${a.id} / ${b.id}）⇒ 顺序无保证 ✗`);
@@ -289,8 +333,24 @@ for (let i = 0; i < ourEntries.length; i++) {
 	}
 }
 // 未登记槽位（多半是 slot 名拼错 ⇒ 静默不显示 ✗）
+// ⚠ 2026-10-16 新增 `conversation.hero.workspace`：hero（空白会话屏）那行的**官方浮层槽** ——
+//   我们以 `priority: -10` **遮蔽**官方的 WorkspacePickFlow，换上自己的合并面板（方案 A，
+//   mockup `doc/dsh-workspace-entry-single-mockup.html`；官方那枚 WorkspaceChip 本身写死在
+//   `heroWorkspaceRow` 里、走不了 slot ⇒ 只能换它的浮层 ✓）。槽是 single ⇒ 同 id 不必写 order ✓。
 const knownSlots = new Set([...OFFICIAL_ENTRIES.map(o => o.slot), 'conversation.input.left', 'conversation.input.overlay',
 	'conversation.session.header.utilities', 'conversation.hero.brand.mark', 'conversation.hero.agentPreset',
+	'conversation.hero.workspace',
+	// `shell.overlay`：官方"整框浮层"（list / root，默认点击穿透；条目要 pointerEvents:auto）。
+	// 曾用于窗口伙伴 client.companion.js（2026-10-17 应用户要求移除）；槽登记保留，留给以后的浮层部件 ✓
+	'shell.overlay',
+	// 2026-10-17 新增：工作台导航（client.workbenchNav.js）—— 侧栏图标槽 + 中栏 keyed 面板槽
+	// （main 是 keyed/root，中央面板按侧栏条目 id 派发；我们的 key 带 vssaros-wb- 前缀 ✓）。
+	// 同日第二刀：页面改开进**右侧栏页签**（sidebar.right.pane.tab，keyed/session，key=tab kind），
+	// main 面板只做中转（openTab + selectPanel(null) 弹回会话，不占用聊天框 ✓）。
+	'sidebar.panellist', 'main', 'sidebar.right.pane.tab',
+	// 同日第三刀：多根工作区「单条目 + hover 详情卡」（client.workspaces.js）遮蔽官方整区
+	// （single/root 槽，priority: -10 升序取最低 ⇒ 与 hero.workspace 遮蔽同一先例 ✓）。
+	'sidebar.workspaces',
 	'conversation.chat.turnTail', 'conversation.composer']);
 for (const o of ourEntries) {
 	if (!knownSlots.has(o.slot)) { notes.push(`${o.file}: 注册到未登记槽 ${o.slot}（若是新槽，请把槽名补进本脚本的 knownSlots ✗）`); }
@@ -327,6 +387,125 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 	// 第三刀（同日）：裸计划卡「打开计划」—— 内容不在地址里 ⇒ remote.follow 会话快照自取 ✓
 	if (!fc.includes('openPlainPlan') || !fc.includes('exit_plan_mode')) {
 		problems.push('client.fileCards.js 缺裸计划卡的自取分支（openPlainPlan / exit_plan_mode）⇒ 「打开计划」回到死按钮 ✗（2026-10-15 第三刀）');
+	}
+}
+
+// ── ⑤ 多根工作区侧栏的分组收敛（client.workspaces.js 的 buildSidebar；2026-10-17）──────
+// 钉的是**回落契约**与「非主根才标根名」这两条用户可见行为；改坏了守卫必须红。
+{
+	const src = fs.readFileSync(path.join(LIB, 'client.workspaces.js'), 'utf8');
+	const doc = makeDocumentStub();
+	const win = makeWindowStub(doc);
+	let loaded = null;
+	try {
+		loaded = loadChunk('client.workspaces.js', doc, win);
+	} catch (e) {
+		problems.push(`client.workspaces.js: 装载失败 — ${String((e && e.message) || e)}`);
+	}
+	const t = loaded && loaded.exports.__test;
+	if (!t || typeof t.buildSidebar !== 'function') {
+		problems.push('client.workspaces.js: 缺 __test.buildSidebar（分组收敛必须可单测 ✗）');
+	} else {
+		const items = [
+			{ workspaceId: 'w1', path: 'G:/WS/client', sessionIds: ['s1', 's2'] },
+			{ workspaceId: 'w2', path: 'G:/WS/market', sessionIds: ['s3'] },
+			{ workspaceId: 'w3', path: 'G:/other/standalone', sessionIds: ['s4'] },
+		];
+		const records = [{
+			id: 'ide-1', name: 'Saros',
+			roots: [
+				{ path: 'G:/WS/client', name: 'client', isPrimary: true },
+				{ path: 'G:/WS/market', name: 'market', isPrimary: false },
+			],
+		}];
+		const sessionsById = {
+			s1: { title: 'A', updatedAt: 300 }, s2: { title: 'B', updatedAt: 200 },
+			s3: { title: 'C', updatedAt: 100 }, s4: { title: 'D', updatedAt: 50 },
+		};
+		const rows = t.buildSidebar({ workspaces: items, records, sessionsById, archivedIds: [], currentSessionId: 's1' });
+		const group = rows.find((r) => r.kind === 'group');
+		const flat = rows.filter((r) => r.kind === 'flat');
+		if (!group) { problems.push('buildSidebar: 多根记录没合成组（应只有一行工作区条目）✗'); }
+		else {
+			if (group.sessions.length !== 3) { problems.push(`buildSidebar: 组内会话数应为 3，实际 ${group.sessions.length} ✗`); }
+			if (group.sessions.map((s) => s.id).join(',') !== 's1,s2,s3') { problems.push('buildSidebar: 组内会话应按 updatedAt 倒序（s1,s2,s3）✗'); }
+			const s1 = group.sessions.find((s) => s.id === 's1');
+			const s3 = group.sessions.find((s) => s.id === 's3');
+			if (!s1 || !s1.isCurrent) { problems.push('buildSidebar: 当前会话标记丢了 ✗'); }
+			if (!s1 || s1.isPrimaryRoot !== true || s1.rootName !== null) { problems.push('buildSidebar: 主根会话不应带根名（稿 1 降噪口径）✗'); }
+			if (!s3 || s3.isPrimaryRoot !== false || s3.rootName !== 'market') { problems.push('buildSidebar: 非主根会话应带根名 "market" ✗'); }
+		}
+		if (flat.length !== 1 || flat[0].label !== 'standalone') {
+			problems.push('buildSidebar: 未被认领的快照条目应平铺成单行（回落契约）✗');
+		}
+		// 回落契约：没有 IDE 记录 ⇒ 全部平铺（与加推送之前逐字相同）
+		const noRec = t.buildSidebar({ workspaces: items, records: [], sessionsById, archivedIds: [], currentSessionId: null });
+		if (noRec.some((r) => r.kind === 'group') || noRec.length !== 3) {
+			problems.push('buildSidebar: 无记录时必须全部平铺（回落契约被破坏 ✗）');
+		}
+		notes.push('client.workspaces.js: buildSidebar 分组/回落契约断言通过');
+		// ── client.workspace.js：hero 面板「只认 chip 发起的 open」（2026-10-17 真机 bug）──────
+		// 病根：官方 hero 的 `open` 有两条来源（chip 点击 / 输入框 inert 的 onRequestWorkspace），
+		// props 不带来源 ⇒ 我们的 540px 面板被"点输入框"打开、压住会话 ✗。判定抽成 isOpenFromAnchor。
+		const wsSrc = fs.readFileSync(path.join(LIB, 'client.workspace.js'), 'utf8');
+		const wsDoc = makeDocumentStub();
+		const wsWin = makeWindowStub(wsDoc);
+		let wsLoaded = null;
+		try {
+			wsLoaded = loadChunk('client.workspace.js', wsDoc, wsWin);
+		} catch (e) {
+			problems.push(`client.workspace.js: 装载失败 — ${String((e && e.message) || e)}`);
+		}
+		const wt = wsLoaded && wsLoaded.exports.__test;
+		if (!wt || typeof wt.isOpenFromAnchor !== 'function') {
+			problems.push('client.workspace.js: 缺 __test.isOpenFromAnchor（hero 面板来源判定必须可单测 ✗）');
+		} else {
+			const anchor = { contains: (t) => t === 'child' || t === 'deep' };
+			if (wt.isOpenFromAnchor(anchor, anchor) !== true) { problems.push('isOpenFromAnchor: 点在 chip 本身应为 true ✗'); }
+			if (wt.isOpenFromAnchor(anchor, 'child') !== true) { problems.push('isOpenFromAnchor: 点在 chip 子孙应为 true ✗'); }
+			if (wt.isOpenFromAnchor(anchor, 'composer') !== false) { problems.push('isOpenFromAnchor: 点输入框（非 chip）必须为 false —— 这正是"点输入框弹出下拉框"那处 ✗'); }
+			if (wt.isOpenFromAnchor(anchor, null) !== false) { problems.push('isOpenFromAnchor: 没有落点应为 false（宁可不开，不乱弹）✗'); }
+			if (wt.isOpenFromAnchor(null, 'composer') !== false) { problems.push('isOpenFromAnchor: 没有锚点应为 false ✗'); }
+			notes.push('client.workspace.js: hero 面板 open 来源判定断言通过');
+		}
+		// 折叠切换的**绝对期望值**（2026-10-17 真机 bug：约定写反 ⇒ 点了无法收缩；
+		// 相对比较型断言（两次不同）恒真 ⇒ 必须钉死每一步的值 ✓）。
+		if (typeof t.nextCollapsed !== 'function') {
+			problems.push('client.workspaces.js: 缺 __test.nextCollapsed（折叠约定必须可单测 ✗）');
+		} else {
+			const once = t.nextCollapsed({}, 'k');
+			const twice = t.nextCollapsed(once, 'k');
+			const explicitOpen = t.nextCollapsed({ k: false }, 'k');
+			if (once.k !== true) { problems.push('nextCollapsed: 展开态点击应得到 true（折叠）✗ —— 这正是"点了无法收缩"的那处约定 ✗'); }
+			if (twice.k !== false) { problems.push('nextCollapsed: 折叠态再点应回到 false（展开）✗'); }
+			if (explicitOpen.k !== true) { problems.push('nextCollapsed: 显式展开（false）点击应得到 true（折叠）✗'); }
+		}
+	}
+}
+
+// ── ⑥ 兜底进会话的"挑哪一条"（client.workbenchNav.js 的 pickLatestSessionId；2026-10-17）──
+// 病根链：弹窗停在 hero（无会话在屏）⇒ 输入框 inert 不能打字 / 右栏按钮缺失 / 条目无处挂载。
+// 救援 = 挑最近更新的会话打开 ⇒ "挑错"会直接让用户进到一条不相干的旧会话，必须钉住口径 ✓。
+{
+	const doc = makeDocumentStub();
+	const win = makeWindowStub(doc);
+	let loaded = null;
+	try {
+		loaded = loadChunk('client.workbenchNav.js', doc, win);
+	} catch (e) {
+		problems.push(`client.workbenchNav.js: 装载失败 — ${String((e && e.message) || e)}`);
+	}
+	const t = loaded && loaded.exports.__test;
+	if (!t || typeof t.pickLatestSessionId !== 'function') {
+		problems.push('client.workbenchNav.js: 缺 __test.pickLatestSessionId（兜底进会话的选条逻辑必须可单测 ✗）');
+	} else {
+		const byId = { a: { updatedAt: 100 }, b: { updatedAt: 300 }, c: { createdAt: 200 }, d: { updatedAt: 300 } };
+		if (t.pickLatestSessionId(byId, []) !== 'b') { problems.push('pickLatestSessionId: 应取 updatedAt 最大（同值按 id 升序 ⇒ b）✗'); }
+		if (t.pickLatestSessionId(byId, ['b']) !== 'd') { problems.push('pickLatestSessionId: 归档的必须跳过（b 归档 ⇒ d）✗'); }
+		if (t.pickLatestSessionId({ c: { createdAt: 200 } }, []) !== 'c') { problems.push('pickLatestSessionId: 缺 updatedAt 时回落 createdAt ✗'); }
+		if (t.pickLatestSessionId({ x: {} }, []) !== 'x') { problems.push('pickLatestSessionId: 都没时间戳也要选一条（宁可旧会话也别停在 hero）✗'); }
+		if (t.pickLatestSessionId({}, []) !== null) { problems.push('pickLatestSessionId: 空快照应回 null ✗'); }
+		notes.push('client.workbenchNav.js: pickLatestSessionId 选条口径断言通过');
 	}
 }
 

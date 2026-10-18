@@ -15,21 +15,34 @@
 // 不导出 `inject`：本模块没有**必需**依赖（`ctx.tools` 都可缺）⇒ 任何 profile 都能激活 ✓。
 
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { bindFoundation } from './foundationRef.js';
 import { existsSync } from 'node:fs';
+
 import { tmpdir } from 'node:os';
+
 import { dirname, join } from 'node:path';
+
 import { routeForUrl } from './core/routes.js';
+
 import { classifyExtractQuality, extractArticle } from './core/extract.js';
+
 import {
+
 	composeArticleMarkdown, composeVideoMarkdown, findMarkdownImageUrls, parseSubtitlesToText,
 	parseYtDlpPrint, planImagePath, rewriteMarkdownImageUrls, slugifyTitle,
 } from './core/record.js';
 import { ytDlpAudioArgs, ytDlpMetaArgs, ytDlpSubtitleArgs } from './core/video.js';
+
 import { buildFfmpegAudioArgs, buildWhisperArgs, parseWhisperStdout } from './core/asr.js';
+
 import { runCommand } from './core/run.js';
+
 import { toLosslessJsonValue } from './core/lossless.js';
+
 import { acquireFileLock, lockFileFor } from './lock.js';
+
 import { kbRootOf, pickVaultDir, writeRawMarkdown } from './store.js';
+
 
 export const name = 'vssaros-web-content-import';
 
@@ -196,6 +209,18 @@ async function fetchVideoContent(url, route, config, notes) {
 }
 
 export function apply(ctx, config = {}) {
+	// 重构 1.3：绑定 foundation 共享服务（dataRoot/dshHome/pageShell/lock 的真源）。
+	{
+		// 同步直读在前：有插件在 apply 的**同步段**就建 store（inject 回调是异步的，会来不及 ✗）。
+		let ready = null;
+		try { ready = ctx.get?.('vssarosFoundation') ?? ctx.vssarosFoundation ?? null; } catch { /* 探针的 Proxy 假 ctx 对未知属性抛错 ⇒ 当不存在 */ }
+		if (ready) { bindFoundation(ready); }
+		ctx.inject(['vssarosFoundation'], child => {
+		let svc = null;
+		try { svc = child.vssarosFoundation ?? null; } catch { /* 探针的假 ctx（Proxy）对未知属性抛错 ⇒ 当不存在 */ }
+		if (svc) { bindFoundation(svc); }
+	});
+	}
 	// ★ 审批闸：只有 mode=write 才问（read 是纯读 ✓）。写库 = 跨会话持久 ⇒ 与 skill_manage / kb_organize 同一把闸。
 	ctx.effect(() => ctx.on('tools/pre-execute', (exec, next) => {
 		if (exec && exec.name === TOOL_NAME && exec.arguments?.mode === 'write') {

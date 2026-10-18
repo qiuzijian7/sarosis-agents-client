@@ -260,6 +260,10 @@ window.__ModuleLoader__.load({
 						const row = (roster || []).find((p) => rowKey(p) === presetId);
 						const label = row ? rowLabel(row) : presetId;
 						setPersona(sid, { personaId: presetId, name: label });
+					// 方案 C：合并 chip 的后缀（`· <人格名>`）读的是人格 chunk 的 store ⇒ 切换成功后同步刷它，
+					// 否则要等下一次 rebind 才更新（"点了没反应"的又一种形态 ✗）。
+					const pk = state.vssarosPersona;
+					if (pk && typeof pk.refresh === "function") { void pk.refresh(sid); }
 						// 成功也要**说出来**：用户看不到 chip 时无法区分"没生效"与"UI 没刷新"（实测踩过 ✗）。
 						if (bridge && bridge.notify) { bridge.notify("done", "已切换人格：" + label + "（当前会话继续）"); }
 					}, () => {
@@ -279,6 +283,9 @@ window.__ModuleLoader__.load({
 						return;
 					}
 					setPersona(sid, null);
+					// 同上：清除后同步人格 store（后缀回到 `· 人格默认` ✓）
+					const pk = state.vssarosPersona;
+					if (pk && typeof pk.refresh === "function") { void pk.refresh(sid); }
 					if (onDone) { onDone(null); }
 				});
 			};
@@ -575,6 +582,13 @@ window.__ModuleLoader__.load({
 				// 打开状态来自 store（触发菜单的行 onPick 会把 store 打开）。
 				react.useEffect(() => store.subscribe(() => setRev(rev + 1)), [rev]);
 				react.useEffect(() => subscribeSessions(() => setRev(rev + 1)), [rev]);
+				// 方案 C：人格段的「当前是哪个 / 适不适用」来自人格 chunk 的 store ⇒ 订阅它（读回/切换都刷新 ✓）
+				react.useEffect(() => {
+					const ps = state.vssarosPersona && state.vssarosPersona.store;
+					if (!ps || typeof ps.subscribe !== "function") { return undefined; }
+					const off = ps.subscribe(() => setRev(rev + 1));
+					return () => { if (typeof off === "function") { off(); } };
+				}, [rev]);
 				const open = store.isOpen();
 				react.useEffect(() => {
 					if (!open) { return; }
@@ -620,6 +634,8 @@ window.__ModuleLoader__.load({
 					key: "a-" + key,
 					type: "button",
 					"data-vssaros-agent-item": rowKey(p),
+					// 方案 C：同一行同时是"人格候选"（属性契约沿用原 persona 面板 ✓，e2e 仍按它点行）
+					"data-vssaros-persona-item": rowKey(p),
 					onClick: () => pick(rowKey(p)),
 					style: Object.assign({
 						display: "flex", alignItems: "center", gap: 9, width: "100%", textAlign: "left",
@@ -667,6 +683,52 @@ window.__ModuleLoader__.load({
 						fontSize: 12, cursor: "pointer",
 					},
 				}, text);
+				const hint = (text, key) => react.createElement("div", {
+					key: "h-" + key,
+					style: {
+						padding: "6px 9px", color: "var(--dsw-alias-label-secondary, #999)",
+						fontSize: 11, lineHeight: 1.45, borderTop: "1px solid var(--dsw-alias-border-l1, transparent)",
+					},
+				}, text);
+				// ── 方案 C（2026-10-17 用户拍板）：原「人格 chip + 人格面板」合并进本面板 ──────────────
+				// 依据：两颗 chip 都在做同一件事 —— 都走 `POST /x/agents/api/persona` 换**本会话人格**
+				// （agent 行 → `switchPersona`，人格面板行 → 同一接口），只是文案分别强调"是谁/是否覆盖"。
+				// 合并后：chip 一颗（`◉ PPT 专家 · 人格默认`，见 AgentChip），面板一个（本面板）。
+				// ⚠ 属性契约沿用原 persona 面板：`data-vssaros-persona-panel`（本段根）、
+				//   `data-vssaros-persona-item`（每一行 —— 与 agent 行是同一批）、
+				//   `data-vssaros-persona-clear`（「跟随 Agent 自带人设」一行）⇒ 真机 e2e 的 persona UI 段不用改 ✓。
+				const pk = state.vssarosPersona || null;
+				const pStore = pk && pk.store ? pk.store : null;
+				const personaApplicable = !!(pStore && pStore.applicable === true);
+				const personaCur = personaApplicable && pStore.current && pStore.current.personaId ? pStore.current.personaId : null;
+				const personaClear = react.createElement("button", {
+					key: "persona-clear", type: "button", disabled: busy || personaCur === null,
+					"data-vssaros-persona-clear": "1",
+					onClick: () => {
+						if (busy) { return; }
+						setBusy(true); setErr(null);
+						clearPersona(sid, (f) => {
+							setBusy(false);
+							if (f) { setErr(f); } else { store.setOpen(false); }
+						});
+					},
+					style: {
+						display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left",
+						padding: "7px 9px", border: 0, borderTop: "1px solid var(--dsw-alias-border-l1, transparent)",
+						background: "transparent", color: "var(--dsw-alias-label-secondary, currentColor)",
+						fontSize: 12, cursor: personaCur === null ? "default" : "pointer",
+					},
+				}, (pk && pk.FOLLOW_LABEL ? pk.FOLLOW_LABEL : "跟随 Agent 自带人设") + (personaCur === null ? "（当前）" : ""));
+				const personaSection = personaApplicable ? react.createElement("div", {
+					key: "persona-sec",
+					"data-vssaros-persona-panel": "1",
+				},
+					head("人格 · 本会话（工具与模型不变）"),
+					...mine.map((p, i) => row(p, "m" + i)),
+					personaClear,
+					hint(pk.HINT_PERSONA || "只改提示词人设：留在当前会话（历史保留），工具与模型不变。", "p1"),
+					hint(pk.HINT_AGENT || "要换工具/模型（换 Agent）请用 Agents 面板——那会切到它的专属会话，历史各自独立。", "p2"),
+				) : null;
 				const children = [
 					react.createElement("div", {
 						key: "search",
@@ -693,8 +755,10 @@ window.__ModuleLoader__.load({
 							},
 						})),
 					// 只列 VsSaros agent（见上面 `list` 处的注释）；空态给出可照做的下一步。
-					mine.length ? head("我的 Agent") : null,
-					...mine.map((p, i) => row(p, "m" + i)),
+					// 方案 C：人设段真的存在时，这批行就是**人格候选**（包在 `data-vssaros-persona-panel` 里）；
+					// 不存在时（如 dsh 自带 preset）退回原来的「我的 Agent」列表（那时换人格没有可观测变化 ✗）。
+					personaSection || (mine.length ? head("我的 Agent") : null),
+					...(personaSection ? [] : mine.map((p, i) => row(p, "m" + i))),
 					mine.length === 0 && !query.trim() ? react.createElement("div", {
 						key: "mine-hint",
 						"data-vssaros-agents-hint": "mine",
@@ -730,7 +794,12 @@ window.__ModuleLoader__.load({
 						border: "1px solid var(--dsw-alias-border-l1, transparent)",
 						background: "var(--dsw-alias-bg-layer-1, var(--dsw-alias-bg-base))",
 						boxShadow: "0 18px 44px rgba(0,0,0,.6)",
-					}, shell.fitMenu ? shell.fitMenu() : {}),
+						// ⚠ 向上展开（`bottom:100%`）⇒ **不能用** fitMenu 那个"整页 − 72"的高度：
+						//   它假定菜单从页面顶部往下长 ⇒ 这里会算出 ~780px 而可用只有几百 ⇒ 面板顶部
+						//   （含首行）落到视口外**且滚不到** ✗。也**不能**用它的向上口径：本面板拿不到
+						//   触发器（`rootRef` 挂的是面板自己）⇒ 给一个**确定的**上限最实在，且这一句必须在
+						//   fitMenu **之后**（从前它在前 ⇒ 被 fit 覆盖掉，等于没写 ✗ —— 2026-10-16 一并修）。
+					}, shell.fitMenu ? shell.fitMenu() : {}, { maxHeight: 320 }),
 				}, ...children);
 			}
 
@@ -763,6 +832,10 @@ window.__ModuleLoader__.load({
 					const bump = () => force((n) => n + 1);
 					personaSubs.add(bump);
 					const off = subscribeSessions(bump);   // 投影一变（切换落成事件）就重渲染 ⇒ chip 自动出现 ✓
+					// 方案 C：chip 后缀（`· 人格默认` / `· <人格名>`）来自人格 chunk 的 store ⇒ 订阅它，
+					// 读接口回来 / 切换成功后 chip 文案自动跟上（不订阅就只能等下一次会话投影事件）。
+					const pStore = state.vssarosPersona && state.vssarosPersona.store;
+					const offP = pStore && typeof pStore.subscribe === "function" ? pStore.subscribe(bump) : undefined;
 					loadPersona(sid, (v) => {         // 路由兜底读一次（投影没暴露时仍有救 ✓）
 						// **读失败**（≠ "没有人格"）且**本地也没有任何依据**时才说一次 —— 这正是
 						// "选完没反应"最难查的一环：2026-10-11 实测页面没开 CDP，只能靠这句自报 ✗。
@@ -785,6 +858,7 @@ window.__ModuleLoader__.load({
 					return () => {
 						personaSubs.delete(bump);
 						if (typeof off === "function") { off(); }
+						if (typeof offP === "function") { offP(); }
 					};
 				}, [sid]);
 				// ⚠ `sid` 缺失是**静默黑洞**：组件返回 null、上面的 effect 也提前返回 ⇒ 界面上既没有 chip
@@ -815,28 +889,50 @@ window.__ModuleLoader__.load({
 				if (!persona && (!presetId || isModePreset(presetId))) { return null; }
 				const row = presetId ? (roster || []).find((p) => rowKey(p) === presetId) : undefined;
 				const label = persona ? (persona.name || persona.personaId) : (row ? rowLabel(row) : agentLabelFromPresetId(presetId));
+				// ── 方案 C（2026-10-17 用户拍板）：与人格 chip **合并成一颗** ────────────────────────
+				// 两颗 chip 本来都在做"本会话换人格"（同一接口），文案里又都出现 Agent ⇒ 读起来重复。
+				// 现在只有这一颗：`◉ PPT 专家 · 人格默认`（后缀**只在"本会话人设段真的存在"时**出现，
+				// 判据仍是人格读接口的 `rendered`；`standard` 这类 preset 上不显示后缀，避免误导 ✓）。
+				// 属性契约不变：`data-vssaros-persona-chip*` 由本 chip 继承（e2e / 页面自证照旧可读 ✓）。
+				const pk = state.vssarosPersona || null;
+				const pStore = pk && pk.store ? pk.store : null;
+				const personaApplicable = !!(pStore && pStore.applicable === true);
+				const personaCur = personaApplicable && pStore.current && pStore.current.personaId ? pStore.current.personaId : "";
+				const personaSuffix = personaApplicable && typeof pk.suffixLabel === "function" ? pk.suffixLabel() : "";
 				state.chipShown = (state.chipShown || 0) + 1;
 				// 自证用（页面自证探针会读它们 ⇒ "chip 为什么没出来"不再只能靠猜 ✓）
-				state.agentChipLabel = label;
+				state.agentChipLabel = label + personaSuffix;
 				state.agentChipSource = persona ? "persona" : "preset";
+				state.chipPersonaApplicable = personaApplicable;
+				state.chipPersonaId = personaCur || null;
 				if (presetId) { state.agentPreset = presetId; }
-				return react.createElement("span", {
+				const chipRootProps = {
 					"data-vssaros-agent-chip": "1",
+					"data-vssaros-chip-persona": personaCur,
 					style: {
 						display: "inline-flex", alignItems: "center", gap: 6, height: 22, padding: "0 5px 0 8px",
 						borderRadius: 999, border: "1px solid rgba(192,139,255,.45)", background: "rgba(192,139,255,.12)",
 						color: "var(--dsw-alias-label-primary, currentColor)", fontSize: 11.5, whiteSpace: "nowrap",
 					},
-				},
-					react.createElement("button", {
-						key: "b", type: "button", title: "切换 Agent（仅切换人格，当前会话继续）", disabled: busy,
+				};
+				const chipOpenProps = {};
+				if (personaApplicable) {
+					chipRootProps["data-vssaros-persona-chip"] = "1";
+					chipRootProps["data-vssaros-persona-current"] = personaCur;
+					chipOpenProps["data-vssaros-persona-chip-open"] = "1";
+				}
+				return react.createElement("span", chipRootProps,
+					react.createElement("button", Object.assign({
+						key: "b", type: "button",
+						title: "换 Agent / 人格（只换人设，当前会话继续）——「人格默认」= 跟随 Agent 自带人设；要换工具或模型请新开会话",
+						disabled: busy,
 						"data-vssaros-agent-chip-open": "1",
 						onClick: () => store.setOpen(true),
 						style: {
 							display: "inline-flex", alignItems: "center", gap: 5, border: 0, background: "transparent",
 							color: "inherit", fontSize: 11.5, cursor: "pointer", padding: 0,
 						},
-					}, react.createElement("span", { key: "i", style: { color: "#c08bff", fontSize: 12 } }, "◉"), label),
+					}, chipOpenProps), react.createElement("span", { key: "i", style: { color: "#c08bff", fontSize: 12 } }, "◉"), label + personaSuffix),
 					// ✕ 只在**真的切换过人格**时给：没切换过时它无处可清（显示它就成了"占位按钮"✗）
 					persona ? react.createElement("button", {
 						key: "x", type: "button", title: "清除人格（回到 preset 自带人设）", disabled: busy,

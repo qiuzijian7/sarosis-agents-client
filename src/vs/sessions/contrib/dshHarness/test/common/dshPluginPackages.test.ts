@@ -449,6 +449,11 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 			// **真的**注在 `renderMemoryOverlay` 里（与 gatewayUrl 同一份 `config` —— 那一行已被
 			// 记忆覆盖层占用，再往 `renderDataRootOverlay` 加一条会**静默抹掉 gatewayUrl** ✗）。
 			['vssaros-memory', 'renderMemoryOverlay'],
+			// `foundation`（2026-10-16，重构 1.3）：它的 `dataRootOf/dshHomeOf` 读的是**调用方传进来的 config**
+			//   （纯函数参数），不读自己那一行的 config ⇒ 覆盖层不需要它的行。
+			//   ⚠ 前提是各**消费插件**自己的行已注入 dataRoot（上面几条保证）——否则 foundation 拿到的
+			//   就是空 config，退回生产默认值 ✗。
+			['vssaros-foundation', '（纯函数参数，不读自己的行）'],
 		]);
 		for (const [dir, id] of rowIdOf) {
 			const lib = path.join(pluginsDir, dir, 'lib');
@@ -807,12 +812,21 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 				],
 			},
 			{ dir: 'vssaros-dashboard', reason: '两个工具都是**只读**（列会话 / 读遥测快照）⇒ 没有可拦的写入。' },
-			{ dir: 'vssaros-media', reason: '两个工具都是**只读**（media_list / media_stats 只跑 SELECT），而且库是以 `readOnly: true` **打开**的（`lib/store.js`）⇒ 连"忘写 WHERE 子句"都伤不到数据。要放开写能力的前置纪律写在同文件末尾（WAL 已就位 / 不建表 / 短事务 / 覆盖语义）。' },
+			// 2026-10-16（重构 4）：mcp_install 是写类（写 mcp.json ⇒ 重启后新服务器挂载 ⇒ 能跑任意命令）。
+			// 与 kanban 同档（写用户数据）⇒ 挂闸 ✓。
+			{ dir: 'vssaros-mcp', gate: 'hook' },
+			// 2026-10-16（重构 4）：media 从"全只读"变"有写"（image_generate 生图）⇒ 挂闸。
+			// 但闸不在 media 插件里——它经桥回 IDE（壳侧的 provider.generateImage），审批在壳侧 ✓
+			// （桥不在 ⇒ 如实失败 ✗，不是静默成功 ✓）。台账写明这个分工（闸的位置在 IDE 侧）。
+			{ dir: 'vssaros-media', reason: 'image_generate 是写类（生图）但**执行经桥回 IDE**（壳侧的 provider.generateImage，审批在壳侧 ✓）；media_list / media_stats 只读。闸的位置在 IDE 侧（桥的 ide.request 会过壳侧的审批），不在 media 插件里重复。' },
 			// ★ 2026-10-13：`vssaros-unreal` 从"只读四个（所以不挂闸）"改成**注册全部七个 ＋ 挂闸** ✓ ——
 			// 执行类三个（`unreal_exec` / `unreal_wait` / `unreal_build`）能在编辑器里跑任意 Python / 触发
 			// C++ 构建 ⇒ 与 kanban/kb 的写同一档 ✓。只读四个不进闸（免得每次 dump 都弹窗 ✗），由源码里的
 			// `WRITE_TOOLS` 区分 ✓；行为由 `dshUnrealPlugin.test.ts` 的发真事件钉住（ask/allow 两侧 ✓）。
 			{ dir: 'vssaros-unreal', gate: 'hook' },
+			// 2026-10-16（重构 4）：session_search 只读（搜投影缓存的元数据：标题/路径）⇒ 没有可拦的写入 ✓
+			// （与 dashboard 同口径：只读 ⇒ 不挂闸，理由写明 ✓）。
+			{ dir: 'vssaros-sessions', reason: 'session_search 只读（搜投影缓存的元数据：标题/路径，不写盘、不改数据）⇒ 没有可拦的写入。' },
 		];
 
 		const snapshot = JSON.parse(fs.readFileSync(path.join(root!, 'dsh-plugins', 'tools-snapshot.json'), 'utf8')) as {

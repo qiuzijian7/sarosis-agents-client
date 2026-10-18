@@ -23,6 +23,11 @@
 /** dsh 侧读的 agent 文件名（VS Code Chat 标准）。 */
 export const AGENT_FILE = '.agent.md';
 
+/** HTML 转义（页面层 detail.js / sideview.js 共用一份，别各写各的）。 */
+export function escapeHtml(value) {
+	return String(value).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+}
+
 /** preset id 前缀：dsh 的 preset id 必须全局唯一（重名会让声明加载失败），加前缀避免撞上 standard/ptc/minimal/cordis。 */
 export const PRESET_ID_PREFIX = 'vssaros-';
 
@@ -96,6 +101,17 @@ export function agentFromFile(text, { id, file }) {
 		return { error: `id 无法归一化（需要至少一个字母或数字）：${agentId}` };
 	}
 	const model = listValue(meta.model)[0];
+	// role / skills（款 A mockup：sideview 角色标签 + hero 技能 chip）。真源 = agentMdFormat 的扩展字段
+	// `role` / `skills`。dsh 侧用逗号分隔口径（与 tools 一致）：`role: 检索`、`skills: anysearch, analysis`。
+	// 没写就不带（role 不显示标签、skills 不显示 chip）——不伪造"assistant"这种无信息默认 ✗。
+	const role = (meta.role || '').trim() || undefined;
+	const skills = listValue(meta.skills);
+	// Workspace Grant（2026-10-16 二期；mockup doc/agents-grants-outbox-mockup.html 拍板点 ①）：
+	// `workspaces-read: <路径,...>` / `workspaces-write: <路径,...>`（绝对路径，逗号分隔）。
+	// **字段不写 = 收紧缺省：只允许引擎缺省 cwd（不显式给 cwd）**——显式跨工作区必须显式声明 ✓。
+	// write ⊆ read 语义在 grants.js 的闸里算（写了 write 没写 read ⇒ read 自动含它）。
+	const wsRead = listValue(meta['workspaces-read']);
+	const wsWrite = listValue(meta['workspaces-write']);
 	return {
 		agent: {
 			id: slugify(agentId),
@@ -106,6 +122,9 @@ export function agentFromFile(text, { id, file }) {
 			tools: listValue(meta.tools),
 			persona: body.trim(),
 			file,
+			...(role ? { role } : {}),
+			...(skills.length ? { skills } : {}),
+			...((wsRead.length || wsWrite.length) ? { workspaces: { read: wsRead, write: wsWrite } } : {}),
 		},
 	};
 }

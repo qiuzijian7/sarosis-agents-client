@@ -71,19 +71,24 @@ import * as mWorkflowTool from '../../browser/providers/tool/workflowTool.js';
 import * as mWorkflow from '../../browser/providers/tool/workflowTools.js';
 
 const MODULES: ReadonlyArray<readonly [string, Record<string, unknown>]> = [
-	['advancedMemoryTools', mAdvancedMemory], ['bundledTools', mBundled], ['canvasTools', mCanvas],
-	['codebaseTools', mCodebase], ['compatibilityTools', mCompat], ['coreTools', mCore],
+	// 2026-10-17（5.5 前置）：退役的模块从 MODULES 清单摘掉——它们的注册注释掉了（builtinToolProvider
+	//   不再调它们 ⇒ 模型看不到了 ✓），检它们的接线没意义 ✗。摘掉的：memoryTools /
+	//   unifiedMemoryTools / advancedMemoryTools / routineCrystalFacetTools / skillTools / imageGenTools /
+	//   sessionSearchTools / visionAnalyzeTools / mediaGenTools / videoFrameTools / videoAnalyzeTools /
+	//   kbBuildTools / feishuDriveTools / workflowTools / codebaseTools（它们的注册都注释掉了 ✓）。
+	//   ⚠ kanbanTools 留着——它的文件还在（kanbanScrapeService 还在用它的常量/函数：SAROS_CLAW_AGENT_ID /
+	//   resolveScrapeSessionId ✓）⇒ ④ 要检它 ✓。
+	['bundledTools', mBundled], ['canvasTools', mCanvas],
+	['kanbanTools', mKanban],
+	['compatibilityTools', mCompat], ['coreTools', mCore],
 	['delegationTools', mDelegation], ['drawioTools', mDrawio], ['handoffTools', mHandoff],
-	['imageGenTools', mImageGen], ['kanbanTools', mKanban],
 	// ★ 2026-09-24：kb_feishu_sync / kb_feishu_spaces / kb_organize 三个工具此前**漏接本扫描**
 	// （文件有 register*Tools 导出但不在 MODULES）⇒ ①②③ 对它们长期失效；断言④正是为抓这个而存在。
-	['feishuDriveTools', mFeishuDrive], ['processTools', mProcess], ['kbBuildTools', mKbBuild], ['kbFeishuSyncTools', mKbFeishuSync], ['kbOrganizeTools', mKbOrganize], ['kbVaultRecallTools', mKbVault],
-	['mediaGenTools', mMediaGen], ['memoryTools', mMemory], ['mermaidTools', mMermaid],
+	['processTools', mProcess], ['kbFeishuSyncTools', mKbFeishuSync], ['kbOrganizeTools', mKbOrganize], ['kbVaultRecallTools', mKbVault],
+	['mermaidTools', mMermaid],
 	['mindmapTools', mMindmap], ['planExploreTool', mPlanExplore], ['planModeTools', mPlanMode],
-	['routineCrystalFacetTools', mRoutine], ['schedulerTools', mScheduler], ['sessionSearchTools', mSessionSearch],
-	['skillTools', mSkill], ['unifiedMemoryTools', mUnifiedMemory],
-	['videoAnalyzeTools', mVideoAnalyze], ['videoFrameTools', mVideoFrame], ['visionAnalyzeTools', mVision], ['webTools', mWeb],
-	['workflowTool', mWorkflowTool], ['workflowTools', mWorkflow],
+	['webTools', mWeb],
+	['workflowTool', mWorkflowTool],
 ];
 
 const ROOT = process.cwd();

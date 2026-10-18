@@ -15,6 +15,7 @@ import type { DshUpdateChannel, IDshUpdateDiscovery } from './dshCompat.js';
 import type { DshHmrState } from './dshPluginActivation.js';
 // `browser` 覆盖层的配置形状（真源在渲染器那一侧；这里只要类型 ⇒ type-only import 不进运行时 ✓）。
 import type { IDshBrowserOverlayConfig } from './dshCli.js';
+import type { IVssarosPluginManifest } from './vssarosPluginManifest.js';
 
 export interface IDshUpdateDiscoveryResult extends IDshUpdateDiscovery {
 	readonly manifestSource?: 'bundled' | 'remote' | 'cache';
@@ -29,6 +30,13 @@ export const DSH_DEFAULT_PROFILE = 'vssaros';
 
 /** 伴生插件包名（源码位于仓库根 `dsh-plugins/vssaros-bridge/`）。 */
 export const DSH_BRIDGE_PLUGIN_NAME = '@vssaros/dsh-bridge';
+
+/**
+ * 共享运行时服务插件包名（源码位于仓库根 `dsh-plugins/vssaros-foundation/`；重构 1.3）。
+ * 它提供 `vssarosFoundation` 服务（dataRoot/dshHome/pageShell/lock 的唯一真源），
+ * 所有模块插件都是它的消费者 ⇒ **必须先于模块插件安装/激活**。
+ */
+export const DSH_FOUNDATION_PLUGIN_NAME = '@vssaros/dsh-foundation';
 
 /** chat-surface 插件包名（源码位于仓库根 `dsh-plugins/vssaros-chat-surface/`）。 */
 export const DSH_CHAT_SURFACE_PLUGIN_NAME = '@vssaros/dsh-chat-surface';
@@ -66,6 +74,9 @@ export const DSH_ARCHIFY_PLUGIN_NAME = '@tt-a1i/archify-dsh';
 
 /** 官方实验语音输入 bundle（随 dsh 运行时分发在其 node_modules 里；本地 SenseVoice 识别）。 */
 export const DSH_VOICE_BUNDLE_PLUGIN_NAME = '@deepseek-ai/dsh-experimental-voice-input-bundle';
+
+/** 官方调度 bundle（重构 2.1）：time-context / schedule 服务 / ui-schedule 三行。S3 已验证可装可用。 */
+export const DSH_SCHEDULE_BUNDLE_PLUGIN_NAME = '@deepseek-ai/dsh-experimental-schedule-bundle';
 
 /**
  * dsh 官方 web app bundle —— **它提供 `webServer` 与 `connection` 这两个服务**。
@@ -123,10 +134,30 @@ export interface IDshPluginInfo {
 	 * 卸载见 `dshPluginActivation.ts` 的口径说明。
 	 */
 	readonly enabled?: boolean;
+	/**
+	 * 解析后的 `vssaros` 清单（方案重构 1.1，2026-10-16：壳改为**按清单驱动**）。
+	 * 由主进程读取 profile 里的 package.json 并用 `parseVssarosManifest` 校验后带上；
+	 * 清单缺失/不合法 ⇒ 没有该字段（渲染端据此不激活它的模块，不猜字段）。
+	 */
+	readonly manifest?: IVssarosPluginManifest;
 }
 
 /** 承载 dsh 页面的会话分区；与 VsSaros 其他 webview / 集成浏览器隔离。 */
 export const DSH_VIEW_PARTITION = 'persist:vssaros-dsh';
+
+/**
+ * 「弹出独立窗口」（拼装式 desktop）专用的**网络分区**（2026-10-18 真机定案）。
+ *
+ * 为什么必须分开：Chromium 对同一个 `host:port` 的 HTTP/1.1 并发连接上限是 **6**，而 dsh 每个页面
+ * 都会长期占住若干条连接。真机实测：弹窗页 + 主窗口两个 dsh 页同时存在时，**三个页面的 `fetch` 全部
+ * 超时**；把弹窗关掉，主窗口**立刻恢复**（`HTTP404 4ms`）；同期 Host 从外部访问一直是 40–50ms。
+ * ⇒ 弹窗页把共享池占满，任何新请求（`session.list` / `session.create`）只能永远排队，
+ *   表现为"页面已加载但 create 永不返回"、"reload 也救不回来"（主文档同样排队）。
+ * ⇒ 弹窗用自己的分区 ⇒ 独立 socket 池 + 独立 cookie 罐，一个窗口坏掉不会饿死其它窗口 ✓。
+ *
+ * 非 persist：弹窗关闭即释放（不在磁盘长期累积 cookie/缓存）。
+ */
+export const DSH_VIEW_PARTITION_DESKTOP = 'vssaros-dsh-desktop';
 
 /**
  * 随包插件的**安装状态**（与"是否停用"正交）。
@@ -219,6 +250,16 @@ export const enum DshHarnessSettings {
 	/** 关闭 IDE 时保留 Host（默认开）：Host 空闲 30 分钟无客户端自退；再次打开 IDE 经租约直接接管（零等待）。 */
 	HostKeepAlive = 'sessions.dshHarness.hostKeepAlive',
 	/**
+	 * 「弹出独立窗口」的形态（2026-10-18 用户拍板）：
+	 *  · `composed`（默认）= **拼装式 desktop**：aux editor part（多分栏）+ 左侧 VsSaros 会话栏
+	 *    + 中间 dsh 聊天视图（`surface=chat`，长期稳定）+ 右侧工作台页签。
+	 *  · `web` = 官方 dsh Web 客户端整页（`surface=full`，带官方侧栏/顶栏）。
+	 * 为什么默认换成 composed：官方整页在真机上会**整页同步阻塞**（渲染线程卡死：executeJavaScript/
+	 * Page.enable 全超时、CPU 0%、无弹窗/无崩溃），表现为"停在 hero、输入框点不动"，且从外部无法
+	 * 定位阻塞源 ⇒ 不再作为默认形态（保留开关供对照排查）✓。
+	 */
+	PopoutStyle = 'sessions.dshHarness.popoutStyle',
+	/**
 	 * 迭代期开关：启动时**跳过随包插件的"升级"安装**（**缺失的仍会装**）。
 	 *
 	 * 为什么需要：`dshHostSupervisor.start()` 里随包插件是**串行安装、且先于 spawn Host**（profile 的
@@ -235,6 +276,12 @@ export const enum DshHarnessSettings {
 	ModuleEngine = 'sessions.dshHarness.moduleEngine',
 	/** 聊天框里只保留聊天 UI：停用 dsh 的侧边栏、品牌顶栏、右侧面板与设置类前端插件（方案 5.13）。 */
 	ChatOnlyUi = 'sessions.dshHarness.chatOnlyUi',
+	/**
+	 * 看板自动执行的入口归属（重构 2.2）：`dsh`（默认）= 由 dsh 侧 kanban runner 驱动（拖到「进行中」
+	 * 由 Host 里的 runner 拾取）；`legacy` = 旧的壳侧执行链（`executeTaskForBoard`）。
+	 * 两边同时跑会双执行 ⇒ 只能二选一；回退到 legacy 时把这个设为 legacy。
+	 */
+	EntryKanban = 'sessions.dshHarness.entry.kanban',
 }
 
 /**
@@ -505,11 +552,13 @@ export function sameStartOptions(a: IDshHostStartOptions, b: IDshHostStartOption
 /**
  * 活动工作区变了、Host 也在跑——**要不要重启它**？
  *
- * 为什么需要：Host 的启动选项是**快照**（`start()` 在跑时原样复用、忽略新 options），而
- * 看板插件的 `config.workspaceId` 只在启动时注入一次（见 `renderKanbanOverlay`）⇒ 不重启，
- * 那段期间建出来的卡片会**静默写进旧工作区**（看起来一切正常，去旧工作区才发现）。
+ * ★ 2026-10-17 起它的角色变成**兜底**：正常情况下 IDE 会把新上下文经桥推给 Host
+ * （`workspace.context`，消费插件运行期读它 ✓）⇒ 不重启也生效。只有**推不动**时才回到这里：
+ *   · 老 Host / 老桥（没有那条方法 ⇒ `-32601`）；
+ *   · foundation 服务缺席或载荷被拒（`applied:false`）。
+ * 升级后的第一次仍会走这条路（那时进程里还是旧代码），之后就再也不用了 ✓。
  *
- * 为什么不无脑重启：重启会连**正在跑的会话**一起杀掉。所以只在**空闲**时重启
+ * 为什么兜底也不能无脑重启：重启会连**正在跑的会话**一起杀掉。所以只在**空闲**时重启
  * （`blockingSessions` 为空），取不到活动状态时**保守不重启**——宁可让选项晚一步生效，
  * 也不打断人家正在干的活（这种情况由 supervisor 里那行日志说明原因）。
  */
@@ -581,6 +630,15 @@ export interface IDshCreateViewArgs {
 	readonly surface: DshViewSurface;
 	/** 缺省视为 true：`surface=chat` 时在页面里隐藏 dsh 的侧边栏 / 品牌顶栏 / 右侧面板（方案 5.13）。 */
 	readonly chatOnlyUi?: boolean;
+	/**
+	 * 该视图是否使用**独立的网络分区**（弹窗用）。
+	 *
+	 * 为什么需要：Chromium 对同一 `host:port` 的 HTTP/1.1 并发连接上限是 6，而 dsh 每个页面都长期占住
+	 * 若干条（状态同步）。真机实测：弹窗 + 主窗口两个 dsh 页同时存在时三页 `fetch` 全超时；关掉弹窗，
+	 * 主窗口立刻恢复；同期 Host 外部访问 40–50ms。⇒ 共享池被占满后，新请求只能永远排队。
+	 * 独立分区 = 独立 socket 池 + 独立 cookie 罐 ✓（见 `DSH_VIEW_PARTITION_DESKTOP`）。
+	 */
+	readonly isolatedPool?: boolean;
 	/** 本视图绑定的 dsh 会话 id（chatId → `vssaros-chat-<chatId>`；空串/缺省 = 不绑定）。 */
 	readonly sessionId?: string;
 	/** 页面 palette 模式（IDE 主题的 light/dark）；缺省时主进程不强制 emulation。 */
@@ -623,6 +681,8 @@ export interface IDshViewInfo {
 	readonly route?: string;
 	readonly ownerWindowId: number;
 	readonly attachedWindowId?: number;
+	/** 本视图绑定的 dsh 会话 id（未绑定 = 缺省）；弹窗「跟随当前聊天会话」等场景据此解析。 */
+	readonly sessionId?: string;
 	/** 主进程记录的可见状态（来自 renderer 的 setViewVisible）。 */
 	readonly visible: boolean;
 	/** Electron 视图的实际可见状态。 */
@@ -680,11 +740,21 @@ export const enum DshHarnessChannelCommand {
 	DiscoverUpdates = 'discoverUpdates',
 	/** 窗口上报自己的工作区目录（`{ windowId, paths }`，整体替换），已连接时立即注册新增的目录。 */
 	SetWindowWorkspaces = 'setWindowWorkspaces',
+	/**
+	 * 推**运行期工作区上下文**给 Host（`IBridgeWorkspaceContextArgs` → 桥 `workspace.context`）。
+	 * 2026-10-17：切工作区**不必重启 Host** 的落点 —— 老 Host/老插件不认识这条时回 `applied:false`，
+	 * 调用方据此退回旧的重启路径 ✓（详见 `DshBridgeMethod.WorkspaceContext` 的注释）。
+	 */
+	SetWorkspaceContext = 'setWorkspaceContext',
 	GetWorkspaceSync = 'getWorkspaceSync',
 	/** 经控制桥查询 dsh 工作区注册表（诊断用）。 */
 	ListWorkspaces = 'listWorkspaces',
 	/** 经控制桥建/接管一个 dsh 会话（方案第 7 章 `session.start`）。 */
 	StartSession = 'startSession',
+	/** 后台回合（重构 1.4 `session.run`）：投 prompt 并等回合跑完回传结果。 */
+	RunSession = 'runSession',
+	/** 取消一条会话当前的活动（重构 1.4 `session.cancel`）。 */
+	CancelSession = 'cancelSession',
 	/** 视图重绑到另一个 dsh 会话（方案 5.15 切 preset；`{ viewId, sessionId }`，主进程校验后推给页面）。 */
 	RebindSession = 'rebindSession',
 	/** 重命名 dsh 会话（`{ viewId, title }`；主进程校验后推给页面，页面调 `ctx.sessions.rename`）。 */
@@ -784,6 +854,15 @@ export const enum DshHarnessChannelCommand {
 	 * 机制与 `PushTheme` 逐字同款（preload 写 `dataset` + 派 DOM 事件）。
 	 */
 	PushWorktrees = 'pushWorktrees',
+	/**
+	 * 向**聊天视图**推 **IDE 工作区记录**（`{ viewId, options }`，options 经 `validateWorkspaceOptions` 校验）。
+	 *
+	 * 为什么推：dsh 的工作区模型**只能是单目录**，宿主把 IDE 侧一个多根工作区的各根**摊平**成 N 条 dsh
+	 * 记录 ⇒ 页面只看 `workspaces.list()` 无法把它们合成"一个工作区 + 各根"（而那正是用户在看的形态）。
+	 * IDE 记录（`relatedFolders` / `codeWorkspacePath`）只在渲染进程手里 ⇒ 只能宿主推 ✓。
+	 * 机制与 `PushWorktrees` 逐字同款（preload 写 `dataset` + 派 DOM 事件）。
+	 */
+	PushWorkspaces = 'pushWorkspaces',
 	/** 向视图发「插入文件引用」（`{ viewId, reference }`，reference 经 validateInsertReference 校验）。 */
 	InsertReference = 'insertReference',
 	/** 同步 VsSaros 已配置的模型 provider 到 dsh（负载经 validateProvidersSyncArgs 校验）。 */

@@ -9,7 +9,8 @@ import { join } from '../../../../../base/common/path.js';
 import {
 	DSH_CHAT_ONLY_CSS, DSH_PAGE_BRIDGE_VERSION, DSH_PAGE_CHAT_ONLY_ARG, DSH_PAGE_INSERT_EVENT, DSH_PAGE_IPC_INSERT, DSH_PAGE_IPC_INVOKE, DSH_PAGE_IPC_KEYDOWN, DSH_PAGE_IPC_REBIND, DSH_PAGE_IPC_THEME, DSH_PAGE_REBIND_EVENT, DSH_PAGE_SESSION_ARG, DSH_PAGE_SURFACE_ARG, DSH_PAGE_THEME_EVENT, DSH_PAGE_VIEW_ARG,
 	DSH_PAGE_IPC_WORKTREES, DSH_PAGE_WORKTREES_EVENT, DSH_WORKTREE_OPTION_LIMIT,
-	isAbsoluteFsPath, isPathInside, validateInsertReference, validateKeyEvent, validatePageCommand, validateWorktreeOptions,
+	DSH_PAGE_IPC_WORKSPACES, DSH_PAGE_WORKSPACES_EVENT, DSH_WORKSPACE_OPTION_LIMIT, DSH_WORKSPACE_ROOT_LIMIT,
+	isAbsoluteFsPath, isPathInside, validateInsertReference, validateKeyEvent, validatePageCommand, validateWorkspaceOptions, validateWorktreeOptions,
 } from '../../common/dshPageBridgeProtocol.js';
 import { dshChatNewSessionId, dshChatPresetSessionId, dshChatSessionId, dshChatWorktreeSessionId, isDshChatSessionId, resolvePresetSessionId, sanitizeDshIdPart } from '../../common/dshChatSession.js';
 
@@ -232,6 +233,64 @@ suite('dshHarness / page bridge', () => {
 			`超过 ${DSH_WORKTREE_OPTION_LIMIT} 条整批丢弃`);
 	});
 
+	test('★ IDE 工作区记录负载（多根工作区，2026-10-16）：各根 + .code-workspace 实名，脏则整批丢弃', () => {
+		// 为什么这条推送存在：dsh 的工作区模型**只能单目录**，宿主把多根工作区**摊平**成 N 条记录
+		// ⇒ 页面只看 `workspaces.list()` 就分不出"这 3 条其实是同一个窗口的 3 个根" ✗
+		// （用户报的"工作区 UI 不对"根因）。记录里的各根只能从 IDE 侧推过去 ✓。
+		// 与 worktree 同口径：主进程发出前校验一次（`dataset` 是字符串、页面当可信数据解析 ✓）。
+		assert.deepStrictEqual(
+			validateWorkspaceOptions([{
+				id: 'ide-1', name: 'multi',
+				roots: [{ path: 'G:\\ws\\main', name: 'main', isPrimary: true }, { path: 'G:\\ws\\lib', name: 'lib', isPrimary: false, junk: 1 }],
+				codeWorkspacePath: 'G:\\ws\\multi.code-workspace', extra: 'x',
+			}]),
+			[{
+				id: 'ide-1', name: 'multi',
+				roots: [{ path: 'G:\\ws\\main', name: 'main', isPrimary: true }, { path: 'G:\\ws\\lib', name: 'lib', isPrimary: false }],
+				codeWorkspacePath: 'G:\\ws\\multi.code-workspace',
+			}],
+			'只保留展示必需字段（IDEA 记录的其余部分不外传 ✓；多余字段丢掉 ✓）');
+		// 单根 + 无 .code-workspace 也要能过（不是只有多根才推 —— 单根同样要走分组那条路 ✓）
+		assert.deepStrictEqual(validateWorkspaceOptions([{ id: 'a', name: 'a', roots: [{ path: '/repo', name: 'repo' }] }]),
+			[{ id: 'a', name: 'a', roots: [{ path: '/repo', name: 'repo', isPrimary: false }] }],
+			'单根合法；isPrimary 非布尔 ⇒ 归 false（不当作 true ✓）');
+		// 整批丢弃：任一项不合法都不掺半份脏数据进 UI（与 worktree 同口径 ✓）
+		assert.strictEqual(validateWorkspaceOptions([{ id: 'a', name: 'a', roots: [] }]), undefined, '**一个根都没有** ⇒ 整批丢');
+		assert.strictEqual(validateWorkspaceOptions([{ id: '', name: 'a', roots: [{ path: '/r', name: 'r' }] }]), undefined, '空 id');
+		assert.strictEqual(validateWorkspaceOptions([{ id: 'a', name: '  ', roots: [{ path: '/r', name: 'r' }] }]), undefined, '空名字');
+		assert.strictEqual(validateWorkspaceOptions([{ id: 'a', name: 'a', roots: [{ path: 'relative', name: 'r' }] }]), undefined, '相对路径的根');
+		assert.strictEqual(validateWorkspaceOptions([{ id: 'a', name: 'a', roots: [{ path: '/r', name: '' }] }]), undefined, '空根名');
+		assert.strictEqual(validateWorkspaceOptions([{ id: 'a', name: 'a', roots: [{ path: '/r', name: 'r' }], codeWorkspacePath: 'x/y.code-workspace' }]), undefined,
+			'.code-workspace 必须是绝对路径（相对路径到页面里无从解释 ✗）');
+		assert.strictEqual(validateWorkspaceOptions([{ id: 'a', name: 'a', roots: [{ path: '/r', name: 'r' }, null] }]), undefined, '数组里有脏项');
+		assert.strictEqual(validateWorkspaceOptions('nope'), undefined);
+		assert.strictEqual(
+			validateWorkspaceOptions([{ id: 'a', name: 'a', roots: new Array(DSH_WORKSPACE_ROOT_LIMIT + 1).fill({ path: '/r', name: 'r' }) }]), undefined,
+			`单工作区超过 ${DSH_WORKSPACE_ROOT_LIMIT} 个根整批丢弃`);
+		assert.strictEqual(
+			validateWorkspaceOptions(new Array(DSH_WORKSPACE_OPTION_LIMIT + 1).fill({ id: 'a', name: 'a', roots: [{ path: '/r', name: 'r' }] })), undefined,
+			`超过 ${DSH_WORKSPACE_OPTION_LIMIT} 条整批丢弃`);
+	});
+
+	test('★ switchWorkspace（桥 10 → 11）：只放形状 —— 它是 IDE registry 的键，不是路径', () => {
+		// 2026-10-16 用户报障「点击其他工作区后，没有切换对应的工作区」⇒ 新增这条命令让 IDE 窗口原地进该工作区。
+		// ⚠ 参数是 **IDE 侧** `Workspace.id`（不是 dsh 的 workspaceId ✗，两者没有映射关系）。
+		// ⚠ 它**不是路径** ⇒ 刻意不套 `isAbsoluteFsPath` / 路径字符集：`Workspace.id` 由工作区名派生，
+		//   可能是中文/空格（如 `我的仓-abc12`）⇒ 按路径收紧会把合法工作区全拒掉、又变成"点了没反应" ✗。
+		assert.deepStrictEqual(validatePageCommand({ method: 'switchWorkspace', workspaceId: 'sarosis-agents-client-ncshv', evil: 1 }),
+			{ method: 'switchWorkspace', workspaceId: 'sarosis-agents-client-ncshv' }, '多余字段丢掉 ✓');
+		assert.deepStrictEqual(validatePageCommand({ method: 'switchWorkspace', workspaceId: '我的仓-abc12' }),
+			{ method: 'switchWorkspace', workspaceId: '我的仓-abc12' },
+			'中文/带短后缀的 id 必须放行（按路径字符集收紧会全拒 ⇒ 那又变成"点了没反应" ✗）');
+		assert.deepStrictEqual(validatePageCommand({ method: 'switchWorkspace', workspaceId: '  padded-id  ' }),
+			{ method: 'switchWorkspace', workspaceId: 'padded-id' }, '首尾空白裁掉（registry 查找是按精确值的 ✓）');
+		for (const bad of ['', '   ', 'a\u0000b', 'a\u001fb', 'x'.repeat(201), 42, null, undefined]) {
+			assert.strictEqual(validatePageCommand({ method: 'switchWorkspace', workspaceId: bad as unknown as string }), undefined,
+				`非法 workspaceId：${String(bad)}`);
+		}
+		assert.strictEqual(validatePageCommand({ method: 'switchWorkspace' }), undefined, '缺 workspaceId 拒收');
+	});
+
 	test('isPathInside: prefix on segment boundaries, platform case rules', () => {
 		assert.ok(isPathInside('C:\\Repo\\src\\a.ts', ['c:\\repo'], true));
 		assert.ok(!isPathInside('C:\\Repo\\src\\a.ts', ['c:\\repo'], false));
@@ -243,13 +302,23 @@ suite('dshHarness / page bridge', () => {
 	test('preload constants match the protocol (the preload cannot import it)', () => {
 		const repo = process.env.DSH_TEST_REPO_ROOT ?? process.cwd();
 		const src = readFileSync(join(repo, 'src', 'vs', 'sessions', 'contrib', 'dshHarness', 'electron-browser', 'preload-dshView.ts'), 'utf8');
-		for (const c of [DSH_PAGE_IPC_INVOKE, DSH_PAGE_IPC_KEYDOWN, DSH_PAGE_IPC_THEME, DSH_PAGE_IPC_INSERT, DSH_PAGE_IPC_WORKTREES, DSH_PAGE_SURFACE_ARG, DSH_PAGE_CHAT_ONLY_ARG, DSH_PAGE_SESSION_ARG, DSH_PAGE_VIEW_ARG, DSH_PAGE_THEME_EVENT, DSH_PAGE_INSERT_EVENT, DSH_PAGE_WORKTREES_EVENT, DSH_PAGE_IPC_REBIND, DSH_PAGE_REBIND_EVENT]) {
+		for (const c of [DSH_PAGE_IPC_INVOKE, DSH_PAGE_IPC_KEYDOWN, DSH_PAGE_IPC_THEME, DSH_PAGE_IPC_INSERT, DSH_PAGE_IPC_WORKTREES, DSH_PAGE_SURFACE_ARG, DSH_PAGE_CHAT_ONLY_ARG, DSH_PAGE_SESSION_ARG, DSH_PAGE_VIEW_ARG, DSH_PAGE_THEME_EVENT, DSH_PAGE_INSERT_EVENT, DSH_PAGE_WORKTREES_EVENT, DSH_PAGE_IPC_REBIND, DSH_PAGE_REBIND_EVENT,
+			// 多根工作区（2026-10-16）：IDE 工作区记录那条推送也要在 preload 里有对应通道 ✓
+			DSH_PAGE_IPC_WORKSPACES, DSH_PAGE_WORKSPACES_EVENT]) {
 			assert.ok(src.includes(`'${c}'`), `preload must use ${c}`);
 		}
 		// plugin-page 的插件页面要能自识别是哪个视图（路由由 location.pathname 决定）。
 		assert.ok(src.includes('viewId: viewId || null'), 'preload must expose viewId on the page bridge');
 		// 桥版本号必须与协议常量同步（方案 5.15 的 switchPreset/rebind 是 v2 引入）。
 		assert.ok(src.includes(`bridgeVersion: ${DSH_PAGE_BRIDGE_VERSION}`), `preload bridgeVersion must be ${DSH_PAGE_BRIDGE_VERSION}`);
+		// ★ 跨层对账（多根工作区，2026-10-16）：`dataset` 的**键名**与页面监听的**事件名**都是字符串字面量，
+		//   preload / 页面各写一份（页面是插件 chunk，不能 import 协议）⇒ 只改一边就会"宿主推了、页面读不到"
+		//   且**两边都不报错** ✗（这就是 worktree 那条推送 2026-10-13 的病根形态）⇒ 在这里钉住 ✓。
+		const wsChunk = readFileSync(join(repo, 'dsh-plugins', 'vssaros-chat-surface', 'lib', 'client.workspace.js'), 'utf8');
+		assert.ok(src.includes('dataset.vssarosWorkspaces = JSON.stringify(list)'), 'preload 必须把 IDE 工作区记录写进 dataset（键名 = vssarosWorkspaces）');
+		assert.ok(wsChunk.includes('dataset.vssarosWorkspaces'), '页面必须从**同一个** dataset 键读（键名对不上 ⇒ 多根永远不出现 ✗）');
+		assert.ok(wsChunk.includes(`"${DSH_PAGE_WORKSPACES_EVENT}"`), `页面监听的事件名必须与 ${DSH_PAGE_WORKSPACES_EVENT} 同值`);
+		assert.ok(src.includes(`'${DSH_PAGE_WORKSPACES_EVENT}'`), 'preload 派发的事件名必须与协议常量同值');
 		// 聊天框裁剪样式（方案 5.13）是 preload 里的字面量，必须与常量逐条一致。
 		for (const rule of DSH_CHAT_ONLY_CSS.split('\n')) {
 			assert.ok(src.includes(rule), `preload must inject the rule: ${rule}`);

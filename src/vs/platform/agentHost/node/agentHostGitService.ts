@@ -326,7 +326,7 @@ export class AgentHostGitService implements IAgentHostGitService {
 		// commit; `_runGit` swallows that into `undefined` which is exactly
 		// the contract callers want.
 		return new Promise((resolve) => {
-			cp.execFile('git', ['show', `${sha}:${repoRelativePath}`], { cwd: workingDirectory.fsPath, timeout: 5000, encoding: 'buffer', maxBuffer: 32 * 1024 * 1024 }, (error, stdout) => {
+			cp.execFile('git', ['show', `${sha}:${repoRelativePath}`], { cwd: workingDirectory.fsPath, timeout: 5000, encoding: 'buffer', maxBuffer: 32 * 1024 * 1024, windowsHide: true }, (error, stdout) => {
 				if (error) {
 					resolve(undefined);
 					return;
@@ -402,7 +402,9 @@ export class AgentHostGitService implements IAgentHostGitService {
 			// Default maxBuffer is 32MB — Node's default is ~1MB, which is
 			// easy to exceed for diff output in large repos. Exceeding it
 			// causes execFile to error and we'd silently drop the diff.
-			cp.execFile('git', [...args], { cwd: workingDirectory.fsPath, timeout: options?.timeout ?? 5000, env, maxBuffer: options?.maxBuffer ?? 32 * 1024 * 1024 }, (error, stdout, stderr) => {
+			// ★ 2026-10-17（用户报「点 agent 条目闪出一个 git 窗口又消失」）：Windows 上 GUI 进程 spawn 控制台程序
+			//   （git.exe）若不设 windowsHide ⇒ 闪一个黑色 conhost 框。打开 agent 会查它工作目录的 git 状态 ⇒ 正是这里。
+			cp.execFile('git', [...args], { cwd: workingDirectory.fsPath, timeout: options?.timeout ?? 5000, env, maxBuffer: options?.maxBuffer ?? 32 * 1024 * 1024, windowsHide: true }, (error, stdout, stderr) => {
 				if (error) {
 					if (options?.throwOnError) {
 						reject(new Error(stderr || error.message));

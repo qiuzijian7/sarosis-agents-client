@@ -1,14 +1,21 @@
 {
   "schema": 1,
-  "generatedAt": "2026-10-10T00:00:00Z",
-  "bundled": "0.2.0-rc.2",
+  "generatedAt": "2026-10-17T00:00:00Z",
+  "bundled": "0.2.1-rc.1",
   "versions": [
+    {
+      "version": "0.2.1-rc.1",
+      "verifiedAt": "2026-10-17",
+      "checks": ["runtime-smoke", "bridge", "client-modules", "workspace-context", "popout-fullwindow-e2e"],
+      "bridgePlugin": ">=0.1.2",
+      "notes": "npm next（2026-10-17 发布）。**bundled 已升级到此版**（2026-10-17 用户拍板；repo dsh-runtime 旧版目录已清、profile seed 重建）。实测：p0-01 10/10、p0-04 11/11、p3-17 37/37、p3-115 31/31、p3-117（弹窗全窗真机）26/26。⚠ 冷启动首跑 25.4s（0.2.0-rc.2 同机 7.3s）＝首启预处理，非回归；随包体积 +211MB（旧 387MB → 新 598MB，已 prune）。"
+    },
     {
       "version": "0.2.0-rc.2",
       "verifiedAt": "2026-10-09",
       "checks": ["runtime-smoke", "bridge", "health", "workbench-e2e", "upgrade-gate", "session-start"],
       "bridgePlugin": ">=0.1.2",
-      "notes": "npm latest/next. Chat smoke pending (needs model credentials)."
+      "notes": "npm latest. Chat smoke pending (needs model credentials)."
     },
     {
       "version": "0.1.7-rc.2",
@@ -16,6 +23,14 @@
       "checks": ["runtime-smoke", "bridge", "health", "upgrade-gate"],
       "bridgePlugin": ">=0.1.2",
       "notes": "Oldest supported version."
+    }
+  ],
+  "canary": [
+    {
+      "version": "0.2.1-alpha.4",
+      "testedAt": "2026-10-16",
+      "checks": ["run-all --fast"],
+      "notes": "金丝雀：48 项中 4 红与 0.2.0-rc.2 基线相同（环境性），新增 1 红 P0-10——alpha 里 create 收养会话时**允许换成不同 preset**（0.2.0-rc.2 会拒绝）。影响我们的幂等接管语义：切 preset 不再报错而是直接换。跟进上游是否定型。"
     }
   ],
   "blocked": []

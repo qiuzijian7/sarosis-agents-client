@@ -1,6 +1,6 @@
 {
   "note": "由 dsh-plugins/tools-snapshot.mjs 生成；被 dshHarness/test/common/dshToolSnapshot.test.ts 钉住。不要手改，跑 --write。",
-  "total": 107,
+  "total": 127,
   "plugins": {
     "vssaros-agents": [
       {
@@ -500,6 +500,20 @@
         "descriptionHash": "fd1220a677c2"
       },
       {
+        "name": "kanban_decompose",
+        "required": [
+          "task_id"
+        ],
+        "params": [
+          "assignee",
+          "fanout",
+          "max_subtasks",
+          "task_id",
+          "workspaceId"
+        ],
+        "descriptionHash": "078d61586fbe"
+      },
+      {
         "name": "kanban_heartbeat",
         "required": [
           "id"
@@ -545,6 +559,33 @@
         "descriptionHash": "139b0a816162"
       },
       {
+        "name": "kanban_specify",
+        "required": [
+          "task_id"
+        ],
+        "params": [
+          "task_id",
+          "workspaceId"
+        ],
+        "descriptionHash": "b3fe60c09e9f"
+      },
+      {
+        "name": "kanban_swarm",
+        "required": [
+          "title",
+          "workers"
+        ],
+        "params": [
+          "enable_synthesizer",
+          "enable_verifier",
+          "goal",
+          "title",
+          "workers",
+          "workspaceId"
+        ],
+        "descriptionHash": "e49025d3f357"
+      },
+      {
         "name": "kanban_unblock",
         "required": [
           "id"
@@ -570,6 +611,51 @@
           "url"
         ],
         "descriptionHash": "1371df8c9474"
+      },
+      {
+        "name": "web_recipe_create",
+        "required": [
+          "extract_fn",
+          "name",
+          "url_pattern"
+        ],
+        "params": [
+          "board_name",
+          "extract_fn",
+          "max_tasks",
+          "name",
+          "url_flags",
+          "url_pattern"
+        ],
+        "descriptionHash": "a991f93974eb"
+      },
+      {
+        "name": "web_recipe_list",
+        "required": [],
+        "params": [],
+        "descriptionHash": "6df7efc1d107"
+      },
+      {
+        "name": "web_recipe_remove",
+        "required": [
+          "name"
+        ],
+        "params": [
+          "name"
+        ],
+        "descriptionHash": "9ff820a85d5c"
+      },
+      {
+        "name": "web_scrape_to_board",
+        "required": [],
+        "params": [
+          "auto_match",
+          "board_name",
+          "max_tasks",
+          "recipe",
+          "workspaceId"
+        ],
+        "descriptionHash": "b63e79527a2c"
       }
     ],
     "vssaros-kb": [
@@ -737,6 +823,15 @@
         "descriptionHash": "cb7a96880090"
       },
       {
+        "name": "kb_reindex",
+        "required": [],
+        "params": [
+          "batchSize",
+          "vaultId"
+        ],
+        "descriptionHash": "62f02ac70254"
+      },
+      {
         "name": "kb_search",
         "required": [],
         "params": [
@@ -772,7 +867,67 @@
         "descriptionHash": "d96a5e97755a"
       }
     ],
+    "vssaros-mcp": [
+      {
+        "name": "mcp_install",
+        "required": [
+          "name",
+          "transport"
+        ],
+        "params": [
+          "args",
+          "command",
+          "env",
+          "name",
+          "transport",
+          "url"
+        ],
+        "descriptionHash": "3964d5e9bc04"
+      },
+      {
+        "name": "mcp_market_list",
+        "required": [],
+        "params": [
+          "limit",
+          "query"
+        ],
+        "descriptionHash": "6951ea58de86"
+      }
+    ],
     "vssaros-media": [
+      {
+        "name": "extract_video_frames",
+        "required": [
+          "source"
+        ],
+        "params": [
+          "durationSec",
+          "frames",
+          "keepVideo",
+          "maxWidth",
+          "outDir",
+          "source",
+          "startSec"
+        ],
+        "descriptionHash": "31176976addc"
+      },
+      {
+        "name": "image_generate",
+        "required": [
+          "prompt"
+        ],
+        "params": [
+          "height",
+          "image_url",
+          "model_id",
+          "negative_prompt",
+          "num_images",
+          "prompt",
+          "provider_id",
+          "width"
+        ],
+        "descriptionHash": "f83f41630bb6"
+      },
       {
         "name": "media_list",
         "required": [],
@@ -787,6 +942,68 @@
         "required": [],
         "params": [],
         "descriptionHash": "835dca4d1ab9"
+      },
+      {
+        "name": "text_to_speech",
+        "required": [
+          "text"
+        ],
+        "params": [
+          "emotion",
+          "lyrics",
+          "model_id",
+          "provider_id",
+          "speed",
+          "text",
+          "voice"
+        ],
+        "descriptionHash": "a9c328788fcb"
+      },
+      {
+        "name": "video_analyze",
+        "required": [
+          "query",
+          "video_url"
+        ],
+        "params": [
+          "durationSec",
+          "frames",
+          "keepVideo",
+          "maxWidth",
+          "outDir",
+          "query",
+          "startSec",
+          "video_url",
+          "withTranscript"
+        ],
+        "descriptionHash": "76ead9d018ec"
+      },
+      {
+        "name": "video_generate",
+        "required": [],
+        "params": [
+          "duration",
+          "image_url",
+          "model_id",
+          "prompt",
+          "provider_id",
+          "ratio",
+          "resolution"
+        ],
+        "descriptionHash": "bf81d9c1672a"
+      },
+      {
+        "name": "vision_analyze",
+        "required": [
+          "image",
+          "query"
+        ],
+        "params": [
+          "image",
+          "mode",
+          "query"
+        ],
+        "descriptionHash": "a338abb6cc77"
       }
     ],
     "vssaros-memory": [
@@ -1100,7 +1317,40 @@
         "descriptionHash": "bb87392f961f"
       }
     ],
+    "vssaros-sessions": [
+      {
+        "name": "session_search",
+        "required": [
+          "query"
+        ],
+        "params": [
+          "limit",
+          "query"
+        ],
+        "descriptionHash": "7e7008800ddc"
+      }
+    ],
     "vssaros-skills": [
+      {
+        "name": "list_skills",
+        "required": [],
+        "params": [
+          "category",
+          "filter"
+        ],
+        "descriptionHash": "7109bf7c2b3f"
+      },
+      {
+        "name": "read_skill",
+        "required": [
+          "skill_id"
+        ],
+        "params": [
+          "path",
+          "skill_id"
+        ],
+        "descriptionHash": "5465e816f3b3"
+      },
       {
         "name": "skill_manage",
         "required": [
@@ -1117,6 +1367,15 @@
           "replace_all"
         ],
         "descriptionHash": "ef764efa3cca"
+      },
+      {
+        "name": "skill_market_list",
+        "required": [],
+        "params": [
+          "limit",
+          "query"
+        ],
+        "descriptionHash": "78fa55581cf2"
       },
       {
         "name": "skill_search",

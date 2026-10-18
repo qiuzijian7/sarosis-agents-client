@@ -12,6 +12,7 @@ import { readFile, readdir, stat } from 'node:fs/promises';
 import { gunzip as gunzipCallback } from 'node:zlib';
 import { promisify } from 'node:util';
 import { join } from 'node:path';
+import { foundation } from './foundationRef.js';
 import { parseGitPaths, parseManifest, validateGraph } from './core/codebase.js';
 import { indexTargetOf, readShadowInfo, shadowReadableOf } from './shadow.js';
 
@@ -36,9 +37,36 @@ export const MAX_DECOMPRESSED_BYTES = 400 * 1024 * 1024;
  */
 export const SKIP_DIRS = new Set(['.git', 'node_modules', '.codebase-memory', 'out', 'dist', 'build', 'dsh-runtime', '.vscode-test']);
 
+/**
+ * 工作区根（源码根 = 图谱与源码读写的锚点）。
+ *
+ * 优先级（★ 2026-10-17 加了第一级）：**运行期上下文** → `config.workspaceRoot`（启动时
+ * `--patch` 注入的快照）→ `null`（不猜 ✓）。
+ *
+ * 为什么加运行期那一级：config 那份只在 Host 启动时注入 ⇒ 从前切工作区必须重启 Host 才能跟上
+ * （而重启会把在跑的会话杀掉）。运行期上下文的真源与三条纪律见
+ * `@vssaros/dsh-foundation/lib/workspaceContext.js` ✓。
+ * ⚠ 有上下文就**以它为准**：上下文里没有根（＝当前工作区没有可用的主根）⇒ 返回 `null`
+ *   （工具/页面照旧如实报"未配置"，**不回落到旧工作区的根** —— 那会变成"图来自 A、你以为在 B" ✗）。
+ */
 export function workspaceRootOf(config) {
+	const runtime = workspaceContext();
+	if (runtime) {
+		return runtime.workspaceRoot ?? null;
+	}
 	const configured = typeof config?.workspaceRoot === 'string' ? config.workspaceRoot.trim() : '';
 	return configured || null;
+}
+
+/** 运行期工作区上下文；`undefined` = 没有（foundation 缺席 / 从未推过都算"没有" ⇒ 回落 config ✓）。 */
+function workspaceContext() {
+	// 为什么要 try：`foundation()` 在服务未绑定时**故意抛错**（fail-fast ✓），而本模块全是工具/页面的
+	// 热路径 ⇒ 不能让它把"读一眼工作区根"变成整页报错 ✗（与 config 回落同语义 ✓）。
+	try {
+		return foundation().workspaceContext?.() ?? undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 export function codebaseDirOf(config) {
@@ -148,9 +176,14 @@ async function statOf(path) {
 /**
  * 图谱**相关根**（主根之外的其余根）：VsSaros 经**同一份覆盖层**注入 `config.relatedRoots`
  * （主根是 `workspaceRoot`，这里只是其余根；见 README 4.87/4.88）。去重、去空白、**主根不重复列**。
+ *
+ * ★ 2026-10-17：与 `workspaceRootOf` 同一条纪律（运行期上下文优先 ✓）。
+ * ⚠ 这里**必须**用上下文里的那一份（哪怕它是**空数组**）：切到"没有关联根"的工作区时若回落到
+ * config 的旧列表，检索会继续在**旧工作区**的根里翻 ✗（那种"图里多了几个不认识的根"最误导 ✓）。
  */
 export function relatedRootsOf(config) {
-	const raw = Array.isArray(config?.relatedRoots) ? config.relatedRoots : [];
+	const runtime = workspaceContext();
+	const raw = runtime ? runtime.relatedRoots : (Array.isArray(config?.relatedRoots) ? config.relatedRoots : []);
 	const main = workspaceRootOf(config);
 	const out = [];
 	for (const entry of raw) {

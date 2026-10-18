@@ -55,13 +55,19 @@ const COVERED_BY: ReadonlyMap<string, readonly string[]> = new Map([
 	['vssaros-codebase', ['p3-11-codebase-plugin.mjs', 'p3-40-codebase-shadow-index.mjs']],
 	['vssaros-dashboard', ['p3-09-dashboard-plugin.mjs']],
 	['vssaros-ide', ['p3-13-ide-plugin.mjs']],
-	['vssaros-kanban', ['p3-02-kanban-tool-pipeline.mjs', 'p3-26-write-tool-gates.mjs']],
-	['vssaros-kb', ['p3-08-kb-plugin.mjs']],
+	// 2026-10-16：kanban_decompose + kanban_swarm（重构 4；两个都在 p3-110 里钉，见该文件的 ①—⑨）。
+	['vssaros-kanban', ['p3-02-kanban-tool-pipeline.mjs', 'p3-26-write-tool-gates.mjs', 'p3-110-kanban-decompose.mjs']],
+	// 2026-10-16（重构 4）：session_search（sessions 插件从"零工具"变"有工具"）。
+	['vssaros-sessions', ['p3-106-session-search.mjs']],
+	// 2026-10-16（重构 4）：kb_search 的 semantic 模式 + kb_reindex（建向量索引）都在 p3-108 里钉。
+	['vssaros-kb', ['p3-08-kb-plugin.mjs', 'p3-108-kb-semantic.mjs']],
 	// media（2026-10-12）：探针 `p3-37` 已落地 ⇒ 两个只读工具从 `UNPINNED` 台账里摘掉、填回这里 ✓。
 	// ⚠ 编号是 **p3-37** 而不是台账原先写的 p3-35 —— 那个号被同批的 `p3-35-memory-partition.mjs` 占了 ✓。
-	['vssaros-media', ['p3-37-media-plugin.mjs']],
+	['vssaros-media', ['p3-37-media-plugin.mjs', 'p3-107-media-generate.mjs']],  // 2026-10-16：image_generate 加进 media 插件（重构 4）
+	// 2026-10-16（重构 4）：mcp_install（mcp 插件从"零工具"变"有工具"）。
+	['vssaros-mcp', ['p3-109-mcp-install.mjs', 'p3-111-market-list.mjs']],  // 2026-10-17：mcp_market_list
 	['vssaros-memory', ['p3-07-memory-plugin.mjs']],
-	['vssaros-skills', ['p3-04-skills-plugin.mjs']],
+	['vssaros-skills', ['p3-04-skills-plugin.mjs', 'p3-111-market-list.mjs']],  // 2026-10-17：skill_market_list
 	// web-content-import（2026-10-15 新增）：p3-93 钉路由 / 质量判定（占位页绝不写库）/ html 输入回路 /
 	// 落盘（锁 + 原子写 + slug 派生 + 形状与 IDE 侧逐字对齐）/ 审批闸 ✓（无页面 ⇒ 进程内 + 回环 HTTP，fast ✓）。
 	['vssaros-web-content-import', ['p3-93-web-content-import.mjs']],

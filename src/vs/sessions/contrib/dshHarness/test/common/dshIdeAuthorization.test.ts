@@ -103,6 +103,57 @@ suite('dshHarness / IDE capability authorization', () => {
 		assert.match(result.allowed ? '' : result.reason, /已声明：无/);
 	});
 
+	/**
+	 * ★ 2026-10-17 真机事故（用户报"工作流 item 点击后没有显示 editor pane"）：授权读取原先**不带
+	 * `builtin`** 解析清单 ⇒ 内置模块插件被按第三方规则校验 ⇒ `activityBar.order` / 容器命名空间
+	 * 越界 ⇒ 整份清单判废 ⇒ 零 IDE 能力 ⇒ 所有「在 IDE 打开」类反向调用被主进程拒。
+	 * 这条用例钉住"内置插件自家写法 + 能力声明"必须能读出来。
+	 */
+	test('内置模块插件的自家 activityBar 写法不应吃掉它的能力声明（@vssaros/*）', () => {
+		const declarations = declarationsOf({
+			'@vssaros/dsh-workflow': {
+				vssaros: {
+					manifestVersion: 1,
+					module: 'workflow',
+					// 内置插件的真实写法：沿用 `agentStudio.*` 容器 ID、order 小于第三方下限
+					activityBar: { containerId: 'agentStudio.workflow', title: 'Workflow', icon: 'codicon:list-tree', order: 80 },
+					view: { kind: 'page', route: '/x/workflow/' },
+					ideCapabilities: ['workflow'],
+				},
+			},
+			// 另一族内置容器：`vssaros.dsh.*`（第三方禁用，内置担保）
+			'@vssaros/dsh-canvas': {
+				vssaros: {
+					manifestVersion: 1,
+					module: 'canvas',
+					activityBar: { containerId: 'vssaros.dsh.canvas', title: 'Canvas', icon: 'codicon:circuit-board', order: 5 },
+					view: { kind: 'page', route: '/x/canvas/' },
+					ideCapabilities: ['canvas'],
+				},
+			},
+		});
+		const workflow = authorizeIdeRequest({ capability: 'workflow', pluginId: '@vssaros/dsh-workflow' }, declarations);
+		assert.strictEqual(workflow.allowed, true, JSON.stringify(workflow));
+		const canvas = authorizeIdeRequest({ capability: 'canvas', pluginId: '@vssaros/dsh-canvas' }, declarations);
+		assert.strictEqual(canvas.allowed, true, JSON.stringify(canvas));
+	});
+
+	test('同一份清单换个第三方包名 ⇒ 仍按第三方规则判非法（修复不得放宽授权面）', () => {
+		const read = readCapabilityDeclarations(new Map([
+			['@acme/dsh-graph-viewer', {
+				vssaros: {
+					manifestVersion: 1,
+					module: 'graph',
+					activityBar: { containerId: 'agentStudio.graph', title: 'Graph', icon: 'codicon:type-hierarchy', order: 80 },
+					view: { kind: 'page', route: '/x/graph/' },
+					ideCapabilities: ['openFile'],
+				},
+			}],
+		]));
+		assert.strictEqual(read.declarations.has('@acme/dsh-graph-viewer'), false, '第三方越界清单必须零能力');
+		assert.strictEqual(read.notes.length, 1, JSON.stringify(read.notes));
+	});
+
 	test('坏清单 ⇒ 零能力 + 一条 note（绝不因此放行）', () => {
 		const broken = readCapabilityDeclarations(new Map([
 			// 有 `vssaros` 字段但清单本身不合法（版本不对）⇒ 必须留 note + 零能力

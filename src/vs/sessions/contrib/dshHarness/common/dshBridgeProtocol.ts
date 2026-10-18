@@ -27,10 +27,25 @@ export const enum DshBridgeMethod {
 	HostPing = 'host.ping',
 	WorkspaceEnsure = 'workspace.ensure',
 	WorkspaceList = 'workspace.list',
+	/**
+	 * **运行期工作区上下文**（2026-10-17）：IDE 切工作区时推一份新的 ⇒ 看板 / 记忆 / 图谱不必重启 Host
+	 * 就能跟着走（起因：切换工作区要重启 Host，而重启会连在跑的会话一起杀掉）。
+	 * 真源与三条纪律见 `dsh-plugins/vssaros-foundation/lib/workspaceContext.js`；消费方的解析优先级见
+	 * 各自的解析函数注释（`workspaceIdOf` / `partitionOf` / `workspaceRootOf`）。
+	 *
+	 * ⚠ 老 Host（桥里没有这条）会回 `-32601 method not found` ⇒ 调用方**必须**把它当成"这条能力不存在"，
+	 *   退回旧的重启路径 ✓（升级那一次仍会重启，之后就再也不用了 ✓）。
+	 * 刻意**不** bump `DSH_BRIDGE_VERSION`：那个常量只是文档口径，能不能用由**这条调用本身**证 ✓。
+	 */
+	WorkspaceContext = 'workspace.context',
 	/** 升级 / 退出闸门：返回仍有活动的会话 id 与活动类别（IHostActivity）。 */
 	HostActivity = 'host.activity',
 	/** 建/接管一个会话并绑定工作区（方案第 7 章 session.start）：传 sessionId 时为幂等接管。 */
 	SessionStart = 'session.start',
+	/** 后台回合（重构 1.4）：投一条 prompt 并**等回合跑完回传结果**（渠道/看板/工作流/调度/Pocket 的统一入口）。 */
+	SessionRun = 'session.run',
+	/** 取消一条会话当前的活动（尽力而为；按 agent.cancel 语义默认清收件箱）。 */
+	SessionCancel = 'session.cancel',
 	/** 同步 VsSaros 已配置的模型 provider（写 llm-pi-ai settings + 凭证；插件侧只动 vssaros- 前缀路由）。 */
 	ProvidersSync = 'providers.sync',
 	/**
@@ -384,6 +399,18 @@ export function isVssarosIdeCapability(value: unknown): value is VssarosIdeCapab
 export interface IClientRegisterParams {
 	readonly token: string;
 	readonly instanceId: string;
+	/**
+	 * 本次注册者**自己的**拥有者记录路径（`owner-<runId>.json`）。
+	 *
+	 * 用途：Host 侧的桥插件拿它做**孤儿自退**判据（记录 mtime = 宿主写的心跳；心跳停了又没有 IDE
+	 * 客户端 ⇒ "宿主进程崩了而 Host 还在常驻" ⇒ 自退，把**会话写租约**还给系统 —— 写租约是
+	 * `session.lock` 的 OS 文件锁，只有关句柄或退进程才释放 ✓）。
+	 *
+	 * ⚠ 必须**随每次注册**给，不能只在 spawn 时经环境变量给一次 ✗：同一个 Host 会被后续窗口
+	 * **接管**（`host.json` 复用）⇒ "当前拥有者"已经换人，只有握手能表达"现在是谁" ✓。
+	 * 接管路给的是**接管者新写的那份**；非 VsSaros 托管的 Host 没有记录 ⇒ 不传（插件保持原目标）✓。
+	 */
+	readonly ownerRecord?: string;
 	readonly windows?: readonly { readonly id: number; readonly workspace?: string }[];
 }
 
@@ -409,6 +436,66 @@ export interface IBridgeWorkspace {
 	readonly error?: string;
 }
 
+/** 上下文里一个路径/标识串的长度上限（跨进程边界收紧；与 `MAX_PATHS_PER_WINDOW` 同一条纪律 ✓）。 */
+const MAX_WORKSPACE_CONTEXT_TEXT = 4096;
+/** 关联根条数上限（一个工作区不该有几百个根；畸形载荷在桥这一侧就被拒 ✓）。 */
+const MAX_WORKSPACE_CONTEXT_ROOTS = 64;
+
+/**
+ * `workspace.context` 的入参 —— **当前**工作区上下文（运行期真源，见 `DshBridgeMethod.WorkspaceContext`）。
+ *
+ * ⚠ 三个字段是**一整份**：消费方以整份为准，不做逐字段回落（否则切到"没有关联根 / 没有活动工作区"的
+ * 目标时会把**旧工作区的值留着** ✗ —— 那正是"卡片静默写进旧工作区"那类静默错的形状）。
+ * `undefined` 在这里是**有意义的**（＝"当前没有"），所以校验只做形状与边界，不要求非空 ✓。
+ */
+export interface IBridgeWorkspaceContextArgs {
+	/** Agent Studio 的当前工作区 id（看板按它过滤、记忆按它分区）。`undefined` = 当前没有活动工作区。 */
+	readonly workspaceId?: string;
+	/** 当前工作区根（代码图谱按它定位 `<root>/.codebase-memory/`）。`undefined` = 没有可用根。 */
+	readonly workspaceRoot?: string;
+	/** 关联根（多根工作区；`[]` = 权威的"没有关联根"）。 */
+	readonly relatedRoots?: readonly string[];
+	/** 推这份上下文的窗口 id（只作诊断：Host 是多窗口共享的，**最后推的胜出** ✓）。 */
+	readonly windowId?: number;
+	/** 推送时刻（只作诊断/排序 ✓）。 */
+	readonly at?: number;
+}
+
+/** `workspace.context` 的回执。`applied: false` ⇒ 调用方应退回旧路径（重启），别当成功 ✓。 */
+export interface IBridgeWorkspaceContextResult {
+	/** 真源**是否真的被更新**（foundation 缺席 / 载荷畸形都会是 false ✓ —— 不谎报成功）。 */
+	readonly applied: boolean;
+	/** `applied: false` 的原因（`foundation-unavailable` / `invalid-payload`；诊断用 ✓）。 */
+	readonly reason?: string;
+	/** 生效后的上下文（规范化之后的那份；带异常时可能没有 ✓）。 */
+	readonly context?: IBridgeWorkspaceContextArgs;
+}
+
+/** 上下文载荷的形状/边界校验（真源那一侧还会再规范化一次 —— 两道都要 ✓）。 */
+export function validateWorkspaceContextArgs(value: unknown): value is IBridgeWorkspaceContextArgs {
+	if (!value || typeof value !== 'object' || Array.isArray(value)) {
+		return false;
+	}
+	const v = value as Record<string, unknown>;
+	const textOk = (x: unknown): boolean => x === undefined
+		|| (typeof x === 'string' && x.length <= MAX_WORKSPACE_CONTEXT_TEXT && !x.includes('\0'));
+	if (!textOk(v.workspaceId) || !textOk(v.workspaceRoot)) {
+		return false;
+	}
+	if (v.relatedRoots !== undefined) {
+		if (!Array.isArray(v.relatedRoots) || v.relatedRoots.length > MAX_WORKSPACE_CONTEXT_ROOTS) {
+			return false;
+		}
+		if (!v.relatedRoots.every(textOk)) {
+			return false;
+		}
+	}
+	if (v.windowId !== undefined && !Number.isInteger(v.windowId)) {
+		return false;
+	}
+	return !(v.at !== undefined && !Number.isFinite(v.at));
+}
+
 /** `session.start` 入参：会话的工作目录、可选的自有 id（幂等接管）、可选预设与首条 prompt。 */
 export interface IBridgeSessionStartArgs {
 	readonly cwd: string;
@@ -425,6 +512,45 @@ export interface IBridgeSessionStartResult {
 	readonly prompted?: boolean;
 	/** 会话实际运行的 preset（桥 ≥0.2.3 回传；方案 5.15 的基座 preset 习得依赖它）。 */
 	readonly agentPreset?: string | null;
+}
+
+// ─── session.run / session.cancel（重构 1.4，后台回合统一入口）──────────────────
+
+/** `session.run` 入参：工作目录、提示词、可选自有会话 id（重复调用即恢复续聊）、预设与超时。 */
+export interface IBridgeSessionRunArgs {
+	readonly cwd: string;
+	readonly prompt: string;
+	readonly sessionId?: string;
+	readonly agentPreset?: string;
+	/** 一回合的等待上限（毫秒）；缺省 120000。超时按错误回传（不静默挂起）。 */
+	readonly timeoutMs?: number;
+	/**
+	 * 无人值守审批白名单（重构 1.5）：本会话本轮允许的工具名；缺省 = 全拒。
+	 * 缺它时背景会话的任何审批请求都会被 runs 应答者拒掉（deny-by-default ✓）。
+	 */
+	readonly approval?: { readonly allow: readonly string[] };
+}
+
+export interface IBridgeSessionRunResult {
+	readonly sessionId: string;
+	readonly workspaceId?: string;
+	readonly agentPreset?: string | null;
+	/** 回合结束原因（turn/end 的 kind：completed / aborted / error / …）。 */
+	readonly stopReason: string | null;
+	/** 该回合最后一条非空 assistant 文本；没有则 null（被工具占满/被打断时是 null，调用方要如实说）。 */
+	readonly finalText: string | null;
+	/** 最终文本是否因中断而不完整。 */
+	readonly interrupted: boolean;
+	readonly elapsedMs: number;
+}
+
+export interface IBridgeSessionCancelArgs {
+	readonly sessionId: string;
+}
+
+export interface IBridgeSessionCancelResult {
+	readonly cancelled: boolean;
+	readonly reason?: string;
 }
 
 // ─── providers.sync（模型 provider 接入，dsh 插件形式）─────────────────────────

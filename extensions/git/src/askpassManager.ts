@@ -100,7 +100,8 @@ async function setWindowsPermissions(filePath: string, logger: LogOutputChannel)
 		// /grant:r - Replace (not add) permissions, giving Full control to user
 		const args = [filePath, '/inheritance:r', '/grant:r', `${username}:F`];
 
-		cp.execFile('icacls', args, (error, _stdout, stderr) => {
+		// ★ 2026-10-17：Windows 上不设 windowsHide 会闪控制台窗口（icacls 是控制台程序）。
+		cp.execFile('icacls', args, { windowsHide: true }, (error, _stdout, stderr) => {
 			if (error) {
 				logger.warn(`[askpassManager] Failed to set permissions on ${filePath}: ${error.message}`);
 				if (stderr) {

@@ -841,8 +841,9 @@ export class KbImportController extends Disposable {
 	 * chatOnly=true：构建产出以文本 FILE 块返回，落盘统一由本控制器完成（不写会话之外的文件）。
 	 */
 	private async _buildNoteAgentic(libFileUri: URI, vaultRoot: URI): Promise<string | null> {
-		const driver = this._agentDriverService;
-		if (!driver) { return null; }
+		// 2026-10-17（5.5 前置）：`executeFromChatOptions` 的调用删了（legacy 引擎要退役 ✓）——
+		//   `driver` 变量不再用（只在下面的前置检查里用 `this._agentDriverService` ✓）。
+		if (!this._agentDriverService) { return null; }
 		const libDir = URI.joinPath(vaultRoot, KB_LIBRARY_SUBPATH);
 		if (!libFileUri.fsPath.toLowerCase().startsWith(libDir.fsPath.toLowerCase())) { return null; }
 		// ★ 2026-09-23 语义变更：**库 = 数据源层，笔记区 = 知识体系层**。
@@ -933,13 +934,11 @@ export class KbImportController extends Disposable {
 			this._kbBuildSessionUsed = true;
 			await chatService.sendMessage(agentId, userPrompt, { ...sendOptions, agentSessionId: sessionId }, onDelta);
 		} else {
-			// 兜底：没有 chatService（单测）/ 会话创建失败 ⇒ 保持旧的 headless 行为（不落历史、用户看不到）
-			for await (const d of driver.executeFromChatOptions(agentId, userPrompt, {
-				...sendOptions,
-				agentSessionId: `kb-build-${Date.now().toString(36)}`,
-			})) {
-				onDelta(d as unknown as { type?: string; content?: unknown });
-			}
+			// 2026-10-17（5.5 前置）：兜底分支删了——`executeFromChatOptions` 是 legacy 引擎的入口
+			//   （要退役 ✓）。chatService 不在 / 会话创建失败 ⇒ 如实不跑（返回 null——调用方按
+			//   "没产出"处理 ✓），不再走 legacy 引擎的 headless 兜底 ✗。
+			this._logService.warn('[KbImportController] chatService 不在 / 会话创建失败 ⇒ 本轮构建不跑（不落历史、用户看不到）——legacy 引擎的 headless 兜底已退役');
+			return null;
 		}
 		const gen = chunks.join('');
 		if (!gen.trim()) { return null; }

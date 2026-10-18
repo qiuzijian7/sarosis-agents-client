@@ -70,7 +70,8 @@ const hasOld = existsSync(join(SRC_ROOT, OLD, ...BIN));
 		runtime = new DshRuntimeManager(managed, l => log.push(l));
 		await runtime.setCurrent(A);
 		supervisor = new DshHostSupervisor({
-			runtime, runDir: join(root, 'run'), bridgePluginDir: BRIDGE_DIR, chatSurfacePluginDir: undefined, modulePluginDirs: [], defaultDshHome: home, instanceId: 'gate-test', log: l => log.push(l),
+			runtime, runDir: join(root, 'run'), foundationPluginDir: undefined,
+			bridgePluginDir: BRIDGE_DIR, chatSurfacePluginDir: undefined, modulePluginDirs: [], defaultDshHome: home, instanceId: 'gate-test', log: l => log.push(l),
 		});
 		gate = new DshUpgradeGate(supervisor, runtime, join(root, 'snapshots'), l => log.push(l));
 		const s = await supervisor.start();

@@ -280,8 +280,10 @@ export function parseAgentMd(content: string): { agent: Partial<Agent>; systemPr
 		role: typeof raw.role === 'string' ? raw.role : 'assistant',
 		description: typeof raw.description === 'string' ? raw.description : '',
 		icon: typeof raw.icon === 'string' ? raw.icon : '🤖',
+		// ★ 2026-10-16：没写 model = **跟随默认**（空串），不再补 `claude-sonnet-4-20250514` ——
+		//   否则 createAgent 留空写盘、这里读回又补上 ⇒ 原生聊天照样强切到它，dsh 侧照样「模型未映射」✗。
 		model: typeof raw.model === 'string' ? raw.model
-			: (Array.isArray(raw.model) && raw.model.length > 0 ? raw.model[0] : 'claude-sonnet-4-20250514'),
+			: (Array.isArray(raw.model) && raw.model.length > 0 ? raw.model[0] : ''),
 		providerId: typeof raw.providerId === 'string' ? raw.providerId : undefined,
 		// 图片生成模型（2026-09-10）
 		imageModel: typeof raw.imageModel === 'string' ? raw.imageModel : undefined,

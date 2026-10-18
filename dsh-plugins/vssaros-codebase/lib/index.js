@@ -29,21 +29,30 @@
 // 解析器那条链是**惰性**的：页面只报"资产在哪、几种语言"（几个 statSync ✓），**不在渲染路径上 parse** ✗。
 
 import { ARCHITECTURE_ASPECTS, ARCHITECTURE_NOT_PORTED, architectureOf, dependenciesOf, graphSchemaOf, impactOf, isSafeGitRef, mapFilesToNodes, normalizeScope, pathOf, projectsOf, resolveSymbol, searchNodes, sliceLines, summarizeGraph, topNodes, traceFrom } from './core/codebase.js';
+import { bindFoundation, foundation } from './foundationRef.js';
 import { GRAPH_FILE, MANIFEST_FILE, SNIPPET_MAX_LINES, SQLITE_FILE, loadGraph, readOverview, readSourceSlice, runGitChanges, workspaceRootOf } from './store.js';
+
 // 写侧前提自证（README 5.53）：Host 自己产出**最小**图谱产物（文件级 import 图）+ 用**同一个读侧**读回比对。
 // 只写临时目录 —— 工作区里的 `.codebase-memory/` 是 VsSaros 侧的所有物（`owns` 没交接，5.48/5.50 同一条纪律）。
 import { DEFAULT_MAX_FILES, flatSelfCheck, selfCheck, summarizeSelfCheck } from './indexer.js';
+
 // P0（2026-10-12）：tree-sitter 在 Host 侧的自证通路（资产解析 + worker 门面）。见 lib/parser/*.js 的文件头。
 import { PROOF_SNIPPET, createParserPool, describeParser } from './parser/pool.js';
+
 // P1（2026-10-12）：影子索引 v0（编排 + 落点/锁/原子写）。见 lib/indexService.js / lib/shadow.js 的文件头。
 import { DELETE_WHICH_VALUES, GRAPH_STALE_AFTER_MS, INDEX_MAX_FILES, INDEX_MAX_FILES_CAP, coverageOf, deleteIndexArtifacts, exportIndexArtifacts, importIndexArtifacts, runShadowIndex, shadowStatus, workspaceArtifactDirOf } from './indexService.js';
+
 // P4（2026-10-12）：影子保鲜 watcher（缺省不启用；见 lib/watcher.js 文件头的五条纪律）。
 import { createShadowWatcher, watchSummaryOf } from './watcher.js';
+
 // A②（2026-10-13）：**形状查询**（Cypher 的诚实子集：4 种写法 ⇒ 转发到既有 helper ✓，见 lib/shapeQuery.js 文件头）
 import { parseShapeQuery, runShapeQuery, SHAPE_HELP } from './shapeQuery.js';
+
 import { shadowDirOf, writeDirOf } from './shadow.js';
+
 // P8（2026-10-13）：**文本搜索**（真源 `search_code` 的对应物 ✓）—— 与图无关，**不需要索引** ✓
 import { SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT, createAdr, deleteAdr, findFiles, getAdr, listAdrs, searchCode, updateAdr } from './store.js';
+
 
 export const name = 'vssaros-codebase';
 
@@ -147,6 +156,7 @@ const MAX_PROOF_TEXT = 4000;
 // 页面外壳（标题 / 工具条 / 分区 / 空态 / 诊断行）逐条移植自 VsSaros 原容器 Pane，
 // 见 `lib/pageShell.js` 顶部注释（真源行号 + 分发约定）。`escapeHtml` 由它提供。
 import { escapeHtml, renderShell } from './pageShell.js';
+
 
 const bytesOf = n => (typeof n === 'number' ? (n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)}MB` : `${Math.round(n / 1024)}KB`) : '未知');
 const isoOf = ms => (typeof ms === 'number' && Number.isFinite(ms) ? new Date(ms).toISOString().replace('T', ' ').slice(0, 16) : '未知');
@@ -2468,6 +2478,18 @@ function toolDefinitions(ctx, state, config) {
 }
 
 export function apply(ctx, config = {}) {
+	// 重构 1.3：绑定 foundation 共享服务（dataRoot/dshHome/pageShell/lock 的真源）。
+	{
+		// 同步直读在前：有插件在 apply 的**同步段**就建 store（inject 回调是异步的，会来不及 ✗）。
+		let ready = null;
+		try { ready = ctx.get?.('vssarosFoundation') ?? ctx.vssarosFoundation ?? null; } catch { /* 探针的 Proxy 假 ctx 对未知属性抛错 ⇒ 当不存在 */ }
+		if (ready) { bindFoundation(ready); }
+		ctx.inject(['vssarosFoundation'], child => {
+		let svc = null;
+		try { svc = child.vssarosFoundation ?? null; } catch { /* 探针的假 ctx（Proxy）对未知属性抛错 ⇒ 当不存在 */ }
+		if (svc) { bindFoundation(svc); }
+	});
+	}
 	// ── R13（preset plane）：同一个包会被挂**两次** ────────────────────────────────────────────
 	// host plane 一行（`cordis.patch.yml`）+ 我们的 preset 里一行（`vssaros-agents/cordis.presets.yml`）✓。
 	// 两次挂载要做**不同的事**，否则同一件事做两遍（工具重名是**静默顶掉** ✓，实测不报错 ✗ 所以更危险）。
@@ -2506,26 +2528,52 @@ export function apply(ctx, config = {}) {
 			state.watchWhy = '未启用（`config.indexWatch` 不是 true）';
 			return undefined;
 		}
-		const root = workspaceRootOf(config);
-		if (!root) {
-			state.watchWhy = '未配置 workspaceRoot ⇒ 不知道盯哪个目录';
-			return undefined;
-		}
-		if (!shadowDirOf(config, root)) {
-			state.watchWhy = '未配置索引目录（`config.indexDir` 与 `DSH_HOME` 都没有）⇒ 重算了也没地方放';
-			return undefined;
-		}
-		const watcher = createShadowWatcher(config, {
-			root,
-			run: () => runShadowIndex(config, { root }),
-			onLog: message => { try { ctx.logger?.info?.(message); } catch { /* 日志不可用无所谓 ✓ */ } },
-		});
-		watcher.start();
-		state.watch = watcher;
-		state.watchWhy = undefined;
-		return () => {
-			watcher.stop();
+		// ★ 2026-10-17：根从"**apply 时读一次**"改成"每次重算时读"（`workspaceRootOf` 内部是
+		//   运行期上下文优先 ✓）—— 切工作区后要换监听目标，而**不再靠重启 Host** ✓（见 foundation 的
+		//   workspaceContext.js）。apply 期上下文通常还没推（Host 先起、IDE 后连）⇒ 那时照旧取
+		//   `config.workspaceRoot`（覆盖层那份），与从前逐字相同 ✓。
+		let current;   // { root, watcher }
+		const stopCurrent = () => {
+			current?.watcher.stop();
+			current = undefined;
 			state.watch = null;
+		};
+		const start = () => {
+			stopCurrent();
+			const root = workspaceRootOf(config);
+			if (!root) {
+				state.watchWhy = '未配置 workspaceRoot ⇒ 不知道盯哪个目录';
+				return;
+			}
+			if (!shadowDirOf(config, root)) {
+				state.watchWhy = '未配置索引目录（`config.indexDir` 与 `DSH_HOME` 都没有）⇒ 重算了也没地方放';
+				return;
+			}
+			const watcher = createShadowWatcher(config, {
+				root,
+				run: () => runShadowIndex(config, { root }),
+				onLog: message => { try { ctx.logger?.info?.(message); } catch { /* 日志不可用无所谓 ✓ */ } },
+			});
+			watcher.start();
+			current = { root, watcher };
+			state.watch = watcher;
+			state.watchWhy = undefined;
+		};
+		start();
+		// 运行期工作区上下文变了 ⇒ 根可能也变了 ⇒ 换监听目标（根没变就不动，避免白重启监听 ✓）。
+		// ⚠ try 包住：`foundation()` 未绑定时**故意抛错**（fail-fast）—— 而这里只是"订阅一个可选通知"，
+		//   不该因为共享服务缺席就让整个插件 activation 失败 ✗。
+		let off;
+		try {
+			off = foundation().onDidChangeWorkspaceContext?.(() => {
+				if (workspaceRootOf(config) !== current?.root) {
+					start();
+				}
+			});
+		} catch { /* 没有 foundation ⇒ 保持 apply 时那个根（与这条能力不存在时一致 ✓） */ }
+		return () => {
+			try { off?.(); } catch { /* 退订失败不值得打扰用户 ✓ */ }
+			stopCurrent();
 		};
 	});
 

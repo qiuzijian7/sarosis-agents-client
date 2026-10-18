@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Agents 团队化 · 方案 D 实现方案</title>
+<style>
+:root{--bg:#1e1f24;--bg2:#26272e;--line:#3a3b46;--fg:#d7d8de;--dim:#8b8d98;--accent:#5b8cff;--green:#4ec9b0;--yellow:#dcdcaa;--red:#f48771;--purple:#c586c0}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--fg);font:14px/1.7 "Segoe UI","Microsoft YaHei",sans-serif;max-width:980px;margin:0 auto;padding:32px 28px}
+h1{font-size:21px;margin-bottom:4px}
+.sub{color:var(--dim);font-size:12.5px;margin-bottom:24px}
+h2{font-size:16px;margin:28px 0 10px;padding-left:10px;border-left:3px solid var(--accent)}
+h3{font-size:14px;margin:16px 0 6px}
+p,li{font-size:13px}
+ul,ol{padding-left:22px}
+li{margin:3px 0}
+code{background:var(--bg2);border:1px solid var(--line);border-radius:4px;padding:0 5px;font:12px Consolas,monospace;color:#9cdcfe}
+table{width:100%;border-collapse:collapse;margin:8px 0;font-size:12.5px}
+th{text-align:left;color:var(--dim);font-weight:400;padding:6px 10px;border-bottom:1px solid var(--line)}
+td{padding:7px 10px;border-bottom:1px solid #2a2b33;vertical-align:top}
+.card{background:var(--bg2);border:1px solid var(--line);border-radius:8px;padding:14px 18px;margin:12px 0}
+.warn{background:#3a2e14;border-color:#57481f;color:var(--yellow)}
+.ok{background:#14202e;border-color:#23405c;color:#9fc7ee}
+.tag{display:inline-block;font-size:11px;padding:1px 8px;border-radius:8px;margin-right:6px}
+.tag.p0{background:var(--accent);color:#fff}.tag.p1{background:var(--purple);color:#fff}.tag.p2{background:#2c4a43;color:var(--green)}.tag.future{background:var(--bg);border:1px solid var(--line);color:var(--dim)}
+</style>
+</head>
+<body>
+<h1>Agents 团队化 · 方案 D 实现方案</h1>
+<div class="sub">拍板稿：<code>doc/agents-mockup-d-combo.html</code>（B+C 组合）· 借鉴 DeepSeekBot/BotHarness · 勘察日期 2026-10-16 · 身份权威坚持 <code>.agent.md</code> 声明式，不引入第二权威</div>
+
+<h2>0. 总体分工（一图）</h2>
+<table>
+<tr><th style="width:130px">面</th><th>承载</th><th>内容</th><th>取数</th></tr>
+<tr><td><b>管理态（左）</b></td><td>sideview 名册摘要版 <code>?surface=sideview</code> + 编辑区详情页 <code>?surface=editor</code></td><td>名册（状态灯/委派·审批角标）、身份/记忆/委派/授权/用量页签</td><td>已有 <code>/x/agents/api/agents</code> + <code>/x/agents/api/usage</code>（含 live/usage，core/live.js）</td></tr>
+<tr><td><b>运行态（右）</b></td><td>chat-surface chunk</td><td>agent chip 行（扩现有 client.agents.js）、委派卡片、dock、审批卡（扩 client.approval.js）</td><td>同源 API + 桥命令</td></tr>
+<tr><td><b>委派语义</b></td><td>agents 插件新模块 <code>lib/assignments.js</code></td><td>Assignment = 基于既有 <code>agent_message</code> + relay 回传封装：创建/追问/中断/回报登记，并发上限 8，超限结构化报错</td><td>插件内状态 + projcache</td></tr>
+</table>
+<div class="card warn">纪律提醒：每个插件改动都要 bump 版本（最后一次做，p3-09 有守卫）；chat-surface 新 chunk 必须登记 <code>check-chat-surface-chunks.mjs</code> 的 OUR_BASELINE 并做反向突变验证；桥方法进 <code>dshPageCommandWiring.test.ts</code>。</div>
+
+<h2><span class="tag p0">P0</span>agents 插件双表面拆分（管理态骨架）—— <b>已落地 0.2.13</b></h2>
+<p>目标：名册常驻左侧；点条目在编辑区开详情页。照抄 kanban 双表面模式。<b>状态（2026-10-16）：p3-06 探针 43/43 ✓（含 6 条新双表面断言 + 反向突变验证 ✓）。</b>落地要点：<code>lib/sideview.js</code>（摘要名册：状态灯/会话角标/点条目交接 + openModulePage 入口）、<code>lib/detail.js</code>（原整页逐字搬入 + 焦点交接 applyFocus/storage 监听）、index.js 按 <code>?surface=</code> 分派、escapeHtml 上移到 core/agents.js 共享。完整页全部既有探针锚点一字未动 ✓。</p>
+<ol>
+<li><b>拆分渲染</b>：<code>dsh-plugins/vssaros-agents/lib/index.js</code> 的 <code>renderPage</code>（L293）按 <code>url.searchParams.get('surface')==='sideview'</code> 分派到新文件 <code>lib/sideview.js</code>（名册摘要：头像+状态灯+角标，点击调桥 <code>openModulePage</code>/详情路由）与 <code>lib/detail.js</code>（编辑区详情页，五页签骨架：身份/记忆/委派/授权/用量）。现有整页成为 detail 的基础。<b>files 清单必须补新文件</b>。</li>
+<li><b>状态聚合</b>：复用 <code>liveForAgents</code>/<code>usageByAgent</code> 给名册行算状态灯（busy=有运行会话 / wait=有待审批 / idle）；委派/审批角标 P0 先来自 assignments 模块计数。</li>
+<li><b>入口不变</b>：仍走容器 <code>agentStudio.presetAgent</code>（sideview 自动带 <code>?surface=sideview</code>，dshPluginViewPane.ts:367 已注入），编辑区经 <code>openModulePage</code>。</li>
+<li><b>守卫</b>：agents 家族探针补「sideview 摘要版无详情控件 / editor 完整页含五页签」断言；插件 bump 0.2.13（最后一次做）。</li>
+</ol>
+
+<h2><span class="tag p0">P0</span>页面桥（<b>已落地为"不 bump"</b>，2026-10-16）</h2>
+<p>原计划桥 10→11 加 <code>openAgentDetail{agentId}</code> 深链命令；实现时改为<b>零桥改动</b>：</p>
+<ul>
+<li><b>「在编辑区打开」</b>复用既有 <code>openModulePage('/x/agents/')</code>（桥 v3 起就有，白名单已覆盖）</li>
+<li><b>定位到具体 agent</b>走同源 localStorage 交接（<code>FOCUS_KEY = vssaros.agents.focus</code>）：sideview 写、detail 页加载时消费 + storage 事件接住"页面已开着"的后续点击。理由：① 编辑器输入按容器单例（<code>DshPluginPageEditorInput.getOrCreate</code>），且 <code>createView</code> 对已存在 viewId <b>静默忽略</b>——query 深链第二次点击不重载页面，反而要拆视图重建；② 桥是单向的（invoke 只回 true/pong），页面拿不到回值。localStorage 交接与单例模型天然契合。</li>
+<li>桥 bump 顺延到 P1（<code>delegateToAgent</code> 等委派命令进来时一起升 10→11）。</li>
+</ul>
+
+<h2><span class="tag p1">P1</span>委派运行时（assignments 模块）—— <b>已落地（2026-10-16，agents 0.2.15 + chat-surface 0.2.71）</b></h2>
+<p><b>状态：p3-06 探针 55/55 ✓（委派 8 条新断言 + API 2 条 + 页面 2 条；反向突变验证 ✓）；chunk 守卫 ✓（order 15 无 tie，突变 10 被抓 ✓）。</b></p>
+<ul>
+<li><code>lib/assignments.js</code>：创建=开 preset 会话+steer 头协议任务消息；并发 8 超限 409（code=concurrency-cap，不排队）；追问=同会话再 steer；中断=cancel（幂等）；回合结束验证消费（findOurSplices）后登记报告（截断 4000）；给了 fromSession 时回复同时回传来源会话（relay 通道）。台账内存态，Host 重启清空，页面如实标注。</li>
+<li>API：<code>/x/agents/api/assignments</code>（GET 列表 / POST create·ask·cancel）。<b>桥没 bump</b>：聊天页与插件 API 同源，fetch 直达到底，delegateToAgent 命令不需要了。</li>
+<li>详情页第三枚页签「委派」（创建表单+台账表+6s 轮询，仅页签可见时轮询）；sideview 行加「委派 N」角标（只数运行中）。</li>
+<li>chat-surface 新 chunk <code>client.delegate.js</code>：dock 槽 order 15；API 404（老 agents）⇒ 停轮询隐藏+留痕；追问/中断失败必 bridge.notify。<b>不进 OUR_BASELINE</b>——保持"新条目"身份让守卫每次全量对账（goal=10 漏检教训）。</li>
+</ul>
+<h3 style="color:var(--dim)">原 P1 计划（存档）</h3>
+<ol>
+<li>新文件 <code>lib/assignments.js</code>：Assignment 记录（id/任务/执行者/来源会话/状态/报告），<b>并发上限 8，超限立即结构化报错不排队</b>；创建 = 开/复用执行者会话 + <code>agent_message</code> 派发（自带 MAX_HOPS=6 防环）；回报 = relay 的 <code>agent/turn-stopping</code> 挂钩登记 Assignment Report；追问 = 再发 agent_message；中断 = <code>agent_stop</code>。</li>
+<li>新 API：<code>/x/agents/api/assignments</code>（GET 列表 / POST 创建 / POST :id/ask / POST :id/cancel）。</li>
+<li>详情页「委派」签 + sideview 角标接此 API。</li>
+<li>守卫：并发上限、重复创建、中断幂各一条纯判据测试（agentStudio/test/common 风格 run-*.mjs）。</li>
+</ol>
+
+<h2><span class="tag p1">P1</span>chat-surface 运行态 chunk</h2>
+<ol>
+<li><b>新 chunk <code>client.delegate.js</code></b>：slot <code>conversation.input.dock</code>，id <code>vssaros-delegate</code>，<b>order 避开 0/5/10/20</b>（建议 15）；dock 列出进行中委派（轮询 assignments API，会话切换经宿主桥）。</li>
+<li><b>委派卡片</b>：agent 回报经 relay 到会话时，渲染 Assignment 卡（追问/中断调桥命令）；复用现有 tool 卡换皮通路。</li>
+<li><b>chip 行扩展</b>：在现有 <code>client.agents.js</code>（input.left chip + switchPreset）上加多 agent chip 行/状态灯，<b>切换必须经宿主 openSession/newChat{agentPreset}</b>（chip 是插入期缓存，不能点着切换——已有教训）。</li>
+<li><b>守卫</b>：<code>check-chat-surface-chunks.mjs</code> 的 OUR_BASELINE 登记新条目 + 反向突变验证；chat-surface bump。</li>
+</ol>
+
+<h2><span class="tag p2">P2</span>审批模板 + 授权页签 —— <b>已落地（2026-10-16，agents 0.2.16 + chat-surface 0.2.72）</b></h2>
+<p><b>状态：p3-06 61/61 ✓ + p3-54 36/36 ✓（B4 模板命中放行 / B5 坏 JSON 照常问）+ chunk 守卫 ✓ + 反向突变 ✓。</b></p>
+<ul>
+<li><code>lib/templates.js</code>：审批模板存 <code>&lt;数据根&gt;/agent-approval-templates.json</code>；<b>收窄边界</b>=只覆盖本包 WRITE_TOOLS 两个工具、工具名级粒度（不按参数）、读失败/坏 JSON 按"没有模板"照常问；API <code>/x/agents/api/approval-templates</code>（GET 含封闭集 / POST add·remove 幂等）。</li>
+<li>tools.js 的 pre-execute 闸先查模板：命中 ⇒ 自动放行（<code>state.approvalTemplates.has</code> 谓词，两个挂工具的角色都接上）。</li>
+<li>chat-surface <code>client.approval.js</code> 审批卡加「存为模板，以后放行」：可模板化名单由 API 的 tools 封闭集下发（chunk 不硬编码 ✓），老版本 agents（404）⇒ 按钮不出现；<b>存失败不替用户回答审批</b>（answer 只在存成功后发 allowed-once）。</li>
+<li>详情页第四枚「授权」页签：能力声明表（每 agent 的 tools allowlist，真源=.agent.md）+ 模板增删（就地刷新不重载）+ 密钥如实说明（不展示不代理 dsh 凭据）。</li>
+<li>与原计划的偏差：Workspace Grant 矩阵与密钥卡片没有真数据源 ⇒ 不渲染假 UI，密钥区只有一段如实说明；模板粒度收窄到工具名级。</li>
+</ul>
+
+<h2><span class="tag future">二期</span>—— <b>四项全部落地（2026-10-16）</b></h2>
+<ul>
+<li>✅ 群聊 Channel（0.2.18）：承载面修正为自托管群对话区（dsh 群会话竞态不可拦，lib/groups.js ★ 留痕）；mockup doc/agents-groupchat-mockup.html</li>
+<li>✅ 委派台账持久化（0.2.20）：写穿 agent-assignments.json，重启免重建恢复</li>
+<li>✅ 记忆 Git 化（0.2.22）：memory/ 目录 + MEMORY.md 快照注入 + 可选 Git（toplevel 判据防外层仓污染）；mockup doc/agents-memory-mockup.html</li>
+<li>✅ 分层授权收窄版（0.2.23）：Workspace Grant cwd 闸（三条开会话路径）+ durable Outbox（unknown-outcome 禁自动重发）；mockup doc/agents-grants-outbox-mockup.html。Reviewer 模型/Access 两级门留到真有跨机 IM 接入再议</li>
+<li>⏳ CLI parity 约定：本期新桥命令=0（全部走同源 API），未产生 CLI 缺口；工具化 lint 待真有 CLI 面时再做</li>
+</ul>
+
+<h2>验证矩阵</h2>
+<table>
+<tr><th>阶段</th><th>检查</th></tr>
+<tr><td>P0</td><td>agents 家族探针（双表面断言）+ dshPageCommandWiring/Bridge 测试 + 插件文件清单守卫（p3-09）</td></tr>
+<tr><td>P1</td><td>check-chat-surface-chunks（含反向突变）+ assignments 纯判据测试 + 真机：发起委派→dock 出现→回报成卡</td></tr>
+<tr><td>P2</td><td>审批流回归（官方三级）+ 模板命中/未命中两路</td></tr>
+</table>
+<div class="card ok">建议开工顺序：P0 桥 + 双表面（一个 PR）→ P1 assignments + delegate chunk（一个 PR）→ P2。每步独立可回退。<br><b>实际收官（2026-10-16）</b>：P0（0.2.13）→ P1（0.2.15 + chat-surface 0.2.71）→ P2（0.2.16 + 0.2.72）→ 二期群聊（0.2.18，承载面修正为自托管群对话区）→ 二期台账持久化（0.2.20 + 0.2.73，写穿 agent-assignments.json，重启恢复免重建登记）。探针 p3-06 累计 72/72、p3-54 36/36、chunk 守卫 ✓，每步含反向突变验证。</div>
+</body>
+</html>

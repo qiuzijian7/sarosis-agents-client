@@ -1,0 +1,207 @@
+{
+  "$schema": "vssaros-migration-ledger/v1",
+  "comment": "迁移台账（方案 doc/dsh-plugin-paradigm-refactor-plan.html §5）。每个能力族一行：owner 是状态机 planned→dual→dsh→removed 的唯一事实来源；dshTarget 是落点插件/官方件；parityProbe 是判定“dsh 侧已等价”的探针；killSwitch 是回退开关；deleteWhen 是 legacy 实现的删除条件。守卫：check-migration-ledger.mjs（与 tools-snapshot / toolOwnership / persistence 三方对账）。改 owner=动台账+改守卫一起进 PR。",
+  "generated": "2026-10-16",
+  "families": [
+    {
+      "id": "agent-loop",
+      "title": "Turn 主循环 / piLoop / 上下文压缩",
+      "owner": "dual",
+      "dshTarget": "官方 agent-loop + compaction（不迁代码）",
+      "parityProbe": "spike run-spike.mjs 4c/4d",
+      "killSwitch": "sessions.dshHarness.chatEngine=legacy",
+      "deleteWhen": "全部入口 owner!=legacy 且 dsh 稳定 2 个版本",
+      "notes": "前台已是 dsh；后台入口全在 legacy"
+    },
+    {
+      "id": "core-tools",
+      "title": "文件/终端/搜索/Web/委派/计划 工具族",
+      "owner": "dual",
+      "dshTarget": "官方 tool-fs/bash/pwsh/jobs/web/subagent/plan-mode",
+      "parityProbe": "—（官方已覆盖，走删除而非对账）",
+      "killSwitch": "chatEngine=legacy",
+      "deleteWhen": "同 agent-loop",
+      "notes": "原生替代"
+    },
+    {
+      "id": "llm-providers",
+      "title": "LLM provider/协议层",
+      "owner": "dual",
+      "dshTarget": "providers.sync → llm-pi-ai",
+      "parityProbe": "p3-20",
+      "killSwitch": "chatEngine=legacy",
+      "deleteWhen": "前台 dsh 后协议层随 agent-loop 删除；配置面留壳",
+      "notes": "配置在壳、执行在 dsh"
+    },
+    {
+      "id": "memory",
+      "title": "记忆",
+      "owner": "dual",
+      "dshTarget": "@vssaros/dsh-memory（23 工具+section+页）",
+      "parityProbe": "p3 系列（memory）",
+      "killSwitch": "—",
+      "deleteWhen": "dsh 默认引擎退役 legacy 工具时",
+      "notes": "已迁，IDE 实现待删"
+    },
+    {
+      "id": "codebase",
+      "title": "Codebase 图谱",
+      "owner": "dual",
+      "dshTarget": "@vssaros/dsh-codebase（21 工具+wasm）",
+      "parityProbe": "p3-47 双引擎差分",
+      "killSwitch": "—",
+      "deleteWhen": "同上；LanguageFeatures/查看器留壳",
+      "notes": "工具面已迁"
+    },
+    {
+      "id": "kb",
+      "title": "知识库",
+      "owner": "dual",
+      "dshTarget": "@vssaros/dsh-kb + @vssaros/dsh-kb-refs + @vssaros/dsh-web-content-import",
+      "parityProbe": "p3-45/58/85 等",
+      "killSwitch": "—",
+      "deleteWhen": "语义检索/kb_build apply/导入控制器迁完后",
+      "notes": "部分迁移"
+    },
+    {
+      "id": "kanban",
+      "title": "看板",
+      "owner": "dual",
+      "dshTarget": "@vssaros/dsh-kanban（10 工具，同 taskboard.json）",
+      "parityProbe": "p3-88/91",
+      "killSwitch": "sessions.dshHarness.entry.kanban=legacy",
+      "deleteWhen": "runner 迁完（2.2）",
+      "notes": "2026-10-16：runner 已落地（2.2）——拖入 running ⇒ 拾取 ⇒ vssarosRuns 驱动 ⇒ 回写；入口开关 entry.kanban 已接闸"
+    },
+    {
+      "id": "workflow",
+      "title": "工作流",
+      "owner": "dual",
+      "dshTarget": "@vssaros/dsh-workflow + vssarosWorkflowEngine 服务（D2=B；核心环已落地 0.5.0）",
+      "parityProbe": "p3-103（引擎核心环行为级，含分支剪枝突变红）",
+      "killSwitch": "entry.workflow=legacy",
+      "deleteWhen": "Phase 3 完成（节点分流 + 双引擎对账 + 编辑器接线）",
+      "notes": "2026-10-16 3.1：DAG 编排 + checkpoint 三件套（逐字移植）+ 断点续跑 + 分支剪枝 + 节点重试 ✓；cordis 服务已注册。边界：只支持 start/end/prompt/agent/ifElse/switch；comfy/askUser/媒体/skill/tool 撞到如实失败"
+    },
+    {
+      "id": "channels",
+      "title": "渠道（飞书/Telegram）",
+      "owner": "dual",
+      "dshTarget": "@vssaros/dsh-channels（核心环已落地 0.1.0；feishu/telegram 真机适配器待真凭据）",
+      "parityProbe": "p3-101（路由行为级）",
+      "killSwitch": "entry.channels=legacy",
+      "deleteWhen": "真机适配器 + 审批 IM 卡片落地后",
+      "notes": "2026-10-16：路由核心环 + loopback 适配器 ✓；真机对接待凭据；审批走 runs deny-by-default"
+    },
+    {
+      "id": "scheduler",
+      "title": "定时调度器",
+      "owner": "dual",
+      "dshTarget": "官方 dsh-schedule bundle + vssaros-scheduler 薄插件（D3=A，S3 已验证）",
+      "parityProbe": "p3-97/98",
+      "killSwitch": "entry.scheduler=legacy",
+      "deleteWhen": "legacy 调度器文件删除（Phase 5）",
+      "notes": "2026-10-16：官方 bundle + 薄插件已落地（2.1）；legacy 侧无存量（纯内存不执行）"
+    },
+    {
+      "id": "pocket",
+      "title": "Saros Pocket",
+      "owner": "dual",
+      "dshTarget": "@vssaros/dsh-pocket（Host 路由 /x/pocket/api/*，token 鉴权，0.1.0 已落地）",
+      "parityProbe": "p3-102（路由行为级）",
+      "killSwitch": "sarosPocket.* 命令保留一版",
+      "deleteWhen": "Pocket 扩展（跨仓）改为调路由后",
+      "notes": "2026-10-16：本仓这半（Host 路由）✓；Pocket 扩展的 bridge.mjs 改调用在 Saros-agents-pocket 仓（跨仓那半）"
+    },
+    {
+      "id": "subagent-crew",
+      "title": "子代理/Crew/Swarm",
+      "owner": "dual",
+      "dshTarget": "官方 subagent + agent-team（可选）；decompose/specify 自实现",
+      "parityProbe": "—（Crew 是死代码）",
+      "killSwitch": "—",
+      "deleteWhen": "Swarm/委派工具换实现后（Phase 4）",
+      "notes": "2026-10-16：Crew 已退役（crewTeamService/crewTeamView/crewTeam.ts 删除，IWorkflow 挪进 workflowStorage.ts）；Swarm/委派工具仍活（在工具表里），换官方 subagent 留给 Phase 4"
+    },
+    {
+      "id": "agents-skills",
+      "title": "Agent 定义/技能",
+      "owner": "dual",
+      "dshTarget": "@vssaros/dsh-agents + @vssaros/dsh-skills",
+      "parityProbe": "p3-27/29/31",
+      "killSwitch": "—",
+      "deleteWhen": "安装/市场/自进化迁完后",
+      "notes": "部分迁移"
+    },
+    {
+      "id": "dashboard",
+      "title": "Dashboard/遥测聚合",
+      "owner": "dual",
+      "dshTarget": "@vssaros/dsh-dashboard（只读 dsh 会话）",
+      "parityProbe": "p3-90 等 dashboard 探针",
+      "killSwitch": "—",
+      "deleteWhen": "legacy 引擎退役后（它只读 dsh 数据）",
+      "notes": "两侧看的是不同引擎的数据"
+    },
+    {
+      "id": "sessions",
+      "title": "历史会话（页面 + session_search）",
+      "owner": "dsh",
+      "dshTarget": "@vssaros/dsh-sessions（页面 + session_search 工具）",
+      "parityProbe": "p3-106（session_search 行为级）",
+      "killSwitch": "—",
+      "deleteWhen": "—（dsh 原生，legacy 侧没有对应物——legacy 的历史会话是壳侧常驻 DOM pane）",
+      "notes": "2026-10-16：session_search 落地（legacy 侧那个是 stub 已删）；页面只读投影缓存"
+    },
+    {
+      "id": "mcp",
+      "title": "MCP",
+      "owner": "dual",
+      "dshTarget": "dsh-mcp-client + @vssaros/dsh-mcp",
+      "parityProbe": "p3-18/24/25",
+      "killSwitch": "—",
+      "deleteWhen": "安装/市场迁完后",
+      "notes": "挂载已归 dsh"
+    },
+    {
+      "id": "media-gen",
+      "title": "媒体生成/视觉/视频",
+      "owner": "dual",
+      "dshTarget": "并入 @vssaros/dsh-media（Phase 4）",
+      "parityProbe": "p3-107（生成三件套 + 视觉分析 + 视频分析）",
+      "killSwitch": "—",
+      "deleteWhen": "5.5（legacy 引擎退役时一起删）",
+      "notes": "2026-10-16：媒体面全迁（media 0.5.0——生成三件套 + vision_analyze + video_analyze + extract_video_frames，定义在插件、执行经桥回 IDE）；legacy 侧的实现等 5.5 一起删"
+    },
+    {
+      "id": "canvas-diagram",
+      "title": "画布/思维导图/mermaid/drawio",
+      "owner": "dual",
+      "dshTarget": "@vssaros/dsh-ide 反向通道 + 插件工具",
+      "parityProbe": "ide 工具契约测试",
+      "killSwitch": "—",
+      "deleteWhen": "mermaid/drawio 迁完后",
+      "notes": "渲染留壳"
+    },
+    {
+      "id": "unreal-browser",
+      "title": "Unreal/Browser CDP",
+      "owner": "removed",
+      "dshTarget": "@vssaros/dsh-unreal + @vssaros/dsh-browser",
+      "parityProbe": "p3 系列",
+      "killSwitch": "—",
+      "deleteWhen": "已完成",
+      "notes": "已迁并删除 IDE 实现（先例）"
+    },
+    {
+      "id": "chat-ui",
+      "title": "聊天 UI / React webview / HTML 编辑器 / 市场 UI",
+      "owner": "dual",
+      "dshTarget": "chat-surface 已接管聊天；其余留壳（D6）",
+      "parityProbe": "workbench-e2e",
+      "killSwitch": "chatEngine=legacy",
+      "deleteWhen": "Phase 5 完成",
+      "notes": "聊天已迁，其余留壳逐步收缩"
+    }
+  ]
+}

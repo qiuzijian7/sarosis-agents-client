@@ -10,9 +10,7 @@
 // 作用: 将工作流以 JSON 文件形式持久化到当前工作区的
 //       `.sarosworkspace/workflows/` 目录下，支持读取、写入、列举、删除。
 //
-// 与 CrewTeamService 的区别:
-// - CrewTeamService 用 IStorageService（浏览器存储）持久化，不落地到工作区文件。
-// - WorkflowStorageService 直接用 IFileService 写文件到 .sarosworkspace/workflows/，
+// WorkflowStorageService 直接用 IFileService 写文件到 .sarosworkspace/workflows/，
 //   每个工作流一个 `{id}.json` 文件，可被版本管理 / 团队共享。
 //
 // 设计: 每个工作流默认绑定一个 Agent（presetId + 部署后的 agentId），
@@ -21,8 +19,56 @@
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { Event } from '../../../../base/common/event.js';
 import { URI } from '../../../../base/common/uri.js';
-import type { IWorkflow } from './crewTeam.js';
 import type { IWorkflowSessionMeta } from './workflowSessions.js';
+
+// ─── Crew 退役（重构 2.5，2026-10-16）────────────────────────────────────────
+// `IWorkflow` / `IWorkflowStep` 原先在 `crewTeam.ts` 里——那个文件是 Crew 的类型包，
+// Crew 本身是**死代码**（MVP 模拟执行 + 视图从没注册）⇒ 已删。这两个类型是**工作流存储**
+// 在用（本文件），与 Crew 无关 ⇒ 挪到这里（真源跟着活的那边走 ✓）。
+/** 工作流（存储到文件的版本；线性步骤列表是向后兼容面，执行器读它）。 */
+export interface IWorkflow {
+	/** 工作流ID */
+	id: string;
+	/** 工作流名称 */
+	name: string;
+	/** 工作流描述 */
+	description: string;
+	/** 步骤列表 */
+	steps: IWorkflowStep[];
+	/** 是否活跃 */
+	isActive: boolean;
+	/** 创建时间 */
+	createdAt: number;
+	/** 更新时间 */
+	updatedAt: number;
+}
+
+/** 工作流步骤 */
+export interface IWorkflowStep {
+	/** 步骤ID */
+	id: string;
+	/** 步骤名称 */
+	name: string;
+	/** 步骤类型 */
+	type: 'task' | 'condition' | 'parallel' | 'loop';
+	/** 执行者 Agent ID */
+	executorId?: string;
+	/** 任务ID (如果类型是 task) */
+	taskId?: string;
+	/** 条件表达式 (如果类型是 condition) */
+	condition?: string;
+	/** 并行步骤列表 (如果类型是 parallel) */
+	parallelSteps?: string[];
+	/** 循环配置 (如果类型是 loop) */
+	loopConfig?: {
+		items: string;
+		itemVariable: string;
+	};
+	/** 下一步骤ID */
+	nextStepId?: string;
+	/** 元数据 */
+	metadata?: Record<string, any>;
+}
 
 // ------------------------------------------------------------------------------------------------
 // 扩展工作流数据模型 — 增加 Agent 绑定字段 + 节点图（ReactFlow 编辑器用）

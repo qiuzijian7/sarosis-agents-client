@@ -12,50 +12,74 @@
 // 数据：`~/.vssaros/knowledge-base/<vaultId>/`（`笔记/`、`库/<分类>/*.md`、`.kbkernel.json` 索引）。**只读**。
 
 import { spawn } from 'node:child_process';
+import { bindFoundation } from './foundationRef.js';
 import { mkdir, mkdtemp, readFile, readdir, rename as renameFile, rm, stat, writeFile } from 'node:fs/promises';
+
 // `.cmd`/`.bat` shim 的**同步**探测（见 `runLarkCli` 的 error 处理：那里不能 await ✗）
 import { existsSync } from 'node:fs';
+
 import { tmpdir } from 'node:os';
+
 import { join } from 'node:path';
+
 import { fileURLToPath } from 'node:url';
+
 
 // ★ 复刻（§15.38）：分区改成「库」/「笔记」两节 ⇒ 两边的目录名都要（`NOTES_DIR` 是这轮补进 import 的 ✓，
 //   漏了它会在渲染期 `ReferenceError` ⇒ 页面直接 500 ✗）。
 import { escapeHtml, isVaultId, searchDocs, FEISHU_SYNC_SCRIPT, LIBRARY_DIR, NOTES_DIR, MAX_DOC_BYTES, TOPIC_OVERVIEW_FILE, buildFeishuSyncArgs } from './core/kb.js';
+
 // 正文检索（`kb_search mode=fulltext`）：口径逐字照 IDE 侧 `kbIndex.ts`，见 core/kbFulltext.js 文件头。
 import { searchFulltext } from './core/kbFulltext.js';
+// 重构 4：语义检索（读壳侧落盘的 .kvindex + cosine 线性扫描）+ 建半（分块 + 序列化）。
+import { chunkMarkdown, deserializeVectorIndexBinary, searchVectorIndex, serializeVectorIndexBinary } from './core/kbVectorStore.js';
+
 // 构建预览（`kb_build mode=preview`）：口径照 IDE 侧 `collectPendingSources`，见 core/kbIngest.js 文件头。
 import { MAX_PREVIEW_LISTED } from './core/kbIngest.js';
+
 // 批授权（`kb_build mode=build` 那张唯一的审批卡）：三条不变式见 core/kbBatchGrant.js 文件头。
 import { DEFAULT_BATCH_LIMIT, GRANT_TTL_MS, clampBatch, consumeGrant, describeGrant, grantAllows, openGrant } from './core/kbBatchGrant.js';
+
 import { DEFAULT_LARK_CLI, LARK_CLI_MISSING_HINT, SPACE_LIST_ARGS, findSameNameSpace, parseCreatedSpaceId, parseSpaceList, sanitizeSpaceName, spaceCreateArgs } from './core/feishuSpaces.js';
+
 // ★ 页面那唯一一条写路由（§15.33）**复用工具同款围栏** ✓：`resolveOrganizePath` 早就把
 //   "只能在「笔记」区内"判死了（真源 `kbOrganizeTools.ts` 的口径 ✓）⇒ 不另写一套判断 ✓。
 import { MAX_OPS, planCounts, resolveOrganizePath } from './core/kbOrganize.js';
+
 // 飞书**云文档（读侧）**（§R.7 第 ⑤ 项的落地 ✓）：与 `kb_feishu_sync` 共用同一个 lark-cli 依赖 ✓，
 // 方向相反（本地资料库 ↔ 飞书文档 ✓）。真源 `feishuDriveTools.ts`，此处只做**只读三件** ✓。
 import { buildAddCommentArgs, buildAddReplyArgs, buildDocReadArgs, buildListCommentsArgs, buildListRepliesArgs, buildReplyElements, describeCliFailure, isCliFailure, parseDocFetch, parseLarkItems, parseDocTarget, summarizeEntry } from './core/feishuDocs.js';
+
 // 写路径**单独一个文件** ✓（`store.js` 的不变量是"只读" ✗，把写操作混进去那条就不作数了 ✓）
 import { MAX_NOTE_CHARS, applyGating, enrichNotes, maintainNavigation, makeDir, restoreFromBackup, runOrganize, uniqueChildName, writeNote } from './organize.js';
+
 // FTS 内核缓存重建（§16.6）：写完之后让检索/页面立刻看到新数据 ✓（写点都在 refreshDerived 里 ✓）
 import { kernelStaleCheck, rebuildKernelCache } from './core/kbKernelBuild.js';
+
 // P2 素材转文本（§16.12）：PDF → 同名 .md（python ＋ 随包脚本 ✓），挂在 kb_build 的枚举之前 ✓
 import { resolvePythonPath, stageDocSourcesToText } from './core/kbDocExtract.js';
+
 // P4 思维导图（§16.14）：确定性半逐字照真源（黄金表 p3-83 ✓）；LLM 那半走 subagent（提示词逐字 ✓）
 import {
+
 	deriveMindmapTitle, extractGraphPrompt, listMindmaps, mergeAndSaveMindmap, mergeMindmapFiles, mergeRefined,
 	parseExtractedGraph, parseRefinedGraph, pickMindmapForOpen, readMindmap, refineGraphPrompt, relayoutMindmap, suggestTitlePrompt,
 	titleFromSuggestion, uniqueCanvasPath, writeMindmap,
 } from './core/kbMindmap.js';
 import { SYS_INDEX_FILES } from './core/kbIngest.js';
+
 import { MIN_DISTINCT_SOURCES } from './core/kbGating.js';
+
 // 跨进程写锁（协议 v2，与 workflow / kanban / IDE 同一套 ✓；实现是**逐字复制**的一份副本 ——
 // 插件之间不能互相 import ✓，包各自独立 ✓）。互通性由 `dshWorkflowWriteLock.test.ts` 拿**真文件互抢**验证 ✓。
 import { acquireFileLock, lockFileFor } from './lock.js';
+
 // 页面外壳（标题 / 工具条 / 分区 / 空态 / 诊断行）逐条移植自 VsSaros 原容器 Pane，
 // 见 `lib/pageShell.js` 顶部注释（真源行号 + 分发约定）。
 import { renderShell } from './pageShell.js';
+
 import { MAX_TOPIC_OVERVIEWS, countFiles, fulltextIndexes, kbRootOf, listTopicOverviews, listVaults, listVaultTree, pageSnapshotOf, previewBuild, readDoc, registerBuildCacheEntries } from './store.js';
+
 
 /** 随包内置的同步脚本绝对路径（真源 `resources/.agents/kb/feishu-sync.mjs`，副本由守卫钉住字节一致）。 */
 const FEISHU_SCRIPT_PATH = fileURLToPath(new URL(`../${FEISHU_SYNC_SCRIPT}`, import.meta.url));
@@ -2873,16 +2897,16 @@ ${group.options.map(([value, label]) => `<div class="dsh-sort-opt" data-sort-opt
 //   （与 B1 那轮"缺省 = 现状"同一纪律：新能力只能在显式请求时生效 ✓）。
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** 支持的检索模式（`index` = 索引字段匹配，从前的行为；`fulltext` = 正文 BM25）。 */
-export const SEARCH_MODES = ['index', 'fulltext'];
+/** 支持的检索模式（`index` = 索引字段匹配；`fulltext` = 正文 BM25；`semantic` = 向量 cosine）。 */
+export const SEARCH_MODES = ['index', 'fulltext', 'semantic'];
 
 /**
  * 规范化 `mode` 参数。
  *
- * ⚠ 不认识的取值**一律报错**，特别是 IDE 侧枚举里的 `semantic` / `hybrid`：dsh 侧**没有向量索引**
- * （实测：IDE 侧 `rebuildVectorIndex()` 只构建不落盘 ⇒ 盘上无向量可比，见 doc/dsh-kb-port-design.html §2）。
- * 静默退化成 fulltext 会让模型以为"语义检索做过了" —— 那正是本仓最忌讳的
- * "看起来答了、其实答的是别的" ✗。
+ * ⚠ 不认识的取值**一律报错**。`semantic`：读壳侧落盘的 `.kvindex`（单 vault 时壳侧构建后落盘 ✓，
+ * 见 `kbCommandService._rebuildVectorIndex`）——没有索引文件 ⇒ 如实报错（"还没建向量索引"），
+ * **不静默退化成 fulltext** ✗（那会让模型以为"语义检索做过了" ✗）。`hybrid` 本侧没有（混合检索
+ * 是另一套排序，不是"向量 + 全文各跑一遍拼起来" ✗）⇒ 明确报错 ✓。
  */
 export function normalizeSearchMode(value) {
 	if (value === undefined || value === null || value === '') {
@@ -2892,8 +2916,8 @@ export function normalizeSearchMode(value) {
 	if (SEARCH_MODES.includes(mode)) {
 		return mode;
 	}
-	if (mode === 'semantic' || mode === 'hybrid') {
-		throw new Error(`mode="${mode}" 需要向量索引，本侧（dsh）尚未实现：请改用 mode="fulltext"（正文全文）或 mode="index"（索引字段）。`);
+	if (mode === 'hybrid') {
+		throw new Error(`mode="hybrid" 本侧（dsh）没有混合检索（那是另一套排序，不是"向量+全文各跑一遍"）：请用 mode="semantic"（向量）或 mode="fulltext"（正文全文）。`);
 	}
 	throw new Error(`未知的 mode：${mode}（本侧支持 ${SEARCH_MODES.join(' / ')}）`);
 }
@@ -3037,6 +3061,70 @@ async function runFulltextSearch(rootValue, { wantedVault, query, limit, type, t
 }
 
 /**
+ * 语义检索（重构 4，2026-10-16）：读壳侧落盘的 `.kvindex`（单 vault 时壳侧 `_rebuildVectorIndex`
+ * 会写 ✓），经桥回 IDE 取 query 向量（embedding 模型在壳侧 ✓），cosine 线性扫描取 top-k。
+ * 没有索引文件 / 没有桥 ⇒ 如实报错（不静默退化成 fulltext ✗——那会让模型以为"语义检索做过了" ✗）。
+ */
+async function runSemanticSearch(rootValue, { wantedVault, query, limit, bridge, config }) {
+	const q = typeof query === 'string' ? query.trim() : '';
+	if (!q) {
+		throw new Error('mode="semantic" 需要非空的 query（只想按类型/标签过滤请用缺省的 mode="index"）。');
+	}
+	const { vaults } = await listAllVaults(rootValue, config, { withDocs: false });
+	const targets = wantedVault ? vaults.filter(vault => vault.id === wantedVault) : vaults;
+	if (targets.length === 0) {
+		throw new Error(wantedVault ? `资料库里没有这个 vault：${wantedVault}` : `资料库根下还没有任何 vault：${rootValue}`);
+	}
+	// 读每个 vault 的 .kvindex（壳侧单 vault 时落盘 ✓；多 vault 壳侧没落 ⇒ 如实报"没建" ✓）。
+	const { readFile } = await import('node:fs/promises');
+	const { join } = await import('node:path');
+	const perVault = [];
+	for (const vault of targets) {
+		const indexPath = join(vault.dir, '.kvindex');
+		let data = null;
+		try {
+			const buf = await readFile(indexPath);
+			data = deserializeVectorIndexBinary(new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength));
+		} catch { /* 没有索引文件 ⇒ 下面如实报 */ }
+		if (data) { perVault.push({ vaultId: vault.id, data, indexPath }); }
+	}
+	if (perVault.length === 0) {
+		throw new Error('选中的 vault 还没有向量索引：'
+			+ targets.map(v => v.id).join(', ')
+			+ '（壳侧在设置里「重建向量索引」后会写 .kvindex；本侧只读它，不自己建——建索引要 embedding 模型，那是壳侧的 ✓）。');
+	}
+	// 经桥回 IDE 取 query 向量（embedding 模型在壳侧 ✓）。
+	if (!bridge || typeof bridge.callIDE !== 'function') {
+		throw new Error('语义检索要经桥回 IDE 取 query 向量（embedding 模型在 IDE 进程），但 vssarosBridge 不在（bridge 插件没装/没连）');
+	}
+	const reply = await bridge.callIDE('ide.request', {
+		capability: 'kb',
+		pluginId: 'vssaros-kb',
+		params: { op: 'embed', text: q },
+	}, { timeoutMs: 60 * 1000 });
+	const queryVector = Array.isArray(reply?.vector) ? reply.vector : null;
+	if (!queryVector) {
+		throw new Error(`IDE 没回向量（embedding 没实现？）：${JSON.stringify(reply)?.slice(0, 120)}`);
+	}
+	// 每库各自检索（cosine），按分数合并；跨库分数不可比 ⇒ 回执里如实说明（与 fulltext 同口径 ✓）。
+	const merged = [];
+	for (const entry of perVault) {
+		for (const hit of searchVectorIndex(entry.data, queryVector, { limit })) {
+			merged.push({ vaultId: entry.vaultId, uri: hit.docId, title: hit.docName, score: Math.round(hit.score * 100) / 100, snippet: String(hit.text ?? '').slice(0, 240), matchedBy: 'semantic' });
+		}
+	}
+	merged.sort((a, b) => b.score - a.score);
+	const items = merged.slice(0, limit);
+	return {
+		count: items.length,
+		mode: 'semantic',
+		items,
+		vaultsSearched: perVault.length,
+		sources: perVault.map(entry => ({ vaultId: entry.vaultId, source: '.kvindex', chunks: entry.data.chunks?.length ?? 0 })),
+	};
+}
+
+/**
  * 工具定义（都带 `output.render`——缺它会让**整个插件不挂载**）。
  * 前四个只读；最后一个是飞书同步（**默认只预览**，`apply:true` 才写远端）。
  */
@@ -3155,6 +3243,10 @@ function toolDefinitions(ctx, state, config) {
 			const limit = Math.min(100, Math.max(1, Number.isFinite(params?.limit) ? Math.floor(params.limit) : 20));
 			if (mode === 'fulltext') {
 				return runFulltextSearch(root(), { wantedVault, query: params?.query, limit, type: params?.type, tag: params?.tag, config });
+			}
+			// 重构 4：semantic 模式（读壳侧落盘的 .kvindex + 经桥取向量 + cosine）。
+			if (mode === 'semantic') {
+				return runSemanticSearch(root(), { wantedVault, query: params?.query, limit, bridge: state.bridge, config });
 			}
 			const { vaults } = await listAllVaults(root(), config, { withDocs: true });
 			const items = [];
@@ -4356,6 +4448,114 @@ function toolDefinitions(ctx, state, config) {
 				await rm(runDir, { recursive: true, force: true }).catch(() => undefined);
 			}
 		},
+	}, {
+		// 重构 4（2026-10-16）：`kb_reindex`——建向量索引（KB 语义检索的**建**半）：读 vault 的 .md
+		// ⇒ 分块（chunkMarkdown，与 IDE 同口径 ✓）⇒ 经桥回 IDE 批量取向量（embedding 模型在壳侧 ✓）
+		// ⇒ 写 `.kvindex`（与 IDE 同一份二进制契约 ✓）。写类 ⇒ 挂审批闸 ✓（WRITE_TOOLS 里有它 ✓）。
+		// 与 kb_build 的 build 模式分开：那个建**笔记**（子代理写盘），这个建**向量索引**（读已有笔记 ✓）。
+		name: 'kb_reindex',
+		description: '重建知识库的向量索引（语义检索的建半）：读 vault 的 .md 笔记，分块后经 IDE 侧的 embedding 模型批量取向量，写成 .kvindex（与 IDE 同一份二进制格式）。写完 mode="semantic" 的检索就能用它。写类（写 .kvindex）。',
+		parameters: {
+			type: 'object',
+			properties: {
+				vaultId: { type: 'string', description: '重建哪个 vault（缺省 = 库里只有一个 vault 时用它）' },
+				batchSize: { type: 'integer', description: '每批向量化多少块（默认 64，照 IDE 的 EMBED_BATCH ✓）' },
+			},
+		},
+		output: {
+			schema: {
+				type: 'object',
+				properties: {
+					ok: { type: 'boolean' },
+					vaultId: { type: 'string' },
+					chunks: { type: 'integer' },
+					dimensions: { type: 'integer' },
+					tag: { type: 'string' },
+					indexPath: { type: 'string' },
+					error: { type: 'string' },
+				},
+			},
+			render: (_args, value) => [{
+				type: 'text',
+				text: value.ok
+					? `已重建向量索引：${value.chunks} 块（${value.dimensions} 维 · ${value.tag}）→ ${value.indexPath}`
+					: `重建失败：${value.error ?? '未知原因'}`,
+			}],
+		},
+		// 写类 ⇒ 不声明 isConcurrencySafe（默认独占 ✓）。
+		execute: async (params) => {
+			const { vaults } = await listAllVaults(root(), config, { withDocs: true });
+			const wantedVault = typeof params?.vaultId === 'string' ? params.vaultId.trim() : '';
+			const targets = wantedVault ? vaults.filter(v => v.id === wantedVault) : vaults;
+			if (targets.length === 0) {
+				throw new Error(wantedVault ? `资料库里没有这个 vault：${wantedVault}` : '资料库根下还没有任何 vault。');
+			}
+			// ⚠ 单 vault 才建（与壳侧同口径 ✓：buildVectorIndex 是合并索引 ⇒ 多库拆不出来 ⇒ 写出来会是
+			//   "合并态却假装是某库的" ✗——`kbCommandService._rebuildVectorIndex` 的注释写清了 ✓）。
+			if (targets.length > 1) {
+				throw new Error(`向量索引一次只建一个 vault（多库会合并拆不开 ✗）：请用 vaultId 指定一个（库里有 ${targets.map(v => v.id).join(', ')}）。`);
+			}
+			const vault = targets[0];
+			// 读所有 .md 笔记
+			const docs = [];
+			const { readdir, readFile, stat } = await import('node:fs/promises');
+			const { join } = await import('node:path');
+			const walk = async (dir, rel = '') => {
+				const entries = await readdir(dir, { withFileTypes: true });
+				for (const e of entries) {
+					const full = join(dir, e.name);
+					const r = rel ? `${rel}/${e.name}` : e.name;
+					if (e.isDirectory()) { await walk(full, r); }
+					else if (e.name.endsWith('.md')) {
+						const text = await readFile(full, 'utf8');
+						const st = await stat(full);
+						docs.push({ uri: r, name: e.name, text, mtime: st.mtimeMs, size: st.size });
+					}
+				}
+			};
+			await walk(vault.dir);
+			if (docs.length === 0) { throw new Error(`vault ${vault.id} 里没有 .md 笔记（没有可索引的文本）。`); }
+			// 分块（与 IDE 同口径 ✓）
+			const chunks = [];
+			for (const doc of docs) {
+				for (const c of chunkMarkdown(doc.text)) {
+					chunks.push({ docId: doc.uri, docName: doc.name, section: 'concept', text: c.text, start: c.start });
+				}
+			}
+			// 经桥批量取向量（embedding 模型在壳侧 ✓）
+			if (!state.bridge || typeof state.bridge.callIDE !== 'function') {
+				throw new Error('建向量索引要经桥回 IDE 取向量（embedding 模型在 IDE 进程），但 vssarosBridge 不在（bridge 插件没装/没连）');
+			}
+			const batchSize = Math.min(64, Math.max(1, Number.isFinite(params?.batchSize) ? Math.floor(params.batchSize) : 64));
+			const vectors = [];
+			let tag = '';
+			let dimensions = 0;
+			for (let i = 0; i < chunks.length; i += batchSize) {
+				const batch = chunks.slice(i, i + batchSize).map(c => c.text);
+				const reply = await state.bridge.callIDE('ide.request', {
+					capability: 'kb',
+					pluginId: 'vssaros-kb',
+					params: { op: 'embedBatch', texts: batch },
+				}, { timeoutMs: 5 * 60 * 1000 });
+				const batchVectors = Array.isArray(reply?.vectors) ? reply.vectors : null;
+				if (!batchVectors || batchVectors.length !== batch.length) {
+					throw new Error(`第 ${i / batchSize + 1} 批向量化失败（IDE 回了 ${batchVectors?.length ?? 0} 个向量，要 ${batch.length} 个）`);
+				}
+				vectors.push(...batchVectors);
+				if (!tag && reply?.tag) { tag = String(reply.tag); }
+				if (!dimensions && reply?.dimensions) { dimensions = Number(reply.dimensions); }
+			}
+			// 写 .kvindex（与 IDE 同一份二进制契约 ✓）
+			const indexData = {
+				v: 1, tag, dimensions, builtAt: Date.now(),
+				roots: [{ uri: vault.dir, section: 'concept' }],
+				chunks: chunks.map((c, i) => ({ ...c, vector: vectors[i], tag })),
+			};
+			const indexPath = join(vault.dir, '.kvindex');
+			const { writeFile } = await import('node:fs/promises');
+			await writeFile(indexPath, Buffer.from(serializeVectorIndexBinary(indexData)));
+			return { ok: true, vaultId: vault.id, chunks: chunks.length, dimensions, tag, indexPath };
+		},
 	}];
 }
 
@@ -4365,7 +4565,7 @@ function toolDefinitions(ctx, state, config) {
  * 为什么导出：跨模块守卫（`dshPluginPackages.test.ts`）拿它**机器核对** —— 名单非空 ✓、
  * 每个名字都真的被注册 ✓（防"闸挂了但名单是空的" ✗ 这种最像修好了的坏法 ✓）。
  */
-export const WRITE_TOOLS = ['kb_feishu_sync', 'kb_feishu_spaces', 'kb_organize', 'kb_write_note', 'kb_mkdir', 'kb_build', 'kb_mindmap', 'feishu_drive_reply_comment', 'feishu_drive_add_comment'];
+export const WRITE_TOOLS = ['kb_feishu_sync', 'kb_feishu_spaces', 'kb_organize', 'kb_write_note', 'kb_mkdir', 'kb_build', 'kb_mindmap', 'feishu_drive_reply_comment', 'feishu_drive_add_comment', 'kb_reindex'];
 
 /**
  * 这次调用**到底写不写**（决定要不要弹窗 ✓）。本模块的写工具分成**两类判据** ✓：
@@ -4894,12 +5094,38 @@ async function startBuildJob({ ctx, state, config, vault, pending, params, exec,
 }
 
 export function apply(ctx, config = {}) {
+	// 重构 1.3：绑定 foundation 共享服务（dataRoot/dshHome/pageShell/lock 的真源）。
+	{
+		// 同步直读在前：有插件在 apply 的**同步段**就建 store（inject 回调是异步的，会来不及 ✗）。
+		let ready = null;
+		try { ready = ctx.get?.('vssarosFoundation') ?? ctx.vssarosFoundation ?? null; } catch { /* 探针的 Proxy 假 ctx 对未知属性抛错 ⇒ 当不存在 */ }
+		if (ready) { bindFoundation(ready); }
+		ctx.inject(['vssarosFoundation'], child => {
+		let svc = null;
+		try { svc = child.vssarosFoundation ?? null; } catch { /* 探针的假 ctx（Proxy）对未知属性抛错 ⇒ 当不存在 */ }
+		if (svc) { bindFoundation(svc); }
+	});
+	}
 	// ★ `state.grant` = **本批一次性授权**（2026-10-12 P0，见 core/kbBatchGrant.js 文件头）：
 	//   由 `kb_build mode="build"` 在**被用户批准之后**打开（执行期 ⇒ 批准已成立 ✓），
 	//   有界（篇数）/ 有时限（TTL）/ 有归属（vault + 会话 owner）✓ ⇒ 子代理写入不再逐篇弹窗 ✓。
 	//   ⚠ 它在内存里（不落盘、不跨进程 ✓）；`config.batchGrant === false` 时**整个机制关闭**（每次都问 ✓）。
 		// `grantWrites`：本批**授权放行**过的笔记路径（vault 相对 ✓）⇒ 构建收尾时用它当补链目标 ✓
-	const state = { tools: null, grant: undefined, grantWrites: new Set(), lastBuildCache: undefined, lastDerivedError: undefined, lastMindmap: undefined };
+	const state = { tools: null, grant: undefined, grantWrites: new Set(), lastBuildCache: undefined, lastDerivedError: undefined, lastMindmap: undefined, bridge: null };
+
+	// 重构 4（2026-10-16）：semantic 检索要经桥回 IDE 取 query 向量（embedding 模型在壳侧 ✓）。
+	// 可选注入：vssarosBridge 不在 ⇒ semantic 模式如实报错（与"没建索引"同口径 ✓），其余照常 ✓。
+	// 防御：探针的假 ctx 不忠实模拟"依赖不齐不调回调"（直接调，scope 上没有 ⇒ 抛）⇒ 服务不齐时
+	// 不启动不抛错（抛错会让整个插件 apply 失败 ✗，kb 工具陪葬 ✗——kanban 的 runner 踩过同型坑 ✓）。
+	ctx.inject(['vssarosBridge'], scope => {
+		let svc = null;
+		try { svc = scope.vssarosBridge ?? null; } catch { /* 探针的 Proxy 假 ctx 对未知属性抛错 ⇒ 当不存在 */ }
+		if (svc && typeof svc.callIDE === 'function') {
+			state.bridge = svc;
+			return () => { state.bridge = null; };
+		}
+		return undefined;
+	});
 	/** 关掉批授权（改用逐篇询问）。为什么留这个开关：让"要不要批授权"这件事**可复核、可回退** ✓。 */
 	const batchGrantEnabled = config.batchGrant !== false;
 	// ★ 写入类工具的**审批闸**（报告 §5-1 / README 5.104）—— 与 kanban / workflow 同一把 ✓：

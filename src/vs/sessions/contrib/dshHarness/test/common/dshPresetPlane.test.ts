@@ -32,6 +32,15 @@ function rowNamesOf(rowsText: string): string[] {
 	return [...rowsText.matchAll(/^\s+name:\s*'(@vssaros\/[^']+)'\s*$/gm)].map(m => m[1]).sort();
 }
 
+/**
+ * 剥注释后再扫源码 —— **必须**：本仓的注释里经常正写着被禁/被要求的写法名（例如
+ * "用 `ctx.reflect.get(name, false)` 探一次"），不剥的话断言会被**自己的注释**满足 ⇒
+ * 反向突变假绿 ✗（2026-10-16 实测：本文件那条 provide 幂等守卫第一版就这么假绿了 ✓）。
+ */
+function stripComments(text: string): string {
+	return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+}
+
 suite('dsh preset plane（R13 ①：我们的 preset 生成物）', () => {
 
 	test('★ cordis.presets.yml == baseline + 我们的行（手改或漏重生成即红）', async function () {
@@ -113,6 +122,69 @@ suite('dsh preset plane（R13 ①：我们的 preset 生成物）', () => {
 			assert.ok(!rowNamesOf(rowsText).includes(name),
 				`${name} 不是模块插件（不随包安装）⇒ 不能写进我们的 preset ✗（组合期会指向不存在的包）`);
 		}
+	});
+
+	test('★★ 双 plane 挂载的插件：`ctx.provide` 必须**幂等**（否则预设一激活就抛 ⇒ 会话整个起不来）', function () {
+		// 为什么单列这条：同一个模块**既**在 host plane（`dsh-plugins/*/cordis.patch.yml` 插进 profile，
+		// 启动即装）**又**在 preset plane（`preset-vssaros.rows.yml` ⇒ 生成物 `cordis.presets.yml`，
+		// 会话选中它时**再 apply 一次**）—— `preset-vssaros.rows.yml` 的头部注释早就记着这个隐患
+		// （"它们会被**重复挂载** ✗（页面/服务重复）"），但**没有守卫** ✗ ⇒ 2026-10-16 真机栽了：
+		// 工作流 3.1 给插件加了 `ctx.provide('vssarosWorkflowEngine', …)` ⇒ 第二次 apply 抛
+		// `service "…" has been registered` ⇒ **整个 preset 被判 invalid** ⇒ 凡是带它的会话
+		// `session.start` 全失败（表现="点工作区 / worktree 切不过去"、界面上一句提示都没有 ✗✗）。
+		// 判据：`ctx.provide(` 之前必须先**探测**一次（`ctx.reflect.get(name, false)` = 文档口径的
+		// "不经 inject 要求地读"、不抛 ✓；`ctx.has(` 也算 ✓）。
+		const root = repoRoot();
+		if (!root) { this.skip(); }
+		// ① host plane：谁有 `cordis.patch.yml`（有 = 启动即装；`disabled: true` = 那行已停用 ✓）
+		const hostPlane: { name: string; dir: string; disabled: boolean }[] = [];
+		for (const entry of fs.readdirSync(path.join(root!, PLUGINS_REL), { withFileTypes: true })) {
+			if (!entry.isDirectory()) { continue; }
+			const patchPath = path.join(root!, PLUGINS_REL, entry.name, 'cordis.patch.yml');
+			if (!fs.existsSync(patchPath)) { continue; }
+			const patch = fs.readFileSync(patchPath, 'utf8');
+			for (const m of patch.matchAll(/^\s+name:\s*'(@vssaros\/[^']+)'\s*$/gm)) {
+				hostPlane.push({ name: m[1], dir: entry.name, disabled: /^\s+disabled:\s*true\s*$/m.test(patch) });
+			}
+		}
+		// 防空跑：patch 文件是这一族的采集面（少于 10 个 ⇒ 写法变了、本守卫静默失效 ✗）
+		assert.ok(hostPlane.length >= 10, `只从 cordis.patch.yml 里认出 ${hostPlane.length} 个 host plane 行 ⇒ 采集面缩水 ✗`);
+		const byName = new Map(hostPlane.map(h => [h.name, h]));
+		const rows = rowNamesOf(fs.readFileSync(path.join(root!, AGENTS_REL, 'preset-vssaros.rows.yml'), 'utf8'));
+		const twice = rows.map(n => byName.get(n)).filter((h): h is { name: string; dir: string; disabled: boolean } => !!h && !h.disabled);
+		const disabledCount = rows.filter(n => byName.get(n)?.disabled === true).length;
+		// 第 ③ 步（host 那几行 `disabled: true`）落地后本守卫自动变成"无可检"，但**采集面自检仍在** ✓
+		if (disabledCount === 0) {
+			assert.ok(twice.some(h => h.dir === 'vssaros-workflow'),
+				'vssaros-workflow 应在"双 plane"名单里（这条守卫就是被它顶出来的 ✓）；名单变了请确认判据没失效 ✗');
+		}
+		// ② 逐个扫这些插件的源码：每个 `ctx.provide(` 之前必须有探测
+		const offenders: string[] = [];
+		const walkJs = (dir: string, out: string[] = []): string[] => {
+			for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+				const full = path.join(dir, e.name);
+				if (e.isDirectory()) { walkJs(full, out); continue; }
+				if (e.name.endsWith('.js')) { out.push(full); }
+			}
+			return out;
+		};
+		for (const { dir } of twice) {
+			const libDir = path.join(root!, PLUGINS_REL, dir, 'lib');
+			if (!fs.existsSync(libDir)) { continue; }
+			for (const file of walkJs(libDir)) {
+				// ⚠ 必须先剥注释（见 `stripComments` 的注释：本仓注释里就写着探测写法 ⇒ 不剥会假绿 ✗）
+				const text = stripComments(fs.readFileSync(file, 'utf8'));
+				for (const m of text.matchAll(/ctx\.provide\(/g)) {
+					const before = text.slice(Math.max(0, (m.index ?? 0) - 400), m.index ?? 0);
+					if (!/reflect\.get\(|ctx\.has\(/.test(before)) {
+						offenders.push(`${dir}/${path.basename(file)}：\`ctx.provide(\` 之前没有探测（reflect.get / has）`);
+					}
+				}
+			}
+		}
+		assert.deepStrictEqual(offenders, [],
+			'双 plane 挂载的插件里 `ctx.provide` 必须先探测再提供 —— 第二次 apply 会抛 `has been registered`，'
+			+ '整个 preset 被判 invalid、该 preset 的会话全部起不来 ✗：\n' + offenders.join('\n'));
 	});
 
 	test('★ 清单接线：bundle.patch 收录 preset 文件、files 覆盖生成物（否则装了也不加载 / 包里没有）', function () {

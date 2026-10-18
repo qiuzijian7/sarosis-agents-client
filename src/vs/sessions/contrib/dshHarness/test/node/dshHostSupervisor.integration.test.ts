@@ -43,6 +43,7 @@ const hasRuntime = existsSync(RUNTIME_ROOT) && new DshRuntimeManager(RUNTIME_ROO
 		supervisor = new DshHostSupervisor({
 			runtime: new DshRuntimeManager(RUNTIME_ROOT, l => lines.push(l)),
 			runDir,
+			foundationPluginDir: undefined,
 			bridgePluginDir: BRIDGE_DIR,
 			chatSurfacePluginDir: undefined,
 			modulePluginDirs: [],
@@ -205,6 +206,7 @@ const hasRuntime = existsSync(RUNTIME_ROOT) && new DshRuntimeManager(RUNTIME_ROO
 		supervisor = new DshHostSupervisor({
 			runtime: new DshRuntimeManager(RUNTIME_ROOT, () => { }),
 			runDir,
+			foundationPluginDir: undefined,
 			bridgePluginDir: undefined,
 			chatSurfacePluginDir: undefined,
 			modulePluginDirs: [],
@@ -243,6 +245,7 @@ const hasRuntime = existsSync(RUNTIME_ROOT) && new DshRuntimeManager(RUNTIME_ROO
 		const sup = new DshHostSupervisor({
 			runtime: new DshRuntimeManager(RUNTIME_ROOT, l => lines.push(l)),
 			runDir: join(shortRoot, 'run'),
+			foundationPluginDir: undefined,
 			bridgePluginDir: BRIDGE_DIR,
 			chatSurfacePluginDir: undefined,
 			modulePluginDirs: [],
@@ -339,7 +342,8 @@ const hasRuntime = existsSync(RUNTIME_ROOT) && new DshRuntimeManager(RUNTIME_ROO
 			const lines: string[] = [];
 			const sup = new DshHostSupervisor({
 				runtime: new DshRuntimeManager(RUNTIME_ROOT, l => lines.push(l)),
-				runDir, bridgePluginDir: src, chatSurfacePluginDir: undefined, modulePluginDirs: [],
+				runDir, foundationPluginDir: undefined,
+			bridgePluginDir: src, chatSurfacePluginDir: undefined, modulePluginDirs: [],
 				defaultDshHome: home, instanceId: 'stage-fingerprint', log: l => lines.push(l),
 			});
 			try {

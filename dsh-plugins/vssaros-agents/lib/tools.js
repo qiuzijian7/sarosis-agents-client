@@ -21,6 +21,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { presetIdOf } from './core/agents.js';
+import { checkCwdGrant } from './grants.js';
 import { aggregateByPreset, liveForAgents } from './core/live.js';
 import { personaSwitchMessage } from './core/persona.js';
 import { AGENT_MESSAGE_KIND } from './core/relay.js';
@@ -40,8 +41,9 @@ export const MAX_HOPS = 6;
 /**
  * 按 id 或名字找 agent：id 精确 → 名字精确 → 名字忽略大小写。
  * 找不到/有歧义都返回 error 文案（列出可用的），**绝不猜**（猜错等于把别人的人格/会话当目标）。
+ * （2026-10-16 导出：assignments 模块的委派创建用同一份查找逻辑，不另写 ✓）
  */
-function findAgent(agents, ref) {
+export function findAgent(agents, ref) {
 	const wanted = String(ref ?? '').trim();
 	if (!wanted) {
 		return { error: '要给 agent 参数（id 或名字）。' };
@@ -171,6 +173,9 @@ export function registerAgentTools(ctx, config, state) {
 					return '这个 dsh 组合里没有 sessionController 服务，开不了会话（dsh 版本不匹配？）。';
 				}
 				const cwd = typeof args?.cwd === 'string' && args.cwd.trim() ? args.cwd.trim() : undefined;
+				// Workspace Grant 闸（2026-10-16 二期）：显式 cwd 必须在 .agent.md 的 workspaces-read 里 ✓
+				const refusal = checkCwdGrant(agent, cwd);
+				if (refusal) { return refusal; }
 				const want = presetIdOf(agent.id);
 				const created = await sc.create({ ...(cwd ? { cwd } : {}), agentPreset: want });
 				if (created?.agentPreset && created.agentPreset !== want) {
@@ -324,15 +329,15 @@ export function registerAgentTools(ctx, config, state) {
 						return '该会话的 agent 不支持 followup（dsh 版本不匹配？）。';
 					}
 					target.followup(message);
-					// 登记 pending ⇒ 它的回合结束时回复自动回传（lib/relay.js；Host 重启会丢未回传的）
-					notePendingReply(sessionId, { messageId: message.id, from: selfId ?? null, fromName: senderName, hop: thisHop });
+					// 登记 pending ⇒ 它的回合结束时回复自动回传（lib/relay.js + outbox 落盘，2026-10-16 起重启不丢 ✓）
+					notePendingReply(config, sessionId, { messageId: message.id, from: selfId ?? null, fromName: senderName, hop: thisHop });
 					return `已排队给 ${agent.name}（会话 ${sessionId}）：它当前工作结束后作为独立回合处理；它回完后，回复会自动送回你的会话（Host 重启会丢未回传的——重要的事自己跟进）。`;
 				}
 				if (typeof target.steer !== 'function') {
 					return '该会话的 agent 不支持 steer（dsh 版本不匹配？）。';
 				}
 				target.steer(message);
-				notePendingReply(sessionId, { messageId: message.id, from: selfId ?? null, fromName: senderName, hop: thisHop });
+				notePendingReply(config, sessionId, { messageId: message.id, from: selfId ?? null, fromName: senderName, hop: thisHop });
 				return `已发给 ${agent.name}（会话 ${sessionId}）：它在干活则下一 step 读到，空闲则直接开回合；它回完后，回复会自动送回你的会话（Host 重启会丢未回传的——重要的事自己跟进）。别轮询、别重发。`;
 			},
 		},
@@ -392,9 +397,18 @@ export function registerAgentTools(ctx, config, state) {
 	];
 
 	const disposers = defs.map(definition => ctx.tools.register(definition));
-	const offGate = ctx.on('tools/pre-execute', (exec, next) => {
+	const offGate = ctx.on('tools/pre-execute', async (exec, next) => {
 		if (!exec || !WRITE_TOOLS.includes(exec.name)) {
 			return next(); // agent_list / agent_open_session 与其它插件的工具 ⇒ 放行
+		}
+		// 审批模板（2026-10-16，P2）：命中 ⇒ 自动放行。模板只覆盖 WRITE_TOOLS 这两个工具、
+		// 工具名级粒度（lib/templates.js 头注释 ①②）；读模板失败按"没有" ⇒ 照常问（宁可多问 ✗ 关闭闸）。
+		try {
+			if (await state.approvalTemplates?.has?.(exec.name)) {
+				return next();
+			}
+		} catch {
+			/* 读模板失败 ⇒ 照常问 ✓ */
 		}
 		// ⚠ 参数在 `exec.arguments`（官方 ToolExecutionInput.arguments），不是 args —— 写错会静默放行。
 		return { kind: 'ask', reason: gateReason(exec.name, exec.arguments ?? {}) };

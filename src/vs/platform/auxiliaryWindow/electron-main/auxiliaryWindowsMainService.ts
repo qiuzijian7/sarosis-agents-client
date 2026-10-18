@@ -55,6 +55,14 @@ export class AuxiliaryWindowsMainService extends Disposable implements IAuxiliar
 
 		app.on('browser-window-created', (_event, browserWindow) => {
 
+			// ★ 2026-10-17 诊断：**所有** BrowserWindow 的创建都留一行（含不是辅助窗口的），带主进程调用栈 ——
+			//   透明窗口问题里「是谁开的」只有这一处能兜底回答（渲染侧日志看不到主进程直接 new 的窗口）。
+			try {
+				const b = browserWindow.getBounds();
+				const stack = (new Error('browser-window-created').stack ?? '').split('\n').slice(2, 12).map(l => '    ' + l.trim()).join('\n');
+				this.logService.info(`[aux window] browser-window-created: id=${browserWindow.id} webContents=${browserWindow.webContents.id} bounds=${b.x},${b.y} ${b.width}x${b.height} parent=${browserWindow.getParentWindow()?.id ?? '-'} url=${browserWindow.webContents.getURL() || '(not loaded)'}\n${stack}`);
+			} catch { /* 诊断失败不影响开窗 */ }
+
 			// This is an auxiliary window, try to claim it
 			const auxiliaryWindow = this.getWindowByWebContents(browserWindow.webContents);
 			if (auxiliaryWindow) {
@@ -91,6 +99,11 @@ export class AuxiliaryWindowsMainService extends Disposable implements IAuxiliar
 	}
 
 	createWindow(details: HandlerDetails): BrowserWindowConstructorOptions {
+		// ★ 2026-10-17 诊断（用户报「点 Agents → 某个 agent 条目就弹出一叠透明窗口」）：
+		//   **每一个**辅助窗口都从渲染进程的 `window.open('about:blank')` 进来、经过这里 ⇒ 在主进程留一行
+		//   （渲染侧 `[auxWindow] open` 那条栈只覆盖走 IAuxiliaryWindowService 的调用；这一行兜住所有来源，
+		//   包括绕过服务直接 window.open 的）。features 里有尺寸 / 位置，能直接和截图里窗口的矩形对上。
+		this.logService.info(`[aux window] createWindow: url=${details.url} frame=${details.frameName || '(none)'} disposition=${details.disposition} features=${details.features}`);
 		const { state, overrides } = this.computeWindowStateAndOverrides(details);
 		return this.instantiationService.invokeFunction(defaultBrowserWindowOptions, state, overrides, {
 			preload: FileAccess.asFileUri('vs/base/parts/sandbox/electron-browser/preload-aux.js').fsPath

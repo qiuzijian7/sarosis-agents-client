@@ -183,6 +183,11 @@ suite('dshHarness / view load retry（有界重试）', () => {
 			assert.match(source, /contextChip: !!document\.querySelector\("\[data-vssaros-context-chip\]"\)/,
 				'探针必须读**真实 DOM**里有没有那枚合并入口（只报"数据到了"仍然分不清是哪一层坏；'
 				+ '认旧的两个标记会永远 false ⇒ 假告警 ✗）');
+			// ★ 2026-10-16（方案 A：hero 里"借官方触发器"）：hero（空白会话屏）那一行**没有我们自己的 chip**
+			//   —— 官方 WorkspaceChip 写死在 heroWorkspaceRow 里（走不了 slot），我们的面板挂它的**浮层槽**上
+			//   ⇒ 只认 contextChip 会把空白会话屏读成"我们的入口没出来"（假告警 ✗）⇒ 必须另认 hero 壳标记 ✓。
+			assert.match(source, /contextHeroEntry: !!document\.querySelector\("\[data-vssaros-context-hero\]"\)/,
+				'hero 壳标记必须进自证（否则空白会话屏永远报"入口没出来"的假告警 ✗）');
 			assert.match(source, /void this\._reportPageSurface\(slot, PAGE_SURFACE_REPORT_DELAY_MS\);/,
 				'did-finish-load 必须触发这次自证（不触发 = 这层可见性又没了）');
 			// ★ 2026-10-15：两枚 chip 合并后，这句 warn 的文案也跟着改了（"chip" → "合并入口"）✓
@@ -278,7 +283,9 @@ suite('dshHarness / view load retry（有界重试）', () => {
 			};
 			const fakeDocument = {
 				documentElement: { dataset: { vssarosWorktrees: '[{"path":"G:\\\\ws\\\\a"}]' } },
-				querySelector: () => ({}),
+				// ⚠ 刻意**按选择器区分**（只塞 chip 那个标记）：两个标记若都返回同一个对象，
+				//   下面那条 `contextHeroEntry === false` 就成了**假守卫** ✗（它得真读自己的标记 ✓）。
+				querySelector: (sel: string) => sel.indexOf('data-vssaros-context-chip') >= 0 ? {} : null,
 			};
 			// ★ 2026-10-14：页面已发出的请求（真实形态）⇒ 只留我们的 chunk，且去重/排序 ✓
 			const fakePerformance = {
@@ -310,6 +317,10 @@ suite('dshHarness / view load retry（有界重试）', () => {
 			assert.strictEqual(parsed.worktreeItems, 1, 'worktree 负载条数仍要能数');
 			// ★ 2026-10-15：两枚 chip 合并成单枚入口 ⇒ 探针字段随之改名（`worktreeChip` → `contextChip`）✓
 			assert.strictEqual(parsed.contextChip, true, '合并入口的存在性仍要能判（改名了，别守着旧字段 ✗）');
+			// ★ 2026-10-16（方案 A）：hero 壳标记要能**单独**判 —— 这一屏没有我们自己的 chip，
+			//   两个字段各读各的标记（fakeDocument 只塞了 chip 那个 ⇒ 这里必须是 false ✓）。
+			assert.strictEqual(parsed.contextHeroEntry, false,
+				'hero 壳标记必须独立可判（与 contextChip 同值就说明它没读自己的标记 ⇒ 假守卫 ✗）');
 		});
 	});
 });

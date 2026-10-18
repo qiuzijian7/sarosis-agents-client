@@ -300,7 +300,6 @@ export const AGENT_STUDIO_PERSONAL_VIEW_ID = 'agentStudio.personalView';
 export const AGENT_STUDIO_SETTINGS_VIEW_ID = 'agentStudio.settingsView';
 export const AGENT_STUDIO_PROVIDER_VIEW_ID = 'agentStudio.providerView';
 export const AGENT_STUDIO_HEALTH_MONITOR_VIEW_ID = 'agentStudio.healthMonitorView';
-export const AGENT_STUDIO_CREW_TEAM_VIEW_ID = 'agentStudio.crewTeamView';
 export const AGENT_STUDIO_EVOLUTION_VIEW_ID = 'agentStudio.evolutionView';
 export const AGENT_STUDIO_WORKFLOW_VIEW_ID = 'agentStudio.workflowView';
 export const AGENT_STUDIO_CHANNEL_VIEW_ID = 'agentStudio.channelView';
@@ -348,6 +347,13 @@ export const AGENT_STUDIO_CODEBASE_VIEW_ID = 'vssaros.dsh.codebaseView';
  * （壳侧 DOM pane，容器 id / 视图 id 都不同）⇒ 两者并存，本格只负责"dsh 自绘那一版"的入口。
  */
 export const AGENT_STUDIO_DSH_SESSIONS_VIEW_ID = 'vssaros.dsh.sessionsView';
+/**
+ * dsh 定时任务页容器的 page 宿主视图 id（`vssaros.dsh.scheduler`，order 95；重构 2.1）。
+ * `page-only`：`engine=dsh` 时挂 `DshPluginViewPane`（插件自托管 `/x/scheduler/`）；
+ * `engine=legacy` 时**故意不注册**——legacy 的自研调度器从未执行过（`agentSchedulerService.ts` 的
+ * 生成器只 await 不迭代），没有静态对应物要并存。
+ */
+export const AGENT_STUDIO_SCHEDULER_VIEW_ID = 'vssaros.dsh.schedulerView';
 
 // --- TOF (Taihu OA Framework) 登录配置 ---
 // 对接 OAuthSystem 网关 (太湖 MCP 鉴权网关)

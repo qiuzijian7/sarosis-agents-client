@@ -25,8 +25,25 @@ import { SKILL_FILE } from './skills.js';
 /** 单个技能正文上限（照 IDE 真源 ✓）。 */
 export const MAX_SKILL_BYTES = 256_000;
 
-/** 允许的 action（照 IDE 真源 ✓；真源还提到 `write_file`/`remove_file`，Saros 侧本来就没实现 ✗，这里也不做 ✓）。 */
-export const SKILL_MANAGE_ACTIONS = ['create', 'edit', 'patch', 'delete'];
+/** 允许的 action（照 IDE 真源 ✓；`promote` 是重构 4 加的：草稿区 → 生效目录，见文件头）。 */
+export const SKILL_MANAGE_ACTIONS = ['create', 'edit', 'patch', 'delete', 'promote'];
+
+/** 草稿区目录（重构 4，2026-10-16）：`<skillsRoot>/.drafts/<name>/SKILL.md`。
+ *  方案口径（持久化提示注入面，壳契约 §8 ⑤）：**新建只写草稿区**（不生效 ✓——模型新建的技能
+ *  不该立刻进每轮的检索面 ✗），用户在页面上手动提升（`promote`）才进生效目录 ✓。
+ *  edit/patch/delete 是"改/删已有的"（目标已在生效目录）⇒ 不是"安装" ⇒ 保持现状（审批闸已拦 ✓）。 */
+export const DRAFTS_DIR = '.drafts';
+
+/** 草稿区的技能目录（带围栏 ✓——与 skillDirOf 同一套双保险）。 */
+export function draftDirOf(root, name) {
+	const safe = assertSkillName(name);
+	const dir = resolve(root, DRAFTS_DIR, safe);
+	const fence = resolve(root, DRAFTS_DIR);
+	if (dir !== fence && !dir.startsWith(fence + sep)) {
+		throw new Error(`路径越界：${safe} 解析后不在草稿区之内（已拒绝）。`);
+	}
+	return dir;
+}
 
 /** 名字规则：小写字母/数字开头，之后可含 `-` `_`，总长 ≤64（照 IDE 真源 ✓）。 */
 export const SKILL_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
@@ -111,9 +128,27 @@ export function skillManage(params, skillsRoot) {
 
 	if (action === 'create') {
 		if (exists) { throw new Error(`技能 ${name} 已存在（create 不会覆盖 ✓；要改内容用 edit 或 patch）。`); }
+		// 重构 4：新建落**草稿区**（不生效 ✓——模型新建的技能不该立刻进每轮的检索面 ✗，
+		// 持久化提示注入面见壳契约 §8 ⑤）；用户在页面上手动提升（promote）才进生效目录 ✓。
+		const draftDir = draftDirOf(skillsRoot, name);
+		const draftFile = join(draftDir, SKILL_FILE);
+		if (existsSync(draftFile)) { throw new Error(`技能 ${name} 的草稿已存在（create 不会覆盖 ✓；要改内容先 promote 再 edit，或删掉草稿重建）。`); }
 		const body = withCategory(assertSkillContent(params?.content), params?.category);
+		mkdirSync(draftDir, { recursive: true });
+		atomicWriteSync(draftFile, body);
+		return { action, id: name, path: draftFile, bytes: Buffer.byteLength(body, 'utf8'), draft: true };
+	}
+	// 重构 4：promote——草稿区 → 生效目录（用户在页面上点"提升"才生效 ✓）。
+	if (action === 'promote') {
+		const draftDir = draftDirOf(skillsRoot, name);
+		const draftFile = join(draftDir, SKILL_FILE);
+		if (!existsSync(draftFile)) { throw new Error(`技能 ${name} 没有草稿（promote 要求草稿在 ✓——没得提升 ✗）。`); }
+		if (exists) { throw new Error(`技能 ${name} 已在生效目录（promote 不会覆盖 ✓；要更新先 edit/patch，或删掉再生效的）。`); }
+		// 草稿 → 生效：读草稿正文，原子写进生效目录，删草稿（一次性提升 ✓）。
+		const body = readFileSync(draftFile, 'utf8');
 		mkdirSync(dir, { recursive: true });
 		atomicWriteSync(file, body);
+		rmSync(draftDir, { recursive: true, force: true });
 		return { action, id: name, path: file, bytes: Buffer.byteLength(body, 'utf8') };
 	}
 	if (action === 'edit') {

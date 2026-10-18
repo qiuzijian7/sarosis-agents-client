@@ -3,7 +3,8 @@
 // clients (several instances may share one Host). Newline-delimited JSON-RPC 2.0.
 // Only VsSaros-defined messages cross this pipe; no dsh event or data structure is relayed.
 import net from 'node:net';
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
+import { createRunsApprovalGate, createRunsService } from './runs.js';
 
 // 启动计时（2026-10-15，"首启慢"排查）：本行的打印时刻 ≈ node 引导 + dsh 核心 + cordis profile
 // 装载完成的时刻（cordis 在解析插件图时 import 本文件）；与 apply() 里那一条合起来，Host 冷启被拆成
@@ -27,6 +28,21 @@ const pluginVersion = JSON.parse(readFileSync(new URL('../package.json', import.
 
 /** 常驻 Host 的空闲自退：最后一个 IDE 客户端断开后，超过该时长无新客户端则 Host 优雅退出。 */
 const IDLE_TTL_DEFAULT_MS = 30 * 60_000;
+
+/**
+ * 拥有者**心跳**的陈旧阈值（2026-10-16）。
+ *
+ * 宿主（VsSaros 主进程）活着时会定期碰一次拥有者记录的 mtime，间隔由 TS 侧的
+ * `HOST_RUN_OWNERSHIP_HEARTBEAT_MS` 定义（20s）⇒ 超过这里的阈值没动，就认定"宿主进程**崩了**
+ * （没走到优雅退出）而 Host 还在常驻"。
+ * ⚠ 主进程被**同步文件写挂住**（本仓有过"零 CPU 假死"、同一指纹 4 次）时心跳同样会停 ⇒ 这里也会按
+ *   "失联"处理。那是**有意的取舍**：挂住的宿主本来也用不了这些会话，先把握着的写租约放出来 ✓；
+ *   代价是宿主恢复后那次会是冷启动（比"会话一直被占用"划算 ✓）。
+ * ★ 两侧是**一对**常量（阈值 ≥ 3× 心跳），由 `test/common/dshOwnerWatchdog.test.ts` 的配对守卫钉住 ✓。
+ */
+const OWNER_STALE_MS = 3 * 20_000;
+/** 看门狗的巡检间隔（比阈值小一个数量级 ⇒ 够及时，且几乎不耗 CPU ✓）。 */
+const OWNER_WATCH_INTERVAL_MS = 20_000;
 
 /**
  * 推理能力位：**pi-ai 的模型级字段是 `reasoningEfforts`**（`{ 档位 → 线上取值 }`），不是 `reasoning`。
@@ -142,6 +158,28 @@ export function apply(ctx, config = {}) {
 			idleTimer.unref?.();
 		}
 	};
+	// ── 拥有者失联自退（2026-10-16）──────────────────────────────────────────────
+	// 场景：宿主进程**崩了**（没有任何退出路径跑到），而这个 Host 还在按 idleTtlMs 常驻 ⇒ 它会一直
+	// 攥着会话写租约（`session.lock` 是 OS 文件锁，只有关句柄/退进程才释放；而 dsh 的 agent 归**宿主**
+	// 所有、不随客户端离开释放）⇒ 与官方 DSH 桌面端共用 `~/.dsh` 时表现为"这个会话已被占用" ✗。
+	// 判据三合一（少一条都会误杀 ✗）：
+	//   ① 没有 IDE 客户端（clients.size === 0）；
+	//   ② 拥有者记录的 mtime 已过期 —— ⚠ **不能只看 pid 存活**，pid 会被复用骗过 ✗；
+	//   ③ 记录路径由**握手**给出（`client.register` 的 ownerRecord）⇒ 永远对应当前那个拥有者 ✓
+	//      （接管场景下会被换成接管者那份 ✓，所以不能用环境变量一次性给 ✗）。
+	// 读不到记录（还没写下 / 已被清）⇒ **一律不动**（保守 ✓）。
+	// ⚠ 优雅分离（IDE 正常退出且 keepAlive）时宿主会把 mtime 推到未来 ⇒ 这里天然判"不陈旧" ✓。
+	let ownerRecordPath;
+	const ownerWatchdog = setInterval(() => {
+		if (!ownerRecordPath || clients.size > 0) { return; }
+		let mtimeMs;
+		try { mtimeMs = statSync(ownerRecordPath).mtimeMs; } catch { return; }
+		const staleMs = Date.now() - mtimeMs;
+		if (staleMs <= OWNER_STALE_MS) { return; }
+		console.log(`[vssaros-bridge] owner heartbeat stale for ${staleMs}ms (${ownerRecordPath}) and no IDE client; shutting down the host so session write handles are released`);
+		process.exit(0);
+	}, OWNER_WATCH_INTERVAL_MS);
+	ownerWatchdog.unref?.();
 	// P0-8: plugin-hosted page, guarded by the Host's own fence + browser auth (always on, even outside VsSaros).
 	ctx.effect(() => ctx.webServer.register({
 		kind: 'prefix',
@@ -157,6 +195,24 @@ export function apply(ctx, config = {}) {
 			res.end(`<!doctype html><meta charset="utf-8"><title>vssaros-bridge</title><main data-vssaros-page="status" data-vssaros-bridge-version="${BRIDGE_VERSION}" data-vssaros-bridge-reverse="${reverseReady ? 'ready' : 'off'}" data-vssaros-bridge-clients="${connectedClients}">vssaros-bridge ${pluginVersion} on :${ctx.webServer.port}</main>`);
 		},
 	}));
+
+	// 重构 1.4（2026-10-16）：后台回合服务 `vssarosRuns`（cordis 服务，Host 内插件直接用）+
+	// 桥方法 `session.run`（IDE 侧过渡期调用）。链路按 Spike S1 已验证的手法（见 runs.js 文件头）。
+	// 与 pipe/token 无关：即使脱离 VsSaros 跑（纯 dsh web），Host 内插件也该能用 ⇒ provide 提前到这里。
+	// 1.5：runs 会话的审批最终应答者（deny-by-default；非 runs 会话放行给 UI 应答者）。
+	// 挂在根 ctx：scoped waterfall 对无标签侦听放行 ⇒ 收得到全部 agent 的请求 ✓（Spike 5a/5b 实测）。
+	const approvalGate = createRunsApprovalGate(handler => ctx.on('approval/request', handler));
+	const runs = createRunsService({
+		agents: ctx.agents,
+		sessionController: ctx.sessionController,
+		workspaceRegistry: ctx.workspaceRegistry,
+		approvalGate,
+	});
+	Object.defineProperty(runs, Symbol.for('cordis.tracker'), {
+		value: { property: 'ctx', noShadow: true },
+		enumerable: false,
+	});
+	ctx.provide('vssarosRuns', runs);
 
 	const { pipe, token } = config;
 	if (!pipe || !token) {
@@ -342,6 +398,14 @@ export function apply(ctx, config = {}) {
 						}
 						registered = { instanceId: String(req.params.instanceId ?? 'unknown'), windows: req.params.windows ?? [] };
 						clients.set(socket, registered);
+						// 看门狗目标随每次注册更新（见上方"拥有者失联自退"的注释）：**只在给了路径时才替换** ✗
+						// —— 接管/Host 不由 VsSaros 托管时是不给路径的，那时把已有目标清掉就等于看门狗静默失效 ✗。
+						if (typeof req.params.ownerRecord === 'string' && req.params.ownerRecord) {
+						if (ownerRecordPath !== req.params.ownerRecord) {
+							console.log(`[vssaros-bridge] owner watchdog → ${req.params.ownerRecord}`);
+						}
+						ownerRecordPath = req.params.ownerRecord;
+					}
 						noteClients();
 						send({ id: req.id, result: hello() });
 						break;
@@ -412,6 +476,33 @@ export function apply(ctx, config = {}) {
 						run.then(result => send({ id: req.id, result }), e => send({ id: req.id, error: { code: -32000, message: String(e?.message ?? e) } }));
 						break;
 					}
+					case 'workspace.context': {
+						// 运行期**工作区上下文**（2026-10-17）：IDE 切工作区时推一份新的 ⇒ 看板 / 记忆 / 图谱
+						// 这些消费插件**不必重启 Host** 就能跟着走 ✓（真源与三条纪律见
+						// `@vssaros/dsh-foundation/lib/workspaceContext.js`；起因：切工作区重启会杀掉在跑的会话）。
+						//
+						// ⚠ `applied` **必须如实**：IDE 拿它决定"还要不要退回旧的重启路径" ✓。两条自证：
+						//   · 本 case 之前装着的桥（没有这段）会落到 `default` 的 -32601 ⇒ IDE 侧 `bridge.call`
+						//     直接抛 ⇒ 它按"老 Host"处理、退回重启 ✓（升级那一次仍然要重启，之后就再也不用了 ✓）；
+						//   · foundation 缺席 / 载荷畸形 ⇒ 回 `applied:false` + 原因，**不谎报成功** ✓
+						//     （谎报会让"切了工作区但没生效"变成静默错 ✗）。
+						const foundation = (() => {
+							try { return ctx.reflect?.get?.('vssarosFoundation', false); } catch { return undefined; }
+						})();
+						if (!foundation || typeof foundation.setWorkspaceContext !== 'function') {
+							send({ id: req.id, result: { applied: false, reason: 'foundation-unavailable' } });
+							break;
+						}
+						const applied = foundation.setWorkspaceContext(req.params ?? {});
+						if (!applied) {
+							send({ id: req.id, result: { applied: false, reason: 'invalid-payload' } });
+							break;
+						}
+						// 每次切换留一行：这是"工作区上下文到底跟着走了没有"唯一的现场证据 ✓
+						console.log(`[vssaros-bridge] workspace context applied: workspaceId=${applied.workspaceId ?? '(none)'} root=${applied.workspaceRoot ?? '(none)'} related=${applied.relatedRoots.length}`);
+						send({ id: req.id, result: { applied: true, context: applied } });
+						break;
+					}
 					case 'session.start': {
 						// Plan §7: VsSaros starts a Session (chat tab binding / background entries)
 						// without going through the IDE's own chat service. Uses dsh's official
@@ -477,6 +568,20 @@ export function apply(ctx, config = {}) {
 						return { sessionId: id, workspaceId: workspace?.id, prompted, agentPreset: created?.agentPreset ?? null };
 						};
 						run().then(result => send({ id: req.id, result }), e => send({ id: req.id, error: { code: -32000, message: String(e?.message ?? e) } }));
+						break;
+					}
+					case 'session.run': {
+						// 重构 1.4：后台回合的统一入口（渠道/看板/工作流/调度/Pocket 都走它）。
+						// 与 session.start 的区别：start 只投递（聊天框自己看事件流）；run 等回合跑完并回传结果。
+						const p = req.params ?? {};
+						runs.run(p)
+							.then(result => send({ id: req.id, result }), e => send({ id: req.id, error: { code: -32000, message: String(e?.message ?? e) } }));
+						break;
+					}
+					case 'session.cancel': {
+						const p = req.params ?? {};
+						runs.cancel(p)
+							.then(result => send({ id: req.id, result }), e => send({ id: req.id, error: { code: -32000, message: String(e?.message ?? e) } }));
 						break;
 					}
 					case 'host.activity': {

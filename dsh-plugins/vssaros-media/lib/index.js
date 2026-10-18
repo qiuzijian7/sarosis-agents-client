@@ -8,7 +8,9 @@
 // pending**，连工具一起失效，kanban 实测过），页面路由走可选 `ctx.inject([...])` 动态挂。
 
 import { escapeHtml, renderChips, renderShell } from './pageShell.js';
+import { bindFoundation } from './foundationRef.js';
 import { listAssets, mediaDbPathOf, mediaRootOf, statsOf } from './store.js';
+
 
 export const name = 'vssaros-media';
 
@@ -237,11 +239,317 @@ function toolDefinitions(state, config) {
 			const stats = await statsOf(config);
 			return { ...stats, dbPath: mediaDbPathOf(config) };
 		},
+	}, {
+		// 重构 4（2026-10-16）：`image_generate`——生图工具。定义在插件，**执行经桥回 IDE**（生图要
+		// 模型 provider，那是壳侧的——`providers.sync` 的凭证在 IDE 进程 ✓）。写类 ⇒ 挂审批闸 ✓。
+		name: 'image_generate',
+		description: '生成图片：按提示词调 IDE 侧的图像模型（provider.generateImage），返回生成的图片（base64 内容项）。模型选择优先级：调用参数 → agent 配置 → 第一个声明 supportsImageGen 的 provider。',
+		parameters: {
+			type: 'object',
+			properties: {
+				prompt: { type: 'string', description: '图片生成提示词' },
+				negative_prompt: { type: 'string', description: '要避免的内容（可选）' },
+				width: { type: 'number', description: '宽度像素（默认 1024）' },
+				height: { type: 'number', description: '高度像素（默认 1024）' },
+				num_images: { type: 'number', description: '生成几张（默认 1）' },
+				image_url: { type: 'string', description: '参考图 URL（图生图，可选）' },
+				provider_id: { type: 'string', description: '显式指定图像 provider id（覆盖 agent 配置，可选）' },
+				model_id: { type: 'string', description: '显式指定图像模型 id（覆盖 agent 配置，可选）' },
+			},
+			required: ['prompt'],
+		},
+		output: {
+			schema: {
+				type: 'object',
+				properties: {
+					ok: { type: 'boolean' },
+					images: { type: 'array', items: { type: 'object', properties: { base64: { type: 'string' }, mimeType: { type: 'string' } } } },
+					error: { type: 'string' },
+				},
+			},
+			render: (_args, value) => [{
+				type: 'text',
+				text: value.ok ? `生成了 ${value.images?.length ?? 0} 张图片` : `生成失败：${value.error ?? '未知原因'}`,
+			}],
+		},
+		// 写类 ⇒ 不声明 isConcurrencySafe（默认独占，见契约"仅 true 表示可并行"）。
+		execute: async (params) => {
+			const prompt = String(params?.prompt ?? '').trim();
+			if (!prompt) { throw new Error('prompt 必填（图片生成提示词）'); }
+			// 经桥回 IDE（壳侧的 provider.generateImage）。桥不在 ⇒ 如实失败（不假装生成了 ✗）。
+			const bridge = state.bridge;
+			if (!bridge || typeof bridge.callIDE !== 'function') {
+				throw new Error('图像生成要经桥回 IDE（模型 provider 在 IDE 进程），但 vssarosBridge 不在（bridge 插件没装/没连）');
+			}
+			const reply = await bridge.callIDE('ide.request', {
+				capability: 'media',
+				pluginId: 'vssaros-media',
+				params: { op: 'generateImage', ...params },
+			}, { timeoutMs: 10 * 60 * 1000 });  // 生图可能很慢（与 legacy VIDEO_TIMEOUT_HINT_MS 同量级）
+			return reply ?? { ok: false, error: 'IDE 没回（provider 没实现 generateImage？）' };
+		},
+	}, {
+		// 重构 4（2026-10-16）：`video_generate`——视频生成。与 image_generate 同构（经桥回 IDE）。
+		// 必填面与 legacy 一致：prompt 或 image_url 至少一个（图生图只要参考图 ✓）。
+		name: 'video_generate',
+		description: '生成视频：按提示词（或参考图）调 IDE 侧的视频模型（provider.generateVideo），返回视频 URL。模型选择优先级：调用参数 → agent 配置 → 第一个声明 supportsVideoGen 的 provider。',
+		parameters: {
+			type: 'object',
+			properties: {
+				prompt: { type: 'string', description: '视频内容描述（图生图时可省）' },
+				image_url: { type: 'string', description: '首帧/参考图 URL（图生视频；与 prompt 至少一个）' },
+				duration: { type: 'number', description: '时长秒（provider 就近取档）' },
+				resolution: { type: 'string', description: '分辨率档（如 "768P" / "2K"，provider 定）' },
+				ratio: { type: 'string', description: '画幅比（如 "16:9"）' },
+				provider_id: { type: 'string', description: '显式指定 provider id（可选）' },
+				model_id: { type: 'string', description: '显式指定模型 id（可选）' },
+			},
+		},
+		output: {
+			schema: {
+				type: 'object',
+				properties: {
+					ok: { type: 'boolean' },
+					videos: { type: 'array', items: { type: 'object', properties: { url: { type: 'string' } } } },
+					error: { type: 'string' },
+				},
+			},
+			render: (_args, value) => [{
+				type: 'text',
+				text: value.ok ? `生成了 ${value.videos?.length ?? 0} 个视频` : `生成失败：${value.error ?? '未知原因'}`,
+			}],
+		},
+		execute: async (params) => {
+			const prompt = String(params?.prompt ?? '').trim();
+			const imageUrl = String(params?.image_url ?? '').trim();
+			if (!prompt && !imageUrl) { throw new Error('prompt 或 image_url 至少一个（视频生成提示词 / 参考图）'); }
+			const bridge = state.bridge;
+			if (!bridge || typeof bridge.callIDE !== 'function') {
+				throw new Error('视频生成要经桥回 IDE（模型 provider 在 IDE 进程），但 vssarosBridge 不在（bridge 插件没装/没连）');
+			}
+			const reply = await bridge.callIDE('ide.request', {
+				capability: 'media',
+				pluginId: 'vssaros-media',
+				params: { op: 'generateVideo', ...params },
+			}, { timeoutMs: 10 * 60 * 1000 });  // 视频生成更慢（与 legacy VIDEO_TIMEOUT_HINT_MS 同量级）
+			return reply ?? { ok: false, error: 'IDE 没回（provider 没实现 generateVideo？）' };
+		},
+	}, {
+		// 重构 4（2026-10-16）：`text_to_speech`——语音合成。与 image_generate 同构（经桥回 IDE）。
+		name: 'text_to_speech',
+		description: '语音合成：按文本调 IDE 侧的音频模型（provider.generateAudio），返回音频 URL。模型选择优先级：调用参数 → 第一个声明 supportsAudioGen 的 provider。',
+		parameters: {
+			type: 'object',
+			properties: {
+				text: { type: 'string', description: '要合成的文本（音乐 provider 是风格/情绪提示词）' },
+				voice: { type: 'string', description: '音色 id（provider 定；省略 = 默认音色）' },
+				speed: { type: 'number', description: '语速（1 = 正常；provider 范围不一）' },
+				emotion: { type: 'string', description: '情绪提示（provider 定，如 happy/sad/angry）' },
+				lyrics: { type: 'string', description: '歌词（音乐 provider；空 = 纯音乐）' },
+				provider_id: { type: 'string', description: '显式指定 provider id（可选）' },
+				model_id: { type: 'string', description: '显式指定模型 id（可选）' },
+			},
+			required: ['text'],
+		},
+		output: {
+			schema: {
+				type: 'object',
+				properties: {
+					ok: { type: 'boolean' },
+					audios: { type: 'array', items: { type: 'object', properties: { url: { type: 'string' } } } },
+					error: { type: 'string' },
+				},
+			},
+			render: (_args, value) => [{
+				type: 'text',
+				text: value.ok ? `合成了 ${value.audios?.length ?? 0} 段音频` : `合成失败：${value.error ?? '未知原因'}`,
+			}],
+		},
+		execute: async (params) => {
+			const text = String(params?.text ?? '').trim();
+			if (!text) { throw new Error('text 必填（要合成的文本）'); }
+			const bridge = state.bridge;
+			if (!bridge || typeof bridge.callIDE !== 'function') {
+				throw new Error('语音合成要经桥回 IDE（模型 provider 在 IDE 进程），但 vssarosBridge 不在（bridge 插件没装/没连）');
+			}
+			const reply = await bridge.callIDE('ide.request', {
+				capability: 'media',
+				pluginId: 'vssaros-media',
+				params: { op: 'generateAudio', ...params },
+			}, { timeoutMs: 10 * 60 * 1000 });  // 音频生成也可能慢（与 legacy 同量级）
+			return reply ?? { ok: false, error: 'IDE 没回（provider 没实现 generateAudio？）' };
+		},
+	}, {
+		// 重构 4（2026-10-16）：`vision_analyze`——视觉分析（"读图"，不是生成）。与生成三件套同构
+		// （经桥回 IDE：视觉模型在壳侧 ✓）。**只读**（不生成、不写盘）⇒ 不挂审批闸（与 session_search
+		// 同口径：只读 ⇒ 没有可拦的写入 ✓）。
+		name: 'vision_analyze',
+		description: '分析图片：按问题调 IDE 侧的视觉模型，返回对图片的文本回答。这是看图片的唯一途径（file_read 拒绝二进制）。image 可以是本地路径（相对工作区）、data URL、纯 base64、或 http(s) URL。mode：auto（默认，当前模型支持图就附带自己答，否则辅助视觉模型答）/ text（总是辅助模型答文本，省上下文）/ attach（强制附带，模型不支持图就报错）。',
+		parameters: {
+			type: 'object',
+			properties: {
+				image: { type: 'string', description: '本地路径 / data URL / 纯 base64 / http(s) URL' },
+				query: { type: 'string', description: '关于图片的问题或指令（如"描述这张图"、"图中报错是什么"、"把表格转成 markdown"）' },
+				mode: { type: 'string', enum: ['auto', 'text', 'attach'], description: 'auto（默认）/ text / attach' },
+			},
+			required: ['image', 'query'],
+		},
+		output: {
+			schema: {
+				type: 'object',
+				properties: {
+					ok: { type: 'boolean' },
+					answer: { type: 'string' },
+					error: { type: 'string' },
+				},
+			},
+			render: (_args, value) => [{
+				type: 'text',
+				text: value.ok ? String(value.answer ?? '（没回答）') : `分析失败：${value.error ?? '未知原因'}`,
+			}],
+		},
+		isConcurrencySafe: () => true,  // 只读 ✓
+		execute: async (params) => {
+			const image = String(params?.image ?? '').trim();
+			const query = String(params?.query ?? '').trim();
+			if (!image) { throw new Error('image 必填（本地路径 / data URL / base64 / http(s) URL）'); }
+			if (!query) { throw new Error('query 必填（关于图片的问题）'); }
+			const bridge = state.bridge;
+			if (!bridge || typeof bridge.callIDE !== 'function') {
+				throw new Error('视觉分析要经桥回 IDE（视觉模型在 IDE 进程），但 vssarosBridge 不在（bridge 插件没装/没连）');
+			}
+			const reply = await bridge.callIDE('ide.request', {
+				capability: 'media',
+				pluginId: 'vssaros-media',
+				params: { op: 'visionAnalyze', ...params },
+			}, { timeoutMs: 5 * 60 * 1000 });  // 视觉分析比生成快（5 分钟够了）
+			return reply ?? { ok: false, error: 'IDE 没回（provider 没实现 visionAnalyze？）' };
+		},
+	}, {
+		// 重构 4（2026-10-16）：`video_analyze`——视频分析（一次调用完成：抽帧 + 字幕/口播转写 +
+		// 多模态模型给结论）。重活全在壳侧（ffmpeg / yt-dlp / whisper 随 VsSaros 自带，模型 provider
+		// 在 IDE 进程）⇒ 定义在插件、执行经桥回 IDE（与 vision_analyze 同构 ✓）。**只读**（读视频，
+		// 不写远端）⇒ 不挂审批闸（与 vision_analyze 同口径 ✓）。
+		name: 'video_analyze',
+		description: '分析一段视频并回答关于它的问题（一次调用完成：抽帧 + 字幕/口播转写 + 多模态模型给结论）。输入 http(s) 视频链接（抖音/小红书/B站/YouTube…）或本地视频文件路径。口播内容的正确来源是音轨（有字幕轨用字幕轨；没有就走本地 ASR whisper 转写）——不要手工下载 + 循环抽帧 + 逐张 vision_analyze（那条路没有 ASR，且慢数倍）。返回带时间点标记的分析文本 + 素材清单。',
+		parameters: {
+			type: 'object',
+			properties: {
+				video_url: { type: 'string', description: 'http(s) 视频链接，或本地视频文件路径' },
+				query: { type: 'string', description: '要回答的问题（如"这游戏的战斗循环是怎么设计的"）' },
+				frames: { type: 'number', description: '抽帧数量（默认 8，最多 24）' },
+				startSec: { type: 'number', description: '从第几秒开始抽（默认 0）' },
+				durationSec: { type: 'number', description: '采样跨度秒数（默认：整段）' },
+				maxWidth: { type: 'number', description: '帧图最大宽度（默认 768；调小可降低请求体积）' },
+				outDir: { type: 'string', description: '产物目录（帧图落盘处；默认 ~/.vssaros/tmp/video-analyze/<名字>-<时间戳>）' },
+				keepVideo: { type: 'boolean', description: '保留下载的视频文件（默认 false：分析完即删）' },
+				withTranscript: { type: 'boolean', description: '是否抓字幕（默认 true；仅远端链接有效）' },
+			},
+			required: ['video_url', 'query'],
+		},
+		output: {
+			schema: {
+				type: 'object',
+				properties: {
+					ok: { type: 'boolean' },
+					answer: { type: 'string' },
+					assets: { type: 'object', description: '素材清单（帧图路径与时间点、字幕/转写字数与来源）' },
+					error: { type: 'string' },
+				},
+			},
+			render: (_args, value) => [{
+				type: 'text',
+				text: value.ok ? String(value.answer ?? '（没回答）') : `分析失败：${value.error ?? '未知原因'}`,
+			}],
+		},
+		isConcurrencySafe: () => true,  // 只读 ✓
+		execute: async (params) => {
+			const videoUrl = String(params?.video_url ?? '').trim();
+			const query = String(params?.query ?? '').trim();
+			if (!videoUrl) { throw new Error('video_url 必填（http(s) 视频链接或本地视频文件路径）'); }
+			if (!query) { throw new Error('query 必填（要问这段视频什么问题）'); }
+			const bridge = state.bridge;
+			if (!bridge || typeof bridge.callIDE !== 'function') {
+				throw new Error('视频分析要经桥回 IDE（ffmpeg/whisper/多模态模型都在 IDE 进程），但 vssarosBridge 不在（bridge 插件没装/没连）');
+			}
+			const reply = await bridge.callIDE('ide.request', {
+				capability: 'media',
+				pluginId: 'vssaros-media',
+				params: { op: 'videoAnalyze', ...params },
+			}, { timeoutMs: 15 * 60 * 1000 });  // 抽帧 + ASR + 多模态，给足时间（比生成还慢 ✓）
+			return reply ?? { ok: false, error: 'IDE 没回（provider 没实现 videoAnalyze？）' };
+		},
+	}, {
+		// 重构 4（2026-10-16）：`extract_video_frames`——只抽帧（给帧图路径，不分析；要把帧当证据落进
+		// 笔记、或针对单帧追问时用）。与 video_analyze 同构（经桥回 IDE ✓）。**只读** ✓。
+		name: 'extract_video_frames',
+		description: '从视频中抽帧：返回帧图路径清单（含时间点）。不写远端、不删用户文件。要"一次拿到理解"用 video_analyze（它内部调本工具的抽帧 + 多模态分析）；要把帧当证据落进笔记、或针对单帧追问细节，用本工具 + vision_analyze。',
+		parameters: {
+			type: 'object',
+			properties: {
+				source: { type: 'string', description: 'http(s) 视频链接，或本地视频文件路径' },
+				frames: { type: 'number', description: '抽帧数量（默认 6，最多 24）' },
+				startSec: { type: 'number', description: '从第几秒开始抽（默认 0）' },
+				durationSec: { type: 'number', description: '采样跨度秒数（默认：整段）' },
+				maxWidth: { type: 'number', description: '帧图最大宽度（默认 768）' },
+				outDir: { type: 'string', description: '产物目录（默认 ~/.vssaros/tmp/video-frames/<名字>-<时间戳>）' },
+				keepVideo: { type: 'boolean', description: '保留下载的视频文件（默认 false：抽完即删）' },
+			},
+			required: ['source'],
+		},
+		output: {
+			schema: {
+				type: 'object',
+				properties: {
+					ok: { type: 'boolean' },
+					frames: { type: 'array', items: { type: 'object', properties: { path: { type: 'string' }, timeSec: { type: 'number' } } } },
+					error: { type: 'string' },
+				},
+			},
+			render: (_args, value) => [{
+				type: 'text',
+				text: value.ok ? `抽了 ${value.frames?.length ?? 0} 帧` : `抽帧失败：${value.error ?? '未知原因'}`,
+			}],
+		},
+		isConcurrencySafe: () => true,  // 只读 ✓
+		execute: async (params) => {
+			const source = String(params?.source ?? '').trim();
+			if (!source) { throw new Error('source 必填（http(s) 视频链接或本地视频文件路径）'); }
+			const bridge = state.bridge;
+			if (!bridge || typeof bridge.callIDE !== 'function') {
+				throw new Error('抽帧要经桥回 IDE（ffmpeg 在 IDE 进程），但 vssarosBridge 不在（bridge 插件没装/没连）');
+			}
+			const reply = await bridge.callIDE('ide.request', {
+				capability: 'media',
+				pluginId: 'vssaros-media',
+				params: { op: 'extractVideoFrames', ...params },
+			}, { timeoutMs: 10 * 60 * 1000 });  // 抽帧（不含 ASR）比 video_analyze 快
+			return reply ?? { ok: false, error: 'IDE 没回（provider 没实现 extractVideoFrames？）' };
+		},
 	}];
 }
 
 export function apply(ctx, config = {}) {
-	const state = { tools: null };
+	// 重构 1.3：绑定 foundation 共享服务（dataRoot/dshHome/pageShell/lock 的真源）。
+	{
+		// 同步直读在前：有插件在 apply 的**同步段**就建 store（inject 回调是异步的，会来不及 ✗）。
+		let ready = null;
+		try { ready = ctx.get?.('vssarosFoundation') ?? ctx.vssarosFoundation ?? null; } catch { /* 探针的 Proxy 假 ctx 对未知属性抛错 ⇒ 当不存在 */ }
+		if (ready) { bindFoundation(ready); }
+		ctx.inject(['vssarosFoundation'], child => {
+		let svc = null;
+		try { svc = child.vssarosFoundation ?? null; } catch { /* 探针的假 ctx（Proxy）对未知属性抛错 ⇒ 当不存在 */ }
+		if (svc) { bindFoundation(svc); }
+	});
+	}
+	const state = { tools: null, bridge: null };
+
+	// 桥（**可选**注入：vssarosBridge 不在 ⇒ image_generate 如实失败，只读工具照常 ✓）。
+	// 与 kanban 同口径（它的注释记着这条教训：可选注入不阻塞激活 ✓）。
+	ctx.inject(['vssarosBridge'], scope => {
+		state.bridge = scope.vssarosBridge;
+		return () => { state.bridge = null; };
+	});
 
 	// ① 工具
 	ctx.effect(() => {

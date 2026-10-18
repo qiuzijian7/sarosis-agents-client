@@ -279,11 +279,16 @@ export function moveOutcome(task, status) {
  *   "工具已注册"分开可证 ✓）；
  * - `data-vssaros-workspace`：工作区 id（空 ⇒ 写工具会 fail-closed，是这块最可能的故障之一 ✓）；
  * - 数据文件绝对路径：数据根配错（`.vssaros` vs `.vssaros-dev`）会在这里现形 ✓。
+ * - ★ `data-kanban-runner` / `data-kanban-runner-why`（2026-10-17）：**自动执行 runner 到底起没起来**。
+ *   为什么要它：从前这条只能读代码判定 —— 那个 warn 走 `ctx.logger(...)`，**不在** Host stdout 里（探针抓不到），
+ *   而"产品口径下 runner 起不来"是个会影响用户体验的实情（拖到「进行中」不会开跑 ✓）⇒ 给个**能抓的锚点** ✓。
+ *   取值：`on` / `off`；`why` 就是原因码（`deps-missing` / `no-cwd` / `ok` / `init` / `disposed`）。
  */
-export function diagHtml({ registeredTools = [], expectedTools = [], workspaceId = '', dataFile = '' }) {
+export function diagHtml({ registeredTools = [], expectedTools = [], workspaceId = '', dataFile = '', runner = false, runnerWhy = 'init' }) {
 	const allRegistered = expectedTools.length > 0 && expectedTools.every(name => registeredTools.includes(name));
-	const attrs = `data-vssaros-tools="${escapeHtml(registeredTools.join(','))}" data-registered="${allRegistered ? 'true' : 'false'}" data-vssaros-workspace="${escapeHtml(workspaceId)}"`;
-	return `<p class="dsh-diag" ${attrs}>工具：${registeredTools.length ? escapeHtml(registeredTools.join(', ')) : '（未注册）'}（${registeredTools.length}/${expectedTools.length}） · 工作区：<code>${workspaceId ? escapeHtml(workspaceId) : '未注入（写工具会拒绝建卡）'}</code> · 数据文件：<code>${escapeHtml(dataFile)}</code></p>`;
+	const attrs = `data-vssaros-tools="${escapeHtml(registeredTools.join(','))}" data-registered="${allRegistered ? 'true' : 'false'}" data-vssaros-workspace="${escapeHtml(workspaceId)}" data-kanban-runner="${runner ? 'on' : 'off'}" data-kanban-runner-why="${escapeHtml(runnerWhy)}"`;
+	const runnerText = runner ? '已启动' : `未启动（${escapeHtml(runnerWhy)}）`;
+	return `<p class="dsh-diag" ${attrs}>工具：${registeredTools.length ? escapeHtml(registeredTools.join(', ')) : '（未注册）'}（${registeredTools.length}/${expectedTools.length}） · 工作区：<code>${workspaceId ? escapeHtml(workspaceId) : '未注入（写工具会拒绝建卡）'}</code> · 自动执行：<code>${runnerText}</code> · 数据文件：<code>${escapeHtml(dataFile)}</code></p>`;
 }
 
 /** 卡片视图模型（**纯函数**，可被探针直接验；不含描述原文）。 */
@@ -311,13 +316,13 @@ export function cardModel(task, statusById) {
  * 输入是**原始任务记录**（不是 `project()` 投影）：卡片要用 `dependencies` 与描述首行；而**描述原文
  * 不会进 HTML**（只有 ≤80 字的首行预览 ✓）。
  */
-export function renderBoardPage({ tasks, missing, registeredTools, expectedTools, dataFile, workspaceId, boards = [], note = '', mirrors = [], mirrorsNote = '' }) {
+export function renderBoardPage({ tasks, missing, registeredTools, expectedTools, dataFile, workspaceId, boards = [], note = '', mirrors = [], mirrorsNote = '', runner = false, runnerWhy = 'init' }) {
 	const all = (Array.isArray(tasks) ? tasks : []).filter(t => t && typeof t === 'object');
 	const counts = countsByStatus(all);
 	const statusById = new Map(all.map(t => [String(t.id ?? ''), String(t.status ?? '')]));
 	const total = counts.total;
 
-	const diag = diagHtml({ registeredTools, expectedTools, workspaceId, dataFile });
+	const diag = diagHtml({ registeredTools, expectedTools, workspaceId, dataFile, runner, runnerWhy });
 
 	// 列：任一列有卡片、或该列"本来就该在"（triage / archived 由开关控制）都渲染出来
 	const columnsHtml = BOARD_COLUMNS.map(column => {

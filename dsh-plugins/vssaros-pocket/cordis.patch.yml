@@ -1,0 +1,11 @@
+# @vssaros/dsh-pocket bundle patch: insert the pocket row.
+#
+# Saros Pocket 的 Host 路由（重构 2.4，D8）：`/x/pocket/api/*`，token 鉴权（Bearer）。
+# 列会话读 dsh 自己的投影缓存（与 vssaros-sessions 同一路径）；发消息走 vssarosRuns。
+#
+# token：`config.token`（VsSaros 经 --patch 注入）→ 环境变量 VSSAROS_POCKET_TOKEN；
+# 都没有 ⇒ 路由**不注册**（fail-closed ✓：没 token 的口袋路由等于把会话操作暴露给局域网 ✗）。
+- insert:
+    - id: vssaros-pocket
+      name: '@vssaros/dsh-pocket'
+      config: {}

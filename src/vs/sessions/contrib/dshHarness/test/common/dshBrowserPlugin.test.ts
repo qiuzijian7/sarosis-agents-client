@@ -1518,7 +1518,10 @@ suite('vssaros-browser：连不上浏览器时的门控与文案', () => {
 		// ⚠ 这些名字**只在 IDE 侧**注册（`agentStudio/browser/providers/tool/**`）⇒ Host-only 环境里不存在。
 		//   这正是真机事故的**同构**问题：手册让人走 `web_extract` / `video_analyze`，而 Host 侧根本没这两个
 		//   工具 ⇒ 模型照名字硬调 ⇒ 白失败一轮。所以技能**必须**显式声明它们"仅 IDE 侧"。
-		const ideOnly = ['web_extract', 'web_search', 'video_analyze', 'extract_video_frames', 'vision_analyze', 'execute_code'];
+		// 2026-10-16（重构 4）：vision_analyze / video_analyze / extract_video_frames 已迁到 Host
+		//   （`vssaros-media` 0.5.0，定义在插件、执行经桥回 IDE）⇒ 从 ideOnly 名单摘掉（守卫的注释
+		//   自己写了"若真把它移到 Host 了，这条断言该跟着改" ✓）。
+		const ideOnly = ['web_extract', 'web_search', 'execute_code'];
 		for (const name of ideOnly) {
 			assert.ok(!hostTools.has(name),
 				`${name} 不该出现在 Host 工具面里（若真把它移到 Host 了，这条断言该跟着改）`);

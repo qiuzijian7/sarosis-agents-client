@@ -1,0 +1,31 @@
+{
+  "name": "@vssaros/dsh-foundation",
+  "version": "0.2.0",
+  "description": "VsSaros dsh foundation plugin: shared runtime services for all @vssaros/dsh-* plugins (dataRoot / dshHome resolution, page shell, cross-process write lock, runtime workspace context). Single source of the formerly copied implementations.",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/paths.js",
+    "lib/pageShell.js",
+    "lib/lock.js",
+    "lib/workspaceContext.js",
+    "cordis.patch.yml"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/dsh": ">=0.1.7-0 <0.3.0-0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": [
+        "./cordis.patch.yml"
+      ]
+    }
+  },
+  "license": "MIT"
+}

@@ -1,5 +1,7 @@
-// @vssaros/dsh-chat-surface — 「人格（本会话）」chip + 面板（package-local chunk）。
+// @vssaros/dsh-chat-surface — 「人格（本会话）」的**数据与动作**（package-local chunk）。
 // 主包 lib/client.js 用 require.async("./client.persona.js") 取回本模块的 install()。
+// ⚠ 2026-10-17 方案 C 起：**不再自己出 chip / 面板**（并入 `client.agents.js` 的 Agent chip +
+//   AgentsPanel，见下方 install() 里的 kit 段）；本 chunk 只负责读人格、切人格、清除、发布 dataset 事实。
 //
 // ── 语义定稿（2026-10-11；依据 `poc/dsh-p0/README.md` 4.40 与"agent vs 人格"边界调研）──────────
 //   两档语义**必须分开呈现**，因为它们改的东西不同：
@@ -176,6 +178,38 @@ window.__ModuleLoader__.load({
 			});
 			void refresh(state.sessionId);
 
+			// ── 方案 C（2026-10-17 用户拍板）：chip 与面板 **合并进 Agent chip / AgentsPanel** ────────
+			// 依据：两颗 chip 实际在做同一件事 —— 都走 `POST /x/agents/api/persona` 换**本会话人格**：
+			//   · agent chip 报"这条会话是谁"（agent 名 / 已切换的人格名）
+			//   · persona chip 报"人格是否被覆盖"（默认 = 跟随 Agent 自带人设）
+			// 合并后只有一颗 `P PPT 专家 · 人格默认 ▾`（由 `client.agents.js` 的 AgentChip 渲染，
+			// 面板 = 它的 AgentsPanel，其中人格段带 `data-vssaros-persona-*` 属性契约）。
+			// ⇒ 本 chunk 继续负责**数据与动作**（读人格、切人格、清除、发布 dataset 事实），不再自己出 UI。
+			// ⚠ 属性契约**保持原样**（合并 chip 继承 `data-vssaros-persona-chip*`；AgentsPanel 的人格段
+			//   继承 `data-vssaros-persona-panel / -item / -clear`）⇒ 真机 e2e 的 persona UI 一段无需改 ✓。
+			// 回滚：删掉下面这段 kit，并恢复文件末尾被注释掉的两个 `ctx.slots.inject` 即可。
+			try {
+				state.vssarosPersona = {
+					store,
+					refresh,
+					loadAgents,
+					clear: () => doSwitch(null),
+					switchTo: (id) => doSwitch(id),
+					/** 合并 chip 的文案片段：`· 人格默认` / `· <人格名>`（不适用时为空串）。 */
+					suffixLabel: () => {
+						if (store.applicable !== true) { return ""; }
+						const cur = store.current;
+						return " · " + (cur && cur.personaId ? (cur.name || cur.personaId) : "人格默认");
+					},
+					FOLLOW_LABEL, HINT_PERSONA, HINT_AGENT,
+				};
+				state.personaMerged = true;
+				state.personaChip = false;
+				state.personaPanel = false;
+			} catch (e) {
+				state.personaKitError = String((e && e.message) || e);
+			}
+
 			/** 输入框 chip：只有"本会话人设段存在"时才出现（否则会误导）。 */
 			function PersonaChip(props) {
 				const sid = (props && props.sessionId) || state.sessionId;
@@ -248,7 +282,10 @@ window.__ModuleLoader__.load({
 						position: "absolute", bottom: "calc(100% + 6px)", left: 0, zIndex: 30,
 						background: "var(--dsw-alias-bg-overlay, #23252b)", border: "1px solid var(--dsw-alias-border-l1, #3a3d45)",
 						borderRadius: 8, boxShadow: "0 6px 24px rgba(0,0,0,.35)", padding: "4px 0",
-					}, shell.fitMenu()),
+						// ⚠ 向上展开（`bottom:100%`）⇒ fitMenu 那个"整页 − 72"的高度在这里**不成立**
+						//   （它假定菜单从页面顶部往下长）⇒ 必须给确定上限，否则面板顶部会落到视口外且滚不到 ✗；
+						//   这一句同理要排在 fitMenu **之后**（见 client.agents.js 的注释 ✓）。
+						}, shell.fitMenu(), { maxHeight: 320 }),
 				},
 					react.createElement("div", {
 						key: "head", style: { padding: "7px 9px 5px", fontSize: 11, letterSpacing: ".02em", color: "var(--dsw-alias-label-secondary, #999)" },
@@ -261,18 +298,13 @@ window.__ModuleLoader__.load({
 				);
 			}
 
-			try {
-				ctx.slots.inject(SLOT_CHIP, () => ctx.slots.register({ name: SLOT_CHIP, id: CHIP_ID, order: 1 }, PersonaChip));
-				state.personaChip = true;
-			} catch (e) {
-				state.personaChipError = String((e && e.message) || e);
-			}
-			try {
-				ctx.slots.inject(SLOT_PANEL, () => ctx.slots.register({ name: SLOT_PANEL, id: PANEL_ID, order: 1 }, PersonaPanel));
-				state.personaPanel = true;
-			} catch (e) {
-				state.personaPanelError = String((e && e.message) || e);
-			}
+			// ⚠ 方案 C 起**不再注册**这两块 UI（人格 chip / 人格面板）：
+			//   · chip 合并进 `client.agents.js` 的 AgentChip（属性 `data-vssaros-persona-chip*` 由它继承）
+			//   · 面板合并进它的 AgentsPanel（人格段带 `data-vssaros-persona-panel/-item/-clear`）
+			//   上面两个组件实现**保留**（未注册）以便回滚：把这两段注册恢复、删掉 kit 段即可。
+			//   `state.personaMerged === true` 时，页面自证里 `personaChip=false` 属**预期**，不是故障。
+			state.personaChipError = state.personaChipError || undefined;
+			state.personaPanelError = state.personaPanelError || undefined;
 		}
 		exports.install = install;
 		// 仅测试用：纯逻辑（两档文案/接口拼装）。

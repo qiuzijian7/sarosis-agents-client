@@ -1,0 +1,13 @@
+# @vssaros/dsh-scheduler bundle patch: insert the scheduler row.
+#
+# 定时任务模块（重构 2.1 试点）：壳图标 + `/x/scheduler/` 页面（读官方 `schedule` 服务的
+# catalog：跨会话的全部任务），外加 legacy 定义的程序化迁移（`lib/migrate.js`）。
+#
+# 调度本身（创建 / 触发 / 投递 / 持久化）全是官方件：`@deepseek-ai/dsh-experimental-schedule-bundle`
+# 由宿主安装链登记进 profile（`dshHostSupervisor.ts` 的安装清单，S3 已验证可装可用）。
+# 本插件不注册任何工具（官方 `schedule_create` 已进模型工具表）；`schedule` 服务走**可选注入**
+# —— 官方 bundle 没装上时页面如实说"不可用"，绝不阻塞启动 ✗。
+- insert:
+    - id: vssaros-scheduler
+      name: '@vssaros/dsh-scheduler'
+      config: {}
