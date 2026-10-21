@@ -104,6 +104,26 @@ suite('记忆详情面板 · 跨分区读取', () => {
 		assert.ok(src.includes('listSkills(aid)'), '导出必须逐分区 listSkills');
 	});
 
+	test('⑥d 报告页也跨分区（报告按分区统计 ⇒ 只查当前分区 ⇒ 报告也空 ✗），并标来源分区', () => {
+		const body = methodBody('_generateAndDisplayReport');
+		assert.ok(!/generateReport\(type, this\._agentId\)/.test(body), '报告不能再只查当前分区');
+		assert.ok(body.includes('generateReport(type, aid)'), '必须逐分区 generateReport');
+		assert.ok(body.includes('来自分区'), '换用别的分区的报告时必须标注来源（不静默换 ✗）');
+	});
+
+	test('⑥e 空态必须说清"查了哪些分区"（"没有数据"与"查错分区"在界面上长得一样 ✗）', () => {
+		const body = methodBody('_renderEmpty');
+		assert.ok(body.includes('已查'), '空态要注明查了哪些分区');
+		assert.ok(body.includes('_partitionScope'), '空态要基于实际读分区集合');
+	});
+
+	test('⑥f 记忆服务降级要**如实告警**（实测 getHealthStatus 一直 degraded，而界面毫无提示 ✗）', () => {
+		assert.ok(src.includes('_renderHealthBanner'), '必须有健康告警横幅');
+		const body = methodBody('_renderHealthBanner');
+		assert.ok(body.includes('getHealthStatus'), '横幅要读 getHealthStatus');
+		assert.ok(body.includes('degraded'), '要识别 degraded 状态');
+	});
+
 	test('⑦ 反向突变：把扇出改回单分区 ⇒ 必须变红（这就是"全空又回来了"）', () => {
 		const mutated = src.replace('memProvider.searchMemory(aid', 'memProvider.searchMemory(this._agentId');
 		assert.notEqual(mutated, src, '突变必须真的改到了代码');

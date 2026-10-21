@@ -500,6 +500,35 @@ export class MemoryDetailEditorPane extends EditorPane {
 		}
 	}
 
+	/**
+	 * 记忆服务**健康告警**横幅（★ 2026-10-21）。
+	 *
+	 * 为什么要有：实测 `getHealthStatus()` 一直返回 `serverAvailable:false / status:degraded`
+	 * （网关侧的"服务端不可达"判定），而面板**完全不提示** ⇒ 用户看到空白的页签会以为"没有数据"，
+	 * 实际可能所有取数都在**降级**（哑巴失败最坑的形态）✗✗。
+	 * ⇒ 这里如实显示（health 正常就不显示，避免噪音 ✓）。
+	 */
+	private _renderHealthBanner(): void {
+		const memProvider = this._agentOSService.getActiveMemoryProvider();
+		const health = memProvider?.getHealthStatus?.();
+		if (!health || typeof health !== 'object') { return; }
+		const st = health as { status?: string; serverAvailable?: boolean; gatewayUp?: boolean; baseUrl?: string };
+		const degraded = st.status === 'degraded' || st.serverAvailable === false || st.gatewayUp === false;
+		if (!degraded) { return; }
+		const banner = append(this._container!, $('.md-card'));
+		banner.style.margin = '0 20px 8px';
+		banner.style.padding = '8px 12px';
+		banner.style.background = 'rgba(240,160,75,0.10)';
+		banner.style.border = '1px solid rgba(240,160,75,0.35)';
+		banner.style.borderRadius = '6px';
+		banner.style.fontSize = '11px';
+		banner.style.color = '#f0a04b';
+		banner.textContent = `⚠ 记忆服务降级中（status=${String(st.status ?? 'unknown')}`
+			+ (st.serverAvailable === false ? ' · 服务端不可达' : '')
+			+ (st.baseUrl ? ` · ${st.baseUrl}` : '')
+			+ ' ⇒ 下面的数据可能不完整（取数走的是降级路径）';
+	}
+
 	private _renderEmpty(msg: string): void {
 		if (!this._container) { return; }
 		this._clearExceptStyle();
@@ -509,6 +538,18 @@ export class MemoryDetailEditorPane extends EditorPane {
 		empty.style.padding = '40px 20px';
 		empty.style.color = 'var(--vscode-descriptionForeground)';
 		empty.style.fontSize = '13px';
+		// ★ 2026-10-21：空态必须说清**查了哪些分区**。
+		//   否则"没有数据"与"查错了分区"在界面上**长得一模一样**（用户只能看到空白 ✗✗）——
+		//   而这正是本次三个页签空白的真实原因（数据在 agent 分区，页面读的是工作区 `ws-*`）。
+		const parts = this._partitionScope;
+		if (parts.length > 1) {
+			const note = append(this._container, $('.md-note'));
+			note.style.margin = '0 20px 8px';
+			note.style.fontSize = '11px';
+			note.style.color = 'var(--vscode-descriptionForeground)';
+			note.textContent = `已查 ${parts.length} 个分区：${parts.slice(0, 8).join('、')}${parts.length > 8 ? ' …' : ''}`
+				+ '（工作区 + 有数据的 agent 分区）⇒ 若这里为空，说明这些分区**确实没有**这类数据。';
+		}
 		empty.textContent = msg;
 	}
 
@@ -548,6 +589,11 @@ export class MemoryDetailEditorPane extends EditorPane {
 		//   为什么要放在分派**之前**：各页签标题里要显示"合并了几个分区"，而标题是各页签自己设的
 		//   ⇒ 不预取的话，第一次打开标题只会写当前分区（而数据其实是跨分区合并来的）⇒ 标题会误导 ✗。
 		try { await this._readPartitions(this._agentOSService.getActiveMemoryProvider()); } catch { /* 预取失败不阻断渲染 ✓ */ }
+
+		// ★ 2026-10-21：记忆服务**健康状态**告警（实测 `getHealthStatus` 一直返回
+		//   `serverAvailable:false / status:degraded`，而界面**完全没提示** ⇒ 用户以为"一切正常"，
+		//   实际可能所有取数都在降级 ✗✗）⇒ 这里如实显示，不静默。
+		this._renderHealthBanner();
 
 		// Route to the appropriate view renderer
 		// 注意：slots/lessons 视图现已改为 async（await 网关代理），
@@ -1299,7 +1345,9 @@ export class MemoryDetailEditorPane extends EditorPane {
 			let commits = memProvider.getRecentCommits(50);
 			if (commits instanceof Promise) { commits = await commits; }
 			if (!commits || commits.length === 0) {
-				this._renderEmpty('暂无 Git 提交记录。提交代码后将自动捕获。');
+				// ★ 2026-10-21：说清这一页的**数据源**（否则用户会以为"我明明提交了代码" ✗）
+				this._renderEmpty('暂无 Git 提交记录。这一页统计的是**记忆库自己记录的提交**'
+					+ '（引擎的提交捕获写入 `mem:commits:<分区>`），**不是**代码库的 git 历史 ⇒ 记忆库没记过就是空的。');
 				return;
 			}
 			const list = append(this._container, $('.md-list'));
@@ -1381,7 +1429,26 @@ export class MemoryDetailEditorPane extends EditorPane {
 		append(content, $('.md-loading')).textContent = `生成 ${type} 报告中...`;
 
 		try {
-			const report = await memProvider.generateReport(type, this._agentId);
+			// ★ 2026-10-21：**跨分区**生成报告（报告按分区统计 ⇒ 只查当前（空）分区 ⇒ 报告也空 ✗）
+			//   规则：当前分区优先；当前分区没内容就用第一个有内容的分区，并**标注来源分区**（不静默换 ✗）
+			const partitions = await this._readPartitions(memProvider);
+			let report: any = null;
+			let reportFrom = '';
+			for (const aid of partitions) {
+				try {
+					const r = await memProvider.generateReport(type, aid);
+					const hasContent = !!r && typeof r === 'object'
+						&& Object.keys(r as Record<string, unknown>).length > 0
+						&& JSON.stringify(r).length > 60;   // 只有标题/时间戳的"空报告"不算
+					if (hasContent) { report = r; reportFrom = aid; break; }
+					if (!report && r) { report = r; reportFrom = aid; }   // 兜底：留个空的也比没报告强
+				} catch { /* 单个分区失败不影响其它 ✓ */ }
+			}
+			if (reportFrom && reportFrom !== this._agentId) {
+				const chip = append(content, $('.md-badge.l1'));
+				chip.style.marginBottom = '6px';
+				chip.textContent = `🗂 来自分区 ${reportFrom}`;
+			}
 			if (!report) {
 				content.textContent = '报告为空';
 				return;
