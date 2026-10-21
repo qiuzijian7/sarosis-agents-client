@@ -68,7 +68,10 @@ const TYPES = [
 const TIER_CLASS = { working: 'l0', episodic: 'l1', semantic: 'l2', procedural: 'l3' };
 
 /** 本页认的参数（其余一律丢 ✓ —— 不原样回显别人的参数 ✗）。 */
-const KEPT_PARAMS = ['view', 'layer', 'type', 'q', 'agent', 'tool', 'sfilter', 'rtype', 'session'];
+// ★ 2026-10-21：加 `partition` —— 会话跨分区合并后，**同名 session id 可能出现多次**
+//   （不同分区各有一个 `x1`）⇒ 只用 `?session=` 选中会**同时展开两条**（歧义 ✗）
+//   ⇒ 选择必须带分区（`?session=<id>&partition=<分区>`）。
+const KEPT_PARAMS = ['view', 'layer', 'type', 'q', 'agent', 'tool', 'sfilter', 'rtype', 'session', 'partition'];
 
 /**
  * 页面样式：**逐条移植** `memoryDetailEditorPane.ts:184-293` ✓。
@@ -783,18 +786,31 @@ function renderSessionsView(params, model) {
 	const sessions = Array.isArray(model.sessions) ? model.sessions : [];
 	const summaries = Array.isArray(model.summaries) ? model.summaries : [];
 	const byId = new Map(summaries.map(s => [String(s?.sessionId ?? ''), s]));
+	// ★ 2026-10-21：会话与摘要现在**跨分区**合并 ⇒ 配对键必须带分区
+	//   （只按 sessionId 配 ⇒ 不同分区的同名 session 会互相错配，"已压缩"徽章就会串 ✗）。
+	const sessionKeyOf = (partition, sessionId) => String(partition ?? '') + '::' + String(sessionId ?? '');
+	const byKey = new Map(summaries.map(s => [sessionKeyOf(s?.partition, s?.sessionId), s]));
 	const totalObs = sessions.reduce((n, s) => n + (Number(s?.observationCount) || 0), 0);
-	const summarized = sessions.filter(s => byId.has(String(s?.id ?? ''))).length;
+	const summarized = sessions.filter(s => byKey.has(sessionKeyOf(s?.partition, s?.id))).length;
 	const statRow = '<div class="md-stats">'
 		+ statCell('会话数', sessions.length, 'l0') + statCell('观察总数', totalObs, 'l1')
 		+ statCell('已压缩会话', summarized, 'l2') + statCell('摘要数', summaries.length, 'l3') + '</div>';
 	const selected = params.get('session') ?? '';
+	// ★ 2026-10-21：选中态要**带分区**（同名 session 跨分区重复 ⇒ 只看 id 会同时展开多条 ✗）
+	const selectedPart = params.get('partition') ?? '';
 	const cards = sessions.map(s => {
 		const sid = String(s?.id ?? '');
-		const summary = byId.get(sid);
+		const summary = byKey.get(sessionKeyOf(s?.partition, sid));
 		const compressed = !!summary;
-		const isOpen = selected !== '' && selected === sid;
+		const isOpen = selected !== '' && selected === sid
+			&& (selectedPart === '' || selectedPart === String(s?.partition ?? ''));
+		// ★ 2026-10-21：会话可能来自**工作区分区**或**agent 分区**（两种口径都显示）⇒
+		//   标注来源分区，否则用户看到"同一个会话在两个分区各一份"会以为重复 ✗。
+		const partChip = s?.partition
+			? '<span class="md-meta-chip session">🗂 ' + escapeHtml(String(s.partition)) + '</span>'
+			: '';
 		const chips = '<span class="md-meta-chip">👁 ' + (Number(s?.observationCount) || 0) + ' 观察</span>'
+			+ partChip
 			+ (s?.project ? '<span class="md-meta-chip">📦 ' + escapeHtml(String(s.project)) + '</span>' : '')
 			+ (summary && typeof summary.observationCount === 'number'
 				? '<span class="md-meta-chip">🗜 压缩 ' + summary.observationCount + ' 观察</span>' : '');
@@ -802,7 +818,7 @@ function renderSessionsView(params, model) {
 			+ '<div class="md-card-header"><span class="md-badge ' + (compressed ? 'l1' : 'l0') + '">'
 			+ (compressed ? '已压缩' : '暂存中') + '</span>'
 			// 点标题 = 换 `?session=`（选中/取消 ✓）；零脚本下这就是"展开"的原语 ✓
-			+ '<a class="md-card-title md-session-link" href="' + hrefTo(params, { session: isOpen ? '' : sid }) + '">'
+			+ '<a class="md-card-title md-session-link" href="' + hrefTo(params, { session: isOpen ? '' : sid, partition: isOpen ? '' : String(s?.partition ?? '') }) + '">'
 			+ escapeHtml(String(s?.firstPrompt || sid || '未命名会话')) + '</a>'
 			// ⚠ **别在这里 `String(...)`**：真源正是这么干才让数字时间戳变成 Invalid Date ✗（见函数头注释 ✓）
 			+ '<span class="md-card-time">' + escapeHtml(sessionRelTime(s?.updatedAt ?? s?.startedAt ?? '')) + '</span>'
@@ -811,12 +827,25 @@ function renderSessionsView(params, model) {
 			+ (isOpen ? renderSessionDetail(s, summary, model) : '')
 			+ '</div>';
 	}).join('');
+	// ★ 2026-10-21：空态要说清"查了哪些分区"（否则用户以为没记录，实际是分区口径不同 ✗）
+	const searched = Array.isArray(model.sessionPartitions) ? model.sessionPartitions : [];
+	const searchedNote = searched.length
+		? '（已查分区：' + escapeHtml(searched.slice(0, 8).join('、')) + (searched.length > 8 ? ' … 共 ' + searched.length + ' 个' : '') + '）'
+		: '';
+	const truncatedNote = model.sessionPartitionsTruncated
+		? '<div class="md-note">⚠ 分区数超过上限，只查了前 ' + searched.length + ' 个（共 ' + (Number(model.sessionPartitionsTotal) || 0) + ' 个）⇒ 这里的会话数**少于**真实值。</div>'
+		: '';
+	// ⚠ 取数失败要**如实显示**（静默显示"暂无会话记录"会把"失败"说成"没有" ✗）
+	const errorNote = model.sessionsError
+		? '<div class="md-note">⚠ 会话取数失败：' + escapeHtml(String(model.sessionsError)) + '</div>'
+		: '';
 	return statRow
 		+ '<div class="md-toolbar"><a class="md-btn" href="./detail?' + queryString(params, {}) + '">🔄 刷新</a>'
 		+ '<span class="md-filter-label">只读 · 点会话标题展开详情（'
 		+ (selected ? '当前：' + escapeHtml(selected) : '当前未选中') + '）</span></div>'
+		+ truncatedNote
 		+ '<div class="md-list">' + (cards
-			|| '<div class="md-empty">暂无会话记录（开始对话后，观察会暂存到会话，达到阈值或会话结束时压缩为摘要 ✓）。</div>')
+			|| '<div class="md-empty">暂无会话记录（开始对话后，观察会暂存到会话，达到阈值或会话结束时压缩为摘要 ✓）。' + searchedNote + '</div>')
 		+ '</div>'
 		+ '<div class="md-note">⚠ IDE 侧的展开是**懒加载**（点一下才取观察 ✗）；零脚本做不到"点击后发请求" ⇒ '
 		+ '本页改成**点标题换 `?session=` 重新请求整页** ✓ —— 服务端**只对选中的那一个**会话取观察，'

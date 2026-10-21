@@ -1231,7 +1231,82 @@ async function summaryForRender(state, config) {
  * ③ 计数**在本地聚合**（与 IDE 侧 `_countByTier` 同款 ✓）—— 引擎的 `getStats` 实测"写入 4 条后
  *    仍回 0" ✗ ⇒ 不能拿它当"总数"（这条早先在 `getExtendedStats` 的 note 里已记 ✓）。
  */
-async function loadDetailModel({ config, params }) {
+/**
+ * 「会话」页要查的**分区数上限**（2026-10-21）。
+ *
+ * 为什么要有上限：会话页现在要**同时**显示工作区分区与"按 agent 区分"的所有分区
+ * ⇒ 分区数 = agent 数（实测一个 profile 就有 7~20 个）⇒ 每个分区 2 次网关往返。
+ * 不设上限 ⇒ 一个装了 200 个 agent 的库会打出 400 次请求 ⇒ 页面直接卡死 ✗。
+ * ⇒ 取前 N 个 ＋ **如实标注**"已截断"（不静默丢数据 ✓）。
+ */
+const SESSION_PARTITION_LIMIT = 24;
+
+/** 会话行的排序时间（`updatedAt` → `startedAt` → 0）；解析不了就当 0（排最后）✓。 */
+function sessionTimeOf(row) {
+	const t = Date.parse(String(row?.updatedAt ?? row?.startedAt ?? ''));
+	return Number.isFinite(t) ? t : 0;
+}
+
+/**
+ * 「会话」页的取数（2026-10-21，用户拍板「记忆既可以按工作区隔离，也可以按 agent 区分，
+ * 记忆的会话都应该显示出来」）。
+ *
+ * ## 病根（为什么之前页面永远是空的）
+ * 之前这里只查 `agentIdOf(config)`（＝**工作区分区** `ws-*`/`wa-*`），而 dsh 侧的观测/会话
+ * **实际落在纯 agent 分区**（`saros-claw` / `knowledge-base-expert` …）
+ * ⇒ 真库实测：dev 与安装版两个 profile 的工作区 scope 都是 **0 条**，而 `mem:obs:*`
+ * 有 3617 / 19703 条 ⇒ **数据在，只是查错了分区** ✗（截图里"暂无会话记录"就是这个）。
+ *
+ * ## 现在的口径
+ * 读分区清单 = 主分区（工作区）＋ **所有有数据的 agent 分区**（`listAllAgentsWithData`）
+ * ⇒ 合并展示，每条带 `partition`（来自哪个分区）⇒ 观察按**该会话自己的分区**去查
+ * （用主分区查必然是空 ⇒ 点开什么都没有 ✗）。
+ *
+ * ⚠ 一个分区/辅助查询失败**不该**让整页 500（零脚本页崩了 = 用户什么都看不到 ✗）
+ * ⇒ 逐分区 `allSettled` + 整体 try/catch（失败**如实说**，页面仍然渲染 ✓）。
+ */
+async function loadSessionsView({ model, config, state, base, params, agentId }) {
+	const scope = readScopeOf(config, state, undefined);
+	// ⚠ 必须 catch：`listAllAgentsWithData` 在**旧网关/代理**上可能不存在（unknown provider method ✗）
+	let agentPartitions = [];
+	try {
+		agentPartitions = rowsOf(await providerCall(base, 'listAllAgentsWithData', []))
+			.map(x => String(x ?? '').trim()).filter(Boolean);
+	} catch { agentPartitions = []; }
+	const allPartitions = [...new Set([...scope.partitions, ...agentPartitions])];
+	const searched = allPartitions.slice(0, SESSION_PARTITION_LIMIT);
+	const per = await Promise.all(searched.map(async p => {
+		const [s, sum] = await Promise.allSettled([
+			providerCall(base, 'listSessions', [p]),
+			providerCall(base, 'listSummaries', [p]),
+		]);
+		return { p, sessions: rowsOf(s.value), summaries: rowsOf(sum.value) };
+	}));
+	const byTime = (a, b) => sessionTimeOf(b) - sessionTimeOf(a);
+	model.sessions = per.flatMap(x => x.sessions.map(row => ({ ...row, partition: x.p }))).sort(byTime);
+	model.summaries = per.flatMap(x => x.summaries.map(row => ({ ...row, partition: x.p }))).sort(byTime);
+	model.sessionPartitions = searched;
+	// ⚠ 截断必须**如实标注**（不静默丢分区 ⇒ 用户看到的会话数会与真实不符 ✗）
+	model.sessionPartitionsTruncated = allPartitions.length > searched.length;
+	model.sessionPartitionsTotal = allPartitions.length;
+	// ⚠⚠ **只对选中的那一个**会话取观察（零脚本下"展开"= 换 `?session=` ✓）
+	//   ⇒ 否则 N 个会话就是 N 次网关往返 ✗（IDE 侧是懒加载，天然只取一个 ✓）
+	const sid = params.get('session');
+	// ★ 2026-10-21：同名 session 可能出现在**多个分区** ⇒ 选中要**带分区**（`?partition=`），
+	//   否则会同时展开多条、且观察会取到别的分区的那条 ✗（没给分区时退回"第一个匹配" ✓）。
+	const spart = String(params.get('partition') ?? '');
+	const picked = model.sessions.find(s => String(s?.id ?? '') === sid
+			&& (spart === '' || String(s?.partition ?? '') === spart))
+		?? model.sessions.find(s => String(s?.id ?? '') === sid);
+	if (picked) {
+		// ⚠ 用**该会话自己的分区**查观察（会话可能来自 agent 分区 ⇒ 用主分区查必然空 ✗）
+		const p = String(picked.partition ?? agentId);
+		try { model.sessionDetail = { observations: rowsOf(await providerCall(base, 'observeList', [p, sid])), partition: p }; }
+		catch { model.sessionDetail = { observations: [], partition: p }; }
+	}
+}
+
+async function loadDetailModel({ config, params, state }) {
 	const base = gatewayUrlOf(config);
 	const agentId = agentIdOf(config);
 	const model = {
@@ -1329,18 +1404,16 @@ async function loadDetailModel({ config, params }) {
 		try { model.report = await providerCall(base, 'generateReport', [rtype, agentId]); } catch { model.report = null; }
 	}
 	if (model.view === 'sessions') {
-		// `listSessions(agentId)` / `listSummaries(agentId)` —— 首参**都是** agentId ✓（在只读白名单里 ✓）
-		// ⚠ 两者都要 `catch`（照 IDE 侧 798-799 行的 `.catch(() => [])` ✓）：一个失败不该让整页 500 ✗
-		const [sessions, summaries] = await Promise.allSettled([call('listSessions'), call('listSummaries')]);
-		model.sessions = rowsOf(sessions.value);
-		model.summaries = rowsOf(summaries.value);
-		// ⚠⚠ **只对选中的那一个会话**取观察（零脚本下"展开"= 换 `?session=` ✓）——
-		//   否则 N 个会话就是 N 次网关往返 ✗（IDE 侧是懒加载，天然只取一个 ✓）
-		//   ⚠ `observeList(agentId, sessionId)` 首参**是** agentId ✓（符合本仓惯例 ✓）
-		const sid = params.get('session');
-		if (sid && model.sessions.some(s => String(s?.id ?? '') === sid)) {
-			try { model.sessionDetail = { observations: rowsOf(await providerCall(base, 'observeList', [agentId, sid])) }; }
-			catch { model.sessionDetail = { observations: [] }; }
+		// ★ 2026-10-21：会话页现在**同时**显示工作区分区与 agent 分区的会话（口径见 loadSessionsView）。
+		//   整体包 try/catch：一个分区查询失败**不该**让整页 500（零脚本页崩了 = 用户什么都看不到 ✗）
+		//   ⇒ 失败**如实说**（写进 model，页面上会显示），页面仍然渲染 ✓。
+		try {
+			await loadSessionsView({ model, config, state, base, params, agentId });
+		} catch (err) {
+			console.error('[vssaros-memory] sessions view failed:', err instanceof Error ? (err.stack || err.message) : String(err));
+			model.sessionsError = String(err instanceof Error ? err.message : err);
+			model.sessions = [];
+			model.summaries = [];
 		}
 	}
 	if (model.view === 'consolidation') {
@@ -4231,7 +4304,7 @@ export function apply(ctx, rawConfig = {}) {
 						await handleDetailExport(res, { config, tool });
 						return;
 					}
-					const model = await loadDetailModel({ config, params });
+					const model = await loadDetailModel({ config, params, state });
 					res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
 					res.end(renderDetailShell(model));
 					return;
@@ -4253,7 +4326,7 @@ export function apply(ctx, rawConfig = {}) {
 				//   ⚠ 摘要版要数字 ⇒ 取数有**预算**（`summaryForRender` ✓）：等不到就用上次结果渲染并如实标注，
 				//     不把侧栏空着等网关（网关忙时实测会答满 5s 超时 ✗）。
 				if (url.searchParams.get('surface') === 'editor') {
-					const model = await loadDetailModel({ config, params: url.searchParams });
+					const model = await loadDetailModel({ config, params: url.searchParams, state });
 					res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
 					res.end(renderDetailShell(model));
 					return;
