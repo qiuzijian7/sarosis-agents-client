@@ -6,8 +6,10 @@
  *  embedding（P0-1）后重建会变成**分钟级** ⇒ 必须有制品缓存。
  *
  *  制品（`<dataDir>/index/`）：
- *    bm25-cache.json.gz    { version, fingerprint, builtAt, docs, agents: { <agentId>: payload } }
- *    vector-cache.json.gz  { version, fingerprint, builtAt, docs, mode, agents: { <agentId>: [{id,vector}] } }
+ *    bm25-cache.bin       二进制（2026-10-21 起写这个；见 ./bm25CacheBinary.mjs）
+ *    bm25-cache.json.gz   旧制品（只读回退：升级后第一次启动用它）
+ *    vector-cache.bin     二进制（2026-10-21 起写这个；见 ./vectorCacheBinary.mjs）
+ *    vector-cache.json.gz 旧制品（只读回退）
  *  （按 agent 分片：网关的索引本来就是 per-agent 实例，见 host.mjs `indexByAgent`）
  *
  *  新鲜度判据 = 启动时实测的 KV 指纹 `{ rows, maxUpdatedAt, sumLen }` 与制品内记录**完全一致**：
@@ -22,9 +24,18 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as zlib from 'node:zlib';
 
+import { decodeBm25Cache, encodeBm25Cache, isBm25Binary } from './bm25CacheBinary.mjs';
+import { decodeVectorCache, encodeVectorCache, isVectorBinary } from './vectorCacheBinary.mjs';
+
 export const INDEX_CACHE_VERSION = 1;
+/** 旧 BM25 制品（JSON + gzip）。2026-10-21 起只读不写：新制品不存在时作为回退来源。 */
 export const BM25_CACHE_FILE = 'bm25-cache.json.gz';
+/** 新 BM25 制品（二进制，见 ./bm25CacheBinary.mjs）。 */
+export const BM25_CACHE_BIN_FILE = 'bm25-cache.bin';
+/** 旧向量制品（JSON + gzip）。2026-10-21 起只读不写：新制品不存在时作为回退来源。 */
 export const VECTOR_CACHE_FILE = 'vector-cache.json.gz';
+/** 新向量制品（二进制，见 ./vectorCacheBinary.mjs）。 */
+export const VECTOR_CACHE_BIN_FILE = 'vector-cache.bin';
 
 /** KV 指纹比较。js-kv 后端没有 updated_at ⇒ 传 0；两边的 `?? 0` 保证同一制品可跨后端比较失败（等价于重建）。 */
 export function fingerprintEqual(a, b) {
@@ -64,29 +75,110 @@ export function validateCache(meta, currentFingerprint, version = INDEX_CACHE_VE
  * 写制品。**原子替换**（temp + rename）——半写制品绝不能留在启动读取路径上。
  * `sync: true` 供 shutdown 使用（进程即将退出，允许阻塞主线程）。
  */
-export async function writeCacheFile(file, obj, { sync = false } = {}) {
+export function writeCacheFile(file, obj, { sync = false } = {}) {
 	fs.mkdirSync(path.dirname(file), { recursive: true });
 	// tmp 名必须唯一：并发落盘（如启动期 BM25+向量两次 save）会互相覆盖同一个 tmp
 	const tmp = `${file}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 	const json = JSON.stringify(obj);
 	if (sync) {
+		// ★ 2026-10-21：本函数不再是 async ⇒ 同步分支的异常**同步抛出**，shutdown 的 try/catch 接得住
+		//   （旧 async 版把它变成无人 await 的 rejected Promise ⇒ 日志里看不到"save failed"）。
 		fs.writeFileSync(tmp, zlib.gzipSync(Buffer.from(json, 'utf8')));
 		fs.renameSync(tmp, file);
-		return;
+		return Promise.resolve();
 	}
-	// 异步 gzip：制品可达数十 MB，gzipSync 会阻塞网关事件循环（→ renderer 5s 超时误判）
-	const gz = await new Promise((resolve, reject) => {
-		zlib.gzip(Buffer.from(json, 'utf8'), (err, buf) => (err ? reject(err) : resolve(buf)));
-	});
-	// 异步写文件 + 原子替换：writeFileSync/renameSync 会阻塞事件循环（数十 MB 时明显）
-	await fs.promises.writeFile(tmp, gz);
-	await fs.promises.rename(tmp, file);
+	return (async () => {
+		// 异步 gzip：制品可达数十 MB，gzipSync 会阻塞网关事件循环（→ renderer 5s 超时误判）
+		const gz = await new Promise((resolve, reject) => {
+			zlib.gzip(Buffer.from(json, 'utf8'), (err, buf) => (err ? reject(err) : resolve(buf)));
+		});
+		// 异步写文件 + 原子替换：writeFileSync/renameSync 会阻塞事件循环（数十 MB 时明显）
+		await fs.promises.writeFile(tmp, gz);
+		await fs.promises.rename(tmp, file);
+	})();
 }
 
 /** 读制品；不存在返回 null，损坏抛出（调用方按「不可用 ⇒ 重建」处理）。 */
 export function readCacheFile(file) {
 	if (!fs.existsSync(file)) { return null; }
 	return JSON.parse(zlib.gunzipSync(fs.readFileSync(file)).toString('utf8'));
+}
+
+/**
+ * 写 BM25 制品（二进制，2026-10-21）。原子替换同 `writeCacheFile`。
+ * 不压缩：gzip 是保存耗时的大头（真机 1.5s，占整体 2.0s），换来的只是 37.6MB → 7.8MB。
+ * @param {string} file
+ * @param {object} obj `{ ...meta, agents: { <agentId>: BM25Index.serializePayload() } }`
+ */
+export function writeBm25CacheFile(file, obj, { sync = false } = {}) {
+	fs.mkdirSync(path.dirname(file), { recursive: true });
+	const tmp = `${file}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+	const { agents, ...meta } = obj;
+	const buf = encodeBm25Cache(meta, agents);
+	if (sync) {
+		// 非 async 函数 ⇒ 同步分支的异常**同步抛出**，shutdown 的 try/catch 接得住
+		fs.writeFileSync(tmp, buf);
+		fs.renameSync(tmp, file);
+		return Promise.resolve();
+	}
+	return (async () => {
+		await fs.promises.writeFile(tmp, buf);
+		await fs.promises.rename(tmp, file);
+	})();
+}
+
+/**
+ * 读 BM25 制品：优先二进制 `binFile`，不存在再回退旧 JSON `legacyFile`（升级后第一次启动走这条）。
+ * 二进制损坏**直接抛错**，不回退旧文件 —— 旧文件比它更旧，静默用旧数据比重建更难排查。
+ * @returns {{ meta: object|null, format: 'binary'|'json'|null }}
+ */
+export function readBm25CacheFile(binFile, legacyFile) {
+	if (fs.existsSync(binFile)) {
+		const buf = fs.readFileSync(binFile);
+		if (!isBm25Binary(buf)) { throw new Error(`${path.basename(binFile)}: not a bm25 cache (bad magic)`); }
+		return { meta: decodeBm25Cache(buf), format: 'binary' };
+	}
+	const legacy = legacyFile ? readCacheFile(legacyFile) : null;
+	return { meta: legacy, format: legacy ? 'json' : null };
+}
+
+/**
+ * 写向量制品（二进制，2026-10-21）。原子替换同 `writeCacheFile`。
+ * 编码在主线程但只是内存拷贝（真机 18889×384 ≈15ms）；不压缩（见 vectorCacheBinary.mjs 头注释）。
+ * @param {string} file
+ * @param {object} obj `{ ...meta, agents: { id: [{id, vector}] } }`（与旧 JSON 制品同形）
+ */
+export function writeVectorCacheFile(file, obj, { sync = false } = {}) {
+	fs.mkdirSync(path.dirname(file), { recursive: true });
+	const tmp = `${file}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+	const { agents, ...meta } = obj;
+	const buf = encodeVectorCache(meta, agents);
+	if (sync) {
+		// 非 async 函数 ⇒ 同步分支的异常**同步抛出**，shutdown 的 try/catch 接得住
+		// （async 版会把它变成被丢弃的 rejected Promise ⇒ 进程退出时报 unhandled rejection）。
+		fs.writeFileSync(tmp, buf);
+		fs.renameSync(tmp, file);
+		return Promise.resolve();
+	}
+	return (async () => {
+		await fs.promises.writeFile(tmp, buf);
+		await fs.promises.rename(tmp, file);
+	})();
+}
+
+/**
+ * 读向量制品：优先二进制 `binFile`，不存在再回退旧 JSON `legacyFile`（升级后第一次启动走这条）。
+ * 二进制损坏**直接抛错**，不回退旧文件 —— 旧文件比它更旧，静默用旧数据比重建更难排查。
+ * @returns {{ meta: object|null, format: 'binary'|'json'|null }}
+ */
+export function readVectorCacheFile(binFile, legacyFile) {
+	if (fs.existsSync(binFile)) {
+		const buf = fs.readFileSync(binFile);
+		if (!isVectorBinary(buf)) { throw new Error(`${path.basename(binFile)}: not a vector cache (bad magic)`); }
+		return { meta: decodeVectorCache(buf), format: 'binary' };
+	}
+	const legacy = legacyFile ? readCacheFile(legacyFile) : null;
+	return { meta: legacy, format: legacy ? 'json' : null };
 }
 
 /**

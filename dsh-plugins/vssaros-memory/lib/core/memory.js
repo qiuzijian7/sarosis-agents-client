@@ -134,6 +134,97 @@ export function partitionOf(config) {
 	return safe ? `${WORKSPACE_PARTITION_PREFIX}${safe}` : LEGACY_PARTITION;
 }
 
+// ── 人设分区（2026-10-20，用户拍板「写 ws、读 ws + 当前人设」）─────────────────────
+//
+// 背景：IDE 侧聊天框停用、统一走 dsh 后，历史记忆全在**按 agent 命名**的分区里
+//   （`knowledge-base-expert` 401 条、`saros-claw` 4039 条……），而 dsh 侧只认工作区分区 `ws-<id>`
+//   ⇒ 在 dsh 里选「知识库专家」也**读不到它自己的旧记忆**。
+// 口径（只改**读**，不改写）：
+//   · 写：仍只进 `ws-<workspace>`（项目事实按工作区隔离，不因换人设而散落）；
+//   · 读：`ws-<workspace>` **+** 当前人设对应的 agent 分区（人设积累的偏好/经验跟人设走）。
+// 人设分区名 = agent id（dsh 的 `vssaros-agents` 与 IDE 时代是**同一套 id**，实测
+//   `resources/.agents/agents/` 下就是 `knowledge-base-expert` / `saros-claw` …）。
+
+/** preset id 前缀（与 `vssaros-agents/lib/core/agents.js` 的 `PRESET_ID_PREFIX` 一致）。 */
+export const AGENT_PRESET_PREFIX = 'vssaros-';
+
+/**
+ * **不是人设**的 preset（它们的 id 也以 `vssaros-` 开头）：标准组合 / 委派派生版的后缀。
+ * ⚠ 新增"组合型" preset 时要加进来，否则会被误当成一个叫 `standard` 的人设分区（只读、无害，但会多一次空查询）。
+ */
+export const NON_PERSONA_PRESETS = new Set(['vssaros-standard']);
+
+/** 人格切换投影的 key（与 `vssaros-agents/lib/core/persona.js` 的 `PERSONA_PROJECTION_KEY` 一致）。 */
+export const PERSONA_PROJECTION_KEY = 'vssaros-persona';
+
+/**
+ * 从 preset id 反推人设的 agent id；不是人设 preset 就返回 `''`。
+ *
+ * 规则与 `presetIdOf(agentId) = 'vssaros-' + slugify(agentId)` 互逆（slug 只含 `[a-z0-9-]`）；
+ * 委派派生版 `vssaros-<id>-assign` 归回本体 `<id>`（同一个人设）。
+ * @param {unknown} presetId
+ * @returns {string}
+ */
+export function personaIdFromPreset(presetId) {
+	if (typeof presetId !== 'string') { return ''; }
+	const id = presetId.trim();
+	if (!id.startsWith(AGENT_PRESET_PREFIX) || NON_PERSONA_PRESETS.has(id)) { return ''; }
+	const rest = id.slice(AGENT_PRESET_PREFIX.length).replace(/-assign$/, '');
+	return /^[a-z0-9][a-z0-9-]*$/.test(rest) ? rest : '';
+}
+
+/**
+ * 当前会话**生效**的人设 agent id（`''` = 没有人设：标准 preset / 拿不到会话）。
+ *
+ * 优先级（与 `vssaros-agents` 的装配口径一致）：
+ *   ① 会话中途**切换过人格**（`vssaros-persona` 投影的 `personaId`）——那才是模型此刻看到的人设；
+ *   ② 会话**当前 preset**：创建头 `meta.agentPreset`，再按日志里的 `agent-preset/selected` 前推
+ *      （dsh 自己的 `agentPreset` 投影就是这么算的：`init: header.agentPreset`、`apply: selected`）。
+ * ⚠ 任何异常都吞掉返回 `''` —— 本函数在 section 的 `text(context)` 热路径上，装配**绝不能**因此失败。
+ *
+ * @param {unknown} agent - dsh `Agent`（装配上下文 / 工具执行上下文 / turn-stopping 负载里的那个）。
+ * @param {{ stateOf?: (session: unknown, key: string) => unknown } | undefined} projections - `sessionProjections` 服务（可缺席）。
+ * @returns {string}
+ */
+export function personaIdOf(agent, projections) {
+	try {
+		const session = /** @type {any} */ (agent)?.session;
+		if (!session) { return ''; }
+		if (projections && typeof projections.stateOf === 'function') {
+			const switched = /** @type {any} */ (projections.stateOf(session, PERSONA_PROJECTION_KEY))?.personaId;
+			if (typeof switched === 'string' && switched.trim()) { return switched.trim(); }
+		}
+		let preset = session.meta?.agentPreset;
+		if (typeof session.snapshotEvents === 'function') {
+			for (const event of session.snapshotEvents()) {
+				if (event?.type === 'agent-preset/selected' && typeof event.data?.agentPreset === 'string') {
+					preset = event.data.agentPreset;
+				}
+			}
+		}
+		return personaIdFromPreset(preset);
+	} catch {
+		return '';
+	}
+}
+
+/**
+ * **读**分区清单：主分区（工作区）在前，人设分区在后；去重、去空。
+ *
+ * ⚠ 显式 `config.agentId`（探针 / 单租户部署）⇒ **只读它** —— 那是"我就要这一个分区"的意思，
+ *   不应再被人设分区稀释（与 `partitionOf` 里"显式压过一切"同一口径）。
+ * @param {{agentId?: unknown}} config
+ * @param {string} primary - 写分区（`partitionOf` 的结果）。
+ * @param {string} personaId - `personaIdOf` 的结果。
+ * @returns {string[]}
+ */
+export function readPartitionsOf(config, primary, personaId) {
+	const explicit = typeof config?.agentId === 'string' && config.agentId.trim() !== '';
+	const out = [primary];
+	if (!explicit && personaId && personaId !== primary) { out.push(personaId); }
+	return out;
+}
+
 /**
  * 审批载荷的**认领前缀**（`tools/pre-execute` 的 `ask` decision）。
  *
@@ -165,6 +256,44 @@ export function targetLabelOf(memoryType) {
 /** 写策略取值（移植 `dsh-memento` 的 `lib/gate.mjs:3-11`）。 */
 export const WRITE_POLICIES = ['ask', 'auto', 'off'];
 
+/** `memory_remember` 的 `memory_type` 枚举（与工具 schema 一致；策略 type 维只认这些）。 */
+export const REMEMBER_MEMORY_TYPES = Object.freeze(['working', 'pattern', 'preference', 'architecture', 'bug', 'workflow', 'fact']);
+
+/**
+ * 审批文案里的动词（每个写工具一个；缺的会显示成 `remember` ⇒ 审批文案**说谎**）。
+ * 2026-10-20：补上 slot / lesson / work / import / skill（原表只有 11 个，五个后加的工具都落到缺省 `remember`）。
+ */
+export const WRITE_VERBS = Object.freeze({
+	memory_remember: 'remember', memory_forget: 'forget', memory_cascade: 'cascade', memory_crystal: 'crystal',
+	memory_routine: 'routine', memory_improve: 'improve', memory_facet: 'facet', memory_governance: 'governance',
+	memory_team: 'team', memory_mesh: 'mesh', memory_sentinel: 'sentinel',
+	memory_slot: 'slot', memory_lesson: 'lesson', memory_work: 'work', memory_import: 'import', memory_skill: 'skill',
+});
+
+/**
+ * 这次写入在策略表里的**类型**（`resolveWritePolicy` 的 type 维）。
+ *
+ * ★ 2026-10-20（代码评估：审批策略可被绕过）：原来所有写工具都用 `exec.arguments.memory_type` ——
+ *   而只有 `memory_remember` **声明**了这个参数。模型可以给 `memory_governance`（批量删除）/ `memory_forget`
+ *   多塞一个 `memory_type: 'working'` ⇒ 这次**删除**落进 `core` 档（若配了 `writePolicies.core='auto'` 就被
+ *   自动放行）。参数是模型给的，schema 外的键 dsh 不会替我们挡。
+ * 现在：
+ *   · `memory_remember`：用它声明的 `memory_type`（必须在枚举里，否则按 `fact`）—— 这是**写到哪一层**的真实
+ *     路由，模型选类型就是在选目标（`resolveWritePolicy` 注释差异 ② 的有意取舍，保持不变）；
+ *   · 其余写工具：**固定**长期层，type = `op-<动词>`（不受参数影响）。它们能被 `long` 层键或全局策略命中，
+ *     但永远命中不了 `core` 或 `long/<记忆类型>` 这些为 remember 设计的键。
+ * @param {string} toolName
+ * @param {{ memory_type?: unknown }} args
+ * @returns {string}
+ */
+export function policyMemoryTypeOf(toolName, args) {
+	if (toolName === 'memory_remember') {
+		const t = typeof args?.memory_type === 'string' ? args.memory_type : '';
+		return REMEMBER_MEMORY_TYPES.includes(t) ? t : 'fact';
+	}
+	return `op-${WRITE_VERBS[toolName] ?? 'write'}`;
+}
+
 /**
  * 粒度写策略解析（移植 `dsh-memento` 的 `lib/gate.mjs:73-81`，**只保留我们真有的维度**）。
  *
@@ -175,11 +304,13 @@ export const WRITE_POLICIES = ['ask', 'auto', 'off'];
  *      没有第二来源 ⇒ 那个键永远没有东西能命中它 ⇒ 配了就是"配了不生效" ✗（memento 有
  *      `/memory` 命令、`seed`、`dsh-claude-move` 等入口，所以它需要）。将来做 `turn/end`
  *      自动沉淀时再加，届时要**同时**给它一条真的写入路径 ✓。
- *   ② **type 维来自模型给的 `memory_type` 参数** ⇒ **模型可以自选类型落到更宽松的策略上**
+ *   ② **type 维来自 `memory_remember` 的 `memory_type` 参数** ⇒ **模型可以自选类型落到更宽松的策略上**
  *      （例：把内容标成 `working` 就落进 `core`；memento 的 track/scope 由写方会话决定、模型不可选 ✓）。
  *      这是**有意的取舍**：闸的目标是"让用户看见跨会话的持久写入"，而 `core`（本会话工作记忆）
  *      本来就是高频低价值的一档 ⇒ 显式把它降成 `auto` 是用户的选择 ✓。要收紧就**只用全局策略**
  *      （`config.writePolicy`，那一级模型绕不过去 ✓）。
+ *      ⚠ 2026-10-20 收紧：**只有 remember** 的类型来自参数；其余写工具的类型固定为 `op-<动词>`
+ *      （`policyMemoryTypeOf`）⇒ 删改类工具再也借不到 `core` 档。
  *
  * @param {Record<string, string> | undefined} policies - `config.writePolicies`。
  * @param {string} fallback - `config.writePolicy`（全局）。

@@ -30,7 +30,7 @@ import { readFileSync } from 'node:fs';
 import { bindFoundation, foundation } from './foundationRef.js';
 import { buildAuditRow } from './core/audit.js';
 
-import { DEFAULT_TOKEN_BUDGET, LEGACY_PARTITION, MAX_INJECT_CHARS, REQUEST_MARKER, SECTION_NAME, SEARCH_CONFIDENCE_THRESHOLD, SECTION_ORDER_FALLBACK, admitSnapshot, buildWriteReason, createSnapshot, isMemoryWriteRequest, isWriteIntent, normalizeSearchResults, parseWriteReason, partitionOf, renderWorkingContext, resolveWritePolicy, snapshotKeyOf, splitByConfidence, summarizeStats, targetKeyOf, targetLabelOf, validateWritePolicies, validateWritePolicy } from './core/memory.js';
+import { DEFAULT_TOKEN_BUDGET, LEGACY_PARTITION, MAX_INJECT_CHARS, REQUEST_MARKER, SECTION_NAME, SEARCH_CONFIDENCE_THRESHOLD, SECTION_ORDER_FALLBACK, admitSnapshot, buildWriteReason, createSnapshot, isMemoryWriteRequest, isWriteIntent, normalizeSearchResults, parseWriteReason, partitionOf, personaIdOf, policyMemoryTypeOf, readPartitionsOf, renderWorkingContext, resolveWritePolicy, snapshotKeyOf, splitByConfidence, summarizeStats, targetKeyOf, targetLabelOf, validateWritePolicies, validateWritePolicy, WRITE_VERBS } from './core/memory.js';
 
 import { createAuditWriter } from './audit.js';
 
@@ -49,9 +49,10 @@ const PKG_VERSION = (() => {
 		return JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version ?? '(未知)';
 	} catch { return '(未知)'; }
 })();
-import { extractCandidates, parseFormUrlEncoded, userTextsOf } from './core/distill.js';
+import { extractCandidates, parseFormUrlEncoded, SUMMARY_MATCHED_TAG, summaryCandidatesOf, userTextsOf } from './core/distill.js';
 
 import { createDraftStore, draftRowsOf } from './draft.js';
+import { recallHistory, renderHistory } from './history.js';
 
 import { createJudge } from './judge.js';
 
@@ -209,6 +210,92 @@ export function partitionKeyOf(config) {
 	return agentIdOf(config);
 }
 
+// ── 部署配置兜底（2026-10-20，preset plane 半边副本没有壳注入的配置）──────────────────
+//
+// 只兜底**部署级**的三个键：网关地址 / 数据根 / 工作区（都由壳经 `--patch` 注入 host plane 那行）。
+// ⚠ 刻意不兜底 `agentId`（显式分区是"我就要这个分区"，不该被别的挂载影响）与策略类键（writePolicy 等：
+//   各行自己的配置说了算）。
+// ⚠ 只给 `toolsOnly` 副本用：非半边的挂载缺配置时**保持原样**（探针 p3-35 的"壳未注入 ⇒ default"语义不变）。
+const DEPLOYMENT_KEYS = Object.freeze(['gatewayUrl', 'dataRoot', 'workspaceId']);
+/** 本进程登记的部署配置（最后一次带配置的非半边挂载）。 */
+let deploymentConfig = null;
+
+const hasValue = v => typeof v === 'string' && v.trim() !== '';
+
+/** 登记；没有任何部署键 ⇒ 不登记（返回 null）。 */
+function registerDeploymentConfig(raw) {
+	if (!raw || !DEPLOYMENT_KEYS.some(k => hasValue(raw[k]))) { return null; }
+	const snapshot = Object.freeze(Object.fromEntries(DEPLOYMENT_KEYS.filter(k => hasValue(raw[k])).map(k => [k, raw[k]])));
+	deploymentConfig = snapshot;
+	return snapshot;
+}
+
+function unregisterDeploymentConfig(snapshot) {
+	if (deploymentConfig === snapshot) { deploymentConfig = null; }
+}
+
+/**
+ * 半边副本的 config：自己有的键用自己的；缺的部署键在**读取时**取登记值（getter ⇒ 先挂载/后挂载都对）。
+ * 展开（`{...config}`）也会求值 getter ⇒ `workspaceScoped` 等现有用法不用改。
+ * @param {object} raw
+ */
+export function withDeploymentFallback(raw) {
+	const out = { ...(raw ?? {}) };
+	for (const key of DEPLOYMENT_KEYS) {
+		if (hasValue(out[key])) { continue; }
+		delete out[key];
+		Object.defineProperty(out, key, { enumerable: true, configurable: true, get: () => deploymentConfig?.[key] });
+	}
+	return out;
+}
+
+/** 探针用：当前登记的部署配置（只读）。 */
+export function deploymentConfigForTest() {
+	return deploymentConfig;
+}
+
+/**
+ * 本次调用的**读**分区清单（2026-10-20：写 ws、读 ws + 当前人设，口径见 `core/memory.js` 的人设分区注释）。
+ * @param {object} config
+ * @param {object} state - 需要 `state.projections`（`sessionProjections` 服务，可缺席）。
+ * @param {unknown} agent - dsh `Agent`（装配上下文 / 工具执行上下文里的那个；缺席 ⇒ 只读主分区）。
+ * @returns {{ primary: string, persona: string, partitions: string[] }}
+ */
+function readScopeOf(config, state, agent) {
+	const primary = agentIdOf(config);
+	const persona = personaIdOf(agent, state?.projections);
+	return { primary, persona, partitions: readPartitionsOf(config, primary, persona) };
+}
+
+/**
+ * 多分区检索 → 合并（按分数降序、按 id 去重、再截到 `limit`）。每条带上 `partition`（来自哪个分区）。
+ * ⚠ 分区之间**并行**取；任一分区失败**不拖垮整次检索**（主分区失败才算失败，人设分区失败只记一条说明）。
+ */
+async function searchPartitions(base, partitions, query, limit) {
+	const settled = await Promise.allSettled(partitions.map(p => search(base, p, query, limit)));
+	const merged = [];
+	const seen = new Set();
+	const notes = [];
+	let primaryError = '';
+	settled.forEach((r, i) => {
+		const part = partitions[i];
+		const normalized = r.status === 'fulfilled' ? normalizeSearchResults(r.value, limit) : { error: String(r.reason?.message ?? r.reason) };
+		if (normalized.error) {
+			if (i === 0) { primaryError = normalized.error; } else { notes.push(`人设分区 ${part} 取数失败：${normalized.error}`); }
+			return;
+		}
+		for (const item of normalized.items) {
+			const key = `${part}\u0000${item.id}`;
+			if (seen.has(key)) { continue; }
+			seen.add(key);
+			merged.push({ ...item, partition: part });
+		}
+	});
+	if (primaryError) { return { error: primaryError }; }
+	merged.sort((a, b) => (typeof b.score === 'number' ? b.score : -1) - (typeof a.score === 'number' ? a.score : -1));
+	return { items: merged.slice(0, limit), notes };
+}
+
 function createState() {
 	return {
 		/** **默认槽位**：启动预热 / 工具 / 页面刷新都写它；也是新装配主体首次进入时的**种子**（见 `snapshotFor`） */
@@ -227,7 +314,7 @@ function createState() {
 		/** 自动沉淀：每个会话已读到的事件位置（`session.seq` 偏移；缺省 0 ⇒ 从会话开头读）✓ */
 		distillSeqs: new Map(),
 		/** 自动沉淀的计数（页面/探针自诊断：**跳过与失败都要可见**，否则"没产出"分不清是哪种 ✗）✓ */
-		distill: { turns: 0, candidates: 0, written: 0, skipped: 0, failed: 0, judged: 0, judgeDropped: 0, judgeSkipped: 0 },
+		distill: { turns: 0, candidates: 0, summaries: 0, written: 0, skipped: 0, failed: 0, judged: 0, judgeDropped: 0, judgeSkipped: 0 },
 		/**
 		 * 草稿区的**读回缓存**（页面渲染是同步的、读文件是异步的 ⇒ 页面请求时后台读一份放这里 ✓）。
 		 * 为什么需要它：草稿如果只有文件、没有界面，就等于**不存在** ✗ —— 自动沉淀的价值全在
@@ -241,6 +328,11 @@ function createState() {
 		summary: undefined,
 		/** 提示词 section 的注册情况：`undefined` = `systemPrompt` 服务不在（组合里没挂），否则是 order */
 		promptSection: undefined,
+		/**
+		 * `sessionProjections` 服务（可选注入；读"会话中途切换过的人格"用 —— 见 `core/memory.js` 的 `personaIdOf`）。
+		 * 缺席 ⇒ 只按会话的 preset 认人设（不影响功能，只是认不出中途切换）。
+		 */
+		projections: undefined,
 	};
 }
 
@@ -262,6 +354,9 @@ function refreshInto(state, config, entry) {
 	const base = gatewayUrlOf(config);
 	const agentId = agentIdOf(config);
 	const tokenBudget = tokenBudgetOf(config);
+	// ★ 2026-10-20：槽位登记时记下的人设（`snapshotFor` 写入；默认槽位没有 ⇒ 只读主分区）。
+	//   显式 `config.agentId` ⇒ 不叠人设（`readPartitionsOf` 的口径）。
+	const persona = readPartitionsOf(config, agentId, typeof entry.persona === 'string' ? entry.persona : '')[1] ?? '';
 	const promise = (async () => {
 		state.refreshes++;
 		if (!base) {
@@ -272,7 +367,25 @@ function refreshInto(state, config, entry) {
 			// ⚠ **真机订正（2026-10-13）**：读路径不是 `mem::context` ✗（那套 404 ✗），而是
 			// `POST /provider/loadContext`（方法名＝ `IMemoryProvider` 接口名 ✓、信封 `{args:[…]}` ✓）。
 			// `sessionId` 用**分区键**：本进程没有 dsh 会话身份（引擎只用它分页会话块），而**稳定值**才对 KV cache 友好 ✓。
-			const text = await workingContext(base, agentId, agentId, tokenBudget);
+			// ★ 2026-10-20：有人设 ⇒ **两个分区并行取**，各自用一份 `tokenBudget`（人设分区不挤占工作区那份）；
+			//   人设那份失败**不拖垮**注入（只记 `personaError`，页面可见）。
+			const [primaryText, personaResult] = await Promise.all([
+				workingContext(base, agentId, agentId, tokenBudget),
+				persona
+					? workingContext(base, persona, persona, tokenBudget).then(t => ({ text: t }), e => ({ error: String(e?.message ?? e) }))
+					: Promise.resolve(undefined),
+			]);
+			const personaText = typeof personaResult?.text === 'string' ? personaResult.text.trim() : '';
+			const memoryText = personaText
+				? `${primaryText}\n\n## 人设记忆（${persona}）\n${personaText}`
+				: primaryText;
+			// ★ 2026-10-20（借鉴 dsh-memento：待审提案随快照让模型看见）：草稿只在页面上可见 ⇒ 实测**从没被提升过**。
+			//   告诉模型"有 N 条待审"，它才会在合适时提醒用户；只给**计数**不给正文 —— 未审的东西不能当事实用。
+			//   随快照一起冻结（本会话内不变）⇒ 不打掉前缀缓存。
+			const pending = await pendingDraftsOf(state);
+			const text = pending.total > 0
+				? `${memoryText ? `${memoryText}\n\n` : ''}${renderPendingDraftsNote(pending)}`
+				: memoryText;
 			// ⚠ 这里**有两道闸**，页面必须都说出来（报告 §5-7 的"互相掩盖" ✗）：
 			//   ① **网关**按 `tokenBudget`（默认 1024 token）产出 —— 这才是**通常生效**的那道 ✓；
 			//   ② 本插件另加一道 `MAX_INJECT_CHARS`（8000 字符 ≈ 该预算的十倍）⇒ **通常不生效** ✓，
@@ -286,6 +399,10 @@ function refreshInto(state, config, entry) {
 				source: `${base}/provider/loadContext`,
 				truncatedByChars: text.length > MAX_INJECT_CHARS,
 				rawChars: text.length,
+				partitions: persona ? [agentId, persona] : [agentId],
+				personaChars: personaText.length,
+				personaError: personaResult?.error ?? '',
+				pendingDrafts: pending.total,
 			});
 		} catch (e) {
 			Object.assign(entry, { text: '', fetchedAt: Date.now(), ok: false, error: String(e?.message ?? e), source: `${base}/provider/loadContext`, truncatedByChars: false, rawChars: 0 });
@@ -301,6 +418,50 @@ function refreshInto(state, config, entry) {
 /** 刷新**默认槽位**（启动预热 / 页面请求 / `memory_refresh` 工具用）。 */
 function refresh(state, config) {
 	return refreshInto(state, config, state.snapshot);
+}
+
+/**
+ * 待审草稿计数（`status === 'draft'`），按类型拆成"约定"与"会话摘要"。
+ * 草稿存储还没建好（启动预热那一次）/ 读失败 ⇒ 0 —— 计数只是提示，绝不让注入失败。
+ */
+async function pendingDraftsOf(state) {
+	try {
+		const rows = state.draftStore ? await state.draftStore.read() : [];
+		const pending = rows.filter(row => row?.status === 'draft');
+		const summaries = pending.filter(row => row.matched === SUMMARY_MATCHED_TAG).length;
+		return { total: pending.length, summaries, conventions: pending.length - summaries };
+	} catch {
+		return { total: 0, summaries: 0, conventions: 0 };
+	}
+}
+
+/**
+ * 单分区的多策略召回（原 `memory_recall` 的逻辑原样搬出，供多分区并行调用）。
+ * 回退与 IDE 同法（真源 `unifiedMemoryTools.ts:62-63` ✓）：老网关没有 `recallFormatted`（404 ⇒ 抛）时退回普通检索。
+ * @returns {Promise<{ strategy: string, text: string }>}
+ */
+async function recallOne(base, partition, query, strategy, limit) {
+	try {
+		const raw = await recallFormatted(base, partition, query, strategy, limit);
+		return { strategy, text: typeof raw === 'string' ? raw : JSON.stringify(raw ?? null) };
+	} catch (error) {
+		const normalized = normalizeSearchResults(await search(base, partition, query, limit), limit);
+		if (normalized.error) {
+			throw new Error(`${normalized.error}（且 recallFormatted 也失败：${error?.message ?? error}）`);
+		}
+		const text = normalized.items.length
+			? `命中 ${normalized.items.length} 条（分区 ${partition}，已回退 memory_search）\n`
+				+ normalized.items.map((item, i) => `[${i + 1}] ${item.id}${item.score === undefined ? '' : ` (${item.score.toFixed(2)})`}`).join('\n')
+			: `分区 ${partition} 里没有命中任何记忆条目（已回退 memory_search）。`;
+		return { strategy: 'searchMemory(fallback)', text };
+	}
+}
+
+/** 快照里的"待审草稿"提示（纯文本、无正文）。 */
+export function renderPendingDraftsNote({ total, summaries, conventions }) {
+	const parts = [conventions > 0 ? `约定 ${conventions}` : '', summaries > 0 ? `会话摘要 ${summaries}` : ''].filter(Boolean).join('、');
+	return `## 待审记忆草稿\n有 ${total} 条自动提取的候选${parts ? `（${parts}）` : ''}尚未进入长期记忆，需用户在「记忆」页审核并「提升」后才生效。`
+		+ '合适时可以提醒用户去审核；在此之前不要把这些草稿当作已确认的事实。';
 }
 
 /**
@@ -329,6 +490,9 @@ function refresh(state, config) {
  */
 function snapshotFor(state, config, context) {
 	const entry = admitSnapshot(state.snapshots, snapshotKeyOf(context));
+	// ★ 2026-10-20：本主体当前生效的人设（装配上下文是 `{ agent, scope: agent }` —— dsh-agent 的
+	//   `assembleContextFor`）。拿不到就是 `''`（只读工作区分区，与从前一致）。
+	const persona = personaIdOf(context?.agent, state.projections);
 	if (entry.fetchedAt === 0) {
 		// 首次进入该主体：先借默认槽位（本轮立刻有内容 ✓），再后台取自己那份 ✓
 		Object.assign(entry, {
@@ -337,7 +501,13 @@ function snapshotFor(state, config, context) {
 			error: state.snapshot.error,
 			source: state.snapshot.source,
 			fetchedAt: state.snapshot.fetchedAt,
+			persona,
 		});
+		void refreshInto(state, config, entry);
+	} else if ((entry.persona ?? '') !== persona) {
+		// 会话**换了人设**（空白会话里改 preset / 中途切人格）：人设 section 本身已经变了 ⇒ 前缀反正要变，
+		// 这时重取记忆**不额外**打掉缓存；不重取的话会一直注入**上一个人设**的记忆 ✗。
+		entry.persona = persona;
 		void refreshInto(state, config, entry);
 	}
 	return entry.text;
@@ -1421,13 +1591,20 @@ function renderSideviewPage({ summary, state, config }) {
 		// `subtitle` 实际不渲染（有 `headerHtml` ⇒ renderShell 只用 header ✓）；留着只为"万一没有 headerHtml"也不空 ✓
 		subtitle: `只读快照 · 摘要版 · v${PKG_VERSION}`,
 		// ⚠ 三层结构由 headerHtml 开、bodyHtml 收（照 codebase ✓）——中途不能插 `dsh-toolbar` 那种独立行 ✗
+		// ★★ 2026-10-20（真机报障「记忆 sideview 为空」，截图是整片纯黑）：`.kb-panel` 在**完整版**的
+		//   tab 式 CSS 里是 `display: none`，只有 `.kb-panel.active` 才 `display: flex`（见本文件
+		//   PAGE_CSS 里那两行）。本页 `extraCss` 复用的正是那份 PAGE_CSS ⇒ 漏掉 `active` 会让
+		//   **整个面板** `display:none`：页面加载成功（`did-finish-load` 正常、日志零错误）但内容区
+		//   一片黑 —— 这是"日志全绿、界面全空"的典型成因（CSS 隐藏既不报错也不留痕 ✗）。
+		//   ⚠ codebase 侧栏不需要 `active`，是因为它的 `.kb-panel` 本身就 `display: flex`
+		//   —— 照抄骨架时**别把这一半一起照抄**。
 		headerHtml: `<div class="kb-view">
 <div class="kb-header">
 	<span class="kb-title"><span>🗃</span><span>记忆库</span></span>
 	<span class="kb-spacer"></span>
 	<span class="kb-stat-hero-label">侧栏摘要</span>
 </div>
-<div class="kb-panel">
+<div class="kb-panel active">
 	<div class="kb-panel-bar"><span class="kb-panel-bar-label">记忆库</span><span class="kb-spacer"></span><span class="kb-stat-hero-label">只读快照 · 写入走 <code>memory_remember</code> 工具 · v${PKG_VERSION}</span></div>
 	<div class="kb-panel-content">`,
 		bodyHtml: `${openEntry}<div class="kb-stats">
@@ -1806,7 +1983,7 @@ function toolDefinitions(ctx, state, config, auditAppend) {
 			type: 'object',
 			properties: {
 				limit: { type: 'integer', description: '返回条数上限，1–100（默认 20；超出会被夹到边界）' },
-				partition: { type: 'string', enum: ['current', 'legacy'], description: '选 `legacy` 列**旧分区**（`default`：本插件按工作区隔离之前的数据；它不再被注入，但可从这里显式查回来）' },
+				partition: { type: 'string', enum: ['current', 'legacy'], description: '缺省 `current` = 当前工作区分区 + 当前人设的分区（人设积累的记忆跟人设走）；选 `legacy` 列**旧分区**（`default`：本插件按工作区隔离之前的数据；它不再被注入，但可从这里显式查回来）' },
 			},
 		},
 		output: {
@@ -1816,7 +1993,9 @@ function toolDefinitions(ctx, state, config, auditAppend) {
 					count: { type: 'integer' },
 					limit: { type: 'integer' },
 					partition: { type: 'string' },
-					items: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, score: { type: 'number' } }, required: ['id'] } },
+					partitions: { type: 'array', items: { type: 'string' } },
+					notes: { type: 'array', items: { type: 'string' } },
+					items: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, score: { type: 'number' }, partition: { type: 'string' } }, required: ['id'] } },
 				},
 				required: ['count', 'items'],
 			},
@@ -1828,18 +2007,26 @@ function toolDefinitions(ctx, state, config, auditAppend) {
 			}],
 		},
 		isConcurrencySafe: () => true,
-		execute: async (params) => {
+		execute: async (params, exec) => {
 			const base = requireGateway(config);
 			// ⚠ 空查询**就是**全量列出（与 legacy 同法）—— 这不是漏了参数 ✓
 			const rawLimit = Number.isFinite(params?.limit) ? Math.floor(params.limit) : 20;
 			const limit = Math.min(100, Math.max(1, rawLimit));
 			// `partition: 'legacy'` ⇒ **旧分区的显式出口**（旧混合记忆不再注入，但必须查得回来 ✓）
-			const partition = params?.partition === 'legacy' ? LEGACY_PARTITION : agentIdOf(config);
-			const normalized = normalizeSearchResults(await search(base, partition, '', limit), limit);
-			if (normalized.error) {
-				throw new Error(normalized.error);
+			if (params?.partition === 'legacy') {
+				const normalized = normalizeSearchResults(await search(base, LEGACY_PARTITION, '', limit), limit);
+				if (normalized.error) {
+					throw new Error(normalized.error);
+				}
+				return { count: normalized.items.length, limit, partition: LEGACY_PARTITION, items: normalized.items };
 			}
-			return { count: normalized.items.length, limit, partition, items: normalized.items };
+			// ★ 2026-10-20：缺省 = 工作区分区 **+ 当前人设分区**（口径见 `readScopeOf`）
+			const scope = readScopeOf(config, state, exec?.agent);
+			const merged = await searchPartitions(base, scope.partitions, '', limit);
+			if (merged.error) {
+				throw new Error(merged.error);
+			}
+			return { count: merged.items.length, limit, partition: scope.partitions.join(' + '), partitions: scope.partitions, items: merged.items, ...(merged.notes.length ? { notes: merged.notes } : {}) };
 		},
 	}, {
 		name: 'memory_search',
@@ -1850,7 +2037,7 @@ function toolDefinitions(ctx, state, config, auditAppend) {
 				query: { type: 'string', description: '检索词（自然语言即可）' },
 				// dsh 的参数 schema 只接受受限子集（无 minimum/maximum）：范围写描述、由代码夹紧
 				limit: { type: 'integer', description: '返回条数上限，1–100（默认 10；超出会被夹到边界）' },
-				partition: { type: 'string', enum: ['current', 'legacy'], description: '选 `legacy` 检索**旧分区**（`default`：按工作区隔离之前的数据；它不再被注入，但可从这里显式查回来）' },
+				partition: { type: 'string', enum: ['current', 'legacy'], description: '缺省 `current` = 当前工作区分区 + 当前人设的分区（合并按分数排序，每条标注来源分区）；选 `legacy` 检索**旧分区**（`default`：按工作区隔离之前的数据；它不再被注入，但可从这里显式查回来）' },
 			},
 			required: ['query'],
 		},
@@ -1860,7 +2047,9 @@ function toolDefinitions(ctx, state, config, auditAppend) {
 				properties: {
 					count: { type: 'integer' },
 					partition: { type: 'string' },
-					items: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, score: { type: 'number' } }, required: ['id'] } },
+					partitions: { type: 'array', items: { type: 'string' } },
+					notes: { type: 'array', items: { type: 'string' } },
+					items: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, score: { type: 'number' }, partition: { type: 'string' } }, required: ['id'] } },
 				},
 				required: ['count', 'items'],
 			},
@@ -1902,18 +2091,26 @@ function toolDefinitions(ctx, state, config, auditAppend) {
 			},
 		},
 		isConcurrencySafe: () => true,
-		execute: async (params) => {
+		execute: async (params, exec) => {
 			const base = requireGateway(config);
 			const query = typeof params?.query === 'string' ? params.query : '';
 			const rawLimit = Number.isFinite(params?.limit) ? Math.floor(params.limit) : 10;
 			const limit = Math.min(100, Math.max(1, rawLimit));
 			// `partition: 'legacy'` ⇒ **旧分区的显式出口**（同 memory_list ✓）
-			const partition = params?.partition === 'legacy' ? LEGACY_PARTITION : agentIdOf(config);
-			const normalized = normalizeSearchResults(await search(base, partition, query, limit), limit);
-			if (normalized.error) {
-				throw new Error(normalized.error);
+			if (params?.partition === 'legacy') {
+				const normalized = normalizeSearchResults(await search(base, LEGACY_PARTITION, query, limit), limit);
+				if (normalized.error) {
+					throw new Error(normalized.error);
+				}
+				return { count: normalized.items.length, partition: LEGACY_PARTITION, items: normalized.items };
 			}
-			return { count: normalized.items.length, partition, items: normalized.items };
+			// ★ 2026-10-20：缺省 = 工作区分区 **+ 当前人设分区**（`exec.agent` 是调用方会话 —— dsh-tools 的 `ToolRunContext`）
+			const scope = readScopeOf(config, state, exec?.agent);
+			const merged = await searchPartitions(base, scope.partitions, query, limit);
+			if (merged.error) {
+				throw new Error(merged.error);
+			}
+			return { count: merged.items.length, partition: scope.partitions.join(' + '), partitions: scope.partitions, items: merged.items, ...(merged.notes.length ? { notes: merged.notes } : {}) };
 		},
 	}, {
 		name: 'memory_stats',
@@ -1967,6 +2164,7 @@ function toolDefinitions(ctx, state, config, auditAppend) {
 		// 命名 / 参数 / 回复语义一律照 IDE 真源（注释里逐条给了行号）—— dsh 侧**只做**"过闸 + 走 provider 平面"。
 		name: 'memory_recall',
 		description: '**多策略**召回记忆（比 memory_search 更强）：可选 hybrid（BM25＋向量）/ graph_first / vector_first / graph_only / vector_only 并带重排；网关不支持该方法时**自动回退 memory_search**。只读。'
+			+ ' 缺省还会附上**近 30 天同一工作区的历史会话片段**（会话原文、未经审核；`history: false` 关闭）——问"之前做过/聊过什么"时用它。'
 			+ ' ⚠ 想"按词撞"用 memory_search，想"按语义捞一批"用这个 ✓。',
 		parameters: {
 			type: 'object',
@@ -1974,42 +2172,48 @@ function toolDefinitions(ctx, state, config, auditAppend) {
 				query: { type: 'string', description: '检索词（自然语言即可）' },
 				strategy: { type: 'string', enum: ['hybrid', 'graph_first', 'vector_first', 'graph_only', 'vector_only'], description: '检索策略（缺省 hybrid）' },
 				limit: { type: 'integer', description: '最多取几条，1–100（缺省 10；超出会被夹到边界）' },
-				partition: { type: 'string', enum: ['current', 'legacy'], description: '选 `legacy` 时走**旧分区** `default`（与 memory_list / memory_search 同一出口 ✓）' },
+				partition: { type: 'string', enum: ['current', 'legacy'], description: '缺省 `current` = 工作区分区 + 当前人设分区；选 `legacy` 时走**旧分区** `default`（与 memory_list / memory_search 同一出口 ✓）' },
+				history: { type: 'boolean', description: '是否附带近 30 天同工作区的历史会话片段（缺省 true）' },
 			},
 			required: ['query'],
 		},
 		output: {
 			schema: {
 				type: 'object',
-				properties: { partition: { type: 'string' }, strategy: { type: 'string' }, text: { type: 'string' } },
+				properties: { partition: { type: 'string' }, strategy: { type: 'string' }, text: { type: 'string' }, historySessions: { type: 'integer' } },
 				required: ['text'],
 			},
 			render: (_args, value) => [{ type: 'text', text: value.text }],
 		},
 		isConcurrencySafe: () => true,
-		execute: async (params) => {
+		execute: async (params, exec) => {
 			const base = requireGateway(config);
 			const query = typeof params?.query === 'string' ? params.query.trim() : '';
 			if (!query) { throw new Error('query 不能为空'); }
 			const rawLimit = Number.isFinite(params?.limit) ? Math.floor(params.limit) : 10;
 			const limit = Math.min(100, Math.max(1, rawLimit));
 			const strategy = typeof params?.strategy === 'string' && params.strategy ? params.strategy : 'hybrid';
-			const partition = params?.partition === 'legacy' ? LEGACY_PARTITION : agentIdOf(config);
-			try {
-				const raw = await recallFormatted(base, partition, query, strategy, limit);
-				return { partition, strategy, text: typeof raw === 'string' ? raw : JSON.stringify(raw ?? null) };
-			} catch (error) {
-				// 回退与 IDE 同法（真源 `unifiedMemoryTools.ts:62-63` ✓）：老网关没有这个方法（404 ⇒ 抛）时退回普通检索 ✓。
-				const normalized = normalizeSearchResults(await search(base, partition, query, limit), limit);
-				if (normalized.error) {
-					throw new Error(`${normalized.error}（且 recallFormatted 也失败：${error?.message ?? error}）`);
-				}
-				const text = normalized.items.length
-					? `命中 ${normalized.items.length} 条（分区 ${partition}，已回退 memory_search）\n`
-						+ normalized.items.map((item, i) => `[${i + 1}] ${item.id}${item.score === undefined ? '' : ` (${item.score.toFixed(2)})`}`).join('\n')
-					: `分区 ${partition} 里没有命中任何记忆条目（已回退 memory_search）。`;
-				return { partition, strategy: 'searchMemory(fallback)', text };
-			}
+			// ★ 2026-10-20：与 memory_search / memory_list 同口径 —— 缺省读「工作区 + 当前人设」
+			const partitions = params?.partition === 'legacy' ? [LEGACY_PARTITION] : readScopeOf(config, state, exec?.agent).partitions;
+			const session = exec?.agent?.session;
+			const [memory, history] = await Promise.all([
+				Promise.all(partitions.map(p => recallOne(base, p, query, strategy, limit))),
+				params?.history === false
+					? Promise.resolve(null)
+					: recallHistory(state.sessionQuery, {
+						query,
+						cwd: typeof session?.meta?.cwd === 'string' ? session.meta.cwd : undefined,
+						excludeSessionId: typeof session?.id === 'string' ? session.id : (typeof exec?.agent?.id === 'string' ? exec.agent.id : undefined),
+					}).catch(error => ({ available: false, term: '', sessions: [], scanned: 0, truncated: false, error: String(error?.message ?? error) })),
+			]);
+			const memoryText = memory.map((m, i) => (i === 0 ? m.text : `## 人设记忆（${partitions[i]}）\n${m.text}`)).join('\n\n');
+			const historyText = history ? renderHistory(history) : '';
+			return {
+				partition: partitions.join(' + '),
+				strategy: memory[0]?.strategy ?? strategy,
+				text: historyText ? `${memoryText}\n\n${historyText}` : memoryText,
+				historySessions: history?.sessions?.length ?? 0,
+			};
 		},
 	}, {
 		name: 'memory_forget',
@@ -3578,7 +3782,10 @@ export const WRITE_TOOLS = [
 	'memory_skill',
 ];
 
-export function apply(ctx, config = {}) {
+export function apply(ctx, rawConfig = {}) {
+	// ★ preset plane 半边判定（理由见下方 `toolsOnly` 的注释）必须在建 `config` 之前 —— 半边副本的 config 要叠部署兜底
+	const toolsOnly = rawConfig?.toolsOnly === true;
+	const config = toolsOnly ? withDeploymentFallback(rawConfig) : (rawConfig ?? {});
 	// 重构 1.3：绑定 foundation 共享服务（dataRoot/dshHome/pageShell/lock 的真源）。
 	{
 		// 同步直读在前：有插件在 apply 的**同步段**就建 store（inject 回调是异步的，会来不及 ✗）。
@@ -3591,6 +3798,39 @@ export function apply(ctx, config = {}) {
 		if (svc) { bindFoundation(svc); }
 	});
 	}
+	/**
+	 * ★ R13 preset plane 的**半边**（2026-10-20）：本包被 **host plane**（`cordis.patch.yml`）
+	 * 与 **preset plane**（`vssaros-agents/preset-vssaros.rows.yml`）**双挂载**，而 `apply` 会跑两次。
+	 *
+	 * 现场证据（`~/.vssaros-dev/memory-audit/audit.jsonl`）：`agent/turn-stopping` 被注册了两个监听
+	 * ⇒ **每回合 distill 跑两遍**，审计成对出现：
+	 *   `agentId=ws-<workspaceId>`（preset plane 那侧的上下文）与 `agentId=default`（host plane）。
+	 * 同理 `systemPrompt.section` 也注册两次（同样内容进两段，白占 token）。
+	 *
+	 * 修法口径与 `vssaros-agents` 的 `toolsOnly: true` **完全一致**：preset 那行只负责"工具对会话可见"
+	 * （R13 的设计就是把给模型用的能力放进 preset）⇒ 这一次**只注册工具**，section / 钩子一概不碰。
+	 * host plane 那行不传该键 ⇒ 仍是完整挂载（页面 + section + 钩子 + 工具）✓。
+	 *
+	 * ⚠ 这不是"把 host 行 disabled"那种 plane 迁移收尾（那条要产品决策：无 preset 的会话还留不留能力），
+	 *   只是把**重复副作用**消掉 ⇒ 对 headless / 无 preset 会话零影响 ✓。
+	 * ⚠ 审批钩子（`tools/pre-execute`）**不设**这道半边：waterfall 里先返回者终止，重复注册不会弹两次窗。
+	 *
+	 * ★★ 2026-10-20 真机订正（`dsh --profile vssaros --patch <壳的 memory 覆盖层> --dump-config`）：
+	 *   壳的覆盖层**只打到 host plane 那一行**（`gatewayUrl` / `dataRoot` / `workspaceId`）；preset 两行
+	 *   （`preset-vssaros-standard` / `preset-vssaros-ptc`）**只有 `toolsOnly: true`**。而 dsh 的工具解析是
+	 *   「Scoped tools shadow globals」（`@deepseek-ai/dsh-tools` 类型注释）⇒ 默认 preset 的会话里，模型调用的是
+	 *   **preset 这份**：网关未配置、分区回落 `default`、数据根回落 `~/.vssaros`（**安装版**的目录 ✗）。
+	 *   ⇒ 半边副本经 `withDeploymentFallback` 在**调用时**借 host plane 那次的部署配置（与 YAML 写在哪一行无关）。
+	 *   上面那句"ws- 是 preset 那侧"是旧推测，现场是反的：preset 那侧原本什么都没有。
+	 */
+	// 非半边、且带部署配置的那次挂载 ⇒ 登记为本进程的部署配置（半边副本兜底用）；卸载时撤销
+	if (!toolsOnly) {
+		ctx.effect(() => {
+			const registered = registerDeploymentConfig(rawConfig);
+			return () => { if (registered) { unregisterDeploymentConfig(registered); } };
+		});
+	}
+
 	const state = createState();
 
 	// ★ 写策略（移植 `dsh-memento` 的 `lib/gate.mjs`）—— 在**挂载期**校验并**响亮失败** ✗：
@@ -3628,7 +3868,8 @@ export function apply(ctx, config = {}) {
 
 	// ① 注入：section 的 text 提供者同步返回快照（零 I/O），刷新永远发生在 assembly 之外。
 	//    可选注入：组合里没有 systemPrompt 时不激活这一块，其余功能照常（页面会显示"未注册"）。
-	ctx.inject(['systemPrompt'], child => child.effect(() => {
+	// ⚠ `toolsOnly`（preset plane 那一次）不注册 section —— 否则每轮系统提示里会多出**同一段**记忆。
+	if (!toolsOnly) ctx.inject(['systemPrompt'], child => child.effect(() => {
 		let order = SECTION_ORDER_FALLBACK;
 		try {
 			const persona = child.systemPrompt.getSectionOrder('DEPLOYMENT_PERSONA_PREFIX');
@@ -3679,8 +3920,12 @@ export function apply(ctx, config = {}) {
 		const content = typeof args.content === 'string' ? args.content : '';
 		// ★ 2026-10-13 批 1：写工具**不止 remember** 了 ⇒ 审批文案必须**说真话** ✗：
 		//   拿 remember 的模板去描述一次"软删除"，等于"批准的不是它做的" ✗。动词 + 人话载荷都按工具取 ✓。
-		const WRITE_VERBS = { memory_remember: 'remember', memory_forget: 'forget', memory_cascade: 'cascade', memory_crystal: 'crystal', memory_routine: 'routine', memory_improve: 'improve', memory_facet: 'facet', memory_governance: 'governance', memory_team: 'team', memory_mesh: 'mesh', memory_sentinel: 'sentinel' };
+		//   （动词表收进 core/memory.js 的 `WRITE_VERBS`，2026-10-20 补齐后加的 5 个工具。）
 		const verb = WRITE_VERBS[exec.name] ?? 'remember';
+		// ★ 2026-10-20：策略的 type 维**不再**直接读 `args.memory_type`（只有 remember 声明了它；
+		//   删改类工具多塞一个 `memory_type:'working'` 就能借到 core 档的宽松策略 ✗）—— 见 `policyMemoryTypeOf`。
+		//   reason 里写的就是这个值 ⇒ 下游 answerer 解析出来的也是它（模型改不到 reason）。
+		const policyType = policyMemoryTypeOf(exec.name, args);
 		const payloadText = content || describeWritePayload(exec.name, args);
 		// 载荷「批准即所见」（移植 dsh-memento 的 lib/gate.mjs）：reason 里带**完整内容** ⇒
 		// 人批准的是具体变更，而不是"某个工具想写点什么"；且 `PreToolDecision.ask.reason` 按官方
@@ -3689,14 +3934,14 @@ export function apply(ctx, config = {}) {
 		// 取不到 content 时**说出来**，绝不产出一条"看起来正常、其实是空载荷"的审批 ✗
 		//（那句必然 parseWriteReason ⇒ null，探针据此变红 ✓）。
 		const reason = payloadText
-			? buildWriteReason({ content: payloadText, memoryType: args.memory_type, importance: args.importance, tags: args.tags, verb })
+			? buildWriteReason({ content: payloadText, memoryType: policyType, importance: args.importance, tags: args.tags, verb })
 			: `${REQUEST_MARKER} ${verb} (未从 exec.arguments 取到载荷 —— 工具参数形状可能已变)`;
 		// 审计「请求」这一格：**不 await** —— 闸的职责是"要不要弹窗"，不该被账本 I/O 拖慢 ✓。
 		// 策略与裁决结果记在下一格 `decision`（此刻尚未裁决，policy 留空 ✓）。
 		void auditAppend({
 			action: 'request', tool: exec.name,
-			target: targetKeyOf(typeof args.memory_type === 'string' ? args.memory_type : 'fact'),
-			...(typeof args.memory_type === 'string' && args.memory_type ? { memoryType: args.memory_type } : {}),
+			target: targetKeyOf(policyType),
+			memoryType: policyType,
 			content,
 		});
 		return {
@@ -3763,6 +4008,8 @@ export function apply(ctx, config = {}) {
 	// 产出是**草稿**（不是长期记忆）：自动提取必然有误（玩笑、否定句「以后不要 X」、转述的约定），
 	// 直写＝把错误喂给之后每一轮 ✗ —— 见 `core/distill.js` 的约束 ② 与社区的自陈教训 ✓。
 	const draftStore = createDraftStore(config, { logger: auditLogger });
+	// 快照的"待审草稿"计数要读它（`pendingDraftsOf`）；启动预热那次刷新早于这里 ⇒ 那一次计 0，会话首装时才有值
+	state.draftStore = draftStore;
 
 	// ★ 后台队列（2026-10-13）：钩子必须 fire-and-forget（官方会 await 它 ✓），但**裸的 `void async`**
 	// 没有并发上限、没有超时、不可观测 ⇒ 连续回合会同时打出多份请求，而一个挂住的请求会永久占住槽位 ✗。
@@ -3794,6 +4041,26 @@ export function apply(ctx, config = {}) {
 			return () => { llmRuntime = null; };
 		}));
 	}
+	// ★ 2026-10-20：会话投影服务（**可选**）—— 读"会话中途切换过的人格"，决定读哪个人设分区。
+	//   缺席（老 Host / 组合里没挂）⇒ 只按会话 preset 认人设，功能不丢 ✓（`personaIdOf` 的注释）。
+	//   ⚠ 只**读**它的状态，不 register 投影（`vssaros-persona` 由 `vssaros-agents` 注册 —— 重复注册以先注册者为准，
+	//   这里注册反而可能让定义版本分叉 ✗）。
+	ctx.inject(['sessionProjections'], child => child.effect(() => {
+		// 与 `vssarosFoundation` 那条同一写法：读服务包一层 try（探针的严格假 ctx 对未知属性抛错 ⇒ 当不存在；
+		// 真 Cordis 下服务不在时根本不会进到这里）✓
+		let svc;
+		try { svc = child.sessionProjections; } catch { svc = undefined; }
+		state.projections = svc && typeof svc.stateOf === 'function' ? svc : undefined;
+		return () => { state.projections = undefined; };
+	}));
+	// ★ 2026-10-20：官方会话检索服务（**可选**）—— `memory_recall` 的"历史会话"那一段（见 lib/history.js）。
+	//   缺席 ⇒ 那一段如实显示"未检索：服务不可用"，记忆那一段照常。
+	ctx.inject(['sessionQuery'], child => child.effect(() => {
+		let svc;
+		try { svc = child.sessionQuery; } catch { svc = undefined; }
+		state.sessionQuery = svc ?? undefined;
+		return () => { state.sessionQuery = undefined; };
+	}));
 	// ⚠ 传 **getter** 而不是实例：`llmRuntime` 是可选注入、在装配后才可能被赋值 ✓（理由见 `lib/judge.js`）
 	const judge = createJudge({ llm: () => llmRuntime, timeoutMs: Number(config.distillJudgeTimeoutMs), logger: auditLogger });
 
@@ -3803,11 +4070,14 @@ export function apply(ctx, config = {}) {
 	const promoter = createPromoter({
 		draftStore,
 		remember,
-		gatewayBase: gatewayUrlOf(config),
-		agentId: agentIdOf(config),
+		// ★ getter（2026-10-20）：调用时现取 —— 切换工作区后提升写进**当前**分区（见 `promote.js` 的注释）
+		gatewayBase: () => gatewayUrlOf(config),
+		agentId: () => agentIdOf(config),
 		auditAppend,
 	});
-	ctx.effect(() => ctx.on('agent/turn-stopping', payload => {
+	// ⚠ `toolsOnly`（preset plane 那一次）不注册本钩子 —— 否则**每回合 distill 跑两遍**
+	//   （实测症状见 `apply` 开头 `toolsOnly` 的注释：审计成对出现 ws-… / default）。
+	if (!toolsOnly) ctx.effect(() => ctx.on('agent/turn-stopping', payload => {
 		state.distill.turns++;
 		const session = payload?.agent?.session;
 		if (!session || typeof session.snapshotEvents !== 'function') { state.distill.skipped++; return; }
@@ -3823,7 +4093,11 @@ export function apply(ctx, config = {}) {
 			return;
 		}
 		const texts = userTextsOf(events);
-		if (texts.length === 0) { state.distill.skipped++; return; }
+		// ★ 2026-10-20：同一段事件里若发生过**压缩**，`compaction/summary` 带着模型写好的会话摘要 ⇒
+		//   作为「会话摘要」草稿（dsh 侧补上 IDE 时代"压缩即写长期记忆"那一跳；仍是草稿、人工提升 ✓）。
+		//   事件游标与约定提取**共用**（上面已推进）⇒ 同一次压缩只会被看到一次。
+		const hasSummary = events.some(event => event?.type === 'compaction/summary');
+		if (texts.length === 0 && !hasSummary) { state.distill.skipped++; return; }
 		// ★ LLM 判定的前置**同步取好**（路由）：后台块里不许再碰 `payload`/`agent` ✗ ——
 		// 那些是回合期对象，回合结束后它们的状态未必还能读 ✓（路由也是"那一刻"的事实 ✓）。
 		// ⚠ `judgeEnabled` 来自**外层**（与"要不要注入 `llm`"是同一个常量 ✓），不在这里重算 ——
@@ -3833,13 +4107,20 @@ export function apply(ctx, config = {}) {
 		// 用队列而不是裸 `void async`：并发上限 + 超时 + 可观测（`state.distill` 里的计数即来自它的结果 ✓）。
 		void distillQueue.push(async () => {
 			try {
+				const seenDigests = await draftStore.seen();
 				const raw = extractCandidates(texts, {
 					sessionId: String(session.id ?? ''),
 					turn: payload?.turn,
-					seenDigests: await draftStore.seen(),
+					seenDigests,
 					now: Date.now(),
 				});
+				// 摘要草稿**不过** LLM 判定：判定器的提示词是为"短约定"设计的（只能减少候选），
+				// 对一整段摘要没有可用的判据 —— 摘要的把关就是人工「提升」✓。
+				const summaries = hasSummary
+					? summaryCandidatesOf(events, { sessionId: String(session.id ?? ''), turn: payload?.turn, seenDigests, now: Date.now() })
+					: [];
 				state.distill.candidates += raw.length;
+				state.distill.summaries = (state.distill.summaries ?? 0) + summaries.length;
 				// ★ LLM 判定（**默认关** ✓）：正则粗筛的噪音交给模型滤一遍 —— 它**只能减少**候选。
 				// ⚠ 失败一律 **fail-open**（保留全部 ✓）：`judge.judge` 的四种失败（超时/抛错/形状不认识/
 				//   回答解析不了）都收敛成"全保留" ⇒ 这里**不需要**再判一次错 ✓（判据：噪音可接受、漏掉不可接受 ✓）。
@@ -3857,7 +4138,7 @@ export function apply(ctx, config = {}) {
 						}
 					}
 				}
-				const written = await draftStore.append(draftRowsOf(candidates));
+				const written = await draftStore.append(draftRowsOf([...candidates, ...summaries]));
 				state.distill.written += written;
 				// ⚠ 写盘之后**必须**让 `state.drafts` 跟上（2026-10-13 修）：页面渲染读的是它 ✗ ——
 				// 不更新的话，刚沉淀出来的草稿在页面上看不见（要等下一次页面请求才读盘 ✓）。
@@ -3870,8 +4151,10 @@ export function apply(ctx, config = {}) {
 					action: 'distill',
 					agentId: agentIdOf(config),
 					sessionId: String(session.id ?? ''),
-					outcome: candidates.length === 0 ? 'no-candidate' : `drafted:${written}`,
-					content: candidates.map(candidate => candidate.text).join(' | '),
+					outcome: candidates.length === 0 && summaries.length === 0
+						? 'no-candidate'
+						: `drafted:${written}${summaries.length ? `(summary:${summaries.length})` : ''}`,
+					content: [...candidates, ...summaries].map(candidate => candidate.text.slice(0, 200)).join(' | '),
 				});
 			} catch (error) {
 				state.distill.failed++;

@@ -67,7 +67,17 @@ async function loadVectorModule() {
 }
 
 // ─── 任务处理（type=build；逐 agent 串行，由主线程保证）────────────────
+/**
+ * 慢速模式（2026-10-20）：主线程周期性告知"用户是否在忙"（`type: 'pace'`）。
+ * 忙 ⇒ 每 10 条歇 25ms（峰值 CPU 大幅下降，dsh 的 HTTP 有机会跑）；空闲 ⇒ 全速。
+ *
+ * 为什么在 worker 里做：真正吃 CPU 的是这里的 embedding 循环；主线程只是收结果。
+ * 只在主线程限流（比如少发消息）挡不住 CPU 竞争。
+ */
+let slowMode = false;
+
 parentPort.on('message', async (msg) => {
+	if (msg.type === 'pace') { slowMode = msg.slow === true; return; }
 	if (msg.type !== 'build') return;
 	const { agentId, scope, pendingIds } = msg;
 	try {
@@ -82,8 +92,12 @@ parentPort.on('message', async (msg) => {
 			try {
 				const obj = JSON.parse(val);
 				if (obj && obj.content && obj.isLatest !== false && obj.deleted !== true) {
-					// 增量模式：只构建 pendingIds 里的 id；全量模式（pendingIds 为空/undefined）则全部
-					if (!pendingIds || pendingIds.length === 0 || pendingIds.includes(obj.id || '')) {
+					// ★ 2026-10-20：区分"全量"与"空集" —— 从前两者都走全量，导致"0 pending"也重算 19107 条。
+					//   · `pendingIds === undefined` ⇒ 全量（首次切 model / 制品缺失）
+					//   · `pendingIds === []`         ⇒ **空集 ⇒ 一条都不建**（调用方已恢复全部向量）
+					if (pendingIds === undefined) {
+						items.push({ id: obj.id || '', content: obj.content });
+					} else if (pendingIds.includes(obj.id || '')) {
 						items.push({ id: obj.id || '', content: obj.content });
 					}
 				}
@@ -97,14 +111,32 @@ parentPort.on('message', async (msg) => {
 				if (vec && vec.length > 0) { vi.addModelVector(items[i].id, vec); ok++; }
 				else { failed++; }
 			} catch { failed++; }
+			// ★ 2026-10-20：慢速模式（主线程说"用户在用"）⇒ **每 10 条歇 300ms**。
+			//   为什么是 300ms 而不是几十毫秒：embedding 本身 ~50ms/条，只加 25ms 等于没降（实测算过）；
+			//   留出一个 300ms 的空档，dsh 的 HTTP 请求才有机会被事件循环处理。
+			//   全速 ~20 条/s ⇒ 慢速 ~12 条/s（时长 ×1.7，但后台任务用户不等它）。
+			//   ⚠ 配合 host 侧的超时上限（30 分钟）—— 别让慢速把任务拖成"超时失败"。
+			if (slowMode && (i + 1) % 10 === 0) {
+				await new Promise(r => setTimeout(r, 300));
+			}
 			if ((i + 1) % 250 === 0) {
 				parentPort.postMessage({ type: 'progress', agentId, built: i + 1, total: items.length });
 			}
 		}
+		// ★★ 2026-10-20（用户：「载入历史…」永久卡住）——**分批回传**，别再一次性甩 6 MB：
+		//   4039 doc × 384 floats ≈ 6 MB，单条 postMessage 会让**主线程连续反序列化**，
+		//   期间 Host 的 HTTP 请求全排队（实测：Host HTTP 20s 超时、IDE 心跳正常 ⇒ 卡在 Host 主线程）。
+		//   拆成 500 一批 ⇒ 主线程在批次之间能回到事件循环，聊天框/会话历史仍可用 ✓
+		//   （`done` 里**不再带 vectors**；host 侧兼容老格式：带就用自己的，不带就用累积的）。
+		const allVectors = vi.exportVectors();
+		const CHUNK = 500;
+		for (let i = 0; i < allVectors.length; i += CHUNK) {
+			parentPort.postMessage({ type: 'chunk', agentId, vectors: allVectors.slice(i, i + CHUNK) });
+		}
 		parentPort.postMessage({
 			type: 'done', agentId,
-			vectors: vi.exportVectors(),
 			mode: 'model', built: ok, failed,
+			chunked: true, chunkSize: CHUNK, total: allVectors.length,
 		});
 	} catch (err) {
 		parentPort.postMessage({ type: 'done', agentId, error: err instanceof Error ? err.message : String(err) });

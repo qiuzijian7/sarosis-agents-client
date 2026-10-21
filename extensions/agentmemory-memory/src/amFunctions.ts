@@ -754,9 +754,10 @@ export async function autoForget(kv: StateKV, agentId: string, dryRun: boolean =
 	}
 	for (const mem of latest) {
 		if (mem.isLatest === false) continue;
+		// ★ 2026-10-20 止血：与 `evict` 的 lowImportance 分支同一个刻度 bug（见那里的注释）⇒ **只上报不删除**。
+		//   `lowValue` 仍返回候选 id，调用方的统计/日志口径不变。
 		if (mem.strength <= 2 && (now - new Date(mem.createdAt).getTime()) > 180 * MS_PER_DAY) {
 			result.lowValue.push(mem.id);
-			if (!dryRun) { await kv.delete(KV.memories(agentId), mem.id); await deleteAccessLog(kv, agentId, mem.id); }
 		}
 	}
 	return result;
@@ -1037,9 +1038,17 @@ export async function evict(kv: StateKV, agentId: string, dryRun: boolean = fals
 			if (!dryRun) { await kv.delete(KV.memories(agentId), mem.id); await deleteAccessLog(kv, agentId, mem.id); }
 			continue;
 		}
+		// ★ 2026-10-20 止血：这条分支**只计数、不删除**（`dryRun` 对它不再有区别）。
+		//   strength 有两套刻度混用：`rememberMemory` 写默认 `7`（0–10 刻度），而 `autoPage` 写
+		//   `importance / 10`（≤1，0–1 刻度 —— importance=10 的**最重要**条目只得 1.0），V2 `updateMemory`
+		//   也只收 0..1 ⇒ 「strength ≤ 2」在 0–1 刻度下等于"全部" ⇒ 满 90 天**整批硬删**。
+		//   实测 dev 库：长期记忆里 4027 条 strength ≤ 1，knowledge-base-expert 首批 2026-10-21 14:07 到期。
+		//   ⇒ 刻度统一（含旧数据迁移）之前，基于 strength 的删除一律不执行；`lowImportance` 仍照常上报
+		//     （诊断/日志能看到"本该被删的候选有多少"）。
+		//   ⚠ 刻意**不**改成 `isLatest = false` 软删：上面的 nonLatest 分支 7 天后会把它硬删，
+		//     且 `isLatest === false` 的条目对检索/注入不可见 ⇒ 只是换个方式删掉。
 		if (mem.strength <= 2 && (now - new Date(mem.createdAt).getTime()) > 90 * MS_PER_DAY) {
 			stats.lowImportance++;
-			if (!dryRun) { await kv.delete(KV.memories(agentId), mem.id); await deleteAccessLog(kv, agentId, mem.id); }
 		}
 	}
 	return stats;

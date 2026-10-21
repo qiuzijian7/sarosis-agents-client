@@ -161,7 +161,33 @@ interface EpisodicMemory {
  *  O(N²) 写放大，且 subagent agentId 唯一 → 211 个遗留 scope 共 188MB（全库 56%）。 */
 const MAX_EPISODES_PER_AGENT = 100;
 
+/** 本分区最近一条 episode（`epi*` 独立条目；兼容旧的"整个数组一个 key"格式时忽略数组）。 */
+async function latestEpisodeOf(kv: StateKV, agentId: string): Promise<EpisodicMemory | undefined> {
+	const all = await kv.list<any>(KV.semantic(agentId));
+	let best: EpisodicMemory | undefined;
+	let bestAt = -Infinity;
+	for (const e of all) {
+		if (Array.isArray(e) || typeof e?.id !== 'string' || !e.id.startsWith('epi')) continue;
+		const at = Date.parse(e.createdAt);
+		if (Number.isFinite(at) && at > bestAt) { bestAt = at; best = e as EpisodicMemory; }
+	}
+	return best;
+}
+
 export async function extractEpisodic(kv: StateKV, agentId: string, sessionId: string, longEntries: Memory[]): Promise<EpisodicMemory[]> {
+	// ★ 2026-10-20：**没有新输入就不生成 episode**。
+	//   调用方（`runConsolidationPipeline`）传的是**整个分区**的活跃记忆，而定时 sweep 每 5 分钟跑一次 ⇒
+	//   旧实现每轮都会新写一条 "Session with N observations"，即使 N 条记忆一条没变 ✗。
+	//   实测 dev 库：2026-09-26 之后**零条新记忆**，`mem:semantic` 却每个分区被持续写满 100 条
+	//   （容量守卫在下面按 createdAt 轮换），白占写入并让 KV 指纹永远 stale。
+	//   判据：分区为空 ⇒ 跳过；最近一条 episode 之后没有任何记忆被新建/更新、且条数相同 ⇒ 跳过。
+	if (longEntries.length === 0) return [];
+	const latestEpi = await latestEpisodeOf(kv, agentId);
+	if (latestEpi) {
+		const since = Date.parse(latestEpi.createdAt);
+		const changed = longEntries.some(m => Date.parse(m.updatedAt || m.createdAt) > since);
+		if (!changed && latestEpi.observationCount === longEntries.length) return [];
+	}
 	const now = new Date().toISOString();
 	const ep: EpisodicMemory = {
 		id: generateId('epi'), sessionId,

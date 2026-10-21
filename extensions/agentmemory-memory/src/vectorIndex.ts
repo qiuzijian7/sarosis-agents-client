@@ -283,11 +283,36 @@ export class VectorIndex {
 	 * 便捷方法：直接用文本添加（内部 trigram 同步 embedding，无需 transformers）。
 	 * 用于 gateway 子进程等只需 trigram fallback 的同步场景。查询侧 search()
 	 * 按 _mode 分流（trigram 库 → embedSync 查询，两侧语义空间一致）。
+	 *
+	 * ★ 2026-10-20：**不再切换 mode**。旧实现第一行就是 `this._mode = 'trigram'` ⇒ 一个已恢复成
+	 *   model（真语义）的索引，只要来一次增量写入（网关每次 `mem:memories` 写都调这里），就会
+	 *   ① 把一条 trigram 伪向量混进 model 语义空间、② 把**查询向量**也切成 trigram ⇒
+	 *   整个分区的向量通道得分失去意义（直到下次重启全量重建）。
+	 *   现在：model 模式下**不写**伪向量、已有向量**保留**（同 id 改写不重算 —— 记忆 id 是 append-only，
+	 *   supersede 也是新建 id），返回 `false` 告诉调用方"这条要补一个 model 向量"。
+	 * @returns `true` = 已写入（trigram 模式）；`false` = model 模式下未写，需调用方补 model 向量。
 	 */
-	addText(id: string, text: string): void {
-		this._mode = 'trigram';
+	addText(id: string, text: string): boolean {
+		if (this._mode === 'model') {
+			return false;
+		}
 		const vec = embedSync(text);
 		if (vec) { this.add(id, vec); }
+		return true;
+	}
+
+	/** 是否已有该 id 的向量（网关据此判断"新写入要不要排队补 model 向量"）。 */
+	has(id: string): boolean {
+		return this.vectors.has(id);
+	}
+
+	/**
+	 * 显式重建为 trigram（model 构建全失败时的回退 / 全量 trigram 重建用）。
+	 * 与 `addText` 分开：只有"整份重来"才允许把 mode 切回 trigram。
+	 */
+	resetToTrigram(): void {
+		this.clear();
+		this._mode = 'trigram';
 	}
 
 	/**

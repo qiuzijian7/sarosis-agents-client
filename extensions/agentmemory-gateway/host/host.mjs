@@ -45,12 +45,18 @@ import { Worker } from 'node:worker_threads';
 import {
 	INDEX_CACHE_VERSION,
 	BM25_CACHE_FILE,
+	BM25_CACHE_BIN_FILE,
 	VECTOR_CACHE_FILE,
-	readCacheFile,
-	writeCacheFile,
+	VECTOR_CACHE_BIN_FILE,
+	readBm25CacheFile,
+	readVectorCacheFile,
+	writeBm25CacheFile,
+	writeVectorCacheFile,
 	validateCache,
 	nextSaveDelayMs,
 } from './indexCache.mjs';
+import { checkRequest, parseAllowedOrigins } from './requestGuard.mjs';
+import { decideFallback, mainThreadEmbeddingAllowed } from './modelVectorsPolicy.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -103,6 +109,10 @@ function emit(kind, msg, extra = {}) {
 // 读操作采样打印（每 25 次 1 条）防止刷屏；
 // AGENTMEMORY_LOG_VERBOSE=1 时全部打印（排障模式）。
 const LOG_VERBOSE = process.env.AGENTMEMORY_LOG_VERBOSE === '1';
+/** 额外允许的跨域 Origin（逗号分隔；`*` = 全放行，仅排障用）。判据见 ./requestGuard.mjs。 */
+const ALLOWED_ORIGINS = parseAllowedOrigins(process.env.AGENTMEMORY_ALLOWED_ORIGINS);
+/** 已记过日志的拒绝原因（每种只记一次）。 */
+const _rejectedReasons = new Set();
 const WRITE_METHODS = new Set([
 	'writeMemory', 'forgetMemory', 'reinforceMemory', 'setSlot', 'removeAgent',
 	'coreMemoryAdd', 'coreMemoryRemove', 'lessonSave', 'addLesson', 'deleteLesson',
@@ -217,7 +227,10 @@ async function initBackend(dataDir) {
 		db = new sqlite.DatabaseSync(dbPath);
 		db.exec('PRAGMA journal_mode = WAL');
 		db.exec('PRAGMA synchronous = NORMAL');
-		db.exec('PRAGMA busy_timeout = 5000');
+		// ★ 2026-10-20（用户：「载入历史…」卡住）：`DatabaseSync` 是**同步**调用，索引期间主线程与
+	//   Worker 抢 WAL 写锁时，最长会**同步等满 busy_timeout** —— 5 秒的同步阻塞足以让 dsh 的
+	//   HTTP 请求排队到超时（实测 Host HTTP 20s 超时）。降到 500ms：宁可让上层重试，也不要卡死事件循环。
+	db.exec('PRAGMA busy_timeout = 500');
 		db.exec(`
 			CREATE TABLE IF NOT EXISTS kv_store (
 				scope     TEXT NOT NULL,
@@ -396,6 +409,42 @@ const vectorIndexByAgent = new Map();
  */
 const _pendingModelVectorIds = new Map();
 
+/**
+ * ★ 2026-10-20：运行期新写入的记忆 ⇒ 补 model 向量（防抖 30s，复用启动时的增量构建路径）。
+ *
+ * 为什么要防抖：一次会话可能连写多条；每条都起一次 worker 往返不值。30s 内的写入并成一批。
+ * 为什么不在写路径上同步 embed：真语义 embedding 是重 CPU，写路径必须立即返回。
+ * 补算期间该 id 只在 BM25 通道可见（向量通道暂缺 ≤30s+构建时长），比混入伪向量好：
+ *   伪向量会让整个分区的查询向量被切成 trigram（旧 bug），影响的是**所有**记忆。
+ */
+const MODEL_VECTOR_DEBOUNCE_MS = 30_000;
+let _modelVectorTimer = null;
+function queueModelVector(agentId, id) {
+	let set = _pendingModelVectorIds.get(agentId);
+	if (!set) { set = new Set(); _pendingModelVectorIds.set(agentId, set); }
+	set.add(id);
+	if (_modelVectorTimer) return;
+	_modelVectorTimer = setTimeout(() => {
+		_modelVectorTimer = null;
+		// 启动期的构建还在跑 ⇒ 等它结束再补（它结束时会消费同一个 pending 表；剩下的这里接着补）
+		const prev = _modelVectorsBuildPromise ?? Promise.resolve();
+		_modelVectorsBuildPromise = prev.catch(() => {}).then(() => buildModelVectorsIfEnabled({ onlyPending: true }));
+	}, MODEL_VECTOR_DEBOUNCE_MS);
+	_modelVectorTimer.unref?.();
+}
+
+/**
+ * 从待补表里摘掉本轮处理过的 id；`handled` 为 undefined（全量构建）⇒ 整个 agent 清掉。
+ * 构建期间新补进来的 id 留着，下一次补算接着处理。
+ */
+function settlePending(agentId, handled) {
+	const set = _pendingModelVectorIds.get(agentId);
+	if (!set) return;
+	if (handled === undefined) { _pendingModelVectorIds.delete(agentId); return; }
+	for (const id of handled) { set.delete(id); }
+	if (set.size === 0) { _pendingModelVectorIds.delete(agentId); }
+}
+
 async function resolveBm25Module() {
 	const extRoot = process.env['AGENTMEMORY_EXT_ROOT'];
 	const candidates = [
@@ -484,6 +533,36 @@ function setupEmbeddingPaths() {
 	}
 }
 
+/**
+ * 注入记忆索引的**容量上限**（2026-10-19）。
+ *
+ * 为什么：底层 BM25 索引默认 `maxDocs = 5000`（`agentmemory-memory/src/bm25Index.ts:30` 的注释），
+ * 超出按 FIFO 淘汰。真机实测：`benchmark-agent` 有 **9420** 条 ⇒ **4420** 条被反复驱逐 ⇒ 索引内容
+ * 每轮都在变 ⇒ 每轮 sweep 都触发**全量重嵌入**（`19154 vector(s) / 452642ms`，之后还要 7.5s 落盘
+ * 63MB 的 `vector-cache.json.gz`）⇒ 网关常驻吃满约 7 个核，并通过主进程日志服务刷大量日志
+ * （主进程日志 flush 是**同步写**，本机又注入了 iOA 数据保护驱动 —— 与主进程卡死在 `NtWriteFile`
+ * 属同一条环境链）。现场印记就是这条 warn：
+ *   `[mem-summary] agent=benchmark-agent indexed=5000/9420 evicted=4420 | ... DEFICIENT
+ *    — memory unreachable from search index (rebuild or raise AGENTMEMORY_BM25_MAX_DOCS)`
+ * ⇒ 默认提到 **12000**（5000 条 ≈ 25MB heap ⇒ 12000 条 ≈ 60MB；网关是专用子进程，可承受）。
+ * ⚠ 用户/环境显式设了就不覆盖（排障时要能调回小值 ✓）。
+ */
+function setupMemoryCaps() {
+	try {
+		if (!process.env['AGENTMEMORY_BM25_MAX_DOCS']) {
+			process.env['AGENTMEMORY_BM25_MAX_DOCS'] = '12000';
+		}
+		// ★ 2026-10-20：向量索引上限与 BM25 **对齐**（原来只调了 BM25，向量仍是包默认 5000）。
+		//   影响面（实测订正）：model 向量走 `importVectors`（不查上限）⇒ 9420 条的 benchmark-agent 在
+		//   model 模式下并未被截；被截的是 **trigram 路径**（`addText` → `add` 有 FIFO）——model 构建失败
+		//   回退 / 首次启动 model 未就绪期间，超过 5000 条的分区有一截在向量通道里召回不到。
+		//   内存：12000 × 384 维 × 4B ≈ 18MB / 分区上限，网关是专用子进程，可承受。
+		if (!process.env['AGENTMEMORY_VECTOR_MAX_DOCS']) {
+			process.env['AGENTMEMORY_VECTOR_MAX_DOCS'] = '12000';
+		}
+	} catch { /* env 只读的极端场景：忽略，退回包默认 5000 */ }
+}
+
 let _fileFetchShimInstalled = false;
 /** 让 `fetch('file://...')` 可读本地文件（@xenova 的 web 构建读模型/词表走这条路）。 */
 function installFileFetchShim() {
@@ -514,11 +593,26 @@ function installFileFetchShim() {
 	};
 }
 
+/** 某分区里**活的**记忆（有正文、最新版、未删除）——与 `buildModelVectorsIfEnabled` 的取数口径一致。 */
+function liveMemoryItemsOf(scope) {
+	const items = [];
+	for (const val of Object.values(listAll(scope))) {
+		try {
+			const obj = JSON.parse(val);
+			if (obj && obj.content && obj.isLatest !== false && obj.deleted !== true) {
+				items.push({ id: obj.id || '', content: obj.content });
+			}
+		} catch { /* skip */ }
+	}
+	return items;
+}
+
 /** 用 trigram 把某 agent 的向量索引重建回来（model 构建全失败时的回退，避免"空索引 + mode=model"）。 */
 function rebuildAgentVectorIndexTrigram(agentId, items) {
 	const vi = getAgentVectorIndex(agentId);
 	if (!vi) return 0;
-	vi.clear();
+	// ★ 2026-10-20：`addText` 不再隐式切 mode ⇒ 整份回退 trigram 必须显式重置（老引擎没有该方法时退回 clear）
+	if (typeof vi.resetToTrigram === 'function') { vi.resetToTrigram(); } else { vi.clear(); }
 	for (const it of items) { vi.addText(it.id, it.content); }
 	return vi.size;
 }
@@ -546,67 +640,234 @@ function rebuildAgentVectorIndexTrigram(agentId, items) {
  * （renderer 5s 超时误判风险）。搬进 Worker ⇒ 主线程只处理 HTTP 请求。
  * Worker 独立打开 SQLite（readonly，WAL 多连接读安全）+ 常驻复用模型加载；
  * 主线程逐 agent 串行发任务（`await` 完成再下一个）。
- * Worker spawn 失败 ⇒ 永久标记（`_modelVectorsWorkerFailed`）⇒ 回退主线程构建。
+ * Worker spawn 失败 ⇒ 永久标记（`_modelVectorsWorkerFailed`）⇒ **本次会话不构建真语义向量**
+ * （★ 2026-10-21 起默认不再回退主线程：主线程 embedding 会阻塞网关 35–150s；
+ *   显式设 AGENTMEMORY_MODEL_EMBEDDING_MAINTHREAD=1 才恢复旧行为，见 ./modelVectorsPolicy.mjs）。
  */
 let _modelVectorsWorker = null;
 let _modelVectorsWorkerFailed = false;
+/**
+ * ★ 2026-10-20：Worker 意外退出后的**重建**次数（进程生命期内累计）。
+ *   旧实现：Worker 崩了（OOM / ONNX 原生崩溃）⇒ `_modelVectorsWorker` 仍指向死实例 ⇒
+ *   ① 正在跑的任务永远收不到 `done`，干等满 30 分钟超时；② 之后每个 agent 的任务都发给死实例，
+ *   每个再各等 30 分钟。现在：`exit` 时清空实例并让在飞任务**立刻**失败（调用方按策略降级），
+ *   下一次取用时重建；连续崩超过上限 ⇒ 永久不再构建真语义向量（防"崩→建→崩"死循环吃 CPU）。
+ */
+const MODEL_VECTORS_WORKER_MAX_RESPAWNS = 3;
+let _modelVectorsWorkerRespawns = 0;
+/** 在飞任务的失败回调（Worker 退出时逐个通知；任务完成时自行注销）。 */
+const _workerInflight = new Set();
+let _workerShuttingDown = false;
 function getModelVectorsWorker() {
 	if (_modelVectorsWorker || _modelVectorsWorkerFailed) { return _modelVectorsWorker; }
 	try {
-		_modelVectorsWorker = new Worker(new URL('./modelVectorsWorker.mjs', import.meta.url), {
+		const worker = new Worker(new URL('./modelVectorsWorker.mjs', import.meta.url), {
 			workerData: {
 				// ⚠ dataDir 是 resolveDataDir() 的局部变量（main() 里遮蔽）⇒ 模块级函数访问不到 ⇒ 直接调用 resolveDataDir()
 				dbPath: path.join(resolveDataDir(), 'state_store.db'),
 				extRoot: process.env['AGENTMEMORY_EXT_ROOT'],
 			},
 		});
-		_modelVectorsWorker.on('message', (msg) => {
+		_modelVectorsWorker = worker;
+		worker.on('message', (msg) => {
 			if (msg.type === 'log') { emit('log', `${TAG} [worker] ${msg.msg}`); }
 			else if (msg.type === 'warn') { emit('warn', `${TAG} [worker] ${msg.msg}`); }
 			else if (msg.type === 'progress') { emit('log', `${TAG} [worker] ${msg.agentId}: ${msg.built}/${msg.total}`); }
 		});
-		_modelVectorsWorker.on('error', (err) => {
+		worker.on('error', (err) => {
 			emit('warn', `${TAG} [worker] error: ${err.message}`);
+		});
+		worker.on('exit', (code) => {
+			if (_modelVectorsWorker === worker) { _modelVectorsWorker = null; }
+			if (_workerShuttingDown) return;
+			const reason = `worker exited (code=${code})`;
+			for (const fail of [..._workerInflight]) { fail(reason); }
+			if (_modelVectorsWorkerRespawns >= MODEL_VECTORS_WORKER_MAX_RESPAWNS) {
+				_modelVectorsWorkerFailed = true;
+				emit('warn', `${TAG} [worker] ${reason}；已重建 ${_modelVectorsWorkerRespawns} 次仍失败 ⇒ 本次会话不再构建真语义向量（保持 trigram，除非显式设 AGENTMEMORY_MODEL_EMBEDDING_MAINTHREAD=1）`);
+				return;
+			}
+			_modelVectorsWorkerRespawns++;
+			emit('warn', `${TAG} [worker] ${reason} ⇒ 下次任务时重建（第 ${_modelVectorsWorkerRespawns}/${MODEL_VECTORS_WORKER_MAX_RESPAWNS} 次）`);
 		});
 		emit('log', `${TAG} [worker] spawned（model vectors 构建搬出主线程）`);
 	} catch (err) {
-		emit('warn', `${TAG} [worker] spawn failed（回退主线程构建）: ${err instanceof Error ? err.message : String(err)}`);
+		emit('warn', `${TAG} [worker] spawn failed（本次不构建真语义向量）: ${err instanceof Error ? err.message : String(err)}`);
 		_modelVectorsWorkerFailed = true;
 		_modelVectorsWorker = null;
 	}
 	return _modelVectorsWorker;
 }
 
-/** 向 Worker 发任务并等完成（带超时；Worker 不可用时返回 null ⇒ 调用方回退主线程）。 */
+/**
+ * 最近一次 HTTP 请求的时刻（**空闲判定**用；见 `waitForIdle`）。
+ *
+ * 为什么需要：本进程既是"记忆 HTTP 服务"又是"索引执行者"。索引（4039 条 × embedding）是重活，
+ * 在用户正在用 IDE 时跑，就会和 `/provider`、dsh 的会话请求抢主线程 ⇒ 界面卡住。
+ * ⇒ 先看"多久没请求"，安静了再开跑。
+ */
+let lastRequestAt = Date.now();
+
+/**
+ * 当前**未完成**的 HTTP 请求数（诊断用）。
+ *
+ * 为什么要它：卡死时"有多少请求挂着"是最关键的判据 ——
+ *   · pending 一直涨 ⇒ 请求进得来、出不去（handler 里某个 await 永不 resolve）
+ *   · pending 为 0 但 HTTP 超时 ⇒ 连 handler 都没进（事件循环被同步操作占满）
+ * 两者修法完全不同，没有这个数字就只能猜。
+ */
+let pendingRequests = 0;
+
+/**
+ * 等到宿主进程**空闲**再返回（最多等 `maxWaitMs`，超时也返回 —— 不能因为一直有请求就永不索引）。
+ *
+ * @param idleMs 需要连续多久没有 HTTP 请求才算空闲（默认 45s：够跨过"打开会话 → 历史加载完"这一串）
+ * @param maxWaitMs 最长等多久（默认 5 分钟）
+ * @returns 是否真的等到了空闲（false = 超时硬上）
+ */
+async function waitForIdle(idleMs = 45_000, maxWaitMs = 5 * 60_000) {
+	const startedAt = Date.now();
+	while (Date.now() - startedAt < maxWaitMs) {
+		if (Date.now() - lastRequestAt >= idleMs) { return true; }
+		await new Promise(r => setTimeout(r, 1000));
+	}
+	emit('log', `${TAG} [idle] 已等 ${Math.round(maxWaitMs / 1000)}s 仍不空闲 ⇒ 照常开始索引（不能永不索引）`);
+	return false;
+}
+
+/** 向 Worker 发任务并等完成（带超时；Worker 不可用时返回 null ⇒ 调用方按策略降级）。 */
 function buildInWorker(agentId, scope, pendingIds) {
 	return new Promise((resolve) => {
 		const worker = getModelVectorsWorker();
 		if (!worker) { resolve(null); return; }
+		// ★ 2026-10-20：Worker 现在**分批**回传向量（见 modelVectorsWorker.mjs 的 chunk 段）——
+		//   这里累积，`done` 时一次交给调用方。老 Worker（done 里带 vectors）仍然兼容。
+		const acc = [];
+		// ★ 2026-10-20（用户：索引期间别抢 CPU）：每 2s 把"用户是否在忙"告知 Worker ——
+		//   3 秒内有过 HTTP 请求 ⇒ 慢速（worker 每 10 条歇 25ms）；空闲 ⇒ 全速。
+		//   真正吃 CPU 的是 worker 里的 embedding，所以节流必须发生在那边，主线程这边只是发信号。
+		const paceTimer = setInterval(() => {
+			try { worker.postMessage({ type: 'pace', slow: Date.now() - lastRequestAt < 3000 }); }
+			catch { /* worker 挂了 ⇒ done/超时分支会收尾 */ }
+		}, 2000);
+		paceTimer.unref?.();
+		// ★ 2026-10-20：三条收尾路径（done / 超时 / Worker 退出）共用一个 finish —— 只结算一次，
+		//   并**清掉超时定时器**（旧实现不清 ⇒ 闭包让 `acc`（可能数千个向量）多活 30 分钟）。
+		let settled = false;
+		let timeoutTimer = null;
+		const finish = (value) => {
+			if (settled) return;
+			settled = true;
+			worker.off('message', onMsg);
+			clearInterval(paceTimer);
+			if (timeoutTimer) { clearTimeout(timeoutTimer); }
+			_workerInflight.delete(onExit);
+			resolve(value);
+		};
+		const onExit = (reason) => finish({ type: 'done', agentId, error: reason });
 		const onMsg = (msg) => {
+			if (msg.type === 'chunk' && msg.agentId === agentId && Array.isArray(msg.vectors)) {
+				for (const v of msg.vectors) { acc.push(v); }   // 逐条 push：避免 spread 大数组的栈风险
+				return;
+			}
 			if (msg.type === 'done' && msg.agentId === agentId) {
-				worker.off('message', onMsg);
-				resolve(msg);
+				if (Array.isArray(msg.vectors) && msg.vectors.length > 0) { finish(msg); return; }   // 老格式
+				finish({ ...msg, vectors: acc });
 			}
 		};
+		_workerInflight.add(onExit);
 		worker.on('message', onMsg);
-		worker.postMessage({ type: 'build', agentId, scope, pendingIds });
-		// 超时保护（单个 agent 最长 5 分钟）
-		setTimeout(() => { worker.off('message', onMsg); resolve({ type: 'done', agentId, error: 'worker timeout' }); }, 300_000);
+		try {
+			worker.postMessage({ type: 'build', agentId, scope, pendingIds });
+		} catch (err) {
+			onExit(`postMessage failed: ${err instanceof Error ? err.message : String(err)}`);
+			return;
+		}
+		// 超时保护
+		// ★ 2026-10-20：超时从 5 分钟放宽到 **30 分钟**。
+		//   实测全量 19107 条要 298s（已贴 5 分钟边）；慢速模式（每 10 条歇 300ms）会把时长乘 1.7
+		//   ⇒ 5 分钟必然"超时失败"（白跑，下次再来一遍）。后台任务慢没关系，别失败。
+		timeoutTimer = setTimeout(() => finish({ type: 'done', agentId, error: 'worker timeout' }), 30 * 60_000);
+		timeoutTimer.unref?.();
 	});
 }
 
-async function buildModelVectorsIfEnabled() {
+/**
+ * 主线程逐条 embedding（**全仓唯一的真语义 embedding 调用点**）。
+ *
+ * ★ 为什么会阻塞：`EmbedFn` 的模型推理是**同步 CPU**（每次几十~几百 ms），`await` 只让出
+ *   微任务队列，**不让出事件循环** ⇒ 连续 N 条会把网关整个堵死（实测 35–150s ⇒ HTTP 请求
+ *   排队超时 ⇒ 界面「载入历史…」卡死）。所以它只在策略明确允许时才会被调用
+ *   （AGENTMEMORY_MODEL_EMBEDDING_MAINTHREAD=1）；默认路径走 Worker（见 modelVectorsPolicy.mjs）。
+ *
+ * @param {Array<{id: string, content: string}>} items
+ * @param {any} vi VectorIndex 实例
+ * @param {string} agentId 日志用
+ * @returns {Promise<{ok: number, failed: number}>}
+ */
+async function embedItemsOnMainThread(items, vi, agentId) {
+	let ok = 0, failed = 0;
+	for (let i = 0; i < items.length; i++) {
+		try {
+			const vec = await EmbedFn(items[i].content);
+			if (vec && vec.length > 0) { vi.addModelVector(items[i].id, vec); ok++; }
+			else { failed++; }
+		} catch { failed++; }
+		if ((i + 1) % 20 === 0) { await new Promise(r => setImmediate(r)); } // 让出事件循环（单线程网关）
+		if ((i + 1) % 250 === 0) {
+			emit('log', `${TAG} [model-vectors] ${agentId}: ${i + 1}/${items.length} built=${ok} mode=${vi.mode}`);
+		}
+	}
+	return { ok, failed };
+}
+
+/**
+ * Worker 不可用/构建失败时的降级：**保持已有向量，不跑主线程 embedding**。
+ *   · model 分区：保住已恢复的 model 向量（待补 id 留在 pending 表里，等下一次成功构建再补）；
+ *   · trigram 分区：保住已有 trigram 向量，没有则就地补建（纯 CPU，很快）。
+ * 理由见 ./modelVectorsPolicy.mjs：宁可语义弱一点，也不要把整个网关堵死。
+ * @param {string} agentId
+ * @param {any} vi VectorIndex 实例
+ * @param {Array<{id: string, content: string}>} items
+ * @param {{action: string, reason: string, pendingCount: number}} plan `decideFallback` 的结论
+ */
+function keepExistingVectors(agentId, vi, items, plan) {
+	if (plan.action === 'keep-model') {
+		emit('log', `${TAG} [model-vectors] ${agentId}: ${plan.reason}（${vi.size} doc${plan.pendingCount ? `，${plan.pendingCount} 条待补留待下次构建` : ''}）`);
+		return;
+	}
+	const back = vi.size > 0 ? vi.size : rebuildAgentVectorIndexTrigram(agentId, items);
+	emit('log', `${TAG} [model-vectors] ${agentId}: ${plan.reason}（${back} doc）`);
+}
+
+async function buildModelVectorsIfEnabled(options = {}) {
 	if (process.env['AGENTMEMORY_MODEL_EMBEDDING'] === 'off') return;
 	if (typeof EmbedFn !== 'function') {
 		emit('warn', `${TAG} [model-vectors] 真语义 embedding 默认开但 embed() 未加载（检查 modelDir/wasmDir 与模型文件是否齐；如需关闭请设 AGENTMEMORY_MODEL_EMBEDDING=off）`);
 		return;
 	}
-	// P2-3：Worker 优先（搬出主线程）；Worker 不可用则回退主线程构建（下方原逻辑）。
+	// ★ 2026-10-20：`onlyPending` = 运行期写入触发的补算（`queueModelVector`）——只走有待补 id 的、
+	//   已是 model 模式的分区（绝不触发全量切换；trigram 分区的写入本来就直接写 trigram 向量）。
+	const onlyPending = options.onlyPending === true;
+	// P2-3：Worker 优先（搬出主线程）。
+	// ★ 2026-10-21：**默认不再回退主线程 embedding** —— 旧行为会连续阻塞网关 35–150s
+	//   （沙箱实测）⇒ HTTP 请求排队到超时（dsh 20s）⇒ 界面「载入历史…」卡死。
+	//   代价对比见 ./modelVectorsPolicy.mjs：保持 trigram 只损失语义精度，而阻塞会让**整个网关**不可用。
 	const useWorker = getModelVectorsWorker() !== null;
+	const allowMainThread = mainThreadEmbeddingAllowed();
+	if (!useWorker && !allowMainThread) {
+		emit('warn', `${TAG} [model-vectors] 无可用 Worker ⇒ 本次不构建真语义向量（保持 trigram；主线程 embedding 会阻塞网关 35–150s）。如需旧行为请设 AGENTMEMORY_MODEL_EMBEDDING_MAINTHREAD=1`);
+	}
 	const t0 = Date.now();
 	let built = 0, failed = 0, done = 0;
 	try {
-		for (const scope of allMemoryScopes()) {
+		const scopes = onlyPending
+			? [..._pendingModelVectorIds.keys()]
+				.filter(agentId => vectorIndexByAgent.get(agentId)?.mode === 'model')
+				.map(agentId => `mem:memories:${agentId}`)
+			: allMemoryScopes();
+		if (onlyPending && scopes.length === 0) { return; }
+		for (const scope of scopes) {
 			const agentId = scope.slice('mem:memories:'.length);
 			const items = [];
 			for (const val of Object.values(listAll(scope))) {
@@ -625,22 +886,51 @@ async function buildModelVectorsIfEnabled() {
 			if (useWorker) {
 				const wPending = _pendingModelVectorIds.get(agentId);
 				const isIncremental = vi.mode === 'model';
-				const pendingIds = isIncremental && wPending ? [...wPending] : undefined;
+				// ★★ 2026-10-20（真机日志抓到的**根因**）：增量模式下**没有待构建的 id ⇒ 直接跳过**。
+				//   日志实证：`vector model cache loaded: 19107 doc restored, 0 pending（增量构建）`
+				//   —— 制品明明全恢复了、pending=0，却仍跑了 `19107 vector(s) … 298676ms`（298 秒），
+				//   因为下面 `pendingIds` 变成 undefined，而 worker 把 undefined 当成"**全量**"✗。
+				//   主线程路径（711-730）早就有"pending 空 ⇒ 无需构建"，worker 路径漏了这条。
+				if (isIncremental && (!wPending || wPending.size === 0)) {
+					emit('log', `${TAG} [model-vectors] ${agentId}: model 制品已恢复（${vi.size} doc），无需构建`);
+					done++;
+					continue;
+				}
+				const pendingIds = isIncremental ? [...wPending] : undefined;
 				const result = await buildInWorker(agentId, scope, pendingIds);
 				if (result && !result.error && Array.isArray(result.vectors) && result.vectors.length > 0) {
 					if (!isIncremental) { vi.clear(); } // 全量切换：清掉 trigram（原子切换，避免两种语义空间混存）
+					// ★ 2026-10-20：导入 4039 个向量是**同步 CPU**（主线程）。导入前先让出一次事件循环，
+					//   把已经排队的 HTTP 请求先处理掉 —— 否则「载入历史…」这类请求会一直等在这一步后面。
+					await new Promise(r => setImmediate(r));
 					vi.importVectors(result.vectors);
 					vi.setMode('model');
-					if (wPending) { _pendingModelVectorIds.delete(agentId); }
+					// ★ 2026-10-20：只摘掉**本轮处理过的** id —— 构建期间运行期写入可能又补进了新 id（`queueModelVector`），
+					//   整个 delete 会把它们丢掉（那几条从此在向量通道不可见，直到下次重启）。
+					settlePending(agentId, pendingIds);
 					done++;
 					built += result.built ?? result.vectors.length;
 					emit('log', `${TAG} [model-vectors] ${agentId}: ${result.vectors.length} doc in model mode (worker, failed=${result.failed ?? 0})`);
 					continue;
 				}
 				if (result?.error) {
-					emit('warn', `${TAG} [model-vectors] ${agentId}: worker failed (${result.error}) ⇒ 回退主线程构建`);
+					emit('warn', `${TAG} [model-vectors] ${agentId}: worker failed (${result.error})`);
 				}
-				// Worker 失败/空 ⇒ 落到下方主线程回退（原逻辑）
+				// Worker 失败/空 ⇒ 落到下方策略判定（默认**不**落主线程）
+			}
+
+			// ─── 走到这里 = Worker 没成功（构建失败 / Worker 不可用）⇒ 按策略降级 ───
+			//   ★ 2026-10-21：默认**不**回退主线程 embedding（会阻塞网关 35–150s）。
+			//   判据与理由见 ./modelVectorsPolicy.mjs；显式开关 AGENTMEMORY_MODEL_EMBEDDING_MAINTHREAD=1 可恢复旧行为。
+			const plan = decideFallback({
+				workerAvailable: false,
+				allowMainThread,
+				mode: vi.mode,
+				pendingCount: _pendingModelVectorIds.get(agentId)?.size ?? 0,
+			});
+			if (plan.action !== 'embed-on-main-thread') {
+				keepExistingVectors(agentId, vi, items, plan);
+				continue;
 			}
 
 			// ★ 增量路径：model 制品已恢复（mode=model 且有 pending 记录）⇒ 只构建「库有但向量没有」的 id，
@@ -651,19 +941,13 @@ async function buildModelVectorsIfEnabled() {
 			//   `vi.clear()` 会丢掉刚恢复的向量）。pending 空 ⇒ 无需构建；pending 非空 ⇒ 增量补齐。
 			if (vi.mode === 'model') {
 				if (pending && pending.size > 0) {
+					const handled = [...pending];
 					const toBuild = items.filter(it => pending.has(it.id));
-					let ok = 0;
-					for (let i = 0; i < toBuild.length; i++) {
-						try {
-							const vec = await EmbedFn(toBuild[i].content);
-							if (vec && vec.length > 0) { vi.addModelVector(toBuild[i].id, vec); ok++; }
-							else { failed++; }
-						} catch { failed++; }
-						if ((i + 1) % 20 === 0) { await new Promise(r => setImmediate(r)); }
-					}
-					_pendingModelVectorIds.delete(agentId);
-					built += ok;
-					emit('log', `${TAG} [model-vectors] ${agentId}: 增量 +${ok} doc（库 ${items.length} / 向量 ${vi.size}）failed=${toBuild.length - ok}`);
+					const r = await embedItemsOnMainThread(toBuild, vi, agentId);
+					settlePending(agentId, handled);
+					built += r.ok;
+					failed += r.failed;
+					emit('log', `${TAG} [model-vectors] ${agentId}: 增量 +${r.ok} doc（库 ${items.length} / 向量 ${vi.size}）failed=${toBuild.length - r.ok}`);
 				} else {
 					emit('log', `${TAG} [model-vectors] ${agentId}: model 制品已恢复（${vi.size} doc），无需构建`);
 				}
@@ -673,26 +957,16 @@ async function buildModelVectorsIfEnabled() {
 
 			// 全量路径（首次切换 trigram → model，或 model 制品为空/不存在）。
 			vi.clear(); // 原子切换：先清掉 trigram，避免两种语义空间混存
-			let ok = 0;
-			for (let i = 0; i < items.length; i++) {
-				try {
-					const vec = await EmbedFn(items[i].content);
-					if (vec && vec.length > 0) { vi.addModelVector(items[i].id, vec); ok++; }
-					else { failed++; }
-				} catch { failed++; }
-				if ((i + 1) % 20 === 0) { await new Promise(r => setImmediate(r)); } // 让出事件循环（单线程网关）
-				if ((i + 1) % 250 === 0) {
-					emit('log', `${TAG} [model-vectors] ${agentId}: ${i + 1}/${items.length} built=${ok} mode=${vi.mode}`);
-				}
-			}
+			const r = await embedItemsOnMainThread(items, vi, agentId);
+			built += r.ok;
+			failed += r.failed;
 			if (vi.size === 0) {
 				const back = rebuildAgentVectorIndexTrigram(agentId, items);
 				emit('warn', `${TAG} [model-vectors] ${agentId}: 0 vector built ⇒ 回退 trigram（${back} doc）`);
 			} else {
 				done++;
-				emit('log', `${TAG} [model-vectors] ${agentId}: ${vi.size} doc in model mode (failed=${items.length - ok})`);
+				emit('log', `${TAG} [model-vectors] ${agentId}: ${vi.size} doc in model mode (failed=${items.length - r.ok})`);
 			}
-			built += ok;
 		}
 		void saveIndexCache('model-vectors');
 		emit('log', `${TAG} [model-vectors] done: ${built} vector(s) across ${done} agent(s), failed=${failed}, ${Date.now() - t0}ms`);
@@ -778,7 +1052,12 @@ function indexMemoryPutVector(scope, key, body) {
 		//（重建后消失、增量时残留 —— 双写不一致）。演练实测：3 条相似记忆 supersede 后
 		// BM25=1 doc 而 vector=3 doc。
 		if (obj.isLatest === false || obj.deleted === true) { vi.remove(obj.id); markIndexDirty(); return; }
-		vi.addText(obj.id, content);  // trigram 同步 embedding（无需 transformers）
+		// ★ 2026-10-20：model 模式下 `addText` **不写**伪向量、不切 mode（见 vectorIndex.ts 的注释），
+		//   返回 false ⇒ 新 id 记进待补队列，防抖后由 worker 增量 embed；已有向量的 id（改写）保留原向量。
+		if (vi.addText(obj.id, content) === false) {
+			if (!vi.has(obj.id)) { queueModelVector(m[1], obj.id); }
+			return;
+		}
 		markIndexDirty();
 	} catch { /* not a memory object */ }
 }
@@ -976,7 +1255,8 @@ function rebuildVectorIndexesOnly() {
 			const agentId = scope.slice('mem:memories:'.length);
 			const vi = getAgentVectorIndex(agentId);
 			if (!vi) continue;
-			if (typeof vi.clear === 'function') vi.clear();
+			if (typeof vi.resetToTrigram === 'function') vi.resetToTrigram();
+			else if (typeof vi.clear === 'function') vi.clear();
 			const all = listAll(scope);
 			for (const val of Object.values(all)) {
 				try {
@@ -1022,17 +1302,28 @@ function setIndexCacheCtx(ctx) { _indexCacheCtx = ctx; }
 /**
  * KV 指纹：rows 覆盖删除、maxUpdatedAt 覆盖写入/更新、sumLen 覆盖「同毫秒改写同长度值」。
  * 取不到指纹返回 null（⇒ 制品判为不可用 ⇒ 重建，宁可慢也不可用错索引）。
+ *
+ * ★ 2026-10-20：只算 **`mem:memories:*`**（BM25 / 向量索引**只**从这些行构建 —— `rebuildBm25IndexesFromKV` /
+ *   `rebuildVectorIndexesOnly` 都只遍历 `allMemoryScopes()`）。旧实现统计**整表** ⇒ 定时 sweep 每 5 分钟重写的
+ *   `mem:retention`（实测 19288 行）/ `mem:semantic` / `mem:slots` 都会让指纹变 ⇒ **几乎每次启动都判 stale**，
+ *   BM25 全量重建（真机日志里每次都是 `index cache stale — full rebuild`）。实测 dev 库 09-26 之后的写入
+ *   **全部**落在这些非记忆族，记忆行的指纹一直没变。
+ *   范围谓词（`>= 'mem:memories:' AND < 'mem:memories;'`）走 `idx_kv_scope` 索引；`;` 是 `:` 的下一个字符。
+ *   旧制品里是整表指纹 ⇒ 升级后首启判 stale 一次（重建 + 落新指纹），之后才开始命中。
  */
+const MEMORY_SCOPE_LO = 'mem:memories:';
+const MEMORY_SCOPE_HI = 'mem:memories;';
 function kvFingerprint() {
 	try {
 		if (backendKind === 'sqlite' && db) {
 			const r = db.prepare(
-				'SELECT COUNT(*) AS rows, IFNULL(MAX(updated_at), 0) AS maxUpdatedAt, IFNULL(SUM(LENGTH(value)), 0) AS sumLen FROM kv_store'
-			).get();
+				'SELECT COUNT(*) AS rows, IFNULL(MAX(updated_at), 0) AS maxUpdatedAt, IFNULL(SUM(LENGTH(value)), 0) AS sumLen FROM kv_store WHERE scope >= ? AND scope < ?'
+			).get(MEMORY_SCOPE_LO, MEMORY_SCOPE_HI);
 			return { rows: Number(r?.rows ?? 0), maxUpdatedAt: Number(r?.maxUpdatedAt ?? 0), sumLen: Number(r?.sumLen ?? 0) };
 		}
 		let rows = 0, sumLen = 0;
-		for (const m of store.values()) {
+		for (const [scope, m] of store.entries()) {
+			if (!scope.startsWith(MEMORY_SCOPE_LO)) continue;
 			for (const v of m.values()) { rows++; sumLen += typeof v === 'string' ? v.length : 0; }
 		}
 		return { rows, maxUpdatedAt: 0, sumLen };
@@ -1063,11 +1354,18 @@ function collectIndexCachePayload() {
 	if (bm25Docs === 0) return null;
 
 	const vecAgents = {};
+	// ★ 2026-10-20：mode **按 agent** 记（`agentModes`）。旧实现在循环里反复覆盖 `vecMode = vi.mode`
+	//   ⇒ 制品顶层 mode = **最后一个** agent 的 mode：只要有一个分区还是 trigram（model 构建失败回退 /
+	//   空分区），整份制品被标成 trigram ⇒ 下次加载走"按指纹"老路 ⇒ 指纹几乎总 stale ⇒ 全量重建
+	//   （真机日志：有时 `vector model cache loaded`，有时全量 105s/706MB —— 就是这个）。
+	//   顶层 `mode` 保留（= 只要有 model 就记 model）给老读者；新读者按 `agentModes` 逐个判定。
+	const agentModes = {};
 	let vecDocs = 0, vecMode = 'trigram';
 	for (const [agentId, vi] of vectorIndexByAgent) {
 		if (!vi || vi.size === 0) continue;
 		vecAgents[agentId] = vi.exportVectors();
-		vecMode = vi.mode;
+		agentModes[agentId] = vi.mode;
+		if (vi.mode === 'model') { vecMode = 'model'; }
 		vecDocs += vi.size;
 	}
 
@@ -1075,7 +1373,7 @@ function collectIndexCachePayload() {
 		fp, bm25Docs, bm25Agents, vecDocs, vecMode, vecAgents,
 		bm25Obj: { version: INDEX_CACHE_VERSION, fingerprint: fp, builtAt: Date.now(), docs: bm25Docs, agents: bm25Agents },
 		vectorObj: vecDocs > 0
-			? { version: INDEX_CACHE_VERSION, fingerprint: fp, builtAt: Date.now(), docs: vecDocs, mode: vecMode, provider: currentEmbeddingProvider(), agents: vecAgents }
+			? { version: INDEX_CACHE_VERSION, fingerprint: fp, builtAt: Date.now(), docs: vecDocs, mode: vecMode, agentModes, provider: currentEmbeddingProvider(), agents: vecAgents }
 			: null,
 	};
 }
@@ -1090,7 +1388,8 @@ async function saveIndexCache(reason) {
 		if (!_indexSaveTimer) {
 			_indexSaveTimer = setTimeout(() => {
 				_indexSaveTimer = null;
-				void saveIndexCache(reason + ':retry');
+				// 原因只标一次 `:retry`（旧实现每重排一次就追加一段 ⇒ 日志里 `throttle:retry:retry:…×7`）
+				void saveIndexCache(reason.endsWith(':retry') ? reason : `${reason}:retry`);
 			}, 1000);
 			_indexSaveTimer.unref?.();
 		}
@@ -1104,10 +1403,11 @@ async function saveIndexCache(reason) {
 			emit('warn', `${TAG} index cache save skipped (${reason}): 0 doc or no fingerprint — 拒绝覆盖可能完好的制品`);
 			return;
 		}
-		await writeCacheFile(ctx.bm25File(), p.bm25Obj);
-		if (p.vectorObj) await writeCacheFile(ctx.vectorFile(), p.vectorObj);
+		await writeBm25CacheFile(ctx.bm25File(), p.bm25Obj);
+		const tBm25 = Date.now();
+		if (p.vectorObj) await writeVectorCacheFile(ctx.vectorFile(), p.vectorObj);
 		_indexDirtySince = 0;
-		emit('log', `${TAG} index cache saved (${reason}) in ${Date.now() - t0}ms: bm25=${p.bm25Docs} doc/${Object.keys(p.bm25Agents).length} agent(s), vector=${p.vecDocs} doc (mode=${p.vecMode})`);
+		emit('log', `${TAG} index cache saved (${reason}) in ${Date.now() - t0}ms (bm25 ${tBm25 - t0}ms, vector ${Date.now() - tBm25}ms): bm25=${p.bm25Docs} doc/${Object.keys(p.bm25Agents).length} agent(s), vector=${p.vecDocs} doc (mode=${p.vecMode})`);
 	} catch (err) {
 		emit('warn', `${TAG} index cache save failed (${reason}): ${err instanceof Error ? err.message : String(err)}`);
 	} finally {
@@ -1123,8 +1423,8 @@ function saveIndexCacheSync(reason) {
 	try {
 		const p = collectIndexCachePayload();
 		if (!p) { emit('warn', `${TAG} index cache save skipped (${reason}): 0 doc or no fingerprint`); return; }
-		writeCacheFile(ctx.bm25File(), p.bm25Obj, { sync: true });
-		if (p.vectorObj) writeCacheFile(ctx.vectorFile(), p.vectorObj, { sync: true });
+		writeBm25CacheFile(ctx.bm25File(), p.bm25Obj, { sync: true });
+		if (p.vectorObj) writeVectorCacheFile(ctx.vectorFile(), p.vectorObj, { sync: true });
 		emit('log', `${TAG} index cache saved (${reason}, sync) in ${Date.now() - t0}ms: bm25=${p.bm25Docs} doc, vector=${p.vecDocs} doc`);
 	} catch (err) {
 		emit('warn', `${TAG} index cache save failed (${reason}): ${err instanceof Error ? err.message : String(err)}`);
@@ -1145,7 +1445,12 @@ function tryLoadIndexCache() {
 	const fp = ctx.fingerprint();
 	let meta = null;
 	try {
-		meta = readCacheFile(ctx.bm25File());
+		// ★ 2026-10-21：优先二进制制品；没有时回退旧 `bm25-cache.json.gz`（升级后第一次启动），
+		//   下次保存就写成二进制。旧文件不主动删（回滚到旧版网关时它仍是可用制品）。
+		const tb = Date.now();
+		const r = readBm25CacheFile(ctx.bm25File(), ctx.legacyBm25File?.());
+		meta = r.meta;
+		if (meta) { emit('log', `${TAG} bm25 cache read (${r.format}) in ${Date.now() - tb}ms`); }
 	} catch (err) {
 		emit('warn', `${TAG} index cache unreadable (${err instanceof Error ? err.message : String(err)}) — full rebuild`);
 	}
@@ -1170,7 +1475,11 @@ function tryLoadIndexCache() {
 	//   靠"按 id 集合增量"恢复 —— 否则每次启动（库有写入 ⇒ 指纹 stale）都要重新全量构建 4 分钟。
 
 	try {
-		const vmeta = readCacheFile(ctx.vectorFile());
+		// ★ 2026-10-21：优先二进制制品；没有时回退旧 `vector-cache.json.gz`（升级后第一次启动），
+		//   下次保存就写成二进制。旧文件不主动删（回滚到旧版网关时它仍是可用制品）。
+		const tv = Date.now();
+		const { meta: vmeta, format: vformat } = readVectorCacheFile(ctx.vectorFile(), ctx.legacyVectorFile?.());
+		if (vmeta) { emit('log', `${TAG} vector cache read (${vformat}) in ${Date.now() - tv}ms`); }
 		if (!vmeta) {
 			emit('log', `${TAG} vector cache absent — will rebuild vectors`);
 		} else if (vmeta.mode === 'model' && vmeta.agents && typeof vmeta.agents === 'object') {
@@ -1185,9 +1494,14 @@ function tryLoadIndexCache() {
 				//   已存在 id 的内容不变（记忆写入是 append-only：supersede 也是新建 id）。
 				//   关键是 **result.vector = true** ⇒ 启动流程不会再触发 `rebuildVectorIndexesOnly()` 的全量 trigram 重建。
 				let vdocs = 0, pendingTotal = 0;
+				// ★ 2026-10-20：新制品带 `agentModes`（按 agent 的 mode）；老制品没有 ⇒ 沿用旧口径（全按 model）。
+				const agentModes = vmeta.agentModes && typeof vmeta.agentModes === 'object' ? vmeta.agentModes : null;
+				const restoredAsModel = new Set();
 				for (const [agentId, vectors] of Object.entries(vmeta.agents)) {
 					const vi = getAgentVectorIndex(agentId);
 					if (!vi || !Array.isArray(vectors)) continue;
+					// trigram 分区的向量**不许**当 model 恢复（两个语义空间，余弦无意义）⇒ 交给下面的 trigram 重建
+					if (agentModes && agentModes[agentId] !== 'model') { continue; }
 					vi.setMode('model');
 					const currentIds = new Set(Object.keys(listAll(`mem:memories:${agentId}`)));
 					if (currentIds.size === 0) {
@@ -1206,9 +1520,19 @@ function tryLoadIndexCache() {
 					for (const id of currentIds) { if (!cachedIds.has(id)) { missing.push(id); } }
 					if (missing.length > 0) { _pendingModelVectorIds.set(agentId, new Set(missing)); pendingTotal += missing.length; }
 					vdocs += imported;
+					restoredAsModel.add(agentId);
+				}
+				// ★ 2026-10-20：没按 model 恢复的分区（制品里是 trigram / 制品里没有）⇒ **就地 trigram 重建**。
+				//   旧实现这里直接 `result.vector = true` ⇒ 这些分区向量通道为空，直到后台 model 构建跑完
+				//   （全量可能几分钟）。trigram 重建是纯 CPU、很快；后台构建随后照常把它们切到 model。
+				let trigramRebuilt = 0;
+				for (const scope of allMemoryScopes()) {
+					const agentId = scope.slice('mem:memories:'.length);
+					if (restoredAsModel.has(agentId)) continue;
+					trigramRebuilt += rebuildAgentVectorIndexTrigram(agentId, liveMemoryItemsOf(scope));
 				}
 				result.vector = true;
-				emit('log', `${TAG} vector model cache loaded: ${vdocs} doc restored, ${pendingTotal} pending（增量构建）`);
+				emit('log', `${TAG} vector model cache loaded: ${vdocs} doc restored (${restoredAsModel.size} agent(s) model), ${pendingTotal} pending（增量构建）${trigramRebuilt ? `, ${trigramRebuilt} doc trigram-rebuilt` : ''}`);
 			} else {
 				emit('log', `${TAG} vector provider changed (cache=${cacheProvider?.name ?? 'local'}, now=${nowProvider?.name ?? 'local'}) — full rebuild`);
 			}
@@ -1349,6 +1673,8 @@ async function main() {
 
 	// Plan C: load the BM25 index module (from the sibling agentmemory-memory
 	// extension's compiled output) and rebuild the in-process index from KV.
+	// ⚠ 必须在**构造索引之前**注入：`bm25Index` 在构造时读一次 env（`AGENTMEMORY_BM25_MAX_DOCS`）。
+	setupMemoryCaps();
 	BM25Ctor = await resolveBm25Module();
 	installFileFetchShim(); // P0-1：@xenova 的 web 构建用 fetch 读本地模型文件（Node 不支持 file://）
 	setupEmbeddingPaths();  // P0-1：注入 modelDir / wasmDir（扩展侧只读 env）
@@ -1358,8 +1684,10 @@ async function main() {
 	// 判据与制品格式 ⇒ ./indexCache.mjs。这里只负责"接进启动流程"。
 	setIndexCacheCtx({
 		fingerprint: kvFingerprint,
-		bm25File: () => path.join(dataDir, 'index', BM25_CACHE_FILE),
-		vectorFile: () => path.join(dataDir, 'index', VECTOR_CACHE_FILE),
+		bm25File: () => path.join(dataDir, 'index', BM25_CACHE_BIN_FILE),
+		legacyBm25File: () => path.join(dataDir, 'index', BM25_CACHE_FILE),
+		vectorFile: () => path.join(dataDir, 'index', VECTOR_CACHE_BIN_FILE),
+		legacyVectorFile: () => path.join(dataDir, 'index', VECTOR_CACHE_FILE),
 	});
 	const indexCache = tryLoadIndexCache();
 	if (!indexCache.bm25) { rebuildBm25IndexesFromKV(); }
@@ -1370,7 +1698,16 @@ async function main() {
 
 	// P0-1（**默认开启**，`AGENTMEMORY_MODEL_EMBEDDING=off` 才关）：后台构建真语义向量。
 	// 不 await —— 启动可用性不受影响（BM25 已就绪）；完成后原子切换 mode 并落盘。
-	_modelVectorsBuildPromise = buildModelVectorsIfEnabled();
+	// ★★ 2026-10-20（用户：「载入历史…」卡死 + 分析结论）：**等空闲再跑索引**。
+	//   以前启动即跑 ⇒ 用户在开 IDE 的头几分钟（正是最需要响应的时候）恰好撞上 4039 条 embedding，
+	//   Host 的主线程被同步 SQLite 写 + 6MB 反序列化堵住 ⇒ dsh 的 HTTP 20s 超时、页面永久「载入历史…」。
+	//   现在：等"连续 45 秒没有 HTTP 请求"才开跑（最长等 5 分钟，超时也照跑 —— 不能永不索引）。
+	//   启动可用性不受影响（BM25 索引在 1403/1404 那两行已经就绪）。
+	_modelVectorsBuildPromise = (async () => {
+		const idled = await waitForIdle(45_000, 5 * 60_000);
+		if (idled) { emit('log', `${TAG} [idle] 已空闲 ${Math.round((Date.now() - lastRequestAt) / 1000)}s ⇒ 开始后台索引`); }
+		return await buildModelVectorsIfEnabled();
+	})();
 	// A4：启动即剪枝一次（subagent 遗留/旧格式巨型键），之后每 24h 由 sweep 触发
 	pruneOrphanData(true);
 
@@ -1379,10 +1716,35 @@ async function main() {
 	await loadProvider();
 
 	const server = http.createServer(async (req, res) => {
-		// CORS
-		res.setHeader('Access-Control-Allow-Origin', '*');
-		res.setHeader('Access-Control-Allow-Methods', 'GET, PUT, POST, DELETE, OPTIONS');
-		res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+		// ★ 2026-10-20：每个请求都刷新"最近活动"时刻 —— 后台索引据此判断"是不是该让路"（见 waitForIdle）。
+		lastRequestAt = Date.now();
+		// ★ 2026-10-20：未完成请求计数（心跳日志会带上；卡死时用它区分"进得来出不去"与"连 handler 都没进"）
+		pendingRequests++;
+		res.on('close', () => { if (pendingRequests > 0) { pendingRequests--; } });
+		// ★ 2026-10-20 安全收口：原来是 `Access-Control-Allow-Origin: *` + 无鉴权 ⇒ 本机任意网页都能跨域
+		//   调 `/provider/deleteMemory` 等写接口。判据见 ./requestGuard.mjs（无 Origin 的 Node 客户端放行；
+		//   带 Origin 的只认 IDE 渲染进程 / webview / `AGENTMEMORY_ALLOWED_ORIGINS`；回环绑定时校验 Host）。
+		const verdict = checkRequest(
+			{ origin: req.headers.origin, host: req.headers.host },
+			{ bindHost: process.env.AGENTMEMORY_HOST, allowed: ALLOWED_ORIGINS },
+		);
+		if (!verdict.ok) {
+			// 每种拒绝原因只记一次（被误拒时一眼可见，又不会被扫描刷屏）
+			if (!_rejectedReasons.has(verdict.reason) && _rejectedReasons.size < 50) {
+				_rejectedReasons.add(verdict.reason);
+				emit('warn', `${TAG} rejected ${req.method} ${String(req.url).slice(0, 80)} — ${verdict.reason}（如为合法调用方，加进 AGENTMEMORY_ALLOWED_ORIGINS）`);
+			}
+			res.writeHead(verdict.status, { 'Content-Type': 'application/json' });
+			res.end(JSON.stringify({ error: verdict.reason }));
+			return;
+		}
+		// CORS：只回显**已放行**的 Origin（不再是 `*`）；无 Origin 的 Node 客户端不需要 CORS 头
+		if (verdict.allowOrigin) {
+			res.setHeader('Access-Control-Allow-Origin', verdict.allowOrigin);
+			res.setHeader('Vary', 'Origin');
+			res.setHeader('Access-Control-Allow-Methods', 'GET, PUT, POST, DELETE, OPTIONS');
+			res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+		}
 
 		if (req.method === 'OPTIONS') {
 			res.writeHead(204);
@@ -1794,6 +2156,20 @@ async function main() {
 	});
 	server.listen(port, bindHost, () => {
 		emit('ready', `KV store ready on port ${port}`, { port, dataDir, engine: backendKind, host: bindHost });
+		// ★★ 2026-10-20（用户报「卡在载入历史…」时 Host 完全静默）：**Host 心跳**。
+		//   实测症状：Host HTTP 15s 超时、CPU 只有 12%、日志从某一刻起**一行都没有** ⇒ 事件循环被卡住，
+		//   但外部完全看不出卡在哪个操作上（IDE 的 MainHeartbeat 是主进程的，不是这个子进程的）。
+		//   这条每 5s 一行；**心跳断掉的那一刻**就是卡住的时刻，配合之前的最后几行日志就能定位。
+		//   ⚠ 只用 `setInterval`（宏任务）：若心跳也停，说明事件循环真的被同步操作占住了 ✓
+		let hostBeat = 0;
+		const beatTimer = setInterval(() => {
+			hostBeat++;
+			try {
+				const mem = Math.round(process.memoryUsage().rss / 1048576);
+				emit('log', `${TAG} [host-heartbeat] tick=${hostBeat} rss=${mem}MB pendingReq=${pendingRequests}`);
+			} catch { /* 心跳自己不能抛 */ }
+		}, 5000);
+		beatTimer.unref?.();
 		// 启动后 5s 输出一次各 agent 健康度（不等首轮清扫）
 		setTimeout(() => {
 			try {
@@ -1810,6 +2186,35 @@ async function main() {
 	/** P1-12：每轮 sweep 最多处理的 agent 数（游标轮转，防单轮长阻塞） */
 	const SWEEP_MAX_AGENTS_PER_TICK = 5;
 	let _sweepCursor = 0;
+	/**
+	 * ★ 2026-10-20：只清扫**近期有写入**的分区（`mem:memories:<agentId>` 的 `MAX(updated_at)` 在窗口内）。
+	 *
+	 * 为什么：IDE 侧聊天框（AgentMemory 唯一的自动写入方）已停用，dev 库 2026-09-26 之后**零条新记忆**；
+	 * 而 sweep 仍每 5 分钟对 7 个历史分区做全套"维护"——
+	 *   · 重写 `mem:retention`（19288 行）⇒ KV 指纹每次启动都 stale ⇒ BM25 全量重建；
+	 *   · 每轮新写一条 episode（见 `amPipeline.extractEpisodic` 的注释）；
+	 *   · 到期后**硬删**（`evict` / `autoForget` / `retentionEvict`）——对不再有写入的分区，删一条少一条。
+	 * 分区一旦有新写入（任何路径写 `mem:memories:<id>`）就自动恢复清扫 ⇒ 无需人工解冻。
+	 *
+	 * `AGENTMEMORY_SWEEP_ACTIVE_DAYS`：窗口天数（缺省 14）；`0` = 关闭本过滤（恢复"全部分区都扫"）。
+	 * js-kv 后端没有写入时间戳 ⇒ 不过滤（与旧行为一致）。
+	 */
+	const SWEEP_ACTIVE_WINDOW_MS = (() => {
+		const raw = process.env['AGENTMEMORY_SWEEP_ACTIVE_DAYS'];
+		if (raw === undefined || raw.trim() === '') return 14 * 86400000;
+		const d = Number(raw);
+		return Number.isFinite(d) && d >= 0 ? d * 86400000 : 14 * 86400000;
+	})();
+	/** 上一次打印的"冻结名单"（只在名单变化时打日志，避免每 5 分钟刷一行）。 */
+	let _lastFrozenKey = '';
+	/** 各 `mem:memories:*` 分区的最近写入时刻（ms）；非 sqlite 后端返回 null（= 不过滤）。 */
+	const memoryScopeLastWrite = () => {
+		if (backendKind !== 'sqlite') return null;
+		const rows = db.prepare("SELECT scope, MAX(updated_at) AS t FROM kv_store WHERE scope LIKE 'mem:memories:%' GROUP BY scope").all();
+		const out = new Map();
+		for (const r of rows) out.set(r.scope, Number(r.t) || 0);
+		return out;
+	};
 
 	// ── P1-9（2026-09-09）：检索健康度诊断行（对齐 codebase 图谱 [summary] 模式）──
 	// 每轮清扫后打一行：indexed/total < 90% → ⚠ DEFICIENT（warn）。
@@ -1882,8 +2287,22 @@ async function main() {
 		if (_sweeping || !providerInstance) return;
 		_sweeping = true;
 		try {
-			const scopes = allMemoryScopes();
+			const allScopes = allMemoryScopes();
+			// ★ 2026-10-20：冻结长期无写入的分区（理由见 SWEEP_ACTIVE_WINDOW_MS 的注释）
+			const lastWrite = SWEEP_ACTIVE_WINDOW_MS > 0 ? memoryScopeLastWrite() : null;
+			const cutoff = Date.now() - SWEEP_ACTIVE_WINDOW_MS;
+			const scopes = lastWrite ? allScopes.filter(s => (lastWrite.get(s) ?? 0) >= cutoff) : allScopes;
+			const frozen = allScopes.filter(s => !scopes.includes(s)).map(s => s.slice('mem:memories:'.length)).sort();
+			const frozenKey = frozen.join(',');
+			if (frozenKey !== _lastFrozenKey) {
+				_lastFrozenKey = frozenKey;
+				const days = Math.round(SWEEP_ACTIVE_WINDOW_MS / 86400000);
+				emit('log', frozen.length
+					? `${TAG} sweep: ${frozen.length}/${allScopes.length} partition(s) frozen (no memory writes in ${days}d): ${frozen.join(', ')}`
+					: `${TAG} sweep: all ${allScopes.length} partition(s) active`);
+			}
 			if (scopes.length === 0) return;
+			if (_sweepCursor >= scopes.length) _sweepCursor = 0;
 			// P1-12（2026-09-11）：分片 + 让出事件循环。
 			// 背景：实测用户日志出现 observe/triggerHook/onTaskCompleted 同时 5s 超时——
 			// 引擎侧 runFullSweep 内含数千次**同步** sqlite 调用（retentionScore 逐条
@@ -1920,6 +2339,8 @@ async function main() {
 
 	// Graceful shutdown
 	const shutdown = (sig) => {
+		// Worker 随进程退出时会触发 `exit` —— 那不是崩溃，别记"将重建"
+		_workerShuttingDown = true;
 		emit('log', `${TAG} received ${sig}, shutting down... (pending writes: ${pendingWrites})`);
 		setTimeout(async () => {
 			try {

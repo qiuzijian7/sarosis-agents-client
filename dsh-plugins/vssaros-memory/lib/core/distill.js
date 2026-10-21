@@ -236,6 +236,13 @@ export function userTextsOf(events) {
 	const out = [];
 	for (const event of Array.isArray(events) ? events : []) {
 		if (event?.type !== 'user/message') { continue; }
+		// ★ 2026-10-20：只认**人说的话**。dsh 的 `user/message` 是"所有非模型输入"的统一载体 ——
+		//   压缩替代消息（`source.kind === 'compact-checkpoint'`，正文是**模型写的摘要**）、
+		//   `agent-instructions` / `runtime-context` / `goal` / `team-message` 等都走它
+		//   （`@deepseek-ai/dsh-llm` 的 `MessageSourceMap`：「user messages carry any producer's kind」）。
+		//   不过滤 ⇒ 一次压缩就把模型对整段对话的转述当成"用户约定"拿去正则提取 ✗。
+		//   判据：没有 `source`（老日志 / 夹具）或 `kind === 'user'`（浏览器提交 `user-rpc` 就是它）⇒ 才算。
+		if (!isHumanSource(event?.data?.source)) { continue; }
 		const content = event?.data?.content;
 		const raw = typeof content === 'string'
 			? content
@@ -250,6 +257,76 @@ export function userTextsOf(events) {
 
 /** 草稿状态词表（`promote` 只会往 `promoted` 走；`rejected` 供将来的人工"丢弃"用 ✓）。 */
 export const DRAFT_STATUSES = ['draft', 'promoted', 'rejected'];
+
+/**
+ * 这条消息是不是**人**说的（`userTextsOf` 的来源闸；纯函数）。
+ * @param {unknown} source - `UserMessage.source`。
+ * @returns {boolean}
+ */
+export function isHumanSource(source) {
+	if (source === undefined || source === null) { return true; }
+	return typeof source === 'object' && /** @type {any} */ (source).kind === 'user';
+}
+
+// ── 会话摘要草稿（2026-10-20：dsh 侧补「压缩摘要」写入点）─────────────────────────
+//
+// IDE 时代压缩时直接 `writeMemory('compression-<ts>')` 进长期层（`turnContextCompaction.ts`）。
+// dsh 侧的等价物是会话日志里的 `compaction/summary`（`@deepseek-ai/dsh-compaction`：模型写好的
+// 摘要在 `data.summary: ContentBlock[]`，log-only，不进 surface）。
+// ⚠ 口径与自动沉淀**同一条纪律**：产出**草稿**、人工「提升」才进长期记忆 —— 摘要是模型对整段
+//   对话的转述，同样"必然有误"（约束 ②），直写＝把转述错误喂给之后每一轮 ✗。
+
+/** 摘要草稿的 `matched` 标签（页面 / 探针据此区分"摘要"与"约定"）。 */
+export const SUMMARY_MATCHED_TAG = 'session-summary';
+
+/**
+ * 摘要草稿的长度上限。比约定（200）大得多：摘要的价值在"一段话讲清这次会话做了什么"，
+ * 但也不能是整份对话（长期记忆的每条都要能被检索/注入，几千字的一条会挤掉别的）。
+ */
+export const SUMMARY_MAX_CHARS = 1200;
+
+/** 太短的摘要没有信息量（压缩后端失败时可能只产出一句占位）。 */
+export const SUMMARY_MIN_CHARS = 40;
+
+/**
+ * 从一批会话事件里取压缩摘要 → 摘要草稿候选（纯函数；零 I/O）。
+ *
+ * 去重走同一套指纹（`auditDigestOf`）：同一段摘要（重放 / 重读游标）不会出两条草稿。
+ * 草稿 id 用 `summary-` 前缀 ⇒ 与约定草稿的 `draft-` 不撞（提升后的记忆 id 由 `promotedMemoryIdOf` 派生）。
+ *
+ * @param {readonly unknown[]} events - `session.snapshotEvents(from, to)` 的产物。
+ * @param {{sessionId?: string, turn?: number, seenDigests?: Set<string> | readonly string[], now?: number}} [options]
+ * @returns {Array<{id: string, at: number, text: string, chars: number, digest: string, matched: string, source: {sessionId: string, turn: number}}>}
+ */
+export function summaryCandidatesOf(events, options = {}) {
+	const sessionId = typeof options.sessionId === 'string' ? options.sessionId : '';
+	const turn = Number.isFinite(options.turn) ? options.turn : 0;
+	const now = Number.isFinite(options.now) ? options.now : 0;
+	const seen = options.seenDigests instanceof Set ? options.seenDigests : new Set(Array.isArray(options.seenDigests) ? options.seenDigests : []);
+	const out = [];
+	for (const event of Array.isArray(events) ? events : []) {
+		if (event?.type !== 'compaction/summary') { continue; }
+		const blocks = event?.data?.summary;
+		const raw = Array.isArray(blocks)
+			? blocks.filter(b => b?.type === 'text' && typeof b.text === 'string').map(b => b.text).join('\n')
+			: '';
+		const collapsed = stripSystemWrappers(raw).replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+		if (collapsed.length < SUMMARY_MIN_CHARS) { continue; }
+		const text = collapsed.length > SUMMARY_MAX_CHARS ? `${collapsed.slice(0, SUMMARY_MAX_CHARS)}…` : collapsed;
+		const digest = auditDigestOf(text);
+		if (!digest || seen.has(digest) || out.some(c => c.digest === digest)) { continue; }
+		out.push({
+			id: `summary-${digest.slice(0, 12)}`,
+			at: now,
+			text,
+			chars: text.length,
+			digest,
+			matched: SUMMARY_MATCHED_TAG,
+			source: { sessionId, turn },
+		});
+	}
+	return out;
+}
 
 /**
  * 解析 `application/x-www-form-urlencoded` 的表单体（纯函数）。

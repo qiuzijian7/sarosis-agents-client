@@ -42,8 +42,12 @@ export function promotedMemoryIdOf(row) {
  * @returns {{promote: (id: string) => Promise<{ok: boolean, id?: string, memoryId?: string, text?: string, error?: string}>}} 提升器。
  */
 export function createPromoter(deps) {
-	const { draftStore, remember, gatewayBase, agentId, auditAppend, now } = deps;
+	const { draftStore, remember, auditAppend, now } = deps;
 	const stamp = () => (typeof now === 'function' && Number.isFinite(now()) ? now() : Date.now());
+	// ★ 2026-10-20：`agentId` / `gatewayBase` 允许传 **getter**（调用时现取）。
+	//   原来在 `apply` 时取值并冻结 ⇒ 运行期切换工作区后，页面上「提升」写进的是**旧**工作区分区 ✗
+	//   （分区由运行期工作区上下文决定，见 `lib/index.js` 的 `workspaceScoped`）。传值仍兼容（探针用法）。
+	const current = value => (typeof value === 'function' ? value() : value);
 
 	/**
 	 * 把一条草稿提升成长期记忆。
@@ -53,6 +57,8 @@ export function createPromoter(deps) {
 	 */
 	async function promote(id) {
 		if (typeof id !== 'string' || !id) { return { ok: false, error: '缺少草稿 id' }; }
+		const gatewayBase = current(deps.gatewayBase);
+		const agentId = current(deps.agentId);
 		if (!gatewayBase) {
 			return { ok: false, error: '记忆网关未配置（config.gatewayUrl / VSSAROS_MEMORY_GATEWAY_URL）' };
 		}
@@ -69,7 +75,9 @@ export function createPromoter(deps) {
 			timestamp: stamp(),
 			// 来源可回溯（`jessenjx` 的 citation 与 `memento` 的双证据链是同一条思路 ✓）：
 			// 记下"这条记忆是从哪个会话的哪个回合提取的" ✓。
-			metadata: { source: 'draft', sessionId: row.sessionId, turn: row.turn },
+			// `kind`（2026-10-20）：草稿的提取方式（约定正则的标签 / `session-summary`）—— 检索结果里能分清
+			// "用户说过的约定"与"模型写的会话摘要"。
+			metadata: { source: 'draft', kind: String(row.matched ?? ''), sessionId: row.sessionId, turn: row.turn },
 		};
 
 		const auditBase = {
@@ -117,6 +125,7 @@ export function createPromoter(deps) {
 	 */
 	async function discard(id) {
 		if (typeof id !== 'string' || !id) { return { ok: false, error: '缺少草稿 id' }; }
+		const agentId = current(deps.agentId);
 		const rows = await draftStore.read();
 		const row = rows.find(candidate => candidate.id === id);
 		if (!row) { return { ok: false, error: `草稿不存在：${id}` }; }
