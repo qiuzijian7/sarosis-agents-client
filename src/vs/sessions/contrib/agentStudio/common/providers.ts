@@ -831,6 +831,24 @@ export interface IMemoryProvider {
 	 * Opt1：实现可返回 Promise（同步假成功禁止）。
 	 */
 	getAuditSummary?(): Record<string, number> | Promise<Record<string, number>>;
+	/**
+	 * 审计**账本**（落盘 JSONL）—— 审计的**单一真源**（★ 2026-10-21）。
+	 *
+	 * 为什么需要它：引擎自带的 `AuditLog` 是**纯内存**（进程重启即失、也没人调 `record()`）
+	 * ⇒ 面板审计页长期空白；而真正在记审计的是 dsh 侧记忆插件写的落盘账本
+	 * `<数据根>/memory-audit/audit.jsonl` ⇒ 引擎侧新增 `getAuditLedger` 读它并**归一**字段
+	 * （`action`/`ts`/`tool` ⇒ `operation`/`timestamp`/`type`）⇒ 两侧页面看到同一份 ✓
+	 */
+	getAuditLedger?(options?: { limit?: number }): Promise<Array<Record<string, unknown>>>;
+
+	/**
+	 * 记忆服务**健康状态**（★ 2026-10-21）。
+	 *
+	 * 为什么需要它：实测网关侧 `getHealthStatus()` 一直返回 `serverAvailable:false / status:'degraded'`
+	 *（宿主模式下没有"远端 server"这回事 ⇒ 那是**误报**），而面板**完全不提示** ⇒
+	 * 用户以为一切正常，实际取数可能都在降级 ⇒ 面板据此显示告警横幅 ✓
+	 */
+	getHealthStatus?(): { status?: string; serverAvailable?: boolean; gatewayUp?: boolean; baseUrl?: string } | Promise<{ status?: string; serverAvailable?: boolean; gatewayUp?: boolean; baseUrl?: string }>;
 
 	// ─── Report & Git APIs (for memory detail panel) ──────────────────────
 

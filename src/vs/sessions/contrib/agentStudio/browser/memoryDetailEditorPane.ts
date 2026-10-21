@@ -886,7 +886,7 @@ export class MemoryDetailEditorPane extends EditorPane {
 
 		try {
 			// ★ 2026-10-21：**跨分区**取教训（教训也是按分区存的 ⇒ 只查当前（空）分区 ⇒ 恒空 ✗）
-			const lessonRows = await this._fanout(memProvider, (aid) => memProvider.getLessons(aid));
+			const lessonRows = await this._fanout(memProvider, (aid) => memProvider.getLessons?.(aid) ?? []);
 			const lessons = (lessonRows ?? []) as Array<Record<string, unknown>>;
 			if (!lessons || lessons.length === 0) {
 				this._renderEmpty('暂无教训记录。');
@@ -902,11 +902,12 @@ export class MemoryDetailEditorPane extends EditorPane {
 					append(headerEl, $('.md-badge.l1')).textContent = `🗂 ${String(lesson['partition'])}`;
 				}
 				append(headerEl, $('.md-card-title')).textContent = String(lesson.content ?? '').slice(0, 80);
-				if (lesson.tags?.length) {
-					append(headerEl, $('.md-card-time')).textContent = lesson.tags.join(', ');
+				const lessonTags = Array.isArray(lesson.tags) ? lesson.tags.map((t: unknown) => String(t)) : [];
+				if (lessonTags.length) {
+					append(headerEl, $('.md-card-time')).textContent = lessonTags.join(', ');
 				}
 				this._addToolbarBtn(headerEl, '🗑️', 'danger', async () => {
-					try { await memProvider.deleteLesson?.(this._agentId, lesson.id); this._renderFull(); } catch { /* best effort */ }
+					try { await memProvider.deleteLesson?.(this._agentId, String(lesson.id ?? '')); this._renderFull(); } catch { /* best effort */ }
 				});
 				// Expanded content
 				const contentBox = append(card, $('.md-content-box'));
@@ -1633,7 +1634,7 @@ export class MemoryDetailEditorPane extends EditorPane {
 			if (!memProvider?.writeAllSkillFiles) return;
 			// ★ 2026-10-21：技能是**按分区**存的 ⇒ 逐分区写入（只写当前分区会漏掉其它分区的技能 ✗）
 			const perWrite = await Promise.all(partitions.map(async aid => {
-				try { return { aid, r: await memProvider.writeAllSkillFiles(aid) }; } catch { return { aid, r: { written: 0, failed: 0, errors: [] as string[] } }; }
+				try { return { aid, r: await memProvider.writeAllSkillFiles?.(aid) ?? { written: 0, failed: 0, errors: [] as string[] } }; } catch { return { aid, r: { written: 0, failed: 0, errors: [] as string[] } }; }
 			}));
 			const result = {
 				written: perWrite.reduce((n, x) => n + (Number(x.r?.written) || 0), 0),
@@ -1652,7 +1653,7 @@ export class MemoryDetailEditorPane extends EditorPane {
 
 		try {
 			// ★ 2026-10-21：**跨分区**取技能（工作区分区没有技能 ⇒ 只查它 ⇒ 恒空 ✗）
-			const skillRows = await this._fanout(memProvider, (aid) => memProvider.listSkills(aid));
+			const skillRows = await this._fanout(memProvider, (aid) => memProvider.listSkills?.(aid) ?? []);
 			const skills = (skillRows ?? []) as Array<Record<string, unknown>>;
 		if (!skills || skills.length === 0) {
 			this._renderEmpty('暂无技能记录。技能会在会话完成并执行固化后自动提取。');
