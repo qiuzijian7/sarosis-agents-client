@@ -14,6 +14,7 @@
 import { ChildProcess, execFile, execFileSync, spawn } from 'child_process';
 import { createHash, randomBytes } from 'crypto';
 import { existsSync, promises as fsp, readFileSync, rmSync, utimesSync } from 'fs';
+import { ClientRequest, request as httpRequest } from 'http';
 import { homedir, tmpdir } from 'os';
 import { pathToFileURL } from 'url';
 import { Emitter, Event } from '../../../../base/common/event.js';
@@ -22,9 +23,10 @@ import { basename, delimiter, join, resolve } from '../../../../base/common/path
 import { DshBridgeMethod, IBridgeHello, IBridgePluginRow, IBridgeReverseRequest, IBridgeWorkspaceContextArgs, IBridgeWorkspaceContextResult } from '../common/dshBridgeProtocol.js';
 import { bridgePipePath, buildHostArgs, buildPluginAddArgs, buildPluginAddArgsMany, buildProfileInitArgs, DSH_SHARED_INSTANCE_PACKAGES, memoryGatewayUrlFromEnv, parseAuthUrl, resolveSiblingPackage, toFileSpec } from '../common/dshCli.js';
 import { isDshRowsBundleRegistered, parseMcpServers, renderMcpOverlay } from '../common/dshMcpConfig.js';
+import { auditBundledPluginVersions, renderBundledVersionAudit } from '../common/dshPluginVersionAudit.js';
 import { DSH_HOST_IDLE_TTL_MS, DshHostOverlayKind, hostOverlayFileName, IDshHostConfig, renderHostOverlays } from '../common/dshHostConfig.js';
 import { HOST_RUN_OWNERSHIP_HEARTBEAT_MS, hostRunOwnershipFileName } from '../common/dshHostRunOwnership.js';
-import { DSH_ARCHIFY_PLUGIN_NAME, DSH_BRIDGE_PLUGIN_NAME, DSH_BROWSER_PLUGIN_NAME, DSH_CHAT_SURFACE_PLUGIN_NAME, DSH_DEFAULT_PROFILE, DSH_FOUNDATION_PLUGIN_NAME, DSH_KB_REFS_PLUGIN_NAME, DSH_SCHEDULE_BUNDLE_PLUGIN_NAME, DSH_UNREAL_PLUGIN_NAME, DSH_VOICE_BUNDLE_PLUGIN_NAME, DSH_WEB_APP_BUNDLE_NAME, IDshBundledInstallResult, IDshHostStartOptions, IDshHostStatus, IDshPluginInfo, sameStartOptions } from '../common/dshHarness.js';
+import { DSH_ARCHIFY_PLUGIN_NAME, DSH_BRIDGE_PLUGIN_NAME, DSH_EGO_PLUGIN_NAME, DSH_BROWSER_PLUGIN_NAME, DSH_CHAT_SURFACE_PLUGIN_NAME, DSH_DEFAULT_PROFILE, DSH_FOUNDATION_PLUGIN_NAME, DSH_KB_REFS_PLUGIN_NAME, DSH_SCHEDULE_BUNDLE_PLUGIN_NAME, DSH_UNREAL_PLUGIN_NAME, DSH_VOICE_BUNDLE_PLUGIN_NAME, DSH_WEB_APP_BUNDLE_NAME, IDshBundledInstallResult, IDshHostStartOptions, IDshHostStatus, IDshPluginInfo, sameStartOptions } from '../common/dshHarness.js';
 import { hostLeaseBlocker, IDshHostLease } from '../common/dshHostLease.js';
 import { SANDBOX_FALLBACK_MODE, SANDBOX_FALLBACK_ROOT } from '../common/dshSandboxCompat.js';
 import { probeLabelWriteOnce } from './dshSandboxProbe.js';
@@ -36,9 +38,69 @@ import { rememberHostPort, resolveHostPort } from './dshHostPortManager.js';
 import { reapOrphanHosts } from './dshHostReaper.js';
 import { DshRuntimeError, DshRuntimeManager, IResolvedDsh, IResolvedNode, sanitizedEnv } from './dshRuntimeManager.js';
 import { IDshHealthReport, IHostActivity, summarizeHealth } from '../common/dshUpgrade.js';
+// ★ 2026-10-19：内置 agent 的**代码真源**（`getBuiltinAgents`）与它到 md 的序列化（`buildAgentMd`）。
+//   dsh 侧的 agents 模块（`vssaros-agents`）此前**只扫用户目录** ⇒ 内置 agent 一个都列不出来 ✗；
+//   Host 进程读不到产品源码 ⇒ 启动期在这里把真源生成成 md 副本，再把目录绝对路径写进覆盖层。
+//   ⚠ 真源只有一个（`common/builtinAgents.ts`）；这里是**产物交付**，不是第二个真源。
+import { getBuiltinAgents } from '../../agentStudio/common/builtinAgents.js';
+import { buildAgentMd } from '../../agentStudio/common/agentMdFormat.js';
 
 const isWindows = process.platform === 'win32';
 const LOG_LIMIT = 400;
+
+/** dsh 页面实时事件走的 WebSocket mux 路径（`dsh-api-gateway` 的 `REMOTE_STREAM_MUX_PATH`）。 */
+const DSH_MUX_PATH = '/api/remote.mux';
+
+/**
+ * 探一次 mux 升级路由**是否已注册**（不带 cookie，绝不会被放行）。
+ *
+ * 为什么能区分（2026-10-20 读官方源码确认）：
+ *   · `dsh-host-webserver` upgrade 处理：路由未注册 ⇒ `socket.destroy()`，**没有任何 HTTP 响应**；
+ *   · `dsh-api-gateway` 的 mux handler：已注册但未认证 ⇒ `rejectRemoteStreamUpgrade` 回 401/403/409。
+ *   ⇒ 收到任何 HTTP 响应 = 路由已在；连接被直接掐断 / 超时 = 还没注册。
+ * 而 mux 路由要等 `appReady`（整个 boot 返回）才注册，比我们判定 ready 用的 bridge hello 晚 ——
+ * 这段时间里页面的实时事件连接每一代都失败，只能按 0.5/1/2/4/8 s 退避重试。
+ * @returns HTTP 状态码（101 也算）；未注册 / 超时 / 出错返回 `undefined`。
+ */
+function probeMuxRouteOnce(origin: string, timeoutMs: number): Promise<number | undefined> {
+	return new Promise(resolvePromise => {
+		let done = false;
+		let req: ClientRequest | undefined;
+		const timer = setTimeout(() => finish(undefined), timeoutMs);
+		function finish(v: number | undefined): void {
+			if (done) {
+				return;
+			}
+			done = true;
+			clearTimeout(timer);
+			try { req?.destroy(); } catch { /* 探针收尾失败无所谓 */ }
+			resolvePromise(v);
+		}
+		try {
+			const u = new URL(DSH_MUX_PATH, origin);
+			req = httpRequest({
+				hostname: u.hostname,
+				port: u.port,
+				path: u.pathname,
+				method: 'GET',
+				headers: {
+					'Connection': 'Upgrade',
+					'Upgrade': 'websocket',
+					'Sec-WebSocket-Version': '13',
+					'Sec-WebSocket-Key': randomBytes(16).toString('base64'),
+				},
+			});
+		} catch {
+			finish(undefined);
+			return;
+		}
+		req.on('response', res => { res.resume(); finish(res.statusCode ?? 0); });
+		req.on('upgrade', (_res, socket) => { socket.destroy(); finish(101); });
+		req.on('error', () => finish(undefined));
+		req.on('close', () => finish(undefined));
+		req.end();
+	});
+}
 
 /**
  * 随包媒体二进制目录（`ffmpeg` / `ffprobe` / `yt-dlp` / `whisper-cli` 都在里面；2026-10-15）。
@@ -117,6 +179,13 @@ export interface IDshHostSupervisorOptions {
 	 */
 	readonly archifyPluginDir?: string;
 	/**
+	 * 随包 **ego lite（`ego-browser`）接入插件**目录（`dsh-plugins/vssaros-ego/`）。
+	 *
+	 * 与 archify 同一条"存在才装"的伴生路径（它也没有 `vssaros.module`：不是我们的 UI 模块）。
+	 * 装不上不影响启动 —— 用户没装 ego lite 应用时那 4 个工具本来就用不了，`ego_status` 会说明原因。
+	 */
+	readonly egoPluginDir?: string;
+	/**
 	 * 随产品分发的**模块插件**（`[包名, 目录]`；由 channel 用 `listBundledPlugins` 自发现）。
 	 * 2026-10-11 起**全部随包自动安装**（用户要求）：agents / skills / mcp / kb / memory / codebase /
 	 * kanban / workflow / dashboard / ide。空数组合法（老构建没带 `dsh-plugins/`）。
@@ -184,6 +253,13 @@ export class DshHostSupervisor extends Disposable {
 
 	private readonly _onDidChangeStatus = this._register(new Emitter<IDshHostStatus>());
 	readonly onDidChangeStatus: Event<IDshHostStatus> = this._onDidChangeStatus.event;
+
+	/**
+	 * ★ 2026-10-20：新起的 Host 的 mux 升级路由**第一次可用**（见 `probeMuxRouteOnce`）。
+	 * 渠道层据此通知页面：dsh 连接还在退避时立刻 `reconnect()`，不必再等剩下的 4/8 s 档。
+	 */
+	private readonly _onMuxReady = this._register(new Emitter<{ readonly afterReadyMs: number; readonly probes: number; readonly status: number }>());
+	readonly onMuxReady: Event<{ readonly afterReadyMs: number; readonly probes: number; readonly status: number }> = this._onMuxReady.event;
 
 	private _status: IDshHostStatus = { state: 'stopped', bridge: 'none' };
 	private _child: ChildProcess | undefined;
@@ -797,6 +873,10 @@ export class DshHostSupervisor extends Disposable {
 				// 与前两个同一条路（存在才装、装不上不影响启动 ⇒ 只是技能库里少一个 archify ✓）。
 				// 装的是**本地暂存目录**（零网络）⇒ 首启只多一次暂存拷贝，不像 npm 那条要等 30s+ ✓。
 				[DSH_ARCHIFY_PLUGIN_NAME, this._opts.archifyPluginDir, 'archify skill bundle'],
+				// **ego lite 的接入插件**（`ego_status` / `ego_guide` / `ego_spaces` / `ego_run` + 随包技能）：
+				// 与 archify / browser 同一条"存在才装、装不上不影响启动"的路（本地暂存目录 ⇒ 零网络）。
+				// 它不提供浏览器本体（第三方 app 单独安装）⇒ 缺席只是少一个可选浏览器，不是能力回归。
+				[DSH_EGO_PLUGIN_NAME, this._opts.egoPluginDir, 'ego lite plugin'],
 				// 模块插件（agents / skills / mcp / kb / memory / codebase / kanban / workflow / dashboard / ide）：
 				// **全部随包自动安装**（2026-10-11 用户要求）。清单由 channel 用 `listBundledPlugins` 自发现
 				// （判据 `vssaros.module`，与插件中心「随包」段、容器聚合表同一真源）⇒ 新增模块不必改这里。
@@ -835,6 +915,13 @@ export class DshHostSupervisor extends Disposable {
 			}
 			const pluginProfileDir = this._profileDir(profile, env);
 			const installedVersionOf = (name: string) => this._readPkgVersion(join(pluginProfileDir, 'node_modules', ...name.split('/'), 'package.json'));
+			// ★ 2026-10-21：**版本错配自检**（把"profile 里的插件与随包不同代"从"症状"变成"日志里的一行"）。
+			//   现场（2026-10-21 15:41）：profile 里 @vssaros/dsh-memory 是 0.3.81，而携带**预设**的
+			//   @vssaros/dsh-agents 已是新一代 ⇒ 预设里 memory 那一行挂不起来 ⇒ 报
+			//   `agent-preset/invalid: vssaros-memory (@vssaros/dsh-memory): never started`
+			//   ⇒ **新建会话被直接拒掉**，而日志里**看不出**是"版本没装齐"（只有一行别的插件的 installing ✗✗）。
+			//   ⇒ 这里逐条点名"已装 a / 随包 b"，且**不管它有没有进 wants**（漏装也要看得见 ✓）。
+			this._auditBundledVersions(plugins, pluginProfileDir);
 			if (wants.length) {
 				// 真的执行了安装动作（升级既有 / 补装缺失）⇒ 置标记：下一次 `start()` 不接管旧 Host
 				// （旧进程内存里是旧代码 / 缺这个包，见 `_pluginsStale` 的注释）✓。
@@ -1002,6 +1089,9 @@ export class DshHostSupervisor extends Disposable {
 					this._sandboxProbeLogged = true;   // 只 warn 一次（Host 会被反复重启）
 					this._appendLog(`sandbox unusable on this machine — downgrading dsh sandbox mode to ${SANDBOX_FALLBACK_MODE}: ${sandboxProbe.detail}`);
 				}
+				// ★ 2026-10-19：内置 agent 目录（由 `common/builtinAgents.ts` 这份**代码真源**生成 md 副本）。
+				//   生成失败**不致命**：只是列表里少一档内置 agent，不能因此起不来 Host（方法内自己吞错）。
+				const agentsBuiltinRoot = await this._writeBuiltinAgentsDir(options.agentsBuiltinSrc?.trim() || undefined);
 				const hostConfig: IDshHostConfig = {
 					...(pipe && token ? {
 						bridge: {
@@ -1017,6 +1107,8 @@ export class DshHostSupervisor extends Disposable {
 					...(workspaceId ? { workspaceId } : {}),
 					...(workspaceRoot ? { workspaceRoot, relatedRoots: options.relatedRoots ?? [] } : {}),
 					...(agentsRoot ? { agentsRoot } : {}),
+				// ★ 内置 agent 目录（启动期由代码真源生成；Host 侧因此能列出内置 agent ✓）
+				...(agentsBuiltinRoot ? { agentsBuiltinRoot } : {}),
 					// A 组缺口（2026-10-12）：这两条过去**根本没有等价配置键** ⇒ 用户在 IDE 里改了知识库存储根 /
 					// unreal bridge 地址，dsh 侧照旧读默认值（前者表现为"资料库/画布空着但不报错" ✗）。
 					...(options.kbRoot?.trim() ? { kbRoot: options.kbRoot.trim() } : {}),
@@ -1173,6 +1265,8 @@ export class DshHostSupervisor extends Disposable {
 				? `（spawn→首行输出=${connection.timing.spawnToFirstOutputMs}ms，首行→ready=${connection.timing.firstOutputToReadyMs}ms）`
 				: '';
 			this._appendLog(`ready in ${Date.now() - t0} ms at ${connection.origin} (bridge: ${connection.hello ? 'connected' : 'fallback'})${bootSplit}`);
+				// ★ 2026-10-20：量「ready → mux 路由可用」这段（不阻塞 start 返回）。
+				void this._probeMuxAfterReady(connection.origin, generation);
 				// 新起的 Host 读的就是磁盘当前代码 ⇒ 标记使命完成 ✓。
 				// ⚠ 只能清在**这里**（真的 spawn 成功之后）：2026-10-12 实测把它清在"进 lock 之前"时，
 				// 并发的第二次 start 会把标记读成 false ⇒ 又去接管旧进程 ✗（日志：`reusing the Host started by pid 80344`）。
@@ -1359,7 +1453,7 @@ export class DshHostSupervisor extends Disposable {
 		this._ownershipHeartbeat = setInterval(() => {
 			void fsp.utimes(file, new Date(), new Date()).catch(() => undefined);
 		}, HOST_RUN_OWNERSHIP_HEARTBEAT_MS);
-		this._ownershipHeartbeat.unref?.();
+		(this._ownershipHeartbeat as { unref?: () => void } | undefined)?.unref?.();
 	}
 
 	private _stopOwnershipHeartbeat(): void {
@@ -1635,6 +1729,31 @@ export class DshHostSupervisor extends Disposable {
 		return { name, dir: dir!, label, bundled, installed, fingerprint: this._entryFingerprint(dir!) };
 	}
 
+	/**
+	 * 逐条比对「profile 已装版本」与「随包版本」，不一致就**点名**记进日志（★ 2026-10-21）。
+	 *
+	 * 为什么要有（现场：2026-10-21 15:41 用户"新建会话报错"）：
+	 *   profile 里 @vssaros/dsh-memory 停在 0.3.81，而携带**预设**的 @vssaros/dsh-agents 已是新一代
+	 *   ⇒ 预设里 memory 那一行挂不起来 ⇒ dsh 报 `agent-preset/invalid: … never started`
+	 *   ⇒ **新建会话被直接拒掉**；而当时的启动日志里只有**别的**插件的 installing 行
+	 *   ⇒ 排查时完全看不出"profile 里的插件与随包不同代"这层原因 ✗✗。
+	 *
+	 * 判定与文案都在**纯函数**里（`common/dshPluginVersionAudit.ts`）⇒ 这里只做 I/O（读版本）+ 写日志 ✓
+	 *   （口径有单测守着：`test/common/dshPluginVersionAudit.test.ts` ✓）。
+	 */
+	private _auditBundledVersions(plugins: readonly (readonly [string, string | undefined, string])[], pluginProfileDir: string): void {
+		const entries = plugins.map(([name, dir, label]) => ({
+			name,
+			label,
+			installed: this._readPkgVersion(join(pluginProfileDir, 'node_modules', ...name.split('/'), 'package.json')),
+			bundled: dir ? this._readPkgVersion(join(dir, 'package.json')) : undefined,
+		}));
+		const text = renderBundledVersionAudit(auditBundledPluginVersions(entries));
+		if (text) {
+			this._appendLog(text);
+		}
+	}
+
 	/** 把一个随产品分发的插件装进 profile（版本相同则跳过）；装不上时返回已装版本并记日志。 */
 	private async _ensurePlugin(name: string, dir: string | undefined, node: IResolvedNode, dsh: IResolvedDsh, profile: string, env: NodeJS.ProcessEnv, label: string, skipUpgrade = false): Promise<string | undefined> {
 		const installed = this._readPkgVersion(join(this._profileDir(profile, env), 'node_modules', ...name.split('/'), 'package.json'));
@@ -1693,6 +1812,31 @@ export class DshHostSupervisor extends Disposable {
 		return after;
 	}
 
+	/**
+	 * Host ready 之后每 200 ms 探一次 mux 路由，第一次可用就记一行日志并发 `onMuxReady`。
+	 * 最多探 60 s；期间 Host 换代 / 停止就放弃。只加日志 + 一个事件，不改启动流程。
+	 *
+	 * 日志口径：`mux route available +N ms after Host ready`。N≈0 说明 ready 那一刻路由就已经在了，
+	 * 也就是说页面的重连阶梯**不是**"路由未注册"导致的，要换方向查。
+	 */
+	private async _probeMuxAfterReady(origin: string, generation: number): Promise<void> {
+		const t0 = Date.now();
+		for (let i = 1; Date.now() - t0 < 60_000; i++) {
+			if (generation !== this._generation || this._status.state !== 'running') {
+				return;
+			}
+			const status = await probeMuxRouteOnce(origin, 1500);
+			if (status !== undefined) {
+				const after = Date.now() - t0;
+				this._appendLog(`mux route available +${after} ms after Host ready（probe #${i}，HTTP ${status}）${i === 1 ? ' —— ready 时已可用：页面重连阶梯不是路由未注册导致' : ''}`);
+				this._onMuxReady.fire({ afterReadyMs: after, probes: i, status });
+				return;
+			}
+			await new Promise(r => setTimeout(r, 200));
+		}
+		this._appendLog('mux route still unavailable 60 s after Host ready（页面实时事件只能靠退避重试）');
+	}
+
 	private _awaitReady(child: ChildProcess, generation: number, pipe: string | undefined, token: string | undefined, hostLogFile?: string): Promise<IDshHostConnection & { hello?: IBridgeHello; timing?: IDshHostBootTiming }> {
 		return new Promise((resolve, reject) => {
 			// ★ 启动分段计时（2026-10-15 "首启慢"排查）：`ready in X ms` 是总账，看不出慢在
@@ -1746,7 +1890,15 @@ export class DshHostSupervisor extends Disposable {
 						if (!firstOutputAt) {
 							firstOutputAt = Date.now();
 						}
-						this._appendLog(redactSecrets(line));
+						const safe = redactSecrets(line);
+						this._appendLog(safe);
+						// ★★ 2026-10-19（用户要求：dsh 的日志也要写到 IDE 侧，方便一处定位）：
+						//   Host 的输出此前**只**落在 `<runDir>/host-<id>.log`（keepAlive 模式下 stdout 直连文件，
+						//   根本不走管道）⇒ 排查时要在 IDE 日志和 dsh-run 之间两头翻 ✗。
+						//   这里把**同一行**（已脱敏）镜像进 IDE 日志，带 `[dsh-host]` 前缀便于过滤 ✓。
+						//   ⚠ 两种模式都经过 `onData`（keepAlive 是每 400ms 轮询文件增量、否则是 pipe）⇒ 只改这一处即全覆盖 ✓。
+						//   ⚠ 必须复用脱敏后的文本：Host 的启动日志里可能带一次性 token（`parseAuthUrl` 就是在找它）。
+						this._opts.log(`[dsh-host] ${safe}`);
 					}
 				}
 				if (urlFromLog) {
@@ -1926,6 +2078,56 @@ export class DshHostSupervisor extends Disposable {
 	 * 文件不存在＝没有 MCP（不是错误，静默返回）；解析不了的服务器**逐条记日志**——跳过原因必须可见，
 	 * 否则现象是"某个 MCP 服务器莫名没挂上"，最难查。
 	 */
+	/**
+	 * 把**内置 agent** 从代码真源生成成一份 md 副本，供 dsh 的 agents 模块扫描（返回目录绝对路径）。
+	 *
+	 * ★ 为什么必须"复制/生成一份文件"：dsh Host 是**独立进程**，读不到产品源码 ⇒ 要让 Host 列出
+	 *   内置 agent，只能把内容**交付**出去。首选是**原样复制**真源目录
+	 *   （`resources/.agents/agents/<id>/.agent.md` —— 真源是文件，见 `builtinAgentSingleSource.test.ts`）；
+	 *   真源拿不到时才回退"用代码镜像序列化"（那份必须与真源一致，由一致性用例守着 ✓）。
+	 *   这与 skills 把 `resources/.agents/skills` 的绝对路径交给 Host（`bundledSkillDir`）
+	 *   是同一类道理：**产品侧的东西，用绝对路径交付给读不到源码的进程**。
+	 *
+	 * ⚠ 真源只有一个（`common/builtinAgents.ts`）—— 这里是**产物交付**，不是第二个真源；
+	 *   放在 runDir ⇒ 与覆盖层同生命周期（Host 停止时一并清理 ⇒ 不会留下陈旧副本 ✗）。
+	 * ⚠ 失败**不致命**：拿不到内置 agent 只是"列表少一档" ⇒ 吞错并返回 undefined，不挡启动。
+	 */
+	private async _writeBuiltinAgentsDir(srcDir?: string): Promise<string | undefined> {
+		try {
+			const dir = join(this._opts.runDir, 'agents-builtin');
+			await fsp.mkdir(dir, { recursive: true });
+			let written = 0;
+			// ① 首选：**从真源目录原样复制** ⇒ 交付副本与 `resources/.agents/agents/` **逐字节相同** ✓
+			//    （不会因为"代码镜像没同步"而把旧内容喂给 dsh ✗ —— 那正是这次要堵的洞）。
+			if (srcDir) {
+				for (const e of await fsp.readdir(srcDir, { withFileTypes: true })) {
+					if (!e.isDirectory()) { continue; }
+					const file = join(srcDir, e.name, '.agent.md');
+					if (!existsSync(file)) { continue; }
+					await fsp.mkdir(join(dir, e.name), { recursive: true });
+					await fsp.copyFile(file, join(dir, e.name, '.agent.md'));
+					written++;
+				}
+			}
+			// ② 回退：真源目录拿不到 ⇒ 用代码里的镜像生成（它必须与真源一致，由
+			//    `builtinAgentSingleSource.test.ts` 的一致性用例守着 ✓）。
+			if (written === 0) {
+				for (const agent of getBuiltinAgents()) {
+					if (!agent.id) { continue; }
+					await fsp.mkdir(join(dir, agent.id), { recursive: true });
+					await fsp.writeFile(join(dir, agent.id, '.agent.md'), buildAgentMd(agent), { mode: 0o600 });
+					written++;
+				}
+			}
+			if (written === 0) { return undefined; }
+			this._appendLog(`agents overlay: builtin dir with ${written} agent(s) → ${dir}`);
+			return dir;
+		} catch (e) {
+			this._appendLog(`agents overlay: builtin dir unavailable（${String((e as Error)?.message ?? e)}）— 只列自定义 agent`);
+			return undefined;
+		}
+	}
+
 	private async _writeMcpOverlay(configPath: string, profileManifest: string): Promise<string | undefined> {
 		// ★ 2026-10-12：MCP 的"配置 → 组合行"已归 dsh 侧（`dsh-plugins/vssaros-mcp/bin/sync-rows.mjs`，
 		// 用官方 `dsh plugin add` 登记成 profile 的一个 bundle 层）。**登记过就必须让路** —— 两条路不能并存：
