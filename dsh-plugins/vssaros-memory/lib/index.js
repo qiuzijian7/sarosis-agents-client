@@ -1384,6 +1384,21 @@ async function loadDetailModel({ config, params, state }) {
 	if (model.view === 'audit') {
 		model.auditSummary = (await call('getAuditSummary')) ?? {};
 		try { model.auditLog = rowsOf(await providerCall(base, 'getAuditLog', [{ limit: 200 }])); } catch { model.auditLog = []; }
+		// ★ 2026-10-21：审计的**单一真源**是**落盘账本**（`<数据根>/memory-audit/audit.jsonl`，
+		//   由本插件写入）⇒ 引擎自带的 AuditLog 只是**进程内内存态**（重启即失、也没人调 record）
+		//   ⇒ 只读它 ⇒ 审计页**永远是 0**（真库 `mem:audit:*` 也是 0 条）✗✗。
+		//   ⇒ 这里读账本（页面直调，形状 = `{ limit }`）⇒ 页面与 IDE 侧看到**同一份**审计 ✓
+		try {
+			const ledger = rowsOf(await providerCall(base, 'getAuditLedger', [{ limit: 200 }]));
+			if (ledger.length) {
+				const seen = new Set((model.auditLog ?? []).map(r => String(r?.id ?? '')));
+				model.auditLog = [...ledger.filter(r => !seen.has(String(r?.id ?? ''))), ...(model.auditLog ?? [])];
+				model.auditSummary = {
+					...(model.auditSummary ?? {}),
+					totalAuditEntries: (Number(model.auditSummary?.totalAuditEntries) || 0) + ledger.length,
+				};
+			}
+		} catch { /* 账本读不到就只用内存审计 ✓ */ }
 	}
 	// ⚠⚠ 下面这三页用的方法**全部**首参都不是 agentId ✗ ⇒ 必须**页面直调**，逐个写清形状：
 	//   ⇒ 它们也正是**因此**被刻意排除在 `MEMORY_API_READONLY` 之外（塞进 `memory_api` 会被自动前置

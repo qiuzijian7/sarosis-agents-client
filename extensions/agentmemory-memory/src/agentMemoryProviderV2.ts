@@ -128,6 +128,25 @@ function _skillsDir(): string {
  *   `getAllWorkingMemory(...): Array<{ key: string; value: string }> { return []; }` 会被
  *   `\([^)]*\)[^;{]*\{` 这种模式**漏掉** ✗（第一版扫描就是这么漏的 ✓）。
  */
+/**
+ * 把**账本行**归一成与引擎审计条目一致的展示字段（★ 2026-10-21）。
+ *
+ * 为什么需要：账本（dsh 记忆插件写的 JSONL）与引擎内存审计的**字段名不同**
+ * —— 账本用 `ts` / `action` / `tool`，引擎用 `timestamp` / `operation` / `type`。
+ * ⇒ 两侧页面（IDE 面板 + dsh 插件页）都按引擎那套渲染 ⇒ 不归一就会显示成 "unknown / 空时间" ✗。
+ * ⇒ 归一放在**引擎这一侧**（单一入口）⇒ 两个消费者都拿到可直接渲染的行 ✓。
+ * ⚠ 原始字段**保留**（不丢信息：JSON 明细里仍能看到 ts/action/tool）。
+ */
+function normalizeAuditRow(row: Record<string, unknown>): Record<string, unknown> {
+	return {
+		...row,
+		operation: row['operation'] ?? row['action'] ?? 'unknown',
+		timestamp: row['timestamp'] ?? row['ts'] ?? 0,
+		type: row['type'] ?? row['tool'] ?? undefined,
+		agentId: row['agentId'] ?? row['sessionId'] ?? '',
+	};
+}
+
 export class AgentMemoryProviderV2 {
 	readonly id = 'agentmemory';
 	readonly name = 'AgentMemory';
@@ -1015,6 +1034,51 @@ export class AgentMemoryProviderV2 {
 			// 回退：至少返回基础统计
 			const stats = await this.getStats(agentId);
 			return { type, agentId, timestamp: new Date().toISOString(), ...stats };
+		}
+	}
+
+	/**
+	 * 审计**账本**（落盘 JSONL）—— 这才是审计的**单一真源**（★ 2026-10-21）。
+	 * ## 为什么需要它（面板审计页长期空白的真因）
+	 * 引擎自带的 `AuditLog` 是**纯内存**（`AuditEntry[]`）⇒ 进程重启即失 ⇒
+	 * 而真正在记审计的是 **dsh 侧记忆插件**，它把账本写在
+	 * `<IDE 数据根>/memory-audit/audit.jsonl`（用户 2026-10-12 拍板的位置）。
+	 * ⇒ 两边**数据源不同** ⇒ 面板的审计页读引擎内存审计 ⇒ **永远是 0**（实测 `mem:audit:*` 也 0 条）✗✗
+	 *
+	 * ## 账本路径怎么定位
+	 * 优先 `VSSAROS_DATA_ROOT`（显式注入的数据根）；否则用 `dirname(AGENTMEMORY_DATA_DIR)`
+	 * —— 网关的 `AGENTMEMORY_DATA_DIR` 是 `<IDE 数据根>/.agentmemory` ⇒ 它的**父目录就是数据根** ✓
+	 * （dev = `~/.vssaros-dev`，生产 = `~/.vssaros`）⇒ 与插件的 `dataRootOf(config)` 同一处 ✓。
+	 */
+	private _auditLedgerPath(): string | undefined {
+		const explicit = readEnv('VSSAROS_DATA_ROOT');
+		const dataDir = readEnv('AGENTMEMORY_DATA_DIR');
+		const root = explicit ?? (dataDir ? _path.dirname(dataDir) : undefined);
+		if (!root) { return undefined; }
+		return _path.join(root, 'memory-audit', 'audit.jsonl');
+	}
+
+	/**
+	 * 读审计账本（尾部 N 行，最新在前；坏行跳过）。
+	 * 失败一律返回空数组 —— **审计读不到不该影响主流程**（与账本写入侧同纪律 ✓）。
+	 */
+	async getAuditLedger(options?: { limit?: number }): Promise<Array<Record<string, unknown>>> {
+		const file = this._auditLedgerPath();
+		if (!file) { return []; }
+		try {
+			const text = await _fs.readFile(file, 'utf8');
+			const lines = text.split('\n').filter(l => l.trim().length > 0);
+			const limit = Math.max(1, Math.min(options?.limit ?? 200, 5000));
+			const out: Array<Record<string, unknown>> = [];
+			for (const line of lines.slice(-limit)) {
+				try {
+					const row = JSON.parse(line);
+					if (row && typeof row === 'object') { out.push(normalizeAuditRow(row as Record<string, unknown>)); }
+				} catch { /* 坏行跳过（账本可能被外部编辑过）✓ */ }
+			}
+			return out.reverse();   // 最新在前（与引擎内存审计的顺序一致 ✓）
+		} catch {
+			return [];
 		}
 	}
 

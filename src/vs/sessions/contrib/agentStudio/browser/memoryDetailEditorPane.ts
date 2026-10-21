@@ -1145,33 +1145,58 @@ export class MemoryDetailEditorPane extends EditorPane {
 		const toolbar = append(this._container, $('.md-toolbar'));
 		this._addToolbarBtn(toolbar, '🔄 刷新', 'primary', () => this._renderFull());
 
-		if (!memProvider?.getAuditLog) {
+		if (!memProvider?.getAuditLog && !memProvider?.getAuditLedger) {
 			this._renderEmpty('当前记忆服务不支持审计 API');
 			return;
 		}
+
+		// ★ 2026-10-21：审计的**单一真源**是**落盘账本**（`<数据根>/memory-audit/audit.jsonl`，
+		//   由 dsh 侧记忆插件写）⇒ 引擎自带的 AuditLog 只是**进程内内存态**（重启即失、也没人调 record）
+		//   ⇒ 只读它 ⇒ 审计页**永远是 0**（实测 `mem:audit:*` 也是 0 条）✗✗。
+		//   ⇒ 这里读账本，并与引擎内存审计**合并**（前者是历史，后者是本次进程的即时记录）✓
+		const ledgerRows: Array<Record<string, unknown>> = [];
+		try {
+			const led = await memProvider.getAuditLedger?.({ limit: 200 });
+			if (Array.isArray(led)) { ledgerRows.push(...led); }
+		} catch { /* 账本读不到就只用内存审计 ✓ */ }
 
 		// Audit summary（Opt1 异步转发到网关）
 		try {
 			let summary = memProvider.getAuditSummary?.();
 			if (summary instanceof Promise) { summary = await summary; }
-			if (summary && Object.keys(summary).length > 0) {
+			// 账本条数并进汇总（否则"总审计条目"永远是 0，与下面的列表自相矛盾 ✗）
+			const merged: Record<string, number> = { ...(summary ?? {}) } as Record<string, number>;
+			if (ledgerRows.length) {
+				merged.totalAuditEntries = (Number(merged.totalAuditEntries) || 0) + ledgerRows.length;
+			}
+			if (Object.keys(merged).length > 0) {
 				const summaryDiv = append(this._container, $('.md-stats'));
 				summaryDiv.style.padding = '8px 20px';
-				for (const [key, value] of Object.entries(summary)) {
+				for (const [key, value] of Object.entries(merged)) {
 					this._addStat(summaryDiv, key, value, '');
 				}
 			}
 		} catch { /* best effort */ }
 
 		try {
-			let log = memProvider.getAuditLog({ limit: 200 });
+			let log = memProvider.getAuditLog?.({ limit: 200 }) ?? [];
 			if (log instanceof Promise) { log = await log; }
-			if (!log || log.length === 0) {
-				this._renderEmpty('暂无审计日志');
+			const memRows = (Array.isArray(log) ? log : []) as Array<Record<string, unknown>>;
+			// 账本在前（更新的在前），内存记录补在后面 ⇒ 去重按 id
+			const seen = new Set<string>();
+			const all: Array<Record<string, unknown>> = [];
+			for (const row of [...ledgerRows, ...memRows]) {
+				const id = String(row['id'] ?? '');
+				if (id && seen.has(id)) { continue; }
+				if (id) { seen.add(id); }
+				all.push(row);
+			}
+			if (all.length === 0) {
+				this._renderEmpty('暂无审计日志（账本：<数据根>/memory-audit/audit.jsonl）');
 				return;
 			}
 			const list = append(this._container, $('.md-list'));
-			for (const entry of log) {
+			for (const entry of all) {
 				const card = append(list, $('.md-card'));
 				const cardHeader = append(card, $('.md-card-header'));
 				const op = String(entry['operation'] ?? 'unknown');

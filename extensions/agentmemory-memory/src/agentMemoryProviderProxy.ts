@@ -522,6 +522,12 @@ export class AgentMemoryProviderProxy {
 	getAuditSummary(): Promise<Record<string, number>> {
 		return this._call('getAuditSummary').then((r: any) => r ?? { totalAuditEntries: 0 });
 	}
+	// ★ 2026-10-21：审计**账本**（落盘 JSONL）—— 审计的单一真源。
+	//   引擎自带的 AuditLog 是纯内存（进程重启即失）⇒ 面板审计页长期空白；
+	//   真正在记审计的是 dsh 侧记忆插件（`<数据根>/memory-audit/audit.jsonl`）⇒ 这里转发它。
+	getAuditLedger(options?: { limit?: number }): Promise<Array<Record<string, unknown>>> {
+		return this._call('getAuditLedger', options).then((r: any) => r ?? []);
+	}
 	// ─── 技能方法（真实引擎在网关进程，统一异步转发）────
 	// agentId 为首参，对齐 host.mjs 的 /provider 路由约定（首参即 agentId）。
 	async getSkillStats(agentId: string): Promise<{ totalSkills: number; avgConfidence: number; avgSteps: number; totalUsage: number; writtenCount: number }> {
