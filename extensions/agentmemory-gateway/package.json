@@ -2,7 +2,7 @@
 	"name": "agentmemory-gateway",
 	"displayName": "AgentMemory Gateway",
 	"description": "agentmemory 内嵌网关：主进程启动 agentmemory server (port 3111)，提供 BM25+Vector+Graph 混合搜索 + 4 层记忆固化。",
-	"version": "0.0.4",
+	"version": "0.0.5",
 	"publisher": "saros",
 	"license": "MIT",
 	"main": "./out/extension.js",

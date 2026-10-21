@@ -42,6 +42,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
+import { createRequire } from 'node:module';
 import {
 	INDEX_CACHE_VERSION,
 	BM25_CACHE_FILE,
@@ -445,6 +446,45 @@ function settlePending(agentId, handled) {
 	if (set.size === 0) { _pendingModelVectorIds.delete(agentId); }
 }
 
+/**
+ * ★ 2026-10-21：给**引擎的 ESM 产物**注入同步 `require`。
+ *
+ * 为什么需要：引擎的 `cjkSegmenter.ts` 用 `globalThis.require` 加载原生模块（@node-rs/jieba），
+ * 而引擎编译产物是 **ESM**（`out/package.json {"type":"module"}`）⇒ ESM 里没有 require ⇒
+ * 那条分支**恒不成立** ⇒ 中文永远降级 bigram（**依赖装了也不生效**的哑巴失败，最难查）。
+ *
+ * 为什么以**引擎目录**为基准：`require('@node-rs/jieba')` 要在
+ * `extensions/agentmemory-memory/node_modules` 里解析到；宿主自己所在目录（agentmemory-gateway/host）
+ * 沿父目录找不到它 ✗ ⇒ createRequire 的基准必须是引擎的 package.json。
+ *
+ * 降级语义：注入失败不报错 ⇒ 引擎照旧走 bigram（检索仍可用，只是分词粗）✓。
+ */
+function installEngineRequireShim() {
+	if (typeof globalThis.require === 'function') { return; } // 已有（CJS 宿主）
+	try {
+		const enginePkg = path.join(AM_EXT_ROOT, 'package.json');
+		const base = fs.existsSync(enginePkg) ? enginePkg : path.join(AM_EXT_ROOT, 'index.js');
+		globalThis.require = createRequire(base);
+	} catch (err) {
+		emit('warn', `${TAG} engine require shim failed（中文分词将降级 bigram）: ${err instanceof Error ? err.message : String(err)}`);
+	}
+}
+
+/**
+ * 中文分词器的真实状态（★ 2026-10-21）：只**探测能否解析**，不实例化（不吃内存）。
+ * 供启动日志与探针断言用 —— "jieba 不可用"必须在日志里看得见，而不是靠检索质量反推。
+ */
+function jiebaAvailable() {
+	try {
+		const req = globalThis.require;
+		if (typeof req !== 'function') { return false; }
+		req.resolve('@node-rs/jieba');
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 async function resolveBm25Module() {
 	const extRoot = process.env['AGENTMEMORY_EXT_ROOT'];
 	const candidates = [
@@ -461,7 +501,13 @@ async function resolveBm25Module() {
 			// Windows 上动态 import 必须使用 file:// URL（裸绝对路径会报错）。
 			const mod = await import(pathToFileURL(c).href);
 			const Ctor = mod.BM25Index || (mod.default && mod.default.BM25Index);
-			if (Ctor) { emit('log', `${TAG} BM25 module loaded: ${c}`); return Ctor; }
+			if (Ctor) {
+				emit('log', `${TAG} BM25 module loaded: ${c}`);
+				// ★ 2026-10-21：中文分词的**真实状态**必须进日志 —— "jieba 没生效"唯一的症状是
+				//   检索质量差（哑巴失败），没有这行就永远查不出来。
+				emit('log', `${TAG} 中文分词：${jiebaAvailable() ? 'jieba（@node-rs/jieba 可用）' : 'bigram（jieba 不可用 ⇒ 中文按二元组切）'}`);
+				return Ctor;
+			}
 		} catch (err) {
 			emit('warn', `${TAG} BM25 load failed (${c}): ${err instanceof Error ? err.message : String(err)}`);
 		}
@@ -1675,6 +1721,9 @@ async function main() {
 	// extension's compiled output) and rebuild the in-process index from KV.
 	// ⚠ 必须在**构造索引之前**注入：`bm25Index` 在构造时读一次 env（`AGENTMEMORY_BM25_MAX_DOCS`）。
 	setupMemoryCaps();
+	// ★ 2026-10-21：先注入引擎的 require 垫片，再加载引擎模块 —— 否则引擎（ESM）永远加载不到
+	//   原生的 @node-rs/jieba ⇒ 中文分词恒降级 bigram（详见 installEngineRequireShim 的注释）。
+	installEngineRequireShim();
 	BM25Ctor = await resolveBm25Module();
 	installFileFetchShim(); // P0-1：@xenova 的 web 构建用 fetch 读本地模型文件（Node 不支持 file://）
 	setupEmbeddingPaths();  // P0-1：注入 modelDir / wasmDir（扩展侧只读 env）

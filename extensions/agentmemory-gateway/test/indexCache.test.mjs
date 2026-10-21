@@ -39,7 +39,11 @@ test('fingerprintEqual：三项全同才相等', () => {
 
 test('validateCache：版本 / 结构 / 指纹三道闸', () => {
 	assert.equal(validateCache(null, FP).ok, false, 'null 制品必须判不可用');
-	assert.equal(validateCache({}, FP).reason, 'version mismatch (cache=undefined, code=1)');
+	// 期望串里的 code 用**常量**拼（版本会随"制品语义变化"升：v1→v2 = 中文分词 bigram→jieba，
+	// 旧制品的词条全变而指纹不变 ⇒ 必须靠版本作废，见 indexCache.mjs 的 INDEX_CACHE_VERSION 注释）。
+	// 但**版本号本身**要钉死一个下界（防止"忘了升版本"这类静默失效被放过）。
+	assert.ok(INDEX_CACHE_VERSION >= 2, `制品版本必须 ≥2（v2 = 中文分词换成 jieba，旧制品作废），实际 ${INDEX_CACHE_VERSION}`);
+	assert.equal(validateCache({}, FP).reason, `version mismatch (cache=undefined, code=${INDEX_CACHE_VERSION})`);
 	assert.equal(validateCache({ version: 99, agents: {}, fingerprint: FP }, FP).ok, false, '版本不符');
 	assert.equal(validateCache({ version: INDEX_CACHE_VERSION, fingerprint: FP }, FP).reason, 'no agents section');
 	assert.equal(validateCache({ version: INDEX_CACHE_VERSION, agents: {}, fingerprint: { ...FP, rows: 1 } }, FP).ok, false, '指纹不符');

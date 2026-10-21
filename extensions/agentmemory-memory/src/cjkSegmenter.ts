@@ -193,6 +193,19 @@ export function segmentCjk(text: string): string[] {
 }
 
 /**
+ * jieba 是否真的可用（★ 2026-10-21 新增出口）。
+ *
+ * 为什么要有这个出口：引擎的编译产物是 **ESM**（`out/package.json {"type":"module"}`）⇒ ESM 里
+ * 没有 `require` ⇒ 上面 `getJieba()` 那条原生模块分支**恒不成立** ⇒ 中文**永远**降级 bigram。
+ * 这种"依赖装了却永远不生效"的哑巴失败最难查（症状只是检索质量差）。
+ * 宿主（网关）注入**以引擎目录为基准**的 `createRequire` 后，这里才可能为 true ⇒
+ * 宿主用它打一行日志/自检，测试用它断言"真在用 jieba 而不是 bigram" ✓。
+ */
+export function jiebaAvailable(): boolean {
+	return getJieba() !== null;
+}
+
+/**
  * Reset state (for testing)
  */
 export function __resetCjkSegmenterStateForTests(): void {

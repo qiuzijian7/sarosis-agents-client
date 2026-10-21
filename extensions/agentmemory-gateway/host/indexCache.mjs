@@ -27,7 +27,15 @@ import * as zlib from 'node:zlib';
 import { decodeBm25Cache, encodeBm25Cache, isBm25Binary } from './bm25CacheBinary.mjs';
 import { decodeVectorCache, encodeVectorCache, isVectorBinary } from './vectorCacheBinary.mjs';
 
-export const INDEX_CACHE_VERSION = 1;
+/**
+ * 制品版本。
+ * ★ 2026-10-21：1 → 2（中文分词从 bigram 换成 jieba）。
+ *   为什么必须升：制品的**新鲜度**判据是 KV 指纹（rows/maxUpdatedAt/sumLen）——
+ *   分词器换了但**库一行没变** ⇒ 指纹一模一样 ⇒ 旧制品（bigram 词条）会被当成新鲜的继续用 ✗
+ *   （症状：索引里全是二元组词条，检索质量差，而且**永远不会自愈**）。
+ *   升级 ⇒ 旧制品作废 ⇒ 一次性重建（BM25 ~2.5s + 向量重建）。
+ */
+export const INDEX_CACHE_VERSION = 2;
 /** 旧 BM25 制品（JSON + gzip）。2026-10-21 起只读不写：新制品不存在时作为回退来源。 */
 export const BM25_CACHE_FILE = 'bm25-cache.json.gz';
 /** 新 BM25 制品（二进制，见 ./bm25CacheBinary.mjs）。 */
