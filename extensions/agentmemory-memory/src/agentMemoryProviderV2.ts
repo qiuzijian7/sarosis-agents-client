@@ -800,6 +800,13 @@ export class AgentMemoryProviderV2 {
 	// ─── Health / Circuit ──────────────────────────────────────────────
 
 	getHealthStatus(): Record<string, unknown> {
+		// ★ 2026-10-21：宿主模式（网关进程内**直跑**引擎）下**没有"远端 server"**这回事
+		//   ⇒ `_serverAvailable`（HTTP 模式的可达标志）**恒 false** ⇒ 恒报 `degraded` ✗✗
+		//   ⇒ 面板的降级告警会**一直亮** ⇒ 告警恒亮 = 告警失效（用户开始忽略一切告警）✗
+		//   ⇒ 宿主模式如实报健康（引擎就在进程内，取数路径就是本进程）✓
+		if (this._hosted) {
+			return { serverAvailable: true, status: 'healthy', mode: 'hosted' };
+		}
 		return { serverAvailable: this._serverAvailable, status: this._serverAvailable ? 'healthy' : 'degraded' };
 	}
 	getCircuitStates(): Record<string, unknown> { return {}; }

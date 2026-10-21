@@ -122,6 +122,11 @@ suite('记忆详情面板 · 跨分区读取', () => {
 		const body = methodBody('_renderHealthBanner');
 		assert.ok(body.includes('getHealthStatus'), '横幅要读 getHealthStatus');
 		assert.ok(body.includes('degraded'), '要识别 degraded 状态');
+		// ★ 2026-10-21：判据必须覆盖**代理**语义（healthy/unknown/offline + gatewayUp），
+		//   且**不能**用 `serverAvailable === false` 作为降级依据（网关侧的 provider 在宿主模式下
+		//   旧实现恒 false ⇒ 告警永远亮 ⇒ 告警失效）⇒ 只认 status/gatewayUp ⇒
+		assert.ok(body.includes("'offline'"), '要认代理语义的 offline（网关真不可达）');
+		assert.ok(!/const degraded = [^;]*serverAvailable/.test(body), '判降级的那一行不得含 serverAvailable（网关侧恒 false ⇒ 告警永亮）');
 	});
 
 	test('⑦ 反向突变：把扇出改回单分区 ⇒ 必须变红（这就是"全空又回来了"）', () => {

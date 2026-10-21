@@ -513,7 +513,7 @@ export class MemoryDetailEditorPane extends EditorPane {
 		const health = memProvider?.getHealthStatus?.();
 		if (!health || typeof health !== 'object') { return; }
 		const st = health as { status?: string; serverAvailable?: boolean; gatewayUp?: boolean; baseUrl?: string };
-		const degraded = st.status === 'degraded' || st.serverAvailable === false || st.gatewayUp === false;
+		const degraded = st.status === 'degraded' || st.status === 'offline' || st.gatewayUp === false;
 		if (!degraded) { return; }
 		const banner = append(this._container!, $('.md-card'));
 		banner.style.margin = '0 20px 8px';
@@ -524,7 +524,7 @@ export class MemoryDetailEditorPane extends EditorPane {
 		banner.style.fontSize = '11px';
 		banner.style.color = '#f0a04b';
 		banner.textContent = `⚠ 记忆服务降级中（status=${String(st.status ?? 'unknown')}`
-			+ (st.serverAvailable === false ? ' · 服务端不可达' : '')
+			+ (st.status === 'offline' ? ' · 网关不可达' : (st.status === 'degraded' ? ' · 服务降级' : ''))
 			+ (st.baseUrl ? ` · ${st.baseUrl}` : '')
 			+ ' ⇒ 下面的数据可能不完整（取数走的是降级路径）';
 	}
