@@ -1,6 +1,6 @@
 {
   "name": "vssaros",
-  "version": "2.2.26064",
+  "version": "2.2.26065",
   "distro": "adf5d4ef5d36b1829d04e2a6f5255c5344cb0316",
   "author": {
     "name": "Microsoft Corporation"
@@ -15,7 +15,7 @@
     "test-browser": "npx playwright install && node test/unit/browser/index.js",
     "test-browser-no-install": "node test/unit/browser/index.js",
     "test-node": "mocha test/unit/node/index.js --delay --ui=tdd --timeout=5000 --exit",
-    "check:dsh-plugins": "node dsh-plugins/check-host-config.mjs && node dsh-plugins/check-plugin-files.mjs && node dsh-plugins/check-chat-surface-chunks.mjs && node dsh-plugins/check-persistence-catalog.mjs && node dsh-plugins/check-migration-ledger.mjs && node dsh-plugins/check-legacy-freeze.mjs && node dsh-plugins/check-spawn-hide.mjs && node dsh-plugins/check-agent-tools.mjs && node dsh-plugins/vssaros-pele/test/run-pele-check.mjs",
+    "check:dsh-plugins": "node dsh-plugins/check-host-config.mjs && node dsh-plugins/check-plugin-files.mjs && node dsh-plugins/check-tool-definitions.mjs && node dsh-plugins/check-chat-surface-chunks.mjs && node dsh-plugins/check-persistence-catalog.mjs && node dsh-plugins/check-migration-ledger.mjs && node dsh-plugins/check-legacy-freeze.mjs && node dsh-plugins/check-spawn-hide.mjs && node dsh-plugins/check-agent-tools.mjs && node dsh-plugins/vssaros-pele/test/run-pele-check.mjs",
     "test:dsh-composition": "node dsh-plugins/test-real-composition.mjs",
     "p3:agents": "node poc/dsh-p0/scripts/run-all.mjs --group agents",
     "p3:quick": "node poc/dsh-p0/scripts/run-all.mjs --group agents --skip-browser",
@@ -30,6 +30,8 @@
     "ab:dsh-session": "node scripts/dsh-session-ab.mjs",
     "codebase:handover": "node scripts/dsh-codebase-handover.mjs",
     "codebase:watch-metrics": "node scripts/dsh-codebase-watch-metrics.mjs",
+    "codebase:watch-save": "node scripts/dsh-codebase-watch-metrics.mjs --save doc/codebase-watch-baseline.json",
+    "codebase:watch-compare": "node scripts/dsh-codebase-watch-metrics.mjs --compare doc/codebase-watch-baseline.json",
     "compile-agent-studio": "npm run gulp compile-all-agent-studio",
     "build-kbblocks": "npm run gulp build-agent-studio-kbblocks",
     "smoke-agent-layout": "node scripts/agent-layout-smoke.mjs",

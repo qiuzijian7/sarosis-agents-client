@@ -66,26 +66,45 @@ function git(gitArgs, opts = {}) {
  * HTTP via curl.exe. Returns { status, data }.
  * Exactly one of json / formFile / uploadFile may be set.
  */
-function curl(method, url, { headers = {}, json, formFile, uploadFile, timeoutSec = 600 } = {}) {
-	const a = ['-sS', '-X', method,
-		'--connect-timeout', '30', '--max-time', String(timeoutSec),
-		'-H', 'Expect:', '-w', '\n%{http_code}'];
-	for (const [k, v] of Object.entries(headers)) { a.push('-H', `${k}: ${v}`); }
+function curl(method, url, { headers = {}, json, formFile, uploadFile, timeoutSec = 600, fallbackBearer = false } = {}) {
+	/** 构造 curl 参数（★ 把"参数拼装"抽出来，重试时才能用**不同的头**重建一份）。 */
+	const buildArgs = (hdrs) => {
+		const a = ['-sS', '-X', method,
+			'--connect-timeout', '30', '--max-time', String(timeoutSec),
+			'-H', 'Expect:', '-w', '\n%{http_code}'];
+		for (const [k, v] of Object.entries(hdrs)) { a.push('-H', `${k}: ${v}`); }
+		if (json !== undefined) {
+			// ★★ 2026-10-21 **关键修复**：请求体必须真的送到 API。
+			//   旧写法 `--data-binary @C:\Users\...\file.json`（**反斜杠**）⇒ Windows 上的 curl.exe
+			//   **读不到这个文件** ⇒ 发出去的是**空 body** ⇒ 工蜂按"没给内容"处理：
+			//   · `PUT /releases/<tag>` 照样 200，但**建出残桩**（描述 = tag message、无资产）；
+			//   · `POST /releases` 400「for ''tag'' not given」。
+			//   而这两处失败都只 warn/被兜底 ⇒ **一个月里每次"发布"都是残桩，流水线还报 success**
+			//   （2026-09-21 起连续验证：v2.2.26045 / v2.2.26062 的描述都只有一行、无任何下载链接）。
+			//   修法：路径**统一转成前斜杠**（实测这样 body 就能送达 ⇒ desc_len 从 0 变 316 ✓）。
+			const bodyPath = tmpFile.replace(/\\/g, '/');
+			a.push('-H', 'Content-Type: application/json; charset=utf-8', '--data-binary', `@${bodyPath}`);
+		} else if (formFile) {
+			// ★ 2026-10-21：**同一个反斜杠坑**（EXE 上传走的就是这条）——`-F file=@C:\...`
+			//   在 Windows 上 curl.exe 读不到文件 ⇒ 上传体是空的 ⇒ GitLab 收不到 EXE ⇒
+			//   一个月里"发布"从头到尾**没有任何可下载的安装包**。同样转前斜杠 ✓。
+			const formPath = String(formFile.path).replace(/\\/g, '/');
+			a.push('-F', `file=@${formPath};type=application/octet-stream;filename=${formFile.name}`);
+		} else if (uploadFile) {
+			a.push('-H', 'Content-Type: application/octet-stream', '--upload-file', uploadFile);
+		}
+		a.push(url);
+		return a;
+	};
 
 	let tmpFile = null;
 	if (json !== undefined) {
 		tmpFile = path.join(os.tmpdir(), `saros-release-${process.pid}-${Date.now()}.json`);
 		fs.writeFileSync(tmpFile, JSON.stringify(json), 'utf8');
-		a.push('-H', 'Content-Type: application/json; charset=utf-8', '--data-binary', `@${tmpFile}`);
-	} else if (formFile) {
-		a.push('-F', `file=@${formFile.path};type=application/octet-stream;filename=${formFile.name}`);
-	} else if (uploadFile) {
-		a.push('-H', 'Content-Type: application/octet-stream', '--upload-file', uploadFile);
 	}
-	a.push(url);
 
-	try {
-		const out = execFileSync('curl.exe', a, {
+	const run = (args) => {
+		const out = execFileSync('curl.exe', args, {
 			encoding: 'utf8', timeout: (timeoutSec + 60) * 1000, maxBuffer: 32 * 1024 * 1024,
 		});
 		const idx = out.lastIndexOf('\n');
@@ -94,13 +113,94 @@ function curl(method, url, { headers = {}, json, formFile, uploadFile, timeoutSe
 		let data;
 		try { data = JSON.parse(body); } catch { data = body; }
 		return { status, data };
+	};
+
+	try {
+		const first = run(buildArgs(headers));
+		// ★ 2026-10-21：工蜂的令牌有两种形态 —— 私人令牌走 `PRIVATE-TOKEN`，OAuth/Bearer 令牌走
+		//   `Authorization: Bearer`（同一个令牌用错头就是 401）。CI 的 WOA_GITLAB_TOKEN 是前者，
+		//   而 `git credential fill` 拿到的可能是后者 ⇒ **401 时换头重试一次**（否则本地永远跑不通）。
+		if (first.status === 401 && fallbackBearer) {
+			const token = headers['PRIVATE-TOKEN'];
+			if (token) {
+				const retryHeaders = { ...headers };
+				delete retryHeaders['PRIVATE-TOKEN'];
+				retryHeaders['Authorization'] = `Bearer ${token}`;
+				const second = run(buildArgs(retryHeaders));
+				return second.status === 401 ? first : { ...second, retriedWithBearer: true };
+			}
+		}
+		return first;
 	} finally {
 		if (tmpFile) { try { fs.unlinkSync(tmpFile); } catch { /* ignore */ } }
 	}
 }
 
+/**
+ * 发布/更新一个 release（★ 2026-10-21 重写）。
+ *
+ * 三个坑（都实测过）：
+ *  ① **先看存不存在**（`GET /releases/<tag>` 按 tag 查是支持的）——
+ *     盲 `PUT /releases/<tag>` 在工蜂上会**创建**一个残桩（描述 = tag message、无资产）且返回 200 ✗。
+ *  ② 更新时**先按 tag PUT**（工蜂：按 id PUT 会 404「Release(x) not found」），
+ *     404/405 时再**按 id PUT**（官方 GitLab 语义：`:release_id` 必须是数字 id）。
+ *  ③ **新建**用 `POST` 且 body 里**同时带 `tag` 与 `tag_name`**
+ *     （工蜂认 `tag`；只带官方的 `tag_name` ⇒ 400「for ''tag'' not given」）。
+ * 最后必须**回读校验**（verifyRelease）——残桩发布过一个月没人发现，就是因为没人回读。
+ */
+function upsertGitlabRelease(projectId, tag, name, desc, headers) {
+	const existing = releaseIdOf(projectId, tag, headers);
+	if (existing) {
+		let r = curl('PUT', `${GITLAB_API}/projects/${projectId}/releases/${encodeURIComponent(tag)}`,
+			{ headers, fallbackBearer: true, json: { name, description: desc } });
+		if (r.status === 404 || r.status === 405) {
+			r = curl('PUT', `${GITLAB_API}/projects/${projectId}/releases/${existing}`,
+				{ headers, fallbackBearer: true, json: { name, description: desc } });
+		}
+		return r;
+	}
+	return curl('POST', `${GITLAB_API}/projects/${projectId}/releases`,
+		{ headers, fallbackBearer: true, json: { tag, tag_name: tag, name, description: desc } });
+}
+
 function brief(data) {
 	return (typeof data === 'string' ? data : JSON.stringify(data)).slice(0, 200);
+}
+
+/**
+ * 按 **tag** 查 release 的数字 id（★ 2026-10-21）。
+ *
+ * 为什么要它：GitLab 的 `PUT/POST .../releases/:release_id` 只认**数字 id**，
+ * 而 `GET .../releases/:tag_name` **可以按 tag 查**（返回体带 `id`）⇒
+ * 「先按 tag 拿 id、再按 id 改」是唯一能改到已有 release 的路。
+ * 旧实现直接把 tag 当 id 用 ⇒ 永远 404 ⇒ 建出残桩且流水线照样绿。
+ */
+function releaseIdOf(projectId, tag, headers) {
+	const r = curl('GET', `${GITLAB_API}/projects/${projectId}/releases/${encodeURIComponent(tag)}`, { headers, fallbackBearer: true });
+	if (r.status === 200 && r.data && Number.isFinite(Number(r.data.id))) { return Number(r.data.id); }
+	return null;
+}
+
+/**
+ * 发布后**回读校验**（★ 2026-10-21）：残桩即失败。
+ * 判据：描述长度达标（不是 tag message 那一行）+ 资产链接数达标。
+ * 为什么要：残桩发布过去**一个多月没人发现**（流水线一直 success，用户拿不到包）——
+ * 失败必须"响"，不能只在日志里 warn。
+ */
+function verifyRelease(projectId, tag, headers, { minDescLen = 200, minLinks = 0 } = {}) {
+	const r = curl('GET', `${GITLAB_API}/projects/${projectId}/releases/${encodeURIComponent(tag)}`, { headers, fallbackBearer: true });
+	if (r.status !== 200 || !r.data) {
+		throw new Error(`release verification failed: GET release ${tag} -> ${r.status}: ${brief(r.data)}`);
+	}
+	const desc = String(r.data.description || '');
+	const links = ((r.data.assets || {}).links) || [];
+	if (desc.length < minDescLen) {
+		throw new Error(`release verification failed: ${tag} 描述只有 ${desc.length} 字符（期望 ≥${minDescLen}）⇒ 残桩（多半是 tag message）`);
+	}
+	if (links.length < minLinks) {
+		throw new Error(`release verification failed: ${tag} 资产链接 ${links.length} 条（期望 ≥${minLinks}）⇒ EXE 没挂上`);
+	}
+	log(`release verified: ${tag} desc=${desc.length} chars, links=${links.length}`);
 }
 
 // ---------- tokens ----------
@@ -127,12 +227,34 @@ function resolveVersion(args) {
 	return product.version;
 }
 
+/** 上一个版本 tag（版本号降序里的**下一个**）；没有则 null。 */
+function previousTagOf(tag) {
+	try {
+		const out = execFileSync('git', ['tag', '--sort=-v:refname'], { cwd: REPO_ROOT, encoding: 'utf8' })
+			.trim().split('\n').map(s => s.trim()).filter(Boolean);
+		const i = out.indexOf(tag);
+		return (i >= 0 && i + 1 < out.length) ? out[i + 1] : null;
+	} catch {
+		return null;
+	}
+}
+
 function buildChangelog(tag) {
 	const outFile = path.join(REPO_ROOT, '.build', `release-notes-${tag}.md`);
-	execFileSync(process.execPath, [
+	const base = [
 		path.join(REPO_ROOT, 'build', 'saros', 'gen-changelog.cjs'),
 		'--repo', REPO_ROOT, '--out', outFile,
-	], { stdio: 'inherit' });
+	];
+	// ★ 2026-10-21：changelog 的区间必须是「**上一个 tag → 这个 tag**」——
+	//   新发布时 tag 还不存在 ⇒ 走默认（最新 tag..HEAD ✓，CI 的正常路径）；
+	//   补发/重跑已有 tag 时 ⇒ 显式给 `--from 上一个tag --to 这个tag`，
+	//   否则默认的 from=最新tag(=它自己) ⇒ 区间为空（0 条提交）✗。
+	const prev = previousTagOf(tag);
+	if (prev) {
+		execFileSync(process.execPath, [...base, '--from', prev, '--to', tag], { stdio: 'inherit' });
+	} else {
+		execFileSync(process.execPath, base, { stdio: 'inherit' });
+	}
 	return fs.readFileSync(outFile, 'utf8');
 }
 
@@ -172,7 +294,7 @@ async function gitlabCreateRelease(tag, changelog, dryRun) {
 	} else {
 		const r = curl('POST',
 			`${GITLAB_API}/projects/${GITLAB_PROJECT}/repository/tags?tag_name=${encodeURIComponent(tag)}&ref=main&message=${encodeURIComponent(`VsSarosis ${tag}`)}`,
-			{ headers: glHeaders });
+			{ headers: glHeaders, fallbackBearer: true });
 		if (r.status === 201) { log(`GitLab tag ${tag} created`); }
 		else if (r.status === 400 || r.status === 409) { log(`GitLab tag ${tag} already exists`); }
 		else { warn(`GitLab create tag -> ${r.status}: ${brief(r.data)}`); }
@@ -187,7 +309,7 @@ async function gitlabCreateRelease(tag, changelog, dryRun) {
 		const name = path.basename(exe.rel);
 		if (dryRun) { log(`[dry-run] would upload ${name} (${sizeMB} MiB) to GitLab uploads`); continue; }
 		const r = curl('POST', `${GITLAB_API}/projects/${GITLAB_PROJECT}/uploads`,
-			{ headers: glHeaders, formFile: { path: abs, name }, timeoutSec: 900 });
+			{ headers: glHeaders, fallbackBearer: true, formFile: { path: abs, name }, timeoutSec: 900 });
 		if (r.status === 201 && r.data && r.data.url) {
 			const full = String(r.data.url).startsWith('http') ? r.data.url : `${GITLAB_WEB}${r.data.url}`;
 			downloads.push({ kind: exe.kind, name, url: full, sizeMB });
@@ -222,18 +344,21 @@ async function gitlabCreateRelease(tag, changelog, dryRun) {
 	].join('\n');
 
 	// 4. create or update release
+	// ★ 2026-10-21 修（发布残桩的根因）：**`:release_id` 必须是数字 id，不是 tag** ——
+	//   旧实现 `PUT /releases/<tag>` 永远 404 ⇒ 落到 POST 兜底 ⇒ 建出来的是**残桩**
+	//   （description = tag message、无资产），而失败只 warn ⇒ **流水线照样报 success**。
+	//   实测：2026-09-21 起的"发布"全是这种残桩（描述只有一行、没有任何下载链接 ⇒ 用户下载不到包）。
+	//   修法：先用 `GET /releases/<tag>`（**按 tag 查是支持的**）拿到数字 id，再按 id PUT/挂链接；
+	//   最后**回读校验**（描述非空 + 资产链接数达标）⇒ 残桩即抛错（流水线红，别再假装发布成功）。
 	if (dryRun) { log(`[dry-run] would PUT/POST GitLab release ${tag} (desc ${desc.length} chars)`); return []; }
-	let r = curl('PUT', `${GITLAB_API}/projects/${GITLAB_PROJECT}/releases/${encodeURIComponent(tag)}`,
-		{ headers: glHeaders, json: { name: `VsSarosis ${tag}`, description: desc } });
-	if (r.status === 404 || r.status === 405) {
-		r = curl('POST', `${GITLAB_API}/projects/${GITLAB_PROJECT}/releases`,
-			{ headers: glHeaders, json: { tag_name: tag, name: `VsSarosis ${tag}`, description: desc } });
-	}
+	const r = upsertGitlabRelease(GITLAB_PROJECT, tag, `VsSaros ${tag}`, desc, glHeaders);
 	if (r.status >= 200 && r.status < 300) {
 		log(`GitLab release: ${GITLAB_WEB}/${GITLAB_PROJECT_PATH}/-/releases/${tag}`);
 	} else {
 		throw new Error(`GitLab release failed -> ${r.status}: ${brief(r.data)}`);
 	}
+	// 回读校验：残桩（描述没落上 / 资产没挂上）必须失败，不能"发布成功但用户下载不到"
+	verifyRelease(GITLAB_PROJECT, tag, glHeaders, { minDescLen: 200, minLinks: downloads.length });
 	return downloads;
 }
 
@@ -251,7 +376,7 @@ async function gitlabCreateMainRepoRelease(tag, changelog, downloads, dryRun) {
 	} else {
 		const r = curl('POST',
 			`${GITLAB_API}/projects/${GITLAB_MAIN_PROJECT}/repository/tags?tag_name=${encodeURIComponent(tag)}&ref=main&message=${encodeURIComponent(`VsSaros ${tag}`)}`,
-			{ headers: glHeaders });
+			{ headers: glHeaders, fallbackBearer: true });
 		if (r.status === 201) { log(`main-repo tag ${tag} created via API`); }
 		else if (r.status === 400 || r.status === 409) { log(`main-repo tag ${tag} already exists`); }
 		else { warn(`main-repo create tag -> ${r.status}: ${brief(r.data)}`); }
@@ -275,31 +400,38 @@ async function gitlabCreateMainRepoRelease(tag, changelog, downloads, dryRun) {
 		`> 安装包托管于 [vssarosis_issue Releases](${issueRel})（避免主仓库膨胀）；本 Release 资产区附同名直链。`,
 	].join('\n');
 
-	// 3. create or update release
+	// 3. create or update release（★ 2026-10-21：按**数字 id** 改，见 releaseIdOf 的注释）
 	if (dryRun) { log(`[dry-run] would PUT/POST main-repo release ${tag} (desc ${desc.length} chars, ${downloads.length} asset links)`); return; }
-	let r = curl('PUT', `${GITLAB_API}/projects/${GITLAB_MAIN_PROJECT}/releases/${encodeURIComponent(tag)}`,
-		{ headers: glHeaders, json: { name: `VsSaros ${tag}`, description: desc } });
-	if (r.status === 404 || r.status === 405) {
-		r = curl('POST', `${GITLAB_API}/projects/${GITLAB_MAIN_PROJECT}/releases`,
-			{ headers: glHeaders, json: { tag_name: tag, name: `VsSaros ${tag}`, description: desc } });
-	}
+	const r = upsertGitlabRelease(GITLAB_MAIN_PROJECT, tag, `VsSaros ${tag}`, desc, glHeaders);
 	if (!(r.status >= 200 && r.status < 300)) {
 		throw new Error(`main-repo release failed -> ${r.status}: ${brief(r.data)}`);
 	}
 	log(`main-repo release: ${GITLAB_WEB}/${GITLAB_MAIN_PROJECT_PATH}/-/releases/${tag}`);
 
 	// 4. attach EXE 直链 as release asset links（幂等：先查重）
-	const existing = curl('GET', `${GITLAB_API}/projects/${GITLAB_MAIN_PROJECT}/releases/${encodeURIComponent(tag)}/assets/links`,
-		{ headers: glHeaders });
+	//    ★ 2026-10-21：asset links 的 `:release_id` 同样只认**数字 id**（旧代码用 tag ⇒ 永远 404
+	//    ⇒ EXE 直链从来没挂上 ⇒ 用户点开 Release 找不到包）。
+	const mainReleaseId = releaseIdOf(GITLAB_MAIN_PROJECT, tag, glHeaders);
+	if (!mainReleaseId) { throw new Error(`main-repo release id not found for ${tag} (cannot attach asset links)`); }
+	const existing = curl('GET', `${GITLAB_API}/projects/${GITLAB_MAIN_PROJECT}/releases/${mainReleaseId}/assets/links`,
+		{ headers: glHeaders, fallbackBearer: true });
 	const existingNames = new Set(
 		existing.status === 200 && Array.isArray(existing.data) ? existing.data.map((l) => l.name) : []);
 	for (const d of downloads) {
 		if (existingNames.has(d.name)) { log(`asset link exists: ${d.name}`); continue; }
-		const lr = curl('POST', `${GITLAB_API}/projects/${GITLAB_MAIN_PROJECT}/releases/${encodeURIComponent(tag)}/assets/links`,
-			{ headers: glHeaders, json: { name: d.name, url: d.url, link_type: 'other' } });
+		// ★ 2026-10-21：工蜂的 assets/links 端点**按 tag 也能用**（按 id 在工蜂上 404）⇒
+		//   先试 id，404/405 再试 tag（两边都试，缺哪边补哪边）。
+		let lr = curl('POST', `${GITLAB_API}/projects/${GITLAB_MAIN_PROJECT}/releases/${mainReleaseId}/assets/links`,
+			{ headers: glHeaders, fallbackBearer: true, json: { name: d.name, url: d.url, link_type: 'other' } });
+		if (lr.status === 404 || lr.status === 405) {
+			lr = curl('POST', `${GITLAB_API}/projects/${GITLAB_MAIN_PROJECT}/releases/${encodeURIComponent(tag)}/assets/links`,
+				{ headers: glHeaders, fallbackBearer: true, json: { name: d.name, url: d.url, link_type: 'other' } });
+		}
 		if (lr.status === 201) { log(`asset link added: ${d.name}`); }
 		else { warn(`asset link ${d.name} -> ${lr.status}: ${brief(lr.data)}`); }
 	}
+	// 回读校验（★ 2026-10-21）：描述与直链都必须真的落上，否则这次"发布"等于没发。
+	verifyRelease(GITLAB_MAIN_PROJECT, tag, glHeaders, { minDescLen: 200, minLinks: downloads.length });
 }
 
 // ---------- GitHub (mirror) ----------
