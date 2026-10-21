@@ -42,6 +42,13 @@ stages:
         name: 拉取源码
         with:
           refName: main
+      # ★ 2026-10-21：对齐工作区（蓝盾会**复用**工作区 ⇒ 残留的旧文件/旧产物会被带进这次构建
+      #   ⇒ 出现过"CI 跑的不是最新代码"的疑云）⇒ 拉全 tag + 硬对齐 + 清掉未跟踪文件 ✓
+      - name: 对齐工作区（拉 tag + 清理残留）
+        with:
+          charsetType: UTF_8
+        run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/align-workspace.ps1'
+        shell: powershell
       - name: 设置版本号
         id: ZXb4BJ
         with:
@@ -124,3 +131,14 @@ stages:
         shell: powershell
 concurrency: {}
 syntax-dialect: INHERIT
+
+
+      # ---------- 8. 回读核验：残桩不许"成功"溜过去 ----------
+      # 过去一个月每个版本的 release 都是残桩（描述 19 字符 = tag message、无安装包直链），
+      # 而流水线**一直是绿的** ⇒ 没人发现 ⇒ 直到用户去下载才发现没有包 ✗✗
+      # ⇒ 这里回读两个仓库的 release：描述 ≥200 字符 + 资产链接里有安装包 ⇒ 否则**流水线红** ✓
+      - name: 核验 Release（描述≥200字符 + 有安装包直链）
+        with:
+          charsetType: UTF_8
+        run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/verify-release.ps1'
+        shell: powershell
