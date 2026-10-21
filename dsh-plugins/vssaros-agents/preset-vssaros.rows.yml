@@ -16,14 +16,26 @@
             name: '@vssaros/dsh-kanban'
           - id: vssaros-kb
             name: '@vssaros/dsh-kb'
+          # memory（2026-10-20）：与 agents 同一条半边口径 —— `toolsOnly: true` ⇒ preset 内这次只注册工具。
+          # 不加的实测后果（`memory-audit/audit.jsonl`）：`agent/turn-stopping` 被挂两个监听 ⇒
+          # **每回合 distill 跑两遍**（审计成对：`ws-<workspaceId>` + `default`），
+          # 且 `systemPrompt.section` 也注册两次（同一段记忆进两遍提示词）。页面/路由重复由 dsh 按路径覆盖 ⇒ 无害。
           - id: vssaros-memory
             name: '@vssaros/dsh-memory'
+            config:
+              toolsOnly: true
           - id: vssaros-media
             name: '@vssaros/dsh-media'
           - id: vssaros-workflow
             name: '@vssaros/dsh-workflow'
           - id: vssaros-codebase
             name: '@vssaros/dsh-codebase'
+          # pele（2026-10-20 补）：**纯工具插件**（`view.kind: none`，无页面无图标）⇒ 与
+          # web-content-import 同档：preset 里必须有它，否则 `render_diagram` 一族在会话里看不见 ✗。
+          # （工具面快照里的 `@vssaros/dsh-pele` 一直没进 rows ⇒ `dshPresetPlane` 的"行名单 == 快照模块"
+          #  断言一直是红的 ✓ 这次一并修正。唯一**有意**的例外只剩 `@vssaros/dsh-sessions`，见守卫里的豁免表。）
+          - id: vssaros-pele
+            name: '@vssaros/dsh-pele'
           - id: vssaros-dashboard
             name: '@vssaros/dsh-dashboard'
           - id: vssaros-ide
@@ -34,13 +46,55 @@
             name: '@vssaros/dsh-agents'
             config:
               toolsOnly: true
+              # ── 工具面预算（0 档收敛，2026-10-20）──────────────────────────────────
+              # 真机量化：一次请求直发 197 个工具 ≈ 42.3k schema token，其中 `mcp__comfy-mcp__*`
+              # 39 个占 15.5k（36.6%），默认会话几乎不用 ⇒ 只对**模型可见性**做隐藏
+              # （`ctx.tools.restrict({deny})`：MCP 照连、工具照注册、审批照旧，只是不进目录）。
+              # 语法：精确名 或 `前缀*`；写错/没命中会打 Host 日志（`[vssaros-agents] denyTools …`）。
+              # 要恢复：删掉这两行（或按需加 `mcp__comfy-mcp__generate_image` 之类的白名单式精确名）。
+              denyTools:
+                - 'mcp__comfy-mcp__*'
+                # ── 记忆工具面收拢（23 → 4，2026-10-21）────────────────────────────
+                # 量化：memory 的 23 个工具 = 4367 schema token（占 42.3k 的 10.3%），
+                #   而模型真正会用的只有「写(remember) / 取(recall) / 搜(search) / 通用只读(api)」。
+                # 只对**模型可见性**做隐藏（`ctx.tools.restrict({deny})`）：工具**照注册**、
+                #   审批闸照旧、页面与桥照旧 —— 隐藏的只是"模型目录里看不见"（用户仍能在页面里用）。
+                # ⚠ `memory_api` 是**只读**通用入口（覆盖 28 个已确证的只读方法）⇒ 读类能力
+                #   并没有丢；写类（forget/import/skill/slot/lesson/work/routine/improve/facet/
+                #   governance/team/mesh/sentinel/cascade/crystal）默认不进模型目录，
+                #   需要时按精确名删掉对应行即可恢复。
+                - 'memory_list'
+                - 'memory_stats'
+                - 'memory_refresh'
+                - 'memory_forget'
+                - 'memory_obsidian_export'
+                - 'memory_cascade'
+                - 'memory_crystal'
+                - 'memory_routine'
+                - 'memory_improve'
+                - 'memory_facet'
+                - 'memory_governance'
+                - 'memory_team'
+                - 'memory_mesh'
+                - 'memory_sentinel'
+                - 'memory_slot'
+                - 'memory_lesson'
+                - 'memory_work'
+                - 'memory_import'
+                - 'memory_skill'
           # web-content-import（2026-10-15 新增模块）：按 URL 抓平台文章/视频内容（HTTP+reader /
           # yt-dlp+字幕/ASR），可写进知识库 库/raw/。纯工具、无页面 ⇒ 与 host 面双挂载只多一份
           # 工具注册（dsh 的工具重复注册是幂等顶掉 ✓）；本插件**没有模块级状态** ⇒ 不串话 ✓。
           - id: vssaros-web-content-import
             name: '@vssaros/dsh-web-content-import'
-          - id: vssaros-sessions
-            name: '@vssaros/dsh-sessions'
+          #   pele / web-content-import 同档：它注册了给模型用的工具，就必须在 preset 里挂上，
+          #   否则"preset 行名单 == 工具面快照里注册工具的模块"这条守卫会一直红（工具面 = 期望集合 ✓）。
+          # ★ 2026-10-19：**不再在 preset 内挂 `@vssaros/dsh-sessions`**。
+          #   它有**页面 + 路由**（不像 web-content-import 是纯工具），而 host 层已经插过同一 id
+          #   ⇒ 同一组合里两处同 id ⇒ preset 那次"从未启动"（真机日志：
+          #   `agent-preset/invalid: vssaros-sessions (@vssaros/dsh-sessions): never started`
+          #   ⇒ `session create failed` ⇒ 会话打不开、状态条卡「正在打开会话…」）。
+          #   工具（`session_search`）由 host 层注册，全局可见 ⇒ 这里不需要再挂 ✓
           - id: vssaros-mcp
             name: '@vssaros/dsh-mcp'
           # ★ 官方 `working_directory` 工具（2026-10-19 用户报 `unknown tool "working_directory"`）：
