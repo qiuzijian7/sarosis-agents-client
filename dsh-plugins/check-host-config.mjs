@@ -22,6 +22,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
 const PLUGINS_DIR = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'));
@@ -30,6 +31,15 @@ const DSH_HOME_DEFAULT = path.join(os.homedir(), '.dsh');
 const TMP_CONFIG = path.join(os.tmpdir(), 'vssaros-cfgcheck-config');
 const TMP_ENV = path.join(os.tmpdir(), 'vssaros-cfgcheck-env');
 const TMP_DSH = path.join(os.tmpdir(), 'vssaros-cfgcheck-dsh');
+
+// ★ 2026-10-21：守卫必须**与环境解耦**。
+//   codebase 的 `workspaceRootOf` 除了 config 与运行期上下文，还会兜底读 **IDE 写的 overlay**
+//   （`<数据根>/dsh-run/codebase-*.yml`，2026-10-20 为修「多根工作区只返回一个目录」加的）。
+//   本机装了 IDE ⇒ 那个 overlay **真的存在** ⇒ 「没配 ⇒ null（不猜）」这条断言会随环境时红时绿 ✗。
+//   处置：整个守卫期间把 VSSAROS_DATA_ROOT 指向一个**空目录**（overlay 必然读不到 ⇒ 断言确定），
+//   overlay 本身的正向行为另用**子进程**单独断（模块级缓存记的是第一次结果，同进程断不了两种状态）。
+const EMPTY_DATA_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'vssaros-cfgcheck-emptyroot-'));
+process.env.VSSAROS_DATA_ROOT = EMPTY_DATA_ROOT;
 
 /** 受检面：每项写清"这个函数自己的契约"。 */
 const TARGETS = [
@@ -312,6 +322,42 @@ for (const target of TARGETS) {
 	}
 }
 
+// ─── A2. codebase 的 overlay 兜底（**单独子进程**）────────────────────────────
+//  2026-10-20：codebase 的 `workspaceRootOf` 除了 config 与运行期上下文，还会兜底读
+//  **IDE 写的 overlay**（`<数据根>/dsh-run/codebase-*.yml`）—— 修的是「多根工作区只返回一个目录」。
+//  ⚠ 必须单独进程：`store.js` 把 overlay 结果**模块级缓存**（第一次读到什么就一直是它），
+//  同进程里断不了「有 overlay」与「无 overlay」两种状态 ⇒ 正向行为只能另起进程断。
+{
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vssaros-cfgcheck-overlay-'));
+	const dshRun = path.join(dir, 'dsh-run');
+	fs.mkdirSync(dshRun, { recursive: true });
+	const want = path.join(dir, 'ws-root').replace(/\\/g, '/');
+	fs.writeFileSync(path.join(dshRun, 'codebase-probe.yml'), `workspaceRoot: '${want}'\nrelatedRoots:\n  - '${want}/sub'\n`);
+	const probeFile = path.join(dir, 'probe.mjs');
+	const storeUrl = pathToFileURL(path.join(PLUGINS_DIR, 'vssaros-codebase', 'lib', 'store.js')).href;
+	fs.writeFileSync(probeFile, [
+		`import { workspaceRootOf } from ${JSON.stringify(storeUrl)};`,
+		`process.stdout.write(JSON.stringify(workspaceRootOf({})));`,
+	].join('\n'));
+	const notes = [];
+	let got;
+	try {
+		const out = execFileSync(process.execPath, [probeFile], {
+			env: { ...process.env, VSSAROS_DATA_ROOT: dir },
+			encoding: 'utf8',
+			windowsHide: true,
+		});
+		got = JSON.parse(out);
+	} catch (e) {
+		notes.push(`子进程探针失败：${String(e?.message ?? e)}`);
+	}
+	if (!notes.length && got !== want) {
+		notes.push(`overlay 兜底：期望 ${JSON.stringify(want)}，实际 ${JSON.stringify(got)}（overlay 兜底被删 ⇒ 图谱页空态回归 ✗）`);
+	}
+	results.push({ plugin: 'vssaros-codebase', fn: 'workspaceRootOf(overlay)', notes, contract: 'overlay' });
+	if (notes.length) { violations++; }
+}
+
 // ─── B. 拷贝一致性（报告 R6）────────────────────────────────────────────────
 const walk = (dir, out = []) => {
 	for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -373,6 +419,68 @@ checkSame('写锁 lock.js 委托层（4 份同形）', allJs
 		violations++;
 		console.log(`  ✗  foundationRef.js 份数是 ${entries.length}，应为 ${EXPECTED_FOUNDATIONREF_COPIES}（新消费插件接入时同步这里）`);
 	}
+}
+
+// ── B1. 记忆页「会话」页签的**读分区集合**（2026-10-21，用户拍板"两种分区口径都要显示"）─────
+// 病根：页面只查工作区分区（`wa-*`/`ws-*`），而 dsh 侧的观测/会话实际落在**纯 agent 分区**
+//   ⇒ 真库实测两个 profile 的工作区 scope 都是 0 条、而 `mem:obs:*` 几千条 ⇒ 页面永远"暂无会话记录"。
+// 修法：读分区 = 工作区 + **所有有数据的 agent 分区** ⇒ 合并展示、每条带 `partition`、
+//   观察按**会话自己的分区**查、摘要按 **分区+sessionId** 配对（否则同名会话串）。
+// ⚠ 行为级断言（真渲染一次会话页）+ 源码结构断言（防回退）：探针 p3-89 在 gitignore 里
+//   ⇒ 只有它的话**发布出去的包没有这道守卫** ✗ ⇒ 必须有一道入库的。
+{
+	const memIndexFile = path.join(PLUGINS_DIR, 'vssaros-memory', 'lib', 'index.js');
+	const memDetailFile = path.join(PLUGINS_DIR, 'vssaros-memory', 'lib', 'detail.js');
+	const memIndexSrc = fs.readFileSync(memIndexFile, 'utf8').replace(/\r\n/g, '\n');
+	const memDetailSrc = fs.readFileSync(memDetailFile, 'utf8').replace(/\r\n/g, '\n');
+	const sessNotes = [];
+	const bad = (msg) => sessNotes.push(msg);
+	// ① 取数侧：必须枚举 agent 分区 + 带上分区上限 + 每条带 partition
+	// ⚠ 断言要**精确到调用点**（不能只搜方法名 ⇒ 否则注释里出现那个名字就"通过"了 ✗
+	//   —— 这正是 M1 突变（把调用换成 Promise.resolve([])）一度没变红的原因 ✓）
+	const hasAgentPartitions = /providerCall\(\s*base,\s*'listAllAgentsWithData'/.test(memIndexSrc);
+	if (!hasAgentPartitions) { bad('vssaros-memory/lib/index.js：会话取数没有枚举"有数据的 agent 分区"（listAllAgentsWithData 的 providerCall 调用）⇒ 只查工作区分区 ⇒ agent 分区的会话永远看不见 ✗'); }
+	if (!/allPartitions\.slice\(0,\s*SESSION_PARTITION_LIMIT\)/.test(memIndexSrc)) { bad('vssaros-memory/lib/index.js：会话取数没有按上限截断分区（agent 多了会把页面打爆 ⇒ 整页卡死 ✗）'); }
+	if (!/partition:\s*x\.p/.test(memIndexSrc)) { bad('vssaros-memory/lib/index.js：会话/摘要行没有带上来源分区（partition: x.p）⇒ 前端无法区分同名会话 ✗'); }
+	// ② 观察必须按**会话自己的分区**查（用主分区查必然是空）
+	if (!/observeList',\s*\[p,\s*sid\]/.test(memIndexSrc)) { bad('vssaros-memory/lib/index.js：观察不是按"会话自己的分区"查（observeList 的首参必须是该会话的分区）⇒ 点开永远是空 ✗'); }
+	// ③ 渲染侧：来源分区 chip + 分区+sessionId 配对 + 选中带分区
+	if (!/md-meta-chip session">🗂/.test(memDetailSrc)) { bad('vssaros-memory/lib/detail.js：会话卡没有标注来源分区 ⇒ 用户看不出这条来自工作区还是 agent ✗'); }
+	if (!/sessionKeyOf/.test(memDetailSrc)) { bad('vssaros-memory/lib/detail.js：摘要与会话没有按"分区+sessionId"配对 ⇒ 不同分区的同名会话会串 ✗'); }
+	if (!/params\.get\('partition'\)/.test(memDetailSrc)) { bad('vssaros-memory/lib/detail.js：选中态没有带分区（?partition=）⇒ 同名会话会同时展开多条 ✗'); }
+	// ④ 行为级：真渲染一次（两个分区各一个同名会话）⇒ chip 出现、选中不串
+	try {
+		const detailMod = await import(pathToFileURL(memDetailFile).href);
+		const SESS = [
+			{ id: 'x1', firstPrompt: '工作区会话', observationCount: 5, updatedAt: '2026-10-21T10:00:00.000Z', partition: 'wa-ws1-agent-a' },
+			{ id: 'x1', firstPrompt: 'agent 会话', observationCount: 7, updatedAt: '2026-10-21T09:00:00.000Z', partition: 'saros-claw' },
+		];
+		const SUMS = [
+			{ sessionId: 'x1', partition: 'wa-ws1-agent-a', title: '工作区摘要', observationCount: 5 },
+			{ sessionId: 'x1', partition: 'saros-claw', title: 'agent 摘要', observationCount: 7 },
+		];
+		const mk = (params) => detailMod.renderDetailPage({
+			params: new URLSearchParams(params), agentId: 'wa-ws1-agent-a',
+			items: [], tierCounts: { working: 0, episodic: 0, semantic: 0, procedural: 0 },
+			typeCounts: {}, extStats: {}, agents: [], slotNames: [],
+			sessions: SESS, summaries: SUMS,
+		}).body;
+		const pageA = mk('view=sessions&session=x1&partition=wa-ws1-agent-a');
+		const pageB = mk('view=sessions&session=x1&partition=saros-claw');
+		if (!pageA.includes('wa-ws1-agent-a') || !pageA.includes('saros-claw')) {
+			problems.push('会话页没渲染来源分区 chip ⇒ 用户看不出每条会话来自哪个分区 ✗');
+		}
+		if (!pageA.includes('工作区摘要') || pageA.includes('agent 摘要')) {
+			bad('会话页按分区选中时串了摘要（工作区那条应显示"工作区摘要"）✗');
+		}
+		if (!pageB.includes('agent 摘要') || pageB.includes('工作区摘要')) {
+			bad('会话页按分区选中时串了摘要（agent 那条应显示"agent 摘要"）✗');
+		}
+	} catch (e) {
+		bad(`会话页渲染断言跑不起来：${String(e?.message ?? e)}`);
+	}
+	results.push({ plugin: 'vssaros-memory', fn: 'sessionsView', notes: sessNotes, contract: 'session-partitions' });
+	if (sessNotes.length) { violations++; }
 }
 
 // B2 数据根/首页解析：委托形态必须是"一行转发"；真解析体只允许在 foundation 里。
