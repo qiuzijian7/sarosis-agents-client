@@ -159,8 +159,25 @@ function upsertGitlabRelease(projectId, tag, name, desc, headers) {
 		}
 		return r;
 	}
-	return curl('POST', `${GITLAB_API}/projects/${projectId}/releases`,
-		{ headers, fallbackBearer: true, json: { tag, tag_name: tag, name, description: desc } });
+	// ★★ 2026-10-21 **关键修法**：工蜂的 `POST /releases` 会**忽略 body 里的 description**，
+	//   还会把 body 里的 **`name` 写进 description** ⇒ 建出来的是"描述 = 名称"的**残桩**
+	//   （实测：description 长度恰好 = `VsSaros v2.2.2606x` = 19 字符 ⇒ 与观察到的残桩完全一致 ✗✗）
+	//   ⇒ 而 `PUT /releases/<tag>` 能正确写 description（实测 348 → 313 字符 ✓）
+	//   ⇒ 所以：**建的时候别带 name，建完立刻再 PUT 一次把 description 写进去** ✓
+	//   （不依赖"工蜂行为会不会再变"——事后 PUT + 回读校验 ⇒ 幂等且可验证 ✓）
+	const created = curl('POST', `${GITLAB_API}/projects/${projectId}/releases`,
+		{ headers, fallbackBearer: true, json: { tag, tag_name: tag, description: desc } });
+	if (created.status < 200 || created.status >= 300) {
+		return created;
+	}
+	// 建完补一次 PUT（按 tag，工蜂唯一可用的更新端点 ⇒ 拿数字 id 会 404）
+	const fix = curl('PUT', `${GITLAB_API}/projects/${projectId}/releases/${encodeURIComponent(tag)}`,
+		{ headers, fallbackBearer: true, json: { name, description: desc } });
+	if (fix.status < 200 || fix.status >= 300) {
+		// 补写失败**不**静默：回读校验会因描述过短而抛错 ⇒ 流水线红（别再假装发布成功）
+		warn(`post-create PUT by tag -> ${fix.status}: ${brief(fix.data)}（描述可能没落上，回读校验会报出来）`);
+	}
+	return created;
 }
 
 function brief(data) {
