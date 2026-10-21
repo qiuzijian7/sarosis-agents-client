@@ -511,6 +511,12 @@ async function githubCreateRelease(tag, changelog, dryRun) {
 	const tag = `v${version}`;
 	log(`version=${version} tag=${tag}${args.dryRun ? ' (dry-run)' : ''}`);
 
+	// ★ 2026-10-21：changelog 的区间依赖**历史 tag** ⇒ 先把 tag 拉下来再生成
+	//   （CI 的 checkout 常常是浅克隆 ⇒ 本地 tag 列表是空的 ⇒ 区间会退化成"最近 50 条"，
+	//   或把这个 tag 之后的提交也算进去 ✗）。拉不到也继续（退化路径不致命）。
+	try {
+		git(['fetch', '--tags', 'origin']);
+	} catch { warn('git fetch --tags failed, changelog range may be inaccurate'); }
 	const changelog = buildChangelog(tag);
 	ensureGitTag(tag, args.dryRun);
 
