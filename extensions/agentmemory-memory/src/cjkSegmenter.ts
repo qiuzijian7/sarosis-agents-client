@@ -33,6 +33,36 @@ export function detectScript(text: string): Script {
 	return 'other';
 }
 
+// ─── 引擎自带的同步 require（★ 2026-10-21）────────────────────────────────
+//
+// 为什么需要它：原生模块（`@node-rs/jieba` / `tiny-segmenter`）只能用**同步 require** 装载，
+// 而引擎产物是 **ESM**（`out/package.json {"type":"module"}`）⇒ ESM 里没有 `require`
+// ⇒ 以前只能靠**宿主注入** `globalThis.require`（网关的 `installEngineRequireShim`）
+// ⇒ **凡是不经网关的场景（渲染侧直跑引擎 / 单元测试 / 其它宿主）就恒降级 bigram**
+// ⇒ 典型的"依赖装了也不生效"的**哑巴失败**（唯一症状：中文检索质量差，定位极难）✗✗。
+//
+// ⇒ 这里用 `createRequire(import.meta.url)` **自建**一个：基准 = 引擎产物目录
+//   ⇒ 能解析到 `extensions/agentmemory-memory/node_modules` 里的原生包 ✓（与宿主垫片同效果）。
+// ⚠ 渲染侧/浏览器没有 node 的 `module` ⇒ 必须**动态 import + try/catch**
+//   （静态 import 会让整个模块在浏览器里加载失败 ⇒ 连带其它功能一起挂 ✗）。
+// ⚠ 顶层 await：module=ES2022 支持 TLA ✓；ESM 的 import 本来就是异步的 ⇒ 不改变调用方语义 ✓。
+const injectedRequire = (globalThis as any).require;
+let engineRequire: any = typeof injectedRequire === 'function' ? injectedRequire : null;
+if (!engineRequire) {
+	try {
+		const nodeModule: any = await import('module');
+		engineRequire = nodeModule.createRequire(import.meta.url);
+	} catch {
+		// 浏览器/无 node 的环境 ⇒ 只能降级（调用方会看到 jiebaAvailable()=false ✓ 可观测）
+		engineRequire = null;
+	}
+}
+
+/** 引擎当前用的同步 require（宿主注入优先，其次自建；都没有 ⇒ null ⇒ 降级）。 */
+export function engineRequireFn(): any {
+	return engineRequire ?? ((globalThis as any).require ?? null);
+}
+
 // ─── Jieba loading (best effort, native module may not be available) ────────
 
 interface JiebaInstance {
@@ -47,7 +77,7 @@ function getJieba(): JiebaInstance | null {
 	jiebaLoaded = true;
 	try {
 		// Try to load @node-rs/jieba (native module, only available in Node.js)
-		const req = (globalThis as any).require;
+		const req = engineRequireFn();
 		if (req) {
 			const mod = req('@node-rs/jieba');
 			try {
@@ -76,7 +106,7 @@ function getJaSegmenter(): JaSegmenter | null {
 	if (jaSegmenterLoaded) return jaSegmenterInstance;
 	jaSegmenterLoaded = true;
 	try {
-		const req = (globalThis as any).require;
+		const req = engineRequireFn();
 		if (req) {
 			const Ctor = req('tiny-segmenter');
 			jaSegmenterInstance = new Ctor();

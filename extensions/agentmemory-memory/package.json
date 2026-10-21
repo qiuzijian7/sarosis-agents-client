@@ -2,7 +2,7 @@
 	"name": "agentmemory-memory",
 	"displayName": "AgentMemory",
 	"description": "agentmemory 进程内记忆框架：BM25+Vector+RRF 混合搜索 + Ebbinghaus 衰减 + 隐私过滤。",
-	"version": "0.0.6",
+	"version": "0.0.7",
 	"publisher": "saros",
 	"license": "MIT",
 	"type": "module",

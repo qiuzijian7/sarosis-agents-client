@@ -16,7 +16,7 @@ import assert from 'assert';
 import { createRequire } from 'module';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
-import { segmentCjk, jiebaAvailable, __resetCjkSegmenterStateForTests } from '../src/cjkSegmenter.js';
+import { segmentCjk, jiebaAvailable, engineRequireFn, __resetCjkSegmenterStateForTests } from '../src/cjkSegmenter.js';
 
 /** 引擎自己的 package.json 作基准 —— 依赖装在 extensions/agentmemory-memory/node_modules 下。 */
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -35,18 +35,29 @@ suite('中文分词（jieba）', () => {
 		}
 	});
 
-	test('没有垫片时明确降级 bigram（仍可用，不抛错）', () => {
+	// ★ 2026-10-21：**引擎自建 require**（垫片下沉）⇒ 不再依赖宿主注入。
+	//   背景：原生模块只能用同步 require 装载，而引擎产物是 ESM ⇒ 以前只有"宿主注入
+	//   globalThis.require"一条路 ⇒ **凡是不经网关的场景（渲染侧直跑引擎）恒降级 bigram**
+	//   ⇒ "依赖装了也不生效"的哑巴失败（唯一症状：中文检索质量差）✗✗。
+	//   现在引擎用 createRequire(import.meta.url) 自建 ⇒ 任何场景都能真分词 ✓
+	test('没有宿主垫片时，引擎自建 require ⇒ 仍走 jieba（不再降级 bigram）', () => {
 		const before = (globalThis as any).require;
 		delete (globalThis as any).require;
 		try {
 			__resetCjkSegmenterStateForTests();
 			const tokens = segmentCjk('身份认证');
-			assert.ok(tokens.length > 0, '降级也要能切出词');
-			assert.deepEqual(tokens, ['身份', '份认', '认证', '身份认证'], '无垫片 ⇒ bigram 切法（bigram 还会补一个整串）');
-			assert.equal(jiebaAvailable(), false, 'jiebaAvailable() 必须为 false（这才是"哑巴失败"的可见信号）');
+			assert.deepEqual(tokens, ['身份', '认证'], '引擎自建 require ⇒ 必须仍是真分词（不能降级）');
+			assert.equal(jiebaAvailable(), true, '无宿主垫片时 jiebaAvailable() 也要为 true');
 		} finally {
 			if (before !== undefined) { (globalThis as any).require = before; }
 			__resetCjkSegmenterStateForTests();
 		}
+	});
+
+	test('引擎自建的 require 以引擎目录为基准（能解析到 extensions/agentmemory-memory/node_modules 的原生包）', () => {
+		const req = engineRequireFn();
+		assert.ok(req, '引擎必须有可用的同步 require（宿主注入或自建）');
+		const resolved = req.resolve('@node-rs/jieba');
+		assert.ok(resolved.includes('agentmemory-memory'), `原生包应解析到引擎自己的 node_modules，实际 ${resolved}`);
 	});
 });
