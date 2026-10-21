@@ -37,6 +37,11 @@ export const KV = {
 	snapshots: (agentId: string) => `mem:snapshots:${agentId}`,
 	crystals: (agentId: string) => `mem:crystals:${agentId}`,
 	facets: (agentId: string) => `mem:facets:${agentId}`,
+	// ⚠ `auditLog` 与上面的 `audit` **目前零引用**（审计的真源是**落盘账本**
+	//   `<数据根>/memory-audit/audit.jsonl`，由 dsh 侧记忆插件写；引擎自带的 AuditLog 是
+	//   **纯内存**（进程重启即失）⇒ 两者都**不落这个 scope** ✗）。
+	//   ⇒ 保留定义只为"将来把审计落库"留位；**别把它当成"审计没落库"的证据** ✗✗
+	//   （守卫 `scripts/check-kv-symmetry.mjs` 对它不做"必须有读侧"的要求）。
 	auditLog: (agentId: string) => `mem:audit:${agentId}`,
 	commitLog: (agentId: string) => `mem:commits:${agentId}`,
 	hookLog: (agentId: string) => `mem:hooks:${agentId}`,

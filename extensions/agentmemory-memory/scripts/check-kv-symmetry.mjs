@@ -50,7 +50,15 @@ const CRITICAL_SCOPE_READERS = {
 	procedural: '程序化记忆/技能新口径（写方=provider 的 addSkill，读方=_readSkills）',
 };
 /** 允许"有写无读"的 scope（它们的读者在**引擎之外**：网关/插件/运维脚本）。 */
+/**
+ * **有意不落 scope** 的 scope（它们不是"忘了落库"，而是设计上就不走 KV）。
+ * ⚠ `audit` / `auditLog` 在此列：审计的真源是**落盘账本**（`memory-audit/audit.jsonl`），
+ *   引擎自带的 AuditLog 是**纯内存**（进程重启即失）⇒ 两者都不落 KV scope（当前零引用）✗。
+ *   ⇒ 别把它们当成"审计没落库"的证据，也别要求它们有读侧 ✓。
+ */
 const WRITE_ONLY_ALLOWED = new Set([
+	'audit',       // 审计走落盘账本（见上）
+	'auditLog',    // 同上（与 audit 同一 scope）
 	'config',       // 引擎配置（外部可写、引擎只按需读）
 	'profiles',
 	'state',

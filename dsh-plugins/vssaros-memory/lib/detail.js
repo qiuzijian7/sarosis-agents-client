@@ -450,8 +450,9 @@ function renderAuditView(params, model) {
 	}).join('');
 	return statRow
 		+ '<div class="md-toolbar"><a class="md-btn" href="./detail?' + queryString(params, {}) + '">🔄 刷新</a>'
-		+ '<span class="md-filter-label">只读 · 审计日志由网关侧记录</span></div>'
+		+ '<span class="md-filter-label">只读 · 审计的真源是**落盘账本**（`memory-audit/audit.jsonl`）</span></div>'
 		+ '<div class="md-list">' + (cards || '<div class="md-empty">暂无审计日志</div>') + '</div>'
+		+ '<div class="md-note">⚠ 审计有两来源：**账本**（审批裁决：请求/决定/执行/沉淀，落盘、跨会话可查）与**内存态**（引擎写记忆时的 write/delete，只存于进程内存 ⇒ 重启即丢）。</div>'
 		+ '<div class="md-note">⚠ 这一页的 <code>getAuditSummary</code> / <code>getAuditLog</code> 是**页面直调**的 ✓'
 		+ '（`getAuditLog` 刻意不在工具白名单里 —— 它的首参不是 agentId ⇒ 塞进 `memory_api` 会传错参数 ✗）。</div>';
 }
