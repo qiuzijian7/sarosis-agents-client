@@ -144,9 +144,29 @@ export async function sentinelList(kv: StateKV, agentId: string): Promise<Sentin
 //   pattern:   正则或子串，匹配哨兵创建之后的新记忆内容
 //   schedule:  "24h" / "7d" / ISO 时间字符串，到期触发
 
+/**
+ * 技能数量（★ 2026-10-21）。
+ *
+ * 为什么不能直接 `kv.list(KV.skillStore(agentId)).length`：
+ * 技能在 `mem:skills:<agent>` 里的形态是 **key='data' 的一个 JSON 数组**
+ * ⇒ `list()` 返回的**键**只有 1 个 ⇒ `.length` 恒为 1（少算）✗
+ * ⇒ 这里取 `data` 键的**数组长度**；同时兼容"一条技能一个键"的新口径（`skl-` 前缀）✓。
+ */
+async function skillCountOf(kv: StateKV, agentId: string): Promise<number> {
+	let count = 0;
+	try {
+		const legacy = await kv.get<any>(KV.skillStore(agentId), 'data');
+		if (Array.isArray(legacy)) { count += legacy.length; }
+	} catch { /* 没有旧口径就跳过 ✓ */ }
+	try {
+		const all = await kv.list<any>(KV.procedural(agentId));
+		count += all.filter((r: any) => r && typeof r.id === 'string' && r.id.startsWith('skl')).length;
+	} catch { /* 没有新口径就跳过 ✓ */ }
+	return count;
+}
+
 /** threshold 条件可引用的指标（从 KV 实时计算） */
-async function sentinelMetricValue(kv: StateKV, agentId: string, metric: string): Promise<number | undefined> {
-	switch (metric) {
+async function sentinelMetricValue(kv: StateKV, agentId: string, metric: string): Promise<number | undefined> {	switch (metric) {
 		case 'memory_count':
 		case 'active_memories':
 			return (await kv.list<Memory>(KV.memories(agentId))).filter(m => m.isLatest !== false).length;
@@ -155,7 +175,10 @@ async function sentinelMetricValue(kv: StateKV, agentId: string, metric: string)
 		case 'lesson_count':
 			return (await kv.list(KV.lessons(agentId))).length;
 		case 'skill_count':
-			return (await kv.list(KV.skillStore(agentId))).length;
+			// ★ 2026-10-21：技能在 `mem:skills:<agent>` 里是 **key='data' 的一个数组**
+			//   ⇒ `kv.list(...).length` 数的是**键数**（=1）⇒ 永远少算 ✗
+			//   ⇒ 这里按**数组长度**算（并兼容"一条一个键"的新口径）✓。
+			return await skillCountOf(kv, agentId);
 		case 'session_count':
 			return (await kv.list(KV.sessions(agentId))).length;
 		case 'action_count':

@@ -90,6 +90,20 @@ suite('记忆详情面板 · 跨分区读取', () => {
 		assert.ok(/this\._agentId\} \+ \$\{extra\} 个 agent 分区/.test(src), '标题要写出合并了几个 agent 分区');
 	});
 
+	test('⑥b 技能页也必须跨分区（真库实测：mem:skills:saros-claw / wf-test1 各 1 条，工作区 ws-* 是 0）', () => {
+		const body = methodBody('_renderSkillsView');
+		assert.ok(!/getSkillStats\(this\._agentId\)/.test(body), '技能统计不能再只查当前分区（⇒ "总技能 0"）');
+		assert.ok(!/listSkills\(this\._agentId\)/.test(body), '技能列表不能再只查当前分区（⇒ 技能页恒空）');
+		assert.ok(body.includes('listSkills(aid)'), '必须逐分区 listSkills');
+		assert.ok(body.includes('writeAllSkillFiles(aid)'), '写 SKILL.md 也要逐分区（只写当前分区会漏）');
+		assert.ok(/🗂 \$\{String\(skill\.partition\)\}/.test(src), '技能卡要标来源分区');
+	});
+
+	test('⑥c 导出技能也要跨分区（只导当前分区 ⇒ 漏掉其它分区的技能 ✗）', () => {
+		assert.ok(!/listSkills\(this\._agentId\)/.test(src), '导出不能再只导当前分区');
+		assert.ok(src.includes('listSkills(aid)'), '导出必须逐分区 listSkills');
+	});
+
 	test('⑦ 反向突变：把扇出改回单分区 ⇒ 必须变红（这就是"全空又回来了"）', () => {
 		const mutated = src.replace('memProvider.searchMemory(aid', 'memProvider.searchMemory(this._agentId');
 		assert.notEqual(mutated, src, '突变必须真的改到了代码');

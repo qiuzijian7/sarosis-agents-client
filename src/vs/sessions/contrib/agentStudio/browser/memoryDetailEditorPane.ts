@@ -1441,7 +1441,7 @@ export class MemoryDetailEditorPane extends EditorPane {
 		if (!this._container) { return; }
 		const memProvider = this._agentOSService.getActiveMemoryProvider();
 		const header = append(this._container, $('.md-header'));
-		append(header, $('h1')).textContent = `⚡ 技能 (${this._agentId})`;
+		append(header, $('h1')).textContent = `⚡ 技能 (${this._scopeText()})`;
 		const subtitle = append(header, $('div'));
 		subtitle.style.fontSize = '11px';
 		subtitle.style.color = 'var(--vscode-descriptionForeground)';
@@ -1449,8 +1449,29 @@ export class MemoryDetailEditorPane extends EditorPane {
 		subtitle.textContent = '从会话历史自动提取的可复用程序化技能 · 沉淀为标准 SKILL.md 格式 · 写入 ~/.vssaros/skills/';
 
 		// Stats — Opt1：真实引擎在网关进程，方法为 async（agentId 为首参）。
-		const stats = memProvider?.getSkillStats
-			? await memProvider.getSkillStats(this._agentId)
+		// ★ 2026-10-21：**跨分区**统计（工作区 + 所有有数据的 agent 分区）——技能是按分区存的
+		//   （真库实测：`mem:skills:saros-claw` / `mem:skills:wf-test1` 各 1 条，而工作区 `ws-*` 是 0）
+		//   ⇒ 只查当前分区 ⇒ "总技能 0" ⇒ 用户以为从没提取过技能 ✗✗。
+		const partitions = await this._readPartitions(memProvider);
+		const perPartitionStats = await Promise.all(partitions.map(async aid => {
+			try {
+				const st = memProvider?.getSkillStats ? await memProvider.getSkillStats(aid) : undefined;
+				return { aid, st };
+			} catch { return { aid, st: undefined as any }; }
+		}));
+		const statRows = perPartitionStats.filter(x => !!x.st);
+		const totalSkills = statRows.reduce((n, x) => n + (Number(x.st.totalSkills) || 0), 0);
+		const totalUsage = statRows.reduce((n, x) => n + (Number(x.st.totalUsage) || 0), 0);
+		const writtenCount = statRows.reduce((n, x) => n + (Number(x.st.writtenCount) || 0), 0);
+		// 置信度/步数是**按技能数加权**的平均（不能把各分区的平均再平均 ⇒ 会失真 ✗）
+		const avgConfidence = totalSkills
+			? statRows.reduce((n, x) => n + (Number(x.st.avgConfidence) || 0) * (Number(x.st.totalSkills) || 0), 0) / totalSkills
+			: 0;
+		const avgSteps = totalSkills
+			? statRows.reduce((n, x) => n + (Number(x.st.avgSteps) || 0) * (Number(x.st.totalSkills) || 0), 0) / totalSkills
+			: 0;
+		const stats = totalSkills || statRows.length
+			? { totalSkills, avgConfidence, avgSteps, totalUsage, writtenCount }
 			: undefined;
 
 		// 技能使用追踪（读取 .usage.json sidecar）
@@ -1518,7 +1539,15 @@ export class MemoryDetailEditorPane extends EditorPane {
 		this._addToolbarBtn(toolbar, '➕ 手动新增', '', () => this._addSkill(memProvider));
 		this._addToolbarBtn(toolbar, '📁 生成全部 SKILL.md', '', async () => {
 			if (!memProvider?.writeAllSkillFiles) return;
-			const result = await memProvider.writeAllSkillFiles(this._agentId);
+			// ★ 2026-10-21：技能是**按分区**存的 ⇒ 逐分区写入（只写当前分区会漏掉其它分区的技能 ✗）
+			const perWrite = await Promise.all(partitions.map(async aid => {
+				try { return { aid, r: await memProvider.writeAllSkillFiles(aid) }; } catch { return { aid, r: { written: 0, failed: 0, errors: [] as string[] } }; }
+			}));
+			const result = {
+				written: perWrite.reduce((n, x) => n + (Number(x.r?.written) || 0), 0),
+				failed: perWrite.reduce((n, x) => n + (Number(x.r?.failed) || 0), 0),
+				errors: perWrite.flatMap(x => (x.r?.errors ?? []).map((e: string) => `[${x.aid}] ${e}`)),
+			};
 			alert(`写入完成: ${result.written} 成功, ${result.failed} 失败${result.errors.length ? '\n' + result.errors.join('\n') : ''}`);
 			this._renderFull();
 		});
@@ -1530,7 +1559,9 @@ export class MemoryDetailEditorPane extends EditorPane {
 		}
 
 		try {
-			const skills = await memProvider.listSkills(this._agentId);
+			// ★ 2026-10-21：**跨分区**取技能（工作区分区没有技能 ⇒ 只查它 ⇒ 恒空 ✗）
+			const skillRows = await this._fanout(memProvider, (aid) => memProvider.listSkills(aid));
+			const skills = (skillRows ?? []) as Array<Record<string, unknown>>;
 		if (!skills || skills.length === 0) {
 			this._renderEmpty('暂无技能记录。技能会在会话完成并执行固化后自动提取。');
 			return;
@@ -1604,6 +1635,10 @@ private _renderSkillCard(list: HTMLElement, skill: any, memProvider: any): void 
 	const badge = append(headerEl, $('.md-badge'));
 	badge.textContent = skill.confidence >= 0.8 && !skill.skillMdWritten ? '⚡ NEW' : '⚡ 技能';
 	badge.className = `md-badge ${skill.confidence >= 0.8 && !skill.skillMdWritten ? 'l1' : 'l3'}`;
+	// ★ 2026-10-21：来源分区徽标（技能现在**跨分区**合并 ⇒ 同名技能可能来自不同分区 ✗ 不标就分不清）
+	if (skill.partition && String(skill.partition) !== this._agentId) {
+		append(headerEl, $('.md-badge.l1')).textContent = `🗂 ${String(skill.partition)}`;
+	}
 
 	// Confidence
 	const confEl = append(headerEl, $('span'));
@@ -1814,12 +1849,14 @@ private async _editMemory(memProvider: any, item: IMemoryEntry): Promise<void> {
 
 private async _exportSkillsJson(memProvider: any): Promise<void> {
 	if (!memProvider?.listSkills) return;
-	const skills = await memProvider.listSkills(this._agentId);
+	// ★ 2026-10-21：导出也要**跨分区**（技能按分区存 ⇒ 只导当前分区会漏掉其它分区的技能 ✗）
+	const skillRows = await this._fanout(memProvider, (aid) => memProvider.listSkills(aid));
+	const skills = (skillRows ?? []) as Array<Record<string, unknown>>;
 	const json = JSON.stringify(skills, null, 2);
 	const blob = new Blob([json], { type: 'application/json' });
 	const url = URL.createObjectURL(blob);
 	const a = document.createElement('a');
-	a.href = url; a.download = `skills_${this._agentId}_${Date.now()}.json`;
+	a.href = url; a.download = `skills_${this._scopeText().replace(/[^\w.-]+/g, '_')}_${Date.now()}.json`;
 	a.click();
 	URL.revokeObjectURL(url);
 }

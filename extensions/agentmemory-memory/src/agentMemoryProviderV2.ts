@@ -1031,33 +1031,62 @@ export class AgentMemoryProviderV2 {
 	// 与 routines(`rtn`)/procedural(`prc`) 共享同一 scope，故按前缀过滤。
 
 	private async _readSkills(agentId: string): Promise<Array<Record<string, unknown>>> {
+		// ★ 2026-10-21：**读时兼容旧口径**（技能页长期"全 0"的真因）。
+		//
+		// 病根：技能有**两套存储**，而读法只认新的一套：
+		//   · 新口径（`addSkill` 写）：`KV.procedural(agentId)`，key = `skl-<ts>-<rand>`，值是单条对象
+		//     ⇒ 真库里 **0 条**（这条通道基本没被用过 ✗）
+		//   · 旧口径（**历史真实数据**在这里）：`KV.skillStore(agentId)`＝`mem:skills:<agent>`，
+		//     key = `data`，值是**技能数组**（id 前缀 `skill-`）⇒ 真库里有 2 条 ✓
+		// ⇒ 只读新口径 ⇒ 技能页"总技能 0 / 已写入 0/0" ⇒ 用户以为没产出过技能 ✗✗
+		//   （本质是**升级后旧数据不可见**：数据没丢，是读法换了）。
+		//
+		// 修法：**两个口径都读、按 id 去重**（新口径优先）⇒ 历史技能立刻可见，且不动数据（不迁、不删）✓。
+		const out: Array<Record<string, unknown>> = [];
+		const seen = new Set<string>();
+		const push = (rows: any[]) => {
+			for (const s of rows) {
+				const id = String(s?.id ?? '');
+				if (!id || seen.has(id)) { continue; }
+				seen.add(id);
+				out.push(s);
+			}
+		};
+		// ① 新口径：每个 key 一条（id 前缀 `skl`）
 		try {
 			const all = await this._kv.list<any>(KV.procedural(agentId));
-			return all
-				.filter((r: any) => r && typeof r.id === 'string' && r.id.startsWith('skl'))
-				.map((s: any) => ({
-					id: s.id,
-					trigger: Array.isArray(s.preconditions) && s.preconditions.length
-						? s.preconditions[0]
-						: (s.trigger ?? ''),
-					title: s.title ?? '未命名技能',
-					steps: Array.isArray(s.steps) ? s.steps : [],
-					expectedOutcome: s.expectedOutcome ?? 'Task completed successfully',
-					tags: Array.isArray(s.tags) ? s.tags : [],
-					sourceSessionId: Array.isArray(s.sourceSessionIds) && s.sourceSessionIds.length
-						? s.sourceSessionIds[0]
-						: (s.sourceSessionId ?? ''),
-					sourceSummaryId: s.sourceSummaryId,
-					confidence: typeof s.confidence === 'number' ? s.confidence : 0,
-					usageCount: typeof s.usageCount === 'number' ? s.usageCount : 0,
-					createdAt: s.createdAt ?? new Date().toISOString(),
-					updatedAt: s.updatedAt ?? s.createdAt ?? new Date().toISOString(),
-					skillMdWritten: !!s.skillMdWritten,
-					slug: s.slug,
-				}));
-		} catch {
-			return [];
-		}
+			push(all.filter((r: any) => r && typeof r.id === 'string' && r.id.startsWith('skl')));
+		} catch { /* 新口径读不到就只用旧口径 ✓ */ }
+		// ② 旧口径：`mem:skills:<agent>` 的 `data` 键是**一个数组**（id 前缀 `skill`）
+		try {
+			const legacy = await this._kv.get<any>(KV.skillStore(agentId), 'data');
+			if (Array.isArray(legacy)) {
+				push(legacy);
+			} else if (legacy && typeof legacy === 'object') {
+				// 兜底：万一存成单条对象
+				push([legacy]);
+			}
+		} catch { /* 旧口径没有就跳过 ✓ */ }
+		return out.map((s: any) => ({
+			id: s.id,
+			trigger: Array.isArray(s.preconditions) && s.preconditions.length
+				? s.preconditions[0]
+				: (s.trigger ?? ''),
+			title: s.title ?? '未命名技能',
+			steps: Array.isArray(s.steps) ? s.steps : [],
+			expectedOutcome: s.expectedOutcome ?? 'Task completed successfully',
+			tags: Array.isArray(s.tags) ? s.tags : [],
+			sourceSessionId: Array.isArray(s.sourceSessionIds) && s.sourceSessionIds.length
+				? s.sourceSessionIds[0]
+				: (s.sourceSessionId ?? ''),
+			sourceSummaryId: s.sourceSummaryId,
+			confidence: typeof s.confidence === 'number' ? s.confidence : 0,
+			usageCount: typeof s.usageCount === 'number' ? s.usageCount : 0,
+			createdAt: s.createdAt ?? new Date().toISOString(),
+			updatedAt: s.updatedAt ?? s.createdAt ?? new Date().toISOString(),
+			skillMdWritten: !!s.skillMdWritten,
+			slug: s.slug,
+		}));
 	}
 
 	async getSkillStats(agentId?: string): Promise<{ totalSkills: number; avgConfidence: number; avgSteps: number; totalUsage: number; writtenCount: number }> {
