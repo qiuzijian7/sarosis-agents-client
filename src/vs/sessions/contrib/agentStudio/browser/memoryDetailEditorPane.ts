@@ -83,6 +83,11 @@ export class MemoryDetailEditorPane extends EditorPane {
 	private _searchQuery: string = '';
 	private _targetContentPreview: string | null = null;
 	private _agentFilter: string = '__all__'; // '__all__' = 所有 agent，其他值 = 指定 agentId
+	/**
+	 * 本次读取覆盖的**分区集合**（★ 2026-10-21）：当前分区（工作区）+ 所有有数据的 agent 分区。
+	 * 只查当前分区 ⇒ 各页签全空（真机实测：工作区分区 episodic=0）⇒ 必须合并 ✓。
+	 */
+	private _partitionScope: string[] = [];
 	private _currentView: ViewName = 'memories';
 
 	constructor(
@@ -318,6 +323,58 @@ export class MemoryDetailEditorPane extends EditorPane {
 		return this._loadMemoryPromise;
 	}
 
+	/**
+	 * 读分区集合（★ 2026-10-21）：**当前分区（工作区）+ 所有有数据的 agent 分区**。
+	 *
+	 * ## 为什么必须多分区（现场：2026-10-21 各页签全空）
+	 * dsh 聊天框那一侧（Host → 引擎）写记忆时用的是**纯 agent id**（`saros-claw` / `default` /
+	 * `knowledge-base-expert` …，实测 episodic 4039 / 4970 / 401 条），而本面板读的是**工作区分区**
+	 * （`ws-<workspaceId>`）⇒ **分区键不同 ⇒ 读到一个空分区** ⇒ 记忆/槽位/教训/会话/固化各页签
+	 * 全部空（真机实测：工作区分区 episodic=0，只有 8 个空缺省槽位）✗✗。
+	 *
+	 * ⇒ 与 dsh 侧「记忆库」页**同口径**（那边已改成合并分区并标注来源）⇒ 两边看到同一份数据 ✓。
+	 * 列表取不到就退回"只用当前分区"（宁可少也不要崩 ✓）。
+	 */
+	private async _readPartitions(memProvider: any): Promise<string[]> {
+		const parts = new Set<string>();
+		if (this._agentId) { parts.add(this._agentId); }
+		try {
+			const agents = memProvider?.listAllAgentsWithData ? await memProvider.listAllAgentsWithData() : [];
+			for (const a of (agents ?? [])) {
+				const s = String(a ?? '').trim();
+				if (s) { parts.add(s); }
+			}
+		} catch { /* 列不出来就只用当前分区 */ }
+		this._partitionScope = [...parts];
+		return this._partitionScope;
+	}
+
+	/**
+	 * 页签标题里的分区口径（★ 2026-10-21）。
+	 * 只写当前分区会**误导**：数据其实来自 N 个分区合并 ⇒ 标题要如实说"合并了几个分区" ✓。
+	 */
+	private _scopeText(): string {
+		const extra = Math.max(0, this._partitionScope.length - 1);
+		return extra > 0 ? `${this._agentId} + ${extra} 个 agent 分区` : this._agentId;
+	}
+
+	/**
+	 * 分区扇出：并发对每个分区调用 `fn`，合并结果并**标注来源分区**（`partition` 字段）。
+	 *
+	 * ⚠ 单个分区失败**不影响其它分区**（逐个 try/catch）—— 这正是"一个分区读不出来就整页空白"的反面 ✓。
+	 */
+	private async _fanout<T>(memProvider: any, fn: (aid: string) => Promise<T[]> | T[]): Promise<Array<T & { partition: string }>> {
+		const parts = await this._readPartitions(memProvider);
+		const per = await Promise.all(parts.map(async aid => {
+			try { return { aid, rows: ((await fn(aid)) ?? []) as T[] }; } catch { return { aid, rows: [] as T[] }; }
+		}));
+		const out: Array<T & { partition: string }> = [];
+		for (const { aid, rows } of per) {
+			for (const row of rows) { out.push({ ...(row as Record<string, unknown>), partition: aid } as T & { partition: string }); }
+		}
+		return out;
+	}
+
 	private async _doLoadMemory(): Promise<void> {
 		// 立即渲染框架（header/tabs/toolbar/search），不阻塞等数据
 		// — 消除打开面板时的"加载记忆数据..."白屏卡顿
@@ -344,8 +401,15 @@ export class MemoryDetailEditorPane extends EditorPane {
 				this._renderFull();
 			}
 
-			console.log(`[MemoryDetailEditorPane] calling searchMemory(${this._agentId}, '')...`);
-			const results = await memProvider.searchMemory(this._agentId, '');
+			console.log(`[MemoryDetailEditorPane] calling searchMemory across partitions (current=${this._agentId})...`);
+			// ★ 2026-10-21：**跨分区**取（工作区 + 所有有数据的 agent 分区）—— 见 _readPartitions 的注释。
+			//   单分区（原来只查 this._agentId）⇒ 读的是空的工作区分区 ⇒ 各页签全空 ✗✗。
+			const partitions = await this._readPartitions(memProvider);
+			console.log(`[MemoryDetailEditorPane] read partitions: ${partitions.join(', ')}`);
+			const perPartition = await Promise.all(partitions.map(async aid => {
+				try { return { aid, rows: (await memProvider.searchMemory(aid, '')) ?? [] }; } catch { return { aid, rows: [] as any[] }; }
+			}));
+			const results = perPartition.flatMap(({ aid, rows }) => rows.map(e => ({ ...e, metadata: { ...(e.metadata ?? {}), agentId: aid } })));
 			console.log(`[MemoryDetailEditorPane] searchMemory returned: ${results?.length ?? 'null'} results`);
 			const newMemories = (results || []).map(e => ({
 				id: e.id || `mem_${Date.now()}_${Math.random().toString(36).slice(2,7)}`,
@@ -356,7 +420,10 @@ export class MemoryDetailEditorPane extends EditorPane {
 			}));
 			// 并入 working(core)/semantic/procedural 独立 scope——这些不在 KV.memories 内，
 			// searchMemory 不返回，故 working/semantic/procedural 类型页签一直为空。
-			newMemories.push(...await this._loadScopedMemories(memProvider));
+			// ★ 同样**跨分区**取（这三个 scope 也是按分区存的 ⇒ 只查当前分区会全空 ✗）。
+			for (const aid of partitions) {
+				newMemories.push(...await this._loadScopedMemories(memProvider, aid));
+			}
 			// searchMemory 返回空数组（而非抛异常），不覆盖已有缓存
 			if (newMemories.length === 0 && this._allMemories.length > 0) {
 				console.warn('[MemoryDetailEditorPane] searchMemory returned empty, keeping cached data');
@@ -476,6 +543,11 @@ export class MemoryDetailEditorPane extends EditorPane {
 
 		// View navigation bar
 		this._renderViewNav();
+
+		// ★ 2026-10-21：**先算出读分区集合**（当前分区 + 所有有数据的 agent 分区）。
+		//   为什么要放在分派**之前**：各页签标题里要显示"合并了几个分区"，而标题是各页签自己设的
+		//   ⇒ 不预取的话，第一次打开标题只会写当前分区（而数据其实是跨分区合并来的）⇒ 标题会误导 ✗。
+		try { await this._readPartitions(this._agentOSService.getActiveMemoryProvider()); } catch { /* 预取失败不阻断渲染 ✓ */ }
 
 		// Route to the appropriate view renderer
 		// 注意：slots/lessons 视图现已改为 async（await 网关代理），
@@ -666,7 +738,7 @@ export class MemoryDetailEditorPane extends EditorPane {
 		if (!this._container) { return; }
 		const memProvider = this._agentOSService.getActiveMemoryProvider();
 		const header = append(this._container, $('.md-header'));
-		append(header, $('h1')).textContent = `📌 固定槽位 (${this._agentId})`;
+		append(header, $('h1')).textContent = `📌 固定槽位 (${this._scopeText()})`;
 
 		const toolbar = append(this._container, $('.md-toolbar'));
 		this._addToolbarBtn(toolbar, '🔄 刷新', 'primary', () => this._renderFull());
@@ -676,9 +748,25 @@ export class MemoryDetailEditorPane extends EditorPane {
 		// 都展示这 8 个固定槽位；网关返回的内容优先覆盖，缺则显示「(空)」。
 		// 这样即使网关未返回槽位数据，也不会误报「暂无固定槽位 / 暂无槽位数据」。
 		try {
-			const slots = memProvider?.getSlots ? await memProvider.getSlots(this._agentId) : [];
+			// ★ 2026-10-21：**跨分区**取槽位（工作区分区常是空的 ⇒ 只查它 ⇒ 8 个槽位全 "(空)" ✗）。
+			//   同名槽位：**当前分区优先**（当前分区有值就用它），否则用第一个有值的 agent 分区 ⇒ 并标来源。
+			const slotRows = await this._fanout(memProvider, (aid) => (memProvider?.getSlots ? memProvider.getSlots(aid) : []));
 			const map = new Map<string, string>();
-			for (const s of (slots ?? [])) { map.set(String(s.name ?? ''), String(s.content ?? '')); }
+			const srcOf = new Map<string, string>();
+			for (const row of slotRows) {
+				const name = String((row as any)?.name ?? '');
+				if (!name) { continue; }
+				const content = String((row as any)?.content ?? '');
+				const aid = String(row.partition ?? '');
+				const isCurrent = aid === this._agentId;
+				const has = map.has(name);
+				// 规则：有值优先；同有值时当前分区优先；否则先到先得
+				const better = !has
+					|| (!!content && !map.get(name))
+					|| (isCurrent && !srcOf.get(name)?.startsWith(this._agentId) && !!content);
+				if (better) { map.set(name, content); srcOf.set(name, aid); }
+			}
+			const slots = slotRows.map((r) => ({ name: String((r as any)?.name ?? ''), content: String((r as any)?.content ?? '') }));
 			const names = [
 				...FIXED_SLOT_NAMES.filter((n) => !!n),
 				...(slots ?? []).map((s) => String(s.name ?? '')).filter((n) => !!n && !FIXED_SLOT_NAMES.includes(n)),
@@ -693,6 +781,11 @@ export class MemoryDetailEditorPane extends EditorPane {
 				const card = append(list, $('.md-card'));
 				const headerEl = append(card, $('.md-card-header'));
 				append(headerEl, $('.md-badge.l2')).textContent = name;
+				// 来源分区徽标（★ 2026-10-21）：同名槽位可能来自不同分区 ⇒ 不标就分不清"这个值是谁的" ✗
+				const src = srcOf.get(name);
+				if (src && src !== this._agentId) {
+					append(headerEl, $('.md-badge.l1')).textContent = `🗂 ${src}`;
+				}
 				append(headerEl, $('.md-card-title')).textContent = content.slice(0, 80) || '(空)';
 				this._addToolbarBtn(headerEl, '✏️', '', () => this._editSlot(memProvider, name, content));
 				this._addToolbarBtn(headerEl, '🗑️', 'danger', async () => {
@@ -734,7 +827,7 @@ export class MemoryDetailEditorPane extends EditorPane {
 		if (!this._container) { return; }
 		const memProvider = this._agentOSService.getActiveMemoryProvider();
 		const header = append(this._container, $('.md-header'));
-		append(header, $('h1')).textContent = `📖 教训 (${this._agentId})`;
+		append(header, $('h1')).textContent = `📖 教训 (${this._scopeText()})`;
 
 		const toolbar = append(this._container, $('.md-toolbar'));
 		this._addToolbarBtn(toolbar, '🔄 刷新', 'primary', () => this._renderFull());
@@ -746,7 +839,9 @@ export class MemoryDetailEditorPane extends EditorPane {
 		}
 
 		try {
-			const lessons = await memProvider.getLessons(this._agentId);
+			// ★ 2026-10-21：**跨分区**取教训（教训也是按分区存的 ⇒ 只查当前（空）分区 ⇒ 恒空 ✗）
+			const lessonRows = await this._fanout(memProvider, (aid) => memProvider.getLessons(aid));
+			const lessons = (lessonRows ?? []) as Array<Record<string, unknown>>;
 			if (!lessons || lessons.length === 0) {
 				this._renderEmpty('暂无教训记录。');
 				return;
@@ -756,6 +851,10 @@ export class MemoryDetailEditorPane extends EditorPane {
 				const card = append(list, $('.md-card'));
 				const headerEl = append(card, $('.md-card-header'));
 				append(headerEl, $('.md-badge.l3')).textContent = 'lesson';
+				// 来源分区徽标（★ 2026-10-21）：同名教训可能来自不同分区 ⇒ 不标就分不清来源 ✗
+				if (lesson['partition'] && String(lesson['partition']) !== this._agentId) {
+					append(headerEl, $('.md-badge.l1')).textContent = `🗂 ${String(lesson['partition'])}`;
+				}
 				append(headerEl, $('.md-card-title')).textContent = String(lesson.content ?? '').slice(0, 80);
 				if (lesson.tags?.length) {
 					append(headerEl, $('.md-card-time')).textContent = lesson.tags.join(', ');
@@ -783,7 +882,7 @@ export class MemoryDetailEditorPane extends EditorPane {
 		if (!this._container) { return; }
 		const memProvider = this._agentOSService.getActiveMemoryProvider() as any;
 		const header = append(this._container, $('.md-header'));
-		append(header, $('h1')).textContent = `💬 会话 (${this._agentId})`;
+		append(header, $('h1')).textContent = `💬 会话 (${this._scopeText()})`;
 
 		const toolbar = append(this._container, $('.md-toolbar'));
 		this._addToolbarBtn(toolbar, '🔄 刷新', 'primary', () => this._renderFull());
@@ -794,17 +893,18 @@ export class MemoryDetailEditorPane extends EditorPane {
 		}
 
 		try {
-			const [sessions, summaries] = await Promise.all([
-				memProvider.listSessions(this._agentId).catch(() => []),
-				(memProvider.listSummaries ? memProvider.listSummaries(this._agentId).catch(() => []) : Promise.resolve([])),
-			]);
-			const sessionList = (sessions ?? []) as Array<Record<string, unknown>>;
-			const summaryList = (summaries ?? []) as Array<Record<string, unknown>>;
+			// ★ 2026-10-21：**跨分区**取会话/摘要（工作区分区没有会话记录 ⇒ 只查它 ⇒ 恒空 ✗）。
+			//   配对键必须带**分区**（不同分区可能有同名 session id ⇒ 只按 id 配会串 ✗）。
+			const sessionRows = await this._fanout(memProvider, (aid) => memProvider.listSessions(aid));
+			const summaryRows = await this._fanout(memProvider, (aid) => (memProvider.listSummaries ? memProvider.listSummaries(aid) : []));
+			const sessionList = (sessionRows ?? []) as Array<Record<string, unknown>>;
+			const summaryList = (summaryRows ?? []) as Array<Record<string, unknown>>;
 			if (sessionList.length === 0) {
 				this._renderEmpty('暂无会话记录。开始对话后，观察会暂存到会话，达到阈值或会话结束时压缩为摘要。');
 				return;
 			}
-			const summaryById = new Map<string, Record<string, unknown>>(summaryList.map(s => [String(s['sessionId']), s]));
+			const keyOf = (partition: unknown, sessionId: unknown) => `${String(partition ?? '')}::${String(sessionId ?? '')}`;
+			const summaryById = new Map<string, Record<string, unknown>>(summaryList.map(s => [keyOf(s['partition'], s['sessionId']), s]));
 
 			// 管线统计
 			const totalObs = sessionList.reduce((n, s) => n + (Number(s['observationCount']) || 0), 0);
@@ -819,7 +919,8 @@ export class MemoryDetailEditorPane extends EditorPane {
 			const list = append(this._container, $('.md-list'));
 			for (const s of sessionList) {
 				const sid = String(s['id'] ?? '');
-				const summary = summaryById.get(sid);
+				// ★ 2026-10-21：按「分区+sessionId」配对（不同分区可能有同名 session id ⇒ 只按 id 配会串 ✗）
+				const summary = summaryById.get(keyOf(s['partition'], sid));
 				this._appendSessionCard(list, s, summary, memProvider);
 			}
 		} catch {
@@ -866,11 +967,11 @@ export class MemoryDetailEditorPane extends EditorPane {
 			card.classList.toggle('expanded');
 			if (!willExpand || loaded) { return; }
 			loaded = true;
-			await this._fillSessionDetail(contentEl, sid, summary, compressed, memProvider);
+			await this._fillSessionDetail(contentEl, sid, summary, compressed, memProvider, String(s['partition'] ?? this._agentId));
 		});
 	}
 
-	private async _fillSessionDetail(contentEl: HTMLElement, sid: string, summary: Record<string, unknown> | undefined, compressed: boolean, memProvider: any): Promise<void> {
+	private async _fillSessionDetail(contentEl: HTMLElement, sid: string, summary: Record<string, unknown> | undefined, compressed: boolean, memProvider: any, partition?: string): Promise<void> {
 		// 1. 压缩摘要（已压缩会话）
 		if (compressed && summary) {
 			const titleEl = append(contentEl, $('h3'));
@@ -907,7 +1008,8 @@ export class MemoryDetailEditorPane extends EditorPane {
 			loading.textContent = '加载观察…';
 			loading.style.color = 'var(--vscode-descriptionForeground)';
 			try {
-				const obs = (await memProvider.observeList(this._agentId, sid).catch(() => [])) as Array<Record<string, unknown>> | undefined;
+				// ★ 2026-10-21：观察要按**该会话自己的分区**查（会话可能来自 agent 分区 ⇒ 用当前分区查必然空 ✗）
+				const obs = (await memProvider.observeList(partition || this._agentId, sid).catch(() => [])) as Array<Record<string, unknown>> | undefined;
 				loading.remove();
 				if (!obs || obs.length === 0) {
 					const none = append(contentEl, $('p'));
@@ -963,7 +1065,7 @@ export class MemoryDetailEditorPane extends EditorPane {
 		if (!this._container) { return; }
 		const memProvider = this._agentOSService.getActiveMemoryProvider();
 		const header = append(this._container, $('.md-header'));
-		append(header, $('h1')).textContent = `🔄 记忆固化 (${this._agentId})`;
+		append(header, $('h1')).textContent = `🔄 记忆固化 (${this._scopeText()})`;
 
 		const toolbar = append(this._container, $('.md-toolbar'));
 		this._addToolbarBtn(toolbar, '🔄 刷新', 'primary', () => this._renderFull());
@@ -995,8 +1097,11 @@ export class MemoryDetailEditorPane extends EditorPane {
 		];
 		for (const tier of tiers) {
 			try {
-				const result = (memProvider as any)[tier.fn]?.(this._agentId);
-				const items = (result instanceof Promise ? await result : result) as Array<Record<string, unknown>> | undefined;
+				// ★ 2026-10-21：**跨分区**取三层（固化数据按分区存 ⇒ 只查当前（空）分区 ⇒ 恒空 ✗）
+				const items = await this._fanout(memProvider, (aid) => {
+					const result = (memProvider as any)[tier.fn]?.(aid);
+					return (result instanceof Promise ? result : Promise.resolve(result)) as Promise<Array<Record<string, unknown>>>;
+				});
 				if (!items || items.length === 0) { continue; }
 				const sectionHeader = append(list, $('.md-card-header'));
 				sectionHeader.style.borderBottom = '2px solid var(--vscode-widget-border)';
