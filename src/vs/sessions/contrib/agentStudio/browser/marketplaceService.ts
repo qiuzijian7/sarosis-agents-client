@@ -748,7 +748,22 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 		}
 		if (resp.statusCode >= 400) {
 			let msg = `HTTP ${resp.statusCode}`;
-			try { msg = resp.body ? JSON.parse(resp.body).error || msg : msg; } catch { /* ignore */ }
+			// ★ 2026-10-22：**把服务端的 `details` 一起带出来**。
+			//   服务端 zod 校验失败只回 `{ error:'参数校验失败', details:[…issues] }`
+			//   （`middleware/error.ts`）—— 此前这里只取 `error` ⇒ 用户只看到"参数校验失败"，
+			//   **完全不知道是哪个参数不合法**（真机：远端服务端还没部署 workbench 类，
+			//   页面只报"参数校验失败"，排查绕了半天才定位到 kind 枚举）✗。
+			try {
+				const parsed = resp.body ? JSON.parse(resp.body) : null;
+				if (parsed?.error) { msg = String(parsed.error); }
+				const details = parsed?.details;
+				if (Array.isArray(details) && details.length) {
+					const brief = details
+						.map((d: any) => `${Array.isArray(d?.path) && d.path.length ? d.path.join('.') : '(根)'}：${String(d?.message ?? d)}`)
+						.join('；');
+					msg = `${msg}（${brief}）`;
+				}
+			} catch { /* body 不是 JSON ⇒ 保持 HTTP 状态文案 */ }
 			throw new Error(msg);
 		}
 		return resp.body ? JSON.parse(resp.body) as T : (undefined as T);

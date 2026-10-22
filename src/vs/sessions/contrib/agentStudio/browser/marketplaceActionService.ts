@@ -79,13 +79,28 @@ export async function runMarketplaceAction(
 	switch (req.op) {
 		case 'list': {
 			await marketplace.ensureLoggedIn();
-			const res = await marketplace.listPackages({
-				...(req.kind ? { kind: req.kind as PackageKind } : {}),
-				...(req.q ? { q: req.q } : {}),
-				...(req.category ? { category: req.category } : {}),
-				...(req.scope ? { scope: req.scope } : {}),
-				pageSize: req.limit ?? 50,
-			});
+			let res: { items: readonly any[]; total: number };
+			try {
+				res = await marketplace.listPackages({
+					...(req.kind ? { kind: req.kind as PackageKind } : {}),
+					...(req.q ? { q: req.q } : {}),
+					...(req.category ? { category: req.category } : {}),
+					...(req.scope ? { scope: req.scope } : {}),
+					pageSize: req.limit ?? 50,
+				});
+			} catch (e) {
+				// ★ 2026-10-22：服务端**版本落后**时会拒收新类别的 kind
+				//   （旧服务端只有 agent|skill|mcp|knowledge|workflow；`workbench` 是后加的）
+				//   ⇒ 它回 400「参数校验失败」⇒ 用户只看到一句莫名其妙的话 ✗。
+				//   这里识别它并给出**可执行**的提示（"服务端还没升级"而不是"参数错了"）✓。
+				const msg = String((e as Error)?.message ?? e);
+				if (/参数校验失败/.test(msg) && req.kind) {
+					throw new Error(
+						`商城服务端还不认识「${req.kind}」这一类商品（它可能还没升级到最新版本）—— 详情：${msg}`,
+					);
+				}
+				throw e;
+			}
 			return {
 				ok: true,
 				total: res.total,
