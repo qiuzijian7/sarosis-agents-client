@@ -1,18 +1,27 @@
-// @vssaros/dsh-marketplace — Host 半（2026-10-22）：商城工作台的**页面外壳 + 意图转发**。
+// @vssaros/dsh-marketplace — Host 半（2026-10-22）：商城工作台的**页面 + 数据 + 逻辑**。
 //
 // ★ 设计纪律（与 @vssaros/dsh-market 的分工）：
 //   - `vssaros-market` = **第三方工作台目录**（dsh 公开市场）⇒ 装的是别人的包；
 //   - `vssaros-marketplace` = **自营商城**（我们的服务端）⇒ agent / skill / 工作台 / 工作流 四类商品。
 //   => 两条数据源、两条能力（`workbenches` vs `marketplace`），互不覆盖 ✓。
 //
-// ★ 为什么 Host 半"什么都不做"：
-//   商城认证（JWT）在 IDE 进程 => Host 侧没有票据 ✗；
-//   装工作台包必须走主进程那条已验证的通道 => Host 内 pluginManager 在全新 profile 上会剪树失败 ✗；
-//   agent/skill/workflow 的落盘与注册表刷新都在 IDE 侧 => Host 写文件也刷不到 ✗。
-//   => **Host 只提供路由与转发**；所有有副作用的动作由 IDE 执行（ide.request{capability:'marketplace'}）✓。
+// ★★ 2026-10-22 架构修正（用户质疑「商城数据/逻辑都该在 dsh 侧，为什么要反向调用」后）：
+//   上一版把 list/detail/installed 也经 `ide.request` 打到 IDE ⇒ **违背方向** ✗。
+//   取证后：当初那三条理由里只有一条成立
+//     ① 「商城 JWT 在 IDE 进程 ⇒ Host 没票据」——**错**：dsh 侧有独立 TOF 登录（`tof_signin`，
+//        票据在 `ctx.credentials`）+ Node fetch ⇒ `POST /auth/tof` 就能换 JWT ✓（见 marketClient.js）
+//     ② 「装工作台包必须走主进程 `dsh plugin add`」——**成立**（且装完要重启 Host，Host 不能自杀重启）
+//     ③ 「落盘/刷新都在 IDE 侧」——**一半错**：目录是同一处（数据根），dsh 侧本来就在写
+//   ⇒ **现在的分工**：
+//     · dsh 侧自持：认证、list / detail / installed（只读面，本文件 + marketClient.js）
+//     · IDE 侧只剩：workbench 包的装/卸（要 `dsh plugin add` + 重启 Host）
+//       以及（S2 完成后）skill 的"刷新"通知 —— 因为 IDE 侧 `skillRegistry` 没有文件监听
+//   ⇒ 「IDE 桥不在」时，**浏览仍然可用** ✓（真机可验：停桥后 list 照样出数据）
 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createMarketClient, dataRootOf } from './marketClient.js';
+import { readInstalled } from './installedLedger.js';
 
 /** 插件包名（与 package.json 一致；也是 ide.request 的 pluginId => 必须与清单里的 ideCapabilities 对上 ✓）。 */
 const PLUGIN_PACKAGE = '@vssaros/dsh-marketplace';
@@ -33,16 +42,195 @@ const OPS = ['list', 'detail', 'installed', 'install', 'uninstall', 'upgrade', '
 /** 写类 op（需要用户确认 => 走长超时）。 */
 const WRITE_OPS = new Set(['install', 'uninstall', 'upgrade', 'publish', 'deletePackage', 'deleteVersion']);
 
+/** dsh 侧**自持**的 op（认证 + HTTP + 本地台账，不碰 IDE 桥 ✓）。 */
+const LOCAL_OPS = new Set(['list', 'detail', 'installed']);
+
 export async function apply(ctx, config) {
-	/** IDE 控制桥（可选注入）：不在 => 页面如实报「商城通道不可用」，**不静默失败** ✓。 */
-	const state = { bridge: null };
+	/** IDE 控制桥（可选注入）：**只有 workbench 的装/卸**还需要它 ✓。 */
+	const state = { bridge: null, credentials: null, market: null, dataRoot: null };
 	ctx.inject(['vssarosBridge'], scope => {
 		state.bridge = scope.vssarosBridge ?? null;
 		return () => { state.bridge = null; };
 	});
+	// 凭据服务（取 TOF 票据 / 存商城 JWT）。**可选注入**：不在就等页面报"没有登录态"，
+	// 而不是让整个插件 pending（历史教训：静态 inject 缺服务会让插件永久 pending ✗）。
+	ctx.inject(['credentials'], scope => {
+		state.credentials = scope.credentials ?? null;
+		state.market = null;
+		return () => { state.credentials = null; state.market = null; };
+	});
+	// 数据根（台账 + 未来的安装落点）：经 foundation 收口（与其它模块同一份口径 ✓）。
+	ctx.inject(['vssarosFoundation'], scope => {
+		try {
+			state.dataRoot = dataRootOf(config);
+		} catch {
+			state.dataRoot = null;
+		}
+		return () => { state.dataRoot = null; };
+	});
+
+	/** 懒建商城客户端（凭据服务晚于 apply 才注入 ⇒ 不能在这里同步建）。 */
+	function market() {
+		if (!state.credentials) {
+			throw new Error('dsh 侧拿不到凭据服务（ctx.credentials）⇒ 无法读取登录态');
+		}
+		if (!state.market) {
+			state.market = createMarketClient({ credentials: state.credentials, config, log: (line) => console.log(line) });
+		}
+		return state.market;
+	}
+
+	/**
+	 * dsh 侧**自持**的三个只读 op（不碰 IDE 桥 ✓）。
+	 *
+	 * @param {string} op
+	 * @param {object} params
+	 */
+	async function runLocal(op, params) {
+		if (op === 'list') {
+			const res = await market().list({
+				...(params.kind ? { kind: String(params.kind) } : {}),
+				...(params.q ? { q: String(params.q) } : {}),
+				...(params.category ? { category: String(params.category) } : {}),
+				...(params.scope ? { scope: String(params.scope) } : {}),
+				...(typeof params.limit === 'number' ? { pageSize: params.limit } : {}),
+			});
+			// 台账（同一份 installed-packages.json）⇒ 让页面标出"已安装 / 可升级"
+			const installed = state.dataRoot ? await readInstalled(state.dataRoot) : [];
+			const installedByKey = new Map(installed.map(e => [`${e.kind}:${e.storeId}`, e.version]));
+			return {
+				ok: true,
+				total: res.total,
+				items: res.items.map(pkg => ({
+					id: pkg.id,
+					kind: pkg.kind,
+					slug: pkg.slug,
+					name: pkg.name,
+					version: pkg.latest_version ?? pkg.version ?? '',
+					description: pkg.description ?? '',
+					author: pkg.author_name ?? '',
+					category: pkg.category ?? '',
+					icon: pkg.icon ?? '',
+					tags: Array.isArray(pkg.tags) ? pkg.tags : [],
+					status: pkg.status ?? 'active',
+					distributionType: pkg.distribution_type ?? 'bundle',
+					distribution: pkg.distribution_meta ?? null,
+					permissions: pkg.permissions ?? null,
+					installedVersion: installedByKey.get(`${pkg.kind}:${pkg.slug}`) ?? '',
+				})),
+			};
+		}
+		if (op === 'detail') {
+			const slug = String(params.slug ?? '');
+			const pkg = await market().detail(slug);
+			return {
+				ok: true,
+				id: pkg.id,
+				kind: pkg.kind,
+				slug: pkg.slug,
+				name: pkg.name,
+				version: pkg.latest_version ?? '',
+				description: pkg.description ?? '',
+				author: pkg.author_name ?? pkg.author?.display_name ?? pkg.author?.username ?? '',
+				category: pkg.category ?? '',
+				icon: pkg.icon ?? '',
+				tags: Array.isArray(pkg.tags) ? pkg.tags : [],
+				status: pkg.status ?? 'active',
+				distributionType: pkg.distribution_type ?? 'bundle',
+				distribution: pkg.distribution_meta ?? null,
+				permissions: pkg.permissions ?? null,
+				versions: (Array.isArray(pkg.versions) ? pkg.versions : []).map(v => ({
+					id: v.id,
+					version: v.version,
+					changelog: v.changelog ?? '',
+					sha256: v.sha256 ?? '',
+					size: v.asset_size ?? 0,
+					isLatest: v.is_latest === true,
+					manifest: v.manifest ?? null,
+				})),
+			};
+		}
+		// installed：本地台账 + 升级检查（全是 dsh 侧自己的 HTTP ✓）
+		const entries = state.dataRoot ? await readInstalled(state.dataRoot) : [];
+		if (entries.length === 0) { return { ok: true, total: 0, items: [] }; }
+		let updatable = new Map();
+		try {
+			const updates = await market().checkUpgrades(entries.map(e => ({ kind: e.kind, storeId: e.storeId, version: e.version })));
+			updatable = new Map(updates.map(u => [`${u.kind}:${u.storeId}`, String(u.latest ?? '')]));
+		} catch (e) {
+			// 升级检查失败**不阻断**已安装列表（列表本身仍有用 ✓）
+			console.warn(`[marketplace] installed: 升级检查失败（不影响列表）：${String(e?.message ?? e)}`);
+		}
+		return {
+			ok: true,
+			total: entries.length,
+			items: entries.map(e => {
+				const latest = updatable.get(`${e.kind}:${e.storeId}`) ?? '';
+				return {
+					id: e.storeId,
+					kind: e.kind,
+					slug: e.storeId,
+					name: e.storeId,
+					version: e.version,
+					description: '',
+					latestVersion: latest,
+					upgradable: Boolean(latest),
+					installedAt: e.installedAt,
+				};
+			}),
+		};
+	}
+
+	/**
+	 * 自持性自检（★ 2026-10-22，供真机验收 / 排障）。
+	 *
+	 * 回答三个问题：**IDE 桥在不在**、**票据从哪来**、**能不能自己换到 JWT**。
+	 * 用途：证明「浏览不再依赖反向调用」——桥 `absent` 时 `list` 仍然出数据 ✓。
+	 */
+	async function selfCheck() {
+		const report = {
+			ok: true,
+			bridge: state.bridge ? 'present' : 'absent',
+			credentials: state.credentials ? 'present' : 'absent',
+			dataRoot: state.dataRoot ?? null,
+			endpoint: (() => { try { return market().endpoint(); } catch { return null; } })(),
+			tofTicket: 'unknown',
+			marketJwt: 'unknown',
+			login: 'not-tried',
+		};
+		if (!state.credentials) { return report; }
+		try {
+			const m = market();
+			report.tofTicket = (await m.tofTicket()) ? 'present' : 'absent';
+			report.marketJwt = (await readInstalledMarketJwt()) ? 'present' : 'absent';
+		} catch (e) {
+			report.tofTicket = `error: ${String(e?.message ?? e)}`;
+		}
+		try {
+			await market().login();
+			report.login = 'ok';
+			report.marketJwt = 'present';
+		} catch (e) {
+			report.login = `failed: ${String(e?.message ?? e)}`;
+		}
+		return report;
+	}
+
+	/** 读 dsh 侧的商城 JWT（只为自检报告"有没有"，不回传值 ✓）。 */
+	async function readInstalledMarketJwt() {
+		if (!state.credentials || typeof state.credentials.resolve !== 'function') { return undefined; }
+		try {
+			const r = await state.credentials.resolve('VSSAROS_MARKET_JWT');
+			return typeof r?.value === 'string' && r.value ? r.value : undefined;
+		} catch {
+			return undefined;
+		}
+	}
 
 	/**
 	 * 把一个商城动作转给 IDE。
+	 *
+	 * **只剩写面**（workbench 的装/卸等）：dsh 侧自己做不到「`dsh plugin add` + 重启 Host」✓。
 	 *
 	 * @param {string} op
 	 * @param {object} params
@@ -144,14 +332,32 @@ export async function apply(ctx, config) {
 					return;
 				}
 
-				// ── 商城动作（转发 IDE）──────────────────────────
+				// ── 商城动作：**只读面在 dsh 侧自持**，写面（装/卸）仍转 IDE ────────
 				if (req.method === 'POST' && url.pathname === `${ROUTE_PREFIX}/api/action`) {
 					const raw = await readBody(req);
 					let parsed = {};
 					try { parsed = JSON.parse(raw || '{}'); } catch { parsed = {}; }
 					const op = String(parsed.op ?? '');
-					const result = await callIde(op, parsed.params ?? {});
-					json(200, result);
+					const params = parsed.params ?? {};
+					if (op === 'self-check') {
+						// 自持性自检（真机可验）：桥在不在都能回答"我是谁、票据在哪、能不能换 JWT"
+						json(200, await selfCheck());
+						return;
+					}
+					if (LOCAL_OPS.has(op)) {
+						try {
+							json(200, await runLocal(op, params));
+						} catch (e) {
+							json(200, { ok: false, error: String(e?.message ?? e) });
+						}
+						return;
+					}
+					json(200, await callIde(op, params));
+					return;
+				}
+				// ── 自检（证明 dsh 侧自持）：桥是否在 / 票据是否可见 / 是否已能换 JWT ──
+				if (req.method === 'GET' && url.pathname === `${ROUTE_PREFIX}/api/self-check`) {
+					json(200, await selfCheck());
 					return;
 				}
 
