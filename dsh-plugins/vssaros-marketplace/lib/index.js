@@ -21,7 +21,8 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createMarketClient, dataRootOf } from './marketClient.js';
-import { readInstalled } from './installedLedger.js';
+import { readInstalled, removeInstalled, upsertInstalled } from './installedLedger.js';
+import { installBundle, sha256Of, uninstallBundle } from './installers.js';
 
 /** 插件包名（与 package.json 一致；也是 ide.request 的 pluginId => 必须与清单里的 ideCapabilities 对上 ✓）。 */
 const PLUGIN_PACKAGE = '@vssaros/dsh-marketplace';
@@ -42,8 +43,19 @@ const OPS = ['list', 'detail', 'installed', 'install', 'uninstall', 'upgrade', '
 /** 写类 op（需要用户确认 => 走长超时）。 */
 const WRITE_OPS = new Set(['install', 'uninstall', 'upgrade', 'publish', 'deletePackage', 'deleteVersion']);
 
-/** dsh 侧**自持**的 op（认证 + HTTP + 本地台账，不碰 IDE 桥 ✓）。 */
+/** dsh 侧**自持**的只读 op（认证 + HTTP + 本地台账，不碰 IDE 桥 ✓）。 */
 const LOCAL_OPS = new Set(['list', 'detail', 'installed']);
+
+/**
+ * dsh 侧**自持**的写 op（S2）：skill / workflow 的安装、升级、卸载。
+ *
+ * ★ 为什么这三类能自持：它们落的就是数据根，dsh 侧本来就在写
+ *   （`skill_manage` / `applyWorkflow`）⇒ 下载 + 解包 + 落盘 + 台账全在本地完成 ✓。
+ * ★ 仍在 IDE 侧（无法消除）：`workbench`（要 `dsh plugin add` + 重启 Host）、
+ *   `agent`（要生成 `.agent.md`，格式真源在 IDE 侧；等包格式统一后再搬）、
+ *   以及 `publish` / `delete*`（发布要调 IDE 侧的打包与上传链，S2c 再搬）。
+ */
+const LOCAL_WRITE_KINDS = new Set(['skill', 'workflow']);
 
 export async function apply(ctx, config) {
 	/** IDE 控制桥（可选注入）：**只有 workbench 的装/卸**还需要它 ✓。 */
@@ -179,6 +191,74 @@ export async function apply(ctx, config) {
 				};
 			}),
 		};
+	}
+
+	/**
+	 * dsh 侧**自持**的写 op（S2）：skill / workflow 的 install / upgrade / uninstall。
+	 *
+	 * 流程：商城拿版本 → 下载 tar.gz（带 JWT）→ sha256 校验 → 解包 → 落盘 → 写台账 ✓
+	 * 全程在 Host 进程内完成，**不经过 IDE 桥**。
+	 *
+	 * @param {'install'|'upgrade'|'uninstall'} op
+	 * @param {object} params
+	 */
+	async function runLocalWrite(op, params) {
+		const dataRoot = state.dataRoot;
+		if (!dataRoot) {
+			throw new Error('dsh 侧拿不到数据根（vssarosFoundation 未绑定）⇒ 无法落盘');
+		}
+		const kind = String(params.kind ?? '');
+		const slug = String(params.slug ?? '');
+		if (!LOCAL_WRITE_KINDS.has(kind)) {
+			throw new Error(`这一类（${kind}）不能由 dsh 侧安装：只有 ${[...LOCAL_WRITE_KINDS].join(' / ')} 能自持`);
+		}
+		if (!slug) { throw new Error(`marketplace.${op} 需要 slug`); }
+
+		if (op === 'uninstall') {
+			const { targetDir } = await uninstallBundle({ dataRoot, kind, storeId: slug });
+			await removeInstalled(dataRoot, kind, slug);
+			return { ok: true, changed: true, targetDir };
+		}
+
+		// install / upgrade：先确定版本与下载地址
+		const detailPkg = await market().detail(slug);
+		const versions = Array.isArray(detailPkg?.versions) ? detailPkg.versions : [];
+		const wanted = String(params.version ?? '').trim();
+		const versionRow = wanted
+			? versions.find(v => v.version === wanted)
+			: versions.find(v => v.is_latest === true) ?? versions[0];
+		if (!versionRow) {
+			throw new Error(`「${slug}」没有可用版本${wanted ? `（找不到 ${wanted}）` : ''}`);
+		}
+		const gzBuffer = await downloadVersion(slug, versionRow.version);
+		// sha256 校验（服务端登记了就必须对得上 —— 不对就是包被换过/传坏了 ✗）
+		const expected = String(versionRow.sha256 ?? '').trim();
+		if (expected && expected !== sha256Of(gzBuffer)) {
+			throw new Error(`「${slug}」v${versionRow.version} 的 sha256 对不上（包可能损坏或被替换）`);
+		}
+		const installed = await installBundle({
+			dataRoot,
+			kind,
+			storeId: slug,
+			version: versionRow.version,
+			gzBuffer,
+			upgrade: op === 'upgrade',
+		});
+		await upsertInstalled(dataRoot, { kind, storeId: slug, version: versionRow.version });
+		return {
+			ok: true,
+			changed: true,
+			version: versionRow.version,
+			fileCount: installed.fileCount,
+			...(installed.backup ? { backup: installed.backup } : {}),
+			// skill 装完**必须**让 IDE 侧技能库重读（它没有文件监听 ✗）—— 见 notifySkillsChanged
+			...(kind === 'skill' ? { needsSkillReload: true } : {}),
+		};
+	}
+
+	/** 下载某个版本的本体（带 JWT；Node 侧直接拿 Buffer ✓）。 */
+	async function downloadVersion(slug, version) {
+		return market().download(`/packages/${encodeURIComponent(slug)}/versions/${encodeURIComponent(version)}/download`);
 	}
 
 	/**
@@ -347,6 +427,16 @@ export async function apply(ctx, config) {
 					if (LOCAL_OPS.has(op)) {
 						try {
 							json(200, await runLocal(op, params));
+						} catch (e) {
+							json(200, { ok: false, error: String(e?.message ?? e) });
+						}
+						return;
+					}
+					// S2：skill / workflow 的装、升、卸在 dsh 侧自持；其余（workbench / agent / publish）仍转 IDE
+					if ((op === 'install' || op === 'upgrade' || op === 'uninstall')
+						&& LOCAL_WRITE_KINDS.has(String(params.kind ?? ''))) {
+						try {
+							json(200, await runLocalWrite(op, params));
 						} catch (e) {
 							json(200, { ok: false, error: String(e?.message ?? e) });
 						}

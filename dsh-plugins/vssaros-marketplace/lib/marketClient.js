@@ -186,6 +186,35 @@ export function createMarketClient({ credentials, config, log = () => { }, fetch
 	}
 
 	/**
+	 * **二进制**下载（包本体）：`request` 只处理 JSON ⇒ 这里单独一条 ✓。
+	 *
+	 * @param {string} urlPath 以 `/` 开头、不含 `/api/v1`
+	 * @returns {Promise<Buffer>}
+	 */
+	async function download(urlPath) {
+		const once = async (token) => {
+			const headers = {};
+			if (token) { headers.authorization = `Bearer ${token}`; }
+			return fetchImpl(`${apiBase()}${urlPath}`, { method: 'GET', headers });
+		};
+		let token = await readRef(MARKET_JWT_REF);
+		if (!token) { token = await login(); }
+		let resp = await once(token);
+		if (resp.status === 401 || resp.status === 403) {
+			token = await login();
+			resp = await once(token);
+		}
+		if (!resp.ok) {
+			const text = await resp.text().catch(() => '');
+			throw new Error(`下载失败：${describeMarketError(resp.status, text)}`);
+		}
+		if (typeof resp.arrayBuffer !== 'function') {
+			throw new Error('下载失败：这个 fetch 实现不支持二进制（arrayBuffer）');
+		}
+		return Buffer.from(await resp.arrayBuffer());
+	}
+
+	/**
 	 * 列商品（服务端筛：kind / q / category / scope）。
 	 *
 	 * @param {{ kind?: string, q?: string, category?: string, scope?: 'all'|'mine'|'review', pageSize?: number }} opts
@@ -214,5 +243,5 @@ export function createMarketClient({ credentials, config, log = () => { }, fetch
 		return Array.isArray(res?.updates) ? res.updates : [];
 	}
 
-	return { login, request, list, detail, checkUpgrades, endpoint: root, tofTicket };
+	return { login, request, download, list, detail, checkUpgrades, endpoint: root, tofTicket };
 }
