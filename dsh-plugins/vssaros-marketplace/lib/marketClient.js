@@ -215,6 +215,37 @@ export function createMarketClient({ credentials, config, log = () => { }, fetch
 	}
 
 	/**
+	 * **二进制上传**（raw tar.gz）：`POST /packages/:slug/versions/raw`。
+	 *
+	 * 服务端契约（`versions.ts` 的 `/raw`）：`Content-Type: application/x-gzip`、
+	 * `X-Changelog: <urlencoded>`、body = tar.gz 字节 ✓
+	 *
+	 * @param {string} urlPath
+	 * @param {Buffer} buffer
+	 * @param {{ changelog?: string }} [opts]
+	 */
+	async function upload(urlPath, buffer, opts = {}) {
+		const once = async (token) => {
+			const headers = { 'content-type': 'application/x-gzip' };
+			if (opts.changelog) { headers['x-changelog'] = encodeURIComponent(String(opts.changelog)); }
+			if (token) { headers.authorization = `Bearer ${token}`; }
+			return fetchImpl(`${apiBase()}${urlPath}`, { method: 'POST', headers, body: buffer });
+		};
+		let token = await readRef(MARKET_JWT_REF);
+		if (!token) { token = await login(); }
+		let resp = await once(token);
+		if (resp.status === 401 || resp.status === 403) {
+			token = await login();
+			resp = await once(token);
+		}
+		const text = await resp.text().catch(() => '');
+		if (!resp.ok) {
+			throw new Error(`上传失败：${describeMarketError(resp.status, text)}`);
+		}
+		try { return text ? JSON.parse(text) : undefined; } catch { return undefined; }
+	}
+
+	/**
 	 * 列商品（服务端筛：kind / q / category / scope）。
 	 *
 	 * @param {{ kind?: string, q?: string, category?: string, scope?: 'all'|'mine'|'review', pageSize?: number }} opts
@@ -243,5 +274,5 @@ export function createMarketClient({ credentials, config, log = () => { }, fetch
 		return Array.isArray(res?.updates) ? res.updates : [];
 	}
 
-	return { login, request, download, list, detail, checkUpgrades, endpoint: root, tofTicket };
+	return { login, request, download, upload, list, detail, checkUpgrades, endpoint: root, tofTicket };
 }

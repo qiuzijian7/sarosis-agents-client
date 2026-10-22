@@ -39,6 +39,7 @@ import { ITaskOrchestrationService } from '../../../common/agentStudioOrchestrat
 // 生态用户级技能目录（SKILL.md 规范）：与 IDE 侧 skillRegistryService **共用同一份清单**
 // （少一侧就会出现"IDE 看得见、Host 看不见"的不一致 ✗）。
 import { ecosystemUserSkillDirPaths } from '../../../common/agentStudioSkillDirs.js';
+import { ISkillRegistry } from '../../agentStudio/common/skills.js';
 // ★ 技能根清单的**单一真源**（顺序 / 来源 / trust 门控 / 去重都在它里面，IDE 侧注册表读同一份 ✓）
 import { SKILL_OFFICIAL_USER_ROOT_SETTING_ID, SKILL_PROJECT_ROOTS_SETTING_ID, officialUserSkillRootCandidates, resolveSkillRoots } from '../../../common/agentStudioSkillRoots.js';
 // worktree 列表（dsh 聊天 header 的 worktree 下拉）：宿主侧 git 事实的唯一真源。
@@ -458,6 +459,8 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 		// worktree 列表（dsh 聊天 header 的下拉）：数据源是宿主侧 git 事实，只能由宿主推给页面（见 PushWorktrees）。
 		@IWorktreeService private readonly _worktreeService: IWorktreeService,
 		@IFileService private readonly _fileService: IFileService,
+	// ★ 2026-10-22：dsh 侧装完 skill 后要刷新（它有文件监听缺失 ⇒ 只能显式 reload）
+	@ISkillRegistry private readonly _skillRegistry: ISkillRegistry,
 		@IEditorGroupsService private readonly _editorGroupsService: IEditorGroupsService,
 		// ★ 库记录（2026-10-15）：读 IDE storage 里那对键（`agentStudio.kb.vaults` / `.active` ✓）——
 		//   真源 KB 视图写的就是它们 ✓（`kbVaultState.ts` 的常量 ✓），名字/图标只存在这里，
@@ -616,6 +619,12 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 	private _ideEnv(): IIdeCapabilityEnv {
 		return {
 			activeResource: () => this._editorService.activeEditor?.resource,
+			// ★ 2026-10-22：dsh 侧装完 skill 后让它重读（IDE 的 skillRegistry **没有文件监听**，
+			//   只有显式 `reload()` 才会看见新目录/新 SKILL.md）✓
+			reloadSkills: async () => {
+				await this._skillRegistry.reload();
+				this._logService.info('[dshHarness] 技能库已重读（dsh 侧装完 skill 后的刷新）');
+			},
 			// 商城清单（2026-10-21）：`skills` / `mcp` 两条能力用。
 			// ⚠ 先 `ensureLoggedIn()`：未登录时商城接口会 401，而 401 的文案没法指导用户 ⇒ 换成
 			//   "未登录商城，请先在 VsSaros 中完成 TOF 登录"（`marketplaceService` 自己那句）✓。

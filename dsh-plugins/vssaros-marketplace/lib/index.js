@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url';
 import { createMarketClient, dataRootOf } from './marketClient.js';
 import { readInstalled, removeInstalled, upsertInstalled } from './installedLedger.js';
 import { installBundle, sha256Of, uninstallBundle } from './installers.js';
+import { PUBLISHABLE_KINDS, deletePackage, deleteVersion, publishVersion } from './publisher.js';
 
 /** 插件包名（与 package.json 一致；也是 ide.request 的 pluginId => 必须与清单里的 ideCapabilities 对上 ✓）。 */
 const PLUGIN_PACKAGE = '@vssaros/dsh-marketplace';
@@ -245,20 +246,83 @@ export async function apply(ctx, config) {
 			upgrade: op === 'upgrade',
 		});
 		await upsertInstalled(dataRoot, { kind, storeId: slug, version: versionRow.version });
+		// skill 装完**必须**让 IDE 侧技能库重读（它没有文件监听 ✗）——
+		// best-effort：刷不过**不让安装失败**（文件已经落好了），但要把原因报出来 ✓
+		const reloadNote = kind === 'skill' ? await reloadIdeSkills() : undefined;
 		return {
 			ok: true,
 			changed: true,
 			version: versionRow.version,
 			fileCount: installed.fileCount,
 			...(installed.backup ? { backup: installed.backup } : {}),
-			// skill 装完**必须**让 IDE 侧技能库重读（它没有文件监听 ✗）—— 见 notifySkillsChanged
-			...(kind === 'skill' ? { needsSkillReload: true } : {}),
+			...(reloadNote ? { skillsReload: reloadNote } : {}),
 		};
+	}
+
+	/**
+	 * 让 IDE 侧技能库重读磁盘（**唯一**还需要反向调用的只读动作）。
+	 *
+	 * 为什么必须借 IDE：`skillRegistryService` **没有文件监听**，只有显式 `reload()` 才能
+	 * 看见 dsh 侧刚写的目录 ⇒ 不通知就"装好了但技能列表里没有" ✗。
+	 * best-effort：失败只回报原因，**不阻断安装**（文件已经落好，用户可手动重启）✓
+	 */
+	async function reloadIdeSkills() {
+		const bridge = state.bridge;
+		if (!bridge) { return 'skipped: IDE 控制桥不在（重启 IDE 后技能会自然加载）'; }
+		try {
+			const reply = await bridge.callIDE('ide.request', {
+				capability: 'marketplace',
+				pluginId: PLUGIN_PACKAGE,
+				params: { op: 'reloadSkills' },
+			}, { timeoutMs: READ_TIMEOUT_MS });
+			if (reply?.ok === false) { return `failed: ${String(reply.error ?? 'IDE 拒绝了刷新')}`; }
+			return 'ok';
+		} catch (e) {
+			return `failed: ${String(e?.message ?? e)}`;
+		}
 	}
 
 	/** 下载某个版本的本体（带 JWT；Node 侧直接拿 Buffer ✓）。 */
 	async function downloadVersion(slug, version) {
 		return market().download(`/packages/${encodeURIComponent(slug)}/versions/${encodeURIComponent(version)}/download`);
+	}
+
+	/**
+	 * dsh 侧**自持**的发布/下架（S2c）。
+	 *
+	 * @param {'publish'|'deletePackage'|'deleteVersion'} op
+	 * @param {object} params
+	 */
+	async function runLocalPublish(op, params) {
+		const dataRoot = state.dataRoot;
+		if (!dataRoot) {
+			throw new Error('dsh 侧拿不到数据根（vssarosFoundation 未绑定）⇒ 无法打包发布');
+		}
+		const m = market();
+		const slug = String(params.slug ?? params.localId ?? '');
+		if (op === 'deletePackage') {
+			return deletePackage({ market: m, slug });
+		}
+		if (op === 'deleteVersion') {
+			return deleteVersion({ market: m, slug, version: String(params.version ?? '') });
+		}
+		// publish
+		const kind = String(params.kind ?? '');
+		if (!PUBLISHABLE_KINDS.includes(kind)) {
+			throw new Error(`这一类（${kind}）不走 bundle 发布：只有 ${PUBLISHABLE_KINDS.join(' / ')} 能由 dsh 侧打包发布`);
+		}
+		const localId = String(params.localId ?? slug);
+		const version = String(params.version ?? '').trim();
+		if (!version) { throw new Error('publish 需要 version'); }
+		return publishVersion({
+			market: m,
+			dataRoot,
+			kind,
+			localId,
+			version,
+			changelog: String(params.changelog ?? ''),
+			meta: {},
+		});
 	}
 
 	/**
@@ -432,11 +496,20 @@ export async function apply(ctx, config) {
 						}
 						return;
 					}
-					// S2：skill / workflow 的装、升、卸在 dsh 侧自持；其余（workbench / agent / publish）仍转 IDE
+					// S2：skill / workflow 的装、升、卸在 dsh 侧自持；其余（workbench / agent）仍转 IDE
 					if ((op === 'install' || op === 'upgrade' || op === 'uninstall')
 						&& LOCAL_WRITE_KINDS.has(String(params.kind ?? ''))) {
 						try {
 							json(200, await runLocalWrite(op, params));
+						} catch (e) {
+							json(200, { ok: false, error: String(e?.message ?? e) });
+						}
+						return;
+					}
+					// S2c：发布与下架也在 dsh 侧（打包用 lib/tar.js，上传走 raw tar.gz）✓
+					if (op === 'publish' || op === 'deletePackage' || op === 'deleteVersion') {
+						try {
+							json(200, await runLocalPublish(op, params));
 						} catch (e) {
 							json(200, { ok: false, error: String(e?.message ?? e) });
 						}

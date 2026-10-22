@@ -357,7 +357,19 @@ export interface IIdeCapabilityEnv {
 	 *
 	 * **可选**（同 `generateImage?`）：适配层没接 ⇒ 能力层报人话（而不是抛 `undefined is not a function`）✓。
 	 */
+	/**
+	 * 让 IDE 侧技能库重读磁盘（★ 2026-10-22）。
+	 *
+	 * 为什么需要：dsh 侧已经把 skill 的安装搬到本地（S2）⇒ 装完**只有文件变了**，
+	 *   而 IDE 的 `skillRegistryService` **没有文件监听**（只能显式 `reload()`）⇒
+	 *   不通知就会出现「dsh 装好了、IDE 技能库看不见」✗。
+	 * 可选：没接就如实报错（不让安装假装成功）。
+	 */
+	reloadSkills?(): Promise<void>;
+
 	marketplaceAction?(request: {
+		// ⚠ **不含** `reloadSkills`：它是"让 IDE 重读磁盘"，由 {@link reloadSkills} 单独处理
+		//   （执行面只做"有副作用/要认证的商城动作"）✓
 		readonly op: 'list' | 'detail' | 'installed' | 'install' | 'uninstall' | 'upgrade' | 'publish' | 'deletePackage' | 'deleteVersion';
 		readonly kind?: string;
 		readonly slug?: string;
@@ -1334,10 +1346,20 @@ export async function executeIdeCapability(request: { readonly capability: strin
 			//  · 读类 op（list / detail）**不问**（无副作用）✓。
 			const params = request.params ?? {};
 			const op = textParam(params, 'op') ?? 'list';
-			const READ_OPS = ['list', 'detail', 'installed'];
+			// `reloadSkills` 放读类：它只是让 IDE 重读磁盘，**没有**任何写入/删除副作用
+			// （真正的写发生在 dsh 侧，这里只是"刷新一下界面看得到"）✓
+			const READ_OPS = ['list', 'detail', 'installed', 'reloadSkills'];
 			const WRITE_OPS = ['install', 'uninstall', 'upgrade', 'publish', 'deletePackage', 'deleteVersion'];
 			if (!READ_OPS.includes(op) && !WRITE_OPS.includes(op)) {
 				throw new Error(`marketplace 的 op 不认识：${op}（可用：${[...READ_OPS, ...WRITE_OPS].join(' / ')}）`);
+			}
+			// ★ 刷新技能库：dsh 侧装完 skill 后调它（IDE 侧没有文件监听 ⇒ 必须显式重读）✓
+			if (op === 'reloadSkills') {
+				if (!env.reloadSkills) {
+					throw new Error('这台 IDE 没有接技能库刷新（env.reloadSkills 缺失）⇒ 装完的 skill 不会出现在技能列表里');
+				}
+				await env.reloadSkills();
+				return { op, ok: true };
 			}
 			if (!env.marketplaceAction) {
 				throw new Error('这台 IDE 没有接商城通道（env.marketplaceAction 缺失）');
@@ -1365,7 +1387,9 @@ export async function executeIdeCapability(request: { readonly capability: strin
 				}
 			}
 			const result = await env.marketplaceAction({
-				op: op as 'list' | 'detail' | 'installed' | 'install' | 'uninstall' | 'upgrade' | 'publish' | 'deletePackage' | 'deleteVersion',
+				// ⚠ 这里**不含** `reloadSkills`：它在上面已经提前 return（由 `env.reloadSkills` 处理），
+			//   落到这里的 op 一定不是它 ⇒ 类型上排除，免得执行面被迫认识一个它不管的 op ✓
+			op: op as 'list' | 'detail' | 'installed' | 'install' | 'uninstall' | 'upgrade' | 'publish' | 'deletePackage' | 'deleteVersion',
 				...(kind ? { kind } : {}),
 				...(slug ? { slug } : {}),
 				...(textParam(params, 'version') ? { version: textParam(params, 'version') } : {}),

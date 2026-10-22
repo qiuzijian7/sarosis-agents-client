@@ -1,0 +1,193 @@
+// @vssaros/dsh-marketplace — 发布与下架（★ 2026-10-22 S2c：publish / delete* 也在 dsh 侧）
+//
+// ★ 为什么能搬：发布 = **读本地目录 → 打 tar.gz → 上传**，三件事 dsh 侧都齐了
+//   （目录就是数据根里那几处；`lib/tar.js` 已有确定性打包；Node 有 fetch）。
+//   原先绕 IDE 是因为 IDE 侧有现成的 `installer.preparePack` + 扩展宿主上传命令
+//   —— 那是**复用便利**，不是能力约束（与 list/detail 同性质）✓
+//
+// ★ 包格式：**目录镜像**（把 `<数据根>/<kind根>/<id>/` 整个打进去）
+//   ⇒ 发布端不需要"导出格式"的额外定义，安装端解包即落盘（S2 的 installBundle 正好吃它）✓
+//   ⚠ 旧包（agent 用 `agent.json` 导出格式）仍能发布/安装（原样打包），但 dsh 侧**安装**只认
+//     目录镜像；遇到 `agent.json` 包会如实报"这一类还要走 IDE"（不猜、不半装）✗
+//
+// ★ manifest：优先沿用目录里已有的 `manifest.json`（作者可能写了 name/description），
+//   但 `kind` / `id` / `version` / `files` **强制按本次发布覆盖** ——
+//   服务端 `validateManifestKind` 要求 `manifest.id === slug`、`kind` 一致，写错就整包被拒 ✗
+//
+// ★ 上传两道：
+//   ① `POST /packages` 建包（同 slug 已存在 ⇒ 409，**容忍**继续发版本 —— 那说明是在更新已有包）
+//   ② `POST /packages/:slug/versions/raw`（raw tar.gz + `X-Changelog`）✓
+
+import { readFile, readdir, stat } from 'node:fs/promises';
+import { join } from 'node:path';
+import { packTarGz } from './tar.js';
+
+/** 可发布的三类（workbench 走外部发布源，不打包）；agent 的**发布**是目录镜像 ⇒ 也能发 ✓。 */
+export const PUBLISHABLE_KINDS = ['agent', 'skill', 'workflow'];
+
+/** 各 kind 的本地根目录名（与 IDE 侧 `SarosPath` 同口径）。 */
+const KIND_DIR = { agent: 'agents', skill: 'skills', workflow: 'workflows' };
+
+/** 打包时**排除**的目录/文件（备份、依赖、版本库 —— 它们不属于"这个资源"）。 */
+const EXCLUDE_DIRS = new Set(['node_modules', '.git', '.upgrade-backup', '.saros']);
+const EXCLUDE_FILES = new Set(['.DS_Store', 'Thumbs.db']);
+
+/** 服务端上传体积上限（与 config.ts 的 `uploadLimits` 同口径；超了服务端会 413）。 */
+const SIZE_LIMIT = { agent: 5 * 1024 * 1024, skill: 2 * 1024 * 1024, workflow: 2 * 1024 * 1024 };
+
+/** 本地资源根：`<数据根>/<kind根>`。 */
+export function localRootOf(dataRoot, kind) {
+	const dir = KIND_DIR[kind];
+	if (!dir) { throw new Error(`dsh 侧不支持发布这一类：${kind}（支持 ${PUBLISHABLE_KINDS.join(' / ')}）`); }
+	return join(dataRoot, dir);
+}
+
+/**
+ * 递归读一个目录成 `路径 → Buffer`（相对路径、`/` 分隔；已排除依赖与备份）。
+ *
+ * @param {string} dir
+ * @param {{ skipManifest?: boolean }} [opts]
+ * @returns {Promise<{ path: string, data: Buffer }[]>}
+ */
+export async function collectDir(dir, opts = {}) {
+	const out = [];
+	async function walk(current, prefix) {
+		const entries = await readdir(current, { withFileTypes: true });
+		for (const entry of entries) {
+			if (entry.isDirectory()) {
+				if (EXCLUDE_DIRS.has(entry.name)) { continue; }
+				await walk(join(current, entry.name), prefix ? `${prefix}/${entry.name}` : entry.name);
+				continue;
+			}
+			if (!entry.isFile()) { continue; }
+			if (EXCLUDE_FILES.has(entry.name)) { continue; }
+			const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+			if (opts.skipManifest && rel === 'manifest.json') { continue; }
+			const data = await readFile(join(current, entry.name));
+			out.push({ path: rel, data });
+		}
+	}
+	await walk(dir, '');
+	return out;
+}
+
+/**
+ * 组装发布用的包（文件 + manifest）。
+ *
+ * @param {object} args
+ * @param {string} args.dataRoot
+ * @param {string} args.kind agent|skill|workflow
+ * @param {string} args.localId 资源 id（= 商城 slug）
+ * @param {string} args.version 版本号
+ * @param {{ name?: string, description?: string, category?: string, tags?: string[] }} [args.meta]
+ */
+export async function preparePublishBundle({ dataRoot, kind, localId, version, meta = {} }) {
+	const root = localRootOf(dataRoot, kind);
+	const dir = join(root, localId);
+	let st;
+	try {
+		st = await stat(dir);
+	} catch {
+		throw new Error(`本地没有这个资源：${dir}（${kind} / ${localId}）`);
+	}
+	if (!st.isDirectory()) { throw new Error(`本地资源不是目录：${dir}`); }
+
+	// 已有 manifest 就沿用（作者可能写了 name/description），但关键字段强制覆盖 ✓
+	let base = {};
+	try {
+		base = JSON.parse(await readFile(join(dir, 'manifest.json'), 'utf8')) ?? {};
+	} catch { base = {}; }
+
+	// 打包时排除旧 manifest（我们用新的那份，避免包内出现两份口径）✓
+	const files = await collectDir(dir, { skipManifest: true });
+	if (files.length === 0) {
+		throw new Error(`「${localId}」目录里没有文件（拒绝发布一个空包）`);
+	}
+	const manifest = {
+		...base,
+		kind,
+		id: localId,
+		name: typeof base.name === 'string' && base.name.trim() ? base.name : (meta.name?.trim() || localId),
+		version,
+		...(typeof base.description === 'string' || typeof meta.description === 'string'
+			? { description: base.description ?? meta.description }
+			: {}),
+		...(typeof base.category === 'string' || typeof meta.category === 'string'
+			? { category: base.category ?? meta.category }
+			: {}),
+		files: files.map(f => f.path),
+	};
+	const totalBytes = files.reduce((sum, f) => sum + f.data.length, 0);
+	const limit = SIZE_LIMIT[kind];
+	if (typeof limit === 'number' && totalBytes > limit) {
+		throw new Error(`包体积 ${(totalBytes / 1024 / 1024).toFixed(2)}MB 超过服务端上限 ${(limit / 1024 / 1024).toFixed(0)}MB`);
+	}
+	files.push({ path: 'manifest.json', data: Buffer.from(JSON.stringify(manifest, null, 2), 'utf8') });
+	return { manifest, files, gzBuffer: packTarGz(files) };
+}
+
+/**
+ * 发布一个版本（建包 + 传版本）。**dsh 侧自持**，不经过 IDE。
+ *
+ * @param {object} args
+ * @param {ReturnType<import('./marketClient.js').createMarketClient>} args.market
+ * @param {string} args.dataRoot
+ * @param {string} args.kind
+ * @param {string} args.localId
+ * @param {string} args.version
+ * @param {string} [args.changelog]
+ * @param {object} [args.meta]
+ */
+export async function publishVersion({ market, dataRoot, kind, localId, version, changelog = '', meta = {} }) {
+	if (!/^[a-z0-9][a-z0-9_-]*$/.test(localId)) {
+		throw new Error(`slug 只能是 a-z0-9_- 且小写字母开头：${localId}（服务端规则）`);
+	}
+	const prepared = await preparePublishBundle({ dataRoot, kind, localId, version, meta });
+
+	// ① 建包：同 slug 已存在 ⇒ 409（说明在更新已有包）⇒ 容忍，继续发版本 ✓
+	let created = false;
+	try {
+		await market.request('POST', '/packages', {
+			kind,
+			slug: localId,
+			name: prepared.manifest.name,
+			...(prepared.manifest.description ? { description: prepared.manifest.description } : {}),
+			...(prepared.manifest.category ? { category: prepared.manifest.category } : {}),
+			...(Array.isArray(meta.tags) && meta.tags.length ? { tags: meta.tags } : {}),
+		});
+		created = true;
+	} catch (e) {
+		const msg = String(e?.message ?? e);
+		// 409 的文案是 `slug "x" 已被占用` ⇒ 只有**这条**才算"已有包，继续发版本"
+		const isTaken = /已被占用/.test(msg) || /HTTP 409/.test(msg);
+		if (!isTaken) { throw e; }
+	}
+
+	// ② 传版本（raw tar.gz）
+	const uploaded = await market.upload(
+		`/packages/${encodeURIComponent(localId)}/versions/raw`,
+		prepared.gzBuffer,
+		{ changelog },
+	);
+	return {
+		ok: true,
+		version: typeof uploaded?.version === 'string' ? uploaded.version : version,
+		created,
+		fileCount: prepared.files.length,
+		bytes: prepared.gzBuffer.length,
+	};
+}
+
+/** 下架整个包（软删，服务端判权）。 */
+export async function deletePackage({ market, slug }) {
+	if (!slug) { throw new Error('deletePackage 需要 slug'); }
+	await market.request('DELETE', `/packages/${encodeURIComponent(slug)}`);
+	return { ok: true, changed: true };
+}
+
+/** 下架某个版本（服务端会重算 latest ✓）。 */
+export async function deleteVersion({ market, slug, version }) {
+	if (!slug || !version) { throw new Error('deleteVersion 需要 slug 与 version'); }
+	await market.request('DELETE', `/packages/${encodeURIComponent(slug)}/versions/${encodeURIComponent(version)}`);
+	return { ok: true, changed: true };
+}
