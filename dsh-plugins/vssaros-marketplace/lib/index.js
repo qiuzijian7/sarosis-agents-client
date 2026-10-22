@@ -131,6 +131,8 @@ export async function apply(ctx, config) {
 					...(typeof params.limit === 'number' ? { pageSize: params.limit } : {}),
 					// ★ 分页（商城里单类 500+ 条 ⇒ 不分页等于看不到大部分 ✗）
 					...(typeof params.page === 'number' && params.page > 0 ? { page: params.page } : {}),
+					// 排序（recent|popular|name；非法值不传 ⇒ 用服务端默认，不报错 ✓）
+					...(params.sort === 'recent' || params.sort === 'popular' || params.sort === 'name' ? { sort: params.sort } : {}),
 				});
 			// 台账（同一份 installed-packages.json）⇒ 让页面标出"已安装 / 可升级"
 			const installed = state.dataRoot ? await readInstalled(state.dataRoot) : [];

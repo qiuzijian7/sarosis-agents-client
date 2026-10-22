@@ -274,6 +274,13 @@ function makeSkill(localId, version, extra = {}) {
 		idxSrc.includes("op === 'updatePackage'") && mcSrc.includes('async function updatePackage'));
 	check('⑪ detail 带 visibility/featured（否则编辑表单回显错、可见性每次被重置）',
 		/detail[\s\S]{0,2000}visibility: pkg\.visibility/.test(idxSrc) || /visibility: pkg\.visibility \?\? 'public'/.test(idxSrc));
+
+	// 排序（服务端原生支持 recent|popular|name ⇒ 列表一长就必需）
+	check('⑪ client 发 sort 参数', /if \(opts\.sort\) \{ qs\.set\('sort', opts\.sort\); \}/.test(mcSrc));
+	check('⑪ Host **只透传三个合法值**（非法值不传 ⇒ 用服务端默认，不报错）',
+		/params\.sort === 'recent' \|\| params\.sort === 'popular' \|\| params\.sort === 'name'/.test(idxSrc));
+	check('⑪ 页面有排序下拉且切排序从第一页重来',
+		clientSrc.includes('vs-mp-sort') && /state\.sort = String\(e\.currentTarget\.value[\s\S]{0,120}load\(\)/.test(clientSrc));
 }
 
 fs.rmSync(dataRoot, { recursive: true, force: true });

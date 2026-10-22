@@ -64,6 +64,8 @@
 		page: 1,
 		/** 编辑表单（null = 关闭）；{ slug, name, description, category, icon, visibility, busy, error } */
 		edit: null,
+		/** 排序：recent（默认）/popular/name —— 服务端原生支持，零额外接口 ✓ */
+		sort: 'recent',
 	};
 
 	const root = document.getElementById('vs-mp-root');
@@ -92,6 +94,7 @@
 		const params = { limit: PAGE_SIZE, page: page };
 		if (state.kind) { params.kind = state.kind; }
 		if (state.q) { params.q = state.q; }
+		if (state.sort) { params.sort = state.sort; }
 		if (state.tab === 'mine') { params.scope = 'mine'; }
 		// ★ 「管理」页签走**审核队列**（服务端 /admin/review，requireAdmin 判权）——
 		//   非管理员会拿到 403，如实显示"需要管理员权限"（不静默空列表）✓
@@ -360,7 +363,13 @@
 						'<p class="vs-mp-sub">Agent / Skill / 工作台 / 工作流 —— 安装、升级、发布与维护</p>' +
 					'</div>' +
 					'<div class="vs-mp-tools">' +
-						'<input id="vs-mp-q" class="vs-mp-input" placeholder="搜索名称、作者或分类" value="' + esc(state.q) + '" />' +
+						'<input id="vs-mp-q" class="vs-mp-input" placeholder="搜索名称 / 介绍 / 标识" value="' + esc(state.q) + '" />' +
+						// 排序（服务端原生支持；列表一长，"按热度/按名字"就很必要 ✓）
+						'<select id="vs-mp-sort" class="vs-mp-input" title="排序">' +
+							'<option value="recent"' + (state.sort === 'recent' ? ' selected' : '') + '>最近更新</option>' +
+							'<option value="popular"' + (state.sort === 'popular' ? ' selected' : '') + '>最热</option>' +
+							'<option value="name"' + (state.sort === 'name' ? ' selected' : '') + '>按名称</option>' +
+						'</select>' +
 						'<button class="vs-mp-btn" data-refresh="1">刷新</button>' +
 						// ★ 2026-10-22：发布入口（用户要的"可上传"）。skill/workflow 由 dsh 侧自己打包上传；
 						//   agent 会转给 IDE 打包（包格式 agent.json 只有 IDE 会组装）✓
@@ -561,6 +570,14 @@
 			const d = state.detail || {};
 			run('deleteVersion', { kind: d.kind, slug: d.slug, version: version }, '已下架该版本');
 		});
+
+		const sortSel = root.querySelector('#vs-mp-sort');
+		if (sortSel) {
+			sortSel.addEventListener('change', e => {
+				state.sort = String(e.currentTarget.value || 'recent');
+				load();  // 排序变了要从第一页重来 ✓
+			});
+		}
 
 		const q = root.querySelector('#vs-mp-q');
 		if (q) {

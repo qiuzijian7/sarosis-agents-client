@@ -262,6 +262,8 @@ export function createMarketClient({ credentials, config, log = () => { }, fetch
 		if (opts.scope) { qs.set('scope', opts.scope); }
 		// ★ 2026-10-22：分页（商城里 skill/mcp 各 500+ 条 ⇒ 不分页等于看不到大部分 ✗）
 		if (opts.page) { qs.set('page', String(opts.page)); }
+		// 排序（服务端 `sort: recent|popular|name`；不传就是服务端默认 recent ✓）
+		if (opts.sort) { qs.set('sort', opts.sort); }
 		qs.set('pageSize', String(opts.pageSize ?? 50));
 		const res = await request('GET', `/packages?${qs.toString()}`);
 		return {
