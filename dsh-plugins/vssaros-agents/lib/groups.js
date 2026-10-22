@@ -24,7 +24,23 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { presetIdOf } from './core/agents.js';
 import { AGENT_MESSAGE_KIND, finalAssistantText, findOurSplices } from './core/relay.js';
-import { dataRootOf, agentsRootOf, scanAgents } from './store.js';
+import { isShownAgent } from './core/agents.js';
+import { dataRootOf, scanAgentsFromConfig } from './store.js';
+
+/**
+ * 群聊能用的 agent 名单 = **内置 + 自定义**（`scanAgentsFromConfig`），去掉显式隐藏的。
+ *
+ * ⚠ 2026-10-19 修（用户问「这些 agent 是否支持群聊」时暴露的既有缺口）：
+ *   这里原本用 `scanAgents(agentsRootOf(config))`（**只扫自定义根**）⇒ 内置 agent
+ *   （knowledge-base-expert / coder / Tob …）加进群会被判 404「没有的 agent」，
+ *   而它们的 preset 其实**都注册了**（派发完全可行）⇒ 纯属校验面写窄了。
+ */
+const groupAgentsOf = async (config) => {
+	const scan = await scanAgentsFromConfig(config);
+	// 2026-10-20：与页面同一条判定（内置按 `userFacing: true` 白名单 + 隐藏名单），
+	// 不再各写一份 —— 群成员列表曾比名册宽/窄，都是"两处口径"造成的。
+	return { ...scan, agents: (scan.agents ?? []).filter(a => isShownAgent(a)) };
+};
 import { outboxNote, outboxPendingFor, outboxResolve } from './outbox.js';
 
 /** 群定义/ transcript 文件名（数据根下）。 */
@@ -34,6 +50,8 @@ export const TRANSSCRIPT_KEEP = 200;
 /** 群名/成员数上限（写口自卫）。 */
 const MAX_GROUPS = 50;
 const MAX_MEMBERS = 20;
+/** 群名长度上限（与 DeepSeekBot 的 `GROUP_NAME_MAX = 120` 一致）。 */
+const GROUP_NAME_MAX = 120;
 
 function httpError(status, message, extra = {}) {
 	return Object.assign(new Error(message), { httpStatus: status, ...extra });
@@ -57,18 +75,114 @@ async function writeGroups(config, groups) {
 	await writeFile(join(root, FILE_NAME), text, 'utf8');
 }
 
-/** API/页面用：清单（transcript 一并给；量已被 TRANSSCRIPT_KEEP 兜住 ✓）。 */
+/**
+ * 未读数（2026-10-21）：上次读过之后新增的**成员回复**条数。
+ *
+ * 口径（刻意窄）：
+ *   · 只数 `role === 'member'` —— 自己的话（user）当然算读过，system（已接力/失败提示）不算"消息"；
+ *   · `readAt` 缺省 = 0 ⇒ 一个从未打开过的群，历史成员回复全算未读（与 DSB 一致：首次进群才清）；
+ *   · **不落盘**：每次 listGroups 现算（transcript 本来就在手边，O(n) 且 n ≤ 200）。
+ */
+export function unreadOf(group) {
+	const since = typeof group?.readAt === 'number' ? group.readAt : 0;
+	return (group?.transcript ?? []).filter(e => e.role === 'member' && (e.at ?? 0) > since).length;
+}
+
+/** API/页面用：清单（transcript 一并给；量已被 TRANSSCRIPT_KEEP 兜住 ✓；`unread` 现算）。 */
 export async function listGroups(config) {
-	return { groups: await readGroups(config), keep: TRANSSCRIPT_KEEP };
+	const groups = await readGroups(config);
+	return { groups: groups.map(g => ({ ...g, unread: unreadOf(g), pending: pendingOf(g) })), keep: TRANSSCRIPT_KEEP };
+}
+
+/**
+ * 群头像（2026-10-21，对齐 DSB 的 `GroupAvatarCropModal` / `pickGroupAvatar`）。
+ *
+ * 口径与 DSB 一致：
+ *   · 只收 `data:image/(png|jpeg|webp);base64,`；
+ *   · **解码后 ≤ 96KB**（页面侧会先居中裁成方形、缩到 256×256，再按质量重压到 96KB 以内）；
+ *   · 字符串 ≤ 128KB（防止有人绕过解码直接塞超长串）。
+ * `avatar: null / ''` ⇒ 移除头像（回落到首字 + 哈希色）。
+ */
+export const GROUP_AVATAR_MAX_BYTES = 96 * 1024;
+const GROUP_AVATAR_MAX_CHARS = 131072;
+const AVATAR_DATA_URL_RE = /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/;
+
+function avatarBytesOf(dataUrl) {
+	const b64 = dataUrl.slice(dataUrl.indexOf(',') + 1);
+	const pad = b64.endsWith('==') ? 2 : (b64.endsWith('=') ? 1 : 0);
+	return Math.floor(b64.length * 3 / 4) - pad;
+}
+
+/** 校验（非法直接抛 400，带可读原因）。返回规范化后的值（`null` = 移除）。 */
+export function normalizeGroupAvatar(value) {
+	const raw = String(value ?? '').trim();
+	if (!raw) {
+		return null;
+	}
+	if (raw.length > GROUP_AVATAR_MAX_CHARS) {
+		throw httpError(400, `头像字符串超长（上限 ${Math.round(GROUP_AVATAR_MAX_CHARS / 1024)}KB）`);
+	}
+	if (!AVATAR_DATA_URL_RE.test(raw)) {
+		throw httpError(400, '头像必须是 data:image/(png|jpeg|webp);base64,… 形式');
+	}
+	const bytes = avatarBytesOf(raw);
+	if (bytes > GROUP_AVATAR_MAX_BYTES) {
+		throw httpError(400, `头像太大：${Math.round(bytes / 1024)}KB（上限 96KB）`);
+	}
+	return raw;
+}
+
+/** 设置 / 移除群头像（`avatar: null` ⇒ 删掉这个字段）。 */
+export async function setGroupAvatar(config, input) {
+	const id = String(input?.id ?? '').trim();
+	if (!id) {
+		throw httpError(400, 'avatar 需要 id');
+	}
+	const avatar = normalizeGroupAvatar(input?.avatar);
+	return locked(async () => {
+		const groups = await readGroups(config);
+		const group = groups.find(g => g.id === id);
+		if (!group) {
+			throw httpError(404, `没有这个群：${id}`);
+		}
+		if (avatar) {
+			group.avatar = avatar;
+		} else {
+			delete group.avatar;
+		}
+		group.updatedAt = Date.now();
+		await writeGroups(config, groups);
+		return { group: { ...group, unread: unreadOf(group) } };
+	});
+}
+
+/** 标记已读（把人看过的时间点写进 `readAt`，下次 unread 从这里开始算）。 */
+export async function markGroupRead(config, input) {
+	const id = String(input?.id ?? '').trim();
+	if (!id) {
+		throw httpError(400, 'read 需要 id');
+	}
+	return locked(async () => {
+		const groups = await readGroups(config);
+		const group = groups.find(g => g.id === id);
+		if (!group) {
+			throw httpError(404, `没有这个群：${id}`);
+		}
+		group.readAt = Date.now();
+		await writeGroups(config, groups);
+		return { id: group.id, readAt: group.readAt, unread: 0 };
+	});
 }
 
 /** 建群。members 必须是真存在的 agent id（封闭集 = 当下扫描结果 ✓）。 */
 export async function createGroup(config, input) {
-	const name = String(input?.name ?? '').trim();
+	const name = String(input?.name ?? '').trim().slice(0, GROUP_NAME_MAX);
 	if (!name) {
 		throw httpError(400, '群名不能为空。');
 	}
-	const mode = input?.mode === 'open' ? 'open' : 'admin';
+	const mode = normalizeGroupMode(input?.mode);
+	// digest 的两个阈值：非法/缺省 ⇒ 官方默认（5 条 / 30 秒）
+	const wake = wakeOf({ wake: input?.wake });
 	const members = Array.isArray(input?.members) ? [...new Set(input.members.map(m => String(m ?? '').trim()).filter(Boolean))] : [];
 	if (members.length === 0) {
 		throw httpError(400, '至少要勾一个成员。');
@@ -76,7 +190,7 @@ export async function createGroup(config, input) {
 	if (members.length > MAX_MEMBERS) {
 		throw httpError(400, `成员最多 ${MAX_MEMBERS} 个。`);
 	}
-	const scan = await scanAgents(agentsRootOf(config));
+	const scan = await groupAgentsOf(config);
 	const known = new Set(scan.agents.map(a => a.id));
 	const unknown = members.filter(m => !known.has(m));
 	if (unknown.length) {
@@ -89,7 +203,7 @@ export async function createGroup(config, input) {
 	if (groups.some(g => g.name === name)) {
 		throw httpError(409, `已有同名群：${name}`);
 	}
-	const group = { id: randomUUID(), name, mode, members, createdAt: Date.now(), updatedAt: Date.now(), transcript: [] };
+	const group = { id: randomUUID(), name, mode, wake, members, createdAt: Date.now(), updatedAt: Date.now(), transcript: [] };
 	await writeGroups(config, [...groups, group]);
 	return group;
 }
@@ -103,6 +217,176 @@ export async function deleteGroup(config, input) {
 		await writeGroups(config, next);
 	}
 	return { groups: next };
+}
+
+/**
+ * 改群设置（2026-10-21，对齐 DSB 的「频道设置 → 群管理」）：群名 / 唤醒策略。
+ *
+ * 只动**显式给了的字段**（`undefined` 一律忽略 ⇒ 页面可以只发改名，不会顺手把策略冲掉）。
+ * 校验口径与 createGroup 一致：群名非空且不重名、mode 收敛到四档、阈值走 wakeOf。
+ */
+export async function updateGroup(config, input) {
+	const id = String(input?.id ?? '').trim();
+	const groups = await readGroups(config);
+	const group = groups.find(g => g.id === id);
+	if (!group) {
+		throw httpError(404, `没有这个群：${id || '(没给 id)'}`);
+	}
+	if (input?.name !== undefined) {
+		const name = String(input.name).trim().slice(0, GROUP_NAME_MAX);
+		if (!name) {
+			throw httpError(400, '群名不能为空。');
+		}
+		if (groups.some(g => g.id !== group.id && g.name === name)) {
+			throw httpError(409, `已有同名群：${name}`);
+		}
+		group.name = name;
+	}
+	if (input?.mode !== undefined) {
+		group.mode = normalizeGroupMode(input.mode);
+	}
+	// 加入需确认（2026-10-21）：开关本身不碰待确认队列 —— 队列里的条目仍由人逐条决定
+	if (input?.requireApproval !== undefined) {
+		group.requireApproval = input.requireApproval === true;
+	}
+	// 换策略 / 换阈值都要把攒着的那几条清掉：否则 digest ⇒ all 会莫名其妙"补发"一批；
+	// 反过来 all ⇒ digest 时若留着旧的 `since`，第一次超时会立刻触发 ✗
+	if (input?.mode !== undefined || input?.wake !== undefined) {
+		group.digest = { count: 0, since: Date.now(), pending: [] };
+	}
+	if (input?.wake !== undefined) {
+		group.wake = wakeOf({ wake: input.wake });
+	}
+	group.updatedAt = Date.now();
+	await writeGroups(config, groups);
+	return group;
+}
+
+/**
+ * 待确认成员（2026-10-21）。
+ *
+ * 群级开关 `requireApproval` 打开时，邀请**先进待确认区**，人工确认后才进 `members`。
+ * 这是 DSB「入群申请 / 审批」在本地单用户场景下的等价物：那边是 bot 主动申请、人批准；
+ * 我们这边没有"申请发起方"，但**防误拉**是真需求（随手把 8 个 agent 拉进群不可逆地开始派发）。
+ */
+export function pendingOf(group) {
+	return Array.isArray(group?.pending) ? group.pending : [];
+}
+
+/** 邀请/加成员。群里开了 `requireApproval` ⇒ 进待确认区（不进 members）。 */
+export async function addGroupMembers(config, input) {
+	const id = String(input?.id ?? '').trim();
+	const wanted = Array.isArray(input?.members)
+		? [...new Set(input.members.map(m => String(m ?? '').trim()).filter(Boolean))]
+		: [];
+	if (!wanted.length) {
+		throw httpError(400, 'members 不能为空。');
+	}
+	const groups = await readGroups(config);
+	const group = groups.find(g => g.id === id);
+	if (!group) {
+		throw httpError(404, `没有这个群：${id || '(没给 id)'}`);
+	}
+	const scan = await groupAgentsOf(config);
+	const known = new Set(scan.agents.map(a => a.id));
+	const unknown = wanted.filter(m => !known.has(m));
+	if (unknown.length) {
+		throw httpError(404, `这些 agent 不存在：${unknown.join('、')}`);
+	}
+	const before = new Set(group.members ?? []);
+	const pendSet = new Set(pendingOf(group).map(p => p.agentId));
+	const fresh = wanted.filter(m => !before.has(m) && !pendSet.has(m));
+
+	if (group.requireApproval === true) {
+		if (!fresh.length) {
+			return { group, pending: [], added: [] };
+		}
+		const rows = fresh.map(m => ({ id: randomUUID(), agentId: m, requestedAt: Date.now() }));
+		group.pending = [...pendingOf(group), ...rows];
+		group.updatedAt = Date.now();
+		const names = rows.map(r => scan.agents.find(a => a.id === r.agentId)?.name ?? r.agentId);
+		appendTranscript(group, { role: 'system', text: `待确认加入：${names.join('、')}（本群设了「加入需确认」）` });
+		await writeGroups(config, groups);
+		return { group, pending: rows, added: [] };
+	}
+
+	const added = fresh;
+	if (before.size + added.length > MAX_MEMBERS) {
+		throw httpError(400, `成员最多 ${MAX_MEMBERS} 个（现在 ${before.size} 个）。`);
+	}
+	if (added.length) {
+		group.members = [...before, ...added];
+		group.updatedAt = Date.now();
+		const names = added.map(m => scan.agents.find(a => a.id === m)?.name ?? m);
+		appendTranscript(group, { role: 'system', text: `已加入：${names.join('、')}` });
+		await writeGroups(config, groups);
+	}
+	return { group, added };
+}
+
+/**
+ * 处理一条待确认：确认 ⇒ 进成员；拒绝 ⇒ 只留痕。
+ * （没有待确认项 ⇒ 404；达成员上限 ⇒ 400）
+ */
+export async function decideGroupJoin(config, input) {
+	const id = String(input?.id ?? '').trim();
+	const agentId = String(input?.agentId ?? '').trim();
+	const accept = input?.accept === true;
+	if (!agentId) {
+		throw httpError(400, 'join-decide 需要 agentId');
+	}
+	return locked(async () => {
+		const groups = await readGroups(config);
+		const group = groups.find(g => g.id === id);
+		if (!group) {
+			throw httpError(404, `没有这个群：${id || '(没给 id)'}`);
+		}
+		const pending = pendingOf(group);
+		if (!pending.some(p => p.agentId === agentId)) {
+			throw httpError(404, `没有待确认的成员：${agentId}`);
+		}
+		group.pending = pending.filter(p => p.agentId !== agentId);
+		group.updatedAt = Date.now();
+		const scan = await groupAgentsOf(config).catch(() => ({ agents: [] }));
+		const name = scan.agents.find(a => a.id === agentId)?.name ?? agentId;
+		if (accept) {
+			if (!(group.members ?? []).includes(agentId)) {
+				if ((group.members?.length ?? 0) >= MAX_MEMBERS) {
+					throw httpError(400, `成员最多 ${MAX_MEMBERS} 个，先移出一些再确认。`);
+				}
+				group.members = [...(group.members ?? []), agentId];
+			}
+			appendTranscript(group, { role: 'system', text: `已确认加入：${name}` });
+		} else {
+			appendTranscript(group, { role: 'system', text: `已拒绝加入：${name}` });
+		}
+		await writeGroups(config, groups);
+		return { group, decided: agentId, accept };
+	});
+}
+
+/** 移出成员（幂等）。允许把群移空 —— 空群仍可改名/邀请，不会被自动删掉。 */
+export async function removeGroupMember(config, input) {
+	const id = String(input?.id ?? '').trim();
+	const member = String(input?.member ?? '').trim();
+	if (!member) {
+		throw httpError(400, 'member 不能为空。');
+	}
+	const groups = await readGroups(config);
+	const group = groups.find(g => g.id === id);
+	if (!group) {
+		throw httpError(404, `没有这个群：${id || '(没给 id)'}`);
+	}
+	if (!(group.members ?? []).includes(member)) {
+		return { group, removed: false };
+	}
+	const scan = await groupAgentsOf(config).catch(() => ({ agents: [] }));
+	const name = scan.agents.find(a => a.id === member)?.name ?? member;
+	group.members = group.members.filter(m => m !== member);
+	group.updatedAt = Date.now();
+	appendTranscript(group, { role: 'system', text: `已移出：${name}` });
+	await writeGroups(config, groups);
+	return { group, removed: true };
 }
 
 /** 从消息文本里解析被 @ 的成员（@id 或 @名字；名字含空格的先试最长匹配）。 */
@@ -157,34 +441,53 @@ function appendTranscript(group, entry) {
 	group.updatedAt = Date.now();
 }
 
+/** 唤醒策略四档（2026-10-21，对齐 DeepSeekBot 的 GroupWakePolicy）。 */
+export const GROUP_MODES = ['all', 'mentions', 'digest', 'silent'];
+/** 旧值兼容：`open` ⇒ 全员、`admin` ⇒ 仅 @（存量群文件不迁移也能读）。 */
+const MODE_ALIASES = { open: 'all', admin: 'mentions' };
+export const DEFAULT_WAKE = Object.freeze({ count: 5, intervalSeconds: 30 });
+
+/** 把任意存量值收敛成四档之一（非法值 ⇒ mentions，最保守）。 */
+export function normalizeGroupMode(value) {
+	const raw = String(value ?? '').trim().toLowerCase();
+	const mode = MODE_ALIASES[raw] ?? raw;
+	return GROUP_MODES.includes(mode) ? mode : 'mentions';
+}
+
+/** digest 的两个阈值（条数 1..100 / 秒 1..3600）。 */
+export function wakeOf(group) {
+	const w = group?.wake ?? {};
+	const count = Number.isInteger(w.count) && w.count >= 1 ? Math.min(w.count, 100) : DEFAULT_WAKE.count;
+	const intervalSeconds = Number.isInteger(w.intervalSeconds) && w.intervalSeconds >= 1 ? Math.min(w.intervalSeconds, 3600) : DEFAULT_WAKE.intervalSeconds;
+	return { count, intervalSeconds };
+}
+
 /**
- * 往群发消息：解析 @ → 派发成员（steer）→ 登记回收。
- * admin 模式：只发被 @ 的（一个都没 @ ⇒ 不落发、transcript 留一条系统提示，**如实** ✓）。
- * open 模式：发全员（@ 只是语气，不改变派发面）。
+ * 往群发消息：解析 @ → 按**唤醒策略**决定派发面 → steer → 登记回收。
+ *
+ * 四档（对齐 DSB 的 `all / mentions / digest / silent`）：
+ *   · `all`      —— 每条都派给全体成员；
+ *   · `mentions` —— 只派给被 @ 的（一个都没 @ ⇒ 不派发、留系统提示，**如实** ✓）；
+ *   · `digest`   —— 普通消息先攒着，**满 `wake.count` 条或等满 `wake.intervalSeconds` 秒**
+ *                   就汇总派发一次（超时由 `installGroupTracker` 里的 5s tick 兜底，
+ *                   见 `flushDueGroups` —— 2026-10-21 补齐，此前只有按条数触发）；
+ *   · `silent`   —— 只进群记录，不唤醒任何成员（`@` 也不唤醒）。
+ *
+ * 并发：本文件的写口都是「整份读 → 改 → 整份写」，而超时冲刷是在**定时器**里跑的
+ * ⇒ 两处必须串行，否则会互相覆盖（丢一条群消息）。所以 `postGroupMessage` 与
+ * `flushDueGroups` 都走模块级 `locked()`（同一进程内的 promise 链）。
  */
-export async function postGroupMessage(config, state, input) {
-	const id = String(input?.id ?? '').trim();
-	const text = String(input?.text ?? '').trim();
-	if (!text) {
-		throw httpError(400, '消息不能为空。');
-	}
-	const groups = await readGroups(config);
-	const group = groups.find(g => g.id === id);
-	if (!group) {
-		throw httpError(404, `没有这个群：${id || '(没给 id)'}`);
-	}
-	const scan = await scanAgents(agentsRootOf(config));
-	const mentioned = parseMentions(text, group.members, scan.agents);
-	const targets = group.mode === 'open'
-		? scan.agents.filter(a => group.members.includes(a.id))
-		: mentioned;
-	appendTranscript(group, { role: 'user', text });
-	if (targets.length === 0) {
-		// admin 模式没 @ 到任何人：不派发，留系统提示（不静默 ✓）
-		appendTranscript(group, { role: 'system', text: 'admin 模式：这条消息没有 @ 到任何成员，未派发。用 @成员名 指定响应者。' });
-		await writeGroups(config, groups);
-		return { group, dispatched: [] };
-	}
+/* ── 进程内串行（超时冲刷 vs HTTP 写入） ────────────────────────────────── */
+let writeChain = Promise.resolve();
+/** 把「整份读 → 改 → 整份写」串起来；前一个失败不阻断后续。 */
+function locked(fn) {
+	const next = writeChain.then(fn, fn);
+	writeChain = next.then(() => undefined, () => undefined);
+	return next;
+}
+
+/** 派一条文本给目标成员（steer + outbox 登记 + 单个失败如实入 transcript）。 */
+async function dispatchText(config, state, group, text, targets) {
 	const dispatched = [];
 	for (const agent of targets) {
 		try {
@@ -210,17 +513,149 @@ export async function postGroupMessage(config, state, input) {
 	if (dispatched.length) {
 		appendTranscript(group, { role: 'system', text: `⇢ 已接力：${dispatched.map(d => d.name).join('、')}` });
 	}
-	await writeGroups(config, groups);
-	return { group, dispatched };
+	return dispatched;
+}
+
+/** digest 最多留多少条原文（再多只留计数，避免群文件膨胀）。 */
+const DIGEST_KEEP = 50;
+
+/** digest 攒着的状态（计数 / 起始时间 / 原文缓冲）。 */
+function digestPendingOf(group) {
+	const d = group.digest ?? {};
+	return {
+		count: Number.isInteger(d.count) ? d.count : 0,
+		since: typeof d.since === 'number' ? d.since : Date.now(),
+		pending: Array.isArray(d.pending) ? d.pending : [],
+	};
+}
+
+/** 攒着的几条 → 一条汇总文本（1 条原样，多条编号）。 */
+function digestText(pending) {
+	if (pending.length <= 1) {
+		return pending[0] ?? '';
+	}
+	return `（汇总 ${pending.length} 条群消息）\n\n` + pending.map((t, i) => `${i + 1}. ${t}`).join('\n');
+}
+
+/**
+ * 超时冲刷：digest 群里「等满 `intervalSeconds` 还没攒够」的，先汇总派发一次。
+ *
+ * 由 `installGroupTracker` 的 5s tick 调用；也**导出给探针直接调**（不必真等 30 秒）。
+ * 返回 `{ flushed: [{ groupId, count }] }`。
+ */
+export async function flushDueGroups(config, state) {
+	return locked(async () => {
+		const groups = await readGroups(config);
+		const now = Date.now();
+		const flushed = [];
+		for (const group of groups) {
+			if (normalizeGroupMode(group.mode) !== 'digest') {
+				continue;
+			}
+			const d = digestPendingOf(group);
+			if (!d.pending.length) {
+				continue;
+			}
+			const wake = wakeOf(group);
+			if (now - d.since < wake.intervalSeconds * 1000) {
+				continue;
+			}
+			const scan = await groupAgentsOf(config).catch(() => ({ agents: [] }));
+			const everyone = scan.agents.filter(a => (group.members ?? []).includes(a.id));
+			const text = digestText(d.pending);
+			group.digest = { count: 0, since: now, pending: [] };
+			appendTranscript(group, {
+				role: 'system',
+				text: `digest 模式：等满 ${wake.intervalSeconds} 秒没攒够 ${wake.count} 条，先汇总派发 ${d.pending.length} 条。`,
+			});
+			await dispatchText(config, state, group, text, everyone);
+			flushed.push({ groupId: group.id, count: d.pending.length });
+		}
+		if (flushed.length) {
+			await writeGroups(config, groups);
+		}
+		return { flushed };
+	});
+}
+
+export async function postGroupMessage(config, state, input) {
+	const id = String(input?.id ?? '').trim();
+	const text = String(input?.text ?? '').trim();
+	if (!text) {
+		throw httpError(400, '消息不能为空。');
+	}
+	return locked(async () => {
+		const groups = await readGroups(config);
+		const group = groups.find(g => g.id === id);
+		if (!group) {
+			throw httpError(404, `没有这个群：${id || '(没给 id)'}`);
+		}
+		const scan = await groupAgentsOf(config);
+		const mentioned = parseMentions(text, group.members, scan.agents);
+		const mode = normalizeGroupMode(group.mode);
+		const everyone = scan.agents.filter(a => group.members.includes(a.id));
+		appendTranscript(group, { role: 'user', text });
+
+		let targets = [];
+		// 派发用的正文：digest 攒满时要换成"汇总文本"，其余档就是原消息
+		let dispatchBody = text;
+		if (mode === 'all') {
+			targets = everyone;
+		} else if (mode === 'mentions') {
+			targets = mentioned;
+		} else if (mode === 'silent') {
+			appendTranscript(group, { role: 'system', text: 'silent 模式：这条只进群记录，不唤醒成员（改「唤醒策略」才会派发）。' });
+			await writeGroups(config, groups);
+			return { group, dispatched: [] };
+		} else {
+			// digest：攒条数；满 count 条**立刻**汇总派发，攒不满则等 tick 超时冲刷
+			const wake = wakeOf(group);
+			const d = digestPendingOf(group);
+			d.count += 1;
+			d.pending = [...d.pending, text].slice(-DIGEST_KEEP);
+			group.digest = d;
+			if (d.count < wake.count) {
+				appendTranscript(group, {
+					role: 'system',
+					text: `digest 模式：已攒 ${d.count}/${wake.count} 条（最多等 ${wake.intervalSeconds} 秒）；攒满或到点就汇总派发。`,
+				});
+				await writeGroups(config, groups);
+				return { group, dispatched: [] };
+			}
+			group.digest = { count: 0, since: Date.now(), pending: [] };
+			appendTranscript(group, { role: 'system', text: `digest 模式：攒满 ${wake.count} 条，汇总派发一次。` });
+			dispatchBody = digestText(d.pending);
+			targets = everyone;
+		}
+
+		if (targets.length === 0) {
+			// mentions 模式没 @ 到任何人：不派发，留系统提示（不静默 ✓）
+			appendTranscript(group, { role: 'system', text: '仅 @ 派发模式：这条消息没有 @ 到任何成员，未派发。用 @成员名 指定响应者。' });
+			await writeGroups(config, groups);
+			return { group, dispatched: [] };
+		}
+		const dispatched = await dispatchText(config, state, group, dispatchBody, targets);
+		await writeGroups(config, groups);
+		return { group, dispatched };
+	});
 }
 
 /**
  * 装群回复回收（只装顶层角色，同 relay/assignments 的事件视野判据 ✓）。返回 dispose。
  * 成员会话回合结束 ⇒ 验证消费了我们的群消息 ⇒ 最终文本写回群 transcript（成员气泡）。
  */
-export function installGroupTracker(ctx, config, _state) {
+export function installGroupTracker(ctx, config, state) {
 	const seenSeq = new Map();
-	return ctx.on('agent/turn-stopping', async payload => {
+	// digest 超时冲刷（2026-10-21）：每 5 秒看一遍有没有「等满了还没攒够」的群。
+	// 5s 只是检测粒度，真正的到期判据在 flushDueGroups 里（`wake.intervalSeconds`）。
+	// `unref()`：别让这个定时器拖住 dsh Host 进程退出。
+	const digestTimer = setInterval(() => {
+		void flushDueGroups(config, state).catch(() => undefined);
+	}, 5000);
+	if (typeof digestTimer.unref === 'function') {
+		digestTimer.unref();
+	}
+	const disposeEvent = ctx.on('agent/turn-stopping', async payload => {
 		const session = payload?.agent?.session;
 		if (!session?.id || typeof session.snapshotEvents !== 'function') {
 			return;
@@ -249,7 +684,7 @@ export function installGroupTracker(ctx, config, _state) {
 		const { readLiveSession } = await import('./live.js');
 		const row = await readLiveSession(config, session.id).catch(() => null);
 		const preset = row?.row?.presetId ?? '';
-		const scan = await scanAgents(agentsRootOf(config)).catch(() => null);
+		const scan = await groupAgentsOf(config).catch(() => null);
 		const speaker = scan?.agents.find(a => presetIdOf(a.id) === preset);
 		let dirty = false;
 		for (const entry of pending.filter(p => answered.has(p.messageId))) {
@@ -279,6 +714,10 @@ export function installGroupTracker(ctx, config, _state) {
 			outboxResolve(config, session.id, [...answered]);
 		}
 	});
+	return () => {
+		clearInterval(digestTimer);
+		disposeEvent?.();
+	};
 }
 
 /** 诊断/测试用：清 outbox 内存 + 复位惰性读（真源已外迁 outbox.js ✓）。 */

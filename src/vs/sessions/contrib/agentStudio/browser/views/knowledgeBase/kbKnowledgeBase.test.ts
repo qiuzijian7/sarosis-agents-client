@@ -251,6 +251,40 @@ describe('KbFullTextIndex - Tag Index', () => {
 		const hits = index.search('编程');
 		assert.ok(hits.length >= 1);
 	});
+
+	// ⚠ 2026-10-19 标签口径修订（真机事故守卫，两条都有反向突变钉住）：
+	//   ① 乱码：mermaid `style A fill:#4a90d9,color:#fff` 曾被旧正则跨 `,color:` 配对成
+	//      标签 `4a90d9,color:`（用户知识库页「标签分类」出现 3 个乱码标签 ✗）。
+	//   ② 无标签：库里 133/166 篇只有 frontmatter tags ⇒ 只认正文 #标签# 全落「无标签」✗。
+	it('should NOT extract tags from mermaid/CSS color sequences (2026-10-19 乱码守卫)', () => {
+		const fs2 = createMockFileService();
+		const index2 = new KbFullTextIndex(fs2);
+		const text = '```mermaid\ngraph LR\nA --> B\nstyle A fill:#4a90d9,color:#fff\nstyle C fill:#f5a623,color:#fff\nstyle E fill:#d0021b,color:#fff\n```';
+		index2.updateDoc({ toString: () => 'file:///vault/m.md', fsPath: 'file:///vault/m.md' } as any,
+			'm.md', 'notes', 1_790_000_000, text.length, text);
+		assert.strictEqual(index2.searchByTag('4a90d9,color:').length, 0, 'mermaid 色值不得成为标签');
+		assert.strictEqual(index2.searchByTag('d0021b,color:').length, 0);
+		assert.strictEqual(index2.getAllTags().length, 0, '不得有任何乱码标签进索引');
+	});
+
+	it('should index frontmatter tags alongside body tags (2026-10-19 无标签守卫)', () => {
+		const fs2 = createMockFileService();
+		const index2 = new KbFullTextIndex(fs2);
+		const text = '---\ntitle: AI画风五档控制\ntags:\n  - 游戏设计\n  - AI绘图\n---\n\n正文没有任何 #标签# 写法。';
+		index2.updateDoc({ toString: () => 'file:///vault/f.md', fsPath: 'file:///vault/f.md' } as any,
+			'f.md', 'notes', 1_790_000_000, text.length, text);
+		assert.strictEqual(index2.searchByTag('游戏设计').length, 1, 'frontmatter tags 应进标签索引');
+		assert.strictEqual(index2.searchByTag('AI绘图').length, 1);
+		// 与正文标签合并去重（小写口径）：frontmatter 与正文同标签 ⇒ 只算一次
+		const text2 = '---\ntags: [前端, UI]\n---\n\n正文 #前端# #交互#。';
+		index2.updateDoc({ toString: () => 'file:///vault/g.md', fsPath: 'file:///vault/g.md' } as any,
+			'g.md', 'notes', 1_790_000_001, text2.length, text2);
+		const g = index2.searchByTag('前端');
+		assert.strictEqual(g.length, 1);
+		// ⚠ 钉**顺序**而不只是集合：frontmatter 全集保序在前、正文补集在后。
+		//   （反向实现"用正文集合去剔 frontmatter"会得到 ['UI','前端','交互'] ✓ 这条会红 ✓）
+		assert.deepStrictEqual([...(g[0].matchedTags ?? [])], ['前端', 'UI', '交互'], 'frontmatter 保序在前、正文补集在后');
+	});
 });
 
 // ---------------------------------------------------------------------------

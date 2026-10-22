@@ -717,6 +717,12 @@ export function apply(ctx, config = {}) {
 		description: '用 CDP 驱动**本机真实 Chrome**（带你的登录态）：快照页面、导航、点击、输入、滚动，'
 			+ '并处理登录墙、cookie 备份与页面内取值。'
 			+ 'op：status / snapshot / images / navigate / click / type / pressEnter / pressKey / scroll / back / reset / login / cookies / evaluate / waitFor / find。'
+			// 【选谁】2026-10-21：装了 ego lite 之后**有两个浏览器入口**，这里只做"选哪个"的提示，
+			// 不改任何执行路径（`browser` 仍然只认 Chrome 的 CDP 端点 —— ego 是另一套，见 vssaros-ego/README）。
+			// 为什么这条必须写在描述里：模型看不到插件清单，它只看工具描述 ⇒ 不写就等于"它不知道还有另一个"。
+			+ '【选谁】若同时装了 ego lite（有 `ego_run` 工具）：让 agent **在后台连开很多页面 / 长时间跑**'
+			+ '（每个 agent 一个隔离 Space、与你并行）的任务优先用 `ego_run`；'
+			+ '要**复用你当前这个 Chrome 的登录态 / 已打开的标签页**就用本工具 —— ego 是**另一个浏览器**，两边的登录态不共通。'
 			+ '【时序】动作类 op **完成后会自动等 DOM 稳定**（约 0.4s 内不抖了才回；`settleMs: 0` 关掉）⇒ 别再"点完立刻 snapshot"（那是拿旧帧 ✗）；'
 			+ '要等明确的条件用 `op: "waitFor"`（`text` / `textGone` / `selector` / `urlContains` / `delayMs` 至少一条，AND 语义，超时会如实报哪个没到）；'
 			+ '大页面别整页 snapshot：用 `op: "find"`（`text` 子串 / `regex` 正则，二选一）只回命中的那一小撮（ref / 标题 / 正文窗口）。'

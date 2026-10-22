@@ -331,7 +331,8 @@ export class AgentStudioDashboardEditorPane extends EditorPane {
 		const ops = el('div', 'dash-wb-ops');
 		ops.appendChild(this._workbenchOp('↗', '打开', () => void this._workbenchManager.open(entry.id)));
 		if (!entry.virtual) {
-			ops.appendChild(this._workbenchOp('📌', entry.pinned ? '取消固定（移入溢出菜单）' : '固定到活动栏',
+			// ★ 2026-10-21（用户：「固定到活动栏 改名成 固定」）：与 dsh 主页页同一措辞 ✓
+			ops.appendChild(this._workbenchOp('📌', entry.pinned ? '取消固定（移入溢出菜单）' : '固定',
 				() => this._workbenchManager.setPinned(entry.id, !entry.pinned), entry.pinned));
 			ops.appendChild(this._workbenchOp('👁', entry.hidden ? '在活动栏显示' : '从活动栏隐藏（含溢出菜单）',
 				() => this._workbenchManager.setHidden(entry.id, !entry.hidden), !entry.hidden));

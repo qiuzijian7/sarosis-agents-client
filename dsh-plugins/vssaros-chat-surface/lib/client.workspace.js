@@ -275,8 +275,42 @@ window.__ModuleLoader__.load({
 				const el = ref && ref.current;
 				if (!el || typeof el.getBoundingClientRect !== "function") { return null; }
 				const r = el.getBoundingClientRect();
-				return { top: r.top, bottom: r.bottom };
+				// ★ 2026-10-19：**必须带 left/right** —— header 那枚菜单已从 `position: absolute`
+				//   改成 `position: fixed`（见 headerMenuBox 的注释），fixed 需要绝对坐标；
+				//   只给 top/bottom 是当初"absolute 挂在 chip 的 relative 容器里"留下的口径 ✗。
+				return { top: r.top, bottom: r.bottom, left: r.left, right: r.right };
 			} catch { return null; }
+		}
+
+		/**
+		 * header 那枚工作区菜单的**视口坐标**（2026-10-19；用户报「工作区下拉框弹出 UI 层级错误」）。
+		 *
+		 * 病根：菜单原先是 `position: absolute; top: 100%; left: 0` 挂在 chip 的 relative 容器里，
+		 * 而 `zIndex: 1000` 只能在本**层叠上下文**内比较 —— dsh header 自己就是一个带 z-index 的
+		 * 定位容器，页面里的浮层（文档预览 / 侧栏 / 我们的自绘菜单）完全可能压在它上面 ⇒
+		 * 菜单被盖住一半、看起来"层级错乱"。hero 那枚早就是 `position: fixed`（挂在 body 语义的
+		 * 视口上，不受祖先层叠上下文约束）✓ —— 两处口径必须一致。
+		 *
+		 * 这里算 {left, top} 并夹在视口内（宽度按 `min(520px, 100vw - 24px)` 估，与样式里的 width 同口径）；
+		 * 下方放不下且上方更宽裕就上翻。拿不到 rect（未挂载/单测无 DOM）⇒ 返回空对象，
+		 * 退回 CSS 里的默认位置，**不猜 0 坐标** ✓。
+		 */
+		function headerMenuBox(ref) {
+			try {
+				const r = anchorRect(ref);
+				const vw = typeof window !== "undefined" ? window.innerWidth : 0;
+				const vh = typeof window !== "undefined" ? window.innerHeight : 0;
+				if (!r || !vw || !vh) { return {}; }
+				const panelW = Math.min(520, vw - 24);
+				const left = Math.max(8, Math.min(r.left, vw - panelW - 8));
+				const below = vh - r.bottom - 16;
+				const above = r.top - 16;
+				const MAX_H = 360;
+				if (below < 200 && above > below) {
+					return { left: left, top: Math.max(8, r.top - 4 - Math.min(MAX_H, above)) };
+				}
+				return { left: left, top: r.bottom + 4 };
+			} catch { return {}; }
 		}
 
 		/**
@@ -1212,7 +1246,10 @@ window.__ModuleLoader__.load({
 						// 锚点方向：本簇在 header **左侧** ⇒ 菜单必须**向右**展开（写 `right: 0` 会让菜单
 						// 越过视图左边缘、被左侧栏盖住一半 —— 2026-10-11 实测截图为证 ✗）。
 						menuStyle: Object.assign({
-							position: "absolute", top: "100%", left: 0, marginTop: 4, zIndex: 1000,
+							// ★ 2026-10-19：**fixed 而不是 absolute**（见 headerMenuBox 注释）——
+							//   absolute + zIndex 只在祖先层叠上下文内比较，会被页面浮层压住 ✗。
+							position: "fixed", zIndex: 1000,
+							...headerMenuBox(rootRef),
 							padding: 5, borderRadius: 10,
 							// 条目多时不许无限长（没给锚点时这条兜底 ✓；`fitMenu` 有锚点时会算出真上限 ✓）
 							maxHeight: 360, overflowY: "auto", minWidth: 300,
@@ -1220,7 +1257,14 @@ window.__ModuleLoader__.load({
 							//   （两栏容器带 `flex-wrap` ⇒ 再窄就落成上下两段，不会溢出 ✓）。
 							width: "min(520px, calc(100vw - 24px))", maxWidth: "calc(100vw - 24px)",
 							border: "1px solid var(--dsw-alias-border-l1, transparent)",
-							background: "var(--dsw-alias-bg-layer-1, var(--dsw-alias-bg-base))",
+							// ★★ 2026-10-19（用户报「工作区下拉框弹出 UI 层级错误」）：底色**必须是不透明层**。
+							//   `--dsw-alias-bg-layer-*` 是"叠层"语义的主题色，真实主题里**可能是半透明**
+							//   （`rgba(...)` 甚至全透明）⇒ 只写 `background: <layer>` 时下面的会话列表会
+							//   从面板里透出来，看起来就是"层级错乱 / 两块 UI 叠在一起"✗（与 sticky 组头
+							//   那次是同一类病：见 feedback_sticky_overlay_opaque_bg）。
+							//   ⇒ 用 `--dsw-alias-bg-base`（页面底色，实心）铺底，layer 色**只当叠加层**✓。
+							backgroundColor: "var(--dsw-alias-bg-base, #1e1e1e)",
+							backgroundImage: "linear-gradient(var(--dsw-alias-bg-layer-1, transparent), var(--dsw-alias-bg-layer-1, transparent))",
 							boxShadow: "0 8px 24px rgba(0,0,0,.35)",
 							// ★ 必须把**本 chip 的 rect** 交给 fitMenu：只按"整页 − 72"算 ⇒ 面板下半截
 							//   （含「＋ 添加工作区…」）落到视口外，而面板自身又是滚动容器 ⇒ 既看不到也滚不到 ✗
@@ -1339,7 +1383,9 @@ window.__ModuleLoader__.load({
 						width: "min(540px, calc(100vw - 24px))", minWidth: 300, maxWidth: "min(540px, calc(100vw - 24px))",
 						padding: 5, borderRadius: 10,
 						border: "1px solid var(--dsw-alias-border-l1, transparent)",
-						background: "var(--dsw-alias-bg-layer-1, var(--dsw-alias-bg-base))",
+						// 同 header 那枚：layer 色可能是半透明 ⇒ 实心底 + 叠层（见 header 处的长注释）
+						backgroundColor: "var(--dsw-alias-bg-base, #1e1e1e)",
+						backgroundImage: "linear-gradient(var(--dsw-alias-bg-layer-1, transparent), var(--dsw-alias-bg-layer-1, transparent))",
 						boxShadow: "0 8px 24px rgba(0,0,0,.35)",
 					}),
 				}));

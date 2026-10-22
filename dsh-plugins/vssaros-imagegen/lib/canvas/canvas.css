@@ -1,0 +1,310 @@
+/* 画布工作台的外壳样式（双模式：自由绘制 / 节点工作流）。
+ *
+ * ★ 为什么自己写样式而不是抄框架：画布页是**独立 webview**（不是 dsh 客户端页）
+ *   ⇒ 引 React/Vue 生态会多出几百 KB，还要跟宿主主题对齐 ⇒ 原生 CSS 变量最省。
+ *
+ * ★ 主题：全部走 `var(--vscode-*)` ⇒ 跟着 IDE 主题走（不硬编码颜色）。
+ *   （`--vscode-*` 是 webview 里宿主的变量；缺省值是给独立打开时的兜底。）
+ */
+
+:root {
+	--cv-bg: var(--vscode-editor-background, #1e1e1e);
+	--cv-panel: var(--vscode-sideBar-background, #252526);
+	--cv-panel2: var(--vscode-editorWidget-background, #252526);
+	--cv-border: var(--vscode-panel-border, #3c3c3c);
+	--cv-fg: var(--vscode-foreground, #cccccc);
+	--cv-dim: var(--vscode-descriptionForeground, #9a9a9a);
+	--cv-accent: var(--vscode-focusBorder, #0e639c);
+	--cv-ok: var(--vscode-testing-iconPassed, #73c991);
+	--cv-bad: var(--vscode-errorForeground, #f14c4c);
+	--cv-warn: var(--vscode-editorWarning-foreground, #cca700);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+	height: 100%;
+	margin: 0;
+	background: var(--cv-bg);
+	color: var(--cv-fg);
+	font: 13px/1.55 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+	overflow: hidden;
+}
+
+#app {
+	display: flex;
+	flex-direction: column;
+	height: 100vh;
+	container-type: inline-size;
+	container-name: app;
+}
+
+/* ── 顶栏 ─────────────────────────────────────────────────────────────── */
+#bar {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 10px;
+	border-bottom: 1px solid var(--cv-border);
+	background: var(--cv-panel);
+	flex: 0 0 auto;
+	flex-wrap: wrap;
+}
+
+#bar .title { font-weight: 600; margin-right: 4px; }
+
+.seg {
+	display: inline-flex;
+	border: 1px solid var(--cv-border);
+	border-radius: 6px;
+	overflow: hidden;
+}
+.seg button {
+	padding: 4px 12px;
+	border: 0;
+	background: transparent;
+	color: var(--cv-dim);
+	font: inherit;
+	cursor: pointer;
+}
+.seg button.on { background: var(--cv-accent); color: #fff; }
+.seg button:hover:not(.on) { background: var(--cv-panel2); color: var(--cv-fg); }
+
+#bar button.plain, #bar button.run {
+	padding: 4px 10px;
+	border-radius: 5px;
+	border: 1px solid var(--cv-border);
+	background: var(--cv-panel2);
+	color: var(--cv-fg);
+	font: inherit;
+	cursor: pointer;
+}
+#bar button.run { border-color: var(--cv-accent); color: var(--cv-accent); }
+#bar button.run:hover { filter: brightness(1.15); }
+/* 清空图这类"不可撤销"的按钮要显眼（别让用户手滑点掉半张图 ✗）。 */
+#bar button.plain.danger { color: var(--cv-bad); border-color: var(--cv-bad); }
+#bar button:disabled { opacity: .5; cursor: default; }
+
+.badge {
+	font-size: 12px;
+	color: var(--cv-dim);
+	border: 1px solid var(--cv-border);
+	border-radius: 10px;
+	padding: 1px 8px;
+}
+.badge[data-tone="ok"] { color: var(--cv-ok); border-color: var(--cv-ok); }
+.badge[data-tone="bad"] { color: var(--cv-bad); border-color: var(--cv-bad); }
+
+/* ── 三栏 ─────────────────────────────────────────────────────────────── */
+#main {
+	flex: 1 1 auto;
+	display: grid;
+	grid-template-columns: 216px minmax(0, 1fr) 280px;
+	min-height: 0;
+}
+#left, #right {
+	border-right: 1px solid var(--cv-border);
+	background: var(--cv-panel);
+	overflow: auto;
+	padding: 8px;
+}
+#right { border-right: 0; border-left: 1px solid var(--cv-border); }
+#stage { position: relative; min-width: 0; min-height: 0; overflow: hidden; }
+
+#left h4, #right h4 {
+	margin: 4px 0 6px;
+	font-size: 12px;
+	color: var(--cv-dim);
+	font-weight: 600;
+}
+
+.addbtn {
+	display: block;
+	width: 100%;
+	text-align: left;
+	margin-bottom: 4px;
+	padding: 6px 8px;
+	border-radius: 5px;
+	border: 1px solid var(--cv-border);
+	background: var(--cv-panel2);
+	color: var(--cv-fg);
+	font: inherit;
+	cursor: pointer;
+}
+.addbtn:hover { border-color: var(--cv-accent); }
+.addbtn small { color: var(--cv-dim); display: block; }
+
+.outline-item {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 3px 4px;
+	border-radius: 4px;
+	cursor: pointer;
+}
+.outline-item:hover { background: var(--cv-panel2); }
+.outline-item.on { background: var(--cv-panel2); outline: 1px solid var(--cv-accent); }
+.outline-item .dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+.outline-item .txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 参数表单 */
+.field { margin-bottom: 8px; }
+.field label { display: block; font-size: 12px; color: var(--cv-dim); margin-bottom: 2px; }
+.field input, .field textarea, .field select {
+	width: 100%;
+	padding: 4px 6px;
+	border-radius: 4px;
+	border: 1px solid var(--cv-border);
+	background: var(--vscode-input-background, #3c3c3c);
+	color: var(--vscode-input-foreground, #ccc);
+	font: inherit;
+	resize: vertical;
+}
+.field textarea { min-height: 62px; }
+.hint { font-size: 12px; color: var(--cv-dim); margin: 4px 0; }
+.hint.warn { color: var(--cv-warn); }
+.hint.bad { color: var(--cv-bad); }
+.rowbtns { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+.rowbtns button {
+	padding: 3px 9px;
+	border-radius: 4px;
+	border: 1px solid var(--cv-border);
+	background: var(--cv-panel2);
+	color: var(--cv-fg);
+	font: inherit;
+	cursor: pointer;
+}
+.rowbtns button.danger { color: var(--cv-bad); border-color: var(--cv-bad); }
+
+/* ── 自由绘制层（Excalidraw 挂载点）──────────────────────────────────── */
+#cv-root { position: absolute; inset: 0; }
+#cv-root.hidden { display: none; }
+
+/* ── 节点工作流层 ─────────────────────────────────────────────────────── */
+#graph-host { position: absolute; inset: 0; display: none; }
+#graph-host.on { display: block; }
+
+#graph-host .viewport {
+	position: absolute;
+	inset: 0;
+	overflow: hidden;
+	background:
+		radial-gradient(circle at 1px 1px, var(--cv-border) 1px, transparent 0) 0 0 / 24px 24px;
+	cursor: grab;
+}
+#graph-host .viewport.panning { cursor: grabbing; }
+
+#graph-host .world {
+	position: absolute;
+	left: 0; top: 0;
+	transform-origin: 0 0;
+	width: 0; height: 0;
+}
+#graph-host .wires {
+	position: absolute;
+	left: 0; top: 0;
+	overflow: visible;
+	pointer-events: none;
+}
+#graph-host .wires path { fill: none; stroke: #70707e; stroke-width: 2.5; }
+#graph-host .wires path.hot { stroke: var(--cv-accent); stroke-width: 3; }
+#graph-host .wires path.temp { stroke: var(--cv-accent); stroke-width: 2; stroke-dasharray: 5 4; }
+
+.gnode {
+	position: absolute;
+	width: 224px;
+	border-radius: 8px;
+	border: 1px solid var(--cv-border);
+	background: var(--cv-panel2);
+	box-shadow: 0 2px 8px rgba(0, 0, 0, .28);
+	user-select: none;
+	cursor: grab;
+}
+.gnode.sel { border-color: var(--cv-accent); box-shadow: 0 0 0 1px var(--cv-accent); }
+.gnode.dragging { cursor: grabbing; }
+.gnode .head {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 5px 8px;
+	border-bottom: 1px solid var(--cv-border);
+	font-size: 12px;
+}
+.gnode .head .kind { font-weight: 600; }
+.gnode .head .st { margin-left: auto; color: var(--cv-dim); font-size: 11px; }
+.gnode .head .st.done { color: var(--cv-ok); }
+.gnode .head .st.error { color: var(--cv-bad); }
+.gnode .head .st.running { color: var(--cv-warn); }
+.gnode .body { padding: 6px 8px; font-size: 12px; color: var(--cv-dim); }
+.gnode .body .t {
+	color: var(--cv-fg);
+	max-height: 46px;
+	overflow: hidden;
+	word-break: break-word;
+}
+.gnode .body img {
+	width: 100%;
+	border-radius: 4px;
+	display: block;
+	margin-top: 4px;
+}
+.gnode .body .meta { margin-top: 3px; font-size: 11px; }
+.gnode .body .meta.err { color: var(--cv-bad); }
+
+.gnode[data-kind="text"] .head { border-left: 3px solid #4ec9b0; }
+.gnode[data-kind="image"] .head { border-left: 3px solid #c586c0; }
+.gnode[data-kind="ref"] .head { border-left: 3px solid #dcdcaa; }
+
+.gnode .port {
+	position: absolute;
+	top: 50%;
+	width: 11px; height: 11px;
+	margin-top: -5.5px;
+	border-radius: 50%;
+	border: 2px solid var(--cv-accent);
+	background: var(--cv-panel2);
+	cursor: crosshair;
+}
+.gnode .port.in { left: -6px; }
+.gnode .port.out { right: -6px; }
+.gnode .port:hover { background: var(--cv-accent); }
+
+#graph-hint {
+	position: absolute;
+	left: 12px; bottom: 10px;
+	font-size: 12px;
+	color: var(--cv-dim);
+	background: var(--cv-panel2);
+	border: 1px solid var(--cv-border);
+	border-radius: 5px;
+	padding: 3px 8px;
+	pointer-events: none;
+}
+
+/* ── 底部运行日志 ─────────────────────────────────────────────────────── */
+#runlog {
+	flex: 0 0 auto;
+	max-height: 132px;
+	overflow: auto;
+	border-top: 1px solid var(--cv-border);
+	background: var(--cv-panel);
+	padding: 4px 10px;
+	font-size: 12px;
+	color: var(--cv-dim);
+}
+#runlog .line { padding: 1px 0; }
+#runlog .line.ok { color: var(--cv-ok); }
+#runlog .line.bad { color: var(--cv-bad); }
+#runlog .line.warn { color: var(--cv-warn); }
+
+/* ── 窄容器（侧栏承载面）⇒ 收起两侧栏，只留画布 ───────────────────────── */
+@container app (max-width: 900px) {
+	#main { grid-template-columns: minmax(0, 1fr); }
+	#left, #right { display: none; }
+	#bar .title { display: none; }
+}
+@container app (max-width: 640px) {
+	#bar { gap: 5px; padding: 4px 6px; }
+	#bar button.plain, #bar button.run { padding: 3px 7px; }
+	#runlog { max-height: 84px; }
+}

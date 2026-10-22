@@ -193,8 +193,14 @@ export const TOOL_SKILL_TOOLS = new Set(['read_skill', 'list_skills', 'skill_man
 /** Mermaid 图示族（renderMermaidDiagram 等，需专用渲染卡片） */
 export const TOOL_MERMAID_TOOLS = new Set(['rendermermaiddiagram', 'mermaid_render', 'render_diagram']);
 
-/** Draw.io 图示族（renderDrawioDiagram 等，需专用渲染卡片；mxGraphModel 只读预览） */
-export const TOOL_DRAWIO_TOOLS = new Set(['renderDrawioDiagram', 'renderdrawiodiagram', 'drawio_render', 'render_diagram']);
+/**
+ * Draw.io 图示族（renderDrawioDiagram 等，需专用渲染卡片；mxGraphModel 只读预览）
+ *
+ * ⚠ 2026-10-19：移除了 `'render_diagram'` —— 它不是 drawio 工具，是 dsh 侧 `@vssaros/dsh-pele`
+ *   的 **Mermaid** 渲染工具（同名却在两个族里 = 名单与实现脱节，本文件注释里已经栽过一次：
+ *   unreal_* 那次）。派发顺序上 mermaid 在前，留在这只是误导 ✗。
+ */
+export const TOOL_DRAWIO_TOOLS = new Set(['renderDrawioDiagram', 'renderdrawiodiagram', 'drawio_render']);
 
 /** Unreal Engine 工具（unreal_*，BunnySeek bridge）。
  *

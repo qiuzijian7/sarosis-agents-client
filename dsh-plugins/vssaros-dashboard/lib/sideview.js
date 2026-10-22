@@ -125,7 +125,7 @@ export function renderSideviewPage({ data, range = 'all', toolsRegistered = '', 
 	code { font-family: ui-monospace, Consolas, monospace; }
 </style>
 </head>
-<body data-vssaros-page="dashboard" data-vssaros-dashboard-surface="sideview">
+<body data-vssaros-page="dashboard" data-vssaros-surface="sideview" data-vssaros-dashboard-surface="sideview">
 <button type="button" class="open" data-dash-action="open-full">📊 打开完整主页</button>
 <div class="kgrid">
 ${kpis.map(kpi => `	<div class="k" data-dash-kpi="${escapeHtml(kpi.label)}"><div class="kl">${escapeHtml(kpi.label)}</div><div class="kv">${kpi.value}</div><div class="kd">${escapeHtml(kpi.detail)}</div></div>`).join('\n')}

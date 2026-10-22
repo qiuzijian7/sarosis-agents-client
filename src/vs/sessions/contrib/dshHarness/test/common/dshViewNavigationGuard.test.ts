@@ -63,7 +63,13 @@ suite('dsh 插件页导航守卫（app.ts 全局拦截 ⇄ DshViewHost 同源放
 			'isDshViewWebContents 的判据不是"按 Session 查集合"');
 		assert.ok(/DshViewHost\._knownSessions\.add\(\s*ses\s*\)/.test(host),
 			'没有任何地方把 dsh 视图的 Session 登记进 _knownSessions ⇒ 豁免永远不生效');
-		assert.ok(/session:\s*this\.session\b/.test(host), 'dsh 视图没有用 `this.session`（登记点所在的 getter）创建');
+		// ⚠ 2026-10-20：视图的 session 被抽成局部 `viewSession`（弹窗走独立的 `desktopSession` 分区，
+		//   见 `isolatedPool` 的注释）⇒ 不能再钉 `session: this.session` 这个字面量（假红）。
+		//   真正要钉的是"用的是**本类那两个 getter 产出的**分区" —— 登记就发生在 getter 里。
+		assert.ok(/const viewSession = [^\n]*this\.session\b/.test(host),
+			'dsh 视图的 Session 必须来自 this.session / desktopSession（登记点所在的 getter）');
+		assert.ok(/session:\s*viewSession\b/.test(host),
+			'webPreferences.session 必须用上面算出的 viewSession（否则登记的分区与实际用的不是一个）');
 	});
 
 	test('③ 豁免后导航权限仍在 DshViewHost：will-navigate 只放行同源', () => {

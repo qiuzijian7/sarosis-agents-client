@@ -47,32 +47,50 @@ export async function readSessionCaches(config, { limit = 300 } = {}) {
 	}
 	const sessions = [];
 	const errors = [];
-	const files = entries.filter(entry => entry.isFile() && entry.name.endsWith('.json')).map(entry => entry.name).sort();
-	for (const file of files) {
+	const files = entries.filter(entry => entry.isFile() && entry.name.endsWith('.json')).map(entry => entry.name);
+	// ★★ 2026-10-19（用户报障「新建会话后找不到之前的会话 item」）：
+	//   从前这里按**文件名**排序再截 `limit` 条 —— 文件名就是会话 id（`session-<uuid>`），
+	//   字典序与"最近用过"**毫无关系** ⇒ 截出来的是"字母序最前的 300 条"。
+	//   实测（本机 1684 个缓存文件）：页面只列出 `session-0044…`、`session-005f…` 这一批，
+	//   刚新建的 `session-1a3b…` 连这 300 条都进不去 ⇒ 用户看到"之前的会话不见了" ✗。
+	//   ⇒ 改成按 **mtime 倒序**取前 limit 条（最近有活动的会话优先），stat 顺手把大小带上，
+	//     下面的循环不再重复 stat（1684 次 stat 并行，实测可接受）。
+	const stats = await Promise.all(files.map(async name => {
+		try {
+			const info = await stat(join(dir, name));
+			return { name, mtime: info.mtimeMs ?? 0, size: info.size ?? 0 };
+		} catch {
+			return { name, mtime: 0, size: -1 };   // stat 失败：排最后，循环里按"读取失败"记一笔
+		}
+	}));
+	stats.sort((a, b) => (b.mtime - a.mtime) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+	for (const file of stats) {
 		if (sessions.length >= limit) {
 			break;
 		}
-		const path = join(dir, file);
+		const path = join(dir, file.name);
 		let text;
 		try {
-			const info = await stat(path);
-			if (info.size > 4_000_000) {
-				errors.push(`${file}：文件过大（${info.size} 字节），跳过`);
+			if (file.size < 0) {
+				throw new Error('stat failed');
+			}
+			if (file.size > 4_000_000) {
+				errors.push(`${file.name}：文件过大（${file.size} 字节），跳过`);
 				continue;
 			}
 			text = await readFile(path, { encoding: 'utf8' });
 		} catch {
-			errors.push(`${file}：读取失败`);
+			errors.push(`${file.name}：读取失败`);
 			continue;
 		}
-		const parsed = parseSessionCache(text, { id: file.replace(/\.json$/, '') });
+		const parsed = parseSessionCache(text, { id: file.name.replace(/\.json$/, '') });
 		if (parsed.error) {
-			errors.push(`${file}：${parsed.error}`);
+			errors.push(`${file.name}：${parsed.error}`);
 			continue;
 		}
 		sessions.push(parsed.session);
 	}
 	// 「还有多少没列出来」按**目录里的文件数**算：两个字段从同一个数派生 ⇒ 不可能各说各话。
-	const remaining = Math.max(0, files.length - sessions.length - errors.length);
+	const remaining = Math.max(0, stats.length - sessions.length - errors.length);
 	return { sessions, errors, dir, missing: null, truncated: remaining > 0, remaining };
 }

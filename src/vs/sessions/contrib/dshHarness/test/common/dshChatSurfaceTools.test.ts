@@ -5,8 +5,13 @@
 
 /**
  * chat-surface 的 `client.tools.js` —— **不再遮蔽官方 write/edit 工具卡**（用户要求），
- * 只把官方卡的「打开文件」通路（`ctx.sidebarRight.openResource`，右栏在聊天框里被隐藏）
- * 改接到 VsSaros 编辑器（页面桥 `window.vssarosDsh.openFile`）。
+ * 只把官方卡的「打开文件」通路（`ctx.sidebarRight.openResource`）改接到 VsSaros 编辑器
+ * （页面桥 `window.vssarosDsh.openFile`）。
+ *
+ * ⚠ 2026-10-19 前提变更（别按旧注释理解）：chat-only CSS **只隐藏左栏**，右栏（轨迹 / 任务 /
+ *   交付物）**保留** —— 用户报「右侧缺少用户消息定位 UI」后改的，轨迹里的"交互式时间概览"就是它。
+ *   ⇒ 改接的理由不再是"右栏被隐藏、点了没反应"，而是"**聊天框里点文件应该进 IDE 编辑器**（带行号），
+ *   而不是 dsh 自己的右栏预览"。断言因此改成正反两面：右栏保留 ✓ + 改接仍在 ✓。
  *
  * 两段测法（与 `dshChatSurfaceUsage.test.ts` 同）：① 假 ctx/shell 直接跑 install，验行为与回落；
  * ② 源码级契约断言（不许再出现遮蔽注册；chunk 必须在入口的 PART_CHUNKS 里）。
@@ -212,9 +217,17 @@ suite('chat-surface 工具卡（官方卡 + 打开通路改接）', () => {
 			assert.ok(entry.includes('./client.tools.js'), 'client.js 的 PART_CHUNKS 必须仍包含本 chunk');
 		});
 
-		test('改接的前提仍在：聊天框确实隐藏了右栏（否则改接可由「不隐藏」替代）', () => {
-			assert.ok(DSH_CHAT_ONLY_CSS.includes('data-slot="rightbar"'),
-				'chat-only CSS 若不再隐藏右栏，请重新评估这条打开通路改接是否还需要');
+		test('★ 前提的两面（2026-10-19 修正）：左栏隐藏 / **右栏保留** / 改接仍在', () => {
+			// ⚠ `DSH_CHAT_ONLY_CSS` 是**数组**（每条规则一项）。旧断言直接对数组 `.includes('data-slot="rightbar"')`
+			//   比较的是"整元素全等" ⇒ **恒假**（这条测试从写出来就没真正判过东西）；这里先归一成字符串。
+			const css = Array.isArray(DSH_CHAT_ONLY_CSS) ? DSH_CHAT_ONLY_CSS.join('\n') : String(DSH_CHAT_ONLY_CSS);
+			assert.ok(css.includes('[data-slot="sidebar"]'), '左侧栏仍要隐藏（IDE 那边已经有会话历史了）');
+			// 这条是**回归保护**：2026-10-19 之前把右栏也 display:none 了 ⇒ 用户报「右侧缺少用户消息定位 UI」
+			// （官方轨迹插件按轮次的时间线就在右栏）。再有人顺手把右栏加回 display:none，这里必须红。
+			assert.ok(!css.includes('data-slot="rightbar"'),
+				'右栏必须保留（轨迹 / 任务 / 交付物）；若确实要隐藏，先重新评估"点文件进 IDE"这条改接是否还成立');
+			// 改接现在的目的：在 **IDE 编辑器**里打开（带行号），不是替代右栏预览 ⇒ 形状仍在。
+			assert.ok(code.includes('openResource'), '改接仍在：聊天框里点文件要进 IDE，而不是 dsh 右栏预览');
 		});
 	});
 });

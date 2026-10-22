@@ -5,7 +5,7 @@
 
 import assert from 'assert';
 import {
-	VSSAROS_THIRD_PARTY_ORDER_MAX, containerPrefixOf, isRelativeIconPath, parseVssarosManifest, tryParseVssarosManifest,
+	VSSAROS_THIRD_PARTY_ORDER_MAX, containerPrefixOf, hasWorkbenchClient, isRelativeIconPath, parseVssarosManifest, tryParseVssarosManifest, workbenchIdentityOf,
 } from '../../common/vssarosPluginManifest.js';
 
 const builtinManifest = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
@@ -164,5 +164,93 @@ suite('vssarosPluginManifest（清单 schema 与命名空间规则）', () => {
 		assert.strictEqual(isRelativeIconPath('media/graph.svg'), true);
 		assert.strictEqual(isRelativeIconPath('codicon:graph'), false);
 		assert.strictEqual(isRelativeIconPath('file:///tmp/a.svg'), false);
+	});
+
+	// ── 工作台描述符（doc/workbench-refactor-plan.md P0-2；规则逐条对齐 dsh-desktop client.js:852-883）──
+	suite('workbench 描述符', () => {
+		const builtin = { pluginName: '@vssaros/dsh-kanban', builtin: true };
+		const withWb = (wb: unknown) => builtinManifest({ workbench: wb });
+
+		test('内置：缺省身份 = vssaros:<module>，panes 缺省 catalog+core，图标沿用 activityBar', () => {
+			const m = parseVssarosManifest(withWb({ title: '看板' }), builtin);
+			assert.deepStrictEqual(m.workbench, { title: '看板', icon: 'codicon:checklist', repository: 'vssaros:kanban', panes: ['catalog', 'core'] });
+			assert.strictEqual(workbenchIdentityOf(m.workbench!), 'vssaros/kanban');
+		});
+
+		test('全字段（与官方同名同义）', () => {
+			const m = parseVssarosManifest(withWb({
+				title: { zh: '看板', en: 'Board' }, description: '任务看板', icon: 'codicon:tasklist', repository: 'vssaros:kanban',
+				customFrame: true, headerLayout: 'compact', layout: { businessSide: 'left', businessWidth: 0.5 }, panes: ['core'],
+			}), builtin);
+			assert.strictEqual(m.workbench?.customFrame, true);
+			assert.strictEqual(m.workbench?.headerLayout, 'compact');
+			assert.deepStrictEqual(m.workbench?.layout, { businessSide: 'left', businessWidth: 0.5 });
+			assert.deepStrictEqual(m.workbench?.panes, ['core']);
+		});
+
+		test('第三方：身份必须是 GitHub 仓库，且按官方口径小写', () => {
+			const third = { pluginName: '@acme/dsh-board', builtin: false };
+			const base = { manifestVersion: 1, module: 'board', view: { kind: 'page', route: '/x/board/' } };
+			const m = parseVssarosManifest({ ...base, workbench: { title: 'Board', repository: 'https://github.com/Acme/Board.git' } }, third);
+			assert.strictEqual(workbenchIdentityOf(m.workbench!), 'acme/board');
+			assert.match(tryParseVssarosManifest({ ...base, workbench: { title: 'Board' } }, third).error ?? '', /repository 必填/);
+			assert.match(tryParseVssarosManifest({ ...base, workbench: { title: 'Board', repository: 'https://gitlab.com/a/b' } }, third).error ?? '', /github\.com/);
+			// 保留身份只许内置用（第三方冒用 vssaros:* ✗）
+			assert.match(tryParseVssarosManifest({ ...base, workbench: { title: 'Board', repository: 'vssaros:board' } }, third).error ?? '', /只许 VsSaros 内置/);
+		});
+
+		test('校验失败一律报错（不降级）—— 每条官方规则一个反例', () => {
+			const bad: Array<[unknown, RegExp]> = [
+				[{}, /title/],
+				[{ title: '' }, /title/],
+				[{ title: '一二三四五六七八九十一二三四五六七八九十一二三四五' }, /24 字/],
+				[{ title: 'x', customFrame: 'yes' }, /customFrame/],
+				[{ title: 'x', headerLayout: 'tight' }, /headerLayout/],
+				[{ title: 'x', layout: { businessSide: 'top' } }, /businessSide/],
+				[{ title: 'x', layout: { businessWidth: 0.2 } }, /businessWidth/],
+				[{ title: 'x', layout: { businessWidth: 0.71 } }, /businessWidth/],
+				[{ title: 'x', layout: { width: 0.5 } }, /不认识的字段/],
+				[{ title: 'x', panes: [] }, /panes/],
+				[{ title: 'x', panes: ['detail'] }, /panes/],
+				[{ title: 'x', panes: ['core', 'core'] }, /重复/],
+				[{ title: 'x', repository: 'vssaros:other' }, /vssaros:kanban/],
+				[{ title: 'x', id: 'kanban' }, /不认识的字段：id/],
+			];
+			for (const [wb, re] of bad) {
+				const r = tryParseVssarosManifest(withWb(wb), builtin);
+				assert.ok(r.error, `应当报错：${JSON.stringify(wb)}`);
+				assert.match(r.error!, re, `报错原因不对：${JSON.stringify(wb)} → ${r.error}`);
+			}
+			// 边界值合法（0.25 / 0.7 闭区间）
+			assert.ok(parseVssarosManifest(withWb({ title: 'x', layout: { businessWidth: 0.25 } }), builtin).workbench);
+			assert.ok(parseVssarosManifest(withWb({ title: 'x', layout: { businessWidth: 0.7 } }), builtin).workbench);
+		});
+
+		test('无界面插件（view.kind=none）不能声明工作台', () => {
+			const r = tryParseVssarosManifest(builtinManifest({ activityBar: undefined, view: { kind: 'none' }, workbench: { title: 'x' } }), builtin);
+			assert.match(r.error ?? '', /view\.kind=none/);
+		});
+	});
+
+	// ── 编辑区 workbench 视图的判据（2026-10-22，doc/workbench-refactor-plan.md §5 步骤 4）──
+	suite('hasWorkbenchClient', () => {
+		const pkg = (over: Record<string, unknown> = {}) => ({
+			name: '@vssaros/dsh-scheduler',
+			exports: { '.': './lib/index.js', './client': './lib/client.js' },
+			dsh: { client: { platform: 'web', inject: ['@vssaros/dsh-workbenches'] } },
+			vssaros: { manifestVersion: 1, module: 'scheduler', workbench: { title: '定时任务' } },
+			...over,
+		});
+		test('三件齐全（workbench 段 + ./client 入口 + inject 宿主）⇒ true', () => {
+			assert.strictEqual(hasWorkbenchClient(pkg()), true);
+		});
+		test('缺任一件 ⇒ false（加载链不完整 = 不能开 workbench 视图）', () => {
+			assert.strictEqual(hasWorkbenchClient(pkg({ vssaros: { manifestVersion: 1, module: 'scheduler' } })), false);
+			assert.strictEqual(hasWorkbenchClient(pkg({ exports: { '.': './lib/index.js' } })), false);
+			assert.strictEqual(hasWorkbenchClient(pkg({ dsh: { client: { platform: 'web', inject: ['@deepseek-ai/dsh-client-ui-slots'] } } })), false);
+			assert.strictEqual(hasWorkbenchClient(pkg({ dsh: {} })), false);
+			assert.strictEqual(hasWorkbenchClient(undefined), false);
+			assert.strictEqual(hasWorkbenchClient('x'), false);
+		});
 	});
 });

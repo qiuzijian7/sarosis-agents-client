@@ -386,6 +386,9 @@ export function renderDashboardPage({ data, config, toolsRegistered, liveService
 	.wb-ops { display: flex; gap: 4px; margin-top: 6px; flex-wrap: wrap; }
 	.wb-op { font: inherit; font-size: 11px; color: inherit; background: rgba(128,128,128,.16); border: 1px solid transparent; border-radius: 3px; padding: 1px 6px; cursor: pointer; }
 	.wb-op:hover { border-color: var(--vscode-focusBorder, #007acc); }
+	/* 禁用态（如"主页恒为固定"）⇒ 看起来就不可点，别让 hover 边框误导 ✓ */
+	.wb-op[disabled] { opacity: .55; cursor: default; }
+	.wb-op[disabled]:hover { border-color: transparent; }
 	.clock { text-align: center; }
 	.clock-t { font-family: ui-monospace, Consolas, monospace; font-size: 28px; letter-spacing: 1px; }
 	.clock-d { font-size: 11px; color: var(--vscode-descriptionForeground, #999); margin-top: 2px; }

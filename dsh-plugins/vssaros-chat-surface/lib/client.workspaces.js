@@ -101,6 +101,26 @@ window.__ModuleLoader__.load({
 		 * 会话归属：dsh 快照条目的 sessionIds（真源 ✓）；条目按路径被记录认领 ⇒ 该条目的会话
 		 * 都算这一组的；会话的根标签 = 它所在条目的 path 命中记录的哪个根。
 		 */
+		/**
+		 * 会话显示标题（2026-10-21，用户：左栏要像 dsh-desktop ⇒ 不许整列 `session-xxxx`）。
+		 *
+		 * 真机症状：`s.title` 在本部署里**普遍为空**（标题插件没产出）⇒ 原实现直接回落 `sid`，
+		 * 于是每行都是 `session-1eaede4-…`。这里按「有就用、没有就取摘要」的顺序找：
+		 *   ① `title` ② `summary.displayTitle`（官方会话头用的就是它）
+		 *   ③ `firstUserMessage` / `preview` / `lastMessage` ④ 最后才回落 id（宁可难看也不编造 ✓）
+		 * 上限 48 字：侧栏只有 ~244px，再长也会被 CSS 省略号吞掉，先截断省一次布局 ✓。
+		 */
+		function titleOf(s, sid) {
+			const pick = (v) => (typeof v === "string" && v.trim() ? v.trim() : "");
+			const summary = (s && s.summary) || {};
+			const raw = pick(s && s.title) || pick(summary.displayTitle)
+				|| pick(s && s.firstUserMessage) || pick(s && s.firstUserMessageText)
+				|| pick(s && s.preview) || pick(s && s.lastMessage);
+			if (!raw) { return sid; }
+			const flat = raw.replace(/[\r\n\t]+/g, " ").trim();
+			return flat.length > 48 ? flat.slice(0, 48) + "…" : flat;
+		}
+
 		function buildSidebar(options) {
 			const items = (options && options.workspaces) || [];
 			const records = (options && options.records) || [];
@@ -113,7 +133,8 @@ window.__ModuleLoader__.load({
 				const s = byId[sid] || {};
 				return {
 					id: sid,
-					title: (typeof s.title === "string" && s.title.trim()) ? s.title.trim() : sid,
+					// 标题：title → summary.displayTitle → 首条消息摘要 → id（见 titleOf 的注释）
+					title: titleOf(s, sid),
 					at: (typeof s.updatedAt === "number" && s.updatedAt) || (typeof s.createdAt === "number" && s.createdAt) || 0,
 					rootName: rootName || null,
 					isPrimaryRoot: isPrimaryRoot !== false,
@@ -202,13 +223,10 @@ window.__ModuleLoader__.load({
 					const ws = typeof ctx.get === "function" ? ctx.get("workspaces") : undefined;
 					const snap = ws && ws.list ? ws.list.getSnapshot() : null;
 					const owner = ((snap && snap.items) || []).filter((w) => w && Array.isArray(w.sessionIds) && w.sessionIds.indexOf(sid) >= 0)[0];
-					if (owner && ctx.uiWorkspace && typeof ctx.uiWorkspace.openWorkspace === "function") {
-						// openWorkspace 返回 Promise；失败也继续试一次 openSession（可能其实已在 roster 里）
-						void Promise.resolve(ctx.uiWorkspace.openWorkspace(owner.workspaceId))
-							.catch(() => undefined)
-							.then(doOpen);
-						return;
-					}
+					// ★ 2026-10-20：不再先 `openWorkspace(owner)` —— 官方实现会 `sessions.create({ workspaceId })`
+					//   **新建一条空会话**再导航过去（见 client.js alignWorkspace 的注释）。
+					//   工作区由选中会话推出，直接 openSession 即可。`owner` 只用于诊断。
+					state.lastOpenOwner = owner ? owner.workspaceId : null;
 					doOpen();
 				} catch (e) {
 					notify("warn", "打开会话失败：" + String((e && e.message) || e));
@@ -292,7 +310,8 @@ window.__ModuleLoader__.load({
 				list: { flex: "1 1 auto", minHeight: 0, overflowY: "auto" },
 				row: { display: "flex", alignItems: "center", gap: 7, minHeight: 28, padding: "3px 8px", borderRadius: 6, cursor: "pointer", whiteSpace: "nowrap", color: "var(--dsw-alias-label-secondary, #a3a3a3)" },
 				lbl: { flex: "1 1 auto", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" },
-				meta: { fontSize: 11, color: "var(--dsw-alias-label-tertiary, #737373)", flex: "0 0 auto" },
+				// 时间戳降为 10px（2026-10-21 对齐 dsh-desktop：它是次要信息，别跟标题抢视线）
+				meta: { fontSize: 10, color: "var(--dsw-alias-label-tertiary, #737373)", flex: "0 0 auto", opacity: .9 },
 				badge: { fontSize: 10, lineHeight: "15px", padding: "0 6px", borderRadius: 8, border: "1px solid var(--dsw-alias-border-l2, #383838)", color: "var(--dsw-alias-label-tertiary, #737373)", flex: "0 0 auto" },
 				rtag: { fontSize: 10, lineHeight: "15px", padding: "0 6px", borderRadius: 4, border: "1px solid var(--dsw-alias-border-l2, #383838)", color: "var(--dsw-alias-label-tertiary, #737373)", flex: "0 0 auto", maxWidth: 74, overflow: "hidden", textOverflow: "ellipsis" },
 				card: {

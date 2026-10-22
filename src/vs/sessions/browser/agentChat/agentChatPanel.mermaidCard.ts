@@ -3,6 +3,8 @@ import { markRenderActivity } from '../../../base/common/renderActivityTrace.js'
 import { IToolCall } from './agentChatTypes.js';
 import { AgentChatPanelWebCard } from './agentChatPanel.webCard.js';
 import { parseToolArgsLoose } from './toolArgsJson.js';
+// 2026-10-19：主题探测搬出本模块（面板之外的代码也要用）⇒ 这里改为引用
+import { detectDiagramTheme } from '../diagramTheme.js';
 
 // 2026-09-05：SVG 注入统一改为 <img> + Blob URL（_createMermaidSvgImage）。
 // 该 fork 的 Chromium 对 Trusted Types 极严格：innerHTML（含清空）、DOMParser
@@ -26,45 +28,22 @@ function _svgIntrinsicSize(svg: string): { width: number; height: number } | und
 }
 
 /**
- * ★★ 2026-09-20：图表渲染主题探测（mermaid 卡 / mermaid fence 兜底 / drawio 卡 / 预览标签**共用** ✓）。
+ * 容器可用宽度（px），交给 pele 做**自适应排版**。
  *
- * 痛点（用户截图：暗色聊天里的 mermaid 卡整块**白色** ✗）：旧判定只看 `body.classList`
- * 有没有 `vs-dark` 等类 ✗ —— 该判定可能为 **false**（主题类不一定挂在 body 上、或类名不同 ✗）
- * ⇒ `theme='default'` ⇒ 渲染**亮色** SVG，且 `renderChart` 会把预览面板**显式刷成 #ffffff** ✗✓。
- *
- * 修法：类名只是**快路径** ✓；不确定时读 **body 的实际计算背景色**做亮度判定
- * （`lum = 0.299R + 0.587G + 0.114B < 128` ⇒ 暗色 ✓ —— 背景色不会骗人 ✓）；
- * 拿不到颜色默认暗色（本聊天 UI 以暗色为主 ✓）。
- * 打一行 `[DiagramTheme]` 诊断（bodyClass + bg + 结论 ✓）—— 下次日志可直接归因 ✓。
+ * ⚠ 拿不到宽度（未挂载 / 布局还没算）就返回 `undefined` ⇒ 渲染器按"不限宽"处理。
+ *   为什么不当成 0：`maxWidth` 传 0 会被 pele 当成"极窄" ⇒ 排版直接崩成竖条 ✗；
+ *   "不知道"和"很窄"是两件事，不能混 ✗。
  */
-export function detectDiagramTheme(container: HTMLElement): 'dark' | 'default' {
-	const doc = container.ownerDocument;
-	const bodyCls = doc.body.classList;
-	let theme: 'dark' | 'default' =
-		(bodyCls.contains('vs-dark') || bodyCls.contains('hc-black')
-			|| bodyCls.contains('vscode-dark') || bodyCls.contains('vscode-high-contrast'))
-			? 'dark'
-			: (bodyCls.contains('vs') || bodyCls.contains('hc-light')) ? 'default' : 'dark';
-	let bg = 'n/a';
-	if (bodyCls.value.trim() === '' || (!bodyCls.contains('vs-dark') && !bodyCls.contains('vs') && !bodyCls.contains('hc-black') && !bodyCls.contains('hc-light'))) {
-		// 一个主题类都没命中 ⇒ 类名判定不可信 ✗ ⇒ 用实际背景色复核 ✓
-		const view = doc.defaultView;
-		bg = view ? view.getComputedStyle(doc.body).backgroundColor : 'n/a';
-		const m = bg.match(/-?\d+(?:\.\d+)?/g);
-		if (m && m.length >= 3) {
-			const lum = (Number(m[0]) * 299 + Number(m[1]) * 587 + Number(m[2]) * 114) / 1000;
-			theme = lum < 128 ? 'dark' : 'default';
-		}
-	}
-	try { console.info(`[DiagramTheme] bodyClass="${bodyCls.value}" bg=${bg} → ${theme}`); } catch { /* ignore */ }
-	return theme;
+function availableWidth(container: HTMLElement): number | undefined {
+	const w = container?.clientWidth ?? 0;
+	return w > 0 ? w : undefined;
 }
 
 /**
  * Mermaid 图示工具卡片（renderMermaidDiagram）
  *
  * 在聊天中显示 Mermaid 图表卡片。
- * - 实际渲染交给 `_agentStudio.renderMermaidSvg`（隐藏 webview）产出 SVG，卡片内以
+ * - 实际渲染交给 `_agentStudio.renderDiagramSvg`（随包 pele 引擎）产出 SVG，卡片内以
  *   Blob URL `<img>` 展示（规避工作台 TrustedTypes CSP）。
  * - 卡片内显示标题、状态、源代码（默认折叠）、在新标签页打开、复制 SVG、复制源代码。
  *
@@ -153,7 +132,11 @@ export abstract class AgentChatPanelMermaidCard extends AgentChatPanelWebCard {
 
 		// 宽松修复链：mermaid markup 里常含 `\n` 之外的转义，裸 parse 失败会让整张图空白
 		const args: Record<string, unknown> = parseToolArgsLoose(tc.args);
-		const diagramMarkup = (args?.markup || args?.diagram || '').toString();
+		// ★ 2026-10-19：兜底加 `source`。dsh 侧的 `@vssaros/dsh-pele` 工具叫 `render_diagram`、
+		//   参数名为 `source`（pele 不只画 mermaid，故不叫 markup）；而 `render_diagram` 在
+		//   base.ts 的 TOOL_MERMAID_TOOLS 里 ⇒ 会派发到本卡片。只认 markup/diagram 会读到空串
+		//   ⇒ 卡片渲染出一张空白图 ✗（"工具成功了但图是空的"，症状离真因很远）。
+		const diagramMarkup = (args?.markup || args?.diagram || args?.source || '').toString();
 		let diagramTitle: string | undefined = args?.title?.toString() || undefined;
 		if (!diagramTitle && tc.result && typeof tc.result === 'string') {
 			const m = tc.result.match(/\[Mermaid\]\s*Diagram\s*"([^"]+)"/);
@@ -402,14 +385,16 @@ export abstract class AgentChatPanelMermaidCard extends AgentChatPanelWebCard {
 				previewPanel.appendChild(loading);
 				const cmd = this._onExecuteCommand;
 				if (!cmd) {
-					loading.textContent = 'Mermaid 渲染不可用（_onExecuteCommand 未注册）';
+					loading.textContent = '图表渲染不可用（_onExecuteCommand 未注册）';
 					console.warn('[MermaidCard] _onExecuteCommand unavailable');
 					return;
 				}
 				try {
-					const svg = await cmd('_agentStudio.renderMermaidSvg', fullMarkup, theme);
+					// ★ 2026-10-19：把可用宽度交给 pele ⇒ 窄容器（侧栏摘要版）里它**改排版**，
+					//   而不是把整张图等比缩到看不清（pele 相对 mermaid 的核心差别之一）。
+					const svg = await cmd('_agentStudio.renderDiagramSvg', fullMarkup, theme, availableWidth(previewPanel));
 					if (typeof svg !== 'string' || svg.indexOf('<svg') === -1) {
-						console.warn('[MermaidCard] renderMermaidSvg returned invalid:', typeof svg, svg && String(svg).slice(0, 120));
+						console.warn('[MermaidCard] renderDiagramSvg returned invalid:', typeof svg, svg && String(svg).slice(0, 120));
 						clearNode(previewPanel);
 						this._mcShowError(previewPanel, loading, '无法渲染该 Mermaid 图示（渲染器返回空结果）');
 						return;
@@ -502,14 +487,14 @@ export abstract class AgentChatPanelMermaidCard extends AgentChatPanelWebCard {
 		markRenderActivity('mermaid');
 		const cmd = this._onExecuteCommand;
 		if (!cmd) {
-			loadingEl.textContent = 'Mermaid 渲染不可用';
+			loadingEl.textContent = '图表渲染不可用';
 			return;
 		}
 
 		try {
 			// ★ 2026-09-20：同上，鲁棒主题探测 ✓
 			const isDark = detectDiagramTheme(this._container) === 'dark';
-			const svg = await cmd('_agentStudio.renderMermaidSvg', markup.replace(/\\n/g, '\n'), isDark ? 'dark' : 'default');
+			const svg = await cmd('_agentStudio.renderDiagramSvg', markup.replace(/\\n/g, '\n'), isDark ? 'dark' : 'default', availableWidth(previewPanel));
 			if (typeof svg === 'string' && svg.indexOf('<svg') !== -1) {
 				const safeSvg = this._sanitizeMermaidSvg(svg);
 				if (safeSvg) {

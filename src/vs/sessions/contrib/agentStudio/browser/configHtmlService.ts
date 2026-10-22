@@ -23,6 +23,7 @@ import type { ConfigHtmlCapability, ChatMessage, AgentConfigHtml } from '../../.
 import { ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 // constants import no longer needed (WORKSPACE_DATA_DIR/AGENTS_DIR) — using getAgentDir()
 import { postProcessImguiBlocks, IMGUI_SDK_SCRIPT, IMGUI_SDK_STYLES } from './imguiBlockProcessor.js';
+import { compileFunction } from './shared/trustedScript.js';
 import { IAgentOSService } from '../common/agentOS.js';
 import { ToolSecurityLevel } from '../common/providers.js';
 import type {
@@ -1067,8 +1068,7 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 			// Custom parsers may reference the global `marked` if they bring it themselves.
 			const moduleObj: { exports: unknown } = { exports: {} };
 			const exportsObj: Record<string, unknown> = {};
-			// eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
-			const fn = new Function('module', 'exports', 'console', source);
+			const fn = compileFunction(['module', 'exports', 'console'], source);
 			fn(moduleObj, exportsObj, { log: (..._a: unknown[]) => undefined, warn: (..._a: unknown[]) => undefined });
 			const exported: unknown = (moduleObj.exports && Object.keys(moduleObj.exports as object).length)
 				? moduleObj.exports

@@ -115,6 +115,15 @@ export function personaProjection() {
 				: { personaId: hit.personaId ?? null, name: hit.name ?? null, text: hit.text ?? null, atSeq };
 		},
 		stateVersion: PERSONA_STATE_VERSION,
+		// ★ 2026-10-20：**带 wire 才会下发给页面**（dsh-session-projection 只把有 `wire` 的单元送进
+		//   控制流 / 连接 baseline / `session/projections` RPC）。此前没有 ⇒ 页面
+		//   `summary.projectionValues["vssaros-persona"]` 恒为 undefined ⇒ 人格 chip 只能靠本地缓存兜底 ✗。
+		//   视图**不带 `text`**（人格全文可能很长，页面只需要 id + 名字）；状态本身不变 ⇒ stateVersion 不用改。
+		//   ⚠ 同一 key 的多次 register 以**先注册**的定义为准（其余只计引用）——两处注册都调本函数，定义一致 ✓。
+		wire: {
+			viewSchema: { parse: value => value },
+			view: state => ({ personaId: state.personaId ?? null, name: state.name ?? null, atSeq: state.atSeq ?? -1 }),
+		},
 	};
 }
 

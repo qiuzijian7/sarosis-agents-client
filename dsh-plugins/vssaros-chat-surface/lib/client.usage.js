@@ -56,8 +56,21 @@ window.__ModuleLoader__.load({
 			const reasoning = num(u.reasoningTokens);
 			const total = num(u.totalTokens);
 			let prompt = num(u.inputTokens);
-			if (prompt === null && (cacheRead !== null || cacheWrite !== null || uncached !== null)) {
-				prompt = (cacheRead || 0) + (cacheWrite || 0) + (uncached || 0);
+			// ★★ 2026-10-20（用户报「命中率 pill 显示 100%」）：
+			//   实测 dsh 现在上报的口径是【inputTokens **不含** cacheRead】：
+			//     { inputTokens: 161, outputTokens: 188, totalTokens: 153309, cacheReadTokens: 152960 }
+			//   其中 total ≈ cacheRead + input + output ✓
+			//   而从前这里直接拿 inputTokens 当分母 ⇒ 152960 / 161 = 95006% ⇒ 被 `cacheHitRateText`
+			//   的 `prompt - cacheRead <= 0` 兜成 **"100%"**（用户看到的就是这个假 100% ✗）。
+			//   ⇒ 判据：**只有当 inputTokens 明显小于缓存量时**，才认定"input 不含缓存"，
+			//     分母补成 `cacheRead + cacheWrite + uncached(或 input)`；旧口径（input 已含全部输入）
+			//     下 input ≥ cacheRead ⇒ 不会误加，行为不变 ✓
+			const cacheSum = (cacheRead === null && cacheWrite === null) ? null
+				: (cacheRead || 0) + (cacheWrite || 0) + (uncached !== null ? uncached : (prompt || 0));
+			if (cacheSum !== null && cacheSum > 0 && (prompt === null || prompt < (cacheRead || 0) + (cacheWrite || 0))) {
+				prompt = cacheSum;
+			} else if (prompt === null && cacheSum !== null) {
+				prompt = cacheSum;
 			}
 			const routes = Array.isArray(u.routes) && u.routes.length > 0 && u.routes[0] && typeof u.routes[0] === "object"
 				? { provider: typeof u.routes[0].provider === "string" ? u.routes[0].provider : null,
@@ -137,30 +150,64 @@ window.__ModuleLoader__.load({
 		 * （"响应没有该字段"与"积分 0"必须区分 ⇒ 前者仍显示 `—`）。
 		 */
 		function creditInWindow(samples, window) {
-			let credit = null;
-			let responses = 0;
-			for (const s of samples || []) {
-				if (!s || typeof s.at !== "number") {
-					continue;
+			/**
+			 * 按时间窗取样本；`strict` 时再要求 model/provider 完全一致。
+			 *
+			 * ★★ 2026-10-20（用户报「积分 pill 显示 `—`」）真机日志佐证：
+			 *   代理**读到了** `[dshCredit] route=vssaros-codebuddy model=deepseek-v4-flash-ioa
+			 *   status=200 credit=0.15`，而页面仍显示 `—`。
+			 *   病根：会话侧记的模型是 `deepseek-v4-flash`，网关抓到的带 **`-ioa` 后缀**
+			 *   ⇒ 完全相等永远不成立 ⇒ 样本被全过滤 ⇒ credit=null（"没数据"，不是"0"）。
+			 *   ⇒ 先严格匹配；**严格匹配一个样本都没有**时才放宽 model/provider（只按时间窗）。
+			 *     时间窗本身已经把范围收到"本回合"，放宽的代价远小于"整块数据丢失"。
+			 */
+			/**
+			 * `level`：`strict` = model+route 全等；`route` = route 全等 + model **同族**
+			 * （一方是另一方加 `-后缀`：`deepseek-v4-flash` ↔ `deepseek-v4-flash-ioa`）。
+			 */
+			const sameFamily = (a, b) => a === b || a.startsWith(b + "-") || b.startsWith(a + "-");
+			const collect = (level) => {
+				let credit = null;
+				let responses = 0;
+				// ★ 2026-10-20（重启后用户报「积分显示异常」）：`start` 缺失时从前**不设下界**
+				//   ⇒ 把样本池里所有历史响应都算进本回合（越用越大 ✗）。这里给一个 10 分钟的有界兜底。
+				const floor = typeof window.start === "number" ? window.start
+					: (typeof window.now === "number" ? window.now - 10 * 60_000 : null);
+				for (const s of samples || []) {
+					if (!s || typeof s.at !== "number") {
+						continue;
+					}
+					if (typeof floor === "number" && s.at < floor) {
+						continue;
+					}
+					if (typeof window.end === "number" && s.at > window.end) {
+						continue;
+					}
+					if (window.provider && s.route && s.route !== window.provider) {
+						continue;
+					}
+					if (window.model && s.model) {
+						if (level === "strict" ? s.model !== window.model : !sameFamily(String(s.model), String(window.model))) {
+							continue;
+						}
+					}
+					responses += 1;
+					if (typeof s.credit === "number" && isFinite(s.credit)) {
+						credit = (credit === null ? 0 : credit) + s.credit;
+					}
 				}
-				if (typeof window.start === "number" && s.at < window.start) {
-					continue;
-				}
-				if (typeof window.end === "number" && s.at > window.end) {
-					continue;
-				}
-				if (window.model && s.model && s.model !== window.model) {
-					continue;
-				}
-				if (window.provider && s.route && s.route !== window.provider) {
-					continue;
-				}
-				responses += 1;
-				if (typeof s.credit === "number" && isFinite(s.credit)) {
-					credit = (credit === null ? 0 : credit) + s.credit;
-				}
+				return { credit, responses };
+			};
+			// 两档递降：精确（model+route）→ route 相同且 model **同族**（网关常加后缀：
+			//   会话侧 `deepseek-v4-flash` ↔ 网关 `deepseek-v4-flash-ioa`）。
+			// ⚠ 2026-10-20 去掉了"纯时间窗"档、也不接受"route 同但 model 完全无关"：主进程的积分样本是
+			//   **广播**的，同一网关上别的会话（别的模型）的请求会落进同一时间窗 ⇒ 算进来就是记错账 ✗
+			//   （单测「provider/model 不符的其它会话请求被排除」钉的正是这两条）。对不上 ⇒ 如实显示「—」。
+			for (const level of ["strict", "route"]) {
+				const r = collect(level);
+				if (r.responses > 0) { return r; }
 			}
-			return { credit, responses };
+			return { credit: null, responses: 0 };
 		}
 		/** 本轮耗时：`12s` / `1m33s`。 */
 		function formatTurnMs(ms) {
@@ -221,6 +268,8 @@ window.__ModuleLoader__.load({
 				start: startedAt, end: endedAt,
 				provider: usage && usage.routes ? usage.routes.provider : null,
 				model: usage && usage.routes ? usage.routes.model : null,
+				// ⚠ `now` 用于"`start` 缺失时的 10 分钟有界兜底"（否则会累积全池样本 ⇒ 积分越用越大 ✗）
+				now: typeof input.now === "number" ? input.now : undefined,
 			};
 			const viaProxy = direct === null ? creditInWindow(input.samples, window) : null;
 			return {
@@ -232,18 +281,118 @@ window.__ModuleLoader__.load({
 				tokens: usage && usage.total !== null ? usage.total : null,
 				credit: direct !== null ? direct : viaProxy.credit,
 				creditResponses: viaProxy ? viaProxy.responses : 0,
+				// ★ 2026-10-20：把**积分窗口**一并交出去 —— 组件要能在 credit 事件到达时**自己重算**
+				//   （选择器结果被缓存，store 不变就不会重算；见 TurnUsageFooter 里的注释）。
+				creditWindow: window,
 				hitRateText: usage ? cacheHitRateText(usage.cacheRead, usage.prompt) : null,
 			};
 		}
 
+		/**
+		 * 从聊天 store 的 `timeline.turns`（Map<turn, { turn, start?, end? }>）里找**正在进行**的回合。
+		 *
+		 * 为什么需要（2026-10-20 用户：要求 LLM 输出过程中实时显示 pill）：composer dock 那份页脚
+		 * 是用同一个组件包出来的，但 composer 槽**不传 `turn`** ⇒ 选择器第一句 `!turn` 直接 return null
+		 * ⇒ 流式期间这一份**从来没渲染过** ✗。turnTail 槽要等回合结束才出现 ⇒ 用户只能等说完才看到数字。
+		 * 这里自己从 store 定位：最大回合号且有 start、没有 end 的那一个；没有 ⇒ null（不渲染）。
+		 */
+		function liveTurnOf(timeline) {
+			const turns = timeline && timeline.turns;
+			if (!turns || typeof turns.values !== "function") {
+				return null;
+			}
+			let best = null;
+			for (const t of turns.values()) {
+				if (!t || typeof t.turn !== "number" || !t.start || t.end !== undefined) {
+					continue;
+				}
+				if (!best || t.turn > best.turn) {
+					best = t;
+				}
+			}
+			return best;
+		}
+
+		/**
+		 * 正在流式输出的这一步的**输出 token 估算**（网关只在每步结束时给真实 usage）。
+		 *
+		 * 口径：粗略按字符折算 —— CJK 约 1 字 ≈ 1 token、其余约 4 字符 ≈ 1 token（与常见 BPE 量级一致）。
+		 * 只用于运行中 pill 的"正在涨"效果，界面上以 `≈` 标明；这一步结束后由真实 usage 取代，不进入任何汇总口径。
+		 * @param partial - store 的 `legacy.partial`（`{ turn, step, blocks: [{ kind, text }] }`）
+		 * @param turnNo - 只估算属于该回合的 partial
+		 * @returns 估算值；没有在途输出 ⇒ 0
+		 */
+		function estimatePartialTokens(partial, turnNo) {
+			if (!partial || partial.turn !== turnNo || !Array.isArray(partial.blocks)) {
+				return 0;
+			}
+			let cjk = 0;
+			let other = 0;
+			for (const b of partial.blocks) {
+				const text = b && typeof b.text === "string" ? b.text : "";
+				for (let i = 0; i < text.length; i++) {
+					const c = text.charCodeAt(i);
+					if ((c >= 0x3400 && c <= 0x9fff) || (c >= 0xf900 && c <= 0xfaff) || (c >= 0x3040 && c <= 0x30ff) || (c >= 0xac00 && c <= 0xd7af)) {
+						cjk++;
+					} else {
+						other++;
+					}
+				}
+			}
+			return cjk + Math.ceil(other / 4);
+		}
+
+		/**
+		 * 会话账本投影的 key（与 `dsh-plugins/vssaros-bridge/lib/credit.js` 的 `CREDIT_PROJECTION_KEY`
+		 * **字面一致**；插件之间不能互相 import ⇒ 两份常量，由契约测试钉住）。
+		 */
+		const CREDIT_PROJECTION_KEY = "vssaros-credit";
+		/**
+		 * 从投影视图里取某回合的账本条目。
+		 * 视图形状（Host 侧 `creditProjection().wire.view`）：`{ byTurn: { [turn]: { credit, responses } }, outside }`。
+		 * 形状不对 / 没有该回合 ⇒ `null`（调用方退回旧的时间窗估算）。
+		 */
+		function ledgerEntryFor(view, turn) {
+			if (!view || typeof view !== "object" || !view.byTurn || typeof view.byTurn !== "object") {
+				return null;
+			}
+			if (!turn || typeof turn.turn !== "number") {
+				return null;
+			}
+			const cell = view.byTurn[turn.turn];
+			if (!cell || typeof cell !== "object" || typeof cell.responses !== "number" || cell.responses <= 0) {
+				return null;
+			}
+			const credit = typeof cell.credit === "number" && isFinite(cell.credit) ? cell.credit : null;
+			return { credit, responses: cell.responses };
+		}
+
 		/** 已收到的积分样本（进程内、按视图；由 `vssaros-dsh-credit` DOM 事件喂）。 */
 		const creditSamples = [];
+		/** 样本键 → 已收（**去重**用：同一批样本可能被推两次，见下面 pushCreditSample）。 */
+		const creditSampleKeys = new Set();
 		const creditListeners = new Set();
 		const CREDIT_SAMPLES_MAX = 200;
+		/**
+		 * 样本键：同一次上游响应 = 同一 (at, route, model, credit)。
+		 *
+		 * ★★ 2026-10-20（用户报「重启后积分 pill 显示 —」→ 修法带来的新风险）：
+		 *   历史样本从磁盘恢复后，宿主要给已就绪的页面**再补发一遍**（`replayCreditsAgain`），
+		 *   而页面池是按时间窗**求和**的 ⇒ 同一批样本进池两次，积分就翻倍 ✗✗。
+		 *   这里做**内容级去重**：补发是幂等的，宿主也就不必精算"哪些还没发过"。
+		 */
+		const creditKeyOf = (s) => [s.at, s.route, s.model === null ? "" : s.model,
+			s.credit === null ? "" : s.credit].join("|");
 		function pushCreditSample(sample) {
+			const key = creditKeyOf(sample);
+			if (creditSampleKeys.has(key)) {
+				return;      // 已经收过 —— 不重复计数（也顺带免掉一次无意义的重渲染）
+			}
+			creditSampleKeys.add(key);
 			creditSamples.push(sample);
 			while (creditSamples.length > CREDIT_SAMPLES_MAX) {
-				creditSamples.shift();
+				const dropped = creditSamples.shift();
+				if (dropped) { creditSampleKeys.delete(creditKeyOf(dropped)); }
 			}
 			for (const fn of creditListeners) {
 				try { fn(); } catch { /* 一个订阅者出错不影响其它 */ }
@@ -290,8 +439,18 @@ window.__ModuleLoader__.load({
 					if (!a || !b) { return false; }
 					return a.ms === b.ms && a.tokens === b.tokens && a.running === b.running
 						&& a.interrupted === b.interrupted
+						// ★★ 2026-10-20（用户报「积分 pill 一直显示 —」）真因：
+						//   这个比较器**不漏 credit**（也不漏命中率）⇒ `useChat(selector)` 认为"没变化"，
+						//   于是返回**缓存的旧 info**（credit: null）。
+						//   `subscribeCredit` 的 `creditTick` 只能让组件重渲染，**不会让选择器重算** ⇒
+						//   样本到了也不显示 —— 只有 `ms` 在变（running 每秒涨）时才"顺带"更新，
+						//   而积分样本通常在 SSE **末块**才到、此时 ms 已固定 ⇒ 最后一次永远进不来 ✗✗
 						&& a.credit === b.credit && a.creditResponses === b.creditResponses
-						&& a.hitRateText === b.hitRateText && a.usageKey === b.usageKey;
+						&& a.hitRateText === b.hitRateText
+						&& a.credit === b.credit && a.creditResponses === b.creditResponses
+						&& a.hitRateText === b.hitRateText && a.usageKey === b.usageKey
+						// 运行中的流式估算与起点（漏比较 ⇒ 选择器返回旧值，pill 不涨 ✗）
+						&& a.partialTokens === b.partialTokens && a.startedAt === b.startedAt;
 				}
 				const TURN_PILL_STYLE = {
 					display: "inline-flex", alignItems: "center", gap: 4,
@@ -389,7 +548,12 @@ window.__ModuleLoader__.load({
 				}
 
 				function TurnUsageFooter(props) {
-					const turn = props.turn;
+					// composer dock（liveOnly）不传 `turn` ⇒ 自己从 store 的 timeline 找正在进行的回合（见 liveTurnOf）。
+					//   `useChat` 的选择器要稳定可比 ⇒ 只取回合号；完整回合对象在选择器里现读。
+					const liveTurnNo = props.liveOnly && props.useChat
+						? props.useChat((s) => { const t = liveTurnOf(s && s.timeline); return t ? t.turn : null; })
+						: null;
+					const turn = props.liveOnly ? (liveTurnNo === null ? null : { turn: liveTurnNo }) : props.turn;
 					// 积分样本到达（主进程代理推送）时强制重渲染：这些数据不在 dsh store 里，
 					// 不会自己触发订阅更新。
 					const [, creditTick] = react.useState(0);
@@ -440,11 +604,20 @@ window.__ModuleLoader__.load({
 						}
 						// 已中断：回合结束原因为 interrupted（被中断）或 aborted（用户停止）；回落 closing.status。
 						const reasonKind = turn.end && turn.end.data && turn.end.data.reason ? turn.end.data.reason.kind : null;
-						return deriveTurnFooter({
-							turn, tailUsage, stepUsages, legacyMs,
+						// 回合记录以 store 的 timeline 为准（start/end 时间）：composer 那份只知道回合号；
+						// turnTail 那份传来的对象若缺时间，也从这里补齐。
+						const rec = (s.timeline && s.timeline.turns && typeof s.timeline.turns.get === "function"
+							&& s.timeline.turns.get(turn.turn)) || turn;
+						const derived = deriveTurnFooter({
+							turn: rec, tailUsage, stepUsages, legacyMs,
 							now: Date.now(), samples: creditSamples,
 							interrupted: reasonKind === "interrupted" || reasonKind === "aborted",
 						});
+						// ★ 2026-10-20（用户：LLM 输出过程中实时显示 pill）：网关只在**每步结束**时给 usage，
+						//   正在输出的这一步按流式文本估算输出 token（界面以 `≈` 标明；这一步结束即由真实值取代）。
+						derived.partialTokens = derived.running ? estimatePartialTokens(s.legacy && s.legacy.partial, turn.turn) : 0;
+						derived.startedAt = rec && rec.start && typeof rec.start.time === "number" ? rec.start.time : null;
+						return derived;
 					}, sameTurnUsage) : null;
 					const running = !!(info && info.running);
 					react.useEffect(() => {
@@ -454,13 +627,58 @@ window.__ModuleLoader__.load({
 						const id = setInterval(() => setTick(t => t + 1), 1000);
 						return () => clearInterval(id);
 					}, [running]);
+					// ★★ 2026-10-20（用户：积分仍显示 `—`）—— 上一轮的修法**无效**，原因在这：
+					//   `useChat(selector)` 的选择器结果**只在 store 变化时重算**；我上一轮把 credit 加进了
+					//   `sameTurnUsage`，但 `subscribeCredit` 的 tick 只让组件**重渲染**、不碰 store
+					//   ⇒ 比较器根本不会被调用 ⇒ `info.credit` 永远停在首算值（那时池里还没样本）✗✗
+					//   ⇒ 正解：积分计算**移出选择器**，用组件自己的 state，由 credit 事件驱动重算。
+					//     （`info.credit` 保留为首屏兜底：selector 首算时若已有样本就直接有值。）
+					const win = info && info.creditWindow ? info.creditWindow : null;
+					const winKey = win ? String(win.start ?? "") + ":" + String(win.end ?? "") : "";
+					// 用一个 useState 持有的可变盒子当"最新窗口"引用（等价 useRef，但不依赖 useRef ——
+					// 宿主的 react 一定有 useState；单测的假 react 也只提供 useState/useEffect）。
+					const [winBox] = react.useState(() => ({ current: null }));
+					const winRef = winBox || { current: null };
+					winRef.current = win;
+					const [liveCredit, setLiveCredit] = react.useState(null);
+					react.useEffect(() => {
+						const recompute = () => {
+							const w = winRef.current;
+							setLiveCredit(w ? creditInWindow(creditSamples, w) : null);
+						};
+						recompute();
+						return subscribeCredit(recompute);
+					}, [winKey]);
+					// ★★ 2026-10-20：**会话账本**（Host 侧投影 `vssaros-credit`，见 vssaros-bridge/lib/credit.js）。
+					//   Host 按 LLM 调用区间把积分归属到 (会话, 回合) 并写进会话日志 ⇒ 这里拿到的是**本会话
+					//   本回合**的准确值，重启/换窗口也还在。`useProjection` 是 session 作用域槽的标准 props
+					//   （turnTail 槽声明 `scope: "session"`）；拿不到（老 Host / 非 session 槽）就退回下面的时间窗估算。
+					//   ⚠ 这是 hook：必须**无条件**调用（props.useProjection 的有无对同一槽实例是稳定的 ✓）。
+					const creditLedgerView = typeof props.useProjection === "function" ? props.useProjection(CREDIT_PROJECTION_KEY) : undefined;
+					const ledgerEntry = ledgerEntryFor(creditLedgerView, turn);
 					if (!info) {
+						return null;
+					}
+					// ★ 2026-10-20（用户要求「LLM 输出过程中就显示 pill」）：
+					//   composer 那份（见 install 里的第二个槽）**只在运行中**渲染 ——
+					//   回合结束后由 `conversation.chat.turnTail` 那份负责，不会出现两份 ✗。
+					if (props.liveOnly && !info.running) {
 						return null;
 					}
 					const pills = [];
 					// 四个 chip **常驻**（数据未到用 0 / — 占位），回合结束后保留最终值。
-					pills.push(turnPill("d", "◷", formatTurnMs(info.ms === null ? 0 : info.ms), "本轮耗时"));
-					pills.push(turnPill("t", "Σ", formatTurnTokens(info.tokens === null ? 0 : info.tokens), "本轮 tokens"));
+					// ★ 2026-10-20：运行中的耗时**在渲染时**现算（`Date.now() - startedAt`）——选择器结果被缓存，
+					//   两步之间（工具执行期间）store 不动 ⇒ 选择器里的 ms 会停住；秒级 ticker 触发的重渲染走这里才会走表。
+					const liveMs = info.running && typeof info.startedAt === "number" ? Math.max(0, Date.now() - info.startedAt) : null;
+					pills.push(turnPill("d", "◷", formatTurnMs(liveMs !== null ? liveMs : (info.ms === null ? 0 : info.ms)), "本轮耗时"));
+					// tokens：已完成步骤的真实值 + 正在输出这一步的估算（有估算时前缀 `≈`，tooltip 说明）。
+					const partialTokens = info.running && typeof info.partialTokens === "number" ? info.partialTokens : 0;
+					const tokenBase = info.tokens === null ? 0 : info.tokens;
+					pills.push(turnPill("t", "Σ",
+						(partialTokens > 0 ? "≈" : "") + formatTurnTokens(tokenBase + partialTokens),
+						partialTokens > 0
+							? "本轮 tokens（已完成步骤 " + formatTurnTokens(tokenBase) + " + 正在输出约 " + formatTurnTokens(partialTokens) + "，这一步结束后换成网关真实值）"
+							: "本轮 tokens"));
 					// 缓存命中率：常驻 chip，hover 出「Token 消耗明细」浮层（无缓存字段时显示 `—`）。
 					const hoverHandlers = info.usage ? {
 						onEnter: (e) => {
@@ -478,12 +696,28 @@ window.__ModuleLoader__.load({
 							? "缓存命中率：还没有缓存读数（该 provider 未上报 cacheRead/cacheWrite）"
 							: "缓存命中率（hover 看 Token 消耗明细）",
 						null, hoverHandlers));
-					// 积分消耗：主进程计费探针抓到的按轮求和（无数据源时显示「积分 —」）。
+					// 积分消耗。取数优先级：
+					//   ① 会话账本（Host 投影，**准确归属**到本会话本回合）；
+					//   ② `liveCredit`（旧链路：广播样本按回合时间窗估算，credit 事件驱动重算）；
+					//   ③ `info.credit`（旧链路选择器首算，兜底）。
+					const liveHas = liveCredit && typeof liveCredit.credit === "number" && isFinite(liveCredit.credit);
+					const creditValue = ledgerEntry ? ledgerEntry.credit : (liveHas ? liveCredit.credit : info.credit);
+					const creditResponses = ledgerEntry ? ledgerEntry.responses
+						: (liveCredit && liveCredit.responses > 0 ? liveCredit.responses : info.creditResponses);
 					pills.push(turnPill("c", "◎",
-						info.credit === null ? "积分 —" : "积分 " + formatTurnCredit(info.credit),
-						info.credit === null
-							? "本轮积分：暂未从网关响应里读到 credit（探针未就绪或该响应无该字段）"
-							: "本轮积分消耗（按回合时间窗汇总 " + info.creditResponses + " 个响应）"));
+						creditValue === null ? "积分 —" : "积分 " + formatTurnCredit(creditValue),
+						ledgerEntry
+							? (creditValue === null
+								? "本轮积分：会话账本记了 " + creditResponses + " 个响应，但网关都没上报 credit"
+								: "本轮积分消耗（会话账本：" + creditResponses + " 个响应）")
+							: creditValue === null
+								// ★ 2026-10-20（用户反复报 `—`）：把**判定依据**写进 tooltip ——
+								//   「池里几条样本 / 本回合窗口」能一眼区分是"事件没到"还是"窗口过滤掉了"，
+								//   而不是只说一句"没读到"让人继续猜 ✗。
+								? "本轮积分：暂未读到 credit —— 会话账本无记录，样本池 " + creditSamples.length + " 条"
+									+ (win && typeof win.start === "number" ? "，本回合窗口 " + new Date(win.start).toLocaleTimeString() : "")
+									+ (win && typeof win.end === "number" ? "–" + new Date(win.end).toLocaleTimeString() : "–现在")
+								: "本轮积分消耗（估算：按回合时间窗汇总 " + creditResponses + " 个响应）"));
 					if (info.interrupted) {
 						pills.push(turnPill("i", "⏹", "已中断", "本轮被中断", {
 							color: "var(--dsw-alias-state-warn-primary, currentColor)",
@@ -523,6 +757,22 @@ window.__ModuleLoader__.load({
 							dispose();
 						};
 					});
+					// ★★ 2026-10-20（用户要求：**LLM 输出过程中**就要看到这些 pill）：
+					//   `conversation.chat.turnTail` 的官方语义是"回合末尾"⇒ 流式期间这个槽根本不渲染
+					//   ⇒ 用户要等 LLM 说完才看到耗时/tokens/命中率/积分 ✗（组件内部其实早就支持 running：
+					//   `deriveTurnFooter` 会用 `now - start` 算耗时、按各 step 的 usage 实时求和）。
+					//   ⇒ 同一份数据再挂到 **composer dock**（输入区下方、会话期间常驻），只在 running 时渲染；
+					//     回合结束后它自己 return null，交给 turnTail 那份显示（不重复 ✓）。
+					//   ⚠ 包 try/catch：老版本/别的装配里没有该槽时，只是少了"流式中"的那份，不能让整个部件装不上。
+					try {
+						const LIVE_SLOT = "conversation.composer.dock";
+						ctx.slots.inject(LIVE_SLOT, () => ctx.slots.register(
+							{ name: LIVE_SLOT, id: "vssaros-turn-usage-live", order: 100 },
+							(props) => react.createElement(TurnUsageFooter, Object.assign({}, props, { liveOnly: true })),
+						));
+					} catch (e) {
+						state.liveUsageError = String((e && e.message) || e);
+					}
 					state.turnUsage = true;
 				} catch (e) {
 					state.error = String((e && e.message) || e);
@@ -535,6 +785,8 @@ window.__ModuleLoader__.load({
 			usageKeyOf, deriveTurnFooter, creditInWindow, normalizeCreditSample,
 			formatTurnMs, formatTurnTokens, formatTurnCredit, pickCredit,
 			pushCreditSample, creditSamples,
+			CREDIT_PROJECTION_KEY, ledgerEntryFor,
+			liveTurnOf, estimatePartialTokens,
 		};
 		return module.exports;
 	}

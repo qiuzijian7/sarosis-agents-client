@@ -9,6 +9,22 @@ import { RawContextKey } from '../../platform/contextkey/common/contextkey.js';
 //#region < --- Active Session --- >
 
 export const IsNewChatSessionContext = new RawContextKey<boolean>('isNewChatSession', true);
+
+/**
+ * 「这个**编辑器组**在中间栏（main part）里吗」——**组作用域**的 key。
+ *
+ * 为什么必须是**组作用域**而不是全局 key（2026-10-21，中间栏多聊天入口 UI）：
+ *   `MenuId.EditorTitle`（组标题栏右侧动作区）与 `MenuId.EmptyEditorGroup`（空组右上角）
+ *   都用**该组自己的** scoped context key service 解析 when
+ *   （`editorGroupView.ts:2095` 用 `activeEditorPane.scopedContextKeyService ?? this.scopedContextKeyService`；
+ *    `editorGroupView.ts:418` 空组 ActionBar 用 `this.scopedContextKeyService`）
+ *   ⇒ 每个组能**各自**回答"我在不在中间栏" ✓。
+ *   用全局 key 的话，中间栏之外的组（右侧 agent 专区、popout 窗口）也会长出同一个 ＋ 按钮，
+ *   而点击落点又按**活动**组算 ⇒ 按钮所在位置与实际行为对不上 ✗。
+ *
+ * 维护方：`sessions/contrib/agentStudio/browser/middleColumnChatEntry.ts`。
+ */
+export const EditorGroupInMainPartContext = new RawContextKey<boolean>('vssaros.editorGroupInMainPart', false, localize('vssaros.editorGroupInMainPart', "Whether the editor group lives in the main (middle) editor part"));
 export const IsNewChatInSessionContext = new RawContextKey<boolean>('isNewChatInSession', false, localize('isNewChatInSession', "Whether the user is composing a new chat within the active session"));
 export const ActiveSessionProviderIdContext = new RawContextKey<string>('activeSessionProviderId', '', localize('activeSessionProviderId', "The provider ID of the active session"));
 export const ActiveSessionTypeContext = new RawContextKey<string>('activeSessionType', '', localize('activeSessionType', "The session type of the active session"));

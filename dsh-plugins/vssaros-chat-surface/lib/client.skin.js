@@ -72,6 +72,19 @@ window.__ModuleLoader__.load({
 					// 因此 `> div > nav` 精确命中面包屑，**保留**同一行里的动作位（＋/🕘/⚙）与工具位（🗂/⬢）。
 					// `:has()` 在用（DSH_CHAT_ONLY_CSS 已依赖），Electron 30+ 支持。
 					"div:has(> [data-conversation-header-corner]) > div > nav { display: none !important; }",
+					// ★★ 2026-10-19（用户报「右侧缺少消息定位条，官方 dsh 里有」）：
+					//   官方有个**轮次导航**（`nav` + `aria-label="轮次导航"`，每条刻度一个
+					//   `button[data-index]`，点击=「加载并跳转到第 N 轮」）。它在**窄视口**下被 dsh
+					//   自己 `display:none` —— 而我们的聊天框普遍 600~900px ⇒ **永远看不见**。
+					//   实测（同一会话、同一 Host，只改视口宽度）：
+					//     · 1520px：可见，28×122，12 个刻度
+					//     · 900px ：`display:none`、刻度 0
+					//     · 900px + 强制 display:block ⇒ **12 个刻度立刻回来**（28×122 正常）
+					//   ⇒ 说明刻度与跳转逻辑都好好的，只是被藏了；覆盖 display 即可。
+					//   ⚠ 选择器**不许按 aria-label 匹配**（它是本地化文案，英文环境会变）：
+					//     用结构 + 非本地化钩子 `button[data-index]`（`:has()` 已被本文件使用）。
+					//   ⚠ 只有 28px 宽、`right:12px` 的浮层，不会挤占聊天内容。
+					'[data-slot="conversation.view"] nav:has(button[data-index]){display:block!important;}',
 					// 聊天框设置 → 「用量页脚」开关（批次③④）：设了根数据属性即隐藏页脚，零侵入。
 					"[data-vssaros-hide-usage] [data-vssaros-turn-usage]{display:none!important;}",
 					// ── 批次②part2：composer `+` 弹层视觉（只改样式，不动结构与行为）────────────

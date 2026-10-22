@@ -27,7 +27,7 @@ import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/p
 import { randomBytes } from 'node:crypto';
 import { basename, join } from 'node:path';
 
-import { ARTIFACT_PRODUCER, DEFAULT_MAX_FILES, REGEX_SOURCE_EXT, buildImportGraph, collectSourceFiles, decodeGraph, encodeGraph, manifestOf, parseCache, serializeCache, shouldRescan } from './indexer.js';
+import { ARTIFACT_PRODUCER, DEFAULT_MAX_FILES, GRAPH_RECIPE_VERSION, REGEX_SOURCE_EXT, buildImportGraph, collectSourceFiles, decodeGraph, encodeGraph, graphFingerprintOf, manifestOf, parseCache, serializeCache, shouldRescan } from './indexer.js';
 import { parseManifest } from './core/codebase.js';
 // P2：真解析（tree-sitter）—— 复用 P0 的解析器门面（资产链 + worker 池 ✓），不另起一套 ✗
 import { createParserPool, describeParser } from './parser/pool.js';
@@ -36,6 +36,35 @@ import {
 	LOCK_STALE_MS, acquireIndexLock, cachePathOf, lockPathOf, readArtifactInfo, readShadowInfo, releaseIndexLock, shadowDirOf, shadowReadableOf, startLockHeartbeat, writeDirOf, writeShadowArtifact,
 } from './shadow.js';
 import { GRAPH_FILE, MANIFEST_FILE, MAX_DECOMPRESSED_BYTES, graphDirOf, workspaceRootOf } from './store.js';
+
+/**
+ * ★★ 甲档交接的**首次安全闸**（2026-10-20，所有权交接当天补的）。
+ *
+ * 场景：`config.indexTarget='workspace'`（dsh 写 `<ws>/.codebase-memory/`）**且** `indexWatch=true`。
+ * 工作区里此刻躺着的是 **IDE 产的图**（20 万节点、无 `producer`）。保鲜 watcher 的第一次运行只有
+ * "增量预算"（`maxFiles` 默认 1500）—— 拿它去覆盖那份完整图，再写上 `producer: 'vssaros-dsh'`
+ * （⇒ IDE **从此永远让路** ✗），一次无意的文件改动就把图毁成 1/40（与 99 字节事故同族 ✗✗）。
+ *
+ * 规则：**交接的第一次建图必须显式跑 `codebase_index`**（带足 `maxFiles` + `treesitter`）。
+ * 在它成功产出 `producer=ours` 之前，watcher 只记一条日志、不写盘 ✓。
+ *
+ * @returns 需要拦截时返回**给人看的原因**（含已有节点数，便于判断"到底会不会覆盖掉真东西"✓）；否则 undefined。
+ */
+export async function handoverNeedsInitialBuild(root) {
+	const dir = String(root ?? '').trim();
+	if (!dir) { return undefined; }
+	let manifest;
+	try {
+		manifest = JSON.parse(await readFile(join(dir, '.codebase-memory', 'artifact.json'), 'utf8'));
+	} catch {
+		return undefined; // 工作区里没有清单（从没索引过）⇒ watcher 写一份小的也不毁东西 ✓
+	}
+	if (manifest?.producer === ARTIFACT_PRODUCER) { return undefined; } // 已经是我们产的 ⇒ 正常增量 ✓
+	const nodes = Number(manifest?.node_count) || 0;
+	return nodes > 0
+		? `交接待首次建图：工作区已有 **IDE 产**的图（${nodes} 节点）⇒ watcher 的增量预算会把它覆盖成小图 ✗；先显式跑一次 codebase_index（parser=treesitter，maxFiles 覆盖全仓）✓`
+		: undefined; // 空制品（0 节点）⇒ 没有可毁的东西 ✓
+}
 
 /**
  * 解析档（`config.parser` / `codebase_index` 的 `parser` 参数 ✓）。
@@ -136,7 +165,16 @@ export async function runShadowIndex(config, {
 				: INDEX_AUTO_TREESITTER_MAX_FILES;
 			const previousMeta = await readIndexMeta(placed.dir).catch(() => undefined);
 			const previousFiles = previousMeta?.present === true && typeof previousMeta.files === 'number' ? previousMeta.files : undefined;
-			if (previousFiles !== undefined && previousFiles > scaleCap) {
+			const previousParser = typeof previousMeta?.parser === 'string' ? previousMeta.parser : undefined;
+			// ★★ 2026-10-20 真机事故（**这是本轮最重要的一条**）：甲档交接后，watcher 的一次运行**没有传 parser**
+			//   ⇒ 走 auto ⇒ 上次实测 13242 文件 > 阈值 3000 ⇒ **悄悄降成 regex 快档** ⇒ 把 treesitter 建的
+			//   393,183 节点 / 1,226,947 边**覆盖成 98,925 / 186,460**（类成员方法、CALLS/USAGE 整族消失 ✗✗）。
+			//   降档是"规模折衷"，**不是**"没有能力" ⇒ 已有一份高保真图时**不许**用启发式把它换差 ✗。
+			//   规则：上次是 `treesitter` 就继续用它（规模阈值不参与降档）；只有上次本来就是 regex 才继续按规模判 ✓。
+			if (previousParser === 'treesitter') {
+				chosen = 'treesitter';
+				parserChoice = `沿用上次的档位「treesitter」（上次实测 ${previousFiles ?? '?'} 个文件；规模阈值 ${scaleCap} **不参与降档** —— 降档会静默丢掉方法/调用边 ✗）`;
+			} else if (previousFiles !== undefined && previousFiles > scaleCap) {
 				chosen = 'regex';
 				parserChoice = `auto ⇒ 快档（上次实测 ${previousFiles} 个文件 > 阈值 ${scaleCap} ✓ ⇒ 真解析会是分钟级 ✗；要真解析就显式 parser:"treesitter"，或调 config.autoTreesitterMaxFiles ✓）`;
 				scaleCapped = { files: previousFiles, threshold: scaleCap };
@@ -229,9 +267,35 @@ export async function runShadowIndex(config, {
 	let released;
 	try {
 		const built = await buildImportGraph({ root: workspaceRoot, maxFiles: limit, project: projectName, now, previous, fullRescan, extract, parser: chosen, ...(scanExtensions ? { extensions: scanExtensions } : {}) });
-		const graphBytes = encodeGraph(built.graph);
-		const manifest = manifestOf(built.graph, { project: projectName, savedAt: now });
-		const written = await writeShadowArtifact(placed.dir, { graphBytes, manifest });
+		// ★★ 2026-10-21（A 档优化）：**先判"图有没有变"，变了才编码/才写盘** ⇒ 每次空跑省掉 ~4.7s 的 gzip ✓
+		//   判据 = **内容指纹**（文件内容 hash 的聚合 + 解析档 + 配方版本 + 节点/边计数 ⇒ 图由它们完全决定 ✓）。
+		//   ⚠ 配方版本（`GRAPH_RECIPE_VERSION`）必须随"提取/构图语义"变化而 +1 —— 否则"代码变了但文件没变"
+		//     会误判成"没变" ⇒ **图谱停在旧语义上**（比慢更糟 ✗✗）。
+		//   ⚠ 只在"上次成功写盘时记下的指纹"与本次相同、且图文件确实存在时才跳过 ⇒ 其它情况一律照旧写 ✓。
+		const fingerprint = graphFingerprintOf(built, { parser: chosen });
+		const previousMetaRun = await readIndexMeta(placed.dir).catch(() => undefined);
+		const graphStat = await stat(join(placed.dir, GRAPH_FILE)).then(info => info).catch(() => undefined);
+		const graphFilePresent = !!graphStat;
+		let graphBytes;
+		let manifest;
+		let written;
+		let graphUnchanged = false;
+		let encodeSkipped = false;
+		if (previousMetaRun?.graphFingerprint === fingerprint
+			&& previousMetaRun?.graphRecipe === GRAPH_RECIPE_VERSION
+			&& graphFilePresent
+			// ⚠ 还要**图文件的大小**与上次记的一致 ⇒ 有人动过/截断过它（指纹只覆盖"内容来源"，不覆盖"盘上那份"）
+			//   ⇒ 大小对不上就照旧重写（宁可多写一次，也不要留一份坏图 ✗✗）。
+			&& (previousMetaRun?.graphBytes === undefined || previousMetaRun.graphBytes === graphStat.size)) {
+			graphUnchanged = true;
+			encodeSkipped = true;
+			manifest = manifestOf(built.graph, { project: projectName, savedAt: now }); // 只为报计数 ✓（便宜）
+		} else {
+			graphBytes = encodeGraph(built.graph);
+			manifest = manifestOf(built.graph, { project: projectName, savedAt: now });
+			written = await writeShadowArtifact(placed.dir, { graphBytes, manifest });
+			graphUnchanged = written.graphUnchanged === true;
+		}
 		// ★ P7：把**档位**落盘（旁挂 `index-meta.json` ✓ —— 产物本身一个字节都不动 ✓）。
 		//   写失败**不**把整次索引判失败（图已经安全落盘 ✓），但必须报出来 ✗：否则以后对着这份图猜档位 ✓。
 		let metaBytes;
@@ -258,17 +322,45 @@ export async function runShadowIndex(config, {
 				//   我第一版读 `nodeCount` ⇒ 落盘记了个 `undefined` ✗（2026-10-13 冒烟抓到 ✓）。
 				nodeCount: manifest?.node_count ?? manifest?.nodeCount,
 				edgeCount: manifest?.edge_count ?? manifest?.edgeCount,
+				// ★ 2026-10-21：把**内容指纹**与**配方版本**记进 meta ⇒ 下一轮能判"图没变 ⇒ 不用重编码" ✓
+				//   （指纹相同 ⇒ 图必然相同；配方版本一变 ⇒ 指纹必变 ⇒ 强制重写 ✓）。
+				graphFingerprint: fingerprint,
+				graphRecipe: GRAPH_RECIPE_VERSION,
+				// ★ 2026-10-21（增量图设计的阶段 0）：把"这次**内容有没有变**"记进 meta/history
+				//   ⇒ 度量脚本能把"空跑耗时"与"有变更耗时"**分开**统计（混在一起看不出优化落在哪 ✓）。
+				graphChanged: graphUnchanged !== true,
+				// ★ 2026-10-21："这次连编码都省了"进 meta/history ⇒ 优化在真机上是**看得见的数据** ✓
+				//   （`cacheUnchanged` 在 meta 写入**之后**才确定 ⇒ 不能在这里引用它 ✗，它仍在工具返回值里 ✓）
+				encodeSkipped: encodeSkipped === true,
+				// 图文件大小（用来判"盘上那份有没有被动过" ⇒ 被动过就重写 ✓）
+				...(written?.graphBytes !== undefined ? { graphBytes: written.graphBytes } : {}),
 			});
 		} catch (error) {
 			metaWarning = `档位记录没写成（不影响产物，但以后查不到这份图是哪一档建的）：${String(error?.message ?? error)}`;
 		}
 		// 缓存**后写**（图已经安全落盘了才更新它 ✓）；缓存写失败只是"下次省不了"⇒ 报 warn 不报失败 ✓
+		//
+		// ★ 2026-10-21（真机观察：多人并发编辑的仓库）：watcher 大约每 30s 跑一次，其中**很多次内容没变**
+		//   （nodes/edges 逐字相同 ⇒ 图压根没落盘，`graphUnchanged=true`），却每次都把 **135MB** 的
+		//   `index-cache.json` 重写一遍（真机单次 13–34s 的跑）⇒ 纯浪费 I/O 与 CPU ✗。
+		//   判据：**图内容没变** ⇒ 这轮的解析结果与上次等价 ⇒ 缓存不必重写 ✓。
+		//   代价（可接受、且是安全的）：万一某个文件变了但解析结果恰好相同，它的 hash 会留在旧缓存里
+		//   ⇒ 下轮会**多解析一次**那个文件（只是慢一点，不会算错 ✓）。
 		let cacheBytes;
 		let cacheWarning;
+		let cacheUnchanged = false;
 		try {
-			const payload = JSON.stringify(serializeCache(built, { savedAt: now }));
-			await writeFile(cachePathOf(placed.dir), payload);
-			cacheBytes = Buffer.byteLength(payload, 'utf8');
+			const cachePath = cachePathOf(placed.dir);
+			let cacheExists = false;
+			try { await stat(cachePath); cacheExists = true; } catch { cacheExists = false; }
+			if (graphUnchanged === true && cacheExists) {
+				cacheUnchanged = true;
+				cacheBytes = (await stat(cachePath)).size;
+			} else {
+				const payload = JSON.stringify(serializeCache(built, { savedAt: now }));
+				await writeFile(cachePath, payload);
+				cacheBytes = Buffer.byteLength(payload, 'utf8');
+			}
 		} catch (e) {
 			cacheWarning = `增量缓存没写成（不影响产物）：${String(e?.message ?? e)}`;
 		}
@@ -288,10 +380,14 @@ export async function runShadowIndex(config, {
 			...(metaWarning ? { metaWarning } : {}),
 			stats: built.stats,
 			manifest,
-			graphBytes: written.graphBytes,
-			manifestBytes: written.manifestBytes,
+			graphBytes: written?.graphBytes ?? (await stat(join(placed.dir, GRAPH_FILE)).then(info => info.size).catch(() => undefined)),
+			manifestBytes: written?.manifestBytes,
 			// ★ O3（2026-10-14）：图内容没变 ⇒ 没落盘 ✓（如实报出来 —— "建了一次索引"与"写出了一份**新的**图"是两件事 ✓）
-			...(written.graphUnchanged === true ? { graphUnchanged: true } : {}),
+			...(graphUnchanged ? { graphUnchanged: true } : {}),
+			// ★ 2026-10-21（A 档优化）：这次**连编码都没做**（指纹相同 ⇒ 图必然相同 ⇒ 省掉 ~4.7s 的 gzip ✓）
+			...(encodeSkipped ? { encodeSkipped: true, graphFingerprint: fingerprint } : {}),
+			// ★ 2026-10-21：图没变 ⇒ 缓存也没重写（省掉 135MB 的写盘 ✓；"省了一次写盘"是要被看见的事实 ✓）
+			...(cacheUnchanged ? { cacheUnchanged: true } : {}),
 			...(cacheBytes !== undefined ? { cacheBytes } : {}),
 			...(cacheRejected ? { cacheRejected } : {}),
 			...(cacheWarning ? { cacheWarning } : {}),
@@ -483,6 +579,11 @@ async function writeIndexMeta(dir, meta) {
 		...(typeof meta.nodeCount === 'number' ? { nodeCount: meta.nodeCount } : {}),
 		...(typeof meta.edgeCount === 'number' ? { edgeCount: meta.edgeCount } : {}),
 		...(typeof meta.files === 'number' ? { files: meta.files } : {}),
+		// ★ 2026-10-21：把"这次**连编码都省了**"记进历史 ⇒ 优化在真机上是**看得见的数据**（不是靠感觉 ✓）
+		...(typeof meta.encodeSkipped === 'boolean' ? { encodeSkipped: meta.encodeSkipped } : {}),
+		...(typeof meta.cacheUnchanged === 'boolean' ? { cacheUnchanged: meta.cacheUnchanged } : {}),
+		// ★ 2026-10-21：这次**内容有没有变**（增量图设计阶段 0：让度量脚本能分开统计空跑/有变更 ✓）
+		...(typeof meta.graphChanged === 'boolean' ? { graphChanged: meta.graphChanged } : {}),
 	};
 	const withHistory = { ...meta, history: [entry, ...previous].slice(0, INDEX_META_HISTORY_MAX) };
 	const payload = `${JSON.stringify(withHistory, null, 1)}\n`;

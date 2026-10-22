@@ -990,6 +990,8 @@ function lark(args, cwd) {
 			encoding: 'utf8',
 			shell: false,
 			cwd,
+			// ★ 2026-10-21：缺 windowsHide ⇒ Windows 上会闪一叠黑框
+			windowsHide: true,
 			// process.execPath 在 Electron 里是 Electron 本体 ⇒ 需以纯 node 模式运行入口脚本
 			env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
 		});
@@ -1000,7 +1002,7 @@ function lark(args, cwd) {
 		const s = String(a);
 		return /[\s"&|^<>]/.test(s) ? `"${s.replace(/"/g, '')}"` : s;
 	});
-	const res = spawnSync(CLI, safe, { encoding: 'utf8', shell: process.platform === 'win32', cwd });
+	const res = spawnSync(CLI, safe, { encoding: 'utf8', shell: process.platform === 'win32', cwd, windowsHide: true });
 	return { code: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' };
 }
 

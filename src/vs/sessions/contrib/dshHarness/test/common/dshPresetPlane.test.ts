@@ -33,6 +33,23 @@ function rowNamesOf(rowsText: string): string[] {
 }
 
 /**
+ * 例外名单：这些模块**有意不写进 preset 行** —— 它们的工具由 **host plane** 注册、全局可见。
+ *
+ * 判据（写清理由，否则下一任会以为漏了 ✗）：
+ *   · `@vssaros/dsh-sessions`：**有页面 + 路由**（不像纯工具插件），而 host 层已挂同一 id
+ *     ⇒ preset 里再挂一次会让 preset 那次 `never started` ⇒ `session create failed`、会话打不开
+ *     （2026-10-19 真机日志；见 `preset-vssaros.rows.yml` 里那段注释 ✓）。
+ *     它的 `session_search` 工具由 host 行提供 ⇒ 会话里照样能用 ✓。
+ *
+ * ⚠ 纯工具插件（`view.kind: none`，如 `@vssaros/dsh-pele` / `@vssaros/dsh-web-content-import`）
+ *   **不许**进这个名单：它们重复注册只是幂等顶掉，漏进 rows 才是真 bug（`render_diagram` 就因此缺席过 ✗）。
+ */
+const HOST_PLANE_ONLY_ROWS: ReadonlyMap<string, string> = new Map([
+	['@vssaros/dsh-sessions', '有页面+路由，preset 内二次挂载会 never started（2026-10-19 真机）'],
+	['@vssaros/dsh-imagegen', '有页面+路由（画布工作台 /x/imagegen/），同 sessions：preset 内二次挂载会 never started；工具由 host 行提供'],
+]);
+
+/**
  * 剥注释后再扫源码 —— **必须**：本仓的注释里经常正写着被禁/被要求的写法名（例如
  * "用 `ctx.reflect.get(name, false)` 探一次"），不剥的话断言会被**自己的注释**满足 ⇒
  * 反向突变假绿 ✗（2026-10-16 实测：本文件那条 provide 幂等守卫第一版就这么假绿了 ✓）。
@@ -49,6 +66,7 @@ suite('dsh preset plane（R13 ①：我们的 preset 生成物）', () => {
 		const sync = await import(pathToFileURL(path.join(root!, PLUGINS_REL, 'preset-sync.mjs')).href) as {
 			BASELINE_PATH: string; ROWS_PATH: string; PRESET_PATH: string; OUR_PRESET_ID: string;
 			expectedPresetText: (a: string, b: string) => string;
+			samePresetContent?: (a: string, b: string) => boolean;
 		};
 		for (const p of [sync.BASELINE_PATH, sync.ROWS_PATH, sync.PRESET_PATH]) {
 			assert.ok(fs.existsSync(p), `缺文件：${path.relative(root!, p)}（跑 \`node dsh-plugins/preset-sync.mjs --write\`）`);
@@ -65,7 +83,13 @@ suite('dsh preset plane（R13 ①：我们的 preset 生成物）', () => {
 		assert.ok(/!!js/.test(baseline) && /!!js/.test(actual),
 			'`!!js` 标签必须逐字保留（配置里的平台判定等靠它 ✓；被"解析再写回"就成了普通字符串 ✗）');
 
-		assert.strictEqual(actual, sync.expectedPresetText(baseline, rows),
+		// ⚠ 比对必须**EOL 无关**（2026-10-21）：生成器统一把生成物写成 LF（`preset-sync.mjs --write`
+		//   里的 `normEol`），而 rows / baseline 文件在 Windows checkout 下是 CRLF ⇒ 逐字比对（`!==`）
+		//   会把"内容完全一样"判成"被手改过" ✗（干净 worktree / 新克隆必红 ⇒ 守卫自己变成噪声 ✗）。
+		//   生成器那边已经给了 `samePresetContent`（EOL 无关）+ 一条自检钉住它 ⇒ 这里必须用同一个口径 ✓。
+		const expected = sync.expectedPresetText(baseline, rows);
+		const sameContent = sync.samePresetContent ? sync.samePresetContent(actual, expected) : actual === expected;
+		assert.ok(sameContent,
 			'`cordis.presets.yml` 与"baseline + 我们的行"不一致 ⇒ 跑 `node dsh-plugins/preset-sync.mjs --write` 并把 diff 一起进 PR ✓');
 		assert.ok(actual.includes(`id: ${sync.OUR_PRESET_ID}`), `生成物里应有 \`id: ${sync.OUR_PRESET_ID}\`（会话保存的 preset 标识 ✓）`);
 
@@ -110,9 +134,18 @@ suite('dsh preset plane（R13 ①：我们的 preset 生成物）', () => {
 		//   `@vssaros/dsh-unreal` 顶红的 ✓ —— 那次失败其实是守卫在提醒"判据要说清收哪一批" ✓）。
 		const expectedNames = packages.filter(p => p.isModule).map(p => p.name).sort();
 		assert.ok(expectedNames.length >= 7, `只算出 ${expectedNames.length} 个模块插件 ⇒ 判据可疑（下限 7）：${expectedNames.join(', ')}`);
-		assert.deepStrictEqual(rowNamesOf(rowsText), expectedNames,
+		// 豁免名单自己也要被守：① 它点的名字必须**真的**在快照里注册了工具（否则是烂条目）；
+		// ② 它点过的名字**不许**同时出现在 rows 里（两边都写 = 语义自相矛盾 ✗）；③ 名单不许膨胀。
+		for (const [name, why] of HOST_PLANE_ONLY_ROWS) {
+			assert.ok(expectedNames.includes(name), `例外名单里的 ${name} 已不在工具面快照里 ⇒ 删掉这条例外（理由：${why}）`);
+			assert.ok(!rowNamesOf(rowsText).includes(name), `${name} 是 host-plane-only 例外，不许再写进 rows ✗（理由：${why}）`);
+		}
+		assert.ok(HOST_PLANE_ONLY_ROWS.size <= 2, `例外名单涨到 ${HOST_PLANE_ONLY_ROWS.size} 条 ⇒ 太容易变成"漏行就加例外"的抽屉，请重新核对 ✗`);
+		const expectedRows = expectedNames.filter(name => !HOST_PLANE_ONLY_ROWS.has(name));
+		assert.deepStrictEqual(rowNamesOf(rowsText), expectedRows,
 			'我们的 preset 行名单与工具面快照不一致：\n'
 			+ `  快照里"注册了工具的**模块**插件"=${expectedNames.join(', ')}\n`
+			+ `  其中 host-plane-only 例外=${[...HOST_PLANE_ONLY_ROWS.keys()].join(', ') || '(none)'}\n`
 			+ `  preset 行=${rowNamesOf(rowsText).join(', ')}\n`
 			+ '⇒ 新增/删掉一个"给模型用"的模块时，两边都要改（这正是"每个 preset 的工具面 = 期望集合"的名单 ✓）');
 
@@ -122,6 +155,35 @@ suite('dsh preset plane（R13 ①：我们的 preset 生成物）', () => {
 			assert.ok(!rowNamesOf(rowsText).includes(name),
 				`${name} 不是模块插件（不随包安装）⇒ 不能写进我们的 preset ✗（组合期会指向不存在的包）`);
 		}
+	});
+
+	/**
+	 * ★ PTC 实验 preset（2026-10-20）：它**必须**与 native 那份只差一行 `tool-presentation`。
+	 *
+	 * 为什么单独守：A/B 结论的有效性全靠"只有一个变量"。如果哪天有人往其中一份里加了行（或 rows 只写进一份），
+	 * 两边就不再可比 —— 但那**不会**报错，只会让"PTC 省了 X token"变成一句无从归因的话 ✗。
+	 */
+	test('★ PTC 实验 preset 与 native 只差 `tool-presentation` 一行（否则 A/B 不可比）', function () {
+		const root = repoRoot();
+		if (!root) { this.skip(); }
+		const text = fs.readFileSync(path.join(root!, AGENTS_REL, 'cordis.presets.yml'), 'utf8');
+		// 按顶层 patch 项切块（每块以行首 `- insert:` 开始）
+		const blocks = text.split(/\n(?=- insert:)/).filter(b => /^- insert:/.test(b));
+		assert.strictEqual(blocks.length, 2, `生成物应有 2 个 patch 项（native + ptc），实际 ${blocks.length} 个`);
+		const idsOf = (block: string): string[] => [...block.matchAll(/^ {10}- id: (\S+)\s*$/gm)].map(m => m[1]);
+		const presentationOf = (block: string): unknown => {
+			const m = block.match(/^ {10}- id: tool-presentation[\s\S]*?^ {14}mode: (\S+)\s*$/m);
+			return m ? m[1] : undefined;
+		};
+		const [native, ptc] = blocks;
+		const nativeIds = idsOf(native);
+		const ptcIds = idsOf(ptc);
+		assert.deepStrictEqual(presentationOf(native), undefined, 'native preset 不许带 `tool-presentation`（那会把它也变成 ptc ✗）');
+		assert.strictEqual(presentationOf(ptc), 'ptc', 'PTC preset 的 `tool-presentation` 必须是 `mode: ptc`');
+		assert.deepStrictEqual(ptcIds.filter(id => id !== 'tool-presentation'), nativeIds,
+			'PTC preset 的行集合必须与 native 完全一致（只允许多出 `tool-presentation`）⇒ 否则 A/B 不是单变量 ✗');
+		assert.ok(ptcIds.includes('tool-presentation'), 'PTC preset 里找不到 `tool-presentation` 行');
+		assert.ok(ptcIds.length === nativeIds.length + 1, `PTC 只该多一行：native=${nativeIds.length}、ptc=${ptcIds.length}`);
 	});
 
 	test('★★ 双 plane 挂载的插件：`ctx.provide` 必须**幂等**（否则预设一激活就抛 ⇒ 会话整个起不来）', function () {

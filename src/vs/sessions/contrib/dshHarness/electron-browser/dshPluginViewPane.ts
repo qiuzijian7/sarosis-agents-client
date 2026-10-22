@@ -81,6 +81,12 @@ export class DshPluginViewPane extends ViewPane {
 	private _shownRecheck: ReturnType<typeof setInterval> | undefined;
 	/** 隐藏自愈定时器：应显示却隐藏时每秒重算（事件漏网的兜底，与聊天宿主同口径）。 */
 	private _hiddenRecheck: ReturnType<typeof setInterval> | undefined;
+	/**
+	 * 上一次看到的 Host 状态（判"重启跃迁"用）。
+	 * 插件页连着具体的 Host 进程（端口 + 令牌）：Host 重启后旧页面必失效，而视图是复用的
+	 * ⇒ 不 reload 就一直停在错误页/空白（用户两次报「sideview 不可见」的该类根因）。
+	 */
+	private _lastHostState: string | undefined;
 
 	/**
 	 * 浮层让位时的**冻结帧**（让位前抓一帧贴到占位上，避免那一块变空白/黑）。
@@ -201,6 +207,25 @@ export class DshPluginViewPane extends ViewPane {
 			}
 		}));
 		this._register(this._dsh.onDidChangeStatus(s => {
+			const prev = this._lastHostState;
+			this._lastHostState = s.state;
+			// ★ 2026-10-19（用户两次报「sideview 不可见 / 聊天框里没有 agent 信息」的真因之一）：
+			//   插件页是**同源页面**，它连着的是一个具体的 Host 进程（端口 + 安装令牌）。Host 重启后
+			//   旧页面的连接/令牌全失效 ⇒ 页面停在上一轮的错误页（400/401、或一直白着），
+			//   而 pane 复用同一视图（`dsh-plugin-w…`），**不重载就一直白**。用户只能重开面板。
+			//   ⇒ Host 从"非 running"转回 "running" 时**自动 reload 一次**。
+			//   安全性：插件页是纯前端 + 同源 API，重载不会丢服务端状态（页面自己的 selection 之类
+			//   由插件从 URL/存储里恢复）；且只在状态跃迁时发生一次，不是轮询。
+			if (prev !== undefined && prev !== 'running' && s.state === 'running' && this._viewId) {
+				const viewId = this._viewId;
+				this._log.info(`[dshHarness] host running again → reload plugin view ${viewId}`);
+				void this._dsh.reloadView(viewId).then(() => {
+					this._layoutView();
+					this._updateVisibility();
+				}).catch(err => {
+					this._log.warn(`[dshHarness] reload plugin view ${viewId} failed: ${String((err as Error)?.message ?? err)}`);
+				});
+			}
 			// "没有页面"时状态框归 `_renderNoPage()` 所有：别让 Host 状态把它盖掉（那正是用户唯一的线索）
 			if (!this._noPageNote) {
 				this._status.render(this._statusBox, s);

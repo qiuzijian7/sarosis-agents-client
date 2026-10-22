@@ -1,0 +1,31 @@
+{
+  "name": "@vssaros/dsh-ego",
+  "version": "0.1.0",
+  "description": "ego lite (ego-browser) 在 DeepSeek Harness 里的薄接入：vendored 上游技能 + 4 个工具（状态/指南/任务空间/执行脚本）。浏览器本体是第三方独立应用（不开源、单独下载），本包不含它。",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/core/cli.js",
+    "lib/core/scripts.js",
+    "cordis.patch.yml",
+    "skills",
+    "LICENSE",
+    "VENDOR.md",
+    "README.md"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/dsh": ">=0.1.7-0 <0.3.0-0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "license": "MIT"
+}

@@ -73,7 +73,7 @@ export interface IVssarosNoneView {
 export type IVssarosView = IVssarosPageView | IVssarosNativeView | IVssarosSectionView | IVssarosNoneView;
 
 /** 页面桥 / `ide.request` 的能力名（方案 13.3）。新增名字时**同时**改白名单常量（下方）。 */
-export type VssarosIdeCapability = 'openFile' | 'reveal' | 'showDiff' | 'getSelection' | 'getDiagnostics' | 'dashboardStats' | 'browser' | 'canvas' | 'mindmap' | 'taskboard' | 'workflow';
+export type VssarosIdeCapability = 'openFile' | 'reveal' | 'showDiff' | 'getSelection' | 'getDiagnostics' | 'dashboardStats' | 'browser' | 'canvas' | 'mindmap' | 'taskboard' | 'workflow' | 'media' | 'skills' | 'mcp';
 
 /**
  * IDE 能力白名单：**唯一真源**（清单校验与桥协议都用这一份）。
@@ -119,6 +119,16 @@ export const VSSAROS_IDE_CAPABILITIES: readonly VssarosIdeCapability[] = [
 	// （`views/workflowView.ts:453-466`）的"点条目先开画布"那一半；那边之后还会切聊天区选 agent
 	// （`_selectWorkflowAgentInChat`），那是 UI 副作用，能力层**不做**。
 	'workflow',
+	// ★ 2026-10-21：`media` —— **生图**（`op:'generateImage'`）。
+	// 生图 provider、凭据与审批都在 IDE 进程 ⇒ dsh 侧插件（`@vssaros/dsh-imagegen`）
+	// 经控制桥回调 IDE 来出图，Host 侧不存第二份 Key。
+	'media',
+	// ★ 2026-10-21：`skills` / `mcp` —— **商城清单**（`op:'marketList'`）。
+	// 商城认证（JWT）在 IDE 进程（`IMarketplaceService` 复用 TOF 登录态）⇒ dsh 侧
+	// `@vssaros/dsh-skills` 的 `skill_market` 与 `@vssaros/dsh-mcp` 的 `mcp_market`
+	// 经控制桥回调 IDE 取清单（只读，不写任何数据 ✓）。
+	// ⚠ 这两个能力此前**长期是坏的**：清单没声明 + IDE 侧没 case ⇒ 真机只表现为"市场不可用"✗。
+	'skills', 'mcp',
 ];
 
 export interface IVssarosActivityBar {
@@ -128,6 +138,63 @@ export interface IVssarosActivityBar {
 	/** `codicon:xxx` 或包内 SVG 相对路径。 */
 	readonly icon: string;
 	readonly order: number;
+}
+
+/**
+ * ★ 2026-10-22：**工作台描述符**（`doc/workbench-refactor-plan.md` §4.2 / P0-2）。
+ *
+ * 对标 dsh-desktop 的 `desktopWorkbenches.register(descriptor, Component)`（`client.js:852-883`）：
+ * 字段名与取值范围**逐条照官方**，校验失败一律抛错（官方也是抛 —— "必须"项不满足 = 不登记，不是降级）。
+ * 区别只有两处：
+ * - **身份**：官方只认 `https://github.com/<owner>/<repo>`；内置工作台没有真实仓库（官方禁止捏造）⇒
+ *   保留命名空间 `vssaros:<module>`，只许 `@vssaros/*` 包用，且必须等于自己的 module；
+ * - **`panes`**（我们独有）：声明本工作台有哪几个 Pane（`catalog` 目录页 / `core` 核心页），
+ *   驱动 IDE / dsh 窗口的承载位（`doc/workbench-authoring-standard.md` 稿 A）。
+ *
+ * 可选字段（v1 清单即可声明；没声明 = 该插件还不是"已注册的工作台"）。
+ */
+export interface IVssarosWorkbench {
+	/** 工作台名（必填；官方 `register.title`）。≤ 24 字。 */
+	readonly title: string | { readonly zh: string; readonly en: string };
+	/** 一句话说明它解决什么问题（官方 `description`）。≤ 200 字。 */
+	readonly description?: string;
+	/** `codicon:xxx`；缺省沿用 `activityBar.icon`。 */
+	readonly icon?: string;
+	/** 工作台身份：内置 `vssaros:<module>`，第三方 `https://github.com/<owner>/<repo>`。缺省（内置）按 module 推导。 */
+	readonly repository: string;
+	/** true = 业务整页 + 按需会话；false/缺省 = 标准分栏（官方 §4.1）。 */
+	readonly customFrame?: boolean;
+	/** 官方 `headerLayout`：`compact` 需要文档内唯一 `data-dsh-workbench-toolbar`。 */
+	readonly headerLayout?: 'default' | 'compact';
+	/** 官方 `layout`：业务区在哪侧、占主内容区多少（0.25–0.7）。 */
+	readonly layout?: { readonly businessSide?: 'left' | 'right'; readonly businessWidth?: number };
+	/** 我们独有：Pane 声明（缺省 `['catalog','core']`）。 */
+	readonly panes: readonly VssarosWorkbenchPane[];
+}
+
+export type VssarosWorkbenchPane = 'catalog' | 'core';
+
+/** 内置工作台的身份前缀（`vssaros:<module>`）。 */
+export const VSSAROS_WORKBENCH_REPOSITORY_SCHEME = 'vssaros:';
+const GITHUB_REPOSITORY_RE = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/;
+/** 与官方同口径：`businessWidth` 的合法区间。 */
+export const VSSAROS_WORKBENCH_BUSINESS_WIDTH_MIN = 0.25;
+export const VSSAROS_WORKBENCH_BUSINESS_WIDTH_MAX = 0.7;
+
+/**
+ * 工作台身份（小写 `owner/repo`；内置为 `vssaros/<module>`）—— 市场卡片、入口与会话归属共用这一个键。
+ * 与官方 `repositoryIdentity`（`client.js:414-420`）同口径：GitHub owner/repo 一律小写。
+ */
+export function workbenchIdentityOf(workbench: Pick<IVssarosWorkbench, 'repository'>): string {
+	const repository = workbench.repository;
+	if (repository.startsWith(VSSAROS_WORKBENCH_REPOSITORY_SCHEME)) {
+		return `vssaros/${repository.slice(VSSAROS_WORKBENCH_REPOSITORY_SCHEME.length).toLowerCase()}`;
+	}
+	const m = GITHUB_REPOSITORY_RE.exec(repository);
+	if (!m) {
+		throw new VssarosManifestError(`工作台身份无法解析：${repository}`);
+	}
+	return `${m[1].toLowerCase()}/${m[2].toLowerCase()}`;
 }
 
 export interface IVssarosPluginManifest {
@@ -142,6 +209,8 @@ export interface IVssarosPluginManifest {
 	readonly owns?: readonly string[];
 	/** 对应的旧模块 id；插件启用时触发所有权切换（方案 6.8）。 */
 	readonly legacyCounterpart?: string;
+	/** 工作台描述符（可选；见 `IVssarosWorkbench`）。 */
+	readonly workbench?: IVssarosWorkbench;
 }
 
 /** 清单不合法时抛出；调用方据此忽略该插件（fail-closed，不猜字段）。 */
@@ -299,6 +368,135 @@ export interface IParseManifestOptions {
 	readonly builtin?: boolean;
 }
 
+const WORKBENCH_PANES: readonly VssarosWorkbenchPane[] = ['catalog', 'core'];
+const WORKBENCH_KEYS = new Set(['title', 'description', 'icon', 'repository', 'customFrame', 'headerLayout', 'layout', 'panes']);
+
+/** 标题长度按"字"算（码点数）；中英文同一上限，避免英文长名把窄入口撑爆。 */
+function lengthOf(s: string): number {
+	return [...s].length;
+}
+
+/**
+ * 校验 `vssaros.workbench`。规则逐条对齐官方 `register()`（`client.js:852-883`）：
+ * title 必填 / customFrame 布尔 / headerLayout ∈ {default, compact} /
+ * layout.businessSide ∈ {left, right} / layout.businessWidth ∈ [0.25, 0.7]；
+ * 外加身份规则（见 `IVssarosWorkbench`）与 panes。未知字段直接报错（写错名字 ≠ 没写，不静默吞）。
+ */
+function parseWorkbench(raw: unknown, module: string | undefined, activityBar: IVssarosActivityBar | undefined, view: IVssarosView, options: IParseManifestOptions): IVssarosWorkbench {
+	if (!isPlainObject(raw)) {
+		throw new VssarosManifestError('vssaros.workbench 必须是对象');
+	}
+	for (const key of Object.keys(raw)) {
+		if (!WORKBENCH_KEYS.has(key)) {
+			throw new VssarosManifestError(`vssaros.workbench 不认识的字段：${key}`);
+		}
+	}
+	if (view.kind === 'none') {
+		throw new VssarosManifestError('vssaros.workbench 要求有界面：view.kind=none 的插件不能声明工作台');
+	}
+	const title = parseTitle(raw.title, 'vssaros.workbench.title');
+	for (const t of typeof title === 'string' ? [title] : [title.zh, title.en]) {
+		if (lengthOf(t.trim()) > 24) {
+			throw new VssarosManifestError(`vssaros.workbench.title 不能超过 24 字：${t}`);
+		}
+	}
+	let description: string | undefined;
+	if (raw.description !== undefined) {
+		if (typeof raw.description !== 'string' || !raw.description.trim()) {
+			throw new VssarosManifestError('vssaros.workbench.description 必须是非空字符串');
+		}
+		if (lengthOf(raw.description) > 200) {
+			throw new VssarosManifestError('vssaros.workbench.description 不能超过 200 字');
+		}
+		description = raw.description.trim();
+	}
+	let icon: string | undefined;
+	if (raw.icon !== undefined) {
+		if (typeof raw.icon !== 'string' || !raw.icon.trim()) {
+			throw new VssarosManifestError('vssaros.workbench.icon 必须是非空字符串');
+		}
+		icon = raw.icon.trim();
+	} else if (activityBar) {
+		icon = activityBar.icon;
+	}
+	// 身份
+	let repository: string;
+	if (raw.repository === undefined) {
+		if (!options.builtin || !module) {
+			throw new VssarosManifestError('vssaros.workbench.repository 必填（第三方工作台须是 https://github.com/<owner>/<repo>）');
+		}
+		repository = `${VSSAROS_WORKBENCH_REPOSITORY_SCHEME}${module}`;
+	} else {
+		if (typeof raw.repository !== 'string' || !raw.repository.trim()) {
+			throw new VssarosManifestError('vssaros.workbench.repository 必须是非空字符串');
+		}
+		repository = raw.repository.trim();
+	}
+	if (repository.startsWith(VSSAROS_WORKBENCH_REPOSITORY_SCHEME)) {
+		if (!options.builtin) {
+			throw new VssarosManifestError(`保留身份 ${VSSAROS_WORKBENCH_REPOSITORY_SCHEME}* 只许 VsSaros 内置插件使用：${repository}`);
+		}
+		if (repository !== `${VSSAROS_WORKBENCH_REPOSITORY_SCHEME}${module ?? ''}`) {
+			throw new VssarosManifestError(`内置工作台身份必须等于 ${VSSAROS_WORKBENCH_REPOSITORY_SCHEME}<module>（${VSSAROS_WORKBENCH_REPOSITORY_SCHEME}${module ?? '?'}）：${repository}`);
+		}
+	} else if (!GITHUB_REPOSITORY_RE.test(repository)) {
+		throw new VssarosManifestError(`vssaros.workbench.repository 必须是 https://github.com/<owner>/<repo>：${repository}`);
+	}
+	if (raw.customFrame !== undefined && typeof raw.customFrame !== 'boolean') {
+		throw new VssarosManifestError('vssaros.workbench.customFrame 必须是布尔值');
+	}
+	if (raw.headerLayout !== undefined && raw.headerLayout !== 'default' && raw.headerLayout !== 'compact') {
+		throw new VssarosManifestError(`vssaros.workbench.headerLayout 必须是 default / compact：${String(raw.headerLayout)}`);
+	}
+	let layout: IVssarosWorkbench['layout'];
+	if (raw.layout !== undefined) {
+		if (!isPlainObject(raw.layout)) {
+			throw new VssarosManifestError('vssaros.workbench.layout 必须是对象');
+		}
+		for (const key of Object.keys(raw.layout)) {
+			if (key !== 'businessSide' && key !== 'businessWidth') {
+				throw new VssarosManifestError(`vssaros.workbench.layout 不认识的字段：${key}`);
+			}
+		}
+		const side = raw.layout.businessSide;
+		if (side !== undefined && side !== 'left' && side !== 'right') {
+			throw new VssarosManifestError(`vssaros.workbench.layout.businessSide 必须是 left / right：${String(side)}`);
+		}
+		const width = raw.layout.businessWidth;
+		if (width !== undefined && (typeof width !== 'number' || !Number.isFinite(width) || width < VSSAROS_WORKBENCH_BUSINESS_WIDTH_MIN || width > VSSAROS_WORKBENCH_BUSINESS_WIDTH_MAX)) {
+			throw new VssarosManifestError(`vssaros.workbench.layout.businessWidth 必须在 ${VSSAROS_WORKBENCH_BUSINESS_WIDTH_MIN}–${VSSAROS_WORKBENCH_BUSINESS_WIDTH_MAX} 之间：${String(width)}`);
+		}
+		layout = { ...(side ? { businessSide: side } : {}), ...(width !== undefined ? { businessWidth: width } : {}) };
+	}
+	let panes: readonly VssarosWorkbenchPane[] = WORKBENCH_PANES;
+	if (raw.panes !== undefined) {
+		if (!Array.isArray(raw.panes) || raw.panes.length === 0) {
+			throw new VssarosManifestError('vssaros.workbench.panes 必须是非空数组');
+		}
+		const seen = new Set<string>();
+		for (const p of raw.panes) {
+			if (!WORKBENCH_PANES.includes(p as VssarosWorkbenchPane)) {
+				throw new VssarosManifestError(`vssaros.workbench.panes 只能是 catalog / core：${String(p)}`);
+			}
+			if (seen.has(p as string)) {
+				throw new VssarosManifestError(`vssaros.workbench.panes 重复：${String(p)}`);
+			}
+			seen.add(p as string);
+		}
+		panes = raw.panes as VssarosWorkbenchPane[];
+	}
+	return {
+		title,
+		...(description ? { description } : {}),
+		...(icon ? { icon } : {}),
+		repository,
+		...(raw.customFrame !== undefined ? { customFrame: raw.customFrame as boolean } : {}),
+		...(raw.headerLayout !== undefined ? { headerLayout: raw.headerLayout as 'default' | 'compact' } : {}),
+		...(layout ? { layout } : {}),
+		panes,
+	};
+}
+
 /**
  * 校验并规范化 `package.json` 的 `vssaros` 字段。不合法时抛 `VssarosManifestError`，
  * 由调用方忽略该插件并记录日志（不猜测、不降级成半可用状态）。
@@ -342,6 +540,7 @@ export function parseVssarosManifest(raw: unknown, options: IParseManifestOption
 		}
 		legacyCounterpart = raw.legacyCounterpart.trim();
 	}
+	const workbench = raw.workbench === undefined ? undefined : parseWorkbench(raw.workbench, module, activityBar, view, options);
 
 	return {
 		manifestVersion: VSSAROS_MANIFEST_VERSION,
@@ -351,6 +550,7 @@ export function parseVssarosManifest(raw: unknown, options: IParseManifestOption
 		...(ideCapabilities ? { ideCapabilities } : {}),
 		...(owns ? { owns } : {}),
 		...(legacyCounterpart ? { legacyCounterpart } : {}),
+		...(workbench ? { workbench } : {}),
 	};
 }
 
@@ -362,6 +562,32 @@ export function tryParseVssarosManifest(raw: unknown, options: IParseManifestOpt
 	} catch (e) {
 		return { error: e instanceof Error ? e.message : String(e) };
 	}
+}
+
+/** 工作台宿主插件的包名（客户端服务 `desktopWorkbenches` 的提供方）。 */
+export const VSSAROS_WORKBENCH_HOST_PACKAGE = '@vssaros/dsh-workbenches';
+
+/**
+ * 该包是否已迁成 **React 工作台**（2026-10-22，doc/workbench-refactor-plan.md §5 步骤 4）：
+ * 清单声明了 `vssaros.workbench`、有客户端入口，且 `dsh.client.inject` 含宿主包（加载链完整的唯一判据，
+ * 与守卫 `dshPluginPackages.test.ts` 的"加载链完整"同口径）。纯函数：只看 package.json 的形状。
+ */
+export function hasWorkbenchClient(pkg: unknown): boolean {
+	if (!isPlainObject(pkg)) {
+		return false;
+	}
+	const vssaros = pkg.vssaros;
+	if (!isPlainObject(vssaros) || !isPlainObject(vssaros.workbench)) {
+		return false;
+	}
+	const exportsField = pkg.exports;
+	if (!isPlainObject(exportsField) || exportsField['./client'] === undefined) {
+		return false;
+	}
+	const dsh = pkg.dsh;
+	const client = isPlainObject(dsh) ? dsh.client : undefined;
+	const inject = isPlainObject(client) ? client.inject : undefined;
+	return Array.isArray(inject) && inject.includes(VSSAROS_WORKBENCH_HOST_PACKAGE);
 }
 
 /** 清单里的 ActivityBar 图标是否为包内 SVG 相对路径（否则按 codicon 处理）。 */

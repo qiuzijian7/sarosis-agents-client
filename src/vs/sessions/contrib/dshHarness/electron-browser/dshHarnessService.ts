@@ -19,13 +19,20 @@ import { ICommandService } from '../../../../platform/commands/common/commands.j
 import { isMacintosh, isWindows } from '../../../../base/common/platform.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
-import { IIdeCapabilityEnv, IIdeSelectionRange, executeIdeCapability, ideFailureSummary } from '../common/dshIdeCapabilities.js';
+import { IIdeCapabilityEnv, IIdeSelectionRange, buildExecuteNodeRequest, executeIdeCapability, ideFailureSummary } from '../common/dshIdeCapabilities.js';
 import { isPathInside } from '../common/dshPageBridgeProtocol.js';
-import { DSH_MODULE_CONTAINERS, DshModuleId, IDshModulePageState, activeModulesFromPlugins, activeModulesOf, containersFromPlugins, pagesFromPlugins, resolveContainerPageState } from '../common/dshModuleContainers.js';
+import { DSH_MODULE_CONTAINERS, DshModuleId, IDshModulePageState, activeModulesFromPlugins, activeModulesOf, containersFromPlugins, pagesFromPlugins, resolveContainerPageState, withWorkbenchClient } from '../common/dshModuleContainers.js';
 // `taskboard` 能力（看板"定位卡片"）：与原 `TasksViewPane` 点条目**同一套实现**（同一个 EditorInput
 // 与同一个 focusTaskInBoard），不另开一条"看起来能跳"的路径。
 import { TaskOverviewEditorInput } from '../../agentStudio/browser/taskOverviewEditorInput.js';
+import { ITofAuthService } from '../../agentStudio/common/tofAuth.js';
+// ★ 2026-10-21：商城清单能力（`skills` / `mcp`）——认证（商城 JWT）在 IDE 侧 ⇒ 复用它 ✓。
+import { IMarketplaceService } from '../../agentStudio/common/marketplace.js';
 import { WorkflowEditorInput } from '../../agentStudio/browser/workflowEditorInput.js';
+// `executeNode` 能力（2026-10-20）：复用画布侧已有的 Comfy 直跑 delegate —— 真正的执行在 webview
+// （`requestDirectStageRun` → `runStageByClass`），这里只负责把「节点原样」整理成它要的形状。
+import { createComfyStageDelegate } from '../../agentStudio/browser/workflow/comfyStageBridge.js';
+import type { WorkflowGraphNode } from '../../agentStudio/common/workflowStorage.js';
 import { ITaskOrchestrationService } from '../../../common/agentStudioOrchestration.js';
 // 生态用户级技能目录（SKILL.md 规范）：与 IDE 侧 skillRegistryService **共用同一份清单**
 // （少一侧就会出现"IDE 看得见、Host 看不见"的不一致 ✗）。
@@ -37,6 +44,10 @@ import { IWorktreeService } from '../../worktree/common/worktreeService.js';
 import { IWorkflowStorageService } from '../../../common/agentStudioWorkflowStorage.js';
 import { canvasContextStore } from '../../agentStudio/browser/messageEnrichment/canvasContextStore.js';
 import { requestCanvasOps } from '../../agentStudio/browser/providers/tool/canvasOpsBridge.js';
+// ★ 2026-10-21：`media`（生图）能力要用的 provider 注册表（`getModelProviders()`）。
+import { IAgentOSService } from '../../agentStudio/common/agentOS.js';
+// ★ 2026-10-21：`media`（生图 / 图生图）能力用到的 provider 类型。
+import { IModelProvider } from '../../agentStudio/common/providers.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 // A 组缺口（2026-10-12）：unreal 的 bridge 设置键 + 知识库存储根解析 —— 后者**复用 IDE 同一份实现** ✓
 //（`knowledgeBaseView.rootUri` 用的就是它 ✓；本文件已有从 `agentStudio/browser/**` import 的先例 ✓）。
@@ -55,9 +66,11 @@ import { IAgentStudioDashboardService } from '../../agentStudio/browser/agentStu
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
-import { DSH_HARNESS_CHANNEL, DshColorScheme, DshHarnessChannelCommand, DshHarnessChannelEvent, DshHarnessSettings, DshPageSurface, DshViewSurface, IDshBootstrapArgs, IDshBundledInstallResult, IDshBundledPluginRow, IDshHostStartOptions, IDshHostStatus, IDshIdeClaimReply, IDshIdeRequest, IDshPluginActivationSnapshot, IDshPluginInfo, IDshPluginRowSetResult, IDshPluginSetResult, IDshRuntimeInfo, IDshUpdateDiscoveryResult, IDshUpdatePolicy, IDshUpgradeArgs, IDshViewBounds, IDshViewInfo, IDshWorkspaceSyncState, IDshWorkspaceSyncSummary, shouldRestartForWorkspaceChange } from '../common/dshHarness.js';
+import { DSH_HARNESS_CHANNEL, DshColorScheme, DshHarnessChannelCommand, DshHarnessChannelEvent, DshHarnessSettings, DshPageSurface, DshViewSurface, IDshBootstrapArgs, IDshBundledInstallResult, IDshBundledPluginRow, IDshHostStartOptions, IDshHostStatus, IDshIdeClaimReply, IDshIdeRequest, IDshPluginActivationSnapshot, IDshPluginInfo, IDshPluginRowSetResult, IDshPluginSetResult, IDshRuntimeInfo, IDshUpdateDiscoveryResult, IDshUpdatePolicy, IDshUpgradeArgs, IDshViewBounds, IDshViewInfo, IDshWorkspaceSyncState, IDshWorkspaceSyncSummary, shouldRestartForWorkspaceChange, surfaceTakesRoute } from '../common/dshHarness.js';
+// dsh 侧会话摘要（侧栏合并用；解析规则与测试见 common/dshSessionIndex.ts）
+import type { IDshSessionSummary } from '../common/dshSessionIndex.js';
 import { DshUpdateChannel } from '../common/dshCompat.js';
-import { IBridgeBundleInfo, IBridgeInspectResult, IBridgeInstallCancelResult, IBridgeInstallResult, IBridgePluginInventory, IBridgePluginRegistries, IBridgePluginRow, IBridgeProvidersSyncArgs, IBridgeProvidersSyncResult, IBridgeSessionCancelArgs, IBridgeSessionCancelResult, IBridgeSessionRunArgs, IBridgeSessionRunResult, IBridgeSessionStartArgs, IBridgeSessionStartResult, IBridgeWorkspace, IBridgeWorkspaceContextArgs, IBridgeWorkspaceContextResult } from '../common/dshBridgeProtocol.js';
+import { IBridgeBundleInfo, IBridgeInspectResult, IBridgeInstallCancelResult, IBridgeInstallResult, IBridgePluginInventory, IBridgePluginRegistries, IBridgePluginRow, IBridgeProvidersSyncArgs, IBridgeProvidersSyncResult, IBridgeSessionCancelArgs, IBridgeSessionCancelResult, IBridgeSessionRunArgs, IBridgeSessionRunResult, IBridgeSessionStartArgs, IBridgeSessionStartResult, IBridgeTofSyncResult, IBridgeWorkspace, IBridgeWorkspaceContextArgs, IBridgeWorkspaceContextResult, DSH_TOF_CREDENTIAL_REF } from '../common/dshBridgeProtocol.js';
 import { DshChatViewAllocator } from '../common/dshChatViewIds.js';
 import { DSH_WORKSPACE_OPTION_LIMIT, DSH_WORKSPACE_ROOT_LIMIT, DSH_WORKTREE_OPTION_LIMIT, DshPageCommand, DshPageEvent, IDshInsertReference, IDshWorkspaceOption, IDshWorktreeOption } from '../common/dshPageBridgeProtocol.js';
 // 多根工作区（2026-10-16）：记录里的 `path` 可能是**工作区文件**（`.code-workspace`）
@@ -92,14 +105,75 @@ export const IDshHarnessService = createDecorator<IDshHarnessService>('dshHarnes
  * renderer 侧对主进程 dsh 通道的薄封装。只传 VsSaros 自定义的命令（启动、视图矩形、可见性），
  * 不接触 dsh 页面里的任何数据 —— 页面与 Host 之间是 dsh 原生协议，VsSaros 不解析。
  */
+/**
+ * dsh 会话改名的**回执**（页面 → 工作台 → 服务层）。
+ *
+ * ⚠ 判成败只看 `error`：**没有 `error` 才算改成了**。命令发出去 ≠ 成功
+ * （桥的 invoke 没有语义返回值，上一轮"切换失败却零报错"就是这么来的 ✗）。
+ */
+export interface IDshSessionRenamedResult {
+	readonly viewId: string;
+	readonly sessionId: string;
+	readonly title?: string;
+	readonly error?: string;
+}
+
 export interface IDshHarnessService {
 	readonly _serviceBrand: undefined;
 	readonly status: IDshHostStatus;
 	readonly onDidChangeStatus: Event<IDshHostStatus>;
 	/** 只包含本 renderer 创建的视图的页面事件（主进程向所有窗口广播，这里按 viewId 过滤）。 */
 	readonly onDidPageEvent: Event<DshPageEvent>;
+	/**
+	 * ★ 2026-10-19：dsh 会话改名的**回执**（页面 → 工作台 → 这里）。
+	 *
+	 * 只在本 renderer 的视图上发生（`onDidPageEvent` 的同款过滤）。`error` 有值 = 页面侧失败
+	 * ⇒ 调用方必须看它，**不能**把"命令已发出"当成"改成功了" ✗（桥 invoke 没有语义返回值，
+	 * 上一轮"切换失败却零报错"就是这么来的）。
+	 */
+	readonly onDidDshSessionRenamed: Event<IDshSessionRenamedResult>;
 
 	ensureStarted(): Promise<IDshHostStatus>;
+	/**
+	 * 登录/登出**失败**时把原因推给所有本窗口的 dsh 视图（2026-10-21）。
+	 *
+	 * 为什么必须有：页面桥是**单向**的（只回 true）⇒ 失败时页面**收不到任何回执** ⇒
+	 * 真实原因（浏览器被关 / 网关超时 / 账号被拒）只落在 IDE 日志里 ⇒ 页面只能干等超时兜底 ✗。
+	 *
+	 * ⚠ 只推**一句人话**（≤200 字符）：不含堆栈/路径/票据 ✓。
+	 */
+	pushAuthError(error: string): void;
+	/**
+	 * 同步"**IDE 主窗口是我们藏着的**"这个事实给主进程（desktop 模式的窗口守卫，2026-10-21）。
+	 *
+	 * @param hidden true = 我们把那个窗口藏起来了（主进程据此装守卫：它一旦 show/focus 就再藏回去 ✓）
+	 * @param windowId 被守卫的窗口 id（`nativeHostService.windowId` = Electron 窗口 id ✓）
+	 */
+	setIdeWindowHidden(hidden: boolean, windowId: number): Promise<void>;
+	/**
+	 * dsh 侧会话摘要（读 projcache）—— 左侧「历史会话」用它把 dsh 会话**合并**进列表。
+	 *
+	 * 两套数据源：IDE 自己的 `chat-history` 索引（`chatService.listAgentSessions`）与 dsh 侧
+	 * `storages/session_projcache`。dsh 引擎下聊天在 dsh 侧开会话 ⇒ 只读前者会让侧栏
+	 * 对 dsh 会话"永远空白"（2026-10-19 用户截图：No sessions found）。
+	 * 读不到 / Host 没起 ⇒ 返回空数组（不抛：侧栏不能因此整块失败 ✗）。
+	 */
+	listDshSessions(): Promise<readonly IDshSessionSummary[]>;
+	/**
+	 * 按 **dsh 会话 id** 改名（侧栏用）——内部把 `sessionId` 解析成"正在显示它的聊天视图"。
+	 *
+	 * @returns `false` = 该会话当前**没有在任何聊天页签打开**（改名只能由页面做）⇒ 调用方应如实提示，
+	 *          **不要**假装成功 ✗；`true` 只代表**请求已推给页面**，真正的成败看
+	 *          {@link onDidDshSessionRenamed}（页面会回执）。
+	 */
+	renameDshSession(sessionId: string, title: string): Promise<boolean>;
+	/**
+	 * 把**某个已存在的 dsh 会话**切到聊天视图上（侧栏点 dsh 条目用）。
+	 *
+	 * 复用既有的 `rebindSession`（宿主是会话绑定的权威）⇒ 与"页面里点历史会话"同一条路。
+	 * @returns 没有可用的聊天视图 ⇒ `false`（调用方据此如实提示，不假装打开了 ✗）
+	 */
+	openDshSessionChat(sessionId: string): Promise<boolean>;
 	restart(): Promise<IDshHostStatus>;
 	stop(): Promise<void>;
 	getLog(): Promise<string[]>;
@@ -245,12 +319,45 @@ export interface IDshHarnessService {
 	disposeView(viewId: string): Promise<void>;
 	resetWindow(windowId: number): Promise<void>;
 	listViews(): Promise<IDshViewInfo[]>;
+	/**
+	 * 本窗口里**哪个聊天页签**正显示这条 dsh 会话（返回 chatId）。
+	 *
+	 * 与 {@link listViews} 的分工（2026-10-19 真机日志实证）：`listViews()` 反映的是**视图槽**
+	 * （pane 活着、WebContentsView 建好才有），而"这条会话是不是已经打开了"要看**页签**——
+	 * pane 隐藏/回收后槽就没了，页签却还在 ⇒ 只看 listViews 会把"已打开"判成"没打开"，
+	 * 于是每点一次「打开会话」就多一个页签（用户报的"仍然重复显示"✗）。
+	 * 这里在**每次绑定成功**（createView / rebindSession）时按 chatId 记账，纯本地、零 IPC ✓。
+	 */
+	findChatIdForSession(sessionId: string): string | undefined;
+	/**
+	 * 本窗口**所有被聊天页签绑着的 dsh 会话 id**（`findChatIdForSession` 的反查集）。
+	 *
+	 * 用途（2026-10-19）：新开页签时挑"可复用的空白会话"必须排除这些 —— 复用一条已经绑在
+	 * 别的页签上的会话，会让两个页签显示同一条 ∨ 更是把用户正在看的会话换掉 ✗。
+	 */
+	boundChatSessionIds(): Set<string>;
+	/**
+	 * **预占**一条 dsh 会话（"我马上就绑它"）—— 见实现处的注释：
+	 * 并排开两个聊天时，第二个不能抢到第一个正在占用的那条会话 ✓。
+	 */
+	reserveChatSession(sessionId: string): void;
 
 	/**
 	 * 聊天框承载时登记"最近聚焦的聊天视图"（方案 5.5 onInsertReference 的落点）；
 	 * 聊天宿主在 pane 在场（可见且矩形非零）时调用。渲染进程本地状态，不走 IPC。
+	 *
+	 * ⚠ 语义（2026-10-21，多聊天并排后收紧）：**只有真正拿到焦点的聊天才能占这个位**。
+	 *   此前"在场即占位"（每次 `_updateVisibility` 都调）⇒ 并排两个聊天时，
+	 *   谁最后跑了一次可见性重算谁占位（ResizeObserver / 定时器 / 状态变化都会触发），
+	 *   **未必是用户正在看的那个** ⇒ "Add File to Chat / 插件页打开会话"会打到错的聊天 ✗。
+	 *   ⇒ 在场登记改走 {@link noteChatViewPresent}；本方法只由**焦点**路径调用。
 	 */
 	noteActiveChatView(viewId: string, token: object): void;
+	/**
+	 * 登记"这个聊天视图在场"（pane 可见且矩形非零）——只影响**视图 id 仲裁**，
+	 * 不占"活动聊天"位 ✓（多聊天并排时两者必须分开，否则外部路由会错落）。
+	 */
+	noteChatViewPresent(viewId: string, token: object): void;
 	/** 该视图不再在场时释放"活动聊天"位与在场记录（仅当都是它）。 */
 	clearActiveChatView(viewId: string, token: object): void;
 	/** 最近聚焦的聊天视图 id；没有则为 undefined。 */
@@ -273,6 +380,13 @@ export interface IDshHarnessService {
 	insertReference(viewId: string, reference: IDshInsertReference): Promise<void>;
 	/** 把 VsSaros 已配置的模型 provider 同步到 dsh（桥 `providers.sync`；控制桥不可用时报错）。 */
 	syncProviders(args: IBridgeProvidersSyncArgs): Promise<IBridgeProvidersSyncResult>;
+	/**
+	 * 把 **IDE 侧的企业身份（TOF/OA 票据）**同步到 dsh（桥 `tof.sync`）。
+	 *
+	 * 2026-10-21（用户："不要用 dsh 官方 DeepSeek 路由，需求是在两侧用 TOF/OA 企业身份（工号 + 票据）实现登录"）：
+	 * dsh 侧不另起账号体系，而是持有**同一份**企业身份 ⇒ 一次浏览器登录，两边都能用 ✓。
+	 */
+	syncTofIdentity(): Promise<IBridgeTofSyncResult>;
 }
 
 export class DshHarnessService extends Disposable implements IDshHarnessService {
@@ -297,7 +411,13 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 	readonly onDidChangeStatus = this._onDidChangeStatus.event;
 	private readonly _onDidPageEvent = this._register(new Emitter<DshPageEvent>());
 	readonly onDidPageEvent = this._onDidPageEvent.event;
+	/** ★ 改名回执（从 `onDidPageEvent` 里挑 `kind:'renamed'` 转发，见 `_onPageEvent`）。 */
+	private readonly _onDidDshSessionRenamed = this._register(new Emitter<IDshSessionRenamedResult>());
+	readonly onDidDshSessionRenamed = this._onDidDshSessionRenamed.event;
 	private readonly _ownViews = new Set<string>();
+	/** ★ 2026-10-19（首启成本拆分）：首次 `ensureStarted()` 的时刻 / 是否已打过"Host ready"日志。 */
+	private _startupT0: number | undefined;
+	private _startupLogged = false;
 	private _workspaceSync: IDshWorkspaceSyncSummary = { reported: 0, registered: 0, rejected: 0 };
 	private readonly _onDidProgress = this._register(new Emitter<string>());
 	readonly onDidProgress = this._onDidProgress.event;
@@ -336,6 +456,14 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 		@IAgentStudioDashboardService private readonly _dashboardService: IAgentStudioDashboardService,
 		@ICommandService private readonly _commandService: ICommandService,
 		@ILogService private readonly _logService: ILogService,
+		// ★ 2026-10-21：`media`（生图）能力要用的：模型 provider 注册表
+		// （`getModelProviders()` ⇒ 里面有 `generateImage` 的那些就是能出图的源）。
+		// 凭据、审批、模型清单都在 IDE 进程 ⇒ Host 侧只负责把请求送过来、把图接回去。
+		@IAgentOSService private readonly _agentOSService: IAgentOSService,
+		@ITofAuthService private readonly _tofAuth: ITofAuthService,
+		// 商城清单（`skills` / `mcp` 两条 IDE 能力，2026-10-21）：认证（商城 JWT）在 IDE 侧 ⇒ 这条
+		//   能力天然属于 IDE 侧实现（dsh 侧只发意图）✓。
+		@IMarketplaceService private readonly _marketplace: IMarketplaceService,
 	) {
 		super();
 		this._channel = mainProcessService.getChannel(DSH_HARNESS_CHANNEL);
@@ -348,12 +476,29 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 		// （两个事件都要接：切活动工作区不必然改记录，改记录也不必然切活动 ✓）。
 		this._register(this._studio.onDidChangeWorkspace(() => this._pushWorkspacesToAll()));
 		this._register(this._studio.onDidChangeActiveWorkspace(() => this._pushWorkspacesToAll()));
+		// IDE 登录态（2026-10-21）：登录/登出变化 ⇒ 推给所有 dsh 视图 ⇒ 窗口里的那行账号与 IDE 同步 ✓
+		// ★ 同一次变化还要把**票据**同步给 dsh 侧（桥 `tof.sync`）⇒ 两侧持有同一份企业身份
+		//   （用户："不要用 dsh 官方 DeepSeek 路由，需求是在两侧用 TOF/OA 企业身份实现登录"）。
+		//   顺序：先推页面（快），再推 dsh（慢、要过桥）⇒ 两者互不阻塞 ✓。
+		this._register(this._tofAuth.onDidChangeUser(() => {
+			this.pushAuthToAll();
+			void this._syncTofIdentityQuietly('登录态变化');
+		}));
 		// 工作区信任变化 ⇒ 技能根集合可能变（项目级根只在受信任时进）⇒ 变了才重启 Host（见 `_lastSkillDirs`）
 		this._register(this._workspaceTrustService.onDidChangeTrust(() => void this._onTrustChanged()));
 		this._register(this._channel.listen<IDshHostStatus>(DshHarnessChannelEvent.OnDidChangeStatus)(s => this._update(s)));
 		this._register(this._channel.listen<DshPageEvent>(DshHarnessChannelEvent.OnDidPageEvent)(e => {
 			if (this._ownViews.has(e.viewId)) {
 				this._onDidPageEvent.fire(e);
+				// ★ 改名回执单独转发一份：侧栏只需要这一件事实，不必自己解析 `DshPageEvent` 的联合类型。
+				if (e.kind === 'renamed') {
+					this._onDidDshSessionRenamed.fire({
+						viewId: e.viewId,
+						sessionId: e.sessionId,
+						...(e.title !== undefined ? { title: e.title } : {}),
+						...(e.error !== undefined ? { error: e.error } : {}),
+					});
+				}
 			}
 		}));
 		this._register(this._channel.listen<string>(DshHarnessChannelEvent.OnDidProgress)(p => this._onDidProgress.fire(p)));
@@ -420,9 +565,63 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 	}
 
 	/** 把工作台服务适配成能力执行所需的**只读**面（逻辑本身在 common 里，这里只做服务接缝）。 */
+	/**
+	 * 选「能出图的 provider + 它的图像模型」（`media` 能力的 generateImage / editImage 共用）。
+	 *
+	 * 模型来源优先级：**调用参数**（providerId / modelId）→ 第一个能生图的 provider 的
+	 * 第一个 `supportsImageGen` 模型 ⇒ 与 IDE 侧既有的「图片生成模型」选择器同口径 ✓。
+	 */
+	private async _pickImageTarget(modelId?: string, providerId?: string): Promise<{
+		target: IModelProvider;
+		picked: { id: string; supportsImageGen?: boolean };
+	}> {
+		const providers = this._agentOSService.getModelProviders()
+			.filter(provider => typeof provider.generateImage === 'function');
+		if (providers.length === 0) {
+			throw new Error('IDE 侧没有可用的图像 provider（没有实现 generateImage 的模型源）');
+		}
+		const target = providerId
+			? providers.find(provider => provider.id === providerId)
+			: providers[0];
+		if (!target) {
+			throw new Error(`找不到图像 provider：${providerId}（可用的：${providers.map(p => p.id).join(', ')}）`);
+		}
+		const models = await target.listModels();
+		const imageModels = models.filter(model => model.supportsImageGen);
+		const picked = modelId
+			? (models.find(model => model.id === modelId) ?? imageModels.find(model => model.id === modelId))
+			: (imageModels[0] ?? models[0]);
+		if (!picked) {
+			throw new Error(`${target.name} 没有可用模型${modelId ? `（找不到 ${modelId}）` : ''}`);
+		}
+		return { target, picked };
+	}
 	private _ideEnv(): IIdeCapabilityEnv {
 		return {
 			activeResource: () => this._editorService.activeEditor?.resource,
+			// 商城清单（2026-10-21）：`skills` / `mcp` 两条能力用。
+			// ⚠ 先 `ensureLoggedIn()`：未登录时商城接口会 401，而 401 的文案没法指导用户 ⇒ 换成
+			//   "未登录商城，请先在 VsSaros 中完成 TOF 登录"（`marketplaceService` 自己那句）✓。
+			marketList: async (kind, opts) => {
+				await this._marketplace.ensureLoggedIn();
+				const res = await this._marketplace.listPackages({
+					kind,
+					...(opts.q ? { q: opts.q } : {}),
+					pageSize: opts.limit,
+				});
+				return {
+					total: res.total,
+					items: res.items.map(pkg => ({
+						id: pkg.id,
+						slug: pkg.slug,
+						name: pkg.name,
+						version: pkg.latestVersion ?? '',
+						description: pkg.description ?? '',
+						author: pkg.authorName ?? '',
+						category: pkg.category ?? '',
+					})),
+				};
+			},
 			// 不传 filter = 全工作区（`scope: 'workspace'` 用）
 			readMarkers: resource => this._markerService.read(resource ? { resource } : undefined),
 			activeSelection: () => {
@@ -522,6 +721,27 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 				}
 				return { id: found.id, name: String(found.name ?? '') };
 			},
+			// 执行工作流里的**单个节点**（`workflow` 能力的 `op:'executeNode'`，2026-10-20）。
+			// 复用画布侧**已有的直跑链**，不新造执行器：
+			//   delegate.execute → requestDirectStageRun → webview `runStageByClass`
+			// （ComfyUI 的 HTTP 客户端在 webview 里 —— renderer 的 fetch 被 CORS 拦 ⇒ 扩展宿主不可能直连）。
+			// ⚠ 三条边界都写在 `IIdeCapabilityEnv.executeWorkflowNode` 的注释里（webview 必须在场、
+			//   只支持 stage 型节点、长任务走慢档预算）；这里不重复判定，免得两处漂移。
+			executeWorkflowNode: async ({ workflowId, executionId, nodeId, nodeType, data }) => {
+				const delegate = createComfyStageDelegate({ info: message => this._logService.info(message) });
+				const built = buildExecuteNodeRequest({ nodeId, nodeType, data });
+				const result = await delegate.execute(
+					built.node as unknown as WorkflowGraphNode,
+					{ values: built.values, defaults: built.defaults, ...(workflowId ? { workflowId } : {}), upstreams: [] },
+					{ executionId: executionId ?? `dsh-${Date.now().toString(36)}`, onProgress: () => undefined },
+				);
+				// 口径与 `_executeComfyNode` 一致（`summary ?? JSON.stringify(outputs)`）——
+				// Host 侧只认 `reply.output` 是字符串（`engineCore` 的节点 output）。
+				return {
+					output: result.summary ?? JSON.stringify(result.outputs ?? {}),
+					...(result.outputs ? { outputs: result.outputs } : {}),
+				};
+			},
 			openResource: async (resource, options) => {
 				// 固定开在**文件编辑区**（`mainPart.activeGroup`）：不指定分组会落到活动分组，而聊天框就是
 				// 活动分组 ⇒ 打开的编辑器会盖住聊天框（这条修复来自页面桥的实测，见方案 7.x 的"顺带修掉的真缺陷"）。
@@ -594,6 +814,80 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 					return undefined;
 				}
 			},
+			// ★ 2026-10-21：生图（`media` 能力）。
+			// 模型来源优先级：**调用参数**（providerId / modelId）→ 第一个能生图的 provider 的
+			// 第一个 `supportsImageGen` 模型 ⇒ 与 IDE 侧既有的"图片生成模型"选择器同口径
+			// （`agentSettingsEditorPane` 的图片模型下拉也是按 `supportsImageGen` 过滤的 ✓）。
+			// ★ 2026-10-21：按参考图改图（画布「照我画的改」走这条）。
+			//   参考图是 data URL ⇒ provider 走 img2img（multipart /images/edits）。
+			//   ⚠ provider 的 edits 端点不可用时会**降级为文生图** ⇒ degraded 必须透出（不静默）。
+			editImage: async ({ prompt, image, modelId, providerId, width, height, numImages, quality }) => {
+				const { target, picked } = await this._pickImageTarget(modelId, providerId);
+				this._logService.info(`[dshHarness] media.editImage → provider=${target.id} model=${picked.id}`);
+				const result = await target.generateImage!({
+					modelId: picked.id,
+					prompt,
+					imageInput: image,
+					...(typeof width === 'number' ? { width } : {}),
+					...(typeof height === 'number' ? { height } : {}),
+					...(typeof numImages === 'number' ? { numImages } : {}),
+					// 三批(9)：质量档**原样透传**（各家认的档位不同 ⇒ 不在这儿改写）。
+					...(quality ? { quality } : {}),
+				});
+				return {
+					images: result?.images ?? [],
+					degraded: result?.degraded === true,
+					degradedReason: result?.degradedReason,
+				};
+			},
+			generateImage: async ({ prompt, modelId, providerId, width, height, numImages, quality }) => {
+				const { target, picked } = await this._pickImageTarget(modelId, providerId);
+				this._logService.info(`[dshHarness] media.generateImage → provider=${target.id} model=${picked.id}`);
+				const result = await target.generateImage!({
+					modelId: picked.id,
+					prompt,
+					...(typeof width === 'number' ? { width } : {}),
+					...(typeof height === 'number' ? { height } : {}),
+					...(typeof numImages === 'number' ? { numImages } : {}),
+					// 三批(9)：质量档**原样透传**（各家认的档位不同 ⇒ 不在这儿改写）。
+					...(quality ? { quality } : {}),
+				});
+				return { images: result?.images ?? [] };
+			},
+			// 三批(9)：**图像能力表**（谁能生图 + 各家支持哪些档位）。
+			//   真源 = 各 provider 自己的 imageCapabilities()（模型清单取自它自己的 listModels ⇒
+			//   不在别处再抄一份，抄了必漂）。某个 provider 读表失败 ⇒ 跳过它并记一行日志
+			//   （不因为一个 provider 坏就让整张表查不出来）。
+			imageCapabilities: async () => {
+				const providers = this._agentOSService.getModelProviders()
+					.filter(provider => typeof provider.generateImage === 'function');
+				const out: Array<{
+					id: string; name?: string;
+					models: Array<{ id: string; name?: string }>;
+					ratios?: readonly string[]; qualities?: readonly string[]; sizes?: readonly string[];
+				}> = [];
+				for (const provider of providers) {
+					if (typeof provider.imageCapabilities !== 'function') { continue; }
+					try {
+						const capabilities = await provider.imageCapabilities();
+						if (!capabilities) { continue; }
+						const capabilityModels = capabilities.models;
+						if (!capabilityModels) { continue; }
+						if (capabilityModels.length === 0) { continue; }
+						out.push({
+							id: provider.id,
+							name: provider.name,
+							models: capabilityModels.map(model => ({ id: model.id, ...(model.name ? { name: model.name } : {}) })),
+							...(capabilities.ratios ? { ratios: capabilities.ratios } : {}),
+							...(capabilities.qualities ? { qualities: capabilities.qualities } : {}),
+							...(capabilities.sizes ? { sizes: capabilities.sizes } : {}),
+						});
+					} catch (e) {
+						this._logService.info(`[dshHarness] media.imageCapabilities：${provider.id} 读能力表失败（跳过它）：${String((e as Error)?.message ?? e)}`);
+					}
+				}
+				return { providers: out };
+			},
 		};
 	}
 
@@ -602,8 +896,15 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 	}
 
 	private _update(status: IDshHostStatus): void {
+		const wasBridge = this._status.bridge;
 		this._status = status;
 		this._onDidChangeStatus.fire(status);
+		// ★ 桥**刚连上**时补一次企业身份同步（2026-10-21）：登录可能发生在 Host 起来之前
+		//   ⇒ 当时同步会失败（控制桥不可用）⇒ 桥可用后必须补上，否则 dsh 侧永远没有这份身份 ✗。
+		//   判据用"桥从不可用变成可用"（connected）⇒ 不会每次状态抖动都打一次桥 ✓。
+		if (wasBridge !== 'connected' && status.bridge === 'connected') {
+			void this._syncTofIdentityQuietly('控制桥就绪');
+		}
 	}
 
 	/**
@@ -695,6 +996,9 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 			...(skills.bundledDir ? { bundledSkillDir: skills.bundledDir } : {}),
 			// agents 模块要的 agent 目录（`<数据根>/agents`）——dev/生产的数据根不同，必须注入（见方法注释）
 			agentsRoot: this._agentsRoot(),
+			// 内置 agent 的**源目录**（真源 `resources/.agents/agents/<id>/.agent.md`）—— 主进程据此复制出
+			// 交付副本；与上面那条一块儿来，dsh 侧才列得出内置 agent、且内容与真源一致 ✓。
+			agentsBuiltinSrc: this._agentsBuiltinSrc(),
 			// 数据根本身（kb / canvas / workflow / skills 都读它；mcp 用同一个根定位 mcp.json）——
 			// 这几个模块此前**从来没有**被注入过 ⇒ dev 实例读的是生产数据（见选项与方法注释）
 			dataRoot: this._dataRoot(),
@@ -941,6 +1245,21 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 	}
 
 	/**
+	 * **内置 agent 的源目录**（`resources/.agents/agents`）—— 真源是那里的 `<id>/.agent.md`。
+	 *
+	 * 与 `bundledSkillDir` 同一类：产品侧的东西，用绝对路径交付给读不到源码的 Host 进程。
+	 * 主进程会把它**原样复制**成一份交付副本 ⇒ dsh 侧列出的内置 agent 与真源逐字节相同
+	 * （不会因为"代码镜像没同步"而拿到旧内容 ✗）。解析失败 ⇒ 不注入（主进程退回镜像生成）。
+	 */
+	private _agentsBuiltinSrc(): string | undefined {
+		try {
+			return FileAccess.asFileUri('vs/../../resources/.agents/agents').fsPath;
+		} catch {
+			return undefined;
+		}
+	}
+
+	/**
 	 * VsSaros 用户**数据根**（生产 `~/.vssaros`、dev `~/.vssaros-dev`）：kb / canvas / workflow / skills
 	 * 这几个模块都读它（另加 mcp 的配置路径，都走 `--patch` 覆盖层，见 `common/dshCli.ts` 的
 	 * `renderDataRootOverlay`）。2026-10-12 之前它们**从来没有**被注入过 ⇒ dev 实例读的是生产数据。
@@ -968,9 +1287,21 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 	}
 
 	async ensureStarted(): Promise<IDshHostStatus> {
+		// ★ 2026-10-19（首启成本拆分，只加日志不改行为）：
+		//   从**首次** ensureStarted 到 Host 变 running 的耗时。与既有三行日志拼起来即可拆出各段：
+		//     · `one-shot install of N plugin(s) took …`   —— pnpm 重装（改过版本的插件）
+		//     · `spawned pid …`                            —— 进程启动
+		//     · `[vssaros-bridge] apply (host uptime …)`   —— Host 内部插件 apply 完成
+		//     · 本行                                        —— Host 侧就绪（之后才是页面连接阶梯 17.7s）
+		//   实测（2026-10-19 17:17 实例）：install 4.4s + Host 内部 24.3s + 连接 17.7s。
+		const t0 = this._startupT0 ?? (this._startupT0 = Date.now());
 		const workspaceId = await this._startWorkspaceId();
 		const s = await this._channel.call<IDshHostStatus>(DshHarnessChannelCommand.Start, this._startOptions(await this._relatedRoots(workspaceId), workspaceId));
 		this._update(s);
+		if (s.state === 'running' && !this._startupLogged) {
+			this._startupLogged = true;
+			this._logService.info(`[dshHarness] Host ready in ${Date.now() - t0} ms（首次 ensureStarted → running；结合 install / spawned / bridge apply 三行可拆出各段成本）`);
+		}
 		return s;
 	}
 
@@ -1026,7 +1357,7 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 			...activeModulesOf(enabled.map(p => p.name)),
 			...activeModulesFromPlugins(enabled),
 		])] as DshModuleId[];
-		return resolveContainerPageState(container, active, pagesFromPlugins(plugins));
+		return withWorkbenchClient(resolveContainerPageState(container, active, pagesFromPlugins(plugins)), plugins);
 	}
 
 	getPluginActivation(): Promise<IDshPluginActivationSnapshot> {
@@ -1105,6 +1436,24 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 
 	async setWindowWorkspaces(windowId: number, paths: readonly string[]): Promise<void> {
 		await this._channel.call(DshHarnessChannelCommand.SetWindowWorkspaces, { windowId, paths });
+	}
+
+	/**
+	 * 同步"**IDE 主窗口是我们藏着的**"这个事实给主进程（desktop 模式的窗口守卫，2026-10-21）。
+	 *
+	 * 为什么需要（用户报障："在 desktop 模式下，点击登录，不要显示 ide 模式的窗口"）：desktop 模式把
+	 * IDE 主窗口整个藏起来了；用户在桌面窗口点「登录」⇒ 走 TOF 浏览器流程 ⇒ **窗口层面**的外部动作
+	 * （系统把焦点还给本应用的窗口）会把 IDE 主窗口拉到前台（真机日志：桌面窗口 BLUR 后 1.6s IDE 主窗口
+	 * FOCUS ✗）⇒ 只在命令分发处拦**拦不住**（那不是命令）⇒ 守卫必须落在**主进程**（那边看得到窗口事件）✓。
+	 *
+	 * ⚠ 失败只记日志、不抛：守卫是"锦上添花"的防线 ⇒ 它坏了不该把调用方（启动/关窗流程）带崩 ✗。
+	 */
+	async setIdeWindowHidden(hidden: boolean, windowId: number): Promise<void> {
+		try {
+			await this._channel.call(DshHarnessChannelCommand.SetIdeWindowHidden, { hidden, windowId });
+		} catch (e) {
+			this._logService.warn(`[dshHarness] desktop 守卫开关没送达（hidden=${hidden}）：${String((e as Error)?.message ?? e)}`);
+		}
 	}
 
 	/** 经控制桥查询 dsh 已注册的工作区（诊断用）；控制桥不可用时为空。 */
@@ -1233,6 +1582,10 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 	 */
 	private async _pushWorkspaceContext(workspaceId: string | undefined): Promise<boolean> {
 		if (this.status.state !== 'running') {
+			// ★ 2026-10-20：这里原本**静默 return true** ⇒ 排查时看到"日志里没有 push 那行"，
+			//   分不清是「压根没调用」（没切工作区）还是「调了但 Host 没在跑」，只能靠猜 ✗。
+			//   补一行 trace 把状态说出来（下次 Start 会自然带上新值，这条不是错误路径 ✓）。
+			this._logService.trace(`[dshHarness] workspace context push skipped: Host 状态=${this.status.state}（该值会由下一次 Start 带上）`);
 			return true;
 		}
 		// `_relatedRoots()` 的第一项就是该工作区的**主根**（`[ws.path, ...relatedFolders]` 去重 ✓），
@@ -1269,6 +1622,7 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 
 	createView(viewId: string, windowId: number, surface: DshViewSurface, sessionId?: string, route?: string, pageSurface?: DshPageSurface, overrideChatOnlyUi?: boolean, isolatedPool?: boolean): Promise<void> {
 		this._ownViews.add(viewId);
+		const chatIdOfView = DshHarnessService._chatIdOf(viewId);
 		// 聊天框只保留聊天 UI（方案 5.13）：把设置交给 preload，在页面里隐藏 dsh 的侧栏 / 顶栏 / 右侧栏。
 		// `overrideChatOnlyUi` 供「拼装式弹窗」按视图覆盖（弹窗要复刻官方 desktop ⇒ 保留官方整套 chrome ✓）。
 		const chatOnlyUi = overrideChatOnlyUi ?? (this._configurationService.getValue<boolean>(DshHarnessSettings.ChatOnlyUi) !== false);
@@ -1279,9 +1633,91 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 			// ★ 底色候选（2026-10-13「初次打开侧栏视图白屏一下」）：随**创建**一起给 ⇒
 			//   主进程建视图时就染色，页面画出第一帧之前不会露 Electron 默认白 ✓（只靠 pushTheme 会晚一拍 ✗）。
 			backgrounds: this._viewBackgrounds(),
-			// 承载表面（2026-10-13）与 route 一起只在 plugin-page 下有意义 ✓（主进程再白名单校验一次）
-			...(surface === 'plugin-page' ? { route, pageSurface } : {}),
-		}).then(() => { this._pushTheme(viewId); this._pushWorktrees(viewId); this._pushWorkspaces(viewId); });
+			// 承载表面（2026-10-13）与 route 一起只在 plugin-page / workbench 下有意义 ✓（主进程再白名单校验一次）
+			...(surfaceTakesRoute(surface) ? { route, pageSurface } : {}),
+		}).then(() => {
+			// ★ 绑定记账（"这条会话已在本窗口的某个页签里打开"的唯一权威）：见 findChatIdForSession 的注释。
+			if (chatIdOfView && sessionId) {
+				this._chatSession.set(chatIdOfView, sessionId);
+			}
+			this._pushTheme(viewId); this._pushWorktrees(viewId); this._pushWorkspaces(viewId); this._pushAuth(viewId);
+		});
+	}
+
+	/**
+	 * dsh 侧会话摘要（读 projcache；主进程解析规则见 `common/dshSessionIndex.ts`）。
+	 *
+	 * 失败一律降级为空数组：这条只给侧栏"补充"用，绝不能因为它让整个会话列表空白 ✗。
+	 */
+	async listDshSessions(): Promise<readonly IDshSessionSummary[]> {
+		try {
+			const list = await this._channel.call<IDshSessionSummary[]>(DshHarnessChannelCommand.ListDshSessions, undefined);
+			return Array.isArray(list) ? list : [];
+		} catch (e) {
+			this._logService.warn('[dshHarness] listDshSessions failed', e);
+			return [];
+		}
+	}
+
+	/**
+	 * 按 **dsh 会话 id** 改名：先找到"正在显示它的聊天视图"，再用既有的 `renameSession(viewId, title)`
+	 * 推给页面（`dshViewHost` → IPC → preload → 页面 `ctx.sessions.rename`）。
+	 *
+	 * ⚠ 返回 `true` **只代表请求已推给页面**；真正的成败看 `onDidDshSessionRenamed`（页面回执）⇒
+	 *   调用方**不许**在这里就报"已改名"（假成功 ✗）。
+	 */
+	async renameDshSession(sessionId: string, title: string): Promise<boolean> {
+		let views: IDshViewInfo[] = [];
+		try {
+			views = await this.listViews();
+		} catch (e) {
+			this._logService.warn('[dshHarness] renameDshSession: listViews failed', e);
+			return false;
+		}
+		const chat = views.find(v => v.surface === 'chat' && v.sessionId === sessionId && this._ownViews.has(v.viewId));
+		if (!chat) {
+			this._logService.info(`[dshHarness] renameDshSession(${sessionId}): 该会话当前没有在聊天视图里打开 ⇒ 无法改名（改名只能由页面做）`);
+			return false;
+		}
+		try {
+			await this.renameSession(chat.viewId, title);
+			this._logService.info(`[dshHarness] renameDshSession(${sessionId}) → view ${chat.viewId}（等页面回执）`);
+			return true;
+		} catch (e) {
+			this._logService.warn(`[dshHarness] renameDshSession(${sessionId}) failed`, e);
+			return false;
+		}
+	}
+
+	/**
+	 * 把侧栏点的 dsh 会话切到聊天视图（同一窗口内）。
+	 *
+	 * ⚠ 只挑 `surface === 'chat'` 的视图：`full`（官方整页）与 `plugin-page` 都不是聊天框，
+	 * 对它们 rebind 等于把用户正在看的插件页顶掉 ✗。
+	 * ⚠ 多个聊天视图时优先**本窗口**（`ownerWindowId` 与视图池里最小的那个一致即可 —— 这里退一步，
+	 * 取"最近聚焦"的那条最好，但那条只有聊天宿主知道；拿不到就取第一个 chat 视图，并在日志里留痕）。
+	 */
+	async openDshSessionChat(sessionId: string): Promise<boolean> {
+		let views: IDshViewInfo[] = [];
+		try {
+			views = await this.listViews();
+		} catch (e) {
+			this._logService.warn('[dshHarness] openDshSessionChat: listViews failed', e);
+			return false;
+		}
+		const chat = views.find(v => v.surface === 'chat' && this._ownViews.has(v.viewId));
+		if (!chat) {
+			this._logService.info(`[dshHarness] openDshSessionChat(${sessionId}): 本窗口没有聊天视图 ⇒ 无法切换`);
+			return false;
+		}
+		try {
+			await this.rebindSession(chat.viewId, sessionId);
+			this._logService.info(`[dshHarness] openDshSessionChat(${sessionId}) → view ${chat.viewId}`);
+			return true;
+		} catch (e) {
+			this._logService.warn(`[dshHarness] openDshSessionChat(${sessionId}) failed`, e);
+			return false;
+		}
 	}
 
 	/** 当前主题 → dsh token 覆盖层（两形态同值，页面始终跟 IDE 一致）；推给指定视图。 */
@@ -1441,6 +1877,51 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 			.catch(e => this._logService.warn(`[dshHarness] workspace record push skipped: ${String((e as Error)?.message ?? e)}`));
 	}
 
+	/**
+	 * IDE 登录态 → 所有本窗口的 dsh 视图（2026-10-21）。
+	 *
+	 * ⚠ 只推**展示投影**（signedIn / 登录名 / 工号 / 团队）—— 票据绝不下发到页面 ✓。
+	 */
+	public pushAuthToAll(): void {
+		for (const viewId of this._ownViews) {
+			this._pushAuth(viewId);
+		}
+	}
+
+	/**
+	 * 登录/登出**失败**时把原因推给所有本窗口的 dsh 视图（2026-10-21）。
+	 *
+	 * 为什么必须有：页面桥是**单向**的（只回 true）⇒ 失败时页面**收不到任何回执** ⇒
+	 * 用户看到的还是"未登录"，真实原因（浏览器被关 / 网关超时 / 账号被拒）只落在 IDE 日志里
+	 *   ⇒ 页面只能干等超时兜底（"点了没反应"的高频形态）✗。
+	 *
+	 * ⚠ 只推**一句人话**（截断到 200 字符）：不含堆栈/路径/票据 ✓。
+	 * ⚠ `signedIn` 仍取**当前真实登录态** ⇒ 失败不会把"已登录"说成"未登录" ✓（错误与状态是两件事）。
+	 */
+	public pushAuthError(error: string): void {
+		const message = (error || '').trim().slice(0, 200);
+		if (!message) {
+			return;
+		}
+		for (const viewId of this._ownViews) {
+			this._pushAuth(viewId, message);
+		}
+	}
+
+	private _pushAuth(viewId: string, error?: string): void {
+		const user = this._tofAuth.currentUser;
+		const auth = {
+			signedIn: !!user,
+			loginName: user?.login_name ?? '',
+			staffId: user?.staff_id ?? '',
+			team: user?.team ?? '',
+			// 失败原因：有才带（推送载荷是逐字段白名单 ⇒ 这里不给，页面就永远看不到失败 ✗）
+			...(error ? { error } : {}),
+		};
+		void this._channel.call(DshHarnessChannelCommand.PushAuth, { viewId, auth })
+			.catch(e => this._logService.warn(`[dshHarness] auth push skipped: ${String((e as Error)?.message ?? e)}`));
+	}
+
 	private _pushWorkspacesToAll(): void {
 		for (const viewId of this._ownViews) {
 			this._pushWorkspaces(viewId);
@@ -1463,8 +1944,63 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 		return this._channel.call(DshHarnessChannelCommand.ReloadView, { viewId });
 	}
 
-	rebindSession(viewId: string, sessionId: string): Promise<void> {
-		return this._channel.call(DshHarnessChannelCommand.RebindSession, { viewId, sessionId });
+	async rebindSession(viewId: string, sessionId: string): Promise<void> {
+		await this._channel.call(DshHarnessChannelCommand.RebindSession, { viewId, sessionId });
+		// 换绑成功 ⇒ 这个页签现在显示的就是 sessionId（记账口径与 createView 一致）。
+		const chatId = DshHarnessService._chatIdOf(viewId);
+		if (chatId) {
+			this._chatSession.set(chatId, sessionId);
+		}
+	}
+
+	/** chatId → 当前绑定的 dsh 会话（createView / rebindSession 成功时写入，dispose 时清）。 */
+	private readonly _chatSession = new Map<string, string>();
+
+	/**
+	 * **已预占**（"马上就绑"）的 dsh 会话 —— 见 `reserveChatSession` 的注释。
+	 *
+	 * 只参与"这条会话能不能被别的页签复用"的判断（`boundChatSessionIds`）✓。
+	 */
+	private readonly _reservedChatSessions = new Set<string>();
+
+	/** `dsh-chat-w<win>-<chatId>` → chatId（与本文件 `_viewBaseFor` 的拼法一一对应）。 */
+	private static _chatIdOf(viewId: string): string | undefined {
+		const m = /^dsh-chat-w\d+-(.+)$/.exec(viewId);
+		return m ? m[1] : undefined;
+	}
+
+	findChatIdForSession(sessionId: string): string | undefined {
+		for (const [chatId, sid] of this._chatSession) {
+			if (sid === sessionId) {
+				return chatId;
+			}
+		}
+		return undefined;
+	}
+
+	boundChatSessionIds(): Set<string> {
+		// 已绑定的 + **已预占**的（预占见 `reserveChatSession`）⇒ 并排开两个聊天时，
+		// 第二个不会抢到第一个正在占用的那条会话 ✓。
+		return new Set([...this._chatSession.values(), ...this._reservedChatSessions]);
+	}
+
+	/**
+	 * **预占**一条 dsh 会话（"我马上就绑它"）。
+	 *
+	 * 为什么需要（2026-10-21，中间栏并排多聊天）：新页签会**复用孤儿空白会话**
+	 * （`pickReusableBlankSession`），而"复用"这件事在**并发**下会撞车 ——
+	 * 两个聊天几乎同时打开时，第一个还没走完 `createView`（记账在 `.then()` 里），
+	 * 第二个已经把同一条空白会话挑走了 ⇒ 两个视图绑**同一** dsh 会话 ⇒
+	 * 要么 Host 报"会话已被占用"，要么两个页面显示同一段对话（用户以为开了两个，其实是同一个）✗✗。
+	 *
+	 * ⇒ 决定 sessionId 后**立刻**预占 ⇒ 另一个聊天在挑空白会话时就能排除它 ✓。
+	 *
+	 * 只影响"能不能被复用"，不改 `_chatSession`（那里记的是"确实已打开"）✓。
+	 */
+	reserveChatSession(sessionId: string): void {
+		if (sessionId) {
+			this._reservedChatSessions.add(sessionId);
+		}
 	}
 
 	renameSession(viewId: string, title: string): Promise<void> {
@@ -1475,6 +2011,14 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 		this._ownViews.delete(viewId);
 		if (this._activeChatViewId === viewId) {
 			this._activeChatViewId = undefined;
+		}
+		// 页签销毁 ⇒ 记账一起清（否则"已打开"会指向一个不存在的页签 ⇒ 用户点了没反应 ✗）。
+		const chatId = DshHarnessService._chatIdOf(viewId);
+		const bound = chatId ? this._chatSession.get(chatId) : undefined;
+		if (chatId && bound) {
+			this._chatSession.delete(chatId);
+			// 预占也一并释放：否则这条会话永远不会被别的页签复用（每次新开页签都多一条空白会话 ✗）。
+			this._reservedChatSessions.delete(bound);
 		}
 		return this._channel.call(DshHarnessChannelCommand.DisposeView, { viewId });
 	}
@@ -1511,6 +2055,12 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 		}
 	}
 
+	noteChatViewPresent(viewId: string, token: object): void {
+		if (this._ownViews.has(viewId)) {
+			this._chatViewAllocator.notePresent(viewId, token);
+		}
+	}
+
 	clearActiveChatView(viewId: string, token: object): void {
 		if (this._activeChatViewId === viewId) {
 			this._activeChatViewId = undefined;
@@ -1524,6 +2074,40 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 
 	syncProviders(args: IBridgeProvidersSyncArgs): Promise<IBridgeProvidersSyncResult> {
 		return this._channel.call(DshHarnessChannelCommand.ProvidersSync, args);
+	}
+
+	/**
+	 * 把企业身份（TOF/OA 票据）同步到 dsh 侧（2026-10-21）。
+	 *
+	 * ⚠ **三态**（把"没取到票"当成"已登出"会把对端那份凭据误删 ⇒ 用户在 dsh 侧突然掉登录 ✗）：
+	 *  ① 已登录 **且** 拿到票 ⇒ 同步这张票；
+	 *  ② 已登录但**票没取到**（启动恢复路径：`currentUser` 有、`currentTicket` 空）⇒ **不动 dsh 侧**
+	 *     （宁可让旧票留着，也不能在对端把凭据清了）；
+	 *  ③ 明确**登出**（`currentUser` 为 null）⇒ 才下发"清掉"。
+	 */
+	async syncTofIdentity(): Promise<IBridgeTofSyncResult> {
+		const user = this._tofAuth.currentUser;
+		const ticket = this._tofAuth.currentTicket;
+		if (user && !ticket) {
+			this._logService.info('[dshHarness] 企业身份同步：已登录但票据未就位 ⇒ 本次不动 dsh 侧（不误清凭据）');
+			return { signedIn: true, ref: DSH_TOF_CREDENTIAL_REF, changed: false };
+		}
+		return this._channel.call(DshHarnessChannelCommand.TofSync, { ticket: ticket ?? null });
+	}
+
+	/**
+	 * 静默同步（失败不抛）：登录态变化 / 桥就绪时都会调。
+	 *
+	 * 为什么静默：dsh 侧没装伴生插件 / Host 还没起来 ⇒ 这条能力**暂时不可用**（可降级），
+	 * 不该让 TOF 登录本身因此失败（登录成功的判据是 IDE 侧拿到票据，不是 dsh 收到票）✓。
+	 */
+	private async _syncTofIdentityQuietly(reason: string): Promise<void> {
+		try {
+			const r = await this.syncTofIdentity();
+			this._logService.info(`[dshHarness] 企业身份同步（${reason}）：dsh 侧 signedIn=${r.signedIn} changed=${r.changed}`);
+		} catch (e) {
+			this._logService.info(`[dshHarness] 企业身份同步（${reason}）跳过：${String((e as Error)?.message ?? e)}`);
+		}
 	}
 
 	resetWindow(windowId: number): Promise<void> {

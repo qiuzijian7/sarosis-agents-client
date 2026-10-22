@@ -162,6 +162,23 @@ export interface IIdeCapabilityEnv {
 	 * 就得从这里拿 ✓，而不是去猜 IDE 的库 ✗。
 	 */
 	dashboardSummary(): IIdeDashboardSummary | undefined;
+	/**
+	 * **商城可安装包的清单**（`skills` / `mcp` 两条能力用，2026-10-21）。
+	 *
+	 * ⚠ 认证（商城 JWT）在 IDE 侧（`IMarketplaceService` 复用 TOF 登录态）⇒ dsh 侧只发意图 ✓。
+	 */
+	marketList(kind: 'skill' | 'mcp', opts: { readonly q?: string; readonly limit: number }): Promise<{
+		readonly items: readonly {
+			readonly id: string;
+			readonly slug: string;
+			readonly name: string;
+			readonly version: string;
+			readonly description: string;
+			readonly author: string;
+			readonly category: string;
+		}[];
+		readonly total: number;
+	}>;
 	/** 把参数里的路径解析成资源（相对路径按工作区解析）；解析不了返回 `undefined`。 */
 	resolvePath(path: string): URI | undefined;
 	/** 资源是否存在（不存在就别开空标签）。 */
@@ -192,6 +209,28 @@ export interface IIdeCapabilityEnv {
 	openWorkflow(id: string): Promise<{ readonly id: string; readonly name: string }>;
 
 	/**
+	 * **执行工作流里的单个节点**（`workflow` 能力的 `op:'executeNode'`），返回该节点的产出。
+	 *
+	 * 由 dsh 侧的工作流引擎（`dsh-plugins/vssaros-workflow`）在遇到 comfy / comfyStage 这类
+	 * 「画布侧才有执行器」的节点时回调。`askUser` **不走这里**（它要人 ⇒ 能力层直接映射成
+	 * `requestActionConsent`，fail-closed）。
+	 *
+	 * 三条**刻意写清**的边界（都不是 bug，是当前架构的事实）：
+	 * ① **必须有 workflow-editor webview 在场**（warm 池或已打开的画布）——ComfyUI 的 HTTP 客户端
+	 *   在 webview 里（renderer 的 fetch 被 CORS 拦）⇒ 底层是 `requestDirectStageRun` 那条链；
+	 * ② **只支持 stage 型 comfy 节点**（归一后走 stageClass）：原生 ComfyUI workflow 节点没有
+	 *   stageClass，会如实报「缺少 stageClass」；
+	 * ③ 长任务（生成图/视频）几十秒到分钟级 ⇒ 渲染侧走慢档预算（见 {@link ideRequestTimeoutMs}）。
+	 */
+	executeWorkflowNode(request: {
+		readonly workflowId?: string;
+		readonly executionId?: string;
+		readonly nodeId: string;
+		readonly nodeType: string;
+		readonly data?: Record<string, unknown>;
+	}): Promise<{ readonly output: string; readonly outputs?: Record<string, unknown> }>;
+
+	/**
 	 * **向用户要一次确认**（有副作用的动作必须过这道闸）。返回 `false` = 用户拒绝或超时。
 	 *
 	 * 这条闸门在**渲染进程**（用户在那边），但**判定顺序在 common**：先问、再跑，中间没有能让模型
@@ -217,6 +256,72 @@ export interface IIdeCapabilityEnv {
 	 * 可选：适配层不给就跳过这道预检（能力层仍有"读回来的字符数"兜底），不会因此失败。
 	 */
 	statFileSize?(resource: URI): Promise<number | undefined>;
+	/**
+	 * **生成图片**（`media` 能力的 `op:'generateImage'`）。
+	 *
+	 * 为什么在 IDE 侧：生图 provider、凭据与审批都在这个进程里
+	 * （BYOK 的 OpenAI 兼容 provider 走 `MainProcessModelProvider.generateImage`；
+	 * 厂商扩展走 `${vendor}.generateImage` 命令）⇒ Host 侧不该也没有第二份 Key。
+	 *
+	 * 返回形状与 `IModelProvider.generateImage` 一致：`{ images: [{ url?, b64? }] }`
+	 * （`url` 可能是 data URL，也可能是 http URL —— Host 侧两种都认）。
+	 *
+	 * **可选**（同 `statFileSize?` 的处理）：适配层没接就当"这台 IDE 不能生图" ⇒ 能力层
+	 * 报一句人话（而不是抛 `undefined is not a function`）✓。
+	 */
+	generateImage?(params: {
+		readonly prompt: string;
+		readonly modelId?: string;
+		readonly providerId?: string;
+		readonly width?: number;
+		readonly height?: number;
+		readonly numImages?: number;
+		/** 三批(9)：生成质量档（**原样透传**给 provider；各家认的档位不同 ⇒ 不在 IDE 侧改写）。 */
+		readonly quality?: string;
+	}): Promise<{ readonly images: ReadonlyArray<{ readonly url?: string; readonly b64?: string }> }>;
+	/**
+	 * **按参考图改图**（`media` 能力的 `op:'editImage'`）。
+	 *
+	 * 与 `generateImage` 的区别：多一张**参考图**（`image` 必须是 data URL）⇒ 走 provider 的
+	 * img2img 通道（OpenAI 兼容的 multipart `/images/edits`）。
+	 *
+	 * ⚠ **降级必须如实透出**：provider 的 edits 端点不可用时会回退为文生图（参考图被忽略）⇒
+	 *   回执带 `degraded` / `degradedReason` ⇒ 调用方要把它告诉用户（否则"改图"变成"重生成" ✗）。
+	 */
+	editImage?(params: {
+		readonly prompt: string;
+		readonly image: string;
+		readonly modelId?: string;
+		readonly providerId?: string;
+		readonly width?: number;
+		readonly height?: number;
+		readonly numImages?: number;
+		/** 三批(9)：生成质量档（**原样透传**给 provider）。 */
+		readonly quality?: string;
+	}): Promise<{
+		readonly images: ReadonlyArray<{ readonly url?: string; readonly b64?: string }>;
+		readonly degraded?: boolean;
+		readonly degradedReason?: string;
+	}>;
+	/**
+	 * ★ 2026-10-21（三批⑨）：**图像能力表**（`media` 能力的 `op:'capabilities'`）。
+	 *
+	 * 回答两个问题：① 这台 IDE **谁能生图**（provider + 模型清单）；
+	 * ② 各家**支持哪些档位**（比例 / 质量 / 尺寸）—— 后者**可选**（provider 没登记就是没有 ⇒
+	 * 调用方按"原样透传"处理；不在这儿臆造一套通用档位 ✗ —— 猜出来的就是第二份真源 ⇒ 必漂）。
+	 *
+	 * **可选**（同 `statFileSize?` 的处理）：适配层没接就当"这台 IDE 不提供能力表" ✓。
+	 */
+	imageCapabilities?(): Promise<{
+		readonly providers: ReadonlyArray<{
+			readonly id: string;
+			readonly name?: string;
+			readonly models: ReadonlyArray<{ readonly id: string; readonly name?: string }>;
+			readonly ratios?: readonly string[];
+			readonly qualities?: readonly string[];
+			readonly sizes?: readonly string[];
+		}>;
+	}>;
 }
 
 /** 本模块实现的能力（清单 `vssaros.ideCapabilities` 必须声明用到的那些）。 */
@@ -227,6 +332,13 @@ export const IDE_CAPABILITIES_CANVAS = ['canvas'] as const;
 export const IDE_CAPABILITIES_MINDMAP = ['mindmap'] as const;
 export const IDE_CAPABILITIES_TASKBOARD = ['taskboard'] as const;
 export const IDE_CAPABILITIES_WORKFLOW = ['workflow'] as const;
+/**
+ * ★ 2026-10-21：`media` —— 生图（`op:'generateImage'`）。
+ *
+ * 与 `workflow` 同理：provider 在 IDE 进程（凭据、审批、模型清单都在那边）⇒ Host 侧
+ * 只负责把"要生成什么"送过来、把图接回去。
+ */
+export const IDE_CAPABILITIES_MEDIA = ['media'] as const;
 
 /**
  * ★ 2026-10-13：`UNREAL_READONLY_TOOLS`（"只放行只读子集"的短名清单）**已删除** ✗。
@@ -305,6 +417,27 @@ function shapeMarker(marker: IMarker, withPath: boolean) {
 const isPositiveInt = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value > 0;
 const isFocus = (value: unknown): boolean => value === true;
 
+/**
+ * `workflow` 的 `executeNode` 的渲染侧等待预算。
+ *
+ * 为什么单独一档：这条 op 是**真跑**（ComfyUI 生成 / 媒体处理，几十秒到分钟）+ `askUser` 还要等
+ * 用户点确认（确认窗口 60s）⇒ 默认 20s 与 120s 慢档都不够，正常长度会被误判成"renderer 没回执"。
+ * ⚠ 与 dsh 侧 `EXECUTE_NODE_TIMEOUT_MS`（150s）配套：**调用方先放弃**（小 30s），
+ * 这样 dsh 侧报的是"IDE 没回执"这个真因，而不是两边同时超时的竞态歧义。
+ * 要支持更久的长任务，两边**必须一起调**（底下 webview 还有 720s 的等待上限）。
+ */
+export const IDE_REQUEST_EXECUTE_NODE_TIMEOUT_MS = 180_000;
+
+/**
+ * `media` 的 `generateImage` 的渲染侧等待预算（2026-10-21）。
+ *
+ * 生图是真跑：BYOK 的 OpenAI 兼容 provider 走 `/images/generations`，厂商扩展走
+ * `${vendor}.generateImage`（内部还有排队 + 轮询）⇒ 几十秒到几分钟都可能。
+ * ⚠ 与 dsh 侧 `vssaros-imagegen` 的 10 分钟预算配套：**渲染侧先放弃**（10 分钟 < 10 分钟 ⇒
+ * 这里取 9 分钟），这样 Host 侧报的是"IDE 没回执"这个真因，而不是两边同时超时的竞态歧义。
+ */
+export const IDE_REQUEST_MEDIA_TIMEOUT_MS = 9 * 60_000;
+
 /** 默认的渲染侧等待预算（读类能力都是毫秒级）。 */
 export const IDE_REQUEST_TIMEOUT_MS = 20_000;
 /**
@@ -326,6 +459,16 @@ export const IDE_REQUEST_SLOW_TIMEOUT_MS = 120_000;
  */
 export function ideRequestTimeoutMs(capability: string, params: Record<string, unknown> | undefined): number {
 	const op = typeof params?.op === 'string' ? params.op : undefined;
+	// ★ 2026-10-20：`workflow` 的 `executeNode` 是**真跑**（ComfyUI 生成 / 媒体处理）+ 可能要等用户确认
+	//   ⇒ 单独一档（默认 20s 会把正常生成长度误判成超时 ✗）。与 dsh 侧预算配套，见那个常量的注释。
+	if (capability === 'workflow' && op === 'executeNode') {
+		return IDE_REQUEST_EXECUTE_NODE_TIMEOUT_MS;
+	}
+	// ★ 2026-10-21：`media` 的 `generateImage` 是**真跑**（生图几十秒到几分钟，与 ComfyUI 那档同量级）
+	//   ⇒ 单独一档（默认 20s 会把正常生成长度误判成超时 ✗）。Host 侧插件的等待预算配套（10 分钟）。
+	if (capability === 'media' && op === 'generateImage') {
+		return IDE_REQUEST_MEDIA_TIMEOUT_MS;
+	}
 	// ★ 凡**需用户确认**的 op 一律走慢档：确认发生在能力执行内部，算在同一份预算里。
 	// 原先只给 `navigate` / `click` / `apply_ops` 慢档——可 `type` / `pressEnter` / `pressKey` / `scroll` /
 	// `back` / `reset` 同样会弹确认框（窗口 60s），却只有 20s 预算 ⇒ 用户稍微慢一点点头，renderer 就先
@@ -337,6 +480,72 @@ export function ideRequestTimeoutMs(capability: string, params: Record<string, u
 	//   （七个工具全在 dsh 侧 `dsh-plugins/vssaros-unreal`，它自带逐工具超时表 ✓）。
 	//   `VSSAROS_IDE_CAPABILITIES` 里的 `unreal` 也已同步移除 ✓ ⇒ 这分支永远不会被走到 ✓，留着只会让人以为它还有用 ✗。
 	return IDE_REQUEST_TIMEOUT_MS;
+}
+
+/** `executeNode` 里**不当作输入值**透传的内部键（与 `WorkflowExecutionService._executeComfyNode` 同口径）。 */
+const EXECUTE_NODE_INTERNAL_KEYS: ReadonlySet<string> = new Set([
+	'bindings', 'defaults', 'label', 'stageClass', 'comfy', '__sarosStageUid', 'hasBreakpoint', 'position', 'style',
+]);
+
+/**
+ * 归一化**占位名**：`comfyStageBridge.resolveStageClass` 会把它们过滤掉（拿它们当 ComfyUI 节点类型
+ * 请求必然 HTTP 400 `missing_node_type`）。两边必须是**同一份口径** —— 那边过滤、这边提前拦。
+ */
+export const PLACEHOLDER_STAGE_TYPES: ReadonlySet<string> = new Set(['comfy', 'comfyStage']);
+
+/**
+ * 把 dsh 侧传来的「节点原样」整理成执行缝要的形状（**纯函数**，可单测）。
+ *
+ * 两件必须做对的事：
+ * ① `data.stageClass` 要填**原始画布 type** —— `comfyStageBridge.resolveStageClass` 会过滤掉归一化
+ *   占位名（`comfy` / `comfyStage`）⇒ 不填、或只填占位名 ⇒ 执行必然报「缺少 stageClass」；
+ * ② 输入值 = `data` 顶层**标量/数组**（跳过内部键）+ `defaults` 兜底（画布的既有口径，与
+ *   `_executeComfyNode` 一致）。**不做**模板替换：这里没有上游执行态，`{{x.output}}` 无从解析 ——
+ *   上游产出该由 Host 侧（引擎）在传参前就替换好。
+ */
+export function buildExecuteNodeRequest(input: {
+	readonly nodeId: string;
+	readonly nodeType: string;
+	readonly data?: Record<string, unknown>;
+}): {
+	node: { id: string; type: string; name: string; data: Record<string, unknown> };
+	values: Record<string, unknown>;
+	defaults: Record<string, unknown>;
+} {
+	const data = input.data ?? {};
+	const nodeData: Record<string, unknown> = { ...data };
+	if (typeof nodeData['stageClass'] !== 'string' || !nodeData['stageClass']) {
+		nodeData['stageClass'] = input.nodeType;
+	}
+	// ★ 2026-10-20：**占位名要在这里就拦住**，别让它漏到 `resolveStageClass`（那边只会报
+	//   「缺少 stageClass」—— 而事实是"有值，但值是归一化占位名" ⇒ 用户按字面去补 stageClass
+	//   怎么补都不对 ✗）。典型来源：老数据/画布归一化后的节点 type 就是 `comfy` / `comfyStage`。
+	const stageClass = typeof nodeData['stageClass'] === 'string' ? nodeData['stageClass'] : '';
+	if (PLACEHOLDER_STAGE_TYPES.has(stageClass)) {
+		throw new Error(
+			`节点 ${input.nodeId} 的 stage 类型是归一化占位名「${stageClass}」，无法执行：`
+			+ '请在画布上重新选择该节点的具体 stage（如 ComfyTV.EmojiStage），'
+			+ `或让 data.stageClass 带上真实类型（当前 nodeType=${input.nodeType}）`,
+		);
+	}
+	const values: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(data)) {
+		if (EXECUTE_NODE_INTERNAL_KEYS.has(key) || value === undefined || value === null) { continue; }
+		const type = typeof value;
+		if (type === 'string' || type === 'number' || type === 'boolean' || Array.isArray(value)) {
+			values[key] = value;
+		}
+	}
+	const defaults = (data['defaults'] && typeof data['defaults'] === 'object' && !Array.isArray(data['defaults']))
+		? (data['defaults'] as Record<string, unknown>)
+		: {};
+	for (const [key, value] of Object.entries(defaults)) {
+		if (values[key] === undefined) { values[key] = value; }
+	}
+	if (values['label'] === undefined && typeof data['label'] === 'string' && data['label']) {
+		values['label'] = data['label'];
+	}
+	return { node: { id: input.nodeId, type: input.nodeType, name: input.nodeId, data: nodeData }, values, defaults };
 }
 
 /**
@@ -773,15 +982,60 @@ export async function executeIdeCapability(request: { readonly capability: strin
 		case 'workflow': {
 			const params = request.params ?? {};
 			const op = textParam(params, 'op') ?? 'open';
-			if (op !== 'open') {
-				throw new Error(`workflow 的 op 不认识：${op}（本版只有 open：在编辑器区打开工作流画布）`);
+			if (op === 'open') {
+				const id = textParam(params, 'id');
+				if (!id) {
+					throw new Error('workflow 的 open 需要 params.id（工作流 id，用 workflow_list 得到的那个）');
+				}
+				const opened = await env.openWorkflow(id);
+				return { op, opened: true, id: opened.id, name: opened.name };
 			}
-			const id = textParam(params, 'id');
-			if (!id) {
-				throw new Error('workflow 的 open 需要 params.id（工作流 id，用 workflow_list 得到的那个）');
+			// ★ 2026-10-20：`executeNode` —— dsh 侧的工作流引擎遇到「画布侧才有执行器」的节点
+			//   （comfy / comfyStage / ComfyTV.*）时回调这里，拿回该节点产出（`engineCore` 要 `output` 字符串）。
+			//   走的是**同一条 capability**（授权粒度不变、桥盖章身份不变）⇒ 壳侧实现这个 op 之后，
+			//   Host 插件那边**不用再改**（它已经在发 `ide.request{capability:'workflow', op:'executeNode'}`）。
+			if (op === 'executeNode') {
+				const nodeId = textParam(params, 'nodeId');
+				const nodeType = textParam(params, 'nodeType');
+				if (!nodeId || !nodeType) {
+					throw new Error('workflow 的 executeNode 需要 params.nodeId 与 params.nodeType（Host 侧按节点原样传）');
+				}
+				const data = (params.data && typeof params.data === 'object' && !Array.isArray(params.data))
+					? (params.data as Record<string, unknown>)
+					: {};
+				// `askUser` **要人** ⇒ 映射成一次审批（fail-closed），不假装"自动回答"。
+				// 现状只有"同意 / 拒绝"二值：多选、自由文本都要另开通道（产品决策，别在这里偷偷猜一个答案 ✗）。
+				if (nodeType === 'askUser') {
+					const question = typeof data['question'] === 'string' && data['question']
+						? data['question']
+						: (typeof data['label'] === 'string' && data['label'] ? data['label'] : nodeId);
+					const options = Array.isArray(data['options'])
+						? data['options']
+							.map(option => typeof option === 'string'
+								? option
+								: (option && typeof option === 'object' ? (option as { label?: unknown }).label : undefined))
+							.filter((value): value is string => typeof value === 'string')
+						: [];
+					const allowed = await env.requestActionConsent({
+						title: `工作流节点 ${nodeId} 在等你确认`,
+						detail: options.length > 0 ? `${question}\n\n可选项：${options.join(' / ')}` : question,
+					});
+					if (!allowed) {
+						throw new Error(`askUser 节点 ${nodeId} 未获用户确认（fail-closed）`);
+					}
+					const answer = options.length > 0 ? options[0] : 'ok';
+					return { op, ok: true, nodeId, nodeType, answer, output: JSON.stringify({ __askUser: 1, answer }) };
+				}
+				const workflowId = textParam(params, 'workflowId');
+				const executionId = textParam(params, 'executionId');
+				const result = await env.executeWorkflowNode({
+					...(workflowId ? { workflowId } : {}),
+					...(executionId ? { executionId } : {}),
+					nodeId, nodeType, data,
+				});
+				return { op, ok: true, nodeId, nodeType, output: result.output, ...(result.outputs ? { outputs: result.outputs } : {}) };
 			}
-			const opened = await env.openWorkflow(id);
-			return { op, opened: true, id: opened.id, name: opened.name };
+			throw new Error(`workflow 的 op 不认识：${op}（本版支持 open：打开画布 / executeNode：执行单个节点）`);
 		}
 		case 'taskboard': {
 			const params = request.params ?? {};
@@ -797,9 +1051,128 @@ export async function executeIdeCapability(request: { readonly capability: strin
 			await env.focusTaskboard(title);
 			return { op, focused: true, title };
 		}
+		case 'skills':
+		case 'mcp': {
+			// ★ 2026-10-21：**商城清单**（`@vssaros/dsh-skills` 的 `skill_market` 与
+			//   `@vssaros/dsh-mcp` 的 `mcp_market` 两个工具走这条）。
+			//
+			// ⚠ 这两个工具**此前一直是坏的**（三重缺口，本轮一次补齐）：
+			//   ① 调用方插件的清单没声明这个能力 ⇒ 主进程**授权就拒**（"未声明能力 skills"）；
+			//   ② IDE 侧**没有执行端**（`executeIdeCapability` 里没有这个 case）；
+			//   ③ 因此真机上只表现为"市场不可用"，没有任何线索（"点了没反应"的典型形态 ✗）。
+			//
+			// 为什么清单查询放 IDE 侧：认证（商城 JWT）本来就在 IDE 侧（`IMarketplaceService`），
+			//   而 dsh 侧只拿得到 TOF 票据（企业身份），换 JWT 需要 whoami 兜底字段 ⇒ 放 IDE 侧最省、最准 ✓。
+			//   （dsh 侧**持有**企业身份这件事本身由桥 `tof.sync` 保证 ⇒ 两边同一份身份 ✓。）
+			const params = request.params ?? {};
+			const op = textParam(params, 'op') ?? 'marketList';
+			if (op !== 'marketList') {
+				throw new Error(`${request.capability} 的 op 不认识：${op}（本版只有 marketList：列商城可安装的包）`);
+			}
+			const q = textParam(params, 'query');
+			const rawLimit = params.limit;
+			const limit = typeof rawLimit === 'number' && Number.isFinite(rawLimit)
+				? Math.min(100, Math.max(1, Math.floor(rawLimit)))
+				: 20;
+			const kind = request.capability === 'skills' ? 'skill' : 'mcp';
+			const listed = await env.marketList(kind, { ...(q ? { q } : {}), limit });
+			// 回执形状：dsh 侧工具的 render 直接吃 `name / version / description` ⇒ 这里给**扁平**字段 ✓
+			return {
+				op,
+				kind,
+				total: listed.total,
+				items: listed.items.map(pkg => ({
+					id: pkg.id,
+					slug: pkg.slug,
+					name: pkg.name,
+					version: pkg.version,
+					description: pkg.description,
+					author: pkg.author,
+					category: pkg.category,
+				})),
+			};
+		}
+		case 'media': {
+			// ★ 2026-10-21：生图能力（`@vssaros/dsh-imagegen` 的 `image_generate` 工具走这条）。
+			//   provider / 凭据 / 审批都在 IDE 进程（`MainProcessModelProvider.generateImage`
+			//   与厂商扩展的 `${vendor}.generateImage` 命令）⇒ Host 侧不存第二份 Key。
+			//   回执形状与 `IModelProvider.generateImage` 一致：`{ images: [{ url?, b64? }] }`。
+			const params = request.params ?? {};
+			const op = textParam(params, 'op') ?? 'generateImage';
+			if (op !== 'generateImage' && op !== 'editImage' && op !== 'capabilities') {
+				throw new Error(`media 的 op 不认识：${op}（本版只有 generateImage：生成图片 / editImage：按参考图改图 / capabilities：能力表）`);
+			}
+			// ★ 2026-10-21（三批⑨）：`capabilities` —— "这台 IDE 谁能生图 + 各家支持哪些档位"。
+			//   **不需要 prompt** ⇒ 必须排在 prompt 校验**之前**（否则查表也得先编个提示词 ✗）。
+			if (op === 'capabilities') {
+				if (!env.imageCapabilities) {
+					throw new Error('这台 IDE 没有接图像能力表（env.imageCapabilities 缺失）');
+				}
+				const capabilities = await env.imageCapabilities();
+				return { op, ok: true, providers: capabilities?.providers ?? [] };
+			}
+			const prompt = textParam(params, 'prompt');
+			if (!prompt) {
+				throw new Error(`media 的 ${op} 需要 params.prompt（画面描述）`);
+			}
+			// ★ 2026-10-21：`editImage`（按参考图改图）——画布"照我画的改"走这条。
+			//   参考图必须是 **data URL**（画布选区原图 / attachment 字节）⇒ provider 走 img2img 通道。
+			//   ⚠ provider 的 edits 端点不可用时会**降级为文生图** ⇒ 回执必须带 `degraded`，
+			//     否则用户以为"按参考图改了"，实际拿到的是凭空生成的一张图 ✗。
+			if (op === 'editImage') {
+				const image = textParam(params, 'image');
+				if (!image) {
+					throw new Error('media 的 editImage 需要 params.image（参考图，data URL）');
+				}
+				if (!env.editImage) {
+					throw new Error('这台 IDE 没有接图生图能力（env.editImage 缺失）');
+				}
+				const edited = await env.editImage({
+					prompt,
+					image,
+					...(textParam(params, 'modelId') ? { modelId: textParam(params, 'modelId') } : {}),
+					...(textParam(params, 'providerId') ? { providerId: textParam(params, 'providerId') } : {}),
+					...(typeof params.width === 'number' ? { width: params.width } : {}),
+					...(typeof params.height === 'number' ? { height: params.height } : {}),
+					...(typeof params.numImages === 'number' ? { numImages: params.numImages } : {}),
+					// 三批(9)：质量档原样透传（provider 自己认自己的档位）。
+					...(textParam(params, 'quality') ? { quality: textParam(params, 'quality') } : {}),
+				});
+				const editedImages = Array.isArray(edited?.images) ? edited.images : [];
+				if (editedImages.length === 0) {
+					throw new Error('图生图 provider 没返回图片');
+				}
+				return {
+					op,
+					ok: true,
+					count: editedImages.length,
+					images: editedImages,
+					degraded: edited?.degraded === true,
+					degradedReason: edited?.degradedReason,
+				};
+			}
+			if (!env.generateImage) {
+				throw new Error('这台 IDE 没有接生图能力（env.generateImage 缺失）');
+			}
+			const result = await env.generateImage({
+				prompt,
+				...(textParam(params, 'modelId') ? { modelId: textParam(params, 'modelId') } : {}),
+				...(textParam(params, 'providerId') ? { providerId: textParam(params, 'providerId') } : {}),
+				...(typeof params.width === 'number' ? { width: params.width } : {}),
+				...(typeof params.height === 'number' ? { height: params.height } : {}),
+				...(typeof params.numImages === 'number' ? { numImages: params.numImages } : {}),
+				// 三批(9)：质量档原样透传（provider 自己认自己的档位）。
+				...(textParam(params, 'quality') ? { quality: textParam(params, 'quality') } : {}),
+			});
+			const images = Array.isArray(result?.images) ? result.images : [];
+			if (images.length === 0) {
+				throw new Error('图像 provider 没返回图片');
+			}
+			return { op, ok: true, count: images.length, images };
+		}
 		default:
 			// 白名单内的能力现在**全部实现**了 ⇒ 这条只在"名字不认识"时走到（主进程不会放行，
 			// 但执行端也不该静默成功——报出来才知道协议两头是不是对上了）。
-			throw new Error(`IDE 能力未实现：${request.capability}（已实现：${[...IDE_CAPABILITIES_READONLY, ...IDE_CAPABILITIES_OPEN, ...IDE_CAPABILITIES_CANVAS, ...IDE_CAPABILITIES_MINDMAP, ...IDE_CAPABILITIES_TASKBOARD, ...IDE_CAPABILITIES_WORKFLOW].join(', ')}）`);
+			throw new Error(`IDE 能力未实现：${request.capability}（已实现：${[...IDE_CAPABILITIES_READONLY, ...IDE_CAPABILITIES_OPEN, ...IDE_CAPABILITIES_CANVAS, ...IDE_CAPABILITIES_MINDMAP, ...IDE_CAPABILITIES_TASKBOARD, ...IDE_CAPABILITIES_WORKFLOW, ...IDE_CAPABILITIES_MEDIA].join(', ')}）`);
 	}
 }

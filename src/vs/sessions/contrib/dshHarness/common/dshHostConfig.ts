@@ -81,6 +81,15 @@ export interface IDshHostConfig {
 	readonly relatedRoots?: readonly string[];
 	/** agent 目录（chat 框列出的 agent 来自这里）。 */
 	readonly agentsRoot?: string;
+	/**
+	 * **内置** agent 目录（dsh 侧的 Agents 页/聊天框要能列出内置 agent ⇒ 必须有这条）。
+	 *
+	 * ⚠ 它**不是真源**：真源是 `common/builtinAgents.ts`（2026-10-19 收敛，`resources/.agents/agents/`
+	 *   已整目录删除）。Host 进程读不到产品源码 ⇒ 只能在启动期把代码真源**生成**成一份 md 副本
+	 *   （`buildAgentMd()`）放这里，道理与 `bundledSkillDir` 完全一致（产品资源目录 → 绝对路径注入）。
+	 *   插件按"用户目录同 id 优先"与 `agentsRoot` 合并 ✓。
+	 */
+	readonly agentsBuiltinRoot?: string;
 	/** 技能目录（须真实存在；调用方过滤，渲染器不查盘）。⚠ **不含内置** —— 内置走下面的 `bundledSkillDir`。 */
 	readonly skillDirs?: readonly string[];
 	/**
@@ -221,10 +230,12 @@ export function renderHostOverlays(config: IDshHostConfig): readonly IDshHostOve
 		out.push({ kind: 'skills', text: renderSkillsOverlay(skillDirs, bundledSkillDir) });
 	}
 	const agentsRoot = trimmed(config.agentsRoot);
-	if (agentsRoot) {
+	const agentsBuiltinRoot = trimmed(config.agentsBuiltinRoot);
+	if (agentsRoot || agentsBuiltinRoot) {
 		// 模块自身的兜底数据根是 `~/.vssaros`，而 dev 实例是 `~/.vssaros-dev` ⇒ 不注入时 dev 会把**生产**的
 		// agent 列进聊天框（2026-10-11 实测）。注入后 dev / 生产各读各的，与 IDE 的 `_getSarosAgentsDir()` 同源。
-		out.push({ kind: 'agents', text: renderAgentsOverlay(agentsRoot) });
+		// 内置那份（agentsBuiltinRoot）是启动期由代码真源生成的 md 副本 ⇒ Host 侧才能列出内置 agent ✓。
+		out.push({ kind: 'agents', text: renderAgentsOverlay(agentsRoot, agentsBuiltinRoot) });
 	}
 	if (dataRoot) {
 		// kb / canvas / workflow / skills 的兜底数据根都是 `~/.vssaros`，dev 是 `~/.vssaros-dev` ⇒ 不注入时
@@ -320,6 +331,7 @@ export function parseDshHostConfig(text: unknown): IDshHostConfig | undefined {
 		...optional('workspaceRoot', trimmed(src.workspaceRoot)),
 		...optional('relatedRoots', strings(src.relatedRoots)),
 		...optional('agentsRoot', trimmed(src.agentsRoot)),
+	...optional('agentsBuiltinRoot', trimmed(src.agentsBuiltinRoot)),
 		...optional('skillDirs', strings(src.skillDirs)),
 		// 2026-10-13（P2）：内置单列（rank 600）—— 同样必须过中立配置，否则独立启动器读同名配置时
 		// 会把它**静默丢掉** ✗（丢了的后果：内置技能掉回 300 与用户根同档 ⇒ 优先级静默变化）
@@ -354,7 +366,7 @@ function optional<K extends keyof IDshHostConfig>(key: K, value: IDshHostConfig[
 export function serializeDshHostConfig(config: IDshHostConfig): string {
 	const ordered: Record<string, unknown> = {};
 	if (config.bridge) { ordered.bridge = config.bridge; }
-	for (const key of ['dataRoot', 'workspaceId', 'workspaceRoot', 'relatedRoots', 'agentsRoot', 'skillDirs', 'bundledSkillDir', 'mcpServers', 'mcpConfigPath', 'gatewayUrl', 'kbRoot', 'unrealBridgeUrl', 'browser', 'sandboxMode', 'sandboxWorkspaceRoot'] as const) {
+	for (const key of ['dataRoot', 'workspaceId', 'workspaceRoot', 'relatedRoots', 'agentsRoot', 'agentsBuiltinRoot', 'skillDirs', 'bundledSkillDir', 'mcpServers', 'mcpConfigPath', 'gatewayUrl', 'kbRoot', 'unrealBridgeUrl', 'browser', 'sandboxMode', 'sandboxWorkspaceRoot'] as const) {
 		const value = config[key];
 		if (value === undefined) { continue; }
 		if (Array.isArray(value) && value.length === 0) { continue; }

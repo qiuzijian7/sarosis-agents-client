@@ -12,7 +12,7 @@ import {
 	IModelProvider, IModelInfo, ModelAuthStatus,
 	IModelOptions, IModelDelta, IChatMessage, IChatContext,
 	ModelCapability, IModelCapabilityConfig,
-	IImageGenParams, IImageGenResult,
+	IImageGenParams, IImageGenResult, IImageProviderCapabilities,
 } from '../common/providers.js';
 import { AGENT_STUDIO_CHAT_STREAM_LOG_ENABLED_SETTING } from '../common/constants.js';
 import { join } from '../../../../base/common/path.js';
@@ -82,6 +82,15 @@ export interface IBYOKProviderDefinition {
 	 * 走此端点，失败自动回退文生图（参考图降级忽略，保证出图）。
 	 */
 	readonly imageEditEndpointPath?: string;
+	/**
+	 * ★ 2026-10-21（三批⑨）：这个 provider 的**生图能力档位**。
+	 *
+	 * 全部**可选**：没登记就是"不知道" ⇒ 调用方按"原样透传"处理（不臆造一套通用档位 ✗ ——
+	 * 猜出来的表就是第二份真源 ⇒ 必漂）。真源是各 provider 自己的文档/端点行为 ✓。
+	 */
+	readonly imageRatios?: readonly string[];
+	readonly imageQualities?: readonly string[];
+	readonly imageSizes?: readonly string[];
 	/**
 	 * Optional: HTTP method for the images generation endpoint (default: 'POST').
 	 * OpenAI-compatible servers use POST; some gateways/proxies expect 'GET'
@@ -258,6 +267,31 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 		}
 
 		return this._models;
+	}
+
+	/**
+	 * ★ 2026-10-21（三批⑨）：**图像能力表**。
+	 *
+	 * · 模型清单取自**自己的** `listModels()`（`supportsImageGen` 标记 ✓）⇒ 单一真源，
+	 *   不在别处再抄一份（抄了必漂 ✗）。`MainProcessModelProvider` 覆写了 `listModels`
+	 *   （经主进程 IPC）⇒ 这里跟着走 IPC ✓。
+	 * · 比例/质量/尺寸档来自 provider 定义（**可选**：没登记就是"不知道" ⇒ 调用方原样透传 ✓）。
+	 * · 一个能生图的模型都没有 ⇒ 返回 `undefined`（= 这个 provider 不参与生图 ✓）。
+	 */
+	async imageCapabilities(): Promise<IImageProviderCapabilities | undefined> {
+		const models = await this.listModels();
+		const imageModels = models
+			.filter(model => model.supportsImageGen === true)
+			.map(model => ({ id: model.id, name: model.name }));
+		if (imageModels.length === 0) {
+			return undefined;
+		}
+		return {
+			models: imageModels,
+			...(this._definition.imageRatios ? { ratios: this._definition.imageRatios } : {}),
+			...(this._definition.imageQualities ? { qualities: this._definition.imageQualities } : {}),
+			...(this._definition.imageSizes ? { sizes: this._definition.imageSizes } : {}),
+		};
 	}
 
 	chat(

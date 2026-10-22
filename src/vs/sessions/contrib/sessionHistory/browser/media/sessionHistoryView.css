@@ -59,10 +59,36 @@
 	width: 100% !important;
 }
 
+/* New session row: [+ New session] [···] —— 后者是「清空所有会话…」的入口（稿 A） */
+.session-history-new-row {
+	display: flex;
+	gap: 4px;
+	align-items: stretch;
+	min-width: 0;
+}
+
+.session-history-more-btn {
+	flex: 0 0 26px;
+	width: 26px;
+	border: none;
+	border-radius: 2px;
+	background: var(--vscode-button-secondaryBackground, #3a3d41);
+	color: var(--vscode-button-secondaryForeground, #cccccc);
+	font-size: 12px;
+	line-height: 20px;
+	cursor: pointer;
+	padding: 4px 0;
+}
+
+.session-history-more-btn:hover {
+	background: var(--vscode-button-secondaryHoverBackground, #45494e);
+}
+
 /* New session button */
 .session-history-new-btn {
 	display: block;
-	width: 100%;
+	flex: 1 1 auto;
+	min-width: 0;
 	padding: 4px 10px;
 	border: none;
 	border-radius: 2px;
@@ -164,6 +190,150 @@
 
 .session-history-new-cancel-btn:hover {
 	background: var(--vscode-toolbar-hoverBackground, #2a2d2e);
+}
+
+/* ========== Clear-all panel（破坏性操作：红边 + 手打确认词）========== */
+.session-history-clear-panel {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	padding: 8px 6px 6px 6px;
+	border: 1px solid var(--vscode-errorForeground, #f14c4c);
+	border-radius: 3px;
+	background-color: var(--vscode-sideBar-background, #252526);
+}
+
+.session-history-clear-head {
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--vscode-errorForeground, #f14c4c);
+}
+
+.session-history-clear-desc {
+	font-size: 11px;
+	line-height: 16px;
+	color: var(--vscode-descriptionForeground, #999);
+}
+
+.session-history-clear-opt {
+	display: flex;
+	align-items: flex-start;
+	gap: 6px;
+	font-size: 11px;
+	line-height: 16px;
+	color: var(--vscode-foreground, #cccccc);
+	cursor: pointer;
+}
+
+.session-history-clear-opt input {
+	margin: 2px 0 0;
+}
+
+.session-history-clear-note {
+	font-size: 11px;
+	line-height: 16px;
+	color: var(--vscode-descriptionForeground, #999);
+	border-left: 2px solid var(--vscode-editorWarning-foreground, #cca700);
+	padding-left: 6px;
+}
+
+.session-history-clear-hint {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground, #999);
+	margin-top: 2px;
+}
+
+.session-history-clear-input {
+	width: 100%;
+	background: var(--vscode-input-background, #3c3c3c);
+	color: var(--vscode-input-foreground, #cccccc);
+	border: 1px solid var(--vscode-errorForeground, #f14c4c);
+	border-radius: 2px;
+	padding: 2px 6px;
+	font-size: 12px;
+	line-height: 20px;
+}
+
+.session-history-clear-actions {
+	display: flex;
+	gap: 6px;
+	justify-content: flex-end;
+	margin-top: 4px;
+}
+
+.session-history-clear-go,
+.session-history-clear-cancel {
+	padding: 2px 10px;
+	border-radius: 2px;
+	font-size: 12px;
+	line-height: 20px;
+	cursor: pointer;
+}
+
+.session-history-clear-cancel {
+	border: 1px solid var(--vscode-widget-border, #454545);
+	background: transparent;
+	color: var(--vscode-foreground, #cccccc);
+}
+
+.session-history-clear-go {
+	border: 1px solid var(--vscode-errorForeground, #f14c4c);
+	background: var(--vscode-errorForeground, #f14c4c);
+	color: #ffffff;
+}
+
+.session-history-clear-go:disabled {
+	background: transparent;
+	color: var(--vscode-disabledForeground, #7f7f7f);
+	border-color: var(--vscode-widget-border, #454545);
+	cursor: default;
+}
+
+/* 进度 */
+.session-history-clear-bar {
+	height: 4px;
+	border-radius: 2px;
+	background: var(--vscode-editor-background, #1e1e1e);
+	overflow: hidden;
+}
+
+.session-history-clear-bar-fill {
+	height: 100%;
+	width: 0%;
+	background: var(--vscode-errorForeground, #f14c4c);
+}
+
+.session-history-clear-progress {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground, #999);
+	display: flex;
+	justify-content: space-between;
+}
+
+/* 结果 */
+.session-history-clear-result {
+	font-size: 11px;
+	line-height: 18px;
+}
+
+.session-history-clear-ok {
+	color: var(--vscode-testing-iconPassed, #73c991);
+}
+
+.session-history-clear-skip {
+	color: var(--vscode-editorWarning-foreground, #cca700);
+}
+
+.session-history-clear-bad {
+	color: var(--vscode-errorForeground, #f14c4c);
+}
+
+.session-history-clear-fail-list {
+	margin: 2px 0 0;
+	padding-left: 16px;
+	max-height: 76px;
+	overflow-y: auto;
+	color: var(--vscode-descriptionForeground, #999);
 }
 
 /* ========== Session List ========== */

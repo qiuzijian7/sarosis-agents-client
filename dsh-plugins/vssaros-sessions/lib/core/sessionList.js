@@ -347,12 +347,40 @@ export function statusOf(session) {
 	return 'idle';
 }
 
-/** 一个分组。`key` = 规范化后的分组值（未归属为 {@link UNGROUPED_GROUP_KEY}）。 */
-function groupOf(key, sessions, path, title) {
+/**
+ * 磁贴视图（稿 C）的**状态筛选**——纯函数，可单测。
+ *
+ * 稿 C（2026-10-21 用户拍板）：dsh desktop 的「多会话窗口」= 会话磁贴矩阵，
+ * 顶部按状态筛（全部 / 运行中 / 等你回答 / 空闲）。
+ * ⚠ 判活口径与列表**完全一致**（同一个 {@link statusOf}）—— 两处各判一次必然漂移 ✗。
+ * ⚠ 不认识的值一律当「全部」（坏参数最多是不过滤，不该让页面空掉 ✗）。
+ */
+export const SESSION_STATUS_FILTERS = ['all', 'running', 'awaiting', 'idle'];
+
+export function normalizeStatusFilter(value) {
+	const key = String(value ?? '').trim().toLowerCase();
+	return SESSION_STATUS_FILTERS.includes(key) ? key : 'all';
+}
+
+export function filterByStatus(sessions, status) {
+	const list = Array.isArray(sessions) ? sessions : [];
+	const key = normalizeStatusFilter(status);
+	if (key === 'all') {
+		return list.slice();
+	}
+	return list.filter(session => statusOf(session) === key);
+}
+
+/**
+ * 一个分组。`key` = 规范化后的分组值（未归属为 {@link UNGROUPED_GROUP_KEY}）。
+ * `roots` 只在"多根工作区"那条分组上有值（主根在前）—— 渲染层据此画主根路径 + 「+N」徽标。
+ */
+function groupOf(key, sessions, path, title, roots) {
 	return {
 		key,
 		title,
 		path,
+		roots,
 		ungrouped: key === UNGROUPED_GROUP_KEY,
 		sessions,
 	};
@@ -396,16 +424,60 @@ function groupTitleOf(key, by) {
  */
 export function buildSessionGroups(sessions, options = {}) {
 	const by = normalizeGroupBy(options.by);
+	/**
+	 * ★ 2026-10-19（用户报障）：按**工作区**分组要支持**多根** —— 同属一个工作区的主根与关联根
+	 * 下的会话必须归到**同一组**；从前只按 `cwd` 分组 ⇒ 一个多根工作区被拆成好几块 ✗。
+	 *
+	 * @type {string[]} 主根在前（它是工作区的标题来源），其余为关联根。
+	 */
+	const roots = Array.isArray(options.workspaceRoots)
+		? options.workspaceRoots.filter(r => typeof r === 'string' && r.trim())
+		: [];
+	const norm = p => String(p).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+	const primary = roots.length ? roots[0] : undefined;
+	/** cwd 落在哪个根下（同一根/其子目录）；没有根可归属 ⇒ undefined（按原 cwd 分组）。 */
+	const rootOf = cwd => {
+		if (!primary || typeof cwd !== 'string' || !cwd.trim()) {
+			return undefined;
+		}
+		const c = norm(cwd);
+		return roots.find(r => {
+			const n = norm(r);
+			return c === n || c.startsWith(n + '/');
+		});
+	};
+	/** 一条会话的分组事实：`{ key, title?, path?, roots? }`（`title/path` 缺省时走原有的 key 推导 ✓）。 */
+	const groupFactsOf = session => {
+		if (by === 'bot') {
+			return { key: groupKeyOf(session, by) };
+		}
+		if (rootOf(session?.cwd)) {
+			// 归到工作区：key 用主根（稳定、可读）。
+			// ★ 2026-10-19（用户报障「鼠标滑过后显示多根内容」）：`path` 只放**主根** —— 从前这里是
+			//   `roots.join(' · ')`，把整串根糊在窄侧栏的副文本里（截断成看不懂的半截），
+			//   还一路进了组头的 title ⇒ 鼠标一停就弹出一大坨多根清单 ✗。
+			//   完整根集合走 `roots`（渲染层自己决定怎么露出：主根 + 「+N」小徽标）。
+			return { key: `ws:${primary}`, title: workspaceTitleOf(primary), path: primary, roots };
+		}
+		return { key: groupKeyOf(session, by) };
+	};
 	const buckets = new Map();
 	for (const session of Array.isArray(sessions) ? sessions : []) {
 		if (!session || typeof session !== 'object') {
 			continue;
 		}
-		const key = groupKeyOf(session, by);
+		const facts = groupFactsOf(session);
+		const key = facts.key;
 		let bucket = buckets.get(key);
 		if (!bucket) {
 			// `path` 只用于"工作区"那种分组（分组头副文本 = 完整路径）；按 Bot 分组时它等于组名本身，不再重复显示。
-			bucket = { sessions: [], newest: undefined, path: key === UNGROUPED_GROUP_KEY || by === 'bot' ? '' : key };
+			bucket = {
+				sessions: [], newest: undefined,
+				path: facts.path ?? (key === UNGROUPED_GROUP_KEY || by === 'bot' ? '' : key),
+				title: facts.title,
+				// 多根工作区那条才带 `roots`（其余 undefined ⇒ 渲染层只画 path，不画「+N」✓）
+				roots: facts.roots,
+			};
 			buckets.set(key, bucket);
 		}
 		bucket.sessions.push(session);
@@ -418,7 +490,8 @@ export function buildSessionGroups(sessions, options = {}) {
 	const groups = [];
 	for (const [key, bucket] of buckets) {
 		if (key !== UNGROUPED_GROUP_KEY) {
-			groups.push(groupOf(key, bucket.sessions, bucket.path, groupTitleOf(key, by)));
+			// `bucket.title` 有值（多根工作区那条）就用它，否则走原有推导（cwd 末段 / preset id）✓
+			groups.push(groupOf(key, orderForDisplay(bucket.sessions), bucket.path, bucket.title ?? groupTitleOf(key, by), bucket.roots));
 		}
 	}
 	groups.sort((a, b) => {
@@ -438,9 +511,72 @@ export function buildSessionGroups(sessions, options = {}) {
 	const ungrouped = buckets.get(UNGROUPED_GROUP_KEY);
 	if (ungrouped) {
 		// 未归属**恒在最后**（与 VsSaros 侧同口径）。
-		groups.push(groupOf(UNGROUPED_GROUP_KEY, ungrouped.sessions, '', groupTitleOf(UNGROUPED_GROUP_KEY, by)));
+		groups.push(groupOf(UNGROUPED_GROUP_KEY, orderForDisplay(ungrouped.sessions), '', groupTitleOf(UNGROUPED_GROUP_KEY, by)));
 	}
 	return groups;
+}
+
+/**
+ * 组内**展示顺序**：有内容的会话在前，空白会话（`blank === true` —— 折叠前缀里没有回合；
+ * 每新开一个聊天页签就会产生一个）整组排到后面；同类里保持原相对顺序（稳定排序）。
+ *
+ * ★ 2026-10-19（用户报「还是看不到该历史会话 item」）：实测现场 1691 个投影缓存里 **1681 个是空白会话**，
+ *   而组内可见配额只有 5 条（按时间）⇒ 5 个槽全被「（未命名会话）」占掉，真正有内容的会话
+ *   （例：`分析 DeepSeek 框架原理`，写入时间第 6 名）被挤到「展开其余」后面 ⇒ 用户以为历史丢了 ✗。
+ *
+ * 为什么把顺序放在**分组结果**里、而不是只改 {@link computeGroupWindow}：
+ *   页面脚本的「展开其余」是**客户端**按 DOM 顺序重算可见集的（`applyWindow`）⇒ 只要顺序进了渲染，
+ *   服务端配额、客户端展开、`/api/sessions` 三处**自动同口径**；只改窗口函数会造成
+ *   "服务端显示 A、点展开后变成 B" 的错位 ✗。
+ */
+function orderForDisplay(sessions) {
+	return sessions.slice().sort((a, b) => (a?.blank === true ? 1 : 0) - (b?.blank === true ? 1 : 0));
+}
+
+/**
+ * 「清空历史会话」的**可见性判据**（纯函数，页面与 API 共用一份）。
+ *
+ * 隐藏条件（全部满足才隐藏）：
+ *   ① `clearedAt > 0`（用户点过清空）；
+ *   ② 会话 `createdAt <= clearedAt`（清空**之后**新建的会话照常出现 ✓）；
+ *   ③ **不是运行中 / 等待中**（正在干活的东西被藏起来 = 事故）；
+ *   ④ **未固定**（pin 是用户显式说"这条我要留着"）。
+ *
+ * ⚠ 没有 `createdAt` 的会话**不隐藏**：宁可多显示几条，也不做"猜着藏"✗。
+ * ⚠ 只隐藏、**不删任何文件**：删投影缓存只是删索引（dsh 里的会话数据还在 ⇒ "假删除"✗），
+ *   而且误点不可逆；隐藏可通过 ⌜恢复被清空的会话⌟ 一键还原 ✓。
+ *
+ * @param options.pinned 已固定 id 的集合（Set / 有 has 的对象）
+ * @param options.isActive 判活（缺省用 {@link isActiveSession}）
+ */
+export function isHiddenByClear(session, options = {}) {
+	const clearedAt = Number.isFinite(options.clearedAt) ? options.clearedAt : 0;
+	if (clearedAt <= 0 || !session || typeof session !== 'object') {
+		return false;
+	}
+	const createdAt = numOrUndefined(session.createdAt);
+	if (createdAt === undefined || createdAt > clearedAt) {
+		return false;
+	}
+	const isActive = typeof options.isActive === 'function' ? options.isActive : isActiveSession;
+	if (isActive(session)) {
+		return false;
+	}
+	const pinned = options.pinned;
+	if (pinned && typeof pinned.has === 'function' && session.id && pinned.has(session.id)) {
+		return false;
+	}
+	return true;
+}
+
+/** 按 {@link isHiddenByClear} 拆成 `{ kept, hidden }`（保序；页面用 hidden 的条数做提示）。 */
+export function filterHiddenByClear(sessions, options = {}) {
+	const kept = [];
+	const hidden = [];
+	for (const session of Array.isArray(sessions) ? sessions : []) {
+		(isHiddenByClear(session, options) ? hidden : kept).push(session);
+	}
+	return { kept, hidden };
 }
 
 /**
@@ -494,7 +630,12 @@ function normalizeExtra(value, fallback) {
 
 /** 会话显示标题：title → 未命名（**不猜**：title 是产品自己投影的字段）。 */
 export function displayTitleOf(session) {
-	return strOrUndefined(session?.title) ?? '(未命名会话)';
+	// ★ 2026-10-19（用户报障：300 条里绝大多数是"未命名会话" ⇒ 列表无区分度）：
+	//   投影没标题时用**首条用户消息**（`firstPrompt`，由页面在渲染前按需从会话日志读补齐）。
+	//   读不到才显示"未命名会话"（不编造 ✗）。
+	return strOrUndefined(session?.title)
+		?? strOrUndefined(session?.firstPrompt)
+		?? '(未命名会话)';
 }
 
 /**

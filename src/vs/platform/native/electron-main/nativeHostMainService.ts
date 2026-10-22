@@ -382,6 +382,24 @@ export class NativeHostMainService extends Disposable implements INativeHostMain
 		window?.win?.minimize();
 	}
 
+	async showWindow(windowId: number | undefined, options?: INativeHostOptions): Promise<void> {
+		// ★ 2026-10-21：桌面窗口模式下 IDE 主窗口整场隐藏（见 `INativeHostService.showWindow` 的说明）。
+		//   隐藏态**必须**先 `show()` —— 只 `focus()` 不会把它变可见（Electron 只在最小化时恢复）✗。
+		const window = this.windowById(options?.targetWindowId, windowId);
+		if (!window?.win) {
+			return;
+		}
+		if (window.win.isMinimized()) {
+			window.win.restore();
+		}
+		window.win.show();
+	}
+
+	async hideWindow(windowId: number | undefined, options?: INativeHostOptions): Promise<void> {
+		const window = this.windowById(options?.targetWindowId, windowId);
+		window?.win?.hide();
+	}
+
 	async moveWindowTop(windowId: number | undefined, options?: INativeHostOptions): Promise<void> {
 		const window = this.windowById(options?.targetWindowId, windowId);
 		window?.win?.moveTop();

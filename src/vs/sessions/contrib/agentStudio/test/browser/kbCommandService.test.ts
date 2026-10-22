@@ -16,6 +16,7 @@ import assert from 'assert';
 import { URI } from '../../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
 import type { IStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
+import type { IWorkbenchLayoutService } from '../../../../../workbench/services/layout/browser/layoutService.js';
 import type { IFileService } from '../../../../../platform/files/common/files.js';
 import type { IDialogService, IFileDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
 import type { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
@@ -164,6 +165,8 @@ function makeHarness(): IHarness {
 
 	// ⚠ 参数顺序必须与服务构造函数一致（DI 按序注入 ✓）；假件只实现被测路径用到的那几个面 ✓。
 	const service = new KbCommandService(
+		// ★ 2026-10-20：构造函数新增 `IWorkbenchLayoutService`（展开 agents 布局的终端 panel），按序放第一位。
+		{ getContainer: () => undefined, isVisible: () => false, setPartHidden: () => undefined } as unknown as IWorkbenchLayoutService,
 		fs as unknown as IFileService,
 		storage as unknown as IStorageService,
 		{

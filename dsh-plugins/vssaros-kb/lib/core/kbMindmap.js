@@ -42,9 +42,35 @@ export async function readMindmap(filePath) {
 	return null;
 }
 
-/** 写 .canvas（**tab 缩进** ✓ —— 逐字节对账就靠这个格式 ✓）。 */
+/**
+ * 写 .canvas（**tab 缩进** ✓ —— 逐字节对账就靠这个格式 ✓）。
+ *
+ * ★★ 2026-10-19：写盘前**补标准字段 `text`**。
+ *   原因（JSON Canvas 1.0 规范原文，jsoncanvas.org/spec/1.0）：
+ *     "Text type nodes … include the following attribute: **text (required, string)**"
+ *   而我们内部一直用 `content`（LLM prompt 也这么要求，见下面 extractGraphPrompt）⇒
+ *   **在 Obsidian 或任何遵循规范的工具里，这些节点会渲染成空节点**（只有坐标和宽高，没有文字）✗。
+ *   ✅ 这里**保留 `content` 并补 `text`**（两者同值），理由：
+ *     · 合并去重 `_simpleKey()` 读的是 `content`（:87）⇒ 不能删；
+ *     · IDE 侧读取本就兼容两者（canvasViewport: `node.text || node.content`）⇒ 补 text 零风险；
+ *     · IDE 侧保存时若 `text === content` 会自动删掉 content（canvasEditorController:356）⇒ 天然收敛。
+ */
 export async function writeMindmap(filePath, mindmap) {
-	await writeFile(filePath, JSON.stringify(mindmap, null, '\t'), 'utf8');
+	await writeFile(filePath, JSON.stringify(withStandardText(mindmap), null, '\t'), 'utf8');
+}
+
+/**
+ * 给每个 `type: "text"` 节点补规范要求的 `text`（幂等：已有非空 `text` 时不覆盖）。
+ * ⚠ 只动内存对象、不改写已有内容；`content` 原样保留（合并去重还要用）。
+ */
+export function withStandardText(mindmap) {
+	if (!mindmap || !Array.isArray(mindmap.nodes)) { return mindmap; }
+	for (const node of mindmap.nodes) {
+		if (!node || node.type !== 'text') { continue; }
+		if (typeof node.text === 'string' && node.text) { continue; }
+		if (typeof node.content === 'string') { node.text = node.content; }
+	}
+	return mindmap;
 }
 
 /** 扫笔记目录的 .canvas（真源 `listMindmaps` ✓：只看**直接子文件** ✓）。 */
@@ -88,8 +114,11 @@ export function mergeGraph(existing, extracted) {
 		return (content || '').slice(0, 60).toLowerCase().replace(/\s+/g, ' ');
 	}
 	for (const nn of extracted.nodes) {
-		const key = _simpleKey(nn.content || '');
-		const dup = nodes.find(en => _simpleKey(en.content || '') === key);
+		// ★ 2026-10-19：**读正文一律 `content || text`**。
+		//   JSON Canvas 规范字段是 `text`；IDE 侧保存时会把 `text === content` 的 content 删掉
+		//   ⇒ 只认 content 的话，**迁移过/在 IDE 里保存过**的文件会让去重失效（同一概念被反复加进来 ✗）。
+		const key = _simpleKey(nn.content || nn.text || '');
+		const dup = nodes.find(en => _simpleKey(en.content || en.text || '') === key);
 		if (dup) { continue; }
 		let id = nn.id;
 		while (usedIds.has(id)) { id = 'n' + _randomId(); }
@@ -300,7 +329,8 @@ export function deriveMindmapTitle(mindmap) {
 	const rootId = [...mindmap.nodes].map(n => n.id)
 		.sort((a, b) => (indeg.get(a) ?? 0) - (indeg.get(b) ?? 0) || (out.get(b)?.length ?? 0) - (out.get(a)?.length ?? 0))[0];
 	const root = mindmap.nodes.find(n => n.id === rootId) ?? mindmap.nodes[0];
-	const firstLine = (root.content || '')
+	// ★ 2026-10-19：`content || text`（规范字段是 text；IDE 保存后会没有 content）
+	const firstLine = (root.content || root.text || '')
 		.split('\n')[0]
 		.replace(/^\*\*|\*\*$/g, '')
 		.replace(/^#+\s*/, '')
@@ -316,7 +346,9 @@ export function deriveMindmapTitle(mindmap) {
 /** 从提取内容推导文件名（真源 `_deriveNameFromContent` ✓：取**第一个**节点 ✓ —— 与上面那条不是一个口径 ✓）。 */
 export function deriveNameFromContent(extracted) {
 	if (extracted.nodes.length > 0) {
-		const firstContent = extracted.nodes[0].content || '';
+		// ★ 2026-10-19：同上，`content || text`（规范字段是 text；IDE 保存后会没有 content）
+		const firstNode = extracted.nodes[0];
+		const firstContent = firstNode.content || firstNode.text || '';
 		const firstLine = firstContent.split('\n')[0]
 			.replace(/^\*\*|\*\*$/g, '')
 			.replace(/^#+\s*/, '')
@@ -384,7 +416,8 @@ Output ONLY valid JSON (no markdown fences): {"nodes":[...],"edges":[...]}`;
 /** 标题建议提示词（真源 `suggestMindmapTitle` ✓ —— 逐字 ✓）。 */
 export function suggestTitlePrompt(mindmap) {
 	const system = 'Given a mind-map (list of nodes with "content"), output a SHORT topic title (2-6 words, no punctuation, no quotes) that best names the whole map. Output only the title text.';
-	const user = JSON.stringify(mindmap.nodes.map(n => ({ id: n.id, content: n.content })));
+	// ★ 2026-10-19：喂给 LLM 的正文同样 `content || text`（否则 text-only 节点会变成 undefined）
+	const user = JSON.stringify(mindmap.nodes.map(n => ({ id: n.id, content: n.content || n.text || '' })));
 	return { system, user };
 }
 

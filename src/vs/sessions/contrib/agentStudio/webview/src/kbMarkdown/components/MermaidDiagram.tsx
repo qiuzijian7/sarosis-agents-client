@@ -1,5 +1,5 @@
 /* Mermaid 图示渲染：KB 文档中的 ```mermaid 代码块 → 请求 host 的
- * IMermaidInlineRenderer（隐藏 webview 渲染引擎，与聊天 Mermaid 卡片一致）
+ * IDiagramRenderer（随包的 pele 引擎，与聊天图表卡片一致）
  * 渲染为 SVG 字符串，再注入本文档 DOM 显示。
  *
  * 渲染结果经由 kbblocks.renderMermaid / kbblocks.mermaidResult 消息往返；
@@ -8,6 +8,7 @@
 
 import { useEffect, useState } from 'react';
 import { postMessage } from '../../bridge/messageClient';
+import { hostDiagramWidth } from '../diagramWidth';
 
 interface MermaidResult {
 	svg: string;
@@ -40,9 +41,11 @@ function renderMermaid(source: string): Promise<MermaidResult> {
 	const requestId = `mermaid_${++counter}_${Date.now()}`;
 	// VS Code webview 会给 <body> 加 vscode-dark/vscode-light class，据此传主题
 	const theme = document.body.classList.contains('vscode-dark') ? 'dark' : 'default';
+	// ★ 2026-10-19：带上可用宽度 ⇒ pele 在窄处**改排版**而不是等比缩小（见 host 侧接口注释）
+	const maxWidth = hostDiagramWidth();
 	return new Promise<MermaidResult>((resolve) => {
 		pending.set(requestId, resolve);
-		postMessage('kbblocks.renderMermaid', { source, requestId, theme });
+		postMessage('kbblocks.renderMermaid', { source, requestId, theme, maxWidth });
 		// 兜底：host 挂起时不让图示一直转圈
 		window.setTimeout(() => {
 			if (pending.has(requestId)) {

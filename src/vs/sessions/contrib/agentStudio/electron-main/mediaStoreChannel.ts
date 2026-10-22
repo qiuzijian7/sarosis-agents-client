@@ -92,9 +92,34 @@ export class MediaStoreChannel<TContext> extends Disposable implements IServerCh
 
 	listen<T>(_: TContext, event: string): Event<any> { return Event.None; }
 
+	/**
+	 * 惰性（重新）打开 store。
+	 *
+	 * ★ 2026-10-19 真机事故：构造期一次 `disk I/O error`（磁盘瞬态 / 上次进程残留的 `-wal`/`-shm`）
+	 *   之后，本 channel 就永远走 `!this._mediaStore` 分支 ⇒ **整个窗口**媒体库都读不到，
+	 *   用户看到的只有「读取媒体库失败」（重启才好 ✗）。
+	 *   ⇒ 每次调用先补一次；`MediaStore` 内部已做"失败关句柄 + 空 wal 清附属文件"的恢复，
+	 *   所以这个重试是真的有机会成功，而不是空转。
+	 */
+	private _tryOpen(): MediaStore | null {
+		try {
+			const store = new MediaStore({ rootDir: this._rootDir });
+			this._initError = undefined;
+			this._log('info', `MediaStore opened (rootDir=${this._rootDir})`);
+			return store;
+		} catch (err: any) {
+			this._initError = err?.message || String(err);
+			this._log('error', `MediaStore open failed: ${this._initError}`);
+			return null;
+		}
+	}
+
 	async call(_ctx: TContext, command: string, args?: any[]): Promise<any> {
 		if (!this._mediaStore) {
-			throw new Error(`media store unavailable (better-sqlite3 failed to load)${this._initError ? `: ${this._initError}` : ''}`);
+			this._mediaStore = this._tryOpen();
+			if (!this._mediaStore) {
+				throw new Error(`媒体库不可用：${this._initError ?? '未知原因'}`);
+			}
 		}
 		try {
 			switch (command) {

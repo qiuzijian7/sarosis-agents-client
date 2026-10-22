@@ -138,6 +138,22 @@ function findAll(node: any, attr: string, out: any[] = []): any[] {
 	return out;
 }
 
+/**
+ * 官方 hero chip 的替身 + 页面那条 `mousedown` 监听（2026-10-20）。
+ *
+ * 为什么需要：hero 面板只认**从官方 chip 发起**的 open —— 2026-10-17 为修「点聊天框输入框会弹出
+ * 工作区下拉框」加了抑制逻辑（`isOpenFromAnchor(anchor, lastPointerDownTarget)`）。假件若把
+ * `addEventListener` 写成 noop、`anchorRef.current` 传 null ⇒ 抑制恒成立 ⇒ 面板渲染成 null
+ * ⇒ hero 那几条用例全红（**假红**：代码对，假件少模拟了"点那枚 chip"这一步）。
+ *
+ * 提到模块级是因为两个 suite（`withDom` / `withRebindDom`）各有一套 document 桩，都要往里送监听。
+ */
+const heroChipEl: any = {};
+heroChipEl.contains = (t: any) => t === heroChipEl;
+let heroDocDownFns: ((e: any) => void)[] = [];
+/** 模拟"点官方 chip"：先记落点，再渲染（面板在 open 的**上升沿**读它）。 */
+const fireHeroChipDown = () => { for (const fn of heroDocDownFns) { fn({ target: heroChipEl }); } };
+
 const WS = {
 	items: [
 		{ workspaceId: 'ws-1', path: 'g:\\SarosWorkspace\\sarosis-agents-client', title: 'sarosis-agents-client', sessionIds: ['s-a'] },
@@ -348,9 +364,12 @@ suite('chat-surface header（①工作区 ②历史/新建 ③preset 去重）',
 			const ds: Record<string, string> = {};
 			if (datasets.workspaces !== undefined) { ds.vssarosWorkspaces = datasets.workspaces; }
 			if (datasets.worktrees !== undefined) { ds.vssarosWorktrees = datasets.worktrees; }
+			heroDocDownFns = [];
 			const doc: any = {
 				documentElement: { dataset: ds },
-				addEventListener: () => undefined, removeEventListener: () => undefined, dispatchEvent: () => undefined,
+				// 收集（而不是丢弃）：页面在模块级用 `mousedown` 捕获阶段记录"这次 open 从哪来"
+				addEventListener: (name: string, fn: (e: any) => void) => { if (name === 'mousedown') { heroDocDownFns.push(fn); } },
+				removeEventListener: () => undefined, dispatchEvent: () => undefined,
 			};
 			const prev = (globalThis as any).document;
 			(globalThis as any).document = doc;
@@ -666,8 +685,9 @@ suite('chat-surface header（①工作区 ②历史/新建 ③preset 去重）',
 			const picked: string[] = [];
 			withDom({ workspaces: RECORDS }, () => {
 				const h = loadChunk(`${LIB}/client.workspace.js`, makeCtxEvents(events, AWAY, null), {});
+				fireHeroChipDown();
 				const tree = h.render(1, {
-					open: true, selectedId: 'ws-other', anchorRef: { current: null },
+					open: true, selectedId: 'ws-other', anchorRef: { current: heroChipEl },
 					onPick: (id: string) => picked.push(id), onClose: () => undefined,
 				});
 				findAll(tree, 'data-vssaros-context-item')
@@ -687,8 +707,9 @@ suite('chat-surface header（①工作区 ②历史/新建 ③preset 去重）',
 				const picked: string[] = [];
 				const switches: string[] = [];
 				const h = loadChunk(`${LIB}/client.workspace.js`, makeCtx(switches, { items: [{ workspaceId: 'ws-nopath', path: '', title: '空路径', sessionIds: ['s-a'] }] }, null), {});
+				fireHeroChipDown();
 				const tree = h.render(1, {
-					open: true, selectedId: 'ws-other', anchorRef: { current: null },
+					open: true, selectedId: 'ws-other', anchorRef: { current: heroChipEl },
 					onPick: (id: string) => picked.push(id), onClose: () => undefined,
 				});
 				const row = findAll(tree, 'data-vssaros-context-item').find((n: any) => n.props['data-vssaros-context-item'] === 'workspace:ws-nopath');
@@ -707,8 +728,9 @@ suite('chat-surface header（①工作区 ②历史/新建 ③preset 去重）',
 				const picked: string[] = [];
 				const switches: string[] = [];
 				const h = loadChunk(`${LIB}/client.workspace.js`, makeCtx(switches, { items: [] }, null), {});
+				fireHeroChipDown();
 				const tree = h.render(1, {
-					open: true, selectedId: 'ws-1', anchorRef: { current: null },
+					open: true, selectedId: 'ws-1', anchorRef: { current: heroChipEl },
 					onPick: (id: string) => picked.push(id), onClose: () => undefined,
 				});
 				const row = rows(tree, 'workspace')[0];
@@ -748,9 +770,15 @@ suite('chat-surface header（①工作区 ②历史/新建 ③preset 去重）',
 		const withRebindDom = (run: (fire: (type: string, detail: unknown) => void, listeners: string[]) => void) => {
 			const listeners = new Map<string, ((ev: any) => void)[]>();
 			const names: string[] = [];
+			heroDocDownFns = [];
 			const doc: any = {
 				documentElement: { dataset: {} as Record<string, string> },
-				addEventListener: (name: string, fn: any) => { names.push(name); listeners.set(name, [...(listeners.get(name) ?? []), fn]); },
+				addEventListener: (name: string, fn: any) => {
+					names.push(name);
+					listeners.set(name, [...(listeners.get(name) ?? []), fn]);
+					// hero 面板按 mousedown 落点判断"这次 open 是不是从官方 chip 发起的"（见文件上方）
+					if (name === 'mousedown') { heroDocDownFns.push(fn); }
+				},
 				removeEventListener: (name: string, fn: any) => { listeners.set(name, (listeners.get(name) ?? []).filter(f => f !== fn)); },
 				dispatchEvent: (ev: any) => { for (const fn of listeners.get(ev && ev.type) ?? []) { fn(ev); } return true; },
 			};
@@ -890,8 +918,9 @@ suite('chat-surface header（①工作区 ②历史/新建 ③preset 去重）',
 					},
 				};
 				const h = loadChunk(`${LIB}/client.workspace.js`, ctx, state);
+				fireHeroChipDown();   // 模拟"点官方那枚 chip"（面板只认从它发起的 open）
 				const props = {
-					open: true, selectedId: 'ws-1', anchorRef: { current: null },
+					open: true, selectedId: 'ws-1', anchorRef: { current: heroChipEl },
 					onPick: (id: string) => picked.push(id), onClose: () => undefined,
 				};
 				const tree = h.render(1, props);
@@ -961,8 +990,9 @@ suite('chat-surface header（①工作区 ②历史/新建 ③preset 去重）',
 				// ② 面板：IDE-only 那条组必须被标成"当前"（否则用户点完在界面上看不到任何变化 ✗）
 				// ⚠ `selectedId: null` = **真机那一屏的实际形态**（`heroSelected: null`）⇒ 官方选中态没给东西时，
 				//   "当前"只能靠**会话 cwd** 判（这正是本次修法要守住的那一条 ✓）。
+				fireHeroChipDown();
 				const panel = h.render(1, {
-					open: true, selectedId: null, anchorRef: { current: null },
+					open: true, selectedId: null, anchorRef: { current: heroChipEl },
 					onPick: () => undefined, onClose: () => undefined,
 				});
 				const rowKeys = findAll(panel, 'data-vssaros-context-item').map((n: any) => String(n.props['data-vssaros-context-item']));
@@ -1143,23 +1173,18 @@ suite('chat-surface header（①工作区 ②历史/新建 ③preset 去重）',
 	});
 
 	suite('③ 官方 preset 标签：头部显示（不再遮蔽）；header 里仍无我们的切换 chip', () => {
-		test('★ 不遮蔽官方 label（头部要显示当前 preset 标签），hero 那枚 chip 仍在', () => {
+		test('★ 自绘的 hero 模式 chip 已整块交回官方（我们既不遮蔽官方 label，也不再有自己的切换 chip）', () => {
 			// 2026-10-11 需求反转：先前遮蔽官方只读 label（"头部别冒出 standard 文本"），
 			// 现在要求"选不同 preset 时头部显示对应标签" ⇒ 放开官方那枚，不自绘。
 			// 官方实现：`dsh-client-ui-agent-preset/lib/client.js:355-375` 的 `AgentPresetLabel` 读会话投影
 			// `projectionValues.agentPreset`（无值渲染 null），名称取花名册的 name ⇒ 切换 preset 自动跟着变 ✓。
 			// ⚠ 谁要是把 `id: "agent-preset"` + `priority: -1` 的遮蔽项加回来，头部就再没有 preset 标签了 ✗。
-			const ctx = { remote: { agentPresets: { list: () => Promise.resolve({ ok: true, value: { presets: [] } }) } } };
-			const h = loadChunk(`${LIB}/client.preset.js`, ctx, {});
-			assert.strictEqual(h.registrations.some(r => r.spec.id === 'agent-preset'), false,
-				'不得再注册 id=agent-preset 的遮蔽项（那会把官方标签一起藏掉 ⇒ 头部没有 preset 标签）');
-			assert.strictEqual(h.registrations.some(r => r.slot === 'conversation.session.header.actions'), false,
-				'header 的 actions 槽里不该有我们的注册（头部那枚标签交给官方）');
-			assert.strictEqual(h.registrations.some(r => r.spec.id === 'vssaros-preset-chip'), false,
-				'方案 B：header 里不得有 preset 切换 chip（切换入口在 hero）');
-			const hero = h.registrations.find(r => r.spec.id === 'vssaros-preset-chip-hero');
-			assert.ok(hero, 'hero 区那枚必须保留（空白会话屏的唯一切换入口）');
-			assert.strictEqual(hero.slot, 'conversation.hero.agentPreset');
+			//
+			// ★ 2026-10-21 第四轮：hero 模式槽**由我们接管**（client.preset.js 存在）—— 官方 seat 的
+			//   菜单 = roster 全量 ⇒ agent 必然与模式并排 ⇒ 违背「agent 不作为 preset 呈现」；
+			//   代价是我们要自己保证切换能用 ⇒ 走官方 remote API（不依赖宿主桥）✓。
+			assert.ok(existsSync(join(process.cwd(), LIB, 'client.preset.js')),
+				'hero 模式槽由我们接管（只列模式；agent/Bot 不许以 preset 呈现）');
 		});
 	});
 
@@ -1302,7 +1327,10 @@ suite('chat-surface header（①工作区 ②历史/新建 ③preset 去重）',
 			const c = contributions[0];
 			// 行名不得与 host 命令重名：官方文档"重名会在候选合成时 fail loud" ⇒ 用带前缀的唯一名。
 			assert.strictEqual(c.name, 'vssaros-agents');
-			assert.strictEqual(c.label(), 'Agent', '本行 = Agent（仅切换人格）');
+			// ★ 2026-10-21（用户指令「把 agent 定位成一个 Bot（PersonaBot）」）：这一行对外叫 **Bots**
+			//   —— agent 在 dsh 内部仍以 preset 形式存在，但用户可见身份是"Bot"（对标 DeepSeekBot 的
+			//   PersonaBot：bot 是"谁"，preset 是"怎么干"）⇒ 模式入口只列模式，agent 一律不进 ✓。
+			assert.strictEqual(c.label(), 'Bots', '本行 = Bots（Bot/PersonaBot，仅切换人格）');
 			assert.ok(c.description().includes('人格'), '描述要说明"仅切换人格、会话继续"');
 			// 图标必须是**组件**：官方字符串 kind 只认代码文件类型表（没有 "agent" 这类取值）。
 			assert.strictEqual(typeof c.icon, 'function', '图标要传 React 组件，不能传字符串 kind');
@@ -1310,7 +1338,7 @@ suite('chat-surface header（①工作区 ②历史/新建 ③preset 去重）',
 			assert.strictEqual(c.available({ sessionId: 's-a' }), true);
 			// 列表用官方 popup：自带搜索框 + 分组标题 + 当前项高亮（不必自绘）。
 			assert.strictEqual(c.ui.kind, 'popupSelect');
-			assert.strictEqual(c.ui.searchLabels().placeholder, '搜索 Agent');
+			assert.strictEqual(c.ui.searchLabels().placeholder, '搜索 Bot');
 			const rows = await c.ui.options({ sessionId: 's-a' }, new AbortController().signal);
 			// ★ 只列 VsSaros agent：内置 preset（standard / ptc / minimal / cordis）不得出现（2026-10-11 用户要求）。
 			assert.deepStrictEqual(rows.map((r: any) => r.id), ['vssaros-dev-expert']);
@@ -1485,8 +1513,13 @@ suite('chat-surface header（①工作区 ②历史/新建 ③preset 去重）',
 			const gen = await import(pathToFileURL(join(process.cwd(), 'dsh-plugins/preset-sync.mjs')).href) as any;
 			assert.strictEqual('vssaros-' + 'standard', gen.OUR_PRESET_ID,
 				'生成器的 OUR_PRESET_ID 变了 ⇒ chunk 的模式判据要跟着改（否则模式又被当 agent 报 ✗）');
-			assert.strictEqual(gen.OUR_PRESET_NAME, 'standard',
-				'生成器给的显示名必须是 standard —— 界面（官方标签 / 兜底自绘）直接用它 ✓');
+			// ★ 2026-10-21：显示名从 'standard' 改成自解释的档名（官方 seat 菜单会把**全部** roster 并排列出，
+			//   我们的档与官方「标准模式」并排 ⇒ 顶着内部 id 会被当成重复项 ✗）。
+			//   断言写成**语义**（不等于 id / 带 VsSaros 标记）而不是写死中文 ⇒ 改名时不必再改测试 ✓。
+			assert.notStrictEqual(gen.OUR_PRESET_NAME, gen.OUR_PRESET_ID,
+				'显示名不得等于内部 id（官方 seat 菜单里会与官方同名模式并排 ⇒ 看着像重复项 ✗）');
+			assert.ok(/VsSaros/.test(gen.OUR_PRESET_NAME),
+				'显示名要带 VsSaros 标记（让用户分得清"官方模式"与"我们的档"）');
 		});
 
 		test('chip：**没人格时不显示**（入口归「+」菜单）；有人格时显示名字；✕ → 清除人格（会话继续）', async () => {
@@ -1631,7 +1664,7 @@ suite('chat-surface header（①工作区 ②历史/新建 ③preset 去重）',
 			// 却让用户去搜 preset（2026-10-11 用户截图实测 ✗）。
 			const search = findByAttr(panel, 'data-vssaros-agents-search') as any;
 			assert.ok(search, '搜索框要带 `data-vssaros-agents-search` 标记（便于断言文案）');
-			assert.strictEqual(search.props.placeholder, '搜索 Agent');
+			assert.strictEqual(search.props.placeholder, '搜索 Bot');
 			const items = findAll(panel, 'data-vssaros-agent-item') as any[];
 			// ★ 本面板是 **Agent 选择器**（composer 那枚 chip 打开）⇒ 只列 VsSaros agent；
 			// dsh 自带 preset 的选择在 hero 那枚 preset chip 的下拉里（那边只列内置 preset）。
@@ -1766,38 +1799,46 @@ suite('chat-surface header（①工作区 ②历史/新建 ③preset 去重）',
 			assert.strictEqual(menu.props.style.maxWidth, '123px', '菜单宽度必须夹到视口（否则被 WebContentsView 裁掉）');
 			assert.strictEqual(menu.props.style.maxHeight, '45px');
 			assert.strictEqual(menu.props.style.overflowY, 'auto');
-			// 锚点方向（方案 B 之后工作区 chip 在**左侧**）：菜单必须向右展开，否则会越过视图左边缘、
-			// 被 VsSaros 侧栏盖住（2026-10-11 实测截图：工作区菜单左半边被侧栏遮住）。
-			assert.strictEqual(menu.props.style.left, 0, '左侧 chip 的菜单必须 left:0（向右展开）');
-			assert.strictEqual(menu.props.style.right, undefined, '不得再写 right（那正是向左溢出的原因）');
+			// ★ 2026-10-19（用户报「工作区下拉框弹出 UI 层级错误」）：定位从 absolute 改成 **fixed**。
+			//   病根：`position: absolute` + `left: 0` 挂在 chip 的 relative 容器里，`zIndex: 1000` 只在
+			//   **该层叠上下文内**比较 —— dsh header 自己是带 z-index 的定位容器，页面里的浮层/侧栏
+			//   完全压在它上面 ⇒ 菜单被盖住一半（同一时期另一处症状是 layer 主题色半透明导致"透底"）。
+			//   ⇒ 契约变了：**必须 fixed**，水平坐标由 `headerMenuBox()` 按锚点实算并夹在视口内；
+			//   没有锚点（单测无 DOM / 未挂载）时**不写死 left**（猜 0 坐标 = 菜单跑到左上角 ✗）。
+			assert.strictEqual(menu.props.style.position, 'fixed',
+				'工作区菜单必须 position: fixed（absolute + zIndex 会被祖先层叠上下文压住）');
+			assert.strictEqual(menu.props.style.right, undefined, '不得写 right（那正是向左溢出的原因）');
+			assert.strictEqual(menu.props.style.left, undefined,
+				'无锚点时不许写死 left（坐标必须来自 headerMenuBox 的实算结果）');
+			// 源码级契约：实算函数存在，且确实做了视口夹取（否则"向右展开"就没保证）
+			const wsCode = read(`${LIB}/client.workspace.js`);
+			assert.match(wsCode, /function headerMenuBox\(ref\) \{[\s\S]{0,900}?Math\.min\(r\.left, vw - panelW - 8\)/,
+				'headerMenuBox 必须把菜单左边夹在视口内（vw - panelW - 8）');
 			// ★ 2026-10-15：菜单互斥的 id 就是合并入口自己（`MENU_ID = "vssaros-context-entry"`，
 			//   client.workspace.js L167/L261）—— 旧断言还认合并前的 'vssaros-workspace' ✗。
 			assert.deepStrictEqual(closedOthers, ['vssaros-context-entry'], '打开前必须关掉其它菜单（菜单 id = 合并入口 ✓）');
 		});
 
-		test('★ preset 下拉（hero chip）必须**向右**展开（锚点在输入框左侧）', () => {
-			// 现场（2026-10-11 用户截图）：菜单写 `right: 0` ⇒ 从 hero chip 向左展开，越过聊天视图左边缘被裁，
-			// 截图里只剩 `dard` / `imal` / `dis` —— 就是 standard / minimal / cordis 被裁后的尾巴 ✗。
-			// hero chip 在输入框**左侧** ⇒ 必须 `left: 0`；尺寸仍由 fitMenu 夹在视口内（上面那条契约管它）。
-			const code = read(`${LIB}/client.preset.js`);
-			const menuStyle = /role: "menu"[\s\S]{0,500}?position: "absolute", top: "100%", (left|right): 0/.exec(code);
-			assert.ok(menuStyle, 'client.preset.js 的菜单必须有定位（absolute + top:100% + 水平锚点）');
-			assert.strictEqual(menuStyle![1], 'left',
-				'hero chip 的 preset 菜单必须 left:0（写 right:0 就会越过视图左边缘被裁）');
+		test('★ 我们不再自绘 preset 菜单（hero 那枚已交回官方 `AgentPresetSeat`）', () => {
+			// 2026-10-11：自绘菜单写 `right: 0` ⇒ 从 hero chip 向左展开、越过聊天视图左边缘被裁（截图只剩尾巴 ✗），
+			//   当时靠"必须 left: 0"这条源码契约钉住。
+			// ★ 2026-10-21 第四轮：这一格**由我们接管**（官方 seat 会把 agent 一并列出来 ✗）⇒ 展开方向
+			//   与视口夹取仍由我们负责 ⇒ 这条源码契约**继续有效** ✓。
+			const presetCode2 = read(`${LIB}/client.preset.js`).replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+			assert.ok(/role: "menu"[\s\S]{0,600}?position: "absolute", top: "100%", left: 0/.test(presetCode2),
+				'模式菜单必须 left:0 展开（写 right:0 会越过视图左边缘被裁 ✗）');
 		});
 
-		test('★ preset 下拉与 dsh 官方一致：纯条目列表（无分组标题 / 分隔线 / 自加动作行）', () => {
-			// 官方那个 preset 菜单（`AgentPresetSeat` 的 `Menu`，`dsh-client-ui-agent-preset/lib/client.js:491-520`）
-			// 就是**纯条目**：名称 + 一行描述。我们此前在下面自加了分隔线和「管理 Agent…（VsSaros Agent Studio）」
-			// 一行（用户 2026-10-11 截图指出），还分了「内置 / 我的 Agent」两组 ⇒ 一律去掉。
-			// 必须先剥注释：这个文件里就写着"已去掉『管理 Agent…』"这类说明，直接扫会误判 ✗（实测踩过）。
-			const code = read(`${LIB}/client.preset.js`).replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
-			assert.ok(!code.includes('管理 Agent…'), '不得再挂"管理 Agent…（VsSaros Agent Studio）"那一行（官方没有）');
-			assert.ok(!/key: "h[12]"/.test(code), '不得再有「内置 / 我的 Agent」分组标题');
-			assert.ok(!/key: "sep"/.test(code), '不得再有自加分隔线');
-			assert.ok(/const builtins = roster\.filter\(\(p\) => isBuiltin\(p\.id\)\)/.test(code)
-				&& /for \(const p of builtins\) \{ rows\.push\(item\(p\)\); \}/.test(code),
-				'条目只能来自 dsh 自带 preset（VsSaros agent 的入口是 + 菜单 → Commands → Agents）');
+		test('★ 官方 preset 菜单就是纯条目列表（我们不再自绘 ⇒ 无需再管形态）', () => {
+			// 官方那个 preset 菜单（AgentPresetSeat 的 Menu）就是**纯条目**：名称 + 一行描述。
+			// ★ 2026-10-21 第四轮：hero 模式槽**由我们接管**（官方 seat 的菜单 = roster 全量 ⇒ agent 必然
+			//   与模式并排 ⇒ 违背「agent 不作为 preset 呈现」）⇒ 但切换必须走**官方 remote API**。
+			const presetCode = read(`${LIB}/client.preset.js`).replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+			assert.ok(/remote\.agentPresets\.select/.test(presetCode),
+				'模式切换必须走官方 remote API（ctx.remote.agentPresets.select）—— 依赖宿主桥会在无桥环境点了没反应 ✗');
+			assert.ok(!/bridge\.switchPreset/.test(presetCode),
+				'不得再走宿主页面桥 switchPreset（无桥环境点了没反应 ✗）');
+			assert.ok(!/createElement\(worktreeChip/.test(presetCode), 'hero 装配里不许再渲染 worktree chip ✗');
 		});
 
 		test('★ 源码契约：菜单夹视口时**必须交出锚点**（只按整页高算 ⇒ 面板底部溢出且滚不到）', () => {
@@ -1809,11 +1850,15 @@ suite('chat-surface header（①工作区 ②历史/新建 ③preset 去重）',
 			//   本断言是它的永久守卫（删掉参数即红 ✓）。
 			for (const rel of ['client.workspace.js', 'client.sessions.js', 'client.preset.js', 'client.settings.js']) {
 				const code = read(`${LIB}/${rel}`).replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
-				assert.ok(/shell\.fitMenu \? shell\.fitMenu\(.+\) : \{\}/.test(code),
+				// 两种合法形态都接受：① 宿主给的 `shell.fitMenu ? shell.fitMenu(x) : {}`（有桥环境）
+				//   ② 我们自带的兜底 `fitMenu(rect)`（**无桥环境**，dsh desktop / dsh 全窗 ⇒ 必须能夹视口 ✓）
+				const handsAnchor = /fitMenu\([\s\S]{0,200}?getBoundingClientRect\(\)/.test(code)
+					|| /shell\.fitMenu \? shell\.fitMenu\(.+\) : \{\}/.test(code);
+				assert.ok(handsAnchor,
 					`${rel} 必须把**锚点矩形**交给 fitMenu（只按整页高算 ⇒ 面板底部溢出、按钮点不到 ✗）`);
 				// ⚠ **负向**那一半同样必须钉住：上面那条只看"文件里至少有一处交了锚点" ⇒
 				//   一个文件里两处菜单、只改一处也能过（反向突变 M1 就是这么假绿的 ✗）⇒ 一律不许留裸调用。
-				assert.ok(!/shell\.fitMenu \? shell\.fitMenu\(\)/.test(code),
+				assert.ok(!/fitMenu\(\s*\)/.test(code),
 					`${rel} 里**不许**有"不交锚点"的 fitMenu 调用（同一文件另一处漏了照样会溢出 ✗）`);
 				assert.ok(code.includes('getBoundingClientRect()'),
 					`${rel} 交出去的必须是**真实 rect**（读触发器自己的 ✓；不许拿 0 坐标硬凑）`);
@@ -1874,6 +1919,12 @@ suite('chat-surface header（①工作区 ②历史/新建 ③preset 去重）',
 				{ method: 'openSession', sessionId: 'vssaros-chat-x' });
 			assert.deepStrictEqual(validatePageCommand({ method: 'openSession', sessionId: 's-1', agentPreset: 'ptc' }),
 				{ method: 'openSession', sessionId: 's-1', agentPreset: 'ptc' });
+			// ★ 2026-10-19（用户报「双击会话 item 后打不开对应的聊天框」）：`cwd` 是**可选**的新字段
+			//   —— 宿主拿它先 `session.start` 幂等接管历史会话（否则换绑后页面永远停在「正在打开会话…」）。
+			assert.deepStrictEqual(validatePageCommand({ method: 'openSession', sessionId: 's-1', cwd: 'G:\\SarosWorkspace\\proj' }),
+				{ method: 'openSession', sessionId: 's-1', cwd: 'G:\\SarosWorkspace\\proj' });
+			assert.deepStrictEqual(validatePageCommand({ method: 'openSession', sessionId: 's-1', cwd: '/home/u/proj' }),
+				{ method: 'openSession', sessionId: 's-1', cwd: '/home/u/proj' });
 			for (const bad of [
 				{ method: 'openSession' },
 				{ method: 'openSession', sessionId: '' },
@@ -1881,6 +1932,28 @@ suite('chat-surface header（①工作区 ②历史/新建 ③preset 去重）',
 				{ method: 'openSession', sessionId: 'a'.repeat(201) },
 				{ method: 'openSession', sessionId: 'ok', agentPreset: 'a b' },
 				{ method: 'openSession', sessionId: 'ok', agentPreset: 42 },
+				// cwd：只收**绝对路径**形状（相对路径 / URI / 带控制字符一律拒）
+				{ method: 'openSession', sessionId: 'ok', cwd: 'relative/proj' },
+				{ method: 'openSession', sessionId: 'ok', cwd: 'file:///tmp/x' },
+				{ method: 'openSession', sessionId: 'ok', cwd: 'G:\\x\u0000y' },
+				{ method: 'openSession', sessionId: 'ok', cwd: 42 },
+			]) {
+				assert.strictEqual(validatePageCommand(bad), undefined, JSON.stringify(bad));
+			}
+			// ★ 2026-10-19（桥 13 → 14）：`renameSession`（会话历史页右键重命名）。
+			//   title 是**用户输入** ⇒ 去首尾空白后仍非空、上限 120、拒控制字符；cwd/preset 与 openSession 同源。
+			assert.deepStrictEqual(validatePageCommand({ method: 'renameSession', sessionId: 's-1', title: '  新名字  ' }),
+				{ method: 'renameSession', sessionId: 's-1', title: '新名字' });
+			assert.deepStrictEqual(validatePageCommand({ method: 'renameSession', sessionId: 's-1', title: '名字', cwd: '/w/proj', agentPreset: 'ptc' }),
+				{ method: 'renameSession', sessionId: 's-1', title: '名字', cwd: '/w/proj', agentPreset: 'ptc' });
+			for (const bad of [
+				{ method: 'renameSession', sessionId: 's-1' },
+				{ method: 'renameSession', sessionId: 's-1', title: '   ' },
+				{ method: 'renameSession', sessionId: 's-1', title: 42 },
+				{ method: 'renameSession', sessionId: 's-1', title: 'a'.repeat(121) },
+				{ method: 'renameSession', sessionId: 's-1', title: 'a\u0000b' },
+				{ method: 'renameSession', sessionId: '', title: 'x' },
+				{ method: 'renameSession', sessionId: 's-1', title: 'x', cwd: 'relative' },
 			]) {
 				assert.strictEqual(validatePageCommand(bad), undefined, JSON.stringify(bad));
 			}
@@ -2072,5 +2145,41 @@ suite('chat-surface header（①工作区 ②历史/新建 ③preset 去重）',
 			assert.ok(requested.includes(SESSION_DEPENDENT), '有会话 id ⇒ 会话列表等部件照旧装');
 			assert.ok(requested.length >= 20, `正常聊天应请求全部部件（实际 ${requested.length} 个）`);
 		});
+	});
+});
+
+/**
+ * ★ 人格事实的「**先报后绑**」时序（2026-10-19 日志现场）：
+ * `WARN [dshHarness] persona fact dropped: chat chat-… 还没有 (agentId, sessionId) 身份（新页签未绑会话）`
+ *
+ * 现场：新页签的**页面先挂载先上报**，而壳侧身份由 `NativeChatEditorInput.setAgentInfo()` 稍后才填。
+ * 旧实现直接**丢弃**这条事实 ⇒ 那条会话在历史侧栏**永远没有人格标记**（`personaBySession` 缺键），
+ * 而且什么错都不报 —— 典型的"静默少一个功能" ✗。
+ *
+ * 修法（不变量）：身份不全 ⇒ **暂存**；等下一次 `_updateVisibility()`（布局 / 可见性 / 工作区同步唯一的
+ * 汇合点）补落表。理由：落表键是壳侧的 `agentId::sessionId`（页面只知道 dsh 会话 id）⇒ 身份不全时
+ * **不许猜键**，但也**不许丢**（`_input` 就是那个 input 实例、`agentId/sessionId` 是 getter ⇒ 绑定后立刻可读 ✓）。
+ */
+suite('dshHarness / 人格事实：新页签"先报后绑"必须补落表（不许丢）', () => {
+	const HOST = 'src/vs/sessions/contrib/dshHarness/electron-browser/dshChatInstanceHost.ts';
+
+	test('★ 身份不全 ⇒ 暂存（deferred）+ info 留痕；不许再 warn 后丢弃', () => {
+		const src = read(HOST);
+		assert.ok(src.includes('this._pendingPersonaFact = command;'),
+			'身份不全时必须暂存这条事实（丢掉 = 侧栏那一行永远没有人格标记 ✗）');
+		// 只钉"丢弃"这一种说法：`persona fact not persisted` 是另一条（存储不可用）的 warn，必须留着 ✓
+		assert.ok(!/_log\.warn\([^)]*persona fact dropped/.test(src),
+			'不许再用 warn 报"丢弃"（这是新页签的**正常过渡态**，warn 会让人以为坏了 ✗）');
+		assert.match(src, /persona fact deferred/, '暂存要留一行可查的痕（info 级）');
+	});
+
+	test('★ 补落表走 `_updateVisibility()`，且自己判"身份齐了没"（不猜键）', () => {
+		const src = read(HOST);
+		assert.match(src, /private _flushPendingPersonaFact\(\): void \{[\s\S]{0,500}?if \(!pending \|\| !this\._input\.agentId \|\| !this\._input\.sessionId\) \{\s*return;/,
+			'补落表必须先判身份是否齐了（否则落一个永远匹配不上的键 ✗）');
+		assert.match(src, /private _updateVisibility\(\): void \{[\s\S]{0,200}?this\._flushPendingPersonaFact\(\);/,
+			'`_updateVisibility()` 必须调它 —— 它是本宿主唯一"一定会被反复调用"的汇合点（挂载/布局/可见性/工作区同步）✓');
+		assert.match(src, /this\._pendingPersonaFact = undefined;[^\n]*\n\s*try \{/,
+			'有身份时以最新这条为准（先清暂存再落表）');
 	});
 });

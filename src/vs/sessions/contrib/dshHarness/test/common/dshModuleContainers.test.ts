@@ -6,7 +6,7 @@
 import assert from 'assert';
 import {
 	DSH_ALWAYS_REGISTERED_CONTAINERS, DSH_BUILTIN_MODULES, DSH_MODULE_CONTAINERS, DSH_MODULE_PAGES, DshModuleId, IPluginWithManifest,
-	activeModulesFromPlugins, activeModulesOf, containersFromPlugins, defaultPageRoute, moduleContainerOf, moduleContextKey, moduleIdForPluginName, pageRouteForActiveModules, pagesFromPlugins, planModuleContainers, resolveContainerPageState,
+	activeModulesFromPlugins, activeModulesOf, containersFromPlugins, defaultPageRoute, moduleContainerOf, moduleContextKey, moduleIdForPluginName, pageRouteForActiveModules, pagesFromPlugins, planModuleContainers, resolveContainerPageState, withWorkbenchClient,
 } from '../../common/dshModuleContainers.js';
 
 suite('dshModuleContainers（容器聚合与注册计划）', () => {
@@ -86,6 +86,17 @@ suite('dshModuleContainers（容器聚合与注册计划）', () => {
 		assert.deepStrictEqual(state.modules, [
 			{ module: 'kb', active: true, route: '/x/kb/' },
 		]);
+	});
+
+	test('withWorkbenchClient：只给"已启用 + module 对得上 + workbenchClient"的模块页打标记', () => {
+		const kb = DSH_MODULE_CONTAINERS.find(c => c.modules.includes('kb'))!;
+		const state = resolveContainerPageState(kb, ['kb']);
+		const manifest = { manifestVersion: 1 as const, module: 'kb', view: { kind: 'page' as const, route: '/x/kb/' } };
+		assert.strictEqual(withWorkbenchClient(state, [{ name: '@vssaros/dsh-kb', manifest, workbenchClient: true }]).page?.workbenchClient, true);
+		assert.strictEqual(withWorkbenchClient(state, [{ name: '@vssaros/dsh-kb', manifest }]).page?.workbenchClient, undefined);
+		assert.strictEqual(withWorkbenchClient(state, [{ name: '@vssaros/dsh-kb', manifest, workbenchClient: true, enabled: false }]).page?.workbenchClient, undefined);
+		assert.strictEqual(withWorkbenchClient(state, [{ name: '@vssaros/dsh-x', manifest: { ...manifest, module: 'memory' }, workbenchClient: true }]).page?.workbenchClient, undefined);
+		assert.strictEqual(withWorkbenchClient(state, []), state, '没有可标记的 ⇒ 原样返回');
 	});
 
 	test('页面表的不变量：覆盖所有容器模块、page/section 有路由、none 没有路由', () => {
@@ -231,7 +242,8 @@ suite('dshModuleContainers（容器聚合与注册计划）', () => {
 				// 2026-10-12 新增，`page-only`（legacy 侧的历史会话是**另一个**常驻容器 `sessionHistory.view`，两者并存）。
 				// （画布模块已于 2026-10-15 移除 —— `.canvas` 文件仍走 legacy **编辑器**，不受影响 ✓）
 				// `vssaros.dsh.scheduler`：定时任务（重构 2.1，page-only —— legacy 调度器从不执行，无静态对应物）。
-				'vssaros.dsh.codebase', 'vssaros.dsh.scheduler', 'vssaros.dsh.sessions']);
+				// `vssaros.dsh.imagegen`：生图 / 画布工作台（2026-10-21，page-only —— legacy 侧没有画布引擎）。
+				'vssaros.dsh.codebase', 'vssaros.dsh.imagegen', 'vssaros.dsh.scheduler', 'vssaros.dsh.sessions']);
 		assert.deepStrictEqual(plan.pending, [], '没有 planned 容器了（语义保留给"规划了图标但还没有页面"的下一个模块）');
 	});
 
@@ -267,6 +279,8 @@ suite('dshModuleContainers（容器聚合与注册计划）', () => {
 				fixturePlugin('@vssaros/dsh-sessions', 'sessions', 'vssaros.dsh.sessions', 120, '/x/sessions/'),
 				// 重构 2.1：定时任务（官方 dsh-schedule 的薄壳；page-only，legacy 侧无对应物）。
 				fixturePlugin('@vssaros/dsh-scheduler', 'scheduler', 'vssaros.dsh.scheduler', 95, '/x/scheduler/'),
+				// 2026-10-21：生图 / 画布工作台（page-only）。
+				fixturePlugin('@vssaros/dsh-imagegen', 'imagegen', 'vssaros.dsh.imagegen', 85, '/x/imagegen/'),
 			];
 			const containers = containersFromPlugins(plugins);
 			// 容器集合与硬编码表一致（containerId + 成员模块）

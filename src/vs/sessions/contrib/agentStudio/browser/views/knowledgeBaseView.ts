@@ -31,7 +31,7 @@ import { IThemeService } from '../../../../../platform/theme/common/themeService
 import { IKeybindingService } from '../../../../../platform/keybinding/common/keybinding.js';
 import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { IFileService, IFileStat, FileChangesEvent, FileKind } from '../../../../../platform/files/common/files.js';
-// ⚠ `IMermaidInlineRenderer` / `IDrawioInlineRenderer` 的注入随飞书同步搬进了 `IKbCommandService`（第 3 期 ✓）
+// ⚠ `IDiagramRenderer` / `IDrawioInlineRenderer` 的注入随飞书同步搬进了 `IKbCommandService`（第 3 期 ✓）
 // ⚠ 图表准备（`prepareDiagramsForSync` / `svgToPng`）随飞书同步一起搬进了 `IKbCommandService`（第 3 期 ✓）
 import { IStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
 import { INotificationService } from '../../../../../platform/notification/common/notification.js';

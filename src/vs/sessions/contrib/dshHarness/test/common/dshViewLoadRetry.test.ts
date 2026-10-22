@@ -144,7 +144,11 @@ suite('dshHarness / view load retry（有界重试）', () => {
 			const navigateBlock = source.slice(navigateAt, navigateAt + 700);
 			assert.match(navigateBlock, /onMainFrameNavigated\(/, 'did-navigate 必须把这次主 frame 导航的状态码记进 retry 状态（did-finish-load 的判据依赖它）');
 
-			const finishAt = source.indexOf("wc.on('did-finish-load'");
+			// ⚠ 采集面必须锚到**真正的处理器**（`() => {`），不能只认事件名：
+			//   2026-10-20 加了加载里程碑的 `wc.on('did-finish-load', () => markLoad(...))`（在 `_wire` 开头），
+			//   它的位置比真处理器**靠前 ~100 行**，于是这个 700 字符窗口永远扫不到 `shouldResetRetryBudget`
+			//   ⇒ 守卫假红（代码本身没坏）。教训同 `feedback_static_scan_surface`：按注册形态枚举，别按名字。
+			const finishAt = source.indexOf("wc.on('did-finish-load', () => {");
 			assert.ok(finishAt > 0, "did-finish-load 处理器不见了（改名/挪走就要同步改这条守卫）");
 			const finishBlock = source.slice(finishAt, finishAt + 700);
 			assert.match(finishBlock, /shouldResetRetryBudget\(/, 'did-finish-load 的预算复位必须由 shouldResetRetryBudget 把关（无条件复位 = 401 无限重试，2026-10-12 事故）');

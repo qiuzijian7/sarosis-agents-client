@@ -1,6 +1,25 @@
-// @vssaros/dsh-chat-surface — Agent(preset) 切换 chip（方案 5.15）
-// package-local chunk（dsh client-modules 契约）：主包 lib/client.js 用 require.async("./client.preset.js") 取回本模块的 install()。
-// 一个文件一个换皮点：并行改动各改各的文件，不再撞同一个 client.js。
+// @vssaros/dsh-chat-surface — **模式（preset）选择器**（hero 区）
+//
+// ── 为什么又自绘（2026-10-21 用户指令：「把 agent 定位成 Bot，不要让 agent 作为 preset 呈现」）──
+// 官方 `AgentPresetSeat`（`@deepseek-ai/dsh-client-ui-agent-preset`）的菜单 = **roster 全量**
+//   （`presetOptions()` 只过滤 `broken`，**没有按 kind 过滤**）⇒ 我们的 22 个内置 agent + 用户自建
+//   agent 全部与"标准模式 / PTC 模式"并排出现在同一个下拉里 ⇒ 用户看到的是"模式 + 一堆 agent 混排"
+//   ⇒ **官方 seat 无法满足"agent 不作为 preset 呈现"**（唯一的官方过滤维度是 broken，而 broken 的行
+//   也不能被选中 ⇒ 不能拿它当"隐藏 agent"的开关）。
+// ⇒ 因此这一格**由我们接管**：只列**模式类** preset（dsh 自带 4 个 + 我们的 3 个"档"），
+//   agent 一律不进 ⇒ 它们改从「+」菜单 → **Bots** 入口选（对标 DeepSeekBot 的 PersonaBot：
+//   bot 是"谁"，preset 是"怎么干" —— bot 不该以 preset 的身份出现 ✓）。
+//
+// ── 切换走**官方 remote API**，不走宿主页面桥（这是 0.2.177 之前那枚自绘 chip 失效的根因 ✗）──
+//   `ctx.remote.agentPresets.select(sessionId, id)`（官方 seat 内部用的同一条，见
+//   `dsh-client-ui-agent-preset/lib/client.js:2079`）⇒ 没有宿主桥的环境（dsh desktop / dsh 全窗）
+//   **照样能切** ✓；`ctx.remote.agentPresets.list()` 取花名册（同官方）✓。
+//   ⇒ 与官方 seat 的语义完全一致：**有当前会话 ⇒ 热切换（Host 拒绝会给原因）；无会话 ⇒ 只预选**
+//   （下一个新任务用该模式）✓。
+//
+// ⚠ 与官方的差别：官方菜单每项带一行描述（内置 preset 走本地化文案）⇒ 我们拿不到那份本地化，
+//   故**只显示能确证的信息**：名称 + roster 里的描述（我们的 3 个档有 ⇒ 显示；dsh 自带的 4 个没有
+//   ⇒ 不显示第二行，避免"暂无描述。"这种空行）。
 window.__ModuleLoader__.load({
 	id: "@vssaros/dsh-chat-surface",
 	chunk: "client.preset.js",
@@ -8,223 +27,291 @@ window.__ModuleLoader__.load({
 		var module = { exports: {} };
 		var exports = module.exports;
 		const react = require("react");
+
+		/** dsh 自带的 4 个模式（官方 preset id，无前缀）。 */
+		const BUILTIN_MODES = ["standard", "ptc", "minimal", "cordis"];
+		/** 我们的 2 个模式（官方模式的逐字副本 + 我们的模块行/工具面；见 `vssaros-agents/cordis.presets.yml`）。
+		 *  ⚠ `vssaros-full`（标准档·全工具）**已退役**：它与标准模式**逐字相同、只差 denyTools 清单**
+		 *   ⇒ "放开场景类工具"改由**一个运行期开关**承担（工具面预算从 preset 清单改为可切换）✓。 */
+		const OUR_MODES = ["vssaros-standard", "vssaros-ptc"];
 		/**
-		 * ⚠ 2026-10-16：本组件**不再**在 hero 里并排渲染"工作区/worktree"入口 ——
-		 * 用户报「工作区 UI 重复了（hero 行里两枚都在说工作区）」，拍板方案 A
-		 * （mockup `doc/dsh-workspace-entry-single-mockup.html`）：hero 仍只出**官方那枚** WorkspaceChip，
-		 * 我们把自己的合并面板挂到 `conversation.hero.workspace` 槽上（`priority: -10` 遮蔽官方浮层）✓。
-		 * ⇒ 从前那条"跨 chunk 传组件"的通道（`shell.heroWorktreeChip` + `WORKTREE_CHIP_EVENT`）**已作废**：
-		 *   面板由**槽**渲染，不需要谁来传；本文件只剩 preset chip 这一件事 ✓。
+		 * 模式白名单（唯一真源 ⇒ 守卫会盯）—— **只有 4 个**（2026-10-21 用户拍板）：
+		 *   `vssaros-standard`（标准模式（VsSaros））/ `vssaros-ptc`（PTC 模式（VsSaros））
+		 *   / `minimal`（极简模式）/ `cordis`（创造模式）。
+		 * ⚠ 官方的 `standard` / `ptc` **故意不列** —— 它们与我们的两个模式是同一件事的两种版本
+		 *   （我们那份 = 官方副本 + 我们的能力模块 + 工具面预算）⇒ 并列只会让人分不清。
+		 *   它们仍在 roster 里（可被 API / 命令面板选中），但**模式菜单里看不到** ✓。
+		 * ⚠ 我们的 `vssaros-full`（标准档·全工具）也不列 —— 与标准模式只差 denyTools 清单，
+		 *   "放开场景类工具"改由**一个开关**承担（工具面预算从 preset 清单改为运行期开关）。
+		 * ★ 剩下的 roster 行一律是 agent（Bot）⇒ 不进这个菜单 ✓。
 		 */
+		const MODE_IDS = new Set([...OUR_MODES, "minimal", "cordis"]);
 		/**
-		 * 安装本部件：注册 slot / 注入样式。ctx = 插件上下文；shell = 入口侧共享状态
-		 * （bridge / state / sessionId / mark / rebind）。段内代码与拆分前逐字一致。
+		 * dsh 自带 4 个模式的**本地化名 + 一句说明**。
+		 *
+		 * ⚠ 为什么自己写：官方那套本地化在 `dsh-client-ui-agent-preset` 包内部（`presetDisplayText`），
+		 *   拿不到 ⇒ 直接用 roster 的 name 会退回**内部 id**（"standard / ptc / minimal / cordis" ✗
+		 *   —— 用户一眼看不出是模式）。我们自己给一份中文名 + 一句说明 ⇒ 与界面语言一致 ✓。
+		 *   （只写**简短说明**，不复刻官方的整段文案 ✓。）
 		 */
+		const BUILTIN_MODE_COPY = {
+			standard: { name: "标准模式", desc: "通用档：代码、文件与资料，按需使用检索 / 编辑 / 终端等工具。" },
+			ptc: { name: "PTC 模式", desc: "标准模式之上，工具以批量调用方式呈现，适合筛选 / 整理 / 汇总类任务。" },
+			minimal: { name: "极简模式", desc: "只留终端与图片读取（知识库 / 记忆 / 看板等模块照常可用），适合测试与基线对比。" },
+			cordis: { name: "创造模式", desc: "用对话定制 DSH —— 让 Agent 写插件、加功能；我们的知识库 / 记忆 / 看板等模块同样可用。" },
+		};
+
+		/**
+		 * 只留模式（★ 本组件存在的全部理由）。
+		 * ⚠ 放在 **factory 层**（不是 install 内）：守卫与单测都直接引用它 ⇒ 测的就是**真实实现**，
+		 *   不会出现"导出的是一个副本、实现是另一个"的假绿 ✗（记忆：相对比较型断言会恒真 ⇒ 必��钉绝对期望值）。
+		 */
+		const modesOf = (presets) => (presets || []).filter((p) => p && MODE_IDS.has(String(p.id)));
+
 		function install(ctx, shell) {
-			const state = shell.state, bridge = shell.bridge, sessionId = shell.sessionId, rebind = shell.rebind;
-				// ── Agent（preset）切换 chip（方案 5.15）─────────────────────────
-				// **只在 hero 区常驻**（空白会话屏）。2026-10-11 方案 B 评审：会话头部那枚被**移除**
-				// （理由与去处见本文件末尾），因为头部只保留「上下文（左）+ 动作（右）」两组。
-				// 切换统一走页面桥 switchPreset → 宿主 rebind 到该 preset 的专属会话
-				// （各自历史独立，切回可见原对话）；不用 dsh 官方空白热切换（理由见 pick()）。
-				/** 菜单互斥用 id（见 client.js 的 createMenuCoordinator）。 */
-				const MENU_ID = "vssaros-preset";
-				const readSummary = (sid) => {
-					try {
-						const list = ctx.sessions && ctx.sessions.list;
-						const snap = list && list.getSnapshot();
-						return sid && snap && snap.byId ? snap.byId[sid] : undefined;
-					} catch { return undefined; }
+			// ⚠ 无桥环境（dsh desktop / dsh 全窗）：`install(ctx, { bridge, state })` 里 **没有 fitMenu / menus**
+			//   ⇒ 状态与夹视口都得自己兜底（否则菜单会溢出视口 ⇒ 下半截点不到 ✗）。
+			const state = (shell && shell.state) || {};
+			/**
+			 * 夹视口：**优先用宿主给的 fitMenu**（与官方/其它 chunk 同一语义）。
+			 * ⚠ 无壳时的兜底**必须返回"相对容器"的偏移**（菜单是 `position:absolute`，容器是
+			 *   `position:relative`）—— 之前这里返回了**视口坐标** ⇒ 与容器偏移叠加 ⇒ 菜单飞到
+			 *   **右下角**（2026-10-21 用户截图）✗✗。
+			 */
+			const fitMenu = (shell && typeof shell.fitMenu === "function")
+				? shell.fitMenu
+				: () => {
+					const vh = (typeof window !== "undefined" && window.innerHeight) || 800;
+					// 菜单在容器**下方**（CSS top:100%）⇒ 只夹高度；宽度固定由内容决定。
+					return { left: 0, maxHeight: Math.max(160, Math.min(360, vh - 220)) };
 				};
-				const presetName = (p) => (p && (p.name || p.id)) || "";
-				function PresetChip(props) {
-					const sid = props && props.sessionId ? props.sessionId : state.sessionId;
-					const [roster, setRoster] = react.useState(null);
-					const [openMenu, setOpenMenu] = react.useState(false);
-					const [busy, setBusy] = react.useState(false);
-					const [err, setErr] = react.useState(null);
-					const rootRef = react.useRef(null);
-					react.useEffect(() => {
-						let dead = false;
-						const load = () => {
-							if (!ctx.remote || !ctx.remote.agentPresets) {
-								state.presetRosterError = "remote.agentPresets unavailable (has remote: " + !!ctx.remote + ")";
-								return;
-							}
-							Promise.resolve(ctx.remote.agentPresets.list()).then((r) => {
-								if (dead) { return; }
-								if (r && r.ok && r.value && Array.isArray(r.value.presets)) {
-									const usable = r.value.presets.filter((p) => p && p.id && !p.broken);
-									state.presetRoster = usable.length;
-									setRoster(usable);
-								} else {
-									state.presetRosterError = "list not ok: " + JSON.stringify(r && r.error ? r.error : r).slice(0, 200);
-								}
-							}).catch((e) => { state.presetRosterError = String((e && e.message) || e); });
-						};
-						load();
-						return () => { dead = true; };
-					}, []);
-					react.useEffect(() => {
-						if (!openMenu) { return; }
-						const close = (ev) => {
-							if (rootRef.current && ev.target && rootRef.current.contains(ev.target)) { return; }
-							setOpenMenu(false);
-						};
-						const esc = (ev) => { if (ev.key === "Escape") { setOpenMenu(false); } };
-						document.addEventListener("mousedown", close, true);
-						document.addEventListener("keydown", esc, true);
-						return () => {
-							document.removeEventListener("mousedown", close, true);
-							document.removeEventListener("keydown", esc, true);
-						};
-					}, [openMenu]);
-					// 菜单互斥（同 client.workspace.js：多菜单叠加时被裁的部分也像"被遮挡"）。
-					react.useEffect(() => {
-						if (!openMenu || !shell.menus) { return; }
-						shell.menus.closeOthers(MENU_ID);
-						return shell.menus.register(MENU_ID, () => setOpenMenu(false));
-					}, [openMenu]);
-					// ── 2026-10-16：hero 里的"工作区 / worktree"入口**已不在这里** ─────────────────
-					// 用户报「工作区 UI 重复了，使用一个即可，但要有 add workspace」⇒ 方案 A（顶部常量注释）：
-					// hero 行的三个位置是官方写死的（`heroWorkspaceRow`）＝ `[官方 WorkspaceChip][hero.workspace 浮层][hero.agentPreset]`，
-					// 我们从前在最后那一格里**又**放了一枚"工作区 + worktree"入口 ⇒ 与官方那枚重复 ✗。
-					// 现在：hero 仍只有**官方那枚 chip**，面板由 `client.workspace.js` 注册到 `conversation.hero.workspace`
-					// （priority -10 遮蔽官方浮层）⇒ 本组件只负责 preset chip ✓，视觉顺序 `[工作区][preset]` ✓。
-					if (!roster || roster.length === 0) {
-						return null;
-					}
-					const summary = readSummary(sid);
-					const current = (summary && summary.projectionValues && summary.projectionValues.agentPreset)
-						|| (roster.find((p) => p.isDefault) || roster[0]).id;
-					const currentName = presetName(roster.find((p) => p.id === current)) || current;
-					const pick = (id) => {
-						setOpenMenu(false);
-						if (id === current || busy) { return; }
-						// 统一语义（方案 5.15.1）：不论空白与否都经宿主 rebind 到该 preset 的专属会话。
-						// 不走 dsh 官方空白热切换（select）——否则 "--ptc" 派生会话会被热改成别的
-						// preset，"会话 id 后缀 = preset" 的确定性被打破，"切回基座" 会撞上 Host 的
-						// ApiSessionPresetConflict。基座 preset 由宿主解析回无后缀会话（历史保留）。
-						if (!bridge || !bridge.switchPreset) {
-							setErr("page bridge too old (switchPreset unavailable)");
-							state.lastPresetError = "bridge-too-old";
-							return;
-						}
-						setBusy(true);
-						setErr(null);
-						bridge.switchPreset(id).then(() => {
-							setBusy(false);
-							state.presetSwitches++;
-						}, (e2) => {
-							setBusy(false);
-							const f = String((e2 && e2.message) || e2);
-							setErr(f);
-							state.lastPresetError = f;
-						});
-					};
-					const children = [
-						// 只剩 preset 一枚（2026-10-16 方案 A：工作区/worktree 入口不再由本组件渲染，见上方注释 ✓）
-						react.createElement("button", {
-							key: "b",
-							type: "button",
-							"data-vssaros-preset-chip": "1",
-							"aria-haspopup": "menu",
-							"aria-expanded": openMenu,
-							disabled: busy,
-							title: err || "切换 Agent（preset）",
-							onClick: () => setOpenMenu(!openMenu),
-							style: {
-								display: "inline-flex", alignItems: "center", gap: 4,
-								padding: "1px 8px", borderRadius: 999, cursor: busy ? "default" : "pointer",
-								border: "1px solid " + (err ? "var(--dsw-alias-state-error-primary, #f85149)" : "var(--dsw-alias-border-l1, transparent)"),
-								background: "var(--dsw-alias-bg-layer-1, transparent)",
-								color: "var(--dsw-alias-label-secondary, currentColor)",
-								fontSize: 11, lineHeight: "18px", whiteSpace: "nowrap",
-							},
-						}, "⬢ " + (busy ? "切换中…" : currentName) + " ▾"),
-					];
-					if (openMenu) {
-						// ── 与 dsh 官方那个 preset 菜单**保持一致**（2026-10-11 用户要求）──────────────
-						// 官方 `AgentPresetSeat` 的 `Menu` 是**纯条目**：名称 + 一行描述，没有分组标题、
-						// 没有分隔线、没有自加的动作行（`dsh-client-ui-agent-preset/lib/client.js:491-520`）。
-						// 所以这里：① 只列 dsh 自带 preset（VsSaros agent 的入口是 `+` 菜单 → Commands → Agents）；
-						// ② 去掉原先的「内置 / 我的 Agent」分组标题与底部"管理 Agent…（VsSaros Agent Studio）"。
-						const BUILTIN_PRESET_IDS = ["standard", "ptc", "minimal", "cordis"];
-						const isBuiltin = (id) => BUILTIN_PRESET_IDS.indexOf(id) >= 0;
-						const builtins = roster.filter((p) => isBuiltin(p.id));
-						const itemStyle = (p) => ({
-							display: "flex", alignItems: "flex-start", gap: 8,
-							width: "100%", padding: "6px 8px", border: "none", borderRadius: 7, cursor: "pointer",
-							background: p.id === current ? "var(--dsw-alias-bg-layer-2, transparent)" : "transparent",
-							color: "var(--dsw-alias-label-primary, currentColor)",
-							fontSize: 12, textAlign: "left",
-						});
-						const check = (p) => react.createElement("span", {
-							key: "c",
-							style: { flex: "0 0 14px", width: 14, color: p.id === current ? "var(--dsw-alias-brand-primary, currentColor)" : "transparent" },
-						}, "✓");
-						const item = (p) => react.createElement("button", {
-							key: p.id,
-							type: "button",
-							role: "menuitem",
-							"data-vssaros-preset-item": p.id,
-							onClick: () => pick(p.id),
-							style: itemStyle(p),
-						},
-							check(p),
-							react.createElement("span", { style: { display: "flex", flexDirection: "column", gap: 2, minWidth: 0 } },
-								react.createElement("span", { style: { fontWeight: p.id === current ? 600 : 400, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, presetName(p)),
-								p.description ? react.createElement("span", { style: { fontSize: 11, color: "var(--dsw-alias-label-secondary, currentColor)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, String(p.description).slice(0, 48)) : null));
-						// 纯条目列表（与官方一致）：无分组标题、无分隔线、无自加动作行。
-						const rows = [];
-						for (const p of builtins) { rows.push(item(p)); }
-						children.push(react.createElement("div", {
-							key: "m",
-							role: "menu",
-							// 尺寸夹在页面视口内（超出 WebContentsView 矩形会被裁掉 ⇒ 露出后面的编辑器）。
-							// ⚠ 锚点方向：本 chip 在**输入框左侧**（hero 那枚）⇒ 菜单必须**向右**展开。
-							// 写 `right: 0`（上一版）会让菜单从 chip 左边缘**向左**展开、越过聊天视图左边缘被裁，
-							// 只剩每个条目的尾巴（2026-10-11 用户截图：`dard` / `imal` / `dis` 其实是
-							// standard / minimal / cordis 被裁后的残余）—— 与工作区 chip 那次是同一类错 ✗。
-							style: Object.assign({
-								position: "absolute", top: "100%", left: 0, marginTop: 4, zIndex: 1000,
-								padding: 5, borderRadius: 10,
-								border: "1px solid var(--dsw-alias-border-l1, transparent)",
-								background: "var(--dsw-alias-bg-layer-1, var(--dsw-alias-bg-base))",
-								boxShadow: "0 8px 24px rgba(0,0,0,.35)",
-								// ⚠ 触发器矩形也要交出去（本 chip 在输入框上方、页面中部）：只按"整页 − 72"算
-								//   ⇒ 面板底部落到视口外、下半截滚不到 ✗（2026-10-16 用户报障，见 client.js 注释）。
-							}, shell.fitMenu ? shell.fitMenu(rootRef.current ? rootRef.current.getBoundingClientRect() : null) : {}),
-						}, ...rows));
-					}
-					// 容器现在只装 preset 一枚（工作区/worktree 入口已交给 `conversation.hero.workspace` 的面板 ✓）；
-					// `gap: 6` 保留无副作用（该槽里若日后又并排出现东西，间距已经在位 ✓）。
-					return react.createElement("span", { ref: rootRef, style: { position: "relative", display: "inline-flex", alignItems: "center", gap: 6 } }, ...children);
-				}
-				// ── 会话头部那枚 preset chip：**已按用户要求移除**（2026-10-11 方案 B 定稿）──────────
-				// 头部只保留「上下文（左：🗂 工作区）+ 动作（右：＋/🕘/⚙）」两组，preset 切换器不再占位。
-				// 当前只剩下面 hero 区这一枚入口（空白会话屏 = 新建对话时）。若以后要"有消息的会话里
-				// 也能切 preset"，正确做法是并进 ⚙ 菜单（一个聚合入口），不要把 chip 加回 header。
-				//
-				// hero 区（空白会话屏无会话头部）：负优先级遮蔽官方 chip —— 官方走空白热切换，
-				// 会把基座/派生会话热改成别的 preset，破坏"会话 id 后缀 = preset"的确定性。
-				const HERO_PRESET_SLOT = "conversation.hero.agentPreset";
+
+			/** 花名册（官方同源；失败如实记，不假装"没有模式"）。 */
+			const loadRoster = () => {
 				try {
-					ctx.slots.inject(HERO_PRESET_SLOT, () =>
-						ctx.slots.register({ name: HERO_PRESET_SLOT, id: "vssaros-preset-chip-hero", priority: -10 }, PresetChip));
-					state.presetHero = true;
+					const remote = ctx.remote;
+					if (!remote || !remote.agentPresets) {
+						state.modeRosterError = "remote.agentPresets unavailable";
+						return Promise.resolve([]);
+					}
+					return Promise.resolve(remote.agentPresets.list()).then((r) => {
+						if (r && r.ok && r.value && Array.isArray(r.value.presets)) { return r.value.presets; }
+						state.modeRosterError = "list not ok: " + JSON.stringify(r && r.error ? r.error : r).slice(0, 200);
+						return [];
+					}).catch((e) => { state.modeRosterError = String((e && e.message) || e); return []; });
 				} catch (e) {
-					state.error = String((e && e.message) || e);
+					state.modeRosterError = String((e && e.message) || e);
+					return Promise.resolve([]);
 				}
-				// ── ③ 官方**只读** preset 标签：**改由 `client.agents.js` 接管渲染**（2026-10-11）──────
-				// 需求演变（三次）：遮蔽（"头部别冒出不可点的 standard 文本"）→ 放开（"切 preset 要显示
-				// 对应标签"）→ 发现官方标签会把 VsSaros agent 的 `name`（= **agent 名**）也印出来（用户要求
-				// 不要），而官方标签没有"哪些 preset 才显示"的开关 ⇒ 改为**接管**并在组件内条件渲染：
-				//   `conversation.session.header.actions` / id `agent-preset` / priority -1 的
-				//   `PresetHeaderLabel`（在 client.agents.js，与输入框那枚 AgentChip 互补）。
-				// 本文件**不再注册该槽位的任何东西**（免得两处抢同一格）。
+			};
+
+			/** 只留模式（factory 层那个 —— 守卫与单测共用同一份实现 ✓）。 */
+
+			/** 当前会话的 preset（宿主推来的 projection）。 */
+			const readSummary = (sid) => {
+				try {
+					const list = ctx.sessions && ctx.sessions.list;
+					const snap = list && list.getSnapshot();
+					return sid && snap && snap.byId ? snap.byId[sid] : undefined;
+				} catch { return undefined; }
+			};
+			const currentOf = (sid) => {
+				const v = readSummary(sid) && readSummary(sid).projectionValues && readSummary(sid).projectionValues.agentPreset;
+				return typeof v === "string" && v ? v : undefined;
+			};
+
+			const labelOf = (p) => {
+				const id = String((p && p.id) || "");
+				const copy = BUILTIN_MODE_COPY[id];
+				if (copy) { return copy.name; }
+				return String((p && (p.name || p.id)) || "");
+			};
+			const descOf = (p) => {
+				const id = String((p && p.id) || "");
+				const copy = BUILTIN_MODE_COPY[id];
+				if (copy) { return copy.desc; }
+				return (p && typeof p.description === "string" && p.description.trim()) ? p.description.trim() : "";
+			};
+
+			function ModeSeat(props) {
+				const sid = props && props.sessionId ? props.sessionId : state.sessionId;
+				const [presets, setPresets] = react.useState(null);
+				const [open, setOpen] = react.useState(false);
+				const [staged, setStaged] = react.useState("");
+				const [err, setErr] = react.useState(null);
+				const [busy, setBusy] = react.useState(false);
+				const rootRef = react.useRef(null);
+
+				react.useEffect(() => {
+					let dead = false;
+					loadRoster().then((list) => { if (!dead) { setPresets(list); } });
+					return () => { dead = true; };
+				}, []);
+
+				// 点外面 / Esc 关闭。
+				react.useEffect(() => {
+					if (!open) { return; }
+					const close = (ev) => {
+						if (rootRef.current && ev.target && rootRef.current.contains(ev.target)) { return; }
+						setOpen(false);
+					};
+					const esc = (ev) => { if (ev.key === "Escape") { setOpen(false); } };
+					document.addEventListener("mousedown", close, true);
+					document.addEventListener("keydown", esc, true);
+					return () => {
+						document.removeEventListener("mousedown", close, true);
+						document.removeEventListener("keydown", esc, true);
+					};
+				}, [open]);
+
+				// 菜单互斥（同 client.workspace.js：多菜单叠加时被裁的部分也像"被遮挡"）。
+				react.useEffect(() => {
+					if (!open || !shell.menus) { return; }
+					shell.menus.closeOthers(MENU_ID);
+					return shell.menus.register(MENU_ID, () => setOpen(false));
+				}, [open]);
+
+				if (!presets) { return null; }
+				const modes = modesOf(presets);
+				if (modes.length === 0) { return null; }
+				const cur = staged || currentOf(sid) || (modes.find((m) => m.isDefault) || modes[0]).id;
+				const curMode = modes.find((m) => m.id === cur) || modes[0];
+				const curLabel = labelOf(curMode) || cur;
+
+				const pick = (id) => {
+					if (id === cur || busy) { return; }
+					setOpen(false);
+					setStaged(id);
+					setErr(null);
+					// 无会话 ⇒ 只预选（官方同语义：下一个新任务用它）。
+					if (!sid) { state.modeStaged = id; return; }
+					setBusy(true);
+					// ★ 官方机制（与官方 seat 内部同一条）⇒ 不依赖宿主桥 ⇒ 桌面/全窗也能切 ✓。
+					Promise.resolve(ctx.remote.agentPresets.select(sid, id)).then((r) => {
+						setBusy(false);
+						if (r && r.ok) { state.modeSwitched = id; return; }
+						const reason = (r && r.error && (r.error.message || (r.error.details && r.error.details.reason))) || "切换被拒绝";
+						setErr(String(reason));
+						state.modeSwitchError = String(reason);
+					}).catch((e) => {
+						setBusy(false);
+						const f = String((e && e.message) || e);
+						setErr(f);
+						state.modeSwitchError = f;
+					});
+				};
+
+				const children = [
+					react.createElement("button", {
+						key: "b",
+						type: "button",
+						"data-vssaros-mode-seat": "1",
+						"aria-haspopup": "menu",
+						"aria-expanded": open,
+						disabled: busy,
+						title: err || "选择模式（Agent 预设）",
+						onClick: () => setOpen(!open),
+						style: {
+							display: "inline-flex", alignItems: "center", gap: 4,
+							padding: "1px 8px", borderRadius: 999, cursor: busy ? "default" : "pointer",
+							border: "1px solid " + (err ? "var(--dsw-alias-state-error-primary, #f85149)" : "var(--dsw-alias-border-l1, transparent)"),
+							background: "var(--dsw-alias-bg-layer-1, transparent)",
+							color: "var(--dsw-alias-label-secondary, currentColor)",
+							fontSize: 11, lineHeight: "18px", whiteSpace: "nowrap",
+						},
+					}, "⬢ " + (busy ? "切换中…" : curLabel) + " ▾"),
+				];
+
+				if (open) {
+					const itemStyle = (m) => ({
+						display: "flex", alignItems: "flex-start", gap: 8,
+						width: "100%", padding: "6px 8px", border: "none", borderRadius: 7, cursor: "pointer",
+						background: m.id === cur ? "var(--dsw-alias-bg-layer-2, transparent)" : "transparent",
+						color: "var(--dsw-alias-label-primary, currentColor)",
+						fontSize: 12, textAlign: "left",
+					});
+					const check = (m) => react.createElement("span", {
+						key: "c",
+						style: { flex: "0 0 14px", width: 14, color: m.id === cur ? "var(--dsw-alias-brand-primary, currentColor)" : "transparent" },
+					}, "✓");
+					// -- group: dsh built-in modes vs our "tiers" ------------------------------
+					// Why group (2026-10-21 user report: "cannot tell these modes apart"):
+					// the two groups are DIFFERENT dimensions:
+					//   - dsh built-in 4 = tool-presentation / capability shape
+					//     (general / batch-call / minimal / conversation-customizable);
+					//   - our 3 tiers = OUR capability modules + tool-surface budget
+					//     (knowledge base / memory / board mounted or not, how many tools hidden).
+					// Flattened together the user just sees "7 modes" and cannot tell them apart.
+					// ★ 2026-10-21：分组改成"**差异到底在哪**"（读码+实测的结论）：
+					//   我们的 13 个模块**本来就注册在 host plane（全局）** ⇒ 官方 minimal/cordis 同样继承得到
+					//   （知识库 / 记忆 / 看板 / 工作流 … 都可用 ✓）⇒ 真正的差别只有 preset 级覆盖这四项：
+					//     ① 工具面预算（denyTools：藏 96 个工具 ⇒ 省 ~42k schema token）；② 上下文压缩三件套；
+					//     ③ `working_directory` 工具；④ persona（我们删掉了带 {{cwd}} 的那行 ⇒ 由全局层接管）。
+					//   ⇒ 标题就说这个差别，别让用户以为"原生模式 = 没有我们的能力" ✗。
+					const groups = [
+						{ key: "vssaros", title: "VsSaros 模式（工具面已收敛 + 上下文压缩）", items: modes.filter((m) => OUR_MODES.indexOf(String(m.id)) >= 0) },
+						{ key: "dsh", title: "dsh 原生（工具全开、无额外压缩）", items: modes.filter((m) => OUR_MODES.indexOf(String(m.id)) < 0) },
+					];
+					const rows = [];
+					for (const g of groups) {
+						if (!g.items.length) { continue; }
+						rows.push(react.createElement("div", {
+							key: "g-" + g.key,
+							"data-vssaros-mode-group": g.key,
+							style: {
+								padding: "6px 8px 2px", fontSize: 10, lineHeight: "14px",
+								letterSpacing: ".04em",
+								color: "var(--dsw-alias-label-tertiary, currentColor)", opacity: 0.85,
+							},
+						}, g.title));
+						for (const m of g.items) {
+							rows.push(react.createElement("button", {
+								key: m.id,
+								type: "button",
+								role: "menuitem",
+								"data-vssaros-mode-item": m.id,
+								onClick: () => pick(m.id),
+								style: itemStyle(m),
+							},
+								check(m),
+								react.createElement("span", { style: { display: "flex", flexDirection: "column", gap: 2, minWidth: 0 } },
+									react.createElement("span", { style: { fontWeight: m.id === cur ? 600 : 400, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, labelOf(m)),
+									descOf(m) ? react.createElement("span", { style: { fontSize: 11, color: "var(--dsw-alias-label-secondary, currentColor)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, descOf(m).slice(0, 48)) : null)));
+						}
+					}
+					children.push(react.createElement("div", {
+						key: "m",
+						role: "menu",
+						// ⚠ 锚点方向：本 chip 在输入框上方、页面中部 ⇒ 菜单**向右**展开（写 right:0 会越过左边缘被裁 ✗）。
+						// ⚠ 夹视口时必须把**触发器矩形**交出去（只按整页高算 ⇒ 面板底部溢出、滚不到 ✗）。
+						style: Object.assign({
+							position: "absolute", top: "100%", left: 0, marginTop: 4, zIndex: 1000,
+							padding: 5, borderRadius: 10,
+							border: "1px solid var(--dsw-alias-border-l1, transparent)",
+							background: "linear-gradient(var(--dsw-alias-bg-layer-1, transparent), var(--dsw-alias-bg-layer-1, transparent)), var(--dsw-alias-bg-base, #1e1e1e)",
+							boxShadow: "0 8px 24px rgba(0,0,0,.35)",
+						}, fitMenu(rootRef.current ? rootRef.current.getBoundingClientRect() : null)),
+					}, ...rows));				}
+
+				return react.createElement("span", { ref: rootRef, style: { position: "relative", display: "inline-flex", alignItems: "center", gap: 6 } }, ...children);
+			}
+
+			/** 菜单互斥 id（同 client.workspace.js）。 */
+			const MENU_ID = "vssaros-mode-seat";
+
+			// 注册到 hero 的模式槽（**遮蔽**官方 seat：官方会把 agent 一并列出来 ⇒ 违背本次口径 ✗）。
+			const HERO_MODE_SLOT = "conversation.hero.agentPreset";
+			try {
+				ctx.slots.inject(HERO_MODE_SLOT, () =>
+					ctx.slots.register({ name: HERO_MODE_SLOT, id: "vssaros-mode-seat-hero", priority: -10 }, ModeSeat));
+				state.modeHero = true;
+			} catch (e) {
+				state.error = String((e && e.message) || e);
+			}
 		}
 		exports.install = install;
+		// 仅测试用：纯逻辑（模式白名单 / 过滤 / 名称）。
+		exports.__test = { MODE_IDS, BUILTIN_MODES, OUR_MODES, modesOf };
 		return module.exports;
 	}
 });

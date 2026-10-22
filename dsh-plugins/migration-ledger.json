@@ -17,11 +17,11 @@
       "id": "core-tools",
       "title": "文件/终端/搜索/Web/委派/计划 工具族",
       "owner": "dual",
-      "dshTarget": "官方 tool-fs/bash/pwsh/jobs/web/subagent/plan-mode",
+      "dshTarget": "官方 tool-fs/bash/pwsh/jobs/web/subagent/plan-mode + @vssaros/dsh-bridge（本仓自研控制桥 host 半：runs 后台回合 / credit 积分账本 / tof 企业身份）",
       "parityProbe": "—（官方已覆盖，走删除而非对账）",
       "killSwitch": "chatEngine=legacy",
       "deleteWhen": "同 agent-loop",
-      "notes": "原生替代"
+      "notes": "原生替代；bridge 是核心工具层的控制桥，不单独成族（2026-10-22 裁决）"
     },
     {
       "id": "llm-providers",
@@ -137,11 +137,11 @@
       "id": "dashboard",
       "title": "Dashboard/遥测聚合",
       "owner": "dual",
-      "dshTarget": "@vssaros/dsh-dashboard（只读 dsh 会话）",
+      "dshTarget": "@vssaros/dsh-dashboard（只读 dsh 会话）+ @vssaros/dsh-workbenches（与 dsh-desktop 官方 dsh-desktop-workbenches 同名同形的工作台宿主，state.json 落盘 + 只读归属服务）",
       "parityProbe": "p3-90 等 dashboard 探针",
       "killSwitch": "—",
       "deleteWhen": "legacy 引擎退役后（它只读 dsh 数据）",
-      "notes": "两侧看的是不同引擎的数据"
+      "notes": "两侧看的是不同引擎的数据；工作台登记/落盘由 workbenches 承接（2026-10-22 裁决并入本族）"
     },
     {
       "id": "sessions",
@@ -167,8 +167,8 @@
       "id": "media-gen",
       "title": "媒体生成/视觉/视频",
       "owner": "dual",
-      "dshTarget": "并入 @vssaros/dsh-media（Phase 4）",
-      "parityProbe": "p3-107（生成三件套 + 视觉分析 + 视频分析）",
+      "dshTarget": "并入 @vssaros/dsh-media（Phase 4）；图像生成独立插件 @vssaros/dsh-imagegen（vssaros-imagegen 0.1.0，image_generate 工具）",
+      "parityProbe": "p3-156（image_generate：注册/缺参/桥参数/pluginId 是包名/attachment/image 块/审批闸）+ p3-107（生成三件套 + 视觉分析 + 视频分析）",
       "killSwitch": "—",
       "deleteWhen": "5.5（legacy 引擎退役时一起删）",
       "notes": "2026-10-16：媒体面全迁（media 0.5.0——生成三件套 + vision_analyze + video_analyze + extract_video_frames，定义在插件、执行经桥回 IDE）；legacy 侧的实现等 5.5 一起删"
@@ -181,7 +181,17 @@
       "parityProbe": "ide 工具契约测试",
       "killSwitch": "—",
       "deleteWhen": "mermaid/drawio 迁完后",
-      "notes": "渲染留壳"
+      "notes": "渲染留壳；2026-10-19：mermaid **渲染**已独立成 diagram-render 族（pele），本族只管画布/drawio"
+    },
+    {
+      "id": "diagram-render",
+      "title": "Mermaid 图表渲染（pele）",
+      "owner": "dsh",
+      "dshTarget": "@vssaros/dsh-pele（随包 pele 1.6.0；dsh 工具 render_diagram 与 IDE 渲染进程共用同一份 assets/pele.global.js）",
+      "parityProbe": "dsh-plugins/vssaros-pele/test/run-pele-check.mjs（25 条：产物随包 / 主题内联 / 18 图种 / 失败面）",
+      "killSwitch": "重装旧版 @vssaros/dsh-pele 或回退 IMermaidInlineRenderer 的实现",
+      "deleteWhen": "extensions/mermaid-chat-features 的 mermaid 渲染链摘干净后",
+      "notes": "2026-10-19：pele 同步、零 DOM ⇒ 替掉「隐藏 webview + mermaid 12」（不用再先 build-chat-webview 才有图）；主题变量必须内联进根 svg（聊天卡片走 img blob，是独立文档，父元素 CSS 传不进去）"
     },
     {
       "id": "unreal-browser",
@@ -194,6 +204,16 @@
       "notes": "已迁并删除 IDE 实现（先例）"
     },
     {
+      "id": "ego-browser",
+      "title": "ego lite（agent 专属浏览器）接入",
+      "owner": "dual",
+      "dshTarget": "@vssaros/dsh-ego（随包技能 + ego_status/ego_guide/ego_spaces/ego_run 四工具）；浏览器本体是第三方独立 app，不含在包内",
+      "parityProbe": "待写（真机三步：ego_status probe=true → ego_guide → ego_run 跑一次 ego.listTaskSpaces()；前提是用户已装 ego lite）",
+      "killSwitch": "从伴生插件清单摘掉 DSH_EGO_PLUGIN_NAME，或 dsh plugin remove @vssaros/dsh-ego",
+      "deleteWhen": "若上游 @citrolabs/ego-deepseek-harness 也补齐工具，则切回上游并删本包",
+      "notes": "与 browser 族不是替代关系：browser 用 CDP 驱动用户同一个 Chrome（会抢标签），ego 是每个 agent 一个隔离 Space 的独立浏览器。本包只带连接层（技能 + 工具），不含 Chromium（上游原话 separate, free download）⇒ 用户没装 app 时工具如实报错，不算启动错误"
+    },
+    {
       "id": "chat-ui",
       "title": "聊天 UI / React webview / HTML 编辑器 / 市场 UI",
       "owner": "dual",
@@ -201,7 +221,7 @@
       "parityProbe": "workbench-e2e",
       "killSwitch": "chatEngine=legacy",
       "deleteWhen": "Phase 5 完成",
-      "notes": "聊天已迁，其余留壳逐步收缩"
+      "notes": "聊天已迁，其余留壳逐步收缩。★ 2026-10-19 后台入口调研结论（决定『能不能删 AgentChatPanel』）：**后台入口 8 条（IM 入站飞书/Telegram/loopback、Pocket、workflow/画布执行、子代理委派、自进化、后台命令通知、Lark CLI；定时任务已废）全部走 IAgentChatService + piLoop，无一处 new 面板** ⇒ 后台**不构成**删除阻碍；checkpointManager / workflowTraceController / chatEditorIntegration 只是 import type { IChatPanel } 的可选消费者（panel?.），无面板时静默跳过。真正阻碍只剩：① nativeChatEditorPane.ts:6300-6311 的 legacy 前台分支（唯一构造点 985-1004）；② iChatPanel.ts / agentChatTypes.ts 被若干文件 type-only 依赖（接口留、类删）；③ dev 画布沙箱 chatSandbox.tsx:143 动态 new。已解耦：detectDiagramTheme → sessions/browser/diagramTheme.ts、terminalLiveOutput → sessions/browser/terminalLiveOutput.ts。对外耦合面由 `npm run check:legacy-chat-coupling` 冻结。⚠ 另注：本族的 killSwitch 与 agent-loop / core-tools / llm-providers 三族同为 chatEngine=legacy ⇒ 去掉它会让四个族同时失去回退路径，是产品决定。★ 2026-10-19 **已拍板：保留回退开关原样，AgentChatPanel 不删**；已确认的死代码 CliChatEditorPanel（0 构造 0 import，被 XtermCliPanel 取代）也留着，随 agentChat/ 整体删除时一起处理。本轮只落地：detectDiagramTheme/terminalLiveOutput 两项解耦 + `npm run check:legacy-chat-coupling` 耦合守卫。⚠ 后续若再推进删除，入口仍是「去掉 chatEngine=legacy」这一步，别跳过"
     }
   ]
 }

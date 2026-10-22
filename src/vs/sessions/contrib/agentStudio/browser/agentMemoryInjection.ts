@@ -20,6 +20,14 @@ export interface MemoryInjectionDeps {
 	injectedSessions: Set<string>;
 	/** P0-1（2026-09-09）：仅注入过「元信息」的 session——下一轮恢复完整注入（一次性） */
 	metaInjectedSessions: Set<string>;
+	/**
+	 * 用户设置 `agentStudio.memory.injectContext` 的读取口（2026-10-20）。
+	 *
+	 * 传函数而不是配置服务：本模块保持"零服务依赖"（纯 generator，便于单测）。
+	 * 返回 true = 用户显式开启；false/undefined = 没开（此时仍看环境变量，见
+	 * {@link isMemoryInjectionEnabled}）。
+	 */
+	readInjectContextSetting?: () => boolean;
 }
 
 /**
@@ -44,7 +52,7 @@ export async function* injectMemoryContext(
 	// 对齐 agentmemory config.ts isContextInjectionEnabled()——默认关闭
 	// （显式 AGENTMEMORY_INJECT_CONTEXT=true 才注入；capture 写入通道常开，
 	// 召回走工具。减少每轮 token 消耗、避免记忆污染）。
-	if (!isMemoryInjectionEnabled()) {
+	if (!isMemoryInjectionEnabled(deps.readInjectContextSetting)) {
 		deps.logService.info('[AgentOS][MemoryInjection] DISABLED — AGENTMEMORY_INJECT_CONTEXT is not "true"');
 		return { messages };
 	}
@@ -274,9 +282,20 @@ export async function* injectMemoryContext(
  *   - 避免跨 agent 记忆污染
  *   - 环境变量在 .env 或 shell 中设置：Windows `set AGENTMEMORY_INJECT_CONTEXT=true`
  */
-export function isMemoryInjectionEnabled(): boolean {
+export function isMemoryInjectionEnabled(readConfigured?: () => boolean): boolean {
 	try {
-		// 2026-09-20：渲染进程**没有** `globalThis.process`（CDP 实测 hasProcess:false）
+		// ① 用户设置优先（2026-10-20）。
+		// 此前只有两条环境变量通道 ⇒ 设置 UI 里既看不到也搜不到这个开关，用户只能去改 shell 环境
+		// （而渲染进程没有 process.env，还得靠宿主注入副本才生效）。
+		// ⚠ 读失败**不**当"关闭"：回落到下面两条通道 —— 否则一个配置服务异常会静默关掉功能。
+		let configured = false;
+		try {
+			configured = readConfigured?.() === true;
+		} catch {
+			configured = false;
+		}
+
+		// ② 2026-09-20：渲染进程**没有** `globalThis.process`（CDP 实测 hasProcess:false）
 		// ⇒ `process.env` 读不到。但 Electron sandbox 暴露了 `globalThis.vscode.process`
 		// （见 base/parts/sandbox/electron-browser/globals.ts；先例 providers/tool/gitBashProvider.ts:49）
 		// ⇒ 优先从那里读环境变量，用户可用 `AGENTMEMORY_INJECT_CONTEXT=true` 直接开启。
@@ -289,12 +308,15 @@ export function isMemoryInjectionEnabled(): boolean {
 		const envValue = g.vscode?.process?.env?.['AGENTMEMORY_INJECT_CONTEXT'];
 		const injected = g.__SAROS_AGENTMEMORY_INJECT__;
 		// ⚠ 必须 trim：`set X=true && ...` 在 cmd.exe 下会把空格带进值（实测 "true " ⇒ 判等失败）。
-		const enabled = envValue?.trim() === 'true' || injected === true || (typeof injected === 'string' && injected.trim() === 'true');
+		const envEnabled = envValue?.trim() === 'true' || injected === true || (typeof injected === 'string' && injected.trim() === 'true');
+		// 设置 or 环境变量，任一为真即开（本项 default false ⇒ 不会覆盖环境变量）
+		const enabled = configured || envEnabled;
 		// 诊断日志（只输出一次，避免刷屏）：定位「记忆注入为何不生效」
 		if (!g.__SAROS_AGENTMEMORY_INJECT_LOGGED__) {
 			g.__SAROS_AGENTMEMORY_INJECT_LOGGED__ = true;
 			console.log(
 				`[AgentOS][MemoryInjection][Diag] isMemoryInjectionEnabled()=${enabled}; `
+				+ `configuredBySetting=${configured}; `
 				+ `vscode.process.env.AGENTMEMORY_INJECT_CONTEXT=${JSON.stringify(envValue)}; `
 				+ `__SAROS_AGENTMEMORY_INJECT__=${JSON.stringify(injected)}; `
 				+ `hasGlobalProcess=${typeof process !== 'undefined'}; `

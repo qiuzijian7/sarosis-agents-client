@@ -17,6 +17,9 @@
  *--------------------------------------------------------------------------------------------*/
 import fs from 'node:fs';
 import path from 'node:path';
+// ★ 2026-10-21：入口指纹守卫要读 git 的工作区改动面（execFileSync）⇒ 必须显式导入 ✓
+//   （这条 import 曾在并发回退里被摘掉 ⇒ 守卫静默跳过自己 ⇒ 必须钉住 import 本身 ✗）。
+import { execFileSync } from 'node:child_process';
 
 const HERE = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'));
 const PLUGIN_DIR = path.join(HERE, 'vssaros-chat-surface');
@@ -239,6 +242,17 @@ if (!arrMatch) {
 	problems.push('client.js 里找不到 PART_CHUNKS 数组（守卫采集面失效 ⇒ 必须同步改这里）');
 } else {
 	const wired = [...arrMatch[1].matchAll(/"\.\/([^"]+)"/g)].map(m => m[1]);
+	// ⚠ 2026-10-21 第五轮：**独立装载路径**的部件（`ALWAYS_CHUNKS`）同样算"已接线" ——
+	//   它们不走 PART_CHUNKS（那儿有"无桥就整批不装"的早退 ⇒ dsh desktop 里不生效 ✗）
+	//   ⇒ 接线清单 = PART_CHUNKS ∪ ALWAYS_CHUNKS（两个清单都要能逐字比对 ⇒ 写成常量 ✓）。
+	const alwaysMatch = /const ALWAYS_CHUNKS = \[([\s\S]*?)\];/.exec(clientSrc);
+	if (!alwaysMatch) {
+		problems.push('client.js 里找不到 ALWAYS_CHUNKS 数组（独立装载路径的部件清单 ⇒ 守卫采集面失效 ✗）');
+	} else {
+		for (const m of alwaysMatch[1].matchAll(/"\.\/([^"]+)"/g)) {
+			if (!wired.includes(m[1])) { wired.push(m[1]); }
+		}
+	}
 	const onDisk = fs.readdirSync(LIB).filter(f => /^client\..+\.js$/.test(f)).sort();
 	const missing = onDisk.filter(f => !wired.includes(f));
 	const ghost = wired.filter(f => !onDisk.includes(f));
@@ -351,7 +365,9 @@ const knownSlots = new Set([...OFFICIAL_ENTRIES.map(o => o.slot), 'conversation.
 	// 同日第三刀：多根工作区「单条目 + hover 详情卡」（client.workspaces.js）遮蔽官方整区
 	// （single/root 槽，priority: -10 升序取最低 ⇒ 与 hero.workspace 遮蔽同一先例 ✓）。
 	'sidebar.workspaces',
-	'conversation.chat.turnTail', 'conversation.composer']);
+	'conversation.chat.turnTail', 'conversation.composer',
+	// 2026-10-21：回合用量实时那一行（client.usage.js）挂在 composer 下方的常驻槽 ⇒ 补登记 ✓
+	'conversation.composer.dock']);
 for (const o of ourEntries) {
 	if (!knownSlots.has(o.slot)) { notes.push(`${o.file}: 注册到未登记槽 ${o.slot}（若是新槽，请把槽名补进本脚本的 knownSlots ✗）`); }
 }
@@ -506,6 +522,239 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 		if (t.pickLatestSessionId({ x: {} }, []) !== 'x') { problems.push('pickLatestSessionId: 都没时间戳也要选一条（宁可旧会话也别停在 hero）✗'); }
 		if (t.pickLatestSessionId({}, []) !== null) { problems.push('pickLatestSessionId: 空快照应回 null ✗'); }
 		notes.push('client.workbenchNav.js: pickLatestSessionId 选条口径断言通过');
+	}
+}
+
+// ── ⑥-b 「主页」行的布局契约 + 页签条落位（2026-10-21 用户指令「工作台改名为主页 / 移除当前的主页按钮」）──
+// 侧栏**只应有一行**：文案「主页」、id=vssaros-workbench、order=-10（官方 plugins=0 / schedules=10 **之前**）。
+// 这三条是**布局契约**，被人顺手改回 20 时界面会静默退回旧序（不报错、只是位置不对）⇒ 必须钉住 ✓。
+// ⚠ 2026-10-21：并发工作线曾把本守卫脚本一起回退到旧版（连带 0.2.192 期的专项断言一起没了）⇒
+//   这几条是**重建**的（照着插件当前实现逐条核对过）✓。
+{
+	const doc = makeDocumentStub();
+	const win = makeWindowStub(doc);
+	let loaded = null;
+	try { loaded = loadChunk('client.workbenchNav.js', doc, win); } catch (e) {
+		problems.push(`client.workbenchNav.js: 装载失败 — ${String((e && e.message) || e)}`);
+	}
+	if (loaded) {
+		const { shell } = makeShell();
+		let regs = [];
+		try { regs = captureRegistration(loaded.exports, shell); } catch (e) {
+			problems.push(`client.workbenchNav.js: install() 抛错 — ${String((e && e.message) || e)} ✗`);
+		}
+		const flat = regs.map((r) => {
+			const e = (r.entry && r.entry.entry) ? r.entry.entry : r.entry;
+			return { slot: (e && e.name) || r.slot, id: e && e.id, key: e && e.key, order: e && e.order, label: e && e.label };
+		});
+		const navRows = flat.filter((r) => r.slot === 'sidebar.panellist');
+		if (navRows.length !== 1) {
+			problems.push(`client.workbenchNav.js: 侧栏应只剩**一行**入口（实际 ${navRows.length} 行：${navRows.map((r) => `${r.id}@${r.order}`).join(', ')}）—— 「当前工作台」那行必须删掉（用户："移除当前的主页按钮"）✗`);
+		}
+		const row = navRows[0];
+		if (!row || row.id !== 'vssaros-workbench' || row.order !== -10) {
+			problems.push(`client.workbenchNav.js: 那一行应为 id=vssaros-workbench order=-10（官方 plugins=0 之前）；实际 ${JSON.stringify(row || null)} ✗`);
+		}
+		if (row && row.label !== '主页') {
+			problems.push(`client.workbenchNav.js: 那一行的文案必须是「主页」（用户："工作台改名为主页"；实际 ${JSON.stringify(row.label)}）✗`);
+		}
+		if (!flat.some((r) => r.slot === 'main' && r.key === 'vssaros-workbench')) {
+			problems.push('client.workbenchNav.js: 「主页」那行没有对应 main 面板（key=vssaros-workbench，官方点击 = selectPanel(id)）⇒ 点了没反应 ✗');
+		}
+		// 页签条必须落在**常驻**槽 shell.overlay（放进 main 面板 ⇒ 点「会话」后页签全消失 ✗）
+		if (!flat.some((r) => r.slot === 'shell.overlay' && r.id === 'vssaros-wb-tabstrip')) {
+			problems.push('client.workbenchNav.js: 页签条必须注册到常驻槽 shell.overlay（id=vssaros-wb-tabstrip）—— 放在 main 面板里会和对话面板一起被卸载 ⇒ 点「会话」后页签全部消失 ✗');
+		}
+		const srcAll = fs.readFileSync(path.join(LIB, 'client.workbenchNav.js'), 'utf8');
+		const anchors = (srcAll.match(/"data-vssaros-wb-tabstrip"/g) || []).length;
+		if (anchors !== 1) {
+			problems.push(`client.workbenchNav.js: 页签条锚点应只出现 1 次（实际 ${anchors} 次）—— 重复画会看到两条 ✗`);
+		}
+		// ★ 2026-10-22（工作台重构 P1 方案 A）：已注册进宿主 `desktopWorkbenches` 的工作台在页签里
+		//   直接渲染宿主 View（不开 iframe）；宿主可能晚到 ⇒ 必须是可选注入 + 订阅刷新。三处任何一处没了 ⇒
+		//   要么静默退回 iframe（迁了等于白迁），要么宿主晚到时永远看不到新界面。
+		for (const [label, re] of [
+			['可选注入宿主服务 desktopWorkbenches', /ctx\.inject\(\["desktopWorkbenches"\]/],
+			['宿主有新注册时刷新页签', /svc\.subscribe\(fire\)/],
+			['页签内渲染宿主 View（替代 iframe）', /createElement\(wbService\.View, \{ id: wbId, active: on \}\)/],
+			['只认不带查询串的 /x/<module>/（变体仍走 iframe）', /\/\^\\\/x\\\/\(\[a-z\]\[a-z0-9-\]\*\)\\\/\$\//],
+		]) {
+			if (!re.test(srcAll)) {
+				problems.push(`client.workbenchNav.js: 缺少「${label}」⇒ React 工作台不会出现在页签里`);
+			}
+		}
+		// ★ 2026-10-22（§5 步骤 4）：IDE 编辑区 `surface=workbench` 视图的入口分支（在主包 client.js 里）。
+		//   分支没了 ⇒ 页面落到"非 chat/full 一律 return" ⇒ 编辑区是一个空白的 dsh 外壳 ✗；
+		//   退回没了 ⇒ 宿主没装时同样空白（而不是回到 SSR 完整页）✗。
+		{
+			const entrySrc = fs.readFileSync(path.join(LIB, 'client.js'), 'utf8');
+			const branch = entrySrc.indexOf('bridge.surface === "workbench"');
+			const gate = entrySrc.indexOf('bridge.surface !== "chat" && bridge.surface !== "full"');
+			for (const [label, ok] of [
+				['workbench 分支在"非 chat/full 一律 return"之前', branch >= 0 && gate >= 0 && branch < gate],
+				['宿主 / 工作台不到场 ⇒ 退回 SSR 完整页', /window\.location\.replace\(route \+ "\?surface=editor"\)/.test(entrySrc)],
+				['按模块路由打开 vssaros/<module>', /svc\.open\(wb\.id\)/.test(entrySrc) && /"vssaros\/" \+ m\[1\]/.test(entrySrc)],
+			]) {
+				if (!ok) {
+					problems.push(`client.js: 缺少「${label}」⇒ IDE 编辑区的 React 工作台视图会是空白`);
+				}
+			}
+		}
+		// 点「主页」必须**开主页那一页**（按 id 找，不受排序影响）⇒ 纯函数可单测 ✓
+		const t = loaded.exports.__test;
+		if (!t || typeof t.pickDashboardItem !== 'function') {
+			problems.push('client.workbenchNav.js: 缺 __test.pickDashboardItem（「主页」行开哪一页必须可单测 ✗）');
+		} else {
+			const picked = t.pickDashboardItem([
+				{ id: 'vssaros-wb-sessions', name: '会话' },
+				{ id: 'vssaros-wb-dashboard', name: '主页' },
+				{ id: 'vssaros-wb-kb', name: '知识库' },
+			]);
+			if (!picked || picked.id !== 'vssaros-wb-dashboard') {
+				problems.push(`pickDashboardItem: 必须按 id 找到主页（不论排序位置）；实际 ${JSON.stringify(picked)} ✗`);
+			}
+			const noDash = t.pickDashboardItem([{ id: 'vssaros-wb-kb', name: '知识库' }]);
+			if (!noDash || noDash.id !== 'vssaros-wb-kb') {
+				problems.push('pickDashboardItem: 主页被删掉时应回落第一项（不能返回 undefined ⇒ 点了没反应）✗');
+			}
+			if (!t.pickDashboardItem([])) { problems.push('pickDashboardItem: 空列表也要给一个条目（不能 undefined）✗'); }
+		}
+		notes.push('client.workbenchNav.js: 侧栏单行「主页」（order -10）+ 中转面板 + 页签条落 shell.overlay 断言通过');
+	}
+}
+
+// ── ⑭「主页」行不许被别的注册连累（2026-10-21 真机「主页丢失」）────────────────────────────
+// 真机原文（官方槽服务）：官方对**重复注册**直接抛 ——
+//   keyed slot "sidebar.right.pane.tab" already has an entry for key "…" (registered by …)
+//   list  slot "sidebar.panellist"   already has an entry with id  "…" (registered by …)
+// 而旧写法是**裸** `ctx.slots.register(...)` ⇒ 任意一处撞了 ⇒ 那个异常从 install() 一路抛出 ⇒
+//   **后面的注册全被跳过**（含侧栏「主页」那一行）⇒ 又因为幂等标记在注册**之前**就置上了 ⇒
+//   之后任何一次再装载都被早退挡住 ⇒ 「主页」行在整个页面生命周期里**永远补不回来**
+//   （真机症状：侧栏只剩 插件 / 自动化任务，🏠主页 不见了）✗✗。
+// ⇒ 这条守卫用**官方口径的假 ctx**（同 key / 同 id 重复注册就抛）复现那个现场，钉三条：
+//   ① install 本身不许抛（每处注册都必须被包住）；
+//   ② 撞了 key 之后，侧栏「主页」那一行**仍必须注册得上**；
+//   ③ 「主页」行必须**第一个**注册（不许排在最后当替死鬼）。
+{
+	/** 官方口径的假 ctx：同 key / 同 id 重复注册 ⇒ 抛（与真机原文同形 ✓）。 */
+	const makeStrictCtx = (preOccupied) => {
+		const occupied = new Map();
+		for (const [slot, ids] of Object.entries(preOccupied || {})) { occupied.set(slot, new Set(ids)); }
+		const registered = [];
+		const ctx = {
+			slots: {
+				inject: (name, fn) => { const e = fn(); registered.push({ slot: name, entry: e }); return { dispose() { } }; },
+				register: (options) => {
+					const slot = options && options.name;
+					const isList = !!(options && options.id !== undefined);
+					const ident = isList ? options.id : (options && options.key);
+					let set = occupied.get(slot);
+					if (!set) { set = new Set(); occupied.set(slot, set); }
+					if (ident !== undefined && set.has(ident)) {
+						throw new Error(`${isList ? 'list' : 'keyed'} slot "${slot}" already has an entry ${isList ? 'with id' : 'for key'} "${ident}" at priority 0 (registered by vssaros-chat-surface-client)`);
+					}
+					if (ident !== undefined) { set.add(ident); }
+					return { entry: options, dispose() { } };
+				},
+			},
+			effect: (fn) => { try { const d = fn(); if (typeof d === 'function') { d(); } } catch { /* 可选服务 */ } },
+			get: () => undefined,
+			plugin: () => { },
+		};
+		return { ctx, registered };
+	};
+	const flattenRegs = (regs) => regs.map((r) => {
+		const e = (r.entry && r.entry.entry) ? r.entry.entry : r.entry;
+		return { slot: (e && e.name) || r.slot, id: e && e.id, key: e && e.key, order: e && e.order, label: e && e.label };
+	});
+	const doc = makeDocumentStub();
+	const win = makeWindowStub(doc);
+	let loaded = null;
+	try { loaded = loadChunk('client.workbenchNav.js', doc, win); } catch (e) {
+		problems.push(`client.workbenchNav.js: 装载失败 — ${String((e && e.message) || e)}`);
+	}
+	if (loaded) {
+		// 现场：`sidebar.right.pane.tab` 的某个 key **已被占**（官方会抛）⇒ 主页行仍必须注册得上。
+		const { ctx, registered } = makeStrictCtx({ 'sidebar.right.pane.tab': ['vssaros-wb-dashboard'] });
+		const { shell } = makeShell();
+		try {
+			loaded.exports.install(ctx, shell);
+		} catch (e) {
+			problems.push(`client.workbenchNav.js: 某处注册撞 key 时 install() 整个抛错（${String((e && e.message) || e)}）⇒ **后面的注册全被跳过** ⇒ 侧栏「主页」那行会消失（用户报「主页丢失」）✗`);
+		}
+		const regs = flattenRegs(registered);
+		const nav = regs.find((r) => r.slot === 'sidebar.panellist' && r.id === 'vssaros-workbench');
+		if (!nav) {
+			problems.push('client.workbenchNav.js: 某处注册撞 key 时，侧栏「主页」那行**没注册上** ⇒ 用户侧栏少一行（2026-10-21 真机「主页丢失」）✗');
+		} else if (nav.order !== -10) {
+			problems.push(`client.workbenchNav.js: 侧栏「主页」那行的 order 应为 -10（实际 ${nav.order}）✗`);
+		}
+		// ③ 「主页」行必须**第一个**注册（排在后面就可能被前面某一处抛错带走 ✗）。
+		const first = regs[0];
+		if (!first || first.slot !== 'sidebar.panellist' || first.id !== 'vssaros-workbench') {
+			problems.push(`client.workbenchNav.js: 侧栏「主页」那行必须是**第一个**注册的槽条目（实际第一个是 ${first ? first.slot + '/' + (first.id || first.key) : '（无）'}）—— 排在后面就可能被前面某一处抛错带走 ✗`);
+		}
+		notes.push('client.workbenchNav.js: 重复注册不许带走「主页」行（官方口径假 ctx）断言通过');
+	}
+}
+
+// ── ⑮ 入口指纹：改了 chunk **必须**动入口（rev 只跟入口走）──────────────────────────────
+// 官方 `artifactRevision()` = framedHash("plugin-artifact", [入口的 mtime/ctime/size, …])
+// ⇒ 客户端 chunk 的 `?rev=` **只跟入口 `lib/client.js` 走** ⇒ **只改 `client.*.js` 而不改入口**
+//   ⇒ rev 不变 ⇒ 浏览器继续吃缓存里的**旧 chunk** ⇒ 用户看到的是**旧界面**（2026-10-21 真机：
+//   侧栏「主页」那一行就是这么丢的 —— 18:15 改了 client.workbenchNav.js、没动入口；22:17 补改入口后才恢复）✗✗。
+// ⇒ 判据：**工作区里改了任何 chunk**（git diff + 未跟踪新文件）⇒ 该插件的入口 `lib/client.js`
+//   **必须在其后被改过**（改了 CLIENT_BUILD_STAMP 那行注释即可）⇒ 漏了必红。
+{
+	const repoRootG = path.resolve(import.meta.dirname, '..');
+	let gitWhy = '';
+	const gitOut = (args) => {
+		try {
+			return execFileSync('git', args, { cwd: repoRootG, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }).split('\n').map((s) => s.trim()).filter(Boolean);
+		} catch (e) {
+			// ⚠ git 可能**非零退出**（并发写索引 / CRLF 警告 / dubious ownership 等）⇒
+			//   退出码非 0 不等于"没有输出" ⇒ 仍取 stdout（只有真的没有输出才算不可用）✓
+			const out = e && e.stdout ? String(e.stdout) : '';
+			if (out.trim()) { return out.split('\n').map((s) => s.trim()).filter(Boolean); }
+			gitWhy = String((e && e.message) || e).slice(0, 160);
+			return null;
+		}
+	};
+	const tracked = gitOut(['diff', '--name-only', 'HEAD', '--', 'dsh-plugins']);
+	const untracked = gitOut(['ls-files', '--others', '--exclude-standard', '--', 'dsh-plugins']);
+	if (tracked === null || untracked === null) {
+		notes.push('入口指纹守卫：git 不可用 ⇒ 跳过（拿不到工作区改动面）' + (gitWhy ? '（' + gitWhy + '）' : ''));
+	} else {
+		const touched = [...tracked, ...untracked].map((p) => p.replace(/\\/g, '/'));
+		const pluginsDir = path.join(repoRootG, 'dsh-plugins');
+		const pluginDirs = fs.existsSync(pluginsDir)
+			? fs.readdirSync(pluginsDir, { withFileTypes: true })
+				.filter((e) => e.isDirectory() && fs.existsSync(path.join(pluginsDir, e.name, 'lib', 'client.js')))
+				.map((e) => e.name)
+			: [];
+		let checked = 0;
+		// ⚠ 判据要**管时序**，不只是"动过没动过"：rev 只认**入口自己的 mtime/ctime/size** ⇒
+		//   「先改了 chunk、过了两小时才动入口」⇒ 中间那段时间装出来的包 rev 不变 ⇒ 浏览器吃旧片 ✗
+		//   （2026-10-21 真机：18:15 改 chunk、22:17 才动入口 ⇒ 那 4 小时里装出来的窗口全是旧界面）。
+		const TOLERANCE_MS = 2000;
+		for (const dir of pluginDirs) {
+			const base = 'dsh-plugins/' + dir + '/lib/';
+			const chunkFiles = touched.filter((p) => p.startsWith(base) && /^client\..+\.js$/.test(p.slice(base.length)));
+			if (!chunkFiles.length) { continue; }
+			checked += 1;
+			let entryMtime = 0;
+			try { entryMtime = fs.statSync(path.join(repoRootG, base, 'client.js')).mtimeMs; } catch { /* 读不到 */ }
+			let newestChunk = 0; let newestName = '';
+			for (const p of chunkFiles) {
+				let m = 0;
+				try { m = fs.statSync(path.join(repoRootG, p)).mtimeMs; } catch { /* 读不到 */ }
+				if (m > newestChunk) { newestChunk = m; newestName = p.split('/').pop(); }
+			}
+			if (entryMtime + TOLERANCE_MS < newestChunk) {
+				problems.push(`${dir}: 入口 lib/client.js 的 mtime 比改过的 chunk（${newestName}）**旧** ⇒ 客户端 chunk 的 ?rev 不会随这次改动变化 ⇒ 浏览器会一直吃缓存里的旧 chunk ⇒ 用户看到旧界面（2026-10-21 真机：「主页」那行就是这样丢的）✗ —— 请在改完 chunk 之后再动一下入口（改 CLIENT_BUILD_STAMP 那行注释即可）`);
+			}
+		}
+		notes.push(`入口指纹守卫：${checked} 个插件有改过的 chunk（入口必须在其后动过）`);
 	}
 }
 

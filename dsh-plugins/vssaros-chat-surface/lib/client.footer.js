@@ -9,6 +9,11 @@
 //        会话   = `ctx.sessions.list` 快照条数（roster，随订阅实时刷新）。
 //   只注册到官方 `sidebar.footer.action` 列表槽（root 作用域，官方会在宽/窄两种形态下渲染 ✓）。
 //
+// ★ 「回到 IDE」入口的归属变更（2026-10-21，两轮）：
+//   第一轮本 chunk 注册过 `sidebar.panellist` 行（id `vssaros-ide`，order 12）+ 中栏中转面板；
+//   第二轮用户要求"回到 ide 按钮移动到 logo 右侧" ⇒ 整段搬去 `client.brand.js`（品牌行 = logo 右侧），
+//   **本 chunk 从此只画页脚那行信息文本**，不再注册 panellist / main 槽 ✓。
+//
 // 纪律：本 chunk **只在带官方 chrome 的视图**（`bridge.chatOnly === false` 或 surface=full）注册，
 //   主窗口的 chat-only 聊天框里不出现（那里没有官方侧栏，注册了也看不见）✓。
 window.__ModuleLoader__.load({
@@ -39,11 +44,18 @@ window.__ModuleLoader__.load({
 			const chrome = bridge.surface === "full"
 				|| (bridge.surface === "chat" && bridge.chatOnly === false);
 			if (!chrome) { return; }
+			// 幂等：本 chunk 现在有**两条装载路径** —— `PART_CHUNKS`（chat 形态）与主包
+			// 「带官方 chrome」那段单独 `require.async`（full 形态 / 2026-10-21 为「回到 IDE」入口补的）。
+			// 两段在 chat+chrome 的桌面窗口里会**都**走到 ⇒ 不加这行就会同 id 注册两次
+			// （`sidebar.footer.action` 是 list 槽，同 id 会互相顶掉/报错）✗。
+			if (state.footerInstalled) { return; }
 
 			const S = {
+				// 2026-10-21（对齐 dsh-desktop）：页脚统计是**次要信息** ⇒ 11.5px/24 降到 10.5px/20，
+				// 并把透明度压一档；主入口（工作台 / 回到 IDE / 插件）才是行按钮 ✓。
 				row: {
-					display: "flex", alignItems: "center", gap: 6, height: 24, padding: "0 8px",
-					color: "var(--dsw-alias-label-tertiary, #737373)", fontSize: 11.5,
+					display: "flex", alignItems: "center", gap: 6, height: 20, padding: "0 8px",
+					color: "var(--dsw-alias-label-tertiary, #737373)", fontSize: 10.5, opacity: .92,
 					whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
 				},
 				dot: { width: 6, height: 6, borderRadius: 3, background: "var(--dsw-alias-brand-primary, #297aa0)", flex: "0 0 auto" },
@@ -83,12 +95,18 @@ window.__ModuleLoader__.load({
 				state.footer = { workspaces, sessions };
 
 				const text = "VsSaros · " + workspaces + " 个工作区 · " + sessions + " 条会话";
+				// ⚠ 这一行是**信息**（别再做成"可点的灰字"：用户看不出能点 ✗）。
+				//   「回到 IDE」按钮现在挂在品牌行右侧（`client.brand.js` 的 BrandName）✓。
 				return react.createElement("div", { style: S.row, title: text, "data-vssaros-footer": "1" },
 					react.createElement("span", { style: S.dot }),
 					react.createElement("span", null, text),
 				);
 			}
 
+			// ★ 2026-10-21（用户："回到 ide 按钮移动到 logo 右侧"）：这里原来注册的
+			//   `sidebar.panellist` 行「🖥 回到 IDE」（+ 中栏中转面板）**已整段搬走**，
+			//   现在只由 `client.brand.js` 的 `BrandName`（品牌行 = logo 右侧）渲染那枚按钮 ✓。
+			//   所以本 chunk 只剩**信息行**：不再注册任何 panellist / main 槽。
 			state.footerInstalled = true;
 			try {
 				// ⚠ **list 槽要求 `id`**（不是 `key`）：报错原文

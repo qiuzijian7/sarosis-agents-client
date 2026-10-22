@@ -57,23 +57,36 @@ async function runInjection(deps: any, request: any, messages: any[]) {
 }
 
 suite('agentMemoryInjection — 注入节奏（P0-1）', () => {
-	const prevEnv = process.env['AGENTMEMORY_INJECT_CONTEXT'];
+	/**
+	 * ★ 2026-10-20 修（这 3 条「期望注入」的用例此前**一直红**，被"browser 套件没人跑"掩盖）：
+	 *
+	 * 实现只认 **`globalThis.vscode.process.env`** —— 因为渲染进程里根本没有全局 `process`
+	 * （CDP 实测 `hasProcess:false`，见 `agentMemoryInjection.ts:298-302`）。而本测试原先设的是
+	 * **Node 的** `process.env` ⇒ 实现读不到 ⇒ 「期望注入」的 3 条恒红；反过来「开关关闭时不注入」
+	 * 那条是**假绿**（它本来就恒不注入）。
+	 *
+	 * 修法：装出真实的读取通道，而不是去改实现迁就测试（后者等于为测试在生产代码里加一条
+	 * 渲染进程永远走不到的分支）。
+	 */
+	const g = globalThis as { vscode?: unknown };
+	let prevVscode: unknown;
+	const envOf = () => (g.vscode as { process: { env: Record<string, string | undefined> } }).process.env;
 
-	suiteSetup(() => { process.env['AGENTMEMORY_INJECT_CONTEXT'] = 'true'; });
-	suiteTeardown(() => {
-		if (prevEnv === undefined) { delete process.env['AGENTMEMORY_INJECT_CONTEXT']; }
-		else { process.env['AGENTMEMORY_INJECT_CONTEXT'] = prevEnv; }
+	suiteSetup(() => {
+		prevVscode = g.vscode;
+		g.vscode = { process: { env: { AGENTMEMORY_INJECT_CONTEXT: 'true' } } };
 	});
+	suiteTeardown(() => { g.vscode = prevVscode; });
 
 	test('开关关闭时不注入（默认姿态）', async () => {
-		delete process.env['AGENTMEMORY_INJECT_CONTEXT'];
+		delete envOf()['AGENTMEMORY_INJECT_CONTEXT'];
 		try {
 			const deps = makeDeps();
 			const messages = [{ role: 'system', content: 'base' }, { role: 'user', content: 'q' }];
 			const { messages: out } = await runInjection(deps, makeRequest(), messages);
 			assert.strictEqual(out.length, 2, '不应新增任何消息');
 		} finally {
-			process.env['AGENTMEMORY_INJECT_CONTEXT'] = 'true';
+			envOf()['AGENTMEMORY_INJECT_CONTEXT'] = 'true';
 		}
 	});
 

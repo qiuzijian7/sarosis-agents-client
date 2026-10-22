@@ -20,7 +20,16 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { presetIdOf } from './core/agents.js';
+import { assignmentPresetIdOf, presetIdOf } from './core/agents.js';
+
+/**
+ * 纯推导：这条委派该用哪条 preset。
+ * `.agent.md` 写了 `model-assignment` ⇒ 用派生版 `<preset>-assign`（同人格、只有模型不同，
+ * 见 `core/agents.js assignmentPresetIdOf` 的注释）；否则与主会话同一条（旧行为 ✓）。
+ */
+export function assignmentPresetFor(agent) {
+	return agent && agent.modelAssignment ? assignmentPresetIdOf(agent.id) : presetIdOf(agent?.id);
+}
 import { AGENT_MESSAGE_KIND, finalAssistantText, findOurSplices } from './core/relay.js';
 import { checkCwdGrant } from './grants.js';
 import { notePendingReply } from './relay.js';
@@ -154,7 +163,7 @@ export async function createAssignment(config, state, input) {
 	if (grantRefusal) {
 		throw httpError(403, grantRefusal);
 	}
-	const wantPreset = presetIdOf(agent.id);
+	const wantPreset = assignmentPresetFor(agent);
 	const created = await sc.create({ ...(cwd ? { cwd } : {}), agentPreset: wantPreset });
 	const sessionId = String(created?.sessionId ?? '').trim();
 	if (!sessionId) {

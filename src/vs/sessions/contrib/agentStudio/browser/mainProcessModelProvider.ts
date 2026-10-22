@@ -153,7 +153,13 @@ export class MainProcessModelProvider extends BuiltInBYOKModelProvider {
 				const fallbackBody = { ...body };
 				delete fallbackBody['__imageDataUrl'];
 				this._logService.warn(`[BYOK:${this.id}] img2img 端点不可用（${msg.slice(0, 80)}）→ 回退文生图 ${genUrl}（参考图被忽略）`);
-				return await callOnce(genUrl, 'POST', fallbackBody);
+				// ★ 2026-10-21：**如实标记降级**（原来只打日志 ⇒ 调用方以为"按参考图改了"，其实没有 ✗）。
+				const fallback = await callOnce(genUrl, 'POST', fallbackBody);
+				return {
+					images: fallback.images,
+					degraded: true,
+					degradedReason: '参考图端点不可用（这个图像服务不提供图生图），已回退为按文字重新生成——参考图**没有**被采纳。',
+				};
 			}
 			this._logService.error(`[BYOK:${this.id}] MainProcessModelProvider: generateImage error:`, e);
 			throw e;

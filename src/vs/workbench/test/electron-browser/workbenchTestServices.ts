@@ -125,6 +125,8 @@ export class TestNativeHostService implements INativeHostService {
 	async saveWindowSplash(value: IPartsSplash): Promise<void> { }
 	async setBackgroundThrottling(throttling: boolean): Promise<void> { }
 	async focusWindow(options?: INativeHostOptions): Promise<void> { }
+	async showWindow(options?: INativeHostOptions): Promise<void> { }
+	async hideWindow(options?: INativeHostOptions): Promise<void> { }
 	async showMessageBox(options: Electron.MessageBoxOptions): Promise<Electron.MessageBoxReturnValue> { throw new Error('Method not implemented.'); }
 	async showSaveDialog(options: Electron.SaveDialogOptions): Promise<Electron.SaveDialogReturnValue> { throw new Error('Method not implemented.'); }
 	async showOpenDialog(options: Electron.OpenDialogOptions): Promise<Electron.OpenDialogReturnValue> { throw new Error('Method not implemented.'); }

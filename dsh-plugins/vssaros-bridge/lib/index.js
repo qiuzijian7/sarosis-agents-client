@@ -4,7 +4,11 @@
 // Only VsSaros-defined messages cross this pipe; no dsh event or data structure is relayed.
 import net from 'node:net';
 import { readFileSync, statSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
 import { createRunsApprovalGate, createRunsService } from './runs.js';
+import { CREDIT_RECORD_TYPE, createCreditLedger, creditProjection, observeStream } from './credit.js';
+import { createTofService, tofToolDefinitions } from './tof.js';
 
 // 启动计时（2026-10-15，"首启慢"排查）：本行的打印时刻 ≈ node 引导 + dsh 核心 + cordis profile
 // 装载完成的时刻（cordis 在解析插件图时 import 本文件）；与 apply() 里那一条合起来，Host 冷启被拆成
@@ -16,7 +20,7 @@ export const name = 'vssaros-bridge';
 // "optional" semantics. Every listed service is required before apply() runs.
 // `agents` (dsh-agent registry) is part of dsh-base in every supported version (0.1.7 – 0.2.x);
 // `sessionController` comes from dsh-api-session-controller (web template, all supported versions).
-export const inject = ['webServer', 'connection', 'workspaceRegistry', 'agents', 'sessionController', 'settings', 'credentials', 'llm'];
+export const inject = ['webServer', 'connection', 'workspaceRegistry', 'agents', 'sessionController', 'settings', 'credentials', 'llm', 'tools'];
 
 // v2（2026-10-10）：新增**反向通道**（Host → IDE）。此前协议只有 IDE → Host 一个方向，
 // 于是方案 6.7 那句"@vssaros/dsh-ide 的工具执行经控制桥 `ide.request` 回调 VsSaros"**不成立**——
@@ -24,6 +28,25 @@ export const inject = ['webServer', 'connection', 'workspaceRegistry', 'agents',
 // v2 约定：**Host 发起的请求用负数 id**（IDE 自己的序号是正整数，天然不相交），
 // 响应形如 `{ id: <负数>, result | error }`（没有 method）；参数里带 `token` 供 IDE 侧核验。
 const BRIDGE_VERSION = 2;
+
+/**
+ * 企业身份（TOF/OA）票据在 dsh 侧的**凭证引用名**（`ctx.credentials.set(ref, value)` 的 ref）。
+ *
+ * ⚠ 必须与 IDE 侧 `src/vs/sessions/contrib/dshHarness/common/dshBridgeProtocol.ts` 的
+ *   `DSH_TOF_CREDENTIAL_REF` **逐字一致** —— 两侧不能互相 import（插件是独立包，随包分发）
+ *   ⇒ 由 `dsh-plugins/check-dsh-tof-identity.mjs` 做**跨层对账**钉住 ✓。
+ */
+const TOF_CREDENTIAL_REF = 'VSSAROS_TOF_TICKET';
+
+/**
+ * **会改用户身份状态**的工具（2026-10-21）：`tof_signin`（开系统浏览器登录 + 把票据写进 dsh 的
+ * 凭据存储）、`tof_signout`（清掉那份票据）⇒ 与 kanban/kb 的写同一档 ⇒ 必须挂官方审批闸 ✓
+ * （`tof_status` 只读 ⇒ 不拦 ✓）。
+ *
+ * ⚠ 名字表由守卫 `dshPluginPackages.test.ts` 逐名核对（改了名却没改这里 ⇒ 闸会静默失效 ✗）。
+ */
+export const WRITE_TOOLS = ['tof_signin', 'tof_signout'];
+
 const pluginVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
 /** 常驻 Host 的空闲自退：最后一个 IDE 客户端断开后，超过该时长无新客户端则 Host 优雅退出。 */
@@ -202,6 +225,76 @@ export function apply(ctx, config = {}) {
 	// 1.5：runs 会话的审批最终应答者（deny-by-default；非 runs 会话放行给 UI 应答者）。
 	// 挂在根 ctx：scoped waterfall 对无标签侦听放行 ⇒ 收得到全部 agent 的请求 ✓（Spike 5a/5b 实测）。
 	const approvalGate = createRunsApprovalGate(handler => ctx.on('approval/request', handler));
+
+	// ── 积分账本（2026-10-20；详见 credit.js 文件头）────────────────────────────────
+	// 主进程代理抓到积分 → 桥 `credit.record` → 这里按 LLM 调用区间归属到 (会话, 回合)
+	// → 写进会话日志（官方插件记录）→ 投影 `vssaros-credit` 自动推给页面。
+	//
+	// ⚠ 本仓插件原则上不 import `@deepseek-ai/*`（profile 侧解析不到、跨版本不稳）。这里是**唯一例外**：
+	//   `appendPluginRecord` 只从 `@deepseek-ai/dsh-session` 导出（`session.append` 写未知类型会让会话
+	//   **重载时整条打不开**，绝不能用）。所以从**正在运行的 Host 入口**解析它 —— 拿到的就是 Host 自己
+	//   那份模块实例（`#appendRecord` 是私有字段，必须同一个类），版本也永远与 Host 一致。
+	//   解析失败 ⇒ 账本不写记录（返回 appended:false），页面自动退回旧的时间窗口径，不会坏 ✓。
+	let appendPluginRecordFn = null;
+	void (async () => {
+		try {
+			const entry = process.argv[1];
+			if (!entry) { throw new Error('process.argv[1] is empty'); }
+			const resolved = createRequire(entry).resolve('@deepseek-ai/dsh-session');
+			const mod = await import(pathToFileURL(resolved).href);
+			if (typeof mod.appendPluginRecord !== 'function') { throw new Error('appendPluginRecord is not exported'); }
+			appendPluginRecordFn = mod.appendPluginRecord;
+			console.log('[vssaros-bridge] credit ledger ready (appendPluginRecord from Host runtime)');
+		} catch (e) {
+			console.warn(`[vssaros-bridge] credit ledger disabled: cannot load appendPluginRecord (${String(e?.message ?? e)})`);
+		}
+	})();
+	const sessionOf = (id) => {
+		try {
+			const sessions = typeof ctx.get === 'function' ? ctx.get('sessions') : undefined;
+			return sessions?.get?.(id) ?? ctx.agents?.get?.(id)?.session;
+		} catch { return undefined; }
+	};
+	const creditLedger = createCreditLedger({
+		now: () => Date.now(),
+		turnOf: (id) => {
+			const projections = typeof ctx.get === 'function' ? ctx.get('sessionProjections') : undefined;
+			const session = sessionOf(id);
+			if (!projections || !session) { return undefined; }
+			const boundary = projections.stateOf(session, 'turnBoundary');
+			if (!boundary) { return undefined; }
+			return boundary.openTurnStartSeq === null ? null : boundary.lastTurn;
+		},
+		append: (id, data) => {
+			if (!appendPluginRecordFn) { return false; }
+			const session = sessionOf(id);
+			if (!session) { return false; }
+			appendPluginRecordFn(session, CREDIT_RECORD_TYPE, data);
+			// 立刻落盘（同官方 translator 的做法）：回合已结束时不会再有下一次检查点替我们 flush。
+			try {
+				const sessions = ctx.get('sessions');
+				void Promise.resolve(sessions?.flush?.(session)).catch(() => undefined);
+			} catch { /* flush 失败不影响记录本身（下次检查点会带上） */ }
+			return true;
+		},
+		log: line => console.log(`[vssaros-bridge] ${line}`),
+	});
+	// 记账：每次 LLM 调用的 (会话, provider, model, 起止)。只观察、不改请求与 chunk。
+	ctx.on('llm/stream', (options, next) => {
+		const handle = creditLedger.beginCall({
+			sessionId: options?.sessionId,
+			provider: options?.provider,
+			model: options?.model,
+			purpose: options?.purpose,
+		});
+		return observeStream(next(), handle);
+	});
+	// 投影：同 key + 同 stateVersion 的 register 是 ref-count 共享。`register` 内部走的是**调用方**
+	// ctx 的 effect ⇒ 随 child 作用域自动释放（与 vssaros-agents 的 persona 投影同一写法，不手动 dispose）。
+	ctx.inject(['sessionProjections'], child => child.effect(() => {
+		child.sessionProjections.register(creditProjection());
+		return () => { };
+	}));
 	const runs = createRunsService({
 		agents: ctx.agents,
 		sessionController: ctx.sessionController,
@@ -213,6 +306,47 @@ export function apply(ctx, config = {}) {
 		enumerable: false,
 	});
 	ctx.provide('vssarosRuns', runs);
+
+	// ── 企业身份（TOF/OA）：dsh 侧**独立**登录（2026-10-21）────────────────────────
+	//
+	// 原先只有一条路：IDE 侧登录 → 票据经控制桥 `tof.sync` 同步过来 ⇒ **依附 IDE**。
+	// dsh 单独跑（没有 IDE / IDE 没开）时 Host 手里没有身份 ⇒ 商城 / 内网服务 / 内网 MCP 全用不了。
+	// 这里补上"dsh 自己登"这条路：vendored TOF 客户端（起 loopback → spawn 开浏览器 → whoami 验证）
+	//   ⇒ 票据落进 dsh 的凭据存储（`ctx.credentials`）。
+	//
+	// ⚠ **两份票据分开存**：IDE 同步的那份是 `TOF_CREDENTIAL_REF`（下面那个常量），dsh 自登的是
+	//   `VSSAROS_TOF_TICKET_DSH`（见 tof.js）⇒ 两条路不互相覆盖；读取时按"本地自登 > IDE 同步"取 ✓。
+	// ⚠ **票据绝不出现在工具回执里**（回执会进模型上下文与页面 ⇒ 等同下发页面 ✗）——投影只有工号/姓名/团队 ✓。
+	// ⚠ 这一段放在 `pipe/token` 早退**之前**：dsh 独立跑时没有管道，登录能力也必须可用 ✓。
+	const tofService = createTofService({
+		credentials: ctx.credentials,
+		ideCredentialRef: TOF_CREDENTIAL_REF,
+		config: (config && typeof config.tof === 'object' && config.tof) ? config.tof : {},
+		log: line => console.log(line),
+	});
+	ctx.provide('vssarosTof', tofService);
+	for (const definition of tofToolDefinitions(tofService)) {
+		ctx.effect(() => ctx.tools.register(definition));
+	}
+
+	// ── 审批闸（2026-10-21）：改企业身份的工具必须先问用户 ─────────────────────
+	//   `tof_signin` 会**打开系统浏览器**并把票据写进 dsh 的凭据存储；`tof_signout` 会清掉那份票据
+	//   ⇒ 两者都改用户的身份状态 ⇒ 与 kanban/kb 的写同一档 ⇒ 挂官方 `tools/pre-execute` ⇒ ask ✓
+	//   （官方契约：`ask` 只有审批服务返回 allowed-once 才执行；没有审批支持的部署 degrade to deny
+	//   ⇒ fail-closed ✓）。`tof_status` 只读 ⇒ 直接放行（不弹窗 ⇒ 不造成审批疲劳 ✓）。
+	ctx.effect(() => ctx.on('tools/pre-execute', (exec, next) => {
+		if (!exec || !WRITE_TOOLS.includes(exec.name)) {
+			return next();
+		}
+		return {
+			kind: 'ask',
+			reason: `${exec.name} 会改动你的企业身份（登录会打开系统浏览器并保存票据；登出会清掉 dsh 侧保存的票据）`,
+			displayReason: {
+				en: `${exec.name} changes your corporate identity (sign-in opens the system browser and stores a ticket; sign-out clears the stored one)`,
+				zh: `${exec.name} 会改动你的企业身份（登录会打开系统浏览器并保存票据；登出会清掉 dsh 侧保存的票据）`,
+			},
+		};
+	}));
 
 	const { pipe, token } = config;
 	if (!pipe || !token) {
@@ -523,9 +657,38 @@ export function apply(ctx, config = {}) {
 							// ⚠ 只重试"在途竞态"（in-process writers 撞）；**真·跨进程**的 flock 占用（另一个 Host 拿着）
 							//   报的是锁错误、不含 'already owned' ⇒ 不会被这条吞掉，仍会抛出 ✓。
 							let created;
-							for (let attempt = 0; ; attempt++) {
+							// ★★ 2026-10-20（今天 Host 铸了 53 条空会话；其中 3 条紧跟在 IDE 的 bind 之后 3~93ms）：
+							//   dsh 的 `create({ sessionId })` **不是**"幂等接管"——源码（dsh-api-session-controller `claim()`）：
+							//     · 该会话 agent 已在运行（live）且**不是空会话** ⇒ `reuseLive` 返回 undefined ⇒ `createMinted`
+							//       ⇒ 另铸一条 `session-<uuid>` 空会话 ✗（真机三次都发生在"复用已有 Host"时，正是 live 的情形）
+							//   ⇒ live **且非空**时直接接管同一个 agent，不再调 create（目录不一致仍交给 create 报冲突，行为不变）。
+							//   live 但**空**的会话照旧走 create：Host 会按请求的 preset 重新选择（reuseLive 的语义，不能丢）。
+							//   判空用 Host 自己的判据（`isBlank`：turnBoundary 投影 `openTurnStartSeq===null && lastTurn===0`）；
+							//   取不到投影服务 ⇒ 视为"不确定"⇒ 走 create（退回原行为）。
+							//   不 live 的情形也维持原样（create 会 resume；真机 7 次冷启 bind 都没有铸新）。
+							const live = sessionId && ctx.agents && typeof ctx.agents.get === 'function' ? ctx.agents.get(sessionId) : undefined;
+							const targetCwd = workspace?.path ?? cwd;
+							const sameDir = (a, b) => typeof a === 'string' && typeof b === 'string'
+								&& (process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b);
+							const liveHasTurns = (() => {
 								try {
-									created = await ctx.sessionController.create({ cwd: workspace?.path ?? cwd, sessionId, agentPreset });
+									const projections = typeof ctx.get === 'function' ? ctx.get('sessionProjections') : undefined;
+									const boundary = projections && live ? projections.stateOf(live.session, 'turnBoundary') : undefined;
+									if (!boundary) { return false; }
+									return !(boundary.openTurnStartSeq === null && boundary.lastTurn === 0);
+								} catch { return false; }
+							})();
+							if (live && liveHasTurns && sameDir(live.session?.header?.cwd, targetCwd)) {
+								let preset = null;
+								try {
+									const projections = ctx.get('sessionProjections');
+									preset = projections ? (projections.stateOf(live.session, 'agentPreset') ?? null) : null;
+								} catch { preset = null; }
+								created = { sessionId, agentPreset: preset, adoptedLive: true };
+							}
+							for (let attempt = 0; !created; attempt++) {
+								try {
+									created = await ctx.sessionController.create({ cwd: targetCwd, sessionId, agentPreset });
 									break;
 								} catch (e) {
 									const msg = String(e?.message ?? e);
@@ -537,6 +700,10 @@ export function apply(ctx, config = {}) {
 								}
 							}
 							const id = created?.sessionId ?? sessionId;
+							// 万一 Host 仍返回了别的 id（另铸），留一行日志：这正是"空会话越积越多"的来源，不能静默。
+							if (sessionId && id !== sessionId) {
+								console.warn(`[vssaros-bridge] session.start: 请求 ${sessionId} 但 Host 返回 ${id}（另建了新会话）`);
+							}
 							// dsh-webhook attaches explicitly; only do it when not already attached.
 							if (workspace && id && !(workspace.sessionIds ?? []).includes(id)) {
 								await workspace.attachSession(id);
@@ -582,6 +749,51 @@ export function apply(ctx, config = {}) {
 						const p = req.params ?? {};
 						runs.cancel(p)
 							.then(result => send({ id: req.id, result }), e => send({ id: req.id, error: { code: -32000, message: String(e?.message ?? e) } }));
+						break;
+					}
+					case 'tof.sync': {
+					// 企业身份（TOF/OA 票据）落到 dsh 侧（2026-10-21）。
+					//
+					// 需求：用户不要 dsh 官方 DeepSeek 路由那一套账号；要在**两侧**用同一份企业身份
+					//   （工号 + 票据）⇒ IDE 侧登录一次，把票据同步过来，dsh 侧自己持有 ✓。
+					// ⚠ 为什么登录不在 dsh 侧自己做：TOF 的 OAuth 是 passport.woa.com → 网关
+					//   `/api/v1/auth/tof/callback?cb_port=` → 本地 loopback（协议由**网关**定），
+					//   而 dsh **没有**"打开外部 URL"的服务（无 openExternal/openUrl）⇒ 开浏览器得靠 IDE 侧
+					//   那个现成的扩展开浏览器（extensions/tof-authentication）⇒ 一次登录、两处可用 ✓。
+					// ⚠ **安全边界**：票据从 VS Code 的 SecretStorage（加密）落到 dsh 的 .credentials.yaml
+					//   （**明文**！dsh-credentials-local 自述："同 UID 的 agent 工具进程能读到这个文件"）。
+					//   这是**扩大了暴露面** —— 所以：① 票据绝不下发页面（页面只拿展示投影）；
+					//   ② 票据只经本机命名管道过，不出网；③ 落到 credentials 的**正式落点**（不是 settings）。
+					// ⚠ 幂等：同值不重写（`describe` 只回 presence，不回值 ⇒ 只能靠"有没有"判有无变化，
+					//   真正相等与否交给 credentials.set 自身处理）。
+					const p = req.params ?? {};
+					const run = async () => {
+						const { credentials } = ctx;
+						if (!credentials) {
+							throw new Error('tof.sync: credentials service unavailable');
+						}
+						const ref = TOF_CREDENTIAL_REF;
+						const ticket = typeof p.ticket === 'string' ? p.ticket : null;
+						if (ticket === null) {
+							// 登出：清掉 dsh 侧那份（`unset` 缺席时是 no-op ⇒ 幂等 ✓）
+							const before = await credentials.describe(ref);
+							await credentials.unset(ref);
+							return { signedIn: false, ref, changed: before.configured === true };
+						}
+						await credentials.set(ref, ticket);
+						return { signedIn: true, ref, changed: true };
+					};
+					run().then(result => send({ id: req.id, result }), e => send({ id: req.id, error: { code: -32000, message: String(e?.message ?? e) } }));
+					break;
+				}
+				case 'credit.record': {
+						// 积分样本入账（2026-10-20）：主进程计费代理抓到一条推一条。只有 route/model/credit/at
+						// 这几个数值字段过管道 —— 不含请求/响应内容。归属与写记录见 credit.js / 上面的账本接线。
+						try {
+							send({ id: req.id, result: creditLedger.recordSample(req.params ?? {}) });
+						} catch (e) {
+							send({ id: req.id, error: { code: -32000, message: String(e?.message ?? e) } });
+						}
 						break;
 					}
 					case 'host.activity': {

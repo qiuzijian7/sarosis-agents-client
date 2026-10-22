@@ -9,6 +9,8 @@
 // 安全口径：frontmatter 只认单行标量（parseFrontmatter 按行切）⇒ 所有标量去掉换行；列表项只收安全字符集。
 
 import { parseFrontmatter, presetIdOf, slugify, toPresetDefinition } from './agents.js';
+import { ICON_PATHS } from './icons.js';
+import { MEMORY_CHARS_MAX, MEMORY_CHARS_MIN, parseMemoryModeInput } from './memoryLimits.js';
 
 /** agent id = 目录名。与页面桥 `openAgentSettings` 的 agent id 字符集同源（dshPageBridgeProtocol）。 */
 export const AGENT_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -68,7 +70,11 @@ export function stripModelFromAgentMd(text) {
 	return { text: keep.join(eol), removed, model };
 }
 const LIST_ITEM_RE = /^[A-Za-z0-9._:@/-]{1,80}$/;
-const LIMITS = { name: 80, description: 200, role: 40, icon: 16, model: 120, persona: 20000 };
+// icon 上限放宽到 40：既存 emoji（1~2 字符），也存 `lucide:<name>`（最长如 `lucide:sliders-horizontal`）
+const LIMITS = { name: 80, description: 200, role: 40, icon: 40, model: 120, persona: 20000 };
+
+/** 新建 agent 的默认图标（Lucide 机器人；与页面 `createPage.js` 的 `DEFAULT_ICON` 同一取值）。 */
+export const DEFAULT_AGENT_ICON = 'lucide:bot';
 
 const oneLine = (v, max) => String(v ?? '').replace(/[\r\n\t]+/g, ' ').trim().slice(0, max);
 const listOf = v => (Array.isArray(v) ? v : String(v ?? '').split(','))
@@ -84,15 +90,34 @@ export function suggestIdFromName(name) {
 }
 
 /** 页面/API 收到的任意形状 → 归一草稿（只保留认识的字段）。 */
+/** 可选整数字段（空/非数字 ⇒ undefined，按"没写"处理；与 `.agent.md` 的解析口径一致）。 */
+function intOrUndefined(value) {
+	if (value === undefined || value === null || String(value).trim() === '') {
+		return undefined;
+	}
+	const n = Number(value);
+	return Number.isFinite(n) ? Math.trunc(n) : undefined;
+}
+
 export function normalizeDraft(raw) {
 	const d = raw && typeof raw === 'object' ? raw : {};
 	return {
 		name: oneLine(d.name, LIMITS.name),
 		id: oneLine(d.id, 64),
 		description: oneLine(d.description, LIMITS.description),
-		icon: oneLine(d.icon, LIMITS.icon),
+		// 没给图标 ⇒ **Lucide 机器人 SVG**（2026-10-20 用户要求：新建 agent 不要默认 emoji）。
+		// ⚠ 只对"新建出来的 agent"生效：编辑既有 agent 的路径（改记忆口径/删 model 行）不经过这里，
+		//   所以老文件不会因为这条默认值被改写。
+		icon: oneLine(d.icon, LIMITS.icon) || DEFAULT_AGENT_ICON,
 		role: oneLine(d.role, LIMITS.role),
 		model: oneLine(d.model, LIMITS.model),
+		// 委派模型 / 记忆口径（2026-10-19）：与 agentFromFile 同一三个字段，向导与 CLI 都走这里
+		modelAssignment: oneLine(d.modelAssignment, LIMITS.model),
+		memoryChars: intOrUndefined(d.memoryChars),
+		// 空 = 不写这一行（向导留空时的语义），只认 live/session（与 core/memoryLimits 同口径）
+		memoryMode: parseMemoryModeInput(d.memoryMode),
+		// 是否允许被别的 agent 点名委派（`subagent: true`；默认关，见 isDelegatableAgent）
+		delegatable: d.delegatable === true || String(d.delegatable ?? '').trim().toLowerCase() === 'true',
 		skills: listOf(d.skills),
 		tools: listOf(d.tools),
 		workspacesRead: pathsOf(d.workspacesRead),
@@ -116,6 +141,13 @@ export function validateDraft(draft, ctx = {}) {
 	const existingPresets = new Set((ctx.existingIds ?? []).map(id => presetIdOf(id)));
 	if (!draft.name) {
 		errors.push('名称必填');
+	}
+	// 图标：`lucide:<name>` 必须在表里（写错名字不要静默落盘成"没图标"——用户会以为保存丢了）
+	if (draft.icon && String(draft.icon).toLowerCase().startsWith('lucide:')) {
+		const iconName = String(draft.icon).slice('lucide:'.length).trim().toLowerCase();
+		if (!ICON_PATHS[iconName]) {
+			errors.push(`图标 ${draft.icon} 不存在（从图标选择器里挑一个，或清空改用名字首字）`);
+		}
 	}
 	if (!draft.id) {
 		errors.push(draft.name && !suggestIdFromName(draft.name)
@@ -151,6 +183,16 @@ export function validateDraft(draft, ctx = {}) {
 		if (probe.notes.some(n => n.startsWith('模型未映射'))) {
 			errors.push('模型 ' + draft.model + ' 在 dsh 里没有路由：写成 provider/model（如 vssaros-codebuddy/hy4），或留空跟随默认模型');
 		}
+	}
+	if (draft.modelAssignment) {
+		// 委派模型同理：它会被写成派生 preset 的 default-model 行，路由不通就整条委派跑不起来
+		const probe = toPresetDefinition({ id: draft.id || 'draft', name: draft.name || 'draft', model: draft.model, tools: [], persona: '' }, { provider: ctx.provider, modelOverride: draft.modelAssignment });
+		if (probe.notes.some(n => n.startsWith('模型未映射'))) {
+			errors.push('委派模型 ' + draft.modelAssignment + ' 在 dsh 里没有路由：写成 provider/model，或留空让委派跟随主模型');
+		}
+	}
+	if (draft.memoryChars !== undefined && draft.memoryChars !== 0 && (draft.memoryChars < MEMORY_CHARS_MIN || draft.memoryChars > MEMORY_CHARS_MAX)) {
+		errors.push(`记忆注入上限 memory-chars 要在 ${MEMORY_CHARS_MIN}~${MEMORY_CHARS_MAX} 之间（0 = 关闭注入）`);
 	}
 	if (!draft.persona.trim()) {
 		warnings.push('没写人格正文：只用默认人格');
@@ -206,6 +248,12 @@ export function draftFromAgentMd(text) {
 			icon: meta.icon ?? '',
 			role: meta.role ?? '',
 			model: meta.model ?? '',
+			// 新字段也要能"导入 → 再创建"走一遍（否则 .agent.md 里的委派模型/记忆口径会被向导吞掉）
+			modelAssignment: meta['model-assignment'] ?? '',
+			memoryChars: meta['memory-chars'] ?? '',
+			memoryMode: meta['memory-mode'] ?? '',
+			// 委派目标（2026-10-20）：`subagent: true` ⇒ 允许被别的 agent 点名派活
+			delegatable: String(meta.subagent ?? '').trim().toLowerCase() === 'true',
 			skills: meta.skills ?? '',
 			tools: meta.tools ?? '',
 			workspacesRead: meta['workspaces-read'] ?? '',
@@ -215,6 +263,62 @@ export function draftFromAgentMd(text) {
 	};
 }
 
+/**
+ * **只改** frontmatter 里的 `memory-chars` / `memory-mode`，正文与其它字段**逐字不动**。
+ *
+ * 为什么不用 `draftFromAgentMd` + `serializeAgentMd` 走一遍：那会把正文 `trim()`、重排字段、
+ * 丢掉没建模的字段（用户手写的注释行、未知 key 全没了 ✗）。改两个键就该只碰那两行。
+ */
+export function setMemoryFrontmatter(text, input = {}) {
+	const raw = String(text ?? '').replace(/\r\n/g, '\n');
+	const m = /^---\n([\s\S]*?)\n---\n?/.exec(raw);
+	if (!m) {
+		return { error: '这个 .agent.md 没有 frontmatter，改不了记忆口径（先补 --- 头）' };
+	}
+	const head = m[1].split('\n');
+	const body = raw.slice(m[0].length);
+	const setLine = (key, value) => {
+		// `undefined` = **没传，不动这一行**（否则"只改 mode"会顺手把 memory-chars 删掉 ✗）；
+		// `null` / 空串 = 显式删除这一行。
+		if (value === undefined) {
+			return;
+		}
+		const idx = head.findIndex((line) => new RegExp('^' + key + '\\s*:').test(line));
+		if (value === null || value === '') {
+			if (idx >= 0) { head.splice(idx, 1); }
+			return;
+		}
+		if (idx >= 0) { head[idx] = key + ': ' + String(value); } else { head.push(key + ': ' + String(value)); }
+	};
+	setLine('memory-chars', input.chars === undefined || input.chars === null || input.chars === '' ? undefined : input.chars);
+	setLine('memory-mode', input.mode === undefined || input.mode === null || input.mode === '' ? undefined : input.mode);
+	return { text: '---\n' + head.join('\n') + '\n---\n' + body };
+}
+
+/**
+ * **只改** `subagent: true|false` 这一行（2026-10-20，「允许被 subagent 选用」开关）。
+ *
+ * 与 `setMemoryFrontmatter` 同一纪律：外科式改行，正文与其它字段逐字不动
+ * （走 `draftFromAgentMd → serializeAgentMd` 会 trim 正文、重排字段、丢掉没建模的 key）。
+ */
+export function setSubagentFlag(text, enabled) {
+	const raw = String(text ?? '').replace(/\r\n/g, '\n');
+	const m = /^---\n([\s\S]*?)\n---\n?/.exec(raw);
+	if (!m) {
+		return { error: '这个 .agent.md 没有 frontmatter，改不了委派开关（先补 --- 头）' };
+	}
+	const head = m[1].split('\n');
+	const body = raw.slice(m[0].length);
+	const idx = head.findIndex((line) => /^subagent\s*:/.test(line));
+	if (enabled) {
+		if (idx >= 0) { head[idx] = 'subagent: true'; } else { head.push('subagent: true'); }
+	} else if (idx >= 0) {
+		// 关掉 = **删掉这一行**（不写 `subagent: false`：默认就是关，多余的键只会让文件变脏）
+		head.splice(idx, 1);
+	}
+	return { text: '---\n' + head.join('\n') + '\n---\n' + body };
+}
+
 /** 草稿 → .agent.md 原文（字段顺序固定；空字段不写）。 */
 export function serializeAgentMd(draft) {
 	const lines = ['---', 'name: ' + draft.name];
@@ -222,6 +326,11 @@ export function serializeAgentMd(draft) {
 	if (draft.icon) { lines.push('icon: ' + draft.icon); }
 	if (draft.role) { lines.push('role: ' + draft.role); }
 	if (draft.model) { lines.push('model: ' + draft.model); }
+	// 委派目标（2026-10-20）：只有 true 才写；false/未设一律不写（默认关）
+	if (draft.delegatable === true) { lines.push('subagent: true'); }
+	if (draft.modelAssignment) { lines.push('model-assignment: ' + draft.modelAssignment); }
+	if (draft.memoryChars !== undefined && draft.memoryChars !== null) { lines.push('memory-chars: ' + draft.memoryChars); }
+	if (draft.memoryMode) { lines.push('memory-mode: ' + draft.memoryMode); }
 	if (draft.skills.length) { lines.push('skills: ' + draft.skills.join(', ')); }
 	if (draft.tools.length) { lines.push('tools: ' + draft.tools.join(', ')); }
 	if (draft.workspacesRead.length) { lines.push('workspaces-read: ' + draft.workspacesRead.join(', ')); }

@@ -65,16 +65,15 @@ const GRANDFATHERED_OVERSIZE: Record<string, string> = {
 	//   社区目录，落 `browser/views/pluginsDshSection.ts`；**前置条件**是先给它建行为网（本文件目前**没有**
 	//   pluginsView 的渲染测试，拆了没法证明等价 ⇒ 与 `agentSettingsEditorPane` 那次同路径：先补网、再拆、再销账 ✓）。
 	'src/vs/sessions/contrib/agentStudio/browser/views/pluginsView.ts': '插件中心视图（三页签 + 商城搜索 + VSIX 分发 + dsh 插件中心/添加插件）待带行为网把 dsh 页签外提',
-	// ⚠ 2026-10-14 登记（同样**由本用例抓出**：落地 `chatWorkspaceAuthority` 那套"会话级工作区覆盖"
-	//   时它从 2497 涨到 ~2520 ⇒ 恰好越过预算 ✗）。已先把新增注释压到最短（保留"为什么/三条语义/
-	//   契约测试指针"），仍越线 ⇒ 按本文件头①「债务可见」登记 ✓。
-	//   拆分方向：`agentStudioService.ts` 是**大杂烩**（工作区 / 会话 / agent / 连接 / 技能全在一个类里），
-	//   先外提「会话」切片（含本次这套覆盖表）落 `browser/agentStudioSessions.ts`；
-	//   **前置条件**：契约测试把 `_sessionWorkspaceOverrides` 钉在**本文件**里
-	//   （`chatWorkspaceAuthority.test.ts` 的 IMPL 常量）⇒ 拆之前要先把那条契约改成"跟到新文件" ✓，
-	//   否则拆完测试仍指旧路径 ⇒ 假绿 ✗。
+	// ⚠ 2026-10-19（同日**又登记回来**）：上午曾因"内置 agent 收敛为代码真源"删掉那段扫描代码 ⇒ 降到 2477 行、
+	//   销账（14 → 13）；随后用户裁决**真源改回 `.agent.md`** ⇒ 那段"扫目录 + 读 .agent.md"的 IO **又回来了**
+	//   ⇒ 重新越过 2500 行 ⇒ 按规则重新登记（13 → 14）。这条来回本身记账在上面 `FROZEN_OVERSIZE_COUNT` 的注释里 ✓。
+	//   拆分方向不变：本文件是**大杂烩**（工作区 / 会话 / agent / 连接 / 技能全在一个类里），
+	//   先外提「会话」切片落 `browser/agentStudioSessions.ts`；**前置条件**：契约测试把
+	//   `_sessionWorkspaceOverrides` 钉在**本文件**里（`chatWorkspaceAuthority.test.ts` 的 IMPL 常量）
+	//   ⇒ 拆之前要先把那条契约改成"跟到新文件" ✓，否则拆完测试仍指旧路径 ⇒ 假绿 ✗。
 	'src/vs/sessions/contrib/agentStudio/browser/agentStudioService.ts': 'Agent Studio 主服务（工作区/会话/agent/连接/技能大杂烩）待按 会话 → agent·连接 外提',
-};
+	};
 
 /**
  * 冻结数量：新增超预算文件会让下面的断言变红 ⇒ 必须先把老的拆掉或改架构 ✓。
@@ -88,6 +87,12 @@ const GRANDFATHERED_OVERSIZE: Record<string, string> = {
  *
  * 2026-10-14（同日第二笔）：13 → **14**（登记 `browser/agentStudioService.ts` ~2520 行 —— 落地
  * `chatWorkspaceAuthority` 那套会话级工作区覆盖时越线 ✓）。同样：拆完回来销账 ✓。
+ *
+ * 2026-10-19（上午）：14 → **13**（销账）—— 内置 agent 收敛为"代码真源"后，那段"扫 resources 目录读
+ * .agent.md"的 IO 代码没了 ⇒ `agentStudioService.ts` 降到 2477 行、回到预算内 ⇒ 删登记项 + 减 1 ✓。
+ *
+ * 2026-10-19（同日反转）：13 → **14**（重新登记）—— 用户裁决**真源改回 `.agent.md`** ⇒ 那段扫描代码
+ * 又回来了 ⇒ 重新越线。一天内来回一次，两笔都留在这里可 review（"只减不增"指的是不许**无声地**涨 ✗）。
  */
 const FROZEN_OVERSIZE_COUNT = 14;
 

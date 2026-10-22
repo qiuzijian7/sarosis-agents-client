@@ -1,0 +1,14 @@
+# @vssaros/dsh-market bundle patch: insert the market row.
+#
+# 「工作台商城」的 Host 半（2026-10-21）：工作台**目录**（catalog）服务 ＋ 安装/卸载通道。
+#
+# · 目录 = 随包策展目录（`catalog/index.json`，协议 v2）＋ 可选远程目录
+#   （`config.catalogUrl` / 环境变量 `VSSAROS_MARKET_CATALOG_URL`；15 分钟缓存 ＋ 磁盘快照 ＋ 读失败回落）。
+# · 安装/卸载 = 转交 dsh 官方 `pluginManager`（我们不造第二套装包语义 ✓）。
+# · 路由：`GET /x/market/api/catalog` / `POST /x/market/api/install` / `POST /x/market/api/uninstall`。
+#
+# ⚠ 本行**不读数据根**（磁盘快照取不到数据根时就不落盘）⇒ 不在 dshCli.ts 的「数据根覆盖层」名单里 ✓。
+- insert:
+    - id: vssaros-market
+      name: '@vssaros/dsh-market'
+      config: {}

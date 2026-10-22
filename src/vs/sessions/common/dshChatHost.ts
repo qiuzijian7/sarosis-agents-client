@@ -49,6 +49,17 @@ export interface IDshChatBinding extends IDisposable {
 	layout(): void;
 	/** pane 被聚焦。 */
 	focus(): void;
+	/**
+	 * 本 pane **拿到焦点**（只登记"活动聊天"，**不**动 DOM 焦点）。
+	 *
+	 * 为什么与 `focus()` 分开（2026-10-21，多聊天并排）：
+	 *   `focus()` 会 `HTMLElement.focus()` 到占位元素 —— 在"活动编辑器变化"这种被动事件里调它，
+	 *   会把用户正在输入的**输入框焦点抢走** ✗✗（输入中断）。
+	 *   而"谁是活动聊天"只需要一个登记 ⇒ 单独一个方法，不碰焦点 ✓。
+	 *
+	 * 可选：宿主（legacy 引擎）不实现时，调用方直接忽略即可。
+	 */
+	noteActive?(): void;
 }
 
 export interface IDshChatHostContext {

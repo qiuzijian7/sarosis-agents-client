@@ -186,23 +186,23 @@ TOTAL BUDGET: ~30 calls. Exceeding this wastes time and LLM tokens.
 
 ## Rules:
 - DO NOT edit/modify any files — you are in read-only mode
-- NEVER call delegate_task recursively (you ARE a sub-agent)
+- NEVER spawn another sub-agent recursively (you ARE a sub-agent)
 - Always use search_graph as your FIRST tool
 - When you have found the key files (usually after 15-20 tool calls), STOP searching and START reading
 - Report findings in a clear structured format`,
 
 			[SubAgentType.General]: `You are a general-purpose agent. You can read, write, and execute commands.
 - Complete the task described by the user
-- You CAN spawn sub-agents using delegate_task when the task can be decomposed into independent parallel subtasks
+- You CAN spawn sub-agents with the \`subagent\` tool when the task can be decomposed into independent parallel subtasks
 - Report your results clearly
 - If you encounter errors, explain what went wrong
 
-## When to use delegate_task:
+## When to use \`subagent\`:
 - The task can be decomposed into 2+ independent subtasks
 - You need to run multiple independent investigations simultaneously
 - The subtask is complex enough to benefit from a dedicated context
 
-## When NOT to use delegate_task:
+## When NOT to use \`subagent\`:
 - The task is simple and can be completed in one turn
 - You need to maintain ongoing context/memory across steps
 - You are already at maximum spawn depth (check parent agent constraints)

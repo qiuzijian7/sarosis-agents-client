@@ -45,10 +45,44 @@
  *   时，除了在该根目录起会话，还要让 **IDE 窗口原地进那个工作区**（多根一起进、不重载窗口）。
  *   用户 2026-10-16 报障："点击其他工作区后，没有切换对应的工作区" ⇒ 补齐这一条 ✓。
  *   ⚠ 它**只**做"窗口进工作区"；起/接管会话仍走既有的 `switchWorktree(path)`（两条命令各管一件事 ✓）。
+ * 2026-10-19：`11 → 12`，新增 `kbFeishuSync` —— dsh 知识库页右上「同步飞书」按钮**真的开始同步**
+ *   （用户报："点击后只打开了设置，没有开始同步" ✗）。宿主转成 IDE 命令 `agentStudio.kb.feishuSync`，
+ *   那条命令照真源 `_syncFeishuFromToolbar` 走（未启用 ⇒ 通知 + 定位「飞书同步」分组；已启用 ⇒
+ *   `feishuSync('apply')` ⇒ 在集成终端里跑 `scripts/feishu-sync.mjs`，输出可见）。
+ *   ⚠ 少数**有副作用**的命令之一（会写飞书文档）：触发点只有用户亲手点的那一下，协议不引入任何
+ *   自动/隐式触发路径 ✓。
+ * 2026-10-19：`12 → 13`，`openSession` 增加**可选** `cwd` —— 会话历史插件页双击条目时把它带上来，
+ *   宿主据此先 `session.start({cwd, sessionId})` **幂等接管**再换绑。为什么非加不可（真机日志实证）：
+ *   历史会话通常不在 Host 的 live 集合里，只换绑的话页面 `openSession` 报
+ *   `sessions.retain: unknown session`，界面永久停在「正在打开会话…（已等待 441 秒）」
+ *   ⇒ 用户看到的就是"双击会话 item 打不开对应的聊天框"✗。**纯增量字段**（老页面不传 = 老行为）。
+ * 2026-10-19：`13 → 14`，新增 `renameSession` —— 会话历史插件页右键「重命名会话」。
+ *   改名只能由**聊天页**做（`ctx.sessions.rename` 在客户端）⇒ 宿主转交；没有聊天框绑着该会话时，
+ *   宿主先按 `openSession` 同款把它绑上（含 `session.start` 幂等接管）再改名。
+ * 2026-10-19：`14 → 15`，新增 `openMediaGallery` —— dsh 媒体库页的「打开媒体库」按钮
+ *   （用户要求"媒体库统一成一个 editor pane"）。取代原来的 `openModulePage('/x/media/')`：
+ *   那条只是把 dsh 自己的**文本列表页**放大，给不出缩略图 / 收藏 / 分组 / 标签 / 清理能力。
+ * 2026-10-21：`15 → 16`，新增 `focusIde` —— dsh **桌面窗口**（composed desktop，`surface=chat` 且保留
+ *   官方 chrome）侧栏底部的「IDE」入口：把 VsSaros 的 **IDE 主窗口**提到前台。
+ *   为什么必须有这条：F5 启动后默认显示的就是那个桌面窗口（`sessions.dshHarness.openDesktopOnStartup`），
+ *   用户需要一条**回得去**的路 —— 页面（WebContentsView）拿不到窗口级 API（`window.focus()` 只能激活
+ *   自己所在的窗口 ⇒ 对"回到另一个窗口"无效 ✗）⇒ 只能请宿主代劳 ✓（纯界面命令，不新增任何写能力 ✓）。
  * ⚠ `test/common/dshPageBridge.test.ts` 会拿这个常量去对账 preload 里的 `bridgeVersion`，
  *   只改一边必红 ✓（这正是它存在的意义）。
+ *
+ * 2026-10-21：`16 → 17`，新增 `signInIde` / `signOutIde` —— dsh **窗口**里的登录按钮**接管 IDE 的登录**：
+ *   ① 页面 → IDE：点「登录」⇒ 宿主请 IDE 的 `ITofAuthService.login()`（开系统浏览器走 TOF/OA）✓；
+ *   ② IDE → 页面：登录态（用户/工号/团队）经 `DSH_PAGE_IPC_AUTH` **推**给页面 ⇒ 窗口里的那一行
+ *      与 IDE **始终一致** ✓（推 ⇒ 不参与版本对账；命令 ⇒ 参与 ✓）。
+ *   ⚠ dsh 自己的 DeepSeek 账号（`records["deepseek-account-platform/default"]`）**保持独立**：它的
+ *     grant 载荷/issuer 与 IDE 的 TOF 票据不是一回事（顶替会被启动自删）⇒ 我们只是让**窗口里那一行**
+ *     显示 IDE 的账号，dsh 自己的账号能力照旧保留（见 `client.account.js` 的注释 ✓）。
+ *
+ * 2026-10-21：`17 → 18`，新增 `openSettings` / `openFeedback` —— 窗口**左下角账号菜单**的两条菜单项
+ *   （用户给的参照布局：设置 / 意见反馈 / 退出登录 + 账号 chip）。两者都只是"请 IDE 打开某个界面"，
+ *   页面既不能指定设置项、也不能附带任何内容 ⇒ 无参、无写能力 ✓。
  */
-export const DSH_PAGE_BRIDGE_VERSION = 11;
+export const DSH_PAGE_BRIDGE_VERSION = 18;
 
 /** preload → 主进程的 IPC 通道（经 webContents.ipc，作用域限于该视图）。 */
 export const DSH_PAGE_IPC_INVOKE = 'vssaros:dsh:page';
@@ -62,6 +96,12 @@ export const DSH_PAGE_SESSION_ARG = '--vssaros-dsh-session=';
  * 路由本身由页面 `location.pathname` 决定，不重复传）。
  */
 export const DSH_PAGE_VIEW_ARG = '--vssaros-dsh-view=';
+/**
+ * 同上（2026-10-22）：`surface=workbench` 视图要打开的**模块路由**（`/x/<module>/`）。
+ * 视图本身加载 dsh 客户端根路径 `/`（URL 逐字符同官方），路由只能经这条参数交给页面；
+ * 页面据此调 `desktopWorkbenches.open('vssaros/<module>')`，宿主不在时退回 `<route>?surface=editor`。
+ */
+export const DSH_PAGE_WORKBENCH_ARG = '--vssaros-dsh-workbench=';
 
 /** 工作台 → 页面的主题推送通道（负载经 {@link validateThemeTokens} 校验；方案 5.13.2 P2）。 */
 export const DSH_PAGE_IPC_THEME = 'vssaros:dsh:theme';
@@ -147,6 +187,69 @@ export function validateWorktreeOptions(raw: unknown): IDshWorktreeOption[] | un
 export const DSH_PAGE_IPC_WORKSPACES = 'vssaros:dsh:workspaces';
 /** 同上：preload 派发给页面插件的 DOM 事件名（`detail` = {@link IDshWorkspaceOption}[]）。 */
 export const DSH_PAGE_WORKSPACES_EVENT = 'vssaros-dsh-workspaces';
+
+/**
+ * **IDE 登录态**推给 dsh 页面的通道（2026-10-21）。
+ *
+ * 为什么要它：dsh 窗口底部那行「账号」要**显示 IDE 的登录**（TOF/OA）并与 IDE **保持一致** ⇒
+ * 窗口里登录/登出后、或在 IDE 那边登录/登出后，窗口必须立刻跟上 ⇒ 只能**推**（页面桥是单向的 ✓）。
+ * 机制与 {@link DSH_PAGE_IPC_WORKSPACES} 逐字同款（preload 写 `dataset` + 派 DOM 事件）✓。
+ * ⚠ 这是**推送**不是命令 ⇒ 不参与 `DSH_PAGE_BRIDGE_VERSION` 的对账 ✓。
+ */
+export const DSH_PAGE_IPC_AUTH = 'vssaros:dsh:auth';
+/** 同上：preload 派发给页面插件的 DOM 事件名（`detail` = {@link IDshAuthOption}）。 */
+export const DSH_PAGE_AUTH_EVENT = 'vssaros-dsh-auth';
+
+/**
+ * IDE 侧登录态的**展示投影**（只含展示必需字段 —— 票据/token 绝不下发到页面 ✗）。
+ *
+ * ⚠ 只给"谁登录了"，**不给**凭据：页面拿到的任何东西都不该能被用来冒充该用户（凭据留在 IDE/Host 侧 ✓）。
+ */
+export interface IDshAuthOption {
+	/** 是否已登录（false ⇒ 其余字段无意义）。 */
+	readonly signedIn: boolean;
+	/** 登录名（工号 / 账号名）；未登录时为空串。 */
+	readonly loginName?: string;
+	/** 工号（staff_id）；没有则空串。 */
+	readonly staffId?: string;
+	/** 团队名；没有则空串。 */
+	readonly team?: string;
+	/**
+	 * **最近一次登录/登出失败的原因**（2026-10-21 新增）。
+	 *
+	 * 为什么需要：页面桥是**单向**的（只回 true）⇒ 登录失败时页面**收不到任何回执** ⇒
+	 * 用户看到的还是"未登录"，而真实原因（浏览器被关 / 网关超时 / 账号被拒）只落在 IDE 日志里
+	 *   ⇒ 页面只能干等超时兜底（本仓"点了没反应"的高频形态）✗ ⇒ 失败必须**可见** ✓。
+	 *
+	 * ⚠ 只给**一句人话**（≤200 字符）：不含堆栈、路径、票据等敏感内容 ✓。
+	 * ⚠ 这是**推送**不是命令 ⇒ 不参与 `DSH_PAGE_BRIDGE_VERSION` 的对账 ✓（与登录态同款）。
+	 */
+	readonly error?: string;
+}
+
+/** 校验 {@link IDshAuthOption} 的形状（推送载荷 ⇒ 宿主侧只收"形状对"的，别的丢弃）。 */
+export function validateAuthOption(raw: unknown): IDshAuthOption | undefined {
+	if (typeof raw !== 'object' || raw === null) {
+		return undefined;
+	}
+	const r = raw as Record<string, unknown>;
+	if (typeof r.signedIn !== 'boolean') {
+		return undefined;
+	}
+	const str = (v: unknown): string => (typeof v === 'string' ? v.slice(0, 64) : '');
+	const out: IDshAuthOption = {
+		signedIn: r.signedIn,
+		loginName: str(r.loginName),
+		staffId: str(r.staffId),
+		team: str(r.team),
+	};
+	// 失败原因：**有才带**（空串当作没有 ⇒ 页面不会显示一个空的错误条 ✗）
+	const err = typeof r.error === 'string' ? r.error.trim().slice(0, 200) : '';
+	if (err) {
+		return { ...out, error: err };
+	}
+	return out;
+}
 
 /** 多根工作区里的一个根（**只含展示必需字段** —— 页面拿不到 IDE 记录的其余部分 ✓）。 */
 export interface IDshWorkspaceRootOption {
@@ -235,6 +338,22 @@ export const DSH_PAGE_IPC_RENAME = 'vssaros:dsh:rename';
 export const DSH_PAGE_RENAME_EVENT = 'vssaros-dsh-rename';
 
 /**
+ * ★ 2026-10-19（A1 第 4 步）：改名的**回执**（页面 → 工作台）。
+ *
+ * 为什么要有这一条：上面的 `DSH_PAGE_IPC_RENAME` 是单向推送，调用方（会话侧栏）**无从知道
+ * 改成了没有** ⇒ 只能乐观刷新 = 假成功 ✗。而 `dshPageBridgeProtocol.ts:79` 那条桥是
+ * **没有语义返回值**的（只回 `true` / `'pong'`）⇒ 不能拿它当回执。
+ * ⇒ 与 rebind / rename 同机制的**反向**消息：页面改完派 `vssaros-dsh-renamed`（成功带 title、
+ * 失败带 error），preload 收到后经这条上送主进程，主进程 fire `kind:'renamed'` 的页面事件。
+ *
+ * ⚠ 频道名与事件名：IPC 用 `vssaros:dsh:renamed`，DOM 事件仍叫 `vssaros-dsh-renamed`
+ * （页面 `client.sessionLabel.js:69/73` 已经在派这个名字 ⇒ 不能改）。
+ */
+export const DSH_PAGE_IPC_RENAMED = 'vssaros:dsh:renamed';
+/** 同上：页面插件派发的 DOM 事件名（须与 client.sessionLabel.js 的派发名一致）。 */
+export const DSH_PAGE_RENAMED_EVENT = 'vssaros-dsh-renamed';
+
+/**
  * 计费样本推送（主进程的计费探针代理 → 页面）——与上面几条同机制的反向消息：
  * 代理在链路上从网关响应里读到 `usage.credit` 后，宿主把样本推给视图，preload 派 DOM 事件，
  * chat-surface（`client.usage.js`）按**回合时间窗**归属并渲染「积分」chip。
@@ -314,15 +433,20 @@ export const DSH_PAGE_CHAT_ONLY_ARG = '--vssaros-dsh-chat-only=';
  * 由单测比对（preload 不能 import 本模块）。
  */
 export const DSH_CHAT_ONLY_CSS = [
-	'[data-slot="sidebar"], [data-slot="rightbar"], [data-rightbar-col="true"] { display: none !important; }',
-	// 栅格收成单栏。锚点必须是 layout frame 本身：`div:has(> [data-shell-overlay])`
-	// —— overlayLayer 是 frame 无条件的直接子元素（AppFrame 的 :has 锚，不用哈希类名）。
-	// 不能像 v0 那样锚 `[data-sidebar-collapsed]`：该属性只在**侧栏折叠态**存在，
-	// 侧栏展开时缺失 → 首列仍按 frame inline style 的 `<sidebar>px` 保留宽度（内容已 display:none）
-	// → 左侧留一条空白列（v0 实测截图）。`!important` 可压过 inline grid-template-columns。
-	'div:has(> [data-shell-overlay]) { grid-template-columns: 0 minmax(0, 1fr) 0 !important; }',
-	// 右侧栏折叠时它会在聊天列里留一个"展开右侧栏"按钮（实测可见）：一并隐藏，否则用户能把它拉回来。
-	'[data-sidebar-right-expand] { display: none !important; }',
+	// ★★ 2026-10-19（用户报「右侧缺少用户消息定位 UI，官方 dsh 里有」）：
+	//   **只隐藏左侧栏**（品牌行 + 会话列表 —— IDE 那边已经有会话历史了）。
+	//   右侧栏（**轨迹** / 任务 / 交付物）**必须保留**：轨迹里的"交互式时间概览"就是
+	//   用户说的"用户消息定位"（官方 `dsh-client-ui-trajectory`，按轮次的时间线 + 点击定位）。
+	//   从前把 `[data-slot="rightbar"]` 一起 display:none 了 ⇒ 那个入口整个消失 ✗
+	'[data-slot="sidebar"] { display: none !important; }',
+	// 栅格：左列 0、中间弹性、**右列 auto**。右栏处于折叠态时宽度是 0 ⇒ auto 列不占地方，
+	// 默认布局与从前一致；用户点"展开右栏"按钮才把轨迹拉出来（可控，不是强塞宽度 ✓）。
+	// 锚点必须是 layout frame 本身：`div:has(> [data-shell-overlay])` —— overlayLayer 是它的直接子元素。
+	// 不能锚 `[data-sidebar-collapsed]`：该属性只在侧栏折叠态存在，展开时缺失 ⇒ 左列会留白。
+	'div:has(> [data-shell-overlay]) { grid-template-columns: 0 minmax(0, 1fr) auto !important; }',
+	// ⚠ 从前这里还有一条 `[data-sidebar-right-expand] { display: none !important; }`
+	//   （"右侧栏折叠时那个展开按钮一并隐藏"）—— 现在**必须去掉**：那是把右栏拉回来的唯一入口，
+	//   去掉它等于"右栏还在但用户永远打不开"（等于没恢复 ✗）。
 ].join('\n');
 
 export type DshPageCommand =
@@ -342,8 +466,28 @@ export type DshPageCommand =
 	 *
 	 * `agentPreset` 可选：页面从会话快照里读到该会话的 preset，宿主据此同步自己的 preset 记账
 	 * （不传则宿主不动 preset 状态）。
+	 *
+	 * `cwd` 可选（2026-10-19 新增）：这条会话的**工作目录**（页面从会话快照里读到）。
+	 * 为什么需要它：历史会话在 Host 那边可能**不在 live 集合里**（只有磁盘上的投影缓存），
+	 * 此时页面 `openSession` 必报 `sessions.retain: unknown session`、界面永远停在
+	 * 「正在打开会话…（已等待 N 秒）」。宿主拿到 cwd 就能先 `session.start({cwd, sessionId})`
+	 * **幂等接管**这条会话（把它拉活），再做换绑 ⇒ 历史会话才真的打得开。
+	 * ⚠ 不带 cwd 时宿主只能按老路换绑（界面仍可能打不开）——所以页面**应当**能拿到就带上。
 	 */
-	| { readonly method: 'openSession'; readonly sessionId: string; readonly agentPreset?: string }
+	| { readonly method: 'openSession'; readonly sessionId: string; readonly agentPreset?: string; readonly cwd?: string }
+	/**
+	 * **重命名一条 dsh 会话**（2026-10-19，桥 `13 → 14`；会话历史插件页右键「重命名会话」）。
+	 *
+	 * 为什么必须交宿主：改名只有**页面**能做（dsh 的 `ctx.sessions.rename` 在聊天页的客户端里），
+	 * 而插件页没有 dsh 客户端上下文 ⇒ 宿主把请求转给"正在显示这条会话的聊天视图"
+	 * （`dshViewHost` → IPC → preload → chat-surface 的 `ctx.sessions.rename`），
+	 * 成功/失败由页面的 `vssaros-dsh-renamed` 回执告知（见 `IDshSessionRenamedResult`）。
+	 *
+	 * `cwd` / `agentPreset` 可选：这条会话当前**没在任何聊天框里打开**时，宿主可以顺手把它
+	 * 绑到一个聊天视图上（`openSession` 同款：先 `session.start` 幂等接管）再改名 ——
+	 * 否则"没有聊天框"就只能拒绝，用户会觉得"重命名功能坏了"。
+	 */
+	| { readonly method: 'renameSession'; readonly sessionId: string; readonly title: string; readonly agentPreset?: string; readonly cwd?: string }
 	/**
 	 * 把**当前这个插件页**在 VsSaros 的**编辑区**里打开（2026-10-13 新增，桥版本 `2 → 3`）。
 	 *
@@ -368,6 +512,19 @@ export type DshPageCommand =
 | { readonly method: 'openKbSettings' }
 /** 同上：请宿主打开**知识库关系图谱**（中间栏 EditorPane `KnowledgeBaseGraphEditorPane` ✓）。 */
 | { readonly method: 'openKbGraph' }
+/**
+ * 请宿主**开始同步飞书**（2026-10-19 新增，桥 `11 → 12`；用户报"点了同步飞书按钮只打开设置，不开始同步"）。
+ *
+ * 为什么必须交宿主：同步 = 在**集成终端**里跑 `scripts/feishu-sync.mjs`（分钟级、输出要用户可见），
+ * dsh 页面既没有终端、也不该自带写通道 ✗ ⇒ 只能转成 IDE 命令 `agentStudio.kb.feishuSync` ✓
+ * （那条命令内部照真源 `_syncFeishuFromToolbar` 走：**未启用 ⇒ 通知 + 打开设置的「飞书同步」分组**；
+ *   已启用 ⇒ `feishuSync('apply')`）—— 与 `openKbSettings` 同一套"命令 ⇒ 服务方法"的实现 ✓。
+ *
+ * **无参数**：同步哪个库 / dry-run 还是 apply 都由 IDE 侧判定 ✓（页面不得指定 ✓，少一处校验面）。
+ * ⚠ 这条是**有副作用**的少数命令之一（会写飞书文档）—— 但触发点是用户**亲手点的按钮**，
+ *   与真源工具栏按钮同一语义 ✓；协议因此**不新增任何隐式/自动触发路径**（只有点击这一条路）。
+ */
+| { readonly method: 'kbFeishuSync' }
 /**
  * 请宿主**添加一个知识库**（把某个文件夹配置成知识库；2026-10-15 新增，桥 `7 → 8`）。
  *
@@ -495,6 +652,30 @@ export type DshPageCommand =
  * 由用户在那页操作 ✓）。
  */
 | { readonly method: 'openSkillMarket' }
+/**
+ * 打开 **VsSaros 的媒体库**（`MediaGalleryEditorPane`，编辑区页；2026-10-19，桥 `14 → 15`）。
+ *
+ * 为什么必须经宿主：与 `openSkillMarket` 同源 —— 媒体库是 VsSaros 的原生 `EditorPane`
+ * （`MediaGalleryEditorInput`），dsh 页面（WebContentsView）创建不了编辑器 ✓。
+ *
+ * 触发点：dsh 媒体库页 `/x/media/` 的置顶「打开媒体库」按钮。**取代**了原先那条
+ * `openModulePage('/x/media/')`（那只是把 dsh 自己的列表页放大，给不出缩略图/收藏/分组/标签）。
+ * 无参（没有可被伪造的输入；打开的是"全库"视图，不带工作流上下文 ✓）。
+ */
+| { readonly method: 'openMediaGallery' }
+/**
+ * 把 **VsSaros 的 IDE 主窗口**提到前台（2026-10-21 新增，桥 `15 → 16`）。
+ *
+ * 触发点：dsh **桌面窗口**（composed desktop）侧栏底部那行「VsSaros · N 个工作区 · M 条会话」——
+ * 它现在就是「回到 IDE」的入口（用户 2026-10-21 要求"窗口版中增加 IDE 入口可以进入 VsSaros 界面"）。
+ *
+ * 为什么必须经宿主：页面是 WebContentsView 里的 dsh 前端，**拿不到窗口级 API**；
+ * `window.focus()` 只能激活它自己所在的那个窗口 ⇒ 对"回到另一个窗口"完全无效 ✗。
+ *
+ * 无参（没有可被伪造的输入 ✓）；宿主侧只做 `focusWindow`，不关窗、不改任何状态 ⇒
+ * 桌面窗口仍在原处，用户可以随时再切回来 ✓（不做成"关闭桌面窗口"是刻意的：关了就回不去）。
+ */
+| { readonly method: 'focusIde' }
 	/**
 	 * 打开 **Agent 花名册 / 管理**（输入框 Agents 面板的底部动作）。
 	 *
@@ -557,7 +738,65 @@ export type DshPageCommand =
  * —— folder 列表的合法写者只有少数几处（`workspaceFolderWriters.test.ts` 的 ALLOWED_FOLDER_WRITERS），
  * 且历史上"追加式注入 folder"引发过跨工作区污染（见 `sourceControl.contribution.ts` 的事故记录）✗。
  */
-| { readonly method: 'switchWorkspace'; readonly workspaceId: string };
+| { readonly method: 'switchWorkspace'; readonly workspaceId: string }
+	/**
+	 * 请 **IDE 侧**登录（2026-10-21，桥 `16 → 17`）：dsh 窗口里的「登录」按钮**不自己登录**，
+	 * 而是请 IDE 走它那套账号流程（TOF/OA：开系统浏览器）⇒ 窗口与 IDE **同一份登录态** ✓。
+	 *
+	 * ⚠ 无参：页面**不能**指定"登录成谁 / 登出谁"（那是 IDE 侧账号服务的事 ✗）⇒ 只表达意图 ✓。
+	 * ⚠ 页面桥是**单向**的（只回 true）⇒ 登录结果**不回传**；窗口那一行的状态由 IDE 推
+	 *   （`DSH_PAGE_IPC_AUTH`）⇒ 不猜、不缓存 ✓。
+	 */
+	| { readonly method: 'signInIde' }
+	/** 同上：登出（IDE 侧账号服务执行）。 */
+	| { readonly method: 'signOutIde' }
+	/**
+	 * 打开 **IDE 的设置页**（2026-10-21 新增，桥 `17 → 18`）。
+	 *
+	 * 触发点：dsh 窗口**左下角**账号菜单（`client.account.js` 的弹层）里的「⚙ 设置」——
+	 * 用户给的参照布局就是这个账号菜单（设置 / 意见反馈 / 退出登录 + 账号 chip）。
+	 *
+	 * 为什么经宿主：dsh 页面（WebContentsView）里没有 IDE 的设置编辑器；`Ctrl+,` 只在 IDE 窗口内有效
+	 * ⇒ 只有宿主能执行 `workbench.action.openSettings` ✓。无参（页面不能指定"打开哪一条设置"）。
+	 */
+	| { readonly method: 'openSettings' }
+	/**
+	 * 打开 **IDE 的意见反馈**（2026-10-21 新增，桥 `17 → 18`，与 `openSettings` 同批）。
+	 *
+	 * 触发点：同一个账号菜单里的「✈ 意见反馈」。宿主执行 `workbench.action.openIssueReporter`
+	 * （带环境/扩展信息的标准反馈通道，比丢一个 URL 靠谱 ✓）。无参。
+	 */
+	| { readonly method: 'openFeedback' };
+
+/**
+ * **不需要 IDE 主窗口露面**的页面桥命令（2026-10-21 新增；原先是 `dshHarness.contribution.ts` 里的私有静态集，
+ * 提到 common 是为了**能被单测钉住** —— 私有静态集没人能断言，等于没有守卫 ✗）。
+ *
+ * 背景：启动时若把 IDE 主窗口收进了任务栏（`openDesktopOnStartup`，"F5 只看到 dsh 窗口"），
+ * 而命令作用在看不见的窗口上 ⇒ 用户看到的就是"点了没反应"（本仓高频缺陷形态）⇒ 所以凡是要让
+ * IDE 出界面的命令，到达时先把主窗口还原到前台（`DshPageCommandContribution._handle` 开头）。
+ *
+ * ⚠ 用**黑名单**（这份名单）而不是白名单：新增的桥命令默认按"要给 IDE 出界面"处理，
+ *   忘登记只会多还原一次窗口，不会变成"点了没反应" ✓。
+ *
+ * ★★ 2026-10-21（用户原话："窗口模式下，点击登录会切换到 ide 模式，要求不切换，在当前模式下，直接登录"）：
+ *   `signInIde` / `signOutIde` 登记进这份名单 ⇒ 窗口里点「登录」**不再**把 IDE 主窗口拉到前台 ✓。
+ *   为什么它们**不需要** IDE 界面：TOF/OA 登录全程在**扩展宿主 + 系统浏览器**里完成
+ *   （`extensions/tof-authentication`：起 loopback server → `env.openExternal` 开浏览器 → 等回调 →
+ *   `fetchWhoami`），IDE 窗口既不弹窗也不需要被看见 ⇒ 登录能在**当前窗口里原地完成** ✓。
+ *   登录结果由 IDE 通过 `DSH_PAGE_IPC_AUTH` **推**回页面（状态是推的 ⇒ 不会说谎 ✓），
+ *   页面那行「登录」/「退出登录」随即翻转。
+ */
+export const DSH_PAGE_COMMANDS_WITHOUT_IDE_UI: ReadonlySet<Exclude<DshPageCommand['method'], 'ping'>> = new Set([
+	'notify',                    // 只是 IDE 的通知条（在收起的窗口里弹也无所谓）
+	'focusIde',                  // 本身就是"回 IDE"，由下面自己的分支处理
+	'insertChatReference',       // 投给活动聊天框
+	'sessionTitle', 'sessionPersona',   // 页面 → 工作台的上报
+	'switchPreset', 'newSession',       // 聊天宿主自己换绑 / 本页新会话
+	'switchWorktree', 'switchWorkspace', // 宿主侧起会话 / 换工作区（无 IDE 界面变化）
+	'kbFeishuSync', 'kbAddVault', 'kbRemoveVault', // 数据动作（原生对话框自带前台）
+	'signInIde', 'signOutIde',   // ★ 账号动作：浏览器里登录，IDE 窗口不必露面 ⇒ 不许切模式 ✗
+]);
 
 export interface IDshPageKeyEvent {
 	readonly key: string;
@@ -574,7 +813,13 @@ export interface IDshPageKeyEvent {
 export type DshPageEvent =
 	| { readonly viewId: string; readonly kind: 'command'; readonly command: Exclude<DshPageCommand, { method: 'ping' }> }
 	| { readonly viewId: string; readonly kind: 'keydown'; readonly event: IDshPageKeyEvent }
-	| { readonly viewId: string; readonly kind: 'focus' };
+	| { readonly viewId: string; readonly kind: 'focus' }
+	/**
+	 * ★ 2026-10-19：改名**回执**（页面 → 工作台）。
+	 * `error` 有值 = 页面侧改名失败（含 `ctx.sessions.rename` 不可用、dsh 拒绝）；调用方必须看它，
+	 * 不能把"命令已发出"当成"改成功了" ✗（上一次踩坑就是这么来的：桥无返回值 + 乐观刷新）。
+	 */
+	| { readonly viewId: string; readonly kind: 'renamed'; readonly sessionId: string; readonly title?: string; readonly error?: string };
 
 const MAX_PATH = 4096;
 const MAX_TEXT = 500;
@@ -747,14 +992,51 @@ export function validatePageCommand(raw: unknown): DshPageCommand | undefined {
 			return { method: 'switchWorktree', path: r.path };
 		}
 		case 'openSession': {
-			// 只放形状（真正的权威校验在宿主：`isDshChatSessionId`）；preset 允许缺省。
+			// 只放形状（真正的权威校验在宿主：`isDshChatSessionId`）；preset / cwd 允许缺省。
 			if (typeof r.sessionId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(r.sessionId)) {
 				return undefined;
 			}
 			if (r.agentPreset !== undefined && (typeof r.agentPreset !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(r.agentPreset))) {
 				return undefined;
 			}
-			return { method: 'openSession', sessionId: r.sessionId, ...(r.agentPreset === undefined ? {} : { agentPreset: r.agentPreset }) };
+			// `cwd`（2026-10-19）：绝对路径形状；带控制字符 / 非绝对路径一律拒（宿主会拿它去 session.start）。
+			if (r.cwd !== undefined && (typeof r.cwd !== 'string' || !isAbsoluteFsPath(r.cwd) || /[\u0000-\u001f]/.test(r.cwd))) {
+				return undefined;
+			}
+			return {
+				method: 'openSession',
+				sessionId: r.sessionId,
+				...(r.agentPreset === undefined ? {} : { agentPreset: r.agentPreset }),
+				...(r.cwd === undefined ? {} : { cwd: r.cwd }),
+			};
+		}
+		case 'renameSession': {
+			// 改名：id/preset/cwd 与 openSession 同一套形状；`title` 是**用户输入** ⇒ 必须收紧
+			//   （非空、去首尾空白后仍非空、上限 120、拒控制字符 —— dsh 侧 `session/title-invalid` 会拒，
+			//   但桥这层先挡能给出更早、更清楚的拒绝）。
+			if (typeof r.sessionId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(r.sessionId)) {
+				return undefined;
+			}
+			if (typeof r.title !== 'string') {
+				return undefined;
+			}
+			const title = r.title.trim();
+			if (!title || title.length > 120 || /[\u0000-\u001f]/.test(title)) {
+				return undefined;
+			}
+			if (r.agentPreset !== undefined && (typeof r.agentPreset !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(r.agentPreset))) {
+				return undefined;
+			}
+			if (r.cwd !== undefined && (typeof r.cwd !== 'string' || !isAbsoluteFsPath(r.cwd) || /[\u0000-\u001f]/.test(r.cwd))) {
+				return undefined;
+			}
+			return {
+				method: 'renameSession',
+				sessionId: r.sessionId,
+				title,
+				...(r.agentPreset === undefined ? {} : { agentPreset: r.agentPreset }),
+				...(r.cwd === undefined ? {} : { cwd: r.cwd }),
+			};
 		}
 		case 'switchPreset': {
 			// dsh preset id：字母数字开头，可含 . _ -（如 standard/ptc/cordis/自定义）；拒绝路径字符与空白。
@@ -822,6 +1104,11 @@ export function validatePageCommand(raw: unknown): DshPageCommand | undefined {
 			return { method: 'openKbSettings' };
 		case 'openKbGraph':
 			return { method: 'openKbGraph' };
+		case 'kbFeishuSync':
+			// 桥 `11 → 12`（2026-10-19）：页面「同步飞书」按钮 ⇒ 宿主转 `agentStudio.kb.feishuSync`。
+			// ⚠ 与上面两条同一个教训：**协议声明了就必须有 case**（漏了会落到 default 被静默丢弃，
+			//   真机表现是"点了没反应"✗）—— 由 dshPageBridge.test.ts 的全族扫描守卫钉住。
+			return { method: 'kbFeishuSync' };
 		case 'kbAddVault':
 			// 知识库增删（桥 `7 → 8`，2026-10-15）。`kbAddVault` **无参**（选哪个目录由用户在原生对话框里定 ✓）。
 			return { method: 'kbAddVault' };
@@ -839,6 +1126,26 @@ export function validatePageCommand(raw: unknown): DshPageCommand | undefined {
 		// 无参命令（与 openAgentMarket 同一形态：没有可伪造的入参 ⇒ 不需要形状校验 ✓）
 		case 'openSkillMarket':
 			return { method: 'openSkillMarket' };
+		// 桥 `14 → 15`（2026-10-19）：无参命令（与上面两条同形态）。
+		case 'openMediaGallery':
+			return { method: 'openMediaGallery' };
+		// 桥 `15 → 16`（2026-10-21）：回到 IDE 主窗口。无参（与上面三条同形态）。
+		// ⚠ 协议声明了就必须有 case —— 漏了会落到 default 被**静默丢弃**（真机表现"点了没反应"✗），
+		//   由 dshPageBridge.test.ts 的全族扫描守卫钉住。
+		case 'focusIde':
+			return { method: 'focusIde' };
+		// 桥 `16 → 17`（2026-10-21）：登录/登出**接管 IDE 的账号**（TOF/OA）。
+		// ⚠ 协议声明了就必须有 case —— 漏了会落到 default 被**静默丢弃**（真机表现"点了没反应"✗），
+		//   由 dshPageBridge.test.ts 的全族扫描守卫钉住 ✓。
+		case 'signInIde':
+			return { method: 'signInIde' };
+		case 'signOutIde':
+			return { method: 'signOutIde' };
+		// 桥 `17 → 18`（2026-10-21）：左下角账号菜单里的「设置 / 意见反馈」。无参（同上）。
+		case 'openSettings':
+			return { method: 'openSettings' };
+		case 'openFeedback':
+			return { method: 'openFeedback' };
 			case 'openAgentRoster':
 			return { method: 'openAgentRoster' };
 			case 'openAgentSettings': {

@@ -25,6 +25,8 @@ import { registerIcon } from '../../../../platform/theme/common/iconRegistry.js'
 import { Action2, registerAction2, MenuId, MenuRegistry } from '../../../../platform/actions/common/actions.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { ActiveEditorContext } from '../../../../workbench/common/contextkeys.js';
+// 「本组在不在中间栏」（**组作用域** key）—— 中间栏入口 UI 的 when 条件。
+import { EditorGroupInMainPartContext } from '../../../common/contextkeys.js';
 import { AuxChatSessionSideView } from '../../sessionHistory/browser/auxChatSessionSideView.js';
 import { mainWindow } from '../../../../base/browser/window.js';
 import { KeyMod, KeyCode } from '../../../../base/common/keyCodes.js';
@@ -42,6 +44,10 @@ import './services/llmWikiAdapter.contribution.js';
 // Chat tab "Rename" command + editor title context menu entry.
 // Side-effect import: the module self-registers the command and menu item.
 import './chatTabRename.js';
+
+// 「中间栏新建聊天」入口 UI 的支撑（组作用域 context key）。
+// Side-effect import: the module self-registers the workbench contribution.
+import './middleColumnChatEntry.js';
 
 import { EditorExtensions, IEditorFactoryRegistry, IEditorSerializer } from '../../../../workbench/common/editor.js';
 import { IEditorPaneRegistry, EditorPaneDescriptor } from '../../../../workbench/browser/editor.js';
@@ -66,7 +72,7 @@ import { AgentStudioService } from './agentStudioService.js';
 import { AgentChatService } from './agentChatService.js';
 import { ConfigHtmlService } from './configHtmlService.js';
 // ★ 2026-09-20：图表预览的主题探测共用 mermaidCard 的鲁棒实现 ✓（body 类名缺失 ⇒ 预览白色渲染 ✗）
-import { detectDiagramTheme } from '../../../browser/agentChat/agentChatPanel.mermaidCard.js';
+import { detectDiagramTheme } from '../../../browser/diagramTheme.js';
 import { AgentOSService } from './agentOSService.js';
 import { AgentDriverService } from './agentDriverService.js';
 import { ModelSelectorService } from './modelSelectorService.js';
@@ -197,6 +203,7 @@ import {
 	AGENT_STUDIO_SKILLS_MAX_PROMPT_CHARS_SETTING,
 	AGENT_STUDIO_TOOL_SEARCH_ENABLED_SETTING,
 	AGENT_STUDIO_TOOL_SEARCH_THRESHOLD_PCT_SETTING,
+	AGENT_STUDIO_MEMORY_INJECT_CONTEXT_SETTING,
 	AGENT_STUDIO_UNREAL_BRIDGE_URL_SETTING,
 	AGENT_STUDIO_WEB_SEARCH_PROVIDER_SETTING,
 	AGENT_STUDIO_WEB_SEARCH_SEARXNG_URL_SETTING,
@@ -1017,6 +1024,16 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'boolean',
 			default: true,
 			description: localize('agentStudio.webSearch.cacheEnabled', "启用检索侧的两级缓存：① `web_extract` 的页面正文本地缓存（24 小时、最多 40 页；命中时输出会标注捕获时间，模型可传 refresh=true 强制重抓）；② `web_search` 的**结果备忘**（进程内、20 分钟；键含 provider 与归一化查询，同 key 并发只打一次网）。关掉则每次都真的打网。"),
+		},
+		// ── AgentMemory 检索库注入（2026-10-20）──────────────────────────────────
+		// 与 Agents 页签的「MEMORY.md 常驻注入」是两套：那条在 dsh 插件侧（memory-chars，默认开），
+		// 这条在 IDE 侧（agentmemory 的策展块，默认关）。用户此前只能靠环境变量
+		// AGENTMEMORY_INJECT_CONTEXT 打开，设置 UI 里看不到也搜不到 ⇒ 这里补注册。
+		// 环境变量仍然有效：两者任一为真即注入（本项 default false，不会覆盖环境变量）。
+		[AGENT_STUDIO_MEMORY_INJECT_CONTEXT_SETTING]: {
+			type: 'boolean',
+			default: false,
+			description: localize('agentStudio.memory.injectContext', "每轮把 AgentMemory 检索库的策展块（<agentmemory-context>）注入系统提示。**默认关闭**：关着时召回走 memory_search / memory_recall 工具，写入（capture）始终常开 —— 这样能省掉每轮 3000~5000 字符的 token，也避免跨 agent 的记忆污染。⚠ 这不是「MEMORY.md 常驻注入」（那个由每个 agent 的 memory-chars 控制）—— 两套记忆互不写入。"),
 		},
 		// ── browser_* 工具（CDP 驱动真实 Chrome，P1-2）────────────────────────
 		[AGENT_STUDIO_BROWSER_CDP_ENABLED_SETTING]: {
@@ -2758,6 +2775,30 @@ registerAction2(class extends Action2 {
 	}
 });
 
+// 打开 **媒体库**（`MediaGalleryEditorPane`）—— dsh 媒体库页 `/x/media/` 的置顶按钮
+// 「打开媒体库」经页面桥 `openMediaGallery` 转过来（桥 `14 → 15`，2026-10-19；用户要求
+// "媒体库统一成一个 editor pane"）。与 `agentStudio.openSkillMarket` 同款理由：
+// 媒体库是原生 `EditorPane`，**页面开不了编辑器** ⇒ 交宿主执行命令 ✓。
+// ⚠ 一律 `applyContext({})`（全库）：从 dsh 页/工作台进来时不该沿用上次"只看某工作流"的范围 ✗。
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: 'agentStudio.openMediaGallery',
+			title: localize2('agentStudio.openMediaGallery', 'Open Media Gallery'),
+			f1: true,
+			category: localize2('agentStudio.category', 'Agent Studio'),
+		});
+	}
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const editorService = accessor.get(IEditorService);
+		const editorGroupsService = accessor.get(IEditorGroupsService);
+		const input = MediaGalleryEditorInput.getOrCreate();
+		input.applyContext({});
+		const groups = editorGroupsService.getGroups(0 /* GroupsOrder.CREATION_TIME */);
+		await editorService.openEditor(input, { pinned: true }, groups.length <= 1 ? SIDE_GROUP : groups[0]);
+	}
+});
+
 // ─── Open Dashboard Command ────────────────────────────────────────────
 // Opens the AgentStudio Dashboard in the editor area.
 registerAction2(class extends Action2 {
@@ -3071,12 +3112,17 @@ class AuxChatSideViewContribution extends Disposable implements IWorkbenchContri
 
 registerWorkbenchContribution2(AuxChatSideViewContribution.ID, AuxChatSideViewContribution, WorkbenchPhase.AfterRestored);
 
-// ── app 顶部标题栏「新建聊天」按钮 ──────────────────────────────────────
-// 用户要求（2026-09-15）：把原先在「聊天编辑器标题栏」的 `+` 按钮**移到 app 顶部
-// 标题栏**（见 `sessions/browser/parts/titlebarPart.ts` 的
-// `#agent-studio-titlebar-toggle-container`，与 popout 按钮相邻）。
-// 命令仍在此注册，标题栏按钮按 id 调用 ⇒ 不再注册 MenuId.EditorTitle 菜单项，
-// 也去掉 `precondition`（全局入口不依赖「当前活动编辑器是聊天」）。
+// ── 「新建聊天」命令 + 它的三处入口 ─────────────────────────────────────
+// 入口（2026-10-21 补齐「中间栏」这一处）：
+//  ① app 顶部标题栏的裸 DOM 按钮（见 `sessions/browser/parts/titlebarPart.ts` 的
+//     `#agent-studio-titlebar-toggle-container`，与 popout 按钮相邻）—— 2026-09-15 起在此；
+//     ⚠ **桌面版主窗口没有这条标题栏**（用上游 `MainNativeTitlebarPart`）⇒ 在那边它不存在；
+//  ② 中间栏的**组标题栏** ＋ 按钮（`MenuId.EditorTitle`）+ **空组**右上角 ＋（`MenuId.EmptyEditorGroup`）
+//     —— 上游渲染 ⇒ **所有窗口都有**（含桌面版）✓；when 用**组作用域** key
+//     （`EditorGroupInMainPartContext`）⇒ 只有中间栏的组才长这个按钮 ✓；
+//  ③ 聊天页签**右键菜单**（`MenuId.EditorTitleContext`）⇒ 已开着聊天时也能"再并排开一个"。
+//
+// 命令本身不设 `precondition`（入口不依赖"当前活动编辑器是聊天"）。
 registerAction2(class extends Action2 {
 	constructor() {
 		super({
@@ -3084,6 +3130,16 @@ registerAction2(class extends Action2 {
 			title: localize2('agentStudio.newChatInEditor', '新建聊天'),
 			f1: false,
 			icon: Codicon.add,
+			menu: [
+				// 组标题栏右侧动作区（上游渲染 ⇒ 桌面版也有）。
+				// ⚠ `order` 取小值但不为负：官方 `toggleMaximizeEditorGroup` 用了 -10000（最靠左），
+				//   我们排在它后面 ⇒ 不会挤掉官方按钮（动作区超过 9 个会折叠进 overflow ✗）。
+				{ id: MenuId.EditorTitle, group: 'navigation', order: 5, when: EditorGroupInMainPartContext },
+				// 空组右上角的动作条（中间栏没有打开任何文件时，这是唯一露头的入口）。
+				{ id: MenuId.EmptyEditorGroup, group: 'navigation', order: 5, when: EditorGroupInMainPartContext },
+				// 聊天页签右键菜单。
+				{ id: MenuId.EditorTitleContext, group: 'navigation', order: 33, when: EditorGroupInMainPartContext },
+			],
 		});
 	}
 	run(accessor: ServicesAccessor, arg?: unknown): void {
@@ -3101,8 +3157,9 @@ registerAction2(class extends Action2 {
 			input.setDshPreset(presetId);
 		}
 
-		// 聊天框的合法归属只有两个：主窗口 agentPart（右侧 agent 专区）或 popout 出的
-		// 独立窗口（aux part）。严禁落入中间栏 mainPart（file editor instance）。
+		// 聊天框的归属：**跟着用户的当前所在栏走** —— 主窗口 agentPart（右侧 agent 专区）、
+		// 中间栏 mainPart（2026-10-21 起支持"中间栏并排多个聊天同时跑"）、popout 出的
+		// 独立窗口（aux part）。
 		//
 		// 目标 part 判定用「活动编辑器（+ 按钮所在标题栏）的 group」经 getPart(group)
 		// 按 group→part 确定性路由（一个 group id 只属于一个 part），而非依赖
@@ -3110,7 +3167,21 @@ registerAction2(class extends Action2 {
 		// 未落到 part 容器内而误判成 mainPart。
 		const agentPart = getAgentPart(editorGroupsService);
 		const activePane = editorService.activeEditorPane;
-		const activeGroup = activePane?.group;
+		// ⚠ 2026-10-21：组标题栏/空组动作区的点击会带上**按钮所在 group** 的 id
+		//   （上游 `EditorCommandsContextActionRunner` 把 `{ groupId }` 作为命令参数传进来，
+		//   见 `editorTabsControl.ts:51-74` + `:255`；`IEditorCommandsContext.groupId` 是**数字**
+		//   —— `GroupIdentifier = number`，见 `workbench/common/editor.ts:1198`）⇒ **以它为准**，
+		//   否则"点中间栏第 2 个 group 的 ＋ 却开在别处"（活动组可能在别的 part）✗。
+		const rawGroupId = (arg && typeof arg === 'object')
+			? (arg as { groupId?: unknown }).groupId
+			: undefined;
+		const clickedGroupId = typeof rawGroupId === 'number'
+			? rawGroupId
+			: (typeof rawGroupId === 'string' && rawGroupId.trim() ? Number(rawGroupId.trim()) : NaN);
+		const clickedGroup = Number.isFinite(clickedGroupId)
+			? editorGroupsService.getGroup(clickedGroupId)
+			: undefined;
+		const activeGroup = clickedGroup ?? activePane?.group;
 		const activePart = activeGroup ? editorGroupsService.getPart(activeGroup) : undefined;
 
 		// ① 活动编辑器在 agentPart（主窗口 agent 专区）：每个新聊天默认开在独立 group。
@@ -3128,6 +3199,29 @@ registerAction2(class extends Action2 {
 			return;
 		}
 
+		// ①bis 活动编辑器在**中间栏**（mainPart）：聊天开在中间栏，且**每个新聊天独占一个新 group**
+		//   （向右分栏）⇒ 中间栏能并排跑多个聊天，各自独立会话、各自同时执行 ✓。
+		//
+		//   为什么与 ① 的 agentPart 分支不同（那边会**复用空 group**）：中间栏的空 group 通常是用户
+		//   故意留出来的分栏（文件区的一半），占用它会打乱用户布局 ⇒ 这里一律新开 group ✓。
+		//
+		//   为什么每个 group 能各跑一个：VS Code 的 pane 是**按 group 复用**的（`EditorPanes` 是
+		//   group 的实例字段），两个 group ⇒ 两个 `NativeChatEditorPane` ⇒ 两个 dsh 承载 ⇒ 两个
+		//   `WebContentsView` ⇒ 两个页面实例（各自的 `currentSessionId` 互不干扰）✓。
+		//   ⇒ 承载层无需改造，这里只改"开在哪"。
+		const mainPart = editorGroupsService.mainPart;
+		if (activeGroup && activePart && mainPart && activePart === mainPart) {
+			const targetGroup = activeGroup.editors.length === 0
+				? activeGroup
+				: mainPart.addGroup(activeGroup, 3 /* GroupDirection.RIGHT */);
+			targetGroup.openEditor(input, { pinned: true }).then(() => {
+				// Chat editor opened successfully in the middle column
+			}).catch((err: any) => {
+				logService.error('[newChatInEditor] failed to open editor in main column:', err);
+			});
+			return;
+		}
+
 		// ② 活动编辑器在独立聊天窗口（aux part，非 mainPart）：在「当前活动 group」
 		//    直接新增页签，保证页签出现在独立窗口里。
 		if (activeGroup && activePart && activePart !== editorGroupsService.mainPart) {
@@ -3139,8 +3233,9 @@ registerAction2(class extends Action2 {
 			return;
 		}
 
-		// ③ 主窗口且焦点判定失效（活动编辑器实际在 agentPart，但 activePane 误落在
-		//    mainPart），或聊天误入 mainPart：一律重定向到 agentPart，绝不落入中间栏。
+		// ③ 焦点判定失效（活动 part 认不出来）：回落到 agentPart（右侧 agent 专区）——
+		//   那是"最不像错地方"的一栏（中间栏是文件区，塞个聊天页签会让人以为文件丢了）✓。
+		//   注：中间栏**不是**不可达区（见 ①bis），这里只是"认不出就在哪儿"时的兜底。
 		if (agentPart?.activeGroup) {
 			const active = agentPart.activeGroup;
 			const targetGroup = active.editors.length === 0
@@ -3577,7 +3672,7 @@ import { IMarketplaceService, MARKETPLACE_URL_SETTING, MARKETPLACE_AUTO_CHECK_SE
 import { MarketplaceService } from './marketplaceService.js';
 import { IPackageInstallerRegistry } from '../common/packageInstaller.js';
 import { PackageInstallerRegistry } from './packageInstallerRegistry.js';
-import { IMermaidInlineRenderer, MermaidInlineRenderer } from './mermaidInlineRenderer.js';
+import { IDiagramRenderer, PeleDiagramRenderer } from './peleDiagramRenderer.js';
 import { IDrawioInlineRenderer, DrawioInlineRenderer } from './drawioInlineRenderer.js';
 
 registerSingleton(ISkillRegistry, SkillRegistry, InstantiationType.Delayed);
@@ -3590,13 +3685,16 @@ registerSingleton(IAgentStudioWebviewPool, AgentStudioWebviewPool, Instantiation
 registerSingleton(IMarketplaceService, MarketplaceService, InstantiationType.Delayed);
 // PackageInstallerRegistry: 按 kind 分发安装/打包逻辑（skill 已实现，其他后续补充）
 registerSingleton(IPackageInstallerRegistry, PackageInstallerRegistry, InstantiationType.Delayed);
-// MermaidInlineRenderer: renderer 进程内的隐藏 webview，把 Mermaid 源码渲染为 SVG
-// 字符串（供 agent 工具卡片内联展示，无需扩展进程往返）
-registerSingleton(IMermaidInlineRenderer, MermaidInlineRenderer, InstantiationType.Delayed);
+// PeleDiagramRenderer: 渲染进程内直接跑随包的 pele（`dsh-plugins/vssaros-pele/assets/`），
+// 把 Mermaid 源码**同步**渲染为 SVG 字符串（供 agent 工具卡片 / 笔记 / 图表文件预览内联展示）。
+// 2026-10-19：替掉原先的「隐藏 webview + mermaid 12」——那条路依赖 `npm run build-chat-webview`
+// 的产物，产物不在就是整片空白；pele 零 DOM 依赖，不需要 webview ✓。
+registerSingleton(IDiagramRenderer, PeleDiagramRenderer, InstantiationType.Delayed);
+// 第三个参数 `maxWidth`：宿主可用宽度 ⇒ pele 在窄容器下**改排版**而不是等比缩小（见接口注释）。
 CommandsRegistry.registerCommand(
-	'_agentStudio.renderMermaidSvg',
-	(accessor, markup: string, theme?: 'dark' | 'default') => {
-		return accessor.get(IMermaidInlineRenderer).renderToSvg(markup, theme);
+	'_agentStudio.renderDiagramSvg',
+	(accessor, markup: string, theme?: 'dark' | 'default', maxWidth?: number) => {
+		return accessor.get(IDiagramRenderer).renderToSvg(markup, theme, maxWidth);
 	},
 );
 // DrawioInlineRenderer: renderer 进程内的隐藏 webview，把 drawio mxGraphModel XML 渲染为 SVG
@@ -3873,7 +3971,7 @@ CommandsRegistry.registerCommand(
 			accessor.get(ILogService).warn('[MermaidOpenPreview] markup is empty, skipping');
 			return;
 		}
-		const renderer = accessor.get(IMermaidInlineRenderer);
+		const renderer = accessor.get(IDiagramRenderer);
 		const normalized = markup.replace(/\\n/g, '\n');
 		await openDiagramPreview(
 			accessor,
@@ -5249,6 +5347,42 @@ registerAction2(class extends Action2 {
 	run(accessor: ServicesAccessor): void {
 		// ★ 2026-10-15（README 5.139「甲」第 2 期）：图谱也搬进了服务 ⇒ 不再取视图 ✓
 		void accessor.get(IKbCommandService).openGraph();
+	}
+});
+
+/**
+ * 同步飞书（2026-10-19；桥命令 `kbFeishuSync`，桥 `11 → 12`）—— dsh 知识库页右上「同步飞书」按钮。
+ *
+ * 照真源按钮**逐条复刻**（`knowledgeBaseView.ts:2728-2739` 的 `_syncFeishuFromToolbar` ✓）：
+ *   · **未启用** ⇒ 通知 + 打开设置并**定位「飞书同步」分组**
+ *     （否则用户只看到"同步完成 0 篇"，根本不知道差的是那个开关 ✗ —— 真源注释里的原话）；
+ *   · **已启用** ⇒ `feishuSync('apply')`：在集成终端里跑 `scripts/feishu-sync.mjs`，输出对用户可见。
+ *
+ * ⚠ **不新写一套实现**：判据与调用都在服务里（`openSettings(focusSection)` / `feishuSync(mode)` ✓），
+ *   这正是本仓"同一个动作只有一份实现"那条纪律（否则两处必然漂移 ✗）。
+ * ⚠ 本命令**不等同步结束**（分钟级长任务）：fire-and-forget ⇒ 桥 handler 不会挂住页面那次调用，
+ *   用户不会看到"点了没反应"✗（与真源按钮的 `void this._kbCommand.feishuSync('apply')` 同口径 ✓）。
+ */
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: 'agentStudio.kb.feishuSync',
+			title: localize2('agentStudio.kb.feishuSync', '同步知识库到飞书'),
+			f1: false,
+			category: localize2('agentStudio.category', 'Agent Studio'),
+		});
+	}
+	run(accessor: ServicesAccessor): void {
+		const kb = accessor.get(IKbCommandService);
+		const configurationService = accessor.get(IConfigurationService);
+		const notificationService = accessor.get(INotificationService);
+		const enabled = configurationService.getValue<boolean>(AGENT_STUDIO_KB_FEISHU_SYNC_ENABLED) === true;
+		if (!enabled) {
+			notificationService.info(localize('kb.feishuNotEnabled', '飞书同步尚未启用：已为你打开知识库设置的「飞书同步」分组，开启「启用飞书同步」后即可一键同步。'));
+			void kb.openSettings('feishu');
+			return;
+		}
+		void kb.feishuSync('apply');
 	}
 });
 

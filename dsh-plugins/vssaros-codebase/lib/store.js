@@ -9,6 +9,10 @@
 // Host 进程的 cwd 不是工作区，所以**不猜**：没配就是"未配置"（工具报错、页面说明），而不是去读别人的图。
 
 import { readFile, readdir, stat } from 'node:fs/promises';
+// ★ 2026-10-20：**同步**读 IDE 写的 codebase overlay（见 codebaseOverlayConfig 的注释 ——
+//   `workspaceRootOf` / `relatedRootsOf` 是同步函数、在工具与页面的热路径上，不能改 async）。
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { gunzip as gunzipCallback } from 'node:zlib';
 import { promisify } from 'node:util';
 import { join } from 'node:path';
@@ -49,13 +53,63 @@ export const SKIP_DIRS = new Set(['.git', 'node_modules', '.codebase-memory', 'o
  * ⚠ 有上下文就**以它为准**：上下文里没有根（＝当前工作区没有可用的主根）⇒ 返回 `null`
  *   （工具/页面照旧如实报"未配置"，**不回落到旧工作区的根** —— 那会变成"图来自 A、你以为在 B" ✗）。
  */
+/**
+ * 从 IDE 写的 `<数据根>/dsh-run/codebase-*.yml` 里兜底读 `workspaceRoot` / `relatedRoots`。
+ *
+ * ★★ 2026-10-20 真机（用户报「多根工作区只返回一个目录」）：
+ *   排查结论是 **`apply(ctx, config)` 收到的 config 是空对象** —— 因为
+ *   `cordis.presets.yml` 已声明同 id 的 `- id: vssaros-codebase`（无 config），
+ *   dsh 的 `insert` 对已存在 id 不合并 config（详见 docs/dsh-upstream-insert-config-merge.md）。
+ *   已在 dsh runtime 打了补丁，但**升级 dsh 会覆盖它** ⇒ 这里留一道防线：
+ *   overlay 文件由 IDE 生成、内容一直是对的，直接读它就不依赖 dsh 的 patch 语义 ✓。
+ *
+ * 优先级保持原样：**运行期上下文 → config → overlay 兜底**（见两个调用点）。
+ * ⚠ 同步 + 模块级缓存：这两个函数在工具/页面的热路径上，不能每次读盘 ✗。
+ */
+let overlayCache;
+function codebaseOverlayConfig() {
+	if (overlayCache !== undefined) { return overlayCache; }
+	overlayCache = null;
+	try {
+		const configuredRoot = typeof process.env.VSSAROS_DATA_ROOT === 'string' ? process.env.VSSAROS_DATA_ROOT.trim() : '';
+		const dataRoot = configuredRoot || join(homedir(), '.vssaros-dev');
+		const dir = join(dataRoot, 'dsh-run');
+		const newest = readdirSync(dir)
+			.filter(name => /^codebase-.*\.yml$/.test(name))
+			.map(name => ({ name, mtime: statSync(join(dir, name)).mtimeMs }))
+			.sort((a, b) => b.mtime - a.mtime)[0];
+		if (!newest) { return overlayCache; }
+		const text = readFileSync(join(dir, newest.name), 'utf8');
+		const rootMatch = /^\s*workspaceRoot:\s*'(.*)'\s*$/m.exec(text);
+		const workspaceRoot = rootMatch ? rootMatch[1].trim() : '';
+		const relatedRoots = [];
+		const blockMatch = /^\s*relatedRoots:\s*$/m.exec(text);
+		if (blockMatch) {
+			const rest = text.slice(blockMatch.index + blockMatch[0].length).split(/\r?\n/);
+			for (const line of rest) {
+				// ⚠ `relatedRoots:` 之后 `split` 的第一个元素是空字符串 —— 若直接 `break`
+				//   会把整个列表读成空（本函数第一版就是这么错的，离线验证当场抓到 ✓）。
+				//   跳过空行，遇到"非列表项"才算结束。
+				if (!line.trim()) { continue; }
+				const item = /^\s*-\s*'(.*)'\s*$/.exec(line);
+				if (!item) { break; }
+				relatedRoots.push(item[1].trim());
+			}
+		}
+		overlayCache = { workspaceRoot, relatedRoots };
+	} catch { overlayCache = null; }
+	return overlayCache;
+}
+
 export function workspaceRootOf(config) {
 	const runtime = workspaceContext();
 	if (runtime) {
 		return runtime.workspaceRoot ?? null;
 	}
 	const configured = typeof config?.workspaceRoot === 'string' ? config.workspaceRoot.trim() : '';
-	return configured || null;
+	// ★ 2026-10-20：config 为空时读 IDE 写的 overlay（见 codebaseOverlayConfig）—— 不能返回 null，
+	//   否则"没配 workspaceRoot"会把整个图谱页变成空态（README 4.82 的教训）。
+	return configured || (codebaseOverlayConfig()?.workspaceRoot || null);
 }
 
 /** 运行期工作区上下文；`undefined` = 没有（foundation 缺席 / 从未推过都算"没有" ⇒ 回落 config ✓）。 */
@@ -183,7 +237,19 @@ async function statOf(path) {
  */
 export function relatedRootsOf(config) {
 	const runtime = workspaceContext();
-	const raw = runtime ? runtime.relatedRoots : (Array.isArray(config?.relatedRoots) ? config.relatedRoots : []);
+	// ★ 2026-10-20：`runtime` 存在时**必须**用它（哪怕空数组 —— 见上面的注释：切到"没有关联根"
+	//   的工作区时回落到旧列表会让检索在旧根里翻 ✗）。只有 runtime 缺席（从未 push）时才走
+	//   config → **overlay 兜底**（config 常为空，见 codebaseOverlayConfig 的注释）。
+	const raw = runtime
+		? runtime.relatedRoots
+		// ★ 2026-10-21（补一个真坑）：**显式给了数组（哪怕是空）就以它为准**，不再回落 overlay ✓
+		//   旧写法是"config 非空才用" ⇒ 探针/临时工作区传了 `relatedRoots: []` 也会被 overlay 的
+		//   真机列表接管 ⇒ 实测临时工作区**读到了 Saros-agents-pocket 的图（1185 节点）**，
+		//   看上去"图建好了"，其实是别人的图 ✗✗（探针会说谎的最坏形态）。
+		//   生产侧无影响：覆盖层有相关根时 config 就有、没有时两边都是空 ✓。
+		: (Array.isArray(config?.relatedRoots)
+			? config.relatedRoots
+			: (codebaseOverlayConfig()?.relatedRoots ?? []));
 	const main = workspaceRootOf(config);
 	const out = [];
 	for (const entry of raw) {
@@ -447,6 +513,14 @@ export const SEARCH_MAX_LIMIT = 100;
 export const SEARCH_DEFAULT_LIMIT = 30;
 /** Node 扫描的预算（**不是性能参数，是诚实的围栏** ✓：超了就报 `truncatedScan`，而不是悄悄少搜 ✓）。 */
 export const SEARCH_SCAN_MAX_FILES = 4000;
+/**
+ * 预算参数的**天花板**（2026-10-20）：`maxFiles` 可以调高，但不许无界 —— 再大就不该用这个工具了 ✓。
+ *
+ * 为什么要有这个参数（真机实测）：本仓 2.3 万源文件，默认 4000 预算下搜 `Graph save SKIPPED`
+ * （源码 `codebaseGraphService.ts:3189` 就有的串）得到 **0 命中 + truncatedScan** ⇒ 模型很容易把它
+ * 读成"没有这个字符串" ✗。调高预算 = **明确用延迟换覆盖** ✓；`truncatedScan` 仍是唯一判据 ✓。
+ */
+export const SEARCH_SCAN_MAX_FILES_CAP = 50_000;
 const SEARCH_MAX_FILE_BYTES = 2 * 1024 * 1024;
 
 /** 工作区内的相对路径 → 绝对路径（**与 `codebase_snippet` 同一条围栏** ✓：绝对路径 / `..` 一律拒 ✗）。 */
@@ -558,7 +632,52 @@ async function walkWorkspace(abs, rel, { onFile, budget = SEARCH_SCAN_MAX_FILES 
 	return state;
 }
 
-export async function searchCode(config, { query, regex = false, path, filePattern, context = 0, limit = SEARCH_DEFAULT_LIMIT } = {}) {
+/**
+ * 工作区**文件数**（不含排除目录、不读内容）—— 只给 `findFiles` 的**默认预算**用。
+ *
+ * 为什么需要它（2026-10-20 真机）：`findFiles` 的默认预算 4000 是**按遍历顺序**吃的，
+ * 而本仓 `extensions/` 一个目录就能吃掉几千个 ⇒ 找 `src/...` 下的文件时**0 命中**，
+ * 看起来像"没有这个文件" ✗。找文件只读目录项（不读内容），把默认预算抬到"覆盖全仓"成本很低 ✓
+ * （实测 2.3 万文件 ~100ms）；内容搜索仍保留 4000（读文件是毫秒级/个，全仓扫描是 10s+ ✗）。
+ */
+async function countWorkspaceFiles(root, cap) {
+	const { readdir } = await import('node:fs/promises');
+	let count = 0;
+	const walk = async at => {
+		if (count >= cap) { return; }
+		let entries = [];
+		try { entries = await readdir(at, { withFileTypes: true }); } catch { return; }
+		for (const entry of entries) {
+			if (count >= cap) { return; }
+			if (entry.isDirectory()) {
+				if (SKIP_DIRS.has(entry.name) || entry.name.startsWith('.')) { continue; }
+				await walk(join(at, entry.name));
+				continue;
+			}
+			if (entry.isFile()) { count += 1; }
+		}
+	};
+	await walk(root);
+	return count;
+}
+
+/**
+ * 数文本里的 NUL 个数（二进制判据用）。
+ *
+ * 为什么不用 `text.split('\u0000').length`：真二进制文件会因此建一个巨大的数组 ✗；
+ * 也不用 `match(/\u0000/g)`：同样建中间数组 ✓。`indexOf` 递增扫描只占常数内存 ✓。
+ */
+function countNulBytes(text) {
+	let count = 0;
+	let at = text.indexOf('\u0000');
+	while (at >= 0) {
+		count += 1;
+		at = text.indexOf('\u0000', at + 1);
+	}
+	return count;
+}
+
+export async function searchCode(config, { query, regex = false, path, filePattern, context = 0, limit = SEARCH_DEFAULT_LIMIT, maxFiles } = {}) {
 	// ⚠ 不再直接 `readdir`：遍历已收进 `walkWorkspace` ✓（留着不用的引入只会让人以为这里还自己走目录 ✗）
 	const { readFile, stat } = await import('node:fs/promises');
 	const started = Date.now();
@@ -600,7 +719,11 @@ export async function searchCode(config, { query, regex = false, path, filePatte
 	// ★ 遍历走**唯一一份** `walkWorkspace` ✓（与 `findFiles` 同口径：同一套排除目录、同一个上限 ✓）
 	//   ⚠ 副作用（**有意**的 ✓）：`scannedFiles` 现在是"**遍历到**的文件数"（在 `filePattern` 过滤**之前**计数 ✓）——
 	//   这比原来那个"候选数"更贴近它的名字 ✓，且与 `findFiles` 的 `scannedFiles` 同义 ✓（notes 里也这么写 ✓）。
+	const scanBudget = Number.isFinite(maxFiles)
+		? Math.max(1, Math.min(SEARCH_SCAN_MAX_FILES_CAP, Math.floor(maxFiles)))
+		: SEARCH_SCAN_MAX_FILES;
 	const state = await walkWorkspace(scope.abs, scope.parts.join('/'), {
+		budget: scanBudget,
 		onFile: async (childRel, parentAbs, entry) => {
 			if (globMatch && !globMatch.test(childRel)) {
 				return false;
@@ -622,7 +745,16 @@ export async function searchCode(config, { query, regex = false, path, filePatte
 				return false;
 			}
 			// 二进制：**不当成错误**，计数后跳过 ✓（把一个 0 命中的判断说清楚，比假装搜过好 ✓）
-			if (text.includes('\u0000')) {
+			//
+			// ★★ 2026-10-20 修（真机事故，不是理论问题）：旧判据是「**出现过一次 NUL** 就跳过」✗ ——
+			//   而源码里**合法**会出现字面 NUL：`codebaseGraphService.ts:69152` 就有一处
+			//   `` `${n.project}` + NUL + `${n.qualifiedName}` `` 的复合键分隔符（idiomatic ✓）。
+			//   后果：这份 **371KB 的关键文件**被整体当二进制跳过 ⇒ 搜 `Graph save SKIPPED`
+			//   （它里面出现两次）得到 0 命中，看起来像"代码里没有这个串" ✗✗（比报错更坏）。
+			//   本仓实测：默认预算下 `skippedBinary=2176` 个文件被跳过 —— 其中就混着这类源码。
+			//   ⇒ 改成 **NUL 密度**：占比 > 0.1% 才当二进制（真二进制远高于此；1~3 个字面 NUL 的源码不算 ✓）。
+			const nulCount = countNulBytes(text);
+			if (nulCount > 8 && nulCount / Math.max(1, text.length) > 0.001) {
 				skippedBinary += 1;
 				return false;
 			}
@@ -673,6 +805,7 @@ export async function searchCode(config, { query, regex = false, path, filePatte
 		truncated,
 		truncatedScan,
 		scannedFiles,
+		scanBudget,
 		...(skippedBinary ? { skippedBinary } : {}),
 		...(skippedOversized ? { skippedOversized } : {}),
 		skippedDirs: [...SKIP_DIRS],
@@ -710,7 +843,7 @@ export async function searchCode(config, { query, regex = false, path, filePatte
  * ⚠ 注释纪律（本仓踩过多次 ✗）：块注释里**不许**出现星号紧跟斜杠的序列（会提前闭合注释 ✓）——
  *   所以上面讲"通配符"与"任意目录前缀"都用**文字**说，而不是把符号原样贴出来 ✓。
  */
-export async function findFiles(config, { pattern, path, limit = SEARCH_DEFAULT_LIMIT, offset = 0 } = {}) {
+export async function findFiles(config, { pattern, path, limit = SEARCH_DEFAULT_LIMIT, offset = 0, maxFiles } = {}) {
 	const { readdir } = await import('node:fs/promises');
 	const started = Date.now();
 	const root = String(workspaceRootOf(config) ?? '').trim();
@@ -744,7 +877,14 @@ export async function findFiles(config, { pattern, path, limit = SEARCH_DEFAULT_
 	const skip = Math.max(0, Number.isFinite(offset) ? Math.floor(offset) : 0);
 	const found = [];
 	// ★ 遍历走**唯一一份** `walkWorkspace` ✓（与 `searchCode` 同口径：同一套排除目录、同一个上限 ✓）
+	// 预算：显式给了就用它；没给就**自动覆盖整个（范围内的）工作区**（找文件只读目录项，很便宜 ✓）。
+	// ⚠ 与 `searchCode` 有意不同：那边缺省仍是 4000（读内容是毫秒级/个，全仓要 10s+ ✗），
+	//   这边缺省是"扫完" ⇒ "按名字找文件"不会再因为预算而漏（2026-10-20 真机：`extensions/` 会吃光预算 ✗）。
+	const scanBudget = Number.isFinite(maxFiles)
+		? Math.max(1, Math.min(SEARCH_SCAN_MAX_FILES_CAP, Math.floor(maxFiles)))
+		: Math.min(SEARCH_SCAN_MAX_FILES_CAP, Math.max(SEARCH_SCAN_MAX_FILES, await countWorkspaceFiles(scope.abs, SEARCH_SCAN_MAX_FILES_CAP)));
 	const state = await walkWorkspace(scope.abs, scope.parts.join('/'), {
+		budget: scanBudget,
 		onFile: async (childRel, _parentAbs, entry) => {
 			// glob 按**相对路径**配（`**` 前缀才有意义 ✓）；子串按**文件名**配（"找文件"的语义 ✓）
 			if (matcher.test(hasMagic ? childRel : entry.name)) {
@@ -771,6 +911,7 @@ export async function findFiles(config, { pattern, path, limit = SEARCH_DEFAULT_
 		truncated: found.length > skip + clampLimit,
 		truncatedScan,
 		scannedFiles: visited,
+		scanBudget,
 		files: page,
 		ms: Date.now() - started,
 		notes: [

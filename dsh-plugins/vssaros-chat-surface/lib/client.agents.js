@@ -41,6 +41,42 @@ window.__ModuleLoader__.load({
 		const BUILTIN_PRESETS = ["standard", "ptc", "minimal", "cordis"];
 		/** VsSaros agent 的 preset id 前缀（见 `vssaros-agents/lib/core/agents.js` 的 PRESET_ID_PREFIX）。 */
 		const VSSAROS_PREFIX = "vssaros-";
+/**
+ * 委派专用 preset（`vssaros-<id>-assign`）：由 agents 插件的 `model-assignment` 派生，
+ * 与本体同人格、只换模型 ⇒ **不进用户可见的花名册 / 选择器**（否则像"凭空多了一个 agent"）。
+ * 口径与 `vssaros-agents/lib/core/agents.js assignmentPresetIdOf` 保持一致（后缀 `-assign`）。
+ */
+const ASSIGN_PRESET_RE = /^vssaros-.+-assign$/;
+
+/**
+ * 用户可见的 agent preset 集合 —— **唯一真源是插件的 `/api/agents`**（它按内置白名单过滤）。
+ *
+ * 为什么不在前端抄一份白名单：内置 agent 的取舍会变（哪天又要把某个内置放出来），抄两份必然漂。
+ * 缓存 60s（花名册打开/切会话都会用到，别每次都打一个请求）；任何失败（404/网络/无 fetch 的
+ * 单测环境）都返回 `null` ⇒ 调用方**原样展示**（fail-open：宁可多列，也不把用户自己的 agent 藏掉）。
+ */
+let visiblePresetsCache = { at: 0, ids: null };
+const loadVisiblePresetIds = () => {
+	const now = Date.now();
+	if (visiblePresetsCache.ids && now - visiblePresetsCache.at < 60_000) {
+		return Promise.resolve(visiblePresetsCache.ids);
+	}
+	if (typeof fetch !== "function") { return Promise.resolve(null); }
+	try {
+		return fetch("/x/agents/api/agents", { headers: { accept: "application/json" } })
+			.then((r) => (r && r.ok ? r.json() : null))
+			.then((data) => {
+				const list = data && Array.isArray(data.agents) ? data.agents : null;
+				if (!list) { return null; }
+				const ids = new Set(list.map((a) => VSSAROS_PREFIX + String((a && a.id) || "")));
+				visiblePresetsCache = { at: Date.now(), ids };
+				return ids;
+			})
+			.catch(() => null);
+	} catch (e) {
+		return Promise.resolve(null);
+	}
+};
 		/** 清除 chip 时切回的基座 preset（会话 id 后缀 = preset，基座即无后缀会话）。 */
 		const BASE_PRESET = "standard";
 		/** 菜单行名：必须唯一且不与官方命令名冲突（见文件头 ①）。 */
@@ -196,13 +232,25 @@ window.__ModuleLoader__.load({
 							// 上一版把它们 filter 掉 ⇒ 用户看到的是"某个 Agent 凭空消失"，没有任何线索
 							// （2026-10-11 实测：`@vssaros/dsh-agents` 未装进 profile 时，弹层只剩内置 4 个，
 							// 排查只能靠读 profile 的 package.json）。改为**照实列出 + 「不可用」徽标**。
-							const all = r.value.presets.filter((p) => p && rowKey(p));
-							state.agentsRoster = all.length;
-							state.agentsRosterBroken = all.filter((p) => p.broken === true).length;
-							// 分来源计数（诊断用：一眼看出"VsSaros agent 一个都没注册"是环境问题而非 UI 问题）。
-							state.agentsRosterSources = { builtin: 0, mine: 0 };
-							for (const p of all) { state.agentsRosterSources[sourceOf(p) === "mine" ? "mine" : "builtin"]++; }
-							return all;
+							// ★ 委派专用 preset（`<preset>-assign`，见 vssaros-agents 的 `model-assignment`）**不进用户列表**：
+							// 它是内部派生行（同人格、只是换了便宜模型给委派跑），列出来会让用户以为多了一个 Agent，
+							// 而且选它换人格没有意义（人格与本体完全相同）。诊断计数留着，便于自证里对账。
+							const raw = r.value.presets.filter((p) => p && rowKey(p));
+							const all = raw.filter((p) => !ASSIGN_PRESET_RE.test(rowKey(p)));
+							state.assignmentPresetsHidden = raw.length - all.length;
+							// ★ 2026-10-19：只列**插件认为该给用户看**的 agent（内置目录里 coder/tester/助理 那些
+							// 是内部子代理角色，插件已在 `/api/agents` 侧过滤成白名单）。拿不到列表 ⇒ **原样展示**
+							// （fail-open：宁可多列，也不因为一次请求失败把用户自己的 agent 藏掉）。
+							return loadVisiblePresetIds().then((ids) => {
+								const shown = ids ? all.filter((p) => ids.has(rowKey(p))) : all;
+								state.builtinAgentsHidden = all.length - shown.length;
+								state.agentsRoster = shown.length;
+								state.agentsRosterBroken = shown.filter((p) => p.broken === true).length;
+								// 分来源计数（诊断用：一眼看出"VsSaros agent 一个都没注册"是环境问题而非 UI 问题）。
+								state.agentsRosterSources = { builtin: 0, mine: 0 };
+								for (const p of shown) { state.agentsRosterSources[sourceOf(p) === "mine" ? "mine" : "builtin"]++; }
+								return shown;
+							});
 						}
 						state.agentsRosterError = "list not ok: " + JSON.stringify((r && r.error) || r).slice(0, 200);
 						return [];
@@ -746,7 +794,7 @@ window.__ModuleLoader__.load({
 							// 上一版这里照抄了 preset 行的占位符（"搜索 preset（dsh 自带）"）⇒ 面板里明明是
 							// 「我的 Agent」5 条，却让用户去搜 preset（2026-10-11 用户截图实测 ✗）。
 							"data-vssaros-agents-search": "1",
-							placeholder: "搜索 Agent",
+							placeholder: "搜索 Bot",
 							value: query,
 							onChange: (e) => setQuery(e.target.value),
 							style: {
@@ -792,7 +840,7 @@ window.__ModuleLoader__.load({
 						position: "absolute", left: 12, bottom: "calc(100% + 4px)", width: 300, zIndex: 1000,
 						maxHeight: 320, overflowY: "auto", padding: 4, borderRadius: 12,
 						border: "1px solid var(--dsw-alias-border-l1, transparent)",
-						background: "var(--dsw-alias-bg-layer-1, var(--dsw-alias-bg-base))",
+						background: "linear-gradient(var(--dsw-alias-bg-layer-1, transparent), var(--dsw-alias-bg-layer-1, transparent)), var(--dsw-alias-bg-base, #1e1e1e)",
 						boxShadow: "0 18px 44px rgba(0,0,0,.6)",
 						// ⚠ 向上展开（`bottom:100%`）⇒ **不能用** fitMenu 那个"整页 − 72"的高度：
 						//   它假定菜单从页面顶部往下长 ⇒ 这里会算出 ~780px 而可用只有几百 ⇒ 面板顶部
@@ -966,17 +1014,22 @@ window.__ModuleLoader__.load({
 					// 所以用带前缀的唯一名，菜单上显示的是 `label`。
 					name: ROW_NAME,
 					// 2026-10-11 与「Preset」行拆开后：本行 = **仅换人格**（当前会话继续）。
-					label: () => "Agent",
-					description: () => "切换 Agent（仅切换人格，当前会话继续）",
+					// ★ 2026-10-21（用户指令「把 agent 定位成一个 Bot（PersonaBot）」）：这一行**不再叫 Agent**
+					//   —— agent 在 dsh 内部仍以 preset 形式存在（技术必需），但**用户可见的身份是"Bot"**
+					//   （对标 DeepSeekBot 的 PersonaBot：bot 是"谁"，preset 是"怎么干"）⇒
+					//   模式入口（hero 那枚）**只列模式**，agent 一律不进（见 client.preset.js）✓。
+					label: () => "Bots",
+					description: () => "选择 Bot（PersonaBot）：只换人格，当前会话继续",
+
 					icon: AgentsIcon,
 					available: () => true,
 					ui: {
 						kind: "popupSelect",
 						searchMode: "substring",
 						searchLabels: () => ({
-							placeholder: "搜索 Agent",
-							empty: "没有可选的 Agent",
-							noResults: "没有匹配的 Agent",
+							placeholder: "搜索 Bot",
+							empty: "没有可用的 Bot",
+							noResults: "没有匹配的 Bot",
 						}),
 						// 每次打开现读花名册（`:909-918` 的候选也是每轮现读 ⇒ 新装/新下的 Agent 立即出现）。
 						options: () => loadRoster().then((roster) => {

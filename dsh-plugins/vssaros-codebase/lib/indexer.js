@@ -601,6 +601,39 @@ export function encodeGraph(graph) {
 export const ARTIFACT_PRODUCER = 'vssaros-dsh';
 
 /**
+ * 图谱"**配方版本**"（2026-10-21，A 档优化用）：**提取 / 构图语义一变就要 +1** ✓。
+ *
+ * 为什么必须有它：`graphFingerprintOf` 用"文件内容 hash 的聚合"判定"图没变 ⇒ 不用重编码"。
+ * 而"图变没变"其实由**解析档 + 提取逻辑**共同决定 ⇒ 如果只按文件 hash 判，**代码改了但文件没改**时
+ * 指纹会相同 ⇒ 误判成"没变" ⇒ **图谱停在旧语义上**（比慢更糟 ✗✗）。
+ * ⇒ 把配方版本混进指纹：逻辑一变，指纹必变 ⇒ 强制重写 ✓。
+ */
+export const GRAPH_RECIPE_VERSION = 1;
+
+/**
+ * **图内容指纹**（廉价、只依赖"决定图内容的那些事实"）。
+ *
+ * 判据 = 每个源文件的**内容 hash**（`built.hashes`）的聚合 + 解析档 + 配方版本 + 节点/边计数。
+ * 理由：图是由这些事实**完全决定**的（解析结果只来自文件内容）⇒ 指纹相同 ⇒ 图必然相同 ⇒
+ * 编码（gzip 19.7MB ≈ 4.7s）与写盘都是白花 ✓。
+ *
+ * ⚠ 成本：13,300 个文件 ⇒ 组串约 1.5MB ⇒ sha256 约 10–30ms ✓（相对省下的 4.7s 可忽略 ✓）。
+ */
+export function graphFingerprintOf(built, { parser } = {}) {
+	const hashes = built?.hashes ?? {};
+	const parts = Object.keys(hashes).sort().map(rel => `${rel} ${hashes[rel]?.sha256 ?? ''}`);
+	const payload = [
+		`recipe=${GRAPH_RECIPE_VERSION}`,
+		`parser=${parser ?? built?.stats?.parser ?? 'regex'}`,
+		`files=${parts.length}`,
+		`nodes=${built?.graph?.nodes?.length ?? 0}`,
+		`edges=${built?.graph?.edges?.length ?? 0}`,
+		...parts,
+	].join('\n');
+	return createHash('sha256').update(payload).digest('hex');
+}
+
+/**
  * 清单（`artifact.json`）的字段与真源一致，读侧 `parseManifest` 才认。
  *
  * ★ 2026-10-13（用户裁决「**权限都在 dsh 侧全权处理、逻辑也都转移到 dsh 侧**」）：
@@ -673,6 +706,8 @@ export async function selfCheck({ root, maxFiles = DEFAULT_MAX_FILES, project = 
 		parsed: again.stats.parsed,
 		equal: encodeGraph(again.graph).equals(encodeGraph(built.graph)),
 	};
+	// ★ 2026-10-21（A 档优化）：**内容没变 ⇒ 指纹必须相同** ⇒ 否则每次都会白重写图（优化反被优化掉了 ✗）
+	const fingerprintStable = graphFingerprintOf(built, { parser: 'regex' }) === graphFingerprintOf(again, { parser: 'regex' });
 	const manifest = manifestOf(built.graph, { project });
 	const bytes = encodeGraph(built.graph);
 	let temp;
@@ -704,12 +739,23 @@ export async function selfCheck({ root, maxFiles = DEFAULT_MAX_FILES, project = 
 		};
 		// ⚠ 读侧 `parseManifest` 把清单**改名成驼峰**（`node_count` → `nodeCount`，见 core/codebase.js:34-42）
 		// ⇒ 比对必须按读侧的形状来 ✗ 不能按**我们写下去**的形状（第一版就是这么写错的：永远 undefined ⇒ 永不过）。
+		// ★ 2026-10-21：缓存根的**大小写**必须被容忍（Windows 上路径不区分大小写 ✓）。
+		//   真机踩到：同一个目录只差大小写（覆盖层给 `g:\...`、别处给 `G:\...`）就被判"属于别的工作区"
+		//   ⇒ 缓存被**拒** ⇒ **每一次都全量重解析**（13,299 文件：真解析 ~90s）而且**不报错**（只是慢）✗✗。
+		//   非 Windows 平台**必须仍然拒**（那里大小写是真差异 ✗）⇒ 两个方向都断言 ✓。
+		const caseFoldCache = { ...serializeCache(built, { savedAt: Date.now() }), root: toPosix(root).toUpperCase() };
+		const caseFoldParsed = parseCache(JSON.stringify(caseFoldCache), { root, now: Date.now() });
+		const caseFoldOk = process.platform === 'win32' ? !caseFoldParsed.error : !!caseFoldParsed.error;
 		const ok = !readBack.overviewError && !readBack.manifestError && !readBack.graphError
+			&& caseFoldOk
 			&& readBack.manifest?.nodeCount === manifest.node_count
 			&& readBack.manifest?.edgeCount === manifest.edge_count
 			&& readBack.nodeCountMatches && readBack.edgeCountMatches
 			&& readBack.symbolNodes === built.stats.symbolNodes
 			&& incremental.equal && delta.equal && delta.changed
+			// ★ 2026-10-21：指纹两条不变量 —— ① 没变时**必须**同指纹（否则白重写 ✗）
+			//   ② 变了时**必须**不同指纹（否则会跳过该写的图 ⇒ 图谱变旧 ✗✗）
+			&& fingerprintStable && delta.fingerprintChanged
 			// ④：漏改**必须能复现**（搬不动就是假绿 ✗）+ 一次全量重扫**必须收敛** + 策略给得出"该重扫" ✓
 			&& miss.missObserved && miss.rescannedEqual && miss.rescannedReused === 0 && miss.policyAdvises
 			// ⑤：符号级的抽/挂/认三条都要过（多抽或漏抽都会红 ✓）
@@ -718,7 +764,7 @@ export async function selfCheck({ root, maxFiles = DEFAULT_MAX_FILES, project = 
 			// 且四条"该拒就拒"**一条都不许被默默接受** ✗（任何一条被接受 ⇒ `rejects` 少一个 ⇒ 这里红 ✓）
 			&& cacheFixture.childExit === 0 && cacheFixture.childEqual && cacheFixture.parentEqual
 			&& cacheFixture.childReused === cacheFixture.files && cacheFixture.rejects === 4;
-		return { ok, stats: built.stats, incremental, delta, miss, symbol, cacheFixture, manifest, readBack, bytes: bytes.length, ms: Date.now() - started, warnings };
+		return { ok, stats: built.stats, incremental, delta, miss, symbol, cacheFixture, manifest, readBack, bytes: bytes.length, caseFold: { ok: caseFoldOk, error: caseFoldParsed.error ?? null }, ms: Date.now() - started, warnings };
 	} catch (e) {
 		return { ok: false, error: String(e?.message ?? e), stats: built.stats, manifest, bytes: bytes.length, ms: Date.now() - started, warnings };
 	} finally {
@@ -747,6 +793,9 @@ async function deltaCheck(root) {
 	await writeFile(join(root, 'beta.ts'), "import { alpha } from './alpha';\nimport { gamma } from './gamma';\nexport const beta = alpha + gamma;\n");
 	const incremental = await buildImportGraph({ root, previous: before });
 	const full = await buildImportGraph({ root });
+	// ★ 2026-10-21（A 档优化的前提）：**内容变了 ⇒ 指纹必变** ⇒ 否则"指纹相同 ⇒ 跳过编码"会跳过
+	//   **本该写**的图 ⇒ 图谱停在旧内容上（比慢更糟 ✗✗）⇒ 这条必须离线断言 ✓。
+	const fingerprintChanged = graphFingerprintOf(before, { parser: 'regex' }) !== graphFingerprintOf(full, { parser: 'regex' });
 	const count = (graph, type) => graph.edges.filter(edge => edge.type === type).length;
 	return {
 		files: full.stats.files,
@@ -759,6 +808,8 @@ async function deltaCheck(root) {
 		edgesBefore: before.graph.edges.length,
 		edgesAfter: full.graph.edges.length,
 		changed: count(before.graph, 'IMPORTS') !== count(full.graph, 'IMPORTS'),
+		// ★ 2026-10-21：内容变了 ⇒ 指纹必变（"跳编码"优化的安全前提 ✓）
+		fingerprintChanged,
 		equal: encodeGraph(incremental.graph).equals(encodeGraph(full.graph)),
 	};
 }
@@ -878,8 +929,16 @@ export function parseCache(value, { root, now = Date.now() } = {}) {
 		return { error: `缓存版本不符：文件里是 ${String(data.version)}，本版要 ${CACHE_VERSION}（请全量重扫）` };
 	}
 	const wantRoot = toPosix(root ?? '');
-	if (wantRoot && toPosix(data.root ?? '') !== wantRoot) {
-		return { error: `缓存属于别的工作区：缓存=${toPosix(data.root ?? '') || '(空)'} 当前=${wantRoot}` };
+	const cacheRoot = toPosix(data.root ?? '');
+	// ★ 2026-10-21（真机踩到，最坏的形态）：路径比较**大小写敏感** ⇒ 同一个目录只差大小写
+	//   （覆盖层给的是 `g:\...`、别处给的是 `G:\...`）就被判成"缓存属于别的工作区" ⇒ 缓存被**拒** ⇒
+	//   **每一次都全量重解析**（13,299 文件：读+hash 10s、真解析 90s ✗✗），而且**不报错**（只是慢）✗。
+	//   Windows 上路径本来就不区分大小写 ⇒ 该平台按小写比较 ✓；Linux/macOS 保持逐字（那里大小写是真差异 ✓）。
+	const sameRoot = process.platform === 'win32'
+		? cacheRoot.toLowerCase() === wantRoot.toLowerCase()
+		: cacheRoot === wantRoot;
+	if (wantRoot && !sameRoot) {
+		return { error: `缓存属于别的工作区：缓存=${cacheRoot || '(空)'} 当前=${wantRoot}（Windows 下已忽略大小写 ⇒ 这确实是另一个目录）` };
 	}
 	for (const field of ['hashes', 'specifiers', 'symbols', 'namedImports', 'calls', 'usages', 'inherits']) {
 		if (!data[field] || typeof data[field] !== 'object') {

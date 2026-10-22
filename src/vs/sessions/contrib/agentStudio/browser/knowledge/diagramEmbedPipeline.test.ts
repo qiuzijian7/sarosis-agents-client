@@ -9,7 +9,7 @@
 import * as assert from 'assert';
 import { URI } from '../../../../../base/common/uri.js';
 import { extractDiagramEmbeds, renderNoteDiagramEmbeds, resolveEmbedTarget } from './diagramEmbedPipeline.js';
-import { canvasToSvg } from './canvasToSvg.js';
+import { canvasToMermaidSource } from './canvasToMermaid.js';
 
 // ---------------------------------------------------------------------------
 // 内存 FS mock（resolve 缺失抛错；writeFile/createFolder 记录）
@@ -150,26 +150,72 @@ suite('resolveEmbedTarget（解析：相对笔记 → 相对 vault → 全库按
 	});
 });
 
-suite('canvasToSvg（纯函数：JSON Canvas → SVG）', () => {
+suite('canvasToMermaidSource（纯函数：JSON Canvas → Mermaid 源码）', () => {
 
-	test('节点/连线/文本/转义', () => {
-		const svg = canvasToSvg(JSON.stringify({
+	test('默认产出 flowchart：节点声明 + 连线 + 边标签', () => {
+		const r = canvasToMermaidSource(JSON.stringify({
 			nodes: [
-				{ id: 'a', x: 0, y: 0, width: 100, height: 50, content: '中心 <标题>' },
+				{ id: 'a', x: 0, y: 0, width: 100, height: 50, content: '中心 标题' },
 				{ id: 'b', x: 200, y: 100, width: 100, height: 50, text: '子节点' },
 			],
 			edges: [{ fromNode: 'a', toNode: 'b', label: '关联' }],
 		}));
-		assert.ok(svg.startsWith('<svg'), '产出 SVG');
-		assert.ok(svg.includes('中心 &lt;标题&gt;'), '文本转义');
-		assert.ok(svg.includes('<line'), '有连线');
-		assert.ok(svg.includes('关联'), '边标签');
-		assert.ok(svg.includes('</svg>'));
+		assert.strictEqual(r.kind, 'flowchart', '未标 mindmap ⇒ flowchart');
+		assert.ok(r.source.startsWith('flowchart TD'), r.source);
+		assert.ok(r.source.includes('n0["中心 标题"]'), '节点声明带标签');
+		assert.ok(r.source.includes('n0 -->|关联| n1'), '边标签');
+	});
+
+	test('标了 mindmap:true 且是树 ⇒ 产出 mindmap（缩进层级）', () => {
+		const r = canvasToMermaidSource(JSON.stringify({
+			mindmap: true,
+			nodes: [
+				{ id: 'r', text: '中心' },
+				{ id: 'a', text: '子一' },
+				{ id: 'b', text: '子二' },
+				{ id: 'c', text: '孙' },
+			],
+			edges: [
+				{ fromNode: 'r', toNode: 'a' },
+				{ fromNode: 'r', toNode: 'b' },
+				{ fromNode: 'a', toNode: 'c' },
+			],
+		}));
+		assert.strictEqual(r.kind, 'mindmap');
+		assert.strictEqual(r.source, 'mindmap\n  中心\n    子一\n      孙\n    子二', r.source);
+	});
+
+	test('★ 标了 mindmap 但不是树（多根）⇒ 退回 flowchart（否则 pele 直接报 only one root ✗）', () => {
+		const r = canvasToMermaidSource(JSON.stringify({
+			mindmap: true,
+			nodes: [{ id: 'a', text: 'A' }, { id: 'b', text: 'B' }],
+			edges: [],
+		}));
+		assert.strictEqual(r.kind, 'flowchart', '森林 ⇒ 不能出 mindmap');
+		assert.ok(r.source.startsWith('flowchart TD'), r.source);
+	});
+
+	test('★ 引号必须转义成 #quot;（裸引号会提前闭合标签 ⇒ 语法错）', () => {
+		const r = canvasToMermaidSource(JSON.stringify({
+			nodes: [{ id: 'a', text: '含 "引号" 的节点' }],
+			edges: [],
+		}));
+		assert.ok(!r.source.includes('"引号"'), r.source);
+		assert.ok(r.source.includes('#quot;引号#quot;'), r.source);
+	});
+
+	test('★ 空标签不能产生 n0[""]（pele 实测语法错）⇒ 退回 id', () => {
+		const r = canvasToMermaidSource(JSON.stringify({
+			nodes: [{ id: 'x-1', text: '   ' }],
+			edges: [],
+		}));
+		assert.ok(!r.source.includes('[""]'), r.source);
+		assert.ok(r.source.includes('x-1'), r.source);
 	});
 
 	test('非法 JSON / 空节点 ⇒ 抛错（调用方按失败处理）', () => {
-		assert.throws(() => canvasToSvg('not json'), /JSON/);
-		assert.throws(() => canvasToSvg('{"nodes":[]}'), /无有效节点/);
+		assert.throws(() => canvasToMermaidSource('not json'), /JSON/);
+		assert.throws(() => canvasToMermaidSource('{"nodes":[]}'), /无有效节点/);
 	});
 });
 
@@ -220,6 +266,8 @@ suite('renderNoteDiagramEmbeds（编排：渲染 → 落盘 → 改写 → 写�
 		const before = fs.content('/vault/笔记/n.md')!;
 		const r = await renderNoteDiagramEmbeds({
 			vaultRoot: VAULT, noteUri: URI.file('/vault/笔记/n.md'), fileService: fs.service,
+			// canvas 现在也走 renderMermaid（JSON Canvas → Mermaid → pele）⇒ 它是**必填**项
+			renderMermaid: okRenderers.renderMermaid,
 			renderDrawio: async () => { throw new Error('渲染引擎挂了'); },
 			rasterize: okRenderers.rasterize, logService: quietLog,
 		});

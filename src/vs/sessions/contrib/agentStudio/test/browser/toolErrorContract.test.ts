@@ -72,13 +72,11 @@ suite('工具错误契约（成功形状错误必须清零）', () => {
 			'必须按 NonRetryableToolError 计算 retryable ✗');
 	});
 
-	test('★★ 确定性失败用 NonRetryableToolError：codebaseTools / compatibilityTools 已批量收敛', () => {
-		const cb = fs.readFileSync(path.join(process.cwd(), `${TOOL_DIR}/codebaseTools.ts`), 'utf8');
-		assert.ok(cb.includes('NonRetryableToolError'), 'codebaseTools 必须导入并使用 NonRetryableToolError ✗');
-		const cbThrows = (cb.match(/throw new NonRetryableToolError\(/g) ?? []).length;
-		assert.ok(cbThrows >= 10,
-			`codebaseTools 的确定性失败应至少 10 处走 NonRetryableToolError（实测 ${cbThrows}）✗`);
-
+	test('★★ 确定性失败用 NonRetryableToolError：compatibilityTools（update_plan）已收敛', () => {
+		// ⚠ 2026-10-20：本条原来还断言 `codebaseTools.ts`（≥10 处）—— 该文件已随 legacy 工具下线
+		//   删除（`0f01ef10a43`）⇒ 读它必然 ENOENT。那一半删掉；**若 IDE 侧再出现同类工具，
+		//   必须把「确定性失败走 NonRetryableToolError」照新文件加回来**（否则模型会对一个
+		//   重试也不会成功的错误反复重试，白烧 token）。
 		const compat = fs.readFileSync(path.join(process.cwd(), `${TOOL_DIR}/compatibilityTools.ts`), 'utf8');
 		const compatThrows = (compat.match(/throw new NonRetryableToolError\(/g) ?? []).length;
 		// ★ 2026-09-21：原为 ≥6（含 switch_paradigm 2 处 + plan_register 1 处）——这两个工具已**正式退役**
@@ -88,11 +86,10 @@ suite('工具错误契约（成功形状错误必须清零）', () => {
 			`compatibilityTools（update_plan）应至少 4 处走 NonRetryableToolError（实测 ${compatThrows}）✗`);
 	});
 
-	test('★ 服务层异常保留普通 Error（瞬时性未知 ⇒ 不做"确定性"判定）', () => {
-		const cb = fs.readFileSync(path.join(process.cwd(), `${TOOL_DIR}/codebaseTools.ts`), 'utf8');
-		// query_graph / get_architecture / detect_changes / ingest_traces / manage_adr / export|import_artifact
-		const plainThrows = (cb.match(/throw new Error\(`(?:query_graph|get_architecture|detect_changes|ingest_traces|manage_adr|export_artifact|import_artifact) error:/g) ?? []).length;
-		assert.ok(plainThrows >= 7,
-			`服务层 catch 分支应保留普通 Error（实测 ${plainThrows}/7）—— 别把它们也标成"确定性失败"✗`);
-	});
+	// ★ 2026-10-20 **删除**：「服务层异常保留普通 Error（瞬时性未知 ⇒ 不做确定性判定）」这条
+	//   唯一被测对象是 `codebaseTools.ts`（那 7 个 `throw new Error(\`xxx error: …\`)`），而该文件
+	//   已随 legacy 工具下线删除 ⇒ 断言无处可测。
+	//   契约本身仍然成立且重要：**服务层 catch 分支的异常一律保留普通 Error**（瞬时性未知；
+	//   标成 NonRetryable 会让真正可恢复的失败失去重试）。若 IDE 侧再出现同类工具文件，
+	//   请照「query_graph / get_architecture … error:」那种形态把断言加回来。
 });

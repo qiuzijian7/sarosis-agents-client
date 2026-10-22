@@ -974,10 +974,17 @@ export class AgentLayoutWorkbench extends Workbench {
 		//   （只是再设一遍 `display: none`）⇒ **第一次点击什么都没发生**，第二次才显示 ✗✗
 		//   （真机日志实证：用户点两次才出来，中途还多建了一个看不见的终端）。
 		//   对齐之后必然走**显示**分支：清 inline display + 恢复 35% 高度 + 打开容器 ✓。
+		const before = `isVisible=${this.isVisible(Parts.PANEL_PART)} domHidden=${this.isPanelDomHidden()}`;
 		if (this.isVisible(Parts.PANEL_PART) && this.isPanelDomHidden()) {
 			this.setPartHidden(true, Parts.PANEL_PART);
 		}
-		void super.toggleAgentsPanelVisibility();
+		// ★ 2026-10-20 诊断：每次切换记前后状态。用途是对照「用户手点 toggle panel（能弹）」与
+		//   「飞书同步自动展开（不弹）」—— 两者若都走这里，日志应当一致；用户手点却**没有**这行
+		//   ⇒ 说明手点走的是别的入口（上游 `workbench.action.togglePanel` 等），差异就在那条路径上。
+		void super.toggleAgentsPanelVisibility().finally(() => {
+			const el = this.getPart(Parts.PANEL_PART)?.element;
+			this._chatLayoutServices()?.log.info(`[AgentLayout] toggle-panel：前 ${before} → 后 isVisible=${this.isVisible(Parts.PANEL_PART)} display=${el?.style.display || '(空)'} offsetH=${el?.offsetHeight ?? -1}`);
+		});
 	}
 
 	/**

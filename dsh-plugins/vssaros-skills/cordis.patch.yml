@@ -13,7 +13,16 @@
 - insert:
     - id: vssaros-skills
       name: '@vssaros/dsh-skills'
-      config: {}
+      config:
+        # ★ 2026-10-19：**技能自动加载**（等价于 dsh 官方没有的 `activation: always`）。
+        #   会话首轮把这些技能的**完整正文**注入 user 消息 ⇒ 不再依赖模型自觉去调 `skill` 工具
+        #   （实测几百个会话里 `skill` 从未被主动调用）。
+        #   ⚠ 代价：每个技能正文常驻上下文（help-me-understand ≈ 3.6 KB ≈ 900 tokens/轮）。
+        #     只放"不读就会做错"的技能；**置空数组 = 完全不介入**（零开销 ✓）。
+        #   ⚠ 为什么是这里而不是 agent 的 `skills:` 字段：那个字段在 dsh 侧**根本不生效**
+        #     （`toPresetDefinition` 只消费 persona/tools/model/memory，skills 被忽略）。
+        skillAutoload:
+          - help-me-understand
 # ── 打开被随包层**关掉的消费者**（2026-10-12）──────────────────────────────────────────
 # `dsh --profile vssaros --dump-config` 里能看到：base 的 `tool-skill` 那一行被
 # `@deepseek-ai/dsh-web-app` **patch 成 `disabled: true`** ✓ ⇒ 原生 `skill` 工具**从不注册** ✗

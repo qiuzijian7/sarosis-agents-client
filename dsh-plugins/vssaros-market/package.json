@@ -1,0 +1,27 @@
+{
+  "name": "@vssaros/dsh-market",
+  "version": "0.2.1",
+  "description": "VsSaros workbench market host half: published catalog API + install channel (npm / GitHub Release / GitHub source).",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "files": ["lib/index.js", "lib/catalog.js", "lib/remoteCatalog.js", "lib/installTargets.js", "lib/foundationRef.js", "catalog/index.json", "cordis.patch.yml"],
+  "peerDependencies": {
+    "@deepseek-ai/dsh": ">=0.1.7-0 <0.3.0-0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": [
+        "./cordis.patch.yml"
+      ]
+    }
+  },
+  "vssaros": {
+    "manifestVersion": 1,
+    "module": "market",
+    "view": {
+      "kind": "none"
+    }
+  },
+  "license": "MIT"
+}

@@ -117,3 +117,144 @@ export function dshChatWorktreeSessionId(chatId: string, presetId: string | unde
 		? `${base}--${sanitizeDshIdPart(presetId)}--wt-${wt}`
 		: `${base}--wt-${wt}`;
 }
+
+// ─── 上次绑定的会话（重启后恢复；2026-10-20）─────────────────────────────────
+
+/**
+ * 持久化的"本页签上次绑定的会话"。
+ *
+ * 为什么需要（2026-10-20 用户报）：从会话 A 切到 B 聊完、关掉 app、重开 ⇒ 聊天框又是 A。
+ * 因为切换只走宿主内存（`slot.sessionId` / `_chatSession`），而启动时的目标会话是
+ * `_sessionIdFor()` **纯函数派生**出来的 ⇒ 必然回到派生会话 A，B 明明还在磁盘上。
+ * 把实际绑定落盘、启动时优先恢复它，这条链才闭环。
+ */
+export interface IRememberedSession {
+	readonly sessionId: string;
+	readonly cwd: string;
+	/** 归一化后的 preset：基座 preset 与"未显式选择"都记成 `''`（两种语义等价，见 `_savePresetState`）。 */
+	readonly preset: string;
+}
+
+/** preset 归一化：基座 preset 与"未显式选择"等价 ⇒ 都记成 `''`。 */
+export function normalizeRememberedPreset(preset: string | undefined, basePreset: string | undefined): string {
+	if (!preset || (basePreset !== undefined && preset === basePreset)) {
+		return '';
+	}
+	return preset;
+}
+
+/** 序列化记录（写入工作区存储的字符串）。 */
+export function serializeRememberedSession(sessionId: string, cwd: string, preset: string | undefined, basePreset: string | undefined): string {
+	const record: IRememberedSession = { sessionId, cwd, preset: normalizeRememberedPreset(preset, basePreset) };
+	return JSON.stringify(record);
+}
+
+/** 解析存储值；损坏 / 缺字段 ⇒ `undefined`（当作没记过，调用方回退派生会话）。 */
+export function parseRememberedSession(raw: string | null | undefined): IRememberedSession | undefined {
+	if (typeof raw !== 'string' || !raw) {
+		return undefined;
+	}
+	try {
+		const parsed = JSON.parse(raw) as { sessionId?: unknown; cwd?: unknown; preset?: unknown };
+		if (typeof parsed.sessionId !== 'string' || !parsed.sessionId) {
+			return undefined;
+		}
+		if (typeof parsed.cwd !== 'string' || !parsed.cwd) {
+			return undefined;
+		}
+		return {
+			sessionId: parsed.sessionId,
+			cwd: parsed.cwd,
+			preset: typeof parsed.preset === 'string' ? parsed.preset : '',
+		};
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * 这条记录还能用于本次绑定吗（**目录**与 **preset** 两道校验）。
+ *
+ * 为什么是这两道：
+ *   · 目录不同 ⇒ 那是另一个 worktree / 工作区的会话，恢复过来就是"串目录" ✗；
+ *   · preset 不同 ⇒ 各 preset 有专属会话（`resolvePresetSessionId`），恢复成别的 preset 的会话 ✗。
+ * 第三道（会话**是否还存在**）必须查会话索引，不能靠纯函数，由调用方（宿主）补。
+ */
+export function rememberedSessionMatches(
+	stored: IRememberedSession,
+	options: { readonly cwd: string; readonly preset?: string; readonly basePreset?: string }
+): boolean {
+	if (!options.cwd) {
+		return false;
+	}
+	if (normalizeCwdForReuse(stored.cwd) !== normalizeCwdForReuse(options.cwd)) {
+		return false;
+	}
+	return stored.preset === normalizeRememberedPreset(options.preset, options.basePreset);
+}
+
+// ─── 复用"空白会话"（2026-10-19，对齐 dsh 官方） ─────────────────────────────
+
+/** 参与复用判定的最小形状（`IDshSessionSummary` 的子集）。 */
+export interface IBlankSessionCandidate {
+	readonly id: string;
+	readonly cwd?: string;
+	readonly agentPreset?: string;
+	/** dsh 官方口径：折叠前缀里**没有任何回合**（用户还没发过消息）。 */
+	readonly blank?: boolean;
+	readonly updatedAt?: number;
+}
+
+/** 路径归一化：大小写不敏感 + 反斜杠转正斜杠 + 去尾斜杠（同一个目录在 Windows 上有多种写法）。 */
+function normalizeCwdForReuse(p: string): string {
+	return String(p).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+/**
+ * 挑一个**可复用的空白会话**（返回它的 id；没有合适的 ⇒ `undefined`）。
+ *
+ * 为什么需要它（2026-10-19 用户问「为什么会有这么多空白会话、官方怎么做」）：dsh 的
+ * `session.create` 参数原文是 **"Blank Session to reuse while it is reusable, or the identity of a
+ * new Session when none is stored under it"** —— 官方「新建对话」是**优先复用**那个还没说过话的会话。
+ * 我们此前的宿主每开一个页签就派生一个**新** sessionId（从不复用）⇒ 每开一次页签就永久多一条
+ * `blank: true` 的会话（实测本机 1691 条里 1681 条是空白）✗。
+ *
+ * 判定（四条全中才复用）：
+ *   ① `blank === true`（有回合的会话绝不能拿来当"新对话"）；
+ *   ② `cwd` 与本次绑定目录**同一目录**（不同工作区的历史不能串）；
+ *   ③ `agentPreset` 与本次一致（否则"新对话"会跑在别人设的 preset 上）；
+ *   ④ 不在 `exclude` 里（= 本窗口**已经有页签绑着它**；复用会让两个页签显示同一条会话 ✗）。
+ * 多个候选时取 `updatedAt` 最新的那个（最近刚被关掉的空白页签，最可能仍然干净）。
+ */
+export function pickReusableBlankSession(
+	candidates: readonly IBlankSessionCandidate[],
+	options: { readonly cwd: string; readonly agentPreset?: string; readonly exclude?: ReadonlySet<string> }
+): string | undefined {
+	const cwd = normalizeCwdForReuse(options.cwd);
+	const wantPreset = options.agentPreset ?? '';
+	if (!cwd) {
+		return undefined;
+	}
+	let best: IBlankSessionCandidate | undefined;
+	for (const candidate of candidates) {
+		if (!candidate || typeof candidate.id !== 'string' || !candidate.id) {
+			continue;
+		}
+		if (candidate.blank !== true) {
+			continue;
+		}
+		if (options.exclude && options.exclude.has(candidate.id)) {
+			continue;
+		}
+		if (typeof candidate.cwd !== 'string' || normalizeCwdForReuse(candidate.cwd) !== cwd) {
+			continue;
+		}
+		if ((candidate.agentPreset ?? '') !== wantPreset) {
+			continue;
+		}
+		if (!best || (candidate.updatedAt ?? 0) > (best.updatedAt ?? 0)) {
+			best = candidate;
+		}
+	}
+	return best?.id;
+}

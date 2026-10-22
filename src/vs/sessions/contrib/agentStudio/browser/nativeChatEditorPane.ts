@@ -537,6 +537,29 @@ export class NativeChatEditorPane extends EditorPane {
 		NativeChatEditorPane._livePanes.push(this);
 		this._installSanitizeTraceSink();
 		this._installInterruptedStreamPersist(lifecycleService);
+		this._installActiveChatReporting();
+	}
+
+	/**
+	 * 把"本 pane 是不是用户正在看的那个聊天"上报给 dsh 承载（2026-10-21，多聊天并排）。
+	 *
+	 * 背景：dsh 侧的"活动聊天"是**单槽**（`activeChatViewId`），而中间栏并排两个聊天后
+	 * 两个视图可以**同时在场**。此前"在场即占位"（每次可见性重算都调）⇒ 谁最后重算谁占位，
+	 * **未必是用户正在看的那个** ⇒ "Add File to Chat / 插件页打开会话"会打到错的聊天 ✗。
+	 *
+	 * ⇒ 这里用**活动编辑器变化**做唯一判据：活动编辑器就是本 pane 的 input 时，
+	 *   让承载登记活动位（`noteActive` **不动 DOM 焦点** —— 否则会把用户正在输入的输入框抢走 ✗）。
+	 */
+	private _installActiveChatReporting(): void {
+		this._register(this._editorService.onDidActiveEditorChange(() => {
+			const active = this._editorService.activeEditor;
+			if (!active || !this._dshBinding) {
+				return;
+			}
+			if (this._input && active === this._input) {
+				this._dshBinding.noteActive?.();
+			}
+		}));
 	}
 
 	/**

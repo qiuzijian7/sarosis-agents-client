@@ -211,6 +211,11 @@ class MermaidPreview extends Disposable {
 		const codiconsUri = this._webviewPanel.webview.asWebviewUri(
 			vscode.Uri.joinPath(mediaRoot, 'codicon.css')
 		);
+		// 2026-10-19：渲染引擎换成随包的 pele（**经典脚本**，先于下面的模块脚本载入）。
+		// 由 `esbuild.webview.mts` 从 `dsh-plugins/vssaros-pele/assets/` 拷进 chat-webview-out ✓。
+		const peleUri = this._webviewPanel.webview.asWebviewUri(
+			vscode.Uri.joinPath(mediaRoot, 'pele.global.js')
+		);
 
 		return /* html */`<!DOCTYPE html>
 			<html lang="en">
@@ -276,9 +281,10 @@ class MermaidPreview extends Disposable {
 				<pre class="mermaid">
 					${escapeHtmlText(this._mermaidSource)}
 				</pre>
+				<script nonce="${nonce}" src="${peleUri}"></script>
 				<script type="module" nonce="${nonce}" src="${scriptUri}"></script>
-			</body>
-			</html>`;
+				</body>
+				</html>`;
 	}
 }
 

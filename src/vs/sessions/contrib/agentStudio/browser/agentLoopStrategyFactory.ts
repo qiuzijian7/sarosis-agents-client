@@ -35,6 +35,11 @@ export class AgentLoopStrategyFactory {
 		this._registry.set('mimo', () => new MiMoStrategy());
 		// 独立实现：各有独立 preLoop / prepareIteration / shouldTerminate 行为
 		this._registry.set('readonly', () => new ReadonlyStrategy());
+		// ⚠ 2026-10-19：`delegate_task`（模型可见工具）已退役，改用 dsh 官方 `subagent`。
+		//   但 `delegation` **范式**仍保留自己的策略实现：它的 preLoop 是**程序化**派发
+		//   （走 orchestrationService，不依赖模型调那个工具），且 `skipMainLoop=true`；
+		//   把它改映射到 HermesReAct 会让"范式自报"与实现不符（契约测试 `agentTurnExecutorBehavior`
+		//   的层 3 就是这么抓到的）。要彻底退役这个范式，应连同它的 preLoop 一起删，而不是偷换实现。
 		this._registry.set('delegation', () => new DelegationStrategy());
 		this._registry.set('graph', () => new GraphStrategy());
 	}

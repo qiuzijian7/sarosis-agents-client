@@ -22,6 +22,7 @@
 	const CHAT_ONLY_ARG = '--vssaros-dsh-chat-only=';
 	const SESSION_ARG = '--vssaros-dsh-session=';
 	const VIEW_ARG = '--vssaros-dsh-view=';
+	const WORKBENCH_ARG = '--vssaros-dsh-workbench=';
 
 	const surfaceArg = process.argv.find(a => a.startsWith(SURFACE_ARG));
 	const surface = surfaceArg ? surfaceArg.slice(SURFACE_ARG.length) : 'full';
@@ -40,13 +41,20 @@
 	// 路由由页面 location.pathname 决定，不重复传）。
 	const viewArg = process.argv.find(a => a.startsWith(VIEW_ARG));
 	const viewId = viewArg ? viewArg.slice(VIEW_ARG.length) : '';
+	// 2026-10-22：`surface=workbench` 的模块路由（`/x/<module>/`）。只认这一种形状；其余一律当没给 ✓
+	const workbenchArg = surface === 'workbench' ? process.argv.find(a => a.startsWith(WORKBENCH_ARG)) : undefined;
+	const workbenchRouteRaw = workbenchArg ? workbenchArg.slice(WORKBENCH_ARG.length) : '';
+	const workbenchRoute = /^\/x\/[a-z][a-z0-9-]*\/$/.test(workbenchRouteRaw) ? workbenchRouteRaw : '';
 
-	// 方案 5.13：聊天框里只保留聊天 UI —— 隐藏 dsh 的侧边栏（含品牌行、会话列表）与右侧栏
-	// （轨迹 / 任务 / 交付物）。不做停用插件：实测停用会让客户端 boot 因服务缺失而失败。
+	// 方案 5.13：聊天框里只保留聊天 UI —— **只隐藏左侧栏**（品牌行 + 会话列表）。
+	// ★ 2026-10-19（用户报「右侧缺少用户消息定位 UI」）：**右侧栏不再隐藏** —— 轨迹（含交互式
+	//   时间概览 = 用户消息定位）就在右栏里；右栏折叠时宽度为 0，默认不占地方，点"展开右栏"才出来。
+	// 不做停用插件：实测停用会让客户端 boot 因服务缺失而失败。
 	// 同内容常量在 common/dshPageBridgeProtocol.ts（单测比对）。
-	const CHAT_ONLY_CSS = '[data-slot="sidebar"], [data-slot="rightbar"], [data-rightbar-col="true"] { display: none !important; }\ndiv:has(> [data-shell-overlay]) { grid-template-columns: 0 minmax(0, 1fr) 0 !important; }\n[data-sidebar-right-expand] { display: none !important; }';
+	const CHAT_ONLY_CSS = '[data-slot="sidebar"] { display: none !important; }\ndiv:has(> [data-shell-overlay]) { grid-template-columns: 0 minmax(0, 1fr) auto !important; }';
 
-	if (surface === 'chat' && chatOnly) {
+	// `surface=workbench`（编辑区承载 React 工作台）同样只要主内容区：隐藏 dsh 左侧栏，工作台整页占满 ✓
+	if ((surface === 'chat' && chatOnly) || surface === 'workbench') {
 		const style = document.createElement('style');
 		style.textContent = CHAT_ONLY_CSS;
 		let observer: MutationObserver | null = null;
@@ -114,7 +122,14 @@
 	const api = {
 		// ⚠ 与 `common/dshPageBridgeProtocol.ts` 的 `DSH_PAGE_BRIDGE_VERSION` **必须同值**
 		//   （`test/common/dshPageBridge.test.ts` 拿那个常量对账这里的字面量，只改一边必红 ✓）。
-		bridgeVersion: 11,
+		// ★ 2026-10-19：`11 → 12`（新增 `kbFeishuSync` —— 知识库页「同步飞书」真的开始同步）。
+		// ★ 2026-10-19：`12 → 13`（`openSession` 增加可选 `cwd` —— 宿主先 session.start 接管历史会话）。
+		// ★ 2026-10-19：`13 → 14`（新增 `renameSession` —— 会话历史插件页右键重命名）。
+		// ★ 2026-10-19：`14 → 15`（新增 `openMediaGallery` —— dsh 媒体库页置顶按钮开原生媒体库）。
+		// ★ 2026-10-21：`15 → 16`（新增 `focusIde` —— 桌面窗口侧栏底部「IDE」入口回到 IDE 主窗口）。
+		// ★ 2026-10-21：`16 → 17`（新增 `signInIde` / `signOutIde` —— 窗口里的登录接管 IDE 账号）。
+		// ★ 2026-10-21：`17 → 18`（新增 `openSettings` / `openFeedback` —— 左下角账号菜单的两条菜单项）。
+		bridgeVersion: 18,
 		surface,
 		// ★ 2026-10-18：`chatOnly` 也放进 bridge（**同步可知**）。
 		//   为什么不能只靠 `data-vssaros-chat-only`：那个 DOM 标记要等 DOMContentLoaded 才写，
@@ -125,6 +140,8 @@
 		sessionId: sessionId || null,
 		// plugin-page 页面用它识别"我是哪个视图"（诊断 / 上报），与 location.pathname（路由）互补。
 		viewId: viewId || null,
+		// `surface=workbench` 要打开的模块路由（`/x/<module>/`）；其他 surface 为 null。
+		workbenchRoute: workbenchRoute || null,
 		// 把**当前插件页**在编辑区打开（2026-10-13，桥 2 → 3）：侧栏版是"摘要 + 入口"，完整版由编辑区
 		// 承载，而**页面自己开不了编辑器** ⇒ 交宿主；宿主按模块页表**白名单**核对 route ✓。
 		openModulePage: (route: string) => invoke({ method: 'openModulePage', route }),
@@ -133,6 +150,16 @@
 		setWorkbenchPinned: (route: string, pinned: boolean) => invoke({ method: 'setWorkbenchPinned', route, pinned }),
 		setWorkbenchHidden: (route: string, hidden: boolean) => invoke({ method: 'setWorkbenchHidden', route, hidden }),
 		ping: () => invoke({ method: 'ping' }),
+		// ★ 2026-10-21（用户：「窗口中，登录功能，接入 ide 侧的登录，两侧的登录状态要求同步」）：
+		//   dsh 窗口里的登录/登出**不自己登录**，而是请 IDE 走它那套账号流程（TOF/OA）⇒ 两侧同一份登录态 ✓。
+		//   ⚠ 无参（页面不能指定"登录成谁"）✓；⚠ 桥只回 true ⇒ 登录结果由 IDE **推**回来（见下面的 auth 通道）✓。
+		signInIde: () => invoke({ method: 'signInIde' }),
+		signOutIde: () => invoke({ method: 'signOutIde' }),
+		// ★ 2026-10-21（桥 `17 → 18`）：左下角账号菜单里的「⚙ 设置 / ✈ 意见反馈」。
+		//   两者都是"请 IDE 打开发某个界面"（`workbench.action.openSettings` / `openIssueReporter`），
+		//   页面自己做不到（设置编辑器 / 反馈面板都长在 IDE 窗口里）⇒ 只能经宿主 ✓。无参。
+		openSettings: () => invoke({ method: 'openSettings' }),
+		openFeedback: () => invoke({ method: 'openFeedback' }),
 		openFile: (path: string, range?: { startLine?: number; endLine?: number }) => invoke({ method: 'openFile', path, startLine: range?.startLine, endLine: range?.endLine }),
 		// 内存态 markdown（计划审阅等）→ IDE 编辑器区的 untitled 页（2026-10-15：dsh 开在它的右侧栏，
 		//   我们壳没有侧栏 ⇒ 改投编辑器 ✓）。只带文本、不碰盘 ✓ —— 与页面桥"只收低风险界面命令"同口径 ✓。
@@ -163,12 +190,28 @@
 		// 方案 5.15：已有会话切 preset = 换到该 preset 的专属会话（宿主派生 id + startSession +
 		// rebind 回推）。空白会话由 chat-surface 直接走 dsh 官方 select，不经过这里。
 		switchPreset: (presetId: string) => invoke({ method: 'switchPreset', presetId }),
-		// 切到指定 dsh 会话（chat-surface 的「历史会话」菜单）；宿主校验并走既有 rebind 通路。
-		openSession: (sessionId: string, agentPreset?: string) => invoke({ method: 'openSession', sessionId, agentPreset }),
+		// 切到指定 dsh 会话（chat-surface 的「历史会话」菜单 / 会话历史插件页双击）；
+		// 宿主校验并走既有 rebind 通路。`cwd` 可选：宿主据此先 `session.start` 把**历史会话拉活**
+		// （否则不在 Host live 集合里的会话换绑后也打不开，见协议里 openSession 的注释）。
+		openSession: (sessionId: string, agentPreset?: string, cwd?: string) => invoke({
+			method: 'openSession',
+			sessionId,
+			...(agentPreset === undefined ? {} : { agentPreset }),
+			...(cwd === undefined ? {} : { cwd }),
+		}),
 		// 新建一个聊天页签（header 的「新建会话」/ Commands 的「Preset」行）：页面无法创建编辑器 ⇒
 		// 由宿主执行官方命令。`agentPreset` 可选：带上则新页签直接绑该 preset 的专属会话
 		// （chat-surface 的「切换 preset = 新建一个会话」就靠它）。
 		newChat: (agentPreset?: string) => invoke({ method: 'newChat', agentPreset }),
+		// 重命名一条 dsh 会话（会话历史插件页右键；桥 14）：改名只能由**聊天页**做
+		// （`ctx.sessions.rename` 在客户端）⇒ 宿主转交；没有聊天框绑着它时先绑（含 session.start 接管）。
+		renameSession: (sessionId: string, title: string, opts?: { agentPreset?: string; cwd?: string }) => invoke({
+			method: 'renameSession',
+			sessionId,
+			title,
+			...(opts && typeof opts.agentPreset === 'string' ? { agentPreset: opts.agentPreset } : {}),
+			...(opts && typeof opts.cwd === 'string' ? { cwd: opts.cwd } : {}),
+		}),
 		// **本页签内**新建会话（header 的「＋ 新建会话」）：宿主派生新 id → `session.start` → rebind 回推。
 		// 与 `newChat`（新开页签）的区别只有落点。页面侧据此把"再来一段新对话"做成一步 ✓
 		newSession: () => invoke({ method: 'newSession' }),
@@ -188,6 +231,15 @@
 		// 与 `openAgentMarket` 同源 —— 商城是 VsSaros 的编辑器页，**页面自己开不了** ⇒ 交宿主；
 		// 宿主只把它转成 `agentStudio.openSkillMarket` 命令 ✓（不在宿主里 new EditorInput ✓）。
 		openSkillMarket: () => invoke({ method: 'openSkillMarket' }),
+		// 打开 **VsSaros 的媒体库**（桥 `14 → 15`，2026-10-19）：dsh 媒体库页 `/x/media/` 的置顶按钮。
+		// 与 `openSkillMarket` 同源 —— 媒体库是原生 `EditorPane`（`MediaGalleryEditorInput`），
+		// 页面（WebContentsView）创建不了编辑器 ⇒ 交宿主转成 `agentStudio.openMediaGallery` 命令 ✓。
+		// ⚠ 它**取代**了原先的 `openModulePage('/x/media/')`：那条开的是 dsh 自己的文本列表页（没有缩略图）。
+		openMediaGallery: () => invoke({ method: 'openMediaGallery' }),
+		// 回到 **VsSaros IDE 主窗口**（桥 `15 → 16`，2026-10-21）：dsh 桌面窗口侧栏底部那行品牌/规模摘要
+		// 就是它的入口（用户要求"窗口版中增加 IDE 入口可以进入 VsSaros 界面"）。
+		// 页面拿不到窗口级 API（`window.focus()` 只能激活自己所在的窗口 ✗）⇒ 只能交宿主 `focusWindow` ✓。
+		focusIde: () => invoke({ method: 'focusIde' }),
 		// 打开**某个资源条目的设置**（桥 `9 → 10`，2026-10-15）：「工具」页（`/x/skills/`，原集成页）里
 		// **技能行 / MCP 行**的齿轮。`kind='skill'` ⇒ 资源管理详情页（改 SKILL.md / 启停 / 卸载）；
 		// `kind='mcp'` ⇒ 真源文件 `<数据根>/mcp.json`（⚠ 不用 IDE 的 MCP 管理页：那份读的是
@@ -204,6 +256,13 @@
 		//   它只把这两条转成 `agentStudio.kb.openSettings` / `.openGraph` 命令 ✓（单一实现 ✓）。
 		openKbSettings: () => invoke({ method: 'openKbSettings' }),
 		openKbGraph: () => invoke({ method: 'openKbGraph' }),
+		// ★ 2026-10-19：**同步飞书**（桥 `11 → 12` 新增的命令）。
+		//   ⚠⚠ 当时只改了「协议 + validate case + 宿主 handler」，**漏了这里** ⇒
+		//   `window.vssarosDsh.kbFeishuSync` 根本不存在 ⇒ 页面只能走"旧宿主"兜底分支，
+		//   用户看到的就是「当前宿主不支持一键同步（需要页面桥 12）」✗（真机报的这个）。
+		//   教训：桥命令有**四处**要同步 —— 协议类型 / validatePageCommand 的 case /
+		//   **preload 的 api 暴露** / 宿主 handler。全族守卫原先只查前两者（本轮已补第三个）。
+		kbFeishuSync: () => invoke({ method: 'kbFeishuSync' }),
 		// 知识库**增删**（桥 `7 → 8`，2026-10-15；用户要求"下拉框要有增删" ✓）——与上面两条同源：
 		// 页面开不了系统选择器、也写不了 IDE storage ✗ ⇒ 交宿主；宿主只转成 IDE 自己的命令 ✓。
 		// ⚠ 这两条**会改数据**（改清单 / 删库目录）⇒ 真源那两步各自带的**原生对话框**就是闸 ✓：
@@ -265,6 +324,34 @@
 		document.dispatchEvent(new CustomEvent(WORKSPACES_EVENT, { detail: list }));
 	});
 
+	// **IDE 登录态**（TOF/OA）推给页面（2026-10-21）：机制与上面那条逐字同款（dataset + DOM 事件）✓。
+	// ⚠ 只推**展示投影**（signedIn / 登录名 / 工号 / 团队）—— 票据绝不下发到页面 ✓。
+	// ⚠ 页面据此显示"与 IDE 同一份登录态"；页面点登录/登出走 `signInIde` / `signOutIde`（上面那两条）✓。
+	const AUTH_CH = 'vssaros:dsh:auth';
+	const AUTH_EVENT = 'vssaros-dsh-auth';
+	ipcRenderer.on(AUTH_CH, (_e: unknown, payload: unknown) => {
+		if (typeof payload !== 'object' || payload === null) {
+			return;
+		}
+		const p = payload as Record<string, unknown>;
+		if (typeof p.signedIn !== 'boolean') {
+			return;
+		}
+		const info = {
+			signedIn: p.signedIn,
+			loginName: typeof p.loginName === 'string' ? p.loginName : '',
+			staffId: typeof p.staffId === 'string' ? p.staffId : '',
+			team: typeof p.team === 'string' ? p.team : '',
+			// ★ 登录/登出**失败原因**（2026-10-21）：页面桥单向 ⇒ 失败必须靠这条推送才可见 ✓
+			//   （只给一句人话；空串 ⇒ 不带这个键 ⇒ 页面不显示空错误条 ✓）。
+			...(typeof p.error === 'string' && p.error ? { error: p.error.slice(0, 200) } : {}),
+		};
+		if (document.documentElement) {
+			document.documentElement.dataset.vssarosAuth = JSON.stringify(info);
+		}
+		document.dispatchEvent(new CustomEvent(AUTH_EVENT, { detail: info }));
+	});
+
 	// 插入文件引用（方案 5.5 onInsertReference）：工作台 → 页面插件（chat-surface 客户端
 	// 用 inputActions.captureInsertion + insertText 落到草稿）。主进程侧已校验负载形状。
 	const INSERT_CH = 'vssaros:dsh:insert';
@@ -300,7 +387,30 @@
 			return;
 		}
 		document.dispatchEvent(new CustomEvent(RENAME_EVENT, { detail: { title: (payload as { title: string }).title } }));
-	});
+		});
+
+		// ★ 2026-10-19：改名的**回执**（页面 → 工作台）—— 与上面那条互为反向。
+		//   页面（`client.sessionLabel.js`）改完派 `vssaros-dsh-renamed`：成功带 `title`、失败带 `error`。
+		//   ⇒ preload 把它上送主进程，主进程 fire `kind:'renamed'` 的页面事件 ⇒ 调用方（会话侧栏）
+		//     才知道这次**到底改成了没有**（桥的 invoke 没有语义返回值，不能拿来当回执 ✗）。
+		//   ⚠ 只透传字符串字段；`sessionId` 必填（否则调用方无从对回是哪条会话）。
+		const RENAMED_CH = 'vssaros:dsh:renamed';
+		const RENAMED_EVENT = 'vssaros-dsh-renamed';
+		document.addEventListener(RENAMED_EVENT, (e: unknown) => {
+		const d = (e as CustomEvent<unknown>).detail;
+		if (typeof d !== 'object' || d === null) {
+			return;
+		}
+		const p = d as { sessionId?: unknown; title?: unknown; error?: unknown };
+		if (typeof p.sessionId !== 'string' || p.sessionId.length === 0) {
+			return;
+		}
+		ipcRenderer.send(RENAMED_CH, {
+			sessionId: p.sessionId,
+			...(typeof p.title === 'string' ? { title: p.title.slice(0, 500) } : {}),
+			...(typeof p.error === 'string' ? { error: p.error.slice(0, 500) } : {}),
+		});
+		});
 
 	// 计费样本（主进程的计费探针代理 → 页面）：chat-surface 的回合页脚按回合时间窗归属后渲染「积分」chip。
 	// 负载形状主进程已构造（route/model/credit/status/at），这里只校验必备字段并透传（不做任何解释）。

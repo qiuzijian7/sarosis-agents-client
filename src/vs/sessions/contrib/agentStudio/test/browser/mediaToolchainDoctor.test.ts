@@ -119,8 +119,15 @@ suite('媒体工具链 · 探活缓存接线', () => {
 		const { ctx, calls } = makeCtx({ runner: { missing: ['ffmpeg.exe'] } });
 		const bins = await resolveToolchain(ctx);
 		await probeMediaBinary(ctx, bins.ffmpeg, '-version', { now: () => 0 });
+		// ⚠ 2026-10-20 修断言（不是实现）：自 2026-09-25 起 `missing` **先重试一次再定论**
+		//   （启动高峰期抖动会把完好的二进制误判 missing，见 `probeMediaBinaryDetailed` 的注释）
+		//   ⇒ **首次调用本身就是 2 次 spawn**（首探 + 一次重试）。
+		//   旧断言写 `calls.length === 1` ⇒ 恒红（2 !== 1）。缓存命中的正确判据是
+		//   "**第二次调用不再增加**"，而不是"总共只有 1 次"。
+		const afterFirst = calls.length;
+		assert.strictEqual(afterFirst, 2, 'missing 首次 = 首探 + 一次重试（抖动防护）');
 		await probeMediaBinary(ctx, bins.ffmpeg, '-version', { now: () => 0 });
-		assert.strictEqual(calls.length, 1, 'missing 也该命中缓存');
+		assert.strictEqual(calls.length, afterFirst, 'missing 也该命中缓存（第二次不再 spawn）');
 	});
 });
 

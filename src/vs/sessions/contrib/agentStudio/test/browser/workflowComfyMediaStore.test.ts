@@ -7,7 +7,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { DatabaseSync } from 'node:sqlite';
-import { mkdtempSync, rmSync, readFileSync, existsSync, readdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, existsSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import assert from 'assert';
@@ -211,6 +211,81 @@ suite('mediaStore (SQL via node:sqlite)', () => {
 			assert.strictEqual(Number(busy.timeout), 5000, 'busy_timeout 必须是 5000ms（与 kb/graph 一致）');
 		} finally {
 			raw.close();
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	// ── 打开失败的恢复（2026-10-19 真机事故：媒体库整页「读取媒体库失败」）──────────
+	// 现场取证：better-sqlite3 **惰性打开** ⇒ `new DatabaseSync()` 成功、第一条语句才
+	// `disk I/O error`（SQLITE_IOERR_TRUNCATE）；而失败时若不 close，半开句柄会一直握着
+	// media.db（Windows 强制字节区锁）⇒ 本窗口后续连接全部 IOERR，只能重启 ✗。
+
+	test('打开失败必须 close 半开连接（不关就毒化整个窗口）', () => {
+		const root = mkdtempSync(path.join(tmpdir(), 'media-store-test-'));
+		let closed = 0;
+		const broken: SqliteDatabase = {
+			exec() { throw Object.assign(new Error('disk I/O error'), { code: 'SQLITE_IOERR_TRUNCATE' }); },
+			prepare(): never { throw new Error('unreachable'); },
+			close() { closed++; },
+		};
+		try {
+			assert.throws(() => new MediaStore({ rootDir: root }, () => broken), /disk I\/O error/);
+			assert.ok(closed >= 1, '失败路径必须调用 close()（半开句柄 = 后续所有连接都读不到库）');
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test('I/O 失败且 -wal 为空 ⇒ 清掉陈旧 -wal/-shm 后重试一次并成功', () => {
+		const root = mkdtempSync(path.join(tmpdir(), 'media-store-test-'));
+		const walPath = path.join(root, 'media.db-wal');
+		const shmPath = path.join(root, 'media.db-shm');
+		const good = new DatabaseSync(':memory:') as unknown as SqliteDatabase;
+		let attempts = 0;
+		try {
+			writeFileSync(path.join(root, 'media.db'), 'placeholder');
+			writeFileSync(walPath, '');
+			writeFileSync(shmPath, Buffer.alloc(32768));
+			const factory = (): SqliteDatabase => {
+				attempts++;
+				if (attempts === 1) {
+					return {
+						exec() { throw Object.assign(new Error('disk I/O error'), { code: 'SQLITE_IOERR_TRUNCATE' }); },
+						prepare(): never { throw new Error('unreachable'); },
+						close() { /* 释放半开句柄 */ },
+					};
+				}
+				return good;
+			};
+			const store = new MediaStore({ rootDir: root }, factory);
+			assert.strictEqual(attempts, 2, 'I/O 失败应重试一次');
+			assert.ok(!existsSync(walPath), '0 字节的陈旧 -wal 应被清掉');
+			assert.ok(!existsSync(shmPath), '陈旧的 -shm 应被清掉');
+			assert.strictEqual(store.getRootDir(), root);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test('-wal 非空时绝不清理、也不重试（那里可能有未落盘的提交）', () => {
+		const root = mkdtempSync(path.join(tmpdir(), 'media-store-test-'));
+		const walPath = path.join(root, 'media.db-wal');
+		let attempts = 0;
+		try {
+			writeFileSync(path.join(root, 'media.db'), 'placeholder');
+			writeFileSync(walPath, Buffer.alloc(1024, 7));
+			const factory = (): SqliteDatabase => {
+				attempts++;
+				return {
+					exec() { throw Object.assign(new Error('disk I/O error'), { code: 'SQLITE_IOERR_TRUNCATE' }); },
+					prepare(): never { throw new Error('unreachable'); },
+					close() { /* noop */ },
+				};
+			};
+			assert.throws(() => new MediaStore({ rootDir: root }, factory), /disk I\/O error/);
+			assert.strictEqual(attempts, 1, '非空 wal ⇒ 不重试（重试也修不好，别装成功）');
+			assert.ok(existsSync(walPath), '非空 -wal 必须保留');
+		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
 	});

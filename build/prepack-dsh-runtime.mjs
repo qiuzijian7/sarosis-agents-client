@@ -33,7 +33,7 @@ const PRUNE_LIST = [
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -167,14 +167,21 @@ console.log(`[prepack-dsh] done: dsh ${actual} ready at ${target} (${Math.round(
 await safeBuildProfileSeed(target, bin, actual);
 
 /**
- * `dsh-plugins/` 下带 `vssaros.module` 清单的**模块插件**目录（agents / skills / mcp / kb / memory /
- * codebase / kanban / workflow / dashboard / ide）。
+ * `dsh-plugins/` 下的**全部随包插件目录**（24 个：16 个模块插件 + 7 个 patch 型 + 1 个 vendored）。
  *
- * 同一判据在宿主侧是 `listBundledPlugins()`（`src/vs/sessions/contrib/dshHarness/electron-main/
- * dshBundledPlugins.ts`）；构建脚本不能 import TS ⇒ 就地重写一遍，`dshPluginPackages.test.ts` 里有一条
- * 守卫比对两边口径（只有一份判断标准，漂移会红）。
+ * ⚠ 判据不能只看 `vssaros.module`（2026-10-19 现场）：patch 型插件（`cordis.patch.yml` 插一行，
+ *   **没有** `vssaros.module`）同样必须进种子 —— 尤其 `vssaros-foundation`：它是所有模块插件的
+ *   共享服务（`dataRoot` / `dshHome` / `pageShell` / `lock` 的唯一真源），消费者的
+ *   `lib/foundationRef.js` 在它缺席时**直接抛**"vssaros-foundation 服务未绑定"；`vssaros-kb-refs`
+ *   缺席则聊天框没有「@知识库」，`vssaros-browser` / `vssaros-unreal` 缺席则那两族工具静默消失。
+ *   而种子的意义就是**首启零下载**（首启走 `dsh plugin add` 需要 pnpm，用户机器上不一定有 ✗）。
+ *
+ * 宿主侧的权威清单在 `dshHostSupervisor`（`DSH_*_PLUGIN_NAME` + 模块插件自发现）；构建脚本不能
+ * import TS ⇒ 这里按"仓库里自称 `@vssaros/*` / `@tt-a1i/*`（vendored）的插件目录"全收，
+ * 宁可多带（装着但不被 patch 插入 ⇒ 不激活，无副作用）也**不许漏**。
+ * `dshPluginPackages.test.ts` 有一条守卫把两边清单逐名对齐（漂移即红）。
  */
-function discoverModulePluginDirs(baseDir) {
+function discoverRepoPluginDirs(baseDir) {
 	const out = [];
 	let entries;
 	try {
@@ -189,13 +196,20 @@ function discoverModulePluginDirs(baseDir) {
 		const dir = join(baseDir, entry.name);
 		try {
 			const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
-			if (typeof pkg?.name === 'string' && pkg.name.startsWith('@vssaros/')
-				&& typeof pkg?.vssaros?.module === 'string' && pkg.vssaros.module.trim()) {
+			const name = typeof pkg?.name === 'string' ? pkg.name : '';
+			// `@vssaros/*` = 自家插件；`@tt-a1i/archify-dsh` = vendored 第三方技能包（宿主也随包装）
+			if (name.startsWith('@vssaros/') || name.startsWith('@tt-a1i/')) {
 				out.push(dir);
 			}
 		} catch { /* 不是包 / 读不动 ⇒ 跳过（与宿主侧同口径） */ }
 	}
-	return out.sort();
+	// 确定性顺序（marker 比对用 JSON.stringify，必须稳定）。foundation 排第一：它是所有消费者的
+	// 依赖（宿主安装清单里也刻意放在模块插件之前，见 `dshHostSupervisor` 的注释）。
+	return out.sort((a, b) => {
+		const fa = a.endsWith(`${sep}vssaros-foundation`) ? 0 : 1;
+		const fb = b.endsWith(`${sep}vssaros-foundation`) ? 0 : 1;
+		return fa - fb || a.localeCompare(b);
+	});
 }
 
 /** 在 <target>/profile-seed 里建好 vssaros profile（含伴生插件 + 全部模块插件 + web 模板依赖）。 */
@@ -205,12 +219,19 @@ async function buildProfileSeed(runtimeDir, dshBin, dshVersion) {
 	const profileDir = join(seed, 'profiles', 'vssaros');
 	const markerPath = join(seed, 'seed.json');
 	const pluginSources = [
-		...['vssaros-bridge', 'vssaros-chat-surface'].map(n => join(root, 'dsh-plugins', n)),
-		// 模块插件自 2026-10-11 起**全部随包**（用户要求）：自发现，避免"新模块忘了加进清单"的漂移
-		// （漂移的表现是"模块没装、图标也不出现"，编译期看不出来 ✗）。
-		...discoverModulePluginDirs(join(root, 'dsh-plugins')),
+		// 仓库侧**全部**随包插件（模块插件 + patch 型伴生插件 + vendored），foundation 已排第一 ✓。
+		// ⚠ 2026-10-19：这里原先只收 `vssaros.module` ⇒ foundation / kb-refs / browser / unreal /
+		//   archify 全漏（种子装上后那些插件一激活就抛"foundation 服务未绑定"✗）。
+		...discoverRepoPluginDirs(join(root, 'dsh-plugins')),
+		// dsh 运行时自带的**官方 bundle**（随 dsh 版本分发，仓库里没有）：web-app + 语音输入 + 调度。
+		// 与宿主 `DSH_WEB_APP_BUNDLE_NAME` / `DSH_VOICE_BUNDLE_PLUGIN_NAME` / `DSH_SCHEDULE_BUNDLE_PLUGIN_NAME`
+		// 同一批；漏了它们首启要 `dsh plugin add`（**需 pnpm**）⇒ "首启零下载"就破了 ✗✗。
+		// ⚠ web-app 尤其不能漏：它提供 `webServer` / `connection` 两个服务，缺了 bridge / chat-surface /
+		//   codebase / memory 全部永远 pending ⇒ Host 直接退出 code 1（见 `dshHostSupervisor` 的注释）。
+		join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh-web-app'),
 		join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh-experimental-voice-input-bundle'),
-	];
+		join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh-experimental-schedule-bundle'),
+	].filter(p => existsSync(join(p, 'package.json')));
 	const wantPlugins = {};
 	for (const src of pluginSources) {
 		const pkg = JSON.parse(readFileSync(join(src, 'package.json'), 'utf8'));

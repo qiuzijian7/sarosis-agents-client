@@ -221,6 +221,32 @@ export interface IModelAgentInfo {
 	readonly models?: string[];        // 该 Agent 支持的模型 ID 列表
 }
 
+/**
+ * ★ 2026-10-21（三批⑨）：**图像 provider 的能力表**（比例 / 质量 / 尺寸档）。
+ *
+ * 为什么要有它（上游 `dsh-image-gen` 的 `capabilities.ts` 有，我们没有 ⇒ 对比上游时的第 ⑨ 条缺口）：
+ * 各家生图 API 的比例/质量/尺寸档**各不相同**（OpenAI 只认 `1024x1024/1536x1024/1024x1536`，
+ * Gemini 认 `1:1/16:9` + `1K/2K`，Seedream 认另一套）⇒ 谁要"按各家能力修正参数"，
+ * 就得先知道各家能吃什么。
+ *
+ * ⚠ **这张表不许臆造**：真源在 provider 侧（每个 provider 自己的定义/文档）⇒
+ *   IDE 侧只**暴露**它，不在这里猜一套"通用档位"（猜了就是第二份真源 ⇒ 必漂 ✗）。
+ *   所以这三项都是**可选**的：provider 没登记 ⇒ 就是空（调用方按"原样透传"处理 ✓）。
+ */
+export interface IImageProviderCapabilities {
+	/** 该 provider 支持的**画面比例**（如 '16:9'）—— 没登记就是空数组/缺省。 */
+	readonly ratios?: readonly string[];
+	/** 该 provider 支持的**生成质量档**（如 'standard'、'high'）。 */
+	readonly qualities?: readonly string[];
+	/** 该 provider 支持的**尺寸档/尺寸串**（如 '1024x1024'、'1K'）。 */
+	readonly sizes?: readonly string[];
+	/** 该 provider 的**图像模型清单**（哪些模型能生图）。 */
+	readonly models?: ReadonlyArray<{
+		readonly id: string;
+		readonly name?: string;
+	}>;
+}
+
 // ─── Model Provider Interface ───────────────────────────────────────────────────
 // 特殊性：支持同时注册多个 Provider，每个 Provider 可提供多个模型
 // 部分 Provider 还支持 Agent 选择（如 Knot）
@@ -267,6 +293,17 @@ export interface IModelProvider {
 	// 支持 text → image 的 Provider 实现此方法。生成的图片以 URL 或
 	// base64 data URL 返回，供画布节点（ImageStage 等）直接展示。
 	generateImage?(params: IImageGenParams, context?: IChatContext): Promise<IImageGenResult>;
+
+	/**
+	 * ★ 2026-10-21（三批⑨）：**图像能力表**（可选）—— 这个 provider 能生图、
+	 * 有哪些图像模型、各家支持哪些比例/质量/尺寸档。
+	 *
+	 * 为什么单独一个方法：模型清单的真源是 provider 自己的 `listModels()`
+	 * （`supportsImageGen` 标记 ✓）⇒ **不在别处再抄一份**（抄了就会漂 ✗）。
+	 *
+	 * 比例/质量/尺寸档是**可选**的：provider 没登记就是空 ⇒ 调用方按"原样透传"处理 ✓。
+	 */
+	imageCapabilities?(): Promise<IImageProviderCapabilities | undefined>;
 
 	// ─── 文生视频（可选）──────────────────────────────────────
 	// 支持 text/image → video 的 Provider 实现此方法。生成的视频以
@@ -316,6 +353,18 @@ export interface IImageGenParams {
 /** 文生图结果：每张图片以 URL 或 base64 data URL 表达。 */
 export interface IImageGenResult {
 	readonly images: Array<{ url?: string; b64?: string }>;
+	/**
+	 * ★ 2026-10-21：**这次是不是"降级"出来的**（图生图的端点不可用 ⇒ 回退成了文生图，参考图被忽略）。
+	 *
+	 * 为什么要有这个标记：provider 的 img2img 回退链是"edits 失败 ⇒ 退文生图，保证出图"，
+	 * 调用方**拿不到任何提示** ⇒ 用户以为"按参考图改了"，其实拿到的是一张凭空生成的图 ✗。
+	 * ⇒ 谁依赖"参考图真的被采纳"（比如画布的"按选区改图"），必须能看见这个标记并如实说。
+	 *
+	 * 可选字段（旧 provider 不填 ⇒ 视为 false ✓）。
+	 */
+	readonly degraded?: boolean;
+	/** 降级原因（人话，直接给用户看）。 */
+	readonly degradedReason?: string;
 }
 
 // ─── 文生视频参数与结果 ───────────────────────────────────────────────────────

@@ -470,26 +470,36 @@ protected override _getMarkdownOptions(isStreaming: boolean = false): MarkdownRe
 				const lines = code.split('\n');
 				const isLarge = lines.length > LARGE_CODE_THRESHOLD;
 
-				// ── Mermaid fence 兜底内联预览（2026-09-05，日志 1788596740459）────────
-				// 设计意图是模型调 renderMermaidDiagram 工具出专用卡片；但模型有时无视
-				// 「DIAGRAM REQUESTS — ALWAYS USE THE TOOL」直接在文本里输出 ```mermaid
-				// fence，此前被渲染成普通代码块，用户看不到图。兜底：代码块上方追加
-				// 异步 SVG 预览（复用 renderMermaidSvg 隐藏 webview），源码块保留
-				// （Copy/Apply 不受影响）。
+				// ── 图表 fence 兜底内联预览（mermaid: 2026-09-05；drawio: 2026-10-19）────
+				// 设计意图是模型调 renderMermaidDiagram / renderDrawioDiagram 工具出专用卡片；
+				// 但模型有时无视「DIAGRAM REQUESTS — ALWAYS USE THE TOOL」直接在文本里输出
+				// ```mermaid / ```drawio fence，此前被渲染成普通代码块，用户看不到图。
+				// 兜底：代码块上方追加异步 SVG 预览，源码块保留（Copy/Apply 不受影响）。
+				//   · mermaid → `_renderMermaidCardSvg`（随包 pele 引擎）
+				//   · drawio  → `_renderDrawioCardSvg`（maxgraph 只读渲染，与 drawio 卡片**同一条路**）
 				// 节流：流式期间 wrapper 每帧重建，setTimeout 随元素废弃自然丢弃——
 				// 仅流结束后的最终重建真正触发渲染（零状态节流）。
-				let mermaidPreview: HTMLElement | undefined;
-				if (lang.toLowerCase() === 'mermaid' && code.trim()) {
-					mermaidPreview = document.createElement('div');
-					mermaidPreview.className = 'mermaid-fallback-preview';
-					const mermaidLoading = document.createElement('div');
-					mermaidLoading.className = 'mermaid-card-loading';
-					mermaidLoading.textContent = 'Mermaid 预览渲染中…';
-					mermaidPreview.appendChild(mermaidLoading);
+				const fenceLang = lang.toLowerCase();
+				const isDrawioFence = fenceLang === 'drawio';
+				let diagramPreview: HTMLElement | undefined;
+				if ((fenceLang === 'mermaid' || isDrawioFence) && code.trim()) {
+					diagramPreview = document.createElement('div');
+					// ⚠ 沿用 `.mermaid-fallback-preview` / `.mermaid-card-loading` 这两个**历史类名**：
+					//   它们的 CSS 同时管 `img` 与 `svg` 两种子节点（agentChat.css），改名要同步动
+					//   两份 CSS ⇒ 收益不抵风险。名字里的 "mermaid" 只是历史包袱，不是只给 mermaid 用。
+					diagramPreview.className = 'mermaid-fallback-preview';
+					const diagramLoading = document.createElement('div');
+					diagramLoading.className = 'mermaid-card-loading';
+					diagramLoading.textContent = isDrawioFence ? 'Draw.io 预览渲染中…' : 'Mermaid 预览渲染中…';
+					diagramPreview.appendChild(diagramLoading);
 					window.setTimeout(() => {
 						// 元素已随流式重建脱离 DOM 则跳过
-						if (!mermaidPreview?.isConnected) { return; }
-						void this._renderMermaidCardSvg(code, mermaidPreview, mermaidLoading);
+						if (!diagramPreview?.isConnected) { return; }
+						if (isDrawioFence) {
+							void this._renderDrawioCardSvg(code, diagramPreview, diagramLoading);
+						} else {
+							void this._renderMermaidCardSvg(code, diagramPreview, diagramLoading);
+						}
 					}, 800);
 				}
 
@@ -648,9 +658,9 @@ protected override _getMarkdownOptions(isStreaming: boolean = false): MarkdownRe
 				}
 				wrapper.appendChild(pre);
 
-				// Mermaid 预览插在代码块上方（图优先，源码在下可折叠）
-				if (mermaidPreview) {
-					wrapper.insertBefore(mermaidPreview, pre);
+				// 图示预览插在代码块上方（图优先，源码在下可折叠）
+				if (diagramPreview) {
+					wrapper.insertBefore(diagramPreview, pre);
 				}
 
 				return wrapper;

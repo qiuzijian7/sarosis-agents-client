@@ -1,4 +1,4 @@
-﻿import {
+import {
 	IModelProvider, IModelSelection, IModelOptions,
 	IModelDelta,
 	IMemoryProvider,
@@ -460,6 +460,9 @@ interface ITurnContext {
 			getActiveMemoryProvider: () => memoryProvider,
 			injectedSessions: host._injectedSessions,
 			metaInjectedSessions: host._metaInjectedSessions,
+			// 用户设置 `agentStudio.memory.injectContext`（2026-10-20）：此前只能靠环境变量开，
+			// 设置 UI 里看不到这个开关。与环境变量是"或"关系（见 isMemoryInjectionEnabled）。
+			readInjectContextSetting: () => host._isMemoryInjectContextConfigured?.() === true,
 		}, request, messages);
 		messages = memResult.messages;
 

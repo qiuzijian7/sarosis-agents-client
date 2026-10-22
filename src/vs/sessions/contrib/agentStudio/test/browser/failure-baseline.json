@@ -18,5 +18,14 @@
     "workflowMediaAssets (vssarosBridge not initialised)",
     "workflowPasteImage (vssarosBridge not initialised)"
   ],
-  "failingSuites": {}
+  "failingSuites": {
+    "taskBoardExecution": {
+      "file": "test/browser/taskBoardExecution.test.ts",
+      "failing": 4,
+      "cases": [
+        "Task Board → Agent 数据传递"
+      ],
+      "cause": "★ 2026-10-20 登记（此前写在 `_unlistedRedNote` 里当\"别人在途\"，一直没人大收尾 ⇒ 现在按存量登记）。现场：`AgentTaskBoardService` 上了跨进程写锁（`common/fileWriteLock.ts`）后，本套件的 `InMemoryFileService` 假件没跟上 —— 缺 `createFile` / `stat` / `hasCapability`，且 `writeFile` 是**空实现**（写盘不落内存 ⇒ 下一次 `_readTasks` 读回初始 `[]` ⇒ `Error: Task not found: task-1`）。2026-10-20 已补齐这三个方法，同源的两个套件（`workflowStorageService` 6 例、`workflowResourceFiles` 8 例）**已转绿**，本套件仍剩 4 例（`_resolveAttachmentPayloads` 解析出 0 个 + 3 条 updateTask/execute 相关）⇒ 还差一层（疑似 service 侧内存缓存与假件 seed 时序），待续。"
+    }
+  }
 }

@@ -162,7 +162,7 @@ suite('同步前图表准备（prepareDiagramsForSync）', () => {
 			'![[拓扑.canvas]]', '',
 			'![[live-demo.html]]', '',
 		));
-		// ⚠ canvas 必须是**非空节点**的 JSON Canvas：canvasToSvg 对空节点主动抛错（记为失败、保留原文）
+		// ⚠ canvas 必须是**非空节点**的 JSON Canvas：canvasToMermaidSource 对空节点主动抛错（记为失败、保留原文）
 		fs.put(URI.joinPath(NOTES, '拓扑.canvas'), JSON.stringify({
 			nodes: [{ id: 'n1', type: 'text', x: 0, y: 0, width: 200, height: 80, text: '拓扑' }],
 			edges: [],
@@ -179,7 +179,9 @@ suite('同步前图表准备（prepareDiagramsForSync）', () => {
 		assert.strictEqual(r.attachments, 1, 'html → 附件复制');
 		assert.strictEqual(r.failures, 0);
 		assert.strictEqual(r.touched, 1, '同一篇笔记多处改动只算一篇');
-		assert.strictEqual(t.s.calls.mermaid, 0, 'mermaid 不再走渲染器（飞书转画板）');
+		// ★ 2026-10-19：canvas 现在**经转译后走 pele**（同一个 renderMermaid 入口）⇒ 这里是 1 不是 0。
+		//   「mermaid 图源不再走渲染器（飞书转画板）」这条仍然成立——那 1 次是 canvas 用的，不是 mermaid。
+		assert.strictEqual(t.s.calls.mermaid, 1, 'mermaid 图源不再渲染（飞书转画板）；canvas 转译成 Mermaid 后走一次 pele');
 
 		const note = fs.text(NOTE_A);
 		assert.ok(note.includes('![[设计.attachments/embed-1.png]]'), 'canvas 应被替换为图片引用');

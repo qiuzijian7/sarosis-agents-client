@@ -23,7 +23,9 @@
 //     （真源 walk 不排隐藏件 ✓ —— 我第一版"顺手跳过点文件"是**偏离** ✗，黄金表会咬 ⇒ 去掉 ✓）；
 //   · 只收 `TEXT_EXTS`（24 种文本扩展名 ✓ —— 照 `kbIndex.ts:27-30` ✓，PDF 等二进制不收 ✓）；
 //   · **>2MB 的文件剔除**（真源 `_reconcileWalk:168` ✓ —— 防大文件把内存索引撑爆 ✓）；
-//   · tags = 正文里的 **`#标签#`**（`extractTags` ✓ —— FTS 侧就是这样 ✓；frontmatter 的 tags 属生产形态 ✓）；
+//   · tags = **frontmatter tags ∪ 正文 `#标签#`**（`extractTags` + `extractFrontmatterTags` ✓
+//     —— 2026-10-19 标签口径修订，与 IDE `_addOrUpdateDoc` 同口径 ✓；此前只认正文 ⇒
+//     133/166 篇 frontmatter-only 的笔记全落「无标签」✗）；
 //   · length = **`tokenize(name.toLowerCase() + ' ' + cleanText)`** 的词元数（BM25 长度归一 ✓，真源 `:344-345` ✓
 //     —— **文件名参与** ✓，我第一版漏了它 ⇒ length 偏小 ✗）；
 //   · text = 原文 ✓（真源直接存全文 ✓）；
@@ -44,7 +46,7 @@ import { readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { LIBRARY_DIR, NOTES_DIR } from './kb.js';
 import { extractTags, tokenize } from './kbFulltext.js';
-import { parseFrontmatter, readNoteFrontmatterType } from './kbFrontmatter.js';
+import { extractFrontmatterTags, parseFrontmatter, readNoteFrontmatterType } from './kbFrontmatter.js';
 
 /** 真源 `kbIndex.ts:27-30` 的 TEXT_EXTS（逐字 ✓ —— 集合内容变了要跟着改 ✓）。 */
 const TEXT_EXTS = new Set([
@@ -103,8 +105,13 @@ export async function buildKernelDocs(vaultDir) {
 		if (st.size > MAX_INDEX_BYTES) { continue; }   // 真源 2MB 上限 ✓（超出 ⇒ 剔除 ✓）
 		const text = await readFile(abs, 'utf8');
 		const name = abs.split(/[\\/]/).pop() ?? '';
-		// ⚠ 两条口径都照真源 `:343-345`：tags = 正文 #标签#；length 的分词输入**带文件名小写** ✓。
+		// ⚠ 两条口径都照真源 `_addOrUpdateDoc`（2026-10-19 修订后 ✓）：tags = frontmatter tags ∪ 正文 #标签#
+		//   （小写去重、frontmatter 在前 ✓）；length 的分词输入**带文件名小写** ✓。
 		const { tags, cleanText } = extractTags(text);
+		const bodyTags = tags;
+		const fmTags = extractFrontmatterTags(text);
+		const fmSeen = new Set(fmTags.map(t => t.toLowerCase()));
+		const mergedTags = [...fmTags, ...bodyTags.filter(t => !fmSeen.has(t.toLowerCase()))];
 		const tokens = tokenize(name.toLowerCase() + ' ' + cleanText);
 		// ★ 元数据三件套（合并形态 ✓，见文件头）：title/created 走完整解析器 ✓；type 走**轻量读法** ✓
 		//   （真源里"索引用这条" ✓，`readNoteFrontmatterType` 的注释 ✓）。没有 ⇒ 键就不出现 ✓（不塞空串 ✗）。
@@ -127,7 +134,7 @@ export async function buildKernelDocs(vaultDir) {
 			mtime: Math.round(st.mtimeMs),   // ⚠ 毫秒 ✓（真源 c.mtime ✓）—— 写成秒会差 1000 倍 ✗
 			size: st.size,
 			length: tokens.length,
-			tags,
+			tags: mergedTags,
 			text,
 		});
 	}
@@ -135,14 +142,19 @@ export async function buildKernelDocs(vaultDir) {
 }
 
 /**
- * 序列化为 FTS 缓存形态（逐字照真源 `:577` ✓）。
+ * 序列化为 FTS 缓存形态（结构照真源 `:577` ✓；⚠ 版本 **v2**，见下）。
  * ⚠ `avgLen` 是 **BM25 的全局量** ✓（真源 `_recomputeStats` ✓）—— 缺它检索分数会错 ✗。
+ *
+ * ⚠ 2026-10-19 **v1 → v2**（与 IDE `serialize`/`deserialize` 同一轮 bump ✓）：标签口径修订
+ *   （frontmatter tags 并入 ＋ 正文标签正则收窄）后，**v1 缓存里的旧标签不可信** ✗ ——
+ *   而真源 reconcile 对 mtime/size 未变的文件**原样沿用缓存条目** ✓，不 bump 版本旧库永远不更新 ✗。
+ *   v1 一律判 stale ⇒ 全量重建一次 ⇒ 自愈 ✓。
  */
 export function serializeKernel(docs) {
 	const totalDocs = docs.length;
 	const totalLen = docs.reduce((sum, doc) => sum + doc.length, 0);
 	const avgLen = totalDocs ? totalLen / totalDocs : 0;
-	return JSON.stringify({ v: 1, docs, avgLen, totalDocs });
+	return JSON.stringify({ v: 2, docs, avgLen, totalDocs });
 }
 
 /**
@@ -158,6 +170,9 @@ export async function kernelStaleCheck(vaultDir) {
 	let kernel = null;
 	try { kernel = JSON.parse(await readFile(join(vaultDir, KERNEL_CACHE_FILE), 'utf8')); } catch { /* 读不到 ⇒ stale ✓ */ }
 	if (!kernel || !Array.isArray(kernel.docs)) { return { stale: true, reason: 'missing-or-unreadable' }; }
+	// ⚠ 2026-10-19 v1 ⇒ stale：标签口径修订后旧缓存里的 tags 不可信（缺 frontmatter tags ＋ 可能带
+	//   mermaid 色值乱码标签 ✗）⇒ 不 bump 判据的话，"文件没变 ⇒ 沿用缓存"会让旧标签永远留着 ✗。
+	if (kernel.v !== 2) { return { stale: true, reason: `version:${String(kernel.v ?? 'none')}` }; }
 	const byUri = new Map();
 	for (const doc of kernel.docs) { if (doc && typeof doc.uri === 'string') { byUri.set(doc.uri, doc); } }
 	const diskUris = new Set();

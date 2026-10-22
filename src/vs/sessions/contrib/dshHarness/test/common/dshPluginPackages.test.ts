@@ -23,7 +23,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { DSH_BUILTIN_MODULES, DSH_MODULE_CONTAINERS, DSH_MODULE_PAGES, defaultPageRoute, moduleContainerOf, moduleIdForPluginName } from '../../common/dshModuleContainers.js';
-import { IVssarosPluginManifest, tryParseVssarosManifest } from '../../common/vssarosPluginManifest.js';
+import { hasWorkbenchClient, IVssarosPluginManifest, tryParseVssarosManifest } from '../../common/vssarosPluginManifest.js';
 import { compareSemver, parseSemver, renderAgentsOverlay, renderBridgeOverlay, renderCodebaseOverlay, renderDataRootOverlay, renderKanbanOverlay, renderMemoryOverlay } from '../../common/dshCli.js';
 import { renderSkillsOverlay } from '../../common/dshSkillDirs.js';
 import { listBundledPlugins } from '../../electron-main/dshBundledPlugins.js';
@@ -801,6 +801,11 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 			//   地执行 ✗）⇒ 它自己发起 `approval.request` 并自己判结果 ✓ ⇒ 判据必须跟着换（不能只看
 			//   `kind: 'ask'` ✗，那是钩子那种挂法的形状 ✓）。动作类 op 藏在 `op` 值里 ⇒ 另由 p3-32 行为级钉住 ✓。
 			{ dir: 'vssaros-browser', gate: 'self' },
+			// ★ 2026-10-21：`vssaros-ego` 与 browser **同一档、同一套理由**：它的写面全在 `ego_run`
+			//   的一段脚本里（脚本能驱动用户已登录的站点），而钩子拿不到审批**结果** ⇒ 自己发起
+			//   `approval.request` 并自己判 `allowed-once`（拿不到审批服务就抛 ⇒ fail-closed ✓）。
+			//   另外三个工具（ego_status / ego_guide / ego_spaces）纯只读，不重复问。
+			{ dir: 'vssaros-ego', gate: 'self' },
 			// ── 不挂闸，理由写在下面（每条都要求"可被复核" ✓，不是"就不挂" ✗）
 			{
 				dir: 'vssaros-ide',
@@ -818,15 +823,32 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 			// 2026-10-16（重构 4）：media 从"全只读"变"有写"（image_generate 生图）⇒ 挂闸。
 			// 但闸不在 media 插件里——它经桥回 IDE（壳侧的 provider.generateImage），审批在壳侧 ✓
 			// （桥不在 ⇒ 如实失败 ✗，不是静默成功 ✓）。台账写明这个分工（闸的位置在 IDE 侧）。
-			{ dir: 'vssaros-media', reason: 'image_generate 是写类（生图）但**执行经桥回 IDE**（壳侧的 provider.generateImage，审批在壳侧 ✓）；media_list / media_stats 只读。闸的位置在 IDE 侧（桥的 ide.request 会过壳侧的审批），不在 media 插件里重复。' },
+			// ★ 2026-10-21：`image_generate` **已迁到 `@vssaros/dsh-imagegen`**（那边挂了闸 ✓）⇒
+			//   media 这边现在只剩只读/生成类工具（video_generate / text_to_speech / video_analyze …），
+			//   它们不改用户数据 ⇒ 仍不挂闸，理由改写如下。
+			{ dir: 'vssaros-media', reason: '生图（image_generate）已迁到 @vssaros/dsh-imagegen（那边挂了闸 ✓）；media 这边剩下的工具都是「生成/分析」类（video_generate / text_to_speech / video_analyze / vision_analyze / extract_video_frames），不改用户数据 ⇒ 没有可拦的写入。' },
+			// ★ 2026-10-21：生图（`@vssaros/dsh-imagegen` 的 `image_generate`）**要花钱**（调图像模型 API）
+			//   ⇒ 与 kanban / kb 的写同一档，挂官方 `tools/pre-execute` 闸 ✓。
+			// ⚠ 为什么不靠"IDE 侧审批"兜底：反向通道 `ide.request` 的闸门只做**授权**（谁能不能驱动 IDE），
+			//   **不弹用户确认**（`dshIdeRequestGate.ts` 全文没有确认这一段）⇒ 闸必须挂在工具上 ✓。
+			{ dir: 'vssaros-imagegen', gate: 'hook' },
 			// ★ 2026-10-13：`vssaros-unreal` 从"只读四个（所以不挂闸）"改成**注册全部七个 ＋ 挂闸** ✓ ——
 			// 执行类三个（`unreal_exec` / `unreal_wait` / `unreal_build`）能在编辑器里跑任意 Python / 触发
 			// C++ 构建 ⇒ 与 kanban/kb 的写同一档 ✓。只读四个不进闸（免得每次 dump 都弹窗 ✗），由源码里的
 			// `WRITE_TOOLS` 区分 ✓；行为由 `dshUnrealPlugin.test.ts` 的发真事件钉住（ask/allow 两侧 ✓）。
 			{ dir: 'vssaros-unreal', gate: 'hook' },
+			// 2026-10-20：pele（Mermaid 渲染）的 `render_diagram` 会**落盘**（`saveTo` ⇒ mkdir + writeFile，
+			// 路径由模型指定）⇒ 与 kanban/kb 的写同一档，必须挂闸（此前它注册了工具却不在台账里 ⇒ 守卫红）。
+			// 闸只拦"带 saveTo"的调用；纯校验/取 SVG 仍直接放行（否则每次渲染都弹窗，工具没法用）。
+			{ dir: 'vssaros-pele', gate: 'hook' },
 			// 2026-10-16（重构 4）：session_search 只读（搜投影缓存的元数据：标题/路径）⇒ 没有可拦的写入 ✓
 			// （与 dashboard 同口径：只读 ⇒ 不挂闸，理由写明 ✓）。
 			{ dir: 'vssaros-sessions', reason: 'session_search 只读（搜投影缓存的元数据：标题/路径，不写盘、不改数据）⇒ 没有可拦的写入。' },
+			// 2026-10-21：dsh 侧**独立**的 TOF/OA 登录（`tof_signin` / `tof_signout`）——
+			//   两者都**改用户的身份状态**：登录会**打开系统浏览器**并把票据写进 dsh 的凭据存储，
+			//   登出会清掉那份票据 ⇒ 与 kanban/kb 的写同一档 ⇒ 挂官方钩子（`tools/pre-execute` ⇒ ask）✓。
+			//   `tof_status` 只读（查当前身份）⇒ 不拦 ✓。
+			{ dir: 'vssaros-bridge', gate: 'hook' },
 		];
 
 		const snapshot = JSON.parse(fs.readFileSync(path.join(root!, 'dsh-plugins', 'tools-snapshot.json'), 'utf8')) as {
@@ -1048,6 +1070,165 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 				assert.strictEqual(page.host, view['host'], `${plugin.dirName} 的 view.host 与 DSH_MODULE_PAGES 不一致`);
 			}
 		}
+	});
+
+	// ★ 2026-10-22（doc/workbench-refactor-plan.md P0-2）：对齐 dsh-desktop 的"注册即身份"——
+	//   有页面（view.kind=page）的内置模块插件**都必须**声明 `vssaros.workbench`，且身份 = `vssaros:<module>`。
+	//   反过来：没有页面的（none/section）不许声明（解析器已拒，这里再钉一次"表与清单同口径"）。
+	test('★ 工作台描述符：有页面的模块插件都注册为工作台（身份 = vssaros:<module>，标题非空）', function () {
+		const root = repoRoot();
+		if (!root) {
+			this.skip();
+		}
+		const pagePlugins = readPluginPackages(root!)
+			.map(plugin => ({ plugin, manifest: manifestOf(plugin) }))
+			.filter((x): x is { plugin: IPluginPackage; manifest: IVssarosPluginManifest } => !!x.manifest?.module && x.manifest.view.kind === 'page');
+		assert.ok(pagePlugins.length >= 11, `有页面的模块插件应至少 11 个（实际 ${pagePlugins.length}）`);
+		const missing: string[] = [];
+		for (const { plugin, manifest } of pagePlugins) {
+			const wb = manifest.workbench;
+			if (!wb) {
+				missing.push(plugin.dirName);
+				continue;
+			}
+			assert.strictEqual(wb.repository, `vssaros:${manifest.module}`, `${plugin.dirName} 的工作台身份必须是 vssaros:${manifest.module}`);
+			assert.ok(wb.panes.length > 0, `${plugin.dirName} 的 panes 不能为空`);
+		}
+		assert.deepStrictEqual(missing, [], `这些有页面的插件还没声明 vssaros.workbench：${missing.join(', ')}`);
+		for (const plugin of readPluginPackages(root!)) {
+			const m = manifestOf(plugin);
+			if (m && m.view.kind !== 'page') {
+				assert.strictEqual(m.workbench, undefined, `${plugin.dirName} 没有页面却声明了工作台`);
+			}
+		}
+	});
+
+	// ★ 2026-10-22（P0-4）：读 `?surface=` 分版的页面，必须在 body 上打**标准**锚点 `data-vssaros-surface`。
+	//   病根：dashboard 写成了 `data-vssaros-dashboard-surface` ⇒ chat-surface 的 probeCatalog
+	//   （client.workbenchNav.js 只认标准名）与探针都认不出它的目录版。
+	test('★ 读 ?surface= 分版的页面插件都打了标准锚点 data-vssaros-surface', function () {
+		const root = repoRoot();
+		if (!root) {
+			this.skip();
+		}
+		const readSurface = /searchParams\.get\(\s*['"]surface['"]\s*\)/;
+		const walk = (dir: string, out: string[] = []): string[] => {
+			for (const name of fs.readdirSync(dir)) {
+				const p = path.join(dir, name);
+				if (fs.statSync(p).isDirectory()) {
+					if (name !== 'node_modules' && name !== 'canvas' && name !== 'vendor') {
+						walk(p, out);
+					}
+				} else if (/\.(js|html)$/.test(name)) {
+					out.push(p);
+				}
+			}
+			return out;
+		};
+		let readers = 0;
+		const missing: string[] = [];
+		for (const plugin of readPluginPackages(root!)) {
+			const lib = path.join(root!, PLUGINS_REL, plugin.dirName, 'lib');
+			if (!fs.existsSync(lib)) {
+				continue;
+			}
+			const texts = walk(lib).map(f => fs.readFileSync(f, 'utf8'));
+			if (!texts.some(t => readSurface.test(t))) {
+				continue;
+			}
+			readers++;
+			if (!texts.some(t => /data-vssaros-surface=/.test(t))) {
+				missing.push(plugin.dirName);
+			}
+		}
+		assert.ok(readers >= 6, `读 ?surface= 的页面插件应至少 6 个（实际 ${readers}，采集面可能失效）`);
+		assert.deepStrictEqual(missing, [], `这些插件读了 ?surface= 却没打标准锚点 data-vssaros-surface：${missing.join(', ')}`);
+	});
+
+	// ★ 2026-10-22（工作台重构 P1，方案 §7 check-workbench-register）：已迁成 React 工作台的插件
+	//   （客户端调 `desktopWorkbenches.register(`）必须与清单**同值**，且加载链完整：
+	//   ① 描述符 repository / title 与清单 `vssaros.workbench` 一致（两份真源对不上 = 入口与身份分叉）；
+	//   ② `dsh.client.inject` 含宿主 `@vssaros/dsh-workbenches`（否则宿主后加载 ⇒ 客户端永远 pending）；
+	//   ③ 服务走**可选注入** `ctx.inject(['desktopWorkbenches'], …)`，**禁止**写进静态 `exports.inject`：
+	//      2026-10-22 真机 —— 宿主没装上时静态 inject 让 dsh 把整次 web boot 判失败
+	//      （"Failed to load plugins / pending (waiting for service: desktopWorkbenches)"）✗。
+	test('★ React 工作台的客户端注册与清单同值，且加载链完整（宿主 inject + 服务 inject）', function () {
+		const root = repoRoot();
+		if (!root) {
+			this.skip();
+		}
+		const host = readPluginPackages(root!).find(p => p.json['name'] === '@vssaros/dsh-workbenches');
+		assert.ok(host, '宿主插件 @vssaros/dsh-workbenches 必须存在');
+		let migrated = 0;
+		for (const plugin of readPluginPackages(root!)) {
+			const manifest = manifestOf(plugin);
+			const clientRel = (plugin.json['exports'] as Record<string, unknown> | undefined)?.['./client'];
+			if (!manifest?.workbench || typeof clientRel !== 'string') {
+				continue;
+			}
+			const clientPath = path.join(root!, PLUGINS_REL, plugin.dirName, clientRel);
+			const src = fs.existsSync(clientPath) ? fs.readFileSync(clientPath, 'utf8') : '';
+			if (!/desktopWorkbenches\.register\(/.test(src)) {
+				continue;
+			}
+			migrated++;
+			const repo = /repository:\s*'([^']+)'/.exec(src)?.[1];
+			const title = /title:\s*'([^']+)'/.exec(src)?.[1];
+			assert.strictEqual(repo, manifest.workbench.repository, `${plugin.dirName} 客户端注册的 repository 与清单不一致`);
+			const manifestTitle = typeof manifest.workbench.title === 'string' ? manifest.workbench.title : manifest.workbench.title.zh;
+			assert.strictEqual(title, manifestTitle, `${plugin.dirName} 客户端注册的 title 与清单不一致`);
+			const inject = ((plugin.json['dsh'] as { client?: { inject?: string[] } } | undefined)?.client?.inject) ?? [];
+			assert.ok(inject.includes('@vssaros/dsh-workbenches'), `${plugin.dirName} 的 dsh.client.inject 必须含 @vssaros/dsh-workbenches`);
+			assert.doesNotMatch(src, /exports\.inject\s*=\s*\[[^\]]*['"]desktopWorkbenches['"]/, `${plugin.dirName} 不许把 desktopWorkbenches 写进静态 exports.inject（宿主缺席会让整次 web boot 失败）`);
+			assert.match(src, /ctx\.inject\(\s*\[\s*['"]desktopWorkbenches['"]\s*\]/, `${plugin.dirName} 必须用 ctx.inject(['desktopWorkbenches'], …) 可选注入宿主服务`);
+		}
+		assert.ok(migrated >= 1, '至少 1 个插件已迁成 React 工作台（P1 样板 scheduler）');
+	});
+
+	// ★ 2026-10-22 真机：宿主插件没有 `vssaros.module` ⇒ 模块自发现不装它；漏接安装段 = 线上"装了工作台却没有宿主"。
+	test('★ 工作台宿主插件已接进伴生安装段（且排在模块插件之前）', function () {
+		const root = repoRoot();
+		if (!root) {
+			this.skip();
+		}
+		const dir = path.join(root!, 'src', 'vs', 'sessions', 'contrib', 'dshHarness', 'electron-main');
+		const channel = fs.readFileSync(path.join(dir, 'dshHarnessChannel.ts'), 'utf8');
+		const supervisor = fs.readFileSync(path.join(dir, 'dshHostSupervisor.ts'), 'utf8');
+		assert.match(channel, /join\(this\._bundledPluginsRoot, 'vssaros-workbenches'\)/, 'channel 必须解析随包 vssaros-workbenches 目录');
+		assert.match(channel, /workbenchesPluginDir:/, 'channel 必须把目录传给 supervisor');
+		const host = supervisor.indexOf('[DSH_WORKBENCHES_PLUGIN_NAME, this._opts.workbenchesPluginDir');
+		const modules = supervisor.indexOf('this._opts.modulePluginDirs', host);
+		assert.ok(host > 0, 'supervisor 的伴生安装清单必须含工作台宿主');
+		assert.ok(modules > host, '工作台宿主必须排在模块插件之前（消费者注册进它）');
+	});
+
+	// ★ 2026-10-22（§5 步骤 4）：编辑区开 'workbench' 视图的判据 `hasWorkbenchClient` 必须与
+	//   "客户端真的调了 desktopWorkbenches.register(" 一一对应 —— 判多了 ⇒ 未迁移的模块被开成空白 dsh 外壳
+	//   （+64MB 还要等 10 秒退回）；判少了 ⇒ 迁移了却永远看不到新界面。
+	test('★ hasWorkbenchClient 与"客户端注册了工作台"逐包一致', function () {
+		const root = repoRoot();
+		if (!root) {
+			this.skip();
+		}
+		const mismatch: string[] = [];
+		const yes: string[] = [];
+		for (const plugin of readPluginPackages(root!)) {
+			if (plugin.json['name'] === '@vssaros/dsh-workbenches') {
+				continue; // 宿主本身是服务提供方，不是工作台
+			}
+			const clientRel = (plugin.json['exports'] as Record<string, unknown> | undefined)?.['./client'];
+			const clientPath = typeof clientRel === 'string' ? path.join(root!, PLUGINS_REL, plugin.dirName, clientRel) : '';
+			const registers = !!clientPath && fs.existsSync(clientPath) && /desktopWorkbenches\.register\(/.test(fs.readFileSync(clientPath, 'utf8'));
+			const judged = hasWorkbenchClient(plugin.json);
+			if (judged) {
+				yes.push(plugin.dirName);
+			}
+			if (judged !== registers) {
+				mismatch.push(`${plugin.dirName}（判据 ${judged} / 实际注册 ${registers}）`);
+			}
+		}
+		assert.deepStrictEqual(mismatch, [], `判据与实际不一致：${mismatch.join('；')}`);
+		assert.ok(yes.includes('vssaros-scheduler'), `scheduler 应被判为 React 工作台（实际：${yes.join(', ') || '无'}）`);
 	});
 
 	test('模块插件的清单与 VsSaros 聚合表逐项一致（module / containerId / order / route / legacyCounterpart）', function () {
@@ -1289,7 +1470,10 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 		// 构建器写对了不等于**真的有人调它** ✗ —— 2026-10-12 之前这几个模块的注入**从来不存在**，
 		// 而"构建器在哪、谁调用它"这件事只有这条断言看得见 ✓。
 		const hostConfigMod = read(path.join(harnessDir, 'common', 'dshHostConfig.ts'));
-		assert.ok(/renderAgentsOverlay\(agentsRoot\)/.test(hostConfigMod),
+		// ⚠ 只钉"**第一个参数是 `agentsRoot`**"，不钉整行逐字：2026-10-19 加了第二个参数
+		//   （`agentsBuiltinRoot` —— 内置 agent 的 md 副本根）⇒ 旧的 `renderAgentsOverlay\(agentsRoot\)`
+		//   会假红。与下面 `renderDataRootOverlay` 那条同一个取舍（见其注释）。
+		assert.ok(/renderAgentsOverlay\(\s*agentsRoot/.test(hostConfigMod),
 			'渲染真源仍必须写 agents 覆盖层（这一步与"装上模块"是两件事：dev 数据根 ≠ 生产数据根）');
 		// ⚠ 只钉"**第一个参数是 `dataRoot`**"这一点 ✓，不钉整行逐字 —— 2026-10-12 加了第 3 个参数
 		//（`{ kbRoot, unrealBridgeUrl }` ✓）时，按旧形态逐字匹配的这条立刻红了 ✓，而它本意只是"别漏了这次调用" ✓。
@@ -1306,10 +1490,16 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 
 		// ③ seed：构建脚本按同一判据自发现（口径漂移 ⇒ 首启 profile 与 build 出来的组合不一致）
 		const prepack = read(path.join('build', 'prepack-dsh-runtime.mjs'));
-		assert.ok(/discoverModulePluginDirs\(join\(root, 'dsh-plugins'\)\)/.test(prepack),
-			'profile seed 必须自发现模块插件（不能只有桥/聊天框/agents 三个）');
-		assert.ok(/pkg\?\.vssaros\?\.module/.test(prepack),
-			'seed 的判据必须与宿主侧同源（`vssaros.module`）');
+		// ⚠ 2026-10-20：函数名已从 `discoverModulePluginDirs` 改为 `discoverRepoPluginDirs`
+		//   （2026-10-19 收敛：判据从 `vssaros.module` 放宽到"仓库侧全部随包插件"，见 prepack 头注释）
+		//   ⇒ 旧断言按旧名字匹配 = 假红。
+		assert.ok(/discoverRepoPluginDirs\(join\(root, 'dsh-plugins'\)\)/.test(prepack),
+			'profile seed 必须自发现随包插件（不能只有桥/聊天框/agents 三个）');
+		// ⚠ 2026-10-20：判据已从"只看 `vssaros.module`"放宽到"包名 `@vssaros/*` ＋ vendored `@tt-a1i/*`"
+		//   （2026-10-19 收敛，见 prepack 的 `discoverRepoPluginDirs` 头注释：patch 型插件没有
+		//   `vssaros.module`，但同样必须进种子 —— 尤其 foundation，缺席时消费者直接抛）⇒ 旧断言假红。
+		assert.ok(/name\.startsWith\('@vssaros\/'\)/.test(prepack) && prepack.includes('@tt-a1i/'),
+			'seed 的判据必须覆盖"自家 @vssaros/* ＋ vendored @tt-a1i/*"（与宿主侧同源）');
 	});
 
 	test('★ 页面插件的 client chunk 必须语法可解析（它们是被当字符串 eval 的）', function () {
@@ -1650,6 +1840,59 @@ suite('dshHarness / 打包链：内置 dsh 运行时（缺它 = 首启要用户�
 		assert.match(prepack, /'\\\\\\\\\?\\\\'/, '前缀本身要是 `\\\\?\\`（Windows 扩展长度路径）');
 		assert.match(prepack, /renameSync\(abs, aside\)/, '删不掉就挪开（对调用方而言"目标不存在"就够了）');
 		assert.match(prepack, /function removeTreeOrThrow\(/, '需要"必须删干净"的场景要有单独入口');
+	});
+
+	test('★★★ 种子必须覆盖**全部**随包插件（patch 型也算；foundation 漏了消费者当场抛）', () => {
+		const prepack = read(REL_PREPACK)!;
+		// ① 发现口径不许只看 `vssaros.module`（2026-10-19 现场：foundation / kb-refs / browser /
+		//    unreal / archify 全被漏掉 ⇒ `foundationRef.js` 在服务缺席时直接抛"服务未绑定"✗✗）
+		const fnAt = prepack.indexOf('function discoverRepoPluginDirs(');
+		assert.ok(fnAt > 0, '找不到 discoverRepoPluginDirs（守卫不能空跑）');
+		const fnBody = prepack.slice(fnAt, prepack.indexOf('\n}', fnAt) + 2);
+		assert.ok(fnBody.includes('@vssaros/'), '必须按包名前缀收 @vssaros/*（含 patch 型）');
+		assert.ok(!fnBody.includes('vssaros.module'),
+			'不许再按 vssaros.module 过滤 —— patch 型插件（foundation / kb-refs / browser / unreal / archify）会被漏掉 ✗✗');
+
+		// ② **真跑一遍**发现逻辑（不是 grep 源码），再和宿主安装清单逐名对齐
+		const discover = new Function('readdirSync', 'readFileSync', 'join', 'sep',
+			`${fnBody}\nreturn discoverRepoPluginDirs;`)(
+			fs.readdirSync, fs.readFileSync, path.join, path.sep,
+		) as (dir: string) => string[];
+		const repoDirs = discover(path.join(root!, 'dsh-plugins'));
+		assert.ok(repoDirs.length >= 20, `仓库随包插件应 >= 20 个（实际 ${repoDirs.length}）`);
+		const seededNames = repoDirs.map(d => String(JSON.parse(fs.readFileSync(path.join(d, 'package.json'), 'utf8')).name));
+		for (const must of ['@vssaros/dsh-foundation', '@vssaros/dsh-bridge', '@vssaros/dsh-chat-surface', '@vssaros/dsh-kb-refs']) {
+			assert.ok(seededNames.includes(must), `种子发现漏了 ${must}（它没有 vssaros.module ⇒ 正是这次事故的形态 ✗）`);
+		}
+
+		// ③ 宿主清单是权威：`common/dshHarness.ts` 里每个 `DSH_*_PLUGIN_NAME`（凡仓库里有目录的）
+		//    都必须被种子收到 —— 新增插件忘了进种子 ⇒ 这里红（否则表现为"首启又去 npm 装一次"✗）
+		const commonSrc = read('src/vs/sessions/contrib/dshHarness/common/dshHarness.ts')!;
+		const declared = [...commonSrc.matchAll(/export const DSH_\w+_PLUGIN_NAME = '([^']+)'/g)].map(m => m[1]);
+		assert.ok(declared.length >= 8, `宿主插件常量没解析到（实际 ${declared.length} 个，守卫不能空跑）`);
+		const allRepoPkgNames = new Set(
+			fs.readdirSync(path.join(root!, 'dsh-plugins'), { withFileTypes: true })
+				.filter(e => e.isDirectory())
+				.map(e => {
+					try {
+						return String(JSON.parse(fs.readFileSync(path.join(root!, 'dsh-plugins', e.name, 'package.json'), 'utf8')).name);
+					} catch {
+						return '';
+					}
+				})
+				.filter(Boolean),
+		);
+		for (const name of declared) {
+			if (!allRepoPkgNames.has(name)) { continue; }   // 官方 bundle（voice/schedule）随 dsh 分发，仓库里没有
+			assert.ok(seededNames.includes(name), `${name} 在宿主安装清单里，但种子发现没收到它 ✗`);
+		}
+
+		// ④ 官方 bundle 也必须进种子（它们随 dsh 分发、仓库里没有，所以上一条 skip 掉了）：
+		//    漏 web-app 尤其致命 —— 缺它 bridge/chat-surface/codebase/memory 永远 pending ⇒ Host 退出 1；
+		//    而首启靠 `dsh plugin add` 补装**需要 pnpm** ⇒ 用户机器上没有就直接起不来 ✗✗
+		for (const bundle of ['dsh-web-app', 'dsh-experimental-voice-input-bundle', 'dsh-experimental-schedule-bundle']) {
+			assert.ok(prepack.includes(`'${bundle}'`), `种子的官方 bundle 必须含 ${bundle}（与宿主 DSH_*_BUNDLE_* 同一批）`);
+		}
 	});
 
 	test('★★ profile 种子是加速项：建不出来**不许**拦出包，且要自己解决 pnpm（2026-10-16 第二次现场）', () => {

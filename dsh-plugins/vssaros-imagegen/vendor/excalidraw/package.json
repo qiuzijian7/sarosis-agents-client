@@ -1,0 +1,19 @@
+{
+  "name": "vssaros-imagegen-excalidraw-vendor",
+  "private": true,
+  "version": "0.1.0",
+  "description": "build the canvas bundle for @vssaros/dsh-imagegen (Excalidraw 0.18.1, MIT). artifacts ship with the plugin; node_modules is not committed.",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "check": "node build.mjs --check"
+  },
+  "dependencies": {
+    "@excalidraw/excalidraw": "0.18.1",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}

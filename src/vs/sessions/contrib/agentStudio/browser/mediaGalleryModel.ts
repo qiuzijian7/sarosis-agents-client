@@ -4,11 +4,10 @@
  *
  *  mediaGalleryModel.ts — 媒体库画廊的**数据层**（与渲染框架无关）。
  *
- *  背景：媒体库有两套 UI —— 工作流画布里的 webview/React 版（MediaGallery.tsx）与
- *  本仓原生的 MediaGalleryEditorPane。两者渲染代码无法共享（React vs 原生 DOM），
- *  但**查询与操作的语义必须一致**，否则同一批资产在两个入口会表现不同。
- *  本文件把这套语义收成一份实现：筛选条件组装、破坏性操作的返回值归一化、
- *  data URL / 本地路径解析、导入。
+ *  背景：媒体库曾经有**两套 UI**（工作流画布里的 webview/React 版 + 本仓原生的
+ *  MediaGalleryEditorPane）。★ 2026-10-19：React 那套**已删除**（统一成编辑区页），
+ *  本文件仍是"查询/操作语义"的唯一实现（筛选条件组装、破坏性操作的返回值归一化、
+ *  data URL / 本地路径解析、导入、清理三连），pane 只负责渲染。
  *
  *  ★ 契约真源仍是 `common/mediaStoreChannel.ts`（IMediaBackend）；本文件只做「组合 + 归一化」，
  *    不新增任何后端能力。
@@ -18,7 +17,7 @@ import type {
 	IMediaBackend, MediaAsset, MediaListFilter, MediaStats,
 } from '../common/mediaStoreChannel.js';
 
-/** 画廊筛选条件（与 webview MediaGallery 的 state 一一对应）。 */
+/** 画廊筛选条件（pane 的控件与它一一对应；`workflowId` = 「当前工作流」范围）。 */
 export interface IMediaGalleryQuery {
 	/** 模糊匹配文件名 / 引用 / 元数据。 */
 	query?: string;
@@ -148,6 +147,25 @@ export class MediaGalleryModel {
 		return { total: targets.length, ok, failed };
 	}
 
+	// ─── 清理（2026-10-19 从 webview 浮层搬进本 pane）─────────────────────
+	// ⚠ 三个都是**破坏性**操作 ⇒ 调用方必须先让用户确认（pane 里用 `IDialogService.confirm`）。
+	//   `IMediaBackend` 早已提供这三条（`mediaStoreChannel.ts`），这里只做透传。
+
+	/** 物理删除回收站资产（行 + 文件）。 */
+	async purgeDeleted(): Promise<{ count: number; freedBytes: number }> {
+		return this.backend.purgeDeleted();
+	}
+
+	/** 清理「不可用」项：file_path 磁盘文件已缺失的活行。 */
+	async cleanOrphaned(): Promise<{ count: number; freedBytes: number }> {
+		return this.backend.cleanOrphaned();
+	}
+
+	/** 配额清理：按天龄/容量软删最旧的未收藏、未分组资产，然后物理清理回收站。 */
+	async enforceQuota(opts?: { maxDays?: number; maxTotalBytes?: number }): Promise<{ removed: number; freedBytes: number }> {
+		return this.backend.enforceQuota(opts);
+	}
+
 	/** 切换收藏；返回切换后的值。 */
 	async toggleFavorite(asset: MediaAsset): Promise<boolean> {
 		const next = !asset.favorite;
@@ -207,6 +225,16 @@ export class MediaGalleryModel {
 	/** 媒体库根目录。 */
 	async getRootDir(): Promise<string> {
 		return this.backend.getRootDir();
+	}
+
+	/**
+	 * 切换媒体库根目录，返回新目录。
+	 * ⚠ 换目录 = **换一个库**（主进程会按新 rootDir 重建 `MediaStore`，`media.db` 在该目录里）；
+	 *   不是"把已有文件搬家"。调用方必须先把这句写进确认框。
+	 */
+	async setRootDir(dir: string): Promise<string> {
+		const r = await this.backend.setRootDir(dir);
+		return r.rootDir;
 	}
 
 	/** 分类计数（只取 total，避免把全量资产拉过 IPC）。 */

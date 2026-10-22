@@ -54,7 +54,17 @@ const KB_AGENT_ID = 'knowledge-base-expert';
  * （`~/.vssaros/skills/`，例如 `tutor` / `tutor-setup`）里，不在本仓 `resources/.agents/skills/`
  * 的扫描范围内；某内置 agent 若要挂载这类技能，必须在此登记，否则会被误报为悬空。
  */
-const KNOWN_ABSENT_SKILL_IDS: ReadonlySet<string> = new Set(['writing', 'planning']);
+/**
+ * ★ 2026-10-19：**现在是空集，这是有意的** —— 让它保持"硬"：谁再挂一个不存在的技能，
+ *   就在这里被点名，由人**显式登记并说明原因**（正合上面那段注释的意图 ✓）。
+ *
+ * 曾经容忍的两个（已摘掉，不留尾巴）：`writing` / `planning`。
+ * 摘它们的依据（查过才动手，不是想当然）：内置库 `resources/.agents/skills/` 里**没有**这两个 id；
+ * 用户全局库里那枚叫 **`writing-skills`**（是**另一个** id，不是 `writing`）
+ * ⇒ 挂 `writing` 是**纯悬空**，摘掉**没有削掉任何功能** ✓。
+ * ⚠ 若将来真的要挂某个"用户可安装的可选技能"，就把它加回本集合并写明原因（那是本集合的正当用途 ✓）。
+ */
+const KNOWN_ABSENT_SKILL_IDS: ReadonlySet<string> = new Set([]);
 
 interface IScannedSkill {
 	/** 磁盘目录名 */
@@ -431,7 +441,10 @@ suite('游戏拆解技能（kb-game-teardown）', () => {
 			assert.ok((claw!.tools ?? []).includes(tool), `saros-claw 缺 ${tool}`);
 		}
 		// KB agent：能上网补证（此前完全不能 ⇒ 与「禁止编造」直接冲突）+ 能抽帧
-		for (const tool of ['web_search', 'web_extract', 'extract_video_frames', 'vision_analyze']) {
+		// ⚠ 2026-10-20：`web_extract` 是 IDE 侧工具名，dsh 里没有对等物；
+		//   dsh 侧对应的是 `web_fetch`（`@deepseek-ai/dsh-tool-web`）⇒ 断言跟着改，
+		//   否则这条会在"agent 内容对齐 dsh 工具"后一直红（是断言过期，不是能力缺失）。
+		for (const tool of ['web_search', 'web_fetch', 'extract_video_frames', 'vision_analyze']) {
 			assert.ok((kb!.tools ?? []).includes(tool), `${KB_AGENT_ID} 缺 ${tool}`);
 		}
 		// ⚠ 反向契约：KB agent **不该**拿到 kb_build —— 构建会话正由它执行，给它构建工具

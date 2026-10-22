@@ -21,11 +21,13 @@ import { FileAccess } from '../../../../base/common/network.js';
 import { IAuxiliaryWindowsMainService } from '../../../../platform/auxiliaryWindow/electron-main/auxiliaryWindows.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IWindowsMainService } from '../../../../platform/windows/electron-main/windows.js';
+import { decideChatPartition } from '../common/dshChatPartition.js';
 import { isSameOrigin } from '../common/dshCli.js';
-import { DSH_VIEW_PARTITION, DSH_VIEW_PARTITION_DESKTOP, DshColorScheme, DshViewSurface, IDshViewBounds, IDshViewInfo } from '../common/dshHarness.js';
+import { DSH_VIEW_PARTITION, DSH_VIEW_PARTITION_CHAT_POOL_PREFIX, DSH_VIEW_PARTITION_DESKTOP, DshColorScheme, DshViewSurface, IDshViewBounds, IDshViewInfo, surfaceTakesRoute } from '../common/dshHarness.js';
 import { resolveViewUrl } from '../common/dshPluginPage.js';
+import { unavailablePageUrl } from '../common/dshViewHostUnavailable.js';
 import { IViewLoadRetryState, newViewLoadRetryState, onDocumentFinishedLoad, onMainFrameNavigated, planLoadRetry, resetViewLoadRetry, shouldResetRetryBudget, VIEW_LOAD_MAX_RETRIES, withAuthRetry } from '../common/dshViewLoadRetry.js';
-import { DSH_PAGE_CHAT_ONLY_ARG, DSH_PAGE_IPC_CREDIT, DSH_PAGE_IPC_INSERT, DSH_PAGE_IPC_INVOKE, DSH_PAGE_IPC_KEYDOWN, DSH_PAGE_IPC_REBIND, DSH_PAGE_IPC_RENAME, DSH_PAGE_IPC_THEME, DSH_PAGE_IPC_WORKSPACES, DSH_PAGE_IPC_WORKTREES, DSH_PAGE_SESSION_ARG, DSH_PAGE_SURFACE_ARG, DSH_PAGE_VIEW_ARG, DshPageEvent, IDshCreditPush, IDshInsertReference, IDshWorkspaceOption, IDshWorktreeOption, validateKeyEvent, validatePageCommand } from '../common/dshPageBridgeProtocol.js';
+import { DSH_PAGE_CHAT_ONLY_ARG, DSH_PAGE_IPC_CREDIT, DSH_PAGE_IPC_INSERT, DSH_PAGE_IPC_INVOKE, DSH_PAGE_IPC_KEYDOWN, DSH_PAGE_IPC_REBIND, DSH_PAGE_IPC_RENAME, DSH_PAGE_IPC_RENAMED, DSH_PAGE_IPC_THEME, DSH_PAGE_IPC_AUTH, DSH_PAGE_IPC_WORKSPACES, DSH_PAGE_IPC_WORKTREES, DSH_PAGE_SESSION_ARG, DSH_PAGE_SURFACE_ARG, DSH_PAGE_VIEW_ARG, DSH_PAGE_WORKBENCH_ARG, DshPageEvent, IDshAuthOption, IDshCreditPush, IDshInsertReference, IDshWorkspaceOption, IDshWorktreeOption, validateKeyEvent, validatePageCommand } from '../common/dshPageBridgeProtocol.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { backgroundForPageSurface, DshThemeTokens, IDshViewBackgrounds } from '../common/dshThemeBridge.js';
 import { IIdeViewSlotForTargeting } from '../common/dshIdeTargeting.js';
@@ -51,7 +53,13 @@ const PAGE_MAX_BLANK_RELOADS = 2;
  * 看门狗**一次都不触发**（日志实证：用户白屏时段内没有任何 `looks blank` 行）✗✗。
  * 判据必须是"**应用可用**"的信号，不能是"我们的插件加载了"。
  */
-const PAGE_ALIVE_PROBE = '!!(document.querySelector("[data-composer-card]") || document.querySelector("[data-chat-flow-kind]"))';
+// ★ 2026-10-19（真机日志定位「打不开会话 ⇒ 判空白 ⇒ 自动 reload ⇒ 更打不开」的死循环）：
+//   存活判据从"有 composer / chat-flow"扩一条 —— **页面挂着我们的连接状态条**（`#vssaros-connect-status`）
+//   也算活着：那说明 chat-surface 已经在跑，只是还在等会话（`openSession` 被拒 / 等工作区 / 等待登记）。
+//   若把它判成白屏去 reload，页面状态（retain / rebind / 退避计数）会被**整个丢掉** ⇒ 永远打不开 ✗✗
+//   （日志实证：`Sidebar Session opening failed: Session reference "…" is released` 之后
+//     `looks blank → reloading (1/2)`、`(2/2)`、`stays blank after 2 auto reloads`）。
+const PAGE_ALIVE_PROBE = '!!(document.querySelector("[data-composer-card]") || document.querySelector("[data-chat-flow-kind]") || document.getElementById("vssaros-connect-status"))';
 /**
  * 白屏现场诊断：把**页面自己**的可观测量抓回日志（没有 DevTools 也能事后查）。
  *
@@ -178,6 +186,31 @@ const PAGE_SURFACE_REPORT = `(() => { try {
     })(),
     composer: !!document.querySelector("[data-composer-card]"),
     opened: s.opened === true, sessionId: s.sessionId || null,
+    // ★ 2026-10-20（用户问「载入历史会话为什么这么慢」）：页面侧的**分段打点**。
+    //   以前这里只报"ready in 6676 ms"这一个总数 ⇒ 6.7 秒花在哪完全靠猜 ✗。
+    //   页面在 client.js 里记 state.timing = { rpc, aligned, parts, opened }（相对页面导航起始的 ms），
+    //   这里原样带出；缺（老版本/未到点）⇒ null，不编造。
+    timing: s.timing || null,
+    // ★ 2026-10-20（量化「载入历史要 2 秒」）：页面侧的连接事件账本。
+    //   真机结论：历史数据只有 512 行 / 解压 19ms ⇒ 慢的不是数据，是"第一代连接就绪"的握手。
+    //   dsh 的 retry 走 500/1000/2000/4000/8000 指数退避，而首屏在 retry #1 之后就出来了 ⇒
+    //   要把每次 open / 连接状态记下来，才能分清"会话还没就绪"与"mux 握手慢"✗
+    connLog: s.connLog || null,
+    muxKicks: typeof s.muxKicks === "number" ? s.muxKicks : 0,
+    // ★ 2026-10-20：登记闸门的取证 —— 列表是否已拉到 / 拉取耗时 / 是否发生过"Host 另铸新会话"。
+    rosterListed: s.rosterListed === true,
+    rosterRefreshMs: typeof s.rosterRefreshMs === "number" ? s.rosterRefreshMs : null,
+    registerMinted: typeof s.registerMinted === "number" ? s.registerMinted : 0,
+    // ★ 2026-10-20（用户：「右侧缺少用户消息定位 UI」）：官方**轮次导航**的存在性自证。
+    //   found=false ⇒ 官方压根没渲染这条 nav（组件在窄视口不建）
+    //   found=true + marks=N ⇒ 渲染了、有 N 个刻度（再看 w/h 是否为 0 判断是否被藏）
+    rail: s.rail || null,
+    // ★ 2026-10-20（用户：「好像加载了一个已删除的会话」）：DOM 有该会话节点、但 dsh 花名册里没有
+    //   ⇒ 页面显示的是残留/恢复内容（retain: unknown session）。这两个字段把这种情况**显式**标出来，
+    //   不再靠人从 lastOpenError 反推。staleLastOpenError = 成功打开前的最后一条错误（历史留痕）。
+    //   ⚠ 本段是模板字符串：注释里绝不能出现反引号（今天已踩九次）。
+    staleOpen: s.staleOpen === true ? true : (s.staleOpen === false ? false : null),
+    staleLastOpenError: s.staleLastOpenError || null,
     // ★ 2026-10-17（用户报「切工作区后聊天框里的工作区 UI 没刷新」）：页面侧那把**归因尺子** ——
     //   workspaceUi = sid 的来源（props 会遮蔽 state ✗）/ 算出的当前工作区与文案 / 三条数据源各到了几条 /
     //   宿主到底换绑过没有（rebinds）；workspaceUiLog = 最近 8 条事件（rebind / switch / switch-ok / switch-fail）。
@@ -292,12 +325,36 @@ const CONN_CHURN_QUIET_MS = 20_000;
  * 而 dsh 的 cookie TTL 由 `maxAgeDays` 配置（`dsh-client-connection/lib/index.js:296`），我们不去猜它。
  */
 const AUTH_REFRESH_INTERVAL_MS = 3 * 60_000;
+/**
+ * 稳态下 `page surface` 自证的**全量**补打间隔（2026-10-19）。
+ *
+ * 为什么要有这个节流：该自证每 30s/视图打一条 ≈3KB JSON（实测 2978 字节），而主进程日志 flush 是
+ * **同步写**。本机注入了 iOA 数据保护驱动，实测两次卡死主线程都停在 `NtWriteFile ← WriteFile ← uv_fs_write`
+ * （磁盘健康，同目录 2KB 写仅 3ms）⇒ 降低写密度是唯一在**我们这一侧**能做的缓解 ✓。
+ */
+const SURFACE_FULL_LOG_INTERVAL_MS = 10 * 60_000;
 
 interface IViewSlot {
 	readonly id: string;
 	readonly view: WebContentsView;
 	readonly ownerWindowId: number;
 	readonly surface: DshViewSurface;
+	/**
+	 * 视图创建时刻（2026-10-19）：**端到端"新建聊天框慢不慢"**的唯一客观起点 ——
+	 * 会话在屏的那一次上报与它相减就是用户实际等的时间（含建 WebContents / 导航 / 页面加载 /
+	 * 客户端连接阶梯 / 会话进 roster），不再靠"看着像"去猜 ✗。
+	 */
+	readonly createdAt: number;
+	/**
+	 * ★ 2026-10-20：加载里程碑（相对 `createdAt` 的 ms）。
+	 *
+	 * 为什么需要：页面侧自测 `composer: 512ms`（文档开始后 0.5s 就可用），而主进程测到
+	 * `ready in 5307ms` ⇒ 有 ~4.8s 花在**文档开始之前**（`loadURL` 排队 / 网络 / 首字节）。
+	 * 这三个点能一次拆开：did-start-loading（导航真的开始）/ dom-ready / did-finish-load。
+	 */
+	loadMarks?: Record<string, number>;
+	/** 「会话已到屏」是否已报过一次（防 15s 一轮的快照把同一条耗时刷屏 ✓）。 */
+	openReported?: boolean;
 	/** `surface=plugin-page` 的插件路由（方案 6.3）；其他 surface 为空。 */
 	readonly route?: string;
 	/**
@@ -341,6 +398,10 @@ interface IViewSlot {
 	  rosterReloaded?: boolean;
 	  /** 该视图所属的 Electron 分区（弹窗走独立分区；`_load` 查 cookie 要看**它自己**的分区 ✓）。 */
 	  session?: Session;
+	 /** 上一次打全量 `page surface` 时的关键状态签名（见记录处的降量注释）。 */
+	 surfaceSig?: string;
+	 /** 上一次打全量的时间（稳态每 `SURFACE_FULL_LOG_INTERVAL_MS` 补一条，保证日志可回溯 ✓）。 */
+	 surfaceFullAt?: number;
 	 /** 页面自证连续超时（渲染线程被同步阻塞）计数；≥2 触发一次自动重载（2026-10-18）。 */
 	 unresponsiveCount?: number;
 	 /** 是否已因"页面无响应"重载过（只做一次，防重载风暴 ✓）。 */
@@ -393,6 +454,8 @@ interface IViewSlot {
 	 * ⚠ 它**不是**页面列条目的来源（那是 `workspaces.list()`）—— 只用于"把被摊平的 N 条记录合成一组"✓。
 	 */
 	lastWorkspaces?: readonly IDshWorkspaceOption[];
+	/** 最近一次推送的 **IDE 登录态**（2026-10-21；与 lastWorkspaces 同一补发口径 ✓）。 */
+	lastAuth?: IDshAuthOption;
 	lastThemeTokens?: DshThemeTokens;
 	lastColorScheme?: DshColorScheme;
 	/** 最近一次页面侧自证的**原文**（见 `_reportPageSurface`）：内容没变就不再写日志 ⇒ 低频轮询也不吵 ✓。 */
@@ -449,6 +512,19 @@ export class DshViewHost extends Disposable {
 	private _session: Session | undefined;
 	/** 弹窗（拼装式 desktop）专用分区；见 `desktopSession` getter 的取证注释。 */
 	private _desktopSession: Session | undefined;
+	/**
+	 * **并发聊天视图**的独立分区池（2026-10-21，中间栏并排多聊天）。
+	 *
+	 * 键 = 分区名（`vssaros-dsh-chat-<n>`），值 = 该分区的 `Session`。
+	 * 每个并发聊天视图一个分区 ⇒ 各自独立的 socket 池 ⇒ 6 条连接的限制不再互相抢 ✓
+	 * （取证见 `DSH_VIEW_PARTITION_DESKTOP` 的注释：同一 `host:port` 的 HTTP/1.1 并发上限是 6）。
+	 *
+	 * 为什么要登记在这里：认证 cookie **每 3 分钟过期**，而新分区的 cookie 是用 authUrl 现换的
+	 * ⇒ 不续期就会在几分钟后变成"authentication required"黑屏 ⇒ `_refreshAuth` 必须遍历它们 ✓。
+	 */
+	private readonly _chatPoolSessions = new Map<string, Session>();
+	/** 聊天池分区的序号（单调递增 ⇒ 分区名不复用 ⇒ 不会撞上旧 cookie）。 */
+	private _chatPoolSeq = 0;
 	private _connection: IDshHostConnection | undefined;
 
 	private readonly _onDidPageEvent = this._register(new Emitter<DshPageEvent>());
@@ -494,6 +570,62 @@ export class DshViewHost extends Disposable {
 		return this._desktopSession;
 	}
 
+	/**
+	 * 主分区上是否已经有**活跃的聊天视图**（决定新聊天能否继续用主分区）。
+	 *
+	 * 判据是"有没有视图正挂在主分区上"，而不是"总共开过几个聊天" ⇒
+	 * 关掉一个聊天后再开新的，仍会回到主分区（单聊天场景行为完全不变 ✓）。
+	 */
+	private _hasChatViewOnMainSession(): boolean {
+		const main = this._session;
+		if (!main) {
+			return false;   // 主分区还没建 ⇒ 没人占用它
+		}
+		for (const slot of this._views.values()) {
+			if (slot.surface === 'chat' && slot.session === main) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * 该分区上是否还有**活跃视图**（没有就不必为它续期 cookie）。
+	 */
+	private _hasViewOnSession(ses: Session): boolean {
+		for (const slot of this._views.values()) {
+			if (slot.session === ses) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * 取一个**聊天池分区**（每个并发聊天视图一个 ⇒ 独立 socket 池）。
+	 *
+	 * 为什么必须独立：Chromium 对同一 `host:port` 的 HTTP/1.1 并发连接上限是 **6**
+	 * （取证见 `DSH_VIEW_PARTITION_DESKTOP`），dsh 每个页面长期占住若干条 ⇒
+	 * 两个聊天页面共用一个分区就会互相饿死（"第二个聊天一直转圈 / create 永不返回"）。
+	 *
+	 * 非 persist：进程退出即释放，不长期累积 cookie/缓存 ✓。
+	 * 分区名单调递增 ⇒ 不复用 ⇒ 不会撞上旧 cookie ✓。
+	 */
+	private _acquireChatPoolSession(name: string): { ses: Session; name: string } {
+		let ses = this._chatPoolSessions.get(name);
+		if (!ses) {
+			// 权限策略与导航守卫**必须**对新分区同样生效（否则麦克风/剪贴板被拒、跨源导航守卫失效）✓
+			ses = this._configureViewSession(electronSession.fromPartition(name));
+			this._chatPoolSessions.set(name, ses);
+			// 序号推进（分区名不复用 ⇒ 不会撞上旧 cookie）✓
+			const seq = Number(name.slice(DSH_VIEW_PARTITION_CHAT_POOL_PREFIX.length));
+			if (Number.isFinite(seq) && seq > this._chatPoolSeq) {
+				this._chatPoolSeq = seq;
+			}
+		}
+		return { ses, name };
+	}
+
 	/** 给一个分区配上我们的权限策略（多个分区共用同一套；见 `session` getter 的注释）。 */
 	private _configureViewSession(ses: Session): Session {
 		// 权限默认全拒；例外只有两个，且都只放行我们自己的 dsh Host（环回 origin）：
@@ -529,7 +661,7 @@ export class DshViewHost extends Disposable {
 		this._authRefreshed = false;
 		if (connection) {
 			this._authTimer = setInterval(() => void this._refreshAuth(), AUTH_REFRESH_INTERVAL_MS);
-			this._authTimer.unref?.();
+			(this._authTimer as { unref?: () => void } | undefined)?.unref?.();
 		}
 		if (!changed) {
 			return;
@@ -542,8 +674,8 @@ export class DshViewHost extends Disposable {
 			slot.retry = withAuthRetry(resetViewLoadRetry());
 			if (connection) {
 				void this._load(slot);
-			} else if (!slot.view.webContents.isDestroyed()) {
-				void slot.view.webContents.loadURL('about:blank');
+			} else {
+				this._showHostUnavailable(slot);
 			}
 		}
 	}
@@ -601,13 +733,32 @@ export class DshViewHost extends Disposable {
 				this._logService.warn(`[dshHarness] 会话 ${sessionId} 已在窗口 ${other.ownerWindowId} 打开，本窗口 ${ownerWindowId} 也开了同一个：该会话的 IDE 能力请求会被拒绝（分不清该落在哪）`);
 			}
 		}
-		// 弹窗（拼装式 desktop）走**独立分区**：它与主窗口共享同一个 `host:port` 的 6 条并发连接配额，
-		// 一起用会把池占满、互相饿死（见 `desktopSession` 的取证注释）⇒ 隔离 ✓。
-		const viewSession = isolatedPool ? this.desktopSession : this.session;
-		if (isolatedPool) {
-			// 可观测 + 可断言：这是"弹窗不再与主窗口争 6 条连接"的唯一现场证据 ✓
-			this._logService.info(`[dshHarness] view ${viewId} uses an isolated network partition (${process.env.DSH_TEST_DESKTOP_PARTITION || DSH_VIEW_PARTITION_DESKTOP})`);
+		// ── 分区选择：谁需要独立的 socket 池？──────────────────────────────────
+		// 判定在纯模块 `common/dshChatPartition.ts`（有单测）：判错的后果是
+		// "两个聊天互相饿死"（界面像卡住，日志里几乎看不出来）✗。
+		const decision = decideChatPartition({
+			isolatedPool,
+			surface,
+			mainPartitionBusy: this._hasChatViewOnMainSession(),
+			poolSeq: this._chatPoolSeq,
+			desktopPartition: process.env.DSH_TEST_DESKTOP_PARTITION || DSH_VIEW_PARTITION_DESKTOP,
+			mainPartition: process.env.DSH_TEST_VIEW_PARTITION || DSH_VIEW_PARTITION,
+			poolPrefix: DSH_VIEW_PARTITION_CHAT_POOL_PREFIX,
+		});
+		let viewSession: Session;
+		if (decision.kind === 'desktop') {
+			viewSession = this.desktopSession;
+		} else if (decision.kind === 'main') {
+			viewSession = this.session;
+		} else if (decision.kind === 'pool') {
+			const pool = this._acquireChatPoolSession(decision.partition);
+			viewSession = pool.ses;
+		} else {
+			// 判定只有三档（desktop / main / pool）；到不了这里 ⇒ 兜底回主分区（别让视图没有 session ✗）。
+			viewSession = this.session;
 		}
+		// 可观测 + 可断言：这是"并排聊天不再互抢 6 条连接"的唯一现场证据 ✓
+		this._logService.info(`[dshHarness] view ${viewId} (${surface}) partition=${decision.partition} kind=${decision.kind}${isolatedPool ? ' [isolated]' : ''}`);
 		const view = new WebContentsView({
 			webPreferences: {
 				session: viewSession,
@@ -617,12 +768,15 @@ export class DshViewHost extends Disposable {
 				webviewTag: false,
 				spellcheck: false,
 				preload: this._preloadPath,
-				additionalArguments: [`${DSH_PAGE_SURFACE_ARG}${surface}`, `${DSH_PAGE_CHAT_ONLY_ARG}${chatOnlyUi ? '1' : '0'}`, `${DSH_PAGE_SESSION_ARG}${sessionId ?? ''}`, `${DSH_PAGE_VIEW_ARG}${viewId}`],
+				additionalArguments: [`${DSH_PAGE_SURFACE_ARG}${surface}`, `${DSH_PAGE_CHAT_ONLY_ARG}${chatOnlyUi ? '1' : '0'}`, `${DSH_PAGE_SESSION_ARG}${sessionId ?? ''}`, `${DSH_PAGE_VIEW_ARG}${viewId}`,
+					// 'workbench'：模块路由只能经参数给页面（视图加载的是 dsh 客户端根路径 `/`）
+					...(surface === 'workbench' && route ? [`${DSH_PAGE_WORKBENCH_ARG}${route}`] : [])],
 			},
 		});
 		view.setBounds(OFFSCREEN);
 		view.setVisible(false);
-		const slot: IViewSlot = { id: viewId, view, ownerWindowId, surface, route: surface === 'plugin-page' ? route : undefined, pageSurface: surface === 'plugin-page' ? pageSurface : undefined, attachedTo: undefined, visible: false, retry: newViewLoadRetryState(), blankChecks: 0, blankReloads: 0, colorScheme, sessionId: sessionId || undefined, backgrounds, session: viewSession };
+		const takesRoute = surfaceTakesRoute(surface);
+		const slot: IViewSlot = { id: viewId, view, ownerWindowId, surface, createdAt: Date.now(), route: takesRoute ? route : undefined, pageSurface: takesRoute ? pageSurface : undefined, attachedTo: undefined, visible: false, retry: newViewLoadRetryState(), blankChecks: 0, blankReloads: 0, colorScheme, sessionId: sessionId || undefined, backgrounds, session: viewSession };
 		// ★ 染色必须在**任何一次 attach / setVisible(true) 之前**（否则中间那几毫秒照样露白 ✗）
 		this._applyViewBackground(slot);
 		this._wire(slot);
@@ -795,6 +949,17 @@ export class DshViewHost extends Disposable {
 		if (this._desktopSession) {
 			await this._refreshAuthIn(this._desktopSession, conn).catch(() => { /* warning 已在内部记 */ });
 		}
+		// ★ 并发聊天视图的独立分区同样要续期（2026-10-21）：
+		//   这些分区的 cookie 是加载时用 authUrl 现换的，**每 3 分钟过期**；
+		//   不续期 ⇒ 并排的第二个聊天几分钟后变成"authentication required"黑屏，
+		//   而 dsh 客户端遇到 401 只显示那句提示、**既不重试也不导航** ⇒ 用户只能重开 IDE ✗✗。
+		//   只续**还有活跃视图**的分区（没人在看的分区续了也白续）。
+		for (const ses of this._chatPoolSessions.values()) {
+			if (!this._hasViewOnSession(ses)) {
+				continue;
+			}
+			await this._refreshAuthIn(ses, conn).catch(() => { /* warning 已在内部记 */ });
+		}
 		await this._refreshAuthIn(this.session, conn);
 	}
 
@@ -844,6 +1009,17 @@ export class DshViewHost extends Disposable {
 	 * 向页面推 **IDE 工作区记录**（多根工作区：让页面把 dsh 那边被摊平的 N 条记录合成"一个工作区 + 各根"；
 	 * 机制与 {@link pushWorktrees} 逐字同款：先留快照、`did-finish-load` 补发 ✓）。
 	 */
+	pushAuth(viewId: string, auth: IDshAuthOption): void {
+		const slot = this._views.get(viewId);
+		if (!slot) {
+			return;
+		}
+		slot.lastAuth = auth;
+		if (!slot.view.webContents.isDestroyed()) {
+			slot.view.webContents.send(DSH_PAGE_IPC_AUTH, auth);
+		}
+	}
+
 	pushWorkspaces(viewId: string, options: readonly IDshWorkspaceOption[]): void {
 		const slot = this._views.get(viewId);
 		if (!slot) {
@@ -911,6 +1087,32 @@ export class DshViewHost extends Disposable {
 	}
 
 	/**
+	 * ★ 2026-10-20：Host 的 mux 升级路由刚可用（supervisor 探到）⇒ 通知所有页面。
+	 *
+	 * 为什么：dsh 页面的实时事件连接在 Host 冷启后会走 0.5/1/2/4/8 s 退避（实测约 13 s 才连上），
+	 * 原因是 mux 路由要等 `appReady` 才注册，比我们判 ready 用的 bridge hello 晚。
+	 * 页面里的 chat-surface 收到这个事件后，若连接还没连上，就调官方 `connection.reconnect()`
+	 * 跳过剩下的退避。
+	 *
+	 * 走 `executeJavaScript` 派发 DOM 事件（页面主世界，chat-surface 也在主世界），
+	 * 不新增 IPC 通道，也不用改 preload。同时把结果写到 `window.__vssarosMuxReady`，
+	 * 给那些事件到达时还没装好 chat-surface 的页面补读。
+	 */
+	notifyMuxReady(afterReadyMs: number): void {
+		const detail = JSON.stringify({ afterReadyMs: Math.round(afterReadyMs) });
+		const script = `(function(){var d=${detail};try{window.__vssarosMuxReady=d;}catch(e){}document.dispatchEvent(new CustomEvent('vssaros-dsh-mux-ready',{detail:d}));return true;})()`;
+		let notified = 0;
+		for (const slot of this._views.values()) {
+			if (slot.view.webContents.isDestroyed()) {
+				continue;
+			}
+			notified++;
+			slot.view.webContents.executeJavaScript(script).catch(() => undefined);
+		}
+		this._logService.info(`[dshHarness] mux ready (+${Math.round(afterReadyMs)} ms after Host ready) → notified ${notified} view(s)`);
+	}
+
+	/**
 	 * 重绑视图到另一个 dsh 会话（方案 5.15 切 preset）：更新 slot 记录并推给页面；
 	 * 页面重载（reload / 渲染进程重建）后 dom-ready 会按 slot 记录重发，保持绑定不回落。
 	 *
@@ -970,6 +1172,39 @@ export class DshViewHost extends Disposable {
 				continue;
 			}
 			slot.view.webContents.send(DSH_PAGE_IPC_CREDIT, sample);
+		}
+	}
+
+	/**
+	 * 把历史积分样本**再补发一遍**给已经就绪的聊天页（2026-10-20）。
+	 *
+	 * 为什么需要：主进程重启后，历史样本是**异步**从磁盘读回来的（`DshCreditProxy.onSamplesRestored`）。
+	 * 而原来每页只补发一次（`creditsReplayedAt` 守卫），若那次读盘还没完成，补发的是空数组
+	 * ⇒ 页面池永远空 ⇒ 历史回合的积分一直显示 — ✗。
+	 *
+	 * 安全：只对**已经补发过**的页重发（没补发过的会走原有流程，别抢跑）；页面侧
+	 * `pushCreditSample` 按样本键去重 ⇒ 重复推送不会把积分算两次 ✓。
+	 */
+	replayCreditsAgain(): void {
+		if (!this._creditReplaySource) {
+			return;
+		}
+		const backlog = this._creditReplaySource();
+		if (backlog.length === 0) {
+			return;
+		}
+		for (const slot of this._views.values()) {
+			if (slot.surface !== 'chat' || slot.view.webContents.isDestroyed()) {
+				continue;
+			}
+			// 还没补发过的页交给正常流程（自证就绪后那一次），这里不抢跑。
+			if (!slot.creditsReplayedAt) {
+				continue;
+			}
+			for (const sample of backlog) {
+				slot.view.webContents.send(DSH_PAGE_IPC_CREDIT, sample);
+			}
+			this._logService.info(`[dshHarness] view ${slot.id} 补发 ${backlog.length} 条积分样本（历史样本恢复完成）`);
 		}
 	}
 
@@ -1056,9 +1291,44 @@ export class DshViewHost extends Disposable {
 	 * 已有 Cookie 时直接加载 origin（plugin-page 时带上插件路由）；Host 重启后旧 Cookie 可能失效（401），
 	 * 此时用带 token 的认证 URL 再试一次（token 交换同样落到该路由上）。
 	 */
+	/**
+	 * **Host 不可用时的统一出口**：插件页加载可见占位页，其它视图维持原来的 `about:blank`。
+	 *
+	 * 为什么不能再"静默 about:blank"（2026-10-20 真机报障）：`about:blank` 属于加载**成功** ⇒
+	 * `did-fail-load` 不触发、有界重试不启动、白屏看门狗只管聊天页 ⇒ 插件页得到"整片纯白 +
+	 * IDE 日志零痕迹"，用户无法区分"没数据"与"页面根本没加载"。占位页把原因与恢复方式写在页面上。
+	 *
+	 * ⚠ 占位页只给 `pageSurface` 有值的视图：聊天页有白屏看门狗与 `DSH_PAGE_IPC_REBIND` 状态机，
+	 *   换成 data: 页面会把那套逻辑搅乱（见 `common/dshViewHostUnavailable.ts` 头注释）。
+	 */
+	private _showHostUnavailable(slot: IViewSlot): void {
+		const wc = slot.view.webContents;
+		if (wc.isDestroyed()) {
+			return;
+		}
+		if (!slot.pageSurface) {
+			this._logService.info(`[dshHarness] view ${slot.id} → about:blank：Host 连接已消失（该视图不使用占位页）`);
+			void wc.loadURL('about:blank').catch(() => undefined);
+			return;
+		}
+		this._logService.info(
+			`[dshHarness] view ${slot.id} (${slot.pageSurface}) → 占位页：Host 连接已消失，`
+			+ '插件页暂时不可用（不是页面/数据的问题；Host 恢复后会自动重载）',
+		);
+		void wc.loadURL(unavailablePageUrl({ route: slot.route })).catch(e => {
+			// data: URL 都加载不了 ⇒ webContents 本身有问题；退回 about:blank，至少不留一个卡住的旧页
+			this._logService.warn(`[dshHarness] view ${slot.id} 占位页加载失败：${String((e as Error)?.message ?? e)}`);
+			if (!wc.isDestroyed()) { void wc.loadURL('about:blank').catch(() => undefined); }
+		});
+	}
+
 	private async _load(slot: IViewSlot): Promise<void> {
 		const conn = this._connection;
-		if (!conn || slot.view.webContents.isDestroyed()) {
+		if (slot.view.webContents.isDestroyed()) {
+			return;
+		}
+		if (!conn) {
+			this._showHostUnavailable(slot);
 			return;
 		}
 		// 这条链"要重新认证"（换 Host/401/白屏看门狗置了 `retriedAuth`）时，先用 `session.fetch(authUrl)`
@@ -1067,6 +1337,11 @@ export class DshViewHost extends Disposable {
 		// 2026-10-13 用户报"聊天框空白"：Host 重启后那一步写了但没生效 ⇒ 永远 401 ⇒ 白屏（探针也复现）。
 		// ⚠ 一律用**该视图自己的分区**（弹窗是独立分区，用主分区查 cookie 会误判"已登录"⇒ 401 ✗）
 		const viewSession = slot.session ?? this.session;
+		// ★★ 2026-10-20（量化「视图创建 → 会话在屏 5.6s」）：页面侧自测 `composer: 501ms`，
+		//   而主进程测到 5604ms ⇒ 差值 ~5.1s 全花在**页面导航之前**。
+		//   这段里唯一会 `await` 的就是下面两处 `session.fetch(authUrl)`（新分区首次加载必须先做
+		//   token 交换把 cookie 落进去）—— 给它计时，别再把"等 Host 回 cookie"混进"聊天框慢" ✗。
+		const tAuth = Date.now();
 		if (slot.retry.retriedAuth) {
 			await viewSession.fetch(conn.authUrl, { redirect: 'follow' })
 				.catch(() => { /* fetch 失败就交给下面的 loadURL（回退 authUrl）与有界重试兜底 */ });
@@ -1080,10 +1355,15 @@ export class DshViewHost extends Disposable {
 			cookies = await viewSession.cookies.get({ url: conn.origin }).catch(() => []);
 			hasAuth = cookies.some(c => c.name.startsWith('dsh-auth'));
 		}
+		// ★ 2026-10-20：>500ms 就记一行 —— 正常应是几十毫秒，几秒说明 Host 当时忙/慢（见日志时序）。
+		if (Date.now() - tAuth > 500) {
+			this._logService.info(`[dshHarness] view ${slot.id} auth cookie exchange took ${Date.now() - tAuth} ms（hasAuth=${hasAuth}）— 这段发生在页面导航之前`);
+		}
 		const url = resolveViewUrl({
 			origin: conn.origin,
 			authUrl: conn.authUrl,
-			route: slot.route ?? '/',
+			// 'workbench' 加载 dsh 客户端根路径（模块路由经 preload 参数给页面）⇒ URL 逐字符同官方 Web Client ✓
+			route: slot.surface === 'workbench' ? '/' : (slot.route ?? '/'),
 			// `retriedAuth` 的链上面已用 fetch 重建过 cookie ⇒ 这里直接按"cookie 是否在"选：在就裸
 			// origin（省一跳重定向），不在（fetch 也失败）才回退带 token 的 authUrl。
 			hasAuth,
@@ -1172,6 +1452,10 @@ export class DshViewHost extends Disposable {
 				wc.send(DSH_PAGE_IPC_WORKSPACES, slot.lastWorkspaces);
 				this._logService.info(`[dshHarness] view ${slot.id} replayed ${slot.lastWorkspaces.length} workspace record(s) after page load`);
 			}
+			if (slot.lastAuth) {
+				// IDE 登录态（2026-10-21）：与工作区记录同口径补发 —— 页面晚加载时也要拿到登录态 ✓
+				wc.send(DSH_PAGE_IPC_AUTH, slot.lastAuth);
+			}
 			if (slot.lastThemeTokens) {
 				wc.send(DSH_PAGE_IPC_THEME, slot.lastThemeTokens);
 			}
@@ -1227,6 +1511,14 @@ export class DshViewHost extends Disposable {
 			if (slot.lastSurfaceReport !== text) {
 				// 只在**快照变化**时写日志 ⇒ 15 秒一轮也不吵，而"用户点了一下"必然让计数变化 ⇒ 一定被记下 ✓
 				slot.lastSurfaceReport = text;
+				// ★ 2026-10-19「新建聊天框窗口慢」：把**端到端耗时**钉成一行日志 ——
+				//   起点 = 视图创建（`slot.createdAt`），终点 = 页面自证里 `opened:true`（会话真的在屏）。
+				//   只在**首次**在屏时计一次（快照每 15s 一轮，之后每次都带 opened:true，否则会刷屏 ✗）。
+				//   ⚠ 这一行必须先落到日志，再谈"要不要闸门 / 要不要视图池"——没有数就改并发等于瞎猜。
+				if (!slot.openReported && /"opened":true/.test(text)) {
+					slot.openReported = true;
+					this._logService.info(`[dshHarness] view ${slot.id} ready in ${Date.now() - slot.createdAt} ms（视图创建 → 会话在屏；surface=${slot.surface}）`);
+				}
 				// ★ 2026-10-17（真机「输入框无法输入」第三轮）：全窗页在**很早期**发起的
 				//   `sessions.refresh()` 可能永不返回（页面侧 `rosterRefreshing` 恒 true、roster 恒 0）
 				//   ⇒ 会话进不了 roster ⇒ 停在 hero ⇒ 输入框被官方 inert 禁用。
@@ -1261,7 +1553,32 @@ export class DshViewHost extends Disposable {
 					//   从前这类失败只弹一条通知、日志里什么都没有 ✗ ⇒ 现在升为 warn 并带上完整快照 ✓。
 					this._logService.warn(`[dshHarness] view ${slot.id} 卡片动作在页面侧失败: ${cardErr[1]} —— 完整快照: ${text}`);
 				} else {
-					this._logService.info(`[dshHarness] view ${slot.id} page surface: ${text}`);
+					// ★ 2026-10-19 **降日志量**（真机两次卡死的同一条线索）：
+					//   这段自证每 30 秒、每个视图打一条**约 3KB** 的全量 JSON（实测 2978 字节/条）。
+					//   主进程日志 flush 是**同步写**（`NtWriteFile`），而本机有 iOA 数据保护驱动注入；
+					//   写量越密，撞上"某次 WriteFile 不返回"的概率越高 —— 两次卡死主线程栈都停在
+					//   `ntdll!NtWriteFile ← KERNELBASE!WriteFile ← uv_fs_write`，且磁盘本身健康（同目录写 2KB 仅 3ms）。
+					//   ⇒ 只在**关键状态变化**时打全量，稳态每 10 分钟补一条；其余打一行精简摘要（仍可证存活）。
+					//   ⚠ 不要在这里删诊断字段：`registered/registerMs/connectStatus` 是真机判定的唯一来源 ✓。
+					const sig = [
+						/"bodyOpened":(true|false|null)/.exec(text)?.[1] ?? '?',
+						/"heroVisible":(true|false)/.exec(text)?.[1] ?? '?',
+						/"rosterSize":(\d+)/.exec(text)?.[1] ?? '?',
+						/"registered":(true|false)/.exec(text)?.[1] ?? '?',
+						/"connectStatus":"((?:[^"\\]|\\.)*)"/.exec(text)?.[1] ?? '',
+					].join('|');
+					const nowMs = Date.now();
+					const firstTime = slot.surfaceSig === undefined;
+					const changed = slot.surfaceSig !== sig;
+					const stale = nowMs - (slot.surfaceFullAt ?? 0) >= SURFACE_FULL_LOG_INTERVAL_MS;
+					if (firstTime || changed || stale) {
+						slot.surfaceSig = sig;
+						slot.surfaceFullAt = nowMs;
+						this._logService.info(`[dshHarness] view ${slot.id} page surface: ${text}`);
+					} else {
+						// 稳态：一行摘要（≈100 字节，替代 ≈3KB）；字段改动时上面那条全量会自动补上 ✓
+						this._logService.trace(`[dshHarness] view ${slot.id} page surface (stable): opened=${slot.surfaceSig}`);
+					}
 				}
 				}
 		} catch (e) {
@@ -1320,7 +1637,7 @@ export class DshViewHost extends Disposable {
 				this._logService.info(`[dshHarness] view ${slot.id} refocused (window focused, view was not)`);
 			} catch { /* 自愈失败不致命，下一轮再试 */ }
 		}, 1000);
-		slot.refocus.unref?.();
+		(slot.refocus as { unref?: () => void } | undefined)?.unref?.();
 	}
 
 	private _startPageWatchdog(slot: IViewSlot): void {
@@ -1328,7 +1645,7 @@ export class DshViewHost extends Disposable {
 			return;
 		}
 		slot.watchdog = setInterval(() => void this._checkPageAlive(slot), PAGE_WATCH_INTERVAL_MS);
-		slot.watchdog.unref?.();
+		(slot.watchdog as { unref?: () => void } | undefined)?.unref?.();
 	}
 
 	/** 看门狗的一次体检（见 `_startPageWatchdog` 的判据与阈值）。 */
@@ -1383,6 +1700,25 @@ export class DshViewHost extends Disposable {
 
 	private _wire(slot: IViewSlot): void {
 		const wc = slot.view.webContents;
+		// ★★ 2026-10-20（拆"视图创建 → 会话在屏 5.3s"里那 4.8 秒）：
+		//   页面自测 `composer: 512ms` ⇒ **文档开始之后** 0.5s 就可用；慢的是「`loadURL` → 文档开始」。
+		//   实测 `auth cookie exchange` 没超过 500ms（我加的那条日志没出现）⇒ 也不是 cookie 交换。
+		//   那就只剩：loadURL 排队 / 网络（1MB bundle 首字节）/ DOM 解析。
+		//   这三个点各记一行（只在首次，相对 `slot.createdAt`），下次一眼能看出 4.8s 属哪一类。
+		slot.loadMarks = {};
+		const markLoad = (name: string, extra?: string): void => {
+			if (!slot.loadMarks || slot.loadMarks[name] !== undefined) {
+				return;
+			}
+			const ms = Date.now() - slot.createdAt;
+			slot.loadMarks[name] = ms;
+			this._logService.info(`[dshHarness] view ${slot.id} ${name} @ +${ms}ms（相对视图创建）${extra ?? ''}`);
+		};
+		wc.on('did-start-loading', () => markLoad('did-start-loading'));
+		wc.on('dom-ready', () => markLoad('dom-ready'));
+		wc.on('did-finish-load', () => markLoad('did-finish-load'));
+		wc.on('did-fail-load', (_e: unknown, code: number, desc: string) =>
+			this._logService.warn(`[dshHarness] view ${slot.id} did-fail-load ${code} ${desc} @ +${Date.now() - slot.createdAt}ms`));
 		/**
 		 * **页面自己的 console**（error / warning）直接进 IDE 日志 —— 这是白屏排查里最可靠的一只眼睛。
 		 *
@@ -1426,7 +1762,7 @@ export class DshViewHost extends Disposable {
 					const totalSecs = Math.round((c.lastAt - c.firstAt) / 100) / 10;
 					this._logService.info(`[dshHarness] view ${slot.id} 客户端连接已稳定：共抖动 ${c.count} 次 / 历时 ${totalSecs}s（末次抖动后静默 ${CONN_CHURN_QUIET_MS / 1000}s 判稳 ✓）—— 这段就是首启"卡了一段时间才出 session"的全部来源 ✓`);
 				}, CONN_CHURN_QUIET_MS);
-				c.timer.unref?.();
+				(c.timer as { unref?: () => void } | undefined)?.unref?.();
 				return;
 				}
 			const isError = rawLevel === 3 || rawLevel === 'error';
@@ -1572,6 +1908,29 @@ export class DshViewHost extends Disposable {
 			if (key) {
 				this._onDidPageEvent.fire({ viewId: slot.id, kind: 'keydown', event: key });
 			}
+		});
+		// ★ 2026-10-19：改名的**回执**（页面 → 工作台）。`DSH_PAGE_IPC_RENAME` 是单向推送，
+		//   调用方（会话侧栏）无从知道改成了没有 ⇒ 页面改完派回执，preload 上送到这里，
+		//   再 fire 成页面事件（带 viewId）⇒ 渲染进程的订阅者能对回是哪一次。
+		//   ⚠ 只承载展示文本（title / error），且统一截断（与 channel 侧同一口径）。
+		wc.ipc.on(DSH_PAGE_IPC_RENAMED, (event, raw) => {
+			if (!this._isTrustedSender(event)) {
+				return;
+			}
+			if (typeof raw !== 'object' || raw === null) {
+				return;
+			}
+			const p = raw as { sessionId?: unknown; title?: unknown; error?: unknown };
+			if (typeof p.sessionId !== 'string' || p.sessionId.length === 0) {
+				return;
+			}
+			this._onDidPageEvent.fire({
+				viewId: slot.id,
+				kind: 'renamed',
+				sessionId: p.sessionId,
+				...(typeof p.title === 'string' ? { title: p.title.slice(0, 500) } : {}),
+				...(typeof p.error === 'string' ? { error: p.error.slice(0, 500) } : {}),
+			});
 		});
 	}
 

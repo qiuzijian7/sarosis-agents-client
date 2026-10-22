@@ -58,8 +58,10 @@ export function parseKernel(text, { withText = false } = {}) {
 		return { docs: [], totalDocs: 0, notes: [`kernel 顶层不是对象：${typeof raw}`] };
 	}
 	const notes = [];
-	if (raw.v !== undefined && raw.v !== 1) {
-		notes.push(`kernel 版本 v=${String(raw.v)}（本模块按 v1 解析）`);
+	// ⚠ 2026-10-19 起接受 v1 与 v2（v2 = 标签口径修订后的形态：frontmatter tags 并入 ＋
+	//   正文标签正则收窄 ✓；两侧读侧都要容忍两种版本 ✓ —— v1 是修订前的既有落盘 ✓）。
+	if (raw.v !== undefined && raw.v !== 1 && raw.v !== 2) {
+		notes.push(`kernel 版本 v=${String(raw.v)}（本模块按 v1/v2 解析）`);
 	}
 	const docsRaw = Array.isArray(raw.docs) ? raw.docs : [];
 	if (raw.docs !== undefined && !Array.isArray(raw.docs)) {
@@ -133,8 +135,15 @@ export const FEISHU_SYNC_SCRIPT = 'scripts/feishu-sync.mjs';
  *  2. `--plan-file` **必带**：脚本会写一份**本次**报告（dry-run 也写），工具读它回报。不带就只能读日志尾部，
  *     而 dry-run **从不写日志**（脚本注释里记着这个坑：预览时只能拿到旧日志）。
  */
-export function buildFeishuSyncArgs({ vault, src = [], apply = false, limit = 0, onConflict = '', planFile = '', cliPath = '' } = {}) {
+export function buildFeishuSyncArgs({ vault, src = [], apply = false, limit = 0, onConflict = '', planFile = '', cliPath = '', parent = '' } = {}) {
 	const args = ['--vault', String(vault ?? '')];
+	// ★ 2026-10-20：**落点可配**。此前 dsh 从不传 `--parent` ⇒ 脚本用写死的默认值
+	//   （`my_library` = 飞书「个人知识库」）⇒ 用户想把库同步到**某个文件夹/wiki 节点**
+	//   必须改脚本 ✗。现在透传：`my_library` 走 `--parent-position`，
+	//   其它值（folder / wiki node token）走 `--parent-token`（由脚本按同一判据分流 ✓）。
+	if (parent) {
+		args.push('--parent', String(parent));
+	}
 	if (cliPath) {
 		// 与 IDE 的 `sessions.agentStudio.kb.feishu.cliPath` 同一个语义（装在非标准位置时用）
 		args.push('--cli', String(cliPath));

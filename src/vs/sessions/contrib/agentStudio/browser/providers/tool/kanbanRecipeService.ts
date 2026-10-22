@@ -19,6 +19,7 @@ import { createDecorator } from '../../../../../../platform/instantiation/common
 import { IStorageService, StorageScope, StorageTarget } from '../../../../../../platform/storage/common/storage.js';
 import { Event, Emitter } from '../../../../../../base/common/event.js';
 import { Disposable } from '../../../../../../base/common/lifecycle.js';
+import { compileFunction } from '../../shared/trustedScript.js';
 
 export const IKanbanRecipeService = createDecorator<IKanbanRecipeService>('kanbanRecipeService');
 
@@ -188,8 +189,7 @@ export class KanbanRecipeService extends Disposable implements IKanbanRecipeServ
 			throw new Error('recipe.extractFn is required');
 		}
 		try {
-			// eslint-disable-next-line no-new-func
-			const compiled = new Function('return (' + fn + ');')();
+			const compiled = compileFunction([], 'return (' + fn + ');')();
 			if (typeof compiled !== 'function') {
 				throw new Error('extractFn did not evaluate to a function');
 			}

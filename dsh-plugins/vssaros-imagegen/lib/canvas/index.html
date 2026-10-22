@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>画布工作台</title>
+<link rel="stylesheet" href="./canvas.css">
+</head>
+<body>
+<div id="app">
+	<header id="bar">
+		<span class="title">画布</span>
+		<div class="seg" id="mode-seg">
+			<button type="button" data-mode="free" class="on">自由绘制</button>
+			<button type="button" data-mode="graph">节点工作流</button>
+		</div>
+		<span class="badge" id="conn">连接…</span>
+		<button type="button" class="run" id="btn-run" hidden>▶ 运行</button>
+		<button type="button" class="plain" id="btn-export" hidden>导出 JSON Canvas</button>
+		<button type="button" class="plain" id="btn-import" hidden>导入</button>
+		<button type="button" class="plain danger" id="btn-clear" hidden>清空图</button>
+		<button type="button" class="plain" id="btn-insert">插入图片</button>
+		<button type="button" class="plain" id="btn-refresh">刷新</button>
+		<input type="file" id="file-import" accept="application/json,.canvas" hidden>
+		<input type="file" id="file-image" accept="image/*" multiple hidden>
+	</header>
+	<main id="main">
+		<aside id="left">
+			<h4>添加节点</h4>
+			<button type="button" class="addbtn" data-kind="text">文本<small>提示词 / 文案</small></button>
+			<button type="button" class="addbtn" data-kind="image">图片<small>要生成的那一张</small></button>
+			<button type="button" class="addbtn" data-kind="ref">参考素材<small>参考图 / 风格图</small></button>
+			<h4>节点大纲</h4>
+			<div id="outline"></div>
+		</aside>
+		<section id="stage">
+			<!-- ★ id 必须叫 cv-root（探针 p3-157 断言页面里有这个锚点；也是自由绘制层的挂载点） -->
+			<div id="cv-root" class="free-host"></div>
+			<div id="graph-host">
+				<div class="viewport" id="graph-viewport">
+					<div class="world" id="graph-world">
+						<svg class="wires" id="graph-wires" width="20000" height="20000"></svg>
+					</div>
+				</div>
+				<div id="graph-hint">拖右侧圆点连线 · 双击空白建节点 · 滚轮缩放 · 拖空白平移</div>
+			</div>
+		</section>
+		<aside id="right"></aside>
+	</main>
+	<footer id="runlog"></footer>
+</div>
+<script type="module" src="./page.js"></script>
+</body>
+</html>

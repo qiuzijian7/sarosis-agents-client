@@ -227,7 +227,7 @@ suite('dshHarness / CLI contract', () => {
 		assert.ok(renderKanbanOverlay('it\'s').includes(`workspaceId: 'it''s'`), 'YAML single-quote escaping in place');
 	});
 
-	test('codebase overlay carries only the plugin row config (workspaceRoot) and quotes it', () => {
+	test('codebase overlay carries only the plugin row config (workspaceRoot + 甲档交接三键) and quotes it', () => {
 		const yml = renderCodebaseOverlay('G:\\ws\\proj');
 		// ★ 跨源码契约：行 id 必须与插件自带 `cordis.patch.yml` 插入的那一行**同名**——不一致会打空、
 		// 并**静默**回到"未配置"（README 4.79 的教训；这条就是钉它的）。
@@ -235,6 +235,14 @@ suite('dshHarness / CLI contract', () => {
 		assert.ok(yml.includes(`workspaceRoot: 'G:\\ws\\proj'`), 'config.workspaceRoot is what the plugin reads');
 		assert.ok(!yml.includes('vssaros-kanban') && !yml.includes('vssaros-bridge'), 'a separate overlay: must not touch other rows');
 		assert.ok(renderCodebaseOverlay("it's").includes(`workspaceRoot: 'it''s'`), 'YAML single-quote escaping in place');
+		// ★ 甲档·所有权交接（2026-10-20 用户拍板）：三键缺一条都会**静默**退化成"IDE 仍在产图"或"图会变旧"——
+		//   `indexTarget` 缺 ⇒ 写影子（IDE 照旧索引、两边各一份）；`indexWatch` 缺 ⇒ 交接后没人保鲜 ✗；
+		//   `indexMaxFiles` 缺 ⇒ watcher 用默认 1500 的扫描预算，会把全量图**缩掉**（本仓 2.3 万源文件 ✗✗）。
+		assert.ok(yml.includes('    indexTarget: workspace'), 'ownership handover: dsh must write <ws>/.codebase-memory (producer=vssaros-dsh)');
+		assert.ok(yml.includes('    indexWatch: true'), 'handover without watch = the graph silently goes stale');
+		assert.ok(yml.includes('    indexMaxFiles: 20000'), 'watcher scan budget must cover the workspace, never the 1500 default');
+		// 防抖：5s 缺省在"多人并发编辑"的仓库里会让 watcher 几乎一直忙（单次索引十几秒）⇒ 部署侧钉 15s ✓
+		assert.ok(yml.includes('    debounceMs: 15000'), 'watcher debounce must be raised on a multi-session workspace');
 		// 图谱相关根（跨根只读）：列出来、主根不重复、空白项被丢、逐项单引号
 		const multi = renderCodebaseOverlay('/ws/main', ['/ws/main', '/ws/other', '   ']);
 		assert.ok(multi.includes('relatedRoots:') && multi.includes("      - '/ws/other'"), 'related roots are listed as a YAML array');

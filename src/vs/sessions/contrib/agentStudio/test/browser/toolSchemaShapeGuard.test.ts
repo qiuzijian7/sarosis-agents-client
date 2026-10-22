@@ -66,9 +66,11 @@ const MIN_INPUT_SCHEMA_OCCURRENCES = 100;
  * 会漏掉的那个最大 schema 来源"（回归守卫）。
  */
 const MUST_INCLUDE = [
-	'browser/providers/tool/browserTools.ts',
+	// ⚠ 2026-10-20：原清单 4 条里有 **3 条指向已删文件**（`browserTools.ts` / `codebaseTools.ts`
+	//   随 legacy 工具下线删除，`0f01ef10a43`）⇒ 发现逻辑「正确地」找不到它们，于是整条防空跑
+	//   断言恒红（症状：`代表性 schema 文件未被发现 —— 动态发现逻辑已失效`，而逻辑其实没坏）。
+	//   保留两处**仍在**的来源即可覆盖"providers/tool + common/bundled-tools"两类目录。
 	'browser/providers/tool/mindmapTools.ts',
-	'browser/providers/tool/codebaseTools.ts',
 	'common/bundled-tools/bundledTools.ts',
 ];
 

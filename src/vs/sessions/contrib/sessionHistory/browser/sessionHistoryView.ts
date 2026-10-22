@@ -26,6 +26,14 @@ import { IThemeService } from '../../../../platform/theme/common/themeService.js
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
+import { ICommandService } from '../../../../platform/commands/common/commands.js';
+// ★ 2026-10-19（A1 第 4 步）：dsh 引擎下新建会话要走 dsh ⇒ 需要"IDE agent → dsh preset"的 id 派生。
+import { agentPresetIdOf } from '../../agentStudio/common/chatSessionBackend.js';
+// ★ 2026-10-19：dsh 会话要进侧栏（两套数据源合并；见 `common/dshSessionIndex.ts` 文件头）。
+//   `optional`：legacy 引擎 / 极早期启动时服务可能还没注册 ⇒ 缺席就退化成"只显示 IDE 会话"，
+//   绝不能让整个侧栏注入失败 ✗。
+import { IDshHarnessService } from '../../dshHarness/electron-browser/dshHarnessService.js';
+import type { IDshSessionSummary } from '../../dshHarness/common/dshSessionIndex.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IAgentChatService, IAgentStudioService, IChatStreamDelta } from '../../../common/agentStudioService.js';
@@ -60,6 +68,8 @@ import {
 	parseStringArray,
 } from '../common/sessionGrouping.js';
 import { IPersonaFact, parsePersonaMap, personaGlyphOf, personaLabelOf } from '../common/sessionPersona.js';
+// 「清空所有会话」的范围判据（纯函数 ⇒ `common/clearAllPlan.test.ts` 有守卫 ✓）
+import { planClearAll } from '../common/clearAllPlan.js';
 
 const $ = DOM.$;
 
@@ -154,6 +164,12 @@ interface SessionInfo {
 	personaName?: string;
 	/** 人格（= 另一个 agent）的 `Agent.icon`（emoji）—— 人格 chip 的 glyph 用它。 */
 	personaIcon?: string;
+	/**
+	 * ★ 2026-10-19：这条来自 **dsh 侧**（`storages/session_projcache`），不是 IDE 的
+	 * `chat-history` 索引。两条来源的 `sessionId` 命名空间不同 ⇒ 打开动作必须分流
+	 * （dsh 条目走 `openDshSessionChat`，IDE 条目走 `NativeChatEditorInput`）✗ 混用会打不开。
+	 */
+	dshSession?: boolean;
 }
 
 interface UserMessageInfo {
@@ -207,6 +223,20 @@ export class SessionHistoryViewPane extends ViewPane {
 	private agentSelectContainer: HTMLElement | undefined;
 	private searchInputContainer: HTMLElement | undefined;
 
+	/**
+	 * 「清空所有会话」的内联危险面板（与「新建会话」面板同层、互斥显示）。
+	 *
+	 * 为什么是**内联面板**而不是弹窗：116 条这种量级的破坏性操作需要「范围 / 跳过项 / 结果」
+	 * 三块信息同时可见，侧栏宽度下弹窗装不下；内联面板与既有 `_renderFilterBar` 的
+	 * `new-session` 面板同构 ⇒ 样式与生命周期都能复用（2026-10-19 mockup 稿 A + C）。
+	 */
+	private clearPanel: HTMLElement | undefined;
+	private clearPanelDisposables: DisposableStore | undefined;
+	/** 面板上的三个开关（内存态，不持久化 —— 破坏性操作的默认不许被"上次"带偏）。 */
+	private _clearOptions = { skipRunning: true, skipPinned: true };
+	/** 正在清空（防重入：面板按钮与右键菜单都指向同一条执行路径）。 */
+	private _clearBusy = false;
+
 	private allSessions: SessionData[] = [];
 	private filteredSessions: SessionData[] = [];
 	private currentAgentFilter = '';
@@ -224,6 +254,14 @@ export class SessionHistoryViewPane extends ViewPane {
 	// ─── 工作区分组状态（2026-10-12 重构）───────────────────────────────────────
 	/** `getWorkspaces()` 的原始顺序 —— 分组顺序就是它（空工作区不输出，见 sessionGrouping）。 */
 	private _workspaces: readonly IWorkspaceRef[] = [];
+
+	/**
+	 * dsh 侧会话 id 集合（每次 `_loadSessions` 刷新）。
+	 * 轮询靠"集合变了没有"判断要不要重载 —— 直接比数组内容会让每轮都重载（抖动 ✗）。
+	 */
+	private _dshSessionIds = new Set<string>();
+	/** dsh 会话轮询句柄（只看可见的侧栏：藏起来还每 5s 读盘是纯浪费 ✗）。 */
+	private _dshPollTimer: ReturnType<typeof setInterval> | undefined;
 	/**
 	 * `sessionId → workspaceId` 的缓存。
 	 *
@@ -314,6 +352,8 @@ export class SessionHistoryViewPane extends ViewPane {
 		@IBridgeService private readonly bridgeService: IBridgeService,
 		@IQuickInputService private readonly quickInputService: IQuickInputService,
 		@INotificationService private readonly notificationService: INotificationService,
+		@ICommandService private readonly commandService: ICommandService,
+		@IDshHarnessService private readonly dshHarness: IDshHarnessService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 		this._loadPersistedState();
@@ -336,8 +376,33 @@ export class SessionHistoryViewPane extends ViewPane {
 			this._clearSelection();
 		}));
 
+		// 稿 C：列表**空白处**右键 ⇒ 「清空所有会话…」（会话条目上的右键仍是既有那条菜单 ✗ 不抢）
+		this._register(DOM.addDisposableListener(this.sessionListEl, DOM.EventType.CONTEXT_MENU, (e) => {
+			const target = e.target as HTMLElement | null;
+			if (target?.closest('.session-history-item')) { return; }
+			e.preventDefault();
+			e.stopPropagation();
+			this._showMoreMenu(e as MouseEvent);
+		}));
+
 		// Load sessions
 		this._loadSessions();
+
+		// ★ 2026-10-19：改名的**页面回执** —— 有 `error` 就如实说出来，没有才刷新列表。
+		//   （`renameDshSession` 返回 true 只代表"请求已推给页面"，成败在回执里 ⇒ 不许提前报成功 ✗）
+		this._register(this.dshHarness.onDidDshSessionRenamed(r => {
+			if (r.error) {
+				this.notificationService.warn(`dsh 会话改名失败：${r.error}`);
+				return;
+			}
+			this.logService.info(`[SessionHistoryView] dsh session ${r.sessionId} renamed to "${r.title ?? ''}"（页面回执）`);
+			this._scheduleSilentReload();
+		}));
+
+		// ★ 2026-10-19：dsh 会话**实时**同步（5s 轮询，只在侧栏可见时跑；见 `_pollDshSessions`）。
+		//   dsh 侧没有任何事件通道能推到 IDE 渲染进程（Host 是另一个进程），轮询是最小可靠形态。
+		this._dshPollTimer = setInterval(() => void this._pollDshSessions(), 5000);
+		this._register({ dispose: () => { if (this._dshPollTimer) { clearInterval(this._dshPollTimer); this._dshPollTimer = undefined; } } });
 
 		// Sync open/closed state when the active editor changes (agent switch, session switch, etc.)
 		this._register(this.editorService.onDidActiveEditorChange(() => {
@@ -540,15 +605,27 @@ export class SessionHistoryViewPane extends ViewPane {
 			this._applyFilters();
 		}));
 
-		// Row 3: "New session" toggle button
-		const newBtn = DOM.append(filterBar, $<HTMLButtonElement>('button.session-history-new-btn'));
+		// Row 3: "New session" toggle button + 右侧「更多」（＝「清空所有会话…」的入口，稿 A）
+		const newRow = DOM.append(filterBar, $('div.session-history-new-row'));
+		const newBtn = DOM.append(newRow, $<HTMLButtonElement>('button.session-history-new-btn'));
 		newBtn.title = localize('newSession', "New session");
 		newBtn.textContent = `+ ${localize('newSession', "New session")}`;
-		this.newSessionPanel = DOM.append(filterBar, $('.session-history-new-panel'));
-		this.newSessionPanel.style.display = 'none';
 		this._register(DOM.addDisposableListener(newBtn, DOM.EventType.CLICK, () => {
 			void this._toggleNewSessionPanel();
 		}));
+		const moreBtn = DOM.append(newRow, $<HTMLButtonElement>('button.session-history-more-btn'));
+		moreBtn.title = localize('sessionHistory.moreActions', "More actions...");
+		moreBtn.textContent = '···';
+		moreBtn.setAttribute('aria-label', localize('sessionHistory.moreActions', "More actions..."));
+		this._register(DOM.addDisposableListener(moreBtn, DOM.EventType.CLICK, (e) => {
+			this._showMoreMenu(e as MouseEvent);
+		}));
+
+		this.newSessionPanel = DOM.append(filterBar, $('.session-history-new-panel'));
+		this.newSessionPanel.style.display = 'none';
+		// 「清空所有会话」的内联危险面板（稿 A / 稿 C 共用同一块）
+		this.clearPanel = DOM.append(filterBar, $('div.session-history-clear-panel'));
+		this.clearPanel.style.display = 'none';
 	}
 
 	private _agentOptionIds: string[] = [''];
@@ -571,6 +648,62 @@ export class SessionHistoryViewPane extends ViewPane {
 		const selectedIndex = prevIndex >= 0 ? prevIndex : 0;
 
 		this.agentSelect.setOptions(options, selectedIndex);
+	}
+
+	/**
+	 * dsh 会话摘要 → 侧栏条目。
+	 *
+	 * 分组归属：**只按 cwd 与工作区主根相等**判断（大小写/分隔符归一）。
+	 * 拿不到就 `undefined`（落「未分组」）—— dsh 的 cwd 完全可能不在当前 IDE 工作区里，
+	 * 那是**真事实**，不能硬塞进某个组 ✗。
+	 */
+	private _dshSessionData(s: IDshSessionSummary): SessionData {
+		const norm = (p: string) => p.replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
+		const ws = this._workspaces.find(w => !!w.path && norm(w.path) === norm(s.cwd));
+		return {
+			info: {
+				// 伪 agentId：dsh 会话不属于任何 IDE agent（`agentName` 用它的 preset 显示）
+				agentId: 'dsh',
+				agentName: s.agentPreset || 'dsh',
+				sessionId: s.id,
+				// 没标题就显示 id（**不编**"新对话"——那会让用户以为会话有名字）
+				sessionName: s.title || s.id,
+				messageCount: s.turns ?? 0,
+				updatedAt: s.updatedAt,
+				...(ws ? { workspaceId: ws.id } : {}),
+				dshSession: true,
+			},
+			messages: [],
+			// 消息历史在 dsh 侧（zstd / 投影），**不走** IDE 的 `getMessages(agentId, sessionId)` —— 那条会空手而归
+			_messagesLoaded: true,
+			chatOpen: false,
+			pinned: false,
+		} as SessionData;
+	}
+
+	/**
+	 * 轮询 dsh 会话（5s）：只有"id 集合真的变了"才静默重载。
+	 *
+	 * 为什么用轮询而不是 fs.watch：projcache 是 dsh 自己按事件落盘的，一个会话在对话期间会**反复写**
+	 * （每轮都变 mtime）⇒ watch 会把"正在说话"变成"列表每 5s 重建一次"（抖动 ✗）；
+	 * 而侧栏关心的是"有没有新会话 / 有没有会话消失"，比 id 集合最省。
+	 */
+	private async _pollDshSessions(): Promise<void> {
+		if (!this.dshHarness || !this.isVisible()) { return; }
+		try {
+			const list = await this.dshHarness.listDshSessions();
+			const next = new Set(list.map(s => s.id));
+			let changed = next.size !== this._dshSessionIds.size;
+			if (!changed) {
+				for (const id of next) {
+					if (!this._dshSessionIds.has(id)) { changed = true; break; }
+				}
+			}
+			if (changed) {
+				this.logService.info(`[SessionHistoryView] dsh session set changed (${this._dshSessionIds.size} → ${next.size}) ⇒ reload`);
+				this._scheduleSilentReload();
+			}
+		} catch { /* 读不到就下一轮再来（不影响 IDE 会话） */ }
 	}
 
 	private async _loadSessions(options: { silent?: boolean } = {}): Promise<void> {
@@ -652,6 +785,28 @@ export class SessionHistoryViewPane extends ViewPane {
 					}
 				} catch (err) {
 					this.logService.warn(`[SessionHistoryView] Failed to list sessions for agent ${agentId}:`, err);
+				}
+			}
+
+			// ── ★ 2026-10-19：把 **dsh 侧会话**并进来 ────────────────────────────────
+			// 用户报「新增的聊天框会话，在左侧会话历史中，没有实时同步更新」。真因是**两套数据源**：
+			// 上面这段读的是 IDE 自己的 `chat-history/<agent>/sessions.json`（只有 IDE 自己
+			// `createAgentSession()` 时才写），而 dsh 引擎下聊天在 dsh 侧开会话 ⇒ 侧栏永远是空的
+			// （截图 "No sessions found"）。这里把 dsh 侧的 projcache 摘要追加进来。
+			// ⚠ 不覆盖、不去重：两套 id 命名空间不同（`sess_xxx` vs `vssaros-chat-…`），去重会误杀。
+			if (this.dshHarness) {
+				try {
+					const dshList = await this.dshHarness.listDshSessions();
+					this._dshSessionIds = new Set(dshList.map(s => s.id));
+					for (const s of dshList) {
+						sessionDataList.push(this._dshSessionData(s));
+						totalCount++;
+					}
+					this.logService.info(`[SessionHistoryView] _loadSessions: +${dshList.length} dsh session(s)`);
+				} catch (err) {
+					// 侧栏不能因为"补充数据源"整块失败（dsh 没起 / 目录没权限）
+					this.logService.warn('[SessionHistoryView] listDshSessions failed', err);
+					this._dshSessionIds = new Set();
 				}
 			}
 
@@ -1116,6 +1271,22 @@ export class SessionHistoryViewPane extends ViewPane {
 				this.logService.info(`[SessionHistoryView] session ${info.sessionId} renamed to "${newName}" (duplicate display name)`);
 			}
 
+			// ★ 2026-10-19：**dsh 会话**改名必须走 dsh（它有真源），不能写 IDE 的 `chat-history`
+			//   （dsh 会话不在那份索引里 ⇒ 写了等于改名了个寂寞 ✗）。
+			//   路径：`renameDshSession` → 主进程 → preload → 页面 `ctx.sessions.rename`。
+			//   ⚠ 它要求该会话**正在某个聊天页签里显示**（改名只能由页面做）；不在 ⇒ 如实提示，
+			//   并且**不改本地显示**（乐观更新 = 假成功 ✗，等页面回执再刷新）。
+			if (info.dshSession) {
+				const ok = await this.dshHarness.renameDshSession(info.sessionId, newName);
+				if (!ok) {
+					this.notificationService.info('这条 dsh 会话当前没有在聊天框里打开，改名只能在聊天框里做 —— 请先打开它再改名。');
+					restoreTitle(original);
+					return;
+				}
+				this.logService.info(`[SessionHistoryView] dsh session ${info.sessionId} rename requested → "${newName}"（等页面回执）`);
+				return;
+			}
+
 			try {
 				// ★ 2026-09-20：这是**用户手动**改名 ⇒ 传 `userInitiated`，
 				// 服务端会给会话打 `userRenamed` 标记，避免之后被「首条消息自动命名」覆盖。
@@ -1347,6 +1518,8 @@ export class SessionHistoryViewPane extends ViewPane {
 			void this._promptFeishuBinding(sessionData);
 		}));
 
+		// ★ 2026-10-19：**重命名**按钮 dsh 会话也给 —— 走 `renameDshSession`（页面 `ctx.sessions.rename`）
+		//   ⇒ 真的会落在 dsh 那边（`_startRenameSession` 里分流，不在就如实提示）。
 		const editBtn = DOM.append(actions, $<HTMLButtonElement>('.session-history-rename-btn'));
 		editBtn.title = 'Rename session';
 		editBtn.appendChild(_icon(ICON_PENCIL));
@@ -1355,6 +1528,10 @@ export class SessionHistoryViewPane extends ViewPane {
 			this._startRenameSession(sessionData, title, item);
 		}));
 
+		// ★ 删除按钮**只给 IDE 会话**：会话控制器**没有删除 API**（实测：`dsh-api-session-controller/client.js`
+		//   全文无 delete/remove/archive/purge）⇒ 给了就是"点了没反应"的假入口 ✗。
+		//   （「固定」按钮两来源都给：它是本地持久化 ✓。）
+		if (!info.dshSession) {
 		// Delete button — hover（或选中态）才可见。
 		// 多选时（该项属于选中集合且集合 > 1）一次删除整个选中集合。
 		const deleteBtn = DOM.append(actions, $<HTMLButtonElement>('.session-history-delete-btn'));
@@ -1366,6 +1543,7 @@ export class SessionHistoryViewPane extends ViewPane {
 			e.stopPropagation();
 			void this._deleteSessionsForItem(sessionData);
 		}));
+		}
 
 		// 运行指示灯：绿闪（执行中）/ 黄闪（等待用户）/ 白常亮（完成未读）/ 红（报错）
 		this._applyDotState(item, this._sessionKey(info.agentId, info.sessionId), sessionData);
@@ -1988,6 +2166,30 @@ export class SessionHistoryViewPane extends ViewPane {
 
 		const agentId = state.agentId;
 		const name = state.name.trim();
+
+		// ★ A1 第 4 步（2026-10-19）：**dsh 引擎下新建必须建 dsh 会话**（与聊天框同源）。
+		//   否则侧栏建的是 IDE 会话（`sess_xxx`），而聊天框用的是 dsh 会话 ⇒ 仍然两套 ✗ ——
+		//   这正是"统一数据源"要消掉的最后一处不一致。
+		//   dsh 会话由**宿主**起（页面开不了编辑器）：这里开一个聊天页签并带 preset，
+		//   宿主派生会话 id → `session.start` → rebind；侧栏 5s 轮询会看到它。
+		//   ⚠ `presetId` 必须走与 dsh 插件**同一套**派生规则（`agentPresetIdOf`），
+		//     否则会落到不存在的 preset ⇒ dsh 静默按默认处理 ⇒ 用户选的 agent 白选 ✗。
+		if (this.configurationService.getValue<string>('sessions.dshHarness.chatEngine') === 'dsh') {
+			const presetId = agentPresetIdOf(agentId);
+			try {
+				await this.commandService.executeCommand('agentStudio.newChatInEditor', { presetId });
+				this.logService.info(`[SessionHistoryView] 新建（dsh 引擎）：已开聊天页签，preset=${presetId}（会话由宿主在 dsh 侧起）`);
+				this._closeNewSessionPanel();
+				void this._loadSessions();
+				return;
+			} catch (err) {
+				state.busy = false;
+				this.logService.warn(`[SessionHistoryView] 新建 dsh 会话失败（不回落 IDE 会话 ⇒ 那会又变成两套）:`, err);
+				this.notificationService.error(`新建 dsh 会话失败：${String((err as Error)?.message ?? err)}`);
+				return;
+			}
+		}
+
 		try {
 			const created = await this.chatService.createAgentSession(agentId, name || undefined);
 			this.logService.info(`[SessionHistoryView] created session ${created.id} for agent ${agentId}`);
@@ -2274,6 +2476,9 @@ export class SessionHistoryViewPane extends ViewPane {
 		//   ② `IAction` 在本仓**不继承** `IDisposable` ✗ ⇒ 必须 `isDisposable()` 守卫 ✓
 		//      （否则 `store.add(a)` 报 TS2741 ✓）。
 		const store = new DisposableStore();
+		// ★ 2026-10-19：**dsh 会话**不提供「重命名 / 删除」—— 与上面不渲染那两个按钮同一条口径
+		//   （dsh 侧没有删除 API；改名也没有可接的通道）⇒ 菜单里给出同样是假入口 ✗。
+		const isDsh = sessionData.info.dshSession === true;
 		const actions: IAction[] = [
 			new Action('sessionHistory.open', localize('openSession', "Open"), undefined, true, () => {
 				void this._openSessionChat(sessionData);
@@ -2282,13 +2487,17 @@ export class SessionHistoryViewPane extends ViewPane {
 			new Action('sessionHistory.pin', pinned ? localize('unpinSession', "Unpin") : localize('pinSession', "Pin"), undefined, true, () => {
 				this._togglePin(sessionData);
 			}),
+			// 重命名：两个来源都有（dsh 走 `renameDshSession` ⇒ 真的落在 dsh 侧 ✓）
 			new Action('sessionHistory.rename', localize('renameSession', "Rename"), undefined, true, () => {
 				this._triggerRename(sessionData);
 			}),
-			new Separator(),
-			new Action('sessionHistory.delete', localize('deleteSession', "Delete"), undefined, true, () => {
-				void this._deleteSession(sessionData);
-			}),
+			// 删除：**只有 IDE 会话**（dsh 侧没有删除 API ⇒ 给了就是假入口 ✗）
+			...(isDsh ? [] : [
+				new Separator(),
+				new Action('sessionHistory.delete', localize('deleteSession', "Delete"), undefined, true, () => {
+					void this._deleteSession(sessionData);
+				}),
+			]),
 		];
 		actions.forEach(a => { if (isDisposable(a)) { store.add(a); } });
 
@@ -2298,6 +2507,262 @@ export class SessionHistoryViewPane extends ViewPane {
 			// ⚠ `showContextMenu()` 返回 **void**（不是 Promise）⇒ 不能 `.finally()` ✗；
 			//    正确钩子是 delegate 的 `onHide` ✓（`platform/contextview/browser/contextView.ts:43`）
 			onHide: () => store.dispose(),
+		});
+	}
+
+	/**
+	 * 稿 A（`+ New session` 行右端 `···`）/ 稿 C（列表空白右键）共用的那枚菜单。
+	 *
+	 * 只放「清空所有会话…」一项：它是唯一一个**没有别的地方能发起**的动作 ——
+	 * 新建会话有那颗大按钮、固定/重命名/删除都在条目右键里 ⇒ 重复入口只会制造第二处漂移点。
+	 */
+	private _showMoreMenu(event: MouseEvent): void {
+		const store = new DisposableStore();
+		const clearAll = new Action('sessionHistory.clearAll', localize('clearAllSessions', "Clear all sessions…"), undefined, true, () => {
+			this._toggleClearPanel(true);
+		});
+		// 同 `_showContextMenu`：Action 是 Disposable 但 `IAction` 不继承它 ⇒ 必须 `isDisposable` 守卫。
+		if (isDisposable(clearAll)) { store.add(clearAll); }
+
+		this.contextMenuService.showContextMenu({
+			getAnchor: () => ({ x: event.clientX, y: event.clientY }),
+			getActions: () => [clearAll],
+			onHide: () => store.dispose(),
+		});
+	}
+
+	// ─────────────────────────────────────────────────────────────────────────
+	// 「清空所有会话」（2026-10-19，mockup 稿 A + C；`doc/session-sideview-clear-all-mockup.html`）
+	// ─────────────────────────────────────────────────────────────────────────
+
+	/** 开 / 关内联危险面板；与「新建会话」面板互斥（同层两块面板同时开会互相挤 ✗）。 */
+	private _toggleClearPanel(open?: boolean): void {
+		if (!this.clearPanel) { return; }
+		const next = open ?? this.clearPanel.style.display === 'none';
+		this.clearPanel.style.display = next ? '' : 'none';
+		if (next) {
+			if (this.newSessionPanel) { this.newSessionPanel.style.display = 'none'; }
+			this._renderClearPanel();
+		} else {
+			this.clearPanelDisposables?.clear();
+		}
+	}
+
+	/**
+	 * 这次「清空」的**范围**与三类跳过项。
+	 *
+	 * ⚠ 范围只认 **agent 筛选**，**不认搜索词**：搜索是"找东西"，不是"定义范围" ——
+	 *   把"清空所有会话"变成"清空搜索结果"会让名字与结果对不上 ✗（面板里也如实写明 ✔）。
+	 * ⚠ 三类跳过：运行/等待中（`_isActiveSession`）、已固定、聊天区**正打开** ——
+	 *   打开的会话一律跳过：既有的 `deleteAgentSession` 只删数据、不关编辑器，
+	 *   删掉会让聊天区指着一条已不存在的会话 ✗ ⇒ 想删它，请先关掉那个页签（文案里写明 ✓）。
+	 */
+	private _collectClearTargets(): {
+		targets: SessionData[];
+		skippedRunning: number;
+		skippedPinned: number;
+		skippedOpen: number;
+		/** 运行中 / 等待中的**总数**（与开关无关 ⇒ 面板上那个数字不随勾选跳变 ✓）。 */
+		runningCount: number;
+		pinnedCount: number;
+	} {
+		// 判据在 `common/clearAllPlan.ts`（纯函数 ⇒ 有行为网守卫 ✓）；这里只补"是否运行中"这一项视图事实。
+		const plan = planClearAll({
+			sessions: this.allSessions.map(s => ({
+				agentId: s.info.agentId,
+				sessionId: s.info.sessionId,
+				pinned: s.pinned,
+				chatOpen: s.chatOpen,
+			})),
+			agentFilter: this.currentAgentFilter,
+			skipRunning: this._clearOptions.skipRunning,
+			skipPinned: this._clearOptions.skipPinned,
+			isActive: (s) => {
+				const data = this.allSessions.find(d => d.info.agentId === s.agentId && d.info.sessionId === s.sessionId);
+				return !!data && this._isActiveSession(data);
+			},
+		});
+		// 回映射到 `SessionData`（`deleteAgentSession` 要的是 agentId + sessionId）
+		const targets = plan.targets
+			.map(s => this.allSessions.find(d => d.info.agentId === s.agentId && d.info.sessionId === s.sessionId))
+			.filter((d): d is SessionData => !!d);
+		return {
+			targets,
+			skippedRunning: plan.skippedRunning,
+			skippedPinned: plan.skippedPinned,
+			skippedOpen: plan.skippedOpen,
+			runningCount: plan.runningCount,
+			pinnedCount: plan.pinnedCount,
+		};
+	}
+
+	/** 面板标题里写的范围说明（当前 agent 筛选；不带搜索词 —— 见 `_collectClearTargets`）。 */
+	private _clearScopeLabel(): string {
+		return this.currentAgentFilter || localize('clearAll.scopeAll', "All Agents");
+	}
+
+	/** 渲染面板：`confirm` 态 → `running` 态 → `done` 态（三个态各自 `clearNode` 重建，无隐藏分支）。 */
+	private _renderClearPanel(stage: 'confirm' | 'running' | 'done' = 'confirm', result?: {
+		done: number; skippedRunning: number; skippedPinned: number; skippedOpen: number; failed: { name: string; reason: string }[];
+	}): void {
+		if (!this.clearPanel) { return; }
+		// ⚠ 收窄到局部 const：下面闭包（`skipRow` / `rerenderKeepingInput`）里再用 `this.clearPanel`
+		//   TS 就不再收窄（类属性在闭包中可变）⇒ `DOM.append` 报 TS2769 ✗。
+		const panel: HTMLElement = this.clearPanel;
+		this.clearPanelDisposables?.clear();
+		this.clearPanelDisposables = new DisposableStore();
+		const store = this.clearPanelDisposables;
+		DOM.clearNode(panel);
+
+		const { targets, skippedOpen, runningCount, pinnedCount } = this._collectClearTargets();
+		const total = targets.length;
+
+		const head = DOM.append(panel, $('div.session-history-clear-head'));
+		head.textContent = localize('clearAll.title', "Clear all sessions");
+
+		// ★ 文案随状态变：结果态再说"将删除 N 个"与屏幕上的事实不符 ✗（MEMORY：可见文案必须描述真发生的事）
+		const desc = DOM.append(panel, $('div.session-history-clear-desc'));
+		if (stage === 'done') {
+			desc.textContent = localize('clearAll.descDone', "Scope: {0}. {1} sessions matched.", this._clearScopeLabel(), result ? result.done : 0);
+		} else {
+			desc.textContent = localize('clearAll.desc', "Permanently delete {0} sessions and their message history. This cannot be undone. Scope: {1}.", total, this._clearScopeLabel());
+		}
+
+		if (stage === 'confirm') {
+			// ── 跳过项（各自带真实数量，不许写"部分"这种含糊词）────────────────────
+			const skipRow = (id: string, checked: boolean, text: string, onToggle: (v: boolean) => void) => {
+				const label = DOM.append(panel, $<HTMLLabelElement>('label.session-history-clear-opt'));
+				const box = DOM.append(label, $<HTMLInputElement>('input'));
+				box.type = 'checkbox';
+				box.id = id;
+				box.checked = checked;
+				const span = DOM.append(label, $('span'));
+				span.textContent = text;
+				store.add(DOM.addDisposableListener(box, DOM.EventType.CHANGE, () => onToggle(box.checked)));
+			};
+			// ⚠ 勾选项切换会重建面板 ⇒ **必须把已输入的确认词带回来**（否则用户勾一下开关就得重打一遍 ✗）
+			const rerenderKeepingInput = () => {
+				const typed = panel.querySelector<HTMLInputElement>('input.session-history-clear-input')?.value ?? '';
+				this._renderClearPanel('confirm');
+				const again = panel.querySelector<HTMLInputElement>('input.session-history-clear-input');
+				if (again) { again.value = typed; again.dispatchEvent(new Event('input')); }
+			};
+			skipRow('sh-clear-skip-running', this._clearOptions.skipRunning,
+				localize('clearAll.skipRunning', "Skip running / waiting sessions ({0})", runningCount),
+				(v) => { this._clearOptions.skipRunning = v; rerenderKeepingInput(); });
+			skipRow('sh-clear-skip-pinned', this._clearOptions.skipPinned,
+				localize('clearAll.skipPinned', "Keep pinned sessions ({0})", pinnedCount),
+				(v) => { this._clearOptions.skipPinned = v; rerenderKeepingInput(); });
+
+			if (skippedOpen > 0) {
+				// 这类**没有开关**（没有"安全删掉打开中会话"的路径）⇒ 只做说明，不许给个点了会出事的勾选项 ✗
+				const note = DOM.append(panel, $('div.session-history-clear-note'));
+				note.textContent = localize('clearAll.skipOpen', "Sessions opened in the chat area are kept ({0}) — close those tabs first if you want them gone.", skippedOpen);
+			}
+
+			// ── 强确认：必须手打「清空」两个字 ─────────────────────────────────
+			const hint = DOM.append(panel, $('div.session-history-clear-hint'));
+			hint.textContent = localize('clearAll.typeToConfirm', "Type {0} to confirm:", localize('clearAll.confirmWord', "清空"));
+			const input = DOM.append(panel, $<HTMLInputElement>('input.session-history-clear-input'));
+			input.type = 'text';
+			input.placeholder = localize('clearAll.confirmWord', "清空");
+			input.setAttribute('aria-label', localize('clearAll.typeToConfirm', "Type {0} to confirm:", localize('clearAll.confirmWord', "清空")));
+
+			const actions = DOM.append(panel, $('div.session-history-clear-actions'));
+			const cancelBtn = DOM.append(actions, $<HTMLButtonElement>('button.session-history-clear-cancel'));
+			cancelBtn.textContent = localize('clearAll.cancel', "Cancel");
+			const goBtn = DOM.append(actions, $<HTMLButtonElement>('button.session-history-clear-go'));
+			goBtn.textContent = localize('clearAll.go', "Clear {0} sessions", total);
+			goBtn.disabled = true;
+
+			const syncGo = () => { goBtn.disabled = input.value.trim() !== localize('clearAll.confirmWord', "清空") || total === 0; };
+			store.add(DOM.addDisposableListener(input, DOM.EventType.INPUT, syncGo));
+			store.add(DOM.addDisposableListener(cancelBtn, DOM.EventType.CLICK, () => this._toggleClearPanel(false)));
+			store.add(DOM.addDisposableListener(goBtn, DOM.EventType.CLICK, () => { void this._runClearAll(); }));
+			syncGo();
+			input.focus();
+			return;
+		}
+
+		if (stage === 'running') {
+			const bar = DOM.append(panel, $('div.session-history-clear-bar'));
+			const fill = DOM.append(bar, $('div.session-history-clear-bar-fill'));
+			fill.style.width = '0%';
+			const text = DOM.append(panel, $('div.session-history-clear-progress'));
+			text.textContent = localize('clearAll.progress', "Deleting… {0} / {1}", 0, total);
+			return;
+		}
+
+		// ── 结果态：成功 / 跳过（三类分开）/ 失败（可展开原因）─────────────────
+		const r = result!;
+		const ok = Math.max(0, r.done - r.failed.length);
+		const box = DOM.append(panel, $('div.session-history-clear-result'));
+		DOM.append(box, $('div.session-history-clear-ok')).textContent = localize('clearAll.resultOk', "✓ Cleared {0} sessions", ok);
+		if (r.skippedRunning + r.skippedPinned + r.skippedOpen > 0) {
+			const parts: string[] = [];
+			if (r.skippedRunning) { parts.push(localize('clearAll.resSkippedRunning', "running {0}", r.skippedRunning)); }
+			if (r.skippedPinned) { parts.push(localize('clearAll.resSkippedPinned', "pinned {0}", r.skippedPinned)); }
+			if (r.skippedOpen) { parts.push(localize('clearAll.resSkippedOpen', "opened {0}", r.skippedOpen)); }
+			DOM.append(box, $('div.session-history-clear-skip')).textContent = localize('clearAll.resultSkipped', "↷ Skipped: {0}", parts.join(' · '));
+		}
+		if (r.failed.length) {
+			DOM.append(box, $('div.session-history-clear-bad')).textContent = localize('clearAll.resultFailed', "✗ Failed {0}", r.failed.length);
+			const list = DOM.append(box, $('ul.session-history-clear-fail-list'));
+			for (const f of r.failed.slice(0, 8)) {
+				DOM.append(list, $('li')).textContent = `${f.name}: ${f.reason}`;
+			}
+			if (r.failed.length > 8) {
+				DOM.append(list, $('li')).textContent = localize('clearAll.moreFailures', "…and {0} more", r.failed.length - 8);
+			}
+		}
+		const actions2 = DOM.append(panel, $('div.session-history-clear-actions'));
+		const closeBtn = DOM.append(actions2, $<HTMLButtonElement>('button.session-history-clear-cancel'));
+		closeBtn.textContent = localize('clearAll.close', "Close");
+		store.add(DOM.addDisposableListener(closeBtn, DOM.EventType.CLICK, () => this._toggleClearPanel(false)));
+	}
+
+	/** 真正执行：逐条走既有 `deleteAgentSession`（真删、不可撤销），中途更新进度，失败不吞。 */
+	private async _runClearAll(): Promise<void> {
+		if (this._clearBusy) { return; }
+		const { targets, skippedRunning, skippedPinned, skippedOpen } = this._collectClearTargets();
+		if (targets.length === 0) { return; }
+
+		this._clearBusy = true;
+		this._renderClearPanel('running');
+
+		const failed: { name: string; reason: string }[] = [];
+		let done = 0;
+		for (let i = 0; i < targets.length; i++) {
+			const s = targets[i];
+			const key = this._sessionKey(s.info.agentId, s.info.sessionId);
+			try {
+				await this.chatService.deleteAgentSession(s.info.agentId, s.info.sessionId);
+				this.pinnedSessions.delete(key);
+				this.selectedKeys.delete(key);
+				this.sessionOrder = this.sessionOrder.filter(k => k !== key);
+				this.logService.info(`[SessionHistoryView] clear-all: deleted session ${s.info.sessionId}`);
+			} catch (err) {
+				const reason = err instanceof Error ? err.message : String(err);
+				failed.push({ name: s.info.sessionName || s.info.sessionId, reason });
+				this.logService.warn(`[SessionHistoryView] clear-all: failed to delete session ${s.info.sessionId}:`, err);
+			}
+			done = i + 1;
+			// 进度就地更新（不重建面板 ⇒ 不闪、不丢焦点）
+			const fill = this.clearPanel?.querySelector<HTMLElement>('.session-history-clear-bar-fill');
+			const text = this.clearPanel?.querySelector<HTMLElement>('.session-history-clear-progress');
+			if (fill) { fill.style.width = Math.round(done / targets.length * 100) + '%'; }
+			if (text) { text.textContent = localize('clearAll.progress', "Deleting… {0} / {1}", done, targets.length); }
+		}
+
+		this._clearBusy = false;
+		this._selectionAnchorKey = undefined;
+		this._savePinned();
+		this._saveOrder();
+		await this._loadSessions();
+		this._renderClearPanel('done', {
+			done: targets.length,
+			skippedRunning, skippedPinned, skippedOpen,
+			failed,
 		});
 	}
 
@@ -2406,6 +2871,19 @@ export class SessionHistoryViewPane extends ViewPane {
 
 		// 打开即视为「已查看」⇒ 完成态白点熄灭（用户需求）
 		this._markRead(this._sessionKey(agentId, sessionId));
+
+		// ★ 2026-10-19：**dsh 会话**不能走 IDE 的 `NativeChatEditorInput`（那条读的是
+		//   `chat-history/<agent>/<sessionId>.json`，dsh 会话根本没有这个文件 ⇒ 打开即空 ✗）。
+		//   正确路径 = 让聊天宿主 rebind（与页面里点历史会话同一条路）。
+		if (sessionData.info.dshSession) {
+			const ok = await this.dshHarness?.openDshSessionChat(sessionId) ?? false;
+			if (!ok) {
+				this.notificationService.info(
+					'这是 dsh 会话：请先在聊天框区域打开一个聊天页签，再点它切换（当前窗口没有可用的聊天视图）。',
+				);
+			}
+			return;
+		}
 
 		// Already open: reveal the tab and focus its input box.
 		const openEditor = this._findOpenEditorForSession(agentId, sessionId);

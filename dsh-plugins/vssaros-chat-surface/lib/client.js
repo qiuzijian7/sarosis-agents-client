@@ -13,6 +13,16 @@ window.__ModuleLoader__.load({
 		var exports = module.exports;
 		Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
 		const name = "vssaros-chat-surface-client";
+		// ⚠⚠ **入口指纹**（2026-10-21 真机事故后立的规矩，改 chunk 时**必须**动这里）：
+		//   客户端 chunk 的 `?rev=` 只跟**入口本文件**的 mtime/ctime/size 走
+		//   （官方 `artifactRevision()` = framedHash("plugin-artifact", [mtime, ctime, size, …])）
+		//   ⇒ **只改 `client.*.js` 而不改入口 ⇒ rev 不变 ⇒ 浏览器继续吃缓存里的旧 chunk** ✗✗
+		//   （今天就因此丢了侧栏「主页」那一行：18:15 改了 client.workbenchNav.js，没动入口 ⇒
+		//    rev 没变 ⇒ 用户窗口里侧栏仍是旧版；22:17 补改入口后才恢复。）
+		// ⇒ 规矩：**改任何 `client.*.js` 之后，把下面这个 stamp 改掉**（守卫会查 ⇒ 漏了必红）✓
+		const CLIENT_BUILD_STAMP = "2026-10-22/编辑区workbench视图/01";
+		// 挂到 window 上 ⇒ 真机取证能一眼看出"这个窗口跑的是哪一版"（`window.__vssarosChatSurfaceBuild`）✓
+		try { window.__vssarosChatSurfaceBuild = CLIENT_BUILD_STAMP; } catch { /* 极端环境 */ }
 		// 注意：**不**把 `workspaces` 加进 inject —— 本仓库实测结论是 Cordis 4 的 inject 数组是
 		// 硬依赖（object 形式没有 optional 语义），未就绪会让整个插件不 apply（比缺这个功能更糟）。
 		// 工作区服务改在 alignWorkspace 里用 `ctx.get("workspaces")` **运行时可选**取（官方
@@ -30,7 +40,16 @@ window.__ModuleLoader__.load({
 		// 不影响其它部件与聊天本身；失败原因记在 window.__vssarosChatSurface.partErrors。
 		// 任务队列（排队消息）：**用 dsh 官方 QueueDock**（`conversation.input.dock` / id `queue` / order 20）。
 		// 0.2.44 起不再有我们自己的 `client.queue.js` 提示条——它会与官方那枚重复表达"排队中"（2026-10-12 决策）。
-		const PART_CHUNKS = ["./client.hero.js", "./client.skin.js", "./client.usage.js", "./client.tools.js", "./client.approval.js", "./client.openInApp.js", "./client.hideBridgePing.js", "./client.preset.js", "./client.settings.js", "./client.sessionLabel.js", "./client.workspace.js", "./client.sessions.js", "./client.agents.js", "./client.persona.js", "./client.fileCards.js", "./client.cardActions.js", "./client.todos.js", "./client.subagents.js", "./client.delegate.js", "./client.welcome.js", "./client.capsule.js", "./client.workbenchNav.js", "./client.workspaces.js",
+		// ★ 2026-10-21（第二轮）：`client.preset.js` 曾**整块删除**（模式入口交回官方 `AgentPresetSeat`）——
+		//   原因：官方那枚切不动（我们那版依赖宿主页面桥 `switchPreset`，无桥环境点了没反应 ✗）。
+		// ★ 2026-10-21（第四轮，用户指令「把 agent 定位成 Bot，不要让 agent 作为 preset 呈现」）：**又接回来**，
+		//   但换了一副实现 —— 官方 seat 的菜单 = roster 全量（只滤 `broken`）⇒ 22 个内置 agent + 用户 agent
+		//   与「标准模式/PTC 模式」并排 ⇒ **官方无法满足"agent 不进模式菜单"** ⇒ 这一格由我们接管：
+		//     · 只列**模式**（dsh 自带 4 个 + 我们的 3 个档）⇒ agent 全部剔除 ✓
+		//     · 切换走**官方 remote API**（`ctx.remote.agentPresets.select`）⇒ 没有宿主桥也能切 ✓
+		//   ⚠ 第五轮：它**不在** PART_CHUNKS 里（那儿有"无桥就整批不装"的早退 ⇒ desktop 里不生效 ✗）
+		//   ⇒ 走上面那条**独立装载路径**（ALWAYS 部件）✓ ⇒ 这里不再列它。
+		const PART_CHUNKS = ["./client.hero.js", "./client.skin.js", "./client.usage.js", "./client.tools.js", "./client.approval.js", "./client.openInApp.js", "./client.hideBridgePing.js", "./client.settings.js", "./client.sessionLabel.js", "./client.workspace.js", "./client.sessions.js", "./client.agents.js", "./client.persona.js", "./client.fileCards.js", "./client.cardActions.js", "./client.todos.js", "./client.subagents.js", "./client.delegate.js", "./client.welcome.js", "./client.capsule.js", "./client.workbenchNav.js", "./client.workspaces.js", "./client.market.js", "./client.account.js",
 		// 侧栏页脚（品牌 + 工作区/会话规模，2026-10-18 差异清单第 ③ 项）：
 		// ⚠ 本块注释里**禁止出现 ASCII 双引号**（连正则字面量也不行）：`PART_CHUNKS` 的提取正则
 		//   是「引号 + 至少一个非引号字符 + 引号」，chunk 守卫与 dshPluginPackages 测试都用它 ⇒
@@ -38,7 +57,13 @@ window.__ModuleLoader__.load({
 		//   （2026-10-19：我连续两版栽在这，第二次是注释里又写了正则原文 ✗✗）。引用术语一律用中文引号 ✓。
 		// 放进 PART_CHUNKS 是为了满足 chunk 守卫的“必须接线”检查；chunk 自身在 install()
 		// 里按 `bridge.chatOnly === false`（带官方 chrome）自门控 ⇒ chat-only 视图里空转 ✓。
-		"./client.footer.js"];
+		"./client.footer.js",
+		// 侧栏品牌区换成 VsSaros 的 logo + 标题（2026-10-21 用户要求）。
+		// 槽：sidebar.brand.mark / sidebar.brand.name（都是 single，priority -10 顶掉官方那份）。
+		"./client.brand.js",
+		// 工作流执行进度条（dock，2026-10-20）：消费 Host 的 `/x/workflow/api/run/status`。
+		// 没有 running 时组件自己 return null ⇒ dock 不占位 ✓。
+		"./client.workflowRun.js"];
 
 		/** 菜单最小宽度（px）——见 fitMenuSize 里 minWidth 的说明。 */
 		const MENU_MIN_WIDTH = 220;
@@ -121,6 +146,53 @@ window.__ModuleLoader__.load({
 				/** 诊断/单测：当前登记为"打开着"的菜单数。 */
 				openedCount() { return closers.size; },
 			};
+		}
+		/** 宿主或工作台迟迟不到场时，退回 SSR 完整页的等待上限。 */
+		const WORKBENCH_SURFACE_FALLBACK_MS = 10000;
+		/**
+		 * `surface=workbench` 的承载逻辑（见 apply 里的调用点注释）。状态写在 `state.workbench`，供宿主侧
+		 * 页面自证与探针读取：`{ route, id, opened, fallback, lastError }`。
+		 */
+		function installWorkbenchSurface(ctx, bridge, state) {
+			const route = String((bridge && bridge.workbenchRoute) || "");
+			const m = /^\/x\/([a-z][a-z0-9-]*)\/$/.exec(route);
+			const wb = state.workbench = { route: route || null, id: m ? "vssaros/" + m[1] : null, opened: false, fallback: null, lastError: null };
+			if (!m) {
+				wb.fallback = "bad-route";
+				return;
+			}
+			let svc = null;
+			let timer = 0;
+			const fallBack = (why) => {
+				if (wb.opened || wb.fallback) { return; }
+				wb.fallback = why;
+				try { window.location.replace(route + "?surface=editor"); } catch (e) { wb.lastError = String((e && e.message) || e); }
+			};
+			const tryOpen = () => {
+				if (wb.opened || wb.fallback || !svc || typeof svc.has !== "function" || !svc.has(wb.id)) { return; }
+				try {
+					if (svc.open(wb.id)) {
+						wb.opened = true;
+						clearTimeout(timer);
+					}
+				} catch (e) {
+					wb.lastError = String((e && e.message) || e);
+				}
+			};
+			timer = setTimeout(() => fallBack("timeout"), WORKBENCH_SURFACE_FALLBACK_MS);
+			try {
+				ctx.inject(["desktopWorkbenches"], (c) => {
+					svc = c.desktopWorkbenches;
+					tryOpen();
+					const off = svc && typeof svc.subscribe === "function" ? svc.subscribe(tryOpen) : null;
+					if (typeof c.effect === "function") {
+						c.effect(() => () => { if (off) { off(); } });
+					}
+				});
+			} catch (e) {
+				wb.lastError = String((e && e.message) || e);
+				fallBack("inject-failed");
+			}
 		}
 		function apply(ctx) {
 			const bridge = window.vssarosDsh;
@@ -351,16 +423,36 @@ window.__ModuleLoader__.load({
 				}, 1500);
 			} catch { /* 忽略 */ }
 		}
-		if (hasOfficialChrome) {
-				void Promise.resolve()
-					.then(() => Promise.all([
-						require.async("./client.workbenchNav.js"),
-						require.async("./client.workspaces.js"),
+		// ★ 2026-10-21 真机取证（窗口模式：中间栏没有页签 + 打开的工作台没有页签）：
+		//   这里的 require 列表与**下面的 `PART_CHUNKS` 有重叠**（workbenchNav / workspaces /
+		//   workspace / footer / brand / market / account 七个都两边有）⇒ 2026-10-18 把弹窗改成
+		//   「surface=chat + 保留官方 chrome」后，**两个分支同时命中**（不再是"按 surface 互斥"）
+		//   ⇒ 同一 chunk 装载两遍 ⇒ keyed 槽重复注册报错 ⇒ **后续 main 槽的中栏面板注册全被跳过**
+		//   ⇒ 工作台页签根本注册不出来 ✗。
+		// ⇒ 改法：这个分支**只服务真正的 full 形态**（`surface === "full"`）；chat 形态（窗口模式 /
+		//   IDE 聊天框）一律由 `PART_CHUNKS` 装（那七个 chunk 全在 PART_CHUNKS 里 ⇒ 功能不减 ✓）。
+		const isFullSurface = !!(bridge && bridge.surface === "full");
+		if (isFullSurface) {
+			void Promise.resolve()
+				.then(() => Promise.all([
+					require.async("./client.workbenchNav.js"),
+					require.async("./client.workspaces.js"),
 						// hero（空白会话屏）的「工作区」下拉在**全窗**里也必须与聊天框同一套 UI
 						// （分组 + 多根 + 添加工作区）：2026-10-17 用户截图——“工作区下拉框要求和
 						// vssaros dsh 聊天框 UI 中的工作区 UI 一致”。该部件对 shell 的依赖全是
 						// state/bridge + 可选的 menus/fitMenu（内部已判空 ✓）⇒ 轻量 shell 可用。
 						require.async("./client.workspace.js"),
+						// ★ 2026-10-21：页脚（即「回到 IDE」入口）——`surface=full` 形态走不到 PART_CHUNKS
+						//   （那段只给 chat 装）⇒ 必须在这里补一次，否则 web 档窗口里没有回 IDE 的路 ✗。
+						require.async("./client.footer.js"),
+						// 同上：品牌行（logo + 标题）也要在 full 形态生效
+						require.async("./client.brand.js"),
+						// ★ 2026-10-21：设置页「工作台商城」那一行 —— 同样**只**在 full 形态装得到
+						//   （PART_CHUNKS 那段只给 chat 装 ⇒ full 窗口里它压根没被 require ⇒ 设置页没有这行 ✗）。
+						require.async("./client.market.js"),
+						// ★ 2026-10-21：侧栏底部「账号」行（IDE 账号 + dsh 账号）—— 窗口（full 形态）里才有那一行
+						//   ⇒ 与 market/footer 一样必须进这条 full 形态的 require 列表（只进 PART_CHUNKS 就不装 ✗）。
+						require.async("./client.account.js"),
 					]))
 					.then((parts) => {
 						for (const part of parts) {
@@ -374,6 +466,37 @@ window.__ModuleLoader__.load({
 					});
 			}
 
+			// ★ 2026-10-21（第五轮，用户指令「agent 定位成 Bot，不要让 agent 作为 preset 呈现」）：
+			//   **hero 的模式槽由我们接管**（官方 `AgentPresetSeat` 的菜单 = roster 全量 ⇒ 22 个内置 agent
+			//   与「标准模式/PTC 模式」并排 ⇒ 官方满足不了）⇒ 但这一格**必须连无桥环境也装**：
+			//   dsh desktop / dsh 全窗**没有** `window.vssarosDsh` 桥 ⇒ 下面的 `if (!bridge …) return;`
+			//   会把 PART_CHUNKS 整批挡掉 ⇒ 我们的接管在**用户最初报障的那个环境里根本不生效** ✗✗。
+			//   ⇒ 模式选择器走**独立的一条装载路径**（不依赖桥、不依赖会话、不依赖 surface ✓）。
+			//   ⚠ 它的数据与切换都走**官方 remote API**（`ctx.remote.agentPresets.list/select`）⇒ 无桥也能用 ✓。
+			//   ⚠ 放在 PART_CHUNKS 之外 ⇒ 不会与有桥环境重复安装（两处都装会出现两枚 chip ✗）。
+			//   ⚠ 守卫（check-chat-surface-chunks）把本清单与 PART_CHUNKS **并集**当"已接线"清单 ⇒
+			//   新增/漏接都能被抓到 ✓（清单写成常量是为了让守卫能逐字比对，不靠正则猜 ✗）。
+			// ⚠ `client.botEntry.js`（Bots 入口）**只在没有宿主桥时**注册（它自己 gate）——
+			//   有桥时那行由 `client.agents.js` 提供（同名命令会 fail loud ⇒ 绝不能同时注册 ✗）。
+			// ★ 2026-10-21：新增 `client.botEntry.js`（无桥环境的 Bot 入口）。
+			//   ⚠ **改这里（入口）会让客户端 chunk 的 rev 变化**（rev 只跟入口 client.js 的 mtime/ctime/size 走）
+			//   ⇒ 浏览器才会重新取各个 chunk —— **只改 `client.*.js` 而不改入口，浏览器会一直吃旧文件** ✗✗。
+			// ★ 2026-10-21（模式菜单）：弹层**位置**修正（无壳兜底不再返回视口坐标 ⇒ 不再飞到右下角 ✗）
+			//   + 菜单**分组**（按"差异到底在哪"分：VsSaros 模式 / dsh 原生）⇒ 改的是 `client.preset.js`
+			//   ⇒ 这里必须跟着动一下（**rev 只跟入口走** ⇒ 不动入口浏览器就一直吃旧 chunk ✗✗）。
+			const ALWAYS_CHUNKS = ["./client.preset.js", "./client.botEntry.js"];
+			Promise.all(ALWAYS_CHUNKS.map((p) => require.async(p)))
+				.then((parts) => {
+					for (const part of parts) {
+						if (part && typeof part.install === "function") {
+							part.install(ctx, { bridge, state });
+						}
+					}
+				})
+				.catch((e) => {
+					state.partErrors = Object.assign({}, state.partErrors, { "always-parts": String((e && e.message) || e) });
+				});
+
 			// 会话绑定对 chat / full 两种 surface **都生效**（2026-10-17 真机：full 弹窗停在 hero
 			// 「Choose workspace to start」——绑定被早退挡在门外 ⇒ 弹窗既不显示跟随的会话，
 			// 工作台条目的右侧栏页签也没有会话可挂载 ✗✗）。
@@ -384,6 +507,16 @@ window.__ModuleLoader__.load({
 			//   浮层就原样露出（2026-10-17 用户截图："与 mockup 不一致" —— 看到的是官方那条
 			//   英文扁平根列表，而不是我们主从两栏的面板）。⇒ 空白会话先装"不依赖会话"的部件，
 			//   其余等首次重绑（拿到真会话 id）后补装；见 BLANK_SESSION_PARTS。
+			// ★ 2026-10-22（doc/workbench-refactor-plan.md §5 步骤 4）：IDE 编辑区的 `surface=workbench` 视图 ——
+			//   页面是 dsh 客户端根路径，preload 把模块路由放在 `bridge.workbenchRoute`。这里只做一件事：
+			//   等宿主 `desktopWorkbenches` 到场且该工作台已注册 ⇒ `open('vssaros/<module>')` 整页打开；
+			//   **不装**会话绑定与任何换皮部件（这个视图不是聊天框）。
+			//   ⚠ 宿主 / 工作台 10 秒内没到场（没装、被停用、客户端报错）⇒ 退回 `<route>?surface=editor`
+			//     的 SSR 完整页 —— 宁可是旧界面，也不给用户一个空白的 dsh 外壳 ✗。
+			if (bridge && bridge.surface === "workbench") {
+				installWorkbenchSurface(ctx, bridge, state);
+				return;
+			}
 			if (!bridge || (bridge.surface !== "chat" && bridge.surface !== "full")) {
 				return;
 			}
@@ -392,7 +525,17 @@ window.__ModuleLoader__.load({
 			//   · `client.workspace.js` —— hero 上官方那条扁平根列表必须被我们的主从两栏面板顶掉
 			//   · `client.hero.js` / `client.welcome.js` —— 首屏换皮
 			// 其余部件要会话事实（roster / 人格 / 待办…），等首次重绑拿到真会话 id 再补装一次。
-			const BLANK_SESSION_PARTS = ["./client.workspace.js", "./client.hero.js", "./client.welcome.js"];
+			// ★ 2026-10-21 补 `client.footer.js`：桌面窗口的侧栏页脚**就是「回到 IDE」的入口**
+			//   （页面桥 `focusIde`）。不放进这里的后果：桌面窗口若没拿到会话 id（例如启动时没开文件夹 ⇒
+			//   `_ensurePopoutSessionId` 返回 undefined），PART_CHUNKS 一条都不装 ⇒ 那行页脚不存在
+			//   ⇒ **窗口里没有任何回 IDE 的路** ✗（正是本次要修的那件事）。
+			//   它自己按 `chatOnly === false` 门控 ⇒ IDE 聊天框里装进来也是空转 ✓。
+			// ★ 2026-10-21 再补 `client.brand.js`：品牌行（logo + 标题）在**空白会话屏也在渲染**，
+			//   不装它的话"桌面窗口没拿到会话 id"时左上角又回到官方的鱼形标 + deepseek ✗。
+			// ★ 2026-10-21 补 `client.workbenchNav.js`：页签条（常驻 overlay 槽）**不依赖会话** ——
+		//   它只读 DOM 几何 + 自己的 localStorage ⇒ 首屏还没绑到会话时也该有 ⇒
+		//   否则窗口模式首屏（没 sessionId ⇒ 只装 BLANK_SESSION_PARTS）里**整条页签条不存在** ✗。
+		const BLANK_SESSION_PARTS = ["./client.workspace.js", "./client.hero.js", "./client.welcome.js", "./client.footer.js", "./client.brand.js", "./client.workbenchNav.js"];
 			let restPartsInstalled = !!bridge.sessionId;
 
 			// ── 会话绑定（含方案 5.15 的重绑）─────────────────────────────────
@@ -403,6 +546,12 @@ window.__ModuleLoader__.load({
 			let idleTicks = 0;
 			let lastAlignAt = 0;
 			const ALIGN_RETRY_MS = 8000;
+			/**
+			 * `openWorkspace()` 的**超时**（2026-10-19）：该调用可能永不 settle，而它挂着时
+			 * `navState.connecting` 一直有值 ⇒ 连接与导航双双早退 ⇒ 界面永久停在
+			 * 「正在打开会话…（已等待 N 秒）」（用户 38 秒截图）。取值与重试节流同量级（8s）。
+			 */
+			const ALIGN_TIMEOUT_MS = 8000;
 			/**
 			 * ★★ 2026-10-17（`roster:0 / openRetries:240 / giveUps:1`、页面停在 hero 的真因）：
 			 * 官方 `uiWorkspace.openSession()` 内部是 `replaceMain()` ⇒ `layout.beginNavigation()`，
@@ -418,6 +567,13 @@ window.__ModuleLoader__.load({
 			let lastRosterRefreshAt = 0;
 			/** 会话列表拉取是否在途（防重入，见循环里的注释 ✓） */
 			let rosterRefreshPending = false;
+			/** 至少有一次列表拉取**成功返回**（登记闸门要靠它判断"Host 到底有没有这条会话"）。 */
+			let rosterListed = false;
+			/** 列表拉取失败过（失败时放开 create 兜底，见登记处注释）。 */
+			let rosterListFailed = false;
+			/** 快速入册（只读本会话投影 + 占位行，见 tick 里的注释）：在途 / 已试过。 */
+			let fastListPending = false;
+			let fastListDone = false;
 			/** 本页的会话是否已用 `sessions.create({sessionId, workspaceId})` 登记进 roster（诊断用）。 */
 			let registered = false;
 			/** 实际发出过几次 create（诊断；**不再设上限**，见下方策略说明）。 */
@@ -479,7 +635,17 @@ window.__ModuleLoader__.load({
 			 */
 			const maybeLongOk = () => noteLongCallOk();
 			const REGISTER_ERROR_BACKOFF_MS = [5000, 15000, 30000, 60000];
-			const registerBackoff = () => REGISTER_ERROR_BACKOFF_MS[Math.min(Math.max(registerErrors, 1) - 1, REGISTER_ERROR_BACKOFF_MS.length - 1)];
+			// ★★ 2026-10-19（真机自证：首启卡 46~91 秒、`registerTries:0` / `registerError:null` /
+			//   `lastOpenError: sessions.retain: unknown session …`）：
+			//   自登记是"让会话秒进 roster"的唯一快路径（一次 create 只要 ~55ms），但失败后退避会走到
+			//   **60 秒**一档；而首启本来就要 Host 24s + 连接阶梯 17.7s —— 等真正就绪时正好落在长退避里
+			//   ⇒ 看起来"一直打不开"✗。
+			//   ⇒ **首启 60 秒内把退避压平到首档（5s）**：宁可多问几次（create 幂等、55ms），也不要错过窗口。
+			const registerBackoff = () => {
+				const early = Date.now() - bindStartedAt < 60000;
+				const idx = early ? 0 : Math.min(Math.max(registerErrors, 1) - 1, REGISTER_ERROR_BACKOFF_MS.length - 1);
+				return REGISTER_ERROR_BACKOFF_MS[idx];
+			};
 			/** 本次绑定开始等待的时刻（状态条的"已等待 N 秒"从这里算；换绑重置）。 */
 			let bindStartedAt = Date.now();
 			/** roster 里有没有这条会话（`retain` 放行的充要条件之一）。 */
@@ -509,12 +675,233 @@ window.__ModuleLoader__.load({
 				} catch { /* 忽略 */ }
 				return rosterBackoffMs;
 			};
+			// ★★ 2026-10-20（用户问「载入历史会话为什么这么慢」）：**分段打点**。
+			//   主进程的 `page surface` 自证会把 `window.__vssarosChatSurface` 的字段 dump 进日志
+			//   ⇒ 这里记下的每个里程碑都会自动出现在 `state.timing` 里，不用再靠猜"6.5 秒花在哪"。
+			//   口径：全部相对**页面导航起始**（`performance.now()`）的毫秒数。
+			const BOOT_T0 = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
+			const sinceBoot = () => Math.round(((typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now()) - BOOT_T0);
+			const markTiming = (name) => {
+				try {
+					if (!state.timing) { state.timing = {}; }
+					if (state.timing[name] === undefined) { state.timing[name] = sinceBoot(); }   // 只记首次
+				} catch { /* 打点不许影响主流程 */ }
+			};
 			const mark = () => {
 				if (document.body) {
 					document.body.dataset.vssarosSessionId = currentSessionId;
 				}
+				markTiming("opened");
 			};
-			mark();
+			/**
+			 * 连接事件账本（用户消息定位条那次之后新增，2026-10-20）。
+			 *
+			 * 为什么需要：真机实测「载入历史要 2 秒」时，`ready in 5459ms` / `retry #1…#5` 全是**主进程**
+			 * 从页面 console 里抓的二手信息，而真正原因（connection generation 就绪握手）的细节在页面内部。
+			 * 这里把关键转折点记成结构化数组（最多 40 条），由主进程 `page surface` 带出 ⇒
+			 * 下次不用再靠猜"重试发生在会话就绪之前还是之后"。
+			 */
+			const connLog = [];
+			const pushConnLog = (kind, extra) => {
+				try {
+					if (connLog.length >= 40) { connLog.shift(); }
+					connLog.push(Object.assign({ kind, t: sinceBoot() }, extra || {}));
+					state.connLog = connLog;
+				} catch { /* 记账不许影响主流程 */ }
+			};
+			pushConnLog("boot");
+
+			/**
+			 * dsh 实时事件连接：记状态变化 + 收到 IDE 的「mux 可用」后跳过剩余退避（2026-10-20）。
+			 *
+			 * 背景（读 dsh 源码 + 真机日志）：Host 冷启后页面的连接会走 0.5/1/2/4/8 s 退避，约 13 s
+			 * 才连上；原因是 mux 路由要等 `appReady` 才注册，比 IDE 判 ready 晚。这段时间里历史能看（走
+			 * HTTP RPC），但流式输出 / 运行状态这类实时事件收不到。
+			 * IDE 主进程探到路由可用后派发 `vssaros-dsh-mux-ready`；这里如果连接还没连上，就调官方
+			 * `connection.reconnect()`（清零计数、跳过退避、立即重连）。已连上就什么都不做。
+			 * 全程 try/catch：这条加速坏了也只是退回原来的退避，不影响聊天。
+			 */
+			try {
+				const conn = typeof ctx.get === "function" ? ctx.get("connection") : undefined;
+				const snapshot = () => {
+					try { return conn && conn.state ? conn.state.getSnapshot() : undefined; } catch { return undefined; }
+				};
+				if (conn && conn.state && typeof conn.state.subscribe === "function") {
+					let last = snapshot();
+					pushConnLog("state", { s: String(last) });
+					if (last === "connected") { markTiming("connected"); }
+					conn.state.subscribe(() => {
+						const s = snapshot();
+						if (s === last) { return; }
+						last = s;
+						pushConnLog("state", { s: String(s) });
+						if (s === "connected") { markTiming("connected"); }
+					});
+				}
+				const onMuxReady = (detail) => {
+					// 同一次通知会经两条路到达（DOM 事件 + window 标记，是同一个对象）⇒ 按对象去重；
+					// 以后 Host 再重启会是新对象，照样处理。
+					if (!detail || detail === state.lastMuxReady) { return; }
+					state.lastMuxReady = detail;
+					const s = snapshot();
+					pushConnLog("mux-ready", { after: detail && typeof detail.afterReadyMs === "number" ? detail.afterReadyMs : null, s: String(s) });
+					if (conn && typeof conn.reconnect === "function" && s !== "connected") {
+						state.muxKicks = (state.muxKicks || 0) + 1;
+						conn.reconnect();
+						pushConnLog("kick", { from: String(s) });
+					}
+				};
+				document.addEventListener("vssaros-dsh-mux-ready", (ev) => onMuxReady(ev && ev.detail));
+				// 事件在本插件装好之前就派发过了 ⇒ 补读主进程留下的标记
+				if (window.__vssarosMuxReady) { onMuxReady(window.__vssarosMuxReady); }
+			} catch { /* 连接加速失败 ⇒ 退回官方退避 */ }
+			// ★ 2026-10-19：把**登记失败的真实原因**暴露到 DOM（诊断/取证用）。
+			//   状态条只放截断版（一行），完整原文在这里 —— 之前"登记会话失败"没有下文，
+			//   用户和排查者都只能猜（本次就是猜不出 conflict / 归属 / 无效 workspaceId 哪一种 ✗）。
+			const exposeRegisterError = () => {
+				try {
+					if (!document.body) { return; }
+					const err = state.registerError;
+					if (err) {
+						document.body.dataset.vssarosRegisterError = String(err).slice(0, 500);
+					} else {
+						delete document.body.dataset.vssarosRegisterError;
+					}
+				} catch { /* 诊断位不能影响主流程 */ }
+			};
+			// ⚠ 2026-10-20：这里原来直接 `mark()` —— 而 `mark()` 的语义是「**会话已到屏**」，
+			//   在模块加载瞬间调用会把 `timing.opened` 记成 **0ms**（真机日志一直是 `opened:0`），
+			//   让人误以为"会话 0 毫秒就打开了"。这里只记一个真正的启动时刻，别污染 `opened`。
+			markTiming("boot");
+
+			// ★★ 2026-10-20（用户：「右侧缺少用户消息定位 UI，官方 dsh 里有」）：
+			//   官方那条是 **轮次导航**：`nav` + 每条刻度一个 `button[data-index]`，
+			//   `position:absolute; right:12px`、宽约 28px，点击 = 「加载并跳转到第 N 轮」。
+			//   实测（同一 Host、只改视口）：1520px 可见 12 个刻度 / 900px 被 dsh 自己 `display:none`
+			//   ⇒ 我们的聊天框普遍 600~900px，所以**一直看不见**。
+			//   skin 里已有一条 CSS 覆盖（`nav:has(button[data-index])`），但那儿有两个不确定：
+			//     ① `:has()` 在某些 Electron 版本不支持；② 可能被更高优先级的官方规则压住。
+			//   ⇒ 再加一道**运行时兜底**（不依赖 CSS 选择器能力）：每秒找一次，找到就 inline 强制显示；
+			//     并把"找没找到 / 几个刻度 / 多大"记进 `state.rail`（主进程 page surface 会带出来，
+			//     下次能一眼分清"没渲染"还是"渲染了但被藏"）。
+			/**
+			 * 自研「轮次导航」（用户消息定位条）。
+			 *
+			 * 为什么必须自研：官方那条（`nav[aria-label="轮次导航"]` + `button[data-index]`）在
+			 * **IDE 聊天视图的宽度下根本不渲染** —— 真机自证 `rail: { found: false }`，连节点都没有
+			 * （不是被 `display:none` 藏起来，那样 CSS/JS 还能救）。而它在 1520px 的独立页面里是存在的
+			 * ⇒ 官方按可用宽度决定"渲不渲染"，我们的聊天框普遍 600~900px，永远落在"不渲染"那侧。
+			 *
+			 * 做法（不碰官方任何东西，纯新增一个浮层）：
+			 *   · 挂进 `[data-slot="conversation.view"]`（自带定位上下文），absolute 贴右缘；
+			 *   · 锚点用官方已有的 `data-chat-turn`（回退 `data-chat-anchor-key`）—— 每轮一个刻度；
+			 *   · 位置按**文档流比例**算（相对滚动容器的 rect），点击 `scrollIntoView` 滚到那一轮；
+			 *   · 每 3 秒补一次刻度（新回合进来后自动增加），窗口 resize 也重排；
+			 *   · 全程 try/catch：这个浮层坏掉也绝不影响聊天本身。
+			 */
+			const installLocalRail = (view) => {
+				if (state.localRail) {
+					return state.localRail;
+				}
+				// ⚠ 挂到 `document.body` + `position:fixed`，**不动官方 DOM 结构**。
+				//   早先想挂进 `[data-slot="conversation.view"]` 并把它改成 relative —— 那会改变
+				//   官方 absolute 子元素的定位上下文（可能把右栏/浮层挪位置），风险不可控 ✗。
+				const rail = document.createElement("div");
+				rail.className = "vs-local-rail";
+				rail.title = "轮次导航：点击定位到某一轮";
+				rail.style.cssText = "position:fixed;width:12px;z-index:2147483000;pointer-events:none;display:none;";
+				const inner = document.createElement("div");
+				inner.style.cssText = "position:relative;width:100%;height:100%;";
+				rail.appendChild(inner);
+				document.body.appendChild(rail);
+
+				const repaint = () => {
+					try {
+						const scroller = document.querySelector("[data-conversation-scroll]");
+						const viewEl = document.querySelector('[data-slot="conversation.view"]');
+						if (!scroller || !viewEl || !inner.isConnected) {
+							rail.style.display = "none";
+							return;
+						}
+						// fixed 浮层跟随聊天视图的位置（不依赖父级定位上下文）
+						const vr = viewEl.getBoundingClientRect();
+						if (vr.width < 240 || vr.height < 160) {
+							rail.style.display = "none";
+							return;
+						}
+						rail.style.display = "block";
+						rail.style.left = Math.round(vr.right - 18) + "px";
+						rail.style.top = Math.round(vr.top + 8) + "px";
+						rail.style.height = Math.round(vr.height - 16) + "px";
+						const seen = {};
+						const nodes = [];
+						const all = scroller.querySelectorAll("[data-chat-turn],[data-chat-anchor-key]");
+						for (const n of all) {
+							const k = n.getAttribute("data-chat-turn") || n.getAttribute("data-chat-anchor-key");
+							if (!k || seen[k]) {
+								continue;
+							}
+							seen[k] = 1;
+							nodes.push(n);
+						}
+						const scrollTop = scroller.scrollTop || 0;
+						const total = scroller.scrollHeight || 1;
+						const baseRect = scroller.getBoundingClientRect();
+						const h = inner.clientHeight || 1;
+						inner.textContent = "";
+						nodes.forEach((node, i) => {
+							// 相对滚动容器的文档流偏移（比 offsetTop 可靠：不受中间定位祖先影响）
+							const relTop = node.getBoundingClientRect().top - baseRect.top + scrollTop;
+							const btn = document.createElement("button");
+							btn.type = "button";
+							btn.title = "第 " + (i + 1) + " 轮";
+							btn.style.cssText = "position:absolute;right:0;width:12px;height:3px;padding:0;border:0;"
+								+ "border-radius:1px;cursor:pointer;pointer-events:auto;opacity:.45;background:#9a9a9a;";
+							btn.style.top = Math.max(0, Math.min(h - 3, Math.round((relTop / total) * h))) + "px";
+							btn.addEventListener("click", (e) => {
+								e.stopPropagation();
+								e.preventDefault();
+								node.scrollIntoView({ block: "start", behavior: "smooth" });
+							});
+							btn.addEventListener("mouseenter", () => { btn.style.opacity = "1"; btn.style.height = "6px"; btn.style.background = "#3794ff"; });
+							btn.addEventListener("mouseleave", () => { btn.style.opacity = ".45"; btn.style.height = "3px"; btn.style.background = "#9a9a9a"; });
+							inner.appendChild(btn);
+						});
+						state.rail = { found: false, local: true, marks: nodes.length };
+					} catch { /* 浮层自身不许影响主流程 */ }
+				};
+				const handle = { repaint };
+				state.localRail = handle;
+				repaint();
+				setInterval(repaint, 3000);
+				window.addEventListener("resize", repaint);
+				return handle;
+			};
+
+			const enforceRail = () => {
+				try {
+					const nav = document.querySelector('[data-slot="conversation.view"] nav')
+						|| document.querySelector('nav[aria-label="轮次导航"]');
+					if (!nav) {
+						state.rail = { found: false, local: !!state.localRail };
+						const view = document.querySelector('[data-slot="conversation.view"]');
+						if (view) { installLocalRail(view); }
+						return;
+					}
+					if (getComputedStyle(nav).display === "none") {
+						nav.style.setProperty("display", "block", "important");
+					}
+					const r = nav.getBoundingClientRect();
+					state.rail = {
+						found: true,
+						marks: nav.querySelectorAll('button[data-index]').length,
+						w: Math.round(r.width),
+						h: Math.round(r.height),
+					};
+				} catch { /* 兜底与诊断都不许影响主流程 */ }
+			};
+			enforceRail();
+			setInterval(enforceRail, 1000);
 
 			// ── 连接状态条（2026-10-18）──────────────────────────────────────────────
 			// 为什么要有：真机上会话没打开时页面停在官方 hero，输入框被官方 `inert` 禁用，**界面上没有任何
@@ -541,17 +928,36 @@ window.__ModuleLoader__.load({
 				state.manualRetries = (state.manualRetries || 0) + 1;
 			};
 			const statusText = () => {
-				if (!rpcReadyEarly()) { return "正在连接 Host…"; }
+				if (!rpcReadyEarly()) {
+					// ★ 2026-10-19（真机日志）：Host 冷启实测 **24s**（24 个插件）+ 客户端连接阶梯 **17.7s / 6 次抖动**
+					//   ⇒ 前 10~20 秒一定会看到这条。原文案只写"正在连接 Host…"，用户无法判断是"慢"还是"死" ✗
+					//   ⇒ 给出**预期时长**；曾经连上过的话说"重新连接"（语义不同，别混）。
+					return state.everReady
+						? "正在重新连接 Host…"
+						: "Host 正在启动（首次约 20–30 秒）";
+				}
 				// 熔断：连续超时 ⇒ 已停止再发请求（再发只会继续占满连接）。必须写明原因与出路。
 				if (longCallsBroken()) { return "与 Host 的连接无响应，已暂停重试——请点「重试」，或执行命令「DSH: 重启 Host」"; }
+				// ★ 2026-10-19：`openWorkspace` 超时过 ⇒ 明确说出来（从前只会停在"正在打开会话…"，
+				//   用户与排查者都不知道卡在连接工作区这一层 ✗）。
+				if (state.alignTimeouts) { return "工作区连接超时，正在重试"; }
 				if (state.registerWaitingOwner) { return "等待工作区就绪…"; }
 				if (registerPending) { return "正在登记会话…"; }
 				if (rosterRefreshPending) { return "正在载入会话列表…"; }
-				if (state.registerError) { return "登记会话失败，稍后自动重试"; }
+				// ★ 2026-10-19：把**真实原因**说出来（从前只说"失败" ⇒ 用户和排查者都无从下手 ✗）。
+				//   本仓纪律：可见文案必须描述真发生的事。错误可能很长 ⇒ 截断到一行能放下的长度，
+				//   完整原文仍写进 `body.dataset.vssarosRegisterError`（取证用，见 mark()）。
+				if (state.registerError) {
+					const why = String(state.registerError).replace(/\s+/g, " ").trim().slice(0, 70);
+					return "登记会话失败：" + why + "（稍后自动重试）";
+				}
 				return "正在打开会话…";
 			};
 			const renderStatus = () => {
 				if (!document.body) { return; }
+				exposeRegisterError();   // 每帧把真实原因同步到 dataset（清空时也删掉）
+				// ★ 2026-10-19：记住"曾经连上过" —— 用于区分「Host 正在启动」与「重新连接」（文案不同，见 statusText）
+				if (rpcReadyEarly()) { state.everReady = true; markTiming("rpc"); }
 				const waited = Math.round((Date.now() - bindStartedAt) / 1000);
 				const showAfter = typeof tune().showAfterMs === "number" ? tune().showAfterMs : 3000;
 				const retryAfter = typeof tune().retryAfterMs === "number" ? tune().retryAfterMs : 60000;
@@ -593,8 +999,38 @@ window.__ModuleLoader__.load({
 					const l = ctx.sessions && ctx.sessions.list ? ctx.sessions.list.getSnapshot() : null;
 					state.rosterSize = l && l.byId ? Object.keys(l.byId).length : 0;
 				} catch { /* 诊断位不能影响主流程 */ }
+				// ★ 2026-10-20（量化"载入历史为什么 5.4s"）：每 tick 记一次**用户可感知的里程碑**。
+				//   实测 `timing` 只有 `{opened:0, parts:104}` —— 因为 `rpc`/`aligned` 的打点都在"快速路径"
+				//   上被跳过（DOM 首帧就有会话节点 ⇒ opened 立刻 true ⇒ 不走 renderStatus/connectFor）✗。
+				//   ⇒ 在 tick 里补三个**一定会经过**的点：
+				//     · rpc        = RPC 首次可用
+				//     · firstTurn  = 第一条消息节点出现（真正的"历史开始渲染"）
+				//     · composer   = 输入框出现（用户的"能用"）
+				//   `markTiming` 只记首次 ✓
+				if (rpcReadyEarly()) { markTiming("rpc"); }
+				// ⚠ 2026-10-20 实测：`[data-chat-turn]` 在 **IDE 里的聊天框**没匹配到（真机 timing 只有
+				//   parts/composer，firstTurn 从未出现）⇒ 用三个官方钩子任一命中即算"历史开始渲染"：
+				//   `data-chat-anchor-key` / `data-chat-flow` 是每条消息/过程组都有的更基础钩子。
+				if (document.querySelector('[data-chat-turn]')
+					|| document.querySelector('[data-chat-anchor-key]')
+					|| document.querySelector('[data-chat-flow]')) {
+					markTiming("firstTurn");
+				}
+				if (document.querySelector('[data-composer-card]')) { markTiming("composer"); }
 				const opened = !!document.querySelector('[data-sidebar-right-session="' + sid + '"]');
 				if (opened) {
+					// ★★ 2026-10-20（用户：「好像是聊天框加载了一个已经被删除的会话」）：
+					//   DOM 里有该会话节点 ≠ 会话真的在 dsh 花名册里。实测自证：
+					//     opened=true / composer=true 但 lastOpenError = sessions.retain: unknown session …
+					//   ⇒ 页面把**残留/恢复的 DOM** 当成了"已打开"，显示的是上一次的内容 ✗。
+					//   这里把"DOM 有、roster 无"如实标出来（`staleOpen`），并**清掉**已过期的
+					//   `lastOpenError`（成功之后还挂着旧错误，会让人以为一直是坏的 ✗）。
+					try {
+						const snap = ctx.sessions && ctx.sessions.list ? ctx.sessions.list.getSnapshot() : null;
+						const inRoster = !!(snap && snap.byId && snap.byId[sid]);
+						state.staleOpen = !inRoster && state.registered !== true;
+					} catch { state.staleOpen = null; }
+					if (state.lastOpenError) { state.staleLastOpenError = state.lastOpenError; state.lastOpenError = null; }
 					if (!state.opened || state.sessionId !== sid) {
 						state.opened = true;
 						state.sessionId = sid;
@@ -662,7 +1098,71 @@ window.__ModuleLoader__.load({
 					//   重试策略见声明处（在途单发 / 60s 未返回可重发 / 失败退避 / 无总次数上限）；
 					//   结果全部进自证（registerMs/registerError/registerTries/…）。
 					const nowT = Date.now();
-					if (rpcReadyEarly() && !rosterHas(sid) && !longCallsBroken() && !longCallPending
+					// ★★ 2026-10-20（首屏实测：openSession 白等全量列表 1708ms；1791 条会话）：**快速入册**。
+					//   `retain()` 的放行条件只是"summaries 里有这一行"（session-controller `resolveTarget`）。
+					//   而 `session/projections({sessionId})` 只读这一条会话（实测 16ms），能拿到 blank / title /
+					//   lastPromptAt ⇒ 用官方自己的 `recordMutation({ kind: "placeholder" })` 插一行占位就能立刻打开。
+					//   为什么用 placeholder 而不是 upsert：官方 `applyMutation` 规定 placeholder 遇到**已存在**的行
+					//   只补缺失的元数据、不覆盖 running/agentAvailable ⇒ 全量列表回来时以它为准，不会被占位行污染 ✓
+					//   （列表在途时 mutation 会被缓存并在基线上重放，同一条规则保证安全 ✓）。
+					//   只读、不建会话；任何一步不可用（老版本 / 方法缺失 / 投影失败）就回到原路（等全量列表）。
+					if (rpcReadyEarly() && !rosterHas(sid) && !fastListPending && !fastListDone) {
+						const svc = ctx.sessions;
+						const manager = svc && svc.manager;
+						let owner = null;
+						try {
+							const w = typeof ctx.get === "function" ? ctx.get("workspaces") : undefined;
+							const items = (w && w.list ? w.list.getSnapshot().items : null) || [];
+							owner = items.find((x) => x && Array.isArray(x.sessionIds) && x.sessionIds.indexOf(sid) >= 0) || null;
+						} catch { owner = null; }
+						if (owner && svc && typeof svc.refreshProjections === "function"
+							&& manager && typeof manager.recordMutation === "function" && typeof manager.projectionValues === "function") {
+							fastListPending = true;
+							const t0 = Date.now();
+							void Promise.resolve(svc.refreshProjections(sid)).then(() => {
+								const vals = manager.projectionValues(sid);
+								const meta = vals && vals.sessionListMetadata ? vals.sessionListMetadata : null;
+								// 投影里什么都没有 ⇒ Host 上很可能没这条会话 ⇒ 别插假行，交给原路（列表 + 必要时 create）
+								if (!vals || !meta) { state.fastListSkipped = "no projections"; return; }
+								if (!rosterHas(sid)) {
+									manager.recordMutation({
+										kind: "placeholder",
+										summary: {
+											sessionId: sid,
+											agentAvailable: true,
+											running: false,
+											blank: meta.blank !== false,
+											updatedAt: typeof meta.lastPromptAt === "number" ? meta.lastPromptAt : Date.now(),
+											cwd: owner.path,
+										},
+									});
+								}
+								state.fastListMs = Date.now() - t0;
+								state.fastListed = rosterHas(sid);
+								pushConnLog("fast-list", { ms: state.fastListMs, has: state.fastListed });
+								if (state.fastListed && currentSessionId === sid) {
+									connectFor(sid);
+									navigate(sid);
+								}
+							}).catch((e) => {
+								state.fastListError = String((e && e.message) || e);
+							}).then(() => {
+								fastListPending = false;
+								fastListDone = true;   // 每个会话只试一次；失败就走原路
+							});
+						}
+					}
+					// ★★ 2026-10-20（真机：每打开一次会话就多出空会话，今天 60 个新会话目录里 52 个是 Host 铸的）：
+					//   Host 的 `session.create({sessionId})`（dsh-api-session-controller `claim()`）语义是：
+					//     · Host **没有**这条会话 ⇒ 按请求的 id 新建 ✓
+					//     · 有、且是空的 ⇒ 复用 ✓
+					//     · 有、但**已经开始过回合** ⇒ **另铸一条新会话**，返回新 id ✗
+					//   从前这里一连上就 create ⇒ 打开任何有历史的会话都会多造一条空会话，
+					//   而且返回的是新 id ⇒ `rosterHas(sid)` 仍为 false ⇒ 还白等一轮退避（实测 openRetries:4、3.5s 才在屏）。
+					//   ⇒ **先拉一次列表**（`rosterListed`），列表里有就直接打开，不再 create；
+					//     只有列表**确认没有**这条会话时才允许 create（此时 Host 必定按请求的 id 建，不会铸新）。
+					//     列表拉取失败时也放开 create（退回旧行为：宁可多一条空会话，也不能打不开）。
+					if (rpcReadyEarly() && !rosterHas(sid) && (rosterListed || rosterListFailed) && !longCallsBroken() && !longCallPending
 						&& nowT >= registerNextAt
 						&& (!registerPending || nowT - registerStartedAt > REGISTER_REISSUE_MS)) {
 						try {
@@ -703,6 +1203,16 @@ window.__ModuleLoader__.load({
 									clearTimeout(regTimer);
 									state.registerMs = Date.now() - nowT;
 									state.registerResult = (() => { try { return JSON.stringify(res).slice(0, 120); } catch { return String(res); } })();
+									// Host 返回的 id 与请求的不同 ⇒ 它**另铸了一条空会话**（见登记闸门处的注释）。
+									//   新闸门下不该再发生；万一发生，把它记下来，别再静默造垃圾。
+									try {
+										const got = res && typeof res === "object" ? (res.sessionId || (res.value && res.value.sessionId)) : undefined;
+										if (got && got !== sid) {
+											state.registerMinted = (state.registerMinted || 0) + 1;
+											state.registerMintedId = got;
+											pushConnLog("minted", { got: String(got).slice(-12) });
+										}
+									} catch { /* 诊断失败无所谓 */ }
 									if (token === registerToken) { registerPending = false; }
 									maybeLongOk();
 									if (rosterHas(sid)) {
@@ -783,22 +1293,37 @@ window.__ModuleLoader__.load({
 									if (rosterRefreshPending) {
 										settle();
 										state.rosterRefreshTimeouts = (state.rosterRefreshTimeouts || 0) + 1;
+										rosterListFailed = true;   // 超时 ⇒ 放开 create 兜底（见登记处注释）
 										noteLongCallTimeout();
 									}
 								}, longCallTimeoutMs());
+								const refreshStartedAt = Date.now();
 								void Promise.resolve(fn.call(svc)).then(() => {
 									const l = svc.list ? svc.list.getSnapshot() : null;
 									state.rosterHasList = !!l;
 									state.rosterState = l ? l.state : null;
 									state.rosterPhase = l ? l.phase : null;
 									state.rosterSizeAfterRefresh = l && l.byId ? Object.keys(l.byId).length : null;
+									state.rosterRefreshMs = Date.now() - refreshStartedAt;
+									rosterListed = true;
+									state.rosterListed = true;
+									pushConnLog("roster", { ms: state.rosterRefreshMs, has: rosterHas(sid) });
 									maybeLongOk();
 								}).catch((e) => {
 									state.rosterRefreshError = String((e && e.message) || e);
+									rosterListFailed = true;
 									maybeLongOk();
 								}).then(() => {
 									clearTimeout(timer);
 									settle();
+									// ★ 2026-10-20：拉到就**立刻**打开，不等下一个 500ms 节拍（列表里有它 ⇒ openSession 直接成功）。
+									//   若列表里仍没有，下一拍的登记闸门会放行 create（此时 Host 必定按请求 id 建，不会铸新）。
+									try {
+										if (rosterHas(sid) && currentSessionId === sid) {
+											connectFor(sid);
+											navigate(sid);
+										}
+									} catch { /* 下一拍还会再来 */ }
 								});
 							} else {
 								state.rosterRefreshError = "no refresh method on ctx.sessions";
@@ -828,16 +1353,12 @@ window.__ModuleLoader__.load({
 			window.addEventListener("pagehide", () => clearInterval(timer));
 
 			/**
-			 * 把页面的**工作区选择**对齐到"拥有该会话的工作区"（= VsSaros 当前工作区）。
+			 * 找"拥有该会话的工作区"（= VsSaros 当前工作区），只记账、不导航。
 			 *
-			 * 为什么需要：dsh web 的工作区选择默认值与我们打开的工作区无关（实测选择器会落在
-			 * 别的工作区/空白上，用户得手点一次）。而 Host 侧 `session.start` 已经用 `cwd`
-			 * 建好工作区并 `attachSession`（bridge 插件），所以 **sessionIds 含本会话的那个工作区
-			 * 就是当前工作区** —— 不需要把 cwd 从主进程透传进页面。
-			 *
-			 * 顺序：`uiWorkspace.openWorkspace()` 会连带切换选中的会话（官方工作区选择器就是这么
-			 * 用的，第二个参数用于保草稿），所以必须在 `openSession(sid)` **之前**调；随后的
-			 * openSession 再把选中会话定回本会话。
+			 * 历史：这里原本会先 `uiWorkspace.openWorkspace()` 把页面的工作区选择对齐过去
+			 * （当时实测选择器会落在别的工作区上）。2026-10-20 读官方源码确认：那个调用会让 Host
+			 * **新建一条空会话**（详见函数体里的注释），而且官方的"当前工作区"本来就由选中会话推出 ⇒
+			 * 现在只要 openSession(sid)，工作区自然正确。保留本函数是为了不动 connectFor 的闸门结构。
 			 */
 			const alignWorkspace = (sid) => {
 				try {
@@ -847,8 +1368,17 @@ window.__ModuleLoader__.load({
 					const owner = items.find((w) => Array.isArray(w.sessionIds) && w.sessionIds.indexOf(sid) >= 0);
 					if (owner) {
 						state.workspace = owner.workspaceId;
-						// ⚠ 返回 Promise：调用方要"等它完成"再 openSession，且**不许**每 tick 重发（会自我取消）✓
-						return ctx.uiWorkspace.openWorkspace(owner.workspaceId).catch(() => undefined);
+						// ★★ 2026-10-20（今天 60 个新会话目录里 52 个是空会话 —— 主要就是这里造的）：
+						//   **不再调 `ctx.uiWorkspace.openWorkspace()`**。官方实现（dsh-client-ui-workspace）是
+						//     openWorkspaceSession(id) → connectBlank(id, undefined) → sessions.create({ workspaceId })
+						//   ⇒ **每调一次就让 Host 新建一条空会话**，再把页面导航过去；随后我们的 openSession
+						//   又导航回本会话 —— 那条空会话就永久留在列表里 ✗（复现：调用报错原文
+						//   `session create failed: … session/create failed`）。
+						//   而"当前工作区"在官方里本来就是**由选中的会话推出来的**（ui-workspace
+						//   `startSession`：`workspace.items.find(item => item.sessionIds.includes(current))`；
+						//   ui-conversation 同理）⇒ 只要 openSession(sid)，工作区自然就对了，无需先"对齐"。
+						//   这里只记下归属并立即放行（仍返回 Promise，保持调用方 connectFor 的闸门语义不变）。
+						return Promise.resolve();
 					}
 				} catch (e) {
 					state.workspaceError = String((e && e.message) || e);
@@ -869,9 +1399,34 @@ window.__ModuleLoader__.load({
 				const p = alignWorkspace(sid);
 				if (!p || typeof p.then !== "function") { return; }
 				navState.connecting = p;
+				// ★★ 2026-10-19（用户截图「正在打开会话…（已等待 38 秒）」+ 代码路径定位）：
+				//   `openWorkspace()` 可能**永不 settle**（Host 侧挂住 / 连接池占满）。
+				//   从前 `navState.connecting` 会一直有值 ⇒
+				//     · `connectFor()` 每轮早退（不再发连接）
+				//     · `navigate()` 也每轮早退（连接在飞时不许导航）
+				//   ⇒ 界面永远停在「正在打开会话…」，**没有超时、没有重试、没有熔断** ✗✗
+				//   这里加超时：到期清闸门并记账，下一轮自然重发（仍受 ALIGN_RETRY_MS 节流）。
+				let settled = false;
+				const timer = setTimeout(() => {
+					if (settled) { return; }
+					settled = true;
+					navState.connecting = null;
+					state.alignTimeouts = (state.alignTimeouts || 0) + 1;
+					state.lastAlignError = "openWorkspace 超时（" + ALIGN_TIMEOUT_MS + "ms 未返回）";
+				}, ALIGN_TIMEOUT_MS);
 				void Promise.resolve(p).then(
-					() => { navState.connecting = null; navState.aligned = true; },
-					() => { navState.connecting = null; },
+					() => {
+						if (settled) { return; }
+						settled = true; clearTimeout(timer);
+						navState.connecting = null; navState.aligned = true;
+						state.alignTimeouts = 0; state.lastAlignError = null;
+						markTiming("aligned");   // 工作区对齐完成（此后才允许 openSession）
+					},
+					() => {
+						if (settled) { return; }
+						settled = true; clearTimeout(timer);
+						navState.connecting = null;
+					},
 				);
 			};
 
@@ -888,8 +1443,37 @@ window.__ModuleLoader__.load({
 				const onRejected = (e) => {
 					const msg = String((e && e.message) || e || "");
 					if (!msg) { return; }
-					if (/unknown session/i.test(msg)) {
+					// ★★ 2026-10-19（真机日志：`Sidebar Session opening failed: Session reference
+					//   "vssaros-chat-…" is released`）：
+					//   被 release 的会话直接 `openSession` 必定失败，而从前这里只记 `lastOpenError`
+					//   ⇒ **没人重新拿引用、也不重试** ⇒ 界面永久停在「正在打开会话…（已等待 N 秒）」✗
+					//   ⇒ 补一次 `sessions.retain(sid)`（拿回引用），下一轮 tick 的 navigate 就能成功。
+					//   节流 2s：navigate 每 500ms 一轮，不节流会变成 retain 风暴。
+					if (/unknown session/i.test(msg) || /is released/i.test(msg)) {
 						state.openRetries = (state.openRetries || 0) + 1;
+						state.lastOpenError = msg;
+						// ★★ 2026-10-19（`sessions.retain: unknown session` = 会话不在 roster）：
+						//   从前这里只记一次数 ⇒ 下一轮仍走 60~120s 的长退避 ⇒ 会话刚被 Host 建好也白等 ✗
+						//   ⇒ 立刻把"重拉 roster / 重新自登记"的闸门打开，下一 tick 就重试。
+						if (/unknown session/i.test(msg)) {
+							rosterBackoffMs = ROSTER_BACKOFF_MS[0];
+							rosterAttempts = 0;
+							lastRosterRefreshAt = 0;
+							registerNextAt = 0;
+						}
+						if (/is released/i.test(msg)) {
+							const nowR = Date.now();
+							if (nowR - (state.lastRetainAt || 0) > 2000) {
+								state.lastRetainAt = nowR;
+								try {
+									const svc = ctx.sessions;
+									if (svc && typeof svc.retain === "function") {
+										state.retainTries = (state.retainTries || 0) + 1;
+										void Promise.resolve(svc.retain(sid)).catch(() => undefined);
+									}
+								} catch { /* 下一轮还会再试 */ }
+							}
+						}
 					} else {
 						state.lastOpenError = msg;
 					}
@@ -898,6 +1482,12 @@ window.__ModuleLoader__.load({
 					const r = ctx.uiWorkspace.openSession(sid);
 					if (r && typeof r.then === "function") { r.then(undefined, onRejected); }
 				} catch (e) { onRejected(e); }
+				// ★ 2026-10-20（实测：retry #1 在 nav+1716ms，而 session.start 在 nav+677ms 就完成了
+				//   ⇒ 重试跟"会话还没建好"无关）：这里只**记账**，不做闸门 —— 串行化只会让页面白等 696ms ✗。
+				// navigate 每 500 ms 跑一轮（直到会话在屏）⇒ 只记前 3 次，别把 40 条的账本挤满、
+				// 把更要紧的连接状态（state / mux-ready / kick）挤出去。
+				state.openCalls = (state.openCalls || 0) + 1;
+				if (state.openCalls <= 3) { pushConnLog("open", { at: Date.now(), sid: sid.slice(-10) }); }
 			};
 
 			// 重绑事件（宿主 → preload → DOM）：切到另一个 preset 的专属会话。
@@ -913,6 +1503,10 @@ window.__ModuleLoader__.load({
 				// 换绑 = 全新的一次等待：登记状态/退避/计时全部归零，并让在途的旧 create 作废（token 递增）
 				registerToken += 1; registerPending = false; registerNextAt = 0; registerErrors = 0;
 				registered = false; state.registered = false; state.registerError = null; state.registerWaitingOwner = false;
+				// ★ 2026-10-20：换绑后要**重新拉一次列表**才允许 create —— 旧列表可能早于新会话，
+				//   拿它判"Host 没有这条"会误放行 create（而目标若是已有历史的会话，create 会另铸一条）。
+				rosterListed = false; rosterListFailed = false; lastRosterRefreshAt = 0;
+				fastListPending = false; fastListDone = false;
 				bindStartedAt = Date.now();
 				removeStatus();
 				mark();
@@ -921,7 +1515,7 @@ window.__ModuleLoader__.load({
 				//   且 full 本来也不装换皮部件（2026-10-17 绑定提升后必须守这条 ✗）。
 				if (!restPartsInstalled && bridge.surface === "chat") {
 					restPartsInstalled = true;
-					void loadParts(PART_CHUNKS.filter((f) => BLANK_SESSION_PARTS.indexOf(f) < 0));
+					void loadParts(PART_CHUNKS.filter((f) => BLANK_SESSION_PARTS.indexOf(f) < 0)).then(() => markTiming("parts"));
 				}
 				try {
 					// 换绑 ⇒ 会话可能落在另一个工作区：放开对齐闸门，允许重新连一次
@@ -946,7 +1540,9 @@ window.__ModuleLoader__.load({
 
 
 			// ── 以下全部只在聊天框 surface 生效：full（官方整页）只借用上面的会话绑定 ──
-		// （工作台导航 / 多根工作区侧栏走顶部那个 full 分支装载，不经过这里 ✓）。
+		// （工作台导航 / 多根工作区侧栏等在 full 形态由**顶部那个 full-only 分支**装载；
+		//   两个分支现在**互斥**（chat 走这里、full 走那边）⇒ 同一个 chunk 不会被装两遍 ✓
+		//   —— 2026-10-21 真机：重叠过一次 ⇒ keyed 槽重复注册 ⇒ 中栏工作台面板全没注册 ✗）。
 		if (bridge.surface !== "chat") {
 			return;
 		}
@@ -983,7 +1579,7 @@ window.__ModuleLoader__.load({
 						}
 					}
 				});
-			void loadParts(bridge.sessionId ? PART_CHUNKS : BLANK_SESSION_PARTS);
+			void loadParts(bridge.sessionId ? PART_CHUNKS : BLANK_SESSION_PARTS).then(() => markTiming("parts"));
 		}
 		exports.apply = apply;
 		exports.inject = inject;

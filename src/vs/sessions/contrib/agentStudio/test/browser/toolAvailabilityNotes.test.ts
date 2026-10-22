@@ -4,29 +4,27 @@
  *  被测的两件事都属于"静默失效"高发区：
  *   ① **策略**：缺依赖时标注（不隐藏）。要钉住的是：未知事实**不得**标注（fail-open）、
  *      标注**幂等**、无关工具**零改动**（热路径每轮都要跑）；
- *   ② **接线**：`availability` 声明与事实来源必须真的接上 —— 本仓的教训是"机制齐全但没人调用"
- *      （`toolAvailabilityEvaluator` 此前是孤儿模块；视频工具的命令通道被漏注入导致生产全废）。
- *      所以这里既有**声明漂移守卫**（新工具忘了声明会被拦），也有**宿主接线守卫**。
+ *   ② **事实来源**：媒体链路的探测必须分别结论、缺命令通道要留下可诊断日志。
+ *
+ *  ★ 2026-10-20：原第 ③ 块「声明与接线守卫」**已删除** —— 它 `import` 的
+ *  `videoFrameTools` / `videoAnalyzeTools` / `feishuDriveTools` 随 legacy 工具整体下线
+ *  （`0f01ef10a43`）一起删了，那几个注册函数在仓里已不存在（能力侧由 dsh 插件承担）。
+ *  留着只能靠加进 `build-failure-baseline.json` 来"装作绿"⇒ 直接删掉，本文件只测还活着的
+ *  「策略 + 媒体事实来源」两块。
  *
  *  运行（仓库根目录）：
  *      node src/vs/sessions/contrib/agentStudio/test/browser/run-browser-test.mjs \
  *          src/vs/sessions/contrib/agentStudio/test/browser/toolAvailabilityNotes.test.ts
  *--------------------------------------------------------------------------------------------*/
 import * as assert from 'assert';
-import * as fs from 'fs';
-import * as path from 'path';
 
 import {
 	annotateToolAvailability, createCapabilityFacts, availabilityContextFor, unavailableNotice,
-	availabilityGaps, NO_CAPABILITY_FACTS, KNOWN_CAPABILITIES, AVAILABILITY_NOTE_PREFIX,
+	availabilityGaps, NO_CAPABILITY_FACTS, AVAILABILITY_NOTE_PREFIX,
 	CAP_MEDIA_FFMPEG, CAP_MEDIA_YTDLP, CAP_FEISHU_LARK_CLI,
 } from '../../browser/providers/tool/toolAvailabilityNotes.js';
 import { probeMediaCapabilities, probeMediaToolchain } from '../../browser/providers/tool/videoMediaPipeline.js';
 import { clearProbeCache } from '../../browser/providers/tool/mediaToolchainProbeCache.js';
-import { registerVideoFrameTools } from '../../browser/providers/tool/videoFrameTools.js';
-import { registerVideoAnalyzeTools } from '../../browser/providers/tool/videoAnalyzeTools.js';
-import { registerFeishuDriveTools } from '../../browser/providers/tool/feishuDriveTools.js';
-import type { IBuiltinToolRegistration } from '../../browser/providers/tool/toolRegistry.js';
 import type { IToolDefinition } from '../../browser/common/providers.js';
 
 const quietLog = { info() { }, warn() { }, error() { }, debug() { }, trace() { } } as never;
@@ -164,84 +162,5 @@ suite('工具可用性 · 媒体事实来源', () => {
 		assert.strictEqual(errors.length, 1, '必须留一条可诊断的日志');
 		assert.match(errors[0], /runCommand|命令通道/);
 		assert.match(errors[0], /builtinToolProvider|接线/, '要指向接线位置，否则排查无从下手');
-	});
-});
-
-suite('工具可用性 · 声明与接线守卫', () => {
-
-	/** 跑真实注册函数，拿到**真实定义**（不靠源码正则猜）。 */
-	function captureDefs(): IToolDefinition[] {
-		const regs: IBuiltinToolRegistration[] = [];
-		const register = (d: IBuiltinToolRegistration) => { regs.push(d); };
-		registerVideoFrameTools({
-			register,
-			fileService: {} as never,
-			logService: quietLog,
-			resolveAndCheckWorkspacePath: async (_a, p) => p,
-			defaultOutRoot: path.join(path.sep, 'tmp'),
-			runCommand: async () => undefined,
-		} as never);
-		registerVideoAnalyzeTools({
-			register,
-			fileService: {} as never,
-			logService: quietLog,
-			resolveAndCheckWorkspacePath: async (_a, p) => p,
-			defaultOutRoot: path.join(path.sep, 'tmp'),
-			runCommand: async () => undefined,
-			getModelProviders: () => [],
-			getKbExpertModel: () => undefined,
-		} as never);
-		registerFeishuDriveTools({ register, logService: quietLog } as never);
-		return regs.map(r => r.definition);
-	}
-
-	const defs = captureDefs();
-	const byName = (n: string): IToolDefinition => {
-		const d = defs.find(x => x.name === n);
-		assert.ok(d, `未注册工具 ${n}`);
-		return d!;
-	};
-
-	test('★★ 依赖型工具有声明：视频要 ffmpeg、飞书要 lark-cli', () => {
-		for (const n of ['extract_video_frames', 'video_analyze']) {
-			const conds = (byName(n).availability ?? []).map(c => c.condition);
-			assert.deepStrictEqual(conds, [CAP_MEDIA_FFMPEG], `${n} 应声明 ${CAP_MEDIA_FFMPEG}`);
-		}
-		for (const n of ['feishu_doc_read', 'feishu_drive_list_comments', 'feishu_drive_list_comment_replies',
-			'feishu_drive_reply_comment', 'feishu_drive_add_comment']) {
-			const conds = (byName(n).availability ?? []).map(c => c.condition);
-			assert.deepStrictEqual(conds, [CAP_FEISHU_LARK_CLI], `${n} 应声明 ${CAP_FEISHU_LARK_CLI}`);
-		}
-	});
-
-	test('★ 知识库飞书同步工具同样声明 lark-cli（同步脚本内部就调它）', () => {
-		const src = fs.readFileSync(path.join(process.cwd(),
-			'src/vs/sessions/contrib/agentStudio/browser/providers/tool/kbFeishuSyncTools.ts'), 'utf8');
-		const hits = src.match(new RegExp(`condition: CAP_FEISHU_LARK_CLI`, 'g')) ?? [];
-		assert.ok(hits.length >= 2, `kb_feishu_sync / kb_feishu_spaces 都应声明（实际 ${hits.length} 处）`);
-	});
-
-	test('★★ 能力名不得拼错：所有声明必须落在 KNOWN_CAPABILITIES 里', () => {
-		const used: string[] = [];
-		for (const d of defs) {
-			for (const c of d.availability ?? []) { used.push(String(c.condition)); }
-		}
-		const unknown = used.filter(c => !KNOWN_CAPABILITIES.includes(c));
-		assert.deepStrictEqual(unknown, [], `这些条件名不在 KNOWN_CAPABILITIES 里 ⇒ 永远查不到事实、静默失效：${unknown.join(', ')}`);
-	});
-
-	test('★★ 端到端：lark-cli 缺失 ⇒ 只标注飞书工具，视频工具不受影响', () => {
-		const annotated = annotateToolAvailability(defs, createCapabilityFacts([[CAP_FEISHU_LARK_CLI, false], [CAP_MEDIA_FFMPEG, true]]));
-		const get = (n: string) => annotated.find(d => d.name === n)!;
-		assert.ok(get('feishu_doc_read').description.includes(AVAILABILITY_NOTE_PREFIX));
-		assert.ok(get('feishu_drive_add_comment').description.includes(AVAILABILITY_NOTE_PREFIX));
-		assert.ok(!get('video_analyze').description.includes(AVAILABILITY_NOTE_PREFIX), 'ffmpeg 就绪时不该标注视频工具');
-		assert.ok(!get('file_read')?.description?.includes(AVAILABILITY_NOTE_PREFIX));
-	});
-
-	test('宿主接线守卫由 `mediaToolchainWiring.test.ts` 承担（按注册点分块断言，比全文件扫描更精确）—— 本文件只钉"缺通道时有可诊断日志"的行为面', () => {
-		// 本用例是占位说明：防止后来者以为"这里没有接线守卫"而再写一个重复的。
-		// 真正的守卫：`mediaToolchainWiring.test.ts`（runCommand 必须注入每个视频注册点）。
-		assert.ok(true);
 	});
 });

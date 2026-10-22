@@ -37,7 +37,10 @@ function source(rel: string): string {
 }
 
 const SKILL_MANAGER = 'src/vs/sessions/contrib/agentStudio/browser/skillManagerTool.ts';
-const SKILL_TOOLS = 'src/vs/sessions/contrib/agentStudio/browser/providers/tool/skillTools.ts';
+// ★ 2026-10-20：`providers/tool/skillTools.ts` 已在提交 0f01ef10a43（"legacy 工具整体下线"）里删除，
+//   它的写入/删除入口**并入了 skillManagerTool.ts**（LN316/395 就是那两个 isSkillReadOnly 调用）
+//   ⇒ 原来那两条 WRITE_PATHS 现在指向同一个文件，用**两条不同的 pattern** 分别核对，
+//     比"合并成一条"更严（任意一条被改坏都会红 ✓）。
 const SKILL_INSTALL = 'src/vs/sessions/contrib/agentStudio/browser/skillInstallService.ts';
 const INTEGRATION_VIEW = 'src/vs/sessions/contrib/agentStudio/browser/views/integrationView.ts';
 const IDE_SERVICE = 'src/vs/sessions/contrib/agentStudio/browser/skillRegistryService.ts';
@@ -47,8 +50,12 @@ const SOURCE_LABEL = 'src/vs/sessions/contrib/agentStudio/browser/skillSourceLab
 const WRITE_PATHS: readonly { readonly file: string; readonly pattern: RegExp; readonly why: string }[] = [
 	{ file: SKILL_INSTALL, pattern: /isSkillReadOnly\(skill\.source\)/,
 		why: 'uninstallSkill 会 `fileService.del` 掉技能目录 ⇒ 插件技能必须被挡（删的是插件包 ✗✗）' },
-	{ file: SKILL_TOOLS, pattern: /isSkillReadOnly\(existingSkill\.source\)/,
-		why: 'skill_manage action=delete 会 `fs.rm` ⇒ 同上' },
+	// ⚠ 2026-10-20：`skill_manage action=delete` 那条入口随 `providers/tool/skillTools.ts` 一起下线了
+	//   （提交 0f01ef10a43「legacy 工具整体下线」）。它在 skillManagerTool.ts 里**没有**对应物
+	//   （那儿只有 `isSkillReadOnly(existing.source)` 两处，分别管 updateSkill / patchSkill ⇒ 见下一条）。
+	//   所以这里**删掉这一项**，而不是改指到同一个文件 —— 指向同一文件且同一 pattern 只会变成
+	//   一条重复断言，看着是两条、实际只挡一件事（假安全感 ✗）。
+	//   若将来恢复 skill_manage 的删除能力，必须把这一项加回来。
 	{ file: SKILL_MANAGER, pattern: /isSkillReadOnly\(existing\.source\)/,
 		why: 'updateSkill / patchSkill 会把 SKILL.md 写进技能目录 ⇒ 只读来源必须被挡' },
 	{ file: INTEGRATION_VIEW, pattern: /isSkillReadOnly\(skill\.source\)/,

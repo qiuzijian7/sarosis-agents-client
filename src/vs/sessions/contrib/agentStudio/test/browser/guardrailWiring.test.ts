@@ -267,19 +267,16 @@ suite('护栏接线不变量（源码级）', () => {
 		assertWired('common/toolResultImages.ts', 'export function buildToolImageMessage(', '判定/组装真源');
 	});
 
-	// ── ⑱ 读图片不得成为读守卫的绕过通道 ──────────────────────────────────
-	test('★★ `vision_analyze` 读本地图片必须走与 `file_read` 同一套读护栏', () => {
-		// 本工具把图片字节发给**外部模型 provider**，与 `file_read` 的出网面完全一致 ——
-		// 若不跑「沙箱解析 / 设备伪文件系统 / 敏感路径读守卫」三件套，它就是一条
-		// **绕过读守卫的通道**（image 后缀不在敏感名表里，但目录级敏感项如 `.ssh/`
-		// `.aws/` `.config/gcloud/` 仍会被 `detectSensitivePath` 命中）。
-		// 这正是今天最高频的缺陷形态：「另一条出口没挂检查」。
-		assertWired('browser/providers/tool/builtinToolProvider.ts', 'loadLocalImage', '本地图片加载器接线');
-		assertWired('browser/providers/tool/builtinToolProvider.ts', 'detectSensitivePath(resolved)', '敏感路径读守卫');
-		assertWired('browser/providers/tool/builtinToolProvider.ts', 'detectDevicePath(resolved)', '设备伪文件系统');
-		assertWired('browser/providers/tool/builtinToolProvider.ts',
-			'_resolveAndCheckWorkspacePath(agentId, requestedPath, false)', '沙箱路径解析（与 file_read 同口径）');
-	});
+	// ── ⑱ 读图片不得成为读守卫的绕过通道 —— **已随工具退役移除**（2026-10-20）──
+	// 原断言：`vision_analyze` 读本地图片必须走 `loadLocalImage` +
+	// `detectSensitivePath(resolved)` + `detectDevicePath(resolved)` +
+	// `_resolveAndCheckWorkspacePath(...)` 三件套（否则它是一条绕过读守卫的出口）。
+	// ⚠ 2026-10-17 起 `vision_analyze` **退役**（能力迁到 dsh 侧 `vssaros-media`），
+	//   `builtinToolProvider` 里那套接线的 import 与实现一并删除（只剩注释），
+	//   本断言于是永远 `assertWired` 失败（不是漏护栏，是**护栏的对象没了**）。
+	//   ⇒ 删掉这条，别让它靠 build/失败基线装绿。
+	//   若哪天 IDE 侧重新出现"读本地图片并外发"的工具，必须把这条**照着新注册点**加回来
+	//   （判据仍是"与 file_read 同口径的三件套"）。
 
 	// ── ⑰ 授权表的**读取**必须与**判定**同源（撤销入口曾读已迁走的键）──────
 	test('★★ 授权表读取必须与判定同源（legacy 键只允许出现在迁移逻辑里）', () => {

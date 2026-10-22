@@ -27,6 +27,7 @@ import { IInstantiationService, ServicesAccessor } from '../../../../platform/in
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { IQuickInputService } from '../../../../platform/quickinput/common/quickInput.js';
+import { FocusMode, INativeHostService } from '../../../../platform/native/common/native.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
@@ -39,12 +40,13 @@ import { IFileService } from '../../../../platform/files/common/files.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { isRuntimeVersionDir } from '../common/dshCli.js';
 import { hostIdleTtlText } from '../common/dshHostConfig.js';
-import { DshPageCommand, IDshInsertReference, isPathInside } from '../common/dshPageBridgeProtocol.js';
+import { DSH_PAGE_COMMANDS_WITHOUT_IDE_UI, DshPageCommand, IDshInsertReference, isPathInside } from '../common/dshPageBridgeProtocol.js';
 import { IDshUpgradeResult } from '../common/dshUpgrade.js';
 import { DSH_MODULE_CONTAINERS, DSH_MODULE_PAGES } from '../common/dshModuleContainers.js';
 // 工作台动作（固定 / 隐藏）要改 IDE 的活动栏状态 ⇒ 用既有的工作台管理服务 ✓
 // （跨层 import electron-browser → agentStudio/browser 有先例：`dshChatInstanceHost.ts` 就是这么引的 ✓）
 import { IWorkbenchManagerService } from '../../agentStudio/browser/workbenchManagerService.js';
+import { ITofAuthService } from '../../agentStudio/common/tofAuth.js';
 // Agents 视图 id（`openAgentRoster` 用它聚焦侧栏那个视图；见该分支的注释 —— 用视图 id 而不是
 // 曾经的 `agentStudio.presetAgent.focus` 假命令 id ✓）
 import { AGENT_STUDIO_PRESET_AGENT_VIEW_ID } from '../../../common/agentStudioConstants.js';
@@ -75,10 +77,10 @@ import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/l
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 
 const DSH_COMMAND_CHECK_UPDATES = 'dshHarness.checkUpdates';
-import { DshHarnessSettings, DSH_DEFAULT_PROFILE, IDshHostStatus } from '../common/dshHarness.js';
+import { DshHarnessSettings, DSH_DEFAULT_PROFILE, IDshHostStatus, IDshViewInfo } from '../common/dshHarness.js';
 import { DshHarnessService, IDshHarnessService } from './dshHarnessService.js';
 import { DshChatHostContribution } from './dshChatInstanceHost.js';
-import { DshFullWindowContribution } from './dshFullWindowContribution.js';
+import { DshFullWindowContribution, dshIdeWindowHidden } from './dshFullWindowContribution.js';
 import { DshPluginCenterHostContribution } from './dshPluginCenterHost.js';
 import { DshActivityBarContribution } from './dshActivityBarContribution.js';
 import { DSH_COMMAND_OPEN_SETTINGS, DSH_COMMAND_RESTART_HOST, DSH_COMMAND_SHOW_LOG } from './dshCommands.js';
@@ -156,6 +158,11 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			],
 			default: 'composed',
 			markdownDescription: localize('dshHarness.config.popoutStyle', "「弹出独立窗口」用哪种形态。改动后需重载窗口。"),
+		},
+		[DshHarnessSettings.OpenDesktopOnStartup]: {
+			type: 'boolean',
+			default: true,
+			markdownDescription: localize('dshHarness.config.openDesktopOnStartup', "启动时直接打开 dsh 桌面窗口（默认开启）：工作台就绪后自动弹出那个独立窗口（形态见「弹出独立窗口」设置），只开一次。桌面窗口侧栏底部有「IDE」入口可以回到 VsSaros 主窗口。总开关关闭或聊天框引擎为 legacy 时不生效。"),
 		},
 		[DshHarnessSettings.SkipPluginInstall]: {
 			type: 'boolean',
@@ -777,6 +784,9 @@ class DshPageCommandContribution extends Disposable implements IWorkbenchContrib
 		@IWorkbenchManagerService private readonly _workbenchManager: IWorkbenchManagerService,
 		// 页面桥的 `insertChatReference` 要投给"活动聊天框" ⇒ 本类直接持有服务（原来只用一个局部变量）。
 		@IDshHarnessService private readonly _dsh: IDshHarnessService,
+		// 「回到 IDE」（`focusIde`，桥 15 → 16）：页面拿不到窗口级 API ⇒ 由宿主把主窗口提到前台。
+		@INativeHostService private readonly _nativeHostService: INativeHostService,
+		@ITofAuthService private readonly _tofAuth: ITofAuthService,
 	) {
 		super();
 		if (!configurationService.getValue<boolean>(DshHarnessSettings.Enabled)) {
@@ -798,30 +808,293 @@ class DshPageCommandContribution extends Disposable implements IWorkbenchContrib
 	 *   （进程内探针只断"调了桥"，看不见宿主侧没人接 ✗）。
 	 * 分工：聊天视图自己的 newChat/openSession 仍归聊天宿主（这里按 viewId 前缀放行，**不会**双开 ✓）。
 	 */
-	private async _handlePluginChatCommand(command: { method: 'newChat'; agentPreset?: string } | { method: 'openSession'; sessionId: string; agentPreset?: string }, viewId: string): Promise<void> {
+	private async _handlePluginChatCommand(command: { method: 'newChat'; agentPreset?: string } | { method: 'openSession'; sessionId: string; agentPreset?: string; cwd?: string }, viewId: string): Promise<void> {
 		if (command.method === 'newChat') {
 			this._logService.info(`[dshHarness] plugin page ${viewId} newChat${command.agentPreset ? ` preset=${command.agentPreset}` : ''} ⇒ agentStudio.newChatInEditor`);
 			await this._commands.executeCommand('agentStudio.newChatInEditor', command.agentPreset ? { presetId: command.agentPreset } : undefined);
 			return;
 		}
-		// openSession：会话绑定的权威在聊天宿主 ⇒ 转交给**活动聊天框**切过去（右侧 Agent 栏 ✓）。
-		const target = this._dsh.activeChatViewId;
-		if (target && this._dsh.dispatchPageCommand(target, command)) {
-			this._logService.info(`[dshHarness] plugin page ${viewId} openSession ${command.sessionId} ⇒ 交给活动聊天框 ${target}`);
+		// openSession：会话绑定的权威在聊天宿主 ⇒ **新开一个聊天页签**再交给它绑（用户定稿：不复用当前聊天框）。
+		const bound = await this._dispatchOpenSession(command, viewId);
+		if (!bound) {
+			this._logService.warn(`[dshHarness] plugin page ${viewId} openSession ${command.sessionId}：新聊天页签没有出现（4000ms），无法绑定`);
+			this._notifications.warn(localize('dshHarness.page.openSessionNoChat', "没能打开聊天框（页签未出现），因此这条会话没有被打开：请稍后重试，或在 agent 栏手动新建一个聊天。"));
+		}
+	}
+
+	/**
+	 * 把一条 `openSession` 落到聊天页签上（2026-10-19 两轮用户口径的**最终形态**）：
+	 *
+	 *   ① **本窗口已经打开了这条会话** ⇒ 只把焦点给到那个页签，**绝不**再开一个（用户原话）；
+	 *   ② 本窗口没有 ⇒ 新开一个页签并把它绑到这条会话（不要"复用当前聊天框"把用户正在看的会话换掉）。
+	 *
+	 * 为什么①优先：不开新页签 = 不制造重复页签、不打断用户；而"复用当前聊天框"只换内容会让用户
+	 * 以为没反应（页签还停在原来那条会话上）⇒ 两条合起来才是"打开＝切到它 / 没开＝新开一个"。
+	 *
+	 * 实现：先查本窗口有没有视图绑着这条会话（`_findChatViewForSession`）→ 有就 `_revealChatView`
+	 * 把它显出来；没有才 `agentStudio.newChatInEditor`（等它**在场**）→ 把 openSession 转给它
+	 * （它会先 `session.start` 幂等接管再换绑，见 `_openSession`）→ 聚焦该页签。
+	 * @returns 实际接单的聊天视图 id；没接上 ⇒ `undefined`（调用方负责如实提示）
+	 */
+	private async _dispatchOpenSession(command: { sessionId: string; agentPreset?: string; cwd?: string }, viewId: string): Promise<string | undefined> {
+		// ★ 幂等①：**本窗口的页签已经在显示这条会话** ⇒ 只聚焦，不再开第二个。
+		//   判据是 chatId 记账（`findChatIdForSession`），**不是** listViews —— 真机日志实证：
+		//   视图槽会随 pane 隐藏/回收消失，而页签还在 ⇒ 只看视图会每次都判"没打开"，越点越多 ✗。
+		const knownChatId = this._dsh.findChatIdForSession(command.sessionId);
+		if (knownChatId && await this._revealChatTab(knownChatId)) {
+			this._logService.info(`[dshHarness] plugin page ${viewId} openSession ${command.sessionId} ⇒ 本窗口页签 ${knownChatId} 已在显示它，只把焦点给过去`);
+			return `chat:${knownChatId}`;
+		}
+		// 幂等②（兜底）：记账里没有，但确实有活跃视图绑着它（例如本窗口外的记账路径）⇒ 同样只聚焦。
+		const already = await this._findChatViewForSession(command.sessionId);
+		if (already && await this._revealChatView(already)) {
+			this._logService.info(`[dshHarness] plugin page ${viewId} openSession ${command.sessionId} ⇒ 本窗口已打开它，只把焦点给到 ${already}`);
+			return already;
+		}
+		// ② 本窗口没有 ⇒ 新开一个页签，并且**把 openSession 交给"刚建的那个"**（不是"最近活跃的那个"）。
+		//   真机日志：按 activeChatViewId 等"新出现的视图"会拿到**别的页签**，于是新页签成了空壳、
+		//   原页签被反复 rebind ⇒ 看起来就是"重复显示 + 有的页签打不开"✗。
+		const beforeChatIds = new Set(this._openChatIds());
+		this._logService.info(`[dshHarness] plugin page ${viewId} openSession ${command.sessionId} ⇒ 新开聊天页签并绑到这条会话（不复用当前聊天框）`);
+		await this._commands.executeCommand('agentStudio.newChatInEditor');
+		const newChatId = await this._waitForNewChatId(beforeChatIds, 4000);
+		if (newChatId) {
+			// 先把它显出来（pane 可见才会建视图），再等它的视图出现 ⤵
+			await this._revealChatTab(newChatId);
+			const target = await this._waitForChatView(newChatId, 4000);
+			if (target && this._dsh.dispatchPageCommand(target, { method: 'openSession', ...command })) {
+				this._logService.info(`[dshHarness] plugin page ${viewId} openSession ${command.sessionId} ⇒ 已交给新建的聊天框 ${target}（chat ${newChatId}）`);
+				return target;
+			}
+			this._logService.warn(`[dshHarness] plugin page ${viewId} openSession ${command.sessionId}：新页签 ${newChatId} 的视图 4000ms 内没出现，无法绑定`);
+			return undefined;
+		}
+		// 连"哪个页签是新建的"都认不出来（极旧宿主/布局异常）⇒ 退回按活跃视图等，至少不静默。
+		const before = this._dsh.activeChatViewId;
+		const created = await this._waitForNewChatView(before, 4000);
+		if (created && created !== before && this._dsh.dispatchPageCommand(created, { method: 'openSession', ...command })) {
+			this._logService.info(`[dshHarness] plugin page ${viewId} openSession ${command.sessionId} ⇒ 已交给聊天框 ${created}（按活跃视图兜底）`);
+			await this._revealChatView(created);
+			return created;
+		}
+		return undefined;
+	}
+
+	/** 当前打开的聊天页签的 chatId 列表（用 `IEditorService.editors`，与视图是否存活无关）。 */
+	private _openChatIds(): string[] {
+		return this._editorService.editors
+			.map(editor => (editor as { chatId?: string }).chatId)
+			.filter((id): id is string => typeof id === 'string' && !!id);
+	}
+
+	/** 轮询等"比 before 多出来的那个 chatId"（= 刚新建的页签）。 */
+	private async _waitForNewChatId(before: Set<string>, timeoutMs: number): Promise<string | undefined> {
+		const started = Date.now();
+		while (Date.now() - started < timeoutMs) {
+			const fresh = this._openChatIds().find(id => !before.has(id));
+			if (fresh) {
+				return fresh;
+			}
+			await new Promise<void>(resolve => mainWindow.setTimeout(resolve, 100));
+		}
+		return undefined;
+	}
+
+	/** 轮询等"这个 chatId 对应的聊天视图"出现（视图 id 形如 `dsh-chat-w<win>-<chatId>`）。 */
+	private async _waitForChatView(chatId: string, timeoutMs: number): Promise<string | undefined> {
+		const started = Date.now();
+		while (Date.now() - started < timeoutMs) {
+			let views: readonly IDshViewInfo[] = [];
+			try {
+				views = await this._dsh.listViews();
+			} catch {
+				views = [];
+			}
+			const hit = views.find(v => v.surface === 'chat' && v.viewId.endsWith(`-${chatId}`));
+			if (hit) {
+				return hit.viewId;
+			}
+			await new Promise<void>(resolve => mainWindow.setTimeout(resolve, 100));
+		}
+		return undefined;
+	}
+
+	/**
+	 * 找出**本窗口**里正在显示这条会话的聊天视图。
+	 *
+	 * ⚠ 必须按 `ownerWindowId` 过滤（2026-10-19 用户要求「当前窗口已打开就只聚焦」）：
+	 *   别的窗口里的聊天页签在本 renderer 的 `editorService` 里**根本找不到** ⇒ 不滤窗口的话
+	 *   会"查到了却聚焦不了"，于是又新开一个（就是用户说的"重复打开新聊天窗口"✗）。
+	 *   跨窗口仍然如实记一行：本窗口确实没开 ⇒ 新开一个反而是对的（不跨窗口抢焦点）。
+	 */
+	private async _findChatViewForSession(sessionId: string): Promise<string | undefined> {
+		try {
+			const views = await this._dsh.listViews();
+			const chats = views.filter(v => v.surface === 'chat' && v.sessionId === sessionId);
+			if (!chats.length) {
+				return undefined;
+			}
+			const mine = chats.find(v => v.ownerWindowId === mainWindow?.vscodeWindowId);
+			if (mine) {
+				return mine.viewId;
+			}
+			this._logService.info(`[dshHarness] 会话 ${sessionId} 只在别的窗口打开（窗口 ${chats.map(v => v.ownerWindowId).join('/')}）⇒ 本窗口按"没打开"处理`);
+			return undefined;
+		} catch (e) {
+			this._logService.warn('[dshHarness] _findChatViewForSession: listViews failed', e);
+			return undefined;
+		}
+	}
+
+	/**
+	 * 插件页发来的 `renameSession`（会话历史页右键「重命名会话」）。
+	 *
+	 * 为什么不是"页面自己改名就算完"：dsh 只允许**聊天页**（有 dsh 客户端上下文）调
+	 * `ctx.sessions.rename` ⇒ 必须经宿主转交给"正在显示这条会话的聊天视图"。
+	 * 该会话当前**没在聊天框里打开**时，先按 `openSession` 同款把它绑上（含 `session.start` 幂等接管）
+	 * 再改名 —— 否则"没打开就改不了名"，用户会以为重命名坏了。
+	 * 成败由页面回执（`vssaros-dsh-renamed` → `onDidDshSessionRenamed`）决定，这里**不假装成功** ✓。
+	 */
+	private async _handlePluginRename(command: { sessionId: string; title: string; agentPreset?: string; cwd?: string }, viewId: string): Promise<void> {
+		if (await this._dsh.renameDshSession(command.sessionId, command.title)) {
+			this._logService.info(`[dshHarness] plugin page ${viewId} renameSession ${command.sessionId} → "${command.title}"（已有聊天框，等页面回执）`);
 			return;
 		}
-		// 没有在场的聊天框：如实降级 —— 新开一个绑该 agent 的聊天（**不是**那条旧会话，提示说清楚 ✓）
-		this._logService.info(`[dshHarness] plugin page ${viewId} openSession ${command.sessionId}：没有活动聊天框 ⇒ 降级为新开聊天`);
-		await this._commands.executeCommand('agentStudio.newChatInEditor', command.agentPreset ? { presetId: command.agentPreset } : undefined);
-		this._notifications.info(localize('dshHarness.page.openSessionFallback', "没有打开着的聊天框，已为该 Agent 新开一个聊天；要回到那条历史会话，请在聊天框的「历史会话」里选它。"));
+		this._logService.info(`[dshHarness] plugin page ${viewId} renameSession ${command.sessionId}：没有聊天框绑着它 ⇒ 先绑再改名`);
+		if (!await this._dispatchOpenSession(command, viewId)) {
+			this._notifications.warn(localize('dshHarness.page.renameNoChat', "没能打开聊天框，因此这条会话没有被重命名：请稍后重试。"));
+			return;
+		}
+		// 换绑是异步的（宿主 → 页面 rebind）：轮询到"该视图确实绑上了这条会话"再改名。
+		const started = Date.now();
+		while (Date.now() - started < 4000) {
+			if (await this._dsh.renameDshSession(command.sessionId, command.title)) {
+				this._logService.info(`[dshHarness] plugin page ${viewId} renameSession ${command.sessionId} → "${command.title}"（先绑定后改名，${Date.now() - started}ms）`);
+				return;
+			}
+			await new Promise<void>(resolve => mainWindow.setTimeout(resolve, 200));
+		}
+		this._logService.warn(`[dshHarness] plugin page ${viewId} renameSession ${command.sessionId}：4000ms 内没能把它绑到聊天框，改名未发出`);
+		this._notifications.warn(localize('dshHarness.page.renameBindTimeout', "没能把这条会话绑到聊天框，因此没有改名：请稍后重试，或先打开这条会话再改名。"));
+	}
+
+	/** 视图 id（`dsh-chat-w<win>-<chatId>`）→ 聚焦对应聊天页签；解析不出 chatId ⇒ false。 */
+	private async _revealChatView(viewId: string): Promise<boolean> {
+		const m = /^dsh-chat-w\d+-(.+)$/.exec(viewId);
+		return m ? this._revealChatTab(m[1]) : false;
+	}
+
+	/**
+	 * 按 **chatId** 把聊天页签显出来并聚焦（"打开会话"必须看得见才算打开）。
+	 *
+	 * 为什么需要：聊天视图是 `WebContentsView` 挂在编辑器 group 里，页面侧的 rebind 只换会话内容，
+	 * **不会**把那一列拉到前台 ⇒ 用户点完"打开会话"可能什么都看不到（尤其聊天在别的 group / 被折叠时）。
+	 * `NativeChatEditorInput.resource` 是 `native-chat:/<chatId>`（agentStudio.contribution 的 serializer
+	 * 也是这么存的）⇒ 能唯一定位页签；找不到页签时**只记一行**、不硬开（不同布局下视图可能挂在非编辑器 group ✓）。
+	 */
+	private async _revealChatTab(chatId: string): Promise<boolean> {
+		if (!chatId) {
+			return false;
+		}
+		const resource = URI.from({ scheme: 'native-chat', path: `/${chatId}` });
+		try {
+			const found = this._editorService.findEditors(resource);
+			if (!found.length) {
+				// 兜底（"别重复开新页签"的最后一道保险）：按输入上的 chatId 再找一遍 ——
+				// resource 形态将来若变（加 query/fragment），findEditors 会静默找不到，而那**不是**
+				// "没打开"，直接新开就正好制造出用户抱怨的重复页签 ✗。
+				const input = this._editorService.editors
+					.find(editor => (editor as { chatId?: string }).chatId === chatId);
+				if (!input) {
+					this._logService.info(`[dshHarness] reveal chat ${chatId}：没有对应的编辑器页签（视图可能挂在非编辑器 group）`);
+					return false;
+				}
+				await this._editorService.openEditor(input, { preserveFocus: false });
+				this._logService.info(`[dshHarness] reveal chat ${chatId} ⇒ 按 chatId 兜底聚焦到聊天页签`);
+				return true;
+			}
+			await this._editorService.openEditor(found[0].editor, { preserveFocus: false }, found[0].groupId);
+			this._logService.info(`[dshHarness] reveal chat ${chatId} ⇒ 已切到 group ${found[0].groupId} 的聊天页签`);
+			return true;
+		} catch (e) {
+			this._logService.warn(`[dshHarness] reveal chat ${chatId} failed`, e);
+			return false;
+		}
+	}
+
+	/** 轮询等"新出现的活动聊天视图"（见 `_handlePluginChatCommand` 的降级路径）。 */
+	private async _waitForNewChatView(previous: string | undefined, timeoutMs: number): Promise<string | undefined> {
+		const started = Date.now();
+		while (Date.now() - started < timeoutMs) {
+			const current = this._dsh.activeChatViewId;
+			if (current && current !== previous) {
+				return current;
+			}
+			await new Promise<void>(resolve => mainWindow.setTimeout(resolve, 100));
+		}
+		const last = this._dsh.activeChatViewId;
+		return last && last !== previous ? last : undefined;
+	}
+
+	/**
+	 * **不**需要 IDE 主窗口露面的命令（其余一律先还原 IDE —— 用**黑名单**而不是白名单：新增的
+	 * 桥命令默认按"要给 IDE 出界面"处理，忘登记只会多还原一次窗口，不会变成"点了没反应" ✓）。
+	 *
+	 * 背景：启动时若把 IDE 主窗口收进了任务栏（`openDesktopOnStartup`，用户 2026-10-21 要求
+	 * "F5 只看到那个窗口"），而命令作用在看不见的窗口上 ⇒ 用户看到的就是"点了没反应" ✗
+	 * （本仓高频缺陷形态）。所以凡是要让 IDE 出界面的命令，到达时先把主窗口还原到前台。
+	 *
+	 * ★ 名单本体搬到 `common/dshPageBridgeProtocol.ts`（`DSH_PAGE_COMMANDS_WITHOUT_IDE_UI`）——
+	 *   私有静态集没法被单测断言 ⇒ 等于没有守卫 ✗。
+	 * ★ 2026-10-21：`signInIde` / `signOutIde` 在名单里 ⇒ **窗口里点「登录」不再切到 IDE 模式**
+	 *   （用户原话："窗口模式下，点击登录会切换到 ide 模式，要求不切换，在当前模式下，直接登录"）✓。
+	 */
+	private static readonly NO_IDE_UI_METHODS = DSH_PAGE_COMMANDS_WITHOUT_IDE_UI;
+
+	/**
+	 * 把 IDE 主窗口**再藏一次**（desktop 模式的兜底，2026-10-21）。
+	 *
+	 * 为什么需要：TOF 登录要开系统浏览器 ⇒ 窗口层面的外部动作（系统把焦点还给本应用的窗口）
+	 * 会把 IDE 主窗口拉到前台（真机日志：桌面窗口 BLUR 后 1.6s IDE 主窗口 FOCUS ✗）。
+	 * 主进程那边的 **desktop 守卫**（`common/dshIdeWindowGuard.ts`）是第一道防线；这里是第二道
+	 * （守卫没装上 / 事件漏了时的兜底）✓。
+	 *
+	 * ⚠ 只在 `dshIdeWindowHidden.value === true` 时才调（那个标记**只有 IDE 主窗口那个 renderer**
+	 *   会置位 ⇒ 桌面窗口那个 renderer 里它是 false ⇒ 绝不会把桌面窗口自己藏掉 ✗）。
+	 */
+	private async _rehideIdeWindow(reason: string): Promise<void> {
+		try {
+			await this._nativeHostService.hideWindow({ targetWindowId: this._nativeHostService.windowId });
+			this._logService.info(`[dshHarness] ${reason} ⇒ IDE 主窗口保持隐藏（desktop 模式下它不该露面 ✓）`);
+		} catch (err) {
+			this._logService.warn(`[dshHarness] ${reason} ⇒ 重新隐藏 IDE 主窗口失败`, err);
+		}
 	}
 
 	private async _handle(command: Exclude<DshPageCommand, { method: 'ping' }>, viewId: string): Promise<void> {
+		// 「IDE 窗口被我们收起来了 + 这条命令要让 IDE 出界面」⇒ 先把主窗口拉回前台
+		if (dshIdeWindowHidden.value && !DshPageCommandContribution.NO_IDE_UI_METHODS.has(command.method)) {
+			dshIdeWindowHidden.value = false;
+			this._logService.info(`[dshHarness] page ${command.method}: IDE 主窗口启动时被藏了起来 ⇒ 先显示到前台`);
+			try {
+				// 隐藏态必须先 show（`focusWindow` 对隐藏窗口无效），再聚焦 ✓
+				await this._nativeHostService.showWindow({ targetWindowId: this._nativeHostService.windowId });
+				await this._nativeHostService.focusWindow({ targetWindowId: this._nativeHostService.windowId, mode: FocusMode.Force });
+			} catch (err) {
+				this._logService.warn('[dshHarness] 显示 IDE 主窗口失败（命令照常执行）', err);
+			}
+		}
 		switch (command.method) {
 			case 'newChat':
 			case 'openSession':
 				if (viewId.startsWith('dsh-plugin-')) {
 					await this._handlePluginChatCommand(command, viewId);
+				}
+				return;
+			case 'renameSession':
+				// 插件页（会话历史）右键改名：只受理插件页发来的（聊天页自己有 ctx.sessions.rename，不走这条）。
+				if (viewId.startsWith('dsh-plugin-')) {
+					await this._handlePluginRename(command, viewId);
 				}
 				return;
 			case 'openFile':
@@ -1045,6 +1318,98 @@ class DshPageCommandContribution extends Disposable implements IWorkbenchContrib
 				this._logService.info('[dshHarness] page openSkillMarket ⇒ 交给 IDE 命令 agentStudio.openSkillMarket');
 				void Promise.resolve(this._commands.executeCommand('agentStudio.openSkillMarket')).catch(() => undefined);
 				return;
+			case 'signInIde':
+			case 'signOutIde': {
+				// 登录/登出**接管 IDE 的账号**（桥 16 → 17，2026-10-21）：dsh 窗口里的那行账号不自己登录，
+				//   而是请 IDE 走 TOF/OA 流程 ⇒ 窗口与 IDE 同一份登录态 ✓（结果由 IDE 推回页面 ✓）。
+				// ★ 2026-10-21：**失败也必须让页面看见**（页面桥单向 ⇒ 只回 true ⇒ 失败无处可传 ✗）
+				//   ⇒ 把失败原因经 `pushAuthError` 推回页面（只给一句人话，不含堆栈/票据 ✓）。
+				//   否则用户看到的还是"未登录"（真实原因只落日志）⇒ 干等超时兜底 ⇒ "点了没反应" ✗。
+				//
+				// ★★ 2026-10-21（用户报障："在 desktop 模式下，点击登录，不要显示 ide 模式的窗口"）：
+				//   TOF 登录要**开系统浏览器** ⇒ **窗口层面**的外部动作（系统把焦点还给本应用的窗口）
+				//   会把 IDE 主窗口拉到前台（真机日志 dev 21:04:23.574 signInIde → 21:04:23.662 桌面窗口
+				//   BLUR → 21:04:25.306 **IDE 主窗口 FOCUS** ✗）⇒ 我们自己的命令分发处根本没调用过
+				//   showWindow ⇒ 拦不住 ⇒ 只能"登录期间 IDE 主窗口不许露面"：
+				//     ① 主进程那边的 **desktop 守卫**（`dshIdeWindowGuard.ts`）兜住 show/focus ✓；
+				//     ② 这里再补一刀"登录结束后它仍然是隐藏的"（守卫没装上/被绕过时的兜底 ✓）。
+				const keepHidden = dshIdeWindowHidden.value;
+				const signIn = command.method === 'signInIde';
+				this._logService.info(`[dshHarness] page ${command.method} ⇒ IDE 账号服务 ${signIn ? 'login' : 'logout'}`);
+				const fail = (e: unknown) => {
+					const msg = String((e as Error)?.message ?? e);
+					this._logService.warn(`[dshHarness] ${command.method} failed: ${msg}`);
+					try {
+						this._dsh.pushAuthError(msg);
+					} catch (pushErr) {
+						this._logService.warn(`[dshHarness] auth error push skipped: ${String((pushErr as Error)?.message ?? pushErr)}`);
+					}
+					if (keepHidden) {
+						void this._rehideIdeWindow(`${command.method} 失败`);
+					}
+				};
+				try {
+					const p = signIn ? this._tofAuth.login() : this._tofAuth.logout();
+					void Promise.resolve(p).then(
+						() => { if (keepHidden) { void this._rehideIdeWindow(`${command.method} 完成`); } },
+						e => fail(e),
+					);
+				} catch (e) {
+					fail(e);
+				}
+				return;
+			}
+			case 'openSettings':
+				// 左下角账号菜单的「⚙ 设置」（桥 17 → 18，2026-10-21）：设置编辑器只长在 IDE 窗口里，
+				//   页面自己开不了 ⇒ 交给 IDE 的标准命令（与 `Ctrl+,` 同一条）✓。无参（不能指定哪一条设置）。
+				this._logService.info('[dshHarness] page openSettings ⇒ 交给 IDE 命令 workbench.action.openSettings');
+				void Promise.resolve(this._commands.executeCommand('workbench.action.openSettings')).catch(() => undefined);
+				return;
+			case 'openFeedback':
+				// 同一菜单的「✈ 意见反馈」：用 IDE 标准的反馈通道（自动带上环境/扩展信息），
+				//   比丢一个 URL 靠谱 ✓。无参。
+				this._logService.info('[dshHarness] page openFeedback ⇒ 交给 IDE 命令 workbench.action.openIssueReporter');
+				void Promise.resolve(this._commands.executeCommand('workbench.action.openIssueReporter')).catch(() => undefined);
+				return;
+			case 'openMediaGallery':
+				// 媒体库（`agentStudio.openMediaGallery`，2026-10-19；触发点 = dsh 媒体库页
+				// `/x/media/` 的置顶按钮）。与上面两条同源：媒体库是原生 `EditorPane`，
+				// 页面开不了 ⇒ 宿主转成 IDE 自己的命令 ✓（不在宿主里 new EditorInput ✗）。
+				// ⚠ 这条**取代**了原先的 `openModulePage('/x/media/')` —— 那条只能把 dsh 自己的
+				//   文本列表页放大，给不出缩略图/收藏/分组/标签（用户原话："应该显示同一个样式的 editorpane"）。
+				this._logService.info('[dshHarness] page openMediaGallery ⇒ 交给 IDE 命令 agentStudio.openMediaGallery');
+				void Promise.resolve(this._commands.executeCommand('agentStudio.openMediaGallery')).catch(() => undefined);
+				return;
+			case 'focusIde': {
+				// 「回到 IDE」（桥 `15 → 16`，2026-10-21；触发点 = dsh 桌面窗口侧栏底部那行品牌摘要）。
+				//   · dsh 页面是 WebContentsView 里的前端，**没有窗口级 API**（`window.focus()` 只能激活它自己
+				//     所在的那个窗口 ⇒ 对"回到另一个窗口"无效 ✗）⇒ 必须宿主代劳；
+				//   · 目标 = **除本窗口外的主窗口**（`includeAuxiliaryWindows: false` ⇒ 桌面窗口那种辅助窗口
+				//     不在列表里）。本窗口已经是唯一主窗口时就直接聚焦自己 ⇒ **绝不新开窗口** ✓
+				//     （`agents.openVSCodeWindow` 那种"找不到就 openWindow"在这里是不行的：会凭空多出一个 IDE ✗）。
+				//   · 只聚焦，不关桌面窗口：关了就回不去（用户随时可能按标题栏那个 Pop Out 切回来 ✓）。
+				try {
+					const windows = await this._nativeHostService.getWindows({ includeAuxiliaryWindows: false });
+					const self = this._nativeHostService.windowId;
+					const target = windows.find(w => w.id !== self) ?? windows.find(w => w.id === self);
+					if (!target) {
+						this._logService.warn(`[dshHarness] page focusIde: 没有可聚焦的主窗口（self=${self}, windows=${windows.map(w => w.id).join(',') || '(空)'}）`);
+						return;
+					}
+					this._logService.info(`[dshHarness] page focusIde ⇒ 显示并聚焦主窗口 ${target.id}（本窗口 ${self}）`);
+					// ⚠ 启动时主窗口可能是**隐藏**的（`hideWindow`）：`focusWindow` 对隐藏窗口无效 ⇒ 先 show ✓
+					// ⚠ **先撤 desktop 守卫**：守卫会把 show/focus 事件压回去 ⇒ 不撤就是"刚显示就被藏" ✗
+					//   （用户点「回到 IDE」= 从 desktop 模式回 IDE 模式 ⇒ 守卫必须撤 ✓）。
+					await this._dsh.setIdeWindowHidden(false, target.id);
+					await this._nativeHostService.showWindow({ targetWindowId: target.id });
+					await this._nativeHostService.focusWindow({ targetWindowId: target.id, mode: FocusMode.Force });
+					dshIdeWindowHidden.value = false;
+				} catch (err) {
+					this._logService.warn('[dshHarness] page focusIde failed', err);
+					this._notifications.warn(localize('dshHarness.page.focusIdeFailed', "回到 VsSaros IDE 失败：{0}", String((err as Error)?.message ?? err)));
+				}
+				return;
+				}
 			case 'openResourceSettings': {
 				// 「工具」页（`/x/skills/`，原「集成」页）里**技能行 / MCP 行**的齿轮（桥 `9 → 10`，2026-10-15；
 				// 用户要求"技能/mcp item 中增加设置按钮，点击后打开 editorpane 修改" ✓）。两类落点不同，
@@ -1138,6 +1503,25 @@ class DshPageCommandContribution extends Disposable implements IWorkbenchContrib
 				}
 				return;
 			}
+			case 'kbFeishuSync': {
+				// 同步飞书（桥 `11 → 12`，2026-10-19；用户报"点了同步飞书按钮只打开设置、没开始同步" ✓）——
+				// 与上面 `openKbSettings` **完全同构**：宿主只把这一跳**转成 IDE 自己的命令**
+				// （`agentStudio.kb.feishuSync`），判据与实现都在那条命令/服务里 ✓（同一个动作只有一份实现 ✓）。
+				//
+				// ⚠ 那条命令内部**不等同步结束**（分钟级长任务，fire-and-forget）⇒ 这里 await 也立刻返回；
+				//   保留 await 只为把"命令不存在 / 抛错"如实记日志 + 通知用户（与上面两条同一套处理 ✓，
+				//   否则又是"点了没反应、日志里啥也没有"那种最难查的形态 ✗）。
+				const commandId = 'agentStudio.kb.feishuSync';
+				this._logService.info(`[dshHarness] page ${command.method} ⇒ 交给 IDE 命令 ${commandId}`);
+				try {
+					await this._commands.executeCommand(commandId);
+					this._logService.info(`[dshHarness] page ${command.method} ⇒ ${commandId} 已执行（同步在集成终端里跑，输出对用户可见）`);
+				} catch (e) {
+					this._logService.error(`[dshHarness] page ${command.method} ⇒ ${commandId} 失败：${String((e as Error)?.message ?? e)}`);
+					this._notifications.warn(localize('dshHarness.page.kbPanel', "这条命令不可用：{0}", `${commandId}（${String((e as Error)?.message ?? e)}）`));
+				}
+				return;
+			}
 			case 'kbAddVault':
 			case 'kbRemoveVault': {
 				// 知识库**增删**（桥 `7 → 8`，2026-10-15；用户要求"下拉框要有增删功能" ✓）——
@@ -1178,7 +1562,17 @@ class DshPageCommandContribution extends Disposable implements IWorkbenchContrib
 				// 完整版由编辑区承载）。route → 模块页表（**白名单**）→ 容器 → 编辑区页 ✓
 				// ⚠ 白名单是必须的：页面里任何**第三方**前端插件都能调 `window.vssarosDsh.*` ⇒ 少了白名单
 				//   就等于给了它"打开任意页面"的能力 ✗（协议里也是这个口径）。
-				const page = DSH_MODULE_PAGES.find(p => p.route === command.route || p.route === `${command.route}/`);
+				//
+				// ★ 2026-10-19（用户报「关系图谱应该开在编辑区、不是侧栏」）：先**精确**匹配，再按**前缀**归属
+				//   （`/x/kb/graph` ⇒ 归到 `/x/kb/`）。
+				//   ⚠ 子路由**不写进** `DSH_MODULE_PAGES`：那张表与插件清单**逐项对账**
+				//   （`dshModuleContainers.test.ts` 的"双轨对账"）⇒ 单方面加一条会立刻把对账打红 ✗（踩过）。
+				//   ⇒ 白名单仍只登记**模块主页**，子路由靠前缀归属；可打开范围依然是
+				//     "已注册模块的路由前缀之下"（仍然打不开第三方站点 ✓）。
+				// ⚠ `p.route` 是可选的（`kind: 'none'` 的模块没有 route）⇒ 前缀比较前必须先判 string
+				//   （否则 TS2345：`string | undefined` 不能给 `startsWith(string)`；watch-client 报过）。
+				const page = DSH_MODULE_PAGES.find(p => p.route === command.route || p.route === `${command.route}/`)
+					?? DSH_MODULE_PAGES.find(p => typeof p.route === 'string' && command.route.startsWith(p.route));
 				const container = page ? DSH_MODULE_CONTAINERS.find(c => c.modules.includes(page.module)) : undefined;
 				this._logService.info(`[dshHarness] page openModulePage: route=${command.route} ⇒ module=${page?.module ?? '(未在页表里)'} container=${container?.containerId ?? '(无)'}`);
 				if (!page || !container) {
@@ -1188,7 +1582,10 @@ class DshPageCommandContribution extends Disposable implements IWorkbenchContrib
 				const bar = container.activityBar;
 				const title = typeof bar?.title === 'string' ? bar.title : bar?.title?.zh;
 				// 「一个容器一个输入」（`getOrCreate` 单例 ✓）；tab 名取自容器表（如「主页」）而不是容器 id ✓
-				const input = DshPluginPageEditorInput.getOrCreate(container.containerId, title ?? container.containerId);
+				// ★ 2026-10-19（用户报「关系图谱应该开在编辑区、不是侧栏」）：把**请求的 route** 传下去。
+				//   否则只会打开模块主页（`/x/kb/`）—— 子页面（`/x/kb/graph`）永远打不开 ✗。
+				//   白名单按「精确 → 前缀归属」，子路由**不登记**在 `DSH_MODULE_PAGES` 里（见上）。
+				const input = DshPluginPageEditorInput.getOrCreate(container.containerId, title ?? container.containerId, command.route);
 				await this._editorService.openEditor(input, { pinned: true });
 				return;
 			}

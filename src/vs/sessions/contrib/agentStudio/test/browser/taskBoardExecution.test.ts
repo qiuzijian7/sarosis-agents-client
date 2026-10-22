@@ -56,8 +56,46 @@ class InMemoryFileService {
 		}
 		throw new Error(`InMemoryFileService: file not found: ${p}`);
 	}
-	async writeFile() { }
-	async exists() { return false; }
+	/**
+	 * ★ 2026-10-20：`writeFile` 原来是**空实现**、`exists` 恒 false ⇒ 整个套件 4 例全红
+	 * （症状：`Error: Task not found: task-1` / 附件解析出 0 个）。
+	 * 根因不是产品代码：`createTask` 写盘后这个假件不更新 `taskboardJson`，
+	 * 于是下一次 `loadBoard` 读回初始 `'[]'` ⇒ 找不到刚建的任务 ✓。
+	 * 现在照真实语义落进内存（只认 taskboard.json，写别的一律抛 —— 与上面 readFile 的口径一致）。
+	 */
+	async writeFile(uri: URI, buffer: VSBuffer): Promise<void> {
+		const p = uri.path;
+		if (p.endsWith('taskboard.json')) {
+			this.taskboardJson = buffer.toString();
+			return;
+		}
+		throw new Error(`InMemoryFileService: 不会写非 taskboard 文件: ${p}`);
+	}
+
+	/** 存在性：taskboard 恒有；附件按 seed 过的 id 判（与 readFile 同一套判据）。 */
+	async exists(uri: URI): Promise<boolean> {
+		const p = uri.path;
+		if (p.endsWith('taskboard.json')) { return true; }
+		for (const id of this.attachmentBytes.keys()) {
+			if (p.includes('/attachments/') && p.endsWith(`/${id}`)) { return true; }
+		}
+		return false;
+	}
+
+	/** `stat` 给写锁（`common/fileWriteLock.ts` 取 mtime 判 "占锁进程是否还活着"）。 */
+	async stat(_uri: URI): Promise<{ type: 'file'; mtime: number }> {
+		return { type: 'file', mtime: Date.now() };
+	}
+
+	/** 写锁的原子占位（`{ overwrite: false }` ⇒ 已存在则抛，调用方据此判"被别人占着"）。 */
+	async createFile(uri: URI, buffer: VSBuffer, opts?: { overwrite?: boolean }): Promise<void> {
+		const p = uri.path;
+		if (opts?.overwrite === false && await this.exists(uri)) {
+			throw new Error(`InMemoryFileService: file already exists: ${p}`);
+		}
+		await this.writeFile(uri, buffer).catch(() => undefined);
+	}
+
 	async del() { }
 	hasCapability() { return false; }
 }

@@ -148,6 +148,16 @@ export interface ICommonNativeHostService {
 	maximizeWindow(options?: INativeHostOptions): Promise<void>;
 	unmaximizeWindow(options?: INativeHostOptions): Promise<void>;
 	minimizeWindow(options?: INativeHostOptions): Promise<void>;
+	/**
+	 * **显示**窗口（与 `minimizeWindow` 不同：隐藏态会从任务栏消失，显示时再回来）。
+	 *
+	 * 为什么需要（2026-10-21）：桌面窗口模式下 IDE 主窗口会整场隐藏（用户要求"F5 只看到 dsh 窗口"），
+	 * 而 `focusWindow` 对**已隐藏**的窗口不会把它显示出来（Electron 的 `focus()` 只处理最小化）⇒
+	 * "回到 IDE"必须先 `showWindow` 再聚焦 ✓。
+	 */
+	showWindow(options?: INativeHostOptions): Promise<void>;
+	/** 隐藏窗口（从任务栏移除，进程/渲染器照常活着）。见 `showWindow` 的说明。 */
+	hideWindow(options?: INativeHostOptions): Promise<void>;
 	moveWindowTop(options?: INativeHostOptions): Promise<void>;
 	positionWindow(position: IRectangle, options?: INativeHostOptions): Promise<void>;
 

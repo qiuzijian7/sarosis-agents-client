@@ -55,6 +55,9 @@ const COVERED_BY: ReadonlyMap<string, readonly string[]> = new Map([
 	['vssaros-codebase', ['p3-11-codebase-plugin.mjs', 'p3-40-codebase-shadow-index.mjs']],
 	['vssaros-dashboard', ['p3-09-dashboard-plugin.mjs']],
 	['vssaros-ide', ['p3-13-ide-plugin.mjs']],
+	// 2026-10-20：pele 的 `render_diagram`（渲染 + **审批闸只在 saveTo 时 ask**）由 p3-148 钉住。
+	// 此前它注册了工具却没有探针 ⇒ 这张表红着（"新模块的工具没人管"正是这条守卫要抓的）。
+	['vssaros-pele', ['p3-148-pele-render.mjs']],
 	// 2026-10-16：kanban_decompose + kanban_swarm（重构 4；两个都在 p3-110 里钉，见该文件的 ①—⑨）。
 	['vssaros-kanban', ['p3-02-kanban-tool-pipeline.mjs', 'p3-26-write-tool-gates.mjs', 'p3-110-kanban-decompose.mjs']],
 	// 2026-10-16（重构 4）：session_search（sessions 插件从"零工具"变"有工具"）。
@@ -63,7 +66,19 @@ const COVERED_BY: ReadonlyMap<string, readonly string[]> = new Map([
 	['vssaros-kb', ['p3-08-kb-plugin.mjs', 'p3-108-kb-semantic.mjs']],
 	// media（2026-10-12）：探针 `p3-37` 已落地 ⇒ 两个只读工具从 `UNPINNED` 台账里摘掉、填回这里 ✓。
 	// ⚠ 编号是 **p3-37** 而不是台账原先写的 p3-35 —— 那个号被同批的 `p3-35-memory-partition.mjs` 占了 ✓。
-	['vssaros-media', ['p3-37-media-plugin.mjs', 'p3-107-media-generate.mjs']],  // 2026-10-16：image_generate 加进 media 插件（重构 4）
+	['vssaros-media', ['p3-37-media-plugin.mjs', 'p3-107-media-generate.mjs']],  // 2026-10-21：image_generate 迁走，p3-107 只剩 video/tts/vision 那几条
+	// 2026-10-21：生图迁到 `@vssaros/dsh-imagegen`（`image_generate` 走官方 `tool.call.images` 画廊）⇒
+	//   由 `p3-156` 钉住（注册 / 缺参 / 桥不在 / 桥参数 / pluginId 是包名 / attachment / image 块 / 审批闸 ✓）。
+	//   2026-10-21（画布工作台）：`canvas_state` / `view_canvas` 由 `p3-157` 钉住
+	//   （路由注册 / 鉴权 / 静态资源 / 路径穿越 / 状态推拉 / 旧序号挡住 / 没画布明确报错 / 选区截图存 attachment ✓）。
+	//   2026-10-21（二批）：⑤落盘（内容寻址 / 幂等 / 目录穿越拒 / 回执带路径）与
+	//   ⑥`edit_image` 多来源（attachment_id / path / 参考图优先级）由 `p3-161` 钉住 ✓。
+	//   2026-10-21（三批）：⑦`generate_images` 批量（顺序 / 失败不中断 / 上限 / 取消语义 / 审批闸）由 `p3-162` 钉住；
+	//   ⑨能力表（经桥读 IDE 的 capabilities / 缓存 / 读失败报错）与 ⑧多模型对比（并发 / 失败不中断 / 按能力表校正参数）由 `p3-163` 钉住 ✓。
+	//   2026-10-21（四批）：⑩落位布局（3 列网格 / 连落 5 张不重叠 / 视口判定）、⑫拖图入画布
+	//   （canvas-import ⇒ attachment + 账本 + 落工作区）与 ⑪画廊筛选/持久化（来源 / provider / 时间 / 关键字 /
+	//   工作区图库 + 字节路由 + 穿越防护）由 `p3-165` 钉住 ✓。
+	['vssaros-imagegen', ['p3-156-imagegen-generate.mjs', 'p3-157-imagegen-canvas.mjs', 'p3-158-imagegen-landings.mjs', 'p3-159-imagegen-edit.mjs', 'p3-160-imagegen-digest.mjs', 'p3-161-imagegen-save-refs.mjs', 'p3-162-imagegen-batch.mjs', 'p3-163-imagegen-capabilities.mjs', 'p3-164-imagegen-workbench.mjs', 'p3-165-imagegen-landing-import-gallery.mjs']],
 	// 2026-10-16（重构 4）：mcp_install（mcp 插件从"零工具"变"有工具"）。
 	['vssaros-mcp', ['p3-109-mcp-install.mjs', 'p3-111-market-list.mjs']],  // 2026-10-17：mcp_market_list
 	['vssaros-memory', ['p3-07-memory-plugin.mjs']],
@@ -73,6 +88,11 @@ const COVERED_BY: ReadonlyMap<string, readonly string[]> = new Map([
 	['vssaros-web-content-import', ['p3-93-web-content-import.mjs']],
 	['vssaros-unreal', ['p3-33-unreal-plugin.mjs']],
 	['vssaros-workflow', ['p3-10-workflow-plugin.mjs']],
+	// 2026-10-21：dsh 侧**独立**的 TOF/OA 登录（`tof_signin` / `tof_status` / `tof_signout`）。
+	//   它们住在**伴生插件** `vssaros-bridge` 里（该插件此前一个工具都没有 ⇒ 不在这张表里 ✓）。
+	//   指定探针 = 桥的反向通道那份（它验的正是这个插件的宿主半 ✓）；三条 TOF 工具本身进 UNPINNED
+	//   （要真开系统浏览器跑 TOF OAuth ⇒ 探针里跑不了 ⇒ 已知欠账 ✓，理由与转绿条件见下 ✓）。
+	['vssaros-bridge', ['p3-12-bridge-reverse.mjs']],
 ]);
 
 /**
@@ -87,6 +107,13 @@ const UNPINNED: readonly (readonly [tool: string, why: string])[] = [
 	// "画布存在 / 看板里有那张卡片"的 IDE 场景 ⇒ 记成已知欠账 ✓（转绿条件写在理由里 ✓）。
 	['workflow_open', '展示类（打开工作流画布）：需"画布存在"的 IDE 场景；转绿 = 在 p3-13 里真调 workflow 能力并断言 opened'],
 	['taskboard_focus', '展示类（在看板定位卡片）：需"该卡片存在"的 IDE 场景；转绿 = 在 p3-13 里真调 taskboard 能力并断言 focused'],
+	// 2026-10-21：dsh 侧**独立**的 TOF/OA 登录三条（`vssaros-bridge`）。
+	//   它们要**真的开系统浏览器**跑一遍 TOF OAuth（还要用户的 iOA 会话 + 内网网关）⇒ 探针里跑不了
+	//   ⇒ 记成已知欠账 ✓。转绿条件 = 用**可注入的假 whoami + 假浏览器**做端到端
+	//   （`dsh-plugins/vssaros-bridge/lib/tof.js` 的服务层已经支持注入 whoami ✓ ⇒ 探针可写 ✓）。
+	['tof_signin', '要真开浏览器跑 TOF OAuth（需用户 iOA 会话 + 内网网关）⇒ 探针跑不了；转绿 = 用可注入的假 whoami/假浏览器做端到端'],
+	['tof_status', '读的是登录后的身份（同上跑不了）；转绿 = 同上（注入假 whoami 后断言投影里没有票据）'],
+	['tof_signout', '清凭据（同上跑不了）；转绿 = 同上（断言两份 ref 都清掉、且默认只清本地那份）'],
 ];
 
 suite('dsh 工具面覆盖守卫（快照 ↔ 探针）', () => {

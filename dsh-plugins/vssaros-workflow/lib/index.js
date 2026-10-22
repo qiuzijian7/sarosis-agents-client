@@ -60,12 +60,21 @@ const ROUTE_PREFIX = '/x/workflow';
 const PLUGIN_ID = '@vssaros/dsh-workflow';
 /** 「在画布打开」的等待预算：主进程一趟 + 渲染侧一趟（开编辑器，不开浏览器、不等用户），默认够用。 */
 const OPEN_TIMEOUT_MS = 15_000;
+/**
+ * 「在 IDE 执行一个节点」（comfy / comfyStage / askUser）的等待预算 —— 比打开画布宽松得多：
+ * 这类节点在壳侧要真的跑（ComfyTV 生成、媒体处理、等用户回答），百秒级是正常量级。
+ *
+ * ⚠ 2026-10-20：与 IDE 侧的 `IDE_REQUEST_EXECUTE_NODE_TIMEOUT_MS`（**180s**）配套，这里**故意小 30s**
+ * —— 让**调用方先放弃**：超时时报的是"IDE 没回执"这个真因，而不是两边同时超时的竞态歧义
+ * （`comfyStageBridge` 对 webview 也留 2min 余量，同一个思路）。要支持更久的长任务，两边一起调。
+ */
+const EXECUTE_NODE_TIMEOUT_MS = 150_000;
 /** JSON 回执的统一响应头（多处理由共用一份，免得一处改了另一处忘）。 */
 const JSON_HEADERS = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' };
 // ⚠ 这是**声明**的工具名清单（页面自诊断那一栏用它 ✓）—— 它必须与 `toolDefinitions()` 里真正注册的
 // 名字**逐字一致** ✗。2026-10-12 加 `workflow_apply` 时漏改过这里一次 ✗，症状是"页面说 4 个、
 // 注册表里 5 个" ✓（单元级看不出来 ✓）。⇒ `p3-10` 现在会拿**这两处互相对账** ✓（谁烂都红 ✓）。
-export const TOOL_NAMES = ['workflow_list', 'workflow_get', 'workflow_get_schema', 'workflow_update', 'workflow_apply', 'workflow_engine_status'];
+export const TOOL_NAMES = ['workflow_list', 'workflow_get', 'workflow_get_schema', 'workflow_update', 'workflow_apply', 'workflow_engine_status', 'workflow_run'];
 /** 页面上画布只画一个工作流（最大的那个，或 `?id=` 指定的）。 */
 const CANVAS_NODE_LIMIT = 120;
 
@@ -666,6 +675,21 @@ function toolDefinitions(ctx, state, config) {
 						},
 					},
 					nodeNames: { type: 'array', items: { type: 'string' } },
+					// ★ 2026-10-20：**节点内容**（`data` —— prompt / branches / allowTools / agentId …）。
+					//   只给名字时模型没法改工作流（改 `workflow_apply` 要复述整份定义 ⇒ 看不到 prompt 就只能编 ✗）。
+					//   ⚠ 受限 schema 下不能塞任意对象（`additionalProperties` 只能布尔）⇒ `data` 用**截断后的
+					//   JSON 文本**（`dataJson`）表达 ✓，纯标量字段不会撑爆 schema。
+					nodeDetails: {
+						type: 'array',
+						items: {
+							type: 'object',
+							properties: {
+								id: { type: 'string' }, type: { type: 'string' }, name: { type: 'string' }, dataJson: { type: 'string' },
+							},
+							required: ['id'],
+						},
+					},
+					nodeDetailsTruncated: { type: 'boolean' },
 				},
 				required: ['id', 'nodes', 'edges'],
 			},
@@ -696,6 +720,28 @@ function toolDefinitions(ctx, state, config) {
 			const nodeTypes = [...typeCounts.entries()]
 				.map(([type, count]) => ({ type, count }))
 				.sort((a, b) => b.count - a.count || a.type.localeCompare(b.type));
+			// 节点内容：从**原文**读（`workflow` 是压扁投影，没有 data ✓）；读不到就不出现（不编造 ✗）。
+			let nodeDetails = [];
+			let nodeDetailsTruncated = false;
+			try {
+				const raw = await readRawWorkflow(workflow.dir);
+				const budget = { left: NODE_DETAILS_BUDGET };
+				nodeDetails = raw.nodes.slice(0, NODE_DETAILS_LIMIT).map(node => {
+					const dataJson = node?.data === undefined ? '' : clipJson(node.data, NODE_DATA_LIMIT);
+					if (dataJson.length > budget.left) {
+						nodeDetailsTruncated = true;
+						return { id: String(node?.id ?? ''), ...(node?.type ? { type: String(node.type) } : {}) };
+					}
+					budget.left -= dataJson.length;
+					return {
+						id: String(node?.id ?? ''),
+						...(node?.type ? { type: String(node.type) } : {}),
+						...(typeof node?.name === 'string' && node.name ? { name: node.name } : {}),
+						...(dataJson ? { dataJson } : {}),
+					};
+				});
+				if (raw.nodes.length > NODE_DETAILS_LIMIT) { nodeDetailsTruncated = true; }
+			} catch { nodeDetails = []; }
 			return {
 				id: workflow.id,
 				name: workflow.name,
@@ -712,6 +758,8 @@ function toolDefinitions(ctx, state, config) {
 				...(workflow.sessions?.latestRunAt ? { sessionLatestAt: workflow.sessions.latestRunAt } : {}),
 				nodeTypes,
 				nodeNames: workflow.nodes.map(node => node.name).slice(0, 40),
+				...(nodeDetails.length > 0 ? { nodeDetails } : {}),
+				...(nodeDetailsTruncated ? { nodeDetailsTruncated: true } : {}),
 			};
 		},
 	}, {
@@ -887,6 +935,80 @@ function toolDefinitions(ctx, state, config) {
 			const flat = { ok: load.ok === true, ...(load.summary ?? {}), threadId: load.threadId, ms: load.ms, ...(load.error ? { error: load.error } : {}) };
 			return { ...base, load: Object.fromEntries(Object.entries(flat).filter(([, value]) => value !== undefined)) };
 		},
+	}, {
+		// ── 执行（2026-10-20）：让 **agent** 也能跑一条工作流（此前只有页面的 ▶ 能触发）───────────────
+		// ⚠ 它**不写定义文件**，但会**真跑**（模型回合；Comfy 类节点还可能生成图像/视频，几分钟且花额度）
+		//   ⇒ 也进 `WRITE_TOOLS` 的审批闸（文案按工具区分，见 `TOOL_APPROVAL`）。
+		// ⚠ 等待策略：默认最多等 `waitSeconds` 秒，**超时不算失败** —— 执行还在后台跑，返回
+		//   `status:'running'` + executionId，让调用方去看进度（聊天框 dock 条 / `/api/run/status`）。
+		//   为什么不等到底：工具调用有自己的超时策略，一次调用挂十几分钟会把整个回合拖死 ✗。
+		name: 'workflow_run',
+		description: '执行一条工作流（dsh 引擎跑；agent / prompt 节点各驱动一个真实回合）。'
+			+ ' ⚠ 有副作用：会真跑模型，Comfy 类节点还可能触发图像/视频生成（耗时且消耗额度）⇒ 需要用户批准。'
+			+ ' 默认最多等 `waitSeconds` 秒：**超时不算失败**，会返回 `status:"running"` 与 `executionId`，'
+			+ ' 之后看聊天框的进度条（或 `/x/workflow/api/run/status`）等它跑完；'
+			+ ' 同一条工作流同时只允许一次执行（并发会被明确拒绝）。',
+		parameters: {
+			type: 'object',
+			properties: {
+				workflowId: { type: 'string', description: '工作流 id（workflow_list 得到的那个）' },
+				waitSeconds: { type: 'integer', description: '最多等多少秒（默认 120，范围 5~600）' },
+			},
+			required: ['workflowId'],
+		},
+		output: {
+			schema: {
+				type: 'object',
+				properties: {
+					status: { type: 'string' }, executionId: { type: 'string' }, workflowId: { type: 'string' },
+					ok: { type: 'boolean' }, done: { type: 'integer' }, total: { type: 'integer' },
+					failedNode: { type: 'string' }, error: { type: 'string' }, note: { type: 'string' },
+				},
+				required: ['status'],
+			},
+			render: (_args, value) => [{
+				type: 'text',
+				text: value.status === 'running'
+					? `工作流 ${value.workflowId ?? ''} 仍在执行（${value.done ?? 0}/${value.total ?? 0} 节点）：${value.executionId ?? ''}`
+					: `工作流 ${value.workflowId ?? ''} 执行结束：${value.status}${value.failedNode ? `（失败节点 ${value.failedNode}）` : ''}${value.error ? ` — ${value.error}` : ''}`,
+			}],
+		},
+		isConcurrencySafe: () => false,
+		execute: async (params = {}) => {
+			const workflowId = String(params?.workflowId ?? '').trim();
+			if (!workflowId) {
+				throw new Error('workflow_run 需要 workflowId（用 workflow_list 得到的那个）');
+			}
+			const waitSeconds = Math.min(600, Math.max(5, Number(params?.waitSeconds ?? 120) || 120));
+			let timer;
+			const TIMED_OUT = Symbol('timeout');
+			const pending = runWorkflow(config, { workflowId });
+			const timeout = new Promise(resolve => {
+				timer = setTimeout(() => resolve(TIMED_OUT), waitSeconds * 1000);
+				timer.unref?.();
+			});
+			try {
+				const out = await Promise.race([pending, timeout]);
+				if (out !== TIMED_OUT) {
+					// ⚠ 兜一个 `status`：`runWorkflow` 的**失败分支**只回 `{ ok:false, error }`（没有 status），
+					//   而本工具的 output schema 把 `status` 列为必填 ⇒ 漏兜会让"引擎不可用/空壳工作流"
+					//   这类正常失败返回一个**不合 schema** 的结果（上游校验报错，用户看到的是一条莫名错误 ✗）。
+					return { status: out?.ok === false ? 'failed' : 'unknown', workflowId, ...out };
+				}
+				// 还在跑：从运行态里挑这条工作流当前的 executionId（runWorkflow 尚未返回）
+				const running = listRunStates({ workflowId }).find(state => state.status === 'running');
+				return {
+					status: 'running',
+					workflowId,
+					...(running?.executionId ? { executionId: running.executionId } : {}),
+					done: Number(running?.done ?? 0),
+					total: Number(running?.total ?? 0),
+					note: `仍在执行（已等 ${waitSeconds}s）：它会在后台继续。进度见聊天框的进度条，或 GET /x/workflow/api/run/status`,
+				};
+			} finally {
+				clearTimeout(timer);
+			}
+		},
 	}];
 }
 
@@ -924,7 +1046,25 @@ function validateConfig(config) {
  * 为什么导出：跨模块守卫（`dshPluginPackages.test.ts`）拿它**机器核对** —— 名单非空 ✓、
  * 每个名字都真的被注册 ✓（防"闸挂了但名单是空的" ✗ 这种最像修好了的坏法 ✓）。
  */
-export const WRITE_TOOLS = ['workflow_update', 'workflow_apply'];
+export const WRITE_TOOLS = ['workflow_update', 'workflow_apply', 'workflow_run'];
+
+/**
+ * 每个需审批工具的**文案**：`reason` = 审计口径、`displayReason` = 用户可见。
+ *
+ * ⚠ 两处都是**用户真的会读到**的文案 ⇒ 必须描述"这次真正会发生什么"：
+ *   `workflow_run` **不写定义文件**，但它会真跑（花模型调用、可能触发生成）——
+ *   跟"改定义"共用一句就是假话 ✗（本仓"写死的文案会随状态变假"踩过多次）。
+ * `p3-10` 会断言名单里**每个**工具都有文案（防"加了工具忘了写、用户看到一句错的"）。
+ */
+export const TOOL_APPROVAL = {
+	workflow_update: { reason: '会改动工作流定义文件', en: 'modify a workflow file', zh: '修改工作流定义' },
+	workflow_apply: { reason: '会改动工作流定义文件', en: 'modify a workflow file', zh: '修改工作流定义' },
+	workflow_run: {
+		reason: '会真的执行这条工作流（跑模型；Comfy 类节点还可能生成图像/视频，耗时且消耗额度）',
+		en: 'RUN this workflow (it costs model calls and may trigger media generation)',
+		zh: '执行这条工作流',
+	},
+};
 
 export function apply(ctx, config = {}) {
 	// ── 配置校验（fail-fast，报告 §5-8）──────────────────────────────────────────────
@@ -958,15 +1098,17 @@ export function apply(ctx, config = {}) {
 	ctx.effect(() => ctx.on('tools/pre-execute', (exec, next) => {
 		if (exec && WRITE_TOOLS.includes(exec.name)) {
 			// `reason`=审计口径 ✓、`displayReason`=本地化提示 ✓（官方字段语义）
+			// ⚠ 文案**按工具取**：`workflow_run` 不写文件但它会真跑 ⇒ 不能跟"改定义"共用一句 ✗
+			const approval = TOOL_APPROVAL[exec.name] ?? { reason: '会改动工作流定义文件', en: 'modify a workflow file', zh: '修改工作流定义' };
 			return {
 				kind: 'ask',
-				reason: `${exec.name} 会改动工作流定义文件`,
-				displayReason: { en: `Allow ${exec.name} to modify a workflow file?`, zh: `允许 ${exec.name} 修改工作流定义？` },
+				reason: `${exec.name} ${approval.reason}`,
+				displayReason: { en: `Allow ${exec.name} to ${approval.en}?`, zh: `允许 ${exec.name} ${approval.zh}？` },
 			};
 		}
 		return next(); // 只读工具交回默认 allow ✓（否则每次读也要弹窗 ⇒ 工具没法用 ✗）
 	}));
-	const state = { tools: null, engine: null };
+	const state = { tools: null, engine: null, cancelRunSession: null };
 	stateRef.current = state;  // 路由辅助（runWorkflow/listRuns）经它拿引擎（见文件尾）
 
 	ctx.effect(() => {
@@ -1006,13 +1148,31 @@ export function apply(ctx, config = {}) {
 	// 可选注入 vssarosRuns：bridge 0.2.26+ 提供；不在 ⇒ 服务照样注册，agent/prompt 节点会如实失败
 	// （"回合驱动不可用"），纯数据节点（start/end/ifElse/switch）照跑 ✓。
 	{
-		// runs 是可选注入（inject 回调异步 ⇒ 先给 null，到了回填）。引擎核心读的是 deps 对象的属性
-		// （`deps.runs`），不是闭包快照 ⇒ 回填生效 ✓。
+		// runs 是可选注入（inject 回调异步 ⇒ 先给 null，到了回填）。引擎核心**必须在用时读
+		// `deps.runs`**（不能解构 —— 解构就是快照，回填白费 ✗；2026-10-20 p3-151 真机栽在这里）。
 		const deps = {
+			// ★ 2026-10-20（p3-151 真机抓到）：`readWorkflow` 的返回是**包着的** ——
+			//   `{ workflow }` 或 `{ error }`，**从不是 null** ✓。原先这里 `if (!wf) throw` 恒不成立 ×2：
+			//   ① 找不到 ⇒ `{ error }` 被当成工作流 ⇒ `wf.nodes` undefined ⇒ **0 节点** ⇒ 直接 completed
+			//      （"不存在的工作流"也会返回 ok:true —— 假成功）；
+			//   ② 找到 ⇒ `{ workflow }` 也被当成工作流 ⇒ 同样是 **0 节点** ⇒ 引擎**从来没真跑过任何节点** ✗。
+			//   ⇒ 这里必须解包；契约由 p3-151（真 Host + 真 runs）钉住，进程内 p3-104 用裸定义注入看不到它 ✗。
+			// ★ 2026-10-20（p3-151 真机）：**执行面必须读原始 nodes/connections** ——
+			//   `readWorkflow` 走的是 `parseWorkflow`，那是为**页面/画布**压扁过的形态：
+			//     节点只剩 `{id,type,name,x,y}`（`data` 整个丢了 ⇒ prompt / branches / allowTools /
+			//     retryMaxAttempts 全失效，真机症状 `session.run: prompt required` ✗）；
+			//     边改名叫 `edges`（`wf.connections` 恒 undefined ⇒ 拓扑序退化成"按数组顺序全跑" ✗）。
+			//   ⇒ 只读投影（页面/工具）保持压扁形态不动 ✓，**执行面单独读原文** ✓。
 			loadWorkflow: async id => {
-				const wf = await readWorkflow(config, id);
-				if (!wf) { throw new Error(`找不到工作流：${id}`); }
-				return wf;
+				const result = await readWorkflow(config, id);
+				if (result?.error) { throw new Error(String(result.error)); }
+				if (!result?.workflow) { throw new Error(`找不到工作流：${id}`); }
+				try {
+					const raw = await readRawWorkflow(result.workflow.dir);
+					return { id: raw.id ?? id, name: raw.name ?? id, nodes: raw.nodes, connections: raw.connections };
+				} catch (e) {
+					throw new Error(`读工作流定义失败（${id}）：${String(e?.message ?? e)}`);
+				}
 			},
 			saveCheckpoint: async (id, cp) => {
 				const dir = checkpointDirOf(config);
@@ -1029,7 +1189,21 @@ export function apply(ctx, config = {}) {
 			runs: null,
 			// 重构 3.3：节点分流的留壳侧（可选注入；不在 ⇒ 保持如实失败 ✓）
 			officialWorkflow: null,   // 官方 workflowEngine（script 节点转交）
-			bridge: null,             // vssarosBridge（comfy/askUser 回 IDE）
+			// comfy / comfyStage / askUser 回 IDE 的那一跳：**走授权链**（`ide.request` + capability=workflow
+			// + `op:'executeNode'`），理由见 `engineCore` 对应分支的注释。
+			// ⚠ 写成**函数**而不是"apply 时取一次 bridge 快照"：`vssarosBridge` 是 inject 异步回填的，
+			//   这里每次调用现取 `bridgeOf()` ⇒ 回填后立刻生效 ✓，桥不在时抛可读错误 ✓。
+			executeNodeViaIde: payload => {
+				const active = bridgeOf();
+				if (!active) {
+					throw new Error(`节点 ${payload?.nodeId ?? '?'} 的类型 ${payload?.nodeType ?? '?'} 要经桥回 IDE，但 vssarosBridge 不在（bridge 插件没装/没连）`);
+				}
+				return active.callIDE('ide.request', {
+					capability: 'workflow',
+					pluginId: PLUGIN_ID,
+					params: { op: 'executeNode', ...payload },
+				}, { timeoutMs: EXECUTE_NODE_TIMEOUT_MS });
+			},
 			cwdOf: () => workspacePathOf(config),
 			log: (level, msg) => (typeof ctx.logger === 'function' ? ctx.logger('vssaros-workflow') : console)[level === 'warn' ? 'warn' : 'info'](msg),
 		};
@@ -1041,12 +1215,19 @@ export function apply(ctx, config = {}) {
 			deps.officialWorkflow = scope.workflowEngine;
 			return () => { deps.officialWorkflow = null; };
 		});
-		ctx.inject(['vssarosBridge'], scope => {
-			deps.bridge = scope.vssarosBridge;
-			return () => { deps.bridge = null; };
-		});
+		// ⚠ 这里**不要**再单独 inject 一份 `vssarosBridge` 到 deps：回 IDE 的唯一出口是上面的
+		//   `executeNodeViaIde`（内部读 `bridgeOf()`），两份来源只会漂移（2026-10-20 收编）。
 		// 引擎实例存进 state：页面路由（/api/run）与别的插件（cordis 服务）都拿同一个 ✓。
 		state.engine = createEngineCore(deps);
+		// 取消"正在跑的那个节点"的会话（`/api/run/cancel` 用）：宿主内唯一的取消原语是 `vssarosRuns.cancel`。
+		// ⚠ 必须在这里闭包 `deps`（而不是模块级快照）—— `runs` 是 inject **异步回填**的。
+		state.cancelRunSession = async sessionId => {
+			const runs = deps.runs;
+			if (!runs || typeof runs.cancel !== 'function') {
+				return { cancelled: false, reason: '回合驱动不可用（@vssaros/dsh-bridge 未加载或版本过旧）' };
+			}
+			return runs.cancel({ sessionId });
+		};
 		// ⚠⚠ **必须幂等**：本插件**同时**挂在两个 plane 上 ——
 		//   host plane：`vssaros-workflow/cordis.patch.yml` 把本行插进 profile（Host 启动即装 ✓）；
 		//   preset plane：`vssaros-agents/preset-vssaros.rows.yml` 的 vssaros-workflow 行（⇒ 生成物
@@ -1076,7 +1257,15 @@ export function apply(ctx, config = {}) {
 
 	// 页面路由（**可选**依赖）：`webServer` / `connection` 只在 web 模板里存在（见静态 `inject` 的注释）。
 	// 不在 web 模板 ⇒ 只是**没有页面** ✓，工具照常可用 ✓。
-	ctx.inject(['webServer', 'connection'], page => page.effect(() => page.webServer.register({
+	ctx.inject(['webServer', 'connection'], page => {
+		// ★ 2026-10-20（p3-151 真机抓到）：**执行引擎的引用必须挂"注册了页面路由"的那次 apply**。
+		//   本包双 plane 挂载（host plane 的 patch 行 + preset plane 的 rows）⇒ 会 apply 两次、各建
+		//   一份 state/engine，而 `stateRef` 是**模块级单例**（后 apply 覆盖前者 ✗）。preset 那次的
+		//   作用域里 `vssarosRuns` 看不到 ⇒ 它的 `deps.runs` 恒 null ⇒ 页面 ▶ 拿到的是一个没有回合
+		//   驱动的引擎（真机症状：节点 a 失败 `Cannot read properties of null (reading 'run')`）。
+		//   页面路由只属于 host plane 实例 ⇒ 以"注册页面路由的那次"为准 ✓（`stateRef` 留给工具/引擎自用）。
+		pageStateRef.current = state;
+		return page.effect(() => page.webServer.register({
 		kind: 'prefix',
 		path: ROUTE_PREFIX,
 		handler: async (req, res) => {
@@ -1132,6 +1321,23 @@ export function apply(ctx, config = {}) {
 					res.end(JSON.stringify({ runs: await listRuns(config) }));
 					return;
 				}
+				// 2026-10-20：**执行期运行态**（聊天页的 dock 条与页面都轮询它）。轮询 1s 级足够，
+				// 不上 SSE —— 数据量小、实现与调试都便宜，且不需要长连接的生命周期管理。
+				if (url.pathname === `${ROUTE_PREFIX}/api/run/status` && req.method === 'GET') {
+					const workflowId = url.searchParams.get('workflowId') ?? undefined;
+					const executionId = url.searchParams.get('executionId') ?? undefined;
+					res.writeHead(200, JSON_HEADERS);
+					res.end(JSON.stringify({ ok: true, runs: listRunStates({ workflowId, executionId }) }));
+					return;
+				}
+				if (url.pathname === `${ROUTE_PREFIX}/api/run/cancel` && req.method === 'POST') {
+					let body = {};
+					try { body = JSON.parse(await readBody(req)); } catch { body = {}; }
+					const out = await cancelWorkflow(config, body);
+					res.writeHead(out.ok ? 200 : 409, JSON_HEADERS);
+					res.end(JSON.stringify(out));
+					return;
+				}
 				const data = await listWorkflows(config, { limit: 200 });
 				const summary = summarizeWorkflows(data.workflows);
 				// 选画布目标：`?id=` 指定的，否则节点最多的那个
@@ -1158,10 +1364,45 @@ export function apply(ctx, config = {}) {
 				}
 			}
 		},
-	})));
+		}));
+	});
 }
 
 // ─── 重构 3.2：执行入口与运行轨迹的辅助（页面路由用）─────────────────────────
+
+/** `workflow_get` 的节点明细上限：条数 / 单条 `data` 字符 / 全部 `data` 的字符预算。 */
+const NODE_DETAILS_LIMIT = 60;
+const NODE_DATA_LIMIT = 1500;
+const NODE_DETAILS_BUDGET = 24_000;
+
+/** 任意值 ⇒ 可读且不撑爆工具返回的 JSON 文本（序列化不了就退化成 String）。 */
+function clipJson(value, limit) {
+	let text;
+	try {
+		text = JSON.stringify(value);
+	} catch {
+		text = String(value);
+	}
+	if (typeof text !== 'string') { return ''; }
+	return text.length > limit ? `${text.slice(0, limit)}…（已截断，共 ${text.length} 字符）` : text;
+}
+
+/**
+ * 读工作流**原文**（`nodes` 带 `data`、`connections` 原样）。
+ *
+ * ⚠ 别用 `readWorkflow` 代替：那条走 `parseWorkflow`，是为**页面/画布**压扁过的只读投影 ——
+ * 节点只剩 `{id,type,name,x,y}`（`data` 全丢）、边改名叫 `edges`。执行面与 `workflow_get` 的
+ * 节点明细都需要原文（2026-10-20 p3-151 真机：拿压扁形态去跑 ⇒ `session.run: prompt required`）。
+ */
+async function readRawWorkflow(dir) {
+	const raw = JSON.parse(await readFile(join(String(dir), 'workflow.json'), 'utf8'));
+	return {
+		id: typeof raw?.id === 'string' ? raw.id : undefined,
+		name: typeof raw?.name === 'string' ? raw.name : undefined,
+		nodes: Array.isArray(raw?.nodes) ? raw.nodes : [],
+		connections: Array.isArray(raw?.connections) ? raw.connections : [],
+	};
+}
 
 /** 读请求体（上限 64KB——工作流定义里没有更大的东西）。 */
 function readBody(req) {
@@ -1173,25 +1414,186 @@ function readBody(req) {
 	});
 }
 
-/** 执行一条工作流（经引擎核心；缺参/没引擎/没 runs 都如实报错）。导出给探针测（p3-104）。 */
+/** 正在执行的工作流（workflowId → executionId）：同一工作流**串行**，见下面的并发闸。 */
+const runningWorkflows = new Map();
+
+// ─── 运行态（2026-10-20：执行期可见性）──────────────────────────────────────────
+// 为什么要它：`/api/run` 是**同步 await** ⇒ 从前只有"开始/完成"两个时间点，聊天框与页面
+// 都看不到中间态。现在引擎每步 emit 一次事件，这里攒成一份**可直接渲染**的快照，
+// 供 `GET /api/run/status` 轮询（1s 足够；不上 SSE —— 数据量小、实现与调试都便宜）。
+/** executionId → 运行态快照。 */
+const runStates = new Map();
+/** executionId → AbortController（取消走它；引擎只在**节点之间**检查）。 */
+const runControllers = new Map();
+/** 最多留多少条历史（页面/聊天页只关心"还在跑的"与"最近一次"）。 */
+const RUN_STATE_KEEP = 20;
+
+/** 事件 → 快照。**纯内存、不落盘**（真源仍是 checkpoint；这里只是观测面）。 */
+function applyRunEvent(event) {
+	const id = event?.executionId;
+	if (!id) { return; }
+	const existing = runStates.get(id);
+	if (event.type === 'run-start') {
+		runStates.set(id, {
+			executionId: id,
+			workflowId: event.workflowId,
+			name: existing?.name,
+			status: 'running',
+			startedAt: new Date().toISOString(),
+			finishedAt: null,
+			total: Number(event.total ?? (event.nodes ?? []).length),
+			done: 0,
+			currentNodeId: null,
+			error: null,
+			cancelling: false,
+			nodes: (event.nodes ?? []).map(node => ({ id: node.id, type: node.type, label: node.label ?? node.id, status: 'pending' })),
+		});
+	} else if (existing) {
+		const node = (event.nodeId !== undefined) ? existing.nodes.find(n => n.id === event.nodeId) : undefined;
+		if (event.type === 'node-start') {
+			if (node) { node.status = 'running'; }
+			existing.currentNodeId = event.nodeId;
+		} else if (event.type === 'node-end') {
+			if (node) {
+				node.status = event.status;
+				if (event.error) { node.error = String(event.error); }
+			}
+			existing.done = existing.nodes.filter(n => n.status === 'completed').length;
+			existing.currentNodeId = null;
+		} else if (event.type === 'run-end') {
+			existing.status = event.status;
+			existing.finishedAt = new Date().toISOString();
+			existing.currentNodeId = null;
+			if (event.error) { existing.error = String(event.error); }
+			if (event.cancelled) { existing.cancelled = true; }
+		}
+	}
+	// 只留最近 N 条（Map 的插入序 = 首次出现序；重建插入以反映"最近活跃"）
+	const snapshot = runStates.get(id);
+	if (snapshot) {
+		runStates.delete(id);
+		runStates.set(id, snapshot);
+	}
+	while (runStates.size > RUN_STATE_KEEP) {
+		runStates.delete(runStates.keys().next().value);
+	}
+}
+
+/** 列运行态（最近的在前；可按 workflowId / executionId 过滤）。 */
+export function listRunStates({ workflowId, executionId } = {}) {
+	const all = [...runStates.values()].reverse();
+	const filtered = all.filter(state =>
+		(executionId === undefined || state.executionId === executionId)
+		&& (workflowId === undefined || state.workflowId === workflowId));
+	return filtered.map(state => ({ ...state, nodes: state.nodes.map(node => ({ ...node })) }));
+}
+
+/** 执行一条工作流（经引擎核心；缺参/没引擎/没 runs 都如实报错）。导出给探针测（p3-104/p3-151）。 */
 export async function runWorkflow(config, body) {
 	const workflowId = String(body?.workflowId ?? '').trim();
 	if (!workflowId) { return { ok: false, error: '缺 workflowId' }; }
-	if (!stateRef.current?.engine) { return { ok: false, error: '引擎不可用（插件没激活？）' }; }
+	// ⚠ 三段都用 `pageStateRef`（注册页面路由的那次 apply），不是 `stateRef` —— 双 plane 覆盖的真机事故，
+	//   见 `pageStateRef` 定义处的注释 ✓。（2026-10-20 复核：这里的 `.run` 一度还写着 `stateRef` ——
+	//   引擎检查与真正执行用了**两个不同实例**，只是恰好指向同一个才没现形 ✗，现已统一 ✓。）
+	const engine = pageStateRef.current?.engine;
+	if (!engine) { return { ok: false, error: '引擎不可用（插件没激活？）' }; }
 	const executionId = `exec-${Date.now().toString(36)}`;
 	const input = typeof body?.input === 'object' && body.input !== null ? body.input : {};
 	const resumeFrom = typeof body?.resumeFromExecutionId === 'string' ? body.resumeFromExecutionId.trim() : '';
+	// ★ 2026-10-20：**同一条工作流不许并发执行**。agent 节点的会话 id 是 `wf-<workflowId>-<nodeId>`
+	//   （**不含 executionId**）⇒ 两次并发会共用同一批会话：prompt 排队、结果窗互相交叉，
+	//   而 checkpoint 各写各的（看着都"完成"，内容串了 ✗）。串行既是产品语义，也避免会话被撑爆。
+	const concurrent = runningWorkflows.get(workflowId);
+	if (concurrent) {
+		return { ok: false, executionId, error: `工作流 ${workflowId} 正在执行（${concurrent}）：同一条工作流不支持并发执行，等它跑完再点` };
+	}
+	runningWorkflows.set(workflowId, executionId);
+	const controller = new AbortController();
+	runControllers.set(executionId, controller);
 	try {
-		const result = await stateRef.current.engine.run({
+		// ★ 2026-10-20（p3-151）：**0 节点不许报"执行完成"**。空图（新建还没画 / 读失败的另一半）
+		//   在引擎里是一条都不跑就直接 completed ⇒ 用户看到"执行完成"却什么都没发生（比失败更坏 ✗）。
+		//   判定放这里（HTTP 入口），不动 `engineCore` 的空图语义 —— 那条被 p3-103/105 的对账钉着 ✓。
+		const pre = await readWorkflow(config, workflowId);
+		if (pre?.error) { return { ok: false, executionId, error: String(pre.error) }; }
+		const nodeCount = Array.isArray(pre?.workflow?.nodes) ? pre.workflow.nodes.length : 0;
+		if (nodeCount === 0) {
+			return { ok: false, executionId, error: `工作流 ${workflowId} 没有任何节点（空壳）：画好节点再执行` };
+		}
+		// 先占个位把**工作流名字**带进观测面（run-start 事件会保留它）—— 列表里只显示 exec-xxx 不好认。
+		runStates.set(executionId, {
+			executionId, workflowId, name: pre?.workflow?.name,
+			status: 'running', startedAt: new Date().toISOString(), finishedAt: null,
+			total: nodeCount, done: 0, currentNodeId: null, error: null, cancelling: false, nodes: [],
+		});
+		const result = await engine.run({
 			workflowId,
 			executionId,
 			input,
 			resumeFromExecutionId: resumeFrom || undefined,
+			onEvent: applyRunEvent,
+			signal: controller.signal,
 		});
-		return { ok: result.status === 'completed', executionId, status: result.status, failedNode: result.failedNode ?? null, resumed: result.resumed === true };
+		// ★ 2026-10-20：失败时把**失败节点的原因**一起带出去。原先只回 `failedNode` 名字 ⇒ 页面只能显示
+		//   "执行失败：未知原因"（`renderPage` 的脚本读的正是 `body.error` ✓），用户得自己去翻 checkpoint ✗。
+		const failedNode = result.failedNode ?? null;
+		return {
+			ok: result.status === 'completed',
+			executionId,
+			status: result.status,
+			failedNode,
+			...(failedNode && result.nodeStates?.[failedNode]?.error
+				? { error: String(result.nodeStates[failedNode].error) }
+				: {}),
+			resumed: result.resumed === true,
+		};
 	} catch (e) {
 		return { ok: false, executionId, error: String(e?.message ?? e) };
+	} finally {
+		runControllers.delete(executionId);
+		// 认领者才释放（并发闸里被拒的那次不会走到这里 ✓）
+		if (runningWorkflows.get(workflowId) === executionId) { runningWorkflows.delete(workflowId); }
 	}
+}
+
+/**
+ * 取消一次执行（`POST /api/run/cancel`）。导出给探针测（p3-104）。
+ *
+ * 语义刻意写清（别让"取消"看起来比实际更彻底）：
+ * ① 置 AbortSignal ⇒ 引擎在**下一个节点开始前**停（该节点记 `cancelled`，整条执行记 `cancelled`）；
+ * ② 正在跑的那个节点：**尽力**取消它那条会话（`vssarosRuns.cancel`）—— 它可能已经产出、
+ *    也可能要等 provider 收尾；取消失败**不改变**"引擎会停"这个结论（所以两个结果分开报）。
+ */
+export async function cancelWorkflow(config, body) {
+	const executionId = typeof body?.executionId === 'string' ? body.executionId.trim() : '';
+	const snapshot = executionId
+		? runStates.get(executionId)
+		: [...runStates.values()].filter(state => state.status === 'running').pop();
+	if (!snapshot) {
+		return { ok: false, error: executionId ? `没有这个执行：${executionId}` : '当前没有正在执行的工作流' };
+	}
+	if (snapshot.status !== 'running') {
+		return { ok: false, error: `执行 ${snapshot.executionId} 已结束（${snapshot.status}）` };
+	}
+	snapshot.cancelling = true;
+	runControllers.get(snapshot.executionId)?.abort();
+	const nodeId = snapshot.currentNodeId ?? null;
+	let sessionCancelled = null;
+	const cancelSession = pageStateRef.current?.cancelRunSession;
+	if (nodeId && typeof cancelSession === 'function') {
+		try {
+			sessionCancelled = await cancelSession(`wf-${snapshot.workflowId}-${nodeId}`);
+		} catch {
+			sessionCancelled = null;
+		}
+	}
+	return {
+		ok: true,
+		executionId: snapshot.executionId,
+		workflowId: snapshot.workflowId,
+		currentNodeId: nodeId,
+		sessionCancelled,
+	};
 }
 
 /** 列运行轨迹（checkpoint 文件 ⇒ 每条执行一份）。导出给探针测（p3-104）。 */
@@ -1223,5 +1625,13 @@ export async function listRuns(config) {
 	return out.sort((a, b) => String(b.timestamp ?? '').localeCompare(String(a.timestamp ?? '')));
 }
 
-/** 引擎实例的进程内引用（apply 里装，路由里用）。 */
+/** 引擎实例的进程内引用（apply 里装，工具/引擎自用）。 */
 const stateRef = { current: null };
+/**
+ * **页面路由**那次 apply 的 state（`/api/run` 用它）。
+ *
+ * ⚠ 不能直接用 `stateRef`：本包双 plane 挂载 ⇒ 两次 apply 会互相覆盖，而 preset 那次拿不到
+ * `vssarosRuns`（作用域不同）⇒ 覆盖后页面 ▶ 用一个**没有回合驱动**的引擎，节点全失败
+ * （真机症状：`Cannot read properties of null (reading 'run')`，p3-151 抓到）。
+ */
+const pageStateRef = { current: null };

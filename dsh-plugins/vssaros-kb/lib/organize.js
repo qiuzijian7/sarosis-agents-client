@@ -329,6 +329,23 @@ async function readNotesTree(notesDir) {
 }
 
 /**
+ * 页面「关系图谱」的数据入口（★ 2026-10-19：图谱从 IDE 侧迁到 dsh 页面时新增）。
+ *
+ * 复用 `readNotesTree` + `selectNoteFiles`（与 `maintainNavigation` **同一套**"算不算笔记"的规则 ✓），
+ * 不再自己写一遍遍历 —— 否则"哪些文件算笔记"会有两份判断，必然漂移 ✗。
+ *
+ * ⚠ 会**全量读正文**（550 篇约 200+ KB）⇒ 调用方（`/api/graph` 路由）必须带缓存，
+ *   否则页面每打开一次就全扫一遍。
+ *
+ * @param {string} notesDir `<vault>/笔记` 的绝对路径
+ * @returns {Promise<{ rel: string, content: string }[]>}
+ */
+export async function readNotesForGraph(notesDir) {
+	const notes = selectNoteFiles(await readNotesTree(notesDir));
+	return notes.map(entry => ({ rel: entry.rel, content: entry.content ?? '' }));
+}
+
+/**
  * 刷新导航两件：`笔记/index.md` 与 `笔记/overview.md`（内容生成见 `core/kbNavigation.js` ✓）。
  *
  * 为什么由**我们**写（而不是留给 IDE）：它们是两侧视图共读的导航文件 ⇒ dsh 构建完不刷，

@@ -9,7 +9,7 @@
 
 import { escapeHtml, renderChips, renderShell } from './pageShell.js';
 import { bindFoundation } from './foundationRef.js';
-import { listAssets, mediaDbPathOf, mediaRootOf, statsOf } from './store.js';
+import { lastReadModeOf, listAssets, mediaDbPathOf, mediaRootOf, statsOf } from './store.js';
 
 
 export const name = 'vssaros-media';
@@ -52,16 +52,50 @@ function shortRef(ref) {
 	return parts.length > 2 ? `…/${parts.slice(-2).join('/')}` : text;
 }
 
+/**
+ * 「打开媒体库」按钮的点击行为（2026-10-19；用户要求"媒体库统一成一个 editor pane"）。
+ *
+ * 退化链（逐级，最后一级一定"真能用"，不留死按钮 ✗）：
+ *   ① 有页面桥 ⇒ `bridge.openMediaGallery()`：宿主在**编辑区**打开 VsSaros 原生媒体库
+ *      （`MediaGalleryEditorPane`：缩略图网格 / 收藏 / 分组 / 标签 / 本地化 / 清理）—— 与工作流
+ *      工具栏「🖼 媒体库」、IDE「媒体库」工作台是**同一个**页 ✓；
+ *   ② 老宿主没这条命令（桥 < 15）⇒ 退回 `bridge.openModulePage(location.pathname)`：把本页
+ *      （纯文本列表）放大到编辑区 —— 比"没反应"好，但**不是**同一份样式，属降级 ✓；
+ *   ③ 桥在但两条都没有 ⇒ 整页跳转；
+ *   ④ 完全没桥（纯浏览器打开这页）⇒ 新标签页打开。
+ *
+ * ⚠ 已经在**编辑区**表面（`?surface=editor`）里 ⇒ 把按钮摘掉：那里点它不会有任何变化（不是"点了没反应"的死链）✓。
+ * ⚠ 桥对象变量名**必须**叫 `bridge`：`dshPageCommandWiring.test.ts` ③ 按 `bridge.<方法>(` 的**字面形态**
+ *   采集本页的调用点，改名 = 这次接线落进守卫盲区 ✗。
+ * ⚠ 本段是页面脚本的字符串（不是模板串）⇒ 里面别写反引号，也别写 `$` 花括号 ✓。
+ */
+const OPEN_PAGE_JS = '(function(){'
+	+ "var btn=document.querySelector('[data-vssaros-media-open]');if(!btn){return;}"
+	+ 'if(/(?:^|[?&])surface=editor(?:&|$)/.test(location.search)){btn.remove();return;}'
+	+ "btn.addEventListener('click',function(ev){"
+	+ 'if(ev&&ev.preventDefault){ev.preventDefault();}'
+	+ "btn.classList.add('busy');btn.textContent='正在打开媒体库…';"
+	+ 'var bridge=window.vssarosDsh;'
+	+ "if(bridge&&typeof bridge.openMediaGallery==='function'){try{bridge.openMediaGallery();return;}catch(e){}}"
+	+ "if(bridge&&typeof bridge.openModulePage==='function'){try{bridge.openModulePage(location.pathname);return;}catch(e){}}"
+	+ 'if(bridge){location.href=location.pathname;return;}'
+	+ "window.open(location.pathname,'_blank','noopener');"
+	+ '});})();';
+
 /** 媒体库专属样式（外壳之外的那点：统计行 + 资产条目）。 */
 const MEDIA_CSS = `
 /* ★ 2026-10-15（统一 sideview 风格 ✓）：与 codebase / 记忆库 **同一套 token** —— 同一份圆角(9px)/间距(8px)/
    卡底色(editor-background)/大数字字号(19px)/主题变量（--vscode-*）✓。统计 = **仪表盘卡**：3 张主卡 + 一行分类格 ✓；
    页顶另有**置顶主操作**（.dsh-actbar ✓）。
    ⚠ 本块是**模板字符串**内容 ⇒ 注释里**不能出现反引号** ✗（会直接把字符串截断 —— 2026-10-15 现场踩到 ✓）。 */
-.dsh-actbar { padding: 6px 10px 0; }
-.dsh-btn { display: inline-flex; align-items: center; gap: 6px; border-radius: 6px; padding: 5px 12px; text-decoration: none; font-weight: 600; font-size: 12px; }
-.dsh-btn-primary { background: var(--vscode-button-background, var(--vscode-focusBorder, #007acc)); color: var(--vscode-button-foreground, #fff); }
+.dsh-actbar { display: flex; gap: 8px; align-items: center; padding: 6px 10px 0; }
+.dsh-btn { display: inline-flex; align-items: center; gap: 6px; border-radius: 6px; padding: 5px 12px; text-decoration: none; font-weight: 600; font-size: 12px; font-family: inherit; cursor: pointer; }
+.dsh-btn-primary { background: var(--vscode-button-background, var(--vscode-focusBorder, #007acc)); color: var(--vscode-button-foreground, #fff); border: 1px solid transparent; }
 .dsh-btn-primary:hover { filter: brightness(1.08); }
+/* 「打开媒体库」= 次要动作（2026-10-19）：描边按钮，不跟「刷新」抢主色。 */
+.dsh-btn-secondary { background: transparent; color: var(--vscode-foreground, inherit); border: 1px solid var(--vscode-panel-border, rgba(128,128,128,.5)); }
+.dsh-btn-secondary:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,.18)); }
+.dsh-btn-secondary.busy { opacity: .6; cursor: default; }
 .dsh-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; padding: 8px 10px 4px; }
 .dsh-card { background: var(--vscode-editor-background, rgba(128,128,128,.06)); border: 1px solid var(--vscode-panel-border, rgba(128,128,128,.35)); border-radius: 9px; padding: 10px 11px; }
 .dsh-card b { display: block; font-size: 19px; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
@@ -75,7 +109,7 @@ const MEDIA_CSS = `
 .dsh-fav { color: #f59e0b; }
 `;
 
-function renderPage({ stats, assets, kind, root, dbPath, toolsRegistered, error }) {
+function renderPage({ stats, assets, kind, root, dbPath, toolsRegistered, via, error }) {
 	const chips = [{ value: 'all', label: '全部', active: !kind }].concat(
 		KINDS.map(k => ({ value: k, label: k, active: kind === k })));
 
@@ -91,11 +125,17 @@ function renderPage({ stats, assets, kind, root, dbPath, toolsRegistered, error 
 ${KINDS.map(k => `<div class="dsh-kind"><b>${escapeHtml(String(stats.byKind[k] ?? 0))}</b><span>${escapeHtml(k)}</span></div>`).join('\n')}
 </div>` : '';
 
-	// ★ 2026-10-15："**按钮置顶**" ✓ —— 本页是**只读**的（同记忆库 ✓）⇒ 它唯一的主操作是**刷新** ✓。
-	//   放在**统计卡之前**（第一眼就是它 ✓）；用 `<a>` 而不是表单/脚本 ⇒ 保持零脚本 ✓。
+	// ★ 2026-10-15："**按钮置顶**" ✓ —— 本页是**只读**的（同记忆库 ✓）⇒ 主操作是**刷新** ✓。
+	//   放在**统计卡之前**（第一眼就是它 ✓）；用 `<a>` 而不是表单/脚本 ⇒ 刷新这一步保持零脚本 ✓。
 	//   ⚠ 带 `?kind=` 时**保住当前筛选**（刷新不该把用户的筛选悄悄丢掉 ✗）。
+	// ★ 2026-10-19（用户报「媒体库 sideview 缺少打开页面按钮」→ 后改为"统一成同一个编辑区页"）：
+	//   置顶给一枚「打开媒体库」—— 侧栏只有三百来像素，**完整版是 VsSaros 原生媒体库页**
+	//   （`MediaGalleryEditorPane`，与工作流工具栏「🖼 媒体库」同一个界面），页面自己开不了编辑器
+	//   ⇒ 交宿主（桥 `openMediaGallery`；老宿主降级到 `openModulePage`）。
+	//   ⚠ 桥对象名必须叫 bridge —— 接线守卫（`dshPageCommandWiring.test.ts` ③）按
+	//     `bridge.<方法>(` 这个**字面形态**采集本页的调用点，改名 = 落进盲区（点了没反应也没人拦 ✗）。
 	const refreshHref = kind ? `./?kind=${encodeURIComponent(kind)}` : './';
-	const actionHtml = `<div class="dsh-actbar"><a class="dsh-btn dsh-btn-primary" href="${refreshHref}" title="重新读取媒体库（只读）" aria-label="刷新媒体库">⟳ 刷新</a></div>`;
+	const actionHtml = `<div class="dsh-actbar"><a class="dsh-btn dsh-btn-primary" href="${refreshHref}" title="重新读取媒体库（只读）" aria-label="刷新媒体库">⟳ 刷新</a><button type="button" class="dsh-btn dsh-btn-secondary" data-vssaros-media-open title="在编辑区打开媒体库（缩略图 / 收藏 / 分组 / 标签 / 清理）">↗ 打开媒体库</button></div>`;
 
 	const rows = assets.map(asset => {
 		const meta = [
@@ -119,10 +159,12 @@ ${KINDS.map(k => `<div class="dsh-kind"><b>${escapeHtml(String(stats.byKind[k] ?
 	data-vssaros-media-kind="${escapeHtml(kind || 'all')}"
 	data-vssaros-media-count="${escapeHtml(String(assets.length))}"
 	data-vssaros-media-dir="${escapeHtml(dbPath)}"
-	data-vssaros-media-tools="${escapeHtml(toolsRegistered)}">库文件 <code>${escapeHtml(dbPath)}</code> · 工具 <code>${escapeHtml(toolsRegistered)}</code> · 列表 ${escapeHtml(String(assets.length))} 条${kind ? `（过滤 ${escapeHtml(kind)}）` : ''}</p>
+	data-vssaros-media-via="${escapeHtml(via)}"
+	data-vssaros-media-tools="${escapeHtml(toolsRegistered)}">库文件 <code>${escapeHtml(dbPath)}</code> · 读取 <code>${escapeHtml(via)}</code> · 工具 <code>${escapeHtml(toolsRegistered)}</code> · 列表 ${escapeHtml(String(assets.length))} 条${kind ? `（过滤 ${escapeHtml(kind)}）` : ''}</p>
 ${assets.length ? `<ul class="dsh-scroll">${rows}</ul>` : '<p class="dsh-empty">暂无媒体资产（工作流产出图片后会出现在这里）。</p>'}`;
 
-	const script = "document.querySelectorAll('.dsh-chip').forEach(function(b){b.addEventListener('click',function(){var v=b.getAttribute('data-chip');location.search=(v&&v!=='all')?('?kind='+encodeURIComponent(v)):'';});});";
+	const script = "document.querySelectorAll('.dsh-chip').forEach(function(b){b.addEventListener('click',function(){var v=b.getAttribute('data-chip');location.search=(v&&v!=='all')?('?kind='+encodeURIComponent(v)):'';});});"
+		+ OPEN_PAGE_JS;
 
 	return renderShell({
 		kind: 'media',
@@ -151,6 +193,24 @@ function assetRow(asset) {
 	};
 }
 
+/**
+ * 本插件注册的工具定义（`apply` 里逐个 `ctx.tools.register`）。
+ *
+ * ⚠⚠ **数组里每一项都必须是完整的工具定义**（有 `name` + `output.schema` + `output.render`）——
+ * 留一个**空壳 `{}`** 就会让 dsh 在装载 preset 时抛
+ * `tool "undefined" must declare output { schema, render, presentationMeta? }`
+ * ⇒ 整个 preset 失效（`agent-preset/invalid`）⇒ **用户连新建会话都做不了** ✗✗。
+ * （2026-10-21 真机事故：`image_generate` 迁到 `@vssaros/dsh-imagegen` 时只删了定义体，
+ *   忘了删对象壳 ⇒ 整个 dsh 插件组起不来。）
+ * ⇒ 改这个数组时**只删整项**（`}, {` 一起），别留空壳；守卫见 `dsh-plugins/check-tool-definitions.mjs` ✓。
+ *
+ * 📌 `image_generate`（生图）已于 2026-10-21 迁到 `@vssaros/dsh-imagegen`（同名 ⇒ 技能文档与
+ * agent 配置里的旧名字继续有效；且新家会把图真的显示在对话里）。
+ * 迁走的两个原因：① IDE 侧没有实现 `capability:'media'`（`dshIdeCapabilities.ts` 里没这个 case）；
+ * ② 它填的桥 `pluginId` 是**入口 id**（'vssaros-media'）而授权表按**包名**建
+ * （`dshHarnessChannel._readIdeDeclarations`）⇒ 授权永远判「插件未安装或没有可读清单」。
+ * 留在原地只有一个后果：模型看到 `image_generate` 就调它，然后拿到一句失败。
+ */
 function toolDefinitions(state, config) {
 	const where = async (params) => {
 		const kind = typeof params?.kind === 'string' ? params.kind.trim() : '';
@@ -238,55 +298,6 @@ function toolDefinitions(state, config) {
 		execute: async () => {
 			const stats = await statsOf(config);
 			return { ...stats, dbPath: mediaDbPathOf(config) };
-		},
-	}, {
-		// 重构 4（2026-10-16）：`image_generate`——生图工具。定义在插件，**执行经桥回 IDE**（生图要
-		// 模型 provider，那是壳侧的——`providers.sync` 的凭证在 IDE 进程 ✓）。写类 ⇒ 挂审批闸 ✓。
-		name: 'image_generate',
-		description: '生成图片：按提示词调 IDE 侧的图像模型（provider.generateImage），返回生成的图片（base64 内容项）。模型选择优先级：调用参数 → agent 配置 → 第一个声明 supportsImageGen 的 provider。',
-		parameters: {
-			type: 'object',
-			properties: {
-				prompt: { type: 'string', description: '图片生成提示词' },
-				negative_prompt: { type: 'string', description: '要避免的内容（可选）' },
-				width: { type: 'number', description: '宽度像素（默认 1024）' },
-				height: { type: 'number', description: '高度像素（默认 1024）' },
-				num_images: { type: 'number', description: '生成几张（默认 1）' },
-				image_url: { type: 'string', description: '参考图 URL（图生图，可选）' },
-				provider_id: { type: 'string', description: '显式指定图像 provider id（覆盖 agent 配置，可选）' },
-				model_id: { type: 'string', description: '显式指定图像模型 id（覆盖 agent 配置，可选）' },
-			},
-			required: ['prompt'],
-		},
-		output: {
-			schema: {
-				type: 'object',
-				properties: {
-					ok: { type: 'boolean' },
-					images: { type: 'array', items: { type: 'object', properties: { base64: { type: 'string' }, mimeType: { type: 'string' } } } },
-					error: { type: 'string' },
-				},
-			},
-			render: (_args, value) => [{
-				type: 'text',
-				text: value.ok ? `生成了 ${value.images?.length ?? 0} 张图片` : `生成失败：${value.error ?? '未知原因'}`,
-			}],
-		},
-		// 写类 ⇒ 不声明 isConcurrencySafe（默认独占，见契约"仅 true 表示可并行"）。
-		execute: async (params) => {
-			const prompt = String(params?.prompt ?? '').trim();
-			if (!prompt) { throw new Error('prompt 必填（图片生成提示词）'); }
-			// 经桥回 IDE（壳侧的 provider.generateImage）。桥不在 ⇒ 如实失败（不假装生成了 ✗）。
-			const bridge = state.bridge;
-			if (!bridge || typeof bridge.callIDE !== 'function') {
-				throw new Error('图像生成要经桥回 IDE（模型 provider 在 IDE 进程），但 vssarosBridge 不在（bridge 插件没装/没连）');
-			}
-			const reply = await bridge.callIDE('ide.request', {
-				capability: 'media',
-				pluginId: 'vssaros-media',
-				params: { op: 'generateImage', ...params },
-			}, { timeoutMs: 10 * 60 * 1000 });  // 生图可能很慢（与 legacy VIDEO_TIMEOUT_HINT_MS 同量级）
-			return reply ?? { ok: false, error: 'IDE 没回（provider 没实现 generateImage？）' };
 		},
 	}, {
 		// 重构 4（2026-10-16）：`video_generate`——视频生成。与 image_generate 同构（经桥回 IDE）。
@@ -601,7 +612,10 @@ export function apply(ctx, config = {}) {
 				const html = renderPage({
 					stats, assets, kind,
 					root: mediaRootOf(config), dbPath: mediaDbPathOf(config),
-					toolsRegistered, error,
+					toolsRegistered,
+					// 读成功之后才取样：它由 store 在**实际打开**时记录（直连 / 私有快照）
+					via: lastReadModeOf(),
+					error,
 				});
 				res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
 				res.end(html);

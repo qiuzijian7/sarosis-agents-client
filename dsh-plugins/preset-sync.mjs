@@ -31,15 +31,35 @@ export const PRESET_PATH = path.join(DIR, 'cordis.presets.yml');
 export const OUR_PRESET_ID = 'vssaros-standard';
 /** 行 id（Loader 编辑地址 ✓）。 */
 export const OUR_PRESET_ROW_ID = 'preset-vssaros-standard';
-/** `order`：官方 standard=1 / ptc=2 ⇒ 我们排 3（只影响列表显示顺序 ✓）。 */
-export const OUR_PRESET_ORDER = 3;
+/**
+ * `order`：官方 standard=1 / ptc=2 / minimal=3 / cordis=4 ⇒ 我们的排 **100**（只影响列表顺序 ✓）。
+ *
+ * ★ 2026-10-21 原来这里是 **3** ⇒ 与官方 minimal(3)/cordis(4) **同 order** ⇒ 官方 seat 菜单里
+ *   "极简模式 → standard → 创造模式" **交错穿插**（用户截图现场 ✗）⇒ 观感上像"重复项"。
+ *   沉到 100 之后：官方 4 模式(1..4) → agent → 我们的 3 档(100/101/102) ⇒ **三层清晰可辨** ✓。
+ *   ⚠ 只改排序，不改 id/内容 ⇒ 会话 id 语义与功能零影响 ✓。
+ */
+export const OUR_PRESET_ORDER = 100;
 /**
  * `config.name`（**显示名**，2026-10-13 加）：官方 `standard` preset 自己**没有** `name` ⇒ dsh 与我们的
  * 页面都退回显示 **id** ✗，而这个 id 是 `vssaros-standard` ⇒ 用户界面上会冒出这个内部串（本次报障现场 ✗✗）。
  * `description` 级的友好名 = `standard`（与官方那条"没有 name 时显示 `standard`"的观感一致 ✓）。
  * ⚠ 这是我们与官方 preset 的**又一处差异**，所以下面 `expectedPresetText` 的差异清单也要列上 ✓。
+ *
+ * ★ 2026-10-21 改名 `standard` → `标准档（VsSaros）`：官方 seat 菜单是**全部 roster**（官方 4 个内置
+ *   模式 + 我们的档 + 22 个 agent 一股脑列出来，官方 `presetOptions()` 只过滤 `broken`、**没有按 kind 过滤**
+ *   ⇒ agent 必然在里面，这是官方语义）⇒ 我们这条若还叫 `standard`，在菜单里就是"标准模式"旁边一条
+ *   顶着内部串的 `standard`，**看着像重复项** ✗。改成"档"的自解释名后，一眼能分清"官方模式"与"我们的档" ✓。
+ *   ⚠ 只改**显示名**，不改 `config.id` ⇒ 会话 id 后缀（= preset id）语义不动 ✓（`isModePreset` 判据也按 id 推导 ✓）。
  */
-export const OUR_PRESET_NAME = 'standard';
+export const OUR_PRESET_NAME = '标准模式（VsSaros）';
+/**
+ * `config.description`（**2026-10-21 加**）：官方 seat 菜单里每条会显示"名称 + 一行描述" ⇒
+ * 我们这三条若不写描述，就是官方那三条的「暂无描述。」⇒ 看着像**重复的模式** ✗。
+ * `AgentPreset.Config` 支持 `description`（`dsh-agent-preset/lib/index.js:16`）⇒ 直接写上 ✓。
+ * ⚠ 描述里**不能有半角冒号+空格**（YAML 键值分隔符）⇒ 统一用全角「：」✓；整体加双引号防意外 ✓。
+ */
+export const OUR_PRESET_DESCRIPTION = '带 VsSaros 能力模块的默认档：知识库 / 记忆 / 看板 / 代码库 / 工作流等已挂载，工具面按预算收敛（省 token）。';
 
 // ── 第二个 preset：`vssaros-ptc`（2 档实验，2026-10-20）──────────────────────────────────────
 /**
@@ -55,11 +75,31 @@ export const OUR_PRESET_NAME = 'standard';
  */
 export const PTC_PRESET_ID = 'vssaros-ptc';
 export const PTC_PRESET_ROW_ID = 'preset-vssaros-ptc';
-/** `order` 4：官方 standard=1 / ptc=2、我们 native=3 ⇒ 实验档排最后（只影响列表顺序 ✓）。 */
-export const PTC_PRESET_ORDER = 4;
-/** 显示名：带 VsSaros 前缀，免得和官方那个 `ptc` 在 UI 里分不清 ✓。 */
-export const PTC_PRESET_NAME = 'PTC (VsSaros)';
+/** `order` 101：与另外两档一起沉到官方模式与 agent 之后（只影响列表顺序 ✓）。 */
+export const PTC_PRESET_ORDER = 101;
+/** 显示名：带 VsSaros 前缀，免得和官方那个 `ptc` 在 UI 里分不清 ✓。
+ *  ★ 2026-10-21：`PTC (VsSaros)` → `PTC 档（VsSaros）`（"档"字点明它是我们的档位、不是官方那个模式 ✓）。 */
+export const PTC_PRESET_NAME = 'PTC 模式（VsSaros）';
+/** 说明：与标准档的差别只有"工具以批量执行方式呈现"这一条 ⇒ 写清楚才不会被当成重复项 ✓。 */
+export const PTC_PRESET_DESCRIPTION = '与标准档同一套能力，但工具以批量执行（PTC）方式呈现：模型只看到 run_code 与自动生成的 SDK。';
 /** 追加进 plugins 末尾那一行（缩进 10/12 与官方 `ptc.patch.yml:123-126` 逐字同形 ✓）。 */
+// ── 第三个 preset：`vssaros-full`（"全能力"档，2026-10-21）──────────────────────────────
+// 与 `vssaros-standard` **逐字相同**，**只差 `vssaros-agents` 行的 `denyTools` 清单**：
+// 标准档藏掉"场景类"工具（省 token），本档**放开**它们 ⇒ 能力不丢（按需切档即可 ✓）。
+// ⚠ 单变量纪律：两份 preset 的**行集合必须完全相同** ⇒ 这样"切档后工具面差多少"才可归因 ✓（守卫会盯 ✓）。
+export const FULL_PRESET_ID = 'vssaros-full';
+export const FULL_PRESET_ROW_ID = 'preset-vssaros-full';
+/** `order` 102：与另外两档一起沉到官方模式与 agent 之后（只影响列表顺序 ✓）。 */
+export const FULL_PRESET_ORDER = 102;
+/**
+ * 显示名：与「标准档（VsSaros）」成对 ⇒ 用户一眼知道这是**同一个底座的两档**（差别只在工具面宽窄），
+ * 而不是一个"另一件事"。
+ * ★ 2026-10-21：`Full (VsSaros)` → `全能力档（VsSaros）` → **`标准档 · 全工具（VsSaros）`**。
+ */
+export const FULL_PRESET_NAME = '标准档 · 全工具（VsSaros）';
+/** 说明：与标准档的差别只有"工具面宽窄" ⇒ 说清"更全但更贵"，用户才知道什么时候切它 ✓。 */
+export const FULL_PRESET_DESCRIPTION = '与标准档同一套能力，但放开被收敛掉的场景类工具（媒体 / 看板 / MCP / Web / Unreal 等）：能力最全，token 也最贵。';
+
 export const PTC_PRESENTATION_ROWS = [
 	'          - id: tool-presentation',
 	'            name: \'@deepseek-ai/dsh-agent-tool-presentation\'',
@@ -130,13 +170,14 @@ export function buildOurPreset(baselineText, ourRowsText) {
 	const lines = baselineText.split(/\r?\n/);
 	const out = [];
 	// ★ 2026-10-15（用户报 "This turn failed: unknown prompt variable {{cwd}}…"，修法 B）：
-	//   **删掉 persona 行** —— 官方 standard 的 persona suffix 带 `{{cwd}}`，而子代理（deployment）
-	//   作用域的变量表里没有 cwd ⇒ 挂着本 preset 的会话一派子代理，子代理每一轮都被插值器抛错
-	//   中止 ✗（dsh-system-prompt/lib/index.js:169；dsh-persona 是按作用域**遮蔽**全局段的 ✓，
-	//   所以只修全局层救不了挂本 preset 的会话 ✗）。
-	//   删掉后由**全局层** persona 生效：我们每次运行的桥补丁已把全局 personaSuffix 烘焙成
-	//   无变量的字面量（见 dshCli.ts renderBridgeOverlay 的 system-prompt 行 ✓）⇒ 根会话文案
-	//   与今天**逐字一致** ✓、子代理作用域也能渲 ✓✓。
+	//   **删掉 persona 行** —— 那时（官方 0.2.0-rc.2）的 standard preset 带 persona 行，其 suffix 含
+	//   `{{cwd}}`，而子代理（deployment）作用域的变量表里没有 cwd ⇒ 挂着本 preset 的会话一派子代理，
+	//   子代理每一轮都被插值器抛错中止 ✗（dsh-system-prompt/lib/index.js:169；dsh-persona 按作用域
+	//   **遮蔽**全局段 ⇒ 只修全局层救不了挂本 preset 的会话 ✗）。
+	//   删掉后由**全局层** persona 生效：桥补丁已把全局 personaSuffix 烘焙成无变量的字面量
+	//   （见 dshCli.ts renderBridgeOverlay 的 system-prompt 行 ✓）⇒ 根会话文案一致 ✓、子代理也能渲 ✓✓。
+	// ★ 2026-10-21（baseline 切到官方 0.2.1-rc.1 之后）：**官方 standard 自己已经没有 persona 行**
+	//   ⇒ 这段"删 persona"在当前 baseline 上是**防御性空操作**（保留：万一官方再加回来仍要删 ✓）。
 	let skippingPersona = false;
 	for (const line of lines) {
 		if (/^ {10}- id: persona\s*$/.test(line)) { skippingPersona = true; continue; }
@@ -150,6 +191,8 @@ export function buildOurPreset(baselineText, ourRowsText) {
 			out.push(`        id: ${OUR_PRESET_ID}`);
 			// 官方那条没有 `name`；我们补一个**显示名**（否则界面退回显示内部 id `vssaros-standard` ✗）。
 			out.push(`        name: ${OUR_PRESET_NAME}`);
+			// 官方 seat 的菜单项是"名称 + 一行描述" ⇒ 不写描述就显示「暂无描述。」⇒ 看着像重复项 ✗。
+			out.push(`        description: "${OUR_PRESET_DESCRIPTION}"`);
 			continue;
 		}
 		if (/^ {8}order: \d+\s*$/.test(line)) { out.push(`        order: ${OUR_PRESET_ORDER}`); continue; }
@@ -182,6 +225,7 @@ export function buildPtcPreset(standardPresetText) {
 		if (line === `    - id: ${OUR_PRESET_ROW_ID}`) { return `    - id: ${PTC_PRESET_ROW_ID}`; }
 		if (line === `        id: ${OUR_PRESET_ID}`) { return `        id: ${PTC_PRESET_ID}`; }
 		if (line === `        name: ${OUR_PRESET_NAME}`) { return `        name: ${PTC_PRESET_NAME}`; }
+		if (line === `        description: "${OUR_PRESET_DESCRIPTION}"`) { return `        description: "${PTC_PRESET_DESCRIPTION}"`; }
 		if (line === `        order: ${OUR_PRESET_ORDER}`) { return `        order: ${PTC_PRESET_ORDER}`; }
 		return line;
 	});
@@ -192,9 +236,59 @@ export function buildPtcPreset(standardPresetText) {
 }
 
 /** 期望的 `cordis.presets.yml` 内容（生成器与守卫**共用这一份**，免得两边各算一遍漂移 ✓）。 */
+/**
+ * 从"我们的 native preset 文本"派生 **Full 档**：换 id/name/order + **把 `denyTools` 换成 `denyToolsFull`**。
+ *
+ * 为什么要"换清单"而不是"换行集合"：host plane 的工具注册是**全局可见**的 ⇒ preset 里少挂某插件，
+ * 那些工具**照样**进模型目录 ⇒ 靠"不挂"是藏不住的 ⇒ 唯一能藏的是 **mask（denyTools）** ✓。
+ * ⇒ "轻/全"两档必须是**同一批行 + 不同 mask**（顺带满足"单一变量 ⇒ 可归因" ✓）。
+ */
+export function buildFullPreset(standardPresetText) {
+	const lines = standardPresetText.replace(/\s+$/, '').split(/\r?\n/);
+	const renamed = lines.map(line => {
+		if (line === `    - id: ${OUR_PRESET_ROW_ID}`) { return `    - id: ${FULL_PRESET_ROW_ID}`; }
+		if (line === `        id: ${OUR_PRESET_ID}`) { return `        id: ${FULL_PRESET_ID}`; }
+		if (line === `        name: ${OUR_PRESET_NAME}`) { return `        name: ${FULL_PRESET_NAME}`; }
+		if (line === `        description: "${OUR_PRESET_DESCRIPTION}"`) { return `        description: "${FULL_PRESET_DESCRIPTION}"`; }
+		if (line === `        order: ${OUR_PRESET_ORDER}`) { return `        order: ${FULL_PRESET_ORDER}`; }
+		return line;
+	});
+	// 取出 `denyToolsFull:` 的条目（它紧跟在 `denyTools:` 之后，缩进更深 ✓）
+	const fullStart = renamed.findIndex(line => /^\s+denyToolsFull:\s*$/.test(line));
+	if (fullStart < 0) { throw new Error('派生 Full preset 时找不到 `denyToolsFull:`（rows 文件里要写它 ✓）'); }
+	const indent = renamed[fullStart].match(/^\s*/)[0];
+	const fullEntries = [];
+	let cursor = fullStart + 1;
+	const fullItem = new RegExp(`^ {${indent.length + 2}}-`);
+	while (cursor < renamed.length && fullItem.test(renamed[cursor])) {
+		fullEntries.push(renamed[cursor]);
+		cursor += 1;
+	}
+	// 删掉 `denyToolsFull:` 整块（连它的注释行一起：往前吃掉连续的注释行 ✓）
+	let blockStart = fullStart;
+	while (blockStart > 0 && /^\s*#/.test(renamed[blockStart - 1]) && renamed[blockStart - 1].match(/^\s*/)[0].length >= indent.length) { blockStart -= 1; }
+	const withoutFull = [...renamed.slice(0, blockStart), ...renamed.slice(cursor)];
+	// 把 `denyTools:` 的条目替换成 full 的条目
+	const denyStart = withoutFull.findIndex(line => /^\s+denyTools:\s*$/.test(line));
+	if (denyStart < 0) { throw new Error('派生 Full preset 时找不到 `denyTools:`（rows 文件里要写它 ✓）'); }
+	const denyIndent = withoutFull[denyStart].match(/^\s*/)[0];
+	let denyEnd = denyStart + 1;
+	// ⚠ 列表里**夹着注释行**（rows 里每段都写了"为什么"）⇒ 只删连续的 `- ` 行会把后面的条目留下 ✗
+	//   ⇒ 这里要连**同缩进的注释**一起吞掉，直到遇到"既不是条目也不是注释"的行（下一个键）✓
+	const denyItem = new RegExp(`^ {${denyIndent.length + 2}}(-|#)`);
+	while (denyEnd < withoutFull.length && denyItem.test(withoutFull[denyEnd])) { denyEnd += 1; }
+	const swapped = [
+		...withoutFull.slice(0, denyStart + 1),
+		...fullEntries,
+		...withoutFull.slice(denyEnd),
+	];
+	return `${swapped.join('\n')}\n`;
+}
+
 export function expectedPresetText(baselineText, ourRowsText) {
 	const standard = buildOurPreset(baselineText, ourRowsText).replace(/\s+$/, '');
 	const ptc = buildPtcPreset(standard).replace(/\s+$/, '');
+	const full = buildFullPreset(standard).replace(/\s+$/, '');
 	return [
 		'# ⚠ 本文件由 `dsh-plugins/preset-sync.mjs` 生成，**不要手改** ✗（改了守卫会红 ✓）：',
 		'#   node dsh-plugins/preset-sync.mjs --write',
@@ -214,9 +308,15 @@ export function expectedPresetText(baselineText, ourRowsText) {
 		'#   `@deepseek-ai/dsh-agent-tool-presentation`（`mode: ptc`）⇒ 模型只看到 `run_code` + 自动生成的 SDK',
 		'#   （默认 native 档是直接发 197 个 schema）。**不要**把它设成默认 —— 它是拿来做 A/B 的 ✓；',
 		'#   `ctx.ptcRuntime` 由 host 层 `dsh-base` 的 `ptc-runtime` 行提供，本文件不需要挂 ✓。',
+		'#',
+		`# ★ 第三个 preset \`${FULL_PRESET_ID}\`（"全能力"档，2026-10-21）：与上面那份**逐字相同**，**只差** \`vssaros-agents\` 行的 \`denyTools\` 清单`,
+		'#   （标准档藏掉"场景类"工具省 token；本档放开它们 ⇒ 能力不丢 ✓）。切档即可换轻重 ✓；',
+		'#   ⚠ 两份的**行集合必须完全相同** ⇒ "切档后差多少"才可归因（守卫会盯 ✓）。',
 		standard,
 		'',
 		ptc,
+		'',
+		full,
 		'',
 	].join('\n');
 }

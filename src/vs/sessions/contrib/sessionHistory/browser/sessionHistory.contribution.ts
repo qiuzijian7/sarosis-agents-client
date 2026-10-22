@@ -1,81 +1,36 @@
 /*---------------------------------------------------------------------------------------------
- *  Session History View — sidebar contribution
- *  Registers the Session History view container and view pane in the sidebar,
- *  allowing users to browse all chat sessions, filter by agent/workspace,
- *  view user messages (newest first), and jump to specific messages in the
- *  Agent Studio chat editor.
+ *  Session History View — **已退役**（2026-10-19）
+ *
+ *  历史：这里注册常驻容器 `sessionHistory.view` + 自绘列表（`SessionHistoryViewPane`）。
+ *  后来会话历史的数据源与 UI 都迁到 dsh 插件页（`/x/sessions/`），本容器改为挂
+ *  `DshPluginViewPane` 过渡了一段时间 —— 但 dsh 侧**自己的模块容器**（`vssaros.dsh.sessions`，
+ *  见 `dshActivityBarContribution`）本来就挂着同一个插件页 ⇒ 活动栏出现**两个**一模一样的
+ *  「历史会话」图标（2026-10-19 用户截图报障）✗。
+ *
+ *  ⇒ 本贡献**不再注册任何容器/视图**：会话历史入口只保留 dsh 模块容器那一条
+ *    （符合用户定稿"会话历史的数据源与 UI 全部归 dsh，IDE 侧不再有任何会话逻辑"）。
+ *
+ *  ⚠ 回滚方式：把 `registerViewContainer` + `registerViews` 恢复，视图 ctor 用
+ *    `new SyncDescriptor(DshPluginViewPane, ['vssaros.dsh.sessions'])`（或自绘列表
+ *    `SessionHistoryViewPane`）—— 注意**只能选一个**，两个都注册就会再次出现双图标。
+ *  ⚠ `SessionHistoryViewPane`（自绘列表）仍留在源码里，但**没有任何注册点**。
  *--------------------------------------------------------------------------------------------*/
 
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
-import { Registry } from '../../../../platform/registry/common/platform.js';
-import {
-	IViewContainersRegistry,
-	IViewsRegistry,
-	ViewContainerLocation,
-	Extensions as ViewExtensions,
-	WindowEnablement,
-} from '../../../../workbench/common/views.js';
-import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
-import { ViewPaneContainer } from '../../../../workbench/browser/parts/views/viewPaneContainer.js';
-import { localize, localize2 } from '../../../../nls.js';
-import { Codicon } from '../../../../base/common/codicons.js';
-import { registerIcon } from '../../../../platform/theme/common/iconRegistry.js';
-import { SessionHistoryViewPane } from './sessionHistoryView.js';
 
-// --- Constants -------------------------------------------------------------
-
+/** 保留常量：其它流/命令面板可能按 id 引用（本文件不再注册它们）。 */
 export const SESSION_HISTORY_VIEW_CONTAINER_ID = 'sessionHistory.view';
 export const SESSION_HISTORY_VIEW_ID = 'sessionHistory.view.main';
-
-// Order: after SourceControl(30) separator, before Agents(60).
-const SESSION_HISTORY_ICON_ORDER = 50;
-
-// --- Icon registration -----------------------------------------------------
-
-const sessionHistoryIcon = registerIcon(
-	'session-history-view',
-	Codicon.commentDiscussion,
-	localize('sessionHistoryIcon', 'Session History')
-);
-
-// --- Workbench contribution ------------------------------------------------
+export const SESSION_HISTORY_PLUGIN_VIEW_ID = 'sessionHistory.view.plugin';
 
 class SessionHistorySidebarContribution extends Disposable implements IWorkbenchContribution {
-	static readonly ID = 'sessions.sessionHistory.sidebar';
+	static readonly ID = 'workbench.contrib.sessionHistorySidebar';
 
 	constructor() {
 		super();
-		this._registerSidebarIcon();
-	}
-
-	private _registerSidebarIcon(): void {
-		const viewContainerRegistry = Registry.as<IViewContainersRegistry>(ViewExtensions.ViewContainersRegistry);
-		const viewsRegistry = Registry.as<IViewsRegistry>(ViewExtensions.ViewsRegistry);
-
-		// Register the sidebar ViewContainer (this creates the activity-bar icon
-		// inside saros SidebarPart, which monitors ViewContainerLocation.Sidebar).
-		const container = viewContainerRegistry.registerViewContainer({
-			id: SESSION_HISTORY_VIEW_CONTAINER_ID,
-			title: localize2('sessionHistory.title', 'Session History'),
-			icon: sessionHistoryIcon,
-			ctorDescriptor: new SyncDescriptor(ViewPaneContainer, [SESSION_HISTORY_VIEW_CONTAINER_ID, { mergeViewWithContainerWhenSingleView: true }]),
-			storageId: SESSION_HISTORY_VIEW_CONTAINER_ID,
-			hideIfEmpty: false,
-			order: SESSION_HISTORY_ICON_ORDER,
-			windowEnablement: WindowEnablement.Both,
-		}, ViewContainerLocation.Sidebar, { isDefault: true, doNotRegisterOpenCommand: true });
-
-		// Register the actual ViewPane inside the container.
-		viewsRegistry.registerViews([{
-			id: SESSION_HISTORY_VIEW_ID,
-			name: localize2('sessionHistory.view.name', 'Session History'),
-			ctorDescriptor: new SyncDescriptor(SessionHistoryViewPane),
-			canToggleVisibility: false,
-			canMoveView: false,
-			order: 0,
-			windowEnablement: WindowEnablement.Both,
-		}], container);
+		// 空实现：入口由 dsh 模块容器（`vssaros.dsh.sessions`）提供 ⇒ 这里**不再注册**任何东西，
+		// 否则活动栏会出现第二个「历史会话」图标（用户 2026-10-19 报障）。
 	}
 }
 

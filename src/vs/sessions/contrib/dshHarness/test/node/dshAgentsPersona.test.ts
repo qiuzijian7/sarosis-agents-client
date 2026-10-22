@@ -49,6 +49,20 @@ suite('dshHarness / agents plugin persona hot switch (pure core)', () => {
 		assert.strictEqual(projection.apply(state, { type: 'agent/inbox/spliced', data: { inserted: [] } }), state);
 	});
 
+	test('projection ships to the page (wire) without the persona full text', async () => {
+		// 没有 wire ⇒ dsh 不把这个单元下发给页面 ⇒ client.agents.js 读 projectionValues["vssaros-persona"]
+		// 恒为 undefined（2026-10-20 读 dsh-session-projection 源码确认：只有带 wire 的单元会发）。
+		const { personaProjection } = await core();
+		const projection = personaProjection();
+		assert.ok(projection.wire && typeof projection.wire.view === 'function', 'must declare wire');
+		assert.strictEqual(typeof projection.wire.viewSchema?.parse, 'function');
+		const switched = projection.apply(projection.init(), { type: 'agent/inbox/spliced', seq: 7, data: { inserted: [{ source: { kind: 'vssaros/persona', personaId: 'fox', name: 'Fox', text: 'A VERY LONG PERSONA' } }] } });
+		const view = projection.wire.view(switched);
+		assert.deepStrictEqual(view, { personaId: 'fox', name: 'Fox', atSeq: 7 }, '页面读的正是 personaId / name');
+		assert.ok(!('text' in view), '人格全文不进页面（可能很长，页面也用不到）');
+		assert.deepStrictEqual(projection.wire.view(projection.init()), { personaId: null, name: null, atSeq: -1 });
+	});
+
 	test('only our own marked splice counts as a switch', async () => {
 		const { personaSwitchOf } = await core();
 		// 别人往 inbox 里注入的消息（没有我们的 source.kind）不能被误判成人格切换。

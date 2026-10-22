@@ -278,12 +278,16 @@ export function metaBlock({ data, summary, tally, toolsRegistered = '', liveServ
  *   "点了没反应（命令被静默拒掉）" ✗ ✓。
  */
 const WORKBENCH_MODULES = [
-	{ route: '/x/dashboard/', name: '主页', desc: '会话遥测 / 用量与编排', icon: '🏠' },
+	// ★ 2026-10-21（用户：「主页item ui中的固定，应该默认固定状态，且不可以取消固定」）：
+	//   主页是 dsh 侧栏的**常驻入口**（那一行永远在）⇒ 活动栏里它也**恒为固定** ⇒ 卡片上
+	//   直接显示「📌 已固定」且**不给取消的入口**（按钮 disabled）✓。
+	{ route: '/x/dashboard/', name: '主页', desc: '会话遥测 / 用量与编排', icon: '🏠', alwaysPinned: true },
 	{ route: '/x/kanban/', name: '看板', desc: '看板存储与卡片工具', icon: '🗂' },
 	{ route: '/x/kb/', name: '知识库', desc: '知识库索引与检索', icon: '📚' },
 	{ route: '/x/memory/', name: '记忆库', desc: '记忆条目与检索', icon: '🧠' },
 	{ route: '/x/codebase/', name: '代码库', desc: '代码图谱与符号检索', icon: '🕸' },
 	{ route: '/x/media/', name: '媒体库', desc: '只读 media.db 页面', icon: '🎬' },
+	{ route: '/x/imagegen/', name: '生图', desc: '生图工作台 / 最近出图画廊', icon: '🎨' },
 	{ route: '/x/skills/', name: '技能', desc: '技能注册与按需加载', icon: '🧩' },
 	{ route: '/x/mcp/', name: 'MCP', desc: 'MCP 服务器与工具', icon: '🔌' },
 	{ route: '/x/workflow/', name: '流程', desc: '工作流引擎与画布', icon: '⚙' },
@@ -406,7 +410,7 @@ ${rows ? `<div class="dash-scroll" data-dash-scroll="sessions"><ul>${rows}</ul><
 	{
 		kind: 'workbench',
 		name: '工作台',
-		description: 'dsh 模块页入口：打开 / 固定到活动栏 / 从活动栏隐藏（后两个是单向动作）',
+		description: 'dsh 模块页入口：打开 / 固定 / 从活动栏隐藏（后两个是单向动作；主页恒为固定）',
 		icon: 'home',
 		accent: '#C586C0',
 		defaultSize: { w: GRID_COLUMNS, h: 3 },
@@ -452,7 +456,7 @@ ${rows ? `<div class="dash-scroll" data-dash-scroll="sessions"><ul>${rows}</ul><
 			const cards = ordered.map(m => `<div class="wb-card" data-dash-wb-route="${escapeHtml(m.route)}">
 	<div class="wb-nm"><span>${m.icon}</span>${escapeHtml(m.name)}</div>
 	<div class="wb-desc">${escapeHtml(m.desc)}</div>
-	<div class="wb-ops"><button type="button" class="wb-op" data-dash-action="open-module" data-dash-route="${escapeHtml(m.route)}">↗ 打开</button><button type="button" class="wb-op" data-dash-action="pin-module" data-dash-route="${escapeHtml(m.route)}">📌 固定到活动栏</button><button type="button" class="wb-op" data-dash-action="hide-module" data-dash-route="${escapeHtml(m.route)}">👁 从活动栏隐藏</button></div>
+	<div class="wb-ops"><button type="button" class="wb-op" data-dash-action="open-module" data-dash-route="${escapeHtml(m.route)}">↗ 打开</button>${m.alwaysPinned ? '<button type="button" class="wb-op" disabled title="主页恒为固定（不可取消）">📌 已固定</button>' : '<button type="button" class="wb-op" data-dash-action="pin-module" data-dash-route="' + escapeHtml(m.route) + '">📌 固定</button>'}<button type="button" class="wb-op" data-dash-action="hide-module" data-dash-route="${escapeHtml(m.route)}">👁 从活动栏隐藏</button></div>
 </div>`).join('');
 			return `<div class="wb-grid" data-dash-workbench="1">${cards}</div>
 <p class="diag">这些按钮是<b>单向动作</b>：dsh 侧读不到 IDE 的固定 / 显隐状态（用户选的是"dsh 侧自己枚举"）⇒ 卡片<b>不回显</b>"已固定 / 已隐藏"，点了就生效、页面不知道结果。顺序可以直接<b>拖动卡片</b>调整（不需要进"编排"模式 ✓）。</p>`;

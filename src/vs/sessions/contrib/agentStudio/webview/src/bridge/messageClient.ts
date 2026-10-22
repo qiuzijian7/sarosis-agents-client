@@ -159,6 +159,11 @@ export type RequestType =
 	| 'workflow.importFile'
 	// 2026-09-13: 把某节点的编辑器开在独立 editor tab（P2）
 	| 'workflow.openNodeEditor'
+	// 2026-10-19: 工具栏「🖼 媒体库」—— 请宿主在**编辑区**打开唯一的媒体库页
+	// （host 侧对应 `agentStudioWebviewController` 的 `workflow.openMediaGallery` 分支）。
+	// ⚠ 2026-10-20 补登记：此前**只加了 host 侧** ⇒ `messageProtocolConsistency` 的
+	//   "两处白名单必须一致"守卫红（漂移项：`workflow.openMediaGallery`）。
+	| 'workflow.openMediaGallery'
 	// 2026-09-13 (P4): 本窗口产出图/视频 → host 广播给同工作流的其它窗口
 	| 'workflow.snapshotPut'
 	| 'workflow.sessions.rename'

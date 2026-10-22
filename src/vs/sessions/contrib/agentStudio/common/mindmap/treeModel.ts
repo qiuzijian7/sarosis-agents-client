@@ -316,23 +316,36 @@ export function collectDescendantNodes(rootNodeId: string, data: IMindmapData): 
  */
 export function getVisibleNodeIds(data: IMindmapData): Set<string> {
 	const parentOf = new Map<string, string>();
+	// ★ 2026-10-19：邻接表 + 节点索引（修「打开大画布卡死」的固定开销之一）。
+	//   原实现对**每个**节点做 `nodes.find(...)`（O(N)）＋ 全扫 `edges`（O(E)）⇒ 总 O(N² + N·E)：
+	//   现场那份 550 节点 / 70 边的画布约 30 万次比较，打开时白烧几十毫秒到数百毫秒。
+	//   一次建表后是 O(N + E)。✅ 语义不变：仍是同样的栈式遍历、同样的 visible 集合
+	//   （重复入栈也无所谓，Set 天然去重；遍历顺序不影响结果）。
+	const childrenOf = new Map<string, string[]>();
 	for (const edge of data.edges) {
 		parentOf.set(edge.toNode, edge.fromNode);
+		const list = childrenOf.get(edge.fromNode);
+		if (list) { list.push(edge.toNode); } else { childrenOf.set(edge.fromNode, [edge.toNode]); }
 	}
+	const byId = new Map<string, IMindmapData['nodes'][number]>();
+	for (const node of data.nodes) { byId.set(node.id, node); }
 	const visible = new Set<string>();
 	const roots = data.nodes.filter(n => !parentOf.has(n.id));
 	const stack = roots.map(r => r.id);
 	while (stack.length) {
 		const id = stack.pop()!;
+		// ★ 2026-10-19：**visited 守卫**（原实现没有 ⇒ 边里一旦成环就是**无限循环**，
+		//   表现是"打开画布直接卡死、只能强杀"—— 这比慢更糟，属健壮性缺口而非性能问题）。
+		//   现在的数据是 DAG（某个节点可以有多个父）⇒ 无环时行为不变，只在重复入栈时剪枝 ✓。
+		if (visible.has(id)) { continue; }
 		visible.add(id);
-		const node = data.nodes.find(n => n.id === id);
+		const node = byId.get(id);
 		if (node && node.expanded === false) {
 			continue;
 		}
-		for (const edge of data.edges) {
-			if (edge.fromNode === id) {
-				stack.push(edge.toNode);
-			}
+		const children = childrenOf.get(id);
+		if (children) {
+			for (const child of children) { stack.push(child); }
 		}
 	}
 	return visible;

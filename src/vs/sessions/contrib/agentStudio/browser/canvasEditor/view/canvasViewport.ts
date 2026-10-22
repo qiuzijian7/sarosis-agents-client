@@ -668,15 +668,33 @@ export class CanvasViewport {
 		}
 
 		// 创建/更新节点
+		//
+		// ★★ 2026-10-19：**批量读写分离** —— 修「点开大画布卡死」（现场：226 KB / 550 个 text 节点）。
+		//   原因是这段原来把「建 DOM → 读 scrollHeight → 写 style.height」写在**同一个循环**里：
+		//   每次 read 都会强制浏览器做一次**同步布局**（layout thrashing）⇒ 550 节点 = 550 次 reflow，
+		//   主线程被钉住几十秒，用户看到的就是「点一下就卡死」✗。
+		//   现在拆三段：① 只建/更新 DOM（纯写）② 统一读 scrollHeight（一次布局）
+		//   ③ 统一写 height（一次布局）⇒ reflow 从 O(nodes) 降到 O(1)。
+		//   ⚠ 行为**完全不变**：仍是「只增不减」、手动 resize 过的节点不覆盖、
+		//     仍保持「先测量文本高度、再布局」的顺序（见下面的 relayout 注释）。
 		let heightChanged = false;
+		// 入边集合预建：原来在循环里对每个节点 edges.some(...) ⇒ O(N×E)（550×70 次）。
+		const parentsWithChildren = new Set<string>();
+		for (const edge of data.edges) { parentsWithChildren.add(edge.fromNode); }
+		const needMeasure: Array<{ el: HTMLElement; node: (typeof data.nodes)[number] }> = [];
+		// ★ 2026-10-19（同一轮的第二刀）：新建的节点先挂进 **DocumentFragment**，循环结束后**一次插入**
+		//   ⇒ DOM 变更次数从 O(nodes) 降到 1（逐个 appendChild 会让浏览器反复失效布局树）。
+		//   ⚠ 顺序要求：Fragment 必须**在测量之前**插入（② 读 scrollHeight 时元素得已在文档里，
+		//     否则读到 0 ⇒ 高度不撑开 ⇒ 文字被裁 ✗），下面 ①′ 就是这一步。
+		const createdFragment = document.createDocumentFragment();
 		for (const node of data.nodes) {
 			if (node.type === 'group') { continue; } // groups rendered separately
 			if (!visible.has(node.id)) { continue; } // 折叠隐藏的后代不渲染
-			const hasChildren = data.edges.some(e => e.fromNode === node.id);
+			const hasChildren = parentsWithChildren.has(node.id);
 			let el = this._nodeEls.get(node.id);
 			if (!el) {
 				el = this._createNodeElement(node);
-				this._nodeLayer.appendChild(el);
+				createdFragment.appendChild(el);
 				this._nodeEls.set(node.id, el);
 			}
 			this._updateNodeElement(el, node, hasChildren);
@@ -684,19 +702,28 @@ export class CanvasViewport {
 			// 自动按内容高度适配：复刻 infinite_canvas_vscode 的 createNodeWithText
 			// （节点高度随文本自适应）。手动 resize 过的节点不覆盖，保留用户设定尺寸。
 			if (this._editingNodeId !== node.id && !this._manualSizeNodes.has(node.id)) {
-				const textEl = el.querySelector('.canvas-node-text') as HTMLElement | null;
-				if (textEl) {
-					const natural = textEl.scrollHeight;
-					// 只增不减：内容超过当前高度才撑高；绝不把显式高度（如文件里的 80px）压小，
-					// 否则会无谓触发重排、破坏文件原有布局（修复「布局混乱」）。
-					const needed = Math.max(this._resizeMinH, Math.min(natural, MAX_AUTO_NODE_HEIGHT));
-					const fitH = Math.max(node.height ?? 0, needed);
-					if (Math.abs((node.height ?? 0) - fitH) > 1) {
-						node.height = fitH;
-						el.style.height = fitH + 'px';
-						heightChanged = true;
-					}
-				}
+				needMeasure.push({ el, node });
+			}
+		}
+		// ①′ 一次性插入（Fragment 里已含全部新建节点）
+		if (createdFragment.childNodes.length > 0) { this._nodeLayer.appendChild(createdFragment); }
+		// ② 统一读（上面所有写操作在这里一次性结算 ⇒ 只布局一次）
+		const naturalHeights = needMeasure.map(m => {
+			const textEl = m.el.querySelector('.canvas-node-text') as HTMLElement | null;
+			return textEl ? textEl.scrollHeight : 0;
+		});
+		// ③ 统一写（只增不减：内容超过当前高度才撑高；绝不把显式高度压小，
+		//    否则会无谓触发重排、破坏文件原有布局（修复「布局混乱」）。
+		for (let i = 0; i < needMeasure.length; i++) {
+			const { el, node } = needMeasure[i];
+			const natural = naturalHeights[i];
+			if (!natural) { continue; }
+			const needed = Math.max(this._resizeMinH, Math.min(natural, MAX_AUTO_NODE_HEIGHT));
+			const fitH = Math.max(node.height ?? 0, needed);
+			if (Math.abs((node.height ?? 0) - fitH) > 1) {
+				node.height = fitH;
+				el.style.height = fitH + 'px';
+				heightChanged = true;
 			}
 		}
 

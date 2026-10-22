@@ -15,6 +15,7 @@
 import { URI } from '../../../../../../base/common/uri.js';
 import { IFileService } from '../../../../../../platform/files/common/files.js';
 import { VSBuffer } from '../../../../../../base/common/buffer.js';
+import { extractFrontmatterTags } from '../../knowledge/frontmatter.js';
 import { IKbNode, KbSection } from './kbTypes.js';
 
 /**
@@ -341,10 +342,20 @@ export class KbFullTextIndex {
 
 		// 提取并索引 #标签#（从文本中解析，然后从 token 流中去除避免重复索引）
 		const { tags, cleanText } = this.extractTags(doc.text);
+		// ⚠ 2026-10-19 标签口径修订：标签 = frontmatter tags ∪ 正文 #标签#
+		//   （库里 133/166 篇只有 frontmatter tags ⇒ 只认正文会让「标签分类」几乎全落「无标签」✗）。
+		//   合并去重按小写；frontmatter 在前（作者显式写的 ✓）。
+		//   与 dsh 侧 `kbFulltext.buildIndex` / `kbKernelBuild.buildKernelDocs` 逐字同构 ✓。
+		// ⚠ 去重方向：以 **frontmatter 全集**为前段（保序 ✓），正文标签作为**补集**追加 ⇒
+		//   反向写（用正文集合去剔 frontmatter）会把 frontmatter 里与正文同名的那条剔掉、
+		//   剩下的 fm 标签反倒排到正文标签前面 ⇒ 顺序与"frontmatter 在前"的口径不符 ✗。
+		const fmTags = extractFrontmatterTags(doc.text);
+		const fmSeen = new Set(fmTags.map(t => t.toLowerCase()));
+		const merged = [...fmTags, ...tags.filter(t => !fmSeen.has(t.toLowerCase()))];
 		const toks = this.tokenize(doc.name.toLowerCase() + ' ' + cleanText);
 		const length = toks.length;
 
-		this._docs.set(docId, { ...doc, length, tags });
+		this._docs.set(docId, { ...doc, length, tags: merged });
 
 		// 文本倒排索引
 		const tf = new Map<string, number>();
@@ -355,8 +366,9 @@ export class KbFullTextIndex {
 			pm.set(docId, f);
 		}
 
-		// 标签索引
-		for (const tag of tags) {
+		// 标签索引（⚠ 必须遍历 **merged**（含 frontmatter tags ✓）—— 用 body-only 的 `tags`
+		//   会让 frontmatter-only 的文档在 `searchByTag` / `getAllTags` 里查不到 ✗）
+		for (const tag of merged) {
 			const normalized = tag.toLowerCase().trim();
 			if (!normalized) { continue; }
 			this._allTags.add(normalized);
@@ -392,11 +404,17 @@ export class KbFullTextIndex {
 	/** 从 Markdown 文本中提取 #标签#（对齐 SiYuan Lute SetTag 语义）。
 	 *  实现：单次扫描 O(L) 增量构建 cleanText，避免在循环内对整串做
 	 *  slice + repeat + concat 造成的 O(N·L) 时间与 O(N·L) 临时字符串分配——
-	 *  对大笔记（几百 KB+ 多标签）会迅速堆涨乃至撞 V8 4GB 上限。*/
+	 *  对大笔记（几百 KB+ 多标签）会迅速堆涨乃至撞 V8 4GB 上限。
+	 *
+	 *  ⚠ 2026-10-19 修订（真机事故：mermaid 图 `style A fill:#4a90d9,color:#fff` 被跨
+	 *  `,color:` 配对成标签 `4a90d9,color:` ✗）：标签内部**不允许** CSS / mermaid / HTML
+	 *  属性专属的 ASCII 标点 `, ; : = ( ) [ ] { } < > "` —— 正常标签（中文、`-`、`_`、
+	 *  `/`、`+`、`.`）都不含它们 ⇒ 这些行整体不命中、原文保留 ✓。
+	 *  与 dsh 侧 `dsh-plugins/vssaros-kb/lib/core/kbFulltext.js` 的 `extractTags` **逐字对齐** ✓。*/
 	private extractTags(text: string): { tags: string[]; cleanText: string } {
 		const tags: string[] = [];
 		// 匹配 #标签# 格式（支持中文标签）
-		const tagRe = /#[^#\s\u2000-\u206F]+#/g;
+		const tagRe = /#[^#\s\u2000-\u206F,;:=()[\]{}<>"]+#/g;
 		const parts: string[] = [];
 		let lastEnd = 0;
 		let m: RegExpExecArray | null;
@@ -574,14 +592,18 @@ export class KbFullTextIndex {
 			tags: d.tags,
 			text: d.text,
 		}));
-		return JSON.stringify({ v: 1, docs, avgLen: this._avgLen, totalDocs: this._totalDocs });
+		// ⚠ 2026-10-19 **v1 → v2**：标签口径修订（frontmatter tags 并入 ＋ 正文标签正则收窄）后，
+		//   v1 缓存里的旧 tags 不可信 ✗ —— 而 reconcile 对 mtime/size 未变的文件原样沿用缓存条目 ✓，
+		//   不 bump 版本旧库永远不更新 ✗。v1 一律判 stale ⇒ 全量重建一次 ⇒ 自愈 ✓。
+		//   （dsh 写侧 `kbKernelBuild.serializeKernel` 同一轮 bump 到 v2 ✓。）
+		return JSON.stringify({ v: 2, docs, avgLen: this._avgLen, totalDocs: this._totalDocs });
 	}
 
 	/** Restore the index from serialized JSON. Returns false on malformed input. */
 	async deserialize(json: string): Promise<boolean> {
 		try {
 			const data = JSON.parse(json);
-			if (!data || data.v !== 1 || !Array.isArray(data.docs)) { return false; }
+			if (!data || data.v !== 2 || !Array.isArray(data.docs)) { return false; }
 			this._docs.clear();
 			this._postings.clear();
 			this._tagIndex.clear();

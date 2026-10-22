@@ -224,7 +224,7 @@ window.__ModuleLoader__.load({
 							position: "absolute", top: "100%", right: 0, marginTop: 4, zIndex: 1000,
 							padding: 5, borderRadius: 10,
 							border: "1px solid var(--dsw-alias-border-l1, transparent)",
-							background: "var(--dsw-alias-bg-layer-1, var(--dsw-alias-bg-base))",
+							background: "linear-gradient(var(--dsw-alias-bg-layer-1, transparent), var(--dsw-alias-bg-layer-1, transparent)), var(--dsw-alias-bg-base, #1e1e1e)",
 							boxShadow: "0 8px 24px rgba(0,0,0,.35)",
 						}, shell.fitMenu ? shell.fitMenu(rootRef.current ? rootRef.current.getBoundingClientRect() : null) : {}),
 					}, ...menuRows));

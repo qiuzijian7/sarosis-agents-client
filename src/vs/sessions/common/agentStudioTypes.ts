@@ -1,4 +1,4 @@
-﻿/*---------------------------------------------------------------------------------------------
+/*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
@@ -305,7 +305,15 @@ export interface Agent {
 	description: string;
 	icon: string;
 	avatar?: string;
-	model: string;
+	/**
+	 * 默认模型（provider 侧的 model id，可写成 `provider/model`）。
+	 *
+	 * ⚠ **可以为空**（2026-10-20 修正类型）：内置 agent 一律不写 model（见 `builtinAgents.ts` 的注释）
+	 * —— 裸模型名在 dsh 引擎里没有 provider route ⇒ 只会得到一条「模型未映射 → 跟随默认」的告警。
+	 * 空值语义 = **跟随用户当前选的模型**（与 `createAgent` / `agentMdFormat` 的空值语义一致），
+	 * 不是"缺字段/损坏"。
+	 */
+	model?: string;
 	/**
 	 * 默认 LM provider ID（如 'knot'、'lm:xxx'）。
 	 * 与 model 配合作为该 Agent 的默认模型选择：聊天页无本地覆盖时使用，
@@ -364,6 +372,35 @@ export interface Agent {
 	source: 'builtin' | 'custom';
 	status?: AgentStatus;
 	sortOrder?: number;
+
+	/**
+	 * 是否进"用户可见"名单（2026-10-20）。
+	 *
+	 * 真源 = `.agent.md` 的 `userFacing: true`。**dsh 侧按这个字段过滤**名册/群成员/子代理候选
+	 * （`dsh-plugins/vssaros-agents` 的 `isShownAgent`）。IDE 侧仍以
+	 * `USER_FACING_BUILTIN_AGENT_IDS` 为准 —— 两者由 `builtinAgentSingleSource.test.ts` ⑤ 强绑定，
+	 * 不是两份各写各的名单。
+	 */
+	userFacing?: boolean;
+	/**
+	 * 是否挂官方 `subagent` / `subagent_fork` 工具行（2026-10-20）。
+	 *
+	 * `false` = 该 agent 的 preset **不装配**这两行 ⇒ 它在 dsh 侧拿不到派发子代理的工具。
+	 * 审查族（code-reviewer / task-reviewer / re-reviewer）用它把"只有一个审查席位"从
+	 * 提示词意愿变成工具层事实（`tools.restrict()` 拦不住同 preset 内注册的行）。
+	 */
+	subagents?: boolean;
+	/**
+	 * 是否允许被 `subagent` 工具**点名委派**（2026-10-20）。
+	 *
+	 * 真源 = `.agent.md` 的 `subagent: true`；缺省（未设 / false）一律**不可委派** ——
+	 * 默认关，因为"能被派活"意味着别人会把自包含 brief 丢过来，只有职责明确、输入自足的
+	 * agent 才该开（`isDelegatableAgent` 是判定入口）。
+	 *
+	 * ⚠ 2026-10-20 补：这个字段先出现在 `builtinAgents.ts` 与 `agentMdFormat.ts` 里
+	 *   （4 + 2 处使用），但 `Agent` 接口没声明 ⇒ `compile-client` 直接 6 个 error。
+	 */
+	delegatable?: boolean;
 
 	/** 资源版本号（商城下载/升级溯源用，语义化版本） */
 	version?: string;

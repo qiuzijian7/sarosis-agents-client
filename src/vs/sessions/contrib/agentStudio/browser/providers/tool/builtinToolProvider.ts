@@ -106,7 +106,7 @@ import { registerWorkflowTool } from './workflowTool.js';
 import type { UnifiedSubAgentDispatch } from '../../../common/unifiedSubAgentDispatch.js';
 import { registerPlanModeTools } from './planModeTools.js';
 import { createKnowledgeStorageRegistrar, type IKnowledgeStorageRegistrar } from './knowledgeStorageTools.js';
-import { IMermaidInlineRenderer } from '../../mermaidInlineRenderer.js';
+import { IDiagramRenderer } from '../../peleDiagramRenderer.js';
 import { IDrawioInlineRenderer } from '../../drawioInlineRenderer.js';
 import { svgToPng } from '../../knowledge/svgRasterizer.js';
 import { prepareDiagramsForSync } from '../../knowledge/diagramSyncPrepare.js';
@@ -329,10 +329,10 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		@IWebContentExtractorService private readonly webContentExtractorService: IWebContentExtractorService,
 		@ISearchService private readonly searchService: ISearchService,
 		@IKbNativeKernelService private readonly kbKernelService: IKbNativeKernelService,
-		// ★ 2026-09-24：图表渲染器（与笔记预览 / 聊天图表卡片同一套隐藏 webview 引擎）。
+		// ★ 2026-09-24：图表渲染器（与笔记预览 / 聊天图表卡片同一套 pele 引擎）。
 		//   注入给 kb_feishu_sync 的「同步前图表准备」—— 此前该步骤只长在「知识库视图 → 同步飞书」
 		//   按钮路径上，agent 走工具同步时 mermaid/drawio 源码会原样发到飞书（飞书不渲染源码）。
-		@IMermaidInlineRenderer private readonly mermaidRenderer: IMermaidInlineRenderer,
+		@IDiagramRenderer private readonly mermaidRenderer: IDiagramRenderer,
 		@IDrawioInlineRenderer private readonly drawioRenderer: IDrawioInlineRenderer,
 		// ★ 2026-09-24：`kb_build`（agent 发起知识库构建）需要按视图同样的方式装配
 		//   `KbImportController`（它有 9 个必需依赖：configuration/log/file/env/storage/
@@ -419,7 +419,20 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		// 2026-10-17（5.5 前置）：video_analyze 退役——dsh 侧的 vssaros-media 已迁 ✓。
 		// this._registerVideoAnalyzeTools();
 		this._registerBundledTools();
-		this._registerDelegationTools();
+		// 2026-10-19（用户要求）：`delegate_task` **退役** —— 委派交给 dsh 官方子代理插件
+		//   （`@deepseek-ai/dsh-tool-subagent`，工具名 `subagent` / `subagent_fork`，已由
+		//   `cordis.presets.yml` 的 delegation 组装在每个 preset 里）。理由：
+		//   · 官方工具是一等公民（后端可换 spawn/fork/in-process、有 maxDepth 与并发治理、
+		//     完成通知 + `send_message` 续谈），我们自己在 shell 里再造一套只会分叉行为；
+		//   · 官方工具挑 agent 的口径是 **preset**（`agent_preset` 参数，需在配置里开
+		//     `allowedAgentPresets`），天然能选到 `vssaros-<id>`，不必再维护第二套 type 枚举。
+		//   文件留着（`delegationTools.ts` 里还有 batch/ledger 等被别处引用的纯函数），等确认
+		//   无回归后真删。
+		// this._registerDelegationTools();
+		// ★ 2026-10-20：退役方法保留、但不调用 ⇒ TS6133 会让 tsgo 永久 exit 2，把未来的新
+		//   类型错误淹没在噪音里。这里显式引用一次（不执行），回归确认期结束整段删掉本行与方法。
+		// eslint-disable-next-line @typescript-eslint/no-unused-expressions
+		void this._registerDelegationTools;
 		this._registerPlanExploreTool(); // WorkBuddy-style plan mode: parallel exploration
 		this._registerDynamicWorkflowTool(); // dynamic workflows: 模型写 JS 脚本编排子代理
 		this._registerPlanModeTools(); // MiMo-style plan_enter/plan_exit tools

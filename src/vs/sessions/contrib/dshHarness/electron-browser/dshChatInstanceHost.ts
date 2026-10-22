@@ -27,7 +27,9 @@ import { IStorageService, StorageScope, StorageTarget } from '../../../../platfo
 import { BrowserOverlayManager, BrowserOverlayType } from '../../../../workbench/contrib/browserView/electron-browser/overlayManager.js';
 import { IDshChatBinding, IDshChatHostContext, IDshChatInput, setDshChatHostFactory } from '../../../common/dshChatHost.js';
 import { DshHarnessSettings } from '../common/dshHarness.js';
-import { dshChatNewSessionId, dshChatSessionId, dshChatWorktreeSessionId, resolvePresetSessionId } from '../common/dshChatSession.js';
+import { dshChatNewSessionId, dshChatSessionId, dshChatWorktreeSessionId, parseRememberedSession, pickReusableBlankSession, rememberedSessionMatches, resolvePresetSessionId, serializeRememberedSession } from '../common/dshChatSession.js';
+// 复用判定的取数来源（会话摘要带 `blank`：折叠前缀里有没有回合）
+import type { IDshSessionSummary } from '../common/dshSessionIndex.js';
 // 人格事实的**落表**（2026-10-12）：页面侧经桥上报 → 本宿主按 (agentId, sessionId) 写进
 // 会话历史侧栏读的那张 PROFILE 表。格式与容错口径由该纯模块独占（parse ↔ write 同一个文件，
 // 不会出现"写的人和读的人各理解一套"）。
@@ -104,6 +106,14 @@ class DshChatBinding extends Disposable implements IDshChatBinding {
 	private _bindSeq = 0;
 	/** preset → 会话 id（本 pane 运行期内习得/派生；确定性派生见 common/dshChatSession）。 */
 	private readonly _presetSessions = new Map<string, string>();
+	/**
+	 * 身份还没到齐时**暂存**的人格事实（新页签：页面先上报、壳侧后绑会话）。
+	 *
+	 * 丢了会怎样：会话历史侧栏那一行**永远没有人格标记**（`personaBySession` 缺键），而且没有报错。
+	 * 为什么要等：落表键是壳侧的 `agentId::sessionId`（页面只知道 dsh 会话 id）⇒ 身份不全时**不能猜** ✓。
+	 * 补落表的时机见 `_flushPendingPersonaFact`。
+	 */
+	private _pendingPersonaFact?: { personaId: string | null; name?: string; applicable?: boolean };
 	/** 进行中的切换（并发点选去重）。 */
 	private _switching: Promise<void> | undefined;
 	/**
@@ -116,6 +126,13 @@ class DshChatBinding extends Disposable implements IDshChatBinding {
 	private _input: IDshChatInput;
 	/** 隐藏自愈定时器：视图应显示却因遮挡/零宽判定隐藏时，每秒重算一次直到恢复（事件漏网的兜底）。 */
 	private _hiddenRecheck: ReturnType<typeof setInterval> | undefined;
+	/**
+	 * "活动聊天"待登记（视图还没建时先记下，视图就绪后补占位）。
+	 *
+	 * 为什么需要：活动位是**单槽**，由**焦点**驱动（见 `noteActive`）；而焦点可能先于视图创建到达
+	 * （用户刚打开聊天就点进去）⇒ 那时无处可占 ⇒ 记下来，等 `_ensureViewOnce` 完成后补上 ✓。
+	 */
+	private _activePending = false;
 
 	/**
 	 * 浮层让位时的**冻结帧**（让位前抓一帧贴到占位上，避免聊天区变空白）。
@@ -182,8 +199,8 @@ class DshChatBinding extends Disposable implements IDshChatBinding {
 				// 方案 5.15：已有会话切 preset（空白会话页面侧已直切，不会走到这里）。
 				void this._switchPreset(e.command.presetId);
 			} else if (e.kind === 'command' && e.command.method === 'openSession') {
-				// header「历史会话」菜单：切到指定会话（宿主是会话绑定的权威，走既有 rebind 通路）。
-				void this._openSession(e.command.sessionId, e.command.agentPreset);
+				// header「历史会话」菜单 / 会话历史插件页双击：切到指定会话（宿主是会话绑定的权威，走既有 rebind 通路）。
+				void this._openSession(e.command.sessionId, e.command.agentPreset, e.command.cwd);
 			} else if (e.kind === 'command' && e.command.method === 'newChat') {
 				// header「新建会话」/ Commands 的「Preset」行：开一个新聊天页签
 				// （引擎设置为 dsh ⇒ 新页签仍是 dsh 聊天；带 preset 时新页签直接绑该 preset 的会话）。
@@ -295,6 +312,25 @@ class DshChatBinding extends Disposable implements IDshChatBinding {
 		}
 	}
 
+	/**
+	 * 本 pane 拿到焦点 ⇒ 登记"活动聊天"（**不**动 DOM 焦点，见 `IDshChatBinding.noteActive`）。
+	 *
+	 * 为什么需要（2026-10-21，中间栏并排多聊天）："活动聊天"是**单槽**，而多个聊天可以同时在场。
+	 *   若仍在场即占位，谁最后跑了一次可见性重算谁占位（ResizeObserver / 15s 定时器 / 状态变化
+	 *   都会触发）⇒ **未必是用户正在看的那个** ⇒ "Add File to Chat / 插件页打开会话"会打到错的聊天 ✗。
+	 *   ⇒ 占位只由**焦点**触发 ✓（焦点是唯一可靠的"用户正在看哪个"信号）。
+	 */
+	noteActive(): void {
+		if (!this._viewId) {
+			// 视图还没建（Host 未就绪 / 尚未 `_ensureViewOnce`）⇒ 记下来，视图就绪后补占 ✓
+			// （否则"刚打开就点开"的用户，活动位永远空着 ⇒ 外部操作找不到落点 ✗）。
+			this._activePending = true;
+			return;
+		}
+		this._activePending = false;
+		this._dsh.noteActiveChatView(this._viewId, this);
+	}
+
 	override dispose(): void {
 		if (this._hiddenRecheck !== undefined) {
 			clearInterval(this._hiddenRecheck);
@@ -319,52 +355,128 @@ class DshChatBinding extends Disposable implements IDshChatBinding {
 			return Promise.resolve();
 		}
 		if (!this._creatingView) {
-			const viewId = this._dsh.claimChatViewId(this._viewBaseFor(this._chatId), this);
-			// 方案 7.x：chatId → dsh 会话（控制桥 session.start，幂等接管）。web 端没有会话深链，
-			// 会话 id 经 preload 参数交给 @vssaros/dsh-chat-surface，在页面里 openSession。
-			// 没有工作区路径时不绑定（页面保持官方默认形态），Host 重启后 dsh 会话仍在、页面自动重开。
-			// 方案 5.15：恢复/切换到 preset 时绑定该 preset 的专属会话（确定性派生 id）。
-			const presetAtBind = this._preset;
-			// 恢复上次所在的 worktree（方案 C）：不恢复的话，pane 一重载就悄悄回到主工作区的会话 ✗。
-			const cwdAtBind = this._worktree ?? this._ctx.workspacePath;
-			const sessionId = cwdAtBind ? this._sessionIdFor(presetAtBind, cwdAtBind) : '';
-			// 绑定决策**留痕**（2026-10-12）：新页签"没有 session.start"是最难查的一种 —— 页面会继续显示
-			// **上一个选中的会话**，看起来就像"新建聊天打开了已有会话" ✗。这一行让"到底派生了什么 id、
-			// 有没有 cwd"一眼可见（有无 session.start 也就有了对照）。
-			this._log.info(`[dshHarness] chat ${this._chatId} bind: cwd=${cwdAtBind ?? '(无，不绑定)'} sessionId=${sessionId || '(无)'} preset=${presetAtBind ?? '(base)'}`);
-			// 绑定（startSession：幂等接管 + 派生 preset 专属 id）与**视图创建并行**：
-			// 页面按 argv 里的 sessionId 立刻开始加载（chat-surface 每 500 ms 轮询，会话没就绪就重试，
-			// 见其 client.js），而绑定要排在 Host 的 workspace 注册之后（用户机器实测 ~4 s）。
-			// 串行（原来的 `bind.then(createView)`）等于让页面白白空等这段时间。
-			const bind: Promise<string | undefined> = sessionId
-				? this._dsh.startSession({ cwd: cwdAtBind!, sessionId, agentPreset: presetAtBind })
-					.then(r => {
-						this._recordSession(presetAtBind, r.sessionId, r.agentPreset ?? undefined);
-						return r.sessionId;
-					}, e => {
-						this._log.warn(`[dshHarness] session.start failed for chat ${this._chatId}`, e);
-						return undefined;
-					})
-				: Promise.resolve(undefined);
-			// 视图立刻创建（页面从此并行加载），但 `_creatingView` 仍等绑定完成才 resolve——
-			// 调用方（以及 e2e）依赖"resolve 时视图已绑好"这条既有语义。
-			const bindSeq = ++this._bindSeq;
-			this._creatingView = this._dsh.createView(viewId, this._windowId, 'chat', sessionId).then(() => {
-				this._viewId = viewId;
-				this._placeholder.dataset.sessionId = sessionId;
-				this._layoutView();
-				this._updateVisibility();
-				// 绑定拿到的会话 id 与请求的不同（Host 派生/接管了别的会话）时，让页面切过去。
-				// 只在这次绑定仍是最新的一次时做：期间用户切了 preset（那是更新的一次绑定）就不能回退。
-				return bind.then(actual => {
-					if (bindSeq === this._bindSeq && actual && actual !== sessionId && this._viewId === viewId) {
-						this._placeholder.dataset.sessionId = actual;
-						void this._dsh.rebindSession(viewId, actual);
-					}
-				});
-			}, e => this._log.error('[dshHarness] createView failed', e)).finally(() => this._creatingView = undefined);
+			this._creatingView = this._ensureViewOnce().finally(() => this._creatingView = undefined);
 		}
 		return this._creatingView;
+	}
+
+	private async _ensureViewOnce(): Promise<void> {
+		const viewId = this._dsh.claimChatViewId(this._viewBaseFor(this._chatId), this);
+		// 方案 7.x：chatId → dsh 会话（控制桥 session.start，幂等接管）。web 端没有会话深链，
+		// 会话 id 经 preload 参数交给 @vssaros/dsh-chat-surface，在页面里 openSession。
+		// 没有工作区路径时不绑定（页面保持官方默认形态），Host 重启后 dsh 会话仍在、页面自动重开。
+		// 方案 5.15：恢复/切换到 preset 时绑定该 preset 的专属会话（确定性派生 id）。
+		const presetAtBind = this._preset;
+		// 恢复上次所在的 worktree（方案 C）：不恢复的话，pane 一重载就悄悄回到主工作区的会话 ✗。
+		const cwdAtBind = this._worktree ?? this._ctx.workspacePath;
+		const derivedSessionId = cwdAtBind ? this._sessionIdFor(presetAtBind, cwdAtBind) : '';
+		// ★★ A（2026-10-19，用户问「为什么会有这么多空白会话」后定稿）：新页签优先**复用**一个
+		//   **孤儿空白会话**（没有任何回合、且本窗口没有页签绑着它）。
+		//   依据是 dsh 官方 `session.create` 的参数语义：
+		//     "Blank Session to reuse while it is reusable, or the identity of a new Session when
+		//      none is stored under it."
+		//   我们此前的写法每次派生**新** id ⇒ 每开一个页签就永久多一条 blank 会话（实测 1691 条里 1681 条）。
+		//   ⚠ 只在"派生的专属会话**还不存在**"时才复用：已存在的专属会话（哪怕还空着）继续用它，
+		//     否则用户重开的页签会莫名跳到另一条会话 ✗。
+		// ★★ 2026-10-20（用户报「从会话 A 切到别的会话聊完，重开 app 又显示 A」）：
+		//   派生只是**兜底**。用户切过会话（历史会话 / 子会话）后，`_openSession()` 会把实际会话落盘，
+		//   这里优先恢复它 —— 否则重启后必然回到 `_sessionIdFor()` 派生的 A，看着就像"切了个寂寞"。
+		//   `_rememberedSessionId` 自带四道校验（目录 / preset / 仍存在），不可信就返回 undefined ⇒ 完全回到旧行为。
+		const rememberedSessionId = cwdAtBind ? await this._rememberedSessionId(presetAtBind, cwdAtBind) : undefined;
+		const sessionId = rememberedSessionId
+			?? (cwdAtBind && derivedSessionId
+				? await this._preferReusableBlank(derivedSessionId, presetAtBind, cwdAtBind)
+				: derivedSessionId);
+		// ★ 预占这条会话（2026-10-21，中间栏并排多聊天）：
+		//   新页签会"复用孤儿空白会话"，而**并发**开两个聊天时第一个还没记账完（记账在
+		//   `createView().then()` 里）⇒ 第二个会把同一条空白会话挑走 ⇒ 两个视图绑**同一**会话 ⇒
+		//   Host 侧"会话已被占用"或两个页面显示同一段对话 ✗✗。
+		//   ⇒ 决定 id 后立刻预占，让另一个聊天在挑空白会话时就能排除它 ✓。
+		this._dsh.reserveChatSession(sessionId);
+		// 绑定决策**留痕**（2026-10-12）：新页签"没有 session.start"是最难查的一种 —— 页面会继续显示
+		// **上一个选中的会话**，看起来就像"新建聊天打开了已有会话" ✗。这一行让"到底派生了什么 id、
+		// 有没有 cwd"一眼可见（有无 session.start 也就有了对照）。
+		this._log.info(`[dshHarness] chat ${this._chatId} bind: cwd=${cwdAtBind ?? '(无，不绑定)'} sessionId=${sessionId || '(无)'} preset=${presetAtBind ?? '(base)'}${rememberedSessionId ? `（恢复上次会话；派生值是 ${derivedSessionId}）` : sessionId && derivedSessionId && sessionId !== derivedSessionId ? `（复用空白；派生值是 ${derivedSessionId}）` : ''}`);
+		// 绑定（startSession：幂等接管 + 派生 preset 专属 id）与**视图创建并行**：
+		// 页面按 argv 里的 sessionId 立刻开始加载（chat-surface 每 500 ms 轮询，会话没就绪就重试，
+		// 见其 client.js），而绑定要排在 Host 的 workspace 注册之后（用户机器实测 ~4 s）。
+		// 串行（原来的 `bind.then(createView)`）等于让页面白白空等这段时间。
+		const bind: Promise<string | undefined> = sessionId
+			? this._bindSessionWithFallback({ cwd: cwdAtBind!, sessionId, derived: derivedSessionId, agentPreset: presetAtBind })
+			: Promise.resolve(undefined);
+		// 视图立刻创建（页面从此并行加载），但 `_creatingView` 仍等绑定完成才 resolve——
+		// 调用方（以及 e2e）依赖"resolve 时视图已绑好"这条既有语义。
+		const bindSeq = ++this._bindSeq;
+		try {
+			await this._dsh.createView(viewId, this._windowId, 'chat', sessionId);
+		} catch (e) {
+			this._log.error('[dshHarness] createView failed', e);
+			return;
+		}
+		this._viewId = viewId;
+		this._placeholder.dataset.sessionId = sessionId;
+		this._layoutView();
+		this._updateVisibility();
+		// 绑定拿到的会话 id 与请求的不同（Host 派生/接管了别的会话）时，让页面切过去。
+		// 只在这次绑定仍是最新的一次时做：期间用户切了 preset（那是更新的一次绑定）就不能回退。
+		const actual = await bind;
+		if (bindSeq === this._bindSeq && actual && actual !== sessionId && this._viewId === viewId) {
+			this._placeholder.dataset.sessionId = actual;
+			void this._dsh.rebindSession(viewId, actual);
+		}
+		// 记住这次真正绑上的会话（重启后 `_ensureViewOnce` 靠它回到同一处，见 `_rememberSession`）。
+		// 只在"这仍是最新一次绑定"时写：期间用户切了会话就别拿旧结果覆盖新记录。
+		if (bindSeq === this._bindSeq && actual) {
+			this._rememberSession(actual, presetAtBind, cwdAtBind);
+		}
+		// 视图刚就绪 ⇒ 补上此前记下的"要占活动位"（焦点可能先于视图创建到达，见 `_activePending`）。
+		if (this._activePending && this._viewId) {
+			this._activePending = false;
+			this._dsh.noteActiveChatView(this._viewId, this);
+		}
+	}
+
+	/**
+	 * 复用判定的**取数**：派生会话不存在时，找一个孤儿空白会话（纯判定在 `pickReusableBlankSession`）。
+	 * 取数失败一律退回派生 id（宁可多一条空白会话，也不能让新页签打不开 ✗）。
+	 */
+	private async _preferReusableBlank(derived: string, agentPreset: string | undefined, cwd: string): Promise<string> {
+		let list: readonly IDshSessionSummary[];
+		try {
+			list = await this._dsh.listDshSessions();
+		} catch (e) {
+			this._log.warn('[dshHarness] 复用空白会话：listDshSessions 失败（照常新建）', e);
+			return derived;
+		}
+		if (list.some(s => s.id === derived)) {
+			return derived;   // 这个 chatId 的专属会话已存在 ⇒ 保持原语义（含"还空着"的情况）
+		}
+		const picked = pickReusableBlankSession(list, { cwd, agentPreset, exclude: this._dsh.boundChatSessionIds() });
+		if (!picked) {
+			return derived;
+		}
+		this._log.info(`[dshHarness] chat ${this._chatId} 复用空白会话 ${picked}（不新建 ${derived}）`);
+		return picked;
+	}
+
+	/** 绑定会话；复用的 id 若被别处抢占（Host 报错）⇒ 退回派生 id 再试一次。 */
+	private async _bindSessionWithFallback(opts: { cwd: string; sessionId: string; derived: string; agentPreset?: string }): Promise<string | undefined> {
+		const attempt = async (id: string): Promise<string | undefined> => {
+			try {
+				const r = await this._dsh.startSession({ cwd: opts.cwd, sessionId: id, agentPreset: opts.agentPreset });
+				this._recordSession(opts.agentPreset, r.sessionId, r.agentPreset ?? undefined);
+				return r.sessionId;
+			} catch (e) {
+				this._log.warn(`[dshHarness] session.start failed for chat ${this._chatId} (${id})`, e);
+				return undefined;
+			}
+		};
+		const first = await attempt(opts.sessionId);
+		if (first || opts.sessionId === opts.derived) {
+			return first;
+		}
+		this._log.info(`[dshHarness] 复用空白会话 ${opts.sessionId} 没绑上 ⇒ 退回派生会话 ${opts.derived}`);
+		return attempt(opts.derived);
 	}
 
 	private get _windowId(): number {
@@ -401,15 +513,23 @@ class DshChatBinding extends Disposable implements IDshChatBinding {
 	 * ⇒ 后报的覆盖先报的：当前绑定的那个 preset 才是"这一行现在的人格"，符合侧栏语义。
 	 *
 	 * `personaId === null` = 跟随 Agent 自带人设（挂载期事实，不是"未知"）⇒ **删掉**该条。
-	 * 身份还不全（新页签尚未绑会话）⇒ 记 warn 后丢弃 —— **绝不猜键**（猜出来的键永远匹配不上）。
+	 * 身份还不全（新页签尚未绑会话）⇒ **暂存**，等身份到齐后补落表（见 `_flushPendingPersonaFact`）——
+	 * **绝不猜键**（猜出来的键永远匹配不上），但也**不能丢**（丢了 = 侧栏那一行永远没有人格标记 ✗）。
 	 */
 	private _applyPersonaFact(command: { personaId: string | null; name?: string; applicable?: boolean }): void {
 		const agentId = this._input.agentId;
 		const sessionId = this._input.sessionId;
 		if (!agentId || !sessionId) {
-			this._log.warn(`[dshHarness] persona fact dropped: chat ${this._chatId} 还没有 (agentId, sessionId) 身份（新页签未绑会话）`);
+			// ★ 2026-10-19（日志现场：`persona fact dropped: chat … 还没有 (agentId, sessionId) 身份`）：
+			//   新页签的**页面先挂载先上报**，而壳侧身份由 `NativeChatEditorInput.setAgentInfo()` 稍后才填。
+			//   `_input` 就是那个 input 实例、`agentId/sessionId` 是 getter ⇒ 绑定后这里立刻读得到真值
+			//   ⇒ 所以只要**别丢**，下一次 `_updateVisibility()`（布局/可见性/工作区同步都会走）就能补上 ✓。
+			//   日志降到 info：这是新页签的**正常过渡态**，不是异常（warn 会让人以为坏了 ✗）。
+			this._pendingPersonaFact = command;
+			this._log.info(`[dshHarness] persona fact deferred: chat ${this._chatId} 尚未绑定会话（身份到齐后补落表）`);
 			return;
 		}
+		this._pendingPersonaFact = undefined;      // 已有身份：以最新这条为准（后报覆盖先报）
 		try {
 			const key = personaSessionKey(agentId, sessionId);
 			const raw = this._storage.get(PERSONA_STORAGE_KEY, StorageScope.PROFILE, '');
@@ -426,10 +546,91 @@ class DshChatBinding extends Disposable implements IDshChatBinding {
 		}
 	}
 
+	/**
+	 * 身份到齐后把**暂存**的人格事实补落表（配合 `_applyPersonaFact` 的 deferred 分支）。
+	 *
+	 * 触发点选在 `_updateVisibility()` 开头：它是本宿主唯一"一定会被反复调用"的汇合点
+	 * （挂载 / 布局 / 可见性 / 状态变化 / 15s 工作区同步都会走）⇒ 身份一到就落表，不用给壳侧再加一条事件。
+	 * 幂等：没有暂存 / 身份还没齐 ⇒ 直接返回 ✓。
+	 */
+	private _flushPendingPersonaFact(): void {
+		const pending = this._pendingPersonaFact;
+		if (!pending || !this._input.agentId || !this._input.sessionId) {
+			return;
+		}
+		this._pendingPersonaFact = undefined;
+		this._applyPersonaFact(pending);
+	}
+
 	/** 持久化当前 preset 状态（切回基座 preset 时存 undefined = 未显式切换）+ 当前 worktree（方案 C）。 */
 	private _savePresetState(): void {
 		const preset = this._preset === this._basePreset ? undefined : this._preset;
 		this._storage.store(`dshHarness.chatPreset.${this._chatId}`, JSON.stringify({ preset, basePreset: this._basePreset, ...(this._worktree ? { worktree: this._worktree } : {}) }), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+	}
+
+	// ── 上次绑定的会话（持久化；2026-10-20 用户报「切到 B 后重启又显示 A」）────────
+
+	/**
+	 * 记住"本页签当前绑定的 dsh 会话"。
+	 *
+	 * 为什么必须落盘：切换历史会话只走 `rebindSession()`（`slot.sessionId` + `_chatSession` 全是**内存**），
+	 * 而重启/重开窗口后 `_ensureViewOnce()` 是**纯函数派生**（`_sessionIdFor`：基座 = `chatId` 的确定性派生 id）
+	 * ⇒ 必然回到派生会话 A，用户以为"聊天记录丢了"（其实 B 在磁盘上完好）。
+	 *
+	 * 存 `cwd` / `preset` 是为了恢复时能判"这条记录还属于当前上下文吗"（切了 worktree 或 preset 就不该用它）。
+	 * 写失败只 warn：记不住最多回到旧行为（启动回到派生会话），不能让切会话本身报错。
+	 */
+	private _rememberSession(sessionId: string | undefined, preset: string | undefined, cwd: string | undefined): void {
+		if (!sessionId || !cwd) {
+			return;
+		}
+		try {
+			const raw = serializeRememberedSession(sessionId, cwd, preset, this._basePreset);
+			this._storage.store(`dshHarness.chatSession.${this._chatId}`, raw, StorageScope.WORKSPACE, StorageTarget.MACHINE);
+		} catch (e) {
+			this._log.warn(`[dshHarness] 记住会话 ${sessionId} 失败（chat ${this._chatId}）`, e);
+		}
+	}
+
+	/**
+	 * 读回"上次绑定的会话"，**只在它仍然可信时**返回（否则返回 undefined ⇒ 调用方回退派生的专属会话）。
+	 *
+	 * 四道校验（每条都对应一种"用错会话"的现场）：
+	 *  1. 记录存在且字段完整；
+	 *  2. 记录的 `cwd` 与本次要绑的目录一致（换过 worktree/工作区 ⇒ 不该再用旧目录的会话）；
+	 *  3. 记录的 preset 与当前 preset 一致（切过 preset ⇒ 各自有专属会话，不能串）；
+	 *  4. **会话仍真实存在**（`listDshSessions` 里能查到，且 cwd 对得上）——
+	 *     少了这条，被删的会话会在 `session.start` 里被**按请求 id 复活**成一条空会话，比回到旧会话更糟 ✗。
+	 *
+	 * 只有"确实有记录"时才去查列表：绝大多数页签从没切过历史会话 ⇒ 零额外开销。
+	 */
+	private async _rememberedSessionId(preset: string | undefined, cwd: string): Promise<string | undefined> {
+		let raw = '';
+		try {
+			raw = this._storage.get(`dshHarness.chatSession.${this._chatId}`, StorageScope.WORKSPACE, '');
+		} catch {
+			return undefined;
+		}
+		const stored = parseRememberedSession(raw);
+		if (!stored) {
+			return undefined;   // 没记过 / 记录损坏 ⇒ 当作没有
+		}
+		// 目录 + preset 两道（纯函数，见 common/dshChatSession.js 里的注释）
+		if (!rememberedSessionMatches(stored, { cwd, preset, basePreset: this._basePreset })) {
+			return undefined;
+		}
+		try {
+			const list = await this._dsh.listDshSessions();
+			const hit = list.find(s => s.id === stored.sessionId);
+			if (!hit || (hit.cwd && !this._sameDir(hit.cwd, cwd))) {
+				return undefined;
+			}
+		} catch (e) {
+			// 查不到列表 ⇒ 无法确认它还在 ⇒ 不恢复（宁可回到派生会话，也不要复活已删除的会话）。
+			this._log.warn(`[dshHarness] 校验上次会话 ${stored.sessionId} 失败，回退派生会话（chat ${this._chatId}）`, e);
+			return undefined;
+		}
+		return stored.sessionId;
 	}
 
 	/**
@@ -543,6 +744,8 @@ class DshChatBinding extends Disposable implements IDshChatBinding {
 		this._savePresetState();
 		await this._dsh.rebindSession(viewId, res.sessionId);
 		this._placeholder.dataset.sessionId = res.sessionId;
+		// 记住这次切换（重启后回到 preset 专属会话，而不是 `_sessionIdFor` 重算出来的另一个）。
+		this._rememberSession(res.sessionId, this._preset, this._worktree ?? this._ctx.workspacePath);
 	}
 
 	/**
@@ -650,6 +853,8 @@ class DshChatBinding extends Disposable implements IDshChatBinding {
 			delete this._placeholder.dataset.dshWorktree;
 		}
 		this._log.info(`[dshHarness] chat ${this._chatId} switched to ${isWorktree ? 'worktree' : 'main dir'} ${worktreePath} (session ${res.sessionId}, preset ${this._preset ?? '(base)'})`);
+		// 记住"这个目录上的会话"：重启后 `_worktree` 会恢复，再配合这条记录就能回到同一会话。
+		this._rememberSession(res.sessionId, this._preset, this._worktree ?? worktreePath);
 	}
 
 	/**
@@ -692,7 +897,7 @@ class DshChatBinding extends Disposable implements IDshChatBinding {
 	 *
 	 * `agentPreset` 由页面从会话快照带上来：有则同步 preset 记账，让后续 switchPreset 从正确的会话派生。
 	 */
-	private async _openSession(sessionId: string, agentPreset?: string): Promise<void> {
+	private async _openSession(sessionId: string, agentPreset?: string, cwd?: string): Promise<void> {
 		const viewId = this._viewId;
 		if (!viewId || this._dsh.status.state !== 'running') {
 			this._log.warn(`[dshHarness] openSession ignored: view/host not ready (chat ${this._chatId})`);
@@ -700,6 +905,27 @@ class DshChatBinding extends Disposable implements IDshChatBinding {
 		}
 		// 这是更新的一次绑定：让仍在途的初始绑定结果不再回写/回退（同 _doSwitchPreset）。
 		this._bindSeq++;
+		// ★★ 2026-10-19（用户报「会话历史页双击会话 item 后打不开对应的聊天框」）：
+		//   **先把这条会话拉活，再换绑**。`rebind` 只改"这个视图绑哪个会话"，不会让会话在 Host 里存在；
+		//   历史会话通常只在磁盘投影缓存里（不在 Host 的 live 集合）⇒ 页面 `openSession` 必报
+		//   `sessions.retain: unknown session <id>`，界面就永久停在「正在打开会话…（已等待 N 秒）」
+		//   （真机日志实证：attempts 涨到 10、giveUps 1、connectStatus 441 秒）。
+		//   `startSession({cwd, sessionId})` 的语义是**幂等接管**（已存在就接管同一个）⇒ 安全。
+		//   cwd 由页面从会话快照带上来；没有就跳过这一步（如实 warn，不猜路径 ✗）。
+		if (cwd) {
+			const startedAt = Date.now();
+			try {
+				await this._dsh.startSession({ cwd, sessionId, ...(agentPreset ? { agentPreset } : {}) });
+				this._log.info(`[dshHarness] openSession ${sessionId}：已幂等接管（session.start，${Date.now() - startedAt}ms，cwd=${cwd}）`);
+			} catch (e) {
+				// 接管失败仍继续尝试换绑（会话可能已经在 Host 里），但**必须让用户看见**：
+				// 真机上这条失败的典型形态是 `vssaros-agents (@vssaros/dsh-agents): never started`
+				// （插件 failed to import ⇒ 会话服务整体不可用 ⇒ 点多少次都打不开，而界面上什么也不说 ✗）。
+				this._notifySwitchFailure(`打开会话 ${sessionId}`, e);
+			}
+		} else {
+			this._log.info(`[dshHarness] openSession ${sessionId}：页面没带 cwd ⇒ 跳过接管（若这条会话不在 Host live 集合，页面会卡在"正在打开会话"）`);
+		}
 		if (agentPreset) {
 			// 第三个参数是"该会话实际运行的 preset"（页面从会话快照读到的就是它，故与第二个同值）。
 			this._recordSession(agentPreset, sessionId, agentPreset);
@@ -707,8 +933,22 @@ class DshChatBinding extends Disposable implements IDshChatBinding {
 			this._input.setDshPreset?.(this._preset === this._basePreset ? undefined : this._preset);
 			this._savePresetState();
 		}
-		await this._dsh.rebindSession(viewId, sessionId);
+		try {
+			await this._dsh.rebindSession(viewId, sessionId);
+			this._log.info(`[dshHarness] openSession ${sessionId} ⇒ 已换绑视图 ${viewId}（页面应收到 vssaros-dsh-rebind）`);
+		} catch (e) {
+			// 例如"同一会话已在另一个窗口打开"：宿主明确拒绝 ⇒ 必须让用户看见（不静默 ✗）
+			// 复用既有的失败出口（它已经带 warn 日志 + 通知两种出口，见 _notifySwitchFailure 的注释）。
+			this._notifySwitchFailure(`切到会话 ${sessionId}`, e);
+			return;
+		}
 		this._placeholder.dataset.sessionId = sessionId;
+		// ★★ 2026-10-20（用户报「切到别的会话聊完，重开 app 又显示原来那条」）：**这里是唯一写入口**。
+		//   切历史会话只走 `rebindSession()`（纯内存：`slot.sessionId` + `_chatSession`），
+		//   而重启后 `_ensureViewOnce()` 用 `_sessionIdFor()` **纯函数派生** ⇒ 必然回到 A ✗。
+		//   把"本页签现在绑哪条会话"落盘，重启时 `_rememberedSessionId()` 优先恢复它。
+		//   `cwd` 优先用页面带上来的会话目录（最准）；没带就退回当前绑定目录。
+		this._rememberSession(sessionId, this._preset, cwd ?? this._worktree ?? this._ctx.workspacePath);
 	}
 
 	/**
@@ -771,6 +1011,9 @@ class DshChatBinding extends Disposable implements IDshChatBinding {
 		await this._dsh.rebindSession(viewId, res.sessionId);
 		this._placeholder.dataset.sessionId = res.sessionId;
 		this._log.info(`[dshHarness] chat ${this._chatId} new session in this tab (session ${res.sessionId}, preset ${this._preset ?? '(base)'})`);
+		// ★ 2026-10-20：这条新会话的 id 是**不确定**的（`dshChatNewSessionId` 带随机段）⇒ 重启后
+		//   `_sessionIdFor` 永远派生不到它，只能靠这条记录回来（否则"新建"完关掉 app，重开又回到旧会话）。
+		this._rememberSession(res.sessionId, this._preset, cwd);
 	}
 
 	private _layoutView(retries = 2): void {
@@ -850,6 +1093,8 @@ class DshChatBinding extends Disposable implements IDshChatBinding {
 	}
 
 	private _updateVisibility(): void {
+		// 身份到齐后补落表（新页签的人格事实会先被暂存，见 `_pendingPersonaFact`）。
+		this._flushPendingPersonaFact();
 		const rect = this._placeholder.getBoundingClientRect();
 		this._rectZero = rect.width === 0 || rect.height === 0;
 		// 遮挡标志无条件重算（廉价的 DOM 查询）：只信 onDidChangeOverlayState 事件会在 toast 自然消失时
@@ -875,7 +1120,9 @@ class DshChatBinding extends Disposable implements IDshChatBinding {
 					void this._ensureView();
 					return;
 				}
-				this._dsh.noteActiveChatView(this._viewId, this);
+				// 在场登记（**不**占"活动聊天"位）：活动位只由焦点路径占用 ⇒
+				// 并排两个聊天时，外部操作（Add File to Chat / 插件页打开会话）不会打到错的聊天 ✗。
+				this._dsh.noteChatViewPresent(this._viewId, this);
 			} else {
 				this._dsh.clearActiveChatView(this._viewId, this);
 			}

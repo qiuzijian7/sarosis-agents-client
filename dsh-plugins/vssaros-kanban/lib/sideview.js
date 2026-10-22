@@ -127,7 +127,7 @@ export function renderSideviewPage({ tasks, missing, registeredTools, expectedTo
 		headerHtml: header,
 		toolbarHtml: toolbar,
 		bodyHtml: body,
-		attrs: 'data-vssaros-kanban-surface="sideview"',
+		attrs: 'data-vssaros-surface="sideview" data-vssaros-kanban-surface="sideview"',
 		extraCss: SIDEBAR_CSS,
 		script: `${OPEN_FULL_JS}\n${FILTER_JS}`,
 	});

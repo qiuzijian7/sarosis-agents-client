@@ -1,0 +1,11 @@
+# @vssaros/dsh-pele bundle patch: insert the pele row.
+#
+# 纯工具 + 随包引擎：**无页面、无图标**（`view.kind: none`，同 web-content-import / ide）。
+# `config` 留空：本插件不需要 dataRoot / dshHome —— 它只读随包的 assets/，不落盘、不连网。
+#
+# ⚠ `assets/pele.global.js` 必须随包（已在 package.json 的 files 里）—— IDE 渲染进程会去
+#   `dsh-plugins/vssaros-pele/assets/` 读它整份内联求值；漏了 ⇒ 所有图表渲染不出来 ✗。
+- insert:
+    - id: vssaros-pele
+      name: '@vssaros/dsh-pele'
+      config: {}

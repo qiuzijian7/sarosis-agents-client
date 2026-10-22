@@ -32,18 +32,16 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 const DOMAIN_REL = 'src/vs/sessions/contrib/agentStudio';
 const PROVIDER_REL = `${DOMAIN_REL}/browser/providers/tool/builtinToolProvider.ts`;
 
-/** 每个需要命令通道的注册点：调用名 + 该调用块里必须出现的东西。 */
+/**
+ * 每个需要命令通道的注册点：调用名 + 该调用块里必须出现的东西。
+ *
+ * ★ 2026-10-20：`registerVideoFrameTools(` / `registerVideoAnalyzeTools(` 两项**已移除** ——
+ *   那两个注册函数连同 `videoFrameTools.ts` / `videoAnalyzeTools.ts` 在 2026-10-17 的工具退役里
+ *   删掉了（`builtinToolProvider` 里只剩注释 `// this._registerVideoFrameTools();`，能力已迁到
+ *   dsh 侧 `vssaros-media`）。留着这两项只会让守卫永远"读不到实参块" ⇒ 红。
+ *   仍在的只有 `probeMediaCapabilities(`（工具列表的能力标注）。
+ */
 const REQUIRED_WIRING: ReadonlyArray<{ call: string; must: RegExp; why: string }> = [
-	{
-		call: 'registerVideoFrameTools(',
-		must: /runCommand\s*:/,
-		why: 'extract_video_frames：探测/下载/抽帧/取时长每一步都要出主进程',
-	},
-	{
-		call: 'registerVideoAnalyzeTools(',
-		must: /runCommand\s*:/,
-		why: 'video_analyze：与抽帧共用同一份管线，缺了同样恒报 no-channel',
-	},
 	{
 		call: 'probeMediaCapabilities(',
 		must: /runCommand\s*:/,
@@ -92,7 +90,7 @@ suite('mediaToolchain — 宿主接线守卫（runCommand 必须注入到每个�
 
 	const readProvider = (): string => fs.readFileSync(path.join(process.cwd(), PROVIDER_REL), 'utf8');
 
-	test('★ 先证明守卫**没在空跑**：三个注册点都要读得到实参块', () => {
+	test('★ 先证明守卫**没在空跑**：仍存在的注册点都要读得到实参块', () => {
 		const source = readProvider();
 		const missing = REQUIRED_WIRING.filter(w => !callBlock(source, w.call)).map(w => w.call);
 		assert.deepStrictEqual(missing, [],

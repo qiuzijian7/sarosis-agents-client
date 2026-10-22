@@ -2063,19 +2063,44 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 		window.addEventListener('wf-node-control', handleNodeControl);
 
 		// 媒体库资产拖入画布 → 创建 Asset Loader 节点（对齐 ComfyTV
-		// handleAssetDrop）。window 级监听：拖拽源在媒体库 modal（已随 dragstart
-		// 关闭），drop 目标是画布，需在 dragover preventDefault 才允许 drop。
+		// handleAssetDrop）。window 级监听：拖拽源在媒体库页（编辑区），drop 目标是画布，
+		// 需在 dragover preventDefault 才允许 drop。
+		//
+		// ★ 2026-10-19（媒体库搬进编辑区页）：拖拽源从"同一个 webview 里的浮层"变成**宿主 DOM**
+		//   ⇒ 自定义 MIME `application/x-saros-asset` 跨 `vscode-webview://` 边界**不保证**留存，
+		//   但 `text/plain` 一定过得去 ⇒ 媒体库卡片同时写一条 `saros-media:<id>:<kind>`，
+		//   这里作为**兜底**解析。两路都认；不是我们前缀的文本拖拽直接忽略（不会建节点 ✓）。
+		const TEXT_ASSET_PREFIX = 'saros-media:';
+		const parseTextAsset = (raw: string): { id: string; kind: string } | null => {
+			if (!raw.startsWith(TEXT_ASSET_PREFIX)) { return null; }
+			const rest = raw.slice(TEXT_ASSET_PREFIX.length);
+			const at = rest.lastIndexOf(':');
+			if (at <= 0) { return null; }
+			const id = rest.slice(0, at);
+			const kind = rest.slice(at + 1);
+			return id && kind ? { id, kind } : null;
+		};
 		const handleAssetDragOver = (e: DragEvent) => {
-			if (!e.dataTransfer?.types.includes(ASSET_DRAG_MIME)) { return; }
+			const types = e.dataTransfer?.types;
+			if (!types) { return; }
+			// ⚠ dragover 阶段**读不到** getData（安全限制）⇒ 只能按"可能有我们的文本"放行，
+			//   真正的身份在 drop 时按前缀校验（不匹配就 return，不建节点）。
+			if (!types.includes(ASSET_DRAG_MIME) && !types.includes('text/plain')) { return; }
 			e.preventDefault();
 			if (e.dataTransfer) { e.dataTransfer.dropEffect = 'copy'; }
 		};
 		const handleAssetDrop = (e: DragEvent) => {
-			const raw = e.dataTransfer?.getData(ASSET_DRAG_MIME);
-			if (!raw) { return; }
-			e.preventDefault();
 			let data: { id?: string; kind?: string } = {};
-			try { data = JSON.parse(raw); } catch { return; }
+			const raw = e.dataTransfer?.getData(ASSET_DRAG_MIME);
+			if (raw) {
+				try { data = JSON.parse(raw); } catch { return; }
+			} else {
+				const text = e.dataTransfer?.getData('text/plain') ?? '';
+				const parsed = parseTextAsset(text);
+				if (!parsed) { return; }
+				data = parsed;
+			}
+			e.preventDefault();
 			if (!data.id || !data.kind) { return; }
 			// client → graph 坐标（同 pointerdown 的命中换算）。
 			const rect = canvas.getBoundingClientRect();

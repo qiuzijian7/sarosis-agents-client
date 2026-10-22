@@ -31,7 +31,8 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IViewPaneOptions, ViewPaneShowActions } from '../../../../workbench/browser/parts/views/viewPane.js';
 import { IAuxiliaryEditorPart, IAuxiliaryEditorSideView } from '../../../../workbench/services/editor/common/editorGroupsService.js';
-import { SessionHistoryViewPane } from './sessionHistoryView.js';
+// ★ 2026-10-19：会话列表 UI 归 dsh ⇒ aux 窗口也用插件页宿主（不再是 IDE 自绘 pane）。
+import { DshPluginViewPane } from '../../dshHarness/electron-browser/dshPluginViewPane.js';
 
 /** Synthetic view id — this pane is not registered in any view container. */
 const AUX_CHAT_SIDE_VIEW_PANE_ID = 'sessions.auxChatSideView.pane';
@@ -59,7 +60,7 @@ export class AuxChatSessionSideView extends Disposable implements IAuxiliaryEdit
 	private readonly collapseButton: HTMLElement;
 	private readonly sash: Sash;
 
-	private readonly pane: SessionHistoryViewPane;
+	private readonly pane: DshPluginViewPane;
 
 	private _width: number;
 	private _collapsed: boolean;
@@ -111,8 +112,12 @@ export class AuxChatSessionSideView extends Disposable implements IAuxiliaryEdit
 		// outside a ViewPaneContainer.
 		this.bodyElement.classList.add('monaco-pane-view');
 
-		// Reuse the exact same session list pane as the main window sidebar.
-		this.pane = this._register(this.instantiationService.createInstance(SessionHistoryViewPane, {
+		// 与主窗口侧栏**同一个**宿主：dsh 插件页（`/x/sessions/`）。
+		// ★ 2026-10-19（用户定稿：会话历史 UI 全部归 dsh）：这里从前复用 IDE 自绘列表
+		//   （`SessionHistoryViewPane` + `setOpenGroupResolver`）—— 那套现在不再接线，
+		//   改为挂通用插件页宿主；点一行由 dsh 页面自己经桥 `openSession` 交给宿主处理，
+		//   本窗口内的 chat 视图会被 rebind ⇒ 不再需要"目标 group 解析器"。
+		this.pane = this._register(this.instantiationService.createInstance(DshPluginViewPane, 'vssaros.dsh.sessions', {
 			id: AUX_CHAT_SIDE_VIEW_PANE_ID,
 			title: localize('auxChatSideView.title', "Sessions"),
 			titleMenuId: AUX_CHAT_SIDE_VIEW_TITLE_MENU,
@@ -121,7 +126,6 @@ export class AuxChatSessionSideView extends Disposable implements IAuxiliaryEdit
 
 		// The pane renders its own header; this side view provides the chrome.
 		this.pane.headerVisible = false;
-		this.pane.setOpenGroupResolver(() => this._part?.activeGroup);
 		this.bodyElement.appendChild(this.pane.element);
 		this.pane.render();
 		this.pane.setVisible(true);
@@ -151,11 +155,15 @@ export class AuxChatSessionSideView extends Disposable implements IAuxiliaryEdit
 	}
 
 	/**
-	 * Bind the auxiliary editor part this side view lives in. Called right after
-	 * the window was created; used to open sessions in *this* window.
+	 * Bind the auxiliary editor part this side view lives in.
+	 *
+	 * ★ 2026-10-19：会话列表换成 dsh 插件页之后，**打开会话不再需要 target group**
+	 *   （页面点行 → 桥 `openSession` → 宿主 rebind 本窗口的 chat 视图）。
+	 *   这里仍保留记录，仅供诊断（`data-aux-part`）与兼容既有调用点。
 	 */
 	setTargetPart(part: IAuxiliaryEditorPart): void {
 		this._part = part;
+		this.element.dataset.auxPart = this._part ? '1' : '0';
 	}
 
 	layout(width: number, height: number, top: number, left: number): void {

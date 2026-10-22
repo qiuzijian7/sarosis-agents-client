@@ -201,6 +201,18 @@ export async function listVaults(root, { withDocs = true, external = [] } = {}) 
 			...(withDocs ? { docs: parsed.docs } : {}),
 		});
 	}
+	// ★★ 2026-10-19（真机：笔记写进了**错误的知识库**）：
+	//   本函数 = "**扫数据根** ＋ 注入的外部库"合并。而数据根下躺着 3 个**历史库**
+	//   （`20260709063858-azbh1at` 等，早就不在用户配置里了）⇒ 页面列出「4 个库」
+	//   ⇒ 用户/模型在历史库里操作 ⇒ 笔记落进 `~/.vssaros-dev/knowledge-base/<旧库>/笔记/…`
+	//   而用户以为在写「我的知识库」（`e:\VsSarosVault`）✗（实测 4 篇全落错）。
+	//   ⇒ **注入了外部清单就只认注入的**（用户配置才是真源）；没注入才退回扫盘（旧行为 ✓）。
+	//   ⚠ 放在**底层**（而不是各调用点）：页面 `pageSnapshotOf`、工具 `listAllVaults`、`/api/*`
+	//     全都经过这里 ⇒ 只有一处口径，不会出现"页面 4 个库、工具 1 个库"那种半修 ✓。
+	if (external.length > 0) {
+		const injectedIds = new Set(external.map(item => String(item?.id ?? '')));
+		return { vaults: vaults.filter(vault => injectedIds.has(String(vault?.id ?? ''))), root };
+	}
 	return { vaults, root };
 }
 
@@ -693,5 +705,75 @@ async function collectNoteFiles(notesDir, out = []) {
 			out.push({ path: full, content: await readFile(full, { encoding: 'utf8' }) });
 		} catch { /* 读不动 ⇒ 当没有 ✓ */ }
 	}
+	return out;
+}
+
+/**
+ * 笔记区的**目录地图**（给 AI 选「这篇该放哪」用）。
+ *
+ * ★★ 2026-10-20（用户报「为什么存到 讲懂/ 文件夹」）：模型不知道库里既有的分类结构，
+ *   只能按任务名自造目录（讲懂/）。而 `笔记/知识体系.md` 里**本来就有**一份带说明的目录总览
+ *   （「AI_Agent/ ← AI 智能体学习（13 篇）」），只是没人把它喂给模型。
+ *   ⇒ 本函数以**磁盘真实目录**为准（知识体系.md 可能过时，不能当唯一真源），
+ *     输出精简地图：路径 + 篇数。语义说明由调用方叠加（见 index.js 的 kb_catalog）。
+ *   ⚠ 只扫到 depth 层（缺省 2）：`01_学习/AI_Agent` 这种两级足够定位，再深就是噪音。
+ */
+export async function noteCatalog(vaultDir, { maxDepth = 2 } = {}) {
+	const root = join(vaultDir, '笔记');
+	const out = [];
+	const walk = async (current, rel, depth) => {
+		if (depth > maxDepth) { return; }
+		let entries;
+		try { entries = await readdir(current, { withFileTypes: true }); } catch { return; }
+		for (const entry of entries) {
+			if (!entry.isDirectory() || entry.name.startsWith('.')) { continue; }
+			const childRel = rel ? rel + '/' + entry.name : entry.name;
+			const abs = join(current, entry.name);
+			let count = 0;
+			try {
+				const files = await readdir(abs, { withFileTypes: true });
+				count = files.filter(f => f.isFile() && f.name.endsWith('.md')).length;
+			} catch { count = 0; }
+			out.push({ path: '笔记/' + childRel, name: entry.name, depth, count });
+			await walk(abs, childRel, depth + 1);
+		}
+	};
+	await walk(root, '', 1);
+	return out;
+}
+
+/**
+ * 从 `笔记/知识体系.md` 提取**目录语义说明**（`AI_Agent/ ← AI 智能体学习（13 篇）` 里的后半截）。
+ *
+ * ★ 2026-10-20：`noteCatalog` 只给"路径 + 篇数"，模型仍要靠目录名猜语义。
+ *   而体系文档里本来就有说明文字 —— 把它叠加上去，模型判断归属会准得多 ✓。
+ * ⚠ **只取说明文字，不取篇数**：文档的篇数会过时（实测写 UnrealEngine 46 篇、磁盘 1 篇）
+ *   ⇒ 篇数一律以磁盘为准，这里把说明里的 `（N 篇）` 摘掉，避免两个数打架 ✗。
+ * ⚠ 文档缺失/格式变了 ⇒ 返回空 Map（调用方按"没有说明"处理，绝不报错）。
+ *
+ * @returns {Promise<Map<string, string>>} 目录名 → 说明（不含篇数）
+ */
+export async function catalogDescriptions(vaultDir) {
+	const out = new Map();
+	try {
+		const text = await readFile(join(vaultDir, '笔记', '知识体系.md'), { encoding: 'utf8' });
+		for (const line of text.split(/\r?\n/)) {
+			// 形如： `│   ├── AI_Agent/             ← AI 智能体学习（13 篇）`
+			const m = /(?:^|[\s│├└─]+)([^\s│├└─/]+)\/\s*←\s*(.+)$/.exec(line);
+			if (!m) { continue; }
+			const name = m[1].trim();
+			const desc = m[2].trim()
+				// 摘掉**任何含「篇」的括号** —— 包括 `（13 篇）` 和 `（1 MOC + 15 子目录，46 篇笔记）`。
+				// 理由：文档里的篇数会过时（实测这个 46 篇、磁盘只有 1 篇）⇒ 篇数一律以磁盘为准，
+				// 留着只会让两个数字打架 ✗。只保留纯语义部分（「UE 引擎模块」）。
+				.replace(/[（(][^（()）]*篇[^（()）]*[)）]/g, '')
+				.replace(/[（(]\s*[)）]/g, '')
+				.trim();
+			// ⚠ 丢掉**零信息量**的占位说明（`（空，待填充）` / `（暂无）`）——
+			//   它们只说明"还没东西"，不说明**这个目录是干什么的**，留着反而干扰判断 ✗
+			const placeholder = /^[（(]?\s*(空|待填充|暂无|todo)/i.test(desc);
+			if (name && desc && !placeholder && !out.has(name)) { out.set(name, desc); }
+		}
+	} catch { /* 没有体系文档是正常情况 */ }
 	return out;
 }

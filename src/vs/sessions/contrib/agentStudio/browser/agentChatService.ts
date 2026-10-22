@@ -8,6 +8,8 @@
 import { Disposable } from "../../../../base/common/lifecycle.js";
 import { Emitter, Event } from "../../../../base/common/event.js";
 import { isDraftAlreadyPersisted, normDraftCompareText, dropCoveredInterruptedDrafts, messageVisibleText } from "../common/interruptedDraftGuard.js";
+// ★ A1 方案（统一数据源）第 2 步：会话存储后端的判据与能力矩阵（纯逻辑，见 `doc/dsh-session-single-source-plan.md`）
+import { backendSupports, resolveSessionBackend, unsupportedError, type SessionBackendCapability } from "../common/chatSessionBackend.js";
 import { ILogService } from "../../../../platform/log/common/log.js";
 import {
 	IAgentChatService,
@@ -2085,6 +2087,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	// ─── Public: appendMessage ───────────────────────────────────────────────
 
 	async appendMessage(agentId: string, message: ChatMessage): Promise<void> {
+		this._requireCapability('appendMessage', message?.agentSessionId);
 		await this._ensureHistoryLoaded();
 		// 🔒 严格隔离写入侧（2026-06-05）：
 		// 之前任何 user/assistant/tool 落到 noSession 桶（agentSessionId=undefined）
@@ -2192,6 +2195,10 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	async appendMessagesBatch(agentId: string, msgs: readonly ChatMessage[]): Promise<void> {
 		if (msgs.length === 0) {
 			return;
+		}
+		// 一批可能跨会话 ⇒ **逐条**判（整批取第一个会在混合批次里漏掉 dsh 会话 ✗）
+		for (const m of msgs) {
+			this._requireCapability('appendMessage', m?.agentSessionId);
 		}
 		await this._ensureHistoryLoaded();
 
@@ -2581,6 +2588,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	}
 
 	async clearHistory(agentId: string, sessionId?: string): Promise<void> {
+		this._requireCapability('clearHistory', sessionId);
 		await this._ensureHistoryLoaded();
 		const key = this._cacheKey(agentId, sessionId);
 		this._historyCache.delete(key);
@@ -2614,6 +2622,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	 * `getHistory` calls don't reload the full uncompressed history.
 	 */
 	async replaceHistory(agentId: string, sessionId: string | undefined, messages: ChatMessage[]): Promise<void> {
+		this._requireCapability('replaceHistory', sessionId);
 		await this._ensureHistoryLoaded();
 		const key = this._cacheKey(agentId, sessionId);
 		this._historyCache.set(key, [...messages]);
@@ -2922,6 +2931,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		sessionId: string | undefined,
 		messageId: string,
 	): Promise<void> {
+		this._requireCapability('deleteMessagesAfter', sessionId);
 		await this._ensureHistoryLoaded();
 		const key = this._cacheKey(agentId, sessionId);
 		let messages = this._historyCache.get(key);
@@ -4066,6 +4076,27 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	}
 
 	/**
+	 * ★ A1 方案（统一数据源）第 2 步：**会话存储后端的能力闸门**。
+	 *
+	 * 现在只有本地后端 ⇒ 判定恒为 `local` ⇒ **所有动作都放行**（行为与改前逐字一致 ✓）。
+	 * 第 3/4 步接上 dsh 后端后，dsh 会话上的 `appendMessage` / `clearHistory` /
+	 * `deleteMessagesAfter` / `replaceHistory` / `deleteSession` 会在这里**明确抛错**：
+	 * dsh 会话是只追加的事件流（且没有删除 API），这些动作在它上面**做不到** ——
+	 * 静默成功 = 用户眼里的"点了没反应" ✗ ⇒ 必须让失败看得见（本仓纪律）。
+	 *
+	 * @param sessionId 目标会话 id（决定走哪个后端；本地 `sess_*` 一律本地 ✓）
+	 */
+	private _requireCapability(cap: SessionBackendCapability, sessionId?: string): void {
+		const engine = this.configurationService.getValue<string>('sessions.dshHarness.chatEngine');
+		const backend = resolveSessionBackend({ engine, sessionId });
+		if (!backendSupports(backend, cap)) {
+			const err = unsupportedError(backend, cap);
+			this.logService.warn(`[AgentChatService] ${err.message} (session=${sessionId ?? '(未指定)'})`);
+			throw err;
+		}
+	}
+
+	/**
 	 * Create a new session. Returns the full AgentSessionMeta.
 	 */
 	async createAgentSession(
@@ -4147,6 +4178,8 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		agentId: string,
 		sessionId: string,
 	): Promise<void> {
+		// ★ dsh 会话没有删除 API（实测）⇒ 走到这里会**明确抛错**，不静默"删了个寂寞"
+		this._requireCapability('deleteSession', sessionId);
 		const paths = await this._resolveAgentPaths(agentId);
 		const fileUri = this._sessionFileUri(paths.sessionsDirUri, sessionId);
 		try {

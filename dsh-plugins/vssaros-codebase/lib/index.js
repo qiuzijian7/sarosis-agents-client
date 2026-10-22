@@ -40,7 +40,7 @@ import { DEFAULT_MAX_FILES, flatSelfCheck, selfCheck, summarizeSelfCheck } from 
 import { PROOF_SNIPPET, createParserPool, describeParser } from './parser/pool.js';
 
 // P1（2026-10-12）：影子索引 v0（编排 + 落点/锁/原子写）。见 lib/indexService.js / lib/shadow.js 的文件头。
-import { DELETE_WHICH_VALUES, GRAPH_STALE_AFTER_MS, INDEX_MAX_FILES, INDEX_MAX_FILES_CAP, coverageOf, deleteIndexArtifacts, exportIndexArtifacts, importIndexArtifacts, runShadowIndex, shadowStatus, workspaceArtifactDirOf } from './indexService.js';
+import { DELETE_WHICH_VALUES, GRAPH_STALE_AFTER_MS, INDEX_MAX_FILES, INDEX_MAX_FILES_CAP, coverageOf, deleteIndexArtifacts, exportIndexArtifacts, handoverNeedsInitialBuild, importIndexArtifacts, runShadowIndex, shadowStatus, workspaceArtifactDirOf } from './indexService.js';
 
 // P4（2026-10-12）：影子保鲜 watcher（缺省不启用；见 lib/watcher.js 文件头的五条纪律）。
 import { createShadowWatcher, watchSummaryOf } from './watcher.js';
@@ -51,7 +51,7 @@ import { parseShapeQuery, runShapeQuery, SHAPE_HELP } from './shapeQuery.js';
 import { shadowDirOf, writeDirOf } from './shadow.js';
 
 // P8（2026-10-13）：**文本搜索**（真源 `search_code` 的对应物 ✓）—— 与图无关，**不需要索引** ✓
-import { SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT, createAdr, deleteAdr, findFiles, getAdr, listAdrs, searchCode, updateAdr } from './store.js';
+import { SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT, SEARCH_SCAN_MAX_FILES, SEARCH_SCAN_MAX_FILES_CAP, createAdr, deleteAdr, findFiles, getAdr, listAdrs, searchCode, updateAdr } from './store.js';
 
 
 export const name = 'vssaros-codebase';
@@ -1006,8 +1006,42 @@ function renderSideview({ overview, parser, index, toolsRegistered }) {
 </div>`,
 		extraCss: PAGE_CSS,
 		script: SIDEVIEW_SCRIPT,
+		// 标准锚点（工作台规范 §7.4；chat-surface 的 probeCatalog 与探针只认这个名字）
+		attrs: 'data-vssaros-surface="sideview"',
 	});
 }
+
+// ─── 工具选择指引（systemPrompt section，2026-10-20）────────────────────────────
+/**
+ * 为什么要有这段（真机取证，不是拍脑袋）：
+ *   21 个 `codebase_*` **一直都在请求里**（真机会话日志 `request/header`：catalog 197 个工具，21 个全在），
+ *   但 **24 个会话里只有 1 次调用**（`codebase_overview`，那次还栽在"未配置 workspaceRoot"），
+ *   其余全程 `pwsh` / `read` / `grep`。官方 dsh 系统提示只教 read/glob/grep，本插件此前
+ *   **没有一句话**告诉模型"本工作区有图谱、什么时候该先用它" ⇒ **工具在 ≠ 会被用** ✗。
+ *
+ * 三条纪律（写这段文案的人以后别破坏它们）：
+ *   ① **静态文案**（不放节点数 / 保存时间 / 路径）：`text` 每轮装配都会被调用，动态数字会打掉
+ *      请求前缀缓存 ✗；"有没有图 / 多新"交给 `codebase_index_status` / `codebase_overview` 现查
+ *      （单一真源，不在这里造第二份读取路径 ✓）。
+ *   ② **只说策略与边界**，不宣称"一定有图"（没图时那句就成了谎 ✗）。
+ *   ③ 注册走**可选注入**（`systemPrompt` 不进静态 `inject`）：缺该服务的组合里不能把插件拖成
+ *      pending、连工具一起失效 ✗（memory 模块为此真机整片 404 过一次）。
+ */
+export const GUIDANCE_SECTION_NAME = 'vssaros-codebase-guidance';
+/** 与部署人设的相对位置兜底值（中央表取不到时用）。 */
+export const GUIDANCE_SECTION_ORDER = 110;
+export const GUIDANCE_TEXT = [
+	'## 代码检索：优先用代码图谱',
+	'本工作区配有结构化代码图谱工具（`codebase_*`）。需要**跨文件**回答「在哪里定义 / 谁调用谁 / 依赖与影响面 / 架构分层 / 热点」时，',
+	'先用 `codebase_search`（按名字找符号）→ `codebase_deps`（入/出边）→ `codebase_trace` / `codebase_query_graph` / `codebase_architecture`；',
+	'`read` / `grep` / `glob` 留给已知路径的定点核对。',
+	'',
+	'图谱只覆盖工作区内的源码（索引器跳过 `node_modules`、构建产物目录）。目标在工作区外（其他盘符、`~/.vssaros-dev`、全局安装目录、依赖包）时',
+	'只能用 `read` / `grep` / `glob` —— 图谱里没有那些文件，别把"没命中"当成"不存在"。',
+	'',
+	'先 `codebase_index_status`（或 `codebase_overview`）确认图谱是否存在、多新；它们报「不可用 / 未配置」时按给出的原因如实说明，',
+	'并改用文件工具，不要假设「查不到 = 没有这个符号」。',
+].join('\n');
 
 function toolDefinitions(ctx, state, config) {
 	const clamp = (value, fallback, max) => Math.min(max, Math.max(1, Number.isFinite(value) ? Math.floor(value) : fallback));
@@ -1044,7 +1078,14 @@ function toolDefinitions(ctx, state, config) {
 				},
 			render: (_args, value) => {
 				if (value.nodeCount === undefined) {
-					return [{ type: 'text', text: `代码图谱不可用：${value.error ?? '没有 artifact.json'}` }];
+					const reason = String(value.error ?? '没有 artifact.json');
+					// ★ 2026-10-20：**配置类**不可用必须与"没命中"区分开（同一句话把两件事说成一件，模型会当成
+					//   "图谱里没有这个符号"继续拿 fs 工具硬找 ✗ —— 真机上那条唯一一次调用的下场就是这样 ✓）。
+					//   只加指引、不改判据：`error` 字段与文案前半段都保持原样（探针 p3-11 逐字断言它们 ✓）。
+					const hint = /未配置 workspaceRoot/.test(reason)
+						? '（这是**配置问题**，不是"没查到" ⇒ 需 VsSaros 经 `--patch` 注入 `config.workspaceRoot`；这一回合请改用 `read` / `grep` / `glob`）'
+						: '';
+					return [{ type: 'text', text: `代码图谱不可用：${reason}${hint}` }];
 				}
 				return [
 					// 人读那一行保持原样 ✓（已有探针与页面按它写文案 ✓）
@@ -1053,7 +1094,8 @@ function toolDefinitions(ctx, state, config) {
 						text: `${value.project ?? '(未知 project)'}：${value.nodeCount} 节点 / ${value.edgeCount} 边 · 保存于 ${isoOf(value.savedAt)} · 图谱文件 ${bytesOf(value.graphBytes)}`
 							// ★ P3-b：**图从哪来 + 多新**必须出现在人读那一行上 ✓（模型据此判断要不要重跑索引 ✓）
 							+ `${value.graphSource ? ` · 来自 ${value.graphSource}` : ''}${value.graphAgeMs !== undefined ? `（${ageOf(value.graphAgeMs)}前）` : ''}`
-							+ `${value.staleShadowAgeMs !== undefined ? ` · ⚠ 影子比 IDE 的图旧 ${ageOf(value.staleShadowAgeMs)}（已让位给 IDE）` : ''}`,
+							+ `${value.staleShadowAgeMs !== undefined ? ` · ⚠ 影子比 IDE 的图旧 ${ageOf(value.staleShadowAgeMs)}（已让位给 IDE）` : ''}`
+							+ `${value.legacyManifest ? ' · ⚠ 清单是**旧格式**（时间取自 `created_at`，不是原生 `saved_at`）⇒ 新鲜度仅供参考' : ''}`,
 					},
 					// ★ 机器可读那一行（README 5.09 的官方做法）：结构化数据以 `*_json:` 文本行出结果 ✓，
 					// 卡片/探针据此取值，而不是去解析人读文案 ✗。键序**固定**（便于探针逐字钉住 ✓）。
@@ -1086,6 +1128,8 @@ function toolDefinitions(ctx, state, config) {
 				edgeCount: overview.manifest?.edgeCount,
 				project: overview.manifest?.project,
 				savedAt: overview.manifest?.savedAt,
+				// ★ 2026-10-20：旧版清单（`created_at` 推出来的时间）要**说出来**，别让人以为这是原生 saved_at ✓
+				...(overview.manifest?.legacyManifest ? { legacyManifest: true, savedAtFrom: overview.manifest.savedAtFrom } : {}),
 				graphBytes: overview.files[GRAPH_FILE]?.bytes,
 				// ★ P3-b：**这张图从哪来、多新** —— 总览不给这两条，调用方就没法判断"看到的是不是当前代码" ✗
 				graphSource: overview.graphSource,
@@ -1111,7 +1155,7 @@ function toolDefinitions(ctx, state, config) {
 			schema: {
 				type: 'object',
 				properties: {
-					count: { type: 'integer' }, loadMs: { type: 'integer' },
+					count: { type: 'integer' }, loadMs: { type: 'integer' }, graphSource: { type: 'string' },
 					items: {
 						type: 'array',
 						items: {
@@ -1131,7 +1175,13 @@ function toolDefinitions(ctx, state, config) {
 				type: 'text',
 				text: value.count
 					? `${value.count} 个命中（图加载 ${value.loadMs}ms）：\n${value.items.map(item => `- ${item.name} [${item.label ?? '?'}] ${item.filePath ?? ''}${item.startLine ? `:${item.startLine}` : ''}（入度 ${item.inDegree ?? '?'}）`).join('\n')}`
-					: '没有命中。',
+					// ★ 2026-10-20（真机）：0 命中时**必须**给出可执行下一步 —— 当前 effective 图常是 **IDE 产的**，
+					//   而 IDE 的抽取口径**不产类成员方法**（真机 `_saveGraph` / `saveGraph` 都搜不到 ✗），
+					//   模型看到"没有命中"很容易写成"代码里没有这个函数" ✗（比报错更坏：它是个自信的错误结论）。
+					: '没有命中。'
+						+ (value.graphSource === 'ide'
+							? '（当前读的是 **IDE 产的图**，它**不含类成员方法** ⇒ 找方法名请改用 `grep`，或先跑 `codebase_index` 用 dsh 解析器建图 ✓）'
+							: ''),
 			}],
 		},
 		isConcurrencySafe: () => true,
@@ -1149,7 +1199,7 @@ function toolDefinitions(ctx, state, config) {
 				id: node.id, name: node.name, label: node.label, filePath: node.filePath,
 				startLine: node.startLine, inDegree: node.inDegree, outDegree: node.outDegree,
 			}).filter(([, value]) => value !== undefined)));
-			return { count: items.length, loadMs: loaded.ms, items };
+			return { count: items.length, loadMs: loaded.ms, graphSource: loaded.source, items };
 		},
 	}, {
 		name: 'codebase_deps',
@@ -1741,7 +1791,9 @@ function toolDefinitions(ctx, state, config) {
 			+ ' ⚠ `scannedFiles` 是**遍历到**的文件数（含被名字匹配滤掉的 ✓，与 `codebase_search_code` 同义 ✓）；`truncatedScan` 为真时"没找到"只代表**扫到的那部分**没有 ✗。'
 			+ ' ⚠ 与真源的差别同 `codebase_search_code`：真源 ripgrep-backed ✓，dsh 是 **Node 扫描** ✓（`backend` / `truncatedScan` 如实 ✓）；'
 			+ '**不读 `.gitignore`** ✗；只在工作区内 ✓。'
-			+ ' ⚠ `offset` 只在 `mode: files` 下按**文件列表**分页 ✓（内容类模式用 `limit` 控制返回的命中行 ✓）。',
+			+ ' ⚠ `offset` 只在 `mode: files` 下按**文件列表**分页 ✓（内容类模式用 `limit` 控制返回的命中行 ✓）。'
+			// ★ 2026-10-20：同 `codebase_search_code` —— 预算可调（默认 4000 在大仓会截断 ⇒ 必须能提高 ✓）
+			+ ` ⚠ 扫描预算默认 ${SEARCH_SCAN_MAX_FILES} 个文件（可用 \`maxFiles\` 提到 ${SEARCH_SCAN_MAX_FILES_CAP}）；\`truncatedScan\` 为真时"没找到"只代表扫到的那部分 ✗。`,
 		parameters: {
 			type: 'object',
 			properties: {
@@ -1753,6 +1805,7 @@ function toolDefinitions(ctx, state, config) {
 				context: { type: 'integer', description: '`content` 模式：每个命中行前后各带几行（0-5 ✓）' },
 				limit: { type: 'integer', description: `最多返回多少个结果（默认 ${SEARCH_DEFAULT_LIMIT}，上限 ${SEARCH_MAX_LIMIT} ✓；达到上限如实报 truncated ✓）` },
 				offset: { type: 'integer', description: '`mode: files`：跳过前 N 个文件（分页 ✓）' },
+				maxFiles: { type: 'integer', description: `扫描预算：最多遍历多少个文件（默认 ${SEARCH_SCAN_MAX_FILES}，上限 ${SEARCH_SCAN_MAX_FILES_CAP} ✓；两种模式共用 ✓）` },
 			},
 			required: ['pattern'],
 		},
@@ -1765,6 +1818,7 @@ function toolDefinitions(ctx, state, config) {
 					total: { type: 'integer' }, returned: { type: 'integer' }, offset: { type: 'integer' }, limit: { type: 'integer' },
 					totalHits: { type: 'integer' }, hitUnit: { type: 'string' }, fileCount: { type: 'integer' },
 					truncated: { type: 'boolean' }, truncatedScan: { type: 'boolean' }, scannedFiles: { type: 'integer' },
+					scanBudget: { type: 'integer' },
 					files: { type: 'array' }, notes: { type: 'array', items: { type: 'string' } }, ms: { type: 'integer' },
 				},
 				required: ['mode', 'ok'],
@@ -1774,10 +1828,11 @@ function toolDefinitions(ctx, state, config) {
 				text: value.mode === 'files'
 					? `按名字找文件 \`${value.pattern}\`（${value.matchedBy}${value.effectivePattern && value.effectivePattern !== value.pattern ? ` ⇒ 生效 ${value.effectivePattern}` : ''}）：`
 						+ `共 ${value.total} 个${value.truncated ? '（已截断 ✓）' : ''} · 扫描 ${value.scannedFiles} 个目录项 · ${value.ms}ms`
-						+ `${value.truncatedScan ? ' · ⚠ **扫描被截断**（"没有更多"只代表扫到的那部分 ✗）' : ''}`
+						+ `${value.truncatedScan ? ` · ⚠ **扫描被截断**（预算 ${value.scanBudget ?? '?'} 个文件；"没有更多"只代表扫到的那部分 ✗；调高 \`maxFiles\` 重搜 ✓）` : ''}`
 						+ `\n${(value.files ?? []).slice(0, 40).join('\n') || '（没有匹配 ✓）'}`
 					: `搜索 \`${value.pattern}\`（mode=${value.mode}）：${value.totalHits ?? 0} 个**命中行** / ${value.fileCount ?? 0} 个文件 · ${value.ms}ms（backend=${value.backend} ✓）`
 						+ `${value.truncated ? ` · ⚠ 已达上限 ${value.limit}（只列前 ${value.limit} 个 ✓）` : ''}`
+						+ `${value.truncatedScan ? ` · ⚠ **扫描被截断**（预算 ${value.scanBudget ?? '?'} 个文件 ⇒ "没找到"只代表扫到的那部分 ✗）` : ''}`
 						+ `\n${(value.files ?? []).slice(0, 30).map(entry => (typeof entry === 'string' ? entry : `${entry.relPath}${entry.lines !== undefined ? `（${entry.lines} 行）` : ''}`)).join('\n') || '（没有命中 ✓）'}`,
 			}],
 		},
@@ -1791,6 +1846,7 @@ function toolDefinitions(ctx, state, config) {
 					...(typeof params?.path === 'string' ? { path: params.path } : {}),
 					...(limit !== undefined ? { limit } : {}),
 					...(Number.isFinite(params?.offset) ? { offset: params.offset } : {}),
+					...(Number.isFinite(params?.maxFiles) ? { maxFiles: params.maxFiles } : {}),
 				});
 				if (got.error) { throw new Error(String(got.error)); }
 				return { mode, ...got };
@@ -1802,6 +1858,7 @@ function toolDefinitions(ctx, state, config) {
 				...(typeof params?.file_glob === 'string' ? { filePattern: params.file_glob } : {}),
 				...(Number.isFinite(params?.context) ? { context: params.context } : {}),
 				...(limit !== undefined ? { limit } : {}),
+				...(Number.isFinite(params?.maxFiles) ? { maxFiles: params.maxFiles } : {}),
 			});
 			if (searched.error) { throw new Error(String(searched.error)); }
 			if (mode === 'content') {
@@ -1815,6 +1872,7 @@ function toolDefinitions(ctx, state, config) {
 				mode, ok: true, pattern: searched.pattern, backend: searched.backend, scope: searched.scope,
 				totalHits: searched.totalHits, hitUnit: searched.hitUnit, fileCount: listed.length,
 				truncated: searched.truncated, truncatedScan: searched.truncatedScan, scannedFiles: searched.scannedFiles,
+				scanBudget: searched.scanBudget,
 				files: listed, notes: searched.notes, ms: searched.ms,
 			};
 		},
@@ -1835,6 +1893,9 @@ function toolDefinitions(ctx, state, config) {
 			+ ' ⚠ `totalHits` 是**命中行数**（同一行多处只算一行 ✓，见 `hitUnit` ✓）；多词查询会按真源规则自动转成 `.*` 连接 ✓（生效模式见 `pattern` ✓）。'
 			// ⚠ 口径必须写进**描述**（不能只写在 `notes` 里 ✗）：描述是模型唯一看得见的那份 ✓
 			+ ' ⚠ `scannedFiles` 是**遍历到**的文件数（含被 `filePattern` 滤掉的 ✓，与 `codebase_search_files` 同义 ✓）；到上限会置 `truncatedScan` ✓ —— 那时"没找到"只代表**扫到的那部分**没有 ✗。'
+			// ★ 2026-10-20：预算可调（真机教训：本仓 2.3 万源文件、默认 4000 ⇒ 源码里确实有的串也 0 命中 ✗）
+			+ ` ⚠ 扫描有预算（默认 ${SEARCH_SCAN_MAX_FILES} 个文件，可用 \`maxFiles\` 提到 ${SEARCH_SCAN_MAX_FILES_CAP}）：`
+			+ '大仓里"没找到"先看 `truncatedScan` ✓ —— 为真时**调高 `maxFiles` 重搜**（用延迟换覆盖 ✓），别当成"不存在"✗。'
 			+ ' ⚠ `filePattern` 只支持 `*` / `**` / `?`（不含 `/` 时按"任意路径以它结尾"处理 ✓，与 ripgrep `-g` 同义 ✓）；复杂 glob **如实拒** ✗。',
 		parameters: {
 			type: 'object',
@@ -1845,6 +1906,7 @@ function toolDefinitions(ctx, state, config) {
 				filePattern: { type: 'string', description: '只搜匹配的文件（如 `*.ts` ✓；只支持 `*` / `**` / `?` ✓）' },
 				context: { type: 'integer', description: '每个命中行前后各带几行（0-5 ✓，默认 0 ✓）' },
 				limit: { type: 'integer', description: `最多返回多少**命中行**（默认 ${SEARCH_DEFAULT_LIMIT}，上限 ${SEARCH_MAX_LIMIT} ✓；达到上限会如实报 truncated ✓）` },
+				maxFiles: { type: 'integer', description: `扫描预算：最多遍历多少个文件（默认 ${SEARCH_SCAN_MAX_FILES}，上限 ${SEARCH_SCAN_MAX_FILES_CAP} ✓）。大仓里只有调高才能真覆盖全仓（延迟随之上升 ✓）` },
 			},
 			required: ['query'],
 		},
@@ -1856,6 +1918,7 @@ function toolDefinitions(ctx, state, config) {
 					backend: { type: 'string' }, scope: { type: 'string' }, filePattern: { type: 'string' },
 					limit: { type: 'integer' }, totalHits: { type: 'integer' }, hitUnit: { type: 'string' }, fileCount: { type: 'integer' },
 					truncated: { type: 'boolean' }, truncatedScan: { type: 'boolean' }, scannedFiles: { type: 'integer' },
+					scanBudget: { type: 'integer' },
 					files: { type: 'array', items: { type: 'object' } }, notes: { type: 'array', items: { type: 'string' } },
 					ms: { type: 'integer' },
 				},
@@ -1866,7 +1929,7 @@ function toolDefinitions(ctx, state, config) {
 				text: `文本搜索 \`${value.pattern}\`${value.filePattern ? `（限于 ${value.filePattern}）` : ''}：`
 					+ `${value.totalHits} 个**命中行** / ${value.fileCount} 个文件 · 扫描 ${value.scannedFiles} 个文件 · ${value.ms}ms（backend=${value.backend} ✓）`
 					+ `${value.truncated ? ` · ⚠ 已达上限 ${value.limit}（只列了前 ${value.limit} 个命中行 ✓）` : ''}`
-					+ `${value.truncatedScan ? ' · ⚠ **扫描也被截断**（只扫了一部分文件 ⇒ 结论只是"扫到的那部分没有" ✗）' : ''}`
+					+ `${value.truncatedScan ? ` · ⚠ **扫描也被截断**（预算 ${value.scanBudget ?? '?'} 个文件 ⇒ 结论只是"扫到的那部分没有" ✗；调高 \`maxFiles\` 重搜 ✓）` : ''}`
 					+ `\n${(value.files ?? []).slice(0, 12).map(file => `**${file.relPath}**\n${(file.hits ?? []).slice(0, 6).map(hit => `  ${hit.line}: ${hit.text}`).join('\n')}`).join('\n') || '（没有命中 ✓）'}`
 					+ `${(value.files ?? []).length > 12 ? `\n（只列了前 12 个文件 ✓）` : ''}`
 					+ `\n\`${(value.notes ?? []).join('` · `')}\``,
@@ -1880,6 +1943,7 @@ function toolDefinitions(ctx, state, config) {
 				...(typeof params?.filePattern === 'string' ? { filePattern: params.filePattern } : {}),
 				...(Number.isFinite(params?.context) ? { context: params.context } : {}),
 				...(Number.isFinite(params?.limit) ? { limit: params.limit } : {}),
+				...(Number.isFinite(params?.maxFiles) ? { maxFiles: params.maxFiles } : {}),
 			});
 			if (got.error) { throw new Error(String(got.error)); }
 			return got;
@@ -2056,9 +2120,13 @@ function toolDefinitions(ctx, state, config) {
 			render: (_args, value) => [{
 				type: 'text',
 				// ⚠ 列表上限 20：这里不引常量（工具对象里放不下 const ✗），数字就地写死并说明 ✓
-				text: `覆盖率 ${value.coveragePct}%：图里 ${value.graphFileCount} 个文件，现在扫到 ${value.scannedFileCount} 个（交集 ${value.coveredCount}）`
-					+ `${value.staleGraph ? ' · ⚠ 存在"图里有、磁盘扫不到"的文件 ⇒ **图已过期**' : ''}`
-					+ `${value.truncated ? ` · ⚠ 本次扫描达上限 ${value.maxFiles} ⇒ 覆盖率只是**下界**，且"图已过期"这一项**不可信**（没扫到 ≠ 不存在 ✗）；把 maxFiles 提到超过工作区文件数再核 ✓` : ''}`
+				// ★ 2026-10-20：**扫不全就不报百分比** —— 旧版会印出「覆盖率 4.6%」这种数字（默认上限 1500 撞上
+				//   2.3 万文件的仓），虽然同一行也标了 truncated，但数字一旦被引用就会被当成事实 ✗。
+				text: (value.truncated
+					? `覆盖率**未给出**（扫描不足）：图里 ${value.graphFileCount} 个文件，本次只扫了 ${value.scannedFileCount} 个（上限 ${value.maxFiles}）`
+						+ ' · ⇒ 调高 `maxFiles`（缺省已是插件上限 20000）再核；"图已过期"这一项在扫描不足时**不可信** ✗'
+					: `覆盖率 ${value.coveragePct}%：图里 ${value.graphFileCount} 个文件，现在扫到 ${value.scannedFileCount} 个（交集 ${value.coveredCount}）`)
+					+ `${value.staleGraph && !value.truncated ? ' · ⚠ 存在"图里有、磁盘扫不到"的文件 ⇒ **图已过期**' : ''}`
 					+ `\n未覆盖（扫得到但图里没有）：${value.missingInGraph.length} 个${value.missingInGraph.length ? `\n${value.missingInGraph.slice(0, 20).map(path => `- ${path}`).join('\n')}` : ''}`
 					+ `${value.missingInGraph.length > 20 ? `\n（只列前 20 个 ✓）` : ''}`
 					+ `\n图已过期（图里有但现在扫不到）：${value.missingOnDisk.length} 个${value.missingOnDisk.length ? `\n${value.missingOnDisk.slice(0, 20).map(path => `- ${path}`).join('\n')}` : ''}`
@@ -2068,7 +2136,12 @@ function toolDefinitions(ctx, state, config) {
 		execute: async params => {
 			const loaded = await loadGraph(config);
 			if (loaded.error) { throw new Error(`${loaded.error}（先确认这个工作区已建索引 ✓）`); }
-			const maxFiles = Math.min(INDEX_MAX_FILES_CAP, Math.max(1, Number.isFinite(params?.maxFiles) ? Math.floor(params.maxFiles) : INDEX_MAX_FILES));
+			// ★ 2026-10-20：缺省上限不再写死 1500 —— 直接给到**插件上限**（20000）。
+			//   为什么不是"图内文件数 + 200"：覆盖率的扫描面比图宽（`.rs/.py/.go` 也在语言表里，IDE 的图只收
+			//   TS/JS 那批）⇒ 真机实测 `图 6295 + 200` 仍会**截断**（扫到 6495 就停），于是又回到"不报百分比"✗。
+			//   这条命令只读目录项（不读文件内容）⇒ 扫 2 万条路径是百毫秒级，缺省给满才合理 ✓。
+			//   显式给 `maxFiles` 时仍以参数为准 ✓；真超过 2 万文件的仓会如实报 truncated ✓。
+			const maxFiles = Math.min(INDEX_MAX_FILES_CAP, Math.max(1, Number.isFinite(params?.maxFiles) ? Math.floor(params.maxFiles) : INDEX_MAX_FILES_CAP));
 			const got = await coverageOf(config, loaded.graph, { maxFiles });
 			if (got.error) { throw new Error(String(got.error)); }
 			return { ok: true, ...got };
@@ -2299,16 +2372,20 @@ function toolDefinitions(ctx, state, config) {
 					handoverWatchOff: { type: 'boolean' }, handoverWarning: { type: 'string' },
 					// ★ O3 / O4（2026-10-14，用户拍板 ✓）：内容没变没落盘 ✓ / 规模挑档的"为什么" ✓
 					graphUnchanged: { type: 'boolean' }, scaleCapped: { type: 'object' },
+					// ★ 2026-10-21：图没变 ⇒ 缓存也没重写（省掉 135MB 写盘 ✓；事实要被看见 ✓）
+					cacheUnchanged: { type: 'boolean' },
+					// ★ 2026-10-21（A 档优化）：内容指纹相同 ⇒ **连 gzip 编码都省了**（~4.7s ✓）
+					encodeSkipped: { type: 'boolean' },
 				},
 				required: ['ok', 'dir', 'files', 'nodes', 'edges'],
 			},
 			render: (_args, value) => [{
 				type: 'text',
-				text: `${value.target === 'workspace' ? '工作区图谱已完成（已交接 ✓）' : '影子索引完成'}（解析档 ${value.parser ?? '?'}${value.degraded ? ' · ⚠ auto 已**如实降级**' : ''}）：${value.files} 个源文件 → ${value.nodes} 节点（文件 ＋ 符号 ${value.symbols}）/ ${value.edges} 条边（import ${value.imports}${value.parser === 'treesitter' ? ` · CALLS ${value.callEdges ?? 0} · USAGE ${value.usageEdges ?? 0} · INHERITS/IMPLEMENTS ${value.inheritEdges ?? 0}` : ''}）${value.truncated ? ' · **已达上限截断**（提高 maxFiles 或缩小范围）' : ''}，产物 ${bytesOf(value.graphBytes)} ${value.graphUnchanged ? '**与盘上逐字节相同 ⇒ 未重写** ✓（读侧零扰动 ✓）' : '写入'} ${value.dir}（${value.ms}ms${value.rescanned ? ' · 本轮为兜底全量重扫' : ''}）。${value.cacheRejected ? `\n⚠ 上一次的增量缓存被拒（如实报出，不影响本次）：${value.cacheRejected}` : ''}${value.cacheWarning ? `\n⚠ ${value.cacheWarning}` : ''}`
+				text: `${value.target === 'workspace' ? '工作区图谱已完成（已交接 ✓）' : '影子索引完成'}（解析档 ${value.parser ?? '?'}${value.degraded ? ' · ⚠ auto 已**如实降级**' : ''}）：${value.files} 个源文件 → ${value.nodes} 节点（文件 ＋ 符号 ${value.symbols}）/ ${value.edges} 条边（import ${value.imports}${value.parser === 'treesitter' ? ` · CALLS ${value.callEdges ?? 0} · USAGE ${value.usageEdges ?? 0} · INHERITS/IMPLEMENTS ${value.inheritEdges ?? 0}` : ''}）${value.truncated ? ' · **已达上限截断**（提高 maxFiles 或缩小范围）' : ''}，产物 ${bytesOf(value.graphBytes)} ${value.graphUnchanged ? '**与盘上逐字节相同 ⇒ 未重写** ✓（读侧零扰动 ✓）' : '写入'}${value.encodeSkipped ? ' · **连编码都省了**（内容指纹相同 ⇒ 图必然相同 ✓）' : ''}${value.cacheUnchanged ? ' · 增量缓存**也没重写**（省掉一次 135MB 写盘 ✓）' : ''} ${value.dir}（${value.ms}ms${value.rescanned ? ' · 本轮为兜底全量重扫' : ''}）。${value.cacheRejected ? `\n⚠ 上一次的增量缓存被拒（如实报出，不影响本次）：${value.cacheRejected}` : ''}${value.cacheWarning ? `\n⚠ ${value.cacheWarning}` : ''}`
 					+ `${value.parser === 'treesitter' && (value.skippedUnsupported || value.extractErrors || value.unmatchedCalls || value.unmatchedUsages || value.unmatchedInherits) ? `\n如实报差：未覆盖语言的文件 ${value.skippedUnsupported ?? 0} 个 · 解析失败 ${value.extractErrors ?? 0} 个 · 同名目标找不到（丢边）CALLS ${value.unmatchedCalls ?? 0} / USAGE ${value.unmatchedUsages ?? 0} / INHERITS ${value.unmatchedInherits ?? 0}` : ''}\n`
 					+ `${value.handoverWarning ? `${value.handoverWarning}\n` : ''}`
 					+ `读图用的就是这一份（页面诊断行会显示 graph-source=${value.target === 'workspace' ? 'workspace' : 'shadow'}）。\n`
-					+ `codebase_index_json: ${JSON.stringify({ ok: value.ok, dir: value.dir, parserChoice: value.parserChoice, degraded: value.degraded, metaBytes: value.metaBytes, target: value.target ?? 'shadow', project: value.project, parser: value.parser ?? 'regex', files: value.files, imports: value.imports, nodes: value.nodes, edges: value.edges, symbols: value.symbols, callEdges: value.callEdges ?? null, usageEdges: value.usageEdges ?? null, inheritEdges: value.inheritEdges ?? null, unmatchedCalls: value.unmatchedCalls ?? null, unmatchedUsages: value.unmatchedUsages ?? null, unmatchedInherits: value.unmatchedInherits ?? null, extractErrors: value.extractErrors ?? null, skippedUnsupported: value.skippedUnsupported ?? null, reused: value.reused, parsed: value.parsed, incrementalRuns: value.incrementalRuns, truncated: value.truncated, rescanned: value.rescanned, graphBytes: value.graphBytes, cacheBytes: value.cacheBytes ?? null, cacheRejected: value.cacheRejected ?? null, cacheWarning: value.cacheWarning ?? null, handoverWatchOff: value.handoverWatchOff === true, handoverWarning: value.handoverWarning ?? null, graphUnchanged: value.graphUnchanged === true, scaleCapped: value.scaleCapped ?? null, ms: value.ms })}`,
+					+ `codebase_index_json: ${JSON.stringify({ ok: value.ok, dir: value.dir, parserChoice: value.parserChoice, degraded: value.degraded, metaBytes: value.metaBytes, target: value.target ?? 'shadow', project: value.project, parser: value.parser ?? 'regex', files: value.files, imports: value.imports, nodes: value.nodes, edges: value.edges, symbols: value.symbols, callEdges: value.callEdges ?? null, usageEdges: value.usageEdges ?? null, inheritEdges: value.inheritEdges ?? null, unmatchedCalls: value.unmatchedCalls ?? null, unmatchedUsages: value.unmatchedUsages ?? null, unmatchedInherits: value.unmatchedInherits ?? null, extractErrors: value.extractErrors ?? null, skippedUnsupported: value.skippedUnsupported ?? null, reused: value.reused, parsed: value.parsed, incrementalRuns: value.incrementalRuns, truncated: value.truncated, rescanned: value.rescanned, graphBytes: value.graphBytes, cacheBytes: value.cacheBytes ?? null, cacheRejected: value.cacheRejected ?? null, cacheWarning: value.cacheWarning ?? null, handoverWatchOff: value.handoverWatchOff === true, handoverWarning: value.handoverWarning ?? null, graphUnchanged: value.graphUnchanged === true, cacheUnchanged: value.cacheUnchanged === true, scaleCapped: value.scaleCapped ?? null, ms: value.ms })}`,
 			}],
 		},
 		// 拿锁 + 写盘 ⇒ **不是**并发安全（两个索引并排跑只会互相等锁 ✓）
@@ -2370,6 +2447,10 @@ function toolDefinitions(ctx, state, config) {
 				//   与"写出了一份**新的**图"是两件事 ✓ —— 不许用同一个回执糊过去 ✗）
 				...(got.scaleCapped ? { scaleCapped: got.scaleCapped } : {}),
 				...(got.graphUnchanged === true ? { graphUnchanged: true } : {}),
+				// ★ 2026-10-21：缓存没重写（省掉 135MB 写盘）也如实报出来 ✓
+				...(got.cacheUnchanged === true ? { cacheUnchanged: true } : {}),
+				// ★ 2026-10-21（A 档优化）：这次**连编码都没做**（指纹相同 ⇒ 省掉 ~4.7s 的 gzip ✓）
+				...(got.encodeSkipped === true ? { encodeSkipped: true } : {}),
 			};
 		},
 	}, {
@@ -2533,6 +2614,27 @@ export function apply(ctx, config = {}) {
 		//   workspaceContext.js）。apply 期上下文通常还没推（Host 先起、IDE 后连）⇒ 那时照旧取
 		//   `config.workspaceRoot`（覆盖层那份），与从前逐字相同 ✓。
 		let current;   // { root, watcher }
+		// 甲档交接的首次拦截只报**一次**（每次文件变动都刷同一句会把真日志淹掉 ✗）
+		let handoverBlockedLogged = false;
+		/**
+		 * watcher 的一次运行（2026-10-20 起多了两道）：
+		 *   ① `maxFiles` 不再用默认 1500 —— 甲档下一次"增量"也会按这个上限**扫描**，上限太小会把全量图"缩"掉 ✗
+		 *      ⇒ 由 `config.indexMaxFiles` 给（覆盖层写 20000；不写就沿用旧默认，行为不变 ✓）。
+		 *   ② 首次交接安全闸：工作区里还是 **IDE 产**的图时**不写**（见 `handoverNeedsInitialBuild`）✓。
+		 */
+		const runOnce = async (root) => {
+			const asked = Number(config.indexMaxFiles);
+			const maxFiles = Number.isFinite(asked) ? Math.min(INDEX_MAX_FILES_CAP, Math.max(1, Math.floor(asked))) : undefined;
+			const blocked = await handoverNeedsInitialBuild(root);
+			if (blocked) {
+				if (!handoverBlockedLogged) {
+					handoverBlockedLogged = true;
+					try { ctx.logger?.warn?.(`[vssaros-codebase] ${blocked}`); } catch { /* 日志不可用无所谓 ✓ */ }
+				}
+				return { ok: false, reason: blocked };
+			}
+			return runShadowIndex(config, { root, ...(maxFiles !== undefined ? { maxFiles } : {}) });
+		};
 		const stopCurrent = () => {
 			current?.watcher.stop();
 			current = undefined;
@@ -2551,7 +2653,13 @@ export function apply(ctx, config = {}) {
 			}
 			const watcher = createShadowWatcher(config, {
 				root,
-				run: () => runShadowIndex(config, { root }),
+				run: () => runOnce(root),
+				// ★ 2026-10-21：防抖**可配**（`config.debounceMs`）—— 多人并发编辑的仓库里 5s 会让 watcher
+				//   变成"每 5 秒醒一次"，而单次索引本身要十几秒 ⇒ 几乎一直忙。给 15s 更合理
+				//   （上限仍是 60s，`watcher.js` 的 `maxDebounceMs` ✓；不配则保持原值 5s，行为不变 ✓）。
+				...(Number.isFinite(Number(config.debounceMs))
+					? { debounceMs: Math.min(60_000, Math.max(1_000, Math.floor(Number(config.debounceMs)))) }
+					: {}),
 				onLog: message => { try { ctx.logger?.info?.(message); } catch { /* 日志不可用无所谓 ✓ */ } },
 			});
 			watcher.start();
@@ -2575,6 +2683,28 @@ export function apply(ctx, config = {}) {
 			try { off?.(); } catch { /* 退订失败不值得打扰用户 ✓ */ }
 			stopCurrent();
 		};
+	});
+
+	// ── 工具选择指引（见 `GUIDANCE_TEXT` 的注释）──────────────────────────────────────────
+	// ⚠ **不受 `hostHalf` 影响**：这是"模型该怎么选工具"的可见性，与 memory 的记忆区块同档
+	//   （双 plane 两次挂载都该有；`section` 按 name 幂等 ✓）。工具本体才分半边 ✓。
+	ctx.inject(['systemPrompt'], child => {
+		let prompt = null;
+		try {
+			prompt = child?.systemPrompt ?? null;
+		} catch {
+			prompt = null; // 探针假 ctx 对未登记服务抛错 ⇒ 当"这个组合里没有"处理 ✓
+		}
+		if (!prompt || typeof prompt.section !== 'function') { return undefined; }
+		return child.effect(() => {
+			let order = GUIDANCE_SECTION_ORDER;
+			try {
+				const persona = prompt.getSectionOrder?.('DEPLOYMENT_PERSONA_PREFIX');
+				if (Number.isFinite(persona)) { order = persona + 90; }
+			} catch { /* 中央表不可用就用兜底序 ✓ */ }
+			const dispose = prompt.section({ name: GUIDANCE_SECTION_NAME, order, text: () => GUIDANCE_TEXT });
+			return () => dispose();
+		});
 	});
 
 	ctx.effect(() => {

@@ -45,7 +45,7 @@ function loadChunkExports(source: string): Record<string, any> {
 }
 
 /** 装载 chunk 并真的执行 `install()`，拿回注册进 slot 的组件与纯逻辑辅助。 */
-function makeHarness(): { exports: Record<string, any>; render: (props: Record<string, unknown>) => any; setReactHooks: (r: Record<string, any>) => void } {
+function makeHarness(): { exports: Record<string, any>; render: (props: Record<string, unknown>) => any; renderLive: (props: Record<string, unknown>) => any; setReactHooks: (r: Record<string, any>) => void } {
 	let definition: any;
 	const fakeWindow = { __ModuleLoader__: { load: (d: any) => { definition = d; } } };
 	new Function('window', read(USAGE_REL))(fakeWindow);
@@ -70,10 +70,19 @@ function makeHarness(): { exports: Record<string, any>; render: (props: Record<s
 		throw new Error(`unexpected require: ${id}`);
 	});
 	let component: any;
+	// ★ 2026-10-20：用量部件现在注册**两个**槽 —— `conversation.chat.turnTail`（回合末尾）与
+	//   `conversation.composer.dock`（liveOnly：只在流式进行中渲染）。按槽名取 turnTail 那份，
+	//   否则后注册的 liveOnly 版会覆盖它（回合已结束 ⇒ 返回 null ⇒ 渲染断言全空）。
+	const registered: Record<string, any> = {};
 	const ctx = {
 		slots: {
 			inject: (_slot: string, factory: () => unknown) => { factory(); },
-			register: (_spec: unknown, comp: any) => { component = comp; return () => undefined; },
+			register: (spec: { name?: string }, comp: any) => {
+				const name = spec && typeof spec.name === 'string' ? spec.name : '';
+				registered[name] = comp;
+				if (name === 'conversation.chat.turnTail' || component === undefined) { component = comp; }
+				return () => undefined;
+			},
 		},
 	};
 	// 页面里 `document` 恒存在（install 要挂积分事件的 DOM 监听），Node 里给一个最小替身。
@@ -89,6 +98,12 @@ function makeHarness(): { exports: Record<string, any>; render: (props: Record<s
 		exports: chunkExports,
 		setReactHooks: (r: Record<string, any>) => { reactRef.current = r; },
 		render: (props: Record<string, unknown>) => component(props),
+		/** composer dock 那份（liveOnly：只在流式进行中渲染，自己从 store 找当前回合）。 */
+		renderLive: (props: Record<string, unknown>) => {
+			const live = registered['conversation.composer.dock'];
+			assert.ok(typeof live === 'function', 'install 必须把实时页脚注册进 conversation.composer.dock');
+			return live(props);
+		},
 	};
 }
 
@@ -335,6 +350,53 @@ suite('chat-surface 回合用量（缓存命中率与积分归属）', () => {
 	});
 
 	suite('实时更新（单回合运行中）', () => {
+		test('★ composer 实时页脚：不传 turn 也能从 store 的 timeline 找到正在进行的回合并渲染（此前永远 null）', () => {
+			const h = makeHarness();
+			const now = Date.now();
+			const state = {
+				timeline: { turns: new Map<number, any>([
+					[1, { turn: 1, start: { time: now - 60_000 }, end: { time: now - 50_000 } }],
+					[2, { turn: 2, start: { time: now - 7_000 } }],
+				]) },
+				nodes: { values: () => [
+					{ kind: 'assistant-step', data: { turn: 2, step: 1, usage: { inputTokens: 1000, cacheReadTokens: 900, uncachedInputTokens: 100, outputTokens: 50, totalTokens: 1050 } } },
+				] },
+				legacy: { partial: { turn: 2, step: 2, blocks: [{ kind: 'text', text: '你好世界' + 'a'.repeat(40) }] } },
+			};
+			const pills = pillsOf(h.renderLive({ useChat: (sel: any) => sel(state) }));
+			assert.strictEqual(pills.length, 4, `应渲染 4 个 pill，实为 ${JSON.stringify(pills.map(p => p.text))}`);
+			assert.match(pills[0].text, /^[67]s$/, '耗时从 timeline 的回合起点算（约 7s）');
+			// 已完成步骤 1050 + 正在输出估算（4 个汉字 + 40/4）= 1064 ⇒ ≈1.1k
+			assert.strictEqual(pills[1].text, '≈1.1k');
+			assert.match(String(pills[1].props.title), /正在输出约 14/);
+			assert.strictEqual(pills[2].text, '90.0%');
+		});
+
+		test('composer 实时页脚：没有进行中的回合（都结束了 / 还没开始）⇒ 不渲染（交给 turnTail 那份）', () => {
+			const h = makeHarness();
+			const ended = { timeline: { turns: new Map([[1, { turn: 1, start: { time: 1 }, end: { time: 2 } }]]) }, nodes: { values: () => [] }, legacy: {} };
+			assert.strictEqual(h.renderLive({ useChat: (sel: any) => sel(ended) }), null);
+			const none = { timeline: { turns: new Map() }, nodes: { values: () => [] }, legacy: {} };
+			assert.strictEqual(h.renderLive({ useChat: (sel: any) => sel(none) }), null);
+		});
+
+		test('liveTurnOf：取最大回合号里还没结束的那个', () => {
+			const tl = { turns: new Map<number, any>([
+				[3, { turn: 3, start: { time: 1 } }],
+				[5, { turn: 5, start: { time: 2 }, end: { time: 3 } }],
+				[4, { turn: 4, start: { time: 2 } }],
+			]) };
+			assert.strictEqual(t.liveTurnOf(tl)?.turn, 4);
+			assert.strictEqual(t.liveTurnOf(undefined), null);
+			assert.strictEqual(t.liveTurnOf({ turns: new Map([[1, { turn: 1 }]]) }), null, '没有 start 的不算');
+		});
+
+		test('estimatePartialTokens：CJK 1 字 ≈ 1 token、其余 4 字符 ≈ 1；不属于本回合的 partial 不算', () => {
+			assert.strictEqual(t.estimatePartialTokens({ turn: 2, blocks: [{ kind: 'text', text: '中文测试' }] }, 2), 4);
+			assert.strictEqual(t.estimatePartialTokens({ turn: 2, blocks: [{ kind: 'reasoning', text: 'abcdefgh' }, { kind: 'text', text: 'x' }] }, 2), 3);
+			assert.strictEqual(t.estimatePartialTokens({ turn: 1, blocks: [{ kind: 'text', text: '中文' }] }, 2), 0);
+			assert.strictEqual(t.estimatePartialTokens(null, 2), 0);
+		});
 		const CB_STEP = { provider: 'vssaros-codebuddy', model: 'hy4-preview-ioa' };
 		const step = (input: number, read: number, output: number, reasoning: number) => ({
 			inputTokens: input, cacheReadTokens: read, uncachedInputTokens: input - read,
@@ -384,6 +446,54 @@ suite('chat-surface 回合用量（缓存命中率与积分归属）', () => {
 		test('没有 start/end 时回落 legacy.turnTimings 的耗时', () => {
 			const info = t.deriveTurnFooter({ turn: { turn: 3 }, stepUsages: [], samples: [], legacyMs: 2_500, now: 1 });
 			assert.strictEqual(info.ms, 2_500);
+		});
+	});
+
+	/**
+	 * 「重启后积分 pill 显示 —」的回归（2026-10-20）。
+	 *
+	 * 修法跨两层，任一层缺了症状都会回来：
+	 *   · 主进程：样本池原来只在内存 ⇒ 重开 app 就空 ⇒ **必须落盘 + 启动时恢复**；
+	 *   · 页面：宿主"恢复完成后再补发一遍"会让同一批样本进池两次 ⇒ 求和翻倍 ⇒ **必须按样本键去重**。
+	 */
+	suite('重启后积分仍要显示（样本落盘 / 恢复后补发 / 页面去重）', () => {
+		test('★ 会话账本优先：投影里有本回合 ⇒ 直接用（含"响应都没带 credit"的 null）', () => {
+			const view = { byTurn: { 2: { credit: 0.3, responses: 2 }, 3: { credit: null, responses: 1 } }, outside: { credit: null, responses: 0 } };
+			assert.deepStrictEqual(t.ledgerEntryFor(view, { turn: 2 }), { credit: 0.3, responses: 2 });
+			assert.deepStrictEqual(t.ledgerEntryFor(view, { turn: 3 }), { credit: null, responses: 1 });
+		});
+
+		test('投影缺失 / 形状不对 / 没有该回合 ⇒ null（页面退回时间窗估算）', () => {
+			assert.strictEqual(t.ledgerEntryFor(undefined, { turn: 1 }), null);
+			assert.strictEqual(t.ledgerEntryFor({}, { turn: 1 }), null);
+			assert.strictEqual(t.ledgerEntryFor({ byTurn: {} }, { turn: 1 }), null);
+			assert.strictEqual(t.ledgerEntryFor({ byTurn: { 1: { credit: 1, responses: 0 } } }, { turn: 1 }), null);
+			assert.strictEqual(t.ledgerEntryFor({ byTurn: { 1: { credit: 1, responses: 1 } } }, null), null);
+		});
+		const PROXY_REL = 'src/vs/sessions/contrib/dshHarness/electron-main/dshCreditProxy.ts';
+		const CHANNEL_REL = 'src/vs/sessions/contrib/dshHarness/electron-main/dshHarnessChannel.ts';
+		const VIEWHOST_REL = 'src/vs/sessions/contrib/dshHarness/electron-main/dshViewHost.ts';
+
+		test('主进程：样本要写入磁盘，且启动时读回来', () => {
+			const src = read(PROXY_REL);
+			assert.match(src, /_restoreSamples\(\)/, '构造时必须恢复历史样本（否则重开 app 池子又是空的）');
+			assert.match(src, /this\._persistSamples\(\)/, '抓到一个样本就要落盘');
+			assert.match(src, /fsp\.writeFile\(/, '必须异步写（主进程同步写有守卫测试盯着）');
+			assert.match(src, /onSamplesRestored/, '恢复完成要通知外层（页面可能需要补发）');
+		});
+
+		test('主进程：恢复后给已就绪的页补发一次，且不抢跑未就绪的页', () => {
+			const src = read(VIEWHOST_REL);
+			assert.match(src, /replayCreditsAgain\(\)/, '需要有"再补发一遍"的入口');
+			assert.match(src, /if \(!slot\.creditsReplayedAt\) \{\s*continue;/, '没补发过的页交给正常流程，别抢跑');
+			assert.match(read(CHANNEL_REL), /onSamplesRestored:\s*\(\)\s*=>\s*this\._views\.replayCreditsAgain\(\)/, 'channel 要把回调接到视图层');
+		});
+
+		test('页面：同一样本进池两次只算一次（补发是幂等的）', () => {
+			const src = read(USAGE_REL);
+			assert.match(src, /creditSampleKeys/, '要有"已收样本键"的集合');
+			assert.match(src, /creditSampleKeys\.has\(key\)/, '入池前必须查重');
+			assert.match(src, /creditSampleKeys\.delete\(/, '样本被挤出池时键也要删（否则集合无限长）');
 		});
 	});
 });

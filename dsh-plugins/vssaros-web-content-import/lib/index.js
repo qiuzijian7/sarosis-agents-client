@@ -23,6 +23,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { routeForUrl } from './core/routes.js';
+// ★ 2026-10-20：URL 清单文件 → 链接列表（纯函数，见 core/urlList.js 头部的四种形态说明）
+import { extractUrlsFromText } from './core/urlList.js';
 
 import { classifyExtractQuality, extractArticle } from './core/extract.js';
 
@@ -252,6 +254,29 @@ export function apply(ctx, config = {}) {
 					slug: { type: 'string', description: 'write 时的文件名（缺省从标题派生，重名自动追加 -2/-3）' },
 					images: { type: 'boolean', description: 'write 时是否把正文图片下载进 assets/（默认 true；下载失败会保留远程 URL 并说明）' },
 					maxChars: { type: 'integer', description: `返回正文 / 字幕的字符上限（默认 ${DEFAULT_MAX_CHARS}；超出截断并标注）` },
+				// ★ 2026-10-20：**批量导入**。爬虫/搜索得到一个 URL 清单后，不必逐个调 N 次 ——
+				//   一次传进来，逐篇跑（串行、单篇失败不影响其它），最后汇总。
+				//   ⚠ 与 `url` 互斥：同时给以 `urls` 为准（并把 url 也纳入队列）。
+				//   ⚠ 上限 20：再多会顶到工具调用超时；分批调更稳。
+				urls: {
+					type: 'array',
+					items: { type: 'string' },
+					description: '批量模式：一次传多个 URL（每个按单篇流程处理，单篇失败不影响其它）。'
+						+ '最多 20 个；与 url 同时给时以本参数为准（url 也会并入队列）。',
+				},
+				// ★ 2026-10-20：**直接从清单文件读**（爬虫 / 平台搜索 / 手工导出的产物）。
+				//   支持 .txt（每行一个）/ .jsonl / .json / .csv 四种形态，见 core/urlList.js。
+				//   典型用法：MediaCrawler 跑完 → 把它的 jsonl/csv 路径传进来，一次导入。
+				urlFile: {
+					type: 'string',
+					description: '从文件读 URL 清单（.txt 每行一个 / .jsonl / .json / .csv 均可）。'
+						+ '与 url / urls 合并去重；仍受 20 条上限。'
+						// ★ 2026-10-20：**时效约束**必须写在这里 —— 模型/用户都是"拿到清单马上导入"，
+						//   这一句就是在那个瞬间被读到的 ✓
+						+ '⚠ 小红书（xhs）的链接带时效 token（xsec_token）：**搜完要立刻导入**，'
+						+ '放置数小时以上 token 会失效、抓取会被拒；失效时重新用爬虫搜一次取新 token，'
+						+ '不要反复重试同一个旧链接。',
+				},
 				},
 				required: [],
 			},
@@ -264,6 +289,20 @@ export function apply(ctx, config = {}) {
 						bodyExcerpt: { type: 'string' }, bodyChars: { type: 'integer' }, truncated: { type: 'boolean' },
 						notes: { type: 'array', items: { type: 'string' } },
 						saved: { type: 'object' },
+						// ★ 2026-10-20：批量模式（urls）才有这三个字段；单篇模式不出现（可选 ⇒ 不破坏旧形态）
+						count: { type: 'integer', description: '批量模式下总共尝试了几篇' },
+						ok: { type: 'integer', description: '批量模式下成功了几篇' },
+						results: {
+							type: 'array',
+							description: '批量模式下逐篇结果（url / ok / status / title / saved / error）',
+							items: {
+								type: 'object',
+								properties: {
+									url: { type: 'string' }, ok: { type: 'boolean' }, status: { type: 'string' },
+									title: { type: 'string' }, error: { type: 'string' }, saved: { type: 'object' },
+								},
+							},
+						},
 					},
 					required: ['status'],
 				},
@@ -410,6 +449,68 @@ export function apply(ctx, config = {}) {
 		//   统一过这一道。**修值的形态，不改 schema**（缺的键本来就可选 ⇒ 丢键合法 ✓）。纯函数见 `core/lossless.js`。
 		const rawExecute = definition.execute;
 		definition.execute = async (params, exec) => toLosslessJsonValue(await rawExecute(params, exec));
+
+		// ★★ 2026-10-20：**批量导入**（`urls[]`）—— 非侵入式包装，单篇逻辑一行未动。
+		//
+		// 为什么需要：爬虫 / 平台搜索 / 导出的 URL 清单动辄十几条，逐个调 N 次工具既慢又刷屏；
+		//   而"发现 URL"和"读懂内容"是两件事 —— 这个插件只做后者，批量入口让它能直接吃清单 ✓。
+		//
+		// 口径：
+		//   · **串行**（不是并发）：这些站点有速率限制，并发容易一起被限流；串行也便于逐篇报进度；
+		//   · **单篇失败不影响其它**（逐篇 try/catch，失败原因原样记进 `results[i].error`）；
+		//   · **与 `url` 合并去重**（用户可能既给 url 又给 urls，都收）；
+		//   · 上限 20 条：再多会顶到工具调用超时，分批调用更稳（description 里写明了 ✓）。
+		const batchExecute = definition.execute;
+		definition.execute = async (params, exec) => {
+			// ★ `urlFile`：从清单文件里抽链接（爬虫产物直接喂进来 ✓）。
+			//   读文件失败 ⇒ **不静默**：把原因拼进错误信息（用户要能区分"文件没写对"与"链接抓不到"）。
+			let fromFile = [];
+			const urlFile = typeof params?.urlFile === 'string' ? params.urlFile.trim() : '';
+			if (urlFile) {
+				try {
+					fromFile = extractUrlsFromText(await readFile(urlFile, 'utf8'), urlFile);
+					if (fromFile.length === 0) {
+						throw new Error(`清单文件里没有找到 http(s) 链接：${urlFile}（支持 .txt/.jsonl/.json/.csv，见工具描述）`);
+					}
+				} catch (e) {
+					if (e && /清单文件里没有找到/.test(String(e.message))) { throw e; }
+					throw new Error(`读 URL 清单失败（${urlFile}）：${String(e?.message ?? e)}`);
+				}
+			}
+			const list = [
+				...(typeof params?.url === 'string' && params.url.trim() ? [params.url.trim()] : []),
+				...(Array.isArray(params?.urls) ? params.urls.map(u => String(u ?? '').trim()).filter(Boolean) : []),
+				...fromFile,
+			];
+			const urls = [...new Set(list)].slice(0, 20);
+			if (urls.length === 0) {
+				return batchExecute(params, exec);   // 没给批量 ⇒ 原样走单篇（含它自己的"url 不能为空"报错 ✓）
+			}
+			const results = [];
+			for (const url of urls) {
+				try {
+					const one = await batchExecute({ ...params, url, urls: undefined }, exec);
+					results.push({
+						url,
+						ok: one?.status !== 'blocked',
+						...(one?.status ? { status: String(one.status) } : {}),
+						...(one?.title ? { title: String(one.title) } : {}),
+						...(one?.saved ? { saved: one.saved } : {}),
+						// 失败原因：优先 `status: blocked` 的 notes，其次"没有正文"
+						...((one?.status === 'blocked' || !one?.bodyChars)
+							? { error: (Array.isArray(one?.notes) ? one.notes.join('; ') : '') || '没有取到内容' }
+							: {}),
+					});
+				} catch (e) {
+					results.push({ url, ok: false, error: String(e?.message ?? e) });
+				}
+			}
+			return toLosslessJsonValue({
+				count: results.length,
+				ok: results.filter(r => r.ok).length,
+				results,
+			});
+		};
 		tools.tools.register(definition);
 	});
 }

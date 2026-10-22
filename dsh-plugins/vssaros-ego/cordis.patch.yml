@@ -1,0 +1,14 @@
+# @vssaros/dsh-ego bundle patch：插入 ego lite 的薄接入行。
+#
+# 为什么只有一行：技能用**代码**注册（`lib/index.js` 里的 skills provider，与上游
+# `@citrolabs/ego/deepseek-harness` 同一套：`ctx.skills.registerProvider`），不借用
+# `@deepseek-ai/dsh-skill-filesystem`（archify 那条路是"配置别人的 provider 扫本包 skills/"，
+# 这里没有那个必要 —— 技能正文由本包自己读，进度与 provider 身份都可控）。
+#
+# ⚠ 本包**故意不声明** `vssaros.module`：它不是我们的 UI 模块（没有页面/视图/ActivityBar），
+#   于是不会被 `dshBundledPlugins.listBundledPlugins` 列进"可安装模块"，而是与 browser /
+#   unreal / archify 同属"伴生插件"（`dshHostSupervisor` 的显式安装清单）。
+- insert:
+    - id: vssaros-ego
+      name: '@vssaros/dsh-ego'
+      config: {}

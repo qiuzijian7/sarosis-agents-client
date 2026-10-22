@@ -25,7 +25,7 @@ import { buildEditedRegionContext, computeInsert, computeBatchPatch, type IBatch
 import { buildUnifiedDiff, diffStat } from '../../../common/unifiedDiff.js';
 import { runExecOutputPipeline } from './execOutputPipeline.js';
 import { ProcessOutputCollector } from '../../../common/processOutputDecoder.js';
-import { appendTerminalLiveOutput } from '../../../../../browser/agentChat/terminalLiveOutput.js';
+import { appendTerminalLiveOutput } from '../../../../../browser/terminalLiveOutput.js';
 import { decideOutputSpill, spillFileName, spillNoticeMessage, selectSpillFilesToDelete } from './execOutputSpill.js';
 import { resolveSarosPath, userDataRootFromPath, SarosPath } from '../../../common/sarosPaths.js';
 import { shellPlatformGuidance, windowsDualShellGuidance } from './shellPlatformPrompt.js';

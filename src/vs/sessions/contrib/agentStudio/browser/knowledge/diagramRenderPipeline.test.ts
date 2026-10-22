@@ -7,6 +7,13 @@
  *   ② 图片引用必须**独占段落**（飞书插图走 block_replace 整块替换）；
  *   ③ 失败**不丢内容**（保留源码块）、无图表**不写盘**（避免无意义改 mtime）。
  *
+ *  ★★ 2026-09-24 契约变更（本套件曾因此整片变红、被搁置 ⇒ 2026-10-19 修）：
+ *      ```mermaid 围栏**不再转 PNG** —— 飞书 markdown 导入会把它转成 whiteboard(type="mermaid")
+ *      画板（可编辑的活图），抢转 PNG 反而把活图变死图。⇒ `renderNoteDiagrams` 只处理 drawio。
+ *      ⚠ 所以本套件里凡是测「转 PNG」的用例都必须用 **```drawio**，
+ *        用 mermaid 写的用例会得到"0 渲染、笔记不动"——那是**正确行为**，不是 bug ✗。
+ *      mermaid 的正确契约另有一条用例专门钉住（围栏原样保留 + 渲染器零调用）。
+ *
  *  运行：
  *      node src/vs/sessions/contrib/agentStudio/test/browser/run-browser-test.mjs \
  *          src/vs/sessions/contrib/agentStudio/browser/knowledge/diagramRenderPipeline.test.ts
@@ -90,60 +97,77 @@ function setup(markdown: string, o: IStubOptions & { writeBack?: boolean } = {})
 }
 
 suite('图表渲染编排（renderNoteDiagrams）', () => {
-	test('★ 单块 mermaid：落盘到 <笔记>.attachments/ 并改写为独占段落的图片引用', async () => {
-		const t = setup(md('# 设计', '', '```mermaid', 'graph TD', '  A-->B', '```', '', '正文', ''));
+	// ★ 先钉住 2026-09-24 的契约本身：**mermaid 围栏不转 PNG**（飞书转画板活图）。
+	//   这条不成立的话，下面所有"转 PNG"用例的前提都是错的（本套件曾因此整片变红 ✗）。
+	test('★ mermaid 围栏原样保留、渲染器零调用（飞书转 whiteboard 活图）', async () => {
+		const original = md('# 设计', '', '```mermaid', 'graph TD', '  A-->B', '```', '', '正文', '');
+		const t = setup(original);
+		const r = await t.run();
+
+		assert.strictEqual(r.changed, false, 'mermaid 不参与转换 ⇒ 笔记不该被改写');
+		assert.strictEqual(r.rendered.length, 0);
+		assert.strictEqual(t.calls.mermaid, 0, 'mermaid 渲染器一次都不该被调用');
+		assert.strictEqual(t.fs.text(NOTE), original, '围栏必须逐字保留（飞书靠它转画板）');
+		assert.ok(r.message.includes('mermaid 由飞书转画板'), r.message);
+	});
+
+	test('★ 单块 drawio：落盘到 <笔记>.attachments/ 并改写为独占段落的图片引用', async () => {
+		const t = setup(md('# 设计', '', '```drawio', '<mxfile/>', '```', '', '正文', ''));
 		const r = await t.run();
 
 		assert.strictEqual(r.changed, true);
 		assert.strictEqual(r.rendered.length, 1);
-		assert.deepStrictEqual(r.rendered[0].kind, 'mermaid');
+		assert.deepStrictEqual(r.rendered[0].kind, 'drawio');
 		assert.strictEqual(r.rendered[0].relPath, '设计.attachments/chart-1.png');
 		assert.ok(t.fs.relPaths().includes('笔记/设计.attachments/chart-1.png'), 'PNG 应落在笔记同级的附件目录');
 
 		const note = t.fs.text(NOTE);
 		assert.ok(note.includes('![[设计.attachments/chart-1.png]]'), '应写入图片引用');
-		assert.ok(!note.includes('```mermaid') && !note.includes('A-->B'), '源码块应被替换掉');
+		assert.ok(!note.includes('```drawio') && !note.includes('<mxfile/>'), '源码块应被替换掉');
 		assert.match(note, /\n\n!\[\[设计\.attachments\/chart-1\.png\]\]\n\n/, '引用必须独占段落');
 		assert.ok(note.includes('# 设计') && note.includes('正文'), '其余内容逐字保留');
 	});
 
-	test('★ 多块（mermaid + drawio）：编号对应原文顺序，且正文不因偏移错位而丢失', async () => {
-		const t = setup(md('开头', '', '```mermaid', 'g1', '```', '', '中间文字', '', '```drawio', '<mxfile/>', '```', '', '结尾'));
+	test('★ 多块 drawio（中间夹 mermaid 围栏）：编号对应原文顺序，且正文不因偏移错位而丢失', async () => {
+		// 中间那个 ```mermaid 是**不会被转换**的 —— 正好用来验证"倒序替换"不会误伤它 ✓
+		const t = setup(md('开头', '', '```drawio', '<a/>', '```', '', '```mermaid', 'g1', '```', '', '中间文字', '', '```drawio', '<b/>', '```', '', '结尾'));
 		const r = await t.run();
 
 		assert.strictEqual(r.rendered.length, 2);
 		assert.deepStrictEqual(r.rendered.map(d => d.relPath),
 			['设计.attachments/chart-1.png', '设计.attachments/chart-2.png']);
-		assert.deepStrictEqual(r.rendered.map(d => d.kind), ['mermaid', 'drawio']);
+		assert.deepStrictEqual(r.rendered.map(d => d.kind), ['drawio', 'drawio']);
 
 		const note = t.fs.text(NOTE);
 		assert.ok(note.includes('![[设计.attachments/chart-1.png]]') && note.includes('![[设计.attachments/chart-2.png]]'));
-		assert.ok(!note.includes('```mermaid') && !note.includes('```drawio'), '两块源码都应消失');
+		assert.ok(!note.includes('```drawio'), '两块 drawio 源码都应消失');
+		assert.ok(note.includes('```mermaid') && note.includes('g1'), 'mermaid 围栏必须原样留着（不该被转）');
 		// ⚠ 偏移量回归：这三段正文必须都还在（倒序替换就是为了这个）
 		assert.ok(note.includes('开头') && note.includes('中间文字') && note.includes('结尾'));
 		assert.ok(note.indexOf('开头') < note.indexOf('chart-1') && note.indexOf('chart-1') < note.indexOf('中间文字'));
 	});
 
 	test('★ 单个图表渲染失败：保留该块源码、其它块照常转换（不丢内容）', async () => {
+		// 只有 drawio 会真的被渲染 ⇒ 失败面只能是 drawio；mermaid 块全程不参与（零影响 ✓）
 		const t = setup(
-			md('```mermaid', 'ok', '```', '', '```drawio', '<mxfile/>', '```'),
+			md('```drawio', '<ok/>', '```', '', '```drawio', '<mxfile/>', '```', '', '```mermaid', 'g', '```'),
 			{ failRender: 'drawio' },
 		);
 		const r = await t.run();
 
-		assert.strictEqual(r.rendered.length, 1, 'mermaid 应成功');
-		assert.strictEqual(r.failures.length, 1);
-		assert.strictEqual(r.failures[0].kind, 'drawio');
+		assert.strictEqual(r.rendered.length, 0, 'drawio 渲染器被 stub 成抛错 ⇒ 没有成功的块');
+		assert.strictEqual(r.failures.length, 2, '两块 drawio 都失败');
+		assert.ok(r.failures.every(f => f.kind === 'drawio'));
 		assert.ok(r.message.includes('失败'));
 
 		const note = t.fs.text(NOTE);
-		assert.ok(note.includes('![[设计.attachments/chart-1.png]]'), '成功的那块应被替换');
-		assert.ok(note.includes('<mxfile/>'), '失败的块必须保留源码（内容不能丢）');
+		assert.ok(note.includes('<ok/>') && note.includes('<mxfile/>'), '失败的块必须保留源码（内容不能丢）');
+		assert.ok(note.includes('```mermaid') && note.includes('g'), 'mermaid 围栏原样保留');
 	});
 
 	test('全部失败 ⇒ changed=false 且**不写回笔记**（避免把文件改坏）', async () => {
-		const original = md('```mermaid', 'g', '```');
-		const t = setup(original, { failRender: 'mermaid' });
+		const original = md('```drawio', '<mxfile/>', '```');
+		const t = setup(original, { failRender: 'drawio' });
 		const r = await t.run();
 
 		assert.strictEqual(r.changed, false);
@@ -153,7 +177,7 @@ suite('图表渲染编排（renderNoteDiagrams）', () => {
 	});
 
 	test('栅格化返回空 PNG ⇒ 记为失败（不写出 0 字节图片）', async () => {
-		const t = setup(md('```mermaid', 'g', '```'), { emptyPng: true });
+		const t = setup(md('```drawio', '<mxfile/>', '```'), { emptyPng: true });
 		const r = await t.run();
 		assert.strictEqual(r.rendered.length, 0);
 		assert.strictEqual(r.failures.length, 1);
@@ -170,7 +194,7 @@ suite('图表渲染编排（renderNoteDiagrams）', () => {
 	});
 
 	test('演练模式（writeBack=false）⇒ 生成图片但不改笔记', async () => {
-		const original = md('```mermaid', 'g', '```');
+		const original = md('```drawio', '<mxfile/>', '```');
 		const t = setup(original, { writeBack: false });
 		const r = await t.run();
 		assert.strictEqual(r.rendered.length, 1);

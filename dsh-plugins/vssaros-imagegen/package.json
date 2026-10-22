@@ -1,0 +1,89 @@
+{
+  "name": "@vssaros/dsh-imagegen",
+  "version": "0.11.2",
+  "description": "VsSaros image-generation module for DeepSeek Harness: the `image_generate` tool (execution goes back to the IDE through the control bridge, so provider credentials and approvals stay in one place) plus the client-side tool card that renders the generated image right in the chat. The canvas workbench has two modes: free drawing (Excalidraw, lazily loaded) and a node workflow (nodes + edges, topological run, JSON Canvas 1.0 interop).",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/canvas/**",
+    "lib/canvas/freeCanvas.js",
+    "lib/canvas/graphCanvas.js",
+    "lib/canvas/landing.js",
+    "lib/canvas/page.js",
+    "lib/canvasGraph.js",
+    "lib/canvasGraphTools.js",
+    "lib/canvasImages.js",
+    "lib/canvasRoutes.js",
+    "lib/canvasRun.js",
+    "lib/canvasState.js",
+    "lib/canvasTools.js",
+    "lib/capabilities.js",
+    "lib/client.js",
+    "lib/gallery.js",
+    "lib/imageBytes.js",
+    "lib/imageEdit.js",
+    "lib/index.js",
+    "lib/studio/**",
+    "lib/studio/page.js",
+    "lib/studioApi.js",
+    "lib/views/**",
+    "lib/views/imagegen/gallery.js",
+    "lib/views/imagegen/shell.js",
+    "lib/workspaceSave.js",
+    "LICENSE",
+    "THIRD_PARTY.md",
+    "cordis.patch.yml",
+    "vendor/excalidraw/LICENSE-excalidraw.txt"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/dsh": ">=0.1.7-0 <0.3.0-0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": [
+        "./cordis.patch.yml"
+      ]
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-tool",
+        "@deepseek-ai/dsh-client-ui-attachment"
+      ]
+    }
+  },
+  "vssaros": {
+    "manifestVersion": 1,
+    "module": "imagegen",
+    "ideCapabilities": [
+      "media"
+    ],
+    "activityBar": {
+      "containerId": "vssaros.dsh.imagegen",
+      "title": {
+        "zh": "生图",
+        "en": "Image"
+      },
+      "icon": "codicon:paintcan",
+      "order": 85
+    },
+    "view": {
+      "kind": "page",
+      "route": "/x/imagegen/"
+    },
+    "legacyCounterpart": "vssaros.dsh.imagegen",
+    "workbench": {
+      "title": "生图",
+      "description": "生图与画布：出图、编辑与在画布上排布素材。",
+      "repository": "vssaros:imagegen",
+      "customFrame": true
+    }
+  },
+  "license": "MIT"
+}

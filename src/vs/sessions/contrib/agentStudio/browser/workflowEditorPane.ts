@@ -17,6 +17,7 @@ import { IInstantiationService } from '../../../../platform/instantiation/common
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { WorkflowEditorInput } from './workflowEditorInput.js';
 import { AgentStudioWebviewController } from './agentStudioWebviewController.js';
+import { mediaAssetInsertEmitter } from './mediaAssetInsert.js';
 import { IWorkflowStorageService } from '../common/workflowStorage.js';
 import { WorkflowVersionPanel } from './workflowVersionPanel.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
@@ -159,6 +160,12 @@ export class WorkflowEditorPane extends EditorPane {
 		// v2 单行工具栏：webview 内「发布 ▾」菜单的宿主侧动作（原 WorkflowToolbar 订阅迁移）
 		this._toolbarDisposables.add(this._webviewController.onDidRequestWorkflowVersionHistory(() => {
 			this._versionPanel?.toggle();
+		}));
+		// 媒体库（编辑区页）→ **本工作流**的画布（2026-10-19）：只接 workflowId 与本 pane 相同的请求，
+		// 否则多开几个工作流时"每个画布都多一个 Loader 节点" ✗。webview 侧落到 `spawnAssetLoader`。
+		this._toolbarDisposables.add(mediaAssetInsertEmitter.event(req => {
+			if (req.workflowId !== this._currentWorkflowId) { return; }
+			this._webviewController?.sendEvent('workflow.insertMediaAsset', { assetId: req.assetId, kind: req.kind });
 		}));
 		this._toolbarDisposables.add(this._webviewController.onDidRequestWorkflowDeleteWorkflow(async ({ workflowId }) => {
 			try {

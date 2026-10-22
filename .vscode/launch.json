@@ -249,7 +249,7 @@
 		{
 			"type": "chrome",
 			"request": "launch",
-		"name": "Launch VS Code Internal",
+			"name": "Launch VS Code Internal",
 			"preLaunchTask": "Transpile Client",
 			"windows": {
 				"runtimeExecutable": "${workspaceFolder}/scripts/code.bat"
@@ -323,6 +323,16 @@
 				"VSCODE_EXTHOST_WILL_SEND_SOCKET": null,
 				"VSCODE_SKIP_PRELAUNCH": "1",
 				"VSCODE_DEV_DEBUG_OBSERVABLES": "1",
+				// [Saros] 2026-10-21 用户要求「F5 直接启动 dsh 窗口，不要显示 IDE 窗口」：
+				// 主进程据此**建窗即隐藏**（`windowImpl` 读这个环境变量，且只对 `initialStartup` 的
+				// 第一个窗口生效）。何时显示由渲染进程决定：dsh 桌面窗口开出来就继续藏着；
+				// Host 起不来 / harness 未启用 ⇒ 立刻 show（另有 25s / 30s 两级兜底）。
+				// ⚠ 必须加在**这一条**（`Launch VS Code Agents Internal`，带 `--agents`）上 ——
+				//   普通 `Launch VS Code Internal`（默认 IDE 工作台）没有我们的"显示窗口"逻辑，
+				//   加上去只会得到一个长时间不出现的窗口 ✗。
+				// ⚠ 2026-10-21 踩过：第一版误加到 `Launch VS Code Internal`（两条 env 长得一样，
+				//   只有 `killBehavior` 不同）⇒ 用户 F5 进 Agents 时**完全没生效**，仍然看到 IDE ✗。
+				"VSSAROS_START_HIDDEN": "1",
 			},
 			"cleanUp": "wholeBrowser",
 			"killBehavior": "forceful",

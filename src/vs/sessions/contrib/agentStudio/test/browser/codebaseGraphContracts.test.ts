@@ -354,7 +354,10 @@ suite('方案 C — 非主 root 大图延迟加载判据', () => {
  */
 suite('方案 C — 「先补延迟图、再判有无图」顺序不变量', () => {
 
-	const TOOLS = 'src/vs/sessions/contrib/agentStudio/browser/providers/tool/codebaseTools.ts';
+	// ⚠ 2026-10-20：原先这里还有 `TOOLS`（`providers/tool/codebaseTools.ts`）—— 该文件已随 legacy
+	//   工具下线删除（`0f01ef10a43`；codebase 能力在 dsh 侧 `vssaros-codebase`，由 p3-11/p3-40 覆盖）
+	//   ⇒ 读它的那条源码断言会永远 ENOENT，已连同常量一起删掉。
+	//   同一条「延迟加载必须早于 hasGraphData()」的顺序契约若要继续钉，得在 dsh 侧重做。
 	const DELEG = 'src/vs/sessions/contrib/agentStudio/browser/providers/tool/delegationTools.ts';
 
 	/**
@@ -367,18 +370,7 @@ suite('方案 C — 「先补延迟图、再判有无图」顺序不变量', () 
 	const stripComments = (src: string) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
 	const readSrc = (rel: string) => stripComments(fs.readFileSync(path.join(process.cwd(), rel), 'utf8'));
 
-	test('★ codebase 工具预检：ensureDeferredGraphsLoaded 必须早于 hasGraphData()', () => {
-		const src = readSrc(TOOLS);
-		const idx = src.indexOf('const ensureGraph = async ()');
-		assert.ok(idx > 0, '应能找到 ensureGraph()');
-		const body = src.slice(idx, idx + 900);
-		// 用带点的调用形态锚定，避开任何残留文字命中。
-		const deferAt = body.indexOf('ensureDeferredGraphsLoaded(');
-		const hasAt = body.indexOf('.hasGraphData()');
-		assert.ok(deferAt > 0, '必须触发延迟加载');
-		assert.ok(hasAt > 0, '应保留 hasGraphData() 判定');
-		assert.ok(deferAt < hasAt, '延迟加载必须早于 hasGraphData() —— 否则会绕开延迟直接全量重建');
-	});
+	// （原「codebase 工具预检」用例已删：`codebaseTools.ts` 下线，见上面 DELEG 旁的注释。）
 
 	test('★ 子代理预检：ensureDeferredGraphsLoaded 必须早于 hasGraphData()', () => {
 		const src = readSrc(DELEG);

@@ -127,7 +127,11 @@ suite('UnifiedSubAgentDispatch — delegate_task propagation', () => {
 			// ⚠ 2026-10-14：原值 120ms（阈值的 2 倍）在机器繁忙时**偶发翻车**（实测一次
 			//   `应为 timeout，实际: completed`：看门狗那 60ms 定时器与"睡满 120ms 后的文本 delta"
 			//   同时排在事件循环上，谁先被处理取决于负载 ⇒ 边距要留够，别用 2 倍这种临界值 ✗）。
-			await new Promise(r => setTimeout(r, 300));
+			// ★ 2026-10-20 **再次翻车**：全量跑时（机器负载高）300ms 也只留了 5 倍余量，仍偶发
+			//   `completed`（单跑必绿 ⇒ 典型的负载敏感 flaky）。这条用例的语义是"**迟到的**文本
+			//   delta 不得掩盖已发生的停滞"，与"多快到达"无关 ⇒ 直接拉到阈值的 ~16 倍（1s）。
+			//   多耗 1 秒，换掉一个会周期性把"新增回归"报假的 flaky，值得 ✓。
+			await new Promise(r => setTimeout(r, 1000));
 			yield { type: 'text', content: '迟到的后续文本。' } as any;
 		};
 

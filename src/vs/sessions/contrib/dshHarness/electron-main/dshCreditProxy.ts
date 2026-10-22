@@ -92,6 +92,14 @@ export interface IDshCreditProxyOptions {
 	readonly userDataPath?: string;
 	/** 记日志（端口被占用退回随机时要留痕——那一幕意味着本次启动会重写 profile）。 */
 	readonly log?: (line: string) => void;
+	/**
+	 * 历史样本从磁盘恢复完成（2026-10-20 用户报「重启后积分 pill 显示 —」）。
+	 *
+	 * 为什么需要回调：视图就绪时会把 `recentSamples` 一次性补发给页面（`creditsReplayedAt` 守卫）。
+	 * 若那会儿磁盘还没读完（冷启动几毫秒，但页面也可能比它快），补发的是空数组 ⇒ 页面池永远空 ⇒
+	 * 历史回合的积分一直是 — ✗。恢复完成后再触发一次补发，页面侧按样本键去重 ⇒ 不会重复计数。
+	 */
+	readonly onSamplesRestored?: () => void;
 }
 
 export class DshCreditProxy extends Disposable {
@@ -106,8 +114,95 @@ export class DshCreditProxy extends Disposable {
 	private readonly _samples: IDshCreditSample[] = [];
 	private _listening: Promise<number> | undefined;
 
+	/** 历史样本落盘（debounce 句柄；见 `_persistSamples`）。 */
+	private _persistTimer: ReturnType<typeof setTimeout> | undefined;
+
 	constructor(private readonly _opts: IDshCreditProxyOptions) {
 		super();
+		// ★★ 2026-10-20（用户报「重启后积分 pill 显示 —」）：**样本要跨进程存活**。
+		//   样本池原来只在主进程内存 ⇒ 重开 app 就空了 ⇒ 页面拿到空池 ⇒ 历史回合的积分永远算不出来 ✗。
+		//   恢复是异步的（主线程不许同步 I/O），完成后再让视图补发一次（`onSamplesRestored`）。
+		void this._restoreSamples();
+		this._register({ dispose: () => { if (this._persistTimer) { clearTimeout(this._persistTimer); } } });
+	}
+
+	/** 样本文件（与 secret / 固定端口同一根：`userDataPath`）。没有 `userDataPath` 就不落盘（单测/探针）。 */
+	private get _samplesFile(): string | undefined {
+		const root = this._opts.userDataPath?.trim();
+		return root ? join(root, 'dsh-credit-samples.json') : undefined;
+	}
+
+	/**
+	 * 从磁盘恢复历史样本。
+	 *
+	 * 只保留**形状正确**的（`route` 字符串 + `at` 数字）：损坏条目会污染页面侧的时间窗求和
+	 * （一个 NaN 就能把整轮积分变成 null ✗）。读不到/损坏 ⇒ 当作没有（行为回到旧版）。
+	 */
+	private async _restoreSamples(): Promise<void> {
+		const file = this._samplesFile;
+		if (!file) {
+			return;
+		}
+		try {
+			const raw = await fsp.readFile(file, 'utf8');
+			const parsed: unknown = JSON.parse(raw);
+			if (!Array.isArray(parsed)) {
+				return;
+			}
+			const restored: IDshCreditSample[] = [];
+			for (const item of parsed) {
+				if (!item || typeof item !== 'object') {
+					continue;
+				}
+				const s = item as Partial<IDshCreditSample>;
+				if (typeof s.route !== 'string' || !s.route || typeof s.at !== 'number' || !isFinite(s.at)) {
+					continue;
+				}
+				restored.push({
+					route: s.route,
+					...(typeof s.model === 'string' ? { model: s.model } : {}),
+					...(typeof s.credit === 'number' && isFinite(s.credit) ? { credit: s.credit } : {}),
+					...(typeof s.status === 'number' ? { status: s.status } : {}),
+					at: s.at,
+				});
+			}
+			// 把恢复的接到**现有池前面**（构造函数之后才到的活样本不能被覆盖）—— 按时间排序更稳。
+			const merged = [...restored, ...this._samples].sort((a, b) => a.at - b.at);
+			this._samples.length = 0;
+			for (const s of merged.slice(-MAX_SAMPLES)) {
+				this._samples.push(s);
+			}
+			this._opts.log?.(`dshCredit: 从磁盘恢复 ${restored.length} 条历史积分样本（重启后历史回合仍能显示积分 ✓）`);
+			if (restored.length > 0) {
+				this._opts.onSamplesRestored?.();
+			}
+		} catch (e) {
+			// 文件不存在是常态（首次运行）；其它错误留一行 warn，但不影响抓取。
+			const code = (e as NodeJS.ErrnoException)?.code;
+			if (code !== 'ENOENT') {
+				this._opts.log?.(`dshCredit: 历史样本读取失败（本次从空池开始）：${String((e as Error)?.message ?? e)}`);
+			}
+		}
+	}
+
+	/**
+	 * 落盘（debounce 1s）：一个回合会连续抓到几十条样本，逐条写盘会白占主线程 I/O。
+	 * 异步写（`fsp.writeFile`）—— 主进程同步写有守卫测试盯着，这里绝不能改成 writeFileSync。
+	 */
+	private _persistSamples(): void {
+		const file = this._samplesFile;
+		if (!file) {
+			return;
+		}
+		if (this._persistTimer) {
+			return;     // 已有一次待写：写的时候取的是当时的全量池 ⇒ 合并成一次 ✓
+		}
+		this._persistTimer = setTimeout(() => {
+			this._persistTimer = undefined;
+			const payload = JSON.stringify(this._samples);
+			void fsp.writeFile(file, `${payload}\n`, { mode: 0o600 })
+				.catch(e => this._opts.log?.(`dshCredit: 历史样本落盘失败（本次进程内仍有效）：${String((e as Error)?.message ?? e)}`));
+		}, 1000);
 	}
 
 	/**
@@ -299,30 +394,59 @@ export class DshCreditProxy extends Disposable {
 		res.writeHead(upstream.status, outHeaders);
 
 		let tail = '';
-		if (upstream.body) {
-			const reader = upstream.body.getReader();
+		// ★★ 2026-10-20（用户报「积分 —」；今天 19:00–19:07 会话日志里 38 次模型响应，代理只记下 1 条）：
+		//   dsh 的 pi-ai 适配器读完流后**无条件**调 `consumer.abort("pi-ai stream consumer stopped")`
+		//   （dsh-llm-pi-ai `finally` 块）⇒ 客户端几乎总是**先于上游**断开连接 ⇒ 上面的 `res.on('close')`
+		//   abort 掉上游读取 ⇒ `reader.read()` 抛 AbortError ⇒ 原来写在循环**之后**的 `_record` 根本不执行，
+		//   而 `_handle` 的 catch 因头已发出只 `res.end()`、不留任何日志 ⇒ 样本**静默丢失** ✗✗。
+		//   积分在 SSE 末块里，那时其实**已经读进 tail 了** ⇒ 改成：无论正常结束 / 客户端断开 / 出错，
+		//   都在 finally 里记一次（`recorded` 防重）。
+		//   顺带两处：① 先追加 tail 再写下游（写失败也不丢这一块）；② 等 drain 时同时等 close
+		//   （客户端断开后 drain 永远不来 ⇒ 原来会一直挂着）。
+		let recorded = false;
+		const recordOnce = () => {
+			if (recorded) {
+				return;
+			}
+			recorded = true;
 			try {
-				for (;;) {
-					const { done, value } = await reader.read();
-					if (done) {
-						break;
+				this._record(route, requestHead, tail, upstream.status);
+			} catch (e) {
+				this._opts.log?.(`dshCredit: 记录样本失败：${String((e as Error)?.message ?? e)}`);
+			}
+		};
+		try {
+			if (upstream.body) {
+				const reader = upstream.body.getReader();
+				try {
+					for (;;) {
+						const { done, value } = await reader.read();
+						if (done) {
+							break;
+						}
+						if (!value) {
+							continue;
+						}
+						tail = (tail + Buffer.from(value).toString('utf8')).slice(-RESPONSE_TAIL_CHARS);
+						if (res.destroyed) {
+							continue;   // 下游已断：不再写，但继续把上游尾巴读完（积分在末块）—— 若上游已被 abort，下一次 read 会抛出
+						}
+						// 背压：写不进去就等 drain，避免大回答在内存里堆着；客户端断开时 drain 不会来 ⇒ 同时等 close。
+						if (!res.write(value)) {
+							await Promise.race([once(res, 'drain'), once(res, 'close')]);
+						}
 					}
-					if (!value) {
-						continue;
+				} finally {
+					if (!res.writableEnded && !res.destroyed) {
+						res.end();
 					}
-					// 背压：写不进去就等 drain，避免大回答在内存里堆着。
-					if (!res.write(value)) {
-						await once(res, 'drain');
-					}
-					tail = (tail + Buffer.from(value).toString('utf8')).slice(-RESPONSE_TAIL_CHARS);
 				}
-			} finally {
+			} else {
 				res.end();
 			}
-		} else {
-			res.end();
+		} finally {
+			recordOnce();
 		}
-		this._record(route, requestHead, tail, upstream.status);
 	}
 
 	/** 最近的样本环（视图重载后回放用 —— 页面侧的样本池是"活推送"，页面重载即清零 ✗）。 */
@@ -358,6 +482,8 @@ export class DshCreditProxy extends Disposable {
 		if (this._samples.length > MAX_SAMPLES) {
 			this._samples.shift();
 		}
+		// ★ 2026-10-20：样本落盘（debounce 1s，异步写）—— 重开 app 后历史回合的积分仍算得出来。
+		this._persistSamples();
 		// ★ 2026-10-15（用户报"积分 chip 一直 —"，实测 7 次采样 credit 全是 0 ✗）：不看到网关的
 		//   usage 原文就分不清"网关真报 0"还是"字段名没对上/没报" ✗ ⇒ 这种样本顺带把 usage 数值段
 		//   打进日志（只取 `"usage"` 键起的 700 字符；usage 是纯数值块，不含回答正文 ✓）。

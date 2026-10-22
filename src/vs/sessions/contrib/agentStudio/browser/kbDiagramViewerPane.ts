@@ -8,7 +8,7 @@
  *  （它们不在 TEXT_EXTS、也没有注册 editor ⇒ 落到 openExternal，系统里多半没有关联程序，
  *  表现为「点了没反应」）。本面板提供：
  *
- *    · 「预览」：用宿主既有的隐藏渲染引擎（IMermaidInlineRenderer / IDrawioInlineRenderer，
+ *    · 「预览」：用宿主既有的渲染引擎（IDiagramRenderer / IDrawioInlineRenderer，
  *      与聊天图表卡片同一引擎）渲染成 SVG 展示；
  *    · 「源码」：textarea 直接编辑源文本，Ctrl+S / 保存按钮落盘，保存后自动重渲染；
  *      编辑过程中防抖预览（不保存也能先看效果）。
@@ -28,7 +28,7 @@ import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
-import { IMermaidInlineRenderer } from './mermaidInlineRenderer.js';
+import { IDiagramRenderer } from './peleDiagramRenderer.js';
 import { IDrawioInlineRenderer } from './drawioInlineRenderer.js';
 import { KbDiagramViewerInput, diagramKindOfPath } from './kbDiagramViewerInput.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
@@ -86,7 +86,7 @@ export class KbDiagramViewerPane extends EditorPane {
 		@IFileService private readonly _fileService: IFileService,
 		@ILogService private readonly _logService: ILogService,
 		@INotificationService private readonly _notificationService: INotificationService,
-		@IMermaidInlineRenderer private readonly _mermaidRenderer: IMermaidInlineRenderer,
+		@IDiagramRenderer private readonly _mermaidRenderer: IDiagramRenderer,
 		@IDrawioInlineRenderer private readonly _drawioRenderer: IDrawioInlineRenderer,
 	) {
 		super(KbDiagramViewerPane.ID, group, telemetryService, themeService, storageService);
@@ -181,8 +181,11 @@ export class KbDiagramViewerPane extends EditorPane {
 		this._setStatus('渲染中…');
 		try {
 			const dark = isDark(this.themeService.getColorTheme().type);
+			// ★ 2026-10-19：给 pele 可用宽度 ⇒ 窄处改排版而不是等比缩小。
+			//   预览容器切到「源码」页签时是隐藏的（clientWidth=0）⇒ 此时不传（"不知道"≠"很窄" ✗）
+			const maxWidth = this._previewEl.clientWidth > 0 ? this._previewEl.clientWidth : undefined;
 			const svg = kind === 'mermaid'
-				? await this._mermaidRenderer.renderToSvg(source, dark ? 'dark' : 'default')
+				? await this._mermaidRenderer.renderToSvg(source, dark ? 'dark' : 'default', maxWidth)
 				: await this._drawioRenderer.renderToSvg(source, dark ? 'dark' : 'default');
 			if (seq !== this._renderSeq) { return; } // 期间又改了源码 ⇒ 丢弃过期结果
 			this._injectSvg(svg);

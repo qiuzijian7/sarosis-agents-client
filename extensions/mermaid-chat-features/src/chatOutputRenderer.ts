@@ -63,6 +63,9 @@ class MermaidChatOutputRenderer implements vscode.ChatOutputRenderer {
 		const nonce = generateUuid();
 		const mermaidScript = vscode.Uri.joinPath(mediaRoot, 'index.js');
 		const codiconsUri = webview.asWebviewUri(vscode.Uri.joinPath(mediaRoot, 'codicon.css'));
+		// 2026-10-19：渲染引擎换成随包的 pele（**经典脚本**，先于下面的模块脚本载入，模块里直接读全局 `pele`）。
+		// 由 `esbuild.webview.mts` 从 `dsh-plugins/vssaros-pele/assets/` 拷进 chat-webview-out ✓。
+		const peleUri = webview.asWebviewUri(vscode.Uri.joinPath(mediaRoot, 'pele.global.js'));
 
 		webview.html = `
 			<!DOCTYPE html>
@@ -155,6 +158,7 @@ class MermaidChatOutputRenderer implements vscode.ChatOutputRenderer {
 					${escapeHtmlText(mermaidSource)}
 				</pre>
 
+				<script nonce="${nonce}" src="${peleUri}"></script>
 				<script type="module" nonce="${nonce}" src="${webview.asWebviewUri(mermaidScript)}"></script>
 			</body>
 			</html>`;

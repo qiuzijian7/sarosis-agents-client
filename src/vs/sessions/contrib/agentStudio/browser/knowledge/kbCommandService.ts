@@ -34,6 +34,16 @@ import { Emitter, Event } from '../../../../../base/common/event.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { localize } from '../../../../../nls.js';
+// ★★★ 2026-10-20（第三轮定稿，真机日志：`openPaneComposite → ok` 且 `location: Panel` 已生效，屏上仍无 panel）：
+//   **agents 窗口的 panel 是用 DOM inline `display:none` 隐藏的**（`agentLayoutWorkbench.ts:859-860`），
+//   `PANEL_HIDDEN` 运行时状态从未置位 ⇒ `isVisible(PANEL_PART)` **恒为 true**
+//   ⇒ `openPaneComposite` / `setPartHidden(false)` 都以为"已经可见"而什么也不做 ✗（返回 ok 却看不到）。
+//   唯一可靠入口 = 标题栏按钮用的 DOM 事件 `agent-studio:toggle-panel`（`toggleAgentsPanel()`：
+//   清 inline display + 恢复 35% 高度 + 打开容器）。**判据只能看 DOM**（display + offsetHeight）。
+//   ⇒ 照搬 `dshHarness.contribution.ts:1187-1215` 已在 agents 布局真机验证过的同一套流程，不另起炉灶。
+import { mainWindow } from '../../../../../base/browser/window.js';
+import { IWorkbenchLayoutService, Parts } from '../../../../../workbench/services/layout/browser/layoutService.js';
+import { TerminalLocation } from '../../../../../platform/terminal/common/terminal.js';
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { IFileDialogService, IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
 import { INativeEnvironmentService } from '../../../../../platform/environment/common/environment.js';
@@ -65,7 +75,7 @@ import { IEmbeddingService } from '../../common/embeddingProvider.js';
 import { IKbNativeKernelService, type IKbBuildRoot } from '../kbNativeKernelService.js';
 import { KbGraphEditorInput } from '../kbGraphEditorInput.js';
 import { KbSettingsEditorInput, IKbSettingsHost, type KbSettingsFocus } from '../kbSettingsEditorInput.js';
-import { IMermaidInlineRenderer } from '../mermaidInlineRenderer.js';
+import { IDiagramRenderer } from '../peleDiagramRenderer.js';
 import { IDrawioInlineRenderer } from '../drawioInlineRenderer.js';
 import { KbLinkGraph, IKbGraphRoot } from '../views/knowledgeBase/kbGraph.js';
 import { KbNativeKernel } from '../views/knowledgeBase/kbNativeKernel.js';
@@ -258,6 +268,7 @@ export class KbCommandService extends Disposable implements IKbCommandService {
 	private readonly _foldersReady = new Set<string>();
 
 	constructor(
+		@IWorkbenchLayoutService private readonly _layoutService: IWorkbenchLayoutService,
 		@IFileService private readonly _fileService: IFileService,
 		@IStorageService private readonly _storageService: IStorageService,
 		@INotificationService private readonly _notificationService: INotificationService,
@@ -276,7 +287,7 @@ export class KbCommandService extends Disposable implements IKbCommandService {
 		@ISharedWebContentExtractorService private readonly _sharedWebContentExtractorService: ISharedWebContentExtractorService,
 		@IEmbeddingService private readonly _embeddingService: IEmbeddingService,
 		@IKbNativeKernelService private readonly _kernelService: IKbNativeKernelService,
-		@IMermaidInlineRenderer private readonly _mermaidRenderer: IMermaidInlineRenderer,
+		@IDiagramRenderer private readonly _mermaidRenderer: IDiagramRenderer,
 		@IDrawioInlineRenderer private readonly _drawioRenderer: IDrawioInlineRenderer,
 		@ILogService private readonly _logService: ILogService,
 	) {
@@ -357,7 +368,24 @@ export class KbCommandService extends Disposable implements IKbCommandService {
 	activeVault(): IKbVault | undefined {
 		const vaults = this.loadVaults();
 		const id = this.activeVaultId();
-		return vaults.find(v => v.id === id) ?? vaults.find(v => !v.closed);
+		// ★★ 2026-10-19 补第三档：**全部库都被标成 closed 时取第一个**。
+		//   真机事故：`_kbVaultsSlim()` 明明读到了库（dsh 页面能显示「我的知识库」），
+		//   但 `find(v => !v.closed)` 返回 undefined ⇒ `_syncToFeishu` 走 `!vault` 早退
+		//   ⇒ 用户点「同步飞书」只看到一句警告、没有终端（B 那轮已给这条分支补了 op-log ✓）。
+		//   语义：closed 只表示"不在侧栏常驻"这类偏好，**不等于"这个库不可用"** ⇒
+		//   真要用它的时候（同步 / 写笔记）不该因为偏好拿不到它 ✗。
+		const picked = vaults.find(v => v.id === id)   // ① 显式激活的那个（哪怕它 closed ✓ —— 用户选的就是它）
+			?? vaults.find(v => !v.closed)             // ② 第一个未关闭的
+			?? vaults[0];                              // ③ 兜底：全 closed 也要给一个（"有库却用不了"最费解 ✗）
+		// ★ 2026-10-19：**取不到 / 落到兜底时留痕**。真机"根目录不对"这类问题，
+		//   光看界面分不清是"清单空"还是"取到了另一个库"⇒ 这里把三个数打出来：
+		//   vaults 总数、期望的 activeId、最终选中谁（以及它是不是靠兜底拿到的）。
+		if (!picked) {
+			this._logService.warn(`[KB] activeVault() 取不到任何库：vaults=${vaults.length} activeId=${id ?? '(空)'} closed=${vaults.filter(v => v.closed).length}`);
+		} else if (id && picked.id !== id) {
+			this._logService.warn(`[KB] activeVault() 未命中期望的库 ⇒ 落到兜底：期望 ${id}，实际 ${picked.id}（vaults=${vaults.length}，closed=${vaults.filter(v => v.closed).length}）`);
+		}
+		return picked;
 	}
 
 	// ── 操作日志 ────────────────────────────────────────────────────────────────────────────
@@ -514,6 +542,14 @@ export class KbCommandService extends Disposable implements IKbCommandService {
 	private _feishuSyncOutput = '';
 	private readonly _feishuSyncListeners = new Set<(chunk: string) => void>();
 	private _feishuSyncTerminalSub: { dispose(): void } | undefined;
+	/**
+	 * 上一次「同步到飞书」开的终端实例（★ 2026-10-19）。
+	 *
+	 * ⚠ 原来这里**只解绑 onData 订阅、从不关终端** ⇒ 用户每点一次同步就多一个
+	 *   「KB → 飞书同步」终端（连点几次堆一排，还得手动一个个关 ✗）。
+	 *   现在：新建前先 dispose 旧的（同一时刻只保留一次同步的终端）。
+	 */
+	private _feishuSyncTerminal: { isDisposed?: boolean; dispose(): void } | undefined;
 
 	/** 广播一段同步输出（缓存 + 通知所有面板订阅者；单个订阅者异常不影响其它 ✓）。截断到最近 40k ✓。 */
 	private _emitSyncOutput(chunk: string): void {
@@ -579,11 +615,92 @@ export class KbCommandService extends Disposable implements IKbCommandService {
 		}
 	}
 
+	/**
+	 * 确保底部 panel **用户真的看得见**，返回终端应建的位置。
+	 *
+	 * ★★★ 2026-10-20（「同步飞书不弹 panel」第三轮定稿）：与 `dshHarness.contribution.ts:1187-1215`
+	 *   （页面「在终端打开」，2026-10-14 真机验证过）**同一套流程**，不另起炉灶 ——
+	 *   · 判据只看 **DOM**（`display` + `offsetHeight`）：agents 布局的隐藏是纯 DOM 的，
+	 *     `isVisible(PANEL_PART)` 恒为 true（`agentLayoutWorkbench.ts:970-974`），信它就会什么都不做 ✗；
+	 *   · 展开只走标题栏同款的 DOM 事件 `agent-studio:toggle-panel`（`toggleAgentsPanel()` 补齐了
+	 *     「清 inline display + 恢复 35% 高度 + 打开容器」四件事）；
+	 *   · 状态与 DOM 不一致时第一次派发可能走"隐藏"分支 ⇒ 最多两次、每次复核 DOM；
+	 *   · 本来就显示着 ⇒ **一次都不派发**（toggle 会把用户正看着的 panel 关掉 ✗）；
+	 *   · 实在出不来 ⇒ 退到编辑区（至少看得见），并如实落日志。
+	 */
+	private async _ensureAgentsPanelShown(): Promise<TerminalLocation> {
+		const panelElement = (): HTMLElement | undefined => {
+			try { return this._layoutService.getContainer(mainWindow, Parts.PANEL_PART); } catch { return undefined; }
+		};
+		const shown = (el: HTMLElement | undefined): boolean => !!el && el.style.display !== 'none' && el.offsetHeight > 0;
+		const wasShown = shown(panelElement());
+		let panelShown = wasShown;
+		for (let attempt = 0; !panelShown && attempt < 2; attempt++) {
+			if (attempt > 0) {
+				// 第 2 轮兜底：状态"谎报可见"时先对齐成 hidden，下一次切换必然落进"显示"分支
+				try {
+					if (this._layoutService.isVisible(Parts.PANEL_PART)) {
+						this._layoutService.setPartHidden(true, Parts.PANEL_PART);
+					}
+				} catch { /* 对齐失败也照常派发，后面还会复核 */ }
+			}
+			mainWindow.document.dispatchEvent(new CustomEvent('agent-studio:toggle-panel'));
+			await new Promise<void>(resolve => setTimeout(resolve, 200));
+			panelShown = shown(panelElement());
+		}
+		const location = panelShown ? TerminalLocation.Panel : TerminalLocation.Editor;
+		this._logService.info(`[KB] 飞书同步终端：panel=${wasShown ? '已显示' : (panelShown ? '原为隐藏，已展开 ✓' : '展不开 ⇒ 退到编辑区')} location=${location === TerminalLocation.Panel ? 'panel' : 'editor'}`);
+		return location;
+	}
+
+	/**
+	 * 诊断探针：建完同步终端后在 T+0 / 0.5s / 1.5s / 4s 采样 panel（只读）。
+	 *
+	 * 每行字段的判读：
+	 * - `display` / `offsetH` / `rect`：panel 元素此刻是否真的占位（之后变成 none / 0 ⇒ 有别的代码收回了它）；
+	 * - `termDom`：panel 里终端 DOM 的高度（`none` ⇒ 终端没进这个 panel）；
+	 * - `hitInPanel`：panel 中心点最上层的 DOM 是否属于 panel（false ⇒ 被别的 DOM 盖住；
+	 *   ⚠ 原生 WebContentsView 不在 DOM 里，**看不出来** —— 若各项都正常而屏上仍看不到，就只剩它）；
+	 * - `target` / `disposed`：终端实例是否还活着、落在哪（1 = Panel，2 = Editor）。
+	 */
+	private _tracePanelAfterTerminal(terminal: { readonly target?: TerminalLocation; readonly isDisposed: boolean }): void {
+		const sample = (tag: string): void => {
+			try {
+				const el = this._layoutService.getContainer(mainWindow, Parts.PANEL_PART);
+				const r = el?.getBoundingClientRect();
+				const termDom = el?.querySelector<HTMLElement>('.terminal-outer-container, .xterm');
+				const hit = r && r.width > 0 && r.height > 0
+					? mainWindow.document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)
+					: null;
+				const rect = r ? `${Math.round(r.left)},${Math.round(r.top)} ${Math.round(r.width)}x${Math.round(r.height)}` : '-';
+				this._logService.info(`[KB] panel 探针 ${tag}: display=${el?.style.display || '(空)'} offsetH=${el?.offsetHeight ?? -1} rect=${rect}`
+					+ ` isVisible=${this._layoutService.isVisible(Parts.PANEL_PART)} termDom=${termDom ? termDom.offsetHeight : 'none'}`
+					+ ` target=${terminal.target ?? '?'} disposed=${terminal.isDisposed}`
+					+ ` hitInPanel=${!!(hit && el?.contains(hit))} hit=${hit ? String(hit.className || hit.tagName).slice(0, 60) : '-'}`
+					+ ` win=${mainWindow.innerWidth}x${mainWindow.innerHeight}`);
+			} catch (e) {
+				this._logService.warn(`[KB] panel 探针 ${tag} 失败：${e instanceof Error ? e.message : String(e)}`);
+			}
+		};
+		sample('T+0');
+		for (const ms of [500, 1500, 4000]) {
+			setTimeout(() => sample(`T+${ms}ms`), ms);
+		}
+	}
+
 	/** 拼装并执行飞书同步脚本（在集成终端里跑，输出对用户可见 ✓；逐字搬自视图 :3124-3230 ✓）。 */
 	private async _syncToFeishu(mode: 'dry-run' | 'apply'): Promise<void> {
 		const vault = this.activeVault();
 		if (!vault) {
-			this._notificationService.warn(localize('kb.feishuNoVault', '没有可用的知识库 Vault，无法同步。'));
+			// ★★ 2026-10-19：这条分支**原先只弹一句警告就 return** —— 而它是四个早退分支里
+			//   唯一**不写 op-log** 的 ⇒ 真机表现为「点了同步飞书：没终端、没日志、什么都没有」✗
+			//   （另外三条 lark-cli / 脚本 / 目录映射 都会写 `feishu.sync failure`，一查就懂 ✓）。
+			//   根因是 **IDE 侧 vault 清单（storage `agentStudio.kb.vaults`）为空**，而 dsh 侧
+			//   用的是注入的 `kbVaults`（`e:\VsSarosVault`）⇒ 两侧清单不同源。
+			//   这里先把**可观测性**补上（治本的同源改造见后续）。
+			this._logService.warn('[KB feishu] 没有可用的 Vault ⇒ 未开始同步：IDE 侧的 vault 清单（storage agentStudio.kb.vaults）为空，而 dsh 侧用的是注入的 kbVaults —— 两处清单不同源。');
+			void this.logOp('feishu.sync', 'failure', { target: mode, error: 'no active vault (IDE storage agentStudio.kb.vaults is empty; dsh side uses injected kbVaults)' });
+			this._notificationService.warn(localize('kb.feishuNoVault', '没有可用的知识库 Vault，无法同步：IDE 侧的知识库清单是空的（可到「知识库设置」里添加一个指向你库目录的 vault）。'));
 			return;
 		}
 
@@ -649,7 +766,11 @@ export class KbCommandService extends Disposable implements IKbCommandService {
 		void this.logOp('feishu.sync', 'success', { target: mode, detail: { srcCount: effectiveSrcDirs.length, parent, onConflict, cli: cli.version ?? cliPath, runner } });
 
 		try {
+			// ★★★ 先把 panel **真正显示出来**，再决定终端建在哪（理由见文件头 IWorkbenchLayoutService 的注释）。
+			const panelLocation = await this._ensureAgentsPanelShown();
 			const terminal = await this._terminalService.createTerminal({
+				// 面板确实显示了才建在 Panel；显示不出来（布局里没有该部件）⇒ 退到编辑区，至少让用户看得见 ✓
+				location: panelLocation,
 				config: {
 					name: `KB → 飞书同步（${mode === 'apply' ? '同步' : '预览'}）`,
 					executable: launch.executable ?? 'node',
@@ -659,12 +780,25 @@ export class KbCommandService extends Disposable implements IKbCommandService {
 					waitOnExit: true, // 结束后保留终端，便于查看输出
 				},
 			});
-			// 把终端输出镜像给设置面板（用户不必切到终端 ✓；终端本身仍保留 ✓）
+			// ★ 2026-10-19：**先关掉上一次的同步终端**（见字段注释 —— 否则连点几次会堆一排终端 ✗）
 			this._feishuSyncTerminalSub?.dispose();
+			this._feishuSyncTerminalSub = undefined;
+			if (this._feishuSyncTerminal && !this._feishuSyncTerminal.isDisposed) {
+				try { this._feishuSyncTerminal.dispose(); } catch { /* 已被用户手动关掉 ⇒ 忽略 */ }
+			}
+			this._feishuSyncTerminal = terminal;
+			// 把终端输出镜像给设置面板（用户不必切到终端 ✓；终端本身仍保留 ✓）
 			this._feishuSyncTerminalSub = terminal.onData(chunk => this._emitSyncOutput(chunk));
 			this._emitSyncOutput(`\n=== 启动飞书同步（${mode === 'apply' ? '同步' : '预览'}）===\n`);
 			this._terminalService.setActiveInstance(terminal);
 			await this._terminalService.revealTerminal(terminal);
+			// 焦点落到新终端（面板刚展开时尤其需要：焦点还在别处，用户会以为没打开 ✓）
+			if (panelLocation === TerminalLocation.Panel) {
+				try { await terminal.focusWhenReady(true); } catch { /* 聚焦失败不致命 */ }
+			}
+			// ★ 2026-10-20 诊断（第四轮：日志说「已展开 ✓」，用户仍看不到）：建完终端后按时间采样 panel 真相，
+			//   区分「之后被收回去」「展开了但被盖住」「终端没进 panel」三种情况。只读、不改任何状态。
+			this._tracePanelAfterTerminal(terminal);
 			// 显式反馈：同步跑在新终端里（可能开在别的面板/被折叠）⇒ 没有提示用户只会觉得「点了没反应」✗
 			this._notificationService.info(localize('kb.feishuLaunched',
 				'已启动飞书同步（{0}），正在终端中运行，可切到终端查看进度。', mode === 'apply' ? '同步' : '预览'));

@@ -38,7 +38,7 @@ import { ViewPaneContainer } from '../../../../workbench/browser/parts/views/vie
 import { DshHarnessSettings, IDshPluginInfo } from '../common/dshHarness.js';
 import { containersFromPlugins, DSH_MODULE_CONTAINERS, IDshModuleContainer, planModuleContainers } from '../common/dshModuleContainers.js';
 import { IDshHarnessService } from './dshHarnessService.js';
-import { AGENT_STUDIO_CODEBASE_VIEW_ID, AGENT_STUDIO_DASHBOARD_VIEW_ID, AGENT_STUDIO_DSH_SESSIONS_VIEW_ID, AGENT_STUDIO_INTEGRATION_VIEW_ID, AGENT_STUDIO_KB_VIEW_ID, AGENT_STUDIO_MEDIA_VIEW_ID, AGENT_STUDIO_MEMORY_VIEW_ID, AGENT_STUDIO_PRESET_AGENT_VIEW_ID, AGENT_STUDIO_SCHEDULER_VIEW_ID, AGENT_STUDIO_TASKS_VIEW_ID, AGENT_STUDIO_WORKFLOW_VIEW_ID } from '../../../common/agentStudioConstants.js';
+import { AGENT_STUDIO_CODEBASE_VIEW_ID, AGENT_STUDIO_DASHBOARD_VIEW_ID, AGENT_STUDIO_DSH_IMAGEGEN_VIEW_ID, AGENT_STUDIO_DSH_SESSIONS_VIEW_ID, AGENT_STUDIO_INTEGRATION_VIEW_ID, AGENT_STUDIO_KB_VIEW_ID, AGENT_STUDIO_MEDIA_VIEW_ID, AGENT_STUDIO_MEMORY_VIEW_ID, AGENT_STUDIO_PRESET_AGENT_VIEW_ID, AGENT_STUDIO_SCHEDULER_VIEW_ID, AGENT_STUDIO_TASKS_VIEW_ID, AGENT_STUDIO_WORKFLOW_VIEW_ID } from '../../../common/agentStudioConstants.js';
 import { DynamicActivityBarContainers } from '../../agentStudio/browser/dynamicActivityBarContainers.js';
 import { DshPluginViewPane } from './dshPluginViewPane.js';
 
@@ -83,6 +83,9 @@ const MODULE_VIEW_HOSTS: Readonly<Record<string, IModuleViewHost>> = {
 	'agentStudio.dashboard': pageHost(AGENT_STUDIO_DASHBOARD_VIEW_ID, 'agentStudio.dashboard'),
 	// 定时任务（重构 2.1）：插件自托管页 `/x/scheduler/`。已知容器显式登记 ⇒ 视图 id 稳定（R1）✓。
 	'vssaros.dsh.scheduler': pageHost(AGENT_STUDIO_SCHEDULER_VIEW_ID, 'vssaros.dsh.scheduler'),
+	// 画布（2026-10-21）：`@vssaros/dsh-imagegen` 的侧栏页（状态 + 「打开画布工作台」）。
+	// ⚠ 2026-10-22 补回：这一行在 10-21 23:08 的本地重置里丢失（没有任何快照），按同族条目重写。
+	'vssaros.dsh.imagegen': pageHost(AGENT_STUDIO_DSH_IMAGEGEN_VIEW_ID, 'vssaros.dsh.imagegen'),
 };
 
 /**

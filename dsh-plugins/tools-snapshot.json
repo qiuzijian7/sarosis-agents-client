@@ -1,6 +1,6 @@
 {
   "note": "由 dsh-plugins/tools-snapshot.mjs 生成；被 dshHarness/test/common/dshToolSnapshot.test.ts 钉住。不要手改，跑 --write。",
-  "total": 127,
+  "total": 146,
   "plugins": {
     "vssaros-agents": [
       {
@@ -67,6 +67,30 @@
         "descriptionHash": "3c45e2ce5060"
       }
     ],
+    "vssaros-bridge": [
+      {
+        "name": "tof_signin",
+        "required": [],
+        "params": [
+          "timeoutSeconds"
+        ],
+        "descriptionHash": "4081c81806d8"
+      },
+      {
+        "name": "tof_signout",
+        "required": [],
+        "params": [
+          "all"
+        ],
+        "descriptionHash": "4e4d5cafbb48"
+      },
+      {
+        "name": "tof_status",
+        "required": [],
+        "params": [],
+        "descriptionHash": "1c253d615ed3"
+      }
+    ],
     "vssaros-browser": [
       {
         "name": "browser",
@@ -93,7 +117,7 @@
           "url",
           "urlContains"
         ],
-        "descriptionHash": "6d3bb84bc11e"
+        "descriptionHash": "e4bdfecc2b55"
       }
     ],
     "vssaros-codebase": [
@@ -257,11 +281,12 @@
           "context",
           "filePattern",
           "limit",
+          "maxFiles",
           "path",
           "query",
           "regex"
         ],
-        "descriptionHash": "9e2977d572e4"
+        "descriptionHash": "0a5f2fbf0b1f"
       },
       {
         "name": "codebase_search_files",
@@ -272,13 +297,14 @@
           "context",
           "file_glob",
           "limit",
+          "maxFiles",
           "mode",
           "offset",
           "path",
           "pattern",
           "regex"
         ],
-        "descriptionHash": "2f7e0a638fb0"
+        "descriptionHash": "b1bd91fdb2fe"
       },
       {
         "name": "codebase_self_index",
@@ -333,6 +359,41 @@
           "limit"
         ],
         "descriptionHash": "7df577c2666b"
+      }
+    ],
+    "vssaros-ego": [
+      {
+        "name": "ego_guide",
+        "required": [],
+        "params": [],
+        "descriptionHash": "65a092c45194"
+      },
+      {
+        "name": "ego_run",
+        "required": [
+          "script"
+        ],
+        "params": [
+          "describe",
+          "script",
+          "taskSpace",
+          "timeoutMs"
+        ],
+        "descriptionHash": "b15612b58862"
+      },
+      {
+        "name": "ego_spaces",
+        "required": [],
+        "params": [],
+        "descriptionHash": "5ec541329002"
+      },
+      {
+        "name": "ego_status",
+        "required": [],
+        "params": [
+          "probe"
+        ],
+        "descriptionHash": "da90c03b3c47"
       }
     ],
     "vssaros-ide": [
@@ -443,6 +504,131 @@
           "id"
         ],
         "descriptionHash": "7c00b7d48de2"
+      }
+    ],
+    "vssaros-imagegen": [
+      {
+        "name": "canvas_add_node",
+        "required": [
+          "kind"
+        ],
+        "params": [
+          "image_id",
+          "kind",
+          "label",
+          "model",
+          "prompt",
+          "provider",
+          "quality",
+          "size",
+          "text"
+        ],
+        "descriptionHash": "6596cd785af4"
+      },
+      {
+        "name": "canvas_link",
+        "required": [
+          "from",
+          "to"
+        ],
+        "params": [
+          "from",
+          "to"
+        ],
+        "descriptionHash": "74de55d6c250"
+      },
+      {
+        "name": "canvas_run",
+        "required": [],
+        "params": [
+          "node_id"
+        ],
+        "descriptionHash": "9eb083aeb9b2"
+      },
+      {
+        "name": "canvas_state",
+        "required": [],
+        "params": [],
+        "descriptionHash": "8ef9fc67253d"
+      },
+      {
+        "name": "compare_models",
+        "required": [
+          "prompt",
+          "targets"
+        ],
+        "params": [
+          "prompt",
+          "quality",
+          "save_dir",
+          "save_to_workspace",
+          "size",
+          "targets"
+        ],
+        "descriptionHash": "8ef0cc35c267"
+      },
+      {
+        "name": "edit_image",
+        "required": [
+          "prompt"
+        ],
+        "params": [
+          "attachment_id",
+          "model",
+          "path",
+          "prompt",
+          "save_dir",
+          "save_to_workspace",
+          "source"
+        ],
+        "descriptionHash": "8c8028979ecc"
+      },
+      {
+        "name": "generate_images",
+        "required": [
+          "prompts"
+        ],
+        "params": [
+          "model",
+          "prompts",
+          "provider",
+          "quality",
+          "save_dir",
+          "save_to_workspace",
+          "size"
+        ],
+        "descriptionHash": "4cb3698e64de"
+      },
+      {
+        "name": "image_generate",
+        "required": [
+          "prompt"
+        ],
+        "params": [
+          "model",
+          "n",
+          "prompt",
+          "provider",
+          "quality",
+          "save_dir",
+          "save_to_workspace",
+          "size"
+        ],
+        "descriptionHash": "724bffa79f7a"
+      },
+      {
+        "name": "image_models",
+        "required": [],
+        "params": [
+          "refresh"
+        ],
+        "descriptionHash": "e1eefcb916d4"
+      },
+      {
+        "name": "view_canvas",
+        "required": [],
+        "params": [],
+        "descriptionHash": "4983090f29c7"
       }
     ],
     "vssaros-kanban": [
@@ -746,6 +932,12 @@
         "descriptionHash": "47a7fce8fecd"
       },
       {
+        "name": "kb_catalog",
+        "required": [],
+        "params": [],
+        "descriptionHash": "c0553057e683"
+      },
+      {
         "name": "kb_feishu_spaces",
         "required": [],
         "params": [
@@ -762,6 +954,7 @@
           "apply",
           "cliPath",
           "limit",
+          "parent",
           "src",
           "vaultId"
         ],
@@ -771,7 +964,7 @@
         "name": "kb_list",
         "required": [],
         "params": [],
-        "descriptionHash": "2c1b00b9fc2e"
+        "descriptionHash": "d89cbc77110d"
       },
       {
         "name": "kb_mindmap",
@@ -818,9 +1011,10 @@
           "uri"
         ],
         "params": [
-          "uri"
+          "uri",
+          "vaultId"
         ],
-        "descriptionHash": "cb7a96880090"
+        "descriptionHash": "57ecce59c6fe"
       },
       {
         "name": "kb_reindex",
@@ -864,7 +1058,7 @@
           "path",
           "vaultId"
         ],
-        "descriptionHash": "d96a5e97755a"
+        "descriptionHash": "377a4154e670"
       }
     ],
     "vssaros-mcp": [
@@ -910,23 +1104,6 @@
           "startSec"
         ],
         "descriptionHash": "31176976addc"
-      },
-      {
-        "name": "image_generate",
-        "required": [
-          "prompt"
-        ],
-        "params": [
-          "height",
-          "image_url",
-          "model_id",
-          "negative_prompt",
-          "num_images",
-          "prompt",
-          "provider_id",
-          "width"
-        ],
-        "descriptionHash": "f83f41630bb6"
       },
       {
         "name": "media_list",
@@ -1169,12 +1346,13 @@
           "query"
         ],
         "params": [
+          "history",
           "limit",
           "partition",
           "query",
           "strategy"
         ],
-        "descriptionHash": "f387418dd8fa"
+        "descriptionHash": "b2311a6e22b1"
       },
       {
         "name": "memory_refresh",
@@ -1315,6 +1493,22 @@
           "type"
         ],
         "descriptionHash": "bb87392f961f"
+      }
+    ],
+    "vssaros-pele": [
+      {
+        "name": "render_diagram",
+        "required": [
+          "source"
+        ],
+        "params": [
+          "includeSvg",
+          "maxWidth",
+          "saveTo",
+          "source",
+          "theme"
+        ],
+        "descriptionHash": "688276963d43"
       }
     ],
     "vssaros-sessions": [
@@ -1474,6 +1668,8 @@
           "mode",
           "slug",
           "url",
+          "urlFile",
+          "urls",
           "vault"
         ],
         "descriptionHash": "62ec2a2c7d8a"
@@ -1527,6 +1723,17 @@
           "limit"
         ],
         "descriptionHash": "0705925b25df"
+      },
+      {
+        "name": "workflow_run",
+        "required": [
+          "workflowId"
+        ],
+        "params": [
+          "waitSeconds",
+          "workflowId"
+        ],
+        "descriptionHash": "7f6cc07b367f"
       },
       {
         "name": "workflow_update",

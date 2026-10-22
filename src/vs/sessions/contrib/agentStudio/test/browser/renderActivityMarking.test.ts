@@ -134,4 +134,35 @@ suite('长任务归因：渲染活动标记 + 图表卡视口延迟（2026-09-20
 			assert.ok(detail.includes(key), `breakdown 明细必须含 ${key} ✗`);
 		}
 	});
+
+	// ─── 图谱索引链的归因 + "0 输入还全库白扫"（2026-10-19 用户日志）───────────────
+	// 现场：`LONG_TASK 1006ms / 592ms 因=[(无标记)]`，两条都落在 `🔗 匹配调用关系 → 🔁 克隆检测`
+	// 之间那 1.4s 里；而 `vssaros-homepage` 这个 **0 个源文件** 的工程也照跑 ⇒ 白扫全库（20 万节点）。
+	const CBM = 'src/vs/sessions/contrib/agentStudio/browser/codebaseGraphService.ts';
+
+	test('★★★ 图谱索引/加载的每个重阶段都必须打常量活动标记（否则 LONG_TASK 只能写「无标记」✗）', () => {
+		const src = code(CBM);
+		for (const tag of ['cbm:load', 'cbm:scan', 'cbm:parse', 'cbm:match', 'cbm:propagate', 'cbm:save', 'cbm:sqlite-sync']) {
+			assert.ok(src.includes(`markRenderActivity('${tag}')`), `缺归因标记 ${tag} ✗（图谱链是启动期最长的一段，没标记就只能猜）`);
+		}
+	});
+
+	test('★★★ 0 个源文件 ⇒ 不许跑全库级的"过程间热路径传播"（实测白扫 1.4s ✗）', () => {
+		const src = code(CBM);
+		const guarded = src.indexOf('if (files.length === 0 && nodesExtracted === 0) {');
+		assert.ok(guarded > 0, '必须有"本次 0 文件 ⇒ 跳过"的守卫 ✗');
+		const callAt = src.indexOf('await this._propagateInterprocedural();');
+		assert.ok(callAt > guarded, '`_propagateInterprocedural()` 必须落在守卫里（输入只来自本次解析 ⇒ 空则无可传播）✗');
+	});
+
+	test('★★★ 传播内部的循环必须惰性迭代 + 细粒度让出（`getAllEdges()` + 20 万条/次 = 1s 冻结 ✗）', () => {
+		const src = code(CBM);
+		const at = src.indexOf('private async _propagateInterprocedural(');
+		assert.ok(at > 0, '找不到 `_propagateInterprocedural` ✗');
+		const body = src.slice(at, src.indexOf('private ', at + 10));
+		assert.ok(body.includes('store.iterateEdges()'),
+			'必须用惰性 `iterateEdges()`（无参 = 直接迭代内部 Map）；`getAllEdges()` 会整份物资化全库边 ✗');
+		assert.ok(!body.includes('store.getAllEdges()'), '不许整份物资化全库边 ✗');
+		assert.ok(body.includes('yieldEvery(++ec, 20000)'), '让出粒度必须是 2 万条级（20 万条/次实测等于不让 ✗）');
+	});
 });

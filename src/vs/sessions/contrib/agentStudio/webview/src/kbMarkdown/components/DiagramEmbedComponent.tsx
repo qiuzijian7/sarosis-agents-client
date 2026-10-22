@@ -2,11 +2,12 @@
  *
  * 与 EmbedComponent（把目标当 markdown 重渲染）的本质区别：这些是**结构化图表源文件**，
  * 语义是「渲染成图」：
- *   · mermaid：读文件文本 → 复用 MermaidDiagram 的宿主渲染通道（IMermaidInlineRenderer → SVG）；
+ *   · mermaid：读文件文本 → 复用 MermaidDiagram 的宿主渲染通道（IDiagramRenderer → SVG）；
  *   · drawio：读文件文本（mxGraphModel XML）→ 新通道 `kbblocks.renderDrawio`
  *     （宿主 IDrawioInlineRenderer → SVG，与聊天 drawio 卡片同一引擎）；
- *   · canvas：JSON Canvas ⇒ 内置只读迷你渲染器（节点绝对定位 + SVG 连线），
- *     刻意不复用 canvasEditor/canvasViewport（80KB 全功能编辑器）。
+ *   · canvas：JSON Canvas ⇒ **宿主转译成 Mermaid 后交给 pele**（2026-10-19），与 mermaid 图
+ *     同一引擎、同一观感。此前是内置的 CanvasMiniView（React + 绝对定位）自己画；
+ *     ⚠ 代价：绝对坐标会被丢弃（Mermaid 由引擎排版），见 knowledge/canvasToMermaid.ts。
  */
 
 import { useEffect, useState } from 'react';
@@ -14,6 +15,7 @@ import { postMessage } from '../../bridge/messageClient';
 import { requestNoteContentDetailed } from '../embedBridge';
 import { kbLog } from '../kbDebug';
 import { MermaidDiagram } from './MermaidDiagram';
+import { hostDiagramWidth } from '../diagramWidth';
 import type { DiagramEmbedKind } from '../markdownExtensions';
 
 // ── drawio 渲染桥（镜像 MermaidDiagram 的 pending-map 模式）──────────────────
@@ -56,94 +58,44 @@ function renderDrawio(source: string): Promise<IDiagramResult> {
 	});
 }
 
-// ── canvas 迷你只读渲染器 ────────────────────────────────────────────────────
+// ── canvas 渲染桥（2026-10-19）：文本 → 宿主转译成 Mermaid → pele → SVG ──────
+// 与 drawio 桥同一个 pending-map 模式（MermaidDiagram 亦同）⇒ 三者的超时/去重口径一致 ✓
 
-interface ICanvasNode {
-	id?: string;
-	type?: string;
-	x?: number; y?: number; width?: number; height?: number;
-	/** JSON Canvas 规范用 `text`；本项目思维导图生成器用 `content`（首行为标题） */
-	text?: string; content?: string; label?: string; file?: string;
-}
-interface ICanvasEdge { id?: string; fromNode?: string; toNode?: string; label?: string }
+const canvasPending = new Map<string, (r: IDiagramResult) => void>();
+let canvasCounter = 0;
+let canvasListenerInstalled = false;
 
-function nodeText(n: ICanvasNode): string {
-	const raw = n.text ?? n.content ?? n.label ?? (n.file ? String(n.file).split(/[\\/]/).pop() ?? '' : '');
-	// 思维导图约定「首行为标题」：只取首行，避免节点里塞长文
-	return raw.split('\n')[0].trim();
-}
-
-function CanvasMiniView({ source }: { source: string }): React.ReactElement {
-	let nodes: ICanvasNode[] = [];
-	let edges: ICanvasEdge[] = [];
-	try {
-		const json = JSON.parse(source) as { nodes?: ICanvasNode[]; edges?: ICanvasEdge[] };
-		nodes = Array.isArray(json.nodes) ? json.nodes : [];
-		edges = Array.isArray(json.edges) ? json.edges : [];
-	} catch {
-		return <div className="kb-diagram-embed-error">⚠ canvas 解析失败（不是合法 JSON）</div>;
-	}
-	if (nodes.length === 0) {
-		return <div className="kb-diagram-embed-error">⚠ canvas 为空（无节点）</div>;
-	}
-
-	const pad = 16;
-	const x0 = Math.min(...nodes.map(n => n.x ?? 0));
-	const y0 = Math.min(...nodes.map(n => n.y ?? 0));
-	const x1 = Math.max(...nodes.map(n => (n.x ?? 0) + (n.width ?? 160)));
-	const y1 = Math.max(...nodes.map(n => (n.y ?? 0) + (n.height ?? 60)));
-	const w = Math.max(1, x1 - x0 + pad * 2);
-	const h = Math.max(1, y1 - y0 + pad * 2);
-	const byId = new Map(nodes.filter(n => n.id).map(n => [n.id as string, n]));
-	const center = (n: ICanvasNode) => ({
-		x: (n.x ?? 0) - x0 + pad + (n.width ?? 160) / 2,
-		y: (n.y ?? 0) - y0 + pad + (n.height ?? 60) / 2,
+function installCanvasListener(): void {
+	if (canvasListenerInstalled) { return; }
+	canvasListenerInstalled = true;
+	window.addEventListener('message', (event) => {
+		const message = event.data;
+		if (!message || message.direction !== 'toWebview' || message.type !== 'kbblocks.canvasResult') { return; }
+		const data = message.data as { requestId?: string; svg?: string; error?: string } | undefined;
+		if (!data?.requestId) { return; }
+		const resolve = canvasPending.get(data.requestId);
+		if (resolve) {
+			canvasPending.delete(data.requestId);
+			resolve({ svg: data.svg ?? '', error: data.error ?? '' });
+		}
 	});
+}
 
-	return (
-		<div className="kb-canvas-mini" style={{ position: 'relative', width: '100%', aspectRatio: `${w} / ${h}` }}>
-			<svg
-				viewBox={`0 0 ${w} ${h}`}
-				style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}
-				preserveAspectRatio="xMidYMid meet"
-			>
-				<defs>
-					<marker id="kb-canvas-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
-						<path d="M0,0 L8,4 L0,8 z" fill="currentColor" />
-					</marker>
-				</defs>
-				{edges.map((e, i) => {
-					const a = e.fromNode ? byId.get(e.fromNode) : undefined;
-					const b = e.toNode ? byId.get(e.toNode) : undefined;
-					if (!a || !b) { return null; }
-					const pa = center(a); const pb = center(b);
-					return (
-						<line key={e.id ?? i} x1={pa.x} y1={pa.y} x2={pb.x} y2={pb.y}
-							stroke="currentColor" strokeWidth="1.5" opacity="0.5" markerEnd="url(#kb-canvas-arrow)" />
-					);
-				})}
-			</svg>
-			{nodes.map((n, i) => {
-				const label = nodeText(n);
-				return (
-					<div
-						key={n.id ?? i}
-						className="kb-canvas-mini-node"
-						style={{
-							position: 'absolute',
-							left: `${(((n.x ?? 0) - x0 + pad) / w) * 100}%`,
-							top: `${(((n.y ?? 0) - y0 + pad) / h) * 100}%`,
-							width: `${((n.width ?? 160) / w) * 100}%`,
-							height: `${((n.height ?? 60) / h) * 100}%`,
-						}}
-						title={label}
-					>
-						{label}
-					</div>
-				);
-			})}
-		</div>
-	);
+function renderCanvas(source: string): Promise<IDiagramResult> {
+	installCanvasListener();
+	const requestId = `canvas_${++canvasCounter}_${Date.now()}`;
+	const theme = document.body.classList.contains('vscode-dark') ? 'dark' : 'default';
+	const maxWidth = hostDiagramWidth();
+	return new Promise<IDiagramResult>((resolve) => {
+		canvasPending.set(requestId, resolve);
+		postMessage('kbblocks.renderCanvas', { source, requestId, theme, maxWidth });
+		window.setTimeout(() => {
+			if (canvasPending.has(requestId)) {
+				canvasPending.delete(requestId);
+				resolve({ svg: '', error: '渲染超时' });
+			}
+		}, 30_000);
+	});
 }
 
 // ── 主组件 ──────────────────────────────────────────────────────────────────
@@ -159,7 +111,8 @@ export function DiagramEmbedComponent(props: any): React.ReactElement {
 	const [source, setSource] = useState<string | null>(null);
 	const [loadFailed, setLoadFailed] = useState(false);
 	const [loadReason, setLoadReason] = useState('');
-	const [drawio, setDrawio] = useState<IDiagramResult & { loading: boolean }>({ svg: '', error: '', loading: kind === 'drawio' });
+	// drawio 与 canvas 都需要「文本 → 宿主渲染 → SVG」这一步（mermaid 自己在 MermaidDiagram 里做）
+	const [hosted, setHosted] = useState<IDiagramResult & { loading: boolean }>({ svg: '', error: '', loading: kind === 'drawio' || kind === 'canvas' });
 
 	// ① 读目标文件文本（宿主 `_serveNoteContent` 不限类型 ✓）
 	useEffect(() => {
@@ -184,13 +137,15 @@ export function DiagramEmbedComponent(props: any): React.ReactElement {
 		return () => { alive = false; };
 	}, [path, broken]);
 
-	// ② drawio：文本 → 宿主渲染 SVG
+	// ② drawio / canvas：文本 → 宿主渲染 SVG（canvas 由宿主转译成 Mermaid 后走 pele）
 	useEffect(() => {
-		if (kind !== 'drawio' || source === null) { return; }
+		if (source === null) { return; }
+		const render = kind === 'drawio' ? renderDrawio : kind === 'canvas' ? renderCanvas : undefined;
+		if (!render) { return; }
 		let alive = true;
-		setDrawio({ svg: '', error: '', loading: true });
-		renderDrawio(source).then((r) => {
-			if (alive) { setDrawio({ ...r, loading: false }); }
+		setHosted({ svg: '', error: '', loading: true });
+		render(source).then((r) => {
+			if (alive) { setHosted({ ...r, loading: false }); }
 		});
 		return () => { alive = false; };
 	}, [kind, source]);
@@ -209,22 +164,19 @@ export function DiagramEmbedComponent(props: any): React.ReactElement {
 	if (kind === 'mermaid') {
 		return <div className="kb-diagram-embed"><MermaidDiagram source={source} /></div>;
 	}
-	if (kind === 'canvas') {
-		return <div className="kb-diagram-embed"><CanvasMiniView source={source} /></div>;
+	// drawio / canvas：宿主渲染（canvas 走 pele，drawio 走 maxgraph）
+	if (hosted.loading) {
+		return <div className="kb-diagram-embed kb-diagram-embed-loading">正在渲染 {KIND_LABEL[kind]} 图示…</div>;
 	}
-	// drawio
-	if (drawio.loading) {
-		return <div className="kb-diagram-embed kb-diagram-embed-loading">正在渲染 drawio 图示…</div>;
-	}
-	if (drawio.error || !drawio.svg) {
+	if (hosted.error || !hosted.svg) {
 		return (
 			<div className="kb-diagram-embed kb-diagram-embed-error">
-				<div className="kb-diagram-label">drawio 渲染失败：{drawio.error || '空结果'}</div>
+				<div className="kb-diagram-label">{KIND_LABEL[kind]} 渲染失败：{hosted.error || '空结果'}</div>
 				<pre className="kb-diagram-code">{source.slice(0, 2000)}</pre>
 			</div>
 		);
 	}
-	// SVG 由宿主 maxgraph 引擎产出；本 webview CSP 的 script-src 仅放行 bundle 自身，
+	// SVG 由宿主引擎产出（pele / maxgraph）；本 webview CSP 的 script-src 仅放行 bundle 自身，
 	// SVG 内任何脚本/事件属性都不会执行（与 MermaidDiagram 同一注入口径）。
-	return <div className="kb-diagram-embed" dangerouslySetInnerHTML={{ __html: drawio.svg }} />;
+	return <div className="kb-diagram-embed" dangerouslySetInnerHTML={{ __html: hosted.svg }} />;
 }

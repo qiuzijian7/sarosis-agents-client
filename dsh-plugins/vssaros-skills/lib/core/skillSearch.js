@@ -26,20 +26,40 @@ export const SKILL_SEARCH_DEFAULT_LIMIT = 3;
 export const SKILL_SEARCH_MAX_LIMIT = 10;
 
 /**
- * 分词：小写 → 非 `[a-z0-9_]` 与**非 CJK** 的字符当分隔 → 去空 → **丢掉长度 < 2 的碎片**。
+ * 分词：小写 → 非 `[a-z0-9_]` 与**非 CJK** 的字符当分隔 →
+ *   段内再按 **ASCII / CJK 边界**切 → 英文/数字丢长度 < 2 的碎片、**中文逐字保留**。
  *
- * 为什么"逐字切中文"：真源就是这条正则（`\u4e00-\u9fff` 落在保留类里 ⇒ 每个汉字各自成一个 token）。
- * 中文没有词边界，这条规则让"代码评审"能命中描述里的"评审" ✓。长度 ≥ 2 的过滤则是
- * 把单字母噪声（`a`、`1`）挡在外面 ✓ —— **中文单字会被一起挡掉** ✓，与 IDE 行为一致（有意保留）。
+ * ★★ 2026-10-19 修（离线基准驱动的改动，见 `scripts/bench-skill-search.mjs`）：
+ *
+ * **旧行为是错的**（注释曾声称"每个汉字各自成一个 token"，但实现做不到）：
+ *   旧正则 `replace(/[^a-z0-9_\u4e00-\u9fff]/g, ' ')` 只替换**非保留字符** ⇒ 中文字符不被替换
+ *   ⇒ 连续中文**整段一个 token**（`"帮我讲懂这个机制"` → 一个 token）
+ *   ⇒ 与描述里的"讲懂"永远匹配不上。实测对比（153 技能 / 12 条中文请求）：
+ *     旧：recall@1 = 2/12（17%）、换说法类进 top3 = 0/6
+ *     新：recall@1 = 4/12、**recall@3 = 8/12**、换说法类进 top3 = **6/6**
+ *
+ * 两条口径（与"英文丢 <2"不同，**中文单字必须保留**）：
+ *   · 中文没有词边界 ⇒ 只能逐字切；单字本身有信息量（"懂"、"改"），
+ *     若按英文那条 `length >= 2` 过滤，逐字切完会被**全部滤光** ⇒ 等于回到旧 bug ✗
+ *   · 英文/数字保留 `length >= 2`：挡住 `a`、`1` 这类噪声（与旧口径一致 ✓）
+ *   · 段内还要再按 ASCII/CJK 边界切：`UE5的GC` 是**一个 chunk**，
+ *     不细分就会整段成一个 token（或把 `ue5` 拆成 `u`/`e`/`5`）✗
  */
 export function tokenize(text) {
-	return new Set(
-		String(text ?? '')
-			.toLowerCase()
-			.replace(/[^a-z0-9_\u4e00-\u9fff]/g, ' ')
-			.split(/\s+/)
-			.filter(w => w.length >= 2),
-	);
+	const out = new Set();
+	const lower = String(text ?? '').toLowerCase();
+	for (const chunk of lower.replace(/[^a-z0-9_\u4e00-\u9fff]/g, ' ').split(/\s+/)) {
+		if (!chunk) { continue; }
+		// 段内再按 ASCII / CJK 边界切（`ue5的gc` ⇒ ue5 / 的 / gc）
+		for (const part of chunk.match(/[a-z0-9_]+|[\u4e00-\u9fff]+/g) ?? []) {
+			if (/^[a-z0-9_]+$/.test(part)) {
+				if (part.length >= 2) { out.add(part); }
+			} else {
+				for (const ch of part) { out.add(ch); }
+			}
+		}
+	}
+	return out;
 }
 
 /**

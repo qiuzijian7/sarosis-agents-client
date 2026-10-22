@@ -15,13 +15,61 @@
 //
 // 刻意**不做**：多选、撤销/重做、自由坐标（拖到任意像素）、自动保存（都是"看着想要、用起来添乱"的
 // 那一类；调研里 R10 也是这个口径 ✓）。
+/** 恒为固定、不可取消固定的工作台路由（2026-10-21 用户要求：主页默认固定）✓ */
+var ALWAYS_PINNED_ROUTES = ['/x/dashboard/'];
+
 (function () {
 	'use strict';
 
+	/**
+	 * dsh 侧「已固定」清单（**与 chat-surface 客户端写的是同一个键** ⇒ 同源共享 ✓）。
+	 *
+	 * 为什么要有它：主页卡片上的「固定」原来是**单向动作**（点完页面不知道结果）⇒ 点了之后
+	 * 按钮还是「📌 固定」，而 dsh 侧栏其实已经长出那一行 ⇒ 用户看到"点了没反应" ✗（2026-10-21 真机）。
+	 * ⇒ 现在：固定/取消都改这份清单，卡片按清单**回显**「📌 已固定」✓（可点 = 取消固定）。
+	 */
+	var PINNED_KEY = 'vssaros.wb.pinned';
+	function readPinned() {
+		try {
+			var raw = window.localStorage.getItem(PINNED_KEY);
+			var arr = raw ? JSON.parse(raw) : [];
+			return Array.isArray(arr) ? arr.map(String) : [];
+		} catch (e) { return []; }
+	}
+	function writePinned(list) {
+		try { window.localStorage.setItem(PINNED_KEY, JSON.stringify(list)); } catch (e) { /* 私密模式：只是不回显 ✓ */ }
+	}
+	/** 按清单把卡片的固定按钮回显成「📌 已固定」（再点 = 取消固定）✓ */
+	function refreshPinButtons() {
+		var pinned = readPinned();
+		var buttons = document.querySelectorAll('[data-dash-action="pin-module"], [data-dash-action="unpin-module"]');
+		Array.prototype.forEach.call(buttons, function (btn) {
+			var route = btn.getAttribute('data-dash-route') || '';
+			if (pinned.indexOf(route) >= 0) {
+				btn.textContent = '📌 已固定';
+				btn.setAttribute('data-dash-action', 'unpin-module');
+				btn.setAttribute('title', '已固定到侧栏（点击取消固定）');
+				btn.removeAttribute('disabled');
+			} else {
+				btn.textContent = '📌 固定';
+				btn.setAttribute('data-dash-action', 'pin-module');
+				btn.setAttribute('title', '固定到侧栏');
+				btn.removeAttribute('disabled');
+			}
+		});
+	}
+	// 别的窗口/别处改了清单 ⇒ 这边也回显（同源 storage 事件**跨 frame** 会派发 ✓）
+	window.addEventListener('storage', function (ev) {
+		if (!ev || ev.key !== PINNED_KEY) { return; }
+		refreshPinButtons();
+	});
+
 	var grid = document.querySelector('[data-dash-grid]');
 	if (!grid) {
+		refreshPinButtons();
 		return;
 	}
+	refreshPinButtons();
 	var GRID_COLUMNS = 12;
 	var MAX_ROWS = 30;
 	var API = grid.getAttribute('data-dash-api') || 'api/layout';
@@ -604,20 +652,60 @@
 	}
 
 	/**
-	 * 工作台动作：打开 / 固定到活动栏 / 从活动栏隐藏。
+	 * 工作台动作：打开 / 固定 / 从活动栏隐藏。
 	 * ⚠ 后两个是**单向动作**：dsh 侧读不到 IDE 的 pin / 显隐状态（用户选 ③，零新通道）⇒ 卡片不回显状态 ✗，
-	 *   所以文案是「固定到活动栏」而不是「已固定」✓。桥里没有该命令时**明说**，不装作成功 ✓。
+	 *   所以文案是「固定」而不是「已固定」✓。桥里没有该命令时**明说**，不装作成功 ✓。
+	 *
+	 * ★ 2026-10-21（用户：「固定到活动栏 改名成 固定，增加功能，当选择固定时，在自动化任务下方增加
+	 *   icon，同时，活动栏中，增加icon」）：「固定」现在**两个地方都生效**——
+	 *   ① IDE **活动栏**：仍走桥 `setWorkbenchPinned`（活动栏里出现该工作台 icon ✓）；
+	 *   ② **dsh 窗口侧栏**：额外通知父窗口（dsh client）⇒ 它在官方「自动化任务」=order 10 **下方**
+	 *      加一行该工作台的 icon ✓（order 11+）。
+	 *   ⚠ 父窗口不是 dsh client 时（这张页开在 **IDE 编辑区**）⇒ 没有侧栏可加 ⇒ 忽略 ✓ 不报错。
 	 */
+	function notifyParentPin(route, pinned) {
+		try {
+			if (window.parent && window.parent !== window && window.parent.__vssarosChatSurface) {
+				window.parent.postMessage({ type: 'vssaros-wb-pin', route: String(route || ''), pinned: !!pinned }, '*');
+				return true;
+			}
+		} catch (e) { /* 跨源访问被拒 ⇒ 不是 dsh 窗口，忽略 ✓ */ }
+		return false;
+	}
+	/**
+	 * 这张页**是不是开在 dsh 窗口里**（父窗口 = 我们的 dsh 客户端，而不是 IDE 工作台）。
+	 *
+	 * 为什么必须分清：
+	 *   · dsh 窗口里 ⇒ 页面是 dsh 客户端的 iframe ⇒ 父窗口带 __vssarosChatSurface ✓；
+	 *   · IDE 编辑区里 ⇒ 父窗口是 IDE 的工作台窗口 ⇒ 没有那个标记 ✓。
+	 * ⚠ 两种宿主下「打开」的**目标窗口**不同：走错 ⇒ 用户点了"打开"却什么都没发生（页面开到
+	 *   另一个窗口去了）✗ —— 2026-10-21 真机报障原话。
+	 */
+	function inDshWindow() {
+		try {
+			return !!(window.parent && window.parent !== window && window.parent.__vssarosChatSurface);
+		} catch (e) { return false; }
+	}
 	function workbenchAction(route, kind) {
 		if (!route) { return; }
 		var api = typeof window !== 'undefined' ? window.vssarosDsh : undefined;
 		if (kind === 'open') {
+			// dsh 窗口里：让**本窗口的 dsh 客户端**去开（中栏 core + 右栏 catalog）✓
+			if (inDshWindow()) {
+				try {
+					window.parent.postMessage({ type: 'vssaros-wb-open', route: String(route) }, '*');
+					setStatus('已请求在本窗口打开：' + route);
+					return;
+				} catch (e) { /* 落到下面的兜底 ✓ */ }
+			}
 			if (api && typeof api.openModulePage === 'function') { api.openModulePage(route); setStatus('已请求打开：' + route); return; }
 			setStatus('这个 IDE 版本还不支持从页面打开模块页：' + route);
 			return;
 		}
 		var fn = kind === 'pin' ? 'setWorkbenchPinned' : 'setWorkbenchHidden';
-		var label = kind === 'pin' ? '固定到活动栏' : '从活动栏隐藏';
+		var label = kind === 'pin' ? '固定' : '从活动栏隐藏';
+		// 固定：先让 dsh 窗口侧栏长出那一行（本地状态，秒回 ✓），再走桥让 IDE 活动栏也加上 ✓
+		if (kind === 'pin') { notifyParentPin(route, true); }
 		if (api && typeof api[fn] === 'function') { api[fn](route, true); setStatus('已请求「' + label + '」：' + route); return; }
 		setStatus('这个 IDE 版本还不支持「' + label + '」：' + route);
 	}
@@ -640,8 +728,30 @@
 			} else if (name === 'open-module') {
 				workbenchAction(action.getAttribute('data-dash-route') || '', 'open');
 				return;
-			} else if (name === 'pin-module') {
-				workbenchAction(action.getAttribute('data-dash-route') || '', 'pin');
+			} else if (name === 'pin-module' || name === 'unpin-module') {
+				var pinRoute = action.getAttribute('data-dash-route') || '';
+				// ★ 主页**恒为固定**（用户 2026-10-21）⇒ 按钮本身已 disabled，这里再兜一层，
+				//   防止别的入口（脚本/旧页面）把它取消掉 ✓
+				if (ALWAYS_PINNED_ROUTES.indexOf(pinRoute) >= 0) {
+					setStatus('主页恒为固定，不可取消');
+					return;
+				}
+				var wantPin = name === 'pin-module';
+				// ① 共享清单（**同源 localStorage**）—— dsh 窗口侧栏那一行就是按它长的 ✓
+				var pinList = readPinned().filter(function (r) { return r !== pinRoute; });
+				if (wantPin) { pinList.push(pinRoute); }
+				writePinned(pinList);
+				// ② 通知 dsh 客户端：侧栏那行立刻长/消（IDE 编辑区里没有父客户端 ⇒ 忽略 ✓）
+				notifyParentPin(pinRoute, wantPin);
+				// ③ IDE 活动栏也同步（取消固定 ⇒ 活动栏那一枚也撤 ✓）
+				try {
+					var pinApi = window.vssarosDsh;
+					if (pinApi && typeof pinApi.setWorkbenchPinned === 'function') {
+						pinApi.setWorkbenchPinned(pinRoute, wantPin);
+					}
+				} catch (e) { /* 没有桥（纯浏览器）⇒ 只有 dsh 侧状态 ✓ */ }
+				refreshPinButtons();
+				setStatus(wantPin ? '已固定：' + pinRoute : '已取消固定：' + pinRoute);
 				return;
 			} else if (name === 'hide-module') {
 				workbenchAction(action.getAttribute('data-dash-route') || '', 'hide');

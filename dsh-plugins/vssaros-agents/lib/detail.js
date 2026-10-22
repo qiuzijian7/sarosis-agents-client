@@ -15,8 +15,10 @@
 // 2026-10-16 新增锚点（同探针钉住）：data-vssaros-surface="editor" / FOCUS_KEY 交接函数 applyFocus。
 
 import { avatarColorOf, escapeHtml, presetIdOf } from './core/agents.js';
+import { renderAvatarContent } from './core/iconRender.js';
 import { CREATE_CLIENT_JS, CREATE_CSS, renderCreateSection } from './createPage.js';
 import { HOME_CLIENT_JS, HOME_CSS, buildHomeData, homePanelsHtml } from './home.js';
+import { ACTIVITY_CLIENT_JS, buildActivityItems, buildTimelineItems, timeLabel } from './activity.js';
 
 /** 侧栏名册 → 本页的焦点交接键（同源 localStorage；值 = agentId + 竖线 + 时间戳）。 */
 export const FOCUS_KEY = 'vssaros.agents.focus';
@@ -25,6 +27,32 @@ export const FOCUS_KEY = 'vssaros.agents.focus';
 // ↓ 浏览器端（toString 内联）：「映射说明」里的「改为跟随默认」。不引用模块作用域；复用页面主脚本的 note。
 // 逐个 POST（不并发：每次都会重扫目录 + 重注册 preset），全部结束后整页刷新（名册 / hero / 琥珀标都要重算）。
 function resetModelClient() {
+	// 「允许被 subagent 选用」开关（2026-10-20）：写 .agent.md 的 `subagent: true`（只动那一行）。
+	window.toggleSubagent = function (btn) {
+		var id = btn.getAttribute('data-subagent-toggle');
+		var on = btn.getAttribute('data-subagent-on') === '1';
+		if (!id) { return; }
+		btn.disabled = true;
+		fetch('/x/agents/api/agents', {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ action: 'set-subagent', id: id, enabled: !on }),
+		}).then(function (r) {
+			return r.json().catch(function () { return {}; }).then(function (j) {
+				if (!r.ok) { throw new Error(j.error || ('HTTP ' + r.status)); }
+				return j;
+			});
+		}).then(function (j) {
+			note('已保存：' + id + (j.delegatable ? ' 可被 subagent 选用' : ' 不再作为委派目标'));
+			// 就地改状态（不整页刷新）：按钮文案 + data 属性
+			btn.setAttribute('data-subagent-on', j.delegatable ? '1' : '0');
+			btn.textContent = j.delegatable ? '取消' : '允许';
+			btn.disabled = false;
+		}).catch(function (e) {
+			btn.disabled = false;
+			note('改委派开关失败：' + e.message);
+		});
+	};
 	window.resetModels = function (els) {
 		var list = [];
 		for (var i = 0; i < els.length; i++) {
@@ -89,9 +117,34 @@ h1 .n { margin-left: auto; font-weight: 400; color: var(--vscode-descriptionFore
 .tag.gray { background: transparent; border: 1px solid var(--vscode-panel-border, #555); color: var(--vscode-descriptionForeground, #999); }
 .tag.off { background: #7a3d2b; color: #fff; }
 .seg { display: flex; margin: 8px 0 7px; border: 1px solid var(--vscode-panel-border, #555); border-radius: 6px; overflow: hidden; }
+/* 2026-10-22：编辑区页去掉了「AGENTS 21」标题行（用户要求）⇒ 页签条成了 header 第一行，上边距归零 */
+header > .seg:first-child { margin-top: 0; }
 .seg button { flex: 1; padding: 3px 0; font: inherit; font-size: 12px; color: var(--vscode-descriptionForeground, #999); background: transparent; border: 0; cursor: pointer; }
 .seg button + button { border-left: 1px solid var(--vscode-panel-border, #555); }
 .seg button.on { background: var(--vscode-button-background, #0e639c); color: #fff; }
+/* 群聊页签（2026-10-21 重做）：中间栏**直接承载 DSB v3 三栏群聊页**（/x/agents/group/<id>）。
+   为什么用同源 iframe 而不是把 groupPage 内联进来：groupPage 的脚本会挂 window.*（note /
+   openNewDialog / closeAll…），内联会与本页的 note() 抢全局 ⇒ iframe 天然隔离 ✓。
+   高度用 calc 兜住：iframe 自己没有内容高度，100% 会塌成 0 ⇒ 页面一片空白 ✗。 */
+.gpframe { height: calc(100vh - 96px); min-height: 420px; }
+.gpframe iframe { display: block; width: 100%; height: 100%; border: 0; background: var(--vscode-editor-background, #1e1e1e); }
+/* 群聊签：中间栏就是群聊页 ⇒ 只收掉名册筛选框（它筛的是名册表，群里没有）。
+   ⚠ hero 身份条**保留**（名字/模型/能力/统计 = mockup 款 A 的必备块）✓ */
+body.gptab .search { display: none; }
+/* 「活动」feed（mockup 款 C）与「时间线」（款 D）—— 2026-10-21 补齐 */
+.c-feed { font-size: 12px; }
+.c-feed .ev { padding: 5px 0; border-bottom: 1px solid var(--vscode-panel-border, #3c3c3c); display: flex; gap: 7px; align-items: baseline; }
+.c-feed .ev:last-child { border-bottom: 0; }
+.c-feed .ev .ic { flex: none; }
+.c-feed .ev .t { color: var(--vscode-descriptionForeground, #999); font-size: 11px; margin-left: auto; flex: none; }
+.d-tl { position: relative; padding-left: 16px; }
+.d-tl::before { content: ""; position: absolute; left: 5px; top: 4px; bottom: 4px; width: 1px; background: var(--vscode-panel-border, #3c3c3c); }
+.d-ev { position: relative; padding: 0 0 12px; font-size: 12px; }
+.d-ev::before { content: ""; position: absolute; left: -14px; top: 4px; width: 7px; height: 7px; border-radius: 50%; background: var(--vscode-button-background, #0078d4); }
+.d-ev.done::before { background: var(--vscode-charts-green, #89d185); }
+.d-ev.run::before { background: var(--vscode-charts-yellow, #cca700); }
+.d-ev.err::before { background: var(--vscode-errorForeground, #f14c4c); }
+.d-ev .t { color: var(--vscode-descriptionForeground, #999); font-size: 11px; }
 .search { display: flex; align-items: center; gap: 5px; padding: 2px 6px; background: var(--vscode-input-background, #3c3c3c); border: 1px solid var(--vscode-input-border, transparent); border-radius: 4px; }
 .search input { flex: 1; min-width: 0; padding: 2px 0; font: inherit; font-size: 12px; color: inherit; background: transparent; border: 0; outline: 0; }
 .search .mag, .search .n { color: var(--vscode-descriptionForeground, #999); font-size: 11px; }
@@ -120,6 +173,12 @@ details.warn { margin: 10px; border: 1px solid rgba(204,167,0,.45); border-radiu
 details.warn > summary { padding: 6px 9px; color: #cca700; font-size: 12px; cursor: pointer; list-style: none; }
 details.warn > summary::-webkit-details-marker { display: none; }
 details.warn .wbody { padding: 0 9px 2px; }
+/* 只有"说明"、没有"问题"时用中性外观（2026-10-20）：21 个 agent 全正常时别再显示成黄色告警 */
+details.note { margin: 10px; border: 1px solid var(--vscode-panel-border, rgba(128,128,128,.28)); border-radius: 6px; background: transparent; }
+details.note > summary { padding: 6px 9px; color: var(--vscode-descriptionForeground, #999); font-size: 12px; cursor: pointer; list-style: none; }
+details.note > summary::-webkit-details-marker { display: none; }
+details.note .wbody { padding: 0 9px 2px; }
+details.note li { margin-bottom: 4px; padding: 3px 0 3px 8px; border-left: 2px solid rgba(128,128,128,.35); color: var(--vscode-descriptionForeground, #999); font-size: 11.5px; }
 details.warn li { margin-bottom: 4px; padding: 3px 0 3px 8px; border-left: 2px solid rgba(204,167,0,.5); color: var(--vscode-descriptionForeground, #999); font-size: 11.5px; }
 section.pad { padding: 0 10px; }
 h2 { margin: 8px 0 5px; font-size: 11px; font-weight: 400; letter-spacing: .04em; text-transform: uppercase; color: var(--vscode-descriptionForeground, #999); }
@@ -179,6 +238,19 @@ td .act { margin-right: 4px; }
 .memview .mh { padding: 6px 10px; border-bottom: 1px solid var(--vscode-panel-border, rgba(128,128,128,.2)); font-size: 11px; color: var(--vscode-descriptionForeground, #999); }
 .memview pre { margin: 0; padding: 8px 10px; max-height: 300px; overflow: auto; font: 11px/1.6 ui-monospace, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .memlog { margin: 8px 10px 0; font-size: 11px; }
+/* 版本对比（2026-10-19）：行级 diff，左行号=历史、右行号=当前 */
+#mDiff { margin: 8px 10px 0; }
+.dwrap { max-height: 340px; overflow: auto; border: 1px solid var(--vscode-panel-border, rgba(128,128,128,.25)); border-radius: 7px; font: 11px/1.55 ui-monospace, Consolas, monospace; }
+.drr { display: flex; gap: 8px; padding: 0 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.drr .dn { flex: 0 0 34px; text-align: right; color: var(--vscode-descriptionForeground, #888); user-select: none; }
+.drr .dt { flex: 1 1 auto; }
+.drr.add { background: rgba(78,201,176,.14); }
+.drr.del { background: rgba(244,135,113,.14); }
+.drr.add .dt::before { content: '+ '; color: #4ec9b0; }
+.drr.del .dt::before { content: '- '; color: #f48771; }
+/* MEMORY.md 的人工编辑口（2026-10-19，P1-2） */
+#mEditText { display: block; width: calc(100% - 20px); margin: 8px 10px 0; min-height: 260px; max-height: 60vh; padding: 8px 10px; box-sizing: border-box; font: 11.5px/1.6 ui-monospace, Consolas, monospace; color: var(--vscode-input-foreground, #ccc); background: var(--vscode-input-background, #2a2a2a); border: 1px solid var(--vscode-input-border, #555); border-radius: 7px; resize: vertical; }
+#mEditText:focus { outline: none; border-color: var(--vscode-focusBorder, #0e639c); }
 .memlog .lr { display: flex; gap: 8px; padding: 3px 4px; border-top: 1px solid var(--vscode-panel-border, rgba(128,128,128,.15)); align-items: baseline; }
 .memlog .h { font-family: ui-monospace, Consolas, monospace; color: #c586c0; }
 .memlog .t { margin-left: auto; color: var(--vscode-descriptionForeground, #999); font-size: 10px; }
@@ -239,10 +311,21 @@ export function renderDetailPage({ agents, summary, root, missing, diagnostics, 
 			sub.push('token ' + fmtTokens(live.tokens));
 		}
 		// 头像：icon 是 emoji 原样显示；没写 icon 就退到名字首字（底色按 id 哈希恒定）。圆角方块，不用圆形。
-		const avatar = '<span class="avatar" style="background:' + avatarColorOf(a.id) + '" data-agent-icon="' + escapeHtml(a.icon ?? '') + '">' + escapeHtml(a.icon ?? a.name.slice(0, 1)) + '</span>';
+		const avatar = '<span class="avatar" style="background:' + avatarColorOf(a.id) + '" data-agent-icon="' + escapeHtml(a.icon ?? '') + '">' + renderAvatarContent(a.icon, a.name.slice(0, 1), { size: 16 }) + '</span>';
+		// 委派开关（2026-10-20）：`subagent: true` 才进别的 agent 的「可委派清单」。
+		// 内置 agent 的 .agent.md 每次启动重新生成 ⇒ 这里只显示状态，不给按钮（改代码才生效）。
+		const subagentCell = a.source === 'builtin'
+			? (a.delegatable
+				? '可被 subagent 选用 <span class="diag">（内置：开关在 common/builtinAgents.ts）</span>'
+				: '不作为委派目标 <span class="diag">（内置：开关在 common/builtinAgents.ts）</span>')
+			: (a.delegatable ? '可被 subagent 选用' : '不作为委派目标')
+				+ ' <button class="act" data-subagent-toggle="' + escapeHtml(a.id) + '" data-subagent-on="' + (a.delegatable ? '1' : '0') + '"'
+				+ ' onclick="toggleSubagent(this)" title="写 .agent.md 的 `subagent: true`（只动这一行，正文不变）">'
+				+ (a.delegatable ? '取消' : '允许') + '</button>';
 		const facts = '<dl>'
 			+ '<dt>preset</dt><dd class="mono">' + escapeHtml(presetId) + '</dd>'
 			+ '<dt>定义</dt><dd class="mono">' + escapeHtml(a.file ?? '(未知)') + '</dd>'
+			+ '<dt>委派</dt><dd>' + subagentCell + '</dd>'
 			+ '<dt>模型</dt><dd>' + (a.model
 				? escapeHtml(a.model) + (unmapped ? ' <span class="unmapped">未映射 → 跟随默认模型</span>' : '')
 				: '未设（跟随默认模型）') + '</dd>'
@@ -289,12 +372,23 @@ export function renderDetailPage({ agents, summary, root, missing, diagnostics, 
 			+ ' <span class="diag">这些 Agent 写的模型 dsh 没有路由，运行时本来就会退回默认模型；改掉后黄色提示消失</span></p>'
 		: '';
 	// 映射说明 / 问题：默认收起（原生 details，不依赖脚本）；有 errors 时默认展开（那是真出事了）
+	//
+	// ★ 2026-10-20 降噪：以前把 `tools 进 allowlist…`、`subagents: false → …` 这类**说明**也计进
+	//   "映射说明 / 问题 N"。结果 21 个 agent 一切正常时，标题写着「问题 23」，看着像出了 23 个事 ✗。
+	//   现在分两栏：说明（中性色）与问题（黄色）。只有"问题"才让它看起来像警告。
+	const INFO_PREFIXES = ['tools 进 allowlist', 'subagents: false →', '没有 agent 标 `subagent: true`'];
+	const isInfo = (text) => INFO_PREFIXES.some((p) => text.includes(p));
+	const infoNotes = notes.filter(isInfo);
+	const issueNotes = notes.filter((n) => !isInfo(n));
+	const issueCount = issueNotes.length + errors.length;
 	const problems = (notes.length || errors.length)
-		? '<details class="warn"' + (errors.length ? ' open' : '') + '><summary>映射说明 / 问题 ' + (notes.length + errors.length)
+		? '<details class="' + (issueCount ? 'warn' : 'note') + '"' + (errors.length ? ' open' : '') + '><summary>映射说明 ' + infoNotes.length
+			+ (issueCount ? ' · <b>问题 ' + issueCount + '</b>' : '')
 			+ (unmappedIds.length ? ' · ' + unmappedIds.length + ' 个模型未映射，可一键改为跟随默认' : '') + '</summary><div class="wbody">' + bulkReset + '<ul>'
 			+ noteItems.join('') + errors.map(t => '<li>' + escapeHtml(t) + '</li>').join('') + '</ul></div></details>'
 		: '';
-	const ours = roster.filter(id => id.startsWith('vssaros-'));
+	// 委派专用 preset（`<preset>-assign`）不算"已注册的 Agent"（与本体是同一个 agent，见 core/agents.js）
+	const ours = roster.filter(id => id.startsWith('vssaros-') && !/-assign$/.test(id));
 	// 页脚：把旧版标题下那长条 diag 行收进来（四个探针锚点挂在这里）
 	const footer = '<footer data-vssaros-agents-count="' + summary.count + '" data-vssaros-presets-registered="' + ours.length
 		+ '" data-vssaros-roster="' + escapeHtml(roster.join(',')) + '" data-vssaros-agents-root="' + escapeHtml(root) + '">'
@@ -304,7 +398,7 @@ export function renderDetailPage({ agents, summary, root, missing, diagnostics, 
 	const usageRows = (usage?.agents ?? []).map(u => {
 		const agent = agents.find(a => a.id === u.agentId);
 		const models = u.models.length ? u.models.map(m => escapeHtml(m.ref) + '（' + fmtTokens(m.tokens) + '）').join('<br>') : '—';
-		const avatar = agent ? '<span class="avatar" style="background:' + avatarColorOf(agent.id) + '">' + escapeHtml(agent.icon ?? agent.name.slice(0, 1)) + '</span>' : '';
+		const avatar = agent ? '<span class="avatar" style="background:' + avatarColorOf(agent.id) + '">' + renderAvatarContent(agent.icon, agent.name.slice(0, 1), { size: 16 }) + '</span>' : '';
 		return '<tr data-usage-agent="' + escapeHtml(u.agentId) + '" data-usage-tokens="' + u.tokens + '"><td>' + avatar + '<b>' + escapeHtml(agent?.name ?? u.agentId) + '</b></td><td>' + u.sessions + '</td><td>' + fmtTokens(u.tokens) + '</td><td>' + u.turns + '</td><td>' + escapeHtml(fmtTime(u.lastActiveAt)) + '</td><td>' + models + '</td></tr>';
 	}).join('');
 	const unknown = usage?.unknown;
@@ -386,28 +480,51 @@ export function renderDetailPage({ agents, summary, root, missing, diagnostics, 
 		+ '</tbody></table>'
 		+ '<p class="diag ahint">密钥：本页不展示也不代理凭据——dsh 侧的凭据走它自己的配置面，模型永远只见引用不见原值（需要卡片式密钥管理时单独立项）。</p>'
 		+ '</section></div>';
-	// 群聊页签（2026-10-16，二期）：左群列表 + 右对话区（自托管 transcript；承载面决策见 lib/groups.js ★）。
+	// 群聊页签（2026-10-21 重做）：**中间栏直接就是 DSB v3 三栏群聊页**
+	//   （左 agent 列表 + 群聊列表 / 中聊天 / 右 记忆·演化·版本·分支），路由 /x/agents/group/<id>。
+	//   旧实现（2026-10-16 的「左群列表 + 右 transcript + 建群表单」内联面板）已下线：
+	//   同一个群聊有两套 UI 必然对不上（用户 2026-10-21 就是"看不到重构后的 UI"）⇒ 只留一套 ✓。
+	//   承载方式 = 同源 iframe（见 PAGE_CSS 的 .gpframe 注释）。
 	const groupItems = groups?.groups ?? [];
-	const groupRowHtml = g => '<div class="gitem" data-group-id="' + escapeHtml(g.id) + '" onclick="selectGroup(this)">'
-		+ '<b># ' + escapeHtml(g.name) + '</b> <span class="gm">' + (g.mode === 'open' ? 'open' : 'admin') + ' · 成员 ' + (g.members?.length ?? 0) + '</span></div>';
-	const groupsSection = '<div id="groups" hidden><section class="pad"><h2>群聊 <small>派发 = 成员会话 steer · 回复回收进群记录 · 封顶 ' + (groups?.keep ?? 200) + ' 条</small></h2>'
-		+ '<div class="aform"><input id="gName" placeholder="群名">'
-		+ '<select id="gMode"><option value="admin">admin（只响应被 @ 的）</option><option value="open">open（全员响应）</option></select>'
-		+ '<button class="act" onclick="groupCreate()">建群</button></div>'
-		+ '<div class="aform" id="gMembers">' + agents.map(a => '<span class="mchip" data-member="' + escapeHtml(a.id) + '" onclick="this.classList.toggle(\'on\')">' + escapeHtml(a.icon ?? '') + ' ' + escapeHtml(a.name) + '</span>').join('') + '</div>'
-		+ '<div class="gwrap"><div class="glist" id="gList">'
-		+ (groupItems.length ? groupItems.map(groupRowHtml).join('') : '<p class="diag">还没有群。</p>')
-		+ '</div><div class="gchat"><div class="glog" id="gLog"><p class="diag">选一个群开始。</p></div>'
-		+ '<div class="gcomposer"><input id="gInput" placeholder="发消息（admin 模式记得 @成员）" onkeydown="if(event.key===\'Enter\'){groupSend()}" disabled><button class="act" id="gSend" onclick="groupSend()" disabled>发送</button></div>'
-		+ '</div></div></section></div>';
+	// 打开工作台默认落在哪个群：第一个群；一个群都没有 ⇒ 打开「新建群」态（页面自带建群弹层 ✓）。
+	const groupOpenId = groupItems[0]?.id ?? 'new';
+	const groupsSection = '<div id="groups"' + (groupItems.length ? '' : ' hidden') + '><div class="gpframe">'
+		+ '<iframe id="gpFrame" title="群聊" src="/x/agents/group/' + escapeHtml(groupOpenId) + '"></iframe>'
+		+ '</div></div>';
 	// 记忆页签（2026-10-16，二期）：agent 选择器 + 文件列表 + 查看器 + Git 状态/历史。
 	// 数据全走 /x/agents/api/memory（服务端只渲染壳）；写口只有「启用 Git / 提交快照」两个 ✓。
-	const memorySection = '<div id="memory" hidden><section class="pad"><h2>记忆 <small>MEMORY.md 前 2KB 随人设段注入 prompt（冻结快照 · 每分钟刷新） · 写口只有 Git 两个按钮</small></h2>'
+	// ⚠ 标题刻意点明"常驻"与"与 AgentMemory 检索库无关"：仓里有两套记忆（本页签 = MEMORY.md
+	//   文件常驻前缀；memory_* 工具 = AgentMemory 网关库），用户已经因为同名问过两次
+	//   ⇒ 页面必须自己说清，别指望人去看代码（2026-10-20）。
+	const memorySection = '<div id="memory" hidden><section class="pad"><h2>记忆 <small>常驻注入：MEMORY.md 的前 N 字符随人设段进 prompt（会话内冻结）· 与 AgentMemory 检索库（memory_* 工具）互不写入</small></h2>'
 		+ '<div class="aform"><select id="mAgent" onchange="memoryLoad()">' + agents.map(a => '<option value="' + escapeHtml(a.id) + '">' + escapeHtml(a.name) + '</option>').join('') + '</select>'
-		+ '<span class="diag" id="mHint">Git 化可选；提交只能人按按钮（模型没有记忆写口）</span></div>'
+		+ '<span class="diag" id="mHint">Git 化可选；提交只能人按按钮（模型没有提交口，只能用文件工具改 MEMORY.md）</span>'
+// 演化面板（2026-10-21）：把「时间线 / 逐行 diff / 版本 / 回滚」放到独立编辑区页签里
+// （这块要宽度；详情页这里只留"管理动作"）
++ '<button class="act" onclick="memoryOpenEvo()" data-vssaros-mem-evo="1">演化面板（历史 / 版本）</button></div>'
 		+ '<div class="membar" id="mBar">…</div>'
+		// 注入口径（2026-10-19，P1-2）：用了多少 / 上限多少 / 什么时候生效 —— 三件事一眼可见
+		+ '<div class="aform" id="mLimitsRow"><span class="diag" id="mLimits">常驻注入：…</span>'
+		+ '<span style="margin-left:auto"></span><button class="act" onclick="memoryImportDraft()" data-vssaros-mem-import="1">从记忆库导入草稿…</button>'
+		+ '<button class="act" onclick="memoryLimitsEdit()" data-vssaros-mem-limits-edit="1">改上限与生效方式…</button></div>'
+		+ '<div class="aform" id="mLimitsForm" hidden><span class="diag">上限</span><input id="mLimitChars" style="width:90px" inputmode="numeric" />'
+		+ '<span class="diag">字符（0 = 关闭；512~20000）· 生效方式</span>'
+		+ '<select id="mLimitMode"><option value="session">会话内冻结（推荐：前缀稳定，省 token）</option><option value="live">实时刷新（改完立刻变，但每轮前缀会变）</option></select>'
+		+ '<span style="margin-left:auto"></span><button class="act" onclick="memoryLimitsSave()" data-vssaros-mem-limits-save="1">保存</button>'
+		+ '<button class="act" onclick="memoryLimitsCancel()">取消</button></div>'
 		+ '<div class="memwrap"><div class="memlist" id="mList"><p class="diag">…</p></div>'
 		+ '<div class="memview"><div class="mh" id="mTitle">选一个文件</div><pre id="mBody">…</pre></div></div>'
+		// MEMORY.md 的人工编辑口（只有它进 prompt，所以只给它开编辑；其它记忆文件是 agent 的工作区）
+		+ '<div class="aform" id="mTools" hidden><span class="diag" id="mToolsHint"></span>'
+		+ '<span style="margin-left:auto"></span><button class="act" onclick="memoryEditOpen()" data-vssaros-mem-edit="1">编辑这个文件</button></div>'
+		+ '<div id="mEditor" hidden><textarea id="mEditText" spellcheck="false" data-vssaros-mem-editor="1"></textarea>'
+		+ '<div class="aform"><span class="diag" id="mEditHint"></span><span style="margin-left:auto"></span>'
+		+ '<button class="act" onclick="memorySaveText()" data-vssaros-mem-save="1">保存</button>'
+		+ '<button class="act" onclick="memoryCancelEdit()">取消</button></div></div>'
+		// 版本对比（2026-10-19）：「看这版」只给全文，这里给"和当前差在哪"（行级 + 行号）
+		+ '<div id="mDiff" hidden><div class="aform"><span class="diag" id="mDiffHint"></span><span style="margin-left:auto"></span>'
+		+ '<button class="act" onclick="memoryDiffClose()" data-vssaros-mem-diff-close="1">关闭对比</button></div>'
+		+ '<div class="dwrap" id="mDiffBody" data-vssaros-mem-diff="1"></div></div>'
 		+ '<div class="memlog" id="mLog"></div>'
 		+ '</section></div>';
 	// Hero（款 A，2026-10-16 用户选定）：当前聚焦 agent 的 profile 头部（大头像/描述/能力 chips/
@@ -421,7 +538,7 @@ export function renderDetailPage({ agents, summary, root, missing, diagnostics, 
 			: '<span class="hchip">默认模型</span>';
 		return '<div class="hero" id="hero" data-h-agent="' + escapeHtml(heroOf.id) + '" data-h-preset="' + escapeHtml(presetIdOf(heroOf.id)) + '">'
 			+ '<span class="hav" id="hAvatar" style="background:' + avatarColorOf(heroOf.id) + '">'
-			+ '<span id="hEmoji">' + escapeHtml(heroOf.icon ?? heroOf.name.slice(0, 1)) + '</span>'
+			+ '<span id="hEmoji">' + renderAvatarContent(heroOf.icon, heroOf.name.slice(0, 1), { size: 22 }) + '</span>'
 			+ '<span class="dot' + (live && live.sessions > 0 ? ' busy' : '') + '" id="hDot"></span></span>'
 			+ '<div class="hmain"><h2 id="hName">' + escapeHtml(heroOf.name) + '</h2>'
 			+ '<div class="hsub" id="hDesc">' + escapeHtml(heroOf.description ?? '（没写 description）') + '</div>'
@@ -436,21 +553,55 @@ export function renderDetailPage({ agents, summary, root, missing, diagnostics, 
 	})() : '';
 	// 概览签 = Bot 主页（方案 A 第 2 步，2026-10-16；doc/agents-botmode-mockup.html）：身份条 + 四块面板
 	// （会话 / Bot 收件箱 / 记忆 / 定时）。每个 agent 的数据按 id 存在 data-home 上，换人只重渲（lib/home.js ★）。
+	// ★ 2026-10-21：默认落点 = **群聊页**（DSB v3 桌面版的中间栏就是群聊）⇒ 有群时概览签默认收起。
 	const homeData = buildHomeData({ agents, sessionRows, assignments, groups });
+	const groupFirst = Boolean(groupItems.length);
 	const overview = heroOf
-		? '<div id="overview" data-vssaros-home data-home="' + escapeHtml(JSON.stringify(homeData)) + '"><section class="pad">'
+		? '<div id="overview"' + (groupFirst ? ' hidden' : '') + ' data-vssaros-home data-home="' + escapeHtml(JSON.stringify(homeData)) + '"><section class="pad">'
 			+ '<div class="idstrip"><span class="lbl">身份（.agent.md）</span>'
 			+ '<span class="hchip">📄 <span class="idchip" id="ovFile">' + escapeHtml(heroOf.file ?? '（未知）') + '</span></span>'
 			+ '<span class="hchip" id="ovMem" style="display:none"></span>'
 			+ '<button class="act" onclick="heroSettings()" title="打开该 bot 的 Agent 设置页">打开编辑器</button></div>'
 			+ '<div class="home-grid" id="homeGrid">' + homePanelsHtml(homeData[heroOf.id], escapeHtml) + '</div>'
 			+ '</section></div>'
-		: '<div id="overview"><p class="empty">还没有可用的 agent。</p></div>';
-const tabNav = '<nav class="seg"><button id="tabOverview" class="on" onclick="showTab(\'overview\')">概览</button>'
+		: '<div id="overview"' + (groupFirst ? ' hidden' : '') + '><p class="empty">还没有可用的 agent。</p></div>';
+	// ── 「活动」（mockup 款 C：此刻 feed + 待你处理）────────────────────────
+	//   跨数据源聚合：委派 / 群回收 / 审批在途 / 会话。纯函数在 lib/activity.js（探针可单测 ✓）。
+	const activity = buildActivityItems({ agents, sessionRows, assignments, groups, outbox });
+	const activityFeedHtml = activity.items.length
+		? activity.items.map(it => '<div class="ev" data-vssaros-act-kind="' + escapeHtml(it.kind) + '">'
+			+ '<span class="ic">' + escapeHtml(it.icon) + '</span><span>' + escapeHtml(it.text) + '</span>'
+			+ '<span class="t">' + escapeHtml(timeLabel(it.at)) + '</span></div>').join('')
+		: '<p class="diag">还没有活动。</p>';
+	const activitySection = '<div id="activity" hidden data-act-src="' + escapeHtml(JSON.stringify({
+		agents: (agents ?? []).map(a => ({ id: a.id, name: a.name })),
+		sessionRows: sessionRows ?? [],
+		groups: (groups?.groups ?? []).map(g => ({ id: g.id, name: g.name, mode: g.mode, members: g.members ?? [], transcript: g.transcript ?? [] })),
+	})) + '"><section class="pad">'
+		+ '<div class="card"><h5>此刻 <span class="note">实时轮询</span></h5>'
+		+ '<div class="c-feed" id="actFeed" data-vssaros-activity-feed>' + activityFeedHtml + '</div></div>'
+		+ '<div class="card"><h5>待你处理</h5><div class="note" id="actTodo" data-vssaros-activity-todo>'
+		+ '审批 ' + activity.todo.approvals + ' 条 · unknown-outcome ' + activity.todo.unknown + ' 条 · 委派 ' + activity.todo.running + ' 在跑</div></div>'
+		+ '</section></div>';
+	// ── 「时间线」（mockup 款 D：会话/委派/记忆快照串成一条线）──────────────
+	//   记忆快照要 Git 提交（当前 agent 的记忆仓库）⇒ 客户端拉 /x/agents/api/memory?agent=… 后追加 ✓。
+	const timelineItems = buildTimelineItems({ agentId: heroOf?.id, sessionRows, assignments, groups, memoryLog: [] });
+	const timelineRowHtml = it => '<div class="d-ev ' + escapeHtml(it.st) + '" data-vssaros-tl-kind="' + escapeHtml(it.kind) + '"'
+		+ (it.sessionId ? ' data-session-id="' + escapeHtml(it.sessionId) + '"' : '')
+		+ (it.hash ? ' data-mem-hash="' + escapeHtml(it.hash) + '"' : '') + '>'
+		+ '<div>' + escapeHtml(it.title) + '</div><div class="t">' + escapeHtml(it.sub) + '</div></div>';
+	const timelineSection = '<div id="timeline" hidden><section class="pad">'
+		+ '<div class="d-tl" id="tlBody" data-vssaros-timeline>'
+		+ (timelineItems.length ? timelineItems.map(timelineRowHtml).join('') : '<p class="diag">还没有事件。</p>')
+		+ '</div></section></div>';
+const tabNav = '<nav class="seg"><button id="tabOverview"' + (groupFirst ? '' : ' class="on"') + ' onclick="showTab(\'overview\')">概览</button>'
+	// ★ 2026-10-21 补齐（用户选「使用 A」+ 补活动/时间线）：款 C 的「此刻 feed」与款 D 的「时间线」
+	+ '<button id="tabActivity" data-vssaros-activity-tab onclick="showTab(\'activity\')">活动</button>'
+	+ '<button id="tabTimeline" data-vssaros-timeline-tab onclick="showTab(\'timeline\')">时间线</button>'
 	+ '<button id="tabRoster" onclick="showTab(\'roster\')">身份 ' + summary.count + '</button>'
 		+ '<button id="tabAssign" data-vssaros-assignments-tab onclick="showTab(\'assignments\')" data-assignments-running="' + (assignments?.running ?? 0) + '">委派 ' + assignmentItems.length + '</button>'
 		+ '<button id="tabGrant" data-vssaros-grants-tab onclick="showTab(\'grants\')">授权 ' + templateItems.length + '</button>'
-		+ '<button id="tabGroup" data-vssaros-groups-tab onclick="showTab(\'groups\')">群聊 ' + groupItems.length + '</button>'
+		+ '<button id="tabGroup"' + (groupFirst ? ' class="on"' : '') + ' data-vssaros-groups-tab onclick="showTab(\'groups\')">群聊 ' + groupItems.length + '</button>'
 		+ '<button id="tabMemory" data-vssaros-memory-tab onclick="showTab(\'memory\')">记忆</button>'
 		+ (usage ? '<button id="tabUsage" data-vssaros-usage-tab onclick="showTab(\'usage\')" data-usage-sessions="' + usage.totals.sessions + '" data-usage-tokens="' + usage.totals.tokens + '">用量 ' + usage.totals.sessions + '</button>' : '') + '</nav>';
 	// 页面脚本：页签 + 行展开 + 筛选 + 焦点交接。都是纯前端增强，关掉 JS 也读得到全部内容。
@@ -479,15 +630,65 @@ const tabNav = '<nav class="seg"><button id="tabOverview" class="on" onclick="sh
 		+ 'el.textContent = text;'
 		+ 'el.hidden = false;'
 		+ '}'
+		// ── 活动 / 时间线（2026-10-21 补齐 mockup 款 C / 款 D）─────────────
+		//   纯函数（buildActivityItems 等）由 lib/activity.js 以 toString 内联进来（ACTIVITY_CLIENT_JS），
+		//   这样轮询时能在**页面内**重建 feed，不必重载整页 ✓。
+		+ ACTIVITY_CLIENT_JS
+		// 活动面板刷新：拉最新的委派 + outbox，用同一套口径重建 feed 与「待你处理」
+		+ 'function refreshActivity() {'
+		+ 'var pane = document.getElementById("activity");'
+		+ 'if (!pane || pane.hidden) { return; }'
+		+ 'var src = {};'
+		+ 'try { src = JSON.parse(pane.getAttribute("data-act-src") || "{}"); } catch (e) { return; }'
+		+ 'Promise.all(['
+		+ 'fetch("/x/agents/api/assignments").then(function (r) { return r.ok ? r.json() : null; }),'
+		+ 'fetch("/x/agents/api/outbox").then(function (r) { return r.ok ? r.json() : null; })'
+		+ ']).then(function (rs) {'
+		+ 'var a = buildActivityItems({ agents: src.agents || [], sessionRows: src.sessionRows || [], assignments: rs[0], groups: src.groups || [], outbox: rs[1] });'
+		+ 'var feed = document.getElementById("actFeed");'
+		+ 'if (feed) {'
+		+ 'feed.innerHTML = a.items.length ? a.items.map(function (it) {'
+		+ 'return "<div class=\\"ev\\" data-vssaros-act-kind=\\"" + esc(it.kind) + "\\"><span class=\\"ic\\">" + esc(it.icon) + "</span><span>" + esc(it.text) + "</span><span class=\\"t\\">" + esc(timeLabel(it.at)) + "</span></div>";'
+		+ '}).join("") : "<p class=\\"diag\\">还没有活动。</p>";'
+		+ '}'
+		+ 'var todo = document.getElementById("actTodo");'
+		+ 'if (todo) { todo.textContent = "审批 " + a.todo.approvals + " 条 · unknown-outcome " + a.todo.unknown + " 条 · 委派 " + a.todo.running + " 在跑"; }'
+		+ '}).catch(function () { /* 轮询失败下轮再来 */ });'
+		+ '}'
+		// 时间线的第三类事件（记忆快照）要 Git 提交 ⇒ 打开签时拉一次当前 agent 的记忆
+		+ 'function loadTimelineMemory() {'
+		+ 'var body = document.getElementById("tlBody");'
+		+ 'if (!body || body.getAttribute("data-mem-loaded") === "1") { return; }'
+		+ 'var hero = document.getElementById("hero");'
+		+ 'var aid = hero ? hero.getAttribute("data-h-agent") : "";'
+		+ 'if (!aid) { return; }'
+		+ 'fetch("/x/agents/api/memory?agent=" + encodeURIComponent(aid) + "&versions=1&limit=8")'
+		+ '.then(function (r) { return r.ok ? r.json() : null; })'
+		+ '.then(function (j) {'
+		+ 'if (!j || !j.log || !j.log.length) { body.setAttribute("data-mem-loaded", "1"); return; }'
+		+ 'var html = j.log.map(function (c) {'
+		+ 'return "<div class=\\"d-ev done\\" data-vssaros-tl-kind=\\"memory\\" data-mem-hash=\\"" + esc(c.hash) + "\\"><div>记忆快照 " + String(c.hash || "").slice(0, 7) + "「" + esc(c.subject) + "」</div><div class=\\"t\\">" + esc(c.date || "") + " · 记忆仓库提交</div></div>";'
+		+ '}).join("");'
+		+ 'body.insertAdjacentHTML("afterbegin", html);'
+		+ 'body.setAttribute("data-mem-loaded", "1");'
+		+ '}).catch(function () { /* 拉不到就只显示委派/会话两类 */ });'
+		+ '}'
 		+ 'function showTab(which) {'
-		+ "var panes = ['overview', 'roster', 'usage', 'assignments', 'grants', 'groups', 'memory', 'create'];"
+		+ "var panes = ['overview', 'activity', 'timeline', 'roster', 'usage', 'assignments', 'grants', 'groups', 'memory', 'create'];"
 		+ "for (var i = 0; i < panes.length; i++) {"
 		+ 'var pane = document.getElementById(panes[i]);'
 		+ 'if (pane) { pane.hidden = panes[i] !== which; }'
 		+ '}'
+		// 切到时间线 ⇒ 拉当前 agent 的记忆提交（Git 历史）补进时间线（服务端只能渲委派/会话两类 ✓）
+		+ 'if (which === "timeline") { loadTimelineMemory(); }'
+		+ 'if (which === "activity") { refreshActivity(); }'
 		// 新建向导要整块宽度 ⇒ 打开时收起 hero（hero 讲的是「当前 agent」，新建时没有当前 agent ✓）
+		// ★ 2026-10-21：hero **不再**在群聊签下收起 —— 身份条（名字/模型/能力/统计）是 mockup 款 A 的
+		//   必备块，收掉后 agents 页看着"空"，用户报"缺少 UI"✗。
 		+ "var heroEl = document.getElementById('hero');"
 		+ "if (heroEl) { heroEl.hidden = which === 'create'; }"
+		// ★ 群聊签：中间栏就是群聊页 ⇒ 只收掉名册筛选框（它筛的是名册表，群里没有）。
+		+ "document.body.classList.toggle('gptab', which === 'groups');"
 		+ "var tabs = { overview: 'tabOverview', roster: 'tabRoster', usage: 'tabUsage', assignments: 'tabAssign', grants: 'tabGrant', groups: 'tabGroup', memory: 'tabMemory' };"
 		+ 'for (var k in tabs) {'
 		+ 'var t = document.getElementById(tabs[k]);'
@@ -510,7 +711,8 @@ const tabNav = '<nav class="seg"><button id="tabOverview" class="on" onclick="sh
 		+ "var hav = document.getElementById('hAvatar');"
 		+ 'if (av && hav) { hav.style.background = av.style.background; }'
 		+ "var hEmoji = document.getElementById('hEmoji');"
-		+ 'if (hEmoji && av) { hEmoji.textContent = av.textContent; }'
+		// 图标可能是内联 SVG（`icon: lucide:bot`）⇒ 必须搬 innerHTML，textContent 会把它变成空串
+		+ 'if (hEmoji && av) { hEmoji.innerHTML = av.innerHTML; }'
 		+ "var hDot = document.getElementById('hDot');"
 		+ 'if (hDot) { hDot.className = "dot" + (li.getAttribute("data-h-live") ? " busy" : ""); }'
 		+ "var hName = document.getElementById('hName');"
@@ -837,99 +1039,77 @@ const tabNav = '<nav class="seg"><button id="tabOverview" class="on" onclick="sh
 		+ 'body.innerHTML = rows.length ? rows.join("") : "<tr class=\\"unknown\\"><td colspan=\\"5\\">队列是空的。</td></tr>";'
 		+ '}).catch(function () { /* 下轮再来 */ });'
 		+ '}'
-		// ── 群聊页签（2026-10-16，二期）：选中/发消息/建群/删群 + 轮询 transcript。
-		+ 'var G_SELECTED = "";'
-		+ 'function groupPost(body) {'
-		+ "return fetch('/x/agents/api/groups', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })"
-		+ '.then(function (r) {'
-		+ 'return r.json().catch(function () { return {}; }).then(function (j) {'
-		+ "if (!r.ok) { throw new Error(j.error || ('HTTP ' + r.status)); }"
-		+ 'return j;'
-		+ '});'
-		+ '});'
-		+ '}'
-		+ 'function renderGroupList(groups) {'
-		+ "var el = document.getElementById('gList');"
-		+ 'if (!el) { return; }'
-		+ 'if (!groups.length) { el.innerHTML = "<p class=\\"diag\\">还没有群。</p>"; return; }'
-		+ 'var html = "";'
-		+ 'for (var i = 0; i < groups.length; i++) {'
-		+ 'var g = groups[i];'
-		+ 'html += "<div class=\\"gitem" + (g.id === G_SELECTED ? " on" : "") + "\\" data-group-id=\\"" + esc(g.id) + "\\" onclick=\\"selectGroup(this)\\">"'
-		+ ' + "<b># " + esc(g.name) + "</b> <span class=\\"gm\\">" + (g.mode === "open" ? "open" : "admin") + " · 成员 " + (g.members ? g.members.length : 0) + "</span></div>";'
-		+ '}'
-		+ 'el.innerHTML = html;'
-		+ '}'
-		+ 'function renderTranscript(g) {'
-		+ "var log = document.getElementById('gLog');"
-		+ 'if (!log) { return; }'
-		+ 'var items = (g && g.transcript) || [];'
-		+ 'if (!items.length) { log.innerHTML = "<p class=\\"diag\\">还没有消息。</p>"; return; }'
-		+ 'var html = "";'
-		+ 'for (var i = 0; i < items.length; i++) {'
-		+ 'var m = items[i];'
-		+ 'var cls = m.role === "user" ? "gmsg me" : m.role === "system" ? "gmsg sys" : "gmsg";'
-		+ 'var who = m.role === "user" ? "你" : m.role === "system" ? "" : esc(m.name || m.agentId || "成员");'
-		+ 'html += "<div class=\\"" + cls + "\\">" + (who ? "<div class=\\"who\\">" + who + "</div>" : "")'
-		+ ' + "<div class=\\"bubble\\">" + esc(m.text) + "</div></div>";'
-		+ '}'
-		+ 'log.innerHTML = html;'
-		+ 'log.scrollTop = log.scrollHeight;'
-		+ '}'
-		+ 'function refreshGroups(keepSel) {'
+		// ── 群聊页签（2026-10-21 重做）：中间栏是 DSB 三栏群聊页（同源 iframe）。
+		//   旧的「左群列表 + 右 transcript + 建群表单」内联面板已下线（同一群聊只留一套 UI）。
+		//   本页只做三件事：① 记住当前群；② 焦点交接时切 iframe；③ 轮询群数更新签上的计数。
+		+ 'var G_SELECTED = ' + JSON.stringify(groupItems[0]?.id ?? '') + ';'
+		// 只更签上的计数（群聊本体在 iframe 里自己轮询 /x/agents/api/groups ✓ 不重复拉）
+		+ 'function refreshGroups() {'
 		+ "return fetch('/x/agents/api/groups').then(function (r) { return r.ok ? r.json() : null; }).then(function (j) {"
 		+ 'if (!j) { return; }'
-		+ 'renderGroupList(j.groups || []);'
-		+ 'var sel = null;'
-		+ 'for (var i = 0; i < (j.groups || []).length; i++) { if (j.groups[i].id === G_SELECTED) { sel = j.groups[i]; } }'
-		+ 'if (sel) { renderTranscript(sel); }'
 		+ "var tab = document.getElementById('tabGroup');"
 		+ "if (tab) { tab.textContent = '群聊 ' + (j.groups || []).length; }"
 		+ '}).catch(function () { /* 轮询失败下轮再来 */ });'
 		+ '}'
+		// 切到某个群：改 iframe 的 src（群 id 走路径段 —— 页面自己认这个路由 ✓）
 		+ 'function selectGroupById(id) {'
+		+ 'if (!id) { return; }'
 		+ 'G_SELECTED = id;'
-		+ "var items = document.querySelectorAll('#gList .gitem');"
-		+ 'for (var i = 0; i < items.length; i++) {'
-		+ 'items[i].classList.toggle("on", items[i].getAttribute("data-group-id") === id);'
+		+ "var fr = document.getElementById('gpFrame');"
+		+ "if (fr) { fr.src = '/x/agents/group/' + encodeURIComponent(id); }"
 		+ '}'
-		+ "var input = document.getElementById('gInput');"
-		+ "var btn = document.getElementById('gSend');"
-		+ 'if (input) { input.disabled = !id; }'
-		+ 'if (btn) { btn.disabled = !id; }'
-		+ 'refreshGroups(true);'
+		// ★ 主题传递：iframe 是**独立文档**，拿不到本页的 --vscode-* 变量 ⇒ 群聊页会退回默认皮
+		//   （深色块/浅色块），和 IDE 主题对不上 ✗。这里把本页的变量灌进 iframe 的根元素（同源 ⇒ 可直接写）。
+		+ 'var THEME_VARS = ["--vscode-editor-background","--vscode-sideBar-background","--vscode-foreground",'
+		+ '"--vscode-descriptionForeground","--vscode-disabledForeground","--vscode-panel-border",'
+		+ '"--vscode-editorWidget-border","--vscode-editorWidget-background","--vscode-widget-shadow",'
+		+ '"--vscode-input-background","--vscode-input-foreground","--vscode-input-border",'
+		+ '"--vscode-button-background","--vscode-button-foreground","--vscode-button-hoverBackground",'
+		+ '"--vscode-button-secondaryBackground","--vscode-button-secondaryForeground","--vscode-button-secondaryHoverBackground",'
+		+ '"--vscode-list-hoverBackground","--vscode-list-activeSelectionBackground","--vscode-list-activeSelectionForeground",'
+		+ '"--vscode-focusBorder","--vscode-textLink-foreground","--vscode-charts-green","--vscode-charts-yellow",'
+		+ '"--vscode-editorWarning-foreground","--vscode-errorForeground","--vscode-font-family","--vscode-font-size",'
+		+ '"--vscode-editor-font-family","--vscode-editorOverlay-background","--vscode-editorHighlightBackground",'
+		+ '"--vscode-diffEditor-insertedTextBackground","--vscode-diffEditor-insertedTextForeground",'
+		+ '"--vscode-diffEditor-removedTextBackground","--vscode-diffEditor-removedTextForeground"];'
+		+ 'function syncThemeToFrame() {'
+		+ "var fr = document.getElementById('gpFrame');"
+		+ 'if (!fr) { return; }'
+		+ 'var doc = null;'
+		+ 'try { doc = fr.contentDocument; } catch (e) { return; }'
+		+ 'if (!doc || !doc.documentElement) { return; }'
+		+ 'var cs = getComputedStyle(document.documentElement);'
+		+ 'for (var i = 0; i < THEME_VARS.length; i++) {'
+		+ 'var v = cs.getPropertyValue(THEME_VARS[i]);'
+		+ 'if (v) { doc.documentElement.style.setProperty(THEME_VARS[i], v.trim()); }'
 		+ '}'
-		+ 'function selectGroup(el) {'
-		+ "var id = el && el.getAttribute ? el.getAttribute('data-group-id') : '';"
-		+ 'if (id) { selectGroupById(id); }'
 		+ '}'
-		+ 'function groupCreate() {'
-		+ "var nameEl = document.getElementById('gName');"
-		+ "var modeEl = document.getElementById('gMode');"
-		+ 'var name = nameEl ? nameEl.value.trim() : "";'
-		+ "if (!name) { note('群名不能为空'); return; }"
-		+ "var chips = document.querySelectorAll('#gMembers .mchip.on');"
-		+ 'var members = [];'
-		+ 'for (var i = 0; i < chips.length; i++) { members.push(chips[i].getAttribute("data-member")); }'
-		+ "if (!members.length) { note('至少勾一个成员'); return; }"
-		+ "groupPost({ action: 'create', name: name, mode: modeEl ? modeEl.value : 'admin', members: members })"
-		+ '.then(function (g) { nameEl.value = ""; note(""); G_SELECTED = g.id; refreshGroups(true); })'
-		+ '.catch(function (e) { note("建群失败：" + e.message); });'
+		+ 'function watchFrameTheme() {'
+		+ "var fr = document.getElementById('gpFrame');"
+		+ 'if (!fr) { return; }'
+		+ 'fr.addEventListener("load", syncThemeToFrame);'
+		+ 'syncThemeToFrame();'
+		+ 'setTimeout(syncThemeToFrame, 250);'
+		+ 'setTimeout(syncThemeToFrame, 900);'
 		+ '}'
-		+ 'function groupSend() {'
-		+ "var input = document.getElementById('gInput');"
-		+ 'var text = input ? input.value.trim() : "";'
-		+ "if (!G_SELECTED || !text) { note(text ? '' : '消息不能为空'); return; }"
-		+ "groupPost({ action: 'message', id: G_SELECTED, text: text })"
-		+ '.then(function () { input.value = ""; note(""); refreshGroups(true); })'
-		+ '.catch(function (e) { note("发送失败：" + e.message); });'
-		+ '}'
+		// ⚠ 注意：**注释只能写在源码层**（这里），不能拼进页面脚本字符串 ——
+		//   拼进去的 `//` 会把同一行后面的代码整行吃掉 ⇒ 花括号不配平 ⇒ 整段脚本解析失败
+		//   （页面所有交互静默失效，连报错都难看到）✗。
+		//   主题切换（IDE 换配色）后 iframe 里的变量不会自己变 ⇒ 轮询同步（可见时才做，开销可忽略）
+		+ 'window.setInterval(function () {'
+		+ "var pane = document.getElementById('groups');"
+		+ 'if (pane && !pane.hidden) { syncThemeToFrame(); }'
+		+ '}, 1200);'
+		+ 'watchFrameTheme();'
 		+ 'window.setInterval(function () {'
 		+ "if (document.hidden) { return; }"
 		+ "var pane = document.getElementById('groups');"
-		+ 'if (pane && !pane.hidden && G_SELECTED) { refreshGroups(true); }'
+		+ 'if (pane && !pane.hidden) { refreshGroups(); }'
 		+ "var gp = document.getElementById('grants');"
 		+ 'if (gp && !gp.hidden) { refreshOutbox(); }'
+		// 活动面板可见 ⇒ 刷新 feed（款 C 的「此刻」要能自己动 ✓）
+		+ "var ap = document.getElementById('activity');"
+		+ 'if (ap && !ap.hidden) { refreshActivity(); }'
 		+ '}, 6000);'
 		// ── 记忆页签（2026-10-16，二期）：全走 api/memory；失败进 pageNote 不静默 ✓。
 		+ 'var M_FILE = "";'
@@ -954,6 +1134,29 @@ const tabNav = '<nav class="seg"><button id="tabOverview" class="on" onclick="sh
 		+ '   + "<button class=\\"act\\" onclick=\\"memorySnapshot()\\">提交快照</button>"'
 		+ ' : "<span>还不是 Git 仓库 · 文件读写不受影响</span><span style=\\"margin-left:auto\\"></span><button class=\\"act\\" onclick=\\"memoryEnableGit()\\">启用 Git 版本化</button>";'
 		+ '}'
+		// 注入口径一行（2026-10-19，P1-2）：用了多少 / 上限多少 / 何时生效 / 人设多长
+		+ "var lim = document.getElementById('mLimits');"
+		+ 'if (lim) {'
+		+ 'var L = (j && j.limits) || {}; var U = (j && j.usage) || {};'
+		+ 'var capTxt = (L.chars === 0) ? "关闭注入" : ((L.chars || 2048) + " 字符");'
+		+ 'var modeTxt = (L.mode === "live") ? "实时生效" : "会话内冻结（新会话生效）";'
+		// 运行时对账（2026-10-20）：上面三个数都是「配置上应该怎样」，这里补「实际装配成怎样」——
+		// preset 还没按新口径重建时两者会不一致，那是唯一能看见的破绽（否则页面永远一片祥和）。
+		+ 'var R = L.runtime || null;'
+		+ 'var rtTxt;'
+		+ 'if (!R) {'
+		+ '  rtTxt = " · 尚未装配（还没有会话挂过这个 preset）";'
+		+ '} else {'
+		+ '  rtTxt = " · 已装配 " + (R.served || 0) + " 次";'
+		+ '  if (R.frozenSessions) { rtTxt += " / 冻结 " + R.frozenSessions + " 个会话"; }'
+		+ '  if (R.ready === false) { rtTxt += " · 首次读取未就绪"; }'
+		+ '  if (typeof R.chars === "number" && R.chars !== L.chars) {'
+		+ '    rtTxt += " · ⚠ 装配口径 " + (R.chars === 0 ? "关闭" : R.chars + " 字符") + "（与上限不一致）";'
+		+ '  }'
+		+ '}'
+		+ 'lim.textContent = "常驻注入：" + (U.chars || 0) + " 字符 / 上限 " + capTxt + " · " + modeTxt'
+		+ '  + " · 人设 " + (L.personaChars || 0) + " 字" + rtTxt;'
+		+ '}'
 		+ "var list = document.getElementById('mList');"
 		+ 'if (list) {'
 		+ 'var dirtySet = {};'
@@ -969,12 +1172,163 @@ const tabNav = '<nav class="seg"><button id="tabOverview" class="on" onclick="sh
 		+ '}'
 		+ "var log = document.getElementById('mLog');"
 		+ 'if (log) {'
+		// 历史每行两个动作（2026-10-19）：看这版（只读全文） / 回滚（覆盖该文件 + 自动快照）
 		+ 'log.innerHTML = j.git && j.git.enabled && j.log && j.log.length'
-		+ ' ? "<b>提交历史（只读）</b>" + j.log.map(function (l) { return "<div class=\\"lr\\"><span class=\\"h\\">" + esc(l.hash) + "</span><span>" + esc(l.subject) + "</span><span class=\\"t\\">" + esc(l.date) + "</span></div>"; }).join("")'
+		+ ' ? "<b>提交历史（最近 " + j.log.length + " 条 · 只读 · 可看任一版 / 回滚 MEMORY.md）</b>" + j.log.map(function (l) {'
+		+ '   return "<div class=\\"lr\\"><span class=\\"h\\">" + esc(l.hash) + "</span><span>" + esc(l.subject) + "</span>"'
+		+ '   + "<span class=\\"t\\">" + esc(l.date) + "</span>"'
+		+ '   + "<button class=\\"act\\" data-mem-diff=\\"" + esc(l.hash) + "\\" onclick=\\"memoryDiffRev(this.getAttribute(\'data-mem-diff\'))\\">对比当前</button>"'
+		+ '   + "<button class=\\"act\\" data-mem-rev=\\"" + esc(l.hash) + "\\" onclick=\\"memoryShowRev(this.getAttribute(\'data-mem-rev\'))\\">看这版</button>"'
+		+ '   + "<button class=\\"act\\" data-mem-restore=\\"" + esc(l.hash) + "\\" onclick=\\"memoryRestoreRev(this.getAttribute(\'data-mem-restore\'))\\">回滚</button>"'
+		+ '   + "</div>"; }).join("")'
 		+ ' : "";'
 		+ '}'
 		+ '}'
-		+ 'function memoryLoad() {'
+		// ── 注入口径的编辑（上限 / 模式）＋ MEMORY.md 的人工编辑（2026-10-19，P1-2）──────
+		+ 'var M_LIMITS = null;'
+		+ 'function memoryPost(body) {'
+		+ "return fetch('/x/agents/api/memory', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })"
+		+ '.then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) {'
+		+ "if (!r.ok) { throw new Error(j.error || ('HTTP ' + r.status)); }"
+		+ 'return j;'
+		+ '}); });'
+		+ '}'
+		// 从记忆库（AgentMemory 网关）拉一份 MEMORY.md 草稿：只填进编辑框，**不写盘**
+		// —— 人删改后按「保存」才落盘，与「提交只能人按」同一条纪律（2026-10-20）。
+		+ 'function memoryImportDraft() {'
+		+ "var sel = document.getElementById('mAgent'); if (!sel) { return; }"
+		+ "memoryPost({ action: 'import-draft', agent: sel.value })"
+		+ '.then(function (j) {'
+		+ 'if (!j || !j.draft) { note("记忆库里没有可导入的条目（空库不是错误）"); return; }'
+		+ "var box = document.getElementById('mEditor');"
+		+ "var ta = document.getElementById('mEditText');"
+		+ "var hint = document.getElementById('mEditHint');"
+		+ 'if (!box || !ta) { return; }'
+		+ 'ta.value = j.draft;'
+		+ 'if (hint) {'
+		+ 'hint.textContent = "草稿：来自记忆库 " + (j.count || 0) + " 条"'
+		+ '  + (j.truncated ? "（已截断到上限）" : "") + " · 未保存，删改后按「保存」";'
+		+ '}'
+		+ 'box.hidden = false;'
+		+ '}).catch(function (e) { note("从记忆库导入失败：" + e.message); });'
+		+ '}'
+		+ 'function memoryLimitsEdit() {'
+		+ 'memoryApi("").then(function (j) {'
+		+ 'M_LIMITS = (j && j.limits) || null;'
+		+ "var box = document.getElementById('mLimitsForm');"
+		+ "var ch = document.getElementById('mLimitChars');"
+		+ "var md = document.getElementById('mLimitMode');"
+		+ 'if (!box || !ch || !md) { return; }'
+		+ 'ch.value = String(M_LIMITS && M_LIMITS.chars !== undefined ? M_LIMITS.chars : 2048);'
+		+ "md.value = (M_LIMITS && M_LIMITS.mode === 'live') ? 'live' : 'session';"
+		+ 'box.hidden = false;'
+		+ '}).catch(function (e) { note("读注入口径失败：" + e.message); });'
+		+ '}'
+		+ 'function memoryLimitsCancel() {'
+		+ "var b = document.getElementById('mLimitsForm'); if (b) { b.hidden = true; }"
+		+ '}'
+		+ 'function memoryLimitsSave() {'
+		+ "var sel = document.getElementById('mAgent'); if (!sel) { return; }"
+		+ "var ch = document.getElementById('mLimitChars'); var md = document.getElementById('mLimitMode');"
+		+ 'var chars = Number(ch && ch.value); var mode = md ? md.value : "session";'
+		+ "if (!isFinite(chars)) { note('上限要是数字'); return; }"
+		+ "memoryPost({ action: 'set-limits', agent: sel.value, chars: chars, mode: mode })"
+		+ '.then(function (j) {'
+		+ "note('已保存：上限 ' + (j.chars === 0 ? '关闭' : j.chars + ' 字符') + ' · ' + (j.mode === 'live' ? '实时生效' : '会话内冻结'));"
+		+ 'memoryLimitsCancel(); memoryLoad();'
+		+ '}).catch(function (e) { note("保存注入口径失败：" + e.message); });'
+		+ '}'
+		+ 'function memoryEditOpen() {'
+		+ "if (M_FILE !== 'MEMORY.md') { note('只支持在页面里编辑 MEMORY.md（人设请改 .agent.md 正文）'); return; }"
+		+ 'memoryApi("&file=" + encodeURIComponent(M_FILE)).then(function (j) {'
+		+ "var box = document.getElementById('mEditor');"
+		+ "var ta = document.getElementById('mEditText');"
+		+ "var hint = document.getElementById('mEditHint');"
+		+ 'if (!box || !ta) { return; }'
+		+ 'ta.value = (j && j.content && j.content.text) ? j.content.text : "";'
+		+ 'if (hint) {'
+		+ 'var L = (j && j.limits) || {};'
+		+ 'hint.textContent = "上限 " + (L.chars === 0 ? "关闭" : (L.chars || 2048) + " 字符") + " · "'
+		+ '  + (L.mode === "live" ? "保存后立刻生效" : "保存后在新会话生效（本会话已冻结）");'
+		+ '}'
+		+ 'box.hidden = false;'
+		+ '}).catch(function (e) { note("读取失败：" + e.message); });'
+		+ '}'
+		+ 'function memoryCancelEdit() {'
+		+ "var b = document.getElementById('mEditor'); if (b) { b.hidden = true; }"
+		+ '}'
+		+ 'function memorySaveText() {'
+		+ "var sel = document.getElementById('mAgent'); var ta = document.getElementById('mEditText');"
+		+ 'if (!sel || !ta) { return; }'
+		+ "memoryPost({ action: 'write-memory', agent: sel.value, text: ta.value })"
+		+ '.then(function (j) {'
+		+ "note('已保存 MEMORY.md（' + j.chars + ' 字符）');"
+		+ 'memoryCancelEdit(); memoryLoad();'
+		+ "if (M_FILE === 'MEMORY.md') { memoryView({ getAttribute: function () { return 'MEMORY.md'; } }); }"
+		+ '}).catch(function (e) { note("保存失败：" + e.message); });'
+		+ '}'
+		// 版本对比（2026-10-19）：服务端算行级 diff（左 = 历史版本，右 = 当前工作区）
+		+ 'function memoryDiffRev(hash) {'
+		+ "var sel = document.getElementById('mAgent'); if (!sel) { return; }"
+		+ "var file = M_FILE || 'MEMORY.md';"
+		+ "fetch('/x/agents/api/memory?agent=' + encodeURIComponent(sel.value) + '&file=' + encodeURIComponent(file) + '&rev=' + encodeURIComponent(hash) + '&against=working')"
+		+ '.then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { if (!r.ok) { throw new Error(j.error || ("HTTP " + r.status)); } return j; }); })'
+		+ '.then(function (j) {'
+		+ 'var d = j.diff;'
+		+ "var box = document.getElementById('mDiffBody');"
+		+ "var hint = document.getElementById('mDiffHint');"
+		+ "var pane = document.getElementById('mDiff');"
+		+ 'if (!d || !box || !pane) { note("没有对比数据"); return; }'
+		+ 'if (hint) {'
+		+ 'hint.textContent = "历史 " + String(hash).slice(0, 7) + " → 当前 · +" + d.added + " / -" + d.removed'
+		+ '  + (d.coarse ? "（差异过大，已退化为整块对比）" : "") + " · 共 " + d.rows.length + " 行";'
+		+ '}'
+		+ 'var html = "";'
+		+ 'for (var i = 0; i < d.rows.length; i++) {'
+		+ 'var r = d.rows[i];'
+		+ 'html += "<div class=\\"drr " + r.type + "\\"><span class=\\"dn\\">" + (r.a === null ? "" : r.a) + "</span><span class=\\"dn\\">" + (r.b === null ? "" : r.b) + "</span><span class=\\"dt\\">" + esc(r.text) + "</span></div>";'
+		+ '}'
+		+ 'box.innerHTML = html || "<div class=\\"drr same\\"><span class=\\"dt\\">（两版内容一致）</span></div>";'
+		+ 'pane.hidden = false;'
+		+ '}).catch(function (e) { note("对比失败：" + e.message); });'
+		+ '}'
+		+ 'function memoryDiffClose() {'
+		+ "var p = document.getElementById('mDiff'); if (p) { p.hidden = true; }"
+		+ '}'
+		// 历史版本：看全文 / 回滚（2026-10-19）
+		+ 'function memoryShowRev(hash) {'
+		+ "var sel = document.getElementById('mAgent'); if (!sel) { return; }"
+		+ "var file = M_FILE || 'MEMORY.md';"
+		+ "fetch('/x/agents/api/memory?agent=' + encodeURIComponent(sel.value) + '&file=' + encodeURIComponent(file) + '&rev=' + encodeURIComponent(hash))"
+		+ '.then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { if (!r.ok) { throw new Error(j.error || ("HTTP " + r.status)); } return j; }); })'
+		+ '.then(function (j) {'
+		+ "var t = document.getElementById('mTitle'); var b = document.getElementById('mBody');"
+		+ "if (t) { t.textContent = file + ' @ ' + String(hash).slice(0, 7) + '（历史版本 · 只读）'; }"
+		+ "if (b) { b.textContent = (j.content && j.content.text) ? j.content.text : '（读不到）'; }"
+		+ '}).catch(function (e) { note("读历史版本失败：" + e.message); });'
+		+ '}'
+		+ 'function memoryRestoreRev(hash) {'
+		+ "var sel = document.getElementById('mAgent'); if (!sel) { return; }"
+		+ "var file = M_FILE || 'MEMORY.md';"
+		+ "if (!window.confirm('把 ' + file + ' 回滚到 ' + String(hash).slice(0, 7) + ' 的内容？\\n会覆盖当前文件，并自动记一条快照。')) { return; }"
+		+ "memoryPost({ action: 'restore', agent: sel.value, file: file, rev: hash })"
+		+ '.then(function (j) {'
+		+ "note('已回滚 ' + j.name + ' 到 ' + j.rev + (j.snapshot && j.snapshot.committed ? '（已提交快照）' : ''));"
+		+ 'memoryLoad();'
+		+ "if (M_FILE === 'MEMORY.md') { memoryView({ getAttribute: function () { return 'MEMORY.md'; } }); }"
+		+ '}).catch(function (e) { note("回滚失败：" + e.message); });'
+		+ '}'
+		// 演化面板入口（2026-10-21）：开成独立编辑区页签，按 agent 各自一个 tab
+	// （`openModulePage` 的路径段 ⇒ 单例键 = 容器 + 子路由）。
+	+ 'window.memoryOpenEvo = function () {'
+	+ "var sel = document.getElementById('mAgent');"
+	+ "var id = sel && sel.value ? sel.value : '';"
+	+ "if (!id) { note('先选一个 agent'); return; }"
+	+ 'var bridge = window.vssarosDsh;'
+	+ "if (!bridge || typeof bridge.openModulePage !== 'function') { note('当前宿主不支持在编辑区打开（需要桥版本 3+）'); return; }"
+	+ "try { bridge.openModulePage('/x/agents/memory/' + id); } catch (e) { note('打开演化面板失败：' + e); }"
+	+ '};'
+	+ 'function memoryLoad() {'
 		+ 'M_FILE = "";'
 		+ "var t = document.getElementById('mTitle');"
 		+ "var b = document.getElementById('mBody');"
@@ -993,6 +1347,11 @@ const tabNav = '<nav class="seg"><button id="tabOverview" class="on" onclick="sh
 		+ "var b = document.getElementById('mBody');"
 		+ 'if (t) { t.textContent = name; }'
 		+ 'if (b) { b.textContent = j.content ? j.content.text : "（读不到内容）"; }'
+		// 只有 MEMORY.md 进 prompt ⇒ 只有它开"页面内编辑"（其它记忆文件是 agent 的工作区）
+		+ "var tools = document.getElementById('mTools');"
+		+ "var th = document.getElementById('mToolsHint');"
+		+ "if (tools) { tools.hidden = name !== 'MEMORY.md'; }"
+		+ "if (th) { th.textContent = name === 'MEMORY.md' ? '这是会进 prompt 的常驻记忆（保存后按上面的生效方式生效）' : ''; }"
 		+ '}).catch(function (e) { note("读文件失败：" + e.message); });'
 		+ '}'
 		+ 'function memoryEnableGit() {'
@@ -1039,9 +1398,8 @@ ${CREATE_CSS}
 ${HOME_CSS}
 </style>
 </head>
-<body data-vssaros-page="agents" data-vssaros-surface="editor">
+<body data-vssaros-page="agents" data-vssaros-surface="editor"${groupFirst ? ' class="gptab"' : ''}>
 <header>
-	<h1>Agents <span class="n">${summary.count}</span></h1>
 	${tabNav}
 	<button class="act" onclick="showTab('create'); if (window.crBegin) { crBegin('blank'); }" title="新建一个 Agent（写入 .agent.md）">＋ 新建</button>
 	<label class="search"><span class="mag">⌕</span><input id="q" placeholder="筛选 name / id / 描述" oninput="filterRows()"><span class="n" id="qCount">${summary.count}</span></label>
@@ -1049,6 +1407,8 @@ ${HOME_CSS}
 <p class="diag note" id="pageNote" hidden></p>
 ${hero}
 ${overview}
+${activitySection}
+${timelineSection}
 <div id="roster" hidden>${body}</div>
 ${usageSection}
 ${assignmentsSection}

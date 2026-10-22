@@ -126,8 +126,12 @@ async function sweepRegistrations(): Promise<ReadonlyMap<string, string>> {
 			if (maybe && typeof (maybe as Promise<unknown>).then === 'function') { await maybe; }
 		}
 	}
-	assert.ok(registrations.size > 80,
-		`扫描必须真的注册到工具（实际 ${registrations.size} 个）—— 为 0 说明代理 ctx 失效，整条守卫变假绿`);
+	// ⚠ 2026-10-20：阈值从 `> 80` 降到 `>= 45` —— legacy 工具下线（`0f01ef10a43` 删了 7 个
+	//   `providers/tool/*.ts`）后实测只有 **52** 个，旧阈值恒红（消息模板还写着"为 0 说明代理 ctx 失效"，
+	//   容易被误读成代理坏了 ✗）。判据本意是"防空跑"：只要明显多于 0 且贴着实测留余量即可。
+	//   若工具面再扩/缩，跟着实测调这个数（并在 PR 里写清为什么）。
+	assert.ok(registrations.size >= 45,
+		`扫描必须真的注册到工具（实际 ${registrations.size} 个，期望 ≥45）—— 远低于此说明代理 ctx 失效，整条守卫变假绿`);
 	return registrations;
 }
 

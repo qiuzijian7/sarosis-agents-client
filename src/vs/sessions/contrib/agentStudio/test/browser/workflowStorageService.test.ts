@@ -46,8 +46,37 @@ class MockFileService {
 		}
 		throw new Error('mock file not found');
 	}
-	async del(_uri: any, _opts?: any): Promise<void> {
-		/* noop */
+	/**
+	 * `del` 必须**真删**：跨进程写锁（`common/fileWriteLock.ts`）靠 `del` 释放锁文件，
+	 * noop 会让第二个用例撞上"锁已存在" ⇒ 连坐全红。
+	 * （只删 `_files`，不动 `written` —— 业务断言看的是后者，锁文件不该污染它。）
+	 */
+	async del(uri: any, _opts?: any): Promise<void> {
+		this._files.delete(uri.toString());
+	}
+
+	/**
+	 * ★ 2026-10-20 补（此前缺这个方法 ⇒ `WorkflowStorageService — version hooks` 6 例**全红**）：
+	 * `acquireFileLock` 用 `createFile(resource, VSBuffer.fromString(text), { overwrite: false })`
+	 * 做**原子占位**（已存在 ⇒ 抛 ⇒ 调用方判"被别的进程占着"）。
+	 * 症状原文：`写锁创建失败（…workflow.json.lock）：fileService.createFile is not a function`。
+	 */
+	async createFile(uri: any, buffer: any, opts?: { overwrite?: boolean }): Promise<void> {
+		const key = uri.toString();
+		if (this._files.has(key) && opts?.overwrite === false) {
+			throw new Error('mock file already exists');
+		}
+		this._files.set(key, buffer.toString());
+	}
+
+	/**
+	 * ★ 2026-10-20 补：`common/atomicWrite.ts` 先探能力再决定走原子写还是普通写
+	 * （`fileService.hasCapability(resource, FileSystemProviderCapabilities.FileAtomicWrite)`）。
+	 * 假件缺这个方法会 `TypeError: fileService.hasCapability is not a function`。
+	 * 返回 `false` ⇒ 走普通 `writeFile` 分支（本假件已实现，语义与真实磁盘写入一致）。
+	 */
+	hasCapability(): boolean {
+		return false;
 	}
 }
 

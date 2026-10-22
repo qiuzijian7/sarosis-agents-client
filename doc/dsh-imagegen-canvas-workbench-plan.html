@@ -1,0 +1,546 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>dsh-image-gen 画布工作台接入 VsSaros · 执行方案（2026-10-20）</title>
+<style>
+	:root {
+		color-scheme: dark;
+		--bg: #1e1e1e; --bg2: #252526; --bg3: #2d2d30; --border: #3c3c3c; --border2: #4a4a4a;
+		--fg: #cccccc; --dim: #9a9a9a; --dim2: #7a7a7a;
+		--accent: #0e639c; --accent-h: #1177bb; --accent2: #3794ff; --warn: #f59e0b; --danger: #f14c4c; --ok: #7bc96f;
+		--mono: ui-monospace, Consolas, monospace;
+	}
+	* { box-sizing: border-box; }
+	body { margin: 0; padding: 0 0 80px; background: #141414; color: var(--fg); font: 13px/1.6 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; }
+	.doc { max-width: 1240px; margin: 0 auto; padding: 24px 24px 0; }
+	h1 { font-size: 22px; margin: 0 0 6px; }
+	h2 { font-size: 16px; margin: 34px 0 10px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+	h3 { font-size: 13px; margin: 18px 0 8px; color: #e8e8e8; }
+	p, li { color: #c9c9c9; }
+	.lead { color: var(--dim); font-size: 12.5px; margin: 0 0 18px; }
+	code, .mono { font-family: var(--mono); font-size: 11.5px; background: rgba(255,255,255,.06); padding: 1px 5px; border-radius: 3px; }
+	table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 10px 0 6px; }
+	th, td { border: 1px solid var(--border); padding: 6px 9px; text-align: left; vertical-align: top; }
+	th { background: #232323; font-weight: 600; color: #e6e6e6; }
+	.tag { display: inline-block; font-size: 10px; padding: 0 6px; border-radius: 8px; border: 1px solid var(--border2); color: var(--dim); margin-left: 4px; white-space: nowrap; }
+	.tag.block { border-color: #6b2222; color: var(--danger); }
+	.tag.warn { border-color: #6b4b12; color: var(--warn); }
+	.tag.ok { border-color: #2f5a2c; color: var(--ok); }
+	.tag.up { border-color: #2c4a6b; color: #8cc4ff; }
+	.banner { border: 1px solid #3b4a5e; background: #1b2530; border-radius: 8px; padding: 12px 14px; margin: 14px 0; }
+	.banner b { color: #cfe3ff; }
+	.banner.red { border-color: #6b2a2a; background: #2a1a1a; }
+	.banner.red b { color: #ffb4b4; }
+	.cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 12px; }
+	.card-mini { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; background: var(--bg2); }
+	.card-mini h4 { margin: 0 0 4px; font-size: 12.5px; }
+	.card-mini p, .card-mini li { margin: 0; font-size: 11.5px; color: var(--dim); }
+	.card-mini ul { margin: 4px 0 0; padding-left: 16px; }
+	.flow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 12px 0 4px; font-size: 12px; }
+	.flow .node { border: 1px solid var(--border2); border-radius: 6px; padding: 5px 9px; background: var(--bg3); }
+	.flow .arrow { color: var(--dim2); }
+	ol.steps > li { margin-bottom: 6px; }
+	.phase { border: 1px solid var(--border); border-radius: 8px; background: var(--bg2); padding: 10px 14px; margin: 12px 0; }
+	.phase h3 { margin-top: 2px; }
+	.phase .meta { font-size: 11.5px; color: var(--dim); }
+
+	/* ── mockup ── */
+	.mock-switch { display: inline-flex; border: 1px solid var(--border2); border-radius: 5px; overflow: hidden; margin: 6px 0 10px; }
+	.mock-switch button { background: transparent; color: var(--dim); border: 0; padding: 5px 12px; font-size: 12px; cursor: pointer; font-family: inherit; }
+	.mock-switch button.on { background: rgba(55,148,255,.18); color: #cfe3ff; }
+	.ide { display: grid; grid-template-columns: 44px 200px 1fr 280px; height: 560px; border: 1px solid var(--border2); border-radius: 10px; overflow: hidden; background: var(--bg); box-shadow: 0 18px 50px rgba(0,0,0,.45); }
+	.ide.h1 { grid-template-columns: 44px 200px 1fr 560px; }
+	.ab { background: #181818; border-right: 1px solid var(--border); display: flex; flex-direction: column; align-items: center; padding-top: 8px; gap: 6px; }
+	.ab .ic { width: 30px; height: 30px; border-radius: 5px; display: grid; place-items: center; color: #8a8a8a; font-size: 15px; position: relative; }
+	.ab .ic.on { color: #fff; }
+	.ab .ic.on::before { content: ""; position: absolute; left: -7px; top: 5px; bottom: 5px; width: 2px; background: #fff; }
+	.ab .ic.new { outline: 1px dashed var(--accent2); }
+	.side { background: var(--bg2); border-right: 1px solid var(--border); padding: 10px; font-size: 11.5px; overflow: hidden; }
+	.side h5 { margin: 0 0 8px; font-size: 11px; letter-spacing: .04em; color: var(--dim); text-transform: uppercase; }
+	.side .open { display: block; width: 100%; text-align: center; background: var(--accent); color: #fff; border-radius: 4px; padding: 6px; margin-bottom: 10px; cursor: pointer; border: 0; font: inherit; }
+	.side .open:hover { background: var(--accent-h); }
+	.side .st { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #303030; color: var(--dim); }
+	.side .st b { color: var(--fg); font-weight: 500; }
+	.side .thumbs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin-top: 8px; }
+	.side .thumbs i { aspect-ratio: 1; border-radius: 4px; display: block; }
+	.ed { display: flex; flex-direction: column; min-width: 0; border-right: 1px solid var(--border); }
+	.tabs { height: 32px; display: flex; align-items: flex-end; gap: 2px; background: #181818; border-bottom: 1px solid var(--border); padding: 0 6px; }
+	.tabs .t { font-size: 11.5px; padding: 5px 10px; color: var(--dim); border-radius: 4px 4px 0 0; }
+	.tabs .t.on { background: var(--bg); color: #fff; border: 1px solid var(--border); border-bottom: none; }
+	.ed-body { flex: 1; display: grid; grid-template-columns: 220px 1fr; min-height: 0; }
+	.ide.h1 .ed-body { grid-template-columns: 1fr; }
+	.chat { display: flex; flex-direction: column; min-height: 0; background: var(--bg); }
+	.chat .msgs { flex: 1; padding: 10px; overflow: hidden; display: flex; flex-direction: column; gap: 8px; }
+	.bubble { font-size: 11.5px; padding: 6px 9px; border-radius: 8px; max-width: 92%; }
+	.bubble.u { align-self: flex-end; background: #264f78; color: #e8f1ff; }
+	.bubble.a { background: var(--bg3); }
+	.toolcard { border: 1px solid var(--border2); border-radius: 6px; padding: 6px; background: #202020; font-size: 11px; color: var(--dim); }
+	.toolcard .img { height: 74px; border-radius: 4px; margin: 4px 0; background: linear-gradient(135deg, #3a6186, #89253e); }
+	.toolcard .act { display: flex; gap: 6px; }
+	.toolcard .act span { border: 1px solid var(--border2); border-radius: 3px; padding: 0 6px; color: var(--fg); }
+	.composer { margin: 8px; border: 1px solid var(--border2); border-radius: 8px; padding: 8px; font-size: 11.5px; color: var(--dim2); background: #222; }
+	.canvas { position: relative; background-color: #1b1b1b; background-image: radial-gradient(#333 1px, transparent 1px); background-size: 16px 16px; border-left: 1px solid var(--border); min-width: 0; overflow: hidden; }
+	.canvas .tb { position: absolute; left: 8px; top: 40px; display: flex; flex-direction: column; gap: 4px; background: var(--bg3); border: 1px solid var(--border2); border-radius: 6px; padding: 4px; }
+	.canvas .tb span { width: 22px; height: 22px; display: grid; place-items: center; font-size: 11px; color: var(--fg); border-radius: 3px; }
+	.canvas .tb span.on { background: rgba(55,148,255,.25); }
+	.canvas .top { position: absolute; left: 0; right: 0; top: 0; height: 32px; display: flex; align-items: center; gap: 6px; padding: 0 10px; border-bottom: 1px solid var(--border); background: #1e1e1e; font-size: 11px; color: var(--dim); }
+	.canvas .top .pill { border: 1px solid var(--border2); border-radius: 10px; padding: 0 8px; }
+	.canvas .top .pill.on { border-color: var(--accent2); color: #cfe3ff; }
+	.canvas .item { position: absolute; border-radius: 4px; box-shadow: 0 4px 14px rgba(0,0,0,.4); }
+	.canvas .item.sel { outline: 2px solid var(--accent2); outline-offset: 2px; }
+	.canvas .sketch { position: absolute; left: 70px; top: 230px; width: 150px; height: 110px; border: 1px dashed #777; border-radius: 6px; color: var(--dim2); font-size: 10.5px; display: grid; place-items: center; }
+	.canvas .status { position: absolute; left: 0; right: 0; bottom: 0; height: 26px; border-top: 1px solid var(--border); background: #1e1e1e; font-size: 10.5px; color: var(--dim); display: flex; align-items: center; gap: 12px; padding: 0 10px; }
+	.canvas .status .g { color: var(--ok); }
+	.agent { display: flex; flex-direction: column; min-width: 0; background: var(--bg); }
+	.agent .hdr { height: 32px; display: flex; align-items: center; padding: 0 10px; font-size: 11.5px; border-bottom: 1px solid var(--border); background: #181818; color: var(--dim); gap: 6px; }
+	.agent-body { flex: 1; display: grid; grid-template-columns: 1fr; min-height: 0; }
+	.ide.h1 .agent-body { grid-template-columns: 1fr 300px; }
+	.agent .rb { display: none; }
+	.ide.h1 .agent .rb { display: block; position: relative; }
+	.ide.h1 .ed-body .canvas, .ide.h1 .ed-body .chat.studio { display: none; }
+	.ide.h1 .ed-body .code { display: block; }
+	.code { display: none; padding: 10px 14px; font-family: var(--mono); font-size: 11px; color: #9cdcfe; background: var(--bg); }
+	.note-pin { position: absolute; font-size: 10.5px; background: #3b2f12; color: #ffd78a; border: 1px solid #6b4b12; border-radius: 4px; padding: 2px 6px; pointer-events: none; }
+</style>
+</head>
+<body>
+<div class="doc">
+
+<h1>dsh-image-gen 画布工作台接入 VsSaros · 执行方案</h1>
+<p class="lead">2026-10-20 · 基线：上游 <code>G:\CustomWorkspaces\AIProjects\dsh-image-gen</code> @ <code>a961b7f</code>（0.9.2，Apache-2.0，当天还在提交）· 本项目 dsh runtime <code>0.2.1-rc.1</code>、页面桥 <code>v15</code>。<br>
+状态：<b>方案稿 + mockup，未改任何生产代码</b>。下文的 mockup 是纯 CSS 示意，<b>不是实现代码</b>。</p>
+
+<div class="banner red">
+<b>已拍板并已开工（2026-10-21）</b>
+<ol style="margin:6px 0 0; padding-left:18px">
+	<li><b>G1 = B：画布引擎换 Excalidraw（MIT）</b>，不用 tldraw（tldraw SDK license 禁生产使用，且禁止干扰其 License Key 校验 ⇒ VsSaros 发给项目成员日常用即属生产）。</li>
+	<li><b>交付形态随之改了：不再 vendor 上游产物 + 打补丁队列，改成「自研第一方插件 <code>@vssaros/dsh-imagegen</code>」</b>。理由：画布引擎一换，上游的画布层（tldraw 封装 + 状态同步 + 选区导出 + 落图桥，8 个文件）<b>全部作废</b>；fork 上游只剩 provider 层可复用，而那部分本来也要按我们的凭据口径重写 ⇒ "rebase 补丁队列"这条长期成本不划算（详见 §5）。</li>
+	<li><b>P1 已落地（可验收）</b>：聊天框里"画一张…"⇒ 真的出图并显示在对话里。IDE 侧补上 `media` 能力（生图），插件侧提供 <code>image_generate</code> 工具 + 官方图片画廊卡（§5.5 列了逐条改动）。</li>
+	<li><b>P2 待做</b>：画布工作台（Excalidraw）—— 承载形态推荐 <b>E1：编辑区「画布工作台」页签 = 自带会话的 dsh 聊天页 + 右栏画布铺宽</b>。理由：上游"结果落画布"靠<b>同一页面内</b>的当前会话事件流，我们每个聊天框是独立 WebContentsView ⇒ 跨视图"跟随会话"是最大的坑；E1 把聊天与画布放进同一个页面，这个坑直接不存在。</li>
+</ol>
+</div>
+
+<h2>1. 上游现状（事实，带出处）</h2>
+<table>
+<tr><th style="width:150px">面</th><th>事实</th><th style="width:250px">出处</th></tr>
+<tr><td>工具（6 个）</td><td><code>generate_image</code> / <code>generate_images</code>（1–10 条串行）/ <code>edit_image</code>（来源四选一，含 <code>source:'canvas_selection'</code>）/ <code>find_inspiration</code> / <code>canvas_state</code> / <code>view_canvas</code>。图片结果均带 <code>{type:'image', attachment}</code> 块，经 <code>ctx.attachments.saveImage</code> 落内容寻址存储，再复制一份到 <code>&lt;会话 cwd&gt;/dsh-image-gen/image-&lt;sha8&gt;.&lt;ext&gt;</code></td><td><code>src/index.ts:303-540</code>、<code>canvas-tools.ts:36-99</code>、<code>workspace-save.ts:26-145</code></td></tr>
+<tr><td>Provider（11 个）</td><td>google / openai / openai-compat / seedream / dashscope / xai / zhipu / comfyui + 3 个<b>订阅登录</b>（chatgpt-sub / grok-sub / google-sub，PKCE + 本机固定端口 1455/56121/51121 回调，内嵌 Google OAuth client secret）</td><td><code>shared.ts:144</code>、<code>subscription/*</code>、<code>vendors/antigravity.ts:33-35</code></td></tr>
+<tr><td>画布</td><td>tldraw 5.3.0 全量打进 <code>lib/client.js</code>（npm 0.9.2 产物 <b>4.89 MB</b>，<b>0 处</b> <code>require.async</code> 分包）。主入口挂 dsh <b>右侧栏页签</b>（<code>sidebarRightTabs.register</code> + <code>sidebar.right.pane.tab</code>，带 <code>guide</code> ⇒ 新右栏默认落到它），副入口 <code>conversation.view</code> 的「画廊」页签</td><td><code>client/index.tsx:1042-1093</code></td></tr>
+<tr><td>画布持久化</td><td>tldraw <code>persistenceKey="dsh-image-gen-workbench-v1"</code> 存浏览器 IndexedDB（<b>全局一份</b>，不分会话/工作区）；图库在 IndexedDB <code>dsh_image_gen_db</code> v4；Host 侧只有内存镜像 <code>CanvasMirror</code>（进程级单例）</td><td><code>studio-tl-canvas.tsx:327</code>、<code>gallery-store.ts:41-91</code>、<code>canvas-state.ts:1-11,113</code></td></tr>
+<tr><td>画布 ↔ Agent</td><td>不碰输入框、不发起 turn：① 画布 600ms 防抖 POST <code>/canvas-state</code>；② Host 把摘要经 <code>systemPrompt.context({order:60, text:()=&gt;digest()})</code> 注入；③ 客户端订阅<b>本页当前会话</b>的事件流，新 <code>tool/result</code> 里的图自动落到画布</td><td><code>canvas-sync.ts:191-209</code>、<code>index.ts:203-209</code>、<code>conversation-landings.ts:57-107</code></td></tr>
+<tr><td>HTTP 路由</td><td>全部挂 <code>/plugins/dsh-image-gen/*</code>（studio / image / import / delete / save-workspace / canvas-state / canvas-asset / inspiration / test / subscription-*）；鉴权只比对 Origin==Host，<b>请求不带 Origin 直接放行</b>，无一处 <code>connection.requestRejection</code></td><td><code>shared.ts:5-30</code>、<code>studio-route.ts:197-201</code></td></tr>
+<tr><td>设置 / 凭据</td><td>设置命名空间 = 入口 id <code>image-gen</code>（客户端写死）；Key 走 <code>ctx.credentials</code>，ref 名如 <code>GEMINI_API_KEY</code> / <code>DSH_IMAGE_GEN_OPENAI_COMPAT_KEY</code>；设置卡挂 <code>plugins.bundle.config</code></td><td><code>shared.ts:141,187-214</code>、<code>client/index.tsx:958-970</code></td></tr>
+<tr><td>开发依赖</td><td>dsh 全部 <code>0.1.7-rc.2</code>；<code>test:package</code> 用 dsh <code>0.2.0-rc.2</code> 验；仓库<b>无 lib/、无 node_modules</b>（要自己装依赖构建）</td><td><code>package.json</code>、<code>scripts/check-package.mjs:32-53</code></td></tr>
+</table>
+
+<h2>2. 与本项目的冲突清单（必须先处理的）</h2>
+<table>
+<tr><th style="width:28px">#</th><th style="width:170px">问题</th><th>事实与后果</th><th style="width:240px">处置</th></tr>
+<tr><td>B1</td><td>tldraw 许可 <span class="tag block">阻断</span></td><td>SDK license 禁止生产使用、禁止干扰 License Key 校验；无 key 时运行时进入 <code>unlicensed</code> 态并显示水印（产物里可见 <code>LicenseManager</code> / <code>UnlicensedWatermark</code> / <code>license-expired</code> 闸门）</td><td>决策 G1；P1 编译期剔除画布，P2 按结论接入</td></tr>
+<tr><td>H1</td><td>画布摘要毁前缀缓存 <span class="tag block">高</span></td><td>摘要含 <code>updated Ns ago</code>，每次组装都变（<code>canvas-state.ts:201-203</code>）；dsh 官方说明 system 节点"从首个变化的 token 起失去前缀复用"（<code>dsh-system-prompt/README.zh.md:154</code>）。⇒ 与我们 10-14「Host 端口进 system 提示词 ⇒ 命中率 6.4%」<b>同型事故</b>，而且<b>没打开画布也会注入</b>一句 "not connected"</td><td>补丁 P03：摘要移出系统提示词，改由 <code>canvas_state</code> 工具按需取</td></tr>
+<tr><td>H2</td><td>画布镜像跨会话串 <span class="tag block">高</span></td><td><code>CanvasMirror</code> 是进程级单例、<code>latest()</code> 取最新一份（<code>canvas-state.ts:113,168</code>）。VsSaros 一个 Host 服务所有聊天框 ⇒ A 会话的画布摘要/选区截图会被 B 会话的 <code>edit_image source=canvas_selection</code> 拿去用</td><td>补丁 P04：推送带 <code>sessionId</code>，按会话分键</td></tr>
+<tr><td>H3</td><td>路由无鉴权 <span class="tag block">高</span></td><td>dsh webServer 明说"不提供服务器级认证"（<code>dsh-host-webserver/README.zh.md:130</code>）；上游无 Origin 即放行 ⇒ 本机任何进程可调 <code>/studio</code>（花用户的 Key）、<code>/delete</code>、<code>/save-workspace</code>（往工作区写文件）。我们所有插件都调 <code>connection.requestRejection</code></td><td>补丁 P02：统一过 <code>requestRejection</code></td></tr>
+<tr><td>H4</td><td>dsh home 写死 <code>~/.dsh</code> <span class="tag warn">高</span></td><td><code>workspace-save.ts:156,181</code>、<code>inspiration-route.ts:258</code>。dev 实例 dsh home 是 <code>~/.vssaros-dev/dsh-home</code> ⇒ 工作区根发现失败（退回 <code>process.cwd()</code>），保存/删除的允许根集合错</td><td>补丁 P01：优先 <code>DSH_HOME</code></td></tr>
+<tr><td>H5</td><td>4.89MB 进每个聊天框 <span class="tag warn">高</span></td><td>dsh 客户端插件对每个 dsh 页面都加载；tldraw 静态打包 ⇒ 每个聊天框首屏多解析近 5MB（我们刚在治"首启卡"）</td><td>补丁 P06：画布与 Studio 拆成 <code>require.async</code> 懒加载块</td></tr>
+<tr><td>M1</td><td>右栏默认页被抢</td><td>studio 页签带 <code>guide</code>，上游注释原话：新右栏会直接落到它（<code>client/index.tsx:1069-1071</code>）。10-19 我们刚为「轨迹 / 用户消息定位」放开右栏 ⇒ 用户在聊天框一展开右栏就挂载 tldraw</td><td>补丁 P09：<code>guide</code> 可配、VsSaros 关</td></tr>
+<tr><td>M2</td><td>聊天框里多一个「画廊」页签</td><td><code>conversation.view</code> 页签会隐藏输入框（<code>gallery-view.tsx:634-645</code>），与"聊天框只放聊天"口径冲突</td><td>chat-surface 侧在 <code>surface=chat</code> 下屏蔽；图库放到工作台</td></tr>
+<tr><td>M3</td><td>订阅登录合规</td><td>复用 ChatGPT/Grok/Google 订阅账号（逆向 OAuth + 内嵌 client secret + 固定端口），有 ToS 与端口冲突风险</td><td>补丁 P07：VsSaros 构建里移除</td></tr>
+<tr><td>M4</td><td>灵感库外网</td><td>运行时拉 jsDelivr / gpt-image2.canghe.ai / GitHub raw 的图；两份 prompt 数据集<b>无许可声明</b>（<code>inspiration.ts:11-22</code>）</td><td>G3 决策；默认关闭拉图</td></tr>
+<tr><td>M5</td><td>新窗口 / blob</td><td><code>window.open(objectURL)</code> 被 <code>dshViewHost</code> 交给系统浏览器 ⇒ blob 地址打不开（<code>client/index.tsx:2486</code>）</td><td>补丁 P10：改"保存到工作区并在 IDE 打开"</td></tr>
+<tr><td>M6</td><td>两套生图并存且一套是坏的</td><td><code>vssaros-media</code> 的 <code>image_generate</code> 经桥 <code>ide.request{capability:'media'}</code>，而 <code>media</code> 不在 IDE 能力白名单、<code>dshIdeCapabilities.ts</code> 无此 case ⇒ <b>这条现在就不通</b></td><td>P1 下线 <code>image_generate</code>（或 P3 修好后改为 provider）</td></tr>
+<tr><td>M7</td><td>双 plane 挂载撞路由</td><td>上游在 <code>apply</code> 里注册 exact 路由；若同时进 host plane 与 preset rows，会 apply 两次</td><td>只挂 host plane；S1 实测工具在 vssaros preset 会话可见</td></tr>
+<tr><td>M8</td><td>"canvas" 语义撞车</td><td><code>vssaros-ide</code> 已有 <code>canvas</code> 工具（工作流 LiteGraph 画布），上游再加 <code>canvas_state</code>/<code>view_canvas</code>（tldraw 画布）</td><td>补丁里改两段 description，写明"图像工作台画布"</td></tr>
+</table>
+
+<h2>3. 目标形态</h2>
+<div class="cols">
+	<div class="card-mini"><h4>① 插件 <code>@vssaros/dsh-imagegen</code>（<code>dsh-plugins/vssaros-imagegen/</code>）</h4>
+	<ul>
+		<li>上游源码钉 commit + 补丁队列构建出的 <code>lib/index.js</code> / <code>lib/client.js</code>（+ P2 起 <code>lib/client.studio.js</code> 懒加载块）</li>
+		<li>清单：<code>module: 'imagegen'</code>，容器 <code>vssaros.dsh.imagegen</code>（page-only），图标 <code>codicon:paintcan</code>，侧栏页 <code>/x/imagegen/</code></li>
+		<li>入口 id 保持 <code>image-gen</code>（客户端设置读写写死了它，<code>shared.ts:141</code>）</li>
+	</ul></div>
+	<div class="card-mini"><h4>② 画布 = <b>我们自己的插件页</b>（<code>/x/imagegen/canvas/</code>）</h4>
+		<ul>
+		<li><b>为什么不塞进 dsh 聊天页/右栏</b>：画布引擎产物 <b>3.4MB</b>（§5.6）⇒ 放进 dsh 客户端包就变成"每个聊天框都加载 3.4MB"——那正是当初 tldraw（4.89MB）被否掉的原因</li>
+		<li>插件页是<b>独立 webview</b>（打开才加载）⇒ 体积只在这一个视图里付</li>
+		<li>页面完全自控（不依赖 dsh 的 slot 机制，也不用碰 dsh 布局 CSS ⇒ 不脆）</li>
+		<li>聊天仍在 Agent 栏（画布页在编辑区页签）⇒ 两个界面切换；"并排"是后面的体验增强</li>
+		</ul></div>
+	<div class="card-mini"><h4>③ Host 侧：画布状态镜像 + 两个工具</h4>
+		<ul>
+		<li>画布页把场景/选区推到 Host（<code>POST /x/imagegen/canvas/state</code>，<b>按会话分键</b> ⇒ 不会跨会话串）</li>
+		<li><code>canvas_state</code>（摘要）/ <code>view_canvas</code>（选区截图 → attachment）两个工具给 Agent 读</li>
+		<li><code>edit_image</code> 增加 <code>source:'canvas_selection'</code>（拿选区原图去改）</li>
+		<li>Agent 出的图回写画布：Host 记"本会话最近出图"⇒ 画布页拉取后落位</li>
+		</ul></div>
+</div>
+
+<div class="flow">
+	<span class="node">ActivityBar「画布」</span><span class="arrow">→</span>
+	<span class="node">侧栏页 /x/imagegen/（状态 + 打开按钮）</span><span class="arrow">→</span>
+	<span class="node">编辑区页签：画布页（Excalidraw，独立视图）</span><span class="arrow">↕</span>
+	<span class="node">Host 画布镜像（按会话）</span><span class="arrow">↔</span>
+	<span class="node">canvas_state / view_canvas / edit_image(canvas_selection)</span>
+</div>
+
+<h2>4. Mockup（纯示意，非实现代码）</h2>
+<p class="lead">可切换两种承载：<b>E1（推荐）</b>编辑区独立工作台；<b>H1</b> 只用聊天框右栏（零 IDE 改动，但画布被挤在 Agent 栏里）。点侧栏「打开画布工作台」也会切到 E1。</p>
+<div class="mock-switch" role="tablist">
+	<button type="button" class="on" data-mode="e1">E1 编辑区「画布工作台」（推荐）</button>
+	<button type="button" data-mode="h1">H1 聊天框右栏</button>
+</div>
+<div class="ide" id="ide">
+	<div class="ab">
+		<div class="ic">⌂</div><div class="ic">☰</div><div class="ic">⑂</div><div class="ic">◫</div>
+		<div class="ic on new" title="画布（新模块）">🎨</div><div class="ic">▤</div>
+	</div>
+	<div class="side">
+		<h5>画布 · 图像工作台</h5>
+		<button type="button" class="open" id="openStudio">打开画布工作台</button>
+		<div class="st"><span>图像来源</span><b>IDE：openai-compat</b></div>
+		<div class="st"><span>连接测试</span><b style="color:var(--ok)">通过</b></div>
+		<div class="st"><span>保存到工作区</span><b>dsh-image-gen/</b></div>
+		<div class="st"><span>画布</span><b>已打开 · 7 个对象</b></div>
+		<h5 style="margin-top:12px">最近生成</h5>
+		<div class="thumbs">
+			<i style="background:linear-gradient(135deg,#3a6186,#89253e)"></i><i style="background:linear-gradient(135deg,#134e5e,#71b280)"></i><i style="background:linear-gradient(135deg,#614385,#516395)"></i>
+			<i style="background:linear-gradient(135deg,#c79081,#dfa579)"></i><i style="background:linear-gradient(135deg,#232526,#414345)"></i><i style="background:linear-gradient(135deg,#1f4037,#99f2c8)"></i>
+		</div>
+	</div>
+	<div class="ed">
+		<div class="tabs"><span class="t">main.cpp</span><span class="t on" id="edTab">🎨 画布工作台</span></div>
+		<div class="ed-body">
+			<div class="chat studio">
+				<div class="msgs">
+					<div class="bubble u">把我画的草图做成一张赛博朋克街景，16:9</div>
+					<div class="toolcard">edit_image · source=canvas_selection<div class="img"></div><div class="act"><span>重新生成</span><span>保存到媒体库</span></div></div>
+					<div class="bubble a">已按草图生成，并放到画布右侧。</div>
+				</div>
+				<div class="composer">在画布会话里继续说…（这是 E1 页签自己的会话）</div>
+			</div>
+			<div class="canvas">
+				<div class="top"><span class="pill on">无限画布</span><span class="pill">预览</span><span class="pill">图库</span><span class="pill">灵感</span><span style="flex:1"></span><span>Studio：provider ▾ · 1:1 ▾ · ×2</span></div>
+				<div class="tb"><span class="on">↖</span><span>✎</span><span>▭</span><span>T</span><span>🖼</span></div>
+				<div class="sketch" style="left:46px; top:200px; width:130px; height:96px">草图（选中）</div>
+				<div class="item sel" style="left:196px; top:60px; width:170px; height:96px; background:linear-gradient(135deg,#3a6186,#89253e)"></div>
+				<div class="item" style="left:196px; top:176px; width:96px; height:96px; background:linear-gradient(135deg,#134e5e,#71b280)"></div>
+				<div class="item" style="left:304px; top:176px; width:96px; height:96px; background:linear-gradient(135deg,#614385,#516395)"></div>
+				<div class="note-pin" style="left:196px; top:290px">新结果自动落位（同页事件流）</div>
+				<div class="status"><span class="g">● 已同步</span><span>选中 2 · 原图 2 已上传</span><span>会话：画布会话 #3</span></div>
+			</div>
+			<div class="code">// 普通编辑器内容（H1 下编辑区不受影响）<br>int main() { return 0; }</div>
+		</div>
+	</div>
+	<div class="agent">
+		<div class="hdr">Agent · dsh 聊天框（chat-only）<span style="flex:1"></span><span title="右栏">⇥</span></div>
+		<div class="agent-body">
+			<div class="chat">
+				<div class="msgs">
+					<div class="bubble u">给登录页画一张背景图</div>
+					<div class="toolcard">generate_image · openai-compat<div class="img" style="background:linear-gradient(135deg,#1f4037,#99f2c8)"></div><div class="act"><span>在画布中打开</span><span>保存到工作区</span></div></div>
+				</div>
+				<div class="composer">输入消息…</div>
+			</div>
+			<div class="rb canvas">
+				<div class="top"><span class="pill on">图像工作台</span><span class="pill">轨迹</span></div>
+				<div class="tb"><span class="on">↖</span><span>✎</span><span>🖼</span></div>
+				<div class="item" style="left:46px; top:60px; width:140px; height:80px; background:linear-gradient(135deg,#1f4037,#99f2c8)"></div>
+				<div class="note-pin" style="left:40px; top:160px">约 300px 宽，画布很挤</div>
+				<div class="status"><span class="g">● 已同步</span></div>
+			</div>
+		</div>
+	</div>
+</div>
+
+<h2>5. 交付形态：自研第一方插件（<b>已改</b>）</h2>
+<p>原方案是"钉住上游 commit + 补丁队列 + 本地构建产物 vendored"。<b>G1 拍板 B 之后这条路不划算</b>，理由三条：</p>
+<ol>
+	<li>画布换 Excalidraw ⇒ 上游 <code>tl/*</code> 那 8 个文件（tldraw 封装 / 状态推送 / 选区导出 / 落图桥 / 画廊拖入）<b>全部作废</b>，要重写成 Excalidraw 适配层 ⇒ fork 下来的代码有一半用不上。</li>
+	<li>fork 剩下的 provider 层（11 个 provider / 订阅登录 / ComfyUI 工作流 / 灵感库）与我们"复用 IDE 侧模型 provider"的路线<b>方向相反</b>：我们要的是"经控制桥回 IDE"（凭据只有一份），上游是"插件自己持 Key"。</li>
+	<li>补丁队列的长期成本（上游当天还在合 PR ⇒ 每月 rebase）换来的只是 provider 层的抄写 ⇒ <b>不如自研</b>：代码在我们手里，许可干净（只有 Excalidraw MIT + 我们自己的 MIT），那些坑（摘要毁缓存 / 镜像跨会话 / 路由无鉴权 / <code>~/.dsh</code> 写死）<b>从一开始就不存在</b>，而不是"打了补丁才不犯"。</li>
+</ol>
+<table>
+<tr><th style="width:190px">决策</th><th>选择</th><th>理由 / 代价</th></tr>
+<tr><td>包名</td><td><code>@vssaros/dsh-imagegen</code>（目录 <code>dsh-plugins/vssaros-imagegen/</code>，模块 id <code>imagegen</code>）</td><td>与仓库里上一轮已登记的迁移台账一致（<code>migration-ledger.json</code> 的 <code>media-gen</code> 族已写明"@vssaros/dsh-imagegen（vssaros-imagegen 0.1.0，image_generate 工具）"）⇒ 沿用它的命名与版本</td></tr>
+<tr><td>入口 id</td><td><code>image-gen</code>（设置命名空间）</td><td>客户端设置读写写死了它（<code>shared.ts:141</code>）</td></tr>
+<tr><td>与 npm <code>dsh-image-gen</code> 共存</td><td>插件中心对它标"已内置"并拦装</td><td>两份都会注册同名工具</td></tr>
+<tr><td>许可与署名</td><td>我们自己的 MIT + 后续随包带 <b>Excalidraw 的 MIT 原文与第三方声明</b>（P2）</td><td>tldraw 那份许可问题<b>整体消失</b>（不随包 ⇒ 不分发）</td></tr>
+</table>
+
+<h3>5.5 P1 已落地（逐条）</h3>
+<div class="cols">
+	<div class="card-mini"><h4>① IDE 侧：补上 <code>media</code> 能力</h4>
+	<ul>
+		<li><code>vssarosPluginManifest.ts</code>：白名单加 <code>'media'</code>（+ 联合类型）</li>
+		<li><code>dshIdeCapabilities.ts</code>：<code>case 'media'</code>（op <code>generateImage</code>）+ env 成员 <code>generateImage?</code> + 慢档预算 <code>IDE_REQUEST_MEDIA_TIMEOUT_MS</code>（9 分钟）</li>
+		<li><code>dshHarnessService.ts</code>：<code>_ideEnv()</code> 里接 <code>IAgentOSService.getModelProviders()</code> ⇒ 挑"第一个有 <code>generateImage</code> 的 provider"＋"第一个 <code>supportsImageGen</code> 的模型"</li>
+		<li>⚠ 顺手修掉一个<b>真实断链</b>：旧 <code>vssaros-media</code> 的 <code>image_generate</code> 今天**根本跑不通**（IDE 侧没有 <code>media</code> 实现；且它填的桥 <code>pluginId</code> 是入口 id，而授权表按<b>包名</b>建 ⇒ 永远被判"插件未安装"）</li>
+	</ul></div>
+	<div class="card-mini"><h4>② 插件侧：<code>@vssaros/dsh-imagegen</code></h4>
+	<ul>
+		<li><code>lib/index.js</code>：<code>image_generate</code> 工具（prompt/size/model/n）→ 经桥 <code>ide.request{capability:'media'}</code> → 图存 <code>attachments.saveImage</code> ⇒ 结果带 <b>image 内容块</b></li>
+		<li><code>lib/client.js</code>：keyed 槽 <code>tool.call.toolview</code>（key=<code>image_generate</code>，声明子槽 <code>tool.call.images</code>）⇒ 官方画廊渲染，<b>不自己拼 data URL</b></li>
+		<li>审批闸：生图<b>要花钱</b> ⇒ 挂官方 <code>tools/pre-execute</code>（<code>kind:'ask'</code>）—— 反向通道的闸只做授权、<b>不弹确认</b>，所以闸必须挂在工具上</li>
+		<li>静态依赖只有 <code>tools</code>；<code>webServer/connection/attachments/bridge</code> 全走可选注入</li>
+	</ul></div>
+	<div class="card-mini"><h4>③ 配套改动与守卫</h4>
+	<ul>
+		<li>旧 <code>image_generate</code> 从 <code>vssaros-media</code> 移除（死代码）＋版本 0.5.4</li>
+		<li>模块登记四处（<code>DshModuleId</code> / <code>DSH_BUILTIN_MODULES</code> / <code>DSH_MODULE_PAGES</code>，P1 无页面 ⇒ kind='none'）</li>
+		<li>preset 行（<code>preset-vssaros.rows.yml</code>）+ <code>cordis.presets.yml</code> 重生成</li>
+		<li>工具面快照重生成（17 插件 / 131 工具）</li>
+		<li>新探针 <code>p3-156-imagegen-generate.mjs</code>（11 条：注册 / 缺参 / 桥不在 / 桥参数 / <b>pluginId 是包名</b> / attachment / image 块 / 并发语义 / 审批闸 / 闸不误伤）</li>
+		<li>守卫：dshHarness common <b>771 passing / 0 failing</b>；<code>tsgo</code> exit 0</li>
+	</ul></div>
+</div>
+
+<h3>5.6 画布引擎已落地：Excalidraw vendor（<span style="color:var(--ok)">2026-10-21 已完成</span>）</h3>
+<div class="cols">
+	<div class="card-mini"><h4>做法：钉版本 + 自建构建 + 产物随包</h4>
+	<ul>
+		<li>引擎 <b>Excalidraw 0.18.1（MIT）</b>；源码不入库，<code>dsh-plugins/vssaros-imagegen/vendor/excalidraw/</code> 里是<b>构建脚本 + 钉版本的依赖清单</b></li>
+		<li>产物落 <code>dsh-plugins/vssaros-imagegen/lib/canvas/</code>（33 个文件 / <b>3.4MB</b>），随插件打进 profile ⇒ <b>离线可用</b></li>
+		<li>重建：<code>cd vendor/excalidraw &amp;&amp; node build.mjs</code>；CI 口径 <code>node build.mjs --check</code>（产物缺失就红）</li>
+		<li>许可：Excalidraw MIT 原文随包（<code>vendor/excalidraw/LICENSE-excalidraw.txt</code>）+ 插件自身 MIT + <code>THIRD_PARTY.md</code></li>
+	</ul></div>
+	<div class="card-mini"><h4>三处刻意裁剪（省下 ≈4.1MB）</h4>
+	<ul>
+		<li><b>mermaid-to-excalidraw → 替身</b>：省 2.6MB（mermaid + cytoscape + katex）；被调用时<b>明确报错</b>，不静默少功能</li>
+		<li><b>locale 代码分割 + 只留 zh-CN/en/ja-JP/zh-TW</b>：省 1.5MB（全量 75 个语言包）</li>
+		<li>字体走 woff2 独立文件（不 base64 内联）</li>
+	</ul></div>
+	<div class="card-mini"><h4>已实测（浏览器真渲染）</h4>
+	<ul>
+		<li>画布渲染正常、中文界面生效（"素材库/撤销/重做"）、<b>无 console 错误</b></li>
+		<li>API 齐备：<code>getSceneElements</code> / <code>updateScene</code> / <code>addFiles</code> / <code>getAppState</code> / <code>getFiles</code> / <code>history</code> / <code>exportToBlob</code> / <code>serializeAsJSON</code></li>
+		<li>⚠ 四条 API 坑（照抄会白写）：<code>excalidrawAPI</code> 必须传<b>函数</b>；<code>langCode</code> 是<b>顶层 prop</b>；<code>UIOptions.languages</code> 要显式给；CSS 导入需 esbuild <code>--conditions=production</code></li>
+	</ul></div>
+</div>
+
+<h2>6. 上游那些坑 ⇒ 现在的处置</h2>
+<p>自研路线下，§2 那张冲突表<b>不再是"要打的补丁"</b>，而是"我们自己写时必须避开的坑"</b>（P1 已按这个口径写完）：</p>
+<table>
+<tr><th style="width:28px">#</th><th style="width:150px">坑</th><th>自研时的处置</th><th style="width:120px">状态</th></tr>
+<tr><td>B1</td><td>tldraw 许可</td><td>画布改用 <b>Excalidraw（MIT）</b>；tldraw 整块不碰、不随包</td><td><span class="tag ok">已定 B</span></td></tr>
+<tr><td>H1</td><td>摘要毁前缀缓存</td><td>画布摘要<b>不进系统提示词</b>，改由 <code>canvas_state</code> 工具按需取（与 10-14 端口漂移事故同型）</td><td><span class="tag warn">P2 待做</span></td></tr>
+<tr><td>H2</td><td>画布状态跨会话串</td><td>推送带 <code>sessionId</code>，Host 侧按会话分键（不是进程级单例）</td><td><span class="tag warn">P2 待做</span></td></tr>
+<tr><td>H3</td><td>路由无鉴权</td><td>每个路由先过 <code>connection.requestRejection</code>（我们所有插件都这么做）</td><td><span class="tag warn">P2 待做</span></td></tr>
+<tr><td>H4</td><td>dsh home 写死</td><td>走 foundation 的 <code>dshHomeOf</code>（真源唯一）</td><td><span class="tag warn">P2 待做</span></td></tr>
+<tr><td>H5</td><td>4.89MB 进每个聊天框</td><td>Excalidraw 与画布 UI <b>不进聊天框 bundle</b>（画布只在工作台页签里懒加载）</td><td><span class="tag warn">P2 待做</span></td></tr>
+<tr><td>M1</td><td>右栏默认页被抢</td><td>我们自绘画布页签，<b>不碰官方 guide</b> ⇒ 聊天框右栏默认仍是「轨迹」</td><td><span class="tag warn">P2 待做</span></td></tr>
+<tr><td>M3</td><td>订阅登录合规</td><td>不实现订阅登录（凭据只有 IDE 侧 provider 一条路）</td><td><span class="tag ok">天然满足</span></td></tr>
+<tr><td>M4</td><td>灵感库外网</td><td>不实现外网拉图；提示词素材要进就自备并带许可</td><td><span class="tag ok">天然满足</span></td></tr>
+<tr><td>M6</td><td>两套生图并存</td><td>旧的同名死代码已移除，只剩一条 <code>image_generate</code></td><td><span class="tag ok">已做</span></td></tr>
+</table>
+
+<h2>7. 分期执行（每期可独立验收、独立回滚）</h2>
+
+<div class="phase"><h3>P0 · 决策与实测摸底（约 3 天）</h3>
+<div class="meta">产出：G1–G4 拍板 + 5 条 spike 结论；不进生产代码。</div>
+<ol class="steps">
+	<li><b>S1 挂载 plane</b>：本地构建上游原样产物 → 装到隔离 dev profile 的 host plane → 在 <code>vssaros-standard</code> 会话里确认 6 个工具可见、路由 200、apply 只跑一次。</li>
+	<li><b>S2 聊天框右栏（H1 基线）</b>：在现有 chat-only 聊天框里展开右栏、<code>openTab</code> 到 studio，记录可用宽度与 tldraw 挂载耗时。</li>
+	<li><b>S3 E1 布局可行性</b>：编辑区建一个 <code>surface=chat</code> 视图，CSS 让右栏占约 70%（锚 <code>[data-slot="rightbar"]</code>），验证宽度拖拽、会话在屏后 <code>openTab</code> 稳定生效。</li>
+	<li><b>S4 首屏代价</b>：同一台机器量聊天框首屏，对比"不装 / 装原样 4.89MB / 装分包版"三档（判据：<code>[dshHarness] view … page surface</code> 日志里的打开耗时）。</li>
+	<li><b>S5 填 Key 的入口</b>：确认 <code>plugins.bundle.config</code> 设置卡在 VsSaros 哪里能到（插件中心 / 弹窗全窗 / 都到不了）；确认 IDE 往 <code>DSH_IMAGE_GEN_OPENAI_COMPAT_KEY</code> 同步凭据 + 覆盖层写 <code>openaiCompatBaseURL/Model</code> 后，与用户在设置卡里改的值谁优先。</li>
+</ol></div>
+
+<div class="phase"><h3>P1 · 聊天内生图（<span style="color:var(--ok)">✅ 2026-10-21 已落地</span>）</h3>
+<div class="meta">用户价值：任何 dsh 聊天框里"画一张…"直接出图、卡片可渲染。零许可风险。逐条改动见 §5.5。</div>
+<ol class="steps">
+	<li>IDE 侧 <code>media</code> 能力 + 插件 <code>@vssaros/dsh-imagegen</code>（工具 + 官方画廊卡 + 审批闸）✓</li>
+	<li>旧 <code>image_generate</code> 死代码从 <code>vssaros-media</code> 移除 ✓</li>
+	<li>模块登记四处 + preset 行 + 工具面快照 ✓</li>
+	<li>探针 <code>p3-156</code>（11/11 ✓）+ <code>p3-107</code> 随迁调整（11/11 ✓）</li>
+	<li>守卫：dshHarness common 771/0 ✓；tsgo exit 0 ✓；<code>check:dsh-plugins</code> 仅剩两条**既有**红（codebase 契约 / spawn-hide），与本次无关</li>
+	<li>⚠ <b>未做真机验证</b>：本轮只跑了进程内探针与静态守卫 ⇒ "真机聊天框里出图"要装到 dev profile 后人工确认（P2 的第一步就做这件事）</li>
+</ol></div>
+
+<div class="phase"><h3>P2 · 画布工作台（Excalidraw）· 约 8–10 天</h3>
+<div class="meta">前提：P1 真机验证通过。画布引擎 = Excalidraw（MIT），<b>不上 tldraw</b>；产物已 vendor 进插件（§5.6 ✅）。</div>
+<ol class="steps">
+	<li><span style="color:var(--ok)">✅</span> <b>画布页</b>（<code>/x/imagegen/canvas/</code>）：路由把 <code>lib/canvas/**</code> 当静态资源发出去（HTML + entry.js + chunks + 字体，<b>路径穿越防护</b> + 官方 <code>connection.requestRejection</code> 鉴权）</li>
+	<li><span style="color:var(--ok)">✅</span> <b>画布页 JS</b>：Excalidraw 挂载（中文）+ 场景/选区 600ms 防抖推送 + 首屏恢复；<b>浏览器真跑通过</b>（画一个矩形 ⇒ 状态确实推上去了）</li>
+	<li><span style="color:var(--ok)">✅</span> <b>Host 侧</b>：画布镜像（按 <code>clientInstance</code> 分键 + <code>sequence</code> 挡旧消息）+ 两个<b>只读</b>工具 <code>canvas_state</code> / <code>view_canvas</code>（选区截图存 attachment ⇒ Agent 能看见）</li>
+	<li><span style="color:var(--ok)">✅</span> <b>IDE 侧</b>：模块改 page（容器 <code>vssaros.dsh.imagegen</code> / order 85 / <code>codicon:paintcan</code> + 侧栏页 <code>/x/imagegen/</code>，按钮走桥 <code>openModulePage('/x/imagegen/canvas/')</code> ⇒ <b>不需要新桥命令</b>）</li>
+	<li><span style="color:var(--ok)">✅</span> <b>Agent 出的图自动落画布</b>：Host 侧「最近出图」账本（内存 50 条）+ 两个路由（列表 / 图字节）；画布页每 3s 轮询 ⇒ 取字节 → dataURL → 放成 image 元素（按图 id 去重）。<b>浏览器实测通过</b>（模拟 Host 给一张图 ⇒ 画布上真的出现了图）</li>
+	<li><span style="color:var(--ok)">✅</span> <b>「按选区改图」</b>（用户说「照我画的改」）：插件侧 <code>edit_image</code> 工具（参考图 = 画布选区**原图**，画布页随状态推上来）→ 经桥 <code>op:'editImage'</code> → IDE 侧 provider 的 <b>multipart <code>/images/edits</code></b>（img2img 通道，本仓 <code>IImageGenParams.imageInput</code> 已支持 ✓）。
+	★ <b>降级不静默</b>：provider 的 edits 端点不可用时会回退成文生图 ⇒ 已加 <code>degraded</code> 标记（<code>IImageGenResult</code> / 能力层 / 工具文本三处都透出）</li>
+	<li><b>待做</b>：画布按<b>工作区</b>分块（现在是"最后活跃的那块"，多窗口会互相顶）</li>
+	<li><b>可选</b>：把画布页嵌进 dsh 聊天视图的右栏，做"聊天 + 画布并排"（要碰 dsh 布局 CSS ⇒ 脆 ⇒ 放最后）</li>
+	<li><b>守卫</b>：工具面快照（133 工具）、覆盖映射（<code>p3-156</code> / <code>p3-157</code>）、模块登记四处、<code>check-plugin-files</code>（<code>lib/canvas/**</code> 已在 files 里 ✓）；⚠ <b>有页面 + 路由的模块不进 preset 行</b>（sessions 同款理由）⇒ 已移到 host-plane-only 豁免表</li>
+</ol></div>
+<ol class="steps">
+	<li><b>补丁</b>：P04 / P05 / P06 / P09 / P10 / P12；<code>P11</code> 开关翻成 true。</li>
+	<li><b>IDE</b>：<code>DshImageStudioEditorPane</code> + <code>EditorInput</code>（按窗口单例，页签名「画布工作台」、图标 paintcan）；画布会话 id 用 <code>dshChatNewSessionId('image-studio', windowId)</code> 一窗一条（同弹窗第七刀"互不影响"口径），重开回到同一条。</li>
+	<li><b>桥</b>：<code>openImageStudio</code>（协议联合 + <code>validatePageCommand</code> + preload + 宿主消费，<code>DSH_PAGE_BRIDGE_VERSION</code> 与 preload 字面量同改 <code>15 → 16</code>）。</li>
+	<li><b>chat-surface</b>：<code>client.imagegen.js</code>（studio 布局开右栏页签 + 铺宽；普通聊天框工具卡加「在画布中打开」→ 桥）；登记进 <code>PART_CHUNKS</code>（注释禁 ASCII 双引号）与 <code>check-chat-surface-chunks.mjs</code>。</li>
+	<li><b>清单改 page</b>：<code>vssaros.activityBar</code>（容器 <code>vssaros.dsh.imagegen</code>、order 待 Q4）+ <code>view:{kind:'page', route:'/x/imagegen/'}</code>；同步主页「工作台」组件的 <code>WORKBENCH_MODULES</code> 与全窗 <code>client.workbenchNav.js</code> 的入口表。</li>
+</ol>
+<p><b>验收</b>：真机 ① ActivityBar 出现「画布」，侧栏页状态正确；② 点「打开画布工作台」→ 编辑区页签出现，右栏宽度 ≥ 60%，会话在屏；③ 页签内"画一张…"→ 结果<b>自动落到画布</b>；④ 选中草图 + 图片 →"按选区重画"走 <code>edit_image source=canvas_selection</code>；⑤ 两个窗口各开一个工作台，A 的选区<b>不会</b>被 B 用到（P04）；⑥ 重启 IDE 画布内容还在（同 partition <code>persist:vssaros-dsh</code> + <code>host-port.json</code> 复用端口 ⇒ 同 origin）；⑦ 普通聊天框首屏与 P1 相比增量 ≤ S4 定的预算。</p></div>
+
+<div class="phase"><h3>P3 · 接进 IDE 生态（约 5 天，可选）</h3>
+<ol class="steps">
+	<li><b>IDE 能力 <code>media</code></b>：<code>VSSAROS_IDE_CAPABILITIES</code> 白名单 + <code>dshIdeAuthorization</code> + <code>dshIdeCapabilities.ts</code> 新 case（<code>generateImage</code> 路由到 IDE 侧 provider，含扩展型）+ 清单 <code>ideCapabilities:['media']</code> + 覆盖率测试把扫描面从只扫 <code>vssaros-ide</code> 扩到全部插件（现在正是它漏掉了 media）。</li>
+	<li><b>补丁 P13</b>：provider <code>vssaros</code>（零 Key：凭据全在 IDE 进程）。</li>
+	<li><b>「保存到媒体库」</b>：IDE 侧是 <code>MediaStore</code> 唯一写者（<code>persistence.json:124-133</code>）⇒ 走桥命令让 IDE 写，不让插件碰 <code>media.db</code>。</li>
+</ol></div>
+
+<div class="phase"><h3>P4 · 收尾（约 2–3 天）</h3>
+<p>探针登记 run-all 与覆盖号段；<code>poc/dsh-p0/README.md</code> 追加一站；把标了 <span class="tag up">PR</span> 的补丁提给上游（P01/P02/P03/P04/P06/P09/P10/P11 共 8 条，合入后补丁队列只剩 P05/P07/P08/P12/P13）。</p></div>
+
+<h2>8. 风险与回滚</h2>
+<table>
+<tr><th style="width:200px">风险</th><th>缓解</th><th style="width:240px">回滚</th></tr>
+<tr><td>上游迭代快（当天还在合 PR），补丁 rebase 常冲突</td><td>钉 commit；每月一次有计划升级；补丁按"单一目的"拆小；PR 上游化</td><td>回到上一个 VENDOR 版本目录</td></tr>
+<tr><td>E1 依赖 dsh 布局属性（<code>data-slot</code>）</td><td>CSS 只锚 <code>data-*</code>，不锚哈希类名；chunk 自证写 <code>rightbarWidth</code>、<code>studioTabOpen</code> 进主进程日志</td><td>退回 H1（只用聊天框右栏）</td></tr>
+<tr><td>IndexedDB 按 origin 隔离</td><td>依赖 <code>host-port.json</code> 端口复用；端口被占换端口时画布"像被清空"⇒ 侧栏页要明说"端口变了，旧画布在 :XXXX"</td><td>—</td></tr>
+<tr><td>弹窗全窗用非 persist 分区</td><td>弹窗里不提供画布入口（关窗即丢）</td><td>—</td></tr>
+<tr><td>首屏变慢</td><td>P06 分包；S4 设预算，探针盯</td><td>插件中心停用 imagegen（图标与工具即时消失）</td></tr>
+</table>
+
+<h2>9. 需要你拍板的问题</h2>
+<ol>
+	<li><b>G1 画布许可</b>：<b>✅ 已定 B（Excalidraw / MIT）</b>——2026-10-21 用户拍板。随之交付形态改为自研第一方插件（§5），tldraw 整块不碰、不随包。</li>
+	<li><b>G2 生图模型范围</b>：当前实现走 <b>IDE 侧 provider 自动选</b>（第一个有 <code>generateImage</code> 的 provider ＋ 第一个 <code>supportsImageGen</code> 的模型；工具参数里已留 <code>model</code> 可显式指定）。要不要再让模型显式选 provider？要不要限定"只用某一个 provider"？</li>
+	<li><b>G3 灵感库</b>：建议<b>不做</b>（外网拉图 + 两份数据集无许可声明）；提示词素材要进就自备并带许可。</li>
+	<li><b>G4 承载</b>：<b>E1（编辑区「画布工作台」页签）还是 H1（只用聊天框右栏）</b>？以及 Q4：ActivityBar 位置——放「工作流」之后（order 85，归"创作类"）还是「媒体库」旁（114，归"资料库系"）？</li>
+	<li><b>Q5 审批体验</b>：生图每次都要用户点头（要花钱 ⇒ fail-closed）。要不要给"本会话免确认"的口子？</li>
+	<li><b>Q6 真机验证窗口</b>：P1 只跑了进程内探针 ⇒ 什么时候可以装到 dev profile 做真机确认（要停/起 Host）？</li>
+</ol>
+
+<p class="lead" style="margin-top:28px">证据来源：上游源码逐文件阅读（行号见各表）；本项目 <code>dshModuleContainers.ts</code>、<code>dshPageBridgeProtocol.ts:68,349-364</code>、<code>dshViewHost.ts:530,549-553</code>、<code>dshPluginPageEditorPane.ts:12-20,74,166</code>、<code>client.fileCards.js:106-196</code>、<code>dshProviderSyncPlan.ts:43-171</code>；dsh 官方 <code>dsh-system-prompt/README.zh.md:154</code>、<code>dsh-host-webserver/README.zh.md:130</code>；tldraw <code>LICENSE.md</code>（main 分支，2026-10-20 读取）；npm <code>dsh-image-gen@0.9.2</code> 产物实测。</p>
+</div>
+
+<script>
+(function () {
+	var ide = document.getElementById('ide');
+	var buttons = document.querySelectorAll('.mock-switch button');
+	function setMode(mode) {
+		ide.classList.toggle('h1', mode === 'h1');
+		for (var i = 0; i < buttons.length; i++) {
+			buttons[i].classList.toggle('on', buttons[i].getAttribute('data-mode') === mode);
+		}
+		document.getElementById('edTab').textContent = mode === 'h1' ? 'main.cpp（编辑区不变）' : '🎨 画布工作台';
+	}
+	for (var i = 0; i < buttons.length; i++) {
+		buttons[i].addEventListener('click', function (e) { setMode(e.currentTarget.getAttribute('data-mode')); });
+	}
+	document.getElementById('openStudio').addEventListener('click', function () { setMode('e1'); });
+})();
+</script>
+</body>
+</html>
+<h2>10. 与上游的能力差（2026-10-21 逐项核对）＋ 优化四批</h2>
+<p class="sub">上游 = <code>G:\CustomWorkspaces\AIProjects\dsh-image-gen</code>（v0.9.2）。下面每条都有上游出处；「我们领先」的部分<b>不要动</b>——那几条正是当初不 fork 上游的理由。</p>
+<h3>10.1 路线差异（我们领先，锁住）</h3>
+<table>
+<tr><th style="width:150px">维度</th><th>上游</th><th>我们</th></tr>
+<tr><td>凭据真源</td><td>插件自己持 11 个 provider 的 Key（DSH Credentials）+ 3 套订阅 OAuth（<code>src/config.ts:193-230</code>）</td><td><b>经桥回 IDE</b>：只有 IDE 侧一份（<code>IModelProvider</code> 注册表）⇒ 凭据不搬家、不双份</td></tr>
+<tr><td>接口鉴权</td><td>只做同源 Origin 校验（无 token）⇒ 本机任何进程可调</td><td>官方 <code>connection.requestRejection</code>（每个路由）</td></tr>
+<tr><td>画布摘要</td><td>注入 <code>systemPrompt.context</code>，含 "updated Ns ago" ⇒ 每次组装都变 ⇒ <b>毁前缀缓存</b></td><td><b>不注入</b>：Agent 主动调 <code>canvas_state</code> 拉</td></tr>
+<tr><td>图生图降级</td><td>edits 失败 ⇒ <b>静默</b>回退文生图（只打日志）</td><td><code>degraded</code> 标记一路透到用户眼前</td></tr>
+<tr><td>许可 / 体积</td><td>tldraw（禁生产使用）· 4.89MB 进客户端包</td><td>Excalidraw MIT · 3.4MB <b>独立页按需加载</b></td></tr>
+<tr><td>dsh home</td><td>写死 <code>~/.dsh</code>（<code>workspace-save.ts:156</code>）</td><td>不读本地目录（无此问题）</td></tr>
+</table>
+<h3>10.2 上游领先、我们缺的能力（按「用户价值 × 成本」排四批）</h3>
+<table>
+<tr><th style="width:52px">批次</th><th style="width:210px">缺口</th><th>上游怎么做</th><th style="width:230px">我们怎么补</th></tr>
+<tr><td><b>一批</b> ✅<br>低成本</td><td>✅ <b>① <code>canvas_state</code> 只说"3 个对象"</b>（模型不知道画布上具体有什么）</td><td>摘要带<b>节点清单</b>（≤24 条，kind/尺寸/文字/prompt，<code>canvas-state.ts:187-239</code>）</td><td>摘要加节点清单（沿用上游的 ≤24 条上限 + 文字截断）</td></tr>
+<tr><td></td><td>✅ ② 选区截图<b>无尺寸/体积上限</b>（大画布 ⇒ 超大 dataURL）</td><td>PNG→JPEG(0.85)→JPEG(0.75×scale) 逐级降质，最长边 2048、4MB 上限（<code>client/tl/canvas-selection.ts:7-26</code>）</td><td>同样做"限长边 + 体积上限 + 降质"（我们自己那份 <code>exportToBlob</code> 没有这层）</td></tr>
+<tr><td></td><td>✅ ③ 选区截图<b>没有"还在准备中"的状态</b>（模型会误判成"没有截图"）</td><td><code>selectionStatus: preparing|ready|error</code> + <code>selectionError</code>（<code>shared.ts:107-131</code>、<code>canvas-tools.ts:141-190</code>）</td><td>同样的三态；模型侧遇 preparing 要"稍等"而不是当成空</td></tr>
+<tr><td></td><td>✅ ④ 模型看不到"这张图怎么来的"（无溯源）</td><td>生成时把 prompt/provider/model 写进 shape.meta（<code>client/tl/studio-tl-canvas.tsx:203-213</code>）⇒ 摘要里可读</td><td>Excalidraw 元素<b>没有 meta 字段</b>（会被 sanitize 掉）⇒ 宿主侧另存一张"元素 id → 溯源"表，画布页推状态时带上</td></tr>
+<tr><td><b>二批</b> ✅<br>中成本</td><td>✅ <b>⑤ 图只活在 attachment 里</b>：用户拿不到"工作区里的一张文件"</td><td>内容寻址落盘 <code>&lt;ws&gt;/&lt;folder&gt;/image-&lt;sha256前8&gt;.&lt;ext&gt;</code>，staging+rename 原子写、目录包含性/符号链接校验（<code>workspace-save.ts:26-145</code>）</td><td>✅ <b>同款落盘</b>（<code>lib/workspaceSave.js</code>）：内容寻址 <code>image-&lt;sha8&gt;.&lt;ext&gt;</code>、同目录临时文件+rename 原子写、目录包含性 + 软链解析后仍在根内；工作区根走 <b>foundation 运行期上下文</b>（不读 <code>~/.dsh</code> ✓）＋ 工具参数 <code>save_to_workspace</code>（<b>默认 true</b>，<code>save_dir</code> 可改目录）＋ 回执带绝对路径</td></tr>
+<tr><td></td><td>✅ ⑥ <code>edit_image</code> 只有"画布选区"一种来源</td><td><code>source</code> ∈ canvas_selection / attachment_id / attachment_ids[] / path；且<b>选区全是图片且完整覆盖 ⇒ 用原始分辨率原图</b>（不降质），混合选区 ⇒ 原图 + 整选区截图（<code>canvas-tools.ts:133-191</code>）</td><td>✅ 补 <code>source</code> ∈ canvas_selection / attachment_id / path（路径做工作区包含性校验）+ 那套"能用原图就别用截图"的优先级（<b>选区只有图 ⇒ 原图不降质</b>；混了别的元素 ⇒ 整选区截图）。<br>⚠ <b>与上游的差别（写清理由）</b>：上游"混合选区 ⇒ 原图 + 整选区截图"要<b>两张参考图</b>，而 provider 的图生图契约 <code>imageInput</code> 是<b>单数</b> ⇒ 扩容要动 IDE 侧 6 个文件（providers/mainProcessModelProvider/llmBridgeNode/dshIdeCapabilities×2/dshHarnessService）⇒ 留到三批之后</td></tr>
+<tr><td><b>三批</b> ✅<br>中成本</td><td>✅ ⑦ 无<b>多 prompt 批量</b>（我们只有同 prompt 的 n 张）</td><td><code>generate_images(prompts[])</code>，1–10 条、顺序执行、单条失败进 failures 不中断、aborted 有语义（<code>src/index.ts:323-392</code>）</td><td>✅ 同名工具同款语义（<b>顺序</b>执行 / 单条失败进 <code>failures</code> 不中断 / <code>exec.signal.aborted</code> ⇒ 还没开始的记成"已取消" / 一次最多 10 条 / 审批闸一起拦）；<b>全失败不抛异常</b>（回 0/N + 失败清单，避免取消时变成红色报错）</td></tr>
+<tr><td></td><td>✅ ⑧ 无<b>多模型对比</b></td><td>并发向 N 个 provider 各发一条，按各 provider 能力表修正 ratio/quality（<code>client/multi-model-compare.ts:14-45</code>）</td><td>✅ 新工具 <code>compare_models</code>：同一条 prompt 多个 <code>{provider, model?}</code> <b>并发</b>各发一条（⇒ 等最慢的那家，不是逐家相加），某家失败不影响其余；参数按 ⑨ 的能力表<b>校正</b>（provider 登记了却不支持的档位 ⇒ 去掉并在文本里说明；没登记 ⇒ 原样透传，不瞎改）</td></tr>
+<tr><td></td><td>✅ ⑨ 模型能力（比例/质量/分辨率档）是各家私有的，我们没有表</td><td>每 provider 一张能力表（<code>src/capabilities.ts:93-184</code>、<code>shared.ts:260-279</code>）</td><td>✅ <b>让 IDE 侧暴露</b>：<code>IModelProvider.imageCapabilities?()</code>（模型清单取自 provider 自己的 <code>listModels</code> 的 <code>supportsImageGen</code> ⇒ 单一真源）→ <code>media</code> 能力新增 <code>op:'capabilities'</code> → Host 侧 <code>lib/capabilities.js</code> 缓存 60s + 新工具 <code>image_models</code>（模型据此知道"能选谁"）。<br>⚠ <b>比例/质量/尺寸档是可选字段且默认为空</b>：IDE 侧今天**没有**这张表 ⇒ 不臆造（猜出来就是第二份真源 ⇒ 必漂）⇒ 没登记就按"原样透传"处理</td></tr>
+<tr><td><b>四批</b><br>体验</td><td>⑩ 落位布局简陋（我们横向排开）</td><td>3 列网格 + 去重 + 落视口外自动 pan/zoom（<code>client/tl/conversation-landings.ts:70-107</code>、<code>studio-tl-canvas.tsx:95-234</code>）</td><td>同款落位算法（Excalidraw 的 <code>scrollToContent</code> 可用）</td></tr>
+<tr><td></td><td>⑪ 无画廊/历史</td><td>IndexedDB 4 个 store + 按 provider/比例/搜索/排序/收藏/批量 ZIP/删除/从磁盘导入（<code>client/gallery-store.ts:9-45</code>、<code>gallery-view.tsx</code>）</td><td>轻量版先做：<b>我们已有"最近出图"账本</b>⇒ 先做"本会话/本工作区最近生成"列表；持久画廊等落盘（二批⑤）后再上</td></tr>
+<tr><td></td><td>⑫ 不能从磁盘/画廊拖图进画布</td><td>自定义 MIME 拖拽 + 缩略图"发送到画布"按钮（<code>client/tl/gallery-image-transfer.ts</code>、<code>gallery-canvas-button.tsx</code>）</td><td>画布页加"插入图片"（文件选择 → 落 attachment → 进画布）</td></tr>
+</table>
+<h3>10.3 明确<b>不做</b>（写清理由，别下轮又纠结）</h3>
+<ul>
+<li><b>订阅登录三件套</b>（ChatGPT/Grok/Google）：逆向登录 + 内嵌应用密钥 + 占用本机端口 ⇒ 合规风险（已定 G2 不开）。</li>
+<li><b>灵感库</b>（500+ 提示词 / Baoyu Composer）：上游两份数据集<b>无许可声明</b>（已定 G3）。</li>
+<li><b>插件自持 provider Key</b>：与 IDE 侧双份必然漂移；我们走"凭据只一份真源"。</li>
+<li><b>画布摘要注入系统提示词</b>：毁前缀缓存（与 10-14 端口漂移事故同型）。</li>
+<li><b>协作/多人</b>：上游也没有（单浏览器 + 宿主内存镜像）⇒ 没有可抄的。</li>
+</ul>
+<h3>10.4 每批的验收判据（能自动验的优先）</h3>
+<ul>
+<li>一批：<code>canvas_state</code> 文本里能看到节点清单（kind/尺寸）；选区截图 ≤ 体积上限；<code>preparing</code> 状态能被模型读到。</li>
+<li>二批：出图后工作区里出现 <code>image-*.png</code>（内容寻址、原子写）；<code>edit_image</code> 能吃 attachment 与 path 两种来源。</li>
+<li>三批：<code>generate_images</code> 十条里坏一条 ⇒ 其余九张照样回、失败列表里有那条；多模型对比并发出 N 张、各自带自己的 provider。</li>
+<li>四批：连续落 5 张图不重叠、不重复；画廊能按 provider/时间过滤。</li>
+</ul>
+
+<h2>11. 生图工作台（<span style="color:var(--ok)">✅ 2026-10-21 已落地</span>）</h2>
+<p class="lead">四批里的 <b>⑪ 画廊</b>先以「工作台页」形态落地，并按 <code>doc/workbench-authoring-standard.md</code> 的<b>单路由 + 三形态</b>规范实现：<b>一条路由 <code>/x/imagegen/</code>、三种外壳（full / sideview / editor）、一次取数三处共用</b>。插件版本 <code>0.8.0</code>。</p>
+<table>
+<tr><th style="width:150px">面</th><th>实现</th></tr>
+<tr><td>路由与外壳</td><td><code>lib/canvasRoutes.js</code>：<code>/x/imagegen</code> 与 <code>/x/imagegen/</code> 返回工作台页，<code>?surface=sideview|editor</code> 注入 <code>data-vssaros-surface</code>（非法值回落 full）；静态资源走 <code>/x/imagegen/**</code>，但<b>必须排除 <code>/canvas</code> 与 <code>/api/</code> 两条已占前缀</b>（否则遮蔽画布页 ⇒ p3-157 回归），带路径穿越防护</td></tr>
+<tr><td>取数（一次）</td><td><code>GET /x/imagegen/api/gallery</code> ⇒ 图片账本 + provider/模型 + 画布状态 + 工作区根；页面只 fetch 这一次，三个外壳共用 <code>lib/views/imagegen/shell.js</code> 的 <code>renderShell()</code></td></tr>
+<tr><td>动作</td><td><code>POST .../generate</code> / <code>.../batch</code>（顺序执行、单条失败不中断、最多 10 条）/ <code>.../save</code>（<code>workspaceSave.js</code> 内容寻址原子写 + <code>canvasImages.markSaved()</code>）/ <code>GET .../capabilities</code>；请求体上限 512KB</td></tr>
+<tr><td>单一真源</td><td>页面<b>不直接调 provider</b>：走 <code>state.generateImage</code>（与工具同一个 <code>generateOneImage()</code>）＋ IDE 侧能力表（<code>image_models</code>）⇒ 工具与工作台不会分叉。页面写动作绕过聊天审批闸（人本人就是审批人），但批量/上限口径一致</td></tr>
+<tr><td>界面</td><td>catalog（搜索 + 最近出图 + 「打开生图工作台」/「打开画布」）与 core（prompt / provider / model / size / quality / n + 生成 + 按行批量生成 + 画廊 + 选中详情：存到工作区 / 到画布里改）；容器查询断点 <b>520 / 320</b>（不是媒体查询）。<br>✅ <b>2026-10-21 已按新稿重做（插件 0.10.0）</b>：新稿见 <code>doc/dsh-imagegen-workbench-mockup.html</code> ⇒ 实现见 <code>lib/views/imagegen/shell.js</code>（整文件重写）：<b>控制台(340) │ 画廊(自适应) │ 详情(288)</b> 三栏；容器 &lt; 1100 时右列详情<b>降级成画廊顶部的「选中条」</b>（两份 DOM 都渲染，靠容器查询切换 ⇒ 不用 ResizeObserver 重绘）；<b>侧栏面只做图库目录</b>（无生成表单）；连接状态收进<b>顶部徽标</b>（可点 = 重新检测）取代独立黄条；缩略图 <code>object-fit:contain</code> 不裁切 + 来源/provider 角标；<b>内联大图预览</b>（上一张/下一张/关闭）不用浮层 ⇒ 不会被 overflow 裁掉；容器断点 <b>1100 / 900 / 760 / 520 / 320</b>。⚠ 顺带修掉一个真机级 bug：<b>表单草稿只存 DOM ⇒ 5 秒轮询重绘会把用户打的提示词抹掉</b> ⇒ 草稿改为状态 + localStorage（<code>page.js</code> 的 <code>readDraft/writeDraft</code>）。</td></tr>
+<tr><td>入口</td><td>Dashboard 主页「工作台」模块表（<code>WORKBENCH_MODULES</code>）、全窗启动器（<code>client.workbenchNav.js</code> 的 <code>DEFAULT_ITEMS</code>）、ActivityBar「生图」（<code>activityBar.title.zh/en</code> 与 IDE 容器表 <code>dshModuleContainers.ts</code> 同步 ⇒ 双轨对账守卫不红）</td></tr>
+</table>
+<h3>11.1 验证</h3>
+<ul>
+<li>探针 <code>p3-164-imagegen-workbench.mjs</code>：<b>16/16 ✓</b>（surface 注入四态 / 静态资源与穿越 404 / 四个 API / 图字节路由 / 入口表三方对账），并纳入 <code>dshToolCoverage.test.ts</code> 覆盖号段</li>
+<li>imagegen 家族 9 个探针全绿（11/14/7/9/4/13/12/13/16）；<code>check-plugin-files</code> ✓；工具面快照 17 插件 / 136 工具 ✓</li>
+<li>真浏览器（mock Host，127.0.0.1:8791）：editor 面渲染出 6 个字段 + 4 个动作；点「生成」⇒ 出图 + 落工作区 + 详情面板；provider→model 联动；sideview 面只出 catalog；<b>320px 容器宽下无横向滚动、无溢出、无裁切</b>（工作台规范 §8）</li>
+<li><b>2026-10-21 新稿的验证</b>：① 用<b>真实 <code>shell.js</code></b> 起临时静态服务器（真 Chrome）⇒ 1360 / 1011 / 760 / 360 / 320 五档容器宽逐档量：三栏 340│772│288 ⇒ 1011 降级成选中条 ⇒ 760 竖排 ⇒ 320 无横向滚动、无元素被裁；交互（选图 / 放大 / 重检 / 比例 / 打字 / 存盘 / 复制 / 筛选 / 示例）逐条有回调；控制台零报错。② <b>真机（运行中的 dsh Host 0.2.1-rc.1 @6999）</b>：<code>/x/imagegen/?surface=editor</code> 渲染成三栏（340│772│288）、1000px 时详情降级为选中条、<code>?surface=sideview</code> 只有目录（无表单）+ 两个入口；静态资源与 <code>api/gallery</code> 全 200（只有 favicon 404）；浏览器直开无页面桥 ⇒ <b>顶部徽标正确变黄</b>（这正是新口径的验收点）。</li>
+<li><code>tsgo</code> exit 0 ✓</li>
+</ul>
+<p><b>仍待</b>：真 Host + 真 provider 的出图链路（浏览器验证走 mock）；四批 ⑩落位布局 / ⑫拖图入画布；画廊的 provider/时间筛选与持久化。<br>
+<b>已装副本提醒（2026-10-21）</b>：本次为验真机，把新 <code>shell.js</code>/<code>page.js</code> 同步进了 profile 里 <code>dsh-imagegen-0.9.0-f4894ab0</code> 与 <code>node_modules/@vssaros/dsh-imagegen</code>（两者内容一致）；插件版本已 bump 到 <b>0.10.0</b> ⇒ 下次走插件中心安装/升级会换成带新指纹的目录（<code>0.10.0-*</code>），这两处手改副本届时被覆盖。</p>
+
+<h2>12. 四批收尾（<span style="color:var(--ok)">✅ 2026-10-21 已落地</span>）· 插件 0.9.0</h2>
+<p class="lead">§10.2 的四批里剩下的三条（⑩落位布局 / ⑫拖图入画布 / ⑪画廊筛选与持久化）已按"能自动验的优先"补齐。</p>
+<table>
+	<tr><th style="width:60px">项</th><th style="width:210px">缺口</th><th>我们怎么补</th></tr>
+	<tr><td><b>⑩</b></td><td>落位是"横向排开"（<code>x = maxX + 40</code>）⇒ 连出 5 张图排成一条看不到头的长龙</td><td>新建 <code>lib/canvas/landing.js</code>（<b>纯函数</b>，探针 in-process 断）：<b>3 列网格</b>（上游同款）+ <b>相交判定</b>兜底（高图不会压到下一行）+ <b>去重</b>（画布上已有同 id 元素 ⇒ 不重复放，刷新不叠加）+ <b>视口外自动带镜头</b>（<code>api.scrollToContent</code>）。尺寸等比缩到 480×380 的格子里 ⇒ 一格放得下一张。</td></tr>
+	<tr><td><b>⑫</b></td><td>不能把磁盘上的图拖进画布</td><td>画布页顶部加「插入图片」工具条（<code>&lt;input type=file accept=image/*&gt;</code>）+ <b>整页拖放</b>；宿主新路由 <code>POST /x/imagegen/api/canvas-import</code>：dataURL → <b>attachment</b> → 账本 → 落工作区 ⇒ 导入的图 Agent 也看得见（<code>edit_image source=attachment_id</code> 能用），且进"我的图"。</td></tr>
+	<tr><td><b>⑪</b></td><td>画廊只有"最近出图"（内存，重启即失），不能按 provider/时间筛</td><td>① 账本记 <b>provider / 模型 / 来源</b>；② 画廊有<b>两个来源</b>：<code>recent</code>（内存账本）与 <code>workspace</code>（<b>工作区 <code>.vssaros-images/</code> 里已落盘的图 ⇒ 持久</b>，Host 重启还在）；③ 筛选（来源 / provider / 时间 / 关键字）是<b>纯函数</b> <code>lib/views/imagegen/gallery.js</code>，页面侧做（一次取数 ⇒ 三个壳共用 ✓）；④ 工作区图有专门的字节路由（<b>只认裸文件名</b> ⇒ 穿越堵死）。</td></tr>
+</table>
+<h3>12.1 顺带修掉的两个真问题</h3>
+<ul>
+	<li><b>画布页打开时看不到之前出的图</b>：轮询游标初值是 <code>Date.now()</code> ⇒ 页面打开前出的图永远不落位（实测：画布是空的）⇒ 初值改 <code>0</code>（首次全量拉，之后增量）。</li>
+	<li><b>筛选/搜索框每 5 秒被重绘抹掉</b>：筛选状态原本只在 DOM 里 ⇒ 5 秒轮询重绘就没了（搜索框基本没法用）⇒ 状态挪到<b>页面</b>（<code>localStorage</code> 持久）＋ 重绘时<b>保住焦点与光标</b>（否则打第二个字打不进去）。</li>
+</ul>
+<h3>12.2 验证</h3>
+<ul>
+	<li>探针 <code>p3-165-imagegen-landing-import-gallery.mjs</code> <b>19/19 ✓</b>（落位网格/不重叠/去重/视口判定 + 画廊筛选四种 + 导入路由 + 持久画廊 + 穿越防护 + 静态资源不断链）⇒ imagegen 家族 <b>10 个探针 118/118 全绿</b>。</li>
+	<li>真浏览器（mock Host 8791）：连落 5 张 ⇒ <b>第 1 行 3 张（x=40/600/1160）、第 2 行 2 张</b>，<b>重叠 0</b>；刷新 ⇒ 仍是 5 张（<b>不重复落位</b>）；<b>拖一个 PNG 进来</b> ⇒ 第 2 行第 3 格落位成功（走的是真实 UI 路径）；工作台筛选 all/recent/workspace = 2/1/1、关键字命中 1/1、<b>轮询重绘后焦点与筛选都不丢</b>。</li>
+	<li><code>check-plugin-files</code> ✓（新增 <code>lib/imageBytes.js</code> 已进 files）、工具面快照 ✓、<code>tsgo</code> exit 0 ✓。</li>
+</ul>
+<p><b>仍待</b>：真 Host + 真 provider 的出图链路（本轮浏览器验证走 mock）；拖图入画布的**持久化筛选**（批量 ZIP / 收藏 / 删除）未做。</p>
+
+<h2>13. 真机验证（<span style="color:var(--ok)">✅ 2026-10-21 已做</span>）</h2>
+<p class="lead">不再是 mock：<b>真 dev IDE + 真 dsh Host（0.2.1-rc.1）+ 真插件 0.9.0</b>（IDE 启动时按版本+哈希装进 profile）。</p>
+<h3>13.1 怎么连上真 Host（可复用）</h3>
+<ul>
+	<li>启 dev IDE：<code>scripts\code.bat</code>（它自己设 <code>VSCODE_DEV=1</code>；<code>VSCODE_SKIP_PRELAUNCH=1</code> 可跳过重编译，<code>out/</code> 是新的就不用编）⇒ 它会开「agents 窗口」并起 Host。</li>
+	<li><b>端口/令牌要从 <code>dsh-home/host.json</code> 现读</b>：<code>origin</code> / <code>authUrl</code>(带 token) / <code>pipe</code> / <code>bridgeToken</code>。⚠ <b>IDE 一重启这些全变</b>（端口会复用、pipe/令牌会换）⇒ 脚本里写死必然过期。</li>
+	<li>HTTP 鉴权是<b>两步</b>：先 <code>GET /?token=…</code> ⇒ <b>303</b> + <code>Set-Cookie: dsh-auth-…</code> ⇒ 之后每个请求都带这个 cookie（只带 <code>?token=</code> 会 <b>401</b>）。</li>
+	<li>控制桥在<b>命名管道</b>上（<code>\\.\pipe\vssaros-dsh-…</code>）：<b>一行一条 JSON-RPC</b> ⇒ <code>client.register{token,instanceId}</code> 之后才能调 <code>workspace.context</code> / <code>host.ping</code>。</li>
+</ul>
+<h3>13.2 真机上验到的东西</h3>
+<table>
+	<tr><th style="width:210px">面</th><th>结果</th></tr>
+	<tr><td>工作台页</td><td><b>200</b>，<code>data-vssaros-page="imagegen"</code> ✓；<code>?surface=editor|sideview</code> 注入正确，非法值回落 <code>full</code> ✓</td></tr>
+	<tr><td>静态资源 / 画布页</td><td><code>views/imagegen/gallery.js</code> 200 ✓；画布页 200 且带「插入图片」工具条 ✓</td></tr>
+	<tr><td>导入（⑫）</td><td>真 PNG → <b>真解码器</b>收下 → attachment → 账本 → <b>真落盘</b>（<code>&lt;workspace&gt;/.vssaros-images/image-&lt;sha8&gt;.png</code>）⇒ 持久画廊列出它（<code>workspaceImages=1</code>）+ 字节路由 200 ✓</td></tr>
+	<tr><td>穿越防护</td><td>工作区图字节路由带路径 ⇒ <b>400</b> ✓</td></tr>
+	<tr><td>能力表</td><td><code>ok:true</code>，<code>providers:[]</code>（该 profile 里没有登记生图模型 ⇒ <b>不臆造</b> ✓）</td></tr>
+	<tr><td>生成 / 批量</td><td>请求<b>确实走到了 IDE</b>（经控制桥）⇒ IDE 侧回「OpenRouter 没有可用模型」；批量按设计进 <code>failures</code>、不抛异常 ✓</td></tr>
+</table>
+<h3>13.3 真机才暴露的两件事</h3>
+<ul>
+	<li><b>假 PNG 在真 Host 会被真解码器拒</b>：<code>Unsupported or malformed image data.</code> ⇒ 探针/取证要用<b>真 PNG</b>（mock 不校验 ⇒ 探针全绿、真机才红 ⇒ 这正是"真机不可省"的一例）。</li>
+	<li><b>没有 studio 工作区记录 ⇒ Host 不知道工作区根</b>：IDE 的 <code>noteActiveWorkspace()</code> 在「上次也是 undefined」时<b>早退</b> ⇒ <b>永不推</b>工作区上下文 ⇒ imagegen 的落盘被跳过（好在会如实回「不知道工作区根（Host 没拿到工作区上下文）」，不静默假装存了 ✓）。⇒ 这是 <b>IDE 侧那条线</b>的问题，不是插件的；本方案用「经控制桥手动推一份」验证了落盘链路本身是通的。</li>
+</ul>

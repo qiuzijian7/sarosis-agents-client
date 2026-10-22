@@ -52,7 +52,7 @@ import { annotateCommandFailure, annotateMaskedSuccess, renderFailureHint } from
 import { detectGitBash, gitBashShellEnvironment, type IGitBashInfo } from './gitBashProvider.js';
 import { shellPreflightRejection } from './shellPreflightGuards.js';
 import { shellApprovalGuidance } from '../../../common/shellCommandSafety.js';
-import { appendTerminalLiveOutput, clearTerminalLiveOutput } from '../../../../../browser/agentChat/terminalLiveOutput.js';
+import { appendTerminalLiveOutput, clearTerminalLiveOutput } from '../../../../../browser/terminalLiveOutput.js';
 import { detectStaleWorktreeAccess, staleWorktreeWarning } from '../../../common/worktreeBinding.js';
 import {
 	detectDevicePath,

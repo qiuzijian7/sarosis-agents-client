@@ -110,6 +110,23 @@ class MockFileService {
 		}
 		return { isDirectory: true, children };
 	}
+	/**
+	 * ★ 2026-10-20 补两个能力（此前缺 ⇒ 本套 8 例全红）：
+	 *   · `createFile(..., { overwrite: false })` —— 跨进程写锁 `common/fileWriteLock.ts` 的原子占位；
+	 *   · `hasCapability()` —— `common/atomicWrite.ts` 的能力探测（返回 false ⇒ 走普通 writeFile）。
+	 */
+	async createFile(uri: any, buffer: any, opts?: { overwrite?: boolean }): Promise<void> {
+		const key = uri.toString();
+		if (this.files.has(key) && opts?.overwrite === false) {
+			throw new Error('mock file already exists');
+		}
+		this.files.set(key, buffer.toString());
+	}
+
+	hasCapability(): boolean {
+		return false;
+	}
+
 	async del(uri: any, _opts?: any): Promise<void> {
 		const key = uri.toString();
 		// 递归删除：删除所有以 key 为前缀的文件/目录

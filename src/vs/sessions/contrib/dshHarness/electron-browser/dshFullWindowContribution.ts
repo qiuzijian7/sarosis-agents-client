@@ -30,12 +30,23 @@ import { $, append } from '../../../../base/browser/dom.js';
 import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { FocusMode, INativeHostService } from '../../../../platform/native/common/native.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IAuxiliaryWindowService } from '../../../../workbench/services/auxiliaryWindow/browser/auxiliaryWindowService.js';
 import { setDshFullWindowOpener } from '../../../common/dshFullWindow.js';
 import { dshChatNewSessionId } from '../common/dshChatSession.js';
 import { DshHarnessSettings } from '../common/dshHarness.js';
 import { IDshHarnessService } from './dshHarnessService.js';
+
+/**
+ * 「启动时把 IDE 主窗口收进了任务栏」这一事实的**共享标记**（桌面窗口侧收，页面命令侧读）。
+ *
+ * 为什么需要跨类传：收起来之后，页面里那些"在 IDE 里打开"的命令（文件卡、终端、设置页…）
+ * 全都作用在**看不见的窗口**上 ⇒ 用户看到的就是"点了没反应"（本仓的高频缺陷形态 ✗）。
+ * 所以那些命令到达时，先把 IDE 主窗口还原到前台（`DshPageCommandContribution._handle` 开头）。
+ * 只在"我们真的收起来过"时才做 ⇒ 手动 popout（两窗并排）时不会抢焦点 ✓。
+ */
+export const dshIdeWindowHidden = { value: false };
 
 export class DshFullWindowContribution extends Disposable {
 	static readonly ID = 'sessions.dshHarness.fullWindow';
@@ -46,16 +57,116 @@ export class DshFullWindowContribution extends Disposable {
 		@IAuxiliaryWindowService private readonly _auxWindowService: IAuxiliaryWindowService,
 		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
 		@ILogService private readonly _log: ILogService,
+		// 启动自动开窗成功后把 **IDE 主窗口藏起来**（"F5 只看到这个窗口"）；关窗/回 IDE 再 `showWindow` 还回去。
+		// ⚠ `focusWindow` 对**已隐藏**的窗口无效（主进程 `doFocusWindow` 只处理最小化）⇒ 必须先 `showWindow` ✓。
+		@INativeHostService private readonly _nativeHostService: INativeHostService,
 	) {
 		super();
 		// 与聊天宿主同一门槛：总开关关闭或 engine=legacy 时不接管，popout 走旧实现。
 		const enabled = this._configurationService.getValue<boolean>(DshHarnessSettings.Enabled) !== false;
 		const engine = this._configurationService.getValue<string>(DshHarnessSettings.ChatEngine);
 		if (!enabled || engine !== 'dsh') {
+			// ★ 2026-10-21：主进程可能以**隐藏**方式建窗（`VSSAROS_START_HIDDEN=1`，见 windowImpl）。
+			//   这些"不接管"的分支必须自己把窗口显示出来，否则 return 之后**一个窗口都没有** ✗。
+			void this._showIdeWindow(`harness 未启用（engine=${engine}）`);
 			return;
 		}
 		setDshFullWindowOpener(args => this._open(args));
 		this._register(toDisposable(() => setDshFullWindowOpener(undefined)));
+
+		// ★ 2026-10-21（用户第二轮："希望 F5 可以默认直接启动 dsh 窗口，**不要显示 IDE 窗口**"）：
+		//   启动时自动打开桌面窗口，成功后就**把 IDE 主窗口隐藏掉**（hide，不是 minimize：连任务栏也不要）。
+		//   配合 `VSSAROS_START_HIDDEN=1`（F5 的 launch.json 里带）——窗口从出生起就不显示，零闪烁 ✓。
+		//   为什么要延时开窗：构造发生在 `WorkbenchPhase.BlockRestore` 期间，此刻布局/工作区还没落定 ——
+		//   立刻 `_open()` 会让 `_ensurePopoutSessionId` 拿不到工作区目录（⇒ 停官方 hero）、
+		//   也可能在建窗时和首帧布局打架。留一拍（2.5s）让"会话解析 + 建窗 + 布局"都在稳定态发生 ✓。
+		//   只开一次：`_openWindow` 单例复用；关窗后也不会偷偷再开（用户要的话点标题栏那个 Pop Out ✓）。
+		if (this._configurationService.getValue<boolean>(DshHarnessSettings.OpenDesktopOnStartup) === false) {
+			// 用户关掉了"启动即开桌面窗口"⇒ 这时候 IDE 必须露出来（隐藏启动模式下尤其重要）
+			void this._showIdeWindow('设置里关闭了启动即打开桌面窗口');
+			return;
+		}
+		const timer = setTimeout(() => {
+			this._log.info('[dshHarness] startup: open the dsh desktop window by default');
+			void this._open({})
+				.then(opened => this._settleIdeWindowAfterStartup(opened))
+				.catch(err => {
+					this._log.warn('[dshHarness] startup: opening the dsh desktop window failed', err);
+					return this._showIdeWindow('桌面窗口开窗失败');
+				});
+		}, 2500);
+		this._register(toDisposable(() => clearTimeout(timer)));
+		// 渲染进程侧的兜底：**20s** 还没开出来就先显示 IDE（主进程 `windowImpl` 那边还有一道 45s 的，
+		// 且露过一次面就作废）。取值依据（2026-10-21 真机日志）：Host **换版本/冷启动**时
+		// 「open 请求 → 桌面窗口出来」实测 17s（13:14:45 → 13:15:02）；插件版本没变时是 2~3s。
+		// ⇒ 20s 能覆盖绝大多数冷启动，让"从没显示过 IDE"成立；真超了才露出来（总好过一直空白），
+		//   桌面窗口随后开出来时 `_settleIdeWindowAfterStartup` 会再把它藏回去 ✓。
+		const watchdog = setTimeout(() => {
+			if (!this._desktopWindowOpened) {
+				void this._showIdeWindow('20s 内桌面窗口没有开出来（Host 冷启动？）');
+			}
+		}, 20_000);
+		this._register(toDisposable(() => clearTimeout(watchdog)));
+	}
+
+	/** 启动自动开窗后是否由我们把 IDE 主窗口藏起来了（关桌面窗口时要还回去；见 `dshIdeWindowHidden`）。 */
+	private _ideHiddenByStartup = false;
+	/** 桌面窗口是否已经真的开出来过（25s 兜底用）。 */
+	private _desktopWindowOpened = false;
+
+	/**
+	 * 开窗结果落定 ⇒ 成功就**隐藏** IDE 主窗口，失败就把它**显示出来**。
+	 *
+	 * 为什么用 hide 不用 minimize：用户要的是"不要显示 IDE 窗口"——最小化还留着任务栏按钮；
+	 * hide 之后屏幕上/任务栏里都只剩桌面窗口。回程由侧栏那枚「回到 IDE」（`showWindow` + 聚焦）负责 ✓。
+	 * 为什么失败要 show：否则窗口是隐藏的，用户面对的是"点了 F5 什么都没出现" ✗。
+	 */
+	private async _settleIdeWindowAfterStartup(opened: boolean): Promise<void> {
+		if (!opened) {
+			await this._showIdeWindow('桌面窗口没有开出来');
+			return;
+		}
+		this._desktopWindowOpened = true;
+		try {
+			// 让新窗口先拿到前台：紧接着隐藏主窗口时，若桌面窗口还没抢到焦点，整应用会闪到后台
+			await new Promise<void>(resolve => setTimeout(resolve, 350));
+			this._log.info('[dshHarness] startup: desktop window is up ⇒ hiding the IDE main window');
+			await this._nativeHostService.hideWindow({ targetWindowId: this._nativeHostService.windowId });
+			this._ideHiddenByStartup = true;
+			dshIdeWindowHidden.value = true;
+			// ★ 2026-10-21：装「desktop 守卫」—— 我们藏起来的窗口**不许再露面**。
+			//   为什么需要：用户在桌面窗口点「登录」⇒ 走 TOF 浏览器流程 ⇒ **窗口层面**的外部动作
+			//   （系统把焦点还给本应用的窗口）会把 IDE 主窗口拉到前台（真机日志：桌面窗口 BLUR 后 1.6s
+			//   IDE 主窗口 FOCUS ✗）⇒ 只在命令分发处拦**拦不住**（那不是命令）⇒ 守卫落在主进程 ✓。
+			await this._dsh.setIdeWindowHidden(true, this._nativeHostService.windowId);
+		} catch (err) {
+			this._log.warn('[dshHarness] startup: hiding the IDE main window failed', err);
+		}
+	}
+
+	/** 显示并聚焦 IDE 主窗口（隐藏/最小化都能拉回来）。`showWindow` 内部会先 restore 再 show ✓。 */
+	private async _showIdeWindow(reason: string): Promise<void> {
+		this._desktopWindowOpened = true;   // 已经决定露出 IDE ⇒ 兜底闹钟不必再响
+		try {
+			this._log.info(`[dshHarness] startup: showing the IDE main window（${reason}）`);
+			// ⚠ **先撤守卫再显示**：守卫会把这个窗口的 show/focus 事件压回去 ⇒ 不撤就是"刚 show 就被藏" ✗
+			//   （用户点「回到 IDE」/ 桌面窗口关闭时走的就是这条 ⇒ 必须先撤 ✓）。
+			await this._dsh.setIdeWindowHidden(false, this._nativeHostService.windowId);
+			await this._nativeHostService.showWindow({ targetWindowId: this._nativeHostService.windowId });
+			await this._nativeHostService.focusWindow({ targetWindowId: this._nativeHostService.windowId, mode: FocusMode.Force });
+			dshIdeWindowHidden.value = false;
+			this._ideHiddenByStartup = false;
+		} catch (err) {
+			this._log.warn(`[dshHarness] startup: showing the IDE main window failed（${reason}）`, err);
+		}
+	}
+
+	/** 桌面窗口被关掉 ⇒ 把（我们藏起来的）IDE 主窗口还原到前台，别让用户面对"没有窗口的 app"。 */
+	private _restoreIdeWindowAfterDesktopClosed(): void {
+		if (!this._ideHiddenByStartup) {
+			return;
+		}
+		void this._showIdeWindow('桌面窗口已关闭');
 	}
 
 	/** 已开着的全窗（单例复用；关闭时清掉）。`sideViewId` = 拼装式的左侧会话列表视图。 */
@@ -114,6 +225,8 @@ export class DshFullWindowContribution extends Disposable {
 			layoutSub.dispose();
 			if (this._openWindow?.viewId === chatViewId) { this._openWindow = undefined; }
 			void this._dsh.disposeView(chatViewId).catch(() => undefined);
+			// 关掉桌面窗口 ⇒ 把启动时收进任务栏的 IDE 主窗口还回来（否则用户面前一个窗口都没有）
+			this._restoreIdeWindowAfterDesktopClosed();
 		});
 		this._register(toDisposable(() => {
 			unloadSub.dispose();

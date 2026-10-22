@@ -8,7 +8,7 @@
  *
  *      ![[架构图.drawio]]
  *        → 解析目标文件（相对笔记目录 → 相对 vault 根 → 全库按文件名搜）
- *        → 读源文本 → SVG（mermaid/drawio 走宿主渲染服务；canvas 走纯函数 canvasToSvg）
+ *        → 读源文本 → SVG（drawio 走宿主渲染服务；canvas 先转译成 Mermaid 再走宿主 pele 渲染服务）
  *        → 栅格化 PNG（注入，通常是 svgToPng）→ 落盘 `<note>.attachments/embed-<n>.png`
  *        → 把 embed 改写为 `![[…embed-n.png]]`（独占段落）
  *        → 之后交给既有飞书图片链路（PNG 已实测可用）
@@ -24,7 +24,7 @@ import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import { attachmentsDirName } from './diagramRenderPipeline.js';
-import { canvasToSvg } from './canvasToSvg.js';
+import { canvasToMermaidSource } from './canvasToMermaid.js';
 
 export type DiagramEmbedKind = 'mermaid' | 'drawio' | 'canvas';
 
@@ -129,11 +129,13 @@ export interface IRenderNoteDiagramEmbedsOptions {
 	noteUri: URI;
 	fileService: IFileService;
 	/**
-	 * mermaid 源码 → SVG。
-	 * ⚠ 2026-09-24 起**不再被使用**：mermaid embed 改为内联展开成围栏（飞书转画板活图）。
-	 *   保留签名仅为兼容既有调用方。
+	 * Mermaid 源码 → SVG（宿主注入 `IDiagramRenderer.renderToSvg` ⇒ pele）。
+	 *
+	 * ⚠ 2026-09-24 起 mermaid embed 自己**不再**走它（内联展开成围栏，交给飞书转画板活图），
+	 *   但 2026-10-19 起 **canvas embed 走它**（JSON Canvas → Mermaid → pele）⇒ 从可选变**必填**：
+	 *   留 optional 的话 canvas 会在"注入方忘了给"时静默失败（保留原文、用户看不出为什么 ✗）。
 	 */
-	renderMermaid?: (source: string) => Promise<string>;
+	renderMermaid: (source: string) => Promise<string>;
 	/** drawio 源码 → SVG（通常注入 `IDrawioInlineRenderer.renderToSvg`） */
 	renderDrawio: (source: string) => Promise<string>;
 	/** SVG → PNG 字节（通常注入 `svgToPng`）。注入以便单测 mock。 */
@@ -240,7 +242,13 @@ export async function renderNoteDiagramEmbeds(opts: IRenderNoteDiagramEmbedsOpti
 				continue;
 			}
 
-			const svg = embed.kind === 'canvas' ? canvasToSvg(source) : await opts.renderDrawio(source);
+			// ★ 2026-10-19：canvas 也走 pele —— JSON Canvas 先转译成 Mermaid 源码，再交给
+			//   `renderMermaid`（`IDiagramRenderer` ⇒ 与 mermaid 图**同一个渲染引擎** ✓）。
+			//   ⚠ 代价：JSON Canvas 的绝对坐标会被丢弃（Mermaid 由引擎自己排版）——
+			//     见 canvasToMermaid.ts 头注释；这是"统一到 pele"的必要代价。
+			const svg = embed.kind === 'canvas'
+				? await opts.renderMermaid(canvasToMermaidSource(source).source)
+				: await opts.renderDrawio(source);
 			if (!svg || !svg.trim()) { throw new Error('渲染得到空 SVG'); }
 
 			const png = await rasterize(svg, scale);

@@ -29,6 +29,16 @@ export interface IKbMindmapNode {
 	color?: string;
 	content?: string;       // 节点内 Markdown 文本
 	/**
+	 * ★ 2026-10-19：**JSON Canvas 1.0 规范里 text 节点的必填字段**（`text`, string, Markdown）。
+	 *
+	 * 我们历史产物只写 `content`（本文件是照真源逐行搬的），而规范要求 `text`
+	 * ⇒ 那样的文件在 Obsidian 等遵循规范的工具里是**空节点** ✗。
+	 * 现在 `writeMindmap` 写盘前会把 `content` 补成 `text`（`withStandardText` 语义），**两者同值**；
+	 * 读取侧仍是 `text || content`（IDE 的 `canvasViewport.ts` 与 dsh 侧都兼容）。
+	 * 保留 `content` 是因为合并去重（`_simpleKey`）读它 —— 等那处也改成 `content || text` 后才可能收掉。
+	 */
+	text?: string;
+	/**
 	 * 源码出处（Ctrl+点击节点跳转到 file:line）。
 	 * 由 LLM 在提取时填充：当某节点明确对应某个源文件/行时，
 	 * 填写其工作区相对（或绝对）路径与可选行号，使思维导图可溯源回源码。
@@ -114,8 +124,21 @@ export class KbMindmapGenerator {
 
 	/**
 	 * 写入思维导图到 .canvas 文件。
+	 *
+	 * ★★ 2026-10-19：写盘前**补标准字段 `text`**（JSON Canvas 1.0 规范里 text 节点 `text` 是 required）。
+	 *   我们内部一直用 `content`（LLM prompt 也要求 content）⇒ 生成的文件在 **Obsidian 等遵循规范的工具里
+	 *   会是空节点**（只有坐标/宽高，没有文字）✗ —— 这是跨工具互操作的真缺口。
+	 *   ✅ 保留 `content` 并补同值的 `text`：合并去重读 content（`_simpleKey`）、IDE 侧读取 `text || content`
+	 *     ⇒ 补 text 零风险；而 IDE 侧保存时 `text === content` 会自动删 content（canvasEditorController:356）。
 	 */
 	async writeMindmap(uri: URI, mindmap: IKbMindmap): Promise<void> {
+		// 幂等：已有非空 text 时不覆盖；只补 type === 'text' 的节点。
+		for (const node of mindmap.nodes ?? []) {
+			const n = node as { type?: string; text?: string; content?: string };
+			if (n.type !== 'text') { continue; }
+			if (typeof n.text === 'string' && n.text) { continue; }
+			if (typeof n.content === 'string') { n.text = n.content; }
+		}
 		const json = JSON.stringify(mindmap, null, '\t');
 		await this.fileService.writeFile(uri, VSBuffer.fromString(json));
 	}
@@ -267,7 +290,8 @@ export class KbMindmapGenerator {
 			.map(n => n.id)
 			.sort((a, b) => (indeg.get(a) ?? 0) - (indeg.get(b) ?? 0) || (out.get(b)?.length ?? 0) - (out.get(a)?.length ?? 0))[0];
 		const root = mindmap.nodes.find(n => n.id === rootId) ?? mindmap.nodes[0];
-		const firstLine = (root.content || '')
+		// ★ 2026-10-19：`content || text`（JSON Canvas 规范字段是 text；本文件保存后会删掉与 text 同值的 content）
+	const firstLine = (root.content || root.text || '')
 			.split('\n')[0]
 			.replace(/^\*\*|\*\*$/g, '')
 			.replace(/^#+\s*/, '')
@@ -284,7 +308,8 @@ export class KbMindmapGenerator {
 	async suggestMindmapTitle(chatModel: IChatModel, mindmap: IKbMindmap): Promise<string | null> {
 		try {
 			const SYSTEM = `Given a mind-map (list of nodes with "content"), output a SHORT topic title (2-6 words, no punctuation, no quotes) that best names the whole map. Output only the title text.`;
-			const user = JSON.stringify(mindmap.nodes.map(n => ({ id: n.id, content: n.content })));
+			// ★ 2026-10-19：喂给 LLM 的正文同样 `content || text`
+	const user = JSON.stringify(mindmap.nodes.map(n => ({ id: n.id, content: n.content || n.text || '' })));
 			const raw = await chatModel.complete(SYSTEM, user, 0.2);
 			const t = raw.trim().replace(/^["']|["']$/g, '').replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, '_').slice(0, 50);
 			if (t.length >= 2) { return `${t}.canvas`; }
@@ -303,7 +328,8 @@ export class KbMindmapGenerator {
 	private static _deriveNameFromContent(extracted: IKbMindmap): string {
 		if (extracted.nodes.length > 0) {
 			// 取第一个节点的 content 第一行作为标题（去掉 Markdown bold）
-			const firstContent = extracted.nodes[0].content || '';
+			// ★ 2026-10-19：`content || text`
+		const firstContent = extracted.nodes[0].content || extracted.nodes[0].text || '';
 			const firstLine = firstContent.split('\n')[0]
 				.replace(/^\*\*|\*\*$/g, '')  // 去掉 **bold**
 				.replace(/^#+\s*/, '')       // 去掉 # heading
@@ -476,8 +502,10 @@ Output ONLY valid JSON (no markdown fences): {"nodes":[...],"edges":[...]}`;
 		}
 
 		for (const nn of extracted.nodes) {
-			const key = _simpleKey(nn.content || '');
-			const dup = nodes.find(en => _simpleKey(en.content || '') === key);
+			// ★ 2026-10-19：**读正文一律 `content || text`** —— 规范字段是 text，而本文件保存时会把
+			//   与 text 同值的 content 删掉（canvasEditorController）⇒ 只认 content 会让去重失效。
+			const key = _simpleKey(nn.content || nn.text || '');
+			const dup = nodes.find(en => _simpleKey(en.content || en.text || '') === key);
 			if (dup) {
 				// 重复节点：跳过（或可更新 content）
 				continue;

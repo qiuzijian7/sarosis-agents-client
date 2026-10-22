@@ -1,7 +1,9 @@
 import { $, append, addDisposableListener, EventType } from '../../../base/browser/dom.js';
 import { createTrustedTypesPolicy } from '../../../base/browser/trustedTypes.js';
 import { IToolCall } from './agentChatTypes.js';
-import { AgentChatPanelMermaidCard, detectDiagramTheme } from './agentChatPanel.mermaidCard.js';
+import { AgentChatPanelMermaidCard } from './agentChatPanel.mermaidCard.js';
+// 2026-10-19：主题探测已从卡片模块搬到 `sessions/browser/diagramTheme.ts`（面板之外的代码也要用）
+import { detectDiagramTheme } from '../diagramTheme.js';
 import { parseToolArgsLoose } from './toolArgsJson.js';
 
 // 工作台启用了 Trusted Types：渲染好的 SVG 字符串需转成 TrustedHTML 才能赋给
@@ -219,8 +221,12 @@ export abstract class AgentChatPanelDrawioCard extends AgentChatPanelMermaidCard
 	/**
 	 * 把 mxGraphModel 渲染成 SVG 注入预览面板。
 	 * 成功时注入 SVG 并启用「复制 SVG」；失败时展示错误信息。
+	 *
+	 * ⚠ 2026-10-19 改为 `protected`：markdown 里的 ```drawio **围栏兜底预览**也要用它
+	 *   （markdown.ts 的类在本类下游 ⇒ private 拿不到）。别复制一份实现——
+	 *   "卡片的 drawio" 和 "围栏的 drawio" 必须是同一个渲染路径，否则又会漂出两套观感 ✗。
 	 */
-	private async _renderDrawioCardSvg(
+	protected async _renderDrawioCardSvg(
 		markup: string,
 		previewPanel: HTMLElement,
 		loadingEl: HTMLElement,

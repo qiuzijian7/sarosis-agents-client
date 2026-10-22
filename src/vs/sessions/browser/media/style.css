@@ -558,6 +558,27 @@
 	background-color: var(--vscode-agentsPanel-background) !important;
 }
 
+/* ---- Overlay 层：`.context-view`（hover / 菜单 / 下拉 的宿主）必须压过各 part ----
+ *
+ * 2026-10-20（用户报：「activitybar 图标 hover 的 tooltip 被 sideview 遮挡」，
+ *   实测表现 = tooltip 只剩压在图标条上的那一小条，其余被侧栏底色盖掉）。
+ *
+ * 为什么需要显式抬层：`.context-view` 的 DOM 节点由 `ContextViewService` 在**首次
+ *   `showContextView` 时** `appendChild` 到 mainContainer，**之后容器不变就不再移动**
+ *   （`ContextView.setContainer` 对同一 container 直接 early-return）。
+ *   而本工作台会在运行期动态重组 part 的 DOM（例如把 activitybar 搬进 sidebar 的 icon strip），
+ *   ⇒ 「parts 全在 split-view-container 里、context-view 恒在末尾」这条上游隐含顺序**不成立**，
+ *   part 可能排在 context-view 之后、又有不透明底色 ⇒ 浮层被盖住 ✗。
+ *   上游没写 z-index 正是因为靠顺序保证；这里顺序不可依赖，故显式抬层 ✓。
+ *
+ * 取值：50 —— 压过 part 自身（z-index auto）与侧栏内部（≤5，如 sidebar-footer）；
+ *   聊天区里 1000+/9999 的浮层只在自身区域出现，与侧栏位置不重叠，提升到它们之上没有必要
+ *   （真要改，改这里而不是各处加 !important）。
+ */
+.agent-sessions-workbench > .context-view {
+	z-index: 50;
+}
+
 /* Keep code block backgrounds stable across themes; add separation in older light themes via border only */
 .agent-sessions-workbench .interactive-session .interactive-response .interactive-result-code-block {
 	border-color: var(--vscode-editorWidget-border, var(--vscode-widget-border));

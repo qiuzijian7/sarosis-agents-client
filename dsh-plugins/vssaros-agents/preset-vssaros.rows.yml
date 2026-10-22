@@ -82,6 +82,37 @@
                 - 'memory_work'
                 - 'memory_import'
                 - 'memory_skill'
+                # ── 飞书族（2026-10-21 加）：**零损失**的那一类 ────────────────────────────
+                # 族级用量的结论（`doc/tool-surface-family-usage.md`）：`feishu_*` 5 个工具 ≈887 tok
+                #   （占可见面 23,454 tok 的 3.8%），而**真机账上调用 0 次** —— 因为飞书通道
+                #   **没配 token ⇒ 路由不注册（fail-closed ✓）** ⇒ 这几个工具调了也必然失败。
+                # ⇒ 藏掉它们是**纯收益**（省 887 tok，且不给模型一个"点了就报错"的假能力 ✓）。
+                # ⚠ 将来真接了飞书通道 ⇒ **删掉这一行**（否则模型看不到飞书工具 ✗）。
+                - 'feishu_*'
+                # ── 标准档再藏"场景类"族（2026-10-21；量化见 doc/tool-surface-family-usage.md）──
+                # 这些族在 29 个真机会话里**调用 0 次**，而它们的可见面合计 ≈4.9k tok
+                #   （占可见面 23,454 tok 的 **21%**）⇒ 藏掉是**默认档**的净收益。
+                # ⚠ 藏 = 模型**看不见**这些工具 ⇒ 需要时切 `Full (VsSaros)` 档即可（**能力不丢** ✓）。
+                #   逐族理由：feishu=通道未配置（调了必失败）· workflow=多 agent 编排场景 ·
+                #   media/video/image/vision/extract/text=媒体管线场景 · dashboard=看板页面场景 ·
+                #   mcp=外部 MCP 透传 · web=URL 抓取 · unreal=Unreal 工程场景。
+                - 'workflow_*'
+                - 'media_*'
+                - 'video_*'
+                - 'image_*'
+                - 'vision_*'
+                - 'extract_*'
+                - 'text_*'
+                - 'dashboard_*'
+                - 'mcp_*'
+                - 'web_*'
+                - 'unreal_*'
+                # ── Full 档（`vssaros-full`）用的清单：只藏 MCP 图像那一族 ────────────────
+                # ⚠ 这份清单**只给** Full 档用（生成器把它换进 Full 那份 preset 的 `denyTools` ✓）；
+                #   标准档读的是上面那份 ⇒ 两者**行集合完全相同**、**只差 mask** ⇒ 单变量可归因 ✓。
+                #   保留 comfy 藏身：它是 39 个工具 / ≈15.5k tok 的图像管线，另有 `image_generate` 工具可用 ✓。
+              denyToolsFull:
+                - 'mcp__comfy-mcp__*'
           # web-content-import（2026-10-15 新增模块）：按 URL 抓平台文章/视频内容（HTTP+reader /
           # yt-dlp+字幕/ASR），可写进知识库 库/raw/。纯工具、无页面 ⇒ 与 host 面双挂载只多一份
           # 工具注册（dsh 的工具重复注册是幂等顶掉 ✓）；本插件**没有模块级状态** ⇒ 不串话 ✓。

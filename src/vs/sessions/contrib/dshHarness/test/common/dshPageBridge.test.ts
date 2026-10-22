@@ -10,6 +10,8 @@ import {
 	DSH_CHAT_ONLY_CSS, DSH_PAGE_BRIDGE_VERSION, DSH_PAGE_CHAT_ONLY_ARG, DSH_PAGE_INSERT_EVENT, DSH_PAGE_IPC_INSERT, DSH_PAGE_IPC_INVOKE, DSH_PAGE_IPC_KEYDOWN, DSH_PAGE_IPC_REBIND, DSH_PAGE_IPC_THEME, DSH_PAGE_REBIND_EVENT, DSH_PAGE_SESSION_ARG, DSH_PAGE_SURFACE_ARG, DSH_PAGE_THEME_EVENT, DSH_PAGE_VIEW_ARG,
 	DSH_PAGE_IPC_WORKTREES, DSH_PAGE_WORKTREES_EVENT, DSH_WORKTREE_OPTION_LIMIT,
 	DSH_PAGE_IPC_WORKSPACES, DSH_PAGE_WORKSPACES_EVENT, DSH_WORKSPACE_OPTION_LIMIT, DSH_WORKSPACE_ROOT_LIMIT,
+	DSH_PAGE_IPC_AUTH, DSH_PAGE_AUTH_EVENT, validateAuthOption, DSH_PAGE_WORKBENCH_ARG,
+	DSH_PAGE_COMMANDS_WITHOUT_IDE_UI,
 	isAbsoluteFsPath, isPathInside, validateInsertReference, validateKeyEvent, validatePageCommand, validateWorkspaceOptions, validateWorktreeOptions,
 } from '../../common/dshPageBridgeProtocol.js';
 import { dshChatNewSessionId, dshChatPresetSessionId, dshChatSessionId, dshChatWorktreeSessionId, isDshChatSessionId, resolvePresetSessionId, sanitizeDshIdPart } from '../../common/dshChatSession.js';
@@ -272,6 +274,25 @@ suite('dshHarness / page bridge', () => {
 			`超过 ${DSH_WORKSPACE_OPTION_LIMIT} 条整批丢弃`);
 	});
 
+	test('★ IDE 登录态负载（2026-10-21）：只含展示字段、脏则丢弃、**绝不下发凭据**', () => {
+		// 为什么单独钉：这份数据是 IDE → 页面**推**过去的（`DSH_PAGE_IPC_AUTH` + `dataset.vssarosAuth`），
+		// 页面把它当可信数据解析 ⇒ 形状必须在发出前收口；同时它**只能**回答"谁登录了"——
+		// 任何能用来冒充该用户的东西（token / ticket / cookie）都必须被挡在外面 ✓。
+		assert.deepStrictEqual(
+			validateAuthOption({ signedIn: true, loginName: 'qiuzijian', staffId: '1001', team: 'SAROS', token: 'secret', ticket: 't' }),
+			{ signedIn: true, loginName: 'qiuzijian', staffId: '1001', team: 'SAROS' },
+			'多余字段（尤其 token/ticket）必须丢掉 ✓');
+		assert.deepStrictEqual(validateAuthOption({ signedIn: false }),
+			{ signedIn: false, loginName: '', staffId: '', team: '' },
+			'未登录也要给形状（页面据此渲染「未登录（IDE 账号）」），但字段全空 ✓');
+		assert.deepStrictEqual(validateAuthOption({ signedIn: true, loginName: 42, staffId: null, team: 'x'.repeat(100) }),
+			{ signedIn: true, loginName: '', staffId: '', team: 'x'.repeat(64) },
+			'非字符串归空串、超长截断 64（不抛错、也不带病下发 ✓）');
+		for (const bad of [null, undefined, 'signedIn', 42, [], { signedIn: 'yes' }, {}]) {
+			assert.strictEqual(validateAuthOption(bad), undefined, `脏载荷必须丢弃：${JSON.stringify(bad)}`);
+		}
+	});
+
 	test('★ switchWorkspace（桥 10 → 11）：只放形状 —— 它是 IDE registry 的键，不是路径', () => {
 		// 2026-10-16 用户报障「点击其他工作区后，没有切换对应的工作区」⇒ 新增这条命令让 IDE 窗口原地进该工作区。
 		// ⚠ 参数是 **IDE 侧** `Workspace.id`（不是 dsh 的 workspaceId ✗，两者没有映射关系）。
@@ -304,9 +325,14 @@ suite('dshHarness / page bridge', () => {
 		const src = readFileSync(join(repo, 'src', 'vs', 'sessions', 'contrib', 'dshHarness', 'electron-browser', 'preload-dshView.ts'), 'utf8');
 		for (const c of [DSH_PAGE_IPC_INVOKE, DSH_PAGE_IPC_KEYDOWN, DSH_PAGE_IPC_THEME, DSH_PAGE_IPC_INSERT, DSH_PAGE_IPC_WORKTREES, DSH_PAGE_SURFACE_ARG, DSH_PAGE_CHAT_ONLY_ARG, DSH_PAGE_SESSION_ARG, DSH_PAGE_VIEW_ARG, DSH_PAGE_THEME_EVENT, DSH_PAGE_INSERT_EVENT, DSH_PAGE_WORKTREES_EVENT, DSH_PAGE_IPC_REBIND, DSH_PAGE_REBIND_EVENT,
 			// 多根工作区（2026-10-16）：IDE 工作区记录那条推送也要在 preload 里有对应通道 ✓
-			DSH_PAGE_IPC_WORKSPACES, DSH_PAGE_WORKSPACES_EVENT]) {
+			DSH_PAGE_IPC_WORKSPACES, DSH_PAGE_WORKSPACES_EVENT,
+			// IDE 登录态推送（2026-10-21）：通道名与 DOM 事件名也必须 preload / 协议 / 页面三处同值 ✓
+			DSH_PAGE_IPC_AUTH, DSH_PAGE_AUTH_EVENT,
+			// 编辑区 workbench 视图（2026-10-22）：模块路由经这条参数交给页面
+			DSH_PAGE_WORKBENCH_ARG]) {
 			assert.ok(src.includes(`'${c}'`), `preload must use ${c}`);
 		}
+		assert.ok(src.includes('workbenchRoute: workbenchRoute || null'), 'preload must expose workbenchRoute on the page bridge');
 		// plugin-page 的插件页面要能自识别是哪个视图（路由由 location.pathname 决定）。
 		assert.ok(src.includes('viewId: viewId || null'), 'preload must expose viewId on the page bridge');
 		// 桥版本号必须与协议常量同步（方案 5.15 的 switchPreset/rebind 是 v2 引入）。
@@ -325,7 +351,16 @@ suite('dshHarness / page bridge', () => {
 		}
 		// 只在聊天框里裁剪，且不改动 data-* 以外的选择器假设（用 data-slot / data-* 属性）。
 		assert.ok(/surface === 'chat' && chatOnly/.test(src), 'preload must apply the trim only for the chat surface');
-		assert.ok(DSH_CHAT_ONLY_CSS.includes('[data-slot="sidebar"]') && DSH_CHAT_ONLY_CSS.includes('[data-slot="rightbar"]'));
+		// ★★ 2026-10-19（用户报「右侧缺少用户消息定位 UI，官方 dsh 里有」）：
+		//   左侧栏必须隐藏（IDE 已有会话历史），**右侧栏必须保留** —— 轨迹里的"交互式时间概览"
+		//   （= 用户消息定位）就在右栏；从前把 rightbar 一起 display:none ⇒ 入口整个消失 ✗。
+		assert.ok(DSH_CHAT_ONLY_CSS.includes('[data-slot="sidebar"]'), '左侧栏必须隐藏（IDE 已有会话历史）');
+		assert.ok(!DSH_CHAT_ONLY_CSS.includes('[data-slot="rightbar"]'),
+			'右栏不许再 display:none（否则轨迹/用户消息定位入口消失 ✗）');
+		assert.ok(!DSH_CHAT_ONLY_CSS.includes('[data-sidebar-right-expand]'),
+			'"展开右栏"按钮不许隐藏 —— 那是把右栏拉回来的唯一入口 ✗');
+		assert.ok(/grid-template-columns:\s*0 minmax\(0, 1fr\) auto/.test(DSH_CHAT_ONLY_CSS),
+			'栅格右列必须是 auto（折叠态不占宽，展开才出）✗');
 		assert.ok(!/^\s*(import|export)\s/m.test(src), 'preload must stay an import/export-free script');
 	});
 
@@ -425,6 +460,21 @@ suite('dshHarness / page bridge', () => {
 		const extra = [...handled].filter(m => !declared.has(m)).sort();
 		assert.deepStrictEqual(missing, [], `这些命令声明了却没有 case（会被**静默丢弃** ⇒ 页面点了没反应）: ${missing.join(', ')}`);
 		assert.deepStrictEqual(extra, [], `这些 case 不在协议联合里（死代码）: ${extra.join(', ')}`);
+
+		// ★★ 2026-10-19 补的**第三个面**：preload 的 `api` 暴露。
+		//   真机事故：`kbFeishuSync` 协议有 ✓、validate case 有 ✓、宿主 handler 有 ✓，
+		//   但 **preload 没暴露** ⇒ `window.vssarosDsh.kbFeishuSync` 是 undefined
+		//   ⇒ 页面只能走"旧宿主"兜底分支，用户看到的是
+		//   「当前宿主不支持一键同步（需要页面桥 12）」✗（看着像版本问题，其实是漏了一层）。
+		//   ⇒ 桥命令有**四处**要同步：协议类型 / validate case / **preload 暴露** / 宿主 handler。
+		//     前两者由本用例的前半段守，第四个由"case 存在"间接保证（handler 里 switch），
+		//     第三个此前**没人管** ⇒ 就在这里钉住。
+		const preloadSrc = readFileSync(join(repo, 'src', 'vs', 'sessions', 'contrib', 'dshHarness', 'electron-browser', 'preload-dshView.ts'), 'utf8');
+		const notExposed = [...declared]
+			.filter(m => !new RegExp(`\\n\\s{1,4}${m}\\s*:`).test(preloadSrc))
+			.sort();
+		assert.deepStrictEqual(notExposed, [],
+			`这些命令协议里有、但 preload 没暴露（页面调不到 ⇒ 会静默走"旧宿主"兜底）: ${notExposed.join(', ')}`);
 	});
 });
 
@@ -489,5 +539,39 @@ suite('dshChatSession / preset 会话 id 派生（方案 5.15.2）', () => {
 	test('sanitizeDshIdPart：去掉首尾连字符、折叠非法字符', () => {
 		assert.strictEqual(sanitizeDshIdPart('PTC'), 'ptc');
 		assert.strictEqual(sanitizeDshIdPart('--a b--'), 'a-b');
+	});
+});
+
+suite('dshHarness / 窗口模式下点「登录」不得切到 IDE 模式', () => {
+
+	test('signInIde / signOutIde 属"不需要 IDE 主窗口露面"名单', () => {
+		// 用户原话（2026-10-21）："窗口模式下，点击登录会切换到 ide 模式，要求不切换，在当前模式下，直接登录"。
+		// 根因：`DshPageCommandContribution._handle` 开头会把"要让 IDE 出界面"的命令先把主窗口拉回前台
+		//   （启动时 IDE 被收进任务栏的形态）⇒ 登录命令一旦落进那份名单，就会把用户从窗口模式拽回 IDE 模式 ✗。
+		// 事实依据：TOF/OA 登录全程在**扩展宿主 + 系统浏览器**里完成
+		//   （`extensions/tof-authentication`：loopback server → `env.openExternal` → 等回调 → `fetchWhoami`），
+		//   IDE 窗口既不弹窗也不必被看见 ⇒ 登录能在当前窗口里原地完成 ✓。
+		assert.ok(DSH_PAGE_COMMANDS_WITHOUT_IDE_UI.has('signInIde'), 'signInIde 必须不还原 IDE 主窗口');
+		assert.ok(DSH_PAGE_COMMANDS_WITHOUT_IDE_UI.has('signOutIde'), 'signOutIde 同理（登出也不该切模式）');
+		// 登录态是由 IDE **推**给页面的（`DSH_PAGE_IPC_AUTH`）⇒ 页面那行会自己翻转，不需要回传通道 ✓。
+		assert.ok(DSH_PAGE_IPC_AUTH && DSH_PAGE_AUTH_EVENT, '登录态推送通道仍在');
+	});
+
+	test('反向对照：真的要 IDE 出界面的命令必须留在名单外', () => {
+		// 这两条**确实**要 IDE 的设置编辑器 / 反馈面板 ⇒ 落在名单外（窗口模式下点它们，理应把 IDE 拉出来）。
+		assert.ok(!DSH_PAGE_COMMANDS_WITHOUT_IDE_UI.has('openSettings'), '打开 IDE 设置页需要 IDE 出界面');
+		assert.ok(!DSH_PAGE_COMMANDS_WITHOUT_IDE_UI.has('openFeedback'), '打开 IDE 反馈面板需要 IDE 出界面');
+		// 'focusIde' 是"回 IDE"本体：由它自己的分支处理，不该再触发一次"先还原" ✓。
+		assert.ok(DSH_PAGE_COMMANDS_WITHOUT_IDE_UI.has('focusIde'), 'focusIde 不在名单外再还原一次');
+	});
+
+	test('名单里的每一项都必须是协议里真实存在的桥命令（防止写了永远不生效的条目）', () => {
+		// 名单是用**方法名字符串**写的（不是联合类型的成员）⇒ 拼错一个字母不会编译错、只会**永远不生效** ✗
+		//   ⇒ 这里扫协议源码对账：名单里的每个名字都必须在 `DshPageCommand` 联合类型里出现过。
+		const repo = process.env.DSH_TEST_REPO_ROOT ?? process.cwd();
+		const protocolSrc = readFileSync(join(repo, 'src', 'vs', 'sessions', 'contrib', 'dshHarness', 'common', 'dshPageBridgeProtocol.ts'), 'utf8');
+		for (const m of DSH_PAGE_COMMANDS_WITHOUT_IDE_UI) {
+			assert.ok(protocolSrc.includes(`method: '${m}'`), `协议里没有桥命令 ${m}（名单写了也永远不生效）`);
+		}
 	});
 });

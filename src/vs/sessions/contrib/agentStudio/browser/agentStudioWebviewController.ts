@@ -19,6 +19,7 @@ import { CHECKPOINT_DIFF_SCHEME, CheckpointDiffContentProvider, CheckpointDiffSt
 import { MEDIA_STORE_CHANNEL, type IMediaBackend, type MediaImportRequest, type MediaListFilter } from "../common/mediaStoreChannel.js";
 import { VSSAROS_LLM_CHANNEL, inlineRemoteImageUrls, type IHttpRequestResult } from "../common/llmBridge.js";
 import { createMediaStoreProxy } from "./mediaStoreProxy.js";
+import { MediaGalleryEditorInput } from "./mediaGalleryEditorInput.js";
 import { hasWriteCapability, isWriteTool } from "../common/writeExclusion.js";
 import { IInstantiationService } from "../../../../platform/instantiation/common/instantiation.js";
 import { ICommandService } from "../../../../platform/commands/common/commands.js";
@@ -1995,6 +1996,19 @@ export class AgentStudioWebviewController extends Disposable {
 				}
 				return this._handleWorkflowGet(wp);
 			}
+			case "workflow.openMediaGallery": {
+				// ★ 2026-10-19（用户要求"媒体库统一成一个编辑区页"）：工具栏「🖼 媒体库」不再开
+				//   webview 浮层（`MediaGallery.tsx` 已删），改为在**编辑区**打开唯一的媒体库页
+				//   （`MediaGalleryEditorPane`），并把 workflowId 当上下文带过去 ⇒ 默认只看本工作流。
+				//   ⚠ 编辑区页只有宿主能创建（webview 不行）⇒ 这条消息就是"请宿主代劳"✓。
+				const gp = p as { workflowId?: string; workflowName?: string };
+				const input = MediaGalleryEditorInput.getOrCreate();
+				input.applyContext({ workflowId: gp?.workflowId, workflowName: gp?.workflowName });
+				const groups = this.editorGroupsService.getGroups(GroupsOrder.CREATION_TIME);
+				const targetGroup = groups.length <= 1 ? SIDE_GROUP : groups[0];
+				await this.editorService.openEditor(input, { pinned: true, preserveFocus: true }, targetGroup);
+				return { success: true };
+			}
 			case "workflow.save": {
 				const ws = p as unknown as { workflow: Record<string, unknown>; workspaceId?: string };
 				return this._handleWorkflowSave(ws);
@@ -2974,6 +2988,18 @@ export class AgentStudioWebviewController extends Disposable {
 		} catch (err) {
 			return { ok: false, error: `vox:checkDeps 失败：${err instanceof Error ? err.message : String(err)}` };
 		}
+	}
+
+	/**
+	 * 宿主侧主动发一条 `toWebview` 事件（2026-10-19）。
+	 *
+	 * 为什么需要公开版：媒体库现在是一个**编辑区页**（`MediaGalleryEditorPane`），它要把
+	 * "插入这个资产到画布"告诉某个工作流的 webview，而它拿不到 controller
+	 * ⇒ 由 `WorkflowEditorPane`（同时知道 workflowId 与自己的 controller）代发 ✓。
+	 * ⚠ 只给**界面类**消息用（不承载会话/权限语义）；`_sendEvent` 里 chat.* 的过滤照旧生效。
+	 */
+	sendEvent(type: string, data: unknown): void {
+		this._sendEvent(type, data);
 	}
 
 	private _sendEvent(type: string, data: unknown): void {

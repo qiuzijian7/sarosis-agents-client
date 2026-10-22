@@ -1,4 +1,4 @@
-﻿# Build outputs
+# Build outputs
 out/
 out-test/
 out-build/
@@ -174,6 +174,13 @@ src/vs/**/*.d.ts
 src/vs/**/*.js.map
 # Agent Studio webview esbuild bundles (debug/prod) — build artifacts
 src/vs/sessions/contrib/agentStudio/webview/media-*/
+# kbblocks 是 esbuild 产物（约 3.95 MB：React + KaTeX + CodeMirror + 语言模式），
+# 由 `npm run build-kbblocks`（= gulp 任务 build-agent-studio-kbblocks）生成。
+# ★ 2026-10-20 真机：它缺失时笔记编辑器会退化 —— 页面只在 console 打
+#   `[KbBlocksEditorPane] kbblocks.js not found`，公式/代码高亮/表格样式全丢。
+#   新克隆后若发现这个报错，跑一次上面那条命令即可（441 ms）。
+src/vs/sessions/contrib/agentStudio/webview/media/kbblocks.js
+src/vs/sessions/contrib/agentStudio/webview/media/kbblocks.css
 # esbuild 打包产物（测试用 CJS bundle，由 build-serializer.mjs 生成）
 src/vs/**/*.cjs
 .sarosisworkspace

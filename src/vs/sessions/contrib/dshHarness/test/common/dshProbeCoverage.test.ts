@@ -74,12 +74,34 @@ function readRunner(root: string): string {
 	return fs.readFileSync(scriptPath(root, 'run-all.mjs'), 'utf8');
 }
 
-/** `run-all.mjs` 里引用到的脚本名（`'scripts/xxx.mjs'` 这种字面量）。 */
+/**
+ * `run-all.mjs` 里**选择集**引用到的脚本名。两种形态都要认（runner 在 2026-10-19 被重写过）：
+ *   · 旧：`'scripts/xxx.mjs'` 字面量（扁平列表）；
+ *   · 新：`GROUPS = { …: ['xxx.mjs', …] }` 里的**裸文件名**。
+ *
+ * ⚠ 只认一种形态的后果是**整族假阴性**：实测（2026-10-20）只认旧形态 ⇒ 引用数 0 ⇒
+ *   140+ 条探针全被判"没进 run-all"，于是"列表被改坏了"与"每个探针都要被覆盖"两条一起假红。
+ *   教训同 `feedback_static_scan_surface`：采集面按**注册形态**枚举。
+ */
 function referencedScripts(runner: string): string[] {
-	return [...runner.matchAll(/'scripts\/([\w.-]+\.mjs)'/g)].map(m => m[1]);
+	const legacy = [...runner.matchAll(/'scripts\/([\w.-]+\.mjs)'/g)].map(m => m[1]);
+	const groupsBlock = /const GROUPS = \{[\s\S]*?\n\};/.exec(runner)?.[0] ?? '';
+	const grouped = [...groupsBlock.matchAll(/'([\w.-]+\.mjs)'/g)].map(m => m[1]);
+	return [...new Set([...legacy, ...grouped])];
 }
 
-/** 明确标了 `{ fast: true }` 的脚本名（`--fast` 组）。 */
+/** runner 是否走"目录自动发现 + `--all` 覆盖全部"的形态（2026-10-19 起）。 */
+function autoDiscoversAll(runner: string): boolean {
+	return runner.includes('readdirSync(SCRIPTS_DIR)') && runner.includes('files = allProbes');
+}
+
+/** 自动发现认哪些前缀（只有写进这条正则的批次才会被 `--all` 跑到）。 */
+function autoCovered(file: string): boolean {
+	// 与 runner 的 `/^(?:p0|p3)-.*\.mjs$/` 同口径：改批次必须同步改这里
+	return /^(?:p0|p3)-/.test(file);
+}
+
+/** 明确标了 `{ fast: true }` 的脚本名（旧形态的 `--fast` 组；新 runner 没有这个概念）。 */
 function fastScripts(runner: string): string[] {
 	return [...runner.matchAll(/'scripts\/([\w.-]+\.mjs)'\][^\n]*\{ fast: true \}/g)].map(m => m[1]);
 }
@@ -102,16 +124,23 @@ const HOSTY_PREFIXES = ['p0-01-', 'p0-04-', 'p0-08-', 'p0-22-', 'p0-07-', 'p3-01
 const SLOW_PREFIXES = ['p0-11'];
 
 suite('dshProbeCoverage（探针必须被 run-all 覆盖）', () => {
-	test('★ 每个探针都在 run-all 列表里（或进显式排除表并写明理由）', function () {
+	test('★ 每个探针都能被 run-all 跑到（在分组里 / 自动发现覆盖 / 进排除表并写明理由）', function () {
 		const root = repoRoot();
 		if (!root) {
 			this.skip();
 		}
 		const runner = readRunner(root!);
-		const missing = probeFiles(root!).filter(file => !referencedScripts(runner).includes(file)
-			&& !EXCLUDED.some(([name]) => name === file));
+		const referenced = referencedScripts(runner);
+		const auto = autoDiscoversAll(runner);
+		const missing = probeFiles(root!).filter(file => {
+			if (EXCLUDED.some(([name]) => name === file)) { return false; }
+			if (referenced.includes(file)) { return false; }
+			// 自动发现形态下，写进发现正则的批次（p0/p3）由 `--all` 覆盖 ⇒ 不必逐条登记；
+			// 其它前缀（workbench-e2e 那种）跑不到 ⇒ 必须显式引用或进排除表。
+			return !(auto && autoCovered(file));
+		});
 		assert.deepStrictEqual(missing, [],
-			`这些探针没进 run-all.mjs（跑不到 ⇒ 会像 p3-06 那样悄悄腐烂）：${missing.join(', ')}`);
+			`这些探针 run-all 跑不到（会像 p3-06 那样悄悄腐烂）：${missing.join(', ')}`);
 	});
 
 	test('★ run-all 引用到的脚本都真实存在（改名/删文件后列表不许留幽灵）', function () {
@@ -139,22 +168,43 @@ suite('dshProbeCoverage（探针必须被 run-all 覆盖）', () => {
 		}
 	});
 
-	test('★ --fast 这条路必须在，且标了 fast 的项不许是"要真机"的', function () {
+	test('★ 快速通道必须在（--fast 或"默认分组"），且不许把整目录当默认', function () {
 		// 这条只钉**形状**，不假装能判断"某脚本到底要不要 Host"（那得读脚本、还判不准 ✗）。它挡的是：
-		// ① `--fast` 被整条删掉（症状：又回到"十几分钟没人跑"）；② 图快把真机项也标 fast（症状：假绿 ✗）。
+		// ① 快速通道被整条删掉（症状：又回到"十几分钟没人跑"）；② 默认变成全量（症状：一跑就撞真机项 ⇒ 没人跑）。
+		// 2026-10-19 runner 重写成"分组选择集"形态 ⇒ `--fast` 被 `--group`（默认 agents）取代，两态都要认。
 		const root = repoRoot();
 		if (!root) {
 			this.skip();
 		}
 		const runner = readRunner(root!);
-		assert.ok(runner.includes('--fast'), 'run-all.mjs 必须保留 --fast 入口');
-		const fast = fastScripts(runner);
-		assert.ok(fast.length >= 3, `--fast 组至少要有几项，实际 ${fast.length}：${fast.join(', ') || '（空）'}`);
-		const wronglyMarked = fast.filter(file => HOSTY_PREFIXES.some(prefix => file.startsWith(prefix)));
-		assert.deepStrictEqual(wronglyMarked, [],
-			`这些项需要真机 Host/真 App，不许标 fast（会被 --fast 静默跳过 ⇒ 假绿）：${wronglyMarked.join(', ')}`);
-		const tooSlowInFast = fast.filter(file => SLOW_PREFIXES.some(prefix => file.startsWith(prefix)));
-		assert.deepStrictEqual(tooSlowInFast, [],
-			`这些项**实测极慢**（进程内 ≠ 快），放进 --fast 会让这条路失去意义：${tooSlowInFast.join(', ')}`);
+
+		if (runner.includes('--fast')) {
+			const fast = fastScripts(runner);
+			assert.ok(fast.length >= 3, `--fast 组至少要有几项，实际 ${fast.length}：${fast.join(', ') || '（空）'}`);
+			const wronglyMarked = fast.filter(file => HOSTY_PREFIXES.some(prefix => file.startsWith(prefix)));
+			assert.deepStrictEqual(wronglyMarked, [],
+				`这些项需要真机 Host/真 App，不许标 fast（会被 --fast 静默跳过 ⇒ 假绿）：${wronglyMarked.join(', ')}`);
+			const tooSlowInFast = fast.filter(file => SLOW_PREFIXES.some(prefix => file.startsWith(prefix)));
+			assert.deepStrictEqual(tooSlowInFast, [],
+				`这些项**实测极慢**（进程内 ≠ 快），放进 --fast 会让这条路失去意义：${tooSlowInFast.join(', ')}`);
+			return;
+		}
+
+		// 新形态：默认必须落到**某个非空分组**（而不是 `--all`），且要能跳过浏览器项。
+		const defaultGroup = /const group = valueOf\('--group'\) \?\? \(has\('--all'\) \? '' : '([\w-]+)'\)/.exec(runner)?.[1];
+		assert.ok(defaultGroup, 'run-all.mjs 必须有一个默认分组（否则一跑就是全量 ⇒ 没人跑）');
+		assert.ok(runner.includes(`\t${defaultGroup}: [`), `默认分组 ${defaultGroup} 必须在 GROUPS 里显式列出`);
+		assert.ok(runner.includes('--skip-browser'), '必须保留 --skip-browser（浏览器项在某些环境根本起不来）');
+
+		const groupBlock = new RegExp(`\\t${defaultGroup}: \\[([\\s\\S]*?)\\n\\t\\]`).exec(runner)?.[1] ?? '';
+		const defaults = [...groupBlock.matchAll(/'([\w.-]+\.mjs)'/g)].map(m => m[1]);
+		assert.ok(defaults.length >= 3, `默认分组至少要有几项，实际 ${defaults.length}`);
+		// 默认组里若有"要真机"的项，就必须留下能把它摘掉的入口（--filter / --skip-browser），
+		// 否则这条快速通道在缺环境时整条不可用 ⇒ 又回到"没人跑"。
+		const hostyInDefault = defaults.filter(file => HOSTY_PREFIXES.some(prefix => file.startsWith(prefix)));
+		if (hostyInDefault.length > 0) {
+			assert.ok(runner.includes('--filter') || runner.includes('--skip-browser'),
+				`默认分组含需要真机的项（${hostyInDefault.join(', ')}），但 runner 没有 --filter/--skip-browser 可摘掉它们`);
+		}
 	});
 });

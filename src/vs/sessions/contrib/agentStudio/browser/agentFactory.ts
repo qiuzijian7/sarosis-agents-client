@@ -256,8 +256,20 @@ export class AgentFactory {
 		// Tool match bonus: if the agent has tools that are relevant to the task
 		if (agent.tools && agent.tools.length > 0) {
 			// Tasks requiring code changes benefit from write/terminal tools
-			const codeRelatedTools = ['write_to_file', 'edit_file', 'replace_in_file', 'terminal'];
-			const readRelatedTools = ['read_file', 'list_dir', 'search_files', 'grep_search'];
+			// ★ 2026-10-19：agent 定义里的 tools 已**统一到 dsh 名单**（`read`/`write`/`edit`/`pwsh`/
+			//   `glob`/`grep`/`codebase_*` …）。这里两张表必须同时认**新名与旧名** ——
+			//   只留旧名 ⇒ 改写后 legacy 打分对**所有** agent 都加不上分（本轮之前就已半失效：
+			//   内置 agent 用 `file_read` 这套，而表里写的是 `read_file` 那套，两套从不重合 ✗）。
+			const codeRelatedTools = [
+				'write_to_file', 'edit_file', 'replace_in_file', 'terminal',       // 旧名（CodeBuddy 风格）
+				'file_write', 'patch',                                            // 旧名（legacy IDE 风格）
+				'write', 'edit', 'pwsh', 'bash', 'codebase_index', 'workflow_apply', // dsh 名
+			];
+			const readRelatedTools = [
+				'read_file', 'list_dir', 'search_files', 'grep_search',           // 旧名（CodeBuddy 风格）
+				'file_read', 'search_code',                                       // 旧名（legacy IDE 风格）
+				'read', 'glob', 'grep', 'codebase_search', 'codebase_query_graph', // dsh 名
+			];
 			const isCodeTask = keywords.some(kw =>
 				['code', 'implement', 'build', 'fix', 'refactor', 'deploy', 'test'].includes(kw)
 			);

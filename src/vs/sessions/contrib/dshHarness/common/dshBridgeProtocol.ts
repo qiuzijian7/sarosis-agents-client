@@ -49,6 +49,33 @@ export const enum DshBridgeMethod {
 	/** 同步 VsSaros 已配置的模型 provider（写 llm-pi-ai settings + 凭证；插件侧只动 vssaros- 前缀路由）。 */
 	ProvidersSync = 'providers.sync',
 	/**
+	 * **同步企业身份（TOF/OA 票据）到 dsh 侧**（2026-10-21）。
+	 *
+	 * 需求（用户原话）："不要用 dsh 官方 DeepSeek 路由，需求是在两侧用 TOF/OA 企业身份（工号 + 票据）实现登录"。
+	 * ⇒ dsh 侧不另起一套账号（DeepSeek 账号那套我们不用），而是**持有同一份企业身份**。
+	 *
+	 * 为什么是 IDE 侧发起、而不是 dsh 侧自己登录：
+	 *  · TOF 的 OAuth 是 **passport.woa.com → 网关 `/api/v1/auth/tof/callback?cb_port=` → 本地 loopback**，
+	 *    协议由**网关**定（客户端可 1:1 复用，但回调端口必须由客户端起）；
+	 *  · dsh 侧**没有**"打开外部 URL"的服务（无 openExternal/openUrl，全 305 个包都没有），
+	 *    而**扩展开浏览器**是现成的（`extensions/tof-authentication`：`env.openExternal` + loopback server）；
+	 *  · 网关是**明文 HTTP**（`http://21.169.46.116:8080`）⇒ 页面侧会被 Mixed Content 拦，只能在 Node 侧做。
+	 * ⇒ **一次浏览器登录，IDE 侧拿到票据，再经这条桥同步给 dsh** ⇒ 两侧同一份身份，不重复登录 ✓。
+	 *
+	 * ⚠ **安全边界（重要）**：票据从 VS Code 的 SecretStorage（加密）**落到 dsh 的 `.credentials.yaml`（明文）**。
+	 *   dsh 侧 `dsh-credentials-local` 的自述限制："同 UID 的 agent 工具进程能读到这个文件"（无 OS keychain）。
+	 *   这是**扩大了暴露面**（之前票据只在 SecretStorage 里）⇒ 必须在两侧都写明，并保证：
+	 *   ① 票据**绝不下发到页面**（页面只拿展示投影，见 `DSH_PAGE_IPC_AUTH`）；
+	 *   ② 票据只经**本机命名管道**（IDE ⇄ Host，同机同信任域）过，不出网。
+	 */
+	TofSync = 'tof.sync',
+	/**
+	 * 积分样本入账（2026-10-20）：主进程计费代理抓到一条推一条（{@link IBridgeCreditRecordArgs}）。
+	 * Host 侧按 LLM 调用区间归属到 (会话, 回合)，写进会话日志（插件记录 `plugin:vssaros/credit`），
+	 * 再由投影 `vssaros-credit` 推给页面 —— 取代"广播给所有聊天页、页面按时间窗猜"的旧链路。
+	 */
+	CreditRecord = 'credit.record',
+	/**
 	 * **反向通道自检**（协议 v2）：IDE 调它 → 桥反向调 `ide.echo` → 把 IDE 的返回**原样**回传。
 	 * 用途：反向通道一旦接通，一条调用即可验收；能力工具接入前也能单独验通道。
 	 */
@@ -613,6 +640,81 @@ export interface IBridgeProvidersSyncResult {
 	readonly modelsOnline?: Readonly<Record<string, readonly string[] | string>>;
 	/** 默认模型改写的诊断（有改写/出错时才有；无则 undefined）。 */
 	readonly defaultModel?: string;
+}
+
+// ─── tof.sync（企业身份票据同步到 dsh 侧，2026-10-21）───────────────────────────
+
+/**
+ * 票据在 dsh 侧的凭证引用名（`ctx.credentials.set(ref, value)` 的 ref；POSIX 标识符）。
+ *
+ * 为什么用 `credentials` 而不是 `settings`：dsh 的 `ctx.settings` 是**插件配置表单**服务
+ * （`dsh-settings` README 明确 "Forms expose only volatile fields"）⇒ 动态票据不该进那里；
+ * `ctx.credentials` 才是**持久化凭据**的正规落点（`dsh-credentials-local` ⇒ `<dshHome>/.credentials.yaml`）。
+ */
+export const DSH_TOF_CREDENTIAL_REF = 'VSSAROS_TOF_TICKET';
+
+export interface IBridgeTofSyncArgs {
+	/**
+	 * 企业身份票据（`x-tai-identity`，TOF/OA）；`null` = 登出（清掉 dsh 侧那一份）。
+	 *
+	 * ⚠ 只传**票据**，不传身份字段：身份（工号/姓名/团队）由 Host 侧自己 whoami 得出 ⇒ 单一事实源，
+	 * 不会出现"票据是 A、名字是 B"的错配 ✓（dsh 侧走 Node fetch，明文 HTTP 没问题）。
+	 */
+	readonly ticket: string | null;
+}
+
+export interface IBridgeTofSyncResult {
+	/** dsh 侧现在是否持有票据。 */
+	readonly signedIn: boolean;
+	/** 票据落在哪个凭证引用名（诊断用；**值本身不外传**）。 */
+	readonly ref: string;
+	/** 本次是否真的写入/删除了（false = 内容没变）。 */
+	readonly changed: boolean;
+}
+
+/** `tof.sync` 负载校验（跨进程边界收紧；票据是凭据 ⇒ 禁控制字符、限长）。 */
+export function validateTofSyncArgs(value: unknown): value is IBridgeTofSyncArgs {
+	if (!value || typeof value !== 'object' || Array.isArray(value)) {
+		return false;
+	}
+	const v = value as { ticket?: unknown };
+	if (v.ticket === null) {
+		return true;
+	}
+	if (typeof v.ticket !== 'string') {
+		return false;
+	}
+	// 票据是长 base64/hex 串 ⇒ 限长 + 禁换行/NUL（防注入到 YAML 与日志行）
+	return v.ticket.length > 0 && v.ticket.length <= 4096 && !/[\r\n\u0000]/.test(v.ticket);
+}
+
+// ─── credit.record（积分样本入账，2026-10-20）────────────────────────────────
+
+/** 一条积分样本（与主进程 `IDshCreditSample` 同形；只有数值字段，不含请求/响应内容）。 */
+export interface IBridgeCreditRecordArgs {
+	/** dsh 路由名（`vssaros-*`），与 Host 侧 `GenerateOptions.provider` 对得上。 */
+	readonly route: string;
+	/** 请求体里的模型 id（网关可能带后缀，Host 侧按"同族"匹配）。 */
+	readonly model?: string;
+	/** 网关上报的积分；缺省 = 该响应没有积分字段（与 0 区分）。 */
+	readonly credit?: number;
+	readonly status?: number;
+	/** 代理读完响应的时刻（epoch ms）。 */
+	readonly at: number;
+}
+
+/** Host 侧归属结果（诊断用；主进程只打日志，不据此做决策）。 */
+export interface IBridgeCreditRecordResult {
+	readonly matched: boolean;
+	/** 已写进会话日志（false = 匹配到了但写不进：Host 版本过旧 / 会话已不活跃）。 */
+	readonly appended?: boolean;
+	/** 暂时没匹配上、在等对应调用结束。 */
+	readonly pending?: boolean;
+	readonly sessionId?: string;
+	readonly turn?: number | null;
+	/** 同一时刻有多个会话在用同一模型 ⇒ 取了最可能的那个。 */
+	readonly ambiguous?: boolean;
+	readonly reason?: string;
 }
 
 const PROVIDER_ROUTE_RE = /^vssaros-[a-z0-9-]{1,40}$/;

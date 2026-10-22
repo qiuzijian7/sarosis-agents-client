@@ -15,6 +15,9 @@
  */
 
 import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+// ★ 2026-10-19：索引各阶段打**活动标记**（`markRenderActivity`）——真机 `LONG_TASK … 因=[(无标记)]`
+// 就是因为图谱这条链一个标记都没有，1s 级冻结只能靠猜（见 `renderActivityMarking.test.ts`）。
+import { markRenderActivity } from '../../../../base/common/renderActivityTrace.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -2170,7 +2173,7 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		const excludeDirs = await this._excludeResolver.resolve(rootPath, config.excludeDirs);
 		// 记录本次全量索引的生效范围，供 watcher/增量索引用同一口径（防幻影变更）
 		this._watchScopeCache.set(this._normalizeRoot(rootPath), { excludeDirs, keepDirs: config.keepDirs ? [...config.keepDirs] : undefined });
-		this._onDidIndexProgress.fire('📁 扫描文件...');
+		markRenderActivity('cbm:scan'); this._onDidIndexProgress.fire('📁 扫描文件...');
 		const files = await this._scanner.scanFiles(
 			rootPath, excludeDirs, config.subPath, cts.token, config.keepDirs,
 			msg => this._onDidIndexProgress.fire(msg),
@@ -2299,7 +2302,7 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			await Promise.all(this._parserWorkers.map((w, i) => workerTask(w, i)));
 		} else {
 			// ── Fallback: 主线程解析 (Worker 不可用时) ──
-			this._onDidIndexProgress.fire('🔍 主线程解析中...');
+			markRenderActivity('cbm:parse'); this._onDidIndexProgress.fire('🔍 主线程解析中...');
 			const YIELD_INTERVAL = 20;
 			for (let i = 0; i < files.length; i++) {
 				if (cts.token.isCancellationRequested) { break; }
@@ -2357,7 +2360,7 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		});
 
 			// 3. Match calls to definitions
-			this._onDidIndexProgress.fire('🔗 匹配调用关系...');
+			markRenderActivity('cbm:match'); this._onDidIndexProgress.fire('🔗 匹配调用关系...');
 		const matchedEdges = await this._matchCallsToDefinitions();
 		edgesExtracted += matchedEdges;
 
@@ -2370,7 +2373,15 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		edgesExtracted += matchedUsage;
 
 		// #9 过程间热路径传播（基于已解析的 CALLS 图）
-		await this._propagateInterprocedural();
+		// ★ 2026-10-19（用户日志：`LONG_TASK 1006ms / 592ms 因=[(无标记)]`，两次都落在这一步）：
+		//   本次**一个源文件都没扫到**（空项目 / 全被 exclude）时它仍会遍历**全库边**（20 万节点 ⇒
+		//   数十万条）后立刻 `callEdges.length === 0` 早退 —— 白扫 1.4s 主线程冻结/次 ✗✗。
+		//   这一步的输入只来自本项目已解析的节点/边（0 ⇒ 无可传播）⇒ 直接跳过，语义不变 ✓。
+		if (files.length === 0 && nodesExtracted === 0) {
+			this._logService.info('[CodebaseGraph]', '本次 0 个源文件 ⇒ 跳过过程间热路径传播（其输入只来自本次解析）');
+		} else {
+			markRenderActivity('cbm:propagate'); await this._propagateInterprocedural();
+		}
 
 			// 4. Similarity (MinHash 代码克隆检测) — 始终运行（签名已预计算，成本低）
 			this._onDidIndexProgress.fire('🔁 代码克隆检测 (MinHash)...');
@@ -2455,7 +2466,7 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			// 8. Save graph to {rootPath}/.codebase-memory/graph.db.zst（仅本 folder 子图）
 			// 先取消该 root 的待发延迟落盘：全量索引即将写一份完整快照，
 			// 若延迟任务稍后 firing 会重复写同一制品（且内容更旧或更新，竞态）。
-			this._cancelPendingSave(rootPath);
+			markRenderActivity('cbm:save'); this._cancelPendingSave(rootPath);
 			// 串行化：等待任何正在跑的落盘结束，避免两个 save 同时写同一个 .tmp 制品
 			// 2026-09-15：project 用本轮局部常量（原为 `this._projectName`，索引期间可能被
 			// 别的工作区的 merge 改写 ⇒ 制品内容错位甚至为空）。
@@ -2470,7 +2481,7 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			// 增量变更走 _syncIncrementalToSqlite 补丁（见 _runIncrementalIndex）。
 			// 同步成功后不再释放内存 store（同步路径 hasGraphData()/searchGraph 依赖它）。
 		if (this._sqliteBackendEnabled) {
-			this._onDidIndexProgress.fire('💾 同步到 SQLite 后端...');
+			markRenderActivity('cbm:sqlite-sync'); this._onDidIndexProgress.fire('💾 同步到 SQLite 后端...');
 			try {
 				// 显式传本轮 project（`_syncGraphToSqlite()` 缺省读 `this._projectName`，同上有被改写风险）
 				// 全局串行：正在跑的后台追平若已开了显式事务，这里排队等它结束
@@ -4254,7 +4265,13 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 
 		const callEdges: { callerId: number; calleeId: number; loopDepth: number }[] = [];
 		let ec = 0;
-		for (const e of store.getAllEdges()) {
+		// ★ 2026-10-19（用户日志：单次 `LONG_TASK` 1006ms、窗口内 16 次/3.4s）：
+		//   原先是 `store.getAllEdges()` —— **整份物资化**全库边（20 万节点 ⇒ 数十万条，一次性同步
+		//   `Array.from` 拷贝）✗；而且每 **20 万**条才 `setTimeout(0)` 让出一次 ⇒ 实际几乎不让 ⇒
+		//   实测 1s 级 UI 冻结 ✗✗。
+		//   改成：① 用**惰性** `iterateEdges()`（无参 = 直接迭代内部 Map，不拷贝 ✓）；
+		//        ② 每 **2 万**条让出一次（一次约几十 ms，人眼无感 ✓）。
+		for (const e of store.iterateEdges()) {
 			if (e.project === project && e.type === 'CALLS') {
 				callEdges.push({
 					callerId: e.sourceId,
@@ -4262,7 +4279,7 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 					loopDepth: (e.properties && (e.properties.loopDepth as number)) ?? 0,
 				});
 			}
-			await yieldEvery(++ec, 200000);
+			await yieldEvery(++ec, 20000);
 		}
 		if (callEdges.length === 0) { return 0; }
 
@@ -6594,6 +6611,8 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 	}
 
 	async loadGraphMerge(sourcePath: string, projectOverride?: string, rebuildBM25: boolean = true): Promise<boolean> {
+		// 归因标记：启动期这里实测 6549ms（8MB 制品解析 + 20 万节点灌入）——真机 LONG_TASK 靠它定位 ✓
+		markRenderActivity('cbm:load');
 		this._graphLoadingCount++;
 		try {
 			return await this._loadGraphMergeImpl(sourcePath, projectOverride, rebuildBM25);

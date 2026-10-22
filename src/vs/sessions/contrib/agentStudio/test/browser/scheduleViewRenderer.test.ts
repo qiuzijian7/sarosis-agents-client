@@ -143,14 +143,20 @@ suite('ScheduleViewRenderer — 渲染与弹窗', () => {
 
 	test('新建定时任务按钮触发 onCreateRequest', () => {
 		const r = new ScheduleViewRenderer();
+		// ⚠ 2026-10-20：`onCreateRequest` 返回的是**订阅 disposable**，订阅方必须自己释放 ——
+		//   原来这个返回值被丢掉 ⇒ `ensureNoDisposablesAreLeakedInTestSuite()` 报
+		//   `There are 1 undisposed disposables!`（`ScheduleViewRenderer._event` 那一层）。
+		//   注意 `r.dispose()` **不能**替它兜底：tracker 记的是创建时刻，父对象释放也不销账。
+		let sub: { dispose(): void } | undefined;
 		try {
 			r.create(parent);
 			r.render([], []);
 			let created = 0;
-			r.onCreateRequest(e => { created++; });
+			sub = r.onCreateRequest(e => { created++; });
 			(parent.querySelector('.sched-view-footer .sched-btn-primary') as HTMLButtonElement).click();
 			assert.strictEqual(created, 1, '点击「新建定时任务」应 fire onCreateRequest');
 		} finally {
+			sub?.dispose();
 			r.dispose();
 		}
 	});
@@ -201,14 +207,20 @@ suite('ScheduleViewRenderer — 渲染与弹窗', () => {
 			// 切到「固定间隔」tab
 			const tabs = parent.querySelectorAll('.sched-type-tab');
 			(tabs[1] as HTMLButtonElement).click();
+			// ⚠ 2026-10-20：事件必须用**元素所属 window 的 Event 构造器**。直接用全局 `Event`
+			//   在 jsdom 里会报 `Failed to execute 'dispatchEvent' on 'EventTarget':
+			//   parameter 1 is not of type 'Event'` —— Node 的 Event 与 jsdom 的 Event
+			//   不是同一个类 ⇒ 被当"参数类型错误"拒掉（不是产品代码的问题）。
+			const win = parent.ownerDocument.defaultView as any;
+			const fire = (el: Element, type: string) => el.dispatchEvent(new win.Event(type, { bubbles: true }));
 			// 单位默认是「小时」，显式切到「分钟」(60000ms) 再设数值
 			const selects = parent.querySelectorAll('.sched-modal select') as NodeListOf<HTMLSelectElement>;
 			const unitSelect = selects[1]; // [0]=任务选择, [1]=间隔单位
 			unitSelect.value = '60000';
-			unitSelect.dispatchEvent(new Event('change'));
+			fire(unitSelect, 'change');
 			const numInput = parent.querySelector('.sched-modal input[type="number"]') as HTMLInputElement;
 			numInput.value = '30';
-			numInput.dispatchEvent(new Event('input'));
+			fire(numInput, 'input');
 			(parent.querySelector('.sched-modal .sched-btn-primary') as HTMLButtonElement).click();
 			assert.strictEqual(saved.type, 'interval');
 			assert.strictEqual(saved.intervalMs, 30 * 60000, '30 分钟 = 1800000ms');

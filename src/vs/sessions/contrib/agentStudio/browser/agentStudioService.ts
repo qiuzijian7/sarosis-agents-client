@@ -735,10 +735,23 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 
 	/**
 	 * 从产品源加载内置 agent 定义。
-	 * 优先读 `resources/.agents/agents/{id}/.agent.md`，回退到 `getBuiltinAgents()`。
+	 *
+	 * ★★ 2026-10-19：**唯一真源 = `resources/.agents/agents/{id}/.agent.md`（文件）**。
+	 *
+	 * 历史（为什么值得记）：这里曾经是"文件优先、代码回退"的**双真源** ⇒ 改一边另一边不知道，
+	 *   实测 15 个里 5 个漂移（saros-claw 挂的 web-content-import / kb-game-teardown 只在代码里
+	 *   ⇒ 长期没生效；tester 反过来是文件里那份 v2.0.0 才是新的）。
+	 *   中途还走过一次"以代码为准、删掉文件"的反向收敛；最终按用户裁决回到**文件为真源**：
+	 *   内置 agent 本来就是"随包发布的内容"，用 md 表达（可 diff、可人工改、与业界 .agent.md 同形）
+	 *   比埋在 TS 里更合适。
+	 *
+	 * ⚠ 代码里那份 `getBuiltinAgents()` **降级为回退镜像**（资源目录缺失/不可读时才用），
+	 *   它不是真源 ⇒ 内容必须与这里的 .agent.md **逐字段相等**，由 `builtinAgentSingleSource.test.ts`
+	 *   的一致性用例强制（漂移即红 ✓）。
+	 * ⚠ 用户覆写不受影响：`~/.vssaros/agents/{builtinId}/.agent.md` 仍然优先于内置定义
+	 *   （见 getAgents 的第 2 级）—— 那是"用户改过的内置 agent"，不是内置真源。
 	 */
 	private async _loadBuiltinAgentsFromSource(): Promise<Agent[]> {
-		// 与 ensureBuiltinAgentMdFiles 相同的多候选路径策略
 		const resourceCandidates: URI[] = [];
 		try {
 			resourceCandidates.push(FileAccess.asFileUri('vs/../../resources/.agents/agents'));
@@ -776,7 +789,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			} catch { /* candidate not accessible, try next */ }
 		}
 
-		// Fallback: 资源目录不可用时从代码定义生成
+		// 回退：资源目录不可用 ⇒ 用代码里那份镜像（非真源；一致性由测试守着）
 		return getBuiltinAgents();
 	}
 
@@ -812,59 +825,34 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 
 	/**
 	 * 从两个数据源合并生成 preset 列表（用于 CreateAgentModal 快速创建面板）：
-	 *   1. resources/.agents/agents/{id}/.agent.md — 内置 agent（始终可用，真相源）
-	 *   2. ~/.vssaros-dev/agents/{id}/.agent.md    — 用户自定义 agent
+	 *   1. 内置 agent —— **唯一真源 `common/builtinAgents.ts`**（2026-10-19 收敛；原先读
+	 *      resources/.agents/agents/ 与代码双真源 ⇒ 已漂移，已删目录）
+	 *   2. 用户自定义 agent —— `~/.vssaros-dev/agents/{id}/.agent.md`
 	 *
-	 * 内置 agent 以 resources 为准，用户目录中同 ID 的不重复列出。
+	 * 内置优先，用户目录中同 ID 的不重复列出。
 	 */
 	async getAgentPresets(): Promise<AgentPreset[]> {
 		const presets: AgentPreset[] = [];
 		const seenIds = new Set<string>();
 
-		// ── 来源 1: resources/.agents/agents/{id}/.agent.md（内置 agent）──
-		const resourceCandidates: URI[] = [];
-		try {
-			const uri1 = FileAccess.asFileUri('vs/../../resources/.agents/agents');
-			resourceCandidates.push(uri1);
-		} catch { /* dev fallback */ }
-		const appRoot = (this.environmentService as any).appRoot as string | undefined;
-		if (appRoot) {
-			const uri2 = URI.joinPath(URI.file(appRoot), 'resources', '.agents', 'agents');
-			if (!resourceCandidates.some(c => c.toString() === uri2.toString())) {
-				resourceCandidates.push(uri2);
-			}
-		}
-
-		for (const candidate of resourceCandidates) {
-			try {
-				const result = await this.fileService.resolve(candidate);
-				const dirs = (result.children ?? []).filter(c => c.isDirectory);
-				for (const d of dirs) {
-					const mdUri = joinPath(d.resource, '.agent.md');
-					try {
-						const buf = await this.fileService.readFile(mdUri);
-						const parsed = parseAgentMd(buf.value.toString());
-						if (parsed?.agent.id) {
-							const p = parsed.agent;
-							presets.push({
-								id: p.id!,
-								name: p.name ?? p.id!,
-								role: p.role ?? 'assistant',
-								icon: p.icon ?? '🤖',
-								description: p.description ?? '',
-								model: p.model ?? '',
-								systemPrompt: parsed.systemPrompt,
-								skills: p.skills?.length ? p.skills : undefined,
-								tools: p.tools?.length ? p.tools : undefined,
-								category: p.category,
-								source: 'builtin',
-							});
-							seenIds.add(p.id!);
-						}
-					} catch { /* skip unreadable */ }
-				}
-				if (presets.length > 0) { break; }
-			} catch { /* candidate not accessible */ }
+		// ── 来源 1: 内置 agent（真源 = resources/.agents/agents/<id>/.agent.md；与 `_loadBuiltinAgentsFromSource`
+		//    同一条读取路径 ⇒ 不会出现"preset 列表与 agent 列表不一致"这种双路漂移 ✓）──
+		for (const p of await this._loadBuiltinAgentsFromSource()) {
+			const model = Array.isArray(p.model) ? (p.model[0] ?? '') : (p.model ?? '');
+			presets.push({
+				id: p.id,
+				name: p.name ?? p.id,
+				role: p.role ?? 'assistant',
+				icon: p.icon ?? '🤖',
+				description: p.description ?? '',
+				model,
+				systemPrompt: p.systemPrompt ?? '',
+				skills: p.skills?.length ? p.skills : undefined,
+				tools: p.tools?.length ? p.tools : undefined,
+				category: p.category,
+				source: 'builtin',
+			});
+			seenIds.add(p.id);
 		}
 
 		// ── 来源 2: ~/.vssaros-dev/agents/{id}/.agent.md（用户自定义）──

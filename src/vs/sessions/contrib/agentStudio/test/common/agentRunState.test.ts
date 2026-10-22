@@ -84,7 +84,10 @@ suite('AgentRunState - reducer (reducer 化 Step 1)', () => {
 		assert.deepStrictEqual(s.toolCallHistory, []);
 		assert.deepStrictEqual(s.startedToolIds, []);
 		assert.deepStrictEqual(s.endedToolIds, []);
-		assert.strictEqual(s.reducerMode, 'reducer');
+		// ⚠ 2026-10-20 删掉 `assert.strictEqual(s.reducerMode, 'reducer')`：
+		//   `reducerMode` **不是** `AgentRunState` 的字段，也不是 `CreateInitialRunStateRequest` 的字段
+		//   （见 `agentOSService.ts:2694` 的记录：那句 `{ reducerMode: 'reducer' }` 是 2026-09-19
+		//   凭想象写的，已删除）。测试跟着实现一起改，别把不存在的字段当契约 ✗。
 	});
 
 	test('createInitialRunState omits system message when no systemPrompt', () => {
@@ -92,14 +95,13 @@ suite('AgentRunState - reducer (reducer 化 Step 1)', () => {
 		assert.deepStrictEqual(s.messages, [{ role: 'user', content: 'hi' }]);
 	});
 
-	test('createInitialRunState seeds lastRealPromptTokens and reducerMode', () => {
+	test('createInitialRunState seeds lastRealPromptTokens（跨 turn 的 prompt 记账）', () => {
+		// ⚠ 原名还带着 `and reducerMode` —— 那个字段不存在（见上一条测试的注释），已删。
 		const s = createInitialRunState({
 			messages: [],
 			lastRealPromptTokens: 1234,
-			reducerMode: 'reducer',
 		});
 		assert.strictEqual(s.lastRealPromptTokens, 1234);
-		assert.strictEqual(s.reducerMode, 'reducer');
 	});
 
 	// ─── 不可变性 ─────────────────────────────────────────────────
@@ -502,7 +504,12 @@ suite('AgentRunState - reducer (reducer 化 Step 1)', () => {
 
 			assert.strictEqual(incompleteTurnDiscardReason('reasoning-only'), 'empty-recovery');
 			assert.strictEqual(incompleteTurnDiscardReason('empty'), 'unfinished-intent');
-			assert.strictEqual(incompleteTurnDiscardReason('length'), 'unfinished-intent');
+			// ★ 2026-10-20 改：`length` / `truncated-text` **保留**本轮文本（返回 undefined），
+			//   不是 `unfinished-intent`。理由见 `agentRunState.ts:1586-1592`：这两类的可见文本是
+			//   有效产物（只是没写完），丢弃会让模型整段重写、把用户眼前的内容清空。
+			//   旧断言写的是 `'unfinished-intent'` ⇒ 语义变更（2026-09-18）后一直红着。
+			assert.strictEqual(incompleteTurnDiscardReason('length'), undefined);
+			assert.strictEqual(incompleteTurnDiscardReason('truncated-text'), undefined);
 		});
 
 		// ─── 维度 1：新增分类 ──────────────────────────────────────────
@@ -732,7 +739,9 @@ suite('AgentRunState - reducer (reducer 化 Step 1)', () => {
 			// 缺失字段补全为合法默认值
 			assert.strictEqual(r.phase, 'idle');
 			assert.deepStrictEqual(r.toolCallHistory, []);
-			assert.strictEqual(r.reducerMode, 'reducer');
+			// ⚠ 2026-10-20：这里原来断的是 `r.reducerMode`（不存在的字段 ⇒ 恒 undefined ⇒ 恒红）。
+			//   换成同类的"默认值补齐"证据：partial 没给 lastRealPromptTokens ⇒ 补 0。
+			assert.strictEqual(r.lastRealPromptTokens, 0);
 		});
 
 		test('restoreRunState rejects unknown/higher version', () => {
@@ -880,6 +889,8 @@ suite('AgentRunState — V3 中断恢复字段', () => {
 				messages: [{ role: 'user', content: 'Old' }], iteration: 5,
 				phase: 'idle', invalidToolNameCount: 0, reflectCount: 0, hasModifiedFiles: false,
 				toolCallHistory: [], startedToolIds: [], endedToolIds: [],
+				// 旧快照里可能带**已不存在的字段**（`reducerMode` 就是当年凭想象写的那个）
+				// ⇒ restore 必须原样忽略它而不是报错（这条用例顺带钉住这层容错 ✓）
 				lastRealPromptTokens: 100, reducerMode: 'reducer',
 				work: { mode: 'work', approvalStatus: 'none', executionStatus: 'idle' },
 			},

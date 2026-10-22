@@ -94,6 +94,13 @@ export interface ITurnHostModelTools {
 export interface ITurnHostContext {
 	getActiveMemoryProvider(): IMemoryProvider | undefined;
 
+	/**
+	 * 用户是否显式开启了 AgentMemory 检索库的上下文注入（设置 `agentStudio.memory.injectContext`，
+	 * 2026-10-20）。与 Agents 页签的 MEMORY.md 常驻注入无关 —— 那是 dsh 插件侧的 memory-chars。
+	 * 可选：拿不到配置服务时省略 ⇒ 回落到环境变量通道（见 agentMemoryInjection）。
+	 */
+	_isMemoryInjectContextConfigured?(): boolean;
+
 	/** 已注入过上下文的会话集合（executor 直接读，用于判定首轮注入）。 */
 	readonly _injectedSessions: Set<string>;
 	readonly _metaInjectedSessions: Set<string>;

@@ -156,7 +156,22 @@ export class CanvasEditorPane extends EditorPane {
 		//  2) 网格启发式：≥80% 节点 y 相同（网格/平铺布局）。
 		// 注意：仅满足条件 2 时若文件未标记，重排结果不会持久化为 mindmap 标记，
 		// 下次打开仍会重新检测；满足条件 1 时标记已存在，重排后随保存固化。
-		if (data.nodes.length >= 3 && (data.mindmap === true || this._isGridLayout(data.nodes))) {
+		//
+		// ★★ 2026-10-19：**大画布不自动重排**（修「点开大画布卡死」的**主因**）。
+		//   现场：226 KB / 550 节点 / **539 个根** / mindmap:true ⇒ 打开即全量重排：
+		//     LayoutEngine.computeLayout 对 **forest 里每一个根**各跑一次 placeRoot，
+		//     重排完还要 `setRenderData` **整棵再渲染一遍**（下面那行）⇒ 主线程被钉住数秒以上，
+		//     用户看到的就是"点一下就卡死"（不是慢，是界面完全不动）。
+		//   两个理由支持设上限（不是临时糊）：
+		//     ① 成本随「根数 × 子树」增长，且**必然**多付一次全量渲染；
+		//     ② 多根大画布本来就不是"一棵树"，自动重排会把文件里既有的坐标**打散**
+		//        ⇒ 产物更难用（用户明明摆好了位置）。
+		//   超上限时**保留文件坐标**（打开即有内容），用户仍可手动「重新布局」（cmdRelayout）。
+		const MAX_AUTO_RELAYOUT_NODES = 300;
+		const wantsAutoLayout = data.nodes.length >= 3 && (data.mindmap === true || this._isGridLayout(data.nodes));
+		if (wantsAutoLayout && data.nodes.length > MAX_AUTO_RELAYOUT_NODES) {
+			this.logService.info(`[CanvasEditor] skip auto mindmap relayout: ${data.nodes.length} nodes > ${MAX_AUTO_RELAYOUT_NODES}（保留文件坐标；可用「重新布局」手动触发）`);
+		} else if (wantsAutoLayout) {
 			this.logService.info(`[CanvasEditor] applying mindmap relayout (mindmapFlag=${data.mindmap})`);
 			this._applyMindmapLayout(data);
 			this._viewport.setRenderData(data);  // 用重排后的数据重新渲染

@@ -1712,6 +1712,8 @@ ${diag}</div>
 </div>`,
 		extraCss: PAGE_CSS,
 		script: OPEN_LIBRARY_JS,
+		// 标准锚点（工作台规范 §7.4；chat-surface 的 probeCatalog 与探针只认这个名字）
+		attrs: 'data-vssaros-surface="sideview"',
 	});
 }
 

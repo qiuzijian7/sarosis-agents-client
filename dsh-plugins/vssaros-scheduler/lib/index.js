@@ -141,22 +141,38 @@ export function apply(ctx) {
 				}
 				return;
 			}
-			// 页面本体
-			const schedule = scheduleOf(ctx);
-			let entries = [];
-			let available = !!schedule;
-			if (schedule) {
-				try {
-					entries = (await schedule.catalog()).map(rowOf);
-				} catch (e) {
-					available = false;
-					ctx.logger('vssaros-scheduler').warn(`catalog 读取失败：${String(e?.message ?? e)}`);
-				}
+			// ★ 2026-10-22（工作台重构 P1，方案 §5 步骤 1）：业务数据接口 —— React 工作台（lib/client.js）与
+			//   SSR 页同源取数。`available=false` = 官方调度 bundle 没装上（与 SSR 页同口径，不报 500）。
+			if (url.pathname === `${ROUTE_PREFIX}/api/list` && req.method === 'GET') {
+				const out = await listSchedules(ctx);
+				res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+				res.end(JSON.stringify(out));
+				return;
 			}
+			// 页面本体
+			const { entries, available } = await listSchedules(ctx);
 			res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
 			res.end(renderPage(entries, available, ''));
 		},
 	})));
+}
+
+/** 跨会话任务清单（页面与 `/api/list` 共用）。catalog 读失败 ⇒ 记日志并按"不可用"返回。 */
+async function listSchedules(ctx) {
+	const schedule = scheduleOf(ctx);
+	let entries = [];
+	let available = !!schedule;
+	let error = '';
+	if (schedule) {
+		try {
+			entries = (await schedule.catalog()).map(rowOf);
+		} catch (e) {
+			available = false;
+			error = String(e?.message ?? e);
+			ctx.logger('vssaros-scheduler').warn(`catalog 读取失败：${error}`);
+		}
+	}
+	return { ok: true, available, entries, ...(error ? { error } : {}) };
 }
 
 /** 可选拿 schedule 服务（官方 bundle 未装时为 undefined）。 */

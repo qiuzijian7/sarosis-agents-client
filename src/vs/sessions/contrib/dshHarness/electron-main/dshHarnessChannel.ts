@@ -18,25 +18,28 @@ import { existsSync, promises as fsp, readFileSync } from 'fs';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
-import { join } from '../../../../base/common/path.js';
+import { dirname, join } from '../../../../base/common/path.js';
+// dsh 会话投影解析（纯逻辑 + 单测：`test/common/dshSessionIndex.test.ts`）
+import { buildDshSessionList } from '../common/dshSessionIndex.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IAuxiliaryWindowsMainService } from '../../../../platform/auxiliaryWindow/electron-main/auxiliaryWindows.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IWindowsMainService } from '../../../../platform/windows/electron-main/windows.js';
-import { DshBridgeMethod, IBridgeBundleInfo, IBridgeBundleToggleArgs, IBridgeInspectResult, IBridgeInstallArgs, IBridgeInstallCancelArgs, IBridgeInstallCancelResult, IBridgeInstallResult, IBridgePluginChangeResult, IBridgePluginInventory, IBridgePluginRegistries, IBridgePluginRow, IBridgePluginRowToggleArgs, IBridgeProvidersSyncArgs, IBridgeProvidersSyncResult, IBridgeRemoveArgs, IBridgeSessionCancelArgs, IBridgeSessionCancelResult, IBridgeSessionRunArgs, IBridgeSessionRunResult, IBridgeSessionStartArgs, IBridgeSessionStartResult, IBridgeWorkspace, IBridgeWorkspaceContextArgs, validateBundleInspectArgs, validateBundleInstallArgs, validateBundleRemoveArgs, validateBundleToggleArgs, validateInstallCancelArgs, validatePluginRowToggleArgs, validateProvidersSyncArgs, validateWorkspaceContextArgs } from '../common/dshBridgeProtocol.js';
+import { DshBridgeMethod, IBridgeBundleInfo, IBridgeBundleToggleArgs, IBridgeCreditRecordArgs, IBridgeCreditRecordResult, IBridgeInspectResult, IBridgeInstallArgs, IBridgeInstallCancelArgs, IBridgeInstallCancelResult, IBridgeInstallResult, IBridgePluginChangeResult, IBridgePluginInventory, IBridgePluginRegistries, IBridgePluginRow, IBridgePluginRowToggleArgs, IBridgeProvidersSyncArgs, IBridgeProvidersSyncResult, IBridgeRemoveArgs, IBridgeSessionCancelArgs, IBridgeSessionCancelResult, IBridgeSessionRunArgs, IBridgeSessionRunResult, IBridgeSessionStartArgs, IBridgeSessionStartResult, IBridgeTofSyncResult, IBridgeWorkspace, IBridgeWorkspaceContextArgs, validateBundleInspectArgs, validateBundleInstallArgs, validateBundleRemoveArgs, validateBundleToggleArgs, validateInstallCancelArgs, validatePluginRowToggleArgs, validateProvidersSyncArgs, validateTofSyncArgs, validateWorkspaceContextArgs } from '../common/dshBridgeProtocol.js';
 import { DshCreditProxy, IDshCreditSample } from './dshCreditProxy.js';
 import { localPluginDir, selectRuntimeVersion } from '../common/dshCli.js';
 import { discoverUpdates, resolveCurrentVersion, selectInstallTarget } from '../common/dshCompat.js';
-import { DSH_HARNESS_CHANNEL, DshHarnessChannelCommand, DshHarnessChannelEvent, IDshBootstrapArgs, IDshBundledPluginRow, IDshCreateViewArgs, IDshHostStartOptions, IDshHostStatus, IDshIdeClaimReply, IDshIdeReply, IDshIdeRequest, IDshPluginActivationSnapshot, IDshPluginInfo, IDshPluginRowSetResult, IDshPluginSetResult, IDshUpdateDiscoveryResult, IDshUpdatePolicy, IDshUpgradeArgs, IDshViewBounds, sameStartOptions } from '../common/dshHarness.js';
+import { DSH_HARNESS_CHANNEL, DshHarnessChannelCommand, DshHarnessChannelEvent, IDshBootstrapArgs, IDshBundledPluginRow, IDshCreateViewArgs, IDshHostStartOptions, IDshHostStatus, IDshIdeClaimReply, IDshIdeReply, IDshIdeRequest, IDshPluginActivationSnapshot, IDshPluginInfo, IDshPluginRowSetResult, IDshPluginSetResult, IDshUpdateDiscoveryResult, IDshUpdatePolicy, IDshUpgradeArgs, IDshViewBounds, sameStartOptions, surfaceTakesRoute } from '../common/dshHarness.js';
 import { IdeRequestClaims } from '../common/dshIdeClaims.js';
 import { IIdeTargetPick, pickIdeTargetWindow } from '../common/dshIdeTargeting.js';
 import { readCapabilityDeclarations } from '../common/dshIdeAuthorization.js';
-import { validateInsertReference, validateWorkspaceOptions, validateWorktreeOptions } from '../common/dshPageBridgeProtocol.js';
+import { validateAuthOption, validateInsertReference, validateWorkspaceOptions, validateWorktreeOptions } from '../common/dshPageBridgeProtocol.js';
 import { isDshChatSessionId } from '../common/dshChatSession.js';
 import { validatePluginRoute } from '../common/dshPluginPage.js';
 import { isBundleDisableForbidden, isBundleEnabled } from '../common/dshPluginActivation.js';
+import { ideWindowGuardAction, validateSetIdeWindowHiddenArgs } from '../common/dshIdeWindowGuard.js';
 import { listBundledPlugins, mergeBundledWithInstalled } from './dshBundledPlugins.js';
-import { IVssarosPluginManifest, isBuiltinPluginName, tryParseVssarosManifest } from '../common/vssarosPluginManifest.js';
+import { hasWorkbenchClient, IVssarosPluginManifest, isBuiltinPluginName, tryParseVssarosManifest } from '../common/vssarosPluginManifest.js';
 import { DshPluginActivationStore } from './dshPluginActivationStore.js';
 import { DshIdeRequestGate } from './dshIdeRequestGate.js';
 import { IDshViewBackgrounds, validateThemeTokens, validateViewBackgrounds } from '../common/dshThemeBridge.js';
@@ -112,6 +115,21 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 	 * 只保留 token 桶，积分在底层就被丢掉了，只能在链路上抓。见 `dshCreditProxy.ts` 文件头。
 	 */
 	private readonly _creditProxy: DshCreditProxy;
+	/**
+	 * 主窗口服务（守卫要用：desktop 模式下 IDE 主窗口的 show/focus 事件只有这里看得到 ✓）。
+	 */
+	private readonly _windowsMainService: IWindowsMainService;
+	/**
+	 * 「desktop 模式 ⇒ IDE 主窗口不露面」的守卫（2026-10-21）。
+	 *
+	 * 背景（用户报障："在 desktop 模式下，点击登录，不要显示 ide 模式的窗口"）：desktop 模式把 IDE
+	 * 主窗口整个藏起来了；用户在桌面窗口点「登录」⇒ 走 TOF 浏览器流程 ⇒ **窗口层面**的外部动作
+	 * （系统把焦点还给本应用的窗口）会把 IDE 主窗口拉到前台（真机日志：桌面窗口 BLUR 后 1.6s
+	 * IDE 主窗口 FOCUS ✗）⇒ 只在命令分发处拦**拦不住**（那不是命令）⇒ 只能在这里守着那个窗口 ✓。
+	 *
+	 * 状态在**主进程**（那边才观察得到窗口事件）；渲染进程用通道命令同步"我们藏起来了"这个事实 ✓。
+	 */
+	private _ideWindowGuard: { windowId: number; dispose: () => void } | undefined;
 
 	constructor(
 		options: IDshHarnessChannelOptions,
@@ -120,6 +138,7 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 		private readonly _logService: ILogService,
 	) {
 		super();
+		this._windowsMainService = windowsMainService;
 		const log = (line: string) => this._logService.info(`[dshHarness] ${line}`);
 		this._fetch = options.fetch ?? ((url: string) => net.fetch(url));
 		// 内置运行时目录（构建期 prepack，见 build/prepack-dsh-runtime.mjs）：存在即传给管理器，
@@ -140,9 +159,14 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 		// 随包 **vendored 第三方技能包**（archify，MIT）：与上面几个同一条"存在才装"路径 ✓。
 		// 它没有 `vssaros.module`（技能 bundle，不是我们的 UI 模块）⇒ 不进模块自发现，也不算进「随包」列表 ✓。
 		const bundledArchify = join(this._bundledPluginsRoot, 'vssaros-archify');
+		// ego lite（`ego-browser`）接入插件（2026-10-21）：与上面几个同一条"存在才装"路径。
+		// 它**不含浏览器本体**（第三方独立 app）⇒ 用户没装 app 时装上也无害：`ego_status` 会说清原因。
+		const bundledEgo = join(this._bundledPluginsRoot, 'vssaros-ego');
 		// 共享运行时服务插件（重构 1.3）：所有模块插件的底座（dataRoot/dshHome/pageShell/lock 的唯一真源），
 		// 同一条"存在才装"路径；安装顺序上它排在模块插件之前（见 supervisor 的插件清单）。
 		const bundledFoundation = join(this._bundledPluginsRoot, 'vssaros-foundation');
+		// 工作台宿主（2026-10-22）：同一条"存在才装"路径；没有 `vssaros.module` ⇒ 模块自发现不会装它。
+		const bundledWorkbenches = join(this._bundledPluginsRoot, 'vssaros-workbenches');
 		// 模块插件（agents / skills / mcp / kb / memory / codebase / kanban / workflow / dashboard / ide）：
 		// **全部随包自动安装**（2026-10-11 用户要求）。清单**自发现**而不是在这里列名 —— 判据是插件自己的
 		// `vssaros.module` 清单（`listBundledPlugins`，与插件中心「随包」段、容器聚合表同一真源）
@@ -159,11 +183,13 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 			runDir: join(options.userDataPath, 'dsh-run'),
 			bridgePluginDir: existsSync(join(bundledBridge, 'package.json')) ? bundledBridge : undefined,
 			foundationPluginDir: existsSync(join(bundledFoundation, 'package.json')) ? bundledFoundation : undefined,
+			workbenchesPluginDir: existsSync(join(bundledWorkbenches, 'package.json')) ? bundledWorkbenches : undefined,
 			chatSurfacePluginDir: existsSync(join(bundledChatSurface, 'package.json')) ? bundledChatSurface : undefined,
 			kbRefsPluginDir: existsSync(join(bundledKbRefs, 'package.json')) ? bundledKbRefs : undefined,
 			browserPluginDir: existsSync(join(bundledBrowser, 'package.json')) ? bundledBrowser : undefined,
 			unrealPluginDir: existsSync(join(bundledUnreal, 'package.json')) ? bundledUnreal : undefined,
 			archifyPluginDir: existsSync(join(bundledArchify, 'package.json')) ? bundledArchify : undefined,
+			egoPluginDir: existsSync(join(bundledEgo, 'package.json')) ? bundledEgo : undefined,
 			modulePluginDirs,
 			defaultDshHome: options.isBuilt ? undefined : join(options.userDataPath, 'dsh-home'),
 			instanceId: `vssaros-${process.pid}-${generateUuid().slice(0, 8)}`,
@@ -182,6 +208,8 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 			void this._applyConnection();
 			this._onDidChangeStatus.fire(status);
 		}));
+		// ★ 2026-10-20：mux 路由可用 ⇒ 让页面跳过 dsh 连接剩余的退避（见 DshViewHost.notifyMuxReady）。
+		this._register(this._supervisor.onMuxReady(e => this._views.notifyMuxReady(e.afterReadyMs)));
 		this._pluginActivation = new DshPluginActivationStore(() => this._supervisor.profileDirectory(), log);
 		this._gate = new DshUpgradeGate(this._supervisor, this._runtime, join(options.userDataPath, 'dsh-snapshots'), log);
 		this._compatBundledPath = options.compatBundledPath ?? join(app.getAppPath(), 'dsh-plugins', 'dsh-compat.json');
@@ -193,6 +221,9 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 			onSample: sample => this._onCreditSample(sample),
 			userDataPath: options.userDataPath,
 			log,
+			// ★ 2026-10-20（用户报「重启后积分 pill 显示 —」）：历史样本是异步读回来的，
+			//   读完后给已就绪的聊天页再补发一遍（页面按样本键去重，不会重复计数 ✓）。
+			onSamplesRestored: () => this._views.replayCreditsAgain(),
 		}));
 		// ★ 2026-10-15（用户报"积分 chip 一直 —"）：页面侧的样本池是**活推送**（chunk 级数组，
 		//   页面重载即清零 ✗）⇒ 视图就绪后由 viewHost 把最近样本**回放**一遍（负载形状与
@@ -478,6 +509,56 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 		return { distTags, manifest: compat.manifest, manifestSource: compat.source, bridge: this._bridgeInfo, notes };
 	}
 
+	/**
+	 * 装 / 撤「IDE 主窗口不许露面」的守卫（desktop 模式，2026-10-21）。
+	 *
+	 * `hidden = true` ⇒ 我们把那个窗口藏起来了 ⇒ 之后它一旦被 `show` 或拿到 `focus`
+	 *   （系统把焦点还给本应用的窗口、Electron 自己把它 show 出来……）⇒ **立刻再藏回去** ✓。
+	 * `hidden = false` ⇒ 撤守卫（用户点了「回到 IDE」/ 桌面窗口关了 ⇒ 窗口该露着 ✗ 不许再被藏）。
+	 *
+	 * ⚠ 判定走**纯函数** `ideWindowGuardAction`（common 层）⇒ 口径只有一份，且可单测 ✓。
+	 */
+	private _setIdeWindowGuard(windowId: number, hidden: boolean): void {
+		// 先撤旧的（换窗口 / 撤守卫都走这里 ⇒ 不会留下两个守卫互相打架 ✗）。
+		this._ideWindowGuard?.dispose();
+		this._ideWindowGuard = undefined;
+		if (!hidden) {
+			this._logService.info('[dshHarness] desktop 守卫：已撤（IDE 主窗口该露着了）');
+			return;
+		}
+		const codeWindow = this._windowsMainService.getWindowById(windowId);
+		const win = codeWindow?.win;
+		if (!win) {
+			// 守卫没装上 = desktop 模式下 IDE 窗口仍可能被系统拉到前台 ⇒ **必须留痕**（否则又变成"查无此因"✗）。
+			this._logService.warn(`[dshHarness] desktop 守卫：找不到窗口 ${windowId} ⇒ 守卫没装上（IDE 主窗口仍可能露面 ✗）`);
+			return;
+		}
+		const state = { hiddenByUs: true };
+		const rehide = (event: 'show' | 'focus') => {
+			if (ideWindowGuardAction(state, event) !== 'rehide') {
+				return;
+			}
+			if (!win.isVisible()) {
+				// 已经不可见（'focus' 可能发生在隐藏态）⇒ 不用再藏 ✓。
+				return;
+			}
+			this._logService.info(`[dshHarness] desktop 模式：IDE 主窗口被${event === 'show' ? '显示' : '聚焦'} ⇒ 立刻再藏起来（desktop 模式下它不该露面 ✗）`);
+			win.hide();
+		};
+		const onShow = () => rehide('show');
+		const onFocus = () => rehide('focus');
+		win.on('show', onShow);
+		win.on('focus', onFocus);
+		this._ideWindowGuard = {
+			windowId,
+			dispose: () => {
+				win.off('show', onShow);
+				win.off('focus', onFocus);
+			},
+		};
+		this._logService.info(`[dshHarness] desktop 守卫：已装（窗口 ${windowId}）`);
+	}
+
 	private async _discover(policy: IDshUpdatePolicy, start: IDshHostStartOptions): Promise<IDshUpdateDiscoveryResult> {
 		let node: IResolvedNode | undefined;
 		try {
@@ -560,19 +641,32 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 	/** 已装插件 + 启停状态（= 是否在 profile 的 `dsh.profile.bundles` 里）；插件中心的行数据。 */
 	private async _listPluginsWithActivation(): Promise<IDshPluginInfo[]> {
 		const pkg = await this._pluginActivation.read();
-		return this._supervisor.listPlugins().map(p => ({
-			...p,
-			enabled: isBundleEnabled(pkg, p.name),
-			// 2026-10-16（重构 1.1，清单驱动的壳）：清单一并下发，渲染端的 ActivityBar / 页面路由都按它算，
-			// 不再靠壳里的硬编码表。读不动/不合法 ⇒ 不带 manifest（该插件不激活模块，不猜字段）。
-			manifest: this._readPluginManifest(p.name),
-		}));
+		return this._supervisor.listPlugins().map(p => {
+			const json = this._readPluginPackageJson(p.name);
+			return {
+				...p,
+				enabled: isBundleEnabled(pkg, p.name),
+				// 2026-10-16（重构 1.1，清单驱动的壳）：清单一并下发，渲染端的 ActivityBar / 页面路由都按它算，
+				// 不再靠壳里的硬编码表。读不动/不合法 ⇒ 不带 manifest（该插件不激活模块，不猜字段）。
+				manifest: this._readPluginManifest(p.name, json),
+				// 2026-10-22：已迁成 React 工作台 ⇒ 编辑区改开 'workbench' 视图（判据见 hasWorkbenchClient）
+				...(hasWorkbenchClient(json) ? { workbenchClient: true } : {}),
+			};
+		});
+	}
+
+	private _readPluginPackageJson(name: string): unknown {
+		try {
+			return JSON.parse(readFileSync(join(this._supervisor.profileDirectory(), 'node_modules', ...name.split('/'), 'package.json'), 'utf8'));
+		} catch {
+			return undefined;
+		}
 	}
 
 	/** 读一个已装插件的 `vssaros` 清单并校验；不合法返回 undefined 并记日志。 */
-	private _readPluginManifest(name: string): IVssarosPluginManifest | undefined {
+	private _readPluginManifest(name: string, json: unknown): IVssarosPluginManifest | undefined {
 		try {
-			const raw = JSON.parse(readFileSync(join(this._supervisor.profileDirectory(), 'node_modules', ...name.split('/'), 'package.json'), 'utf8'))?.vssaros;
+			const raw = (json as { vssaros?: unknown } | undefined)?.vssaros;
 			if (raw === undefined) {
 				return undefined;
 			}
@@ -630,13 +724,26 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 	private _onCreditSample(sample: IDshCreditSample): void {
 		const credit = sample.credit === undefined ? '(该响应无 credit 字段)' : sample.credit;
 		this._logService.info(`[dshCredit] route=${sample.route} model=${sample.model ?? '?'} status=${sample.status ?? '?'} credit=${credit}`);
-		this._views.pushCredit({
+		const payload: IBridgeCreditRecordArgs = {
 			route: sample.route,
 			...(sample.model === undefined ? {} : { model: sample.model }),
 			...(sample.credit === undefined ? {} : { credit: sample.credit }),
 			...(sample.status === undefined ? {} : { status: sample.status }),
 			at: sample.at,
-		});
+		};
+		// ★★ 2026-10-20：**新链路** —— 交给 Host 按 LLM 调用区间归属到 (会话, 回合)，写进会话日志，
+		//   再由投影 `vssaros-credit` 推给页面（见 dsh-plugins/vssaros-bridge/lib/credit.js 文件头）。
+		//   fire-and-forget：桥不在 / Host 过旧（method not found）都只记一行，不影响旧链路。
+		const bridge = this._supervisor.bridge;
+		if (bridge) {
+			void bridge.call<IBridgeCreditRecordResult>(DshBridgeMethod.CreditRecord, payload, 5_000).then(
+				r => this._logService.info(r?.matched
+					? `[dshCredit] → 归属 ${r.sessionId ?? '?'} 第 ${r.turn ?? '?'} 轮${r.appended ? '' : '（未写入会话日志）'}${r.ambiguous ? '（同模型并发，取最可能的一个）' : ''}`
+					: `[dshCredit] → 暂未归属（${r?.pending ? '等待调用结束' : (r?.reason ?? '未知')}）`),
+				e => this._logService.info(`[dshCredit] → 桥入账失败（旧链路兜底）：${String((e as Error)?.message ?? e)}`));
+		}
+		// 旧链路**保留一个版本**作兜底：页面优先读投影，投影没有该回合时才用这些广播样本按时间窗估算。
+		this._views.pushCredit(payload);
 	}
 
 	/** 清单 + HMR 状态（HMR 决定改完组合是热重载还是需重启）。 */
@@ -1080,9 +1187,31 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 				const rewritten = await this._rewriteForCreditProxy(arg);
 				return bridge.call<IBridgeProvidersSyncResult>(DshBridgeMethod.ProvidersSync, rewritten, 60_000);
 			}
+			case DshHarnessChannelCommand.TofSync: {
+				// 企业身份（TOF/OA 票据）同步到 dsh 侧（2026-10-21）。
+				// ⚠ 票据是**凭据**：只经本机命名管道（IDE ⇄ Host，同信任域）过，绝不下发页面 ✓。
+				// ⚠ 老 Host（桥里没有 tof.sync）会回 -32601 ⇒ 调用方必须能把它当"这条能力不存在"（可降级）✓。
+				const bridge = this._supervisor.bridge;
+				if (!bridge) {
+					throw new Error('[dshHarness] tofSync: 控制桥不可用（未安装伴生插件或 Host 未运行）');
+				}
+				if (!validateTofSyncArgs(arg)) {
+					throw new Error('[dshHarness] tofSync: 负载未通过校验');
+				}
+				return bridge.call<IBridgeTofSyncResult>(DshBridgeMethod.TofSync, arg, 30_000);
+			}
 			case DshHarnessChannelCommand.DiscoverUpdates: {
 				const a = arg as { policy: IDshUpdatePolicy; start: IDshHostStartOptions };
 				return this._discover(a.policy, a.start ?? {});
+			}
+			case DshHarnessChannelCommand.SetIdeWindowHidden: {
+				// 「desktop 模式 ⇒ IDE 主窗口不露面」的守卫开关（2026-10-21）。
+				// ⚠ 载荷必须先校验（跨进程边界 ⇒ 脏值不许进来 ⇒ 也不许误伤别的窗口 ✗）。
+				if (!validateSetIdeWindowHiddenArgs(arg)) {
+					throw new Error('[dshHarness] setIdeWindowHidden: 负载未通过校验（需要 { hidden: boolean, windowId: 正整数 }）');
+				}
+				this._setIdeWindowGuard(arg.windowId, arg.hidden);
+				return { hidden: arg.hidden, windowId: arg.windowId };
 			}
 			case DshHarnessChannelCommand.ClaimIdeRequest: {
 				// 多窗口下 `OnIdeRequest` 是广播：renderer 执行**之前**先认领，只放行一个（详见 `dshIdeClaims.ts`）。
@@ -1121,20 +1250,21 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 				return this._supervisor.getActivity();
 			case DshHarnessChannelCommand.CreateView: {
 				const a = arg as IDshCreateViewArgs;
-				// plugin-page 必须带合法的站内绝对路径：这条边界同时挡住 `//host`（协议相对地址）
+				// plugin-page / workbench 必须带合法的站内绝对路径：这条边界同时挡住 `//host`（协议相对地址）
 				// 与 `..`（跨路径）。其他 surface 的 route 一律忽略（不静默改行为）。
-				const route = a.surface === 'plugin-page' ? validatePluginRoute(a.route) : undefined;
-				if (a.surface === 'plugin-page' && !route) {
-					throw new Error('[dshHarness] createView: plugin-page 需要合法的 route（站内绝对路径，如 /x/<module>/）');
+				const takesRoute = surfaceTakesRoute(a.surface);
+				const route = takesRoute ? validatePluginRoute(a.route) : undefined;
+				if (takesRoute && !route) {
+					throw new Error(`[dshHarness] createView: ${a.surface} 需要合法的 route（站内绝对路径，如 /x/<module>/）`);
 				}
-				if (a.surface !== 'plugin-page' && a.route !== undefined) {
-					this._logService.warn(`[dshHarness] createView: 忽略 non-plugin-page 视图 ${a.viewId} 的 route`);
+				if (!takesRoute && a.route !== undefined) {
+					this._logService.warn(`[dshHarness] createView: 忽略 ${a.surface} 视图 ${a.viewId} 的 route`);
 				}
 				// 承载表面（2026-10-13）：只允许白名单取值，非法值当作**没给**（回落完整页）而不是抛错 ——
 				// 它是"渲染哪一版"的提示，不是安全边界（真值由宿主自己传）✓。
 				const pageSurface = a.pageSurface === 'sideview' || a.pageSurface === 'editor' ? a.pageSurface : undefined;
-				if (a.surface !== 'plugin-page' && a.pageSurface !== undefined) {
-					this._logService.warn(`[dshHarness] createView: 忽略 non-plugin-page 视图 ${a.viewId} 的 pageSurface`);
+				if (!takesRoute && a.pageSurface !== undefined) {
+					this._logService.warn(`[dshHarness] createView: 忽略 ${a.surface} 视图 ${a.viewId} 的 pageSurface`);
 				}
 				// 视图底色候选（2026-10-13：修「初次打开侧栏视图白屏一下」）——建视图时就染色 ⇒
 				// 页面画出第一帧之前不会露 Electron 默认白。形状非法 ⇒ 当没给（宁可少染一次，
@@ -1142,6 +1272,27 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 				const backgrounds: IDshViewBackgrounds | undefined = validateViewBackgrounds(a.backgrounds) ? a.backgrounds : undefined;
 				this._views.create(a.viewId, a.windowId, a.surface, a.chatOnlyUi !== false, a.sessionId || undefined, a.colorScheme, route, pageSurface, backgrounds, a.isolatedPool === true);
 				return;
+			}
+			case DshHarnessChannelCommand.ListDshSessions: {
+				// 读 projcache（`<dshHome>/storages/session_projcache/sessions/*.json`，**明文**）。
+				// 解析规则在 `common/dshSessionIndex.ts`（纯函数、有单测）；这里只负责读盘与容错：
+				// 目录不存在 / 单个文件正在写（半截 JSON）/ 权限异常 ⇒ 统统降级，绝不让侧栏整块失败 ✗。
+				const profileDir = this._supervisor.profileDirectory();   // <dshHome>/profiles/<profile>
+				const dshHome = dirname(dirname(profileDir));
+				const dir = join(dshHome, 'storages', 'session_projcache', 'sessions');
+				let names: string[];
+				try {
+					names = (await fsp.readdir(dir)).filter(n => n.toLowerCase().endsWith('.json'));
+				} catch {
+					return [];   // 还没跑过任何会话（目录不存在）是最常见的正常情况 ✓
+				}
+				const entries: { id: string; text: string }[] = [];
+				for (const n of names) {
+					try {
+						entries.push({ id: n, text: await fsp.readFile(join(dir, n), 'utf8') });
+					} catch { /* 刚被删 / 正在写 ⇒ 跳过这一个（下一轮会再读到） */ }
+				}
+				return buildDshSessionList(entries);
 			}
 			case DshHarnessChannelCommand.LayoutView: {
 				const a = arg as { viewId: string; bounds: IDshViewBounds };
@@ -1198,6 +1349,17 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 					this._views.pushWorkspaces(a.viewId as string, options);
 				} else {
 					this._logService.warn(`[dshHarness] pushWorkspaces ignored: 选项形状不合法（viewId=${String(a.viewId)}）`);
+				}
+				return;
+			}
+			case DshHarnessChannelCommand.PushAuth: {
+				// IDE 登录态（2026-10-21）：同款校验 —— 主进程是信任边界，页面会把 `dataset` 当可信数据解析 ✓
+				const a = arg as { viewId: unknown; auth: unknown };
+				const auth = validateAuthOption(a.auth);
+				if (typeof a.viewId === 'string' && auth) {
+					this._views.pushAuth(a.viewId, auth);
+				} else {
+					this._logService.warn(`[dshHarness] pushAuth ignored: 载荷形状不合法（viewId=${String(a.viewId)}）`);
 				}
 				return;
 			}

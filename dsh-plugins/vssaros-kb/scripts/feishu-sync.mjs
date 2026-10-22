@@ -990,11 +990,10 @@ function lark(args, cwd) {
 			encoding: 'utf8',
 			shell: false,
 			cwd,
+			// ★ 2026-10-21：缺 windowsHide ⇒ Windows 上会闪一叠黑框
+			windowsHide: true,
 			// process.execPath 在 Electron 里是 Electron 本体 ⇒ 需以纯 node 模式运行入口脚本
 			env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
-			// ⚠ 本脚本由 kb 插件以 windowsHide 起在 dsh Host 里 ⇒ 自身没有可继承的控制台，
-			// 这里不带 windowsHide 就会为 lark-cli 新开一个控制台窗口（闪窗）。
-			windowsHide: true,
 		});
 		return { code: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' };
 	}

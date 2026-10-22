@@ -125,6 +125,7 @@ import {
 	type IToolAllowFile,
 } from '../common/toolAllowStore.js';
 import {
+	AGENT_STUDIO_MEMORY_INJECT_CONTEXT_SETTING,
 	AGENT_STUDIO_TOOL_SEARCH_ENABLED_SETTING,
 	AGENT_STUDIO_TOOL_SEARCH_THRESHOLD_PCT_SETTING,
 } from '../common/constants.js';
@@ -1086,6 +1087,24 @@ private readonly _sandboxGuard: SandboxGuard;
 			);
 		} catch {
 			return true;
+		}
+	}
+
+	/**
+	 * 用户是否显式开启了 AgentMemory 检索库的上下文注入
+	 * （设置 `agentStudio.memory.injectContext`，2026-10-20；默认 false）。
+	 *
+	 * 由 `agentTurnExecutor` 传给 `injectMemoryContext`，与 `AGENTMEMORY_INJECT_CONTEXT`
+	 * 环境变量是"或"关系（见 `agentMemoryInjection.isMemoryInjectionEnabled`）。
+	 * 拿不到配置服务 ⇒ false（保守：不注入；环境变量那条路仍然能开）。
+	 */
+	_isMemoryInjectContextConfigured(): boolean {
+		try {
+			return this._instantiationService.invokeFunction(accessor =>
+				accessor.get(IConfigurationService).getValue<boolean>(AGENT_STUDIO_MEMORY_INJECT_CONTEXT_SETTING) === true,
+			);
+		} catch {
+			return false;
 		}
 	}
 

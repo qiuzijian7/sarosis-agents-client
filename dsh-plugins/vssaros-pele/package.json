@@ -1,0 +1,41 @@
+{
+  "name": "@vssaros/dsh-pele",
+  "version": "0.1.1",
+  "description": "VsSaros pele module for DeepSeek Harness: the single Mermaid → SVG renderer for the whole product (pele 1.6.0, MIT, vendored as assets/pele.global.js). Ships a `render_diagram` tool (validate / measure / optionally return SVG) for dsh, and the same bundle is loaded in-process by the IDE renderer (chat cards, ```mermaid fences, knowledge-base notes, .mermaid file preview) — replacing the former hidden-webview + mermaid 12 pipeline. Theme presets live in assets/pele-theme.json (read by both sides).",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/core/render.js",
+    "lib/core/theme.js",
+    "assets/pele.global.js",
+    "assets/pele-theme.json",
+    "assets/VERSION.txt",
+    "cordis.patch.yml",
+    "LICENSE",
+    "tools/build-pele.mjs"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/dsh": ">=0.1.7-0 <0.3.0-0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": [
+        "./cordis.patch.yml"
+      ]
+    }
+  },
+  "vssaros": {
+    "manifestVersion": 1,
+    "module": "pele",
+    "view": {
+      "kind": "none"
+    }
+  },
+  "license": "MIT"
+}

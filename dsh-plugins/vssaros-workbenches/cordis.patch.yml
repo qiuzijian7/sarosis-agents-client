@@ -1,0 +1,11 @@
+# @vssaros/dsh-workbenches bundle patch: insert the workbench host row.
+#
+# 工作台宿主（doc/workbench-refactor-plan.md §4.1）：客户端服务 `desktopWorkbenches` +
+# 服务端 state.json / 只读归属服务 `desktopWorkbenchOwnership`。照抄 dsh-desktop 的宿主装载行
+# （build/dsh-desktop.patch.yml：`root: !!js dshHomePath('desktop-workbenches')`），目录名换成我们自己的，
+# 避免与官方宿主（若被装进同一 profile）共用一份 state.json。
+- insert:
+    - id: vssaros-workbenches
+      name: '@vssaros/dsh-workbenches'
+      config:
+        root: !!js dshHomePath('vssaros-workbenches')

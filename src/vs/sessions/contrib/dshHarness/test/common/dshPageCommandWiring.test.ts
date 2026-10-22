@@ -36,6 +36,8 @@ import path from 'node:path';
 
 const PROTOCOL = 'src/vs/sessions/contrib/dshHarness/common/dshPageBridgeProtocol.ts';
 const CONTRIBUTION = 'src/vs/sessions/contrib/dshHarness/electron-browser/dshHarness.contribution.ts';
+/** chatId → dsh 会话 的记账处（"已打开"的权威判据，2026-10-19）。 */
+const SERVICE = 'src/vs/sessions/contrib/dshHarness/electron-browser/dshHarnessService.ts';
 const CHAT_HOST = 'src/vs/sessions/contrib/dshHarness/electron-browser/dshChatInstanceHost.ts';
 const PRELOAD = 'src/vs/sessions/contrib/dshHarness/electron-browser/preload-dshView.ts';
 /**
@@ -75,6 +77,11 @@ const PLUGIN_PAGE_SOURCES = [
 	//   `bridge.openFile(…)`（局部别名）与 `window.vssarosDsh.openFile(…)`（直写全局 ✓）。
 	//   采集面因此**按两种形态**扫（见 ③ 里的两段正则 ✓）—— 只认一种写法就会整族假阴性 ✓。
 	'dsh-plugins/vssaros-kb/lib/index.js',
+	// 2026-10-19 加：**媒体库页**（`/x/media/`）—— 置顶「打开页面」调
+	//   `bridge.openModulePage(location.pathname)`（在编辑区打开同一个插件页，与 dashboard /
+	//   codebase / skills 同款）。⚠ 该文件同时是**宿主侧插件模块**：里面的 `state.bridge.callIDE(…)`
+	//   不是页面桥（已在 `NOT_PAGE_BRIDGE_CALLS` 里登记）⇒ 采集不会误判 ✓。
+	'dsh-plugins/vssaros-media/lib/index.js',
 ];
 /** 命令 id 的其它可能注册处（扩展那半只在这里；`out/**` 被 gitignore ⇒ 必须显式进扫描面 ✓）。 */
 const COMMAND_ROOTS = ['src', 'extensions/agent-studio/src', 'extensions/agent-studio/out'];
@@ -453,5 +460,70 @@ suite('聊天页按钮 → IDE 接线（协议 / preload / 处理器 / 命令 id
 		assert.deepStrictEqual(notProvided, [],
 			'`IKbSettingsHost` 声明了、但**服务那份 host 没提供** ⇒ 点 ⚙ 时面板运行到那一段就崩（`host.x is not a function`）✗\n'
 			+ '  （补进 `KbCommandService._buildSettingsHost()` 即可 ✓）：\n' + notProvided.join('\n'));
+	});
+});
+
+/**
+ * ⑧ 插件页「打开会话」的**去重契约**（2026-10-19 用户两轮口径的最终形态）：
+ *   ① 本窗口已经打开了这条会话 ⇒ **只聚焦**那个页签，不新开；
+ *   ② 本窗口没有 ⇒ 新开一个页签并绑到这条会话。
+ * 为什么值得钉（而不是只靠类型）：这两句是**顺序 + 过滤条件**，退化成"永远新开"时
+ * 界面完全正常、日志也正常，只有用户看到重复页签 ✗（本轮用户就是这么报的）。
+ */
+suite('插件页「打开会话」：已打开就只聚焦（不重复开页签）', () => {
+	/** 取某个方法体（从 `signature` 起，到下一个同缩进的 `}` 为止）。 */
+	function methodBody(src: string, signature: string): string {
+		const at = src.indexOf(signature);
+		assert.ok(at >= 0, `找不到方法：${signature}`);
+		const end = src.indexOf('\n\t}', at);
+		assert.ok(end > at, `方法体没闭合：${signature}`);
+		return src.slice(at, end);
+	}
+
+	test('查"已打开"必须按 ownerWindowId 过滤到**本窗口**（否则查得到、聚焦不了 ⇒ 又新开一个）', () => {
+		const src = stripComments(read(CONTRIBUTION));
+		const find = methodBody(src, 'private async _findChatViewForSession');
+		assert.match(find, /ownerWindowId === mainWindow\?\.vscodeWindowId/,
+			'必须按本窗口过滤（跨窗口的页签在本 renderer 里找不到 ⇒ 白开一个 ✗）');
+		assert.match(find, /v\.surface === 'chat' && v\.sessionId === sessionId/,
+			'必须只认 chat 面、且按 dsh 会话 id 匹配 ✗');
+	});
+
+	test('顺序：先判"已打开并聚焦"，再 newChatInEditor（反过来就永远是重复页签）', () => {
+		const src = stripComments(read(CONTRIBUTION));
+		const dispatch = methodBody(src, 'private async _dispatchOpenSession');
+		const iChatId = dispatch.indexOf('findChatIdForSession');
+		const iAlready = dispatch.indexOf('_findChatViewForSession');
+		const iReveal = dispatch.indexOf('_revealChatView(already)');
+		const iNew = dispatch.indexOf("executeCommand('agentStudio.newChatInEditor'");
+		assert.ok(iChatId >= 0, '必须先用 chatId 记账判"本窗口页签已在显示它"（listViews 看不到隐藏页签）✗');
+		assert.ok(iChatId < iNew, '判"已打开"必须在新开之前 ✗');
+		assert.ok(iAlready >= 0, '必须保留视图兜底判据 ✗');
+		assert.ok(iReveal > iAlready, '已打开时必须聚焦那个页签（`_revealChatView(already)`）✗');
+		assert.ok(iNew > iReveal, '只有聚焦失败 / 没打开时才允许新开 ✗');
+	});
+
+	test('新开页签后必须绑**刚建的那个**（按 chatId 认，不许按 activeChatViewId 猜）', () => {
+		const src = stripComments(read(CONTRIBUTION));
+		const dispatch = methodBody(src, 'private async _dispatchOpenSession');
+		assert.match(dispatch, /_waitForNewChatId\(beforeChatIds/, '必须按"新多出来的 chatId"认出刚建的页签 ✗');
+		assert.match(dispatch, /_waitForChatView\(newChatId/, '必须等这个 chatId 的视图，再交给它 ✗');
+		assert.ok(dispatch.indexOf('_waitForChatView(newChatId') < dispatch.indexOf('_waitForNewChatView('),
+			'按 chatId 的路径必须优先于"按活跃视图猜"的兜底 ✗');
+	});
+
+	test('聚焦要有兜底：findEditors 找不到时按 chatId 再找一遍（resource 形态变了也不算"没打开"）', () => {
+		const src = stripComments(read(CONTRIBUTION));
+		const reveal = methodBody(src, 'private async _revealChatTab');
+		assert.match(reveal, /\.editors\b/, '必须兜底扫描已打开编辑器（`IEditorService.editors`）✗');
+		assert.match(reveal, /chatId === chatId/, '兜底要按 input 上的 chatId 匹配 ✗');
+	});
+
+	test('记账：chatId → 会话的登记必须覆盖 create/rebind 两条路，且 dispose 时清掉', () => {
+		const svc = stripComments(read(SERVICE));
+		assert.match(svc, /_chatSession\.set\(chatIdOfView, sessionId\)/, 'createView 成功后必须记账 ✗');
+		assert.match(svc, /_chatSession\.set\(chatId, sessionId\)/, 'rebindSession 成功后必须记账 ✗');
+		assert.match(svc, /_chatSession\.delete\(chatId\)/, 'disposeView 必须清记账（否则指向不存在的页签 ⇒ 点了没反应）✗');
+		assert.match(svc, /findChatIdForSession\(sessionId: string\)/, '必须暴露按会话查 chatId 的口 ✗');
 	});
 });

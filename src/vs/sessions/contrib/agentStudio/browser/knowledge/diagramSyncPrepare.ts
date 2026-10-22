@@ -118,7 +118,7 @@ export interface IPrepareDiagramsOptions {
 	/** 库内相对目录（如 `['笔记']`）；空数组 ⇒ `DEFAULT_DIAGRAM_SRC_DIRS` */
 	readonly srcDirs: readonly string[];
 	readonly fileService: IFileService;
-	/** mermaid 源码 → SVG（通常注入 `IMermaidInlineRenderer.renderToSvg`） */
+	/** mermaid 源码 → SVG（通常注入 `IDiagramRenderer.renderToSvg`） */
 	readonly renderMermaid: (source: string) => Promise<string>;
 	/** drawio 源码 → SVG（通常注入 `IDrawioInlineRenderer.renderToSvg`） */
 	readonly renderDrawio: (source: string) => Promise<string>;

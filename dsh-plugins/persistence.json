@@ -122,6 +122,16 @@
       "evidence": "vssaros-codebase/lib/shadow.js:7,23-25,60-63"
     },
     {
+      "path": "$DSH_HOME/vssaros-workbenches/state.json",
+      "writer": "@vssaros/dsh-workbenches",
+      "readers": [
+        "desktopWorkbenchOwnership 服务的使用方（只读）"
+      ],
+      "ownsDeclared": false,
+      "concurrency": "同进程串行队列 + revision 乐观锁(409) + 原子写(临时文件 wx 0o600 + rename)；会话归属不可改不可删（移植自 dsh-desktop state.mjs）",
+      "evidence": "vssaros-workbenches/lib/state.js; cordis.patch.yml root=dshHomePath('vssaros-workbenches')"
+    },
+    {
       "path": "<媒体根>/media/media.db（+ <数据根>/media-store-config.json 覆盖层）",
       "writer": "IDE 媒体库",
       "readers": [

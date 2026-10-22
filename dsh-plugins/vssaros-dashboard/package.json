@@ -1,6 +1,6 @@
 {
   "name": "@vssaros/dsh-dashboard",
-  "version": "0.4.30",
+  "version": "0.4.35",
   "description": "VsSaros Dashboard module for DeepSeek Harness: read-only telemetry / token-usage summary over dsh's session projection cache (<DSH_HOME>/storages/session_projcache/sessions), merged with live sessions via sessions.get + sessionProjections.stateOf, plus a 'running state' view (turn in-flight / goal / todos / plan mode / sandbox / approval / LLM retrying / pending questions) and context-window occupancy plus the heuristic context composition (system / messages / tool definitions), queued user input (durable inbox), the durable model selection (last used / pending) the cold-session summary hints (blank / last human prompt time), the title-eligible human input aggregate and the subagent facts (self identity / active timing / durable child catalog / allowed child model routes). Tools: dashboard_sessions / dashboard_session.",
   "private": true,
   "type": "module",
@@ -33,7 +33,13 @@
       "kind": "page",
       "route": "/x/dashboard/"
     },
-    "legacyCounterpart": "agentStudio.dashboard"
+    "legacyCounterpart": "agentStudio.dashboard",
+    "workbench": {
+      "title": "主页",
+      "description": "工作台中心：用量、运行状态与常用入口一页看全。",
+      "repository": "vssaros:dashboard",
+      "customFrame": true
+    }
   },
   "license": "MIT"
 }

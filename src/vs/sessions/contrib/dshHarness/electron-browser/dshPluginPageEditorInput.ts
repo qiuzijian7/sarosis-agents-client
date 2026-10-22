@@ -33,14 +33,26 @@ export class DshPluginPageEditorInput extends EditorInput {
 	/** 容器 id → 输入实例（`getOrCreate` 的单例表；`dispose` 时清）。 */
 	private static readonly _instances = new Map<string, DshPluginPageEditorInput>();
 
-	static getOrCreate(containerId: string, title: string): DshPluginPageEditorInput {
-		const existing = DshPluginPageEditorInput._instances.get(containerId);
+	/**
+	 * @param route ★ 2026-10-19（用户报「关系图谱应该开在编辑区、不是侧栏」）：
+	 *   模块的**子路由**（完整 dsh 路径，如 `/x/kb/graph`）。给了它就**直接用它**当页面路径，
+	 *   不再让 pane 去 `resolveModulePage` 猜模块主页（那样只会开 `/x/kb/` ✗）。
+	 *   `undefined` ⇒ 老行为（模块主页，按容器解析）。
+	 */
+	static getOrCreate(containerId: string, title: string, route?: string): DshPluginPageEditorInput {
+		const key = DshPluginPageEditorInput._keyOf(containerId, route);
+		const existing = DshPluginPageEditorInput._instances.get(key);
 		if (existing && !existing.isDisposed()) {
 			return existing;
 		}
-		const input = new DshPluginPageEditorInput(containerId, title);
-		DshPluginPageEditorInput._instances.set(containerId, input);
+		const input = new DshPluginPageEditorInput(containerId, title, route);
+		DshPluginPageEditorInput._instances.set(key, input);
 		return input;
+	}
+
+	/** 单例键：**容器 + 子路由**（同容器不同子路由必须是两个 tab，否则图谱会被知识库主页顶掉 ✗）。 */
+	private static _keyOf(containerId: string, route?: string): string {
+		return route ? `${containerId}#${route}` : containerId;
 	}
 
 	/**
@@ -52,6 +64,8 @@ export class DshPluginPageEditorInput extends EditorInput {
 		/** 模块容器 id（如 `agentStudio.dashboard`）—— 路由由宿主按"已激活模块"现算 ✓ */
 		readonly containerId: string,
 		private readonly _title: string,
+		/** 子路由（完整 dsh 路径）；`undefined` ⇒ 模块主页（按容器解析 ✓） */
+		readonly route?: string,
 	) {
 		super();
 	}
@@ -74,14 +88,17 @@ export class DshPluginPageEditorInput extends EditorInput {
 	}
 
 	override get resource(): URI {
-		return URI.from({ scheme: 'dsh-page', path: `/${this.containerId}` });
+		// 含子路由 ⇒ 同容器的不同子页面（知识库主页 vs 关系图谱）是**两个不同的 resource** ✓
+		return URI.from({ scheme: 'dsh-page', path: `/${this.containerId}${this.route ?? ''}` });
 	}
 
 	override matches(other: EditorInput | IUntypedEditorInput): boolean {
 		if (super.matches(other)) {
 			return true;
 		}
-		return other instanceof DshPluginPageEditorInput && other.containerId === this.containerId;
+		return other instanceof DshPluginPageEditorInput
+			&& other.containerId === this.containerId
+			&& other.route === this.route;
 	}
 
 	override toUntyped(): IUntypedEditorInput {
@@ -92,8 +109,9 @@ export class DshPluginPageEditorInput extends EditorInput {
 	}
 
 	override dispose(): void {
-		if (DshPluginPageEditorInput._instances.get(this.containerId) === this) {
-			DshPluginPageEditorInput._instances.delete(this.containerId);
+		const key = DshPluginPageEditorInput._keyOf(this.containerId, this.route);
+		if (DshPluginPageEditorInput._instances.get(key) === this) {
+			DshPluginPageEditorInput._instances.delete(key);
 		}
 		super.dispose();
 	}

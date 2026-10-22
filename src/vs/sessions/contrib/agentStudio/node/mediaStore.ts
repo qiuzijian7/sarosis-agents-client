@@ -30,6 +30,13 @@ export interface SqliteStatement {
 export interface SqliteDatabase {
 	exec(sql: string): void;
 	prepare(sql: string): SqliteStatement;
+	/**
+	 * 可选：关闭连接。
+	 * ⚠ 有它才能做到"打开失败时**释放半开句柄**"—— better-sqlite3 的 `new Database()` 成功后
+	 * 文件句柄就已经开着，若后续 `exec` 抛错而对象被丢弃，那个句柄会**一直占着 media.db**
+	 * （2026-10-19 事故：本窗口此后所有连接都 `disk I/O error`，重启才好）。
+	 */
+	close?(): void;
 }
 export type DatabaseFactory = (rootDir: string) => SqliteDatabase;
 
@@ -80,6 +87,40 @@ CREATE INDEX IF NOT EXISTS idx_media_wf    ON media_asset(workflow_id, created_a
 CREATE INDEX IF NOT EXISTS idx_media_deleted ON media_asset(is_deleted, created_at);
 `;
 
+/** SQLite 的 I/O 级错误（`disk I/O error` / `SQLITE_IOERR*`）。只对这类做附属文件恢复。 */
+function isSqliteIoError(err: unknown): boolean {
+	const code = String((err as { code?: unknown })?.code ?? '');
+	const msg = String((err as { message?: unknown })?.message ?? err);
+	return code.startsWith('SQLITE_IOERR') || /disk I\/O error|SQLITE_IOERR/i.test(msg);
+}
+
+/**
+ * 清掉**陈旧**的 `-shm` / `-wal`，返回是否可以重试一次。
+ *
+ * ⚠ 只在 `-wal` 为空（0 字节或不存在）时动手：空 wal = 没有未 checkpoint 的提交 ⇒ 删掉无损。
+ * `-wal` 非空就**绝不删**（里面可能有还没落盘的资产行）。
+ * ⚠ 若别的进程正映射着这些文件，Windows 上删除会失败 ⇒ 我们什么也不做，让重试自然失败并如实报错。
+ */
+function discardWalIfEmpty(rootDir: string): boolean {
+	const walPath = path.join(rootDir, 'media.db-wal');
+	const shmPath = path.join(rootDir, 'media.db-shm');
+	try {
+		if (fs.existsSync(walPath) && fs.statSync(walPath).size > 0) {
+			return false;
+		}
+	} catch {
+		return false;
+	}
+	for (const file of [walPath, shmPath]) {
+		try {
+			if (fs.existsSync(file)) {
+				fs.rmSync(file, { force: true });
+			}
+		} catch { /* 被占用 ⇒ 跳过；重试一次本身无害 */ }
+	}
+	return true;
+}
+
 export class MediaStore {
 	private readonly db: SqliteDatabase;
 
@@ -94,10 +135,45 @@ export class MediaStore {
 			return new Database(path.join(rootDir, 'media.db'), nativeBinding ? { nativeBinding } : {}) as unknown as SqliteDatabase;
 		});
 		fs.mkdirSync(opts.rootDir, { recursive: true });
-		this.db = factory(opts.rootDir);
-		this._applyPragmas();
-		this.db.exec(CREATE_TABLE);
-		this._migrate();
+		this.db = MediaStore._openWithRecovery(factory, opts.rootDir);
+	}
+
+	/**
+	 * 打开并初始化，失败时：**先关掉半开句柄**，再（仅 I/O 级失败且 wal 为空时）清掉陈旧
+	 * `-wal`/`-shm` 重试一次。
+	 *
+	 * 为什么要有（2026-10-19 真机事故：媒体库整页「读取媒体库失败」，本窗口内**永远**读不到库）：
+	 * - `better-sqlite3` 是**惰性打开**的：`new Database()` 成功 ≠ 能读；真正的 `disk I/O error`
+	 *   要到第一条语句（`PRAGMA` / `CREATE TABLE` / `PRAGMA table_info`）才现形。
+	 * - 失败时若不 `close()`，那个句柄会一直握着 `media.db`（Windows 上是**强制字节区锁**）⇒
+	 *   本窗口后面**每一次**重连都同样 IOERR ⇒ 只能重启。关闭后再抛，读者才有机会重试。
+	 * - 触发条件里最常见的一种是**陈旧的 `-shm`（32KB）配 0 字节 `-wal`**（上次非正常退出残留）。
+	 *   此时写者不存在、也没有未 checkpoint 的帧 ⇒ 删掉这两个附属文件是**无损**的；
+	 *   反之 `-wal` 非空就**绝不删**（那里面可能有没落盘的提交）。
+	 */
+	private static _openWithRecovery(factory: DatabaseFactory, rootDir: string): SqliteDatabase {
+		const attempt = (): SqliteDatabase => {
+			const db = factory(rootDir);
+			try {
+				MediaStore._applyPragmas(db);
+				db.exec(CREATE_TABLE);
+				MediaStore._migrate(db);
+				return db;
+			} catch (err) {
+				// ★ 必须关闭：半开句柄会毒化整个窗口（见上面的注释）
+				try { db.close?.(); } catch { /* 关不掉也要继续抛原始错误 */ }
+				throw err;
+			}
+		};
+		try {
+			return attempt();
+		} catch (err) {
+			if (!isSqliteIoError(err) || !discardWalIfEmpty(rootDir)) {
+				throw err;
+			}
+			// 只重试一次：第二次仍失败说明不是残留附属文件的锅，原样抛给上层（如实报错）
+			return attempt();
+		}
 	}
 
 	/**
@@ -114,10 +190,10 @@ export class MediaStore {
 	 *   （测试用 fake 实现也只需满足这两条）；`PRAGMA` 的返回值用 `exec` 会被忽略，正合所需。
 	 * ⚠ PRAGMA 失败不能阻塞打开（只读介质等极端情况）—— 降级为旧行为即可。
 	 */
-	private _applyPragmas(): void {
+	private static _applyPragmas(db: SqliteDatabase): void {
 		try {
-			this.db.exec('PRAGMA journal_mode = WAL');
-			this.db.exec('PRAGMA busy_timeout = 5000');
+			db.exec('PRAGMA journal_mode = WAL');
+			db.exec('PRAGMA busy_timeout = 5000');
 		} catch { /* 忽略：降级为无 PRAGMA 的旧行为，不影响可用性 */ }
 	}
 
@@ -125,11 +201,11 @@ export class MediaStore {
 	 * 轻量迁移：`CREATE TABLE IF NOT EXISTS` **不会给已存在的旧库补列** ⇒
 	 * 新增列必须逐列探测后 ALTER（SQLite 的 ADD COLUMN 是 O(1) 元数据操作）。
 	 */
-	private _migrate(): void {
-		const cols = this.db.prepare('PRAGMA table_info(media_asset)').all() as Array<{ name: string }>;
+	private static _migrate(db: SqliteDatabase): void {
+		const cols = db.prepare('PRAGMA table_info(media_asset)').all() as Array<{ name: string }>;
 		const has = (n: string) => cols.some(c => c.name === n);
 		if (!has('tags')) {
-			this.db.exec('ALTER TABLE media_asset ADD COLUMN tags TEXT');
+			db.exec('ALTER TABLE media_asset ADD COLUMN tags TEXT');
 		}
 	}
 

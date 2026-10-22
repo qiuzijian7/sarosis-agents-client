@@ -17,7 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { URI } from '../../../../../base/common/uri.js';
 import { IMarker, MarkerSeverity } from '../../../../../platform/markers/common/markers.js';
-import { IIdeActiveSelection, IIdeCapabilityEnv, IIdeDashboardSummary, IDE_CANVAS_ACTION_OPS, IDE_CANVAS_APPLY_OPS_LIMIT, IDE_CANVAS_EDGES_LIMIT, IDE_CANVAS_GENERATE_FLOW_TYPE, IDE_CANVAS_NODES_LIMIT, IDE_CANVAS_OPS_LIMIT, IDE_CANVAS_REVERSE_PROMPT_TYPE, IDE_DIAGNOSTICS_LIMIT, IDE_MINDMAP_EDGES_LIMIT, IDE_MINDMAP_FILE_BYTES_LIMIT, IDE_MINDMAP_NODES_LIMIT, IDE_MINDMAP_TEXT_LIMIT, IDE_REQUEST_SLOW_TIMEOUT_MS, IDE_REQUEST_TIMEOUT_MS, IDE_SELECTION_TEXT_LIMIT, executeIdeCapability, ideFailureSummary, ideRequestTimeoutMs } from '../../common/dshIdeCapabilities.js';
+import { IIdeActiveSelection, IIdeCapabilityEnv, IIdeDashboardSummary, IDE_CANVAS_ACTION_OPS, IDE_CANVAS_APPLY_OPS_LIMIT, IDE_CANVAS_EDGES_LIMIT, IDE_CANVAS_GENERATE_FLOW_TYPE, IDE_CANVAS_NODES_LIMIT, IDE_CANVAS_OPS_LIMIT, IDE_CANVAS_REVERSE_PROMPT_TYPE, IDE_DIAGNOSTICS_LIMIT, IDE_MINDMAP_EDGES_LIMIT, IDE_MINDMAP_FILE_BYTES_LIMIT, IDE_MINDMAP_NODES_LIMIT, IDE_MINDMAP_TEXT_LIMIT, IDE_REQUEST_EXECUTE_NODE_TIMEOUT_MS, IDE_REQUEST_SLOW_TIMEOUT_MS, IDE_REQUEST_TIMEOUT_MS, IDE_SELECTION_TEXT_LIMIT, buildExecuteNodeRequest, executeIdeCapability, ideFailureSummary, ideRequestTimeoutMs } from '../../common/dshIdeCapabilities.js';
 
 function marker(path: string, severity: MarkerSeverity, line: number, message: string, code?: string): IMarker {
 	return {
@@ -55,6 +55,23 @@ function envOf(options: {
 	 * 少写这个字段会直接让这里 `options.dashboard` 报 TS2339（2026-10-13 修过一次 ✓）。
 	 */
 	dashboard?: IIdeDashboardSummary;
+	/**
+	 * `workflow` 的 `executeNode`（comfy 家族）的执行缝返回值（缺省 = 抛错：让"没给就报错"成立）。
+	 */
+	executeNode?: { output: string; outputs?: Record<string, unknown> };
+	/**
+	 * `media`（生图）的执行缝返回值（缺省 = **这个 IDE 没接生图** ⇒ 能力层要报人话，
+	 * 而不是抛 `undefined is not a function` ✓）。
+	 */
+	generateImage?: { images: { url?: string; b64?: string }[] };
+	/**
+	 * 商城清单（`skills` / `mcp` 两条能力，2026-10-21）：缺省 = 空清单；
+	 * 给一个函数就能断言"kind / query / limit 传对了"✓。
+	 */
+	marketList?: (kind: 'skill' | 'mcp', opts: { q?: string; limit: number }) => Promise<{
+		items: { id: string; slug: string; name: string; version: string; description: string; author: string; category: string }[];
+		total: number;
+	}>;
 } = {}) {
 	const opened: { resource: URI; options: { focus: boolean; selection?: unknown } }[] = [];
 	const revealed: URI[] = [];
@@ -67,8 +84,14 @@ function envOf(options: {
 	/** 展示类能力（不写数据）：看板定位 / 工作流画布。留成数组，方便那块能力的作者直接断言。 */
 	const taskboardFocused: string[] = [];
 	const workflowsOpened: string[] = [];
+	const workflowNodeRequests: { nodeId: string; nodeType: string; data?: Record<string, unknown>; workflowId?: string; executionId?: string }[] = [];
 	const env: IIdeCapabilityEnv = {
 		activeResource: () => (options.active ? URI.file(options.active) : undefined),
+		// 商城清单（`skills` / `mcp` 两条能力，2026-10-21）：留成可注入的假实现，
+		// 便于断言"kind 映射对了、query/limit 传下去了"✓。
+		marketList: async (kind, listOptions) => (options.marketList
+			? options.marketList(kind, listOptions)
+			: { items: [], total: 0 }),
 		readMarkers: resource => (resource ? (options.markers ?? []) : (options.allMarkers ?? options.markers ?? [])),
 		activeSelection: () => (options.selection ? { resource: options.selection.resource ?? URI.file(options.active ?? 'a.ts'), ...options.selection } : undefined),
 		// `unresolvable` 用于测"路径根本解析不出来"；`missing` 是"解析得出来但文件不在"
@@ -108,11 +131,58 @@ function envOf(options: {
 			workflowsOpened.push(id);
 			return { id, name: `wf:${id}` };
 		},
+		executeWorkflowNode: async request => {
+			workflowNodeRequests.push(request);
+			if (!options.executeNode) {
+				throw new Error('假环境没有配置 executeNode 返回值');
+			}
+			return options.executeNode;
+		},
+		// 生图（`media`）：缺省 = 这个 IDE 没接 ⇒ 能力层自己报"没接生图能力"（可断言 ✓）。
+		generateImage: options.generateImage ? async () => options.generateImage! : undefined,
 	};
-	return { env, opened, revealed, diffs, browserOps, canvasReads, consents, canvasOps, textReads, taskboardFocused, workflowsOpened };
+	return { env, opened, revealed, diffs, browserOps, canvasReads, consents, canvasOps, textReads, taskboardFocused, workflowsOpened, workflowNodeRequests };
 }
 
 suite('dshHarness / IDE capability execution', () => {
+
+	test('★ 商城清单（skills / mcp）：kind 映射、query/limit 传下去、回执字段扁平（2026-10-21）', async () => {
+		// 这两个能力此前**一直是坏的**（授权缺声明 + 执行端缺 case）⇒ 真机只表现为"市场不可用"✗。
+		const calls: { kind: string; q?: string; limit: number }[] = [];
+		const { env } = envOf({
+			marketList: async (kind, opts) => {
+				calls.push({ kind, ...(opts.q ? { q: opts.q } : {}), limit: opts.limit });
+				return {
+					total: 1,
+					items: [{ id: 'p1', slug: 'demo', name: '示例包', version: '1.2.3', description: '说明', author: '张三', category: '工具' }],
+				};
+			},
+		});
+		// ① capability 'skills' ⇒ kind 'skill'（**单数**：商城那边是 skill 不是 skills）
+		const skills = await executeIdeCapability(
+			{ capability: 'skills', params: { op: 'marketList', query: 'demo', limit: 5 } }, env
+		) as { kind: string; total: number; items: { name: string; version: string }[] };
+		assert.strictEqual(calls[0].kind, 'skill', 'skills ⇒ kind=skill（商城接口用单数）');
+		assert.strictEqual(calls[0].q, 'demo', 'query 要传下去');
+		assert.strictEqual(calls[0].limit, 5, 'limit 要传下去');
+		assert.strictEqual(skills.total, 1);
+		assert.deepStrictEqual(skills.items[0], {
+			id: 'p1', slug: 'demo', name: '示例包', version: '1.2.3', description: '说明', author: '张三', category: '工具',
+		}, '回执字段要扁平（dsh 侧工具的 render 直接吃 name/version/description）');
+
+		// ② capability 'mcp' ⇒ kind 'mcp'；limit 缺省 20、越界夹到 [1,100]
+		await executeIdeCapability({ capability: 'mcp', params: { op: 'marketList' } }, env);
+		assert.strictEqual(calls[1].kind, 'mcp', 'mcp ⇒ kind=mcp');
+		assert.strictEqual(calls[1].limit, 20, 'limit 缺省 20');
+		await executeIdeCapability({ capability: 'mcp', params: { op: 'marketList', limit: 9999 } }, env);
+		assert.strictEqual(calls[2].limit, 100, 'limit 上限 100（与 dsh 侧工具自己的夹取同口径）');
+
+		// ③ 不认识的 op 要报错（不静默忽略）
+		await assert.rejects(
+			() => executeIdeCapability({ capability: 'skills', params: { op: 'marketInstall' } }, env),
+			/op 不认识/,
+		);
+	});
 
 	test('getDiagnostics：按文件读诊断，字段整形 + 按行列排序 + 严重级用名字', async () => {
 		const { env } = envOf({
@@ -519,11 +589,190 @@ suite('dshHarness / IDE capability execution', () => {
 	});
 
 
+	test('workflow executeNode：comfy 节点 ⇒ 交给执行缝（原样透传 nodeId/nodeType/data，回 output）', async () => {
+		const e = envOf({ executeNode: { output: '生成完成', outputs: { image: 'a.png' } } });
+		const result = await executeIdeCapability({
+			capability: 'workflow',
+			params: { op: 'executeNode', workflowId: 'wf-1', executionId: 'e-9', nodeId: 'c1', nodeType: 'ComfyTV.EmojiStage', data: { prompt: '画' } },
+		}, e.env) as { ok: boolean; output: string; outputs?: Record<string, unknown> };
+		assert.deepStrictEqual(e.workflowNodeRequests, [
+			{ workflowId: 'wf-1', executionId: 'e-9', nodeId: 'c1', nodeType: 'ComfyTV.EmojiStage', data: { prompt: '画' } },
+		]);
+		assert.strictEqual(result.ok, true);
+		assert.strictEqual(result.output, '生成完成');
+		assert.deepStrictEqual(result.outputs, { image: 'a.png' });
+	});
+
+	test('workflow executeNode：askUser ⇒ 映射成一次审批（拒绝即 fail-closed，绝不假装答案）', async () => {
+		// 默认 consent = 拒绝 ⇒ 必须抛，而不是"空答案往下跑"
+		const denied = envOf();
+		await assert.rejects(
+			() => executeIdeCapability({ capability: 'workflow', params: { op: 'executeNode', nodeId: 'q1', nodeType: 'askUser', data: { question: '继续吗？' } } }, denied.env),
+			/askUser 节点 q1 未获用户确认/);
+		// 允许 ⇒ 回**首选项**并显式标记（多选/自由文本还没有通道，别偷偷编一个）
+		const allowed = envOf({ consent: true });
+		const ok = await executeIdeCapability({
+			capability: 'workflow',
+			params: { op: 'executeNode', nodeId: 'q1', nodeType: 'askUser', data: { question: '选哪个', options: [{ label: '甲' }, '乙'] } },
+		}, allowed.env) as { ok: boolean; answer: string; output: string };
+		assert.strictEqual(ok.ok, true);
+		assert.strictEqual(ok.answer, '甲');
+		assert.deepStrictEqual(JSON.parse(ok.output), { __askUser: 1, answer: '甲' });
+		assert.match(allowed.consents[0]?.detail ?? '', /选哪个[\s\S]*甲 \/ 乙/);
+		// askUser **不该**走到节点执行缝（那是给 comfy 家族用的）
+		assert.deepStrictEqual(allowed.workflowNodeRequests, []);
+	});
+
+	test('workflow executeNode：缺 nodeId/nodeType ⇒ 明确报错（不猜节点）', async () => {
+		await assert.rejects(
+			() => executeIdeCapability({ capability: 'workflow', params: { op: 'executeNode', nodeId: 'c1' } }, envOf().env),
+			/executeNode 需要 params\.nodeId 与 params\.nodeType/);
+	});
+
+	test('workflow executeNode：预算是**专门一档**（真跑 + 可能要等确认，20s/120s 都不够）', () => {
+		assert.strictEqual(ideRequestTimeoutMs('workflow', { op: 'executeNode' }), IDE_REQUEST_EXECUTE_NODE_TIMEOUT_MS);
+		assert.ok(IDE_REQUEST_EXECUTE_NODE_TIMEOUT_MS > IDE_REQUEST_SLOW_TIMEOUT_MS, '必须比通用慢档更大');
+		assert.strictEqual(ideRequestTimeoutMs('workflow', { op: 'open' }), IDE_REQUEST_TIMEOUT_MS, 'open 仍是快档');
+	});
+
+	test('buildExecuteNodeRequest：stageClass 用原始 type、内部键不进 values、defaults 兜底', () => {
+		const built = buildExecuteNodeRequest({
+			nodeId: 'c1', nodeType: 'ComfyTV.EmojiStage',
+			data: {
+				prompt: '画', fps: 12, bindings: { x: '{{a.output}}' }, defaults: { fps: 8, model: 'm' },
+				style: { color: 'red' }, position: { x: 1 }, comfy: { stageClass: 'comfyStage' },
+			},
+		});
+		assert.strictEqual(built.node.data['stageClass'], 'ComfyTV.EmojiStage', '归一化占位名会被 resolveStageClass 过滤 ⇒ 必须填原始 type');
+		assert.deepStrictEqual(built.values, { prompt: '画', fps: 12, model: 'm' }, '顶层标量优先、defaults 只兜底、内部键与对象字段不进 values');
+		assert.deepStrictEqual(built.defaults, { fps: 8, model: 'm' });
+		// 已显式给 stageClass ⇒ **不覆盖**（画布写的是真名，比节点 type 更权威）
+		const kept = buildExecuteNodeRequest({ nodeId: 'c2', nodeType: 'comfyStage', data: { stageClass: 'X.Y' } });
+		assert.strictEqual(kept.node.data['stageClass'], 'X.Y');
+	});
+
+	// ★ 2026-10-20：占位名要**当场拒绝且说清是"占位名"**。放过去的话，`resolveStageClass` 过滤后
+	//   只会报「缺少 stageClass」—— 而事实是"有值、值是占位名"，用户按字面补怎么补都不对 ✗。
+	test('buildExecuteNodeRequest：归一化占位名（comfy / comfyStage）当场拒绝，错误说明是"占位名"', () => {
+		for (const nodeType of ['comfy', 'comfyStage']) {
+			assert.throws(
+				() => buildExecuteNodeRequest({ nodeId: 'c9', nodeType }),
+				new RegExp(`归一化占位名「${nodeType}」`),
+				`${nodeType} 必须在执行前被拦住（不能让底层报"缺少 stageClass"）`,
+			);
+		}
+		// 老数据的常见形态：nodeType 是占位名，但 data.stageClass 是真名 ⇒ **放行**
+		const rescued = buildExecuteNodeRequest({ nodeId: 'c10', nodeType: 'comfy', data: { stageClass: 'ComfyTV.EmojiStage' } });
+		assert.strictEqual(rescued.node.data['stageClass'], 'ComfyTV.EmojiStage');
+	});
+
+	// ★ 2026-10-20：**跨端超时预算必须配套**（这条守卫是它的唯一防线）。
+	//   两边都是"等对方"的预算：dsh 侧（150s）必须**小于** IDE 侧（180s）—— 让**调用方先放弃**，
+	//   这样报出来的是"IDE 没回执"这个真因；反过来则是两边同时超时，无法分辨是谁的问题 ✗。
+	//   两处注释里都写了这条契约，但注释拦不住漂移 —— 只有断言能。
+	test('executeNode 的等待预算跨端配套：dsh 侧 < IDE 侧，且差距 ≥ 20s', () => {
+		const file = path.join(process.cwd(), 'dsh-plugins', 'vssaros-workflow', 'lib', 'index.js');
+		assert.ok(fs.existsSync(file), `找不到 ${file} —— 请从**仓库根**运行（runner 的 Usage 里写了）`);
+		const source = fs.readFileSync(file, 'utf8');
+		const matched = /const EXECUTE_NODE_TIMEOUT_MS = ([\d_]+)/.exec(source);
+		assert.ok(matched, 'dsh 侧 EXECUTE_NODE_TIMEOUT_MS 没找到（改名了？两处注释是配套契约，改一处必须改另一处）');
+		const dshMs = Number(matched[1].replace(/_/g, ''));
+		assert.ok(
+			dshMs < IDE_REQUEST_EXECUTE_NODE_TIMEOUT_MS,
+			`dsh 侧(${dshMs}ms) 必须小于 IDE 侧(${IDE_REQUEST_EXECUTE_NODE_TIMEOUT_MS}ms)：调用方先放弃，否则两边同时超时无法分辨真因`,
+		);
+		assert.ok(
+			IDE_REQUEST_EXECUTE_NODE_TIMEOUT_MS - dshMs >= 20_000,
+			`两端差距至少 20s（给 IDE 侧留收尾时间），实际 ${IDE_REQUEST_EXECUTE_NODE_TIMEOUT_MS - dshMs}ms`,
+		);
+	});
+
 	test('不认识的能力名必须明确失败（授权过了也不该静默成功）', async () => {
 		// 白名单里的能力**现在全部实现了**（`taskboard` / `workflow` 是随包插件清单里新增的两项展示类
 		// 能力；`unreal` 已在 3b 删除——那族下移到 Host 的 `dsh-plugins/vssaros-unreal`，README 4.68）
 		// ⇒ 这条分支只在"名字不认识"时走到：主进程不会放行它，但执行端也不该静默——报出来才知道协议
 		// 两头对上了。
-		await assert.rejects(() => executeIdeCapability({ capability: 'teleport' }, envOf().env), /IDE 能力未实现：teleport（已实现：getDiagnostics, getSelection, openFile, reveal, showDiff, canvas, mindmap, taskboard, workflow）/);
+		await assert.rejects(() => executeIdeCapability({ capability: 'teleport' }, envOf().env), /IDE 能力未实现：teleport（已实现：getDiagnostics, getSelection, openFile, reveal, showDiff, canvas, mindmap, taskboard, workflow, media）/);
+	});
+
+	test('media 的 generateImage：走 IDE 侧执行缝，回执原样带回（★ 生图能力只有 IDE 进程有 ⇒ 凭据只有一份）', async () => {
+		const { env } = envOf({ generateImage: { images: [{ b64: 'AAA' }] } });
+		const out = await executeIdeCapability(
+			{ capability: 'media', params: { op: 'generateImage', prompt: '画一只猫', modelId: 'm1', numImages: 2 } },
+			env,
+		) as { ok: boolean; count: number; images: { b64?: string }[] };
+		assert.strictEqual(out.ok, true);
+		assert.strictEqual(out.count, 1, 'count = 实际拿到的图数（不是请求的 numImages）');
+		assert.deepStrictEqual(out.images, [{ b64: 'AAA' }], '图原样带回（Host 侧再存进 attachment）');
+	});
+
+	test('media 的 generateImage：缺 prompt 要报错；IDE 没接生图能力也要说人话（不许抛 undefined is not a function）', async () => {
+		await assert.rejects(
+			() => executeIdeCapability({ capability: 'media', params: { op: 'generateImage' } }, envOf({ generateImage: { images: [] } }).env),
+			/需要 params\.prompt/,
+		);
+		await assert.rejects(
+			() => executeIdeCapability({ capability: 'media', params: { op: 'generateImage', prompt: 'x' } }, envOf().env),
+			/没有接生图能力/,
+		);
+		await assert.rejects(
+			() => executeIdeCapability({ capability: 'media', params: { op: 'generateVideo' } }, envOf({ generateImage: { images: [] } }).env),
+			/media 的 op 不认识/,
+		);
+	});
+
+	test('media 的 editImage：按参考图改图；降级标记必须原样带回（★ 参考图没被采纳要能被上层说出来）', async () => {
+	const env = envOf({}).env as any;
+	const calls: any[] = [];
+	(env as any).editImage = async (params: any) => { calls.push(params); return { images: [{ b64: 'AAA' }], degraded: true, degradedReason: '这个服务不支持图生图' }; };
+	const out = await executeIdeCapability(
+		{ capability: 'media', params: { op: 'editImage', prompt: '改成水彩', image: 'data:image/png;base64,AAAA' } },
+		env,
+	) as { op: string; ok: boolean; count: number; images: unknown[]; degraded?: boolean; degradedReason?: string };
+	assert.strictEqual(out.op, 'editImage');
+	assert.strictEqual(out.ok, true);
+	assert.strictEqual(out.count, 1);
+	assert.strictEqual(out.degraded, true, '降级标记必须带上来（否则上层会把「重新生成」当成「按参考图改了」而骗用户）');
+	assert.match(String(out.degradedReason), /不支持图生图/);
+	assert.strictEqual(calls.length, 1);
+	assert.strictEqual(calls[0].image, 'data:image/png;base64,AAAA', '参考图要原样传给执行缝');
+});
+
+test('media 的 editImage：缺参考图要报错；IDE 没接图生图能力要说人话', async () => {
+	const env = envOf({}).env as any;
+	(env as any).editImage = async () => ({ images: [{ b64: 'AAA' }] });
+	await assert.rejects(
+		() => executeIdeCapability({ capability: 'media', params: { op: 'editImage', prompt: 'x' } }, env),
+		/需要 params\.image/,
+	);
+	const bare = envOf({}).env;
+	await assert.rejects(
+		() => executeIdeCapability({ capability: 'media', params: { op: 'editImage', prompt: 'x', image: 'data:image/png;base64,AA' } }, bare),
+		/没有接图生图能力/,
+	);
+});
+test('media 的 capabilities：返回 IDE 侧的能力表（provider/模型/档位）；没接就报错', async () => {
+	// ★ 2026-10-21（三批⑨）：能力表是"这台 IDE 谁能生图"的真源 ⇒ 由 IDE 暴露，Host 只读。
+	const env = envOf({}).env as any;
+	(env as any).imageCapabilities = async () => ({
+		providers: [{ id: 'prov-a', name: 'A 家', models: [{ id: 'm1' }], qualities: ['standard'] }],
+	});
+	const out = await executeIdeCapability(
+		{ capability: 'media', params: { op: 'capabilities' } },
+		env,
+	) as { op: string; ok: boolean; providers: unknown[] };
+	assert.strictEqual(out.op, 'capabilities');
+	assert.strictEqual(out.ok, true);
+	assert.strictEqual(out.providers.length, 1, 'provider 清单要原样带回（Host 侧只读不加工）');
+	// ⚠ capabilities **不需要 prompt**（查表不该先编个提示词 ✗）—— 用例里没给 prompt 也能过 ✓
+	const bare = envOf({}).env;
+	await assert.rejects(
+		() => executeIdeCapability({ capability: 'media', params: { op: 'capabilities' } }, bare),
+		/没有接图像能力表/,
+	);
+});
+test('media 的等待预算必须是慢档（生图几十秒到几分钟 ⇒ 20s 默认预算会误判超时）', () => {
+		const media = ideRequestTimeoutMs('media', { op: 'generateImage' });
+		assert.ok(media > IDE_REQUEST_SLOW_TIMEOUT_MS, `生图预算(${media}ms) 必须大于慢档(${IDE_REQUEST_SLOW_TIMEOUT_MS}ms)`);
 	});
 });

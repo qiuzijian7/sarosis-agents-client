@@ -29,6 +29,9 @@ import { useSwarmStore } from './store/useSwarmStore.js';
 import { useDebugTraceStore } from './store/useDebugTraceStore.js';
 import { dispatchConfigHtmlEvent } from './features/configmd/configHtmlBridge.js';
 import { handleSnapshotArchiveEvent, handleSnapshotMediaPutEvent, handleSnapshotQueryEvent, handleStageRunEvent, handleStageRunCancel, handleDirectStageRunEvent, handleDirectStageRunCancel } from './features/workflowEditor/comfyHost/workflowSnapshotBridgeWebview.js';
+// 2026-10-19：媒体库页「插入到画布」的落点 —— 与"拖拽资产到画布"**同一个函数**（节点类型/mediaAssetId 口径一致）。
+import { spawnAssetLoader } from './features/workflowEditor/comfyHost/actionSpawn.js';
+import { useWorkflowEditorStore } from './features/workflowEditor/store.js';
 import './styles/globals.css';
 import './styles/themes.css';
 import './styles/configHtml.css';
@@ -248,6 +251,20 @@ initMessageClient((type, data) => {
 		case 'taskBoard.focusTask':
 			window.dispatchEvent(new CustomEvent('agentStudio:focusTask', { detail: data }));
 			break;
+		case 'workflow.insertMediaAsset': {
+			// 2026-10-19：媒体库页（编辑区）→ 本工作流画布。落点与"拖拽资产到画布"是**同一个函数**
+			// ⇒ Loader 节点类型与 `mediaAssetId` 注入完全一致 ✓。位置按节点数错开，避免叠成一坨。
+			const req = (data as { assetId?: string; kind?: string } | undefined) ?? {};
+			if (req.assetId && req.kind) {
+				const offset = (useWorkflowEditorStore.getState().nodes.length % 5) * 48;
+				const created = spawnAssetLoader(req.assetId, req.kind, { x: 80 + offset, y: 80 + offset });
+				if (!created) {
+					// 该 kind 没有对应 Loader（text）⇒ 如实说，不静默失败
+					console.warn('[AgentStudio] workflow.insertMediaAsset: 这个类型没有对应的 Loader 节点', req.kind);
+				}
+			}
+			break;
+		}
 		// 5.2（2026-10-17）：diagnostics.detected / diagnostics.changed 的接收端删了
 		//   （useDiagnosticsStore 是 taskboard 面板的诊断 store——面板已退役 ✓）。
 		case 'swarm.updated': {

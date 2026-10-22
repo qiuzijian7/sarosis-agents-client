@@ -36,12 +36,24 @@ function makeRegisterContext(render?: (markup: string, theme?: 'dark' | 'default
 	return { registered, ctx, warnings };
 }
 
-/** 合成一份「像 mermaid 12 产物」的 SVG：计数特征与真实产物一致（见 analyzeMermaidSvg 注释）。 */
+/**
+ * 合成一份「像 **pele** 产物」的 SVG（计数特征与真实产物一致，见 `analyzeMermaidSvg` 注释）。
+ *
+ * ⚠ 2026-10-20 换口径：实现自 2026-10-19 换 pele 引擎后按 `class="pele-node` / `class="pele-edge`
+ *   计数，而这里的夹具还在造 **mermaid** 的 `class="node"` / `class="edge-thickness-*"`
+ *   ⇒ 数出 0 节点 ⇒ 布局体检整条静默失效 + 本套 4 条恒红（实现是对的，夹具过期）。
+ *   顺带把**容器与标签**也造出来：它们才是口径的关键（`pele-nodes` / `pele-edges` /
+ *   `pele-edge-label` 都必须**不**被计入，否则计数会偏）。
+ */
 function makeSvg(nodeCount: number, edgeCount: number, width = 600, height = 400): string {
-	const nodes = '<g class="node default"></g>'.repeat(nodeCount);
-	const edges = '<path class="edge-thickness-normal edge-pattern-solid"></path>'.repeat(edgeCount);
-	const labels = '<g class="edgeLabel"></g>'.repeat(edgeCount);
-	return `<svg viewBox="0 0 ${width} ${height}">${nodes}${edges}${labels}</svg>`;
+	const nodes = '<g class="pele-node" id="n"></g>'.repeat(nodeCount);
+	const edges = '<path class="pele-edge" d="M0 0"></path>'.repeat(edgeCount);
+	const labels = '<g class="pele-edge-label"></g>'.repeat(edgeCount);
+	return `<svg viewBox="0 0 ${width} ${height}">`
+		+ `<g class="pele-nodes">${nodes}</g>`
+		+ `<g class="pele-edges">${edges}</g>`
+		+ labels
+		+ '</svg>';
 }
 
 async function invokeHandler(
@@ -151,7 +163,11 @@ suite('Mermaid Tool (renderMermaidDiagram)', () => {
 
 	test('渲染器不可用（bundle 缺失）时不阻断：记日志并按成功放行', async () => {
 		const { registered, ctx, warnings } = makeRegisterContext(async () => {
-			throw new Error('Mermaid 渲染 bundle 不存在（请先构建 mermaid-chat-features 的 webview）');
+			// ⚠ 2026-10-20：报错文案必须是**当前引擎**的基建特征 —— 判据是
+			//   `RENDERER_INFRA_ERROR_MARKERS = ['pele 资源读不到', 'pele 产物格式不对']`
+			//   （2026-10-19 换 pele 后旧特征 '渲染 bundle 不存在' 全部失效）。
+			//   夹具还用旧文案 ⇒ 被判成"模型写错 markup" ⇒ 返回错误块 ⇒ 本用例恒红（实现是对的）✗。
+			throw new Error('pele 资源读不到：渲染器 bundle 缺失（请先构建 mermaid-chat-features 的 webview）');
 		});
 		registerMermaidTools(ctx as any);
 
@@ -179,9 +195,9 @@ suite('Mermaid Tool (renderMermaidDiagram)', () => {
 		assert.strictEqual(unwrapMarkupFence('graph TD\nA-->B'), 'graph TD\nA-->B');
 	});
 
-	test('analyzeMermaidSvg 计数与真实 mermaid 12 产物口径一致', () => {
-		// 口径来源：真实渲染 11 节点 / 12 连线的流程图，class="node 出现 11 次、
-		// 描边类名里的 \bedge\b 出现 12 次（edgeLabel / edgePath 不会被误计）。
+	test('analyzeMermaidSvg 计数与真实 pele 产物口径一致', () => {
+		// 口径来源（2026-10-19 换 pele 后重测）：`class="pele-node` 计数、`class="pele-edge`
+		// 必须紧跟空格/引号 ⇒ 容器 `pele-nodes` / `pele-edges` 与标签 `pele-edge-label` 不误计。
 		const m = analyzeMermaidSvg(makeSvg(11, 12, 136, 40));
 		assert.strictEqual(m.nodes, 11);
 		assert.strictEqual(m.edges, 12);

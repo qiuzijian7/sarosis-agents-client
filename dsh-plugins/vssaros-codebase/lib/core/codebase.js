@@ -31,13 +31,22 @@ export function parseManifest(text) {
 		// 不认识的格式要报出来（例如某些版本写 sqlite 快照）
 		return { error: `不认识的 artifact.format：${String(raw.format)}（本模块按 gzip-json 解析）` };
 	}
+	// ★ 2026-10-20：**旧版清单**兼容（真机 `saros-marketplace`：`schema_version:1` + `created_at`，
+	//   没有 `saved_at` / `project`）。旧行为是"读得出来但没有时间戳"⇒ 上层**静默**少了 savedAt：
+	//   `codebase_overview` 不显示保存时间、新鲜度判据也失效（而它又不是错误 ⇒ 没人会发现 ✗）。
+	//   ⇒ 认它：`created_at`（ISO）当 savedAt 的**来源**，但带上 `legacyManifest` 让上层**说出来** ✓。
+	const declaredSavedAt = finite(raw.saved_at);
+	const createdMs = typeof raw.created_at === 'string' ? Date.parse(raw.created_at) : NaN;
+	const savedAt = declaredSavedAt ?? (Number.isFinite(createdMs) ? createdMs : undefined);
+	const legacyManifest = declaredSavedAt === undefined && savedAt !== undefined;
 	return {
 		manifest: {
 			nodeCount: finite(raw.node_count),
 			edgeCount: finite(raw.edge_count),
 			project: typeof raw.project === 'string' ? raw.project : undefined,
-			savedAt: finite(raw.saved_at),
+			savedAt,
 			format: typeof raw.format === 'string' ? raw.format : 'gzip-json',
+			...(legacyManifest ? { legacyManifest: true, savedAtFrom: 'created_at' } : {}),
 		},
 	};
 }

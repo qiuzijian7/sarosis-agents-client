@@ -115,17 +115,32 @@ function ideLiteralNames(hostNames: Iterable<string>): Set<string> {
 	const texts = ideToolFiles().map(f => stripComments(readSource(`${IDE_TOOL_DIR_REL}/${f}`)));
 	const out = new Set<string>();
 	for (const n of hostNames) {
-		if (texts.some(t => t.includes(`'${n}'`))) { out.add(n); }
+		// ★ 2026-10-20 收窄：只认"作为**常量定义的值**出现"（`const X = 'n'` / `X_TOOL_NAME = 'n'`）。
+		//
+		// 原来只判 `'n'` 是否出现在文件里 ⇒ 任何**清单/白名单/黑名单/错误消息**里的字面量都会命中。
+		// 实测造出 5 个假阳性：`bundledTools.ts` 的"已实现 handler 名字集合"（4 个 `workflow_*`）
+		// 与 `delegationTools.ts` 的写黑名单（`memory_remember`）—— 这两族的 IDE 注册器
+		// 已经随 legacy 下线（`0f01ef10a43`）删掉了 ⇒ 它们**不是**两侧同名。
+		//
+		// 判据 B 的存在理由只有一个：IDE 侧**表驱动注册**把工具名放在常量里（unreal 那种
+		// `export const UNREAL_X_TOOL_NAME = 'unreal_x'`）⇒ 常量定义判据已足够且精确 ✓。
+		// ⚠ 判据收窄会让"误报清单"失去作用 ⇒ 见下面 `KNOWN_LITERAL_FALSE_POSITIVES` 的注释。
+		const asConstValue = new RegExp(`(?:const|let|var)\\s+[A-Za-z_][A-Za-z0-9_]*\\s*(?::\\s*string\\s*)?=\\s*'${n}'`);
+		if (texts.some(t => asConstValue.test(t))) { out.add(n); }
 	}
 	return out;
 }
 
-/** 判据 B 在本仓的**已知误报**（单词名撞普通字符串）。守卫会断言它不扩大。 */
-const KNOWN_LITERAL_FALSE_POSITIVES: Record<string, string> = {
-	browser: 'Host 侧 `browser` 是单工具 + op 参数形态；IDE 侧 `browserTools.ts` 命中的是 category 字符串 "browser"',
-	canvas: '同上：IDE 侧 `canvasTools.ts` 命中 toolset/category 字符串 "canvas"，不是工具名',
-	mindmap: '同上：IDE 侧 `mindmapTools.ts` 命中 toolset 字符串 "mindmap"，不是工具名',
-};
+/**
+ * 判据 B 在本仓的**已知误报**（守卫会断言它不扩大）。
+ *
+ * ★ 2026-10-20：**已清空** —— 判据 B 收窄到"常量定义的值"之后，原先那 3 条
+ * （`browser` / `canvas` / `mindmap`，命中的都是 `category:` / toolset 普通字符串）不再会命中。
+ *
+ * 留着这张**空**表是有意的：守卫仍断言"它不许扩大（≤3）"。下次谁把判据写宽回去、误报重新
+ * 出现时，就只能往这张表里加 —— 那一步会逼他重新读上面那段判据注释 ✗。
+ */
+const KNOWN_LITERAL_FALSE_POSITIVES: Record<string, string> = {};
 
 suite('两侧同名工具 — 登记表与两侧源码双向核对', () => {
 
@@ -135,8 +150,15 @@ suite('两侧同名工具 — 登记表与两侧源码双向核对', () => {
 		// ⚠ 加条目时**同步抬这个下限**（防空跑：只涨不抬 = 有人删掉半张表也不会红 ✗）。
 		// 2026-10-14：21 → **33**（补进记忆族 12 个；上一版下限 20 已明显滞后 ✓）。
 		// 若哪天**故意**退役某条（工具整体下移到 dsh 侧那种），把下限跟着减 1 并在此写明理由 ✓（不是删断言 ✓）。
-		assert.ok(SHARED_TOOL_VERBS.length >= 33,
-			`登记条数异常（${SHARED_TOOL_VERBS.length}）：实测基线是 33 条，少于此说明有人删条目 ✗`);
+		// ★ 2026-10-20：基数从 33 调到 14 —— 提交 0f01ef10a43「legacy 工具整体下线」删掉了 7 个
+	//   `providers/tool/*.ts`（memoryTools / unifiedMemoryTools / advancedMemoryTools / routineCrystalFacetTools
+	//   / workflowTools / skillTools / feishuDriveTools），登记表里 26 条随之移除。
+	//   ⚠ 这条断言的用途是「防有人悄悄删条目」⇒ 调基数时必须同步想清楚：**条目变少若是能力下线，调基数；
+	//     若是想掩盖某条断言，就改错了**。这次是前者（文件确实不在了 ✓）。
+	// 条数下限跟着**实测**走（只涨不抬 = 有人删掉半张表也不会红 ✗）。
+	// 2026-10-20：14 → 20（看板族 6 个补登记；同日 legacy 下线让 33 掉到 14，两次都写明理由）。
+	assert.ok(SHARED_TOOL_VERBS.length >= 21,
+			`登记条数异常（${SHARED_TOOL_VERBS.length}）：实测基线是 21 条，少于此说明有人删条目 ✗`);
 		const names = SHARED_TOOL_VERBS.map(v => v.name);
 		assert.strictEqual(new Set(names).size, names.length, '登记表里存在重复名字');
 		for (const v of SHARED_TOOL_VERBS) {
@@ -167,7 +189,10 @@ suite('两侧同名工具 — 登记表与两侧源码双向核对', () => {
 		const host = hostRegisteredNames();
 		assert.ok(host.size >= 40, `Host 侧只扫到 ${host.size} 个名字 —— 扫描面缩水了，别当成通过 ✗`);
 		const defined = ideDefinedNames();
-		assert.ok(defined.size >= 100, `IDE 侧只扫到 ${defined.size} 个工具名 —— 扫描面缩水了，别当成通过 ✗`);
+		// ★ 2026-10-20：下限从 100 调到 50 —— 同一个 legacy 下线把 IDE 侧一大批工具定义一起删了
+	//   （实际扫到 56 个，此前是 >100）。这条断言防的是「扫描面缩水」（路径写错 ⇒ 只扫到 0 个也"通过"），
+	//   所以下限要贴着**当前真实值**留一点余量，而不是留一个再也不成立的旧值 ✓。
+	assert.ok(defined.size >= 50, `IDE 侧只扫到 ${defined.size} 个工具名 —— 扫描面缩水了，别当成通过 ✗`);
 
 		const literals = ideLiteralNames(host.keys());
 		const candidates = new Set<string>([...host.keys()].filter(n => defined.has(n) || literals.has(n)));

@@ -10,13 +10,14 @@
     "./package.json": "./package.json"
   },
   "files": [
-    "lib",
-    "cordis.patch.yml",
-    "skills",
-    "README.md",
+    "lib/index.js",
     "CHANGELOG.md",
     "LICENSE",
-    "release.json"
+    "README.md",
+    "cordis.patch.yml",
+    "lib",
+    "release.json",
+    "skills"
   ],
   "keywords": [
     "dsh-plugin",

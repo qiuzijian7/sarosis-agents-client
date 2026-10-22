@@ -214,6 +214,7 @@ export type RequestType =
 	| 'workflow.versionHistory'  // 单行工具栏：切换版本历史侧边面板（由 EditorPane 处理）
 	| 'workflow.deleteWorkflow'  // 单行工具栏：删除工作流并关闭编辑器（由 EditorPane 处理）
 	| 'workflow.upgrade'         // 单行工具栏：从商城升级到服务器版本
+	| 'workflow.openMediaGallery'// 2026-10-19 工具栏「🖼 媒体库」：请宿主在**编辑区**打开唯一的媒体库页（MediaGalleryEditorPage；带 workflowId 上下文）
 	| 'workflow.files.list'      // 列举工作流资源子目录（scripts/bin）文件
 	| 'workflow.files.read'      // 读取工作流资源子目录单个文件
 	| 'workflow.files.write'     // 写入工作流资源子目录单个文件
@@ -278,7 +279,8 @@ export type EventType =
 	| 'workflow.snapshotMediaPut' // 2026-09-11：host 把**媒体引用**落进 webview 快照库（选择型节点输出与普通节点同构）
 	| 'workflow.stageDirectRun'       // 存储工作流 ComfyStage 直跑（host → 画布按 stageClass 执行）
 	| 'workflow.stageDirectRunCancel' // 2026-09-11：host 放弃该直跑（空闲超时）→ 画布停止执行，消除僵尸
-	| 'workflow.stageRunCancel';     // 2026-09-11：host 放弃该 stage()（空闲超时 / 取消）→ 同上（与直跑同构）
+	| 'workflow.stageRunCancel'      // 2026-09-11：host 放弃该 stage()（空闲超时 / 取消）→ 同上（与直跑同构）
+	| 'workflow.insertMediaAsset';   // 2026-10-19：媒体库页「插入到画布」→ host 定向投给**该工作流**的画布（webview 侧 spawnAssetLoader）
 
 // ─── Message Interfaces ─────────────────────────────────────────────────────────
 

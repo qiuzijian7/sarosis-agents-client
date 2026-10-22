@@ -48,7 +48,8 @@ import { IEditorService } from '../../../../workbench/services/editor/common/edi
 import { IKbNativeKernelService } from './kbNativeKernelService.js';
 import { KbVersionService, IKbVersionService } from './kbVersionService.js';
 import type { KbCommitMeta, KbDiffResult } from './kbVersionTypes.js';
-import { IMermaidInlineRenderer } from './mermaidInlineRenderer.js';
+import { IDiagramRenderer } from './peleDiagramRenderer.js';
+import { canvasToMermaidSource } from './knowledge/canvasToMermaid.js';
 import { IDrawioInlineRenderer } from './drawioInlineRenderer.js';
 import { HtmlPreviewEditorInput } from './htmlPreviewEditorInput.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
@@ -141,7 +142,7 @@ export class KbBlocksEditorPane extends EditorPane {
 		@IKbNativeKernelService private readonly _kbKernelService: IKbNativeKernelService,
 		@IOpenerService private readonly _openerService: IOpenerService,
 		@IKbVersionService private readonly _versionService: KbVersionService,
-		@IMermaidInlineRenderer private readonly _mermaidRenderer: IMermaidInlineRenderer,
+		@IDiagramRenderer private readonly _mermaidRenderer: IDiagramRenderer,
 		// 图表文件嵌入 `![[x.drawio]]` 的渲染引擎（与聊天 drawio 卡片同一服务）
 		@IDrawioInlineRenderer private readonly _drawioRenderer: IDrawioInlineRenderer,
 		@IMainProcessService private readonly _mainProcessService: IMainProcessService,
@@ -615,9 +616,14 @@ export class KbBlocksEditorPane extends EditorPane {
 				void this._handleRestoreVersion(payload.sha);
 			}
 		} else if (msg.type === 'kbblocks.renderMermaid') {
-			const payload = msg.payload as { source?: string; requestId?: string; theme?: string } | undefined;
+			const payload = msg.payload as { source?: string; requestId?: string; theme?: string; maxWidth?: number } | undefined;
 			if (typeof payload?.source === 'string' && typeof payload?.requestId === 'string') {
-				void this._handleRenderMermaid(payload.source, payload.requestId, payload.theme);
+				void this._handleRenderMermaid(payload.source, payload.requestId, payload.theme, payload.maxWidth);
+			}
+		} else if (msg.type === 'kbblocks.renderCanvas') {
+			const payload = msg.payload as { source?: string; requestId?: string; theme?: string; maxWidth?: number } | undefined;
+			if (typeof payload?.source === 'string' && typeof payload?.requestId === 'string') {
+				void this._handleRenderCanvas(payload.source, payload.requestId, payload.theme, payload.maxWidth);
 			}
 		} else if (msg.type === 'kbblocks.resolveMediaAsset') {
 			// 同源化方案 B（引用层）：把笔记里 `saros-media://<id>` 解析为 webview 可加载 URL
@@ -684,12 +690,22 @@ export class KbBlocksEditorPane extends EditorPane {
 		});
 	}
 
-	/** Render Mermaid source via the shared inline renderer and stream the SVG back to the webview. */
-	private async _handleRenderMermaid(source: string, requestId: string, theme?: string): Promise<void> {
+	/**
+ * 归一化 webview 报上来的可用宽度。
+ *
+ * ⚠ 只接受 **> 0** 的数：0 / 负数 / 非数字一律当"不知道"（`undefined` ⇒ 不限宽）。
+ *   把 0 直接传下去会被 pele 当成"极窄" ⇒ 排版崩成竖条 ✗（"不知道"和"很窄"是两回事）。
+ */
+private _diagramMaxWidth(value: unknown): number | undefined {
+	return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+/** Render Mermaid source via the shared inline renderer and stream the SVG back to the webview. */
+	private async _handleRenderMermaid(source: string, requestId: string, theme?: string, maxWidth?: number): Promise<void> {
 		let svg = '';
 		let error = '';
 		try {
-			svg = await this._mermaidRenderer.renderToSvg(source, theme === 'dark' ? 'dark' : 'default');
+			svg = await this._mermaidRenderer.renderToSvg(source, theme === 'dark' ? 'dark' : 'default', this._diagramMaxWidth(maxWidth));
 		} catch (err) {
 			error = err instanceof Error ? err.message : String(err);
 		}
@@ -700,7 +716,30 @@ export class KbBlocksEditorPane extends EditorPane {
 		});
 	}
 
-	/** `![[x.drawio]]` 嵌入的渲染（镜像 `_handleRenderMermaid`；引擎与聊天 drawio 卡片一致）。 */
+	/**
+ * `![[x.canvas]]` 嵌入的渲染：JSON Canvas → Mermaid 源码 → 同一个 pele 引擎。
+ *
+ * 2026-10-19：原先 webview 侧用自带的 `CanvasMiniView`（React + 绝对定位）自己画，
+ * ⇒ 与 mermaid 图**两套观感**。现在统一走 pele（转译层见 `knowledge/canvasToMermaid.ts`），
+ * 代价是绝对坐标会被丢弃（Mermaid 由引擎排版）。
+ */
+private async _handleRenderCanvas(source: string, requestId: string, theme?: string, maxWidth?: number): Promise<void> {
+	let svg = '';
+	let error = '';
+	try {
+		const { source: mermaidSource } = canvasToMermaidSource(source);
+		svg = await this._mermaidRenderer.renderToSvg(mermaidSource, theme === 'dark' ? 'dark' : 'default', this._diagramMaxWidth(maxWidth));
+	} catch (err) {
+		error = err instanceof Error ? err.message : String(err);
+	}
+	this._webview?.postMessage({
+		direction: 'toWebview',
+		type: 'kbblocks.canvasResult',
+		data: { requestId, svg, error },
+	});
+}
+
+/** `![[x.drawio]]` 嵌入的渲染（镜像 `_handleRenderMermaid`；引擎与聊天 drawio 卡片一致）。 */
 	private async _handleRenderDrawio(source: string, requestId: string, theme?: string): Promise<void> {
 		let svg = '';
 		let error = '';

@@ -1,0 +1,19 @@
+# @vssaros/dsh-imagegen bundle patch: insert the image-generation row.
+#
+# 挂载形态：
+#   - 工具：`image_generate`（**执行经控制桥回 IDE** —— 生图 provider、凭据、审批都在 IDE 进程）。
+#   - 客户端：聊天框里的工具卡（`tool.call.toolview`，key = `image_generate`）⇒ 图直接显示在对话里。
+#
+# 为什么不自己 fetch provider：Host 侧再存一份 Key 会变成**两处真源**（必漂移），
+# 而且我们的 BYOK provider 的 baseURL / apiKey 只存在于 IDE 设置里。
+#
+# 桥的 `pluginId` 必须是**包名**（`@vssaros/dsh-imagegen`）：授权表按包名建
+# （`dshHarnessChannel._readIdeDeclarations` → `readCapabilityDeclarations`），
+# 填入口 id 会被判「插件未安装或没有可读清单」⇒ 授权永远不通过。
+#
+# ⚠ 双 plane：同一个包可能被挂两次（host plane + preset plane）⇒ 工具注册要幂等
+#   （`hostHalf: true` 时只登记页面面、不重复注册工具，见 lib/index.js）。
+- insert:
+    - id: vssaros-imagegen
+      name: '@vssaros/dsh-imagegen'
+      config: {}

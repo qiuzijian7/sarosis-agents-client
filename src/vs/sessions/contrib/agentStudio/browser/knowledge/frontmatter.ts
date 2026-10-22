@@ -119,6 +119,23 @@ export function extractSources(content: string): string[] {
 	return arr.map(normalizeSourceRef).filter(Boolean);
 }
 
+/**
+ * 从笔记内容提取 frontmatter 的 `tags`（2026-10-19 标签口径修订）。
+ *
+ * 背景：库里绝大多数笔记的标签写在 frontmatter（实测 133/166 篇），正文 `#标签#` 一条都没有
+ * ⇒ 「标签分类」几乎全落进「无标签」✗。修订后标签来源 = frontmatter tags ∪ 正文 `#标签#`，
+ * 两侧（本函数的调用方 `kbIndex.ts` `_addOrUpdateDoc` / dsh 侧 `kbFrontmatter.extractFrontmatterTags`）
+ * 同口径。有效性过滤与正文标签同一条：trim 后非空且长度 < 64（`kbIndex.ts` 的 `tag.length < 64` ✓）。
+ */
+export function extractFrontmatterTags(content: string): string[] {
+	const { frontmatter } = parseFrontmatter(content);
+	if (!frontmatter) { return []; }
+	const v = frontmatter['tags'];
+	if (v == null || v === '') { return []; }
+	const arr = Array.isArray(v) ? v : [v];
+	return arr.map(t => String(t ?? '').trim()).filter(t => t.length > 0 && t.length < 64);
+}
+
 /** 归一化单个 source 引用为库文件 basename（小写）。 */
 export function normalizeSourceRef(s: string): string {
 	let t = s.trim().replace(/^["']|["']$/g, '');

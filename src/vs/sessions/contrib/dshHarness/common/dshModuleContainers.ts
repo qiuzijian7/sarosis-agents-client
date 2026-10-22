@@ -40,7 +40,18 @@ export type DshModuleId =
 	// 自带容器 `vssaros.dsh.scheduler`（`page-only` —— legacy 调度器从不执行，无静态对应物）。
 	| 'scheduler'
 	// 2026-10-16（重构 2.4）：Saros Pocket 的 Host 路由（`/x/pocket/api/*`）。无图标模块（view.kind=none）。
-	| 'pocket';
+	| 'pocket'
+	// 2026-10-19：图表渲染（`@vssaros/dsh-pele`）。**纯引擎 + 一个工具、无页面** ⇒ 无图标模块形态
+	// （同 web-content-import：在 DSH_BUILTIN_MODULES、不在容器表、清单 view.kind='none'）。
+	// ⚠ 它同时是 IDE 侧渲染器的**产物来源**（`assets/pele.global.js`）⇒ 不是"只影响 dsh 会话"的普通插件。
+	| 'pele'
+	// 2026-10-21：图像生成（`@vssaros/dsh-imagegen`）。`image_generate` 工具 + 聊天框里的生图卡；
+	// 画布工作台（Excalidraw）在这之上再加一页（P2 ⇒ 届时把 view.kind 从 'none' 改成 'page'）。
+	| 'imagegen'
+	// 2026-10-21：工作台商城（`@vssaros/dsh-market`）。读 dsh 公开市场目录 + Host 侧安装路由；
+	// 界面在 chat-surface 的 `client.market.js` ⇒ 无图标模块形态（清单 view.kind='none'）。
+	// ⚠ 2026-10-22 补回：本条与下面那行登记在 10-21 23:08 的本地重置里丢失，按清单重写。
+	| 'market';
 
 export interface IDshBuiltinModule {
 	readonly module: DshModuleId;
@@ -87,6 +98,15 @@ export const DSH_BUILTIN_MODULES: readonly IDshBuiltinModule[] = [
 	{ module: 'sessions', pluginName: '@vssaros/dsh-sessions', summary: '历史会话 dsh 页（按工作区分组 + 人格标记 + 运行/等待指示灯；只读）' },
 	// 2026-10-15：多平台内容导入（纯工具、无页面 ⇒ 无图标模块形态；页面/容器都不加）。
 	{ module: 'web-content-import', pluginName: '@vssaros/dsh-web-content-import', summary: '按 URL 抓平台文章/视频内容（HTTP+reader / yt-dlp+字幕/ASR），可写进知识库 库/raw/' },
+	// 2026-10-19：图表渲染（`render_diagram` 工具 + 随包 pele 引擎；IDE 渲染进程读同一份
+	// `assets/pele.global.js`，聊天卡片 / 代码块 / 笔记 / .mermaid 预览全走它）。
+	{ module: 'pele', pluginName: '@vssaros/dsh-pele', summary: 'Mermaid 图表渲染（随包 pele 引擎；dsh 工具与 IDE 渲染进程共用同一份产物）' },
+	// 2026-10-21：图像生成（`@vssaros/dsh-imagegen`）。工具 `image_generate`（执行经控制桥回 IDE ⇒
+	// 凭据与审批只有一份真源）+ 聊天框里的生图工具卡（官方 `tool.call.images` 画廊）。
+	// 无图标模块形态（view.kind='none'）：画布工作台那页落地（P2）后才给活动栏一格。
+	{ module: 'imagegen', pluginName: '@vssaros/dsh-imagegen', summary: '图像生成（生图工具 + 对话内出图；执行经控制桥回 IDE）' },
+	// 2026-10-21：工作台商城（无 ActivityBar 图标；界面在 chat-surface 的设置面板里）。
+	{ module: 'market', pluginName: '@vssaros/dsh-market', summary: '工作台商城：读 dsh 公开市场目录（协议 v2）+ Host 侧安装路由（无 ActivityBar 图标）' },
 ];
 
 /**
@@ -192,6 +212,14 @@ export const DSH_MODULE_CONTAINERS: readonly IDshModuleContainer[] = [
 		activityBar: { containerId: 'vssaros.dsh.scheduler', title: { zh: '定时任务', en: 'Scheduled Tasks' }, icon: 'codicon:clock', order: 95 },
 	},
 	{
+		// 画布（2026-10-21）：`@vssaros/dsh-imagegen` 的画布工作台。
+		// **page-only**：legacy 引擎侧没有画布（画布引擎 3.4MB 随 dsh 插件走 ⇒ 只在 dsh 侧存在）✓
+		// order 85 = 排在「工作流」(80) 之后 —— 画布是**创作**入口（资料库系 110–113 是"看资料"）。
+		containerId: 'vssaros.dsh.imagegen', modules: ['imagegen'], status: 'page-only',
+		activityBar: { containerId: 'vssaros.dsh.imagegen', title: { zh: '画布', en: 'Canvas' }, icon: 'codicon:paintcan', order: 85 },
+		note: '2026-10-21：画布工作台。侧栏页 = 状态 + 「打开画布工作台」按钮；真正的画布（Excalidraw，3.4MB 引擎）是**独立 webview**，在编辑区页签里全屏展开（塞进 dsh 客户端包会变成"每个聊天框都加载 3.4MB"）。',
+	},
+	{
 		containerId: 'agentStudio.dashboard', modules: ['dashboard'], status: 'existing',
 		// order 5 = **活动栏第一位**（2026-10-12 用户要求；原 150 = 最后一位）。
 		// 静态注册侧（`agentStudio.contribution.ts` 的 `_registerModuleToolIcon`）必须同值，
@@ -249,6 +277,8 @@ export const DSH_MODULE_PAGES: readonly IDshModulePage[] = [
 	{ module: 'pocket', kind: 'none' },
 	// 2026-10-15：多平台内容导入（纯工具、无页面）⇒ kind='none'（与插件清单 view.kind 一致 ✓）。
 	{ module: 'web-content-import', kind: 'none' },
+	// 2026-10-21：图像生成 + 画布工作台（`/x/imagegen/` 侧栏页；画布本体在 `/x/imagegen/canvas/` 子路由）。
+	{ module: 'imagegen', kind: 'page', route: '/x/imagegen/' },
 ];
 
 /** 容器页路由的解析结果（见 {@link pageRouteForActiveModules}）。 */
@@ -256,6 +286,18 @@ export interface IDshModulePageResolution {
 	readonly module: string;
 	readonly kind: 'page' | 'section';
 	readonly route: string;
+	/** 2026-10-22：该模块的插件已迁成 React 工作台（见 `hasWorkbenchClient`）⇒ 编辑区开 'workbench' 视图。 */
+	readonly workbenchClient?: boolean;
+}
+
+/** 给页面解析结果补上"已迁成 React 工作台"标记（纯函数；只认已启用、清单 module 对得上的包）。 */
+export function withWorkbenchClient<T extends IDshModulePageState>(state: T, plugins: readonly (IPluginWithManifest & { readonly workbenchClient?: boolean })[]): T {
+	const page = state.page;
+	if (!page || page.kind !== 'page') {
+		return state;
+	}
+	const owner = plugins.find(p => p.enabled !== false && p.manifest?.module === page.module);
+	return owner?.workbenchClient ? { ...state, page: { ...page, workbenchClient: true } } : state;
 }
 
 /**

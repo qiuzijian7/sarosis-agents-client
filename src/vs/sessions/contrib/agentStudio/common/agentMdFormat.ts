@@ -57,6 +57,15 @@ interface AgentMdRaw {
 	sortOrder?: number;
 	configHtml?: unknown;
 	visibility?: unknown;
+	// 展示白名单 / 子代理开关（2026-10-20）：两侧都读——IDE 侧保真回写，dsh 侧按它过滤。
+	userFacing?: boolean;
+	subagents?: boolean;
+	/**
+	 * 允许被别的 agent 用 `subagent(agent_preset)` 点名（2026-10-20）。
+	 * 写进 `.agent.md` 的 `subagent: true`；dsh 侧据此生成 `allowedAgentPresets`。
+	 * ⚠ 与 `subagents`（"自己能不能开子代理"）是两件事。
+	 */
+	delegatable?: boolean;
 	confidenceThreshold?: number;
 	parallelStrategy?: string;
 	sandbox?: string;
@@ -228,6 +237,12 @@ export function buildAgentMd(agent: Agent): string {
 	if (agent.sandbox) { fm.sandbox = agent.sandbox; }
 	if (agent.configHtml) { fm.configHtml = agent.configHtml; }
 	if (agent.visibility) { fm.visibility = agent.visibility; }
+	// ⚠ 必须回写：用户覆写内置 agent 时写的是用户目录那**一整份**文件 ⇒ 漏写就等于把
+	//   `userFacing: true` / `subagents: false` 静默抹掉（dsh 侧名册会少一个、审查族会重新长出子代理）。
+	if (agent.userFacing !== undefined) { fm.userFacing = agent.userFacing; }
+	if (agent.subagents !== undefined) { fm.subagents = agent.subagents; }
+	// 委派目标（2026-10-20）：只写 true；false/未设一律不写（默认关，见 `isDelegatableAgent`）
+	if (agent.delegatable === true) { fm.subagent = true; }
 	if (agent.budgetMaxTotal !== undefined) { fm.budgetMaxTotal = agent.budgetMaxTotal; }
 	fm.createdAt = agent.createdAt;
 	fm.updatedAt = agent.updatedAt;
@@ -312,6 +327,10 @@ export function parseAgentMd(content: string): { agent: Partial<Agent>; systemPr
 			: (Array.isArray((raw as any).handOffs) ? (raw as any).handOffs as Agent['handOffs'] : undefined),
 		hooks: raw.hooks && typeof raw.hooks === 'object' ? raw.hooks as Agent['hooks'] : undefined,
 		visibility: raw.visibility && typeof raw.visibility === 'object' ? raw.visibility as Agent['visibility'] : undefined,
+		userFacing: typeof raw.userFacing === 'boolean' ? raw.userFacing : undefined,
+		subagents: typeof raw.subagents === 'boolean' ? raw.subagents : undefined,
+		// `subagent: true` ⇒ 允许被别的 agent 点名委派（2026-10-20）
+		delegatable: raw.subagent === true ? true : undefined,
 		createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : new Date(0).toISOString(),
 		updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : new Date(0).toISOString(),
 	};

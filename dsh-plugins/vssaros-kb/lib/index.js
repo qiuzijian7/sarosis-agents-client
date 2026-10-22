@@ -13,12 +13,21 @@
 
 import { spawn } from 'node:child_process';
 import { bindFoundation } from './foundationRef.js';
-import { mkdir, mkdtemp, readFile, readdir, rename as renameFile, rm, stat, writeFile } from 'node:fs/promises';
+// ★ codicon 子集（2026-10-19）：页面原本用 emoji 当图标（彩色、不吃 color、字号随系统 emoji 字体飘），
+//   与原资料库（IDE 侧 kbView 用 codicon 字体）对不上 ⇒ 把 24 个字形子集化成 woff2 并 base64 内联随包
+//   （`scripts/build-codicon-subset.py` 生成，约 3 KB）。页面 CSS 里拼 `CODICON_FONT_CSS`，
+//   图标位一律用 codicon(字形名) 出 span（scripts/check-codicon-subset.mjs 守着"引用 ⊆ 子集" ✓）。
+//   详见 lib/codiconSubset.js 头部的许可说明（含 CC BY 署名）。
+import { CODICON_FONT_CSS, codicon } from './codiconSubset.js';
+import { appendFile, mkdir, mkdtemp, readFile, readdir, rename as renameFile, rm, stat, writeFile } from 'node:fs/promises';
+// ★ 2026-10-20：**同步**读 roots overlay（见 readKbVaultsFromOverlay 的注释 ——
+//   `externalVaultRecords` 是同步函数、被 20+ 处调用 ⇒ 不能改成 async）。
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 
 // `.cmd`/`.bat` shim 的**同步**探测（见 `runLarkCli` 的 error 处理：那里不能 await ✗）
 import { existsSync } from 'node:fs';
 
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 
 import { join } from 'node:path';
 
@@ -51,7 +60,7 @@ import { MAX_OPS, planCounts, resolveOrganizePath } from './core/kbOrganize.js';
 import { buildAddCommentArgs, buildAddReplyArgs, buildDocReadArgs, buildListCommentsArgs, buildListRepliesArgs, buildReplyElements, describeCliFailure, isCliFailure, parseDocFetch, parseLarkItems, parseDocTarget, summarizeEntry } from './core/feishuDocs.js';
 
 // 写路径**单独一个文件** ✓（`store.js` 的不变量是"只读" ✗，把写操作混进去那条就不作数了 ✓）
-import { MAX_NOTE_CHARS, applyGating, enrichNotes, maintainNavigation, makeDir, restoreFromBackup, runOrganize, uniqueChildName, writeNote } from './organize.js';
+import { MAX_NOTE_CHARS, applyGating, enrichNotes, maintainNavigation, readNotesForGraph, makeDir, restoreFromBackup, runOrganize, uniqueChildName, writeNote } from './organize.js';
 
 // FTS 内核缓存重建（§16.6）：写完之后让检索/页面立刻看到新数据 ✓（写点都在 refreshDerived 里 ✓）
 import { kernelStaleCheck, rebuildKernelCache } from './core/kbKernelBuild.js';
@@ -77,8 +86,15 @@ import { acquireFileLock, lockFileFor } from './lock.js';
 // 页面外壳（标题 / 工具条 / 分区 / 空态 / 诊断行）逐条移植自 VsSaros 原容器 Pane，
 // 见 `lib/pageShell.js` 顶部注释（真源行号 + 分发约定）。
 import { renderShell } from './pageShell.js';
+// ★ 2026-10-19：关系图谱页面（从 IDE 侧迁来；`/x/kb/graph`）
+import { renderGraphPage } from './graphPage.js';
+// ★ 2026-10-19：「当前目录」的持久化 + 写笔记路径兜底（见 core/kbActiveDir.js 文件头）
+import { applyActiveDir, readActiveDir, readActiveVault, writeActiveDir } from './core/kbActiveDir.js';
+// ★ 2026-10-19：图数据构建（纯函数，节点 id = vault 相对路径）。**漏过这一行** ⇒ `/api/graph` 会
+//   `buildGraphData is not defined`（由新守卫 `scripts/check-plugin-scope.mjs` 抓到，不是靠人眼）。
+import { buildGraphData } from './core/kbGraphData.js';
 
-import { MAX_TOPIC_OVERVIEWS, countFiles, fulltextIndexes, kbRootOf, listTopicOverviews, listVaults, listVaultTree, pageSnapshotOf, previewBuild, readDoc, registerBuildCacheEntries } from './store.js';
+import { MAX_TOPIC_OVERVIEWS, catalogDescriptions, countFiles, dataRootOf, fulltextIndexes, kbRootOf, listTopicOverviews, listVaults, listVaultTree, noteCatalog, pageSnapshotOf, previewBuild, readDoc, registerBuildCacheEntries } from './store.js';
 
 
 /** 随包内置的同步脚本绝对路径（真源 `resources/.agents/kb/feishu-sync.mjs`，副本由守卫钉住字节一致）。 */
@@ -203,6 +219,35 @@ export const name = 'vssaros-kb';
 export const inject = ['tools'];
 
 const ROUTE_PREFIX = '/x/kb';
+
+/**
+ * 页面「关系图谱」的图数据缓存（★ 2026-10-19：图谱从 IDE 侧迁到 dsh 页面）。
+ *
+ * 为什么必须缓存：`/api/graph` 要**读全库正文**才能解析 `[[双链]]`（550 篇 ≈ 200+ KB 文件 IO），
+ * 页面每次打开/刷新都重扫会明显卡 ⇒ 按 `notesDir` 缓存 60 秒；`?refresh=1` 强制重扫
+ * （页面上的「重新构建」按钮用它）。
+ * ⚠ 不在写盘路径里主动失效（`kb_write_note` 等）—— 60 秒的窗口对"看图"足够，
+ *   为它给所有写工具挂回调不划算；真要最新数据点「重新构建」即可。
+ */
+const GRAPH_CACHE_TTL_MS = 60_000;
+const graphCache = new Map();
+
+/**
+ * 库的显示名（**模块级**版本，供路由 handler 使用）。
+ *
+ * ⚠⚠ 2026-10-19 真机事故：`/x/kb/graph` 直接调了 `vaultDisplayName(vault.id)` ⇒
+ *   **服务端 500 `vaultDisplayName is not defined`**（用户点图谱按钮就报这个）。
+ *   原因：那个名字是 `renderPage()` **函数体内**的局部 `const`（:2864），依赖它自己的
+ *   局部变量 `injectedVaults` ⇒ handler 作用域里根本没有。
+ *
+ * 口径必须与渲染侧保持一致：**注入名优先，拿不到退回 uid**（不编造 ✓）。
+ * 两处注释互指（渲染侧 :2862-2864、这里）；将来若要合并成一份，得给渲染函数整体传参
+ * （改动面大）⇒ 暂按两份维护，但**口径不许分叉**。
+ */
+function vaultDisplayNameFrom(config, id) {
+	const injected = parseInjectedVaults(config?.kbVaults) ?? [];
+	return injected.find(item => item.id === id)?.name || id;
+}
 // ⚠ 这是**声明**的工具名清单（页面自诊断那一栏用它 ✓，且被跨模块探针拿去对账 ✓）。
 // 它必须与 `toolDefinitions()` 里真正注册的名字**集合相同** ✗ —— 2026-10-12 加 `kb_feishu_spaces`
 // 时正是靠 `p3-08` 的"页面 == 注册 == 声明"三方对账抓到的（同 workflow 那次 ✓：两处名单各写一份，
@@ -259,19 +304,17 @@ function formatSizeCompact(bytes) {
 function isMarkdownName(name) { return /\.(md|markdown)$/i.test(String(name)); }
 
 /**
- * 文件/目录的图标字形（**如实标注的差异** ✗）：真源用 VS Code 的活动文件图标主题
- * （`kb-ficon` ＋ `getIconClasses` ✓，`kbView.css:257-261`），页面上拿不到那套主题
- * ⇒ 我们按扩展名给**固定字形** ✓（与"箭头没有 codicon、改用同一字形 ＋ 旋转"是同一种处理 ✓）。
+ * 文件行的图标 —— **现在是真 codicon** ✓（2026-10-19 换掉 emoji）。
+ *
+ * ★ 变更：原先按扩展名派 emoji（📄🖼️📕📘🧾🎨）—— 那是"页面拿不到图标字体"时期的权宜 ✗。
+ *   现在与真源 `_fileIconEl`（`knowledgeBaseView.ts:1959-1966`）**同口径**：基类就是 codicon-file，
+ *   不再按扩展名分叉 ⇒ 图标变成单色、吃 `color`、16px 网格，与原资料库一致 ✓。
+ * ⚠ 仍然不同的那一半**如实记** ✗：真源在此之上还叠加 `getIconClasses()` 产出的**文件图标主题**
+ *   （每个扩展名一枚彩色图标）；那是 IDE 侧产物，页面拿不到 ⇒ 我们停在"只有基类"这一档
+ *   —— 而真源在**没有**文件图标主题时也正是这一档 ⇒ 与真源的**兜底形态**一致 ✓。
  */
-function fileGlyphOf(name) {
-	const lower = String(name).toLowerCase();
-	if (/\.(md|markdown)$/.test(lower)) { return '📄'; }
-	if (/\.(png|jpe?g|gif|webp|svg|bmp|ico)$/.test(lower)) { return '🖼️'; }
-	if (/\.(pdf)$/.test(lower)) { return '📕'; }
-	if (/\.(docx?|xlsx?|pptx?)$/.test(lower)) { return '📘'; }
-	if (/\.(json|ya?ml|toml|ini|log|csv|tsv)$/.test(lower)) { return '🧾'; }
-	if (/\.(canvas)$/.test(lower)) { return '🎨'; }
-	return '📄';
+function fileGlyphOf() {
+	return codicon('file');
 }
 
 /**
@@ -280,7 +323,32 @@ function fileGlyphOf(name) {
  * ⚠ 折叠钩子仍用 `data-dir-toggle` ＋ `.dsh-dir` ✓（页内脚本早就在用这两个 ✓）⇒
  *   换结构**不换钩子** ✓，免得脚本与样式各自认一套 ✗。
  */
-function treeDirHtml(node, ctx) {
+/**
+ * 行的缩进（inline style，服务端算 ✓）—— 照真源 knowledgeBaseView.ts:2000 的 paddingLeft = 6 + depth*16 ✓。
+ *
+ * ⚠ 为什么**连负的 margin-left 一起给**（这是本轮的关键一招）：
+ *   我们的树是**嵌套**的（子树的 ul 在目录行的 li 里面 ✗），而真源是**扁平**的（行是兄弟、子树是行的兄弟容器）。
+ *   嵌套下子行的**包含块**会跟着父行的 padding 右移 ⇒ 只写 padding-left 的话，
+ *   内容缩进对了（16px/层 ✓），但**行盒子本身也右移** ⇒ hover / 选中的底色（背景条）逐层内缩
+ *   （首层 +6px、之后每层 +16px，右侧同理变短）✗ —— 与真源"所有行背景条左对齐"不符。
+ *   ⇒ 用**等量的负 margin-left** 把行盒子拉回容器左边界：内容缩进仍是精确的 16px/层，
+ *     而背景条左右边界与层级无关 ✓（视觉与真源一致）。
+ *   数值推导（depth N，N>0）：内容目标 = 6+16N；盒子要回到父盒子左边界 ⇒ margin-left = -(父的 padding-left)
+ *     = -(6+16(N-1)) = -(16N-10)。实测校准过：N=1 ⇒ -6、N=2 ⇒ -22、N=3 ⇒ -38 ✓。
+ *   ⚠ **右边界也要补**（第一版漏了，浏览器量出来才发现 ✗）：只补左边的话右边界会逐层短 14px
+ *     （实测 L0/L1/L2 右边界 = 1504 / 1490 / 1476 ✗）。
+ *     ⇒ 补 margin-right: **-6px，与层数无关** ✓：每层的内容区右边界恒为 W-14（父盒子右恒 W-8、
+ *     再减行自己的 padding-right 6）⇒ 减 -6 恰好回到 W-8 ✓。
+ * ⚠ 排序安全：页内排序只在同一层 ul 内搬节点（depth 不变）⇒ inline 值无需重算 ✓。
+ */
+function indentStyle(depth) {
+	const d = Math.max(0, depth | 0);
+	const pad = 6 + d * 16;
+	if (d === 0) { return `padding-left:${pad}px;`; }
+	return `padding-left:${pad}px;margin-left:-${d * 16 - 10}px;margin-right:-6px;`;
+}
+
+function treeDirHtml(node, ctx, depth = 0) {
 	const childCount = (node.children ?? []).length;
 	// ⚠ `data-dir-rel` = 这一级目录的 vault 相对路径（2026-10-14 §16.18 **加法** ✓）：
 	//   页面右键「新建」要知道"建到哪个目录"（真源 targetDir：目录行 ⇒ 建进它里面 ✓）——
@@ -302,10 +370,10 @@ function treeDirHtml(node, ctx) {
 	//   （只有 data-dir-rel ✓）⇒ 补上（`data-child-count` 就是真源的 `childCount` ✓ :135-136 ✓）。
 	//   ⚠ 索引条目那类行（`docRowHtml`）**没有** fs 尺寸 ✗ ⇒ `data-size` 缺席 ⇒ 比较器按 0 算 ✓
 	//    （与"缺字段沉底"同一条既有约定 ✓）。
-	return `<li class="dsh-node dir" draggable="true" data-dir-node data-vault="${escapeHtml(ctx.vaultId)}" data-dir-rel="${escapeHtml(ctx.section + '/' + node.rel)}" data-order="${escapeHtml(String(ctx.orderOf ? ctx.orderOf(node) : ''))}" data-title="${escapeHtml(String(node.name).toLowerCase())}" data-created="${escapeHtml(String(ctx.createdOf ? ctx.createdOf(node) : ''))}" data-mtime="${node.mtime !== undefined ? String(node.mtime) : ''}" data-size="${node.size !== undefined ? String(node.size) : ''}" data-child-count="${String(childCount)}">
+	return `<li class="dsh-node dir" draggable="true" data-dir-node data-depth="${depth}" style="${indentStyle(depth)}" data-vault="${escapeHtml(ctx.vaultId)}" data-dir-rel="${escapeHtml(ctx.section + '/' + node.rel)}" data-order="${escapeHtml(String(ctx.orderOf ? ctx.orderOf(node) : ''))}" data-title="${escapeHtml(String(node.name).toLowerCase())}" data-created="${escapeHtml(String(ctx.createdOf ? ctx.createdOf(node) : ''))}" data-mtime="${node.mtime !== undefined ? String(node.mtime) : ''}" data-size="${node.size !== undefined ? String(node.size) : ''}" data-child-count="${String(childCount)}">
 <button type="button" class="dsh-node-button dsh-dir" data-dir-toggle aria-expanded="false">
 <span class="dsh-twist">▸</span>
-<span class="dsh-ficon folder">📁</span>
+<span class="dsh-ficon">${codicon('folder')}</span>
 <span class="dsh-name">${escapeHtml(node.name)}</span>
 <span class="dsh-count-badge">${childCount}</span>
 </button>
@@ -314,7 +382,7 @@ ${rowActionsHtml({
 			// ⚠ 目录行**不给 renamePath** ✗（服务端 moves 的还原点用 copyFile ⇒ 目录必抛 ✓，见 rowActionsHtml 的注释 ✓）
 			deletePath: ctx.section === NOTES_DIR ? `${ctx.section}/${node.rel}` : '',
 		})}
-<ul class="dsh-node-children" hidden>${treeHtml(node.children ?? [], ctx)}</ul>
+<ul class="dsh-node-children" hidden>${treeHtml(node.children ?? [], ctx, depth + 1)}</ul>
 </li>`;
 }
 
@@ -344,21 +412,23 @@ ${rowActionsHtml({
  */
 function rowActionsHtml({ renamePath = '', deletePath = '', dirRel = '' } = {}) {
 	const inNotes = !!dirRel && (dirRel === NOTES_DIR || dirRel.indexOf(NOTES_DIR + '/') === 0);
+	// ⇐ 真源 .kb-act 用的是 codicon（new-file / new-folder / ✎ / trash ✓ knowledgeBaseView.ts:2039-2046 ✓）
+	//   2026-10-19 把 emoji 换回 codicon（重命名那枚原先是 ✎ 文本 ⇒ 换成 codicon-pencil，与真源"重命名"语义同源 ✓）。
 	const newBits = inNotes
-		? `<button type="button" class="dsh-act" data-row-new="file" data-row-new-dir="${escapeHtml(dirRel)}" title="新建笔记（建在 ${escapeHtml(dirRel)} 里）">📄</button>`
-			+ `<button type="button" class="dsh-act" data-row-new="folder" data-row-new-dir="${escapeHtml(dirRel)}" title="新建文件夹（建在 ${escapeHtml(dirRel)} 里）">📁</button>`
+		? `<button type="button" class="dsh-act" data-row-new="file" data-row-new-dir="${escapeHtml(dirRel)}" title="新建笔记（建在 ${escapeHtml(dirRel)} 里）">${codicon('new-file')}</button>`
+			+ `<button type="button" class="dsh-act" data-row-new="folder" data-row-new-dir="${escapeHtml(dirRel)}" title="新建文件夹（建在 ${escapeHtml(dirRel)} 里）">${codicon('new-folder')}</button>`
 		: '';
 	const renameBit = renamePath
-		? `<button type="button" class="dsh-act dsh-rename" data-rename data-rename-path="${escapeHtml(renamePath)}" title="重命名 / 移动（只能在「笔记」区）">✎</button>`
+		? `<button type="button" class="dsh-act dsh-rename" data-rename data-rename-path="${escapeHtml(renamePath)}" title="重命名 / 移动（只能在「笔记」区）">${codicon('pencil')}</button>`
 		: '';
 	const deleteBit = deletePath
-		? `<button type="button" class="dsh-act" data-row-delete data-row-delete-path="${escapeHtml(deletePath)}" title="删除（移入备份，可撤销）">🗑</button>`
+		? `<button type="button" class="dsh-act" data-row-delete data-row-delete-path="${escapeHtml(deletePath)}" title="删除（移入备份，可撤销）">${codicon('trash')}</button>`
 		: '';
 	if (!newBits && !renameBit && !deleteBit) { return ''; }
 	return `<span class="dsh-actions">${newBits}${renameBit}${deleteBit}</span>`;
 }
 
-function treeFileHtml(node, ctx) {
+function treeFileHtml(node, ctx, depth = 0) {
 	const rel = ctx.section + '/' + node.rel;
 	const isRawLib = ctx.section === LIBRARY_DIR && !isMarkdownName(node.name);
 	const built = ctx.section === LIBRARY_DIR ? !ctx.pendingSet.has(String(node.rel).toLowerCase()) : true;
@@ -376,7 +446,7 @@ function treeFileHtml(node, ctx) {
 	// ★ `draggable="true"`（2026-10-14 §16.19）：真源给**每个**节点都开了拖拽（`:2105-2107` ✓）——
 	//   放置目标另有约定（只有目录行与分区体拦截 ✓，见页内脚本那段注释 ✓）。
 	//   ⚠ 模板串里注释不许出现反引号 ✗。
-	return `<li class="dsh-node${ctx.pendingSet.has(String(node.rel).toLowerCase()) && ctx.section === LIBRARY_DIR ? ' dsh-pending' : ''}" draggable="true"${ctx.pendingSet.has(String(node.rel).toLowerCase()) && ctx.section === LIBRARY_DIR ? ' data-pending="1"' : ''} data-doc-row data-node data-vault="${escapeHtml(ctx.vaultId)}" data-uri="${escapeHtml(ctx.uriOf(node))}" data-order="${escapeHtml(String(ctx.orderOf(node)))}" data-title="${escapeHtml(title.toLowerCase())}" data-created="${escapeHtml(created)}" data-mtime="${node.mtime !== undefined ? String(node.mtime) : ''}" data-size="${node.size !== undefined ? String(node.size) : ''}" data-child-count="0" data-tags="${escapeHtml(tags.map(tag => tag.toLowerCase()).join('|'))}" data-search="${escapeHtml([node.name, rel, title, ...tags].join(' ').toLowerCase())}" data-rel="${escapeHtml(rel)}">
+	return `<li class="dsh-node${ctx.pendingSet.has(String(node.rel).toLowerCase()) && ctx.section === LIBRARY_DIR ? ' dsh-pending' : ''}" draggable="true"${ctx.pendingSet.has(String(node.rel).toLowerCase()) && ctx.section === LIBRARY_DIR ? ' data-pending="1"' : ''} data-doc-row data-node data-depth="${depth}" style="${indentStyle(depth)}" data-vault="${escapeHtml(ctx.vaultId)}" data-uri="${escapeHtml(ctx.uriOf(node))}" data-order="${escapeHtml(String(ctx.orderOf(node)))}" data-title="${escapeHtml(title.toLowerCase())}" data-created="${escapeHtml(created)}" data-mtime="${node.mtime !== undefined ? String(node.mtime) : ''}" data-size="${node.size !== undefined ? String(node.size) : ''}" data-child-count="0" data-tags="${escapeHtml(tags.map(tag => tag.toLowerCase()).join('|'))}" data-search="${escapeHtml([node.name, rel, title, ...tags].join(' ').toLowerCase())}" data-rel="${escapeHtml(rel)}">
 <button type="button" class="dsh-node-button" data-node-open>
 <span class="dsh-twist empty">▸</span>
 <span class="dsh-ficon">${fileGlyphOf(node.name)}</span>
@@ -390,9 +460,9 @@ ${rowActionsHtml({ renamePath: renamable ? rel : '', deletePath: renamable ? rel
 }
 
 /** 递归渲染一层（目录在前、各自按名称 —— 顺序在 `store.listVaultTree` 里定死 ✓）。 */
-function treeHtml(nodes, ctx) {
+function treeHtml(nodes, ctx, depth = 0) {
 	if (!nodes.length) { return ''; }
-	return nodes.map(node => (node.isDirectory ? treeDirHtml(node, ctx) : treeFileHtml(node, ctx))).join('');
+	return nodes.map(node => (node.isDirectory ? treeDirHtml(node, ctx, depth) : treeFileHtml(node, ctx, depth))).join('');
 }
 
 /**
@@ -404,12 +474,17 @@ function treeHtml(nodes, ctx) {
  * （`kbView.css:217` / `:902-908` ✓；真源 header 的挂载顺序是 arrow, title, count, processing, spacer, **toolbar**
  * `:1728-1730` ✓，且**工具栏为空就整块不挂** ✓ —— 我们也照这条 ✓）。
  *
- * ⚠ 真源这儿原有四件（批量构建库 / 导入 URL / 思维导图 / 同步飞书 ✓ `:1698-1726` ✓），我们**只摆思维导图** ✗，
- *   理由逐件写在这里（照 §16.23 清单的裁决 ✓）：
+ * ⚠ 真源这儿原有四件（批量构建库 / 导入 URL / 思维导图 / 同步飞书 ✓ `:1698-1726` ✓），我们的裁决逐件写在这里
+ *   （照 §16.23 清单的口径 ✓）：
  *   · **批量构建库** ✗：长任务（几十次写 ✓）—— 页面里没有进度/取消/重试，挂 HTTP 会半途 ✓；
  *     它在会话里走 `kb_build` 有闸有状态 ✓；
  *   · **导入链接 / URL** ✗：本侧**没有**这个能力 ✓（摆了就是"点了必然失败" ✓）；
- *   · **同步飞书** ✗：外部集成 ✓（`kb_feishu_sync` 在会话里 ✓；真源未配置时是"跳设置页"，我们没有那个页 ✓）；
+ *   · **同步飞书** ✓（2026-10-19 改判 ✓，用户明确要求补上）：原先不摆的理由是"真源未配置时跳设置页，
+ *     而我们没有那个页" —— 这个理由**已经不成立**了（桥 7 有 `openKbSettings` ✓）。
+ *     ⚠ 但仍**不假装能同步** ✗：真源在已启用时直接跑 `feishuSync('apply')`（写 ＋ 分钟级 ✓），
+ *     页面这侧是**只读**通道、也没有进度/取消 ⇒ 点它只做**短动作**：打开 IDE 的知识库设置
+ *     （「飞书同步」分组就在那页），同步本身在面板里或会话里的 `kb_feishu_sync` 执行 ✓。
+ *     title 必须**说实话**（写清"打开设置"，不写"立即同步" ✗）✓。
  *   · **思维导图** ✓：四件里唯一的短动作 ✓ ⇒ 摆 —— ⚠ 但**只做"打开"那一半** ✗：
  *     真源 title 是「思维导图（打开或生成 .canvas）」✓，而"生成"在我们侧要起子代理 ⇒ 页面点不出来 ✓
  *     ⇒ title 必须**说实话**（不写"或生成" ✓），生成那半由回执/提示指路到会话里的 `kb_mindmap` ✓。
@@ -417,22 +492,28 @@ function treeHtml(nodes, ctx) {
  *     我们这条走**页面 → 只读路由**（`/api/mindmap` ✓ 只 readdir ✓），"打开"由页面桥 `openFile` 做 ✓
  *     —— 桥是协议明文允许的低风险界面命令 ✓，**不新增任何写通道** ✓。
  */
-function mindmapToolbarHtml() {
-	const title = '打开思维导图（.canvas）；从笔记生成请在会话里用 kb_mindmap';
+function notesToolbarHtml() {
+	const mindmapTitle = '打开思维导图（.canvas）；从笔记生成请在会话里用 kb_mindmap';
+	// ★ 2026-10-19 晚：按钮语义改为**真的开始同步**（桥 12 的 kbFeishuSync ⇒ 宿主转 agentStudio.kb.feishuSync）。
+	//   未启用时那条命令会自己通知 + 定位「飞书同步」分组 ⇒ 标题不再写"只是打开设置" ✓。
+	const feishuTitle = '同步飞书（未启用会打开知识库设置的「飞书同步」分组；已启用则直接在集成终端里开始同步）';
 	return `<div class="dsh-section-toolbar" data-section-toolbar>
-<span class="dsh-tool-btn" data-mindmap-open role="button" tabindex="0" title="${escapeHtml(title)}" aria-label="思维导图">🗺</span>
+<span class="dsh-tool-btn" data-mindmap-open role="button" tabindex="0" title="${escapeHtml(mindmapTitle)}" aria-label="思维导图">${codicon('type-hierarchy')}</span>
+<span class="dsh-tool-btn" data-feishu-sync role="button" tabindex="0" title="${escapeHtml(feishuTitle)}" aria-label="同步飞书">${codicon('cloud-upload')}</span>
 </div>`;
 }
 
 function sectionHtml({ section, vaultId, count, body, missing, toolbar = '' }) {
 	const isLibrary = section === LIBRARY_DIR;
 	const label = isLibrary ? '库' : '笔记';
-	const glyph = isLibrary ? '📚' : '📝';
+	// ⇐ 真源分区头图标是 codicon-library / codicon-note（`knowledgeBaseView.ts:1627` ✓）——
+	//   2026-10-19 用真 codicon 替掉 📚 / 📝（那两个是彩色 emoji，且不跟着分区色走 ✗）。
+	const glyph = codicon(isLibrary ? 'book' : 'note');
 	// ⚠ `open` 是**初始展开态** ✓（真源 renderSection 之后 `sec.classList.add('open')` ✓，
 	//   库/笔记初始都展开 ✓）；折叠箭头靠 CSS 旋转 ✓，与手风琴/solo 共用同一个 `.open` 语义 ✓。
 	return `<section class="dsh-section open ${isLibrary ? 'sec-library' : 'sec-notes'}" data-section="${escapeHtml(section)}" data-vault="${escapeHtml(vaultId)}" data-kb-region="${escapeHtml(vaultId + ':' + section)}">
 <div class="dsh-section-header" data-section-toggle role="button" tabindex="0" aria-expanded="true">
-<span class="dsh-arrow">▸</span>
+<span class="dsh-arrow">${codicon('chevron-right')}</span>
 <span class="dsh-title"><span class="dsh-cat ${isLibrary ? 'lib' : 'notes'}">${glyph}</span>${label}<span class="dsh-count-badge" data-section-count>${count}</span></span>
 ${toolbar}
 </div>
@@ -464,7 +545,7 @@ function tagClassHtml({ vaultId, tags, untagged }) {
 	const total = tags.length + (untagged.length ? 1 : 0);
 	const group = item => `<div class="dsh-tag-group" data-tag-name="${escapeHtml(String(item.tag).toLowerCase())}">
 <div class="dsh-tag-group-head" data-tag-toggle role="button" tabindex="0" aria-expanded="false">
-<span class="dsh-arrow">▸</span>
+<span class="dsh-arrow">${codicon('chevron-right')}</span>
 <span class="dsh-tag-group-name">${escapeHtml(item.label)}</span>
 <span class="dsh-count">${item.count} 篇</span>
 </div>
@@ -473,14 +554,14 @@ function tagClassHtml({ vaultId, tags, untagged }) {
 	const list = tags.map(item => group({ tag: item.tag, label: `#${item.tag}`, count: item.count, names: item.names }))
 		.concat(untagged.length ? [group({ tag: '__untagged__', label: '#无标签', count: untagged.length, names: untagged })] : []);
 	const body = total === 0
-		? `<div class="dsh-tag-search"><div class="dsh-search-box"><span class="dsh-search-ico">🔍</span><input type="text" data-tag-input placeholder="搜索标签…" aria-label="搜索标签" autocomplete="off"><span class="dsh-search-clear" data-tag-clear hidden>✕</span></div></div>
+		? `<div class="dsh-tag-search"><div class="dsh-search-box"><span class="dsh-search-ico">${codicon('search')}</span><input type="text" data-tag-input placeholder="搜索标签…" aria-label="搜索标签" autocomplete="off"><span class="dsh-search-clear" data-tag-clear hidden>${codicon('close')}</span></div></div>
 <div class="dsh-tag-groups" data-tag-groups data-tag-total="0"><p class="dsh-empty" data-tag-empty>暂无标签（在笔记中使用 #标签# 格式即可创建标签）</p></div>`
-		: `<div class="dsh-tag-search"><div class="dsh-search-box"><span class="dsh-search-ico">🔍</span><input type="text" data-tag-input placeholder="搜索标签…" aria-label="搜索标签" autocomplete="off"><span class="dsh-search-clear" data-tag-clear hidden>✕</span></div></div>
+		: `<div class="dsh-tag-search"><div class="dsh-search-box"><span class="dsh-search-ico">${codicon('search')}</span><input type="text" data-tag-input placeholder="搜索标签…" aria-label="搜索标签" autocomplete="off"><span class="dsh-search-clear" data-tag-clear hidden>${codicon('close')}</span></div></div>
 <div class="dsh-tag-groups" data-tag-groups data-tag-total="${total}">${list.join('')}<p class="dsh-empty" data-tag-empty hidden>无匹配标签</p></div>`;
 	return `<section class="dsh-section sec-tagclass" data-section="tagclass" data-vault="${escapeHtml(vaultId)}" data-kb-region="${escapeHtml(vaultId + ':tagclass')}">
 <div class="dsh-section-header" data-section-toggle role="button" tabindex="0" aria-expanded="false">
-<span class="dsh-arrow">▸</span>
-<span class="dsh-title"><span class="dsh-cat tag">🏷</span>标签分类<span class="dsh-and-badge">交集 AND</span><span class="dsh-count-badge" data-tag-count>${total}</span></span>
+<span class="dsh-arrow">${codicon('chevron-right')}</span>
+<span class="dsh-title"><span class="dsh-cat tag">${codicon('tag')}</span>标签分类<span class="dsh-and-badge">交集 AND</span><span class="dsh-count-badge" data-tag-count>${total}</span></span>
 </div>
 <div class="dsh-section-body">${body}</div>
 </section>`;
@@ -590,6 +671,22 @@ function renderVaultTree(docs, vaultId, pendingSet) {
  *    而 2026-10-13 起**页面已带上状态点**（`.dsh-status`：库分区 built ? indexed : raw ✓），
  */
 const PAGE_CSS = `
+${CODICON_FONT_CSS}
+/* ── codicon 尺寸校准（⇐ 真源 kbView.css:891-908 那一节 ✓） ──────────────────────────────────
+   .dsh-cod 基类写的是 16px/1（与 codicon.css 的 .codicon[class*='codicon-'] 同值 ✓）；
+   各位置的实际字号由下面这些覆盖给出，取值逐条照真源：
+     行内图标 14（kbView.css:894 ✓）／行内动作 13（:893 ✓）／节头箭头 12（:204 ✓）
+     ／节头工具钮 13（:906 ✓）／vault 图标 14（:611 同值 ✓）／vault caret 12（:897 ✓）。
+   ⚠ 图标颜色一律走 currentColor（继承父级）⇒ 行内图标再按 symbolIcon-* 上色（下面 .dsh-ficon 那条 ✓），
+     与真源 .kb-ficon 的口径一致 ✓（选中行时图标**不会**跟着变白 ✓ —— 那是 emoji 版本的老毛病 ✗）。 */
+.dsh-node .dsh-cod { font-size: 14px; }
+.dsh-act .dsh-cod { font-size: 13px; }
+.dsh-section-header .dsh-cod, .dsh-tag-group-head .dsh-cod { font-size: 12px; }
+.dsh-abtn .dsh-cod { font-size: 14px; }
+.dsh-tool-btn .dsh-cod { font-size: 13px; }
+.dsh-search-ico .dsh-cod { font-size: 12px; }
+.dsh-opt-ico .dsh-cod { font-size: 13px; }
+.dsh-caret .dsh-cod { font-size: 12px; }
 .t { font-weight: 600; }
 /* ⇐ .kb-scroll, .kb-panel-content（滚动区：去掉聚焦框 + 允许收缩 ✓） */
 .dsh-scroll { outline: none; min-height: 0; }
@@ -607,7 +704,8 @@ const PAGE_CSS = `
 .dsh-vault-select { flex: 1; display: flex; align-items: center; gap: 6px; background: var(--vscode-input-background, transparent); border: 1px solid var(--vscode-input-border, transparent); border-radius: 4px; padding: 5px 8px; cursor: pointer; color: var(--vscode-foreground, inherit); font-size: 12px; min-width: 0; }
 .dsh-vault-select:hover { border-color: var(--vscode-focusBorder, #007fd4); }
 .dsh-vault-select .dsh-vname { font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dsh-vault-select .dsh-caret { color: var(--vscode-descriptionForeground, #999); font-size: 10px; }
+/* ⇐ 真源 .kb-vault-select .kb-caret 是 12px（kbView.css:897 ✓）；原先这里写 10px ✗ ⇒ 与真源差 2px。 */
+.dsh-vault-select .dsh-caret { color: var(--vscode-descriptionForeground, #999); font-size: 12px; }
 .dsh-vault-icon { font-size: 14px; }
 .dsh-abtn { width: 26px; height: 26px; display: flex; align-items: center; justify-content: center; border-radius: 4px; cursor: pointer; color: var(--vscode-icon-foreground, #ccc); opacity: .8; border: 1px solid transparent; }
 .dsh-abtn:hover { background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground, rgba(128,128,128,.15))); opacity: 1; }
@@ -804,7 +902,19 @@ const PAGE_CSS = `
 .dsh-menu-item .dsh-menu-key { margin-left: auto; color: var(--vscode-descriptionForeground, #9d9d9d); font-size: 11px; }
 .dsh-menu-item:hover .dsh-menu-key, .dsh-menu-item.active .dsh-menu-key { color: var(--vscode-menu-selectionForeground, #fff); }
 /* 复制路径的回执（自定件 ✓；静默复制会让人不知道成没成 ✓） */
-.dsh-toast { margin: 2px 8px; font-size: 11px; color: var(--vscode-editorWarning-foreground, #dcdcaa); }
+/* ★★ 2026-10-19：toast 改成 **fixed 悬浮**（真机"点了没反应"的元凶之一 ✗）。
+   原因：它原先按普通流插在 .dsh-scroll 顶上 ⇒ 用户把页面滚到「笔记」区时，提示出现在**看不见的上方**
+   ⇒ 一次点击（不管成功还是失败）看起来完全没反应 ✗。改 fixed 后任何滚动位置都看得见 ✓。
+   位置贴顶部（left/right 10px）而不是底部 —— 与 IDE 的 notif 位置习惯一致，也不挡分区头的可点区太多。 */
+.dsh-toast {
+	position: fixed; left: 10px; right: 10px; top: 8px; z-index: 9999;
+	margin: 0; padding: 6px 10px; border-radius: 4px; font-size: 11px;
+	color: var(--vscode-editorWarning-foreground, #dcdcaa);
+	background: var(--vscode-editorWidget-background, rgba(37,37,38,.97));
+	border: 1px solid var(--vscode-panel-border, rgba(128,128,128,.4));
+	box-shadow: 0 2px 8px rgba(0,0,0,.35);
+	display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+}
 /* ⇐ 撤销入口（自定件 ✓：原生菜单里"撤销"是系统级动作，网页里只能自己给一个可点的 ✓） */
 .dsh-toast-act {
 	margin-left: 6px; font: inherit; font-size: 11px; cursor: pointer;
@@ -818,15 +928,37 @@ const PAGE_CSS = `
 /* ⇐ .kb-node .kb-twist（折叠三角：宽 14px / 描述色 / 10px；空目录**不可见**仍占位 ✓） */
 .dsh-node .dsh-twist { width: 14px; text-align: center; color: var(--vscode-descriptionForeground); font-size: 10px; cursor: pointer; flex-shrink: 0; }
 .dsh-node .dsh-twist.empty { visibility: hidden; }
-/* ⇐ .kb-node .kb-ficon（16px；目录用文件夹色 ✓）—— ⚠ 真源是 VS Code 文件图标主题，我们只能给字形 ✗ */
-.dsh-node .dsh-ficon { width: 16px; height: 16px; flex-shrink: 0; display: inline-block; }
+/* ⇐ .kb-node .kb-ficon（16px；目录用文件夹色 ✓）。
+   ★ 2026-10-19（换 codicon 后补齐两条）：
+     ① 盒子改成 flex 居中 —— 照真源 kbView.css:894（.kb-node .kb-ficon.codicon 那条 ✓）；
+        原来是 inline-block，字形靠基线排 ⇒ 换字体后上下会飘 ✗。
+     ② 补**通用**图标色（.dsh-ficon 用 symbolIcon-fileForeground，真源 :261 ✓）——
+        sideview 原先只有 .dir 那一条 ✗ ⇒ 文件图标跟着行色走、选中行里会变白 ✗。 */
+.dsh-ficon { color: var(--vscode-symbolIcon-fileForeground, #cccccc); }
+.dsh-node .dsh-ficon { width: 16px; height: 16px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
 .dsh-node.dir .dsh-ficon { color: var(--vscode-symbolIcon-folderForeground, #dcb67a); }
 /* ⇐ .kb-node .kb-name（占满 ＋ 省略号 ✓） */
 .dsh-node .dsh-name { flex: 1; overflow: hidden; text-overflow: ellipsis; line-height: 22px; }
 /* ⇐ .kb-node .kb-meta（10px / 描述色 / 左距 6px ✓）—— 内容＝大小 或「未索引」✓ */
 .dsh-node .dsh-meta { font-size: 10px; color: var(--vscode-descriptionForeground); margin-left: 6px; font-family: var(--vscode-font-family); }
 /* 子层缩进（真源是 padding-left 逐层加 ✓） */
-.dsh-node-children { list-style: none; margin: 0; padding-left: 12px; }
+/* ★★ 2026-10-19：子层缩进对齐真源（真源 knowledgeBaseView.ts:2000 的 paddingLeft = 6 + depth*16 ✓）。
+   ⚠ 这里踩过一个**算错的坑**（本轮实测咬出来的 ✗）：第一版我直接把 ul 的 padding-left 从 12 改成 16，
+     以为"每层步长 = ul 的 padding" —— **错** ✗：我们的树是**嵌套**的（ul 在 li 里面），
+     每层实际缩进 = ul 的 padding ＋ 子行的 margin-left(8) ＋ 子行的 padding-left(6) = P + 14 ✗
+     （真源是**扁平**的，行之间只是兄弟 ⇒ 步长就等于 padding 的增量 16 ✓）。
+     实测：P=12 ⇒ 内容每层 +26；P=16 ⇒ +30（**越改越远** ✗）。
+   ⇒ 第二版：ul 不再承担缩进（padding-left: 0），子行自己的 padding-left 就是那 16px 的增量
+     ⇒ 内容步长对了（16px/层 ✓），但**行盒子跟着右移** ⇒ hover / 选中的**背景条逐层内缩**
+     （首层 +6px、之后每层 +16px，右侧同理变短）✗，与真源"所有行背景条左对齐"不符 ✗。
+   ⇒ **终版（现在这条）**：缩进**不再由 CSS 给**，改由行内 inline style（服务端 indentStyle() 逐层算）：
+     同时给 padding-left（6+16N，管内容缩进）＋ **等量负 margin-left**（-(16N-10)，把行盒子拉回容器
+     左边界，管背景条）⇒ 内容步长与背景条**同时**与真源重合 ✓，且**不动 DOM 结构**（零脚本改动 ✓）。
+     实测（浏览器量过）：名字起点步长 16/层，各层行盒子的左右边界一致 ✓。
+   ⚠ 与真源仍存的一处差异（如实记 ✗）：真源是**扁平**结构（行是兄弟、子树是行的兄弟容器）⇒
+     它的 hover 可以直接写在行上；我们是嵌套结构 ⇒ 仍需下面那条"伪元素只画首行"的补丁
+     （否则 li:hover 会把整棵子树一起涂掉 ✗）。要连 DOM 也同构，得改渲染 + 页内脚本取法 ⇒ 未做 ✗。 */
+.dsh-node-children { list-style: none; margin: 0; padding-left: 0; }
 /* ── 「标签分类」分区（2026-10-14 §16.23；逐条照真源 kbView.css:402-455 ✓）────────────────────
    ⚠ 模板串里注释不许出现反引号 ✗。 */
 .dsh-section.sec-tagclass { border-top: 1px solid var(--vscode-panel-border, var(--vscode-sideBar-border, rgba(128,128,128,.25))); margin-top: 4px; }
@@ -868,6 +1000,26 @@ const PAGE_CSS = `
 .dsh-node.dir.selected { background: transparent; }
 .dsh-node.dir.selected > .dsh-node-button { background: var(--vscode-list-activeSelectionBackground, rgba(77,163,255,.25)); }
 .dsh-node.dir.selected:not(:only-of-type) > .dsh-node-button { background: var(--vscode-list-inactiveSelectionBackground, rgba(77,163,255,.12)); }
+/* ★ 2026-10-19：目录行的**整行**高亮（照真源 .kb-node:hover / .kb-node.selected ✓）。
+   ⚠ 为什么不能直接给 li 上底色（真源就是这么写的 ✓）：我们的子树 <ul> 是 li 的**子元素**
+     （真源是**兄弟** ✗ 结构差异）—— li:hover 会把整棵子树一起涂掉 ✗，
+     这正是当初改成"只画 button"的原因 ✓（那条注释在上面 §16 那段里 ✓）。
+   ⇒ 改用伪元素**只画第一行那 28px**（子树被 flex 挤到第二行 ⇒ 天然不被涂 ✓），
+     并用 :has() 排除"鼠标其实停在子树里"的情况（否则悬停**子行**时父行也亮 ✗ ——
+     真源的扁平结构不会有这种事 ✓）。
+   ⚠ 降级如实记：不支持 :has() 的浏览器这整条规则**不生效** ⇒ 退回上面"只画 button"的既有行为 ✓（不会更糟）。
+   ⚠ 模板串里注释不许出现反引号 ✗（本轮已踩两次 ✓）。 */
+.dsh-node.dir { position: relative; }
+.dsh-node.dir:hover:not(:has(.dsh-node-children :hover))::before,
+.dsh-node.dir.selected::before {
+	content: ''; position: absolute; left: 0; right: 0; top: 0; height: 28px;
+	border-radius: 4px; pointer-events: none;
+	background: var(--vscode-list-hoverBackground);
+}
+.dsh-node.dir.selected::before { background: var(--vscode-list-activeSelectionBackground, rgba(77,163,255,.25)); }
+.dsh-node.dir.selected:not(:only-of-type)::before { background: var(--vscode-list-inactiveSelectionBackground, rgba(77,163,255,.12)); }
+/* 内容必须压在伪元素之上（伪元素 absolute、与 button 同层 ⇒ 靠 z-index 把内容抬起来 ✓） */
+.dsh-node.dir > .dsh-node-button, .dsh-node.dir > .dsh-actions { position: relative; z-index: 1; }
 /* ⇐ 复刻：每个 vault 给一组「库/笔记」分区（多于一个库时加一行小标题 —— 真源只显示当前库 ✗，
    静态页要能同时看到全部 ⇒ 这行是**我们的适配**，如实标注 ✓） */
 /* ★★ 2026-10-14 修（用户报"知识库 sideview 显示错误" ✓）：分区全塌成一条头、**行一条都看不见** ✗
@@ -972,6 +1124,23 @@ const PAGE_CSS = `
 }
 .dsh-rename-msg { margin-left: 6px; font-size: 11px; color: var(--vscode-editorWarning-foreground, #dcdcaa); }
 .dsh-rename-msg.ok { color: var(--vscode-testing-iconPassed, #6a9955); }
+/* ── 承载表面（2026-10-21）：同一页三形态 ────────────────────────────────
+   surface=sideview ⇒ 目录页（列表吃满容器）；surface=editor ⇒ 正文页；缺省 ⇒ 完整页。
+   ⚠ 本段在模板串里 ⇒ 注释里不许出现反引号 ✗。 */
+.dsh-doc { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.dsh-doc-head { flex: none; padding: 10px 16px 8px; border-bottom: 1px solid var(--vscode-panel-border, rgba(128,128,128,.35)); }
+.dsh-doc-title { font-size: 15px; font-weight: 600; margin: 0 0 2px; }
+.dsh-doc-meta { font-size: 11px; color: var(--vscode-descriptionForeground, #999); margin: 0; word-break: break-all; }
+.dsh-doc-body {
+	flex: 1 1 auto; min-height: 0; overflow: auto; padding: 14px 16px 24px;
+	white-space: pre-wrap; word-break: break-word;
+	font-family: var(--vscode-editor-font-family, ui-monospace, Consolas, monospace);
+	font-size: 13px; line-height: 1.65; color: var(--vscode-foreground, inherit);
+}
+.dsh-doc-empty { color: var(--vscode-descriptionForeground, #999); font-family: inherit; }
+/* 目录版（侧栏）：标题里那串统计让位给条目（窄栏里它会把标题挤成竖排 ✗） */
+[data-vssaros-surface="sideview"] .dsh-header h1 small { display: none; }
+[data-vssaros-surface="sideview"] .dsh-scroll { padding-bottom: 24px; }
 `;
 
 /**
@@ -1052,6 +1221,75 @@ const DOC_PREVIEW_SCRIPT = `
 })();
 `;
 
+/**
+ * 正文版（`?surface=editor`，2026-10-21 新增）—— 编辑区承载「核心页」。
+ *
+ * 为什么正文由**这段脚本**取而不是服务端直出：选中项的唯一真源是**同源 localStorage**
+ * （目录页与正文页是两个 webContents ⇒ 不能靠 DOM / React 通信；宿主只注入 `?surface=`，
+ * 不传选中项 ⇒ 路由里带不了它 ✗）。⚠ 所以这一版**必须**有脚本；脚本没跑起来时如实显示
+ * 「从左侧目录选一篇笔记」，不装死 ✓。
+ *
+ * 与 DOC_PREVIEW_SCRIPT 的区别：那个是**页内 sticky 面板**（只在没有页面桥时兜底），
+ * 这个是**整页正文**（编辑区就这一块）⇒ 两者互斥，永不同时出现在同一份页面里 ✓。
+ *
+ * ⚠ 本段在模板串里 ⇒ 注释里不许出现反引号，也不要写反斜杠 ✗（本仓已踩 6 次）。
+ */
+const DOC_SURFACE_SCRIPT = `
+(function () {
+	var root = document.querySelector('[data-vssaros-page="kb"]');
+	if (!root || !window.fetch) { return; }
+	var SEL_KEY = 'vssaros.wb.kb.sel';
+	var body = root.querySelector('[data-doc-view-body]');
+	var titleEl = root.querySelector('[data-doc-view-title]');
+	var metaEl = root.querySelector('[data-doc-view-meta]');
+	if (!body) { return; }
+	function empty(text) {
+		body.className = 'dsh-doc-body dsh-doc-empty';
+		body.textContent = text;
+	}
+	function readSel() {
+		// 显式深链优先（探针与手工核对用）：?doc=<uri>&title=<名字>
+		try {
+			var q = new URLSearchParams(window.location.search);
+			var direct = q.get('doc');
+			if (direct) { return { uri: direct, title: q.get('title') || '' }; }
+		} catch (e) { /* 老浏览器没有 URLSearchParams ⇒ 继续走 localStorage */ }
+		try {
+			var raw = window.localStorage.getItem(SEL_KEY);
+			var parsed = raw ? JSON.parse(raw) : null;
+			return parsed && parsed.uri ? parsed : null;
+		} catch (e) { return null; }
+	}
+	function show(sel) {
+		if (!sel) {
+			if (titleEl) { titleEl.textContent = '未选择'; }
+			if (metaEl) { metaEl.textContent = ''; }
+			empty('从左侧目录选一篇笔记（选中项会自动同步到这里）');
+			return;
+		}
+		if (titleEl) { titleEl.textContent = sel.title || '（未命名）'; }
+		if (metaEl) { metaEl.textContent = sel.uri || ''; }
+		empty('正在读取…');
+		window.fetch('/x/kb/api/doc?uri=' + encodeURIComponent(sel.uri), { credentials: 'same-origin' })
+			.then(function (res) { return res.json(); })
+			.then(function (data) {
+				if (!data || data.ok !== true) {
+					empty('读不到这篇笔记：' + String((data && data.error) || '未知原因'));
+					return;
+				}
+				body.className = 'dsh-doc-body';
+				body.textContent = String(data.content || '') + (data.truncated ? ' …（已截断）' : '');
+			})
+			.catch(function (e) { empty('请求失败：' + String(e && e.message ? e.message : e)); });
+	}
+	show(readSel());
+	// 目录页改了选中项 ⇒ 同源 storage 事件（跨 webContents 也会派发）
+	window.addEventListener('storage', function (ev) { if (ev && ev.key && ev.key !== SEL_KEY) { return; } show(readSel()); });
+	// 从后台切回来时重读一次（个别宿主里 storage 事件不保证跨进程派发）
+	document.addEventListener('visibilitychange', function () { if (!document.hidden) { show(readSel()); } });
+})();
+`;
+
 const KB_SCRIPT = `
 (function () {
 	var root = document.querySelector('[data-vssaros-page="kb"]');
@@ -1059,6 +1297,39 @@ const KB_SCRIPT = `
 	var rows = Array.prototype.slice.call(root.querySelectorAll('[data-doc-row]'));
 	var blocks = Array.prototype.slice.call(root.querySelectorAll('[data-vault-block]'));
 	var input = root.querySelector('[data-search-input]');
+	// ── 承载表面（2026-10-21）：sideview = 目录页（点条目 ⇒ 编辑区的正文页）─────────────
+	// 判据只有宿主注入的 data-vssaros-surface（renderShell 的 attrs 打在 body 上）；
+	// **不看** window 尺寸、也不看 UA ✗（侧栏与编辑区同窗不同宽 ⇒ 尺寸判不出来 ✓）。
+	var SURFACE = (function () {
+		var b = document.body;
+		var v = b ? String(b.getAttribute('data-vssaros-surface') || '') : '';
+		return v === 'sideview' || v === 'editor' ? v : 'full';
+	})();
+	/** 选中项（同源 localStorage）：目录页写、正文页读（见 DOC_SURFACE_SCRIPT）。 */
+	var KB_SEL_KEY = 'vssaros.wb.kb.sel';
+	function rememberSelection(row) {
+		try {
+			var nameEl = row.querySelector('.t');
+			window.localStorage.setItem(KB_SEL_KEY, JSON.stringify({
+				uri: row.getAttribute('data-uri') || '',
+				title: nameEl ? String(nameEl.textContent || '') : '',
+				at: Date.now()
+			}));
+		} catch (e) { /* 隐私模式等：不记也能用（只是不跨载体同步）*/ }
+	}
+	/**
+	 * 目录页点条目 ⇒ 请宿主把本模块页开在**编辑区**（core 版）。
+	 * 走桥既有的 openModulePage（白名单只认模块页路由，不新增通道 ✓）；
+	 * 没有这条能力（纯浏览器 / 老宿主）⇒ 返回 false，让既有路径接管 ✓。
+	 */
+	function openDocSurface() {
+		var bridge = window.vssarosDsh;
+		if (!bridge || typeof bridge.openModulePage !== 'function') { return false; }
+		try {
+			bridge.openModulePage('/x/kb/');
+			return true;
+		} catch (e) { return false; }
+	}
 	// ★ 库选择器（§16.25）：真源是**自定菜单** ✗（不是 select ✓）⇒ 当前筛选存在**状态变量**里 ✓
 	//   （原先靠 <select data-vault-select> 的 value ✓ —— 那个元素已经搬走 ✓）。
 	// ★ §16.29（用户第 ② 条）：默认**只显示当前库** —— 初值由服务端写在 vault bar 上
@@ -1228,8 +1499,19 @@ const KB_SCRIPT = `
 			row.hidden = !hit;
 			if (hit) { shown += 1; }
 		});
+		// ★ 2026-10-19（用户报「笔记里的子文件夹显示不全」）：
+		//   **有没有筛选条件**决定"空目录要不要藏"——
+		//   · 有筛选（搜索词 / 指定库 / 指定标签）⇒ 藏：筛完留一堆空壳目录头没意义 ✗；
+		//   · 没筛选（默认视图）⇒ **照常显示**：目录是用户自己在磁盘上建的（02_工作 / 03_生活
+		//     这种还没放文件的），藏掉就等于"页面上的库和资源管理器不一致"✗（真机报的就是这个）。
+		// ⚠⚠ 2026-10-19 订正：**选中某个库不算筛选** ✗（vault 不等于 all 这条件已被移除）。
+		//   第一版把它算进去了 ⇒ 用户只要在下拉里选了某个库（几乎所有人都会选 ✓），
+		//   就被当成"有筛选" ⇒ 空目录继续被藏 ⇒ 用户报"还是缺文件夹"（真机 ✓）。
+		//   只有**搜索词**和**标签**是真的筛选：它们会把行过滤掉，这时留空壳目录头才没意义 ✓。
+		var filtering = !!q || (tag !== 'all');
 		blocks.forEach(function (block) {
 			sortBlock(block, mode);
+			if (!filtering) { block.hidden = false; return; }
 			var any = Array.prototype.some.call(block.querySelectorAll('[data-doc-row]'), function (row) { return !row.hidden; });
 			block.hidden = !any;
 		});
@@ -1241,6 +1523,9 @@ const KB_SCRIPT = `
 		//   ✓（属性挂上、画面照旧 ✓）；加了那条全局规则之后就**真藏**了 ⇒ 行点不到 ✗（p3-72 ⑫ / p3-73 ⑧-b
 		//   都崩在这 ✓）。⇒ 判据对象换成**目录行**（[data-dir-node] ✓），意图一字未改 ✓。
 		Array.prototype.slice.call(root.querySelectorAll('[data-dir-node]')).forEach(function (dirRow) {
+			// ★ 2026-10-19：无筛选时**不藏空目录**（见上面 filtering 的说明）。
+			//   有筛选时才按"内部还有没有可见文件行"决定 —— 那才是这条规则原本的用途。
+			if (!filtering) { dirRow.hidden = false; return; }
 			var any = Array.prototype.some.call(dirRow.querySelectorAll('[data-doc-row]'), function (row) { return !row.hidden; });
 			dirRow.hidden = !any;
 		});
@@ -1324,14 +1609,20 @@ const KB_SCRIPT = `
 				// ⚠ 只处理**最内层**那一行 ✗（树是嵌套的 ⇒ 否则点一个文件会把它每一层祖先都开一遍 ✓，
 				//   与选中那段同一条纪律 ✓）。
 				if (ev.target && ev.target.closest && ev.target.closest("[data-doc-row]") !== row) { return; }
+				// ★ 2026-10-21：无论哪个表面都先记下选中项（正文页靠它同步，见 DOC_SURFACE_SCRIPT）
+				rememberSelection(row);
+				// 目录页（sideview）：这一跳的目标是**模块正文页**（编辑区承载），不是原始文件。
+				// 只有"开不出正文页"时才退回原来的 openFile（老宿主 / 纯浏览器）✓。
+				if (SURFACE === "sideview" && openDocSurface()) { return; }
 				openRowInHost(row);
 			});
 		});
 	}
 	// ★★ 分区头工具栏「思维导图」（2026-10-14 §16.28）—— **只读**路由 ＋ 页面桥开文件 ✓
 	//   ⚠ 本段在模板串里 ⇒ 注释里不许出现反引号 ✗。
-	var mindmapBtn = root.querySelector("[data-mindmap-open]");
-	if (mindmapBtn) {
+	// ★ 2026-10-19：**每个分区都绑**（原先 querySelector 只绑第一个 ⇒ 多库时其余笔记区的按钮是死的 ✗；
+	//   加上新加的「同步飞书」同理 ⇒ 统一改成 querySelectorAll ＋ forEach ✓）。
+	Array.prototype.slice.call(root.querySelectorAll("[data-mindmap-open]")).forEach(function (mindmapBtn) {
 		mindmapBtn.addEventListener("click", function (ev) {
 			// ⚠ 必须拦下 ✗：它挂在分区头里，而分区头**自己**是可点的（折叠/手风琴 ✓）——
 			//   不拦就会"点一下图、顺手把这一节折叠了" ✓（真源那句 e.stopPropagation() 同理 ✓）。
@@ -1340,6 +1631,9 @@ const KB_SCRIPT = `
 			var section = mindmapBtn.closest(".dsh-section");
 			var vaultId = section ? (section.getAttribute("data-vault") || "") : "";
 			if (!vaultId) { toast("这一节没带 vault 标识 ⇒ 开不了", false); return; }
+			// ★ 2026-10-19：**点下去先出回执** ✓ —— 原先只在 fetch 回来后才提示，
+			//   一旦请求慢/静默失败，界面就是"没反应" ✗（toast 现在改 fixed 了，任何滚动位置可见 ✓）。
+			toast("正在查找思维导图…", true);
 			window.fetch("/x/kb/api/mindmap", {
 				method: "POST",
 				credentials: "same-origin",
@@ -1362,7 +1656,9 @@ const KB_SCRIPT = `
 						// ⚠ 桥是**单向**的（invoke 只回 true ✓）⇒ 这里只能说"已请求" ✓；
 						//   工作区之外的路径宿主会**先弹一次确认**（宿主既定的安全设计 ✓，我们不绕过也不隐藏 ✓）。
 						bridge.openFile(String(out.data.path || ""));
-						toast("已请求打开 " + String(out.data.name || "思维导图"), true);
+						// ⚠ 桥是单向的 ⇒ 只能说到"已请求"这一步 ✓（不谎报"已打开" ✗）；
+						//   并**预告**宿主会弹的那次确认（工作区之外的文件 ✓）—— 用户点了"取消"也不算没反应 ✓。
+						toast("已请求宿主打开 " + String(out.data.name || "思维导图") + "（若弹出「工作区之外的文件」确认，请点允许）", true);
 					} catch (e) {
 						toast("打开失败：" + String(e && e.message ? e.message : e), false);
 					}
@@ -1374,7 +1670,7 @@ const KB_SCRIPT = `
 			ev.preventDefault();
 			mindmapBtn.click();
 		});
-	}
+	});
 	// ★★ 库选择器 ＋ 同排两个按钮（2026-10-14 §16.25，照真源 :1321-1419 / :1339-1364 ✓）———————
 	//   ⚠ 本段在模板串里 ⇒ 注释里不许出现反引号 ✗。
 	function closeVaultMenu() {
@@ -1414,12 +1710,20 @@ const KB_SCRIPT = `
 				syncVaultChecks();
 				closeVaultMenu();
 				apply();
+				// ★ 2026-10-19：**切库也要上报** —— 否则服务端只知道 IDE 启动时注入的那个库
+				//   ⇒ "切完库立刻让模型写笔记"会写进上一个库 ✗（这条就是补这个缺口）。
+				//   传 dir 空 ⇒ 该库的"当前目录"清空（用户切库后本来就要重新进目录，
+				//   比留着上一个库的目录去兜底更安全 ✓）。
+				reportActiveVault(activeVault);
 			});
 		});
 		// 点别处 / Esc ⇒ 关（真源靠面板上的 click 收 ✓；这里挂在 document 上 ✓ —— 点页面任意处都收 ✓）
 		document.addEventListener("click", function () { closeVaultMenu(); });
 		document.addEventListener("keydown", function (ev) { if (ev.key === "Escape") { closeVaultMenu(); } });
 		syncVaultChecks();
+		// ★ 2026-10-19：**首屏也报一次** —— 否则 sidecar 里没有 activeVaultId，
+		//   第一次写笔记只能退回 IDE 注入值（那值可能是旧的 ✓）。这里报的是页面当前选中的库 ✓。
+		reportActiveVault(activeVault);
 	}
 	// ★★ 库下拉里的**增删**（2026-10-15 §16.32，用户报"下拉框UI中没有增删入口" ✓；mockup 已审 ✓）——
 	//   · 增：菜单底部那一项 ⇒ 桥 kbAddVault（桥 8 ✓）⇒ 宿主弹**原生选目录** ✓。
@@ -1607,8 +1911,60 @@ const KB_SCRIPT = `
 	}
 	var settingsBtn = root.querySelector("[data-kb-settings]");
 	if (settingsBtn) { settingsBtn.addEventListener("click", function (ev) { ev.stopPropagation(); openHostPanel("openKbSettings", "知识库设置"); }); }
+	// ★★ 分区头「同步飞书」（2026-10-19，用户要求补上）—— 与 ⚙ 走**同一条**宿主命令（openKbSettings ✓）：
+	//   页面是只读通道、也没有进度/取消 ⇒ 不在页面跑同步（真源在已启用时是直接跑 apply ✓，那是写＋分钟级）。
+	//   ⇒ 桥 12 起**直接开始同步**（宿主转 agentStudio.kb.feishuSync）；旧宿主退回"打开设置"并如实说明 ✓。
+	//   ⚠ 每个分区都绑（多库时都有 ✓）；⚠ 本段在模板串里 ⇒ 注释里不许出现反引号 ✗。
+	Array.prototype.slice.call(root.querySelectorAll("[data-feishu-sync]")).forEach(function (feishuBtn) {
+		feishuBtn.addEventListener("click", function (ev) {
+			ev.preventDefault();
+			ev.stopPropagation();
+			// ★★ 2026-10-19 晚：**真的开始同步**（用户报"点了只打开设置、不开始同步" ✗ —— 他点的是"同步"按钮）。
+			//   桥 12 的 kbFeishuSync ⇒ 宿主转 IDE 命令 agentStudio.kb.feishuSync ⇒
+			//   照真源：未启用则通知 + 定位「飞书同步」分组；已启用则 feishuSync('apply')（集成终端里跑脚本，输出可见）。
+			//   ⚠ 页面**不自己判断开关**（判据只在 IDE 侧一处 ✓），也不假装"已同步完成"（只能说"已请求" ✓）。
+			var syncBridge = window.vssarosDsh;
+			var syncVersion = syncBridge && typeof syncBridge.bridgeVersion === "number" ? syncBridge.bridgeVersion : 0;
+			if (syncBridge && typeof syncBridge.kbFeishuSync === "function" && syncVersion >= 12) {
+				try {
+					syncBridge.kbFeishuSync();
+					toast("已请求开始同步飞书 —— 进度与结果在 IDE 的集成终端里", true);
+				} catch (e) {
+					toast("同步请求失败：" + String(e && e.message ? e.message : e), false);
+				}
+				return;
+			}
+			// 旧宿主（桥 < 12 / 没有这条命令）⇒ 退回"打开设置"，并**如实说**为什么没有一键同步 ✗
+			openHostPanel("openKbSettings", "知识库设置（飞书同步）");
+			toast("当前宿主不支持一键同步（需要页面桥 12）—— 已打开设置里的「飞书同步」分组；或重装插件/IDE 后重试", false);
+		});
+		feishuBtn.addEventListener("keydown", function (ev) {
+			if (ev.key !== "Enter" && ev.key !== " ") { return; }
+			ev.preventDefault();
+			feishuBtn.click();
+		});
+	});
 	var graphBtn = root.querySelector("[data-kb-graph]");
-	if (graphBtn) { graphBtn.addEventListener("click", function (ev) { ev.stopPropagation(); openHostPanel("openKbGraph", "关系图谱"); }); }
+	if (graphBtn) { graphBtn.addEventListener("click", function (ev) {
+		ev.stopPropagation();
+		// ★★ 2026-10-19：关系图谱**已迁到 dsh 侧独立页面**（/x/kb/graph）⇒ 直接**同源跳转**，
+		//   不再切到 IDE 的编辑器 Tab（那条路是旧实现，阶段 3 会删掉 IDE 侧）。
+		//   ⚠ 用 location.href 而不是页面桥命令：同源页面导航不需要任何宿主能力 ✓
+		//     （openModulePage 还要把路由加进宿主白名单，多一处要同步的地方）。
+		//   ⚠ activeVault 是页面上的"当前库"（'all' = 未指定）⇒ all 时传空，
+		//     由服务端按 IDE 注入的 kbActiveVaultId 兜底（与其它路由同一口径 ✓）。
+		// ★★ 2026-10-19（用户报「图谱应该开在编辑区、不是侧栏」）：优先**交宿主在编辑区打开**。
+		//   同源跳转只会在**当前承载面**里换页 —— dsh 页若在侧栏，跳完还在侧栏（实测踩到 ✗）。
+		//   openModulePage 先**精确匹配**、再按**前缀归属**（白名单里的 /x/kb/ ⇒ /x/kb/graph 归它）→
+		//   编辑器页输入 → 编辑区 tab ✓。⚠ 白名单是**精确匹配** ⇒ 这里不带 query string。
+		var graphBridge = window.vssarosDsh;
+		if (graphBridge && typeof graphBridge.openModulePage === 'function') {
+			graphBridge.openModulePage('/x/kb/graph');
+			return;
+		}
+		// 旧宿主兜底（没有桥 / 桥版本过低）：同源跳转，至少能看到图（落在哪个承载面就哪个）
+		window.location.href = '/x/kb/graph';
+	}); }
 	// ⚠ 这里原来挂着 sortSelect 的 change 监听 ✗ —— §16.26 把 select 换成自定下拉后**忘了删** ⇒
 	//   sortSelect 已不存在 ⇒ 页面加载时 **ReferenceError** ⇒ 整段脚本死掉（筛选/折叠/拖拽全哑 ✓）。
 	//   是"页面零脚本错误"那条探针该咬的洞 ✓（页内脚本**能解析** ✗ ≠ 能跑 ✓ —— 两者都要守 ✓）。
@@ -1655,12 +2011,62 @@ const KB_SCRIPT = `
 	Array.prototype.slice.call(root.querySelectorAll("[data-dir-node]")).forEach(function (dirRow) {
 		if (expandedMap[dirRow.getAttribute("data-dir-rel") || ""]) { setDirOpen(dirRow, true, false); }
 	});
+	// ★ 2026-10-19（用户报「模型写笔记没落到我当前在看的目录」）：
+	//   **「当前目录」= 我最后展开的那个目录** ⇒ 上报给服务端（它给 kb_write_note 兜底）。
+	//   ⚠ 节流 800ms + 同值不重复发：展开是高频动作，每点一次就打一次请求没必要 ✗。
+	//   ⚠ 失败**静默**：记不住当前目录不该打断用户（大不了写回笔记区根 ✓）。
+	//   ⚠ 本段在模板串里 ⇒ 不许出现反引号 ✗。
+	var activeDirTimer = null;
+	var lastActiveDir = '';
+	/**
+	 * 上报「当前库」（切库时调）—— 服务端据此更新 sidecar 的 activeVaultId。
+	 *
+	 * ★ 2026-10-19：补的是这条缺口 —— config.kbActiveVaultId 是 IDE **启动时**注入的静态值，
+	 *   用户中途在页面上切库，服务端毫不知情 ⇒ 写工具会把笔记写进**上一个**库 ✗。
+	 *   传 dir 空串 ⇒ 该库的"当前目录"清空（切库后用户本来就要重新展开目录 ✓，
+	 *   比留下上一个库的目录去兜底安全 ✓）。
+	 *   ⚠ all（全部库）不是真实 vault ⇒ 不报（报了服务端会拒 ✓）。
+	 *   ⚠ 失败静默：记不住当前库不该打断用户（写工具会退回 IDE 注入值 ✓）。
+	 *   ⚠ 本段在模板串里 ⇒ 不许出现反引号 ✗。
+	 */
+	function reportActiveVault(vaultId) {
+		if (!vaultId || vaultId === 'all') { return; }
+		try {
+			window.fetch('/x/kb/api/active-dir', {
+				method: 'POST',
+				credentials: 'same-origin',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ vaultId: vaultId, dir: '' }),
+			}).catch(function () { /* 静默 */ });
+		} catch (e) { /* 静默 */ }
+	}
+	function reportActiveDir(dirRow) {
+		var dirRel = dirRow.getAttribute('data-dir-rel') || '';
+		var vaultId = dirRow.getAttribute('data-vault') || '';
+		if (!dirRel || !vaultId || dirRel === lastActiveDir) { return; }
+		lastActiveDir = dirRel;
+		if (activeDirTimer) { clearTimeout(activeDirTimer); }
+		activeDirTimer = setTimeout(function () {
+			activeDirTimer = null;
+			try {
+				window.fetch('/x/kb/api/active-dir', {
+					method: 'POST',
+					credentials: 'same-origin',
+					headers: { 'content-type': 'application/json' },
+					body: JSON.stringify({ vaultId: vaultId, dir: dirRel }),
+				}).catch(function () { /* 静默：见上 */ });
+			} catch (e) { /* 静默 */ }
+		}, 800);
+	}
 	Array.prototype.slice.call(root.querySelectorAll('[data-dir-toggle]')).forEach(function (head) {
 		head.addEventListener('click', function () {
 			// ★ 复刻（§15.38）：目录行换成 .dsh-node.dir（钩子 data-dir-node ✓）—— **新旧都认** ✓。
 			var dir = head.closest('[data-dir-node]') || head.closest('.dsh-dir');
 			if (!dir) { return; }
-			setDirOpen(dir, head.getAttribute('aria-expanded') === 'false', true);
+			var opening = head.getAttribute('aria-expanded') === 'false';
+			setDirOpen(dir, opening, true);
+			// 只在**展开**时算"我进了这个目录"（收起不代表我去别处 ✓）
+			if (opening) { reportActiveDir(dir); }
 		});
 	});
 
@@ -2092,9 +2498,39 @@ const KB_SCRIPT = `
 		if (renameButton) {
 			items.push({ label: "重命名", key: "F2", run: function () { renameButton.click(); } });
 		}
+		// ★ 2026-10-19（用户要求：文档 item 右键菜单补四项之一）：
+		//   **在文件资源管理器中显示** —— 走页面桥既有的 reveal 命令（bridge.reveal ✓，不是新命令）。
+		//   ⚠ 与 openFile 同口径：只收**绝对路径**（相对路径的基准在页面里不可靠 ✓）⇒
+		//     先用 uriToFsPath 把 data-uri 转成 fsPath，转不出来就如实说，不静默 ✗。
+		//   ⚠ 本段在模板串里 ⇒ 注释与代码都**不许出现反引号** ✗（本仓已踩 9 次）。
+		//   ⚠ 也不许写**带反斜杠的正则** ✗（会被模板串吃掉一层 ⇒ 生成非法正则 ⇒ 整段脚本语法错）。
 		if (uri) {
+			items.push({ label: "在文件资源管理器中显示", run: function () {
+				var bridge = window.vssarosDsh;
+				if (!bridge || typeof bridge.reveal !== "function") {
+					toast("这个宿主还不支持定位文件（需要较新的页面桥）", false);
+					return;
+				}
+				var fsPath = uriToFsPath(uri);
+				if (!fsPath) {
+					toast("这条记录不是本地文件路径，定位不了", false);
+					return;
+				}
+				try {
+					bridge.reveal(fsPath);
+					toast("已在文件资源管理器中定位", true);
+				} catch (e) {
+					toast("定位失败：" + String(e && e.message ? e.message : e), false);
+				}
+			} });
+			// ★ 2026-10-19：复制的是**原生 fsPath**（G:\... 或 /home/...），不是 data-uri（file:///G:/...）。
+			//   理由：这个菜单项的用途是"贴到终端 / 资源管理器 / 另一个程序" ⇒ URI 形态粘过去用不了 ✗；
+			//   转不出 fsPath（索引来源不是本地文件）时才退回 uri 原文，并在回执里说清是哪种 ✓。
 			items.push({ label: "复制路径", run: function () {
-				copyText(uri).then(function (ok) { toast(ok ? "已复制路径" : "复制失败（浏览器未授权剪贴板）", ok); });
+				var fsPath = uriToFsPath(uri);
+				copyText(fsPath || uri).then(function (ok) {
+					toast(ok ? (fsPath ? "已复制路径" : "已复制（这条记录不是本地路径，复制的是原始 uri）") : "复制失败（浏览器未授权剪贴板）", ok);
+				});
 			} });
 		}
 		if (rel) {
@@ -2563,25 +2999,38 @@ function updateSolo() {
  */
 function parseInjectedVaults(raw) {
 	if (typeof raw !== 'string' || !raw.trim()) { return undefined; }
-	try {
-		const parsed = JSON.parse(raw);
-		if (!Array.isArray(parsed)) { return undefined; }
+	// ★★ 2026-10-20 真机（用户报「kb_list 少了外挂库」）：**YAML 单引号不处理转义**。
+	//   `roots-*.yml` 里写的是 `kbVaults: '[{\"id\":\"...\"}]'` —— 那些 `\"` 是**字面反斜杠**
+	//   ⇒ 插件拿到的字符串带 `\` ⇒ `JSON.parse` 直接抛 ⇒ 本函数返回 undefined
+	//   ⇒ `externalVaultRecords` 为空 ⇒ `listVaults` 不过滤 ⇒ **只剩数据根下扫到的历史库**
+	//   （实测：kb_list 只返回 20260709063858-azbh1at 等 3 个，注入的 e:/VsSarosVault 消失 ✗）
+	//   ⇒ 连带 `kb_read` 的相对路径 `picked` 永远 miss ⇒ 回落到数据根 ⇒ ENOENT ✔ 同一条根因。
+	//   修法：**逐个候选**尝试解析——先原样，再反转义 `\"`（不猜、不静默：都有解析不出就返回 undefined）。
+	const candidates = [raw, raw.replace(/\\"/g, '"'), raw.replace(/\\\\/g, '\\')];
+	for (const candidate of candidates) {
+		let parsed;
+		try {
+			parsed = JSON.parse(candidate);
+		} catch {
+			continue;
+		}
+		if (!Array.isArray(parsed)) { continue; }
 		const out = parsed
 			.filter(item => item && typeof item.id === 'string' && item.id.trim())
 			.map(item => ({
 				id: String(item.id),
 				name: typeof item.name === 'string' && item.name.trim() ? item.name : String(item.id),
-				icon: typeof item.icon === 'string' && item.icon ? item.icon : '📚',
-				path: typeof item.path === 'string' ? item.path : '',
+				icon: typeof item.icon === 'string' && item.icon ? escapeHtml(item.icon) : codicon('book'),
+				// path 也可能是「反转义后才能用」的形态 ⇒ 统一把 `\\` 收成 `\`（Windows 盘符路径）
+				path: typeof item.path === 'string' ? item.path.replace(/\\\\/g, '\\') : '',
 				closed: item.closed === true,
 			}));
-		return out.length ? out : undefined;
-	} catch {
-		return undefined;
+		if (out.length) { return out; }
 	}
+	return undefined;
 }
 
-async function renderPage({ config, state }) {
+async function renderPage({ config, state, surface = 'full' }) {
 	const root = kbRootOf(config);
 	// 快照缓存（报告 §5-4）：同一个根、且各 vault 目录与 kernel 都没变时，直接复用上一次扫描 ✓
 	// （见 `store.js` 的 `pageSnapshotOf`：键 = 根形状 + vault 目录 mtime + kernel 的 size/mtime ✓）。
@@ -2646,8 +3095,8 @@ async function renderPage({ config, state }) {
 					createdOf: node => createdIndex.get(keyOf(node)) ?? '',
 				}),
 				missing: !!tree.missing,
-				// ⚠ 只有「笔记」区挂工具栏 ✗（真源两份都有 ✓，理由见 mindmapToolbarHtml 的注释 ✓）
-				toolbar: section === NOTES_DIR ? mindmapToolbarHtml() : '',
+				// ⚠ 只有「笔记」区挂工具栏 ✗（真源两份都有 ✓，理由见 notesToolbarHtml 的注释 ✓）
+				toolbar: section === NOTES_DIR ? notesToolbarHtml() : '',
 			}));
 		}
 		// ★ 第三个分区「标签分类」（2026-10-14 §16.23，照真源 :1148-1287 ✓）：
@@ -2686,7 +3135,12 @@ async function renderPage({ config, state }) {
 	const vaultMetaOf = id => (injectedVaults ?? []).find(item => item.id === id);
 	/** 显示名：注入里有就用它 ✓，否则**退回 uid** ✓（不编造 ✓）。 */
 	const vaultDisplayName = id => (vaultMetaOf(id)?.name) || id;
-	const vaultIcon = id => (vaultMetaOf(id)?.icon) || '📚';
+	// ⚠ 返回的是**已转义的 HTML 片段**（不是纯文本）⇒ 调用处**不要再 escapeHtml** ✗（会把 span 打成一串实体 ✗）。
+//   注入的自定义图标（IDE 侧给的，纯文本 emoji 一类 ✓）照旧转义；没给 ⇒ 用 codicon 的库图标 ✓。
+const vaultIcon = id => {
+	const raw = vaultMetaOf(id)?.icon;
+	return typeof raw === 'string' && raw ? escapeHtml(raw) : codicon('book');
+};
 	const vaultBlocks = (await Promise.all(vaults.map(async (vault, index) => `<div class="dsh-vault-group" data-vault-block data-kb-region="${escapeHtml(vault.id)}" data-vault-id="${escapeHtml(vault.id)}" data-vault="${escapeHtml(vault.id)}">
 ${vaults.length > 1 ? `<p class="dsh-vault-group-label" title="${escapeHtml(vault.id)}">${escapeHtml(vaultIcon(vault.id))} ${escapeHtml(vaultDisplayName(vault.id))} · ${docCounts.get(vault.id) ?? 0} 个文件${vault.kernelBytes ? ` · kernel ${vault.kernelBytes}B` : ' · 无 kernel'}</p>` : ''}
 ${vault.notes?.length ? `<p class="dsh-diag">${escapeHtml(vault.notes.join('；'))}</p>` : ''}
@@ -2755,7 +3209,7 @@ ${await sectionBlocksOf(vault)}
 	const pickerName = defaultVaultId
 		? vaultDisplayName(defaultVaultId)
 		: (scannedIds.length ? `当前库未知 · ${scannedIds.length} 个库都显示` : '（这个根下还没有库）');
-	const pickerIcon = defaultVaultId ? vaultIcon(defaultVaultId) : '📚';
+	const pickerIcon = defaultVaultId ? vaultIcon(defaultVaultId) : codicon('book');
 	const pickerTitle = defaultVaultId
 		? `本页显示：${pickerName}；在这里切换只改**本页**显示；要改 IDE 的当前库，请去知识库设置（页面桥不允许写能力）`
 		: '不知道 IDE 的当前库（页面没拿到库记录注入：老 Host / 独立启动器）⇒ 本页把扫到的库**都显示**出来，不猜是哪一本';
@@ -2777,30 +3231,30 @@ ${await sectionBlocksOf(vault)}
 			title: vaultMetaOf(vault.id)?.path ? `内容目录：${vaultMetaOf(vault.id).path}` : '',
 		};
 	}).map(item => `<div class="dsh-opt" data-vault-opt="${escapeHtml(item.id)}" data-vault-registered="${item.registered}" role="menuitem" tabindex="0"${item.title ? ` title="${escapeHtml(item.title)}"` : ''}>
-<span class="dsh-check" data-vault-check></span><span class="dsh-opt-ico">${escapeHtml(item.icon)}</span><span class="dsh-opt-name">${escapeHtml(item.name)}</span><span class="dsh-path">${escapeHtml(item.note)}</span>
+<span class="dsh-check" data-vault-check></span><span class="dsh-opt-ico">${item.icon}</span><span class="dsh-opt-name">${escapeHtml(item.name)}</span><span class="dsh-path">${escapeHtml(item.note)}</span>
 </div>`).join('');
 	// ⚠ 选择器标签：有"当前库"（IDE 注入的 active ✓）就显示**它的名字与图标** ✓（真源 `_activeVault.name` 的口径 ✓）；
 	//   拿不到就退回旧的「全部库（N）」✓（不假装"只有一个库" ✓）。
 	const vaultBar = `<div class="dsh-vault-bar" data-vault-bar data-vault-default="${escapeHtml(defaultVaultId || 'all')}">
 <div class="dsh-vault-select" data-vault-pick role="button" tabindex="0" aria-haspopup="menu" aria-expanded="false" title="${escapeHtml(pickerTitle)}">
-<span class="dsh-vault-icon">${escapeHtml(pickerIcon)}</span><span class="dsh-vname" data-vault-name>${escapeHtml(pickerName)}</span><span class="dsh-caret">▾</span>
+<span class="dsh-vault-icon">${pickerIcon}</span><span class="dsh-vname" data-vault-name>${escapeHtml(pickerName)}</span><span class="dsh-caret">${codicon('chevron-down')}</span>
 </div>
-<span class="dsh-abtn" data-view-mode="tree" role="button" tabindex="0" title="文件树视图">🌲</span>
-<span class="dsh-abtn" data-vault-refresh role="button" tabindex="0" title="刷新">⟳</span>
+<span class="dsh-abtn" data-view-mode="tree" role="button" tabindex="0" title="文件树视图">${codicon('list-tree')}</span>
+<span class="dsh-abtn" data-vault-refresh role="button" tabindex="0" title="刷新">${codicon('refresh')}</span>
 <!-- ★ 设置 ＋ 关系图谱（2026-10-15 §16.29 ④⑤，位次照真源 :1353-1364 ✓：树 ⇄ 最近 / 刷新 / ⚙ / 🕸 ✓）。
      两者都要**中间栏 EditorPane**（真源 :2775 / :5461 ✓），而 dsh 侧没有中间栏 ⇒ 走页面桥
      openKbSettings / openKbGraph（桥 7 ✓）请宿主在编辑区打开**IDE 自己的**面板 ✓。
      ⚠ 旧宿主 ⇒ 点了**如实提示**"这个宿主还不支持"（不静默、不假装 ✓，见页内脚本 ✓）。
      注意：本行在模板串里 ⇒ 注释里不能出现反引号 ✗。 -->
-<span class="dsh-abtn" data-kb-settings role="button" tabindex="0" title="知识库设置（在编辑区打开）">⚙</span>
-<span class="dsh-abtn" data-kb-graph role="button" tabindex="0" title="关系图谱（在编辑区打开）">🕸</span>
+<span class="dsh-abtn" data-kb-settings role="button" tabindex="0" title="知识库设置（在编辑区打开）">${codicon('gear')}</span>
+<span class="dsh-abtn" data-kb-graph role="button" tabindex="0" title="关系图谱（在编辑区打开）">${codicon('graph')}</span>
 <div class="dsh-vault-menu" data-vault-menu role="menu" hidden>
 <div class="dsh-grp">当前知识库</div>
 ${vaultMenuItems}
 <!-- ★ 增（2026-10-15 §16.32；mockup 就是这条 ✓）：分隔线 ＋ 「＋ 配置文件夹为知识库…」（真源 :1391-1396 ✓） -->
 <div class="dsh-divider" aria-hidden="true"></div>
 <div class="dsh-opt dsh-opt-add" data-vault-add role="menuitem" tabindex="0" title="把某个文件夹配置成知识库：走宿主的「选择文件夹」对话框（取消 ⇒ 什么都不做 ✓）；写入 IDE 清单后本页刷新可见">
-<span class="dsh-check"></span><span class="dsh-opt-ico">＋</span><span class="dsh-opt-name">配置文件夹为知识库…</span>
+<span class="dsh-check"></span><span class="dsh-opt-ico">${codicon('add')}</span><span class="dsh-opt-name">配置文件夹为知识库…</span>
 </div>
 </div>
 </div>`;
@@ -2850,7 +3304,9 @@ ${group.options.map(([value, label]) => `<div class="dsh-sort-opt" data-sort-opt
 	// ⚠ 2026-10-14（§16.25）：**vault 下拉已从这里搬走** ✗ —— 真源里它是**独立一行**（`.kb-vault-bar` ✓，
 	//   在标题之下、搜索行之上 ✓ `:617-628` ✓）＋ 一个自定菜单 ✗（不是 select ✓）⇒ 见上面 vaultBar ✓。
 	const toolbar = `<div class="dsh-search">
-	<span class="dsh-search-icon">🔍</span>
+		<!-- ★ 2026-10-19 顺手修一处真 bug ✗：这个 class 原先写成 dsh-search-icon，而 CSS 里只有
+	     .dsh-search-ico（:839）⇒ 这枚图标**一直没吃到样式**。改名照 CSS 那侧来（不反过来加规则 ✓）。 -->
+	<span class="dsh-search-ico">${codicon('search')}</span>
 	<input type="search" data-search-input placeholder="搜索资料库…" aria-label="搜索文档">
 	<!-- ⇐ .kb-search-mode-btn（真源在搜索框内、输入框之后 ✓；我们没包 box ⇒ 直接相邻 ✓；
 	     注意：本行在模板串里 ⇒ 注释里**不能出现反引号** ✗ —— 真踩过：它把后面变成 JS，报 "search is not defined" ✓） -->
@@ -2858,7 +3314,7 @@ ${group.options.map(([value, label]) => `<div class="dsh-sort-opt" data-sort-opt
 	<!-- ★ 排序按钮（2026-10-14 §16.26）：真源把它放在**搜索框内**、模式按钮之后（:663-670 ✓）
 	     —— 原先是个独立 <select> ✗，已换成按钮 ＋ 自定下拉（见 data-sort-dropdown ✓）。
 	     注意：本行在模板串里 ⇒ 注释里不能出现反引号 ✗。 -->
-	<span class="dsh-search-sort-btn" data-sort-btn role="button" tabindex="0" title="排序">⇅</span>
+	<span class="dsh-search-sort-btn" data-sort-btn role="button" tabindex="0" title="排序">${codicon('sort-precedence')}</span>
 	<select data-tag-select aria-label="筛选标签">${tagOptions}</select>
 </div>`;
 	// ★ 2026-10-12（「资料库」拆分）：「记忆」分区已摘 —— 记忆升为独立工作台（`agentStudio.memory`
@@ -2868,6 +3324,27 @@ ${group.options.map(([value, label]) => `<div class="dsh-sort-opt" data-sort-opt
 	// ★ 复刻（§15.38）：「库」不再是"一个包住所有 vault 的大分区" ✗（那就与真源的
 	//   「库 / 笔记 / 标签分类」三节对不上了 ✓）⇒ 这里只剩**容器**：结果面板 ＋ 计数行 ＋ 各 vault 的分区组 ✓。
 	const sections = `<div class="dsh-search-results" data-search-results><div class="dsh-search-head" data-search-head></div><ul data-search-list></ul></div><div class="dsh-count" data-count>共 ${renderedDocs} 条文档</div>${vaultBlocks || '<p class="dsh-empty">还没有任何 vault。</p>'}<p class="dsh-empty" data-empty hidden>🔍 没有匹配的文档</p><div class="dsh-menu" data-menu role="menu" hidden></div><div class="dsh-dropdown" data-sort-dropdown role="menu" hidden>${sortMenu}</div>`;
+	// ── 承载表面分派（2026-10-21）：同一份取数，三种外壳 ─────────────────────────────
+	//   full（缺省）= 现在的完整页（目录 + 页内预览兜底）—— **既有探针全走这条** ✓（零行为改变）
+	//   sideview    = 目录页（点条目 ⇒ 宿主把正文页开在编辑区，见 KB_SCRIPT 的 openDocSurface）
+	//   editor      = 正文页（编辑区承载；选中项从同源 localStorage 读，见 DOC_SURFACE_SCRIPT）
+	// ⚠ 三态的 kind 都保持 'kb'：两个既有页内脚本与探针都以 body[data-vssaros-page="kb"] 为锚点 ✓。
+	const surfaceAttrs = `data-vssaros-surface="${surface}" data-vssaros-kb-surface="${surface}"`;
+	if (surface === 'editor') {
+		return renderShell({
+			kind: 'kb',
+			title: '知识库',
+			subtitle: '正文 · 选中项由目录同步',
+			// ⚠ diag 那行必须保留（探针读它上面的一串 data-vssaros-kb-* ✓，见上文 3027-3033 的理由）
+			headerHtml: `<div class="dsh-header"><h1>知识库 <small>正文 · 只读</small></h1>${diag}</div>`,
+			toolbarHtml: '',
+			bodyHtml: `<div class="dsh-doc" data-doc-view><div class="dsh-doc-head"><p class="dsh-doc-title" data-doc-view-title>未选择</p><p class="dsh-doc-meta" data-doc-view-meta></p></div><div class="dsh-doc-body dsh-doc-empty" data-doc-view-body>从左侧目录选一篇笔记（选中项会自动同步到这里）</div></div>`,
+			attrs: surfaceAttrs,
+			extraCss: PAGE_CSS,
+			// 这一版**只有**正文脚本（目录版的 KB_SCRIPT 在这里没有 DOM 可挂 ⇒ 不加载 ✓）
+			script: DOC_SURFACE_SCRIPT,
+		});
+	}
 	return renderShell({
 		kind: 'kb',
 		title: '知识库',
@@ -2880,9 +3357,11 @@ ${group.options.map(([value, label]) => `<div class="dsh-sort-opt" data-sort-opt
 		//   "JS 不在也是全量只读列表"这条既有性质 ✓ ⇒ 用一条 noscript 样式把 [hidden] 还原成可见 ✓
 		//   （纯 HTML 能力 ✓，不依赖任何脚本 ✓）。
 		bodyHtml: `<noscript><style>.dsh-node-children[hidden] { display: block; }</style></noscript><div class="dsh-scroll">${notices}${sections}</div>`,
+		attrs: surfaceAttrs,
 		extraCss: PAGE_CSS,
-		// 两段脚本顺序固定：先做页内筛选，再挂"点条目预览"（都只依赖 DOM 与 fetch ✓，互不干扰 ✓）
-		script: KB_SCRIPT + DOC_PREVIEW_SCRIPT,
+		// 完整页：两段脚本顺序固定（先页内筛选，再挂预览兜底）；
+		// 目录页（sideview）**不加载**预览兜底 —— 目录版不该有正文面板 ✓（正文在编辑区 ✓）。
+		script: surface === 'sideview' ? KB_SCRIPT : KB_SCRIPT + DOC_PREVIEW_SCRIPT,
 	});
 }
 
@@ -3141,42 +3620,123 @@ async function runSemanticSearch(rootValue, { wantedVault, query, limit, bridge,
  * ⚠ 容错口径同 `parseInjectedVaults`：拿不到 / 坏 JSON / 没有 path ⇒ 空数组 ⇒ 退回"只扫盘"✓（不猜 ✓）。
  */
 function externalVaultRecords(config) {
-	const list = parseInjectedVaults(config?.kbVaults) ?? [];
+	const list = parseInjectedVaults(injectedRawOf(config)) ?? [];
 	return list
 		.filter(item => typeof item?.path === 'string' && item.path.trim())
 		.map(item => ({ id: String(item.id), dir: String(item.path).trim(), name: item.name, icon: item.icon }));
+}
+
+/**
+ * 本插件拿到的 `kbVaults` 原始串：**config 优先，overlay 文件兜底**。
+ *
+ * ★★ 2026-10-20 真机（用户反复报「kb_list 少了外挂库」）：
+ *   定性日志打出来是 `kb_list keys=[]` —— 插件的 **config 整个是空对象**，
+ *   连 `cordis.patch.yml` 里的 `autoApprove` 都不在 ⇒ `apply(ctx, {})`。
+ *   而 `roots-*.yml`（IDE 写的 overlay）里 `- id: vssaros-kb` + `kbVaults` **逐字节是对的**
+ *   （我用 node 读原始字节核对过）⇒ 结论：**那一行没有合并进本插件**。
+ *   疑因：`cordis.presets.yml` 里已经声明了 `- id: vssaros-kb`（无 config），
+ *   patch 的 `insert` 因 id 已存在被跳过 ⇒ 它携带的 config 一并丢失（dsh 侧行为，非本仓可控）。
+ *
+ *   ⇒ 不跟 dsh 的 patch 语义较劲：**直接读那个已经写好的 overlay 文件**。
+ *     IDE 侧不用改（文件本来就在），config 修好之后 `config.kbVaults` 会自动优先 ✓。
+ *   ⚠ 只读**最新**的 `roots-*.yml`（按 mtime），且只在 apply 时读一次（结果缓存在模块变量里）。
+ */
+function readKbVaultsFromOverlay(dataRoot) {
+	try {
+		const dir = join(dataRoot, 'dsh-run');
+		const newest = readdirSync(dir)
+			.filter(name => /^roots-.*\.yml$/.test(name))
+			.map(name => ({ name, mtime: statSync(join(dir, name)).mtimeMs }))
+			.sort((a, b) => b.mtime - a.mtime)[0];
+		if (!newest) { return ''; }
+		const text = readFileSync(join(dir, newest.name), 'utf8');
+		// 只抓 `kbVaults:` 那一行（值用 YAML 单引号包着；单引号内的 ' 会写成 ''，JSON 里不会出现）
+		const match = /^\s*kbVaults:\s*'(.*)'\s*$/m.exec(text);
+		return match ? match[1].trim() : '';
+	} catch {
+		return '';
+	}
+}
+
+/** overlay 兜底值（apply 时填；空 = 没读到） */
+let kbVaultsFromOverlay = '';
+
+/** config 与 overlay 兜底的合并取值：config 有就用 config（将来 dsh 修好会自动优先）。 */
+function injectedRawOf(config) {
+	const fromConfig = typeof config?.kbVaults === 'string' ? config.kbVaults.trim() : '';
+	return fromConfig || kbVaultsFromOverlay;
 }
 /**
  * 本侧认的**全部**库 = 扫盘 ＋ 注入里内容在别处的 ✓ —— 页面与工具**共用这一份口径**（别各拼一套 ✗）。
  * ⚠ 别把它写成 `listAllVaults` 调自己 ✗（第一刀就是，跑起来直接爆栈 ✓ —— 批量改写把定义体也改了 ✓）。
  */
 function listAllVaults(rootValue, config, options = {}) {
+	// ★ 2026-10-19：「注入了外部清单 ⇒ 只认注入的」这条口径已经下沉到 **`store.listVaults` 底层**
+	//   （页面/工具/API 全经过它 ⇒ 只有一处判别 ✓）。这里保持"只负责拼 external"的单一职责，
+	//   不再重复过滤（否则两处口径迟早漂移 ✗）。
 	return listVaults(rootValue, { ...options, external: externalVaultRecords(config) });
 }
 function toolDefinitions(ctx, state, config) {
 	const root = () => kbRootOf(config);
 	return [{
 		name: 'kb_list',
-		description: '列出资料库里所有 vault（知识库）及其索引条目数。',
+		description: '列出资料库里所有 vault（知识库），**带真实路径**（`path`）。'
+			+ '⚠ 库不一定在数据根下：外挂库（用户把已有文件夹登记成库）的真实内容在 path 指向的位置，'
+			+ '数据根下**不会有**同名 id 目录 ⇒ 判断"库是否存在"请以 path 为准，别去 `<数据根>/<id>` 找。'
+			// ★ 2026-10-19（真机：模型判定"库不存在"后提议改 .active-dir.json / 建目录）：
+			//   把职责边界写进**工具描述** —— 这是模型每次调用都会读到的位置，
+			//   比塞进 agent 的 systemPrompt 更靠近行为点（且不会碰 builtinAgentSingleSource 的逐字对账 ✓）。
+			+ '⚠ **职责边界**：你只负责库里的内容。发现工具/配置异常时**报告给用户并给证据**'
+			+ '（失败的调用、期望 vs 实际、你查过哪里），**不要**自行修改工程源码（dsh-plugins / src / resources / 配置），'
+			+ '**也不要**改 .active-dir.json 这类运行期文件 —— 那属于应用，不属于笔记。',
 		parameters: { type: 'object', properties: {} },
 		output: {
 			schema: {
 				type: 'object',
 				properties: {
 					count: { type: 'integer' },
-					vaults: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, totalDocs: { type: 'integer' } }, required: ['id'] } },
+					vaults: {
+						type: 'array',
+						items: {
+							type: 'object',
+							properties: { id: { type: 'string' }, name: { type: 'string' }, path: { type: 'string' }, totalDocs: { type: 'integer' } },
+							required: ['id', 'path'],
+						},
+					},
 				},
 				required: ['count', 'vaults'],
 			},
 			render: (_args, value) => [{
 				type: 'text',
-				text: value.count ? `资料库有 ${value.count} 个 vault：${value.vaults.map(v => `${v.id}(${v.totalDocs})`).join(', ')}` : '资料库还没有 vault。',
+				text: value.count
+					? `资料库有 ${value.count} 个 vault：\n${value.vaults.map(v => `- ${v.id}（${v.name ?? v.id}）：${v.path}`).join('\n')}`
+					: '资料库还没有 vault。',
 			}],
 		},
 		isConcurrencySafe: () => true,
 		execute: async () => {
+			// ★★ 2026-10-20：**定性日志**。已确认 overlay 里的值合法、`parseInjectedVaults` 也能解析，
+			//   但 `kb_list` 仍只返回数据根下扫到的历史库 ⇒ 只剩一种可能：**`config.kbVaults` 没到插件**。
+			//   这里把三件事一次打出来（下次一调 kb_list 就能判）：
+			//     raw    = kbVaults 的 typeof / 长度（undefined ⇒ patch 没生效；string(0) ⇒ 传了空串）
+			//     parsed = parseInjectedVaults 解析出几条
+			//     ext    = externalVaultRecords 过滤后剩几条（它要求 path 非空）
+			const rawInjected = injectedRawOf(config);
+			const injected = parseInjectedVaults(rawInjected);
+			// ★ 2026-10-20 加 keys + src：keys 里**没有 kbVaults**（甚至整个是空对象）就证明
+			//   roots overlay 那一行**没合并进本插件**（overlay 文件本身已验证正确）；
+			//   src 说明这次用的是哪份 —— config（dsh 修好后自动优先）还是 overlay 兜底。
+			void logKbWrite(config, `kb_list keys=[${Object.keys(config ?? {}).join(',')}] src=${typeof config?.kbVaults === 'string' && config.kbVaults.trim() ? 'config' : (kbVaultsFromOverlay ? 'overlay' : 'none')} raw=${typeof rawInjected === 'string' ? 'string(' + rawInjected.length + ')' : typeof rawInjected} parsed=${injected ? injected.length : 0} ext=${externalVaultRecords(config).length} root=${root()}`);
 			const { vaults } = await listAllVaults(root(), config, { withDocs: false });
-			return { count: vaults.length, vaults: vaults.map(v => ({ id: v.id, totalDocs: v.totalDocs })) };
+			// ★★ 2026-10-19（真机：模型误判「库已不存在」并想改 .active-dir.json）：
+			//   这里原先只返回 `{ id, totalDocs }` —— **没有 path**。而外挂库（`e:\VsSarosVault`）
+			//   在数据根下**没有**同名目录 ⇒ 模型只能去 `<数据根>/<id>` 找 ⇒ 找不到 ⇒
+			//   判定"库不存在" ⇒ 提议改 `.active-dir.json` 的 `__activeVaultId`、甚至"就地建目录" ✗
+			//   ⇒ 把 **path**（和 name）给出去：判断库是否存在，看它，而不是猜目录布局 ✓。
+			return {
+				count: vaults.length,
+				vaults: vaults.map(v => ({ id: v.id, name: v.name ?? v.id, path: v.dir, totalDocs: v.totalDocs })),
+			};
 		},
 	}, {
 		name: 'kb_search',
@@ -3203,6 +3763,8 @@ function toolDefinitions(ctx, state, config) {
 				properties: {
 					count: { type: 'integer' },
 					mode: { type: 'string' },
+					// ★ 2026-10-20：index 模式 0 命中时自动降级 fulltext ⇒ 标注从哪个模式降下来的
+					fallbackFrom: { type: 'string' },
 					items: {
 						type: 'array',
 						items: {
@@ -3263,15 +3825,95 @@ function toolDefinitions(ctx, state, config) {
 			// 跨库结果按标题稳定排序后夹到 limit（同输入同输出）
 			items.sort((a, b) => a.title.localeCompare(b.title) || a.uri.localeCompare(b.uri));
 			const picked = items.slice(0, limit);
+			// ★★ 2026-10-20（用户报「kb_search 返回空」）：本工具此前**一行日志都不写** ⇒
+			//   没法区分「库选错了 / 索引空 / 过滤条件把结果筛没了 / 查询词真的没命中」✗。
+			//   这里每次调用都记一行（含各库文档数与命中数）。实测索引本身是好的
+			//   （168 docs、带 text 字段、"框架原理" 能命中 1 条）⇒ 空结果一定出在参数或库选择上 ✓。
+			void logKbWrite(config, `kb_search mode=${mode} q=${JSON.stringify(params?.query ?? '')} type=${params?.type ?? '-'} tag=${params?.tag ?? '-'} vaults=${vaults.length} docs=${vaults.reduce((sum, v) => sum + (Array.isArray(v?.docs) ? v.docs.length : 0), 0)} hits=${picked.length}`);
+			// ★★ 2026-10-20（用户报「kb_search 返回空」）：**0 命中时自动降级 fulltext**。
+			//   真机根因就是这里：`mode: "index"`（缺省）只在**元数据**（标题/标签/类型/路径）里匹配，
+			//   **完全不读正文** —— 模型/用户搜正文里的词必然 0 命中，而它不会想到要显式传
+			//   `mode: "fulltext"` ⇒ 体感就是"知识库搜不到东西" ✗（实测索引 168 篇、
+			//   "框架原理" 在 index 模式能命中 1 条，但正文词命中率为 0）。
+			//   ⇒ 只在**有查询词且 0 命中**时降级（有 type/tag 过滤时不降级：
+			//     那多半是"过滤把结果筛没了"，换模式也帮不上，而且 fulltext 不认 type/tag ✗）。
+			const queryText = String(params?.query ?? '').trim();
+			if (picked.length === 0 && queryText && !params?.type && !params?.tag) {
+				void logKbWrite(config, `kb_search fallback → fulltext（index 模式 0 命中，query=${JSON.stringify(queryText)}）`);
+				const fulltext = await runFulltextSearch(root(), {
+					wantedVault, query: queryText, limit, type: params?.type, tag: params?.tag, config,
+				});
+				// `fallbackFrom` 让调用方知道"这不是 index 模式的结果"（回执里也会说明 ✓）
+				return { ...fulltext, fallbackFrom: 'index' };
+			}
 			return { count: picked.length, mode: 'index', items: picked };
 		},
 	}, {
+		// ★★ 2026-10-20（用户报「为什么存到 讲懂/ 文件夹」）：新增**目录地图**工具。
+		//   此前模型要决定「这篇放哪」时**没有任何依据**（只能看单个文件路径，看不到分类结构）
+		//   ⇒ 就按任务名自造了 `笔记/讲懂/` ✗。
+		//   `笔记/知识体系.md` 里本来有一份带说明的目录总览，但它是 `kb_build` 的产物、
+		//   **可能过时**（实测文档写 UnrealEngine 46 篇、磁盘只有 1 篇）⇒ 这里**以磁盘为准**，
+		//   只给"路径 + 篇数"（语义留给模型按目录名判断，或让它读体系文档补充）。
+		name: 'kb_catalog',
+		description: '笔记区的**目录地图**：列出 `笔记/` 下所有分类目录及其篇数（**以磁盘实际目录为准**）。'
+			+ '⚠ 决定把笔记写到哪里之前，**先调本工具**看清既有分类；把笔记放进**领域分类**（如 `笔记/01_学习/AI_Agent`），'
+			+ '**不要**用任务类型命名目录（`讲懂/`、`分析/`、`摘要/` 都是错的）。'
+			+ '看不清该放哪就**直接问用户**（把这里的目录列给用户选）。',
+		parameters: { type: 'object', properties: {} },
+		output: {
+			schema: {
+				type: 'object',
+				properties: {
+					count: { type: 'integer' },
+					dirs: {
+						type: 'array',
+						items: {
+							type: 'object',
+							properties: {
+								path: { type: 'string' }, name: { type: 'string' },
+								depth: { type: 'integer' }, count: { type: 'integer' },
+								// 语义说明（来自 笔记/知识体系.md，可能缺失；篇数**不**取自它 ✓）
+								desc: { type: 'string' },
+							},
+							required: ['path'],
+						},
+					},
+				},
+				required: ['count', 'dirs'],
+			},
+			render: (_args, value) => [{
+				type: 'text',
+				text: value.count
+					? `笔记区有 ${value.count} 个分类目录（路径与篇数**以磁盘为准**；说明来自知识体系.md，可能滞后）：\n`
+						+ value.dirs.map(d => `- ${d.path}（${d.count} 篇）${d.desc ? `　← ${d.desc}` : ''}`).join('\n')
+					: '笔记区还没有子目录（可以直接写 `笔记/xxx.md`，或问用户想怎么分类）。',
+			}],
+		},
+		isConcurrencySafe: () => true,
+		execute: async () => {
+			const { vaults } = await listAllVaults(root(), config, { withDocs: false });
+			const target = vaults[0];
+			if (!target) { return { count: 0, dirs: [] }; }
+			// 目录与篇数来自**磁盘**（真实）；说明来自 `笔记/知识体系.md`（尽力匹配，可能过时/缺失）
+			const [dirs, descMap] = await Promise.all([
+				noteCatalog(target.dir),
+				catalogDescriptions(target.dir),
+			]);
+			const enriched = dirs.map(d => ({ ...d, ...(descMap.get(d.name) ? { desc: descMap.get(d.name) } : {}) }));
+			void logKbWrite(config, `kb_catalog vault=${target.id} dirs=${enriched.length} desc=${descMap.size}`);
+			return { count: enriched.length, dirs: enriched };
+		},
+	}, {
 		name: 'kb_read',
-		description: `读取资料库里的某一篇文档正文（用 kb_search 得到的 uri）。单篇上限 ${MAX_DOC_BYTES} 字，超出会截断。`,
+		description: `读取资料库里的某一篇文档正文（用 kb_search 得到的 uri）。单篇上限 ${MAX_DOC_BYTES} 字，超出会截断。`
+			+ '传相对路径（如 库/概念/x.md）时按**当前库**解析（vaultId 缺省 = 页面上选的那个库）；'
+			+ '要读别的库就显式传 vaultId，否则同名相对路径会在多个库里撞车、读到错的那一份。',
 		parameters: {
 			type: 'object',
 			properties: {
 				uri: { type: 'string', description: '文档 uri（kb_search 返回的那个）或 vault 内相对路径，如 库/概念/x.md' },
+				vaultId: { type: 'string', description: '相对路径按哪个 vault 解析（留空 = 当前库）' },
 			},
 			required: ['uri'],
 		},
@@ -3292,9 +3934,86 @@ function toolDefinitions(ctx, state, config) {
 				throw new Error('uri 不能为空');
 			}
 			// ★ B 方案：外挂库（内容在别处）里的正文也要读得到 ✓（多根围栏见 store.js 的 readDoc ✓）
-			const result = await readDoc(root(), uri, externalVaultRecords(config).map(item => item.dir));
+			//
+			// ★★ 2026-10-19 修（用户报「读取知识库根目录还是错误」）：
+			//   `readDoc(root(), uri)` 里**相对路径是相对「数据根」解析的**（`resolve(rootAbs, uri)`）——
+			//   而数据根是 `~/.vssaros-dev/knowledge-base`，真正的库在 `<数据根>/<vaultId>/` 或外挂路径
+			//   （`E:/VsSarosVault`）⇒ `库/概念/x.md` 会被解析成一个**不存在的路径** ✗
+			//   （description 却承诺"vault 内相对路径"，两者不符 ✓ 真机踩到）。
+			//   而且数据根下**有多个库**（`20260709063858-azbh1at` 等）⇒ 同名相对路径天然歧义。
+			//   ⇒ 相对路径一律按**当前库**解析（面板上选的那个 ✓）；要读别的库显式传 vaultId。
+			//   ⚠ `file:` 形态的 uri（kb_search 返回的就是）**不受影响**：它自带绝对路径 ✓。
+			// ★★ 2026-10-20 修回归（真机日志：`wanted=[object Object]` ⇒ `picked=NO` ⇒ 回落到数据根 ⇒ ENOENT）：
+			//   0.5.10 把 vaultWantedOf 的返回值从「字符串」改成了「{ vaultId, overriddenFrom }」，
+			//   6 个写工具都跟着改了解构，**唯独这里漏了** ⇒ 对象被拿去和 `item.id` 比较，永远不相等
+			//   ⇒ `picked` 永远 undefined ⇒ `baseRoot` 停在数据根 ⇒ 相对路径全部解析到
+			//   `<数据根>/笔记/...`（不存在）✗。这是"读取根目录错误"的直接原因。
+			const readPick = await vaultWantedOf(params, config);
+			const wantedVault = readPick.vaultId;
+			const isFileUri = /^file:/i.test(uri);
+			const extraRoots = externalVaultRecords(config).map(item => item.dir);
+			let baseRoot = root();
+			if (!isFileUri) {
+				const { vaults } = await listAllVaults(root(), config, { withDocs: false });
+				const picked = wantedVault ? vaults.find(item => item.id === wantedVault) : undefined;
+				if (picked) {
+					baseRoot = picked.dir;
+					// 围栏放宽到**所有库根**（否则从 A 库解析出的路径会被 B 库的 extraRoots 漏掉 ✓）
+					for (const item of vaults) { if (item.dir) { extraRoots.push(item.dir); } }
+				}
+			}
+			// ★ 2026-10-19：**读失败也要留痕**。此前只有 `kb_write_note` 写日志 ⇒
+			//   `kb_read` 报 ENOENT 时完全查不到"它到底用了哪个 baseRoot"（真机就此反复卡住 ✗）。
+			//   只在失败时写（正常读很频繁，全记会刷屏）；成功不记。
+			const result = await readDoc(baseRoot, uri, extraRoots);
+			if (result && result.error) {
+				// ★ 关键字段（缺一个就没法定性）：
+				//   ext  = externalVaultRecords() 返回几个库（**0 ⇒ config.kbVaults 没传进来** ⇒ listVaults 不过滤
+				//          ⇒ 只剩数据根下的历史库 ⇒ picked 必然 undefined ⇒ 相对路径回落到数据根 ✗）
+				//   picked = 是否命中了当前库（undefined 时 base 会是数据根）
+				//   wanted = sidecar / 注入解析出来的"当前库 id"
+				void logKbWrite(config, `kb_read FAIL uri=${uri} base=${baseRoot} isFileUri=${isFileUri} wanted=${wantedVault || '(空)'} ext=${extraRoots.length} picked=${baseRoot === root() ? 'NO' : 'YES'} kbVaults=${typeof config?.kbVaults === 'string' ? 'string(' + config.kbVaults.length + ')' : String(typeof config?.kbVaults)} error=${String(result.error).slice(0, 200)}`);
+			}
 			if (result.error) {
-				throw new Error(result.error);
+				// ★★ 2026-10-20：**跨库提示**（不自动跨库读 ✗）。
+				//   背景：相对路径只按「当前库」解析，文件在别的库时直接 ENOENT ⇒ 用户/模型不知道
+				//   是"真没有"还是"在另一个库"。
+				//   ⚠ 为什么**只提示不自动读**：同名路径在不同库里是**两份不同内容**
+				//     （`README` 的注释里就写着"同名相对路径会在多个库里撞车、读到错的那一份"）。
+				//     自动跨库会变成"静默读了另一个知识域的内容" ✗ —— 那和 kb_search 的
+				//     "换检索方式"降级性质完全不同（那是同域，这是跨域）。
+				//   ⇒ 只探测 + 把候选（库 id / 名 / 绝对路径）附在错误里，让调用方显式传 vaultId。
+				//   ⚠ 只在**失败**时探测（正常读零开销），且各库 stat 失败一律忽略。
+				let extra = '';
+				if (!isFileUri) {
+					try {
+						const { vaults: all } = await listAllVaults(root(), config, { withDocs: false });
+						const elsewhere = [];
+						for (const other of all) {
+							if (other.dir === baseRoot) { continue; }          // 跳过当前库
+							const abs = join(other.dir, uri);
+							try {
+								await stat(abs);
+								elsewhere.push({ id: other.id, name: other.name ?? other.id, path: abs });
+							} catch { /* 该库也没有 ⇒ 忽略 */ }
+						}
+						if (elsewhere.length > 0) {
+							extra = `\n\n⚠ 但**其它库**里有同名路径（要读它请显式传 vaultId，不要直接改 path）：\n`
+								+ elsewhere.map(item => `- vaultId=${item.id}（${item.name}）：${item.path}`).join('\n');
+							void logKbWrite(config, `kb_read CROSS-VAULT uri=${uri} candidates=${elsewhere.map(i => i.id).join(',')}`);
+						}
+					} catch { /* 探测失败不影响原始错误 */ }
+				}
+				// ★★ 2026-10-20 真机（日志：`kb_search` 刚返回路径、`kb_read` 立刻 ENOENT）：
+				//   **索引与磁盘不一致**时会形成"搜得到、读不到"的循环 —— 文件被移动/删除后，
+				//   `mode: "index"` 的搜索结果仍带着旧路径（脏检查只在 `fulltext` 模式做 ✗）。
+				//   这里补一条**可操作**的提示，让调用方知道下一步该做什么，而不是反复重试同一个路径。
+				const staleHint = /ENOENT|不存在|no such file/i.test(String(result.error))
+					? '\n\n⚠ 如果这篇笔记确实存在（例如刚用 kb_search 搜到它），'
+						+ '那说明**索引与磁盘已不一致**（文件被移动或删除过）⇒ 调 `kb_reindex` 重建索引；'
+						+ '不要反复重试同一个路径。'
+					: '';
+				throw new Error(`${result.error}${extra}${staleHint}`);
 			}
 			return result;
 		},
@@ -3444,7 +4163,9 @@ function toolDefinitions(ctx, state, config) {
 			render: (_args, value) => [{ type: 'text', text: String(value.message ?? '') }],
 		},
 		execute: async params => {
-			const wanted = typeof params?.vaultId === 'string' ? params.vaultId.trim() : '';
+			// 显式 vaultId → **当前库**（config.kbActiveVaultId，与页面渲染同一口径 ✓）
+		const vaultPick = await vaultWantedOf(params, config);
+		const wanted = vaultPick.vaultId;
 			if (wanted && !isVaultId(wanted)) { throw new Error(`vaultId 形态不合法：${wanted}`); }
 			const { vaults, missing } = await listAllVaults(root(), config, { withDocs: false });
 			if (missing) { throw new Error(`资料库根目录还不存在：${missing}`); }
@@ -3497,6 +4218,8 @@ function toolDefinitions(ctx, state, config) {
 			return {
 				ok: true,
 				vault: targets[0].id,
+				// ★ 库被纠正过（方案 A：当前库优先）⇒ 必须说，否则模型以为写进了它指定的库 ✗
+				...(vaultPick.overriddenFrom ? { overriddenFrom: vaultPick.overriddenFrom } : {}),
 				reason,
 				...summary,
 				...(nav && !nav.error ? { navigation: nav } : {}),
@@ -3569,7 +4292,9 @@ function toolDefinitions(ctx, state, config) {
 		// ⚠ 需要第二个参数 `exec`（官方 `ToolExecutionInput` ✓）：`build` 模式要用它的
 		// `agent`（= jobs 的 owner ＋ 子代理的 parent）与 `signal`（取消）✓。
 		execute: async (params, exec) => {
-			const wanted = typeof params?.vaultId === 'string' ? params.vaultId.trim() : '';
+			// 显式 vaultId → **当前库**（config.kbActiveVaultId，与页面渲染同一口径 ✓）
+		const vaultPick = await vaultWantedOf(params, config);
+		const wanted = vaultPick.vaultId;
 			if (wanted && !isVaultId(wanted)) { throw new Error(`vaultId 形态不合法：${wanted}`); }
 			// 未知的 mode 一律**明确报错**（照 kb_search 的 `semantic` 口径 ✓）：静默降级最坏 ✓
 			const mode = params?.mode === undefined || params?.mode === '' ? 'preview' : String(params.mode).trim();
@@ -3637,6 +4362,8 @@ function toolDefinitions(ctx, state, config) {
 			return {
 				ok: true,
 				vault: vault.id,
+				// ★ 库被纠正过（方案 A：当前库优先）⇒ 必须说（与其它写工具同口径）
+				...(vaultPick.overriddenFrom ? { overriddenFrom: vaultPick.overriddenFrom } : {}),
 				mode: 'preview',
 				pendingCount: result.pending.length,
 				pending: listed,
@@ -3665,6 +4392,18 @@ function toolDefinitions(ctx, state, config) {
 			'缺省 `mode: "create"` ⇒ **目标已存在就拒绝**（绝不静默覆盖 ✓）；确实要覆盖时显式传 `mode: "replace"` ⇒',
 			'旧正文会**先**被复制进 vault 之外的备份目录（结果里给 `backupDir`，**还原只靠它** ✓）。',
 			'`path` 给相对 vault 根（形如 `笔记/主题/标题.md` ✓）或绝对路径均可 ✓，**父目录会自动创建** ✓。',
+			// ★★ 2026-10-20 真机（用户报「为什么笔记存到 讲懂 文件夹下」）：模型把**任务类型**
+			//   （「讲懂」）当成了分类，自建 `笔记/讲懂/` 这种孤儿目录，而库里的既有分类是
+			//   `01_学习` / `02_工作` / `03_生活` / `技术架构` 这类**领域**划分 ✗。
+			//   根因：`path` 完全自由 + 描述里没有任何"该放哪"的引导 ⇒ 模型只能自己发明规则。
+			//   ⇒ 把口径写进描述（模型每次写都会读到），并明确"不确定就落 笔记/ 根、别新建目录"。
+			'⚠ **存放位置有规矩**：先看**既有分类**（**调 `kb_catalog`** 拿目录地图：路径 + 篇数），'
+				+ '把笔记放进**领域分类**（如 `笔记/01_学习/AI_Agent/`、`笔记/技术架构/`）。'
+				+ '**不要**用**任务类型**命名目录 —— `讲懂/`、`分析/`、`摘要/`、`问答/` 这类都是错的'
+				+ '（同一篇笔记会因为换个任务被存成好几份）。'
+				// ★ 2026-10-20（用户口径）：**不确定就问用户，不要自己挑、更不要新建目录**。
+				+ '**不确定放哪就询问用户**（列出 `笔记/` 下现有目录供其选择）—— '
+				+ '宁可多问一句，也不要留下一个孤儿目录。',
 			`⚠ 单篇上限 ${MAX_NOTE_CHARS} 字；⚠ 空内容允许（= 建一篇空笔记），但**空内容也是一次写入** ⇒ 同样要过审批 ✓。`,
 			'⚠ **改知识库（vault）里的笔记请走本工具** ✗：dsh 原生 `write` / `edit` 只允许会话工作区内与平台临时目录，vault 在围栏外 ⇒ 用原生工具会吃 `FS_SANDBOX_DENIED` ✓。',
 			'⚠ 会改盘 ⇒ 需要用户在审批里确认 ✓（被拒绝是正常的，别反复重试 ✗）。',
@@ -3698,7 +4437,9 @@ function toolDefinitions(ctx, state, config) {
 			render: (_args, value) => [{ type: 'text', text: String(value.message ?? '') }],
 		},
 		execute: async params => {
-			const wanted = typeof params?.vaultId === 'string' ? params.vaultId.trim() : '';
+			// 显式 vaultId → **当前库**（config.kbActiveVaultId，与页面渲染同一口径 ✓）
+		const vaultPick = await vaultWantedOf(params, config);
+		const wanted = vaultPick.vaultId;
 			if (wanted && !isVaultId(wanted)) { throw new Error(`vaultId 形态不合法：${wanted}`); }
 			const { vaults, missing } = await listAllVaults(root(), config, { withDocs: false });
 			if (missing) { throw new Error(`资料库根目录还不存在：${missing}`); }
@@ -3709,11 +4450,16 @@ function toolDefinitions(ctx, state, config) {
 				throw new Error(`请指明要写哪个 vault（现在有 ${targets.length} 个）：${vaults.map(v => v.id).join(', ')}`);
 			}
 			const mode = params?.mode === 'replace' ? 'replace' : 'create';
+			// ★★ 2026-10-19（用户报「模型写笔记没落到我当前在看的目录」）：
+			//   模型不知道用户在页面上的「当前目录」⇒ 路径落在**笔记区根**时就按它兜底。
+			//   规则与边界见 core/kbActiveDir.js 文件头（只在"模型没给子目录"时改写，给了就不动 ✓）。
+			const activeDir = await readActiveDir({ readFile }, kbRootOf(config), targets[0].id);
+			const redirect = applyActiveDir(params?.path, activeDir);
 			const release = await acquireFileLock(lockFileFor(targets[0].dir), { label: '知识库写笔记' });
 			let result;
 			let nav;
 			try {
-				result = await writeNote({ vaultRoot: targets[0].dir, relPath: params?.path, content: params?.content, mode });
+				result = await writeNote({ vaultRoot: targets[0].dir, relPath: redirect.relPath, content: params?.content, mode });
 				// ★ 写完刷导航（`笔记/index.md` / `笔记/overview.md`）—— 与真源同一批动作之后刷 ✓
 				//（真源：构建/整理完后 `maintainKbNavigation` ✓；本仓最接近的挂点就是这里与构建任务 ✓）。
 				//   放在**同一把 vault 锁之内**：导航也是往 `笔记/` 里写 ⇒ 不能与别的写者交错 ✓。
@@ -3721,6 +4467,8 @@ function toolDefinitions(ctx, state, config) {
 			} finally {
 				await release();
 			}
+			// ★ 落盘留痕（见 logKbWrite 的注释）：请求的 vault / 实际用的 vault / 最终路径 / 是否被纠正
+			void logKbWrite(config, `kb_write_note requested=${params?.vaultId ?? '(未给)'} used=${targets[0].id} dir=${targets[0].dir} relPath=${result.ok ? result.path : redirect.relPath} overriddenFrom=${vaultPick.overriddenFrom ?? '-'} ok=${result.ok}`);
 			if (!result.ok) {
 				// 拒因**原样带出**（含"要覆盖就传 replace"这类下一步指引 ✓）—— 不吞成一句"失败" ✗
 				return { ok: false, vault: targets[0].id, message: `kb_write_note 未写入：${result.error}` };
@@ -3728,10 +4476,17 @@ function toolDefinitions(ctx, state, config) {
 			return {
 				ok: true,
 				vault: targets[0].id,
+				// ★ 库被纠正过（方案 A：当前库优先）⇒ 必须说，否则模型以为写进了它指定的库 ✗
+				...(vaultPick.overriddenFrom ? { overriddenFrom: vaultPick.overriddenFrom } : {}),
 				path: result.path,
 				created: result.created,
 				mode: result.mode,
 				bytes: result.bytes,
+				// ★ 落点被「当前目录」调整过 ⇒ **必须告诉模型**（否则它以为是 `笔记/xxx.md`，
+				//   下次还按旧路径找，会"找不到刚写的笔记" ✗）。也放进工具结果，用户看回执能懂 ✓。
+				...(redirect.redirected ? { redirectedFrom: redirect.from, activeDir } : {}),
+				// ★ 库被纠正过（方案 A：当前库优先）⇒ **同样必须说**（否则模型以为写进了它指定的库，
+				//   下次还去那边找 ✗）。用户看回执也能懂"为什么笔记不在我以为的地方" ✓。
 				...(result.backupDir ? { backupDir: result.backupDir } : {}),
 				...(nav && !nav.error ? { navigation: nav } : {}),
 				message: [
@@ -3771,7 +4526,9 @@ function toolDefinitions(ctx, state, config) {
 			render: (_args, value) => [{ type: 'text', text: String(value.message ?? '') }],
 		},
 		execute: async params => {
-			const wanted = typeof params?.vaultId === 'string' ? params.vaultId.trim() : '';
+			// 显式 vaultId → **当前库**（config.kbActiveVaultId，与页面渲染同一口径 ✓）
+		const vaultPick = await vaultWantedOf(params, config);
+		const wanted = vaultPick.vaultId;
 			if (wanted && !isVaultId(wanted)) { throw new Error(`vaultId 形态不合法：${wanted}`); }
 			const { vaults, missing } = await listAllVaults(root(), config, { withDocs: false });
 			if (missing) { throw new Error(`资料库根目录还不存在：${missing}`); }
@@ -3796,6 +4553,8 @@ function toolDefinitions(ctx, state, config) {
 			const navText = navLine(nav);
 			return {
 				ok: true, vault: targets[0].id, path: result.path, created: result.created,
+				// ★ 库被纠正过（方案 A：当前库优先）⇒ 必须说（与其它写工具同口径）
+				...(vaultPick.overriddenFrom ? { overriddenFrom: vaultPick.overriddenFrom } : {}),
 				...(nav && !nav.error ? { navigation: nav } : {}),
 				message: [
 					`kb_mkdir：${result.created ? '新建' : '已存在（未改动）'} ${result.path}`,
@@ -3840,7 +4599,9 @@ function toolDefinitions(ctx, state, config) {
 			render: (_args, value) => [{ type: 'text', text: String(value.message ?? '') }],
 		},
 		execute: async (params, exec) => {
-			const wanted = typeof params?.vaultId === 'string' ? params.vaultId.trim() : '';
+			// 显式 vaultId → **当前库**（config.kbActiveVaultId，与页面渲染同一口径 ✓）
+		const vaultPick = await vaultWantedOf(params, config);
+		const wanted = vaultPick.vaultId;
 			if (wanted && !isVaultId(wanted)) { throw new Error(`vaultId 形态不合法：${wanted}`); }
 			const mode = String(params?.mode ?? '').trim();
 			if (!['merge', 'generate', 'refine', 'rename'].includes(mode)) { throw new Error(`未知的 mode：${mode}（本侧支持 merge / generate / refine / rename）`); }
@@ -3880,6 +4641,8 @@ function toolDefinitions(ctx, state, config) {
 				}
 				return {
 					ok: true, vault: vault.id, mode, path: merged.path, nodes: merged.nodes, edges: merged.edges,
+				// ★ 库被纠正过（方案 A：当前库优先）⇒ 必须说（与其它写工具同口径）
+				...(vaultPick.overriddenFrom ? { overriddenFrom: vaultPick.overriddenFrom } : {}),
 					message: `已合并为 ${merged.path.split(/[\\/]/).pop()}（${merged.nodes} 节点 / ${merged.edges} 边 ✓；其余源文件已删 ✓）。`,
 				};
 			}
@@ -4388,6 +5151,12 @@ function toolDefinitions(ctx, state, config) {
 				apply: { type: 'boolean', description: 'true = 真同步（写远端）；缺省 false = 只预览' },
 				limit: { type: 'integer', description: '最多同步多少篇（0 = 不限）' },
 				cliPath: { type: 'string', description: 'lark-cli 的可执行名或路径（缺省 = 走 PATH；装在非标准位置时给绝对路径）' },
+				// ★ 2026-10-20：落点可配（此前写死脚本默认的 my_library = 飞书「个人知识库」）
+				parent: {
+					type: 'string',
+					description: '同步落点：缺省 my_library（飞书「个人知识库」）；'
+						+ '要给某个文件夹 / wiki 节点就传它的 token（folder token 或 wiki node token）。',
+				},
 			},
 		},
 		output: {
@@ -4402,7 +5171,9 @@ function toolDefinitions(ctx, state, config) {
 			render: (_args, value) => [{ type: 'text', text: value.report }],
 		},
 		execute: async params => {
-			const wanted = typeof params?.vaultId === 'string' ? params.vaultId.trim() : '';
+			// 显式 vaultId → **当前库**（config.kbActiveVaultId，与页面渲染同一口径 ✓）
+		const vaultPick = await vaultWantedOf(params, config);
+		const wanted = vaultPick.vaultId;
 			if (wanted && !isVaultId(wanted)) {
 				throw new Error(`vaultId 形态不合法：${wanted}`);
 			}
@@ -4425,7 +5196,8 @@ function toolDefinitions(ctx, state, config) {
 			const runDir = await mkdtemp(join(tmpdir(), 'vssaros-feishu-sync-'));
 			try {
 				const planFile = join(runDir, 'report.txt');
-				const args = buildFeishuSyncArgs({ vault: targets[0].dir, src, apply, limit, planFile, cliPath });
+				const parent = typeof params?.parent === 'string' ? params.parent.trim() : '';
+			const args = buildFeishuSyncArgs({ vault: targets[0].dir, src, apply, limit, planFile, cliPath, parent });
 				const result = await runFeishuSync(args, targets[0].dir);
 				// 报告优先（脚本注释：工具读它即可准确回报"预览了什么/实际做了什么、有没有失败"）；
 				// 拿不到报告才退回进程输出（例如脚本在写报告前就退出了）
@@ -4435,11 +5207,27 @@ function toolDefinitions(ctx, state, config) {
 				} catch {
 					report = '';
 				}
-				const text = (report.trim() ? report : result.output).trim() || `（脚本没有输出）退出码 ${result.code}`;
+				// ★★ 2026-10-20（真机：同步后无法自证「哪几篇失败了」）：
+			//   报告原先**只在返回值里**，而 `runDir`（存 report.txt 的临时目录）在 `finally` 里
+			//   被整个删掉 ⇒ 事后完全查不到逐篇结果 ✗。而脚本对"部分失败"仍可能返回退出码 0
+			//   （见 runFeishuSync 的注释）⇒ 光看 `status: success` 会误判"全都成了" ✗。
+			//   ⇒ 把报告落盘（复用 logKbWrite：`<数据根>/kb-write.log`，三级兜底、失败不影响同步）。
+			//   ⚠ 报告可能很长（脚本会逐篇列结果）⇒ 截到 FEISHU_REPORT_LIMIT，并如实标注被截断。
+			if (report.trim()) {
+				const logged = report.trim().length > FEISHU_REPORT_LIMIT
+					? `${report.trim().slice(0, FEISHU_REPORT_LIMIT)}\n…（落盘时按 ${FEISHU_REPORT_LIMIT} 字符截断）`
+					: report.trim();
+				void logKbWrite(config, `=== feishu.sync 报告 vault=${targets[0].id} apply=${apply} src=${src.length} exit=${result.code} ===\n${logged}\n=== 报告结束 ===`);
+			} else {
+				void logKbWrite(config, `=== feishu.sync 无报告文件 vault=${targets[0].id} apply=${apply} exit=${result.code}，输出前 2000 字：${String(result.output ?? '').slice(0, 2000)} ===`);
+			}
+			const text = (report.trim() ? report : result.output).trim() || `（脚本没有输出）退出码 ${result.code}`;
 				const truncated = text.length > FEISHU_REPORT_LIMIT;
 				return {
 					mode: apply ? 'apply' : 'dry-run',
 					vault: targets[0].id,
+					// ★ 库被纠正过（方案 A：当前库优先）⇒ 必须说，否则模型以为写进了它指定的库 ✗
+					...(vaultPick.overriddenFrom ? { overriddenFrom: vaultPick.overriddenFrom } : {}),
 					exitCode: result.code,
 					report: truncated ? `${text.slice(0, FEISHU_REPORT_LIMIT)}\n…（报告已截断）` : text,
 					...(truncated ? { reportTruncated: true } : {}),
@@ -4577,7 +5365,103 @@ export const WRITE_TOOLS = ['kb_feishu_sync', 'kb_feishu_spaces', 'kb_organize',
  * ⇒ 两种判据都收在本函数里 ✓：写在闸里会变成"一长串 &&/||"，下一个写工具接进来时最容易漏掉其中一个 ✓。
  * @returns `{reason, en, zh}` 或 `undefined`（= 放行走 next ✓）
  */
-function writeIntentOf(name, args) {
+/**
+ * 工具侧 "写哪个 vault" 的解析：**显式参数 → IDE 注入的当前库**。
+ *
+ * ★★ 2026-10-19（用户报「知识库读写的笔记目录应该为当前选择的笔记根目录」）：
+ *   此前这些写工具**只认显式 `vaultId`**，多库时直接抛
+ *   「请指明要写哪个 vault（现在有 N 个）」—— 而用户在页面上明明已经选了当前库，
+ *   那个选择就是 `config.kbActiveVaultId`（页面渲染 :2960、`/api/doc` :5891、`/api/graph` :5854
+ *   **全都用它兜底** ✓）⇒ 只有写工具漏了这一层，于是模型只能瞎猜或反复问 ✗。
+ *   ⇒ 统一收在这里，与其它路由**同一口径**（不另立一套"默认库"规则 ✓）。
+ *   ⚠ 显式参数仍然优先（模型/用户明确指定时必须听它的 ✓）。
+ */
+/**
+ * 写操作的**落盘日志**（`<数据根>/kb-write.log`）。
+ *
+ * ★★ 2026-10-19（用户反复报「工具里写了错误的知识库目录」）：`kb_write_note` 之前
+ *   **一行日志都不留** —— `.op-log.jsonl` 里只有 `feishu.sync`（那是 IDE 侧记录的），
+ *   于是"到底用了哪个 vault、落点被纠正没有"完全查不到，只能靠猜 ✗。
+ *   ⇒ 每次写都把三件事记下来：**请求的 vaultId / 实际用的 / 最终路径**。
+ *   ⚠ 落点不能走 `foundation`（apply 阶段可能未绑定，见 skills 插件同名坑）⇒ 这里用
+ *     `config.dataRoot` → `dataRootOf()`（try）→ `~/.vssaros-dev` 三级兜底。
+ */
+async function logKbWrite(config, line) {
+	try {
+		let root = '';
+		const configured = typeof config?.dataRoot === 'string' ? config.dataRoot.trim() : '';
+		if (configured) { root = configured; }
+		else {
+			try { root = dataRootOf(config) || ''; } catch { root = ''; }
+		}
+		// ⚠ `dataRootOf` 也可能**返回空**（不是只抛）⇒ 不判空就会 `join(undefined, …)` 抛，
+		//   再被外层 catch 吞掉 ⇒ 日志又变成"静默不写"（这正是排查时最怕的形态 ✗）。
+		if (!root) { root = join(homedir(), '.vssaros-dev'); }
+		await appendFile(join(root, 'kb-write.log'), `[${new Date().toISOString()}] ${line}\n`, 'utf8');
+	} catch { /* 日志失败不影响写入 */ }
+}
+
+async function vaultWantedOf(params, config) {
+	const explicit = typeof params?.vaultId === 'string' ? params.vaultId.trim() : '';
+	// 页面最后上报的当前库 → IDE 注回值
+	let current = '';
+	try {
+		current = await readActiveVault({ readFile }, kbRootOf(config));
+	} catch { /* 读不到就退回注入值 */ }
+	if (!current) {
+		current = typeof config?.kbActiveVaultId === 'string' ? config.kbActiveVaultId.trim() : '';
+	}
+	// ★★ 2026-10-19（用户拍板方案 A）：**当前库优先于模型显式参数**。
+	//
+	// 真机事故：用户页面选的是 `20260922123131-827wo3k`（我的知识库 / E:/VsSarosVault），
+	//   而模型调 `kb_write_note` 时显式传了 `20260709063858-azbh1at` —— 它刚才 `kb_search`（**跨库** ✓）
+	//   在那个库的「库」区搜到了素材，于是判断"内容在那儿"，笔记就写进了那个库 ✗。
+	//   ⇒ 用户看不到笔记、另一个库却多了一篇（`笔记/00-入门与导读/...` 实测）。
+	//
+	// 现在的口径：**用户当前所在的位置就是默认落点**。模型想写别的库会被纠正，
+	//   并把被纠正的值放进返回值（调用方要写进工具结果 ⇒ 模型和用户都能看见"落点被改过" ✓，
+	//   静默改库是本仓明令禁止的那种"最难查" ✗）。
+	//   ⚠ 想往别的库写 ⇒ 先在页面上切库（切库会上报 ✓）。
+	if (current && explicit && explicit !== current) {
+		return { vaultId: current, overriddenFrom: explicit };
+	}
+	return { vaultId: explicit || current };
+}
+
+/**
+ * 免审白名单的**代码内默认值**。
+ *
+ * ★★ 2026-10-19 真机踩到：`cordis.patch.yml` 里明明配了 `autoApprove`（6 项），
+ *   但运行时 `config.autoApprove` 是 **undefined** ⇒ 审批卡照弹 ✗。
+ *   原因：VsSaros 给 `vssaros-kb` 注入的 `roots-*.yml` overlay **整体替换了这一行的 config**
+ *   （里面只有 `kbVaults` / `kbActiveVaultId`）⇒ `cordis.patch.yml` 里的 `autoApprove` 被覆盖掉。
+ *   ⇒ 默认值**必须落在代码里**（配置只用于覆盖），否则"配了却不生效"这类问题永远查不出来 ✓。
+ *
+ * 口径：`config.autoApprove` 显式给了就听它的（含**空数组 = 全部恢复逐次询问**）；没给用这份默认。
+ */
+const DEFAULT_AUTO_APPROVE = ['kb_mkdir', 'kb_write_note', 'kb_mindmap', 'kb_build', 'kb_reindex', 'kb_organize'];
+
+/** 解析免审清单：显式配置优先（空数组 = 全关），否则用代码内默认。 */
+function autoApproveOf(config) {
+	const fromConfig = config?.autoApprove;
+	if (Array.isArray(fromConfig)) { return fromConfig; }
+	return DEFAULT_AUTO_APPROVE;
+}
+
+function writeIntentOf(name, args, autoApprove) {
+	// ★★ 2026-10-19（用户报「kb 工具为什么每次都要授权，想加白名单」）：
+	//   **免审白名单**（配置 `autoApprove: ['kb_mkdir', ...]`）—— 命中的工具**一律不问**。
+	//
+	// 为什么这层是安全的（不是"把闸拆了"）：审批只是**两层防护里的外层**，
+	//   **内层路径校验仍然照跑** —— 比如截图里 `kb_write_note` 指向只读的「库」区时，
+	//   工具自己会拒绝（"写入被拒 …… 笔记必须写进「笔记」区"），那条跟审批无关 ✓。
+	//   所以白名单的语义是"**信任模型在合法位置写盘**"，不是"允许它乱写"✓。
+	//
+	// 为什么不做成"按参数放行"：`kb_mkdir` / `kb_write_note` 没有只读形态（任何一次调用都真写盘）
+	//   ⇒ 按参数放行必然开出口子（见本函数下方"一律问"的注释）。白名单是**按工具名**的显式信任，
+	//   由用户在配置里点名，默认空（= 保持原来的每次询问 ✓）。
+	if (Array.isArray(autoApprove) && autoApprove.includes(name)) { return undefined; }
+
 	if (name === 'kb_feishu_sync' && args?.apply === true) {
 		return {
 			reason: `${name} 会把飞书文档真正写入资料库目录`,
@@ -5100,6 +5984,19 @@ export function apply(ctx, config = {}) {
 		let ready = null;
 		try { ready = ctx.get?.('vssarosFoundation') ?? ctx.vssarosFoundation ?? null; } catch { /* 探针的 Proxy 假 ctx 对未知属性抛错 ⇒ 当不存在 */ }
 		if (ready) { bindFoundation(ready); }
+		// ★ 2026-10-20：**config 拿不到 kbVaults 时，从 overlay 文件兜底读**（见 injectedRawOf 的注释）。
+		//   放在 bindFoundation 之后：`dataRootOf` 依赖 foundation，未绑定时会抛 ⇒ 三级兜底到 home。
+		{
+			let dr = '';
+			try {
+				dr = typeof config?.dataRoot === 'string' ? config.dataRoot.trim() : '';
+			} catch { dr = ''; }
+			if (!dr) {
+				try { dr = dataRootOf(config) || ''; } catch { dr = ''; }
+			}
+			if (!dr) { dr = join(homedir(), '.vssaros-dev'); }
+			kbVaultsFromOverlay = readKbVaultsFromOverlay(dr);
+		}
 		ctx.inject(['vssarosFoundation'], child => {
 		let svc = null;
 		try { svc = child.vssarosFoundation ?? null; } catch { /* 探针的假 ctx（Proxy）对未知属性抛错 ⇒ 当不存在 */ }
@@ -5164,7 +6061,8 @@ export function apply(ctx, config = {}) {
 				return next();
 			}
 		}
-		const intent = exec ? writeIntentOf(exec.name, exec.arguments) : undefined;
+		// 免审白名单：**代码内有默认值**（见 autoApproveOf 的注释 —— 配置会被 overlay 覆盖掉 ✗）
+		const intent = exec ? writeIntentOf(exec.name, exec.arguments, autoApproveOf(config)) : undefined;
 		if (intent) {
 			return { kind: 'ask', reason: intent.reason, displayReason: { en: intent.en, zh: intent.zh } };
 		}
@@ -5199,6 +6097,15 @@ export function apply(ctx, config = {}) {
 				res.end(String(rejected));
 				return;
 			}
+			// ★ 2026-10-21：**承载表面**（宿主注入 `?surface=sideview|editor`，见 dshPluginPage.ts:65-110）。
+			//   缺省（浏览器直开 / dsh 官方页 / 全部既有探针）⇒ 'full' ⇒ **与改造前逐字相同** ✓。
+			//   ⚠ 这里单独解析一次：下面那条 `let url` 活在 `if (page.connection && req.url)` 块里，
+			//     到页面渲染那一行已经出作用域了（块在 6430 就闭合）⇒ 不能复用 ✗。
+			let surface = 'full';
+			try {
+				const surfaceParam = new URL(req.url ?? '/', 'http://localhost').searchParams.get('surface');
+				if (surfaceParam === 'sideview' || surfaceParam === 'editor') { surface = surfaceParam; }
+			} catch { /* url 不可解析 ⇒ 当没给（完整页）✓ */ }
 			// ★ 只读正文 API（README 5.68）：页面点条目 → 预览笔记正文。
 			// 围栏与 `kb_read` 工具**同一套**（都在 `readDoc` 里：解析后的绝对路径必须落在库内 ✓）——
 			// 页面与模型都只能读到**库内**文件 ✓。这条**只读**、不改任何东西 ✓；读不到就如实回 400 + 原因 ✓。
@@ -5283,6 +6190,38 @@ export function apply(ctx, config = {}) {
 						send(400, { ok: false, error: String(e?.message ?? e) });
 					}
 					return;
+				}
+				// ★ 2026-10-19（用户报「模型写笔记没落到我当前在看的目录」）：
+				//   **记录「当前目录」** —— 页面点/展开目录时 POST 一条（页面侧节流）。
+				//   存 `<资料库根>/.active-dir.json`（与各 vault 目录同级，属 kb 自己的数据 ✓），
+				//   `kb_write_note` 在"模型没给子目录"时用它兜底（见 core/kbActiveDir.js ✓）。
+				//   ⚠ 只支持「笔记」区：库区不可写 ⇒ 记了也没用，直接 400 让页面知道 ✓。
+				if (url && url.pathname === `${ROUTE_PREFIX}/api/active-dir`) {
+					const send = (code, payload) => {
+						res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(payload));
+					};
+					try {
+						if (req.method !== 'POST') { send(405, { ok: false, error: '请用 POST' }); return; }
+						let raw = '';
+						for await (const chunk of req) {
+							raw += chunk;
+							if (raw.length > 4096) { send(413, { ok: false, error: '请求体太大（本接口只收几 KB 的 JSON）' }); return; }
+						}
+						const payload = JSON.parse(raw || '{}');
+						const vaultId = String(payload?.vaultId ?? '');
+						const dirRel = String(payload?.dir ?? '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+						if (!isVaultId(vaultId)) { send(400, { ok: false, error: `vaultId 形态不合法：${vaultId}` }); return; }
+						if (dirRel && dirRel !== NOTES_DIR && !dirRel.startsWith(NOTES_DIR + '/')) {
+							send(400, { ok: false, error: `当前目录只支持「笔记」区：${dirRel}` });
+							return;
+						}
+						const saved = await writeActiveDir({ readFile, writeFile }, kbRootOf(config), vaultId, dirRel);
+						if (!saved) { send(500, { ok: false, error: `写 .active-dir.json 失败（${kbRootOf(config)}）` }); return; }
+						return send(200, { ok: true, vaultId, dir: dirRel });
+					} catch (e) {
+						return send(500, { ok: false, error: String(e?.message ?? e) });
+					}
 				}
 				if (url && url.pathname === `${ROUTE_PREFIX}/api/new`) {
 					const send = (code, payload) => {
@@ -5533,6 +6472,88 @@ export function apply(ctx, config = {}) {
 					}
 					return;
 				}
+				// ★★ 2026-10-19：**关系图谱页面**（从 IDE 侧迁来）。
+				//   GET /x/kb/graph?vault=<id> ⇒ 整页；页面自己去 fetch /api/graph 取数据
+				//   （不把图数据塞进 HTML：库大时那是几百 KB 的重复传输 ✗，与 `/api/doc` 同一条理由）。
+				if (url && url.pathname === `${ROUTE_PREFIX}/graph`) {
+					try {
+						const { vaults, missing } = await listAllVaults(kbRootOf(config), config, { withDocs: false });
+						if (missing) {
+							res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' });
+							res.end(`资料库根目录还不存在：${missing}`);
+							return;
+						}
+						const wanted = (url.searchParams.get('vault') ?? '').trim()
+							|| (typeof config?.kbActiveVaultId === 'string' ? config.kbActiveVaultId.trim() : '');
+						const vault = wanted ? vaults.find(v => v.id === wanted) : vaults[0];
+						if (!vault) {
+							res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' });
+							res.end('还没有可用的知识库（先「配置文件夹为知识库…」）');
+							return;
+						}
+						const html = renderGraphPage({
+							vaultId: vault.id,
+							vaultName: vaultDisplayNameFrom(config, vault.id),
+							notesDir: join(vault.dir, NOTES_DIR),
+						});
+						res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(html);
+					} catch (e) {
+						res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
+						res.end(String(e?.message ?? e));
+					}
+					return;
+				}
+				// ★★ 2026-10-19：页面「关系图谱」的图数据（**从 IDE 侧迁来**）。
+				//   GET /x/kb/api/graph?vault=<id>[&refresh=1]
+				//   · `nodes[].id` = **vault 内的相对路径**（如 `UE5/xxx.md`）⇒ 页面拼绝对路径交给页面桥
+				//     `openFile` 就能打开笔记 ✓（这正是不能复用 `buildInsightGraph` 的原因：它用标题做 id，
+				//     见 core/kbGraphData.js 文件头的说明）。
+				//   · **只读**：`readNotesForGraph`（readdir + readFile）+ 纯函数 `buildGraphData`
+				//     ⇒ 不取 vault 锁、不写盘 ⇒ 与"页面上的写通道只有 new/rename/delete/restore"不冲突 ✓。
+				//   · ⚠ 全库读正文 ⇒ 进程内缓存 60s（GRAPH_CACHE_TTL_MS）；`refresh=1` 强制重扫。
+				if (url && url.pathname === `${ROUTE_PREFIX}/api/graph`) {
+					const send = (code, payload) => {
+						res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(payload));
+					};
+					try {
+						const { vaults, missing } = await listAllVaults(kbRootOf(config), config, { withDocs: false });
+						if (missing) { return send(400, { ok: false, error: `资料库根目录还不存在：${missing}` }); }
+						const wanted = (url.searchParams.get('vault') ?? '').trim()
+							|| (typeof config?.kbActiveVaultId === 'string' ? config.kbActiveVaultId.trim() : '');
+						const vault = wanted ? vaults.find(v => v.id === wanted) : vaults[0];
+						if (!vault) {
+							return send(400, {
+								ok: false,
+								error: wanted ? `找不到这个库：${wanted}` : '还没有可用的知识库（先「配置文件夹为知识库…」）',
+							});
+						}
+						const notesDir = join(vault.dir, NOTES_DIR);
+						const refresh = url.searchParams.get('refresh') === '1';
+						const now = Date.now();
+						const cached = graphCache.get(notesDir);
+						const fresh = !refresh && !!cached && (now - cached.at) < GRAPH_CACHE_TTL_MS;
+						let data = fresh ? cached.data : undefined;
+						if (!data) {
+							const notes = await readNotesForGraph(notesDir);
+							data = buildGraphData(notes);
+							graphCache.set(notesDir, { at: now, data });
+						}
+						return send(200, {
+							ok: true,
+							vaultId: vault.id,
+							vaultName: vaultDisplayNameFrom(config, vault.id),
+							notesDir,
+							cached: !!fresh,
+							nodes: data.nodes,
+							edges: data.edges,
+							stats: data.stats,
+						});
+					} catch (e) {
+						return send(500, { ok: false, error: String(e?.message ?? e) });
+					}
+				}
 				if (url && url.pathname === `${ROUTE_PREFIX}/api/search`) {
 					try {
 						const query = url.searchParams.get('q') ?? '';
@@ -5565,7 +6586,7 @@ export function apply(ctx, config = {}) {
 			}
 			try {
 				// 先渲染再 writeHead（渲染抛错还能干净回 500，不切 socket）
-				const html = await renderPage({ config, state });
+				const html = await renderPage({ config, state, surface });
 				res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
 				res.end(html);
 			} catch (e) {

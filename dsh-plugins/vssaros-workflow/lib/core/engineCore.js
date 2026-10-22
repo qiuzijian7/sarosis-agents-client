@@ -68,16 +68,34 @@ export function interpolate(text, nodeStates, context) {
  *   log(level, msg)
  */
 export function createEngineCore(deps) {
-	const { loadWorkflow, saveCheckpoint, loadCheckpoint, runs, cwdOf, log } = deps;
+	// ⚠⚠ `runs` **不许解构**（2026-10-20 p3-151 真机抓到）：调用方（插件 apply）是
+	//   `ctx.inject(['vssarosRuns'], …)` **之后回填** `deps.runs` 的 —— 解构就是值快照 ⇒
+	//   引擎永远拿到 null ⇒ 每个 agent/prompt 节点都失败（真机症状：`Cannot read properties of
+	//   null (reading 'run')`）。`deps.officialWorkflow` / `deps.bridge` 在 `executeNode` 里本来就是
+	//   按属性读的 ✓，所以只有 `runs` 这一处是坏的。⇒ 用时再取（`deps.runs`）。
+	const { loadWorkflow, saveCheckpoint, loadCheckpoint, cwdOf, log } = deps;
 
-	/** 执行一条工作流。resumeFromExecutionId 给定时走断点续跑。 */
-	async function run({ workflowId, executionId, input = {}, resumeFromExecutionId }) {
+	/**
+	 * 执行一条工作流。resumeFromExecutionId 给定时走断点续跑。
+	 *
+	 * 观测面（2026-10-20 加，为"执行期可见性"服务）：
+	 *   · `onEvent(e)` —— 每次运行状态变化回调一次（run-start / node-start / node-end / run-end）。
+	 *     **观测侧抛异常不许拖垮执行**（这里 try/catch 吞掉），且事件只是"事实通知"，不是控制流。
+	 *   · `signal`（AbortSignal）—— 取消。检查点在**每个节点开始前**；正在跑的节点由调用方
+	 *     （Host 侧的 `/api/run/cancel`）去取消它那条会话，引擎自己不等（`vssarosRuns` 没有"安全中断"原语）。
+	 */
+	async function run({ workflowId, executionId, input = {}, resumeFromExecutionId, onEvent, signal }) {
 		const wf = await loadWorkflow(workflowId);
 		const nodes = wf.nodes ?? [];
 		const connections = wf.connections ?? [];
 		const order = topoOrder(nodes, connections);
 		const adj = buildAdjacency(connections);
 		const byId = new Map(nodes.map(n => [String(n.id), n]));
+		const emit = event => {
+			if (typeof onEvent !== 'function') { return; }
+			try { onEvent({ executionId, workflowId, ...event }); } catch { /* 观测面炸了不该影响执行 */ }
+		};
+		const cancelled = () => signal !== undefined && signal.aborted === true;
 
 		// 断点续跑：读 checkpoint 判可复用
 		const nodeStates = {};
@@ -130,11 +148,28 @@ export function createEngineCore(deps) {
 			await saveCheckpoint(executionId, cp);
 		};
 
+		emit({
+			type: 'run-start',
+			total: order.filter(id => toRunSet.has(id)).length,
+			nodes: order.filter(id => toRunSet.has(id)).map(id => ({
+				id, type: byId.get(id)?.type, label: byId.get(id)?.name ?? id,
+			})),
+		});
+
 		for (const nodeId of order) {
 			if (!toRunSet.has(nodeId)) { continue; }  // 复用节点：已在 nodeStates 里
 			if (skipped.has(nodeId)) { continue; }    // 分支剪枝：没选中的支跳过（state 已在 cascadeSkip 里写成 Skipped ✓）
+			// 取消检查点：**每个节点开始前**（正在跑的那个节点由调用方去取消它的会话 ——
+			// `vssarosRuns` 没有"安全中断"原语，引擎不在这里硬杀）。
+			if (cancelled()) {
+				execution.status = EXECUTION_STATUS.Cancelled;
+				emit({ type: 'run-end', status: execution.status, cancelled: true });
+				try { await persist(); } catch { /* 取消路径不因落盘失败改变结论 */ }
+				return { ...execution, resumed, cancelled: true };
+			}
 			const node = byId.get(nodeId);
 			if (!node) { continue; }
+			emit({ type: 'node-start', nodeId, nodeType: node.type, label: node.name ?? nodeId });
 			const state = { status: NODE_STATUS.Running, output: null, error: null, startTime: new Date().toISOString(), endTime: null };
 			nodeStates[nodeId] = state;
 			const retryMax = Number(node.data?.retryMaxAttempts ?? 0);
@@ -153,16 +188,21 @@ export function createEngineCore(deps) {
 				}
 			}
 			if (failed) {
-				state.status = NODE_STATUS.Failed;
+				// 取消引发的失败 ⇒ 记 `cancelled`（别把"用户按了停止"报成"节点失败"✗）。
+				const wasCancelled = cancelled();
+				state.status = wasCancelled ? NODE_STATUS.Cancelled : NODE_STATUS.Failed;
 				state.error = String(failed?.message ?? failed);
 				state.endTime = new Date().toISOString();
-				execution.status = EXECUTION_STATUS.Failed;
+				execution.status = wasCancelled ? EXECUTION_STATUS.Cancelled : EXECUTION_STATUS.Failed;
 				await persist();
-				return { ...execution, failedNode: nodeId, resumed };
+				emit({ type: 'node-end', nodeId, status: state.status, error: state.error });
+				emit({ type: 'run-end', status: execution.status, ...(wasCancelled ? { cancelled: true } : { failedNode: nodeId }) });
+				return { ...execution, ...(wasCancelled ? { cancelled: true } : { failedNode: nodeId }), resumed };
 			}
 			state.status = NODE_STATUS.Completed;
 			state.endTime = new Date().toISOString();
 			await persist();  // 每节点完成后落 checkpoint（崩溃一致性 ✓）
+			emit({ type: 'node-end', nodeId, status: state.status });
 			// 分支剪枝：分支节点返回的 next 是"选中的出边"；它**全部**出边里没被选中的目标 ⇒ 级联 skip。
 			// 判据：该节点有 fromPort 出边（分支语义）且 next 覆盖了部分而不是全部 ⇒ 没盖到的剪掉。
 			const outEdges = adj.get(nodeId) ?? [];
@@ -179,6 +219,7 @@ export function createEngineCore(deps) {
 		}
 		execution.status = EXECUTION_STATUS.Completed;
 		await persist();
+		emit({ type: 'run-end', status: execution.status });
 		return { ...execution, resumed };
 	}
 
@@ -196,6 +237,13 @@ export function createEngineCore(deps) {
 			case 'agent': {
 				// LLM 判定节点：经 vssarosRuns 驱动一回合（S4 结论：用 runs 而不是官方 subagent——
 				// 子代理的 parent 必须是活 Agent，后台没有 ⇒ 先 agents.create 建根会话，那是 runs 的事 ✓）。
+				// ⚠ 缺回合驱动要**说人话**：`runs` 为 null 时原先直接 `runs.run` ⇒ 报
+				//   `Cannot read properties of null (reading 'run')`（真机 p3-151 见过，用户完全看不懂 ✗）。
+				// ⚠ 这里必须是 `deps.runs`（**不是**上面解构的快照）—— 见 `createEngineCore` 开头的注释。
+				const runs = deps.runs;
+				if (!runs || typeof runs.run !== 'function') {
+					throw new Error(`节点 ${node.id} 是 ${type}，但回合驱动 vssarosRuns 不可用（@vssaros/dsh-bridge 未加载或版本过旧）`);
+				}
 				const prompt = interpolate(String(data.prompt ?? data.instruction ?? data.title ?? ''), nodeStates, context);
 				const result = await runs.run({
 					sessionId: `wf-${workflowId}-${node.id}`,
@@ -256,10 +304,15 @@ export function createEngineCore(deps) {
 			case 'askUser': {
 				// 重构 3.2：留壳节点经 vssarosBridge 回 IDE（画布/媒体/交互在壳侧）。
 				// 桥不在 ⇒ 如实失败（不静默跳过 ✗）。
-				if (!deps.bridge) {
+				// ★ 2026-10-20：调用形态改成**走授权链**（`ide.request` + capability=workflow + op），
+				//   不再是裸 method `workflow.executeNode` —— 裸 method 在壳侧的分发器里**没有处理者**
+				//   （真机症状：要么 unknown method、要么干等 10s 超时，用户完全看不出是"能力没实现"✗）。
+				//   现在壳侧会明确回 `workflow 的 op 不认识：executeNode（本版只有 open）`，
+				//   将来壳侧实现该 op 也**不用再改这里** ✓（同一个 capability、同一处盖章身份）。
+				if (typeof deps.executeNodeViaIde !== 'function') {
 					throw new Error(`节点 ${node.id} 的类型 ${type} 要经桥回 IDE，但 vssarosBridge 不在（bridge 插件没装/没连）`);
 				}
-				const reply = await deps.bridge.callIDE('workflow.executeNode', {
+				const reply = await deps.executeNodeViaIde({
 					workflowId, executionId: env.executionId, nodeId: node.id, nodeType: type, data,
 				});
 				nodeStates[node.id].output = typeof reply?.output === 'string' ? reply.output : null;

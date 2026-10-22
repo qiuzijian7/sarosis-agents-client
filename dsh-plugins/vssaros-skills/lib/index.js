@@ -16,13 +16,18 @@
 //
 // 数据契约与覆盖缺口见 `lib/core/skills.js` 文件头（三层来源只覆盖中间那层；always 的自动注入语义无等价物）。
 
+import { appendFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { skillFromFile, summarizeCatalog, toCandidate, toDefinition, VSAROS_SKILL_PROVIDER } from './core/skills.js';
 import { bindFoundation } from './foundationRef.js';
 import { rankSkills, SKILL_SEARCH_DEFAULT_LIMIT, SKILL_SEARCH_MAX_LIMIT } from './core/skillSearch.js';
 
 import { MAX_SKILL_BYTES, SKILL_MANAGE_ACTIONS, skillManage } from './core/skillManage.js';
 
-import { readSkillFile, scanSkills, skillDirOf, skillIdOf, skillsRootOf } from './store.js';
+import { dataRootOf, readSkillFile, scanSkills, skillDirOf, skillIdOf, skillsRootOf } from './store.js';
 
 // 跨进程写锁（协议 v2，与 workflow / kanban / IDE 同一套 ✓；**逐字复制的副本** —— 插件间不能互相
 // import ✓，包各自独立 ✓）。互通性由 `dshWorkflowWriteLock.test.ts` 拿真文件互抢验证 ✓。
@@ -484,6 +489,294 @@ function renderPage({ skills, errors, missing, root, nativeSkillTool, provider, 
 }
 
 
+/** 自动加载注入消息的 `source.kind`（自定义值；**不新增会话事件类型**，与 `vssaros/persona` 同一做法）。 */
+export const SKILL_AUTOLOAD_SOURCE_KIND = 'vssaros/skill-autoload';
+
+/** 单次注入的正文上限（防御：正文异常大时别一次把上下文打满）。 */
+const SKILL_AUTOLOAD_MAX_BODY = 60_000;
+
+/**
+ * 动态加载 dsh 官方的 `createUserMessage`。
+ * ⚠ 必须**裸包名**：插件是独立安装的包，profile 里没有跨包解析路径 ⇒ 不能 import 别的插件的文件，
+ *   但 dsh 官方包可以（运行时由 dsh 的 node_modules 解析）—— `vssaros-agents` 的 `loadCreateUserMessage` 同做法。
+ */
+async function loadCreateUserMessage() {
+	try {
+		const mod = await import('@deepseek-ai/dsh-llm');
+		return typeof mod?.createUserMessage === 'function' ? mod.createUserMessage : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/** 从一条 message 取文本（content 可能是 string 或块数组）。 */
+function skillAutoloadTextOf(message) {
+	const content = message?.content;
+	if (typeof content === 'string') { return content; }
+	if (Array.isArray(content)) {
+		return content.map(part => (typeof part === 'string' ? part : (part?.text ?? ''))).join('\n');
+	}
+	return '';
+}
+
+/**
+ * 「技能自动加载」（`config.skillAutoload`，缺省 = 空 = **完全不介入**）。
+ *
+ * 做法与 dsh 官方 catalog 完全同一条路：`agent/pre-step` 往 `decision.messages` 追加一条 **user** 消息。
+ * 为什么不能在 systemPrompt：见本函数上方的注释与 `vssaros-agents/lib/core/persona.js` 头注释（dsh 规范硬约束）。
+ */
+/**
+ * 把「自动加载发生了」**落盘**。
+ *
+ * 为什么必须落盘（2026-10-19 实测）：dsh 的**会话正文不落盘**（`session_projcache` 只有 rows 摘要），
+ * 插件的 `ctx.logger.info` 也**不进 main.log** ⇒ 不加这一行，"到底注入没注入"在生产上**永远查不到** ✗
+ * （本轮就是这样：配置链确认就位，但日志里零命中，无法判断是"没生效"还是"没记录"）。
+ *
+ * 落点 `<dataRoot>/skill-autoload.log`（与 `.agentmemory/gateway.log` 同一层）。
+ * ⚠ 失败不影响注入本身。
+ */
+async function logAutoload(config, line, deps = {}) {
+	try {
+		const writer = deps.appendLog ?? appendFile;
+		await writer(join(autoloadLogRoot(config), 'skill-autoload.log'), `[${new Date().toISOString()}] ${line}\n`, 'utf8');
+	} catch { /* 日志失败不能影响注入 */ }
+}
+
+/**
+ * 日志落点根目录 —— **不能直接用 `dataRootOf(config)`**。
+ *
+ * ★★ 2026-10-19 真机踩到：`dataRootOf()` 是 `foundation().dataRootOf(config)`，
+ *   而 `foundation()` 在**服务未绑定**时是 **抛错**（不是返回默认值 ✓ 见 foundationRef.js:24-31）。
+ *   绑定的时机是 `ctx.inject(['vssarosFoundation'], …)` —— **异步**，比 `apply()` 里的同步调用晚
+ *   ⇒ 于是"注入时的日志"永远抛错、被 catch 吞掉 ⇒ **`skill-autoload.log` 一次都没生成过** ✗
+ *   （我一度因此误判成"注入没发生"，其实只是没留痕 ✓）。
+ *
+ * 兜底顺序：`config.dataRoot` → `dataRootOf()` → `~/.vssaros-dev`。
+ * ⚠ 这里只用于**日志**：解析失败退回 home 下的默认根，不影响真正的数据根选择 ✓。
+ */
+function autoloadLogRoot(config) {
+	const configured = typeof config?.dataRoot === 'string' ? config.dataRoot.trim() : '';
+	if (configured) { return configured; }
+	try {
+		return dataRootOf(config);
+	} catch { /* foundation 尚未绑定（apply 阶段正常现象）⇒ 退回默认根 */ }
+	return join(homedir(), '.vssaros-dev');
+}
+
+/**
+ * 从**本包自己的 `cordis.patch.yml`** 里读出 `skillAutoload` 列表。
+ *
+ * ★★ 2026-10-20 真机（用户反复问「为什么没使用 understand 技能」）：
+ *   `skill-autoload.log` 里只有 10-19 的两条 `boot`，新 Host（10:36 启动、已装 0.7.3）**一条都没有**
+ *   ⇒ 因为 `installSkillAutoload` 在 `always.length === 0` 处直接 `return`，
+ *     连 boot 日志都打不出来 ✗（所以看起来像"插件没加载"，其实是"配置是空的"）。
+ *
+ *   空的原因：`cordis.presets.yml` 里已经声明了 `- id: vssaros-skills`（**无 config**），
+ *   于是 `cordis.patch.yml` 的 `insert`（带 `config.skillAutoload`）因 **id 已存在被跳过**
+ *   ⇒ `apply(ctx, {})` ⇒ `config.skillAutoload` 是 undefined
+ *   （`vssaros-kb` 的 `kb_list keys=[]` 是同一个根因 ✓）。
+ *
+ *   ⇒ 不跟 dsh 的 patch 语义较劲：**读自己包里的 patch 文件**拿默认值。
+ *     配置哪天真能传进来时，`config.skillAutoload` 依然优先 ✓。
+ *   ⚠ patch 文件里这段很小（`skillAutoload:` + 若干 `- name`），用手写小解析就够，
+ *     不值得为它引一个 YAML 依赖。
+ */
+function skillAutoloadFromOwnPatch() {
+	try {
+		const here = dirname(fileURLToPath(import.meta.url));
+		const text = readFileSync(join(here, '..', 'cordis.patch.yml'), 'utf8');
+		const lines = text.split(/\r?\n/);
+		const start = lines.findIndex(line => /^\s*skillAutoload:\s*$/.test(line));
+		if (start < 0) { return []; }
+		const out = [];
+		for (let i = start + 1; i < lines.length; i++) {
+			const item = /^\s*-\s+([A-Za-z0-9_.-]+)\s*(?:#.*)?$/.exec(lines[i]);
+			if (!item) { break; }   // 列表到此结束（下一条配置/空行）
+			out.push(item[1]);
+		}
+		return out;
+	} catch {
+		return [];
+	}
+}
+
+/**
+ * 本进程内**已注入过技能正文的 agent**。
+ *
+ * ★★ 2026-10-20（真机日志：同一 session 在 08:58:02 / 05 / 10 / 33 连续 `inject` 了 4 次，每次 3301 字节）：
+ *   幂等判据（扫消息里有没有 `<skill_content name="x"`）**在这里失效** —— `enter` 日志显示
+ *   `messages=0`，即 pre-step 的入参里根本没有历史消息 ⇒ 每次都当成"首次" ⇒ 重复注入 ✗
+ *   ⇒ 后果是上下文随轮次线性膨胀（10 轮对话 = 33 KB 同样的正文重复），既费 token 也让模型困惑。
+ *   ⇒ 用 agent 对象本身做键，**每个会话只注一次**。
+ *   ⚠ 用 `WeakSet` 而不是 `Set`：Host 长跑时会话对象会被回收，`Set` 会一直持有它们（内存泄漏）。
+ *   ⚠ Host 重启后标记消失 ⇒ 同一会话会**重新注入一次** —— 这是可接受的：进程都换了，
+ *     模型本来也需要重新拿到正文 ✓。
+ */
+const injectedAgents = new WeakSet();
+
+export function installSkillAutoload(ctx, config, deps = {}) {
+	const fromConfig = Array.isArray(config?.skillAutoload)
+		? config.skillAutoload.filter(name => typeof name === 'string' && name.trim()).map(name => name.trim())
+		: [];
+	// config 优先（将来 dsh 修好、或用户在 overlay 里显式配置都走这里）；空则读自己包里的 patch。
+	// ⚠ `deps.autoloadFallback` 只为可测性：smoke 里那些"空配置 ⇒ 不注入"的用例，
+	//   若走真实兜底会读到包里的 patch 而意外注入 ⇒ 必须能替换成 `() => []` ✓。
+	const fallback = deps.autoloadFallback ?? skillAutoloadFromOwnPatch;
+	const always = fromConfig.length > 0 ? fromConfig : fallback();
+	if (always.length === 0) { return; }
+
+	// ★ 2026-10-19：**boot 日志**。没有它就只能看到"没有 inject 日志"，无法区分
+	//   「插件根本没加载 / skillAutoload 没传进来」和「加载了但 pre-step 没触发」✗
+	//   （真机就是这么卡住的：日志一条都没有，只能靠猜 ✓）。
+	//   ⚠ 落点见 autoloadLogRoot：**绕开 foundation**（apply 阶段它还没绑定 ✓）。
+	void logAutoload(config, `boot skills=${always.join(',')}`, deps);
+
+	const warned = new Set();
+	const warn = (key, text) => {
+		if (warned.has(key)) { return; }
+		warned.add(key);
+		try { ctx.logger?.warn?.(`[skill-autoload] ${text}`); } catch { /* logger 不可用 ⇒ 静默 */ }
+	};
+
+	ctx.effect(() => {
+		// ★★ 2026-10-20（真机：boot 有 50 行、enter 一行都没有）：`boot` 能写说明执行流**过了**
+		//   `if (always.length === 0) return;` 那道闸 ⇒ 下面这行注册代码**一定被执行到**。
+		//   但如果连这行 `registered` 都没出现，就说明 `ctx.effect` 的回调**没被调用**
+		//   （作用域/生命周期问题，而不是事件没触发）。
+		//   三行日志因此能精确分段：boot（apply 到了）→ registered（effect 回调跑了）→ enter（事件到了）。
+		//
+		// ★★★ 2026-10-20 **真根因（命中）**：`agent/pre-step` 是 **agent 作用域**的事件
+		//   （dsh 声明是 `this: Scoped<Agent>`）。对照内置 `time-context` 插件 ——
+		//   它写的是 `export const inject = ['agents']`，即在**有 agents 服务的作用域**里注册；
+		//   而本插件此前**没有把 `ctx.on` 架到那个作用域**（直接挂在根 ctx 上）
+		//   ⇒ `apply()` 跑得通（boot 有日志），但 **pre-step 事件到不了这里**（enter 永远不来）✓
+		//   ⇒ 用 `ctx.inject(['agents'], scope => …)` 把监听挂进去。
+		//   ⚠ 为什么不用顶层 `export const inject = ['agents']`：那会让**整个插件**依赖 agents 服务
+		//     ⇒ 无 agent 的 profile（headless / 精简模板）里本插件不再激活，而它还要注册技能目录/工具
+		//     （见文件头注释：三个注册都走可选依赖 ⇒ 任何 profile 都能激活 ✓）。
+		//     用 `ctx.inject` 只在**有该服务时**挂这段，其余功能不受影响 ✓。
+		ctx.inject(['agents'], scope => scope.effect(() => {
+			void logAutoload(config, `registered skills=${always.join(',')}`, deps);
+			const autoloadHandler = async ({ agent, messages, signal }, next) => {
+		// ★★ 2026-10-20 真机：`skill-autoload.log` 里**只有 boot、没有 inject** ⇒
+		//   无法区分"pre-step 压根没触发"和"触发了但被幂等跳过/注入失败" ✗。
+		//   这里**进入 handler 就落一行**（每轮一行，量很小）⇒ 下一次就能定性：
+		//     · 连 enter 都没有 ⇒ 事件名/注册时机不对（插件层解决不了，要看 dsh 侧）
+		//     · 有 enter 没有 inject ⇒ 是幂等判据或技能读取的问题（本文件内可修）
+		void logAutoload(config, `enter session=${agent?.session?.id ?? agent?.id ?? '(unknown)'} messages=${Array.isArray(messages) ? messages.length : '?'}`, deps);
+		// ★ 2026-10-20：**本进程已注入过这个 agent ⇒ 直接放行**（见 injectedAgents 的注释）。
+		//   放在最前面短路：省掉后续的幂等扫描与技能读取（`next()` 仍要调，否则链路断）。
+		if (agent && injectedAgents.has(agent)) {
+			void logAutoload(config, `skip session=${agent?.session?.id ?? agent?.id ?? '(unknown)'}（本进程已注入过）`, deps);
+			return next();
+		}
+		const decision = await next();
+		if (decision.kind === 'reject') { return decision; }
+
+		const current = Array.isArray(decision.messages) ? decision.messages : [];
+		// 幂等：已有该技能的 `<skill_content name="x"` ⇒ 跳过（本插件注入的 / 模型自己用 `skill` 加载的都算）
+		const present = new Set();
+		for (const message of current) {
+			const text = skillAutoloadTextOf(message);
+			if (!text.includes('<skill_content')) { continue; }
+			for (const name of always) {
+				if (!present.has(name) && text.includes(`<skill_content name="${name}"`)) { present.add(name); }
+			}
+			if (present.size === always.length) { break; }
+		}
+		const todo = always.filter(name => !present.has(name));
+		if (todo.length === 0) { return decision; }
+
+		// `deps.createUserMessage` 只为可测性（离线 smoke 在仓库根跑，解析不到 dsh 的包 ⇒ 动态 import 会失败）
+		const createUserMessage = deps.createUserMessage ?? await loadCreateUserMessage();
+		if (!createUserMessage) {
+			warn('factory', '拿不到 createUserMessage（@deepseek-ai/dsh-llm 不可解析）⇒ 本轮不注入');
+			return decision;
+		}
+		// ★★ 2026-10-20（真机：`cannot get property "skills" without inject`）：
+		//   这里原先直接读 **`ctx.skills`** —— 而 `installSkillAutoload` 是在 apply 里
+		//   **裸调**的（不在 `ctx.inject(['skills'], …)` 内）⇒ cordis 对"未声明的服务"
+		//   一律抛错（见 memory: cordis 里读未声明服务一定抛 ✗）。
+		//   之前没暴露，纯粹是因为 handler 一次都没被调用过（作用域不对 ⇒ 走不到这里）；
+		//   0.7.6 把监听挂进 agent 作用域后**第一次真的执行到这行**，于是当场炸 ✓
+		//   ⇒ 改成从 `deps.skills` 取（由调用点的 `ctx.inject(['skills'], …)` 传进来）。
+		let registry = deps.skills;
+		if (!registry) {
+			// ⚠ 这一段**只为测试/兼容**：真机上未声明 inject 时 `ctx.skills` 会**抛**
+			//   （不是返回 undefined）⇒ 必须 try。生产路径恒先拿到 `deps.skills`
+			//   （由调用点 `ctx.inject(['skills'], …)` 传入 ✓）。
+			try { registry = ctx.skills; } catch { registry = undefined; }
+		}
+		if (!registry || typeof registry.get !== 'function') {
+			warn('registry', 'skills 注册表不可用（deps.skills 缺失）⇒ 本轮不注入');
+			return decision;
+		}
+
+		const lookup = { cwd: agent?.session?.header?.cwd, signal, scope: agent };
+		const blocks = [];
+		const injectedNames = [];
+		for (const name of todo) {
+			let skill;
+			try {
+				skill = await registry.get(name, lookup);
+			} catch (e) {
+				warn(`get:${name}`, `读取技能失败 ${name}：${String(e?.message ?? e)}`);
+				continue;
+			}
+			if (!skill || typeof skill.content !== 'string' || skill.content.length === 0) {
+				// 名字写错 / 目录没挂上 —— 必须说出来（否则又是"配了没反应"那种最难查的形态 ✗）
+				warn(`missing:${name}`, `技能不存在或没有正文：${name}（检查 skillAutoload 的拼写与技能目录挂载）`);
+				continue;
+			}
+			const body = skill.content.length > SKILL_AUTOLOAD_MAX_BODY
+				? `${skill.content.slice(0, SKILL_AUTOLOAD_MAX_BODY)}\n…（正文过长，已截断）`
+				: skill.content;
+			blocks.push(`<skill_content name="${skill.name}">\n${body}\n</skill_content>`);
+			injectedNames.push(skill.name);
+		}
+		if (blocks.length === 0) { return decision; }
+
+		const message = createUserMessage({
+			content: [{
+				type: 'text',
+				text: [
+					'<system-reminder>',
+					'以下技能的完整正文已按配置**自动加载**（vssaros-skill-autoload）。请直接遵循其中的指令；',
+					'不要再用 `skill` 工具重复加载同名技能（重复加载只会白烧上下文）。',
+					'',
+					...blocks,
+					'</system-reminder>',
+				].join('\n'),
+			}],
+			source: { kind: SKILL_AUTOLOAD_SOURCE_KIND, form: 'instructions' },
+		});
+		// ★ 落盘（唯一可查的证据链：会话正文不落盘、logger 不进 main.log）
+		const sessionId = agent?.session?.id ?? agent?.id ?? '(unknown)';
+		const bytes = blocks.reduce((sum, b) => sum + b.length, 0);
+		void logAutoload(config, `inject session=${sessionId} skills=${injectedNames.join(',')} bytes=${bytes}`, deps);
+		// 注入成功 ⇒ 记下这个 agent（下次 pre-step 直接短路，不再重复注入）
+		if (agent) { injectedAgents.add(agent); }
+		try { ctx.logger?.info?.(`[skill-autoload] 注入 ${blocks.length} 个技能：${injectedNames.join(', ')}`); } catch { /* 忽略 */ }
+			return { ...decision, messages: [...current, message] };
+			};   // ← 闭合 autoloadHandler
+			// ★★ 2026-10-20：**handler 内全局捕获**。背景：`enter` 出现过、`inject` 从未出现，
+			//   而 UI 报 `cannot get property "skills" without inject` 却**没有任何栈落盘**
+			//   （main.log / harness-*.log / renderer.log 三处都查过，全无）。
+			//   handler 里抛的异常此前完全不可见 ⇒ 只能靠猜「是哪一行」✗。
+			//   这里把**任何**未捕获异常连同栈写进 `skill-autoload.log`，然后**原样再抛**
+			//   （不掩盖失败：dsh 仍需知道本轮失败 ✓）。
+			return scope.on('agent/pre-step', async (payload, next) => {
+				try {
+					return await autoloadHandler(payload, next);
+				} catch (e) {
+					void logAutoload(config, `ERROR ${e?.stack ?? e?.message ?? String(e)}`, deps);
+					throw e;
+				}
+			});
+		}));           // ← 闭合 scope.effect(() => …) 与 ctx.inject(['agents'], …)
+	});                // ← 闭合最外层 ctx.effect(() => …)
+}
+
 export function apply(ctx, config = {}) {
 	// 重构 1.3：绑定 foundation 共享服务（dataRoot/dshHome/pageShell/lock 的真源）。
 	{
@@ -515,6 +808,19 @@ export function apply(ctx, config = {}) {
 	// 缺省（不写）⇒ **与从前完全一样** ✓（零行为改变）。可选的 `skills` provider 注入**不受影响** ✓：
 	// 那是"技能来源"，两次挂载注册的是**同一个来源名**（幂等 ✓），而工具重复注册是**静默顶掉** ✓。
 	const hostHalf = config.hostHalf === true;
+
+	// ── 技能**自动加载**（★ 2026-10-19）──────────────────────────────────────────────
+	// dsh 原生只有「`<available_skills>` 目录 + 按需 `skill` 工具」，是否加载**全靠模型自觉**
+	// （实测几百个会话：`skill` 从未被主动调用；A 类"讲懂"请求 recall@1 只有 33%）。
+	// 官方没有 `activation: always` / 预加载配置 ⇒ 在插件层补：会话首轮把配置的技能**完整正文**注入上下文。
+	// ⚠ 只能 **user 角色**：`developer` 会被 `withoutDeveloperMessages()` 静默剔除，
+	//   `system` 对应的 `system/message` 事件必须在打开的 step 内 ⇒ 插件写不进去（见 vssaros-agents/core/persona.js）。
+	// ⚠ 幂等：消息里已出现 `<skill_content name="x"` 就跳过（我们注入的、模型自己 `skill` 加载的都算）。
+	// ★ 2026-10-20：**在 `skills` 作用域里调用** —— 内部要用 `skills.get()` 读技能正文，
+	//   而 cordis 不允许在未声明该服务的作用域里访问它（否则抛 `cannot get property "skills" without inject`）。
+	//   传 `scope.skills` 进 deps，`installSkillAutoload` 内部就不再碰 `ctx.skills` ✓。
+	//   ⚠ 没有 skills 服务的 profile 里这段不会执行（可选依赖语义 ⇒ 其余功能照常 ✓）。
+	ctx.inject(['skills'], scope => installSkillAutoload(ctx, config, { skills: scope.skills }));
 
 	// ★ 写入类工具的**审批闸**（报告 §R.7 第 ① 项 / README 5.103 同一把 ✓）：
 	// 官方派发前决策钩子 `tools/pre-execute`（waterfall ✓）返回 `{ kind: 'ask' }` ＝"先问用户" ✓；

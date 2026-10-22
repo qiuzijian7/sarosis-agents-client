@@ -4,8 +4,8 @@
 # 它声明"我们的 agent preset"：官方 standard preset 的**逐字副本**（保留 `!!js` 标签 ✓，见 baseline 文件）
 # + `preset-vssaros.rows.yml` 里那几行我们的模块 ✓。
 # ⚠ 与官方 preset 的**关键差异只有这些**：
-#   · `config.id` = `vssaros-standard`（官方是 `standard`）、行 id = `preset-vssaros-standard`、`order` = 3；
-#   · `config.name` = `standard`（官方那条没有 name ⇒ 界面会退回显示内部 id `vssaros-standard` ✗，故补上 ✓）；
+#   · `config.id` = `vssaros-standard`（官方是 `standard`）、行 id = `preset-vssaros-standard`、`order` = 100；
+#   · `config.name` = `标准模式（VsSaros）`（官方那条没有 name ⇒ 界面会退回显示内部 id `vssaros-standard` ✗，故补上 ✓）；
 #   · plugins 里**删掉**了 persona 行（官方 suffix 带 {{cwd}}，子代理作用域必炸 ✗；
 #     删掉后由全局层生效 —— 我们已把全局 personaSuffix 烘焙成无变量字面量，文案一致 ✓）；
 #   · plugins 末尾追加了我们的行。
@@ -16,6 +16,10 @@
 #   `@deepseek-ai/dsh-agent-tool-presentation`（`mode: ptc`）⇒ 模型只看到 `run_code` + 自动生成的 SDK
 #   （默认 native 档是直接发 197 个 schema）。**不要**把它设成默认 —— 它是拿来做 A/B 的 ✓；
 #   `ctx.ptcRuntime` 由 host 层 `dsh-base` 的 `ptc-runtime` 行提供，本文件不需要挂 ✓。
+#
+# ★ 第三个 preset `vssaros-full`（"全能力"档，2026-10-21）：与上面那份**逐字相同**，**只差** `vssaros-agents` 行的 `denyTools` 清单
+#   （标准档藏掉"场景类"工具省 token；本档放开它们 ⇒ 能力不丢 ✓）。切档即可换轻重 ✓；
+#   ⚠ 两份的**行集合必须完全相同** ⇒ "切档后差多少"才可归因（守卫会盯 ✓）。
 # Agent preset standard: one `@deepseek-ai/dsh-agent-preset` declaration inserted
 # after the web patch. Edits saved from the Web editor override this row's
 # `config.plugins` by id from the profile patch.
@@ -24,13 +28,16 @@
       name: '@deepseek-ai/dsh-agent-preset'
       config:
         id: vssaros-standard
-        name: standard
-        order: 3
+        name: 标准模式（VsSaros）
+        description: "带 VsSaros 能力模块的默认档：知识库 / 记忆 / 看板 / 代码库 / 工作流等已挂载，工具面按预算收敛（省 token）。"
+        order: 100
         plugins:
           - id: agent-instructions
             name: '@deepseek-ai/dsh-agent-instructions'
             config:
               maxBytes: 65536
+          - id: time-context
+            name: '@deepseek-ai/dsh-time-context'
           - id: tool-bash
             name: '@deepseek-ai/dsh-tool-bash'
             disabled: !!js process.platform === 'win32'
@@ -45,6 +52,8 @@
               sampleOverCapGlobResults: false
           - id: tool-jobs
             name: '@deepseek-ai/dsh-tool-jobs'
+          - id: tool-schedule
+            name: '@deepseek-ai/dsh-tool-schedule'
           - id: skill-filesystem
             name: '@deepseek-ai/dsh-skill-filesystem'
           - id: tool-skill
@@ -63,7 +72,7 @@
                 name: '@deepseek-ai/dsh-plan-mode'
                 config:
                   section: |
-                    You are in plan mode. Stay in plan mode until exit_plan_mode succeeds or the user switches the session mode. Imperative language to implement changes means plan the implementation, not execute it. A user's conversational agreement — including an answer confirming something you asked — approves nothing and does not end plan mode; fold the confirmed decision into the plan and submit it through exit_plan_mode.
+                    You are in plan mode. Stay in plan mode until the user approves your plan through exit_plan_mode or switches the session mode. Imperative language to implement changes means plan the implementation, not execute it. A user's conversational agreement — including an answer confirming something you asked — approves nothing and does not end plan mode; fold the confirmed decision into the plan and submit it through exit_plan_mode.
 
                     Explore first. Use non-mutating reads, searches, static analysis, and checks to ground the plan in the actual repository. Do not edit or write files, change configuration, run formatters or code generation that rewrites tracked files, commit, or otherwise carry out the plan. Prefer existing functions and patterns over new machinery.
 
@@ -107,41 +116,17 @@
                   provider: spawn
                   toolName: subagent
                   modelSelectionSettings: true
-                  backgroundMode: continuable
               - id: tool-subagent-fork
                 name: '@deepseek-ai/dsh-tool-subagent'
                 config:
                   provider: fork
                   toolName: subagent_fork
-                  backgroundMode: continuable
-              - id: tool-subagent-codex
-                name: '@deepseek-ai/dsh-tool-subagent'
-                disabled: true
-                config:
-                  provider: codex
-                  toolName: subagent_codex
-                  backgroundMode: one-shot
-                  maxDepth: provider-managed
-              - id: tool-subagent-claude-code
-                name: '@deepseek-ai/dsh-tool-subagent'
-                disabled: true
-                config:
-                  provider: claude-code
-                  toolName: subagent_claude_code
-                  backgroundMode: one-shot
-                  maxDepth: provider-managed
               - id: workflow-ptc
                 name: '@deepseek-ai/dsh-workflow-ptc'
                 config:
                   provider: spawn
               - id: tool-workflow
                 name: '@deepseek-ai/dsh-tool-workflow'
-              - id: tool-ralph
-                name: '@deepseek-ai/dsh-tool-ralph'
-                disabled: true
-                config:
-                  subagentProvider: spawn
-                  maxRounds: 64
           - id: tool-ask-user
             name: '@deepseek-ai/dsh-tool-ask-user'
           - id: tool-todo
@@ -157,6 +142,9 @@
             name: '@deepseek-ai/dsh-tool-present'
           - id: tool-plugin-manager
             name: '@deepseek-ai/dsh-plugin-manager/tools'
+            disabled: true
+          - id: tool-plugin-market
+            name: '@deepseek-ai/dsh-plugin-market/tools'
             disabled: true
           # ── 我们的行（R13：把"给模型用的"能力放进 preset plane）──────────────────────────────
           # 与官方同一套做法：preset 的 `config.plugins` 里列出这个 agent 该有的行 ✓。
@@ -242,6 +230,37 @@
                 - 'memory_work'
                 - 'memory_import'
                 - 'memory_skill'
+                # ── 飞书族（2026-10-21 加）：**零损失**的那一类 ────────────────────────────
+                # 族级用量的结论（`doc/tool-surface-family-usage.md`）：`feishu_*` 5 个工具 ≈887 tok
+                #   （占可见面 23,454 tok 的 3.8%），而**真机账上调用 0 次** —— 因为飞书通道
+                #   **没配 token ⇒ 路由不注册（fail-closed ✓）** ⇒ 这几个工具调了也必然失败。
+                # ⇒ 藏掉它们是**纯收益**（省 887 tok，且不给模型一个"点了就报错"的假能力 ✓）。
+                # ⚠ 将来真接了飞书通道 ⇒ **删掉这一行**（否则模型看不到飞书工具 ✗）。
+                - 'feishu_*'
+                # ── 标准档再藏"场景类"族（2026-10-21；量化见 doc/tool-surface-family-usage.md）──
+                # 这些族在 29 个真机会话里**调用 0 次**，而它们的可见面合计 ≈4.9k tok
+                #   （占可见面 23,454 tok 的 **21%**）⇒ 藏掉是**默认档**的净收益。
+                # ⚠ 藏 = 模型**看不见**这些工具 ⇒ 需要时切 `Full (VsSaros)` 档即可（**能力不丢** ✓）。
+                #   逐族理由：feishu=通道未配置（调了必失败）· workflow=多 agent 编排场景 ·
+                #   media/video/image/vision/extract/text=媒体管线场景 · dashboard=看板页面场景 ·
+                #   mcp=外部 MCP 透传 · web=URL 抓取 · unreal=Unreal 工程场景。
+                - 'workflow_*'
+                - 'media_*'
+                - 'video_*'
+                - 'image_*'
+                - 'vision_*'
+                - 'extract_*'
+                - 'text_*'
+                - 'dashboard_*'
+                - 'mcp_*'
+                - 'web_*'
+                - 'unreal_*'
+                # ── Full 档（`vssaros-full`）用的清单：只藏 MCP 图像那一族 ────────────────
+                # ⚠ 这份清单**只给** Full 档用（生成器把它换进 Full 那份 preset 的 `denyTools` ✓）；
+                #   标准档读的是上面那份 ⇒ 两者**行集合完全相同**、**只差 mask** ⇒ 单变量可归因 ✓。
+                #   保留 comfy 藏身：它是 39 个工具 / ≈15.5k tok 的图像管线，另有 `image_generate` 工具可用 ✓。
+              denyToolsFull:
+                - 'mcp__comfy-mcp__*'
           # web-content-import（2026-10-15 新增模块）：按 URL 抓平台文章/视频内容（HTTP+reader /
           # yt-dlp+字幕/ASR），可写进知识库 库/raw/。纯工具、无页面 ⇒ 与 host 面双挂载只多一份
           # 工具注册（dsh 的工具重复注册是幂等顶掉 ✓）；本插件**没有模块级状态** ⇒ 不串话 ✓。
@@ -270,13 +289,16 @@
       name: '@deepseek-ai/dsh-agent-preset'
       config:
         id: vssaros-ptc
-        name: PTC (VsSaros)
-        order: 4
+        name: PTC 模式（VsSaros）
+        description: "与标准档同一套能力，但工具以批量执行（PTC）方式呈现：模型只看到 run_code 与自动生成的 SDK。"
+        order: 101
         plugins:
           - id: agent-instructions
             name: '@deepseek-ai/dsh-agent-instructions'
             config:
               maxBytes: 65536
+          - id: time-context
+            name: '@deepseek-ai/dsh-time-context'
           - id: tool-bash
             name: '@deepseek-ai/dsh-tool-bash'
             disabled: !!js process.platform === 'win32'
@@ -291,6 +313,8 @@
               sampleOverCapGlobResults: false
           - id: tool-jobs
             name: '@deepseek-ai/dsh-tool-jobs'
+          - id: tool-schedule
+            name: '@deepseek-ai/dsh-tool-schedule'
           - id: skill-filesystem
             name: '@deepseek-ai/dsh-skill-filesystem'
           - id: tool-skill
@@ -309,7 +333,7 @@
                 name: '@deepseek-ai/dsh-plan-mode'
                 config:
                   section: |
-                    You are in plan mode. Stay in plan mode until exit_plan_mode succeeds or the user switches the session mode. Imperative language to implement changes means plan the implementation, not execute it. A user's conversational agreement — including an answer confirming something you asked — approves nothing and does not end plan mode; fold the confirmed decision into the plan and submit it through exit_plan_mode.
+                    You are in plan mode. Stay in plan mode until the user approves your plan through exit_plan_mode or switches the session mode. Imperative language to implement changes means plan the implementation, not execute it. A user's conversational agreement — including an answer confirming something you asked — approves nothing and does not end plan mode; fold the confirmed decision into the plan and submit it through exit_plan_mode.
 
                     Explore first. Use non-mutating reads, searches, static analysis, and checks to ground the plan in the actual repository. Do not edit or write files, change configuration, run formatters or code generation that rewrites tracked files, commit, or otherwise carry out the plan. Prefer existing functions and patterns over new machinery.
 
@@ -353,41 +377,17 @@
                   provider: spawn
                   toolName: subagent
                   modelSelectionSettings: true
-                  backgroundMode: continuable
               - id: tool-subagent-fork
                 name: '@deepseek-ai/dsh-tool-subagent'
                 config:
                   provider: fork
                   toolName: subagent_fork
-                  backgroundMode: continuable
-              - id: tool-subagent-codex
-                name: '@deepseek-ai/dsh-tool-subagent'
-                disabled: true
-                config:
-                  provider: codex
-                  toolName: subagent_codex
-                  backgroundMode: one-shot
-                  maxDepth: provider-managed
-              - id: tool-subagent-claude-code
-                name: '@deepseek-ai/dsh-tool-subagent'
-                disabled: true
-                config:
-                  provider: claude-code
-                  toolName: subagent_claude_code
-                  backgroundMode: one-shot
-                  maxDepth: provider-managed
               - id: workflow-ptc
                 name: '@deepseek-ai/dsh-workflow-ptc'
                 config:
                   provider: spawn
               - id: tool-workflow
                 name: '@deepseek-ai/dsh-tool-workflow'
-              - id: tool-ralph
-                name: '@deepseek-ai/dsh-tool-ralph'
-                disabled: true
-                config:
-                  subagentProvider: spawn
-                  maxRounds: 64
           - id: tool-ask-user
             name: '@deepseek-ai/dsh-tool-ask-user'
           - id: tool-todo
@@ -403,6 +403,9 @@
             name: '@deepseek-ai/dsh-tool-present'
           - id: tool-plugin-manager
             name: '@deepseek-ai/dsh-plugin-manager/tools'
+            disabled: true
+          - id: tool-plugin-market
+            name: '@deepseek-ai/dsh-plugin-market/tools'
             disabled: true
           # ── 我们的行（R13：把"给模型用的"能力放进 preset plane）──────────────────────────────
           # 与官方同一套做法：preset 的 `config.plugins` 里列出这个 agent 该有的行 ✓。
@@ -488,6 +491,37 @@
                 - 'memory_work'
                 - 'memory_import'
                 - 'memory_skill'
+                # ── 飞书族（2026-10-21 加）：**零损失**的那一类 ────────────────────────────
+                # 族级用量的结论（`doc/tool-surface-family-usage.md`）：`feishu_*` 5 个工具 ≈887 tok
+                #   （占可见面 23,454 tok 的 3.8%），而**真机账上调用 0 次** —— 因为飞书通道
+                #   **没配 token ⇒ 路由不注册（fail-closed ✓）** ⇒ 这几个工具调了也必然失败。
+                # ⇒ 藏掉它们是**纯收益**（省 887 tok，且不给模型一个"点了就报错"的假能力 ✓）。
+                # ⚠ 将来真接了飞书通道 ⇒ **删掉这一行**（否则模型看不到飞书工具 ✗）。
+                - 'feishu_*'
+                # ── 标准档再藏"场景类"族（2026-10-21；量化见 doc/tool-surface-family-usage.md）──
+                # 这些族在 29 个真机会话里**调用 0 次**，而它们的可见面合计 ≈4.9k tok
+                #   （占可见面 23,454 tok 的 **21%**）⇒ 藏掉是**默认档**的净收益。
+                # ⚠ 藏 = 模型**看不见**这些工具 ⇒ 需要时切 `Full (VsSaros)` 档即可（**能力不丢** ✓）。
+                #   逐族理由：feishu=通道未配置（调了必失败）· workflow=多 agent 编排场景 ·
+                #   media/video/image/vision/extract/text=媒体管线场景 · dashboard=看板页面场景 ·
+                #   mcp=外部 MCP 透传 · web=URL 抓取 · unreal=Unreal 工程场景。
+                - 'workflow_*'
+                - 'media_*'
+                - 'video_*'
+                - 'image_*'
+                - 'vision_*'
+                - 'extract_*'
+                - 'text_*'
+                - 'dashboard_*'
+                - 'mcp_*'
+                - 'web_*'
+                - 'unreal_*'
+                # ── Full 档（`vssaros-full`）用的清单：只藏 MCP 图像那一族 ────────────────
+                # ⚠ 这份清单**只给** Full 档用（生成器把它换进 Full 那份 preset 的 `denyTools` ✓）；
+                #   标准档读的是上面那份 ⇒ 两者**行集合完全相同**、**只差 mask** ⇒ 单变量可归因 ✓。
+                #   保留 comfy 藏身：它是 39 个工具 / ≈15.5k tok 的图像管线，另有 `image_generate` 工具可用 ✓。
+              denyToolsFull:
+                - 'mcp__comfy-mcp__*'
           # web-content-import（2026-10-15 新增模块）：按 URL 抓平台文章/视频内容（HTTP+reader /
           # yt-dlp+字幕/ASR），可写进知识库 库/raw/。纯工具、无页面 ⇒ 与 host 面双挂载只多一份
           # 工具注册（dsh 的工具重复注册是幂等顶掉 ✓）；本插件**没有模块级状态** ⇒ 不串话 ✓。
@@ -514,3 +548,208 @@
             name: '@deepseek-ai/dsh-agent-tool-presentation'
             config:
               mode: ptc
+
+# Agent preset standard: one `@deepseek-ai/dsh-agent-preset` declaration inserted
+# after the web patch. Edits saved from the Web editor override this row's
+# `config.plugins` by id from the profile patch.
+- insert:
+    - id: preset-vssaros-full
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: vssaros-full
+        name: 标准档 · 全工具（VsSaros）
+        description: "与标准档同一套能力，但放开被收敛掉的场景类工具（媒体 / 看板 / MCP / Web / Unreal 等）：能力最全，token 也最贵。"
+        order: 102
+        plugins:
+          - id: agent-instructions
+            name: '@deepseek-ai/dsh-agent-instructions'
+            config:
+              maxBytes: 65536
+          - id: time-context
+            name: '@deepseek-ai/dsh-time-context'
+          - id: tool-bash
+            name: '@deepseek-ai/dsh-tool-bash'
+            disabled: !!js process.platform === 'win32'
+          - id: tool-pwsh
+            name: '@deepseek-ai/dsh-tool-pwsh'
+            disabled: !!js process.platform !== 'win32'
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+          - id: tool-fs-search
+            name: '@deepseek-ai/dsh-tool-fs-search'
+            config:
+              sampleOverCapGlobResults: false
+          - id: tool-jobs
+            name: '@deepseek-ai/dsh-tool-jobs'
+          - id: tool-schedule
+            name: '@deepseek-ai/dsh-tool-schedule'
+          - id: skill-filesystem
+            name: '@deepseek-ai/dsh-skill-filesystem'
+          - id: tool-skill
+            name: '@deepseek-ai/dsh-tool-skill'
+          - id: command-goal
+            name: '@deepseek-ai/dsh-command-goal'
+          - id: tool-goal
+            name: '@deepseek-ai/dsh-tool-goal'
+          - id: planning
+            name: cordis:group
+            group: true
+            isolate:
+              planMode: true
+            config:
+              - id: plan-mode
+                name: '@deepseek-ai/dsh-plan-mode'
+                config:
+                  section: |
+                    You are in plan mode. Stay in plan mode until the user approves your plan through exit_plan_mode or switches the session mode. Imperative language to implement changes means plan the implementation, not execute it. A user's conversational agreement — including an answer confirming something you asked — approves nothing and does not end plan mode; fold the confirmed decision into the plan and submit it through exit_plan_mode.
+
+                    Explore first. Use non-mutating reads, searches, static analysis, and checks to ground the plan in the actual repository. Do not edit or write files, change configuration, run formatters or code generation that rewrites tracked files, commit, or otherwise carry out the plan. Prefer existing functions and patterns over new machinery.
+
+                    The tool catalog stays the same across modes for request-cache stability. These plan-mode rules override any later tool description or guidance that suggests using mutation tools; those tools remain listed to keep the tool catalog unchanged. Do not use todo_write to track this planning phase: it tracks implementation after an approved plan, while the plan itself belongs in exit_plan_mode.
+
+                    Resolve discoverable facts by inspection. Use ask_user_question only for user-owned choices or material ambiguity that inspection cannot answer. Do not ask the user where code lives or how current behavior works when you can find out.
+
+                    Make the plan decision-complete: state the goal and success criteria; group implementation changes by subsystem; identify public API, schema, and data-flow changes; cover edge cases, failure modes, tests, acceptance criteria, and explicit assumptions. Keep it concise enough to review but detailed enough that another engineer can implement it without making design decisions.
+
+                    When ready, call exit_plan_mode with the complete plan markdown, starting with a # title. Make exit_plan_mode the only and final tool call in that assistant response: it presents the plan for approval, and implementation begins only in a later step after approval. Do not paste the final plan as a plain reply or ask "should I proceed?" through prose or ask_user_question. If review rejects it, incorporate the feedback and present again. If the review channel is unavailable or aborted, stay in plan mode and ask the user to switch modes manually; do not proceed with implementation.
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+              toolResultPruner: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+              - id: command-compact
+                name: '@deepseek-ai/dsh-command-compact'
+              - id: tool-result-pruner
+                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+                config:
+                  thresholdChars: 8192
+                  headChars: 4096
+                  tailChars: 1024
+          - id: delegation
+            name: cordis:group
+            group: true
+            isolate:
+              workflowEngine: true
+            config:
+              - id: tool-subagent-control
+                name: '@deepseek-ai/dsh-tool-subagent-control'
+              - id: tool-subagent-list-agents
+                name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
+              - id: tool-subagent
+                name: '@deepseek-ai/dsh-tool-subagent'
+                config:
+                  provider: spawn
+                  toolName: subagent
+                  modelSelectionSettings: true
+              - id: tool-subagent-fork
+                name: '@deepseek-ai/dsh-tool-subagent'
+                config:
+                  provider: fork
+                  toolName: subagent_fork
+              - id: workflow-ptc
+                name: '@deepseek-ai/dsh-workflow-ptc'
+                config:
+                  provider: spawn
+              - id: tool-workflow
+                name: '@deepseek-ai/dsh-tool-workflow'
+          - id: tool-ask-user
+            name: '@deepseek-ai/dsh-tool-ask-user'
+          - id: tool-todo
+            name: '@deepseek-ai/dsh-tool-todo'
+            config:
+              allowParallelInProgress: true
+          - id: tool-web
+            name: '@deepseek-ai/dsh-tool-web'
+            config:
+              fetch: true
+              searchTimeoutMs: 60000
+          - id: present
+            name: '@deepseek-ai/dsh-tool-present'
+          - id: tool-plugin-manager
+            name: '@deepseek-ai/dsh-plugin-manager/tools'
+            disabled: true
+          - id: tool-plugin-market
+            name: '@deepseek-ai/dsh-plugin-market/tools'
+            disabled: true
+          # ── 我们的行（R13：把"给模型用的"能力放进 preset plane）──────────────────────────────
+          # 与官方同一套做法：preset 的 `config.plugins` 里列出这个 agent 该有的行 ✓。
+          # ⚠ 缩进必须与官方 preset 的行一致（**10 空格** ✓，注释行也一样 ✗）：
+          #   0 = `- insert:` / 4 = `- id: preset-…` / 8 = `config:` `id:` `order:` `plugins:` / 10 = 行与注释 ✓。
+          #   **注释比后续项浅会被 YAML 判为 bad indentation** ✗ —— 2026-10-12 真机安装时就栽在这（离线字符串比对看不出来 ✗），
+          #   现已由守卫 `dshPresetPlane.test.ts` 的"YAML 缩进下限"断言盯住 ✓，不用等真机 ✓。
+          # 行 id 与 `dsh-plugins/*/cordis.patch.yml` 里的同名（同 id 在两层各自注册、按作用域取用 ✓）。
+          # ⚠ 目前这 8 行指向的模块**同时**还在 host plane 上挂着 ⇒ 一旦有会话选中本 preset，
+          #   它们会被**重复挂载** ✗（页面/服务重复 ✓）。⇒ 把默认 preset 切过来（第 ③ 步）之前，
+          #   必须先让 host 那几行 `disabled: true` ✓。
+          # ⚠ 本名单要**与工具面快照对齐**：`tools-snapshot.json` 里"注册了工具的**模块**插件"改了，
+          #   这里必须跟着改 —— 守卫 `dshPresetPlane.test.ts` 会红 ✓（不用靠人记 ✓）。
+          - id: vssaros-skills
+            name: '@vssaros/dsh-skills'
+          - id: vssaros-kanban
+            name: '@vssaros/dsh-kanban'
+          - id: vssaros-kb
+            name: '@vssaros/dsh-kb'
+          # memory（2026-10-20）：与 agents 同一条半边口径 —— `toolsOnly: true` ⇒ preset 内这次只注册工具。
+          # 不加的实测后果（`memory-audit/audit.jsonl`）：`agent/turn-stopping` 被挂两个监听 ⇒
+          # **每回合 distill 跑两遍**（审计成对：`ws-<workspaceId>` + `default`），
+          # 且 `systemPrompt.section` 也注册两次（同一段记忆进两遍提示词）。页面/路由重复由 dsh 按路径覆盖 ⇒ 无害。
+          - id: vssaros-memory
+            name: '@vssaros/dsh-memory'
+            config:
+              toolsOnly: true
+          - id: vssaros-media
+            name: '@vssaros/dsh-media'
+          - id: vssaros-workflow
+            name: '@vssaros/dsh-workflow'
+          - id: vssaros-codebase
+            name: '@vssaros/dsh-codebase'
+          # pele（2026-10-20 补）：**纯工具插件**（`view.kind: none`，无页面无图标）⇒ 与
+          # web-content-import 同档：preset 里必须有它，否则 `render_diagram` 一族在会话里看不见 ✗。
+          # （工具面快照里的 `@vssaros/dsh-pele` 一直没进 rows ⇒ `dshPresetPlane` 的"行名单 == 快照模块"
+          #  断言一直是红的 ✓ 这次一并修正。唯一**有意**的例外只剩 `@vssaros/dsh-sessions`，见守卫里的豁免表。）
+          - id: vssaros-pele
+            name: '@vssaros/dsh-pele'
+          - id: vssaros-dashboard
+            name: '@vssaros/dsh-dashboard'
+          - id: vssaros-ide
+            name: '@vssaros/dsh-ide'
+          # agents 的"只挂工具"行（2026-10-13，P2 生命周期工具）：`toolsOnly: true` ⇒  preset 内这次挂载
+          # 不碰页面/preset 注册（⇒ 与 host 面双挂载时**没有**页面/服务重复的问题，只有工具一份）。
+          - id: vssaros-agents
+            name: '@vssaros/dsh-agents'
+            config:
+              toolsOnly: true
+              # ── 工具面预算（0 档收敛，2026-10-20）──────────────────────────────────
+              # 真机量化：一次请求直发 197 个工具 ≈ 42.3k schema token，其中 `mcp__comfy-mcp__*`
+              # 39 个占 15.5k（36.6%），默认会话几乎不用 ⇒ 只对**模型可见性**做隐藏
+              # （`ctx.tools.restrict({deny})`：MCP 照连、工具照注册、审批照旧，只是不进目录）。
+              # 语法：精确名 或 `前缀*`；写错/没命中会打 Host 日志（`[vssaros-agents] denyTools …`）。
+              # 要恢复：删掉这两行（或按需加 `mcp__comfy-mcp__generate_image` 之类的白名单式精确名）。
+              denyTools:
+                - 'mcp__comfy-mcp__*'
+          # web-content-import（2026-10-15 新增模块）：按 URL 抓平台文章/视频内容（HTTP+reader /
+          # yt-dlp+字幕/ASR），可写进知识库 库/raw/。纯工具、无页面 ⇒ 与 host 面双挂载只多一份
+          # 工具注册（dsh 的工具重复注册是幂等顶掉 ✓）；本插件**没有模块级状态** ⇒ 不串话 ✓。
+          - id: vssaros-web-content-import
+            name: '@vssaros/dsh-web-content-import'
+          #   pele / web-content-import 同档：它注册了给模型用的工具，就必须在 preset 里挂上，
+          #   否则"preset 行名单 == 工具面快照里注册工具的模块"这条守卫会一直红（工具面 = 期望集合 ✓）。
+          # ★ 2026-10-19：**不再在 preset 内挂 `@vssaros/dsh-sessions`**。
+          #   它有**页面 + 路由**（不像 web-content-import 是纯工具），而 host 层已经插过同一 id
+          #   ⇒ 同一组合里两处同 id ⇒ preset 那次"从未启动"（真机日志：
+          #   `agent-preset/invalid: vssaros-sessions (@vssaros/dsh-sessions): never started`
+          #   ⇒ `session create failed` ⇒ 会话打不开、状态条卡「正在打开会话…」）。
+          #   工具（`session_search`）由 host 层注册，全局可见 ⇒ 这里不需要再挂 ✓
+          - id: vssaros-mcp
+            name: '@vssaros/dsh-mcp'
+          # ★ 官方 `working_directory` 工具（2026-10-19 用户报 `unknown tool "working_directory"`）：
+          #   包 `@deepseek-ai/dsh-tool-working-directory` 在 runtime 里，但**官方 standard preset 默认没有装配它**
+          #   （`preset-standard.baseline.yml` 里没有这行）⇒ 模型按别的 harness 的习惯调用就报 unknown tool ✗。
+          #   这里补上这一行把它挂进我们的 preset（= 官方 standard 逐字副本 + 我们的行）✓。
+          #   ⚠ 它是官方模块、不是我们的插件 ⇒ 不在 `tools-snapshot.json` 的覆盖范围内（快照只收 dsh-plugins/*）✓。
+          - id: tool-working-directory
+            name: '@deepseek-ai/dsh-tool-working-directory'

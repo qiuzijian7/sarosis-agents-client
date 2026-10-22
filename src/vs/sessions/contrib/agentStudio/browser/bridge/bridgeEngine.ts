@@ -593,7 +593,10 @@ export class BridgeEngine extends Disposable implements IBridgeEngineOps {
 
 	async listAgents(): Promise<Array<{ id: string; name: string; model: string }>> {
 		const agents = await this._studio.getAgents();
-		return agents.map(a => ({ id: a.id, name: a.name, model: a.model }));
+		// `Agent.model` 自 2026-10-20 起可为空（内置 agent 一律不写 = 跟随用户当前模型，见
+		// `builtinAgents.ts` 的注释）。桥协议这里保持 `string` 契约 ⇒ 空值归一成 `''`，
+		// 调用方按"空串 = 跟随默认"处理（与 `agentMdFormat` 的空值语义一致）。
+		return agents.map(a => ({ id: a.id, name: a.name, model: a.model ?? '' }));
 	}
 
 	async createSession(sessionKey: string, agentId: string, name?: string): Promise<string> {

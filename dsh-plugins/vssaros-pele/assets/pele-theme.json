@@ -1,0 +1,51 @@
+{
+  "$comment": "pele 的主题预设。为什么是**随包数据文件**而不是写进 JS/TS：同一个渲染器有两个消费方（dsh Host 的 lib/core/render.js 与 IDE 渲染进程的 peleDiagramRenderer.ts），主题必须**同一个真源**，否则会出现\"同一张图在 dsh 与 IDE 里两个配色\"。两侧都读这份 JSON（IDE 侧走 IFileService）。改这里 = 两边一起变。",
+  "$upstream": "https://pele.run/theming",
+  "version": 1,
+  "presets": {
+    "default": {
+      "$note": "浅色：对齐 VS Code 默认浅色工作台（前景 #1f1f1f / 编辑器底 #ffffff）。",
+      "--pele-bg": "#ffffff",
+      "--pele-fg": "#1f1f1f",
+      "--pele-muted": "#6e6e6e",
+      "--pele-line": "#3b3b3b",
+      "--pele-surface": "#f3f3f3",
+      "--pele-surface-alt": "#e6e6e6",
+      "--pele-border": "#8a8a8a",
+      "--pele-accent": "#5b7bd5",
+      "--pele-radius": "4px",
+      "--pele-font": "sans-serif",
+      "--pele-font-mono": "monospace",
+      "--pele-series-1": "#5b7bd5",
+      "--pele-series-2": "#5fa777",
+      "--pele-series-3": "#d5a15b",
+      "--pele-series-4": "#c1576b",
+      "--pele-series-5": "#8a6fc1",
+      "--pele-series-6": "#4ba3a5",
+      "--pele-series-7": "#b0835a",
+      "--pele-series-8": "#7d8fa3"
+    },
+    "dark": {
+      "$note": "深色：对齐 VS Code 默认深色工作台（前景 #d4d4d4 / 编辑器底 #1f1f1f）。",
+      "--pele-bg": "#1f1f1f",
+      "--pele-fg": "#d4d4d4",
+      "--pele-muted": "#9a9a9a",
+      "--pele-line": "#9a9a9a",
+      "--pele-surface": "#2d2d2d",
+      "--pele-surface-alt": "#3a3a3a",
+      "--pele-border": "#7a7a7a",
+      "--pele-accent": "#6ea0f2",
+      "--pele-radius": "4px",
+      "--pele-font": "sans-serif",
+      "--pele-font-mono": "monospace",
+      "--pele-series-1": "#6ea0f2",
+      "--pele-series-2": "#6cc08a",
+      "--pele-series-3": "#e0b675",
+      "--pele-series-4": "#d97b8c",
+      "--pele-series-5": "#a68bdd",
+      "--pele-series-6": "#5fbcc0",
+      "--pele-series-7": "#c89a70",
+      "--pele-series-8": "#9aaebf"
+    }
+  }
+}

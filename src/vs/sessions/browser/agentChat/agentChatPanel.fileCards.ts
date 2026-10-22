@@ -6,7 +6,7 @@ import { AgentChatPanelCodebaseCards } from './agentChatPanel.codebaseCards.js';
 import { createSvgIcon, FILE_ICON_D, ERROR_ICON_D } from './agentChatPanel.toolCards.js';
 import { parseToolArgsLoose } from './toolArgsJson.js';
 import { IDisposable } from '../../../base/common/lifecycle.js';
-import { onTerminalLiveOutput, getTerminalLiveOutput, clearTerminalLiveOutput } from './terminalLiveOutput.js';
+import { onTerminalLiveOutput, getTerminalLiveOutput, clearTerminalLiveOutput } from '../terminalLiveOutput.js';
 import { LINE_FOLD_LIMITS, planLineFold, planNextChunk } from './lineFoldPlan.js';
 
 /**

@@ -301,6 +301,30 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 		this.handleChatRequest(openConfig, [window]);
 	}
 
+	/**
+	 * 首次启动的那个窗口要不要**建窗即隐藏**（2026-10-21 用户要求：F5 / 打包双击 exe 都只看到 dsh 桌面窗口）。
+	 *
+	 * 三条来源（满足其一即隐藏）：
+	 *  ① `--agents` —— dev 的 `Launch VS Code Agents Internal` 带这个参数；
+	 *  ② `VSSAROS_START_HIDDEN=1` —— 兜底开关（其它启动方式想复现时用）；
+	 *  ③ **打包版的"裸启动"** —— 双击 exe 没有任何目标参数。打包版既没有 `--agents`、也没有
+	 *     launch.json 的 env（第一版只认前两条 ⇒ 打包版照旧先显示 IDE ✗）。
+	 *
+	 * ⚠ 带目标（文件夹 / 文件 / `--diff` / `--merge` / 位置参数）时**不隐藏**：那种启动用户的意图
+	 *   就是"打开这个目录的 IDE"，藏起来只剩一个 dsh 窗口才是 bug ✗。
+	 * 显示权在渲染进程（`DshFullWindowContribution`）：桌面窗口开出来就继续藏；未启用/失败 ⇒
+	 * `showWindow`，另有 20s / 45s 两级兜底 ✓。
+	 */
+	private _wantsHiddenStart(): boolean {
+		const args = this.environmentMainService.args;
+		if (args['agents'] === true || process.env['VSSAROS_START_HIDDEN'] === '1') {
+			return true;
+		}
+		const hasTarget = (Array.isArray(args._) && args._.length > 0)
+			|| !!args['folder-uri'] || !!args['file-uri'] || !!args['diff'] || !!args['merge'];
+		return !hasTarget && !!(process as INodeProcess).isEmbeddedApp;
+	}
+
 	async openAgentsWindow(openConfig: IOpenConfiguration, folderUri?: URI): Promise<ICodeWindow[]> {
 		this.logService.trace('windowsManager#openAgentsWindow');
 
@@ -2010,7 +2034,19 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 			const createdWindow = window = this.instantiationService.createInstance(CodeWindow, {
 				state,
 				extensionDevelopmentPath: configuration.extensionDevelopmentPath,
-				isExtensionTestHost: !!configuration.extensionTestsPath
+				isExtensionTestHost: !!configuration.extensionTestsPath,
+				// ★ 2026-10-21（Saros）：**agents 布局的首个窗口建窗即隐藏**（F5 直接看到 dsh 桌面窗口）。
+				//   判据两条（满足其一即隐藏，且**都只作用于 `initialStartup`** 的第一个窗口）：
+				//   ① 这次启动是 `--agents`（= 这个窗口就是 sessions/agents 窗口；dev 的 F5 参数、
+				//      产品启动用的也是它）—— 2026-10-21 第一版只认环境变量，结果 launch.json 里加错
+				//      到另一条配置 ⇒ 用户 F5 后照旧看到 IDE ✗；
+				//   ② 显式 `VSSAROS_START_HIDDEN=1`（其它启动方式想复现时用）。
+				//   显示权归渲染进程（`DshFullWindowContribution`：桌面窗口开出来就继续藏；
+				//   未启用/失败 ⇒ `showWindow`），另有 25s/30s 两级兜底 ✓。
+				// ★ 2026-10-21 第三轮（用户："打包出的版本，双击 exe。要求默认打开 desktop，不要开 ide"）：
+				//   打包版既没有 `--agents`、也没有 launch.json 的 env ⇒ 上面那版只在 dev 生效。
+				//   判据抽到 `_wantsHiddenStart()`（含"双击裸启动"这一条）✓
+				startHidden: configuration.isInitialStartup === true && this._wantsHiddenStart()
 			});
 			mark('code/didCreateCodeWindow');
 

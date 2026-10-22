@@ -5,7 +5,7 @@
  *   · 飞书**图片不支持 SVG**（实测：`file is not a supported BMP, GIF, JPEG, PNG, TIFF, or WebP image`）
  *     ⇒ mermaid / drawio 渲染出的 SVG 不能直接同步，必须先转成 PNG；
  *   · 项目没有 `sharp` / `resvg` / `svg2png` / `mmdc` 依赖，宿主侧也没有栅格化能力；
- *   · 但本模块运行在**渲染进程**（与 `mermaidInlineRenderer` 同一层，用 `mainWindow`），
+ *   · 但本模块运行在**渲染进程**（与 `peleDiagramRenderer` 同一层，用 `mainWindow`），
  *     那里有完整 DOM ⇒ 用 `canvas.drawImage` 即可栅格化，**不引入任何依赖、不需要 webview 通道**。
  *
  *  ⚠ 只有 `parseSvgSize` 是纯函数（可在 node 测试里跑）；`svgToPng` 依赖 DOM，只能真机验证。

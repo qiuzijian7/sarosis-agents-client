@@ -26,7 +26,7 @@ import { NodeEditorPopup } from './NodeEditorPopup';
 import { MindMapPanel } from '../mindmap/MindMapPanel';
 
 import { setActiveRunnerRegistry, setActiveRunnerPreference } from './comfyHost/runnerContext';
-import { MediaGallery } from './MediaGallery';
+
 import { ComfyRunnerRegistry, createDefaultLocalRunner, collectRunnerRows } from './comfyHost/comfyRunner';
 import { guiToApi, stripSarosNodesForExport } from './comfyHost/comfyApiAdapter';
 import { registerDefaultComfyTVStages, getNodeSpec } from './comfyHost/registry';
@@ -50,7 +50,7 @@ import { formatProgressPct } from './comfyHost/progressFormat';
 import { runReversePrompt } from './comfyHost/reversePromptRun';
 import { loadObjectInfoNodes } from './comfyHost/comfyObjectInfoLoader';
 import { useWorkflowEditorStore, undo as doUndo, redo as doRedo, pauseTracking, resumeTracking, type WorkflowEditorNode, type WorkflowEditorEdge } from './store';
-import { sendRequest, createComfyFetch } from '../../bridge/messageClient';
+import { sendRequest, createComfyFetch, postMessage } from '../../bridge/messageClient';
 import { useAgentStore } from '../../store/useAgentStore';
 import { usePicklistStore } from './picklistStore';
 import { collectWriteStepIds } from './comfyHost/writeStepIds';
@@ -119,7 +119,6 @@ export const WorkflowEditorPanel: React.FC = () => {
 
 	// Canvas engine: LiteGraph (ComfyUI 底层框架) — ReactFlow 已移除，唯一引擎
 	const [showRunners, setShowRunners] = useState(false);
-	const [showMediaLibrary, setShowMediaLibrary] = useState(false);
 	// 点击 Runner 面板外部 → 自动关闭（面板容器 + 开关按钮两个 ref，点击开关按钮本身不触发关闭）
 	const runnerPanelRef = useRef<HTMLDivElement>(null);
 	const runnerBtnRef = useRef<HTMLButtonElement>(null);
@@ -2098,7 +2097,15 @@ const handleExecute = useCallback(async () => {
 						    注：原下拉里的「对齐选中节点」「重置视图」已在右键菜单里有等价入口
 						    （menuItems.ts: align / resetView）；「自动布局」「封装 Subflow/Loop/Parallel」
 						    仅此一处入口，本改动会一并丢失，后续需要时请找回。 */}
-						<button className="wft-btn" title="媒体库（生成图片资产管理）" onClick={() => setShowMediaLibrary(true)}>
+						{/* ★ 2026-10-19（用户要求"媒体库统一成一个编辑区页"）：不再开 webview 浮层
+						    （`MediaGallery.tsx` 已删），改为请宿主在**编辑区**打开唯一的媒体库页
+						    （`MediaGalleryEditorPane`），并带上 workflowId ⇒ 默认只看本工作流。
+						    ⚠ 页面自己开不了编辑器 ⇒ 必须 `postMessage` 交宿主（同「发布 ▾」那几条）。 */}
+						<button
+							className="wft-btn"
+							title="媒体库（在编辑区打开：生成图片资产 / 收藏 / 分组 / 标签 / 清理）"
+							onClick={() => postMessage('workflow.openMediaGallery', { workflowId, workflowName })}
+						>
 							🖼 媒体库
 						</button>
 
@@ -2667,13 +2674,6 @@ const handleExecute = useCallback(async () => {
 					/>
 				)}
 
-							{/* 媒体库（生成图片管理 P1）：按当前 workflow 过滤 + 全库 */}
-					{showMediaLibrary && (
-						<MediaGallery
-							workflowId={workflowId}
-							onClose={() => setShowMediaLibrary(false)}
-						/>
-					)}
 					{comfyImportMsg && (
 						<div style={{
 							position: 'absolute', bottom: 12, left: 12, zIndex: 5,

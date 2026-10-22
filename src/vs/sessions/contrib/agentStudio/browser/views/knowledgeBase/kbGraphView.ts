@@ -157,7 +157,33 @@ const LAYOUT = {
 	LABEL_BG_RADIUS: 6,
 	/** 标签内边距 [vertical, horizontal] */
 	LABEL_PADDING: [2, 6] as [number, number],
+	/**
+	 * ★ 2026-10-19：**低于这个缩放就不画默认态标签**（选中/hover/邻居不受限，永远画）。
+	 *   原因：标签是"白底 + 12px 小字"，缩得小的时候会糊成一片（真机反馈"满屏小方块"），
+	 *   而缩放回来又瞬间恢复 ⇒ 保留了"看名字"的能力，只是不再全程噪声。
+	 */
+	LABEL_MIN_SCALE: 0.6,
+	/** 标签最多显示几个字（原 12 —— 中文标题普遍 8-15 字，放到 18 更完整） */
+	LABEL_MAX_CHARS: 18,
 };
+
+/**
+ * 力导向参数（★ 2026-10-19 P1：工具条 ⚙ 面板可调）。
+ *
+ * 原先是 `_simulateStep` 里的三个魔数（0.16 / 0.2 / 0.008）—— 用户既看不出含义也改不了 ✗，
+ * 而"图摊得太开 / 挤成一团"恰恰是最常见的调参诉求（Obsidian 就有 Forces 面板）。
+ * 值域只是面板滑杆的**提示**，代码不做强校验（让用户能调到极端再调回来 ✓）。
+ */
+export interface IGraphForces {
+	/** 排斥强度（理想边长系数）：越大节点越散，默认 0.16 */
+	repulsion: number;
+	/** 连线吸引强度：越大相连节点越紧，默认 0.20 */
+	spring: number;
+	/** 向心强度：越大整体越聚拢，默认 0.008 */
+	center: number;
+}
+
+export const DEFAULT_GRAPH_FORCES: IGraphForces = { repulsion: 0.16, spring: 0.2, center: 0.008 };
 
 // ---------------------------------------------------------------------------
 // 节点样式（三态）
@@ -307,6 +333,39 @@ export class KbGraphView extends Disposable {
 	private _highlightedNodes: Set<string> = new Set();
 	/** 双击高亮时，关联的边集合 */
 	private _highlightedEdges: Set<IRenderEdge> = new Set();
+	/**
+	 * ★ 2026-10-19：**hover 邻居高亮**（对齐 Obsidian「悬停即看连接」）用的**独立集合**。
+	 *
+	 * 为什么不复用 `_highlightedNodes`：那个是**双击钉住**的（持久，直到下次点击/双击），
+	 * 而 hover 是**临时**的（鼠标移开就该消失）。共用一个集合的话，鼠标移开会把双击钉住的
+	 * 高亮一起清掉 ✗。⇒ 状态判定时取两者**并集**，清理时只清自己那一对 ✓。
+	 */
+	private _hoverNeighborNodes: Set<string> = new Set();
+	/** 同上：hover 邻居关联的边 */
+	private _hoverNeighborEdges: Set<IRenderEdge> = new Set();
+
+	/**
+	 * ★ 2026-10-19（P1，对齐 Obsidian 的 Filters）：是否显示**孤立节点**（度数为 0）。
+	 * 默认 `true` —— 隐藏后用户很容易误以为"笔记丢了"；真正需要时（库大、孤点淹没主体）才关掉。
+	 */
+	private _showOrphans = true;
+	/**
+	 * ★ 2026-10-19（P1，对齐 Obsidian 的 **Local graph**）：只渲染该节点 N 跳内的子图。
+	 * `null` = 全图。深度目前固定 1（hover 邻居已覆盖 1 跳的"看连接"需求，
+	 * 聚焦用于"把周围这一圈单独拎出来看"）。
+	 */
+	private _localFocus: { id: string; depth: number } | null = null;
+	/**
+	 * 聚焦可见集合的**缓存**（`null` = 不限制）。
+	 * ⚠ 必须在 `_draw` 里读缓存而不是现算：BFS 是 O(N×E)，每帧算会打满主线程 ✗。
+	 */
+	private _focusCache: Set<string> | null = null;
+	/** 度数表（id → 关联边数）：孤点判定 + 局部聚焦 BFS 用；loadGraph 时重建。 */
+	private _degree = new Map<string, number>();
+	/** ★ 2026-10-19（P1）：力导向参数（⚙ 面板可调，见 IGraphForces） */
+	private _forces: IGraphForces = { ...DEFAULT_GRAPH_FORCES };
+	/** 标签显示阈值（低于该缩放不画默认态标签；⚙ 面板可调） */
+	private _labelMinScale = LAYOUT.LABEL_MIN_SCALE;
 
 	// 诊断状态
 	private _simRunning = false;
@@ -373,6 +432,8 @@ export class KbGraphView extends Disposable {
 		this._canvas.addEventListener('wheel', this._onWheel);
 		this._canvas.addEventListener('click', this._onClick);
 		this._canvas.addEventListener('dblclick', this._onDblClick);
+		// ★ 2026-10-19：移出画布要清掉临时 hover 高亮（否则鼠标移走后邻居还亮着 ✗）
+		this._canvas.addEventListener('mouseleave', this._onMouseLeave);
 
 		// Resize
 		this._registerResizeObserver();
@@ -424,6 +485,16 @@ export class KbGraphView extends Disposable {
 			}
 		}
 
+		// ★ 2026-10-19（P1）：重建度数表（孤点开关 / 局部聚焦 BFS 都用它）；
+		//   新数据到来时旧的聚焦目标可能已不存在 ⇒ 清掉，否则会画出一张空图 ✗。
+		this._degree.clear();
+		for (const e of this._edges) {
+			this._degree.set(e.source.data.id, (this._degree.get(e.source.data.id) ?? 0) + 1);
+			this._degree.set(e.target.data.id, (this._degree.get(e.target.data.id) ?? 0) + 1);
+		}
+		this._localFocus = null;
+		this._focusCache = null;   // 新数据 ⇒ 聚焦缓存必须失效（否则会画出上一份图的子集 ✗）
+
 		this._info(`loadGraph 完成：节点=${this._nodes.length}, 边=${this._edges.length}`);
 		if (this._nodes.length > 800) {
 			this._warn(`节点数=${this._nodes.length} 较大：力导向每帧约 ${this._nodes.length * this._nodes.length} 次斥力计算`);
@@ -435,6 +506,189 @@ export class KbGraphView extends Disposable {
 	relayout(): void {
 		if (this._nodes.length === 0) { return; }
 		this._startSimulation();
+	}
+
+	// -----------------------------------------------------------------------
+	// P1（2026-10-19）：过滤（孤点）/ 局部聚焦 / 适应视图
+	// -----------------------------------------------------------------------
+
+	/**
+	 * 计算局部聚焦的可见集合（BFS `depth` 跳）；`null` ⇒ 不限制（全图）。
+	 *
+	 * ⚠ 这是 **O(N×E)**（550 节点 × 550 边 ≈ 30 万次），**绝不能每帧算** ✗ ——
+	 *   60fps 下会直接把主线程打满。⇒ 只在聚焦目标变化时算一次，结果存 `_focusCache`，
+	 *   渲染时读缓存（见 `_focusSet()`）。
+	 */
+	private _computeFocusSet(): Set<string> | null {
+		const focus = this._localFocus;
+		if (!focus) { return null; }
+		const start = this._nodeMap.get(focus.id);
+		if (!start) { return null; }
+		const keep = new Set<string>([focus.id]);
+		let frontier: IRenderNode[] = [start];
+		for (let d = 0; d < focus.depth && frontier.length > 0; d++) {
+			const next: IRenderNode[] = [];
+			for (const node of frontier) {
+				for (const edge of this._edges) {
+					const other = edge.source === node ? edge.target : (edge.target === node ? edge.source : null);
+					if (other && !keep.has(other.data.id)) {
+						keep.add(other.data.id);
+						next.push(other);
+					}
+				}
+			}
+			frontier = next;
+		}
+		return keep;
+	}
+
+	/** 重算聚焦缓存（`setLocalFocus` / `loadGraph` 之后调用一次即可）。 */
+	private _recomputeFocus(): void {
+		this._focusCache = this._computeFocusSet();
+	}
+
+	/** 渲染期读聚焦缓存（O(1)；不要在 `_draw` 里调 `_computeFocusSet` ✗）。 */
+	private _focusSet(): Set<string> | null {
+		return this._focusCache;
+	}
+
+	/** 节点当前是否该画（聚焦过滤优先，其次孤点开关）。 */
+	private _isNodeVisible(node: IRenderNode, focus: Set<string> | null): boolean {
+		if (focus) { return focus.has(node.data.id); }
+		if (!this._showOrphans && (this._degree.get(node.data.id) ?? 0) === 0) { return false; }
+		return true;
+	}
+
+	/** 边是否该画：**两端都要可见** —— 否则会出现"连向一个看不见的点"的悬空线 ✗。 */
+	private _isEdgeVisible(edge: IRenderEdge, focus: Set<string> | null): boolean {
+		return this._isNodeVisible(edge.source, focus) && this._isNodeVisible(edge.target, focus);
+	}
+
+	/** 显示/隐藏孤立节点（度数为 0）。默认显示 —— 藏起来容易让人以为"笔记丢了"。 */
+	setShowOrphans(show: boolean): void {
+		if (this._showOrphans === show) { return; }
+		this._showOrphans = show;
+		this._requestDraw();
+	}
+
+	getShowOrphans(): boolean { return this._showOrphans; }
+
+	/**
+	 * 局部聚焦：只显示 `id` 的 `depth` 跳子图（对齐 Obsidian 的 Local graph）。
+	 * @param id null ⇒ 回全图
+	 */
+	setLocalFocus(id: string | null, depth = 1): void {
+		if (!id) {
+			if (!this._localFocus) { return; }
+			this._localFocus = null;
+			this._recomputeFocus();   // 清缓存 ⇒ 恢复全图
+			this._requestDraw();
+			return;
+		}
+		if (!this._nodeMap.has(id)) { return; }   // 找不到就不动（不画空图 ✗）
+		this._localFocus = { id, depth: Math.max(1, depth | 0) };
+		this._recomputeFocus();       // ★ 只在这里算一次 BFS（渲染期读缓存 ✓）
+		this._requestDraw();
+	}
+
+	/** 当前聚焦的节点 id（null = 全图） */
+	getLocalFocusId(): string | null { return this._localFocus?.id ?? null; }
+
+	/**
+	 * 按标题模糊查找节点（⚙ 面板的「聚焦到某篇」用）。
+	 *
+	 * 匹配顺序：**精确**（忽略大小写）→ 首个**包含**匹配 ⇒ 命中返回 `data.id`，否则 `null`。
+	 * ⚠ 先精确再包含：否则输"分析"时可能跳到第一篇名字里恰好含"分析"的无关笔记 ✗。
+	 */
+	findNodeByLabel(text: string): string | null {
+		const q = String(text ?? '').trim().toLowerCase();
+		if (!q) { return null; }
+		let partial: string | null = null;
+		for (const node of this._nodes) {
+			const label = String(node.data.label ?? '').toLowerCase();
+			if (label === q) { return node.data.id; }
+			if (!partial && label.includes(q)) { partial = node.data.id; }
+		}
+		return partial;
+	}
+
+	/** 当前选中的节点 id（工具条「聚焦」用；没选中时调用方可用 hover 兜底） */
+	getSelectedNodeId(): string | null { return this._selectedNode?.data.id ?? null; }
+
+	/** 当前 hover 的节点 id（同上） */
+	getHoveredNodeId(): string | null { return this._hoveredNode?.data.id ?? null; }
+
+	/** 可见节点数（孤点/聚焦过滤后；工具条计数用） */
+	getVisibleCount(): number {
+		const focus = this._focusSet();
+		let n = 0;
+		for (const node of this._nodes) { if (this._isNodeVisible(node, focus)) { n++; } }
+		return n;
+	}
+
+	/**
+	 * 把整张图缩放到画布内（对齐 Obsidian 的"适应视图"）。
+	 * 变换口径与 `_draw` 一致：`screen = (world - center) * scale + offset + center`
+	 *   ⇒ 让世界包围盒中心落到画布中心，只需要 `offset = -(worldCenter - center) * scale` ✓。
+	 */
+	/**
+	 * @param onlyVisible `true`（默认）= **只按当前可见节点**算包围盒 —— 聚焦/隐藏孤点时，
+	 *   按全图算会把视野缩到整库尺度 ⇒ 聚焦等于白聚焦 ✗（这是本轮实测出来的）。
+	 */
+	fitToView(onlyVisible = true): void {
+		if (!this._canvas || this._nodes.length === 0) { return; }
+		const dpr = window.devicePixelRatio || 1;
+		const w = this._canvas.width / dpr;
+		const h = this._canvas.height / dpr;
+		const focus = this._focusSet();
+		let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+		for (const node of this._nodes) {
+			if (onlyVisible && !this._isNodeVisible(node, focus)) { continue; }
+			if (node.x < minX) { minX = node.x; }
+			if (node.x > maxX) { maxX = node.x; }
+			if (node.y < minY) { minY = node.y; }
+			if (node.y > maxY) { maxY = node.y; }
+		}
+		// 一个可见节点都没有（过滤光了）⇒ 不动视野，交给画布中央的提示说明情况
+		if (!Number.isFinite(minX) || !Number.isFinite(minY)) { return; }
+		const pad = 60;
+		const bw = Math.max(1, maxX - minX);
+		const bh = Math.max(1, maxY - minY);
+		const scale = Math.max(0.1, Math.min(3, Math.min((w - pad * 2) / bw, (h - pad * 2) / bh)));
+		this._scale = scale;
+		this._offsetX = -(((minX + maxX) / 2) - this._centerX) * scale;
+		this._offsetY = -(((minY + maxY) / 2) - this._centerY) * scale;
+		this._requestDraw();
+	}
+
+	/** 当前力参数（⚙ 面板初始化用） */
+	getForces(): IGraphForces { return { ...this._forces }; }
+
+	/**
+	 * 更新力参数（★ 2026-10-19 P1，⚙ 面板驱动）。
+	 *
+	 * @param relayout 默认 `true` = **重新加热**布局（`alpha` 归 1 后重跑，**位置保留**）——
+	 *   拖滑杆时用户要"立刻看到图变化"；若只想改值不重排（例如启动时恢复持久化配置），传 `false`。
+	 * ⚠ `relayout()` 不会重置坐标（见它的实现）⇒ 拖滑杆不会把布局打散 ✓。
+	 */
+	setForces(patch: Partial<IGraphForces>, relayout = true): void {
+		this._forces = { ...this._forces, ...patch };
+		if (relayout) { this.relayout(); } else { this._requestDraw(); }
+	}
+
+	/** 标签显示阈值（低于该缩放不画默认态标签） */
+	getLabelMinScale(): number { return this._labelMinScale; }
+
+	/** 设置标签显示阈值（夹在 0.2–2.0；非数字按默认值处理） */
+	setLabelMinScale(v: number): void {
+		const n = Number.isFinite(v) ? v : LAYOUT.LABEL_MIN_SCALE;
+		this._labelMinScale = Math.max(0.2, Math.min(2, n));
+		this._requestDraw();
+	}
+
+	/** 当前图规模（工具条计数用；2026-10-19 —— 用户看到"20 个点 0 条线"就能自己判断是不是没建链接 ✓）。 */
+	getStats(): { nodes: number; links: number } {
+		return { nodes: this._nodes.length, links: this._edges.length };
 	}
 
 	resize(): void {
@@ -462,6 +716,7 @@ export class KbGraphView extends Disposable {
 			this._canvas.removeEventListener('wheel', this._onWheel);
 			this._canvas.removeEventListener('click', this._onClick);
 			this._canvas.removeEventListener('dblclick', this._onDblClick);
+			this._canvas.removeEventListener('mouseleave', this._onMouseLeave);
 		}
 		super.dispose();
 	}
@@ -497,8 +752,8 @@ export class KbGraphView extends Disposable {
 
 	private _simulateStep(): void {
 		const area = this._centerX * 2 * this._centerY * 2;
-		// 缩短理想边长（原 *0.2 → *0.16），让相连节点更紧凑，避免整体摊得过开
-		const k = Math.sqrt(area / (this._nodes.length || 1)) * 0.16;
+		// 理想边长 = sqrt(面积/节点数) × **排斥强度**（原先是写死的 0.16；现在可调，见 IGraphForces）
+		const k = Math.sqrt(area / (this._nodes.length || 1)) * this._forces.repulsion;
 		const alpha = this._alpha;
 		const collideRadius = LAYOUT.COLLIDE_RADIUS;
 
@@ -532,8 +787,8 @@ export class KbGraphView extends Disposable {
 			let dx = edge.target.x - edge.source.x;
 			let dy = edge.target.y - edge.source.y;
 			const dist = Math.max(1, Math.sqrt(dx * dx + dy * dy));
-			// 增强弹簧引力（0.1 → 0.2），相连节点被拉得更近
-			const force = (dist - k * 2) * alpha * 0.2;
+			// 弹簧引力：系数可调（默认 0.2 —— 越大相连节点被拉得越近）
+			const force = (dist - k * 2) * alpha * this._forces.spring;
 			dx /= dist;
 			dy /= dist;
 			edge.source.vx += dx * force;
@@ -545,8 +800,9 @@ export class KbGraphView extends Disposable {
 		// 中心引力（0.001 → 0.008，显著增强以收敛整体散布）+ 速度衰减
 		for (const node of this._nodes) {
 			if (node === this._dragging) { continue; }
-			node.vx += (this._centerX - node.x) * alpha * 0.008;
-			node.vy += (this._centerY - node.y) * alpha * 0.008;
+			// 中心引力：系数可调（默认 0.008 —— 越大整体越聚拢）
+			node.vx += (this._centerX - node.x) * alpha * this._forces.center;
+			node.vy += (this._centerY - node.y) * alpha * this._forces.center;
 			node.vx *= 0.9;
 			node.vy *= 0.9;
 			node.x += node.vx;
@@ -573,22 +829,99 @@ export class KbGraphView extends Disposable {
 		ctx.scale(this._scale, this._scale);
 		ctx.translate(-this._centerX, -this._centerY);
 
-		// 边
+		// ★ 2026-10-19（P1）：过滤 —— 局部聚焦优先，其次孤点开关（两者都只影响**渲染**，
+		//   被隐藏的节点仍然参与力导向计算 ⇒ 反复开关不会把布局打散 ✓）。
+		const focus = this._focusSet();
+
+		// 边（两端都要可见才画；否则会出现"连向一个看不见的点"的悬空线 ✗）
 		for (const edge of this._edges) {
+			if (!this._isEdgeVisible(edge, focus)) { continue; }
 			this._drawEdge(edge);
 		}
 
 		// 节点
+		let drawn = 0;
 		for (const node of this._nodes) {
+			if (!this._isNodeVisible(node, focus)) { continue; }
 			this._drawNode(node);
+			drawn++;
 		}
 
 		ctx.restore();
+
+		// ★ 2026-10-19：**空图引导**（真机反馈："一堆散点，不知道是不是坏了"）。
+		//   边只来自 `[[双链]]`；库里没有互链时画布必然是一堆孤立点 —— 这是**数据状态**，
+		//   不是故障，但原先界面一句解释都没有 ⇒ 用户只能判成 bug ✗（与 Obsidian 的差距也在这里：
+		//   它会用 Orphans 开关 / Filters 让你立刻明白"是没建链接"）。
+		if (this._nodes.length === 0) {
+			this._drawHintLine(w, h, '没有可显示的笔记', '先点右上角「🔄 构建图谱」扫描知识库（库 + 笔记）');
+		} else if (drawn === 0) {
+			// 被过滤光了要**说清是哪种过滤**（否则用户以为图和数据都没了 ✗）
+			this._drawHintLine(w, h, '当前过滤条件下没有可见节点',
+				focus ? '点工具条「⤢ 全图」退出聚焦' : '点工具条「◌ 孤点」把孤立笔记显示出来');
+		} else if (this._edges.length === 0) {
+			this._drawHintLine(w, h, `本库 ${this._nodes.length} 篇笔记，0 条双链`, '在笔记里写 [[另一篇笔记名]] 就会连线；也可点「重新布局」看分布');
+		}
 	}
 
-	/** 获取节点的三态视觉状态 */
+	/**
+	 * 画布中央的两行提示（空图 / 无边）。
+	 * ⚠ 在 `ctx.restore()` **之后**用屏幕坐标绘制 ⇒ 不跟随缩放平移，任何视图下都居中可见 ✓。
+	 */
+	private _drawHintLine(w: number, h: number, title: string, detail: string): void {
+		const ctx = this._ctx;
+		const font = '"SF Pro Display", system-ui, -apple-system, sans-serif';
+		ctx.save();
+		ctx.textAlign = 'center';
+		ctx.textBaseline = 'middle';
+		ctx.fillStyle = this._theme.textLabel;
+		ctx.globalAlpha = 0.85;
+		ctx.font = `600 13px ${font}`;
+		ctx.fillText(title, w / 2, h / 2 - 12);
+		ctx.globalAlpha = 0.6;
+		ctx.font = `400 11px ${font}`;
+		ctx.fillText(detail, w / 2, h / 2 + 12);
+		ctx.restore();
+	}
+
+	/**
+	 * 某节点的「自身 + 相邻节点 + 关联边」三件套。
+	 *
+	 * ★ 2026-10-19：抽出来给**双击（钉住）**与**hover（临时）**共用同一套算法
+	 *   —— 原来这段写在 `_onDblClick` 里，hover 想加就得抄一遍（抄了就必然漂移 ✗）。
+	 */
+	private _neighborSetsOf(node: IRenderNode): { nodes: Set<string>; edges: Set<IRenderEdge> } {
+		const nodes = new Set<string>([node.data.id]);
+		const edges = new Set<IRenderEdge>();
+		for (const edge of this._edges) {
+			if (edge.source === node) {
+				nodes.add(edge.target.data.id);
+				edges.add(edge);
+			} else if (edge.target === node) {
+				nodes.add(edge.source.data.id);
+				edges.add(edge);
+			}
+		}
+		return { nodes, edges };
+	}
+
+	/** 更新 hover 邻居集合（node 为 null ⇒ 清空）。只在 hovered 变化时调用，不做逐帧计算。 */
+	private _updateHoverNeighbors(node: IRenderNode | null): void {
+		if (!node) {
+			if (this._hoverNeighborNodes.size > 0 || this._hoverNeighborEdges.size > 0) {
+				this._hoverNeighborNodes = new Set();
+				this._hoverNeighborEdges = new Set();
+			}
+			return;
+		}
+		const { nodes, edges } = this._neighborSetsOf(node);
+		this._hoverNeighborNodes = nodes;
+		this._hoverNeighborEdges = edges;
+	}
+
+	/** 获取节点的三态视觉状态（双击钉住 ∪ hover 邻居 —— 任一命中都算 HIGHLIGHTED） */
 	private _getNodeState(node: IRenderNode): VisualState {
-		if (this._highlightedNodes.has(node.data.id)) {
+		if (this._highlightedNodes.has(node.data.id) || this._hoverNeighborNodes.has(node.data.id)) {
 			return VisualState.HIGHLIGHTED;
 		}
 		if (node === this._selectedNode) {
@@ -597,9 +930,9 @@ export class KbGraphView extends Disposable {
 		return VisualState.DEFAULT;
 	}
 
-	/** 获取边的三态视觉状态 */
+	/** 获取边的三态视觉状态（同上，取并集） */
 	private _getEdgeState(edge: IRenderEdge): VisualState {
-		if (this._highlightedEdges.has(edge)) {
+		if (this._highlightedEdges.has(edge) || this._hoverNeighborEdges.has(edge)) {
 			return VisualState.HIGHLIGHTED;
 		}
 		if (edge === this._selectedEdge) {
@@ -649,13 +982,34 @@ export class KbGraphView extends Disposable {
 		}
 
 		// Halo 标签 + 半透明白底圆角 + 底部放置
-		this._drawNodeLabel(node, style);
+		if (this._shouldDrawLabel(node, state)) {
+			this._drawNodeLabel(node, style);
+		}
+	}
+
+	/**
+	 * 是否画这个节点的标签（★ 2026-10-19，标签降噪）。
+	 *
+	 * 规则（从宽到窄）：
+	 *   1. 选中 / 双击高亮 / hover 邻居 ⇒ **一定画**（这些是"我正在看它"的节点）；
+	 *   2. hover 的那个节点自身 ⇒ 一定画；
+	 *   3. 其余 ⇒ 只在 `scale >= LABEL_MIN_SCALE` 时画。
+	 *
+	 * 为什么这么切：标签是"白底 12px 小字"，缩小时会和节点糊成一片小方块（真机反馈），
+	 * 而"放大就能看到名字"这条能力必须保留 ⇒ 用缩放阈值而不是一刀切关掉。
+	 */
+	private _shouldDrawLabel(node: IRenderNode, state: VisualState): boolean {
+		if (state !== VisualState.DEFAULT) { return true; }
+		if (node === this._hoveredNode) { return true; }
+		// 阈值可调（⚙ 面板）；默认 LAYOUT.LABEL_MIN_SCALE = 0.6
+		return this._scale >= this._labelMinScale;
 	}
 
 	/** 绘制节点标签：Halo 描边 + 半透明白底圆角 + 底部放置 */
 	private _drawNodeLabel(node: IRenderNode, style: INodeStyle): void {
 		const ctx = this._ctx;
-		const label = node.data.label.slice(0, 12);
+		// ★ 2026-10-19：12 → 18 字（中文标题普遍 8–15 字，12 会截掉关键后缀，看不出是哪篇）
+		const label = node.data.label.slice(0, LAYOUT.LABEL_MAX_CHARS);
 		const fontSize = style.labelFontSize;
 		const fontWeight = style.labelFontWeight;
 
@@ -877,6 +1231,20 @@ export class KbGraphView extends Disposable {
 			// 悬停边时如果也悬停在节点上，优先节点
 			this._hoveredNode = hoveredNode;
 			this._hoveredEdge = hoveredNode ? null : hoveredEdge;
+			// ★ 2026-10-19：**悬停即高亮邻居**（对齐 Obsidian「Hover over each circle to highlight
+			//   that note's connections」）—— 原先只有双击才高亮，想"看看这篇连了谁"必须先双击，
+			//   而双击还会顺带打开笔记（打断浏览 ✗）。
+			this._updateHoverNeighbors(hoveredNode);
+			this._requestDraw();
+		}
+	};
+
+	/** 鼠标移出画布 ⇒ 清掉**临时** hover 状态（双击钉住的高亮不受影响 ✓） */
+	private _onMouseLeave = (): void => {
+		if (this._hoveredNode || this._hoveredEdge || this._hoverNeighborNodes.size > 0) {
+			this._hoveredNode = null;
+			this._hoveredEdge = null;
+			this._updateHoverNeighbors(null);
 			this._requestDraw();
 		}
 	};

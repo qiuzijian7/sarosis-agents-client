@@ -46,6 +46,20 @@ export const AGENT_STUDIO_TOOL_SEARCH_ENABLED_SETTING = 'agentStudio.toolSearch.
 /** Tool Search 自动折叠阈值（deferrable 工具 token 占上下文窗口的百分比，0–100）。 */
 export const AGENT_STUDIO_TOOL_SEARCH_THRESHOLD_PCT_SETTING = 'agentStudio.toolSearch.thresholdPct';
 
+/**
+ * AgentMemory 检索库的**上下文注入总开关**（2026-10-20）。
+ *
+ * 管的是 `<agentmemory-context>`（agentmemory 网关库的策展块注入，默认**关**）。它与 Agents
+ * 页签的「MEMORY.md 常驻注入」是**两套**互不写入的东西：
+ *   · MEMORY.md 常驻 = `.agent.md` 的 `memory-chars`（dsh 插件侧，默认开）；
+ *   · 本开关 = 检索库注入（IDE 侧，默认关；原先只能靠环境变量 AGENTMEMORY_INJECT_CONTEXT）。
+ * 关着时召回走 `memory_search` / `memory_recall` 工具 —— capture（写入）通道始终常开。
+ *
+ * 读取方：`agentMemoryInjection.isMemoryInjectionEnabled`（经 `ITurnHostContext` 取）。
+ * schema 注册在 `agentStudio.contribution.ts`。
+ */
+export const AGENT_STUDIO_MEMORY_INJECT_CONTEXT_SETTING = 'agentStudio.memory.injectContext';
+
 /** Unreal Engine 工具的 bridge 基址。留空回退到内置默认 `http://127.0.0.1:8765`。 */
 export const AGENT_STUDIO_UNREAL_BRIDGE_URL_SETTING = 'sessions.agentStudio.unreal.bridgeUrl';
 /** Unreal Engine bridge 内置默认地址（配置留空时使用）。 */
@@ -354,6 +368,14 @@ export const AGENT_STUDIO_DSH_SESSIONS_VIEW_ID = 'vssaros.dsh.sessionsView';
  * 生成器只 await 不迭代），没有静态对应物要并存。
  */
 export const AGENT_STUDIO_SCHEDULER_VIEW_ID = 'vssaros.dsh.schedulerView';
+
+/**
+ * 画布工作台（2026-10-21）的侧栏视图 id。
+ *
+ * `engine=legacy` 时**故意不注册**——画布引擎（Excalidraw，3.4MB）随 dsh 插件走，
+ * legacy 引擎侧没有画布可显示（注册一个打不开的图标 = 死按钮 ✗）。
+ */
+export const AGENT_STUDIO_DSH_IMAGEGEN_VIEW_ID = 'vssaros.dsh.imagegenView';
 
 // --- TOF (Taihu OA Framework) 登录配置 ---
 // 对接 OAuthSystem 网关 (太湖 MCP 鉴权网关)

@@ -16,9 +16,13 @@
 //     ⑦ `snippet`：命中位置前 40 / 后 80 的窗口，空白折叠，两端按需加 `…`；
 //     ⑧ 排序：**只按分数降序**（同分保持插入顺序 = 与 IDE 相同的遍历顺序）—— 这里**刻意不加**
 //        二级排序键：加了就会与 IDE 的并列顺序不一致（那正是口径分叉 ✗）。
+//     ⑨ 标签口径（2026-10-19 修订）：标签 = frontmatter tags ∪ 正文 `#标签#`；正文标签内部
+//        **不许含** `, ; : = ( ) [ ] { } < > "`（mermaid/CSS 色值跨分隔符配出乱码标签的事故 ✓）。
 //
 // ⚠ 两个正则都是 `/g`（**有状态**：`lastIndex` 会残留）⇒ 与 IDE 一样**每次调用现建**，
 //   绝不放到模块级（放上去就会出现"同一次进程里第一次对、第二次开始漏"这种最难查的错 ✗）。
+
+import { extractFrontmatterTags } from './kbFrontmatter.js';
 
 /** BM25 参数（照 `kbIndex.ts:80-81`）。 */
 export const BM25_K1 = 1.2;
@@ -68,12 +72,19 @@ export function tokenize(text) {
 /**
  * 提取 `#标签#` 并给出"去标签后的正文"（照 `kbIndex.ts:396-416`）。
  * 有效标签替换为**等长空格**（保持其余文本的偏移不变 ⇒ 以后若要在 cleanText 上做位置计算不会错位）；
- * 无效标签（空 / 超长）**保留原文**（不静默丢掉一段正文 ✗）。
+ * 无效标签（空 / 超长 / 含代码类标点）**保留原文**（不静默丢掉一段正文 ✗）。
+ *
+ * ⚠ 2026-10-19 修订（真机事故：`AI画风五档控制.md` 的 mermaid 图）：
+ *   `style A fill:#4a90d9,color:#fff` 被旧正则跨过 `,color:` 配对成 `#4a90d9,color:#`
+ *   ⇒ 页面「标签分类」出现 `#4a90d9,color:` 这种乱码标签 ✗。
+ *   修法：标签内部**不允许** CSS / mermaid / HTML 属性专属的 ASCII 标点
+ *   `, ; : = ( ) [ ] { } < > "` —— 正常标签（含中文、`-`、`_`、`/`、`+`、`.`）都不含它们 ✓。
+ *   排除后这些行**整体不命中**（原文保留，正文分词照旧 ✓）。
  */
 export function extractTags(text) {
 	const source = String(text ?? '');
 	const tags = [];
-	const tagRe = /#[^#\s\u2000-\u206F]+#/g;
+	const tagRe = /#[^#\s\u2000-\u206F,;:=()[\]{}<>"]+#/g;
 	const parts = [];
 	let lastEnd = 0;
 	let m;
@@ -110,8 +121,12 @@ export function fileNameOf(uri) {
  * 建索引。`docs` 每项 `{ uri, name, title?, text }`（`name` = 文件名；`uri` 是主键）。
  *
  * 与 IDE 的 `_addOrUpdateDoc` 等价：**重复 uri 后者覆盖前者**（IDE 是先 remove 再 add ✓），
- * 标签一律**从正文解析**（IDE 的 `doc.tags` 就是 `extractTags` 的结果 ✓ —— 不用 kernel 里那个
+ * 标签一律**从正文解析**（IDE 的 `doc.tags` 就是同一套解析的结果 ✓ —— 不用 kernel 里那个
  * `tags` 字段：那是另一条写路径的产物，混进来就是第二套口径 ✗）。
+ *
+ * ⚠ 2026-10-19 标签口径修订：标签 = **frontmatter tags ∪ 正文 #标签#**
+ *   （库里 133/166 篇只有 frontmatter tags ⇒ 只认正文会让「标签分类」几乎全落 `#无标签` ✗）。
+ *   合并去重按小写（与 tagIndex 的归一口径一致 ✓），frontmatter 在前（它是作者显式写的 ✓）。
  */
 export function buildIndex(docs) {
 	const postings = new Map();   // term -> Map(uri -> tf)
@@ -125,6 +140,11 @@ export function buildIndex(docs) {
 		const name = String(raw.name ?? fileNameOf(raw.uri));
 		const text = String(raw.text ?? '');
 		const { tags, cleanText } = extractTags(text);
+		// 2026-10-19 口径：frontmatter tags ∪ 正文 #标签#（小写去重、frontmatter 全集保序在前 ✓
+		// —— 与 IDE `_addOrUpdateDoc` 逐字同构 ✓；反向写入会让 fm 里与正文同名的那条被剔掉 ✗）
+		const fmTags = extractFrontmatterTags(text);
+		const fmSeen = new Set(fmTags.map(t => t.toLowerCase()));
+		const merged = [...fmTags, ...tags.filter(t => !fmSeen.has(t.toLowerCase()))];
 		const toks = tokenize(`${name.toLowerCase()} ${cleanText}`);
 		const uri = raw.uri;
 		// `...raw` 在前：保留调用方附带的字段（如 `vaultId` —— 命中结果要能被归回某个库 ✓）
@@ -133,7 +153,7 @@ export function buildIndex(docs) {
 			uri,
 			name,
 			title: typeof raw.title === 'string' && raw.title ? raw.title : name,
-			tags,
+			tags: merged,
 			length: toks.length,
 			text,
 		});

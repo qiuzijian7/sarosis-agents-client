@@ -583,10 +583,22 @@ suite('聊天页控件 · hero 工作区入口（遮蔽官方浮层 + 添加工�
 	function mount(opts: { bridge?: Record<string, any>; picker?: any; create?: (input: any) => Promise<any>; pushed?: string },
 		body: (h: any, state: Record<string, unknown>) => unknown): unknown {
 		const state: Record<string, unknown> = { sessionId: 's-a' };
+		/**
+		 * 事件监听**真收集**（2026-10-20）：页面在模块级装了一条 `mousedown`（捕获）用来记录
+		 * "这次 open 是不是从官方 chip 发起的"（2026-10-17 修「点输入框会弹出工作区下拉框」）。
+		 * 桩只写 noop 的话，那个落点恒为空 ⇒ `isOpenFromAnchor` 恒 false ⇒ 面板恒被抑制
+		 * ⇒ 本套 5 条全红（假红：代码对，假件没模拟"点 chip"这一步）。
+		 */
+		const listeners: Record<string, ((e: any) => void)[]> = {};
+		/** 官方 hero 那枚 WorkspaceChip 的替身：`contains` 认自己与自己的子节点。 */
+		const chipEl: any = {};
+		const chipInner: any = {};
+		chipEl.contains = (t: any) => t === chipEl || t === chipInner;
 		const doc: any = {
 			documentElement: { dataset: { vssarosWorktrees: opts.pushed ?? PUSH } },
-			addEventListener: () => undefined,
+			addEventListener: (name: string, fn: (e: any) => void) => { (listeners[name] ||= []).push(fn); },
 			removeEventListener: () => undefined,
+			querySelector: () => null,
 		};
 		const prev = (globalThis as any).document;
 		(globalThis as any).document = doc;
@@ -608,6 +620,10 @@ suite('聊天页控件 · hero 工作区入口（遮蔽官方浮层 + 添加工�
 				return undefined;
 			},
 		}, { state, menus: { closeOthers: () => undefined, register: () => () => undefined } });
+		// 让用例能模拟"点官方 chip"（页面在模块级监听 mousedown，见上面 listeners 的注释）
+		(h as any).chipEl = chipEl;
+		(h as any).chipInner = chipInner;
+		(h as any).fireDown = (target: any) => { for (const fn of listeners['mousedown'] ?? []) { fn({ target }); } };
 		let out: unknown;
 		try { out = body(h, state); } catch (e) { restore(); throw e; }
 		if (out && typeof (out as any).then === 'function') {
@@ -619,8 +635,11 @@ suite('聊天页控件 · hero 工作区入口（遮蔽官方浮层 + 添加工�
 
 	/** hero 槽 = 本 chunk 的**第 2 条**注册 ⇒ 一律 `render(1)` ✓（第 1 条永远是 header 入口）。 */
 	function heroTree(h: any, props: Record<string, unknown> = {}, onPick?: (id: string) => void, onClose?: () => void): any {
+		// 模拟"点官方那枚 chip"：面板只认**从 chip 发起**的 open（2026-10-17 的抑制逻辑，
+		// 见 client.workspace.js 的 isOpenFromAnchor）；不模拟这一步 ⇒ 面板恒被抑制（假红）。
+		h.fireDown?.(h.chipEl);
 		return h.render(1, {
-			open: true, selectedId: 'ws-1', anchorRef: { current: null },
+			open: true, selectedId: 'ws-1', anchorRef: { current: h.chipEl ?? null },
 			onPick: onPick ?? (() => undefined), onClose: onClose ?? (() => undefined),
 			...props,
 		});
@@ -643,9 +662,14 @@ suite('聊天页控件 · hero 工作区入口（遮蔽官方浮层 + 添加工�
 		});
 		// 负对照（按**注册形态**采集：注释里提旧通道名是允许的 ✓）
 		const ws = read(`${LIB}/client.workspace.js`);
-		const preset = read(`${LIB}/client.preset.js`);
 		assert.ok(!/shell\.heroWorktreeChip\s*=/.test(ws), '跨 chunk 传组件那条通道必须删除（留着就是第二枚 chip 回来 ✗）');
-		assert.ok(!/createElement\(worktreeChip/.test(preset), 'hero 装配里不许再渲染 worktree chip ✗');
+		// ★ 2026-10-21 第四轮：hero 模式槽**由我们接管**（官方 seat 的菜单 = roster 全量 ⇒ agent 必然
+		//   与模式并排 ⇒ 违背「agent 不作为 preset 呈现」）⇒ 但**不许**再出现第二枚 chip，
+		//   且切换必须走官方 remote API（不依赖宿主页面桥 ⇒ 无桥环境也能切 ✓）。
+		const presetCode = read(`${LIB}/client.preset.js`).replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+		assert.ok(!/createElement\(worktreeChip/.test(presetCode), 'hero 装配里不许再渲染 worktree chip ✗');
+		assert.ok(/remote\.agentPresets\.select/.test(presetCode),
+			'模式切换必须走官方 remote API（ctx.remote.agentPresets.select）—— 依赖宿主桥会在无桥环境点了没反应 ✗');
 	});
 
 	test('hero 面板：没打开只有自证壳；打开后按**官方给的 selectedId** 判当前工作区（不能用会话归属 ✗）', () => {
@@ -661,6 +685,27 @@ suite('聊天页控件 · hero 工作区入口（遮蔽官方浮层 + 添加工�
 			assert.strictEqual(cur.props.style.background, 'var(--dsw-alias-bg-layer-2, transparent)',
 				'hero 里"当前工作区"的权威是官方给的 selectedId（空白屏还没有会话 ⇒ 用 sessionIds 会永远读不到 ✓）');
 			assert.strictEqual(other.props.style.background, 'transparent', '非当前项不许画成选中态');
+		});
+	});
+
+	test('★ 抑制逻辑仍在：open 的上升沿**不是**从官方 chip 发起 ⇒ 本次不渲染面板（2026-10-17 那条真机修复）', () => {
+		// 为什么在"修假件"的同一轮补这条：为了变绿最省事的做法是**把抑制拆掉**（不模拟 chip 也能开），
+		// 那会把「点输入框弹 540px 面板」那个真机 bug 放回来。所以正反两面都要钉住。
+		mount({}, h => {
+			const props = { selectedId: 'ws-1', anchorRef: { current: h.chipEl }, onPick: () => undefined, onClose: () => undefined };
+			// 上升沿归零
+			h.render(1, { ...props, open: false });
+			// 落点**不是** chip（例：hero 里 inert 的输入框）⇒ 这次 open 必须被抑制
+			h.fireDown?.({ id: 'composer' });
+			const suppressedTree = h.render(1, { ...props, open: true });
+			assert.strictEqual(findAll(suppressedTree, 'data-vssaros-context-item').length, 0,
+				'不得因输入框触发的 open 就弹出 540px 面板（2026-10-17 真机 bug）');
+			assert.ok(findByAttr(suppressedTree, 'data-vssaros-context-hero'), '零尺寸自证壳仍要在（宿主自证靠它）');
+			// 官方再点一次 chip（false→true 上升沿）⇒ 必须恢复
+			h.render(1, { ...props, open: false });
+			h.fireDown?.(h.chipEl);
+			const again = h.render(1, { ...props, open: true });
+			assert.ok(findAll(again, 'data-vssaros-context-item').length > 0, '从 chip 发起的下一次 open 必须恢复');
 		});
 	});
 

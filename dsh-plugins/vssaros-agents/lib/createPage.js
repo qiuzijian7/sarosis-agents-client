@@ -12,9 +12,34 @@
 //   检查按第一个到最后一个 script 标签整段取，多一个 JSON 块会把它打红。
 
 import { escapeHtml } from './core/agents.js';
+import { iconPickerData } from './core/iconRender.js';
 
-/** 可选图标（与 IDE 原生新建页的 ICON_OPTIONS 同一批，挑常用的）。 */
+/**
+ * emoji 快捷选项（老习惯保留；主选择器是下面 `iconPickerData()` 的 **Lucide SVG** 网格）。
+ * 2026-10-19 用户反馈"图标太少"：原来只有这 20 个 emoji，现在默认给 **100+ 个开源 SVG**。
+ */
 const ICONS = ['🤖', '👨‍💻', '🔬', '✍️', '🎨', '📋', '🧪', '🚀', '📊', '🧭', '📚', '🧠', '🔧', '🐛', '🔍', '💡', '🎯', '🛠', '☁️', '🔒'];
+
+/**
+ * 工具候选（2026-10-20：**必须是 dsh 侧真实存在的名字**）。
+ *
+ * 为什么要在向导里给候选：IDE 侧的聊天/工具正在退役，但 `.agent.md` 的 `tools:` 是历史遗留的
+ * VS Code / Cursor 口径（`file_read`、`terminal`、`patch`、`web_extract`…）⇒ 写进 dsh 的 allowlist
+ * 只会被**静默忽略**（不影响其它名字，所以很容易一直没人发现）。给一份下拉，至少不会照着习惯写错。
+ *
+ * 清单来源：`@deepseek-ai/dsh-tool-` 各包（read/write/edit/glob/grep/pwsh/skill/web_search/web_fetch/todo_write…）
+ * + 本仓 dsh 插件（`codebase_*` / `kb_*` / `content_import` / `vision_analyze` / `feishu_*` …）。
+ * ⚠ 只做提示，不校验：用户装了哪些插件不由这里说了算（写错只会被忽略，不会报错）。
+ */
+const DSH_TOOLS = [
+	'read', 'write', 'edit', 'read_image', 'glob', 'grep', 'pwsh', 'bash',
+	'skill', 'todo_write', 'ask_user_question', 'web_search', 'web_fetch', 'session_search',
+	'content_import', 'kb_search', 'kb_read', 'kb_list', 'kb_write_note', 'kb_build', 'kb_organize',
+	'codebase_search', 'codebase_deps', 'codebase_trace', 'codebase_snippet', 'codebase_architecture',
+	'codebase_index', 'codebase_index_status', 'codebase_changes',
+	'vision_analyze', 'video_analyze', 'extract_video_frames', 'feishu_doc_read',
+	'agent_list', 'agent_message', 'browser', 'canvas', 'image_generate', 'kanban_list', 'job_list',
+];
 
 export const CREATE_CSS = `
 /* hero 自带 display:flex ⇒ 会压过浏览器对 hidden 属性的默认样式（showTab('create') 收起 hero 实测无效 ✗ p3-96 抓到）
@@ -51,10 +76,22 @@ export const CREATE_CSS = `
 .cr-fl .hint { font-size: 10.5px; color: var(--vscode-descriptionForeground, #999); margin-top: 2px; }
 .cr-row2 { display: flex; gap: 10px; }
 .cr-row2 > .cr-fl { flex: 1; min-width: 0; }
-.cr-icons { display: flex; flex-wrap: wrap; gap: 3px; }
-.cr-icons span { width: 26px; height: 26px; border-radius: 6px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; border: 1px solid transparent; }
+/* 勾选框行（2026-10-20）：允许被 subagent 选用 */
+.cr-check label { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; }
+.cr-check input[type="checkbox"] { width: 13px; height: 13px; margin: 0; }
+.cr-check .diag { display: block; margin-top: 3px; font-size: 11px; color: var(--vscode-descriptionForeground, #999); }
+.cr-check .diag code { font-size: 10.5px; }
+/* 图标选择器（2026-10-19）：Lucide SVG 网格 + 搜索 + emoji 快捷 */
+.cr-iconset { color: var(--vscode-descriptionForeground, #999); font-size: 10px; margin-left: 6px; }
+.cr-icon-search { width: 100%; box-sizing: border-box; margin: 2px 0 5px; font-size: 11.5px; padding: 3px 7px; border-radius: 5px; border: 1px solid var(--vscode-input-border, #555); background: var(--vscode-input-background, #2a2a2a); color: var(--vscode-input-foreground, #ccc); }
+.cr-icons { display: flex; flex-wrap: wrap; gap: 3px; max-height: 132px; overflow: auto; padding: 2px; }
+.cr-icons span { width: 30px; height: 30px; border-radius: 6px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; border: 1px solid transparent; color: var(--vscode-foreground, #ccc); }
 .cr-icons span:hover { background: rgba(128,128,128,.15); }
-.cr-icons span.on { border-color: var(--vscode-focusBorder, #0e639c); }
+.cr-icons span.on { border-color: var(--vscode-focusBorder, #0e639c); background: rgba(14,99,156,.18); }
+.cr-icons span svg { pointer-events: none; }
+.cr-icons-emoji { max-height: none; margin-top: 4px; }
+.cr-icons-emoji span { font-size: 15px; }
+.cr-icon-empty { font-size: 11px; color: var(--vscode-descriptionForeground, #999); }
 .cr-pp { display: flex; gap: 4px; margin-bottom: 5px; }
 .cr-pp button, .cr-foot button, .cr-done button, .cr-head button { font-size: 11.5px; padding: 3px 11px; border-radius: 5px; cursor: pointer; border: 1px solid var(--vscode-panel-border, #555); background: var(--vscode-button-secondaryBackground, #3a3d41); color: var(--vscode-foreground, #ccc); }
 .cr-foot button.primary, .cr-done button.primary { background: var(--vscode-button-background, #0e639c); border-color: var(--vscode-button-background, #0e639c); color: var(--vscode-button-foreground, #fff); }
@@ -88,12 +125,17 @@ export function renderCreateSection({ agents, create }) {
 	const data = {
 		agents: (agents ?? []).map(a => ({
 			id: a.id, name: a.name, description: a.description ?? '', icon: a.icon ?? '', role: a.role ?? '', model: a.model ?? '',
+			// 委派开关（2026-10-20）：复制已有 agent 时一并带回
+			delegatable: a.delegatable === true,
 			skills: a.skills ?? [], tools: a.tools ?? [], persona: (a.persona ?? '').slice(0, 20000),
 			workspacesRead: a.workspaces?.read ?? [], workspacesWrite: a.workspaces?.write ?? [],
 		})),
 		models: create?.modelCandidates ?? [],
 		hasDefaultProvider: create?.hasDefaultProvider === true,
+		// emoji 快捷 + Lucide SVG 全量（101 个；`{ value:'lucide:bot', name:'bot', svg:'<path…>' }`）
 		icons: ICONS,
+		iconSet: iconPickerData().set,
+		svgIcons: iconPickerData().icons,
 	};
 	return '<div id="create" hidden data-vssaros-create data-create="' + escapeHtml(JSON.stringify(data)) + '"><section class="pad cr">'
 		+ '<div class="cr-head"><h2>新建 Agent</h2><div class="cr-steps"><span id="crS1" class="on">① 起点</span><span id="crS2">② 填写</span><span id="crS3">③ 完成</span></div>'
@@ -113,14 +155,27 @@ export function renderCreateSection({ agents, create }) {
 		+ '<div class="cr-section" id="crFrom" hidden></div>'
 		+ '<div class="cr-row2"><div class="cr-fl"><label>名称 <i>*</i></label><input id="crName" data-cr="name" placeholder="比如：代码评审员"></div>'
 		+ '<div class="cr-fl"><label>id（= 目录名）</label><input id="crId" data-cr="id" placeholder="code-reviewer"><div class="hint">默认按名称生成；名称没有英文时需要手动起一个</div></div></div>'
-		+ '<div class="cr-fl"><label>图标</label><div class="cr-icons" id="crIcons"></div></div>'
+		+ '<div class="cr-fl"><label>图标 <small id="crIconSet" class="cr-iconset"></small></label>'
+	+ '<input id="crIconSearch" class="cr-icon-search" placeholder="搜图标（英文，如 bot / code / shield）" autocomplete="off">'
+	+ '<div class="cr-icons" id="crIcons"></div>'
+	+ '<div class="cr-icons cr-icons-emoji" id="crIconsEmoji"></div></div>'
 		+ '<div class="cr-row2"><div class="cr-fl"><label>角色（role · 名册里的紫色小标签）</label><input data-cr="role" placeholder="评审 / 检索 / 工程"></div>'
 		+ '<div class="cr-fl"><label>模型</label><input data-cr="model" list="crModels" placeholder="留空 = 跟随默认模型"><datalist id="crModels"></datalist><div class="hint" id="crModelHint"></div></div></div>'
 		+ '<div class="cr-fl"><label>简介（description · 名册副行用它）</label><input data-cr="description" placeholder="一句话说明它干什么"></div>'
+	// 委派开关（2026-10-20）：勾上写 `subagent: true`，别的 agent 才能用 subagent 点名它。
+	// 默认不勾 —— 清单只放少数几个，才不会每次增删 agent 都把全部 preset 重挂一遍。
+	+ '<div class="cr-fl cr-check"><label><input type="checkbox" data-cr-check="delegatable"> 允许被 subagent 选用</label>'
+	+ '<span class="diag">勾上后写入 <code>subagent: true</code>：别的 agent 可以 <code>subagent({ agent_preset })</code> 点名它。默认不勾。</span></div>'
 		+ '<div class="cr-fl"><label>人格（写进 .agent.md 正文）</label><div class="cr-pp"><button onclick="crPersona(\'blank\')">空白</button><button onclick="crPersona(\'colleague\')">同事</button><button onclick="crPersona(\'roleplay\')">角色扮演</button></div>'
 		+ '<textarea data-cr="persona" placeholder="人格正文（Markdown）"></textarea></div>'
 		+ '<div class="cr-row2"><div class="cr-fl"><label>技能（skills，逗号分隔）</label><input data-cr="skills" placeholder="anysearch, docx"></div>'
-		+ '<div class="cr-fl"><label>工具（tools，逗号分隔）</label><input data-cr="tools" placeholder="留空 = 不限；如 read, grep"></div></div>'
+		// 工具：给一份 **dsh 侧真实存在** 的候选（2026-10-20）——IDE 侧工具名在 dsh 里不存在，
+		// 写进 allowlist 只会被静默忽略（`.agent.md` 里最典型的历史遗留是 `file_read` / `terminal`）。
+		+ '<div class="cr-fl"><label>工具（tools，逗号分隔 · dsh 工具名）</label>'
+		+ '<input data-cr="tools" list="crTools" placeholder="留空 = 不限；如 read, grep, skill">'
+		+ '<datalist id="crTools">' + DSH_TOOLS.map((t) => '<option value="' + t + '"></option>').join('') + '</datalist>'
+		+ '<span class="diag" style="display:block;margin-top:3px;font-size:11px;color:var(--vscode-descriptionForeground,#999)">'
+		+ '下拉里是 dsh 侧的工具；写 dsh 里不存在的名字会被忽略（不影响其它名字）。声明了技能必须带 <code>skill</code>，否则技能加载不了。</span></div></div>'
 		+ '<details><summary style="cursor:pointer;font-size:11px;color:var(--vscode-descriptionForeground,#999)">进阶：工作区授权</summary>'
 		+ '<div class="cr-fl" style="margin-top:6px"><label>可读工作区（workspaces-read，绝对路径，逗号分隔；不写 = 只允许默认 cwd）</label><input data-cr="workspacesRead"></div>'
 		+ '<div class="cr-fl"><label>可写工作区（workspaces-write，自动并入可读）</label><input data-cr="workspacesWrite"></div></details>'
@@ -155,7 +210,11 @@ function createClient() {
 	var say = function (t) { if (typeof note === 'function') { note(t); } };
 	var colorOf = function (id) { var h = 0; var s = String(id || ''); for (var i = 0; i < s.length; i++) { h = (h * 31 + s.charCodeAt(i)) >>> 0; } return 'hsl(' + (h % 360) + ' 45% 42%)'; };
 	var slug = function (n) { return String(n || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64); };
-	var blank = function () { return { name: '', id: '', icon: '🤖', role: '', description: '', model: '', persona: '', skills: '', tools: '', workspacesRead: '', workspacesWrite: '' }; };
+	// 默认图标 = **Lucide 的机器人 SVG**（2026-10-20 用户要求：新建 agent 不要再用 emoji）。
+	// 选它只是因为它是"机器人"里最中性的一个；网格里任何其它图标都能换。
+	var DEFAULT_ICON = 'lucide:bot';
+	// `delegatable` = 允许被别的 agent 用 `subagent(agent_preset)` 点名（`.agent.md` 的 `subagent: true`）
+	var blank = function () { return { name: '', id: '', icon: DEFAULT_ICON, role: '', description: '', model: '', persona: '', skills: '', tools: '', workspacesRead: '', workspacesWrite: '', delegatable: false }; };
 	function step(n) {
 		$('crStep1').hidden = n !== 1; $('crStep2').hidden = n !== 2; $('crStep3').hidden = n !== 3;
 		for (var i = 1; i <= 3; i++) { var s = $('crS' + i); s.className = i === n ? 'on' : (i < n ? 'past' : ''); }
@@ -163,14 +222,60 @@ function createClient() {
 	function fill() {
 		var els = root.querySelectorAll('[data-cr]');
 		for (var i = 0; i < els.length; i++) { var k = els[i].getAttribute('data-cr'); els[i].value = draft[k] == null ? '' : (Array.isArray(draft[k]) ? draft[k].join(', ') : draft[k]); }
+		// 勾选框（布尔字段）单独回填：`.value` 对 checkbox 永远是 "on"，不能用同一条路径
+		var boxes = root.querySelectorAll('[data-cr-check]');
+		for (var j = 0; j < boxes.length; j++) { boxes[j].checked = !!draft[boxes[j].getAttribute('data-cr-check')]; }
 		renderIcons();
 	}
-	function renderIcons() {
-		var box = $('crIcons'); var html = '';
-		var icons = DATA.icons || [];
-		for (var i = 0; i < icons.length; i++) { html += '<span data-cr-icon="' + escH(icons[i]) + '" class="' + (draft.icon === icons[i] ? 'on' : '') + '">' + escH(icons[i]) + '</span>'; }
-		box.innerHTML = html;
+	// 图标：**Lucide SVG**（101 个，可搜）+ emoji 快捷一排。
+	// 选中值写 `lucide:<name>`；老数据里的 emoji 仍然按文本渲染（互不干扰）。
+	var iconQuery = '';
+	function iconSvg(name, size) {
+		var list = DATA.svgIcons || [];
+		for (var i = 0; i < list.length; i++) {
+			if (list[i].name === name) {
+				return '<svg width="' + size + '" height="' + size + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + list[i].svg + '</svg>';
+			}
+		}
+		return '';
 	}
+	/** 头像内容（预览卡/列表用）：图标 → svg；否则退回首字/emoji。 */
+	function avatarInner(value, fallback) {
+		var v = String(value || '');
+		if (v.indexOf('lucide:') === 0) {
+			var svg = iconSvg(v.slice(7), 16);
+			if (svg) { return svg; }
+		}
+		return escH(v || fallback || '?');
+	}
+	function renderIcons() {
+		var box = $('crIcons'); if (!box) { return; }
+		var setEl = $('crIconSet');
+		if (setEl && DATA.iconSet) { setEl.textContent = DATA.iconSet.name + ' ' + DATA.iconSet.version + ' · ' + DATA.iconSet.license; }
+		var q = (iconQuery || '').trim().toLowerCase();
+		var html = '';
+		var list = DATA.svgIcons || [];
+		var shown = 0;
+		for (var i = 0; i < list.length; i++) {
+			if (q && list[i].name.indexOf(q) < 0) { continue; }
+			var on = draft.icon === list[i].value ? ' on' : '';
+			html += '<span data-cr-icon="' + escH(list[i].value) + '" class="' + (on ? 'on' : '') + '" title="' + escH(list[i].name) + '">' + iconSvg(list[i].name, 18) + '</span>';
+			shown += 1;
+		}
+		box.innerHTML = html || '<span class="cr-icon-empty">没有匹配的图标</span>';
+		var emo = $('crIconsEmoji');
+		if (emo) {
+			var emoHtml = '';
+			var icons = DATA.icons || [];
+			for (var j = 0; j < icons.length; j++) { emoHtml += '<span data-cr-icon="' + escH(icons[j]) + '" class="' + (draft.icon === icons[j] ? 'on' : '') + '">' + escH(icons[j]) + '</span>'; }
+			emo.innerHTML = emoHtml;
+		}
+	}
+	(function wireIconSearch() {
+		var el = $('crIconSearch');
+		if (!el) { return; }
+		el.addEventListener('input', function () { iconQuery = el.value || ''; renderIcons(); });
+	})();
 	function toForm(d, from) {
 		draft = d; idEdited = !!d.id && d.id !== slug(d.name);
 		var f = $('crFrom'); f.hidden = !from; f.textContent = from || '';
@@ -188,7 +293,7 @@ function createClient() {
 			var list = DATA.agents || []; var html = '';
 			for (var j = 0; j < list.length; j++) {
 				var a = list[j];
-				html += '<div class="cr-tpl" data-cr-copy="' + escH(a.id) + '"><span class="cr-av" style="background:' + colorOf(a.id) + '">' + escH(a.icon || a.name.slice(0, 1)) + '</span>'
+				html += '<div class="cr-tpl" data-cr-copy="' + escH(a.id) + '"><span class="cr-av" style="background:' + colorOf(a.id) + '">' + avatarInner(a.icon, a.name.slice(0, 1)) + '</span>'
 					+ '<div class="t"><div>' + escH(a.name) + '</div><small>' + escH(a.description || a.id) + '</small></div></div>';
 			}
 			$('crCopyList').innerHTML = html || '<span class="hint">名册是空的，先用「空白创建」吧</span>';
@@ -204,11 +309,20 @@ function createClient() {
 			for (var i = 0; i < list.length; i++) { if (list[i].id === id) { a = list[i]; } }
 			if (!a) { return; }
 			var d = blank();
-			d.name = a.name + ' 副本'; d.id = a.id + '-copy'; d.icon = a.icon || '🤖'; d.role = a.role; d.description = a.description; d.model = a.model;
+			d.name = a.name + ' 副本'; d.id = a.id + '-copy'; d.icon = a.icon || DEFAULT_ICON; d.role = a.role; d.description = a.description; d.model = a.model;
 			d.persona = a.persona; d.skills = a.skills.join(', '); d.tools = a.tools.join(', ');
+			d.delegatable = a.delegatable === true;   // 复制时一并带上委派开关（2026-10-20）
 			d.workspacesRead = a.workspacesRead.join(', '); d.workspacesWrite = a.workspacesWrite.join(', ');
 			toForm(d, '复制自 ' + a.name + '（原来那个不受影响）');
 		}
+	});
+	// 勾选框（布尔字段）：`value` 对 checkbox 恒为 "on"，必须走 checked
+	root.addEventListener('change', function (e) {
+		var k = e.target.getAttribute ? e.target.getAttribute('data-cr-check') : null;
+		if (!k) { return; }
+		draft[k] = !!e.target.checked;
+		clearTimeout(timer); timer = setTimeout(validate, 200);
+		renderCard();
 	});
 	root.addEventListener('input', function (e) {
 		var k = e.target.getAttribute ? e.target.getAttribute('data-cr') : null;
@@ -227,7 +341,7 @@ function createClient() {
 	};
 	function renderCard() {
 		var id = draft.id || 'new-agent';
-		$('crCard').innerHTML = '<span class="cr-av" style="background:' + colorOf(id) + '">' + escH(draft.icon || (draft.name || '?').slice(0, 1)) + '</span>'
+		$('crCard').innerHTML = '<span class="cr-av" style="background:' + colorOf(id) + '">' + avatarInner(draft.icon, (draft.name || '?').slice(0, 1)) + '</span>'
 			+ '<div style="min-width:0"><div><span class="n">' + escH(draft.name || '（未命名）') + '</span>' + (draft.role ? '<span class="r">' + escH(draft.role) + '</span>' : '') + '<span class="cr-new">新</span></div>'
 			+ '<div class="d">' + escH([draft.description, draft.model].filter(Boolean).join(' · ') || '（没写简介）') + '</div></div>';
 	}
@@ -266,8 +380,14 @@ function createClient() {
 		err.hidden = true;
 		api({ action: 'parse', text: t ? t.value : '' }).then(function (r) {
 			var d = blank(); var src = r.draft || {};
-			for (var k in d) { if (Object.prototype.hasOwnProperty.call(src, k)) { d[k] = Array.isArray(src[k]) ? src[k].join(', ') : (src[k] == null ? '' : String(src[k])); } }
-			if (!d.icon) { d.icon = '🤖'; }
+			for (var k in d) {
+				if (!Object.prototype.hasOwnProperty.call(src, k)) { continue; }
+				// 布尔字段（delegatable）保持布尔：转成 "true" 字符串会让 serializeAgentMd 的 `=== true` 落空
+				d[k] = k === 'delegatable'
+					? (src[k] === true || String(src[k]).toLowerCase() === 'true')
+					: (Array.isArray(src[k]) ? src[k].join(', ') : (src[k] == null ? '' : String(src[k])));
+			}
+			if (!d.icon) { d.icon = DEFAULT_ICON; }
 			toForm(d, '导入自 .agent.md');
 		}).catch(function (e) { err.textContent = '✗ ' + e.message; err.hidden = false; });
 	};

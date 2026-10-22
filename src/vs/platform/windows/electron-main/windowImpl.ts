@@ -52,6 +52,11 @@ export interface IWindowCreationOptions {
 	readonly state: IWindowState;
 	readonly extensionDevelopmentPath?: string[];
 	readonly isExtensionTestHost?: boolean;
+	/**
+	 * 「首次启动窗口不显示」候选（2026-10-21，Saros）：由 `WindowsMainService` 传
+	 * `configuration.isInitialStartup`，**真正生效还要 `VSSAROS_START_HIDDEN=1`**（见 `CodeWindow` 构造）。
+	 */
+	readonly startHidden?: boolean;
 }
 
 interface ITouchBarSegment extends electron.SegmentedControlSegment {
@@ -262,6 +267,15 @@ export abstract class BaseWindow extends Disposable implements IBaseWindow {
 		super();
 	}
 
+	/**
+	 * 「首次启动窗口不显示」模式（`VSSAROS_START_HIDDEN=1` + `startHidden`，2026-10-21 Saros）。
+	 *
+	 * 声明放在 `BaseWindow`（不是在 `CodeWindow`）：`applyState` / `doFocusWindow` 都在这层，
+	 * 它们都必须知道"别把这个窗口显示出来"（否则最大化状态、开窗时的 focus 都会把它亮出来 ✗）。
+	 * 显示权只留给渲染进程的 `INativeHostService.showWindow` ✓。
+	 */
+	protected _startHidden = false;
+
 	protected applyState(state: IWindowState, hasMultipleDisplays = electron.screen.getAllDisplays().length > 0): void {
 
 		// TODO@electron (Electron 4 regression): when running on multiple displays where the target display
@@ -301,7 +315,10 @@ export abstract class BaseWindow extends Disposable implements IBaseWindow {
 
 			// to reduce flicker from the default window size
 			// to maximize or fullscreen, we only show after
-			this._win?.show();
+			// ⚠ 隐藏启动时不 show（否则最大化过窗口的用户每次启动都会被这一步重新显示出来 ✗）
+			if (!this._startHidden) {
+				this._win?.show();
+			}
 		}
 	}
 
@@ -385,6 +402,13 @@ export abstract class BaseWindow extends Disposable implements IBaseWindow {
 	private doFocusWindow() {
 		const win = this.win;
 		if (!win) {
+			return;
+		}
+
+		// ★ 2026-10-21：隐藏启动期间**不许被"聚焦"顺带显示出来**（开窗流程里有多处 `window.focus()`，
+		//   而 Electron 对隐藏窗口调用 focus() 会把它 show 出来 ⇒ 用户又会看到 IDE 窗口 ✗）。
+		//   渲染进程决定显示时会先走 `showWindow`（`win.show()`），此后 `isVisible()` 为真，本闸不再拦 ✓。
+		if (this._startHidden && !win.isVisible() && !win.isMinimized()) {
 			return;
 		}
 
@@ -726,6 +750,19 @@ export class CodeWindow extends BaseWindow implements ICodeWindow {
 
 			const options = instantiationService.invokeFunction(defaultBrowserWindowOptions, this.windowState, undefined, webPreferences);
 
+			// ★ 2026-10-21（用户："希望 F5 可以默认直接启动 dsh 窗口，不要显示 IDE 窗口"）：
+			//   `config.startHidden`（由 `WindowsMainService` 判：`initialStartup` + `--agents`/环境变量）
+			//   ⇒ **这个窗口建出来就不显示**（连闪一下都不要），由渲染进程
+			//   （`DshFullWindowContribution`）决定何时 show：
+			//     · dsh 桌面窗口开出来了 ⇒ 一直藏着（屏幕上只有桌面窗口）；
+			//     · Host 起不来 / harness 未启用 / 没开默认桌面窗口 ⇒ 立刻 show。
+			//   安全网：30s 内没人 show 就自己 show（否则用户面对的是"app 完全没起来" ✗）。
+			//   ⚠ 只在 `initialStartup` 的第一个窗口生效：之后用户主动"新建窗口"必须照常可见 ✓。
+			this._startHidden = config.startHidden === true;
+			if (this._startHidden) {
+				options.show = false;   // 创建即隐藏（否则 Electron 在构造时就把窗口画出来了）
+			}
+
 			// Create the browser window
 			mark('code/willCreateCodeBrowserWindow');
 			this._win = new electron.BrowserWindow(options);
@@ -736,6 +773,35 @@ export class CodeWindow extends BaseWindow implements ICodeWindow {
 
 			// Apply some state after window creation
 			this.applyState(this.windowState, hasMultipleDisplays);
+
+			// 隐藏启动的安全网（见上面 `_startHidden` 的说明）：45s 还没**露过面** ⇒ 自己显示。
+			//
+			// ★★ 2026-10-21 真机日志抓到的一处硬伤（用户报"F5 后还是显示 IDE"）：
+			//   兜底原来只判 `!isVisible()`。而渲染进程的流程是
+			//   「Host 起不来 ⇒ 10s 先 show ⇒ 桌面窗口开出来 ⇒ 再 hide」——
+			//   兜底定时器 30s 到点时窗口正好是**被我们自己藏起来**的状态，于是它又把窗口 show 出来 ✗✗
+			//   （`main.log`: `window#hiddenStart: 30s 内没有收到显示请求 … ⇒ 自动显示 IDE`，发生在
+			//   `hiding the IDE main window` 之后 5s）。⇒ 现在**一旦窗口露过面就作废兜底**
+			//   （监听 Electron 的 `show` 事件；`showWindow` / 用户从任务栏恢复都会触发）✓。
+			if (this._startHidden) {
+				const failsafe = new RunOnceScheduler(() => {
+					if (this._win && !this._win.isDestroyed() && !this._win.isVisible()) {
+						this.logService.warn('window#hiddenStart: 45s 内没有收到显示请求（dsh 桌面窗口可能没开出来）⇒ 自动显示 IDE 窗口');
+						this._win.show();
+					}
+				}, 45_000);
+				this._register(failsafe);
+				failsafe.schedule();
+				if (this._win) {
+					const onShown = () => {
+						// 渲染进程（或用户）已经把它显示出来过 ⇒ 显示权移交完成，兜底作废，别再抢
+						this._startHidden = false;
+						failsafe.cancel();
+					};
+					this._win.on('show', onShown);
+					this._register(toDisposable(() => { try { this._win?.removeListener('show', onShown); } catch { /* 已销毁 */ } }));
+				}
+			}
 
 			this._lastFocusTime = Date.now(); // since we show directly, we need to set the last focus time too
 		}

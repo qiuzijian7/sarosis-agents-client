@@ -38,6 +38,14 @@ export const DSH_BRIDGE_PLUGIN_NAME = '@vssaros/dsh-bridge';
  */
 export const DSH_FOUNDATION_PLUGIN_NAME = '@vssaros/dsh-foundation';
 
+/**
+ * 工作台宿主插件包名（源码位于仓库根 `dsh-plugins/vssaros-workbenches/`；doc/workbench-refactor-plan.md P1）。
+ * 提供客户端服务 `desktopWorkbenches` 与只读服务 `desktopWorkbenchOwnership`。它没有 `vssaros.module`
+ * （不是 UI 模块）⇒ **不进模块自发现**，必须由伴生段显式安装，且排在模块插件之前（消费者 inject 它）。
+ * ⚠ 2026-10-22 真机：漏装它 ⇒ `@vssaros/dsh-scheduler: pending (waiting for service: desktopWorkbenches)`。
+ */
+export const DSH_WORKBENCHES_PLUGIN_NAME = '@vssaros/dsh-workbenches';
+
 /** chat-surface 插件包名（源码位于仓库根 `dsh-plugins/vssaros-chat-surface/`）。 */
 export const DSH_CHAT_SURFACE_PLUGIN_NAME = '@vssaros/dsh-chat-surface';
 
@@ -71,6 +79,18 @@ export const DSH_UNREAL_PLUGIN_NAME = '@vssaros/dsh-unreal';
  * 技能"（那正是 2026-10-13 消灭掉的重复交付 ✗）。取舍与 provenance 见 `dsh-plugins/vssaros-archify/VENDOR.md`。
  */
 export const DSH_ARCHIFY_PLUGIN_NAME = '@tt-a1i/archify-dsh';
+
+/**
+ * **ego lite（`ego-browser`）接入插件**包名（源码位于仓库根 `dsh-plugins/vssaros-ego/`）。
+ *
+ * 它是"**agent 的第二个浏览器**"那条线的 Host 侧落点：`vssaros-browser` 用 CDP 驱动用户**同一个**
+ * Chrome（会跟人抢标签），ego lite 则是每个 agent 一个隔离 Space 的**独立浏览器**。
+ *
+ * ⚠ 本包**不含**浏览器本体：ego lite 是第三方独立应用（不开源、单独下载），`globalThis.ego` 那份
+ * 原生绑定由它注入。所以装不上/用户没装 app 都**不是**启动错误 —— 只是那 4 个工具用不了，
+ * 且 `ego_status` 会把"没装 / 没运行 / PATH 陈旧"三种情况分开说清楚（`vssaros-ego/README.md`）。
+ */
+export const DSH_EGO_PLUGIN_NAME = '@vssaros/dsh-ego';
 
 /** 官方实验语音输入 bundle（随 dsh 运行时分发在其 node_modules 里；本地 SenseVoice 识别）。 */
 export const DSH_VOICE_BUNDLE_PLUGIN_NAME = '@deepseek-ai/dsh-experimental-voice-input-bundle';
@@ -140,6 +160,11 @@ export interface IDshPluginInfo {
 	 * 清单缺失/不合法 ⇒ 没有该字段（渲染端据此不激活它的模块，不猜字段）。
 	 */
 	readonly manifest?: IVssarosPluginManifest;
+	/**
+	 * ★ 2026-10-22：该包已迁成 React 工作台（客户端经宿主 `@vssaros/dsh-workbenches` 注册）。
+	 * 判据见 `hasWorkbenchClient`；编辑区据此改开 `'workbench'` 视图（否则仍是插件 SSR 页）。
+	 */
+	readonly workbenchClient?: boolean;
 }
 
 /** 承载 dsh 页面的会话分区；与 VsSaros 其他 webview / 集成浏览器隔离。 */
@@ -158,6 +183,22 @@ export const DSH_VIEW_PARTITION = 'persist:vssaros-dsh';
  * 非 persist：弹窗关闭即释放（不在磁盘长期累积 cookie/缓存）。
  */
 export const DSH_VIEW_PARTITION_DESKTOP = 'vssaros-dsh-desktop';
+
+/**
+ * **并发聊天视图**专用网络分区的前缀（2026-10-21，中间栏并排多聊天）。
+ *
+ * 沿用与弹窗同源的取证（见 `DSH_VIEW_PARTITION_DESKTOP`）：Chromium 对同一 `host:port` 的
+ * HTTP/1.1 并发连接上限是 **6**，dsh 每个页面长期占住若干条 ⇒ 同一窗口里并排两个聊天
+ * （两个 `WebContentsView` = 两个页面实例）就会互相饿死，表现为"第二个聊天一直转圈 /
+ * `session.create` 永不返回"。
+ *
+ * ⇒ **同一窗口的第 2..N 个聊天视图各占一个独立分区**（独立 socket 池）✓。
+ * 第 1 个聊天视图仍用主分区（`DSH_VIEW_PARTITION`）：单聊天场景**行为完全不变**，
+ * 且它与插件页同源 ⇒ 跨页焦点交接（聊天页 → agents 页）照旧 ✓。
+ *
+ * 非 persist：进程退出即释放（不长期累积 cookie/缓存）。
+ */
+export const DSH_VIEW_PARTITION_CHAT_POOL_PREFIX = 'vssaros-dsh-chat-';
 
 /**
  * 随包插件的**安装状态**（与"是否停用"正交）。
@@ -245,6 +286,8 @@ export const enum DshHarnessSettings {
 	CompatManifestUrl = 'sessions.dshHarness.compatManifestUrl',
 	/** 聊天框引擎：legacy（现有 DOM 聊天面板）/ dsh（dsh 聊天页面承载在聊天框 instance 内）。改动后需重载窗口。 */
 	ChatEngine = 'sessions.dshHarness.chatEngine',
+	// ★ 2026-10-19：`sessionHistoryUi` 开关**已删除** —— 用户定稿"会话历史的数据源与 UI 全部归 dsh"，
+	//   容器只挂插件页宿主，不再有第二套 UI 可选。留一个没人读的开关只会制造"配了没效果"的假配置 ✗。
 	/** 工作台就绪后后台预热 Host（默认开）：用户点开聊天框时 Host 已就绪，不用等启动。 */
 	Prewarm = 'sessions.dshHarness.prewarm',
 	/** 关闭 IDE 时保留 Host（默认开）：Host 空闲 30 分钟无客户端自退；再次打开 IDE 经租约直接接管（零等待）。 */
@@ -259,6 +302,15 @@ export const enum DshHarnessSettings {
 	 * 定位阻塞源 ⇒ 不再作为默认形态（保留开关供对照排查）✓。
 	 */
 	PopoutStyle = 'sessions.dshHarness.popoutStyle',
+	/**
+	 * 启动时**直接打开 dsh 桌面窗口**（默认开；2026-10-21 用户要求"F5 启动 app，默认显示 dsh 窗口版"）。
+	 *
+	 * 语义：sessions 工作台起来后自动执行一次「弹出独立窗口」（与标题栏那个 Pop Out 同一条实现
+	 * `DshFullWindowContribution._open`），形态由 {@link PopoutStyle} 决定 ⇒ IDE 主窗口仍然在，
+	 * 只是退到后面；桌面窗口侧栏底部有「IDE」入口可以回去（页面桥 `focusIde`）✓。
+	 * 全程只开一次（关掉那个窗口 ≠ 又开一个）；engine=legacy / 总开关关闭时不生效。
+	 */
+	OpenDesktopOnStartup = 'sessions.dshHarness.openDesktopOnStartup',
 	/**
 	 * 迭代期开关：启动时**跳过随包插件的"升级"安装**（**缺失的仍会装**）。
 	 *
@@ -431,6 +483,15 @@ export interface IDshHostStartOptions {
 	 * 这类错配被完全掩盖。目录增删重启 Host 生效（与 skills / kanban 同口径：启动时快照）。
 	 */
 	readonly agentsRoot?: string;
+	/**
+	 * **内置 agent 的源目录**（`resources/.agents/agents`，真源是那里的 `<id>/.agent.md`）。
+	 *
+	 * 为什么也要注入：Host 是独立进程，只能靠绝对路径拿到产品侧的东西（与 `bundledSkillDir` 同一类道理）。
+	 * 主进程据此把源目录**原样复制**成 runDir 下的一份交付副本（`config.agentsBuiltinRoot`）
+	 * ⇒ dsh 侧列出的内置 agent 与真源**逐字节相同**，不会因为"代码镜像没同步"而拿到旧内容 ✗。
+	 * ⚠ 缺省时主进程退回用代码里的镜像生成（兼容老路径），但那不是真源 ⇒ 正常路径永远有值。
+	 */
+	readonly agentsBuiltinSrc?: string;
 	/**
 	 * VsSaros 用户**数据根**（`~/.vssaros` 或 dev 的 `~/.vssaros-dev`）：经 `--patch` 覆盖层注入
 	 * **那几个读 `<数据根>` 的模块**（`config.dataRoot`：kb / canvas / workflow / skills；
@@ -614,8 +675,19 @@ export interface IDshViewBounds {
 	readonly zoomFactor: number;
 }
 
-/** 视图承载的界面形态，经 preload 传给页面（P1 只有 full；chat / plugin-page 在 P2 起用）。 */
-export type DshViewSurface = 'full' | 'chat' | 'plugin-page' | 'sessions';
+/**
+ * 视图承载的界面形态，经 preload 传给页面（P1 只有 full；chat / plugin-page 在 P2 起用）。
+ *
+ * ★ 2026-10-22 `workbench`（doc/workbench-refactor-plan.md §5 步骤 4）：编辑区承载**已迁成 React 的工作台**——
+ *   加载 dsh 客户端根路径 `/`（不是插件 SSR 页），模块路由经 preload 参数交给页面，由 chat-surface 调
+ *   `desktopWorkbenches.open(vssaros/<module>)` 整页打开；宿主没到场则页面自己退回 SSR 完整页。
+ */
+export type DshViewSurface = 'full' | 'chat' | 'plugin-page' | 'sessions' | 'workbench';
+
+/** 带 route 的视图形态（route 都按 {@link validatePluginRoute} 校验）。 */
+export function surfaceTakesRoute(surface: DshViewSurface): boolean {
+	return surface === 'plugin-page' || surface === 'workbench';
+}
 
 /**
  * 页面 palette 模式（light/dark），由 IDE 主题决定。dsh 的弹层、圆角、字体等**非 alias** token
@@ -730,6 +802,15 @@ export const enum DshHarnessChannelCommand {
 	DisposeView = 'disposeView',
 	ResetWindow = 'resetWindow',
 	ListViews = 'listViews',
+	/**
+	 * dsh 侧会话摘要（读 `<dshHome>/storages/session_projcache/sessions/*.json`）。
+	 *
+	 * 为什么要有（2026-10-19 用户报「新增的聊天框会话，在左侧会话历史中，没有实时同步更新」）：
+	 * dsh 引擎下聊天在 **dsh 侧**开会话，而左侧「历史会话」读的是 IDE 自己的
+	 * `chat-history/<agent>/sessions.json` —— 两套数据源不相通 ⇒ dsh 里新建的会话永远不出现。
+	 * 这条命令把 dsh 侧的事实读给渲染进程，由侧栏合并展示（解析规则见 `common/dshSessionIndex.ts`）。
+	 */
+	ListDshSessions = 'listDshSessions',
 	InstallNode = 'installNode',
 	/** 一键准备：缺 Node 装 Node、缺 dsh 装 npm `latest` 版本并设为当前，然后启动。 */
 	Bootstrap = 'bootstrap',
@@ -749,6 +830,19 @@ export const enum DshHarnessChannelCommand {
 	GetWorkspaceSync = 'getWorkspaceSync',
 	/** 经控制桥查询 dsh 工作区注册表（诊断用）。 */
 	ListWorkspaces = 'listWorkspaces',
+	/**
+	 * 同步"**IDE 主窗口是我们藏着的**"这个事实给主进程（desktop 模式的窗口守卫，2026-10-21）。
+	 *
+	 * 为什么需要这条通道（用户报障："在 desktop 模式下，点击登录，不要显示 ide 模式的窗口"）：
+	 *   desktop 模式把 IDE 主窗口整个 `hide()` 了；用户在桌面窗口点「登录」⇒ 走 TOF 浏览器流程 ⇒
+	 *   **窗口层面**的外部动作（系统把焦点还给本应用的窗口）会把 IDE 主窗口拉到前台 ⇒
+	 *   用户看到"冒出一个 IDE 窗口" ✗。只在命令分发处拦**拦不住**（那不是命令）⇒
+	 *   只能由**主进程**守着那个窗口：隐藏态下它一旦 show/focus ⇒ 立刻再藏回去 ✓。
+	 *
+	 * 负载：`IDshSetIdeWindowHiddenArgs`（`{ hidden, windowId }`；`windowId` = 渲染进程的
+	 * `nativeHostService.windowId` = Electron 窗口 id ✓）。
+	 */
+	SetIdeWindowHidden = 'setIdeWindowHidden',
 	/** 经控制桥建/接管一个 dsh 会话（方案第 7 章 `session.start`）。 */
 	StartSession = 'startSession',
 	/** 后台回合（重构 1.4 `session.run`）：投 prompt 并等回合跑完回传结果。 */
@@ -863,10 +957,26 @@ export const enum DshHarnessChannelCommand {
 	 * 机制与 `PushWorktrees` 逐字同款（preload 写 `dataset` + 派 DOM 事件）。
 	 */
 	PushWorkspaces = 'pushWorkspaces',
+	/**
+	 * 向视图推 **IDE 登录态**（`{ viewId, auth }`，auth 经 validateAuthOption 校验）。
+	 *
+	 * 2026-10-21（用户：「窗口中，登录功能，接入 ide 侧的登录，两侧的登录状态要求同步」）：dsh 窗口
+	 * 底部那行账号要显示 **IDE 的登录**（TOF/OA）并与 IDE 保持一致 ⇒ 只能宿主推（页面桥单向 ✓）。
+	 * ⚠ 载荷只含**展示投影**（signedIn / 登录名 / 工号 / 团队）—— 票据不下发 ✓。
+	 */
+	PushAuth = 'pushAuth',
 	/** 向视图发「插入文件引用」（`{ viewId, reference }`，reference 经 validateInsertReference 校验）。 */
 	InsertReference = 'insertReference',
 	/** 同步 VsSaros 已配置的模型 provider 到 dsh（负载经 validateProvidersSyncArgs 校验）。 */
 	ProvidersSync = 'providersSync',
+	/**
+	 * 把 **IDE 侧的企业身份票据**（TOF/OA）同步到 dsh（负载经 validateTofSyncArgs 校验）。
+	 *
+	 * 2026-10-21（用户："不要用 dsh 官方 DeepSeek 路由，需求是在两侧用 TOF/OA 企业身份（工号 + 票据）实现登录"）：
+	 * dsh 侧不另起账号体系，而是**持有同一份企业身份** ⇒ 一次浏览器登录，两边都可用。
+	 * 触发时机 = TOF 登录态变化（`ITofAuthService.onDidChangeUser`）＋ 控制桥就绪时补一次。
+	 */
+	TofSync = 'tofSync',
 }
 
 /** 工作区同步的概览（渲染进程侧同步可读，用于界面显示）。 */

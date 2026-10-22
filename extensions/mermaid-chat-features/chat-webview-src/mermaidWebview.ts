@@ -2,9 +2,36 @@
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
-import mermaid from 'mermaid';
-import { buildMermaidConfig, getMermaidThemeFromBody } from './mermaidTheme';
+import { applyPeleThemeVars } from './mermaidTheme';
 import { VsCodeApi } from './vscodeApi';
+
+/**
+ * 随包进 `chat-webview-out/` 的 pele 渲染器（`dsh-plugins/vssaros-pele/assets/pele.global.js`，
+ * 由 `esbuild.webview.mts` 拷过来），以**经典脚本**先于本模块载入 ⇒ 这里直接读全局 `pele`。
+ *
+ * 2026-10-19：替掉 mermaid —— pele 同步、零 DOM 依赖地返回 SVG 字符串，不再需要
+ * `mermaid.initialize` / `mermaid.run` 那一套（也不再需要 `index-render` 那条隐藏 webview 通道）。
+ */
+declare const pele: {
+	render(source: string, options?: { fontFamily?: string; maxWidth?: number }): { svg: string; width: number; height: number; type: string };
+};
+
+/**
+ * 把 SVG 放进容器。
+ *
+ * VS Code 的 webview 常规不开 Trusted Types，直接 `innerHTML` 即可；这里仍走一层策略兜底，
+ * 免得将来 CSP 加上 `require-trusted-types-for` 时**整片图渲染不出来**（本 fork 已踩过同类坑 ✓）。
+ */
+function setSvgHtml(target: HTMLElement, svg: string): void {
+	const trustedTypes = (window as unknown as {
+		trustedTypes?: { createPolicy(name: string, rules: { createHTML: (s: string) => string }): { createHTML: (s: string) => unknown } };
+	}).trustedTypes;
+	if (trustedTypes) {
+		target.innerHTML = trustedTypes.createPolicy('vssarosPeleDiagram', { createHTML: s => s }).createHTML(svg) as string;
+		return;
+	}
+	target.innerHTML = svg;
+}
 
 interface PanZoomState {
 	readonly scale: number;
@@ -292,34 +319,26 @@ export class PanZoomHandler {
 	}
 }
 
-/**
- * Unpersisted state
- */
-interface LocalState {
-	readonly mermaidSource: string;
-	readonly theme: 'dark' | 'default';
-}
-
 interface PersistedState {
 	readonly mermaidSource: string;
 	readonly panZoom?: PanZoomState;
 }
 
 /**
- * Re-renders the mermaid diagram when theme changes
+ * Renders one Mermaid diagram into `diagramElement` with pele.
+ *
+ * 渲染失败**不抛**：把 pele 的报错原样显示在图的位置上（跟 mermaid 画"错误图"同款观感），
+ * 否则一张画不出来的图会让整个 webview 停在 `visibility:hidden` 上 ⇒ 用户看到一片空白 ✗。
  */
-async function rerenderMermaidDiagram(
-	diagramElement: HTMLElement,
-	diagramText: string,
-	newTheme: 'dark' | 'default'
-): Promise<void> {
-	diagramElement.textContent = diagramText;
-	delete diagramElement.dataset.processed;
-
-	mermaid.initialize(buildMermaidConfig(newTheme));
-	await mermaid.run({
-		nodes: [diagramElement]
-	});
+function renderDiagram(diagramElement: HTMLElement, source: string): void {
+	applyPeleThemeVars(diagramElement);
+	try {
+		setSvgHtml(diagramElement, pele.render(source).svg);
+	} catch (err) {
+		diagramElement.textContent = `图表渲染失败：${err instanceof Error ? err.message : String(err)}`;
+	}
+	// 显示出来（`.mermaid` 初始 visibility:hidden，加 `.rendered` 才可见）
+	diagramElement.classList.add('rendered');
 }
 
 export async function initializeMermaidWebview(vscode: VsCodeApi): Promise<PanZoomHandler | undefined> {
@@ -328,13 +347,7 @@ export async function initializeMermaidWebview(vscode: VsCodeApi): Promise<PanZo
 		return;
 	}
 
-	// Capture diagram state
-	const theme = getMermaidThemeFromBody();
 	const diagramText = diagram.textContent ?? '';
-	let state: LocalState = {
-		mermaidSource: diagramText,
-		theme
-	};
 
 	// Save the mermaid source in the webview state
 	const currentState: PersistedState = vscode.getState() || {};
@@ -356,12 +369,8 @@ export async function initializeMermaidWebview(vscode: VsCodeApi): Promise<PanZo
 	content.appendChild(diagram);
 	wrapper.appendChild(content);
 
-	// Run mermaid
-	mermaid.initialize(buildMermaidConfig(theme));
-	await mermaid.run({ nodes: [diagram] });
-
-	// Show the diagram now that it's rendered
-	diagram.classList.add('rendered');
+	// Render with pele
+	renderDiagram(diagram, diagramText);
 
 	const panZoomHandler = new PanZoomHandler(wrapper, content, vscode);
 	panZoomHandler.initialize();
@@ -374,25 +383,9 @@ export async function initializeMermaidWebview(vscode: VsCodeApi): Promise<PanZo
 		}
 	});
 
-	// Re-render when theme changes
-	new MutationObserver(() => {
-		const newTheme = getMermaidThemeFromBody();
-		if (state?.theme === newTheme) {
-			return;
-		}
-
-		const diagramNode = document.querySelector('.mermaid');
-		if (!diagramNode || !(diagramNode instanceof HTMLElement)) {
-			return;
-		}
-
-		state = {
-			mermaidSource: state?.mermaidSource ?? '',
-			theme: newTheme
-		};
-
-		rerenderMermaidDiagram(diagramNode, state.mermaidSource, newTheme);
-	}).observe(document.body, { attributes: true, attributeFilter: ['class'] });
+	// 2026-10-19：原先这里挂了 MutationObserver 在主题变化时**重渲染**。pele 的颜色全是 CSS 变量，
+	// 且本 webview 把它们转发到 `var(--vscode-*)` ⇒ 主题切换时颜色自动跟着变，**不需要重渲染**
+	// （重渲染反而会丢掉用户的缩放状态）。故整段移除 ✓。
 
 	return panZoomHandler;
 }
