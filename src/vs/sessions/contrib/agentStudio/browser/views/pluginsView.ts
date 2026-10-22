@@ -96,6 +96,8 @@ const KIND_LABEL: Record<PackageKind, string> = {
 	mcp: 'MCP',
 	knowledge: '\u77E5\u8BC6\u5E93', // 知识库
 	workflow: '\u5DE5\u4F5C\u6D41', // 工作流
+	// ★ 2026-10-22：工作台（dsh 插件包）
+	workbench: '工作台',
 };
 
 const KIND_ICON: Record<PackageKind, string> = {
@@ -104,6 +106,8 @@ const KIND_ICON: Record<PackageKind, string> = {
 	mcp: '\u{1F50C}',
 	knowledge: '\u{1F4DA}',
 	workflow: '\u{1F527}',
+	// ★ 2026-10-22：工作台
+	workbench: '\u{1F5A5}',
 };
 
 // --- Data Types ---

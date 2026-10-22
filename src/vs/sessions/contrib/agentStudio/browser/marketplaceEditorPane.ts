@@ -42,6 +42,8 @@ const KIND_LABEL: Record<PackageKind, string> = {
 	mcp: 'MCP',
 	knowledge: '知识库',
 	workflow: '工作流',
+	// ★ 2026-10-22：工作台（dsh 插件包）入列 —— 它是商城商品之一 ✓
+	workbench: '工作台',
 };
 
 const KIND_ICON: Record<PackageKind, string> = {
@@ -50,6 +52,8 @@ const KIND_ICON: Record<PackageKind, string> = {
 	mcp: '\u{1F50C}',
 	knowledge: '\u{1F4DA}',
 	workflow: '\u{1F527}',
+	// ★ 2026-10-22：工作台
+	workbench: '\u{1F5A5}',
 };
 
 /** Inline CSS — matches mockup integration-marketplace-mockup.html */
@@ -746,6 +750,8 @@ export class MarketplaceEditorPane extends EditorPane {
 			case 'mcp': return 'badge-mcp';
 			case 'knowledge': return 'badge-kb';
 			case 'workflow': return 'badge-workflow';
+			// ★ 2026-10-22：工作台
+			case 'workbench': return 'badge-workbench';
 		}
 	}
 
@@ -2046,6 +2052,8 @@ export class MarketplaceEditorPane extends EditorPane {
 		mcp: 'mcp',
 		knowledge: 'knowledge-base',
 		workflow: 'workflows',
+		// ★ 2026-10-22：工作台的本体是 dsh 插件（装进 profile）⇒ 这里只是占位
+		workbench: 'workbenches',
 	};
 
 	/** 用 fileService + DecompressionStream 在渲染进程中解压 zip 文件 */

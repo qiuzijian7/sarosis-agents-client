@@ -104,6 +104,8 @@ export class MarketplaceUrlHandler extends Disposable implements IURLHandler {
 			agent: 'Agent',
 			knowledge: '知识库',
 			workflow: '工作流',
+			// ★ 2026-10-22：工作台（dsh 插件包）
+			workbench: '工作台',
 		};
 
 		// Show progress and install

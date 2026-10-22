@@ -16,8 +16,42 @@
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { Event } from '../../../../base/common/event.js';
 
-/** 资源类型 */
-export type PackageKind = 'agent' | 'skill' | 'mcp' | 'knowledge' | 'workflow';
+/**
+ * 资源类型。
+ *
+ * ★ 2026-10-22：新增 `workbench`（工作台 = dsh 插件包）。
+ * 口径与服务端 `saros-marketplace/src/packages/kinds.ts` 的 `PACKAGE_KINDS` **逐字对应** ✓
+ * （两边错开 ⇒ 会装不上的那种"静默"错位 ⇒ 有守卫核对 ✓）。
+ */
+export type PackageKind = 'agent' | 'skill' | 'mcp' | 'knowledge' | 'workflow' | 'workbench';
+
+/** 分发方式：bundle = 包本体随版本上传；其余 = 外部发布源（workbench 走这条）。 */
+export type DistributionType = 'bundle' | 'npm' | 'github-release' | 'github-source';
+
+/** 外部发布源描述（与 dsh 市场协议 v2 同口径）。 */
+export interface IPackageDistribution {
+	readonly type: Exclude<DistributionType, 'bundle'>;
+	readonly name?: string;
+	readonly url?: string;
+	readonly sha256?: string;
+	readonly bytes?: number;
+	readonly commit?: string;
+	readonly peerRange?: string;
+}
+
+/**
+ * 权限（★ 2026-10-22）。
+ *
+ * ★ **由服务端裁决后下发，客户端不判定** ⇒ 客户端（含 dsh 侧商城工作台）只渲染按钮可用性 ✓。
+ */
+export interface IPackagePermissions {
+	readonly isAuthor: boolean;
+	readonly isAdmin: boolean;
+	readonly canEdit: boolean;
+	readonly canPublish: boolean;
+	readonly canDelete: boolean;
+	readonly canReview: boolean;
+}
 
 /** 商城用户 */
 export interface IMarketplaceUser {
@@ -49,6 +83,14 @@ export interface IMarketplacePackage {
 	readonly updatedAt?: number;
 	/** 版本列表（列表接口可能不返回，详情接口返回） */
 	readonly versions?: readonly IMarketplaceVersion[];
+	/** ★ 2026-10-22：分发方式（bundle = 包本体随版本上传） */
+	readonly distributionType?: DistributionType;
+	/** ★ 2026-10-22：外部发布源描述（workbench） */
+	readonly distribution?: IPackageDistribution;
+	/** ★ 2026-10-22：权限（服务端裁决后下发；客户端不自行判定） */
+	readonly permissions?: IPackagePermissions;
+	/** ★ 2026-10-22：商品状态（active / pending_review / removed） */
+	readonly status?: string;
 }
 
 /** 资源版本 */
@@ -80,6 +122,11 @@ export interface IUpgradeInfo {
 	readonly downloadUrl: string;
 	readonly sha256: string;
 	readonly size: number;
+	/**
+	 * ★ 2026-10-22：外部发布源描述（workbench）。
+	 * 缺省 = 走 `downloadUrl` 下载 tar.gz；存在 = 该版本本体在外部 ⇒ 按它装 ✓。
+	 */
+	readonly distribution?: IPackageDistribution;
 }
 
 /** 升级检查项 */
@@ -147,6 +194,8 @@ export interface IListPackagesOptions {
 	readonly page?: number;
 	readonly pageSize?: number;
 	readonly sort?: 'recent' | 'popular' | 'name';
+	/** ★ 2026-10-22：我的发布 / 待审核（**服务端筛**，客户端不猜） */
+	readonly scope?: 'all' | 'mine' | 'review';
 }
 
 /**

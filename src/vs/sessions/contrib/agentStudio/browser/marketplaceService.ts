@@ -28,7 +28,7 @@ import { SarosPath, resolveSarosPath, userDataRootFromRoamingHome } from '../com
 import {
 	IMarketplaceService, IMarketplaceUser, IMarketplacePackage, IMarketplacePackageDetail,
 	IUpgradeInfo, IUpgradeCheckItem, IInstallResult, IPublishOptions, IListPackagesOptions,
-	IInstalledPackageInfo, PackageKind, MARKETPLACE_URL_SETTING,
+	IInstalledPackageInfo, PackageKind, MARKETPLACE_URL_SETTING, DistributionType,
 } from '../common/marketplace.js';
 import { IPackageInstallerRegistry, PackageManifest } from '../common/packageInstaller.js';
 import { ITofAuthService } from '../common/tofAuth.js';
@@ -51,13 +51,20 @@ interface IInstalledEntry {
 	source?: 'installed' | 'published';
 }
 
-/** 各 kind 的本地安装子目录（回退用，installer 注册后由 installer 决定） */
+/**
+ * 各 kind 的本地安装子目录（回退用，installer 注册后由 installer 决定）。
+ *
+ * ★ 2026-10-22：`workbench` 的落点**不是数据根目录** —— 它是 dsh 插件（装进 profile）
+ *   ⇒ 这里给一个占位值只为满足 `Record<PackageKind, string>` 的类型约束；
+ *   真实安装路径由 `WorkbenchInstaller`（走 `IDshPluginCenterHost`）决定 ✓。
+ */
 const KIND_SUBDIR: Record<PackageKind, string> = {
 	agent: 'agents',
 	skill: 'skills',
 	mcp: 'mcp',
 	knowledge: 'knowledge-base',
 	workflow: 'workflows',
+	workbench: 'workbenches',
 };
 
 export class MarketplaceService extends Disposable implements IMarketplaceService {
@@ -282,6 +289,8 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 		if (opts.page) { qs.set('page', String(opts.page)); }
 		if (opts.pageSize) { qs.set('pageSize', String(opts.pageSize)); }
 		if (opts.sort) { qs.set('sort', opts.sort); }
+		// ★ 2026-10-22：scope（我的发布 / 待审核）—— **服务端筛**，客户端不猜 ✓
+		if (opts.scope) { qs.set('scope', opts.scope); }
 		const res = await this.api<{ items: any[]; total: number }>('GET', `/packages?${qs.toString()}`);
 		// 按 slug 去重：服务端可能按版本返回多条同 slug 记录，列表只保留最新版本的一条
 		const bySlug = new Map<string, IMarketplacePackage>();
@@ -710,6 +719,8 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 		return res.updates.map((u: any) => ({
 			kind: u.kind as PackageKind, storeId: u.storeId, current: u.current, latest: u.latest,
 			changelog: u.changelog ?? undefined, downloadUrl: u.downloadUrl, sha256: u.sha256, size: u.size,
+			// ★ 2026-10-22：外部发布源（workbench）—— 缺它就会去下载一个不存在的包 ✗
+			distribution: u.distribution ?? undefined,
 		}));
 	}
 
@@ -879,6 +890,12 @@ function mapPackage(p: any): IMarketplacePackage {
 		useGuide: p.use_guide ?? p.useGuide ?? undefined,
 		authorName: p.author ?? (p.author_info?.username ?? p.author_info?.display_name) ?? undefined,
 		updatedAt: p.updated_at ?? p.updatedAt ?? undefined,
+		// ★ 2026-10-22：分发方式与外部发布源（workbench 靠它决定"去哪儿取"）
+		distributionType: (p.distribution_type ?? p.distributionType ?? 'bundle') as DistributionType,
+		distribution: p.distribution_meta ?? p.distribution ?? undefined,
+		// ★ 2026-10-22：权限（服务端裁决后下发 ⇒ 客户端只渲染不判定）
+		permissions: p.permissions ?? undefined,
+		status: p.status ?? undefined,
 		versions: p.versions ? p.versions.map((v: any) => ({
 			id: v.id, version: v.version, changelog: v.changelog ?? undefined,
 			sha256: v.sha256, size: v.asset_size ?? v.size, isLatest: Boolean(v.is_latest), createdAt: v.created_at ?? v.createdAt,

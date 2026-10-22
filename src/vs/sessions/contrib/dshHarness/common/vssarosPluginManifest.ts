@@ -73,7 +73,7 @@ export interface IVssarosNoneView {
 export type IVssarosView = IVssarosPageView | IVssarosNativeView | IVssarosSectionView | IVssarosNoneView;
 
 /** 页面桥 / `ide.request` 的能力名（方案 13.3）。新增名字时**同时**改白名单常量（下方）。 */
-export type VssarosIdeCapability = 'openFile' | 'reveal' | 'showDiff' | 'getSelection' | 'getDiagnostics' | 'dashboardStats' | 'browser' | 'canvas' | 'mindmap' | 'taskboard' | 'workflow' | 'media' | 'skills' | 'mcp';
+export type VssarosIdeCapability = 'openFile' | 'reveal' | 'showDiff' | 'getSelection' | 'getDiagnostics' | 'dashboardStats' | 'browser' | 'canvas' | 'mindmap' | 'taskboard' | 'workflow' | 'media' | 'skills' | 'mcp' | 'workbenches' | 'marketplace';
 
 /**
  * IDE 能力白名单：**唯一真源**（清单校验与桥协议都用这一份）。
@@ -129,6 +129,24 @@ export const VSSAROS_IDE_CAPABILITIES: readonly VssarosIdeCapability[] = [
 	// 经控制桥回调 IDE 取清单（只读，不写任何数据 ✓）。
 	// ⚠ 这两个能力此前**长期是坏的**：清单没声明 + IDE 侧没 case ⇒ 真机只表现为"市场不可用"✗。
 	'skills', 'mcp',
+	// ★ 2026-10-22：`workbenches` —— **安装第三方工作台**（`op:'install'`，`@vssaros/dsh-market` 用）。
+	// 有副作用（往 profile 装包，包的服务端会以 Host 的权限运行）⇒ IDE 侧**必须先问用户**（fail-closed）；
+	// 装包走主进程那条已验证的通道（暂存 + `dsh plugin add`），不走 Host 的 pluginManager（全新 profile 上会剪树失败）。
+	'workbenches',
+	// ★ 2026-10-22：`marketplace` —— **商城工作台的全套动作**
+	// （`op: list|detail|install|uninstall|upgrade|publish|deletePackage|deleteVersion`）。
+	//
+	// ★ 为什么单开名字而不是复用 `skills`/`mcp`/`workbenches`：
+	//   · `skills`/`mcp` 的 `marketList` 是**只读清单**（op 只有那一个）⇒ 装/卸/升级/发布
+	//     不在它们的能力面里 ✗；
+	//   · `workbenches` 只有 `op:'install'`（且**只**针对第三方工作台）⇒ 不覆盖
+	//     agent/skill/workflow 的安装，也不覆盖卸载/升级/发布 ✗。
+	//   ⇒ 商城工作台要一次覆盖 4 类商品 + 发布/维护/删除 ⇒ 单开一个 `marketplace` 能力 ✓
+	//     （与"能力名粒度 = 授权粒度"的既有原则一致：`mindmap` 从 `browser` 折出来同理 ✓）。
+	//
+	// ★ 与 `workbenches` 的分工：`marketplace` 是**商城自营商品**（我们自己的服务端），
+	//   `workbenches` 是**第三方工作台目录**（dsh 公开市场）⇒ 两条数据源，两条能力 ✓。
+	'marketplace',
 ];
 
 export interface IVssarosActivityBar {

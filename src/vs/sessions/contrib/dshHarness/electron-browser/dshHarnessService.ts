@@ -28,6 +28,8 @@ import { TaskOverviewEditorInput } from '../../agentStudio/browser/taskOverviewE
 import { ITofAuthService } from '../../agentStudio/common/tofAuth.js';
 // ★ 2026-10-21：商城清单能力（`skills` / `mcp`）——认证（商城 JWT）在 IDE 侧 ⇒ 复用它 ✓。
 import { IMarketplaceService } from '../../agentStudio/common/marketplace.js';
+// ★ 2026-10-22：商城工作台的执行面（`marketplace` 能力的落地实现）。
+import { runMarketplaceAction } from '../../agentStudio/browser/marketplaceActionService.js';
 import { WorkflowEditorInput } from '../../agentStudio/browser/workflowEditorInput.js';
 // `executeNode` 能力（2026-10-20）：复用画布侧已有的 Comfy 直跑 delegate —— 真正的执行在 webview
 // （`requestDirectStageRun` → `runStageByClass`），这里只负责把「节点原样」整理成它要的形状。
@@ -70,7 +72,7 @@ import { DSH_HARNESS_CHANNEL, DshColorScheme, DshHarnessChannelCommand, DshHarne
 // dsh 侧会话摘要（侧栏合并用；解析规则与测试见 common/dshSessionIndex.ts）
 import type { IDshSessionSummary } from '../common/dshSessionIndex.js';
 import { DshUpdateChannel } from '../common/dshCompat.js';
-import { IBridgeBundleInfo, IBridgeInspectResult, IBridgeInstallCancelResult, IBridgeInstallResult, IBridgePluginInventory, IBridgePluginRegistries, IBridgePluginRow, IBridgeProvidersSyncArgs, IBridgeProvidersSyncResult, IBridgeSessionCancelArgs, IBridgeSessionCancelResult, IBridgeSessionRunArgs, IBridgeSessionRunResult, IBridgeSessionStartArgs, IBridgeSessionStartResult, IBridgeTofSyncResult, IBridgeWorkspace, IBridgeWorkspaceContextArgs, IBridgeWorkspaceContextResult, DSH_TOF_CREDENTIAL_REF } from '../common/dshBridgeProtocol.js';
+import { IBridgeBundleInfo, IBridgeCodeBuddyImportArgs, IBridgeCodeBuddyImportResult, IBridgeCodeBuddyStatus, IBridgeInspectResult, IBridgeInstallCancelResult, IBridgeInstallResult, IBridgeLightAIImportArgs, IBridgeLightAIImportResult, IBridgeLightAIStatus, IBridgePluginInventory, IBridgePluginRegistries, IBridgePluginRow, IBridgeProvidersSyncArgs, IBridgeProvidersSyncResult, IBridgeSessionCancelArgs, IBridgeSessionCancelResult, IBridgeSessionRunArgs, IBridgeSessionRunResult, IBridgeSessionStartArgs, IBridgeSessionStartResult, IBridgeTofSyncResult, IBridgeWorkspace, IBridgeWorkspaceContextArgs, IBridgeWorkspaceContextResult, DSH_TOF_CREDENTIAL_REF } from '../common/dshBridgeProtocol.js';
 import { DshChatViewAllocator } from '../common/dshChatViewIds.js';
 import { DSH_WORKSPACE_OPTION_LIMIT, DSH_WORKSPACE_ROOT_LIMIT, DSH_WORKTREE_OPTION_LIMIT, DshPageCommand, DshPageEvent, IDshInsertReference, IDshWorkspaceOption, IDshWorktreeOption } from '../common/dshPageBridgeProtocol.js';
 // 多根工作区（2026-10-16）：记录里的 `path` 可能是**工作区文件**（`.code-workspace`）
@@ -387,6 +389,21 @@ export interface IDshHarnessService {
 	 * dsh 侧不另起账号体系，而是持有**同一份**企业身份 ⇒ 一次浏览器登录，两边都能用 ✓。
 	 */
 	syncTofIdentity(): Promise<IBridgeTofSyncResult>;
+
+	/**
+	 * dsh 侧 CodeBuddy 登录态（2026-10-22：CodeBuddy 的登录 / 刷新 / 目录 / 路由已搬到 Host；回执不含 token）。
+	 * 老 Host 不认这条方法 ⇒ 抛（调用方当"能力不存在"处理）。
+	 */
+	codeBuddyStatus(): Promise<IBridgeCodeBuddyStatus>;
+
+	/** 把 IDE 扩展里的 CodeBuddy 登录态一次性迁到 dsh 侧（dsh 侧已登录时 Host 不覆盖）。 */
+	importCodeBuddySession(args: IBridgeCodeBuddyImportArgs): Promise<IBridgeCodeBuddyImportResult>;
+
+	/** dsh 侧 LightAI 登录态（无 cookie 值；老 Host 不认 ⇒ 抛）。 */
+	lightAIStatus(): Promise<IBridgeLightAIStatus>;
+
+	/** 把 IDE 扩展 settings 里的 LightAI cookie 一次性迁到 dsh 侧（dsh 侧已登录 / 主动登出过时 Host 不导）。 */
+	importLightAISession(args: IBridgeLightAIImportArgs): Promise<IBridgeLightAIImportResult>;
 }
 
 export class DshHarnessService extends Disposable implements IDshHarnessService {
@@ -888,6 +905,37 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 				}
 				return { providers: out };
 			},
+			// ★ 2026-10-22：用户主动发起的操作（市场「安装」）的确认 —— 主进程原生模态框；出错 ⇒ 未允许（fail-closed）。
+			confirmUserAction: async ({ title, detail, confirmLabel }) => {
+				try {
+					const reply = await this._channel.call<{ allowed?: boolean }>(DshHarnessChannelCommand.ConfirmUserAction, { title, detail, confirmLabel });
+					return reply?.allowed === true;
+				} catch (e) {
+					this._logService.warn(`[dshHarness] confirmUserAction 失败（按未允许处理）：${String((e as Error)?.message ?? e)}`);
+					return false;
+				}
+			},
+			// ★ 2026-10-22：工作台市场的安装按钮（`workbenches.install`）—— 用户已在能力层点过"允许"。
+			//   目录 ⇒ InstallLocalPlugin（暂存 + `dsh plugin add`）；spec ⇒ InstallPluginSpec。两条装完都会触发
+			//   主进程的插件列表刷新（ActivityBar / 插件中心）；Host 重启后才加载新包。
+			installWorkbenchPackage: async ({ dir, spec, name }) => {
+				const result = dir
+					? await this._channel.call<IDshBundledInstallResult>(DshHarnessChannelCommand.InstallLocalPlugin, { spec: dir })
+					: await this.installPluginSpec(spec!, name);
+				this._logService.info(`[dshHarness] workbenches.install ${name} via ${dir ? 'local dir' : 'spec'}: ok=${result.ok} changed=${result.changed}${result.error ? ` error=${result.error}` : ''}`);
+				const installed = result.version ?? (result.bundledVersion || undefined);
+				return { ok: result.ok, changed: result.changed, ...(installed ? { version: installed } : {}), ...(result.error ? { error: result.error } : {}) };
+			},
+			// ★ 2026-10-22：商城工作台的全套动作（`marketplace` 能力）。
+			//   认证、下载、打包、注册表刷新都在 IDE 侧 ⇒ dsh 侧只发意图 ✓。
+			marketplaceAction: async (req) => runMarketplaceAction({
+				marketplace: this._marketplace,
+				installPluginSpec: async (spec, name) => {
+					const r = await this.installPluginSpec(spec, name);
+					return { ok: r.ok, changed: r.changed, ...(r.version ? { version: r.version } : {}), ...(r.error ? { error: r.error } : {}) };
+				},
+				logService: this._logService,
+			}, req),
 		};
 	}
 
@@ -2088,11 +2136,32 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 	async syncTofIdentity(): Promise<IBridgeTofSyncResult> {
 		const user = this._tofAuth.currentUser;
 		const ticket = this._tofAuth.currentTicket;
+		// ★ 2026-10-22：企业身份由 **dsh 侧持有**（IDE 只读镜像）⇒ 票本来就是从 dsh 读来的 ⇒ 不再往回推
+		//   （推回去会在 dsh 侧多存一份"IDE 同步来的"副本，登出时还得两份一起清 ✗）。
+		if (this._tofAuth.holder === 'dsh') {
+			return { signedIn: !!user, ref: DSH_TOF_CREDENTIAL_REF, changed: false };
+		}
 		if (user && !ticket) {
 			this._logService.info('[dshHarness] 企业身份同步：已登录但票据未就位 ⇒ 本次不动 dsh 侧（不误清凭据）');
 			return { signedIn: true, ref: DSH_TOF_CREDENTIAL_REF, changed: false };
 		}
 		return this._channel.call(DshHarnessChannelCommand.TofSync, { ticket: ticket ?? null });
+	}
+
+	codeBuddyStatus(): Promise<IBridgeCodeBuddyStatus> {
+		return this._channel.call(DshHarnessChannelCommand.CodeBuddyStatus);
+	}
+
+	importCodeBuddySession(args: IBridgeCodeBuddyImportArgs): Promise<IBridgeCodeBuddyImportResult> {
+		return this._channel.call(DshHarnessChannelCommand.CodeBuddyImport, args);
+	}
+
+	lightAIStatus(): Promise<IBridgeLightAIStatus> {
+		return this._channel.call(DshHarnessChannelCommand.LightAIStatus);
+	}
+
+	importLightAISession(args: IBridgeLightAIImportArgs): Promise<IBridgeLightAIImportResult> {
+		return this._channel.call(DshHarnessChannelCommand.LightAIImport, args);
 	}
 
 	/**

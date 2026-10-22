@@ -1,6 +1,6 @@
 {
   "name": "vssaros",
-  "version": "2.2.26082",
+  "version": "2.2.26083",
   "distro": "adf5d4ef5d36b1829d04e2a6f5255c5344cb0316",
   "author": {
     "name": "Microsoft Corporation"
@@ -15,7 +15,7 @@
     "test-browser": "npx playwright install && node test/unit/browser/index.js",
     "test-browser-no-install": "node test/unit/browser/index.js",
     "test-node": "mocha test/unit/node/index.js --delay --ui=tdd --timeout=5000 --exit",
-    "check:dsh-plugins": "node dsh-plugins/check-host-config.mjs && node dsh-plugins/check-plugin-files.mjs && node dsh-plugins/check-tool-definitions.mjs && node dsh-plugins/check-chat-surface-chunks.mjs && node dsh-plugins/vssaros-sessions/test/run-sessions-plugin-check.mjs && node dsh-plugins/check-persistence-catalog.mjs && node dsh-plugins/check-migration-ledger.mjs && node dsh-plugins/check-legacy-freeze.mjs && node dsh-plugins/check-spawn-hide.mjs && node dsh-plugins/check-agent-tools.mjs && node dsh-plugins/check-agents-group-page.mjs && node dsh-plugins/vssaros-pele/test/run-pele-check.mjs && node dsh-plugins/vssaros-ego/test/run-ego-check.mjs && node dsh-plugins/vssaros-market/test/run-market-check.mjs && node dsh-plugins/check-codebase-handover.mjs && node dsh-plugins/check-dsh-tof-standalone.mjs",
+    "check:dsh-plugins": "node dsh-plugins/check-host-config.mjs && node dsh-plugins/check-plugin-files.mjs && node dsh-plugins/check-tool-definitions.mjs && node dsh-plugins/check-chat-surface-chunks.mjs && node dsh-plugins/vssaros-sessions/test/run-sessions-plugin-check.mjs && node dsh-plugins/check-persistence-catalog.mjs && node dsh-plugins/check-migration-ledger.mjs && node dsh-plugins/check-legacy-freeze.mjs && node dsh-plugins/check-spawn-hide.mjs && node dsh-plugins/check-agent-tools.mjs && node dsh-plugins/check-agents-group-page.mjs && node dsh-plugins/vssaros-pele/test/run-pele-check.mjs && node dsh-plugins/vssaros-ego/test/run-ego-check.mjs && node dsh-plugins/vssaros-market/test/run-market-check.mjs && node dsh-plugins/check-codebase-handover.mjs && node dsh-plugins/check-dsh-tof-standalone.mjs && node dsh-plugins/check-dsh-codebuddy.mjs && node dsh-plugins/check-dsh-tof-owned.mjs && node dsh-plugins/check-dsh-lightai.mjs",
     "test:dsh-composition": "node dsh-plugins/test-real-composition.mjs",
     "p3:agents": "node poc/dsh-p0/scripts/run-all.mjs --group agents",
     "p3:quick": "node poc/dsh-p0/scripts/run-all.mjs --group agents --skip-browser",

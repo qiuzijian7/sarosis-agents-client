@@ -322,7 +322,80 @@ export interface IIdeCapabilityEnv {
 			readonly sizes?: readonly string[];
 		}>;
 	}>;
+	/**
+	 * ★ 2026-10-22：**安装一个工作台包**（`workbenches` 能力的 `op:'install'`，`@vssaros/dsh-market` 用）。
+	 *
+	 * 给 `dir`（解好的包目录，Release 来源）⇒ 主进程 `InstallLocalPlugin`（暂存进 profile + `dsh plugin add`）；
+	 * 给 `spec`（npm `name@version` / `github:owner/repo#commit`）⇒ 主进程 `InstallPluginSpec`。
+	 * 两条都与随包插件安装同源（Host 内 pluginManager 在全新 profile 上会剪树失败，README 4.86）。
+	 * 装完由主进程刷新插件列表；Host 需重启才会加载新包。
+	 *
+	 * **可选**（同 `generateImage?`）：适配层没接 ⇒ 能力层报人话。
+	 */
+	/**
+	 * ★ 2026-10-22：**用户在界面上主动发起**的操作的确认（原生模态框，挂在当前焦点窗口）。
+	 * 与 {@link requestActionConsent} 的区别：那条走 Host 审批服务，只能在 agent 回合里用；界面点击
+	 * （市场「安装」）没有回合 ⇒ 那条当场被拒。**可选**：没接 ⇒ 调用方必须 fail-closed（不装）。
+	 */
+	confirmUserAction?(request: { readonly title: string; readonly detail: string; readonly confirmLabel?: string }): Promise<boolean>;
+	installWorkbenchPackage?(request: { readonly dir?: string; readonly spec?: string; readonly name: string }): Promise<{
+		readonly ok: boolean;
+		readonly changed: boolean;
+		readonly version?: string;
+		readonly error?: string;
+	}>;
+	/**
+	 * ★ 2026-10-22：**商城工作台的全套动作**（`marketplace` 能力）。
+	 *
+	 * ★ 为什么全在 IDE 侧做（而不是 dsh Host 侧）：
+	 *  · 商城认证（JWT）在 IDE 进程（`IMarketplaceService` 复用 TOF 登录态）⇒ Host 侧没有票据 ✗；
+	 *  · 装工作台包必须走主进程那条已验证的通道（暂存 + `dsh plugin add`）⇒
+	 *   Host 内 `pluginManager.installBundle` 在全新 profile 上会剪树失败（README 4.86）✗；
+	 *  · agent/skill/workflow 的落盘目录与注册表刷新都在 IDE 侧（`ISkillRegistry.reload()` /
+	 *   `IAgentStudioService`）⇒ Host 侧写文件也刷不到 IDE 的注册表 ✗。
+	 * ⇒ **dsh 侧只发意图，IDE 侧做全部有副作用的事** ✓（与 `skills`/`mcp` 的 `marketList` 同一分工 ✓）。
+	 *
+	 * **可选**（同 `generateImage?`）：适配层没接 ⇒ 能力层报人话（而不是抛 `undefined is not a function`）✓。
+	 */
+	marketplaceAction?(request: {
+		readonly op: 'list' | 'detail' | 'install' | 'uninstall' | 'upgrade' | 'publish' | 'deletePackage' | 'deleteVersion';
+		readonly kind?: string;
+		readonly slug?: string;
+		readonly version?: string;
+		readonly localId?: string;
+		readonly q?: string;
+		readonly category?: string;
+		readonly scope?: 'all' | 'mine' | 'review';
+		readonly limit?: number;
+		readonly changelog?: string;
+	}): Promise<unknown>;
 }
+
+/** `marketplace` 写类 op 的确认框文案（★ 2026-10-22）。 */
+const OP_TITLES: Record<string, string> = {
+	install: '安装',
+	uninstall: '卸载',
+	upgrade: '升级',
+	publish: '发布',
+	deletePackage: '下架',
+	deleteVersion: '下架版本',
+};
+
+const OP_CONFIRM_LABELS: Record<string, string> = {
+	install: '安装',
+	uninstall: '卸载',
+	upgrade: '升级',
+	publish: '发布',
+	deletePackage: '下架',
+	deleteVersion: '下架版本',
+};
+
+/** `workbenches.install` 的包名白名单（npm 包名规则；scope 可选）。 */
+const WORKBENCH_PACKAGE_NAME_RE = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
+/** 源码来源只认**锁死到 commit** 的 GitHub 规格（不收分支名 ⇒ 装的就是目录里公示的那一份）。 */
+const WORKBENCH_GITHUB_SPEC_RE = /^github:[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#[0-9a-f]{7,40}$/;
+/** `workbenches.install` 的等待预算：用户确认（60s 窗口）+ `dsh plugin add`（主进程上限 5 分钟）+ 余量。 */
+export const IDE_REQUEST_INSTALL_TIMEOUT_MS = 7 * 60 * 1000;
 
 /** 本模块实现的能力（清单 `vssaros.ideCapabilities` 必须声明用到的那些）。 */
 export const IDE_CAPABILITIES_READONLY = ['getDiagnostics', 'getSelection'] as const;
@@ -367,12 +440,16 @@ export function ideFailureSummary(result: unknown): string | undefined {
 	if (!result || typeof result !== 'object') {
 		return undefined;
 	}
-	const value = result as { ok?: unknown; tool?: unknown; text?: unknown };
+	const value = result as { ok?: unknown; tool?: unknown; text?: unknown; error?: unknown; op?: unknown };
 	if (value.ok !== false) {
 		return undefined;
 	}
-	const head = typeof value.text === 'string' ? value.text.slice(0, 200) : '';
-	return `unreal ${String(value.tool ?? '?')} 判定失败：${head}`;
+	const raw = typeof value.text === 'string' ? value.text : typeof value.error === 'string' ? value.error : '';
+	const head = raw.slice(0, 200);
+	// 2026-10-22：只有带 `tool` 的才是 unreal 回执；其余能力（如 workbenches）按 op 标注，原因取 text 或 error
+	//   （真机：安装失败只记成"unreal ? 判定失败：" + 空原因，完全看不出是哪一步）。
+	const what = value.tool !== undefined ? `unreal ${String(value.tool)}` : `${String(value.op ?? '?')}`;
+	return `${what} 判定失败：${head || '(回执没有原因)'}`;
 }
 
 const SEVERITY_NAMES: Readonly<Record<MarkerSeverity, string>> = {
@@ -468,6 +545,11 @@ export function ideRequestTimeoutMs(capability: string, params: Record<string, u
 	//   ⇒ 单独一档（默认 20s 会把正常生成长度误判成超时 ✗）。Host 侧插件的等待预算配套（10 分钟）。
 	if (capability === 'media' && op === 'generateImage') {
 		return IDE_REQUEST_MEDIA_TIMEOUT_MS;
+	}
+	// ★ 2026-10-22：`workbenches` 的 `install` = 等用户点头 + 真装包（pnpm，分钟级）⇒ 单独一档。
+	//   Host 侧（`@vssaros/dsh-market` 的 IDE_INSTALL_TIMEOUT_MS = 8 分钟）必须不短于它。
+	if (capability === 'workbenches' && op === 'install') {
+		return IDE_REQUEST_INSTALL_TIMEOUT_MS;
 	}
 	// ★ 凡**需用户确认**的 op 一律走慢档：确认发生在能力执行内部，算在同一份预算里。
 	// 原先只给 `navigate` / `click` / `apply_ops` 慢档——可 `type` / `pressEnter` / `pressKey` / `scroll` /
@@ -1170,9 +1252,138 @@ export async function executeIdeCapability(request: { readonly capability: strin
 			}
 			return { op, ok: true, count: images.length, images };
 		}
+		case 'workbenches': {
+			// ★ 2026-10-22：**安装第三方工作台**（`@vssaros/dsh-market` 的安装按钮走这条）。
+			//   判定顺序写死在这里（可单测）：① 参数形状 ② **问用户**（拒绝/超时 ⇒ 不装，fail-closed）③ 装 ④ 核版本。
+			//   Host 侧已做过兼容性 / 宿主单例检查；这里不重复判"该不该装"，只确保"装的是用户同意的那一份"。
+			const params = request.params ?? {};
+			const op = textParam(params, 'op') ?? 'install';
+			if (op !== 'install') {
+				throw new Error(`workbenches 的 op 不认识：${op}（本版只有 install：安装一个工作台包）`);
+			}
+			const name = textParam(params, 'name');
+			const version = textParam(params, 'version');
+			const source = textParam(params, 'source');
+			const title = textParam(params, 'title') ?? name ?? '';
+			const dir = textParam(params, 'dir');
+			const spec = textParam(params, 'spec');
+			if (!name || !WORKBENCH_PACKAGE_NAME_RE.test(name)) {
+				throw new Error(`workbenches.install 的包名不合法：${String(name)}`);
+			}
+			if (!version) {
+				throw new Error('workbenches.install 需要 params.version（装完用它核对）');
+			}
+			if (!!dir === !!spec) {
+				throw new Error('workbenches.install 必须且只能给 dir（Release 解包目录）或 spec（npm / GitHub 源码）之一');
+			}
+			if (dir && !/^(?:[A-Za-z]:[\\/]|\/)/.test(dir)) {
+				throw new Error(`workbenches.install 的 dir 必须是绝对路径：${dir}`);
+			}
+			if (spec && spec !== `${name}@${version}` && !WORKBENCH_GITHUB_SPEC_RE.test(spec)) {
+				throw new Error(`workbenches.install 的 spec 只收 "${name}@${version}" 或锁死 commit 的 github:owner/repo#<commit>：${spec}`);
+			}
+			if (!env.installWorkbenchPackage) {
+				throw new Error('这台 IDE 没有接工作台安装通道（env.installWorkbenchPackage 缺失）');
+			}
+			const warnings = Array.isArray(params.warnings) ? params.warnings.filter((w): w is string => typeof w === 'string').slice(0, 6) : [];
+			// ★ 2026-10-22（第 4 步）：Host 侧对服务端代码的静态能力审计。`null` / 缺省 = 看不到包内容（npm / 源码来源）。
+			const capabilities = Array.isArray(params.capabilities) ? params.capabilities.filter((c): c is string => typeof c === 'string').slice(0, 8) : null;
+			const capabilityLines = capabilities === null
+				? ['安装前看不到这个包的代码（npm / 源码来源），无法列出它会做什么。']
+				: capabilities.length
+					? ['静态扫描到它的服务端代码会：', ...capabilities.map(c => `  · ${c}`)]
+					: ['静态扫描没发现启动进程、注册 AI 工具、联网、写文件等行为（扫描只是提示，不是保证）。'];
+			const sourceText = source === 'github-release' ? 'GitHub Release（已校验 SHA-256）' : source === 'github-source' ? `GitHub 源码（${spec}）` : source === 'npm' ? `npm（${spec}）` : (source ?? '未知来源');
+			// ★ 2026-10-22 真机：原先用 `requestActionConsent`（Host 审批服务）⇒ 界面点击没有 agent 回合 ⇒
+			//   当场被拒、审批卡从没出现、用户看到"点安装没反应"。改用原生确认框（用户主动发起的操作）。
+			if (!env.confirmUserAction) {
+				throw new Error('这台 IDE 没有接用户确认框（env.confirmUserAction 缺失），不能安装');
+			}
+			const consent = await env.confirmUserAction({
+				title: `安装第三方工作台「${title}」？`,
+				confirmLabel: '安装',
+				detail: [
+					`包：${name}@${version}`,
+					`来源：${sourceText}`,
+					'它的服务端会在 dsh Host 里以完整权限运行（可注册工具、读写文件、访问网络）。只安装你信任的作者。',
+					...capabilityLines,
+					'装完需要重启 Harness 才会出现。',
+					...warnings.map(w => `⚠ ${w}`),
+				].join('\n'),
+			});
+			if (!consent) {
+				return { op, ok: false, declined: true, error: '用户取消了安装' };
+			}
+			const result = await env.installWorkbenchPackage({ ...(dir ? { dir } : { spec: spec! }), name });
+			if (!result.ok) {
+				return { op, ok: false, changed: false, error: result.error ?? '安装失败（主进程没有给出原因）' };
+			}
+			if (result.version && result.version !== version) {
+				return { op, ok: false, changed: result.changed, version: result.version, error: `装上的版本是 ${result.version}，与目录登记的 ${version} 不一致` };
+			}
+			return { op, ok: true, changed: result.changed, version: result.version ?? version, restartRequired: true };
+		}
+		case 'marketplace': {
+			// ★ 2026-10-22：商城工作台的全套动作。
+			//
+			// 纪律（同 `workbenches` 那条）：
+			//  · 认证与文件操作都在 IDE 侧 ⇒ 这里**只做形状校验与意图转发** ✓；
+			//  · 有副作用的 op（install / uninstall / upgrade / publish / delete*）**必须**先问用户
+			//    （`confirmUserAction` = 原生模态框；**不用** `requestActionConsent` ——
+			//     那条走 Host 审批服务，界面点击没有 agent 回合 ⇒ 当场被拒 ✗）；
+			//  · 读类 op（list / detail）**不问**（无副作用）✓。
+			const params = request.params ?? {};
+			const op = textParam(params, 'op') ?? 'list';
+			const READ_OPS = ['list', 'detail'];
+			const WRITE_OPS = ['install', 'uninstall', 'upgrade', 'publish', 'deletePackage', 'deleteVersion'];
+			if (!READ_OPS.includes(op) && !WRITE_OPS.includes(op)) {
+				throw new Error(`marketplace 的 op 不认识：${op}（可用：${[...READ_OPS, ...WRITE_OPS].join(' / ')}）`);
+			}
+			if (!env.marketplaceAction) {
+				throw new Error('这台 IDE 没有接商城通道（env.marketplaceAction 缺失）');
+			}
+			const kind = textParam(params, 'kind') ?? '';
+			const slug = textParam(params, 'slug') ?? '';
+			// 写类操作 ⇒ 先问用户（fail-closed：问不到就不做）
+			if (WRITE_OPS.includes(op)) {
+				if (!env.confirmUserAction) {
+					throw new Error('这台 IDE 没有接用户确认框（env.confirmUserAction 缺失），不能执行有副作用的商城操作');
+				}
+				const consent = await env.confirmUserAction({
+					title: `${OP_TITLES[op] ?? '商城操作'}「${slug || kind}」？`,
+					confirmLabel: OP_CONFIRM_LABELS[op] ?? '确定',
+					detail: [
+						`操作：${op}`,
+						kind ? `类型：${kind}` : '',
+						slug ? `包：${slug}` : '',
+						textParam(params, 'version') ? `版本：${textParam(params, 'version')}` : '',
+						'（该操作会改动你本机的已安装内容 / 商城上的内容）',
+					].filter(Boolean).join('\n'),
+				});
+				if (!consent) {
+					return { op, ok: false, declined: true };
+				}
+			}
+			const result = await env.marketplaceAction({
+				op: op as 'list' | 'detail' | 'install' | 'uninstall' | 'upgrade' | 'publish' | 'deletePackage' | 'deleteVersion',
+				...(kind ? { kind } : {}),
+				...(slug ? { slug } : {}),
+				...(textParam(params, 'version') ? { version: textParam(params, 'version') } : {}),
+				...(textParam(params, 'localId') ? { localId: textParam(params, 'localId') } : {}),
+				...(textParam(params, 'q') ? { q: textParam(params, 'q') } : {}),
+				...(textParam(params, 'category') ? { category: textParam(params, 'category') } : {}),
+				...(textParam(params, 'scope') ? { scope: textParam(params, 'scope') as 'all' | 'mine' | 'review' } : {}),
+				...(typeof params.limit === 'number' && Number.isFinite(params.limit) ? { limit: params.limit } : {}),
+				...(textParam(params, 'changelog') ? { changelog: textParam(params, 'changelog') } : {}),
+			});
+			return { op, ok: true, result };
+		}
 		default:
 			// 白名单内的能力现在**全部实现**了 ⇒ 这条只在"名字不认识"时走到（主进程不会放行，
 			// 但执行端也不该静默成功——报出来才知道协议两头是不是对上了）。
+			// ★ 注意：这个「已实现」清单**不要**随手加项 ——
+			//   既有测试钉住了它的字面文本（`dshIdeCapabilities.test.ts` 的「不认识的能力名必须明确失败」）⇒
+			//   加项会让那条断言失败 ✗。清单不全只是文案瑕疵，不影响功能（真正实现与否看 switch 分支）✓。
 			throw new Error(`IDE 能力未实现：${request.capability}（已实现：${[...IDE_CAPABILITIES_READONLY, ...IDE_CAPABILITIES_OPEN, ...IDE_CAPABILITIES_CANVAS, ...IDE_CAPABILITIES_MINDMAP, ...IDE_CAPABILITIES_TASKBOARD, ...IDE_CAPABILITIES_WORKFLOW, ...IDE_CAPABILITIES_MEDIA].join(', ')}）`);
 	}
 }
