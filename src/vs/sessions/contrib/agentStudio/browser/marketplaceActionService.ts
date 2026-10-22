@@ -70,11 +70,48 @@ export interface IMarketplaceActionResult {
  *
  * ⚠️ 未知 op 一律抛错（不静默成功）⇒ 协议两头对不上时能立刻看见 ✓。
  */
+/**
+ * **已被 dsh 侧接管**的 op（★ 2026-10-22 S1/S2/S2c）。
+ *
+ * 这些能力已经搬进 `dsh-plugins/vssaros-marketplace`（认证、list/detail/installed、
+ * skill/workflow 的装升卸、publish/delete*）⇒ 走到 IDE 侧说明**调用方是旧版或走错路**。
+ *
+ * ⚠ 必须**立刻报错**而不是"顺手也做一遍"：
+ *   两套逻辑都活着时，谁都不知道实际生效的是哪一套 —— 这正是要消掉的状态 ✗
+ *   （而且 dsh 侧的台账/备份语义与这里不同，双写会打架）。
+ *
+ * ⚠ 这里**暂时保留**旧实现（不物理删除），原因：dsh 侧的 S1/S2 尚未真机验收。
+ *   验收通过后应整段删除，并把下面这些 op 从 `IMarketplaceActionRequest` 里去掉。
+ *   待办登记在 `doc/`（见提交说明）。
+ */
+const OPS_TAKEN_OVER_BY_DSH = new Set([
+	'list', 'detail', 'installed',
+	'publish', 'deletePackage', 'deleteVersion',
+]);
+
+/** 这三类 op 里，dsh 侧只接管了 skill / workflow；agent 与 workbench 仍必须由 IDE 做。 */
+const KIND_TAKEN_OVER_BY_DSH = new Set(['skill', 'workflow']);
+
 export async function runMarketplaceAction(
 	host: IMarketplaceActionHost,
 	req: IMarketplaceActionRequest,
 ): Promise<IMarketplaceActionResult> {
 	const { marketplace, logService } = host;
+
+	// ── 下线闸：已被 dsh 侧接管的 op 一律拒绝（不执行任何逻辑）──────────────
+	if (OPS_TAKEN_OVER_BY_DSH.has(req.op)) {
+		throw new Error(
+			`marketplace 的 ${req.op} 已由 dsh 侧自持（Host 直接完成），不该再走 IDE 反向调用`
+			+ '—— 请升级 dsh 侧插件（@vssaros/dsh-marketplace ≥ 0.1.4）',
+		);
+	}
+	if ((req.op === 'install' || req.op === 'upgrade' || req.op === 'uninstall')
+		&& KIND_TAKEN_OVER_BY_DSH.has(String(req.kind ?? ''))) {
+		throw new Error(
+			`${req.kind} 的 ${req.op} 已由 dsh 侧自持（直接落数据根 + 写台账），不该再走 IDE`
+			+ '—— 只有 agent（要 .agent.md 序列化）与 workbench（要 dsh plugin add + 重启）仍需 IDE',
+		);
+	}
 
 	switch (req.op) {
 		case 'list': {
