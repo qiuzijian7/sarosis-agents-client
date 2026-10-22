@@ -60,6 +60,10 @@
 		msg: null,            // { text, kind }
 		/** 发布表单（null = 关闭）；{ items, pick, version, changelog, busy, error } */
 		publish: null,
+		/** 当前页码（"加载更多"靠它 +1；0/1 都当第一页 ✓） */
+		page: 1,
+		/** 编辑表单（null = 关闭）；{ slug, name, description, category, icon, visibility, busy, error } */
+		edit: null,
 	};
 
 	const root = document.getElementById('vs-mp-root');
@@ -71,11 +75,21 @@
 		render();
 	}
 
-	/** 拉清单。 */
-	async function load() {
+	/** 每页条数（商城里单类 500+ 条 ⇒ 必须分页 ✓）。 */
+	const PAGE_SIZE = 60;
+
+	/**
+	 * 拉清单。
+	 *
+	 * @param {{ append?: boolean }} [opts] `append` = 只追加下一页（"加载更多"），否则从第 1 页重来
+	 */
+	async function load(opts) {
+		const append = Boolean(opts && opts.append);
 		state.busy = true;
+		if (!append) { state.page = 1; }
 		render();
-		const params = { limit: 60 };
+		const page = append ? (state.page || 1) + 1 : 1;
+		const params = { limit: PAGE_SIZE, page: page };
 		if (state.kind) { params.kind = state.kind; }
 		if (state.q) { params.q = state.q; }
 		if (state.tab === 'mine') { params.scope = 'mine'; }
@@ -87,13 +101,16 @@
 		const res = await action(op, params);
 		state.busy = false;
 		if (!res || res.ok === false) {
-			state.items = [];
-			state.total = 0;
+			if (!append) { state.items = []; state.total = 0; }
 			showMsg((res && res.error) || '商城清单取不到', 'error');
 			return;
 		}
-		state.items = Array.isArray(res.items) ? res.items : [];
+		const got = Array.isArray(res.items) ? res.items : [];
+		// 审核队列 / 已安装台账一次给全 ⇒ 不参与分页累积
+		const paginated = op === 'list';
+		state.items = append && paginated ? state.items.concat(got) : got;
 		state.total = Number(res.total) || state.items.length;
+		state.page = append ? page : 1;
 		render();
 	}
 
@@ -214,6 +231,10 @@
 		if (perm.canPublish !== false) {
 			buttons.push('<button class="vs-mp-btn primary" data-install="' + esc(d.slug) + '">安装</button>');
 		}
+		// 编辑元数据（作者或管理员）—— 服务端判权，前端只按 permissions 渲染 ✓
+		if (perm.canEdit !== false) {
+			buttons.push('<button class="vs-mp-btn" data-openedit="1">编辑信息</button>');
+		}
 		if (perm.canDelete !== false) {
 			buttons.push('<button class="vs-mp-btn danger" data-uninstall="' + esc(d.slug) + '">卸载</button>');
 			buttons.push('<button class="vs-mp-btn danger" data-delpkg="' + esc(d.slug) + '">下架整个包</button>');
@@ -281,6 +302,46 @@
 			'</div>';
 	}
 
+	/**
+	 * 编辑元数据表单（作者 / 管理员）。
+	 *
+	 * 只放**可改**的字段（`kind`/`slug` 是身份，不可改；版本走"发布"）✓
+	 */
+	function renderEditForm() {
+		const e = state.edit;
+		if (!e) { return ''; }
+		return '' +
+			'<div class="vs-mp-mask" data-closeedit="1"></div>' +
+			'<div class="vs-mp-drawer">' +
+				'<div class="vs-mp-drawer-head">' +
+					'<div><div class="vs-mp-drawer-title">编辑「' + esc(e.slug) + '」的信息</div>' +
+					'<div class="vs-mp-drawer-meta">类型与标识不可改；版本请用「发布」</div></div>' +
+					'<button class="vs-mp-x" data-closeedit="1">×</button>' +
+				'</div>' +
+				'<div class="vs-mp-form">' +
+					'<label>名称</label>' +
+					'<input id="vs-mp-edit-name" class="vs-mp-input" value="' + esc(e.name) + '" />' +
+					'<label>介绍</label>' +
+					'<textarea id="vs-mp-edit-desc" class="vs-mp-input" rows="3">' + esc(e.description) + '</textarea>' +
+					'<label>分类</label>' +
+					'<input id="vs-mp-edit-category" class="vs-mp-input" value="' + esc(e.category) + '" />' +
+					'<label>图标（emoji 或 codicon）</label>' +
+					'<input id="vs-mp-edit-icon" class="vs-mp-input" value="' + esc(e.icon) + '" />' +
+					'<label>可见性</label>' +
+					'<select id="vs-mp-edit-visibility" class="vs-mp-input">' +
+						'<option value="public"' + (e.visibility === 'private' ? '' : ' selected') + '>公开</option>' +
+						'<option value="private"' + (e.visibility === 'private' ? ' selected' : '') + '>私有（仅自己可见）</option>' +
+					'</select>' +
+					(e.error ? '<div class="vs-mp-msg error">' + esc(e.error) + '</div>' : '') +
+					'<div class="vs-mp-drawer-actions">' +
+						'<button class="vs-mp-btn primary" data-doedit="1"' + (e.busy ? ' disabled' : '') + '>' +
+							(e.busy ? '保存中…' : '保存') + '</button>' +
+						'<button class="vs-mp-btn" data-closeedit="1">取消</button>' +
+					'</div>' +
+				'</div>' +
+			'</div>';
+	}
+
 	/** 主渲染。 */
 	function render() {
 		const msg = state.msg
@@ -309,11 +370,16 @@
 				msg +
 				'<nav class="vs-mp-tabs">' + renderTabs() + '</nav>' +
 				'<nav class="vs-mp-kinds">' + renderKindTabs() + '</nav>' +
-				'<div class="vs-mp-count">已显示 ' + state.items.length + ' / 共 ' + state.total + ' 个商品</div>' +
+				'<div class="vs-mp-count">已显示 ' + state.items.length + ' / 共 ' + state.total + ' 个商品' +
+					(state.items.length < state.total && state.tab !== 'admin' && state.tab !== 'installed'
+						? '　<button class="vs-mp-link" data-more="1">' + (state.busy ? '加载中…' : '加载更多') + '</button>'
+						: '') +
+				'</div>' +
 				empty +
 			'</div>' +
 			renderDetail() +
-			renderPublishForm();
+			renderPublishForm() +
+			renderEditForm();
 
 		bindEvents();
 	}
@@ -334,6 +400,8 @@
 			load();
 		});
 		on('[data-refresh]', 'click', () => { state.msg = null; load(); });
+		// 加载更多：**追加**下一页（不清空已看到的；换页签/改搜索时从头来 ✓）
+		on('[data-more]', 'click', () => { if (!state.busy) { load({ append: true }); } });
 
 		// ── 发布表单（打开发布 op 拿本机可发布资源 → 选 → 发）──────────────
 		on('[data-openpublish]', 'click', async () => {
@@ -418,6 +486,59 @@
 			const kind = (fromDetail && fromDetail.kind) || (fromList && fromList.kind) || 'skill';
 			run('uninstall', { kind: kind, slug: slug }, '已卸载');
 		});
+		// ── 编辑元数据（作者 / 管理员）─────────────────────────────────────
+		on('[data-openedit]', 'click', () => {
+			const d = state.detail || {};
+			state.edit = {
+				slug: d.slug || '',
+				name: d.name || '',
+				description: d.description || '',
+				category: d.category || '',
+				icon: d.icon || '',
+				visibility: d.visibility || 'public',
+				busy: false,
+				error: '',
+			};
+			render();
+		});
+		on('[data-closeedit]', 'click', () => { state.edit = null; render(); });
+		on('[data-doedit]', 'click', async () => {
+			const e = state.edit;
+			if (!e) { return; }
+			// 从 DOM 读（三个输入框是**非受控**的，渲染时只给初值 ⇒ 不重渲染，避免打字被吞 ✓）
+			const readVal = (id) => {
+				const el = root.querySelector(id);
+				return el ? String(el.value || '') : '';
+			};
+			const patch = {
+				slug: e.slug,
+				name: readVal('#vs-mp-edit-name'),
+				description: readVal('#vs-mp-edit-desc'),
+				category: readVal('#vs-mp-edit-category'),
+				icon: readVal('#vs-mp-edit-icon'),
+				visibility: readVal('#vs-mp-edit-visibility') || 'public',
+			};
+			if (!patch.name.trim()) {
+				e.error = '名称不能为空';
+				render();
+				return;
+			}
+			e.busy = true;
+			e.error = '';
+			render();
+			const res = await action('updatePackage', patch);
+			if (!res || res.ok === false) {
+				e.busy = false;
+				e.error = String((res && res.error) || '保存失败');
+				render();
+				return;
+			}
+			state.edit = null;
+			showMsg('已保存', 'ok');
+			await load();
+			if (state.detail && state.detail.slug === patch.slug) { await openDetail(patch.slug); }
+		});
+
 		// ── 管理页签：审核三件套（服务端判 admin，前端只发意图）─────────────
 		on('[data-review-ok]', 'click', e => {
 			run('reviewStatus', { slug: e.currentTarget.getAttribute('data-review-ok'), status: 'active' }, '已通过审核');

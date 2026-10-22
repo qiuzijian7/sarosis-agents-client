@@ -260,15 +260,41 @@ export function createMarketClient({ credentials, config, log = () => { }, fetch
 		if (opts.q) { qs.set('q', opts.q); }
 		if (opts.category) { qs.set('category', opts.category); }
 		if (opts.scope) { qs.set('scope', opts.scope); }
+		// ★ 2026-10-22：分页（商城里 skill/mcp 各 500+ 条 ⇒ 不分页等于看不到大部分 ✗）
+		if (opts.page) { qs.set('page', String(opts.page)); }
 		qs.set('pageSize', String(opts.pageSize ?? 50));
 		const res = await request('GET', `/packages?${qs.toString()}`);
-		return { items: Array.isArray(res?.items) ? res.items : [], total: Number(res?.total) || 0 };
+		return {
+			items: Array.isArray(res?.items) ? res.items : [],
+			total: Number(res?.total) || 0,
+			page: Number(res?.page) || (opts.page ?? 1),
+			pageSize: Number(res?.pageSize) || (opts.pageSize ?? 50),
+		};
 	}
 
 	/** 商品详情（含版本列表 + permissions）。 */
 	async function detail(slug) {
 		if (!slug) { throw new Error('marketplace.detail 需要 slug'); }
 		return request('GET', `/packages/${encodeURIComponent(slug)}`);
+	}
+
+	/**
+	 * 编辑包元数据（作者或管理员；服务端 `assertAuthor` 判权）。
+	 *
+	 * 只传**要改的字段**（服务端用 `COALESCE` ⇒ 不传的保持不变 ✓）；
+	 * `kind`/`slug` 不可改（它们是身份）⇒ 这里不收。
+	 */
+	async function updatePackage(idOrSlug, patch) {
+		if (!idOrSlug) { throw new Error('updatePackage 需要 slug 或 id'); }
+		const body = {};
+		if (typeof patch.name === 'string' && patch.name.trim()) { body.name = patch.name.trim(); }
+		if (typeof patch.description === 'string') { body.description = patch.description; }
+		if (typeof patch.category === 'string') { body.category = patch.category; }
+		if (typeof patch.icon === 'string') { body.icon = patch.icon; }
+		if (patch.visibility === 'public' || patch.visibility === 'private') { body.visibility = patch.visibility; }
+		if (Array.isArray(patch.tags)) { body.tags = patch.tags.map(t => String(t)).filter(Boolean); }
+		if (Object.keys(body).length === 0) { throw new Error('没有要改的字段'); }
+		return request('PUT', `/packages/${encodeURIComponent(idOrSlug)}`, body);
 	}
 
 	/**
@@ -306,7 +332,7 @@ export function createMarketClient({ credentials, config, log = () => { }, fetch
 
 	return {
 		login, request, download, upload, list, detail, checkUpgrades,
-		reviewList, reviewSetStatus, reviewSetFeatured,
+		reviewList, reviewSetStatus, reviewSetFeatured, updatePackage,
 		endpoint: root, tofTicket,
 	};
 }

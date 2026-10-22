@@ -124,12 +124,14 @@ export async function apply(ctx, config) {
 		}
 		if (op === 'list') {
 			const res = await market().list({
-				...(params.kind ? { kind: String(params.kind) } : {}),
-				...(params.q ? { q: String(params.q) } : {}),
-				...(params.category ? { category: String(params.category) } : {}),
-				...(params.scope ? { scope: String(params.scope) } : {}),
-				...(typeof params.limit === 'number' ? { pageSize: params.limit } : {}),
-			});
+					...(params.kind ? { kind: String(params.kind) } : {}),
+					...(params.q ? { q: String(params.q) } : {}),
+					...(params.category ? { category: String(params.category) } : {}),
+					...(params.scope ? { scope: String(params.scope) } : {}),
+					...(typeof params.limit === 'number' ? { pageSize: params.limit } : {}),
+					// ★ 分页（商城里单类 500+ 条 ⇒ 不分页等于看不到大部分 ✗）
+					...(typeof params.page === 'number' && params.page > 0 ? { page: params.page } : {}),
+				});
 			// 台账（同一份 installed-packages.json）⇒ 让页面标出"已安装 / 可升级"
 			const installed = state.dataRoot ? await readInstalled(state.dataRoot) : [];
 			const installedByKey = new Map(installed.map(e => [`${e.kind}:${e.storeId}`, e.version]));
@@ -169,6 +171,9 @@ export async function apply(ctx, config) {
 				author: pkg.author_name ?? pkg.author?.display_name ?? pkg.author?.username ?? '',
 				category: pkg.category ?? '',
 				icon: pkg.icon ?? '',
+				// 编辑表单要回显这两项 ⇒ 必须带上（否则"可见性"每次都被重置成 public ✗）
+				visibility: pkg.visibility ?? 'public',
+				featured: pkg.featured === true,
 				tags: Array.isArray(pkg.tags) ? pkg.tags : [],
 				status: pkg.status ?? 'active',
 				distributionType: pkg.distribution_type ?? 'bundle',
@@ -536,6 +541,26 @@ export async function apply(ctx, config) {
 						&& LOCAL_WRITE_KINDS.has(String(params.kind ?? ''))) {
 						try {
 							json(200, await runLocalWrite(op, params));
+						} catch (e) {
+							json(200, { ok: false, error: String(e?.message ?? e) });
+						}
+						return;
+					}
+					// 编辑元数据（作者或管理员；服务端 assertAuthor 判权）⇒ 纯 HTTP，dsh 侧自持 ✓
+					if (op === 'updatePackage') {
+						try {
+							const pkg = await market().updatePackage(
+								String(params.slug || params.id || ''),
+								{
+									...(typeof params.name === 'string' ? { name: params.name } : {}),
+									...(typeof params.description === 'string' ? { description: params.description } : {}),
+									...(typeof params.category === 'string' ? { category: params.category } : {}),
+									...(typeof params.icon === 'string' ? { icon: params.icon } : {}),
+									...(typeof params.visibility === 'string' ? { visibility: params.visibility } : {}),
+									...(Array.isArray(params.tags) ? { tags: params.tags } : {}),
+								},
+							);
+							json(200, { ok: true, package: pkg });
 						} catch (e) {
 							json(200, { ok: false, error: String(e?.message ?? e) });
 						}

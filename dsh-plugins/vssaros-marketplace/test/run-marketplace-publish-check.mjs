@@ -248,6 +248,34 @@ function makeSkill(localId, version, extra = {}) {
 		/if \(!version\) \{[\s\S]{0,160}return;/.test(clientSrc));
 }
 
+// ── ⑪ 分页与编辑：页面与 Host 必须真的接上 ──────────────────────
+{
+	const clientSrc = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'client.js'), 'utf8');
+	const idxSrc = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'index.js'), 'utf8');
+	const mcSrc = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'marketClient.js'), 'utf8');
+
+	// 分页：商城里单类 500+ 条 ⇒ 不分页等于看不到大部分 ✗
+	check('⑪ list 支持分页（page/pageSize 都发给服务端）',
+		/qs\.set\('page',\s*String\(opts\.page\)\)/.test(mcSrc) && /qs\.set\('pageSize'/.test(mcSrc));
+	check('⑪ Host 把 page 透传给 client', /params\.page > 0 \? \{ page: params\.page \}/.test(idxSrc));
+	check('⑪ 页面有「加载更多」且是**追加**（不清空已看到的）',
+		clientSrc.includes('data-more') && /load\(\{ append: true \}\)/.test(clientSrc));
+	check('⑪ 换页签/改搜索时从第一页重来（append=false 重置 page）',
+		/if \(!append\) \{ state\.page = 1; \}/.test(clientSrc));
+	check('⑪ 「加载更多」只在还有剩余时出现（items < total）',
+		/state\.items\.length < state\.total/.test(clientSrc));
+
+	// 编辑元数据（作者/管理员）—— "可维护"的另一半
+	check('⑪ 页面有「编辑信息」按钮且按 permissions.canEdit 渲染',
+		clientSrc.includes('data-openedit') && /perm\.canEdit !== false/.test(clientSrc));
+	check('⑪ 编辑保存时**从 DOM 读值**（非受控 input，避免打字被渲染吞掉）',
+		/const readVal = \(id\) =>/.test(clientSrc) && clientSrc.includes("readVal('#vs-mp-edit-name')"));
+	check('⑪ Host 有 updatePackage op（纯 HTTP，服务端 assertAuthor 判权）',
+		idxSrc.includes("op === 'updatePackage'") && mcSrc.includes('async function updatePackage'));
+	check('⑪ detail 带 visibility/featured（否则编辑表单回显错、可见性每次被重置）',
+		/detail[\s\S]{0,2000}visibility: pkg\.visibility/.test(idxSrc) || /visibility: pkg\.visibility \?\? 'public'/.test(idxSrc));
+}
+
 fs.rmSync(dataRoot, { recursive: true, force: true });
 console.log(`\n[marketplace publish] ${pass} passing / ${fails.length} failing`);
 if (fails.length) { console.log('失败：' + fails.join('、')); }
