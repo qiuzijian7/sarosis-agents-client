@@ -66,6 +66,13 @@
 		edit: null,
 		/** 排序：recent（默认）/popular/name —— 服务端原生支持，零额外接口 ✓ */
 		sort: 'recent',
+		/** 当前分类（'' = 全部） */
+		category: '',
+		/**
+		 * 已知分类（从已加载列表**累积提取**；切 kind 时清空 —— 不同类型的分类不同）。
+		 * 用累积而不是"当前页覆盖"：否则加载更多后下拉项会跳变 ✓
+		 */
+		categories: [],
 	};
 
 	const root = document.getElementById('vs-mp-root');
@@ -95,6 +102,9 @@
 		if (state.kind) { params.kind = state.kind; }
 		if (state.q) { params.q = state.q; }
 		if (state.sort) { params.sort = state.sort; }
+		// 分类筛选（服务端原生支持 `category`；分类清单由已加载列表**累积提取** ✓
+		//   —— 省掉一个后端接口：商城的分类是运营维度，从首页数据里就能看出来）
+		if (state.category) { params.category = state.category; }
 		if (state.tab === 'mine') { params.scope = 'mine'; }
 		// ★ 「管理」页签走**审核队列**（服务端 /admin/review，requireAdmin 判权）——
 		//   非管理员会拿到 403，如实显示"需要管理员权限"（不静默空列表）✓
@@ -114,6 +124,15 @@
 		state.items = append && paginated ? state.items.concat(got) : got;
 		state.total = Number(res.total) || state.items.length;
 		state.page = append ? page : 1;
+		// 累积分类（只看列表页；审核/已安装没有分类的概念）
+		if (paginated) {
+			const known = new Set(state.categories);
+			for (const it of state.items) {
+				const c = String(it.category || '').trim();
+				if (c) { known.add(c); }
+			}
+			state.categories = [...known].sort();
+		}
 		render();
 	}
 
@@ -171,6 +190,22 @@
 		return TABS.map(t => (
 			'<button class="vs-mp-kind' + (state.kind === t.id ? ' active' : '') + '" data-kind="' + t.id + '">' + esc(t.label) + '</button>'
 		)).join('');
+	}
+
+	/**
+	 * 分类筛选（运营维度：宣发/美术/文档…）。
+	 *
+	 * 分类清单来自已加载列表的**累积提取** ⇒ 不需要后端额外接口 ✓
+	 * 只有 ≥2 个分类时才显示（只有一个分类时它是噪音 ✗）
+	 */
+	function renderCategoryChips() {
+		if (state.tab === 'admin' || state.tab === 'installed' || state.tab === 'mine') { return ''; }
+		if (state.categories.length < 2 && !state.category) { return ''; }
+		const chips = [''].concat(state.categories).map(c => (
+			'<button class="vs-mp-kind' + (state.category === c ? ' active' : '') + '" data-category="' + esc(c) + '">' +
+			esc(c || '全部分类') + '</button>'
+		)).join('');
+		return '<nav class="vs-mp-kinds vs-mp-cats">' + chips + '</nav>';
 	}
 
 	/** 一张卡片。 */
@@ -379,6 +414,7 @@
 				msg +
 				'<nav class="vs-mp-tabs">' + renderTabs() + '</nav>' +
 				'<nav class="vs-mp-kinds">' + renderKindTabs() + '</nav>' +
+				renderCategoryChips() +
 				'<div class="vs-mp-count">已显示 ' + state.items.length + ' / 共 ' + state.total + ' 个商品' +
 					(state.items.length < state.total && state.tab !== 'admin' && state.tab !== 'installed'
 						? '　<button class="vs-mp-link" data-more="1">' + (state.busy ? '加载中…' : '加载更多') + '</button>'
@@ -406,7 +442,14 @@
 		});
 		on('[data-kind]', 'click', e => {
 			state.kind = e.currentTarget.getAttribute('data-kind');
+			// 换类型 ⇒ 分类清单**必须清空**（不同 kind 的分类是两套；留着会出现选了就空列表 ✗）
+			state.category = '';
+			state.categories = [];
 			load();
+		});
+		on('[data-category]', 'click', e => {
+			state.category = e.currentTarget.getAttribute('data-category') || '';
+			load();  // 换分类从第一页重来 ✓
 		});
 		on('[data-refresh]', 'click', () => { state.msg = null; load(); });
 		// 加载更多：**追加**下一页（不清空已看到的；换页签/改搜索时从头来 ✓）

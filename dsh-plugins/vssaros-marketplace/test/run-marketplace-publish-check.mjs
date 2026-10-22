@@ -281,6 +281,15 @@ function makeSkill(localId, version, extra = {}) {
 		/params\.sort === 'recent' \|\| params\.sort === 'popular' \|\| params\.sort === 'name'/.test(idxSrc));
 	check('⑪ 页面有排序下拉且切排序从第一页重来',
 		clientSrc.includes('vs-mp-sort') && /state\.sort = String\(e\.currentTarget\.value[\s\S]{0,120}load\(\)/.test(clientSrc));
+
+	// 分类筛选（服务端 category 参数；分类清单从已加载列表累积提取，不加后端接口）
+	check('⑪ 分类筛选把 category 传给 Host', /if \(state\.category\) \{ params\.category = state\.category; \}/.test(clientSrc));
+	check('⑪ 分类清单**累积**提取（加载更多后下拉项不跳变）',
+		/const known = new Set\(state\.categories\)/.test(clientSrc));
+	check('⑪ 切 kind 时清空分类（不同类型的分类是两套，留着会"选了就空列表"）',
+		/state\.category = '';[\s\S]{0,80}state\.categories = \[\];/.test(clientSrc));
+	check('⑪ 分类少于 2 个时不显示（只有一个分类是噪音）',
+		/state\.categories\.length < 2 && !state\.category/.test(clientSrc));
 }
 
 fs.rmSync(dataRoot, { recursive: true, force: true });

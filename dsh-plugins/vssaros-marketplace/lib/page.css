@@ -56,3 +56,6 @@
 .vs-mp-form { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
 .vs-mp-form label { font-size: 12px; color: var(--dsw-fg-muted, var(--vscode-descriptionForeground, #999)); }
 .vs-mp-form textarea.vs-mp-input { min-height: 64px; resize: vertical; font: inherit; }
+/* 分类筛选（2026-10-22）：与类型页签区分开（更轻、更小） */
+.vs-mp-cats { margin-top: -4px; }
+.vs-mp-cats .vs-mp-kind { font-size: 11px; padding: 2px 10px; }
