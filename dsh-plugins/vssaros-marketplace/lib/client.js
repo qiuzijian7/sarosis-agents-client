@@ -58,6 +58,8 @@
 		detail: null,
 		busy: false,
 		msg: null,            // { text, kind }
+		/** 发布表单（null = 关闭）；{ items, pick, version, changelog, busy, error } */
+		publish: null,
 	};
 
 	const root = document.getElementById('vs-mp-root');
@@ -226,6 +228,51 @@
 			'</div>';
 	}
 
+	/**
+	 * 发布表单（抽屉式）。
+	 *
+	 * 数据源是 Host 的 `publishables` op（列本机真实存在的 skill/workflow 目录）——
+	 * 不让用户手打 id（打错只会得到"本地没有这个资源"，体验差且容易错）✓
+	 */
+	function renderPublishForm() {
+		const p = state.publish;
+		if (!p) { return ''; }
+		let opts;
+		if (p.items.length === 0) {
+			opts = '<option value="">（本机没有可发布的 skill / workflow）</option>';
+		} else {
+			opts = p.items.map(function (it) {
+				const value = it.kind + '|' + it.localId + '|' + it.version;
+				const label = (KIND_LABEL[it.kind] || it.kind) + ' · ' + it.localId + (it.version ? ' (v' + it.version + ')' : '');
+				const selected = p.pick === it.kind + '|' + it.localId ? ' selected' : '';
+				return '<option value="' + esc(value) + '"' + selected + '>' + esc(label) + '</option>';
+			}).join('');
+		}
+		return '' +
+			'<div class="vs-mp-mask" data-closepublish="1"></div>' +
+			'<div class="vs-mp-drawer">' +
+				'<div class="vs-mp-drawer-head">' +
+					'<div><div class="vs-mp-drawer-title">发布到商城</div>' +
+					'<div class="vs-mp-drawer-meta">从本机已装资源打包上传（skill / workflow 由 dsh 侧打包；agent 转 IDE 打包）</div></div>' +
+					'<button class="vs-mp-x" data-closepublish="1">×</button>' +
+				'</div>' +
+				'<div class="vs-mp-form">' +
+					'<label>资源</label>' +
+					'<select id="vs-mp-pub-pick" class="vs-mp-input">' + opts + '</select>' +
+					'<label>版本（语义化版本，如 1.0.0）</label>' +
+					'<input id="vs-mp-pub-version" class="vs-mp-input" placeholder="1.0.0" value="' + esc(p.version || '') + '" />' +
+					'<label>更新说明（可空）</label>' +
+					'<textarea id="vs-mp-pub-changelog" class="vs-mp-input" rows="3" placeholder="这次改了什么">' + esc(p.changelog || '') + '</textarea>' +
+					(p.error ? '<div class="vs-mp-msg error">' + esc(p.error) + '</div>' : '') +
+					'<div class="vs-mp-drawer-actions">' +
+						'<button class="vs-mp-btn primary" data-dopublish="1"' + (p.busy ? ' disabled' : '') + '>' +
+							(p.busy ? '发布中…' : '发布') + '</button>' +
+						'<button class="vs-mp-btn" data-closepublish="1">取消</button>' +
+					'</div>' +
+				'</div>' +
+			'</div>';
+	}
+
 	/** 主渲染。 */
 	function render() {
 		const msg = state.msg
@@ -246,6 +293,9 @@
 					'<div class="vs-mp-tools">' +
 						'<input id="vs-mp-q" class="vs-mp-input" placeholder="搜索名称、作者或分类" value="' + esc(state.q) + '" />' +
 						'<button class="vs-mp-btn" data-refresh="1">刷新</button>' +
+						// ★ 2026-10-22：发布入口（用户要的"可上传"）。skill/workflow 由 dsh 侧自己打包上传；
+						//   agent 会转给 IDE 打包（包格式 agent.json 只有 IDE 会组装）✓
+						'<button class="vs-mp-btn primary" data-openpublish="1">发布</button>' +
 					'</div>' +
 				'</header>' +
 				msg +
@@ -254,7 +304,8 @@
 				'<div class="vs-mp-count">已显示 ' + state.items.length + ' / 共 ' + state.total + ' 个商品</div>' +
 				empty +
 			'</div>' +
-			renderDetail();
+			renderDetail() +
+			renderPublishForm();
 
 		bindEvents();
 	}
@@ -275,6 +326,67 @@
 			load();
 		});
 		on('[data-refresh]', 'click', () => { state.msg = null; load(); });
+
+		// ── 发布表单（打开发布 op 拿本机可发布资源 → 选 → 发）──────────────
+		on('[data-openpublish]', 'click', async () => {
+			state.publish = { items: [], pick: '', version: '', changelog: '', busy: true, error: '' };
+			render();
+			const res = await action('publishables', {});
+			const items = (res && res.ok !== false && Array.isArray(res.items)) ? res.items : [];
+			state.publish = {
+				items: items,
+				pick: items.length ? (items[0].kind + '|' + items[0].localId) : '',
+				version: items.length ? (items[0].version || '') : '',
+				changelog: '',
+				busy: false,
+				error: (res && res.ok === false) ? String(res.error || '列不出本机资源') : (items.length ? '' : '本机没有可发布的 skill / workflow'),
+			};
+			render();
+		});
+		on('[data-closepublish]', 'click', () => { state.publish = null; render(); });
+		const pubPick = root.querySelector('#vs-mp-pub-pick');
+		if (pubPick && state.publish) {
+			pubPick.addEventListener('change', e => {
+				const [kind, localId] = String(e.currentTarget.value || '').split('|');
+				const hit = state.publish.items.find(it => it.kind === kind && it.localId === localId);
+				state.publish.pick = kind + '|' + localId;
+				state.publish.version = hit && hit.version ? hit.version : '';
+				state.publish.error = '';
+				render();
+			});
+		}
+		const pubVer = root.querySelector('#vs-mp-pub-version');
+		if (pubVer && state.publish) {
+			pubVer.addEventListener('input', e => { state.publish.version = e.currentTarget.value; });
+		}
+		const pubLog = root.querySelector('#vs-mp-pub-changelog');
+		if (pubLog && state.publish) {
+			pubLog.addEventListener('input', e => { state.publish.changelog = e.currentTarget.value; });
+		}
+		on('[data-dopublish]', 'click', async () => {
+			const p = state.publish;
+			if (!p || !p.pick) { return; }
+			const [kind, localId] = p.pick.split('|');
+			const version = String(p.version || '').trim();
+			if (!version) {
+				p.error = '请填版本号（语义化版本，如 1.0.0）';
+				render();
+				return;
+			}
+			p.busy = true;
+			p.error = '';
+			render();
+			const res = await action('publish', { kind, localId, slug: localId, version, changelog: p.changelog || '' });
+			if (!res || res.ok === false) {
+				p.busy = false;
+				p.error = String((res && res.error) || '发布失败');
+				render();
+				return;
+			}
+			state.publish = null;
+			showMsg('已发布 ' + localId + ' v' + (res.version || version), 'ok');
+			await load();
+		});
 		on('[data-closemsg]', 'click', () => { state.msg = null; render(); });
 		on('[data-close]', 'click', () => { state.detail = null; render(); });
 		on('[data-detail]', 'click', e => { openDetail(e.currentTarget.getAttribute('data-detail')); });

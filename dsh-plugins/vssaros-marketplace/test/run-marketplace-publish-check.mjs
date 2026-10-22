@@ -199,6 +199,55 @@ function makeSkill(localId, version, extra = {}) {
 		&& localRootOf(dataRoot, 'workflow') === path.join(dataRoot, 'workflows'));
 }
 
+// ── ⑨ 本地可发布资源的枚举（发布表单的数据源）────────────────────
+{
+	const { listPublishables } = await import(pathToFileURL(path.join(LIB, 'localResources.js')).href);
+	const root2 = fs.mkdtempSync(path.join(os.tmpdir(), 'vssaros-mp-pubables-'));
+	// 正常的 skill（frontmatter 带 version）
+	fs.mkdirSync(path.join(root2, 'skills', 'ok-skill'), { recursive: true });
+	fs.writeFileSync(path.join(root2, 'skills', 'ok-skill', 'SKILL.md'), '---\nname: ok-skill\nversion: 2.1.0\n---\n\n正文\n');
+	// 缺 SKILL.md ⇒ 不该列出（发布必失败）
+	fs.mkdirSync(path.join(root2, 'skills', 'no-entry'), { recursive: true });
+	fs.writeFileSync(path.join(root2, 'skills', 'no-entry', 'README.md'), 'x');
+	// 备份目录 ⇒ 跳过
+	fs.mkdirSync(path.join(root2, 'skills', '.upgrade-backup', 'old'), { recursive: true });
+	// 正常 workflow
+	fs.mkdirSync(path.join(root2, 'workflows', 'ok-wf'), { recursive: true });
+	fs.writeFileSync(path.join(root2, 'workflows', 'ok-wf', 'workflow.json'), JSON.stringify({ id: 'ok-wf', version: '3.2.1' }));
+	// 普通文件（不是目录）⇒ 跳过
+	fs.writeFileSync(path.join(root2, 'skills', 'stray.txt'), 'x');
+	// agent 目录存在也不该出现在列表里（agent 不走 dsh 侧发布）
+	fs.mkdirSync(path.join(root2, 'agents', 'some-agent'), { recursive: true });
+	fs.writeFileSync(path.join(root2, 'agents', 'some-agent', '.agent.md'), '---\nname: a\n---\n');
+
+	const list = await listPublishables(root2);
+	check('⑨ 列出正常的 skill（带 frontmatter 版本）',
+		list.some(it => it.kind === 'skill' && it.localId === 'ok-skill' && it.version === '2.1.0'), JSON.stringify(list));
+	check('⑨ 列出正常的 workflow（带 workflow.json 版本）',
+		list.some(it => it.kind === 'workflow' && it.localId === 'ok-wf' && it.version === '3.2.1'));
+	check('⑨ 跳过缺关键文件的目录（发布必失败的不列）', !list.some(it => it.localId === 'no-entry'));
+	check('⑨ 跳过 `.upgrade-backup` 与普通文件', !list.some(it => it.localId === '.upgrade-backup' || it.localId === 'stray.txt'));
+	check('⑨ **不**列 agent（agent 发布归 IDE）', !list.some(it => it.kind === 'agent'), JSON.stringify(list.map(i => i.kind)));
+	fs.rmSync(root2, { recursive: true, force: true });
+}
+
+// ── ⑩ 页面的"发布"入口：按钮 / 表单 / 事件必须齐全 ────────────────
+//   背景：能力做了但**没有 UI 入口**，用户就"上传不了"（用户明确要求"可上传"）✗
+//   ⇒ 源码级钉住：工具栏有发布按钮、表单有资源/版本/说明三个字段、事件有打开/关闭/提交 ✓
+{
+	const clientSrc = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'client.js'), 'utf8');
+	const idxSrc = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'index.js'), 'utf8');
+	check('⑨ 页面有「发布」按钮（否则能力做了也没入口）', clientSrc.includes('data-openpublish'));
+	check('⑨ 发布表单三要素齐全（资源下拉 / 版本 / 更新说明）',
+		clientSrc.includes('vs-mp-pub-pick') && clientSrc.includes('vs-mp-pub-version') && clientSrc.includes('vs-mp-pub-changelog'));
+	check('⑨ 发布事件三件套（打开 / 关闭 / 提交）',
+		clientSrc.includes("on('[data-openpublish]'") && clientSrc.includes("on('[data-closepublish]'") && clientSrc.includes("on('[data-dopublish]'"));
+	check('⑨ 表单数据来自 Host 的 publishables op（不让用户手打 id）',
+		clientSrc.includes("action('publishables'") && idxSrc.includes("'publishables'"));
+	check('⑨ 版本为空时**前端就拦**（不发一个注定失败的请求）',
+		/if \(!version\) \{[\s\S]{0,160}return;/.test(clientSrc));
+}
+
 fs.rmSync(dataRoot, { recursive: true, force: true });
 console.log(`\n[marketplace publish] ${pass} passing / ${fails.length} failing`);
 if (fails.length) { console.log('失败：' + fails.join('、')); }

@@ -24,6 +24,7 @@ import { createMarketClient, dataRootOf } from './marketClient.js';
 import { readInstalled, removeInstalled, upsertInstalled } from './installedLedger.js';
 import { installBundle, sha256Of, uninstallBundle } from './installers.js';
 import { PUBLISHABLE_KINDS, deletePackage, deleteVersion, publishVersion } from './publisher.js';
+import { listPublishables } from './localResources.js';
 
 /** 插件包名（与 package.json 一致；也是 ide.request 的 pluginId => 必须与清单里的 ideCapabilities 对上 ✓）。 */
 const PLUGIN_PACKAGE = '@vssaros/dsh-marketplace';
@@ -45,7 +46,7 @@ const OPS = ['list', 'detail', 'installed', 'install', 'uninstall', 'upgrade', '
 const WRITE_OPS = new Set(['install', 'uninstall', 'upgrade', 'publish', 'deletePackage', 'deleteVersion']);
 
 /** dsh 侧**自持**的只读 op（认证 + HTTP + 本地台账，不碰 IDE 桥 ✓）。 */
-const LOCAL_OPS = new Set(['list', 'detail', 'installed']);
+const LOCAL_OPS = new Set(['list', 'detail', 'installed', 'publishables']);
 
 /**
  * dsh 侧**自持**的写 op（S2）：skill / workflow 的安装、升级、卸载。
@@ -100,6 +101,7 @@ export async function apply(ctx, config) {
 	 * @param {object} params
 	 */
 	async function runLocal(op, params) {
+		if (op === 'publishables') { return listLocalPublishables(); }
 		if (op === 'list') {
 			const res = await market().list({
 				...(params.kind ? { kind: String(params.kind) } : {}),
@@ -192,6 +194,19 @@ export async function apply(ctx, config) {
 				};
 			}),
 		};
+	}
+
+	/**
+	 * 列出**本地可发布**的资源（`<数据根>/skills/*` 与 `workflows/*`）。
+	 *
+	 * 为什么需要：发布表单要让用户从"本机真实存在的资源"里挑，而不是手打 id
+	 * （手打一个不存在的 id ⇒ 报错"本地没有这个资源"，体验差且容易错）✓
+	 */
+	async function listLocalPublishables() {
+		const dataRoot = state.dataRoot;
+		if (!dataRoot) { throw new Error('dsh 侧拿不到数据根 ⇒ 列不出本地资源'); }
+		const items = await listPublishables(dataRoot);
+		return { ok: true, total: items.length, items };
 	}
 
 	/**

@@ -52,3 +52,7 @@
 .vs-mp-drawer-versions li { padding: 8px 0; border-bottom: 1px solid var(--dsw-border, var(--vscode-widget-border, #2f2f2f)); }
 .vs-mp-ver-note { font-size: 12px; color: var(--dsw-fg-muted, var(--vscode-descriptionForeground, #999)); margin-top: 2px; }
 .vs-mp-x { background: none; border: none; color: inherit; font-size: 18px; cursor: pointer; line-height: 1; }
+/* 发布表单（2026-10-22）：抽屉里的简单表单 */
+.vs-mp-form { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
+.vs-mp-form label { font-size: 12px; color: var(--dsw-fg-muted, var(--vscode-descriptionForeground, #999)); }
+.vs-mp-form textarea.vs-mp-input { min-height: 64px; resize: vertical; font: inherit; }

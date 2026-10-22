@@ -170,7 +170,12 @@ function fakeFetch(handler) {
 // ── ⑥ 源码级：只读 op 必须走 runLocal，不许回到 callIde ──────────
 {
 	const idx = fs.readFileSync(path.join(LIB, 'index.js'), 'utf8');
-	check('index.js 声明了 LOCAL_OPS（list/detail/installed）', /const LOCAL_OPS = new Set\(\['list', 'detail', 'installed'\]\)/.test(idx));
+	// ⚠ 断言"**至少包含** list/detail/installed"，而不是写死整行 ——
+	//   后来加新 op（如 `publishables`）时不该让这条守卫假红 ✓
+	const localOpsBody = /const LOCAL_OPS = new Set\(\[([^\]]*)\]\)/.exec(idx)?.[1] ?? '';
+	check('index.js 声明了 LOCAL_OPS（含 list / detail / installed）',
+		['list', 'detail', 'installed'].every(op => localOpsBody.includes(`'${op}'`)),
+		localOpsBody);
 	check('路由里 LOCAL_OPS 优先走 runLocal', /if \(LOCAL_OPS\.has\(op\)\)[\s\S]{0,200}runLocal\(op, params\)/.test(idx));
 	// callIde 的函数体里不许再出现 list/detail/installed 的分支
 	const bodyStart = idx.indexOf('async function callIde(');
