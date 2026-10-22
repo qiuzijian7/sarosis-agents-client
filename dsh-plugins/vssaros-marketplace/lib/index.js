@@ -506,8 +506,12 @@ export async function apply(ctx, config) {
 						}
 						return;
 					}
-					// S2c：发布与下架也在 dsh 侧（打包用 lib/tar.js，上传走 raw tar.gz）✓
-					if (op === 'publish' || op === 'deletePackage' || op === 'deleteVersion') {
+					// S2c：发布与下架在 dsh 侧（打包用 lib/tar.js，上传走 raw tar.gz）✓
+					// ⚠ `publish` 的 **agent** 例外：它的包格式是 `agent.json`（IDE 侧独有的组装逻辑）
+					//   ⇒ dsh 侧打不了兼容包 ⇒ 转回 IDE（`delete*` 是纯 HTTP，不分 kind）✓
+					const publishIsLocal = op === 'deletePackage' || op === 'deleteVersion'
+						|| (op === 'publish' && PUBLISHABLE_KINDS.includes(String(params.kind ?? '')));
+					if (publishIsLocal) {
 						try {
 							json(200, await runLocalPublish(op, params));
 						} catch (e) {

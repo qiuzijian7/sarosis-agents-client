@@ -21,7 +21,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const LIB = path.resolve(HERE, '..', 'lib');
 
 const { listTarGzEntries } = await import(pathToFileURL(path.join(LIB, 'tar.js')).href);
-const { preparePublishBundle, publishVersion, deletePackage, deleteVersion, collectDir, localRootOf } =
+const { PUBLISHABLE_KINDS, preparePublishBundle, publishVersion, deletePackage, deleteVersion, collectDir, localRootOf } =
 	await import(pathToFileURL(path.join(LIB, 'publisher.js')).href);
 
 let pass = 0;
@@ -86,11 +86,17 @@ function makeSkill(localId, version, extra = {}) {
 	const wf = await preparePublishBundle({ dataRoot, kind: 'workflow', localId: 'demo-wf', version: '2.0.0' });
 	check('② workflow 目录镜像可发布（manifest 自动生成）', wf.manifest.kind === 'workflow' && wf.manifest.id === 'demo-wf' && wf.manifest.version === '2.0.0');
 
+	// ⚠ agent **不可**由 dsh 侧发布（2026-10-22 收窄）：包格式是 `agent.json`，
+	//   只有 IDE 侧 `agentInstaller.preparePack` 会正确组装（含嵌套 configHtml）⇒
+	//   dsh 侧打目录镜像会让"别人装不上"✗
 	fs.mkdirSync(path.join(dataRoot, 'agents', 'demo-agent'), { recursive: true });
 	fs.writeFileSync(path.join(dataRoot, 'agents', 'demo-agent', '.agent.md'), '---\nname: demo-agent\n---\n\n人设\n');
-	const ag = await preparePublishBundle({ dataRoot, kind: 'agent', localId: 'demo-agent', version: '3.0.0' });
-	check('② agent 目录镜像可发布（.agent.md 原样进包）', ag.manifest.kind === 'agent'
-		&& listTarGzEntries(ag.gzBuffer).files.some(f => f.path === '.agent.md'));
+	let agentThrew = '';
+	try { await preparePublishBundle({ dataRoot, kind: 'agent', localId: 'demo-agent', version: '3.0.0' }); }
+	catch (e) { agentThrew = String(e.message ?? e); }
+	check('② agent **不**走 dsh 侧发布（包格式 agent.json 归 IDE 组装）',
+		agentThrew.includes('不支持发布这一类') && agentThrew.includes('agent'), agentThrew);
+	check('② PUBLISHABLE_KINDS 只剩 skill / workflow', PUBLISHABLE_KINDS.join(',') === 'skill,workflow');
 }
 
 // ── ③ 本地没有 / 空目录 / slug 非法 ⇒ 如实报错 ─────────────────

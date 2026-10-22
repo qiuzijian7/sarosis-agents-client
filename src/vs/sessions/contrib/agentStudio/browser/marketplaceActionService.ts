@@ -86,11 +86,22 @@ export interface IMarketplaceActionResult {
  */
 const OPS_TAKEN_OVER_BY_DSH = new Set([
 	'list', 'detail', 'installed',
-	'publish', 'deletePackage', 'deleteVersion',
+	'deletePackage', 'deleteVersion',
 ]);
 
-/** 这三类 op 里，dsh 侧只接管了 skill / workflow；agent 与 workbench 仍必须由 IDE 做。 */
+/**
+ * dsh 侧只接管了 **skill / workflow** 的装升卸；`agent` 与 `workbench` 仍必须由 IDE 做。
+ *
+ * ⚠ `agent` 为什么搬不走（**不是懒，是有硬理由**）：
+ *   · **安装**：dsh 侧装完 preset 不会即时注册（`syncPresets` 只在"打开 agents 页面"时跑），
+ *     而且丢了内置 id 冲突保护（装同 id 会被启动期清理 ⇒ "装了又消失"）；
+ *   · **发布**：agent 的包格式是 `agent.json`（`AgentExportData`），只有 IDE 的
+ *     `agentInstaller.preparePack` 会正确组装（含嵌套 `configHtml`）⇒ dsh 侧反解 YAML 必漂。
+ */
 const KIND_TAKEN_OVER_BY_DSH = new Set(['skill', 'workflow']);
+
+/** `publish` 里 dsh 侧能自己打包的 kind（agent 必须在 IDE 侧打包，见上）。 */
+const PUBLISH_KINDS_TAKEN_OVER_BY_DSH = new Set(['skill', 'workflow']);
 
 export async function runMarketplaceAction(
 	host: IMarketplaceActionHost,
@@ -109,7 +120,13 @@ export async function runMarketplaceAction(
 		&& KIND_TAKEN_OVER_BY_DSH.has(String(req.kind ?? ''))) {
 		throw new Error(
 			`${req.kind} 的 ${req.op} 已由 dsh 侧自持（直接落数据根 + 写台账），不该再走 IDE`
-			+ '—— 只有 agent（要 .agent.md 序列化）与 workbench（要 dsh plugin add + 重启）仍需 IDE',
+			+ '—— 只有 agent（名册刷新 + 内置冲突保护）与 workbench（要 dsh plugin add + 重启）仍需 IDE',
+		);
+	}
+	if (req.op === 'publish' && PUBLISH_KINDS_TAKEN_OVER_BY_DSH.has(String(req.kind ?? ''))) {
+		throw new Error(
+			`${req.kind} 的 publish 已由 dsh 侧自持（目录镜像打包 + 上传），不该再走 IDE`
+			+ '—— agent 的包格式是 agent.json，仍必须由 IDE 的 preparePack 组装',
 		);
 	}
 

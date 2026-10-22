@@ -65,11 +65,28 @@ suite('marketplace 下线闸（已被 dsh 侧接管的 op 不许再走 IDE）', 
 		}
 	});
 
-	test('发布/下架：publish / deletePackage / deleteVersion 必须被拒', async () => {
-		for (const op of ['publish', 'deletePackage', 'deleteVersion'] as const) {
-			const msg = await throwsOf({ op, slug: 'x', localId: 'x', version: '1.0.0' });
+	test('下架：deletePackage / deleteVersion 必须被拒（纯 HTTP，不分 kind）', async () => {
+		for (const op of ['deletePackage', 'deleteVersion'] as const) {
+			const msg = await throwsOf({ op, slug: 'x', version: '1.0.0' });
 			assert.ok(msg.includes('已由 dsh 侧自持'), `${op} 应被下线闸拒绝，实际：${msg || '(没抛错)'}`);
 		}
+	});
+
+	test('发布：skill / workflow 必须被拒；**agent 必须放行**（包格式 agent.json 只有 IDE 会组装）', async () => {
+		for (const kind of ['skill', 'workflow']) {
+			const msg = await throwsOf({ op: 'publish', kind, localId: 'x', version: '1.0.0' });
+			assert.ok(msg.includes('已由 dsh 侧自持'), `${kind} 的 publish 应被拒，实际：${msg || '(没抛错)'}`);
+		}
+		let agentMsg = '';
+		try {
+			await runMarketplaceAction(fakeHost([]), { op: 'publish', kind: 'agent', localId: 'x', version: '1.0.0' });
+		} catch (e) {
+			agentMsg = String((e as Error)?.message ?? e);
+		}
+		assert.ok(
+			!agentMsg.includes('已由 dsh 侧自持'),
+			`agent 的 publish 被误拦了（它必须留在 IDE：包格式是 agent.json）：${agentMsg}`,
+		);
 	});
 
 	test('skill / workflow 的装升卸必须被拒（dsh 侧直接落数据根）', async () => {

@@ -23,7 +23,13 @@ import { join } from 'node:path';
 import { packTarGz } from './tar.js';
 
 /** 可发布的三类（workbench 走外部发布源，不打包）；agent 的**发布**是目录镜像 ⇒ 也能发 ✓。 */
-export const PUBLISHABLE_KINDS = ['agent', 'skill', 'workflow'];
+// ⚠ **不含 `agent`**（2026-10-22 自查后收窄）：agent 的商城包格式是 `agent.json`
+//   （`AgentExportData`：`agent` 元数据 + `files.agentsMd` 等），而 IDE 侧
+//   `agentInstaller.install` **只认 `agent.json`** ⇒ dsh 侧若只打"目录镜像"，
+//   发出去的 agent 包**别人装不上**（IDE 安装器报"包内缺少 agent.json"）✗；
+//   而自己从 `.agent.md` 的 frontmatter 反解出 `agent.json` 又必然与 IDE 的组装逻辑漂移
+//   （嵌套 `configHtml` 之类）✗ ⇒ **agent 的发布留在 IDE**（`preparePack` 是唯一正确组装器）✓
+export const PUBLISHABLE_KINDS = ['skill', 'workflow'];
 
 /** 各 kind 的本地根目录名（与 IDE 侧 `SarosPath` 同口径）。 */
 const KIND_DIR = { agent: 'agents', skill: 'skills', workflow: 'workflows' };
@@ -82,6 +88,14 @@ export async function collectDir(dir, opts = {}) {
  * @param {{ name?: string, description?: string, category?: string, tags?: string[] }} [args.meta]
  */
 export async function preparePublishBundle({ dataRoot, kind, localId, version, meta = {} }) {
+	// ★ 入口先卡 kind（`localRootOf` 认得 agents 目录，但 agent **不该**由 dsh 侧打包 ⇒
+	//   只在 kind 层面拦是拦不住的，必须在打包入口拦 ✓）
+	if (!PUBLISHABLE_KINDS.includes(kind)) {
+		throw new Error(
+			`dsh 侧不支持发布这一类：${kind}（支持 ${PUBLISHABLE_KINDS.join(' / ')}）`
+			+ '—— agent 的包格式是 agent.json，必须由 IDE 侧 preparePack 组装',
+		);
+	}
 	const root = localRootOf(dataRoot, kind);
 	const dir = join(root, localId);
 	let st;
