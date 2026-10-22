@@ -7,11 +7,21 @@
 // workflowStorage.ts - 工作流文件存储服务接口
 // ------------------------------------------------------------------------------------------------
 //
-// 作用: 将工作流以 JSON 文件形式持久化到当前工作区的
-//       `.sarosworkspace/workflows/` 目录下，支持读取、写入、列举、删除。
+// 作用: 将工作流以 JSON 文件形式持久化到**数据根**的
+//       `~/.vssaros/workflows/<id>/workflow.json`（目录式：一个工作流一个目录），
+//       支持读取、写入、列举、删除。
 //
-// WorkflowStorageService 直接用 IFileService 写文件到 .sarosworkspace/workflows/，
-//   每个工作流一个 `{id}.json` 文件，可被版本管理 / 团队共享。
+// ★ 真源口径（2026-10-22 归一；此前注释写的是"工作区 `.sarosworkspace/workflows/`"——
+//   **已过时**：实现早已是用户级（数据根）⇒ 注释与实现不符会把人引到"两侧两套真源"的
+//   错误结论上（我本轮就误判过一次）✗）：
+//   · 唯一真源 = **数据根** `~/.vssaros/workflows/<id>/workflow.json`（dev 是 `.vssaros-dev`）；
+//   · **dsh 侧工作流引擎**（`@vssaros/dsh-workflow`）读的就是这个目录（`<数据根>/workflows`）✓；
+//   · IDE 侧画布/侧栏读写**同一个目录** ⇒ 商城装的工作流在 dsh 里能跑、在 IDE 画布里也看得见 ✓；
+//   · 两侧**同一把跨进程写锁**（`<file>.lock`；见 `common/fileWriteLock.ts` 与
+//     `dsh-plugins/vssaros-workflow/lib/lock.js`）⇒ 并发写不会丢更新 ✓。
+//
+// WorkflowStorageService 直接用 IFileService 写文件到数据根的 workflows/ 目录，
+//   每个工作流一个目录（`workflow.json` + `sessions.json` + 产物）。
 //
 // 设计: 每个工作流默认绑定一个 Agent（presetId + 部署后的 agentId），
 //       执行工作流即执行该 Agent，所有内容在 Agent 的聊天框中显示。
@@ -291,8 +301,8 @@ export interface IWorkflowStorageService {
 	readonly onDidChangeWorkflows: Event<void>;
 
 	/**
-	 * 列举当前激活工作区下 `.sarosworkspace/workflows/` 中的所有工作流。
-	 * 如果没有激活工作区或目录不存在，返回空数组。
+	 * 列举**数据根** `~/.vssaros/workflows/` 下的所有工作流（用户级，**不按工作区隔离** —— 见文件头"真源口径"）。
+	 * 目录不存在时返回空数组。
 	 */
 	listWorkflows(workspaceId?: string): Promise<IStoredWorkflow[]>;
 

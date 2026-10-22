@@ -7,12 +7,19 @@
 // workflowStorageService.ts - 工作流文件存储服务实现
 // ------------------------------------------------------------------------------------------------
 //
-// 将工作流以 JSON 文件形式持久化到当前工作区的
-// `.sarosworkspace/workflows/{id}.json`。
+// 将工作流以 JSON 文件形式持久化到**数据根**的
+// `~/.vssaros/workflows/<id>/workflow.json`（目录式：一个工作流一个目录）。
+//
+// ★ 真源口径（2026-10-22 归一；此前文件头写的是"工作区 `.sarosworkspace/workflows/{id}.json`"
+//   —— **已过时**，实现早已是数据根（用户级）⇒ 注释与实现不符会让人误判"两侧两套真源"✗）：
+//   · 唯一真源 = **数据根** `~/.vssaros/workflows/<id>/workflow.json`；
+//   · **dsh 侧工作流引擎**（`@vssaros/dsh-workflow`）读**同一个目录** ⇒
+//     IDE 画布改的，dsh 引擎立刻能跑；商城装的工作流两边都看得见 ✓；
+//   · 两侧**同一把跨进程写锁**（`<file>.lock`）⇒ 不会丢更新 ✓。
 //
 // 目录定位:
-//   workspace.path → home/元数据目录 → 拼接 `.sarosworkspace/workflows/`
-//   (workspace.path 通过 IAgentStudioService.getWorkspace(activeId) 获取)
+//   数据根（`IEnvironmentService.userDataPath`）→ 拼接 `workflows/`
+//   ⇒ 与 dsh 侧的 `<数据根>/workflows`（`config.dataRoot`）是**同一处** ✓。
 
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
@@ -269,7 +276,7 @@ export class WorkflowStorageService extends Disposable implements IWorkflowStora
 	async listWorkflows(workspaceId?: string): Promise<IStoredWorkflow[]> {
 		const workflows: IStoredWorkflow[] = [];
 
-		// 用户/商城工作流（工作区 .sarosworkspace/workflows/）
+		// 用户/商城工作流（**数据根** `~/.vssaros/workflows/`；dsh 侧引擎读的是同一处 ✓）
 		const dir = await this._resolveWorkflowsDir(workspaceId);
 		if (dir) {
 			try {
@@ -552,12 +559,14 @@ export class WorkflowStorageService extends Disposable implements IWorkflowStora
 
 	/**
 	 * v19: Persist workflow display order.
-	 * Stores ordered IDs in `.sarosworkspace/workflows-order.json`.
+	 * Stores ordered IDs in the **data root**'s `workflows-order.json`
+ * （即 `~/.vssaros/workflows-order.json`；此前注释写的是 `.sarosworkspace/workflows-order.json`
+ *  —— **已过时**（实现早已是数据根）⇒ 会把人引到"工作区级"这个错误口径上 ✗）。
 	 */
 	async reorderWorkflows(orderedIds: string[], workspaceId?: string): Promise<void> {
 		const dir = await this._resolveWorkflowsDir(workspaceId);
 		if (!dir) { return; }
-		// Write order file in parent directory (.sarosworkspace/)
+		// Write order file in the data root (parent of the workflows/ dir)
 		const orderUri = URI.joinPath(dir, '..', 'workflows-order.json');
 		const data = JSON.stringify({ order: orderedIds, updatedAt: Date.now() }, null, 2);
 		await this._fileService.writeFile(orderUri, VSBuffer.fromString(data));

@@ -40,7 +40,8 @@ import { buildWorkflowExportJson, workflowExportFileName } from '../workflow/wor
  * Workflow View - 工作流管理面板 (ActivityBar Sidebar)
  *
  * 功能：
- * - 显示当前工作区 `.sarosworkspace/workflows/` 下所有工作流（文件存储）
+ * - 显示**数据根** `~/.vssaros/workflows/` 下所有工作流（用户级，不按工作区隔离；
+ *   与 dsh 侧工作流引擎读的是**同一处** ⇒ 见 `common/workflowStorage.ts` 的"真源口径"）
  * - 创建工作流：自动创建专属 Agent（每个 workflow 独立 agent）
  * - 点击工作流 item：打开编辑器 + 右侧聊天框切换到该 workflow 的 agent
  * - 执行工作流：确保对应 Agent 存在 → 选中 → 打开聊天框 → 注入执行指令
