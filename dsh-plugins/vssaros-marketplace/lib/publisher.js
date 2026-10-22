@@ -23,6 +23,8 @@ import { join } from 'node:path';
 import { packTarGz } from './tar.js';
 // ★ 2026-10-22：`localId` 也要挡越界（`../` 会让 `join(root, ...)` 读到数据根外）
 import { assertSafeStoreId } from './installers.js';
+// ★ 2026-10-22：外部源发布（本体就是一个 GitHub 地址）⇒ 归一化 + 安全边界在它里面
+import { parseGitHubSource } from './githubSource.js';
 
 /** 可发布的三类（workbench 走外部发布源，不打包）；agent 的**发布**是目录镜像 ⇒ 也能发 ✓。 */
 // ⚠ **不含 `agent`**（2026-10-22 自查后收窄）：agent 的商城包格式是 `agent.json`
@@ -162,30 +164,80 @@ export async function preparePublishBundle({ dataRoot, kind, localId, version, m
  * @param {string} [args.changelog]
  * @param {object} [args.meta]
  */
+/**
+ * 确保商城里有这个包（没有就建；已存在 409 ⇒ 容忍）。
+ *
+ * 抽出来给两条发布路径共用（bundle 上传 / **外部源登记**）✓
+ *
+ * @returns {Promise<boolean>} true = 本次新建
+ */
+async function ensurePackage({ market, kind, localId, meta = {} }) {
+	try {
+		await market.request('POST', '/packages', {
+			kind,
+			slug: localId,
+			name: typeof meta.name === 'string' && meta.name.trim() ? meta.name.trim() : localId,
+			...(typeof meta.description === 'string' && meta.description ? { description: meta.description } : {}),
+			...(typeof meta.category === 'string' && meta.category ? { category: meta.category } : {}),
+			...(Array.isArray(meta.tags) && meta.tags.length ? { tags: meta.tags } : {}),
+		});
+		return true;
+	} catch (e) {
+		const msg = String(e?.message ?? e);
+		// 409 的文案是 `slug "x" 已被占用` ⇒ 只有**这条**才算"已有包，继续发版本"
+		const isTaken = /已被占用/.test(msg) || /HTTP 409/.test(msg);
+		if (!isTaken) { throw e; }
+		return false;
+	}
+}
+
+/**
+ * 发布一个**外部源**版本（★ 2026-10-22 用户需求：本体是一个 GitHub 地址）。
+ *
+ * 与 `publishVersion` 的区别：**不打包、不上传本体** —— 只把"从哪拿"登记到服务端
+ * （`POST /packages/:id/versions/external`，服务端早有该接口）✓
+ *
+ * @param {object} args
+ * @param {ReturnType<import('./marketClient.js').createMarketClient>} args.market
+ * @param {string} args.kind
+ * @param {string} args.localId 商城 slug（= 包 id，服务端要求 manifest.id === slug）
+ * @param {string} args.version
+ * @param {string} args.source 用户粘的 GitHub 地址（`owner/repo` / tree / releases 直链…）
+ * @param {string} [args.changelog]
+ * @param {{ name?: string, description?: string, category?: string, tags?: string[] }} [args.meta]
+ */
+export async function publishExternal({ market, kind, localId, version, source, changelog = '', meta = {} }) {
+	if (!/^[a-z0-9][a-z0-9_-]*$/.test(localId)) {
+		throw new Error(`slug 只能是 a-z0-9_- 且小写字母开头：${localId}（服务端规则）`);
+	}
+	const safeVersion = String(version ?? '').trim();
+	if (!safeVersion) { throw new Error('发布需要版本号（不能为空或纯空白）'); }
+	// 归一化（这一步就把"只允许 GitHub 域 / https"卡死 ✓）
+	const distribution = parseGitHubSource(source);
+
+	const created = await ensurePackage({ market, kind, localId, meta });
+	await market.request('POST', `/packages/${encodeURIComponent(localId)}/versions/external`, {
+		version: safeVersion,
+		...(changelog ? { changelog } : {}),
+		...(typeof meta.description === 'string' && meta.description ? { description: meta.description } : {}),
+		...(typeof meta.category === 'string' && meta.category ? { category: meta.category } : {}),
+		distribution,
+	});
+	return { ok: true, version: safeVersion, created, distribution, external: true };
+}
+
 export async function publishVersion({ market, dataRoot, kind, localId, version, changelog = '', meta = {} }) {
 	if (!/^[a-z0-9][a-z0-9_-]*$/.test(localId)) {
 		throw new Error(`slug 只能是 a-z0-9_- 且小写字母开头：${localId}（服务端规则）`);
 	}
 	const prepared = await preparePublishBundle({ dataRoot, kind, localId, version, meta });
 
-	// ① 建包：同 slug 已存在 ⇒ 409（说明在更新已有包）⇒ 容忍，继续发版本 ✓
-	let created = false;
-	try {
-		await market.request('POST', '/packages', {
-			kind,
-			slug: localId,
-			name: prepared.manifest.name,
-			...(prepared.manifest.description ? { description: prepared.manifest.description } : {}),
-			...(prepared.manifest.category ? { category: prepared.manifest.category } : {}),
-			...(Array.isArray(meta.tags) && meta.tags.length ? { tags: meta.tags } : {}),
-		});
-		created = true;
-	} catch (e) {
-		const msg = String(e?.message ?? e);
-		// 409 的文案是 `slug "x" 已被占用` ⇒ 只有**这条**才算"已有包，继续发版本"
-		const isTaken = /已被占用/.test(msg) || /HTTP 409/.test(msg);
-		if (!isTaken) { throw e; }
-	}
+	const created = await ensurePackage({ market, kind, localId, meta: {
+		name: prepared.manifest.name,
+		description: prepared.manifest.description,
+		category: prepared.manifest.category,
+		...meta,
+	} });
 
 	// ② 传版本（raw tar.gz）
 	const uploaded = await market.upload(

@@ -24,7 +24,10 @@ import { createMarketClient, dataRootOf } from './marketClient.js';
 import { readInstalled, removeInstalled, upsertInstalled } from './installedLedger.js';
 // ⚠ 不再直接 import `sha256Of`：校验已下沉到 `installBundle`（可单测）
 import { installBundle, uninstallBundle } from './installers.js';
-import { PUBLISHABLE_KINDS, deletePackage, deleteVersion, publishVersion } from './publisher.js';
+import { PUBLISHABLE_KINDS, deletePackage, deleteVersion, publishExternal, publishVersion } from './publisher.js';
+// ★ 2026-10-22：外部源（GitHub 地址作本体）—— 归一化 / 安全边界 / 定位安装根 / 下载
+import { downloadGitHubTarball, locateInstallRoot, resolveDownloadUrl } from './githubSource.js';
+import { listTarGzEntries } from './tar.js';
 import { listPublishables } from './localResources.js';
 
 /** 插件包名（与 package.json 一致；也是 ide.request 的 pluginId => 必须与清单里的 ideCapabilities 对上 ✓）。 */
@@ -274,18 +277,30 @@ export async function apply(ctx, config) {
 		if (!versionRow) {
 			throw new Error(`「${slug}」没有可用版本${wanted ? `（找不到 ${wanted}）` : ''}`);
 		}
-		const gzBuffer = await downloadVersion(slug, versionRow.version);
-		// ★ sha256 校验**下沉到 installBundle**（不在磁盘上留任何东西之前就验完）⇒
-		//   这样它可被单测直接覆盖（此前算在这里，测试只能绕一大圈 ✗）
-		const installed = await installBundle({
-			dataRoot,
-			kind,
-			storeId: slug,
-			version: versionRow.version,
-			gzBuffer,
-			expectedSha256: String(versionRow.sha256 ?? '').trim() || undefined,
-			upgrade: op === 'upgrade',
-		});
+		// ★ 2026-10-22（用户需求）：商品本体可能是**外部源（GitHub 地址）**而不是自带包 ⇒
+		//   按 `manifest.distribution` 分流：外部源走 GitHub 下载 + 定位安装根，否则走商城下载 ✓
+		const dist = versionRow.manifest?.distribution;
+		let installed;
+		if (dist && typeof dist === 'object' && dist.type) {
+			installed = await installFromExternal({
+				dataRoot, kind, storeId: slug, version: versionRow.version, distribution: dist,
+				upgrade: op === 'upgrade',
+			});
+		} else {
+			const gzBuffer = await downloadVersion(slug, versionRow.version);
+			// ★ sha256 校验**下沉到 installBundle**（不在磁盘上留任何东西之前就验完）⇒
+			//   这样它可被单测直接覆盖（此前算在这里，测试只能绕一大圈 ✗）
+			installed = await installBundle({
+				dataRoot,
+				kind,
+				storeId: slug,
+				version: versionRow.version,
+				gzBuffer,
+				expectedSha256: String(versionRow.sha256 ?? '').trim() || undefined,
+				upgrade: op === 'upgrade',
+			});
+			await upsertInstalled(dataRoot, { kind, storeId: slug, version: versionRow.version });
+		}
 		await upsertInstalled(dataRoot, { kind, storeId: slug, version: versionRow.version });
 		// skill 装完**必须**让 IDE 侧技能库重读（它没有文件监听 ✗）——
 		// best-effort：刷不过**不让安装失败**（文件已经落好了），但要把原因报出来 ✓
@@ -298,6 +313,32 @@ export async function apply(ctx, config) {
 			...(installed.backup ? { backup: installed.backup } : {}),
 			...(reloadNote ? { skillsReload: reloadNote } : {}),
 		};
+	}
+
+	/**
+	 * 从**外部源**（GitHub 地址）装一个商品（★ 2026-10-22 用户需求）。
+	 *
+	 * 流程：描述 → 可下载的 tar.gz 地址 → 下载 → 解包 → **定位安装根**（剥掉
+	 * `<repo>-<ref>/` 与 `skills/<name>/` 这类前缀）→ 复用 `installBundle` 落盘 ✓
+	 *
+	 * ⚠ 与本地包的区别：外部源**没有 sha256**（服务端没登记）⇒ 不做完整性校验；
+	 *   但**安全性靠"只允许 GitHub 域 + 体积上限"**兜住（见 githubSource.js）✓
+	 *
+	 * @param {{ dataRoot: string, kind: string, storeId: string, version: string, distribution: object, upgrade: boolean }} args
+	 */
+	async function installFromExternal({ dataRoot, kind, storeId, version, distribution, upgrade }) {
+		const url = resolveDownloadUrl(distribution);
+		const gzBuffer = await downloadGitHubTarball(url);
+		const unpacked = await listTarGzEntries(gzBuffer);
+		const located = locateInstallRoot(unpacked.files, kind);
+		return installBundle({
+			dataRoot,
+			kind,
+			storeId,
+			version,
+			files: located.files,
+			upgrade,
+		});
 	}
 
 	/**
@@ -349,12 +390,36 @@ export async function apply(ctx, config) {
 		}
 		// publish
 		const kind = String(params.kind ?? '');
-		if (!PUBLISHABLE_KINDS.includes(kind)) {
-			throw new Error(`这一类（${kind}）不走 bundle 发布：只有 ${PUBLISHABLE_KINDS.join(' / ')} 能由 dsh 侧打包发布`);
-		}
 		const localId = String(params.localId ?? slug);
 		const version = String(params.version ?? '').trim();
 		if (!version) { throw new Error('publish 需要 version'); }
+
+		// ★ 2026-10-22（用户需求）：本体是一个 **GitHub 地址** ⇒ 只登记来源，不打包上传。
+		//   这条对**所有 kind** 都成立（服务端 external 接口不限类型）；
+		//   而"能不能装"另说：skill / workflow 可装，其余见 installFromExternal 的说明 ✓
+		const source = String(params.source ?? '').trim();
+		if (source) {
+			return publishExternal({
+				market: m,
+				kind,
+				localId,
+				version,
+				source,
+				changelog: String(params.changelog ?? ''),
+				meta: {
+					...(typeof params.name === 'string' ? { name: params.name } : {}),
+					...(typeof params.description === 'string' ? { description: params.description } : {}),
+					...(typeof params.category === 'string' ? { category: params.category } : {}),
+				},
+			});
+		}
+
+		if (!PUBLISHABLE_KINDS.includes(kind)) {
+			throw new Error(
+				`这一类（${kind}）不走 bundle 发布：只有 ${PUBLISHABLE_KINDS.join(' / ')} 能由 dsh 侧打包发布`
+				+ '；如果本体在 GitHub 上，请在「来源」里填 GitHub 地址（这样任何类型都能登记）',
+			);
+		}
 		return publishVersion({
 			market: m,
 			dataRoot,

@@ -251,8 +251,12 @@ function makeSkill(localId, version, extra = {}) {
 		clientSrc.includes("action('publishables'") && idxSrc.includes("'publishables'"));
 	check('⑨ 版本为空时**前端就拦**（不发一个注定失败的请求）',
 		/if \(!version\) \{[\s\S]{0,160}return;/.test(clientSrc));
-	check('⑨ 提交走 publish op 且带 kind/localId/version/changelog',
-		/action\('publish',\s*\{[^}]*kind[^}]*localId[^}]*version/.test(clientSrc));
+	// ⚠ 契约级：不绑"一次写完参数字面量"的写法（重构后改成先构造 params 再传）
+	check('⑨ 提交走 publish op 且参数含 kind / localId / version / changelog',
+		/params\s*=\s*\{\s*kind:[^}]*localId:[^}]*version:/.test(clientSrc)
+		&& clientSrc.includes("action('publish', params)"));
+	check('⑨ GitHub 源模式下会把 source 一起提交（本体不打包）',
+		/params\.source\s*=/.test(clientSrc));
 }
 
 // ── ⑫ 页面必须是 **React** 实现（2026-10-22 用户要求重写）──────────────

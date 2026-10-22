@@ -149,12 +149,13 @@ async function backupBeforeUpgrade(targetDir, backupRoot) {
  * @param {Buffer} args.gzBuffer 下载到的 package.tar.gz
  * @param {boolean} [args.upgrade] true = 覆盖（升级）；false/缺省 = 已存在则拒绝
  */
-export async function installBundle({ dataRoot, kind, storeId, version, gzBuffer, expectedSha256, upgrade = false }) {
+export async function installBundle({ dataRoot, kind, storeId, version, gzBuffer, files: unpackedFiles, expectedSha256, upgrade = false }) {
 	// ★ 2026-10-22：id 越界检查 + **在校验完 sha256 之前不碰磁盘**（顺序很重要：
 	//   先验包、再建目录 ⇒ 坏包不会留下半个目录）✓
 	assertSafeStoreId(storeId, 'storeId');
 	const wanted = String(expectedSha256 ?? '').trim().toLowerCase();
 	if (wanted) {
+		if (!gzBuffer) { throw new Error('给了 expectedSha256 但没有包体（无法校验）'); }
 		const actual = sha256Of(gzBuffer);
 		if (actual !== wanted) {
 			throw new Error(`包的 sha256 对不上（期望 ${wanted.slice(0, 12)}…，实际 ${actual.slice(0, 12)}…）⇒ 包可能损坏或被替换`);
@@ -162,7 +163,13 @@ export async function installBundle({ dataRoot, kind, storeId, version, gzBuffer
 	}
 	const root = targetRootOf(dataRoot, kind);
 	const targetDir = join(root, storeId);
-	const { files, skipped } = await unpackBundle(gzBuffer);
+	// ★ 2026-10-22：允许调用方直接给**已解开的文件**（GitHub 源要先"定位安装根"剥掉
+	//   `<repo>-<ref>/` 前缀；若这里再要求 tar.gz，就得 解开→重打包→再解开，纯浪费 ✗）
+	const { files, skipped } = Array.isArray(unpackedFiles)
+		? { files: unpackedFiles, skipped: [] }
+		: gzBuffer
+			? await unpackBundle(gzBuffer)
+			: (() => { throw new Error('installBundle 需要 gzBuffer 或 files 其中之一'); })();
 	if (files.length === 0) {
 		throw new Error('包内没有任何文件（拒绝安装一个空包）');
 	}

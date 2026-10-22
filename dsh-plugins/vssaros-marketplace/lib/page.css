@@ -197,3 +197,6 @@
 
 /* 消息条的关闭按钮绝对定位（与 .vs-mp-x 的基础样式共存） */
 .vs-mp-msg .vs-mp-x { position: absolute; top: 6px; right: 8px; }
+/* 发布来源切换（2026-10-22）：打包上传 / GitHub 地址 */
+.vs-mp-srcseg { display: flex; gap: 8px; margin-bottom: 4px; }
+.vs-mp-srcseg .vs-mp-btn { flex: 1; text-align: center; }

@@ -264,6 +264,7 @@
 
 	function PublishDrawer(props) {
 		var st = props.state;
+		var github = st.mode === 'github';
 		var pickOptions = st.items.length === 0
 			? [h('option', { key: 'none', value: '' }, '（本机没有可发布的 skill / workflow）')]
 			: st.items.map(function (it) {
@@ -271,14 +272,69 @@
 				var label = (KIND_LABEL[it.kind] || it.kind) + ' · ' + it.localId + (it.version ? ' (v' + it.version + ')' : '');
 				return h('option', { key: value, value: value }, label);
 			});
+		var kindOptions = ['skill', 'agent', 'mcp', 'workbench', 'workflow', 'knowledge'].map(function (k) {
+			return h('option', { key: k, value: k }, KIND_LABEL[k] || k);
+		});
 
 		return h(Drawer, {
 			title: '发布到商城',
-			subtitle: '从本机已装资源打包上传（skill / workflow 由 dsh 侧打包；agent 转 IDE 打包）',
+			subtitle: github
+				? '本体就是一个 GitHub 地址 —— 只登记来源，不打包上传（安装时从 GitHub 取）'
+				: '从本机已装资源打包上传（skill / workflow 由 dsh 侧打包）',
 			onClose: props.onClose
 		},
 			h('div', { className: 'vs-mp-form' },
-				h(Field, { label: '资源' },
+				// ★ 2026-10-22（用户需求）：来源二选一 —— 打包上传 / GitHub 地址
+				h('div', { className: 'vs-mp-srcseg' },
+					h('button', {
+						className: 'vs-mp-btn' + (github ? '' : ' primary'),
+						onClick: function () { props.onChange({ mode: 'local', error: '' }); }
+					}, '从本机打包'),
+					h('button', {
+						className: 'vs-mp-btn' + (github ? ' primary' : ''),
+						onClick: function () { props.onChange({ mode: 'github', error: '' }); }
+					}, 'GitHub 地址')
+				),
+				github ? [
+					h(Field, { key: 'k', label: '类型' },
+						h('select', {
+							className: 'vs-mp-input',
+							value: st.kind,
+							onChange: function (e) { props.onChange({ kind: e.target.value }); }
+						}, kindOptions)
+					),
+					h(Field, { key: 's', label: '标识（商城里的唯一 id，小写字母开头，可含 -_）' },
+						h('input', {
+							className: 'vs-mp-input',
+							placeholder: 'my-skill',
+							value: st.slug,
+							onChange: function (e) { props.onChange({ slug: e.target.value }); }
+						})
+					),
+					h(Field, { key: 'src', label: 'GitHub 地址（owner/repo 或 https://github.com/...）' },
+						h('input', {
+							className: 'vs-mp-input',
+							placeholder: 'owner/repo 或 https://github.com/owner/repo/tree/main',
+							value: st.source,
+							onChange: function (e) { props.onChange({ source: e.target.value }); }
+						})
+					),
+					h(Field, { key: 'n', label: '名称（可空，默认用标识）' },
+						h('input', {
+							className: 'vs-mp-input',
+							value: st.name,
+							onChange: function (e) { props.onChange({ name: e.target.value }); }
+						})
+					),
+					h(Field, { key: 'd', label: '介绍（可空）' },
+						h('textarea', {
+							className: 'vs-mp-input',
+							rows: 2,
+							value: st.description,
+							onChange: function (e) { props.onChange({ description: e.target.value }); }
+						})
+					)
+				] : h(Field, { label: '资源' },
 					h('select', {
 						className: 'vs-mp-input',
 						value: st.pick,
@@ -459,38 +515,74 @@
 
 		/** 打开发布表单（先拿本机可发布资源）。 */
 		async function openPublish() {
-			setPub({ items: [], pick: '', version: '', changelog: '', busy: true, error: '' });
+			setPub({
+				mode: 'local', items: [], pick: '', version: '', changelog: '', busy: true, error: '',
+				// GitHub 源模式专用（★ 2026-10-22）
+				kind: 'skill', slug: '', source: '', name: '', description: '',
+			});
 			var res = await action('publishables', {});
 			var list = (res && res.ok !== false && Array.isArray(res.items)) ? res.items : [];
 			setPub({
+				mode: 'local',
 				items: list,
 				pick: list.length ? (list[0].kind + '|' + list[0].localId) : '',
 				version: list.length ? String(list[0].version || '') : '',
 				changelog: '',
 				busy: false,
 				error: (res && res.ok === false) ? String(res.error || '列不出本机资源')
-					: (list.length ? '' : '本机没有可发布的 skill / workflow')
+					: (list.length ? '' : '本机没有可发布的 skill / workflow —— 可以把「来源」切到 GitHub 地址'),
+				kind: 'skill', slug: '', source: '', name: '', description: '',
 			});
 		}
 
 		async function submitPublish() {
 			if (!pub) { return; }
-			var parts = String(pub.pick || '').split('|');
-			var k = parts[0];
-			var localId = parts[1];
+			var github = pub.mode === 'github';
+			var k;
+			var localId;
+			if (github) {
+				k = String(pub.kind || '').trim();
+				localId = String(pub.slug || '').trim();
+				if (!localId) {
+					setPub(Object.assign({}, pub, { error: '请填标识（商城里的唯一 id，如 my-skill）' }));
+					return;
+				}
+				if (!String(pub.source || '').trim()) {
+					setPub(Object.assign({}, pub, { error: '请填 GitHub 地址（owner/repo 或 https://github.com/...）' }));
+					return;
+				}
+			} else {
+				var parts = String(pub.pick || '').split('|');
+				k = parts[0];
+				localId = parts[1];
+				if (!localId) {
+					setPub(Object.assign({}, pub, { error: '请选择要发布的资源（或把来源切到 GitHub 地址）' }));
+					return;
+				}
+			}
 			var version = String(pub.version || '').trim();
 			if (!version) {
 				setPub(Object.assign({}, pub, { error: '请填版本号（语义化版本，如 1.0.0）' }));
 				return;
 			}
 			setPub(Object.assign({}, pub, { busy: true, error: '' }));
-			var res = await action('publish', { kind: k, localId: localId, slug: localId, version: version, changelog: pub.changelog || '' });
+			var params = { kind: k, localId: localId, slug: localId, version: version, changelog: pub.changelog || '' };
+			if (github) {
+				// 本体就是一个 GitHub 地址 ⇒ 只登记来源，不打包上传
+				params.source = String(pub.source || '').trim();
+				if (String(pub.name || '').trim()) { params.name = String(pub.name).trim(); }
+				if (String(pub.description || '').trim()) { params.description = String(pub.description).trim(); }
+			}
+			var res = await action('publish', params);
 			if (!res || res.ok === false) {
 				setPub(Object.assign({}, pub, { busy: false, error: String((res && res.error) || '发布失败') }));
 				return;
 			}
 			setPub(null);
-			setMsg({ kind: 'ok', text: '已发布 ' + localId + ' v' + String(res.version || version) });
+			setMsg({
+				kind: 'ok',
+				text: '已发布 ' + localId + ' v' + String(res.version || version) + (github ? '（外部源：安装时从 GitHub 取）' : ''),
+			});
 			void fetchPage(1, false);
 		}
 
