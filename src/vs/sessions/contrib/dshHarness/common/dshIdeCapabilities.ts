@@ -358,7 +358,7 @@ export interface IIdeCapabilityEnv {
 	 * **可选**（同 `generateImage?`）：适配层没接 ⇒ 能力层报人话（而不是抛 `undefined is not a function`）✓。
 	 */
 	marketplaceAction?(request: {
-		readonly op: 'list' | 'detail' | 'install' | 'uninstall' | 'upgrade' | 'publish' | 'deletePackage' | 'deleteVersion';
+		readonly op: 'list' | 'detail' | 'installed' | 'install' | 'uninstall' | 'upgrade' | 'publish' | 'deletePackage' | 'deleteVersion';
 		readonly kind?: string;
 		readonly slug?: string;
 		readonly version?: string;
@@ -1334,7 +1334,7 @@ export async function executeIdeCapability(request: { readonly capability: strin
 			//  · 读类 op（list / detail）**不问**（无副作用）✓。
 			const params = request.params ?? {};
 			const op = textParam(params, 'op') ?? 'list';
-			const READ_OPS = ['list', 'detail'];
+			const READ_OPS = ['list', 'detail', 'installed'];
 			const WRITE_OPS = ['install', 'uninstall', 'upgrade', 'publish', 'deletePackage', 'deleteVersion'];
 			if (!READ_OPS.includes(op) && !WRITE_OPS.includes(op)) {
 				throw new Error(`marketplace 的 op 不认识：${op}（可用：${[...READ_OPS, ...WRITE_OPS].join(' / ')}）`);
@@ -1365,7 +1365,7 @@ export async function executeIdeCapability(request: { readonly capability: strin
 				}
 			}
 			const result = await env.marketplaceAction({
-				op: op as 'list' | 'detail' | 'install' | 'uninstall' | 'upgrade' | 'publish' | 'deletePackage' | 'deleteVersion',
+				op: op as 'list' | 'detail' | 'installed' | 'install' | 'uninstall' | 'upgrade' | 'publish' | 'deletePackage' | 'deleteVersion',
 				...(kind ? { kind } : {}),
 				...(slug ? { slug } : {}),
 				...(textParam(params, 'version') ? { version: textParam(params, 'version') } : {}),

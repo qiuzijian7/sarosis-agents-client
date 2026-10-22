@@ -281,6 +281,29 @@ export interface IMarketplaceService {
 	 */
 	getInstalled(): Promise<readonly IInstalledPackageInfo[]>;
 
+	/**
+	 * 记录一条「已安装」（写 installed-packages.json；同 kind+storeId 覆盖）。
+	 *
+	 * ★ 2026-10-22：为什么需要它 —— **workbench 走的是 dsh 插件通道**（不是数据根目录）⇒
+	 *   `download()` 那条链（它内部记账）覆盖不到它 ⇒ 装完不记台账 ⇒
+	 *   「已安装」页签看不到、升级检查也查不到 ✗。
+	 *   ⇒ 装工作台成功后由调用方显式记一笔 ✓（台账是"我装了什么"的唯一真源）。
+	 */
+	recordInstalled(entry: {
+		readonly kind: PackageKind;
+		readonly storeId: string;
+		readonly version: string;
+		/** 来源（默认 'installed'） */
+		readonly source?: 'installed' | 'published';
+	}): Promise<void>;
+
+	/**
+	 * 移除一条「已安装」记录（只动台账，不删任何目录）。
+	 *
+	 * ⚠ workbench 卸载时用它：插件本体由主进程卸掉 ⇒ 这里只清账 ✓。
+	 */
+	forgetInstalled(kind: PackageKind, storeId: string): Promise<void>;
+
 	// ── 残留记录清理 ──────────────────────────────────────
 	/**
 	 * 批量移除「已安装」记录（仅更新 installed-packages.json，不删除任何目录）。

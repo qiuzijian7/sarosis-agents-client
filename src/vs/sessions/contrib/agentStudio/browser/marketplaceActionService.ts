@@ -28,7 +28,7 @@ import { distributionOfVersion, resolveDistributionSpec } from '../common/market
 
 /** 商城动作的入参（与 dshIdeCapabilities.ts 的 marketplaceAction 同形）。 */
 export interface IMarketplaceActionRequest {
-	readonly op: 'list' | 'detail' | 'install' | 'uninstall' | 'upgrade' | 'publish' | 'deletePackage' | 'deleteVersion';
+	readonly op: 'list' | 'detail' | 'installed' | 'install' | 'uninstall' | 'upgrade' | 'publish' | 'deletePackage' | 'deleteVersion';
 	readonly kind?: string;
 	readonly slug?: string;
 	readonly version?: string;
@@ -137,6 +137,50 @@ export async function runMarketplaceAction(
 			};
 		}
 
+		case 'installed': {
+			// ★ 本地台账（installed-packages.json）= "我装了什么"的唯一真源 ✓
+			//   （服务端不知道谁装了 ⇒ 这个视图只能在客户端算 ✓）。
+			//   顺带把「可升级」标出来：跑一次升级检查并按 kind+storeId 对上 ✓。
+			await marketplace.ensureLoggedIn();
+			const installed = await marketplace.getInstalled();
+			let upgradable = new Set<string>();
+			try {
+				const updates = await marketplace.checkUpgrades(
+					installed.map(e => ({ kind: e.kind, storeId: e.storeId, version: e.version })),
+				);
+				upgradable = new Set(updates.map(u => `${u.kind}:${u.storeId}`));
+			} catch (e) {
+				// 升级检查失败**不阻断**「已安装」列表（列表本身仍然有用）✓
+				logService.warn(`[marketplace] installed: 升级检查失败（不影响已安装列表）：${String((e as Error)?.message ?? e)}`);
+			}
+			// 取商城条目补名称/描述（失败就退化成台账里的信息，不让整页挂掉）✓
+			const items = await Promise.all(installed.map(async e => {
+				let name = e.storeId;
+				let description = '';
+				let latestVersion = '';
+				try {
+					const detail = await marketplace.getPackage(e.storeId);
+					name = detail.name;
+					description = detail.description ?? '';
+					latestVersion = detail.latestVersion ?? '';
+				} catch {
+					// 已从商城下架/删除的条目 ⇒ 只显示台账信息 ✓
+				}
+				return {
+					id: e.storeId,
+					kind: e.kind,
+					slug: e.storeId,
+					name,
+					version: e.version,
+					description,
+					latestVersion,
+					upgradable: upgradable.has(`${e.kind}:${e.storeId}`),
+					installedAt: e.installedAt,
+				};
+			}));
+			return { ok: true, total: items.length, items };
+		}
+
 		case 'install':
 		case 'upgrade': {
 			await marketplace.ensureLoggedIn();
@@ -178,10 +222,16 @@ export async function runMarketplaceAction(
 					if (!tar.ok) {
 						return { ok: false, error: tar.error ?? '工作台安装失败（主进程没有给出原因）' };
 					}
+					const tarVersion = tar.version ?? targetVersion;
+					await marketplace.recordInstalled({
+						kind: 'workbench',
+						storeId: detail.slug,
+						version: tarVersion,
+					});
 					return {
 						ok: true,
 						changed: tar.changed,
-						version: tar.version ?? targetVersion,
+						version: tarVersion,
 						restartRequired: true,
 					};
 				}
@@ -193,10 +243,18 @@ export async function runMarketplaceAction(
 				if (!installResult.ok) {
 					return { ok: false, error: installResult.error ?? '工作台安装失败（主进程没有给出原因）' };
 				}
+				// ★ 记账：工作台装进 dsh profile（不是数据根目录）⇒ `download()` 那条链覆盖不到
+				//   ⇒ 不显式记一笔，「已安装」页签与升级检查都看不到它 ✗ ✓。
+				const installedVersion = installResult.version ?? targetVersion;
+				await marketplace.recordInstalled({
+					kind: 'workbench',
+					storeId: detail.slug,
+					version: installedVersion,
+				});
 				return {
 					ok: true,
 					changed: installResult.changed,
-					version: installResult.version ?? targetVersion,
+					version: installedVersion,
 					restartRequired: true,
 				};
 			}
@@ -216,7 +274,12 @@ export async function runMarketplaceAction(
 					throw new Error('这台 IDE 没有卸载工作台的通道（removePlugin 缺失）');
 				}
 				const r = await host.removePlugin(req.slug);
-				return r.ok ? { ok: true, changed: true } : { ok: false, error: r.error ?? '卸载失败' };
+				if (!r.ok) {
+					return { ok: false, error: r.error ?? '卸载失败' };
+				}
+				// ★ 插件卸了 ⇒ 台账也要清（否则「已安装」页签还挂着它 ✗）✓
+				await marketplace.forgetInstalled('workbench', req.slug);
+				return { ok: true, changed: true };
 			}
 			await marketplace.uninstall(req.slug, kind);
 			return { ok: true, changed: true };

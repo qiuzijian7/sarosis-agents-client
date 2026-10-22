@@ -28,7 +28,7 @@ const WRITE_TIMEOUT_MS = 8 * 60_000;
 const KINDS = ['agent', 'skill', 'mcp', 'knowledge', 'workflow', 'workbench'];
 
 /** 能力层支持的 op（与 IDE 侧 marketplaceAction 同口径）。 */
-const OPS = ['list', 'detail', 'install', 'uninstall', 'upgrade', 'publish', 'deletePackage', 'deleteVersion'];
+const OPS = ['list', 'detail', 'installed', 'install', 'uninstall', 'upgrade', 'publish', 'deletePackage', 'deleteVersion'];
 
 /** 写类 op（需要用户确认 => 走长超时）。 */
 const WRITE_OPS = new Set(['install', 'uninstall', 'upgrade', 'publish', 'deletePackage', 'deleteVersion']);

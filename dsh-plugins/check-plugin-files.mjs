@@ -69,6 +69,35 @@ const check = (name, ok, detail) => {
 
 console.log('★ 插件打包白名单（files）+ 已装完整性守卫\n');
 
+// ── ★ 链条完整性（2026-10-22 实锤：这道检查是为了防"链里引用了不存在的脚本"）────────
+//
+// 事故：`npm run check:dsh-plugins` 的链里引用了 `dsh-plugins/check-agent-tools.mjs`，
+//   而那个脚本**从未入库** ⇒ `node` 报 "Cannot find module" ⇒ `&&` 链**当场断掉** ⇒
+//   **断点之后的 10 个守卫从未执行过**（它们既不报错也不通过 —— 静默失效）✗✗。
+//   ⇒ 这道检查断言：**链上引用的每个脚本都真实存在** ✓。
+//
+// ⚠ 为什么这道检查放这里：它自己在链的**第 2 位** ⇒ 断点之前的守卫会跑 ⇒ 能报出来 ✓
+//   （若放在链尾，断在前面就永远不会执行 ⇒ 又是静默失效 ✗）。
+{
+	const rootPkgPath = join(ROOT, 'package.json');
+	const chain = (() => {
+		try { return JSON.parse(readFileSync(rootPkgPath, 'utf8'))?.scripts?.['check:dsh-plugins'] ?? ''; }
+		catch { return ''; }
+	})();
+	const scripts = [...chain.matchAll(/node\s+([^\s&|]+)/g)].map(m => m[1]);
+	check('package.json 里 check:dsh-plugins 链存在', scripts.length > 0, '没读到链');
+	const missing = scripts.filter(s => !existsSync(join(ROOT, s)));
+	if (missing.length === 0) {
+		check(`链上 ${scripts.length} 个脚本都真实存在（否则 && 链会断、后面的守卫静默不执行）`, true);
+	} else {
+		check(
+			`链上 ${scripts.length} 个脚本都真实存在（否则 && 链会断、后面的守卫静默不执行）`,
+			false,
+			`缺失：${missing.join('、')} ⇒ 请从链里移除，或把脚本补入库`,
+		);
+	}
+}
+
 const names = pluginDirs();
 check('至少扫到一个插件目录', names.length > 0, `扫到 ${names.length} 个`);
 

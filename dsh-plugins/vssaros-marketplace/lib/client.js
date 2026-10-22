@@ -78,7 +78,10 @@
 		if (state.q) { params.q = state.q; }
 		if (state.tab === 'mine') { params.scope = 'mine'; }
 		if (state.tab === 'admin') { params.scope = 'review'; }
-		const res = await action('list', params);
+		// ★ 「已安装」页签走**本地台账**（installed-packages.json）——
+		//   服务端不知道谁装了 ⇒ 这个视图只能在客户端算 ✓。
+		const op = state.tab === 'installed' ? 'installed' : 'list';
+		const res = await action(op, params);
 		state.busy = false;
 		if (!res || res.ok === false) {
 			state.items = [];
@@ -149,7 +152,7 @@
 
 	/** 一张卡片。 */
 	function renderCard(pkg) {
-		const perm = pkg.permissions; {};
+		const perm = pkg.permissions || {};
 		const version = pkg.version ? 'v' + pkg.version : '';
 		const statusTag = pkg.status && pkg.status !== 'active'
 			? '<span class="vs-mp-tag warn">' + esc(pkg.status === 'pending_review' ? '待审核' : pkg.status) + '</span>'
@@ -157,16 +160,25 @@
 		const distTag = pkg.distributionType && pkg.distributionType !== 'bundle'
 			? '<span class="vs-mp-tag">' + esc(pkg.distributionType) + '</span>'
 			: '';
+		// 「已安装」页签里可升级的条目 ⇒ 标出来 ✓
+		const upgradableTag = pkg.upgradable
+			? '<span class="vs-mp-tag warn">可升级 → v' + esc(pkg.latestVersion || '') + '</span>'
+			: '';
 		const actions = [];
 		actions.push('<button class="vs-mp-btn" data-detail="' + esc(pkg.slug) + '">详情</button>');
-		if (perm.canPublish !== false) {
+		if (pkg.upgradable) {
+			actions.push('<button class="vs-mp-btn primary" data-upgrade="' + esc(pkg.slug) + '">升级</button>');
+		} else if (perm.canPublish !== false) {
 			actions.push('<button class="vs-mp-btn primary" data-install="' + esc(pkg.slug) + '">安装</button>');
+		}
+		if (state.tab === 'installed') {
+			actions.push('<button class="vs-mp-btn danger" data-uninstall="' + esc(pkg.slug) + '">卸载</button>');
 		}
 		return '' +
 			'<div class="vs-mp-card" data-slug="' + esc(pkg.slug) + '">' +
 				'<div class="vs-mp-card-head">' +
 					'<span class="vs-mp-kindtag">' + esc(KIND_LABEL[pkg.kind] || pkg.kind) + '</span>' +
-					statusTag + distTag +
+					statusTag + distTag + upgradableTag +
 				'</div>' +
 				'<div class="vs-mp-card-title">' + esc(pkg.name) + '</div>' +
 				'<div class="vs-mp-card-meta">' + esc(pkg.author || '暂无') + (version ? ' · ' + esc(version) : '') + '</div>' +
@@ -179,7 +191,7 @@
 	function renderDetail() {
 		const d = state.detail;
 		if (!d) { return ''; }
-		const perm = d.permissions; {};
+		const perm = d.permissions || {};
 		const versions = (d.versions || []).map(v => (
 			'<li>' + esc(v.version) + (v.isLatest ? ' <span class="vs-mp-tag ok">最新</span>' : '') +
 			'<div class="vs-mp-ver-note">' + esc(v.changelog || '') + '</div>' +
@@ -272,10 +284,19 @@
 			const kind = pkg ? pkg.kind : 'skill';
 			run('install', { kind: kind, slug: slug }, '已安装（部分资源需要重启后才生效）');
 		});
+		on('[data-upgrade]', 'click', e => {
+			const slug = e.currentTarget.getAttribute('data-upgrade');
+			const pkg = state.items.find(p => p.slug === slug);
+			const kind = pkg ? pkg.kind : 'skill';
+			run('upgrade', { kind: kind, slug: slug }, '已升级（部分资源需要重启后才生效）');
+		});
 		on('[data-uninstall]', 'click', e => {
 			const slug = e.currentTarget.getAttribute('data-uninstall');
-			const d = state.detail || {};
-			run('uninstall', { kind: d.kind, slug: slug }, '已卸载');
+			// 卸载要带 kind：详情抽屉里有；卡片上（已安装页签）从列表项取 ✓
+			const fromDetail = state.detail && state.detail.slug === slug ? state.detail : null;
+			const fromList = state.items.find(p => p.slug === slug);
+			const kind = (fromDetail && fromDetail.kind) || (fromList && fromList.kind) || 'skill';
+			run('uninstall', { kind: kind, slug: slug }, '已卸载');
 		});
 		on('[data-delpkg]', 'click', e => {
 			const slug = e.currentTarget.getAttribute('data-delpkg');

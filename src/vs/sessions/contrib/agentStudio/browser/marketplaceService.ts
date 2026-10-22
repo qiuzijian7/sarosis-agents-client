@@ -807,6 +807,32 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 		return this.readInstalled();
 	}
 
+	/**
+	 * 记录一条「已安装」（★ 2026-10-22：workbench 走 dsh 插件通道，`download()` 那条链覆盖不到它 ⇒
+	 * 装完不记账 ⇒ 「已安装」页签与升级检查都看不到它 ✗）✓。
+	 */
+	async recordInstalled(entry: {
+		readonly kind: PackageKind;
+		readonly storeId: string;
+		readonly version: string;
+		readonly source?: 'installed' | 'published';
+	}): Promise<void> {
+		await this.upsertInstalled({
+			kind: entry.kind,
+			storeId: entry.storeId,
+			version: entry.version,
+			installedAt: new Date().toISOString(),
+			source: entry.source ?? 'installed',
+		});
+	}
+
+	/**
+	 * 移除一条「已安装」记录（只动台账，不删任何目录）—— workbench 卸载时用 ✓。
+	 */
+	async forgetInstalled(kind: PackageKind, storeId: string): Promise<void> {
+		await this.removeInstalled(kind, storeId);
+	}
+
 	// ── 内部：installed-packages.json ─────────────────────────
 	private getInstalledFileUri(): URI {
 		return resolveSarosPath(this._getSarosRoot(), SarosPath.installedPackages);
