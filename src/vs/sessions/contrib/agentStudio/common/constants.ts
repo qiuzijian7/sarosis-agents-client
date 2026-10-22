@@ -377,6 +377,15 @@ export const AGENT_STUDIO_SCHEDULER_VIEW_ID = 'vssaros.dsh.schedulerView';
  */
 export const AGENT_STUDIO_DSH_IMAGEGEN_VIEW_ID = 'vssaros.dsh.imagegenView';
 
+/**
+ * 商城工作台（2026-10-22）的侧栏视图 id。
+ *
+ * `page-only`：`engine=dsh` 时挂 `DshPluginViewPane`（插件自托管 `/x/marketplace/`）；
+ * `engine=legacy` 时**故意不注册** —— 商城的认证与安装链全在 dsh/IDE 侧
+ * （商城 JWT 在 IDE 进程；装工作台必须走主进程 `dsh plugin add`）⇒ legacy 侧没有可承载的商城页 ✗。
+ */
+export const AGENT_STUDIO_DSH_MARKETPLACE_VIEW_ID = 'vssaros.dsh.marketplaceView';
+
 // --- TOF (Taihu OA Framework) 登录配置 ---
 // 对接 OAuthSystem 网关 (太湖 MCP 鉴权网关)
 export const TOF_PAASID_SETTING = 'sessions.agentStudio.tof.paasid';

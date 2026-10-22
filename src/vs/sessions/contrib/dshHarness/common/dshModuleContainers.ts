@@ -51,7 +51,12 @@ export type DshModuleId =
 	// 2026-10-21：工作台商城（`@vssaros/dsh-market`）。读 dsh 公开市场目录 + Host 侧安装路由；
 	// 界面在 chat-surface 的 `client.market.js` ⇒ 无图标模块形态（清单 view.kind='none'）。
 	// ⚠ 2026-10-22 补回：本条与下面那行登记在 10-21 23:08 的本地重置里丢失，按清单重写。
-	| 'market';
+	| 'market'
+	// 2026-10-22：**自营商城**（`@vssaros/dsh-marketplace`）—— 与上面的 `market` 分工：
+	//   `market` = 第三方工作台目录（dsh 公开市场，界面在设置面板）；
+	//   `marketplace` = 我们的自营商城（独立页面 `/x/marketplace/`）⇒ 两条数据源、两条能力，互不覆盖 ✓。
+	// 无 ActivityBar 图标：入口走工作台中间栏 / 命令（页面自带 route）。
+	| 'marketplace';
 
 export interface IDshBuiltinModule {
 	readonly module: DshModuleId;
@@ -107,6 +112,11 @@ export const DSH_BUILTIN_MODULES: readonly IDshBuiltinModule[] = [
 	{ module: 'imagegen', pluginName: '@vssaros/dsh-imagegen', summary: '图像生成（生图工具 + 对话内出图；执行经控制桥回 IDE）' },
 	// 2026-10-21：工作台商城（无 ActivityBar 图标；界面在 chat-surface 的设置面板里）。
 	{ module: 'market', pluginName: '@vssaros/dsh-market', summary: '工作台商城：读 dsh 公开市场目录（协议 v2）+ Host 侧安装路由（无 ActivityBar 图标）' },
+	// 2026-10-22：**自营商城工作台**（agent / skill / 工作台 / 工作流 四类商品）。
+	// 与上面的 `market` 的分工：`market` = 第三方工作台目录（dsh 公开市场，界面在设置面板）；
+	// `marketplace` = 我们自己的商城（独立页面 `/x/marketplace/`）⇒ 两条数据源、两条能力，互不覆盖 ✓。
+	// 无 ActivityBar 图标：入口走工作台中间栏 / 命令（页面自带 route ⇒ 不必占活动栏一格）。
+	{ module: 'marketplace', pluginName: '@vssaros/dsh-marketplace', summary: '自营商城工作台：agent/skill/工作台/工作流 的浏览、安装、升级、发布与管理（页面 /x/marketplace/）' },
 ];
 
 /**
@@ -220,6 +230,14 @@ export const DSH_MODULE_CONTAINERS: readonly IDshModuleContainer[] = [
 		note: '2026-10-21：画布工作台。侧栏页 = 状态 + 「打开画布工作台」按钮；真正的画布（Excalidraw，3.4MB 引擎）是**独立 webview**，在编辑区页签里全屏展开（塞进 dsh 客户端包会变成"每个聊天框都加载 3.4MB"）。',
 	},
 	{
+		// 商城工作台（2026-10-22）：`@vssaros/dsh-marketplace` 的 `/x/marketplace/` 整页。
+		// **page-only** —— legacy 引擎侧没有商城页（商城认证与安装链全在 dsh/IDE 侧）✓
+		// order 86 = 紧跟画布(85) 之后（两者都是「创作/扩展」类入口，排在「看资料」110+ 之前 ✓）。
+		containerId: 'vssaros.dsh.marketplace', modules: ['marketplace'], status: 'page-only',
+		activityBar: { containerId: 'vssaros.dsh.marketplace', title: { zh: '商城', en: 'Marketplace' }, icon: 'codicon:extensions', order: 86 },
+		note: '2026-10-22：自营商城工作台（agent / skill / 工作台 / 工作流 四类商品）。与「工作台商城」（market 模块 = dsh 公开市场的第三方工作台，界面在设置面板）**并存且分工明确** ✓。页面自带 route ⇒ IDE 直接开 `/x/marketplace/`；所有有副作用的动作经 `ide.request{capability:"marketplace"}` 落到 IDE 侧（认证/下载/注册表刷新只有一份真源）✓。',
+	},
+	{
 		containerId: 'agentStudio.dashboard', modules: ['dashboard'], status: 'existing',
 		// order 5 = **活动栏第一位**（2026-10-12 用户要求；原 150 = 最后一位）。
 		// 静态注册侧（`agentStudio.contribution.ts` 的 `_registerModuleToolIcon`）必须同值，
@@ -279,6 +297,8 @@ export const DSH_MODULE_PAGES: readonly IDshModulePage[] = [
 	{ module: 'web-content-import', kind: 'none' },
 	// 2026-10-21：图像生成 + 画布工作台（`/x/imagegen/` 侧栏页；画布本体在 `/x/imagegen/canvas/` 子路由）。
 	{ module: 'imagegen', kind: 'page', route: '/x/imagegen/' },
+	// 2026-10-22：自营商城工作台（整页 `/x/marketplace/`）—— 与「工作台商城」（market 模块）**并存** ✓。
+	{ module: 'marketplace', kind: 'page', route: '/x/marketplace/' },
 ];
 
 /** 容器页路由的解析结果（见 {@link pageRouteForActiveModules}）。 */

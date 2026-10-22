@@ -1,0 +1,16 @@
+# @vssaros/dsh-marketplace bundle patch: insert the marketplace row.
+#
+# 「商城工作台」的 Host 半（2026-10-22）：自营商城的浏览 / 安装 / 升级 / 发布 / 管理。
+#
+# · 页面路由：/x/marketplace/（客户端 chunk 由 `dsh.client.inject` 装载 ✓）
+# · **认证与有副作用的动作全在 IDE 侧**（ide.request{capability:'marketplace'}）：
+#   商城 JWT 在 IDE 进程（复用 TOF 登录态）⇒ Host 侧没有票据 ✗；
+#   装工作台包必须走主进程已验证的通道（暂存 + `dsh plugin add`）⇒
+#   Host 内 pluginManager.installBundle 在全新 profile 上会剪树失败（README 4.86）✗。
+#   ⇒ Host 半只做「页面外壳 + 把意图转给 IDE」，**不持有任何商城凭据** ✓。
+#
+# ⚠ 本行**不读数据根**（无落盘状态）⇒ 不在 dshCli.ts 的「数据根覆盖层」名单里 ✓。
+- insert:
+    - id: vssaros-marketplace
+      name: '@vssaros/dsh-marketplace'
+      config: {}

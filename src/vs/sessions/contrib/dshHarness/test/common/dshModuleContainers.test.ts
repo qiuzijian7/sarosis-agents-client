@@ -243,7 +243,8 @@ suite('dshModuleContainers（容器聚合与注册计划）', () => {
 				// （画布模块已于 2026-10-15 移除 —— `.canvas` 文件仍走 legacy **编辑器**，不受影响 ✓）
 				// `vssaros.dsh.scheduler`：定时任务（重构 2.1，page-only —— legacy 调度器从不执行，无静态对应物）。
 				// `vssaros.dsh.imagegen`：生图 / 画布工作台（2026-10-21，page-only —— legacy 侧没有画布引擎）。
-				'vssaros.dsh.codebase', 'vssaros.dsh.imagegen', 'vssaros.dsh.scheduler', 'vssaros.dsh.sessions']);
+				// `vssaros.dsh.marketplace`：自营商城工作台（2026-10-22，page-only —— 商城认证与安装链在 IDE/dsh 侧）。
+				'vssaros.dsh.codebase', 'vssaros.dsh.imagegen', 'vssaros.dsh.marketplace', 'vssaros.dsh.scheduler', 'vssaros.dsh.sessions']);
 		assert.deepStrictEqual(plan.pending, [], '没有 planned 容器了（语义保留给"规划了图标但还没有页面"的下一个模块）');
 	});
 
@@ -281,7 +282,9 @@ suite('dshModuleContainers（容器聚合与注册计划）', () => {
 				fixturePlugin('@vssaros/dsh-scheduler', 'scheduler', 'vssaros.dsh.scheduler', 95, '/x/scheduler/'),
 				// 2026-10-21：生图 / 画布工作台（page-only）。
 				fixturePlugin('@vssaros/dsh-imagegen', 'imagegen', 'vssaros.dsh.imagegen', 85, '/x/imagegen/'),
-			];
+				// 2026-10-22：自营商城工作台（page-only；与「工作台商城」market 模块并存 ✓）。
+				fixturePlugin('@vssaros/dsh-marketplace', 'marketplace', 'vssaros.dsh.marketplace', 86, '/x/marketplace/'),
+				];
 			const containers = containersFromPlugins(plugins);
 			// 容器集合与硬编码表一致（containerId + 成员模块）
 			assert.deepStrictEqual(
