@@ -459,6 +459,13 @@ export async function apply(ctx, config) {
 	 *   商城自己的样式塞进去会当场红 ✗ ⇒ 单独一个文件 ✓。
 	 */
 	function renderPage() {
+		// ★ 2026-10-22：界面改用 **React**（用户要求；也修掉"文字看不清"）。
+		//
+		// ★ React 从哪来：本页是**自托管 SSR 页**（`vssaros.view.kind='page'`），
+		//   不在 dsh 的 chunk 装载器里 ⇒ **不能** `require("react")`（那是 chunk 形态的拿法）。
+		//   ⇒ 自带 **UMD 版 React 18.3.1**（`lib/vendor/*.production.min.js`，共 139KB，
+		//     复制自本仓 `vssaros-imagegen/vendor/excalidraw/node_modules`，不联网 ✓）。
+		//   ⚠ 顺序不能错：react → react-dom → client.js（后两个都依赖前一个的全局）✓
 		return `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -469,9 +476,28 @@ export async function apply(ctx, config) {
 </head>
 <body>
 <div id="vs-mp-root"><div class="vs-mp-empty">正在装载商城工作台…</div></div>
-<script type="module" src="${ROUTE_PREFIX}/client.js"></script>
+<script src="${ROUTE_PREFIX}/vendor/react.js"></script>
+<script src="${ROUTE_PREFIX}/vendor/react-dom.js"></script>
+<script src="${ROUTE_PREFIX}/client.js"></script>
 </body>
 </html>`;
+	}
+
+	/**
+	 * 发一份 vendor 静态文件（React UMD）。
+	 *
+	 * ⚠ 用 `immutable` 长缓存：这些文件**内容不变**（版本号在文件名/来源说明里）⇒
+	 *   每次都重传 139KB 是浪费 ✓。真升级 React 时改文件名（`?v=`）即可。
+	 */
+	async function sendVendor(res, fileName) {
+		const { readFile } = await import('node:fs/promises');
+		const here = path.dirname(fileURLToPath(import.meta.url));
+		const body = await readFile(path.join(here, 'vendor', fileName), 'utf8');
+		res.writeHead(200, {
+			'content-type': 'text/javascript; charset=utf-8',
+			'cache-control': 'public, max-age=604800, immutable',
+		});
+		res.end(body);
 	}
 
 	ctx.inject(['webServer', 'connection'], webCtx => webCtx.effect(() => webCtx.webServer.register({
@@ -495,6 +521,16 @@ export async function apply(ctx, config) {
 				if (req.method === 'GET' && (url.pathname === ROUTE_PREFIX || url.pathname === `${ROUTE_PREFIX}/`)) {
 					res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
 					res.end(renderPage());
+					return;
+				}
+
+				// ── React UMD（自托管页面自带，见 renderPage 的说明）──────────
+				if (req.method === 'GET' && url.pathname === `${ROUTE_PREFIX}/vendor/react.js`) {
+					await sendVendor(res, 'react.production.min.js');
+					return;
+				}
+				if (req.method === 'GET' && url.pathname === `${ROUTE_PREFIX}/vendor/react-dom.js`) {
+					await sendVendor(res, 'react-dom.production.min.js');
 					return;
 				}
 

@@ -64,15 +64,17 @@ function makeSkill(localId, version, extra = {}) {
 	check('① 作者写的 name/description 被**保留**', prepared.manifest.name === '作者起的名字' && prepared.manifest.description === '作者写的介绍');
 	check('① files 是实际打包的相对路径', Array.isArray(prepared.manifest.files) && prepared.manifest.files.includes('SKILL.md') && prepared.manifest.files.includes('scripts/run.sh'));
 
-	const entries = listTarGzEntries(prepared.gzBuffer).files.map(f => f.path).sort();
+	const entries = (await listTarGzEntries(prepared.gzBuffer)).files.map(f => f.path).sort();
 	check('① 包内是目录镜像（含 SKILL.md + scripts）', entries.includes('SKILL.md') && entries.includes('scripts/run.sh'), entries.join(','));
 	check('① 包内只有一份 manifest.json（旧的不重复）', entries.filter(p => p === 'manifest.json').length === 1);
 	check('① 排除了 node_modules / .upgrade-backup', !entries.some(p => p.startsWith('node_modules') || p.startsWith('.upgrade-backup')), entries.join(','));
-	check('① 包内 manifest.json 与返回值一致', (() => {
-		const raw = listTarGzEntries(prepared.gzBuffer).files.find(f => f.path === 'manifest.json');
-		const parsed = JSON.parse(raw.data.toString('utf8'));
-		return parsed.id === 'demo-skill' && parsed.version === '1.2.0';
-	})());
+	// ⚠ 解压是 async ⇒ 这个 IIFE 必须 async + await（不是笔误）
+	const manifestInPack = await (async () => {
+		const raw = (await listTarGzEntries(prepared.gzBuffer)).files.find(f => f.path === 'manifest.json');
+		return JSON.parse(raw.data.toString('utf8'));
+	})();
+	check('① 包内 manifest.json 与返回值一致',
+		manifestInPack.id === 'demo-skill' && manifestInPack.version === '1.2.0');
 
 	// 确定性：同样内容 ⇒ 同样字节（发布前比对依赖它）
 	const again = await preparePublishBundle({ dataRoot, kind: 'skill', localId: 'demo-skill', version: '1.2.0' });
@@ -237,15 +239,47 @@ function makeSkill(localId, version, extra = {}) {
 {
 	const clientSrc = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'client.js'), 'utf8');
 	const idxSrc = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'index.js'), 'utf8');
-	check('⑨ 页面有「发布」按钮（否则能力做了也没入口）', clientSrc.includes('data-openpublish'));
-	check('⑨ 发布表单三要素齐全（资源下拉 / 版本 / 更新说明）',
-		clientSrc.includes('vs-mp-pub-pick') && clientSrc.includes('vs-mp-pub-version') && clientSrc.includes('vs-mp-pub-changelog'));
-	check('⑨ 发布事件三件套（打开 / 关闭 / 提交）',
-		clientSrc.includes("on('[data-openpublish]'") && clientSrc.includes("on('[data-closepublish]'") && clientSrc.includes("on('[data-dopublish]'"));
+	// ⚠ 判据一律**契约级**（文案 / 调的 op / 组件职责），**不绑实现细节**。
+	//   教训：这些断言原本写的是 `data-openpublish` / `vs-mp-pub-pick` 这类**DOM 属性名**，
+	//   页面从原生 DOM 换成 React 后 **13 条全部假红** —— 绑实现细节的守卫会惩罚重构 ✗
+	check('⑨ 页面有「发布」按钮（否则能力做了也没入口）',
+		clientSrc.includes("'发布'") && clientSrc.includes("'发布中…'"));
+	check('⑨ 发布表单三要素齐全（资源 / 版本 / 更新说明）',
+		/\bpick\b/.test(clientSrc) && /\bversion\b/.test(clientSrc) && /\bchangelog\b/.test(clientSrc)
+		&& clientSrc.includes('PublishDrawer'));
 	check('⑨ 表单数据来自 Host 的 publishables op（不让用户手打 id）',
 		clientSrc.includes("action('publishables'") && idxSrc.includes("'publishables'"));
 	check('⑨ 版本为空时**前端就拦**（不发一个注定失败的请求）',
 		/if \(!version\) \{[\s\S]{0,160}return;/.test(clientSrc));
+	check('⑨ 提交走 publish op 且带 kind/localId/version/changelog',
+		/action\('publish',\s*\{[^}]*kind[^}]*localId[^}]*version/.test(clientSrc));
+}
+
+// ── ⑫ 页面必须是 **React** 实现（2026-10-22 用户要求重写）──────────────
+//   为什么守这条：自托管页**不在** dsh 的 chunk 装载器里 ⇒ 不能 `require("react")`
+//   ⇒ 必须自带 UMD（vendor 两个文件 + 页面按序引入）⇒ 少了任何一个都是**白屏** ✗
+{
+	const clientSrc = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'client.js'), 'utf8');
+	const idxSrc = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'index.js'), 'utf8');
+	const vendorDir = path.resolve(HERE, '..', 'lib', 'vendor');
+
+	check('⑫ 页面用 React（全局 React + createRoot）',
+		clientSrc.includes('window.React') && /ReactDOM\.createRoot\(/.test(clientSrc));
+	check('⑫ React 缺装载时**如实报错**（不静默白屏）',
+		/clientSrc/.test('') === false && /没有装载成功/.test(clientSrc));
+	check('⑫ vendor 里有 React 与 ReactDOM（自托管页自带，不依赖别人的 vendor）',
+		fs.existsSync(path.join(vendorDir, 'react.production.min.js'))
+		&& fs.existsSync(path.join(vendorDir, 'react-dom.production.min.js')));
+	check('⑫ Host 有发 vendor 的路由', /vendor\/react\.js/.test(idxSrc) && /vendor\/react-dom\.js/.test(idxSrc));
+	check('⑫ 页面按 react → react-dom → client.js 的**顺序**引入（顺序错就是白屏）', (() => {
+		const m = /<\/body>/.test(idxSrc);
+		const iReact = idxSrc.indexOf('vendor/react.js');
+		const iDom = idxSrc.indexOf('vendor/react-dom.js');
+		const iClient = idxSrc.indexOf('}/client.js');
+		return m && iReact > 0 && iDom > iReact && iClient > iDom;
+	})());
+	check('⑫ client.js 是**普通 script**（不是 ESM：自托管页没有 import 解析）',
+		!/^\s*import\s+[\s\S]{0,200}from\s+'/m.test(clientSrc) && !/^\s*export\s+/m.test(clientSrc));
 }
 
 // ── ⑪ 分页与编辑：页面与 Host 必须真的接上 ──────────────────────
@@ -259,37 +293,36 @@ function makeSkill(localId, version, extra = {}) {
 		/qs\.set\('page',\s*String\(opts\.page\)\)/.test(mcSrc) && /qs\.set\('pageSize'/.test(mcSrc));
 	check('⑪ Host 把 page 透传给 client', /params\.page > 0 \? \{ page: params\.page \}/.test(idxSrc));
 	check('⑪ 页面有「加载更多」且是**追加**（不清空已看到的）',
-		clientSrc.includes('data-more') && /load\(\{ append: true \}\)/.test(clientSrc));
-	check('⑪ 换页签/改搜索时从第一页重来（append=false 重置 page）',
-		/if \(!append\) \{ state\.page = 1; \}/.test(clientSrc));
+		clientSrc.includes('加载更多') && /fetchPage\([^)]*,\s*true\)/.test(clientSrc));
+	check('⑪ 换页签/改搜索时从第一页重来', /fetchPage\(1,\s*false\)/.test(clientSrc));
 	check('⑪ 「加载更多」只在还有剩余时出现（items < total）',
-		/state\.items\.length < state\.total/.test(clientSrc));
+		/items\.length < total/.test(clientSrc));
 
 	// 编辑元数据（作者/管理员）—— "可维护"的另一半
 	check('⑪ 页面有「编辑信息」按钮且按 permissions.canEdit 渲染',
-		clientSrc.includes('data-openedit') && /perm\.canEdit !== false/.test(clientSrc));
-	check('⑪ 编辑保存时**从 DOM 读值**（非受控 input，避免打字被渲染吞掉）',
-		/const readVal = \(id\) =>/.test(clientSrc) && clientSrc.includes("readVal('#vs-mp-edit-name')"));
+		clientSrc.includes('编辑信息') && /perm\.canEdit !== false/.test(clientSrc));
 	check('⑪ Host 有 updatePackage op（纯 HTTP，服务端 assertAuthor 判权）',
 		idxSrc.includes("op === 'updatePackage'") && mcSrc.includes('async function updatePackage'));
 	check('⑪ detail 带 visibility/featured（否则编辑表单回显错、可见性每次被重置）',
-		/detail[\s\S]{0,2000}visibility: pkg\.visibility/.test(idxSrc) || /visibility: pkg\.visibility \?\? 'public'/.test(idxSrc));
+		/visibility: pkg\.visibility \?\? 'public'/.test(idxSrc));
+	check('⑪ 编辑表单是**受控组件**（React 下 value+onChange ⇒ 不会再出现"打字被渲染吞掉"）',
+		/EditDrawer/.test(clientSrc) && /onChange:\s*function \(e\) \{ props\.onChange\(\{ name:/.test(clientSrc));
 
 	// 排序（服务端原生支持 recent|popular|name ⇒ 列表一长就必需）
-	check('⑪ client 发 sort 参数', /if \(opts\.sort\) \{ qs\.set\('sort', opts\.sort\); \}/.test(mcSrc));
+	check('⑪ client 发 sort 参数', /qs\.set\('sort', opts\.sort\)/.test(mcSrc));
 	check('⑪ Host **只透传三个合法值**（非法值不传 ⇒ 用服务端默认，不报错）',
 		/params\.sort === 'recent' \|\| params\.sort === 'popular' \|\| params\.sort === 'name'/.test(idxSrc));
-	check('⑪ 页面有排序下拉且切排序从第一页重来',
-		clientSrc.includes('vs-mp-sort') && /state\.sort = String\(e\.currentTarget\.value[\s\S]{0,120}load\(\)/.test(clientSrc));
+	check('⑪ 页面有排序下拉且切排序重新拉第一页',
+		clientSrc.includes('最热') && /setSort\(e\.target\.value\)/.test(clientSrc));
 
 	// 分类筛选（服务端 category 参数；分类清单从已加载列表累积提取，不加后端接口）
-	check('⑪ 分类筛选把 category 传给 Host', /if \(state\.category\) \{ params\.category = state\.category; \}/.test(clientSrc));
+	check('⑪ 分类筛选把 category 传给 Host', /params\.category = category/.test(clientSrc));
 	check('⑪ 分类清单**累积**提取（加载更多后下拉项不跳变）',
-		/const known = new Set\(state\.categories\)/.test(clientSrc));
+		/known\[c\] = true/.test(clientSrc) || /new Set\(state\.categories\)/.test(clientSrc));
 	check('⑪ 切 kind 时清空分类（不同类型的分类是两套，留着会"选了就空列表"）',
-		/state\.category = '';[\s\S]{0,80}state\.categories = \[\];/.test(clientSrc));
+		/setKind\(id\);[\s\S]{0,80}setCategory\(''\)/.test(clientSrc));
 	check('⑪ 分类少于 2 个时不显示（只有一个分类是噪音）',
-		/state\.categories\.length < 2 && !state\.category/.test(clientSrc));
+		/cats\.length < 2 && !category/.test(clientSrc));
 }
 
 fs.rmSync(dataRoot, { recursive: true, force: true });

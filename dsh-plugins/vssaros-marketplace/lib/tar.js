@@ -14,7 +14,14 @@
 //   - 打包只写 ustar（name ≤100 或 name+prefix ≤255），超长**抛错**（如实）
 //   - ⚠ 安全：解包**挡住路径穿越**（`..` / 绝对路径 / 盘符），与服务端 `sanitizeRelPath` 同精神 ✓
 
-import { gunzipSync, gzipSync } from 'node:zlib';
+// ⚠ **解压必须异步**：`gunzipSync` 会把 Host 主线程卡住（商城包可以几 MB，同步解压期间
+//   整个 dsh 界面都在等）⇒ `dshPluginPackages.test.ts` 有一条守卫专门抓 `gunzipSync` ✗
+//   打包（gzip）保持同步：它在发布路径上、且我们要返回 Buffer 给上传接口 ⇒
+//   改成异步会污染一大片调用方，而发布是**低频人工操作** ⇒ 不值得（如实记在这里，不是忘了）。
+import { gzipSync, gunzip } from 'node:zlib';
+import { promisify } from 'node:util';
+
+const gunzipAsync = promisify(gunzip);
 
 const BLOCK = 512;
 
@@ -114,9 +121,14 @@ export function listTarEntries(tarBuf) {
 	return { files, dirs, links, skipped };
 }
 
-/** 解包 `.tar.gz`（gunzip + listTarEntries）。 */
-export function listTarGzEntries(gzBuf) {
-	return listTarEntries(gunzipSync(gzBuf));
+/**
+ * 解包 `.tar.gz`（gunzip + listTarEntries）。
+ *
+ * ⚠ **async**：解压走 `promisify(gunzip)`（异步），不用 `gunzipSync` ——
+ *   同步解压会把 Host 主线程卡死（几 MB 的包就是几百毫秒的界面冻结）✗
+ */
+export async function listTarGzEntries(gzBuf) {
+	return listTarEntries(await gunzipAsync(gzBuf));
 }
 
 /** 写一个 512 字节头。 */

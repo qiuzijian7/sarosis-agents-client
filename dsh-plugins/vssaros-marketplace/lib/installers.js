@@ -76,8 +76,9 @@ export function injectSkillFrontmatter(content, meta) {
 }
 
 /** 解包并返回 `路径 → Buffer`（已做路径穿越校验 ✓）。 */
-export function unpackBundle(gzBuffer) {
-	const { files, dirs, skipped } = listTarGzEntries(gzBuffer);
+export async function unpackBundle(gzBuffer) {
+	// ⚠ 解压是**异步**的（`gunzip` 而非 `gunzipSync`，见 tar.js 的说明）⇒ 这里也必须 async ✓
+	const { files, dirs, skipped } = await listTarGzEntries(gzBuffer);
 	return { files, dirs, skipped };
 }
 
@@ -127,7 +128,7 @@ async function backupBeforeUpgrade(targetDir, backupRoot) {
 export async function installBundle({ dataRoot, kind, storeId, version, gzBuffer, upgrade = false }) {
 	const root = targetRootOf(dataRoot, kind);
 	const targetDir = join(root, storeId);
-	const { files, skipped } = unpackBundle(gzBuffer);
+	const { files, skipped } = await unpackBundle(gzBuffer);
 	if (files.length === 0) {
 		throw new Error('包内没有任何文件（拒绝安装一个空包）');
 	}

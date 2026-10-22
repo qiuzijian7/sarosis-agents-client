@@ -55,7 +55,7 @@ const FILES = {
 // ── 自己解自己（基础正确性）─────────────────────────────────────
 {
 	const gz = packTarGzFromMap(FILES);
-	const { files, skipped } = listTarGzEntries(gz);
+	const { files, skipped } = await listTarGzEntries(gz);
 	const map = new Map(files.map(f => [f.path, f.data.toString('utf8')]));
 	check('自解：条目数一致', files.length === 3, `实际 ${files.length}`);
 	check('自解：内容逐字节一致', Object.entries(FILES).every(([p, v]) => map.get(p) === v));
@@ -90,7 +90,7 @@ if (hasTar) {
 	const sysTar = path.join(tmp, 'system.tar.gz');
 	try {
 		execFileSync('tar', ['-czf', sysTar, '-C', srcDir, 'manifest.json', 'SKILL.md', 'scripts'], { stdio: 'pipe', windowsHide: true });
-		const { files, skipped } = listTarGzEntries(fs.readFileSync(sysTar));
+		const { files, skipped } = await listTarGzEntries(fs.readFileSync(sysTar));
 		const map = new Map(files.map(f => [f.path, f.data.toString('utf8')]));
 		check('② 系统 tar 打包 ⇒ 我们能解开且内容一致',
 			files.length >= 3 && Object.entries(FILES).every(([p, v]) => map.get(p) === v),
@@ -109,7 +109,7 @@ if (hasTar) {
 	check('③ 正常相对路径放行且规范化', sanitizeEntryPath('a\\b/./c.txt') === 'a/b/c.txt');
 	// 真造一个含 `../` 的恶意 tar（手工拼头），必须抛错
 	const evil = packTarGz([]); // 空包基线
-	check('③ 空包可解且零条目', listTarGzEntries(evil).files.length === 0);
+	check('③ 空包可解且零条目', (await listTarGzEntries(evil)).files.length === 0);
 }
 
 // ── 超长路径如实抛错（不静默写错文件）─────────────────────────

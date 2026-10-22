@@ -608,8 +608,12 @@ export function renderDataRootOverlay(dataRoot: string, mcpConfigPath?: string, 
 	// dashboard（2026-10-13，P2 起）：它**写** `<数据根>/dashboard/layout.json`（首页编排）⇒ 也读
 	// `dataRoot` ✓。⚠ 不加这行的话，dev 实例会把编排**写进生产数据根**（而且读也在生产）—— 比"读到旧数据"
 	// 更糟 ✗（本插件此前全只读，所以它是新进入这份名单的）。
+	// marketplace（2026-10-22）：**读写都最重的一个** —— 它把商城安装的 skill/workflow **落盘**到
+	// `<数据根>/skills|workflows`，还**写** `<数据根>/installed-packages.json` 台账。
+	// ⚠ 不加这行：dev 实例会把商城下载的包与台账写进**生产数据根**（且 `installed` 页签读到生产的台账）✗✗
+	//   —— 比只读的那几个危险得多，这条由 `dshPluginPackages.test.ts` 按源码实际读法对账兜住。
 	// ⚠ kb / canvas 单独两行（不放进上面的循环）：它们除了数据根，还要**各自的根** —— 见下。
-	for (const id of ['vssaros-workflow', 'vssaros-skills', 'vssaros-media', 'vssaros-dashboard']) {
+	for (const id of ['vssaros-workflow', 'vssaros-skills', 'vssaros-media', 'vssaros-dashboard', 'vssaros-marketplace']) {
 		lines.push(`- id: ${id}`);
 		lines.push('  config:');
 		lines.push(`    dataRoot: ${yamlSingleQuoted(dataRoot)}`);

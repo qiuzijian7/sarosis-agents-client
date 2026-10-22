@@ -382,6 +382,9 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 			['vssaros-skills', ['dataRoot']],
 			['vssaros-media', ['dataRoot']],
 			['vssaros-dashboard', ['dataRoot']],
+			// ★ 2026-10-22：商城工作台 —— 它**写** `<数据根>/skills|workflows`（落盘）与
+			// `installed-packages.json`（台账）⇒ 必须被注入数据根，否则 dev 实例写生产 ✗
+			['vssaros-marketplace', ['dataRoot']],
 			['vssaros-kb', ['dataRoot', 'kbRoot', 'kbVaults', 'kbActiveVaultId']],
 			['vssaros-web-content-import', ['dataRoot', 'kbRoot']],
 			['vssaros-dsh-mcp', ['path']],
