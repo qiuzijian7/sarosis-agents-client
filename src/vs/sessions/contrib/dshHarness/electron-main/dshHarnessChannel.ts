@@ -25,9 +25,10 @@ import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IAuxiliaryWindowsMainService } from '../../../../platform/auxiliaryWindow/electron-main/auxiliaryWindows.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IWindowsMainService } from '../../../../platform/windows/electron-main/windows.js';
-import { DshBridgeMethod, IBridgeBundleInfo, IBridgeBundleToggleArgs, IBridgeCreditRecordArgs, IBridgeCreditRecordResult, IBridgeInspectResult, IBridgeInstallArgs, IBridgeInstallCancelArgs, IBridgeInstallCancelResult, IBridgeInstallResult, IBridgePluginChangeResult, IBridgePluginInventory, IBridgePluginRegistries, IBridgePluginRow, IBridgePluginRowToggleArgs, IBridgeProvidersSyncArgs, IBridgeProvidersSyncResult, IBridgeRemoveArgs, IBridgeSessionCancelArgs, IBridgeSessionCancelResult, IBridgeSessionRunArgs, IBridgeSessionRunResult, IBridgeSessionStartArgs, IBridgeSessionStartResult, IBridgeTofSyncResult, IBridgeWorkspace, IBridgeWorkspaceContextArgs, validateBundleInspectArgs, validateBundleInstallArgs, validateBundleRemoveArgs, validateBundleToggleArgs, validateInstallCancelArgs, validatePluginRowToggleArgs, validateProvidersSyncArgs, validateTofSyncArgs, validateWorkspaceContextArgs } from '../common/dshBridgeProtocol.js';
+import { DshBridgeMethod, DshBridgeReverseMethod, IBridgeBundleInfo, IBridgeBundleToggleArgs, IBridgeCodeBuddyImportResult, IBridgeCodeBuddyStatus, IBridgeCreditRecordArgs, IBridgeCreditRecordResult, IBridgeCreditRouteResult, IBridgeInspectResult, IBridgeInstallArgs, IBridgeInstallCancelArgs, IBridgeInstallCancelResult, IBridgeInstallResult, IBridgeLightAIImportResult, IBridgeLightAIStatus, IBridgePluginChangeResult, IBridgePluginInventory, IBridgePluginRegistries, IBridgePluginRow, IBridgePluginRowToggleArgs, IBridgeProvidersSyncArgs, IBridgeProvidersSyncResult, IBridgeRemoveArgs, IBridgeReverseRequest, IBridgeSessionCancelArgs, IBridgeSessionCancelResult, IBridgeSessionRunArgs, IBridgeSessionRunResult, IBridgeSessionStartArgs, IBridgeSessionStartResult, IBridgeTofStatus, IBridgeTofSyncResult, IBridgeTofTicketResult, IBridgeWorkspace, IBridgeWorkspaceContextArgs, validateBundleInspectArgs, validateBundleInstallArgs, validateBundleRemoveArgs, validateBundleToggleArgs, validateCodeBuddyImportArgs, validateCreditRouteArgs, validateInstallCancelArgs, validateLightAIImportArgs, validatePluginRowToggleArgs, validateProvidersSyncArgs, validateTofSyncArgs, validateWorkspaceContextArgs } from '../common/dshBridgeProtocol.js';
 import { DshCreditProxy, IDshCreditSample } from './dshCreditProxy.js';
-import { localPluginDir, selectRuntimeVersion } from '../common/dshCli.js';
+import { localPluginDir, selectRuntimeVersion, toFileSpec } from '../common/dshCli.js';
+import { downloadAndVerify, removeDownloaded } from './dshMarketplaceInstaller.js';
 import { discoverUpdates, resolveCurrentVersion, selectInstallTarget } from '../common/dshCompat.js';
 import { DSH_HARNESS_CHANNEL, DshHarnessChannelCommand, DshHarnessChannelEvent, IDshBootstrapArgs, IDshBundledPluginRow, IDshCreateViewArgs, IDshHostStartOptions, IDshHostStatus, IDshIdeClaimReply, IDshIdeReply, IDshIdeRequest, IDshPluginActivationSnapshot, IDshPluginInfo, IDshPluginRowSetResult, IDshPluginSetResult, IDshUpdateDiscoveryResult, IDshUpdatePolicy, IDshUpgradeArgs, IDshViewBounds, sameStartOptions, surfaceTakesRoute } from '../common/dshHarness.js';
 import { IdeRequestClaims } from '../common/dshIdeClaims.js';
@@ -975,6 +976,44 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 					this._onDidChangePlugins.fire();
 				}
 				return installed;
+			}
+			case DshHarnessChannelCommand.InstallMarketplaceWorkbench: {
+				// ★ 2026-10-22：装**外部发布源**的工作台（GitHub Release tarball）。
+				//   主进程做「下载 → 校验 sha256 → `dsh plugin add file:<tgz>`」——
+				//   renderer 侧没有 sha256 实现（算不了）且不该依赖外部扩展的下载命令 ✓。
+				const { url, sha256, name, bytes } = (arg ?? {}) as { url?: unknown; sha256?: unknown; name?: unknown; bytes?: unknown };
+				if (typeof url !== 'string' || !url.trim()) {
+					throw new Error('[dshHarness] installMarketplaceWorkbench: 需要 { url: string }');
+				}
+				if (typeof name !== 'string' || !name.trim()) {
+					throw new Error('[dshHarness] installMarketplaceWorkbench: 需要 { name: string }（装完用它核对版本）');
+				}
+				if (typeof sha256 !== 'string' || !sha256.trim()) {
+					throw new Error('[dshHarness] installMarketplaceWorkbench: 需要 { sha256 }（没有校验值就不装）');
+				}
+				const expectedBytes = typeof bytes === 'number' && Number.isFinite(bytes) && bytes > 0 ? bytes : undefined;
+				const tmpDir = join(app.getPath('temp'), 'vssaros-marketplace');
+				const downloaded = await downloadAndVerify(url.trim(), sha256.trim(), expectedBytes, tmpDir);
+				if (!downloaded.ok || !downloaded.filePath) {
+					// 校验没过 ⇒ 文件没落盘（下载失败/校验失败都在写盘前返回）⇒ 只需清一次（幂等）✓
+					await removeDownloaded(downloaded.filePath);
+					return {
+						name: name.trim(), ok: false, bundledVersion: '', changed: false,
+						error: downloaded.error ?? '下载或校验失败',
+					};
+				}
+				try {
+					// `file:` spec 必须是**绝对路径 + 正斜杠**（`file:G:\x` 会被 pnpm 当相对路径 ⇒ ENOENT）✓
+					const spec = toFileSpec(downloaded.filePath);
+					const installed = await this._supervisor.installPluginSpec(spec, name.trim());
+					if (installed.changed) {
+						this._onDidChangePlugins.fire();
+					}
+					return installed;
+				} finally {
+					// 临时 tarball 装完即删（不留在磁盘上）✓
+					await removeDownloaded(downloaded.filePath);
+				}
 			}
 			case DshHarnessChannelCommand.ListDshBundles: {
 				const bridge = this._supervisor.bridge;

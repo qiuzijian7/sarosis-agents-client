@@ -881,6 +881,29 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 	}
 }
 
+/**
+ * 把服务端的 manifest 字段（**JSON 字符串**）解析成对象。
+ *
+ * ⚠ 服务端的 `package_versions.manifest` 是 TEXT 列 ⇒ 列表/详情接口给回来的是**字符串**
+ *   ⇒ 直接当对象用会拿到 undefined（`v.manifest.distribution` ⇒ undefined）⇒ 版本级发布源丢失 ✗。
+ *
+ * 已解析过（对象）就原样返回；解析失败就**原样返回**（不吞：详情页仍能显示原始文本）✓。
+ */
+function parseManifest(value: unknown): any {
+	if (typeof value !== 'string') {
+		return value;
+	}
+	const trimmed = value.trim();
+	if (!trimmed) {
+		return value;
+	}
+	try {
+		return JSON.parse(trimmed);
+	} catch {
+		return value;
+	}
+}
+
 function mapPackage(p: any): IMarketplacePackage {
 	return {
 		id: p.id, kind: p.kind as PackageKind, slug: p.slug, name: p.name,
@@ -899,7 +922,11 @@ function mapPackage(p: any): IMarketplacePackage {
 		versions: p.versions ? p.versions.map((v: any) => ({
 			id: v.id, version: v.version, changelog: v.changelog ?? undefined,
 			sha256: v.sha256, size: v.asset_size ?? v.size, isLatest: Boolean(v.is_latest), createdAt: v.created_at ?? v.createdAt,
-			manifest: v.manifest,
+			// ★ 2026-10-22：manifest 在服务端是 **JSON 字符串**（DB 里的文本列）⇒
+			//   不解析的话 `v.manifest.distribution` 恒为 undefined ⇒ 版本级发布源取不到
+			//   （`distributionOfVersion` 依赖它）⇒ github-release 拿不到 url/sha256 ✗。
+			//   解析失败就**留原值**（不吞错误：详情页仍能看到原始文本）✓。
+			manifest: parseManifest(v.manifest),
 		})) : undefined,
 	};
 }

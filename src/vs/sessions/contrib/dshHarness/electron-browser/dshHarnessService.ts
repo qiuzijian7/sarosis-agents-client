@@ -934,6 +934,16 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 					const r = await this.installPluginSpec(spec, name);
 					return { ok: r.ok, changed: r.changed, ...(r.version ? { version: r.version } : {}), ...(r.error ? { error: r.error } : {}) };
 				},
+				// ★ 2026-10-22：外部 tarball（GitHub Release）—— 下载 + sha256 校验都在**主进程**
+				//   （renderer 没有 sha256 实现，也不该依赖外部扩展的下载命令）✓。
+				installExternalTarball: async ({ url, sha256, name, bytes }) => {
+					const r = await this._channel.call<IDshBundledInstallResult>(
+						DshHarnessChannelCommand.InstallMarketplaceWorkbench,
+						{ url, sha256, name, ...(bytes ? { bytes } : {}) },
+					);
+					this._logService.info(`[dshHarness] installMarketplaceWorkbench ${name} ← ${url}: ok=${r.ok}${r.error ? ` error=${r.error}` : ''}`);
+					return { ok: r.ok, changed: r.changed, ...(r.version ? { version: r.version } : {}), ...(r.error ? { error: r.error } : {}) };
+				},
 				logService: this._logService,
 			}, req),
 		};

@@ -934,6 +934,19 @@ export const enum DshHarnessChannelCommand {
 	 * 回落到商城那条 ✓（选路真源 `agentStudio/common/dshPluginTransport.ts`）。
 	 */
 	InstallPluginSpec = 'installPluginSpec',
+	/**
+	 * 装一个**外部发布源**的工作台（`{ url, sha256, name, bytes? }`）：主进程下载 + 校验 sha256
+	 * ⇒ 交 `dsh plugin add file:<tgz>`。
+	 *
+	 * 为什么单独一条（2026-10-22）：`InstallPluginSpec` 只收 spec，**不负责取包** ⇒ 商城登记的
+	 * `github-release`（本体在 GitHub Release 上，不在商城服务器）没有取包通道 ✗。
+	 * 这条把「下载 → 校验 sha256 → 按 tarball 装」收在主进程：
+	 *  - renderer 侧没有 sha256 实现（`vs/base/common` 只有对象 hash）⇒ 算不了 ✗；
+	 *  - `marketplace.downloadToFile` 由**外部**内置扩展注册、不在本仓 ⇒ 商城链路不能把它当必需依赖 ✗。
+	 *
+	 * ⚠ **没有校验就不装**（sha256 缺失/不匹配 ⇒ 拒绝）✓；**只收 https** ✓；体积上限 8 MiB ✓。
+	 */
+	InstallMarketplaceWorkbench = 'installMarketplaceWorkbench',
 	/** 插件清单 + 启停状态 + HMR 状态（插件中心「DSH」页签的渲染数据）。 */
 	GetPluginActivation = 'getPluginActivation',
 	/** 设置某个插件的启停（`{ name, enabled }`）；返回更新后的清单与 HMR 状态（插件中心开关）。 */

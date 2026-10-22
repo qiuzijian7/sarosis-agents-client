@@ -44,8 +44,15 @@ export interface IMarketplaceActionRequest {
 export interface IMarketplaceActionHost {
 	/** 商城服务（认证 + 浏览 + 下载 + 发布 + 卸载） */
 	readonly marketplace: IMarketplaceService;
-	/** 按 spec 装 dsh 插件（npm / github）—— 走主进程已验证通道 ✓ */
+	/** 按 spec 装 dsh 插件（npm / github-source）—— 走主进程已验证通道 ✓ */
 	installPluginSpec(spec: string, name: string): Promise<{ readonly ok: boolean; readonly changed: boolean; readonly version?: string; readonly error?: string }>;
+	/**
+	 * 装一个**外部 tarball**（github-release）：主进程下载 + 校验 sha256 + `dsh plugin add file:<tgz>` ✓。
+	 *
+	 * 为什么单独一条：spec 通道只收 spec，**不负责取包** ⇒ 商城登记的 GitHub Release 附件没人下载 ✗。
+	 * 下载与校验**必须**在主进程（renderer 没有 sha256 实现）✓。
+	 */
+	installExternalTarball?(args: { readonly url: string; readonly sha256: string; readonly name: string; readonly bytes?: number }): Promise<{ readonly ok: boolean; readonly changed: boolean; readonly version?: string; readonly error?: string }>;
 	/** 卸掉已装的 dsh 插件 */
 	removePlugin?(name: string): Promise<{ readonly ok: boolean; readonly error?: string }>;
 	readonly logService: ILogService;
@@ -152,10 +159,30 @@ export async function runMarketplaceAction(
 					return { ok: false, error: resolved.error };
 				}
 				if (resolved.needsDownload) {
-					// github-release：要先下载 + 校验 sha256 ⇒ 本版**如实报不支持**，不假装装上了 ✗
+					// github-release：本体是 GitHub Release 上的 tarball ⇒ 走主进程「下载 + 校验 sha256 + file: spec」✓
+					if (!host.installExternalTarball) {
+						return { ok: false, error: '这台 IDE 没有外部包下载通道（installExternalTarball 缺失）' };
+					}
+					const url = dist.url;
+					const sha = dist.sha256;
+					if (!url || !sha) {
+						return { ok: false, error: `工作台「${req.slug}」的发布源信息不完整（缺 url 或 sha256）` };
+					}
+					const tar = await host.installExternalTarball({
+						url,
+						sha256: sha,
+						name: resolved.name ?? dist.name ?? req.slug,
+						...(dist.bytes ? { bytes: dist.bytes } : {}),
+					});
+					logService.info(`[marketplace] ${req.op} workbench ${req.slug} via tarball ${url}: ok=${tar.ok}`);
+					if (!tar.ok) {
+						return { ok: false, error: tar.error ?? '工作台安装失败（主进程没有给出原因）' };
+					}
 					return {
-						ok: false,
-						error: 'github-release 分发的工作台暂不支持安装（需要先下载并校验 sha256 的下载通道）；请改用 npm 或 github-source 分发。',
+						ok: true,
+						changed: tar.changed,
+						version: tar.version ?? targetVersion,
+						restartRequired: true,
 					};
 				}
 				if (!resolved.spec || !resolved.name) {
