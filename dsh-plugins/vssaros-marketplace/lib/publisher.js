@@ -21,6 +21,8 @@
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { packTarGz } from './tar.js';
+// ★ 2026-10-22：`localId` 也要挡越界（`../` 会让 `join(root, ...)` 读到数据根外）
+import { assertSafeStoreId } from './installers.js';
 
 /** 可发布的三类（workbench 走外部发布源，不打包）；agent 的**发布**是目录镜像 ⇒ 也能发 ✓。 */
 // ⚠ **不含 `agent`**（2026-10-22 自查后收窄）：agent 的商城包格式是 `agent.json`
@@ -96,6 +98,13 @@ export async function preparePublishBundle({ dataRoot, kind, localId, version, m
 			+ '—— agent 的包格式是 agent.json，必须由 IDE 侧 preparePack 组装',
 		);
 	}
+	// ★ 2026-10-22（健壮性测试抓到）：**空白版本号必须拒**。
+	//   此前不校验 ⇒ 会打出一个 `version: ""` 的包传上去（服务端可能收下 ⇒ 脏数据，
+	//   而且升级检查永远对不上）✗
+	const safeVersion = String(version ?? '').trim();
+	if (!safeVersion) { throw new Error('发布需要版本号（不能为空或纯空白）'); }
+	// 同一类问题：`localId` 直接拼进 `join(root, ...)` ⇒ 必须挡越界（`../` 会读到数据根外）
+	assertSafeStoreId(localId, 'localId');
 	const root = localRootOf(dataRoot, kind);
 	const dir = join(root, localId);
 	let st;
@@ -122,7 +131,8 @@ export async function preparePublishBundle({ dataRoot, kind, localId, version, m
 		kind,
 		id: localId,
 		name: typeof base.name === 'string' && base.name.trim() ? base.name : (meta.name?.trim() || localId),
-		version,
+		// 用校验过的（trim 后）版本，别把空白原样写进 manifest
+		version: safeVersion,
 		...(typeof base.description === 'string' || typeof meta.description === 'string'
 			? { description: base.description ?? meta.description }
 			: {}),

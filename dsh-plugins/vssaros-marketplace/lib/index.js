@@ -22,7 +22,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createMarketClient, dataRootOf } from './marketClient.js';
 import { readInstalled, removeInstalled, upsertInstalled } from './installedLedger.js';
-import { installBundle, sha256Of, uninstallBundle } from './installers.js';
+// ⚠ 不再直接 import `sha256Of`：校验已下沉到 `installBundle`（可单测）
+import { installBundle, uninstallBundle } from './installers.js';
 import { PUBLISHABLE_KINDS, deletePackage, deleteVersion, publishVersion } from './publisher.js';
 import { listPublishables } from './localResources.js';
 
@@ -274,17 +275,15 @@ export async function apply(ctx, config) {
 			throw new Error(`「${slug}」没有可用版本${wanted ? `（找不到 ${wanted}）` : ''}`);
 		}
 		const gzBuffer = await downloadVersion(slug, versionRow.version);
-		// sha256 校验（服务端登记了就必须对得上 —— 不对就是包被换过/传坏了 ✗）
-		const expected = String(versionRow.sha256 ?? '').trim();
-		if (expected && expected !== sha256Of(gzBuffer)) {
-			throw new Error(`「${slug}」v${versionRow.version} 的 sha256 对不上（包可能损坏或被替换）`);
-		}
+		// ★ sha256 校验**下沉到 installBundle**（不在磁盘上留任何东西之前就验完）⇒
+		//   这样它可被单测直接覆盖（此前算在这里，测试只能绕一大圈 ✗）
 		const installed = await installBundle({
 			dataRoot,
 			kind,
 			storeId: slug,
 			version: versionRow.version,
 			gzBuffer,
+			expectedSha256: String(versionRow.sha256 ?? '').trim() || undefined,
 			upgrade: op === 'upgrade',
 		});
 		await upsertInstalled(dataRoot, { kind, storeId: slug, version: versionRow.version });

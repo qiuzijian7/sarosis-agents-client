@@ -31,6 +31,30 @@ export function sha256Of(buffer) {
 	return createHash('sha256').update(buffer).digest('hex');
 }
 
+/**
+ * 校验落盘用的 id（`storeId` / `localId`）**不许跑出数据根**（★ 2026-10-22）。
+ *
+ * 为什么必须自己校验：id 虽然来自商城 slug（服务端也校验过），
+ * 但**不能把"目录不能越界"这件事委托给远端** —— 服务端被换/被绕过时，
+ * 这里就是最后一道。`join(root, '../evil')` 会把文件写到数据根**外面** ✗✗
+ *
+ * 拒绝：空、`.`/`..`、含 `/` 或 `\`、盘符（`C:`）、控制字符。
+ *
+ * @param {unknown} id
+ * @param {string} [what] 报错时用的字段名
+ * @returns {string} 校验通过的原值
+ */
+export function assertSafeStoreId(id, what = 'id') {
+	const value = String(id ?? '');
+	if (!value) { throw new Error(`${what} 不能为空`); }
+	if (value === '.' || value === '..') { throw new Error(`${what} 不能是 "${value}"`); }
+	// eslint-disable-next-line no-control-regex
+	if (/[\u0000-\u001f\u007f]/.test(value)) { throw new Error(`${what} 含控制字符`); }
+	if (/[\\/]/.test(value)) { throw new Error(`${what} 不能含路径分隔符：${value}`); }
+	if (/^[A-Za-z]:/.test(value)) { throw new Error(`${what} 不能是盘符路径：${value}`); }
+	return value;
+}
+
 /** 各 kind 的落地根：`<数据根>/skills` / `<数据根>/workflows`。 */
 export function targetRootOf(dataRoot, kind) {
 	if (kind === 'skill') { return join(dataRoot, 'skills'); }
@@ -125,7 +149,17 @@ async function backupBeforeUpgrade(targetDir, backupRoot) {
  * @param {Buffer} args.gzBuffer 下载到的 package.tar.gz
  * @param {boolean} [args.upgrade] true = 覆盖（升级）；false/缺省 = 已存在则拒绝
  */
-export async function installBundle({ dataRoot, kind, storeId, version, gzBuffer, upgrade = false }) {
+export async function installBundle({ dataRoot, kind, storeId, version, gzBuffer, expectedSha256, upgrade = false }) {
+	// ★ 2026-10-22：id 越界检查 + **在校验完 sha256 之前不碰磁盘**（顺序很重要：
+	//   先验包、再建目录 ⇒ 坏包不会留下半个目录）✓
+	assertSafeStoreId(storeId, 'storeId');
+	const wanted = String(expectedSha256 ?? '').trim().toLowerCase();
+	if (wanted) {
+		const actual = sha256Of(gzBuffer);
+		if (actual !== wanted) {
+			throw new Error(`包的 sha256 对不上（期望 ${wanted.slice(0, 12)}…，实际 ${actual.slice(0, 12)}…）⇒ 包可能损坏或被替换`);
+		}
+	}
 	const root = targetRootOf(dataRoot, kind);
 	const targetDir = join(root, storeId);
 	const { files, skipped } = await unpackBundle(gzBuffer);
@@ -170,6 +204,8 @@ export async function installBundle({ dataRoot, kind, storeId, version, gzBuffer
  * @param {string} args.storeId
  */
 export async function uninstallBundle({ dataRoot, kind, storeId }) {
+	// 卸载也要挡越界 id（否则 `rm -rf ../..` 会删到数据根外）✗
+	assertSafeStoreId(storeId, 'storeId');
 	const root = targetRootOf(dataRoot, kind);
 	const targetDir = join(root, storeId);
 	if (!await exists(targetDir)) {
@@ -181,6 +217,7 @@ export async function uninstallBundle({ dataRoot, kind, storeId }) {
 
 /** 读已装目录里的版本（skill 读 frontmatter，workflow 读 workflow.json），供"已安装"显示 ✓。 */
 export async function installedVersionOf({ dataRoot, kind, storeId }) {
+	assertSafeStoreId(storeId, 'storeId');
 	const root = targetRootOf(dataRoot, kind);
 	const file = kind === 'skill'
 		? join(root, storeId, 'SKILL.md')
