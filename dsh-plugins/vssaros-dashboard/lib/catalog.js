@@ -292,6 +292,11 @@ const WORKBENCH_MODULES = [
 	{ route: '/x/mcp/', name: 'MCP', desc: 'MCP 服务器与工具', icon: '🔌' },
 	{ route: '/x/workflow/', name: '流程', desc: '工作流引擎与画布', icon: '⚙' },
 	{ route: '/x/agents/', name: 'Agent', desc: '.agent.md → dsh preset', icon: '🤖' },
+	// ★ 2026-10-22（修 bug：主页没有「商城」卡片）：自营商城工作台（`@vssaros/dsh-marketplace`）。
+	//   ⚠ 漏登记的后果不止"卡片不显示"：`client.workbenchNav.js` 的 `itemByRoute()` 只认
+	//   `DEFAULT_ITEMS` 里的 route ⇒ 卡片就算加进来，点「打开」也会被 route 白名单静默拒掉
+	//   （表现为"点了没反应"）✗ ⇒ **两处必须同时登记**（守卫 `check-workbench-catalog.mjs` 盯着 ✓）。
+	{ route: '/x/marketplace/', name: '商城', desc: 'Agent / Skill / 工作台 / 工作流的安装与发布', icon: '🛒' },
 
 	{ route: '/x/sessions/', name: '历史会话', desc: '会话分组 / 人格标记 / 指示灯', icon: '🕘' },
 ];

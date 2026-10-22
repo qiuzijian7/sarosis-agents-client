@@ -79,7 +79,11 @@ window.__ModuleLoader__.load({
 			{ id: "vssaros-wb-imagegen", name: "生图", ico: "🎨", route: "/x/imagegen/" },
 			{ id: "vssaros-wb-skills", name: "工具", ico: "🧰", route: "/x/skills/" },
 			{ id: "vssaros-wb-scheduler", name: "定时任务", ico: "⏰", route: "/x/scheduler/" },
-		];
+			// ★ 2026-10-22（修 bug：主页没有「商城」卡片）：自营商城工作台。
+			//   这份 DEFAULT_ITEMS 同时是 **route 白名单**（`itemByRoute()` 只认这里的 route）⇒
+			//   不登记 ⇒ 从主页/侧栏点「打开」会被静默拒掉（"点了没反应"）✗ ⇒ 必须登记 ✓。
+			{ id: "vssaros-wb-marketplace", name: "商城", ico: "🛒", route: "/x/marketplace/" },
+			];
 		// ★ 暴露给同插件的其它 chunk（`client.market.js` 的「已安装」要用它）：
 		//   本机内置的工作台**不是市场条目**（市场的目录里只有别人上架的工作台），
 		//   但它们属于「本机已装」那一格 ⇒ 商城界面得知道它们存在。

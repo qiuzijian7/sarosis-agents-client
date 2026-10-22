@@ -1,6 +1,6 @@
 {
   "name": "@vssaros/dsh-chat-surface",
-  "version": "0.2.195",
+  "version": "0.2.206",
   "description": "VsSaros chat-surface plugin for DeepSeek Harness: binds the chat surface to the VsSaros-owned session (方案 5.13.2 / 7.x). Client-only; the host half is inert.",
   "private": true,
   "type": "module",

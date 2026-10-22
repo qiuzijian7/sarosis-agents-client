@@ -20,7 +20,7 @@ window.__ModuleLoader__.load({
 		//   （今天就因此丢了侧栏「主页」那一行：18:15 改了 client.workbenchNav.js，没动入口 ⇒
 		//    rev 没变 ⇒ 用户窗口里侧栏仍是旧版；22:17 补改入口后才恢复。）
 		// ⇒ 规矩：**改任何 `client.*.js` 之后，把下面这个 stamp 改掉**（守卫会查 ⇒ 漏了必红）✓
-		const CLIENT_BUILD_STAMP = "2026-10-22/编辑区workbench视图/01";
+		const CLIENT_BUILD_STAMP = "2026-10-22/模式chip当前名称不冒充(P0-1)/03+第三方工作台固定到侧栏+空白会话预选Bot(P0-2)/04+固定行启动兜底也同步(重启后固定图标不丢)+2026-10-22/工作流页改左右两档(左列表右画布)+2026-10-22/工作台导航登记商城(主页不显示商城的修复)";
 		// 挂到 window 上 ⇒ 真机取证能一眼看出"这个窗口跑的是哪一版"（`window.__vssarosChatSurfaceBuild`）✓
 		try { window.__vssarosChatSurfaceBuild = CLIENT_BUILD_STAMP; } catch { /* 极端环境 */ }
 		// 注意：**不**把 `workspaces` 加进 inject —— 本仓库实测结论是 Cordis 4 的 inject 数组是
