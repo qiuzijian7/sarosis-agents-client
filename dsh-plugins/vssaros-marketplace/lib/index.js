@@ -46,7 +46,7 @@ const OPS = ['list', 'detail', 'installed', 'install', 'uninstall', 'upgrade', '
 const WRITE_OPS = new Set(['install', 'uninstall', 'upgrade', 'publish', 'deletePackage', 'deleteVersion']);
 
 /** dsh 侧**自持**的只读 op（认证 + HTTP + 本地台账，不碰 IDE 桥 ✓）。 */
-const LOCAL_OPS = new Set(['list', 'detail', 'installed', 'publishables']);
+const LOCAL_OPS = new Set(['list', 'detail', 'installed', 'publishables', 'reviewList']);
 
 /**
  * dsh 侧**自持**的写 op（S2）：skill / workflow 的安装、升级、卸载。
@@ -102,6 +102,26 @@ export async function apply(ctx, config) {
 	 */
 	async function runLocal(op, params) {
 		if (op === 'publishables') { return listLocalPublishables(); }
+		// 管理员审核队列（服务端 requireAdmin 判权 ⇒ 非管理员会 403，如实抛 ✓）
+		if (op === 'reviewList') {
+			const res = await market().reviewList();
+			return {
+				ok: true,
+				total: res.total,
+				items: res.items.map(pkg => ({
+					id: pkg.id,
+					kind: pkg.kind,
+					slug: pkg.slug,
+					name: pkg.name,
+					version: pkg.latest_version ?? '',
+					description: pkg.description ?? '',
+					author: pkg.author_name ?? '',
+					status: pkg.status ?? 'pending_review',
+					featured: pkg.featured === true,
+					pendingSince: pkg.pending_review_since ?? null,
+				})),
+			};
+		}
 		if (op === 'list') {
 			const res = await market().list({
 				...(params.kind ? { kind: String(params.kind) } : {}),
@@ -516,6 +536,22 @@ export async function apply(ctx, config) {
 						&& LOCAL_WRITE_KINDS.has(String(params.kind ?? ''))) {
 						try {
 							json(200, await runLocalWrite(op, params));
+						} catch (e) {
+							json(200, { ok: false, error: String(e?.message ?? e) });
+						}
+						return;
+					}
+					// 管理员审核（纯 HTTP，服务端 requireAdmin 判权）⇒ dsh 侧自持 ✓
+					if (op === 'reviewStatus' || op === 'reviewFeature') {
+						try {
+							const m2 = market();
+							const target = String(params.slug || params.id || '');
+							if (op === 'reviewStatus') {
+								await m2.reviewSetStatus(target, String(params.status ?? ''));
+							} else {
+								await m2.reviewSetFeatured(target, params.featured === true);
+							}
+							json(200, { ok: true });
 						} catch (e) {
 							json(200, { ok: false, error: String(e?.message ?? e) });
 						}

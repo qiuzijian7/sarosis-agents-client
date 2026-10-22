@@ -79,10 +79,11 @@
 		if (state.kind) { params.kind = state.kind; }
 		if (state.q) { params.q = state.q; }
 		if (state.tab === 'mine') { params.scope = 'mine'; }
-		if (state.tab === 'admin') { params.scope = 'review'; }
-		// ★ 「已安装」页签走**本地台账**（installed-packages.json）——
-		//   服务端不知道谁装了 ⇒ 这个视图只能在客户端算 ✓。
-		const op = state.tab === 'installed' ? 'installed' : 'list';
+		// ★ 「管理」页签走**审核队列**（服务端 /admin/review，requireAdmin 判权）——
+		//   非管理员会拿到 403，如实显示"需要管理员权限"（不静默空列表）✓
+		let op = 'list';
+		if (state.tab === 'installed') { op = 'installed'; }
+		if (state.tab === 'admin') { op = 'reviewList'; }
 		const res = await action(op, params);
 		state.busy = false;
 		if (!res || res.ok === false) {
@@ -175,6 +176,13 @@
 		}
 		if (state.tab === 'installed') {
 			actions.push('<button class="vs-mp-btn danger" data-uninstall="' + esc(pkg.slug) + '">卸载</button>');
+		}
+		// 「管理」页签：审核三件套（通过 / 拒绝下架 / 推荐位）—— 服务端判权，前端不判 ✓
+		if (state.tab === 'admin') {
+			actions.push('<button class="vs-mp-btn primary" data-review-ok="' + esc(pkg.slug) + '">通过</button>');
+			actions.push('<button class="vs-mp-btn danger" data-review-no="' + esc(pkg.slug) + '">拒绝下架</button>');
+			actions.push('<button class="vs-mp-btn" data-review-feature="' + esc(pkg.slug) + '">' +
+				(pkg.featured ? '取消推荐' : '设为推荐') + '</button>');
 		}
 		return '' +
 			'<div class="vs-mp-card" data-slug="' + esc(pkg.slug) + '">' +
@@ -409,6 +417,18 @@
 			const fromList = state.items.find(p => p.slug === slug);
 			const kind = (fromDetail && fromDetail.kind) || (fromList && fromList.kind) || 'skill';
 			run('uninstall', { kind: kind, slug: slug }, '已卸载');
+		});
+		// ── 管理页签：审核三件套（服务端判 admin，前端只发意图）─────────────
+		on('[data-review-ok]', 'click', e => {
+			run('reviewStatus', { slug: e.currentTarget.getAttribute('data-review-ok'), status: 'active' }, '已通过审核');
+		});
+		on('[data-review-no]', 'click', e => {
+			run('reviewStatus', { slug: e.currentTarget.getAttribute('data-review-no'), status: 'removed' }, '已拒绝并下架');
+		});
+		on('[data-review-feature]', 'click', e => {
+			const slug = e.currentTarget.getAttribute('data-review-feature');
+			const pkg = state.items.find(p => p.slug === slug);
+			run('reviewFeature', { slug: slug, featured: !(pkg && pkg.featured) }, pkg && pkg.featured ? '已取消推荐' : '已设为推荐');
 		});
 		on('[data-delpkg]', 'click', e => {
 			const slug = e.currentTarget.getAttribute('data-delpkg');

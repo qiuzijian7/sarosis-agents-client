@@ -172,8 +172,10 @@ export function createMarketClient({ credentials, config, log = () => { }, fetch
 		let token = await readRef(MARKET_JWT_REF);
 		if (!token) { token = await login(); }
 		let resp = await once(token);
-		if (resp.status === 401 || resp.status === 403) {
-			// 换一张 JWT 再试一次（票据还在就能续上；票据没了 ⇒ login 会抛出可读原因 ✓）
+		// ⚠ **只在 401 重登**：401 = 票据过期（换一张就好）；
+		//   403 = **权限不足**（如非管理员调 /admin/*）⇒ 重登毫无意义，还会把真实原因
+		//   盖成"没有 TOF 票据"（真机踩过：管理员接口的 403 被报成登录问题 ✗）
+		if (resp.status === 401) {
 			token = await login();
 			resp = await once(token);
 		}
@@ -200,7 +202,8 @@ export function createMarketClient({ credentials, config, log = () => { }, fetch
 		let token = await readRef(MARKET_JWT_REF);
 		if (!token) { token = await login(); }
 		let resp = await once(token);
-		if (resp.status === 401 || resp.status === 403) {
+		// ⚠ 只在 401 重登（403 = 权限不足，换票无用）—— 与 request() 同一口径 ✓
+		if (resp.status === 401) {
 			token = await login();
 			resp = await once(token);
 		}
@@ -234,7 +237,8 @@ export function createMarketClient({ credentials, config, log = () => { }, fetch
 		let token = await readRef(MARKET_JWT_REF);
 		if (!token) { token = await login(); }
 		let resp = await once(token);
-		if (resp.status === 401 || resp.status === 403) {
+		// ⚠ 只在 401 重登（403 = 权限不足，换票无用）—— 与 request() 同一口径 ✓
+		if (resp.status === 401) {
 			token = await login();
 			resp = await once(token);
 		}
@@ -267,6 +271,32 @@ export function createMarketClient({ credentials, config, log = () => { }, fetch
 		return request('GET', `/packages/${encodeURIComponent(slug)}`);
 	}
 
+	/**
+	 * 管理员：审核队列（待审核的包）。
+	 *
+	 * 服务端 `/admin/*` 整段挂了 `requireAuth + requireAdmin` ⇒ 非管理员会 403，
+	 * 这里**如实抛**（页面上显示"需要管理员权限"，不静默空列表）✓
+	 */
+	async function reviewList() {
+		const res = await request('GET', '/admin/review');
+		return { items: Array.isArray(res?.items) ? res.items : [], total: Number(res?.total) || 0 };
+	}
+
+	/** 管理员：改包状态（`active` 通过 / `removed` 拒绝下架 / `pending_review` 打回）。 */
+	async function reviewSetStatus(idOrSlug, status) {
+		if (!idOrSlug) { throw new Error('reviewStatus 需要 slug 或 id'); }
+		if (!['active', 'pending_review', 'removed'].includes(status)) {
+			throw new Error(`reviewStatus 的 status 不认识：${status}`);
+		}
+		return request('PUT', `/admin/packages/${encodeURIComponent(idOrSlug)}/status`, { status });
+	}
+
+	/** 管理员：推荐位开关。 */
+	async function reviewSetFeatured(idOrSlug, featured) {
+		if (!idOrSlug) { throw new Error('reviewFeature 需要 slug 或 id'); }
+		return request('PUT', `/admin/packages/${encodeURIComponent(idOrSlug)}/featured`, { featured: featured === true });
+	}
+
 	/** 升级检查（批量）。 */
 	async function checkUpgrades(items) {
 		if (!Array.isArray(items) || items.length === 0) { return []; }
@@ -274,5 +304,9 @@ export function createMarketClient({ credentials, config, log = () => { }, fetch
 		return Array.isArray(res?.updates) ? res.updates : [];
 	}
 
-	return { login, request, download, upload, list, detail, checkUpgrades, endpoint: root, tofTicket };
+	return {
+		login, request, download, upload, list, detail, checkUpgrades,
+		reviewList, reviewSetStatus, reviewSetFeatured,
+		endpoint: root, tofTicket,
+	};
 }

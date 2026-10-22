@@ -127,6 +127,33 @@ function fakeFetch(handler) {
 	check('401 后自动换票重试成功（不让用户手动重登）', res.total === 0 && f.calls.filter(c => c.url.includes('/auth/tof')).length === 1);
 }
 
+// ── ③b 403 **不许**走重登（真机踩过：管理员接口的 403 被报成"没有 TOF 票据" ✗）──
+{
+	const creds = fakeCredentials({ [TOF_SYNCED_TICKET_REF]: 't', [MARKET_JWT_REF]: 'valid-jwt' });
+	const f = fakeFetch((entry) => {
+		if (entry.url.includes('/auth/tof')) { return { body: { token: 'new' } }; }
+		return { status: 403, body: { error: '需要管理员权限' } };
+	});
+	const m = createMarketClient({ credentials: creds, config: { marketEndpoint: 'http://x' }, fetchImpl: f });
+	let msg = '';
+	try { await m.reviewList(); } catch (e) { msg = String(e.message ?? e); }
+	check('403 直接抛出原文案（含"管理员"），不掩盖成登录问题', msg.includes('管理员'), msg);
+	check('403 **不触发重登**（换票解决不了权限不足）',
+		f.calls.filter(c => c.url.includes('/auth/tof')).length === 0,
+		`实际换票 ${f.calls.filter(c => c.url.includes('/auth/tof')).length} 次`);
+	// 401 仍然要重登（票据过期是常态）
+	const creds2 = fakeCredentials({ [TOF_SYNCED_TICKET_REF]: 't2', [MARKET_JWT_REF]: 'expired' });
+	let n = 0;
+	const f2 = fakeFetch((entry) => {
+		if (entry.url.includes('/auth/tof')) { n++; return { body: { token: `fresh-${n}` } }; }
+		if (entry.headers.authorization === 'Bearer expired') { return { status: 401, body: { error: '过期' } }; }
+		return { body: { items: [], total: 0 } };
+	});
+	const m2b = createMarketClient({ credentials: creds2, config: { marketEndpoint: 'http://x' }, fetchImpl: f2 });
+	await m2b.reviewList();
+	check('401 仍然自动重登一次（票据过期要续上）', n === 1, `实际 ${n} 次`);
+}
+
 // ── ④ 服务端 details 必须出现在错误文案里 ─────────────────────────
 {
 	const msg = describeMarketError(400, JSON.stringify({
