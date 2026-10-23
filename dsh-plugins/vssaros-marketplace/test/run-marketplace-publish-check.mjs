@@ -388,6 +388,44 @@ function makeSkill(localId, version, extra = {}) {
 		/\.vs-mp-card-top\s*\{[^}]*display:\s*flex/.test(css) && page.includes("'vs-mp-card-top'"));
 }
 
+// ── ⑮ 商品缩略图（2026-10-23：参考 colorskill 的 gallery 布局）──────────────
+//   数据来源：`tools/fetch-covers.mjs` 从 Cola Skill 页面的 `og:image` 抓来写进 `icon`
+//   （131 个商品已回填）。前端只要"icon 是图片地址"就渲染缩略图 ✓
+{
+	const page = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'client.js'), 'utf8');
+	const css = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'page.css'), 'utf8');
+	const toolPath = path.resolve(HERE, '..', 'tools', 'fetch-covers.mjs');
+	const tool = fs.existsSync(toolPath) ? fs.readFileSync(toolPath, 'utf8') : '';
+
+	check('⑮ 有缩略图组件 PkgCover，且卡片/详情都用它',
+		/function\s+PkgCover\s*\(/.test(page) && page.split('h(PkgCover').length - 1 >= 2);
+	check('⑮ 缩略图同样**懒加载**（一页几十张图，必须 lazy）',
+		/loading:\s*'lazy'/.test(page) && /decoding:\s*'async'/.test(page));
+	check('⑮ 有缩略图时**不再渲染小图标**（否则重复占位）',
+		/hasCover\s*\?\s*null\s*:\s*h\(PkgIcon/.test(page), '缺 hasCover 三元');
+	check('⑮ 封面尺寸固定 16:9（懒加载前后不跳版）',
+		/\.vs-mp-cover\s*\{[^}]*aspect-ratio:\s*16\s*\/\s*9/.test(css));
+	check('⑮ 封面用 object-fit: cover（不同比例图都不变形）',
+		/\.vs-mp-cover img\s*\{[^}]*object-fit:\s*cover/.test(css));
+	check('⑮ 卡片里封面**贴边**（负 margin 抵消卡片 padding）',
+		/\.vs-mp-cover\s*\{[^}]*margin:\s*-14px\s+-16px/.test(css));
+
+	// 抓取工具：必须从 Cola Skill 取 og:image，且幂等（只补没有真图的）
+	check('⑮ 有抓取工具 tools/fetch-covers.mjs', tool.length > 0, toolPath);
+	check('⑮ 抓取工具从 og:image 取图（twitter:image 兜底）',
+		/og:image/i.test(tool) && /twitter:image/i.test(tool));
+	check('⑮ 抓取工具只处理 Cola Skill 链接的商品（不瞎抓）',
+		/colaskill\\?\.com/i.test(tool));
+	check('⑮ 抓取工具**幂等**：已是图片地址就跳过（`--force` 才覆盖）',
+		/--force/.test(tool) && /isImageIcon/.test(tool));
+	check('⑮ 抓取工具用 OSS 缩略参数 w_480（不用 1920 原图拖慢列表）',
+		/THUMB_WIDTH\s*=\s*480/.test(tool) && /x-oss-process/i.test(tool));
+	check('⑮ 抓取工具是运维脚本（不进 files 白名单，不随插件分发）', (() => {
+		const pkg = JSON.parse(fs.readFileSync(path.resolve(HERE, '..', 'package.json'), 'utf8'));
+		return !pkg.files.some(f => f.startsWith('tools/'));
+	})());
+}
+
 fs.rmSync(dataRoot, { recursive: true, force: true });
 console.log(`\n[marketplace publish] ${pass} passing / ${fails.length} failing`);
 if (fails.length) { console.log('失败：' + fails.join('、')); }

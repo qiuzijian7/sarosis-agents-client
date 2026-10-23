@@ -128,6 +128,34 @@
 			h('span', { className: 'vs-mp-icon-emoji' }, emoji || raw || fallbackEmoji));
 	}
 
+	/**
+	 * 商品**缩略图**（★ 2026-10-23 用户："参考 colorskill 平台，使用缩略图展示"）。
+	 *
+	 * 数据来源：`tools/fetch-covers.mjs` 从 Cola Skill 的 `og:image` 抓来写进 `icon`
+	 * （131 个商品已回填）。所以这里只认"`icon` 是图片地址"这一种情况 ——
+	 * 没有图时**不渲染这个块**（卡片沿用 emoji + 渐变兜底，不留空白 ✗）。
+	 *
+	 * 懒加载：`loading="lazy"` + `decoding="async"`（一页几十张首屏图，必须懒加载）
+	 * 失败兜底：图片挂了就**整块隐藏**（父级渐变底顶上来，不留破图）
+	 *
+	 * @param {{ pkg: object }} props
+	 */
+	function PkgCover(props) {
+		var raw = String((props.pkg || {}).icon || '').trim();
+		var failedState = useState(false);
+		if (!isImageIcon(raw) || failedState[0]) { return null; }
+		return h('div', { className: 'vs-mp-cover' },
+			h('img', {
+				src: raw,
+				alt: '',
+				loading: 'lazy',
+				decoding: 'async',
+				referrerPolicy: 'no-referrer',
+				onError: function () { failedState[1](true); }
+			})
+		);
+	}
+
 	/** 分类页签（mcp / knowledge 不进页签，但接口支持）。 */
 	var KIND_TABS = [
 		{ id: '', label: '全部' },
@@ -240,10 +268,13 @@
 			}, pkg.featured ? '取消推荐' : '设为推荐'));
 		}
 
-		return h('div', { className: 'vs-mp-card', 'data-slug': pkg.slug },
-			// ★ 2026-10-23：图标块 + 标题并排（图标是图片时走懒加载，见 PkgIcon）
+		// ★ 2026-10-23：有缩略图 ⇒ 顶部大图 + 不再显示小图标（重复且占位）；
+		//   没缩略图 ⇒ 沿用「小图标 + 渐变」的紧凑布局 ✓
+		var hasCover = isImageIcon(pkg.icon);
+		return h('div', { className: 'vs-mp-card' + (hasCover ? ' has-cover' : ''), 'data-slug': pkg.slug },
+			h(PkgCover, { key: 'cover', pkg: pkg }),
 			h('div', { className: 'vs-mp-card-top' },
-				h(PkgIcon, { key: 'icon', pkg: pkg }),
+				hasCover ? null : h(PkgIcon, { key: 'icon', pkg: pkg }),
 				h('div', { className: 'vs-mp-card-topbody' },
 					h('div', { className: 'vs-mp-card-head' },
 						h('span', { className: 'vs-mp-kindtag' }, KIND_LABEL[pkg.kind] || String(pkg.kind)),
@@ -310,12 +341,15 @@
 		}
 
 		return h(Drawer, {
-			icon: h(PkgIcon, { key: 'icon', pkg: d, large: true }),
+			// 有缩略图就显示大图（与卡片一致）；没有才用 emoji 图标
+			icon: isImageIcon(d.icon) ? null : h(PkgIcon, { key: 'icon', pkg: d, large: true }),
 			title: String(d.name || d.slug || ''),
 			subtitle: [KIND_LABEL[d.kind] || String(d.kind || ''), String(d.author || '暂无'), d.version ? 'v' + String(d.version) : '']
 				.filter(Boolean).join(' · '),
 			onClose: props.onClose
 		},
+			// 详情里放一张较大的缩略图（与 colorskill 的商品页一致）
+			h(PkgCover, { key: 'cover', pkg: d }),
 			h('div', { className: 'vs-mp-tagrow' },
 				d.visibility === 'private' ? h('span', { className: 'vs-mp-tag' }, '私有') : null,
 				d.featured ? h('span', { className: 'vs-mp-tag ok' }, '推荐') : null,

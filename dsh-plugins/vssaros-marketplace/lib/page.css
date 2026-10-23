@@ -299,3 +299,36 @@ body {
 	gap: 10px;
 	flex-wrap: wrap;
 }
+
+/* ── 商品缩略图（2026-10-23：参考 colorskill 的 gallery 布局）────────────────
+ * 数据来源：tools/fetch-covers.mjs 从 Cola Skill 的 og:image 抓来写进 icon。
+ *
+ * 卡片里的封面**贴边**（用负 margin 抵消 .vs-mp-card 的 padding），
+ * 圆角只在顶部 ⇒ 视觉上像一张"预览图"，而不是卡片里的小方块。
+ * 尺寸固定 16:9 ⇒ 图片加载前后**不跳版**（懒加载必需）。
+ */
+.vs-mp-cover {
+	width: calc(100% + 32px);
+	margin: -14px -16px 4px;
+	aspect-ratio: 16 / 9;
+	overflow: hidden;
+	border-radius: 14px 14px 0 0;
+	/* 图片还没加载出来时的底色（深灰渐变）⇒ 不留白块、也不闪 */
+	background: linear-gradient(135deg, #2b2b2b, #1e1e1e);
+}
+.vs-mp-cover img {
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+	display: block;
+}
+
+/* 有缩略图的卡片：顶部内容不需要再顶 14px（封面已经贴边） */
+.vs-mp-card.has-cover { min-height: 0; }
+
+/* 详情抽屉里的缩略图：全宽、正常圆角、比卡片更大 */
+.vs-mp-drawer .vs-mp-cover {
+	width: 100%;
+	margin: 0 0 12px;
+	border-radius: 12px;
+}
