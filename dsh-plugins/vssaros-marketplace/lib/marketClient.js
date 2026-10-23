@@ -21,6 +21,8 @@
 //   服务端 zod 校验失败只回 `{ error:'参数校验失败', details:[…issues] }`
 //   —— 只取 `error` 会让人看不出是哪个参数不合法（真机踩过：远端服务端版本落后，缺一个 kind 枚举）✗
 
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { foundation } from './foundationRef.js';
 
 /** dsh 自登的 TOF 票据（与 `vssaros-bridge/lib/tof.js` 的 `TOF_LOCAL_CREDENTIAL_REF` 同值）。 */
@@ -42,17 +44,31 @@ export const DEFAULT_MARKET_ENDPOINT = 'http://21.6.92.5:3040';
  *   之前写成"自己实现"会被守卫 `check-host-config.mjs` 判成**第三份实现**（1.3 之后不许有）✗。
  */
 export function dataRootOf(config) {
-	// ★ 2026-10-23（真机：点「安装」毫无反应的根因）：
-	//   `dataRoot` 一直为 null，因为这里**完全委托给 foundation 服务**，
-	//   而真机上 `vssarosFoundation` **没绑上**（激活顺序 / 组合缺插件）⇒
-	//   `foundation()` 直接抛 ⇒ 所有需要落盘的动作（安装/升级/卸载/发布）全废 ✗
+	// 数据根按**三档**取（★ 2026-10-23 真机：点「安装」没反应 = dataRoot 恒 null）：
 	//
-	//   而 `config.dataRoot` 是**显式配置**（IDE 的数据根覆盖层写进 `cordis.patch.yml` 的
-	//   `config.dataRoot`），它比"服务发现"更可靠 ⇒ **配置优先，foundation 兜底** ✓
+	//   ① `config.dataRoot` —— **显式配置**，IDE 的数据根覆盖层就写在这里
+	//      （`cordis.patch.yml` 的 `config.dataRoot`）⇒ 最可靠，优先 ✓
+	//   ② `vssarosFoundation` 服务 —— 与其它 @vssaros/* 插件同一份口径（真源）
+	//   ③ **本地兜底** —— 服务不可用时自己按同一套规则推导
+	//      （`VSSAROS_DATA_ROOT` → `~/.vssaros`），**并打日志说明走了兜底**
+	//
+	// 为什么要有 ③：真机上 `vssarosFoundation` 明明在 bundles 里却没绑上
+	//   ⇒ `foundation()` 直接抛 ⇒ 装/升/卸/发布**全部失效**，页面表现是"点了没反应" ✗
+	//   marketplace 是独立安装包，**不该因为一个可选服务缺失就整体报废**。
+	//   （主口径仍是 ①②；③ 只是保命，且与 foundation 的规则逐条一致，不会算出不同答案）
 	const fromConfig = typeof config?.dataRoot === 'string' ? config.dataRoot.trim() : '';
 	if (fromConfig) { return fromConfig.replace(/[\\/]+$/, ''); }
-	// 没有显式配置才问 foundation（它的口径可能带 profile 推导，比裸配置更全）
-	return foundation().dataRootOf(config);
+
+	try {
+		return foundation().dataRootOf(config);
+	} catch (e) {
+		// ② 不可用 ⇒ ③ 本地兜底（口径与 `@vssaros/dsh-foundation/lib/paths.js` 一致）
+		const fromEnv = typeof process.env.VSSAROS_DATA_ROOT === 'string' ? process.env.VSSAROS_DATA_ROOT.trim() : '';
+		const fallback = (fromEnv || join(homedir(), '.vssaros')).replace(/[\\/]+$/, '');
+		// 模块级没有实例的 `log` ⇒ 直接 console.log（Host 会捕获进日志）
+		console.log(`[marketplace] ⚠ vssarosFoundation 服务不可用（${String(e?.message ?? e).slice(0, 80)}）⇒ 数据根改用本地兜底：${fallback}`);
+		return fallback;
+	}
 }
 
 /** 商城服务端地址：`config.marketEndpoint` → env `VSSAROS_MARKET_ENDPOINT` → 默认。 */

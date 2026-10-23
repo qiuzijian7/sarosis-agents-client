@@ -243,7 +243,7 @@ export async function apply(ctx, config) {
 	async function runLocalWrite(op, params) {
 		const dataRoot = state.dataRoot;
 		if (!dataRoot) {
-			throw new Error('dsh 侧拿不到数据根（vssarosFoundation 未绑定）⇒ 无法落盘');
+			throw new Error('dsh 侧拿不到数据根（config.dataRoot 未注入，且 vssarosFoundation 服务不可用）⇒ 无法落盘');
 		}
 		const kind = String(params.kind ?? '');
 		const slug = String(params.slug ?? '');
@@ -427,7 +427,7 @@ export async function apply(ctx, config) {
 	async function runLocalPublish(op, params) {
 		const dataRoot = state.dataRoot;
 		if (!dataRoot) {
-			throw new Error('dsh 侧拿不到数据根（vssarosFoundation 未绑定）⇒ 无法打包发布');
+			throw new Error('dsh 侧拿不到数据根（config.dataRoot 未注入，且 vssarosFoundation 服务不可用）⇒ 无法打包发布');
 		}
 		const m = market();
 		const slug = String(params.slug ?? params.localId ?? '');

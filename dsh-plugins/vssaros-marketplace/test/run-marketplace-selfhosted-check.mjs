@@ -244,10 +244,37 @@ function fakeFetch(handler) {
 		dataRootOf({ dataRoot: 'C:/Users/x/.vssaros-dev/' }) === 'C:/Users/x/.vssaros-dev'
 		&& dataRootOf({ dataRoot: 'C:/a/b\\\\' }) === 'C:/a/b');
 
-	// 没有显式配置 ⇒ **兜底到 foundation**（本套件开头绑的假 foundation 返回 tmpdir 下的路径）
+	// 没有显式配置 ⇒ **先问 foundation**（本套件开头绑的假 foundation 返回 tmpdir 下的路径）
 	const expectedFromFoundation = path.join(os.tmpdir(), 'vssaros-marketplace-selfcheck');
-	check('数据根：没配置时**兜底到 foundation**（不是静默返回空）',
+	check('数据根：没配置时先问 foundation（真源）',
 		dataRootOf({}) === expectedFromFoundation, dataRootOf({}));
+
+	// ★ foundation **不可用**时 ⇒ 本地兜底（不抛！否则装/升/卸/发布全部失效）
+	//   真机：`vssarosFoundation` 在 bundles 里却没绑上 ⇒ 曾导致"点安装没反应" ✗
+	{
+		foundationMod.bindFoundation(null);
+		const expectedFallback = (process.env.VSSAROS_DATA_ROOT || path.join(os.homedir(), '.vssaros')).replace(/[\\/]+$/, '');
+		let got = null;
+		let err = '';
+		try { got = dataRootOf({}); } catch (e) { err = String(e?.message ?? e); }
+		check('数据根：foundation 不可用 ⇒ **本地兜底**（不抛，口径与 foundation 一致）',
+			got === expectedFallback, `${err} | got=${got} expect=${expectedFallback}`);
+		// 兜底也不能盖过显式配置
+		check('数据根：兜底不会盖过 config.dataRoot',
+			dataRootOf({ dataRoot: 'C:/explicit' }) === 'C:/explicit');
+		// 恢复假 foundation（后续用例要用）
+		foundationMod.bindFoundation({
+			dataRootOf: () => path.join(os.tmpdir(), 'vssaros-marketplace-selfcheck'),
+			lockFileFor: (f) => `${f}.lock`,
+			acquireFileLock: async () => async () => { },
+			atomicWriteFile: async () => { },
+			isPidAlive: () => false,
+			escapeHtml: (s) => String(s),
+			renderChips: () => '',
+			renderShell: () => '',
+			SHELL_CSS: '',
+		});
+	}
 
 	// 接线：必须在 **apply 时**就算一次（不能只在 inject 回调里算，否则服务没绑就永远 null）
 	// ⚠ 定位时用 `ctx.inject(['vssarosFoundation'], scope =>`（带参数）——
