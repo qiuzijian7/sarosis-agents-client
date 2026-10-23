@@ -426,6 +426,36 @@ function makeSkill(localId, version, extra = {}) {
 	})());
 }
 
+// ── ⑯ 公开市场工作台同步（2026-10-23：把「设置→工作台商城」的数据爬进我们商城）──
+//   数据源 = `https://market.dshdesktop.com/index.json`（协议 v2）
+//   IDE 的「设置→工作台商城」读的就是它；dsh Host 的 `/x/market/api/catalog` 只是它的快照+策展
+{
+	const toolPath = path.resolve(HERE, '..', 'tools', 'sync-market-workbenches.mjs');
+	const tool = fs.existsSync(toolPath) ? fs.readFileSync(toolPath, 'utf8') : '';
+
+	check('⑯ 有公开市场同步脚本', tool.length > 0, toolPath);
+	check('⑯ 数据源是官方市场目录（可覆盖，便于换环境/测试）',
+		/market\.dshdesktop\.com\/index\.json/.test(tool) && /MARKET_CATALOG/.test(tool));
+	check('⑯ 读的是协议 v2 的 `workbenches`（也兼容 `items`）',
+		/catalog\.workbenches/.test(tool) && /catalog\.items/.test(tool));
+	check('⑯ slug 用 `owner-repo`（不同人同名仓库不会撞车）',
+		/function slugOf\(/.test(tool) && /item\?\.id/.test(tool) && /replace\(\/\[\^a-z0-9\]\+\/g, '-'\)/.test(tool));
+	check('⑯ distribution 三种都映射（github-source / github-release / npm）',
+		/'github-release'/.test(tool) && /'github-source'/.test(tool) && /'npm'/.test(tool));
+	check('⑯ 映射不了就**跳过**（不编造来源）',
+		/return null;/.test(tool) && /来源无法映射/.test(tool));
+	check('⑯ 缩略图取 `screenshots[0]` 并上传自持（不是存外链）',
+		/screenshots/.test(tool) && /api\/v1\/covers/.test(tool) && /updatePackage\(slug, \{ icon/.test(tool));
+	check('⑯ 只同步 listed / installable 的（下架与不可装的不入库）',
+		/w\.listed === false/.test(tool) && /w\.installable === false/.test(tool));
+	check('⑯ 幂等（已存在 ⇒ skipped；`--force` 才重发版本）',
+		/--force/.test(tool) && /skip/.test(tool) && /409/.test(tool));
+	check('⑯ 同步脚本是运维工具（不进 files 白名单）', (() => {
+		const pkg = JSON.parse(fs.readFileSync(path.resolve(HERE, '..', 'package.json'), 'utf8'));
+		return !pkg.files.some(f => f.startsWith('tools/'));
+	})());
+}
+
 fs.rmSync(dataRoot, { recursive: true, force: true });
 console.log(`\n[marketplace publish] ${pass} passing / ${fails.length} failing`);
 if (fails.length) { console.log('失败：' + fails.join('、')); }
