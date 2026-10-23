@@ -53,6 +53,81 @@
 		workbench: '工作台'
 	};
 
+	/**
+	 * 各类型没有图标时的默认 emoji（★ 2026-10-23 用户："商城中的 item 希望也有图像显示"）。
+	 *
+	 * 为什么需要兜底：实测 168 个商品里 `icon` **全是同一个默认值**（`🥤`），
+	 * 服务端也没有 `cover` / `thumbnail` 字段 ⇒ 光显示 icon 会整页一个样，等于没有图像信息 ✗
+	 * ⇒ 用「图标 + 按 slug 稳定的渐变色底」做出可辨识的视觉块（同一商品颜色恒定）✓
+	 */
+	var KIND_EMOJI = {
+		agent: '🤖',
+		skill: '⚡',
+		mcp: '🔌',
+		knowledge: '📚',
+		workflow: '🔀',
+		workbench: '🧰'
+	};
+
+	/** 字符串 → 稳定色相（同一 slug 永远同色，刷新不会跳）。 */
+	function hueOf(text) {
+		var s = String(text || '');
+		var hv = 0;
+		for (var i = 0; i < s.length; i++) {
+			hv = (hv * 31 + s.charCodeAt(i)) % 360;
+		}
+		return hv;
+	}
+
+	/** 图标块底：两段同色系渐变（深色主题下也不刺眼）。 */
+	function iconBg(hue) {
+		return 'linear-gradient(135deg, hsl(' + hue + ',68%,58%,0.34), hsl(' + ((hue + 46) % 360) + ',72%,46%,0.16))';
+	}
+
+	/** 这个 icon 是不是图片地址（而不是 emoji / 短文本）。 */
+	function isImageIcon(raw) {
+		return /^(https?:\/\/|data:image\/)/i.test(String(raw || '').trim());
+	}
+
+	/**
+	 * 商品图标块（卡片 / 详情共用）。
+	 *
+	 * 三态：
+	 *   · `icon` 是**图片地址** ⇒ `<img loading="lazy" decoding="async">`
+	 *     （浏览器原生懒加载：只加载视口内的，168 个卡片也不会一次拉 168 个请求 ✓）
+	 *     · 加载失败 ⇒ 自动退回 emoji（不让格子空着，也不显示破图 ✗）
+	 *   · `icon` 是 emoji / 短文本 ⇒ 直接显示
+	 *   · 空 ⇒ 按类型给默认 emoji
+	 *
+	 * @param {{ pkg: object, large?: boolean }} props
+	 */
+	function PkgIcon(props) {
+		var pkg = props.pkg || {};
+		var raw = String(pkg.icon || '').trim();
+		var hue = hueOf(pkg.slug || pkg.name || '');
+		var fallbackEmoji = KIND_EMOJI[pkg.kind] || '📦';
+		var emojiState = useState(null);   // 图片失败后要显示的 emoji（null = 还没失败）
+		var emoji = emojiState[0];
+		var setEmoji = emojiState[1];
+		var cls = 'vs-mp-icon' + (props.large ? ' vs-mp-icon-lg' : '');
+
+		if (isImageIcon(raw) && !emoji) {
+			return h('div', { className: cls, style: { background: iconBg(hue) }, title: raw },
+				h('img', {
+					src: raw,
+					alt: '',
+					// ★ 懒加载：原生 loading=lazy（视口外不请求）+ async 解码（不阻塞渲染）
+					loading: 'lazy',
+					decoding: 'async',
+					referrerPolicy: 'no-referrer',
+					onError: function () { setEmoji(fallbackEmoji); }
+				})
+			);
+		}
+		return h('div', { className: cls, style: { background: iconBg(hue) } },
+			h('span', { className: 'vs-mp-icon-emoji' }, emoji || raw || fallbackEmoji));
+	}
+
 	/** 分类页签（mcp / knowledge 不进页签，但接口支持）。 */
 	var KIND_TABS = [
 		{ id: '', label: '全部' },
@@ -166,11 +241,17 @@
 		}
 
 		return h('div', { className: 'vs-mp-card', 'data-slug': pkg.slug },
-			h('div', { className: 'vs-mp-card-head' },
-				h('span', { className: 'vs-mp-kindtag' }, KIND_LABEL[pkg.kind] || String(pkg.kind)),
-				statusTag, distTag, upTag
+			// ★ 2026-10-23：图标块 + 标题并排（图标是图片时走懒加载，见 PkgIcon）
+			h('div', { className: 'vs-mp-card-top' },
+				h(PkgIcon, { key: 'icon', pkg: pkg }),
+				h('div', { className: 'vs-mp-card-topbody' },
+					h('div', { className: 'vs-mp-card-head' },
+						h('span', { className: 'vs-mp-kindtag' }, KIND_LABEL[pkg.kind] || String(pkg.kind)),
+						statusTag, distTag, upTag
+					),
+					h('div', { className: 'vs-mp-card-title' }, String(pkg.name || pkg.slug || ''))
+				)
 			),
-			h('div', { className: 'vs-mp-card-title' }, String(pkg.name || pkg.slug || '')),
 			h('div', { className: 'vs-mp-card-meta' },
 				String(pkg.author || '暂无'),
 				pkg.version ? ' · v' + String(pkg.version) : ''
@@ -188,6 +269,8 @@
 			h('div', { className: 'vs-mp-mask', onClick: props.onClose }),
 			h('div', { className: 'vs-mp-drawer', role: 'dialog', 'aria-label': props.title },
 				h('div', { className: 'vs-mp-drawer-head' },
+					// ★ 2026-10-23：可选图标（详情抽屉用大号，与卡片上的视觉块呼应）
+					props.icon || null,
 					h('div', null,
 						h('div', { className: 'vs-mp-drawer-title' }, props.title),
 						props.subtitle ? h('div', { className: 'vs-mp-drawer-meta' }, props.subtitle) : null
@@ -227,6 +310,7 @@
 		}
 
 		return h(Drawer, {
+			icon: h(PkgIcon, { key: 'icon', pkg: d, large: true }),
 			title: String(d.name || d.slug || ''),
 			subtitle: [KIND_LABEL[d.kind] || String(d.kind || ''), String(d.author || '暂无'), d.version ? 'v' + String(d.version) : '']
 				.filter(Boolean).join(' · '),

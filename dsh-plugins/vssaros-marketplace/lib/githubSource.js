@@ -195,17 +195,19 @@ export function locateInstallRoot(files, kind) {
  *
  * 安全边界（都是硬的）：
  *   · 只走 https + 白名单域；**跟随重定向后仍校验**（Release 资产会 302 到 objects.githubusercontent.com）
- *   · 体积上限（超了立刻中止，不是下完再判）
+ *   · 体积上限（★ 2026-10-23：**流式边收边判**，不是下完再判 —— 以前用 `arrayBuffer()`
+ *     一次性读满，64MB 上限只是"下完之后拒绝"，内存峰值仍是 64MB × 2（再 gunzip 还要一份）✗）
  *   · 超时
  *
  * @param {string} url
- * @param {{ fetchImpl?: typeof fetch, maxBytes?: number, timeoutMs?: number }} [opts]
+ * @param {{ fetchImpl?: typeof fetch, maxBytes?: number, timeoutMs?: number, onProgress?: (received: number, total: number) => void }} [opts]
  * @returns {Promise<Buffer>}
  */
 export async function downloadGitHubTarball(url, opts = {}) {
 	const fetchImpl = opts.fetchImpl ?? globalThis.fetch;
 	const maxBytes = opts.maxBytes ?? MAX_DOWNLOAD_BYTES;
 	const timeoutMs = opts.timeoutMs ?? 60_000;
+	const onProgress = typeof opts.onProgress === 'function' ? opts.onProgress : undefined;
 	const target = new URL(url);
 	if (target.protocol !== 'https:') { throw new Error('只允许 https 下载'); }
 	if (!isAllowedHost(target.hostname)) { throw new Error(`不允许从这个域下载：${target.hostname}`); }
@@ -222,14 +224,42 @@ export async function downloadGitHubTarball(url, opts = {}) {
 		if (Number.isFinite(declared) && declared > maxBytes) {
 			throw new Error(`包太大（Content-Length ${(declared / 1024 / 1024).toFixed(1)}MB > 上限 ${(maxBytes / 1024 / 1024).toFixed(0)}MB）`);
 		}
+
+		const chunks = [];
+		let total = 0;
+		const push = (chunk) => {
+			const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+			total += buf.length;
+			if (total > maxBytes) {
+				throw new Error(`包太大（${(total / 1024 / 1024).toFixed(1)}MB > 上限 ${(maxBytes / 1024 / 1024).toFixed(0)}MB）`);
+			}
+			chunks.push(buf);
+			if (onProgress) { onProgress(total, maxBytes); }
+		};
+
+		// ① 首选流式：`body.getReader()` ⇒ **边收边判上限**（内存只到上限，不会先吃满 64MB）
+		const reader = resp.body && typeof resp.body.getReader === 'function' ? resp.body.getReader() : null;
+		if (reader) {
+			try {
+				for (;;) {
+					const { done, value } = await reader.read();
+					if (done) { break; }
+					push(value);
+				}
+			} catch (e) {
+				// 超限时把连接断掉（别让服务端继续推），再把原始错误抛出去
+				try { await reader.cancel(); } catch { /* 已经关了 */ }
+				throw e;
+			}
+			return Buffer.concat(chunks, total);
+		}
+
+		// ② 回退：老 fetch 实现 / 测试 stub 只有 `arrayBuffer()` ⇒ 退化为一次性读，仍事后判上限
 		if (typeof resp.arrayBuffer !== 'function') {
-			throw new Error('这个 fetch 实现不支持二进制（arrayBuffer）');
+			throw new Error('这个 fetch 实现不支持二进制（body 流 / arrayBuffer）');
 		}
-		const buf = Buffer.from(await resp.arrayBuffer());
-		if (buf.length > maxBytes) {
-			throw new Error(`包太大（${(buf.length / 1024 / 1024).toFixed(1)}MB > 上限 ${(maxBytes / 1024 / 1024).toFixed(0)}MB）`);
-		}
-		return buf;
+		push(await resp.arrayBuffer());
+		return Buffer.concat(chunks, total);
 	} catch (e) {
 		if (e && e.name === 'AbortError') {
 			throw new Error(`GitHub 下载超时（${Math.round(timeoutMs / 1000)}s）：${url}`);

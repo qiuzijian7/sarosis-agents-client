@@ -357,6 +357,37 @@ function makeSkill(localId, version, extra = {}) {
 		/#vs-mp-root\s*\{[\s\S]{0,160}min-height\s*:\s*100vh/.test(css));
 }
 
+// ── ⑭ 商品图标（2026-10-23：用户要"item 有图像显示，可懒加载"）────────────
+//   实测服务端**没有封面字段**，`icon` 全是同一个默认 emoji ⇒ 光显示 icon 等于没有图像信息 ✗
+//   ⇒ 判据：图片走**原生懒加载**、失败要退回 emoji（不留空格子/破图）、空值按类型兜底
+{
+	const page = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'client.js'), 'utf8');
+	const css = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'page.css'), 'utf8');
+
+	// 卡片一次 + 详情一次（至少两处调用）⇒ split 会得到 3 段
+	const iconCallCount = page.split('h(PkgIcon').length - 1;
+	check('⑭ 有图标组件 PkgIcon，且卡片/详情都用它',
+		/function\s+PkgIcon\s*\(/.test(page) && iconCallCount >= 2,
+		`定义=${/function\s+PkgIcon\s*\(/.test(page)} 调用=${iconCallCount}`);
+	check('⑭ 图片走**原生懒加载**（loading=lazy + decoding=async）',
+		/loading:\s*'lazy'/.test(page) && /decoding:\s*'async'/.test(page));
+	check('⑭ 图片加载失败 ⇒ 退回 emoji（不留空格子、不显示破图）',
+		/onError:\s*function\s*\(\)\s*\{\s*setEmoji\(fallbackEmoji\)/.test(page));
+	check('⑭ 外链图片带 no-referrer（否则部分站点防盗链会 403）',
+		/referrerPolicy:\s*'no-referrer'/.test(page));
+	check('⑭ 只把 http(s)/data:image 当图片，其余（emoji/短文本）当文字',
+		/\^\(https\?:\\\/\\\/\|data:image\\\/\)/i.test(page));
+	check('⑭ 空 icon 按类型兜底（agent 🤖 / skill ⚡ / workflow 🔀 …）',
+		page.includes("agent: '🤖'") && page.includes("skill: '⚡'") && page.includes("workflow: '🔀'"));
+	check('⑭ 图标底色按 slug **稳定**（同一商品刷新不变色）',
+		/function hueOf\(/.test(page) && /hueOf\(pkg\.slug \|\| pkg\.name/.test(page));
+	check('⑭ 图标格**尺寸固定**（懒加载前后不跳版）',
+		/\.vs-mp-icon\s*\{[^}]*width:\s*44px[^}]*height:\s*44px/.test(css),
+		(css.match(/\.vs-mp-icon\s*\{[^}]*\}/) ?? [''])[0].slice(0, 100));
+	check('⑭ 卡片顶部是「图标 + 标签/标题」横向布局',
+		/\.vs-mp-card-top\s*\{[^}]*display:\s*flex/.test(css) && page.includes("'vs-mp-card-top'"));
+}
+
 fs.rmSync(dataRoot, { recursive: true, force: true });
 console.log(`\n[marketplace publish] ${pass} passing / ${fails.length} failing`);
 if (fails.length) { console.log('失败：' + fails.join('、')); }

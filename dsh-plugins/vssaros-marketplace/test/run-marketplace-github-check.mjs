@@ -191,6 +191,65 @@ console.log('★ GitHub 作为发布源\n');
 	check('④ 超时 ⇒ 报"超时"而不是沉默挂住', msg.includes('超时'), msg);
 }
 
+// ── ④b 流式下载（★ 2026-10-23：边收边判 + 进度；老 fetch 只有 arrayBuffer 也要能用）──
+{
+	/** 造一个假的流式响应：把若干 chunk 依次吐出来，并记录是否被 cancel。 */
+	const streamFetch = (chunks, { declared = null } = {}) => {
+		const state = { cancelled: false, read: 0 };
+		const fetchImpl = async () => ({
+			ok: true, status: 200,
+			headers: { get: () => declared },
+			body: {
+				getReader: () => ({
+					read: async () => {
+						if (state.cancelled || state.read >= chunks.length) { return { done: true, value: undefined }; }
+						const value = chunks[state.read++];
+						return { done: false, value: new Uint8Array(value) };
+					},
+					cancel: async () => { state.cancelled = true; },
+				}),
+			},
+		});
+		return { fetchImpl, state };
+	};
+
+	// ① 正常流式：两段拼起来字节对、进度单调、总数正确
+	// ⚠ 必须自己兜住异常：若"流式分支"被删掉，这里的调用会抛（stub 没有 arrayBuffer）
+	//   ⇒ 不兜的话整个测试进程直接崩，看起来像"没失败"（变异测试踩到过 ✗）。
+	const progress = [];
+	const ok = streamFetch([[1, 2], [3, 4, 5]]);
+	let buf = Buffer.alloc(0);
+	let streamErr = '';
+	try {
+		buf = await downloadGitHubTarball('https://codeload.github.com/o/r/tar.gz/main', {
+			fetchImpl: ok.fetchImpl,
+			onProgress: (received, total) => progress.push({ received, total }),
+		});
+	} catch (e) { streamErr = String(e && e.message || e); }
+	check('④b 流式分支存在（有 body 流就走流式，不依赖 arrayBuffer）', !streamErr, streamErr);
+	check('④b 流式：分段拼装字节正确', Buffer.isBuffer(buf) && buf.length === 5 && buf[4] === 5, `${buf.length}B`);
+	check('④b 流式：进度回调单调递增且终值等于总长', progress.length === 2 && progress[0].received === 2 && progress[1].received === 5, JSON.stringify(progress));
+	check('④b 流式：进度回调带上限值（给 UI 画进度条）', progress.every(p => p.total === 64 * 1024 * 1024), JSON.stringify(progress[0] || null));
+
+	// ② 流式超限：第二段就超过上限 ⇒ 立刻中止 + cancel 连接（不继续收）
+	const over = streamFetch([[1, 2, 3], [4, 5, 6]]);
+	const overMsg = await thrownAsync(() => downloadGitHubTarball('https://codeload.github.com/o/r/tar.gz/x', {
+		maxBytes: 4,
+		fetchImpl: over.fetchImpl,
+	}));
+	check('④b 流式超限 ⇒ 报"太大"', overMsg.includes('太大'), overMsg);
+	check('④b 流式超限 ⇒ 主动 cancel（不让服务端继续推）', over.state.cancelled === true, JSON.stringify(over.state));
+
+	// ③ 回退：没有 body 流（老实现 / stub）仍走 arrayBuffer 并照常判上限
+	const noStream = await downloadGitHubTarball('https://codeload.github.com/o/r/tar.gz/x', {
+		fetchImpl: async () => ({
+			ok: true, status: 200, headers: { get: () => null },
+			arrayBuffer: async () => new Uint8Array([9, 8, 7]).buffer,
+		}),
+	});
+	check('④b 无 body 流 ⇒ 回退 arrayBuffer（老运行时/测试 stub 兼容）', noStream.length === 3 && noStream[0] === 9, `${noStream.length}B`);
+}
+
 // ── ⑤ 与安装器串起来：GitHub 包 ⇒ 落盘（入口在嵌套目录也能装对）──
 {
 	const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vssaros-mp-gh-'));

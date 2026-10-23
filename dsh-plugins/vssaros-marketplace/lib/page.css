@@ -224,3 +224,66 @@ body {
 /* 发布来源切换（2026-10-22）：打包上传 / GitHub 地址 */
 .vs-mp-srcseg { display: flex; gap: 8px; margin-bottom: 4px; }
 .vs-mp-srcseg .vs-mp-btn { flex: 1; text-align: center; }
+
+/* ── 商品图标块（2026-10-23：用户要"item 有图像显示，可懒加载"）────────────
+ * 尺寸固定 ⇒ 图片加载前后**不跳版**（否则懒加载会让整页抖动 ✗）
+ * overflow:hidden + border-radius：图片按格子裁剪，不用 object-fit 也能对齐
+ */
+.vs-mp-icon {
+	width: 44px;
+	height: 44px;
+	flex: 0 0 44px;
+	border-radius: 12px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	overflow: hidden;
+	border: 1px solid rgba(255, 255, 255, 0.08);
+}
+.vs-mp-icon img {
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+	display: block;
+	background: transparent;
+}
+.vs-mp-icon-emoji {
+	font-size: 22px;
+	line-height: 1;
+	user-select: none;
+}
+.vs-mp-icon-lg {
+	width: 56px;
+	height: 56px;
+	flex: 0 0 56px;
+	border-radius: 14px;
+}
+.vs-mp-icon-lg .vs-mp-icon-emoji {
+	font-size: 28px;
+}
+
+/* 卡片顶部：图标 + （标签行 + 标题）并排 */
+.vs-mp-card-top {
+	display: flex;
+	align-items: flex-start;
+	gap: 12px;
+}
+.vs-mp-card-topbody {
+	min-width: 0;      /* 允许标题在 flex 里正确省略 */
+	flex: 1 1 auto;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+.vs-mp-card-topbody .vs-mp-card-title {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	display: -webkit-box;
+	-webkit-line-clamp: 2;
+	-webkit-box-orient: vertical;
+}
+
+/* 抽屉头部：图标与标题同行 */
+.vs-mp-drawer-head .vs-mp-icon {
+	margin-right: 12px;
+}
