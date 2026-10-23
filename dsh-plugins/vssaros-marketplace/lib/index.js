@@ -29,6 +29,8 @@ import { PUBLISHABLE_KINDS, deletePackage, deleteVersion, publishDistribution, p
 import { downloadGitHubTarball, locateInstallRoot, resolveDownloadUrl } from './githubSource.js';
 import { listTarGzEntries } from './tar.js';
 import { listPublishables } from './localResources.js';
+// ★ 2026-10-23（用户「都转移到 dsh 侧实现」）：mcp 装完要注册进 `<数据根>/mcp.json`
+import { readMcpPackageConfig, registerMcpServer, removeMcpCompletely } from './mcpInstall.js';
 import { ALL_OPS, LOCAL_WRITE_KINDS, WRITE_OPS, isKnownOp, resolveOp } from './dispatch.js';
 // ★ 服务端 pkg → 前端形状的**唯一映射**（list/detail/reviewList/installed 共用）
 import { toInstalledItem, toPackageDetail, toPackageSummary } from './shape.js';
@@ -256,6 +258,12 @@ export async function apply(ctx, config) {
 		if (!slug) { throw new Error(`marketplace.${op} 需要 slug`); }
 
 		if (op === 'uninstall') {
+			// ★ mcp 的卸载必须**同时**从 `mcp.json` 注销（只删目录会留下指向空目录的 entry ✗）
+			if (kind === 'mcp') {
+				const { removedEntry, removedDir } = await removeMcpCompletely(dataRoot, slug);
+				await removeInstalled(dataRoot, kind, slug);
+				return { ok: true, changed: removedEntry || removedDir, mcpUnregistered: removedEntry };
+			}
 			const { targetDir } = await uninstallBundle({ dataRoot, kind, storeId: slug });
 			await removeInstalled(dataRoot, kind, slug);
 			return { ok: true, changed: true, targetDir };
@@ -296,6 +304,18 @@ export async function apply(ctx, config) {
 			await upsertInstalled(dataRoot, { kind, storeId: slug, version: versionRow.version });
 		}
 		await upsertInstalled(dataRoot, { kind, storeId: slug, version: versionRow.version });
+		// ★ mcp：装完把服务器**注册进** `<数据根>/mcp.json`（与 IDE 侧 `mcpInstaller` 同一份文件、同一套形状）
+		let mcpRegistered = null;
+		if (kind === 'mcp') {
+			try {
+				const { config } = await readMcpPackageConfig(dataRoot, slug);
+				const entry = await registerMcpServer(dataRoot, slug, config);
+				mcpRegistered = { type: String(entry.type ?? 'stdio'), transport: config.transport ?? 'stdio' };
+			} catch (e) {
+				// 文件已经落好了，但注册失败 ⇒ **必须报出来**（否则用户以为装好了却用不了 ✗）
+				throw new Error(`mcp 已下载并落盘，但注册进 mcp.json 失败：${String(e?.message ?? e)}`);
+			}
+		}
 		// skill 装完**必须**让 IDE 侧技能库重读（它没有文件监听 ✗）——
 		// best-effort：刷不过**不让安装失败**（文件已经落好了），但要把原因报出来 ✓
 		const reloadNote = kind === 'skill' ? await reloadIdeSkills() : undefined;
@@ -320,6 +340,8 @@ export async function apply(ctx, config) {
 			...(reloadNote ? { skillsReload: reloadNote } : {}),
 			// agent：重扫成功 ⇒ 即时可用；否则文件已落好但 preset 要重启才扫描到（如实报）
 			...(kind === 'agent' ? { restartRequired: agentsRescan !== 'ok', agentsRescan } : {}),
+			// mcp：文件 + mcp.json 都写好了；dsh 的 MCP 连接需要重启才重建（没有热重载入口）
+			...(kind === 'mcp' ? { mcpRegistered, restartRequired: true, mcpNote: '已写入 mcp.json；连接要重启 IDE 才建立' } : {}),
 		};
 	}
 

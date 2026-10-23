@@ -65,13 +65,19 @@ console.log('★ 商城动作分派\n');
 	check('② publish(缺 kind) ⇒ ide（不猜）', resolveOp('publish', {}) === 'ide');
 }
 
-// ── ③ 装升卸的 kind 边界：只有三类能自持，其余交 IDE ─────────────
+// ── ③ 装升卸的 kind 边界 ────────────────────────────────────────
+//   ★ 2026-10-23（用户「都转移到 dsh 侧实现」）：**mcp 已搬 dsh 侧** ⇒ 只剩
+//     workbench（要 `dsh plugin add` + 重启）和 knowledge 还交 IDE
 {
-	for (const kind of ['workbench', 'mcp', 'knowledge']) {
+	for (const kind of ['workbench', 'knowledge']) {
 		check(`③ install(${kind}) ⇒ ide`, resolveOp('install', { kind }) === 'ide', resolveOp('install', { kind }));
 		check(`③ upgrade(${kind}) ⇒ ide`, resolveOp('upgrade', { kind }) === 'ide');
 		check(`③ uninstall(${kind}) ⇒ ide`, resolveOp('uninstall', { kind }) === 'ide');
 	}
+	// mcp 必须走本地（否则又会默默绕回 IDE）
+	check('③ install(mcp) ⇒ local-write（已搬 dsh 侧）', resolveOp('install', { kind: 'mcp' }) === 'local-write', resolveOp('install', { kind: 'mcp' }));
+	check('③ upgrade(mcp) ⇒ local-write', resolveOp('upgrade', { kind: 'mcp' }) === 'local-write');
+	check('③ uninstall(mcp) ⇒ local-write', resolveOp('uninstall', { kind: 'mcp' }) === 'local-write');
 	check('③ install(缺 kind) ⇒ ide（不猜）', resolveOp('install', {}) === 'ide');
 }
 

@@ -33,17 +33,19 @@ import { parseGitHubSource } from './githubSource.js';
 //   发出去的 agent 包**别人装不上**（IDE 安装器报"包内缺少 agent.json"）✗；
 //   而自己从 `.agent.md` 的 frontmatter 反解出 `agent.json` 又必然与 IDE 的组装逻辑漂移
 //   （嵌套 `configHtml` 之类）✗ ⇒ **agent 的发布留在 IDE**（`preparePack` 是唯一正确组装器）✓
-export const PUBLISHABLE_KINDS = ['skill', 'workflow', 'agent'];
+// ★ 2026-10-23：mcp 也能由 dsh 侧打包（目录镜像，入口 config.json）
+export const PUBLISHABLE_KINDS = ['skill', 'workflow', 'agent', 'mcp'];
 
 /** 各 kind 的本地根目录名（与 IDE 侧 `SarosPath` 同口径）。 */
-const KIND_DIR = { agent: 'agents', skill: 'skills', workflow: 'workflows' };
+// ★ 2026-10-23：加 mcp（`<数据根>/mcp/<id>/`，入口 config.json）
+const KIND_DIR = { agent: 'agents', skill: 'skills', workflow: 'workflows', mcp: 'mcp' };
 
 /** 打包时**排除**的目录/文件（备份、依赖、版本库 —— 它们不属于"这个资源"）。 */
 const EXCLUDE_DIRS = new Set(['node_modules', '.git', '.upgrade-backup', '.saros']);
 const EXCLUDE_FILES = new Set(['.DS_Store', 'Thumbs.db']);
 
 /** 服务端上传体积上限（与 config.ts 的 `uploadLimits` 同口径；超了服务端会 413）。 */
-const SIZE_LIMIT = { agent: 5 * 1024 * 1024, skill: 2 * 1024 * 1024, workflow: 2 * 1024 * 1024 };
+const SIZE_LIMIT = { agent: 5 * 1024 * 1024, skill: 2 * 1024 * 1024, workflow: 2 * 1024 * 1024, mcp: 2 * 1024 * 1024 };
 
 /** 本地资源根：`<数据根>/<kind根>`。 */
 export function localRootOf(dataRoot, kind) {

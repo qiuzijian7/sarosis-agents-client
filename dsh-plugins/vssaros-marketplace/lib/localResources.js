@@ -18,7 +18,8 @@ import { PUBLISHABLE_KINDS } from './publisher.js';
  * ★ 2026-10-22 晚：加 `agent` —— agent 的本地形态是 `<数据根>/agents/<id>/.agent.md`，
  *   与 skill/workflow 一样是目录镜像 ⇒ 可发布、可安装 ✓
  */
-const KIND_DIR = { skill: 'skills', workflow: 'workflows', agent: 'agents' };
+// ★ 2026-10-23：加 mcp（`<数据根>/mcp/<id>/`，入口是 config.json）
+const KIND_DIR = { skill: 'skills', workflow: 'workflows', agent: 'agents', mcp: 'mcp' };
 
 /**
  * 各 kind 的**关键文件**（没有它就不是一个可发布的资源）。
@@ -26,7 +27,7 @@ const KIND_DIR = { skill: 'skills', workflow: 'workflows', agent: 'agents' };
  * ⚠ agent 是 `.agent.md`（点开头）—— 之前这里只写了 skill/workflow 两个分支，
  *   结果 agent 目录被当成"缺 workflow.json"**静默跳过**（页面上根本选不到）✗
  */
-const ENTRY_OF = { skill: 'SKILL.md', workflow: 'workflow.json', agent: '.agent.md' };
+const ENTRY_OF = { skill: 'SKILL.md', workflow: 'workflow.json', agent: '.agent.md', mcp: 'config.json' };
 
 /**
  * 读一个本地资源的版本（读不到就空串，不抛）。

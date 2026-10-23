@@ -156,17 +156,24 @@ const market = createMarketClient({ credentials: creds, config: { marketEndpoint
 const stamp = () => Date.now().toString(36).slice(-6);
 
 // ── ① dsh 侧完整链路：skill / workflow（上传 → 安装 → 升级 → 卸载）──
-console.log('══ ① dsh 侧自持的品类（真跑全链路）══');
-for (const kind of ['skill', 'workflow']) {
+console.log('══ ① dsh 侧自持的品类（真跑全链路：skill / workflow / mcp）══');
+for (const kind of ['skill', 'workflow', 'mcp']) {
 	const slug = `e2e-${kind}-${stamp()}`;
 	console.log(`\n── ${kind} / ${slug} ──`);
 
 	// 目录约定：skill = <root>/skills/<id>/SKILL.md；workflow = <root>/workflows/<id>/workflow.json
-	const kindDir = kind === 'skill' ? 'skills' : 'workflows';
-	const entryFile = kind === 'skill' ? 'SKILL.md' : 'workflow.json';
+	// ⚠ 三类各有自己的目录名与入口文件（mcp 是 `<root>/mcp/<id>/config.json`）
+	const kindDir = kind === 'skill' ? 'skills' : kind === 'mcp' ? 'mcp' : 'workflows';
+	const entryFile = kind === 'skill' ? 'SKILL.md' : kind === 'mcp' ? 'config.json' : 'workflow.json';
+	// 三类资源的入口文件内容形态不同：
+	//   skill   = markdown（带 frontmatter）
+	//   mcp     = config.json（transport/command/args ⇒ 装完要转成 mcp.json 的 entry）
+	//   workflow= workflow.json
 	const entryBody = kind === 'skill'
 		? `---\nname: ${slug}\nversion: 1.0.0\n---\n\n# ${slug}\n\nv1 正文\n`
-		: JSON.stringify({ id: slug, name: slug, version: '1.0.0', steps: [{ tool: 'noop' }] }, null, 2);
+		: kind === 'mcp'
+			? JSON.stringify({ version: '1.0.0', transport: 'stdio', command: 'node', args: ['server.js'] }, null, 2)
+			: JSON.stringify({ id: slug, name: slug, version: '1.0.0', steps: [{ tool: 'noop' }] }, null, 2);
 	const dir = path.join(publishRoot, kindDir, slug);
 	fs.mkdirSync(dir, { recursive: true });
 	fs.writeFileSync(path.join(dir, entryFile), entryBody, 'utf8');
@@ -200,7 +207,9 @@ for (const kind of ['skill', 'workflow']) {
 	// 3) 升级（发 v2 → 再装一次，带 upgrade）
 	const entryV2 = kind === 'skill'
 		? `---\nname: ${slug}\nversion: 2.0.0\n---\n\n# ${slug}\n\nv2 正文\n`
-		: JSON.stringify({ id: slug, name: slug, version: '2.0.0', steps: [{ tool: 'noop' }] }, null, 2);
+		: kind === 'mcp'
+			? JSON.stringify({ version: '2.0.0', transport: 'stdio', command: 'node', args: ['server.js'] }, null, 2)
+			: JSON.stringify({ id: slug, name: slug, version: '2.0.0', steps: [{ tool: 'noop' }] }, null, 2);
 	fs.writeFileSync(path.join(dir, entryFile), entryV2, 'utf8');
 	let pub2 = null;
 	try {
@@ -225,10 +234,40 @@ for (const kind of ['skill', 'workflow']) {
 		JSON.stringify(up).slice(0, 160));
 	check(`${kind}：升级前有备份`, Boolean(up?.backup) && fs.existsSync(up.backup), String(up?.backup));
 
+	// ★ mcp 特有：装完要**注册进 `<数据根>/mcp.json`**。
+	//   这一步在 Host 里由 `runLocalWrite` 自动做（本脚本直接调 `installBundle` 底层，
+	//   所以这里复现编排层的这两步 —— 用的都是**产品里的真实函数**，不是另写一份 ✓）
+	if (kind === 'mcp') {
+		const { readMcpPackageConfig, registerMcpServer } = await import(pathToFileURL(path.join(LIB, 'mcpInstall.js')).href);
+		const { config } = await readMcpPackageConfig(dataRoot, slug);
+		await registerMcpServer(dataRoot, slug, config);
+	}
+
+	// 3b) mcp 特有：必须注册进 <数据根>/mcp.json 的 servers[id]
+	if (kind === 'mcp') {
+		const { readMcpJson } = await import(pathToFileURL(path.join(LIB, 'mcpInstall.js')).href);
+		const mcpCfg = await readMcpJson(dataRoot);
+		check('mcp：已注册进 mcp.json（servers[id]）', Boolean(mcpCfg.servers?.[slug]), JSON.stringify(mcpCfg.servers ?? {}).slice(0, 120));
+		check('mcp：entry 形状正确（type=stdio + command/args）',
+			mcpCfg.servers?.[slug]?.type === 'stdio' && mcpCfg.servers?.[slug]?.command === 'node', JSON.stringify(mcpCfg.servers?.[slug] ?? null).slice(0, 140));
+	}
+
 	// 4) 卸载（删目录 + 台账）
-	await uninstallBundle({ dataRoot, kind, storeId: slug });
+	// ★ mcp 的卸载在 Host 里由 `runLocalWrite` 走 `removeMcpCompletely`
+	//   （删目录 **+** 从 mcp.json 注销）；这里同样复现编排层 ✓
+	if (kind === 'mcp') {
+		const { removeMcpCompletely } = await import(pathToFileURL(path.join(LIB, 'mcpInstall.js')).href);
+		await removeMcpCompletely(dataRoot, slug);
+	} else {
+		await uninstallBundle({ dataRoot, kind, storeId: slug });
+	}
 	await removeInstalled(dataRoot, kind, slug);
 	check(`${kind}：卸载（目录已删）`, !fs.existsSync(path.join(dataRoot, kindDir, slug)));
+	if (kind === 'mcp') {
+		const { readMcpJson: rd } = await import(pathToFileURL(path.join(LIB, 'mcpInstall.js')).href);
+		const after = await rd(dataRoot);
+		check('mcp：卸载后已从 mcp.json 注销', !(slug in (after.servers ?? {})), JSON.stringify(Object.keys(after.servers ?? {})));
+	}
 	check(`${kind}：卸载后台账里没有残留`,
 		!(await readInstalled(dataRoot)).some(e => e.kind === kind && e.storeId === slug));
 
@@ -237,8 +276,8 @@ for (const kind of ['skill', 'workflow']) {
 }
 
 // ── ② mcp / workbench：dsh 侧**如实转交 IDE**（不假装成功）──────────
-console.log('\n══ ② 转给 IDE 的品类（mcp / workbench）══');
-for (const kind of ['mcp', 'workbench']) {
+console.log('\n══ ② 仍转给 IDE 的品类（workbench —— 要 dsh plugin add + 重启，搬不走）══');
+for (const kind of ['workbench']) {
 	console.log(`\n── ${kind} ──`);
 	// 2a. 分派：四个动作都必须交给 IDE（这是设计，不是缺陷）
 	for (const op of ['install', 'upgrade', 'uninstall', 'publish']) {

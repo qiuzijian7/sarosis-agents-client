@@ -36,7 +36,9 @@ import { listTarGzEntries } from './tar.js';
  *      `.agent.md` 全文在 `files.agentsMd` 里 ⇒ 这里解出来写成 `.agent.md` ✓
  *   ② **新包**（dsh 侧目录镜像）：直接就有 `.agent.md` ✓
  */
-export const BUNDLE_KINDS = ['skill', 'workflow', 'agent'];
+// ★ 2026-10-23（用户「都转移到 dsh 侧实现」）：加 `mcp` —— 它的本地形态同样是目录
+//   （`<数据根>/mcp/<id>/config.json`），只是装完还要**注册进 mcp.json**（见 `mcpInstall.js`）
+export const BUNDLE_KINDS = ['skill', 'workflow', 'agent', 'mcp'];
 
 /** sha256（hex）。 */
 export function sha256Of(buffer) {
@@ -72,6 +74,7 @@ export function targetRootOf(dataRoot, kind) {
 	if (kind === 'skill') { return join(dataRoot, 'skills'); }
 	if (kind === 'workflow') { return join(dataRoot, 'workflows'); }
 	if (kind === 'agent') { return join(dataRoot, 'agents'); }
+	if (kind === 'mcp') { return join(dataRoot, 'mcp'); }
 	throw new Error(`dsh 侧还不支持安装这一类：${kind}（当前支持 ${BUNDLE_KINDS.join(' / ')}）`);
 }
 

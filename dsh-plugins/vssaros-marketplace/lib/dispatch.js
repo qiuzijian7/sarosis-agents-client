@@ -30,7 +30,9 @@ export const LOCAL_WRITE_OPS = new Set(['install', 'upgrade', 'uninstall']);
  * · `workbench`：必须 `dsh plugin add` + 重启 Host ⇒ 永远是 IDE
  * · `mcp` / `knowledge`：没有可落盘的本体（配置/文档集）⇒ 不进这条路径
  */
-export const LOCAL_WRITE_KINDS = new Set(['skill', 'workflow', 'agent']);
+// ★ 2026-10-23（用户「都转移到 dsh 侧实现」）：加 `mcp`
+//   （装完会顺带把服务器注册进 `<数据根>/mcp.json`，见 `mcpInstall.js`）
+export const LOCAL_WRITE_KINDS = new Set(['skill', 'workflow', 'agent', 'mcp']);
 
 /** 走本地纯 HTTP 的写 op（服务端判权：assertAuthor / requireAdmin）。 */
 export const LOCAL_HTTP_OPS = new Set([

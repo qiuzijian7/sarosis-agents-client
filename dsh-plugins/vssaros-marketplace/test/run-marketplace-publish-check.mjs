@@ -98,8 +98,9 @@ function makeSkill(localId, version, extra = {}) {
 	check('② agent 可发布（目录镜像：.agent.md 原样进包）',
 		ag.manifest.kind === 'agent'
 		&& (await listTarGzEntries(ag.gzBuffer)).files.some(f => f.path === '.agent.md'));
-	check('② PUBLISHABLE_KINDS = skill / workflow / agent',
-		PUBLISHABLE_KINDS.join(',') === 'skill,workflow,agent', PUBLISHABLE_KINDS.join(','));
+	// ★ 2026-10-23：mcp 也能由 dsh 侧打包（目录镜像，入口 config.json）
+	check('② PUBLISHABLE_KINDS = skill / workflow / agent / mcp',
+		PUBLISHABLE_KINDS.join(',') === 'skill,workflow,agent,mcp', PUBLISHABLE_KINDS.join(','));
 }
 
 // ── ③ 本地没有 / 空目录 / slug 非法 ⇒ 如实报错 ─────────────────
