@@ -42,7 +42,16 @@ export const DEFAULT_MARKET_ENDPOINT = 'http://21.6.92.5:3040';
  *   之前写成"自己实现"会被守卫 `check-host-config.mjs` 判成**第三份实现**（1.3 之后不许有）✗。
  */
 export function dataRootOf(config) {
-	// 委托到 @vssaros/dsh-foundation（重构 1.3：真源只有一份）；调用签名不变。
+	// ★ 2026-10-23（真机：点「安装」毫无反应的根因）：
+	//   `dataRoot` 一直为 null，因为这里**完全委托给 foundation 服务**，
+	//   而真机上 `vssarosFoundation` **没绑上**（激活顺序 / 组合缺插件）⇒
+	//   `foundation()` 直接抛 ⇒ 所有需要落盘的动作（安装/升级/卸载/发布）全废 ✗
+	//
+	//   而 `config.dataRoot` 是**显式配置**（IDE 的数据根覆盖层写进 `cordis.patch.yml` 的
+	//   `config.dataRoot`），它比"服务发现"更可靠 ⇒ **配置优先，foundation 兜底** ✓
+	const fromConfig = typeof config?.dataRoot === 'string' ? config.dataRoot.trim() : '';
+	if (fromConfig) { return fromConfig.replace(/[\\/]+$/, ''); }
+	// 没有显式配置才问 foundation（它的口径可能带 profile 推导，比裸配置更全）
 	return foundation().dataRootOf(config);
 }
 

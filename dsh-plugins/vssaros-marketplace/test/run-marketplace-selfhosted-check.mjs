@@ -228,6 +228,38 @@ function fakeFetch(handler) {
 		/agentsRescan = `failed: \$\{String\(e\?\.message/.test(idxSrc));
 }
 
+// ── 数据根：**config 优先，foundation 兜底**（★ 2026-10-23 真机「点安装没反应」）──
+//   症状：点「安装」返回 `{ok:false, error:"dsh 侧拿不到数据根（vssarosFoundation 未绑定）"}`
+//   根因：`dataRootOf` 完全委托 foundation，而真机上该服务**没绑上**（激活顺序）⇒
+//        `dataRoot` 恒 null ⇒ 所有落盘动作全废 ✗
+//   修法：`config.dataRoot` 是**显式配置**（IDE 覆盖层注入），比服务发现可靠 ⇒ 优先用它
+{
+	const { dataRootOf } = await import(pathToFileURL(path.join(LIB, 'marketClient.js')).href);
+
+	check('数据根：**config.dataRoot 优先**（不依赖 foundation 是否绑上）',
+		dataRootOf({ dataRoot: 'C:/Users/x/.vssaros-dev' }) === 'C:/Users/x/.vssaros-dev',
+		dataRootOf({ dataRoot: 'C:/Users/x/.vssaros-dev' }));
+
+	check('数据根：末尾斜杠被去掉（拼路径不会出现 //）',
+		dataRootOf({ dataRoot: 'C:/Users/x/.vssaros-dev/' }) === 'C:/Users/x/.vssaros-dev'
+		&& dataRootOf({ dataRoot: 'C:/a/b\\\\' }) === 'C:/a/b');
+
+	// 没有显式配置 ⇒ **兜底到 foundation**（本套件开头绑的假 foundation 返回 tmpdir 下的路径）
+	const expectedFromFoundation = path.join(os.tmpdir(), 'vssaros-marketplace-selfcheck');
+	check('数据根：没配置时**兜底到 foundation**（不是静默返回空）',
+		dataRootOf({}) === expectedFromFoundation, dataRootOf({}));
+
+	// 接线：必须在 **apply 时**就算一次（不能只在 inject 回调里算，否则服务没绑就永远 null）
+	// ⚠ 定位时用 `ctx.inject(['vssarosFoundation'], scope =>`（带参数）——
+	//   只匹配 `ctx.inject(['vssarosFoundation']` 会撞上注释里的同名文字，导致假红 ✗
+	const idxSrc = fs.readFileSync(path.join(LIB, 'index.js'), 'utf8');
+	const firstCompute = idxSrc.indexOf('state.dataRoot = dataRootOf(config)');
+	const injectAt = idxSrc.indexOf("ctx.inject(['vssarosFoundation'], scope =>");
+	check('数据根在 apply 时先算一次（不依赖 foundation 激活顺序）',
+		firstCompute > 0 && injectAt > 0 && firstCompute < injectAt,
+		`首处计算@${firstCompute} inject@${injectAt}`);
+}
+
 // ── 票据来源：**两张都要试**（2026-10-23 真机踩到的登录失败）──────────────
 //   症状：IDE 里明明已登录，商城一直报「TOF 票据无效或已过期」。
 //   根因：`tofTicket()` 用 `??` 只做**存在性**回退 —— 本地票据**存在但过期**时，

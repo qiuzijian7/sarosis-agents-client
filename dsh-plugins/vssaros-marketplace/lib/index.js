@@ -107,6 +107,21 @@ export async function apply(ctx, config) {
 	});
 
 	// 数据根（台账 + 未来的安装落点）：经 foundation 收口（与其它模块同一份口径 ✓）。
+	// ★ 2026-10-23（真机：点「安装」没反应）：**先在 apply 里算一次**。
+	//   原先只在 `ctx.inject(['vssarosFoundation'])` 的**回调里**算 —— foundation 没绑上时
+	//   回调压根不跑 ⇒ `dataRoot` 永远是 null ⇒ 一切落盘动作全废，且页面表现成"点了没反应" ✗
+	//   `dataRootOf(config)` 现在**配置优先**（`config.dataRoot` 由 IDE 覆盖层注入）
+	//   ⇒ 不依赖激活顺序 ✓
+	{
+		try {
+			state.dataRoot = dataRootOf(config);
+			state.dataRootError = null;
+		} catch (e) {
+			state.dataRoot = null;
+			state.dataRootError = String(e?.message ?? e);
+		}
+	}
+
 	ctx.inject(['vssarosFoundation'], scope => {
 		try {
 			state.dataRoot = dataRootOf(config);
