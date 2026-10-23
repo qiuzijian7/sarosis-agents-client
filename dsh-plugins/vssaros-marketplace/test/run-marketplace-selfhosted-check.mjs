@@ -401,6 +401,80 @@ function fakeFetch(handler) {
 	check('形状：没有新版本时 upgradable = false', instNo.upgradable === false && instNo.latestVersion === '');
 }
 
+// ── 本机工作台枚举（★ 2026-10-23：把「设置→工作台」同步进商城）────────────
+//   真源 = **已装插件树**（`vssaros.view.kind === 'page'`），不写第 4 份硬编码清单 ✓
+{
+	const wb = await import(pathToFileURL(path.join(LIB, 'workbenches.js')).href);
+	const { listLocalWorkbenches, slugFromPackageName, profileDirFromModule } = wb;
+
+	check('slug 从包名派生（@vssaros/dsh-kanban ⇒ dsh-kanban，符合服务端规则）',
+		slugFromPackageName('@vssaros/dsh-kanban') === 'dsh-kanban'
+		&& slugFromPackageName('dsh-xiaohongshu-note-workbench') === 'dsh-xiaohongshu-note-workbench'
+		&& /^[a-z0-9][a-z0-9_-]*$/.test(slugFromPackageName('@Scope/Weird Name!!')),
+		JSON.stringify([slugFromPackageName('@vssaros/dsh-kanban'), slugFromPackageName('@Scope/Weird Name!!')]));
+
+	// profileDirFromModule = 本文件位置上溯 4 级（`lib` → 包 → `@vssaros` → `node_modules` → profile）
+	// ⚠ 在**仓库源码**目录里跑时它会落到仓库根（没有 profiles）—— 这是预期：
+	//   dsh 装的形态是 `<profile>/node_modules/@vssaros/dsh-marketplace/lib/` ✓
+	//   所以这里只校验"算法就是上溯 4 级"，不假设当前在什么形态下跑。
+	const pd = profileDirFromModule();
+	const expectUp4 = path.resolve(LIB, '../../../..');
+	check('profileDirFromModule = 插件位置上溯 4 级（装到 profile 时正好是 profile 根）',
+		pd === expectUp4, `got=${pd} expect=${expectUp4}`);
+
+	// 造一个假 profile：2 个 page + 1 个 section + 1 个坏的 ⇒ 只认 page
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vssaros-mp-wb-'));
+	fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({
+		dependencies: {
+			'@vssaros/dsh-kanban': 'file:x',
+			'@vssaros/dsh-skills': 'file:x',
+			'@vssaros/dsh-foundation': 'file:x',
+			'@vssaros/dsh-broken': 'file:x',
+		},
+	}));
+	const writePkg = (name, body) => {
+		const dir = path.join(root, 'node_modules', name);
+		fs.mkdirSync(dir, { recursive: true });
+		fs.writeFileSync(path.join(dir, 'package.json'), typeof body === 'string' ? body : JSON.stringify(body));
+	};
+	writePkg('@vssaros/dsh-kanban', { name: '@vssaros/dsh-kanban', version: '0.8.13', displayName: '看板', description: '看板工作台', vssaros: { view: { kind: 'page', route: '/x/kanban/' } } });
+	writePkg('@vssaros/dsh-skills', { name: '@vssaros/dsh-skills', version: '0.7.11', vssaros: { view: { kind: 'page', route: '/x/skills/' } } });
+	writePkg('@vssaros/dsh-foundation', { name: '@vssaros/dsh-foundation', version: '0.2.0', vssaros: { view: { kind: 'none' } } });
+	writePkg('@vssaros/dsh-broken', '{ 这不是 JSON');
+
+	const list = await listLocalWorkbenches(root);
+	check('只把 `vssaros.view.kind === page` 的插件当工作台（section/none/坏包都排除）',
+		list.length === 2 && list.every(w => w.slug === 'dsh-kanban' || w.slug === 'dsh-skills'),
+		JSON.stringify(list.map(w => w.slug)));
+	check('工作台带 npm 型 distribution（服务端 DistributionSchema 要求 name）',
+		list.every(w => w.distribution.type === 'npm' && w.distribution.name.startsWith('@vssaros/')),
+		JSON.stringify(list.map(w => w.distribution)));
+	check('版本用包的真实版本（不是 0.0.0 占位）',
+		list.some(w => w.slug === 'dsh-kanban' && w.version === '0.8.13'));
+	check('按 slug 稳定排序（幂等同步不来回跳）',
+		list.map(w => w.slug).join(',') === 'dsh-kanban,dsh-skills');
+	check('空/坏 profile ⇒ 返回空数组（不抛）',
+		(await listLocalWorkbenches('')).length === 0
+		&& (await listLocalWorkbenches(path.join(root, 'nope'))).length === 0);
+	fs.rmSync(root, { recursive: true, force: true });
+
+	// 分派：syncWorkbenches 走本地（要 market() 的纯 HTTP），**不能**掉到 IDE 兜底
+	const { resolveOp } = await import(pathToFileURL(path.join(LIB, 'dispatch.js')).href);
+	check('syncWorkbenches 走 local-http（不能掉到 IDE 兜底，否则"点了没反应"）',
+		resolveOp('syncWorkbenches', {}) === 'local-http', resolveOp('syncWorkbenches', {}));
+
+	// 接线断言
+	const idx = fs.readFileSync(path.join(LIB, 'index.js'), 'utf8');
+	check('Host 有 syncWorkbenches 分支且用 publishDistribution（npm 型登记）',
+		idx.includes("op === 'syncWorkbenches'") && idx.includes('publishDistribution'));
+	check('同步是**幂等**的（已存在/409 ⇒ 记为 skipped，不算失败）',
+		/skipped/.test(idx) && /已存在\|已被占用\|HTTP 409/.test(idx));
+	check('页面有空态入口「同步本机工作台」', (() => {
+		const page = fs.readFileSync(path.join(LIB, 'client.js'), 'utf8');
+		return page.includes('同步本机工作台') && page.includes("action('syncWorkbenches'");
+	})());
+}
+
 console.log(`\n[marketplace self-hosted] ${pass} passing / ${fails.length} failing`);
 if (fails.length) { console.log('失败：' + fails.join('、')); }
 process.exit(fails.length === 0 ? 0 : 1);

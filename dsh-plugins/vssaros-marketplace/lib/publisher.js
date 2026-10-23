@@ -207,19 +207,48 @@ async function ensurePackage({ market, kind, localId, meta = {} }) {
  * @param {{ name?: string, description?: string, category?: string, tags?: string[] }} [args.meta]
  */
 export async function publishExternal({ market, kind, localId, version, source, changelog = '', meta = {} }) {
+	// 归一化（这一步就把"只允许 GitHub 域 / https"卡死 ✓）
+	const distribution = parseGitHubSource(source);
+	return publishDistribution({ market, kind, localId, version, distribution, changelog, meta });
+}
+
+/**
+ * 用**任意 distribution** 登记一个版本（不打包上传）。
+ *
+ * ★ 2026-10-23：从 `publishExternal` 里抽出来 —— 工作台同步要用 **npm** 型
+ * （`{ type:'npm', name:'@vssaros/dsh-kanban' }`），而 `publishExternal` 只认 GitHub 地址。
+ * 服务端 `DistributionSchema` 三种都支持（npm / github-release / github-source）✓
+ *
+ * @param {object} args
+ * @param {object} args.market
+ * @param {string} args.kind
+ * @param {string} args.localId
+ * @param {string} args.version
+ * @param {{ type: string, name?: string, url?: string, commit?: string }} args.distribution
+ * @param {string} [args.changelog]
+ * @param {{ name?: string, description?: string, category?: string, tags?: string[] }} [args.meta]
+ */
+export async function publishDistribution({ market, kind, localId, version, distribution, changelog = '', meta = {} }) {
 	if (!/^[a-z0-9][a-z0-9_-]*$/.test(localId)) {
 		throw new Error(`slug 只能是 a-z0-9_- 且小写字母开头：${localId}（服务端规则）`);
 	}
 	const safeVersion = String(version ?? '').trim();
 	if (!safeVersion) { throw new Error('发布需要版本号（不能为空或纯空白）'); }
-	// 归一化（这一步就把"只允许 GitHub 域 / https"卡死 ✓）
-	const distribution = parseGitHubSource(source);
+	if (!distribution || typeof distribution !== 'object' || !distribution.type) {
+		throw new Error('publishDistribution 需要 distribution（含 type）');
+	}
 
-	const created = await ensurePackage({ market, kind, localId, meta });
+	// ⚠ 服务端 `description` 上限 2048：这里再兜一次（调用方可能直接塞长文本）
+	//   超了会被整包拒掉（真机踩过：4 个工作台因这个字段同步失败 ✗）
+	const safeDescription = typeof meta.description === 'string' && meta.description
+		? meta.description.trim().slice(0, 2048)
+		: '';
+
+	const created = await ensurePackage({ market, kind, localId, meta: { ...meta, description: safeDescription } });
 	await market.request('POST', `/packages/${encodeURIComponent(localId)}/versions/external`, {
 		version: safeVersion,
 		...(changelog ? { changelog } : {}),
-		...(typeof meta.description === 'string' && meta.description ? { description: meta.description } : {}),
+		...(safeDescription ? { description: safeDescription } : {}),
 		...(typeof meta.category === 'string' && meta.category ? { category: meta.category } : {}),
 		distribution,
 	});
