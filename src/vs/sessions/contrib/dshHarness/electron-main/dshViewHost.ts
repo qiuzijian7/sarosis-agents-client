@@ -23,15 +23,19 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IWindowsMainService } from '../../../../platform/windows/electron-main/windows.js';
 import { decideChatPartition } from '../common/dshChatPartition.js';
 import { isSameOrigin } from '../common/dshCli.js';
+// 主 frame 导航判据（纯函数；表驱动单测见 `test/common/dshViewNavigation.test.ts`）——
+// 2026-10-23 从本文件的 `will-navigate` 里抽出来："同源非根路径要拦"这条规则此前完全没法单测。
+import { decideMainFrameNavigation } from '../common/dshViewNavigation.js';
 import { DSH_VIEW_PARTITION, DSH_VIEW_PARTITION_CHAT_POOL_PREFIX, DSH_VIEW_PARTITION_DESKTOP, DshColorScheme, DshViewSurface, IDshViewBounds, IDshViewInfo, surfaceTakesRoute } from '../common/dshHarness.js';
 import { resolveViewUrl } from '../common/dshPluginPage.js';
 import { unavailablePageUrl } from '../common/dshViewHostUnavailable.js';
 import { IViewLoadRetryState, newViewLoadRetryState, onDocumentFinishedLoad, onMainFrameNavigated, planLoadRetry, resetViewLoadRetry, shouldResetRetryBudget, VIEW_LOAD_MAX_RETRIES, withAuthRetry } from '../common/dshViewLoadRetry.js';
-import { DSH_PAGE_CHAT_ONLY_ARG, DSH_PAGE_IPC_CREDIT, DSH_PAGE_IPC_INSERT, DSH_PAGE_IPC_INVOKE, DSH_PAGE_IPC_KEYDOWN, DSH_PAGE_IPC_REBIND, DSH_PAGE_IPC_RENAME, DSH_PAGE_IPC_RENAMED, DSH_PAGE_IPC_THEME, DSH_PAGE_IPC_AUTH, DSH_PAGE_IPC_WORKSPACES, DSH_PAGE_IPC_WORKTREES, DSH_PAGE_SESSION_ARG, DSH_PAGE_SURFACE_ARG, DSH_PAGE_VIEW_ARG, DSH_PAGE_WORKBENCH_ARG, DshPageEvent, IDshAuthOption, IDshCreditPush, IDshInsertReference, IDshWorkspaceOption, IDshWorktreeOption, validateKeyEvent, validatePageCommand } from '../common/dshPageBridgeProtocol.js';
+import { DSH_PAGE_CHAT_ONLY_ARG, DSH_PAGE_IPC_CREDIT, DSH_PAGE_IPC_INSERT, DSH_PAGE_IPC_INVOKE, DSH_PAGE_IPC_KEYDOWN, DSH_PAGE_IPC_REBIND, DSH_PAGE_IPC_RENAME, DSH_PAGE_IPC_RENAMED, DSH_PAGE_IPC_THEME, DSH_PAGE_IPC_AUTH, DSH_PAGE_IPC_UPGRADE, DSH_PAGE_IPC_WORKSPACES, DSH_PAGE_IPC_WORKTREES, DSH_PAGE_SESSION_ARG, DSH_PAGE_SURFACE_ARG, DSH_PAGE_VIEW_ARG, DSH_PAGE_WORKBENCH_ARG, DshPageEvent, IDshAuthOption, IDshCreditPush, IDshInsertReference, IDshUpgradeState, IDshWorkspaceOption, IDshWorktreeOption, validateKeyEvent, validatePageCommand } from '../common/dshPageBridgeProtocol.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { backgroundForPageSurface, DshThemeTokens, IDshViewBackgrounds } from '../common/dshThemeBridge.js';
 import { IIdeViewSlotForTargeting } from '../common/dshIdeTargeting.js';
 import { IDshHostConnection } from './dshHostSupervisor.js';
+import { markMainThreadPhase } from '../../../../code/electron-main/mainThreadBreadcrumb.js';
 
 const PRELOAD = 'vs/sessions/contrib/dshHarness/electron-browser/preload-dshView.js';
 
@@ -59,7 +63,13 @@ const PAGE_MAX_BLANK_RELOADS = 2;
 //   若把它判成白屏去 reload，页面状态（retain / rebind / 退避计数）会被**整个丢掉** ⇒ 永远打不开 ✗✗
 //   （日志实证：`Sidebar Session opening failed: Session reference "…" is released` 之后
 //     `looks blank → reloading (1/2)`、`(2/2)`、`stays blank after 2 auto reloads`）。
-const PAGE_ALIVE_PROBE = '!!(document.querySelector("[data-composer-card]") || document.querySelector("[data-chat-flow-kind]") || document.getElementById("vssaros-connect-status"))';
+// ★ 2026-10-23（用户报「主页显示过程中，page 突然被切换成了会话页」——日志实证是**看门狗误判**）：
+//   中栏被我们的工作台面板（主页 / 工作台页签）占着时，composer **本来就不在 DOM**（main 槽是单选的）
+//   ⇒ 上面那些判据全假 ⇒ 连续 3 次（45s）判"白屏" ⇒ `reload` ⇒ 页面重新引导、`activePanelId` 复位成
+//   null（会话），而页签条还按 localStorage 记着「主页」⇒ 用户看到的就是"主页突然变回会话页" ✗✗。
+//   补一条**面板真的渲染出来了**的判据（根标记只在被显示时挂载）。⚠ 仍不能写作"我们的插件 loaded"那种
+//   在认证失败页也会为真的标志（见上一段教训）；根标记要求槽帧真的渲染成功 ⇒ 认证失败页里不存在 ✓。
+const PAGE_ALIVE_PROBE = '!!(document.querySelector("[data-composer-card]") || document.querySelector("[data-chat-flow-kind]") || document.getElementById("vssaros-connect-status") || document.querySelector("[data-vssaros-wb-tabs]") || document.querySelector("[data-vssaros-wb-full]"))';
 /**
  * 白屏现场诊断：把**页面自己**的可观测量抓回日志（没有 DevTools 也能事后查）。
  *
@@ -457,6 +467,11 @@ interface IViewSlot {
 	/** 最近一次推送的 **IDE 登录态**（2026-10-21；与 lastWorkspaces 同一补发口径 ✓）。 */
 	lastAuth?: IDshAuthOption;
 	lastThemeTokens?: DshThemeTokens;
+	/**
+	 * 最近一次推送的**升级状态**（2026-10-23）：`_replayPushedSnapshots` 在页面就绪后补发 ——
+	 * 否则侧栏那行「更新 · N 项可用」在重载 / 白屏自愈后永远是空的 ✗。
+	 */
+	lastUpgrade?: IDshUpgradeState;
 	lastColorScheme?: DshColorScheme;
 	/** 最近一次页面侧自证的**原文**（见 `_reportPageSurface`）：内容没变就不再写日志 ⇒ 低频轮询也不吵 ✓。 */
 	lastSurfaceReport?: string;
@@ -560,10 +575,16 @@ export class DshViewHost extends Disposable {
 	 *
 	 * 修法：让弹窗用一个**独立 partition** ⇒ 独立的 socket 池与 cookie 罐，一个页面再坏也
 	 * 不会饿死其它窗口 ✓（顺带让弹窗的登录态与主窗口隔离，符合"独立会话"的产品口径）。
+	 *
+	 * ⚠ **persist**（2026-10-22 用户报障：「重启 app 后左侧栏里固定的工作台图标消失了」）：
+	 * 桌面窗口那一整页 dsh 客户端把用户可见状态放在**页面 localStorage**（侧栏「固定行」清单
+	 * `vssaros.wb.pinned` 等）⇒ 分区不 persist 的话进程一退出这些数据就没了 ⇒ 下次启动固定行
+	 * 长不出来 ✗。分区隔离（socket 池）与持久化互不相干 ⇒ 改 persist 不影响上面那条根治 ✓。
 	 */
 	private get desktopSession(): Session {
 		if (!this._desktopSession) {
-			// 非 persist：弹窗关掉即释放，避免长期累积 cookie/缓存；`DSH_TEST_*` 仅测试可覆盖。
+			// persist：桌面窗口的页面 localStorage 必须跨重启存活（见上面的报障与常量注释）。
+			// `DSH_TEST_*` 仅测试可覆盖。
 			const partition = process.env.DSH_TEST_DESKTOP_PARTITION || DSH_VIEW_PARTITION_DESKTOP;
 			this._desktopSession = this._configureViewSession(electronSession.fromPartition(partition));
 		}
@@ -1020,6 +1041,21 @@ export class DshViewHost extends Disposable {
 		}
 	}
 
+	/**
+	 * 推**升级状态**给页面（2026-10-23；机制与 {@link pushAuth} 逐字同款）。
+	 * 记快照是为了 `_replayPushedSnapshots` 在页面重载后补发（否则侧栏那行会变空 ✗）。
+	 */
+	pushUpgrade(viewId: string, state: IDshUpgradeState): void {
+		const slot = this._views.get(viewId);
+		if (!slot) {
+			return;
+		}
+		slot.lastUpgrade = state;
+		if (!slot.view.webContents.isDestroyed()) {
+			slot.view.webContents.send(DSH_PAGE_IPC_UPGRADE, state);
+		}
+	}
+
 	pushWorkspaces(viewId: string, options: readonly IDshWorkspaceOption[]): void {
 		const slot = this._views.get(viewId);
 		if (!slot) {
@@ -1456,6 +1492,10 @@ export class DshViewHost extends Disposable {
 				// IDE 登录态（2026-10-21）：与工作区记录同口径补发 —— 页面晚加载时也要拿到登录态 ✓
 				wc.send(DSH_PAGE_IPC_AUTH, slot.lastAuth);
 			}
+			if (slot.lastUpgrade) {
+				// 升级状态（2026-10-23）：同口径补发（侧栏那行「N 项可用」不能因为一次重载就变空 ✗）
+				wc.send(DSH_PAGE_IPC_UPGRADE, slot.lastUpgrade);
+			}
 			if (slot.lastThemeTokens) {
 				wc.send(DSH_PAGE_IPC_THEME, slot.lastThemeTokens);
 			}
@@ -1471,6 +1511,8 @@ export class DshViewHost extends Disposable {
 	 * 别的组合都是正常态：没数据没 chip 是对的）；其余打 `info` 一行 ✓。
 	 */
 	private async _reportPageSurface(slot: IViewSlot, delayMs: number): Promise<void> {
+		// 取证面包屑：15s 周期的页面探针（冻结前最后两个动作之一，见 2026-10-22 事故）
+		markMainThreadPhase('dsh-view-probe');
 		await new Promise<void>(resolve => setTimeout(resolve, delayMs));
 		if (this._views.get(slot.id) !== slot || slot.view.webContents.isDestroyed()) {
 			return;
@@ -1783,10 +1825,27 @@ export class DshViewHost extends Disposable {
 			return { action: 'deny' };
 		});
 		wc.on('will-navigate', (event, url) => {
-			if (!this._connection || !isSameOrigin(url, this._connection.origin)) {
-				event.preventDefault();
-				this._openExternal(url);
+			// ★ 2026-10-23：判据抽进 `common/dshViewNavigation.ts`（纯函数、有表驱动单测）——
+			//   这里只做三件事的分派：放行 / 拦下并外开 / 拦下并留现场。规则本身见那个文件。
+			// ★ 2026-10-23：把**插件页自己的路由**传下去 ⇒ 只放行它路由子树内的下钻（`/x/memory/detail` ✓），
+			//   子树之外的同源整页导航照旧拦（防"主页被导航成工作台页"）✓。
+			//   ⚠ 只对 `plugin-page` 传：`workbench` 的文档是 `/`，对它也放行子树就会退回那个 bug ✗。
+			const pluginPageRoute = slot.surface === 'plugin-page' ? slot.route : undefined;
+			const decision = decideMainFrameNavigation(url, this._connection?.origin, pluginPageRoute);
+			if (decision === 'allow') {
+				return;
 			}
+			event.preventDefault();
+			if (decision === 'external') {
+				this._openExternal(url);
+				return;
+			}
+			// 'block'：同源非根路径（dsh 客户端是 `/` 上的 SPA，工作台页走 iframe），或非 http(s) 的地址。
+			//   真机留痕（2026-10-23）：视图被整页导航到 `/x/dashboard/` ⇒ 那个文档里我们的插件不加载
+			//   （`surface.loaded:false`）、没有 composer ⇒ 白屏看门狗 45s 后 reload ⇒ 用户看到
+			//   "主页突然变成会话页"，中栏面板状态也一起丢了 ✗✗。**拦下 + 留现场**是唯一的止血点。
+			//   ⚠ 宿主自己的加载走 `loadURL`，不经过本事件；带 token 的 authUrl 也是 `/` ⇒ 都放行 ✓。
+			this._logService.warn(`[dshHarness] view ${slot.id} blocked a main-frame navigation to ${url}（dsh 客户端是 / 上的 SPA；工作台页走 iframe；非 http(s) 也不外开）`);
 		});
 		wc.on('will-redirect', (event, url) => {
 			if (!this._connection || !isSameOrigin(url, this._connection.origin)) {
