@@ -29,6 +29,7 @@ import { PUBLISHABLE_KINDS, deletePackage, deleteVersion, publishExternal, publi
 import { downloadGitHubTarball, locateInstallRoot, resolveDownloadUrl } from './githubSource.js';
 import { listTarGzEntries } from './tar.js';
 import { listPublishables } from './localResources.js';
+import { ALL_OPS, LOCAL_WRITE_KINDS, WRITE_OPS, isKnownOp, resolveOp } from './dispatch.js';
 
 /** 插件包名（与 package.json 一致；也是 ide.request 的 pluginId => 必须与清单里的 ideCapabilities 对上 ✓）。 */
 const PLUGIN_PACKAGE = '@vssaros/dsh-marketplace';
@@ -43,17 +44,12 @@ const WRITE_TIMEOUT_MS = 8 * 60_000;
 /** 商城商品类型（与服务端 packages/kinds.ts 同口径）。 */
 const KINDS = ['agent', 'skill', 'mcp', 'knowledge', 'workflow', 'workbench'];
 
-/** 能力层支持的 op（与 IDE 侧 marketplaceAction 同口径）。 */
-const OPS = ['list', 'detail', 'installed', 'install', 'uninstall', 'upgrade', 'publish', 'deletePackage', 'deleteVersion'];
-
-/** 写类 op（需要用户确认 => 走长超时）。 */
-const WRITE_OPS = new Set(['install', 'uninstall', 'upgrade', 'publish', 'deletePackage', 'deleteVersion']);
-
-/** dsh 侧**自持**的只读 op（认证 + HTTP + 本地台账，不碰 IDE 桥 ✓）。 */
-const LOCAL_OPS = new Set(['list', 'detail', 'installed', 'publishables', 'reviewList']);
+// ★ 2026-10-23：op 清单与分派**只有一份真源**（`lib/dispatch.js`）——
+//   此前这里是手写清单，加了 publishables / reviewList / updatePackage 等 5 个 op 后
+//   `OPS` 没跟着改 ⇒ `/api/meta` 声明不全、`callIde` 白名单也不全（声明与实现漂移 ✗）
 
 /**
- * dsh 侧**自持**的写 op（S2）：skill / workflow 的安装、升级、卸载。
+ * dsh 侧**自持**的写 op（S2）：skill / workflow / agent 的安装、升级、卸载。
  *
  * ★ 为什么这三类能自持：它们落的就是数据根，dsh 侧本来就在写
  *   （`skill_manage` / `applyWorkflow`）⇒ 下载 + 解包 + 落盘 + 台账全在本地完成 ✓。
@@ -61,7 +57,6 @@ const LOCAL_OPS = new Set(['list', 'detail', 'installed', 'publishables', 'revie
  *   `agent`（要生成 `.agent.md`，格式真源在 IDE 侧；等包格式统一后再搬）、
  *   以及 `publish` / `delete*`（发布要调 IDE 侧的打包与上传链，S2c 再搬）。
  */
-const LOCAL_WRITE_KINDS = new Set(['skill', 'workflow', 'agent']);
 
 export async function apply(ctx, config) {
 	/** IDE 控制桥（可选注入）：**只有 workbench 的装/卸**还需要它 ✓。 */
@@ -378,6 +373,47 @@ export async function apply(ctx, config) {
 	}
 
 	/**
+	 * 按分派目标执行（★ 2026-10-23：替代原来路由里的 6 层 if）。
+	 *
+	 * 五个目标各自对应一条**已有**的本地路径；这里只做路由，不含业务逻辑 ✓
+	 *
+	 * @param {'local-read'|'local-write'|'local-http'|'local-publish'} target
+	 * @param {string} op
+	 * @param {object} params
+	 */
+	async function runLocalByTarget(target, op, params) {
+		if (target === 'local-read') { return runLocal(op, params); }
+		if (target === 'local-write') { return runLocalWrite(op, params); }
+		if (target === 'local-publish') { return runLocalPublish(op, params); }
+		// local-http：编辑元数据 / 管理员审核（纯 HTTP，服务端判权）
+		const m = market();
+		if (op === 'updatePackage') {
+			const pkg = await m.updatePackage(
+				String(params.slug || params.id || ''),
+				{
+					...(typeof params.name === 'string' ? { name: params.name } : {}),
+					...(typeof params.description === 'string' ? { description: params.description } : {}),
+					...(typeof params.category === 'string' ? { category: params.category } : {}),
+					...(typeof params.icon === 'string' ? { icon: params.icon } : {}),
+					...(typeof params.visibility === 'string' ? { visibility: params.visibility } : {}),
+					...(Array.isArray(params.tags) ? { tags: params.tags } : {}),
+				},
+			);
+			return { ok: true, package: pkg };
+		}
+		const idOrSlug = String(params.slug || params.id || '');
+		if (op === 'reviewStatus') {
+			await m.reviewSetStatus(idOrSlug, String(params.status ?? ''));
+			return { ok: true };
+		}
+		if (op === 'reviewFeature') {
+			await m.reviewSetFeatured(idOrSlug, params.featured === true);
+			return { ok: true };
+		}
+		throw new Error(`本地说不了这个动作：${op}`);
+	}
+
+	/**
 	 * 让 IDE 侧技能库重读磁盘（**唯一**还需要反向调用的只读动作）。
 	 *
 	 * 为什么必须借 IDE：`skillRegistryService` **没有文件监听**，只有显式 `reload()` 才能
@@ -526,7 +562,8 @@ export async function apply(ctx, config) {
 		if (!bridge) {
 			return { ok: false, error: '商城通道不可用（IDE 控制桥不在）—— 请确认 IDE 侧已连上 Harness。' };
 		}
-		if (!OPS.includes(op)) {
+		// ★ 白名单来自 dispatch.js 的 ALL_OPS（与分派同源）⇒ 不会再"声明有、实际不认" ✓
+		if (!isKnownOp(op)) {
 			return { ok: false, error: `不认识的商城动作：${op}` };
 		}
 		const timeoutMs = WRITE_OPS.has(op) ? WRITE_TIMEOUT_MS : READ_TIMEOUT_MS;
@@ -666,74 +703,27 @@ export async function apply(ctx, config) {
 						json(200, await selfCheck());
 						return;
 					}
-					if (LOCAL_OPS.has(op)) {
+					// ★ 2026-10-23：分派改走 `lib/dispatch.js`（原先是 6 层 if 嵌套，
+					//   "哪个 op 去哪"这条最容易错的契约一个测试都没有 ✗）。
+					//   ⚠ 五条本地路径的**错误契约必须一致**（200 + `{ok:false,error}`），
+					//     绝不能让某一条抛到外层变成 500 —— 前端只认 `ok === false` ✓
+					const target = resolveOp(op, params);
+					if (target !== 'ide') {
 						try {
-							json(200, await runLocal(op, params));
+							json(200, await runLocalByTarget(target, op, params));
 						} catch (e) {
 							json(200, { ok: false, error: String(e?.message ?? e) });
 						}
 						return;
 					}
-					// S2：skill / workflow 的装、升、卸在 dsh 侧自持；其余（workbench / agent）仍转 IDE
-					if ((op === 'install' || op === 'upgrade' || op === 'uninstall')
-						&& LOCAL_WRITE_KINDS.has(String(params.kind ?? ''))) {
-						try {
-							json(200, await runLocalWrite(op, params));
-						} catch (e) {
-							json(200, { ok: false, error: String(e?.message ?? e) });
-						}
-						return;
+					// 兜底：转 IDE（workbench 装卸 / agent 发布 / 未知 op）。
+					// ⚠ 这里也**包了 try/catch**：原先是裸调用 ⇒ 唯一会返回 500 的分支
+					//   （错误契约不一致 ✗）。现在统一成 200 + ok:false ✓
+					try {
+						json(200, await callIde(op, params));
+					} catch (e) {
+						json(200, { ok: false, error: `商城通道出错：${String(e?.message ?? e)}` });
 					}
-					// 编辑元数据（作者或管理员；服务端 assertAuthor 判权）⇒ 纯 HTTP，dsh 侧自持 ✓
-					if (op === 'updatePackage') {
-						try {
-							const pkg = await market().updatePackage(
-								String(params.slug || params.id || ''),
-								{
-									...(typeof params.name === 'string' ? { name: params.name } : {}),
-									...(typeof params.description === 'string' ? { description: params.description } : {}),
-									...(typeof params.category === 'string' ? { category: params.category } : {}),
-									...(typeof params.icon === 'string' ? { icon: params.icon } : {}),
-									...(typeof params.visibility === 'string' ? { visibility: params.visibility } : {}),
-									...(Array.isArray(params.tags) ? { tags: params.tags } : {}),
-								},
-							);
-							json(200, { ok: true, package: pkg });
-						} catch (e) {
-							json(200, { ok: false, error: String(e?.message ?? e) });
-						}
-						return;
-					}
-					// 管理员审核（纯 HTTP，服务端 requireAdmin 判权）⇒ dsh 侧自持 ✓
-					if (op === 'reviewStatus' || op === 'reviewFeature') {
-						try {
-							const m2 = market();
-							const target = String(params.slug || params.id || '');
-							if (op === 'reviewStatus') {
-								await m2.reviewSetStatus(target, String(params.status ?? ''));
-							} else {
-								await m2.reviewSetFeatured(target, params.featured === true);
-							}
-							json(200, { ok: true });
-						} catch (e) {
-							json(200, { ok: false, error: String(e?.message ?? e) });
-						}
-						return;
-					}
-					// S2c：发布与下架在 dsh 侧（打包用 lib/tar.js，上传走 raw tar.gz）✓
-					// ⚠ `publish` 的 **agent** 例外：它的包格式是 `agent.json`（IDE 侧独有的组装逻辑）
-					//   ⇒ dsh 侧打不了兼容包 ⇒ 转回 IDE（`delete*` 是纯 HTTP，不分 kind）✓
-					const publishIsLocal = op === 'deletePackage' || op === 'deleteVersion'
-						|| (op === 'publish' && PUBLISHABLE_KINDS.includes(String(params.kind ?? '')));
-					if (publishIsLocal) {
-						try {
-							json(200, await runLocalPublish(op, params));
-						} catch (e) {
-							json(200, { ok: false, error: String(e?.message ?? e) });
-						}
-						return;
-					}
-					json(200, await callIde(op, params));
 					return;
 				}
 				// ── 自检（证明 dsh 侧自持）：桥是否在 / 票据是否可见 / 是否已能换 JWT ──
@@ -744,7 +734,7 @@ export async function apply(ctx, config) {
 
 				// ── 分类常量（页面用来画页签）─────────────────────
 				if (req.method === 'GET' && url.pathname === `${ROUTE_PREFIX}/api/meta`) {
-					json(200, { ok: true, kinds: KINDS, ops: OPS });
+					json(200, { ok: true, kinds: KINDS, ops: ALL_OPS });
 					return;
 				}
 

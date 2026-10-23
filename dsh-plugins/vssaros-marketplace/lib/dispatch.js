@@ -1,0 +1,106 @@
+// @vssaros/dsh-marketplace — **动作分派表**（★ 2026-10-23 抽出：原先是 6 层 if 嵌套）
+//
+// 为什么单独抽一个文件：
+//   ① **可测**：分派原先是 `apply()` 里的一串 `if`，只能起整个 Host 才测得到 ⇒
+//      "哪个 op 去哪"这条最容易错的契约，**一个测试都没有** ✗
+//   ② **防漂移**：`OPS`（对外声明）与真实分派曾是两份手写清单，加 op 时漏改一处
+//      就会出现「声明有、实际不认」（`callIde` 白名单）或相反 ✗
+//   ③ **可读**：6 层 if 读不出"这个 op 到底走哪条路"
+//
+// 分派目标只有 5 种，每种对应 `index.js` 里的一段处理：
+//   local-read    → 走本地（认证 + HTTP + 台账），如 list / installed / publishables
+//   local-write   → 走本地落盘（skill / workflow / agent 的装升卸）
+//   local-http    → 走本地纯 HTTP（编辑元数据 / 管理员审核，服务端判权）
+//   local-publish → 走本地打包上传/下架
+//   ide           → 转给 IDE 控制桥（workbench 装卸、agent 发布等，见各常量注释）
+
+// ★ 打包能力的真源在 publisher.js（这里只引用，不再抄一份）
+import { PUBLISHABLE_KINDS } from './publisher.js';
+
+/** 走本地只读的 op（不碰 IDE 桥 ✓）。 */
+export const LOCAL_READ_OPS = new Set(['list', 'detail', 'installed', 'publishables', 'reviewList']);
+
+/** 走本地落盘的**写** op（装 / 升 / 卸）。 */
+export const LOCAL_WRITE_OPS = new Set(['install', 'upgrade', 'uninstall']);
+
+/**
+ * 这三类 op 里，dsh 侧能自持的 kind。
+ *
+ * · `skill` / `workflow` / `agent`：都是"目录镜像落数据根"（agent 自 2026-10-22 起）
+ * · `workbench`：必须 `dsh plugin add` + 重启 Host ⇒ 永远是 IDE
+ * · `mcp` / `knowledge`：没有可落盘的本体（配置/文档集）⇒ 不进这条路径
+ */
+export const LOCAL_WRITE_KINDS = new Set(['skill', 'workflow', 'agent']);
+
+/** 走本地纯 HTTP 的写 op（服务端判权：assertAuthor / requireAdmin）。 */
+export const LOCAL_HTTP_OPS = new Set(['updatePackage', 'reviewStatus', 'reviewFeature']);
+
+/**
+ * 走本地打包/下架的 op。
+ *
+ * `delete*` 是纯 HTTP，**不分 kind** ✓
+ * `publish` 按 kind 判断（见 {@link PUBLISH_LOCAL_KINDS}）。
+ */
+export const LOCAL_PUBLISH_OPS = new Set(['deletePackage', 'deleteVersion']);
+
+/**
+ * `publish` 时 dsh 侧能自己打包的 kind。
+ *
+ * ★ 2026-10-23：**直接取 `publisher.js` 的同名清单**（单一真源）——
+ *   之前这里手写了 `['skill','workflow']`，而 `PUBLISHABLE_KINDS` 已经加回了 `agent`
+ *   （因为 IDE 侧安装器也认目录镜像包了）⇒ 两份清单打架：分派把 `publish(agent)`
+ *   送去 IDE，而 dsh 侧明明能打包 ✗（本条由 dispatch 守卫 ⑦ 抓到）
+ *
+ * 历史（别再走回头路）：agent 的发布一度只能留 IDE，因为商城包格式是 `agent.json`
+ * 而只有 IDE 的 `preparePack` 会组装它。后来 `agentInstaller.install` 加了
+ * 「目录镜像」分支（认 `.agent.md`）⇒ 那个限制消失了 ⇒ agent 现在能双向发布/安装 ✓
+ */
+export const PUBLISH_LOCAL_KINDS = PUBLISHABLE_KINDS;
+
+/** 全部**能被处理**的 op（本地 + IDE）。对外声明（`/api/meta`）与白名单都用它 ✓ */
+export const ALL_OPS = [
+	...LOCAL_READ_OPS,
+	...LOCAL_WRITE_OPS,
+	...LOCAL_HTTP_OPS,
+	...LOCAL_PUBLISH_OPS,
+	'publish',
+	'self-check',
+];
+
+/** 需要用户确认、耗时较长的 op（转 IDE 时用长超时）。 */
+export const WRITE_OPS = new Set([...LOCAL_WRITE_OPS, 'publish', ...LOCAL_PUBLISH_OPS]);
+
+/**
+ * 判定一个动作该在哪执行。
+ *
+ * @param {string} op
+ * @param {{ kind?: unknown }} [params]
+ * @returns {'local-read' | 'local-write' | 'local-http' | 'local-publish' | 'ide'}
+ */
+export function resolveOp(op, params = {}) {
+	const name = String(op ?? '');
+	const kind = String(params?.kind ?? '');
+
+	if (LOCAL_READ_OPS.has(name)) { return 'local-read'; }
+	if (LOCAL_WRITE_OPS.has(name)) {
+		// kind 决定能不能自持：能 ⇒ 本地；不能（workbench / mcp…）⇒ 交 IDE
+		return LOCAL_WRITE_KINDS.has(kind) ? 'local-write' : 'ide';
+	}
+	if (LOCAL_HTTP_OPS.has(name)) { return 'local-http'; }
+	if (LOCAL_PUBLISH_OPS.has(name)) { return 'local-publish'; }
+	if (name === 'publish') {
+		// ⚠ 唯一按 kind 分流的 publish（workbench 必须 IDE：要 dsh plugin add + 重启）
+		return PUBLISH_LOCAL_KINDS.includes(kind) ? 'local-publish' : 'ide';
+	}
+	// 未知 / 纯 IDE 的 op ⇒ 兜底交 IDE（由 IDE 侧白名单给出"不认识"的可读报错）
+	return 'ide';
+}
+
+/**
+ * 这个 op 是否是**已知**动作（本地或 IDE 都会认）。
+ *
+ * 用途：`callIde` 的白名单 —— 用它代替手写清单，避免"声明有、实际不认"✗
+ */
+export function isKnownOp(op) {
+	return ALL_OPS.includes(String(op ?? ''));
+}

@@ -100,8 +100,15 @@ const OPS_TAKEN_OVER_BY_DSH = new Set([
  */
 const KIND_TAKEN_OVER_BY_DSH = new Set(['skill', 'workflow']);
 
-/** `publish` 里 dsh 侧能自己打包的 kind（agent 必须在 IDE 侧打包，见上）。 */
-const PUBLISH_KINDS_TAKEN_OVER_BY_DSH = new Set(['skill', 'workflow']);
+/**
+ * `publish` 里 dsh 侧能自己打包的 kind。
+ *
+ * ★ 2026-10-23：**加回 `agent`** —— 当年把 agent 的发布留在 IDE 的理由是
+ *   "商城包格式是 `agent.json`，只有 IDE 的 `preparePack` 会组装"；现在
+ *   `agentInstaller.install` 已支持**目录镜像**（认 `.agent.md`）⇒ 那个理由消失了 ✓
+ *   （dsh 侧打目录镜像，IDE 侧也能装；两侧都能发布 ⇒ 不留两套）
+ */
+const PUBLISH_KINDS_TAKEN_OVER_BY_DSH = new Set(['skill', 'workflow', 'agent']);
 
 export async function runMarketplaceAction(
 	host: IMarketplaceActionHost,
@@ -125,8 +132,7 @@ export async function runMarketplaceAction(
 	}
 	if (req.op === 'publish' && PUBLISH_KINDS_TAKEN_OVER_BY_DSH.has(String(req.kind ?? ''))) {
 		throw new Error(
-			`${req.kind} 的 publish 已由 dsh 侧自持（目录镜像打包 + 上传），不该再走 IDE`
-			+ '—— agent 的包格式是 agent.json，仍必须由 IDE 的 preparePack 组装',
+			`${req.kind} 的 publish 已由 dsh 侧自持（目录镜像打包 + 上传），不该再走 IDE`,
 		);
 	}
 

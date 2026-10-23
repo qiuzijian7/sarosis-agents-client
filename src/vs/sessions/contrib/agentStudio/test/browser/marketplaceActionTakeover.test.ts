@@ -72,21 +72,14 @@ suite('marketplace 下线闸（已被 dsh 侧接管的 op 不许再走 IDE）', 
 		}
 	});
 
-	test('发布：skill / workflow 必须被拒；**agent 必须放行**（包格式 agent.json 只有 IDE 会组装）', async () => {
-		for (const kind of ['skill', 'workflow']) {
+	test('发布：skill / workflow / **agent** 都必须被拒（2026-10-23 起 agent 也能由 dsh 打包）', async () => {
+		// 历史：agent 的 publish 一度必须放行到 IDE（包格式 agent.json 只有 IDE 会组装）。
+		// 现在 IDE 侧安装器已认**目录镜像**（`.agent.md`）⇒ dsh 打的包 IDE 也装得上
+		// ⇒ agent 的发布也归 dsh，IDE 侧一律拒（**不留两套** ✗）
+		for (const kind of ['skill', 'workflow', 'agent']) {
 			const msg = await throwsOf({ op: 'publish', kind, localId: 'x', version: '1.0.0' });
 			assert.ok(msg.includes('已由 dsh 侧自持'), `${kind} 的 publish 应被拒，实际：${msg || '(没抛错)'}`);
 		}
-		let agentMsg = '';
-		try {
-			await runMarketplaceAction(fakeHost([]), { op: 'publish', kind: 'agent', localId: 'x', version: '1.0.0' });
-		} catch (e) {
-			agentMsg = String((e as Error)?.message ?? e);
-		}
-		assert.ok(
-			!agentMsg.includes('已由 dsh 侧自持'),
-			`agent 的 publish 被误拦了（它必须留在 IDE：包格式是 agent.json）：${agentMsg}`,
-		);
 	});
 
 	test('skill / workflow 的装升卸必须被拒（dsh 侧直接落数据根）', async () => {

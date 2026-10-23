@@ -199,11 +199,13 @@ function fakeFetch(handler) {
 	const idx = fs.readFileSync(path.join(LIB, 'index.js'), 'utf8');
 	// ⚠ 断言"**至少包含** list/detail/installed"，而不是写死整行 ——
 	//   后来加新 op（如 `publishables`）时不该让这条守卫假红 ✓
-	const localOpsBody = /const LOCAL_OPS = new Set\(\[([^\]]*)\]\)/.exec(idx)?.[1] ?? '';
-	check('index.js 声明了 LOCAL_OPS（含 list / detail / installed）',
-		['list', 'detail', 'installed'].every(op => localOpsBody.includes(`'${op}'`)),
-		localOpsBody);
-	check('路由里 LOCAL_OPS 优先走 runLocal', /if \(LOCAL_OPS\.has\(op\)\)[\s\S]{0,200}runLocal\(op, params\)/.test(idx));
+	// ★ 2026-10-23：`LOCAL_OPS` 已并入 `dispatch.js` 的 `LOCAL_READ_OPS`（单一真源）。
+	//   这里改成验证**分派结果**，而不是某个变量名 —— 后者一改名就假红 ✗
+	const { resolveOp } = await import(pathToFileURL(path.join(LIB, 'dispatch.js')).href);
+	check('只读面（list/detail/installed）由 dispatch 判为 local-read',
+		['list', 'detail', 'installed'].every(op => resolveOp(op, {}) === 'local-read'));
+	check('路由改用 resolveOp 分派，本地分支走 runLocalByTarget',
+		/resolveOp\(op, params\)/.test(idx) && /runLocalByTarget\(target, op, params\)/.test(idx));
 	// callIde 的函数体里不许再出现 list/detail/installed 的分支
 	const bodyStart = idx.indexOf('async function callIde(');
 	const bodyEnd = idx.indexOf('/** 页面外壳', bodyStart) > 0 ? idx.indexOf('/** 页面外壳', bodyStart) : idx.length;
