@@ -77,8 +77,26 @@ suite('dshHarness / 视图主 frame 导航决策', () => {
 			'前缀相近但不同路由 ⇒ 不能误放行');
 	});
 
-	test('不传 viewRoute（chat / workbench 表面）⇒ 行为与改动前一致：只放行 `/`', () => {
+	test('不传 currentPathname ⇒ 行为与改动前一致：只放行 `/`', () => {
 		assert.strictEqual(decideMainFrameNavigation(`${ORIGIN}/x/memory/detail`, ORIGIN), 'block');
 		assert.strictEqual(decideMainFrameNavigation(`${ORIGIN}/x/memory/`, ORIGIN), 'block');
+	});
+
+	// ★ 2026-10-23（真机日志坐实）：`blocked a main-frame navigation to /x/memory/detail`
+	//   当年视图是 **chat**（id `dsh-desk-chat-*`）而不是 plugin-page ⇒ 按表面判会漏 ⇒ 按"当前 URL"判 ✓
+	test('当前在模块页 ⇒ 同模块**子树内**的下钻放行（这正是「查看完整记忆」那一次点击）', () => {
+		assert.strictEqual(decideMainFrameNavigation(`${ORIGIN}/x/memory/detail`, ORIGIN, '/x/memory/'), 'allow');
+		assert.strictEqual(decideMainFrameNavigation(`${ORIGIN}/x/memory/detail?tool=export-md`, ORIGIN, '/x/memory/'), 'allow');
+		// 当前已在详情页再点别的详情参数也放行（幂等）
+		assert.strictEqual(decideMainFrameNavigation(`${ORIGIN}/x/memory/detail?session=x`, ORIGIN, '/x/memory/detail'), 'allow');
+	});
+
+	test('跨模块 / 从根跳模块页仍拦（「主页突然变成会话页」那个 bug 的防线）', () => {
+		assert.strictEqual(decideMainFrameNavigation(`${ORIGIN}/x/dashboard/`, ORIGIN, '/x/memory/'), 'block',
+			'跨模块必须拦');
+		assert.strictEqual(decideMainFrameNavigation(`${ORIGIN}/x/dashboard/`, ORIGIN, '/'), 'block',
+			'从根路径跳模块页必须拦（否则又回到"主页被导航成会话页"）');
+		assert.strictEqual(decideMainFrameNavigation(`${ORIGIN}/x/memoryx/`, ORIGIN, '/x/memory/'), 'block',
+			'前缀相近但不是同一模块 ⇒ 不能误放行');
 	});
 });

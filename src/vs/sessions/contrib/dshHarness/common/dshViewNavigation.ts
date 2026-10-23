@@ -28,14 +28,17 @@ export type DshMainFrameNavigationDecision =
 	| 'external';
 
 /**
- * `pathname` 是否落在 `route` 这棵**子树**里（含相等）。
+ * 取 `pathname` 所属的**模块子树**（`/x/<module>`），不是模块页就返回 `undefined`。
  *
- * 例：`route='/x/memory/'` ⇒ 命中 `/x/memory/`、`/x/memory/detail`、`/x/memory/?a=1`（查询串不进 pathname）；
- * 不命中 `/x/memoryx`（避免前缀误判）、`/x/other`。
+ * 例：`/x/memory/` / `/x/memory/detail` / `/x/memory/detail?x=1` ⇒ `/x/memory`；
+ *     `/x/memoryx/` ⇒ `/x/memoryx`（**不同**子树，不会误放行 ✓）；`/` ⇒ `undefined`；`/myspace` ⇒ `undefined`。
+ *
+ * 为什么按两级取：dsh 的模块页统一挂在 `/x/<module>/…` 下 ⇒ 前缀就是"这个页面属于哪个模块"的天然边界 ✓。
  */
-function isUnderRoute(pathname: string, route: string): boolean {
-	const base = route.endsWith('/') ? route : `${route}/`;
-	return pathname === route || pathname === base || pathname.startsWith(base);
+function moduleSubtree(pathname: string | undefined): string | undefined {
+	if (!pathname) { return undefined; }
+	const m = /^\/x\/([^/]+)/.exec(pathname);
+	return m ? `/x/${m[1]}` : undefined;
 }
 
 /** 与 `isSameOrigin` 同口径：协议 + 主机 + 端口（默认端口归一化由 URL 负责）。 */
@@ -55,16 +58,19 @@ export function decideMainFrameNavigation(
 	rawUrl: string,
 	connectionOrigin: string | undefined,
 	/**
-	 * 本视图承载的**插件页路由**（如 `/x/memory/`）—— 只有 `plugin-page` 表面才该传（★ 2026-10-23）。
+	 * **当前主 frame 的 pathname**（调用方传 `new URL(wc.getURL()).pathname`）★ 2026-10-23。
 	 *
 	 * 为什么要它：真机「记忆库」页的「查看完整记忆」按钮 `location.href='./detail'` **点了没反应** ⇒
-	 * 根因就是这条规则"同源只放行 `/`"把插件页的**下钻**（`/x/memory/detail`）一起拦了 ✗✗
-	 * （那个子路由插件**真的**在服务 ⇒ 拦在导航层）。
+	 * 日志坐实：`blocked a main-frame navigation to /x/memory/detail` —— 就是这条"同源只放行 `/`"把
+	 * **同一模块的下钻**一起拦了 ✗✗（那个子路由插件**真的**在服务 ⇒ 拦在导航层）。
 	 *
-	 * ⚠ **只对 `plugin-page` 传**：`workbench` 表面加载的是 dsh 客户端根 `/`，它的 route 只是给页面内部用的
-	 * （`desktopWorkbenches.open(...)`）⇒ 若也对它放行子树，就会退回"主页被整页导航成工作台页"那个 bug ✗
+	 * ⚠ 不能只看"视图表面"（我第一版只对 `plugin-page` 放行，结果**不够**）：真机上这个记忆库页被宿主
+	 * `loadURL` 装进的是 **chat 视图**（id `dsh-desk-chat-*`）的主 frame ⇒ 表面判据覆盖不到 ✗。
+	 * ⇒ 改成**按当前 URL 判**：目标只要还在**当前文档所在的同一模块子树**（`/x/<module>/…`）内就放行 ✓
+	 *   —— 这样"记忆库 → 记忆详情"能走，而"从 `/` 或别的模块页跳到 `/x/dashboard/`"照旧拦 ✓
+	 *   （后者正是 2026-10-23 那个「主页突然变成会话页」的 bug ✗）。
 	 */
-	viewRoute?: string,
+	currentPathname?: string,
 ): DshMainFrameNavigationDecision {
 	if (!connectionOrigin) {
 		// 没连上 Host：视图里的页面不可信 ⇒ 交给外部（与改动前 `!this._connection || …` 一致）
@@ -84,9 +90,11 @@ export function decideMainFrameNavigation(
 	}
 	// 同源：根路径留在视图里（`/?token=…` 也是根 ⇒ 认证跳转照常 ✓）
 	if (target.pathname === '/') { return 'allow'; }
-	// ★ 2026-10-23：**插件页视图**允许它**自己路由子树内**的同源导航 —— 否则插件页的下钻会被拦，
-	//   表现就是"点了没反应"（真机：`/x/memory/` 页上的「查看完整记忆」按钮 `location.href='./detail'` ✗✗）。
-	//   仍不放行路由子树之外的同源地址（`/x/dashboard/` 这类整页导航照旧拦 ✓）。
-	if (viewRoute && viewRoute !== '/' && isUnderRoute(target.pathname, viewRoute)) { return 'allow'; }
+	// ★ 2026-10-23：**同一模块子树内**的同源导航放行 —— 否则模块页的下钻会被拦，表现就是"点了没反应"
+	//   （真机日志：`blocked a main-frame navigation to /x/memory/detail`；那个子路由插件真的在服务 ✗✗）。
+	//   仍**不放行**跨模块 / 从根路径跳模块页的同源地址（`/` → `/x/dashboard/` 照旧拦 ✓）；
+	//   查询串不进 pathname ⇒ `?tool=export-json` 这类下载动作也照常放行 ✓。
+	const currentModule = moduleSubtree(currentPathname);
+	if (currentModule && currentModule === moduleSubtree(target.pathname)) { return 'allow'; }
 	return 'block';
 }

@@ -1056,6 +1056,30 @@ export class DshViewHost extends Disposable {
 		}
 	}
 
+	/**
+	 * 除 `windowId` 之外，**还承载着 dsh 视图的其它窗口**（也就是"桌面窗口"）。
+	 *
+	 * 用途（2026-10-23 用户："关闭 ide 窗口时，连同 desktop 窗口一起关掉了，要求各关各的"）：
+	 *   桌面窗口是 IDE 主窗口的**辅助窗口**（`window.open` 开的）⇒ 直接销毁主窗口，Chromium 会
+	 *   把这个没有 `noopener` 的子窗口一起收掉 ⇒ 用户看到"关 IDE，desktop 也没了" ✗。
+	 *   ⇒ 主进程改成"有桌面窗口时只隐藏 IDE"，本方法就是那个判据。
+	 *
+	 * 判据用槽的 `ownerWindowId`（chat / full / plugin-page 都算）；主窗口自己会被排除 ✓。
+	 */
+	desktopWindowsOtherThan(windowId: number): BrowserWindow[] {
+		const out: BrowserWindow[] = [];
+		for (const slot of this._views.values()) {
+			if (slot.ownerWindowId === windowId) {
+				continue;
+			}
+			const win = this._windowById(slot.ownerWindowId);
+			if (win && !win.isDestroyed() && out.indexOf(win) < 0) {
+				out.push(win);
+			}
+		}
+		return out;
+	}
+
 	pushWorkspaces(viewId: string, options: readonly IDshWorkspaceOption[]): void {
 		const slot = this._views.get(viewId);
 		if (!slot) {
@@ -1827,11 +1851,14 @@ export class DshViewHost extends Disposable {
 		wc.on('will-navigate', (event, url) => {
 			// ★ 2026-10-23：判据抽进 `common/dshViewNavigation.ts`（纯函数、有表驱动单测）——
 			//   这里只做三件事的分派：放行 / 拦下并外开 / 拦下并留现场。规则本身见那个文件。
-			// ★ 2026-10-23：把**插件页自己的路由**传下去 ⇒ 只放行它路由子树内的下钻（`/x/memory/detail` ✓），
-			//   子树之外的同源整页导航照旧拦（防"主页被导航成工作台页"）✓。
-			//   ⚠ 只对 `plugin-page` 传：`workbench` 的文档是 `/`，对它也放行子树就会退回那个 bug ✗。
-			const pluginPageRoute = slot.surface === 'plugin-page' ? slot.route : undefined;
-			const decision = decideMainFrameNavigation(url, this._connection?.origin, pluginPageRoute);
+			// ★ 2026-10-23：把**当前主 frame 的 pathname** 传下去 ⇒ 同一模块子树内的下钻放行
+			//   （`/x/memory/` → `/x/memory/detail` ✓），跨模块 / 从 `/` 跳模块页照旧拦 ✓。
+			//   ⚠ 不能按"视图表面"判：真机上记忆库页是被宿主 `loadURL` 装进 **chat 视图**
+			//     （id `dsh-desk-chat-*`）的主 frame ⇒ 表面判据覆盖不到（第一版就栽在这里 ✗）。
+			const currentPathname = (() => {
+				try { return new URL(wc.getURL()).pathname; } catch { return slot.route ?? '/'; }
+			})();
+			const decision = decideMainFrameNavigation(url, this._connection?.origin, currentPathname);
 			if (decision === 'allow') {
 				return;
 			}
