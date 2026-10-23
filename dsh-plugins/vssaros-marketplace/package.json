@@ -1,6 +1,6 @@
 {
   "name": "@vssaros/dsh-marketplace",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "VsSaros marketplace workbench: agent / skill / workbench / workflow browsing, install, upgrade, uninstall, publish and admin review. The page only sends intent (ide.request capability 'marketplace'); authentication, downloading and registry refresh all happen on the IDE side.",
   "private": true,
   "type": "module",

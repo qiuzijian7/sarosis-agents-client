@@ -165,24 +165,21 @@ const market = createMarketClient({ credentials: creds, config: { marketEndpoint
 //     "别人用 IDE 发布的 agent 包"，验证 dsh 侧**装得对**（这才是本轮搬的东西）。
 {
 	const agentSlug = `e2e-agent-${Date.now().toString().slice(-6)}`;
-	// 造一个旧格式（IDE preparePack 产物）的 agent 包：agent.json + files.agentsMd
-	// ⚠ 服务端 raw 上传**强制要求包内带 manifest.json**（`validateManifestKind`），
-	//   缺了直接 400「包内缺少 manifest.json」⇒ dsh 侧打包器会自动生成，这里手工造包要自己写 ✓
-	const agentPkg = packTarGzFromMap({
-		'manifest.json': JSON.stringify({
-			kind: 'agent', id: agentSlug, name: 'E2E 演示 Agent', version: '1.0.0',
-			files: ['agent.json'],
-		}, null, 2),
-		'agent.json': JSON.stringify({
-			agent: { id: agentSlug, name: 'E2E 演示 Agent', description: '端到端验证' },
-			files: { agentsMd: `---\nid: ${agentSlug}\nname: E2E 演示 Agent\ntools:\n  - read\n---\n\n你是端到端验证用的 agent\n` },
-		}),
+	// ★ 2026-10-22 晚：agent **发布也搬到 dsh 侧了** ⇒ 这里是完整闭环：
+	//   本机 agent 目录 → publishVersion（目录镜像打包）→ 服务端 → 下载 → installBundle 落盘
+	// ⚠ 发布源与安装目标必须**分开**两个数据根：同一个目录既有 `.agent.md` 又要往里装
+	//   会撞"已装过"的保护 ✗（真机上也不会是同一个人做这两步）
+	const publishRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vssaros-mp-pubroot-'));
+	const agentDir = path.join(publishRoot, 'agents', agentSlug);
+	fs.mkdirSync(agentDir, { recursive: true });
+	fs.writeFileSync(path.join(agentDir, '.agent.md'), `---\nid: ${agentSlug}\nname: E2E 演示 Agent\ntools:\n  - read\n---\n\n你是端到端验证用的 agent\n`);
+	const pub = await publishVersion({
+		market, dataRoot: publishRoot, kind: 'agent', localId: agentSlug, version: '1.0.0', changelog: 'e2e',
+		meta: { name: 'E2E 演示 Agent', description: '端到端验证' },
 	});
-	await market.request('POST', '/packages', {
-		kind: 'agent', slug: agentSlug, name: 'E2E 演示 Agent', description: '端到端验证',
-	});
-	const uploaded = await market.upload(`/packages/${encodeURIComponent(agentSlug)}/versions/raw`, agentPkg, { changelog: 'e2e' });
-	check('9. 服务端接受了 agent 包', Boolean(uploaded), JSON.stringify(uploaded));
+	check('9. dsh 侧能发布 agent（目录镜像）', pub.ok === true && pub.version === '1.0.0', JSON.stringify(pub));
+	const uploaded = { version: pub.version };
+	fs.rmSync(publishRoot, { recursive: true, force: true });
 
 	// 下载回来（模拟 dsh 侧安装的第一步），再落盘
 	const buf = await market.download(`/packages/${encodeURIComponent(agentSlug)}/versions/${encodeURIComponent(uploaded.version)}/download`);
@@ -192,10 +189,14 @@ const market = createMarketClient({ credentials: creds, config: { marketEndpoint
 	const mdPath = path.join(res.targetDir, '.agent.md');
 	check('9. agent 装到 <数据根>/agents/<id>/.agent.md',
 		res.targetDir === path.join(dataRoot, 'agents', agentSlug) && fs.existsSync(mdPath), res.targetDir);
-	check('9. agent.json 的 agentsMd 被正确解成 .agent.md（含 frontmatter）',
-		fs.readFileSync(mdPath, 'utf8').includes(`id: ${agentSlug}`)
-		&& fs.readFileSync(mdPath, 'utf8').includes('你是端到端验证用的 agent'));
-	check('9. agent.json 本身不落盘', !fs.existsSync(path.join(res.targetDir, 'agent.json')));
+	// 本次走的是**目录镜像**（dsh 侧发布格式）⇒ 验证 frontmatter 与正文都完整落地。
+	// （另一种格式——IDE 的 `agent.json` + `files.agentsMd`——在 installer 套件的 ⑨ 组单测覆盖 ✓）
+	const installedMd = fs.readFileSync(mdPath, 'utf8');
+	check('9. 目录镜像的 .agent.md 原样落地（frontmatter + 正文都在）',
+		installedMd.includes(`id: ${agentSlug}`) && installedMd.includes('你是端到端验证用的 agent'));
+	check('9. 包里的临时文件（agent.json/manifest.json）不落盘',
+		!fs.existsSync(path.join(res.targetDir, 'agent.json'))
+		&& !fs.existsSync(path.join(res.targetDir, 'manifest.json')));
 
 	// 卸载
 	await uninstallBundle({ dataRoot, kind: 'agent', storeId: agentSlug });

@@ -273,7 +273,11 @@ export async function installBundle({ dataRoot, kind, storeId, version, gzBuffer
 		files.push(...normalized);
 	}
 
-	await writeFiles(targetDir, files, { overwrite: Boolean(existing) });
+	// ★ 2026-10-22（真机端到端抓到）：`manifest.json` 是**打包元数据**，不属于资源本体
+	//   ⇒ **不落盘**（三种 kind 都一样）。此前它会跟着写进 `<数据根>/<kind根>/<id>/` ⇒
+	//   资源目录里多出一个服务端格式的文件（污染，且下次发布还会把它当资源内容打进去 ✗）
+	const runtimeFiles = files.filter(f => f.path !== 'manifest.json');
+	await writeFiles(targetDir, runtimeFiles, { overwrite: Boolean(existing) });
 	return { targetDir, fileCount: files.length, skipped, ...(backup ? { backup } : {}) };
 }
 

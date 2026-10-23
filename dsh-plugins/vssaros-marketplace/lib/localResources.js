@@ -12,8 +12,21 @@ import { readdir, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { PUBLISHABLE_KINDS } from './publisher.js';
 
-/** 各 kind 的本地根目录名（与 IDE 侧 `SarosPath` 同口径）。 */
-const KIND_DIR = { skill: 'skills', workflow: 'workflows' };
+/**
+ * 各 kind 的本地根目录名（与 IDE 侧 `SarosPath` 同口径）。
+ *
+ * ★ 2026-10-22 晚：加 `agent` —— agent 的本地形态是 `<数据根>/agents/<id>/.agent.md`，
+ *   与 skill/workflow 一样是目录镜像 ⇒ 可发布、可安装 ✓
+ */
+const KIND_DIR = { skill: 'skills', workflow: 'workflows', agent: 'agents' };
+
+/**
+ * 各 kind 的**关键文件**（没有它就不是一个可发布的资源）。
+ *
+ * ⚠ agent 是 `.agent.md`（点开头）—— 之前这里只写了 skill/workflow 两个分支，
+ *   结果 agent 目录被当成"缺 workflow.json"**静默跳过**（页面上根本选不到）✗
+ */
+const ENTRY_OF = { skill: 'SKILL.md', workflow: 'workflow.json', agent: '.agent.md' };
 
 /**
  * 读一个本地资源的版本（读不到就空串，不抛）。
@@ -23,8 +36,9 @@ const KIND_DIR = { skill: 'skills', workflow: 'workflows' };
  */
 async function versionOf(dir, kind) {
 	try {
-		if (kind === 'skill') {
-			const md = await readFile(join(dir, 'SKILL.md'), 'utf8');
+		// skill 与 agent 都从 markdown 的 frontmatter 取 version（agent 是 `.agent.md`）
+		if (kind === 'skill' || kind === 'agent') {
+			const md = await readFile(join(dir, ENTRY_OF[kind]), 'utf8');
 			const head = md.split(/\r?\n---/)[0] ?? '';
 			const m = /^version:\s*(.+)$/m.exec(head);
 			return m ? m[1].trim() : '';
@@ -58,7 +72,7 @@ export async function listPublishables(dataRoot) {
 			try { if (!(await stat(dir)).isDirectory()) { continue; } } catch { continue; }
 			// 关键文件不在 ⇒ 不是一个可发布的资源（发布时必失败）
 			try {
-				await stat(join(dir, kind === 'skill' ? 'SKILL.md' : 'workflow.json'));
+				await stat(join(dir, ENTRY_OF[kind]));
 			} catch {
 				continue;
 			}

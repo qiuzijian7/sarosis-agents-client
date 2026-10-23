@@ -215,7 +215,17 @@ check('① 支持 skill / workflow / agent 三类，其它类（mcp 等）明说
 		fs.readFileSync(path.join(up.targetDir, '.agent.md'), 'utf8').includes('第二版'));
 	check('⑨ agent 升级前有备份', Boolean(up.backup) && fs.existsSync(up.backup), String(up.backup));
 
-	// 9g. BUNDLE_KINDS 现在包含 agent；uninstall 也认
+	// 9g. **manifest.json 不落盘**（三 kind 一致）：它是打包元数据，不属于资源本体
+	//     （2026-10-22 真机端到端抓到：此前会跟着写进资源目录，污染且下次发布会再打进去 ✗）
+	const withManifest = packTarGzFromMap({
+		'manifest.json': JSON.stringify({ kind: 'skill', id: 'mf-skill', version: '1.0.0', files: ['SKILL.md'] }),
+		'SKILL.md': '---\nname: mf\n---\n\nx\n',
+	});
+	const rmf = await installBundle({ dataRoot, kind: 'skill', storeId: 'mf-skill', version: '1.0.0', gzBuffer: withManifest });
+	check('⑨ 包里的 manifest.json **不落盘**（打包元数据不属于资源）',
+		!fs.existsSync(path.join(rmf.targetDir, 'manifest.json')) && fs.existsSync(path.join(rmf.targetDir, 'SKILL.md')));
+
+	// 9h. BUNDLE_KINDS 现在包含 agent；uninstall 也认
 	check('⑨ BUNDLE_KINDS 含 agent', BUNDLE_KINDS.includes('agent'), BUNDLE_KINDS.join(','));
 	await uninstallBundle({ dataRoot, kind: 'agent', storeId: 'demo-agent' });
 	check('⑨ agent 能卸载（目录删掉）', !fs.existsSync(path.join(dataRoot, 'agents', 'demo-agent')));

@@ -93,12 +93,13 @@ function makeSkill(localId, version, extra = {}) {
 	//   dsh 侧打目录镜像会让"别人装不上"✗
 	fs.mkdirSync(path.join(dataRoot, 'agents', 'demo-agent'), { recursive: true });
 	fs.writeFileSync(path.join(dataRoot, 'agents', 'demo-agent', '.agent.md'), '---\nname: demo-agent\n---\n\n人设\n');
-	let agentThrew = '';
-	try { await preparePublishBundle({ dataRoot, kind: 'agent', localId: 'demo-agent', version: '3.0.0' }); }
-	catch (e) { agentThrew = String(e.message ?? e); }
-	check('② agent **不**走 dsh 侧发布（包格式 agent.json 归 IDE 组装）',
-		agentThrew.includes('不支持发布这一类') && agentThrew.includes('agent'), agentThrew);
-	check('② PUBLISHABLE_KINDS 只剩 skill / workflow', PUBLISHABLE_KINDS.join(',') === 'skill,workflow');
+	// ★ 2026-10-22 晚：agent **已可发布**（目录镜像含 `.agent.md`，IDE 侧安装器也已认它）
+	const ag = await preparePublishBundle({ dataRoot, kind: 'agent', localId: 'demo-agent', version: '3.0.0' });
+	check('② agent 可发布（目录镜像：.agent.md 原样进包）',
+		ag.manifest.kind === 'agent'
+		&& (await listTarGzEntries(ag.gzBuffer)).files.some(f => f.path === '.agent.md'));
+	check('② PUBLISHABLE_KINDS = skill / workflow / agent',
+		PUBLISHABLE_KINDS.join(',') === 'skill,workflow,agent', PUBLISHABLE_KINDS.join(','));
 }
 
 // ── ③ 本地没有 / 空目录 / slug 非法 ⇒ 如实报错 ─────────────────
@@ -218,9 +219,9 @@ function makeSkill(localId, version, extra = {}) {
 	fs.writeFileSync(path.join(root2, 'workflows', 'ok-wf', 'workflow.json'), JSON.stringify({ id: 'ok-wf', version: '3.2.1' }));
 	// 普通文件（不是目录）⇒ 跳过
 	fs.writeFileSync(path.join(root2, 'skills', 'stray.txt'), 'x');
-	// agent 目录存在也不该出现在列表里（agent 不走 dsh 侧发布）
+	// ★ 2026-10-22 晚：agent **可以**发布了 ⇒ 这个目录应该出现在列表里（入口是 `.agent.md`）
 	fs.mkdirSync(path.join(root2, 'agents', 'some-agent'), { recursive: true });
-	fs.writeFileSync(path.join(root2, 'agents', 'some-agent', '.agent.md'), '---\nname: a\n---\n');
+	fs.writeFileSync(path.join(root2, 'agents', 'some-agent', '.agent.md'), '---\nid: some-agent\nname: a\nversion: 4.5.6\n---\n');
 
 	const list = await listPublishables(root2);
 	check('⑨ 列出正常的 skill（带 frontmatter 版本）',
@@ -229,7 +230,10 @@ function makeSkill(localId, version, extra = {}) {
 		list.some(it => it.kind === 'workflow' && it.localId === 'ok-wf' && it.version === '3.2.1'));
 	check('⑨ 跳过缺关键文件的目录（发布必失败的不列）', !list.some(it => it.localId === 'no-entry'));
 	check('⑨ 跳过 `.upgrade-backup` 与普通文件', !list.some(it => it.localId === '.upgrade-backup' || it.localId === 'stray.txt'));
-	check('⑨ **不**列 agent（agent 发布归 IDE）', !list.some(it => it.kind === 'agent'), JSON.stringify(list.map(i => i.kind)));
+	// ★ 2026-10-22 晚：agent 已可发布 ⇒ **应该**列出（且版本从 `.agent.md` 的 frontmatter 读）
+	check('⑨ **列**出 agent（入口 `.agent.md`，版本从 frontmatter 读）',
+		list.some(it => it.kind === 'agent' && it.localId === 'some-agent' && it.version === '4.5.6'),
+		JSON.stringify(list.map(i => `${i.kind}:${i.localId}@${i.version}`)));
 	fs.rmSync(root2, { recursive: true, force: true });
 }
 

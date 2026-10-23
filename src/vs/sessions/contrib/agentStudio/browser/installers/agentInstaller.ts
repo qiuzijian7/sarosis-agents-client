@@ -18,6 +18,8 @@ import { IFileService } from '../../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import { IPathService } from '../../../../../workbench/services/path/common/pathService.js';
 import { IAgentStudioService } from '../../common/agentStudio.js';
+// ★ 2026-10-22：目录镜像包（只有 `.agent.md`）要用它把 frontmatter 还原成 Agent 定义
+import { parseAgentMd } from '../../common/agentMdFormat.js';
 
 import { Agent } from '../../../../common/agentStudioTypes.js';
 import { IPackageInstaller, PackageManifest, IPreparePackResult } from '../../common/packageInstaller.js';
@@ -41,7 +43,11 @@ export class AgentInstaller extends Disposable implements IPackageInstaller {
 	async install(manifest: PackageManifest, extractedDir: URI): Promise<IInstallResult> {
 		const agentJsonUri = URI.joinPath(extractedDir, 'agent.json');
 		if (!await this.fileService.exists(agentJsonUri)) {
-			throw new Error('包内缺少 agent.json');
+			// ★ 2026-10-22：**目录镜像包**（`@vssaros/dsh-marketplace` 发布的就是这种：
+			//   包里只有一个 `.agent.md` + 可选的 `config.html`）。
+			//   此前只认 `agent.json` ⇒ dsh 侧发出来的 agent 包在这里**装不了** ✗。
+			//   `.agent.md` 的 frontmatter 本来就是完整定义 ⇒ `parseAgentMd` 还原即可 ✓
+			return this.installFromAgentMd(manifest, extractedDir);
 		}
 		const raw = (await this.fileService.readFile(agentJsonUri)).value.toString();
 		const exportData = JSON.parse(raw) as {
@@ -99,6 +105,54 @@ export class AgentInstaller extends Disposable implements IPackageInstaller {
 		await this.agentStudioService.createAgent(createData);
 		this.logService.info(`[AgentInstaller] 安装完成: ${manifest.id} v${manifest.version}${htmlPath ? ' (含 ConfigHTML)' : ''}`);
 
+		return { kind: 'agent', storeId: manifest.id, version: manifest.version, targetDir: agentDir.fsPath };
+	}
+
+	/**
+	 * 从**目录镜像包**安装（包里只有 `.agent.md`，没有 `agent.json`）。
+	 *
+	 * 与 `agent.json` 路径的差别只有"定义从哪来"：这里用 `parseAgentMd` 把
+	 * frontmatter 还原成 `Partial<Agent>`，落地仍走 `createAgent`（与 IDE 内建流程同一条 ✓）。
+	 *
+	 * ⚠ `bootstrapTemplates.agentsMd` 要传**原文**（不是重新生成的）——
+	 *   否则用户写在正文里的内容、以及 frontmatter 里我们还不认识的字段会被洗掉 ✗
+	 */
+	private async installFromAgentMd(manifest: PackageManifest, extractedDir: URI): Promise<IInstallResult> {
+		const mdUri = URI.joinPath(extractedDir, '.agent.md');
+		if (!await this.fileService.exists(mdUri)) {
+			throw new Error('包内既没有 agent.json 也没有 .agent.md（不知道该装什么）');
+		}
+		const content = (await this.fileService.readFile(mdUri)).value.toString();
+		const parsed = parseAgentMd(content);
+		if (!parsed) {
+			throw new Error('.agent.md 解析失败（frontmatter 不合法或缺少 id/name）');
+		}
+		const agentId = parsed.agent.id || manifest.id;
+		const agentDir = await this.agentStudioService.getAgentDir(agentId);
+		try {
+			await this.fileService.resolve(agentDir);
+		} catch {
+			await this.fileService.createFolder(agentDir);
+		}
+		// 包内自带的 config.html 一并搬过去（dsh 侧发布时会把 config.html 打进包）
+		const configSrc = URI.joinPath(extractedDir, 'config.html');
+		if (await this.fileService.exists(configSrc)) {
+			await this.fileService.writeFile(
+				URI.joinPath(agentDir, 'config.html'),
+				(await this.fileService.readFile(configSrc)).value,
+			);
+		}
+		// 与 agent.json 分支同形：`bootstrapTemplates` 不在 `Partial<Agent>` 里，用交叉类型补 ✓
+		const createData: Partial<Agent> & { bootstrapTemplates?: { agentsMd?: string } } = {
+			...parsed.agent,
+			id: agentId,
+			version: manifest.version,
+			storeId: manifest.id,
+			source: 'custom' as const,
+			bootstrapTemplates: { agentsMd: content },
+		};
+		await this.agentStudioService.createAgent(createData);
+		this.logService.info(`[AgentInstaller] 目录镜像安装完成: ${manifest.id} v${manifest.version}`);
 		return { kind: 'agent', storeId: manifest.id, version: manifest.version, targetDir: agentDir.fsPath };
 	}
 

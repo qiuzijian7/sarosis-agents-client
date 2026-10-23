@@ -33,7 +33,7 @@ import { parseGitHubSource } from './githubSource.js';
 //   发出去的 agent 包**别人装不上**（IDE 安装器报"包内缺少 agent.json"）✗；
 //   而自己从 `.agent.md` 的 frontmatter 反解出 `agent.json` 又必然与 IDE 的组装逻辑漂移
 //   （嵌套 `configHtml` 之类）✗ ⇒ **agent 的发布留在 IDE**（`preparePack` 是唯一正确组装器）✓
-export const PUBLISHABLE_KINDS = ['skill', 'workflow'];
+export const PUBLISHABLE_KINDS = ['skill', 'workflow', 'agent'];
 
 /** 各 kind 的本地根目录名（与 IDE 侧 `SarosPath` 同口径）。 */
 const KIND_DIR = { agent: 'agents', skill: 'skills', workflow: 'workflows' };
