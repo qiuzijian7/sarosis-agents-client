@@ -1859,6 +1859,11 @@ export class DshViewHost extends Disposable {
 				try { return new URL(wc.getURL()).pathname; } catch { return slot.route ?? '/'; }
 			})();
 			const decision = decideMainFrameNavigation(url, this._connection?.origin, currentPathname);
+			// ★ 2026-10-23 诊断：真机"点了没反应"排查用 —— 把 current / target / 判定一起打出来
+			//   （只在**目标不是根路径**时打，避免刷屏；定位完可以删 ✓）
+			if (!/^\/?$/.test(new URL(url).pathname)) {
+				this._logService.info(`[dshHarness][nav] view ${slot.id} surface=${slot.surface} route=${slot.route ?? '-'} current=${currentPathname} target=${new URL(url).pathname} => ${decision}`);
+			}
 			if (decision === 'allow') {
 				return;
 			}
