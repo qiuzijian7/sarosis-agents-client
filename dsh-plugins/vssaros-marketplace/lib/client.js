@@ -151,9 +151,31 @@
 				loading: 'lazy',
 				decoding: 'async',
 				referrerPolicy: 'no-referrer',
-				onError: function () { failedState[1](true); }
+				// ⚠ 失败要**通知父级**：父级据此把布局从"大图"回退成"小图标"，
+				//   否则 `hasCover ? null : PkgIcon` 会让卡片顶部**整块空白** ✗
+				//   （真机踩到：2 个商品的源图在 CDN 侧就 400，卡片顶部只剩 kindtag）
+				onError: function () {
+					failedState[1](true);
+					if (typeof props.onFail === 'function') { props.onFail(); }
+				}
 			})
 		);
+	}
+
+	/**
+	 * 卡片的"有没有封面"状态 + 失败回退。
+	 *
+	 * 为什么要 state：封面 `onError` 之后必须能把布局**切回小图标**，
+	 * 否则大图消失、小图标又被跳过 ⇒ 卡片顶部空白 ✗（真机踩到）
+	 *
+	 * @param {string} icon
+	 * @returns {[boolean, () => void]} `[hasCover, onCoverFail]`
+	 */
+	function useCoverFallback(icon) {
+		// 换商品不需要手动重置：`Card` 的 key 是 `kind:slug` ⇒ React 会重建组件、state 自动归位 ✓
+		var state = useState(isImageIcon(icon));
+		var onFail = useCallback(function () { state[1](false); }, []);
+		return [state[0], onFail];
 	}
 
 	/** 分类页签（mcp / knowledge 不进页签，但接口支持）。 */
@@ -270,9 +292,12 @@
 
 		// ★ 2026-10-23：有缩略图 ⇒ 顶部大图 + 不再显示小图标（重复且占位）；
 		//   没缩略图 ⇒ 沿用「小图标 + 渐变」的紧凑布局 ✓
-		var hasCover = isImageIcon(pkg.icon);
+		//   ⚠ 用 state 而不是直接判断：封面**加载失败时**要能回退到小图标布局
+		//     （否则大图没了、小图标又被 `hasCover ? null` 跳过 ⇒ 顶部空白 ✗）
+		var coverState = useCoverFallback(pkg.icon);
+		var hasCover = coverState[0];
 		return h('div', { className: 'vs-mp-card' + (hasCover ? ' has-cover' : ''), 'data-slug': pkg.slug },
-			h(PkgCover, { key: 'cover', pkg: pkg }),
+			h(PkgCover, { key: 'cover', pkg: pkg, onFail: coverState[1] }),
 			h('div', { className: 'vs-mp-card-top' },
 				hasCover ? null : h(PkgIcon, { key: 'icon', pkg: pkg }),
 				h('div', { className: 'vs-mp-card-topbody' },
