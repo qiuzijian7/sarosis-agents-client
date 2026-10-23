@@ -53,9 +53,11 @@ const WF_PKG = packTarGzFromMap({
 check('① skill 落 <数据根>/skills，workflow 落 <数据根>/workflows',
 	targetRootOf(dataRoot, 'skill') === path.join(dataRoot, 'skills')
 	&& targetRootOf(dataRoot, 'workflow') === path.join(dataRoot, 'workflows'));
-check('① 只支持 skill / workflow（agent 会明说"还不行"）',
-	(() => { try { targetRootOf(dataRoot, 'agent'); return false; } catch { return true; } })()
-	&& BUNDLE_KINDS.join(',') === 'skill,workflow');
+// ★ 2026-10-22 晚：agent **已搬过来** ⇒ 这条断言从"agent 还不行"改成"这三类都行、其它类明说不行"
+check('① 支持 skill / workflow / agent 三类，其它类（mcp 等）明说不支持',
+	BUNDLE_KINDS.join(',') === 'skill,workflow,agent'
+	&& targetRootOf(dataRoot, 'agent') === path.join(dataRoot, 'agents')
+	&& (() => { try { targetRootOf(dataRoot, 'mcp'); return false; } catch (e) { return /还不支持/.test(String(e.message ?? e)); } })());
 
 // ── ② skill 安装 + frontmatter 回写 ──────────────────────────
 {
@@ -138,6 +140,85 @@ check('① 只支持 skill / workflow（agent 会明说"还不行"）',
 	check('⑧ frontmatter 未闭合 ⇒ 抛错（不猜着改）', (() => {
 		try { injectSkillFrontmatter('---\nname: x\n正文', { storeId: 's', version: '1' }); return false; } catch { return true; }
 	})());
+}
+
+// ── ⑨ agent 安装（★ 2026-10-22 晚：从 IDE 侧搬过来）────────────────
+//   取证：agent 本地形态就是 `<数据根>/agents/<id>/.agent.md`，
+//   而 `.agent.md` 的 frontmatter 自带完整定义 ⇒ 不需要 IDE 的 createAgent ✓
+{
+	// 9a. 目录镜像包（dsh 侧发布格式）：直接有 .agent.md
+	const mirrorPkg = packTarGzFromMap({
+		'.agent.md': '---\nid: demo-agent\nname: 演示 Agent\ntools:\n  - read\n---\n\n你是一个演示 agent\n',
+		'README.md': '说明\n',
+	});
+	const r1 = await installBundle({
+		dataRoot, kind: 'agent', storeId: 'demo-agent', version: '1.0.0', gzBuffer: mirrorPkg,
+	});
+	check('⑨ agent 落到 <数据根>/agents/<id>', r1.targetDir === path.join(dataRoot, 'agents', 'demo-agent'), r1.targetDir);
+	check('⑨ .agent.md 原样落盘（frontmatter 完整）',
+		fs.readFileSync(path.join(r1.targetDir, '.agent.md'), 'utf8').includes('id: demo-agent'));
+
+	// 9b. 旧包（IDE 的 preparePack 产物）：agent.json + files.agentsMd
+	const legacyPkg = packTarGzFromMap({
+		'agent.json': JSON.stringify({
+			agent: { id: 'legacy-agent', name: '旧格式 Agent', description: 'x', tools: ['read'] },
+			files: {
+				agentsMd: '---\nid: legacy-agent\nname: 旧格式 Agent\n---\n\n旧包正文\n',
+				configHtml: '<html><body>配置</body></html>',
+			},
+		}),
+	});
+	const r2 = await installBundle({
+		dataRoot, kind: 'agent', storeId: 'legacy-agent', version: '0.9.0', gzBuffer: legacyPkg,
+	});
+	check('⑨ 旧包：files.agentsMd 被转成 .agent.md',
+		fs.existsSync(path.join(r2.targetDir, '.agent.md'))
+		&& fs.readFileSync(path.join(r2.targetDir, '.agent.md'), 'utf8').includes('旧包正文'));
+	check('⑨ 旧包：agent.json 不落盘（它不是运行期文件）',
+		!fs.existsSync(path.join(r2.targetDir, 'agent.json')));
+	check('⑨ 旧包：files.configHtml 落成 config.html（与 IDE 侧同名）',
+		fs.existsSync(path.join(r2.targetDir, 'config.html')));
+
+	// 9c. agent.json 的 id 与商城标识不一致 ⇒ 明确拒（否则目录名和 frontmatter 对不上）
+	const mismatch = packTarGzFromMap({
+		'agent.json': JSON.stringify({ agent: { id: 'other-id' }, files: { agentsMd: '---\nid: other-id\n---\n' } }),
+	});
+	let msg = '';
+	try {
+		await installBundle({ dataRoot, kind: 'agent', storeId: 'wanted-id', version: '1.0.0', gzBuffer: mismatch });
+	} catch (e) { msg = String(e.message ?? e); }
+	check('⑨ agent.json 的 id 与标识不一致 ⇒ 拒绝', msg.includes('不一致'), msg);
+	check('⑨ 被拒时没有落下目录', !fs.existsSync(path.join(dataRoot, 'agents', 'wanted-id')));
+
+	// 9d. 两种来源都没有 ⇒ 拒绝（不装空壳）
+	const empty = packTarGzFromMap({ 'README.md': 'x\n' });
+	msg = '';
+	try {
+		await installBundle({ dataRoot, kind: 'agent', storeId: 'no-entry', version: '1.0.0', gzBuffer: empty });
+	} catch (e) { msg = String(e.message ?? e); }
+	check('⑨ 既无 agent.json 又无 .agent.md ⇒ 拒绝', msg.includes('.agent.md'), msg);
+
+	// 9e. agent.json 缺 files.agentsMd ⇒ 拒绝（装不出可用 agent）
+	const noMd = packTarGzFromMap({ 'agent.json': JSON.stringify({ agent: { id: 'x' }, files: {} }) });
+	msg = '';
+	try {
+		await installBundle({ dataRoot, kind: 'agent', storeId: 'x', version: '1.0.0', gzBuffer: noMd });
+	} catch (e) { msg = String(e.message ?? e); }
+	check('⑨ agent.json 缺 agentsMd ⇒ 拒绝', msg.includes('agentsMd'), msg);
+
+	// 9f. 升级 = 覆盖 + 先备份
+	const v2 = packTarGzFromMap({ '.agent.md': '---\nid: demo-agent\nname: v2\n---\n\n第二版\n' });
+	const up = await installBundle({
+		dataRoot, kind: 'agent', storeId: 'demo-agent', version: '2.0.0', gzBuffer: v2, upgrade: true,
+	});
+	check('⑨ agent 升级生效（内容换了）',
+		fs.readFileSync(path.join(up.targetDir, '.agent.md'), 'utf8').includes('第二版'));
+	check('⑨ agent 升级前有备份', Boolean(up.backup) && fs.existsSync(up.backup), String(up.backup));
+
+	// 9g. BUNDLE_KINDS 现在包含 agent；uninstall 也认
+	check('⑨ BUNDLE_KINDS 含 agent', BUNDLE_KINDS.includes('agent'), BUNDLE_KINDS.join(','));
+	await uninstallBundle({ dataRoot, kind: 'agent', storeId: 'demo-agent' });
+	check('⑨ agent 能卸载（目录删掉）', !fs.existsSync(path.join(dataRoot, 'agents', 'demo-agent')));
 }
 
 fs.rmSync(dataRoot, { recursive: true, force: true });

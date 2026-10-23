@@ -29,6 +29,7 @@ const LIB = path.resolve(HERE, '..', 'lib');
 // 用真源：foundation 绑定（dataRootOf 走它）
 const foundationMod = await import(pathToFileURL(path.join(LIB, 'foundationRef.js')).href);
 const { createMarketClient, MARKET_JWT_REF } = await import(pathToFileURL(path.join(LIB, 'marketClient.js')).href);
+const { packTarGzFromMap } = await import(pathToFileURL(path.join(LIB, 'tar.js')).href);
 const { installBundle, uninstallBundle } = await import(pathToFileURL(path.join(LIB, 'installers.js')).href);
 const { publishVersion, deletePackage, deleteVersion } = await import(pathToFileURL(path.join(LIB, 'publisher.js')).href);
 const { readInstalled, upsertInstalled, removeInstalled } = await import(pathToFileURL(path.join(LIB, 'installedLedger.js')).href);
@@ -156,6 +157,50 @@ const market = createMarketClient({ credentials: creds, config: { marketEndpoint
 	try { await market.list({ kind: 'not-a-kind' }); } catch (e) { msg = String(e.message ?? e); }
 	check('8. 非法 kind ⇒ 错误文案带服务端 details（能看出哪个参数不对）',
 		msg.includes('参数校验失败') && /kind/.test(msg), msg.slice(0, 160));
+}
+
+// ── 9. agent：真服务端 → dsh 侧安装（★ 2026-10-22 晚搬过来的能力）──────
+//   ⚠ dsh 侧**暂不支持发布 agent bundle**（`PUBLISHABLE_KINDS` 不含 agent：IDE 侧安装器
+//     只认 agent.json，dsh 的目录镜像它装不了）⇒ 这里用**服务端 raw 上传**模拟
+//     "别人用 IDE 发布的 agent 包"，验证 dsh 侧**装得对**（这才是本轮搬的东西）。
+{
+	const agentSlug = `e2e-agent-${Date.now().toString().slice(-6)}`;
+	// 造一个旧格式（IDE preparePack 产物）的 agent 包：agent.json + files.agentsMd
+	// ⚠ 服务端 raw 上传**强制要求包内带 manifest.json**（`validateManifestKind`），
+	//   缺了直接 400「包内缺少 manifest.json」⇒ dsh 侧打包器会自动生成，这里手工造包要自己写 ✓
+	const agentPkg = packTarGzFromMap({
+		'manifest.json': JSON.stringify({
+			kind: 'agent', id: agentSlug, name: 'E2E 演示 Agent', version: '1.0.0',
+			files: ['agent.json'],
+		}, null, 2),
+		'agent.json': JSON.stringify({
+			agent: { id: agentSlug, name: 'E2E 演示 Agent', description: '端到端验证' },
+			files: { agentsMd: `---\nid: ${agentSlug}\nname: E2E 演示 Agent\ntools:\n  - read\n---\n\n你是端到端验证用的 agent\n` },
+		}),
+	});
+	await market.request('POST', '/packages', {
+		kind: 'agent', slug: agentSlug, name: 'E2E 演示 Agent', description: '端到端验证',
+	});
+	const uploaded = await market.upload(`/packages/${encodeURIComponent(agentSlug)}/versions/raw`, agentPkg, { changelog: 'e2e' });
+	check('9. 服务端接受了 agent 包', Boolean(uploaded), JSON.stringify(uploaded));
+
+	// 下载回来（模拟 dsh 侧安装的第一步），再落盘
+	const buf = await market.download(`/packages/${encodeURIComponent(agentSlug)}/versions/${encodeURIComponent(uploaded.version)}/download`);
+	const res = await installBundle({
+		dataRoot, kind: 'agent', storeId: agentSlug, version: uploaded.version, gzBuffer: buf,
+	});
+	const mdPath = path.join(res.targetDir, '.agent.md');
+	check('9. agent 装到 <数据根>/agents/<id>/.agent.md',
+		res.targetDir === path.join(dataRoot, 'agents', agentSlug) && fs.existsSync(mdPath), res.targetDir);
+	check('9. agent.json 的 agentsMd 被正确解成 .agent.md（含 frontmatter）',
+		fs.readFileSync(mdPath, 'utf8').includes(`id: ${agentSlug}`)
+		&& fs.readFileSync(mdPath, 'utf8').includes('你是端到端验证用的 agent'));
+	check('9. agent.json 本身不落盘', !fs.existsSync(path.join(res.targetDir, 'agent.json')));
+
+	// 卸载
+	await uninstallBundle({ dataRoot, kind: 'agent', storeId: agentSlug });
+	check('9. agent 能卸载', !fs.existsSync(res.targetDir));
+	try { await market.request('DELETE', `/admin/packages/${encodeURIComponent(agentSlug)}`); } catch { /* ignore */ }
 }
 
 fs.rmSync(dataRoot, { recursive: true, force: true });

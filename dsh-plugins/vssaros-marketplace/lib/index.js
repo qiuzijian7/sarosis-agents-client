@@ -61,7 +61,7 @@ const LOCAL_OPS = new Set(['list', 'detail', 'installed', 'publishables', 'revie
  *   `agent`（要生成 `.agent.md`，格式真源在 IDE 侧；等包格式统一后再搬）、
  *   以及 `publish` / `delete*`（发布要调 IDE 侧的打包与上传链，S2c 再搬）。
  */
-const LOCAL_WRITE_KINDS = new Set(['skill', 'workflow']);
+const LOCAL_WRITE_KINDS = new Set(['skill', 'workflow', 'agent']);
 
 export async function apply(ctx, config) {
 	/** IDE 控制桥（可选注入）：**只有 workbench 的装/卸**还需要它 ✓。 */
@@ -259,6 +259,9 @@ export async function apply(ctx, config) {
 		if (!LOCAL_WRITE_KINDS.has(kind)) {
 			throw new Error(`这一类（${kind}）不能由 dsh 侧安装：只有 ${[...LOCAL_WRITE_KINDS].join(' / ')} 能自持`);
 		}
+		// agent 的"生效"与 skill 不同：`vssaros-agents` 只在**启动时**扫描 agent 目录
+		// （`syncPresets` 没有文件监听）⇒ 装完必须重启才注册成 preset。
+		// 如实返回，不让用户以为"装完就能用"✗（重启后自然生效，代码里不需要额外动作）
 		if (!slug) { throw new Error(`marketplace.${op} 需要 slug`); }
 
 		if (op === 'uninstall') {
@@ -312,6 +315,8 @@ export async function apply(ctx, config) {
 			fileCount: installed.fileCount,
 			...(installed.backup ? { backup: installed.backup } : {}),
 			...(reloadNote ? { skillsReload: reloadNote } : {}),
+			// agent：文件已落好，但 preset 要重启才会扫描到（见上面的说明）
+			...(kind === 'agent' ? { restartRequired: true, agentsRescan: 'restart' } : {}),
 		};
 	}
 

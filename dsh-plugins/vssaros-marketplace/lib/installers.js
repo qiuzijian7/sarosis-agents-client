@@ -23,8 +23,20 @@ import { cp, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promis
 import { dirname, join } from 'node:path';
 import { listTarGzEntries } from './tar.js';
 
-/** 三类落数据根的商品（agent 暂不在内，见文件头）。 */
-export const BUNDLE_KINDS = ['skill', 'workflow'];
+/**
+ * 落数据根的商品类型。
+ *
+ * ★ 2026-10-22 晚：**agent 也搬进来了**（用户要求"继续搬 agent"）。
+ *   取证结论：agent 的本地形态极简 —— `<数据根>/agents/<id>/.agent.md`（外加可选 config.html），
+ *   而 `.agent.md` 的 frontmatter 就含完整定义（id/name/tools/skills/role…）⇒
+ *   **能像 skill 一样解包落盘**，不需要 IDE 的 `createAgent`。
+ *
+ * ⚠ 包格式有两种，都要认：
+ *   ① **旧包**（IDE 侧 preparePack 产的）：`agent.json`（AgentExportData），
+ *      `.agent.md` 全文在 `files.agentsMd` 里 ⇒ 这里解出来写成 `.agent.md` ✓
+ *   ② **新包**（dsh 侧目录镜像）：直接就有 `.agent.md` ✓
+ */
+export const BUNDLE_KINDS = ['skill', 'workflow', 'agent'];
 
 /** sha256（hex）。 */
 export function sha256Of(buffer) {
@@ -55,11 +67,67 @@ export function assertSafeStoreId(id, what = 'id') {
 	return value;
 }
 
-/** 各 kind 的落地根：`<数据根>/skills` / `<数据根>/workflows`。 */
+/** 各 kind 的落地根：`<数据根>/skills` / `workflows` / `agents`（与 IDE 侧同口径 ✓）。 */
 export function targetRootOf(dataRoot, kind) {
 	if (kind === 'skill') { return join(dataRoot, 'skills'); }
 	if (kind === 'workflow') { return join(dataRoot, 'workflows'); }
+	if (kind === 'agent') { return join(dataRoot, 'agents'); }
 	throw new Error(`dsh 侧还不支持安装这一类：${kind}（当前支持 ${BUNDLE_KINDS.join(' / ')}）`);
+}
+
+/**
+ * 把 agent 包**规范化**成"磁盘上该有的样子"（★ 2026-10-22）。
+ *
+ * 两种包格式都要认（见 `BUNDLE_KINDS` 的注释）：
+ *   · 有 `agent.json` ⇒ 从 `files.agentsMd` 取出 `.agent.md` 全文；
+ *     `files.configHtml` / `files.htmlContent` 落成 `config.html`（与 IDE 侧
+ *     `agentInstaller.install` 写的是同一个文件 ✓）
+ *   · 没有 `agent.json` ⇒ 要求包内**自带** `.agent.md`（目录镜像）
+ *
+ * ⚠ 不解析 `agent.json` 的 `agent` 元数据：`.agent.md` 的 frontmatter 已经是完整定义
+ *   （dsh 侧 preset 只读它）⇒ 多存一份反而会漂 ✗
+ *
+ * @param {{ path: string, data: Buffer }[]} files
+ * @param {string} storeId
+ * @returns {{ path: string, data: Buffer }[]}
+ */
+export function normalizeAgentBundle(files, storeId) {
+	const agentJsonIndex = files.findIndex(f => f.path === 'agent.json');
+	if (agentJsonIndex < 0) {
+		if (!files.some(f => f.path === '.agent.md')) {
+			throw new Error('agent 包里既没有 agent.json 也没有 .agent.md（不知道该装什么）');
+		}
+		// ⚠ 必须返回**拷贝**：调用方是"清空原数组再 push 回来"，返回同一个引用会把自己清空 ✗
+		//   （2026-10-22 真被测试抓到：目录建了、文件一个都没写）
+		return files.slice();
+	}
+	let parsed;
+	try {
+		parsed = JSON.parse(files[agentJsonIndex].data.toString('utf8'));
+	} catch (e) {
+		throw new Error(`agent.json 不是合法 JSON：${String(e?.message ?? e)}`);
+	}
+	const bundleFiles = parsed?.files ?? {};
+	const agentsMd = typeof bundleFiles.agentsMd === 'string' ? bundleFiles.agentsMd : '';
+	if (!agentsMd.trim()) {
+		throw new Error('agent.json 里没有 files.agentsMd（这是 agent 的定义正文，缺了就装不出可用的 agent）');
+	}
+	// id 对不上就明确拒：装进去也注册不出来（preset 的 id 取自 frontmatter，与目录名不一致会更乱）
+	const declaredId = typeof parsed?.agent?.id === 'string' ? parsed.agent.id.trim() : '';
+	if (declaredId && declaredId !== storeId) {
+		throw new Error(`包的 agent.id（${declaredId}）与商城标识（${storeId}）不一致 —— 装进去会和目录名对不上`);
+	}
+	const out = files.filter(f => f.path !== 'agent.json');
+	out.push({ path: '.agent.md', data: Buffer.from(agentsMd, 'utf8') });
+	if (out.every(f => f.path !== 'config.html')) {
+		const configHtml = typeof bundleFiles.configHtml === 'string'
+			? bundleFiles.configHtml
+			: (typeof bundleFiles.htmlContent === 'string' ? bundleFiles.htmlContent : '');
+		if (configHtml.trim()) {
+			out.push({ path: 'config.html', data: Buffer.from(configHtml, 'utf8') });
+		}
+	}
+	return out;
 }
 
 /** 目录是否存在。 */
@@ -196,6 +264,13 @@ export async function installBundle({ dataRoot, kind, storeId, version, gzBuffer
 		if (!files.some(f => f.path === 'workflow.json')) {
 			throw new Error('包里缺少 workflow.json（工作流包必须带定义文件）');
 		}
+	}
+	// agent（★ 2026-10-22）：旧包（agent.json + files.agentsMd）要转成 `.agent.md`；
+	// 目录镜像包直接就有 `.agent.md` ✓（见 normalizeAgentBundle）
+	if (kind === 'agent') {
+		const normalized = normalizeAgentBundle(files, storeId);
+		files.length = 0;
+		files.push(...normalized);
 	}
 
 	await writeFiles(targetDir, files, { overwrite: Boolean(existing) });
