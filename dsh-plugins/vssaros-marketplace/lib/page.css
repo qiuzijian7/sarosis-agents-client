@@ -13,6 +13,30 @@
  *   dsh 原生界面里没有 `--vscode-*` 这个变量 ⇒ 直接当主色令牌会被守卫判红 ✗
  */
 
+/* ★★ 2026-10-23 真机白屏的**根因修复**（务必保留）：
+ *
+ * 实测（dsh 0.2.1-rc.1 的页面 iframe）：`--dsw-fg` / `--dsw-bg` / `--vscode-foreground`
+ * **全部未定义** ⇒ 所有 `var(--dsw-*, var(--vscode-*, #回退))` 都走兜底值。
+ * 而页面**没有自己的背景色** ⇒ 宿主给白底 + 兜底浅色文字（#ddd）⇒ **白底浅灰字 = 看着像白屏** ✗
+ *
+ * ⇒ 页面必须**自带底色**、自成一体，不依赖宿主（变量将来有了也会覆盖 ✓）：
+ *   `color-scheme: dark` 让滚动条/表单控件也跟着深色，避免"深色页面配白色滚动条"的割裂感。
+ */
+html,
+body {
+	margin: 0;
+	min-height: 100%;
+	background: #1a1a1a;
+	color: #e6e6e6;
+	color-scheme: dark;
+}
+
+/* 挂载点铺满：内容很少时也不会露出下面的透明区域（那会被看成"白屏"）✗ */
+#vs-mp-root {
+	min-height: 100vh;
+	background: inherit;
+}
+
 .vs-mp-wrap {
 	--vs-mp-fg: var(--dsw-fg, var(--vscode-foreground, #e6e6e6));
 	--vs-mp-fg-dim: var(--dsw-fg-secondary, var(--vscode-foreground, #e6e6e6));

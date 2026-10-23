@@ -337,6 +337,26 @@ function makeSkill(localId, version, extra = {}) {
 		/cats\.length < 2 && !category/.test(clientSrc));
 }
 
+// ── ⑬ 页面**必须自带底色**（2026-10-23 真机"白屏"的根因，防回归）──────────
+//   实测：dsh 页面 iframe 里 `--dsw-*` / `--vscode-*` **全部未定义** ⇒ 所有
+//   `var(--dsw-*, …)` 都走兜底值；而页面原先**没有自己的背景色** ⇒ 宿主给白底时
+//   兜底的浅色文字（#ddd / #e6e6e6）落在白底上 ⇒ 对比度 ≈1.2:1 ⇒ **看着像白屏** ✗
+//   ⇒ 页面必须自带非透明底色，不依赖宿主变量 ✓
+{
+	const css = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'page.css'), 'utf8');
+	// 抓 `html, body { ... }` 这一段（允许中间有换行与空格）
+	const block = /html\s*,\s*body\s*\{([\s\S]*?)\}/.exec(css)?.[1] ?? '';
+	check('⑬ page.css 定义了 html/body 块（页面自带底色，不靠宿主）', block.length > 0);
+	check('⑬ html/body 有**非透明** background（白底宿主的根因）',
+		/background\s*:\s*#[0-9a-fA-F]{3,8}/.test(block) || /background\s*:\s*rgb/.test(block), block.slice(0, 120));
+	check('⑬ html/body 有明确的 color（不能靠继承宿主的黑字）',
+		/color\s*:\s*#[0-9a-fA-F]{3,8}/.test(block) || /color\s*:\s*rgb/.test(block));
+	check('⑬ 声明 color-scheme（滚动条/表单控件跟着深色，避免割裂）',
+		/color-scheme\s*:\s*dark/.test(block));
+	check('⑬ #vs-mp-root 有 min-height（内容少时不露透明区 = 另一种"白屏"）',
+		/#vs-mp-root\s*\{[\s\S]{0,160}min-height\s*:\s*100vh/.test(css));
+}
+
 fs.rmSync(dataRoot, { recursive: true, force: true });
 console.log(`\n[marketplace publish] ${pass} passing / ${fails.length} failing`);
 if (fails.length) { console.log('失败：' + fails.join('、')); }
