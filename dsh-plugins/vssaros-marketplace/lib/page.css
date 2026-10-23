@@ -120,9 +120,38 @@ body {
 .vs-mp-count { font-size: 12px; color: var(--vs-mp-fg-dim); opacity: .78; margin: 10px 0; }
 
 /* ── 卡片 ───────────────────────────────────────────────── */
-.vs-mp-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
-@media (max-width: 1100px) { .vs-mp-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 720px) { .vs-mp-grid { grid-template-columns: 1fr; } }
+/* ★ 2026-10-23：列数改成由 `--vs-mp-card-min` 自动决定（原先是写死 3 列 + 两条媒体查询）
+ *   `auto-fill` 会按可用宽度尽量多排 ⇒ 屏幕变窄/变大**自动响应**，不用再维护断点 ✓
+ *   卡片大小按钮只改这一个变量（见 JS 的 SIZES）。
+ *   默认 340px ≈ 原来 3 列的观感。 */
+.vs-mp-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(var(--vs-mp-card-min, 340px), 1fr));
+	gap: 16px;
+}
+
+/* 卡片大小切换（小 / 中 / 大）—— 分段按钮，当前档高亮 */
+.vs-mp-size {
+	display: inline-flex;
+	align-items: stretch;
+	border: 1px solid var(--vs-mp-border);
+	border-radius: 8px;
+	overflow: hidden;
+	height: 30px;
+}
+.vs-mp-size-btn {
+	background: transparent;
+	border: 0;
+	color: var(--vs-mp-muted);
+	font-size: 12px;
+	line-height: 1;
+	padding: 0 10px;
+	cursor: pointer;
+	transition: background 0.12s ease, color 0.12s ease;
+}
+.vs-mp-size-btn + .vs-mp-size-btn { border-left: 1px solid var(--vs-mp-border); }
+.vs-mp-size-btn:hover { background: var(--vs-mp-chip); color: var(--vs-mp-fg); }
+.vs-mp-size-btn.on { background: var(--vs-mp-chip); color: var(--vs-mp-fg); font-weight: 600; }
 
 .vs-mp-card {
 	background: var(--vs-mp-card);

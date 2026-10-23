@@ -69,6 +69,36 @@
 		workbench: '🧰'
 	};
 
+	/**
+	 * 文案兜底：把"可能不是字符串"的字段变成字符串。
+	 *
+	 * ★ 2026-10-23 真机踩到：公开市场同步来的商品 `description` 是 `{zh, en}` 对象
+	 *   ⇒ `String(obj)` 直接渲染成 **`[object Object]`** ✗
+	 *   Host 侧已在 `shape.js` 的 `textOf` 里归一；这里再兜一层（页面还吃 mock / 旧缓存）✓
+	 *
+	 * @param {unknown} v
+	 * @returns {string}
+	 */
+	function textOf(v) {
+		if (v === null || v === undefined) { return ''; }
+		if (typeof v === 'string') { return v; }
+		if (typeof v === 'number' || typeof v === 'boolean') { return String(v); }
+		if (Array.isArray(v)) { return v.map(textOf).filter(Boolean).join(' / '); }
+		if (typeof v === 'object') {
+			var keys = ['zh', 'zh-CN', 'zhCn', 'cn', 'en', 'default'];
+			for (var i = 0; i < keys.length; i++) {
+				var hit = v[keys[i]];
+				if (typeof hit === 'string' && hit.trim()) { return hit; }
+			}
+			var own = Object.keys(v);
+			for (var j = 0; j < own.length; j++) {
+				if (typeof v[own[j]] === 'string' && v[own[j]].trim()) { return v[own[j]]; }
+			}
+			return '';
+		}
+		return String(v);
+	}
+
 	/** 字符串 → 稳定色相（同一 slug 永远同色，刷新不会跳）。 */
 	function hueOf(text) {
 		var s = String(text || '');
@@ -176,6 +206,34 @@
 		var state = useState(isImageIcon(icon));
 		var onFail = useCallback(function () { state[1](false); }, []);
 		return [state[0], onFail];
+	}
+
+	/**
+	 * 卡片尺寸档（★ 2026-10-23 用户："增加 item 大小调整按钮"）。
+	 *
+	 * 实现方式是给网格一个 CSS 变量 `--vs-mp-card-min`（`minmax()` 的最小宽度）：
+	 *   `grid-template-columns: repeat(auto-fill, minmax(var(--vs-mp-card-min), 1fr))`
+	 * ⇒ 档位一变，**列数自动重排**（不用写死 3 列 + 媒体查询）✓
+	 *
+	 * 尺寸挑的是"缩略图还看得清"的区间：小档 260px 一屏能放 5 列，
+	 * 大档 520px 一屏 2 列（看截图更清楚）。
+	 */
+	var SIZES = [
+		{ id: 's', label: '小', min: 250 },
+		{ id: 'm', label: '中', min: 340 },
+		{ id: 'l', label: '大', min: 520 },
+	];
+	/** 记住上次选择（localStorage；dsh 页面同源，隐私模式下读不到就回落默认）。 */
+	var SIZE_KEY = 'vs-mp-card-size';
+	function loadSizeId() {
+		try {
+			var saved = localStorage.getItem(SIZE_KEY);
+			if (saved && SIZES.some(function (s) { return s.id === saved; })) { return saved; }
+		} catch { /* 读不到就用默认 */ }
+		return 'm';
+	}
+	function saveSizeId(id) {
+		try { localStorage.setItem(SIZE_KEY, id); } catch { /* 存不了也不影响本次 */ }
 	}
 
 	/** 分类页签（mcp / knowledge 不进页签，但接口支持）。 */
@@ -305,15 +363,15 @@
 						h('span', { className: 'vs-mp-kindtag' }, KIND_LABEL[pkg.kind] || String(pkg.kind)),
 						statusTag, distTag, upTag
 					),
-					h('div', { className: 'vs-mp-card-title' }, String(pkg.name || pkg.slug || ''))
+					h('div', { className: 'vs-mp-card-title' }, textOf(pkg.name) || textOf(pkg.slug))
 				)
 			),
 			h('div', { className: 'vs-mp-card-meta' },
-				String(pkg.author || '暂无'),
+				textOf(pkg.author) || '暂无',
 				pkg.version ? ' · v' + String(pkg.version) : ''
 			),
 			h('div', { className: 'vs-mp-card-desc' },
-				String(pkg.description || '这个商品暂时还没有填写介绍。')
+				textOf(pkg.description) || '这个商品暂时还没有填写介绍。'
 			),
 			h('div', { className: 'vs-mp-card-actions' }, actions)
 		);
@@ -368,8 +426,8 @@
 		return h(Drawer, {
 			// 有缩略图就显示大图（与卡片一致）；没有才用 emoji 图标
 			icon: isImageIcon(d.icon) ? null : h(PkgIcon, { key: 'icon', pkg: d, large: true }),
-			title: String(d.name || d.slug || ''),
-			subtitle: [KIND_LABEL[d.kind] || String(d.kind || ''), String(d.author || '暂无'), d.version ? 'v' + String(d.version) : '']
+			title: textOf(d.name) || textOf(d.slug),
+			subtitle: [KIND_LABEL[d.kind] || String(d.kind || ''), textOf(d.author) || '暂无', d.version ? 'v' + String(d.version) : '']
 				.filter(Boolean).join(' · '),
 			onClose: props.onClose
 		},
@@ -378,9 +436,9 @@
 			h('div', { className: 'vs-mp-tagrow' },
 				d.visibility === 'private' ? h('span', { className: 'vs-mp-tag' }, '私有') : null,
 				d.featured ? h('span', { className: 'vs-mp-tag ok' }, '推荐') : null,
-				d.category ? h('span', { className: 'vs-mp-tag' }, String(d.category)) : null
+				d.category ? h('span', { className: 'vs-mp-tag' }, textOf(d.category)) : null
 			),
-			h('div', { className: 'vs-mp-drawer-desc' }, String(d.description || '这个商品暂时还没有填写介绍。')),
+			h('div', { className: 'vs-mp-drawer-desc' }, textOf(d.description) || '这个商品暂时还没有填写介绍。'),
 			h('div', { className: 'vs-mp-drawer-actions' }, actions),
 			h('div', { className: 'vs-mp-drawer-versions' },
 				h('h4', null, '版本'),
@@ -580,6 +638,10 @@
 		var _total = useState(0); var total = _total[0]; var setTotal = _total[1];
 		var _cats = useState([]); var cats = _cats[0]; var setCats = _cats[1];
 		var _busy = useState(false); var busy = _busy[0]; var setBusy = _busy[1];
+		// 卡片尺寸（★ 2026-10-23 用户要求）：惰性初始化读 localStorage，改了就存
+		var _size = useState(loadSizeId); var sizeId = _size[0];
+		var setSizeId = function (id) { _size[1](id); saveSizeId(id); };
+		var sizeMin = (SIZES.filter(function (s) { return s.id === sizeId; })[0] || SIZES[1]).min;
 		var _msg = useState(null); var msg = _msg[0]; var setMsg = _msg[1];
 
 		var _detail = useState(null); var detail = _detail[0]; var setDetail = _detail[1];
@@ -713,8 +775,8 @@
 			if (github) {
 				// 本体就是一个 GitHub 地址 ⇒ 只登记来源，不打包上传
 				params.source = String(pub.source || '').trim();
-				if (String(pub.name || '').trim()) { params.name = String(pub.name).trim(); }
-				if (String(pub.description || '').trim()) { params.description = String(pub.description).trim(); }
+				if (textOf(pub.name).trim()) { params.name = textOf(pub.name).trim(); }
+				if (textOf(pub.description).trim()) { params.description = textOf(pub.description).trim(); }
 			}
 			var res = await action('publish', params);
 			if (!res || res.ok === false) {
@@ -806,6 +868,18 @@
 						h('option', { value: 'popular' }, '最热'),
 						h('option', { value: 'name' }, '按名称')
 					),
+					// ★ 2026-10-23：卡片大小调整（小 / 中 / 大，选择会被记住）
+					h('div', { className: 'vs-mp-size', title: '卡片大小', role: 'group', 'aria-label': '卡片大小' },
+						SIZES.map(function (s) {
+							return h('button', {
+								key: s.id,
+								className: 'vs-mp-size-btn' + (sizeId === s.id ? ' on' : ''),
+								title: s.label + '卡片',
+								'aria-pressed': sizeId === s.id,
+								onClick: function () { setSizeId(s.id); }
+							}, s.label);
+						})
+					),
 					h('button', { className: 'vs-mp-btn', onClick: function () { setMsg(null); void fetchPage(1, false); } }, '刷新'),
 					h('button', { className: 'vs-mp-btn primary', onClick: openPublish }, '发布')
 				)
@@ -828,7 +902,8 @@
 
 			items.length === 0
 				? h('div', { className: 'vs-mp-empty' }, busy ? '正在加载…' : '没有找到匹配的商品。')
-				: h('div', { className: 'vs-mp-grid' }, items.map(function (pkg) {
+				// ★ 2026-10-23：列数由 `--vs-mp-card-min` 决定（auto-fill ⇒ 档位一变自动重排）
+				: h('div', { className: 'vs-mp-grid', style: { '--vs-mp-card-min': sizeMin + 'px' } }, items.map(function (pkg) {
 					return h(Card, {
 						key: (pkg.kind || '') + ':' + String(pkg.slug || pkg.id || ''),
 						pkg: pkg,
@@ -852,9 +927,9 @@
 				onEdit: function () {
 					setEdit({
 						slug: detail.slug,
-						name: String(detail.name || ''),
-						description: String(detail.description || ''),
-						category: String(detail.category || ''),
+						name: textOf(detail.name),
+						description: textOf(detail.description),
+						category: textOf(detail.category),
 						icon: String(detail.icon || ''),
 						visibility: detail.visibility === 'private' ? 'private' : 'public',
 						busy: false,

@@ -8,6 +8,37 @@
 // 现在：公共字段只有 `baseOf()` 一份；差异部分（已安装版本 / 审核字段 / 版本列表）
 //   用显式选项加上去 ✓ 「list 与 detail 的公共字段必须一致」也变成可断言的了。
 
+/**
+ * 把"可能不是字符串"的文案字段归一成字符串。
+ *
+ * ★ 2026-10-23 真机踩到：从 dsh 公开市场同步来的商品，`description` 是
+ *   **多语言对象** `{ zh: '…', en: '…' }`（19/19 都是），
+ *   而 `String(obj)` 的结果是字面量 **`[object Object]`** ⇒ 页面上直接显示这串鬼东西 ✗
+ *
+ * 口径：中文字段优先（`zh`/`zh-CN`/`cn`），再 `en`/`default`，最后取第一个非空字符串。
+ * 数组按 ` / ` 拼接（少数目录会给 `[{lang,text}]` 形态）。
+ *
+ * @param {unknown} value
+ * @returns {string}
+ */
+export function textOf(value) {
+	if (value === null || value === undefined) { return ''; }
+	if (typeof value === 'string') { return value; }
+	if (typeof value === 'number' || typeof value === 'boolean') { return String(value); }
+	if (Array.isArray(value)) { return value.map(textOf).filter(Boolean).join(' / '); }
+	if (typeof value === 'object') {
+		const obj = value;
+		for (const key of ['zh', 'zh-CN', 'zhCn', 'cn', 'en', 'default']) {
+			if (typeof obj[key] === 'string' && obj[key].trim()) { return obj[key]; }
+		}
+		for (const key of Object.keys(obj)) {
+			if (typeof obj[key] === 'string' && obj[key].trim()) { return obj[key]; }
+		}
+		return '';
+	}
+	return String(value);
+}
+
 /** 各字段的空值口径（服务端可能不返回某个键）。 */
 function baseOf(pkg) {
 	const p = pkg ?? {};
@@ -15,15 +46,15 @@ function baseOf(pkg) {
 		id: p.id,
 		kind: p.kind,
 		slug: p.slug,
-		name: p.name,
+		name: textOf(p.name),
 		// `latest_version` 是列表视图的字段；详情可能只给 `version`
 		version: p.latest_version ?? p.version ?? '',
-		description: p.description ?? '',
+		description: textOf(p.description),
 		// 详情接口的作者在 `author` 对象里，列表里是 `author_name`
-		author: p.author_name ?? p.author?.display_name ?? p.author?.username ?? '',
-		category: p.category ?? '',
+		author: textOf(p.author_name ?? p.author?.display_name ?? p.author?.username ?? ''),
+		category: textOf(p.category),
 		icon: p.icon ?? '',
-		tags: Array.isArray(p.tags) ? p.tags : [],
+		tags: Array.isArray(p.tags) ? p.tags.map(textOf).filter(Boolean) : [],
 		status: p.status ?? 'active',
 		distributionType: p.distribution_type ?? 'bundle',
 		distribution: p.distribution_meta ?? null,

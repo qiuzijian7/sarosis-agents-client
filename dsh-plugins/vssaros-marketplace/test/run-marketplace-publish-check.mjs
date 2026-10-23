@@ -468,6 +468,49 @@ function makeSkill(localId, version, extra = {}) {
 	})());
 }
 
+// ── ⑰ 文案兜底 + 卡片尺寸调整（2026-10-23 真机 bug + 用户需求）──────────
+//   ① 公开市场的 `description` 是 `{zh,en}` 对象 ⇒ `String(obj)` 渲染成 `[object Object]` ✗
+//      19/19 商品都中招（用户截图反馈）。Host 侧 `shape.textOf` + 页面 `textOf` 双兜底。
+//   ② 用户要"item 大小调整按钮" ⇒ 三档（小/中/大）改 `--vs-mp-card-min`，auto-fill 自动重排。
+{
+	const shapeSrc = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'shape.js'), 'utf8');
+	const page = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'client.js'), 'utf8');
+	const css = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'page.css'), 'utf8');
+	const tool = fs.readFileSync(path.resolve(HERE, '..', 'tools', 'sync-market-workbenches.mjs'), 'utf8');
+	const idxSrc = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'index.js'), 'utf8');
+
+	// ① 多语言文本兜底
+	check('⑰ Host 侧有 `textOf`（多语言对象 ⇒ 字符串）', /export function textOf\(/.test(shapeSrc));
+	check('⑰ `baseOf` 的 name/description/author/category 都过 textOf（否则入库即 `[object Object]`）',
+		/name: textOf\(p\.name\)/.test(shapeSrc)
+		&& /description: textOf\(p\.description\)/.test(shapeSrc)
+		&& /author: textOf\(/.test(shapeSrc)
+		&& /category: textOf\(p\.category\)/.test(shapeSrc));
+	check('⑰ 页面侧也兜一层（mock / 旧缓存也吃得下）',
+		/function textOf\(v\)/.test(page) && /textOf\(pkg\.description\)/.test(page)
+		&& /textOf\(d\.description\)/.test(page));
+	check('⑰ 同步脚本用 `pickText` 处理 `{zh,en}`（不是 String 硬转）',
+		/function pickText\(/.test(tool) && /description: pickText\(w\.description\)/.test(tool));
+	check('⑰ 重跑同步会**顺手修正**已存在的脏文案（自动治愈，不用手工改库）',
+		/fixedText/.test(tool) && /updatePackage\(slug, \{/.test(tool));
+
+	// ② 卡片尺寸调整
+	check('⑰ 页面有尺寸三档（小 / 中 / 大）',
+		/var SIZES = \[/.test(page) && /label: '小'/.test(page) && /label: '中'/.test(page) && /label: '大'/.test(page));
+	check('⑰ 选择**持久化**（localStorage，刷新不丢）',
+		/vs-mp-card-size/.test(page) && /localStorage\.setItem/.test(page) && /localStorage\.getItem/.test(page));
+	check('⑰ 网格列数由 `--vs-mp-card-min` + auto-fill 决定（档位一变自动重排）',
+		/repeat\(auto-fill, minmax\(var\(--vs-mp-card-min/.test(css)
+		&& /--vs-mp-card-min': sizeMin \+ 'px'/.test(page));
+	check('⑰ 已删掉写死的 3 列 + 媒体查询（否则档位不生效）',
+		!/grid-template-columns: repeat\(3, minmax\(0, 1fr\)\)/.test(css));
+	check('⑰ 尺寸按钮有高亮态（.on）', /\.vs-mp-size-btn\.on/.test(css));
+
+	// ③ 服务端字段映射仍是单一真源（这条与 ⑰ 同源，防止有人绕过 shape 直接拼）
+	check('⑰ index.js 不自己拼 name/description（都走 shape）',
+		!/description: pkg\.description/.test(idxSrc));
+}
+
 fs.rmSync(dataRoot, { recursive: true, force: true });
 console.log(`\n[marketplace publish] ${pass} passing / ${fails.length} failing`);
 if (fails.length) { console.log('失败：' + fails.join('、')); }

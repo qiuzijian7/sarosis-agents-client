@@ -73,6 +73,32 @@ const credentials = {
 const market = createMarketClient({ credentials, config: { marketEndpoint: ENDPOINT }, log: () => {} });
 
 // ── 工具 ──────────────────────────────────────────────────────────
+/**
+ * 文案归一：公开市场的 `description` 是**多语言对象** `{ zh, en }`（19/19 都是）。
+ *
+ * ⚠ 血泪：第一版用 `String(w.description)` ⇒ 入库成字面量 **`[object Object]`**
+ *   （商城卡片上真的就这么显示了，用户截图反馈"很多 [object Object]"）✗
+ *
+ * @param {unknown} v
+ * @returns {string}
+ */
+function pickText(v) {
+	if (v === null || v === undefined) { return ''; }
+	if (typeof v === 'string') { return v; }
+	if (typeof v === 'number' || typeof v === 'boolean') { return String(v); }
+	if (Array.isArray(v)) { return v.map(pickText).filter(Boolean).join(' / '); }
+	if (typeof v === 'object') {
+		for (const k of ['zh', 'zh-CN', 'zhCn', 'cn', 'en', 'default']) {
+			if (typeof v[k] === 'string' && v[k].trim()) { return v[k]; }
+		}
+		for (const k of Object.keys(v)) {
+			if (typeof v[k] === 'string' && v[k].trim()) { return v[k]; }
+		}
+		return '';
+	}
+	return String(v);
+}
+
 /** 目录 id（`owner/repo`）→ 商城 slug（`owner-repo`，符合 `[a-z0-9][a-z0-9_-]*`）。 */
 function slugOf(item) {
 	const raw = String(item?.id || `${item?.owner ?? ''}/${item?.repository ?? ''}`);
@@ -174,9 +200,10 @@ const results = await mapLimit(targets, CONCURRENCY, async (w) => {
 	const version = String(w.version || '').trim() || '0.1.0';
 	const dist = toDistribution(w);
 	const meta = {
-		name: String(w.name || w.nameEn || w.repository || slug),
-		description: String(w.description || w.descriptionEn || ''),
-		...(w.category ? { category: String(w.category) } : {}),
+		// ⚠ 必须走 pickText：`description` 是 `{zh,en}` 对象，直接 String() 会变成 `[object Object]`
+		name: pickText(w.name) || pickText(w.nameEn) || pickText(w.repository) || slug,
+		description: pickText(w.description) || pickText(w.descriptionEn),
+		...(w.category ? { category: pickText(w.category) } : {}),
 	};
 	if (DRY) { return { slug, version, status: 'dry', dist }; }
 	try {
@@ -184,7 +211,21 @@ const results = await mapLimit(targets, CONCURRENCY, async (w) => {
 		return { slug, version, status: 'ok', created: r.created, dist };
 	} catch (e) {
 		const msg = String(e?.message ?? e);
-		if (/已存在|已被占用|HTTP 409|重复/.test(msg)) { return { slug, version, status: 'skip' }; }
+		if (/已存在|已被占用|HTTP 409|重复/.test(msg)) {
+			// ★ 2026-10-23：版本已存在 ⇒ **顺便把文案修正一次**。
+			//   第一版把 `description` 存成了 `[object Object]`（多语言对象直接 String()）
+			//   ⇒ 重跑本脚本即可自动治愈，不用手工改库 ✓
+			let fixed = false;
+			try {
+				await market.updatePackage(slug, {
+					name: meta.name,
+					...(meta.description ? { description: meta.description } : {}),
+					...(meta.category ? { category: meta.category } : {}),
+				});
+				fixed = true;
+			} catch { /* 修不了也不影响同步结论 */ }
+			return { slug, version, status: 'skip', fixedText: fixed };
+		}
 		return { slug, version, status: 'fail', why: msg.slice(0, 100) };
 	}
 });
