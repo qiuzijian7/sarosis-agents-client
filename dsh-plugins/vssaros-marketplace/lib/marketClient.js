@@ -113,10 +113,35 @@ export function createMarketClient({ credentials, config, log = () => { }, fetch
 		return (await readRef(TOF_LOCAL_TICKET_REF)) ?? (await readRef(TOF_SYNCED_TICKET_REF));
 	}
 
-	/** 用 TOF 票据换商城 JWT（成功后就存起来）。 */
+	/**
+	 * 列出**所有**可用的 TOF 票据来源（★ 2026-10-23 修）。
+	 *
+	 * 真机踩到的坑：`tofTicket()` 用 `??` 只做**存在性**回退 ——
+	 * 本地那张**存在但已过期**时，就永远不会去试 IDE 同步的那张 ✗
+	 * ⇒ 用户明明在 IDE 里是登录状态，商城却一直报"票据无效或已过期"。
+	 *
+	 * 现在：两张都拿出来（去重），登录时**逐张尝试**，任一成功即用 ✓
+	 *
+	 * @returns {Promise<{ ticket: string, source: string }[]>}
+	 */
+	async function tofTicketCandidates() {
+		const list = [];
+		const local = await readRef(TOF_LOCAL_TICKET_REF);
+		if (local) { list.push({ ticket: local, source: 'dsh 本地登录的票据' }); }
+		const synced = await readRef(TOF_SYNCED_TICKET_REF);
+		if (synced && synced !== local) { list.push({ ticket: synced, source: 'IDE 同步的票据' }); }
+		return list;
+	}
+
+	/**
+	 * 用 TOF 票据换商城 JWT（成功后就存起来）。
+	 *
+	 * ⚠ **逐张尝试**所有来源（见 `tofTicketCandidates` 的说明）——
+	 *   只试第一张会让"本地票据过期、IDE 票据仍有效"这种常见状态彻底登不上 ✗
+	 */
 	async function login() {
-		const ticket = await tofTicket();
-		if (!ticket) {
+		const candidates = await tofTicketCandidates();
+		if (candidates.length === 0) {
 			throw new Error('没有 TOF 票据：请先登录（dsh 侧 `tof_signin`，或让 IDE 同步登录态）');
 		}
 		// 身份投影可能没有（只同步了票据）⇒ 只传 ticket 也能登（网关可达时服务端自己查 whoami ✓）
@@ -125,30 +150,40 @@ export function createMarketClient({ credentials, config, log = () => { }, fetch
 		if (rawIdentity) {
 			try { identity = JSON.parse(rawIdentity); } catch { identity = null; }
 		}
-		const body = JSON.stringify({
-			ticket,
-			...(identity?.login_name ? { loginName: identity.login_name } : {}),
-			...(identity?.staff_id ? { staffId: identity.staff_id } : {}),
-			...(identity?.is_admin === undefined ? {} : { isAdmin: identity.is_admin === true }),
-		});
-		const resp = await fetchImpl(`${apiBase()}/auth/tof`, {
-			method: 'POST',
-			headers: { 'content-type': 'application/json' },
-			body,
-		});
-		const text = await resp.text().catch(() => '');
-		if (!resp.ok) {
-			throw new Error(`商城登录失败：${describeMarketError(resp.status, text)}`);
+		const failures = [];
+		for (const candidate of candidates) {
+			const body = JSON.stringify({
+				ticket: candidate.ticket,
+				...(identity?.login_name ? { loginName: identity.login_name } : {}),
+				...(identity?.staff_id ? { staffId: identity.staff_id } : {}),
+				...(identity?.is_admin === undefined ? {} : { isAdmin: identity.is_admin === true }),
+			});
+			const resp = await fetchImpl(`${apiBase()}/auth/tof`, {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body,
+			});
+			const text = await resp.text().catch(() => '');
+			if (!resp.ok) {
+				failures.push(`${candidate.source}被拒（${describeMarketError(resp.status, text)}）`);
+				continue;
+			}
+			let parsed = null;
+			try { parsed = JSON.parse(text); } catch { parsed = null; }
+			const token = typeof parsed?.token === 'string' ? parsed.token : '';
+			if (!token) {
+				failures.push(`${candidate.source}：服务端没有返回 token`);
+				continue;
+			}
+			await writeRef(MARKET_JWT_REF, token);
+			log(`[marketplace] 商城登录成功（来源=${candidate.source}，endpoint=${root()}）`);
+			return token;
 		}
-		let parsed = null;
-		try { parsed = JSON.parse(text); } catch { parsed = null; }
-		const token = typeof parsed?.token === 'string' ? parsed.token : '';
-		if (!token) {
-			throw new Error('商城登录失败：服务端没有返回 token');
-		}
-		await writeRef(MARKET_JWT_REF, token);
-		log(`[marketplace] 商城登录成功（endpoint=${root()}）`);
-		return token;
+		// 全部失败才报错，并**说清试过哪些**（否则用户不知道去哪儿重登）
+		throw new Error(
+			`商城登录失败：${failures.join('；')}`
+			+ ' ⇒ 票据可能已过期，请在 IDE 里退出并重新登录（dsh 侧也可执行 `tof_signin` 重新授权）',
+		);
 	}
 
 	/**
@@ -332,9 +367,19 @@ export function createMarketClient({ credentials, config, log = () => { }, fetch
 		return Array.isArray(res?.updates) ? res.updates : [];
 	}
 
+	/**
+	 * **只报状态**（供 self-check / 排障）：每个票据来源在不在、多长 ——
+	 * **绝不回传票据值** ✓（凭据值一旦进了日志/页面就等于泄露）
+	 */
+	async function tofTicketSources() {
+		const list = await tofTicketCandidates();
+		return list.map(c => ({ source: c.source, present: true, length: c.ticket.length }));
+	}
+
 	return {
 		login, request, download, upload, list, detail, checkUpgrades,
 		reviewList, reviewSetStatus, reviewSetFeatured, updatePackage,
+		tofTicketSources,
 		endpoint: root, tofTicket,
 	};
 }

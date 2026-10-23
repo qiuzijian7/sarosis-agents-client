@@ -69,6 +69,8 @@ export async function apply(ctx, config) {
 		dataRoot: null,
 		/** agent 重扫（可选）：`vssaros-agents` 提供了才能即时生效，否则重启兜底 */
 		agentsRescan: null,
+		/** 取数据根失败的原因（self-check 会报出来，**不静默**）*/
+		dataRootError: null,
 	};
 	ctx.inject(['vssarosBridge'], scope => {
 		state.bridge = scope.vssarosBridge ?? null;
@@ -97,10 +99,14 @@ export async function apply(ctx, config) {
 	ctx.inject(['vssarosFoundation'], scope => {
 		try {
 			state.dataRoot = dataRootOf(config);
-		} catch {
+			state.dataRootError = null;
+		} catch (e) {
+			// ⚠ **不静默**：真机踩到 `dataRoot: null` 时，self-check 只报 null，
+			//   根本看不出是"foundation 没注入"还是"取根时抛错"✗ ⇒ 记下原因
 			state.dataRoot = null;
+			state.dataRootError = String(e?.message ?? e);
 		}
-		return () => { state.dataRoot = null; };
+		return () => { state.dataRoot = null; state.dataRootError = 'foundation 已卸载'; };
 	});
 
 	/** 懒建商城客户端（凭据服务晚于 apply 才注入 ⇒ 不能在这里同步建）。 */
@@ -454,6 +460,7 @@ export async function apply(ctx, config) {
 			bridge: state.bridge ? 'present' : 'absent',
 			credentials: state.credentials ? 'present' : 'absent',
 			dataRoot: state.dataRoot ?? null,
+			...(state.dataRoot ? {} : { dataRootError: state.dataRootError ?? 'foundation 尚未注入（插件可能还没激活完）' }),
 			endpoint: (() => { try { return market().endpoint(); } catch { return null; } })(),
 			tofTicket: 'unknown',
 			marketJwt: 'unknown',
@@ -463,6 +470,9 @@ export async function apply(ctx, config) {
 		try {
 			const m = market();
 			report.tofTicket = (await m.tofTicket()) ? 'present' : 'absent';
+			// ★ 2026-10-23：**分别**报两个来源 —— 真机踩到"本地票据过期、IDE 票据有效"
+			//   时，只报合并结果根本看不出该往哪查 ✗
+			report.tofTicketSources = await m.tofTicketSources();
 			report.marketJwt = (await readInstalledMarketJwt()) ? 'present' : 'absent';
 		} catch (e) {
 			report.tofTicket = `error: ${String(e?.message ?? e)}`;

@@ -228,6 +228,48 @@ function fakeFetch(handler) {
 		/agentsRescan = `failed: \$\{String\(e\?\.message/.test(idxSrc));
 }
 
+// ── 票据来源：**两张都要试**（2026-10-23 真机踩到的登录失败）──────────────
+//   症状：IDE 里明明已登录，商城一直报「TOF 票据无效或已过期」。
+//   根因：`tofTicket()` 用 `??` 只做**存在性**回退 —— 本地票据**存在但过期**时，
+//        永远不会去试 IDE 同步的那张 ✗
+{
+	// 7a. 本地票据被拒 ⇒ 自动改用 IDE 同步的那张（并成功）
+	const creds = fakeCredentials({
+		[MARKET_JWT_REF]: undefined,
+		[TOF_LOCAL_TICKET_REF]: 'stale-local',
+		[TOF_SYNCED_TICKET_REF]: 'fresh-synced',
+	});
+	const tried = [];
+	const f = fakeFetch((entry) => {
+		if (!entry.url.includes('/auth/tof')) { return { body: { items: [], total: 0 } }; }
+		const ticket = JSON.parse(entry.body).ticket;
+		tried.push(ticket);
+		if (ticket === 'stale-local') { return { status: 401, body: { error: 'TOF 票据无效或已过期' } }; }
+		return { body: { token: 'fresh-jwt' } };
+	});
+	const m = createMarketClient({ credentials: creds, config: { marketEndpoint: 'http://x' }, fetchImpl: f });
+	let loginErr = '';
+	try { await m.login(); } catch (e) { loginErr = String(e.message ?? e); }
+	check('本地票据过期 ⇒ **自动改用 IDE 同步的票据**（两张都试）',
+		!loginErr && tried.length === 2 && tried[1] === 'fresh-synced', `${loginErr} | 试过：${tried.join(',')}`);
+	check('换到的 JWT 存进了自己的 ref（不污染票据来源）',
+		await creds.resolve(MARKET_JWT_REF).then(r => r?.value === 'fresh-jwt'));
+	const sources = await m.tofTicketSources();
+	check('票据来源可被 self-check 分别报告（只报有无与长度，**不回传票据值**）',
+		sources.length === 2
+		&& sources.every(s => typeof s.length === 'number' && !('ticket' in s)),
+		JSON.stringify(sources));
+
+	// 7b. 两张都过期 ⇒ 报错要**说清试过哪些来源**（否则用户不知道去哪儿重登）
+	const creds2 = fakeCredentials({ [TOF_LOCAL_TICKET_REF]: 'a', [TOF_SYNCED_TICKET_REF]: 'b' });
+	const f2 = fakeFetch(() => ({ status: 401, body: { error: 'TOF 票据无效或已过期' } }));
+	const m2 = createMarketClient({ credentials: creds2, config: { marketEndpoint: 'http://x' }, fetchImpl: f2 });
+	let bothMsg = '';
+	try { await m2.login(); } catch (e) { bothMsg = String(e.message ?? e); }
+	check('两张都失败 ⇒ 报错列出**两个来源**且给可执行提示',
+		bothMsg.includes('dsh 本地') && bothMsg.includes('IDE 同步') && /重新登录|tof_signin/.test(bothMsg), bothMsg);
+}
+
 // ── 输出形状：list / detail / reviewList / installed 必须**同一份口径** ────
 //   背景：这三处曾各自手写一遍 pkg → 前端映射 ⇒ 加字段时漏一处就是
 //   "列表有、详情没有"这类静默不一致 ✗（真踩过：detail 忘了 visibility ⇒ 编辑表单把可见性重置）

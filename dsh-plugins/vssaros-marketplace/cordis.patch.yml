@@ -1,15 +1,20 @@
 # @vssaros/dsh-marketplace bundle patch: insert the marketplace row.
 #
-# 「商城工作台」的 Host 半（2026-10-22）：自营商城的浏览 / 安装 / 升级 / 发布 / 管理。
+# 「商城工作台」的 Host 半（2026-10-22 起）：自营商城的浏览 / 安装 / 升级 / 发布 / 管理。
 #
-# · 页面路由：/x/marketplace/（客户端 chunk 由 `dsh.client.inject` 装载 ✓）
-# · **认证与有副作用的动作全在 IDE 侧**（ide.request{capability:'marketplace'}）：
-#   商城 JWT 在 IDE 进程（复用 TOF 登录态）⇒ Host 侧没有票据 ✗；
-#   装工作台包必须走主进程已验证的通道（暂存 + `dsh plugin add`）⇒
-#   Host 内 pluginManager.installBundle 在全新 profile 上会剪树失败（README 4.86）✗。
-#   ⇒ Host 半只做「页面外壳 + 把意图转给 IDE」，**不持有任何商城凭据** ✓。
+# · 页面路由：/x/marketplace/（自托管页面，自带 React UMD —— 见 lib/vendor/）
+# · 认证在 Host 侧自己完成：TOF 票据（`VSSAROS_TOF_TICKET_DSH` 自登 / `VSSAROS_TOF_TICKET`
+#   IDE 同步）→ `POST /api/v1/auth/tof` 换商城 JWT ⇒ **只有 workbench 的装/卸仍借道 IDE** ✓
 #
-# ⚠ 本行**不读数据根**（无落盘状态）⇒ 不在 dshCli.ts 的「数据根覆盖层」名单里 ✓。
+# ★ 2026-10-23 更正一处**过时注释**：这里原先写"本行不读数据根（无落盘状态）"——
+#   那是 0.1.x 的事实；现在它**要读数据根**：
+#     · 已安装台账 `<数据根>/installed-packages.json`
+#     · skill / workflow / agent 的安装落盘（`<数据根>/skills|workflows|agents`）
+#   ⇒ `dataRoot` 由 IDE 的「数据根覆盖层」注入（`dshCli.ts` 的 `renderDataRootOverlay`
+#     名单里已含 `vssaros-marketplace`）。
+#   ⚠ **IDE 未重建时那份覆盖层里还没有这一行** ⇒ `config.dataRoot` 缺失，此时
+#     `self-check` 会明确报 `dataRootError`（不静默），浏览/详情/审核仍可用，
+#     只有"已安装 / 发布本机资源 / 装升卸"依赖它。
 - insert:
     - id: vssaros-marketplace
       name: '@vssaros/dsh-marketplace'
