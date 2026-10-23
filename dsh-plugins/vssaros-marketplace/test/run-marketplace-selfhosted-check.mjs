@@ -45,7 +45,7 @@ foundationMod.bindFoundation({
 	SHELL_CSS: '',
 });
 
-const { createMarketClient, describeMarketError, TOF_LOCAL_TICKET_REF, TOF_SYNCED_TICKET_REF, MARKET_JWT_REF } =
+const { createMarketClient, describeMarketError, TOF_LOCAL_TICKET_REF, TOF_SYNCED_TICKET_REF, TOF_IDENTITY_REF, MARKET_JWT_REF } =
 	await import(pathToFileURL(path.join(LIB, 'marketClient.js')).href);
 const { readInstalled, upsertInstalled, removeInstalled } = await import(pathToFileURL(path.join(LIB, 'installedLedger.js')).href);
 
@@ -276,6 +276,42 @@ function fakeFetch(handler) {
 		try { await m.login(); } catch (e) { msg = String(e.message ?? e); }
 		check('TOF 服务答"没有票据" ⇒ 直接提示登录（**不偷偷用凭据里的旧票**）',
 			msg.includes('没有 TOF 票据') && f.calls.length === 0, `${msg} | 请求 ${f.calls.length} 次`);
+	}
+
+	// 7a4. ★ 真机定位到的登录失败根因：身份字段是**驼峰**（dsh 的 projectUser 输出 loginName），
+	//      此前读 `login_name` ⇒ 永远 undefined ⇒ 服务端 fallback（`if (!tofUser && loginName)`）
+	//      永远进不去 ⇒ 网关 whoami 一失败就直接 401「且无 fallback 用户信息」✗
+	{
+		const creds = fakeCredentials({
+			[TOF_LOCAL_TICKET_REF]: 't',
+			[TOF_IDENTITY_REF]: JSON.stringify({ signedIn: true, loginName: 'zijianqiu', staffId: '161765', isAdmin: false }),
+		});
+		let sent = null;
+		const f = fakeFetch((entry) => {
+			if (entry.url.includes('/auth/tof')) { sent = JSON.parse(entry.body); return { body: { token: 'jwt' } }; }
+			return { body: { items: [], total: 0 } };
+		});
+		const m = createMarketClient({ credentials: creds, config: { marketEndpoint: 'http://x' }, fetchImpl: f });
+		await m.login();
+		check('身份是驼峰时，登录请求体带 loginName / staffId（否则服务端 fallback 永不生效）',
+			sent && sent.loginName === 'zijianqiu' && sent.staffId === '161765' && sent.isAdmin === false,
+			JSON.stringify(sent));
+	}
+
+	// 7a5. 下划线形态也要认（老数据兼容，别为了洁癖删掉）
+	{
+		const creds = fakeCredentials({
+			[TOF_LOCAL_TICKET_REF]: 't',
+			[TOF_IDENTITY_REF]: JSON.stringify({ login_name: 'legacy', staff_id: '9' }),
+		});
+		let sent = null;
+		const f = fakeFetch((entry) => {
+			if (entry.url.includes('/auth/tof')) { sent = JSON.parse(entry.body); return { body: { token: 'jwt' } }; }
+			return { body: { items: [], total: 0 } };
+		});
+		const m = createMarketClient({ credentials: creds, config: { marketEndpoint: 'http://x' }, fetchImpl: f });
+		await m.login();
+		check('老数据（下划线 login_name/staff_id）也兼容', sent && sent.loginName === 'legacy' && sent.staffId === '9', JSON.stringify(sent));
 	}
 
 	// 7b. 票据过期 ⇒ 报错要说清来源 + **给可执行的重登指引**

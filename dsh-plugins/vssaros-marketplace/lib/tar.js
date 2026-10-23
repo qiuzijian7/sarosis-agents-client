@@ -18,10 +18,7 @@
 //   整个 dsh 界面都在等）⇒ `dshPluginPackages.test.ts` 有一条守卫专门抓 `gunzipSync` ✗
 //   打包（gzip）保持同步：它在发布路径上、且我们要返回 Buffer 给上传接口 ⇒
 //   改成异步会污染一大片调用方，而发布是**低频人工操作** ⇒ 不值得（如实记在这里，不是忘了）。
-import { gzipSync, gunzip } from 'node:zlib';
-import { promisify } from 'node:util';
-
-const gunzipAsync = promisify(gunzip);
+import { createGunzip, gzipSync } from 'node:zlib';
 
 const BLOCK = 512;
 
@@ -62,13 +59,15 @@ export function sanitizeEntryPath(raw) {
  * 把"解析"与"落盘"分开是为了**可单测**（不碰文件系统），也让安装逻辑能先校验再写 ✓。
  *
  * @param {Buffer} tarBuf
+ * @param {{ maxEntries?: number }} [opts] 条目数上限（防"海量空文件"式炸弹；默认 `MAX_ENTRIES`）
  * @returns {{ files: { path: string, mode: number, data: Buffer }[], dirs: string[], links: { path: string, target: string }[], skipped: string[] }}
  */
-export function listTarEntries(tarBuf) {
+export function listTarEntries(tarBuf, { maxEntries = MAX_ENTRIES } = {}) {
 	const files = [];
 	const dirs = [];
 	const links = [];
 	const skipped = [];
+	let entries = 0;
 	let offset = 0;
 	let longName = '';
 	while (offset + BLOCK <= tarBuf.length) {
@@ -76,6 +75,11 @@ export function listTarEntries(tarBuf) {
 		// 结束标记：全零块（读两个，缺一个也当结束 ✓）
 		if (header.every(byte => byte === 0)) { break; }
 		offset += BLOCK;
+		// ★ 2026-10-23：条目数上限（"海量空文件"式炸弹：压缩后极小、解开后几百万条）⇒ 超立刻中止
+		entries += 1;
+		if (entries > maxEntries) {
+			throw new Error(`包内条目太多（>${maxEntries}，疑似压缩炸弹）⇒ 已中止`);
+		}
 
 		const size = readOctal(header, 124, 12);
 		if (!Number.isFinite(size) || size < 0) {
@@ -121,14 +125,67 @@ export function listTarEntries(tarBuf) {
 	return { files, dirs, links, skipped };
 }
 
+// ── 解压安全上限（★ 2026-10-23：压缩炸弹防护）────────────────────────────
+//
+// 为什么必须有：下载侧只挡了**压缩后**体积（64MB），而 gzip 的压缩比可以到 1000:1
+// ⇒ 一个 64MB 的 tar.gz 能膨胀到**几十 GB**，`Buffer.concat` 当场把 Host 打爆（OOM / 卡死）。
+// 隧道两头都要挡：`gunzip` 时**边解边累加**（超限立刻 destroy，不是解完再判），
+// 解析 tar 时再挡**条目数**（同样的炸弹也能用几百万个空文件撑爆内存）✓
+export const MAX_UNPACKED_BYTES = 256 * 1024 * 1024;
+export const MAX_ENTRIES = 5000;
+
+/**
+ * gunzip 但**限制解开后的字节数**（流式累加，超限立刻中止）。
+ *
+ * ⚠ 用流式 `createGunzip` 而不是 `promisify(gunzip)`：后者要等**整包解完**才拿到 Buffer，
+ *   那时内存已经进去了 ⇒ 上限形同虚设 ✗。
+ *
+ * @param {Buffer} gzBuf
+ * @param {{ maxBytes?: number }} [opts]
+ * @returns {Promise<Buffer>}
+ */
+function gunzipCapped(gzBuf, { maxBytes = MAX_UNPACKED_BYTES } = {}) {
+	return new Promise((resolve, reject) => {
+		const gunzipStream = createGunzip();
+		const chunks = [];
+		let total = 0;
+		let settled = false;
+		const fail = (err) => {
+			if (settled) { return; }
+			settled = true;
+			try { gunzipStream.destroy(); } catch { /* 已经关了 */ }
+			reject(err);
+		};
+		gunzipStream.on('data', (chunk) => {
+			total += chunk.length;
+			if (total > maxBytes) {
+				fail(new Error(`包解开后太大（>${Math.round(maxBytes / 1024 / 1024)}MB，疑似压缩炸弹）⇒ 已中止`));
+				return;
+			}
+			chunks.push(chunk);
+		});
+		gunzipStream.on('error', (e) => fail(new Error(`解压失败：${e?.message ?? e}`)));
+		gunzipStream.on('end', () => {
+			if (settled) { return; }
+			settled = true;
+			resolve(Buffer.concat(chunks));
+		});
+		gunzipStream.end(gzBuf);
+	});
+}
+
 /**
  * 解包 `.tar.gz`（gunzip + listTarEntries）。
  *
- * ⚠ **async**：解压走 `promisify(gunzip)`（异步），不用 `gunzipSync` ——
+ * ⚠ **async**：解压走流式（异步），不用 `gunzipSync` ——
  *   同步解压会把 Host 主线程卡死（几 MB 的包就是几百毫秒的界面冻结）✗
+ *
+ * @param {Buffer} gzBuf
+ * @param {{ maxBytes?: number, maxEntries?: number }} [opts] 测试可显式传更小的上限（不传用全局默认）
  */
-export async function listTarGzEntries(gzBuf) {
-	return listTarEntries(await gunzipAsync(gzBuf));
+export async function listTarGzEntries(gzBuf, opts = {}) {
+	const { maxBytes = MAX_UNPACKED_BYTES, maxEntries = MAX_ENTRIES } = opts;
+	return listTarEntries(await gunzipCapped(gzBuf, { maxBytes }), { maxEntries });
 }
 
 /** 写一个 512 字节头。 */

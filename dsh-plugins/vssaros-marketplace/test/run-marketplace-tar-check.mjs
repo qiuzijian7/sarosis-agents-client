@@ -16,6 +16,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { gzipSync } from 'node:zlib';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -118,6 +119,39 @@ if (hasTar) {
 	let threw = false;
 	try { packTarGz([{ path: long, data: 'x' }]); } catch { threw = true; }
 	check('超长路径打包如实抛错（ustar 上限）', threw);
+}
+
+// ── ⑤ 解压炸弹：解开后体积超限必须**当场中止**（★ 2026-10-23）──────────
+//
+// 为什么必须守：下载侧只挡了**压缩后**体积（64MB），gzip 压缩比可达 1000:1
+// ⇒ 64MB 的包能膨胀到几十 GB。以前 `listTarGzEntries` 用 `promisify(gunzip)`
+//   **整包解完**才拿到 Buffer ⇒ 那时内存已经进去了 ⇒ 上限形同虚设 ✗。
+// 测试用**更小的上限**（64KB + 1MB 全零）即可验证，不必真造 64MB 炸弹 ✓。
+{
+	const bomb = gzipSync(Buffer.alloc(1024 * 1024)); // 1MB 全零 ⇒ gz 约 1KB
+	let msg = '';
+	try { await listTarGzEntries(bomb, { maxBytes: 64 * 1024 }); }
+	catch (e) { msg = String(e && e.message || e); }
+	check('⑤ 解压后超限 ⇒ 中止并报"疑似压缩炸弹"', /疑似压缩炸弹/.test(msg), msg || '(没有抛错 —— 上限没生效)');
+	check('⑤ 上限是"边解边判"（错误里带中止语义，不是解完再判）', /已中止/.test(msg), msg);
+	// 同一条炸弹在默认上限下**不该**被误判（1MB < 256MB）
+	let normalOk = false;
+	try { await listTarGzEntries(bomb); normalOk = true; } catch { normalOk = false; }
+	check('⑤ 正常体积不误判（默认上限 256MB 下 1MB 放行）', normalOk);
+}
+
+// ── ⑥ 条目数上限：「海量空文件」式炸弹 ──────────────────────────────
+{
+	const many = {};
+	for (let i = 0; i < 40; i++) { many[`f${i}.txt`] = 'x'; }
+	const gz = packTarGzFromMap(many);
+	let msg = '';
+	try { await listTarGzEntries(gz, { maxEntries: 10 }); }
+	catch (e) { msg = String(e && e.message || e); }
+	check('⑥ 条目数超限 ⇒ 中止并报"条目太多"', /条目太多/.test(msg), msg || '(没有抛错)');
+	let ok = false;
+	try { const r = await listTarGzEntries(gz); ok = r.files.length === 40; } catch { ok = false; }
+	check('⑥ 默认上限下 40 条正常放行', ok);
 }
 
 fs.rmSync(tmp, { recursive: true, force: true });

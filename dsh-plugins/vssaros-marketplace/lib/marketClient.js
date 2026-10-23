@@ -187,16 +187,28 @@ export function createMarketClient({ credentials, config, log = () => { }, fetch
 		if (rawIdentity) {
 			try { identity = JSON.parse(rawIdentity); } catch { identity = null; }
 		}
+		// ★ 2026-10-23（真机定位到的登录失败根因）：**字段名要读驼峰**。
+		//   dsh 侧 `projectUser()` 写进凭据的是 `{ loginName, staffId, isAdmin, … }`（驼峰），
+		//   而这里原先读 `identity.login_name`（下划线）⇒ 永远是 undefined ⇒
+		//   服务端 `/auth/tof` 的 fallback 分支（`if (!tofUser && loginName)`）**永远进不去**
+		//   ⇒ 网关那边 whoami 一失败就直接 401「且无 fallback 用户信息」✗
+		//   （两种写法都认：老数据可能是下划线，别为了洁癖把兼容删掉）
+		const pick = (a, b) => (a === undefined || a === null || a === '' ? b : a);
+		const idLoginName = pick(identity?.loginName, identity?.login_name);
+		const idStaffId = pick(identity?.staffId, identity?.staff_id);
+		const idIsAdmin = pick(identity?.isAdmin, identity?.is_admin);
 		const failures = [];
 
 		/** 逐张尝试，成功返回 token，否则收集失败原因。 */
 		const attempt = async (candidates) => {
 			for (const candidate of candidates) {
+				// `loginName` 是服务端 fallback 的**触发条件**（`if (!tofUser && loginName)`）
+				// ⇒ 传了它，网关侧 whoami 失败也不会 401，而是用这份已验证过的身份 ✓
 				const body = JSON.stringify({
 					ticket: candidate.ticket,
-					...(identity?.login_name ? { loginName: identity.login_name } : {}),
-					...(identity?.staff_id ? { staffId: identity.staff_id } : {}),
-					...(identity?.is_admin === undefined ? {} : { isAdmin: identity.is_admin === true }),
+					...(idLoginName ? { loginName: String(idLoginName) } : {}),
+					...(idStaffId ? { staffId: String(idStaffId) } : {}),
+					...(idIsAdmin === undefined || idIsAdmin === null ? {} : { isAdmin: idIsAdmin === true }),
 				});
 				const resp = await fetchImpl(`${apiBase()}/auth/tof`, {
 					method: 'POST',
