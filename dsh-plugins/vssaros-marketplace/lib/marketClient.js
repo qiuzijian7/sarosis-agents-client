@@ -85,7 +85,17 @@ export function describeMarketError(status, body) {
  * @param {(line: string) => void} [args.log]
  * @param {typeof fetch} [args.fetchImpl] 守卫注入假实现（不联网 ✓）
  */
-export function createMarketClient({ credentials, config, log = () => { }, fetchImpl = fetch }) {
+/**
+ * @param {object} args
+ * @param {object} args.credentials dsh 凭据服务（存商城 JWT 用）
+ * @param {object} args.config 插件配置
+ * @param {() => Promise<{ ticket?: string, source?: string }>} [args.tofProvider]
+ *   ★ 2026-10-23：**TOF 票据的唯一真源** —— `vssarosTof.ticket()`（bridge 提供的服务）。
+ *   有这个就走它（优先级/兜底/刷新都在 bridge 一处）；没有才降级去读 credentials（见 `tofTicketCandidates`）。
+ *   为什么不自己拼：两份票据并存时，各插件自己判优先级就会出现"口径打架"
+ *   （本插件曾把"本地优先"写成硬编码，结果本地票据过期时永远试不到 IDE 那张 ✗）。
+ */
+export function createMarketClient({ credentials, config, log = () => { }, fetchImpl = fetch, tofProvider = null }) {
 	const root = () => marketEndpointOf(config);
 	const apiBase = () => `${root()}/api/v1`;
 
@@ -124,26 +134,51 @@ export function createMarketClient({ credentials, config, log = () => { }, fetch
 	 *
 	 * @returns {Promise<{ ticket: string, source: string }[]>}
 	 */
-	async function tofTicketCandidates() {
+	async function credentialTicketCandidates() {
 		const list = [];
 		const local = await readRef(TOF_LOCAL_TICKET_REF);
-		if (local) { list.push({ ticket: local, source: 'dsh 本地登录的票据' }); }
+		if (local) { list.push({ ticket: local, source: 'dsh 本地登录的票据（降级读取）' }); }
 		const synced = await readRef(TOF_SYNCED_TICKET_REF);
-		if (synced && synced !== local) { list.push({ ticket: synced, source: 'IDE 同步的票据' }); }
+		if (synced && synced !== local) { list.push({ ticket: synced, source: 'IDE 同步的票据（降级读取）' }); }
 		return list;
+	}
+
+	/**
+	 * 票据候选：**先问 TOF 服务（唯一真源），它给的不能用才降级读凭据**。
+	 *
+	 * ★ 2026-10-23（用户要求「tof 应该在 dsh 侧，不应该有多个」）：
+	 *   本插件**不再自己决定"用哪张票"** —— 那属于 TOF 服务（`vssarosTof`，bridge 提供），
+	 *   由它统一处理优先级/刷新。此前这里硬编码「本地优先」，与服务口径重复且会打架 ✗
+	 *
+	 * ⚠ 降级只发生在"服务给的票换不到 JWT"时（`login()` 里二次调用），
+	 *   目的是**别让环境问题把功能彻底废掉**；正常情况下只走服务这一条路 ✓
+	 *
+	 * @param {boolean} [forceCredentials] true = 直接读凭据（不试服务）
+	 */
+	async function tofTicketCandidates(forceCredentials = false) {
+		if (!forceCredentials && typeof tofProvider === 'function') {
+			try {
+				const got = await tofProvider();
+				if (got && typeof got.ticket === 'string' && got.ticket) {
+					const where = got.source === 'ide' ? 'IDE 同步' : got.source === 'dsh' ? 'dsh 自登' : String(got.source ?? '未知');
+					return [{ ticket: got.ticket, source: `TOF 服务（${where}）` }];
+				}
+				// 服务明确回答"没有票据" ⇒ 不猜（别偷偷翻凭据里的旧票 ✗）
+				return [];
+			} catch (e) {
+				log(`[marketplace] TOF 服务取票失败，降级读凭据：${String(e?.message ?? e)}`);
+			}
+		}
+		return credentialTicketCandidates();
 	}
 
 	/**
 	 * 用 TOF 票据换商城 JWT（成功后就存起来）。
 	 *
-	 * ⚠ **逐张尝试**所有来源（见 `tofTicketCandidates` 的说明）——
-	 *   只试第一张会让"本地票据过期、IDE 票据仍有效"这种常见状态彻底登不上 ✗
+	 * 顺序：**先 TOF 服务**（唯一真源）→ 它给的票换不到才**降级**读凭据。
+	 * 降级会打日志（说明"该修的是 TOF 服务/登录态，不是靠 marketplace 猜"）。
 	 */
 	async function login() {
-		const candidates = await tofTicketCandidates();
-		if (candidates.length === 0) {
-			throw new Error('没有 TOF 票据：请先登录（dsh 侧 `tof_signin`，或让 IDE 同步登录态）');
-		}
 		// 身份投影可能没有（只同步了票据）⇒ 只传 ticket 也能登（网关可达时服务端自己查 whoami ✓）
 		let identity = null;
 		const rawIdentity = await readRef(TOF_IDENTITY_REF);
@@ -151,34 +186,60 @@ export function createMarketClient({ credentials, config, log = () => { }, fetch
 			try { identity = JSON.parse(rawIdentity); } catch { identity = null; }
 		}
 		const failures = [];
-		for (const candidate of candidates) {
-			const body = JSON.stringify({
-				ticket: candidate.ticket,
-				...(identity?.login_name ? { loginName: identity.login_name } : {}),
-				...(identity?.staff_id ? { staffId: identity.staff_id } : {}),
-				...(identity?.is_admin === undefined ? {} : { isAdmin: identity.is_admin === true }),
-			});
-			const resp = await fetchImpl(`${apiBase()}/auth/tof`, {
-				method: 'POST',
-				headers: { 'content-type': 'application/json' },
-				body,
-			});
-			const text = await resp.text().catch(() => '');
-			if (!resp.ok) {
-				failures.push(`${candidate.source}被拒（${describeMarketError(resp.status, text)}）`);
-				continue;
+
+		/** 逐张尝试，成功返回 token，否则收集失败原因。 */
+		const attempt = async (candidates) => {
+			for (const candidate of candidates) {
+				const body = JSON.stringify({
+					ticket: candidate.ticket,
+					...(identity?.login_name ? { loginName: identity.login_name } : {}),
+					...(identity?.staff_id ? { staffId: identity.staff_id } : {}),
+					...(identity?.is_admin === undefined ? {} : { isAdmin: identity.is_admin === true }),
+				});
+				const resp = await fetchImpl(`${apiBase()}/auth/tof`, {
+					method: 'POST',
+					headers: { 'content-type': 'application/json' },
+					body,
+				});
+				const text = await resp.text().catch(() => '');
+				if (!resp.ok) {
+					failures.push(`${candidate.source}被拒（${describeMarketError(resp.status, text)}）`);
+					continue;
+				}
+				let parsed = null;
+				try { parsed = JSON.parse(text); } catch { parsed = null; }
+				const got = typeof parsed?.token === 'string' ? parsed.token : '';
+				if (!got) {
+					failures.push(`${candidate.source}：服务端没有返回 token`);
+					continue;
+				}
+				await writeRef(MARKET_JWT_REF, got);
+				log(`[marketplace] 商城登录成功（来源=${candidate.source}，endpoint=${root()}）`);
+				return got;
 			}
-			let parsed = null;
-			try { parsed = JSON.parse(text); } catch { parsed = null; }
-			const token = typeof parsed?.token === 'string' ? parsed.token : '';
-			if (!token) {
-				failures.push(`${candidate.source}：服务端没有返回 token`);
-				continue;
-			}
-			await writeRef(MARKET_JWT_REF, token);
-			log(`[marketplace] 商城登录成功（来源=${candidate.source}，endpoint=${root()}）`);
-			return token;
+			return null;
+		};
+
+		const primary = await tofTicketCandidates();
+		if (primary.length === 0) {
+			throw new Error(
+				'没有 TOF 票据：请先登录（dsh 侧 `tof_signin`，或让 IDE 同步登录态）',
+			);
 		}
+		const usedService = String(primary[0]?.source ?? '').startsWith('TOF 服务');
+		const fromService = await attempt(primary);
+		if (fromService) { return fromService; }
+
+		// 降级：**只有**服务那条路失败时才翻凭据（并明确记录"这是降级"）
+		if (usedService) {
+			const fallback = await credentialTicketCandidates();
+			if (fallback.length > 0) {
+				log('[marketplace] ⚠ TOF 服务的票据换不到 JWT，降级尝试凭据里的票据（根因应修 TOF 服务/重新登录）');
+				const got = await attempt(fallback);
+				if (got) { return got; }
+			}
+		}
+
 		// 全部失败才报错，并**说清试过哪些**（否则用户不知道去哪儿重登）
 		throw new Error(
 			`商城登录失败：${failures.join('；')}`

@@ -69,6 +69,8 @@ export async function apply(ctx, config) {
 		dataRoot: null,
 		/** agent 重扫（可选）：`vssaros-agents` 提供了才能即时生效，否则重启兜底 */
 		agentsRescan: null,
+		/** ★ TOF 服务（`vssarosTof.ticket()`）：dsh 侧**唯一**的票据真源，本插件只消费不实现优先级 */
+		tof: null,
 		/** 取数据根失败的原因（self-check 会报出来，**不静默**）*/
 		dataRootError: null,
 	};
@@ -83,6 +85,15 @@ export async function apply(ctx, config) {
 		state.market = null;
 		return () => { state.credentials = null; state.market = null; };
 	});
+	// ★ 2026-10-23（用户要求「TOF 应该在 dsh 侧，不应该有多个」）：
+	//   票据**只问 TOF 服务**（`vssarosTof.ticket()`，由 @vssaros/dsh-bridge 提供）——
+	//   优先级/兜底/刷新都在 bridge 一处。本插件**不再自己拼两份票据的优先级** ✓
+	//   （此前本插件硬编码「本地优先」，而本地票据过期时永远试不到 IDE 同步的那张 ✗）
+	ctx.inject(['vssarosTof'], scope => {
+		state.tof = scope.vssarosTof ?? null;
+		return () => { state.tof = null; };
+	});
+
 	// ★ 2026-10-22 晚：**可选**注入 agent 重扫服务（等 `vssaros-agents` 提供后即自动生效）。
 	//   现状：它的 `syncPresets` 只在插件激活时跑一次（没有文件监听）⇒ dsh 侧装完 agent
 	//   要重启 IDE 才会成为 preset。这里预留调用点，**不强求**：
@@ -115,7 +126,13 @@ export async function apply(ctx, config) {
 			throw new Error('dsh 侧拿不到凭据服务（ctx.credentials）⇒ 无法读取登录态');
 		}
 		if (!state.market) {
-			state.market = createMarketClient({ credentials: state.credentials, config, log: (line) => console.log(line) });
+			state.market = createMarketClient({
+				credentials: state.credentials,
+				config,
+				log: (line) => console.log(line),
+				// 票据**只向 TOF 服务要**（单一真源）；服务不在时 marketClient 才降级读凭据
+				tofProvider: typeof state.tof?.ticket === 'function' ? () => state.tof.ticket() : null,
+			});
 		}
 		return state.market;
 	}

@@ -260,6 +260,51 @@ function fakeFetch(handler) {
 		&& sources.every(s => typeof s.length === 'number' && !('ticket' in s)),
 		JSON.stringify(sources));
 
+	// 7a2. ★ 有 TOF 服务时**只问服务**（单一真源），不再自己读两份凭据拼优先级
+	{
+		const creds = fakeCredentials({
+			[TOF_LOCAL_TICKET_REF]: 'stale-local',
+			[TOF_SYNCED_TICKET_REF]: 'fresh-synced',
+		});
+		const tried = [];
+		const f = fakeFetch((entry) => {
+			if (!entry.url.includes('/auth/tof')) { return { body: { items: [], total: 0 } }; }
+			tried.push(JSON.parse(entry.body).ticket);
+			return { body: { token: 'jwt-from-service' } };
+		});
+		let providerCalls = 0;
+		const m = createMarketClient({
+			credentials: creds,
+			config: { marketEndpoint: 'http://x' },
+			fetchImpl: f,
+			// 服务说"该用 IDE 那张" ⇒ 本插件就照用，**不自己判优先级** ✓
+			tofProvider: async () => { providerCalls++; return { ticket: 'fresh-synced', source: 'ide' }; },
+		});
+		await m.login();
+		check('有 TOF 服务时**只向服务要票据**（一次调用，不再自己拼优先级）',
+			providerCalls === 1 && tried.length === 1 && tried[0] === 'fresh-synced',
+			`provider ${providerCalls} 次；试过 ${tried.join(',')}`);
+		const src = await m.tofTicketSources();
+		check('self-check 标明票据来自 TOF 服务（而不是"本地/同步"两路）',
+			src.length === 1 && src[0].source.includes('TOF 服务'), JSON.stringify(src));
+	}
+
+	// 7a3. TOF 服务在但回答"没有票据" ⇒ **不猜**（不去翻凭据，直接报要登录）
+	{
+		const creds = fakeCredentials({ [TOF_SYNCED_TICKET_REF]: 'still-there' });
+		const f = fakeFetch(() => ({ body: { token: 'should-not-be-used' } }));
+		const m = createMarketClient({
+			credentials: creds,
+			config: { marketEndpoint: 'http://x' },
+			fetchImpl: f,
+			tofProvider: async () => ({ ticket: undefined, source: 'none' }),
+		});
+		let msg = '';
+		try { await m.login(); } catch (e) { msg = String(e.message ?? e); }
+		check('TOF 服务答"没有票据" ⇒ 直接提示登录（**不偷偷用凭据里的旧票**）',
+			msg.includes('没有 TOF 票据') && f.calls.length === 0, `${msg} | 请求 ${f.calls.length} 次`);
+	}
+
 	// 7b. 两张都过期 ⇒ 报错要**说清试过哪些来源**（否则用户不知道去哪儿重登）
 	const creds2 = fakeCredentials({ [TOF_LOCAL_TICKET_REF]: 'a', [TOF_SYNCED_TICKET_REF]: 'b' });
 	const f2 = fakeFetch(() => ({ status: 401, body: { error: 'TOF 票据无效或已过期' } }));
