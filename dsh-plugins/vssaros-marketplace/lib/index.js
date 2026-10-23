@@ -65,7 +65,14 @@ const LOCAL_WRITE_KINDS = new Set(['skill', 'workflow', 'agent']);
 
 export async function apply(ctx, config) {
 	/** IDE 控制桥（可选注入）：**只有 workbench 的装/卸**还需要它 ✓。 */
-	const state = { bridge: null, credentials: null, market: null, dataRoot: null };
+	const state = {
+		bridge: null,
+		credentials: null,
+		market: null,
+		dataRoot: null,
+		/** agent 重扫（可选）：`vssaros-agents` 提供了才能即时生效，否则重启兜底 */
+		agentsRescan: null,
+	};
 	ctx.inject(['vssarosBridge'], scope => {
 		state.bridge = scope.vssarosBridge ?? null;
 		return () => { state.bridge = null; };
@@ -77,6 +84,18 @@ export async function apply(ctx, config) {
 		state.market = null;
 		return () => { state.credentials = null; state.market = null; };
 	});
+	// ★ 2026-10-22 晚：**可选**注入 agent 重扫服务（等 `vssaros-agents` 提供后即自动生效）。
+	//   现状：它的 `syncPresets` 只在插件激活时跑一次（没有文件监听）⇒ dsh 侧装完 agent
+	//   要重启 IDE 才会成为 preset。这里预留调用点，**不强求**：
+	//   服务不在 ⇒ 装完返回 `restartRequired`（如实告知），不假装即时生效 ✗
+	//   ⚠ 用回调式 `ctx.inject`（不是静态 inject）：缺服务时不会让插件永久 pending ✓
+	ctx.inject(['vssarosAgents'], scope => {
+		state.agentsRescan = typeof scope.vssarosAgents?.rescan === 'function'
+			? () => scope.vssarosAgents.rescan()
+			: null;
+		return () => { state.agentsRescan = null; };
+	});
+
 	// 数据根（台账 + 未来的安装落点）：经 foundation 收口（与其它模块同一份口径 ✓）。
 	ctx.inject(['vssarosFoundation'], scope => {
 		try {
@@ -308,6 +327,18 @@ export async function apply(ctx, config) {
 		// skill 装完**必须**让 IDE 侧技能库重读（它没有文件监听 ✗）——
 		// best-effort：刷不过**不让安装失败**（文件已经落好了），但要把原因报出来 ✓
 		const reloadNote = kind === 'skill' ? await reloadIdeSkills() : undefined;
+		// agent：优先让 `vssaros-agents` 重扫（服务在就即时生效）；不在 ⇒ 重启兜底（如实报）
+		let agentsRescan = 'restart';
+		if (kind === 'agent') {
+			if (state.agentsRescan) {
+				try {
+					await state.agentsRescan();
+					agentsRescan = 'ok';
+				} catch (e) {
+					agentsRescan = `failed: ${String(e?.message ?? e)}`;
+				}
+			}
+		}
 		return {
 			ok: true,
 			changed: true,
@@ -315,8 +346,8 @@ export async function apply(ctx, config) {
 			fileCount: installed.fileCount,
 			...(installed.backup ? { backup: installed.backup } : {}),
 			...(reloadNote ? { skillsReload: reloadNote } : {}),
-			// agent：文件已落好，但 preset 要重启才会扫描到（见上面的说明）
-			...(kind === 'agent' ? { restartRequired: true, agentsRescan: 'restart' } : {}),
+			// agent：重扫成功 ⇒ 即时可用；否则文件已落好但 preset 要重启才扫描到（如实报）
+			...(kind === 'agent' ? { restartRequired: agentsRescan !== 'ok', agentsRescan } : {}),
 		};
 	}
 

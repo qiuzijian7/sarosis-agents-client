@@ -212,6 +212,20 @@ function fakeFetch(handler) {
 		!/['"](list|detail|installed)['"]/.test(callIdeBody), callIdeBody.slice(0, 160));
 }
 
+// ── agent 重扫：**可选**注入（★ 2026-10-22 晚）────────────────────
+//   `vssaros-agents` 的 syncPresets 只在激活时跑一次 ⇒ 装完 agent 要重启才成 preset。
+//   marketplace 侧预留了调用点：对方 provide 了就即时生效，没 provide 就如实报"要重启"。
+//   ⚠ 必须是**回调式可选 inject**：静态 inject 缺服务会让插件永久 pending ✗（历史事故）
+{
+	const idxSrc = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'index.js'), 'utf8');
+	check('agent 重扫用**可选**注入（缺服务不能让插件 pending）',
+		idxSrc.includes("ctx.inject(['vssarosAgents']") && idxSrc.includes('typeof scope.vssarosAgents?.rescan'));
+	check('重扫服务不在 ⇒ 返回 restart（不假装即时生效）',
+		/let agentsRescan = 'restart'/.test(idxSrc) && /restartRequired: agentsRescan !== 'ok'/.test(idxSrc));
+	check('重扫失败也如实回报（不吞成成功）',
+		/agentsRescan = `failed: \$\{String\(e\?\.message/.test(idxSrc));
+}
+
 console.log(`\n[marketplace self-hosted] ${pass} passing / ${fails.length} failing`);
 if (fails.length) { console.log('失败：' + fails.join('、')); }
 process.exit(fails.length === 0 ? 0 : 1);
