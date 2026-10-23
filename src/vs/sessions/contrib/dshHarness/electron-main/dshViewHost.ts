@@ -1855,6 +1855,10 @@ export class DshViewHost extends Disposable {
 		//     `[nav] … current=http://127.0.0.1:7583/ target=/x/memory/detail => block`
 		//   ⇒ 顶层文档是 dsh 客户端 `/`（模块页在 iframe 里）⇒ 被当成"主 frame 导航"拦掉
 		//   ⇒ 用户看到的就是"点了没反应" ✗✗（连点 3 轮才定位到这一层）
+		// ★ 2026-10-23：记录**最近一次用户输入**（鼠标/键盘）—— 用来区分"用户点链接"与"页面自己导航"：
+		//   前者该放行（记忆库「查看完整记忆」），后者是事故来源（"主页突然变成会话页"）必须拦 ✓
+		let lastUserInputAt = 0;
+		wc.on('before-input-event', () => { lastUserInputAt = Date.now(); });
 		wc.on('will-frame-navigate', (details) => {
 			if (!details.isMainFrame) { return; }
 			const event = details;
@@ -1870,11 +1874,13 @@ export class DshViewHost extends Disposable {
 			const currentUrl = (() => {
 				try { return wc.getURL(); } catch { return slot.route ?? '/'; }
 			})();
-			const decision = decideMainFrameNavigation(url, this._connection?.origin, currentUrl);
+			// ★ 2026-10-23："最近 1.5s 内有用户输入" ⇒ 认为这次导航是用户点出来的
+			const userGestureRecently = Date.now() - lastUserInputAt < 1500;
+			const decision = decideMainFrameNavigation(url, this._connection?.origin, currentUrl, userGestureRecently);
 			// ★ 2026-10-23 诊断：真机"点了没反应"排查用 —— 把 current / target / 判定一起打出来
 			//   （只在**目标不是根路径**时打，避免刷屏；定位完可以删 ✓）
 			if (!/^\/?$/.test(new URL(url).pathname)) {
-				this._logService.info(`[dshHarness][nav] view ${slot.id} surface=${slot.surface} route=${slot.route ?? '-'} current=${currentUrl} target=${new URL(url).pathname} => ${decision}`);
+				this._logService.info(`[dshHarness][nav] view ${slot.id} surface=${slot.surface} route=${slot.route ?? '-'} current=${currentUrl} target=${new URL(url).pathname} isMainFrame=${details.isMainFrame} gesture=${userGestureRecently} => ${decision}`);
 			}
 			if (decision === 'allow') {
 				return;

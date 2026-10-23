@@ -110,4 +110,22 @@ suite('dshHarness / 视图主 frame 导航决策', () => {
 		assert.strictEqual(decideMainFrameNavigation(`${ORIGIN}/x/memoryx/`, ORIGIN, '/x/memory/'), 'block',
 			'前缀相近但不是同一模块 ⇒ 不能误放行');
 	});
+
+	// ★★ 2026-10-23（真机定案）：记忆库页是**客户端 `/` 里的一屏**（主 frame、URL 仍为 `/`）
+	//   ⇒ 用户点「查看完整记忆」= 主 frame 从 `/` 导航到 `/x/memory/detail` ⇒ 必须放行；
+	//   而「主页突然变成会话页」那次是**页面自己**导航（无用户手势）⇒ 必须继续拦 ✓
+	test('用户刚点出来的模块页导航 ⇒ 放行（记忆库「查看完整记忆」就是这种）', () => {
+		assert.strictEqual(decideMainFrameNavigation(`${ORIGIN}/x/memory/detail`, ORIGIN, `${ORIGIN}/`, true), 'allow');
+		assert.strictEqual(decideMainFrameNavigation(`${ORIGIN}/x/dashboard/`, ORIGIN, `${ORIGIN}/`, true), 'allow');
+	});
+
+	test('**没有**用户手势的模块页导航 ⇒ 仍然拦（「主页突然变成会话页」的防线）', () => {
+		assert.strictEqual(decideMainFrameNavigation(`${ORIGIN}/x/dashboard/`, ORIGIN, `${ORIGIN}/`, false), 'block');
+		assert.strictEqual(decideMainFrameNavigation(`${ORIGIN}/x/memory/detail`, ORIGIN, `${ORIGIN}/`, false), 'block');
+	});
+
+	test('用户手势**不能**放宽跨源 / 非 http(s)（安全性不受影响）', () => {
+		assert.strictEqual(decideMainFrameNavigation('https://example.com/x/memory/', ORIGIN, `${ORIGIN}/`, true), 'external');
+		assert.strictEqual(decideMainFrameNavigation('javascript:alert(1)', ORIGIN, `${ORIGIN}/`, true), 'block');
+	});
 });

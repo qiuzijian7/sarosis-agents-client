@@ -93,6 +93,16 @@ export function decideMainFrameNavigation(
 	 * ⇒ 正确判据：先用 `locationKeyOf()` 把 hash 归一成路径，再比"**同一模块子树**" ✓
 	 */
 	currentUrl?: string,
+	/**
+	 * 这次导航**是不是用户刚点出来的**（调用方按"最近 1.5s 内有鼠标/键盘输入"判定）★ 2026-10-23。
+	 *
+	 * 为什么要它：真机日志已证死 —— 记忆库页是**客户端 `/` 里的一屏**（不是 iframe），
+	 * 点「查看完整记忆」= **主 frame** 从 `/` 导航到 `/x/memory/detail` ⇒
+	 * 按"同源只放行 `/`"必然 block，而插件侧怎么改都绕不过去（除非不导航）✗✗
+	 * ⇒ 真正该禁的是**页面自己**把视图整页导航走（2026-10-23「主页突然变成会话页」那种 bug，
+	 *   发生在**程序性导航**里、没有用户手势）⇒ 用"最近有用户输入"把两者分开 ✓
+	 */
+	userGestureRecently?: boolean,
 ): DshMainFrameNavigationDecision {
 	if (!connectionOrigin) {
 		// 没连上 Host：视图里的页面不可信 ⇒ 交给外部（与改动前 `!this._connection || …` 一致）
@@ -122,5 +132,11 @@ export function decideMainFrameNavigation(
 	const currentKey = locationKeyOf(currentUrl);
 	const currentModule = moduleSubtree(currentKey);
 	if (currentModule && currentModule === moduleSubtree(target.pathname)) { return 'allow'; }
+
+	// ★ 2026-10-23：**用户刚点出来的**同源模块页导航 ⇒ 放行。
+	//   判据分工："页面自己导航"（程序性、无手势）= 事故来源 ⇒ 继续 block；
+	//            "用户点击链接" = 正常页面行为 ⇒ 放行（记忆库「查看完整记忆」就是这种）✓
+	if (userGestureRecently && moduleSubtree(target.pathname)) { return 'allow'; }
 	return 'block';
 }
+
