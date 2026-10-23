@@ -91,6 +91,17 @@ suite('dshHarness / 视图主 frame 导航决策', () => {
 		assert.strictEqual(decideMainFrameNavigation(`${ORIGIN}/x/memory/detail?session=x`, ORIGIN, '/x/memory/detail'), 'allow');
 	});
 
+	// ★ 2026-10-23（真机日志）：`current` 实测是 **`/`**，页面其实是 `/#/x/memory/`（hash 路由）
+	//   ⇒ 判据必须把 hash 归一成路径，否则"同一模块的下钻"永远判 block ✗✗
+	test('模块页走 hash 路由时（`/#/x/memory/`）⇒ 同模块下钻也要放行', () => {
+		assert.strictEqual(decideMainFrameNavigation(`${ORIGIN}/x/memory/detail`, ORIGIN, `${ORIGIN}/#/x/memory/`), 'allow');
+		assert.strictEqual(decideMainFrameNavigation(`${ORIGIN}/x/memory/detail`, ORIGIN, '/#/x/memory/detail'), 'allow');
+		// 只在根（`/`，没有 hash）⇒ 仍然拦（防"主页被导航成模块页"）
+		assert.strictEqual(decideMainFrameNavigation(`${ORIGIN}/x/memory/detail`, ORIGIN, `${ORIGIN}/`), 'block');
+		// hash 在别的模块 ⇒ 跨模块 ⇒ 拦
+		assert.strictEqual(decideMainFrameNavigation(`${ORIGIN}/x/memory/detail`, ORIGIN, `${ORIGIN}/#/x/dashboard/`), 'block');
+	});
+
 	test('跨模块 / 从根跳模块页仍拦（「主页突然变成会话页」那个 bug 的防线）', () => {
 		assert.strictEqual(decideMainFrameNavigation(`${ORIGIN}/x/dashboard/`, ORIGIN, '/x/memory/'), 'block',
 			'跨模块必须拦');

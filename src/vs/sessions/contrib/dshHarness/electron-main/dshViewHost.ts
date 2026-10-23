@@ -1855,14 +1855,16 @@ export class DshViewHost extends Disposable {
 			//   （`/x/memory/` → `/x/memory/detail` ✓），跨模块 / 从 `/` 跳模块页照旧拦 ✓。
 			//   ⚠ 不能按"视图表面"判：真机上记忆库页是被宿主 `loadURL` 装进 **chat 视图**
 			//     （id `dsh-desk-chat-*`）的主 frame ⇒ 表面判据覆盖不到（第一版就栽在这里 ✗）。
-			const currentPathname = (() => {
-				try { return new URL(wc.getURL()).pathname; } catch { return slot.route ?? '/'; }
+			// ★ 2026-10-23：传**完整 URL**（不是 pathname）—— 真机上模块页走的是 **hash 路由**
+			//   （`current` 实测为 `/`，实际是 `/#/x/memory/`）⇒ 只传 pathname 会永远判 block ✗
+			const currentUrl = (() => {
+				try { return wc.getURL(); } catch { return slot.route ?? '/'; }
 			})();
-			const decision = decideMainFrameNavigation(url, this._connection?.origin, currentPathname);
+			const decision = decideMainFrameNavigation(url, this._connection?.origin, currentUrl);
 			// ★ 2026-10-23 诊断：真机"点了没反应"排查用 —— 把 current / target / 判定一起打出来
 			//   （只在**目标不是根路径**时打，避免刷屏；定位完可以删 ✓）
 			if (!/^\/?$/.test(new URL(url).pathname)) {
-				this._logService.info(`[dshHarness][nav] view ${slot.id} surface=${slot.surface} route=${slot.route ?? '-'} current=${currentPathname} target=${new URL(url).pathname} => ${decision}`);
+				this._logService.info(`[dshHarness][nav] view ${slot.id} surface=${slot.surface} route=${slot.route ?? '-'} current=${currentUrl} target=${new URL(url).pathname} => ${decision}`);
 			}
 			if (decision === 'allow') {
 				return;

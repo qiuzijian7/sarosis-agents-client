@@ -35,6 +35,26 @@ export type DshMainFrameNavigationDecision =
  *
  * 为什么按两级取：dsh 的模块页统一挂在 `/x/<module>/…` 下 ⇒ 前缀就是"这个页面属于哪个模块"的天然边界 ✓。
  */
+/**
+ * 把**当前地址**归一成"路径键"：优先取 `hash` 里的路由（`/#/x/memory/` ⇒ `/x/memory/`），否则用 pathname。
+ *
+ * 为什么要它：真机日志显示 chat 视图里展示模块页时，主 frame 的 URL 是 **`/`**（模块路由在 hash 里）
+ * ⇒ 只看 pathname 会把"同一模块内的下钻"误判成"从根跳到模块页"⇒ 一律 block ✗✗
+ * （真机：`[nav] … current=/ target=/x/memory/detail => block`，点了没反应）。
+ */
+function locationKeyOf(currentUrl: string | undefined): string | undefined {
+	if (!currentUrl) { return undefined; }
+	try {
+		const u = new URL(currentUrl);
+		const hashPath = u.hash && u.hash.length > 1 ? u.hash.slice(1) : '';
+		return hashPath.startsWith('/') ? hashPath : u.pathname;
+	} catch {
+		// 传进来的不是完整 URL（只有 path）⇒ 直接当路径用；带 hash 也照样切出来 ✓
+		const i = currentUrl.indexOf('#');
+		return i >= 0 ? currentUrl.slice(i + 1) : currentUrl;
+	}
+}
+
 function moduleSubtree(pathname: string | undefined): string | undefined {
 	if (!pathname) { return undefined; }
 	const m = /^\/x\/([^/]+)/.exec(pathname);
@@ -57,20 +77,22 @@ function sameOrigin(a: URL, b: URL): boolean {
 export function decideMainFrameNavigation(
 	rawUrl: string,
 	connectionOrigin: string | undefined,
+
 	/**
-	 * **当前主 frame 的 pathname**（调用方传 `new URL(wc.getURL()).pathname`）★ 2026-10-23。
+	 * **当前主 frame 的地址**（调用方直接传 `wc.getURL()`；也可以只传 path）★ 2026-10-23。
 	 *
 	 * 为什么要它：真机「记忆库」页的「查看完整记忆」按钮 `location.href='./detail'` **点了没反应** ⇒
-	 * 日志坐实：`blocked a main-frame navigation to /x/memory/detail` —— 就是这条"同源只放行 `/`"把
-	 * **同一模块的下钻**一起拦了 ✗✗（那个子路由插件**真的**在服务 ⇒ 拦在导航层）。
+	 * 日志坐实 `[nav] … current=/ target=/x/memory/detail => block` ⇒ 就是这条"同源只放行 `/`"
+	 * 把**同一模块的下钻**一起拦了 ✗✗（那个子路由插件**真的**在服务 ⇒ 拦在导航层）。
 	 *
-	 * ⚠ 不能只看"视图表面"（我第一版只对 `plugin-page` 放行，结果**不够**）：真机上这个记忆库页被宿主
-	 * `loadURL` 装进的是 **chat 视图**（id `dsh-desk-chat-*`）的主 frame ⇒ 表面判据覆盖不到 ✗。
-	 * ⇒ 改成**按当前 URL 判**：目标只要还在**当前文档所在的同一模块子树**（`/x/<module>/…`）内就放行 ✓
-	 *   —— 这样"记忆库 → 记忆详情"能走，而"从 `/` 或别的模块页跳到 `/x/dashboard/`"照旧拦 ✓
-	 *   （后者正是 2026-10-23 那个「主页突然变成会话页」的 bug ✗）。
+	 * ⚠ 两个坑（都踩过）：
+	 *   ① **不能按视图表面判**（第一版只对 `plugin-page` 放行 ⇒ 不够）：真机这个记忆库页被宿主 `loadURL`
+	 *      装进的是 **chat 视图**（id `dsh-desk-chat-*`）⇒ 表面判据覆盖不到 ✗；
+	 *   ② **不能只看 pathname**（第二版就是栽在这）：真机 `current` 报的是 **`/`**，而页面其实是
+	 *      `/#/x/memory/`（**hash 路由**）⇒ 只看 pathname 永远判 block ✗✗
+	 * ⇒ 正确判据：先用 `locationKeyOf()` 把 hash 归一成路径，再比"**同一模块子树**" ✓
 	 */
-	currentPathname?: string,
+	currentUrl?: string,
 ): DshMainFrameNavigationDecision {
 	if (!connectionOrigin) {
 		// 没连上 Host：视图里的页面不可信 ⇒ 交给外部（与改动前 `!this._connection || …` 一致）
@@ -94,7 +116,11 @@ export function decideMainFrameNavigation(
 	//   （真机日志：`blocked a main-frame navigation to /x/memory/detail`；那个子路由插件真的在服务 ✗✗）。
 	//   仍**不放行**跨模块 / 从根路径跳模块页的同源地址（`/` → `/x/dashboard/` 照旧拦 ✓）；
 	//   查询串不进 pathname ⇒ `?tool=export-json` 这类下载动作也照常放行 ✓。
-	const currentModule = moduleSubtree(currentPathname);
+	// ⚠ 真机实测（2026-10-23）：`current` 常常是 **`/`**，而页面其实是 `/#/x/memory/`（**hash 路由**）
+	//   ⇒ 只看 pathname 会永远判成 block（这就是第三轮"还是没反应"的原因 ✗✗）。
+	//   ⇒ 这里把 **hash 一起归一**：`/#/x/memory/` ⇒ `/x/memory/` ✓
+	const currentKey = locationKeyOf(currentUrl);
+	const currentModule = moduleSubtree(currentKey);
 	if (currentModule && currentModule === moduleSubtree(target.pathname)) { return 'allow'; }
 	return 'block';
 }
