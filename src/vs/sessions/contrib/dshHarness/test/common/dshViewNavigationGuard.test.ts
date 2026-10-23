@@ -74,11 +74,13 @@ suite('dsh 插件页导航守卫（app.ts 全局拦截 ⇄ DshViewHost 同源放
 
 	test('③ 豁免后导航权限仍在 DshViewHost：will-navigate 只放行同源', () => {
 		const host = stripComments(read(VIEW_HOST));
-		const start = host.indexOf(`wc.on('will-navigate'`);
+		const start = host.indexOf(`wc.on('will-frame-navigate'`);
 		assert.ok(start >= 0, 'dshViewHost.ts 里找不到 will-navigate 守卫 ⇒ 豁免后插件页可以导航到任意地址 ✗');
 		const body = host.slice(start, host.indexOf('});', start));
-		assert.ok(/!isSameOrigin\(\s*url\s*,\s*this\._connection\.origin\s*\)/.test(body) && /event\.preventDefault\(\)/.test(body),
-			'dshViewHost 的 will-navigate 守卫不再是"非同源即 preventDefault"');
+		// ★ 2026-10-23：判据抽进 `common/dshViewNavigation.ts`（纯函数 + 表驱动单测）⇒
+		//   这里改断言"handler 必须调用它，且非 allow 一律 preventDefault"（意图不变：非同源不放行）。
+		assert.ok(/decideMainFrameNavigation\(\s*url\s*,/.test(body) && /event\.preventDefault\(\)/.test(body),
+			'dshViewHost 的 will-navigate 守卫不再是"除同源根路径外一律 preventDefault"');
 		const redirect = host.indexOf(`wc.on('will-redirect'`);
 		assert.ok(redirect >= 0, 'dshViewHost.ts 里找不到 will-redirect 守卫');
 	});

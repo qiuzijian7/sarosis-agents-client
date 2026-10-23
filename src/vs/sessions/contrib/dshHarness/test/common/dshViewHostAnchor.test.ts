@@ -37,9 +37,21 @@ suite('dshHarness / 视图必须停在客户端根路径（2026-10-23 主页被�
 		assert.ok(line.includes('[data-vssaros-wb-full]'), '必须认整页面板的根标记 ✗');
 	});
 
+	// ★★ 2026-10-23（真机 3 轮才定位）：插件页在**客户端 iframe** 里渲染 ⇒ iframe 内部换页
+	//   （「查看完整记忆」⇒ `/x/memory/detail`）会被 `will-navigate` 当成主 frame 导航拦掉
+	//   ⇒ 用户看到"点了没反应" ✗✗ ⇒ 必须用 `will-frame-navigate` 且**只判主 frame** ✓
+	test('① 必须用 will-frame-navigate 且**子帧放行**（否则 iframe 里的正常换页被拦）', () => {
+		// ⚠ 用 stripComments：我自己在上面写的注释里也提到事件名 ⇒ 不去注释会假绿 ✗
+		const src = stripComments(read());
+		assert.ok(src.includes(`wc.on('will-frame-navigate'`),
+			'必须挂 `will-frame-navigate`（`will-navigate` 会把 iframe 的导航也报上来 ⇒ 误拦 ✗）');
+		assert.ok(/if\s*\(\s*!\s*details\.isMainFrame\s*\)\s*\{\s*return;?\s*\}/.test(src),
+			'必须先判 `details.isMainFrame` 并放行子帧 —— 少了这一句，插件页 iframe 里点任何链接都没反应 ✗');
+		assert.ok(src.includes('details.url'), '`will-frame-navigate` 的地址在 `details.url` 上');
+	});
 	test('② will-navigate 只做分派：判据必须在纯函数里（同源非根 = block）', () => {
 		const src = stripComments(read());
-		const at = src.indexOf("wc.on('will-navigate'");
+		const at = src.indexOf("wc.on('will-frame-navigate'");
 		assert.ok(at > 0, '找不到 will-navigate 接线 ✗');
 		const body = src.slice(at, src.indexOf('});', at));
 		// 判据已抽进 common/dshViewNavigation.ts（有表驱动单测）⇒ 这里必须**调用**它
@@ -59,7 +71,7 @@ suite('dshHarness / 视图必须停在客户端根路径（2026-10-23 主页被�
 
 	test("③ 'external' 分支必须 preventDefault + 外开 + return（不许掉进 block 那段）", () => {
 		const src = stripComments(read());
-		const at = src.indexOf("wc.on('will-navigate'");
+		const at = src.indexOf("wc.on('will-frame-navigate'");
 		const body = src.slice(at, src.indexOf('});', at));
 		const iExternal = body.indexOf("if (decision === 'external')");
 		assert.ok(iExternal > 0, "缺少 'external' 分支（跨源链接会留在 dsh 视图里 ✗）");

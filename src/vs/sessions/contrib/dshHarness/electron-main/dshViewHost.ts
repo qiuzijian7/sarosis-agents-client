@@ -1848,7 +1848,17 @@ export class DshViewHost extends Disposable {
 			this._openExternal(url);
 			return { action: 'deny' };
 		});
-		wc.on('will-navigate', (event, url) => {
+		// ★★ 2026-10-23 **关键修法**：改成 `will-frame-navigate` 并**只判主 frame**；
+		//   **子帧（iframe）导航一律放行** —— 插件页（如记忆库）是在客户端 iframe 里渲染的，
+		//   iframe 内部换页（「查看完整记忆」⇒ `/x/memory/detail`）属于**正常页面行为**。
+		//   真机证据（`will-navigate` 时代）：
+		//     `[nav] … current=http://127.0.0.1:7583/ target=/x/memory/detail => block`
+		//   ⇒ 顶层文档是 dsh 客户端 `/`（模块页在 iframe 里）⇒ 被当成"主 frame 导航"拦掉
+		//   ⇒ 用户看到的就是"点了没反应" ✗✗（连点 3 轮才定位到这一层）
+		wc.on('will-frame-navigate', (details) => {
+			if (!details.isMainFrame) { return; }
+			const event = details;
+			const url = details.url;
 			// ★ 2026-10-23：判据抽进 `common/dshViewNavigation.ts`（纯函数、有表驱动单测）——
 			//   这里只做三件事的分派：放行 / 拦下并外开 / 拦下并留现场。规则本身见那个文件。
 			// ★ 2026-10-23：把**当前主 frame 的 pathname** 传下去 ⇒ 同一模块子树内的下钻放行
