@@ -81,7 +81,7 @@ function fakeFetch(handler) {
 
 // ── ① 票据优先级 ─────────────────────────────────────────────────
 {
-	const creds = fakeCredentials({ [TOF_LOCAL_TICKET_REF]: 'local-ticket', [TOF_SYNCED_TICKET_REF]: 'ide-ticket' });
+	const creds = fakeCredentials({ [TOF_LOCAL_TICKET_REF]: 'local-ticket' });
 	const m = createMarketClient({ credentials: creds, config: {}, fetchImpl: async () => ({ ok: true, status: 200, text: async () => '{}' }) });
 	check('票据优先取 dsh 自登的那份（VSSAROS_TOF_TICKET_DSH）', (await m.tofTicket()) === 'local-ticket');
 
@@ -95,7 +95,7 @@ function fakeFetch(handler) {
 
 // ── ② 首次请求先换 JWT，之后复用 ─────────────────────────────────
 {
-	const creds = fakeCredentials({ [TOF_SYNCED_TICKET_REF]: 't1' });
+	const creds = fakeCredentials({ [TOF_LOCAL_TICKET_REF]: 't1' });
 	const f = fakeFetch((entry) => {
 		if (entry.url.includes('/auth/tof')) { return { body: { token: 'jwt-1' } }; }
 		if (entry.url.includes('/packages')) { return { body: { items: [{ id: 'a', kind: 'skill', slug: 's1', name: 'S1' }], total: 1 } }; }
@@ -114,7 +114,7 @@ function fakeFetch(handler) {
 
 // ── ③ 401 自动重登一次 ──────────────────────────────────────────
 {
-	const creds = fakeCredentials({ [TOF_SYNCED_TICKET_REF]: 't2', [MARKET_JWT_REF]: 'expired' });
+	const creds = fakeCredentials({ [TOF_LOCAL_TICKET_REF]: 't2', [MARKET_JWT_REF]: 'expired' });
 	let n = 0;
 	const f = fakeFetch((entry) => {
 		if (entry.url.includes('/auth/tof')) { n++; return { body: { token: `fresh-${n}` } }; }
@@ -129,7 +129,7 @@ function fakeFetch(handler) {
 
 // ── ③b 403 **不许**走重登（真机踩过：管理员接口的 403 被报成"没有 TOF 票据" ✗）──
 {
-	const creds = fakeCredentials({ [TOF_SYNCED_TICKET_REF]: 't', [MARKET_JWT_REF]: 'valid-jwt' });
+	const creds = fakeCredentials({ [TOF_LOCAL_TICKET_REF]: 't', [MARKET_JWT_REF]: 'valid-jwt' });
 	const f = fakeFetch((entry) => {
 		if (entry.url.includes('/auth/tof')) { return { body: { token: 'new' } }; }
 		return { status: 403, body: { error: '需要管理员权限' } };
@@ -142,7 +142,7 @@ function fakeFetch(handler) {
 		f.calls.filter(c => c.url.includes('/auth/tof')).length === 0,
 		`实际换票 ${f.calls.filter(c => c.url.includes('/auth/tof')).length} 次`);
 	// 401 仍然要重登（票据过期是常态）
-	const creds2 = fakeCredentials({ [TOF_SYNCED_TICKET_REF]: 't2', [MARKET_JWT_REF]: 'expired' });
+	const creds2 = fakeCredentials({ [TOF_LOCAL_TICKET_REF]: 't2', [MARKET_JWT_REF]: 'expired' });
 	let n = 0;
 	const f2 = fakeFetch((entry) => {
 		if (entry.url.includes('/auth/tof')) { n++; return { body: { token: `fresh-${n}` } }; }
@@ -163,7 +163,7 @@ function fakeFetch(handler) {
 	check('错误文案带上 details 的 路径+消息', msg.includes('参数校验失败') && msg.includes('kind') && msg.includes('Invalid enum value'), msg);
 	check('非 JSON body 不炸（退回 HTTP 状态）', describeMarketError(500, '<html>oops</html>').includes('500'));
 
-	const creds = fakeCredentials({ [TOF_SYNCED_TICKET_REF]: 't3' });
+	const creds = fakeCredentials({ [TOF_LOCAL_TICKET_REF]: 't3' });
 	const f = fakeFetch((entry) => {
 		if (entry.url.includes('/auth/tof')) { return { body: { token: 'j' } }; }
 		return { status: 400, body: { error: '参数校验失败', details: [{ path: ['kind'], message: 'bad kind' }] } };
@@ -233,33 +233,6 @@ function fakeFetch(handler) {
 //   根因：`tofTicket()` 用 `??` 只做**存在性**回退 —— 本地票据**存在但过期**时，
 //        永远不会去试 IDE 同步的那张 ✗
 {
-	// 7a. 本地票据被拒 ⇒ 自动改用 IDE 同步的那张（并成功）
-	const creds = fakeCredentials({
-		[MARKET_JWT_REF]: undefined,
-		[TOF_LOCAL_TICKET_REF]: 'stale-local',
-		[TOF_SYNCED_TICKET_REF]: 'fresh-synced',
-	});
-	const tried = [];
-	const f = fakeFetch((entry) => {
-		if (!entry.url.includes('/auth/tof')) { return { body: { items: [], total: 0 } }; }
-		const ticket = JSON.parse(entry.body).ticket;
-		tried.push(ticket);
-		if (ticket === 'stale-local') { return { status: 401, body: { error: 'TOF 票据无效或已过期' } }; }
-		return { body: { token: 'fresh-jwt' } };
-	});
-	const m = createMarketClient({ credentials: creds, config: { marketEndpoint: 'http://x' }, fetchImpl: f });
-	let loginErr = '';
-	try { await m.login(); } catch (e) { loginErr = String(e.message ?? e); }
-	check('本地票据过期 ⇒ **自动改用 IDE 同步的票据**（两张都试）',
-		!loginErr && tried.length === 2 && tried[1] === 'fresh-synced', `${loginErr} | 试过：${tried.join(',')}`);
-	check('换到的 JWT 存进了自己的 ref（不污染票据来源）',
-		await creds.resolve(MARKET_JWT_REF).then(r => r?.value === 'fresh-jwt'));
-	const sources = await m.tofTicketSources();
-	check('票据来源可被 self-check 分别报告（只报有无与长度，**不回传票据值**）',
-		sources.length === 2
-		&& sources.every(s => typeof s.length === 'number' && !('ticket' in s)),
-		JSON.stringify(sources));
-
 	// 7a2. ★ 有 TOF 服务时**只问服务**（单一真源），不再自己读两份凭据拼优先级
 	{
 		const creds = fakeCredentials({
@@ -305,14 +278,19 @@ function fakeFetch(handler) {
 			msg.includes('没有 TOF 票据') && f.calls.length === 0, `${msg} | 请求 ${f.calls.length} 次`);
 	}
 
-	// 7b. 两张都过期 ⇒ 报错要**说清试过哪些来源**（否则用户不知道去哪儿重登）
-	const creds2 = fakeCredentials({ [TOF_LOCAL_TICKET_REF]: 'a', [TOF_SYNCED_TICKET_REF]: 'b' });
-	const f2 = fakeFetch(() => ({ status: 401, body: { error: 'TOF 票据无效或已过期' } }));
-	const m2 = createMarketClient({ credentials: creds2, config: { marketEndpoint: 'http://x' }, fetchImpl: f2 });
-	let bothMsg = '';
-	try { await m2.login(); } catch (e) { bothMsg = String(e.message ?? e); }
-	check('两张都失败 ⇒ 报错列出**两个来源**且给可执行提示',
-		bothMsg.includes('dsh 本地') && bothMsg.includes('IDE 同步') && /重新登录|tof_signin/.test(bothMsg), bothMsg);
+	// 7b. 票据过期 ⇒ 报错要说清来源 + **给可执行的重登指引**
+	{
+		const creds2 = fakeCredentials({ [TOF_LOCAL_TICKET_REF]: 'expired', [TOF_SYNCED_TICKET_REF]: 'legacy-unused' });
+		const f2 = fakeFetch(() => ({ status: 401, body: { error: 'TOF 票据无效或已过期' } }));
+		const m2 = createMarketClient({ credentials: creds2, config: { marketEndpoint: 'http://x' }, fetchImpl: f2 });
+		let msg = '';
+		try { await m2.login(); } catch (e) { msg = String(e.message ?? e); }
+		check('票据过期 ⇒ 报错含来源 + 「重新登录」指引', msg.includes('dsh 登录的票据') && /重新登录/.test(msg), msg);
+		// ★ 2026-10-23（用户「不该有多个」）：**不再读 IDE 同步那份**（已废弃路线）
+		check('**不再读取已废弃的 `VSSAROS_TOF_TICKET`**（IDE 同步那份）',
+			!f2.calls.some(c => c.body && String(c.body).includes('legacy-unused')),
+			`请求体里出现了旧票：${f2.calls.map(c => c.body).join('|')}`);
+	}
 }
 
 // ── 输出形状：list / detail / reviewList / installed 必须**同一份口径** ────

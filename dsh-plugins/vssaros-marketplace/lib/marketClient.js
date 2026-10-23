@@ -135,12 +135,14 @@ export function createMarketClient({ credentials, config, log = () => { }, fetch
 	 * @returns {Promise<{ ticket: string, source: string }[]>}
 	 */
 	async function credentialTicketCandidates() {
-		const list = [];
+		// ★ 2026-10-23（用户「tof 应该在 dsh 侧，不应该有多个」）：
+		//   **只读 dsh 自登的那一张**。
+		//   `VSSAROS_TOF_TICKET`（IDE 同步）是**已废弃路线** —— 2026-10-22 就定了
+		//   「登录归 dsh 侧，IDE 只读状态」（见 `dshTofAuthService.login()`：dsh 模式下
+		//   直接 call `TofSignIn`）。真机也证实：`refs` 里**只有** `…_DSH`，同步那份从未写入过 ✗
+		//   ⇒ 继续读它只会掩盖"该重新登录"这个真实结论。
 		const local = await readRef(TOF_LOCAL_TICKET_REF);
-		if (local) { list.push({ ticket: local, source: 'dsh 本地登录的票据（降级读取）' }); }
-		const synced = await readRef(TOF_SYNCED_TICKET_REF);
-		if (synced && synced !== local) { list.push({ ticket: synced, source: 'IDE 同步的票据（降级读取）' }); }
-		return list;
+		return local ? [{ ticket: local, source: 'dsh 登录的票据（降级读取）' }] : [];
 	}
 
 	/**
@@ -240,10 +242,13 @@ export function createMarketClient({ credentials, config, log = () => { }, fetch
 			}
 		}
 
-		// 全部失败才报错，并**说清试过哪些**（否则用户不知道去哪儿重登）
+		// 全部失败才报错，并**说清试过哪些 + 怎么修**
+		// ★ 2026-10-23：指引写具体 —— 真机验证过 IDE 的「重新登录」在 dsh 模式下会
+		//   `call TofSignIn`（把登录交给 dsh 侧、开系统浏览器）⇒ 用户点它就够了 ✓
 		throw new Error(
 			`商城登录失败：${failures.join('；')}`
-			+ ' ⇒ 票据可能已过期，请在 IDE 里退出并重新登录（dsh 侧也可执行 `tof_signin` 重新授权）',
+			+ ' ⇒ 企业身份（TOF）票据已过期：请在 IDE 里点「重新登录」（会打开浏览器，登录由 dsh 侧完成），'
+			+ '或在 dsh 里执行 `tof_signin`',
 		);
 	}
 
