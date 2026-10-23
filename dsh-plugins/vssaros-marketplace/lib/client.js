@@ -766,35 +766,11 @@
 			void run('reviewFeature', { slug: pkg.slug, featured: !pkg.featured }, pkg.featured ? '已取消推荐' : '已设为推荐');
 		};
 
-		/**
-		 * 「同步本机工作台」—— 把本机已装的 `kind=page` 插件登记成商城商品
-		 * （★ 2026-10-23 用户："把设置→工作台里的内容也上传到商城数据库，统一数据源"）。
-		 *
-		 * 幂等：重复点只会把"已存在"的跳过，不会产生重复商品 ✓
-		 */
-		var _syncing = useState(false); var syncing = _syncing[0]; var setSyncing = _syncing[1];
-		var onSyncWorkbenches = function () {
-			if (syncing) { return; }
-			setSyncing(true);
-			setMsg({ kind: 'ok', text: '正在把本机工作台同步到商城…' });
-			void (async function () {
-				var res = await action('syncWorkbenches', {});
-				setSyncing(false);
-				if (!res || res.ok === false) {
-					setMsg({ kind: 'error', text: String((res && (res.error || (res.items || []).filter(function (i) { return i.ok === false; }).map(function (i) { return i.slug + ': ' + i.error; }).join('; '))) || '同步失败') });
-					return;
-				}
-				if (!res.total) {
-					setMsg({ kind: 'error', text: String(res.note || '本机没有找到工作台') });
-					return;
-				}
-				setMsg({
-					kind: 'ok',
-					text: '已同步 ' + res.total + ' 个本机工作台' + (res.skipped ? '（其中 ' + res.skipped + ' 个已存在，跳过）' : '')
-				});
-				void fetchPage(1, false);
-			})();
-		};
+		// ⚠ 2026-10-23 移除：「同步本机工作台」按钮。
+		//   用户明确"内置的工作台不用在商城中展示，我们会随版本更新" ⇒
+		//   本机 `kind=page` 插件是**内置能力**，不属于商城商品；
+		//   商城的 workbench 只放**第三方**（由 `tools/sync-market-workbenches.mjs` 从公开市场同步）。
+		//   曾经同步进去的 14 个内置工作台已从数据库删除 ✓
 
 		var kindChips = KIND_TABS.map(function (t) { return { id: t.id, label: t.label }; });
 		var catChips = useMemo(function () {
@@ -851,20 +827,7 @@
 			),
 
 			items.length === 0
-				? h('div', { className: 'vs-mp-empty' },
-					busy ? '正在加载…' : '没有找到匹配的商品。',
-					// ★ 2026-10-23：工作台页签空 ⇒ 给"从本机同步上架"的入口
-					//   （商城数据库里原本没有工作台商品，而本机装了 14 个 ⇒ 一键登记）
-					(!busy && tab === 'mall' && kind === 'workbench')
-						? h('div', { className: 'vs-mp-empty-hint' },
-							'商城里的工作台需要先从本机已装插件同步上架。',
-							h('button', {
-								className: 'vs-mp-btn primary',
-								disabled: syncing,
-								onClick: onSyncWorkbenches
-							}, syncing ? '同步中…' : '同步本机工作台'))
-						: null
-				)
+				? h('div', { className: 'vs-mp-empty' }, busy ? '正在加载…' : '没有找到匹配的商品。')
 				: h('div', { className: 'vs-mp-grid' }, items.map(function (pkg) {
 					return h(Card, {
 						key: (pkg.kind || '') + ':' + String(pkg.slug || pkg.id || ''),

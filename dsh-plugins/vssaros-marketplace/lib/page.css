@@ -288,17 +288,6 @@ body {
 	margin-right: 12px;
 }
 
-/* 空态里的操作提示（2026-10-23：工作台页签为空时给"同步本机工作台"入口） */
-.vs-mp-empty-hint {
-	margin-top: 14px;
-	font-size: 13px;
-	color: var(--vs-mp-muted);
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	gap: 10px;
-	flex-wrap: wrap;
-}
 
 /* ── 商品缩略图（2026-10-23：参考 colorskill 的 gallery 布局）────────────────
  * 数据来源：tools/fetch-covers.mjs 从 Cola Skill 的 og:image 抓来写进 icon。

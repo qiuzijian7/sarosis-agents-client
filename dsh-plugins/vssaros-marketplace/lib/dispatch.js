@@ -35,8 +35,6 @@ export const LOCAL_WRITE_KINDS = new Set(['skill', 'workflow', 'agent']);
 /** 走本地纯 HTTP 的写 op（服务端判权：assertAuthor / requireAdmin）。 */
 export const LOCAL_HTTP_OPS = new Set([
 	'updatePackage', 'reviewStatus', 'reviewFeature',
-	// ★ 2026-10-23：把本机工作台同步登记到商城（幂等，纯 HTTP）
-	'syncWorkbenches',
 ]);
 
 /**

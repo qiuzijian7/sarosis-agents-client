@@ -454,6 +454,18 @@ function makeSkill(localId, version, extra = {}) {
 		const pkg = JSON.parse(fs.readFileSync(path.resolve(HERE, '..', 'package.json'), 'utf8'));
 		return !pkg.files.some(f => f.startsWith('tools/'));
 	})());
+
+	// ★★ 2026-10-23 用户："内置的工作台不用在商城中展示，我们会随版本更新"
+	//   ⇒ 「同步本机工作台」这个能力必须**已经移除**，否则误点一次就把 14 个内置
+	//     插件又同步回商城（那正是被要求清掉的数据）✗
+	check('⑯ **不再有**「同步本机工作台」能力（内置随版本更新，不进商城）', (() => {
+		const idx = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'index.js'), 'utf8');
+		const page = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'client.js'), 'utf8');
+		const lib = path.resolve(HERE, '..', 'lib');
+		return !idx.includes('syncWorkbenches')
+			&& !page.includes('syncWorkbenches')
+			&& !fs.existsSync(path.join(lib, 'workbenches.js'));
+	})());
 }
 
 fs.rmSync(dataRoot, { recursive: true, force: true });

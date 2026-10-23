@@ -32,8 +32,6 @@ import { listPublishables } from './localResources.js';
 import { ALL_OPS, LOCAL_WRITE_KINDS, WRITE_OPS, isKnownOp, resolveOp } from './dispatch.js';
 // ★ 服务端 pkg → 前端形状的**唯一映射**（list/detail/reviewList/installed 共用）
 import { toInstalledItem, toPackageDetail, toPackageSummary } from './shape.js';
-// ★ 2026-10-23：本机工作台枚举（真源 = 已装插件树，不写第四份清单）
-import { listLocalWorkbenches, profileDirFromModule } from './workbenches.js';
 
 /** 插件包名（与 package.json 一致；也是 ide.request 的 pluginId => 必须与清单里的 ideCapabilities 对上 ✓）。 */
 const PLUGIN_PACKAGE = '@vssaros/dsh-marketplace';
@@ -351,49 +349,6 @@ export async function apply(ctx, config) {
 		if (target === 'local-publish') { return runLocalPublish(op, params); }
 		// local-http：编辑元数据 / 管理员审核（纯 HTTP，服务端判权）
 		const m = market();
-		// ★ 2026-10-23（用户："把设置→工作台里的内容也上传到商城数据库，统一数据源"）：
-		//   枚举本机**已装工作台**（`vssaros.view.kind === 'page'` 的插件）⇒ 逐个登记为
-		//   `kind:'workbench'` 的商品；本体就是 npm 包（`distribution:{type:'npm',name}`）。
-		//   幂等：已存在的版本会被服务端拒 ⇒ 视为"已同步"，不报错 ✓
-		if (op === 'syncWorkbenches') {
-			const profileDir = profileDirFromModule();
-			const list = await listLocalWorkbenches(profileDir);
-			if (list.length === 0) {
-				return {
-					ok: true, total: 0, synced: 0, skipped: 0, items: [],
-					note: `profile 里没有找到工作台（${profileDir}）—— 可能当前不是"已安装"形态`,
-				};
-			}
-			const items = [];
-			let synced = 0;
-			let skipped = 0;
-			for (const wb of list) {
-				try {
-					const r = await publishDistribution({
-						market: m,
-						kind: 'workbench',
-						localId: wb.slug,
-						version: wb.version,
-						distribution: wb.distribution,
-						changelog: '从本机工作台同步',
-						meta: { name: wb.name, description: wb.description },
-					});
-					items.push({ slug: wb.slug, name: wb.name, version: wb.version, ok: true, created: r.created });
-					synced += 1;
-				} catch (e) {
-					const msg = String(e?.message ?? e);
-					// 版本已存在 / slug 冲突 ⇒ 幂等跳过（不是失败）
-					if (/已存在|已被占用|HTTP 409|重复/.test(msg)) {
-						items.push({ slug: wb.slug, name: wb.name, version: wb.version, ok: true, skipped: true });
-						skipped += 1;
-					} else {
-						items.push({ slug: wb.slug, name: wb.name, version: wb.version, ok: false, error: msg });
-					}
-				}
-			}
-			const failed = items.filter(i => i.ok === false).length;
-			return { ok: failed === 0, total: list.length, synced, skipped, failed, items };
-		}
 		if (op === 'updatePackage') {
 			const pkg = await m.updatePackage(
 				String(params.slug || params.id || ''),
