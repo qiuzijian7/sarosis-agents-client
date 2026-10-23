@@ -14,21 +14,20 @@ import * as https from 'https';
 import * as fs from 'fs';
 import { URL } from 'url';
 import { execFile } from 'child_process';
-import { TofAuthenticationProvider } from './tofAuthProvider';
+/**
+ * ⚠ 2026-10-23（用户："TOF 所有功能都转移到 dsh 侧，IDE 侧无逻辑功能"）：
+ * 这里**不再注册** `tof` authentication provider —— 企业身份的登录 / 取票 / 续期全在
+ * `dsh-plugins/vssaros-bridge/lib/tof.js`（自己起 loopback server + state 校验 + 浏览器）。
+ * 所以 `tofAuthProvider.ts` / `tofAuthServer.ts` / `tofGatewayClient.ts` 已删除，
+ * 账号菜单里也不再出现"腾讯 OA (TOF)"这个扩展 provider（入口改由 IDE 账号菜单 →
+ * `ITofAuthService.login()` → dsh 的 `TofSignIn`）✓
+ *
+ * 本文件剩下的**只有商城相关的 HTTP/tar 命令**（proxyRequest / extractTar / createTar /
+ * downloadToFile / uploadFromFile）—— 它们与 TOF 无关，是渲染进程绕过 CORS 与拿 tar/sha256
+ * 的通道，不能跟着删 ✗
+ */
 
 export function activate(context: vscode.ExtensionContext): void {
-	const provider = new TofAuthenticationProvider(context);
-
-	context.subscriptions.push(
-		vscode.authentication.registerAuthenticationProvider(
-			'tof',
-			'腾讯 OA (TOF)',
-			provider,
-			{ supportsMultipleAccounts: false }
-		)
-	);
-	context.subscriptions.push(provider);
-
 	// ── HTTP 代理命令 ──
 	// 渲染进程的 fetch() 受 CORS 限制，无法直接访问外部 HTTP 服务。
 	// 此命令在扩展宿主（Node.js 环境）中发起 HTTP 请求，绕过 CORS。

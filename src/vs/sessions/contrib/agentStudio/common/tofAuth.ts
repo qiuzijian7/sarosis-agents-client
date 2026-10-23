@@ -36,7 +36,16 @@ export interface ITofUser {
  *  5. 本地 server 捕获 ticket，校验 state，返回 x-tai-identity
  *  6. 用 ticket 调 /api/v1/whoami 获取用户身份
  *
- * 票据持久化到 ~/.saros/auth.json，下次启动自动恢复。
+ * 谁执行这套流程（★ 2026-10-23 用户："TOF 所有功能都转移到 dsh 侧，IDE 侧无逻辑功能"）：
+ *  - **只有 dsh 侧**：`dsh-plugins/vssaros-bridge/lib/tof.js` 自己起 loopback server、校验 state、
+ *    开浏览器、持有票据、判过期（入口 `tof_signin` / `tof_signout` / `tof_status` + `vssarosTof.ticket()`）。
+ *  - IDE 侧**只剩转发**：`DshTofAuthService`（desktop）把 login/logout 转给 dsh，状态与票据从 dsh 读；
+ *    `TofAuthService`（非桌面兜底）是**占位**：恒为未登录，`login()` 直接报"去 dsh 登录"。
+ *  - **IDE 不再有任何登录流程**：扩展 `extensions/tof-authentication` 已停止注册 `tof` provider，
+ *    `tofAuthProvider` / `tofAuthServer` / `tofGatewayClient` 三个实现文件已删除
+ *    （该扩展现在只剩商城的 HTTP/tar 命令，与 TOF 无关）。
+ *  - 两条铁律：票据过期**不自动开浏览器**（只报"已失效"，由用户自己点登录）；
+ *    桥断开 / Host 没起来时**保持现状**，不能把用户误判成登出。
  */
 export const ITofAuthService = createDecorator<ITofAuthService>('tofAuthService');
 
@@ -51,6 +60,12 @@ export interface ITofAuthService {
 	readonly onDidChangeUser: Event<ITofUser | null>;
 
 	/**
+	 * 企业身份由谁持有：`dsh` = dsh 侧持有（IDE 只读镜像）；`ide` = IDE 内置扩展持有。
+	 * IDE → dsh 的票据同步（`tof.sync`）只在 `ide` 时需要。
+	 */
+	readonly holder: 'dsh' | 'ide';
+
+	/**
 	 * 发起 TOF 浏览器登录。
 	 * 启动本地回调 server，打开系统浏览器，等待用户完成 iOA 登录。
 	 * 成功后持久化票据并刷新 currentUser。
@@ -62,8 +77,8 @@ export interface ITofAuthService {
 	logout(): Promise<void>;
 
 	/**
-	 * 从持久化存储恢复票据并校验（调 /whoami）。
-	 * 启动时自动调用。票据过期或校验失败时清除。
+	 * 读回已保存的登录态（启动时自动调用）。
+	 * 票据过期或校验失败时视为未登录 —— **不**自动打开浏览器重登。
 	 */
 	restoreSession(): Promise<ITofUser | null>;
 

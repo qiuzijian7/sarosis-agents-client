@@ -19,16 +19,9 @@
 		}
 	},
 	"activationEvents": [
-		"onAuthenticationRequest:tof",
 		"onCommand:marketplace.proxyRequest"
 	],
 	"contributes": {
-		"authentication": [
-			{
-				"label": "腾讯 OA (TOF)",
-				"id": "tof"
-			}
-		],
 		"configuration": [
 			{
 				"title": "TOF 登录",
