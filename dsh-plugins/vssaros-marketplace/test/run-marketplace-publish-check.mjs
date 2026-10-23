@@ -311,8 +311,12 @@ function makeSkill(localId, version, extra = {}) {
 		clientSrc.includes('编辑信息') && /perm\.canEdit !== false/.test(clientSrc));
 	check('⑪ Host 有 updatePackage op（纯 HTTP，服务端 assertAuthor 判权）',
 		idxSrc.includes("op === 'updatePackage'") && mcSrc.includes('async function updatePackage'));
+	// ⚠ 契约级：映射已收进 `shape.js` 的 `toPackageDetail`（不再写在 index.js 里）
+	const shapeSrc = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'shape.js'), 'utf8');
 	check('⑪ detail 带 visibility/featured（否则编辑表单回显错、可见性每次被重置）',
-		/visibility: pkg\.visibility \?\? 'public'/.test(idxSrc));
+		/visibility: p\.visibility \?\? 'public'/.test(shapeSrc)
+		&& /featured: p\.featured === true/.test(shapeSrc)
+		&& /toPackageDetail\(pkg\)/.test(idxSrc));
 	check('⑪ 编辑表单是**受控组件**（React 下 value+onChange ⇒ 不会再出现"打字被渲染吞掉"）',
 		/EditDrawer/.test(clientSrc) && /onChange:\s*function \(e\) \{ props\.onChange\(\{ name:/.test(clientSrc));
 

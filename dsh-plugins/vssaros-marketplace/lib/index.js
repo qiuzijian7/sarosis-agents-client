@@ -30,6 +30,8 @@ import { downloadGitHubTarball, locateInstallRoot, resolveDownloadUrl } from './
 import { listTarGzEntries } from './tar.js';
 import { listPublishables } from './localResources.js';
 import { ALL_OPS, LOCAL_WRITE_KINDS, WRITE_OPS, isKnownOp, resolveOp } from './dispatch.js';
+// ★ 服务端 pkg → 前端形状的**唯一映射**（list/detail/reviewList/installed 共用）
+import { toInstalledItem, toPackageDetail, toPackageSummary } from './shape.js';
 
 /** 插件包名（与 package.json 一致；也是 ide.request 的 pluginId => 必须与清单里的 ideCapabilities 对上 ✓）。 */
 const PLUGIN_PACKAGE = '@vssaros/dsh-marketplace';
@@ -126,18 +128,9 @@ export async function apply(ctx, config) {
 			return {
 				ok: true,
 				total: res.total,
-				items: res.items.map(pkg => ({
-					id: pkg.id,
-					kind: pkg.kind,
-					slug: pkg.slug,
-					name: pkg.name,
-					version: pkg.latest_version ?? '',
-					description: pkg.description ?? '',
-					author: pkg.author_name ?? '',
-					status: pkg.status ?? 'pending_review',
-					featured: pkg.featured === true,
-					pendingSince: pkg.pending_review_since ?? null,
-				})),
+				// ★ 与列表共用同一份映射（`shape.js`）—— 以前这里手抄一遍，漏字段就是
+				//   "审核队列少显示一列"这类静默不一致 ✗
+				items: res.items.map(pkg => toPackageSummary(pkg, { review: true })),
 			};
 		}
 		if (op === 'list') {
@@ -158,21 +151,7 @@ export async function apply(ctx, config) {
 			return {
 				ok: true,
 				total: res.total,
-				items: res.items.map(pkg => ({
-					id: pkg.id,
-					kind: pkg.kind,
-					slug: pkg.slug,
-					name: pkg.name,
-					version: pkg.latest_version ?? pkg.version ?? '',
-					description: pkg.description ?? '',
-					author: pkg.author_name ?? '',
-					category: pkg.category ?? '',
-					icon: pkg.icon ?? '',
-					tags: Array.isArray(pkg.tags) ? pkg.tags : [],
-					status: pkg.status ?? 'active',
-					distributionType: pkg.distribution_type ?? 'bundle',
-					distribution: pkg.distribution_meta ?? null,
-					permissions: pkg.permissions ?? null,
+				items: res.items.map(pkg => toPackageSummary(pkg, {
 					installedVersion: installedByKey.get(`${pkg.kind}:${pkg.slug}`) ?? '',
 				})),
 			};
@@ -180,35 +159,8 @@ export async function apply(ctx, config) {
 		if (op === 'detail') {
 			const slug = String(params.slug ?? '');
 			const pkg = await market().detail(slug);
-			return {
-				ok: true,
-				id: pkg.id,
-				kind: pkg.kind,
-				slug: pkg.slug,
-				name: pkg.name,
-				version: pkg.latest_version ?? '',
-				description: pkg.description ?? '',
-				author: pkg.author_name ?? pkg.author?.display_name ?? pkg.author?.username ?? '',
-				category: pkg.category ?? '',
-				icon: pkg.icon ?? '',
-				// 编辑表单要回显这两项 ⇒ 必须带上（否则"可见性"每次都被重置成 public ✗）
-				visibility: pkg.visibility ?? 'public',
-				featured: pkg.featured === true,
-				tags: Array.isArray(pkg.tags) ? pkg.tags : [],
-				status: pkg.status ?? 'active',
-				distributionType: pkg.distribution_type ?? 'bundle',
-				distribution: pkg.distribution_meta ?? null,
-				permissions: pkg.permissions ?? null,
-				versions: (Array.isArray(pkg.versions) ? pkg.versions : []).map(v => ({
-					id: v.id,
-					version: v.version,
-					changelog: v.changelog ?? '',
-					sha256: v.sha256 ?? '',
-					size: v.asset_size ?? 0,
-					isLatest: v.is_latest === true,
-					manifest: v.manifest ?? null,
-				})),
-			};
+			// ★ 详情 = 列表的公共字段 + visibility/featured/versions（同一份 `baseOf`）
+			return { ok: true, ...toPackageDetail(pkg) };
 		}
 		// installed：本地台账 + 升级检查（全是 dsh 侧自己的 HTTP ✓）
 		const entries = state.dataRoot ? await readInstalled(state.dataRoot) : [];
@@ -224,20 +176,7 @@ export async function apply(ctx, config) {
 		return {
 			ok: true,
 			total: entries.length,
-			items: entries.map(e => {
-				const latest = updatable.get(`${e.kind}:${e.storeId}`) ?? '';
-				return {
-					id: e.storeId,
-					kind: e.kind,
-					slug: e.storeId,
-					name: e.storeId,
-					version: e.version,
-					description: '',
-					latestVersion: latest,
-					upgradable: Boolean(latest),
-					installedAt: e.installedAt,
-				};
-			}),
+			items: entries.map(e => toInstalledItem(e, updatable.get(`${e.kind}:${e.storeId}`) ?? '')),
 		};
 	}
 

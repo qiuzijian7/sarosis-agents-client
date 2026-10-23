@@ -228,6 +228,78 @@ function fakeFetch(handler) {
 		/agentsRescan = `failed: \$\{String\(e\?\.message/.test(idxSrc));
 }
 
+// ── 输出形状：list / detail / reviewList / installed 必须**同一份口径** ────
+//   背景：这三处曾各自手写一遍 pkg → 前端映射 ⇒ 加字段时漏一处就是
+//   "列表有、详情没有"这类静默不一致 ✗（真踩过：detail 忘了 visibility ⇒ 编辑表单把可见性重置）
+{
+	const shape = await import(pathToFileURL(path.join(LIB, 'shape.js')).href);
+	const { toPackageSummary, toPackageDetail, toInstalledItem } = shape;
+
+	// 列表形态（服务端 list 返回）
+	const listPkg = {
+		id: 'p1', kind: 'skill', slug: 'demo', name: '演示',
+		latest_version: '2.1.0', description: '介绍', author_name: '张三',
+		category: '宣发', icon: '🚀', tags: ['a', 'b'], status: 'active',
+		distribution_type: 'github-source', distribution_meta: { type: 'github-source', name: 'o/r' },
+		permissions: { canInstall: true },
+	};
+	const summary = toPackageSummary(listPkg);
+	check('形状：列表把 latest_version 映射成 version', summary.version === '2.1.0');
+	check('形状：列表带上 category/icon/tags/distribution',
+		summary.category === '宣发' && summary.icon === '🚀'
+		&& summary.tags.length === 2 && summary.distributionType === 'github-source');
+
+	// 详情形态（服务端 detail 返回：作者在 author 对象里、可能只有 version）
+	// ⚠ 用**与 list 相同的输入**造，才能验证"公共字段一致"这条（输入不同输出当然不同）
+	const detailPkg = {
+		...listPkg,
+		// detail 接口没有 latest_version，只有 version（真实差异）
+		latest_version: undefined,
+		version: '2.1.0',
+		author_name: undefined,
+		author: { display_name: '张三', username: 'zhangsan' },
+		visibility: 'private', featured: true,
+		// 注意：服务端在 `routes.ts` 里已把 `is_latest` 转成**布尔**
+		//（`is_latest: Boolean(v.is_latest)`）⇒ 这里按真实契约造 `true` 而不是 1
+		versions: [{ id: 'v1', version: '2.1.0', changelog: 'x', sha256: 'abc', asset_size: 100, is_latest: true, manifest: { a: 1 } }],
+	};
+	const detail = toPackageDetail(detailPkg);
+
+	// ★ 最关键的一条：公共字段必须**逐字一致**（这是抽出 shape.js 的全部意义）
+	const PUBLIC_KEYS = ['id', 'kind', 'slug', 'name', 'version', 'description', 'author',
+		'category', 'icon', 'tags', 'status', 'distributionType', 'distribution', 'permissions'];
+	const diffs = PUBLIC_KEYS.filter(k => JSON.stringify(summary[k]) !== JSON.stringify(detail[k]));
+	check('形状：**list 与 detail 的公共字段完全一致**（改一处不会漏另一处）',
+		diffs.length === 0, diffs.map(k => `${k}: ${JSON.stringify(summary[k])} vs ${JSON.stringify(detail[k])}`).join('; '));
+
+	check('形状：详情能从 author 对象里取到作者（列表用 author_name）', detail.author === '张三', detail.author);
+	check('形状：详情带 visibility / featured（编辑表单回显要用）',
+		detail.visibility === 'private' && detail.featured === true);
+	check('形状：版本列表字段映射（asset_size→size、is_latest→isLatest）',
+		detail.versions[0].size === 100 && detail.versions[0].isLatest === true
+		&& detail.versions[0].manifest?.a === 1);
+
+	// 缺省值：服务端少给字段时不能出 undefined（前端会显示 "undefined"）
+	const bare = toPackageSummary({ id: 'x', kind: 'mcp', slug: 'x', name: 'x' });
+	check('形状：缺字段时给安全的空值（不出现 undefined）',
+		bare.version === '' && bare.description === '' && bare.author === ''
+		&& Array.isArray(bare.tags) && bare.status === 'active' && bare.distributionType === 'bundle');
+	check('形状：tags 非数组时归一成空数组', toPackageSummary({ tags: 'not-an-array' }).tags.length === 0);
+
+	// 审核队列：默认状态不同（几乎都是待审），且带 featured/pendingSince
+	const review = toPackageSummary({ id: 'r', kind: 'skill', slug: 'r', name: 'r' }, { review: true });
+	check('形状：审核队列默认 status = pending_review（列表默认 active）',
+		review.status === 'pending_review' && summary.status === 'active');
+	check('形状：审核队列带 featured / pendingSince',
+		review.featured === false && review.pendingSince === null);
+
+	// 已安装项（本地台账，没有服务端 pkg）
+	const inst = toInstalledItem({ kind: 'skill', storeId: 'demo', version: '1.0.0', installedAt: 123 }, '2.0.0');
+	check('形状：已安装项标记可升级', inst.upgradable === true && inst.latestVersion === '2.0.0');
+	const instNo = toInstalledItem({ kind: 'skill', storeId: 'demo', version: '2.0.0' }, '');
+	check('形状：没有新版本时 upgradable = false', instNo.upgradable === false && instNo.latestVersion === '');
+}
+
 console.log(`\n[marketplace self-hosted] ${pass} passing / ${fails.length} failing`);
 if (fails.length) { console.log('失败：' + fails.join('、')); }
 process.exit(fails.length === 0 ? 0 : 1);
