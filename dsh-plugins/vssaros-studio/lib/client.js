@@ -284,6 +284,8 @@ window.__ModuleLoader__.load({
 								// 诊断（2026-10-24）：btnMounted=1 但 btnClick=0 ⇒ 点击没落到按钮上
 								// （被覆盖层挡住 / 祖先 pointer-events:none / z-index 被压）。
 								// 这里把按钮从流里抬出来：最高层级 + 强制可点 + 自己也带定位上下文。
+								// 2026-10-24：浮层里已经有一个可用的「＋新会话」，header 这个点不着又重叠 ⇒ 直接隐藏
+								display: 'none',
 								position: 'relative', zIndex: 2147482000, pointerEvents: 'auto',
 								minWidth: '64px', textAlign: 'center',
 							},

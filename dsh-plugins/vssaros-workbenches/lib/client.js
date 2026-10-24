@@ -559,6 +559,44 @@ window.__ModuleLoader__.load({
 			service.View = makeView(service);
 			ctx.effect(maintainStyles, 'vssaros-workbenches: styles');
 			ctx.effect(() => ctx.reflect.provide('desktopWorkbenches', service), 'vssaros-workbenches: service');
+
+			/* ★★ 2026-10-24 真机报障（用户第 2 次报）「bot 工作台里切换工作区 ⇒ 整个工作台被换成会话页」。
+			   根因在 dsh 自己的客户端包里（不是我们的代码）：
+			     `dsh-client-ui-workspace/lib/client.js` 的 `replaceMain(target, signal, panel, …)` 末尾
+			     `if (panel === 'reveal') this.ctx.layout.selectPanel(null)`  ⇒ 直接把前台面板置空。
+			   工作台里的官方对话（`props.conversation`）点"切换工作区"就是走这条路 ⇒
+			   **它不经过本服务的 `showSession()`**，所以上一轮改 showSession 三分支拦不住 ✗。
+
+			   ⇒ 只能在 `layout.selectPanel` 上拦。口径**刻意收窄**：
+			     · 只拦 `panel === null`（切到别的面板不拦）
+			     · 只在前台确实是"整页工作台（customFrame）"时拦
+			     · `leave()` 会先把 `active` 置 null 再调 ⇒ **自动放行**（用户主动关工作台不受影响）
+			   拦下来时打 warn：真机上如果要区分"谁在关面板"，看这条日志。 */
+			ctx.effect(() => {
+				const layout = ctx.layout;
+				if (!layout || typeof layout.selectPanel !== 'function') { return undefined; }
+				if (layout.selectPanel.__vssarosGuarded) { return undefined; }
+				const original = layout.selectPanel.bind(layout);
+				const guarded = (panel) => {
+					try {
+						if (panel === null && service.active && service.docksConversation(service.active)) {
+							console.warn('[vssaros-workbenches] 已拦截 selectPanel(null)：前台整页工作台 = ' + service.active
+								+ '（多半是工作台里的官方对话在切工作区/会话）');
+							return;
+						}
+					} catch (e) { /* 判断失败就放行，别把布局搞死 */ }
+					return original(panel);
+				};
+				guarded.__vssarosGuarded = true;
+				try {
+					layout.selectPanel = guarded;
+				} catch (e) {
+					// 只读代理 ⇒ 装不上。**明确说出来**，别让守卫假装生效。
+					console.warn('[vssaros-workbenches] layout.selectPanel 不可写，守卫未安装：' + String((e && e.message) || e));
+					return undefined;
+				}
+				return () => { try { layout.selectPanel = original; } catch (e) { /* 卸载时尽力还原 */ } };
+			}, 'vssaros-workbenches: layout guard');
 			ctx.effect(() => { void service.load(); return undefined; }, 'vssaros-workbenches: state');
 			// 会话停靠（整页工作台的 AI 对话显示在工作台自己页面里，不切走）：根覆盖层条目声明 session 子槽，
 			// 子槽里放对话面板。覆盖层由根布局常驻渲染 ⇒ 不论工作台开在页签里还是整页面板里都能停靠。
