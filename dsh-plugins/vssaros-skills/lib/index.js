@@ -816,7 +816,7 @@ async function fetchMarketPage(req, kind, page, pageSize) {
 				'content-type': 'application/json',
 				...(req.headers?.cookie ? { cookie: String(req.headers.cookie) } : {}),
 			},
-			body: JSON.stringify({ op: 'list', params: { kind, page, pageSize } }),
+			body: JSON.stringify({ op: 'list', params: { kind, page, limit: pageSize } }),
 			signal: AbortSignal.timeout(8000),
 		});
 		const j = await res.json().catch(() => null);
@@ -835,7 +835,7 @@ async function fetchMarketItems(req) {
 		const res = await fetch(`http://${host}${MARKET_ACTION_ROUTE}`, {
 			method: 'POST',
 			headers: { 'content-type': 'application/json', ...cookie },
-			body: JSON.stringify({ op: 'list', params: { kind, pageSize } }),
+			body: JSON.stringify({ op: 'list', params: { kind, limit: pageSize } }),
 			signal: AbortSignal.timeout(5000),
 		});
 		const j = await res.json().catch(() => null);
