@@ -167,6 +167,10 @@ export function injectSkillFrontmatter(content, meta) {
 	};
 	setKey('storeId', meta.storeId);
 	setKey('version', meta.version);
+	// ★ 2026-10-23：**只有技能**需要这一步 —— dsh 的 `isSkillName` 只接受 kebab-case，
+	//   所以 `name` 不可能写成中文；Agent / 工作流的 `name` 本来就允许中文，不需要第二个字段。
+	//   商城商品名（「Kami 文档设计系统」）写进 `displayName` ⇒ 本地条目 UI 标题不退化。
+	if (meta.displayName) { setKey('displayName', meta.displayName); }
 	return ['---', ...head, '---', ...lines.slice(end + 1)].join('\n');
 }
 
@@ -220,7 +224,7 @@ async function backupBeforeUpgrade(targetDir, backupRoot) {
  * @param {Buffer} args.gzBuffer 下载到的 package.tar.gz
  * @param {boolean} [args.upgrade] true = 覆盖（升级）；false/缺省 = 已存在则拒绝
  */
-export async function installBundle({ dataRoot, kind, storeId, version, gzBuffer, files: unpackedFiles, expectedSha256, upgrade = false }) {
+export async function installBundle({ dataRoot, kind, storeId, version, gzBuffer, files: unpackedFiles, expectedSha256, upgrade = false, displayName = '' }) {
 	// ★ 2026-10-22：id 越界检查 + **在校验完 sha256 之前不碰磁盘**（顺序很重要：
 	//   先验包、再建目录 ⇒ 坏包不会留下半个目录）✓
 	assertSafeStoreId(storeId, 'storeId');
@@ -259,19 +263,25 @@ export async function installBundle({ dataRoot, kind, storeId, version, gzBuffer
 		if (skillMdIndex < 0) {
 			throw new Error('包里缺少 SKILL.md（技能包必须以 SKILL.md 为入口）');
 		}
-		const injected = injectSkillFrontmatter(files[skillMdIndex].data.toString('utf8'), { storeId, version });
+		const injected = injectSkillFrontmatter(files[skillMdIndex].data.toString('utf8'), { storeId, version, displayName });
 		files[skillMdIndex] = { path: 'SKILL.md', data: Buffer.from(injected, 'utf8'), mode: files[skillMdIndex].mode };
 	}
 	// workflow：workflow.json 必须存在
 	if (kind === 'workflow') {
-		if (!files.some(f => f.path === 'workflow.json')) {
+		const i = files.findIndex(f => f.path === 'workflow.json');
+		if (i < 0) {
 			throw new Error('包里缺少 workflow.json（工作流包必须带定义文件）');
 		}
+		// 2026-10-23（简化）：**不再**往 workflow.json 塞 displayName ——
+		// workflow.json 的 `name` 本来就是可读名（「动态表情包工作流」），多一个字段只会让人猜哪个算数。
 	}
 	// agent（★ 2026-10-22）：旧包（agent.json + files.agentsMd）要转成 `.agent.md`；
 	// 目录镜像包直接就有 `.agent.md` ✓（见 normalizeAgentBundle）
 	if (kind === 'agent') {
 		const normalized = normalizeAgentBundle(files, storeId);
+		// 2026-10-23（简化）：Agent 的 `.agent.md` 里 `name` 允许中文（现有全是「GR垃圾回收专家」这类）
+		// ⇒ 不需要 displayName；只有 **skill** 因为 dsh 强制 kebab 才需要第二个字段。
+
 		files.length = 0;
 		files.push(...normalized);
 	}
@@ -282,6 +292,31 @@ export async function installBundle({ dataRoot, kind, storeId, version, gzBuffer
 	const runtimeFiles = files.filter(f => f.path !== 'manifest.json');
 	await writeFiles(targetDir, runtimeFiles, { overwrite: Boolean(existing) });
 	return { targetDir, fileCount: files.length, skipped, ...(backup ? { backup } : {}) };
+}
+
+/**
+ * 卸载到回收站（★ 2026-10-23：用户要"已安装的工作流能删除"）。
+ *
+ * 为什么不直接 `uninstallBundle`（rm -rf）：本地自建的工作流/Agent **没有商城包可以重装**，
+ * 删了就是永久丢失 ⇒ 一律移到 `<数据根>/.trash-<时间戳>/<kind>/<id>/`，用户能自己捞回来。
+ *
+ * @param {object} args
+ * @param {string} args.dataRoot
+ * @param {string} args.kind
+ * @param {string} args.storeId
+ */
+export async function trashBundle({ dataRoot, kind, storeId }) {
+	assertSafeStoreId(storeId, 'storeId');
+	const root = targetRootOf(dataRoot, kind);
+	const from = join(root, storeId);
+	if (!await exists(from)) {
+		throw new Error('「' + storeId + '」不在 ' + root + ' 里（可能已经删过）');
+	}
+	const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..+$/, '');
+	const to = join(dataRoot, '.trash-' + stamp, kind, storeId);
+	await mkdir(dirname(to), { recursive: true });
+	await rename(from, to);
+	return { movedTo: to };
 }
 
 /**

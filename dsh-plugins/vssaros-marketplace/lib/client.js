@@ -171,7 +171,8 @@
 	 * @param {{ pkg: object }} props
 	 */
 	function PkgCover(props) {
-		var raw = String((props.pkg || {}).icon || '').trim();
+		// ★ 2026-10-24：大图只认 `cover`（`icon` 是小图标语义，两者不互相顶替）
+		var raw = String((props.pkg || {}).cover || '').trim();
 		var failedState = useState(false);
 		if (!isImageIcon(raw) || failedState[0]) { return null; }
 		return h('div', { className: 'vs-mp-cover' },
@@ -352,7 +353,7 @@
 		//   没缩略图 ⇒ 沿用「小图标 + 渐变」的紧凑布局 ✓
 		//   ⚠ 用 state 而不是直接判断：封面**加载失败时**要能回退到小图标布局
 		//     （否则大图没了、小图标又被 `hasCover ? null` 跳过 ⇒ 顶部空白 ✗）
-		var coverState = useCoverFallback(pkg.icon);
+		var coverState = useCoverFallback(pkg.cover);
 		var hasCover = coverState[0];
 		return h('div', { className: 'vs-mp-card' + (hasCover ? ' has-cover' : ''), 'data-slug': pkg.slug },
 			h(PkgCover, { key: 'cover', pkg: pkg, onFail: coverState[1] }),
@@ -425,7 +426,7 @@
 
 		return h(Drawer, {
 			// 有缩略图就显示大图（与卡片一致）；没有才用 emoji 图标
-			icon: isImageIcon(d.icon) ? null : h(PkgIcon, { key: 'icon', pkg: d, large: true }),
+			icon: isImageIcon(d.cover) ? null : h(PkgIcon, { key: 'icon', pkg: d, large: true }),
 			title: textOf(d.name) || textOf(d.slug),
 			subtitle: [KIND_LABEL[d.kind] || String(d.kind || ''), textOf(d.author) || '暂无', d.version ? 'v' + String(d.version) : '']
 				.filter(Boolean).join(' · '),

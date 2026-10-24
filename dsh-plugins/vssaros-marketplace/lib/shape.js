@@ -54,6 +54,8 @@ function baseOf(pkg) {
 		author: textOf(p.author_name ?? p.author?.display_name ?? p.author?.username ?? ''),
 		category: textOf(p.category),
 		icon: p.icon ?? '',
+		// ★ 2026-10-24：缩略图（16:9）与 icon（小图标）分开；老服务端没有该字段 ⇒ 空串
+		cover: p.cover ?? '',
 		tags: Array.isArray(p.tags) ? p.tags.map(textOf).filter(Boolean) : [],
 		status: p.status ?? 'active',
 		distributionType: p.distribution_type ?? 'bundle',

@@ -253,7 +253,8 @@ const results = await mapLimit(targets, CONCURRENCY, async (pkg) => {
 
 	if (DRY) { return { slug: pkg.slug, status: 'dry', icon }; }
 	try {
-		await market.updatePackage(pkg.slug, { icon });
+		// ★ 2026-10-24：写 `cover`（16:9 缩略图），`icon` 留给小图标
+		await market.updatePackage(pkg.slug, { cover: icon });
 		return { slug: pkg.slug, status: 'ok', icon };
 	} catch (e) {
 		return { slug: pkg.slug, status: 'fail', why: `写库失败：${String(e?.message ?? e).slice(0, 90)}` };

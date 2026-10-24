@@ -257,6 +257,20 @@ export async function apply(ctx, config) {
 		// 如实返回，不让用户以为"装完就能用"✗（重启后自然生效，代码里不需要额外动作）
 		if (!slug) { throw new Error(`marketplace.${op} 需要 slug`); }
 
+		// ★ 2026-10-23：删除到回收站（可恢复）。工作流/Agent 这类本地条目没有商城包可重装，
+		//   直接 rm 太狠 ⇒ 移到 <数据根>/.trash-<时间戳>/ 下，用户能捞回来。
+		if (op === 'trash') {
+			// ⚠ 连接器不能只挪目录：它还登记在 `<数据根>/mcp.json` 里，
+			//   挪走会留下一条指向空目录的 entry（下次启动 Host 会去连一个不存在的路径）。
+			//   要删连接器请用 uninstall（它会同时注销 entry）。这里直接拒绝，不做半截事。
+			if (kind === 'mcp') {
+				throw new Error('连接器不支持删除到回收站（它同时登记在 mcp.json 里）⇒ 请用「卸载」');
+			}
+			const { movedTo } = await trashBundle({ dataRoot, kind, storeId: slug });
+			await removeInstalled(dataRoot, kind, slug);
+			return { ok: true, changed: true, movedTo };
+		}
+
 		if (op === 'uninstall') {
 			// ★ mcp 的卸载必须**同时**从 `mcp.json` 注销（只删目录会留下指向空目录的 entry ✗）
 			if (kind === 'mcp') {
@@ -297,6 +311,8 @@ export async function apply(ctx, config) {
 				kind,
 				storeId: slug,
 				version: versionRow.version,
+				// 商城商品名 = 可读名 ⇒ 装完本地条目的标题就是它（不是 kebab）
+				displayName: String(detailPkg?.name ?? '').trim(),
 				gzBuffer,
 				expectedSha256: String(versionRow.sha256 ?? '').trim() || undefined,
 				upgrade: op === 'upgrade',

@@ -20,8 +20,14 @@ import { PUBLISHABLE_KINDS } from './publisher.js';
 /** 走本地只读的 op（不碰 IDE 桥 ✓）。 */
 export const LOCAL_READ_OPS = new Set(['list', 'detail', 'installed', 'publishables', 'reviewList']);
 
-/** 走本地落盘的**写** op（装 / 升 / 卸）。 */
-export const LOCAL_WRITE_OPS = new Set(['install', 'upgrade', 'uninstall']);
+/**
+ * 走本地落盘的**写** op（装 / 升 / 卸）。
+ *
+ * ★ 2026-10-23：新增 `trash`（删除到 `<数据根>/.trash-<时间戳>/`，可恢复）。
+ *   ⚠ 必须加进这个集合 —— 否则 `isKnownOp` 不认，页面点「删除」只会拿到
+ *   「不认识的商城动作：trash」（我在浏览器里是 stub 掉 confirm 测的，差点漏掉这条）。
+ */
+export const LOCAL_WRITE_OPS = new Set(['install', 'upgrade', 'uninstall', 'trash']);
 
 /**
  * 这三类 op 里，dsh 侧能自持的 kind。

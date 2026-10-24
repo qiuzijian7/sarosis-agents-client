@@ -512,6 +512,26 @@ function makeSkill(localId, version, extra = {}) {
 		!/description: pkg\.description/.test(idxSrc));
 }
 
+// ── ⑱ `cover`（16:9 缩略图）与 `icon`（小图标）**分离**（2026-10-24）──────
+//   背景：此前把 16:9 大图塞进 `icon` ⇒ 只想要小图标的地方（侧栏/通知/弹窗）都得自己裁剪 ✗
+//   约定：列表卡片用 `cover`；小图标位置用 `icon`；缺 cover ⇒ 走 emoji 兜底，**不拿大图顶替**
+{
+	const shape = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'shape.js'), 'utf8');
+	const page = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'client.js'), 'utf8');
+	const tool = fs.readFileSync(path.resolve(HERE, '..', 'tools', 'fetch-covers.mjs'), 'utf8');
+
+	check('⑱ 服务端字段映射有 cover（detail/list 共用 shape）',
+		/cover: p\.cover \?\? ''/.test(shape));
+	check('⑱ PkgCover **只读 cover**（不再拿 icon 当大图）',
+		/\(props\.pkg \|\| \{\}\)\.cover \|\| ''/.test(page) && !/\(props\.pkg \|\| \{\}\)\.icon \|\| ''/.test(page));
+	check('⑱ 卡片"有没有封面"判定用 cover',
+		/useCoverFallback\(pkg\.cover\)/.test(page));
+	check('⑱ 抓取工具写 **cover** 而不是 icon',
+		/updatePackage\(pkg\.slug, \{ cover: icon \}\)/.test(tool));
+	check('⑱ 详情抽屉：有 cover 才隐藏小图标（用 d.cover 判）',
+		/isImageIcon\(d\.cover\)/.test(page));
+}
+
 fs.rmSync(dataRoot, { recursive: true, force: true });
 console.log(`\n[marketplace publish] ${pass} passing / ${fails.length} failing`);
 if (fails.length) { console.log('失败：' + fails.join('、')); }
