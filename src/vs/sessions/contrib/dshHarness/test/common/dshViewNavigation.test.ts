@@ -14,7 +14,7 @@
  *  · `javascript:` / `file:` / 解析失败 ⇒ **block** 且**不**外开。
  */
 import assert from 'assert';
-import { decideMainFrameNavigation } from '../../common/dshViewNavigation.js';
+import { decideMainFrameNavigation, isBlankPopupUrl } from '../../common/dshViewNavigation.js';
 
 const ORIGIN = 'http://127.0.0.1:7583';
 
@@ -48,6 +48,17 @@ suite('dshHarness / 视图主 frame 导航决策', () => {
 	test('没有连接时任何导航都不留在视图里（与改动前一致）', () => {
 		for (const url of [`${ORIGIN}/`, `${ORIGIN}/x/dashboard/`, 'https://example.com/']) {
 			assert.strictEqual(decideMainFrameNavigation(url, undefined), 'external', url);
+		}
+	});
+
+	// ★ 2026-10-24（用户报「登录未打开网页」）：官方账号登录先开 `about:blank` 占位窗、再设 location。
+	//   主进程若对占位窗直接 deny ⇒ window.open 返回 null ⇒ 浏览器永远不开 ✗ —— 这张表就是那条判据。
+	test('isBlankPopupUrl：只认"空弹窗占位"（about:blank / 空串），真地址一律 false', () => {
+		for (const blank of ['', '   ', 'about:blank', 'about:blank#x', 'about:blank?y', 'ABOUT:BLANK']) {
+			assert.strictEqual(isBlankPopupUrl(blank), true, blank);
+		}
+		for (const real of ['about:srcdoc', 'about:blankX', 'https://sso.example.com/auth', 'http://127.0.0.1:7583/', 'mailto:a@b.c']) {
+			assert.strictEqual(isBlankPopupUrl(real), false, real);
 		}
 	});
 
@@ -111,21 +122,24 @@ suite('dshHarness / 视图主 frame 导航决策', () => {
 			'前缀相近但不是同一模块 ⇒ 不能误放行');
 	});
 
-	// ★★ 2026-10-23（真机定案）：记忆库页是**客户端 `/` 里的一屏**（主 frame、URL 仍为 `/`）
-	//   ⇒ 用户点「查看完整记忆」= 主 frame 从 `/` 导航到 `/x/memory/detail` ⇒ 必须放行；
-	//   而「主页突然变成会话页」那次是**页面自己**导航（无用户手势）⇒ 必须继续拦 ✓
-	test('用户刚点出来的模块页导航 ⇒ 放行（记忆库「查看完整记忆」就是这种）', () => {
-		assert.strictEqual(decideMainFrameNavigation(`${ORIGIN}/x/memory/detail`, ORIGIN, `${ORIGIN}/`, true), 'allow');
-		assert.strictEqual(decideMainFrameNavigation(`${ORIGIN}/x/dashboard/`, ORIGIN, `${ORIGIN}/`, true), 'allow');
+
+	// ★★ 2026-10-24（真机定案 + 用户反馈"错误的显示成了全屏"）：
+	//   放行"用户点击触发的主 frame 模块页导航"**体验是错的** —— 它把整个 dsh 客户端整页替换
+	//   ⇒ **页签栏/侧栏全没了** ✗✗ ⇒ 正确做法是页侧调 `openModulePage`（编辑区标签页打开，
+	//   宿主按"精确 → 前缀归属"匹配已注册模块，子路由本来就支持）⇒ 主 frame 因此恢复严格 ✓
+	test('**哪怕用户点的**，主 frame 也不许整页跳到模块页（体验会丢页签栏）', () => {
+		assert.strictEqual(decideMainFrameNavigation(`${ORIGIN}/x/memory/detail`, ORIGIN, `${ORIGIN}/`, true), 'block',
+			'用户点击也不放宽：整页替换 = 页签栏/侧栏消失（用户实测报过）⇒ 该走 openModulePage 开标签页 ✓');
+		assert.strictEqual(decideMainFrameNavigation(`${ORIGIN}/x/dashboard/`, ORIGIN, `${ORIGIN}/`, true), 'block');
 	});
 
-	test('**没有**用户手势的模块页导航 ⇒ 仍然拦（「主页突然变成会话页」的防线）', () => {
-		assert.strictEqual(decideMainFrameNavigation(`${ORIGIN}/x/dashboard/`, ORIGIN, `${ORIGIN}/`, false), 'block');
-		assert.strictEqual(decideMainFrameNavigation(`${ORIGIN}/x/memory/detail`, ORIGIN, `${ORIGIN}/`, false), 'block');
-	});
-
-	test('用户手势**不能**放宽跨源 / 非 http(s)（安全性不受影响）', () => {
+	test('手势参数不影响跨源 / 非 http(s) 的既有判定（安全性不放宽）', () => {
 		assert.strictEqual(decideMainFrameNavigation('https://example.com/x/memory/', ORIGIN, `${ORIGIN}/`, true), 'external');
 		assert.strictEqual(decideMainFrameNavigation('javascript:alert(1)', ORIGIN, `${ORIGIN}/`, true), 'block');
+	});
+
+	test('同模块子树内（iframe / 详情级）仍照常放行 —— 不受本次改动影响', () => {
+		assert.strictEqual(decideMainFrameNavigation(`${ORIGIN}/x/memory/detail`, ORIGIN, `${ORIGIN}/x/memory/`), 'allow');
+		assert.strictEqual(decideMainFrameNavigation(`${ORIGIN}/x/memory/detail`, ORIGIN, `${ORIGIN}/#/x/memory/`), 'allow');
 	});
 });

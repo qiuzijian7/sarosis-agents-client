@@ -61,6 +61,28 @@ function moduleSubtree(pathname: string | undefined): string | undefined {
 	return m ? `/x/${m[1]}` : undefined;
 }
 
+/**
+ * 这个 `window.open` 请求是不是"**空弹窗占位**"（`about:blank` / 空串）。
+ *
+ * ★ 2026-10-24（用户报「登录未打开网页」）：dsh 官方账号登录的做法是
+ *   `begin(): popup = window.open("about:blank", "_blank"); popup.opener = null;`
+ *   → 拿到 RPC 结果后再 `popup.location = authorizeUrl`。
+ *   为什么要先开空窗：`window.open` 必须发生在**用户手势**的同一个同步栈里，否则会被拦；
+ *   而 authorizeUrl 要等一次网络往返才有 ⇒ 只能先占位。
+ *
+ * 所以主进程不能对 blank 弹窗直接 `deny`（那样 `window.open` 返回 `null`，
+ * 页面后面所有 `popup.location = …` 都落空 ⇒ **浏览器永远不开**，用户只看到"复制登录链接" ✗）。
+ * 正确做法：blank 先**允许**（隐藏窗口），等它真的要去某个地址时，再把地址交给系统浏览器并销毁占位窗。
+ */
+export function isBlankPopupUrl(rawUrl: string): boolean {
+	const t = String(rawUrl ?? '').trim();
+	if (!t) {
+		return true;
+	}
+	// `about:blank` 可能带 hash（`about:blank#x`）—— 都算占位，不算真地址
+	return /^about:blank($|[?#])/i.test(t);
+}
+
 /** 与 `isSameOrigin` 同口径：协议 + 主机 + 端口（默认端口归一化由 URL 负责）。 */
 function sameOrigin(a: URL, b: URL): boolean {
 	return a.protocol === b.protocol && a.hostname === b.hostname && a.port === b.port;
@@ -133,10 +155,12 @@ export function decideMainFrameNavigation(
 	const currentModule = moduleSubtree(currentKey);
 	if (currentModule && currentModule === moduleSubtree(target.pathname)) { return 'allow'; }
 
-	// ★ 2026-10-23：**用户刚点出来的**同源模块页导航 ⇒ 放行。
-	//   判据分工："页面自己导航"（程序性、无手势）= 事故来源 ⇒ 继续 block；
-	//            "用户点击链接" = 正常页面行为 ⇒ 放行（记忆库「查看完整记忆」就是这种）✓
-	if (userGestureRecently && moduleSubtree(target.pathname)) { return 'allow'; }
+	// ★ 2026-10-24 **回退手势放行**：实测放行主 frame 导航的**体验是错的** ——
+	//   它把整个 dsh 客户端整页替换 ⇒ **页签栏/侧栏全没了**（用户报"错误的显示成了全屏"）✗✗
+	//   ⇒ 正确做法是"在编辑区**标签页**里打开子页"（页侧调 `openModulePage`，宿主前缀匹配已支持）
+	//   ⇒ 主 frame 一律保持严格（只放行 `/`），不再按手势放宽 ✓
+	//   `userGestureRecently` 参数**保留**：留给"未来若真的需要"时有据可查，但**不参与判定** ⚠
+	void userGestureRecently;
 	return 'block';
 }
 

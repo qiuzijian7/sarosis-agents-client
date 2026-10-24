@@ -1062,15 +1062,25 @@ const OPEN_DETAIL_JS = `(function(){
   var go = function (ev) {
     if (ev) { ev.preventDefault(); }
     var at = new Date().toLocaleTimeString();
-    var url = './detail';
     var bridge = window.vssarosDsh;
-    if (bridge) {
-      mark('· ' + at + ' 原地打开详情');
-      location.href = url;
-      return;
+    // ★★ 2026-10-24：走宿主的 openModulePage —— 在**编辑区标签页**里打开详情页面。
+    //   为什么不再用 location.href='./detail'：那是**主 frame 整页导航** ⇒
+    //   会把整个 dsh 客户端替换掉 ⇒ **页签栏/侧栏全没了**（用户报"错误的显示成了全屏"）✗✗
+    //   且宿主的导航守卫（只放行 '/'）本来也会拦它 ⇒ 表现为"点了没反应"。
+    //   openModulePage 支持子路由（宿主按"精确 → 前缀归属"匹配已注册模块）✓
+    if (bridge && typeof bridge.openModulePage === 'function') {
+      mark('· ' + at + ' 在编辑区打开详情');
+      try {
+        Promise.resolve(bridge.openModulePage('/x/memory/detail')).then(
+          function () { mark('· ' + at + ' 已在编辑区打开详情'); },
+          function (e) { mark('· ' + at + ' 打开失败：' + ((e && e.message) || e)); }
+        );
+        return;
+      } catch (e) { mark('· ' + at + ' 打开失败：' + ((e && e.message) || e)); return; }
     }
+    // 无桥（纯浏览器）⇒ 新标签页（这是**真能用**的退化，不是"点了没反应" ✓）
     mark('· ' + at + ' 新标签页打开详情');
-    window.open(url, '_blank', 'noopener');
+    window.open('./detail', '_blank', 'noopener');
   };
   el.addEventListener('click', go);
   el.addEventListener('keydown', function (ev) { if (ev.key === 'Enter' || ev.key === ' ') { go(ev); } });
@@ -4293,6 +4303,65 @@ export function apply(ctx, rawConfig = {}) {
 			try {
 				const url = new URL(req.url ?? '/', 'http://127.0.0.1');
 				const pathname = url.pathname;
+				// ★ 2026-10-22（工作台重构 §5 步骤 2）：**页面数据的 JSON 接口**（React 工作台用）。
+				//   与 SSR 页**同一份 state**（`state.snapshot` / `state.drafts` / `state.distill` / `state.lastAction`）
+				//   ⇒ 两个界面的数字与文案口径一致 ✓（各算一遍迟早分叉 ✗）。
+				//   ⚠ 不在这里 `void refresh(...)`：那是**渲染**的副作用（页面每次打开刷一次）⇒
+				//     放进 GET 接口会让轮询/重取把网关打爆 ✗。要新鲜数据由页面上的「刷新」显式触发 ✓。
+				if (pathname === `${PAGE_ROUTE}api/page` || pathname === `${PAGE_ROUTE}api/page/`) {
+					// 草稿是**渲染依赖** ⇒ 读一次（只读本地 jsonl，代价可忽略 ✓，与 SSR 页同口径）
+					await draftStore.read()
+						.then(rows => { state.drafts = { rows, readAt: Date.now(), error: '' }; })
+						.catch(error => { state.drafts = { rows: state.drafts?.rows ?? [], readAt: Date.now(), error: String(error?.message ?? error) }; });
+					const snapshot = state.snapshot;
+					const base = gatewayUrlOf(config);
+					const agentId = agentIdOf(config);
+					const toolsRegistered = TOOL_NAMES.filter(tool => !!ctx.tools.get(tool)).join(',') || '(未注册)';
+					const lastAction = state.lastAction;
+					const fresh = lastAction && Number.isFinite(lastAction.at) && Date.now() - lastAction.at < 30_000;
+					res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+					res.end(JSON.stringify({
+						ok: true,
+						version: PKG_VERSION,
+						state: {
+							name: !base ? 'unconfigured' : (snapshot.ok ? 'ok' : 'error'),
+							agent: agentId,
+							gateway: base ?? '',
+							bytes: Buffer.byteLength(snapshot.text, 'utf8'),
+							chars: snapshot.text.length,
+							refreshes: state.refreshes,
+							writes: state.writes.get(agentId) ?? 0,
+							tools: toolsRegistered,
+							promptSection: state.promptSection === undefined ? null : state.promptSection,
+							snapshots: state.snapshots.size,
+							sectionName: SECTION_NAME,
+							tokenBudget: tokenBudgetOf(config),
+							charCap: MAX_INJECT_CHARS,
+						},
+						working: {
+							ok: snapshot.ok === true,
+							text: snapshot.text ?? '',
+							error: snapshot.error ? String(snapshot.error) : '',
+							source: snapshot.source ? String(snapshot.source) : '',
+							fetchedAt: snapshot.fetchedAt ?? 0,
+							truncated: snapshot.truncatedByChars === true,
+							rawChars: snapshot.rawChars ?? null,
+						},
+						distill: state.distill ?? {},
+						drafts: {
+							rows: (state.drafts?.rows ?? []).map(row => ({
+								id: String(row.id ?? ''), text: String(row.text ?? '').slice(0, 90),
+								matched: String(row.matched ?? ''), turn: Number.isFinite(row.turn) ? row.turn : null,
+								status: String(row.status ?? ''),
+							})),
+							readAt: state.drafts?.readAt ?? 0,
+							error: state.drafts?.error ? String(state.drafts.error) : '',
+						},
+						lastAction: fresh ? { action: String(lastAction.action ?? ''), ok: lastAction.ok === true, text: String(lastAction.text ?? '').slice(0, 60), error: lastAction.error ? String(lastAction.error) : '' } : null,
+						slots: SLOT_NAMES.slice(),
+					}));
+					return;
+				}
 				// ★ 提升路由（`POST /x/memory/promote`）—— 草稿区那个"无 JS"表单提交到这里 ✓
 				// （为什么页面提升不过审批闸：见 `lib/promote.js` 文件头 ✓）
 				if (pathname === PROMOTE_ROUTE || pathname === DISCARD_ROUTE) {
