@@ -566,6 +566,35 @@ function makeSkill(localId, version, extra = {}) {
 	})());
 }
 
+// ── ⑳ MCP 版本对齐（2026-10-24 用户："去各自的 repo 读 package.json"）──────
+//   背景：从 Cline 提交 Issue 同步时全部记成 `1.0.0` 占位（Issue 里没有版本）。
+//   坑：服务端 `latest_version` 是**按 semver 最大**取，不是"最后发布的"
+//       ⇒ 占位 `1.0.0` 永远压过真实版本 `0.2.0`（历史是 `0.2.0, 1.0.0` 但 latest=1.0.0）✗
+//       ⇒ 发完真实版本必须**删掉占位 1.0.0**
+{
+	const toolPath = path.resolve(HERE, '..', 'tools', 'sync-mcp-versions.mjs');
+	const tool = fs.existsSync(toolPath) ? fs.readFileSync(toolPath, 'utf8') : '';
+
+	check('⑳ 有 MCP 版本对齐脚本', tool.length > 0, toolPath);
+	check('⑳ 从 `distribution_meta.name`（owner/repo）取仓库',
+		/distribution_meta\?\.name/.test(tool));
+	check('⑳ 读 `package.json`（raw.githubusercontent，不占 API 额度）',
+		/raw\.githubusercontent\.com/.test(tool) && /package\.json/.test(tool));
+	check('⑳ 依次试 HEAD / main / master（默认分支不统一）',
+		/\['HEAD', 'main', 'master'\]/.test(tool));
+	check('⑳ 版本要像版本号（挡 `0.0.0` / 占位）', /function isRealVersion/.test(tool));
+	check('⑳ **发完真实版本要删占位 1.0.0**（否则 semver 最大仍指向占位）',
+		/needPrune = cur === '1\.0\.0' && real !== '1\.0\.0'/.test(tool) && /deleteVersion\(\{ market, slug: p\.slug, version: '1\.0\.0' \}\)/.test(tool));
+	check('⑳ 顺手清掉 `_No response_`（Issue 表单占位符曾被当描述入库）',
+		/PLACEHOLDERS/.test(tool) && /_No response_/.test(tool));
+	check('⑳ 非 Node 项目**如实报**（不是静默跳过）', /没有 package\\?\.json/.test(tool));
+	check('⑳ 幂等（真实版本已在 ⇒ same，不重复发）', /if \(real === cur\) \{/.test(tool));
+	check('⑳ 是运维脚本（不进 files 白名单）', (() => {
+		const pkg = JSON.parse(fs.readFileSync(path.resolve(HERE, '..', 'package.json'), 'utf8'));
+		return !pkg.files.some(f => f.startsWith('tools/'));
+	})());
+}
+
 fs.rmSync(dataRoot, { recursive: true, force: true });
 console.log(`\n[marketplace publish] ${pass} passing / ${fails.length} failing`);
 if (fails.length) { console.log('失败：' + fails.join('、')); }
