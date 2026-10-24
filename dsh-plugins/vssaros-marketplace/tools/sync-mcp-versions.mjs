@@ -19,6 +19,7 @@
  * node tools/sync-mcp-versions.mjs --dry --limit 10    # 先看会改什么
  * node tools/sync-mcp-versions.mjs                     # 全量（133 个，约 1-2 分钟）
  * node tools/sync-mcp-versions.mjs --only-missing      # 只处理仍是 1.0.0 占位的
+ * node tools/sync-mcp-versions.mjs --no-releases       # 只读 package.json（不回退 Releases）
  * ```
  *
  * ⚠ `raw.githubusercontent.com` **不占** GitHub API 的 60/h 额度（它是静态 CDN），
@@ -40,6 +41,8 @@ const PLACEHOLDERS = new Set(['_No response_', 'No response', '_No response_ ', 
 const argv = process.argv.slice(2);
 const DRY = argv.includes('--dry');
 const ONLY_MISSING = argv.includes('--only-missing');
+// `--no-releases` 可关掉 Releases 回退（只想读 package.json 时）
+const USE_RELEASES = !argv.includes('--no-releases');
 const LIMIT = (() => {
 	const i = argv.indexOf('--limit');
 	if (i < 0) { return 0; }
@@ -83,7 +86,7 @@ const market = createMarketClient({
 
 // ── 读仓库版本 ──────────────────────────────────────────────────
 /** 从 `owner/repo` 读 `package.json` 的 version（依次试 HEAD/main/master）。 */
-async function readRepoVersion(repo) {
+async function readPkgJsonVersion(repo) {
 	const branches = ['HEAD', 'main', 'master'];
 	for (const br of branches) {
 		const url = `https://raw.githubusercontent.com/${repo}/${br}/package.json`;
@@ -93,13 +96,58 @@ async function readRepoVersion(repo) {
 			const j = await r.json().catch(() => null);
 			const v = typeof j?.version === 'string' ? j.version.trim() : '';
 			if (v) { return { version: v, via: `package.json@${br}` }; }
-			return { error: 'package.json 里没有 version 字段', via: br };
-		} catch (e) {
+			return { error: 'package.json 里没有 version 字段' };
+		} catch {
 			/* 试下一个分支 */
-			if (br === branches[branches.length - 1]) { return { error: String(e?.message ?? e).slice(0, 80) }; }
 		}
 	}
 	return { error: '没有 package.json（非 Node 项目或不在根目录）' };
+}
+
+/**
+ * 从 **GitHub Releases 的最新 tag** 取版本（`--releases`）。
+ *
+ * 为什么用 302 的 `Location` 而不是 `api.github.com/repos/:o/:r/releases/latest`：
+ * - 后者**占 API 额度**（未认证仅 60/h）⇒ 67 个非 Node 项目直接撞墙 ✗
+ * - 前者是 `github.com` 的普通跳转，**不占额度**，`Location` 就是
+ *   `/owner/repo/releases/tag/v1.2.3` ⇒ 直接解析出 tag ✓
+ *
+ * 实测可用：`github/github-mcp-server` → `v2.0.3`；`planetscale/cli` → `v0.348.0`
+ */
+async function readReleaseVersion(repo) {
+	try {
+		const r = await fetch(`https://github.com/${repo}/releases/latest`, {
+			redirect: 'manual',
+			headers: { 'user-agent': 'Mozilla/5.0 (compatible; VsSarosMarket/1.0)' },
+			signal: AbortSignal.timeout(15000),
+		});
+		const loc = r.headers.get('location') ?? '';
+		const tag = /\/releases\/tag\/([^/?#]+)/.exec(loc)?.[1] ?? '';
+		if (!tag) {
+			// 302/301 但跳到的是 `/releases` 列表页 ⇒ 该仓库**没有 latest Release**
+			// （不是错误，只是没有发布记录）
+			return { error: r.status === 404 ? '没有 Release' : '没有 latest Release（跳到了 releases 列表）' };
+		}
+		// 剥掉开头的 `v` / `release-` 之类前缀，但保留 `1.2.3-beta.1` 这类后缀
+		const version = decodeURIComponent(tag).replace(/^(v|ver|release[-_]?)/i, '').trim();
+		return { version, via: `releases/tag/${tag}` };
+	} catch (e) {
+		return { error: String(e?.message ?? e).slice(0, 80) };
+	}
+}
+
+/**
+ * 综合取版本：先 `package.json`（Node 项目最准），失败再退到 Releases。
+ * @param {string} repo
+ * @param {{ useReleases?: boolean }} [opts]
+ */
+async function readRepoVersion(repo, opts = {}) {
+	const pkg = await readPkgJsonVersion(repo);
+	if (pkg.version) { return pkg; }
+	if (!opts.useReleases) { return pkg; }
+	const rel = await readReleaseVersion(repo);
+	if (rel.version) { return rel; }
+	return { error: `${pkg.error}；${rel.error}` };
 }
 
 /** 版本号是否像版本（防 `0.0.0` / 占位）。 */
@@ -153,7 +201,7 @@ async function main() {
 			const repo = p.distribution_meta?.name;
 			if (!repo) { failures.push(`${p.slug}: 没有 distribution_meta.name`); continue; }
 
-			const got = await readRepoVersion(repo);
+			const got = await readRepoVersion(repo, { useReleases: USE_RELEASES });
 			if (got.error) { failures.push(`${p.slug} (${repo}): ${got.error}`); continue; }
 
 			const real = got.version;

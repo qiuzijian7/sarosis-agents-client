@@ -588,6 +588,16 @@ function makeSkill(localId, version, extra = {}) {
 	check('⑳ 顺手清掉 `_No response_`（Issue 表单占位符曾被当描述入库）',
 		/PLACEHOLDERS/.test(tool) && /_No response_/.test(tool));
 	check('⑳ 非 Node 项目**如实报**（不是静默跳过）', /没有 package\\?\.json/.test(tool));
+	// ★ Releases 回退：非 Node 项目（Python/Go/Rust）没有 package.json，
+	//   用 `github.com/<repo>/releases/latest` 的 **302 Location** 取 tag。
+	//   为什么不打 `api.github.com/repos/:o/:r/releases/latest`：那**占 API 额度**
+	//   （未认证 60/h，67 个项目直接撞墙）✗ 而普通跳转不占额度 ✓
+	check('⑳ Releases 回退用 **302 Location** 取 tag（不占 GitHub API 额度）',
+		/redirect: 'manual'/.test(tool) && tool.includes('/releases/tag/') && /readReleaseVersion/.test(tool));
+	check('⑳ 剥掉 tag 的 `v` 前缀（`v1.2.3` → `1.2.3`）',
+		/replace\(\/\^\(v\|ver\|release\[-_\]\?\)\/i/.test(tool));
+	check('⑳ `--no-releases` 可关掉回退（只想读 package.json 时）',
+		/USE_RELEASES/.test(tool) && /--no-releases/.test(tool));
 	check('⑳ 幂等（真实版本已在 ⇒ same，不重复发）', /if \(real === cur\) \{/.test(tool));
 	check('⑳ 是运维脚本（不进 files 白名单）', (() => {
 		const pkg = JSON.parse(fs.readFileSync(path.resolve(HERE, '..', 'package.json'), 'utf8'));
