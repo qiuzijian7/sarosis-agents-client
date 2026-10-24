@@ -25,7 +25,7 @@ import { decideChatPartition } from '../common/dshChatPartition.js';
 import { isSameOrigin } from '../common/dshCli.js';
 // 主 frame 导航判据（纯函数；表驱动单测见 `test/common/dshViewNavigation.test.ts`）——
 // 2026-10-23 从本文件的 `will-navigate` 里抽出来："同源非根路径要拦"这条规则此前完全没法单测。
-import { decideMainFrameNavigation } from '../common/dshViewNavigation.js';
+import { decideMainFrameNavigation, isBlankPopupUrl } from '../common/dshViewNavigation.js';
 import { DSH_VIEW_PARTITION, DSH_VIEW_PARTITION_CHAT_POOL_PREFIX, DSH_VIEW_PARTITION_DESKTOP, DshColorScheme, DshViewSurface, IDshViewBounds, IDshViewInfo, surfaceTakesRoute } from '../common/dshHarness.js';
 import { resolveViewUrl } from '../common/dshPluginPage.js';
 import { unavailablePageUrl } from '../common/dshViewHostUnavailable.js';
@@ -38,6 +38,12 @@ import { IDshHostConnection } from './dshHostSupervisor.js';
 import { markMainThreadPhase } from '../../../../code/electron-main/mainThreadBreadcrumb.js';
 
 const PRELOAD = 'vs/sessions/contrib/dshHarness/electron-browser/preload-dshView.js';
+
+/** 读一个"真值"型环境变量（`1`/`true`/`yes`/`on`）。dsh 视图侧的小工具，避免各处自己写判断 ✓ */
+function readEnvFlag(name: string): boolean {
+	const v = String(process.env[name] ?? '').trim().toLowerCase();
+	return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+}
 
 /** 页面健康看门狗：体检间隔（见 `_checkPageAlive`）。 */
 const PAGE_WATCH_INTERVAL_MS = 15_000;
@@ -1845,8 +1851,51 @@ export class DshViewHost extends Disposable {
 			if (isError) { this._logService.error(line2); } else { this._logService.warn(line2); }
 		});
 		wc.setWindowOpenHandler(({ url }) => {
+			// ★★ 2026-10-24（用户报「登录未打开网页」）：
+			//   dsh 官方账号登录的流程是 —— `popup = window.open("about:blank", "_blank")`（在用户手势的
+			//   同一个同步栈里）→ 等一次 RPC 拿到 `authorizeUrl` → `popup.location = authorizeUrl`。
+			//   原来这里**一律 deny** ⇒ `window.open` 返回 `null` ⇒ 后面所有 `popup.location = …` 都是空操作
+			//   ⇒ 浏览器永远不开，用户只看到「没有自动打开新页面？复制登录链接」✗✗。
+			//   ⇒ 占位弹窗（about:blank）**允许创建**但隐藏（不闪窗）；等它真的要去某个地址时，
+			//     把地址交给系统浏览器 + 立刻销毁占位窗（用户看到的仍是"外部浏览器打开登录页" ✓）。
+			if (isBlankPopupUrl(url)) {
+				return {
+					action: 'allow',
+					overrideBrowserWindowOptions: {
+						show: false,            // 占位窗不许闪一下（它只会存在几百毫秒）
+						width: 480,
+						height: 640,
+						autoHideMenuBar: true,
+					},
+				};
+			}
 			this._openExternal(url);
 			return { action: 'deny' };
+		});
+		// 占位弹窗的去向：第一次真正的导航 ⇒ 交给系统浏览器，然后收掉占位窗。
+		wc.on('did-create-window', (child) => {
+			const cwc = child.webContents;
+			const kill = () => {
+				try {
+					if (!child.isDestroyed()) {
+						child.destroy();
+					}
+				} catch { /* 已经没了 */ }
+			};
+			const handoff = (event: { preventDefault(): void }, url: string): void => {
+				if (isBlankPopupUrl(url)) {
+					return;   // 还在 about:blank 上打转 ⇒ 不动它
+				}
+				event.preventDefault();
+				this._logService.info(`[dshHarness] 登录/外链弹窗 ⇒ 交给系统浏览器：${url}`);
+				this._openExternal(url);
+				kill();
+			};
+			cwc.on('will-navigate', (e, url) => handoff(e, url));
+			cwc.on('will-redirect', (e, url) => handoff(e, url));
+			// 兜底：页面拿不到结果（登录被取消 / 超时）时占位窗会一直留着 ⇒ 15s 后收掉（隐藏窗口用户看不见，但不能泄漏）
+			const timer = setTimeout(kill, 15_000);
+			(child as unknown as { once?: (ev: string, cb: () => void) => void }).once?.('closed', () => clearTimeout(timer));
 		});
 		// ★★ 2026-10-23 **关键修法**：改成 `will-frame-navigate` 并**只判主 frame**；
 		//   **子帧（iframe）导航一律放行** —— 插件页（如记忆库）是在客户端 iframe 里渲染的，
@@ -1855,9 +1904,22 @@ export class DshViewHost extends Disposable {
 		//     `[nav] … current=http://127.0.0.1:7583/ target=/x/memory/detail => block`
 		//   ⇒ 顶层文档是 dsh 客户端 `/`（模块页在 iframe 里）⇒ 被当成"主 frame 导航"拦掉
 		//   ⇒ 用户看到的就是"点了没反应" ✗✗（连点 3 轮才定位到这一层）
-		// ★ 2026-10-23：记录**最近一次用户输入**（鼠标/键盘）—— 用来区分"用户点链接"与"页面自己导航"：
+		// ★ 2026-10-24：记录**最近一次用户"点击"** —— 用来区分"用户点链接"与"页面自己导航"：
 		//   前者该放行（记忆库「查看完整记忆」），后者是事故来源（"主页突然变成会话页"）必须拦 ✓
+		//
+		// ⚠ **不能用 `before-input-event`**：它只报**键盘**事件（Electron 既有行为）⇒ 鼠标点击捕不到
+		//   ⇒ 真机日志 `gesture=false` 就是这么来的（用户明明点了）✗✗
+		// ⇒ 改用 `input-event`（鼠标 + 键盘都报），且**只认点击类**（`mouseDown`/`mouseUp`/`keyDown`）：
+		//   忽略 `mouseMove` —— 否则鼠标划过就算"手势"⇒ 判据被稀释到等于没有 ✗
 		let lastUserInputAt = 0;
+		const isClickLike = (t: string) => t === 'mouseDown' || t === 'mouseUp' || t === 'keyDown' || t === 'rawKeyDown' || t === 'char';
+		// ⚠ 签名是 **(event, inputEvent) 两个参数** —— `type` 在**第二个**参数上（`InputEvent.type`）
+		//   ⇒ 只写 `(event) => event.type` 会永远读到空字符串 ⇒ 手势判据恒 false ⇒ 白跑一轮 ✗✗
+		wc.on('input-event', (_event, inputEvent) => {
+			const type = String(inputEvent?.type ?? '');
+			if (isClickLike(type)) { lastUserInputAt = Date.now(); }
+		});
+		// 键盘兜底（`input-event` 某些平台/版本对键盘的覆盖不如它稳）
 		wc.on('before-input-event', () => { lastUserInputAt = Date.now(); });
 		wc.on('will-frame-navigate', (details) => {
 			if (!details.isMainFrame) { return; }
@@ -1874,9 +1936,13 @@ export class DshViewHost extends Disposable {
 			const currentUrl = (() => {
 				try { return wc.getURL(); } catch { return slot.route ?? '/'; }
 			})();
-			// ★ 2026-10-23："最近 1.5s 内有用户输入" ⇒ 认为这次导航是用户点出来的
+			// "最近 1.5s 内有用户点击" ⇒ 认为这次导航是用户点出来的（正常页面行为）
 			const userGestureRecently = Date.now() - lastUserInputAt < 1500;
-			const decision = decideMainFrameNavigation(url, this._connection?.origin, currentUrl, userGestureRecently);
+			// ★ 2026-10-24 应急开关：`VSSAROS_DSH_ALLOW_MODULE_NAV=1` ⇒ 一律放行"到模块页"的同源导航
+			//   为什么留着：手势判据依赖 Electron 的输入事件（`input-event` 的覆盖度在不同平台/版本上
+			//   有过差异）⇒ 万一某台机器捕不到点击，用户可以一条环境变量先跑通，而不是卡死 ✗
+			const allowModuleNavByEnv = readEnvFlag('VSSAROS_DSH_ALLOW_MODULE_NAV');
+			const decision = decideMainFrameNavigation(url, this._connection?.origin, currentUrl, userGestureRecently || allowModuleNavByEnv);
 			// ★ 2026-10-23 诊断：真机"点了没反应"排查用 —— 把 current / target / 判定一起打出来
 			//   （只在**目标不是根路径**时打，避免刷屏；定位完可以删 ✓）
 			if (!/^\/?$/.test(new URL(url).pathname)) {
