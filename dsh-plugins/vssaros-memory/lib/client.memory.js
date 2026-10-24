@@ -142,7 +142,15 @@ window.__ModuleLoader__.load({
 						'data-vssaros-memory-action': 'open-detail',
 						onClick: ev => {
 							const bridge = typeof window !== 'undefined' ? window.vssarosDsh : undefined;
-							if (!bridge || typeof bridge.openModulePage !== 'function') { return; }
+							// ★ 2026-10-24：页面侧日志会进 Host 日志（`page console(info)`）⇒ 一次就能看清
+							//   "点击有没有进处理器 / 桥在不在"（之前 7 轮都在盲猜，就是缺这一行 ✗）
+							const probe = '[vssaros-memory][v0.3.96] open-detail click; hasBridge=' + !!bridge
+								+ ' hasOpenModulePage=' + !!(bridge && typeof bridge.openModulePage === 'function');
+							if (typeof console !== 'undefined' && console.info) { console.info(probe); }
+							if (!bridge || typeof bridge.openModulePage !== 'function') {
+								if (typeof console !== 'undefined' && console.warn) { console.warn('[vssaros-memory] 无桥 ⇒ 走 href（纯浏览器退化）'); }
+								return;
+							}
 							ev.preventDefault();
 							try {
 								Promise.resolve(bridge.openModulePage(DETAIL_HREF)).catch(() => { /* 失败则退化成整页导航（会被守卫拦，但至少不静默崩） */ });
