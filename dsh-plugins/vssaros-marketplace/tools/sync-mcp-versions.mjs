@@ -210,7 +210,10 @@ async function main() {
 
 			// 顺手清理占位描述
 			const desc = String(p.description ?? '').trim();
-			const needDescFix = PLACEHOLDERS.has(desc) || desc.length === 0;
+			// ⚠ 只清"**有内容且是占位符**"的描述。
+			//   原条件还包含 `desc.length === 0`（空描述）⇒ 每次跑都白调一次
+			//   `updatePackage({ description: '' })`（幂等但纯浪费请求，真机看日志发现）✗
+			const needDescFix = PLACEHOLDERS.has(desc);
 			if (needDescFix && !DRY) {
 				try {
 					await market.updatePackage(p.slug, { description: '' });

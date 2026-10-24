@@ -599,6 +599,11 @@ function makeSkill(localId, version, extra = {}) {
 	check('⑳ `--no-releases` 可关掉回退（只想读 package.json 时）',
 		/USE_RELEASES/.test(tool) && /--no-releases/.test(tool));
 	check('⑳ 幂等（真实版本已在 ⇒ same，不重复发）', /if \(real === cur\) \{/.test(tool));
+	// 只清"**有内容且是占位符**"的描述：原条件含 `desc.length === 0` ⇒
+	// 每次跑都会对空描述白调一次 `updatePackage({description:''})`（真机日志里看到）
+	check('⑳ 只清「有内容且是占位符」的描述（空描述不反复调 updatePackage）',
+		/const needDescFix = PLACEHOLDERS\.has\(desc\);/.test(tool)
+		&& !/needDescFix = PLACEHOLDERS\.has\(desc\) \|\|/.test(tool));
 	check('⑳ 是运维脚本（不进 files 白名单）', (() => {
 		const pkg = JSON.parse(fs.readFileSync(path.resolve(HERE, '..', 'package.json'), 'utf8'));
 		return !pkg.files.some(f => f.startsWith('tools/'));
