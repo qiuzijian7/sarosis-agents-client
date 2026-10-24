@@ -128,6 +128,12 @@ export function skillFromFile(text, { id, file }) {
 			activation,
 			metadata: {
 				activation,
+				// ★ 2026-10-23：marketplace 安装时会往 frontmatter 注入 storeId（= 商城 slug），
+				//   它是「本地技能 ↔ 商城商品」唯一稳定的关联 ⇒ 必须带出来，否则装前装后两个名字。
+				...(meta.storeId ? { storeId: String(meta.storeId).trim() } : {}),
+				// ★ 2026-10-23（用户：每个条目都要有 slug 和可读名）：dsh 要求 name 是 kebab-case
+				//   ⇒ 可读名只能另立字段（`displayName`，其次 `title`）。缺省时由 slug 生成。
+				...(meta.displayName || meta.title ? { displayName: String(meta.displayName || meta.title).trim() } : {}),
 				...(listValue(meta.match) ? { match: listValue(meta.match) } : {}),
 				...(meta.category ? { category: meta.category } : {}),
 				...(meta.version ? { version: meta.version } : {}),
