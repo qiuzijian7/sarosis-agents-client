@@ -148,6 +148,24 @@
 
 ---
 
+## 6.1 一次「查死代码」的事故（2026-10-24 21:20 查明）
+
+`vssaros-kb` 早先被判「只差 `@container`」，结论是**错的**——守卫查的是死文件：
+
+| 事实 | 证据 |
+|---|---|
+| `client.kb.js`（47KB）已被整段并进 `client.js` | `client.js:3`「为什么把 `client.kb.js` 整段并进来（不再用子块 + require.async）」 |
+| 入口只 `require.async('./client.kbview.js')` | 全包无人引用 `client.kb.js` ⇒ 死代码 |
+| 守卫当时按「候选里 `wb-*` 最多」挑 ⇒ 选中死文件 | 死文件 29 个 `wb-*` / 0 裸色 / 有 surface ⇒ 一片绿 |
+| 活组件（`client.js` 的 `KbWorkbenchPanel`）实际缺 4 项 | 21 行内联 style 裸色 · **无 `data-vssaros-surface`** · **无 toolbar 锚点** · 无 `@container` |
+
+**修法（已落地）**：组件选择改成 ①入口自己有 `register(` ⇒ 用入口；②否则用入口 `require.async('./client.X.js')` 装载的子块；③都没有才退回 `wb-*` 最多。
+kb 的 4 项登记为欠账（`--strict` 下仍红），修好后删条目并顺手删死文件。
+
+> 教训：**守卫选错文件比没有守卫更危险**——它会给出"已达标"的假结论。凡是"取最 X 的那个"的启发式，都要问一句：最 X 的会不会是死代码。
+
+---
+
 ## 7. 工具链（2026-10-24 收口）
 
 | 工具 | 作用 | 现状 |

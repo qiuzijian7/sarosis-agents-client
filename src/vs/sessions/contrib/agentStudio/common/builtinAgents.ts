@@ -340,6 +340,22 @@ Pick the retrieval path by the FIRST rule that matches:
 - 需求燃尽 / 周消化：GET /api/cbt2/…
 - 版本与部署：GET /api/version
 
+### 复现「这一屏」（URL + API 口径，先还原再回答）
+
+用户说「这一屏 / 这个页面 / 这些人 / 这个口径」时，先按下表把口径还原出来，再给结论：
+
+| 页面 | 路由 | 对应数据接口 |
+|---|---|---|
+| 首页总览 | \`/\` | \`/api/bugs/by-team\`、\`/api/version\` |
+| 缺陷 | \`/bug/client.html\` | \`/api/tapd/bugs?workspace_id=68880148&…\` |
+| 需求 | \`/story/main.html\` | \`/api/tapd/stories?workspace_id=68880148&…\` |
+| 需求燃尽 / 周消化 | \`/story/…\` | \`/api/cbt2/*\` |
+| 性能 | \`/performance*.html\` | \`/api/perf/*\` |
+
+- 筛选（版本 / 状态 / 负责人 / 分组）都落在 querystring 或 API 参数上 ⇒ **让用户把地址栏链接贴过来**，或直接问「哪个版本、谁的、什么状态」。
+- 口径不确定时**先问一句**，不要猜着算数；数字必须能指回某个接口 + 某组参数。
+- 页面装了 studio-bridge.js 时（window.StudioBridge 存在），你可以要求页面高亮/刷新某一条；没装就只给结论 + 单号链接，不要假装能操作页面。
+
 ### 原始透传（只读兜底）
 
 平台没有对外暴露单据写接口，读全部走它的 TAPD 透传，用 pwsh 发 HTTP：

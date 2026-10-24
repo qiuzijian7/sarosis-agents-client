@@ -227,10 +227,50 @@ window.__ModuleLoader__.load({
 				style: { display: 'flex', flex: '1 1 auto', minWidth: 0, minHeight: 0, height: '100%' },
 			},
 				react.createElement('div', { style: { flex: '1 1 auto', minWidth: 0, minHeight: 0, display: 'flex' } }, site),
+				// ★ 拖动条（2026-10-24 用户要求「AI 助手和网站页之间能左右拖动」）
+				//   纯 DOM 操作改 aside 宽度（不引入 state ⇒ 不触发重渲染、不打断对话）；
+				//   松手后写 localStorage，下次打开还是这个宽度。
+				react.createElement('div', {
+					'data-vssaros-studio-split': '',
+					title: '左右拖动调节宽度（双击复位）',
+					style: {
+						flex: '0 0 auto', width: '6px', cursor: 'col-resize',
+						background: 'transparent', position: 'relative', zIndex: 5,
+					},
+					onDoubleClick: (ev) => {
+						const aside = ev.currentTarget.nextElementSibling;
+						if (aside) {
+							aside.style.width = CONV_WIDTH;
+							try { localStorage.removeItem('__vssarosStudioConvW'); } catch { /* ignore */ }
+						}
+					},
+					onMouseDown: (ev) => {
+						ev.preventDefault();
+						const aside = ev.currentTarget.nextElementSibling;
+						if (!aside) { return; }
+						const startX = ev.clientX;
+						const startW = aside.getBoundingClientRect().width;
+						const onMove = (e2) => {
+							const next = Math.max(320, Math.min(startW - (e2.clientX - startX), window.innerWidth - 360));
+							aside.style.width = next + 'px';
+						};
+						const onUp = () => {
+							document.removeEventListener('mousemove', onMove, true);
+							document.removeEventListener('mouseup', onUp, true);
+							try { localStorage.setItem('__vssarosStudioConvW', aside.style.width); } catch { /* ignore */ }
+						};
+						document.addEventListener('mousemove', onMove, true);
+						document.addEventListener('mouseup', onUp, true);
+					},
+				}),
 				react.createElement('aside', {
 					'data-vssaros-studio-conv': '',
 					style: {
-						flex: '0 0 auto', width: CONV_WIDTH, minWidth: 0, minHeight: 0,
+						flex: '0 0 auto',
+						width: (() => {
+							try { return localStorage.getItem('__vssarosStudioConvW') || CONV_WIDTH; } catch { return CONV_WIDTH; }
+						})(),
+						minWidth: 0, minHeight: 0,
 						display: 'flex', flexDirection: 'column',
 						borderLeft: BORDER, background: 'var(--dsw-alias-bg-base, #fff)',
 					},

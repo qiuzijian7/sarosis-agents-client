@@ -28,13 +28,20 @@ const UNIFIED = ['vssaros-workflow', 'vssaros-kanban', 'vssaros-memory', 'vssaro
  */
 const PENDING = {
 	'vssaros-kb': {
-		rules: ['S9'],
-		reason: '2026-10-24 20:33 另一条会话正在重构 kb（面板合并进 lib/client.js：KbWorkbenchPanel），'
-			+ '组件文件在 client.js / client.kb.js 之间漂移 ⇒ 本轮只差 @container，等它落地后一起补并删掉本条',
+		rules: ['S7', 'S8', 'TOOLBAR', 'S9'],
+		// 2026-10-24 21:20 查明：`client.kb.js`（47KB）已被整段并进 `client.js`（文件头第 3 行明写"不再用子块"）
+		//   ⇒ 那是**死文件**，旧的"全部达标"是查死代码得出的。活组件（client.js 的 KbWorkbenchPanel）缺：
+		//   surface 标记、toolbar 锚点、@container，外加 21 行内联 style 裸色（rgba(127,127,127,.25) 一类）。
+		//   这四处都在**另一条会话正在重构的文件里**（66KB），我不代改；等它收尾后按下面四处补齐并删掉本条。
+		reason: 'kb 把面板合并进 client.js 后丢了 surface 标记 / toolbar 锚点 / @container，'
+			+ '且 21 行内联 style 是裸色 ⇒ 待其重构收尾后补齐（顺带删掉死文件 client.kb.js）',
 	},
 	// 2026-10-24：workflow / memory / codebase / agents 已各自补上 `test/run-*.mjs` ⇒ 欠账清零（别再登记回来）。
 };
 
+// `--strict`：把 PENDING 也当失败（收尾/CI 用；平时让"别人正在改的包"不阻塞其他人）
+const STRICT = process.argv.includes('--strict');
+const debts = [];
 const MIN_WB_CLASSES = 10;
 /** 机器锚点下限：少于这个数，探针就只能靠类名（类名会被 UI 统一换掉）。 */
 const MIN_ANCHORS = 3;
@@ -63,11 +70,23 @@ for (const dirName of UNIFIED) {
 
 	const libDir = join(PLUGINS, dirName, 'lib');
 	const files = walk(libDir);
-	// 组件文件 = 「含 register」的候选里 **wb-* 用得最多**的那个
-	//   （2026-10-24：kb 把面板合并进 client.js 后入口也含 register ⇒ 取第一个会查错文件）
-	const component = files.map((p) => ({ p, text: stripComments(readFileSync(p, 'utf8')) }))
-		.filter((x) => /desktopWorkbenches\.register\(/.test(x.text))
-		.sort((a, b) => (b.text.match(/\bwb-[a-z-]+/g) || []).length - (a.text.match(/\bwb-[a-z-]+/g) || []).length)[0];
+	// 组件文件怎么选（2026-10-24 修，**别再退回"wb-* 最多"这种启发式**）：
+	//   ① 入口自己就 `register(` ⇒ 组件就是入口（kb 把面板整段并进 client.js 后属这种）；
+	//   ② 否则看入口 `require.async('./client.X.js')` 装载的那个子块；
+	//   ③ 都没有才退回「候选里 wb-* 最多」。
+	// 为什么：kb 合并后 `client.kb.js` 成了**死文件**（47KB，没人 require），
+	//   而"wb-* 最多"会选中死文件 ⇒ 守卫对着死代码给结论（既漏了活文件的 21 处裸色，也漏了它的 @container 缺失）。
+	const entryPath = join(PLUGINS, dirName, 'lib', 'client.js');
+	const entryText = existsSync(entryPath) ? stripComments(readFileSync(entryPath, 'utf8')) : '';
+	const loadedChunks = [...entryText.matchAll(/require\.async\(\s*['"]\.\/(client\.[\w-]+\.js)['"]\s*\)/g)].map((m) => m[1]);
+	const candidates = files.map((p) => ({ p, text: stripComments(readFileSync(p, 'utf8')) }))
+		.filter((x) => /desktopWorkbenches\.register\(/.test(x.text));
+	const byName = (name) => candidates.find((x) => x.p.split(/[\\/]/).pop() === name);
+	const component = (entryText && /desktopWorkbenches\.register\(/.test(entryText)
+		? { p: entryPath, text: entryText }
+		: null)
+		|| loadedChunks.map(byName).find(Boolean)
+		|| candidates.sort((a, b) => (b.text.match(/\bwb-[a-z-]+/g) || []).length - (a.text.match(/\bwb-[a-z-]+/g) || []).length)[0];
 	if (!component) { fail('S5', `${dirName}: 找不到工作台组件（含 desktopWorkbenches.register）`); }
 	else {
 		const src = component.text;
@@ -120,10 +139,18 @@ for (const dirName of UNIFIED) {
 	else { ok(`${dirName}: 有包内自检 ✓`); }
 
 	const blocking = pkgFails.filter((f) => !f.downgraded).length;
-	problems += blocking;
+	const downgraded = pkgFails.filter((f) => f.downgraded).length;
+	problems += STRICT ? blocking + downgraded : blocking;
+	if (downgraded) { debts.push({ dirName, count: downgraded, rules: [...allowed] }); }
 	if (pkgFails.length && allowed.size) {
-		console.log(`  ⚠ ${dirName}: ${pkgFails.length} 项未达标，其中 ${allowed.size} 类已登记欠账 ⇒ 不计入退出码 —— ${PENDING[dirName].reason}`);
+		console.log(`  ⚠ ${dirName}: ${pkgFails.length} 项未达标，其中 ${downgraded} 项已登记欠账 ⇒ ${STRICT ? '**--strict 下仍计入失败**' : '不计入退出码'} —— ${PENDING[dirName].reason}`);
 	}
+}
+
+// 欠账要**一直可见**：不然"已登记"会慢慢变成"没人管"。
+if (debts.length) {
+	const total = debts.reduce((sum, d) => sum + d.count, 0);
+	console.log(`\n[check-workbench-style] ⚠ 欠账合计 ${total} 项：` + debts.map((d) => `${d.dirName}(${d.rules.join('/')}×${d.count})`).join('，'));
 }
 
 /** 列目录下所有文件（用于 test/ 目录；不递归进 node_modules）。 */

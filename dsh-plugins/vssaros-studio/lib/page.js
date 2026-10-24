@@ -54,6 +54,7 @@ iframe{flex:1;min-height:0;width:100%;border:0;background:#fff}
 	<span class="lab">站点</span>
 	<span class="url" title="${safeSite}">${safeSite}</span>
 	<span class="grow"></span>
+	<span class="badge" id="conn" title="等待页面桥上报"></span>
 	<span class="badge" id="state">加载中…</span>
 	<button class="btn" id="reload" title="重载站点">↻ 刷新</button>
 	<button class="btn" id="open" title="在外部浏览器打开">↗ 外开</button>
@@ -74,6 +75,39 @@ iframe{flex:1;min-height:0;width:100%;border:0;background:#fff}
     frame.src = SITE + (SITE.indexOf('?') >= 0 ? '&' : '?') + 't=' + Date.now();
   });
   document.getElementById('open').addEventListener('click', function(){ window.open(SITE, '_blank'); });
+
+  /* ── studio-bridge 中继（2026-10-24）─────────────────────────────────
+     站点是**两层 iframe**：dsh 工作台 → 本页(7583) → 站点(9999)。
+     桥在站点里只 postMessage 到「parent」= 本页，所以要在这里再往上转一手；
+     下行命令同理转回站点。targetOrigin 用 '*'（跨域，消息本身不含凭据）。
+     上下文挂在 window.__vssarosStudioPageContext（方便调试与后续接工具）。 */
+  var siteFrame = document.getElementById('site');
+  var conn = document.getElementById('conn') || null;
+
+  window.addEventListener('message', function (e) {
+    var d = e && e.data;
+    if (!d || typeof d !== 'object') { return; }
+
+    if (d.type === 'sss:context') {
+      window.__vssarosStudioPageContext = d;
+      if (conn) {
+        conn.textContent = d.sel ? ('页面：' + (d.page || '') + ' · 选中 #' + String(d.sel.id || '').slice(-6)) : ('页面：' + (d.page || ''));
+        conn.title = d.href || '';
+      }
+      try { parent.postMessage(d, '*'); } catch (err) { /* 顶层不可达 */ }
+      return;
+    }
+
+    if (d.type === 'sss:cmd') {
+      try { if (siteFrame && siteFrame.contentWindow) { siteFrame.contentWindow.postMessage(d, '*'); } } catch (err) { /* ignore */ }
+    }
+  });
+
+  function pushCmd(cmd) {
+    try { if (siteFrame && siteFrame.contentWindow) { siteFrame.contentWindow.postMessage(cmd, '*'); } } catch (e) { /* ignore */ }
+  }
+  // 供宿主调试：__vssarosStudioCmd({type:'sss:cmd', cmd:'highlight', id:'...'})
+  window.__vssarosStudioCmd = pushCmd;
 })();
 </script>
 </body>
