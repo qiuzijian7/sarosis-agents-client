@@ -532,6 +532,40 @@ function makeSkill(localId, version, extra = {}) {
 		/isImageIcon\(d\.cover\)/.test(page));
 }
 
+// ── ⑲ 从 Cline MCP Marketplace 爬取（2026-10-24 用户需求）────────────
+//   数据源查证：Cline 商城前端是 Next.js SSR（数据在服务端），开源仓库 `cline/cline`
+//   只有调用代码 ⇒ **唯一可公开爬取的结构化数据**是提交仓库的 Issues：
+//   `cline/mcp-marketplace`（3121 条：2868 open / 253 closed，issue body 里有
+//   `### GitHub Repository URL` + `### Logo Image`）
+{
+	const toolPath = path.resolve(HERE, '..', 'tools', 'sync-cline-mcp.mjs');
+	const tool = fs.existsSync(toolPath) ? fs.readFileSync(toolPath, 'utf8') : '';
+
+	check('⑲ 有 Cline 商城同步脚本', tool.length > 0, toolPath);
+	check('⑲ 数据源是 `cline/mcp-marketplace` 的 Issues', /cline\/mcp-marketplace/.test(tool) && /api\.github\.com/.test(tool));
+	check('⑲ 支持 `GITHUB_TOKEN`（未认证只有 60 请求/h，253 条要 3 页）', /GITHUB_TOKEN/.test(tool));
+	check('⑲ 默认只同步 **closed**（提交池 ≠ 已上架，open 是未审核）', /'closed'/.test(tool) && /\[&#39;open&#39;, &#39;closed&#39;, &#39;all&#39;\]|\[\\?'open\\?', \\?'closed\\?', \\?'all\\?'\]/.test(tool));
+	check('⑲ 小节解析兼容 `##` / `###`（早期提交通常用二级标题）', /#\{2,4\}/.test(tool));
+	check('⑲ logo 兼容 `<img src>` 与裸 URL 两种形态',
+		/beskLogo/.test(tool) === false && /pickLogo/.test(tool) && tool.includes('src=[') && tool.includes('https?:'));
+	check('⑲ slug 用 `owner-repo`（不同人同名仓库不撞车）',
+		/function slugOf/.test(tool) && tool.includes('github.com/') && tool.includes('replace(/-+/g'));
+	check('⑲ 封面写 **cover**（不是 icon），并上传自持', /updatePackage\(e\.slug, \{ cover: up\.url \}\)/.test(tool) && /api\/v1\/covers/.test(tool));
+	check('⑲ 封面失败**不静默**（记录到 failures，而不是 `catch {}`）', /封面上传失败/.test(tool) && /写 cover 失败/.test(tool));
+	check('⑲ 只认 github-source（repo 即安装源）', /'github-source'/.test(tool));
+
+	// ★ 本轮真机踩到的客户端 bug：`updatePackage` 白名单漏了 cover ⇒
+	//   调用方收到「没有要改的字段」这种风马牛不相及的报错 ✗
+	const mc = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'marketClient.js'), 'utf8');
+	check('⑲ `marketClient.updatePackage` 白名单**含 cover**（漏了会报「没有要改的字段」）',
+		/if \(typeof patch\.cover === 'string'\) \{ body\.cover = patch\.cover; \}/.test(mc));
+
+	check('⑲ 同步脚本是运维工具（不进 files 白名单）', (() => {
+		const pkg = JSON.parse(fs.readFileSync(path.resolve(HERE, '..', 'package.json'), 'utf8'));
+		return !pkg.files.some(f => f.startsWith('tools/'));
+	})());
+}
+
 fs.rmSync(dataRoot, { recursive: true, force: true });
 console.log(`\n[marketplace publish] ${pass} passing / ${fails.length} failing`);
 if (fails.length) { console.log('失败：' + fails.join('、')); }

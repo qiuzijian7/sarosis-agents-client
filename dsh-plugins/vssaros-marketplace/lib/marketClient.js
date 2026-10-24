@@ -431,6 +431,9 @@ export function createMarketClient({ credentials, config, log = () => { }, fetch
 		if (typeof patch.description === 'string') { body.description = patch.description; }
 		if (typeof patch.category === 'string') { body.category = patch.category; }
 		if (typeof patch.icon === 'string') { body.icon = patch.icon; }
+		// ★ 2026-10-24：`cover`（16:9 缩略图）是独立字段 —— 漏了这里会让调用方
+		//   收到「没有要改的字段」这种**风马牛不相及**的报错（抓 Cline logo 时踩过）✗
+		if (typeof patch.cover === 'string') { body.cover = patch.cover; }
 		if (patch.visibility === 'public' || patch.visibility === 'private') { body.visibility = patch.visibility; }
 		if (Array.isArray(patch.tags)) { body.tags = patch.tags.map(t => String(t)).filter(Boolean); }
 		if (Object.keys(body).length === 0) { throw new Error('没有要改的字段'); }
