@@ -73,6 +73,21 @@ function toGalleryItem(item) {
 }
 
 /**
+ * 账本条目 ⇒ **版本条目**（聊天卡用）：比画廊条目多带 `attachment` 与 `group`。
+ *
+ * ★ 为什么必须带 attachment：聊天卡在 dsh 客户端里渲染，图片要靠**会话授权的加载器**
+ *   （`loadImage`）拿 URL ⇒ 客户端手里只有 attachment ref（没有可直接用的 url）。
+ *   `url` 仍然给上（宿主的字节路由，同源可直取）⇒ 客户端两条路都能走。
+ */
+function toVersionItem(item) {
+	return {
+		...toGalleryItem(item),
+		attachment: item.attachment,
+		group: item.group || item.id,
+	};
+}
+
+/**
  * 工作区里**已落盘**的图（画廊的持久来源：Host 重启还在）。
  *
  * ⚠ 只认我们自己的图目录（`<工作区>/.vssaros-images/`）⇒ 不会把用户仓库里别的图卷进来。
@@ -139,7 +154,10 @@ export async function handleStudioApi(state, { pathname, req, res, url }) {
 	const isWorkspaceImage = pathname === WORKSPACE_IMAGE_ROUTE;
 	const isImport = pathname === '/x/imagegen/api/canvas-import';
 	const isCanvasRun = pathname === '/x/imagegen/api/canvas-run';
-	if (!isGenerate && !isBatch && !isSave && !isGallery && !isCaps && !isWorkspaceImage && !isImport && !isCanvasRun) {
+	// ★ 2026-10-22：聊天卡「版本切换 / 原位重生成」的两个端点。
+	const isVersions = pathname === '/x/imagegen/api/versions';
+	const isRegenerate = pathname === '/x/imagegen/api/regenerate';
+	if (!isGenerate && !isBatch && !isSave && !isGallery && !isCaps && !isWorkspaceImage && !isImport && !isCanvasRun && !isVersions && !isRegenerate) {
 		return false;
 	}
 
@@ -429,6 +447,88 @@ export async function handleStudioApi(state, { pathname, req, res, url }) {
 			});
 		} catch (e) {
 			sendJson(res, 200, { ok: false, error: String(e?.message ?? e) });
+		}
+		return true;
+	}
+
+	// (9) ★ 2026-10-22：**版本族**（聊天卡切版本用）。
+	//     认三种寻址：附件 id（客户端手里只有这个）/ 账本 id / 直接给族 id。
+	if (isVersions) {
+		const attachmentId = String(url?.searchParams?.get('attachment') || '').trim();
+		const itemId = String(url?.searchParams?.get('id') || '').trim();
+		const groupParam = String(url?.searchParams?.get('group') || '').trim();
+		let group = groupParam;
+		let current = '';
+		if (!group) {
+			const item = state.canvasImages?.find?.(attachmentId || itemId);
+			if (item) {
+				group = item.group || item.id;
+				current = item.id;
+			}
+		}
+		if (!group) {
+			sendJson(res, 404, { ok: false, error: '找不到这张图（只留最近 50 张）' });
+			return true;
+		}
+		const versions = (state.canvasImages?.versionsOf?.(group) ?? []).map(toVersionItem);
+		const last = versions.length ? versions[versions.length - 1].id : '';
+		sendJson(res, 200, { ok: true, group, current: current || last, versions });
+		return true;
+	}
+
+	// (10) ★ 2026-10-22：**原位重生成**（聊天卡「重新生成」按钮 ⇒ 同一张卡上再出一版）。
+	//     走的是**同一条** `state.generateImage` 链路（桥回 IDE ⇒ 凭据/审批只有一份真源 ✓）。
+	//     ⚠ 页面写动作**不经聊天框那层审批闸**（人本人点按钮 ⇒ 人就是审批人 ✓，与工作台页面同口径）。
+	if (isRegenerate) {
+		const body = await readJsonBody(req);
+		if (body.error) {
+			sendJson(res, 400, { ok: false, error: body.error });
+			return true;
+		}
+		const prompt = String(body.prompt || '').trim();
+		if (!prompt) {
+			sendJson(res, 400, { ok: false, error: 'prompt 必填（画面描述）' });
+			return true;
+		}
+		if (typeof state.generateImage !== 'function') {
+			sendJson(res, 503, { ok: false, error: '生图链路没装好（宿主侧 generateImage 缺失）' });
+			return true;
+		}
+		let group = String(body.group || '').trim();
+		if (!group) {
+			const item = state.canvasImages?.find?.(String(body.attachment || body.id || ''));
+			group = item ? (item.group || item.id) : '';
+		}
+		try {
+			const result = await state.generateImage(state, {
+				prompt,
+				model: body.model,
+				provider: body.provider,
+				size: body.size,
+				quality: body.quality,
+				numImages: 1,
+				askedSave: true,
+				saveDir: body.save_dir,
+				group,
+			});
+			const first = result.images && result.images[0];
+			const entry = first ? state.canvasImages?.find?.(first.id) : undefined;
+			const image = entry
+				? toVersionItem(entry)
+				: (first
+					? { id: first.id, attachment: first.attachment, url: CANVAS_IMAGE_ROUTE + '/' + first.id, group, prompt, provider: '', model: '' }
+					: undefined);
+			const versions = group ? (state.canvasImages?.versionsOf?.(group) ?? []).map(toVersionItem) : [];
+			sendJson(res, 200, {
+				ok: true,
+				group,
+				image,
+				versions,
+				savedPaths: result.savedPaths,
+				failures: result.failures,
+			});
+		} catch (e) {
+			sendJson(res, 200, { ok: false, error: String((e && e.message) || e) });
 		}
 		return true;
 	}

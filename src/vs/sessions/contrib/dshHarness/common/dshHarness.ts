@@ -180,9 +180,15 @@ export const DSH_VIEW_PARTITION = 'persist:vssaros-dsh';
  *   表现为"页面已加载但 create 永不返回"、"reload 也救不回来"（主文档同样排队）。
  * ⇒ 弹窗用自己的分区 ⇒ 独立 socket 池 + 独立 cookie 罐，一个窗口坏掉不会饿死其它窗口 ✓。
  *
- * 非 persist：弹窗关闭即释放（不在磁盘长期累积 cookie/缓存）。
+ * ⚠ **必须 persist**（2026-10-22 用户报障：「重启 app 后，左侧栏里固定的工作台图标消失了」）：
+ * 这个分区承载的是**桌面窗口里那一整页 dsh 客户端**，而它的用户可见状态（侧栏「固定行」清单
+ * `vssaros.wb.pinned` 等）存在**页面的 localStorage** 里 ⇒ 分区若不 persist，进程一退出这些数据
+ * 全部蒸发 ⇒ 下次启动侧栏固定行长不出来 ✗（图标"自己消失"就是这么来的）。
+ * 分区隔离解决的是 **socket 池争抢**，与持久化是两件独立的事 ⇒ 改 persist 不影响那条修复 ✓。
+ * ⚠ localStorage 仍按 origin（`127.0.0.1:<host 端口>`）分区 ⇒ Host 端口变了清单会丢；
+ *   端口由 `host-port.json` 偏好固定（见 `common/dshHostPortPreference.ts`）⇒ 常规重启端口不变 ✓。
  */
-export const DSH_VIEW_PARTITION_DESKTOP = 'vssaros-dsh-desktop';
+export const DSH_VIEW_PARTITION_DESKTOP = 'persist:vssaros-dsh-desktop';
 
 /**
  * **并发聊天视图**专用网络分区的前缀（2026-10-21，中间栏并排多聊天）。
@@ -785,6 +791,16 @@ export const enum DshHarnessChannelCommand {
 	 * （产品口径：不退回通知 —— 见 README 4.84）。
 	 */
 	RequestActionConsent = 'requestActionConsent',
+	/**
+	 * ★ 2026-10-22：**用户在界面上主动发起**的有副作用操作（目前：工作台市场的「安装」）的确认。
+	 * 主进程弹**原生模态框**，挂在当前获得焦点的窗口上（用户正在点的那个：IDE 主窗口或 dsh 桌面窗口）。
+	 *
+	 * 为什么不用 {@link RequestActionConsent}：那条走 Host 审批服务 `approval.request()`，rc.1 要求请求带
+	 * `agent` 且**处在打开的回合里**（`dsh-user-approval/lib/index.js:128-130`），桥又没传 agent ⇒
+	 * 界面点击这类"没有回合"的请求**当场被拒**（真机：点安装 4ms 后 `allowed:false`，审批卡从没出现）。
+	 * 入参 `{ title, detail, confirmLabel? }`；返回 `{ allowed }`。没有可挂的窗口也照样弹（无父窗口）。
+	 */
+	ConfirmUserAction = 'confirmUserAction',
 	GetLog = 'getLog',
 	GetRuntimeInfo = 'getRuntimeInfo',
 	InstallRuntime = 'installRuntime',
@@ -978,6 +994,14 @@ export const enum DshHarnessChannelCommand {
 	 * ⚠ 载荷只含**展示投影**（signedIn / 登录名 / 工号 / 团队）—— 票据不下发 ✓。
 	 */
 	PushAuth = 'pushAuth',
+	/**
+	 * 向视图推**升级状态**（`{ viewId, state }`，state 经 `validateUpgradeState` 校验；2026-10-23）。
+	 *
+	 * 为什么推：页面桥单向（`invoke` 只回 `true`），而"有哪些可升级 / 应用有没有新版"只在宿主手里
+	 * （插件中心 + 更新源）⇒ 只能宿主推。机制与 `PushAuth` 逐字同款（preload 写 `dataset` + 派 DOM 事件）。
+	 * 载荷是**全量快照**（不是增量）⇒ 页面整块重画，天然幂等 ✓。
+	 */
+	PushUpgrade = 'pushUpgrade',
 	/** 向视图发「插入文件引用」（`{ viewId, reference }`，reference 经 validateInsertReference 校验）。 */
 	InsertReference = 'insertReference',
 	/** 同步 VsSaros 已配置的模型 provider 到 dsh（负载经 validateProvidersSyncArgs 校验）。 */
@@ -990,6 +1014,22 @@ export const enum DshHarnessChannelCommand {
 	 * 触发时机 = TOF 登录态变化（`ITofAuthService.onDidChangeUser`）＋ 控制桥就绪时补一次。
 	 */
 	TofSync = 'tofSync',
+	/** 查 dsh 侧 CodeBuddy 登录态（2026-10-22：CodeBuddy 已搬到 Host 实现；回执不含 token）。 */
+	CodeBuddyStatus = 'codeBuddyStatus',
+	/** 把 IDE 扩展里的 CodeBuddy 登录态一次性迁到 dsh 侧（负载经 validateCodeBuddyImportArgs 校验）。 */
+	CodeBuddyImport = 'codeBuddyImport',
+	/** dsh 侧 LightAI 登录态（无 cookie 值；2026-10-22）。 */
+	LightAIStatus = 'lightAIStatus',
+	/** 把 IDE 扩展里的 LightAI cookie 一次性迁到 dsh 侧（负载经 validateLightAIImportArgs 校验）。 */
+	LightAIImport = 'lightAIImport',
+	/** dsh 侧企业身份状态（2026-10-22：TOF 登录归 dsh 侧，IDE 只读；回执没有票据）。 */
+	TofStatus = 'tofStatus',
+	/** 请 dsh 侧开浏览器登录企业身份（IDE 里的登录入口都走这条）。 */
+	TofSignIn = 'tofSignIn',
+	/** 请 dsh 侧登出企业身份（用户主动登出）。 */
+	TofSignOut = 'tofSignOut',
+	/** 取 dsh 侧当前有效票据（商城 JWT 兑换用；只到渲染进程，绝不下发页面）。 */
+	TofTicket = 'tofTicket',
 }
 
 /** 工作区同步的概览（渲染进程侧同步可读，用于界面显示）。 */
@@ -1026,4 +1066,6 @@ export const enum DshHarnessChannelEvent {
 	 * 算完用 {@link DshHarnessChannelCommand.ResolveIdeRequest} 交回。
 	 */
 	OnIdeRequest = 'onIdeRequest',
+	/** dsh 侧企业身份变了（Host 反向通知 `tof.changed`，主进程转发；不带票据）。 */
+	OnDidChangeTof = 'onDidChangeTof',
 }

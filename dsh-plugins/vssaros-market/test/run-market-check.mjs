@@ -10,6 +10,7 @@
 //
 // 口径：全部用夹具（假 fetch / 临时目录 / 手搓 tgz），可以钉绝对期望值。
 
+import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -71,22 +72,29 @@ function publishedCatalog(entries = [publishedEntry()]) {
 
 /** 手搓一个 .tgz（package/package.json 在里面）—— 不依赖 npm/pnpm ✓。 */
 function makeTgz(manifest) {
-	const data = Buffer.from(JSON.stringify(manifest));
-	const header = Buffer.alloc(512);
-	header.write('package/package.json', 0, 'utf8');
-	header.write('0000644\0', 100, 'utf8');
-	header.write('0000000\0', 108, 'utf8');
-	header.write('0000000\0', 116, 'utf8');
-	header.write(data.length.toString(8).padStart(11, '0') + '\0', 124, 'utf8');
-	header.write('00000000000\0', 136, 'utf8');
-	header.write('        ', 148, 'utf8');
-	header.write('0', 156, 'utf8');
-	header.write('ustar\0', 257, 'utf8');
-	let sum = 0;
-	for (const byte of header) { sum += byte; }
-	header.write(sum.toString(8).padStart(6, '0') + '\0 ', 148, 'utf8');
-	const pad = Buffer.alloc((512 - (data.length % 512)) % 512);
-	return gzipSync(Buffer.concat([header, data, pad]));
+	return makeTgzFiles({ 'package/package.json': JSON.stringify(manifest) });
+}
+/** 多文件 tgz（键 = tar 里的完整路径，可以故意写坏路径测拒收）。 */
+function makeTgzFiles(entries) {
+	const blocks = [];
+	for (const [path, text] of Object.entries(entries)) {
+		const data = Buffer.from(text);
+		const header = Buffer.alloc(512);
+		header.write(path, 0, 'utf8');
+		header.write('0000644\0', 100, 'utf8');
+		header.write('0000000\0', 108, 'utf8');
+		header.write('0000000\0', 116, 'utf8');
+		header.write(data.length.toString(8).padStart(11, '0') + '\0', 124, 'utf8');
+		header.write('00000000000\0', 136, 'utf8');
+		header.write('        ', 148, 'utf8');
+		header.write('0', 156, 'utf8');
+		header.write('ustar\0', 257, 'utf8');
+		let sum = 0;
+		for (const byte of header) { sum += byte; }
+		header.write(sum.toString(8).padStart(6, '0') + '\0 ', 148, 'utf8');
+		blocks.push(header, data, Buffer.alloc((512 - (data.length % 512)) % 512));
+	}
+	return gzipSync(Buffer.concat(blocks));
 }
 
 // ── 1. 随包产物 ────────────────────────────────────────────────────────────
@@ -301,14 +309,14 @@ function makeTgz(manifest) {
 	const tmp = mkdtempSync(join(tmpdir(), 'vssaros-market-tgz-'));
 	const codeOf = async (fn) => { try { await fn(); return null; } catch (e) { return e instanceof MarketInstallError ? e.code : String(e?.message ?? e); } };
 	try {
-		// 6a. npm 来源
-		const npmTarget = await resolveInstallTarget(normalizeWorkbench(publishedEntry()));
+		// 6a. npm 来源（注册表取不到清单 ⇒ manifest=null，不阻断；**不联网**：fetch 桩直接失败）
+		const npmTarget = await resolveInstallTarget(normalizeWorkbench(publishedEntry()), { fetchImpl: async () => { throw new Error('offline'); } });
 		check('6a. npm 来源的 spec', npmTarget.pluginSpec === 'dsh-demo@1.0.0', npmTarget.pluginSpec);
 		check('6a. npm 来源的包名', npmTarget.expectedPluginName === 'dsh-demo', npmTarget.expectedPluginName);
+		check('6a. npm 来源取不到清单 ⇒ manifest=null（检查结论为 unknown）', npmTarget.manifest === null, String(npmTarget.manifest));
 
 		// 6b. GitHub Release：sha256 对得上 ⇒ spec 指向本地文件
 		const tgz = makeTgz({ name: 'dsh-demo', version: '1.0.0' });
-		const { createHash } = await import('node:crypto');
 		const digest = createHash('sha256').update(tgz).digest('hex');
 		const releaseEntry = normalizeWorkbench(publishedEntry({
 			distribution: { type: 'github-release', url: 'https://example.test/dsh-demo.tgz', sha256: digest, bytes: tgz.length, version: '1.0.0' },
@@ -361,8 +369,168 @@ function makeTgz(manifest) {
 			sourceCommit: '',
 		}));
 		check('6f. 源码来源缺 commit ⇒ 报错', await codeOf(() => resolveInstallTarget(noCommit, { fetchImpl: manifestFetch, temporaryRoot: tmp })) === 'invalid_distribution', '');
+
+		// ── 7. 2026-10-22：解包 / 安装前检查 / 安装通道 ─────────────────────────────
+		const feed = buf => async () => ({
+			ok: true, status: 200, headers: { get: () => null },
+			body: { getReader: () => { let sent = false; return { read: async () => { if (sent) { return { done: true }; } sent = true; return { done: false, value: buf }; }, releaseLock() { } }; } },
+		});
+		const relEntry = (buf, over = {}) => normalizeWorkbench(publishedEntry({
+			distribution: { type: 'github-release', url: 'https://example.test/r.tgz', sha256: createHash('sha256').update(buf).digest('hex'), bytes: buf.length, version: '1.0.0' }, ...over,
+		}));
+		const wbManifest = { name: 'dsh-demo', version: '1.0.0', exports: { './client': './lib/client.js' }, dsh: { client: { platform: 'web', inject: ['dsh-desktop-workbenches'] } }, peerDependencies: { '@deepseek-ai/dsh-host-webserver': '^0.1.5-rc.2' } };
+		const fullTgz = makeTgzFiles({ 'package/package.json': JSON.stringify(wbManifest), 'package/lib/client.js': 'window.__ModuleLoader__.load({ id: "dsh-demo", factory: r => ({ apply() {}, inject: [] }) })' });
+		const pkgRoot = join(tmp, 'packages');
+		const persisted = await resolveInstallTarget(relEntry(fullTgz), { fetchImpl: feed(fullTgz), packagesRoot: pkgRoot });
+		const { existsSync } = await import('node:fs');
+		check('7a. Release 解进持久目录（dir 存在，含客户端入口）', !!persisted.dir && existsSync(join(persisted.dir, 'lib', 'client.js')) && persisted.dir.startsWith(pkgRoot), persisted.dir);
+		await persisted.cleanup();
+		check('7a. cleanup 不删持久目录（否则 file: 依赖悬空）', existsSync(join(persisted.dir, 'package.json')), '');
+		check('7a. 回落规格是同一目录的 file:', persisted.pluginSpec === `file:${persisted.dir}`, persisted.pluginSpec);
+		const evil = makeTgzFiles({ 'package/package.json': JSON.stringify({ name: 'dsh-demo', version: '1.0.0' }), 'package/../../escape.js': 'x' });
+		check('7b. tar 里有 ../ 路径 ⇒ 拒收', await codeOf(() => resolveInstallTarget(relEntry(evil), { fetchImpl: feed(evil), packagesRoot: pkgRoot })) === 'invalid_package', '');
+		check('7b. 拒收时没有写出越界文件', !existsSync(join(tmp, 'escape.js')), '');
+
+		const inspect = await import('../lib/inspect.js');
+		const judge = { runtimeVersion: '0.2.1-rc.1', evaluate: m => (m.peerDependencies?.['@deepseek-ai/dsh-host-webserver'] === '^0.1.5-rc.2' ? { requirements: { '@deepseek-ai/dsh-host-webserver': '^0.1.5-rc.2' } } : undefined) };
+		const r1 = await inspect.inspectPackage(wbManifest, { files: persisted.files, judge });
+		check('7c. 版本范围不覆盖运行时 ⇒ incompatible（带要求原文）', r1.compatibility.status === 'incompatible' && r1.compatibility.requirements['@deepseek-ai/dsh-host-webserver'] === '^0.1.5-rc.2', JSON.stringify(r1.compatibility));
+		check('7c. 是工作台（client 入口 + inject 点名宿主）', r1.workbench === true, String(r1.workbench));
+		const r2 = await inspect.inspectPackage({ ...wbManifest, peerDependencies: {} }, { files: new Map([['lib/client.js', Buffer.from('var x={__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED:{}}')]]), judge });
+		check('7d. 客户端打包进 React ⇒ blocked', r2.blocked.length === 1 && r2.compatibility.status === 'ok', JSON.stringify(r2.blocked));
+		const r3 = await inspect.inspectPackage({ name: 'x', version: '1', dependencies: { react: '^19' } }, { judge });
+		check('7e. 依赖带 react ⇒ 警告（不拦）+ 非工作台警告', r3.blocked.length === 0 && r3.warnings.some(w => w.includes('react')) && r3.workbench === false, JSON.stringify(r3.warnings));
+		const r4 = await inspect.inspectPackage(null, { judge });
+		check('7f. 读不到清单 ⇒ unknown（不编结论）', r4.compatibility.status === 'unknown', JSON.stringify(r4.compatibility));
+		const r5 = await inspect.compatibilityOf(wbManifest, null);
+		check('7f. 拿不到判据 ⇒ unknown', r5.status === 'unknown', JSON.stringify(r5));
 	} finally {
 		rmSync(tmp, { recursive: true, force: true });
+	}
+}
+
+// ── 8. 安装通道（假 ctx：IDE 桥 / Host 回落 / 如实失败）──────────────────────────
+{
+	const index = await import('../lib/index.js');
+	const inspect = await import('../lib/inspect.js');
+	inspect.resetCompatibilityJudge();
+	await inspect.loadCompatibilityJudge(async () => ({ evaluatePluginCompatibility: () => undefined, getDshRuntimeVersion: () => '0.2.1-rc.1' }));
+	const okManifest = { name: 'dsh-demo', version: '1.0.0', exports: { './client': './lib/client.js' }, dsh: { client: { platform: 'web', inject: ['dsh-desktop-workbenches'] } } };
+	const tgz = makeTgzFiles({ 'package/package.json': JSON.stringify(okManifest), 'package/lib/client.js': 'void 0' });
+	const { createHash: hash } = await import('node:crypto');
+	const entry = publishedEntry({ distribution: { type: 'github-release', url: 'https://example.test/r.tgz', sha256: hash('sha256').update(tgz).digest('hex'), bytes: tgz.length, version: '1.0.0' } });
+	const savedFetch = globalThis.fetch;
+	globalThis.fetch = async (url) => {
+		if (String(url).includes('example.test/r.tgz')) {
+			return { ok: true, status: 200, headers: { get: () => null }, body: { getReader: () => { let s = false; return { read: async () => { if (s) { return { done: true }; } s = true; return { done: false, value: tgz }; }, releaseLock() { } }; } } };
+		}
+		if (String(url).includes('index.json')) {
+			const body = JSON.stringify({ schemaVersion: 2, kind: 'catalog', categories: [{ id: 'productivity', name: { zh: '效率', en: 'Productivity' } }], workbenches: [entry] });
+			return new Response(body, { status: 200, headers: { 'content-type': 'application/json' } });
+		}
+		throw new Error('unexpected ' + url);
+	};
+	const harness = (opts) => {
+		const routes = [];
+		const injectCbs = {};
+		const ctx = {
+			logger: () => ({ warn() { } }),
+			get: (n) => (n === 'pluginManager' ? opts.mgr : undefined),
+			reflect: { get: (n) => (n === 'pluginManager' ? opts.mgr : undefined) },
+			inject: (names, cb) => { injectCbs[names.join(',')] = cb; },
+		};
+		index.apply(ctx, { catalogUrl: 'https://market.test/index.json' });
+		if (opts.bridge) { injectCbs['vssarosBridge']?.({ vssarosBridge: opts.bridge }); }
+		injectCbs['webServer,connection']?.({ effect: fn => fn(), webServer: { register: r => routes.push(r) }, connection: { requestRejection: () => 0 } });
+		const call = (method, path, body) => new Promise(resolveCall => {
+			const req = { method, url: path, on: (ev, fn) => { if (ev === 'data' && body) { fn(JSON.stringify(body)); } if (ev === 'end') { setTimeout(fn, 0); } } };
+			let status = 0;
+			const res = { writeHead: s => { status = s; }, end: t => resolveCall({ status, body: JSON.parse(t) }) };
+			routes[0].handler(req, res);
+		});
+		return { call };
+	};
+	try {
+		// 8a. IDE 通道：参数里给的是解好的目录（不是 tgz），回执 ok ⇒ 成功并要求重启
+		const ideCalls = [];
+		const viaIde = harness({ bridge: { callIDE: async (m, p) => { ideCalls.push(p); return { ok: true, changed: true, version: '1.0.0' }; } }, mgr: { installBundle: async () => { throw new Error('不该走 Host'); } } });
+		const a = await viaIde.call('POST', '/x/market/api/install', { id: 'acme/dsh-demo' });
+		check('8a. 有桥 ⇒ 走 IDE（capability=workbenches, op=install, 给目录）', ideCalls.length === 1 && ideCalls[0].capability === 'workbenches' && ideCalls[0].params.op === 'install' && !!ideCalls[0].params.dir && !ideCalls[0].params.spec, JSON.stringify(ideCalls[0]?.params ?? null).slice(0, 200));
+		check('8a. 成功回执带 restartRequired 与 via=ide', a.body.ok === true && a.body.restartRequired === true && a.body.via === 'ide', JSON.stringify(a.body).slice(0, 200));
+		// 8b. 用户在 IDE 里拒绝 ⇒ ok:false, code=declined（不写安装记录）
+		const declined = harness({ bridge: { callIDE: async () => ({ ok: false, declined: true, error: '用户取消了安装' }) } });
+		const b = await declined.call('POST', '/x/market/api/install', { id: 'acme/dsh-demo' });
+		check('8b. 用户拒绝 ⇒ ok:false / declined', b.body.ok === false && b.body.code === 'declined', JSON.stringify(b.body).slice(0, 160));
+		// 8c. 没有桥 ⇒ 回落 Host；`application:failed` 必须如实报失败（旧版这里回 ok:true ✗）
+		const failing = harness({ mgr: { installBundle: async () => ({ changed: false, application: 'failed', stage: 'install', error: { code: 'operation-error', diagnostic: ' ERR_PNPM_UNEXPECTED_STORE  Unexpected store location' } }) } });
+		const c = await failing.call('POST', '/x/market/api/install', { id: 'acme/dsh-demo' });
+		check('8c. Host 回落 application:failed ⇒ ok:false（不再假成功）', c.body.ok === false && c.body.code === 'install_failed' && /ERR_PNPM_UNEXPECTED_STORE/.test(c.body.error), JSON.stringify(c.body).slice(0, 200));
+		// 8d. Host 回落要构建批准 ⇒ ok:false / pending_builds
+		const pending = harness({ mgr: { installBundle: async () => ({ changed: false, application: 'applied', pendingBuilds: ['esbuild'] }) } });
+		const d = await pending.call('POST', '/x/market/api/install', { id: 'acme/dsh-demo' });
+		check('8d. 待批准构建 ⇒ ok:false / pending_builds', d.body.ok === false && d.body.code === 'pending_builds', JSON.stringify(d.body).slice(0, 160));
+		// 8e. 不兼容 ⇒ 装之前就拦（不调 IDE）
+		inspect.resetCompatibilityJudge();
+		await inspect.loadCompatibilityJudge(async () => ({ evaluatePluginCompatibility: () => ({ requirements: { '@deepseek-ai/dsh': '<0.2.0-0' } }), getDshRuntimeVersion: () => '0.2.1-rc.1' }));
+		let called = 0;
+		const incompatible = harness({ bridge: { callIDE: async () => { called++; return { ok: true }; } } });
+		const e = await incompatible.call('POST', '/x/market/api/install', { id: 'acme/dsh-demo' });
+		check('8e. 不兼容 ⇒ incompatible_runtime 且没有调 IDE', e.body.ok === false && e.body.code === 'incompatible_runtime' && called === 0 && /0\.2\.1-rc\.1/.test(e.body.error), JSON.stringify(e.body).slice(0, 200));
+
+		// ── 9. 第 4 步：服务端能力审计 + 策略叠加层 ──────────────────────────────
+		inspect.resetCompatibilityJudge();
+		await inspect.loadCompatibilityJudge(async () => ({ evaluatePluginCompatibility: () => undefined, getDshRuntimeVersion: () => '0.2.1-rc.1' }));
+		// 9a. 能力审计：服务端代码里的 spawn / tools.register / fetch 被列出；客户端入口里的 fetch 不算
+		const capFiles = new Map([
+			['lib/client.js', Buffer.from('fetch("/api/x"); eval("1")')],
+			['dsh/index.js', Buffer.from('import { spawn } from "node:child_process"; ctx.tools.register({}); await fetch(u);')],
+			['dsh/store.js', Buffer.from('await writeFile(p, s)')],
+			['node_modules/x/index.js', Buffer.from('new Function("x")')],
+		]);
+		const caps = inspect.serverCapabilitiesOf(okManifest, capFiles).map(c => c.key);
+		check('9a. 能力审计：spawn/tools/network/fileWrite；客户端与 node_modules 不算', JSON.stringify(caps) === JSON.stringify(['spawn', 'tools', 'network', 'fileWrite']), JSON.stringify(caps));
+		check('9a. 看不到文件 ⇒ null（不编结论）', inspect.serverCapabilitiesOf(okManifest, undefined) === null, '');
+		// 9b. 策略合并：blocked 取并集；allowOnly 取交集；大小写不敏感
+		const pol = inspect.mergePolicies(
+			inspect.normalizePolicy({ blocked: [{ id: 'Acme/Bad', reason: '恶意' }], allowOnly: ['acme/dsh-demo', 'acme/other'] }),
+			inspect.normalizePolicy({ blocked: ['acme/x'], allowOnly: ['ACME/dsh-demo'] }),
+		);
+		check('9b. blocked 并集', inspect.policyVerdict(pol, 'acme/bad').reason === '恶意' && !inspect.policyVerdict(pol, 'acme/x').allowed, '');
+		check('9b. allowOnly 交集（acme/other 只在一层 ⇒ 不许）', inspect.policyVerdict(pol, 'acme/dsh-demo').allowed && !inspect.policyVerdict(pol, 'acme/other').allowed, '');
+		check('9b. 空策略 ⇒ 全部允许', inspect.policyVerdict(inspect.mergePolicies(null, null), 'any/thing').allowed, '');
+		// 9c. 端到端：本机策略停用 ⇒ install / check 不下载、不调 IDE；目录条目带 policy 标记；能力清单进 IDE 参数
+		const dataRoot = mkdtempSync(join(tmpdir(), 'vssaros-market-policy-'));
+		const savedFoundation = globalThis.__VSSAROS_FOUNDATION__;
+		globalThis.__VSSAROS_FOUNDATION__ = { dataRootOf: () => dataRoot };
+		try {
+			const { mkdirSync, writeFileSync } = await import('node:fs');
+			mkdirSync(join(dataRoot, 'market'), { recursive: true });
+			writeFileSync(join(dataRoot, 'market', 'policy.json'), JSON.stringify({ version: 1, blocked: [{ id: 'acme/dsh-demo', reason: '安全团队已停用' }] }));
+			let downloads = 0; let ideCalls9 = 0;
+			const fetchBefore = globalThis.fetch;
+			globalThis.fetch = async (url, ...rest) => { if (String(url).includes('r.tgz')) { downloads++; } return fetchBefore(url, ...rest); };
+			const blockedH = harness({ bridge: { callIDE: async () => { ideCalls9++; return { ok: true }; } } });
+			const i9 = await blockedH.call('POST', '/x/market/api/install', { id: 'acme/dsh-demo' });
+			const c9 = await blockedH.call('GET', '/x/market/api/check?id=acme/dsh-demo');
+			const cat9 = await blockedH.call('GET', '/x/market/api/catalog');
+			const e9 = cat9.body.workbenches.find(w => w.id === 'acme/dsh-demo');
+			check('9c. 本机策略停用 ⇒ install 拒绝（blocked_by_policy），不下载不调 IDE', i9.body.code === 'blocked_by_policy' && /安全团队/.test(i9.body.error) && downloads === 0 && ideCalls9 === 0, JSON.stringify({ body: i9.body, downloads, ideCalls9 }));
+			check('9c. check 同样拒绝', c9.body.code === 'blocked_by_policy', JSON.stringify(c9.body));
+			check('9c. 目录条目带 policy 标记', e9 && e9.policy && e9.policy.allowed === false, JSON.stringify(e9 && e9.policy));
+			// 去掉策略 ⇒ 能装，且能力清单（客户端 'void 0' ⇒ 空数组）进了 IDE 参数
+			writeFileSync(join(dataRoot, 'market', 'policy.json'), JSON.stringify({ version: 1, blocked: [] }));
+			const seen = [];
+			const okH = harness({ bridge: { callIDE: async (m, p) => { seen.push(p.params); return { ok: true, changed: true, version: '1.0.0' }; } } });
+			const ok9 = await okH.call('POST', '/x/market/api/install', { id: 'acme/dsh-demo' });
+			check('9d. 策略放开 ⇒ 装上；IDE 参数带 capabilities 数组', ok9.body.ok === true && Array.isArray(seen[0]?.capabilities), JSON.stringify(seen[0]?.capabilities));
+			globalThis.fetch = fetchBefore;
+		} finally {
+			globalThis.__VSSAROS_FOUNDATION__ = savedFoundation;
+			rmSync(dataRoot, { recursive: true, force: true });
+		}
+	} finally {
+		globalThis.fetch = savedFetch;
+		inspect.resetCompatibilityJudge();
 	}
 }
 

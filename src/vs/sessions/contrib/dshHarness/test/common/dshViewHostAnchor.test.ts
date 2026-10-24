@@ -45,8 +45,15 @@ suite('dshHarness / 视图必须停在客户端根路径（2026-10-23 主页被�
 		const src = stripComments(read());
 		assert.ok(src.includes(`wc.on('will-frame-navigate'`),
 			'必须挂 `will-frame-navigate`（`will-navigate` 会把 iframe 的导航也报上来 ⇒ 误拦 ✗）');
-		assert.ok(/if\s*\(\s*!\s*details\.isMainFrame\s*\)\s*\{\s*return;?\s*\}/.test(src),
-			'必须先判 `details.isMainFrame` 并放行子帧 —— 少了这一句，插件页 iframe 里点任何链接都没反应 ✗');
+		// ⚠ 断言只钉**语义**：子帧分支里必须 `return`（放行）且**不许** preventDefault。
+		//   别钉 `if (...) { return; }` 的紧邻形态 —— 2026-10-24 那轮给子帧加了留痕日志，
+		//   `{` 和 `return` 之间多了几行，形态一变就假红（实测踩过 ✗）。
+		const sub = /if\s*\(\s*!\s*details\.isMainFrame\s*\)\s*\{([\s\S]{0,500}?)\n\t\t\t\}/.exec(src);
+		assert.ok(sub, '必须先判 `details.isMainFrame`，否则插件页 iframe 里点任何链接都被拦 ✗');
+		assert.ok(/return;/.test(sub![1]),
+			'子帧分支必须 return（放行）—— 少了它，插件页 iframe 里点任何链接都没反应 ✗');
+		assert.ok(!/preventDefault/.test(sub![1]),
+			'子帧分支里不许 preventDefault（iframe 换页是正常行为 ✗）');
 		assert.ok(src.includes('details.url'), '`will-frame-navigate` 的地址在 `details.url` 上');
 	});
 	test('② will-navigate 只做分派：判据必须在纯函数里（同源非根 = block）', () => {
@@ -98,6 +105,40 @@ suite('dshHarness / 视图必须停在客户端根路径（2026-10-23 主页被�
 		const replay = src.slice(replayAt, replayAt + 1800);
 		assert.ok(/if \(slot\.lastUpgrade\)/.test(replay) && /DSH_PAGE_IPC_UPGRADE/.test(replay),
 			'页面就绪补发必须包含升级状态（preload 的 ipcRenderer.on 注册晚于首次推送 ⇒ 不补发页面永远收不到 ✗）');
+	});
+
+	// ★ 2026-10-24（用户报「登录未打开网页」）：官方账号登录靠 `window.open("about:blank")` 占位、
+	//   再 `popup.location = authorizeUrl`。一律 deny ⇒ 句柄为 null ⇒ 浏览器永远不开 ✗。
+	test('⑥ window.open：blank 占位必须放行（隐藏），真地址才交系统浏览器并收掉占位窗', () => {
+		const src = stripComments(read());
+		const at = src.indexOf('wc.setWindowOpenHandler(');
+		assert.ok(at > 0, '找不到 setWindowOpenHandler ✗');
+		const body = src.slice(at, src.indexOf('});', at) + 3);
+
+		// ① blank 判定必须在 `_openExternal` 之前（否则会先白开一个 about:blank，再被 deny）
+		const iBlank = body.indexOf('isBlankPopupUrl(url)');
+		const iOpenExt = body.indexOf('_openExternal(url)');
+		assert.ok(iBlank > 0, '缺少 isBlankPopupUrl 判定 ⇒ 占位弹窗被一律 deny（登录页永远不开 ✗）');
+		assert.ok(iOpenExt > iBlank, 'blank 分支必须早于 _openExternal（否则会外开一个空白页 ✗）');
+		// ② blank ⇒ allow + 隐藏（不许闪窗）
+		assert.ok(/action: 'allow'/.test(body), 'blank 弹窗必须 allow（deny ⇒ 页面拿不到句柄 ✗）');
+		assert.ok(/show: false/.test(body), '占位窗必须隐藏（否则用户会看到一个空白弹窗闪一下 ✗）');
+		// ③ 非 blank ⇒ 仍走系统浏览器 + deny
+		assert.ok(/this\._openExternal\(url\);\s*return \{ action: 'deny' \};/.test(body),
+			'非 blank 的新窗口请求仍必须外开 + deny ✗');
+
+		// ④ 占位窗的第一次真实导航要被接管：外开 + 销毁
+		const childAt = src.indexOf("wc.on('did-create-window'");
+		assert.ok(childAt > 0, '缺少 did-create-window ⇒ 占位窗会停在一个隐藏的空窗口里（登录页不开 ✗）');
+		const child = src.slice(childAt, childAt + 1400);
+		assert.ok(/cwc\.on\('will-navigate'/.test(child), '占位窗的 will-navigate 必须接管 ✗');
+		assert.ok(/event\.preventDefault\(\)/.test(child), '接管时必须 preventDefault（否则占位窗自己加载了登录页 ✗）');
+		// ⚠ 必须断言"外开之后**紧跟**收窗"：`child.destroy()` 在 kill() 定义里也出现，
+		//   只查它存在会被"交出去但忘了收"骗过（实测漏过一次）⇒ 用相邻性断言 ✗
+		assert.ok(/this\._openExternal\(url\);\s*kill\(\);/.test(child),
+			'交出去之后必须立刻销毁占位窗（否则留一个隐藏窗口 ✗）');
+		assert.ok(/child\.destroy\(\)/.test(child), 'kill() 必须真的 destroy（不能只隐藏）✗');
+		assert.ok(/isBlankPopupUrl\(url\)/.test(child), '占位窗里"还在 blank 上打转"要放过（不能反复外开）✗');
 	});
 
 	test('⑤ 白屏探针**不许**退化成"插件加载过就算活着"（认证失败页会永判活着）', () => {

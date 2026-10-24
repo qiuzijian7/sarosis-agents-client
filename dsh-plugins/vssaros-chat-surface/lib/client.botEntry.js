@@ -25,6 +25,37 @@ window.__ModuleLoader__.load({
 		const MODE_IDS = new Set(["standard", "ptc", "minimal", "cordis", "vssaros-standard", "vssaros-ptc", "vssaros-full"]);
 		/** 「+」菜单里的行名（带前缀，避免与官方命令重名 ⇒ 官方文档：重名会 fail loud）。 */
 		const ROW_NAME = "vssaros-bots";
+		/** 人格路由（agents 插件的页面路由；与 client.agents.js 同一条）。 */
+		const PERSONA_ROUTE = "/x/agents/api/persona";
+		/** 预选生效时的重试（新会话刚建出来时 agents 侧可能还没登记它 ⇒ 400「会话不在运行」）。 */
+		const APPLY_RETRIES = 6;
+		const APPLY_RETRY_MS = 1500;
+
+		/**
+		 * ★ P0-2（2026-10-22）：Bot 入口的**可见反馈**。
+		 * 无桥环境没有 `bridge.notify`、dsh 也没有官方 toast 服务 ⇒ 用一个两个 chunk **共享**的小 store
+		 *   （挂在同一个 `state` 上：client.js 给每个 ALWAYS 部件传的是**同一个** state 对象）⇒
+		 *   本 chunk 写、`client.preset.js` 的模式 chip 旁边读出来显示 ✓。
+		 * 值形如 `{ kind: "staged" | "done" | "error", text }`；谁先装谁建，后装的复用 ✓。
+		 */
+		const botNoticeStore = (state) => {
+			if (state.vssarosBotNotice) { return state.vssarosBotNotice; }
+			let value = null;
+			const listeners = new Set();
+			const store = {
+				get: () => value,
+				set: (v) => {
+					value = v;
+					for (const l of [...listeners]) { try { l(); } catch { /* 单个订阅者出错不连坐 */ } }
+				},
+				subscribe: (l) => { listeners.add(l); return () => { listeners.delete(l); }; },
+			};
+			state.vssarosBotNotice = store;
+			return store;
+		};
+
+		/** 这类失败值得重试（会话刚建出来、agents 侧还没登记）。 */
+		const retryable = (text) => /不在运行|not running/i.test(String(text || ""));
 
 		function install(ctx, shell) {
 			const state = (shell && shell.state) || {};
@@ -39,10 +70,97 @@ window.__ModuleLoader__.load({
 			const authToken = () => {
 				try {
 					if (shell && typeof shell.token === "string" && shell.token) { return shell.token; }
-					const m = /[?&]token=([^&]+)/.exec((typeof location !== "undefined" && location.search) || "");
-					return m ? decodeURIComponent(m[1]) : "";
+					if (typeof location === "undefined" || !location.search) { return ""; }
+					return new URLSearchParams(location.search).get("token") || "";
 				} catch { return ""; }
 			};
+
+			/** 当前会话 id（官方 SessionListState.current；session-controller/src/client/sessions/service.ts:74）。 */
+			const currentSessionId = () => {
+				try {
+					const list = ctx.sessions && ctx.sessions.list;
+					const snap = list && list.getSnapshot();
+					return snap && typeof snap.current === "string" && snap.current ? snap.current : "";
+				} catch { return ""; }
+			};
+			const subscribeSessions = (fn) => {
+				try {
+					const list = ctx.sessions && ctx.sessions.list;
+					if (list && typeof list.subscribe === "function") { return list.subscribe(fn); }
+				} catch { /* 订阅不上 ⇒ 预选只能等下一次手动选择 */ }
+				return () => undefined;
+			};
+
+			const notice = botNoticeStore(state);
+
+			/**
+			 * POST 人格切换；与 `client.agents.js` 的 postPersona **同一口径**：token 放 query、
+			 * `credentials: same-origin`、失败时**读正文**当原因（这条路由把拒绝原因写在 400 正文里）。
+			 * @returns Promise<null | string> —— null 成功；字符串 = 带原因的错误。
+			 */
+			const postPersona = (sid, presetId) => {
+				if (typeof fetch !== "function") { return Promise.resolve("fetch unavailable"); }
+				const params = new URLSearchParams();
+				const token = authToken();
+				if (token) { params.set("token", token); }
+				const url = PERSONA_ROUTE + (params.toString() ? "?" + params.toString() : "");
+				return Promise.resolve()
+					.then(() => fetch(url, {
+						method: "POST",
+						credentials: "same-origin",
+						headers: { "content-type": "application/json", accept: "application/json" },
+						body: JSON.stringify(personaRequest(sid, presetId)),
+					}))
+					.then((r) => {
+						state.botEntrySwitch = { status: r && r.status, presetId };
+						if (r && r.ok) { return null; }
+						return Promise.resolve(r && typeof r.text === "function" ? r.text() : "").then(
+							(t) => "HTTP " + ((r && r.status) || "?") + (String(t || "").trim() ? "：" + String(t).trim().replace(/\s+/g, " ").slice(0, 200) : ""),
+							() => "HTTP " + ((r && r.status) || "?"));
+					}, (e) => String((e && e.message) || e));
+			};
+
+			/** 对某个会话应用 Bot（失败且属"会话刚建出来"时按间隔重试）。 */
+			const applyTo = (sid, presetId, label, attempt) => {
+				return postPersona(sid, presetId).then((err) => {
+					if (!err) {
+						state.botEntryError = undefined;
+						notice.set({ kind: "done", text: "已切换为 Bot · " + label + "（当前会话继续）" });
+						return;
+					}
+					if (retryable(err) && attempt < APPLY_RETRIES) {
+						return new Promise((res) => setTimeout(res, APPLY_RETRY_MS)).then(() => applyTo(sid, presetId, label, attempt + 1));
+					}
+					state.botEntryError = err;
+					notice.set({ kind: "error", text: "切换 Bot 失败：" + err });
+				});
+			};
+
+			/**
+			 * ★ P0-2：空白会话（还没有会话 id）里选 Bot ⇒ **先预选**，等第一条消息建出会话后自动应用
+			 *   （官方 seat 的 stage/apply 同语义）。旧实现直接 POST 空 sessionId ⇒ 宿主 400「需要 sessionId」，
+			 *   错误只写进 state ⇒ 用户**毫无反馈** ✗✗。
+			 */
+			let staged = null;
+			let unsubscribe = null;
+			const stage = (presetId, label) => {
+				staged = { presetId, label };
+				state.botStaged = presetId;
+				notice.set({ kind: "staged", text: "已预选 Bot · " + label + "：发出第一条消息后生效" });
+				if (unsubscribe) { return; }
+				unsubscribe = subscribeSessions(() => {
+					const sid = currentSessionId();
+					if (!sid || !staged) { return; }
+					const pick = staged;
+					staged = null;
+					state.botStaged = undefined;
+					if (unsubscribe) { const u = unsubscribe; unsubscribe = null; try { u(); } catch { /* 已释放 */ } }
+					void applyTo(sid, pick.presetId, pick.label, 0);
+				});
+			};
+
+			/** 切人格的请求体（只换人格、当前会话继续）。 */
+			const personaRequest = (sid, presetId) => ({ sessionId: String(sid || ""), presetId: String(presetId || "") });
 
 			/** 花名册（官方 remote，同 client.agents.js）⇒ 取**非模式**的那些 = Bot。 */
 			const loadBots = () => {
@@ -57,9 +175,6 @@ window.__ModuleLoader__.load({
 					}).catch(() => []);
 				} catch { return Promise.resolve([]); }
 			};
-
-			/** 切人格的请求体（只换人格、当前会话继续）。 */
-			const personaRequest = (sid, presetId) => ({ sessionId: String(sid || ""), presetId: String(presetId || "") });
 
 			const AgentsIcon = (props) => react.createElement("span", { "data-vssaros-bots-icon": "1", ...props });
 
@@ -84,28 +199,22 @@ window.__ModuleLoader__.load({
 						...(b && b.broken === true ? { detail: "该 Bot 加载失败（preset 未就绪）" } : {}),
 					}))),
 					onSelect: (opt, args) => {
-						const sid = args && args.sessionId;
 						const presetId = opt && opt.id;
 						if (!presetId) { return; }
-						const url = "/x/agents/api/persona";
-						const headers = { "content-type": "application/json", accept: "application/json" };
-						const token = authToken();
-						if (token) { headers.authorization = "Bearer " + token; }
-						fetch(url, {
-							method: "POST",
-							headers,
-							body: JSON.stringify(personaRequest(sid, presetId)),
-						}).then((r) => {
-							state.botEntrySwitch = { status: r.status, presetId };
-							if (!r.ok) { state.botEntryError = "HTTP " + r.status; }
-						}).catch((e) => { state.botEntryError = String((e && e.message) || e); });
+						const label = String((opt && opt.label) || presetId);
+						const sid = (args && args.sessionId) || currentSessionId();
+						// 无会话 ⇒ 预选（发出第一条消息后自动生效）；有会话 ⇒ 立即切换 ✓
+						if (!sid) { stage(presetId, label); return; }
+						staged = null;
+						state.botStaged = undefined;
+						void applyTo(sid, presetId, label, 0);
 					},
 				},
 			});
 			state.botEntry = true;
 		}
 		exports.install = install;
-		exports.__test = { MODE_IDS, ROW_NAME, personaRequest: (sid, presetId) => ({ sessionId: String(sid || ""), presetId: String(presetId || "") }) };
+		exports.__test = { MODE_IDS, ROW_NAME, PERSONA_ROUTE, botNoticeStore, retryable, personaRequest: (sid, presetId) => ({ sessionId: String(sid || ""), presetId: String(presetId || "") }) };
 		return module.exports;
 	}
 });

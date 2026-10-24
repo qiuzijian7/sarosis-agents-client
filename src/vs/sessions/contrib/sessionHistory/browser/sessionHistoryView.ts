@@ -999,6 +999,36 @@ export class SessionHistoryViewPane extends ViewPane {
 		const countEl = DOM.append(meta, $('.session-history-group-count'));
 		// 计数 = 该工作区下**全部**会话（含被 5 条配额折叠掉的）—— 否则用户以为会话丢了。
 		countEl.textContent = String(group.sessions.length);
+
+		/**
+		 * ★★ 多根徽标（2026-10-24 用户报「左侧工作区看不出多根」）。
+		 *
+		 * `group.roots` 由 `sessionGrouping` 从 `Workspace.relatedFolders` 算出来，
+		 * **只在 `length > 1` 时有值** ⇒ 单根工作区不显示任何东西（不制造噪音）。
+		 *
+		 * 为什么徽标比"改名字"更合适：多根工作区的两个根常常**同名**（`...\S1Game` ×2），
+		 * 光靠名字区分要么变很长、要么仍然歧义；「2 根」是**结构化信息**，一眼就知道这组含两个根，
+		 * 悬停还能看到每个根的完整路径。
+		 *
+		 * ⚠ 用内联样式而不是新增 CSS 类：本文件对应的 css 在别处，加类要两个文件一起改，
+		 *   而这个徽标只有一种形态（不值得为它加一条全局样式）。
+		 */
+		const groupRoots = Array.isArray(group.roots) ? group.roots : [];
+		if (groupRoots.length > 1) {
+			const rootsBadge = $<HTMLElement>('span.session-history-group-roots');
+			rootsBadge.textContent = localize('sessionHistory.groupRoots', "{0} 根", groupRoots.length);
+			rootsBadge.title = groupRoots
+				.map((r, i) => localize('sessionHistory.groupRootItem',
+					"{0}：{1}",
+					i === 0 ? localize('sessionHistory.groupRootPrimary', "主根") : localize('sessionHistory.groupRootRelated', "关联根"),
+					r))
+				.join('\n');
+			rootsBadge.style.cssText = 'flex:0 0 auto;font-size:10px;line-height:15px;padding:0 5px;'
+				+ 'border-radius:7px;white-space:nowrap;cursor:help;'
+				+ 'background:rgba(128,128,128,.18);color:var(--vscode-descriptionForeground,#999);';
+			// 插在计数之前（视觉顺序：名称 … 路径 … N 根 · 计数）
+			header.insertBefore(rootsBadge, countEl);
+		}
 		this._register(DOM.addDisposableListener(header, DOM.EventType.CLICK, () => this._toggleGroupCollapsed(group.key)));
 
 		return DOM.append(groupEl, $('.session-history-group-items'));
@@ -1955,9 +1985,19 @@ export class SessionHistoryViewPane extends ViewPane {
 		if (this._workspaces.length > 0) { return this._workspaces; }
 		try {
 			const workspaces = await this.agentStudioService.getWorkspaces();
+			/**
+			 * ★★ 2026-10-24（用户报「左侧工作区看不出多根」的**真正根因**）：
+			 *
+			 * `getWorkspaces()` 返回的 `Workspace` **本来就带 `relatedFolders`**，
+			 * 但这里 `.map()` 只挑 `id / name / path` ⇒ **多根信息在这一行被丢掉**，
+			 * 下游 `IWorkspaceRef` 拿不到 ⇒ 分组永远只有 1 个根 ⇒
+			 * 「N 根」徽标不可能出现，同名的两个根也只能显示成两个一模一样的组头。
+			 *
+			 * ⇒ 补上 `relatedFolders`（原样透传，不做裁剪：分组侧自己会算 roots[0]=主根）。
+			 */
 			this._workspaces = workspaces
 				.filter(w => !!w?.id)
-				.map(w => ({ id: w.id, name: w.name, path: w.path }));
+				.map(w => ({ id: w.id, name: w.name, path: w.path, relatedFolders: w.relatedFolders }));
 		} catch (err) {
 			// 失败**不缓存**（保持空数组）⇒ 下次重载会重试。本次分组全体落「未分组」，
 			// 但**不会丢会话** —— 这是有意的降级：宁可暂时没有分组头，也不能让列表空掉 ✓。

@@ -145,6 +145,36 @@ for (const name of names) {
 			: '');
 }
 
+// ── ★ 入口**真的能 import**（2026-10-24 实锤：工具页整页空白）───────────────────────
+//
+// 事故：`lib/index.js` 里一段 **注释** 写了反引号（`/x/skills/api/plugins`），
+//   而那段注释在**页面模板字符串内部** ⇒ 反引号提前闭合模板 ⇒ 后面的 `/x/...`
+//   被当成除法表达式 `x / skills / api / plugins` 解析。
+//   ⚠ 这个形态**语法合法** ⇒ `node --check` 通过、`--check` 类守卫全绿，
+//     直到 dsh 真正 import 时抛 `ReferenceError: x is not defined`
+//     ⇒ 插件加载失败 ⇒ 整页白屏（Host 日志只有一行 "failed to import"）。
+//   ⇒ 唯一可靠的判据就是**真跑一次 import**。子进程跑，避免污染本进程。
+{
+	const { execFileSync } = await import('node:child_process');
+	const { pathToFileURL } = await import('node:url');
+	for (const name of names) {
+		const dir = join(PLUGINS_DIR, name);
+		let pkg = {};
+		try { pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')); } catch { continue; }
+		const entryRel = typeof pkg.main === 'string' ? pkg.main : 'lib/index.js';
+		const entry = join(dir, entryRel);
+		if (!existsSync(entry)) { continue; }
+		const spec = JSON.stringify(pathToFileURL(entry).href);
+		try {
+			execFileSync(process.execPath, ['-e', `import(${spec}).then(()=>{},e=>{console.error(e && e.message || e);process.exit(1)})`], { stdio: 'pipe' });
+			check(`${name}：入口能真正 import（${entryRel}）`, true);
+		} catch (e) {
+			const msg = String(e.stderr || e.message || '').split('\n').filter(Boolean).slice(0, 2).join(' | ');
+			check(`${name}：入口能真正 import（${entryRel}）`, false, msg.slice(0, 200));
+		}
+	}
+}
+
 console.log(`\n${pass}/${pass + fails.length} passed`);
 if (fails.length) {
 	console.log('失败：' + fails.join(' / '));

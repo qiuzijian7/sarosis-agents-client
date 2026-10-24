@@ -5,6 +5,14 @@
 
 import '../../platform/update/common/update.config.contribution.js';
 
+// ★ 2026-10-22（三次"整个 app 无响应"的现场取证）：**加大 libuv 线程池**（默认 4）。
+//   机理：图谱全量同步把 4 个池线程全占在 SQLite 语句上 ⇒ 之后任何**同步** fs 调用
+//   （日志落盘 / 读配置 / `existsSync`）都只能排队等池线程 ⇒ **主线程的事件循环直接停摆**
+//   ⇒ inspector 也执行不了（实测 `Runtime.evaluate` 超时、CPU 0%、所有线程 Wait）。
+//   加大到 16 ⇒ 即使 SQLite 语句很慢，池里仍有空线程服务同步调用 ⇒ app 变"慢"而不是"死" ✓。
+//   ⚠ 必须在本进程**第一次用到线程池之前**设置（libuv 只读一次），所以放在文件顶部 ✓。
+if (!process.env['UV_THREADPOOL_SIZE']) { process.env['UV_THREADPOOL_SIZE'] = '16'; }
+
 import { app, dialog } from 'electron';
 import { unlinkSync, promises } from 'fs';
 import { URI } from '../../base/common/uri.js';
@@ -75,6 +83,7 @@ import { FileUserDataProvider } from '../../platform/userData/common/fileUserDat
 import { addUNCHostToAllowlist, getUNCHost } from '../../base/node/unc.js';
 import { ThemeMainService } from '../../platform/theme/electron-main/themeMainServiceImpl.js';
 import { LINUX_SYSTEM_POLICY_FILE_PATH } from '../../base/common/policy.js';
+import { startMainThreadWatchdog } from './mainThreadWatchdog.js';
 
 /**
  * The main VS Code entry point.
@@ -202,6 +211,13 @@ class CodeMain {
 		// 日志里出现时间戳断层，断层起点即"最后一次可用"。
 		// 判读方法与环境开关（SAROSIS_MAIN_HEARTBEAT / …_MS）见 `mainHeartbeat.ts` 模块头。
 		disposables.add(startMainHeartbeat(logService));
+		// ★ 2026-10-22（三次卡死取证）：主线程**停更看门狗** —— 主线程被 native 调用阻塞时，
+		//   日志/定时器/inspector 全会停摆（连"报错"都写不出去 ✗）⇒ 只有**独立 worker** 还能跑。
+		//   它读 `mainThreadBreadcrumb` 的共享槽，停更 >8s 就把「最后阶段 + CPU% + RSS」写进
+		//   `<logsHome>/main-hang.log` ⇒ 下次冻结直接指名道姓（见 mainThreadWatchdog.ts 头注）。
+		disposables.add(startMainThreadWatchdog(logService, {
+			logPath: resolve(environmentMainService.logsHome.with({ scheme: Schemas.file }).fsPath, 'main-hang.log'),
+		}));
 
 		// Files
 		const fileService = new FileService(logService);

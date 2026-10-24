@@ -334,6 +334,78 @@ const WORKFLOW_SCRIPT = `
 `;
 
 /**
+ * 页面数据（**SSR 页与 React 工作台共用**，2026-10-22）。
+ *
+ * 为什么共用：两个界面各自取数 ⇒ 迟早分叉（数字对不上、筛选口径不同、画布选中的不是同一个）✗。
+ * ⇒ 这里一处取数，SSR 走 `renderPage`，React 走 `GET /api/page` ✓。
+ *
+ * @param config 配置
+ * @param state  插件状态（读已注册的工具名）
+ * @param wantedId 指定要看哪条工作流的画布（`?id=`）；不给 ⇒ 选节点最多的那条（与旧页一致 ✓）
+ */
+async function collectPageData(config, state, wantedId) {
+	const data = await listWorkflows(config, { limit: 200 });
+	const summary = summarizeWorkflows(data.workflows);
+	// 选画布目标：`?id=` 指定的，否则节点最多的那个
+	const selected = (wantedId ? summary.sorted.find(w => w.id === wantedId) : undefined)
+		?? [...summary.sorted].sort((a, b) => b.nodes.length - a.nodes.length)[0];
+	const canvas = selected
+		? renderSvgCanvas({ ...selected, nodes: selected.nodes.slice(0, CANVAS_NODE_LIMIT) })
+		: { svg: '', width: 0, height: 0, dangling: 0 };
+	// 页面用**缓存过的**自证结果（TTL 30s，见文件头 `probeWorkerCached`）：起 worker 是重活，
+	// 而它只是页面上的一个事实栏 ✓；"现在到底行不行"由 `workflow_engine_status` 工具现跑回答 ✓。
+	const worker = await probeWorkerCached();
+	const toolsRegistered = TOOL_NAMES.filter(tool => !!state.tools?.get(tool)).join(',') || '(未注册)';
+	return {
+		data,
+		summary,
+		selected: selected ? { id: selected.id, name: selected.name, nodes: selected.nodes.length, edges: selected.edges.length } : null,
+		canvas,
+		worker,
+		toolsRegistered,
+		rows: summary.sorted.map((workflow, index) => workflowRowData(workflow, index)),
+	};
+}
+
+/**
+ * 一条工作流的**行数据**（React 工作台与 JSON 接口的载荷；与旧页的行字段一一对应 ✓）。
+ *
+ * 排序键（`order` / `title` / `updated`）在服务端算好 —— 页内排序不再读 DOM 属性 ✓（旧页那样做是因为
+ * 它只有 HTML；React 侧直接排数组 ✓）。`search` 是小写后的可搜索串（与旧页 `data-search` 同口径 ✓）。
+ */
+function workflowRowData(workflow, index) {
+	const nodeCount = Array.isArray(workflow.nodes) ? workflow.nodes.length : 0;
+	const edgeCount = Array.isArray(workflow.edges) ? workflow.edges.length : 0;
+	const tidy = tidyReasonOf(workflow);
+	const meta = [workflow.category, workflow.author, workflow.visibility, workflow.version, workflow.tags?.length ? workflow.tags.join(', ') : ''].filter(Boolean).join(' · ');
+	const updated = Number(workflow.updatedAt);
+	const updateKey = Number.isFinite(updated) ? String(updated) : '';
+	return {
+		id: String(workflow.id ?? ''),
+		name: String(workflow.name ?? ''),
+		description: String(workflow.description ?? ''),
+		meta,
+		tidy,
+		isActive: !!workflow.isActive,
+		empty: !!workflow.empty,
+		hasGraph: nodeCount > 0,
+		nodeCount,
+		edgeCount,
+		updatedAt: workflow.updatedAt ?? null,
+		updatedText: shortOf(workflow.updatedAt),
+		updatedIso: isoOf(workflow.updatedAt),
+		sessionCount: workflow.sessionCount,
+		sessionRuns: workflow.sessions?.runs,
+		sessionLatestName: workflow.sessions?.latestName,
+		// 排序键（与旧页的 data-order / data-title / data-updated 同义 ✓）
+		order: String(index).padStart(4, '0'),
+		titleKey: String(workflow.name ?? '').toLowerCase(),
+		updatedKey: updateKey,
+		search: [workflow.name, workflow.id, workflow.description, meta].filter(Boolean).join(' ').toLowerCase(),
+	};
+}
+
+/**
  * 服务端渲染的只读工作流页（**A 稿：紧凑列表**，见 `doc/workflow-sideview-refactor-mockup.html`）。
  *
  * 一句话：**列表是这个侧栏的本职** —— 画布让位（它 1522px 宽，330px 的侧栏里只看得到左上角），
@@ -1277,6 +1349,24 @@ export function apply(ctx, config = {}) {
 			}
 			try {
 				const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+				// ★ 2026-10-22（工作台重构 §5 步骤 1）：**页面数据的 JSON 接口**。
+				//   React 工作台（`lib/workbench.js`）与 SSR 页**共用同一份取数**（`collectPageData`）⇒
+				//   两个界面的数字/筛选/画布永远一致 ✓（各写各的 ⇒ 迟早分叉 ✗）。
+				if (url.pathname === `${ROUTE_PREFIX}/api/page` && req.method === 'GET') {
+					const payload = await collectPageData(config, state, url.searchParams.get('id') ?? undefined);
+					res.writeHead(200, JSON_HEADERS);
+					res.end(JSON.stringify({ ok: true, ...payload }));
+					return;
+				}
+				// ★ 2026-10-22（左右两档）：**只取画布**的轻接口 —— 左列点一行就换右列的图，
+				//   没必要把整页（所有行 + 摘要 + worker 自证）重搬一遍 ✗（每次点行都白搬一遍）。
+				if (url.pathname === `${ROUTE_PREFIX}/api/canvas` && req.method === 'GET') {
+					const wanted = (url.searchParams.get('id') ?? '').trim();
+					const payload = await collectPageData(config, state, wanted || undefined);
+					res.writeHead(200, JSON_HEADERS);
+					res.end(JSON.stringify({ ok: true, selected: payload.selected, canvas: payload.canvas }));
+					return;
+				}
 				if (url.pathname === `${ROUTE_PREFIX}/api/open`) {
 					// 「在画布打开」：**只经反向通道**请求 IDE 能力 workflow（清单里已声明 ⇒ 才有授权）。
 					// 没有桥 / 没有 IDE 监听时给**可读错误**（页面据此显示原因），绝不静默成功。
@@ -1338,20 +1428,8 @@ export function apply(ctx, config = {}) {
 					res.end(JSON.stringify(out));
 					return;
 				}
-				const data = await listWorkflows(config, { limit: 200 });
-				const summary = summarizeWorkflows(data.workflows);
-				// 选画布目标：`?id=` 指定的，否则节点最多的那个
-				const wanted = url.searchParams.get('id');
-				const selected = (wanted ? summary.sorted.find(w => w.id === wanted) : undefined)
-					?? [...summary.sorted].sort((a, b) => b.nodes.length - a.nodes.length)[0];
-				const canvas = selected
-					? renderSvgCanvas({ ...selected, nodes: selected.nodes.slice(0, CANVAS_NODE_LIMIT) })
-					: { svg: '', width: 0, height: 0, dangling: 0 };
-				// 页面用**缓存过的**自证结果（TTL 30s，见文件头 `probeWorkerCached`）：起 worker 是重活，
-				// 而它只是页面上的一个事实栏 ✓；"现在到底行不行"由 `workflow_engine_status` 工具现跑回答 ✓。
-				const worker = await probeWorkerCached();
-				const toolsRegistered = TOOL_NAMES.filter(tool => !!state.tools?.get(tool)).join(',') || '(未注册)';
-				const html = renderPage({ data: { ...data, summary }, config, toolsRegistered, worker, selected, canvas });
+				const payload = await collectPageData(config, state, url.searchParams.get('id') ?? undefined);
+				const html = renderPage({ data: { ...payload.data, summary: payload.summary }, config, toolsRegistered: payload.toolsRegistered, worker: payload.worker, selected: payload.selected, canvas: payload.canvas });
 				res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
 				res.end(html);
 			} catch (e) {

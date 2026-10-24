@@ -17,7 +17,7 @@
 // 数据契约与覆盖缺口见 `lib/core/skills.js` 文件头（三层来源只覆盖中间那层；always 的自动注入语义无等价物）。
 
 import { appendFile, readFile, readdir } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -122,6 +122,9 @@ const SKILL_PREVIEW_SCRIPT = `
 	var panes = Array.prototype.slice.call(root.querySelectorAll('[data-sk-pane]'));
 	var searchWrap = root.querySelector('[data-sk-search-wrap]');
 	function showTab(name) {
+		// ★ 2026-10-24（用户：「开关插件后…莫名切换到了其他页签」）：把当前页签记下来，
+		//   任何原因导致重渲染/刷新，回来还是同一个页签（而不是跳回默认的「技能」）。
+		try { localStorage.setItem('vssaros.tools.tab', String(name)); } catch (e) { }
 		tabs.forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-sk-tab') === name); });
 		panes.forEach(function (p) { p.hidden = p.getAttribute('data-sk-pane') !== name; });
 		// 搜索框已在页头（对所有页签生效）⇒ 不再随页签显隐
@@ -130,12 +133,19 @@ const SKILL_PREVIEW_SCRIPT = `
 	tabs.forEach(function (b) {
 		b.addEventListener('click', function () { showTab(b.getAttribute('data-sk-tab')); });
 	});
+	// 恢复上次的页签（只认页面上真实存在的，避免旧值把内容全隐掉）
+	try {
+		var savedTab = localStorage.getItem('vssaros.tools.tab');
+		if (savedTab && tabs.some(function (b) { return b.getAttribute('data-sk-tab') === savedTab; })) {
+			showTab(savedTab);
+		}
+	} catch (e) { }
 
 	/*
 	 * 「加载更多」（2026-10-24 用户要求）：
 	 * 服务端只渲染前 N 个（插件有 6704 个，全渲染会卡死）⇒ 点一次翻一页。
 	 *
-	 * ⚠ 卡片 HTML 由**服务端** `/x/skills/api/plugins` 返回（复用 renderMarketCard）——
+	 * ⚠ 卡片 HTML 由**服务端** /x/skills/api/plugins 返回（复用 renderMarketCard）——
 	 *   不在浏览器里重写一遍模板，否则两份迟早漂移 ✗
 	 */
 	Array.prototype.forEach.call(root.querySelectorAll('[data-sk-more-pane]'), function (btn) {
@@ -191,7 +201,8 @@ const SKILL_PREVIEW_SCRIPT = `
 		var active = bar.getAttribute('data-tk-active') || 'all';
 		var more = (bar.getAttribute('data-tk-more') || '').split(',').filter(Boolean);
 		var q = (input && input.value ? input.value : '').trim().toLowerCase();
-		var nodes = Array.prototype.slice.call(pane.querySelectorAll('[data-skill-row], [data-tk-card]'));
+		// data-item-row = 已安装的 agent / 工作流 / 插件 / 工作台（与技能行同一种行，但不是技能）
+		var nodes = Array.prototype.slice.call(pane.querySelectorAll('[data-skill-row], [data-item-row], [data-tk-card]'));
 		var shown = 0;
 		nodes.forEach(function (n) {
 			var ok = chipHit(n, active);
@@ -512,19 +523,27 @@ const SKILL_PREVIEW_SCRIPT = `
 		if (ev.stopPropagation) { ev.stopPropagation(); }
 		var kind = String(btn.getAttribute('data-tk-kind') || '');
 		var slug = String(btn.getAttribute('data-tk-del') || '');
+		// ★ 2026-10-24：插件走 uninstall（profile 依赖移除），其它类型仍走 trash（移到回收站）
+		var opName = String(btn.getAttribute('data-tk-op') || 'trash');
+		var pkgName = String(btn.getAttribute('data-tk-pkg') || '');
 		if (!kind || !slug) { return; }
 		// ⚠ 这段在**模板字符串**里：反斜杠 n 会被模板解释成真换行，落到页面上就是「字符串里有裸换行」
 		//   ⇒ Uncaught SyntaxError（这个坑本文件已经踩过 5 次）。用 String.fromCharCode(10) 绕开。
 		var nl = String.fromCharCode(10);
-		var confirmMsg = '删除「' + slug + '」？' + nl + '会移到 <数据根>/.trash-<时间戳>/ 下（可恢复）。';
+		var confirmMsg = opName === 'uninstall'
+			? '卸载「' + slug + '」？' + nl + '会从 dsh profile 的依赖里移除，重启或热重载后不再加载；'
+				+ nl + '以后可以从商城重新安装。'
+			: '删除「' + slug + '」？' + nl + '会移到 <数据根>/.trash-<时间戳>/ 下（可恢复）。';
 		if (!window.confirm(confirmMsg)) { return; }
 		btn.disabled = true;
 		var label = btn.textContent;
-		btn.textContent = '删除中…';
+		btn.textContent = opName === 'uninstall' ? '卸载中…' : '删除中…';
 		fetch('/x/marketplace/api/action', {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },
-			body: JSON.stringify({ op: 'trash', params: { kind: kind, slug: slug } }),
+			body: JSON.stringify({ op: opName, params: pkgName
+				? { kind: kind, slug: slug, packageName: pkgName }
+				: { kind: kind, slug: slug } }),
 		}).then(function (r) { return r.json(); }).then(function (j) {
 			if (j && j.ok) { location.reload(); return; }
 			btn.disabled = false;
@@ -534,7 +553,7 @@ const SKILL_PREVIEW_SCRIPT = `
 			if (body) {
 				var box = body.querySelector('.tk-err');
 				if (!box) { box = document.createElement('div'); box.className = 'tk-err'; body.appendChild(box); }
-				box.textContent = '删除失败：' + String((j && j.error) || '商城没返回原因');
+				box.textContent = (opName === 'uninstall' ? '卸载失败：' : '删除失败：') + String((j && j.error) || '商城没返回原因');
 			}
 		}).catch(function (e) {
 			btn.disabled = false;
@@ -544,8 +563,62 @@ const SKILL_PREVIEW_SCRIPT = `
 			if (body) {
 				var box = body.querySelector('.tk-err');
 				if (!box) { box = document.createElement('div'); box.className = 'tk-err'; body.appendChild(box); }
-				box.textContent = '删除失败：' + String((e && e.message) || e);
+				box.textContent = (opName === 'uninstall' ? '卸载失败：' : '删除失败：') + String((e && e.message) || e);
 			}
+		});
+	});
+
+	/* 插件开关：POST setPluginEnabled（dsh 侧改 profile 的 bundles 选择）。
+	   ⚠ 和删除按钮一样，必须 ev.preventDefault + stopPropagation，否则会连带打开详情弹层。 */
+	root.addEventListener('click', function (ev) {
+		var sw = ev.target && ev.target.closest ? ev.target.closest('[data-sk-sw]') : null;
+		if (!sw) { return; }
+		ev.preventDefault();
+		if (ev.stopPropagation) { ev.stopPropagation(); }
+		if (sw.disabled) { return; }
+		var pkg = String(sw.getAttribute('data-sk-sw') || '');
+		if (!pkg) { return; }
+		var on = sw.getAttribute('data-sk-sw-on') === '1';
+		sw.disabled = true;
+		function fail(msg) {
+			sw.disabled = false;
+			var row = sw.closest ? sw.closest('.sk-row') : null;
+			var box = row ? row.querySelector('.sk-main') : null;
+			if (!box) { return; }
+			var err = box.querySelector('.tk-err');
+			if (!err) { err = document.createElement('div'); err.className = 'tk-err'; box.appendChild(err); }
+			err.textContent = '开关失败：' + msg;
+		}
+		fetch('/x/marketplace/api/action', {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ op: 'setPluginEnabled', params: { name: pkg, enabled: !on } }),
+		}).then(function (r) { return r.json(); }).then(function (j) {
+			if (j && j.ok) {
+				// ★ 2026-10-24（用户：「开关插件后，不要全屏刷新UI，导致莫名切换到了其他页签」）：
+				//   开关只改变 profile 的 bundles 选择，**本页的数据没有变** ⇒ 就地更新状态即可。
+				//   之前用 location.reload()：整页重拉 → 页签回到默认的「技能」→ 用户以为"跳页了"。
+				var nowOn = (j.enabled === undefined) ? !on : (j.enabled === true);
+				sw.setAttribute('aria-checked', nowOn ? 'true' : 'false');
+				sw.setAttribute('data-sk-sw-on', nowOn ? '1' : '0');
+				sw.setAttribute('title', nowOn ? '已启用（点一下停用）' : '已停用（点一下启用）');
+				sw.disabled = false;
+				var rowEl = sw.closest ? sw.closest('.sk-row') : null;
+				if (rowEl) { rowEl.classList.toggle('is-off', !nowOn); }
+				// 需要重启才生效时给一句就地提示（仍然不刷新）
+				if (j.restartRequired && rowEl) {
+					var box2 = rowEl.querySelector('.sk-main');
+					if (box2) {
+						var note = box2.querySelector('.tk-err');
+						if (!note) { note = document.createElement('div'); note.className = 'tk-err'; box2.appendChild(note); }
+						note.textContent = '已保存：重启 Host 后生效（本页数据不变）';
+					}
+				}
+				return;
+			}
+			fail(String((j && j.error) || '商城没返回原因'));
+		}).catch(function (e) {
+			fail(String((e && e.message) || e));
 		});
 	});
 
@@ -680,7 +753,10 @@ const SKILL_PREVIEW_SCRIPT = `
 				html += '<button type="button" class="tk-btn primary" data-market-install="'
 					+ escapeHtmlClient(String(inst.getAttribute('data-market-install') || '')) + '">安装</button>';
 			} else {
-				html += '<span class="mk-note">这个商品在商城里没有包体（只有介绍）⇒ 仅浏览</span>';
+				// 具体原因写在卡片那个「仅浏览」标签的 title 里（有版本但没包体 / 压根没版本，两种说法）
+				var browseNote = card.querySelector('.tk-only-browse');
+				var why = browseNote ? String(browseNote.getAttribute('title') || '') : '';
+				html += '<span class="mk-note">' + escapeHtmlClient(why || '这个商品在商城里没有包体') + ' ⇒ 仅浏览</span>';
 			}
 		}
 		var upKindOk = kind === 'skill' || kind === 'workflow' || kind === 'agent';
@@ -690,8 +766,13 @@ const SKILL_PREVIEW_SCRIPT = `
 				+ escapeHtmlClient(upver) + ' 覆盖本地（旧目录先移到回收站）">升级到 ' + escapeHtmlClient(upver) + '</button>';
 		}
 		if (del && itemSlug) {
+			var dOp = String(card.getAttribute('data-item-delop') || '');
+			var dPkg = String(card.getAttribute('data-item-pkg') || '');
 			html += '<button type="button" class="tk-btn tk-del" data-tk-del="' + escapeHtmlClient(itemSlug)
-				+ '" data-tk-kind="' + escapeHtmlClient(del) + '">删除</button>';
+				+ '" data-tk-kind="' + escapeHtmlClient(del) + '"'
+				+ (dOp ? ' data-tk-op="' + escapeHtmlClient(dOp) + '"' : '')
+				+ (dPkg ? ' data-tk-pkg="' + escapeHtmlClient(dPkg) + '"' : '')
+				+ '>' + (dOp === 'uninstall' ? '卸载' : '删除') + '</button>';
 		}
 		if (!html) {
 			html = '<span class="mk-note">内置条目：不涉及安装 / 升级 / 删除。</span>';
@@ -733,11 +814,22 @@ const SKILL_PREVIEW_SCRIPT = `
 		var t = ev.target;
 		if (!t || !t.closest) { return; }
 		if (t.closest('[data-mk-dlg]') || t.closest('[data-market-install]') || t.closest('[data-tk-del]')
+			|| t.closest('[data-sk-sw]')
 			|| t.closest('[data-sk-settings]') || t.closest('[data-sk-copy]') || t.closest('.sk-gear')) { return; }
-		var host = t.closest('[data-tk-card]') || t.closest('[data-skill-row]');
+		var host = t.closest('[data-tk-card]') || t.closest('[data-skill-row]') || t.closest('[data-item-row]');
 		if (!host) { return; }
 		ev.preventDefault();
 		openMkDlg(host, host.getAttribute('data-market-open') || '');
+	});
+
+	/* 已安装折叠组：开合状态记进 localStorage（刷新后保持用户上次的选择）。
+	   ⚠ 只对 data-sk-fold 的 details 生效，别的 details（连接器的工具清单）不动。 */
+	Array.prototype.slice.call(root.querySelectorAll('details[data-sk-fold]')).forEach(function (d) {
+		var k = 'vssaros.tools.fold.' + String(d.getAttribute('data-sk-fold') || '');
+		try { var v = localStorage.getItem(k); if (v === '0') { d.open = false; } else if (v === '1') { d.open = true; } } catch (e) { }
+		d.addEventListener('toggle', function () {
+			try { localStorage.setItem(k, d.open ? '1' : '0'); } catch (e) { }
+		});
 	});
 
 	applyFilter();
@@ -856,6 +948,60 @@ async function fetchMarketItems(req) {
 }
 
 /**
+ * 读 dsh profile 里**实际装着的插件** —— 也就是「内置 / 已安装」这两个过滤档的数据源。
+ *
+ * 数据源是 `<数据根>/dsh-home/profiles/<profile>/package.json` 的 dependencies：
+ *   · `@vssaros/*` / `@deepseek-ai/*` ⇒ **内置**（随产品或 dsh 官方发布，用户没装过也在）
+ *   · 其余（@tt-a1i/… / dshmarket / dsh-xxx-workbench…）⇒ **已安装**（从商城装的）
+ *
+ * ⚠ 不要用「商城台账」当唯一判据：台账只记"本机通过商城装过什么"，
+ *   而内置插件从来没走商城 ⇒ 台账里永远没有它们（这是"内置永远是 0"的老根因）。
+ */
+function readProfilePlugins(dataRoot) {
+	const result = { profile: '', file: '', items: [], bundles: [], error: '' };
+	if (!dataRoot) { result.error = '数据根未知'; return result; }
+	const dir = join(dataRoot, 'dsh-home', 'profiles');
+	let names = [];
+	try {
+		names = readdirSync(dir, { withFileTypes: true }).filter(e => e.isDirectory()).map(e => e.name);
+	} catch { result.error = '没有 dsh-home/profiles 目录'; return result; }
+	// 优先 vssaros（本产品的 profile），否则取第一个
+	const pick = names.includes('vssaros') ? 'vssaros' : names[0];
+	if (!pick) { result.error = 'profiles 目录是空的'; return result; }
+	const file = join(dir, pick, 'package.json');
+	if (!existsSync(file)) { result.error = 'profile 里没有 package.json'; return result; }
+	result.profile = pick;
+	result.file = file;
+	let pkg = null;
+	try { pkg = JSON.parse(readFileSync(file, 'utf8')); } catch (e) { result.error = 'package.json 读不了：' + String(e && e.message || e); return result; }
+	const deps = (pkg && pkg.dependencies) || {};
+	// ⚠ dependencies 里的值可能是 `file:C:/…`（本地 link）或 `^1.2.3`，**不是**版本号 ⇒
+	//   优先读 node_modules/<name>/package.json 的 version；读不到才退回依赖串（file: 显示为「本地链接」）。
+	const versionOf = name => {
+		try {
+			const pj = join(dir, pick, 'node_modules', name, 'package.json');
+			const j = JSON.parse(readFileSync(pj, 'utf8'));
+			if (j && j.version) { return String(j.version); }
+		} catch { /* 读不到就退回依赖串 */ }
+		const raw = String(deps[name] || '');
+		if (/^file:/.test(raw)) { return '本地链接'; }
+		return raw.replace(/^[\^~]/, '') || '未声明';
+	};
+	// ★ 2026-10-24（用户：「插件 item 是允许有开关的」）：开关的**当前状态**看这里 ——
+	//   profile 的 `dsh.profile.bundles` 就是"被选中的 bundle 层"；不在这个数组里 = 已停用。
+	//   （`setBundleEnabled` 改的也正是这份选择，所以两边是同一份真源。）
+	const profileNode = pkg && pkg.dsh && pkg.dsh.profile;
+	result.bundles = (profileNode && Array.isArray(profileNode.bundles) ? profileNode.bundles : []).map(String);
+	result.items = Object.keys(deps).map(name => ({
+		name,
+		version: versionOf(name),
+		// 随产品 / 官方发布 ⇒ 内置（用户没做过任何操作它也在）
+		builtin: /^@(vssaros|deepseek-ai)\//.test(name),
+	}));
+	return result;
+}
+
+/**
  * 某个页签下**尚未安装**的商城商品。
  * `installedVersion` 非空 = 已装（商城的台账给的）⇒ 不重复列出（本地那侧已经有一条了）。
  */
@@ -880,13 +1026,20 @@ function renderMarketCard(it) {
 	const key = String(it.kind) + ':' + String(it.slug);
 	const kind = String(it.kind || '');
 	const icon = String(it.icon || '').trim();
-	const fallbackGlyph = escapeHtml(icon && icon.length <= 4 ? icon : (KIND_EMOJI[kind] || '\u{1F4E6}'));
-	const glyph = '<span class="tk-cover-glyph" aria-hidden="true"' + (isImageIcon(icon) ? ' hidden' : '') + '>' + fallbackGlyph + '</span>';
+	const cover = String(it.cover || '').trim();
+	// ★ 2026-10-24（用户：「工作台 item 中的图像丢失」）：卡片大图要看 **cover**，不能只看 icon。
+	//   服务端这两者是分开的语义：cover = 大图（卡片/详情页），icon = 小图标（行首 28px）。
+	//   工作台那批商品 icon 是空的、只有 cover ⇒ 以前这里退化成 emoji 字形，看着就是"图没了" ✗
+	const bigImage = isImageIcon(cover) ? cover : (isImageIcon(icon) ? icon : '');
+	const fallbackGlyph = escapeHtml(icon && icon.length <= 4 && !isImageIcon(icon) ? icon : (KIND_EMOJI[kind] || '\u{1F4E6}'));
+	const glyph = '<span class="tk-cover-glyph" aria-hidden="true"' + (bigImage ? ' hidden' : '') + '>' + fallbackGlyph + '</span>';
 	// 同本地卡片：外链失效时露字形，而不是留一块空白
-	const coverInner = isImageIcon(icon)
-		? '<img src="' + escapeHtml(icon) + '" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" onerror="'
+	const coverInner = bigImage
+		? '<img src="' + escapeHtml(bigImage) + '" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" onerror="'
 			+ COVER_ONERROR + '">' + glyph
 		: glyph;
+	// 详情抽屉/弹层也要这张图（openMkDlg 从卡片里取 img，取不到就退回字形）
+	it.cover = bigImage || cover;
 	return '<li class="tk-card tk-market-card" data-tk-card data-tk-src="market" data-tk-state="market" data-market-open="' + escapeHtml(String(it.slug)) + '"'
 		+ fAttrs({ src: 'market', ver: it.version ? 'yes' : 'no' }) + ' title="' + escapeHtml(key) + '">'
 		+ '<div class="tk-cover" style="background:' + iconBgOf(String(it.slug || name)) + '">' + coverInner + '</div>'
@@ -898,13 +1051,16 @@ function renderMarketCard(it) {
 		+ '<div class="tk-nm">' + escapeHtml(name) + '</div>'
 		+ '<div class="tk-sub">' + escapeHtml(String(it.author || '商城')) + '</div>'
 		+ (it.description ? '<div class="tk-ds">' + escapeHtml(shortStoreDesc(it.description).slice(0, 140)) + '</div>' : '')
-		// ★ 只有**真有版本**（商城侧 latest_version 非空）才给「安装」：
-		//   colaskill 抓来的那批只有介绍、没有包体 ⇒ 点安装会得到「没有可用版本」（用户已踩到）。
-		//   这类如实标「仅浏览」，而不是留一个必然失败的按钮。
+		// ★ 能不能装**由服务端说了算**（`installable` = 有包体 或 有外部发布源）。
+		//   2026-10-24（用户：「安装插件失败 … HTTP 404」）：以前只判 `it.version`，
+		//   而商城里 6704 个 plugin / 33 个 workbench 都是"有版本号、没包体" ⇒ 点了必然失败。
+		//   服务端现在回传 installable，这里据此显示「安装」或「仅浏览」，不再留必然失败的按钮。
 		+ '<div class="tk-ops"><button type="button" class="tk-btn" data-tk-open="1" aria-expanded="false" data-market-detail="' + escapeHtml(String(it.slug)) + '">详情</button>'
-		+ (it.version
+		+ (it.version && it.installable !== false
 			? '<button type="button" class="tk-btn primary" data-market-install="' + escapeHtml(key) + '">安装</button>'
-			: '<span class="tk-only-browse" title="这个商品在商城里没有包体（只有介绍）">仅浏览</span>')
+			: '<span class="tk-only-browse" title="' + (it.version
+				? '商城只登记了元数据（没有包体，也没有 npm / GitHub 发布源）⇒ 装不了'
+				: '这个商品在商城里没有包体（只有介绍）') + '">仅浏览</span>')
 		+ '</div>'
 		+ '<div class="tk-detail" hidden><div class="mk-detail-body"></div><div class="paths"><h4>商品信息</h4>'
 		+ '<div class="path-row"><span class="pk">标识</span><span class="pv"><code>' + escapeHtml(key) + '</code></span></div>'
@@ -1048,7 +1204,7 @@ function iconBgOf(seed) {
 	return 'linear-gradient(135deg, hsl(' + h + ',68%,58%,.34), hsl(' + ((h + 46) % 360) + ',72%,46%,.16))';
 }
 
-const KIND_EMOJI = { skill: '\u26A1', mcp: '\u{1F50C}', workflow: '\u{1F500}', agent: '\u{1F916}', workbench: '\u{1F9F0}' };
+const KIND_EMOJI = { skill: '\u26A1', mcp: '\u{1F50C}', workflow: '\u{1F500}', agent: '\u{1F916}', workbench: '\u{1F9F0}', plugin: '\u{1F9E9}' };
 const isImageIcon = raw => /^(https?:\/\/|data:image\/)/i.test(String(raw || '').trim());
 
 /** @param {{ icon?: string, kind: string, seed?: string, cls?: string }} o */
@@ -1068,7 +1224,7 @@ function renderIcon(o) {
 }
 
 /** 卡片类型 → 商城商品类型（emoji 兜底按它选）。 */
-const KIND_OF_TYPE = { flow: 'workflow', agent: 'agent', wb: 'workbench', skill: 'skill', conn: 'mcp' };
+const KIND_OF_TYPE = { flow: 'workflow', agent: 'agent', wb: 'workbench', skill: 'skill', conn: 'mcp', plugin: 'plugin' };
 function pathsOf(type, cur, dataRoot) {
 	const home = homedir();
 	const t = file => {
@@ -1226,7 +1382,74 @@ function readableName({ slug, displayName, name, storeName }) {
  * 做法：有图时同时渲染一个 `hidden` 的类型字形，onerror 里藏流程图、露出字形。
  */
 const COVER_ONERROR = "this.style.display='none';var g=this.parentNode?this.parentNode.querySelector('.tk-cover-glyph'):null;if(g){g.hidden=false;}";
-function renderToolCard({ name, desc, tags, foot, path, src, state, type, cur, paths, f, slug, delKind, store }) {
+/**
+ * 已安装条目 → **和技能行同一种行**（.sk-row）。
+ *
+ * 2026-10-24（用户：「已安装的 agent、工作流、插件、工作台 item ui 样式和技能页中的已安装的技能一样」）：
+ * 之前这四类是卡片网格（.tk-card，图片封面 + 220px 高），技能却是紧凑行（两行文字 + 标签）。
+ * 同一个页面里两种密度，看起来像两个产品 ⇒ 统一成行。
+ *
+ * ⚠ 用 `data-item-row` 而**不是** `data-skill-row`：p3-04 / p3-57 按 `[data-skill-row]` 数技能行，
+ *   复用那个属性会让探针把别的东西当技能（探针本身就是判据，不能为了省事去动它）。
+ */
+function renderItemRow({ kind, slug, name, desc, icon, src, f, store, localVer, tags, delKind, delOp, delPkg, delLabel, delTitle, paths,
+	// 插件开关（2026-10-24）：toggleOn 是**当前**状态（从 profile 的 bundles 选择读出来的）
+	togglePkg, toggleOn, toggleLocked, toggleTitle }) {
+	const storeSlug = store ? String(store.slug || '') : '';
+	const storeVer = store ? String(store.version || '') : '';
+	const itemAttrs = ' data-item-kind="' + escapeHtml(String(kind || '')) + '" data-item-slug="' + escapeHtml(String(slug || '')) + '"'
+		+ (storeSlug ? ' data-item-store="' + escapeHtml(storeSlug) + '" data-item-upver="' + escapeHtml(storeVer) + '"' : '')
+		+ ' data-item-lver="' + escapeHtml(String(localVer || '')) + '"'
+		+ (delKind ? ' data-item-del="' + escapeHtml(delKind) + '"' : '')
+		+ (delKind && delOp ? ' data-item-delop="' + escapeHtml(delOp) + '"' : '')
+		+ (delKind && delPkg ? ' data-item-pkg="' + escapeHtml(delPkg) + '"' : '');
+	const swBtn = togglePkg
+		? '<button type="button" class="sk-sw" role="switch" aria-checked="' + (toggleOn ? 'true' : 'false') + '"'
+			+ ' data-sk-sw="' + escapeHtml(String(togglePkg)) + '" data-sk-sw-on="' + (toggleOn ? '1' : '0') + '"'
+			+ (toggleLocked ? ' disabled' : '')
+			+ ' title="' + escapeHtml(toggleTitle || (toggleOn ? '已启用（点一下停用）' : '已停用（点一下启用）')) + '">'
+			+ '<i></i></button>'
+		: '';
+	const delBtn = delKind && slug
+		? '<button type="button" class="sk-act tk-del" data-tk-del="' + escapeHtml(String(slug)) + '"'
+			+ ' data-tk-kind="' + escapeHtml(delKind) + '"'
+			+ (delOp ? ' data-tk-op="' + escapeHtml(delOp) + '"' : '')
+			+ (delPkg ? ' data-tk-pkg="' + escapeHtml(delPkg) + '"' : '')
+			+ ' title="' + escapeHtml(delTitle || '移到回收站（.trash-时间戳，可恢复）') + '">'
+			+ escapeHtml(delLabel || '删除') + '</button>'
+		: '';
+	return '<li class="sk-row' + (togglePkg && !toggleOn ? ' is-off' : '') + '" data-item-row' + itemAttrs + ' data-f-src="' + escapeHtml(String(src || 'installed')) + '"'
+		+ fAttrs(f) + ' data-slug="' + escapeHtml(String(slug || '')) + '" title="'
+		+ escapeHtml(String(name) + ' — ' + String(desc || '') + '（' + String(slug || '') + '）') + '">'
+		+ '<i class="sk-bar"></i>'
+		+ renderIcon({ icon, kind: KIND_OF_TYPE[({ flow: 'workflow', agent: 'agent', wb: 'workbench', plugin: 'plugin' })[kind] || kind], seed: slug || name, cls: 'sk-ico' })
+		+ '<div class="sk-main"><div class="sk-l1"><span class="sk-nm">' + escapeHtml(String(name)) + '</span></div>'
+		+ '<div class="sk-ds">' + escapeHtml(String(desc || '')) + '</div>'
+		+ '<div class="sk-rowmeta">' + (tags || []).map(t =>
+			'<span class="sk-tag' + (t.acc ? ' acc' : '') + '">' + escapeHtml(String(t.text)) + '</span>').join('') + '</div></div>'
+		+ swBtn
+		+ delBtn
+		+ (paths ? '<div class="tk-detail" hidden>' + paths + '</div>' : '')
+		+ '</li>';
+}
+
+/**
+ * 已安装折叠组：<details> 原生折叠（不引 JS 状态机）。
+ * 折叠状态会记在 localStorage（下次进来还是收起的），key 按页签区分。
+ */
+function foldHtml(key, count, innerHtml, emptyHtml) {
+	if (!innerHtml) { return emptyHtml || ''; }
+	return '<details class="sk-fold" data-sk-fold="' + escapeHtml(key) + '" open>'
+		+ '<summary>已安装 <span class="sk-fold-n">' + String(count) + '</span></summary>'
+		+ innerHtml
+		+ '</details>';
+}
+
+function renderToolCard({ name, desc, tags, foot, path, src, state, type, cur, paths, f, slug, delKind, store,
+	// ★ 2026-10-24（用户：「插件 item 缺少卸载按钮」）：插件的删除**不是** trash ——
+	//   插件装在 profile 的 node_modules 里，只能走 marketplace 的 uninstall（dsh 侧 removeBundle）。
+	//   所以按钮要能带 op / 包名 / 文案；默认仍是 删除 + trash，不影响其它类型。
+	delSlug, itemSlug, delOp, delPkg, delLabel, delTitle }) {
 	const kind = KIND_OF_TYPE[type] || '';
 	// ★ 2026-10-23（用户：「每个 item 点击后用独立 UI 展示详情，包含升级、删除等按钮」）：
 	//   详情弹层是**统一的**，它靠这几个 data-item-* 自己决定底部给哪些按钮：
@@ -1237,10 +1460,13 @@ function renderToolCard({ name, desc, tags, foot, path, src, state, type, cur, p
 	const localVer = String((cur && (cur.version || (cur.metadata && cur.metadata.version))) || '');
 	// 只有"本地已装 + 商城有同名件 + 商城有版本 + 版本不同/未知"才给升级（不做无意义的按钮）
 	const canUp = !!delKind && !!storeSlug && !!storeVer && (!localVer || localVer !== storeVer);
-	const itemAttrs = ' data-item-kind="' + escapeHtml(kind) + '" data-item-slug="' + escapeHtml(String(slug || '')) + '"'
+	const identitySlug = String(itemSlug || slug || '');
+	const itemAttrs = ' data-item-kind="' + escapeHtml(kind) + '" data-item-slug="' + escapeHtml(identitySlug) + '"'
 		+ (storeSlug ? ' data-item-store="' + escapeHtml(storeSlug) + '" data-item-upver="' + escapeHtml(storeVer) + '"' : '')
 		+ ' data-item-lver="' + escapeHtml(localVer) + '"'
-		+ (delKind ? ' data-item-del="' + escapeHtml(delKind) + '"' : '');
+		+ (delKind ? ' data-item-del="' + escapeHtml(delKind) + '"' : '')
+		+ (delKind && delOp ? ' data-item-delop="' + escapeHtml(delOp) + '"' : '')
+		+ (delKind && delPkg ? ' data-item-pkg="' + escapeHtml(delPkg) + '"' : '');
 	const icon = (cur && (cur.icon || (cur.metadata && cur.metadata.icon))) || '';
 	// slug 放最前、视觉弱化：两样信息都在（可读名做标题、slug 做标签）
 	const pills = (slug ? '<span class="tk-pill dim" title="slug（技术 id）">' + escapeHtml(String(slug)) + '</span>' : '')
@@ -1269,7 +1495,13 @@ function renderToolCard({ name, desc, tags, foot, path, src, state, type, cur, p
 		+ '<button type="button" class="tk-btn" data-tk-open="1" aria-expanded="false">详情</button>'
 		// ★ 2026-10-23（用户：「已安装的工作流 item ui 没有删除按钮」）：
 		//   删除走商城插件的新 op `trash`（移到 <数据根>/.trash-<时间戳>/，可恢复），本页不自己写盘。
-		+ (delKind && slug ? '<button type="button" class="tk-btn tk-del" data-tk-del="' + escapeHtml(String(slug)) + '" data-tk-kind="' + escapeHtml(delKind) + '" title="移到回收站（.trash-时间戳，可恢复）">删除</button>' : '')
+		+ (delKind && identitySlug
+			? '<button type="button" class="tk-btn tk-del" data-tk-del="' + escapeHtml(identitySlug) + '" data-tk-kind="' + escapeHtml(delKind) + '"'
+				+ (delOp ? ' data-tk-op="' + escapeHtml(delOp) + '"' : '')
+				+ (delPkg ? ' data-tk-pkg="' + escapeHtml(delPkg) + '"' : '')
+				+ ' title="' + escapeHtml(delTitle || '移到回收站（.trash-时间戳，可恢复）') + '">'
+				+ escapeHtml(delLabel || '删除') + '</button>'
+			: '')
 		+ '</div>'
 		+ '</div>'
 		+ (paths ? '<div class="tk-detail" hidden>' + paths + '</div>' : '')
@@ -1309,6 +1541,70 @@ function renderPage({ skills, errors, missing, root, nativeSkillTool, provider, 
 	const wf = workflows || { root: '', items: [], errors: [] };
 	const ag = agents || { root: '', items: [], errors: [] };
 	const summary = summarizeCatalog(skills);
+	// 插件页签的三档数据源：内置（随包）/ 已安装（商城装的）/ 可安装（商城还没装）
+	const profilePlugins = readProfilePlugins(dataRoot);
+	const builtinPlugins = profilePlugins.items.filter(x => x.builtin);
+	const installedPlugins = profilePlugins.items.filter(x => !x.builtin);
+	// 启用状态：profile 的 bundles 选择（与 setBundleEnabled 同一份真源）
+	const enabledBundles = new Set(profilePlugins.bundles || []);
+	// 本页/商城接口所在插件：开关锁住（关掉页面就没了），与后端 SELF_PLUGIN_NAME 一致
+	const SELF_LOCKED_PLUGINS = ['@vssaros/dsh-skills', '@vssaros/dsh-marketplace'];
+	// 包名 → 可读名：@vssaros/dsh-skills ⇒ Skills；archify-dsh ⇒ Archify；
+	// dsh-experimental-voice-input-bundle ⇒ Experimental Voice Input Bundle
+	// （直接用包名当标题会 35 字符换 3 行，卡片被顶到 284px ✗）
+	const pluginTitleOf = name => {
+		const short = String(name).split('/').pop().replace(/^dsh-/, '').replace(/-dsh$/, '');
+		return short.split('-').filter(Boolean)
+			.map(w => w.charAt(0).toUpperCase() + w.slice(1))
+			.join(' ') || String(name);
+	};
+
+	// 插件卡片：名字用包名末段（@vssaros/dsh-skills ⇒ dsh-skills），完整包名放描述里
+	// 插件行首图标：包名 → 商城商品。三档匹配（越往后越松，但都要求**精确**名字，不做模糊）：
+	//   ① slug 扁平化：@zyfgood/dsh-whale-girl ⇒ zyfgood-dsh-whale-girl（商城 slug 就是这么生成的）
+	//   ② npm 包名：商城 item 的 distribution.name 与包名一致（unscoped 的 dsh-cold-boot 走这条对不上，走 ③）
+	//   ③ 仓库名：distribution 是 github-source 时，repo 的末段 == 包名（dsh-cold-boot ⇒ zzbkl/dsh-cold-boot）
+	// 三条都落空（本地自己装的 / 内置 @vssaros）⇒ 退回类型字形 🧩，不猜。
+	const mkByNpm = new Map();
+	const mkByRepoBase = new Map();
+	// ⚠ 列表接口回传的 distribution 可能是**字符串**（distribution_meta 原文），不是对象 ⇒ 必须先 parse，
+	//   否则 d.type 恒 undefined、三条匹配全落空（这个坑第一次就是这样静默失效的）。
+	const parseDist = raw => {
+		if (!raw) { return null; }
+		if (typeof raw === 'object') { return raw; }
+		try { return JSON.parse(String(raw)); } catch { return null; }
+	};
+	for (const it of (mk.items || [])) {
+		const d = it ? parseDist(it.distribution) : null;
+		if (d && d.type === 'npm' && d.name) { mkByNpm.set(String(d.name).toLowerCase(), it); }
+		if (d && (d.type === 'github-source') && d.name) {
+			const base = String(d.name).split('/').pop();
+			if (base && !mkByRepoBase.has(base.toLowerCase())) { mkByRepoBase.set(base.toLowerCase(), it); }
+		}
+	}
+	const pluginStoreOf = name => {
+		const raw = String(name || '');
+		if (!raw) { return null; }
+		return mkBySlug.get(raw.replace(/^@/, '').replace(/\//g, '-').toLowerCase())
+			|| mkByNpm.get(raw.toLowerCase())
+			|| mkByRepoBase.get(raw.split('/').pop().toLowerCase())
+			|| null;
+	};
+	const pluginIconOf = name => {
+		const st = pluginStoreOf(name);
+		return (st && (st.icon || st.cover)) || '';
+	};
+
+	// 插件详情块（行与弹层共用；卡片已改成行，这里只剩这一份）
+	const pluginPathsHtml = (it, isBuiltin) => '<div class="paths"><h4>插件信息</h4>'
+		+ '<div class="path-row"><span class="pk">包名</span><span class="pv"><code>' + escapeHtml(it.name) + '</code></span></div>'
+		+ '<div class="path-row"><span class="pk">版本</span><span class="pv"><code>' + escapeHtml(it.version || '未声明') + '</code></span></div>'
+		+ '<div class="path-row"><span class="pk">清单</span><span class="pv"><code>' + escapeHtml(prettyPath(profilePlugins.file)) + '</code></span></div>'
+		+ '<p class="sk-note">' + (isBuiltin
+			? '随产品发布，不用安装、也不该卸载。'
+			: '已从商城安装 ⇒ 点「卸载」会从 dsh profile 的依赖里移除（dsh 侧执行，不用开 IDE）。') + '</p>'
+		+ '</div>';
+
 	const rows = skills.map(s => {
 		const id = skillIdOf(s.path);
 		// ★ 2026-10-23（用户：装前装后名字/描述对不上）：
@@ -1798,6 +2094,50 @@ function renderPage({ skills, errors, missing, root, nativeSkillTool, provider, 
 .mk-detail-local dd { margin: 0; font-size: 12px; min-width: 0; word-break: break-all; }
 .mk-detail-local code { font-family: ui-monospace, Consolas, monospace; font-size: 11.5px; }
 .mk-detail-local .sk-pre { white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow: auto; font-size: 11.5px; }
+/* ── 已安装折叠组 + 行内动作（2026-10-24 用户：已安装的 agent/工作流/插件/工作台
+   要和技能页的行一样，并且能折叠）── */
+.sk-fold { margin: 0 10px 10px; }
+.sk-fold > summary {
+	display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none;
+	list-style: none; padding: 6px 4px; font-size: 11.5px; font-weight: 600;
+	color: var(--vscode-descriptionForeground, #999);
+}
+.sk-fold > summary::-webkit-details-marker { display: none; }
+.sk-fold > summary::before { content: '\u25B8'; font-size: 10px; transition: transform .12s ease; }
+.sk-fold[open] > summary::before { transform: rotate(90deg); }
+.sk-fold > summary:hover { color: var(--vscode-foreground, #ccc); }
+.sk-fold > summary .sk-fold-n { font-weight: 600; color: var(--vscode-foreground, #ccc); }
+.sk-fold > .sk-list { padding: 0; }
+.sk-fold > .sk-empty { margin: 4px 2px 0; }
+/* 行内动作（删除 / 卸载）：和齿轮一样悬停才出现，避免每行都杵个按钮 */
+.sk-act {
+	flex: 0 0 auto; align-self: center; margin-right: 8px; padding: 0 8px; height: 22px;
+	border-radius: 11px; font: inherit; font-size: 11px; line-height: 20px; cursor: pointer;
+	border: 1px solid var(--vscode-panel-border, rgba(128,128,128,.45));
+	background: none; color: var(--vscode-descriptionForeground, #999);
+	opacity: 0; transition: opacity .12s ease, color .12s ease, border-color .12s ease;
+}
+.sk-row:hover .sk-act, .sk-row:focus-within .sk-act, .sk-act:focus { opacity: 1; }
+.sk-act:hover { color: var(--vscode-errorForeground, #f14c4c); border-color: currentColor; }
+.sk-act[disabled] { opacity: .6; cursor: default; }
+/* 插件开关（2026-10-24 用户：「插件 item 是允许有开关的」）：30×16 的滑动开关 */
+.sk-sw {
+	flex: 0 0 auto; align-self: center; margin-right: 8px; padding: 0;
+	width: 30px; height: 16px; border-radius: 8px; position: relative; cursor: pointer;
+	border: 1px solid var(--vscode-panel-border, rgba(128,128,128,.5));
+	background: rgba(128,128,128,.28);
+	transition: background .12s ease, border-color .12s ease;
+}
+.sk-sw i {
+	position: absolute; top: 1px; left: 1px; width: 12px; height: 12px; border-radius: 50%;
+	background: var(--vscode-foreground, #ccc); transition: transform .12s ease, background .12s ease;
+}
+.sk-sw[aria-checked="true"] { background: var(--vscode-charts-green, #3fb950); border-color: transparent; }
+.sk-sw[aria-checked="true"] i { transform: translateX(14px); background: #fff; }
+.sk-sw:hover:not([disabled]) { border-color: var(--vscode-focusBorder, #007acc); }
+.sk-sw[disabled] { opacity: .4; cursor: not-allowed; }
+.sk-row.is-off { opacity: .62; }
+.sk-row.is-off .sk-nm { text-decoration: line-through; text-decoration-thickness: 1px; }
 </style>
 </head>
 <body data-vssaros-page="skills" data-vssaros-skills-mcp-section="${mcpSection.state}" data-vssaros-skills-preview="enabled">
@@ -1820,7 +2160,7 @@ function renderPage({ skills, errors, missing, root, nativeSkillTool, provider, 
 				<button type="button" data-sk-tab="workflows">工作流 ${wf.items.length}</button>
 				<button type="button" data-sk-tab="agents">Agent ${ag.items.length}</button>
 				<button type="button" data-sk-tab="workbenches">工作台 ${TOOLS_WORKBENCHES.length}</button>
-				<button type="button" data-sk-tab="plugins">插件 ${mk.totals?.plugin ?? 0}</button>
+				<button type="button" data-sk-tab="plugins">插件 ${builtinPlugins.length + installedPlugins.length + (mk.totals?.plugin ?? 0)}</button>
 			</div>
 			<div data-sk-pane="skills">
 				${filterBarHtml('skills',
@@ -1829,7 +2169,7 @@ function renderPage({ skills, errors, missing, root, nativeSkillTool, provider, 
 						{ k: 'src:builtin', t: '内置' }, { k: 'act:auto', t: '自动调用' }],
 					[{ k: 'ver:yes', t: '有可安装版本' }, { k: 'ver:no', t: '仅浏览（无包体）' }],
 				)}
-				${dnNote}${list}${marketGridHtml(mk, 'skills')}</div>
+				${dnNote}${foldHtml('skills', skills.length, list)}${marketGridHtml(mk, 'skills')}</div>
 			<div data-sk-pane="mcp" hidden><div class="sk-pane-mcp">${decorateMcpHtml(mcpSection.html, id => (mkBySlug.get(String(id)) || {}).name)}</div>${marketGridHtml(mk, 'conn')}</div>
 
 			<div data-sk-pane="workflows" hidden>
@@ -1838,18 +2178,23 @@ function renderPage({ skills, errors, missing, root, nativeSkillTool, provider, 
 					[{ k: 'all', t: '全部' }, { k: 'state:on', t: '已启用' }, { k: 'state:off', t: '已停用' }, { k: 'src:market', t: '可安装' }],
 					[],
 				)}
-				${wf.items.length
-					? '<ul class="tk-grid">' + wf.items.map(w => renderToolCard({
-						// ★ 装了商城工作流时，名字/描述以商城为准（否则装前「夜间巡检」、装后叫 flow-nightly）
+				${foldHtml('workflows', wf.items.length,
+					wf.items.length ? '<ul class="sk-list">' + wf.items.map(w => renderItemRow({
+						kind: 'workflow',
 						slug: w.id,
-						delKind: 'workflow',
 						store: storeOfId(w.id),
 						name: readableName({ slug: w.id, name: w.name, storeName: storeOfId(w.id)?.name }),
-						desc: (storeOfId(w.id) ? (shortStoreDesc(storeOfId(w.id).description).slice(0, 140) || w.desc) : w.desc), path: w.path, src: 'installed', state: w.active ? 'on' : 'off', type: 'flow', cur: w, paths: P('flow', w), f: { src: 'installed', state: w.active ? 'on' : 'off' },
+						desc: (storeOfId(w.id) ? (shortStoreDesc(storeOfId(w.id).description).slice(0, 140) || w.desc) : w.desc),
+						localVer: w.version,
+						src: 'installed',
+						f: { src: 'installed', state: w.active ? 'on' : 'off' },
 						tags: [{ text: w.active ? '已启用' : '已停用', acc: w.active }, { text: '已安装' }, { text: w.nodes + ' 个节点' }],
-						foot: '<span>更新 ' + escapeHtml(w.updatedAt ? new Date(w.updatedAt).toISOString().slice(0, 10) : '未知') + '</span>',
-					})).join('') + '</ul>'
-					: '<p class="sk-empty">工作流目录里还没有条目：<code>' + escapeHtml(prettyPath(wf.root)) + '</code></p>'}
+						delKind: 'workflow',
+						delLabel: '删除',
+						paths: P('flow', w),
+					})).join('') + '</ul>' : '',
+					'<p class="sk-empty">工作流目录里还没有条目：<code>' + escapeHtml(prettyPath(wf.root)) + '</code></p>',
+				)}
 				${wf.errors.length ? '<p class="sk-empty">' + wf.errors.length + ' 个文件读不了：' + escapeHtml(wf.errors.join('；')) + '</p>' : ''}
 				<p class="sk-note">「内置」恒为 0：本插件没有随包提供工作流模板，真源全部在数据根（已安装）。</p>
 				${marketGridHtml(mk, 'workflows')}
@@ -1861,23 +2206,76 @@ function renderPage({ skills, errors, missing, root, nativeSkillTool, provider, 
 					[{ k: 'all', t: '全部' }, { k: 'model:yes', t: '有模型' }, { k: 'src:market', t: '可安装' }],
 					[],
 				)}
-				${ag.items.length
-					? '<ul class="tk-grid">' + ag.items.map(a => renderToolCard({
+				${foldHtml('agents', ag.items.length,
+					ag.items.length ? '<ul class="sk-list">' + ag.items.map(a => renderItemRow({
+						kind: 'agent',
 						slug: a.id,
-						delKind: 'agent',
 						store: storeOfId(a.id),
 						name: readableName({ slug: a.id, name: a.name, storeName: storeOfId(a.id)?.name }),
-						desc: (storeOfId(a.id) ? (shortStoreDesc(storeOfId(a.id).description).slice(0, 140) || a.desc) : a.desc), path: a.path, src: 'installed', state: a.model ? 'model' : '', type: 'agent', cur: a, paths: P('agent', a), f: { src: 'installed', model: a.model ? 'yes' : 'no' },
-						tags: [{ text: '已安装' }].concat(a.role ? [{ text: a.role }] : []).concat(a.model ? [{ text: a.model, dim: true }] : []),
-						foot: '<span>' + (a.model ? '模型 ' + escapeHtml(a.model) : '未声明模型') + '</span>',
-					})).join('') + '</ul>'
-					: '<p class="sk-empty">Agent 目录里还没有条目：<code>' + escapeHtml(prettyPath(ag.root)) + '</code></p>'}
+						desc: (storeOfId(a.id) ? (shortStoreDesc(storeOfId(a.id).description).slice(0, 140) || a.desc) : a.desc),
+						localVer: a.version,
+						src: 'installed',
+						f: { src: 'installed', model: a.model ? 'yes' : 'no' },
+						tags: [{ text: '已安装' }].concat(a.role ? [{ text: a.role }] : []).concat(a.model ? [{ text: a.model }] : []),
+						delKind: 'agent',
+						delLabel: '删除',
+						paths: P('agent', a),
+					})).join('') + '</ul>' : '',
+					'<p class="sk-empty">Agent 目录里还没有条目：<code>' + escapeHtml(prettyPath(ag.root)) + '</code></p>',
+				)}
 				${ag.errors.length ? '<p class="sk-empty">' + ag.errors.length + ' 个文件读不了：' + escapeHtml(ag.errors.join('；')) + '</p>' : ''}
 				<p class="sk-note">「内置」Agent 由 IDE 代码真源生成副本后经 agents 插件交付，本页读不到那份目录 ⇒ 恒为 0，不伪造。</p>
 				${marketGridHtml(mk, 'agents')}
 			</div>
 
 			<div data-sk-pane="plugins" hidden>
+				<!-- ★ 2026-10-24（用户：「插件页签下增加 全部、内置、已安装 的过滤」）：
+				     三档都是**真的**：内置 = profile 里随产品发布的 @vssaros/@deepseek-ai；
+				     已安装 = profile 里第三方（从商城装的）；其余是商城目录（还没装）。 -->
+				${filterBarHtml('plugins',
+					builtinPlugins.map(() => ({ src: 'builtin' }))
+						.concat(installedPlugins.map(() => ({ src: 'installed' })))
+						.concat(marketItemsFor(mk, 'plugins').map(i => ({ src: 'market', ver: i.version ? 'yes' : 'no' }))),
+					[{ k: 'all', t: '全部' }, { k: 'src:builtin', t: '内置' }, { k: 'src:installed', t: '已安装' }],
+					[],
+				)}
+				${foldHtml('plugins', builtinPlugins.length + installedPlugins.length,
+					(builtinPlugins.length + installedPlugins.length)
+						? '<ul class="sk-list">'
+							+ builtinPlugins.map(x => renderItemRow({
+								kind: 'plugin', slug: x.name,
+								name: pluginTitleOf(x.name),
+								desc: x.name + ' · ' + (x.version || '版本未知'),
+								src: 'builtin', f: { src: 'builtin' },
+								icon: pluginIconOf(x.name),
+								togglePkg: x.name,
+								toggleOn: enabledBundles.has(x.name),
+								toggleLocked: SELF_LOCKED_PLUGINS.includes(x.name),
+								toggleTitle: SELF_LOCKED_PLUGINS.includes(x.name)
+									? '这是当前页面/商城接口所在的插件，不能在这里关闭'
+									: (enabledBundles.has(x.name) ? '已启用（点一下停用）' : '已停用（点一下启用）'),
+								tags: [{ text: '内置' }, { text: '随包' }],
+								paths: pluginPathsHtml(x, true),
+							})).join('')
+							+ installedPlugins.map(x => renderItemRow({
+								kind: 'plugin', slug: x.name,
+								name: pluginTitleOf(x.name),
+								desc: x.name + ' · ' + (x.version || '版本未知'),
+								src: 'installed', f: { src: 'installed' },
+								icon: pluginIconOf(x.name),
+								togglePkg: x.name,
+								toggleOn: enabledBundles.has(x.name),
+								toggleTitle: enabledBundles.has(x.name) ? '已启用（点一下停用）' : '已停用（点一下启用）',
+								tags: [{ text: '已安装' }, { text: '商城安装' }],
+								delKind: 'plugin', delOp: 'uninstall', delPkg: x.name,
+								delLabel: '卸载',
+								delTitle: '从 dsh profile 移除这个插件（之后可从商城重装）',
+								paths: pluginPathsHtml(x, false),
+							})).join('')
+							+ '</ul>'
+						: ''
+				)}
+				${profilePlugins.error ? '<p class="sk-note">读不到 profile 的插件清单（' + escapeHtml(profilePlugins.error) + '）⇒ 内置 / 已安装 两档为空，可安装那部分照常。</p>' : ''}
 				${mk.totals?.plugin > MARKET_PAGE_SIZE.plugin
 					? '<p class="sk-note">商城共 ' + mk.totals.plugin + ' 个插件，这里展示前 ' + MARKET_PAGE_SIZE.plugin + ' 个；完整列表见 <a href="/x/marketplace/" target="_blank" rel="noopener">商城</a>。</p>'
 					: ''}
@@ -1885,7 +2283,7 @@ function renderPage({ skills, errors, missing, root, nativeSkillTool, provider, 
 				${marketItemsFor(mk, 'plugins').length && (mk.totals?.plugin ?? 0) > MARKET_PAGE_SIZE.plugin
 					? '<div class="sk-more-wrap"><button type="button" class="sk-hbtn sk-more-btn" data-sk-more-pane="plugins" data-sk-more-page="1">加载更多（还有 ' + ((mk.totals?.plugin ?? 0) - MARKET_PAGE_SIZE.plugin) + ' 个）</button></div>'
 					: ''}
-				${marketItemsFor(mk, 'plugins').length ? '' : '<p class="sk-empty">商城里的插件还没同步过来（跑 tools/sync-dsh-plugins.mjs 即可）。</p>'}
+				${builtinPlugins.length || installedPlugins.length || marketItemsFor(mk, 'plugins').length ? '' : '<p class="sk-empty">本机没有装任何插件，商城里的插件也还没同步过来（跑 tools/sync-dsh-plugins.mjs 即可）。</p>'}
 			</div>
 
 			<div data-sk-pane="workbenches" hidden>
@@ -1894,12 +2292,19 @@ function renderPage({ skills, errors, missing, root, nativeSkillTool, provider, 
 					[{ k: 'all', t: '全部' }, { k: 'src:builtin', t: '内置' }, { k: 'src:market', t: '可安装' }],
 					[],
 				)}
-				<ul class="tk-grid">${TOOLS_WORKBENCHES.map(w => renderToolCard({
-					slug: w.route.replace(/^\/x\//, '').replace(/\/$/, ''),
-					name: readableName({ slug: w.route.replace(/^\/x\//, '').replace(/\/$/, ''), name: w.name }), desc: w.desc, path: 'dsh-plugins/' + w.provider + '/lib/index.js', src: 'builtin', type: 'wb', cur: w, paths: P('wb', w), f: { src: 'builtin' },
-					tags: [{ text: '内置' }, { text: w.route, dim: true }],
-					foot: '<span>由 ' + escapeHtml(w.provider) + ' 提供</span>',
-				})).join('')}</ul>
+				${foldHtml('workbenches', TOOLS_WORKBENCHES.length,
+					'<ul class="sk-list">' + TOOLS_WORKBENCHES.map(w => {
+						const id = w.route.replace(/^\/x\//, '').replace(/\/$/, '');
+						return renderItemRow({
+							kind: 'workbench', slug: id,
+							name: readableName({ slug: id, name: w.name }),
+							desc: w.desc,
+							src: 'builtin', f: { src: 'builtin' },
+							tags: [{ text: '内置' }, { text: w.route }],
+							paths: P('wb', w),
+						});
+					}).join('') + '</ul>',
+				)}
 				<p class="sk-note">工作台注册在宿主服务里（IDE 活动栏管理）⇒ 本页只读镜像，不提供开关。</p>
 				${marketGridHtml(mk, 'workbenches')}
 			</div>

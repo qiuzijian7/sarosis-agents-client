@@ -282,6 +282,11 @@ export class LifecycleMainService extends Disposable implements ILifecycleMainSe
 			}
 
 			this.trace('Lifecycle#app.on(before-quit)');
+			// ★ 2026-10-23（真机：应用反复"自己关掉"，渲染侧只看到 `ShutdownReason.QUIT`，
+			//   而 main.log 里**没有任何一条**能说明是谁发起的）：把**调用栈**落到 info 级。
+			//   两条都埋（本处覆盖"绕过 lifecycleMainService 直接 app.quit()"的调用方，
+			//   `doQuit` 那处覆盖正规入口）⇒ 下次复现直接点名 ✓。
+			this.logService.info(`[ShutdownDiag] before-quit fired; caller:\n${new Error('before-quit caller').stack ?? '(no stack)'}`);
 			this._quitRequested = true;
 
 			// Emit event to indicate that we are about to shutdown
@@ -656,6 +661,9 @@ export class LifecycleMainService extends Disposable implements ILifecycleMainSe
 
 	private doQuit(willRestart?: boolean): Promise<boolean /* veto */> {
 		this.trace(`Lifecycle#quit() - begin (willRestart: ${willRestart})`);
+		// ★ 2026-10-23：正规入口（`workbench.action.quit` / 菜单 / Host 侧的 quit 命令 /
+		//   dshHarness 的桌面模式收场）都走这里 ⇒ 记调用栈，把"谁要求退出"钉死 ✓。
+		this.logService.info(`[ShutdownDiag] quit() requested (willRestart=${String(willRestart)}); caller:\n${new Error('quit() caller').stack ?? '(no stack)'}`);
 
 		if (this.pendingQuitPromise) {
 			this.trace('Lifecycle#quit() - returning pending quit promise');

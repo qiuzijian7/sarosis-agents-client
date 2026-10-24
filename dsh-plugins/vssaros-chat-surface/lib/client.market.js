@@ -46,6 +46,29 @@ window.__ModuleLoader__.load({
 		var module = { exports: {} };
 		var exports = module.exports;
 		const react = require("react");
+
+		/**
+		 * `codicon:xxx` → emoji（与 `client.workbenchNav.js` 里那份**逐字一致**，守卫比对两处 ✓）。
+		 * 原因：注册表 `icon` 是标识符（`codicon:home`），而 dsh 前端没有 codicon 字体/CSS，
+		 * 图标体系是 emoji ⇒ 直接渲染会变成 🧩 / 一串字母（2026-10-22 实测）。
+		 */
+		const WB_ICON_EMOJI = {
+			"codicon:home": "🏠", "codicon:book": "📚", "codicon:database": "🧠",
+			"codicon:robot": "🤖", "codicon:organization": "🤖", "codicon:tasklist": "🗂️",
+			"codicon:checklist": "🗂️", "codicon:list-tree": "🔀", "codicon:type-hierarchy": "🕸️",
+			"codicon:clock": "⏰", "codicon:graph": "📊", "codicon:pulse": "💓",
+			"codicon:search": "🔍", "codicon:settings": "⚙️", "codicon:gear": "⚙️",
+			"codicon:extensions": "🧩", "codicon:package": "🧩", "codicon:cloud": "☁️",
+			"codicon:comment-discussion": "💬", "codicon:terminal": "⌨️",
+		};
+		/** 图标 → 可渲染的 emoji：映射表优先；本来就是短符号/emoji ⇒ 原样；其余兜底 🧩。 */
+		function wbIconEmoji(icon) {
+			const raw = String(icon == null ? "" : icon).trim();
+			if (!raw) { return "🧩"; }
+			if (WB_ICON_EMOJI[raw]) { return WB_ICON_EMOJI[raw]; }
+			if (raw.indexOf("codicon:") !== 0 && Array.from(raw).length <= 4) { return raw; }
+			return "🧩";
+		}
 		// ⚠ **不能**去 require react-dom：dsh 的 chunk 装载器只提供 react（守卫也会直接抛）⇒
 		//   详情模态**就地渲染**（遮罩是 position:fixed ⇒ 视觉上与 portal 到 body 等价 ✓）。
 
@@ -66,6 +89,7 @@ window.__ModuleLoader__.load({
 		const CATALOG_API = "/x/market/api/catalog";
 		const INSTALL_API = "/x/market/api/install";
 		const UNINSTALL_API = "/x/market/api/uninstall";
+		const CHECK_API = "/x/market/api/check";
 
 		const CSS = `
 .vssWb { --vssGutter:32px; color: var(--dsw-alias-label-primary, #e6e6e6); font-size:13px; line-height:20px; container-type: vss-wb-market; container-name: vss-wb-market; }
@@ -166,6 +190,13 @@ a.vssWbTitleText:hover { text-decoration:underline; }
 .vssWbPrompt { width:100%; min-height:180px; resize:vertical; padding:10px; border-radius:8px; border:1px solid var(--dsw-alias-border-l2, #3e3e3e); background: var(--dsw-alias-bg-layer-1, #252526); color: var(--dsw-alias-label-primary, #e6e6e6); font-family: var(--dsw-font-mono, monospace); font-size:12px; line-height:1.6; }
 .vssWbSubmitCategory { display:flex; align-items:center; gap:8px; font-size:12.5px; }
 .vssWbSubmitOutcome { font-size:12px; }
+/* ── 2026-10-22：兼容性标记 / 卸载 ─────────────────────────────────────────── */
+.vssWbCompat { font-size:11px; line-height:16px; padding:1px 7px; border-radius:999px; white-space:nowrap; flex:0 0 auto; border:1px solid currentColor; }
+.vssWbCompat[data-status="incompatible"] { color: var(--dsw-alias-state-warning-primary, #e0a43a); }
+.vssWbCompat[data-status="ok"] { color: var(--dsw-alias-label-tertiary, #737373); }
+.vssWbCompat[data-status="pending"] { color: var(--dsw-alias-state-business-primary, #4d7cfe); }
+.vssWbLink { background:none; border:none; color: var(--dsw-alias-label-tertiary, #737373); font:inherit; font-size:12px; cursor:pointer; padding:0 2px; text-decoration:underline; flex:0 0 auto; }
+.vssWbLink:hover { color: var(--dsw-alias-label-primary, #e6e6e6); }
 @media (prefers-reduced-motion: reduce) { .vssWb * { transition:none !important; } }
 `;
 		let cssInjected = false;
@@ -192,8 +223,45 @@ a.vssWbTitleText:hover { text-decoration:underline; }
 			function notify(kind, text) {
 				try { if (typeof bridge.notify === "function") { bridge.notify(kind, text); } } catch { /* 通知失败不影响别的 */ }
 			}
-			/** 打开一个工作台：走侧栏页签（与侧栏那套同源，id 是策展目录里的 workbenchId）。 */
+			// ★ 2026-10-22 真机（"点安装没反应"）：商城页里自己的消息条 + 进行中的条目。
+			//   `notify` 只进 IDE 主窗口右下角；用户在 dsh 窗口里操作时看不到 ⇒ 结果必须同时写在页面上。
+			const MARKET_EVENT = "vssaros-market-ui";
+			const ui = { message: null, busy: new Set() };
+			function bumpUi() { try { window.dispatchEvent(new Event(MARKET_EVENT)); } catch { /* 无 window */ } }
+			function say(kind, text) {
+				ui.message = { kind: kind === "warn" ? "warn" : "info", text: String(text), at: Date.now() };
+				bumpUi();
+				notify(kind, text);
+			}
+			function useMarketUi() {
+				const [, setVer] = react.useState(0);
+				react.useEffect(() => {
+					const h = () => setVer(v => v + 1);
+					window.addEventListener(MARKET_EVENT, h);
+					return () => window.removeEventListener(MARKET_EVENT, h);
+				}, []);
+				return ui;
+			}
+			/** 同一条目的操作串行化（装包分钟级，防重复点）；进行中卡片按钮显示"安装中…"。 */
+			async function withBusy(entry, fn) {
+				if (ui.busy.has(entry.id)) { return false; }
+				ui.busy.add(entry.id); bumpUi();
+				try { return await fn(); } finally { ui.busy.delete(entry.id); bumpUi(); }
+			}
+			/**
+			 * 打开一个工作台。
+			 * ★ 2026-10-22：**已注册进工作台宿主**的（第三方 / 已迁移的内置）⇒ 交给统一入口
+			 *   `window.__vssarosOpenWorkbench`（workbenchNav 提供：开一个页签，内容是宿主 View）；
+			 *   否则回落旧行为（侧栏页签，id 是目录里的 workbenchId）。
+			 */
 			function openWorkbench(entry) {
+				const regId = String(entry?.registeredId || "").trim();
+				if (regId && typeof window.__vssarosOpenWorkbench === "function") {
+					try { if (window.__vssarosOpenWorkbench(regId)) { return; } } catch (e) {
+						notify("warn", "打开失败：" + String((e && e.message) || e));
+						return;
+					}
+				}
 				const target = String(entry?.workbenchId || entry?.id || "").trim();
 				if (!target) {
 					notify("warn", "这个条目还没有接到侧栏页签（目录里没有 workbenchId）");
@@ -239,9 +307,15 @@ a.vssWbTitleText:hover { text-decoration:underline; }
 				}
 			}
 
-			/** 安装一个目录条目（Host ⇒ dsh 官方 pluginManager）。 */
+			/**
+			 * 安装一个目录条目（Host ⇒ 经 IDE 安装通道；IDE 会先弹确认框）。
+			 * ★ 2026-10-22：**如实**说结果 —— 只有 `ok:true` 才算装上；装上后提示"重启 Harness 后出现"。
+			 *   失败按错误码给人话（不兼容 / 用户取消 / 宿主单例 / 待批准构建 / 其它）。
+			 * ★ 同日真机（"点安装没反应"）：结果**也写在商城页面里**（`say`）—— `notify` 只进 IDE 主窗口右下角，
+			 *   用户在 dsh 窗口里点的时候根本看不到。
+			 */
 			async function installEntry(entry) {
-				if (typeof fetch !== "function") { notify("warn", "这个环境没有 fetch（装不了）"); return false; }
+				if (typeof fetch !== "function") { say("warn", "这个环境没有 fetch（装不了）"); return false; }
 				try {
 					const res = await fetch(INSTALL_API, {
 						method: "POST",
@@ -250,16 +324,75 @@ a.vssWbTitleText:hover { text-decoration:underline; }
 						body: JSON.stringify({ id: entry.id }),
 					});
 					const body = await res.json().catch(() => ({}));
-					if (!res.ok || body?.ok === false) {
-						notify("warn", "安装失败：" + String(body?.error || body?.diagnostic || ("HTTP " + res.status)));
+					if (!res.ok || body?.ok !== true) {
+						if (body?.code === "declined") { say("info", "已取消安装「" + (entry.name || entry.id) + "」"); return false; }
+						say("warn", "安装「" + (entry.name || entry.id) + "」失败：" + String(body?.error || ("HTTP " + res.status)));
 						return false;
 					}
-					notify("info", "已安装 " + (entry.name || entry.id) + "（可能要重启 Harness 才生效）");
+					const warn = Array.isArray(body.warnings) && body.warnings.length ? "（注意：" + body.warnings[0] + "）" : "";
+					say("info", "已安装「" + (entry.name || entry.id) + "」" + (body.version ? " v" + body.version : "") + "。重启 Harness 后它会出现在工作台里" + warn);
 					return true;
 				} catch (e) {
-					notify("warn", "安装失败：" + String((e && e.message) || e));
+					say("warn", "安装「" + (entry.name || entry.id) + "」失败：" + String((e && e.message) || e));
 					return false;
 				}
+			}
+			/** 卸载（只对从市场装的条目）。卸载不删用户数据；重启后生效。 */
+			async function uninstallEntry(entry) {
+				if (typeof fetch !== "function") { return false; }
+				try {
+					const res = await fetch(UNINSTALL_API, {
+						method: "POST", credentials: "same-origin",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({ id: entry.id }),
+					});
+					const body = await res.json().catch(() => ({}));
+					if (!res.ok || body?.ok !== true) {
+						say("warn", "卸载失败：" + String(body?.error || ("HTTP " + res.status)));
+						return false;
+					}
+					say("info", "已卸载「" + (entry.name || entry.id) + "」。重启 Harness 后生效（它的数据不会被删除）");
+					return true;
+				} catch (e) {
+					say("warn", "卸载失败：" + String((e && e.message) || e));
+					return false;
+				}
+			}
+			/** 只做兼容性检查（不装）：结论会写进 Host 缓存，目录卡片随即标出。 */
+			async function checkEntry(entry) {
+				if (typeof fetch !== "function") { return null; }
+				try {
+					const res = await fetch(CHECK_API + "?id=" + encodeURIComponent(entry.id), { credentials: "same-origin", cache: "no-store" });
+					const body = await res.json().catch(() => ({}));
+					if (!res.ok || body?.ok !== true) { say("warn", "检查失败：" + String(body?.error || ("HTTP " + res.status))); return null; }
+					return body;
+				} catch (e) {
+					say("warn", "检查失败：" + String((e && e.message) || e));
+					return null;
+				}
+			}
+
+			/**
+			 * 工作台宿主（`@vssaros/dsh-workbenches`）里**当前已注册**的工作台（快照 + 订阅）。
+			 * 拿不到宿主 ⇒ 空列表（不编造）。chunk 拿不到 ctx 的可选注入结果 ⇒ 用宿主暴露的只读快照钩子。
+			 */
+			function useRegisteredWorkbenches() {
+				const read = () => {
+					try {
+						const snap = typeof globalThis.__vssarosWorkbenchesSnapshot === "function" ? globalThis.__vssarosWorkbenchesSnapshot() : null;
+						return snap && Array.isArray(snap.workbenches) ? snap.workbenches : [];
+					} catch { return []; }
+				};
+				const [list, setList] = react.useState(read);
+				react.useEffect(() => {
+					const svc = (() => { try { return ctx.get && ctx.get("desktopWorkbenches"); } catch { return null; } })();
+					const refresh = () => setList(read());
+					refresh();
+					if (svc && typeof svc.subscribe === "function") { return svc.subscribe(refresh); }
+					const timer = window.setInterval(refresh, 2000);
+					return () => window.clearInterval(timer);
+				}, []);
+				return list;
 			}
 
 			// ── 卡片（复刻 dsh-desktop client.js:2138-2167）───────────────────────────
@@ -337,9 +470,14 @@ a.vssWbTitleText:hover { text-decoration:underline; }
 				const hasMetrics = listed && (stars !== null || downloads !== null);
 				const faved = props.faved;
 				const installed = it.installed === true;
-				// 「打开」只对**我们自己内置的工作台**成立（第三方工作台的入口由它自己注册 ✗）
-				const canOpen = installed && !!it.route;
-				const canInstall = it.installable === true && !installed;
+				// 「打开」：内置工作台（有 route）或**已注册进工作台宿主**的（registeredId）
+				const canOpen = installed && (!!it.route || !!it.registeredId);
+				const compat = it.compatibility && it.compatibility.status;
+				// 已知不兼容 / 被策略停用 ⇒ 不给「安装」
+				const policyBlocked = !!(it.policy && it.policy.allowed === false);
+				const canInstall = it.installable === true && !installed && compat !== "incompatible" && !policyBlocked;
+				// 装上了但宿主里还没有它 ⇒ 要重启 Harness 才会加载（运行中的进程不热加载新包）
+				const awaitingRestart = installed && !it.route && !it.registeredId && it.installedFromMarket === true;
 				const repo = String(it.url || "").trim();
 				return react.createElement("article", { className: "vssWbCard", "data-vssaros-market-card": it.id },
 					// 媒体区：截图 / 模拟预览 ⇒ 点击开详情模态
@@ -362,6 +500,11 @@ a.vssWbTitleText:hover { text-decoration:underline; }
 						react.createElement("div", { className: "vssWbAuthorRow" },
 							react.createElement(AuthorItem, { item: it }),
 							it.version ? react.createElement("span", { className: "vssWbCardVersion" }, "v" + it.version) : null,
+							compat === "incompatible" ? react.createElement("span", {
+								className: "vssWbCompat", "data-status": "incompatible", "data-vssaros-market-compat": "incompatible",
+								title: "与当前 dsh " + String(it.compatibility.runtimeVersion || "") + " 不兼容：" + Object.entries(it.compatibility.requirements || {}).map(([n, r]) => n + " " + r).join("；"),
+							}, "不兼容") : null,
+							awaitingRestart ? react.createElement("span", { className: "vssWbCompat", "data-status": "pending", title: "已安装，重启 Harness 后出现" }, "待重启") : null,
 						),
 						// 指标**独立成行**（不放底部）：窄卡片里底部还要放 GitHub / 收藏 / 主按钮，
 						// 指标挤进去会被压成竖排（★ / 0 分两行）✗ ⇒ 挪到上面独占一行 ✓
@@ -383,6 +526,10 @@ a.vssWbTitleText:hover { text-decoration:underline; }
 									"aria-label": (faved ? "取消收藏" : "收藏") + it.name,
 									onClick: () => props.onFav(it),
 								}, faved ? "★" : "☆"),
+								it.installedFromMarket === true && props.onUninstall ? react.createElement("button", {
+									type: "button", className: "vssWbLink", "data-vssaros-market-uninstall": it.id,
+									onClick: () => props.onUninstall(it),
+								}, "卸载") : null,
 								canOpen ? react.createElement("button", {
 									type: "button", className: "vssWbBtn vssWbPrimary vssWbCardBtn",
 									onClick: () => openWorkbench(it),
@@ -390,8 +537,18 @@ a.vssWbTitleText:hover { text-decoration:underline; }
 									: canInstall ? react.createElement("button", {
 										type: "button", className: "vssWbBtn vssWbPrimary vssWbCardBtn",
 										onClick: () => props.onInstall(it),
-									}, "安装")
-										: installed ? react.createElement("span", { className: "vssWbInstalled", role: "status" }, "已安装")
+										disabled: ui.busy.has(it.id),
+										"data-vssaros-market-install": it.id,
+									}, ui.busy.has(it.id) ? "安装中…" : "安装")
+										: installed ? react.createElement("span", { className: "vssWbInstalled", role: "status" }, awaitingRestart ? "重启后可用" : "已安装")
+											: policyBlocked ? react.createElement("button", {
+												type: "button", className: "vssWbBtn vssWbCardBtn", disabled: true, "data-vssaros-market-policy": "blocked",
+												title: String(it.policy.reason || "已被停用"),
+											}, "已停用")
+											: compat === "incompatible" ? react.createElement("button", {
+												type: "button", className: "vssWbBtn vssWbCardBtn", disabled: true,
+												title: "与当前 dsh 版本不兼容，等作者发布兼容版本",
+											}, "不兼容")
 											: repo ? react.createElement("a", {
 												className: "vssWbBtn vssWbPrimary vssWbCardBtn", href: repo, target: "_blank", rel: "noopener noreferrer",
 											}, "查看安装说明")
@@ -420,6 +577,37 @@ a.vssWbTitleText:hover { text-decoration:underline; }
 					many ? react.createElement("button", { type: "button", className: "vssWbCarouselNav", "data-side": "prev", "aria-label": "上一张", onClick: () => go(-1) }, "‹") : null,
 					many ? react.createElement("button", { type: "button", className: "vssWbCarouselNav", "data-side": "next", "aria-label": "下一张", onClick: () => go(1) }, "›") : null,
 					many ? react.createElement("span", { className: "vssWbCarouselCount", "aria-live": "polite" }, (index + 1) + " / " + shots.length) : null,
+				);
+			}
+
+			/** 详情里的兼容性一行：有结论就显示；没有 ⇒ 给「检查兼容性」（会下载包做检查，不安装）。 */
+			function CompatLine(props) {
+				const it = props.item;
+				const [result, setResult] = react.useState(it.compatibility || null);
+				const [caps, setCaps] = react.useState(undefined);
+				const [busy, setBusy] = react.useState(false);
+				if (!it.installable) { return null; }
+				if (it.policy && it.policy.allowed === false) {
+					return react.createElement("p", { className: "vssWbMuted", style: { marginTop: 8 }, "data-vssaros-market-compat-line": "blocked" }, "✗ 已停用：" + String(it.policy.reason || ""));
+				}
+				const status = result && result.status;
+				const req = result && result.requirements ? Object.entries(result.requirements).map(([n, r]) => n + " " + r).join("；") : "";
+				const capText = caps === undefined ? null
+					: caps === null ? "看不到这个包的代码（npm / 源码来源），列不出它的服务端会做什么。"
+						: caps.length ? "静态扫描：它的服务端会" + caps.map(c => c.label).join("、") + "。"
+							: "静态扫描没发现启动进程、注册 AI 工具、联网、写文件等行为。";
+				return react.createElement("div", { style: { marginTop: 8 } },
+					react.createElement("p", { className: "vssWbMuted", style: { margin: 0 }, "data-vssaros-market-compat-line": status || "none" },
+						status === "ok" ? "✓ 与当前 dsh " + (result.runtimeVersion || "") + " 兼容"
+							: status === "incompatible" ? "✗ 与当前 dsh " + (result.runtimeVersion || "") + " 不兼容" + (req ? "（它要求 " + req + "）" : "") + "。装上也会被 dsh 跳过。"
+								: status === "unknown" ? "兼容性未能确认：" + String(result.reason || "")
+									: "还没检查过与当前 dsh 版本的兼容性。",
+						caps === undefined ? react.createElement("button", {
+							type: "button", className: "vssWbLink", disabled: busy, style: { marginLeft: 8 },
+							onClick: () => { setBusy(true); checkEntry(it).then(body => { setBusy(false); if (body) { setResult(body.compatibility); setCaps(body.capabilities === undefined ? null : body.capabilities); } }); },
+						}, busy ? "检查中…" : "检查兼容性与权限") : null,
+					),
+					capText ? react.createElement("p", { className: "vssWbMuted", style: { margin: "4px 0 0" }, "data-vssaros-market-caps": caps ? caps.map(c => c.key).join(",") : "unknown" }, capText) : null,
 				);
 			}
 
@@ -461,8 +649,9 @@ a.vssWbTitleText:hover { text-decoration:underline; }
 							react.createElement("a", { href: it.url, target: "_blank", rel: "noopener noreferrer" }, "查看 GitHub 仓库")) : null,
 						react.createElement("p", { className: "vssWbMuted", style: { marginTop: 12 } },
 							sourceLabel
-								? "发布源：" + sourceLabel + "（安装时按目录公示的版本与校验值核对）"
+								? "发布源：" + sourceLabel + "（安装时按目录公示的版本与校验值核对；安装前会检查与当前 dsh 版本是否兼容）"
 								: "这个条目没有可安装的发布源。"),
+						react.createElement(CompatLine, { item: it }),
 					),
 				);
 				// 官方是 React portal 到 body；我们**没有 react-dom**（chunk 只能 require react）⇒
@@ -516,7 +705,7 @@ a.vssWbTitleText:hover { text-decoration:underline; }
 					/** 侧栏页签 id（打开时用它寻址）—— 目录条目用的是 workbenchId，这里是本机 id。 */
 					workbenchId: String(it.id),
 					name: String(it.name || it.id),
-					icon: String(it.ico || "🧩"),
+					icon: wbIconEmoji(it.ico),
 					route: String(it.route),
 					category: "local",
 					local: true,
@@ -619,16 +808,36 @@ a.vssWbTitleText:hover { text-decoration:underline; }
 					setFavs(next);
 					writeFavs(next);
 				};
-				const onInstall = (it) => { installEntry(it).then(ok => { if (ok) { reload(false); } }); };
+				const onInstall = (it) => {
+					say("info", "正在安装「" + (it.name || it.id) + "」：下载与检查后会弹出确认框（在当前窗口）…");
+					withBusy(it, () => installEntry(it)).then(ok => { if (ok) { reload(false); } });
+				};
+				const onUninstall = (it) => { withBusy(it, () => uninstallEntry(it)).then(ok => { if (ok) { reload(false); } }); };
+				const uiState = useMarketUi();
+				const registered = useRegisteredWorkbenches();
+				// 目录身份 = `owner/repo`（小写），与宿主注册身份同口径 ⇒ 直接对上
+				const registeredIds = new Set(registered.map(w => String(w.id || "").toLowerCase()));
 
 				// Tab ⇒ 数据源（dsh：market=已上架条目 / favorites=收藏 / mine=已安装）
-				const entries = Array.isArray(catalog && catalog.workbenches) ? catalog.workbenches : [];
+				const rawEntries = Array.isArray(catalog && catalog.workbenches) ? catalog.workbenches : [];
+				const entries = rawEntries.map(it => registeredIds.has(String(it.id || "").toLowerCase())
+					? Object.assign({}, it, { installed: true, registeredId: String(it.id).toLowerCase() }) : it);
 				// 本机内置的工作台（随产品分发，**不是市场条目**）—— 由 workbenchNav chunk 挂在 window 上
 				const localItems = readLocalItems();
 				const marketInstalled = entries.filter(it => it.installed === true);
-				const installedCount = localItems.length + marketInstalled.length;
+				// 宿主里已注册、但既不是内置条目也不在目录里的（本地装的第三方 / 已下架的）⇒ 也算"已安装"
+				const known = new Set(entries.map(it => String(it.id || "").toLowerCase()));
+				const extraRegistered = registered
+					.filter(w => !String(w.id).startsWith("vssaros/") && !known.has(String(w.id).toLowerCase()))
+					.map(w => ({
+						id: w.id, registeredId: w.id, name: w.title || w.id, icon: wbIconEmoji(w.icon), description: w.description || "",
+						category: "local", local: true, listed: false, installed: true, installable: false,
+						author: String(w.id).split("/")[0] || "", owner: String(w.id).split("/")[0] || "", version: "", screenshots: [],
+						url: /^[a-z0-9_.-]+\/[a-z0-9_.-]+$/i.test(String(w.id)) ? "https://github.com/" + w.id : "",
+					}));
+				const installedCount = localItems.length + marketInstalled.length + extraRegistered.length;
 				const base = tab === "favorites" ? entries.filter(it => favs.indexOf(it.id) >= 0)
-					: tab === "mine" ? localItems.concat(marketInstalled)
+					: tab === "mine" ? localItems.concat(marketInstalled, extraRegistered)
 						: entries.filter(it => it.listed !== false);
 				const declared = Array.isArray(catalog && catalog.categories) ? catalog.categories : [];
 				// 分类下拉：**用目录声明的中文名**（不是原始 id —— id 是 productivity 这种英文 ✗）
@@ -694,6 +903,15 @@ a.vssWbTitleText:hover { text-decoration:underline; }
 					// 状态条：如实说明目录来自哪儿 / 有没有读失败
 					react.createElement("div", { className: "vssWbNotice", role: "status" },
 						sourceText(catalog, loadError, loading)),
+					// 操作结果（安装 / 卸载 / 检查）：页面内消息条（IDE 通知在 dsh 窗口里看不到）
+					uiState.message ? react.createElement("div", {
+						className: "vssWbNotice", role: uiState.message.kind === "warn" ? "alert" : "status",
+						"data-vssaros-market-message": uiState.message.kind,
+						style: { display: "flex", alignItems: "flex-start", gap: 10, borderColor: uiState.message.kind === "warn" ? "var(--dsw-alias-state-warning-primary, #e0a43a)" : undefined },
+					},
+						react.createElement("span", { style: { flex: "1 1 auto", minWidth: 0, whiteSpace: "pre-wrap", wordBreak: "break-word" } }, uiState.message.text),
+						react.createElement("button", { type: "button", className: "vssWbLink", "aria-label": "关闭消息", onClick: () => { ui.message = null; bumpUi(); } }, "关闭"),
+					) : null,
 					// 工具行（2058-2070）
 					!isSubmit ? react.createElement("div", { className: "vssWbToolbar" },
 						react.createElement("div", { className: "vssWbTabs", role: "tablist", "aria-label": "工作台集合",
@@ -745,7 +963,7 @@ a.vssWbTitleText:hover { text-decoration:underline; }
 							shown.length ? shown.map(it => react.createElement(Card, {
 								key: it.id, item: it, mine: tab === "mine",
 								faved: favs.indexOf(it.id) >= 0,
-								onFav: toggleFav, onDetail: setDetail, onInstall: onInstall,
+								onFav: toggleFav, onDetail: setDetail, onInstall: onInstall, onUninstall: onUninstall,
 							})) : react.createElement("div", { className: "vssWbEmpty" },
 								react.createElement("strong", null,
 									tab === "favorites" ? "还没有收藏工作台" : tab === "mine" ? "还没有安装工作台"

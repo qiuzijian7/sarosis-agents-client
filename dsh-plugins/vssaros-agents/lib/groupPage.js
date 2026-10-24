@@ -60,6 +60,13 @@ const CSS = `
 }
 *{box-sizing:border-box}
 html,body{height:100%;margin:0}
+/* ★ ?embed=1（2026-10-23）：被父页面（agents 工作台中间栏）以 iframe 内嵌时，
+   父页面已经提供了左栏（名册+群聊）与右栏（记忆/演化/版本/分支）⇒ 这里只留中间聊天列，
+   否则会出现"两套左栏 + 两套右栏"。客户端脚本启动时按 location.search 加 .embed。 */
+body.embed .gp-left,body.embed .gp-right,body.embed .gp-ovl{display:none!important}
+body.embed .gp-page{padding-left:0}
+/* embed 下「‹ 展开左栏」「面板」两个按钮指向的栏已经没了 ⇒ 一并隐藏（否则点了没反应 ✗） */
+body.embed #gpLeftBtn,body.embed #gpRightBtn{display:none!important}
 body{background:var(--gp-bg);color:var(--gp-fg);font-family:var(--vscode-font-family,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif);font-size:var(--vscode-font-size,13px);line-height:1.55;overflow:hidden}
 button{font:inherit;color:inherit;background:transparent;border:0;cursor:pointer}
 input,textarea,select{font:inherit;color:var(--vscode-input-foreground,inherit);background:var(--vscode-input-background,#3c3c3c);border:1px solid var(--gp-line2);border-radius:4px;padding:5px 8px;outline:none}
@@ -272,6 +279,8 @@ function clientJs(keep) {
 	const L = [];
 	const add = (...p) => L.push(p.join(''));
 	add('(function(){');
+	// 内嵌模式：父页面（agents 工作台）已经给了左栏与右栏 ⇒ 这里只保留中间聊天列
+	add(' if(location.search.indexOf("embed=1")>=0){document.body.classList.add("embed");}');
 	add('var KEEP=', String(keep), ';');
 	// 状态：groups / agents / active / 右栏 tab / 右栏 agent / 工作列表 / 未读签名
 	add('var S={groups:[],agents:[],active:"",tab:"mem",memAgent:"",work:[],busy:{},readSig:{},rightOpen:true,leftOpen:true,drawer:false};');

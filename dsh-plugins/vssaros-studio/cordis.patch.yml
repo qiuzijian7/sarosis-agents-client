@@ -1,0 +1,9 @@
+# @vssaros/dsh-studio bundle patch.
+#
+# 页面路由以前缀形式注册（`/x/studio` 同时匹配 `/x/studio/` 与其子路径）。
+# `config.siteUrl` 留空 ⇒ 用 lib/index.js 里的默认值（线上站点）。
+# 想指到本机或另一套环境时，由宿主 `--patch` 覆盖这一行即可，不必改代码。
+- insert:
+    - id: vssaros-studio
+      name: '@vssaros/dsh-studio'
+      config: {}

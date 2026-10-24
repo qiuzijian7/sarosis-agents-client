@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>主页组件 · 三套样式（A 现网 / B 分层 / C 紧凑）</title>
+<style>
+/* ─────────────────────────────────────────────────────────────────────────────
+   这是**选型用的 mockup**，不是产品代码。
+   颜色来自插件 vendor 的 dsh 官方 token，`--dash-*` 派生与 app.jsx 的 RATIOS.dark 同源
+   ⇒ 这里看到的层级在真机上就是那样（不是随手调的好看颜色）。
+   版面按**真机 12 列 / 单卡满宽**渲染（页宽 980 = 卡片内容宽约 940），字号不允许低于 12px。
+   ───────────────────────────────────────────────────────────────────────────── */
+:root {
+	/* ── 自带配色（**不依赖任何外部样式表**，任何预览器里都看得清）──────────────
+	   数值取自真机的暗色派生结果：页面 #1f1f1f / 卡片 #272729 / 描边 #595a5b。
+	   亮色一套见下面的 [data-theme='light']，用右上角按钮切。 */
+	--page: #1f1f1f;
+	--surface: #272729;
+	--surface-2: #2f2f31;
+	--stroke: #595a5b;
+	--stroke-2: #75777a;
+	--fg: #e6e6e6;
+	--fg-inv: #101012;
+	--muted: #b9babd;
+	--faint: #8f9194;
+	--accent: #4c9aff;
+
+	/* 组件里用到的别名（保持原有类名不变，只换取值来源） */
+	--dash-surface: var(--surface);
+	--dash-surface-2: var(--surface-2);
+	--dash-stroke: var(--stroke);
+	--dash-stroke-2: var(--stroke-2);
+	--dash-muted: var(--muted);
+	--dash-faint: var(--faint);
+	--dash-accent: var(--accent);
+}
+[data-theme='light'] {
+	--page: #ffffff;
+	--surface: #f1f3f6;
+	--surface-2: #e6e9ee;
+	--stroke: #b3b9c1;
+	--stroke-2: #949aa2;
+	--fg: #16181b;
+	--fg-inv: #ffffff;
+	--muted: #4d5158;
+	--faint: #6b7077;
+	--accent: #0b63c5;
+}
+* { box-sizing: border-box; }
+body {
+	margin: 0;
+	padding: 20px 24px 48px;
+	background: var(--page);
+	color: var(--fg);
+	font: 14px/1.5 -apple-system, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+}
+.wrap { max-width: 980px; margin: 0 auto; }
+h1 { font-size: 19px; font-weight: 600; margin: 0 0 4px; }
+.lead { color: var(--dash-muted); font-size: 13px; margin: 0 0 14px; }
+.bar {
+	position: sticky; top: 0; z-index: 5;
+	display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+	padding: 10px 0; margin-bottom: 12px;
+	background: var(--page);
+	border-bottom: 1px solid var(--dash-stroke);
+}
+.seg { display: inline-flex; border: 1px solid var(--dash-stroke-2); border-radius: 8px; overflow: hidden; }
+.seg button {
+	appearance: none; border: 0; background: transparent; color: inherit;
+	font: inherit; font-size: 13px; padding: 6px 12px; cursor: pointer;
+}
+.seg button.on { background: var(--dash-accent); color: var(--fg-inv); }
+.bar .spacer { flex: 1; }
+.bar .btn {
+	border: 1px solid var(--dash-stroke-2); background: transparent; color: inherit;
+	font: inherit; font-size: 12.5px; padding: 5px 10px; border-radius: 8px; cursor: pointer;
+}
+.hint { color: var(--dash-faint); font-size: 12px; }
+
+/* 卡片外壳：三种样式共用骨架，差异全在 .s-a / .s-b / .s-c 里 */
+.card {
+	border: 1px solid var(--dash-stroke);
+	border-radius: 10px;
+	background: var(--dash-surface);
+	padding: 10px 12px;
+	margin: 0 0 12px;
+}
+.head { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+.head .ico { display: grid; place-items: center; width: 16px; height: 16px; color: var(--dash-muted); }
+.head .t { font-size: 13px; font-weight: 600; }
+.head .sub { color: var(--dash-faint); font-size: 12px; margin-left: 2px; }
+.head .right { margin-left: auto; color: var(--dash-faint); font-size: 12px; }
+.mono { font-family: ui-monospace, Consolas, monospace; font-variant-numeric: tabular-nums; }
+.num { font-variant-numeric: tabular-nums; }
+.tag { font-size: 12px; color: var(--dash-muted); }
+.dim { color: var(--dash-muted); }
+.faint { color: var(--dash-faint); }
+svg.i { display: block; }
+
+/* 区块标题（用于分隔"每个组件"） */
+.sec { margin: 26px 0 10px; }
+.sec b { font-size: 15px; }
+.sec span { color: var(--dash-faint); font-size: 12.5px; margin-left: 8px; }
+
+/* ── 组件：KPI ─────────────────────────────────────────────────────────────── */
+.kpi-a { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.kpi-a div { min-width: 0; }
+.kpi-a b { display: block; font-size: 20px; font-weight: 600; }
+.kpi-a span { display: block; color: var(--dash-faint); font-size: 12px; margin-top: 1px; }
+
+.kpi-b { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; }
+.kpi-b > div { padding: 6px 12px; border-left: 1px solid var(--dash-stroke); min-width: 0; }
+.kpi-b > div:first-child { border-left: 0; padding-left: 0; }
+.kpi-b b { font-size: 26px; font-weight: 600; letter-spacing: -0.4px; }
+.kpi-b em { font-style: normal; font-size: 12.5px; color: var(--dash-faint); margin-left: 4px; }
+.kpi-b span { display: block; color: var(--dash-muted); font-size: 12px; margin-top: 2px; }
+
+.kpi-c { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 18px; }
+.kpi-c span { font-size: 12.5px; color: var(--dash-muted); }
+.kpi-c b { font-size: 15px; font-weight: 600; margin-right: 4px; }
+
+/* ── 组件：会话明细 ─────────────────────────────────────────────────────────── */
+.rows-a li { display: flex; align-items: baseline; gap: 8px; padding: 3px 0; font-size: 13px; }
+.rows-a li .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rows-a li .meta { color: var(--dash-faint); font-size: 12px; flex: none; }
+
+.tbl-b { width: 100%; border-collapse: collapse; font-size: 13px; }
+.tbl-b th { text-align: left; font-weight: 500; color: var(--dash-faint); font-size: 12px; padding: 0 8px 4px 0; }
+.tbl-b td { padding: 5px 8px 5px 0; border-top: 1px solid var(--dash-stroke); }
+.tbl-b td.r, .tbl-b th.r { text-align: right; }
+.tbl-b .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--dash-accent); margin-right: 6px; vertical-align: 1px; }
+
+.tbl-c { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.tbl-c th { text-align: left; color: var(--dash-faint); font-size: 12px; font-weight: 500; padding: 0 6px 3px 0; }
+.tbl-c td { padding: 3px 6px 3px 0; border-top: 1px solid var(--dash-stroke); }
+.tbl-c td.r, .tbl-c th.r { text-align: right; }
+
+/* ── 组件：用量 ─────────────────────────────────────────────────────────────── */
+.bar-wrap { height: 8px; border-radius: 4px; background: var(--dash-surface-2); overflow: hidden; display: flex; margin-bottom: 8px; }
+.bar-wrap i { display: block; height: 100%; }
+.legend-a { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 12.5px; color: var(--dash-muted); }
+.legend-a b { color: var(--fg); font-weight: 600; }
+.legend-b { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 16px; font-size: 12.5px; }
+.legend-b div { display: flex; align-items: center; gap: 6px; }
+.legend-b i { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+.legend-b .v { margin-left: auto; font-variant-numeric: tabular-nums; }
+
+/* ── 组件：工作台 ───────────────────────────────────────────────────────────── */
+.wb-a { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
+.wb-a a {
+	display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 8px; align-items: center;
+	padding: 7px 8px; border: 1px solid var(--dash-stroke); border-radius: 8px;
+	background: var(--dash-surface-2); text-decoration: none; color: inherit;
+}
+.wb-a .nm { font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wb-a .ds { font-size: 12px; color: var(--dash-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.wb-b { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 8px; }
+.wb-b a {
+	display: block; padding: 9px 10px; border: 1px solid var(--dash-stroke); border-radius: 10px;
+	background: var(--dash-surface); text-decoration: none; color: inherit;
+}
+.wb-b .top { display: flex; align-items: center; gap: 8px; }
+.wb-b .ico { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 7px; background: var(--dash-surface-2); color: var(--dash-muted); }
+.wb-b .nm { font-size: 13px; font-weight: 600; }
+.wb-b .ct { margin-left: auto; font-size: 12px; color: var(--dash-faint); font-variant-numeric: tabular-nums; }
+.wb-b .ds { margin: 6px 0 0 32px; font-size: 12px; color: var(--dash-faint); line-height: 1.4; }
+
+.wb-c { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 18px; }
+.wb-c a { display: flex; align-items: center; gap: 7px; padding: 4px 0; border-bottom: 1px solid var(--dash-stroke); text-decoration: none; color: inherit; font-size: 12.5px; }
+.wb-c .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wb-c .ct { color: var(--dash-faint); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+/* ── 组件：诊断行 ───────────────────────────────────────────────────────────── */
+.diag-a { font-size: 12.5px; color: var(--dash-muted); line-height: 1.6; }
+.diag-b { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 4px 10px; font-size: 12.5px; }
+.diag-b dt { color: var(--dash-faint); }
+.diag-b dd { margin: 0; color: var(--dash-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ── 组件：时钟 / 番茄钟 ────────────────────────────────────────────────────── */
+.clock-a { font-size: 26px; font-weight: 600; font-family: ui-monospace, Consolas, monospace; }
+.clock-b { font-size: 34px; font-weight: 600; letter-spacing: -0.5px; font-variant-numeric: tabular-nums; }
+.clock-c { font-size: 15px; font-weight: 600; font-family: ui-monospace, Consolas, monospace; }
+
+.pomo-a { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.pomo-a .ring {
+	width: 96px; height: 96px; border-radius: 50%;
+	border: 6px solid var(--dash-surface-2); border-top-color: var(--dash-accent);
+	display: grid; place-items: center; font-size: 19px; font-weight: 600; font-variant-numeric: tabular-nums;
+}
+.pomo-b { display: flex; align-items: center; gap: 14px; }
+.pomo-b .ring { width: 72px; height: 72px; border-width: 5px; font-size: 16px; }
+.pomo-b .ph { font-size: 13px; color: var(--dash-muted); }
+.pomo-c { display: flex; align-items: baseline; gap: 10px; }
+.pomo-c .n { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+.btns { display: flex; gap: 6px; }
+.btn-s {
+	border: 1px solid var(--dash-stroke-2); background: transparent; color: inherit;
+	font: inherit; font-size: 12.5px; padding: 3px 10px; border-radius: 14px; cursor: pointer;
+}
+.btn-s.pri { background: var(--dash-accent); border-color: var(--dash-accent); color: var(--fg-inv); }
+
+/* 选型提示卡 */
+.note { border-left: 2px solid var(--dash-accent); padding: 2px 0 2px 10px; margin: 8px 0 0; color: var(--dash-muted); font-size: 12.5px; }
+.hide { display: none; }
+table.pick { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+table.pick th, table.pick td { text-align: left; padding: 7px 10px 7px 0; border-top: 1px solid var(--dash-stroke); vertical-align: top; }
+table.pick th { color: var(--dash-faint); font-weight: 500; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+	<h1>主页组件 · 三套样式</h1>
+	<p class="lead">
+		按真机 12 列 / 单卡满宽渲染（内容宽 940px，字号 ≥12px，颜色是 dsh 官方 token 派生的）。
+		切换上方 A / B / C 看每个组件的三种画法 —— <b>同一批数据</b>，只换视觉语言。
+	</p>
+
+	<div class="bar">
+		<span class="seg" id="styleSeg">
+			<button data-s="a" class="on">A 现网基线</button>
+			<button data-s="b">B 分层面板</button>
+			<button data-s="c">C 紧凑数据</button>
+		</span>
+		<span class="spacer"></span>
+		<button class="btn" id="theme">切换明暗</button>
+		<span class="hint" id="who">当前：A 现网基线（＝你现在看到的）</span>
+	</div>
+
+	<!-- ══════════════ A 现网基线 ══════════════ -->
+	<section class="set" data-set="a">
+		<div class="sec"><b>关键指标</b><span>A：4×2 小格子，数字 20px，标签在下方 12px</span></div>
+		<div class="card">
+			<div class="head"><span class="ico" data-icon="pulse"></span><span class="t">关键指标</span><span class="sub">会话 / turn / step / 耗时</span></div>
+			<div class="kpi-a">
+				<div><b class="num">219</b><span>会话（29 个活跃）</span></div>
+				<div><b class="num">61</b><span>turn</span></div>
+				<div><b class="num">824</b><span>step</span></div>
+				<div><b class="num">1h22m</b><span>模型耗时</span></div>
+				<div><b class="num">1h0m</b><span>工具耗时</span></div>
+				<div><b class="num">2</b><span>进行中待办</span></div>
+				<div><b class="num">1</b><span>正在重试（LLM）</span></div>
+				<div><b class="num">2</b><span>活跃会话（近 1 天）</span></div>
+			</div>
+			<p class="note">问题：8 个数字等权重，主次不分；「219」和「1」看起来一样重要。</p>
+		</div>
+
+		<div class="sec"><b>会话明细</b><span>A：一行一条，标题 + 右侧元信息</span></div>
+		<div class="card">
+			<div class="head"><span class="ico" data-icon="history"></span><span class="t">会话明细</span><span class="right">8 个（按创建时间倒序）</span></div>
+			<ul class="rows-a" style="list-style:none;margin:0;padding:0">
+				<li><span class="nm">C:\Users\qiuzijian\agent\...\3194aa16</span><span class="meta">190 turn · 954 step</span></li>
+				<li><span class="nm">F:\agent\...\0f3948c9</span><span class="meta">12 turn · 1f3</span></li>
+				<li><span class="nm">C:\Users\qiuzijian\agent\...\e7a9f8e1</span><span class="meta">9 turn · 9f0</span></li>
+				<li><span class="nm">F:\agent\...\5b2a1c2d</span><span class="meta">3 turn · 8f9</span></li>
+			</ul>
+			<p class="note">问题：路径占满一行、真正的「何时/多长」被挤到最右且字号最小。</p>
+		</div>
+
+		<div class="sec"><b>用量分布</b><span>A：一条堆叠条 + 图例 + 表格</span></div>
+		<div class="card">
+			<div class="head"><span class="ico" data-icon="usage"></span><span class="t">用量分布</span><span class="sub">四路构成 · 按模型</span></div>
+			<div class="bar-wrap">
+				<i style="width:33%;background:#4C9AFF"></i><i style="width:1%;background:#E8C46A"></i><i style="width:66%;background:#59C0A8"></i><i style="width:1%;background:#B37FE0"></i>
+			</div>
+			<div class="legend-a">
+				<span>输入 <b class="num">25.52M</b></span><span>输出 <b class="num">368.6k</b></span><span>读缓存 <b class="num">70.95M</b></span><span>写缓存 <b class="num">0</b></span>
+			</div>
+			<p class="note">问题：图例是「一行流」，百分比（33% / 66%）反而没显示，对比靠眼睛估。</p>
+		</div>
+
+		<div class="sec"><b>工作台</b><span>A：磁贴 190px，图标 + 名称 + 描述</span></div>
+		<div class="card">
+			<div class="head"><span class="ico" data-icon="grid"></span><span class="t">工作台</span><span class="right">13 个模块</span></div>
+			<div class="wb-a" id="wbA"></div>
+			<p class="note">问题：13 个磁贴密度刚好，但描述与名称同色系、扫读时区分度低。</p>
+		</div>
+
+		<div class="sec"><b>诊断行</b><span>A：一整段小字</span></div>
+		<div class="card">
+			<div class="head"><span class="ico" data-icon="diag"></span><span class="t">诊断行</span></div>
+			<p class="diag-a">tools: 输入 25.52M · 输出 368.6k · 模型仅 deepseek-v4-flash-ioa（vssaros-codebuddy）· 工具 dashboard_sessions / dashboard_session 已注册 · 重试 1 次 · 活跃近 1 天</p>
+			<p class="note">问题：一整条约 60 字，没有可扫的节点。</p>
+		</div>
+
+		<div class="sec"><b>时钟 / 番茄钟</b><span>A：时钟 26px 等宽；番茄 96px 圆环</span></div>
+		<div class="card">
+			<div class="head"><span class="ico" data-icon="clock"></span><span class="t">时钟</span></div>
+			<div class="clock-a">11:26:12</div>
+			<div class="tag" style="margin-top:2px">2026-10-23 周五</div>
+		</div>
+		<div class="card">
+			<div class="head"><span class="ico" data-icon="pomodoro"></span><span class="t">番茄时钟</span></div>
+			<div class="pomo-a">
+				<div class="ring num">25:00</div>
+				<div class="tag">专注 · 第 1 个</div>
+				<div class="btns"><button class="btn-s">开始</button><button class="btn-s">重置</button></div>
+			</div>
+			<p class="note">问题：96px 圆环 + 3 行内容 ⇒ 卡片至少 5 行高，只为了一个倒计时。</p>
+		</div>
+	</section>
+
+	<!-- ══════════════ B 分层面板 ══════════════ -->
+	<section class="set hide" data-set="b">
+		<div class="sec"><b>关键指标</b><span>B：数字 26px + 单位小字，竖向分隔线，主次靠字号</span></div>
+		<div class="card">
+			<div class="head"><span class="ico" data-icon="pulse"></span><span class="t">关键指标</span><span class="tag" style="margin-left:auto">29 个活跃</span></div>
+			<div class="kpi-b">
+				<div><b class="num">219</b><em>会话</em><span>29 个活跃</span></div>
+				<div><b class="num">61</b><em>turn</em><span>824 step</span></div>
+				<div><b class="num">1h22m</b><em>模型</em><span>工具 1h0m</span></div>
+				<div><b class="num">2</b><em>待办</em><span>1 个正在重试</span></div>
+			</div>
+			<p class="note">8 个数压成 4 组，第二行用小字当"副指标" —— 一眼只看到 4 个主数字。</p>
+		</div>
+
+		<div class="sec"><b>会话明细</b><span>B：表格 + 左侧状态点，时间列右对齐</span></div>
+		<div class="card">
+			<div class="head"><span class="ico" data-icon="history"></span><span class="t">会话明细</span><span class="right">8 / 219</span></div>
+			<table class="tbl-b">
+				<thead><tr><th>会话</th><th class="r">turn</th><th class="r">step</th><th class="r">更新</th></tr></thead>
+				<tbody>
+					<tr><td><span class="dot"></span>qiuzijian/agent 3194aa16</td><td class="r num">190</td><td class="r num">954</td><td class="r faint">2 分钟前</td></tr>
+					<tr><td>F:/agent 0f3948c9</td><td class="r num">12</td><td class="r num">13</td><td class="r faint">17 分钟前</td></tr>
+					<tr><td>C:/agent e7a9f8e1</td><td class="r num">9</td><td class="r num">9</td><td class="r faint">今天 09:26</td></tr>
+					<tr><td>F:/agent 5b2a1c2d</td><td class="r num">3</td><td class="r num">8</td><td class="r faint">昨天</td></tr>
+				</tbody>
+			</table>
+			<p class="note">路径只留最后两段（绝对路径进 tooltip），把「何时更新」提到可见列。</p>
+		</div>
+
+		<div class="sec"><b>用量分布</b><span>B：两列图例带色块 + 百分比，数据自己说话</span></div>
+		<div class="card">
+			<div class="head"><span class="ico" data-icon="usage"></span><span class="t">用量分布</span><span class="right">合计 96.8M</span></div>
+			<div class="bar-wrap">
+				<i style="width:33%;background:#4C9AFF"></i><i style="width:1%;background:#E8C46A"></i><i style="width:66%;background:#59C0A8"></i><i style="width:1%;background:#B37FE0"></i>
+			</div>
+			<div class="legend-b">
+				<div><i style="background:#4C9AFF"></i>输入<span class="v num">25.52M · 33%</span></div>
+				<div><i style="background:#59C0A8"></i>读缓存<span class="v num">70.95M · 66%</span></div>
+				<div><i style="background:#E8C46A"></i>输出<span class="v num">368.6k · 0.4%</span></div>
+				<div><i style="background:#B37FE0"></i>写缓存<span class="v num">0</span></div>
+			</div>
+			<p class="note">「读缓存 66%」是这张卡的重点（省钱），B 把它提到第 2 位并给百分比。</p>
+		</div>
+
+		<div class="sec"><b>工作台</b><span>B：两段式磁贴（图标+名称+计数 / 描述换行）</span></div>
+		<div class="card">
+			<div class="head"><span class="ico" data-icon="grid"></span><span class="t">工作台</span><span class="right">13 个模块</span></div>
+			<div class="wb-b" id="wbB"></div>
+			<p class="note">名称一行、描述一行（挂在图标下方缩进），右侧给「计数」留位（有数据时才显示）。</p>
+		</div>
+
+		<div class="sec"><b>诊断行</b><span>B：键值两列（像一张小 dl 表）</span></div>
+		<div class="card">
+			<div class="head"><span class="ico" data-icon="diag"></span><span class="t">诊断</span></div>
+			<dl class="diag-b">
+				<dt>token</dt><dd class="mono">25.52M / 368.6k / 缓存 70.95M</dd>
+				<dt>模型</dt><dd>deepseek-v4-flash-ioa（vssaros-codebuddy）</dd>
+				<dt>工具</dt><dd>dashboard_sessions · dashboard_session</dd>
+				<dt>数据目录</dt><dd>~/.dsh/storages/session_projcache</dd>
+			</dl>
+			<p class="note">长句拆成 4 行键值，找「数据目录在哪」不用通读整段。</p>
+		</div>
+
+		<div class="sec"><b>时钟 / 番茄钟</b><span>B：时钟 34px；番茄收成 72px 圆环 + 右侧相位</span></div>
+		<div class="card">
+			<div class="head"><span class="ico" data-icon="clock"></span><span class="t">时钟</span></div>
+			<div class="clock-b">11:26:12</div>
+			<div class="tag" style="margin-top:2px">2026-10-23 周五</div>
+		</div>
+		<div class="card">
+			<div class="head"><span class="ico" data-icon="pomodoro"></span><span class="t">番茄时钟</span></div>
+			<div class="pomo-b">
+				<div class="ring pomo-a" style="width:72px;height:72px;border-width:5px;font-size:16px">25:00</div>
+				<div>
+					<div class="ph">专注 · 第 1 个</div>
+					<div class="btns" style="margin-top:6px"><button class="btn-s pri">开始</button><button class="btn-s">重置</button></div>
+				</div>
+			</div>
+			<p class="note">横排后高度从 5 行降到 2 行 —— 主页上省下的空间给「会话明细」。</p>
+		</div>
+	</section>
+
+	<!-- ══════════════ C 紧凑数据 ══════════════ -->
+	<section class="set hide" data-set="c">
+		<div class="sec"><b>关键指标</b><span>C：一行横排（像仪表盘的读数条），标签紧跟数字</span></div>
+		<div class="card" style="background:transparent">
+			<div class="head"><span class="ico" data-icon="pulse"></span><span class="t">指标</span></div>
+			<div class="kpi-c">
+				<span><b class="num">219</b>会话</span><span><b class="num">61</b>turn</span><span><b class="num">824</b>step</span>
+				<span><b class="num">1h22m</b>模型</span><span><b class="num">1h0m</b>工具</span>
+				<span><b class="num">2</b>待办</span><span><b class="num">1</b>重试</span><span><b class="num">2</b>活跃</span>
+			</div>
+			<p class="note">8 个指标只占 1 行（≈24px 高），适合"我只要数字"的人；代价是不强调任何一项。</p>
+		</div>
+
+		<div class="sec"><b>会话明细</b><span>C：纯表格，12.5px，无状态点</span></div>
+		<div class="card" style="background:transparent">
+			<div class="head"><span class="ico" data-icon="history"></span><span class="t">会话</span><span class="right">8 / 219</span></div>
+			<table class="tbl-c">
+				<thead><tr><th>会话</th><th class="r">turn</th><th class="r">step</th><th class="r">模型耗时</th><th class="r">输出</th></tr></thead>
+				<tbody>
+					<tr><td>3194aa16</td><td class="r num">190</td><td class="r num">954</td><td class="r num">1h21m</td><td class="r num">966.0k</td></tr>
+					<tr><td>0f3948c9</td><td class="r num">12</td><td class="r num">13</td><td class="r num">4.1m</td><td class="r num">1.1k</td></tr>
+					<tr><td>e7a9f8e1</td><td class="r num">9</td><td class="r num">9</td><td class="r num">0.9m</td><td class="r num">0</td></tr>
+					<tr><td>5b2a1c2d</td><td class="r num">3</td><td class="r num">8</td><td class="r num">0.8m</td><td class="r num">0</td></tr>
+				</tbody>
+			</table>
+			<p class="note">信息密度最高（5 列 × 4 行 = 4 行高）。会话 ID 只留 8 位，路径进 tooltip。</p>
+		</div>
+
+		<div class="sec"><b>用量分布</b><span>C：不画条，直接一行「构成」+ 表格</span></div>
+		<div class="card" style="background:transparent">
+			<div class="head"><span class="ico" data-icon="usage"></span><span class="t">用量</span><span class="right">96.8M</span></div>
+			<div class="kpi-c" style="margin-bottom:6px">
+				<span><b class="num">33%</b>输入</span><span><b class="num">66%</b>读缓存</span><span><b class="num">0.4%</b>输出</span><span><b class="num">0</b>写缓存</span>
+			</div>
+			<table class="tbl-c">
+				<thead><tr><th>模型</th><th class="r">会话</th><th class="r">输出 token</th></tr></thead>
+				<tbody>
+					<tr><td>未知（缓存里没该单元）</td><td class="r num">190</td><td class="r num">0</td></tr>
+					<tr><td>deepseek-v4-flash-ioa</td><td class="r num">21</td><td class="r num">281.7k</td></tr>
+					<tr><td>hy4-preview-ioa</td><td class="r num">8</td><td class="r num">86.9k</td></tr>
+				</tbody>
+			</table>
+			<p class="note">堆叠条在这种"33/66 两段独大"的数据上信息量很低，C 直接用数字。</p>
+		</div>
+
+		<div class="sec"><b>工作台</b><span>C：两列紧凑列表（无磁贴，13 个塞进 7 行）</span></div>
+		<div class="card" style="background:transparent">
+			<div class="head"><span class="ico" data-icon="grid"></span><span class="t">工作台</span><span class="right">13 个</span></div>
+			<div class="wb-c" id="wbC"></div>
+			<p class="note">最省高度；代价是没有描述，新用户不知道「知识库」和「记忆库」差在哪。</p>
+		</div>
+
+		<div class="sec"><b>诊断行</b><span>C：压缩成一行等宽文本，用 「·」 分隔</span></div>
+		<div class="card" style="background:transparent">
+			<div class="head"><span class="ico" data-icon="diag"></span><span class="t">诊断</span></div>
+			<div class="mono faint" style="font-size:12px">token 25.52M/368.6k · 缓存 70.95M · model deepseek-v4-flash-ioa · tools 2 · retry 1</div>
+			<p class="note">只留机器可读的键值，去掉中文句子。</p>
+		</div>
+
+		<div class="sec"><b>时钟 / 番茄钟</b><span>C：时钟 15px 一行；番茄一行（读数 + 按钮）</span></div>
+		<div class="card" style="background:transparent">
+			<div class="head"><span class="ico" data-icon="clock"></span><span class="t">时钟</span></div>
+			<div class="clock-c">11:26:12 · 2026-10-23 周五</div>
+		</div>
+		<div class="card" style="background:transparent">
+			<div class="head"><span class="ico" data-icon="pomodoro"></span><span class="t">番茄</span></div>
+			<div class="pomo-c">
+				<span class="n num">25:00</span>
+				<span class="tag">专注 · 第 1 个</span>
+				<span class="btns" style="margin-left:auto"><button class="btn-s pri">开始</button><button class="btn-s">重置</button></span>
+			</div>
+			<p class="note">一行装完（≈28px），但失去"环形进度"这种一眼可见的剩余量。</p>
+		</div>
+	</section>
+
+	<!-- ══════════════ 怎么选 ══════════════ -->
+	<div class="sec"><b>怎么选</b><span>可以逐个组件混搭，不必整套</span></div>
+	<div class="card">
+		<table class="pick">
+			<tr><th>组件</th><th>A（现网）</th><th>B（分层）</th><th>C（紧凑）</th></tr>
+			<tr><td>关键指标</td><td>8 个等权</td><td><b>4 主 + 4 副</b>，有主次</td><td>1 行装完，最省高</td></tr>
+			<tr><td>会话明细</td><td>路径占满一行</td><td><b>表格 + 状态点 + 相对时间</b></td><td>5 列信息最密</td></tr>
+			<tr><td>用量分布</td><td>条 + 一行图例</td><td><b>两列图例 + 百分比</b></td><td>只给数字（条无意义）</td></tr>
+			<tr><td>工作台</td><td>190px 磁贴</td><td><b>两段式磁贴（可挂计数）</b></td><td>两列紧凑列表</td></tr>
+			<tr><td>诊断行</td><td>一段长句</td><td><b>键值两列</b></td><td>一行键值</td></tr>
+			<tr><td>时钟</td><td>26px</td><td>34px（卡片内唯一主角）</td><td>15px 一行</td></tr>
+			<tr><td>番茄钟</td><td>96px 环，5 行高</td><td><b>72px 环横排，2 行高</b></td><td>一行读数 + 按钮</td></tr>
+		</table>
+		<p class="note">
+			我的建议：<b>B 为主</b>（每块都解决了 A 的"主次不分"），但 <b>工作台用 A</b>（磁贴密度刚好、B 的两段式在 13 个模块时反而变高）、
+			<b>番茄钟用 B</b>（省 3 行）、<b>诊断用 B</b>。C 适合你想要"一屏塞完"的时候，可以只把 KPI 与时钟换成 C。
+		</p>
+	</div>
+</div>
+
+<script>
+/* 单色图标（与 app.jsx 同一批 path，不引第三方） */
+const ICONS = {
+	pulse: 'M2 8h2.6l1.5-3.6L8.6 12l1.9-5.2L12.2 8H14',
+	history: 'M8 4.2a4.4 4.4 0 1 1-4.2 3.1M2.8 4.4v2.8h2.8M8 6.4v2.3l1.7 1.1',
+	usage: 'M2.8 12.4V7.2M6.2 12.4V4.4M9.6 12.4V8.6M13 12.4V5.8',
+	grid: 'M2.8 2.8h4v4h-4zM9.2 2.8h4v4h-4zM2.8 9.2h4v4h-4zM9.2 9.2h4v4h-4z',
+	diag: 'M2.8 8h3l1.4-3.2L9.8 11.2 11.4 8h1.8',
+	clock: 'M8 2.6a5.4 5.4 0 1 0 0 10.8A5.4 5.4 0 0 0 8 2.6ZM8 5.4V8l1.9 1.3',
+	pomodoro: 'M8 4.4a3.9 3.9 0 1 0 0 7.8 3.9 3.9 0 0 0 0-7.8ZM8 2.2v1.4M10.8 3 11.8 4',
+};
+for (const el of document.querySelectorAll('[data-icon]')) {
+	const d = ICONS[el.getAttribute('data-icon')];
+	if (!d) { continue; }
+	el.innerHTML = '<svg class="i" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"><path d="' + d + '"/></svg>';
+}
+
+/* 工作台模块（真实 13 个；计数是 mock，仅示意 B/C 的右对齐数字） */
+const MODULES = [
+	['home', '主页', '会话遥测 / 用量与编排', ''],
+	['kanban', '看板', '看板存储与卡片工具', '5'],
+	['book', '知识库', '知识库索引与检索', '113'],
+	['code', '代码库', '代码图谱与符号检索', ''],
+	['history', '历史会话', '会话分组 / 人格标记 / 指示灯', '219'],
+	['image', '媒体库', '只读 media.db 页面', ''],
+	['puzzle', '技能', '技能注册与按需加载', '12'],
+	['plug', 'MCP', 'MCP 服务器与工具', '3'],
+	['graph', '流程', '工作流引擎与画布', ''],
+	['robot', 'Agent', '.agent.md → dsh preset', '7'],
+	['cart', '商城', 'Agent / Skill / 工作台 / 工作流的安装与发布', ''],
+	['pulse', '记忆库', '记忆条目与检索', ''],
+	['monitor', '并行 TUI 工作台', '并排编排多个并行 LLM 会话', ''],
+];
+const ico = name => {
+	const d = ICONS[name] || ICONS.grid;
+	return '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"><path d="' + d + '"/></svg>';
+};
+document.getElementById('wbA').innerHTML = MODULES.map(([ic, nm, ds]) =>
+	'<a href="#"><span class="ico">' + ico(ic) + '</span><span><span class="nm" style="display:block">' + nm + '</span><span class="ds" style="display:block">' + ds + '</span></span></a>').join('');
+document.getElementById('wbB').innerHTML = MODULES.map(([ic, nm, ds, ct]) =>
+	'<a href="#"><span class="top"><span class="ico">' + ico(ic) + '</span><span class="nm">' + nm + '</span><span class="ct">' + ct + '</span></span><span class="ds">' + ds + '</span></a>').join('');
+document.getElementById('wbC').innerHTML = MODULES.map(([ic, nm, , ct]) =>
+	'<a href="#"><span style="color:var(--dash-muted)">' + ico(ic) + '</span><span class="nm">' + nm + '</span><span class="ct">' + ct + '</span></a>').join('');
+
+/* 切换样式 / 明暗 */
+const LABEL = { a: 'A 现网基线（＝你现在看到的）', b: 'B 分层面板', c: 'C 紧凑数据' };
+for (const btn of document.querySelectorAll('#styleSeg button')) {
+	btn.onclick = () => {
+		const s2 = btn.getAttribute('data-s');
+		for (const b of document.querySelectorAll('#styleSeg button')) { b.classList.toggle('on', b === btn); }
+		for (const set of document.querySelectorAll('.set')) { set.classList.toggle('hide', set.getAttribute('data-set') !== s2); }
+		document.getElementById('who').textContent = '当前：' + LABEL[s2];
+	};
+}
+const themeBtn = document.getElementById('theme');
+const syncThemeLabel = () => {
+	const light = document.documentElement.getAttribute('data-theme') === 'light';
+	themeBtn.textContent = light ? '切到暗色' : '切到亮色';
+};
+themeBtn.onclick = () => {
+	const light = document.documentElement.getAttribute('data-theme') === 'light';
+	document.documentElement.setAttribute('data-theme', light ? 'dark' : 'light');
+	syncThemeLabel();
+};
+// 首屏跟随系统/预览器：IDE 的 HTML 预览通常是亮色，硬给深色会显得突兀；
+// 两边都有**显式**底色与描边，所以无论哪套都看得清边界（这正是上一版的问题）。
+if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
+	document.documentElement.setAttribute('data-theme', 'light');
+}
+syncThemeLabel();
+</script>
+</body>
+</html>

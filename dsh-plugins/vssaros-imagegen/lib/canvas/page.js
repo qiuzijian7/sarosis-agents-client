@@ -570,9 +570,17 @@ async function boot() {
 		/* 节点图拿不到 ⇒ 空图起步 ✓ */
 	}
 	// ② 模式：本地记忆优先（用户上次选的那个），否则用宿主记的。
+	//    ⚠ 带 `?image=<id>` 进来（工作台详情栏「到画布里改」）⇒ **强制自由绘制**并把那张图放上去
+	//      （用户意图明确是要"改这张图"；留在节点模式会看不到图 ✗）。
+	const wantedImage = new URLSearchParams(location.search).get('image') || '';
 	let remembered = hostMode;
 	try { remembered = localStorage.getItem(MODE_KEY) || hostMode; } catch { /* 忽略 ✓ */ }
+	if (wantedImage) { remembered = 'free'; }
 	await setMode(remembered === 'graph' ? 'graph' : 'free', initialScene);
+	if (wantedImage && free) {
+		const placed = await free.placeImageById(wantedImage);
+		if (!placed) { log('没把这张图放上画布（图不在「最近出图」账本里？）', 'bad'); }
+	}
 	// ③ 心跳与轮询。
 	setInterval(() => { void pullGraph(); }, 3000);
 	setInterval(() => {

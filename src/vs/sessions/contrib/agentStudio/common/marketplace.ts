@@ -25,6 +25,16 @@ import { Event } from '../../../../base/common/event.js';
  */
 export type PackageKind = 'agent' | 'skill' | 'mcp' | 'knowledge' | 'workflow' | 'workbench';
 
+/*
+ * ⚠ 服务端**还会**返回 kind = `plugin`（6704 个 dsh 插件，与 workbench 同类：本体在 npm / GitHub）。
+ *
+ * 为什么不加进 `PackageKind`：那会让 7 处 `Record<PackageKind, string>`（标签 / 图标表）全部报
+ *   "Property 'plugin' is missing"，而那些表本来就没有"插件"这一档 ✗。
+ * 为什么不在这里导出一个常量：2026-10-24 实测 `SERVER_ONLY_EXTERNAL_KINDS is not defined`
+ *   （IDE 运行中改文件、模块加载到半成品状态就会炸）⇒ 判定逻辑就地写在用它的那个文件里，
+ *   **不跨模块传值**，少一个能被缓存住的机会。
+ */
+
 /** 分发方式：bundle = 包本体随版本上传；其余 = 外部发布源（workbench 走这条）。 */
 export type DistributionType = 'bundle' | 'npm' | 'github-release' | 'github-source';
 

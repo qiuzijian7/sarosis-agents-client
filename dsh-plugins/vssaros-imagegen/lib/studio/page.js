@@ -11,6 +11,7 @@
  */
 
 import { PAGE_CSS, renderShell } from './views/imagegen/shell.js';
+import { CANVAS_ROUTE, WORKBENCH_ROUTE, planOpenRoute } from './views/imagegen/openPlan.js';
 
 const SEL_KEY = 'vssaros.wb.imagegen.sel';
 const REV_KEY = 'vssaros.wb.imagegen.rev';
@@ -195,8 +196,12 @@ function render() {
 				render();
 			},
 			onRefresh() { load(); },
-			onOpenWorkbench() { openModulePage('/x/imagegen/'); },
-			onOpenCanvas() { openModulePage('/x/imagegen/canvas/'); },
+			onOpenWorkbench() { openModulePage(WORKBENCH_ROUTE); },
+			// 「打开画布」不带图；「到画布里改」带图 id（画布页会把它放到自由绘制层上 ✓）。
+			onOpenCanvas(imageId) {
+				const id = String(imageId || '').trim();
+				openModulePage(id ? CANVAS_ROUTE + '?image=' + encodeURIComponent(id) : CANVAS_ROUTE);
+			},
 			onGenerate(options) { runAction('/x/imagegen/api/generate', options, '生成中…（可能几十秒）'); },
 			onBatch(options) { runAction('/x/imagegen/api/batch', options, '批量生成中…'); },
 			onSave(id) { runAction('/x/imagegen/api/save', { id }, '正在存到工作区…'); },
@@ -234,16 +239,33 @@ async function copyPrompt(text) {
 	}
 }
 
-/** 走页面桥打开模块页（页面 → 宿主是允许的方向 ✓；桥不在 ⇒ 如实说，不静默失败）。 */
+/**
+ * 打开模块页（工作台 / 画布）。
+ *
+ * ★ 落点由 `planOpenRoute` 决定（纯函数，见 `views/imagegen/openPlan.js`）：
+ *   · 有页面桥 ⇒ 在 **IDE 编辑区**开一个页签（原行为 ✓）。
+ *   · 无页面桥（**dsh 客户端窗口**：插件页由 dsh 自己加载 ⇒ 没有 IDE preload）
+ *     ⇒ **同窗口导航**到该路由 —— 画布页是 Host 的同源路由，本就能同窗口打开 ✓
+ *       （原来这里只报"没有桥"，于是用户点了**没反应** ✗）。
+ */
 function openModulePage(route) {
-	const bridge = window.vssarosDsh;
-	if (bridge && typeof bridge.openModulePage === 'function') {
-		bridge.openModulePage(route);
+	const plan = planOpenRoute(route, hasBridge());
+	if (plan.mode === 'ide') {
+		window.vssarosDsh.openModulePage(plan.route);
 		return;
 	}
-	setStatus('这一版 IDE 没有提供打开模块页的桥（页面桥版本太旧）——请升级后再试。', true, 'err');
-	// 顶部徽标要跟着变黄 ⇒ 重绘一次（状态在页面上）。
-	render();
+	if (plan.mode === 'current') {
+		setStatus(plan.note, false, 'ok');
+		render();
+		return;
+	}
+	// 同窗口打开（无桥时唯一的路）。
+	try {
+		window.location.assign(plan.route);
+	} catch (e) {
+		setStatus('打开失败：' + String((e && e.message) || e), true, 'err');
+		render();
+	}
 }
 
 function setStatus(text, isError, tone) {

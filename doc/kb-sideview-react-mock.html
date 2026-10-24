@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>知识库侧栏 · React 版（HTML 效果稿）</title>
+<style>
+/* ── 主题令牌：与组件里 `const c = {…}` 一一对应（都是 VS Code 侧栏的变量，带暗色兜底）── */
+:root {
+	--bg:        var(--vscode-sideBar-background, #252526);
+	--fg:        var(--vscode-sideBar-foreground, #cccccc);
+	--fg-dim:    var(--vscode-descriptionForeground, #9d9d9d);
+	--fg-faint:  var(--vscode-disabledForeground, #6e7681);
+	--line:      var(--vscode-panel-border, #3c3c3c);
+	--hover:     var(--vscode-list-hoverBackground, #2a2d2e);
+	--sel:       var(--vscode-list-activeSelectionBackground, #094771);
+	--sel-fg:    var(--vscode-list-activeSelectionForeground, #ffffff);
+	--accent:    var(--vscode-focusBorder, #007acc);
+	--link:      var(--vscode-textLink-foreground, #3794ff);
+	--input-bg:  var(--vscode-input-background, #3c3c3c);
+	--input-fg:  var(--vscode-input-foreground, #cccccc);
+	--chip-bg:   #2a2d2e;
+	--chip-line: #383838;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+	background: #1e1e1e; color: var(--fg);
+	font: 13px/1.5 -apple-system, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+	display: flex; flex-direction: column; overflow: hidden;
+}
+/* 顶部页签条（仅示意宿主环境，不是侧栏的一部分） */
+.tabs {
+	height: 35px; flex: 0 0 35px; display: flex; align-items: stretch;
+	background: #252526; border-bottom: 1px solid #1b1b1b; padding-left: 8px;
+}
+.tab {
+	display: flex; align-items: center; gap: 6px; padding: 0 12px;
+	font-size: 12px; color: var(--fg-dim); border-right: 1px solid #1b1b1b;
+}
+.tab.active { background: #1e1e1e; color: var(--fg); box-shadow: inset 0 1px 0 var(--accent); }
+.tab .dot { width: 7px; height: 7px; border-radius: 50%; background: #6e7681; }
+.tab.active .dot { background: var(--accent); }
+.body { flex: 1; display: flex; min-height: 0; }
+/* 左侧栏：宽 320，与 IDE 侧栏同宽 */
+.sidebar {
+	width: 320px; flex: 0 0 320px; background: var(--bg);
+	display: flex; flex-direction: column; min-height: 0;
+	border-right: 1px solid #1b1b1b;
+}
+/* 右侧编辑区（正文在这里打开 —— 旧页是侧栏内嵌阅读器，新页不是） */
+.editor { flex: 1; display: flex; align-items: center; justify-content: center; color: #4b5058; font-size: 12.5px; }
+.editor .hint { text-align: center; line-height: 1.9; }
+.editor kbd { background: #2a2d2e; border: 1px solid #3c3c3c; border-radius: 3px; padding: 1px 5px; font: 11px monospace; color: #9d9d9d; }
+
+/* ── 库栏 ── */
+.vaultbar {
+	height: 34px; flex: 0 0 34px; display: flex; align-items: center; gap: 6px;
+	padding: 0 10px; border-bottom: 1px solid var(--line);
+}
+.vaultbar .name { font-size: 12.5px; font-weight: 600; color: var(--fg); }
+.vaultbar .meta { font-size: 11px; color: var(--fg-faint); }
+.vaultbar .caret { margin-left: auto; color: var(--fg-dim); font-size: 9px; }
+
+/* ── 搜索行 ── */
+.searchrow { padding: 8px 10px 6px; display: flex; gap: 6px; align-items: center; }
+.searchrow input {
+	flex: 1; height: 24px; padding: 0 7px; font-size: 12px;
+	background: var(--input-bg); color: var(--input-fg);
+	border: 1px solid var(--line); border-radius: 3px; outline: none;
+}
+.searchrow input:focus { border-color: var(--accent); }
+.mode { display: flex; gap: 2px; }
+.mode button {
+	height: 22px; padding: 0 7px; font-size: 10.5px; cursor: pointer;
+	background: transparent; color: var(--fg-dim);
+	border: 1px solid var(--line); border-radius: 3px;
+}
+.mode button.on { background: var(--sel); color: var(--sel-fg); border-color: var(--sel); }
+
+/* ── 节头（28px / 11px / 700 / 大写 / 字距 .04em）── */
+.section { border-bottom: 1px solid #2b2b2b; }
+.sechead {
+	height: 28px; display: flex; align-items: center; gap: 6px; padding: 0 8px;
+	font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+	color: var(--fg-dim); cursor: pointer; user-select: none;
+}
+.sechead:hover { background: var(--hover); }
+.sechead .arrow { width: 10px; font-size: 9px; color: var(--fg-faint); }
+.sechead .count { font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--fg-faint); }
+.sechead .spacer { flex: 1; }
+.sechead .btn {
+	height: 19px; padding: 0 7px; font-size: 10.5px; font-weight: 400; letter-spacing: 0;
+	text-transform: none; cursor: pointer; border-radius: 3px;
+	background: transparent; color: var(--fg-dim); border: 1px solid var(--line);
+}
+.sechead .btn:hover { background: var(--hover); color: var(--fg); }
+
+/* ── 树行（24px / 12.5px / 缩进 10 + depth×14）── */
+.row {
+	height: 24px; display: flex; align-items: center; gap: 6px;
+	padding-right: 8px; font-size: 12.5px; cursor: pointer;
+	color: var(--fg); white-space: nowrap;
+}
+.row:hover { background: var(--hover); }
+.row.sel { background: var(--sel); color: var(--sel-fg); }
+.row.sel .size { color: rgba(255,255,255,.72); }
+.row .arrow2 { width: 10px; flex: 0 0 10px; font-size: 9px; color: var(--fg-faint); }
+.row.sel .arrow2 { color: var(--sel-fg); }
+.row .ico { width: 13px; flex: 0 0 13px; display: flex; align-items: center; }
+.row .label { overflow: hidden; text-overflow: ellipsis; }
+.row .size { margin-left: auto; font-size: 10.5px; color: var(--fg-faint); font-variant-numeric: tabular-nums; }
+.d1 { padding-left: 10px; } .d2 { padding-left: 24px; } .d3 { padding-left: 38px; }
+
+/* ── 排序 chips ── */
+.sortrow { display: flex; align-items: center; gap: 6px; padding: 0 10px 5px; }
+.sortrow .lbl { font-size: 10.5px; color: var(--fg-faint); }
+.sortrow .chip {
+	height: 19px; padding: 0 7px; font-size: 10.5px; cursor: pointer; border-radius: 3px;
+	background: transparent; color: var(--fg-dim); border: 1px solid var(--line);
+}
+.sortrow .chip.on { background: var(--sel); color: var(--sel-fg); border-color: var(--sel); }
+.sortrow .grow { flex: 1; }
+
+/* ── 标签 ── */
+.tagfilter { width: 100%; height: 22px; padding: 0 6px; margin-bottom: 6px; font-size: 11.5px;
+	background: var(--input-bg); color: var(--input-fg); border: 1px solid var(--line); border-radius: 3px; outline: none; }
+.taggroups { padding: 4px 10px 8px; }
+.tg { margin-bottom: 4px; }
+.tghead { display: flex; align-items: center; gap: 4px; height: 18px; font-size: 10.5px; color: var(--fg-faint); cursor: pointer; }
+.tghead .gname { font-weight: 700; letter-spacing: .03em; }
+.tgbody { display: flex; flex-wrap: wrap; gap: 5px; padding-top: 3px; }
+.tag {
+	display: inline-flex; align-items: center; gap: 4px; height: 21px; padding: 0 7px;
+	background: var(--chip-bg); border: 1px solid var(--chip-line); border-radius: 11px;
+	font-size: 11px; color: #c8c8c8; cursor: pointer;
+}
+.tag:hover { border-color: var(--accent); }
+.tag b { font-size: 9.5px; font-weight: 400; color: var(--fg-faint); }
+.tag.untagged { border-style: dashed; border-color: #555; color: var(--fg-dim); }
+
+/* ── 双链 ── */
+.links { padding: 2px 10px 8px; }
+.links .grp { font-size: 11px; color: var(--fg-faint); margin: 6px 0 2px; }
+.links .grp:first-child { margin-top: 0; }
+.links a { display: block; font-size: 12px; color: var(--link); text-decoration: none; padding: 1px 0; }
+.links a:hover { text-decoration: underline; }
+
+/* ── 底栏 ── */
+.footer {
+	height: 24px; flex: 0 0 24px; display: flex; align-items: center; gap: 6px;
+	padding: 0 10px; border-top: 1px solid var(--line); font-size: 10.5px; color: var(--fg-faint);
+}
+.scroll { flex: 1; overflow: auto; }
+/* 说明浮层（仅效果稿用，不属于组件） */
+.note {
+	position: fixed; right: 16px; bottom: 16px; max-width: 340px; padding: 10px 12px;
+	background: #252526; border: 1px solid var(--line); border-radius: 5px;
+	font-size: 11.5px; line-height: 1.75; color: var(--fg-dim); box-shadow: 0 8px 24px rgba(0,0,0,.5);
+}
+.note b { color: var(--fg); font-weight: 600; }
+</style>
+</head>
+<body>
+
+<div class="tabs">
+	<div class="tab"><span class="dot"></span>会话</div>
+	<div class="tab"><span class="dot"></span>主页</div>
+	<div class="tab"><span class="dot"></span>工具</div>
+	<div class="tab active"><span class="dot"></span>知识库</div>
+</div>
+
+<div class="body">
+	<div class="sidebar">
+
+		<!-- 库栏 -->
+		<div class="vaultbar">
+			<span class="name">VsSarosVault</span>
+			<span class="meta">1 个库 · 170 条索引</span>
+			<span class="caret">▾</span>
+		</div>
+
+		<!-- 搜索行 -->
+		<div class="searchrow">
+			<input placeholder="搜索笔记（回车）">
+			<div class="mode">
+				<button class="on">全文</button>
+				<button>文件名</button>
+			</div>
+		</div>
+
+		<div class="scroll">
+
+			<!-- 库 -->
+			<div class="section">
+				<div class="sechead"><span class="arrow">▾</span><span>库</span><span class="count">134</span></div>
+
+				<div class="row d1"><span class="arrow2">▸</span><span class="ico"><svg width="13" height="13" viewBox="0 0 16 16" fill="#dcb67a"><path d="M1.5 3h4l1.2 1.5h7.8v8.5h-13z"/></svg></span><span class="label">方法</span><span class="size">15</span></div>
+				<div class="row d1"><span class="arrow2">▸</span><span class="ico"><svg width="13" height="13" viewBox="0 0 16 16" fill="#dcb67a"><path d="M1.5 3h4l1.2 1.5h7.8v8.5h-13z"/></svg></span><span class="label">概念</span><span class="size">11</span></div>
+				<div class="row d1"><span class="arrow2">▸</span><span class="ico"><svg width="13" height="13" viewBox="0 0 16 16" fill="#dcb67a"><path d="M1.5 3h4l1.2 1.5h7.8v8.5h-13z"/></svg></span><span class="label">实体</span><span class="size">3</span></div>
+				<div class="row d1"><span class="arrow2">▸</span><span class="ico"><svg width="13" height="13" viewBox="0 0 16 16" fill="#dcb67a"><path d="M1.5 3h4l1.2 1.5h7.8v8.5h-13z"/></svg></span><span class="label">源</span><span class="size">4</span></div>
+				<div class="row d1"><span class="arrow2">▸</span><span class="ico"><svg width="13" height="13" viewBox="0 0 16 16" fill="#dcb67a"><path d="M1.5 3h4l1.2 1.5h7.8v8.5h-13z"/></svg></span><span class="label">综合</span><span class="size">4</span></div>
+				<div class="row d1"><span class="arrow2">▸</span><span class="ico"><svg width="13" height="13" viewBox="0 0 16 16" fill="#dcb67a"><path d="M1.5 3h4l1.2 1.5h7.8v8.5h-13z"/></svg></span><span class="label">raw</span><span class="size">92</span></div>
+
+				<!-- 只有「能打开、有意义」的类型才进树；index/insights/overview/.kb-*.json 已被过滤 -->
+				<div class="row d1"><span class="arrow2"></span><span class="ico"><svg width="13" height="13" viewBox="0 0 16 16" fill="#8a8a8a"><path d="M3 1.5h6l4 4v9H3z"/></svg></span><span class="label">Codex 批量生成游戏图标工作流-奶爸教UI</span><span class="size">1.0 KB</span></div>
+				<div class="row d1"><span class="arrow2"></span><span class="ico"><svg width="13" height="13" viewBox="0 0 16 16" fill="#8a8a8a"><path d="M3 1.5h6l4 4v9H3z"/></svg></span><span class="label">差分图压缩优化方案</span><span class="size">1.0 KB</span></div>
+				<div class="row d1"><span class="arrow2"></span><span class="ico"><svg width="13" height="13" viewBox="0 0 16 16" fill="#8a8a8a"><path d="M3 1.5h6l4 4v9H3z"/></svg></span><span class="label">UI 优化篇.canvas</span><span class="size">12.2 KB</span></div>
+				<div class="row d1"><span class="arrow2"></span><span class="ico"><svg width="13" height="13" viewBox="0 0 16 16" fill="#e06c75"><path d="M3 1.5h10v13H3z"/></svg></span><span class="label">材质参考手册.pdf</span><span class="size">2.4 MB</span></div>
+			</div>
+
+			<!-- 笔记 -->
+			<div class="section">
+				<div class="sechead"><span class="arrow">▾</span><span>笔记</span><span class="count">102</span></div>
+
+				<div class="sortrow">
+					<span class="lbl">排序</span>
+					<button class="chip on">名称↑</button>
+					<button class="chip">名称↓</button>
+					<button class="chip">大小↓</button>
+					<button class="chip">时间↓</button>
+					<button class="chip">时间↑</button>
+					<span class="grow"></span>
+					<button class="btn">审核</button>
+					<button class="btn">去重</button>
+					<button class="btn">体检</button>
+					<button class="btn">导图</button>
+				</div>
+
+				<div class="row d1"><span class="arrow2">▾</span><span class="ico"><svg width="13" height="13" viewBox="0 0 16 16" fill="#dcb67a"><path d="M1.5 3h4l1.2 1.5h7.8v8.5h-13z"/></svg></span><span class="label">01_学习</span><span class="size">94</span></div>
+					<div class="row d2"><span class="arrow2">▸</span><span class="ico"><svg width="13" height="13" viewBox="0 0 16 16" fill="#dcb67a"><path d="M1.5 3h4l1.2 1.5h7.8v8.5h-13z"/></svg></span><span class="label">AI_Agent</span><span class="size">22</span></div>
+					<div class="row d2"><span class="arrow2">▸</span><span class="ico"><svg width="13" height="13" viewBox="0 0 16 16" fill="#dcb67a"><path d="M1.5 3h4l1.2 1.5h7.8v8.5h-13z"/></svg></span><span class="label">DSH专题</span><span class="size">12</span></div>
+					<div class="row d2"><span class="arrow2"></span><span class="ico"><svg width="13" height="13" viewBox="0 0 16 16" fill="#8a8a8a"><path d="M3 1.5h6l4 4v9H3z"/></svg></span><span class="label">05 Plan-and-Solve</span><span class="size">8.2 KB</span></div>
+				<div class="row d1 sel"><span class="arrow2"></span><span class="ico"><svg width="13" height="13" viewBox="0 0 16 16" fill="#ffffff"><path d="M3 1.5h6l4 4v9H3z"/></svg></span><span class="label">Cpp 内存分配机制</span><span class="size">14.6 KB</span></div>
+				<div class="row d1"><span class="arrow2">▸</span><span class="ico"><svg width="13" height="13" viewBox="0 0 16 16" fill="#dcb67a"><path d="M1.5 3h4l1.2 1.5h7.8v8.5h-13z"/></svg></span><span class="label">02_工作</span><span class="size">6</span></div>
+				<div class="row d1"><span class="arrow2">▸</span><span class="ico"><svg width="13" height="13" viewBox="0 0 16 16" fill="#dcb67a"><path d="M1.5 3h4l1.2 1.5h7.8v8.5h-13z"/></svg></span><span class="label">03_生活</span><span class="size">2</span></div>
+				<div class="row d1"><span class="arrow2">▸</span><span class="ico"><svg width="13" height="13" viewBox="0 0 16 16" fill="#dcb67a"><path d="M1.5 3h4l1.2 1.5h7.8v8.5h-13z"/></svg></span><span class="label">技术架构</span><span class="size">4</span></div>
+				<div class="row d1"><span class="arrow2"></span><span class="ico"><svg width="13" height="13" viewBox="0 0 16 16" fill="#8a8a8a"><path d="M3 1.5h6l4 4v9H3z"/></svg></span><span class="label">知识体系</span><span class="size">21.0 KB</span></div>
+				<div class="row d1"><span class="arrow2"></span><span class="ico"><svg width="13" height="13" viewBox="0 0 16 16" fill="#8a8a8a"><path d="M3 1.5h6l4 4v9H3z"/></svg></span><span class="label">图像识别.png</span><span class="size">1.5 KB</span></div>
+				<div class="row d1"><span class="arrow2"></span><span class="ico"><svg width="13" height="13" viewBox="0 0 16 16" fill="#8a8a8a"><path d="M3 1.5h6l4 4v9H3z"/></svg></span><span class="label">log</span><span class="size">417 B</span></div>
+			</div>
+
+			<!-- 标签分类 -->
+			<div class="section">
+				<div class="sechead"><span class="arrow">▾</span><span>标签分类</span><span class="count">198</span></div>
+				<div class="taggroups">
+					<input class="tagfilter" placeholder="筛选标签…">
+
+					<div class="tg">
+						<div class="tghead"><span>▾</span><span class="gname">#</span><span>12</span></div>
+						<div class="tgbody">
+							<span class="tag">#UE4.41<b>41</b></span>
+							<span class="tag">#动画系统<b>20</b></span>
+							<span class="tag">#AI-Agent<b>19</b></span>
+							<span class="tag">#性能优化<b>18</b></span>
+							<span class="tag">#游戏设计<b>14</b></span>
+							<span class="tag">#C++<b>12</b></span>
+							<span class="tag">#参考资料<b>11</b></span>
+							<span class="tag">#内存分配<b>9</b></span>
+						</div>
+					</div>
+
+					<div class="tg">
+						<div class="tghead"><span>▾</span><span class="gname">D</span><span>2</span></div>
+						<div class="tgbody">
+							<span class="tag">#DeepSeek-Harness<b>8</b></span>
+							<span class="tag">#DSH<b>8</b></span>
+						</div>
+					</div>
+
+					<div class="tg">
+						<div class="tghead"><span>▾</span><span class="gname">H</span><span>1</span></div>
+						<div class="tgbody">
+							<span class="tag">#Heil-Agent<b>7</b></span>
+						</div>
+					</div>
+
+					<span class="tag untagged">未标签<b>3</b></span>
+				</div>
+			</div>
+
+			<!-- 双链（全量索引，按当前选中项取数） -->
+			<div class="section">
+				<div class="sechead"><span class="arrow">▾</span><span>双链</span><span class="count">出 3 · 反 2</span></div>
+				<div class="links">
+					<div class="grp">出链（当前笔记）</div>
+					<a href="#">Cpp 内存管理参考资料</a>
+					<a href="#">Unreal 内存与对象生命周期参考资料</a>
+					<a href="#">UnLua 内存泄漏排查实践参考资料</a>
+					<div class="grp">反链（被引用）</div>
+					<a href="#">AI-Agent 双书学习地图</a>
+					<a href="#">05 Plan-and-Solve</a>
+				</div>
+			</div>
+
+		</div>
+
+		<!-- 底栏：索引状态 -->
+		<div class="footer"><span style="color:#89d185">●</span><span>索引就绪 · 170 篇</span></div>
+	</div>
+
+	<!-- 右侧编辑区 -->
+	<div class="editor">
+		<div class="hint">
+			<div>正文在<strong style="color:#9d9d9d">编辑区</strong>打开，不在侧栏里内嵌阅读器</div>
+			<div style="margin-top:10px">右键树行 → 改名 / 删除；拖到目录或节头 → 移动<br><kbd>Ctrl</kbd> / <kbd>Shift</kbd> 单击 → 多选</div>
+		</div>
+	</div>
+</div>
+
+<div class="note">
+	<b>这是 React 版侧栏的效果稿。</b><br>
+	与截图（旧页）的区别：无「只读」徽标、无右侧内嵌阅读器、<br>
+	<code>index.md</code> / <code>insights.md</code> / <code>.kb-*.json</code> 已被过滤、<br>
+	多了排序五钮与「审核/去重/体检/导图」四钮、多了「双链」节。<br>
+	颜色全部取自 <code>--vscode-*</code> 令牌，与组件同一套。
+</div>
+
+</body>
+</html>

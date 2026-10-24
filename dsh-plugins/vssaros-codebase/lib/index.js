@@ -30,7 +30,7 @@
 
 import { ARCHITECTURE_ASPECTS, ARCHITECTURE_NOT_PORTED, architectureOf, dependenciesOf, graphSchemaOf, impactOf, isSafeGitRef, mapFilesToNodes, normalizeScope, pathOf, projectsOf, resolveSymbol, searchNodes, sliceLines, summarizeGraph, topNodes, traceFrom } from './core/codebase.js';
 import { bindFoundation, foundation } from './foundationRef.js';
-import { GRAPH_FILE, MANIFEST_FILE, SNIPPET_MAX_LINES, SQLITE_FILE, loadGraph, readOverview, readSourceSlice, runGitChanges, workspaceRootOf } from './store.js';
+import { GRAPH_FILE, MANIFEST_FILE, SNIPPET_MAX_LINES, SQLITE_FILE, loadGraph, readOverview, readSourceSlice, relatedRootsOf, runGitChanges, workspaceRootOf } from './store.js';
 
 // 写侧前提自证（README 5.53）：Host 自己产出**最小**图谱产物（文件级 import 图）+ 用**同一个读侧**读回比对。
 // 只写临时目录 —— 工作区里的 `.codebase-memory/` 是 VsSaros 侧的所有物（`owns` 没交接，5.48/5.50 同一条纪律）。
@@ -138,6 +138,65 @@ export function portAuditOf(registered) {
 	const extra = list.filter(tool => !claimed.includes(tool));
 	return { sourceTools: PORT_AUDIT.length, mapped, replaced, conclusions, missing, extra };
 }
+/**
+ * 可视化取样：**只看结构核心**（按总度数入+出取前 N），并只保留两端都在取样里的边 ✓。
+ *
+ * 为什么需要它：真图 40 万节点 / 127 万边 —— 画不出来，也不该画（IDE 那个面板是 Three.js 3D +
+ * CDN，dsh 客户端没有网络也没有 three ⇒ 我们给一份**可渲染的子图**，由客户端排 2D 布局）。
+ * 三条纪律（都会影响"看起来对、其实假"）：
+ *   ① **只收 degree>0** 的节点：孤立节点在图上只是噪点，还会把名额吃光 ✗；
+ *   ② 边必须**两端都在**取样里 ⇒ 画面上每根线都是真实存在的边 ✓（不抽样造假边 ✗）；
+ *   ③ `truncated` 如实回（"图上只有 N 个"与"图里只有 N 个"是两件事 ✗）。
+ *
+ * @returns `{ nodes, edges, limit, connected, truncated, edgeCap }`（`nodes` 按总度数降序 ✓）
+ */
+export function buildVizSample(graph, { label = '', limit = 240, edgeCap = 2000 } = {}) {
+	const wanted = String(label ?? '').trim().toLowerCase();
+	const cap = Math.min(500, Math.max(40, Math.floor(Number(limit) || 240)));
+	const pool = [];
+	let connected = 0;
+	for (const node of graph?.nodes ?? []) {
+		if (!node) { continue; }
+		if (wanted && String(node.label ?? '').toLowerCase() !== wanted) { continue; }
+		const inDegree = Number(node.inDegree) || 0;
+		const outDegree = Number(node.outDegree) || 0;
+		const degree = inDegree + outDegree;
+		if (degree <= 0) { continue; }
+		connected += 1;
+		pool.push({ node, degree, inDegree, outDegree });
+	}
+	// 排序：总度数降序，平手按 id 升序（确定性 ⇒ 页面刷新不会"换一张图" ✓）
+	pool.sort((a, b) => b.degree - a.degree || ((a.node.id ?? 0) - (b.node.id ?? 0)));
+	const picked = pool.slice(0, cap);
+	const ids = new Set(picked.map(entry => entry.node.id));
+	const nodes = picked.map(entry => ({
+		id: entry.node.id,
+		name: entry.node.name ?? '',
+		label: entry.node.label ?? '',
+		filePath: entry.node.filePath,
+		degree: entry.degree,
+		inDegree: entry.inDegree,
+		outDegree: entry.outDegree,
+	}));
+	const edges = [];
+	for (const edge of graph?.edges ?? []) {
+		if (edges.length >= edgeCap) { break; }
+		if (!ids.has(edge.sourceId) || !ids.has(edge.targetId)) { continue; }
+		edges.push({ source: edge.sourceId, target: edge.targetId, type: edge.type });
+	}
+	return {
+		nodes,
+		edges,
+		limit: cap,
+		connected,
+		edgeCap,
+		truncated: connected > nodes.length || edges.length >= edgeCap,
+	};
+}
+
+/** 可视化取样的缺省规模（客户端不传 `?viz=` 时用它；40..500 之间夹紧 ✓）。 */
+const VIZ_DEFAULT_LIMIT = 240;
+
 /** `codebase_snippet` 默认带的前后文行数（真源 `get_code_snippet` 也是 3 ✓）。 */
 const SNIPPET_CONTEXT_DEFAULT = 3;
 /** `codebase_schema` 每个列表默认列几条（页面那份 `summarizeGraph` 是 12 ✓；给模型可以多些，但**必须标 truncated** ✓）。 */
@@ -2944,6 +3003,60 @@ export function apply(ctx, config = {}) {
 					res.end(JSON.stringify({ ...status, watch: watchStateOf() }));
 					return;
 				}
+				if (url.pathname === `${ROUTE_PREFIX}/api/graph`) {
+					// ★★ 2026-10-23（用户报「点图谱页按钮没有反应」）：**工作台不能靠跳 SSR 页** ——
+					//   工作台跑在 dsh 客户端那个 SPA 里（`surface=workbench` 加载的是客户端根 `/`），
+					//   `<a href="/x/codebase/?view=graph">` 是**换整页**（还带查询串，宿主入口白名单本来就不收 ✗）
+					//   ⇒ 点了等于没反应 ✓。正解 = 把那一页的**数据**给工作台（同一份口径 ✓，不嵌 iframe ✗）。
+					//   只读、无副作用、无闸（与 `/api/index-status` 同级 ✓）；**必然加载全量图** ⇒ 只由用户
+					//   真正展开「图谱浏览」时才请求（打开工作台本身仍走轻路径 ✓）。
+					const label = (url.searchParams.get('label') ?? '').trim().slice(0, 60);
+					const rawGraphNode = url.searchParams.get('node');
+					const graphNodeId = rawGraphNode === null || rawGraphNode.trim() === '' ? undefined : Number(rawGraphNode);
+					// 可视化取样规模（客户端可调，夹紧 40..500 —— 再大就不是"一眼看懂结构"了，也画不动 ✗）
+					const vizLimitRaw = Number(url.searchParams.get('viz'));
+					const vizLimit = Number.isFinite(vizLimitRaw) && vizLimitRaw > 0
+						? Math.min(500, Math.max(40, Math.floor(vizLimitRaw)))
+						: VIZ_DEFAULT_LIMIT;
+					const writeGraph = (body) => {
+						res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(body));
+					};
+					const light = await readOverview(config);
+					const why = light.error ?? (light.missing ? `还没有图谱：${light.missing}` : undefined);
+					if (why) {
+						writeGraph({ ok: true, available: false, why, label });
+						return;
+					}
+					const loaded = await loadGraph(config);
+					if (loaded.error) {
+						writeGraph({ ok: true, available: false, why: loaded.error, label });
+						return;
+					}
+					const graph = loaded.graph;
+					writeGraph({
+						ok: true,
+						available: true,
+						summary: summarizeGraph(graph),
+						label,
+						loadMs: loaded.ms,
+						loadBytes: loaded.bytes,
+						cached: loaded.cached,
+						// 两张排行与「按类型筛选」同一份口径（与 SSR 的 `renderGraphView` 逐条一样 ✓）
+						inTop: topNodes(graph, { by: 'inDegree', label, limit: 15 }),
+						outTop: topNodes(graph, { by: 'outDegree', label, limit: 15 }),
+						// ★★ 2026-10-23（用户「图谱页面缺少可视化显示，参考 IDE 侧」）：给工作台一份**可视化子图**。
+						//   IDE 那个面板是 Three.js 3D（CDN 加载，dsh 客户端里没有网络/没有 three）
+						//   ⇒ 这边给**同一份设备无关的数据**，由客户端自己排 2D 力导向 + 画 SVG ✓。
+						//   ⚠ 40 万节点画不出来也不该画：按 **总度数**（入+出）取前 N 个"结构核心"，
+						//     只保留两端都在取样里的边 ⇒ 画面上每根线都是真的 ✓（不抽样造假边 ✗）。
+						//   ⚠ 只统计**有边的节点**（degree>0）：孤立节点在图上只是噪点，还会把可用的名额吃光 ✗。
+						viz: buildVizSample(graph, { label, limit: vizLimit }),
+						// 下钻：点一个节点 ⇒ 就地摊开它的出入依赖（`dependenciesOf` ✓）
+						...(Number.isFinite(graphNodeId) ? { deps: dependenciesOf(graph, { nodeId: graphNodeId, limit: 12 }) } : {}),
+					});
+					return;
+				}
 				const query = url.searchParams.get('q') ?? '';
 				const fileFilter = url.searchParams.get('file') ?? '';
 				// ⚠️ `Number(null)` 是 **0**，`Number.isFinite(0)` 为真 ⇒ 不写 `?node=` 也会被当成"要深加载"
@@ -3040,18 +3153,42 @@ export function apply(ctx, config = {}) {
 					}));
 					return;
 				}
-				const html = renderPage({
+				// ★ 2026-10-22（工作台重构 §5 步骤 2）：页面数据**只装配一次** ⇒ SSR 页与 React 工作台共用 ✓
+				//   （`/api/page` 直接回这一份 JSON ⇒ 两个界面的数字/文案口径一致，不会各算一遍 ✗）。
+				const pageData = {
 					overview,
 					deep: deep && !deep.error ? deep : undefined,
 					shape: wantsShape ? { text: shapeText, outcome: shapeOutcome } : undefined,
+					// ★ 2026-10-23：React 工作台要**补齐 IDE 侧 `codebaseMemoryDetailEditorPane` 的那几节** ⇒
+					//   它需要两样"只在服务端才有"的清单：形状查询的可用写法、移植对账表。
+					//   ⚠ 都从**真源**现算（`SHAPE_HELP` / `PORT_AUDIT`）⇒ 改一处两界面同时变，不会各自抄一份 ✗。
+					shapeHelp: SHAPE_HELP.map(entry => ({ usage: entry.usage, example: entry.example, desc: entry.desc })),
+					portAudit: {
+						...portAuditOf(toolsRegistered),
+						rows: PORT_AUDIT.map(entry => ({
+							from: entry.from,
+							...(entry.to ? { to: entry.to } : {}),
+							...(entry.replacedBy ? { replacedBy: entry.replacedBy } : {}),
+							...(entry.why ? { why: entry.why } : {}),
+							...(entry.conclusion ? { conclusion: entry.conclusion } : {}),
+						})),
+					},
 					projects,
 					query,
 					results,
 					deps,
+					// 一张图可能覆盖**多个**根（`config.relatedRoots`）⇒ 工作台的 Projects 段要能列出来 ✓
+					relatedRoots: relatedRootsOf(config),
 					toolsRegistered: `${toolsRegistered}${deep?.error ? ` · 全量图加载失败：${deep.error}` : ''}`,
 					parser: describeParser(config),
 					index: { ...(await shadowStatus(config)), watch: watchStateOf() },
-				});
+				};
+				if (url.pathname === `${ROUTE_PREFIX}/api/page`) {
+					res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+					res.end(JSON.stringify({ ok: true, ...pageData }));
+					return;
+				}
+				const html = renderPage(pageData);
 				res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
 				res.end(html);
 			} catch (e) {

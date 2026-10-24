@@ -139,9 +139,15 @@ export async function listVaults(root, { withDocs = true, external = [] } = {}) 
 		entries = await readdir(root, { withFileTypes: true });
 	} catch (e) {
 		if (e?.code === 'ENOENT') {
-			return { vaults: [], root, missing: root };
+			// ★ 2026-10-23（用户报「知识库内容变空」）：**注入库不依赖数据根存在**。
+			//   以前这里直接 `return { vaults: [] }` ⇒ 一个"内容在别处"的库（IDE 的 `E:\VsSarosVault`）
+			//   会因为 `<数据根>/knowledge-base` 还没建过而**整段消失** ✗（页面就成了「1 个库 · 0 条索引 · 0 文件」）。
+			//   现在：数据根缺失只表示"没有本地库"，注入库照常参与下面的合并 ✓。
+			if (!external.length) { return { vaults: [], root, missing: root }; }
+			entries = [];
+		} else {
+			throw new Error(`资料库根目录读取失败（${root}）：${e?.message ?? e}`);
 		}
-		throw new Error(`资料库根目录读取失败（${root}）：${e?.message ?? e}`);
 	}
 	const vaults = [];
 	for (const entry of entries.filter(e => e.isDirectory() && isVaultId(e.name)).sort((a, b) => a.name.localeCompare(b.name))) {

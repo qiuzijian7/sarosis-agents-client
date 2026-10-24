@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>主页组件规范（dsh dashboard）</title>
+<!--
+  主页（dsh dashboard 插件）的**组件规范**：新增/修改一个卡片时照这份做，风格就不会漂。
+  2026-10-22 起主页由 React 渲染（`lib/app/src/app.jsx`），本文件里的每条都对应一条守卫，
+  不是"建议"，是"不这么做守卫会红 / 页面会静默坏"。
+
+  直接双击打开即可（样式用的是插件 vendor 进来的 dsh 官方 token，与主页同一套配色）。
+-->
+<link rel="stylesheet" href="../dsh-plugins/vssaros-dashboard/vendor/dsw-theme/base.css">
+<link rel="stylesheet" href="../dsh-plugins/vssaros-dashboard/vendor/dsw-theme/design-platform.css">
+<link rel="stylesheet" href="../dsh-plugins/vssaros-dashboard/vendor/dsw-theme/gradient-shadow-text.css">
+<link rel="stylesheet" href="../dsh-plugins/vssaros-dashboard/vendor/dsw-theme/scrollbar.css">
+<style>
+	body {
+		margin: 0; padding: 32px 40px 80px;
+		background: var(--dsw-alias-bg-base, #1f1f1f); color: var(--dsw-alias-label-primary, #e6e6e6);
+		font: 14px/1.75 "SF Pro Text", -apple-system, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+		max-width: 980px;
+	}
+	h1 { font-size: 22px; margin: 0 0 4px; }
+	h2 { font-size: 16px; margin: 32px 0 10px; padding-bottom: 6px; border-bottom: 1px solid var(--dsw-alias-border-l2); }
+	h3 { font-size: 14px; margin: 18px 0 6px; color: var(--dsw-alias-label-primary, #e6e6e6); }
+	p, li { color: var(--dsw-alias-label-primary, #e6e6e6); }
+	.sub { color: var(--dsw-alias-label-secondary); font-size: 12px; }
+	code { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px;
+		background: var(--dsw-alias-bg-layer-2); padding: 1px 5px; border-radius: 4px; }
+	pre { background: var(--dsw-alias-bg-layer-2); border: 1px solid var(--dsw-alias-border-l2);
+		border-radius: 8px; padding: 12px 14px; overflow-x: auto; }
+	pre code { background: none; padding: 0; font-size: 12.5px; line-height: 1.6; }
+	table { width: 100%; border-collapse: collapse; font-size: 13px; margin: 8px 0 4px; }
+	th { text-align: left; font-weight: 500; color: var(--dsw-alias-label-secondary); font-size: 12px; padding: 6px 8px; }
+	td { padding: 7px 8px; border-top: 1px solid var(--dsw-alias-border-l1); vertical-align: top; }
+	.warn { border-left: 3px solid var(--dsw-alias-state-warn-primary); background: var(--dsw-alias-bg-layer-2);
+		padding: 8px 12px; border-radius: 0 8px 8px 0; margin: 10px 0; font-size: 13px; }
+	.bad { color: var(--dsw-alias-state-error-primary); }
+	.ok { color: var(--dsw-alias-state-success-primary); }
+	.pill { display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 10px;
+		background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-secondary); margin-right: 4px; }
+</style>
+</head>
+<body>
+
+<h1>主页组件规范</h1>
+<p class="sub">适用范围：<code>dsh-plugins/vssaros-dashboard</code> 的主页（完整页 <code>/x/dashboard/</code>）里的**每一个卡片组件**。<br>
+最后更新 2026-10-22（主页改 React 渲染 + 卡片头统一 + 每卡错误边界）。</p>
+
+<h2>0. 三十秒版</h2>
+<ul>
+	<li><b>元数据</b>写在 <code>lib/catalog.js</code> 的 <code>WIDGETS</code>；<b>渲染</b>写在 <code>lib/app/src/app.jsx</code>；<b>样式</b>写 <code>lib/app/src/app.css</code>。</li>
+	<li>卡片<b>标题/图标/强调色由外壳统一画</b>（读目录岛的 <code>name/icon/accent</code>），组件里<b>不许再画 <code>h2</code> 标题</b>。</li>
+	<li>颜色<b>只用两层</b>：<code>--dash-*</code>（页面派生层级）+ 语义明确的 <code>--dsw-alias-*</code>（品牌/状态/遮罩/阴影）。</li>
+	<li>每个组件外面已包 <code>CardBoundary</code>：你抛错只坏自己那一块，但<b>别指望它兜异步/事件里的错</b>。</li>
+	<li>改完必须跑：<code>vendor/build.mjs</code> → <code>p3-46</code> → <code>dump-shell.mjs</code> → bump 版本。</li>
+</ul>
+
+<h2>1. 数据契约（<code>catalog.js</code>）</h2>
+<p>每个组件只有<b>元数据</b>，没有渲染函数（<code>render()</code> 已于 2026-10-22 删除，别再往里加）：</p>
+<table>
+	<tr><th>字段</th><th>必填</th><th>含义 / 约束</th></tr>
+	<tr><td><code>kind</code></td><td>✓</td><td>唯一 id，同时是 <code>WIDGETS</code> 注册表的键。<b>同一 kind 只允许一张卡</b>（<code>normalizeLayout</code> 会丢掉重复的并说明原因）。</td></tr>
+	<tr><td><code>name</code></td><td>✓</td><td>卡片标题 + 画廊条目标题。<b>卡片标题的唯一来源。</b></td></tr>
+	<tr><td><code>description</code></td><td>✓</td><td>画廊副标题 + 卡片图标的 tooltip。</td></tr>
+	<tr><td><code>icon</code></td><td>✓</td><td><b>单色图标名</b>（<code>app.jsx</code> 的 <code>ICONS</code> 键）。现有：<code>graph / graph-line / list / list-unordered / home / pulse / folder / clock / watch / timer</code>。写错不会白屏，会回落 <code>grid</code>。</td></tr>
+	<tr><td><code>accent</code></td><td>✓</td><td>卡片头图标颜色（<code>#RRGGBB</code>）。它在卡片底上必须 ≥3:1（图形元素）。</td></tr>
+	<tr><td><code>defaultSize</code></td><td>✓</td><td><code>{ w, h }</code>：<code>w</code> = 占列 1–12；<code>h</code> = <b>最小高度（行）</b>，24px/行 —— 实际高度由内容撑。</td></tr>
+	<tr><td><code>defaultConfig</code></td><td>✓</td><td>出厂配置工厂函数。</td></tr>
+	<tr><td><code>normalizeConfig(raw)</code></td><td>可选</td><td>越界夹紧 / 过滤去重。<b>由宿主在交给页面前调用</b>（<code>index.js</code> 的 <code>layoutForClient</code>）；组件侧再 <code>clampInt</code> 一次当第二道防线。</td></tr>
+	<tr><td><code>configFields</code></td><td>可选</td><td>可配字段声明，有了它就<b>自动长出</b>卡片设置面板（编辑态齿轮），没有就不显示齿轮。三种类型：<br>
+		· <code>{ type:'number'（默认）, key, label, unit?, min, max, step?, fallback }</code><br>
+		· <code>{ type:'toggle', key, label, fallback:true|false }</code><br>
+		· <code>{ type:'select', key, label, options:[{value,label}], fallback }</code><br>
+		· <code>{ type:'text', key, label, <b>maxLength</b>, placeholder?, fallback }</code>（trim + 超长截断 + 空白回落）<br>
+		<b>声明必须与 <code>normalizeConfig</code> 同口径</b>——守卫用<b>行为断言</b>逐字段钉住：number 喂 <code>max+100</code> 要夹到 <code>max</code>、toggle 喂垃圾值要回落 <code>fallback</code>（不能按 JS 真值当 true）、select 喂非法选项要回落 <code>fallback</code> 且合法值必须原样保留。否则用户填了会被悄悄改掉。</td></tr>
+</table>
+
+<h3>1.1 布局契约（<code>layout.js</code>）</h3>
+<pre><code>// 落盘文件（<数据根>/dashboard/layout.json）——**多套布局**
+{ version: 1, active: '工作',
+  presets: { default: { settings, updatedAt, items[] }, 工作: { … } } }
+
+settings = { rowHeight(24..400), gap(0..48, 默认 12), maxWidth, mode: 'flow' | 'free' }
+items[]  = { id, kind, w(1..12), h, config, title?, x?, y? }
+
+// ⚠ version 2 起间距默认 12px（v1 是 0：卡片描边贴描边，看起来是一整块）；
+//   读 v1 文件时会把**显式存的 gap: 0** 迁到新默认（那不是缺省、是存了 0，只改默认值救不了）。
+// ⚠ 出厂默认顺序（2026-10-23）：工作台 → 关键指标 → 诊断行 → 会话明细（工作台最先）。
+
+// mode = 'flow'（默认）：items 顺序 = 视觉顺序；h = **最小高度**（行，上限 MAX_ROWS=30），没有 x/y
+// mode = 'free'        ：位置由 (x 0..11, y 0..MAX_ROWS_FREE-1) 决定；h = **真实高度**（行）
+//                        ⇒ 上限用 MAX_ROWS_FREE=400，不能用 30（一页装不下会全部叠在一起）
+
+// ⚠ 老形状（顶层 items/settings，P2 单布局时代）**照读不误**：`normalizeLayoutFile` 在内存里
+//   包成 presets.default，**不写盘**（"读一页不该产生文件"那条纪律）；真正落新形状只在写口。</code></pre>
+<ul>
+	<li><b>两种模式的坐标必须互斥</b>：flow 不许留 x/y（切回去用 <code>stripPlacement</code> 剥掉），free 必须有 —— <code>normalizeItem</code> 只认"两个都给"，只给一个是半套数据，当没给。</li>
+	<li>flow → free 是<b>有损换算</b>：先把每张卡的<b>实测高度</b>折算成行（<code>measureRows</code>），再用 <code>packFlow</code> 贪心装箱；否则 h=1 的卡只有 24px 高、内容全溢出。</li>
+	<li>free 模式下拖动/缩放后由 <code>resolveOverlaps(items, anchorId)</code> 兜底：锚点钉住，其余按 (y, x) 依次下沉到不撞为止（<b>被推开的卡之间也要再解一次</b>）。</li>
+	<li><b>虚高卡片自动修</b>：flow 下 <code>h</code> 只是最小高度，一旦被错误写大就永久留着。页面加载后<b>自查一次</b>：量内容高度，把虚高 <b>≥3 行</b>的卡缩回内容高度 —— <b>只在内存里改、不落盘</b>（"读一页不产生文件"），下次改布局时一并保存。阈值 3 行是为了不抹掉用户有意留白；手动「收紧高度」不限差量（明确要收就全收）。</li>
+	<li><b>未知 kind 一律保留</b>在布局里 → 渲染成占位卡（"该组件不存在：xxx"），不能静默消失。</li>
+	<li>落盘：<code>&lt;数据根&gt;/dashboard/layout.json</code>；写口：<code>POST /api/layout</code>（内容，原子写 + 锁 + <b>按预设</b>的 <code>updatedAt</code> CAS）与 <code>POST /api/layout/presets</code>（<code>switch</code> / <code>saveAs</code> / <code>delete</code>，同一把锁、不参与 CAS）。<b><code>settings.mode</code> 必须一起提交</b>，否则服务端归一化成 flow ⇒ "切过去刷新又变回来"。</li>
+	<li><b>预设的几条硬规则</b>：<code>?preset=xxx</code> 只是<b>预览</b>（不改盘上 active）；<code>saveAs</code> 重名要 409（<code>overwrite: true</code> 才覆盖）；<code>rename</code> <b>保序</b>改名（Map 插入顺序即落盘顺序，先删再插会把这份挪到末尾）、不动内容与 <code>updatedAt</code>、重名 409 / 原名不存在 404 / 新名为空 400 / 改同名回 <code>unchanged</code>；<code>delete</code> 不能删到空（最后一个 ⇒ 400），删掉 active 会自动切到 default/第一个；名字 trim + 最多 24 字（<code>normalizePresetName</code>）。</li>
+	<li>页面拿到的是<b>归一化后</b>的 items（含每卡 config）——<b>采纳服务端回传的那份</b>，别用本地快照硬顶。</li>
+</ul>
+
+<h2>2. 渲染契约（<code>app.jsx</code>）</h2>
+<pre><code>function MyCard({ model, config, onSaveConfig, setStatus }) {
+	return el('div', null,
+		el('div', { className: 'dash-sub' }, '副信息（可选）'),
+		/* 正文：只读渲染 model，自己的临时状态用 useState */
+	);
+}
+const WIDGETS = { kpi: KpiCard, ..., my: MyCard };   // kind → 组件</code></pre>
+
+<table>
+	<tr><th>规则</th><th>为什么</th></tr>
+	<tr><td><b>文案由宿主算</b>（<code>sessionRowModel</code> / <code>groupByCwd</code> / <code>usageBuckets</code>），组件只造结构</td><td>侧栏摘要版、React 版、<code>/api/sessions</code> 共用同一处口径 ⇒ 不会"侧栏 32、主页 30"</td></tr>
+	<tr><td><b>不画 <code>h2</code> 标题</b>，只放 <code>.dash-sub</code> 副信息</td><td>标题由外壳统一（图标 + accent + name）⇒ 8 个组件不会各漂一套字号/间距</td></tr>
+	<tr><td><b>不自己写设置表单</b>：可配项只在 <code>catalog.js</code> 声明 <code>configFields</code></td><td>面板由 <code>CardSettings</code> 统一画（一套间距/校验/应用流程）⇒ 加组件不用再写 UI，也不会漂成 8 种表单</td></tr>
+	<tr><td><b>编排必须有至少两条"永远看得见"的出口</b>：工具栏按钮（吸顶）+ 右下固定悬浮「完成编排」+ Esc</td><td>2026-10-23 真机出现"进了编排回不来"：出口只在页面顶部，卡片一多滚下去就找不到了 ⇒ 三条路都收敛到同一个 <code>exitEditing()</code></td></tr>
+	<tr><td><b>动作按钮必须</b>带 <code>data-dash-action</code> <b>且有 onClick</b></td><td>死代码守卫盯着：渲染了按钮却没处理器的历史事故（画廊按钮写在 <code>return</code> 之后）</td></tr>
+	<tr><td>移除/缩放手柄要带 <code>data-dash-no-drag</code></td><td>否则点击会被卡片级拖拽吃掉</td></tr>
+	<tr><td>长列表自己滚动（<code>.dash-scroll</code>，双帽 <code>min(30vh, 300px)</code>）</td><td>不把整页撑长（用户明确要求过）</td></tr>
+	<tr><td>保存失败必须<b>明说</b>；409 才重载；不许静默丢弃</td><td>"显示已保存但没落盘"是最难察觉的形态</td></tr>
+</table>
+
+<div class="warn">
+	<b>错误边界</b>：外壳已给每张卡包 <code>CardBoundary</code>（降级成"这块渲染失败了 + 原因"）。
+	它<b>抓不到</b>事件处理器与异步回调里的异常 ⇒ 那类逻辑自己 <code>try/catch</code> 并把原因写进 <code>setStatus</code>。
+</div>
+
+<h2>3. 视觉契约（<code>app.css</code>）</h2>
+<h3>3.1 颜色只用两层</h3>
+<table>
+	<tr><th>层</th><th>用什么</th><th>用在哪</th></tr>
+	<tr><td>官方 alias</td><td><code>--dsw-alias-brand-primary</code>、<code>--dsw-alias-state-{success,warn,error}-primary</code>、<code>--dsw-alias-bg-mask-1</code>、<code>--dsw-shadow-lv3</code>、<code>--dsw-alias-label-primary</code></td><td>品牌色、状态色、遮罩、阴影、正文色</td></tr>
+	<tr><td>页面派生 <code>--dash-*</code></td><td><code>surface / surface-2 / stroke / stroke-2 / muted / faint</code></td><td><b>所有层级</b>：卡片底、次级块底、描边、次要/弱文字</td></tr>
+</table>
+
+<h3>3.2 禁止清单（每条都是踩过的坑）</h3>
+<table>
+	<tr><th class="bad">禁止</th><th>后果</th></tr>
+	<tr><td><code>--dsw-alias-bg-layer-1</code> 当卡片底</td><td>真机上它被 IDE 主题覆盖成 <code>sideBar.background</code>（比页面底<b>更暗</b>）⇒ 卡片"凹进去"，看着像没卡片</td></tr>
+	<tr><td><code>--dsw-alias-border-l1</code> 当描边</td><td>它 = <code>panel.border</code>，与底差 12 级灰度（<b>1.1:1</b>）⇒ 等于没有边框</td></tr>
+	<tr><td><code>--dsw-alias-label-secondary</code> 当次要文字</td><td>IDE <b>亮色</b>主题下它等于正文色 ⇒ 层次消失</td></tr>
+	<tr><td>彩色 emoji 当图标</td><td>近黑底上过饱和，与官方单色体系冲突</td></tr>
+	<tr><td>在 CSS 里用 <code>color-mix()</code> 派生层级</td><td>自定义属性读回的是声明原文（量不了对比度）+ 需要 Chromium 111+</td></tr>
+	<tr><td>只按 <code>prefers-color-scheme</code> 切主题</td><td>官方 CSS 只认 <code>body[data-ds-dark-theme]</code> ⇒ 暗色环境里整页白底</td></tr>
+</table>
+
+<h3>3.3 几何基准</h3>
+<table>
+	<tr><th>元素</th><th>规格</th></tr>
+	<tr><td>卡片</td><td><code>radius 10</code> + <code>1px</code> 描边 + <code>padding 10px 12px</code>；编辑态改虚线 + <code>grab</code>。<b><code>box-sizing: border-box</code> 是硬要求</b>：<code>min-height</code>（顺序流）、<code>grid-row</code>（自由摆放）与切模式时的 <code>getBoundingClientRect()</code> 必须同一盒模型 —— 默认 <code>content-box</code> 时差 padding+border（22px），会让每次切换都把 6 行折成 7 行、越点越高</td></tr>
+	<tr><td>卡片头</td><td>图标 16px（accent 色）+ 标题 <code>13px / 600</code>，间距 <code>6px</code></td></tr>
+	<tr><td>副信息 <code>.dash-sub</code></td><td><code>11px</code>，<code>--dash-faint</code></td></tr>
+	<tr><td>小按钮</td><td><code>h28 / radius 14 / font 12</code>；主按钮用 <code>brand-primary</code> 填充</td></tr>
+	<tr><td>pill / 徽标</td><td><code>h20–24 / radius 10–12 / font 11–12</code></td></tr>
+	<tr><td>表格</td><td><code>12–13px</code>，行分隔线 <code>--dash-stroke</code>，hover 用 <code>--dash-surface-2</code></td></tr>
+	<tr><td>数字</td><td>一律 <code>font-variant-numeric: tabular-nums</code>（否则跳动）</td></tr>
+	<tr><td>状态点</td><td>同色 16% 外晕 + 22% 内芯（StateDot 口径）</td></tr>
+</table>
+
+<h3>3.4 对比度门槛（可量，别凭眼）</h3>
+<table>
+	<tr><th>对象</th><th>阈值</th></tr>
+	<tr><td>正文 / 次要文字 ÷ 卡片底</td><td>≥ 4.5</td></tr>
+	<tr><td>弱文字 ÷ 卡片底</td><td>≥ 3.0</td></tr>
+	<tr><td><b>装饰</b>描边 ÷ 卡片底</td><td>≥ 1.5（WCAG 1.4.11 只管交互件，卡片不是）</td></tr>
+	<tr><td><b>交互件</b>描边（按钮/输入/焦点）÷ 卡片底</td><td>≥ 3.0</td></tr>
+	<tr><td>卡片底 ÷ 页面底</td><td>≥ 1.12（否则看不出"抬起来"）</td></tr>
+	<tr><td><code>accent</code> ÷ 卡片底</td><td>≥ 3.0（图形元素）</td></tr>
+</table>
+<p class="sub">派生比例在 <code>app.jsx</code> 的 <code>RATIOS</code> 里，**三档**：<code>dark</code> / <code>light</code> / <code>hc</code>（高对比，<code>prefers-contrast: more</code> 时启用，VS Code 的 hc-* 主题会带）。<code>hc</code> 不分明暗——它每一项都比另两档更极端。改色先改那里，别在组件里硬编码。</p>
+
+<h2>4. 扩展一个组件（7 步）</h2>
+<ol>
+	<li><b>元数据</b>：<code>catalog.js</code> 的 <code>WIDGETS</code> 追加一条（<code>kind/name/description/icon/accent/defaultSize/defaultConfig</code>，需要就加 <code>normalizeConfig</code>）。画廊自动出现。</li>
+	<li><b>数据</b>：需要新字段 → 在 <code>index.js</code> 的 <code>widgetModel</code> 里补，并<b>优先复用 <code>catalog.js</code> 的聚合函数</b>（别在页面里重算）。</li>
+	<li><b>组件</b>：在 <code>app.jsx</code> 写 <code>MyCard</code>（props 见上），注册进 <code>WIDGETS</code>。<b>不要画标题</b>。</li>
+	<li><b>样式</b>：<code>app.css</code> 加类，统一 <code>dash-</code> 前缀，颜色只用 <code>--dash-*</code> / 语义明确的 alias。</li>
+	<li><b>构建</b>：<code>node dsh-plugins/vssaros-dashboard/vendor/build.mjs</code></li>
+	<li><b>守卫</b>：<code>node poc/dsh-p0/scripts/p3-46-dashboard-homepage-layout.mjs</code>（"组件都在注册表里"会自动覆盖你）</li>
+	<li><b>看效果</b>：<code>node poc/dashboard-react-build/dump-shell.mjs</code> → 打开 <code>poc/dashboard-react-build/shell.html</code>（真实服务端 HTML，不用重启 Host）</li>
+</ol>
+<p class="sub">版本：<b>只要 <code>lib/</code> 里的内容变了就 bump <code>package.json</code> 的 version</b>（Host 按版本重装；同版本会短路）。新增文件还要进 <code>files</code> 白名单。</p>
+
+<h2>5. 模板</h2>
+<h3>5.1 <code>catalog.js</code></h3>
+<pre><code>{
+	kind: 'mymetric',
+	name: '我的指标',
+	description: '一句话说清它显示什么、数据来自哪',
+	icon: 'graph-line',            // app.jsx 的 ICONS 键（写错回落 grid）
+	accent: '#4EC9B0',             // 卡片头图标色，≥3:1
+	defaultSize: { w: 6, h: 2 },
+	defaultConfig: () => ({ limit: 8 }),
+	// 可配字段（有它就自动有设置面板；声明必须与下面的夹紧同口径）
+	configFields: [
+		{ key: 'limit', label: '最多显示', unit: '个工作区', min: 1, max: 30, step: 1, fallback: 8 },
+		{ key: 'showTrack', label: '显示占比条', type: 'toggle', fallback: true },
+		{ key: 'order', label: '排序', type: 'select', fallback: 'desc',
+			options: [{ value: 'desc', label: '会话多在前' }, { value: 'asc', label: '会话少在前' }] },
+	],
+	normalizeConfig(raw) {
+		return {
+			limit: clampInt(raw?.limit, 1, 30, 8),
+			showTrack: boolOf(raw?.showTrack, true),
+			order: enumOf(raw?.order, ['desc', 'asc'], 'desc'),
+		};
+	},
+},</code></pre>
+<p class="sub"><code>boolOf</code> / <code>enumOf</code> 是 <code>catalog.js</code> 里的两个小助手：布尔只认 <code>true/false</code>（垃圾值回落 fallback，不按 JS 真值当 true）、枚举只认白名单（非法值回落 fallback）。</p>
+
+<h3>5.2 <code>app.jsx</code></h3>
+<pre><code>function MyMetricCard({ model, config }) {
+	const limit = clampInt(config?.limit, 1, 30, 8);       // 第二道防线
+	const rows = (model.mymetric || []).slice(0, limit);   // 数据由宿主算好
+	if (!rows.length) { return el('p', { className: 'empty' }, '还没有数据。'); }
+	return el('div', null,
+		el('div', { className: 'dash-sub' }, `共 ${rows.length} 条`),
+		el('table', { className: 'dash-tbl' },
+			el('thead', null, el('tr', null, el('th', null, '名称'), el('th', null, '数值'))),
+			el('tbody', null, rows.map(row => el('tr', { key: row.key },
+				el('td', null, row.key), el('td', { className: 'dash-num' }, String(row.value))))),
+		),
+	);
+}
+// 注册：
+const WIDGETS = { ..., mymetric: MyMetricCard };</code></pre>
+
+<h3>5.3 <code>app.css</code></h3>
+<pre><code>.dash-mymetric-row { display: flex; gap: 8px; align-items: center; }
+.dash-mymetric-row .dash-num { color: var(--dash-muted); font-variant-numeric: tabular-nums; }</code></pre>
+
+<h2>5.4 与 IDE 侧「主页」的口径差异（原在页面上，2026-10-23 移到这里）</h2>
+<p>
+	<b>本页读的是 dsh 自己的会话投影缓存</b>（<code>&lt;dsh 数据根&gt;/storages/session_projcache/sessions/*.json</code>），
+	checkpoint 落盘 ⇒ <b>可能比实时略落后</b>，因此只有<b>会话遥测</b>：turn / step / 耗时 / token 用量 / 子代理 / 待办计数。
+	<b>IDE 那侧的「主页」是它自己的聚合口径</b>（另有成本与告警）。
+</p>
+<p>
+	⇒ 同一个"会话数 / 用量"在两页<b>不必相同</b>，这<b>不是 bug</b>。
+	但请<b>不要拿两页互相对账</b> —— 它们量的不是同一段时间、也不是同一份数据。
+</p>
+<p class="muted">
+	为什么放在这里而不是页面上：那段说明占两行、每天都看的人不需要它；而需要它的人（第一次觉得"数字对不上"）
+	会来查规范。守卫两侧都钉：<b>文档里必须有</b>（含点名 IDE）、<b>页面上必须没有</b>。
+</p>
+
+<h2>6. 谁在盯着这些规则</h2>
+<table>
+	<tr><th>守卫</th><th>钉住什么</th></tr>
+	<tr><td><code>poc/dsh-p0/scripts/p3-46-dashboard-homepage-layout.mjs</code></td><td>布局纯函数、锚点与布局解耦、岛（layout/model/catalog）、卡片头统一（icon/accent/title）、<code>CardBoundary</code>、工作台拖拽两轴、保存语义、画廊标记、<code>node --check</code> 产物</td></tr>
+	<tr><td><code>src/.../test/common/dshDashboardWorkbenchPin.test.ts</code></td><td>主页恒为固定、<code>ALWAYS_PINNED_ROUTES</code> 白名单、禁用态样式</td></tr>
+	<tr><td><code>src/.../test/common/dshDashboardScope.test.ts</code></td><td>口径文案（"两者数字不必相同"）</td></tr>
+	<tr><td><b><code>src/.../test/common/dshDashboardContrast.test.ts</code></b></td><td><b>对比度机器守卫</b>：读 <code>RATIOS</code> × 真实底/前景重算 WCAG 比值，四个场景（dsh 官方明暗 + <b>IDE 覆盖后</b>明暗）全过阈值；外加「<code>app.css</code> 不许写死颜色」「不许用 <code>color-mix()</code>」两条卫生断言</td></tr>
+	<tr><td><code>dsh-plugins/check-plugin-files.mjs</code></td><td><code>files</code> 白名单与真实文件一致（漏了就白屏）</td></tr>
+</table>
+
+<h2>7. 还没做的（别以为是已实现）</h2>
+<ul>
+	<li><b>自由摆放的跨列压实</b>：<code>compactGrid</code> 只做**纵向**压实（只动 y、不动 x，可预测）；Grafana 那种跨列搜索填洞需要完整求解，刻意不做。</li>
+	<li><b>字号随对比度</b>：高对比只强化了层级色、卡片描边、focus 外观与图标线宽；字号没动（VS Code 的 hc 主题也不改字号）。</li>
+	<li><b>预设级的 CAS 提示</b>：切换/存为/改名/删除走同一把锁但不参与 CAS（它们不改布局内容）；两个窗口同时存为同名预设时，后到的会覆盖。</li>
+</ul>
+<p class="sub">（对比度、卡片级配置面板、开关/下拉/文本字段、自由 x/y 摆放、高对比档（含字号与焦点）、网格压实（纵向+跨列）、多套布局（含改名与预设级 CAS）都曾是缺口，2026-10-22 已分别补上：<code>dshDashboardContrast.test.ts</code>、<code>configFields</code> + <code>CardSettings</code>、<code>boolOf</code>/<code>enumOf</code>/<code>textOf</code>、<code>mode=free</code> + <code>packFlow</code>/<code>resolveOverlaps</code>、<code>RATIOS.hc</code> + <code>prefers-contrast</code>、<code>compactGrid</code>、<code>presets</code> + <code>/api/layout/presets</code>。上面四条是**当前**仍未做的。）</p>
+
+</body>
+</html>

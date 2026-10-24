@@ -1305,3 +1305,246 @@ suite('所有权 —— dsh 产的清单 ⇒ IDE 不索引、不落盘（2026-10
 		assert.ok(/要重建图谱，请在 dsh 侧触发 codebase_index/.test(svcSrc), 'message 必须给去处 ✓');
 	});
 });
+
+/**
+ * ★ 2026-10-22（用户报"dev 整个 app 卡死"）：**全量同步的事务边界不许夹 checkpoint**。
+ *
+ * 现场：全量追平把 401,027 节点 + 1,247,209 边写进主进程 SQLite（551,936ms ≈ 9.2 分钟，WAL 1.2GB），
+ * 写完提交后紧接着的 **checkpoint**（当年是 `wal_checkpoint(TRUNCATE)`，**阻塞式**）把主进程主线程
+ * 挂住 ⇒ 0% CPU、inspector 5875 任何命令都超时、渲染端 9335 的 HTTP 端点不通
+ * ⇒ 渲染进程 IPC 永不返回 ⇒ **整个 app 无响应且不会自愈**（实测僵死 35 分钟）✗✗✗。
+ *
+ * 两条不变量（改动前先读 `node/codebaseGraphSqliteStore.ts` 的 `checkpoint()` 头注）：
+ *   ① 显式事务（`beginProjectSync` → `commitProjectSync`）**之内**不许调 checkpoint
+ *      —— 事务里的 checkpoint 要么被拒、要么阻塞（写锁/读者，且不受 `busy_timeout` 约束）✗；
+ *   ② 提交后那次 checkpoint 必须是**非阻塞**实现（store 侧只允许 PASSIVE ✓）。
+ */
+suite('codebaseGraph 契约 / 全量同步的事务边界（2026-10-22 卡死事故）', () => {
+	const svcPath = path.join(process.cwd(), 'src/vs/sessions/contrib/agentStudio/browser/codebaseGraphService.ts');
+	const storePath = path.join(process.cwd(), 'src/vs/sessions/contrib/agentStudio/node/codebaseGraphSqliteStore.ts');
+	const svcSrc = fs.readFileSync(svcPath, 'utf8');
+	const storeSrc = fs.readFileSync(storePath, 'utf8');
+
+	test('★ 显式事务内不许调 checkpoint（事务里的 checkpoint 会阻塞主进程）', () => {
+		const fnAt = svcSrc.indexOf('async _syncGraphToSqlite(');
+		assert.ok(fnAt > 0, '找不到 _syncGraphToSqlite（守卫不能空跑）');
+		const fn = svcSrc.slice(fnAt, svcSrc.indexOf('\n\tprivate ', fnAt + 10));
+		const beginAt = fn.indexOf('beginProjectSync(');
+		const commitAt = fn.indexOf('commitProjectSync(');
+		assert.ok(beginAt > 0 && commitAt > beginAt, '要能定位 begin/commit（守卫不能空跑）');
+		const inTx = fn.slice(beginAt, commitAt);
+		assert.ok(!/checkpoint\(/.test(inTx),
+			'显式事务内不许 checkpoint（阻塞式 ⇒ 主进程僵死 ✗✗）；收敛交给提交后那一次 ✓');
+	});
+
+	test('★ store 的 checkpoint() 只用 PASSIVE（TRUNCATE 阻塞式 ⇒ 无限期挂住主进程）', () => {
+		const at = storeSrc.indexOf('async checkpoint(');
+		assert.ok(at > 0, '找不到 checkpoint（守卫不能空跑）');
+		// ⚠ 剥掉注释再判：头注里会引用旧写法（TRUNCATE）作取证 ⇒ 连注释查会假红 ✗
+		const body = storeSrc.slice(at, storeSrc.indexOf('\n\t}', at))
+			.replace(/\/\*[\s\S]*?\*\//g, '')
+			.replace(/^\s*\/\/.*$/gm, '');
+		assert.ok(!body.includes('TRUNCATE'), 'checkpoint() 里不许出现 TRUNCATE（阻塞式）✗');
+		assert.ok(body.includes('PASSIVE'), '必须用 PASSIVE（永不阻塞 ✓）');
+	});
+
+	test('★ 增量索引的"删旧节点"循环必须**切片**（否则主线程冻结 ⇒ 窗口"未响应"）', () => {
+		const fnAt = svcSrc.indexOf('private async _runIncrementalIndex(');
+		assert.ok(fnAt > 0, '找不到 _runIncrementalIndex（守卫不能空跑）');
+		const fn = svcSrc.slice(fnAt, svcSrc.indexOf('\n\tprivate ', fnAt + 10));
+		const at = fn.indexOf('this._graph.deleteByFile(rel);');
+		assert.ok(at > 0, '找不到 deleteByFile 调用（守卫不能空跑）');
+		// 该循环前后 1200 字符内必须有切片让出（asyncSlice 的统一口径：8ms 预算）
+		const region = fn.slice(Math.max(0, at - 1200), at + 1200);
+		assert.ok(region.includes('sliceBudgetExceeded('), '删除循环必须按时间预算切片（asyncSlice 统一口径）✗');
+		assert.ok(region.includes('yieldToEventLoop()'), '超预算必须让出主线程（否则 UI 冻结 ⇒ "未响应"）✗');
+		// 现场：实测一次要删 6,726 + 6,688 ≈ 1.3 万个文件 ⇒ 不切片就是 29.5s 主线程阻塞 ✗✗
+	});
+
+	test('★ 被改文件**不先删**基线 hash（否则 watcher 每轮都当"新增"⇒ 反复触发索引）', () => {
+		const fnAt = svcSrc.indexOf('private async _runIncrementalIndex(');
+		const fn = svcSrc.slice(fnAt, svcSrc.indexOf('\n\tprivate ', fnAt + 10));
+		const at = fn.indexOf('this._graph.deleteByFile(rel);');
+		assert.ok(at > 0, '找不到 deleteByFile 调用（守卫不能空跑）');
+		const region = fn.slice(at, at + 900);
+		assert.ok(region.includes('modifiedSet.has(rel)'), '必须区分 deleted / modified：只有 deleted 才删基线 hash ✗');
+	});
+
+	test('★ 索引进行中，watcher 的变更**不并发**跑第二个索引（否则两轮互相踩）', () => {
+		const at = svcSrc.indexOf('private async _onWatcherChange(');
+		assert.ok(at > 0, '找不到 _onWatcherChange（守卫不能空跑）');
+		const fn = svcSrc.slice(at, svcSrc.indexOf('\n\tprivate ', at + 10));
+		const lockAt = fn.indexOf('this._indexLocked');
+		assert.ok(lockAt > 0, '必须在处理文件变更前检查索引锁（_indexLocked）✗');
+		const runAt = fn.indexOf('this._runIncrementalIndex(');
+		assert.ok(runAt > lockAt, '锁检查必须**早于**触发增量索引（否则并发）✗');
+	});
+
+	test('*** deleteProject must also purge orphan edges (else edges table grows forever => WAL 6.6GB => app freeze)', () => {
+		const at2 = storeSrc.indexOf('async deleteProject(');
+		assert.ok(at2 > 0, 'deleteProject not found');
+		const dpBody = storeSrc.slice(at2, storeSrc.indexOf('\n\tasync ', at2 + 10));
+		assert.ok(/NOT EXISTS \(SELECT 1 FROM nodes n WHERE n\.id = e\.source\)/.test(dpBody) && /NOT EXISTS \(SELECT 1 FROM nodes n WHERE n\.id = e\.target\)/.test(dpBody),
+			'deleteProject must purge orphan edges (measured 2026-10-22: 2,043,757 of 3,295,436 edges were orphans => 62% => WAL 6.76GB => freeze); NOT EXISTS required (NOT IN materialises 400k ids)');
+		assert.ok(/DELETE FROM edges WHERE rowid > \? AND rowid <= \?/.test(dpBody), 'the orphan purge must be CHUNKED too (one shot = huge WAL again)');
+	});
+
+	test('★ SQLite 后端调用必须有超时（主进程卡住时"报错"发不回来 ⇒ 只有调用方能自救）', () => {
+		const timeoutPath = path.join(process.cwd(), 'src/vs/sessions/contrib/agentStudio/common/codebaseGraphStoreTimeout.ts');
+		assert.ok(fs.existsSync(timeoutPath), '必须有独立的超时模块（纯函数、无依赖 ⇒ 可直接测）✗');
+		const t = fs.readFileSync(timeoutPath, 'utf8');
+		assert.ok(t.includes('export function withSqliteBackendTimeout'), '要有 withSqliteBackendTimeout ✗');
+		assert.ok(/DEFAULT_SQLITE_BACKEND_TIMEOUT_MS\s*=\s*\d+/.test(t), '要有默认超时值 ✗');
+		const proxyPath = path.join(process.cwd(), 'src/vs/sessions/contrib/agentStudio/browser/codebaseGraphStoreProxy.ts');
+		const proxy = fs.readFileSync(proxyPath, 'utf8');
+		assert.ok(proxy.includes('withSqliteBackendTimeout('), '代理必须给每次调用套上超时 ✗');
+		assert.ok(/broken\s*=\s*true/.test(proxy), '超时后要熔断（后续调用直接失败，别再排队等一个卡住的主进程 ✗）');
+	});
+
+	test('*** full sqlite sync must commit in CHUNKS (one big tx => 6.76GB WAL => app freeze)', () => {
+		const fnAt = svcSrc.indexOf('async _syncGraphToSqlite(');
+		assert.ok(fnAt > 0, 'svcSrc has no _syncGraphToSqlite');
+		const fn = svcSrc.slice(fnAt, svcSrc.indexOf('\n\tprivate ', fnAt + 10));
+		const chunkSize = Number((fn.match(/const COMMIT_CHUNK = ([0-9_]+)/) || [])[1]?.replace(/_/g, '') ?? NaN);
+		assert.ok(Number.isFinite(chunkSize) && chunkSize > 0 && chunkSize <= 500_000,
+			`chunk size must be defined AND bounded (<= 500k rows) -- a huge chunk = WAL explosion again (measured 6.76GB) (got ${chunkSize})`);
+		assert.ok(/commitProjectSync\(project\);\s*\n\s*await this\._sqliteBackend\.checkpoint\(\);\s*\n\s*await this\._sqliteBackend\.beginProjectSync\(project\);/.test(fn),
+			'chunk boundary must be commit -> checkpoint -> begin (checkpoint inside a tx is rejected/blocks)');
+		const nodesAt = fn.indexOf('upsertNodesBatch(graphNodes)');
+		const edgesAt = fn.indexOf('upsertEdgesBatch(edgePayloads)');
+		assert.ok(nodesAt > 0 && edgesAt > 0, 'locate the two upsert loops');
+		const chunkHits = (fn.match(/rowsSinceCommit >= COMMIT_CHUNK/g) || []).length;
+		assert.ok(chunkHits >= 2, `both upsert loops (nodes AND edges) must chunk-commit (hits=${chunkHits}; one big tx => WAL 6.76GB => freeze)`);
+		assert.ok(fn.indexOf('rowsSinceCommit >= COMMIT_CHUNK') > nodesAt, 'node loop must chunk-commit');
+		assert.ok(fn.indexOf('rowsSinceCommit >= COMMIT_CHUNK', edgesAt) > edgesAt, 'edge loop must chunk-commit too');
+		const delAt = fn.indexOf('deleteProject(project');
+		assert.ok(delAt > 0, 'locate deleteProject');
+		// (the delete phase is now OUTSIDE the explicit tx -- it commits its own chunks;
+		//  see the dedicated guard about the delete running outside the explicit tx)
+	});
+
+	test('*** deleteProject must be CHUNKED (one big delete tx => 5GB WAL => main process wedges)', () => {
+		const at = storeSrc.indexOf('async deleteProject(');
+		assert.ok(at > 0, 'deleteProject not found');
+		const body = storeSrc.slice(at, storeSrc.indexOf('\n\tasync ', at + 10));
+		assert.ok(/const CHUNK = this\._deleteChunkSize/.test(body), 'deleteProject must use a chunk size');
+		assert.ok(/LIMIT \$\{CHUNK\}/.test(body), 'deletes must be chunked (LIMIT)');
+		assert.ok(/id > \?/.test(body), 'must advance with an id cursor (a plain LIMIT re-picks the same rows => only the first batch gets deleted)');
+		assert.ok(!/DELETE FROM edges WHERE source IN \(SELECT id FROM nodes WHERE project = \?\) OR target/.test(body),
+			'no more single-shot edge delete (that was the 5GB WAL tx)');
+		assert.ok(/NOT EXISTS/.test(body), 'orphan purge must use NOT EXISTS (NOT IN materialises 400k ids => pathologically slow)');
+	});
+
+	test('*** the delete phase must run OUTSIDE the explicit tx (inside => chunks join it => one huge tx again)', () => {
+		const fnAt = svcSrc.indexOf('async _syncGraphToSqlite(');
+		assert.ok(fnAt > 0, 'svcSrc has no _syncGraphToSqlite');
+		const fn = svcSrc.slice(fnAt, svcSrc.indexOf('\n\tprivate ', fnAt + 10));
+		const delAt = fn.indexOf('deleteProject(project');
+		const beginAt = fn.indexOf('beginProjectSync(project');
+		assert.ok(delAt > 0 && beginAt > 0, 'locate deleteProject + beginProjectSync');
+		assert.ok(delAt < beginAt, 'deleteProject must come BEFORE beginProjectSync (inside the tx the chunks join it => one huge tx => 5GB WAL => freeze)');
+	});
+
+/**
+ * ★★ 2026-10-22（全量追平 8+ 分钟、边只有 2.6k 条/秒 ⇒ 主进程被长时间挤占 ⇒ 卡死）：
+ *   **全量灌数据必须先卸边索引、灌完再建**（SQLite 批量装载的标准手法，快一个数量级）。
+ *
+ * 三条不变量（缺一条就退化回 8 分钟）：
+ *   ① 卸索引必须在 `deleteProject` **之前**（delete 本身也要快）；
+ *   ② 重建索引必须在 `finally` 里**无条件**执行（abort 路径也不能把库留在"没索引"状态 ✗）；
+ *   ③ `store.open()` 必须无条件 `ensureIndexes()`（真崩在中间 ⇒ 下次自愈）。
+ */
+suite('codebaseGraph 契约 / 全量灌数据必须卸边索引（2026-10-22 卡死事故）', () => {
+	const svcSrc2 = fs.readFileSync(path.join(process.cwd(), 'src/vs/sessions/contrib/agentStudio/browser/codebaseGraphService.ts'), 'utf8');
+	const storeSrc2 = fs.readFileSync(path.join(process.cwd(), 'src/vs/sessions/contrib/agentStudio/node/codebaseGraphSqliteStore.ts'), 'utf8');
+
+	test('★ ① 卸索引必须早于 deleteProject（事务外）', () => {
+		const fnAt = svcSrc2.indexOf('async _syncGraphToSqlite(');
+		assert.ok(fnAt > 0, '找不到 _syncGraphToSqlite（守卫不能空跑）');
+		const fn = svcSrc2.slice(fnAt, svcSrc2.indexOf('\n\tprivate ', fnAt + 10));
+		const suspendAt = fn.indexOf('suspendEdgeIndexes()');
+		const delAt = fn.indexOf('deleteProject(project');
+		const beginAt = fn.indexOf('beginProjectSync(project');
+		assert.ok(suspendAt > 0, '全量前必须 suspendEdgeIndexes()（否则 1.25M 边逐条维护三棵 B 树 ✗）');
+		assert.ok(delAt > suspendAt, '卸索引必须早于 deleteProject（delete 也要快）✗');
+		assert.ok(beginAt > suspendAt, '卸索引必须在显式事务**之外**（事务里 DDL 会被卷进同一个 tx）✗');
+	});
+
+	test('★ ② 重建索引必须在 finally 里无条件执行（abort 路径也不能漏）', () => {
+		const fnAt = svcSrc2.indexOf('async _syncGraphToSqlite(');
+		const fn = svcSrc2.slice(fnAt, svcSrc2.indexOf('\n\tprivate ', fnAt + 10));
+		const finallyAt = fn.indexOf('} finally {');
+		assert.ok(finallyAt > 0, '找不到 finally（守卫不能空跑）');
+		const ensureAt = fn.indexOf('ensureIndexes()', finallyAt);
+		assert.ok(ensureAt > finallyAt, 'finally 里必须 ensureIndexes()（否则异常路径会把库留在没索引状态 ✗）');
+		// ⚠ 判据用**顺序**而不是切片：ensureIndexes 若被塞进 if 分支（只有 commit 成功才建），
+		//   它就出现在 `} else {` **之前** ⇒ 必须判它在其**之后**。
+		//   （2026-10-22 突变验证：早先「slice 到 ensure 自身」的写法**抓不到**这个突变 ✗）
+		const elseAt = fn.indexOf('} else {', finallyAt);
+		const ensureAt2 = fn.indexOf('ensureIndexes()', finallyAt);
+		assert.ok(elseAt > finallyAt, '找不到 else 分支（守卫不能空跑）');
+		assert.ok(ensureAt2 > elseAt, 'ensureIndexes() 必须在 `} else {` 之后（无条件；塞进 if 分支会让 abort 路径留下没索引的库 ✗）');
+	});
+
+	test('★ ③ store.open() 必须自愈（崩在卸索引窗口里 ⇒ 下次补建）', () => {
+		const at = storeSrc2.indexOf('async open(');
+		assert.ok(at > 0, '找不到 open()（守卫不能空跑）');
+		const body = storeSrc2.slice(at, storeSrc2.indexOf('\n\tasync ', at + 10));
+		assert.ok(body.includes('ensureIndexes()'), 'open() 必须无条件 ensureIndexes()（崩在中间自愈）✗');
+		assert.ok(/if \(!opts\.readOnly\)/.test(body), '只读打开不许建索引（会失败）✗');
+	});
+});
+
+
+/**
+ * ★★ 2026-10-23（实测：WAL 涨到 **4.9GB**，而日志里**一条 checkpoint 相关记录都没有**）：
+ *   `checkpoint()` 以前把 `PRAGMA wal_checkpoint` 的返回值和异常都**静默吞掉** ⇒
+ *   膨胀到 4.9GB 也无人知道、无法归因 ✗。
+ *   不变量：① 必须读返回值（busy / log / checkpointed）；② 失败必须 console.warn；③ 要有周期性进度日志。
+ *
+ *   另一条：增量补丁跑在**渲染进程**（主进程的面包屑对它无效）⇒ 必须在**开始前**写渲染日志，
+ *   否则卡在那一段时日志里看不到"正在做什么"（真机 33s 阻塞期间一行都没有）。
+ */
+suite('codebaseGraph 契约 / checkpoint 与增量补丁必须可观测（2026-10-23 WAL 4.9GB）', () => {
+
+	test('★ checkpoint 失败必须可见、并周期性报 busy/log/checkpointed', () => {
+		const at = storeSrc.indexOf('async checkpoint()');
+		assert.ok(at > 0, 'checkpoint not found');
+		const body = storeSrc.slice(at, storeSrc.indexOf('\n\t}', at));
+		assert.ok(/dbAll\(db, 'PRAGMA wal_checkpoint\(PASSIVE\)'/.test(body),
+			'必须读取 wal_checkpoint 的返回值（busy/log/checkpointed）-- 以前 dbExec 丢掉返回值 => 膨胀不可见');
+		assert.ok(body.includes('console.warn'), '失败必须 console.warn（不许再静默吞掉）');
+		assert.ok(/checkpoint#/.test(body), '必须有周期性进度日志（busy/log/checkpointed）');
+	});
+
+	test('★ 增量补丁必须在**开始前**写阶段日志（渲染进程，面包屑无效）', () => {
+		const at = svcSrc.indexOf('private async _syncIncrementalToSqlite');
+		assert.ok(at > 0, 'incremental sync not found');
+		const fn = svcSrc.slice(at, svcSrc.indexOf('\n\tprivate ', at + 10));
+		const hits = (fn.match(/\[phase\] 增量补丁/g) || []).length;
+		assert.ok(hits >= 4, `四段都要有开始日志（实测 ${hits} 处；卡住时看不到正在做什么）`);
+		assert.ok(!fn.includes('markMainThreadPhase'),
+			'渲染进程里不许用 markMainThreadPhase（SAB 不在同进程 => no-op，纯误导）');
+	});
+});
+
+/**
+ * ★★ 2026-10-23（真机连环原生崩溃：0xC000001D ×5 + 0xE06D7363 ×3，全部落在
+ *   `[CodebaseGraph] 💾 同步到 SQLite 后端...` 期间，进程级异常 ⇒ 日志里什么都没有）：
+ *   排查时最先卡住的问题是「当前到底跑的是 SQLite 后端还是内存 store」——
+ *   以前只能靠"有没有 SQLite sync 那行"反推 ⇒ 白白绕了几轮 ✗。
+ *   不变量：**启动时必须明确打出后端选择**，两个分支都要有。
+ */
+suite('codebaseGraph 契约 / 存储后端必须可辨识（2026-10-23 原生崩溃取证教训）', () => {
+
+	test('★ 构造时按设置打印当前后端（SQLite / 内存 store 两条都要有）', () => {
+		const at = svcSrc.indexOf('this._sqliteBackend = createCodebaseGraphSqliteBackend(');
+		assert.ok(at > 0, '找不到 sqlite backend 的构造点（守卫不能空跑）');
+		const body = svcSrc.slice(at, at + 1400);
+		assert.match(body, /存储后端：主进程 SQLite/, '启用时必须打出「存储后端：主进程 SQLite」✗');
+		assert.match(body, /存储后端：内存 store/, '关闭时必须打出「存储后端：内存 store」（否则又只能靠猜 ✗）');
+		assert.match(body, /_sqliteBackendEnabled/, '后端选择必须跟随设置，不许写死 ✗');
+	});
+});
+
+});

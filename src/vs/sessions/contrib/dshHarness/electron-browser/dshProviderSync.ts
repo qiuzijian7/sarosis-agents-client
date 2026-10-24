@@ -48,6 +48,13 @@ const EXTENSION_PROVIDER_COMMANDS: readonly { command: string; id: string; name:
 	{ command: '_codebuddy.dshProviderConfig', id: 'codebuddy', name: 'CodeBuddy', registryId: 'lm:codebuddy' },
 ];
 
+/**
+ * 已搬到 **dsh Host 侧实现**的 provider（2026-10-22）：登录 / 刷新 / 目录 / 路由都在 Host 里做
+ * （`dsh-plugins/vssaros-bridge/lib/codebuddy.js`）。Host 认 `codebuddy.status` 时 IDE **不再推送**它；
+ * 老 Host（不认这条方法）仍走上面的扩展命令（过渡兼容，版本错配时不至于让 CodeBuddy 消失）。
+ */
+const HOST_OWNED_PROVIDER_IDS: ReadonlySet<string> = new Set(['codebuddy']);
+
 /** 触发重同步的设置键（apiKey/baseUrl 全部身份键 + 自定义 provider 列表 + 扩展端点）。 */
 const WATCHED_SETTINGS: readonly string[] = [
 	...BUILTIN_PROVIDER_IDENTITIES.flatMap(i => [i.apiKeyConfigKey, i.baseUrlConfigKey]),
@@ -83,6 +90,13 @@ export class DshProviderSync extends Disposable {
 	private _lastDiagHash = '';
 	/** "采集偏慢"告警的节流戳（30s 兜底轮询下最多 5 分钟一条）。 */
 	private _lastSlowCollectLogAt = 0;
+	/**
+	 * Host 是否已自持 CodeBuddy（认 `codebuddy.status`）。`undefined` = 本次桥连接还没探过。
+	 * 桥每次重连都重探（Host 可能换了进程 / 换了版本）。
+	 */
+	private _hostOwnsCodeBuddy: boolean | undefined;
+	/** 本次桥连接里是否已经尝试过 LightAI 的一次性迁移（不反复推）。 */
+	private _lightAIMigrationTried = false;
 
 	constructor(
 		@IDshHarnessService private readonly _dsh: IDshHarnessService,
@@ -95,6 +109,9 @@ export class DshProviderSync extends Disposable {
 		this._register(this._dsh.onDidChangeStatus(s => {
 			if (s.bridge === 'connected') {
 				this._schedule();
+			} else {
+				this._hostOwnsCodeBuddy = undefined;
+				this._lightAIMigrationTried = false;
 			}
 		}));
 		this._register(this._config.onDidChangeConfiguration(e => {
@@ -106,6 +123,84 @@ export class DshProviderSync extends Disposable {
 		const interval = setInterval(() => this._schedule(), 30_000);
 		this._register({ dispose: () => clearInterval(interval) });
 		this._schedule();
+	}
+
+	/**
+	 * 每次桥连接探一次：Host 是否已自持 CodeBuddy（2026-10-22 起登录/刷新/目录/路由都在 Host）。
+	 *
+	 *  · 认 `codebuddy.status` ⇒ 自持 ⇒ IDE 不再推送 CodeBuddy；若 dsh 侧还没登录（或只有 IDE 旧同步留下的
+	 *    "无会话信息"数据），把 IDE 扩展里的登录态**一次性**迁过去（Host 侧已登录时不覆盖）；
+	 *  · 不认（老 Host）⇒ 照旧走扩展命令（过渡兼容：版本错配时 CodeBuddy 不至于消失）。
+	 */
+	private async _probeHostOwnedProviders(): Promise<void> {
+		if (this._hostOwnsCodeBuddy !== undefined) {
+			return;
+		}
+		let status;
+		try {
+			status = await this._dsh.codeBuddyStatus();
+		} catch (e) {
+			this._hostOwnsCodeBuddy = false;
+			this._log.info(`[dshHarness] Host 不认 codebuddy.status（老版本桥插件？）⇒ CodeBuddy 仍由 IDE 扩展同步：${String((e as Error)?.message ?? e)}`);
+			return;
+		}
+		this._hostOwnsCodeBuddy = true;
+		if (status.signedIn && status.source !== 'legacy') {
+			return;
+		}
+		let session: { accessToken?: string; refreshToken?: string; expiresAt?: number } | undefined;
+		try {
+			session = await this._commands.executeCommand('_codebuddy.exportSession');
+		} catch {
+			session = undefined;   // 扩展没装 / 版本旧（没有这条命令）⇒ 没什么可迁的
+		}
+		if (!session?.accessToken) {
+			return;
+		}
+		try {
+			const r = await this._dsh.importCodeBuddySession({
+				accessToken: session.accessToken,
+				...(session.refreshToken ? { refreshToken: session.refreshToken } : {}),
+				...(typeof session.expiresAt === 'number' ? { expiresAt: session.expiresAt } : {}),
+			});
+			this._log.info(`[dshHarness] CodeBuddy 登录态迁移到 dsh 侧：${r.imported ? '已导入' : `未导入（${r.reason ?? '?'}）`}`);
+		} catch (e) {
+			this._log.warn(`[dshHarness] CodeBuddy 登录态迁移失败（不影响 dsh 侧自行登录）：${String((e as Error)?.message ?? e)}`);
+		}
+	}
+
+	/**
+	 * LightAI 的一次性迁移（2026-10-22：LightAI 登录 / 模型 / 配置归 dsh 侧，登录经浏览器插件读 cookie）。
+	 *
+	 * IDE 扩展把登录态存在 **settings**（`lightai.cookie` / `lightai.userId`，Global）⇒ 直接读配置即可（不需要扩展命令）。
+	 * 只在 dsh 侧一份 cookie 都没有、且用户没在 dsh 侧主动登出过时推一次；Host 不认 `lightai.status`（老版本）⇒ 什么都不做。
+	 * ⚠ IDE 扩展自己的那份**不动**：IDE 里的生成链路（`lm:lightai`）暂时仍用它（过渡期，生成链路下一期移到 dsh）。
+	 */
+	private async _migrateLightAI(): Promise<void> {
+		if (this._lightAIMigrationTried) {
+			return;
+		}
+		this._lightAIMigrationTried = true;
+		const cookie = String(this._config.getValue<string>('lightai.cookie') ?? '').trim();
+		const userId = String(this._config.getValue<string>('lightai.userId') ?? '').trim();
+		if (!cookie || !userId) {
+			return;
+		}
+		let status;
+		try {
+			status = await this._dsh.lightAIStatus();
+		} catch {
+			return;   // 老 Host：没有 dsh 侧 LightAI
+		}
+		if (status.hasCredential || status.signedOutByUser) {
+			return;
+		}
+		try {
+			const r = await this._dsh.importLightAISession({ cookie, userId });
+			this._log.info(`[dshHarness] LightAI 登录态迁移到 dsh 侧：${r.imported ? '已导入' : `未导入（${r.reason ?? '?'}）`}`);
+		} catch (e) {
+			this._log.warn(`[dshHarness] LightAI 登录态迁移失败（不影响在 dsh 侧自行登录）：${String((e as Error)?.message ?? e)}`);
+		}
 	}
 
 	private _schedule(): void {
@@ -134,6 +229,9 @@ export class DshProviderSync extends Disposable {
 		const timings: string[] = [];
 		const tCollect = Date.now();
 		try {
+			await this._probeHostOwnedProviders();
+			// LightAI 迁移不挡 provider 同步（状态里可能要做一次网络校验）
+			void this._migrateLightAI();
 			const { sources, notes } = await this._collect(timings);
 			const collectMs = Date.now() - tCollect;
 			// collect 明显偏慢时把**逐源耗时**打出来（每 5 分钟最多一条，30s 兜底轮询下不刷屏 ✓）。
@@ -270,6 +368,10 @@ export class DshProviderSync extends Disposable {
 			});
 		}
 		for (const ext of EXTENSION_PROVIDER_COMMANDS) {
+			// 2026-10-22：Host 已自持（登录/目录/路由都在 dsh 侧）⇒ IDE 不再推送这一路 ✓
+			if (this._hostOwnsCodeBuddy === true && HOST_OWNED_PROVIDER_IDS.has(ext.id)) {
+				continue;
+			}
 			// 区分三种跳过：命令未注册/执行失败（throw）、扩展返回空（未登录）、返回无 baseURL。
 			// 原来 `.catch(() => undefined)` 把"命令未注册"和"返回空"混成同一个 undefined，无法定位。
 			let cfg: IExtensionProviderConfig | undefined;

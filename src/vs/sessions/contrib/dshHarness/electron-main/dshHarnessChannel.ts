@@ -13,7 +13,7 @@
  * 首次运行（没有上次选项）与"上次被禁用"时仍退回渲染进程触发。
  */
 
-import { app, net } from 'electron';
+import { app, BaseWindow, dialog, net, type BrowserWindow } from 'electron';
 import { existsSync, promises as fsp, readFileSync } from 'fs';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
@@ -34,11 +34,13 @@ import { DSH_HARNESS_CHANNEL, DshHarnessChannelCommand, DshHarnessChannelEvent, 
 import { IdeRequestClaims } from '../common/dshIdeClaims.js';
 import { IIdeTargetPick, pickIdeTargetWindow } from '../common/dshIdeTargeting.js';
 import { readCapabilityDeclarations } from '../common/dshIdeAuthorization.js';
-import { validateAuthOption, validateInsertReference, validateWorkspaceOptions, validateWorktreeOptions } from '../common/dshPageBridgeProtocol.js';
+import { validateAuthOption, validateInsertReference, validateUpgradeState, validateWorkspaceOptions, validateWorktreeOptions } from '../common/dshPageBridgeProtocol.js';
 import { isDshChatSessionId } from '../common/dshChatSession.js';
 import { validatePluginRoute } from '../common/dshPluginPage.js';
 import { isBundleDisableForbidden, isBundleEnabled } from '../common/dshPluginActivation.js';
 import { ideWindowGuardAction, validateSetIdeWindowHiddenArgs } from '../common/dshIdeWindowGuard.js';
+// ★ 2026-10-24（用户口径：app 开关三条规则）—— 关窗收场的判据只在这一处，主进程两个关窗路径都调它
+import { decideDesktopWindowClose, decideIdeWindowClose } from '../common/dshAppLifecycle.js';
 import { listBundledPlugins, mergeBundledWithInstalled } from './dshBundledPlugins.js';
 import { hasWorkbenchClient, IVssarosPluginManifest, isBuiltinPluginName, tryParseVssarosManifest } from '../common/vssarosPluginManifest.js';
 import { DshPluginActivationStore } from './dshPluginActivationStore.js';
@@ -52,6 +54,7 @@ import { DshRuntimeError, DshRuntimeManager, IResolvedNode } from './dshRuntimeM
 import { DshUpgradeGate } from './dshUpgradeGate.js';
 import { DshViewHost } from './dshViewHost.js';
 import { DshWorkspaceSync } from './dshWorkspaceSync.js';
+import { markMainThreadPhase } from '../../../../code/electron-main/mainThreadBreadcrumb.js';
 
 export interface IDshHarnessChannelOptions {
 	readonly userDataPath: string;
@@ -93,6 +96,8 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 	private readonly _onDidChangePlugins = this._register(new Emitter<void>());
 	/** Host 里的插件请求 IDE 能力（已授权）：renderer 执行后经 `ResolveIdeRequest` 交回。 */
 	private readonly _onDidIdeRequest = this._register(new Emitter<IDshIdeRequest>());
+	/** dsh 侧企业身份变了（Host 反向通知 `tof.changed`；2026-10-22）⇒ 各窗口的 TofAuthService 重读。 */
+	private readonly _onDidChangeTof = this._register(new Emitter<void>());
 	/** 在途的 IDE 能力请求：id → 等 renderer 回执。 */
 	private readonly _idePending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout>; grace?: ReturnType<typeof setTimeout> }>();
 	/**
@@ -131,6 +136,15 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 	 * 状态在**主进程**（那边才观察得到窗口事件）；渲染进程用通道命令同步"我们藏起来了"这个事实 ✓。
 	 */
 	private _ideWindowGuard: { windowId: number; dispose: () => void } | undefined;
+	/**
+	 * 应用是不是**正在退出**（`before-quit` 之后）。
+	 *
+	 * 用途（2026-10-23 "各关各的"）：关窗拦截只看"还剩几个可见窗口"，但**真退出**时
+	 * 必须整体放行，否则关不掉应用 ✗。
+	 */
+	private _appQuitting = false;
+	/** 已经给哪些桌面窗口挂过 `once('closed')`（避免反复关/开 IDE 时重复挂 ⇒ 重复 quit ✓）。 */
+	private readonly _desktopCloseWatch = new WeakSet<object>();
 
 	constructor(
 		options: IDshHarnessChannelOptions,
@@ -140,6 +154,9 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 	) {
 		super();
 		this._windowsMainService = windowsMainService;
+		// 真退出时放行 IDE 主窗口的 close（否则"只隐藏"会把退出流程卡死 ✗）。
+		// `before-quit` 在关闭窗口之前触发 ⇒ 这里置位就够；用 `on`（不是 `once`）因为 quit 可能被取消后重来。
+		app.on('before-quit', () => { this._appQuitting = true; });
 		const log = (line: string) => this._logService.info(`[dshHarness] ${line}`);
 		this._fetch = options.fetch ?? ((url: string) => net.fetch(url));
 		// 内置运行时目录（构建期 prepack，见 build/prepack-dsh-runtime.mjs）：存在即传给管理器，
@@ -200,7 +217,14 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 			// 反向通道（Host → IDE）的处理器：**在桥客户端创建时**注册（不是等状态变化）——
 			// 早先写在下面 `_applyConnection` 里，而桥客户端建好前状态可能已是 running 且之后不再变，
 			// 于是处理器被永久跳过：真机 e2e 里客户端回"IDE 侧没有处理 ide.request"（README 4.55）。
-			reverseRequestHandler: request => this._ideGate.handle(request),
+			reverseRequestHandler: request => request.method === DshBridgeReverseMethod.CreditRoute
+				// 计费代理路由登记（2026-10-22）：主进程**就地**应答 —— 代理本来就在主进程，
+				// 不下发渲染进程、也不过 IDE 能力闸（它不驱动 IDE 界面）✓。
+				? this._handleCreditRoute(request)
+				: request.method === DshBridgeReverseMethod.TofChanged
+					// 企业身份变了（2026-10-22）：只是通知（不带票据、不驱动 IDE 界面）⇒ 主进程就地应答并广播 ✓
+					? this._handleTofChanged()
+					: this._ideGate.handle(request),
 		}));
 		this._views = this._register(new DshViewHost(windowsMainService, auxiliaryWindowsMainService, _logService, options.preloadPath));
 		this._workspaces = this._register(new DshWorkspaceSync(log));
@@ -519,14 +543,59 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 	 *
 	 * ⚠ 判定走**纯函数** `ideWindowGuardAction`（common 层）⇒ 口径只有一份，且可单测 ✓。
 	 */
+	/**
+	 * **可见**的 IDE 主窗口数（`excludeWindowId` = 正在关的那扇，不算）。
+	 * 隐藏窗口对用户不可见 ⇒ 等于没有（规则里的"开着"指看得见 ✓）。
+	 */
+	private _visibleIdeWindows(excludeWindowId?: number): number {
+		return this._windowsMainService.getWindows().filter(w => {
+			if (typeof excludeWindowId === 'number' && w.id === excludeWindowId) {
+				return false;
+			}
+			const bw = w.win;
+			return !!bw && !bw.isDestroyed() && bw.isVisible();
+		}).length;
+	}
+
+	/** 存活的**桌面窗口**数（承载 dsh 视图的辅助窗口；`excludeWindowId` = 正在关的那扇）。 */
+	private _liveDesktopWindows(excludeWindowId?: number): number {
+		const list = this._views.desktopWindowsOtherThan(typeof excludeWindowId === 'number' ? excludeWindowId : -1);
+		return list.filter(w => !w.isDestroyed()).length;
+	}
+
+	/**
+	 * IDE 被"隐藏式关闭"之后，盯着那些桌面窗口：**最后一扇**关掉、而 IDE 仍不可见 ⇒ 按规则退出
+	 * （`common/dshAppLifecycle.ts` 规则 ①）。
+	 *
+	 * ⚠ 用 WeakSet 防重复挂：用户可能反复"关 IDE → 回到 IDE → 再关"，重复挂会重复 quit ✓。
+	 */
+	private _watchDesktopWindowsAfterIdeClose(windowId: number, ideWin: BrowserWindow): void {
+		void ideWin;   // 只用于语义（IDE 那扇窗口）；判活走 facts，不看它
+		for (const desktop of this._views.desktopWindowsOtherThan(windowId)) {
+			if (desktop.isDestroyed() || this._desktopCloseWatch.has(desktop)) {
+				continue;
+			}
+			this._desktopCloseWatch.add(desktop);
+			desktop.once('closed', () => {
+				this._desktopCloseWatch.delete(desktop);
+				if (this._appQuitting) {
+					return;
+				}
+				const facts = { ideVisible: this._visibleIdeWindows(), desktop: this._liveDesktopWindows() };
+				if (decideDesktopWindowClose(facts) !== 'quit') {
+					this._logService.info(`[dshHarness] 桌面窗口关闭 ⇒ 应用保持（可见 IDE=${facts.ideVisible}，剩余桌面窗口=${facts.desktop}）`);
+					return;
+				}
+				this._logService.info('[dshHarness] 桌面窗口关闭 ⇒ 它是最后一个界面，退出应用');
+				app.quit();
+			});
+		}
+	}
+
 	private _setIdeWindowGuard(windowId: number, hidden: boolean): void {
 		// 先撤旧的（换窗口 / 撤守卫都走这里 ⇒ 不会留下两个守卫互相打架 ✗）。
 		this._ideWindowGuard?.dispose();
 		this._ideWindowGuard = undefined;
-		if (!hidden) {
-			this._logService.info('[dshHarness] desktop 守卫：已撤（IDE 主窗口该露着了）');
-			return;
-		}
 		const codeWindow = this._windowsMainService.getWindowById(windowId);
 		const win = codeWindow?.win;
 		if (!win) {
@@ -534,7 +603,55 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 			this._logService.warn(`[dshHarness] desktop 守卫：找不到窗口 ${windowId} ⇒ 守卫没装上（IDE 主窗口仍可能露面 ✗）`);
 			return;
 		}
-		const state = { hiddenByUs: true };
+		/**
+		 * ★★ 2026-10-23 用户口径（**三条规则，按"还剩几个可见窗口"判定**）：
+		 *
+		 *   ① 只开着桌面窗口 ⇒ 关桌面窗口 ⇒ 退出应用；
+		 *   ② 只开着 IDE 窗口   ⇒ 关 IDE 窗口 ⇒ 退出应用；
+		 *   ③ 两个都开着       ⇒ 关哪个都**只关它自己**，应用保持（另一个窗口继续可用）。
+		 *
+		 * ⇒ 判定标准只有一条：**关掉的这一扇是不是最后一个"可见"窗口**。
+		 *   · 还有别的可见窗口 ⇒ 谁也别拦，让它**真的关掉**（以前这里 `preventDefault()+hide()`，
+		 *     用户点 X 之后窗口其实还活着 ⇒ 违反"关闭 = 关闭自己的窗口"，而且之后再也没法从
+		 *     任何入口把它请回来 ✗）；
+		 *   · 它是最后一个可见窗口 ⇒ 允许关，关闭后 `app.quit()`（桌面模式下 IDE 主窗口可能只是
+		 *     **隐藏**着 ⇒ `window-all-closed` 不会触发，必须显式退出，否则留下"没有界面却活着"的
+		 *     隐形进程 ✗）。
+		 *
+		 * ⚠ 应用真在退出（`before-quit` 之后）⇒ 什么都别做，否则关不掉。
+		 */
+		const onClose = (event: Electron.Event) => {
+			if (this._appQuitting) {
+				return;
+			}
+			// ★★ 2026-10-24（用户口径：app 开关三条规则）—— 判据只在 `common/dshAppLifecycle.ts` 一处：
+			//   ① 只开桌面窗口 ⇒ 关它 = 退；② 只开 IDE ⇒ 关它 = 退；③ 都开着 ⇒ 关哪个都只关自己。
+			const facts = {
+				ideVisible: this._visibleIdeWindows(windowId),
+				desktop: this._liveDesktopWindows(windowId),
+			};
+			const action = decideIdeWindowClose(facts);
+			if (action === 'close') {
+				this._logService.info(`[dshHarness] 关 IDE 主窗口 ⇒ 只关它自己（可见 IDE=${facts.ideVisible}，桌面窗口=${facts.desktop}，应用保持）`);
+				return;
+			}
+			if (action === 'hide') {
+				// 桌面窗口的 opener 就是这扇窗口 ⇒ 真关会把它带走 ✗ ⇒ 隐藏（用户视角 = 关了自己）
+				event.preventDefault();
+				win.hide();
+				this._logService.info(`[dshHarness] 关 IDE 主窗口 ⇒ 只隐藏（桌面窗口 ${facts.desktop} 个还开着，各关各的）`);
+				this._watchDesktopWindowsAfterIdeClose(windowId, win);
+				return;
+			}
+			// 'quit'：这是最后一个界面 ⇒ 关完退出（隐藏窗口不计入 window-all-closed ⇒ 显式退）
+			this._logService.info('[dshHarness] 关 IDE 主窗口 ⇒ 它是最后一个界面，关闭后退出应用');
+			win.once('closed', () => {
+				if (!this._appQuitting) {
+					app.quit();
+				}
+			});
+		};
+		const state = { hiddenByUs: hidden };
 		const rehide = (event: 'show' | 'focus') => {
 			if (ideWindowGuardAction(state, event) !== 'rehide') {
 				return;
@@ -548,16 +665,21 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 		};
 		const onShow = () => rehide('show');
 		const onFocus = () => rehide('focus');
+		win.on('close', onClose);
 		win.on('show', onShow);
 		win.on('focus', onFocus);
 		this._ideWindowGuard = {
 			windowId,
 			dispose: () => {
+				win.off('close', onClose);
 				win.off('show', onShow);
 				win.off('focus', onFocus);
 			},
 		};
-		this._logService.info(`[dshHarness] desktop 守卫：已装（窗口 ${windowId}）`);
+		this._logService.info(`[dshHarness] desktop 守卫：已装（窗口 ${windowId}, hidden=${hidden}）`);
+		if (!hidden) {
+			this._logService.info('[dshHarness] desktop 守卫：IDE 主窗口该露着了（只保留"关窗不带走桌面窗口"这条）');
+		}
 	}
 
 	private async _discover(policy: IDshUpdatePolicy, start: IDshHostStartOptions): Promise<IDshUpdateDiscoveryResult> {
@@ -717,6 +839,31 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 	}
 
 	/**
+	 * 反向 `credit.route`（Host → 主进程）：dsh 侧自持的 provider（CodeBuddy，见
+	 * `dsh-plugins/vssaros-bridge/lib/codebuddy.js`）登记"路由 → 真实网关"，拿回代理地址写进它自己的路由。
+	 *
+	 * 与 `_rewriteForCreditProxy` 同一个代理、同一套地址（固定端口 + 落盘 secret ⇒ 跨重启不变）✓。
+	 * 负载不合规 ⇒ **抛**（Host 侧据此退回直连；主进程不替它猜）。
+	 */
+	private async _handleCreditRoute(request: IBridgeReverseRequest): Promise<IBridgeCreditRouteResult> {
+		// 取证面包屑：2026-10-22 那次冻结前最后一条日志正是本方法（`credit.route 已登记`）✓
+		markMainThreadPhase('credit-route');
+		if (!validateCreditRouteArgs(request.params)) {
+			throw new Error('credit.route: 负载未通过校验（route 须为 vssaros-*，baseURL 须为 https 或本机地址）');
+		}
+		const { route, baseURL } = request.params;
+		const proxied = await this._creditProxy.routeBaseURL(route, baseURL);
+		this._logService.info(`[dshCredit] credit.route: ${route} 已登记（dsh 侧自持 provider）`);
+		return { baseURL: proxied };
+	}
+
+	/** 反向 `tof.changed`：广播给各窗口（渲染进程据此经 `tof.status` / `tof.ticket` 重读）。 */
+	private async _handleTofChanged(): Promise<{ ok: true }> {
+		this._onDidChangeTof.fire();
+		return { ok: true };
+	}
+
+	/**
 	 * 计费样本落点：① 落日志（核对"代理是否真的抓到了积分"）；② 推给 dsh 页面，
 	 * 由 chat-surface 的回合页脚渲染「积分」chip（含按回合时间窗归属）。
 	 *
@@ -771,6 +918,9 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 		if (event === DshHarnessChannelEvent.OnIdeRequest) {
 			return this._onDidIdeRequest.event as Event<T>;
 		}
+		if (event === DshHarnessChannelEvent.OnDidChangeTof) {
+			return this._onDidChangeTof.event as Event<T>;
+		}
 		throw new Error(`[dshHarness] unknown event: ${event}`);
 	}
 
@@ -817,6 +967,19 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 					...(consent?.detail ? { displayReason: { zh: String(consent.detail) } } : {}),
 				});
 				return { allowed };
+			}
+			case DshHarnessChannelCommand.ConfirmUserAction: {
+				// 用户主动发起的操作（市场「安装」）：原生模态框，挂在当前焦点窗口上（用户正在点的那个）。
+				// 不走 Host 审批服务：那条要求处在 agent 回合里，界面点击没有回合 ⇒ 当场被拒（见命令定义处注释）。
+				const a = (arg ?? {}) as { title?: unknown; detail?: unknown; confirmLabel?: unknown };
+				const title = String(a.title ?? '确认操作').slice(0, 200);
+				const detail = String(a.detail ?? '').slice(0, 4000);
+				const confirmLabel = typeof a.confirmLabel === 'string' && a.confirmLabel.trim() ? a.confirmLabel.trim().slice(0, 20) : '继续';
+				const options = { type: 'warning' as const, title: 'Saroasis harness', message: title, detail, buttons: [confirmLabel, '取消'], defaultId: 1, cancelId: 1, noLink: true };
+				const parent = BaseWindow.getFocusedWindow();
+				const { response } = parent ? await dialog.showMessageBox(parent, options) : await dialog.showMessageBox(options);
+				this._logService.info(`[dshHarness] confirmUserAction「${title}」⇒ ${response === 0 ? '允许' : '取消'}（父窗口 ${parent ? parent.id : '无'}）`);
+				return { allowed: response === 0 };
 			}
 			case DshHarnessChannelCommand.ListPlugins:
 				return this._listPluginsWithActivation();
@@ -1239,6 +1402,77 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 				}
 				return bridge.call<IBridgeTofSyncResult>(DshBridgeMethod.TofSync, arg, 30_000);
 			}
+			case DshHarnessChannelCommand.CodeBuddyStatus: {
+				// dsh 侧 CodeBuddy 状态（2026-10-22）。老 Host 回 -32601 ⇒ 调用方当"这条能力不存在"（可降级）✓。
+				const bridge = this._supervisor.bridge;
+				if (!bridge) {
+					throw new Error('[dshHarness] codeBuddyStatus: 控制桥不可用（未安装伴生插件或 Host 未运行）');
+				}
+				return bridge.call<IBridgeCodeBuddyStatus>(DshBridgeMethod.CodeBuddyStatus, {}, 10_000);
+			}
+			case DshHarnessChannelCommand.CodeBuddyImport: {
+				// ⚠ token 是**凭据**：只经本机命名管道过，绝不下发页面；回执只有状态投影 ✓。
+				const bridge = this._supervisor.bridge;
+				if (!bridge) {
+					throw new Error('[dshHarness] codeBuddyImport: 控制桥不可用（未安装伴生插件或 Host 未运行）');
+				}
+				if (!validateCodeBuddyImportArgs(arg)) {
+					throw new Error('[dshHarness] codeBuddyImport: 负载未通过校验');
+				}
+				return bridge.call<IBridgeCodeBuddyImportResult>(DshBridgeMethod.CodeBuddyImport, arg, 60_000);
+			}
+			case DshHarnessChannelCommand.LightAIStatus: {
+				// 状态里可能要做一次 /api/user/check（≤15s）⇒ 给 30s
+				const bridge = this._supervisor.bridge;
+				if (!bridge) {
+					throw new Error('[dshHarness] lightAIStatus: 控制桥不可用（未安装伴生插件或 Host 未运行）');
+				}
+				return bridge.call<IBridgeLightAIStatus>(DshBridgeMethod.LightAIStatus, {}, 30_000);
+			}
+			case DshHarnessChannelCommand.LightAIImport: {
+				// ⚠ cookie 是**凭据**：只经本机命名管道过，绝不下发页面；回执只有"导没导"✓。
+				const bridge = this._supervisor.bridge;
+				if (!bridge) {
+					throw new Error('[dshHarness] lightAIImport: 控制桥不可用（未安装伴生插件或 Host 未运行）');
+				}
+				if (!validateLightAIImportArgs(arg)) {
+					throw new Error('[dshHarness] lightAIImport: 负载未通过校验');
+				}
+				return bridge.call<IBridgeLightAIImportResult>(DshBridgeMethod.LightAIImport, arg, 30_000);
+			}
+			// ── 企业身份由 dsh 侧持有（2026-10-22，用户："登录也转移到 dsh 侧实现，ide 侧仅读取状态"）──
+			// 老 Host 回 -32601 ⇒ 渲染进程据此退回旧扩展路径（版本错配时登录不至于整个消失）✓。
+			case DshHarnessChannelCommand.TofStatus: {
+				const bridge = this._supervisor.bridge;
+				if (!bridge) {
+					throw new Error('[dshHarness] tofStatus: 控制桥不可用（未安装伴生插件或 Host 未运行）');
+				}
+				const fresh = !!(arg && typeof arg === 'object' && (arg as { fresh?: unknown }).fresh === true);
+				return bridge.call<IBridgeTofStatus>(DshBridgeMethod.TofStatus, { fresh }, 40_000);
+			}
+			case DshHarnessChannelCommand.TofSignIn: {
+				// 浏览器登录最长 180s + whoami 30s ⇒ 给 240s（短了会在用户还在浏览器里时就报超时 ✗）
+				const bridge = this._supervisor.bridge;
+				if (!bridge) {
+					throw new Error('[dshHarness] tofSignIn: 控制桥不可用（未安装伴生插件或 Host 未运行）');
+				}
+				return bridge.call<IBridgeTofStatus>(DshBridgeMethod.TofSignIn, {}, 240_000);
+			}
+			case DshHarnessChannelCommand.TofSignOut: {
+				const bridge = this._supervisor.bridge;
+				if (!bridge) {
+					throw new Error('[dshHarness] tofSignOut: 控制桥不可用（未安装伴生插件或 Host 未运行）');
+				}
+				return bridge.call(DshBridgeMethod.TofSignOut, {}, 20_000);
+			}
+			case DshHarnessChannelCommand.TofTicket: {
+				// ⚠ 票据是**凭据**：只到发起调用的渲染进程（商城 JWT 兑换用），绝不转发页面 / 日志 ✓
+				const bridge = this._supervisor.bridge;
+				if (!bridge) {
+					throw new Error('[dshHarness] tofTicket: 控制桥不可用（未安装伴生插件或 Host 未运行）');
+				}
+				return bridge.call<IBridgeTofTicketResult>(DshBridgeMethod.TofTicket, {}, 10_000);
+			}
 			case DshHarnessChannelCommand.DiscoverUpdates: {
 				const a = arg as { policy: IDshUpdatePolicy; start: IDshHostStartOptions };
 				return this._discover(a.policy, a.start ?? {});
@@ -1388,6 +1622,17 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 					this._views.pushWorkspaces(a.viewId as string, options);
 				} else {
 					this._logService.warn(`[dshHarness] pushWorkspaces ignored: 选项形状不合法（viewId=${String(a.viewId)}）`);
+				}
+				return;
+			}
+			case DshHarnessChannelCommand.PushUpgrade: {
+				// 升级状态（2026-10-23）：与 pushAuth 同款校验 —— 主进程是信任边界。
+				const a = arg as { viewId: unknown; state: unknown };
+				const state = validateUpgradeState(a.state);
+				if (typeof a.viewId === 'string' && state) {
+					this._views.pushUpgrade(a.viewId, state);
+				} else {
+					this._logService.warn(`[dshHarness] pushUpgrade ignored: 载荷形状不合法（viewId=${String(a.viewId)}）`);
 				}
 				return;
 			}

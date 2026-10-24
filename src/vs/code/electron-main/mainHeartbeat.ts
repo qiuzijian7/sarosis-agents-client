@@ -31,6 +31,7 @@
 
 import { Disposable, IDisposable, toDisposable } from '../../base/common/lifecycle.js';
 import { ILogService } from '../../platform/log/common/log.js';
+import { markMainThreadPhase } from './mainThreadBreadcrumb.js';
 
 export const MAIN_HEARTBEAT_TAG = '[MainHeartbeat]';
 
@@ -96,6 +97,8 @@ export function startMainHeartbeat(logService: ILogService, options: IMainHeartb
 	);
 
 	const timer = setInterval(() => {
+		// 每拍都打点：主线程还活着 ⇒ 面包屑在更新（看门狗据此判"停更"✓）
+		markMainThreadPhase('heartbeat');
 		const now = Date.now();
 		// lag = 本拍**应到**时刻与**实到**时刻之差 = 主线程这一拍被占用的时间
 		const lagMs = now - expectedAt;

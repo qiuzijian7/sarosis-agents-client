@@ -35,6 +35,14 @@ export const COMMON_EXCLUDE_DIRS: readonly string[] = Object.freeze([
 	'tmp', 'temp', 'enc_temp_folder',
 	// 工具自身产物
 	'.vscode-test', '.codebase-memory', '.sarosworkspace',
+	// ★ 2026-10-22（用户报"dev 整个 app 卡死"）：**预装的 dsh 运行时**（`build/prepack-dsh-runtime.mjs`
+	//   生成，gitignore）不是源码，是**第三方依赖的物化**——本机实测 **86,782 个文件**
+	//   （其中 profile-seed 15,052 个），全被索引 ⇒ 本项目图谱涨到 **40 万节点 / 125 万边**，
+	//   而它重写一次（我们重建运行时）还会让 watcher 看到"删了几千个文件" ⇒ 增量补丁 169s
+	//   ⇒ DB 落后 19.4 万节点 ⇒ **强制全量追平**（实测 551,936ms ≈ 9.2 分钟）⇒ 主进程在
+	//   1.2GB 的 WAL 上阻塞 ⇒ 整个 app 僵死（0% CPU、inspector 无响应）✗✗✗。
+	//   ⇒ 排除它：既掐掉"量级失控"，也掐掉"重写运行时 ⇒ 误报删除 ⇒ 强制全量"这条链 ✓。
+	'dsh-runtime',
 	// IDE/工具配置与缓存（UE 的 compile_commands_* 预处理产物也在 .vscode 下，动辄数万文件）
 	'.vscode', '.idea', '.vs', '.vscode-server', '.ugs',
 	// 非源码资产 / 文档 / 脚本（索引价值低、体量大）
@@ -76,7 +84,7 @@ export const EXCLUDE_PROFILES = {
 		'build', 'out', 'out-build', 'out-test', 'out-vscode', 'dist', 'target', 'deploy-package', 'coverage',
 		'.next', '.nuxt', '__pycache__', '.cache',
 		'tmp', 'temp', 'enc_temp_folder',
-		'.vscode-test', '.codebase-memory', '.sarosworkspace',
+		'.vscode-test', '.codebase-memory', '.sarosworkspace', 'dsh-runtime',
 		'.vscode', '.idea', '.vs', '.vscode-server', '.ugs',
 		'generated-images', '_removed_extensions',
 	],

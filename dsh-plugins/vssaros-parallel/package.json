@@ -1,0 +1,55 @@
+{
+  "name": "@vssaros/dsh-parallel",
+  "version": "0.12.3",
+  "description": "VsSaros parallel TUI workbench: one workbench that orchestrates N side-by-side LLM sessions, each cell a real TUI running in the official PTY (node-pty + raw ANSI stream + xterm.js). Page /x/parallel/. 2026-10-22: first slice = static grid shell (workbench page + home item); the cell backend (PTY spawn / stream / attach) lands next.",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/cells.js",
+    "lib/runtime.js",
+    "lib/pageClient.js",
+    "lib/page.css",
+    "cordis.patch.yml",
+    "vendor/xterm.js",
+    "vendor/xterm.css",
+    "vendor/addon-fit.js",
+    "vendor/LICENSE.xterm",
+    "vendor/LICENSE.addon-fit"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/dsh": ">=0.1.7-0 <0.3.0-0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": [
+        "./cordis.patch.yml"
+      ]
+    }
+  },
+  "vssaros": {
+    "manifestVersion": 1,
+    "module": "parallel",
+    "activityBar": {
+      "containerId": "vssaros.dsh.parallel",
+      "title": "并行工作台",
+      "icon": "codicon:split-horizontal",
+      "order": 87
+    },
+    "view": {
+      "kind": "page",
+      "route": "/x/parallel/"
+    },
+    "workbench": {
+      "title": "并行 TUI 工作台",
+      "description": "并排编排多个并行 LLM 会话：每格一个 TUI，可观察 / 收割 / 接管。",
+      "repository": "vssaros:parallel"
+    }
+  },
+  "license": "MIT"
+}

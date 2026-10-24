@@ -2182,4 +2182,92 @@ suite('dshHarness / 人格事实：新页签"先报后绑"必须补落表（不�
 		assert.match(src, /this\._pendingPersonaFact = undefined;[^\n]*\n\s*try \{/,
 			'有身份时以最新这条为准（先清暂存再落表）');
 	});
+
+/**
+ * ★ 2026-10-22（真机：页面永远「正在重新连接 Host… 已等待 101 秒」）：
+ *   Host 重启会换 token —— 实测 dsh web 的校验：当前 token ⇒ 303 + dsh-auth-* cookie；
+ *   **旧 token / 无 token ⇒ 401**。而页面（client.js）里连 401 这个词都没有 ⇒
+ *   拿旧 token/cookie 重连被拒后**完全无感知**，只能一直显示"正在重新连接"，点「重试」也只重置退避 ⇒ 死路。
+ *
+ * 不变量（三条缺一不可）：
+ *   ① 必须能**识别 401**（包一层 fetch 观察 status，不改语义）；
+ *   ② 状态条必须在"重新连接"**之前**说真话（这不是慢，是 token 失效）；
+ *   ③ 「重试」在 401 时必须**真重载**（location.reload）—— 只重置退避对 token 失效无效。
+ */
+suite('chat-surface / Host 重启后 401 必须被识别（否则永远停在「正在重新连接」）', () => {
+	const SRC = 'dsh-plugins/vssaros-chat-surface/lib/client.js';
+
+	test('★ 必须识别 401（观察 fetch 的 status）', () => {
+		const src = read(SRC);
+		assert.ok(src.includes('__vssarosFetchPatched'), '必须包一层 window.fetch 观察响应状态');
+		assert.match(src, /res\.status === 401/, '必须认 401（Host 换 token 后唯一的表现就是它）');
+		assert.ok(src.includes('state.authFailed = true'), '401 必须落到 state.authFailed（供状态条与重试使用）');
+	});
+
+	test('★ 状态条必须先说 token 失效，再说重新连接', () => {
+		const src = read(SRC);
+		const authAt = src.indexOf('if (state.authFailed) { return ');
+		const retryAt = src.indexOf('if (!rpcReadyEarly()) {');
+		assert.ok(authAt > 0, '状态条必须有 401 分支（否则只会说正在重新连接，用户与排查者都被误导）');
+		assert.ok(retryAt > 0, '找不到原分支（守卫不能空跑）');
+		assert.ok(authAt < retryAt, '401 分支必须**先于**重新连接分支（否则永远走不到）');
+	});
+
+	test('★ 「重试」在 401 时必须真重载（只重置退避 = 死路）', () => {
+		const src = read(SRC);
+		const at = src.indexOf('const retryNow = () => {');
+		assert.ok(at > 0, '找不到 retryNow（守卫不能空跑）');
+		const body = src.slice(at, src.indexOf('const statusText', at));
+		assert.ok(body.includes('state.authFailed'), '重试必须区分 401 情形');
+		assert.ok(body.includes('location.reload()'), '401 时重试必须重载页面（重新换 token）');
+	});
+});
+
+/**
+ * ★★ 2026-10-22（用户报「操作工作台过程中，突然切换到了会话页面」）：
+ *   会话绑定的轮询把"已打开"判成 **DOM 标记**（`[data-sidebar-right-session="<sid>"]`）——
+ *   用户切到**工作台页**（`/x/<module>/`）或**另一条会话**时标记自然不在 DOM ⇒ 循环判定
+ *   "我的会话没打开" ⇒ 退避后 `uiWorkspace.openSession(sid)` ⇒ **把人拽回会话页**（而且"永不放弃"，
+ *   降频后每 30s 还抢一次 ⇒ 用户感觉是**突然**被切走）。
+ *
+ * 不变量：**只有页面真的空白（还停在 hero）时才抢**；别的路由 / 已有会话在渲染 ⇒ 一律不抢。
+ */
+suite('chat-surface / 不许抢用户的导航（工作台页被切回会话页）', () => {
+	const SRC = 'dsh-plugins/vssaros-chat-surface/lib/client.js';
+
+	test('★ tick 里必须有"不抢导航"闸门（含"中栏是我们的面板"），且**早于** openSession', () => {
+		const src = read(SRC);
+		const gate = 'if (onOtherRoute() || workbenchPanelActive() || !looksBlankPage()) {';
+		const gateAt = src.indexOf(gate);
+		const openAt = src.indexOf('ctx.uiWorkspace.openSession(sid)');
+		assert.ok(gateAt > 0, '缺少"不抢导航"闸门（或没算进"中栏是我们的工作台面板"）⇒ 切到工作台/主页会被拽回会话页 ✗✗');
+		assert.ok(openAt > 0, '找不到 openSession（守卫不能空跑）');
+		assert.ok(gateAt < openAt, '闸门必须**早于** openSession（晚于它就还是抢）✗');
+	});
+
+	// ★ 2026-10-23（用户报「主页显示过程中，page 突然被切换成了聊天输入框」）：
+	//   中栏被我们的工作台面板占着时，聊天 DOM **天然不在** ⇒ `looksBlankPage()` 为真 ⇒
+	//   救援轮询 `openSession` ⇒ 官方 `replaceMain(…,'reveal')` 里的 `selectPanel(null)` 把主页换回聊天 ✗。
+	//   ⇒ 判据必须多一条"中栏是我们的面板"（用面板根标记，只在被显示时才挂载）。
+	test('★ 中栏是我们的工作台面板时不算空白（主页被切回聊天的那个洞）', () => {
+		const src = read(SRC);
+		const at = src.indexOf('const workbenchPanelActive =');
+		assert.ok(at > 0, '缺少 workbenchPanelActive 判据 ⇒ 主页显示时会被救援抢回聊天 ✗');
+		const body = src.slice(at, src.indexOf('};', at));
+		assert.ok(body.includes('[data-vssaros-wb-tabs]'), '判据必须看页签面板的根标记 [data-vssaros-wb-tabs] ✗');
+		assert.ok(body.includes('[data-vssaros-wb-full]'), '判据必须看整页面板的根标记 [data-vssaros-wb-full] ✗');
+	});
+
+	test('★ 判据必须覆盖"别的工作台路由"与"已有会话在渲染"', () => {
+		const src = read(SRC);
+		assert.ok(src.includes('const onOtherRoute ='), '缺少路由判据（/x/<module>/ 是工作台页）✗');
+		assert.match(src, /p !== "\/" || p !== ""/, '根路径以外一律算别的路由 ✗');
+		const blankAt = src.indexOf('const looksBlankPage =');
+		assert.ok(blankAt > 0, '缺少空白页判据 ✗');
+		const blankBody = src.slice(blankAt, src.indexOf('};', blankAt));
+		for (const marker of ['[data-sidebar-right-session]', '[data-chat-flow]', '[data-chat-anchor-key]', '[data-composer-card]']) {
+			assert.ok(blankBody.includes(marker), '空白判据必须看 ' + marker + '（否则"已经在看别的会话"会被当成空白 ⇒ 抢）✗');
+		}
+	});
+});
 });

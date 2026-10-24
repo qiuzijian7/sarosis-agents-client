@@ -16,7 +16,9 @@
     "visual:watch": "node visual/build.mjs --watch",
     "visual:test": "node visual/visual.spec.mjs",
     "visual:dom": "node visual/visual.spec.mjs --no-shot",
-    "visual:baseline": "node visual/visual.spec.mjs --baseline"
+    "visual:baseline": "node visual/visual.spec.mjs --baseline",
+    "build:kbSideview": "node esbuild.kbSideview.config.mjs",
+    "watch:kbSideview": "node esbuild.kbSideview.config.mjs --watch"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.1",

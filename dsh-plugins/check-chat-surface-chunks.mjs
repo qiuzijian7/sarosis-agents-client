@@ -82,6 +82,8 @@ const MULTI_ENTRY_SLOTS = new Set([
 	'shell.overlay',
 	// 2026-10-17 新增：侧栏全局面板图标（官方 plugins=0 / schedules=10 已登记进 OFFICIAL_ENTRIES ✓）
 	'sidebar.panellist',
+	// 2026-10-22：设置 → 模型页尾（list/root；官方自己不往里放 ⇒ 但别的插件可能放 ⇒ 必须有 id + order）
+	'settings.models.footer',
 ]);
 
 /**
@@ -97,7 +99,9 @@ const MULTI_ENTRY_SLOTS = new Set([
  * 两两判重 ⇒ 55 条假阳性 ✗。
  * 同日第二刀：`sidebar.right.pane.tab`（右侧栏页签体，key = tab kind）同规律 ✓。
  */
-const KEYED_SLOTS = new Set(['main', 'sidebar.right.pane.tab']);
+const KEYED_SLOTS = new Set(['main', 'sidebar.right.pane.tab',
+	// 2026-10-22：设置 → 模型的卡片扩展位（keyed/root，entryKey = settingsNs；client.modelAccounts.js 注册 llm-pi-ai）
+	'settings.models.provider-card']);
 
 const KNOWN_TIES = [
 	// ★ 2026-10-15 已消解：`vssaros-workspace-chip` 与官方 `subagent-catalog` 曾在 -30 tie；
@@ -367,7 +371,9 @@ const knownSlots = new Set([...OFFICIAL_ENTRIES.map(o => o.slot), 'conversation.
 	'sidebar.workspaces',
 	'conversation.chat.turnTail', 'conversation.composer',
 	// 2026-10-21：回合用量实时那一行（client.usage.js）挂在 composer 下方的常驻槽 ⇒ 补登记 ✓
-	'conversation.composer.dock']);
+	'conversation.composer.dock',
+	// 2026-10-22：设置 → 模型页的两个官方扩展位（client.modelAccounts.js）
+	'settings.models.provider-card', 'settings.models.footer']);
 for (const o of ourEntries) {
 	if (!knownSlots.has(o.slot)) { notes.push(`${o.file}: 注册到未登记槽 ${o.slot}（若是新槽，请把槽名补进本脚本的 knownSlots ✗）`); }
 }
@@ -755,6 +761,541 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 			}
 		}
 		notes.push(`入口指纹守卫：${checked} 个插件有改过的 chunk（入口必须在其后动过）`);
+	}
+}
+
+// ── ⑯ 设置 → 模型：CodeBuddy 账号界面（client.modelAccounts.js，2026-10-22，用户确认方案 A'）─────────────
+// 钉四条：① 两个官方扩展位都注册了（卡片 keyed=llm-pi-ai / 页尾 list 带 id+order）；
+//   ② Host 状态 ⇒ 界面状态的映射（哪种状态入口在页尾、哪种在行内）——映射错了 = 用户找不到登录入口 ✗；
+//   ③ A'：结构吻合时藏掉官方「自定义」徽标与「编辑/删除」，**卸载时还原**；
+//   ④ 结构不吻合时**什么都不藏**（自动退回方案 A，绝不误伤别的元素）。
+{
+	const doc = makeDocumentStub();
+	const win = makeWindowStub(doc);
+	let loaded = null;
+	try { loaded = loadChunk('client.modelAccounts.js', doc, win); } catch (e) {
+		problems.push(`client.modelAccounts.js: 装载失败 — ${String((e && e.message) || e)}`);
+	}
+	if (loaded) {
+		const { shell } = makeShell();
+		const regs = captureRegistration(loaded.exports, shell).map((r) => {
+			const e = (r.entry && r.entry.entry) ? r.entry.entry : r.entry;
+			return { slot: (e && e.name) || r.slot, id: e && e.id, key: e && e.key, order: e && e.order };
+		});
+		if (!regs.some((r) => r.slot === 'settings.models.provider-card' && r.key === 'llm-pi-ai')) {
+			problems.push('client.modelAccounts.js: 没在 settings.models.provider-card 上以 key=llm-pi-ai 注册（CodeBuddy 行里不会出现账号条 ✗）');
+		}
+		if (!regs.some((r) => r.slot === 'settings.models.footer' && r.id === 'vssaros-accounts' && typeof r.order === 'number')) {
+			problems.push('client.modelAccounts.js: 没在 settings.models.footer 上注册（带 id+order）⇒ 未登录时找不到 CodeBuddy 登录入口 ✗');
+		}
+		const t = loaded.exports.__test;
+		const cases = [
+			[null, 'unknown'],
+			[{ signedIn: false, signingIn: true }, 'pending'],
+			[{ signedIn: true, routeWritten: true, models: 34 }, 'in'],
+			[{ signedIn: true, routeWritten: false, models: 0 }, 'empty'],
+			[{ signedIn: true, routeWritten: false, models: null }, 'syncing'],
+			[{ signedIn: false, error: 'CodeBuddy 登录已失效（目录接口 HTTP 401），请重新登录' }, 'expired'],
+			[{ signedIn: false, error: '请求超时（30s）' }, 'error'],
+			[{ signedIn: false, error: '已取消登录' }, 'out'],
+			[{ signedIn: false }, 'out'],
+		];
+		for (const [st, want] of cases) {
+			const got = t.cardState(st);
+			if (got !== want) { problems.push(`modelAccounts.cardState(${JSON.stringify(st)}) 应为 ${want}，实际 ${got} ✗`); }
+		}
+		if (t.fmtCountdown(288_000) !== '4:48' || t.fmtCountdown(-5) !== '0:00') { problems.push('modelAccounts.fmtCountdown 格式不对 ✗'); }
+		const now = 1_000_000_000_000;
+		if (t.renewText({ canRefresh: false, expiresAt: now + 7200_000 }, now) !== '') { problems.push('modelAccounts.renewText：没有 refresh token 时不该承诺"自动续期" ✗'); }
+		if (!/1 小时 55 分后自动续期/.test(t.renewText({ canRefresh: true, expiresAt: now + 7200_000 }, now))) { problems.push('modelAccounts.renewText：续期时间应按"过期前 5 分钟"口径算 ✗'); }
+
+		// ③④ A' 隐藏：用极简 DOM 复刻官方行结构 li > head(left(name, badge, dot), actions(btn, btn)) + slot > anchor
+		const mk = (tag, text, attrs) => {
+			const el = { tagName: tag, textContent: text || '', style: {}, dataset: {}, children: [], parent: null, attrs: Object.assign({}, attrs) };
+			el.hasAttribute = (n) => Object.prototype.hasOwnProperty.call(el.attrs, n);
+			el.append = (...cs) => { for (const c of cs) { c.parent = el; el.children.push(c); } return el; };
+			el.contains = (x) => { for (let p = x; p; p = p.parent) { if (p === el) { return true; } } return false; };
+			el.closest = (sel) => { for (let p = el; p; p = p.parent) { if (p.tagName.toLowerCase() === sel) { return p; } } return null; };
+			Object.defineProperty(el, 'firstElementChild', { get: () => el.children[0] || null });
+			return el;
+		};
+		const build = (actionTags) => {
+			const name = mk('SPAN', 'CodeBuddy'), badge = mk('SPAN', '自定义'), dotEl = mk('SPAN', '', { 'aria-label': 'API 密钥已配置' });
+			const left = mk('SPAN').append(name, badge, dotEl);
+			const actions = mk('SPAN').append(...actionTags.map((tg) => mk(tg, tg === 'BUTTON' ? '编辑' : 'x')));
+			const head = mk('DIV').append(left, actions);
+			const anchor = mk('DIV');
+			const li = mk('LI').append(head, mk('DIV').append(anchor));
+			return { li, badge, actions, name, dotEl, anchor };
+		};
+		const ok1 = build(['BUTTON', 'BUTTON']);
+		const restore = t.hideOfficialRowControls(ok1.anchor);
+		if (ok1.actions.style.display !== 'none' || ok1.badge.style.display !== 'none') {
+			problems.push('modelAccounts A\'：结构吻合时应藏掉官方「编辑/删除」与「自定义」徽标 ✗');
+		}
+		if (ok1.name.style.display === 'none' || ok1.dotEl.style.display === 'none') {
+			problems.push('modelAccounts A\'：误藏了名字 / 状态圆点 ✗');
+		}
+		restore();
+		if (ok1.actions.style.display === 'none' || ok1.badge.style.display === 'none') {
+			problems.push('modelAccounts A\'：卸载后没有还原官方按钮 ✗');
+		}
+		const odd2 = build(['BUTTON', 'DIV']);
+		t.hideOfficialRowControls(odd2.anchor);
+		if (odd2.actions.style.display === 'none') {
+			problems.push('modelAccounts A\'：按钮区里混着非按钮元素（官方改版）时不该隐藏 ⇒ 必须自动退回方案 A ✗');
+		}
+		const src = fs.readFileSync(path.join(LIB, 'client.modelAccounts.js'), 'utf8');
+		if (!/vssarosCbAccount === "1" \? hideOfficialRowControls/.test(src)) {
+			problems.push('modelAccounts A\'：必须只在账号条真的画出来时才藏官方按钮（老版本桥插件没有 API 时，官方按钮是唯一的操作入口）✗');
+		}
+		notes.push('client.modelAccounts.js: 两个扩展位注册 / 状态映射 / A\' 隐藏与还原 / 结构不符退回 A 断言通过');
+	}
+}
+
+// ── ⑰ 模式槽守卫（client.preset.js；2026-10-21 立、2026-10-22 补回 + P0-1）─────────────────────
+// ⚠ 2026-10-22 发现：这一段**曾经写过、后来整段丢了**（HEAD 与工作区都没有，疑似并发会话覆盖）⇒ 补回。
+// 口径（用户指令「agent 定位成 Bot，不要让 agent 作为 preset 呈现」+「收敛成 4 个模式」）：
+//   ① 模式菜单**只有 4 项**：vssaros-standard / vssaros-ptc / minimal / cordis（agent 一个都不许进）；
+//   ② 必须注册到 `conversation.hero.agentPreset`（否则官方 seat 仍会把 agent 列进来）；
+//   ③ 切换走官方 `ctx.remote.agentPresets.select`，**不得**回到宿主桥 `bridge.switchPreset`
+//      （无桥环境 = dsh desktop / 全窗 ⇒ 点了没反应 ✗）；
+//   ④ ★ P0-1：当前会话不在菜单里时，chip **不得冒充菜单第一项**（旧实现回落 modes[0] ⇒ Bot 会话显示成
+//      「极简模式」✗）⇒ resolveCurrent 按种类给出真实名称（绝对期望值，不是相对比较）。
+{
+	const doc = makeDocumentStub();
+	const win = makeWindowStub(doc);
+	let loaded = null;
+	try { loaded = loadChunk('client.preset.js', doc, win); } catch (e) {
+		problems.push(`client.preset.js: 装载失败 — ${String((e && e.message) || e)}`);
+	}
+	if (loaded) {
+		const t = loaded.exports.__test;
+		if (!t || typeof t.modesOf !== 'function' || typeof t.resolveCurrent !== 'function') {
+			problems.push('client.preset.js: 缺 __test.modesOf / __test.resolveCurrent（模式过滤与当前名称必须可单测 ✗）');
+		} else {
+			const roster = [
+				{ id: 'standard' }, { id: 'ptc' }, { id: 'minimal', order: 3 }, { id: 'cordis', order: 4 },
+				{ id: 'vssaros-standard', name: '标准模式（VsSaros）', order: 100, isDefault: true },
+				{ id: 'vssaros-ptc', name: 'PTC 模式（VsSaros）', order: 101 },
+				{ id: 'vssaros-full', name: '标准档 · 全工具（VsSaros）', order: 102 },
+				{ id: 'vssaros-code-architect', name: 'Code Architect' },
+				{ id: 'vssaros-coder', name: 'Coder' },
+				{ id: 'some-user-agent', name: '用户自建 Agent' },
+			];
+			// ① 只列 4 个模式（★ 反向突变点：过滤改成全放行 ⇒ 这里必红）
+			const kept = t.modesOf(roster).map((p) => String(p.id)).sort();
+			const expected = ['cordis', 'minimal', 'vssaros-ptc', 'vssaros-standard'];
+			if (JSON.stringify(kept) !== JSON.stringify(expected)) {
+				problems.push(`client.preset.js: 模式菜单应恰好是 ${expected.join('/')}，实际 ${kept.join('/')} ✗（agent/Bot 不许以 preset 呈现；官方 standard/ptc 与退役的 vssaros-full 不进菜单）`);
+			}
+			// ④ P0-1：当前名称（绝对期望值）
+			const modes = t.modesOf(roster);
+			const cases = [
+				['vssaros-code-architect', 'bot', 'Bot · Code Architect'],
+				['standard', 'legacy', '标准模式（dsh 原生）'],
+				['vssaros-full', 'legacy', '标准档 · 全工具（VsSaros）'],
+				['minimal', 'mode', '极简模式'],
+				['vssaros-ptc', 'mode', 'PTC 模式（VsSaros）'],
+				['', 'mode', '标准模式（VsSaros）'],
+				['ghost-preset', 'unknown', 'ghost-preset'],
+			];
+			for (const [cur, kind, label] of cases) {
+				const r = t.resolveCurrent(roster, cur, modes);
+				if (!r || r.kind !== kind || r.label !== label) {
+					problems.push(`client.preset.js: resolveCurrent(${JSON.stringify(cur)}) 应为 {${kind}, ${label}}，实际 ${JSON.stringify(r)} ✗（旧 bug：Bot 会话 chip 显示成「极简模式」）`);
+				}
+			}
+		}
+		// ③ 切换通道
+		const src = fs.readFileSync(path.join(LIB, 'client.preset.js'), 'utf8');
+		if (!/remote\.agentPresets\.select\(/.test(src)) {
+			problems.push('client.preset.js: 切换必须走官方 ctx.remote.agentPresets.select（无桥环境也能切）✗');
+		}
+		if (/bridge\.switchPreset/.test(src)) {
+			problems.push('client.preset.js: 不得回到宿主桥 bridge.switchPreset（dsh desktop / 全窗没有桥 ⇒ 点了没反应）✗');
+		}
+		// ② 注册槽
+		try {
+			const regs = captureRegistration(loaded.exports, makeShell().shell);
+			const hit = regs.some((r) => {
+				const spec = r && r.entry && r.entry.entry ? r.entry.entry : (r && r.entry);
+				return r.slot === 'conversation.hero.agentPreset' || (spec && spec.name === 'conversation.hero.agentPreset');
+			});
+			if (!hit) { problems.push('client.preset.js: 必须注册到 conversation.hero.agentPreset（否则官方 seat 仍会把 agent 列进模式菜单）✗'); }
+		} catch (e) {
+			problems.push(`client.preset.js: install() 抛错 — ${String((e && e.message) || e)}`);
+		}
+		notes.push('模式槽守卫：恰好 4 个模式 / 当前名称不冒充（7 例）/ 切换走官方 remote / 注册到 hero 槽');
+	}
+}
+
+// ── ⑱ Bot 入口：空白会话先预选、会话出现后才生效（client.botEntry.js；2026-10-22 P0-2）──────────────
+// 旧 bug：空白会话里选 Bot ⇒ 直接 POST 空 sessionId ⇒ 宿主 400「需要 sessionId」⇒ 错误只写进 state，
+//   用户**毫无反馈** ✗✗。钉三条行为（假 ctx + 假 fetch 真跑，不是读源码）：
+//   ① 无会话时选 Bot ⇒ **不发请求**，共享 store 变成 staged（模式 chip 旁会显示「已预选…」）；
+//   ② 会话出现（SessionListState.current 有值）⇒ 才 POST，且 sessionId 就是那个会话；
+//   ③ 宿主拒绝 ⇒ store 变成 error，**带上正文里的原因**（不是只有 HTTP 400）。
+{
+	const doc = makeDocumentStub();
+	const win = makeWindowStub(doc);
+	let loaded = null;
+	try { loaded = loadChunk('client.botEntry.js', doc, win); } catch (e) {
+		problems.push(`client.botEntry.js: 装载失败 — ${String((e && e.message) || e)}`);
+	}
+	if (loaded) {
+		const t = loaded.exports.__test || {};
+		if (typeof t.retryable !== 'function' || typeof t.botNoticeStore !== 'function') {
+			problems.push('client.botEntry.js: 缺 __test.retryable / __test.botNoticeStore ✗');
+		} else {
+			if (t.retryable('HTTP 400：会话不在运行，无法热切换：s1') !== true) { problems.push('botEntry.retryable：「会话不在运行」应判为可重试 ✗'); }
+			if (t.retryable('HTTP 400：未知 preset：x') !== false) { problems.push('botEntry.retryable：「未知 preset」不应重试 ✗'); }
+		}
+		const st = {};
+		let snap = { current: undefined, byId: {} };
+		const subs = new Set();
+		let registered = null;
+		const calls = [];
+		const ctx = {
+			get: (name) => (name === 'commandUi' ? { register: (c) => { registered = c; return { dispose() { } }; } } : undefined),
+			remote: { agentPresets: { list: () => Promise.resolve({ ok: true, value: { presets: [{ id: 'vssaros-coder', name: 'Coder' }] } }) } },
+			sessions: { list: { getSnapshot: () => snap, subscribe: (fn) => { subs.add(fn); return () => subs.delete(fn); } } },
+		};
+		const realFetch = globalThis.fetch;
+		let respond = () => ({ ok: true, status: 200, text: () => Promise.resolve('') });
+		globalThis.fetch = (url, init) => { calls.push({ url: String(url), body: init && init.body ? JSON.parse(init.body) : null }); return Promise.resolve(respond()); };
+		const flush = () => new Promise((r) => setTimeout(r, 30));
+		try {
+			loaded.exports.install(ctx, { state: st });
+			if (!registered || typeof registered.ui?.onSelect !== 'function') {
+				problems.push('client.botEntry.js: 无桥时没有注册 Bots 行（commandUi.register）✗');
+			} else {
+				// ① 无会话 ⇒ 预选、不发请求
+				registered.ui.onSelect({ id: 'vssaros-coder', label: 'Coder' }, {});
+				await flush();
+				const n1 = st.vssarosBotNotice && st.vssarosBotNotice.get();
+				if (calls.length !== 0) { problems.push(`client.botEntry.js: 无会话时不该发请求（旧 bug：POST 空 sessionId ⇒ 400 且无反馈），实际发了 ${calls.length} 次 ✗`); }
+				if (!n1 || n1.kind !== 'staged' || !/Coder/.test(n1.text)) { problems.push(`client.botEntry.js: 无会话时应显示「已预选 Bot · Coder」，实际 ${JSON.stringify(n1)} ✗`); }
+				// ② 会话出现 ⇒ 才 POST，sessionId 对
+				snap = { current: 'sess-new', byId: {} };
+				for (const fn of [...subs]) { fn(); }
+				await flush();
+				if (calls.length !== 1 || !calls[0].body || calls[0].body.sessionId !== 'sess-new' || calls[0].body.presetId !== 'vssaros-coder') {
+					problems.push(`client.botEntry.js: 会话出现后应 POST 一次 {sessionId: sess-new, presetId: vssaros-coder}，实际 ${JSON.stringify(calls)} ✗`);
+				}
+				const n2 = st.vssarosBotNotice && st.vssarosBotNotice.get();
+				if (!n2 || n2.kind !== 'done') { problems.push(`client.botEntry.js: 生效后应显示「已切换」，实际 ${JSON.stringify(n2)} ✗`); }
+				// ③ 宿主拒绝 ⇒ error + 正文原因
+				respond = () => ({ ok: false, status: 400, text: () => Promise.resolve('未知 preset：vssaros-ghost') });
+				registered.ui.onSelect({ id: 'vssaros-ghost', label: 'Ghost' }, { sessionId: 'sess-new' });
+				await flush();
+				const n3 = st.vssarosBotNotice && st.vssarosBotNotice.get();
+				if (!n3 || n3.kind !== 'error' || !/未知 preset/.test(n3.text)) { problems.push(`client.botEntry.js: 宿主拒绝时应显示带原因的错误，实际 ${JSON.stringify(n3)} ✗`); }
+			}
+		} catch (e) {
+			problems.push(`client.botEntry.js: 行为断言抛错 — ${String((e && e.message) || e)}`);
+		} finally {
+			globalThis.fetch = realFetch;
+		}
+		notes.push('Bot 入口：空白会话先预选 / 会话出现后才 POST / 拒绝时带正文原因 —— 行为断言通过');
+	}
+}
+
+// ── ⑫ 中栏是我们的工作台面板时，**不许**抢用户的导航（2026-10-23 真机报障）──────────────
+//   用户原话：「主页显示过程中，page 突然被切换成了聊天输入框」。
+//   机理：两处"救援/自动进会话"的判据都是"聊天 DOM 不在 = 会话没打开"，而**中栏被我们的面板占着**时
+//   聊天 DOM 天然不在 ⇒ 救援调用 uiWorkspace.openSession ⇒ 官方 replaceMain(…,'reveal') 里的
+//   selectPanel(null) ⇒ 把主页换回聊天 ✗。
+//   ⚠ 这类断言必须钉**绝对形态**（顺序 / 完整表达式），相对比较会被"两处都删掉"骗过。
+{
+	// 本节自带读取（本守卫没有全局 read/stripComments 助手 ⇒ 别引用不存在的东西 ✗）
+	const readSrc = (rel) => fs.readFileSync(path.join(LIB, rel), 'utf8');
+	const strip = (s) => String(s).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+	const clientSrc = strip(readSrc('client.js'));
+	// ① 主包轮询的闸门必须把"中栏是我们的面板"算进去（与 onOtherRoute 同一行）
+	const gate = 'if (onOtherRoute() || workbenchPanelActive() || !looksBlankPage()) {';
+	if (!clientSrc.includes(gate)) {
+		problems.push('client.js: "不抢用户导航"那道闸门没有把 workbenchPanelActive() 算进去 ⇒ 中栏显示主页时仍会被救援切回聊天 ✗');
+	}
+	// ② 判据本体：必须查我们面板自己的两个根标记
+	const declAt = clientSrc.indexOf('const workbenchPanelActive = () => {');
+	if (declAt < 0) {
+		problems.push('client.js: 找不到 workbenchPanelActive（判据没了 ⇒ 上面的闸门恒 false ✗）');
+	} else {
+		const body = clientSrc.slice(declAt, declAt + 400);
+		if (!body.includes('[data-vssaros-wb-tabs]') || !body.includes('[data-vssaros-wb-full]')) {
+			problems.push('client.js: workbenchPanelActive 必须查 [data-vssaros-wb-tabs] 与 [data-vssaros-wb-full]（两个面板根标记都要 ✓）');
+		}
+	}
+
+	const wbSrc = strip(readSrc('client.workbenchNav.js'));
+	// ③ 救援 tick 里，workbenchPanelActive() 必须**先于** openSession（顺序断言）
+	const tickAt = wbSrc.indexOf('const timer = window.setInterval(() => {');
+	if (tickAt < 0) {
+		problems.push('client.workbenchNav.js: 找不到救援 tick（自动进会话的定时器）✗');
+	} else {
+		const iGuard = wbSrc.indexOf('workbenchPanelActive()', tickAt);
+		const iOpen = wbSrc.indexOf('ctx.uiWorkspace.openSession(', tickAt);
+		if (iGuard < 0) {
+			problems.push('client.workbenchNav.js: 救援 tick 没有排除"中栏是我们的面板" ⇒ 会把主页换回聊天 ✗');
+		} else if (iOpen >= 0 && iGuard > iOpen) {
+			problems.push('client.workbenchNav.js: workbenchPanelActive() 排在 openSession 之后（等于没拦 ✗）');
+		}
+	}
+	// ④ 页签高亮必须跟"面板在不在屏"对齐（否则页签会说谎：主页高亮着、内容是聊天）
+	if (!wbSrc.includes('const panelOn = workbenchPanelActive();')) {
+		problems.push('client.workbenchNav.js: 页签条没有取 panelOn（面板被切走后「主页」仍高亮 ✗）');
+	}
+	if (!wbSrc.includes('const chatOn = !panelOn || !openTabs.some((t) => t.id === activeTabId);')) {
+		problems.push('client.workbenchNav.js: chatOn 必须同时看 panelOn（只按 activeTabId 判断 ⇒ 页签说谎 ✗）');
+	}
+	// ⚠ 2026-10-23 拖拽排序把这一行改成了 `Object.assign({}, <高亮 ? tabOn : tabBase>, <拖拽态>)` ⇒
+	//   断言只钉**判据本身**（`panelOn && activeTabId === t.id ? tabOn : tabBase`），别再钉整行原文 ✗
+	if (!wbSrc.includes('panelOn && activeTabId === t.id ? tabOn : tabBase')) {
+		problems.push('client.workbenchNav.js: 页签高亮必须等于 "面板在屏 && 是活动页签"（否则面板被切走后仍亮 ✗）');
+	}
+	// ⑤ 负对照：旧写法不许复活（它正是被修掉的那个 bug）
+	if (wbSrc.includes('const chatOn = !openTabs.some((t) => t.id === activeTabId);')) {
+		problems.push('client.workbenchNav.js: 旧写法 `chatOn = !openTabs.some(...)` 又回来了（不看面板是否在屏 ✗）');
+	}
+	if (!problems.some((p) => /workbenchPanelActive|chatOn|panelOn|救援 tick/.test(p))) {
+		notes.push('中栏面板不被抢：主包轮询 + 救援 tick 都排除"我们的面板在屏"，页签高亮按面板真实状态对齐');
+	}
+}
+
+// ── ⑬ 页签条支持拖拽排序（2026-10-23 用户："要求页签支持拖拽排序"）──────────────
+//   要点：① 用 pointer 事件（不用 HTML5 draggable）；② 拖完要**持久化顺序**（否则重开窗口又乱）；
+//   ③ 「会话」是固定出口，不许被拖走；④ 拖动后紧跟的那次 click 必须丢掉（否则松手就切页签 ✗）。
+{
+	const readSrc = (rel) => fs.readFileSync(path.join(LIB, rel), 'utf8');
+	const strip = (s) => String(s).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+	const wb = strip(readSrc('client.workbenchNav.js'));
+
+	// ① pointer 三件套
+	for (const [label, needle] of [
+		['拖拽起点 onPointerDown', 'onPointerDown: (e) => beginDrag(e, t.id, i)'],
+		['移动监听 pointermove', 'window.addEventListener("pointermove", onMove)'],
+		['松手监听 pointerup', 'window.addEventListener("pointerup", onUp)'],
+	]) {
+		if (!wb.includes(needle)) {
+			problems.push(`client.workbenchNav.js: 缺少${label} ⇒ 页签拖不动 ✗`);
+		}
+	}
+
+	// ② 换序必须真换 + 持久化（两个都在同一个函数里）
+	const mAt = wb.indexOf('const moveTabTo = (id, slot) => {');
+	if (mAt < 0) {
+		problems.push('client.workbenchNav.js: 找不到 moveTabTo（拖拽结果无处落地 ✗）');
+	} else {
+		const body = wb.slice(mAt, mAt + 900);
+		// ⚠ 2026-10-23：换序语义已抽到纯函数 `reorderTabs`（行为级断言在 `check-dsh-tab-drag.mjs`）
+		//   ⇒ 这里只钉"接线"：moveTabTo 必须调它，别再内联一份 splice 实现（两份迟早漂移 ✗）。
+		if (!body.includes('reorderTabs(openTabs, id, slot)')) {
+			problems.push('client.workbenchNav.js: moveTabTo 必须走 reorderTabs（换序只允许一处实现 ✗）');
+		}
+		if (!body.includes('saveTabs(openTabs)')) {
+			problems.push('client.workbenchNav.js: 换序后必须 saveTabs(openTabs)（否则重开窗口顺序又乱 ✗）');
+		}
+		if (!body.includes('bumpTabs()')) {
+			problems.push('client.workbenchNav.js: 换序后必须 bumpTabs()（否则条上不重画 ✗）');
+		}
+	}
+
+	// ③ 拖动过后的 click 必须被吞掉
+	if (!wb.includes('if (dragMovedRef.current) { dragMovedRef.current = false; return; }')) {
+		problems.push('client.workbenchNav.js: 页签 onClick 没有"刚拖过就丢掉"的闸门 ⇒ 松手会顺势切页签 ✗');
+	}
+
+	// ④ 负对照：「会话」那格（`"data-vssaros-wb-tab": "chat"`）不许挂拖拽起点
+	const chatAt = wb.indexOf('"data-vssaros-wb-tab": "chat"');
+	if (chatAt < 0) {
+		problems.push('client.workbenchNav.js: 找不到「会话」那一格（守卫无法确认它没被拖拽化）✗');
+	} else if (wb.slice(chatAt, chatAt + 400).includes('onPointerDown')) {
+		problems.push('client.workbenchNav.js: 「会话」那格挂了 onPointerDown ⇒ 回聊天的出口会被拖走 ✗');
+	}
+
+	// ⑤ ✕ 上按下不许起拖（否则想关页签会把条拖歪）
+	if (!wb.includes('onPointerDown: (e) => { try { e.stopPropagation(); }')) {
+		problems.push('client.workbenchNav.js: 关闭按钮没挡 pointerdown ⇒ 点 ✕ 也会进入拖拽 ✗');
+	}
+
+	if (!problems.some((p) => /拖拽|moveTabTo|dragMovedRef|会话」那格|pointerdown/.test(p))) {
+		notes.push('页签拖拽排序：pointer 事件换序 + saveTabs 持久化 + 「会话」不可拖 + 松手不误切');
+	}
+}
+
+// ── ⑦ 「首次点页签却被主页覆盖」回归守卫（2026-10-24）──────────────────────────
+// 用户报障：「当首次点击其他页签时，会默认切中 主页 页签」。
+// 根因：中栏面板（makeTabPanel）**首次挂载**时无条件 `ensureTab(pick())`（pick 恒为主页），
+//       而"首次挂载"恰恰是用户第一次点页签触发的 ⇒ 刚点的那一项被改回主页 ✗。
+// 修法：用 `pendingTabOpen` 意图标记区分"用户显式切页"与"宿主开面板"。
+// 这四条任何一条被删都会让 bug 复活，且**不会有任何报错**（页签静默跳回主页）⇒ 必须钉死。
+{
+	// 自带读文件 + 去注释（`strip` / `readSrc` 是别的函数里的局部量，这里不能用 ✓）
+	const wbSrc = fs.readFileSync(new URL('./vssaros-chat-surface/lib/client.workbenchNav.js', import.meta.url), 'utf8')
+		.replace(/\/\*[\s\S]*?\*\//g, '')
+		.replace(/^\s*\/\/.*$/gm, '');
+	const before = problems.length;
+
+	// ① 意图标记必须存在
+	if (!wbSrc.includes('let pendingTabOpen = "";')) {
+		problems.push('client.workbenchNav.js: 缺 pendingTabOpen 意图标记 ⇒ 首次点页签会被主页覆盖（2026-10-24 报障）✗');
+	}
+
+	// ② 页签点击：必须**先**写标记，再 selectPanel（selectPanel 才会触发首次挂载）
+	const clickAt = wbSrc.indexOf('"data-vssaros-wb-tab": t.id,');
+	if (clickAt < 0) {
+		problems.push('client.workbenchNav.js: 找不到工作台页签的 onClick 区域（守卫无法确认意图标记 ✗）');
+	} else {
+		const clickBody = wbSrc.slice(clickAt, clickAt + 1400);
+		const markAt = clickBody.indexOf('pendingTabOpen = t.id;');
+		const selAt = clickBody.indexOf('ctx.layout.selectPanel(ENTRY_ID)');
+		if (markAt < 0) {
+			problems.push('client.workbenchNav.js: 页签 onClick 没写 pendingTabOpen ⇒ 首次点击仍会被主页覆盖 ✗');
+		} else if (selAt > 0 && markAt > selAt) {
+			problems.push('client.workbenchNav.js: pendingTabOpen 必须写在 selectPanel **之前**（写在后面时挂载 effect 已经跑完 ✗）');
+		}
+	}
+
+	// ③ ensureTab（启动器 / 主页卡片「打开」）也要记意图
+	const ensureAt = wbSrc.indexOf('function ensureTab(it)');
+	if (ensureAt < 0) {
+		problems.push('client.workbenchNav.js: 找不到 ensureTab（守卫锚点失效 ✗）');
+	} else if (!wbSrc.slice(ensureAt, ensureAt + 600).includes('pendingTabOpen = it.id;')) {
+		problems.push('client.workbenchNav.js: ensureTab 没写 pendingTabOpen ⇒ 从主页卡片「打开」也会被弹回主页 ✗');
+	}
+
+	// ④ 挂载 effect：必须先消费标记并**提前 return**，且早于 ensureTab(pick())
+	const effAt = wbSrc.indexOf('const wantTab = pendingTabOpen;');
+	if (effAt < 0) {
+		problems.push('client.workbenchNav.js: 挂载 effect 没有消费 pendingTabOpen ⇒ 首次点页签又被拉回主页 ✗');
+	} else {
+		const effBody = wbSrc.slice(effAt, effAt + 400);
+		if (!effBody.includes('pendingTabOpen = "";')) {
+			problems.push('client.workbenchNav.js: 消费后必须清空 pendingTabOpen（陈旧值会在下次挂载误伤 ✗）');
+		}
+		if (!/if \(wantTab && wantTab === activeTabId\) \{ setVer\(v => v \+ 1\); return; \}/.test(effBody)) {
+			problems.push('client.workbenchNav.js: 命中意图时必须 return（不许继续走到 ensureTab(主页) ✗）');
+		}
+		const ensureCallAt = wbSrc.indexOf('ensureTab(it);', effAt);
+		if (ensureCallAt < 0) {
+			problems.push('client.workbenchNav.js: 挂载 effect 里找不到 ensureTab(it)（原有"首次进主页"行为不能丢 ✗）');
+		} else if (ensureCallAt < effAt) {
+			problems.push('client.workbenchNav.js: 意图判定必须早于 ensureTab(it)（否则覆盖已经发生 ✗）');
+		}
+	}
+
+	// ⑤ 负对照：只允许 4 处赋值（声明 / ensureTab / 页签点击 / 消费清空）
+	//    额外再加一处（例如给侧栏「🏠 主页」那行也标）⇒ 会让"点主页显示主页"失效 ✗
+	const assigns = (wbSrc.match(/pendingTabOpen = /g) || []).length;
+	if (assigns !== 4) {
+		problems.push(`client.workbenchNav.js: pendingTabOpen 应恰好 4 处赋值（声明/ensureTab/页签点击/消费清空），实际 ${assigns} 处 ✗`);
+	}
+
+	if (problems.length === before) {
+		notes.push('页签首次点击不被主页覆盖：意图标记 + 消费顺序 + 侧栏「主页」路径不受影响');
+	}
+}
+
+// ── ⑭ 账号行必须在**所有** surface 生效（2026-10-24 真机：插件页里左下角是官方账号行）──────
+//   用户报障原话：「左下角的 tof 登录按钮为什么会触发官方的登录，是 profile 错了么」。
+//   真机日志把链路钉死了：点下去弹的是 `https://platform.deepseek.com/dsh/authorize?…`
+//   （dsh 官方 DeepSeek 账号，URL 只由运行时包 `dsh-deepseek-account-platform` 构造），
+//   而同期**没有任何** `signInIde` / `tof` 调用 ⇒ 那颗不是我们画的。
+//   根因两层，缺一不可：
+//     ① `client.account.js` 只在 PART_CHUNKS（有 sessionId）与 full 分支里 require ⇒
+//        插件页（`/x/skills/?surface=editor`，无 sessionId ⇒ BLANK_SESSION_PARTS）**压根没装载**；
+//     ② chunk 里又有 `chrome` 判据（只认 full / chat+!chatOnly）⇒ 就算装上也 return。
+//   ⇒ 判据必须"除纯聊天框以外都装"，且装载走 ALWAYS_CHUNKS（无条件）。
+{
+	const readSrc = (rel) => fs.readFileSync(path.join(LIB, rel), 'utf8');
+	const strip = (s) => String(s).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+	const entry = strip(readSrc('client.js'));
+	const acct = strip(readSrc('client.account.js'));
+
+	// ① 无条件装载
+	const alwaysAt = entry.indexOf('const ALWAYS_CHUNKS = [');
+	if (alwaysAt < 0) {
+		problems.push('client.js: 找不到 ALWAYS_CHUNKS（账号行无处无条件装载）✗');
+	} else {
+		const line = entry.slice(alwaysAt, entry.indexOf('];', alwaysAt));
+		if (!line.includes('"./client.account.js"')) {
+			problems.push('client.js: `client.account.js` 必须在 ALWAYS_CHUNKS 里（否则插件页不装 ⇒ 左下角是官方账号行，点登录走 DeepSeek ✗）');
+		}
+	}
+
+	// ② 不许再出现在"有 sessionId 才装"的清单里（单一装载路径，避免双注册）
+	const partAt = entry.indexOf('const PART_CHUNKS = [');
+	if (partAt > 0) {
+		const part = entry.slice(partAt, entry.indexOf('];', partAt));
+		if (part.includes('"./client.account.js"')) {
+			problems.push('client.js: `client.account.js` 不许留在 PART_CHUNKS（它已进 ALWAYS ⇒ 再留一处就是双装载 ✗）');
+		}
+	}
+
+	// ③ chrome 判据：除纯聊天框以外都要装
+	if (!acct.includes('const chrome = bridge.surface !== "chat" || bridge.chatOnly === false;')) {
+		problems.push('client.account.js: chrome 判据必须是"除 surface=chat && chatOnly 以外都装"（只认 full ⇒ 插件页不装 ⇒ 官方账号行接管 ✗）');
+	}
+	// 负对照：旧的"只认 full"写法不许复活
+	if (/const chrome = bridge\.surface === "full" \|\| \(bridge\.surface === "chat" && bridge\.chatOnly === false\);/.test(acct)) {
+		problems.push('client.account.js: 旧判据（只认 full / chat）又回来了 ⇒ 插件页又会被排除 ✗');
+	}
+
+	if (!problems.some((p) => /ALWAYS_CHUNKS|client\.account|chrome 判据|官方账号行/.test(p))) {
+		notes.push('账号行：ALWAYS_CHUNKS 无条件装载 + chrome 判据覆盖插件页（左下角不再出现官方 DeepSeek 入口）');
+	}
+}
+
+// ── ⑮ 侧栏「插件」行必须被藏掉，但**只藏行**（2026-10-24 用户："移除插件 item"）──────────
+//   官方 `dsh-client-ui-plugin-manager` 无条件往 `sidebar.panellist` 注册 `{ id:'plugins', order:0 }`，
+//   源码里没有任何配置开关 ⇒ 只能 DOM 层隐藏；而且侧栏每次切面板都会重渲染 ⇒ 必须观察 + 重贴。
+//   ⚠ 只许 `display:none` 那一颗 button：页面 / `pluginNavigation` / 设置入口都要留着（删能力 ✗）。
+{
+	const readSrc = (rel) => fs.readFileSync(path.join(LIB, rel), 'utf8');
+	const strip = (s) => String(s).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+	const nav = strip(readSrc('client.workbenchNav.js'));
+
+	// ⚠ 断言只钉"必须包含哪几个标签"，不钉整行原文 —— 这张表是会长的
+	//   （2026-10-24 起除了「插件」还要藏官方「自动化任务」⇒ 钉死整行会天天假红 ✗）
+	const hiddenAt = nav.indexOf('const HIDDEN_LABELS = [');
+	if (hiddenAt < 0) {
+		problems.push('client.workbenchNav.js: 缺少"要藏哪几行"的白名单（HIDDEN_LABELS）✗');
+	} else {
+		const hiddenLine = nav.slice(hiddenAt, nav.indexOf('];', hiddenAt));
+		for (const label of ['插件', '自动化任务']) {
+			if (!hiddenLine.includes(`"${label}"`)) {
+				problems.push(`client.workbenchNav.js: 白名单必须含「${label}」（否则侧栏那一行又露出来了 ✗）`);
+			}
+		}
+	}
+	if (!/btn\.style\.display = "none"/.test(nav)) {
+		problems.push('client.workbenchNav.js: 藏行必须是 display:none 那一颗 button ✗');
+	}
+	if (!/querySelectorAll\("button\[aria-label\]"\)/.test(nav)) {
+		problems.push('client.workbenchNav.js: 必须按 aria-label 在侧栏里找行（别用全局文本匹配，会误伤正文 ✗）');
+	}
+	if (!/new MutationObserver\(schedule\)/.test(nav)) {
+		problems.push('client.workbenchNav.js: 必须有 MutationObserver 重贴（侧栏重渲染会把 display:none 覆盖掉 ✗）');
+	}
+	if (!/Math\.max\(0, 200 - \(now - lastRun\)\)/.test(nav)) {
+		problems.push('client.workbenchNav.js: 重贴必须节流（侧栏 DOM 变动频繁，不节流会拖慢输入 ✗）');
+	}
+	// 负对照：不许把行**删掉**（节点被 React 重建 / 会打乱 key，用 display:none 才稳）
+	if (/aria-label[\s\S]{0,120}\.remove\(\)/.test(nav)) {
+		problems.push('client.workbenchNav.js: 不许 remove() 那一行（React 会重建、易打乱兄弟节点；用 display:none ✗）');
+	}
+
+	// ⑥ 隐藏了官方「自动化任务」行 ⇒ **页签条必须补上同名入口**，否则用户再也进不去那个能力 ✗
+	const schedulerItem = /\{ id: "vssaros-wb-scheduler", name: "([^"]+)", ico: "[^"]*", route: "\/x\/scheduler\/" \}/.exec(nav);
+	if (!schedulerItem) {
+		problems.push('client.workbenchNav.js: DEFAULT_ITEMS 缺 vssaros-wb-scheduler（隐藏侧栏那行后就没入口了 ✗）');
+	} else if (schedulerItem[1] !== '自动化任务') {
+		problems.push(`client.workbenchNav.js: 页签名必须是「自动化任务」（实际「${schedulerItem[1]}」）—— 与工作台标题/清单三处同值 ✗`);
+	}
+
+	if (!problems.some((p) => /HIDDEN_LABELS|display:none|aria-label|MutationObserver|节流|remove\(\)|vssaros-wb-scheduler/.test(p))) {
+		notes.push('侧栏：隐藏官方「插件」「自动化任务」行（display:none + MutationObserver 节流重贴；只藏行、不删能力；自动化任务由工作台承接）');
 	}
 }
 

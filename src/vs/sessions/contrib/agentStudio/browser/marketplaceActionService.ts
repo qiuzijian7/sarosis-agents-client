@@ -267,11 +267,18 @@ export async function runMarketplaceAction(
 				throw new Error(`marketplace.${req.op}：包「${req.slug}」没有可用版本`);
 			}
 
-			// ★ workbench 走外部发布源通道（本体不在商城服务器上 ⇒ 没有 tar.gz 可下）✓
-			if (kind === 'workbench') {
+			// ★ workbench / plugin 走外部发布源通道（本体不在商城服务器上 ⇒ 没有 tar.gz 可下）✓
+			//   2026-10-24：把 `plugin` 并进来 —— 商城里 6704 个插件都是 kind=plugin + 只有 distribution，
+			//   以前它掉进下面的 download()（下载不存在的包体）⇒ 用户看到的是「HTTP 404」✗
+			// workbench 与 plugin 同属"本体在外部"（npm / github-source / github-release）
+			// ⇒ 必须有发布源才装得动。
+			// ⚠ 判定**就地写**，不从别的模块 import 常量：2026-10-24 那次
+			//   "SERVER_ONLY_EXTERNAL_KINDS is not defined" 就是跨模块取值、模块加载到半成品状态炸的。
+			const kindName = String(kind);
+			if (kindName === 'workbench' || kindName === 'plugin') {
 				const dist = distributionOfVersion(detail, targetVersion);
 				if (!dist) {
-					throw new Error(`工作台「${req.slug}」没有登记发布源（distribution）⇒ 不知道该从哪儿装`);
+					throw new Error(`「${req.slug}」没有登记发布源（distribution）⇒ 不知道该从哪儿装`);
 				}
 				const resolved = resolveDistributionSpec(dist, targetVersion);
 				if (resolved.error) {
@@ -284,8 +291,15 @@ export async function runMarketplaceAction(
 					}
 					const url = dist.url;
 					const sha = dist.sha256;
+					// sha256 是**硬要求**（主进程「没有校验值就不装」，不能为了能装而弱化它 ✗）。
+					// 但报错必须说清缺什么 —— 商城里 github-release 那批（17 个工作台）登记时就只有 url，
+					// 以前这里不成体系地失败，用户看到的是别的错（HTTP 404）。
 					if (!url || !sha) {
-						return { ok: false, error: `工作台「${req.slug}」的发布源信息不完整（缺 url 或 sha256）` };
+						return {
+							ok: false,
+							error: `「${req.slug}」的发布源信息不完整（缺 ${!url ? 'url' : 'sha256'}）`
+								+ '⇒ 需要商品作者在商城补齐发布源后重发一版',
+						};
 					}
 					const tar = await host.installExternalTarball({
 						url,
@@ -299,7 +313,7 @@ export async function runMarketplaceAction(
 					}
 					const tarVersion = tar.version ?? targetVersion;
 					await marketplace.recordInstalled({
-						kind: 'workbench',
+						kind,
 						storeId: detail.slug,
 						version: tarVersion,
 					});
@@ -322,7 +336,7 @@ export async function runMarketplaceAction(
 				//   ⇒ 不显式记一笔，「已安装」页签与升级检查都看不到它 ✗ ✓。
 				const installedVersion = installResult.version ?? targetVersion;
 				await marketplace.recordInstalled({
-					kind: 'workbench',
+					kind,
 					storeId: detail.slug,
 					version: installedVersion,
 				});
@@ -344,7 +358,7 @@ export async function runMarketplaceAction(
 			await marketplace.ensureLoggedIn();
 			if (!req.kind || !req.slug) { throw new Error('marketplace.uninstall 需要 kind 与 slug'); }
 			const kind = req.kind as PackageKind;
-			if (kind === 'workbench') {
+			if (String(kind) === 'workbench' || String(kind) === 'plugin') {
 				if (!host.removePlugin) {
 					throw new Error('这台 IDE 没有卸载工作台的通道（removePlugin 缺失）');
 				}
@@ -353,7 +367,7 @@ export async function runMarketplaceAction(
 					return { ok: false, error: r.error ?? '卸载失败' };
 				}
 				// ★ 插件卸了 ⇒ 台账也要清（否则「已安装」页签还挂着它 ✗）✓
-				await marketplace.forgetInstalled('workbench', req.slug);
+				await marketplace.forgetInstalled(kind, req.slug);
 				return { ok: true, changed: true };
 			}
 			await marketplace.uninstall(req.slug, kind);

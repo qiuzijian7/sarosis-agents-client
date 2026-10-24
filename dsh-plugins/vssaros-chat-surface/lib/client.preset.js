@@ -64,9 +64,57 @@ window.__ModuleLoader__.load({
 		/**
 		 * 只留模式（★ 本组件存在的全部理由）。
 		 * ⚠ 放在 **factory 层**（不是 install 内）：守卫与单测都直接引用它 ⇒ 测的就是**真实实现**，
-		 *   不会出现"导出的是一个副本、实现是另一个"的假绿 ✗（记忆：相对比较型断言会恒真 ⇒ 必��钉绝对期望值）。
+		 *   不会出现"导出的是一个副本、实现是另一个"的假绿 ✗（记忆：相对比较型断言会恒真 ⇒ 必须钉绝对期望值）。
 		 */
 		const modesOf = (presets) => (presets || []).filter((p) => p && MODE_IDS.has(String(p.id)));
+
+		/** 已退役、但 roster 里仍在的我们的档（不进菜单；当前会话若挂在它上面要如实显示 ⇒ 不能冒充 Bot）。 */
+		const RETIRED_MODES = ["vssaros-full"];
+
+		/** 显示名 / 描述（factory 层 ⇒ 菜单渲染与 resolveCurrent 共用同一份 ✓）。 */
+		const labelOf = (p) => {
+			const id = String((p && p.id) || "");
+			const copy = BUILTIN_MODE_COPY[id];
+			if (copy) { return copy.name; }
+			return String((p && (p.name || p.id)) || "");
+		};
+		const descOf = (p) => {
+			const id = String((p && p.id) || "");
+			const copy = BUILTIN_MODE_COPY[id];
+			if (copy) { return copy.desc; }
+			return (p && typeof p.description === "string" && p.description.trim()) ? p.description.trim() : "";
+		};
+
+		/**
+		 * ★ P0-1（2026-10-22）：当前会话的 preset ⇒ chip 上显示什么。
+		 * 旧实现 `modes.find(id === cur) || modes[0]`：会话跑的**不是**菜单里 4 个模式之一时（以 agent preset
+		 *   打开的 Bot 会话 / 早先用官方 standard·ptc 建的老会话），chip 显示 **modes[0]** —— 按 roster 顺序就是
+		 *   「极简模式」✗✗（菜单里也不打 ✓）⇒ 名不副实。
+		 * 新实现：在**全量 roster** 里查当前 id，按种类给出真实名称：
+		 *   · mode    菜单里的 4 个之一 ⇒ 显示其名；
+		 *   · legacy  官方 standard/ptc、或已退役的 vssaros-full（不在菜单但真实存在）⇒ 显示其名 + 标注；
+		 *   · bot     其余 roster 行（agent 在 dsh 内部以 preset 存在）⇒「Bot · 名字」；
+		 *   · unknown roster 里查无此 id ⇒ 如实显示 id（**不冒充**任何模式）。
+		 * 没有当前值（空白会话）⇒ 默认档（isDefault）⇒ 其次我们的标准模式 ⇒ 最后才是 menu[0]。
+		 */
+		const resolveCurrent = (presets, currentId, modes) => {
+			const all = presets || [];
+			const menu = modes || modesOf(all);
+			const id = String(currentId || "");
+			if (!id) {
+				const d = menu.find((m) => m && m.isDefault)
+					|| menu.find((m) => m && OUR_MODES.indexOf(String(m.id)) >= 0)
+					|| menu[0];
+				return d ? { id: String(d.id), kind: "mode", label: labelOf(d) } : { id: "", kind: "unknown", label: "" };
+			}
+			const inMenu = menu.find((m) => m && String(m.id) === id);
+			if (inMenu) { return { id, kind: "mode", label: labelOf(inMenu) }; }
+			const row = all.find((p) => p && String(p.id) === id);
+			if (BUILTIN_MODE_COPY[id]) { return { id, kind: "legacy", label: BUILTIN_MODE_COPY[id].name + "（dsh 原生）" }; }
+			if (RETIRED_MODES.indexOf(id) >= 0) { return { id, kind: "legacy", label: String((row && row.name) || id) }; }
+			if (row) { return { id, kind: "bot", label: "Bot · " + String(row.name || row.id) }; }
+			return { id, kind: "unknown", label: id };
+		};
 
 		function install(ctx, shell) {
 			// ⚠ 无桥环境（dsh desktop / dsh 全窗）：`install(ctx, { bridge, state })` 里 **没有 fitMenu / menus**
@@ -120,18 +168,24 @@ window.__ModuleLoader__.load({
 				return typeof v === "string" && v ? v : undefined;
 			};
 
-			const labelOf = (p) => {
-				const id = String((p && p.id) || "");
-				const copy = BUILTIN_MODE_COPY[id];
-				if (copy) { return copy.name; }
-				return String((p && (p.name || p.id)) || "");
-			};
-			const descOf = (p) => {
-				const id = String((p && p.id) || "");
-				const copy = BUILTIN_MODE_COPY[id];
-				if (copy) { return copy.desc; }
-				return (p && typeof p.description === "string" && p.description.trim()) ? p.description.trim() : "";
-			};
+			/**
+			 * ★ P0-2：Bot 入口（client.botEntry.js）的可见反馈 —— 两个 chunk 共享同一个 `state`
+			 *   ⇒ 共享这个 store（形状 `{get,set,subscribe}` 与 botEntry 那边**完全一致**；谁先装谁建）✓。
+			 */
+			const botNotice = state.vssarosBotNotice || (() => {
+				let value = null;
+				const listeners = new Set();
+				const store = {
+					get: () => value,
+					set: (v) => {
+						value = v;
+						for (const l of [...listeners]) { try { l(); } catch { /* 不连坐 */ } }
+					},
+					subscribe: (l) => { listeners.add(l); return () => { listeners.delete(l); }; },
+				};
+				state.vssarosBotNotice = store;
+				return store;
+			})();
 
 			function ModeSeat(props) {
 				const sid = props && props.sessionId ? props.sessionId : state.sessionId;
@@ -141,6 +195,15 @@ window.__ModuleLoader__.load({
 				const [err, setErr] = react.useState(null);
 				const [busy, setBusy] = react.useState(false);
 				const rootRef = react.useRef(null);
+				const [note, setNote] = react.useState(() => botNotice.get());
+
+				// ★ P0-2：订阅 Bot 入口的反馈（预选 / 已切换 / 失败原因）⇒ 显示在 chip 旁边；「已切换」6 秒后自动收起。
+				react.useEffect(() => botNotice.subscribe(() => setNote(botNotice.get())), []);
+				react.useEffect(() => {
+					if (!note || note.kind !== "done") { return; }
+					const t = setTimeout(() => { if (botNotice.get() === note) { botNotice.set(null); } }, 6000);
+					return () => clearTimeout(t);
+				}, [note]);
 
 				react.useEffect(() => {
 					let dead = false;
@@ -174,9 +237,10 @@ window.__ModuleLoader__.load({
 				if (!presets) { return null; }
 				const modes = modesOf(presets);
 				if (modes.length === 0) { return null; }
-				const cur = staged || currentOf(sid) || (modes.find((m) => m.isDefault) || modes[0]).id;
-				const curMode = modes.find((m) => m.id === cur) || modes[0];
-				const curLabel = labelOf(curMode) || cur;
+				// ★ P0-1：当前名称在**全量 roster** 里查（不再回落 modes[0] ⇒ 不会把 Bot 会话显示成「极简模式」✗）。
+				const resolved = resolveCurrent(presets, staged || currentOf(sid), modes);
+				const cur = resolved.id;
+				const curLabel = resolved.label || cur;
 
 				const pick = (id) => {
 					if (id === cur || busy) { return; }
@@ -221,6 +285,21 @@ window.__ModuleLoader__.load({
 						},
 					}, "⬢ " + (busy ? "切换中…" : curLabel) + " ▾"),
 				];
+				if (note && note.text) {
+					children.push(react.createElement("span", {
+						key: "bot-note",
+						"data-vssaros-bot-note": note.kind,
+						title: note.text,
+						onClick: () => { if (note.kind !== "staged") { botNotice.set(null); } },
+						style: {
+							fontSize: 11, lineHeight: "18px", maxWidth: 360, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+							cursor: note.kind === "staged" ? "default" : "pointer",
+							color: note.kind === "error"
+								? "var(--dsw-alias-state-error-primary, #f85149)"
+								: "var(--dsw-alias-label-secondary, currentColor)",
+						},
+					}, (note.kind === "staged" ? "◷ " : note.kind === "done" ? "✓ " : "⚠ ") + note.text));
+				}
 
 				if (open) {
 					const itemStyle = (m) => ({
@@ -279,6 +358,21 @@ window.__ModuleLoader__.load({
 									descOf(m) ? react.createElement("span", { style: { fontSize: 11, color: "var(--dsw-alias-label-secondary, currentColor)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, descOf(m).slice(0, 48)) : null)));
 						}
 					}
+					// ★ P0-1：当前会话不在 4 个模式里（Bot 会话 / 老模式）⇒ 菜单里没有 ✓ ⇒ 底部如实说明，
+					//   并讲清"切换会发生什么"（agentPresets.select 换的是整个 preset ⇒ Bot 人设会随之卸下）。
+					if (resolved.kind === "bot" || resolved.kind === "legacy" || resolved.kind === "unknown") {
+						rows.push(react.createElement("div", {
+							key: "cur-note",
+							"data-vssaros-mode-note": resolved.kind,
+							style: {
+								margin: "4px 4px 0", padding: "6px 6px 2px", fontSize: 11, lineHeight: "15px",
+								borderTop: "1px solid var(--dsw-alias-border-l1, transparent)",
+								color: "var(--dsw-alias-label-secondary, currentColor)", maxWidth: 300, whiteSpace: "normal",
+							},
+						}, "当前会话：" + resolved.label + (resolved.kind === "bot"
+							? "。选择上面的模式会让本会话改用该模式（Bot 人设随之卸下；只换人格请用「+」→ Bots）。"
+							: "（不在模式菜单内）。选择上面的模式会让本会话改用该模式。")));
+					}
 					children.push(react.createElement("div", {
 						key: "m",
 						role: "menu",
@@ -311,7 +405,8 @@ window.__ModuleLoader__.load({
 		}
 		exports.install = install;
 		// 仅测试用：纯逻辑（模式白名单 / 过滤 / 名称）。
-		exports.__test = { MODE_IDS, BUILTIN_MODES, OUR_MODES, modesOf };
+		exports.__test = { MODE_IDS, BUILTIN_MODES, OUR_MODES, modesOf, resolveCurrent };
 		return module.exports;
 	}
 });
+

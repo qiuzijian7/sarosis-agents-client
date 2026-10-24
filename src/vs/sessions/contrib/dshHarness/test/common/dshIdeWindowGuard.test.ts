@@ -131,6 +131,66 @@ suite('desktop 模式：IDE 主窗口不许露面（点登录也不许）', () =
 			'渲染侧服务没走这条通道 ✗');
 	});
 
+	// ★★ 2026-10-23 用户口径（三条规则）：**按"还剩几个可见窗口"判定**，各关各的
+	//   ① 只有桌面窗口 ⇒ 关桌面 ⇒ 退应用；② 只有 IDE ⇒ 关 IDE ⇒ 退应用；
+	//   ③ 两个都在 ⇒ 关哪个只关它自己，应用保持。
+	test('⑤ 关窗规则：三条口径（只桌面 / 只 IDE / 都开着），判据只允许一处', () => {
+		const channel = stripComments(read(CHANNEL));
+		const at = channel.indexOf('const onClose = (event: Electron.Event) => {');
+		assert.ok(at > 0, '找不到 IDE 主窗口的 close 拦截 ✗');
+		// ⚠ 只取 onClose 本体：紧邻的 rehide（show/focus 守卫）**合法**地调 win.hide()，别混进来
+		const endAt = channel.indexOf('const state = {', at);
+		assert.ok(endAt > at, '找不到 onClose 的结束位置（切片口径要靠它）✗');
+		const body = channel.slice(at, endAt);
+
+		// ① 退出中必须放行
+		assert.match(body, /if \(this\._appQuitting\) \{\s*return;\s*\}/,
+			'应用正在退出时必须直接放行（否则关不掉应用 ✗）');
+
+		// ② 判据只能来自规则表（`common/dshAppLifecycle.ts`），不许再内联一套
+		assert.match(body, /decideIdeWindowClose\(facts\)/,
+			'关 IDE 的收场必须由 decideIdeWindowClose 决定（规则只允许一处，内联会与规则漂移 ✗）');
+		assert.match(body, /desktop: this\._liveDesktopWindows\(windowId\)/,
+			'facts 必须包含"还有几个桌面窗口"（漏了它 ⇒ 关 IDE 会把桌面窗口一起带走 ✗）');
+		assert.match(body, /ideVisible: this\._visibleIdeWindows\(windowId\)/,
+			'facts 必须包含"还有几个**可见** IDE 窗口"（隐藏窗口不算"还在"✗）');
+
+		// ③ 三个分支都要在：只关自己 / 隐藏（保住桌面窗口）/ 关完退出
+		assert.match(body, /action === 'close'/,
+			"缺少 'close' 分支（规则③：都开着时关 IDE 只关它自己）✗");
+		assert.match(body, /action === 'hide'[\s\S]{0,260}event\.preventDefault\(\)[\s\S]{0,140}win\.hide\(\)/,
+			"缺少 'hide' 分支，或没真 preventDefault+hide —— 桌面窗口的 opener 就是 IDE ⇒ 真关会把它一起带走 ✗");
+		assert.match(body, /win\.once\('closed'[\s\S]{0,240}app\.quit\(\)/,
+			'规则①②：关掉的若是最后一个界面，必须显式退出（隐藏窗口不计入 window-all-closed ✗）');
+
+		// ④ 负对照：旧的内联判据不许复活
+		assert.ok(!/const others = this\._windowsMainService\.getWindows\(\)\.filter/.test(body),
+			'内联的"数可见窗口"又回来了 ⇒ 会与 common/dshAppLifecycle 的规则表漂移 ✗');
+
+		// ⑤ 桌面窗口那一侧同样走规则函数（规则①③）
+		assert.match(channel, /decideDesktopWindowClose\(facts\)/,
+			'桌面窗口关闭的收场也必须走 decideDesktopWindowClose（规则①）✗');
+
+		// ⑥ 拦截挂的是**这一扇**窗口，dispose 要摘掉
+		assert.match(channel, /win\.on\('close', onClose\)/, 'close 拦截必须挂在 IDE 主窗口上 ✗');
+		assert.match(channel, /win\.off\('close', onClose\)/,
+			'dispose 必须摘掉 close 拦截（否则换窗口后旧守卫还在 ✗）');
+		// ⑦ 负对照：`hidden` 与否都要装（用户可能先「回到 IDE」再关窗）
+		assert.match(channel, /const state = \{ hiddenByUs: hidden \};/,
+			'守卫状态必须跟随 hidden 参数（写死 true ⇒ 点「回到 IDE」后窗口一显示又被藏回去 ✗）');
+	});
+
+	test('⑤b 桌面窗口侧（渲染进程）：IDE 仍可见时不许退', () => {
+		const full = stripComments(read(FULL_WINDOW));
+		const qAt = full.indexOf('private _quitAfterDesktopClosed(');
+		assert.ok(qAt > 0, '找不到 _quitAfterDesktopClosed ✗');
+		const qBody = full.slice(qAt, qAt + 1200);
+		assert.match(qBody, /if \(!this\._ideHiddenByStartup\) \{/,
+			'IDE 仍可见时必须先判 _ideHiddenByStartup 并 return（否则关桌面窗口会连带退应用 ✗）');
+		assert.match(qBody, /_quit\(/,
+			'IDE 不可见（桌面模式下被藏着）时关闭桌面窗口必须退出应用（规则①）✗');
+	});
+
 	test('④ 藏 / 显两处都必须调守卫（藏时装、显时先撤）', () => {
 		const full = stripComments(read(FULL_WINDOW));
 		assert.match(full, /setIdeWindowHidden\(true,/,
@@ -168,5 +228,58 @@ suite('desktop 模式：IDE 主窗口不许露面（点登录也不许）', () =
 		const list = pageProtocol.slice(listAt, pageProtocol.indexOf(']);', listAt));
 		assert.match(list, /'signInIde'/, "signInIde 必须在'不需要 IDE 主窗口露面'那份名单里 ✗");
 		assert.match(list, /'signOutIde'/, "signOutIde 必须在'不需要 IDE 主窗口露面'那份名单里 ✗");
+	});
+
+	// ★ 2026-10-22（用户："启动 app 时，能否仅启动窗口版"）：真机日志 `logs/20261022T084749` ——
+	//   请求开窗 08:47:57.58 → Host 冷启动到 08:48:13.6 才就绪 → 08:48:14.19 渲染侧 20s 兜底把 IDE 亮出来
+	//   → 08:48:15.59 桌面窗口才出现、再藏 IDE ⇒ **IDE 闪了 1.4s** ✗。
+	//   根因 = `_open` 先 `ensureStarted()`（等 Host）再建窗口 ⇒ 桌面窗口出现时间被 Host 冷启动绑死。
+	//   修 = **先建窗口壳（带占位）再等 Host**，壳一出现就藏 IDE ⇒ 这里把这条顺序与配套闸门钉住。
+	test('⑥ 启动：桌面窗口壳必须先于 Host 就绪出现（否则 Host 冷启动期间 IDE 会被兜底亮出来）', () => {
+		const full = stripComments(read(FULL_WINDOW));
+		const openAt = full.indexOf('private async _open(');
+		assert.ok(openAt >= 0, '找不到 _open ✗');
+		const open = full.slice(openAt, full.indexOf('\n\tprivate ', openAt + 1));
+		const iShell = open.indexOf('_auxWindowService.open(');
+		const iNotify = open.indexOf('onShellOpened?.()');
+		const iHost = open.indexOf('ensureStarted(');
+		assert.ok(iShell >= 0, '_open 里没有建窗口壳 ✗');
+		assert.ok(iHost >= 0, '_open 里没有等 Host（ensureStarted）✗');
+		assert.ok(iShell < iHost,
+			'窗口壳必须在 ensureStarted **之前**建（反了 = Host 冷启动 17s+ 期间没有桌面窗口 ⇒ IDE 被兜底亮出来 ✗）');
+		assert.ok(iNotify > iShell && iNotify < iHost,
+			'"壳已出现"的回调必须在建壳之后、等 Host 之前触发（启动流程靠它尽早藏 IDE ✗）');
+		// ★ 2026-10-22（用户："关闭 desktop 窗口时，更不要打开 IDE"）：
+		//   壳在 Host 就绪前被关 ⇒ **退出应用**（以前是"无条件显示 IDE"⇒ 用户看到关窗反而冒出 IDE ✗）
+		const bootClose = open.slice(iShell, iHost);
+		assert.match(bootClose, /onUnload\([\s\S]*?_quit\(/,
+			'Host 就绪前关掉桌面窗口 ⇒ 必须退出应用 ✗');
+		assert.ok(!/onUnload\([\s\S]*?_showIdeWindow\(/.test(bootClose),
+			'启动期关窗**不许**再调 _showIdeWindow（关窗反而冒出 IDE ✗）');
+
+		// 关掉桌面窗口 ⇒ 退出应用，而不是把藏起来的 IDE 还回来
+		const closeAt = full.indexOf('private _quitAfterDesktopClosed(');
+		assert.ok(closeAt >= 0, '找不到 _quitAfterDesktopClosed（关窗收场不见了 ✗）');
+		const onClose = full.slice(closeAt, full.indexOf('\n\tprivate ', closeAt + 1));
+		assert.match(onClose, /this\._quit\('/, '关闭桌面窗口后必须退出应用 ✗');
+		assert.ok(!/_showIdeWindow\(/.test(onClose),
+			'关闭桌面窗口后**不许**把 IDE 亮出来（本次报障就是这条 ✗）');
+		// 手动 popout（IDE 与桌面窗口并排）时关窗不能退：用户还在 IDE 里 ⇒ 只在我们藏过 IDE 时退
+		assert.match(onClose, /if \(!this\._ideHiddenByStartup\)/,
+			'关窗退出必须只在"IDE 是我们藏起来的"时发生（否则并排模式会被误退 ✗）');
+
+		// 启动流程必须把回调传进去（只改 _open 不接线 = 照旧等到 Host 就绪才藏 ✗）
+		assert.match(full, /this\._open\(\{\}, settle\)/, '启动流程没把"壳已出现"回调传给 _open ✗');
+
+		// "藏"与"显"会交错（壳先出现、Host 可能秒挂）⇒ 等待期间有人要求显示，就不许再藏
+		const settleAt = full.indexOf('private async _settleIdeWindowAfterStartup(');
+		const settle = full.slice(settleAt, full.indexOf('\n\tprivate ', settleAt + 1));
+		const iEpoch = settle.indexOf('showEpoch !== this._ideShowEpoch');
+		const iHide = settle.indexOf('hideWindow(');
+		assert.ok(iEpoch >= 0 && iHide >= 0 && iEpoch < iHide,
+			'隐藏前必须先检查"等待期间是否被要求显示"（否则 Host 失败时 IDE 刚露面又被藏回去 ✗）');
+		const showAt = full.indexOf('private async _showIdeWindow(');
+		const show = full.slice(showAt, full.indexOf('\n\tprivate ', showAt + 1));
+		assert.match(show, /this\._ideShowEpoch\+\+/, '_showIdeWindow 必须推进显示代数（否则上面那道闸永远不触发 ✗）');
 	});
 });

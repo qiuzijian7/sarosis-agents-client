@@ -12,9 +12,9 @@
 // ⚠ 纯逻辑 + 可注入 fetch ⇒ 可单测（不联网）。
 
 import { createHash } from 'node:crypto';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { gunzip as gunzipCb } from 'node:zlib';
 
@@ -152,13 +152,89 @@ export function checkManifest(manifest, entry) {
 	return manifest.name;
 }
 
+/** 解包文件数上限（防止一个包塞几十万个小文件把磁盘与 inode 打满）。 */
+const MAX_PACKAGE_FILES = 5000;
+
+/**
+ * 把 npm 风格 .tgz 的 `package/**` **完整解到目录**（2026-10-22）。
+ *
+ * 为什么要解包、不再交 `file:<tgz>`：
+ *   · 装完就删 tgz ⇒ profile 依赖里留下指向**不存在文件**的 `file:` 规格 ⇒ 下次 pnpm 解析整树失败 ✗；
+ *   · IDE 那条可靠安装通道（`InstallLocalPlugin` = 暂存进 profile + `dsh plugin add`）收的是**目录**；
+ *   · 解出来才看得到客户端入口，能做宿主单例检查（React 打进包里 ⇒ 拒装）。
+ * 安全：只收普通文件；路径必须落在 `package/` 之下（拒 `..`、绝对路径、盘符）；总量走 gunzip 上限 + 文件数上限。
+ * 返回 `{ files: Map<相对路径, Buffer>, manifest }`（`files` 供检查，调用方不必再读盘）。
+ */
+export async function extractPackage(tgz, destination) {
+	let tar;
+	try { tar = await gunzip(tgz, { maxOutputLength: MAX_UNPACKED_BYTES }); } catch {
+		fail('Release 安装包不是合法的 .tgz 文件', 502, 'invalid_package');
+	}
+	const files = new Map();
+	let longName = null;
+	for (let offset = 0; offset + 512 <= tar.length;) {
+		const header = tar.subarray(offset, offset + 512);
+		if (header.every(byte => byte === 0)) { break; }
+		const text = (start, length) => header.subarray(start, start + length).toString('utf8').replace(/\0[\s\S]*$/u, '');
+		const size = Number.parseInt(text(124, 12).trim() || '0', 8);
+		if (!Number.isSafeInteger(size) || size < 0) { fail('Release 安装包的 tar 头损坏', 502, 'invalid_package'); }
+		const body = tar.subarray(offset + 512, offset + 512 + size);
+		const type = text(156, 1);
+		const prefix = text(345, 155);
+		let name = longName ?? (prefix ? `${prefix}/${text(0, 100)}` : text(0, 100));
+		longName = null;
+		if (type === 'L') { longName = body.toString('utf8').replace(/\0[\s\S]*$/u, ''); }
+		else if (type === 'x') { const m = /(?:^|\n)\d+ path=([^\n]+)\n/.exec(body.toString('utf8')); if (m) { longName = m[1]; } }
+		else if (type === '0' || type === '') {
+			name = name.replace(/\\/g, '/');
+			const parts = name.split('/');
+			const rel = parts.slice(1).join('/');
+			if (parts[0] !== 'package' || !rel || rel.startsWith('/') || /^[A-Za-z]:/.test(rel) || parts.slice(1).some(p => p === '..' || p === '.' || p === '')) {
+				fail(`Release 安装包里有不安全的路径：${name.slice(0, 120)}`, 502, 'invalid_package');
+			}
+			files.set(rel, Buffer.from(body));
+			if (files.size > MAX_PACKAGE_FILES) { fail(`Release 安装包文件数超过 ${MAX_PACKAGE_FILES}`, 502, 'package_too_large'); }
+		}
+		offset += 512 + Math.ceil(size / 512) * 512;
+	}
+	const raw = files.get('package.json');
+	if (!raw) { fail('Release 包里没有 package/package.json', 502, 'invalid_package'); }
+	let manifest;
+	try { manifest = JSON.parse(raw.toString('utf8')); } catch { fail('Release 包里的 package.json 不是合法 JSON', 502, 'invalid_package'); }
+	await rm(destination, { recursive: true, force: true });
+	for (const [rel, data] of files) {
+		const target = join(destination, ...rel.split('/'));
+		await mkdir(dirname(target), { recursive: true });
+		await writeFile(target, data);
+	}
+	return { files, manifest };
+}
+
+/** 包名 → 目录名（scope 的 `/` 换成 `__`；其余只留安全字符）。 */
+export function packageDirName(name, version) {
+	return `${String(name).replace(/^@/, '').replace(/\//g, '__').replace(/[^A-Za-z0-9._-]/g, '_')}-${String(version).replace(/[^A-Za-z0-9._+-]/g, '_')}`;
+}
+
+/** npm 注册表上某个版本的 package.json（只读检查用；拿不到 ⇒ null，不阻断安装）。 */
+async function registryManifest(name, version, fetchImpl) {
+	try {
+		const raw = await download(`https://registry.npmjs.org/${name.replace('/', '%2f')}/${encodeURIComponent(version)}`, { fetchImpl, maxBytes: MAX_MANIFEST_BYTES, what: 'npm 包信息' });
+		return JSON.parse(raw.toString('utf8'));
+	} catch {
+		return null;
+	}
+}
+
 /**
  * 解析**唯一**安装目标。
  *
- * 返回 `{ pluginSpec, expectedPluginName, expectedVersion, cleanup }`；
- * `cleanup` 负责删掉临时下载（装完必须调用 ⇒ 否则临时目录越堆越多 ✗）。
+ * 返回 `{ pluginSpec, dir?, manifest, files?, expectedPluginName, expectedVersion, cleanup }`：
+ *   · `dir`（仅 Release）：解好的包目录 —— IDE 安装通道收它；`pluginSpec` 是同一目录的 `file:` 规格（Host 回落用）；
+ *   · `manifest`：包里的 package.json（npm 来源取注册表那份，取不到为 null）—— 兼容性 / 单例检查用；
+ *   · `files`（仅 Release）：解包后的全部文件（检查客户端入口用，不必再读盘）；
+ *   · `cleanup`：删掉**临时**下载（`packagesRoot` 给了 ⇒ 解在持久目录里，不删 ⇒ `file:` 依赖不会悬空）。
  */
-export async function resolveInstallTarget(entry, { fetchImpl, temporaryRoot = tmpdir() } = {}) {
+export async function resolveInstallTarget(entry, { fetchImpl, temporaryRoot = tmpdir(), packagesRoot } = {}) {
 	const distribution = entry?.distribution;
 	const type = distribution?.type;
 	if (type === 'npm') {
@@ -166,6 +242,7 @@ export async function resolveInstallTarget(entry, { fetchImpl, temporaryRoot = t
 		if (!name) { fail('目录条目的 npm 发布源缺包名', 502, 'invalid_distribution'); }
 		return {
 			pluginSpec: `${name}@${distribution.version}`,
+			manifest: await registryManifest(name, distribution.version, fetchImpl),
 			expectedPluginName: name,
 			expectedVersion: distribution.version,
 			cleanup: async () => { },
@@ -178,14 +255,17 @@ export async function resolveInstallTarget(entry, { fetchImpl, temporaryRoot = t
 			fail('下载到的 Release 安装包与目录登记的 SHA-256 不一致', 502, 'checksum_mismatch');
 		}
 		const name = checkManifest(await readPackedManifest(bytes), entry);
-		const directory = await mkdtemp(join(temporaryRoot, 'vssaros-wb-release-'));
-		const file = join(directory, 'workbench.tgz');
-		await writeFile(file, bytes);
+		const temporary = packagesRoot ? null : await mkdtemp(join(temporaryRoot, 'vssaros-wb-release-'));
+		const directory = packagesRoot ? join(packagesRoot, packageDirName(name, distribution.version)) : join(temporary, 'package');
+		const { files, manifest } = await extractPackage(bytes, directory);
 		return {
-			pluginSpec: `file:${file}`,
+			pluginSpec: `file:${directory}`,
+			dir: directory,
+			manifest,
+			files,
 			expectedPluginName: name,
 			expectedVersion: distribution.version,
-			cleanup: () => rm(directory, { recursive: true, force: true }),
+			cleanup: temporary ? () => rm(temporary, { recursive: true, force: true }) : async () => { },
 		};
 	}
 	if (type === 'github-source') {
@@ -202,6 +282,7 @@ export async function resolveInstallTarget(entry, { fetchImpl, temporaryRoot = t
 		}
 		return {
 			pluginSpec: `github:${owner}/${repo}#${commit}`,
+			manifest,
 			expectedPluginName: checkManifest(manifest, entry),
 			expectedVersion: distribution.version,
 			cleanup: async () => { },

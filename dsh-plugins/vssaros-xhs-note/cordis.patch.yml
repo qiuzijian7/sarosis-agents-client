@@ -1,0 +1,9 @@
+# @vssaros/dsh-xhs-note bundle patch: insert the note-workbench row.
+#
+# ⚠ 没有这个文件 = **插件不会被 insert 进运行时**（真机实测：profile 里 deps/bundles 都登记了，
+#   但注册表里就是没有它，且 `web boot` 也不报错 —— 静默不激活）⇒ 客户端永远不会被装载。
+#   与 `vssaros-kb` / `vssaros-scheduler` / 商城里的第三方包同一形状。
+- insert:
+    - id: vssaros-xhs-note
+      name: '@vssaros/dsh-xhs-note'
+      config: {}

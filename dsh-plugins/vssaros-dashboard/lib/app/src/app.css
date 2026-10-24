@@ -1,0 +1,585 @@
+/*
+ * 主页 React 应用的样式（`lib/app/dist/dashboard-app.css` 由 `vendor/build.mjs` 拷贝）。
+ *
+ * ## 层级从哪来
+ * 全部走 `--dash-*`（由 `app.jsx` 的 `deriveTokens()` 按「底 + 前景 × 比例」现算）：
+ *   · 不用 `--dsw-alias-bg-layer-1` 当卡片底 —— 真实页面里它被 IDE 主题覆盖成
+ *     `sideBar.background`（#181818），比页面底（#1F1F1F）更暗 ⇒ 卡片"凹进去"；
+ *   · 不用 `--dsw-alias-border-l1` 当卡片描边 —— 它 = `panel.border`（#2B2B2B），
+ *     与底只差 12 级灰度（1.1:1）⇒ 等于没有；
+ *   · 不用 `--dsw-alias-label-secondary` 当次要文字 —— IDE 亮色主题下它等于正文色。
+ * 官方 token（`--dsw-alias-*` / `--dsw-shadow-*`）只用在这些**语义明确**的地方：
+ * 品牌色、状态色、遮罩、阴影、按钮填充。
+ *
+ * ## 官方几何（逐字搬 ui-primitives）
+ * Button: h36 / r18 / pad 0 14 / font 14 / gap 4；小号 h28 / r14 / font 12；
+ * Pill: h24 / r12 / font 12；Modal: r24 + mask(rgba(0,0,0,.24) + blur(2px)) + shadow-lv3。
+ */
+
+.dash-app {
+	font-size: 13px;
+	line-height: 1.6;
+	color: var(--dsw-alias-label-primary);
+}
+
+/* ── 工具条 ───────────────────────────────────────────────────────────── */
+.dash-bar {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin: 0 0 10px;
+}
+/* 编排态的工具栏**吸顶**：卡片多的时候要滚很久，工具按钮滚出视野会让人以为"退不出去"。
+   ⚠ 只加 sticky + 不透明底，不改布局尺寸（否则进编辑时整页会跳一下）。 */
+.dash-bar.is-editing {
+	position: sticky;
+	top: 0;
+	z-index: 20;
+	padding: 6px 0;
+	margin: -6px 0 4px;
+	background: var(--dsw-alias-bg-base);
+	border-bottom: 1px solid var(--dash-stroke);
+}
+/* 固定悬浮的「完成编排」：工具栏之外的第二条出口（第三条是 Esc） */
+.dash-done-float {
+	position: fixed;
+	right: 18px;
+	bottom: 18px;
+	z-index: 30;
+	height: 32px;
+	padding: 0 14px;
+	border: 1px solid var(--dsw-alias-brand-primary);
+	border-radius: 16px;
+	background: var(--dsw-alias-brand-primary);
+	/* 品牌底上的文字用官方"反色" token（写死 #fff 会被 contrast 守卫判红，也确实会漏掉亮色主题） */
+	color: var(--dsw-alias-label-primary-inverted);
+	font: inherit;
+	font-size: 12.5px;
+	font-weight: 600;
+	cursor: pointer;
+	box-shadow: var(--dsw-shadow-lv2);
+}
+.dash-done-float:hover { filter: brightness(1.08); }
+.dash-done-float:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }
+.dash-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 4px;
+	height: 28px;
+	padding: 0 10px;
+	border: 1px solid var(--dash-stroke-2);
+	border-radius: 14px;
+	background: transparent;
+	color: var(--dsw-alias-label-primary);
+	font: inherit;
+	font-size: 12px;
+	line-height: 18px;
+	cursor: pointer;
+}
+.dash-btn:hover { background: var(--dash-surface-2); }
+.dash-btn.primary {
+	border-color: transparent;
+	background: var(--dsw-alias-brand-primary);
+	color: var(--dsw-alias-label-primary-foreground);
+}
+.dash-btn.primary:hover { filter: brightness(1.08); }
+.dash-btn-add { border-color: transparent; background: var(--dash-surface-2); }
+.dash-status { color: var(--dash-muted); font-size: 11px; }
+/* 预设组：选择器 + 存为 + 删除（编辑态才出现） */
+.dash-preset { display: inline-flex; align-items: center; gap: 6px; }
+.dash-preset-save { display: flex; align-items: center; gap: 6px; margin: 0 0 10px; }
+
+/* ── 画廊 ─────────────────────────────────────────────────────────────── */
+.dash-gallery {
+	border: 1px solid var(--dash-stroke);
+	border-radius: 12px;
+	background: var(--dash-surface);
+	padding: 10px 12px;
+	margin: 0 0 12px;
+}
+.dash-gallery-title { margin: 0 0 8px; color: var(--dash-muted); font-size: 12px; }
+.dash-gallery-item {
+	display: block;
+	width: 100%;
+	text-align: left;
+	font: inherit;
+	color: inherit;
+	background: none;
+	border: 1px solid transparent;
+	border-radius: 8px;
+	padding: 6px 8px;
+	cursor: pointer;
+}
+.dash-gallery-item:hover { border-color: var(--dsw-alias-brand-primary); background: var(--dash-surface-2); }
+.dash-gallery-item b { font-weight: 500; font-size: 13px; }
+.dash-gallery-item small { display: block; color: var(--dash-faint); font-size: 11px; }
+.dash-gallery-item.is-added { opacity: 0.5; }
+.dash-gallery-item.is-added:hover { border-color: transparent; background: none; }
+
+/* ── 12 列网格（顺序流：数组顺序 = 视觉顺序） ──────────────────────────── */
+.dash-grid {
+	display: grid;
+	grid-template-columns: repeat(12, minmax(0, 1fr));
+	gap: var(--dash-gap, 12px);
+	max-width: var(--dash-max-width, none);
+}
+.dash-w {
+	position: relative;
+	min-width: 0;
+	/* ⚠ 必须是 border-box：`min-height`（顺序流）与 `grid-row` 的高度（自由摆放）都以**边框盒**为准，
+	   而测量用的是 `getBoundingClientRect()` 也是边框盒。默认 content-box 时两者差 padding+border(22px)
+	   ⇒ 每次切模式都被折成"多一行"（真机：6 行 → 7 行，来回点一路长高）。 */
+	box-sizing: border-box;
+	padding: 10px 12px;
+	border: 1px solid var(--dash-stroke);
+	border-radius: 10px;
+	background: var(--dash-surface);
+	overflow: hidden;
+}
+/* ── 自由摆放（`.dash-free`）：行高由 grid-auto-rows 固定，卡片高度 = h 行 ──────────
+   内容超出时**卡片自己滚**（顺序流下是"最小高度、内容撑开"，两套语义不能混）。 */
+.dash-free .dash-w { overflow: auto; }
+.dash-free .dash-w.dash-dragging { z-index: 5; box-shadow: var(--dsw-shadow-lv2); }
+.dash-free .dash-w[data-dash-drop='before'] { box-shadow: none; }
+/* 「收紧高度」的测量态：清掉 min-height 才能量到**内容**高度（inline style 定的，所以要 !important）。
+   只为量一次，同一帧内就被移除 —— 用户看不到中间态。 */
+.dash-grid[data-dash-measure] .dash-w { min-height: 0 !important; }
+
+/* ── 高对比（`prefers-contrast: more`，VS Code 的 hc-* 主题）────────────────────────
+   token 已经换成更极端的一档（见 app.jsx 的 RATIOS.hc）；这里只把描边"再明确一点"。
+   ⚠ 用 inset box-shadow 而不是加粗 border：border 会改变盒模型尺寸 ⇒ 卡片高度抖一下 ✗ */
+body[data-dash-contrast='more'] .dash-w { box-shadow: inset 0 0 0 1px var(--dash-stroke-2); }
+/* 高对比下的**焦点外观**（WCAG 2.2 · 2.4.13 focus 可见性）：2px 描边 + 2px 间隙，
+   比常规态的 1px 更"抓得住"；只作用于 `:focus-visible`（鼠标点击不弹框，键盘才显形）。 */
+body[data-dash-contrast='more'] :focus-visible {
+	outline: 2px solid var(--dsw-alias-brand-primary);
+	outline-offset: 2px;
+}
+/* 图标线也加粗一点（1.35 → 1.7）：高对比主题下细线容易糊掉 */
+body[data-dash-contrast='more'] .dash-ico { stroke-width: 1.7; }
+/* 禁用态别糊成一片（常规 55% 在高对比下仍然偏低） */
+body[data-dash-contrast='more'] .dash-wb-op[disabled],
+body[data-dash-contrast='more'] .dash-btn[disabled] { opacity: 0.8; }
+/* 字号下限：11px 的小字在高对比环境里仍然吃力 ⇒ 抬到 12px（标题 13→14、表格 12→13）。
+   ⚠ 只抬"要读的字"，**不缩放整个界面**：行高/列宽/卡片尺寸不能跟着抖（那是布局契约）。 */
+body[data-dash-contrast='more'] .dash-app small,
+body[data-dash-contrast='more'] .dash-sub,
+body[data-dash-contrast='more'] .dash-diag,
+body[data-dash-contrast='more'] .dash-legend,
+body[data-dash-contrast='more'] .dash-kpi span,
+body[data-dash-contrast='more'] .dash-clock-d,
+body[data-dash-contrast='more'] .dash-pomo-ph,
+body[data-dash-contrast='more'] .dash-status,
+body[data-dash-contrast='more'] .dash-tbl th,
+body[data-dash-contrast='more'] .dash-wb-op,
+body[data-dash-contrast='more'] .dash-cfg-range { font-size: 12px; }
+body[data-dash-contrast='more'] .dash-card-title { font-size: 14px; }
+body[data-dash-contrast='more'] .dash-tbl { font-size: 13px; }
+/* 编辑态：描边虚线 + 抓手光标；非编辑态完全不留痕 */
+.dash-editing .dash-w {
+	border-style: dashed;
+	border-color: var(--dash-stroke-2);
+	cursor: grab;
+	touch-action: none;
+}
+.dash-editing .dash-w:hover { border-color: var(--dsw-alias-brand-primary); border-style: solid; }
+.dash-w.dash-dragging { opacity: 0.55; }
+.dash-w[data-dash-drop='before'] { box-shadow: 0 -2px 0 var(--dsw-alias-brand-primary); }
+
+.dash-tools {
+	position: absolute;
+	top: 6px;
+	right: 8px;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	color: var(--dash-faint);
+	font-size: 11px;
+	z-index: 2;
+}
+.dash-x {
+	font: inherit;
+	font-size: 11px;
+	color: var(--dash-muted);
+	background: none;
+	border: 0;
+	cursor: pointer;
+	padding: 0 2px;
+}
+.dash-x:hover { color: var(--dsw-alias-state-error-primary); }
+.dash-resize {
+	position: absolute;
+	right: 3px;
+	bottom: 3px;
+	width: 12px;
+	height: 12px;
+	cursor: nwse-resize;
+	touch-action: none;
+	background: linear-gradient(135deg, transparent 50%, var(--dash-stroke-2) 50%);
+}
+
+/* ── 卡片设置面板（字段来自 configFields，整套只有这一处样式） ──────────────── */
+.dash-cfg {
+	display: grid;
+	gap: 6px;
+	margin: 0 0 8px;
+	padding: 8px 10px;
+	border: 1px solid var(--dash-stroke);
+	border-radius: 8px;
+	background: var(--dash-surface-2);
+}
+/* 一行一个字段：label | 控件 | 单位 | 范围（用 flex ⇒ 三种控件类型共用一套间距） */
+.dash-cfg-row { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.dash-cfg-label { color: var(--dash-muted); }
+.dash-cfg-input {
+	flex: none;
+	width: 68px;
+	height: 24px;
+	padding: 0 6px;
+	border: 1px solid var(--dash-stroke-2);
+	border-radius: 6px;
+	background: var(--dash-surface);
+	color: var(--dsw-alias-label-primary);
+	font: inherit;
+	font-size: 12px;
+	font-variant-numeric: tabular-nums;
+}
+.dash-cfg-select {
+	flex: none;
+	height: 24px;
+	padding: 0 6px;
+	border: 1px solid var(--dash-stroke-2);
+	border-radius: 6px;
+	background: var(--dash-surface);
+	color: var(--dsw-alias-label-primary);
+	font: inherit;
+	font-size: 12px;
+}
+.dash-cfg-check { flex: none; width: 14px; height: 14px; margin: 0; accent-color: var(--dsw-alias-brand-primary); cursor: pointer; }
+/* 文本型字段：占满剩余宽度（关键字/名称这类输入没法给固定 68px） */
+.dash-cfg-text {
+	flex: 1 1 120px;
+	min-width: 96px;
+	height: 24px;
+	padding: 0 6px;
+	border: 1px solid var(--dash-stroke-2);
+	border-radius: 6px;
+	background: var(--dash-surface);
+	color: var(--dsw-alias-label-primary);
+	font: inherit;
+	font-size: 12px;
+}
+.dash-cfg-text::placeholder { color: var(--dash-faint); }
+.dash-cfg-input:focus-visible,
+.dash-cfg-select:focus-visible,
+.dash-cfg-text:focus-visible,
+.dash-cfg-check:focus-visible { outline: 1px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
+.dash-cfg-unit { color: var(--dash-faint); }
+.dash-cfg-range { margin-left: auto; color: var(--dash-faint); font-size: 11px; }
+.dash-cfg-ops { display: flex; gap: 6px; justify-content: flex-end; }
+
+/* ── 关键指标 ─────────────────────────────────────────────────────────── */
+/* 指标（样式 B，2026-10-23 用户选定）：**4 组主数字 + 副指标小字**，用竖向分隔线分组。
+   旧版是 8~13 个等权小格（"219" 和 "1" 一样重）⇒ 扫读找不到重点，也没法一眼比大小。 */
+/* ⚠ 用固定 4 列而不是 `auto-fit`：auto-fit 在宽屏会切出 8 条轨道，4 组只占左半、右半留空
+   （实测 gridTemplateColumns 8 条 ⇒ 每组被压到 150px）。列数由"有几组"决定，不由宽度猜。 */
+.dash-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px 0; }
+@media (max-width: 760px) { .dash-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 0; } }
+.dash-kpi { padding: 2px 14px; border-left: 1px solid var(--dash-stroke); min-width: 0; }
+.dash-kpi:first-child { border-left: 0; padding-left: 0; }
+.dash-kpi b {
+	display: block;
+	font-size: 26px;
+	font-weight: 600;
+	letter-spacing: -0.4px;
+	font-variant-numeric: tabular-nums;
+}
+.dash-kpi b em {
+	font-style: normal;
+	margin-left: 5px;
+	font-size: 12.5px;
+	font-weight: 500;
+	letter-spacing: 0;
+	color: var(--dash-faint);
+}
+.dash-kpi span { display: block; margin-top: 2px; color: var(--dash-muted); font-size: 12px; }
+/* 其余清点项（只在有值时出现）：一行小字，不占主视觉 */
+.dash-kpi-extra { margin-top: 8px; color: var(--dash-faint); font-size: 12px; }
+
+/* ── 诊断行 ───────────────────────────────────────────────────────────── */
+.dash-diag { margin: 0; color: var(--dash-muted); font-size: 12px; }
+.dash-diag code { color: var(--dsw-alias-label-primary); }
+
+/* ── 卡片头（**统一由外壳渲染**：图标 + 标题；组件里只放 .dash-sub 副信息） ────── */
+.dash-card-head {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin: 0 0 8px;
+	min-height: 18px;
+}
+.dash-card-ico {
+	display: inline-flex;
+	align-items: center;
+	color: var(--dash-muted);
+	flex: none;
+}
+.dash-card-title {
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--dsw-alias-label-primary);
+}
+/* 组件内的副信息（计数 / 分组口径…）—— 比标题弱一档，别抢视线 */
+.dash-sub {
+	font-size: 11px;
+	color: var(--dash-faint);
+	margin: -4px 0 6px;
+}
+
+/* ── 单卡错误边界（一块坏了只坏一块） ─────────────────────────────────── */
+.dash-broken {
+	display: flex;
+	gap: 8px;
+	align-items: flex-start;
+	padding: 8px 10px;
+	border: 1px solid var(--dsw-alias-state-error-primary);
+	border-radius: 8px;
+	background: var(--dash-surface-2);
+	color: var(--dsw-alias-label-primary);
+	font-size: 12px;
+}
+.dash-broken .dash-card-ico { color: var(--dsw-alias-state-error-primary); }
+.dash-broken-msg { color: var(--dsw-alias-state-error-primary); margin-top: 2px; word-break: break-word; }
+.dash-broken-hint { color: var(--dash-faint); margin-top: 4px; font-size: 11px; }
+
+/* ── 根级兜底（整页渲染崩溃）：一屏说明 + 两个出口，绝不留半截页面 ────────── */
+.dash-fatal {
+	margin: 12px 0;
+	padding: 14px 16px;
+	border: 1px solid var(--dsw-alias-state-error-primary);
+	border-radius: 10px;
+	background: var(--dash-surface);
+	color: var(--dsw-alias-label-primary);
+	font-size: 13px;
+}
+.dash-fatal > b { font-size: 14px; }
+.dash-fatal-msg { margin-top: 6px; color: var(--dsw-alias-state-error-primary); word-break: break-word; }
+.dash-fatal-hint { margin-top: 6px; color: var(--dash-muted); font-size: 12px; }
+.dash-fatal-stack {
+	margin: 8px 0 0;
+	padding: 8px 10px;
+	max-height: 120px;
+	overflow: auto;
+	border-radius: 6px;
+	background: var(--dash-surface-2);
+	color: var(--dash-muted);
+	font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+	font-size: 11px;
+	line-height: 1.5;
+	white-space: pre-wrap;
+}
+.dash-scroll { max-height: min(30vh, 300px); overflow-y: auto; overscroll-behavior: contain; }
+.dash-app ul { list-style: none; margin: 0; padding: 0; }
+.dash-app li { padding: 6px 0; border-top: 1px solid var(--dash-stroke); }
+.dash-app li:first-child { border-top: 0; }
+.dash-app li.cold { opacity: 0.72; }
+.dash-app .t { font-weight: 600; }
+.dash-app small { color: var(--dash-muted); display: block; font-size: 11px; }
+
+/* 会话行（样式 B，用户选定）：一行一条 = 标题 + turn + step + 耗时四列。
+   旧版把 id / 路径 / 模型 / token 铺成 4~5 行 ⇒ 一屏只看得下 3 个会话。
+   ⚠ 仍是 <li>（`.dash-scroll li` 是守卫与探针的锚点）；详情进 `title` tooltip。 */
+.dash-rows li {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) 44px 48px 62px;
+	gap: 8px;
+	align-items: baseline;
+}
+.dash-rows .t {
+	min-width: 0;
+	font-size: 13px;
+	font-weight: 600;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.dash-rows b {
+	text-align: right;
+	font-size: 12.5px;
+	font-weight: 500;
+	color: var(--dash-muted);
+	font-variant-numeric: tabular-nums;
+}
+.dash-rows small { text-align: right; color: var(--dash-faint); font-size: 12px; font-variant-numeric: tabular-nums; }
+.dash-act { color: var(--dsw-alias-state-warn-primary); }
+.dash-app .empty { color: var(--dash-faint); margin: 0; }
+.dash-app code { font-family: ui-monospace, Consolas, monospace; font-size: 11.5px; }
+
+/* ── 工作台（磁贴网格，2026-10-23 重做）────────────────────────────────────
+   旧版每个模块是"名字 + 描述 + 三个文字按钮"的竖条 ⇒ 13 个模块堆成一列、按钮比内容还显眼。
+   现在：整块可点打开，「固定 / 隐藏」收进**悬停才出现的图标按钮**；路由只在 tooltip 里（不占版面）。 */
+.dash-wb-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+	gap: 8px;
+}
+.dash-wb-tile {
+	display: grid;
+	grid-template-columns: 26px minmax(0, 1fr) auto;
+	align-items: center;
+	gap: 9px;
+	padding: 8px 9px;
+	border: 1px solid var(--dash-stroke);
+	border-radius: 8px;
+	background: var(--dash-surface-2);
+	cursor: pointer;
+	touch-action: none;
+	user-select: none;
+	transition: border-color 0.12s ease, background 0.12s ease;
+}
+.dash-wb-tile:hover { border-color: var(--dsw-alias-brand-primary); }
+.dash-wb-tile:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }
+.dash-wb-tile.is-fixed { background: var(--dash-surface); }
+.dash-wb-ico {
+	display: grid;
+	place-items: center;
+	width: 26px;
+	height: 26px;
+	border-radius: 7px;
+	background: var(--dash-surface);
+	color: var(--dsw-alias-label-secondary);
+}
+.dash-wb-tile:hover .dash-wb-ico { color: var(--dsw-alias-brand-primary); }
+.dash-wb-body { min-width: 0; }
+.dash-wb-nm {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	font-size: 12.5px;
+	font-weight: 600;
+	color: var(--dsw-alias-label-primary);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.dash-wb-desc {
+	display: block;
+	margin-top: 2px;
+	color: var(--dash-faint);
+	font-size: 11px;
+	line-height: 1.35;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.dash-wb-tag {
+	font-style: normal;
+	font-size: 10px;
+	line-height: 15px;
+	padding: 0 5px;
+	border-radius: 6px;
+	background: var(--dash-surface);
+	color: var(--dash-muted);
+	flex: none;
+}
+/* 动作区：默认透明（不抢视线），悬停 / 键盘聚焦才显形；仍留在 DOM 里（探针与守卫要能找到） */
+.dash-wb-actions { display: flex; gap: 4px; opacity: 0; transition: opacity 0.12s ease; }
+.dash-wb-tile:hover .dash-wb-actions,
+.dash-wb-tile:focus-within .dash-wb-actions { opacity: 1; }
+.dash-wb-op {
+	display: grid;
+	place-items: center;
+	width: 22px;
+	height: 22px;
+	padding: 0;
+	font: inherit;
+	color: var(--dash-muted);
+	background: transparent;
+	border: 1px solid var(--dash-stroke-2);
+	border-radius: 6px;
+	cursor: pointer;
+}
+.dash-wb-op:hover { border-color: var(--dsw-alias-brand-primary); color: var(--dsw-alias-brand-primary); }
+.dash-wb-op.is-on { color: var(--dsw-alias-brand-primary); border-color: var(--dsw-alias-brand-primary); cursor: default; }
+.dash-wb-op[disabled] { opacity: 0.55; cursor: default; }
+.dash-wb-op[disabled]:hover { border-color: var(--dash-stroke-2); }
+
+/* ── 工作区 ───────────────────────────────────────────────────────────── */
+.dash-root-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid var(--dash-stroke); font-size: 12px; }
+.dash-root-row:first-child { border-top: 0; }
+.dash-root-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dash-dot { position: relative; display: inline-block; width: 8px; height: 8px; flex: none; }
+.dash-dot::before { content: ''; position: absolute; inset: 0; border-radius: 50%; background: currentColor; opacity: 0.16; }
+.dash-dot::after { content: ''; position: absolute; inset: 22%; border-radius: 50%; background: currentColor; }
+.dash-dot.ok { color: var(--dsw-alias-state-success-primary); }
+.dash-pill {
+	display: inline-flex; align-items: center; height: 20px; padding: 0 8px; border-radius: 10px;
+	font-size: 11px; color: var(--dash-muted); background: var(--dash-surface);
+}
+
+/* ── 用量分布 ─────────────────────────────────────────────────────────── */
+.dash-bar-row { display: grid; grid-template-columns: 64px 1fr 52px; align-items: center; gap: 8px; margin-bottom: 7px; font-size: 11px; }
+.dash-bar-name { color: var(--dash-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dash-bar-track { height: 6px; border-radius: 3px; background: var(--dash-surface-2); overflow: hidden; }
+.dash-bar-fill { display: block; height: 100%; border-radius: 3px; opacity: 0.9; }
+.dash-num { color: var(--dash-muted); font-variant-numeric: tabular-nums; text-align: right; }
+
+/* ── 时钟 / 番茄 ──────────────────────────────────────────────────────── */
+.dash-clock, /* （旧 `.dash-pomo{text-align:center}` 随竖向番茄钟一起删了 —— 组件已改用 `.dash-pomo-b`） */
+.dash-clock-t { font-family: ui-monospace, Consolas, monospace; font-size: 26px; letter-spacing: 1px; font-variant-numeric: tabular-nums; }
+.dash-clock-d { color: var(--dash-muted); font-size: 11px; margin-top: 2px; }
+/* 番茄钟（样式 B，用户选定）：**横排**（环 + 右侧读数/相位/按钮）。
+   旧的竖向 3 段要占 5 行高，只为一个倒计时不值得 —— 省下的行给会话明细。 */
+.dash-pomo-b { display: flex; align-items: center; gap: 14px; }
+.dash-pomo-b .dash-pomo-ring { flex: none; }
+.dash-pomo-b-body { min-width: 0; }
+.dash-pomo-b-top { display: flex; align-items: baseline; gap: 8px; }
+.dash-pomo-b .dash-pomo-t { font-size: 22px; }
+.dash-pomo-b .dash-pomo-ph { margin: 0; font-size: 12px; }
+.dash-pomo-b .dash-pomo-ops { justify-content: flex-start; margin-top: 6px; }
+.dash-pomo-t { font-family: ui-monospace, Consolas, monospace; font-size: 24px; font-variant-numeric: tabular-nums; }
+.dash-pomo-ph { color: var(--dash-muted); font-size: 11px; margin: 2px 0 8px; }
+.dash-pomo-ops { display: flex; gap: 6px; justify-content: center; }
+
+/* 诊断行（样式 B，用户选定）：**键值两列**。旧版一整段 60+ 字长句，找"数据目录在哪"要通读。 */
+.dash-dl { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 4px 10px; margin: 0; font-size: 12.5px; }
+.dash-dl-row { display: contents; }
+.dash-dl dt { color: var(--dash-faint); }
+.dash-dl dd { margin: 0; min-width: 0; color: var(--dash-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dash-dl dd code { color: var(--dsw-alias-label-primary); }
+
+/* ── 表格（工作区 / 用量共用） ─────────────────────────────────────────── */
+.dash-tbl { width: 100%; border-collapse: collapse; font-size: 12px; margin: 6px 0 8px; }
+.dash-tbl th { text-align: left; font-weight: 400; font-size: 11px; color: var(--dash-faint); padding: 2px 6px 6px; }
+.dash-tbl td { padding: 5px 6px; border-top: 1px solid var(--dash-stroke); vertical-align: top; }
+.dash-tbl tbody tr:hover td { background: var(--dash-surface-2); }
+.dash-ws-track { height: 6px; border-radius: 3px; background: var(--dash-surface-2); overflow: hidden; }
+.dash-ws-track i { display: block; height: 100%; background: var(--dsw-alias-brand-primary); opacity: 0.85; }
+
+/* ── 用量堆叠条 + 图例 ────────────────────────────────────────────────── */
+.dash-stack { display: flex; height: 18px; border-radius: 4px; overflow: hidden; margin: 6px 0 8px; background: var(--dash-surface-2); }
+.dash-stack i { display: block; height: 100%; }
+/* 图例（样式 B，用户选定）：两列，色块 + 名称 + 数值·百分比，按占比降序。
+   旧版是一行流水（`输入 25.52M 输出 368.6k 读缓存 70.95M`）⇒ 看不出哪个占大头。 */
+.dash-legend-b {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 3px 18px;
+	margin: 8px 0 4px;
+	font-size: 12.5px;
+}
+.dash-legend-b > div { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.dash-legend-b i { width: 9px; height: 9px; border-radius: 2px; flex: none; }
+.dash-legend-b .k { color: var(--dash-muted); white-space: nowrap; }
+.dash-legend-b .v { margin-left: auto; color: var(--dsw-alias-label-primary); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.dash-legend-b .v em { font-style: normal; color: var(--dash-faint); }
+/* 窄一点时单列（两列会挤成"标签 值"贴在一起） */
+@media (max-width: 620px) { .dash-legend-b { grid-template-columns: minmax(0, 1fr); } }
+
+/* ── 工作台：拖拽中 / 第三方徽标 / 脚注 ────────────────────────────────── */
+.dash-wb-dragging { opacity: 0.5; border-color: var(--dsw-alias-brand-primary); }
+.dash-wb-note { margin: 8px 0 0; font-size: 11px; }
+
+/* ── 单色图标 ─────────────────────────────────────────────────────────── */
+.dash-ico { display: inline-block; vertical-align: -3px; flex: none; }

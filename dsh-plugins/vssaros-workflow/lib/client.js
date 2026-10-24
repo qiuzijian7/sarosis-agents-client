@@ -1,3 +1,4 @@
+// 2026-10-24 touch：client.workbench.js：补 @container（S9 容器查询） ⇒ 入口置新（chunk 守卫按 mtime 判）。
 // @vssaros/dsh-workflow — 客户端半（dsh web 的客户端插件）。
 //
 // 这是本仓**第二张工具卡** ✓，形态**逐条照**第一张（`dsh-plugins/vssaros-codebase/lib/client.js`，
@@ -145,6 +146,42 @@ window.__ModuleLoader__.load({
 				console.warn(`[vssaros-workflow] 卡片注册失败：${failure}`);
 			}
 			globalThis.__vssarosWorkflowClient = { loaded: true, registered, failure, slot: TOOL_SLOT, key: ENGINE_TOOL };
+			// ★ 2026-10-22（工作台重构 §5 步骤 2）：**React 工作台**（`lib/client.workbench.js`）。
+			//   它注册进宿主服务 `desktopWorkbenches`（身份 `vssaros/workflow`）⇒ dsh 窗口页签条里
+			//   `/x/workflow/` 那一条自动从 iframe 换成宿主渲染 ✓；IDE 编辑区也会改开 'workbench' 视图
+			//   （判据 = 清单 `dsh.client.inject` 含宿主包 ⇒ 见 `hasWorkbenchClient`）。
+			//   ⚠ 子块文件名**必须**是 `client.<名字>.js`（装载器只认 `client.*.js` ⇒ 相对请求 `client-modules` 会拒）
+			//     ⇒ 写成 `workbench.js` 会报 "invalid relative chunk request" ✗（真机踩过 ✓）。
+			//   ★ 2026-10-22：**左右两档**（用户要求）—— 左列 = 工作流条目列表，右列 = 该条的画布；
+			//     点左列任一条 ⇒ 右列换它的画布（只取画布的轻接口 `/api/canvas` ⇒ 不重搬整页 ✓）；
+			//     窄容器也**保持左右**（不改成上下排）⇒ 左列收缩、画布那栏自己滚 ✓。
+			//     （旧 SSR 页仍是"列表优先 + 画布折叠在页脚"——它是**窄侧栏**（330px）的退化形态，不在这条要求内 ✓）
+			//   ⚠ 规矩：改过 `client.workbench.js` 之后，**要再动一下这个入口**（守卫查 mtime ⇒ 漏了必红 ✓）
+			//     ⇒ 否则浏览器会一直吃缓存里的旧 chunk ⇒ 用户看到旧界面 ✗。
+			//   ★ 2026-10-22（工作台 UI 统一，方案稿 §6.19）：组件已改用**共享层** `wb-*` 原语
+			//     （宿主 `@vssaros/dsh-workbenches` 注入一份样式表）⇒ 颜色只走 `--dsw-alias-*` 令牌
+			//     （明暗两套自动跟随），间距/圆角/字号只走 `--wb-*` 刻度；本包只留 3 行布局覆盖。
+			//     守卫 `check-workbench-style.mjs` 钉住四条（无裸色值 / 宿主渲染标记 / ≥10 个 wb-* 类 / 工具条锚点唯一），
+			//     已统一的包在它的 UNIFIED 白名单里 —— 每迁完一个就入列 ✓。
+			//   ⚠ 迁移脚本改写文件后要**归一 CRLF**（仓库约定）+ **重新动入口 / 升版本**（守卫查 mtime）。
+			//   ⚠ 装不上不许拖垮这张卡（try/catch + 留痕 ✓）：装载器没有 `require.async`（老运行时 / 探针的假 ctx）
+			//     ⇒ 只丢 React 工作台，工具卡照常 ✓。
+			try {
+				if (typeof require.async !== 'function') {
+					throw new Error('装载器没有 require.async（老运行时）');
+				}
+				require.async('./client.workbench.js')
+					.then((part) => { if (part && typeof part.install === 'function') { part.install(ctx); } })
+					.catch((e) => {
+						const why = String((e && e.message) || e);
+						globalThis.__vssarosWorkflowClient = Object.assign({}, globalThis.__vssarosWorkflowClient, { workbenchFailed: why });
+						console.warn(`[vssaros-workflow] 工作台组件装载失败：${why}`);
+					});
+			} catch (e) {
+				const why = String((e && e.message) || e);
+				globalThis.__vssarosWorkflowClient = Object.assign({}, globalThis.__vssarosWorkflowClient, { workbenchFailed: why });
+				console.warn(`[vssaros-workflow] 工作台组件装载失败：${why}`);
+			}
 			return undefined;
 		}
 

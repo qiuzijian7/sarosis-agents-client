@@ -72,21 +72,26 @@ try {
 	check('页面路由抓得到（ctx.inject 形状没变）', typeof handler === 'function');
 	if (typeof handler !== 'function') { throw new Error('no handler'); }
 
-	async function render(query) {
+	async function render(query, base = '/x/kb/') {
 		let html = '';
 		const res = {
 			status: 0,
 			writeHead(status) { this.status = status; },
 			end(body) { html += body ?? ''; },
 		};
-		await handler({ url: '/x/kb/' + query }, res);
+		await handler({ url: base + query }, res);
 		return { status: res.status, html };
 	}
 
-	const full = await render('');
-	const sideview = await render('?surface=sideview');
-	const editor = await render('?surface=editor');
-	const unknown = await render('?surface=nonsense');
+	// ★ 2026-10-24（产品决定：知识库主入口用新版）：`/x/kb/`（**含带 `?surface=` 的**，
+	//   宿主 `dshPluginPage.ts` 会自己注入）一律出 **React 侧栏页**；经典 SSR 三态退到
+	//   `/x/kb/classic`（仍走 renderPage）⇒ 下面的经典断言改探 classic。
+	const bare = await render('');
+	const sideviewWithParam = await render('?surface=sideview');   // 宿主真实进入形态
+	const full = await render('?surface=full', 'classic');
+	const sideview = await render('?surface=sideview', '/x/kb/classic');
+	const editor = await render('?surface=editor', '/x/kb/classic');
+	const unknown = await render('?surface=nonsense', '/x/kb/classic');
 
 	check('三种表面都 200', [full, sideview, editor].every(r => r.status === 200),
 		`${full.status}/${sideview.status}/${editor.status}`);
@@ -94,6 +99,16 @@ try {
 	check('sideview 打标', sideview.html.includes('data-vssaros-surface="sideview"'));
 	check('editor 打标', editor.html.includes('data-vssaros-surface="editor"'));
 	check('未知 surface 回落完整页', unknown.html.includes('data-vssaros-surface="full"'));
+
+	// 2026-10-24：钉住"裸主页 = React 壳"这条产品决定（否则将来有人把接管改回去，没人会发现 ✗）
+	check('裸 /x/kb/ 出 React 壳（注入数据 + bundle 都在）',
+		bare.html.includes('__KB_SIDEVIEW_DATA__') && bare.html.includes('kbSideview.js'));
+	check('裸 /x/kb/ 不再出经典三态页（无 data-vssaros-surface）',
+		!bare.html.includes('data-vssaros-surface'));
+	// ★ 宿主真实进入形态：`dshPluginPage.ts` 会注入 `?surface=sideview` ⇒ 这条必须也出 React 壳，
+	//   否则真机上"改了代码页面不变"（2026-10-24 踩过：按 surface 分流把新版整条路堵死了）。
+	check('/x/kb/?surface=sideview 也出 React 壳（宿主注入参数时不能退回旧页）',
+		sideviewWithParam.html.includes('__KB_SIDEVIEW_DATA__') && !sideviewWithParam.html.includes('data-vssaros-surface'));
 
 	check('full 有目录块', full.html.includes('data-vault-block'));
 	check('full 有页内预览脚本', full.html.includes('data-preview-title'));

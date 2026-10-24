@@ -1,7 +1,7 @@
 {
   "name": "@vssaros/dsh-media",
-  "version": "0.5.7",
-  "description": "VsSaros media-library module for DeepSeek Harness: a read-only self-hosted page (/x/media/) plus media_list / media_stats tools over the SAME `{rootDir}/media.db` that the VsSaros main-process MediaStore owns (bytes live at `{rootDir}/{yyyy}/{mm}/{id}.{ext}`, rootDir default `<dataRoot>/media`, overridable via `media-store-config.json`). Opens the database through Node's built-in `node:sqlite` (dsh requires Node 22.19+/24+, where it exists) in read-only mode: table creation and migrations stay single-writer on the VsSaros side, this module never creates or alters them.",
+  "version": "0.5.14",
+  "description": "VsSaros media library for DeepSeek Harness. **As of 2026-10-24 the authoritative store is on the dsh side**: `{dataRoot}/media-store/media.db` + content-addressed objects under `{dataRoot}/media-store/objects/<sha8[0..2]>/<sha8>.<ext>`, created and owned by this module (single writer), with a full read/write HTTP API under `/x/media/api/*` (list / stats / bytes / import / delete / restore / favorite / tags / board). The old VsSaros main-process store (`{rootDir}/media.db`, bytes at `{rootDir}/{yyyy}/{mm}/{id}.{ext}`) is still readable as a **read-only mirror** for the transition period (`lib/store.js`); the page keeps reading that mirror by default and can read the new store with `?source=dsh`.",
   "private": true,
   "type": "module",
   "main": "lib/index.js",
@@ -13,6 +13,8 @@
     "lib/index.js",
     "lib/pageShell.js",
     "lib/store.js",
+    "lib/ownStore.js",
+    "lib/ideSync.js",
     "cordis.patch.yml",
     "lib/foundationRef.js"
   ],

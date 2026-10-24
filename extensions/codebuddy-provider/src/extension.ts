@@ -1830,6 +1830,13 @@ export function activate(context: vscode.ExtensionContext): void {
 		}),
 	);
 
+	// 2026-10-22：CodeBuddy 已搬到 dsh Host 实现（dsh-plugins/vssaros-bridge/lib/codebuddy.js）。
+	// 过渡期：IDE 侧发现 dsh 侧还没登录时，经桥 `codebuddy.import` 把这里的登录态**一次性**迁过去
+	// （内部命令，只给 VsSaros 自己的 DshProviderSync 用；不出现在命令面板）。
+	context.subscriptions.push(
+		vscode.commands.registerCommand('_codebuddy.exportSession', () => auth.exportSession()),
+	);
+
 	provider.notifyModelsChanged();
 	console.log(`[CodeBuddy] activate() — registered chat provider, vendor='${VENDOR}'`);
 }

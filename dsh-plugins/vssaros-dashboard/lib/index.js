@@ -24,9 +24,13 @@ import { projCacheDirOf, readSession, readSessions } from './store.js';
 
 import { readFileSync } from 'node:fs';
 
-import { activityText, contextUsageText, escapeHtml, getWidget, isoOf, listMetaText, metaBlock, modelText, normalizeWidgetConfig, SESSIONS_LIMIT_DEFAULT, serializeCatalog, summarizeModel } from './catalog.js';
+// ⚠ 逐项：`activityText` / `contextUsageText` / `isoOf` / `listMetaText` / `modelText` 仍被**工具输出**用到
+//   （`dashboard_sessions` / `dashboard_session` 的文本）—— 页面搬到 React 后它们不能跟着一起删 ✗。
+//   `getWidget` 随卡片渲染一起下线了；`normalizeWidgetConfig` 仍在用（见 `layoutForClient`：渲染前把
+//   每张卡的 config 归一化一次，`sessions.limit` 夹紧 / `workbench.order` 过滤去重都靠它）。
+import { activityText, contextUsageText, escapeHtml, groupByCwd, isoOf, listMetaText, metaBlock, modelText, normalizeWidgetConfig, serializeCatalog, sessionRowModel, SESSIONS_LIMIT_DEFAULT, summarizeModel, usageBuckets, WIDGETS, WORKBENCH_MODULES } from './catalog.js';
 
-import { defaultLayout, LAYOUT_VERSION, layoutCssVars, normalizeLayout, normalizeSettings } from './layout.js';
+import { activePresetOf, DEFAULT_PRESET_NAME, defaultLayout, LAYOUT_VERSION, layoutCssVars, normalizeLayout, normalizeLayoutFile, normalizePresetName, normalizeSettings, serializeLayoutFile } from './layout.js';
 
 import { layoutPath, mutateLayout, readLayout } from './layoutStore.js';
 
@@ -55,6 +59,21 @@ export const name = 'vssaros-dashboard';
 export const inject = ['tools'];
 
 const ROUTE_PREFIX = '/x/dashboard';
+/**
+ * 插件版本号，**渲染进页面**（页面上那行淡淡的 `vssaros-dashboard 0.4.x`）。
+ *
+ * 为什么要有这个：真机出现过"主页看起来是旧样式"的排查，最后发现是**两个窗口跑着不同版本**
+ * （旧壳没有版本号、也没有「范围」那行）。版本写在页面上 ⇒ 一眼能判断"我看到的是哪一版"，
+ * 不用再猜是缓存、是没重启、还是代码没生效。
+ * ⚠ 从 `package.json` 读，**不手写常量**（手写必然与真实版本漂移）。
+ */
+const PLUGIN_VERSION = (() => {
+	try {
+		return JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version || '0.0.0';
+	} catch {
+		return '0.0.0';
+	}
+})();
 const TOOL_NAMES = ['dashboard_sessions', 'dashboard_session'];
 /**
  * 页面扫描（以及 `/api/sessions` 默认、以及会话明细组件默认）的条数上限。
@@ -68,14 +87,30 @@ const PAGE_LIMIT = SESSIONS_LIMIT_DEFAULT;
 const LAYOUT_BODY_LIMIT = 64 * 1024;
 
 /**
- * 页面侧脚本：**读成文本**整段嵌进 `<script>`（独立文件 —— 理由见 `lib/pageClient.js` 的头注释：
- * 客户端代码里可以自由用反引号，而页面那段模板字符串就不会被提前闭合 ✗）。
+ * 页面用到的**静态资源**（模块加载期一次读进内存）。
  *
- * ⚠ **在模块加载期读**：文件缺失 ⇒ **整包加载失败** ⇒ `dshPluginPackages.test.ts` 的"Host 入口必须能被
- * 加载"当场抓住 ✓（比"页面少个按钮、静默没交互"好得多）。⚠ `package.json` 的 `files` **必须**列上它 ——
- * 漏了就是"源码里在、装出来没有"（本仓已经踩过一次这种 ✗）。
+ * 为什么不再把客户端脚本读成文本内联进页面：
+ *   · React 版是 esbuild 打的单文件产物（~160KB），内联进 HTML 每次导航都重传、也没法缓存；
+ *   · 它必须能被浏览器当**独立脚本**加载（script src）⇒ 走静态路由。
+ *
+ * ⚠ 只用**白名单**（不是拼路径）⇒ 不可能被目录穿越读到别处；
+ * ⚠ 读不到就**整包加载失败**（与从前内联的做法同一条纪律：比"页面白屏、按钮没反应"好得多）；
+ * ⚠ cache-control: no-store —— 插件换版后旧产物不能留在浏览器缓存里（本仓在这上面踩过）。
  */
-const PAGE_CLIENT_JS = readFileSync(new URL('./pageClient.js', import.meta.url), 'utf8');
+const ASSETS = new Map([
+	['/app/dashboard-app.js', { file: new URL('./app/dist/dashboard-app.js', import.meta.url), type: 'text/javascript; charset=utf-8' }],
+	['/app/dashboard-app.css', { file: new URL('./app/dist/dashboard-app.css', import.meta.url), type: 'text/css; charset=utf-8' }],
+	['/theme/base.css', { file: new URL('../vendor/dsw-theme/base.css', import.meta.url), type: 'text/css; charset=utf-8' }],
+	['/theme/design-platform.css', { file: new URL('../vendor/dsw-theme/design-platform.css', import.meta.url), type: 'text/css; charset=utf-8' }],
+	['/theme/gradient-shadow-text.css', { file: new URL('../vendor/dsw-theme/gradient-shadow-text.css', import.meta.url), type: 'text/css; charset=utf-8' }],
+	['/theme/scrollbar.css', { file: new URL('../vendor/dsw-theme/scrollbar.css', import.meta.url), type: 'text/css; charset=utf-8' }],
+]);
+for (const [key, asset] of ASSETS) {
+	asset.body = readFileSync(asset.file);
+	if (!asset.body || asset.body.length === 0) {
+		throw new Error('静态资源是空文件：' + key);
+	}
+}
 
 /**
  * 塞进 `<script type="application/json">` 的 JSON 岛：把 `<` 转义成 `\u003c` ⇒
@@ -122,31 +157,47 @@ async function readJsonBody(req, limit) {
  * 返回 `{ items, settings, note, source }`；`source` 是给探针与排障看的一句话来源
  * （`query:none` / `query:default` / `file` / `file:error` / `default:missing`）✓。
  */
-async function resolveLayout(config, param) {
+async function resolveLayout(config, param, presetParam) {
 	const fromConfig = normalizeSettings(config?.layout);
 	// ⚠ **无论哪个模式都要读一次盘**：客户端保存时要拿 `updatedAt` 做 CAS，而它必须来自**盘上那份**
 	//   （哪怕这一页展示的是 `?layout=default` 的预览）—— 否则"预览默认布局后保存"会拿一个 0 去比，
 	//   必然误报 409 ✗。文件不存在 ⇒ stamp = 0（首启，那本来就是"没有"的诚实表示 ✓）。
+	//
+	// ★ 多套布局（2026-10-22）：盘上是 `{ active, presets }`；老形状（单布局）由 `normalizeLayoutFile`
+	//   在**内存里**包成 `presets.default`，**不写盘** ⇒ "读一页不该产生文件"那条纪律仍然成立 ✓。
 	const read = await readLayout(config);
-	const stamp = Number.isFinite(read.layout?.updatedAt) ? read.layout.updatedAt : 0;
+	const file = normalizeLayoutFile(read.layout);
+	const wanted = normalizePresetName(presetParam);
+	// `?preset=xxx` 只是**预览**（不改变盘上的 active）；名字不存在 ⇒ 按 active 显示并如实说明
+	const previewName = wanted && file.presets.has(wanted) ? wanted : undefined;
+	const activeName = previewName ?? file.active;
+	const entry = file.presets.get(activeName);
+	const names = [...file.presets.keys()];
+	const stamp = Number.isFinite(entry?.updatedAt) ? entry.updatedAt : 0;
+	const presetNote = wanted && !previewName
+		? `预设 ${wanted} 不存在（现有：${names.join(' / ')}）⇒ 显示当前布局`
+		: '';
+	const base = { active: activeName, names, stamp };
+
 	if (param === 'none') {
-		return { items: [], settings: fromConfig, note: '', source: 'query:none', stamp };
+		return { ...base, items: [], settings: fromConfig, note: presetNote, source: 'query:none' };
 	}
 	if (param === 'default') {
-		return { items: defaultLayout(), settings: fromConfig, note: '', source: 'query:default', stamp };
+		return { ...base, items: defaultLayout(), settings: fromConfig, note: presetNote, source: 'query:default' };
 	}
-	const normalized = normalizeLayout(read.layout);
-	const settings = normalizeSettings(read.layout?.settings) ?? fromConfig;
+	const items = entry?.items ?? defaultLayout();
+	const settings = normalizeSettings(entry?.settings) ?? fromConfig;
 	if (read.error) {
-		return { items: normalized.items, settings, note: `首页布局读不了，已回到出厂默认：${read.error}`, source: 'file:error', stamp };
+		return { ...base, items, settings, note: `首页布局读不了，已回到出厂默认：${read.error}`, source: 'file:error' };
 	}
 	if (read.missing) {
-		return { items: normalized.items, settings, note: '', source: 'default:missing', stamp };
+		return { ...base, items, settings, note: presetNote, source: 'default:missing' };
 	}
-	const note = normalized.repaired.length
-		? `首页布局有 ${normalized.repaired.length} 处被自动纠正：${normalized.repaired.join('；')}`
-		: '';
-	return { items: normalized.items, settings, note, source: 'file', stamp };
+	const note = [
+		presetNote,
+		file.repaired.length ? `首页布局有 ${file.repaired.length} 处被自动纠正：${file.repaired.join('；')}` : '',
+	].filter(Boolean).join('；');
+	return { ...base, items, settings, note, source: 'file' };
 }
 /** 工具 output schema 里「运行状态」的形状——**两个工具共用一份**（写两份必然漂移）。 */
 const ACTIVITY_SCHEMA = {
@@ -252,7 +303,40 @@ async function collect(config, limit, state) {
  * ⚠ 三块从「body 直接子节点」变成「网格项」后，相邻外边距**不再折叠**（flex/grid 项之间不折叠）
  *   ⇒ 纵向间距会比改造前大几个 px；内容与锚点逐字未变，且 P3 的网格本来就要接管间距。
  */
-export function renderDashboardPage({ data, config, toolsRegistered, liveServices, range = 'all', layout = defaultLayout(), settings, layoutNote = '', layoutStamp = 0 }) {
+/**
+ * 页面数据（汇总 + 组件模型 + 交给客户端的布局）**只装配一次**（2026-10-22）。
+ *
+ * 为什么抽出来：SSR 页（`renderDashboardPage`）与 **React 工作台**（`?format=json`）都要这份数据 ⇒
+ * 各算一遍必然漂移（"页面说 32 条、工作台说 30 条"）✗。口径仍全在 `catalog.summarizeModel()` 一处 ✓。
+ */
+export function buildDashboardPayload({ data, config, toolsRegistered, liveServices, range = 'all', layout = defaultLayout(), settings }) {
+	const { summary, tally, tokenLine, model } = summarizeModel(data, range, { toolsRegistered, liveServices });
+	const widgetModel = {
+		range,
+		data,
+		summary: { ...summary, sorted: undefined },
+		tally,
+		tokenLine,
+		toolsRegistered,
+		liveServices,
+		sessions: summary.sorted.map(sessionRowModel),
+		workbench: WORKBENCH_MODULES,
+		workspaces: groupByCwd(summary.sorted, 30),
+		usage: usageBuckets(model),
+		// 版本号也随载荷下发：**两个前端**都用它（模块页印在页面中缝、注册式工作台印在顶栏）
+		// ⇒ 排查"样式不对"时先看版本，不用再猜是缓存还是没重启 ✓
+		version: PLUGIN_VERSION,
+	};
+	// 每张卡的 `config` 在**交给客户端之前**归一化一次（`sessions.limit` 夹紧 / `workbench.order` 过滤去重…）：
+	//   宿主做第一道，React 侧的 `clampInt` 只当第二道防线 ✓。
+	const layoutForClient = layout.map(item => ({
+		...item,
+		config: normalizeWidgetConfig(WIDGETS.find(widget => widget.kind === item.kind), item.config),
+	}));
+	return { summary, tally, tokenLine, model, widgetModel, layoutForClient };
+}
+
+export function renderDashboardPage({ data, config, toolsRegistered, liveServices, range = 'all', layout = defaultLayout(), settings, layoutNote = '', layoutStamp = 0, activePreset = DEFAULT_PRESET_NAME, presetNames = [DEFAULT_PRESET_NAME] }) {
 	const { errors, dir, missing, truncated } = data;
 	// ── 日期范围（README 5.74）：与 `/api/sessions` 用**同一个纯函数** ✓ ────────────────────────────
 	// 这里把 `summary` **整体重算**成"范围内"的那一份 ⇒ 卡片 / 运行清点 / 明细列表**全都跟着范围走** ✓。
@@ -260,47 +344,16 @@ export function renderDashboardPage({ data, config, toolsRegistered, liveService
 	// ⚠ 2026-10-13：这段口径**抽到 `catalog.summarizeModel()`**，与侧栏紧凑版（`lib/sideview.js`）
 	//   **共用同一处** —— 两版各算一遍必然漂移（"侧栏 32、完整页 30"）✗。语义与抽取前逐字等价 ✓
 	//   （「运行中」清点仍**只数已知的**：没有会话带 todos 单元时 `todoSessions` 缺席 ⇒ 卡片不出现，而不是显示 0）。
-	const { summary, tally, tokenLine, model } = summarizeModel(data, range, { toolsRegistered, liveServices });
-	// 「编排」工具条 + 画廊：**无条件渲染**（编辑态靠 CSS 显形）⇒ 探针不必去点按钮就能断言它们在 ✓
-	// ★ 2026-10-13（用户："不允许重复添加组件"）：把**页面上已有的 kind** 交给目录序列化 ⇒ 画廊据此
-	//   标「已添加」（`data-dash-added` / `is-added` ✓）。`layout` 是**归一化过**的（重复 kind 已被
-	//   `normalizeLayout` 丢掉 ✓）⇒ 标记与实际渲染的卡片**必然一致** ✓（两处各算一遍就会漂移 ✗）。
-	const catalog = serializeCatalog(new Set(layout.map(item => item.kind)));
-	// ⚠ 编排按钮同时带**稳定锚点** `data-dash-edit-toggle`：`data-dash-action` 会在 edit ↔ done 之间来回改
-	//   （客户端 `setEditing` ✓），拿它当"查找键"必然单向卡死 ✗（见 `pageClient.js` 的注释与探针第 ⑭ 条 ✓）。
-	const toolbar = '<div class="dash-bar"><button type="button" class="dash-btn" data-dash-action="edit" data-dash-edit-toggle="1">编排</button><button type="button" class="dash-btn dash-btn-add" data-dash-action="gallery">＋ 添加组件</button><span class="dash-status" data-dash-status></span></div>';
-	// ⚠ 已添加的那些**保留按钮**（不删 ✗）：点了由 `pageClient.js` 的 `addWidget` 回一句话说明原因 ✓
-	//   —— 直接 disabled 的话用户只会觉得"按钮坏了" ✗（而且 p3-46 断言每个 kind 都有按钮 ✓）。
-	const gallery = `<div class="dash-gallery" data-dash-gallery hidden><p class="dash-gallery-title">加一个组件：</p>${catalog.map(entry => `<button type="button" class="dash-gallery-item${entry.added ? ' is-added' : ''}" data-dash-action="add" data-dash-kind="${escapeHtml(entry.kind)}"${entry.added ? ' data-dash-added="1" aria-disabled="true"' : ''}><b>${escapeHtml(entry.name)}</b><small>${entry.added ? '已经在页面上（不允许重复添加）' : `${escapeHtml(entry.description)} · ${entry.w}×${entry.h}`}</small></button>`).join('')}</div>`;
-	// ⚠ 再夹一次：本函数可以被**直接调用**（探针 / 将来的其它入口）⇒ 不假设调用方已经归一化过
-	//   （文件可能被手改过 ⇒ 渲染期是**最后**一道，见 `layout.js` 的两道夹紧注释 ✓）。
+	// 组件网格 / 工具条 / 画廊 **全部由页面里的 React 应用渲染**（lib/app/src/app.jsx）：
+	//   服务端只出「壳 + 数据岛」⇒ 两套 UI 只剩一套实现（原先 pageClient.js 那套手写 DOM 已下线）。
+	//   ⚠ 岛里的展示数据一律由 catalog.js 算（会话行文案 / 工作区分组 / 用量分桶 / 工作台清单）
+	//     ⇒ 与侧栏版、与 /api/sessions 共用同一处口径，不会漂移。
+	// ★ 2026-10-22：装配抽到 `buildDashboardPayload()`（React 工作台走 `?format=json` 吃同一份 ✓）。
+	const built = buildDashboardPayload({ data, config, toolsRegistered, liveServices, range, layout, settings });
+	const { summary, tally, tokenLine, widgetModel, layoutForClient } = built;
+	// ⚠ 再夹一次：本函数可以被**直接调用**（探针 / 将来的其它入口）⇒ 不假设调用方已经归一化过。
 	const vars = layoutCssVars(normalizeSettings(settings) ?? normalizeSettings(config?.layout) ?? {});
-
-	const cells = layout.map(item => {
-		// `h` = **最小高度**（行）：出厂默认 1/1/3 ⇒ 24/24/72px，**都低于内容高度 ⇒ 视觉与改造前一致** ✓
-		// （把 `h` 拉大是缩放手柄的活儿；语义见 `layout.js` 的注释）
-		const attrs = [
-			`data-dash-id="${escapeHtml(item.id)}"`,
-			`data-dash-widget="${escapeHtml(item.kind)}"`,
-			`data-dash-w="${item.w}"`,
-			`data-dash-h="${item.h}"`,
-			`style="grid-column: span ${item.w}; min-height: calc(${item.h} * var(--dash-row) + ${Math.max(0, item.h - 1)} * var(--dash-gap, 0px))"`,
-		].join(' ');
-		// 编辑态的四个小件（尺寸标签 / 移除 / 缩放手柄）**由服务端就渲染好**，靠 CSS 只在 `.dash-editing`
-		// 下显形 ⇒ "进入编辑模式"只是切一个 class，没有"客户端凭空造 DOM"那一步 ✓；非编辑态**完全不留痕** ✓。
-		const tools = `<span class="dash-tools"><span data-dash-size>${item.w}×${item.h}</span><button type="button" class="dash-x" data-dash-action="remove" title="移除这个组件">✕</button></span><span class="dash-resize" data-dash-resize title="拖动缩放（列 × 行）"></span>`;
-		const widget = getWidget(item.kind);
-		if (!widget) {
-			// 未知组件 ⇒ **占位卡**（不静默丢掉）：用户得看得见"这里少了一块"，并能把它从布局里去掉；
-			// 提供它的模块装回来时，同一份布局会自动恢复（布局里一直保留着它）。
-			return `<section class="dash-w dash-w-missing" ${attrs}>${tools}<p class="empty">该组件不存在：<code>${escapeHtml(item.kind)}</code>（提供它的模块可能被卸下了）。</p></section>`;
-		}
-		return `<section class="dash-w" ${attrs}>${tools}${widget.render(model, normalizeWidgetConfig(widget, item.config))}</section>`;
-	}).join('\n');
-
-	// ▲ 隐藏元数据块：**机器可断言的锚点**（与用户布局无关、与承载表面无关 —— 实现见 `catalog.metaBlock`）。
-	//   ⚠ 与侧栏紧凑版**共用同一个函数**：两版 HTML 完全不同，唯一必须逐字相同的就是这 16 个锚点 ✓
-	//   （侧栏版没有组件网格、完整页的组件可被用户删光 ⇒ 锚点若分别内联，早晚有一边漂移 ✗）。
+	// ▲ 隐藏元数据块：**机器可断言的锚点**（与用户布局无关、与承载表面无关 —— 见 catalog.metaBlock）。
 	const meta = metaBlock({ data, summary, tally, toolsRegistered, liveServices });
 
 	return `<!doctype html>
@@ -308,130 +361,48 @@ export function renderDashboardPage({ data, config, toolsRegistered, liveService
 <head>
 <meta charset="utf-8">
 <title>主页 · VsSaros</title>
+<link rel="stylesheet" href="${ROUTE_PREFIX}/theme/base.css">
+<link rel="stylesheet" href="${ROUTE_PREFIX}/theme/design-platform.css">
+<link rel="stylesheet" href="${ROUTE_PREFIX}/theme/gradient-shadow-text.css">
+<link rel="stylesheet" href="${ROUTE_PREFIX}/theme/scrollbar.css">
+<link rel="stylesheet" href="${ROUTE_PREFIX}/app/dashboard-app.css">
 <style>
-	:root { color-scheme: light dark; }
-	body { margin: 0; padding: 16px; font: 13px/1.6 system-ui, "Segoe UI", sans-serif; color: var(--vscode-foreground, #ccc); background: var(--vscode-sideBar-background, #1e1e1e); }
+	/* 页面级外壳（组件样式在 dashboard-app.css）。⚠ 本段在模板字符串里：注释绝不能出现反引号。 */
+	html { color-scheme: light dark; }
+	body { margin: 0; padding: 16px; font: 13px/1.6 system-ui, "Segoe UI", sans-serif;
+		color: var(--dsw-alias-label-primary, #ccc); background: var(--dsw-alias-bg-base, #1f1f1f); }
 	h1 { font-size: 14px; margin: 0 0 6px; font-weight: 600; }
-	h1 small, h2 small { color: var(--vscode-descriptionForeground, #999); font-weight: 400; }
-	.cards { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 4px; }
-	.card { border: 1px solid var(--vscode-panel-border, rgba(128,128,128,.35)); border-radius: 6px; padding: 6px 10px; min-width: 96px; }
-	.card b { display: block; font-size: 16px; }
-	.card span { color: var(--vscode-descriptionForeground, #999); font-size: 11px; }
-	ul { list-style: none; margin: 0; padding: 0; }
-	li { padding: 6px 0; border-top: 1px solid var(--vscode-panel-border, rgba(128,128,128,.2)); }
-	li:first-child { border-top: 0; }
-	li.cold { opacity: .72; }
-	.t { font-weight: 600; }
-	small, .diag, .empty { color: var(--vscode-descriptionForeground, #999); }
-	.diag { font-size: 12px; margin: 4px 0 0; }
+	h1 small { font-weight: 400; color: var(--dash-muted, #999); }
+	.diag, .empty { color: var(--dash-muted, #999); font-size: 12px; margin: 4px 0; }
+	.diag a { color: var(--dsw-alias-brand-primary, #4C9AFF); }
 	code { font-family: ui-monospace, Consolas, monospace; }
-	/* ── 组件网格（2026-10-13 P1）：12 列制，宽度由布局给（grid-column: span N）。
-	   ⚠ 默认 --dash-gap 为 0 是刻意的：等价重构阶段不该凭空多出网格间距（见 layout.js 注释）。
-	   ⚠ 本段在模板字符串里：注释里**绝不能出现反引号**，否则会提前闭合整页 ✗（真踩过两次）。 */
-	.dash-grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: var(--dash-gap, 0); max-width: var(--dash-max-width, none); }
-	.dash-w { min-width: 0; }
-	.dash-w-missing { border: 1px dashed var(--vscode-panel-border, rgba(128,128,128,.35)); border-radius: 6px; padding: 6px 10px; }
-	/* ── 编排态（2026-10-13 P3）：**非编辑态完全不留痕** —— 四个小件都 display:none、没有 outline
-	   ⇒ 出厂视觉与改造前一致 ✓（这也是为什么小件由服务端渲染而不是客户端造 DOM ✓）。
-	   ⚠ 本段在模板字符串里：注释里**绝不能出现反引号**，否则整页提前闭合 ✗（本轮第三次踩）。 */
-	.dash-bar { display: flex; align-items: center; gap: 6px; margin: 8px 0 0; }
-	.dash-btn { font: inherit; font-size: 12px; color: var(--vscode-button-foreground, #fff); background: var(--vscode-button-background, #0e639c); border: 0; border-radius: 3px; padding: 2px 8px; cursor: pointer; }
-	.dash-btn-add { display: none; background: var(--vscode-button-secondaryBackground, #3a3d41); color: var(--vscode-button-secondaryForeground, #ccc); }
-	.dash-status { color: var(--vscode-descriptionForeground, #999); font-size: 11px; }
-	.dash-gallery { border: 1px solid var(--vscode-panel-border, rgba(128,128,128,.35)); border-radius: 6px; padding: 8px; margin: 8px 0; }
-	.dash-gallery-title { margin: 0 0 6px; color: var(--vscode-descriptionForeground, #999); font-size: 12px; }
-	.dash-gallery-item { display: block; width: 100%; text-align: left; font: inherit; color: inherit; background: none; border: 1px solid transparent; border-radius: 4px; padding: 4px 6px; cursor: pointer; }
-	.dash-gallery-item:hover { border-color: var(--vscode-focusBorder, #007acc); }
-	.dash-gallery-item small { display: block; color: var(--vscode-descriptionForeground, #999); font-size: 11px; }
-	/* ★ 2026-10-13：已经在页面上的组件（不允许重复添加）⇒ 置灰但仍可点（点了会回一句话说明原因 ✓）。 */
-	.dash-gallery-item.is-added { opacity: .5; }
-	.dash-gallery-item.is-added:hover { border-color: var(--vscode-panel-border, rgba(128,128,128,.35)); }
-	.dash-tools, .dash-resize { display: none; }
-	/* 2026-10-13：长列表（会话明细）自己滚动，别把整页撑长（用户要求）。帽用视口份额而不是
-	   卡片的 h：h 的语义是"最小高度"，且**已落盘布局里还是旧值 3** ⇒ 按它算帽会让老用户只看到
-	   一两行（把改动变成回归 ✗）。overscroll-behavior 防滚动链（滚到底不再带动外层 ✓）。
-	   ★ 2026-10-13 二改（用户："会话组件太高了，降低组件高度"）：帽从 55vh 降到 **min(30vh, 300px)**
-	     —— **双帽**（视口份额 + 绝对像素）：只给 vh 的话大屏上仍是半个屏幕 ✗，只给 px 的话小屏上
-	     又会占满 ✗。要更高就点「编排」用右下角手柄拉（h 是**最小高度**，卡片会被内容撑回来 ✓ 但
-	     列表自己的滚动帽不受 h 影响 ⇒ 想真正变高，得改这里或加"每卡高度"配置 ✗ —— 目前不做）。
-	   ⚠ 本段在模板字符串里：注释里**绝不能出现反引号**，否则整页提前闭合 ✗（这条我踩了第 4 次 ✗）。 */
-	.dash-scroll { max-height: min(30vh, 300px); overflow-y: auto; overscroll-behavior: contain; }
-	/* 2026-10-13 新增组件（工作台 / 工作区统计 / 用量分布 / 时钟 / 番茄时钟）的样式。
-	   ⚠ 本段在模板字符串里：注释里**绝不能出现反引号**（本仓已踩过四次 ✗）。 */
-	.wb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(178px, 1fr)); gap: 8px; }
-	.wb-card { border: 1px solid var(--vscode-panel-border, rgba(128,128,128,.35)); border-radius: 5px; padding: 8px 10px; background: rgba(128,128,128,.06); }
-	/* ★ 2026-10-13：工作台条目可**拖拽排序**（非编辑态也允许 ✓）—— 抓手 / 拖拽中的反馈。
-	   touch-action: none 防触摸环境下拖动变成滚页 ✓（与卡片缩放手柄同款做法 ✓）。 */
-	.wb-card { cursor: grab; touch-action: none; user-select: none; }
-	/* ⚠ 本段在模板字符串里：注释里绝不能出现反引号 ✗ */
-	/* ★ 2026-10-13（用户："工作台中的item缺少拖拽表现" ⇒ 并选定**B 空槽跟手**）：
-	   ① 抓手提示（名称前的 ⠿）：一眼知道这条能拖 ✓；
-	   ② 拖拽中：原条目变**虚线空槽**（留出落点位置 ✓），另一个**浮层克隆跟着指针走** ✓
-	      —— 实现在 pageClient.js 的 makeWorkbenchGhost ✓。
-	   ⚠ 本段在模板字符串里：注释里**绝不能出现反引号** ✗ —— 我这次正是在这里加了反引号，
-	     让它提前闭合、整个文件语法错（探针静默失败 ✓）。现在 p3-46 开头有一道元检查盯着它 ✓。 */
-	.wb-nm::before { content: '⠿'; opacity: .45; margin-right: 4px; font-size: 11px; }
-	.wb-card.wb-slot { border-style: dashed; border-color: var(--vscode-focusBorder, #007acc); background: transparent; }
-	.wb-card.wb-slot > * { opacity: .18; }
-	/* ⚠ 浮层必须 pointer-events: none —— 否则它会把指针事件全吃掉，拖到一半就断 ✓（真踩过 ✓）。
-	   ★ 方案 3（用户 2026-10-13 选定）：位置**只**由 transform: translate3d() 给 ——
-	     ① left/top 固定 0 ＋ translate3d ⇒ 交给**合成层**、不触发布局（最跟手 ✓）；
-	     ② ⚠ **绝对不要**再写 left/top ✗ —— 之前横向取"空槽矩形"，实测偏差 **283px** ✓（"非常不跟手" ✓）；
-	     ③ will-change 挂在这里够用（浮层只存在于拖拽期间 ✓）。 */
-	.wb-ghost { position: fixed; left: 0; top: 0; z-index: 60; margin: 0; pointer-events: none; opacity: .95;
-		border-color: var(--vscode-focusBorder, #007acc); background: var(--vscode-editor-background, #1e1e1e);
-		box-shadow: 0 10px 26px rgba(0, 0, 0, .45); transform: translate3d(0, 0, 0) scale(1.02); will-change: transform; }
-	.wb-nm { font-size: 12px; display: flex; align-items: center; gap: 6px; }
-	.wb-desc { font-size: 10px; color: var(--vscode-descriptionForeground, #999); margin-top: 2px; min-height: 15px; }
-	.wb-ops { display: flex; gap: 4px; margin-top: 6px; flex-wrap: wrap; }
-	.wb-op { font: inherit; font-size: 11px; color: inherit; background: rgba(128,128,128,.16); border: 1px solid transparent; border-radius: 3px; padding: 1px 6px; cursor: pointer; }
-	.wb-op:hover { border-color: var(--vscode-focusBorder, #007acc); }
-	/* 禁用态（如"主页恒为固定"）⇒ 看起来就不可点，别让 hover 边框误导 ✓ */
-	.wb-op[disabled] { opacity: .55; cursor: default; }
-	.wb-op[disabled]:hover { border-color: transparent; }
-	.clock { text-align: center; }
-	.clock-t { font-family: ui-monospace, Consolas, monospace; font-size: 28px; letter-spacing: 1px; }
-	.clock-d { font-size: 11px; color: var(--vscode-descriptionForeground, #999); margin-top: 2px; }
-	.pomo { text-align: center; }
-	.pomo-ring { width: 84px; height: 84px; }
-	.pomo-t { font-family: ui-monospace, Consolas, monospace; font-size: 24px; }
-	.pomo-ph { font-size: 11px; color: var(--vscode-descriptionForeground, #999); margin: 2px 0 8px; }
-	.pomo-ops { display: flex; gap: 6px; justify-content: center; }
-	.ws-track { height: 7px; border-radius: 4px; background: rgba(128,128,128,.2); overflow: hidden; margin-top: 4px; }
-	.ws-track i { display: block; height: 100%; background: var(--vscode-charts-blue, #4C9AFF); }
-	.stack { display: flex; height: 20px; border-radius: 4px; overflow: hidden; margin: 6px 0 8px; }
-	.stack i { display: block; height: 100%; }
-	.legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 11px; color: var(--vscode-descriptionForeground, #999); }
-	.legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; }
-	.dash-editing .dash-btn-add { display: inline-block; }
-	.dash-editing .dash-w { position: relative; outline: 1px dashed var(--vscode-panel-border, rgba(128,128,128,.5)); outline-offset: 2px; cursor: grab; touch-action: none; }
-	.dash-editing .dash-w.dash-dragging { cursor: grabbing; opacity: .85; z-index: 3; }
-	.dash-editing .dash-w[data-dash-drop="before"] { box-shadow: 0 -3px 0 var(--vscode-focusBorder, #007acc); }
-	.dash-editing .dash-w[data-dash-drop="after"] { box-shadow: 0 3px 0 var(--vscode-focusBorder, #007acc); }
-	.dash-editing .dash-tools { display: flex; gap: 6px; align-items: center; justify-content: flex-end; color: var(--vscode-descriptionForeground, #999); font-size: 11px; }
-	.dash-x { font: inherit; font-size: 11px; color: inherit; background: none; border: 0; cursor: pointer; }
-	.dash-editing .dash-resize { display: block; position: absolute; right: -2px; bottom: -2px; width: 14px; height: 14px; background: linear-gradient(135deg, transparent 50%, var(--vscode-focusBorder, #007acc) 50%); cursor: nwse-resize; touch-action: none; }
+
+/* 页脚（2026-10-23）：范围切换与版本号从页头下沉到这里 —— 页头只留标题，功能不丢。 */
+.dash-foot {
+	display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+	margin: 14px 0 4px; padding-top: 10px;
+	border-top: 1px solid var(--dash-stroke, rgba(127,127,127,.3));
+	font-size: 12px; color: var(--dash-faint, inherit);
+}
+.dash-foot a { color: var(--dsw-alias-brand-primary, #4C9AFF); text-decoration: none; }
+.dash-foot a:hover { text-decoration: underline; }
+.dash-foot b { font-weight: 600; }
+.dash-foot-ver { margin-left: auto; opacity: .75; }
 </style>
 </head>
 <body data-vssaros-page="dashboard">
+
 <h1>主页 <small>dsh 会话遥测 / 用量（只读）</small></h1>
-<p class="diag" data-vssaros-dashboard-scope="session-telemetry">口径：本页读 dsh 自己的<b>会话投影缓存</b>（checkpoint 落盘，可能比实时略落后），因此只有<b>会话遥测</b>（turn / step / 耗时 / token 用量 / 子代理 / 待办计数）；IDE 那侧的「主页」是它自己的聚合口径（另有成本与告警）⇒ <b>两者数字不必相同</b>，不要拿两页互相"对账"。</p>
-<p class="diag" data-vssaros-dashboard-range="${escapeHtml(range)}">范围：${DATE_RANGES.map(item => item.range === range
-		? `<b>${escapeHtml(item.label)}</b>`
-		: `<a href="${ROUTE_PREFIX}/?range=${item.range}">${escapeHtml(item.label)}</a>`).join(' · ')}</p>
-${toolbar}
-${gallery}
-${layoutNote ? `<p class="diag" data-vssaros-dashboard-layout-note="1">${escapeHtml(layoutNote)}</p>\n` : ''}${meta}
-<div class="dash-grid" data-dash-grid="1" data-dash-count="${layout.length}" data-dash-api="${escapeHtml(ROUTE_PREFIX)}/api/layout" style="--dash-row: ${vars.row}; --dash-gap: ${vars.gap}; --dash-max-width: ${vars.maxWidth}">
-${cells}
-</div>
+${layoutNote ? `<p class="diag" data-vssaros-dashboard-layout-note="1">${escapeHtml(layoutNote)}</p>` : ''}${meta}<div data-dash-app-root="1" data-dash-api="${escapeHtml(ROUTE_PREFIX)}/api/layout" data-dash-count="${layoutForClient.length}" data-dash-version="${escapeHtml(PLUGIN_VERSION)}" style="--dash-row: ${vars.row}; --dash-gap: ${vars.gap}; --dash-max-width: ${vars.maxWidth}"></div>
+<div class="dash-foot" data-vssaros-dashboard-foot="1"><span class="dash-foot-range" data-vssaros-dashboard-range="${escapeHtml(range)}">范围：${DATE_RANGES.map(item => item.range === range ? `<b>${escapeHtml(item.label)}</b>` : `<a href="${ROUTE_PREFIX}/?range=${item.range}">${escapeHtml(item.label)}</a>`).join(' · ')}</span><span class="dash-foot-ver" data-dash-version="${escapeHtml(PLUGIN_VERSION)}">vssaros-dashboard ${escapeHtml(PLUGIN_VERSION)}</span></div>
 ${missing ? `<p class="empty">投影缓存目录还不存在：<code>${escapeHtml(missing)}</code>（dsh 还没写过会话，或 DSH_HOME 配错了）。</p>` : ''}
 ${truncated ? '<p class="diag">目录里还有更多会话，已按上限截断。</p>' : ''}
 ${errors.length ? `<p class="diag">${errors.length} 个缓存文件读不了：${escapeHtml(errors.slice(0, 3).join('；'))}${errors.length > 3 ? ' …' : ''}</p>` : ''}
 ${truncated ? `<p class="diag">…另有 ${data.remaining ?? 0} 个，用 dashboard_sessions 工具查看。</p>` : ''}
-<script type="application/json" data-dash-layout-json>${jsonIsland({ version: LAYOUT_VERSION, updatedAt: layoutStamp, settings: normalizeSettings(settings) ?? null, items: layout })}</script>
-<script type="application/json" data-dash-catalog-json>${jsonIsland(catalog)}</script>
-<script>${PAGE_CLIENT_JS}</script>
+<script type="application/json" data-dash-layout-json>${jsonIsland({ version: LAYOUT_VERSION, updatedAt: layoutStamp, settings: normalizeSettings(settings) ?? null, items: layoutForClient, active: activePreset, presets: presetNames })}</script>
+<script type="application/json" data-dash-model-json>${jsonIsland(widgetModel)}</script>
+<script type="application/json" data-dash-catalog-json>${jsonIsland(serializeCatalog(new Set(layoutForClient.map(item => item.kind))))}</script>
+<script src="${ROUTE_PREFIX}/app/dashboard-app.js"></script>
 </body>
 </html>`;
 }
@@ -686,6 +657,18 @@ export function apply(ctx, config = {}) {
 			}
 			try {
 				const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+				// 静态资源（白名单；见 ASSETS 的注释）。**先于**数据收集：CSS/JS 不该等缓存扫盘。
+				if (url.pathname.startsWith(`${ROUTE_PREFIX}/app/`) || url.pathname.startsWith(`${ROUTE_PREFIX}/theme/`)) {
+					const asset = ASSETS.get(url.pathname.slice(ROUTE_PREFIX.length));
+					if (!asset) {
+						res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' });
+						res.end('not found');
+						return;
+					}
+					res.writeHead(200, { 'content-type': asset.type, 'cache-control': 'no-store' });
+					res.end(asset.body);
+					return;
+				}
 				const range = url.searchParams.get('range') ?? 'all';
 				// 带范围时先把缓存**多读一些**再筛：只在前 PAGE_LIMIT 条里找"今日"，数出来的数会少 ✓
 				// 而且**看不出少** ✗（"为什么昨天下午的会话不见了"就是这么来的 ✓）。上限写死 1000：本地缓存读，够用 ✓。
@@ -727,6 +710,9 @@ export function apply(ctx, config = {}) {
 				// （`normalizeLayout` / `normalizeSettings`，不信任页面与脚本 ✓）；② 写盘在**锁**里
 				// （`layoutStore.js` 的协议 v2 拷贝 ✓）；③ **CAS** —— 客户端递的 `updatedAt` 必须与
 				// **锁内重读到的**一致，否则 409 + 当前布局（宁可让用户重来一次，也不静默覆盖别人的改动 ✗）。
+				// ── 写口：布局（指定预设的内容）──────────────────────────────────────
+				// 纪律：① 输入一律先 sanitize；② 写盘在**锁**里；③ **CAS**（updatedAt 不一致 ⇒ 409 + 当前内容）。
+				// ★ 多套布局（2026-10-22）：体里可带 `preset`，不带给当前 active；带了就顺手切 active（"存到这份"语义）。
 				if (url.pathname === `${ROUTE_PREFIX}/api/layout`) {
 					if (req.method !== 'POST') {
 						res.writeHead(405, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
@@ -740,54 +726,158 @@ export function apply(ctx, config = {}) {
 						return;
 					}
 					const incoming = body.value && typeof body.value === 'object' ? body.value : {};
-					// 允许两种递法：`{ layout: {...}, updatedAt }` 或直接 `{ items: [...] }`（脚本更好写 ✓）
 					const normalized = normalizeLayout(incoming.layout ?? incoming);
 					const settings = normalizeSettings(incoming.settings) ?? normalizeSettings(incoming.layout?.settings);
 					const clientStamp = Number.isFinite(incoming.updatedAt) ? incoming.updatedAt : undefined;
+					const targetName = normalizePresetName(incoming.preset);
 					const outcome = await mutateLayout(config, current => {
-						const currentLayout = current.layout && typeof current.layout === 'object' ? current.layout : {};
-						const currentStamp = Number.isFinite(currentLayout.updatedAt) ? currentLayout.updatedAt : 0;
+						const file = normalizeLayoutFile(current.layout);
+						const target = targetName ?? file.active;
+						const existing = file.presets.get(target);
+						const currentStamp = Number.isFinite(existing?.updatedAt) ? existing.updatedAt : 0;
 						if (clientStamp !== undefined && clientStamp !== currentStamp) {
+							// 409 回**该预设**的内容（不是 active 的）—— 客户端据此对齐，不用猜"被谁改了"
 							return {
 								value: {
 									status: 409,
 									body: {
 										error: '布局已被别的写者改过（updatedAt 不一致）',
-										conflict: true, updatedAt: currentStamp,
-										layout: { version: LAYOUT_VERSION, updatedAt: currentStamp, items: normalizeLayout(currentLayout).items },
+										conflict: true, preset: target, updatedAt: currentStamp,
+										items: existing?.items ?? [], active: file.active,
 									},
 								},
 							};
 						}
-						const next = {
-							version: LAYOUT_VERSION,
-							...(settings ? { settings } : {}),
-							updatedAt: Date.now(),
-							items: normalized.items,
-						};
+						const next = { version: LAYOUT_VERSION, active: target, presets: new Map(file.presets) };
+						next.presets.set(target, { items: normalized.items, settings, updatedAt: Date.now() });
+						const written = next.presets.get(target);
 						return {
-							layout: next,
+							layout: serializeLayoutFile(next),
 							value: {
 								status: 200,
 								body: {
-									// ⚠ 字段语义（2026-10-13 改明确）：`items` = **数组**（真正落盘的那份 ✓，客户端
-									//   据此对齐 ✗ 之前没有它，客户端只能拿"读盘时那份"⇒ 两边错位 ✓）；
-									//   `count` = 数量（原先是 `items: <number>` ✗ —— 名字与内容不符，且我加数组时
-									//   撞了同名键 ⇒ 后写的覆盖前写的，把既有契约改掉了 ✗ 探针当场抓到 ✓）。
-									ok: true, updatedAt: next.updatedAt,
+									ok: true, preset: target, active: next.active,
+									presets: [...next.presets.keys()],
+									updatedAt: written.updatedAt,
 									items: normalized.items, count: normalized.items.length,
 									repaired: normalized.repaired, file: layoutPath(config),
-									// ★ 2026-10-13：回传**归一化后的 items**（= 真正落盘的那份）⇒ 客户端拿它当准 ✓。
-									//   起因（用户第二次报"删除不生效"）：页面手里的 items 是**读盘时**那份，而写口会
-									//   再归一化一次（丢重复 kind ✓）⇒ 两边不一致时，客户端"删一个"再 POST 回去，
-									//   盘上却是另一份东西 ✗（表现："显示已保存、卡片却还在"）。客户端现在会采纳这份 ✓。
-									items: normalized.items,
-									// 顺手把"写之前盘上是什么状态"如实带出来（坏了就是坏了，别装作没发生 ✓）
 									...(current.missing ? { created: true } : {}),
 									...(current.error ? { previousError: current.error } : {}),
 								},
 							},
 						};
+					});
+					res.writeHead(outcome.status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+					res.end(JSON.stringify(outcome.body));
+					return;
+				}
+				// ── 写口：预设集合（switch / saveAs / delete）────────────────────────────
+				// ⚠ 这三件事**不改布局内容**，所以不参与 CAS；但仍走 `mutateLayout` ⇒ 与布局写入共用同一把锁。
+				if (url.pathname === `${ROUTE_PREFIX}/api/layout/presets`) {
+					if (req.method !== 'POST') {
+						res.writeHead(405, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify({ error: '预设操作只接受 POST', method: String(req.method ?? '') }));
+						return;
+					}
+					const body = await readJsonBody(req, LAYOUT_BODY_LIMIT);
+					if (body.error) {
+						res.writeHead(400, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify({ error: body.error }));
+						return;
+					}
+					const incoming = body.value && typeof body.value === 'object' ? body.value : {};
+					const action = String(incoming.action ?? '');
+					const name = normalizePresetName(incoming.name);
+					if (!name) {
+						res.writeHead(400, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify({ error: '预设名不能为空（最多 24 字）' }));
+						return;
+					}
+					const outcome = await mutateLayout(config, current => {
+						const file = normalizeLayoutFile(current.layout);
+						const names = [...file.presets.keys()];
+						const fail = (status, error) => ({ value: { status, body: { error, presets: names, active: file.active } } });
+						/**
+						 * 预设级 CAS（2026-10-22）：`rename` / `delete` **会动已有预设**，所以要防"我看到的已经不是它"。
+						 * ⚠ 只对这两件事生效：`switch` 不改内容（改了也只是"看哪一份"），`saveAs` 是新建。
+						 * 客户端只在操作 **active** 时带上 `updatedAt`（它只知道 active 的戳）。
+						 */
+						const clientStamp = Number.isFinite(incoming.updatedAt) ? incoming.updatedAt : undefined;
+						const staleOf = target => {
+							const stamp = Number.isFinite(file.presets.get(target)?.updatedAt) ? file.presets.get(target).updatedAt : 0;
+							if (clientStamp === undefined || clientStamp === stamp) { return null; }
+							return {
+								value: {
+									status: 409,
+									body: {
+										error: `预设 ${target} 在你操作期间被改过（updatedAt 不一致）⇒ 已刷新，请重试`,
+										conflict: true, preset: target, updatedAt: stamp, presets: names, active: file.active,
+									},
+								},
+							};
+						};
+						if (action === 'switch') {
+							if (!file.presets.has(name)) { return fail(404, `预设 ${name} 不存在（现有：${names.join(' / ')}）`); }
+							if (file.active === name) { return { value: { status: 200, body: { ok: true, active: name, presets: names, unchanged: true } } }; }
+							return {
+								layout: serializeLayoutFile({ version: LAYOUT_VERSION, active: name, presets: file.presets }),
+								value: { status: 200, body: { ok: true, active: name, presets: names } },
+							};
+						}
+						if (action === 'saveAs') {
+							if (file.presets.has(name) && incoming.overwrite !== true) {
+								return fail(409, `预设 ${name} 已存在（要覆盖请显式传 overwrite: true）`);
+							}
+							const source = activePresetOf(file);
+							const next = { version: LAYOUT_VERSION, active: name, presets: new Map(file.presets) };
+							next.presets.set(name, {
+								items: source.items, settings: source.settings, updatedAt: Date.now(),
+							});
+							return {
+								layout: serializeLayoutFile(next),
+								value: { status: 200, body: { ok: true, active: name, presets: [...next.presets.keys()] } },
+							};
+						}
+						// ★ 重命名（2026-10-22）：**保序**改名 —— Map 的插入顺序就是落盘顺序，
+						//   若先删再插会把这套布局挪到末尾（用户看到的顺序莫名其妙变了）。
+						//   也不改内容 / 不动 updatedAt（改名不是"改布局"，不该让别的窗口误判冲突）。
+						if (action === 'rename') {
+							const to = normalizePresetName(incoming.to);
+							if (!to) { return fail(400, '新名字不能为空（最多 24 字）'); }
+							if (!file.presets.has(name)) { return fail(404, `预设 ${name} 不存在（现有：${names.join(' / ')}）`); }
+							const renamedStale = staleOf(name);
+							if (renamedStale) { return renamedStale; }
+							if (name === to) { return { value: { status: 200, body: { ok: true, active: file.active, presets: names, unchanged: true } } }; }
+							if (file.presets.has(to)) { return fail(409, `预设 ${to} 已存在（换个名字，或先删掉它）`); }
+							const next = {
+								version: LAYOUT_VERSION,
+								active: file.active === name ? to : file.active,
+								presets: new Map(),
+							};
+							for (const [key, value] of file.presets) {
+								next.presets.set(key === name ? to : key, value);
+							}
+							return {
+								layout: serializeLayoutFile(next),
+								value: { status: 200, body: { ok: true, active: next.active, presets: [...next.presets.keys()] } },
+							};
+						}
+						if (action === 'delete') {
+							if (!file.presets.has(name)) { return fail(404, `预设 ${name} 不存在`); }
+							const deletedStale = staleOf(name);
+							if (deletedStale) { return deletedStale; }
+							if (file.presets.size <= 1) { return fail(400, '至少要留一个预设（删掉最后一个就没布局可显示了）'); }
+							const next = { version: LAYOUT_VERSION, active: file.active, presets: new Map(file.presets) };
+							next.presets.delete(name);
+							if (next.active === name) {
+								next.active = next.presets.has(DEFAULT_PRESET_NAME) ? DEFAULT_PRESET_NAME : [...next.presets.keys()][0];
+							}
+							return {
+								layout: serializeLayoutFile(next),
+								value: { status: 200, body: { ok: true, active: next.active, presets: [...next.presets.keys()] } },
+							};
+						}
+						return fail(400, `不认识的 action：${action || '(空)'}（只认 switch / saveAs / rename / delete）`);
 					});
 					res.writeHead(outcome.status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
 					res.end(JSON.stringify(outcome.body));
@@ -800,7 +890,29 @@ export function apply(ctx, config = {}) {
 				// 先渲染再 writeHead（渲染抛错还能干净回 500）
 				// ★ 2026-10-13：按**布局**渲染（P1 组件化 ＋ P2 落盘）。解析口径全在 `resolveLayout()`
 				//   一处（查询参数 → 落盘文件 → 出厂默认）⇒ 页面与探针吃的是同一条链 ✓。
-				const resolved = await resolveLayout(config, url.searchParams.get('layout'));
+				const resolved = await resolveLayout(config, url.searchParams.get('layout'), url.searchParams.get('preset'));
+				// ★ 2026-10-22（用户拍板：主页改成**注册式工作台**）：数据的 JSON 接口。
+				//   用 `?format=json` 而不是新开一条路径 —— 这样**布局解析链完全共用**（查询参数 → 落盘 → 出厂默认），
+				//   与 SSR 页走的是同一次 `resolveLayout()` ✓；装配同样共用 `buildDashboardPayload()` ✓。
+				if (url.searchParams.get('format') === 'json') {
+					const payload = buildDashboardPayload({
+						data, config, toolsRegistered, liveServices, range,
+						layout: resolved.items, settings: resolved.settings,
+					});
+					res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+					res.end(JSON.stringify({
+						ok: true,
+						note: resolved.note,
+						source: resolved.source,
+						active: resolved.active,
+						presets: resolved.names,
+						stamp: resolved.stamp,
+						settings: resolved.settings,
+						layout: payload.layoutForClient,
+						model: payload.widgetModel,
+					}));
+					return;
+				}
 				// ★ 2026-10-13：**按承载表面分版**（宿主注入 `?surface=`）：
 				//   侧栏（`sideview`）⇒ 摘要版（`lib/sideview.js`）；其余（含探针与浏览器直开）⇒ 完整页 ✓。
 				//   ⚠ 两版渲染**同一份隐藏锚点块** ⇒ 探针 `p3-09`（走不带参数的 URL ⇒ 完整页）不受影响 ✓。
@@ -810,7 +922,7 @@ export function apply(ctx, config = {}) {
 					: renderDashboardPage({
 						data, config, toolsRegistered, liveServices, range,
 						layout: resolved.items, settings: resolved.settings, layoutNote: resolved.note,
-						layoutStamp: resolved.stamp,
+						layoutStamp: resolved.stamp, activePreset: resolved.active, presetNames: resolved.names,
 					});
 				res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
 				res.end(html);

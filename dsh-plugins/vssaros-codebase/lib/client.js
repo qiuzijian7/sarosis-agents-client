@@ -1,3 +1,5 @@
+// 2026-10-24 touch：client.codebase.js 经变异测试改写后置新（chunk 守卫按 mtime 判）。
+// 2026-10-24 touch：client.codebase.js：补 @container ⇒ 入口置新（chunk 守卫按 mtime 判）。
 // @vssaros/dsh-codebase — 客户端半（dsh web 的客户端插件；也是本仓**第一张工具卡**）。
 //
 // 契约来源（README 5.01/5.02/5.09 ✓，全部照官方与看板样板抄，没有自创机制）：
@@ -142,6 +144,33 @@ window.__ModuleLoader__.load({
 			// 页面自诊断（与看板 `__vssarosKanbanClient` 同一套）：**apply 真的跑过**才是"工具卡能渲染"的
 			// 前提，而"文件可服务 / 在 boot 清单里"只是**必要**条件（README 5.15 的教训 ✓）。
 			globalThis.__vssarosCodebaseClient = { loaded: true, registered, failure, slot: TOOL_SLOT, key: OVERVIEW_TOOL };
+			// ★ 2026-10-22（工作台重构 §5 步骤 2）：**React 工作台**（`lib/client.codebase.js`）。
+			//   注册进宿主服务 `desktopWorkbenches`（身份 `vssaros/codebase`）⇒ dsh 窗口页签条里
+			//   `/x/codebase/` 那一条自动从 iframe 换成宿主渲染 ✓；IDE 编辑区也会改开 'workbench' 视图。
+			//   ⚠ 子块文件名**必须**是 `client.<名字>.js`（装载器只认 `client.*.js`）；装不上不许拖垮这张卡 ✓。
+			//   ⚠ 改过子块要**再动一下这个入口**（守卫查 mtime），且**版本号必须是最后一次改动的动作**。
+			//   工作台内容：四张统计卡（Nodes / Edges / Files / Last Index）+ 检索（按名/按文件）+ 结果列表
+			//   （点一条看依赖）+ Projects + 形状查询 + 诊断（折叠，`data-vssaros-codebase-*` 锚点照旧 ✓）
+			//   + 「图谱页 →」（`?view=graph` 那页**留在 SSR**：它要全量图 + 交互，不是这一版的活 ✓）。
+			//   ★ 2026-10-22（UI 统一 §6.19）：组件改用**共享层** `wb-*` 原语（宿主注入一份样式表）——
+			//     自写 CSS 从 38 行压到 26 行（只留统计卡四色强调 / 检索控件 / 节点行 / 键值对）；
+			//     顺带修掉**不存在的令牌名**（`--dsw-alias-border-default` / `-label-link`）⇒ 那两处之前从没跟随主题 ✗。
+			//   ⚠ 统计卡带 `data-vssaros-codebase-stat` 锚点：统计卡与"区块卡"都是 `wb-card` ⇒ **类名数不出张数**
+			//     （迁移当场数出 5 张）⇒ 机器锚点一律用 `data-*`，与样式解耦。
+			try {
+				if (typeof require.async !== 'function') { throw new Error('装载器没有 require.async（老运行时）'); }
+				require.async('./client.codebase.js')
+					.then((part) => { if (part && typeof part.install === 'function') { part.install(ctx); } })
+					.catch((e) => {
+						const why = String((e && e.message) || e);
+						globalThis.__vssarosCodebaseClient = Object.assign({}, globalThis.__vssarosCodebaseClient, { workbenchFailed: why });
+						console.warn(`[vssaros-codebase] 工作台组件装载失败：${why}`);
+					});
+			} catch (e) {
+				const why = String((e && e.message) || e);
+				globalThis.__vssarosCodebaseClient = Object.assign({}, globalThis.__vssarosCodebaseClient, { workbenchFailed: why });
+				console.warn(`[vssaros-codebase] 工作台组件装载失败：${why}`);
+			}
 			return undefined;
 		}
 

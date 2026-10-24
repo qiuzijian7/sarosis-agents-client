@@ -23,24 +23,8 @@ import { FIXED_SLOT_NAMES, IMemoryProvider } from '../common/providers.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { MarkdownString } from '../../../../base/common/htmlContent.js';
 
-interface IMemoryEntry {
-	id: string;
-	type: string;
-	content: string;
-	metadata?: Record<string, unknown>;
-	timestamp?: number;
-}
-
-/** 
- * agentmemory 原生类型筛选器 — 直接使用 Memory.type 值，不再做 4-Tier 映射。
- * 所有 agentmemory 细分类型（pattern/preference/bug/fact/architecture/workflow）均为一级筛选标签。
- */
-type LayerFilter = 'all' | 'working' | 'episodic' | 'semantic' | 'procedural'
-	| 'pattern' | 'preference' | 'architecture' | 'bug' | 'workflow' | 'fact';
-
-/** Episodic 层的原生类型集合（agentmemory 原版：KV.memories 内 Memory.type 的合法值） */
-const EPISODIC_TYPES: ReadonlySet<string> = new Set(['pattern', 'preference', 'architecture', 'bug', 'workflow', 'fact']);
-function isEpisodicType(type: string): boolean { return EPISODIC_TYPES.has(type); }
+// 条目形状 / 筛选器取值域 / 层匹配规格已外提（见 memoryDetailSpec.ts 头部注释：为预算拆的是纯类型+纯函数）
+import { isEpisodicType, type IMemoryEntry, type LayerFilter } from './memoryDetailSpec.js';
 
 
 /** 分类 → 头部统计色板 class（与 _addStat 的原配色保持一致） */

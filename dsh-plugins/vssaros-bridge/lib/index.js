@@ -8,7 +8,10 @@ import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { createRunsApprovalGate, createRunsService } from './runs.js';
 import { CREDIT_RECORD_TYPE, createCreditLedger, creditProjection, observeStream } from './credit.js';
-import { createTofService, tofToolDefinitions } from './tof.js';
+import { createTofService, openExternalUrl, tofToolDefinitions } from './tof.js';
+import { buildRouteProfile, routeReasoningDefault, sameProfile } from './providerProfile.js';
+import { CODEBUDDY_ROUTE, createCodeBuddyService } from './codebuddy.js';
+import { createLightAIService } from './lightai.js';
 
 // 启动计时（2026-10-15，"首启慢"排查）：本行的打印时刻 ≈ node 引导 + dsh 核心 + cordis profile
 // 装载完成的时刻（cordis 在解析插件图时 import 本文件）；与 apply() 里那一条合起来，Host 冷启被拆成
@@ -99,11 +102,18 @@ const OWNER_WATCH_INTERVAL_MS = 20_000;
  * 合法性已核实：schema 明写收 null（`dsh-llm-pi-ai/lib/index.js:1001`：
  * `z.dict(z.union([z.string(), z.const(null)]), z.union(THINKING_LEVELS))`），且经 schemastery 解析/再解析后
  * **仍是 null**（不是被抹成 undefined）⇒ 幂等比对（`sameReasoning`）不会每次都判"变了"。
+ *
+ * ★ 2026-10-22：`REASONING_EFFORTS` / `REASONING_LEVELS` / `routeReasoningDefault` 与画像比对（`sameProfile`）
+ *   已移到 `./providerProfile.js` —— dsh 侧自持的 provider（`./codebuddy.js`）写同一种画像，必须共用一份 ✓。
  */
-const REASONING_EFFORTS = { off: null, low: 'low', medium: 'medium', high: 'high' };
 
-/** pi-ai 允许出现在 profile 里的档位（= `dsh-llm-pi-ai` 的 THINKING_LEVELS，升序）。 */
-const REASONING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+/**
+ * **dsh 侧自持**的路由（2026-10-22）：登录 / 目录 / 写入都在 Host 里做（见 `./codebuddy.js`）。
+ *
+ * `providers.sync`（IDE 侧整批同步）对这些路由**一律不碰**：负载里带了也忽略、"残留 vssaros- 路由"清理时
+ * 也跳过、凭据也不覆盖 —— 否则 IDE（旧版或过渡期）一次同步就会把 dsh 自己维护的路由删掉/改回去 ✗。
+ */
+const DSH_OWNED_ROUTES = new Set([CODEBUDDY_ROUTE]);
 /**
  * 上一次打过的“默认推理档位”汇总行 —— **值没变就不再打**。
  *
@@ -112,46 +122,6 @@ const REASONING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'm
  * 只按**内容**去重（不按次数/时间）：档位真的变了还是要留痕 ✓。
  */
 let lastRouteReasoningLog = '';
-
-/**
- * 该路由的**路由级默认档位**（`profile.reasoning`）—— "用户没选档位时用哪一档"。
- *
- * ⚠ 为什么必须**全体模型都支持**才敢写（这是本函数存在的主要理由）：
- * pi-ai 把 `profile.reasoning` 当**请求默认值**用：
- * `resolveReasoningLevel(model, options.reasoningEffort ?? profile.reasoning)` —— 而它对"该模型不支持的档位"
- * 是**直接抛错**（`UNSUPPORTED_REASONING_EFFORT`，发生在 provider I/O 之前，整个回合失败）。
- * 非推理模型在 pi-ai 里的支持集只有 `['off']`（`getSupportedThinkingLevels()`：`!model.reasoning ⇒ ['off']`），
- * 所以只要路由上混着一个非推理模型，写非 'off' 的默认档位就会让**那个模型**每次请求都炸。
- * 实测（2026-10-11，本机 profile）：`vssaros-codebuddy` 34/34 都带推理位（安全），
- * 而 `vssaros-ollama` 0/6、`vssaros-grnexus` 0/32（写默认档位会炸 ⇒ 这里直接不发）。
- *
- * 取值：各模型推荐档位（扩展从 `/v3/config` 的 `model.reasoning.effort` 导出）的**众数**；
- * 平票取**更低**的一档 —— 低档更保守（扩展侧实测 'high' 会让 hy3 + 大量工具陷进 fake-completion 死循环）。
- * 没有任何模型给推荐档位时不写（保持"provider default"，不替用户拍板）。
- *
- * @param {Array<{id:string, reasoning?:boolean, effort?:string}>} modelEntries - 该路由的模型条目（收集侧形状）。
- * @returns {string|undefined} 档位（∈ REASONING_LEVELS），或 undefined = 不写。
- */
-function routeReasoningDefault(modelEntries) {
-	if (!Array.isArray(modelEntries) || modelEntries.length === 0) { return undefined; }
-	// 守卫：有一个模型没有推理位 ⇒ 它的支持集只有 ['off'] ⇒ 任何非 'off' 默认值都会让它抛错。
-	if (!modelEntries.every(m => m && m.reasoning === true)) { return undefined; }
-	const counts = new Map();
-	for (const m of modelEntries) {
-		const effort = typeof m.effort === 'string' ? m.effort : undefined;
-		if (effort !== undefined && effort !== 'off' && REASONING_LEVELS.includes(effort)) {
-			counts.set(effort, (counts.get(effort) ?? 0) + 1);
-		}
-	}
-	let best;
-	for (const [level, count] of counts) {
-		if (best === undefined || count > best.count
-			|| (count === best.count && REASONING_LEVELS.indexOf(level) < REASONING_LEVELS.indexOf(best.level))) {
-			best = { level, count };
-		}
-	}
-	return best === undefined ? undefined : best.level;
-}
 
 export function apply(ctx, config = {}) {
 	// 启动计时（与文件顶部那条配对）：模块装载 → apply 之间是 cordis 等齐 inject 声明的服务。
@@ -203,6 +173,265 @@ export function apply(ctx, config = {}) {
 		process.exit(0);
 	}, OWNER_WATCH_INTERVAL_MS);
 	ownerWatchdog.unref?.();
+
+	// ── 默认模型对齐（providers.sync 与 dsh 侧自持 provider 共用；2026-10-22 从 providers.sync 里抽出）───
+	// 现象：新会话的模型选择器默认停在官方 `deepseek-official/deepseek-flash`（官方 bundle 写死），而在
+	// VsSaros 里那个 provider **没有凭据** ⇒ 默认停在一个用不了的模型上。
+	// 规则（与抽出前逐字一致）：
+	//   · 候选 = 传入的路由（首选 `vssaros-codebuddy`，否则取第一条有模型的）；
+	//   · **只**在"当前默认仍是官方 deepseek-official 且它不可用"或"当前默认指向我们已失效的路由"时改写；
+	//     用户自己选过的一律不动；
+	//   · 走官方 `agentDefaultModel.saveSelection()`（经 configEditor 写 profile patch ⇒ 跨重启保留）；
+	//   · 服务缺席时静默跳过，绝不影响 provider 接入。
+	/**
+	 * @param {Record<string, {models?: Array<{id:string}>}>} candidates 路由 → 画像（只用 models）
+	 * @returns {Promise<string|undefined>} 日志用说明；没改写 ⇒ undefined
+	 */
+	async function alignDefaultModel(candidates) {
+		const { llm } = ctx;
+		try {
+			const defaultModel = typeof ctx.get === 'function' ? ctx.get('agentDefaultModel') : undefined;
+			if (!defaultModel?.currentSelection || !defaultModel?.saveSelection) { return undefined; }
+			const current = defaultModel.currentSelection();
+			const routeIds = Object.keys(candidates);
+			// "我们的路由是否仍在线"必须看 `llm.listProviders()`（**真实在线**路由），不能看本次传入的候选
+			// （候选可能没带全 ⇒ 会把"用户自己选中的、仍然在线"的 vssaros- 路由误判成已失效而覆盖 ✗）。
+			const liveRoutes = (llm?.listProviders?.() ?? []).map(p => String(p?.provider ?? p?.id ?? p)).filter(r => r.startsWith('vssaros-'));
+			const preferred = [routeIds.includes(CODEBUDDY_ROUTE) ? CODEBUDDY_ROUTE : undefined, ...routeIds]
+				.filter(r => r !== undefined)
+				.map(route => ({ route, models: candidates[route]?.models ?? [] }))
+				.find(c => c.models.length > 0);
+			const untouchedOfficialDefault = current?.provider === 'deepseek-official';
+			const staleOwnRoute = typeof current?.provider === 'string' && current.provider.startsWith('vssaros-') && !liveRoutes.includes(current.provider);
+			// 官方 provider **仍可用**（用户自己配了 DeepSeek 凭据）⇒ 尊重其默认值，不动。
+			let officialUsable = false;
+			if (untouchedOfficialDefault) {
+				try {
+					officialUsable = (await llm.listModels('deepseek-official')).length > 0;
+				} catch {
+					officialUsable = false;
+				}
+			}
+			if (preferred && !officialUsable && (untouchedOfficialDefault || staleOwnRoute)) {
+				// `saveSelection` 在没有 configuration editor 时是 no-op（官方 README）⇒ 只记"请求改写"。
+				await defaultModel.saveSelection({ provider: preferred.route, model: preferred.models[0].id });
+				return `请求改写 ${current.provider}/${current.model} -> ${preferred.route}/${preferred.models[0].id}`;
+			}
+			return undefined;
+		} catch (e) {
+			return `ERR ${String(e?.message ?? e).slice(0, 160)}`;
+		}
+	}
+
+	// ── CodeBuddy：**dsh 侧自持**的模型 provider（2026-10-22，见 ./codebuddy.js 文件头）──────────────
+	// 放在 `pipe/token` 早退**之前**：dsh 独立跑（没有 IDE）时 CodeBuddy 也要能登录、能出模型 ✓。
+	// 有 IDE 托管（配了 pipe）时首轮同步推迟到"第一个 IDE 客户端注册"（那时才能拿到计费代理地址 ⇒
+	// 避免先写直连、再改代理地址的两次 profile 重写）；20s 内没人注册就按直连写。
+	const codebuddy = createCodeBuddyService({
+		credentials: ctx.credentials,
+		settings: ctx.settings,
+		openExternal: openExternalUrl,
+		config: (config && typeof config.codebuddy === 'object' && config.codebuddy) ? config.codebuddy : {},
+		onRouteWritten: async entry => {
+			const note = await alignDefaultModel({ [entry.route]: entry });
+			if (note) { console.log(`[vssaros-bridge] default model: ${note}`); }
+		},
+		log: line => console.log(line),
+	});
+	ctx.effect(() => codebuddy.start({ initialDelayMs: config && config.pipe ? 20_000 : 2_000 }));
+
+	// ── LightAI（2026-10-22，用户选方案 ①：用本仓浏览器插件开登录页、登录后自动读 Cookie）──────────────
+	// 浏览器插件是**可选**依赖：`ctx.inject([...], cb)` 动态取（不在 ⇒ 本插件照常起，只是登录时明说"需要浏览器插件"）✓。
+	// 放在管道早退之前：dsh 独立跑（没有 IDE）时 LightAI 也要能登录 ✓。
+	let browserService;
+	try {
+		ctx.inject?.(['vssarosBrowser'], scope => {
+			browserService = scope.vssarosBrowser;
+			return () => { browserService = undefined; };
+		});
+	} catch { /* 老运行时没有动态 inject ⇒ 登录时如实报"需要浏览器插件" */ }
+	const lightai = createLightAIService({
+		credentials: ctx.credentials,
+		browser: () => browserService,
+		config: (config && typeof config.lightai === 'object' && config.lightai) ? config.lightai : {},
+		log: line => console.log(line),
+	});
+	/**
+	 * `vssarosLightAI`：给**同 Host 的其他插件**用的 LightAI 生成服务（2026-10-22 二期，用户："把建任务、轮询结果这套
+	 * 搬到 dsh，让 dsh 里生图直接用 LightAI，不再绕道 IDE"）。imagegen 的生图 / 改图 / 模型列表直接调它。
+	 * ⚠ 只交出**生成与状态**：cookie / 编排凭证不出本插件（回执里只有产物 URL）✓。
+	 * 放在管道早退之前：dsh 独立跑（没有 IDE）时也能生图 ✓。
+	 */
+	ctx.provide('vssarosLightAI', {
+		/** 状态投影（同设置页那份；**无 cookie 值**）。 */
+		status: () => lightai.status(),
+		/** 某类里能生成的模型 + 默认模型：`{ models: [{id, name}], defaultModel }`。 */
+		models: kind => lightai.modelsOf(kind),
+		/** banana 系可选比例（给能力表展示用）。 */
+		ratios: lightai.ratios,
+		/**
+		 * 生成一次：`kind` = image / video / model3d / audio；`params` 同 IDE 扩展的 FloodGenParams
+		 * （modelId 可省 ⇒ 该类默认模型；imageInput = 参考图 data URL / http(s) URL）；`opts.signal` 可取消。
+		 */
+		generate: (kind, params, opts) => lightai.generate(kind, params, opts),
+	});
+
+	/**
+	 * 设置页（模型 → CodeBuddy 卡片）用的 HTTP 面：`/x/vssaros-bridge/api/codebuddy/<op>`。
+	 * 与页面同源、走同一道 `requestRejection`（Host 的围栏 + 浏览器认证）⇒ **不经 IDE** 也能登录 ✓。
+	 * 回执只有状态投影（**没有 token**）✓。
+	 */
+	const CODEBUDDY_API = '/x/vssaros-bridge/api/codebuddy/';
+	const JSON_HEADERS = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' };
+	// ⚠ 这里**不用 switch 分支写子路径**：守卫 `dshBridgeParity.test.ts` 把本文件里所有"case + 引号字符串 + 冒号"
+	//   都当成"桥方法分发"去和协议对账（扫的是原文、不剥注释）⇒ HTTP 子路径写成分支会被误判为"分发了协议里没有的方法" ✗。
+	/** @type {Record<string, {write: boolean, run: () => Promise<[number, object]>}>} */
+	const codebuddyOps = {
+		status: { write: false, run: async () => [200, { ok: true, status: await codebuddy.status() }] },
+		// 不等浏览器那头（可能要几分钟）：先回 202 + "登录中"，页面轮询 status 看结果 ✓（失败原因落在 status().error）
+		signin: { write: true, run: async () => { codebuddy.signIn().catch(() => undefined); return [202, { ok: true, status: await codebuddy.status() }]; } },
+		cancel: { write: true, run: async () => { codebuddy.cancelSignIn(); return [200, { ok: true, status: await codebuddy.status() }]; } },
+		signout: { write: true, run: async () => [200, { ok: true, status: await codebuddy.signOut() }] },
+		refresh: { write: true, run: async () => { await codebuddy.refreshModels(); return [200, { ok: true, status: await codebuddy.status() }]; } },
+	};
+	async function handleCodeBuddyApi(op, req, res) {
+		const reply = (code, body) => { res.writeHead(code, JSON_HEADERS); res.end(JSON.stringify(body)); };
+		const entry = Object.prototype.hasOwnProperty.call(codebuddyOps, op) ? codebuddyOps[op] : undefined;
+		if (!entry) {
+			reply(404, { ok: false, error: `未知操作：${op}` });
+			return;
+		}
+		if (entry.write && req.method !== 'POST') {
+			reply(405, { ok: false, error: `${op} 只接受 POST`, method: String(req.method ?? '') });
+			return;
+		}
+		try {
+			const [code, body] = await entry.run();
+			reply(code, body);
+		} catch (e) {
+			reply(500, { ok: false, error: String(e?.message ?? e) });
+		}
+	}
+
+	/**
+	 * 企业身份（TOF/OA）的 HTTP 面：`/x/vssaros-bridge/api/tof/<op>`（2026-10-22，用户："登录也转移到 dsh 侧实现，
+	 * ide 侧仅读取状态"）——dsh 页面（侧栏账号行）**不经 IDE** 直接登录 / 登出 ⇒ 独立桌面窗口也能用 ✓。
+	 * 与 CodeBuddy 同一套写法：写操作只认 POST、`signin` 先回 202 页面轮询、回执**没有票据** ✓。
+	 * ⚠ `tofService` 在本函数更下方才建（它要排在管道早退之前）——handler 只在请求到来时跑，
+	 *   那时 apply() 早已跑完 ⇒ 不会撞上暂时性死区 ✓。
+	 */
+	const TOF_API = '/x/vssaros-bridge/api/tof/';
+	/** @type {Record<string, {write: boolean, run: () => Promise<[number, object]>}>} */
+	const tofOps = {
+		status: { write: false, run: async () => [200, { ok: true, status: await tofService.status() }] },
+		signin: { write: true, run: async () => { tofService.signIn().catch(() => undefined); return [202, { ok: true, status: await tofService.status() }]; } },
+		cancel: { write: true, run: async () => { tofService.cancelSignIn(); return [200, { ok: true, status: await tofService.status() }]; } },
+		// 用户点「退出登录」= 两份票都清 + 记"主动登出过"（IDE 不再把旧扩展里的票迁回来）✓
+		signout: { write: true, run: async () => { await tofService.signOut({ all: true, byUser: true }); return [200, { ok: true, status: await tofService.status() }]; } },
+	};
+	async function handleTofApi(op, req, res) {
+		const reply = (code, body) => { res.writeHead(code, JSON_HEADERS); res.end(JSON.stringify(body)); };
+		const entry = Object.prototype.hasOwnProperty.call(tofOps, op) ? tofOps[op] : undefined;
+		if (!entry) {
+			reply(404, { ok: false, error: `未知操作：${op}` });
+			return;
+		}
+		if (entry.write && req.method !== 'POST') {
+			reply(405, { ok: false, error: `${op} 只接受 POST`, method: String(req.method ?? '') });
+			return;
+		}
+		try {
+			const [code, body] = await entry.run();
+			reply(code, body);
+		} catch (e) {
+			reply(500, { ok: false, error: String(e?.message ?? e) });
+		}
+	}
+
+	/**
+	 * LightAI 的 HTTP 面：`/x/vssaros-bridge/api/lightai/<op>`（设置 → 模型 → LightAI 卡片用）。
+	 * 同 CodeBuddy：写操作只认 POST、`signin` 先回 202 页面轮询、回执**没有 cookie 值** ✓。
+	 * `config` 带 JSON 体（≤16KB）：`{ floodApiBase?, userType?, company? }`。
+	 */
+	const LIGHTAI_API = '/x/vssaros-bridge/api/lightai/';
+	const readJsonBody = req => new Promise((resolve, reject) => {
+		let size = 0;
+		const chunks = [];
+		req.on?.('data', c => {
+			size += c.length;
+			if (size > 16 * 1024) { reject(new Error('请求体过大')); req.destroy?.(); return; }
+			chunks.push(c);
+		});
+		req.on?.('end', () => {
+			try { resolve(chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {}); } catch { reject(new Error('请求体不是 JSON')); }
+		});
+		req.on?.('error', reject);
+	});
+	/** @type {Record<string, {write: boolean, run: (req: any) => Promise<[number, object]>}>} */
+	const lightaiOps = {
+		status: { write: false, run: async () => [200, { ok: true, status: await lightai.status() }] },
+		signin: { write: true, run: async () => { lightai.signIn().catch(() => undefined); return [202, { ok: true, status: await lightai.status() }]; } },
+		cancel: { write: true, run: async () => { lightai.cancelSignIn(); return [200, { ok: true, status: await lightai.status() }]; } },
+		signout: { write: true, run: async () => [200, { ok: true, status: await lightai.signOut({ byUser: true }) }] },
+		refresh: { write: true, run: async () => [200, { ok: true, status: await lightai.refreshModels() }] },
+		test: { write: true, run: async () => [200, { ok: true, status: await lightai.test() }] },
+		config: { write: true, run: async req => [200, { ok: true, status: await lightai.setConfig(await readJsonBody(req)) }] },
+	};
+	/**
+	 * 创作模型目录 / 默认选择（2026-10-22，聊天框下拉框用）。
+	 * `GET  /x/vssaros-bridge/api/media/catalog` —— 按 provider 分组的全部媒体模型 + 各类默认 + provider 状态
+	 * `POST /x/vssaros-bridge/api/media/default` —— body `{ kind, provider, model }` ⇒ 记住这一类的默认
+	 * ⚠ 只有 dsh 侧能生成的 provider 才在里面（用户已定：不经 IDE）；回执里没有 cookie ✓
+	 */
+	const MEDIA_API = '/x/vssaros-bridge/api/media/';
+	const mediaOps = {
+		catalog: {
+			write: false,
+			run: async () => [200, { ok: true, ...(await lightai.catalog()) }],
+		},
+		default: {
+			write: true,
+			run: async req => [200, { ok: true, ...(await lightai.setDefault(await readJsonBody(req))) }],
+		},
+	};
+	async function handleMediaApi(op, req, res) {
+		const reply = (code, body) => { res.writeHead(code, JSON_HEADERS); res.end(JSON.stringify(body)); };
+		const entry = Object.prototype.hasOwnProperty.call(mediaOps, op) ? mediaOps[op] : undefined;
+		if (!entry) {
+			reply(404, { ok: false, error: `未知操作：${op}` });
+			return;
+		}
+		if (entry.write && req.method !== 'POST') {
+			reply(405, { ok: false, error: `${op} 只接受 POST`, method: String(req.method ?? '') });
+			return;
+		}
+		try {
+			const [code, body] = await entry.run(req);
+			reply(code, body);
+		} catch (e) {
+			reply(400, { ok: false, error: String(e?.message ?? e) });
+		}
+	}
+
+	async function handleLightAIApi(op, req, res) {
+		const reply = (code, body) => { res.writeHead(code, JSON_HEADERS); res.end(JSON.stringify(body)); };
+		const entry = Object.prototype.hasOwnProperty.call(lightaiOps, op) ? lightaiOps[op] : undefined;
+		if (!entry) {
+			reply(404, { ok: false, error: `未知操作：${op}` });
+			return;
+		}
+		if (entry.write && req.method !== 'POST') {
+			reply(405, { ok: false, error: `${op} 只接受 POST`, method: String(req.method ?? '') });
+			return;
+		}
+		try {
+			const [code, body] = await entry.run(req);
+			reply(code, body);
+		} catch (e) {
+			reply(400, { ok: false, error: String(e?.message ?? e) });
+		}
+	}
+
 	// P0-8: plugin-hosted page, guarded by the Host's own fence + browser auth (always on, even outside VsSaros).
 	ctx.effect(() => ctx.webServer.register({
 		kind: 'prefix',
@@ -212,6 +441,23 @@ export function apply(ctx, config = {}) {
 			if (rejected) {
 				res.writeHead(rejected, { 'content-type': 'text/plain' });
 				res.end(String(rejected));
+				return;
+			}
+			const pathname = new URL(req.url ?? '/', 'http://127.0.0.1').pathname;
+			if (pathname.startsWith(CODEBUDDY_API)) {
+				void handleCodeBuddyApi(pathname.slice(CODEBUDDY_API.length), req, res);
+				return;
+			}
+			if (pathname.startsWith(TOF_API)) {
+				void handleTofApi(pathname.slice(TOF_API.length), req, res);
+				return;
+			}
+			if (pathname.startsWith(LIGHTAI_API)) {
+				void handleLightAIApi(pathname.slice(LIGHTAI_API.length), req, res);
+				return;
+			}
+			if (pathname.startsWith(MEDIA_API)) {
+				void handleMediaApi(pathname.slice(MEDIA_API.length), req, res);
 				return;
 			}
 			res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
@@ -318,11 +564,16 @@ export function apply(ctx, config = {}) {
 	//   `VSSAROS_TOF_TICKET_DSH`（见 tof.js）⇒ 两条路不互相覆盖；读取时按"本地自登 > IDE 同步"取 ✓。
 	// ⚠ **票据绝不出现在工具回执里**（回执会进模型上下文与页面 ⇒ 等同下发页面 ✗）——投影只有工号/姓名/团队 ✓。
 	// ⚠ 这一段放在 `pipe/token` 早退**之前**：dsh 独立跑时没有管道，登录能力也必须可用 ✓。
+	// ★ 2026-10-22（用户："登录也转移到 dsh 侧实现，ide 侧仅读取状态"）：登录态一变就通知 IDE
+	//   （反向方法 `tof.changed`，主进程就地转给渲染进程）⇒ IDE 的 TofAuthService 立刻重读，不必轮询 ✓。
+	//   通知函数在下面管道段里才有（要 IDE 客户端）⇒ 这里先放一个晚绑定的钩子。
+	let notifyTofChanged = () => { };
 	const tofService = createTofService({
 		credentials: ctx.credentials,
 		ideCredentialRef: TOF_CREDENTIAL_REF,
 		config: (config && typeof config.tof === 'object' && config.tof) ? config.tof : {},
 		log: line => console.log(line),
+		onChange: why => notifyTofChanged(why),
 	});
 	ctx.provide('vssarosTof', tofService);
 	for (const definition of tofToolDefinitions(tofService)) {
@@ -450,6 +701,35 @@ export function apply(ctx, config = {}) {
 		enumerable: false,
 	});
 	ctx.provide('vssarosBridge', bridgeService);
+	// CodeBuddy 路由的 baseURL 走 IDE 主进程的**计费代理**（积分 chip 的数据源，见 IDE 侧 dshCreditProxy.ts）：
+	// 反向方法 `credit.route` 让主进程登记"路由 → 真实网关"并回代理地址。代理端口固定 + secret 落盘 ⇒
+	// 跨重启地址不变 ⇒ profile 不会因此反复重写 ✓。
+	//   · 没有 IDE 客户端时沿用**上一次拿到的代理地址**（IDE 一断就改回直连 ⇒ 每次进出都重写 profile ✗）；
+	//   · 从没拿到过 / 老 IDE 不认这个方法 ⇒ 直连（宁可这一轮没有积分，也不能让模型接入断掉）✓。
+	let lastProxiedCodeBuddyURL;
+	codebuddy.setBaseURLResolver(async real => {
+		if (clients.size === 0) {
+			return lastProxiedCodeBuddyURL ?? real;
+		}
+		try {
+			const r = await callIDE('credit.route', { route: CODEBUDDY_ROUTE, baseURL: real }, { timeoutMs: 5_000 });
+			if (typeof r?.baseURL === 'string' && r.baseURL) {
+				lastProxiedCodeBuddyURL = r.baseURL;
+				return r.baseURL;
+			}
+		} catch (e) {
+			console.log(`[vssaros-bridge] credit.route 不可用（按直连写 CodeBuddy 路由，本轮积分不可见）：${String(e?.message ?? e).slice(0, 160)}`);
+		}
+		return lastProxiedCodeBuddyURL ?? real;
+	});
+	// 企业身份变化 ⇒ 通知**每个**已注册的 IDE（2026-10-22）：反向方法 `tof.changed`，主进程就地转给渲染进程，
+	// 渲染进程的 TofAuthService 立刻经 `tof.status` / `tof.ticket` 重读（通知里**不带票据**）✓。
+	// 老 IDE 不认这个方法 ⇒ 反向调用被拒 ⇒ 吞掉（它们本来就不靠这条路）✓。
+	notifyTofChanged = why => {
+		for (const info of clients.values()) {
+			callIDE('tof.changed', { reason: String(why ?? '') }, { timeoutMs: 5_000, instanceId: info.instanceId }).catch(() => undefined);
+		}
+	};
 	reverseReady = true;
 	const hello = () => {
 		const origin = `http://127.0.0.1:${ctx.webServer.port}`;
@@ -542,6 +822,9 @@ export function apply(ctx, config = {}) {
 					}
 						noteClients();
 						send({ id: req.id, result: hello() });
+						// 有 IDE 客户端了 ⇒ 可以拿计费代理地址 ⇒ 立刻同步一次 CodeBuddy 路由（也顺带在主进程登记代理路由：
+						// 主进程的路由表只在内存里，App 重启后不登记一次，走代理的请求会 502 ✗）。
+						void codebuddy.syncRoute('client-register').catch(() => undefined);
 						break;
 					}
 					case 'host.ping':
@@ -778,12 +1061,73 @@ export function apply(ctx, config = {}) {
 							// 登出：清掉 dsh 侧那份（`unset` 缺席时是 no-op ⇒ 幂等 ✓）
 							const before = await credentials.describe(ref);
 							await credentials.unset(ref);
+							tofService.invalidate();
 							return { signedIn: false, ref, changed: before.configured === true };
 						}
 						await credentials.set(ref, ticket);
+						tofService.invalidate();
 						return { signedIn: true, ref, changed: true };
 					};
-					run().then(result => send({ id: req.id, result }), e => send({ id: req.id, error: { code: -32000, message: String(e?.message ?? e) } }));
+					const p0 = req.params ?? {};
+					// 2026-10-22：用户在 dsh 侧**主动登出**过 ⇒ 拒收 IDE 推来的票（IDE 刚启动、还没认出"dsh 持有身份"时，
+					//   会按老路把旧扩展里的票推过来 ⇒ 不拦就"登出不掉" ✗）。用户在 dsh 侧再登录才撤标记 ✓。
+					const guarded = async () => {
+						if (typeof p0.ticket === 'string' && (await tofService.status()).signedOutByUser === true) {
+							return { signedIn: false, ref: TOF_CREDENTIAL_REF, changed: false, ignored: 'signed-out-by-user' };
+						}
+						return run();
+					};
+					guarded().then(result => send({ id: req.id, result }), e => send({ id: req.id, error: { code: -32000, message: String(e?.message ?? e) } }));
+					break;
+				}
+				// ── 企业身份由 dsh 侧持有（2026-10-22，用户："登录也转移到 dsh 侧实现，ide 侧仅读取状态"）──────────
+				// IDE 的 TofAuthService 在 Host 认这几条方法时**只读** dsh 的状态；IDE 里的 9 个登录入口都经它交给这里登录。
+				case 'tof.status': {
+					// 状态投影（**没有票据**）；`fresh` ⇒ 跳过 60s 缓存重查网关
+					const p = req.params ?? {};
+					tofService.status({ fresh: p.fresh === true }).then(result => send({ id: req.id, result }), e => send({ id: req.id, error: { code: -32000, message: String(e?.message ?? e) } }));
+					break;
+				}
+				case 'tof.signin': {
+					// 开系统浏览器登录（最长 ~3 分钟）——回执等登录完成才发；并发与页面 HTTP 登录共用同一次 ✓
+					tofService.signIn().then(result => send({ id: req.id, result }), e => send({ id: req.id, error: { code: -32000, message: String(e?.message ?? e) } }));
+					break;
+				}
+				case 'tof.signout': {
+					// IDE 的「退出登录」= 用户主动登出 ⇒ 两份票都清 + 记标记（IDE 不再把旧扩展里的票迁回来）✓
+					tofService.signOut({ all: true, byUser: true }).then(result => send({ id: req.id, result }), e => send({ id: req.id, error: { code: -32000, message: String(e?.message ?? e) } }));
+					break;
+				}
+				case 'tof.ticket': {
+					// 给 IDE 取票（商城 JWT 兑换要它）。⚠ 票据只经本机命名管道到 IDE 主进程，**绝不**进页面 / 工具回执 ✓
+					tofService.ticket().then(r => send({ id: req.id, result: { ticket: r.ticket ?? null, source: r.source } }), e => send({ id: req.id, error: { code: -32000, message: String(e?.message ?? e) } }));
+					break;
+				}
+				case 'codebuddy.status': {
+					// IDE → Host：查 dsh 侧 CodeBuddy 登录态（**不含 token**）。IDE 用它决定要不要做一次性迁移。
+					codebuddy.status().then(result => send({ id: req.id, result }), e => send({ id: req.id, error: { code: -32000, message: String(e?.message ?? e) } }));
+					break;
+				}
+				case 'codebuddy.import': {
+					// IDE → Host：把 IDE 扩展里的 CodeBuddy 登录态**一次性**迁过来（过渡期；dsh 侧已登录时不覆盖）。
+					// token 只经本机命名管道、落 dsh 凭据存储；回执只有状态投影 ✓。
+					const p = req.params ?? {};
+					codebuddy.importSession({ accessToken: p.accessToken, refreshToken: p.refreshToken, expiresAt: p.expiresAt })
+						.then(async r => send({ id: req.id, result: { ...r, status: await codebuddy.status() } }),
+							e => send({ id: req.id, error: { code: -32000, message: String(e?.message ?? e) } }));
+					break;
+				}
+				case 'lightai.status': {
+					// IDE → Host：dsh 侧 LightAI 登录态（**无 cookie 值**）。IDE 用它判断要不要做一次性迁移（2026-10-22）。
+					lightai.status().then(result => send({ id: req.id, result }), e => send({ id: req.id, error: { code: -32000, message: String(e?.message ?? e) } }));
+					break;
+				}
+				case 'lightai.import': {
+					// IDE → Host：把 IDE 扩展 settings 里的 LightAI cookie **一次性**迁过来（dsh 侧已登录 / 用户主动登出过 ⇒ 不导）。
+					// cookie 只经本机命名管道、落 dsh 凭据存储；回执只有"导没导"✓。
+					const p = req.params ?? {};
+					lightai.importSession({ cookie: p.cookie, userId: p.userId })
+						.then(result => send({ id: req.id, result }), e => send({ id: req.id, error: { code: -32000, message: String(e?.message ?? e) } }));
 					break;
 				}
 				case 'credit.record': {
@@ -826,8 +1170,10 @@ export function apply(ctx, config = {}) {
 							const credList = Array.isArray(params.credentials) ? params.credentials : [];
 							const entries = Array.isArray(params.providers) ? params.providers : [];
 							// 凭证先就位（profile 的 apiKeyEnv 按请求解析引用——先写凭证再挂路由）。
+							// ⚠ dsh 侧自持路由用到的凭据**不覆盖**（dsh 刚刷新过的 token 会被 IDE 手里的旧值盖掉 ✗）。
+							const ownedRefs = new Set(entries.filter(p => p && DSH_OWNED_ROUTES.has(p.route) && p.credentialRef).map(p => p.credentialRef));
 							for (const c of credList) {
-								if (c && typeof c.ref === 'string' && typeof c.value === 'string') {
+								if (c && typeof c.ref === 'string' && typeof c.value === 'string' && !ownedRefs.has(c.ref)) {
 									await credentials.set(c.ref, c.value);
 								}
 							}
@@ -839,23 +1185,19 @@ export function apply(ctx, config = {}) {
 							}
 							step.describeMs = Date.now() - tDescribe;
 							const current = (desc.value && typeof desc.value === 'object' ? desc.value.providers : undefined) ?? {};
+							// ★ 2026-10-22：**dsh 侧自持**的路由（`DSH_OWNED_ROUTES`，目前是 CodeBuddy）一律不碰 ——
+							//   负载里带了也忽略（IDE 旧版/过渡期仍可能发）、它的凭据也不覆盖（dsh 侧刷新过的 token 会被旧值盖掉 ✗）。
+							const ownedSkipped = entries.filter(p => p && DSH_OWNED_ROUTES.has(p.route)).map(p => p.route);
+							if (ownedSkipped.length > 0) {
+								console.log(`[vssaros-bridge] providers.sync: 忽略 dsh 侧自持路由 ${ownedSkipped.join(', ')}（由 Host 自己登录/维护）`);
+							}
 							const ours = {};
 							const reasoningNotes = [];
 							for (const p of entries) {
-								const models = (p.models ?? []).map(m => ({ id: m.id, name: m.name ?? m.id, ...(m.reasoning ? { reasoningEfforts: REASONING_EFFORTS } : {}) }));
-								const routeReasoning = routeReasoningDefault(p.models ?? []);
-								ours[p.route] = {
-									api: p.api,
-									baseURL: p.baseURL,
-									displayName: p.displayName,
-									models,
-									// 路由级默认档位（用户没选档位时的取值）。见 routeReasoningDefault 的守卫说明：
-									// 只有**全体模型都支持**才写，否则会给非推理模型开出一条必抛错的请求路径。
-									...(routeReasoning ? { reasoning: routeReasoning } : {}),
-									...(p.credentialRef ? { apiKeyEnv: p.credentialRef } : {}),
-									// 额外请求头（如 codebuddy 网关的 X-IDE-* 身份头；pi-ai profile 原生支持 headers 字段）。
-									...(p.headers && typeof p.headers === 'object' && Object.keys(p.headers).length ? { headers: p.headers } : {}),
-								};
+								if (!p || DSH_OWNED_ROUTES.has(p.route)) { continue; }
+								// 画像构造与比对见 ./providerProfile.js（与 dsh 侧自持 provider 共用一份 ⇒ 两边写出的画像同形）。
+								ours[p.route] = buildRouteProfile(p);
+								const routeReasoning = ours[p.route].reasoning;
 								const total = (p.models ?? []).length;
 								const reasoned = (p.models ?? []).filter(m => m && m.reasoning === true).length;
 								reasoningNotes.push(routeReasoning
@@ -863,65 +1205,16 @@ export function apply(ctx, config = {}) {
 									: `${p.route}=跳过(${reasoned}/${total} 支持推理)`);
 							}
 							if (reasoningNotes.length > 0) {
-								// 进 Host 日志：一眼看清默认档位写了没、为什么没写。
-								// **值没变就不重复打**（见 `lastRouteReasoningLog` 的注释）：sync 每轮都跑，
-								// 原先这行会把日志刷满，排查时完全没法用 ✗。
+								// 进 Host 日志：一眼看清默认档位写了没、为什么没写。**值没变就不重复打**（见 `lastRouteReasoningLog`）。
 								const line = reasoningNotes.join(' ');
 								if (line !== lastRouteReasoningLog) {
 									lastRouteReasoningLog = line;
 									console.log(`[vssaros-bridge] route reasoning default: ${line}`);
 								}
 							}
-							// 幂等：语义比对（settings 会把 profile 规范化——补 input/compat/modelOverrides 等默认字段，
-							// JSON 全量比永远不等）。只比我们管理的字段；残留 vssaros- 路由也算变化。
-							const sameHeaders = (a, b) => {
-								const ae = Object.entries(a ?? {});
-								const be = Object.entries(b ?? {});
-								return ae.length === be.length && ae.every(([k, v]) => b[k] === v);
-							};
-							/**
-							 * 比较**推理能力位**（我们写的 `reasoningEfforts` 字典）是否等价。
-							 *
-							 * ⚠ 这里必须按 `reasoningEfforts` 比，不能按旧的 `reasoning: true` 比：
-							 *   ① 旧条目（我们曾写 `reasoning: true`）与新的 `reasoningEfforts` **不等价** ⇒
-							 *      会触发一次重写（正是我们要的：把历史错误键修正掉）；
-							 *   ② 若沿用旧比较式，重写后两侧永远对不上 ⇒ **每次 sync 都重写 profile**（幂等性坏掉）。
-							 */
-							const sameReasoning = (want, got) => {
-								const a = want.reasoningEfforts;
-								const b = got && typeof got === 'object' ? got.reasoningEfforts : undefined;
-								if (a === undefined && b === undefined) { return true; }
-								if (!a || !b || typeof b !== 'object') { return false; }
-								const keys = Object.keys(a);
-								return keys.length === Object.keys(b).length && keys.every(k => b[k] === a[k]);
-							};
-							// ⚠ 2026-10-15 改写成逐条判定（**返回布尔完全不变**）——因为实测**每次启动都 changed=true**
-							//   ⇒ 每次首启都白付一次 `settings.mutate`（= 整份 profile 热重组，本机实测 ~20s）。
-							//   要修"为什么每次都重写"必须先看见**是哪个字段在漂**：`why` 收第一个不同的字段名。
-							// baseURL 漂移时要把**值**（脱敏：代理 secret 段打码）带出来——
-							// 2026-10-15 现场：字段名只知道"在漂"，看不到漂成什么，排查多走一轮。
-							const redactUrl = u => String(u ?? '').replace(/(\/r\/)[^/]+/, '$1***');
-							const sameProfile = (want, got, why) => {
-								const no = f => { why?.push(f); return false; };
-								if (!got || typeof got !== 'object') { return no('route-absent'); }
-								if (got.api !== want.api) { return no('api'); }
-								if (got.baseURL !== want.baseURL) { return no(`baseURL ${redactUrl(got.baseURL)} → ${redactUrl(want.baseURL)}`); }
-								if (got.displayName !== want.displayName) { return no('displayName'); }
-								// 路由级默认档位也要参与比对：漏比会导致"该写没写/该改没改"永远不收敛（幂等性或正确性二选一坏掉）。
-								if ((got.reasoning ?? undefined) !== (want.reasoning ?? undefined)) { return no('reasoning'); }
-								if ((got.apiKeyEnv ?? undefined) !== (want.apiKeyEnv ?? undefined)) { return no('apiKeyEnv'); }
-								if (!sameHeaders(want.headers, got.headers)) { return no('headers'); }
-								if (!Array.isArray(got.models) || got.models.length !== want.models.length) { return no('models.length'); }
-								for (let i = 0; i < want.models.length; i++) {
-									const wm = want.models[i];
-									const gm = got.models[i];
-									if (!gm || gm.id !== wm.id) { return no(`models[${i}].id`); }
-									if ((gm.name ?? gm.id) !== (wm.name ?? wm.id)) { return no(`models[${i}].name`); }
-									if (!sameReasoning(wm, gm)) { return no(`models[${i}].reasoningEfforts`); }
-								}
-								return true;
-							};
-							const stale = Object.keys(current).filter(k => k.startsWith('vssaros-') && !ours[k]);
+							// 幂等：语义比对（`sameProfile`，见 ./providerProfile.js）。只比我们管理的字段；残留 vssaros- 路由也算变化
+							// —— 但 **dsh 侧自持路由不算残留**（它本来就不在负载里）✓。
+							const stale = Object.keys(current).filter(k => k.startsWith('vssaros-') && !ours[k] && !DSH_OWNED_ROUTES.has(k));
 							const diffNotes = stale.map(k => `${k}:stale`);
 							for (const k of Object.keys(ours)) {
 								const why = [];
@@ -934,7 +1227,8 @@ export function apply(ctx, config = {}) {
 							if (changed) {
 								const merged = {};
 								for (const [k, v] of Object.entries(current)) {
-									if (!k.startsWith('vssaros-')) {
+									// 非 vssaros- 条目（用户自加）原样保留；**dsh 侧自持路由也原样保留**（不在负载里 ≠ 该删）✓
+									if (!k.startsWith('vssaros-') || DSH_OWNED_ROUTES.has(k)) {
 										merged[k] = v;
 									}
 								}
@@ -955,59 +1249,17 @@ export function apply(ctx, config = {}) {
 							}
 							step.mutateMs = Date.now() - tMutate;
 							const tDefault = Date.now();
-							// ─── 默认模型对齐 ───────────────────────────────────────────────
-							// 现象：新会话（首页）的模型选择器仍显示官方 `deepseek-official/deepseek-flash`。
-							// 根因：默认值由 `agent-default-model` 插件的 Config 提供，而官方 bundle 里写死了
-							// provider/model（`@deepseek-ai/dsh-base/cordis.patch.yml`：- id: agent-default-model
-							// → config: { provider: deepseek-official, model: deepseek-flash }）。在 VsSaros 里
-							// 那个 provider **没有凭据**（官方首启引导已被我们关掉，凭据 UX 归 VsSaros），
-							// 所以选择器默认停在一个用不了的官方模型上。
-							//
-							// 这里在**路由已就位之后**把它改写成我们自己的首选路由/模型：
-							//   · 首选 `vssaros-codebuddy`（用户登录的聊天 provider），否则取第一条有模型的我们的路由；
-							//   · **只**在"当前默认仍是官方 deepseek-official"或"当前默认指向我们已失效的路由"时改写，
-							//     用户自己选过的（其它 provider / 我们仍在线上的路由）一律不动；
-							//     且官方 provider **仍可用**（用户自己配了 Key）时也不动；
-							//   · 走官方 `agentDefaultModel.saveSelection()`：它经 `configEditor` 写 profile patch
-							//     （= 我们写 llm-pi-ai 路由的同一个文件）⇒ **跨重启保留**；
-							//   · 服务/配置编辑器缺席（换 profile、更老的 dsh）时静默跳过，绝不影响 provider 接入。
-							let defaultModelNote;
-							try {
-								const defaultModel = typeof ctx.get === 'function' ? ctx.get('agentDefaultModel') : undefined;
-								if (defaultModel?.currentSelection && defaultModel?.saveSelection) {
-									const current = defaultModel.currentSelection();
-									const routeIds = Object.keys(ours);
-									// "我们的路由是否仍在线"必须看 `llm.listProviders()`（**真实在线**路由），
-									// **不能**看本次负载的 `ours`：payload 可能没带全（某个源本次被摘掉/还没同步），
-									// 用 payload 判定会把"用户自己选中的、仍然在线"的 vssaros- 路由误判成已失效而覆盖
-									// （smoke 用例 ④ 实测踩到：payload 只带 codebuddy 时，选中的 vssaros-ollama 被改写）。
-									const liveRoutes = (llm?.listProviders?.() ?? []).map(p => String(p?.provider ?? p?.id ?? p)).filter(r => r.startsWith('vssaros-'));
-									const preferred = [routeIds.includes('vssaros-codebuddy') ? 'vssaros-codebuddy' : undefined, ...routeIds]
-										.filter(r => r !== undefined)
-										.map(route => ({ route, models: ours[route].models ?? [] }))
-										.find(c => c.models.length > 0);
-									const untouchedOfficialDefault = current?.provider === 'deepseek-official';
-									const staleOwnRoute = typeof current?.provider === 'string' && current.provider.startsWith('vssaros-') && !liveRoutes.includes(current.provider);
-									// 官方 provider **仍可用**（自己列表里有模型 = 用户配过 DeepSeek 凭据，覆盖层因此没把它隐藏）
-									// ⇒ 尊重其默认值，不动。只修"默认停在一个**用不了**的官方模型上"这个 bug。
-									let officialUsable = false;
-									if (untouchedOfficialDefault) {
-										try {
-											officialUsable = (await llm.listModels('deepseek-official')).length > 0;
-										} catch {
-											officialUsable = false;
-										}
-									}
-									if (preferred && !officialUsable && (untouchedOfficialDefault || staleOwnRoute)) {
-										// 注意：`saveSelection` 在**没有 configuration editor** 时是 no-op（官方 README 明说），
-										// 所以这里只记"请求改写"，不宣称已生效（实时 config ref 也是异步落定的）。
-										await defaultModel.saveSelection({ provider: preferred.route, model: preferred.models[0].id });
-										defaultModelNote = `请求改写 ${current.provider}/${current.model} -> ${preferred.route}/${preferred.models[0].id}`;
-									}
+							// ─── 默认模型对齐（规则见 apply() 开头的 `alignDefaultModel`，2026-10-22 抽出共用）────
+							// 候选 = 本次负载的路由 + **仍在 profile 里的 dsh 侧自持路由**（CodeBuddy 不在负载里，
+							// 但它仍是首选 ⇒ 不并进来的话默认模型会落到别的路由上 ✗）。
+							const candidates = {};
+							for (const k of Object.keys(current)) {
+								if (DSH_OWNED_ROUTES.has(k) && current[k] && typeof current[k] === 'object') {
+									candidates[k] = current[k];
 								}
-							} catch (e) {
-								defaultModelNote = `ERR ${String(e?.message ?? e).slice(0, 160)}`;
 							}
+							Object.assign(candidates, ours);
+							const defaultModelNote = await alignDefaultModel(candidates);
 							if (defaultModelNote) {
 								// 进 Host 日志（supervisor 会把它收进 dsh 日志面板）：重启后一眼能看到默认值有没有被改。
 								console.log(`[vssaros-bridge] default model: ${defaultModelNote}`);

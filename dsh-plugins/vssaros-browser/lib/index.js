@@ -63,6 +63,7 @@ import { readStorageStore, writeStorageStore } from './core/storageStore.js';
 import { clampEvaluateTimeout, expressionPreview, formatEvaluateResult, normalizeExpression } from './core/evaluateResult.js';
 import { CdpHost } from './core/host.js';
 import { createHostInvoker } from './core/invoker.js';
+import { createLoginSessions } from './core/loginSession.js';
 import { findInSnapshot, formatFindResult, normalizeFindQuery } from './core/findInSnapshot.js';
 import { SETTLE_DEFAULT_MS, SETTLE_MAX_MS, normalizeWaitConditions, settleAfterAction, waitForCondition } from './core/interaction.js';
 import { formatLoginVerdict, loginGuidanceText } from './core/loginProbe.js';
@@ -302,11 +303,26 @@ export function apply(ctx, config = {}) {
 	};
 	const logger = { info: log, warn: log };
 	const host = new CdpHost({ port, launchDedicated, headless, homeDir, logger });
+	const invoke = createHostInvoker(host);
 	/**
 	 * **无会话绑定**的客户端：真正的调用一律经 `baseClient.forSession(sessionKey)` 取绑定视图
 	 * （见 `execute`）—— 这是多会话互不影响的入口。
 	 */
-	const baseClient = new BrowserCdpClient(createHostInvoker(host), logger);
+	const baseClient = new BrowserCdpClient(invoke, logger);
+	/**
+	 * 登录会话（2026-10-22）：给**同 Host 的其他插件**用（LightAI 在 dsh 侧登录 = 开登录页 + 读会话 cookie）。
+	 * 只认登记过的站点与 cookie 名、不经模型可达的工具面 ⇒ 不受 `allowCookieIO` / 审批约束（见 `core/loginSession.js`）。
+	 */
+	const loginSession = createLoginSessions({
+		baseClient,
+		browserCommand: async (method, params) => {
+			const res = await invoke({ op: 'command', method, params });
+			if (!res?.ok) { throw new Error(res?.error ?? 'browser CDP call failed'); }
+			return res.result;
+		},
+		headless,
+		log,
+	});
 
 	// ★ **让路标记**：`vssaros-ide` 会检查这个服务在不在，在就跳过它自己那套 `browser`（见 README 4.69 Step 1）。
 	//   两个包同时注册同名工具会让**整条 entry 失效**（不是后者覆盖）⇒ 必须靠它保证任何时刻只有一个。
@@ -320,6 +336,8 @@ export function apply(ctx, config = {}) {
 		launchDedicated,
 		/** 默认**免问**的阅读类动作（诊断/守卫读；见文件头"确认的分档"②）。 */
 		readingOps: READING_OPS,
+		/** 登录会话（开登录页 / 读登记站点的会话 cookie / 关 tab）——见 `core/loginSession.js`。 */
+		loginSession,
 	});
 
 	/**

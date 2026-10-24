@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>知识库树 · Obsidian 风格预览</title>
+<style>
+	:root{
+		--bg:#252526; --fg:#dcddde; --dim:#b9bbbe; --faint:#8b8d91;
+		--guide:rgba(127,127,127,.2); --guide-last:rgba(127,127,127,.35);
+		--hover:rgba(127,127,127,.09); --sel:rgba(127,127,127,.16);
+	}
+	body{margin:0;padding:20px;background:#1e1e1e;color:var(--fg);
+		font:13px/1.5 -apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif}
+	h1{font-size:15px;margin:0 0 4px;font-weight:600}
+	.sub{color:var(--faint);font-size:12px;margin-bottom:14px}
+	.panel{width:330px;background:var(--bg);border:1px solid #333;border-radius:6px;overflow:hidden}
+	.titlebar{display:flex;align-items:center;gap:8px;height:35px;padding:0 10px;border-bottom:1px solid #3c3c3c;font-size:12px;font-weight:600}
+	/* ── 节头（Obsidian：11.5px/600 灰字，箭头在右）── */
+	.sec{display:flex;align-items:center;gap:6px;height:26px;padding:0 8px;font-size:11.5px;font-weight:600;color:var(--dim);cursor:pointer;user-select:none}
+	.sec .n{font-weight:400;font-size:10.5px;color:var(--faint);opacity:.8}
+	.sec .sp{flex:1}
+	.sec .chev{width:12px;text-align:center;font-size:9px;color:var(--faint);transform:rotate(90deg);transition:transform .12s ease}
+	.sec.closed .chev{transform:none}
+	/* ── 树行（Obsidian：27px / 13px / 缩进导引线 / 箭头在右）── */
+	.row{display:flex;align-items:stretch;height:27px;padding-right:8px;cursor:pointer;font-size:13px;color:var(--fg)}
+	.row.folder{color:var(--dim)}
+	.row:hover{background:var(--hover)}
+	.row.sel{background:var(--sel);color:#fff}
+	.guide{width:16px;flex:0 0 16px;align-self:stretch;border-left:1px solid var(--guide)}
+	.guide.last{border-left-color:var(--guide-last)}
+	.body{display:flex;align-items:center;gap:6px;flex:1;min-width:0;padding-left:4px}
+	.d0 .body{padding-left:10px}
+	.dot{width:4px;height:4px;border-radius:50%;background:var(--faint);flex:0 0 4px;opacity:.8}
+	.name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+	.meta{margin-left:auto;font-size:10.5px;color:var(--faint);font-variant-numeric:tabular-nums;opacity:.75;padding-left:8px}
+	.chev{display:flex;align-items:center;justify-content:center;width:16px;flex:0 0 16px;font-size:9px;color:var(--faint);transform:rotate(90deg);transition:transform .12s ease}
+	.row.closed .chev{transform:none}
+	/* 大小/子项数：默认隐藏，hover 或选中才淡入（与组件的 .kb-meta 规则一致） */
+	.meta{opacity:0;transition:opacity .1s ease}
+	.row:hover .meta,.row.sel .meta{opacity:.85}
+	/* .md 的极小文档字形 */
+	.mdi{position:relative;width:9px;height:11px;flex:0 0 9px;border:1px solid currentColor;border-radius:1.5px;opacity:.6}.mdi::after{content:'';position:absolute;right:-1px;top:-1px;width:4px;height:4px;border-left:1px solid currentColor;border-bottom:1px solid currentColor;background:var(--bg)}
+	.hint{margin-top:14px;font-size:11.5px;color:var(--faint);line-height:1.9}
+	.hint b{color:var(--dim);font-weight:600}
+</style>
+</head>
+<body>
+
+<h1>知识库树 · Obsidian 风格</h1>
+<div class="sub">与 <code>index.tsx</code> 里刚改的 TreeRow / SectionHeader 同一组数值（27px 行高、13px 字、16px 缩进导引、箭头在右、低对比选中）。</div>
+
+<div class="panel">
+	<div class="titlebar">知识库</div>
+
+	<div class="sec"><span>库</span><span class="n">129</span><span class="sp"></span><span class="chev">▸</span></div>
+
+	<div class="row folder"><div class="body d0"><span class="name">方法</span><span class="meta">15</span></div><span class="chev">▸</span></div>
+	<div class="row"><span class="guide last"></span><div class="body"><span class="mdi"></span><span class="name">overview</span><span class="meta">587 B</span></div></div>
+	<div class="row"><span class="guide last"></span><div class="body"><span class="dot"></span><span class="name">材质参考手册.pdf</span><span class="meta">2.4 MB</span></div></div>
+	<div class="row"><span class="guide last"></span><div class="body"><span class="dot"></span><span class="name">UI 优化篇.canvas</span><span class="meta">3.6 KB</span></div></div>
+
+	<div class="row folder"><div class="body d0"><span class="name">概念</span><span class="meta">26</span></div><span class="chev">▸</span></div>
+	<div class="row folder"><div class="body d0"><span class="name">实体</span><span class="meta">31</span></div><span class="chev">▸</span></div>
+
+	<div class="sec"><span>笔记</span><span class="n">101</span><span class="sp"></span><span class="chev">▸</span></div>
+
+	<div class="row folder"><div class="body d0"><span class="name">01_学习</span><span class="meta">94</span></div><span class="chev">▸</span></div>
+	<div class="row folder"><span class="guide last"></span><div class="body"><span class="name">AI_Agent</span><span class="meta">20</span></div><span class="chev">▸</span></div>
+	<div class="row sel"><span class="guide"></span><span class="guide last"></span><div class="body"><span class="mdi"></span><span class="name">DSH 专题</span><span class="meta">21.0 KB</span></div></div>
+	<div class="row"><span class="guide"></span><span class="guide last"></span><div class="body"><span class="mdi"></span><span class="name">05 DSH 框架原理</span><span class="meta">16.0 KB</span></div></div>
+	<div class="row"><span class="guide"></span><span class="guide last"></span><div class="body"><span class="mdi"></span><span class="name">05a 框架原理（讲懂版）</span><span class="meta">27.8 KB</span></div></div>
+	<div class="row"><span class="guide last"></span><div class="body"><span class="name">UnrealEngine</span><span class="meta">45</span></div><span class="chev">▸</span></div>
+
+	<div class="sec closed"><span>标签分类</span><span class="n">198</span><span class="sp"></span><span class="chev">▸</span></div>
+	<div class="sec closed"><span>双链</span><span class="sp"></span><span class="chev">▸</span></div>
+</div>
+
+<div class="hint">
+	<b>从 VS Code 风改过来的四处：</b><br>
+	① 行高 24 → <b>27</b>，字号 12.5 → <b>13</b><br>
+	② 缩进由 padding 改为<b>每层一条 1px 竖导引线</b>（越深越淡；最后一层略深）<br>
+	③ 折叠箭头从<b>左侧移到右侧</b>，且只在目录行出现，展开时旋转 90°<br>
+	④ 选中态由整行高亮蓝改为<b>低对比灰底 + 正常前景</b>；目录文字比文件淡一档<br>
+	⑤ 节头不再做大写变形与字距，改 11.5px/600 灰字，箭头同样在右
+</div>
+
+</body>
+</html>

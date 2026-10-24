@@ -12,22 +12,76 @@
 /** 能力表缓存时长。 */
 const CACHE_TTL_MS = 60_000;
 
+// ── LightAI 直连（2026-10-22，用户："让 dsh 里生图直接用 LightAI，不再绕道 IDE"）──────────────────
+//   bridge 插件提供 `vssarosLightAI`（建任务 → 轮询 → 取产物都在 Host 里）⇒ 选中 LightAI 时**不经 IDE**。
+
+/** 指 LightAI 的 provider id：dsh 直连用 `lightai`；`lm:lightai` 是 IDE 侧那个注册名（照样走直连）。 */
+export const LIGHTAI_PROVIDER_IDS = new Set(['lightai', 'lm:lightai']);
+export const LIGHTAI_PROVIDER_ID = 'lightai';
+
+/**
+ * 这一次生图走哪条路（纯函数 ⇒ 守卫直接断言）。
+ *   · 指定了 provider ⇒ 是 LightAI 就直连，否则交给 IDE；
+ *   · 只指定了 model ⇒ `picture_*`（LightAI 的模型 id 形状）直连，其它交给 IDE；
+ *   · 都没指定 ⇒ dsh 侧 LightAI 已登录就直连，否则交给 IDE（老行为）。
+ * @returns {'lightai' | 'ide'}
+ */
+export function pickImageRoute(target, { lightaiReady = false } = {}) {
+	const provider = String(target?.provider ?? '').trim();
+	const model = String(target?.model ?? '').trim();
+	if (provider) { return LIGHTAI_PROVIDER_IDS.has(provider) ? 'lightai' : 'ide'; }
+	if (model) { return /^picture_/.test(model) ? 'lightai' : 'ide'; }
+	return lightaiReady ? 'lightai' : 'ide';
+}
+
+/** dsh 侧 LightAI 是否可直接生图（服务在 + 已登录）。读不到状态 ⇒ 当不可用。 */
+export async function lightaiReady(state) {
+	const service = state?.lightai;
+	if (!service || typeof service.status !== 'function') { return false; }
+	try {
+		return (await service.status())?.signedIn === true;
+	} catch {
+		return false;
+	}
+}
+
+/** 解析路由（含"没指定时看 LightAI 登录没"）。 */
+export async function resolveImageRoute(state, target) {
+	const provider = String(target?.provider ?? '').trim();
+	const model = String(target?.model ?? '').trim();
+	if (provider || model) { return pickImageRoute(target); }
+	return pickImageRoute(target, { lightaiReady: await lightaiReady(state) });
+}
+
+/** LightAI 在能力表里的那一项（已登录才有）。 */
+async function lightaiProviderEntry(state) {
+	if (!(await lightaiReady(state))) { return undefined; }
+	try {
+		const { models } = await state.lightai.models('image');
+		if (!models || models.length === 0) { return undefined; }
+		return {
+			id: LIGHTAI_PROVIDER_ID,
+			name: 'LightAI（dsh 直连）',
+			models: models.map(m => ({ id: m.id, ...(m.name ? { name: m.name } : {}) })),
+			...(Array.isArray(state.lightai.ratios) && state.lightai.ratios.length ? { ratios: [...state.lightai.ratios] } : {}),
+		};
+	} catch {
+		return undefined;
+	}
+}
+
 /**
  * 能力表缓存（读一次、缓存一会儿）。
  * @param {object} state 宿主状态（要 state.bridge 与 state.pluginName）
  */
 export function createCapabilityCache(state) {
-	let cached = undefined;
+	/** IDE 那部分（过桥，缓存 60s）。LightAI 那项每次现算（它的状态在 bridge 里另有缓存）。 */
+	let ideCached = undefined;
 	let inflight = undefined;
+	let merged = undefined;
 
-	async function load(options) {
-		const force = options?.force === true;
-		if (!force) {
-			if (cached) {
-				const age = Date.now() - cached.at;
-				if (age < CACHE_TTL_MS) { return cached; }
-			}
-		}
+	async function loadIde(force) {
+		if (!force && ideCached && Date.now() - ideCached.at < CACHE_TTL_MS) { return ideCached; }
 		// 并发调用只过桥一次（其余等同一个 promise ✓）。
 		if (inflight) { return inflight; }
 		inflight = (async () => {
@@ -44,8 +98,8 @@ export function createCapabilityCache(state) {
 				throw new Error('读图像能力表失败：' + String(reply?.error ?? reply?.text ?? 'IDE 没回'));
 			}
 			const providers = Array.isArray(reply.providers) ? reply.providers : [];
-			cached = { at: Date.now(), providers };
-			return cached;
+			ideCached = { at: Date.now(), providers };
+			return ideCached;
 		})();
 		try {
 			return await inflight;
@@ -54,9 +108,26 @@ export function createCapabilityCache(state) {
 		}
 	}
 
+	async function load(options) {
+		const force = options?.force === true;
+		const [lightai, ide] = await Promise.all([
+			lightaiProviderEntry(state),
+			loadIde(force).then(v => ({ ok: true, v }), e => ({ ok: false, e })),
+		]);
+		// IDE 读不到、LightAI 也没有 ⇒ 如实报 IDE 那边的错（老行为）；有 LightAI 就不因 IDE 不在而失败 ✓
+		if (!ide.ok && !lightai) { throw ide.e; }
+		const ideProviders = ide.ok ? ide.v.providers.filter(p => !LIGHTAI_PROVIDER_IDS.has(String(p?.id ?? ''))) : [];
+		merged = {
+			at: Date.now(),
+			providers: [...(lightai ? [lightai] : []), ...ideProviders],
+			...(!ide.ok ? { ideError: String(ide.e?.message ?? ide.e) } : {}),
+		};
+		return merged;
+	}
+
 	return {
 		load,
-		peek() { return cached; },
+		peek() { return merged; },
 	};
 }
 
@@ -68,7 +139,7 @@ export function createCapabilityCache(state) {
 export function formatCapabilities(capabilities) {
 	const providers = capabilities?.providers ?? [];
 	if (providers.length === 0) {
-		return '这台 IDE 现在**没有登记任何能生图的 provider**（能力表是空的）——先在 IDE 设置里把图像模型配好，否则生图会失败。';
+		return '现在**没有任何能生图的 provider**（能力表是空的）——在 设置 → 模型 → LightAI 登录，或在 IDE 设置里配好图像模型，否则生图会失败。';
 	}
 	const lines = [];
 	for (const provider of providers) {
@@ -84,7 +155,8 @@ export function formatCapabilities(capabilities) {
 		const title = provider?.name ? provider.name + '（' + provider.id + '）' : String(provider?.id ?? '?');
 		lines.push('- ' + title + ' — ' + parts.join('；'));
 	}
-	return '这台 IDE 能生图的 provider：\n' + lines.join('\n');
+	const ideNote = capabilities?.ideError ? '\n（IDE 侧的图像 provider 这次没读到：' + capabilities.ideError + '）' : '';
+	return '能生图的 provider（不指定 provider/model 时：LightAI 已登录就用它，否则用 IDE 侧默认那个）：\n' + lines.join('\n') + ideNote;
 }
 
 /**

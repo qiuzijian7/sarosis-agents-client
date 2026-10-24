@@ -18,7 +18,7 @@ import { bindFoundation, foundation } from './foundationRef.js';
 //   · 编辑区（不带该参数）⇒ `lib/board.js` 的**多列看板**（探针 p3-01 走的正是这条）。
 // 渲染与样式都在那两个文件里（它们各自 import `pageShell.js`）；**本文件只负责取数 + 分派路由**，
 // 免得两个表面的渲染混在一处。看板页的列口径 / 卡片视图模型 / 描述拆分都是纯函数，可被探针直接验。
-import { columnKeyForStatus, moveOutcome, renderBoardPage, resolveDrop, splitNotes, statusLabel } from './board.js';
+import { columnKeyForStatus, moveOutcome, renderBoardPage, resolveDrop, splitNotes, statusLabel, BOARD_COLUMNS, COLUMN_LIMIT, cardModel, columnTasks, columnByKey, draggableOf, MIRROR_COLUMN_OF } from './board.js';
 
 import { renderSideviewPage } from './sideview.js';
 
@@ -195,6 +195,89 @@ function renderTaskList(value) {
  * 两个表面**吃同一份数据、共用同一批锚点**（`data-vssaros-tools` / `data-registered` /
  * `data-vssaros-workspace` / 数据文件路径都在 `board.js` 的 `diagHtml` 里，只有一份实现 ⇒ 不会漂）。
  */
+/**
+ * 看板页的**一份取数**（SSR 页与 React 工作台共用，2026-10-22）。
+ *
+ * 为什么共用：两个界面各自取数 ⇒ 迟早分叉（卡片集合不一致、列计数不同、镜像卡一边有一边没有）✗。
+ */
+function collectBoardData(input) {
+	return {
+		tasks: Array.isArray(input.tasks) ? input.tasks : [],
+		missing: input.missing ?? '',
+		boards: Array.isArray(input.boards) ? input.boards : [],
+		note: input.note ?? '',
+		registeredTools: Array.isArray(input.registeredTools) ? input.registeredTools : [],
+		expectedTools: EXPECTED_TOOLS,
+		dataFile: input.dataFile ?? '',
+		workspaceId: input.workspaceId ?? '',
+		runner: input.runner === true,
+		runnerWhy: input.runnerWhy ?? 'init',
+		mirrors: Array.isArray(input.mirrors) ? input.mirrors : [],
+		mirrorsNote: input.mirrorsNote ?? '',
+	};
+}
+
+/**
+ * 看板页的 **JSON 载荷**（React 工作台用）。
+ *
+ * 形状与 SSR 页一一对应：列定义（`BOARD_COLUMNS`）＋ 卡片（`cardModel`，与页面同款投影 ✓）＋
+ * 镜像卡（只读）＋ 筛选项（看板 / 指派）＋ 自诊断事实。
+ */
+function boardPageJson(data) {
+	const all = data.tasks.filter(t => t && typeof t === 'object');
+	const statusById = new Map(all.map(t => [String(t.id ?? ''), String(t.status ?? '')]));
+	const cards = all.map(task => {
+		const model = cardModel(task, statusById);
+		return {
+			...model,
+			// `when` 是 Date ⇒ JSON 化会变 ISO 串；页面要的是"日期"文本 ⇒ 这里给两种（时间戳 + 本地日期串）
+			whenMs: model.when ? model.when.getTime() : null,
+			whenText: model.when ? model.when.toLocaleDateString('zh-CN') : '',
+			draggable: draggableOf(model),
+			column: columnKeyForStatus(model.status),
+		};
+	});
+	const mirrors = data.mirrors.map(m => ({
+		id: String(m.id ?? m.sessionId ?? ''),
+		content: String(m.content ?? ''),
+		status: String(m.status ?? ''),
+		sessionId: String(m.sessionId ?? ''),
+		sessionTitle: String(m.sessionTitle ?? ''),
+		column: MIRROR_COLUMN_OF[String(m.status ?? '')] ?? '',
+	}));
+	const boardIds = [];
+	for (const board of data.boards) { if (board?.id && !boardIds.includes(board.id)) { boardIds.push(board.id); } }
+	if (!boardIds.includes('default')) { boardIds.unshift('default'); }
+	const assignees = [...new Set(all.map(t => String(t.assigneeName ?? '')).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'zh'));
+	return {
+		columns: BOARD_COLUMNS.map(column => ({
+			key: column.key,
+			label: column.label,
+			icon: column.icon,
+			color: column.color,
+			dropStatus: column.dropStatus,
+			startCollapsed: column.startCollapsed === true,
+			limit: COLUMN_LIMIT,
+		})),
+		cards,
+		mirrors,
+		boardOptions: boardIds.map(id => ({ id, name: (data.boards.find(b => b && b.id === id) || {}).name || id })),
+		assigneeOptions: assignees,
+		total: all.length,
+		missing: data.missing,
+		note: data.note,
+		mirrorsNote: data.mirrorsNote,
+		diag: {
+			registeredTools: data.registeredTools,
+			expectedTools: data.expectedTools,
+			workspaceId: data.workspaceId,
+			dataFile: data.dataFile,
+			runner: data.runner,
+			runnerWhy: data.runnerWhy,
+		},
+	};
+}
+
 function renderPage(input) {
 	return (input.surface === 'sideview' ? renderSideviewPage : renderBoardPage)({
 		...input,
@@ -636,12 +719,9 @@ export function apply(ctx, config = {}) {
 				//   ⚠ 失败**不**影响看板本体（我们自己的 taskboard 照常渲染 ✓）。
 				const mirrorRead = await readDshTodoMirrors(config)
 					.catch(e => ({ mirrors: [], note: `读取异常：${String(e?.message ?? e)}` }));
-				// 渲染放到 writeHead 之前：渲染抛错时还能干净地回 500（顺序反了会变成"头已发出→再写头又抛
-				// →socket 被切断"，在 skills 模块上实测吃过这个亏）。200 之后真发生异常则只 end。
-				const html = renderPage({
-					surface: url.searchParams.get('surface') === 'sideview' ? 'sideview' : 'board',
-					// ⚠ 页面自己从这份数组算总数与各列计数（**只有一份**计数实现 ✓）；`total` 只服务
-					// `/api/tasks` 那条给模型读的接口 ⇒ 不往页面里传第二次（两处算同一个数早晚会漂 ✗）。
+				// ★ 2026-10-22（工作台重构）：**React 工作台与 SSR 页共用这一份取数**（`collectBoardData`）⇒
+				//   两个界面的卡片 / 计数 / 筛选口径永远一致 ✓（各写各的 ⇒ 迟早分叉 ✗）。
+				const boardData = collectBoardData({
 					tasks,
 					missing,
 					boards,
@@ -649,12 +729,36 @@ export function apply(ctx, config = {}) {
 					registeredTools: EXPECTED_TOOLS.filter(name => !!ctx.tools.get(name)),
 					dataFile: taskboardPath(config),
 					workspaceId: workspaceIdOf(config) ?? '',
-					// 自动执行状态（2026-10-17）：页面自诊断把它写成 `data-kanban-runner` ⇒ 探针/用户都看得见 ✓
 					runner: runnerState.on,
 					runnerWhy: runnerState.why,
-					// dsh 任务镜像（**只读**；`board.js` 只认 `mirrors`/`mirrorsNote` 两个键 ✓，sideview 忽略 ✓）
 					mirrors: mirrorRead.mirrors,
 					mirrorsNote: mirrorRead.note,
+				});
+				// ★ 2026-10-22（工作台重构 §5 步骤 2）：**看板的 JSON 接口**（React 工作台用；与 SSR 页共用取数 ✓）。
+				if (pathname === `${ROUTE_PREFIX}/api/page`) {
+					res.writeHead(200, JSON_HEADERS);
+					res.end(JSON.stringify({ ok: true, ...boardPageJson(boardData) }));
+					return;
+				}
+				// 渲染放到 writeHead 之前：渲染抛错时还能干净地回 500（顺序反了会变成"头已发出→再写头又抛
+				// →socket 被切断"，在 skills 模块上实测吃过这个亏）。200 之后真发生异常则只 end。
+				const html = renderPage({
+					surface: url.searchParams.get('surface') === 'sideview' ? 'sideview' : 'board',
+					// ⚠ 页面自己从这份数组算总数与各列计数（**只有一份**计数实现 ✓）；`total` 只服务
+					// `/api/tasks` 那条给模型读的接口 ⇒ 不往页面里传第二次（两处算同一个数早晚会漂 ✗）。
+					tasks: boardData.tasks,
+					missing: boardData.missing,
+					boards: boardData.boards,
+					note: boardData.note,
+					registeredTools: boardData.registeredTools,
+					dataFile: boardData.dataFile,
+					workspaceId: boardData.workspaceId,
+					// 自动执行状态（2026-10-17）：页面自诊断把它写成 `data-kanban-runner` ⇒ 探针/用户都看得见 ✓
+					runner: boardData.runner,
+					runnerWhy: boardData.runnerWhy,
+					// dsh 任务镜像（**只读**；`board.js` 只认 `mirrors`/`mirrorsNote` 两个键 ✓，sideview 忽略 ✓）
+					mirrors: boardData.mirrors,
+					mirrorsNote: boardData.mirrorsNote,
 				});
 				res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
 				res.end(html);

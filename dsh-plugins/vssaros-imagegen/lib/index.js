@@ -38,7 +38,7 @@ import { EDIT_IMAGE_TOOL, canvasToolDefinitions } from './canvasTools.js';
 import { CANVAS_RUN_TOOL, canvasGraphToolDefinitions } from './canvasGraphTools.js';
 import { registerCanvasRoutes } from './canvasRoutes.js';
 import { maybeSaveToWorkspace } from './workspaceSave.js';
-import { createCapabilityCache, fitToCapabilities, formatCapabilities } from './capabilities.js';
+import { createCapabilityCache, fitToCapabilities, formatCapabilities, resolveImageRoute } from './capabilities.js';
 import { decodeBase64, decodeDataUrl, normalizeMediaType } from './imageBytes.js';
 
 export const name = 'vssaros-imagegen';
@@ -133,46 +133,25 @@ async function generateOneImage(state, options = {}) {
 	if (!prompt) {
 		throw new Error('prompt 必填（要生成的画面描述）');
 	}
-	const bridge = state.bridge;
-	if (!bridge || typeof bridge.callIDE !== 'function') {
-		throw new Error('图像生成要经控制桥回 IDE（模型 provider 在 IDE 进程），但 vssarosBridge 不在（bridge 插件没装/没连）');
-	}
 	const size = String(options.size ?? '').trim();
 	const matched = /^(\d{2,5})\s*[x×]\s*(\d{2,5})$/.exec(size);
-	const request = {
-		op: 'generateImage',
-		prompt,
-		numImages: Number.isFinite(Number(options.numImages)) ? Math.max(1, Math.min(4, Number(options.numImages))) : 1,
-	};
-	if (matched) {
-		request.width = Number(matched[1]);
-		request.height = Number(matched[2]);
-	}
+	const numImages = Number.isFinite(Number(options.numImages)) ? Math.max(1, Math.min(4, Number(options.numImages))) : 1;
 	const model = String(options.model ?? '').trim();
-	if (model) {
-		request.modelId = model;
-	}
 	const provider = String(options.provider ?? '').trim();
-	if (provider) {
-		request.providerId = provider;
-	}
 	const quality = String(options.quality ?? '').trim();
-	if (quality) {
-		request.quality = quality;
-	}
-	const reply = await bridge.callIDE('ide.request', {
-		capability: 'media',
-		pluginId: PLUGIN_PACKAGE,
-		params: request,
-	}, { timeoutMs: IDE_TIMEOUT_MS });
-
-	if (!reply || reply.ok === false) {
-		const reason = String(reply?.error ?? reply?.text ?? 'IDE 没回（图像 provider 不可用？）');
-		throw new Error(`图像生成失败：${reason}`);
-	}
-	const rawImages = Array.isArray(reply?.images) ? reply.images : [];
-	if (rawImages.length === 0) {
-		throw new Error('图像生成失败：provider 没返回图片');
+	// ★ 2026-10-22：选中 LightAI（或没指定、而 dsh 侧 LightAI 已登录）⇒ **直接**在 Host 里建任务 / 轮询（不过桥回 IDE）
+	const route = await resolveImageRoute(state, { provider, model });
+	let rawImages;
+	let usedProvider;
+	let usedModel;
+	if (route === 'lightai') {
+		({ rawImages, usedProvider, usedModel } = await requestLightAIImages(state, {
+			prompt, numImages, model, quality,
+			...(matched ? { width: Number(matched[1]), height: Number(matched[2]) } : {}),
+			signal: options.signal,
+		}));
+	} else {
+		({ rawImages, usedProvider, usedModel } = await requestIdeImages(state, { prompt, numImages, matched, model, provider, quality }));
 	}
 	const attachments = state.attachments;
 	if (!attachments || typeof attachments.saveImage !== 'function') {
@@ -182,10 +161,6 @@ async function generateOneImage(state, options = {}) {
 	const failures = [];
 	const savedPaths = [];
 	const saveFailures = [];
-	// ★ 四批⑪：把"这次到底是哪家出的"记进账本 ⇒ 画廊能按 provider 筛。
-	//   IDE 回里带了 provider/model 就用它（更准）；没带才回落请求参数。
-	const usedProvider = String(reply?.providerId ?? reply?.provider ?? provider ?? '').trim();
-	const usedModel = String(reply?.modelId ?? reply?.model ?? model ?? '').trim();
 	for (const [index, raw] of rawImages.entries()) {
 		try {
 			const normalized = await normalizeImage(raw);
@@ -202,8 +177,12 @@ async function generateOneImage(state, options = {}) {
 				attachment, mediaType: normalized.mediaType,
 				width: attachment.width, height: attachment.height, prompt,
 				provider: usedProvider, model: usedModel, source: 'generate',
+				// ★ 2026-10-22：版本族（聊天卡切版本 / 原位重生成用）。缺省＝自成一族。
+				group: options.group,
 			});
-			images.push({ attachment, id: recorded?.id });
+			// 先建对象再入列：后面入库成功要给它挂 `mediaId`（媒体库资产 id，便于对账）。
+			const image = { attachment, id: recorded?.id };
+			images.push(image);
 			// ★ 2026-10-21（二批⑤）：结果落进工作区（内容寻址 + 原子写 ⇒ 同一张图不重复写）。
 			const saved = await maybeSaveToWorkspace({
 				asked: options.askedSave,
@@ -218,6 +197,17 @@ async function generateOneImage(state, options = {}) {
 				if (recorded?.id) { state.canvasImages?.markSaved?.(recorded.id, saved.path); }
 			}
 			else if (saved.error) { saveFailures.push(saved.error); }
+			// ★ 2026-10-24：**存进 IDE 媒体库**（用户要求「聊天框生成的图片自动存储到媒体库」）。
+			//   best-effort：桥不在 / 老 IDE 不认这个 op ⇒ 跳过；**绝不让生图因此失败** ✓。
+			const mediaId = await importToMediaLibrary(state, {
+				bytes: normalized.bytes,
+				mediaType: normalized.mediaType,
+				prompt,
+				provider: usedProvider,
+				model: usedModel,
+				savedPath: saved.saved ? saved.path : '',
+			});
+			if (mediaId) { image.mediaId = mediaId; }
 		} catch (e) {
 			failures.push(String(e?.message ?? e));
 		}
@@ -228,13 +218,136 @@ async function generateOneImage(state, options = {}) {
 	return { images, savedPaths, saveFailures, failures };
 }
 
+/**
+ * 把一张生成结果**存进 IDE 的媒体库**（`media` 能力的 `op:'importAsset'`，2026-10-24）。
+ *
+ * ★ 为什么必须回 IDE：媒体库的真源在主进程（SQLite `media_asset` + `{root}/{yyyy}/{mm}/{uuid}.{ext}`），
+ *   dsh 侧的 `@vssaros/dsh-media` 是**只读镜像**（实测直连主进程正在用的 `media.db` 会 `disk I/O error`）
+ *   ⇒ 写只能由 IDE 侧做。
+ *
+ * ★ **best-effort**：桥不在（headless / tui）/ 老 IDE 不认这个 op（会回"media 的 op 不认识：importAsset"）
+ *   ⇒ **跳过**并返回空串。**绝不能**因为入库失败让生图整体失败（图已经生成好了，用户要的是那张图 ✓）。
+ *
+ * @param {object} state 宿主状态
+ * @param {{bytes: Uint8Array, mediaType: string, prompt: string, provider: string, model: string, savedPath: string}} input
+ * @returns {Promise<string>} 媒体库资产 id；没入库时为空串
+ */
+async function importToMediaLibrary(state, { bytes, mediaType, prompt, provider, model, savedPath }) {
+	// ★★ 2026-10-24（P4）：**dsh 内直连**。媒体库真源已搬到 dsh 侧
+	//   （`@vssaros/dsh-media` 的 `media-store/`，见那边 `lib/ownStore.js`），
+	//   同 Host 的插件经 `ctx.provide('vssarosMediaStore')` 直接写 ⇒
+	//   **不再经桥回 IDE**（那条 `media` 能力的 `importAsset` 是过渡通道，IDE 侧媒体库随后下线）。
+	const store = state.mediaStore;
+	if (!store || typeof store.importAsset !== 'function') {
+		// 没装媒体库 / 老版本没 provide ⇒ 跳过（best-effort；生图本身不该因此失败）
+		return '';
+	}
+	try {
+		const type = String(mediaType || 'image/png');
+		const ext = type === 'image/jpeg' ? 'jpg' : (type.split('/')[1] || 'png');
+		// provider 口径：'byok:<providerId>' / 'lightai' / 'local'（与媒体库那侧约定一致）
+		const via = !provider ? 'local' : (provider === 'lightai' ? 'lightai' : 'byok:' + provider);
+		const asset = await store.importAsset({
+			bytes,
+			kind: 'image',
+			mime: type,
+			ext,
+			provider: via,
+			// `source` 是**来源**（chat / comfyui / local）⇒ 媒体库能筛出"聊天框生成的" ✓
+			source: 'chat',
+			// ★ 截断：prompt 可能很长（媒体库那侧字段只存摘要，原文在工作区文件名/账本里另有）
+			prompt: String(prompt || '').slice(0, 2000),
+			model: String(model || ''),
+			metaJson: JSON.stringify({
+				...(savedPath ? { workspacePath: savedPath } : {}),
+				source: 'chat',
+			}),
+		});
+		return String(asset?.id ?? '');
+	} catch {
+		// 媒体库写失败（磁盘满 / 库锁住…）：正常降级（不影响生图结果，也不刷红字）
+		return '';
+	}
+}
+
+/**
+ * IDE 路（老路）：经桥 `media` 能力回 IDE。
+ * @returns {Promise<{rawImages: object[], usedProvider: string, usedModel: string}>}
+ */
+async function requestIdeImages(state, { prompt, numImages, matched, model, provider, quality }) {
+	const bridge = state.bridge;
+	if (!bridge || typeof bridge.callIDE !== 'function') {
+		throw new Error('图像生成要经控制桥回 IDE（模型 provider 在 IDE 进程），但 vssarosBridge 不在（bridge 插件没装/没连）'
+			+ '——或在 设置 → 模型 → LightAI 登录，直接用 LightAI 生图');
+	}
+	const request = { op: 'generateImage', prompt, numImages };
+	if (matched) {
+		request.width = Number(matched[1]);
+		request.height = Number(matched[2]);
+	}
+	if (model) { request.modelId = model; }
+	if (provider) { request.providerId = provider; }
+	if (quality) { request.quality = quality; }
+	const reply = await bridge.callIDE('ide.request', {
+		capability: 'media',
+		pluginId: PLUGIN_PACKAGE,
+		params: request,
+	}, { timeoutMs: IDE_TIMEOUT_MS });
+	if (!reply || reply.ok === false) {
+		const reason = String(reply?.error ?? reply?.text ?? 'IDE 没回（图像 provider 不可用？）');
+		throw new Error(`图像生成失败：${reason}`);
+	}
+	const rawImages = Array.isArray(reply?.images) ? reply.images : [];
+	if (rawImages.length === 0) {
+		throw new Error('图像生成失败：provider 没返回图片');
+	}
+	// ★ 四批⑪：把"这次到底是哪家出的"记进账本 ⇒ 画廊能按 provider 筛。
+	//   IDE 回里带了 provider/model 就用它（更准）；没带才回落请求参数。
+	return {
+		rawImages,
+		usedProvider: String(reply?.providerId ?? reply?.provider ?? provider ?? '').trim(),
+		usedModel: String(reply?.modelId ?? reply?.model ?? model ?? '').trim(),
+	};
+}
+
+/**
+ * LightAI 直连（2026-10-22）：`vssarosLightAI.generate('image', …)` —— 建任务 / 轮询都在 Host 里，不过桥。
+ * n 张 = n 个任务并发（LightAI 一个任务出一组；扩展那条路会把 n 静默丢掉 ✗）。部分失败 ⇒ 进 failures；全失败 ⇒ 抛。
+ * @returns {Promise<{rawImages: object[], usedProvider: string, usedModel: string}>}
+ */
+async function requestLightAIImages(state, { prompt, numImages, model, quality, width, height, signal, imageInput }) {
+	const service = state.lightai;
+	if (!service || typeof service.generate !== 'function') {
+		throw new Error('选中了 LightAI，但 dsh 侧 LightAI 生成服务不在（bridge 插件版本太旧，需 ≥ 0.2.38）');
+	}
+	const params = {
+		prompt,
+		...(model ? { modelId: model } : {}),
+		...(quality ? { quality } : {}),
+		...(width && height ? { width, height } : {}),
+		...(imageInput ? { imageInput } : {}),
+	};
+	const settled = await Promise.all(Array.from({ length: numImages }, () =>
+		service.generate('image', params, { signal }).then(v => ({ v }), e => ({ e }))));
+	const ok = settled.filter(s => s.v);
+	if (ok.length === 0) {
+		throw new Error(`LightAI 生图失败：${String(settled[0]?.e?.message ?? settled[0]?.e ?? '没有返回图片')}`);
+	}
+	const rawImages = ok.flatMap(s => (Array.isArray(s.v.images) ? s.v.images : []));
+	if (rawImages.length === 0) {
+		throw new Error('LightAI 生图失败：任务完成但没有图片');
+	}
+	return { rawImages, usedProvider: 'lightai', usedModel: String(ok[0].v.modelId ?? model ?? '') };
+}
+
 /** 工具定义（`state` 由 apply 注入：桥与 attachments 都是可选服务）。 */
 function toolDefinitions(state) {
 	return [{
 		name: IMAGE_GENERATE_TOOL,
 		description: [
 			'生成图片并把图直接显示在对话里。',
-			'执行经控制桥回 IDE：生图模型、凭据与审批都在 IDE 进程（用用户已配置的图像模型）。',
+			'provider=lightai（或 model 是 picture_* 的 LightAI 模型）⇒ 直接调 LightAI（dsh 侧登录，不经 IDE）；',
+			'其它 provider ⇒ 经控制桥回 IDE 用用户在 IDE 里配的图像模型。都不指定 ⇒ LightAI 已登录就用 LightAI，否则用 IDE 默认。',
 			'参数：prompt（画面描述，必填）、size（如 1024x1024，可选）、model（图像模型 id，可选）、n（张数，默认 1）。',
 			'★ 结果会**存进工作区**（默认 <工作区>/.vssaros-images/，内容寻址 ⇒ 同一张图不重复存）；',
 			'   不想要就传 save_to_workspace=false。要改已有图用 edit_image（带参考图的那种）。',
@@ -244,8 +357,8 @@ function toolDefinitions(state) {
 			properties: {
 				prompt: { type: 'string', description: '图片生成提示词（画面描述，越具体越好）' },
 				size: { type: 'string', description: '输出尺寸，如 1024x1024（可选，provider 不支持时会被忽略）' },
-				model: { type: 'string', description: '图像模型 id（可选；不填则用 IDE 侧默认的图像模型）' },
-				provider: { type: 'string', description: '图像 provider id（可选；不填则用 IDE 侧默认的那个 provider）' },
+				model: { type: 'string', description: '图像模型 id（可选；LightAI 的是 picture_*，先用 image_models 看有哪些）' },
+				provider: { type: 'string', description: '图像 provider id（可选；lightai = 直连 LightAI；不填 ⇒ LightAI 已登录就用它，否则 IDE 默认）' },
 				quality: { type: 'string', description: '生成质量档（如 standard/high；可选，provider 不支持会自己报错）' },
 				n: { type: 'number', description: '生成几张（默认 1）' },
 				save_to_workspace: { type: 'boolean', description: '是否把图存进工作区（默认 true ⇒ 存到 <工作区>/.vssaros-images/）' },
@@ -290,7 +403,7 @@ function toolDefinitions(state) {
 			},
 		},
 		// 写类（花钱、慢）⇒ 不声明 isConcurrencySafe（默认独占，见工具契约）。
-		execute: async (params) => {
+		execute: async (params, exec) => {
 			const prompt = String(params?.prompt ?? '').trim();
 			if (!prompt) {
 				throw new Error('prompt 必填（要生成的画面描述）');
@@ -304,6 +417,7 @@ function toolDefinitions(state) {
 				numImages: params?.n,
 				askedSave: params?.save_to_workspace,
 				saveDir: params?.save_dir,
+				signal: exec?.signal,
 			});
 			// 用户**明确**要求落盘却没落成 ⇒ 报错（不静默）；默认落盘失败 ⇒ 只在文本里说明 ✓。
 			if (params?.save_to_workspace === true && result.savedPaths.length === 0) {
@@ -409,10 +523,16 @@ function toolDefinitions(state) {
 				if (prompts.length > MAX_BATCH_PROMPTS) {
 					throw new Error(`一次最多 ${MAX_BATCH_PROMPTS} 条（收到 ${prompts.length} 条）——请拆成多次调用`);
 				}
-				// ★ 系统性失败（桥不在）**先**查一次并直接报错：那是"整个批量都做不了"，
+				// ★ 系统性失败（这条路整个不可用）**先**查一次并直接报错：那是"整个批量都做不了"，
 				//   不是"这一条失败" ⇒ 不该被当成 N 条 per-item 失败糊弄过去 ✓（上游同理）。
-				if (!state.bridge || typeof state.bridge.callIDE !== 'function') {
-					throw new Error('图像生成要经控制桥回 IDE（模型 provider 在 IDE 进程），但 vssarosBridge 不在（bridge 插件没装/没连）');
+				//   2026-10-22：走 LightAI 直连时不需要桥 ⇒ 按路由查（LightAI 服务在不在 / 桥在不在）。
+				const route = await resolveImageRoute(state, { provider: params?.provider, model: params?.model });
+				if (route === 'lightai' && (!state.lightai || typeof state.lightai.generate !== 'function')) {
+					throw new Error('选中了 LightAI，但 dsh 侧 LightAI 生成服务不在（bridge 插件版本太旧，需 ≥ 0.2.38）');
+				}
+				if (route === 'ide' && (!state.bridge || typeof state.bridge.callIDE !== 'function')) {
+					throw new Error('图像生成要经控制桥回 IDE（模型 provider 在 IDE 进程），但 vssarosBridge 不在（bridge 插件没装/没连）'
+						+ '——或在 设置 → 模型 → LightAI 登录，直接用 LightAI 生图');
 				}
 				const images = [];
 				const failures = [];
@@ -433,6 +553,7 @@ function toolDefinitions(state) {
 							numImages: 1,
 							askedSave: params?.save_to_workspace,
 							saveDir: params?.save_dir,
+							signal: exec?.signal,
 						});
 						for (const image of result.images) {
 							images.push({ ...image, prompt });
@@ -563,7 +684,7 @@ function toolDefinitions(state) {
 					return blocks;
 				},
 			},
-			execute: async (params) => {
+			execute: async (params, exec) => {
 				const prompt = String(params?.prompt ?? '').trim();
 				if (!prompt) {
 					throw new Error('prompt 必填（画面描述）');
@@ -606,6 +727,7 @@ function toolDefinitions(state) {
 						provider: target.provider,
 						askedSave: params?.save_to_workspace,
 						saveDir: params?.save_dir,
+						signal: exec?.signal,
 					})
 						.then(result => ({ target, result }))
 						.catch(error => ({ target, error: String(error?.message ?? error) }));
@@ -674,7 +796,7 @@ function reserveToolName(ctx, name) {
 }
 
 export function apply(ctx, config = {}) {
-	const state = { bridge: null, attachments: null, tools: null, canvas: null, canvasImages: createImageLedger(), pluginName: PLUGIN_PACKAGE };
+	const state = { bridge: null, lightai: null, mediaStore: null, attachments: null, tools: null, canvas: null, canvasImages: createImageLedger(), pluginName: PLUGIN_PACKAGE };
 	// ★ 2026-10-21（二批⑤）：工作区根 —— 落盘与 `edit_image` 的 `source:'path'` 都要它。
 	//
 	// 取值优先级（与 vssaros-codebase 的 `workspaceRootOf` 同口径 ✓）：
@@ -732,10 +854,31 @@ state.canvas = createCanvasMirror({
 		return () => { state.bridge = null; };
 	});
 
+	// LightAI 直连（2026-10-22，**可选**注入）：bridge 插件 ≥ 0.2.38 提供 `vssarosLightAI`
+	//   ⇒ 选中 LightAI（或没指定、而 LightAI 已登录）时生图 / 改图直接在 Host 里建任务 / 轮询，不过桥回 IDE。
+	//   不在 ⇒ 一切照旧走 IDE。
+	ctx.inject(['vssarosLightAI'], scope => {
+		// ⚠ 有些宿主的 scope 是"读未知属性即抛"的 Proxy ⇒ 读属性要兜住（缺这个可选服务 = 走 IDE 旧路，不是崩）✓
+		let svc = null;
+		try { svc = scope.vssarosLightAI ?? null; } catch { svc = null; }
+		state.lightai = svc;
+		return () => { state.lightai = null; };
+	});
+
 	// attachments（**可选**注入）：图片要落内容寻址存储才谈得上"显示在对话里"。
 	ctx.inject(['attachments'], scope => {
 		state.attachments = scope.attachments;
 		return () => { state.attachments = null; };
+	});
+
+	// ★ 2026-10-24（P4）：媒体库真源服务（`@vssaros/dsh-media` 的 `ctx.provide('vssarosMediaStore')`）。
+	//   生图结果**直接写 dsh 侧媒体库**（不再经桥回 IDE 的过渡通道）。
+	//   **可选**：没装媒体库 / 老版本没 provide ⇒ 跳过入库（best-effort，绝不让生图失败）。
+	ctx.inject(['vssarosMediaStore'], scope => {
+		let svc = null;
+		try { svc = scope.vssarosMediaStore ?? null; } catch { svc = null; }
+		state.mediaStore = svc;
+		return () => { state.mediaStore = null; };
 	});
 
 	ctx.effect(() => {

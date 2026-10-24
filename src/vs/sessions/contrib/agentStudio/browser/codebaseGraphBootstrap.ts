@@ -740,6 +740,15 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 	private async _autoIndex(): Promise<void> {
 		// [TRACE] codebaseGraphBootstrap._autoIndex 入口
 		this._logService.info(LOG_TAG, `[TRACE] codebaseGraphBootstrap._autoIndex triggered: pending=${this._pendingIndex.size} folders`);
+		// ★★ 2026-10-23（真机：进程级原生崩溃 `0xC000001D` / `0xE06D7363`，每次都在启动后 30–90s，
+		//   最后一次业务日志恒为 `Files changed, running incremental index...`）：
+		//   给自动索引一个**总开关**，默认开（行为不变）；设 `false` 可完全绕开这条路径，
+		//   用来做「关掉它是否还崩」的判定实验，也给用户一个逃生口 ✓。
+		if (this._configurationService.getValue<boolean | undefined>('saros.codebaseGraph.autoIndex') === false) {
+			this._logService.warn(LOG_TAG, `自动索引已被设置关闭（saros.codebaseGraph.autoIndex=false）⇒ 跳过 ${this._pendingIndex.size} 个 folder（不会建图，也不会起 watcher；需要时手动「重建图谱」）`);
+			this._pendingIndex.clear();
+			return;
+		}
 		const userConfig = await this._readUserIndexConfig();
 		// subPath 是全局单值配置：多 folder 工作区下无法判定它属于哪个 folder，故仅单 folder 时透传
 		const singleFolder = this._workspaceService.getWorkspace().folders.length === 1;

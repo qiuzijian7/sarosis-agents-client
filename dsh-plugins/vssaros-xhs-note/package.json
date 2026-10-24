@@ -1,0 +1,44 @@
+{
+  "name": "@vssaros/dsh-xhs-note",
+  "version": "0.1.10",
+  "private": true,
+  "type": "module",
+  "description": "主题与素材整理成小红书笔记：标题、正文、话题标签；草稿落本机数据目录，AI 协助可带上下文",
+  "main": "./lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "cordis.patch.yml",
+    "lib/"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@vssaros/dsh-workbenches"
+      ]
+    }
+  },
+  "vssaros": {
+    "workbench": {
+      "title": "小红书笔记",
+      "description": "主题与素材整理成小红书笔记：标题、正文、话题标签；草稿落本机数据目录，AI 协助可带上下文",
+      "icon": "codicon:comment-discussion",
+      "repository": "vssaros:xhs-note",
+      "customFrame": true
+    },
+    "activityBar": {
+      "icon": "codicon:comment-discussion",
+      "order": 42
+    }
+  },
+  "scripts": {
+    "check": "node ./test/run-xhs-note-check.mjs"
+  }
+}

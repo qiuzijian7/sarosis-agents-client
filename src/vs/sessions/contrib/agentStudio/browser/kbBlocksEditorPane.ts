@@ -69,9 +69,11 @@ interface KbHostMessage {
  * 笔记因此渲染成空白页）。`<` 是 JSON 字符串里的合法转义，解析后语义完全不变。
  * （导出以便单测。）
  */
-export function escapeJsonForInlineScript(json: string): string {
-	return json.replace(/</g, '\\u003c');
-}
+// ★ 2026-10-23：实现搬到 `kbInlineScript.ts`（打破与 `kbMediaViewerPane` 的双向 import）。
+//   ⚠ 必须 `import` 再 `export` —— 只写 `export { … } from` 不会把名字带进**本文件作用域**，
+//     而下面的 `_getHtml` 自己也要用它 ⇒ 只 re-export 会报 "Cannot find name" ✗。
+import { escapeJsonForInlineScript } from './kbInlineScript.js';
+export { escapeJsonForInlineScript };
 
 export class KbBlocksEditorPane extends EditorPane {
 

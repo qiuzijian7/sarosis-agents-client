@@ -67,6 +67,12 @@ import { IRequestService } from '../../../../../platform/request/common/request.
 import { IWebContentExtractorService, ISharedWebContentExtractorService } from '../../../../../platform/webContentExtractor/common/webContentExtractor.js';
 import { IAgentStudioService } from '../../common/agentStudio.js';
 import { KbImportController } from '../kbImportController.js';
+// 体检：规则与报告格式化都在这两个函数里（视图版与这里共用同一份 ✓）
+import { formatLintReport, lintVault } from './kbLint.js';
+// 去重检测：与原生视图共用同一份实现（合并流程暂不在此，见接口注释）
+import { detectDuplicates, formatDedupReport } from './dedup.js';
+// 审核队列：只读 list，不引入 write/approve（见 showReviewQueue 注释）
+import { listReviewNotes } from './reviewStore.js';
 import { CanvasEditorInput } from '../canvasEditor/canvasEditorInput.js';
 import { KbMindmapGenerator } from '../views/knowledge/kbMindmapGenerator.js';
 import type { IChatModel } from './llm.js';
@@ -230,6 +236,39 @@ export interface IKbCommandService {
 	 * 单独搬会是半拆 ✗，见 README 5.143）。
 	 */
 	openMindmap(): Promise<void>;
+
+	/**
+	 * 体检（2026-10-24 从 `KnowledgeBaseViewPane._runLint` 抽到服务层）。
+	 *
+	 * 为什么抽：`体检/去重/审核` 原来是视图的私有方法，React 侧栏（现在的主入口）**够不着**，
+	 * 只能在「知识库（经典）」里用 ⇒ 两个入口能力不一致 ✗。
+	 * 只搬**胶水**：规则在 `kbLint.lintVault`、报告格式化在 `formatLintReport`（原样复用，无第二实现 ✓）。
+	 *
+	 * @returns 检出的问题数（`-1` 表示失败）—— 视图侧据此决定要不要刷新树。
+	 */
+	runVaultLint(): Promise<number>;
+
+	/**
+	 * 整理去重**检测**（2026-10-24 从 `_runDedup` 抽离，只搬检测+报告）。
+	 *
+	 * ⚠ 不含「合并去重」：那是逐组确认的交互链（`_runDedupMerge`，选保留项 + 重写引用），
+	 *   先在「知识库（经典）」里用。检测这一步已经能给出 `dedup-report.md`，足以判断要不要合并。
+	 * @returns 疑似重复组数（`-1` 表示失败/无库）
+	 */
+	runVaultDedup(): Promise<number>;
+
+	/**
+	 * 审核队列**只读概览**（2026-10-24）：返回 `.review/` 待审篇数，并把前几篇的名字报给用户。
+	 *
+	 * ⚠ 刻意**不做移回/清空**：
+	 *   · 那两个动作要求一个选择列表（`IQuickInputService`），而本服务没有注入它 ——
+	 *     为一个“概览”去改构造函数签名不划算（会波及所有 DI 组装点）；
+	 *   · 更重要的是它们**会改用户笔记**（移回 / 永久删除），在没有列表 UI 的前提下
+	 *     只给一个“全部删掉”的确认框，风险不对等。
+	 *   ⇒ 变更类操作仍在「知识库（经典）」里，这里只负责“让你知道有待审的东西”。
+	 * @returns 待审篇数（`-1` = 失败/无库）
+	 */
+	showReviewQueue(): Promise<number>;
 	/**
 	 * 导入 / 构建完成后**自动生成或更新**思维导图（增量扫"笔记"区最近文件 → LLM 提结构 → 合并进 `.canvas` ✓）。
 	 * 视图里那 3 个调用点（初始化后 / 导入后 / 构建后）现在都走服务 ✓。
@@ -1212,6 +1251,87 @@ export class KbCommandService extends Disposable implements IKbCommandService {
 		} catch (err) {
 			this._logService.error('[KB mindmap] open failed', err);
 			this._notificationService.error('打开思维导图失败：' + (err instanceof Error ? err.message : String(err)));
+		}
+	}
+
+	/** 体检（实现见接口注释）。返回问题数；失败/无库返回 -1。 */
+	async runVaultLint(): Promise<number> {
+		const vault = this.activeVault();
+		if (!vault) {
+			this._notificationService.info(localize('kb.lintNoVault', '还没有可用的知识库：先「配置文件夹为知识库…」再做体检。'));
+			return -1;
+		}
+		try {
+			const notesDir = this.sectionUri(vault, 'notes');
+			const libDir = this.sectionUri(vault, 'library');
+			// ⚠ 扫描根是**笔记区**，库只作「来源目录」传入 —— 反过来会把库内引用全判成断链（误报）
+			const issues = await lintVault(this._fileService, notesDir, libDir);
+			const report = formatLintReport(notesDir, issues);
+			await this._fileService.writeFile(URI.joinPath(notesDir, 'lint-report.md'), VSBuffer.fromString(report));
+			await KbImportController.appendKbLog(this._fileService, notesDir, `体检：${issues.length} 项问题`);
+			const cnt = (sev: string) => issues.filter(i => i.severity === sev).length;
+			this._notificationService.info(`知识库体检完成：${issues.length} 项（error ${cnt('error')} / warning ${cnt('warning')} / info ${cnt('info')}），详见 lint-report.md`);
+			return issues.length;
+		} catch (err) {
+			this._logService.error('[KB lint] failed', err);
+			this._notificationService.error('体检失败：' + (err instanceof Error ? err.message : String(err)));
+			return -1;
+		}
+	}
+
+	/** 整理去重（检测 + 报告，见接口注释）。返回疑似重复组数；失败/无库 -1。 */
+	async runVaultDedup(): Promise<number> {
+		const vault = this.activeVault();
+		if (!vault) {
+			this._notificationService.info(localize('kb.dedupNoVault', '还没有可用的知识库：先「配置文件夹为知识库…」再整理去重。'));
+			return -1;
+		}
+		try {
+			const notesDir = this.sectionUri(vault, 'notes');
+			const libDir = this.sectionUri(vault, 'library');
+			// 签名只收 (fileService, notesDir)：去重只比较笔记正文，库目录不参与
+			const groups = await detectDuplicates(this._fileService, notesDir);
+			const report = formatDedupReport(notesDir, groups);
+			await this._fileService.writeFile(URI.joinPath(notesDir, 'dedup-report.md'), VSBuffer.fromString(report));
+			await KbImportController.appendKbLog(this._fileService, libDir, `整理去重：${groups.length} 组疑似重复`);
+			const total = groups.reduce((s, g) => s + g.notes.length, 0);
+			this._notificationService.info(`整理去重完成：${groups.length} 组疑似重复（共 ${total} 篇），详见 dedup-report.md。合并去重请用「知识库（经典）」。`);
+			return groups.length;
+		} catch (err) {
+			this._logService.error('[KB dedup] failed', err);
+			this._notificationService.error('整理去重失败：' + (err instanceof Error ? err.message : String(err)));
+			return -1;
+		}
+	}
+
+	/** 审核队列只读概览（见接口注释）。返回待审篇数；失败/无库 -1。 */
+	async showReviewQueue(): Promise<number> {
+		const vault = this.activeVault();
+		if (!vault) {
+			this._notificationService.info(localize('kb.reviewNoVault', '还没有可用的知识库：先「配置文件夹为知识库…」。'));
+			return -1;
+		}
+		try {
+			const notesDir = this.sectionUri(vault, 'notes');
+			const notes = await listReviewNotes(this._fileService, notesDir) as readonly unknown[];
+			if (!notes.length) {
+				this._notificationService.info('审核队列为空');
+				return 0;
+			}
+			// `listReviewNotes` 的元素形态可能是 URI，也可能是 {uri,name}；两种都兜住（只用 path 取文件名）
+			const names = notes.slice(0, 5).map(n => {
+				const raw = (n as { uri?: unknown })?.uri ?? n;
+				return String((raw as URI | undefined)?.path ?? '').split('/').pop() ?? '';
+			}).filter(Boolean);
+			this._notificationService.info(
+				`审核队列有 ${notes.length} 篇待审${names.length ? '：' + names.join('、') : ''}${notes.length > names.length ? ' …' : ''}。`
+				+ '移回/清空请用「知识库（经典）」。',
+			);
+			return notes.length;
+		} catch (err) {
+			this._logService.error('[KB review] failed', err);
+			this._notificationService.error('读取审核队列失败：' + (err instanceof Error ? err.message : String(err)));
+			return -1;
 		}
 	}
 

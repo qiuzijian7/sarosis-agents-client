@@ -70,6 +70,34 @@ export const enum DshBridgeMethod {
 	 */
 	TofSync = 'tof.sync',
 	/**
+	 * 企业身份由 **dsh 侧持有**（2026-10-22，用户："登录也转移到 dsh 侧实现，ide 侧仅读取状态"）。
+	 * `tof.status`：状态投影 {@link IBridgeTofStatus}（**没有票据**）；Host 认它 ⇒ IDE 的 TofAuthService 切成只读镜像。
+	 */
+	TofStatus = 'tof.status',
+	/** 在 dsh 侧开系统浏览器登录（最长 ~3 分钟，回执等登录完成）。回执 = 身份投影（没有票据）。 */
+	TofSignIn = 'tof.signin',
+	/** 用户主动登出（两份票都清 + 记"主动登出过" ⇒ IDE 不再把旧扩展里的票迁回来）。 */
+	TofSignOut = 'tof.signout',
+	/** 取当前有效票据 {@link IBridgeTofTicketResult}（商城 JWT 兑换要它）。⚠ 只经本机命名管道，绝不进页面。 */
+	TofTicket = 'tof.ticket',
+	/**
+	 * dsh 侧 CodeBuddy 登录态（2026-10-22）：CodeBuddy 的登录 / 刷新 / 目录 / 路由都已搬到 Host
+	 * （`dsh-plugins/vssaros-bridge/lib/codebuddy.js`）。回执是 {@link IBridgeCodeBuddyStatus}（**不含 token**）。
+	 */
+	CodeBuddyStatus = 'codebuddy.status',
+	/**
+	 * 把 IDE 扩展里的 CodeBuddy 登录态**一次性**迁到 dsh 侧（过渡期；dsh 侧已登录时不覆盖）。
+	 * 负载 {@link IBridgeCodeBuddyImportArgs}：token 只经本机命名管道，落 dsh 凭据存储。
+	 */
+	CodeBuddyImport = 'codebuddy.import',
+	/**
+	 * dsh 侧 LightAI 登录态（2026-10-22）：登录 / 模型清单 / 配置都在 Host（`vssaros-bridge/lib/lightai.js`，
+	 * 登录经浏览器插件开页面、读会话 cookie）。回执 {@link IBridgeLightAIStatus}（**无 cookie 值**）。
+	 */
+	LightAIStatus = 'lightai.status',
+	/** 把 IDE 扩展 settings 里的 LightAI cookie **一次性**迁到 dsh 侧（负载 {@link IBridgeLightAIImportArgs}）。 */
+	LightAIImport = 'lightai.import',
+	/**
 	 * 积分样本入账（2026-10-20）：主进程计费代理抓到一条推一条（{@link IBridgeCreditRecordArgs}）。
 	 * Host 侧按 LLM 调用区间归属到 (会话, 回合)，写进会话日志（插件记录 `plugin:vssaros/credit`），
 	 * 再由投影 `vssaros-credit` 推给页面 —— 取代"广播给所有聊天页、页面按时间窗猜"的旧链路。
@@ -148,6 +176,17 @@ export const enum DshBridgeReverseMethod {
 	IdeEcho = 'ide.echo',
 	/** 请求一项 IDE 能力：`capability` 必须在该插件清单的 `vssaros.ideCapabilities` 里声明过。 */
 	IdeRequest = 'ide.request',
+	/**
+	 * 计费代理路由登记（2026-10-22）：dsh 侧自持的 provider（CodeBuddy）要让请求经过主进程的计费代理
+	 * （积分 chip 的数据源）⇒ Host 发 `{ route, baseURL }`，**主进程**登记"路由 → 真实网关"并回代理地址
+	 * {@link IBridgeCreditRouteResult}。由主进程直接应答（不下发渲染进程、不过 IDE 能力闸）。
+	 */
+	CreditRoute = 'credit.route',
+	/**
+	 * 企业身份变了（2026-10-22）：Host 在登录成功 / 登出后通知（**不带票据**）。主进程就地应答，
+	 * 并转给渲染进程（`DshHarnessChannelEvent.OnDidChangeTof`）⇒ TofAuthService 立刻重读，不必轮询。
+	 */
+	TofChanged = 'tof.changed',
 }
 
 // ─── 插件商城（方案 5.16，只读面）：桥侧整形后的视图，UI 直接用 ─────────────────
@@ -663,6 +702,40 @@ export interface IBridgeTofSyncArgs {
 	readonly ticket: string | null;
 }
 
+/**
+ * dsh 侧企业身份状态（`tof.status` 回执，2026-10-22）——与 `tof.js` 的 `status()` 同形，**没有票据**。
+ */
+export interface IBridgeTofStatus {
+	readonly signedIn: boolean;
+	/** 网关给的标准用户 ID（`taihu:staffid:<id>` 形）——IDE 当数据归属键用。 */
+	readonly userId?: string;
+	readonly staffId?: string;
+	readonly loginName?: string;
+	readonly team?: string | null;
+	readonly isAdmin?: boolean;
+	/** 票据过期时间（ISO 8601，网关给的）。 */
+	readonly expiresAt?: string;
+	/** 身份来自哪：dsh（dsh 侧自登）/ ide（IDE 旧扩展同步或一次性迁移来的）。 */
+	readonly source?: string;
+	/** 网关临时不可达 ⇒ 下面是缓存的身份（仍算已登录）。 */
+	readonly stale?: boolean;
+	/** 网关明确拒票（401：过期 / 吊销）⇒ 未登录，需要用户重新登录（**不**自动开浏览器）。 */
+	readonly expired?: boolean;
+	/** dsh 侧是否存着票（不论是否有效）——IDE 据此判断要不要做一次性迁移。 */
+	readonly hasCredential?: boolean;
+	/** 用户在 dsh 侧主动登出过 ⇒ IDE 不得再把旧扩展里的票迁回来。 */
+	readonly signedOutByUser?: boolean;
+	readonly signingIn?: boolean;
+	readonly signInDeadline?: number;
+	readonly error?: string;
+}
+
+/** `tof.ticket` 回执：当前有效票据（只经本机命名管道到 IDE 主进程 ⇒ 渲染进程；**绝不**下发页面）。 */
+export interface IBridgeTofTicketResult {
+	readonly ticket: string | null;
+	readonly source: string;
+}
+
 export interface IBridgeTofSyncResult {
 	/** dsh 侧现在是否持有票据。 */
 	readonly signedIn: boolean;
@@ -686,6 +759,138 @@ export function validateTofSyncArgs(value: unknown): value is IBridgeTofSyncArgs
 	}
 	// 票据是长 base64/hex 串 ⇒ 限长 + 禁换行/NUL（防注入到 YAML 与日志行）
 	return v.ticket.length > 0 && v.ticket.length <= 4096 && !/[\r\n\u0000]/.test(v.ticket);
+}
+
+// ─── CodeBuddy（dsh 侧自持 provider，2026-10-22）────────────────────────────────
+
+/** dsh 侧 CodeBuddy 状态投影（**不含 token**；与 `codebuddy.js` 的 `status()` 同形）。 */
+export interface IBridgeCodeBuddyStatus {
+	readonly provider: 'codebuddy';
+	readonly route: string;
+	readonly endpoint: string;
+	readonly signedIn: boolean;
+	readonly signingIn: boolean;
+	/** 浏览器登录的等待截止时刻（epoch ms；仅登录中出现）。 */
+	readonly signInDeadline?: number;
+	/** 登录态来源：cli_external_link（浏览器登录）/ local_storage（复用本机 CodeBuddy）/ ide-import / legacy。 */
+	readonly source?: string;
+	readonly userId?: string;
+	readonly tenantId?: string;
+	readonly name?: string;
+	/** access token 过期时刻（epoch ms）；未知 = null。 */
+	readonly expiresAt?: number | null;
+	readonly canRefresh?: boolean;
+	/** 模型目录条数；还没取过 = null。 */
+	readonly models: number | null;
+	readonly modelIds: readonly string[];
+	/** 与 modelIds 一一对应的展示名（平台没给名字就是 id）。 */
+	readonly modelNames?: readonly string[];
+	readonly modelsFetchedAt: number | null;
+	readonly routeWritten: boolean;
+	readonly routeNote: string;
+	/** 一句人话的最近错误（不含 token / 堆栈）。 */
+	readonly error?: string;
+}
+
+/** `codebuddy.import` 负载：IDE 扩展里的登录态（一次性迁移）。 */
+export interface IBridgeCodeBuddyImportArgs {
+	readonly accessToken: string;
+	readonly refreshToken?: string;
+	/** 过期时刻（epoch ms 或 s 均可，Host 侧按扩展的 `_calcExpiry` 口径换算）。 */
+	readonly expiresAt?: number;
+}
+
+export interface IBridgeCodeBuddyImportResult {
+	readonly imported: boolean;
+	/** 未导入的原因：already-signed-in / invalid-token。 */
+	readonly reason?: string;
+	readonly status?: IBridgeCodeBuddyStatus;
+}
+
+/** token 形状收紧：可打印 ASCII、无空白、限长（跨进程边界 + 将落进 YAML）。 */
+const TOKEN_RE = /^[\x21-\x7E]{10,8192}$/;
+
+/** `codebuddy.import` 负载校验。 */
+export function validateCodeBuddyImportArgs(value: unknown): value is IBridgeCodeBuddyImportArgs {
+	if (!value || typeof value !== 'object' || Array.isArray(value)) {
+		return false;
+	}
+	const v = value as { accessToken?: unknown; refreshToken?: unknown; expiresAt?: unknown };
+	if (typeof v.accessToken !== 'string' || !TOKEN_RE.test(v.accessToken)) {
+		return false;
+	}
+	if (v.refreshToken !== undefined && (typeof v.refreshToken !== 'string' || !TOKEN_RE.test(v.refreshToken))) {
+		return false;
+	}
+	if (v.expiresAt !== undefined && (typeof v.expiresAt !== 'number' || !Number.isFinite(v.expiresAt) || v.expiresAt <= 0)) {
+		return false;
+	}
+	return true;
+}
+
+/** dsh 侧 LightAI 状态（`lightai.status` 回执，与 `lightai.js` 的 `status()` 同形；**没有 cookie 值**）。只列 IDE 用到的字段。 */
+export interface IBridgeLightAIStatus {
+	readonly signedIn: boolean;
+	readonly signingIn: boolean;
+	/** dsh 侧是否存着 cookie（不论有效与否）—— IDE 据此判断要不要做一次性迁移。 */
+	readonly hasCredential: boolean;
+	/** 用户在 dsh 侧主动登出过 ⇒ IDE 不得再把扩展里的 cookie 迁回来。 */
+	readonly signedOutByUser: boolean;
+	readonly expired?: boolean;
+	readonly userId?: string;
+	readonly error?: string;
+}
+
+/** `lightai.import` 负载：IDE 扩展 settings 里的 `lightai.cookie` / `lightai.userId`。 */
+export interface IBridgeLightAIImportArgs {
+	readonly cookie: string;
+	readonly userId: string;
+}
+
+export interface IBridgeLightAIImportResult {
+	readonly imported: boolean;
+	readonly reason?: string;
+}
+
+/** 跨进程边界的负载校验：cookie 必须含 `sessionid=` 与 `uid=`、≤4096、无控制字符；userId 1–256。 */
+export function validateLightAIImportArgs(value: unknown): value is IBridgeLightAIImportArgs {
+	if (!value || typeof value !== 'object' || Array.isArray(value)) {
+		return false;
+	}
+	const v = value as { cookie?: unknown; userId?: unknown };
+	if (typeof v.cookie !== 'string' || v.cookie.length > 4096 || /[\r\n\u0000]/.test(v.cookie)
+		|| !/(^|;\s*)sessionid=[^;]+/.test(v.cookie) || !/(^|;\s*)uid=[^;]+/.test(v.cookie)) {
+		return false;
+	}
+	if (typeof v.userId !== 'string' || !v.userId.trim() || v.userId.length > 256 || /[\r\n\u0000]/.test(v.userId)) {
+		return false;
+	}
+	return true;
+}
+
+/** 反向 `credit.route` 负载：登记"路由 → 真实网关"。 */
+export interface IBridgeCreditRouteArgs {
+	readonly route: string;
+	readonly baseURL: string;
+}
+
+export interface IBridgeCreditRouteResult {
+	/** 代理地址（`http://127.0.0.1:<port>/r/<secret>/<route>`）。 */
+	readonly baseURL: string;
+}
+
+/**
+ * `credit.route` 负载校验：路由名同 providers.sync 口径（`vssaros-*`）；真实网关只认 https（或本机）——
+ * 主进程代理会**按这个地址转发**，放开 http 等于让 Host 指挥主进程去连任意明文地址 ✗。
+ */
+export function validateCreditRouteArgs(value: unknown): value is IBridgeCreditRouteArgs {
+	if (!value || typeof value !== 'object' || Array.isArray(value)) {
+		return false;
+	}
+	const v = value as { route?: unknown; baseURL?: unknown };
+	return typeof v.route === 'string' && /^vssaros-[a-z0-9-]{1,40}$/.test(v.route)
+		&& typeof v.baseURL === 'string' && v.baseURL.length <= 512
+		&& (/^https:\/\/[^\s]+$/.test(v.baseURL) || /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?([/][^\s]*)?$/.test(v.baseURL));
 }
 
 // ─── credit.record（积分样本入账，2026-10-20）────────────────────────────────

@@ -322,6 +322,8 @@ export interface IIdeCapabilityEnv {
 			readonly sizes?: readonly string[];
 		}>;
 	}>;
+	// ★ 2026-10-24：`importMediaAsset?` 已移除（媒体库真源搬到 dsh 侧，见上面 `op:'importAsset'` 那段的说明）。
+
 	/**
 	 * ★ 2026-10-22：**安装一个工作台包**（`workbenches` 能力的 `op:'install'`，`@vssaros/dsh-market` 用）。
 	 *
@@ -1196,6 +1198,10 @@ export async function executeIdeCapability(request: { readonly capability: strin
 			if (op !== 'generateImage' && op !== 'editImage' && op !== 'capabilities') {
 				throw new Error(`media 的 op 不认识：${op}（本版只有 generateImage：生成图片 / editImage：按参考图改图 / capabilities：能力表）`);
 			}
+			// ★ 2026-10-24（下线 IDE 侧媒体库）：这里的 `op:'importAsset'` **已移除**。
+			//   媒体库真源已搬到 dsh 侧（`@vssaros/dsh-media` 的 `media-store/`），生图结果由
+			//   imagegen 经 `ctx.inject(['vssarosMediaStore'])` **在 Host 内直接写** ⇒ 不再跨进程。
+			//   （老版 imagegen 还会尝试这个 op ⇒ 它会收到上面那句"op 不认识"，自己降级为"不入库"，不影响生图。）
 			// ★ 2026-10-21（三批⑨）：`capabilities` —— "这台 IDE 谁能生图 + 各家支持哪些档位"。
 			//   **不需要 prompt** ⇒ 必须排在 prompt 校验**之前**（否则查表也得先编个提示词 ✗）。
 			if (op === 'capabilities') {

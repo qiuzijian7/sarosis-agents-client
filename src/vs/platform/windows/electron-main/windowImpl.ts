@@ -433,7 +433,9 @@ export abstract class BaseWindow extends Disposable implements IBaseWindow {
 	private lastWindowControlColors: { backgroundColor?: string; foregroundColor?: string } | undefined;
 
 	// ★ 2026-10-17（用户报「点 agent 条目弹出透明窗口」，日志里有 uncaught "Titlebar overlay is not enabled"）：
-	//   原生标题栏的辅助窗口（dsh 全窗，`nativeTitlebar: true`）没有 titleBarOverlay ⇒ `setTitleBarOverlay` 必抛，
+	//   原生标题栏的辅助窗口（`nativeTitlebar: true`；dsh 全窗 2026-10-23 起已改用 overlay，
+	//   见 `dshFullWindowContribution._installTitleBar`，但 issue reporter 等窗口仍是原生）没有 titleBarOverlay
+	//   ⇒ `setTitleBarOverlay` 必抛，
 	//   而且抛在 `setWin()` 中途 ⇒ 认领流程被截断（窗口菜单没去掉、没登记进生命周期——弹窗带着系统菜单栏）。
 	//   辅助窗口认领时拿不到它的创建参数 ⇒ 不知道有没有 overlay ⇒ 先试一次：成功记 true，抛了记 false 并别再调。
 	private windowControlsOverlay: boolean | undefined = undefined;
@@ -785,10 +787,22 @@ export class CodeWindow extends BaseWindow implements ICodeWindow {
 			//   （监听 Electron 的 `show` 事件；`showWindow` / 用户从任务栏恢复都会触发）✓。
 			if (this._startHidden) {
 				const failsafe = new RunOnceScheduler(() => {
-					if (this._win && !this._win.isDestroyed() && !this._win.isVisible()) {
-						this.logService.warn('window#hiddenStart: 45s 内没有收到显示请求（dsh 桌面窗口可能没开出来）⇒ 自动显示 IDE 窗口');
-						this._win.show();
+					if (!this._win || this._win.isDestroyed() || this._win.isVisible()) {
+						return;
 					}
+					// ★ 2026-10-22（用户："app 启动后只显示 desktop 模式，**不要打开 IDE**"）：
+					//   桌面窗口（aux）在本进程里也是 BrowserWindow ⇒ 只要还有别的窗口活着，
+					//   用户就有界面可用 ⇒ 这道"防隐形"兜底**不许**再把 IDE 亮出来。
+					//   真机症状：启动 45s 后 IDE 自己冒出来（桌面窗口早在 3s 就出来了，可它们互不知道）✗。
+					//   只有"一个窗口都没有"（渲染进程没起来 / 桌面窗口根本建不出来）才兜底显示，
+					//   否则就真的是一个看不见的进程了。
+					const others = electron.BrowserWindow.getAllWindows().filter(w => w !== this._win && !w.isDestroyed());
+					if (others.length > 0) {
+						this.logService.info(`window#hiddenStart: 45s 仍隐藏，但还有 ${others.length} 个窗口（桌面窗口）⇒ 保持隐藏（用户要求不露 IDE）`);
+						return;
+					}
+					this.logService.warn('window#hiddenStart: 45s 内没有收到显示请求，且一个窗口都没有 ⇒ 兜底显示 IDE 窗口');
+					this._win.show();
 				}, 45_000);
 				this._register(failsafe);
 				failsafe.schedule();

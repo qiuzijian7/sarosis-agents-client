@@ -168,6 +168,36 @@ function manifestOf(plugin: IPluginPackage): IVssarosPluginManifest | undefined 
 	return parsed.manifest;
 }
 
+/**
+ * 这个插件的客户端代码里**有没有**注册工作台（`desktopWorkbenches.register(…)`）。
+ *
+ * ⚠ **扫整个 `lib/`，不只扫入口文件**：工作台组件常是独立子块（workflow 的 `lib/workbench.js`、
+ * 聊天表面那套 `client.*.js`）⇒ 只看入口会把"已经迁了"判成"没迁" ✗（判据与实际脱节 ✗）。
+ * 注释先剥掉（头注释里有用法示例，会误判 ✓）。
+ */
+function registersWorkbench(root: string, plugin: IPluginPackage): boolean {
+	const libDir = path.join(root, PLUGINS_REL, plugin.dirName, 'lib');
+	const found: string[] = [];
+	const walk = (dir: string): void => {
+		for (const name of fs.readdirSync(dir)) {
+			const p = path.join(dir, name);
+			if (fs.statSync(p).isDirectory()) {
+				if (name !== 'node_modules' && name !== 'canvas' && name !== 'vendor') { walk(p); }
+			} else if (name.endsWith('.js')) {
+				found.push(p);
+			}
+		}
+	};
+	if (!fs.existsSync(libDir)) {
+		return false;
+	}
+	walk(libDir);
+	return found.some(p => {
+		const text = fs.readFileSync(p, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+		return /desktopWorkbenches\.register\(/.test(text);
+	});
+}
+
 function normalizeRoute(route: string): string {
 	return route.endsWith('/') ? route.slice(0, -1) : route;
 }
@@ -1026,6 +1056,19 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 			const text = fs.readFileSync(clientFile, 'utf8')
 				.replace(/\/\*[\s\S]*?\*\//g, '')
 				.replace(/^\s*\/\/.*$/gm, '');
+			// 2026-10-22：**本包自己声明**的子槽（某条注册的 `children: { [NAME]: {...} }` / `{ 'a.b': {...} }`）也算"在目录里"——
+			//   它的声明者就是本包（例：工作台宿主的对话停靠槽 `vssaros.workbench.conversation`）。只认真的 children 声明，
+			//   名字写错照样两边对不上 ⇒ 照样红 ✓。
+			const selfDeclared = new Set<string>();
+			for (const block of text.matchAll(/children:\s*\{([^{}]*)\{/g)) {
+				const key = block[1].trim();
+				const literal = /^['"]([^'"]+)['"]\s*:$/.exec(key)?.[1];
+				const ident = /^\[\s*([A-Za-z_$][\w$]*)\s*\]\s*:$/.exec(key)?.[1];
+				const resolved = literal ?? (ident ? new RegExp(`(?:const|let|var)\\s+${ident}\\s*=\\s*['"]([^'"]+)['"]`).exec(packageText)?.[1] : undefined);
+				if (resolved) {
+					selfDeclared.add(resolved);
+				}
+			}
 			for (const m of text.matchAll(/slots\.inject\(\s*([^,)]+)/g)) {
 				const raw = m[1].trim();
 				let name = /^['"]([^'"]+)['"]$/.exec(raw)?.[1];
@@ -1033,7 +1076,7 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 					name = new RegExp(`(?:const|let|var)\\s+${raw}\\s*=\\s*['"]([^'"]+)['"]`).exec(packageText)?.[1];
 				}
 				assert.ok(!!name, `${plugin.dirName} 的 client.js 里 slots.inject(${raw}) 解析不出 slot 名 ✗（守卫无法判定 ⇒ 大声失败，不静默放行）`);
-				assert.ok(catalogue.has(name!), `${plugin.dirName} 的 client.js 注入的 slot「${name}」不在运行时目录里（写错不会报错、视图只是永不出现 ✗）`);
+				assert.ok(catalogue.has(name!) || selfDeclared.has(name!), `${plugin.dirName} 的 client.js 注入的 slot「${name}」不在运行时目录里、本包也没声明它（写错不会报错、视图只是永不出现 ✗）`);
 				checked++;
 			}
 		}
@@ -1163,6 +1206,8 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 		const host = readPluginPackages(root!).find(p => p.json['name'] === '@vssaros/dsh-workbenches');
 		assert.ok(host, '宿主插件 @vssaros/dsh-workbenches 必须存在');
 		let migrated = 0;
+		/** 收集所有工作台注册问题，最后一次性断言（per-plugin assert 会在第一个坏包处中断 ⇒ 后面的包没人查 ✗）。 */
+		const workbenchProblems: string[] = [];
 		for (const plugin of readPluginPackages(root!)) {
 			const manifest = manifestOf(plugin);
 			const clientRel = (plugin.json['exports'] as Record<string, unknown> | undefined)?.['./client'];
@@ -1170,21 +1215,93 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 				continue;
 			}
 			const clientPath = path.join(root!, PLUGINS_REL, plugin.dirName, clientRel);
-			const src = fs.existsSync(clientPath) ? fs.readFileSync(clientPath, 'utf8') : '';
-			if (!/desktopWorkbenches\.register\(/.test(src)) {
+			const entrySrc = fs.existsSync(clientPath) ? fs.readFileSync(clientPath, 'utf8') : '';
+			void entrySrc;
+			// ★ 2026-10-22：注册**可能不在入口文件里**（工作台组件常是独立子块，如 workflow 的 `lib/workbench.js`）
+			//   ⇒ 找**真正含注册的那一份**来比对 repository / title，而不是只看入口 ✗（否则子块写法完全没被守 ✗）。
+			const stripComments = (text: string) => text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+			const libDir = path.join(root!, PLUGINS_REL, plugin.dirName, 'lib');
+			const libFiles: string[] = [];
+			const walkLib = (dir: string): void => {
+				for (const name of fs.readdirSync(dir)) {
+					const p = path.join(dir, name);
+					if (fs.statSync(p).isDirectory()) {
+						if (name !== 'node_modules' && name !== 'canvas' && name !== 'vendor') { walkLib(p); }
+					} else if (name.endsWith('.js')) {
+						libFiles.push(p);
+					}
+				}
+			};
+			if (fs.existsSync(libDir)) { walkLib(libDir); }
+			const registerFile = libFiles.map(p => ({ p, text: stripComments(fs.readFileSync(p, 'utf8')) }))
+				.find(x => /desktopWorkbenches\.register\(/.test(x.text));
+			if (!registerFile) {
 				continue;
 			}
 			migrated++;
+			const src = registerFile.text;
 			const repo = /repository:\s*'([^']+)'/.exec(src)?.[1];
 			const title = /title:\s*'([^']+)'/.exec(src)?.[1];
-			assert.strictEqual(repo, manifest.workbench.repository, `${plugin.dirName} 客户端注册的 repository 与清单不一致`);
+			if (repo !== manifest.workbench.repository) {
+				workbenchProblems.push(`${plugin.dirName} 客户端注册的 repository(${repo ?? '未写'}) 与清单(${manifest.workbench.repository}) 不一致`);
+			}
 			const manifestTitle = typeof manifest.workbench.title === 'string' ? manifest.workbench.title : manifest.workbench.title.zh;
-			assert.strictEqual(title, manifestTitle, `${plugin.dirName} 客户端注册的 title 与清单不一致`);
+			if (title !== manifestTitle) {
+				workbenchProblems.push(`${plugin.dirName} 客户端注册的 title(${title ?? '未写'}) 与清单(${manifestTitle}) 不一致`);
+			}
+			// ★ 2026-10-22（审计后的补守）：**description / icon 也必须与清单逐字一致**。
+			//   为什么必须守：宿主快照（`vssaros-workbenches/lib/client.js`）直接取描述符的
+			//   `description || ''` / `icon || ''`，**没有回落到清单** ⇒ 描述符漏写 = 注册表里那一项
+			//   说明空 / 图标空（商城还会落到 🧩）✗ —— 当天就实测到 kb 漏 description、memory 漏 icon。
+			//   ⚠ 图标口径按规范：`workbench.icon` 缺省回落 `activityBar.icon` ⇒ 期望值取这两者先有的那个。
+			const descriptorBlock = /const DESCRIPTOR\s*=\s*\{([\s\S]*?)\}\s*;/.exec(src)?.[1] ?? src;
+			if (typeof manifest.workbench.description === 'string') {
+				const description = /description:\s*'([^']*)'/.exec(descriptorBlock)?.[1];
+				if (description !== manifest.workbench.description) {
+					workbenchProblems.push(`${plugin.dirName} 客户端注册的 description(${description ?? '未写'}) 与清单(${manifest.workbench.description}) 不一致 —— 宿主不回落到清单 ⇒ 漏写就是空说明`);
+				}
+			}
+			const manifestIcon = manifest.workbench.icon ?? manifest.activityBar?.icon;
+			if (manifestIcon !== undefined) {
+				const icon = /icon:\s*'([^']+)'/.exec(descriptorBlock)?.[1];
+				if (icon !== manifestIcon) {
+					workbenchProblems.push(`${plugin.dirName} 客户端注册的 icon(${icon ?? '未写'}) 与清单(${manifestIcon}) 不一致 —— 宿主不回落 ⇒ 漏写就是空图标`);
+				}
+			}
+			// ★ 2026-10-22：`headerLayout: 'compact'` 的官方契约是"文档内**唯一**一个 `data-dsh-workbench-toolbar`"
+			//   （宿主据此把工具条吸到顶上）。静态判据 = 客户端代码里这个锚点恰好出现 1 次：
+			//     0 次 ⇒ 声明了紧凑头却没有工具条 ⇒ 宿主吸了个空壳 ✗；
+			//     ≥2 次 ⇒ 页面上有两个"工具条" ⇒ 宿主不知道吸哪个 ✗。
+			//   ⚠ 只在清单声明 compact 时要求；默认头不强制（工具条跟着宿主头走）。
+			if (manifest.workbench.headerLayout === 'compact') {
+				let toolbarHits = 0;
+				for (const file of libFiles) {
+					const text = stripComments(fs.readFileSync(file, 'utf8'));
+					toolbarHits += (text.match(/data-dsh-workbench-toolbar/g) ?? []).length;
+				}
+				if (toolbarHits !== 1) {
+					workbenchProblems.push(`${plugin.dirName} 声明了 headerLayout:'compact' ⇒ 客户端代码必须恰好有 1 个 data-dsh-workbench-toolbar（实际 ${toolbarHits} 个）`);
+				}
+			}
 			const inject = ((plugin.json['dsh'] as { client?: { inject?: string[] } } | undefined)?.client?.inject) ?? [];
-			assert.ok(inject.includes('@vssaros/dsh-workbenches'), `${plugin.dirName} 的 dsh.client.inject 必须含 @vssaros/dsh-workbenches`);
-			assert.doesNotMatch(src, /exports\.inject\s*=\s*\[[^\]]*['"]desktopWorkbenches['"]/, `${plugin.dirName} 不许把 desktopWorkbenches 写进静态 exports.inject（宿主缺席会让整次 web boot 失败）`);
-			assert.match(src, /ctx\.inject\(\s*\[\s*['"]desktopWorkbenches['"]\s*\]/, `${plugin.dirName} 必须用 ctx.inject(['desktopWorkbenches'], …) 可选注入宿主服务`);
+			if (!inject.includes('@vssaros/dsh-workbenches')) {
+				workbenchProblems.push(`${plugin.dirName} 的 dsh.client.inject 必须含 @vssaros/dsh-workbenches`);
+			}
+			// 静态 `exports.inject` 里写 desktopWorkbenches ⇒ 宿主缺席会让整次 web boot 失败 ⇒ 全 lib 都不许有
+			for (const file of libFiles) {
+				const text = stripComments(fs.readFileSync(file, 'utf8'));
+				if (/exports\.inject\s*=\s*\[[^\]]*['"]desktopWorkbenches['"]/.test(text)) {
+					workbenchProblems.push(`${plugin.dirName}/${path.basename(file)} 把 desktopWorkbenches 写进静态 exports.inject（宿主缺席会让整次 web boot 失败）`);
+				}
+			}
+			if (!/ctx\.inject\(\s*\[\s*['"]desktopWorkbenches['"]\s*\]/.test(src)) {
+				workbenchProblems.push(`${plugin.dirName} 必须用 ctx.inject(['desktopWorkbenches'], …) 可选注入宿主服务`);
+			}
 		}
+		// ★ 2026-10-22：**收集后一次性断言**，不再"遇到第一个不合格就中断" ——
+		//   原先用 per-plugin `assert.*` ⇒ 第一个坏包之后的所有包都**没被检查**（守卫静默空转 ✗，
+		//   2026-10-22 用变异测试（把 scheduler 的 toolbar 锚点删掉）才发现：报错顺序把它挡住了）。
+		assert.deepStrictEqual(workbenchProblems, [], '工作台客户端注册与清单不一致：\n' + workbenchProblems.join('\n'));
 		assert.ok(migrated >= 1, '至少 1 个插件已迁成 React 工作台（P1 样板 scheduler）');
 	});
 
@@ -1219,9 +1336,7 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 			if (plugin.json['name'] === '@vssaros/dsh-workbenches') {
 				continue; // 宿主本身是服务提供方，不是工作台
 			}
-			const clientRel = (plugin.json['exports'] as Record<string, unknown> | undefined)?.['./client'];
-			const clientPath = typeof clientRel === 'string' ? path.join(root!, PLUGINS_REL, plugin.dirName, clientRel) : '';
-			const registers = !!clientPath && fs.existsSync(clientPath) && /desktopWorkbenches\.register\(/.test(fs.readFileSync(clientPath, 'utf8'));
+			const registers = registersWorkbench(root!, plugin);
 			const judged = hasWorkbenchClient(plugin.json);
 			if (judged) {
 				yes.push(plugin.dirName);

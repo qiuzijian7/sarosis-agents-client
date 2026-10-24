@@ -17,7 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { URI } from '../../../../../base/common/uri.js';
 import { IMarker, MarkerSeverity } from '../../../../../platform/markers/common/markers.js';
-import { IIdeActiveSelection, IIdeCapabilityEnv, IIdeDashboardSummary, IDE_CANVAS_ACTION_OPS, IDE_CANVAS_APPLY_OPS_LIMIT, IDE_CANVAS_EDGES_LIMIT, IDE_CANVAS_GENERATE_FLOW_TYPE, IDE_CANVAS_NODES_LIMIT, IDE_CANVAS_OPS_LIMIT, IDE_CANVAS_REVERSE_PROMPT_TYPE, IDE_DIAGNOSTICS_LIMIT, IDE_MINDMAP_EDGES_LIMIT, IDE_MINDMAP_FILE_BYTES_LIMIT, IDE_MINDMAP_NODES_LIMIT, IDE_MINDMAP_TEXT_LIMIT, IDE_REQUEST_EXECUTE_NODE_TIMEOUT_MS, IDE_REQUEST_SLOW_TIMEOUT_MS, IDE_REQUEST_TIMEOUT_MS, IDE_SELECTION_TEXT_LIMIT, buildExecuteNodeRequest, executeIdeCapability, ideFailureSummary, ideRequestTimeoutMs } from '../../common/dshIdeCapabilities.js';
+import { IIdeActiveSelection, IIdeCapabilityEnv, IIdeDashboardSummary, IDE_CANVAS_ACTION_OPS, IDE_CANVAS_APPLY_OPS_LIMIT, IDE_CANVAS_EDGES_LIMIT, IDE_CANVAS_GENERATE_FLOW_TYPE, IDE_CANVAS_NODES_LIMIT, IDE_CANVAS_OPS_LIMIT, IDE_CANVAS_REVERSE_PROMPT_TYPE, IDE_DIAGNOSTICS_LIMIT, IDE_MINDMAP_EDGES_LIMIT, IDE_MINDMAP_FILE_BYTES_LIMIT, IDE_MINDMAP_NODES_LIMIT, IDE_MINDMAP_TEXT_LIMIT, IDE_REQUEST_EXECUTE_NODE_TIMEOUT_MS, IDE_REQUEST_INSTALL_TIMEOUT_MS, IDE_REQUEST_SLOW_TIMEOUT_MS, IDE_REQUEST_TIMEOUT_MS, IDE_SELECTION_TEXT_LIMIT, buildExecuteNodeRequest, executeIdeCapability, ideFailureSummary, ideRequestTimeoutMs } from '../../common/dshIdeCapabilities.js';
 
 function marker(path: string, severity: MarkerSeverity, line: number, message: string, code?: string): IMarker {
 	return {
@@ -774,5 +774,99 @@ test('media 的 capabilities：返回 IDE 侧的能力表（provider/模型/档�
 test('media 的等待预算必须是慢档（生图几十秒到几分钟 ⇒ 20s 默认预算会误判超时）', () => {
 		const media = ideRequestTimeoutMs('media', { op: 'generateImage' });
 		assert.ok(media > IDE_REQUEST_SLOW_TIMEOUT_MS, `生图预算(${media}ms) 必须大于慢档(${IDE_REQUEST_SLOW_TIMEOUT_MS}ms)`);
+	});
+
+	// ── ★ 2026-10-22：`workbenches.install`（工作台市场的安装按钮）────────────────
+	suite('workbenches.install', () => {
+		const base = { op: 'install', name: 'dsh-deck-workbench', version: '1.0.13', title: '演示动画工作台', source: 'github-release', dir: 'C:/data/market/packages/dsh-deck-workbench-1.0.13' };
+		const withInstaller = (consent: boolean, result = { ok: true, changed: true, version: '1.0.13' }) => {
+			const made = envOf({ consent });
+			const calls: { dir?: string; spec?: string; name: string }[] = [];
+			(made.env as any).installWorkbenchPackage = async (req: { dir?: string; spec?: string; name: string }) => { calls.push(req); return result; };
+			// ★ 2026-10-22 真机：安装确认走原生框（confirmUserAction），**不许**再走 Host 审批服务（界面点击没有回合 ⇒ 当场被拒）
+			const approvalCalls: unknown[] = [];
+			(made.env as any).requestActionConsent = async (req: unknown) => { approvalCalls.push(req); return true; };
+			(made.env as any).confirmUserAction = async (req: { title: string; detail: string }) => { made.consents.push(req); return consent; };
+			return { ...made, calls, approvalCalls };
+		};
+		test('★ 安装确认走原生确认框，不走 Host 审批服务（真机：后者当场被拒，点安装没反应）', async () => {
+			const { env, approvalCalls, consents } = withInstaller(true) as any;
+			await executeIdeCapability({ capability: 'workbenches', params: base }, env);
+			assert.strictEqual(approvalCalls.length, 0, '不许调用 requestActionConsent');
+			assert.strictEqual(consents.length, 1, '必须调用 confirmUserAction 一次');
+			const bare = envOf({ consent: true }).env as any;
+			bare.installWorkbenchPackage = async () => ({ ok: true, changed: true });
+			await assert.rejects(() => executeIdeCapability({ capability: 'workbenches', params: base }, bare), /confirmUserAction 缺失/, '没有确认框 ⇒ fail-closed');
+		});
+		test('ideFailureSummary：非 unreal 回执按 op 标注并带 error 原因（真机日志曾是 "unreal ? 判定失败：" + 空）', () => {
+			assert.strictEqual(ideFailureSummary({ op: 'install', ok: false, declined: true, error: '用户取消了安装' }), 'install 判定失败：用户取消了安装');
+			assert.match(ideFailureSummary({ ok: false }) ?? '', /回执没有原因/);
+		});
+		test('先问用户；拒绝 ⇒ 不装（fail-closed），回执 declined', async () => {
+			const { env, calls, consents } = withInstaller(false) as any;
+			const out = await executeIdeCapability({ capability: 'workbenches', params: base }, env) as { ok: boolean; declined?: boolean };
+			assert.strictEqual(out.ok, false);
+			assert.strictEqual(out.declined, true);
+			assert.strictEqual(calls.length, 0, '没确认就不许装');
+			assert.strictEqual(consents.length, 1);
+			assert.match(consents[0].title, /演示动画工作台/);
+			assert.match(consents[0].detail, /dsh-deck-workbench@1\.0\.13/);
+			assert.match(consents[0].detail, /完整权限/, '确认框必须讲清服务端的权限');
+		});
+		test('同意 ⇒ 按目录装，回执带版本与 restartRequired', async () => {
+			const { env, calls } = withInstaller(true);
+			const out = await executeIdeCapability({ capability: 'workbenches', params: base }, env) as { ok: boolean; version: string; restartRequired: boolean };
+			assert.deepStrictEqual(calls, [{ dir: base.dir, name: base.name }]);
+			assert.strictEqual(out.ok, true);
+			assert.strictEqual(out.version, '1.0.13');
+			assert.strictEqual(out.restartRequired, true);
+		});
+		test('装上的版本与目录不一致 ⇒ ok:false', async () => {
+			const { env } = withInstaller(true, { ok: true, changed: true, version: '9.9.9' });
+			const out = await executeIdeCapability({ capability: 'workbenches', params: base }, env) as { ok: boolean; error: string };
+			assert.strictEqual(out.ok, false);
+			assert.match(out.error, /9\.9\.9/);
+		});
+		test('参数校验：包名 / dir 与 spec 二选一 / spec 只收锁版本形态 / dir 必须绝对路径', async () => {
+			const { env } = withInstaller(true);
+			const bad: Array<[Record<string, unknown>, RegExp]> = [
+				[{ ...base, name: '../evil' }, /包名不合法/],
+				[{ ...base, spec: 'x@1' }, /二选一|之一/],
+				[{ ...base, dir: undefined }, /二选一|之一/],
+				[{ ...base, dir: undefined, spec: 'github:o/r#main' }, /锁死 commit/],
+				[{ ...base, dir: undefined, spec: 'other-pkg@1.0.13' }, /只收/],
+				[{ ...base, dir: 'relative/path' }, /绝对路径/],
+				[{ ...base, version: undefined }, /version/],
+				[{ ...base, op: 'uninstall' }, /op 不认识/],
+			];
+			for (const [params, re] of bad) {
+				await assert.rejects(() => executeIdeCapability({ capability: 'workbenches', params }, env), re, JSON.stringify(params));
+			}
+			// 合法的两种 spec
+			for (const spec of [`${base.name}@${base.version}`, 'github:sara2398/xiaohongshu-note-workbench#60e0de77c58f92e6319212df33ad2ece53898726']) {
+				const out = await executeIdeCapability({ capability: 'workbenches', params: { ...base, dir: undefined, spec } }, env) as { ok: boolean };
+				assert.strictEqual(out.ok, true, spec);
+			}
+		});
+		test('确认框列出服务端能力审计：有清单逐条列；空清单说没发现；null 说看不到代码', async () => {
+			const cases: Array<[unknown, RegExp]> = [
+				[['启动子进程（可执行任意本机程序）', '向 AI 注册工具（模型可以调用它）'], /静态扫描到[\s\S]*启动子进程[\s\S]*注册工具/],
+				[[], /没发现启动进程/],
+				[null, /看不到这个包的代码/],
+			];
+			for (const [capabilities, re] of cases) {
+				const { env, consents } = withInstaller(false) as any;
+				await executeIdeCapability({ capability: 'workbenches', params: { ...base, capabilities } }, env);
+				assert.match(consents[0].detail, re, JSON.stringify(capabilities));
+			}
+		});
+		test('IDE 没接安装通道 ⇒ 报人话', async () => {
+			const env = envOf({ consent: true }).env;
+			await assert.rejects(() => executeIdeCapability({ capability: 'workbenches', params: base }, env), /没有接工作台安装通道/);
+		});
+		test('等待预算：不短于确认窗口 + 装包上限', () => {
+			assert.strictEqual(ideRequestTimeoutMs('workbenches', { op: 'install' }), IDE_REQUEST_INSTALL_TIMEOUT_MS);
+			assert.ok(IDE_REQUEST_INSTALL_TIMEOUT_MS >= 6 * 60 * 1000);
+		});
 	});
 });

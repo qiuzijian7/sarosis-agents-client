@@ -12,6 +12,8 @@ import { ProcessOutputCollector } from '../../sessions/contrib/agentStudio/commo
 import { hostname, release } from 'os';
 import { existsSync } from 'fs';
 import { dispatchWorktreeDebug, resolveWorktreeDebugPlan } from './worktreeDebugStrategies.js';
+import { installCursorCrashGuard } from './cursorCrashGuard.js';
+import { installRunJournal } from './runJournal.js';
 import { initWindowsVersionInfo } from '../../base/node/windowsVersion.js';
 import { VSBuffer } from '../../base/common/buffer.js';
 import { toErrorMessage } from '../../base/common/errorMessage.js';
@@ -231,6 +233,11 @@ export class CodeApplication extends Disposable {
 		@IUserDataProfilesMainService private readonly userDataProfilesMainService: IUserDataProfilesMainService
 	) {
 		super();
+
+		// ★★ 2026-10-24：尽早落一条 START，并补记"上次是否无声消失"。
+		//   两条 launch 型配置（js-debug 直接 spawn exe + `cleanUp: wholeBrowser`）会**绕过**
+		//   `scripts/start-dev-app.*`，以前连 START/EXIT 都没有 ⇒ "自动关闭"查不到原因 ✗。
+		installRunJournal(this.logService);
 
 		this.configureSession();
 		this.registerListeners();
@@ -470,6 +477,12 @@ export class CodeApplication extends Disposable {
 	}
 
 	private registerListeners(): void {
+
+		// ★★ 2026-10-24: CSS cursors such as `col-resize` / `zoom-in` / `grab` are loaded from exe
+		//   resources; when Windows' LoadCursor fails (dev machine: USER atom table exhausted),
+		//   Chromium hits a CHECK and the whole app dies with 0xC000001D. Rewrite them to system
+		//   cursors in every frame before any window is created. See `cursorCrashGuard.ts`.
+		installCursorCrashGuard(this.logService);
 
 		// Dispose on shutdown
 		Event.once(this.lifecycleMainService.onWillShutdown)(() => this.dispose());

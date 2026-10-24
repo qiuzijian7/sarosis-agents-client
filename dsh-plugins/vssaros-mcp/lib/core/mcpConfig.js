@@ -226,11 +226,16 @@ export function renderSection({ path, exists, readError, parsed, toolCount, tool
 	// 2026-10-15 的新增只有**齿轮**（`[data-sk-settings]`，交互由宿主页那段委派处理器统一接 ✓）。
 	const serverRows = parsed.servers.map(server => {
 		const tools = toolsOfServer(server.serverName);
-		return `<li data-mcp-server-row data-mcp-server="${escapeHtml(server.serverName)}">`
+		// ★ 2026-10-23（用户：连接器 item UI 重构）：`.sk-pane-mcp li` 是 flex-column，
+		//   原来 名字 / slug / 传输 / 端点 / 齿轮 各占一行 ⇒ 一张卡 113px 高、五行。
+		//   现在第一行放「名字 + 传输·工具数 + 齿轮」，第二行只放端点。
+		return `<li data-mcp-server-row data-mcp-server="${escapeHtml(server.serverName)}" title="${escapeHtml(server.serverName)}">`
+			+ '<div class="mcp-l1">'
 			+ `<span class="id">${escapeHtml(server.serverName)}</span>`
-			+ ` <small>${escapeHtml(server.transport)}${tools.length ? ` · ${tools.length} 工具` : ''}</small>`
-			+ `<code>${escapeHtml(endpointOf(server))}</code>`
+			+ `<small>${escapeHtml(server.transport)}${tools.length ? ` · ${tools.length} 工具` : ''}</small>`
 			+ settingsBtn('mcp', server.serverName, '设置（在编辑区修改 mcp.json）')
+			+ '</div>'
+			+ `<code>${escapeHtml(endpointOf(server))}</code>`
 			+ '</li>';
 	}).join('');
 	const skipRows = parsed.skipped.map(item => `<li><span class="id">${escapeHtml(item.name)}</span> ${escapeHtml(item.reason)}</li>`).join('');
@@ -242,16 +247,26 @@ export function renderSection({ path, exists, readError, parsed, toolCount, tool
 				? `<ul>${serverRows}</ul>`
 				: '<p class="empty">配置里没有可挂载的服务器（全部被跳过，原因见下）。</p>'));
 	const skips = skipRows ? `<section><h2>跳过的服务器 <small>${summary.skipped}</small></h2><ul>${skipRows}</ul></section>` : '';
+	/**
+	 * 模型可见的工具清单（★ 2026-10-23 用户：「mcp 中的工具名不应该作为 item 显示」）。
+	 *
+	 * 工具不是"连接器条目"—— 不可单独启用/配置、也不能单独安装 ⇒ 列成卡片只会把真正的
+	 * 服务器行挤到看不见的地方。改成**折叠清单**：默认只给数量，点开是纯名字（`<code>`，不是 `<li>`）。
+	 * `data-vssaros-mcp-tool` 必须逐条保留：p3-18 用它断言"清单条数 == 计数"。
+	 */
+	const toolItems = toolList ?? [];
+	const toolListHtml = toolItems.length
+		? '<details class="mcp-tools" data-vssaros-mcp-tool-list="ready"><summary>模型可见的 MCP 工具 <b>' + toolItems.length + '</b>（点开看名字）</summary>'
+			+ '<div class="mcp-tool-names">'
+			+ toolItems.map(tool => '<span data-vssaros-mcp-tool="' + escapeHtml(tool.name) + '" title="' + escapeHtml(String(tool.description || '').slice(0, 200)) + '"><code>' + escapeHtml(tool.name) + '</code></span>').join('')
+			+ '</div></details>'
+		: '';
 	return `<section data-vssaros-page="mcp-section" data-vssaros-mcp-state="${!exists ? 'missing' : (readError ? 'error' : (summary.servers ? 'ok' : 'empty'))}" data-vssaros-mcp-path="${escapeHtml(path)}" data-vssaros-mcp-servers="${summary.servers}" data-vssaros-mcp-skipped="${summary.skipped}" data-vssaros-mcp-stdio="${summary.byTransport.stdio}" data-vssaros-mcp-http="${summary.byTransport['streamable-http']}" data-vssaros-mcp-tools="${escapeHtml(toolCount)}">
 <h2>MCP 服务器 <small>${summary.servers ? `挂载 ${summary.servers} 台` : '未挂载'}${summary.skipped ? ` · 跳过 ${summary.skipped}` : ''}</small></h2>
 <p class="diag">真源：<code>${escapeHtml(path)}</code> · 模型可见的 MCP 工具：<code>${escapeHtml(toolCount)}</code>${toolNote ? `（${escapeHtml(toolNote)}）` : ''}</p>
 <p class="diag">改这份文件后需<b>重启 Host</b> 才生效（dsh 的一台服务器一个组合行，只能靠启动时的覆盖层加行）。</p>
-${(toolList ?? []).length ? `<section data-vssaros-mcp-tool-list="ready"><h2>模型可见的 MCP 工具 <small>${(toolList ?? []).length}</small></h2><ul>${toolList.map(tool => `<li data-vssaros-mcp-tool="${escapeHtml(tool.name)}"><span class="id">${escapeHtml(tool.name)}</span>${tool.description ? ` <small>${escapeHtml(String(tool.description).slice(0, 200))}</small>` : ''}`
-		// 工具**不可单独配置**（它是服务器给的）⇒ 这里的齿轮指向**它所属的服务器**的设置，标题里写明归属 ✓
-		// （"每条 item 都有设置按钮"是用户的要求 ✓；指向"能改的那个东西"才不是假按钮 ✓）
-		+ (ownerOfTool(tool.name) ? settingsBtn('mcp', ownerOfTool(tool.name), `设置所属服务器（${ownerOfTool(tool.name)}）`) : '')
-		+ '</li>').join('')}</ul></section>` : ''}
 ${body}
+${toolListHtml}
 ${skips}
 </section>`;
 }

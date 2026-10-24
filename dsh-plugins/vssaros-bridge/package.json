@@ -1,6 +1,6 @@
 {
   "name": "@vssaros/dsh-bridge",
-  "version": "0.2.33",
+  "version": "0.2.39",
   "description": "VsSaros companion plugin for DeepSeek Harness: control bridge (host half) and page-bridge client (browser half). Protocol: src/vs/sessions/contrib/dshHarness/common/dshBridgeProtocol.ts",
   "private": true,
   "type": "module",
@@ -15,6 +15,10 @@
     "lib/runs.js",
     "lib/credit.js",
     "lib/tof.js",
+    "lib/providerProfile.js",
+    "lib/codebuddy.js",
+    "lib/lightai.js",
+    "lib/lightaiGen.js",
     "lib/client.js",
     "cordis.patch.yml"
   ],

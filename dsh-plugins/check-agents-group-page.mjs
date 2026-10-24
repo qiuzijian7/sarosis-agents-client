@@ -115,8 +115,25 @@ check('群聊页：fallback 分层（媒体查询只改 --gp-fb-*，不覆盖主
 const detail = existsSync(DETAIL) ? readFileSync(DETAIL, 'utf8') : '';
 check('工作台：群聊签用同源 iframe 承载群聊页（#gpFrame → /x/agents/group/…）',
 	detail.includes('id="gpFrame"') && detail.includes('/x/agents/group/'), '');
-check('工作台：默认落点 = 群聊签（有群时概览签收起）',
-	detail.includes("id=\"tabGroup\"' + (groupFirst ? ' class=\"on\"' : '')"), '');
+// ★ v3（2026-10-23 用户指定）：顶部**只有 4 个签**（名册/用量/委派/授权），默认落点 = 名册；
+//   群聊不再占签，并入名册左栏（点群聊 item ⇒ 中间栏变群聊窗口）。
+check('工作台：顶部只 4 个签（名册/用量/委派/授权），默认落点 = 名册',
+	/id="tabRoster" class="on"/.test(detail)
+	&& !/id="tabGroup"/.test(detail) && !/id="tabMemory"/.test(detail)
+	&& !/id="tabOverview"/.test(detail), '');
+check('工作台：名册 = 三栏（左 agents+群聊 / 中 会话或群聊窗口 / 右 5 子 tab）',
+	/class="wb3"/.test(detail) && /class="wb3-l"/.test(detail)
+	&& /class="wb3-m"/.test(detail) && /class="wb3-r"/.test(detail), '');
+check('工作台：左栏群聊 item 与 agents 混在一个名册里（data-wb-group / data-wb-agent）',
+	/data-wb-group="/.test(detail) && /data-wb-agent="/.test(detail), '');
+check('工作台：右栏 5 个常驻子 tab（最近会话/记忆/演化/版本/分支）',
+	['recent', 'mem', 'evo', 'ver', 'br'].every(k => detail.includes(`data-wb-rt="${k}"`)), '');
+check('工作台：群聊窗口用 ?embed=1 内嵌（父页已给左右栏，避免两套栏）',
+	detail.includes("/x/agents/group/' + escapeHtml(groupOpenId) + '?embed=1'")
+	|| detail.includes('?embed=1'), '');
+check('群聊页：embed=1 时隐藏自带的左右栏（body.embed 规则）',
+	/body\.embed \.gp-left/.test(src) && /body\.embed \.gp-right/.test(src)
+	&& src.includes('embed=1') && src.includes('classList.add("embed")'), '');
 check('工作台：焦点交接 group:<id> 改为切 iframe 的 src',
 	detail.includes('function selectGroupById') && detail.includes("fr.src = '/x/agents/group/'"), '');
 check('工作台：旧的内联群面板已下线（不得复活 —— 同一群聊只留一套 UI）',
@@ -132,9 +149,11 @@ check('工作台：iframe 主题同步真的被调用（watchFrameTheme + syncTh
 	&& /syncThemeToFrame\(\);/.test(detail), '');
 
 // ── 8 活动 / 时间线（mockup 款 C / 款 D）────────────────────────────────
-check('工作台：补齐「活动」「时间线」两个签（mockup 款 C / 款 D）',
-	detail.includes('data-vssaros-activity-tab') && detail.includes('data-vssaros-timeline-tab')
-	&& detail.includes('id="activity"') && detail.includes('id="timeline"'), '');
+// ★ v3：活动/时间线不再占顶部签 —— 它们收进 #legacyPanes（hidden），
+//   对应的能力并入右栏「最近会话」（会话+委派混合流）与「演化」（记忆提交时间线）。
+check('工作台：活动/时间线收进 #legacyPanes（不再占顶部签，避免两套入口）',
+	detail.includes('id="legacyPanes"') && detail.includes('id="activity"') && detail.includes('id="timeline"')
+	&& !detail.includes('data-vssaros-activity-tab') && !detail.includes('data-vssaros-timeline-tab'), '');
 check('工作台：活动面板 = 此刻 feed + 待你处理；时间线 = 委派/会话/记忆快照',
 	detail.includes('data-vssaros-activity-feed') && detail.includes('data-vssaros-activity-todo')
 	&& detail.includes('data-vssaros-timeline') && detail.includes('data-vssaros-tl-kind'), '');

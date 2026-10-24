@@ -56,11 +56,26 @@ const HOST_EXEMPT = {
 	scheduler: '定时任务是"自动化任务"不是工作台 ⇒ 主页不收（但侧栏有它 ⇒ 必须在 DEFAULT_ITEMS 里）',
 };
 
+/* ⚠ 2026-10-23：宿主页表里既登记"模块主页"（`/x/kb/`），也可能登记**子路由**
+   （`/x/kb/sideview`）。两份清单一向只登记**模块主页**（那是用户点的入口）
+   ⇒ 精确匹配会把子路由误报成"漏登记"（实测报了 kb(/x/kb/sideview)）。
+   判据改成**前缀归属**：清单里有 `/x/kb/` 就算 `/x/kb/xxx` 已登记
+   （与 `openModulePage` 的白名单口径一致：精确 → 前缀归属）。 */
+const covers = (set, route) => {
+	if (set.has(route)) { return true; }
+	for (const r of set) {
+		if (!r || r === '/') { continue; }
+		const prefix = r.endsWith('/') ? r : r + '/';
+		if (route.startsWith(prefix)) { return true; }
+	}
+	return false;
+};
+
 const missingNav = [];
 const missingHome = [];
 for (const { module, route } of pageModules) {
-	if (!navItems.has(route)) { missingNav.push(`${module}(${route})`); }
-	if (!homeCards.has(route) && !HOST_EXEMPT[module]) { missingHome.push(`${module}(${route})`); }
+	if (!covers(navItems, route)) { missingNav.push(`${module}(${route})`); }
+	if (!covers(homeCards, route) && !HOST_EXEMPT[module]) { missingHome.push(`${module}(${route})`); }
 }
 if (missingNav.length === 0) {
 	ok(`侧栏启动器 / route 白名单：${pageModules.length} 个整页模块都已登记 ✓`);
@@ -80,6 +95,58 @@ for (const [module, why] of Object.entries(HOST_EXEMPT)) {
 	if (homeCards.has(route)) {
 		fail(`豁免项「${module}」已经在主页卡片清单里了 ⇒ 它的豁免理由（${why}）已过期，请删掉豁免`);
 	}
+}
+
+// ── ④ 图标可渲染：`codicon:*` → emoji 映射表覆盖所有已注册工作台（2026-10-22）──────
+// 为什么必须守：注册表 `icon` 是**标识符**（`codicon:home`），而 dsh 前端**没有 codicon 字体/CSS**
+//   ⇒ 不映射就只能显示兜底 🧩（以前那行是 `icon.length <= 4 ? icon : "🧩"`）。加了映射表之后，
+//   新增工作台若用了没登记的 codicon，就会**悄悄**退回 🧩 ⇒ 必须让它在这里变红 ✓。
+const NAV_FILE = path.join(ROOT, 'dsh-plugins', 'vssaros-chat-surface', 'lib', 'client.workbenchNav.js');
+const MARKET_FILE = path.join(ROOT, 'dsh-plugins', 'vssaros-chat-surface', 'lib', 'client.market.js');
+const mapBlockOf = (text) => {
+	const m = /const WB_ICON_EMOJI\s*=\s*\{([\s\S]*?)\};/.exec(text);
+	return m ? m[1].replace(/\s+/g, ' ').trim() : '';
+};
+const navIconSrc = read(NAV_FILE);
+const marketIconSrc = read(MARKET_FILE);
+const navIconMap = mapBlockOf(navIconSrc);
+const marketIconMap = mapBlockOf(marketIconSrc);
+if (!navIconMap) {
+	fail('client.workbenchNav.js 里找不到 WB_ICON_EMOJI 映射表（图标会全部退回 🧩）');
+} else if (!marketIconMap) {
+	fail('client.market.js 里找不到 WB_ICON_EMOJI 映射表（商城列表会显示 codicon:xxx 原文）');
+} else if (navIconMap !== marketIconMap) {
+	fail('两处 WB_ICON_EMOJI **不一致**（两个 chunk 各存一份 ⇒ 必须逐字相同，否则启动器与商城显示不同图标）');
+} else {
+	ok(`codicon→emoji 映射表两处逐字一致（${(navIconMap.match(/"codicon:/g) ?? []).length} 项）✓`);
+}
+
+// 每个**已注册**工作台（有 desktopWorkbenches.register 的包）的图标，都必须能映射到非 🧩 的 emoji
+const pluginsRoot = path.join(ROOT, 'dsh-plugins');
+/** 键 → emoji（从 workbenchNav 那份表解析；两张表已校验逐字一致 ⇒ 用哪份都一样）。 */
+const iconPairs = new Map([...navIconMap.matchAll(/"([^"]+)"\s*:\s*"([^"]+)"/g)].map(m => [m[1], m[2]]));
+const unmapped = [];
+for (const dirName of fs.readdirSync(pluginsRoot)) {
+	const pkgPath = path.join(pluginsRoot, dirName, 'package.json');
+	if (!fs.existsSync(pkgPath)) { continue; }
+	const pkg = JSON.parse(read(pkgPath));
+	const wb = pkg.vssaros && pkg.vssaros.workbench;
+	if (!wb) { continue; }
+	const libDir = path.join(pluginsRoot, dirName, 'lib');
+	if (!fs.existsSync(libDir)) { continue; }
+	const registered = fs.readdirSync(libDir).filter(f => f.endsWith('.js'))
+		.some(f => /desktopWorkbenches\.register\(/.test(read(path.join(libDir, f))));
+	if (!registered) { continue; }
+	const icon = wb.icon ?? (pkg.vssaros.activityBar && pkg.vssaros.activityBar.icon) ?? '';
+	if (!icon) { unmapped.push(`${dirName}（没写 icon）`); continue; }
+	const emoji = iconPairs.get(icon);
+	if (!emoji) { unmapped.push(`${dirName}（${icon} 不在映射表里）`); }
+	else if (emoji === '🧩') { unmapped.push(`${dirName}（${icon} 映射到占位符 🧩）`); }
+}
+if (unmapped.length) {
+	fail(`已注册工作台的图标映射不到 emoji（会显示 🧩）：${unmapped.join('、')}`);
+} else {
+	ok('已注册工作台的图标都能映射到 emoji ✓');
 }
 
 console.log(problems === 0

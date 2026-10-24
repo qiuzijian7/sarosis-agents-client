@@ -414,10 +414,57 @@ export async function mountFreeCanvas(options) {
 		},
 	}));
 
+	/**
+	 * 按 id 把一张图放进画布（"到画布里改"用：`/x/imagegen/canvas/?image=<id>`）。
+	 *
+	 * ⚠ 与 `pullImages` 的区别：那个走**账本时间游标**（"最近出图"），
+	 *   这个走**指定 id**（图可能早于游标 ⇒ 拉不到 ✗）。
+	 */
+	async function placeImageById(imageId) {
+		const id = String(imageId || '').trim();
+		if (!id) { return false; }
+		if (placedImages.has(id)) { return true; }
+		try {
+			const res = await fetch(apiBase + '/canvas-image/' + encodeURIComponent(id), { credentials: 'same-origin' });
+			if (!res.ok) {
+				onStatus('取图失败（图不在「最近出图」账本里？）：HTTP ' + res.status, 'bad');
+				return false;
+			}
+			const blob = await res.blob();
+			const dataUrl = await new Promise(function (resolve) {
+				const reader = new FileReader();
+				reader.onload = function () { resolve(String(reader.result || '')); };
+				reader.onerror = function () { resolve(''); };
+				reader.readAsDataURL(blob);
+			});
+			if (!dataUrl) { return false; }
+			// 尺寸：blob 自己解码（宿主只给 id，不给尺寸 ⇒ 猜不得 ✗）。
+			let width = 0;
+			let height = 0;
+			try {
+				const bitmap = await createImageBitmap(blob);
+				width = bitmap.width;
+				height = bitmap.height;
+				bitmap.close();
+			} catch (e) {
+				width = 512;
+				height = 512;
+			}
+			placedImages.add(id);
+			await placeImage({ id, mimeType: blob.type || 'image/png', width, height, prompt: '' }, dataUrl);
+			onStatus('已把选中的图放进画布', 'ok');
+			return true;
+		} catch (e) {
+			onStatus('取图失败：' + String((e && e.message) || e), 'bad');
+			return false;
+		}
+	}
+
 	return {
 		snapshot,
 		importFiles,
 		pullImages,
+		placeImageById,
 		/** 当前的 Excalidraw API（探针/调试用）。 */
 		api: () => apiRef.current,
 	};

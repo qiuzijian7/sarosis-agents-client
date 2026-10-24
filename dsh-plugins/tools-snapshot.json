@@ -614,7 +614,7 @@
           "save_to_workspace",
           "size"
         ],
-        "descriptionHash": "724bffa79f7a"
+        "descriptionHash": "ab4f1535b02b"
       },
       {
         "name": "image_models",
@@ -1134,7 +1134,7 @@
           "text",
           "voice"
         ],
-        "descriptionHash": "a9c328788fcb"
+        "descriptionHash": "2bed39bb5fea"
       },
       {
         "name": "video_analyze",
@@ -1167,7 +1167,7 @@
           "ratio",
           "resolution"
         ],
-        "descriptionHash": "bf81d9c1672a"
+        "descriptionHash": "7510fce12c2e"
       },
       {
         "name": "vision_analyze",

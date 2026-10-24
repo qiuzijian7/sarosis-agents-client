@@ -32,6 +32,8 @@ import { lineDiff } from './core/diff.js';
 import { aggregateByPreset, liveForAgents, usageByAgent } from './core/live.js';
 import { PERSONA_PROJECTION_KEY, personaProjection, personaSwitchMessage, switchedPersonaText } from './core/persona.js';
 import { renderDetailPage } from './detail.js';
+// ★ 2026-10-22（工作台重构）：名册 JSON 接口复用**同一份**面板数据构建（页面与工作台不会各算一遍 ✓）
+import { buildHomeData } from './home.js';
 import { renderGroupPage } from './groupPage.js';
 import { renderMemoryEvoPage } from './memoryEvoPage.js';
 import { addGroupMembers, createGroup, decideGroupJoin, deleteGroup, installGroupTracker, listGroups, markGroupRead, normalizeGroupMode, postGroupMessage, removeGroupMember, setGroupAvatar, updateGroup, wakeOf } from './groups.js';
@@ -660,6 +662,187 @@ function applyTopLevel(ctx, config) {
 			const url = new URL(req.url ?? '/', 'http://127.0.0.1');
 			const pathname = url.pathname;
 			const root = agentsRootOf(config);
+
+			/* ══ 真聊天（2026-10-23）：把宿主的 `sessionController` 转发成三条路由 ══════════════
+			   为什么要这三条：工作台中间栏要「真聊天」，而聊天需要的三件事 dsh 全有，只是插件拿不到 HTTP 面：
+			     · 首屏 + 定稿帧 + assistant 流式帧 = `sessionController.follow()` 的三种帧
+			       （`SessionFollowFrame = {type:'snapshot'} | SessionEventEntry | {type:'assistant-stream'}`，
+			        见 dsh-api-session-controller/types.d.ts:539-550 —— 与 DSB 的 channel/message+channel/draft 同构）
+			     · 发消息 = `sessionController.prompt()`（`SessionPromptRequest{requestId,sessionId,mode,content}`）
+			     · 停止 = `sessionController.cancel()`
+			   ⚠ 服务名是实测出来的：`ctx.sessionController`（该包 `super(ctx, "sessionController", …)`）。
+			   ⚠ 宿主没装 / 没就绪 ⇒ **如实 501**，不静默（静默会让工作台显示"没有会话"，比报错更难查）。 */
+			const sessionController = () => {
+				try {
+					const viaReflect = page.reflect && typeof page.reflect.get === 'function' ? page.reflect.get('sessionController') : undefined;
+					return viaReflect || page.sessionController || null;
+				} catch { return null; }
+			};
+			const sseHead = (res) => {
+				res.writeHead(200, {
+					'content-type': 'text/event-stream; charset=utf-8',
+					'cache-control': 'no-cache, no-transform',
+					connection: 'keep-alive',
+					'x-accel-buffering': 'no',
+				});
+			};
+
+			// ① GET /api/live?session=<id> —— SSE：snapshot / event(定稿) / assistant-stream(流式)
+			if (pathname === `${ROUTE_PREFIX}/api/live` && req.method === 'GET') {
+				const sid = String(url.searchParams.get('session') || '');
+				const ctl = sessionController();
+				if (!ctl) {
+					res.writeHead(501, { 'content-type': 'application/json; charset=utf-8' });
+					res.end(JSON.stringify({ ok: false, error: '宿主的 sessionController 服务不可用（Host 版本太旧或该插件被禁用）' }));
+					return;
+				}
+				if (!sid) {
+					res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' });
+					res.end(JSON.stringify({ ok: false, error: '缺 session 参数' }));
+					return;
+				}
+				sseHead(res);
+				const ac = new AbortController();
+				req.on('close', () => ac.abort());
+				// 心跳：SSE 过代理/空闲会被掐断（15s 一次注释帧，浏览器不会当数据）
+				const beat = setInterval(() => { try { res.write(': ping\n\n'); } catch { /* 已断开 */ } }, 15_000);
+				const send = (event, data) => {
+					try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch { /* 已断开 */ }
+				};
+				try {
+					for await (const frame of ctl.follow({ address: { kind: 'session', sessionId: sid }, assistantStream: true }, ac.signal)) {
+						const kind = frame && typeof frame === 'object' && typeof frame.type === 'string' ? frame.type : 'frame';
+						send(kind, frame);
+					}
+				} catch (e) {
+					if (!ac.signal.aborted) { send('error', { message: String((e && e.message) || e) }); }
+				} finally {
+					clearInterval(beat);
+					try { res.end(); } catch { /* 已断开 */ }
+				}
+				return;
+			}
+
+			// ①.5 POST /api/session { agentPreset?, cwd? } —— 开一个新会话（工作台「发起会话」用）
+			if (pathname === `${ROUTE_PREFIX}/api/session` && req.method === 'POST') {
+				const ctl = sessionController();
+				if (!ctl) {
+					res.writeHead(501, { 'content-type': 'application/json; charset=utf-8' });
+					res.end(JSON.stringify({ ok: false, error: '宿主的 sessionController 服务不可用' }));
+					return;
+				}
+				const body = await readJsonBody(req).catch(() => ({}));
+				try {
+					// 只透传白名单字段（`sessionId` 不透传：新会话就让它自己生成，避免与已有会话撞名）
+					const out = await ctl.create({
+						agentPreset: typeof body.agentPreset === 'string' && body.agentPreset ? body.agentPreset : undefined,
+						cwd: typeof body.cwd === 'string' && body.cwd ? body.cwd : undefined,
+					});
+					res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+					res.end(JSON.stringify({ ok: true, sessionId: out && out.sessionId, agentPreset: out && out.agentPreset }));
+				} catch (e) {
+					res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
+					res.end(JSON.stringify({ ok: false, error: String((e && e.message) || e) }));
+				}
+				return;
+			}
+
+			// ①.7 GET /api/page?session=<id>&throughSeq=<n>&maxMessages=<n> —— **历史首屏**
+			//   ⚠ 为什么需要它：`follow()` 的 snapshot 只给"从当前游标往前一小段"，**不含完整历史**
+			//     ⇒ 中间栏接上一个有历史的会话时会是空的（只有增量）。DSB 的对应做法是
+			//     `loadOpeningTimeline`（RPC 拉首屏）+ SSE（推增量）两段 ⇒ 这里补齐第一段。
+			//   ⚠ `throughSeq` 是必填（类型注释：inclusive log cut obtained from the follow opening frame）
+			//     ⇒ 客户端拿到 snapshot 帧的 `cursor` 再回填到这里。
+			if (pathname === `${ROUTE_PREFIX}/api/page` && req.method === 'GET') {
+				const ctl = sessionController();
+				if (!ctl) {
+					res.writeHead(501, { 'content-type': 'application/json; charset=utf-8' });
+					res.end(JSON.stringify({ ok: false, error: '宿主的 sessionController 服务不可用' }));
+					return;
+				}
+				const sid = String(url.searchParams.get('session') || '');
+				// ⚠ 不能用 `Number(null)` —— 那是 0，会被当成合法 throughSeq（缺参不报错 ✗，p3-176 抓到过）
+				const rawSeq = url.searchParams.get('throughSeq');
+				const throughSeq = rawSeq === null || rawSeq.trim() === '' ? Number.NaN : Number(rawSeq);
+				const maxMessages = Number(url.searchParams.get('maxMessages')) || 60;
+				if (!sid || !Number.isFinite(throughSeq) || throughSeq < 0) {
+					res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' });
+					res.end(JSON.stringify({ ok: false, error: '缺 session 或 throughSeq（throughSeq 取自 follow 的 snapshot.cursor）' }));
+					return;
+				}
+				try {
+					const page = await ctl.page({ address: { kind: 'session', sessionId: sid }, throughSeq, maxMessages }, new AbortController().signal);
+					res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+					res.end(JSON.stringify({ ok: true, records: (page && page.records) || [], hasMore: !!(page && page.hasMore) }));
+				} catch (e) {
+					res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
+					res.end(JSON.stringify({ ok: false, error: String((e && e.message) || e) }));
+				}
+				return;
+			}
+
+			// ② POST /api/prompt { sessionId, text, mode? } —— 真发一条消息
+			if (pathname === `${ROUTE_PREFIX}/api/prompt` && req.method === 'POST') {
+				const ctl = sessionController();
+				if (!ctl) {
+					res.writeHead(501, { 'content-type': 'application/json; charset=utf-8' });
+					res.end(JSON.stringify({ ok: false, error: '宿主的 sessionController 服务不可用' }));
+					return;
+				}
+				const body = await readJsonBody(req).catch(() => ({}));
+				const sid = String(body.sessionId || '');
+				const text = String(body.text || '');
+				if (!sid || !text.trim()) {
+					res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' });
+					res.end(JSON.stringify({ ok: false, error: '缺 sessionId 或 text' }));
+					return;
+				}
+				const ac = new AbortController();
+				req.on('close', () => ac.abort());
+				try {
+					const out = await ctl.prompt({
+						// requestId 是**幂等键**（客户端铸一次，重试复用 ⇒ 不会发两条）
+						requestId: String(body.requestId || ('wb-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8))),
+						sessionId: sid,
+						mode: body.mode === 'steer' ? 'steer' : 'queue',
+						content: [{ type: 'text', text }],
+						clientTimeZone: typeof body.clientTimeZone === 'string' ? body.clientTimeZone : undefined,
+					}, ac.signal);
+					res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+					res.end(JSON.stringify({ ok: true, value: out ?? null }));
+				} catch (e) {
+					res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
+					res.end(JSON.stringify({ ok: false, error: String((e && e.message) || e) }));
+				}
+				return;
+			}
+
+			// ③ POST /api/cancel { sessionId } —— 停掉当前回合（不清待办队列）
+			if (pathname === `${ROUTE_PREFIX}/api/cancel` && req.method === 'POST') {
+				const ctl = sessionController();
+				if (!ctl) {
+					res.writeHead(501, { 'content-type': 'application/json; charset=utf-8' });
+					res.end(JSON.stringify({ ok: false, error: '宿主的 sessionController 服务不可用' }));
+					return;
+				}
+				const body = await readJsonBody(req).catch(() => ({}));
+				const sid = String(body.sessionId || '');
+				if (!sid) {
+					res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' });
+					res.end(JSON.stringify({ ok: false, error: '缺 sessionId' }));
+					return;
+				}
+				try {
+					const out = typeof ctl.cancel === 'function' ? ctl.cancel({ sessionId: sid }) : null;
+					res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+					res.end(JSON.stringify({ ok: true, value: out ?? null }));
+				} catch (e) {
+					res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
+					res.end(JSON.stringify({ ok: false, error: String((e && e.message) || e) }));
+				}
+				return;
+			}
+
 			// 会话内人格热切换（GET 读当前人格 / POST 切换）：与只读花名册页同前缀，聊天页同源可直接 fetch，
 			// 不必绕 IDE——切换只依赖 Host 侧（agents + 投影 + durable inbox），不新建会话、不新建视图。
 			if (pathname === `${ROUTE_PREFIX}/api/persona`) {
@@ -1296,10 +1479,61 @@ function applyTopLevel(ctx, config) {
 				// 实况 + 用量（P1/P5）：projcache 读不到就降级为"没有这两块"（页面主体不受影响 ✓）
 				const live = await readLiveSessions(config).catch(() => null);
 				const liveRows = live ? liveForAgents(scan.agents, aggregateByPreset(live.rows)).rows : [];
+				/** agentId → 实况行（名册 JSON 每行带自己的实况 ✓；与 `/api/agents` 那条的 `liveOf` 同口径）。 */
+				const liveRowsByAgent = new Map(liveRows.map(row => [row.agentId, row]));
 				const usage = live ? usageByAgent(scan.agents, live.rows) : null;
 				// 双表面分派（2026-10-16，方案 D；与 kanban 同惯例）：宿主在**侧栏**承载时带
 				// `?surface=sideview` ⇒ 名册摘要版（lib/sideview.js）；其余（编辑区完整页、探针的默认
 				// 请求）⇒ 完整页（lib/detail.js）。两个表面吃同一份数据（上面这一份 input）⇒ 不会漂 ✓。
+				// ★ 2026-10-22（工作台重构 §5 步骤 2）：这几份数据**只取一次** ⇒ SSR 页与 React 工作台共用 ✓
+				//   （各取一遍 ⇒ 迟早出现"页面说有 3 条委派、工作台说 2 条"这种分叉 ✗）
+				const assignmentsData = await listAssignments(config);
+				const templatesData = await listApprovalTemplates(config).catch(() => ({ tools: [], templates: [] }));
+				const groupsData = await listGroups(config).catch(() => ({ groups: [], keep: 0 }));
+				const outboxData = await outboxList(config).catch(() => ({ entries: [], keep: 0 }));
+				const unreadData = live ? await unreadSnapshot(config, scan.agents, live.rows) : {};
+				// 新建向导（2026-10-16，方案 A）：模型候选 = 真实会话里跑过的 provider/model ✓；
+				// 没配 defaultProvider 时裸模型名不可路由（口径 = toPresetDefinition）
+				const createData = {
+					modelCandidates: modelCandidatesOf(live?.rows, scan.agents),
+					hasDefaultProvider: typeof config.defaultProvider === 'string' && config.defaultProvider.trim() !== '',
+				};
+				// ★ 2026-10-22（工作台重构 §5 步骤 2）：**名册面的 JSON 接口**（React 工作台用）。
+				//   载荷 = 名册行 + 每个 agent 的「会话 / 需要处理 / 运行中 / 收件箱」（现成的 `buildHomeData` ✓）
+				//   + 摘要 + 实况 + 未读。**其余页签（用量 / 委派 / 授权 / 群聊 / 记忆 / 演化）仍在 SSR 页** ✓
+				//   —— 这一刀只迁名册面（用户口径同知识库：先迁主面，其余给明确入口）。
+				if (url.pathname === `${ROUTE_PREFIX}/api/home`) {
+					res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+					res.end(JSON.stringify({
+						ok: true,
+						root,
+						summary: shownSummary,
+						roster: state.roster,
+						diagnostics: state.diagnostics,
+						errors: [...scan.errors, ...state.errors],
+						missing: scan.missing ?? '',
+						agents: shownAgents.map(a => ({
+							id: a.id,
+							name: a.name,
+							description: a.description ?? '',
+							icon: a.icon ?? '',
+							role: a.role ?? null,
+							skills: a.skills ?? [],
+							color: avatarColorOf(a.id),
+							model: a.model ?? '',
+							presetId: presetIdOf(a.id),
+							registered: state.roster.includes(presetIdOf(a.id)),
+							toolCount: Array.isArray(a.tools) ? a.tools.length : 0,
+							personaBytes: Buffer.byteLength(a.persona ?? '', 'utf8'),
+							live: liveRowsByAgent.get(a.id) ?? null,
+						})),
+						live: live ? { dir: live.dir, sessions: live.rows.length, truncated: live.truncated === true, errors: live.errors, ...(live.missing ? { missing: live.missing } : {}) } : null,
+						usage,
+						unread: unreadData,
+						home: buildHomeData({ agents: shownAgents, sessionRows: live?.rows ?? [], assignments: assignmentsData, groups: groupsData }),
+					}));
+					return;
+				}
 				const surface = url.searchParams.get('surface') === 'sideview' ? 'sideview' : 'editor';
 				const render = surface === 'sideview' ? renderSideviewPage : renderDetailPage;
 				// 渲染先于 writeHead：渲染抛错还能干净回 500（教训：顺序反了会切断 socket）
@@ -1315,21 +1549,16 @@ function applyTopLevel(ctx, config) {
 					// Bot 主页（方案 A 第 2 步）：「会话」面板要逐条会话（标题/最近活跃/回合），不是聚合值 ✓
 					sessionRows: live?.rows ?? [],
 					// 未读角标（方案 A 收尾）：侧栏首屏就要带上（轮询是补新活动，不是补首屏 ✗）
-					unread: live ? await unreadSnapshot(config, scan.agents, live.rows) : {},
+					unread: unreadData,
 					usage,
-					assignments: await listAssignments(config),
+					assignments: assignmentsData,
 					// 授权页签的模板清单（读失败按空 ⇒ 页面照出，模板区显示空 ✓）
-					templates: await listApprovalTemplates(config).catch(() => ({ tools: [], templates: [] })),
+					templates: templatesData,
 					// 群聊页签（读失败按空 ⇒ 同上口径 ✓）
-					groups: await listGroups(config).catch(() => ({ groups: [], keep: 0 })),
+					groups: groupsData,
 					// 授权页签的 outbox 队列（同口径 ✓）
-					outbox: await outboxList(config).catch(() => ({ entries: [], keep: 0 })),
-					// 新建向导（2026-10-16，方案 A）：模型候选 = 真实会话里跑过的 provider/model ✓；
-					// 没配 defaultProvider 时裸模型名不可路由（口径 = toPresetDefinition）
-					create: {
-						modelCandidates: modelCandidatesOf(live?.rows, scan.agents),
-						hasDefaultProvider: typeof config.defaultProvider === 'string' && config.defaultProvider.trim() !== '',
-					},
+					outbox: outboxData,
+					create: createData,
 					});
 				// 压缩（2026-10-19）：页面 CSS/JS 全内联，实测 144KB → gzip 27KB（18%）。
 				// 只改传输编码、不动页面结构；不支持 gzip 的客户端拿到原文（encodeBody 里判）。

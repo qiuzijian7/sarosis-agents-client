@@ -158,32 +158,30 @@
           #   必须先让 host 那几行 `disabled: true` ✓。
           # ⚠ 本名单要**与工具面快照对齐**：`tools-snapshot.json` 里"注册了工具的**模块**插件"改了，
           #   这里必须跟着改 —— 守卫 `dshPresetPlane.test.ts` 会红 ✓（不用靠人记 ✓）。
-          - id: vssaros-skills
-            name: '@vssaros/dsh-skills'
-          - id: vssaros-kanban
-            name: '@vssaros/dsh-kanban'
-          - id: vssaros-kb
-            name: '@vssaros/dsh-kb'
+          # ⚠ 2026-10-24 移除 `@vssaros/dsh-skills`（同 media 的理由）：它在 profile 的 bundles 里
+          #   已经挂着 ⇒ preset 再列 ⇒ 重复挂载 ⇒ 新建会话报 `vssaros-skills: never started`。
+          #   ⚠ 下面这 6 个（kanban/kb/memory/workflow/codebase/pele）**同样是 bundles 里已有的**，
+          #     只是当前还没轮到报错 —— 应当一并移除，否则修一个换一个报。
+          # ⚠ 2026-10-24 移除 vssaros-kanban（已在 profile bundles 里；重复挂载 ⇒ 新建会话报 never started）
+          # ⚠ 2026-10-24 移除 vssaros-kb（已在 profile bundles 里；重复挂载 ⇒ 新建会话报 never started）
           # memory（2026-10-20）：与 agents 同一条半边口径 —— `toolsOnly: true` ⇒ preset 内这次只注册工具。
           # 不加的实测后果（`memory-audit/audit.jsonl`）：`agent/turn-stopping` 被挂两个监听 ⇒
           # **每回合 distill 跑两遍**（审计成对：`ws-<workspaceId>` + `default`），
           # 且 `systemPrompt.section` 也注册两次（同一段记忆进两遍提示词）。页面/路由重复由 dsh 按路径覆盖 ⇒ 无害。
-          - id: vssaros-memory
-            name: '@vssaros/dsh-memory'
-            config:
-              toolsOnly: true
-          - id: vssaros-media
-            name: '@vssaros/dsh-media'
-          - id: vssaros-workflow
-            name: '@vssaros/dsh-workflow'
-          - id: vssaros-codebase
-            name: '@vssaros/dsh-codebase'
+          # ⚠ 2026-10-24 移除 vssaros-memory（已在 profile bundles 里；重复挂载 ⇒ 新建会话报 never started）
+          # ⚠ 2026-10-24 移除 `@vssaros/dsh-media`（此前三档都列了它）：
+          #   它**已经在 profile 的 `bundles` 里**（profile 级、总是加载）⇒ preset 再列一次
+          #   会把同一插件 compose 两次 ⇒ `vssarosMediaStore` 重复注册 ⇒
+          #   新建会话直接报 `agent-preset/invalid: ... service 'vssarosMediaStore' has been registered`
+          #   （真机 2026-10-24 实锤，且连锁到 `vssaros-skills: never started`）。
+          #   ⇒ **bundles 里有的插件，preset 里不要再写**。
+          # ⚠ 2026-10-24 移除 vssaros-workflow（已在 profile bundles 里；重复挂载 ⇒ 新建会话报 never started）
+          # ⚠ 2026-10-24 移除 vssaros-codebase（已在 profile bundles 里；重复挂载 ⇒ 新建会话报 never started）
           # pele（2026-10-20 补）：**纯工具插件**（`view.kind: none`，无页面无图标）⇒ 与
           # web-content-import 同档：preset 里必须有它，否则 `render_diagram` 一族在会话里看不见 ✗。
           # （工具面快照里的 `@vssaros/dsh-pele` 一直没进 rows ⇒ `dshPresetPlane` 的"行名单 == 快照模块"
           #  断言一直是红的 ✓ 这次一并修正。唯一**有意**的例外只剩 `@vssaros/dsh-sessions`，见守卫里的豁免表。）
-          - id: vssaros-pele
-            name: '@vssaros/dsh-pele'
+          # ⚠ 2026-10-24 移除 vssaros-pele（已在 profile bundles 里；重复挂载 ⇒ 新建会话报 never started）
           - id: vssaros-dashboard
             name: '@vssaros/dsh-dashboard'
           - id: vssaros-ide
@@ -247,7 +245,10 @@
                 - 'workflow_*'
                 - 'media_*'
                 - 'video_*'
-                - 'image_*'
+                # ★ 2026-10-24：**只藏查表工具 image_models，主生图 image_generate 必须可见**
+                #   （原来写 'image_*' ⇒ 标准档里聊天框生图用不到：真机 2026-10-23 实锤模型报"未知工具"）。
+                #   ⚠ expandDenyPatterns 不支持负向排除 ⇒ 只能精确列举；image_ 前缀的工具目前只有这两个。
+                - 'image_models'
                 - 'vision_*'
                 - 'extract_*'
                 - 'text_*'
@@ -419,32 +420,30 @@
           #   必须先让 host 那几行 `disabled: true` ✓。
           # ⚠ 本名单要**与工具面快照对齐**：`tools-snapshot.json` 里"注册了工具的**模块**插件"改了，
           #   这里必须跟着改 —— 守卫 `dshPresetPlane.test.ts` 会红 ✓（不用靠人记 ✓）。
-          - id: vssaros-skills
-            name: '@vssaros/dsh-skills'
-          - id: vssaros-kanban
-            name: '@vssaros/dsh-kanban'
-          - id: vssaros-kb
-            name: '@vssaros/dsh-kb'
+          # ⚠ 2026-10-24 移除 `@vssaros/dsh-skills`（同 media 的理由）：它在 profile 的 bundles 里
+          #   已经挂着 ⇒ preset 再列 ⇒ 重复挂载 ⇒ 新建会话报 `vssaros-skills: never started`。
+          #   ⚠ 下面这 6 个（kanban/kb/memory/workflow/codebase/pele）**同样是 bundles 里已有的**，
+          #     只是当前还没轮到报错 —— 应当一并移除，否则修一个换一个报。
+          # ⚠ 2026-10-24 移除 vssaros-kanban（已在 profile bundles 里；重复挂载 ⇒ 新建会话报 never started）
+          # ⚠ 2026-10-24 移除 vssaros-kb（已在 profile bundles 里；重复挂载 ⇒ 新建会话报 never started）
           # memory（2026-10-20）：与 agents 同一条半边口径 —— `toolsOnly: true` ⇒ preset 内这次只注册工具。
           # 不加的实测后果（`memory-audit/audit.jsonl`）：`agent/turn-stopping` 被挂两个监听 ⇒
           # **每回合 distill 跑两遍**（审计成对：`ws-<workspaceId>` + `default`），
           # 且 `systemPrompt.section` 也注册两次（同一段记忆进两遍提示词）。页面/路由重复由 dsh 按路径覆盖 ⇒ 无害。
-          - id: vssaros-memory
-            name: '@vssaros/dsh-memory'
-            config:
-              toolsOnly: true
-          - id: vssaros-media
-            name: '@vssaros/dsh-media'
-          - id: vssaros-workflow
-            name: '@vssaros/dsh-workflow'
-          - id: vssaros-codebase
-            name: '@vssaros/dsh-codebase'
+          # ⚠ 2026-10-24 移除 vssaros-memory（已在 profile bundles 里；重复挂载 ⇒ 新建会话报 never started）
+          # ⚠ 2026-10-24 移除 `@vssaros/dsh-media`（此前三档都列了它）：
+          #   它**已经在 profile 的 `bundles` 里**（profile 级、总是加载）⇒ preset 再列一次
+          #   会把同一插件 compose 两次 ⇒ `vssarosMediaStore` 重复注册 ⇒
+          #   新建会话直接报 `agent-preset/invalid: ... service 'vssarosMediaStore' has been registered`
+          #   （真机 2026-10-24 实锤，且连锁到 `vssaros-skills: never started`）。
+          #   ⇒ **bundles 里有的插件，preset 里不要再写**。
+          # ⚠ 2026-10-24 移除 vssaros-workflow（已在 profile bundles 里；重复挂载 ⇒ 新建会话报 never started）
+          # ⚠ 2026-10-24 移除 vssaros-codebase（已在 profile bundles 里；重复挂载 ⇒ 新建会话报 never started）
           # pele（2026-10-20 补）：**纯工具插件**（`view.kind: none`，无页面无图标）⇒ 与
           # web-content-import 同档：preset 里必须有它，否则 `render_diagram` 一族在会话里看不见 ✗。
           # （工具面快照里的 `@vssaros/dsh-pele` 一直没进 rows ⇒ `dshPresetPlane` 的"行名单 == 快照模块"
           #  断言一直是红的 ✓ 这次一并修正。唯一**有意**的例外只剩 `@vssaros/dsh-sessions`，见守卫里的豁免表。）
-          - id: vssaros-pele
-            name: '@vssaros/dsh-pele'
+          # ⚠ 2026-10-24 移除 vssaros-pele（已在 profile bundles 里；重复挂载 ⇒ 新建会话报 never started）
           - id: vssaros-dashboard
             name: '@vssaros/dsh-dashboard'
           - id: vssaros-ide
@@ -508,7 +507,10 @@
                 - 'workflow_*'
                 - 'media_*'
                 - 'video_*'
-                - 'image_*'
+                # ★ 2026-10-24：**只藏查表工具 image_models，主生图 image_generate 必须可见**
+                #   （原来写 'image_*' ⇒ 标准档里聊天框生图用不到：真机 2026-10-23 实锤模型报"未知工具"）。
+                #   ⚠ expandDenyPatterns 不支持负向排除 ⇒ 只能精确列举；image_ 前缀的工具目前只有这两个。
+                - 'image_models'
                 - 'vision_*'
                 - 'extract_*'
                 - 'text_*'
@@ -687,32 +689,30 @@
           #   必须先让 host 那几行 `disabled: true` ✓。
           # ⚠ 本名单要**与工具面快照对齐**：`tools-snapshot.json` 里"注册了工具的**模块**插件"改了，
           #   这里必须跟着改 —— 守卫 `dshPresetPlane.test.ts` 会红 ✓（不用靠人记 ✓）。
-          - id: vssaros-skills
-            name: '@vssaros/dsh-skills'
-          - id: vssaros-kanban
-            name: '@vssaros/dsh-kanban'
-          - id: vssaros-kb
-            name: '@vssaros/dsh-kb'
+          # ⚠ 2026-10-24 移除 `@vssaros/dsh-skills`（同 media 的理由）：它在 profile 的 bundles 里
+          #   已经挂着 ⇒ preset 再列 ⇒ 重复挂载 ⇒ 新建会话报 `vssaros-skills: never started`。
+          #   ⚠ 下面这 6 个（kanban/kb/memory/workflow/codebase/pele）**同样是 bundles 里已有的**，
+          #     只是当前还没轮到报错 —— 应当一并移除，否则修一个换一个报。
+          # ⚠ 2026-10-24 移除 vssaros-kanban（已在 profile bundles 里；重复挂载 ⇒ 新建会话报 never started）
+          # ⚠ 2026-10-24 移除 vssaros-kb（已在 profile bundles 里；重复挂载 ⇒ 新建会话报 never started）
           # memory（2026-10-20）：与 agents 同一条半边口径 —— `toolsOnly: true` ⇒ preset 内这次只注册工具。
           # 不加的实测后果（`memory-audit/audit.jsonl`）：`agent/turn-stopping` 被挂两个监听 ⇒
           # **每回合 distill 跑两遍**（审计成对：`ws-<workspaceId>` + `default`），
           # 且 `systemPrompt.section` 也注册两次（同一段记忆进两遍提示词）。页面/路由重复由 dsh 按路径覆盖 ⇒ 无害。
-          - id: vssaros-memory
-            name: '@vssaros/dsh-memory'
-            config:
-              toolsOnly: true
-          - id: vssaros-media
-            name: '@vssaros/dsh-media'
-          - id: vssaros-workflow
-            name: '@vssaros/dsh-workflow'
-          - id: vssaros-codebase
-            name: '@vssaros/dsh-codebase'
+          # ⚠ 2026-10-24 移除 vssaros-memory（已在 profile bundles 里；重复挂载 ⇒ 新建会话报 never started）
+          # ⚠ 2026-10-24 移除 `@vssaros/dsh-media`（此前三档都列了它）：
+          #   它**已经在 profile 的 `bundles` 里**（profile 级、总是加载）⇒ preset 再列一次
+          #   会把同一插件 compose 两次 ⇒ `vssarosMediaStore` 重复注册 ⇒
+          #   新建会话直接报 `agent-preset/invalid: ... service 'vssarosMediaStore' has been registered`
+          #   （真机 2026-10-24 实锤，且连锁到 `vssaros-skills: never started`）。
+          #   ⇒ **bundles 里有的插件，preset 里不要再写**。
+          # ⚠ 2026-10-24 移除 vssaros-workflow（已在 profile bundles 里；重复挂载 ⇒ 新建会话报 never started）
+          # ⚠ 2026-10-24 移除 vssaros-codebase（已在 profile bundles 里；重复挂载 ⇒ 新建会话报 never started）
           # pele（2026-10-20 补）：**纯工具插件**（`view.kind: none`，无页面无图标）⇒ 与
           # web-content-import 同档：preset 里必须有它，否则 `render_diagram` 一族在会话里看不见 ✗。
           # （工具面快照里的 `@vssaros/dsh-pele` 一直没进 rows ⇒ `dshPresetPlane` 的"行名单 == 快照模块"
           #  断言一直是红的 ✓ 这次一并修正。唯一**有意**的例外只剩 `@vssaros/dsh-sessions`，见守卫里的豁免表。）
-          - id: vssaros-pele
-            name: '@vssaros/dsh-pele'
+          # ⚠ 2026-10-24 移除 vssaros-pele（已在 profile bundles 里；重复挂载 ⇒ 新建会话报 never started）
           - id: vssaros-dashboard
             name: '@vssaros/dsh-dashboard'
           - id: vssaros-ide

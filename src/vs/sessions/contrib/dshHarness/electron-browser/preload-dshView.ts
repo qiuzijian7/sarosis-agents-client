@@ -129,7 +129,8 @@
 		// ★ 2026-10-21：`15 → 16`（新增 `focusIde` —— 桌面窗口侧栏底部「IDE」入口回到 IDE 主窗口）。
 		// ★ 2026-10-21：`16 → 17`（新增 `signInIde` / `signOutIde` —— 窗口里的登录接管 IDE 账号）。
 		// ★ 2026-10-21：`17 → 18`（新增 `openSettings` / `openFeedback` —— 左下角账号菜单的两条菜单项）。
-		bridgeVersion: 18,
+		// ★ 2026-10-23：`18 → 19`（新增 `upgradeRefresh` / `upgradeBundled` / `upgradeApp` —— desktop 窗口的「更新」入口）。
+		bridgeVersion: 19,
 		surface,
 		// ★ 2026-10-18：`chatOnly` 也放进 bridge（**同步可知**）。
 		//   为什么不能只靠 `data-vssaros-chat-only`：那个 DOM 标记要等 DOMContentLoaded 才写，
@@ -160,6 +161,14 @@
 		//   页面自己做不到（设置编辑器 / 反馈面板都长在 IDE 窗口里）⇒ 只能经宿主 ✓。无参。
 		openSettings: () => invoke({ method: 'openSettings' }),
 		openFeedback: () => invoke({ method: 'openFeedback' }),
+		// ★ 2026-10-23（桥 `18 → 19`）：desktop 窗口的「更新」入口。
+		//   三条都是**单向**命令（只回 true）—— 状态由宿主经 `vssaros:dsh:upgrade` **推**回来，
+		//   页面读 `document.documentElement.dataset.vssarosUpgrade` 或监听 `vssaros-dsh-upgrade` ✓。
+		upgradeRefresh: () => invoke({ method: 'upgradeRefresh' }),
+		upgradeBundled: (name: string) => invoke({ method: 'upgradeBundled', name }),
+		upgradeApp: () => invoke({ method: 'upgradeApp' }),
+		// 升级一件商城资产（技能 / MCP / 智能体 / 工作流 / 工作台）：`(kind, slug)`
+		upgradeAsset: (kind: string, slug: string) => invoke({ method: 'upgradeAsset', kind, slug }),
 		openFile: (path: string, range?: { startLine?: number; endLine?: number }) => invoke({ method: 'openFile', path, startLine: range?.startLine, endLine: range?.endLine }),
 		// 内存态 markdown（计划审阅等）→ IDE 编辑器区的 untitled 页（2026-10-15：dsh 开在它的右侧栏，
 		//   我们壳没有侧栏 ⇒ 改投编辑器 ✓）。只带文本、不碰盘 ✓ —— 与页面桥"只收低风险界面命令"同口径 ✓。
@@ -350,6 +359,22 @@
 			document.documentElement.dataset.vssarosAuth = JSON.stringify(info);
 		}
 		document.dispatchEvent(new CustomEvent(AUTH_EVENT, { detail: info }));
+	});
+
+	// **升级状态**推给页面（2026-10-23，桥 `18 → 19`）：机制与上面那条逐字同款（dataset + DOM 事件）✓。
+	// 载荷已在主进程经 `validateUpgradeState` 校验过形状；这里再按"能不能安全序列化"兜一层。
+	const UPGRADE_CH = 'vssaros:dsh:upgrade';
+	const UPGRADE_EVENT = 'vssaros-dsh-upgrade';
+	ipcRenderer.on(UPGRADE_CH, (_e: unknown, payload: unknown) => {
+		if (typeof payload !== 'object' || payload === null) {
+			return;
+		}
+		try {
+			if (document.documentElement) {
+				document.documentElement.dataset.vssarosUpgrade = JSON.stringify(payload);
+			}
+			document.dispatchEvent(new CustomEvent(UPGRADE_EVENT, { detail: payload }));
+		} catch { /* 序列化失败不影响页面其它功能 */ }
 	});
 
 	// 插入文件引用（方案 5.5 onInsertReference）：工作台 → 页面插件（chat-surface 客户端

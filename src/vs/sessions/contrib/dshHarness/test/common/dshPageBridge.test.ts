@@ -574,4 +574,40 @@ suite('dshHarness / 窗口模式下点「登录」不得切到 IDE 模式', () =
 			assert.ok(protocolSrc.includes(`method: '${m}'`), `协议里没有桥命令 ${m}（名单写了也永远不生效）`);
 		}
 	});
+
+/**
+ * ★★ 2026-10-22（真机 F5 后）：桌面页报
+ *   `Uncaught (in promise) Error: Error invoking remote method 'vssaros:dsh:page': Error: vssarosDsh: invalid command`
+ *   主进程日志同时打 `rejected page command "notify"`。
+ *
+ * 根因：页面侧（`client.account.js` 等）一直用 `notify("warn", …)`，而协议的 kind 只允许
+ *   `info | done | attention` ⇒ 校验拒掉 ⇒ 页面拿到 rejected promise（账号/人格那几条路径直接报错）。
+ *
+ * 不变量：**页面实际用到的每个 kind 都必须能通过校验** —— 这里既做行为断言，
+ *   也扫页面源码里的真实取值（将来再加 kind，漏改协议就红）。
+ */
+suite('dshPageBridge / notify 的 kind 必须覆盖页面实际用量（2026-10-22 invalid command）', () => {
+
+	test('★ notify(warn) 必须通过校验（页面在用它）', () => {
+		const cmd = validatePageCommand({ method: 'notify', kind: 'warn', text: '登录失败：x' });
+		assert.ok(cmd, 'notify(warn) 被拒 ⇒ 页面会拿到 invalid command ✗');
+		assert.strictEqual((cmd as { kind?: string }).kind, 'warn');
+	});
+
+	test('★ 页面源码里出现的每个 notify kind 都能通过校验', () => {
+		const libDir = join(process.cwd(), 'dsh-plugins', 'vssaros-chat-surface', 'lib');
+		const kinds = new Set<string>();
+		for (const f of readdirSync(libDir)) {
+			if (!f.endsWith('.js')) { continue; }
+			const src = readFileSync(join(libDir, f), 'utf8');
+			for (const m of src.matchAll(/notify\(\s*["']([a-z]+)["']/g)) { kinds.add(m[1]); }
+		}
+		assert.ok(kinds.size > 0, '一个 notify kind 都没扫到 ⇒ 守卫空跑 ✗');
+		for (const kind of kinds) {
+			assert.ok(validatePageCommand({ method: 'notify', kind, text: 'x' }),
+				`页面在用 notify("${kind}") 但协议不接受（校验器/联合类型要同步补）✗`);
+		}
+	});
+});
+
 });

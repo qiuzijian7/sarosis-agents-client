@@ -485,6 +485,110 @@ describe('CodebaseGraphSqliteStore.transaction — 可重入 + 串行化（2026-
 		assert.strictEqual(await store.getNodeCount(PROJECT), 3, '前一棒失败不该卡住后续事务 ✓');
 		await store.close();
 	});
+
+	// ─── ★ 2026-10-22（用户报"dev 整个 app 卡死"）：checkpoint 绝不能是**阻塞式** ──────────────
+	// 现场：全量追平写完 1.25M 边（WAL 1.2GB）后，主进程在**提交后那次 checkpoint** 上僵死
+	//   （0% CPU、inspector 无响应、渲染端 IPC 永不返回 ⇒ 整个 app 无响应且不自愈）。
+	//   根因：那次 checkpoint 用的是 `wal_checkpoint(**TRUNCATE**)` —— 阻塞式：等写锁/等读者，
+	//   而 **SQLite 的 checkpoint 等待不受 busy_timeout 约束** ⇒ 可以无限期挂住 ✗✗✗。
+	// 本组用例把"有并发读连接时 checkpoint 必须**快速**返回"钉死（TRUNCATE 会走 busy handler
+	//   等满 busy_timeout=5s ⇒ 旧实现约 5s，PASSIVE 立即返回 ⇒ 阈值取 2s 足够区分）。
+	itOrSkip('★ checkpoint() 绝不用 TRUNCATE（阻塞式 ⇒ 可无限期挂住主进程）', async () => {
+		const src = fs.readFileSync(path.join(process.cwd(), 'src/vs/sessions/contrib/agentStudio/node/codebaseGraphSqliteStore.ts'), 'utf8');
+		const at = src.indexOf('async checkpoint(');
+		assert.ok(at > 0, '找不到 checkpoint（守卫不能空跑）');
+		// ⚠ 必须**剥掉注释**再判：这段函数的注释里会引用旧写法（TRUNCATE）作取证 ⇒ 连注释查会假红 ✗
+		const body = src.slice(at, src.indexOf('\n\t}', at))
+			.replace(/\/\*[\s\S]*?\*\//g, '')
+			.replace(/^\s*\/\/.*$/gm, '');
+		assert.ok(!body.includes('TRUNCATE'), 'checkpoint() 里不许出现 TRUNCATE（阻塞式，会把主进程挂住 ✗）');
+		assert.ok(body.includes('PASSIVE'), '必须用 PASSIVE（永不阻塞 ✓）');
+	});
+
+	itOrSkip('★ checkpoint() 走 PASSIVE ⇒ **不截断** WAL 文件（TRUNCATE 会把它清零 ⇒ 阻塞式）', async () => {
+		const dbPath = tempDb('checkpoint-wal.db');
+		const store = new CodebaseGraphSqliteStore();
+		await store.open(dbPath);
+		for (let i = 0; i < 200; i++) {
+			await store.upsertNode(makeNode(`n${i}`, { filePath: `f${i}.ts` }));
+		}
+		const walPath = dbPath + '-wal';
+		const walBefore = fs.existsSync(walPath) ? fs.statSync(walPath).size : 0;
+		assert.ok(walBefore > 0, `写入后 WAL 应有内容（实际 ${walBefore}B）—— 否则本用例测不到东西 ✗`);
+		await store.checkpoint();
+		const walAfter = fs.existsSync(walPath) ? fs.statSync(walPath).size : 0;
+		// PASSIVE：回写但不截断 ⇒ 文件仍在且非 0；TRUNCATE：会把 WAL 截成 0 字节 ✗
+		assert.ok(walAfter > 0, `PASSIVE 不该把 WAL 截断（实际 ${walAfter}B；=0 说明走了 TRUNCATE ⇒ 会阻塞主进程 ✗）`);
+		await store.close();
+	});
+	itOrSkip('*** deleteProject (chunked): must delete exactly the project (nodes/edges/FTS/layout), purge orphans, keep other projects intact', async () => {
+		const dbPath = tempDb('delete-chunked.db');
+		const store = new CodebaseGraphSqliteStore();
+		await store.open(dbPath);
+		// tiny chunk => the chunked + cursor path is really exercised (the default 100k would not be)
+		(store as any)._deleteChunkSize = 3;
+		const aIds: number[] = [];
+		for (let i = 0; i < 5; i++) { aIds.push(await store.upsertNode({ ...makeNode(`a${i}`), project: 'A' } as any)); }
+		const bIds: number[] = [];
+		for (let i = 0; i < 2; i++) { bIds.push(await store.upsertNode({ ...makeNode(`b${i}`), project: 'B' } as any)); }
+		await store.upsertEdge({ source: aIds[0], target: aIds[1], type: 'CALLS', project: 'A' } as any);
+		await store.upsertEdge({ source: bIds[0], target: bIds[1], type: 'CALLS', project: 'B' } as any);
+		// an orphan edge (endpoints do not exist) => must be purged as well
+		await store.upsertEdge({ source: 999999, target: 999998, type: 'CALLS', project: 'A' } as any);
+		await store.setLayout(aIds[0], 1, 2, 3);
+		assert.ok(await store.getTotalEdgeCount() >= 3, 'setup: 3 edges');
+		await store.deleteProject('A', { keepFileHashes: true });
+		assert.strictEqual(await store.getTotalNodeCount('A'), 0, 'A nodes must be gone (chunked + cursor)');
+		assert.strictEqual(await store.getTotalNodeCount('B'), 2, 'B nodes must survive (no over-delete)');
+		assert.strictEqual(await store.getTotalEdgeCount(), 1, 'only the B edge must remain (A edges + orphan purged)');
+		assert.strictEqual((await store.searchNodes('a0')).length, 0, 'A FTS rows must be gone');
+		assert.ok((await store.searchNodes('b0')).length >= 1, 'B FTS rows must survive');
+		await store.close();
+	});
+	
+	// ─── ★★ 2026-10-22（全量追平 8 分钟、2.6k 边/秒）：卸索引 → 灌数据 → 重建 ─────────────
+	// 现场：1.25M 条边逐条 upsert，每条都要维护 idx_edges_source / target / rel 三棵 B 树
+	//   ⇒ 写入被索引维护拖死（也是主进程事件循环被长时间挤占、最终卡死的根源）。
+	// 不变量：① 卸得掉；② 重建得回来（幂等）；③ **崩在中间 ⇒ 下次 open() 自愈**（不能留一个没索引的库）。
+	itOrSkip('★★ suspendEdgeIndexes / ensureIndexes：卸得掉、建得回、崩了能自愈', async () => {
+		const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
+		const dbPath = tempDb('idx-suspend.db');
+		const listIdx = (): string[] => {
+			const raw = new DatabaseSync(dbPath);
+			try {
+				const rows = raw.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx_edges%'").all() as { name: string }[];
+				return rows.map(r => String(r.name)).sort();
+			} finally { raw.close(); }
+		};
+
+		// ① 建库 + 写数据（此时索引齐全）
+		const s1 = new CodebaseGraphSqliteStore();
+		await s1.open(dbPath);
+		const n1 = await s1.upsertNode(makeNode('n1', { filePath: 'f.ts' }));
+		const n2 = await s1.upsertNode(makeNode('n2', { filePath: 'f.ts' }));
+		await s1.upsertEdge({ source: n1, target: n2, type: 'CALLS' } as any);
+		assert.deepStrictEqual(listIdx(), ['idx_edges_rel', 'idx_edges_source', 'idx_edges_target'], '开库后三棵边索引应齐全');
+
+		// ② 卸索引 ⇒ 真的没了（全量灌数据窗口）
+		await s1.suspendEdgeIndexes();
+		assert.strictEqual(s1.indexesSuspended, true, '卸下后要置标记（供诊断）');
+		await s1.ensureIndexes();
+		assert.strictEqual(s1.indexesSuspended, false, '重建后标记要清');
+		assert.deepStrictEqual(listIdx(), ['idx_edges_rel', 'idx_edges_source', 'idx_edges_target'], '重建后三棵索引必须回来');
+		await s1.ensureIndexes();   // 幂等：再来一次不该出错
+		await s1.suspendEdgeIndexes();
+		await s1.close();
+
+		// ③ 关库后确认"缺着"（模拟崩在灌数据窗口里）
+		assert.deepStrictEqual(listIdx(), [], '卸下后关库 ⇒ 索引确实不在（模拟中断现场）');
+
+		// ④ 重开 ⇒ open() 自愈补建
+		const s2 = new CodebaseGraphSqliteStore();
+		await s2.open(dbPath);
+		await s2.close();
+		assert.deepStrictEqual(listIdx(), ['idx_edges_rel', 'idx_edges_source', 'idx_edges_target'],
+			'崩在中间后重开必须自愈（否则边查询永远退化为全表扫描 ✗）');
+	});
 });
 
 after(() => cleanup());

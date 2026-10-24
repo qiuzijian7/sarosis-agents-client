@@ -2,6 +2,20 @@
 	"version": "0.1.0",
 	"configurations": [
 		{
+			"type": "chrome",
+			"request": "attach",
+			"name": "Launch & Attach Dev (9222)",
+			"port": 9222,
+			// 先由 preLaunchTask（scripts/start-dev-app.cmd，detached）把应用起起来，再 attach。
+			// attach 断开**不会**杀 app（launch + cleanUp:wholeBrowser 会，见 killBehavior）。
+			"preLaunchTask": "Start Dev App (attach-ready)",
+			// 慢启动（RDP + 冷启动）实测要 20~40s 才把 devtools 端口拉起来，45s 太紧。
+			"timeout": 90000,
+			"webRoot": "${workspaceFolder}",
+			"presentation": { "group": "0_vscode", "order": 0 }
+		},
+
+		{
 			"type": "node",
 			"request": "launch",
 			"name": "Gulp Build",
@@ -74,11 +88,18 @@
 			]
 		},
 		{
+			"type": "chrome",
+			"request": "attach",
+			"name": "Attach to VS Code Renderer (9222)",
+			"port": 9222,
+			"webRoot": "${workspaceFolder}",
+		},
+		{
 			"type": "node",
 			"request": "attach",
 			"name": "Attach to Main Process",
 			"timeout": 30000,
-			"port": 5875,
+			"port": 5999,
 			"continueOnAttach": true,
 			"outFiles": [
 				"${workspaceFolder}/out/**/*.js"
@@ -249,36 +270,43 @@
 		{
 			"type": "chrome",
 			"request": "launch",
-			"name": "Launch VS Code Internal",
+			"name": "Launch VS Code Internal（launch：调试结束会关掉应用）",
+			"runtimeExecutable": "${workspaceFolder}/.build/electron/Saroasis harness.exe",
 			"preLaunchTask": "Transpile Client",
-			"windows": {
-				"runtimeExecutable": "${workspaceFolder}/scripts/code.bat"
-			},
 			"osx": {
 				"runtimeExecutable": "${workspaceFolder}/scripts/code.sh"
 			},
 			"linux": {
 				"runtimeExecutable": "${workspaceFolder}/scripts/code.sh"
 			},
-			// [Saros] 同样从 9334 改到 **9335**（与 `Launch VS Code Agents Internal` 一致）。
+			// [Saros] 同样从 9334 改到 **9799**（与 `Launch VS Code Agents Internal` 一致）。
 			// 原因：F5 会**重复上一次选的配置**，而 9334 上留着一个残留监听
 			// （`netstat` LISTENING 但 `wmic` 查该 PID 已 `No Instance(s) Available`）。
-			// 两条都改到 9335 ⇒ 无论 F5 跑哪条，报错端口都能指出它跑的是哪条配置。
-			"port": 9335,
+			// 两条都改到 9799 ⇒ 无论 F5 跑哪条，报错端口都能指出它跑的是哪条配置。
+			"port": 9222,
 			"timeout": 0,
 			"env": {
-				"VSCODE_EXTHOST_WILL_SEND_SOCKET": null,
+				"NODE_ENV": "development",
+					"VSCODE_DEV": "1",
+					"VSCODE_CLI": "1",
+					"ELECTRON_ENABLE_LOGGING": "1",
+					"VSCODE_EXTHOST_WILL_SEND_SOCKET": null,
 				"VSCODE_SKIP_PRELAUNCH": "1",
 				"VSCODE_DEV_DEBUG_OBSERVABLES": "1",
+				// [Saros] 让主进程的运行日志（runJournal）能给这次启动打上来源标签，
+				// 从而把 START/EXIT/PREV-DIED 写进 app-exit.log —— 这条 launch 路径不经过
+				// scripts/start-dev-app.*，以前完全没有退出码与崩溃记录 ✗（2026-10-24 修）
+				"DSH_LAUNCH_SRC": "debug-launch",
 			},
 			"cleanUp": "wholeBrowser",
-			"killBehavior": "polite",
+			"killBehavior": "none",
 			"runtimeArgs": [
-				"--inspect=5875",
-				"--remote-debugging-port=9335",
+				"${workspaceFolder}",
+				"--inspect=5888",
+				"--remote-debugging-port=9799",
 				"--no-cached-data",
 				"--open-devtools",
-				"--crash-reporter-directory=${workspaceFolder}/.profile-oss/crashes",
+				"--crash-reporter-directory=${userHome}/.vssaros-dev/Crashpad",
 				// for general runtime freezes: https://github.com/microsoft/vscode/issues/127861#issuecomment-904144910
 				"--disable-features=CalculateNativeWinOcclusion",
 				"--disable-extension=vscode.vscode-api-tests"
@@ -301,28 +329,34 @@
 		{
 			"type": "chrome",
 			"request": "launch",
-			"name": "Launch VS Code Agents Internal",
+			"name": "Launch VS Code Agents Internal（launch：调试结束会关掉应用）",
+			"runtimeExecutable": "${workspaceFolder}/.build/electron/Saroasis harness.exe",
 			"preLaunchTask": "Transpile Client",
-			"windows": {
-				"runtimeExecutable": "${workspaceFolder}/scripts/code.bat"
-			},
 			"osx": {
 				"runtimeExecutable": "${workspaceFolder}/scripts/code.sh"
 			},
 			"linux": {
 				"runtimeExecutable": "${workspaceFolder}/scripts/code.sh"
 			},
-			// [Saros] 端口从 9334 改成 **9335**：9334 上留着一个**残留监听**
+			// [Saros] 端口从 9334 改成 **9799**：9334 上留着一个**残留监听**
 			// （`netstat` 显示 LISTENING，但 `wmic` 查该 PID 已 `No Instance(s) Available`），
 			// 会让 F5 报 `Could not connect to debug target at http://localhost:9334:
 			// Could not find any debuggable target`。
 			// ⚠ 注意另一条配置 `Launch VS Code Internal` 仍在用 9334，两者**不要共用**。
-			"port": 9335,
+			"port": 9222,
 			"timeout": 0,
 			"env": {
-				"VSCODE_EXTHOST_WILL_SEND_SOCKET": null,
+				"NODE_ENV": "development",
+					"VSCODE_DEV": "1",
+					"VSCODE_CLI": "1",
+					"ELECTRON_ENABLE_LOGGING": "1",
+					"VSCODE_EXTHOST_WILL_SEND_SOCKET": null,
 				"VSCODE_SKIP_PRELAUNCH": "1",
 				"VSCODE_DEV_DEBUG_OBSERVABLES": "1",
+				// [Saros] 让主进程的运行日志（runJournal）能给这次启动打上来源标签，
+				// 从而把 START/EXIT/PREV-DIED 写进 app-exit.log —— 这条 launch 路径不经过
+				// scripts/start-dev-app.*，以前完全没有退出码与崩溃记录 ✗（2026-10-24 修）
+				"DSH_LAUNCH_SRC": "debug-launch",
 				// [Saros] 2026-10-21 用户要求「F5 直接启动 dsh 窗口，不要显示 IDE 窗口」：
 				// 主进程据此**建窗即隐藏**（`windowImpl` 读这个环境变量，且只对 `initialStartup` 的
 				// 第一个窗口生效）。何时显示由渲染进程决定：dsh 桌面窗口开出来就继续藏着；
@@ -335,13 +369,14 @@
 				"VSSAROS_START_HIDDEN": "1",
 			},
 			"cleanUp": "wholeBrowser",
-			"killBehavior": "forceful",
+			"killBehavior": "none",
 			"runtimeArgs": [
-				"--inspect=5875",
-				"--remote-debugging-port=9335",
+				"${workspaceFolder}",
+				"--inspect=5888",
+				"--remote-debugging-port=9799",
 				"--no-cached-data",
 				"--open-devtools",
-				"--crash-reporter-directory=${workspaceFolder}/.profile-oss/crashes",
+				"--crash-reporter-directory=${userHome}/.vssaros-dev/Crashpad",
 				// for general runtime freezes: https://github.com/microsoft/vscode/issues/127861#issuecomment-904144910
 				"--disable-features=CalculateNativeWinOcclusion",
 				"--disable-extension=vscode.vscode-api-tests",
@@ -373,9 +408,6 @@
 			"type": "chrome",
 			"request": "launch",
 			"name": "Launch VS Code Internal (Hot Reload)",
-			"windows": {
-				"runtimeExecutable": "${workspaceFolder}/scripts/code.bat"
-			},
 			"osx": {
 				"runtimeExecutable": "${workspaceFolder}/scripts/code.sh"
 			},
@@ -385,19 +417,27 @@
 			"port": 9334,
 			"timeout": 0,
 			"env": {
-				"VSCODE_EXTHOST_WILL_SEND_SOCKET": null,
+				"NODE_ENV": "development",
+					"VSCODE_DEV": "1",
+					"VSCODE_CLI": "1",
+					"ELECTRON_ENABLE_LOGGING": "1",
+					"VSCODE_EXTHOST_WILL_SEND_SOCKET": null,
 				"VSCODE_SKIP_PRELAUNCH": "1",
 				"VSCODE_DEV_DEBUG": "1",
 				"VSCODE_DEV_SERVER_URL": "http://localhost:5199/build/vite/workbench-vite-electron.html",
 				"DEV_WINDOW_SRC": "http://localhost:5199/build/vite/workbench-vite-electron.html",
 				"VSCODE_DEV_DEBUG_OBSERVABLES": "1",
+				// [Saros] 让主进程的运行日志（runJournal）能给这次启动打上来源标签，
+				// 从而把 START/EXIT/PREV-DIED 写进 app-exit.log —— 这条 launch 路径不经过
+				// scripts/start-dev-app.*，以前完全没有退出码与崩溃记录 ✗（2026-10-24 修）
+				"DSH_LAUNCH_SRC": "debug-launch",
 				"VSCODE_DEV": "1"
 			},
 			"cleanUp": "wholeBrowser",
 			"runtimeArgs": [
-				"--inspect=5875",
+				"--inspect=5888",
 				"--no-cached-data",
-				"--crash-reporter-directory=${workspaceFolder}/.profile-oss/crashes",
+				"--crash-reporter-directory=${userHome}/.vssaros-dev/Crashpad",
 				// for general runtime freezes: https://github.com/microsoft/vscode/issues/127861#issuecomment-904144910
 				"--disable-features=CalculateNativeWinOcclusion",
 				"--disable-extension=vscode.vscode-api-tests"
@@ -422,9 +462,6 @@
 			"request": "launch",
 			"name": "VS Code Server (Web)",
 			"runtimeExecutable": "${workspaceFolder}/scripts/code-server.sh",
-			"windows": {
-				"runtimeExecutable": "${workspaceFolder}/scripts/code-server.bat",
-			},
 			"outFiles": [
 				"${workspaceFolder}/out/**/*.js"
 			],
@@ -452,14 +489,11 @@
 			"type": "node",
 			"request": "launch",
 			"name": "Main Process",
-			"attachSimplePort": 5875,
+			"attachSimplePort": 5888,
 			"enableContentValidation": false,
 			"runtimeExecutable": "${workspaceFolder}/scripts/code.sh",
-			"windows": {
-				"runtimeExecutable": "${workspaceFolder}/scripts/code.bat",
-			},
 			"runtimeArgs": [
-				"--inspect=5875",
+				"--inspect=5888",
 				"--no-cached-data",
 			],
 			"outFiles": [
@@ -611,9 +645,6 @@
 			"name": "Run Unit Tests",
 			"program": "${workspaceFolder}/test/unit/electron/index.js",
 			"runtimeExecutable": "${workspaceFolder}/.build/electron/Code - OSS.app/Contents/MacOS/Code - OSS",
-			"windows": {
-				"runtimeExecutable": "${workspaceFolder}/.build/electron/Code - OSS.exe"
-			},
 			"linux": {
 				"runtimeExecutable": "${workspaceFolder}/.build/electron/code-oss"
 			},
@@ -641,9 +672,6 @@
 			"name": "Run Unit Tests For Current File",
 			"program": "${workspaceFolder}/test/unit/electron/index.js",
 			"runtimeExecutable": "${workspaceFolder}/.build/electron/Code - OSS.app/Contents/MacOS/Code - OSS",
-			"windows": {
-				"runtimeExecutable": "${workspaceFolder}/.build/electron/Code - OSS.exe"
-			},
 			"linux": {
 				"runtimeExecutable": "${workspaceFolder}/.build/electron/code-oss"
 			},

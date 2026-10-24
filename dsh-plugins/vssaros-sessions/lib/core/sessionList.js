@@ -62,8 +62,23 @@ export function lastPathSegment(path) {
  * 与 VsSaros 侧的 `workspaceTitleOf`（name → 路径末段 → id）是**同一个判据的下游形态**。
  */
 export function workspaceTitleOf(cwd) {
-	const segment = lastPathSegment(cwd);
-	return segment || String(cwd ?? '').trim();
+	/**
+	 * ★ 2026-10-24（用户报：左侧「工作区」列表里 `UESEa`、`S1Game` 各出现两次，分不清）：
+	 *
+	 * 原来只取**路径末段** ⇒ `F:\GR_qiuzijian_main\S1Game` 与 `F:\PJDB_qiuzijian_main\S1Game`
+	 * 都变成 `S1Game`，两个不同的工作区在侧栏里长得一模一样（截图实证）。
+	 *
+	 * ⇒ 改成取**末两段**：`GR_qiuzijian_main/S1Game` / `PJDB_qiuzijian_main/S1Game`，同名的不同根一眼可分。
+	 * ⚠ 不重复的工作区也会跟着变长（`sarosis-agents-client` → `SarosWorkspace/sarosis-agents-client`）。
+	 *   这是有意的取舍：**宁可长一点，也不能让两个不同的根显示成同一个名字**。
+	 *   宽度问题由 CSS 的 `text-overflow: ellipsis` 兜住（`.sv-group-path` 早就这么做了），
+	 *   组头副文本仍然显示完整主根 ⇒ 信息没丢。
+	 * ⚠ 盘符不算"段"：`F:\a\b` 切成 `['F:', 'a', 'b']`，末两段是 `a/b` ✓。
+	 */
+	const segs = String(cwd ?? '').split(/[\\/]+/).filter(Boolean);
+	if (segs.length === 0) { return String(cwd ?? '').trim(); }
+	if (segs.length === 1) { return segs[0]; }
+	return segs.slice(-2).join('/');
 }
 
 /** 数字或 undefined（**不把 0 与未知混起来**——0 是有信息的）。 */

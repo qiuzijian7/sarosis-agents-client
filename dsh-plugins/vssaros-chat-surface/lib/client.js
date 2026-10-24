@@ -20,13 +20,19 @@ window.__ModuleLoader__.load({
 		//   （今天就因此丢了侧栏「主页」那一行：18:15 改了 client.workbenchNav.js，没动入口 ⇒
 		//    rev 没变 ⇒ 用户窗口里侧栏仍是旧版；22:17 补改入口后才恢复。）
 		// ⇒ 规矩：**改任何 `client.*.js` 之后，把下面这个 stamp 改掉**（守卫会查 ⇒ 漏了必红）✓
-		const CLIENT_BUILD_STAMP = "2026-10-22/模式chip当前名称不冒充(P0-1)/03+第三方工作台固定到侧栏+空白会话预选Bot(P0-2)/04+固定行启动兜底也同步(重启后固定图标不丢)+2026-10-22/工作流页改左右两档(左列表右画布)+2026-10-22/工作台导航登记商城(主页不显示商城的修复)";
+		const CLIENT_BUILD_STAMP = "2026-10-22/模式chip当前名称不冒充(P0-1)/03+第三方工作台固定到侧栏+空白会话预选Bot(P0-2)/04+固定行启动兜底也同步(重启后固定图标不丢)+2026-10-22/工作流页改左右两档(左列表右画布)+2026-10-22/工作台导航登记商城(主页不显示商城的修复)+2026-10-22/DEFAULT_ITEMS登记并行工作台+2026-10-22/模型下拉框加创作模型三行(S2)/07+2026-10-22/品牌改名Saroasis-harness(品牌位+页面title)+2026-10-23/中栏工作台面板不被救援抢回会话+2026-10-23/desktop窗口加更新入口(随包插件+一键升级应用)/02+2026-10-23/更新面板加五类资产升级检查(skill/mcp/agent/工作流/工作台)+2026-10-23/工作台导航登记萨罗斯平台(studio)+2026-10-23/页签支持拖拽排序/02+2026-10-23/更新行不透明且不压状态行+2026-10-23/LLM模型下拉移除创作模型三行(SHOW_IN_LLM_MENU=false)+2026-10-23/模型chip按方案B恢复创作模型分组(文字vs图片视频音频+二级面板搜索+首开聚焦)+2026-10-23/创作模型行直接绑click(文档级委托没命中的兜底)+2026-10-23/模型菜单选择器加结构匹配兜底(window.__vssarosCreative.probe)+2026-10-23/scan走findMenu(不再只认中文aria-label)+2026-10-23/更新行不透明不压状态行+无可升级内容时不显示更新UI+2026-10-24/账号行在所有surface接管(插件页不再露官方DeepSeek登录)+2026-10-24/侧栏隐藏官方插件行+2026-10-24/自动化任务收进工作台(侧栏那行隐藏)/02";
 		// 挂到 window 上 ⇒ 真机取证能一眼看出"这个窗口跑的是哪一版"（`window.__vssarosChatSurfaceBuild`）✓
 		try { window.__vssarosChatSurfaceBuild = CLIENT_BUILD_STAMP; } catch { /* 极端环境 */ }
 		// 注意：**不**把 `workspaces` 加进 inject —— 本仓库实测结论是 Cordis 4 的 inject 数组是
 		// 硬依赖（object 形式没有 optional 语义），未就绪会让整个插件不 apply（比缺这个功能更糟）。
 		// 工作区服务改在 alignWorkspace 里用 `ctx.get("workspaces")` **运行时可选**取（官方
 		// settings-models 取 productAnalytics 用的也是这一手）。
+		// ★ 2026-10-22（图标）：`client.workbenchNav.js` 与 `client.market.js` 各加了一张
+		//   `WB_ICON_EMOJI`（`codicon:*` → emoji）。原因：注册表 icon 是**标识符**，而 dsh 前端
+		//   没有 codicon 字体/CSS ⇒ 直接渲染只得到兜底 🧩。两张表**必须逐字一致**（同包两个 chunk
+		//   不能同步 require 对方），由 `check-workbench-catalog.mjs` 比对 + 校验每个已注册工作台
+		//   的图标都在表里，且**映射值不能是 🧩**（否则等于没修）✓。
+		// ⚠ 改过这两个子块（哪怕是"改了又改回来"的变异测试）都要**再动一次本入口 + 升版本**。
 		// 2026-10-17 加 sidebarRight / sidebarRightTabs / layout：工作台导航（client.workbenchNav.js）
 		// 把页面开进**右侧栏页签**（openTab）并把中栏弹回会话（selectPanel(null)）用。
 		// 都是官方随附服务（dsh-client-ui-sidebar-right / dsh-client-ui-layout）⇒ 硬依赖安全 ✓。
@@ -49,7 +55,7 @@ window.__ModuleLoader__.load({
 		//     · 切换走**官方 remote API**（`ctx.remote.agentPresets.select`）⇒ 没有宿主桥也能切 ✓
 		//   ⚠ 第五轮：它**不在** PART_CHUNKS 里（那儿有"无桥就整批不装"的早退 ⇒ desktop 里不生效 ✗）
 		//   ⇒ 走上面那条**独立装载路径**（ALWAYS 部件）✓ ⇒ 这里不再列它。
-		const PART_CHUNKS = ["./client.hero.js", "./client.skin.js", "./client.usage.js", "./client.tools.js", "./client.approval.js", "./client.openInApp.js", "./client.hideBridgePing.js", "./client.settings.js", "./client.sessionLabel.js", "./client.workspace.js", "./client.sessions.js", "./client.agents.js", "./client.persona.js", "./client.fileCards.js", "./client.cardActions.js", "./client.todos.js", "./client.subagents.js", "./client.delegate.js", "./client.welcome.js", "./client.capsule.js", "./client.workbenchNav.js", "./client.workspaces.js", "./client.market.js", "./client.account.js",
+		const PART_CHUNKS = ["./client.hero.js", "./client.skin.js", "./client.usage.js", "./client.tools.js", "./client.approval.js", "./client.openInApp.js", "./client.hideBridgePing.js", "./client.settings.js", "./client.sessionLabel.js", "./client.workspace.js", "./client.sessions.js", "./client.agents.js", "./client.persona.js", "./client.fileCards.js", "./client.cardActions.js", "./client.todos.js", "./client.subagents.js", "./client.delegate.js", "./client.welcome.js", "./client.capsule.js", "./client.workbenchNav.js", "./client.workspaces.js", "./client.market.js",
 		// 侧栏页脚（品牌 + 工作区/会话规模，2026-10-18 差异清单第 ③ 项）：
 		// ⚠ 本块注释里**禁止出现 ASCII 双引号**（连正则字面量也不行）：`PART_CHUNKS` 的提取正则
 		//   是「引号 + 至少一个非引号字符 + 引号」，chunk 守卫与 dshPluginPackages 测试都用它 ⇒
@@ -202,6 +208,8 @@ window.__ModuleLoader__.load({
 				sessionId: bridge && bridge.sessionId ? bridge.sessionId : null,
 				opened: false,
 				attempts: 0,
+				// ★ 2026-10-22：Host 回过 401（token/cookie 失效 ⇒ Host 已重启）—— 见下方 fetch 观察器
+				authFailed: false,
 				// `error` = **当前**是否坏着（成功打开会话时清空 ✓）；历史留 `lastError` / `lastOpenError`。
 				// 2026-10-12 实测教训：从前成功后不清 ⇒ 白屏诊断里报的是**陈旧错误**，
 				// 把"其实已经恢复"也读成"还坏着" ✗。
@@ -366,6 +374,41 @@ window.__ModuleLoader__.load({
 				}
 			});
 
+			// ★ 2026-10-24（工作台样板：小红书笔记，doc/xhs-workbench-fix-plan.md 硬伤 3）：
+			//   **composer 预填**通道 —— 工作台把草稿变成一段指令，由这里落笔到输入框（**不自动发送**）。
+			//   为什么要走事件：注册式工作台拿到的 `conversation` 只是**停靠节点**（宿主 portal 进来的），
+			//   拿不到 `inputActions`；而 chat-surface 在 `adapter.current` 上就能取到（与 `vssaros-dsh-insert` 同一套）。
+			//   三个保险：① 只写「当前会话的输入器」② 输入机不是 plain（有 @引用 / 斜杠命令）就不覆盖
+			//   ③ 结果写回 `detail.result`，调用方据此提示用户（applied / busy / phase / no-input）。
+			// 预填通道（工作台 → composer）：改动本入口是为了让 mtime 新于 chunk（守卫会查）。
+			const PREFILL_EVENT = "vssaros-composer-prefill";
+			document.addEventListener(PREFILL_EVENT, (e) => {
+				const detail = e && e.detail;
+				if (!detail || typeof detail.text !== "string") { return; }
+				const result = detail.result && typeof detail.result === "object" ? detail.result : (detail.result = {});
+				try {
+					const binding = ctx.uiSession && ctx.uiSession.adapter && ctx.uiSession.adapter.current
+						? ctx.uiSession.adapter.current.getSnapshot() : null;
+					const actions = binding && binding.props ? binding.props.inputActions : null;
+					const inputHook = binding && binding.hooks ? binding.hooks.input : null;
+					if (!actions || typeof actions.insertText !== "function") { result.applied = false; result.reason = "no-input"; return; }
+					const snap = inputHook && typeof inputHook.getSnapshot === "function" ? (inputHook.getSnapshot() || {}) : {};
+					if (snap.occurrences && snap.occurrences.length) { result.applied = false; result.reason = "busy"; return; }
+					if (snap.phase && snap.phase !== "plain") { result.applied = false; result.reason = "phase"; return; }
+					const draft = String(snap.draft || "");
+					// 末尾插入（不改动用户已写的内容）；已有内容 → 空两行再追加
+					const text = draft.trim() ? "\n\n" + detail.text : detail.text;
+					const ok = actions.insertText(text, { start: draft.length, end: draft.length });
+					result.applied = ok !== false;
+					if (!result.applied) { result.reason = "rejected"; return; }
+					state.prefilled = (state.prefilled || 0) + 1;
+					state.lastPrefill = { from: String(detail.from || ""), chars: detail.text.length, appended: !!draft.trim() };
+				} catch (err) {
+					result.applied = false;
+					result.reason = String((err && err.message) || err);
+				}
+			});
+
 			// 工作台导航（sidebar.panellist 图标 + main 中栏面板）：chat 形态由下方 PART_CHUNKS
 			// 统一装载；**full 形态（弹出窗口）走不到那里** ⇒ 这里单独装。两个分支按 surface
 			// 互斥（同一视图 surface 固定），不会双重注册 ✓。chat-only 形态侧栏被 CSS 裁掉，
@@ -452,7 +495,8 @@ window.__ModuleLoader__.load({
 						require.async("./client.market.js"),
 						// ★ 2026-10-21：侧栏底部「账号」行（IDE 账号 + dsh 账号）—— 窗口（full 形态）里才有那一行
 						//   ⇒ 与 market/footer 一样必须进这条 full 形态的 require 列表（只进 PART_CHUNKS 就不装 ✗）。
-						require.async("./client.account.js"),
+						// ★ 2026-10-24：账号行改由 `ALWAYS_CHUNKS` 无条件装载（插件页也要接管，
+						//   否则左下角是官方入口 ⇒ 点登录走 DeepSeek 授权 ✗）⇒ 这里不再单独 require。
 					]))
 					.then((parts) => {
 						for (const part of parts) {
@@ -484,7 +528,14 @@ window.__ModuleLoader__.load({
 			// ★ 2026-10-21（模式菜单）：弹层**位置**修正（无壳兜底不再返回视口坐标 ⇒ 不再飞到右下角 ✗）
 			//   + 菜单**分组**（按"差异到底在哪"分：VsSaros 模式 / dsh 原生）⇒ 改的是 `client.preset.js`
 			//   ⇒ 这里必须跟着动一下（**rev 只跟入口走** ⇒ 不动入口浏览器就一直吃旧 chunk ✗✗）。
-			const ALWAYS_CHUNKS = ["./client.preset.js", "./client.botEntry.js"];
+			// ★ 2026-10-22：新增 `client.modelAccounts.js`（设置 → 模型：CodeBuddy 账号条 + 账号服务入口）——
+			//   设置对话框在任何 surface 都能打开、且无桥环境（dsh desktop）正是主要使用场景 ⇒ 必须走这条独立装载路径 ✓。
+			// ★ 2026-10-24（用户：「左下角的 tof 登录按钮为什么会触发官方的登录」）：`client.account.js`
+			//   **必须无条件装载**。它原先只在 PART_CHUNKS（有 sessionId 才装）与 full 分支里 ⇒ 插件页
+			//   （`/x/skills/?surface=editor`，无 sessionId ⇒ 走 BLANK_SESSION_PARTS）里压根没被 require
+			//   ⇒ 左下角是**官方账号行**，点它就走 dsh 官方 DeepSeek 授权 ✗✗。
+			//   它自己用 `state.accountInstalled` 防重复 + `chrome` 判据决定是否真的注册 ⇒ 无条件装载是安全的 ✓。
+			const ALWAYS_CHUNKS = ["./client.preset.js", "./client.botEntry.js", "./client.modelAccounts.js", "./client.creative.js", "./client.upgrade.js", "./client.account.js"];
 			Promise.all(ALWAYS_CHUNKS.map((p) => require.async(p)))
 				.then((parts) => {
 					for (const part of parts) {
@@ -552,6 +603,48 @@ window.__ModuleLoader__.load({
 			 * 「正在打开会话…（已等待 N 秒）」（用户 38 秒截图）。取值与重试节流同量级（8s）。
 			 */
 			const ALIGN_TIMEOUT_MS = 8000;
+			/**
+			 * ★★ 2026-10-22（用户报「操作工作台过程中，突然切换到了会话页面」）：
+			 *   轮询的"已打开"判据原本只有 **DOM 标记**（`[data-sidebar-right-session="<sid>"]`）——
+			 *   用户切到**工作台页**（`/x/<module>/`）或**另一条会话**时，那枚标记自然不在 DOM 里
+			 *   ⇒ 循环判定"我的会话没打开" ⇒ 退避后 `uiWorkspace.openSession(sid)` ⇒ **把人拽回会话页** ✗✗✗
+			 *   （而且 2026-10-18 起它"永不放弃"，降频后每 30s 仍会抢一次 ⇒ 用户感觉是**突然**被切走）。
+			 *
+			 *   不变量：**只有页面真的空白（还停在 hero）时才抢**。
+			 *     · 在别的路由（`/x/...` 工作台）⇒ 不抢；
+			 *     · 页面上已经渲染了任何会话（哪怕不是"我这条"）⇒ 不抢（用户是**主动**切过去的 ✓）。
+			 *   需要"重新抢"的正当场景只有：首次打开、换绑（rebind）、用户点状态条「重试」。
+			 */
+			const onOtherRoute = () => {
+				try {
+					const p = String(location.pathname || "/");
+					// dsh 的会话页是根路径（无 /session/<id> 深链）；`/x/<module>/` 是工作台/插件页
+					return p !== "/" && p !== "";
+				} catch { return false; }
+			};
+			const looksBlankPage = () => {
+				try {
+					return !document.querySelector("[data-sidebar-right-session]")
+						&& !document.querySelector("[data-chat-flow]")
+						&& !document.querySelector("[data-chat-anchor-key]")
+						&& !document.querySelector("[data-composer-card]");
+				} catch { return true; }
+			};
+			/**
+			 * ★★ 2026-10-23（用户报「主页显示过程中，page 突然被切换成了聊天输入框」）：
+			 *   中栏显示的是**我们自己的工作台面板**（主页 / 工作台页签）时，聊天 DOM 本来就不在 ——
+			 *   上面 `looksBlankPage()` 会把这种"设计上的空白"误判成"会话没打开" ⇒ 救援轮询调用
+			 *   `uiWorkspace.openSession()` ⇒ 官方 `replaceMain(…, 'reveal')` 里那句 `selectPanel(null)`
+			 *   ⇒ **把主页换回聊天** ✗✗（用户看到的正是"主页显示到一半突然变成聊天输入框"）。
+			 *   判据用面板自己的根标记：`makeTabPanel` / `PageOpenPanel` 只在被显示时才挂载
+			 *   ⇒ 它存在 == `activePanelId` 是我们的键（不依赖官方未公开的 panelInfo 观测接口 ✓）。
+			 */
+			const workbenchPanelActive = () => {
+				try {
+					return !!(document.querySelector("[data-vssaros-wb-tabs]")
+						|| document.querySelector("[data-vssaros-wb-full]"));
+				} catch { return false; }
+			};
 			/**
 			 * ★★ 2026-10-17（`roster:0 / openRetries:240 / giveUps:1`、页面停在 hero 的真因）：
 			 * 官方 `uiWorkspace.openSession()` 内部是 `replaceMain()` ⇒ `layout.beginNavigation()`，
@@ -910,12 +1003,41 @@ window.__ModuleLoader__.load({
 			// 超过 60 秒再露出「重试」按钮（立即重置所有退避，马上重来一轮）。会话一打开就移除。
 			// 纯 DOM、不依赖 dsh 的槽位（hero 在官方 inert 区域里，插槽不一定渲染）✓。
 			// 阈值可被 `window.__vssarosConnectTuning` 覆盖——仅供 e2e 缩短等待，生产不设。
+			// ★ 2026-10-22（真机：Host 重启换 token ⇒ 页面拿旧 token/cookie 重连 ⇒ Host 回 **401**
+			//   ⇒ 旧实现完全无感知（client.js 里连 401 这个词都没有）⇒ 永远「正在重新连接 Host…」✗✗）。
+			//   实测 Host 的校验：当前 token ⇒ 303 + `dsh-auth-*` cookie；旧 token / 无 token ⇒ **401**。
+			//   这里只**观察**（不改语义）：看到 401 就记一笔 ⇒ 状态条改文案、重试改成"真的重载" ✓。
+			const markAuthFailed = () => {
+				if (state.authFailed) { return; }
+				state.authFailed = true;
+				try { console.warn("[vssaros] Host 返回 401：登录已失效（Host 已重启 ⇒ token 已换），页面需要重载"); } catch { /* 忽略 */ }
+			};
+			try {
+				if (!window.__vssarosFetchPatched) {
+					window.__vssarosFetchPatched = true;
+					const origFetch = window.fetch;
+					if (typeof origFetch === "function") {
+						window.fetch = function (...args) {
+							return origFetch.apply(this, args).then(res => {
+								try { if (res && res.status === 401) { markAuthFailed(); } } catch { /* 忽略 */ }
+								return res;
+							});
+						};
+					}
+				}
+			} catch { /* 忽略：观察器失败绝不影响页面 */ }
 			const STATUS_ID = "vssaros-connect-status";
 			const tune = () => (typeof window !== "undefined" && window.__vssarosConnectTuning) || {};
 			const removeStatus = () => {
 				try { const e = document.getElementById(STATUS_ID); if (e) { e.remove(); } } catch { /* 忽略 */ }
 			};
 			const retryNow = () => {
+				// ★ 401 ⇒ 唯一有效的动作是**重载**（重新用当前 URL/cookie 换 token）；
+				//   旧实现只重置退避 ⇒ 对"token 失效"这种情形是死路（点多少次都没用）✗
+				if (state.authFailed) {
+					try { location.reload(); } catch { /* 忽略 */ }
+					return;
+				}
 				// 重置**所有**退避/节流，让下一个 tick 立刻重来；在途的请求不取消（取消=重蹈互相覆盖的覆辙）。
 				registerNextAt = 0; registerErrors = 0;
 				if (Date.now() - registerStartedAt > 5000) { registerPending = false; }
@@ -928,6 +1050,8 @@ window.__ModuleLoader__.load({
 				state.manualRetries = (state.manualRetries || 0) + 1;
 			};
 			const statusText = () => {
+				// ★ 401 必须**先于** "重新连接" 说：这不是"慢"，是"token 换了，重连永远好不了" ✗
+				if (state.authFailed) { return "Host 已重启（登录已失效）—— 请从 IDE 重新打开，或点「重试」重载"; }
 				if (!rpcReadyEarly()) {
 					// ★ 2026-10-19（真机日志）：Host 冷启实测 **24s**（24 个插件）+ 客户端连接阶梯 **17.7s / 6 次抖动**
 					//   ⇒ 前 10~20 秒一定会看到这条。原文案只写"正在连接 Host…"，用户无法判断是"慢"还是"死" ✗
@@ -1046,6 +1170,15 @@ window.__ModuleLoader__.load({
 				return;
 			}
 			state.opened = false;
+			// ★ 2026-10-22：**不许抢用户的导航** —— 切到工作台页 / 已经在看别的会话 ⇒ 本轮什么都别做。
+			//   （这一条就是"操作工作台时突然被切回会话页"的修复；详细口径见 `looksBlankPage` 的注释。）
+			if (onOtherRoute() || workbenchPanelActive() || !looksBlankPage()) {
+				// 任一成立就**不抢**：别的路由（工作台/插件页）/ 中栏是我们的工作台面板 / 页面上已经有会话在渲染
+				state.leftForOtherView = onOtherRoute() ? "route" : (workbenchPanelActive() ? "workbench-panel" : "other-view");
+				removeStatus();   // 别把待打开状态条留在别人的页面上
+				return;
+			}
+			state.leftForOtherView = null;
 			renderStatus();
 			idleTicks += 1;
 			// 降频线（默认 240 tick = 120s；e2e 可经 `__vssarosConnectTuning.degradeAfterTicks` 缩短，生产不设）
@@ -1589,3 +1722,5 @@ window.__ModuleLoader__.load({
 		return module.exports;
 	}
 });
+// 2026-10-24 touch: 修「首次点击页签却切中主页」后刷新入口 mtime ⇒ 客户端 chunk 的 ?rev 变化，浏览器不再吃旧缓存。
+

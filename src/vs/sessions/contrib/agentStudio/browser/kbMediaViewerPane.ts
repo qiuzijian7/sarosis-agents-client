@@ -31,7 +31,9 @@ import { IFileService } from '../../../../platform/files/common/files.js';
 import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { IWebviewElement, IWebviewService } from '../../../../workbench/contrib/webview/browser/webview.js';
 import { encodeBase64 } from '../../../../base/common/buffer.js';
-import { escapeJsonForInlineScript } from './kbBlocksEditorPane.js';
+// ★ 2026-10-23：改指向独立文件 —— 原先从 `kbBlocksEditorPane` 引它会形成**双向 import**
+//   （那个文件也要引本文件），`compile-client` 因此一直报 CYCLIC。
+import { escapeJsonForInlineScript } from './kbInlineScript.js';
 import { imageMimeOf, mediaKindOf } from './kbMediaViewerKinds.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';

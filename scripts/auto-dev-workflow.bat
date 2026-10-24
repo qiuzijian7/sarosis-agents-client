@@ -84,12 +84,12 @@ timeout /t 2 /nobreak >nul
 
 REM 启动带调试标志的 VS Code
 start "" "%PROJECT_ROOT%\scripts\code.bat" ^
-    --inspect=5875 ^
-    --remote-debugging-port=9222 ^
+    --inspect=5888 ^
+    --remote-debugging-port=9799 ^
     --no-cached-data ^
     --disable-features=CalculateNativeWinOcclusion
 
-echo   [成功] VS Code 已启动（调试端口: 5875, Chrome调试: 9222）
+echo   [成功] VS Code 已启动（调试端口: 5888, Chrome调试: 9799）
 call :log "[成功] VS Code 调试模式已启动"
 
 REM Step 5: 等待用户验证
@@ -98,7 +98,7 @@ echo [Step 5/5] 等待验证...
 echo ============================================
 echo   ✓ 编译完成
 echo   ✓ VS Code 调试模式已启动
-echo   ✓ 主进程调试端口: 5875
+echo   ✓ 主进程调试端口: 5888
 echo   ✓ 扩展主机调试端口: 5870
 echo.
 echo 请在 VS Code 中：

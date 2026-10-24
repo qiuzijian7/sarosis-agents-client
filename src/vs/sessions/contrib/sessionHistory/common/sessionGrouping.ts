@@ -40,6 +40,16 @@ export interface IWorkspaceRef {
 	readonly id: string;
 	readonly name?: string;
 	readonly path?: string;
+	/**
+	 * ★ 2026-10-24（用户要求「左侧工作区要能看出多根」）：多根工作区的**其余根**。
+	 *
+	 * 来源是 `Workspace.relatedFolders`（Agent Studio registry）。多根工作区在 IDE 里是
+	 * 「一个 registry 记录 + 若干关联文件夹」，但侧栏分组此前只拿 `path`（主根）
+	 * ⇒ 同名的两个根会显示成两个一模一样的组头，用户分不清。
+	 *
+	 * 可选：单根工作区 / 旧数据里没有这个字段。
+	 */
+	readonly relatedFolders?: readonly { readonly path: string; readonly name?: string }[];
 }
 
 /** 一个工作区分组的投影（渲染层只读它，不再自己判断归属）。 */
@@ -50,6 +60,14 @@ export interface ISessionGroup<T> {
 	readonly title: string;
 	/** 工作区路径（未分组 / 已删除为空串）。 */
 	readonly path: string;
+	/**
+	 * ★ 该组的**全部根**（主根在前）。`length > 1` ⇒ 渲染层要给出「N 根」标记。
+	 *
+	 * ⚠ 与 `path` 的关系：`roots[0] === path`（主根）。分成两个字段是因为
+	 *   `path` 是对外契约（点开工作区、打开文件夹都用它），`roots` 只用于**展示多根**，
+	 *   消费方不该拿 `roots[0]` 去替代 `path`（两者的空值语义不同）。
+	 */
+	readonly roots?: readonly string[];
 	/** 全局会话注册表里查不到该 workspaceId ⇒ 工作区已删除。 */
 	readonly missing: boolean;
 	/** 未归属任何工作区。 */
@@ -104,6 +122,8 @@ export function buildSessionGroups<T>(
 	interface IBucket {
 		readonly title: string;
 		readonly path: string;
+		/** ★ 该工作区的全部根（主根在前）；未分组 / 已删除为空。 */
+		readonly roots?: readonly string[];
 		readonly sessions: T[];
 	}
 
@@ -116,10 +136,10 @@ export function buildSessionGroups<T>(
 	/** 首次出现顺序（只用于「已删除的工作区」，真实工作区按 `workspaces` 顺序）。 */
 	const firstSeen: string[] = [];
 
-	const bucketOf = (key: string, seed: { title: string; path: string }): IBucket => {
+	const bucketOf = (key: string, seed: { title: string; path: string; roots?: readonly string[] }): IBucket => {
 		let bucket = buckets.get(key);
 		if (!bucket) {
-			bucket = { title: seed.title, path: seed.path, sessions: [] };
+			bucket = { title: seed.title, path: seed.path, roots: seed.roots, sessions: [] };
 			buckets.set(key, bucket);
 			firstSeen.push(key);
 		}
@@ -137,9 +157,22 @@ export function buildSessionGroups<T>(
 		}
 		const workspace = known.get(workspaceId);
 		if (workspace) {
+			/**
+			 * ★ 2026-10-24：把 `relatedFolders` 一并收进 bucket。
+			 *
+			 * 多根工作区在 registry 里是「一个记录 + 若干关联文件夹」，此前只取 `path`（主根）
+			 * ⇒ 侧栏无法表达「这一组有 2 个根」，同名的两个根看起来就是两个独立工作区。
+			 *
+			 * ⚠ `roots[0]` 恒等于 `path`（主根在前），消费方拿 `path` 做业务、拿 `roots` 做展示。
+			 */
+			const primary = (workspace.path ?? '').trim();
+			const related = Array.isArray(workspace.relatedFolders) ? workspace.relatedFolders : [];
+			const roots = [primary, ...related.map(f => String((f && f.path) || '').trim())]
+				.filter(p => p.length > 0);
 			bucketOf(workspaceId, {
 				title: workspaceTitleOf(workspace),
-				path: (workspace.path ?? '').trim(),
+				path: primary,
+				roots: roots.length > 1 ? roots : undefined,
 			}).sessions.push(session);
 		} else {
 			// 工作区已被删除：保留会话（用户仍要能打开/改名/删除它），但如实标注。
@@ -156,6 +189,8 @@ export function buildSessionGroups<T>(
 				key: workspace.id,
 				title: bucket.title,
 				path: bucket.path,
+				// ★ 多根标记（>1 根时才有值）⇒ 视图层据此渲染「N 根」
+				roots: bucket.roots,
 				missing: false,
 				ungrouped: false,
 				sessions: bucket.sessions,

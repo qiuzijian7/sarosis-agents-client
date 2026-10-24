@@ -99,7 +99,16 @@
                 - 'workflow_*'
                 - 'media_*'
                 - 'video_*'
-                - 'image_*'
+                # ★ 2026-10-24（用户要求 A）：**只藏查表工具 `image_models`，主生图工具 `image_generate` 必须可见**。
+                #   原来这里是 `'image_*'` ⇒ 把 `image_generate` 一起藏了 ⇒ 标准档里聊天框生图**根本用不到**
+                #   （真机 2026-10-23 实锤：模型原话"这个会话里没有 image_generate 工具…调它只会报未知工具"；
+                #     Host 日志 `[vssaros-agents] 工具面收敛：… image_* …`）。
+                #   ⚠ `expandDenyPatterns` **不支持负向排除**（只有精确名与 `prefix*`）⇒ 不能写 `'!image_generate'`
+                #     ⇒ 只能精确列举。当前 `image_` 前缀的工具**只有我们插件这两个**（全仓 grep 确认），
+                #     所以把 `image_*` 收敛成 `image_models` 一条即可。
+                #   为什么仍藏 `image_models`：它是"这台 IDE 谁能生图"的查表工具，占 1 个工具位；
+                #     需要挑模型时可以临时切档，或直接传 `model=picture_*`（工具描述里已写明）。
+                - 'image_models'
                 - 'vision_*'
                 - 'extract_*'
                 - 'text_*'

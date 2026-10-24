@@ -48,6 +48,11 @@ export type DshModuleId =
 	// 2026-10-21：图像生成（`@vssaros/dsh-imagegen`）。`image_generate` 工具 + 聊天框里的生图卡；
 	// 画布工作台（Excalidraw）在这之上再加一页（P2 ⇒ 届时把 view.kind 从 'none' 改成 'page'）。
 	| 'imagegen'
+	// 2026-10-24：萨罗斯管理平台工作台（`@vssaros/dsh-studio`，整页 `/x/studio/`）。
+	// ⚠ 补登记的原因：容器表（`vssaros.dsh.studio`）与页面表（:350）都已加，但**模块联合与
+	//   内置模块表漏了** ⇒ 守卫报「声明了未登记的内置模块：studio」+「studio 没有插件包
+	//   ⇒ DSH_MODULE_PAGES 里必须是 none」（后者是按内置表反查插件包失败后的连带结论）。
+	| 'studio'
 	// 2026-10-21：工作台商城（`@vssaros/dsh-market`）。读 dsh 公开市场目录 + Host 侧安装路由；
 	// 界面在 chat-surface 的 `client.market.js` ⇒ 无图标模块形态（清单 view.kind='none'）。
 	// ⚠ 2026-10-22 补回：本条与下面那行登记在 10-21 23:08 的本地重置里丢失，按清单重写。
@@ -56,7 +61,15 @@ export type DshModuleId =
 	//   `market` = 第三方工作台目录（dsh 公开市场，界面在设置面板）；
 	//   `marketplace` = 我们的自营商城（独立页面 `/x/marketplace/`）⇒ 两条数据源、两条能力，互不覆盖 ✓。
 	// 无 ActivityBar 图标：入口走工作台中间栏 / 命令（页面自带 route）。
-	| 'marketplace';
+	| 'marketplace'
+	// 2026-10-22：并行 TUI 工作台（`@vssaros/dsh-parallel`）—— 一个工作台编排 N 个并行 LLM 会话，
+	//   每格一个真 TUI（Host 侧 node-pty 起社区 `@tomowang/dsh-tui`，原始 ANSI 流 + xterm.js 渲染）。
+	//   入口：主页「工作台」组件里的一行 item（`/x/parallel/`）。
+	| 'parallel'
+	// 2026-10-23：萨罗斯管理平台工作台（`@vssaros/dsh-studio`）—— 页面 `/x/studio/` 里 iframe 承载
+	//   Saroasis Studio System 前端；平台右上角「AI 助手」在右侧栏打开 chat-surface。
+	//   无 ActivityBar 图标：入口走主页卡片 / 侧栏启动器（页面自带 route）。
+	| 'studio';
 
 export interface IDshBuiltinModule {
 	readonly module: DshModuleId;
@@ -117,6 +130,13 @@ export const DSH_BUILTIN_MODULES: readonly IDshBuiltinModule[] = [
 	// `marketplace` = 我们自己的商城（独立页面 `/x/marketplace/`）⇒ 两条数据源、两条能力，互不覆盖 ✓。
 	// 无 ActivityBar 图标：入口走工作台中间栏 / 命令（页面自带 route ⇒ 不必占活动栏一格）。
 	{ module: 'marketplace', pluginName: '@vssaros/dsh-marketplace', summary: '自营商城工作台：agent/skill/工作台/工作流 的浏览、安装、升级、发布与管理（页面 /x/marketplace/）' },
+	// 2026-10-22：并行 TUI 工作台（`/x/parallel/`）。一个工作台编排 N 个并行 LLM 会话，每格一个真 TUI。
+	// 实测进程模型：N 格 = N 个**独立 dsh 进程**（社区 TUI 自带 core，不连 Host）；同 profile 可并行，
+	// 写锁是**会话级**；每格 ≈ 71.6MB（带我们全套模块的空闲态）⇒ 12 格 ≈ 0.86GB。
+	{ module: 'parallel', pluginName: '@vssaros/dsh-parallel', summary: '并行 TUI 工作台：并排编排多个并行 LLM 会话，每格一个 TUI（页面 /x/parallel/）' },
+	// 2026-10-24：萨罗斯管理平台工作台（站点 iframe + 站点栏 + 右栏 AI 助手页签）。
+	// 登记在三张表里必须同批完成（模块联合 / 内置模块表 / 页面表），漏一处就是「未登记的内置模块」✗。
+	{ module: 'studio', pluginName: '@vssaros/dsh-studio', summary: '萨罗斯管理平台：承载平台前端页面，右上角 AI 助手在右栏打开助手会话（页面 /x/studio/）' },
 ];
 
 /**
@@ -172,7 +192,7 @@ export const DSH_MODULE_CONTAINERS: readonly IDshModuleContainer[] = [
 	},
 	{
 		containerId: 'agentStudio.presetAgent', modules: ['agents'], status: 'existing',
-		activityBar: { containerId: 'agentStudio.presetAgent', title: 'Agents', icon: 'codicon:robot', order: 60 },
+		activityBar: { containerId: 'agentStudio.presetAgent', title: 'Bots', icon: 'codicon:robot', order: 60 },
 	},
 	{
 		containerId: 'agentStudio.tasks', modules: ['kanban'], status: 'existing',
@@ -238,6 +258,29 @@ export const DSH_MODULE_CONTAINERS: readonly IDshModuleContainer[] = [
 		note: '2026-10-22：自营商城工作台（agent / skill / 工作台 / 工作流 四类商品）。与「工作台商城」（market 模块 = dsh 公开市场的第三方工作台，界面在设置面板）**并存且分工明确** ✓。页面自带 route ⇒ IDE 直接开 `/x/marketplace/`；所有有副作用的动作经 `ide.request{capability:"marketplace"}` 落到 IDE 侧（认证/下载/注册表刷新只有一份真源）✓。',
 	},
 	{
+		// 并行 TUI 工作台（2026-10-22）：`@vssaros/dsh-parallel` 的 `/x/parallel/` 整页（稿 A 网格）。
+		// **page-only** —— legacy 引擎侧没有这一页（格位是 Host 侧 PTY + 浏览器 xterm.js，只存在于 dsh 侧）✓
+		// order 87 = 紧跟商城(86) 之后（同为「扩展/创作」类入口，排在「看资料」110+ 之前 ✓）。
+		// ⚠ 活动栏 title/icon/order 必须与插件清单 `vssaros.activityBar` **同值**（双轨对账守卫盯着）。
+		containerId: 'vssaros.dsh.parallel', modules: ['parallel'], status: 'page-only',
+		activityBar: { containerId: 'vssaros.dsh.parallel', title: { zh: '并行工作台', en: 'Parallel' }, icon: 'codicon:split-horizontal', order: 87 },
+		note: '2026-10-22：并行 TUI 工作台（一屏 N 格，每格一个真 TUI）。实测：N 格 = N 个独立 dsh 进程（社区 TUI 自带 core，不连 Host），同 profile 可并行、写锁是会话级，每格 ≈ 71.6MB。0.1.0 只交付静态网格壳，格位后端（PTY 起停/推流/收割）下一步接。',
+	},
+	{
+		// 萨罗斯管理平台工作台（2026-10-23）：`@vssaros/dsh-studio` 的 `/x/studio/` 整页。
+		// **page-only** —— IDE 侧没有对应 legacy 页（页面 = 站点 iframe + 站点栏，只存在于 dsh 侧）✓
+		// ★ 2026-10-23（修编译错误）：`IDshModuleContainer.activityBar` 是**必填**，而这条原先没写 ⇒
+		//   `Property 'activityBar' is missing`（gulp 编译唯一剩下的一条）。当时注释说"入口走主页卡片 /
+		//   侧栏启动器，所以不占活动栏"，但那与接口矛盾 —— 二者只能选一个：
+		//   ① 补 activityBar（本条，活动栏多一格）；② 把字段改可选（试过 ⇒ 引出 6 处消费点报错，已回退）。
+		//   ⇒ 选 ①：order 88（紧跟并行工作台 87、商城 86 之后，「创作/扩展」类），icon 与插件清单
+		//   `workbench.icon` 同值（codicon:globe）。
+		//   ⚠ 与插件清单 `vssaros.activityBar` **必须同值**（`dshPluginPackages.test.ts` 双轨对账盯着）。
+		containerId: 'vssaros.dsh.studio', modules: ['studio'], status: 'page-only',
+		activityBar: { containerId: 'vssaros.dsh.studio', title: { zh: '萨罗斯', en: 'Studio' }, icon: 'codicon:globe', order: 88 },
+		note: '2026-10-23：萨罗斯管理平台工作台。页面 iframe 直连 http://saroasisstudiosystem.saroasis.woa.com:9999/（站点无 X-Frame-Options，可嵌）；页面自带底色与配色（自托管页拿不到 --dsw-alias-*）；「AI 助手」由 client 侧注册 shell.overlay 入口 + 右栏 studiochat 页签（复用官方 sidebar.chat.conversation）。',
+	},
+	{
 		containerId: 'agentStudio.dashboard', modules: ['dashboard'], status: 'existing',
 		// order 5 = **活动栏第一位**（2026-10-12 用户要求；原 150 = 最后一位）。
 		// 静态注册侧（`agentStudio.contribution.ts` 的 `_registerModuleToolIcon`）必须同值，
@@ -275,6 +318,13 @@ export const DSH_MODULE_PAGES: readonly IDshModulePage[] = [
 	{ module: 'codebase', kind: 'page', route: '/x/codebase/' },
 	{ module: 'dashboard', kind: 'page', route: '/x/dashboard/' },
 	{ module: 'kanban', kind: 'page', route: '/x/kanban/' },
+	// ★ 2026-10-23（知识库 UI 统一）／2026-10-24 修正：
+	//   **route 必须保持规范形态 `/x/kb/`** —— `dshPluginPackages.test.ts` 有一条硬校验
+	//   「view.route 必须等于该模块的规范默认路由」。我一度把它改成 `/x/kb/sideview`，
+	//   结果打红（`vssaros-kb 的 view.route 与聚合表推导的默认路由不一致`）。
+	//   ⇒ 「让窗口模式用 React 页」不该靠改路由，而是靠**这个路由返回什么**：
+	//     插件侧 `lib/index.js` 现在把 `/x/kb/` 直接出 `web/sideview.html`（与 IDE 侧栏同一份
+	//     bundle），旧页退到 `/x/kb/classic`（renderPage 兜底）仍可回退 ✓。
 	{ module: 'kb', kind: 'page', route: '/x/kb/' },
 	{ module: 'skills', kind: 'page', route: '/x/skills/' },
 	{ module: 'workflow', kind: 'page', route: '/x/workflow/' },
@@ -299,6 +349,13 @@ export const DSH_MODULE_PAGES: readonly IDshModulePage[] = [
 	{ module: 'imagegen', kind: 'page', route: '/x/imagegen/' },
 	// 2026-10-22：自营商城工作台（整页 `/x/marketplace/`）—— 与「工作台商城」（market 模块）**并存** ✓。
 	{ module: 'marketplace', kind: 'page', route: '/x/marketplace/' },
+	// 2026-10-22：并行 TUI 工作台（整页 `/x/parallel/`，稿 A 网格）。
+	// ⚠ 这条是主页「工作台」组件点「打开」的**白名单**（`openModulePage` 精确匹配 → 前缀归属）⇒
+	//   漏登记的表现是"点了没反应"（宿主 warn「不在模块页表里」）✗。
+	{ module: 'parallel', kind: 'page', route: '/x/parallel/' },
+	// 2026-10-23：萨罗斯管理平台工作台（整页 `/x/studio/`）。
+	// ⚠ 这条同时是主页/侧栏点「打开」的**白名单**（`openModulePage` 精确匹配）⇒ 漏登记 = 点了没反应。
+	{ module: 'studio', kind: 'page', route: '/x/studio/' },
 ];
 
 /** 容器页路由的解析结果（见 {@link pageRouteForActiveModules}）。 */

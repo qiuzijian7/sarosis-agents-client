@@ -29,39 +29,69 @@ import { dirname } from '../../../../base/common/path.js';
 import type { Database, RunResult } from '@vscode/sqlite3';
 // 仅类型导入：esbuild/tsc 会擦除，不会把 renderer 代码打进 node bundle
 import type { GraphNode, GraphEdge, VisualizationNode } from '../browser/codebaseGraphService.js';
+import { markMainThreadPhase } from '../../../../code/electron-main/mainThreadBreadcrumb.js';
 
 // ---- Promise wrappers around callback-based @vscode/sqlite3 API ----
 
-function dbExec(db: Database, sql: string): Promise<void> {
-	return new Promise((resolve, reject) => {
-		db.exec(sql, err => err ? reject(err) : resolve());
+/**
+ * 单条 SQL 的超时（毫秒）。
+ *
+ * ★ 2026-10-22（用户报"dev 整个 app 卡死"）：SQLite 驱动在**等锁**时**不回调**（`busy_timeout`
+ *   只覆盖 SQLITE_BUSY，不覆盖 checkpoint 的阻塞等待）⇒ 这里的 promise 永远不 settle ⇒
+ *   上层 IPC 调用也永远不返回 ⇒ 渲染侧堆积 pending promise、主进程那边看起来"活着"但什么都不做 ✗✗。
+ *   加超时 ⇒ 至少**报错**（调用方有 catch ⇒ 能自愈/能看见），而不是无声挂死 ✓。
+ *
+ * 取值：120s —— 一次大批量写（实测 5 万条边 ≈ 8s）留足余量；挂死时最多拖一分钟 ✗。
+ */
+const SQL_STATEMENT_TIMEOUT_MS = 120_000;
+
+/**
+ * 给驱动回调包一层超时（超时 ⇒ reject；驱动那条语句**不会被取消**，但调用方不再等 ✓）。
+ *
+ * ⚠ `value` 是**可选**的：错误分支没有"值"可言（如 `dbRun` 失败时没有 changes/lastID）
+ *   ⇒ 回调签名必须允许 `undefined`，否则错误分支传值会类型报错（TS2345）✗。
+ */
+function withStatementTimeout<T>(sql: string, exec: (done: (err: Error | null, value?: T) => void) => void): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		let settled = false;
+		const timer = setTimeout(() => {
+			if (settled) { return; }
+			settled = true;
+			reject(new Error(`SQLite 语句超时（${SQL_STATEMENT_TIMEOUT_MS}ms）：${sql.slice(0, 120)}`
+				+ ` —— 多半卡在锁等待（WAL/checkpoint）；语句未被取消，但调用方不再等待 ✗`));
+		}, SQL_STATEMENT_TIMEOUT_MS);
+		exec((err, value) => {
+			if (settled) { return; }
+			settled = true;
+			clearTimeout(timer);
+			if (err) { reject(err); return; }
+			resolve(value as T);
+		});
 	});
 }
 
+function dbExec(db: Database, sql: string): Promise<void> {
+	return withStatementTimeout<void>(sql, done => db.exec(sql, err => done(err, undefined)));
+}
+
 function dbRun(db: Database, sql: string, params: unknown[]): Promise<{ changes: number; lastID: number }> {
-	return new Promise((resolve, reject) => {
+	return withStatementTimeout<{ changes: number; lastID: number }>(sql, done => {
 		db.run(sql, params, function (this: RunResult, err: Error | null) {
-			if (err) { return reject(err); }
-			resolve({ changes: this.changes, lastID: this.lastID });
+			// ⚠ 错误分支没有"值"可言（`value` 可选）⇒ 这里传 undefined；helper 只在**无错**时 resolve ✓
+			done(err, err ? undefined : { changes: this.changes, lastID: this.lastID });
 		});
 	});
 }
 
 function dbGet(db: Database, sql: string, params: unknown[]): Promise<Record<string, unknown> | undefined> {
-	return new Promise((resolve, reject) => {
-		db.get(sql, params, (err: Error | null, row: Record<string, unknown> | undefined) => {
-			if (err) { return reject(err); }
-			resolve(row);
-		});
+	return withStatementTimeout<Record<string, unknown> | undefined>(sql, done => {
+		db.get(sql, params, (err: Error | null, row: Record<string, unknown> | undefined) => done(err, row));
 	});
 }
 
 function dbAll(db: Database, sql: string, params: unknown[]): Promise<Record<string, unknown>[]> {
-	return new Promise((resolve, reject) => {
-		db.all(sql, params, (err: Error | null, rows: Record<string, unknown>[]) => {
-			if (err) { return reject(err); }
-			resolve(rows);
-		});
+	return withStatementTimeout<Record<string, unknown>[]>(sql, done => {
+		db.all(sql, params, (err: Error | null, rows: Record<string, unknown>[]) => done(err, rows));
 	});
 }
 
@@ -417,6 +447,12 @@ export class CodebaseGraphSqliteStore {
 		try { await dbExec(this.db, 'PRAGMA auto_vacuum = INCREMENTAL'); } catch { /* 只读库等场景忽略 */ }
 
 		await this._runMigrations();
+
+		// ★ 2026-10-22：**索引自愈** —— 全量灌数据会先卸边索引（`suspendEdgeIndexes`）；
+		//   若进程在那段窗口里崩了，索引就缺着 ⇒ 这里无条件补建（幂等，只缺才真建）✓
+		if (!opts.readOnly) {
+			await this.ensureIndexes();
+		}
 		this._ready = true;
 	}
 
@@ -538,6 +574,8 @@ export class CodebaseGraphSqliteStore {
 
 	/** 提交显式事务并放行写队列 ✓。 */
 	async commitProjectSync(project: string): Promise<void> {
+		// 取证面包屑：2026-10-22 真机就卡在这一步（WAL 128MB 的提交/回写把主进程堵住）
+		markMainThreadPhase('sqlite-commit');
 		if (!this._explicitTx) { throw new Error(`commitProjectSync: 没有进行中的显式事务 ✗ project=${project}`); }
 		const db = this._ensureDb();
 		await dbExec(db, 'COMMIT');
@@ -696,6 +734,15 @@ export class CodebaseGraphSqliteStore {
 	 * ②天然排在两次事务之间，不会与进行中事务交错（同连接上会 SQLITE_BUSY ✗✗）。
 	 */
 	private _rowsSinceCheckpoint = 0;
+	/** rows per delete chunk (tests shrink it so the chunked/cursor path is actually covered) */
+	private _deleteChunkSize = 100_000;
+	/** checkpoint 调用计数（每 50 次打一条进度，见 checkpoint()）。 */
+	private _ckptProbe = 0;
+	/** 边的二级索引是否已被卸下（见 suspendEdgeIndexes）。 */
+	private _indexesSuspended = false;
+
+	/** 诊断/守卫用：边索引现在是不是被卸下的（全量同步窗口内为 true）。 */
+	get indexesSuspended(): boolean { return this._indexesSuspended; }
 	/** 摊销阈值（行）：实测 1000 行 ≈1MB WAL ⇒ 5000 行 ≈5MB，与原 autocheckpoint 同量级 ✓。 */
 	private static readonly _CHECKPOINT_ROWS = 5000;
 
@@ -723,6 +770,8 @@ export class CodebaseGraphSqliteStore {
 	}
 
 	async upsertEdgesBatch(edges: (GraphEdge & { sourceId?: number; targetId?: number })[]): Promise<void> {
+		// 取证面包屑：1.25M 条边的批量写是这条链最长的长尾（实测 2.6k 边/秒）
+		markMainThreadPhase('sqlite-write');
 		const tEnter = Date.now();
 		let tBody = tEnter;
 		await this.transaction(async () => {
@@ -779,15 +828,92 @@ export class CodebaseGraphSqliteStore {
 	}
 
 	/**
-	 * WAL checkpoint + TRUNCATE：压缩 WAL 文件，避免大同步后 WAL 膨胀导致读查询变慢。
-	 * WAL 模式下读需合并 WAL，WAL 达数百 MB 时读延迟显著；同步完成/分批后调用此方法把 WAL 收敛回主库。
+	 * 卸掉**边的三个二级索引**（全量灌数据前用）。
+	 *
+	 * ★★ 2026-10-22（实测：全量追平 8+ 分钟、边只有 **2.6k 条/秒**）：1.25M 条边逐条 upsert 时，
+	 *   每条都要维护 `idx_edges_source` / `idx_edges_target` / `idx_edges_rel` 三棵 B 树
+	 *   ⇒ 写入全被索引维护拖死（也是主进程事件循环被长时间挤占、最终卡死的根源）。
+	 *   批量装载的标准手法：**先卸索引 → 灌数据 → 再建索引**（建索引是一次扫描 + 排序，
+	 *   比逐条维护快一个数量级）⇒ 把全量从 8 分钟压到 1 分钟内。
+	 *
+	 * ⚠ 卸载窗口里边查询会退化成**全表扫描**（结果仍正确，只是慢）⇒ 只许在全量同步这段用，
+	 *   且**必须**配对 `ensureIndexes()`。
+	 * ⚠ 崩在中间 ⇒ 索引缺失 ⇒ 下次 `open()` 无条件补建（自愈）✓。
+	 */
+	async suspendEdgeIndexes(): Promise<void> {
+		const db = this._ensureDb();
+		const t0 = Date.now();
+		await this.transaction(async () => {
+			await dbExec(db, 'DROP INDEX IF EXISTS idx_edges_source');
+			await dbExec(db, 'DROP INDEX IF EXISTS idx_edges_target');
+			await dbExec(db, 'DROP INDEX IF EXISTS idx_edges_rel');
+		});
+		this._indexesSuspended = true;
+		console.info(`[codebase-graph] 边索引已卸下（全量灌数据用，查询退化为全表扫描但结果正确）：${Date.now() - t0}ms`);
+	}
+
+	/** 确保边的二级索引存在（**幂等**）。全量同步结束后必须调；崩在中间由 `open()` 补 ✓。 */
+	async ensureIndexes(): Promise<void> {
+		const db = this._ensureDb();
+		// 先看是不是真的缺（缺 = 上次全量同步被打断）⇒ 只有真缺才值得吼一声
+		const rows = await dbAll(db,
+			`SELECT name FROM sqlite_master WHERE type = 'index' AND name IN ('idx_edges_source','idx_edges_target','idx_edges_rel')`,
+			[]) as unknown as { name: string }[];
+		const missing = 3 - rows.length;
+		const t0 = Date.now();
+		await this.transaction(async () => {
+			await dbExec(db, 'CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source)');
+			await dbExec(db, 'CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target)');
+			await dbExec(db, 'CREATE INDEX IF NOT EXISTS idx_edges_rel    ON edges(source, type)');
+		});
+		this._indexesSuspended = false;
+		if (missing > 0) {
+			console.warn(`[codebase-graph] 边索引缺失已补建 ${missing} 个（上次全量同步被打断）：${Date.now() - t0}ms`);
+		} else if (Date.now() - t0 > 200) {
+			console.info(`[codebase-graph] 边索引检查/补建：${Date.now() - t0}ms`);
+		}
+	}
+
+	/**
+	 * WAL checkpoint：**只用 PASSIVE**（**永不阻塞**）。
+	 *
+	 * ★★★ 2026-10-22（用户报"dev 整个 app 卡死"，现场取证 ⇒ 这里就是冻结点）：
+	 *   原实现跑的是 `PRAGMA wal_checkpoint(**TRUNCATE**)` —— **阻塞式**：
+	 *     ① 它要回写整个 WAL 并**截断**文件；同一连接上只要还有读连接（或并发写），
+	 *        它就会**等**，而 **SQLite 的 checkpoint 等待不受 `busy_timeout` 约束**
+	 *        （`busy_timeout` 只管 SQLITE_BUSY，管不了 checkpoint 的等待）⇒ **无限期挂住** ✗✗✗；
+	 *     ② 实测：一次全量追平把 WAL 写到 **1.2GB**（`wal_autocheckpoint=0` 是既定设置），
+	 *        写完提交后紧接着执行本方法 ⇒ 主进程**主线程阻塞**（0% CPU、65 个线程全在 Wait、
+	 *        inspector 5875 连得上但任何命令都超时、渲染端 9335 的 HTTP 端点直接不通）
+	 *        ⇒ 渲染进程的 IPC **永不返回** ⇒ **整个 app 无响应且不会自愈**（实测僵死 35 分钟）✗✗✗。
+	 *
+	 * PASSIVE：能回写多少回写多少，**不等任何读者/写者** ⇒ 永不阻塞 ✓。
+	 *   代价：WAL 文件**不被截断**（不立刻变小）——但它**可复用**，配合摊销 checkpoint
+	 *   （`_scheduleAmortizedCheckpoint`，每 5000 行一次 PASSIVE）实测 WAL 稳定在 ~3MB ✓。
+	 *   需要"立刻把 WAL 文件缩回去"的显式维护动作走 `reclaimSpace()`（那里是**用户主动**、
+	 *   已知会阻塞的路径，不在热路径上 ✓）。
 	 */
 	async checkpoint(): Promise<void> {
+		// 取证面包屑：PASSIVE checkpoint 也要回写 WAL（百 MB 量级 ⇒ 可能是长尾）
+		markMainThreadPhase('sqlite-checkpoint');
 		const db = this._ensureDb();
+		// ★★ 2026-10-23（实测 WAL 涨到 **4.9GB** 却**一条日志都没有**）：checkpoint 的返回值必须被看见。
+		//   `PRAGMA wal_checkpoint` 会返回 (busy, log, checkpointed)：
+		//     · busy=1 ⇒ 有读者/写者挡住了本轮回写 ⇒ **WAL 不会收缩**（这是膨胀的唯一真因）✗；
+		//     · log 不降/checkpointed 不推进 ⇒ 回写**根本没进展** ⇒ WAL 会无限涨 ✗✗。
+		//   以前这里 `catch {}` 静默吞掉 ⇒ 涨到 4.9GB 也没人知道 ⇒ 没法归因 ✗。
+		let row: { busy?: number; log?: number; checkpointed?: number } | undefined;
 		try {
-			await dbExec(db, `PRAGMA wal_checkpoint(TRUNCATE)`);
-		} catch {
-			try { await dbExec(db, `PRAGMA wal_checkpoint(PASSIVE)`); } catch { /* 忙则跳过 */ }
+			const rows = await dbAll(db, 'PRAGMA wal_checkpoint(PASSIVE)', []) as unknown as { busy?: number; log?: number; checkpointed?: number }[];
+			row = rows[0];
+		} catch (err) {
+			console.warn(`[codebase-graph] checkpoint(PASSIVE) 失败：${err instanceof Error ? err.message : String(err)}`);
+			return;
+		}
+		// 每 50 次打一条（够稀，又能看出趋势：busy 一直 1 / checkpointed 不推进 ⇒ 立刻可见）
+		this._ckptProbe = (this._ckptProbe ?? 0) + 1;
+		if (this._ckptProbe % 50 === 0 && row) {
+			console.info(`[codebase-graph] checkpoint#${this._ckptProbe}: busy=${row.busy} walFrames=${row.log} checkpointed=${row.checkpointed}`);
 		}
 	}
 
@@ -862,18 +988,80 @@ export class CodebaseGraphSqliteStore {
 
 	async deleteProject(project: string, opts?: { keepFileHashes?: boolean }): Promise<void> {
 		const db = this._ensureDb();
-		await this.transaction(async () => {
-			// 用子查询替代 IN(大量字面量)，避免超过 SQLITE_MAX_VARIABLE_NUMBER（默认 999）。
-			// 注意：dbExec 不支持参数绑定，带占位符的 DELETE 必须用 dbRun（旧代码因此必抛错）。
-			await dbRun(db, `DELETE FROM nodes_fts WHERE rowid IN (SELECT id FROM nodes WHERE project = ?)`, [project]);
-			await dbRun(db, `DELETE FROM edges WHERE source IN (SELECT id FROM nodes WHERE project = ?) OR target IN (SELECT id FROM nodes WHERE project = ?)`, [project, project]);
-			await dbRun(db, `DELETE FROM layout WHERE node_id IN (SELECT id FROM nodes WHERE project = ?)`, [project]);
-			await dbRun(db, `DELETE FROM nodes WHERE project = ?`, [project]);
-			// keepFileHashes：同步场景下保留增量索引哈希（删了会导致下次全量重解析）
-			if (!opts?.keepFileHashes) {
-				await dbRun(db, `DELETE FROM file_hashes WHERE key LIKE ?`, [`${project}:%`]);
+		// *** 2026-10-22 (freeze #2, measured): CHUNKED delete -- the other half of the WAL explosion.
+		//   Incident: the "delete old" phase (1.25M edges + 402k nodes + FTS + orphan edges) used to run
+		//   inside ONE transaction => all dirty pages into the WAL => measured WAL grew to 5GB =>
+		//   the commit / write-back wedged the main process (0% CPU, 30 min with zero progress,
+		//   renderer grew to 3GB then OOM-crashed) => the whole app was dead x
+		//   Now: each chunk is its OWN transaction (transaction() queues on _writeQueue => it never
+		//   interleaves with other writers) + a PASSIVE checkpoint between chunks (never blocks)
+		//   => the WAL stays bounded (100s of MB) => commits are small => no wedge.
+		//   NOTE: must be called OUTSIDE an explicit transaction -- inside one, transaction() joins the
+		//   outer tx => the chunks would NOT commit separately => WAL explodes again.
+		//   The caller (_syncGraphToSqlite) therefore deletes FIRST, then opens the explicit tx.
+		// (test-overridable so the chunked path can be covered with a handful of rows)
+		const CHUNK = this._deleteChunkSize;
+		/** delete up to CHUNK rows per statement, checkpoint between chunks (keeps the WAL bounded) */
+		const drain = async (sql: string, params: unknown[]): Promise<void> => {
+			for (;;) {
+				const n = await this.transaction(() => dbRun(db, sql, params));
+				if (!n.changes) { break; }
+				await this.checkpoint();
 			}
-		});
+		};
+		// 1) FTS rows (external content => FTS must go BEFORE the nodes it mirrors)
+		//    Uses an id CURSOR: a plain LIMIT would return the same first ids every round
+		//    (the nodes still exist) => only the first batch would ever be deleted x
+		let cursor = Number.MIN_SAFE_INTEGER;
+		for (;;) {
+			const rows = await dbAll(db,
+				`SELECT id FROM nodes WHERE project = ? AND id > ? ORDER BY id LIMIT ${CHUNK}`, [project, cursor]) as unknown as { id: number }[];
+			if (rows.length === 0) { break; }
+			const hi = Number(rows[rows.length - 1].id);
+			await this.transaction(() => dbRun(db,
+				`DELETE FROM nodes_fts WHERE rowid IN (SELECT id FROM nodes WHERE project = ? AND id > ? AND id <= ?)`,
+				[project, cursor, hi]));
+			await this.checkpoint();
+			cursor = hi;
+		}
+		// 2) edges touching this project (chunked by node-id range => progress guaranteed)
+		cursor = Number.MIN_SAFE_INTEGER;
+		for (;;) {
+			const rows = await dbAll(db,
+				`SELECT id FROM nodes WHERE project = ? AND id > ? ORDER BY id LIMIT ${CHUNK}`, [project, cursor]) as unknown as { id: number }[];
+			if (rows.length === 0) { break; }
+			const hi = Number(rows[rows.length - 1].id);
+			await drain(
+				`DELETE FROM edges WHERE rowid IN (SELECT rowid FROM edges WHERE source IN (SELECT id FROM nodes WHERE project = ? AND id > ? AND id <= ?) OR target IN (SELECT id FROM nodes WHERE project = ? AND id > ? AND id <= ?) LIMIT ${CHUNK})`,
+				[project, cursor, hi, project, cursor, hi]);
+			// 3) layout rows of the same range
+			await drain(
+				`DELETE FROM layout WHERE rowid IN (SELECT rowid FROM layout WHERE node_id IN (SELECT id FROM nodes WHERE project = ? AND id > ? AND id <= ?) LIMIT ${CHUNK})`,
+				[project, cursor, hi]);
+			// 4) the nodes of the range (FTS + edges + layout are gone => safe)
+			await drain(`DELETE FROM nodes WHERE project = ? AND id > ? AND id <= ?`, [project, cursor, hi]);
+			await this.checkpoint();
+			cursor = hi;
+		}
+		// 5) orphan edges (endpoint no longer exists): chunked + NOT EXISTS.
+		//    NOT IN would materialise 400k ids and compare per row => pathologically slow x
+		let ec = Number.MIN_SAFE_INTEGER;
+		for (;;) {
+			const rows = await dbAll(db,
+				`SELECT e.rowid AS rid FROM edges e WHERE e.rowid > ? AND (NOT EXISTS (SELECT 1 FROM nodes n WHERE n.id = e.source) OR NOT EXISTS (SELECT 1 FROM nodes n WHERE n.id = e.target)) ORDER BY e.rowid LIMIT ${CHUNK}`,
+				[ec]) as unknown as { rid: number }[];
+			if (rows.length === 0) { break; }
+			const hi = Number(rows[rows.length - 1].rid);
+			await drain(
+				`DELETE FROM edges WHERE rowid > ? AND rowid <= ? AND (NOT EXISTS (SELECT 1 FROM nodes n WHERE n.id = edges.source) OR NOT EXISTS (SELECT 1 FROM nodes n WHERE n.id = edges.target))`,
+				[ec, hi]);
+			await this.checkpoint();
+			ec = hi;
+		}
+		// keepFileHashes: keep the incremental-index hashes during a sync (else a full re-parse next time)
+		if (!opts?.keepFileHashes) {
+			await dbRun(db, `DELETE FROM file_hashes WHERE key LIKE ?`, [`${project}:%`]);
+		}
 	}
 
 	/**

@@ -40,6 +40,16 @@ export const LOCAL_WRITE_OPS = new Set(['install', 'upgrade', 'uninstall', 'tras
 //   （装完会顺带把服务器注册进 `<数据根>/mcp.json`，见 `mcpInstall.js`）
 export const LOCAL_WRITE_KINDS = new Set(['skill', 'workflow', 'agent', 'mcp']);
 
+/**
+ * ★ 2026-10-24（用户：「插件管理能否在 dsh 侧实现，不走 ide」）：能。
+ *   这类资源的包体在 npm / GitHub，安装 = `dsh plugin add`；而 dsh 把这件事做成了**进程内服务**
+ *   `ctx.pluginManager`（@deepseek-ai/dsh-plugin-manager，与 CLI 共用 operations.js）
+ *   ⇒ 插件自己就能装/卸/升，且装了 dsh-hmr 时**热生效、不用重启**。
+ *   ⚠ 这里只表示「dsh 侧优先」：运行时没有 pluginManager（老 Host / 无 profileContext）时
+ *     调用方必须退回 IDE ⇒ 所以标记为 local-plugin，而不是 local-write。
+ */
+export const LOCAL_PLUGIN_KINDS = new Set(['plugin', 'workbench']);
+
 /** 走本地纯 HTTP 的写 op（服务端判权：assertAuthor / requireAdmin）。 */
 export const LOCAL_HTTP_OPS = new Set([
 	'updatePackage', 'reviewStatus', 'reviewFeature',
@@ -67,6 +77,13 @@ export const LOCAL_PUBLISH_OPS = new Set(['deletePackage', 'deleteVersion']);
  */
 export const PUBLISH_LOCAL_KINDS = PUBLISHABLE_KINDS;
 
+/**
+ * 2026-10-24（用户：「插件 item 是允许有开关的」）：插件启用/停用与状态查询。
+ * 它们**不带 kind**（操作对象是 npm 包名），所以按 op 名分派，走 local-plugin 那条路
+ * （内部再按 pluginManager 能力决定能不能做，做不了就退回 IDE）。
+ */
+export const PLUGIN_STATE_OPS = new Set(['pluginState', 'setPluginEnabled']);
+
 /** 全部**能被处理**的 op（本地 + IDE）。对外声明（`/api/meta`）与白名单都用它 ✓ */
 export const ALL_OPS = [
 	...LOCAL_READ_OPS,
@@ -75,6 +92,7 @@ export const ALL_OPS = [
 	...LOCAL_PUBLISH_OPS,
 	'publish',
 	'self-check',
+	...PLUGIN_STATE_OPS,
 ];
 
 /** 需要用户确认、耗时较长的 op（转 IDE 时用长超时）。 */
@@ -85,15 +103,19 @@ export const WRITE_OPS = new Set([...LOCAL_WRITE_OPS, 'publish', ...LOCAL_PUBLIS
  *
  * @param {string} op
  * @param {{ kind?: unknown }} [params]
- * @returns {'local-read' | 'local-write' | 'local-http' | 'local-publish' | 'ide'}
+ * @returns {'local-read' | 'local-write' | 'local-plugin' | 'local-http' | 'local-publish' | 'ide'}
  */
 export function resolveOp(op, params = {}) {
 	const name = String(op ?? '');
 	const kind = String(params?.kind ?? '');
 
 	if (LOCAL_READ_OPS.has(name)) { return 'local-read'; }
+	// 插件开关：不带 kind，按 op 名直接给 dsh 侧（能力不足时调用方退回 IDE）
+	if (PLUGIN_STATE_OPS.has(name)) { return 'local-plugin'; }
 	if (LOCAL_WRITE_OPS.has(name)) {
-		// kind 决定能不能自持：能 ⇒ 本地；不能（workbench / mcp…）⇒ 交 IDE
+		// 插件 / 工作台：dsh 侧有 pluginManager 就能自己装（调用方按能力再兜底回 IDE）
+		if (LOCAL_PLUGIN_KINDS.has(kind)) { return 'local-plugin'; }
+		// 其余 kind 决定能不能自持：能 ⇒ 本地落盘；不能（mcp 等）⇒ 交 IDE
 		return LOCAL_WRITE_KINDS.has(kind) ? 'local-write' : 'ide';
 	}
 	if (LOCAL_HTTP_OPS.has(name)) { return 'local-http'; }

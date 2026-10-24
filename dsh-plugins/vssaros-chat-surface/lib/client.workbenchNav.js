@@ -37,6 +37,36 @@ window.__ModuleLoader__.load({
 		var exports = module.exports;
 		const react = require("react");
 
+		/**
+		 * `codicon:xxx` → emoji（2026-10-22 加）。
+		 *
+		 * 为什么需要：注册表里 `icon` 按清单规范写的是 **标识符**（`codicon:home` 这种），但 dsh 前端
+		 * **没有 codicon 字体/CSS**（查过运行时：零 codicon 样式），而启动器/商城的图标体系整体是
+		 * emoji（内置 `DEFAULT_ITEMS` 全是 🏠💬🤖…）⇒ 把 `codicon:*` 直接丢给 UI 只会得到兜底 🧩
+		 * （以前那行是 `icon.length <= 4 ? icon : "🧩"`，按"图标一定是 emoji"的假设写的 ✗）。
+		 *
+		 * ⚠ 这份表在 `client.workbenchNav.js` 与 `client.market.js` 里**各存一份**（两个 chunk 之间不能
+		 *   同步 require），由守卫 `check-workbench-catalog.mjs` 比对两处**逐字一致** + 校验每个已注册
+		 *   工作台的图标都在表里（新增工作台用了没登记的 codicon ⇒ 守卫红，而不是悄悄显示 🧩）。
+		 */
+		const WB_ICON_EMOJI = {
+			"codicon:home": "🏠", "codicon:book": "📚", "codicon:database": "🧠",
+			"codicon:robot": "🤖", "codicon:organization": "🤖", "codicon:tasklist": "🗂️",
+			"codicon:checklist": "🗂️", "codicon:list-tree": "🔀", "codicon:type-hierarchy": "🕸️",
+			"codicon:clock": "⏰", "codicon:graph": "📊", "codicon:pulse": "💓",
+			"codicon:search": "🔍", "codicon:settings": "⚙️", "codicon:gear": "⚙️",
+			"codicon:extensions": "🧩", "codicon:package": "🧩", "codicon:cloud": "☁️",
+			"codicon:comment-discussion": "💬", "codicon:terminal": "⌨️",
+		};
+		/** 图标 → 可渲染的 emoji：映射表优先；本来就是短符号/emoji ⇒ 原样；其余兜底 🧩。 */
+		function wbIconEmoji(icon) {
+			const raw = String(icon == null ? "" : icon).trim();
+			if (!raw) { return "🧩"; }
+			if (WB_ICON_EMOJI[raw]) { return WB_ICON_EMOJI[raw]; }
+			if (raw.indexOf("codicon:") !== 0 && Array.from(raw).length <= 4) { return raw; }
+			return "🧩";
+		}
+
 		const SLOT_NAV = "sidebar.panellist";
 		const SLOT_MAIN = "main";
 		const SLOT_RIGHT_TAB = "sidebar.right.pane.tab";
@@ -69,7 +99,7 @@ window.__ModuleLoader__.load({
 			// ★ 稿 C（2026-10-21 用户拍板）：会话磁贴矩阵 = dsh desktop 的「多会话窗口」形态
 			//   （一眼看到一批会话的状态，点一块换到那条会话）。与「会话」条目同源路由，只是 view 不同 ✓
 			{ id: "vssaros-wb-session-tiles", name: "会话磁贴", ico: "🧲", route: "/x/sessions/?view=tiles" },
-			{ id: "vssaros-wb-agents", name: "Agents", ico: "🤖", route: "/x/agents/" },
+			{ id: "vssaros-wb-agents", name: "Bots", ico: "🤖", route: "/x/agents/" },
 			{ id: "vssaros-wb-kanban", name: "看板", ico: "🗂️", route: "/x/kanban/" },
 			{ id: "vssaros-wb-workflow", name: "工作流", ico: "🔀", route: "/x/workflow/" },
 			{ id: "vssaros-wb-kb", name: "知识库", ico: "📚", route: "/x/kb/" },
@@ -78,11 +108,27 @@ window.__ModuleLoader__.load({
 			{ id: "vssaros-wb-media", name: "媒体库", ico: "🖼️", route: "/x/media/" },
 			{ id: "vssaros-wb-imagegen", name: "生图", ico: "🎨", route: "/x/imagegen/" },
 			{ id: "vssaros-wb-skills", name: "工具", ico: "🧰", route: "/x/skills/" },
-			{ id: "vssaros-wb-scheduler", name: "定时任务", ico: "⏰", route: "/x/scheduler/" },
+			// ★ 2026-10-24（用户：「移除自动化任务 item，将自动化任务包装成一个 自动化任务工作台」）：
+			//   侧栏那条官方「自动化任务」面板被隐藏（见下面 HIDDEN_LABELS）⇒ 能力全部收到这个工作台里
+			//   ⇒ 名字也跟着改成「自动化任务」（与工作台标题、插槽描述符三处同值）。
+			{ id: "vssaros-wb-scheduler", name: "自动化任务", ico: "🕒", route: "/x/scheduler/" },
 			// ★ 2026-10-22（修 bug：主页没有「商城」卡片）：自营商城工作台。
 			//   这份 DEFAULT_ITEMS 同时是 **route 白名单**（`itemByRoute()` 只认这里的 route）⇒
 			//   不登记 ⇒ 从主页/侧栏点「打开」会被静默拒掉（"点了没反应"）✗ ⇒ 必须登记 ✓。
 			{ id: "vssaros-wb-marketplace", name: "商城", ico: "🛒", route: "/x/marketplace/" },
+			// ★ 2026-10-23：萨罗斯管理平台工作台（`@vssaros/dsh-studio`）。
+			//   这份表同时是 **route 白名单** ⇒ 不登记 ⇒ 从主页/侧栏点「打开」被静默拒掉。
+			//   ⚠ 与 `vssaros-dashboard/lib/catalog.js` 的 `WORKBENCH_MODULES` 必须两处同时登记。
+			{ id: "vssaros-wb-studio", name: "萨罗斯平台", ico: "◱", route: "/x/studio/" },
+			// ★ 2026-10-24：小红书笔记（创作型工作台样板，`@vssaros/dsh-xhs-note`）。
+			//   这份表同时是 **route 白名单** ⇒ 不登记 ⇒ 从主页/侧栏点「打开」会被静默拒掉（"点了没反应"）。
+			//   ⚠ 与 `vssaros-dashboard/lib/catalog.js` 的 `WORKBENCH_MODULES` 必须两处同时登记。
+			{ id: "vssaros-wb-xhs-note", name: "小红书笔记", ico: "💬", route: "/x/xhs-note/" },
+			// ★ 2026-10-22（用户：「多 TUI 应该设计为一个工作台，在主页中显示 item」）：
+			//   并行 TUI 工作台（`@vssaros/dsh-parallel`，页面 `/x/parallel/` 是稿 A 网格）。
+			//   ⚠ 与 `vssaros-dashboard/lib/catalog.js` 的 `WORKBENCH_MODULES` **必须两处同时登记**
+			//   （这份同时是 route 白名单 ⇒ 漏了 = 主页卡片在、点「打开」被静默拒掉）✗
+			{ id: "vssaros-wb-parallel", name: "并行工作台", ico: "🖥️", route: "/x/parallel/" },
 			];
 		// ★ 暴露给同插件的其它 chunk（`client.market.js` 的「已安装」要用它）：
 		//   本机内置的工作台**不是市场条目**（市场的目录里只有别人上架的工作台），
@@ -117,6 +163,27 @@ window.__ModuleLoader__.load({
 
 		/** 主页在 DEFAULT_ITEMS 里的 id（「工作台」那行固定开它）。 */
 		const DASHBOARD_ID = "vssaros-wb-dashboard";
+
+		/**
+		 * 页签换序的**纯逻辑**（2026-10-23 拖拽排序）。放在模块级（不在 `install()` 里）是为了
+		 * 能被 `__test` 直接调用 ⇒ 守卫可以真跑换序断言，而不是只比源码字符串 ✓。
+		 *
+		 * `slot` = 插入位（0 … list.length，含义是"插在第 slot 个之前"）。先摘后插 ⇒ 右侧插入位要减一。
+		 * 返回**同一个引用** = "没变"（调用方据此跳过写盘 / 重画）；否则返回新数组（**不改入参**）。
+		 */
+		function reorderTabs(list, id, slot) {
+			const arr = Array.isArray(list) ? list : [];
+			const from = arr.findIndex((t) => t && t.id === id);
+			if (from < 0) { return arr; }
+			if (typeof slot !== "number" || Number.isNaN(slot)) { return arr; }
+			const to = slot > from ? slot - 1 : slot;
+			const clamped = Math.max(0, Math.min(arr.length - 1, to));
+			if (clamped === from) { return arr; }
+			const next = arr.slice();
+			const moved = next.splice(from, 1)[0];
+			next.splice(clamped, 0, moved);
+			return next;
+		}
 
 		/**
 		 * 「🗂 工作台」那行**固定开哪一条**：主页（2026-10-21 用户："点击工作台要求直接打开 主页的 page"）。
@@ -165,6 +232,59 @@ window.__ModuleLoader__.load({
 			window.__vssarosWorkbenchNavInstalled = true;
 			const bridge = shell && shell.bridge;
 			const state = (shell && shell.state) || {};
+
+			// ★★ 2026-10-24（用户：「移除插件 item」）：把侧栏那行「插件」藏掉。
+			//   官方 `dsh-client-ui-plugin-manager` 是**无条件**往 `sidebar.panellist` 注册
+			//   `{ id: 'plugins', order: 0 }` 的（源码里没有任何配置开关）⇒ 只能在 DOM 层处理。
+			//   ⚠ 只藏**侧栏那一颗 button**：页面本身、`pluginNavigation` 命令、设置里的入口都保留
+			//     （用户要的是"侧栏别出现这一项"，不是把能力删掉 ✗）。
+			//   判据用 `aria-label`（官方行是 `<button aria-label="插件">`，中英两种都认）；
+			//   侧栏每次切面板都会重渲染 ⇒ 必须 **MutationObserver + 节流**重贴，否则一次 hide 就被覆盖。
+			(() => {
+				// ★ 2026-10-24（用户：「移除自动化任务 item」）：官方 `dsh-client-ui-schedule` 拿
+				//   `sidebar.panellist`（id=schedules / order=10）注册了「自动化任务」那一行，同样**没有配置开关**
+				//   ⇒ 一起在 DOM 层隐藏。能力没丢：它被收进了 `@vssaros/dsh-scheduler` 的**自动化任务工作台**
+				//   （页签条里的「自动化任务」，DEFAULT_ITEMS 已登记 ⇒ route 白名单也认 ✓）。
+				//   以后再有"官方行不该露脸"的，往这张表里加 label 即可（判据只看侧栏里的 button[aria-label]）。
+				const HIDDEN_LABELS = ["插件", "Plugins", "自动化任务", "定时任务", "Scheduled tasks", "Automated tasks"];
+				let lastRun = 0;
+				let queued = 0;
+				const apply = () => {
+					queued = 0;
+					try {
+						const scope = document.querySelector("[data-sidebar-left]") || document.body;
+						if (!scope) { return; }
+						const rows = scope.querySelectorAll("button[aria-label]");
+						for (let i = 0; i < rows.length; i++) {
+							const btn = rows[i];
+							const label = String(btn.getAttribute("aria-label") || "").trim();
+							if (HIDDEN_LABELS.indexOf(label) < 0) { continue; }
+							if (btn.getAttribute("data-vssaros-hidden") === "1") { continue; }
+							btn.setAttribute("data-vssaros-hidden", "1");
+							btn.style.display = "none";
+							state.pluginsRowHidden = true;
+						}
+					} catch (e) { noteFail("nav:隐藏插件行", e); }
+				};
+				/** 节流到 ~200ms：侧栏 DOM 变动很频繁，不节流的 querySelectorAll 会拖慢输入 ✓ */
+				const schedule = () => {
+					const now = Date.now();
+					if (queued) { return; }
+					const wait = Math.max(0, 200 - (now - lastRun));
+					queued = setTimeout(() => { lastRun = Date.now(); apply(); }, wait);
+				};
+				apply();
+				try {
+					if (typeof MutationObserver === "function") {
+						const target = document.querySelector("[data-sidebar-left]") || document.body;
+						if (target) { new MutationObserver(schedule).observe(target, { childList: true, subtree: true }); }
+					}
+				} catch (e) { noteFail("nav:隐藏插件行(观察)", e); }
+				// 首屏兜底：React 还没画出来时那一次 apply 会空跑 ✓
+				setTimeout(apply, 400);
+				setTimeout(apply, 1500);
+			})();
+
 			let items = loadOrder();
 			/** 最后打开过的工作台（只写不读：侧栏那行「当前名」已删，留着供以后用；读不到也没影响 ✓）。 */
 			let currentId = loadCurrent();
@@ -216,6 +336,11 @@ window.__ModuleLoader__.load({
 			/** 固定行的 order 起点：官方 plugins=0 / schedules=10 ⇒ 11 起 ⇒ 正好落在「自动化任务」下方 ✓。 */
 			const PINNED_ORDER_BASE = 11;
 			const pinnedDisposers = new Map();   // route → { nav, main }
+			/**
+			 * 工作台宿主（`desktopWorkbenches`）。★ 2026-10-22 上移到这里：固定行同步（下面第一次 inject 里就会跑）
+			 * 要用它解析第三方工作台（`wb:<身份>`）⇒ 声明必须先于那次 inject（否则 TDZ）。
+			 */
+			let wbService = null;
 
 			// ── 侧栏「主页」那一行：**第一个注册**（2026-10-21）─────────────────────────
 			// 为什么必须排第一：这是用户**唯一看得见**的入口 ⇒ 后面任何一处注册抛错都不能带走它 ✓
@@ -234,6 +359,10 @@ window.__ModuleLoader__.load({
 			});
 
 			// 兜底：万一这一行没落地（竞态 / 槽当时还没就绪）⇒ 稍后再试一次（safeRegister ⇒ 撞了忽略）✓
+			// ★ 2026-10-22（用户报障「重启 app 后左侧栏里固定的工作台图标消失」）：**这条兜底路径也必须
+			//   同步固定行** —— 原来只有第一次 inject 的回调里调了 `syncPinnedRows()` ⇒ 第一次 inject 抛了
+			//   （`safeInject` 记一笔就返回）时，固定行**永远不会被注册** ⇒ 清单还在、图标不在这 ✗。
+			//   （`syncPinnedRows` 幂等：已注册的跳过、清单里没有的收掉 ⇒ 多调一次无害 ✓。）
 			try {
 				window.setTimeout(() => {
 					if (REG.nav) { return; }
@@ -244,8 +373,11 @@ window.__ModuleLoader__.load({
 							EntryIcon,
 						);
 						if (reg) { REG.nav = true; }
+						// 槽就绪时（inject 回调里）再同步一次 ⇒ 上面那次可能早于槽就绪而注册失败 ✗
+						try { syncPinnedRows(); } catch (e) { noteFail("nav:固定行(重试)", e); }
 						return reg;
 					});
+					try { syncPinnedRows(); } catch (e) { noteFail("nav:固定行(重试)", e); }
 				}, 1500);
 			} catch { /* 无 setTimeout */ }
 
@@ -274,6 +406,22 @@ window.__ModuleLoader__.load({
 				try {
 					return !!(document && typeof document.querySelector === "function"
 						&& document.querySelector("[data-sidebar-right-session]"));
+				} catch { return false; }
+			}
+			/**
+			 * 中栏现在是不是**我们自己的工作台面板**（主页 / 工作台页签）？
+			 *
+			 * ★★ 2026-10-23（用户报「主页显示过程中，page 突然被切换成了聊天输入框」）：
+			 *   下面的"自动进最近会话"救援是**按 DOM 判断**"有没有会话在屏"的；中栏被我们的面板占着时，
+			 *   聊天 DOM 天然不在 ⇒ 救援判定"没会话" ⇒ `uiWorkspace.openSession()` ⇒
+			 *   官方 `replaceMain(…, 'reveal')` 里那句 `selectPanel(null)` ⇒ **把主页换回聊天** ✗✗。
+			 *   所以救援 / 抢焦点这一类**必须先排除"用户正在看我们的面板"**。
+			 *   用面板自己的根标记（只在被显示时才挂载）⇒ 等价于"中栏是我们的键"，不碰官方未公开接口 ✓。
+			 */
+			function workbenchPanelActive() {
+				try {
+					return !!(document && typeof document.querySelector === "function"
+						&& (document.querySelector("[data-vssaros-wb-tabs]") || document.querySelector("[data-vssaros-wb-full]")));
 				} catch { return false; }
 			}
 
@@ -308,6 +456,13 @@ window.__ModuleLoader__.load({
 					if (anySessionOnScreen()) {
 						window.clearInterval(timer);
 						if (state.rescue) { state.rescue.done = true; }
+						return;
+					}
+					// ★★ 2026-10-23：中栏是**我们自己的工作台面板**（主页 / 工作台页签）⇒ **不救**。
+					//   否则 openSession 会把中栏换回聊天（官方 replaceMain('reveal') ⇒ selectPanel(null)）
+					//   ⇒ 用户看到"主页显示到一半突然变成聊天输入框" ✗。等他回到会话页，下一轮照常救 ✓
+					if (workbenchPanelActive()) {
+						if (state.rescue) { state.rescue.skipped = "workbench-panel"; }
 						return;
 					}
 					const waited = Date.now() - startedAt;
@@ -611,7 +766,7 @@ window.__ModuleLoader__.load({
 				try {
 					const raw = window.localStorage && window.localStorage.getItem(LS_TABS);
 					const arr = raw ? JSON.parse(raw) : [];
-					return Array.isArray(arr) ? arr.filter(t => t && t.id && t.route) : [];
+					return Array.isArray(arr) ? arr.filter(t => t && t.id && (t.route || t.wbId)) : [];
 				} catch { return []; }
 			}
 			function saveTabs(list) {
@@ -631,13 +786,33 @@ window.__ModuleLoader__.load({
 			//   ② catalogTabs：探测到**真的有目录版**（?surface=sideview）的工作台 ⇒ 才可以开右栏 ✓。
 			//   ③ noCatalogTabs：探测到**没有**目录版的工作台 ⇒ **不开右栏**（否则白渲染一份完整页 ✗）。
 			const loadedTabs = new Set();
+			/** 刚由 `openRegisteredWorkbench` 激活、还没被面板挂载确认过的动态页签 id（见 makeTabPanel 的挂载 effect）。 */
+			let pendingDynamicOpen = "";
+			/**
+			 * 刚由**用户显式请求**切到的页签 id（页签条点击 / `ensureTab` 调用方）。
+			 *
+			 * ★★ 2026-10-24 修复（用户报：「首次点击其他页签时，会默认切中 主页 页签」）：
+			 *   中栏面板（`makeTabPanel`）是**第一次被 `selectPanel(ENTRY_ID)` 显示时才挂载**的，
+			 *   而那一下显示几乎总是"用户刚点了某个页签"造成的 —— 点击里已经写好
+			 *   `activeTabId = t.id`，可挂载 effect 又跑 `ensureTab(pick())`（`pick` 恒是主页）
+			 *   ⇒ `activeTabId` 被改回主页 ⇒ 用户第一次点的那一下**被吃掉**（第二次才正常，
+			 *   因为面板已在屏、effect 不再执行 —— 正好是"只有首次"的现象）✗。
+			 *   ⇒ 用一个"意图标记"区分两种挂载：
+			 *     · 有人显式要求切某页（本标记非空）⇒ **不要覆盖**，尊重它 ✓；
+			 *     · 侧栏「🏠 主页」那行：宿主直接 `selectPanel(ENTRY_ID)`，**不经过** `ensureTab`
+			 *       ⇒ 标记为空 ⇒ 仍按 `pick()` 开主页 ✓（原有行为一字不变）。
+			 */
+			let pendingTabOpen = "";
 			// ── ★ 2026-10-22（工作台重构 P1，方案 A，doc/workbench-refactor-plan.md §6.2）─────────
 			//   已迁成 React 的工作台（向宿主 `desktopWorkbenches` 注册过的）在页签里**直接渲染**
 			//   宿主的 `View`，不再开 iframe；页签条、保活、持久化一概不变。没迁的照旧走 iframe ✓。
 			//   宿主可能晚于本 chunk 加载 ⇒ 可选注入；它到场 / 有新注册时发同一个页签刷新事件。
 			//   对应规则：路由必须是**不带查询串**的 `/x/<module>/`（`?view=tiles` 这类变体仍走 iframe）。
-			let wbService = null;
-			const wbIdOf = (t) => { const m = /^\/x\/([a-z][a-z0-9-]*)\/$/.exec(String((t && t.route) || "")); return m ? "vssaros/" + m[1] : ""; };
+			const wbIdOf = (t) => {
+				// ★ 2026-10-22：第三方 / 动态注册的工作台没有路由 ⇒ 页签直接带 `wbId`（宿主身份 owner/repo）
+				if (t && typeof t.wbId === "string" && t.wbId) { return t.wbId; }
+				const m = /^\/x\/([a-z][a-z0-9-]*)\/$/.exec(String((t && t.route) || "")); return m ? "vssaros/" + m[1] : "";
+			};
 			const wbFor = (t) => {
 				const id = wbIdOf(t);
 				return id && wbService && typeof wbService.has === "function" && typeof wbService.View === "function" && wbService.has(id) ? id : "";
@@ -647,11 +822,15 @@ window.__ModuleLoader__.load({
 					ctx.inject(["desktopWorkbenches"], (c) => {
 						const svc = c.desktopWorkbenches;
 						const fire = () => { try { window.dispatchEvent(new Event(TAB_CHANGE_EVENT)); } catch { /* 无 window */ } };
+						// 第三方工作台注册得比宿主晚 ⇒ 每次宿主变化都补一次固定行（只补缺的，已有的不动）
+						const syncPinned = () => { try { syncPinnedRows(); } catch (e) { noteFail("nav:固定行(宿主)", e); } };
 						wbService = svc;
 						fire();
+						syncPinned();
 						const off = svc && typeof svc.subscribe === "function" ? svc.subscribe(fire) : null;
+						const offPinned = svc && typeof svc.subscribe === "function" ? svc.subscribe(syncPinned) : null;
 						if (typeof c.effect === "function") {
-							c.effect(() => () => { if (off) { off(); } if (wbService === svc) { wbService = null; } fire(); });
+							c.effect(() => () => { if (off) { off(); } if (offPinned) { offPinned(); } if (wbService === svc) { wbService = null; } fire(); });
 						}
 					});
 				}
@@ -666,13 +845,39 @@ window.__ModuleLoader__.load({
 			function ensureTab(it) {
 				if (!it || !it.id) { return null; }
 				if (!openTabs.filter(t => t.id === it.id)[0]) {
-					openTabs = openTabs.concat([{ id: it.id, name: it.name, ico: it.ico, route: it.route }]);
+					openTabs = openTabs.concat([Object.assign({ id: it.id, name: it.name, ico: it.ico, route: it.route }, it.wbId ? { wbId: it.wbId } : {})]);
 					saveTabs(openTabs);
 				}
 				activeTabId = it.id;
 				saveActiveTab(activeTabId);
+				// ★ 2026-10-24：这是**显式**切页（启动器 / 主页卡片「打开」/ 第三方工作台）
+				//   ⇒ 记意图，避免随后挂载的中栏面板再把活动页签抢回「主页」（详见 pendingTabOpen 注释）。
+				pendingTabOpen = it.id;
 				bumpTabs();
 				return it;
+			}
+			/**
+			 * ★ 2026-10-22：打开一个**已注册进工作台宿主**的工作台（第三方 / 从市场装的）。
+			 * 页签 id = `wb:<身份>`，内容 = 宿主 View；挂在「主页」那个中栏面板里（页签条与保活同一套）。
+			 * 返回 false = 宿主里没有它（未装 / 未重启 / 被停用）——调用方据此回落。
+			 */
+			function openRegisteredWorkbench(id) {
+				const wbId = String(id || "").toLowerCase();
+				if (!wbId || !wbService || typeof wbService.has !== "function" || !wbService.has(wbId)) { return false; }
+				const snap = typeof wbService.getSnapshot === "function" ? wbService.getSnapshot() : null;
+				const info = snap && Array.isArray(snap.workbenches) ? snap.workbenches.filter(w => w.id === wbId)[0] : null;
+				const it = { id: "wb:" + wbId, wbId, name: (info && info.title) || wbId, ico: wbIconEmoji(info && info.icon), route: "" };
+				ensureTab(it);
+				pendingDynamicOpen = it.id;
+				try { if (ctx.layout && typeof ctx.layout.selectPanel === "function") { ctx.layout.selectPanel(ENTRY_ID); } }
+				catch (e) { notify("warn", "打开失败：" + String((e && e.message) || e)); return false; }
+				return true;
+			}
+			try { window.__vssarosOpenWorkbench = openRegisteredWorkbench; } catch { /* window 不可写 */ }
+			/** 宿主里已注册、且不是内置模块的工作台（启动器里列出来；身份 = owner/repo）。 */
+			function registeredExtras() {
+				const snap = wbService && typeof wbService.getSnapshot === "function" ? wbService.getSnapshot() : null;
+				return snap && Array.isArray(snap.workbenches) ? snap.workbenches.filter(w => w && w.id && !String(w.id).startsWith("vssaros/")) : [];
 			}
 			function closeTab(id) {
 				openTabs = openTabs.filter(t => t.id !== id);
@@ -735,6 +940,22 @@ window.__ModuleLoader__.load({
 					const rerender = () => setVer((v) => v + 1);
 					window.addEventListener(TAB_CHANGE_EVENT, rerender);
 					return () => window.removeEventListener(TAB_CHANGE_EVENT, rerender);
+				}, []);
+
+				// ★ 2026-10-23：中栏被**别处**切走（点会话 / 官方 `replaceMain` / 任何 selectPanel）时，
+				//   页签条必须跟着把高亮还给「会话」—— 否则用户看到"主页 高亮着、内容却是聊天" ✗。
+				//   ⚠ 只对齐**显示**，不改 `activeTabId`（用户再点那个页签仍会 selectPanel 回来 ✓）。
+				//   面板在不在屏用它的根标记判断（只有被显示时才挂载）。
+				react.useEffect(() => {
+					if (typeof window.setInterval !== "function") { return; }
+					let last = workbenchPanelActive();
+					const t = window.setInterval(() => {
+						const now = workbenchPanelActive();
+						if (now === last) { return; }
+						last = now;
+						setVer((v) => v + 1);
+					}, 400);
+					return () => window.clearInterval(t);
 				}, []);
 
 				// 量中栏列：overlay 层铺满整帧 ⇒ 用**相对**坐标；侧栏拖拽/折叠、窗口缩放都重算 ✓
@@ -837,8 +1058,82 @@ window.__ModuleLoader__.load({
 				}, []);
 
 				const g = geo.current;
+				// ── 页签拖拽排序（2026-10-23 用户：「要求页签支持拖拽排序」）──────────────────
+				//   为什么用 **pointer 事件**而不是 HTML5 `draggable`：
+				//     · 原生 drag 在 overlay 层里拖影会跟着整条 DOM 一起闪，且 drop 目标常常落在子节点上；
+				//     · pointer 事件能自己算"插到第几个位置"，还能**保留点击语义**（没移动就是点击 ✓）。
+				//   ⚠ 两条必须守住的：①「会话」是固定第一格，不参与排序（回聊天是出口，别被拖走 ✗）；
+				//     ② 拖动过之后紧跟着的那次 click **必须丢掉**，否则松手瞬间会切页签 ✗。
+				const DRAG_STEP = 4;                              // 超过这个位移才算"在拖"，否则当点击
+				const dragRef = react.useRef(null);               // { id, index, startX, moved, slot }
+				const dragMovedRef = react.useRef(false);         // 供 click 闸门读（state 更新晚一拍）
+				const [dragView, setDragView] = react.useState(null);
+				/** 指针落在第几个"插入位"（0…openTabs.length）。只看页签右半边归属下一个 ⇒ 手感与文件管理器一致。 */
+				const slotAt = (clientX) => {
+					try {
+						const el = hostRef.current;
+						if (!el) { return openTabs.length; }
+						const nodes = el.querySelectorAll("[data-vssaros-wb-tab]");
+						// nodes[0] 恒是「会话」⇒ 从 1 开始映射 openTabs[i-1]
+						for (let i = 1; i < nodes.length; i++) {
+							const r = nodes[i].getBoundingClientRect();
+							if (clientX < r.left + r.width / 2) { return i - 1; }
+						}
+						return openTabs.length;
+					} catch { return openTabs.length; }
+				};
+				/** 把某个页签挪到插入位 `slot`（0…length）。换序语义在 `reorderTabs`（纯函数，有单测）。 */
+				const moveTabTo = (id, slot) => {
+					const next = reorderTabs(openTabs, id, slot);
+					if (next === openTabs) { return; }             // 位置没变 ⇒ 不写盘、不重画
+					openTabs = next;
+					saveTabs(openTabs);                            // ★ 持久化：重开窗口顺序还在
+					bumpTabs();                                    // 让页签条 + 中栏面板都重画
+				};
+				react.useEffect(() => {
+					const onMove = (e) => {
+						const d = dragRef.current;
+						if (!d) { return; }
+						const moved = d.moved || Math.abs(e.clientX - d.startX) > DRAG_STEP;
+						if (!moved) { return; }
+						d.moved = true;
+						dragMovedRef.current = true;
+						d.slot = slotAt(e.clientX);
+						setDragView({ id: d.id, index: d.index, slot: d.slot, moved: true });
+					};
+					const onUp = () => {
+						const d = dragRef.current;
+						dragRef.current = null;
+						setDragView(null);
+						if (d && d.moved && typeof d.slot === "number") {
+							moveTabTo(d.id, d.slot);
+						}
+						// 拖动过 ⇒ 紧跟的 click 要被丢掉（下一帧再复位，确保 click 先被吞掉）
+						if (d && d.moved) {
+							window.setTimeout(() => { dragMovedRef.current = false; }, 0);
+						}
+					};
+					window.addEventListener("pointermove", onMove);
+					window.addEventListener("pointerup", onUp);
+					window.addEventListener("pointercancel", onUp);
+					return () => {
+						window.removeEventListener("pointermove", onMove);
+						window.removeEventListener("pointerup", onUp);
+						window.removeEventListener("pointercancel", onUp);
+					};
+				}, []);
+				/** 开始拖一个页签（只有按下左键、且没按在 ✕ 上才进来）。 */
+				const beginDrag = (e, id, index) => {
+					try {
+						if (e.button !== 0) { return; }
+						dragRef.current = { id, index, startX: e.clientX, moved: false, slot: index };
+						dragMovedRef.current = false;
+					} catch { /* 老宿主没有 button ⇒ 不拖 ✓ */ }
+				};
 				const tabBase = {
 					display: "inline-flex", alignItems: "center", gap: 5, padding: "4px 9px", cursor: "pointer",
+					// 拖拽时别顺手把页签文字选中（否则拖完是一屏蓝，像坏了 ✗）
+					userSelect: "none",
 					fontSize: 12, whiteSpace: "nowrap", borderRadius: "6px 6px 0 0", border: "1px solid transparent",
 					background: "transparent", color: "var(--dsw-alias-label-secondary, #a3a3a3)",
 				};
@@ -846,7 +1141,9 @@ window.__ModuleLoader__.load({
 					color: "var(--dsw-alias-label-primary, #e6e6e6)",
 					background: "var(--dsw-alias-bg-module-platform, #1b1c1f)",
 				});
-				const chatOn = !openTabs.some((t) => t.id === activeTabId);
+				// 面板不在屏（= 中栏正显示会话）⇒「会话」高亮；否则按 activeTabId 判断 ✓
+				const panelOn = workbenchPanelActive();
+				const chatOn = !panelOn || !openTabs.some((t) => t.id === activeTabId);
 				const tabs = [];
 				tabs.push(react.createElement("div", {
 					key: "__chat", style: chatOn ? tabOn : tabBase, "data-vssaros-wb-tab": "chat",
@@ -858,12 +1155,34 @@ window.__ModuleLoader__.load({
 						bumpTabs();
 					},
 				}, react.createElement("span", null, "💬"), react.createElement("span", null, "会话")));
-				openTabs.forEach((t) => {
+				/** 插入位指示条（拖拽时显示在两个页签之间）。 */
+				const marker = (k) => react.createElement("span", {
+					key: "wb-mk-" + k, "data-vssaros-wb-marker": "1",
+					style: {
+						flex: "none", width: 2, height: 16, margin: "0 1px", borderRadius: 1,
+						background: "var(--dsw-alias-brand-primary, #4a8cff)",
+					},
+				});
+				openTabs.forEach((t, i) => {
+					if (dragView && dragView.slot === i) { tabs.push(marker(i)); }
+					const dragging = !!(dragView && dragView.id === t.id);
 					tabs.push(react.createElement("div", {
-						key: t.id, style: activeTabId === t.id ? tabOn : tabBase,
-						"data-vssaros-wb-tab": t.id, title: t.route,
+						key: t.id,
+						style: Object.assign({}, panelOn && activeTabId === t.id ? tabOn : tabBase,
+							dragging ? { opacity: .55, cursor: "grabbing" } : null),
+						"data-vssaros-wb-tab": t.id,
+						// 提示里带上"可拖拽"：否则用户不知道这个条能排序
+						title: (t.route ? t.route + " · " : "") + "拖拽可排序",
+						// ★ 拖拽起点（只按下、还没动 ⇒ 后面仍是普通点击 ✓）
+						onPointerDown: (e) => beginDrag(e, t.id, i),
 						onClick: () => {
+							// ★ 刚刚拖动过 ⇒ 这次 click 是松手的余波，丢掉（否则会切页签 ✗）
+							if (dragMovedRef.current) { dragMovedRef.current = false; return; }
 							activeTabId = t.id; saveActiveTab(activeTabId);
+							// ★★ 2026-10-24：先记意图再 selectPanel —— 下面这一句会让中栏面板**首次挂载**，
+							//   而它的挂载 effect 默认会 `ensureTab(主页)`；没有这个标记就会被覆盖回去
+							//   （用户报的「首次点击其他页签，却切中主页」）✗。
+							pendingTabOpen = t.id;
 							try { ctx.layout.selectPanel(ENTRY_ID); } catch { /* 留在此面板也够 ✓ */ }
 							// 右栏跟随：只有**有目录版**的工作台才切右栏（没有就别白开一份完整页 ✓）
 							try { openItem(t, { skipRight: !catalogTabs.has(t.id) }); } catch { /* 右栏失败不阻塞切页 ✓ */ }
@@ -875,6 +1194,8 @@ window.__ModuleLoader__.load({
 						react.createElement("span", {
 							style: { opacity: .55, marginLeft: 2, padding: "0 2px" },
 							"data-vssaros-wb-tab-close": t.id,
+							// ✕ 上按下不该起拖（否则想关页签会把条拖歪 ✗）
+							onPointerDown: (e) => { try { e.stopPropagation(); } catch { /* 老宿主没有 stopPropagation */ } },
 							onClick: (e) => {
 								try { e.stopPropagation(); } catch { /* 老宿主没有 stopPropagation */ }
 								closeTab(t.id);
@@ -882,6 +1203,8 @@ window.__ModuleLoader__.load({
 							},
 						}, "✕")));
 				});
+				// 拖到最右（插入位 = 末尾）时也要有指示
+				if (dragView && dragView.slot >= openTabs.length) { tabs.push(marker("end")); }
 				const shell = {
 					position: "absolute",
 					left: g.ok ? g.left : 0,
@@ -911,10 +1234,19 @@ window.__ModuleLoader__.load({
 					}, []);
 					react.useEffect(() => {
 						// 挂载即：把「这个入口对应的工作台」变成活动页签（没开过就补一个）✓
+						// ⚠ 2026-10-22：刚由 `openRegisteredWorkbench` 激活的动态页签（`wb:` 前缀）不要被
+						//   「主页」面板的挂载抢回去（那是同一个中栏面板，打开它会先触发这里）。
+						if (String(activeTabId || "").indexOf("wb:") === 0 && pendingDynamicOpen === activeTabId) { pendingDynamicOpen = ""; setVer(v => v + 1); return; }
+						// ★★ 2026-10-24 修复（「首次点击其他页签却切中主页」）：有显式切页意图 ⇒ 尊重它。
+						//   消费掉标记（无论命中与否）⇒ 陈旧值不会在**下次**挂载时误伤其它路径 ✓。
+						const wantTab = pendingTabOpen;
+						pendingTabOpen = "";
+						if (wantTab && wantTab === activeTabId) { setVer(v => v + 1); return; }
 						let it = null;
 						try { it = pick(); } catch { /* 取不到就保持原样 ✓ */ }
 						if (it) { ensureTab(it); }
-						if (it) { try { openItem(it); } catch { /* 右栏失败不阻塞 ✓ */ } }
+						// 第三方工作台没有右栏目录页（内容是宿主 View）⇒ 只记"最后打开"，不开右栏
+						if (it) { try { openItem(it, it.wbId ? { skipRight: true } : undefined); } catch { /* 右栏失败不阻塞 ✓ */ } }
 						setVer(v => v + 1);
 					}, []);
 					let active = openTabs.filter(t => t.id === activeTabId)[0] || null;
@@ -941,6 +1273,15 @@ window.__ModuleLoader__.load({
 											? { display: "flex", flexDirection: "column", flex: "1 1 auto", minHeight: 0, height: "100%", width: "100%" }
 											: { display: "none" },
 									}, react.createElement(wbService.View, { id: wbId, active: on }));
+								}
+								if (!t.route) {
+									// 动态工作台的页签，但宿主里（暂时）没有它：宿主还没到 / 已卸载 / 等重启 ⇒ 说清楚，不开空 iframe
+									return react.createElement("div", {
+										key: t.id, "data-vssaros-wb-missing": t.wbId || t.id,
+										style: on
+											? { flex: "1 1 auto", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, opacity: .7, padding: 24, textAlign: "center" }
+											: { display: "none" },
+									}, "「" + (t.name || t.wbId) + "」当前不可用：它可能还在加载、已被卸载，或安装后还没重启 Harness。");
 								}
 								return react.createElement("iframe", {
 									key: t.id, src: withSurface(t.route, "editor"), title: t.name,
@@ -1024,9 +1365,20 @@ window.__ModuleLoader__.load({
 			function writePinned(list) {
 				try { window.localStorage && window.localStorage.setItem(LS_PINNED, JSON.stringify(list)); } catch { /* 私密模式 */ }
 			}
-			/** route → 条目（items = DEFAULT_ITEMS 按用户排序后的那份，带 route ✓）。 */
+			/**
+			 * route → 条目（items = DEFAULT_ITEMS 按用户排序后的那份，带 route ✓）。
+			 * ★ 2026-10-22：`wb:<身份>` = 第三方工作台（主页卡片的 route 就是这个）⇒ 从宿主注册表取名字与图标，
+			 *   条目没有 route、带 `wbId`（页签内容由宿主 View 渲染）。宿主里没有它（未就绪 / 已卸载）⇒ null。
+			 */
 			function itemByRoute(route) {
 				const r = String(route || "");
+				if (r.indexOf("wb:") === 0) {
+					const wbId = r.slice(3).toLowerCase();
+					if (!wbId || !wbService || typeof wbService.has !== "function" || !wbService.has(wbId)) { return null; }
+					const snap = typeof wbService.getSnapshot === "function" ? wbService.getSnapshot() : null;
+					const info = snap && Array.isArray(snap.workbenches) ? snap.workbenches.filter(w => w.id === wbId)[0] : null;
+					return { id: "wb:" + wbId, wbId, name: (info && info.title) || wbId, ico: wbIconEmoji(info && info.icon), route: "" };
+				}
 				return items.filter(it => it && it.route === r)[0] || null;
 			}
 			function unpin(route) {
@@ -1049,8 +1401,9 @@ window.__ModuleLoader__.load({
 				list.forEach((route, index) => {
 					if (pinnedDisposers.has(route)) { return; }
 					const it = itemByRoute(route);
-					if (!it) { return; }               // 认不出的 route（别的模块）⇒ 不长行 ✓
-					const id = "vssaros-wb-pinned-" + it.id;
+					if (!it) { return; }               // 认不出的 route（别的模块 / 第三方还没注册）⇒ 不长行 ✓
+					// 第三方的 id 带 `:` 和 `/`（`wb:owner/repo`）⇒ 槽 key 只留安全字符
+					const id = "vssaros-wb-pinned-" + String(it.id).replace(/[^A-Za-z0-9_-]/g, "-");
 					const navDispose = safeRegister(
 						"nav:固定行:" + id,
 						{ name: SLOT_NAV, id: id, order: PINNED_ORDER_BASE + index, label: it.name },
@@ -1150,6 +1503,19 @@ window.__ModuleLoader__.load({
 						cell.addEventListener("click", () => { closeLauncher(); openItem(it); });
 						grid.appendChild(cell);
 					}
+					// ★ 2026-10-22：宿主里已注册的第三方工作台（从市场装的 / 本地装的）—— 不进排序，排在内置之后
+					for (const w of registeredExtras()) {
+						const cell = el("div");
+						cell.style.cssText = "display:flex;flex-direction:column;align-items:center;gap:3px;padding:9px 2px;border-radius:8px;cursor:pointer;font-size:17px;";
+						cell.setAttribute("data-vssaros-launcher-wb", w.id);
+						cell.title = (w.title || w.id) + "（" + w.id + "）";
+						cell.onmouseenter = () => { cell.style.background = "rgba(128,128,128,.14)"; };
+						cell.onmouseleave = () => { cell.style.background = ""; };
+						cell.appendChild(el("span", wbIconEmoji(w.icon)));
+						cell.appendChild(el("span", w.title || w.id, "font-size:10.5px;opacity:.85;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"));
+						cell.addEventListener("click", () => { closeLauncher(); if (!openRegisteredWorkbench(w.id)) { notify("warn", (w.title || w.id) + " 当前不可用"); } });
+						grid.appendChild(cell);
+					}
 					body.appendChild(grid);
 					return;
 				}
@@ -1231,7 +1597,7 @@ window.__ModuleLoader__.load({
 
 		exports.install = install;
 		// 仅测试用：兜底进会话时"挑哪一条"（纯逻辑 ⇒ 守卫 ⑥ 钉住）
-		exports.__test = { pickLatestSessionId, pickDashboardItem, DASHBOARD_ID };
+		exports.__test = { pickLatestSessionId, pickDashboardItem, DASHBOARD_ID, reorderTabs };
 		return module.exports;
 	}
 });

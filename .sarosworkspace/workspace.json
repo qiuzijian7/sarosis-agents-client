@@ -1,29 +1,33 @@
 [
   {
-    "id": "sarosis-agents-client-ncshv",
+    "id": "sarosis-agents-client-8fnip",
     "name": "sarosis-agents-client",
     "path": "g:\\SarosWorkspace\\sarosis-agents-client",
     "relatedFolders": [
       {
         "path": "g:\\SarosWorkspace\\Saros-agents-pocket",
         "name": "Saros-agents-pocket",
-        "addedAt": "2026-10-17T03:05:03.656Z"
+        "addedAt": "2026-10-23T12:54:24.871Z",
+        "isGitRepo": true
       },
       {
         "path": "g:\\SarosWorkspace\\saros-marketplace",
         "name": "saros-marketplace",
-        "addedAt": "2026-10-17T03:05:03.656Z"
+        "addedAt": "2026-10-23T12:54:24.887Z",
+        "isGitRepo": true
       },
       {
         "path": "g:\\SarosWorkspace\\vssaros-homepage",
         "name": "vssaros-homepage",
-        "addedAt": "2026-10-17T03:05:03.656Z"
+        "addedAt": "2026-10-23T12:54:24.904Z",
+        "isGitRepo": false
       }
     ],
     "agents": [],
     "connections": [],
-    "createdAt": "2026-09-14T16:24:26.573Z",
-    "updatedAt": "2026-10-17T03:05:03.803Z",
+    "createdAt": "2026-10-23T12:54:24.141Z",
+    "updatedAt": "2026-10-23T12:54:24.906Z",
+    "codeWorkspacePath": "g:\\SarosWorkspace\\sarosis-agents-client\\sarosis-agents-client.code-workspace",
     "filesExclude": {
       "**/.git": true,
       "**/.worktrees": true,
@@ -36,7 +40,6 @@
       "**/out-vscode": true,
       "**/dist": true,
       "**/tmp": true
-    },
-    "codeWorkspacePath": "g:\\SarosWorkspace\\sarosis-agents-client\\sarosis-agents-client.code-workspace"
+    }
   }
 ]

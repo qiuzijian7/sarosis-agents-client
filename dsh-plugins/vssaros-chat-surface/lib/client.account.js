@@ -33,6 +33,12 @@
 //   官方账号启动器注册在 `settings.launcher`（single）⇒ 我们用 `priority: -10` **顶掉**它、
 //   自己画这一枚（顶替单槽的先例：`client.brand.js` 顶 `sidebar.brand.mark/name` ✓）。
 //   ⚠ 本 chunk 只在**带官方 chrome 的视图**装（chat-only 聊天框里没有侧栏 ⇒ 没这枚 ✓）。
+//
+// ── 2026-10-22：企业身份归 dsh 侧（用户："登录也转移到 dsh 侧实现，ide 侧仅读取状态"）──────────
+//   状态与登录 / 登出改走**桥插件的 HTTP 面** `/x/vssaros-bridge/api/tof/*`（Host 自己开浏览器、存票）⇒
+//   **不经 IDE** ⇒ 独立桌面窗口（没有 IDE 宿主桥）也能登录 ✓。回执没有票据（页面永远拿不到票）✓。
+//   老版本桥插件（没有这个 API，回 404）⇒ 自动退回原来的"IDE 推状态 + 页面桥 signInIde"✓。
+//   IDE 推来的 `vssaros-dsh-auth` 事件仍然听着 ⇒ 当作"重读一次"的信号（IDE 侧登录也会反映到这里）。
 window.__ModuleLoader__.load({
 	id: "@vssaros/dsh-chat-surface",
 	chunk: "client.account.js",
@@ -94,7 +100,94 @@ window.__ModuleLoader__.load({
 		/** 账号 chip / 触发按钮上显示的名字。 */
 		function displayName(auth) {
 			if (!auth || !auth.signedIn) { return "未登录"; }
-			return auth.loginName || auth.staffId || "IDE 账号";
+			return auth.loginName || auth.staffId || "企业账号";
+		}
+
+		// ── dsh 侧企业身份（HTTP 面）──────────────────────────────────────────────
+		const TOF_API = "/x/vssaros-bridge/api/tof/";
+		/** available: null = 还没探过；true = 有 HTTP 面；false = 老桥插件（退回 IDE 推送）。 */
+		const tofHttp = { available: null, status: null, inflight: null, pollTimer: null };
+		const tofListeners = new Set();
+		const emitTof = () => { for (const fn of Array.from(tofListeners)) { try { fn(); } catch { /* 组件已卸载 */ } } };
+
+		/** 外壳 URL 上的 token（Host 的 requestRejection 对所有路径都要凭据；同源 cookie 也带着）。 */
+		function authHeaders(extra) {
+			const headers = Object.assign({ accept: "application/json" }, extra || {});
+			try {
+				const m = /[?&]token=([^&]+)/.exec((typeof location !== "undefined" && location.search) || "");
+				if (m) { headers.authorization = "Bearer " + decodeURIComponent(m[1]); }
+			} catch { /* 无 location */ }
+			return headers;
+		}
+
+		/** HTTP 状态 ⇒ 与 `readIdeAuth()` 同形（页面其它地方不必关心来源）。 */
+		function fromTofStatus(st) {
+			if (!st || typeof st !== "object") { return null; }
+			return {
+				signedIn: st.signedIn === true,
+				loginName: String(st.loginName || ""),
+				staffId: String(st.staffId || ""),
+				team: String(st.team || ""),
+				expired: st.expired === true,
+				signingIn: st.signingIn === true,
+				error: st.expired === true ? "" : String(st.error || ""),
+			};
+		}
+
+		function fetchTofStatus() {
+			if (tofHttp.available === false) { return Promise.resolve(null); }
+			if (tofHttp.inflight) { return tofHttp.inflight; }
+			tofHttp.inflight = fetch(TOF_API + "status", { headers: authHeaders() })
+				.then((r) => {
+					// 老桥插件：没有这个 API ⇒ 要么 404，要么前缀路由回它的 HTML 状态页（200 但不是 JSON）
+					//   ⇒ 两种都当"没有 HTTP 面"⇒ 退回 IDE 推送 + 页面桥，且不再反复探 ✓
+					const type = String((r.headers && r.headers.get && r.headers.get("content-type")) || "");
+					if (r.status === 404 || !/json/i.test(type)) { tofHttp.available = false; return null; }
+					return r.json().then((b) => (b && b.ok && b.status) ? b.status : null);
+				})
+				.then((st) => { if (st) { tofHttp.available = true; tofHttp.status = st; } return st; })
+				.catch(() => null)
+				.then((st) => { tofHttp.inflight = null; emitTof(); return st; });
+			return tofHttp.inflight;
+		}
+
+		/** 登录中：每 1.5s 看一次，直到 Host 说"不在登录了"（成功 / 失败 / 取消 / 超时）。 */
+		function pollWhileSigningIn() {
+			if (tofHttp.pollTimer) { clearTimeout(tofHttp.pollTimer); tofHttp.pollTimer = null; }
+			tofHttp.pollTimer = setTimeout(() => {
+				tofHttp.pollTimer = null;
+				fetchTofStatus().then((st) => {
+					if (st && st.signingIn) { pollWhileSigningIn(); return; }
+					setPendingAction("");
+					if (st && !st.signedIn && st.error && !/已取消/.test(st.error)) { notify("warn", "登录未完成：" + st.error); }
+				});
+			}, 1500);
+		}
+
+		/** 经 HTTP 面登录 / 登出；返回 false = 没有 HTTP 面（调用方退回页面桥）。 */
+		function tofHttpAction(action) {
+			if (tofHttp.available !== true) { return false; }
+			const op = action === "signInIde" ? "signin" : "signout";
+			setPendingAction(action);
+			fetch(TOF_API + op, { method: "POST", headers: authHeaders({ "content-type": "application/json" }), body: "{}" })
+				.then((r) => r.json().catch(() => null))
+				.then((b) => {
+					if (b && b.status) { tofHttp.status = b.status; emitTof(); }
+					if (!b || b.ok !== true) {
+						setPendingAction("");
+						notify("warn", (op === "signin" ? "登录" : "登出") + "失败：" + String((b && b.error) || "未知错误"));
+						return;
+					}
+					if (op === "signin") { pollWhileSigningIn(); } else { setPendingAction(""); }
+				})
+				.catch((e) => { setPendingAction(""); notify("warn", "操作失败：" + String((e && e.message) || e)); });
+			return true;
+		}
+
+		/** 当前账号状态：有 HTTP 面就以 dsh 侧为准；否则用 IDE 推来的（老桥插件）。 */
+		function readAuth() {
+			const fromHttp = tofHttp.available === true ? fromTofStatus(tofHttp.status) : null;
+			return fromHttp || readIdeAuth();
 		}
 
 		/**
@@ -164,6 +257,8 @@ window.__ModuleLoader__.load({
 		 */
 		function runMenuAction(action) {
 			if (action === "dshSettings") { openDshSettings(); return; }
+			// ★ 2026-10-22：登录 / 登出优先走 dsh 侧 HTTP 面（不经 IDE）；老桥插件才退回页面桥
+			if ((action === "signInIde" || action === "signOutIde") && tofHttpAction(action)) { return; }
 			const api = bridgeApi();
 			const missing = {
 				openSettings: "当前宿主不支持「打开设置」（需要页面桥 18）",
@@ -220,7 +315,7 @@ window.__ModuleLoader__.load({
 		 */
 		function openAccountMenu(anchor) {
 			closeAccountMenu();
-			const auth = readIdeAuth();
+			const auth = readAuth();
 			const box = el("div", undefined,
 				"position:fixed;z-index:1000;min-width:180px;padding:6px;border-radius:10px;"
 				+ "background:var(--dsw-alias-bg-layer-2,#232323);border:1px solid var(--dsw-alias-border-l2,rgba(128,128,128,.35));"
@@ -267,15 +362,28 @@ window.__ModuleLoader__.load({
 		function AccountEntry(props) {
 			// 记下槽的 ownerProps（`openSettings` = dsh 官方设置弹窗的开关）⇒ 弹层里的「设置」用得到 ✓
 			ownerProps = props || null;
-			const [auth, setAuth] = react.useState(readIdeAuth);
+			const [auth, setAuth] = react.useState(readAuth);
 			const [hover, setHover] = react.useState(false);
 			// 「登录中 / 登出中」（点菜单项后亮起来；登录态推来或超时后复位）
 			const [pending, setPending] = react.useState(getPendingAction);
-			// IDE 登录态：只认宿主推来的（DOM 事件）⇒ 不轮询、不猜 ✓
+			// 登录态来源：dsh 侧 HTTP 面（挂载即拉、窗口回到前台再拉）+ IDE 推来的事件（当作"重读"信号）✓
 			react.useEffect(() => {
-				const onAuth = () => { setAuth(readIdeAuth()); setPendingAction(""); };
+				const onTof = () => setAuth(readAuth());
+				tofListeners.add(onTof);
+				void fetchTofStatus();
+				const onAuth = () => {
+					// 老桥插件：IDE 推来即真相；有 HTTP 面：IDE 推来 ⇒ 去 dsh 重读一次
+					if (tofHttp.available === true) { void fetchTofStatus(); } else { setAuth(readAuth()); }
+					if (!tofHttp.pollTimer) { setPendingAction(""); }
+				};
+				const onFocus = () => { void fetchTofStatus(); };
 				document.addEventListener(AUTH_EVENT, onAuth);
-				return () => document.removeEventListener(AUTH_EVENT, onAuth);
+				window.addEventListener("focus", onFocus);
+				return () => {
+					tofListeners.delete(onTof);
+					document.removeEventListener(AUTH_EVENT, onAuth);
+					window.removeEventListener("focus", onFocus);
+				};
 			}, []);
 			// 订阅"进行中"状态（模块级状态 ⇒ 组件用订阅拿，卸载时退订 ✓）
 			react.useEffect(() => {
@@ -287,8 +395,9 @@ window.__ModuleLoader__.load({
 			// ⚠ 文案要跟着状态走：登录中不能还显示"未登录"（用户会以为没点上）✓；登录完成后由推来的状态接管 ✓
 			const label = pending === "signInIde" ? "登录中（请在浏览器里完成）"
 				: pending === "signOutIde" ? "登出中…"
-					: auth.error ? "⚠ 登录失败：" + auth.error
-						: (auth.signedIn ? name + (auth.team ? " · " + auth.team : "") : "未登录（IDE 账号）");
+					: auth.expired ? "⚠ 登录已失效（请重新登录）"
+						: auth.error ? "⚠ 登录失败：" + auth.error
+							: (auth.signedIn ? name + (auth.team ? " · " + auth.team : "") : "未登录（企业账号）");
 			return react.createElement("button", {
 				type: "button",
 				// ⚠ 稳定锚点（不随 hover / 登录态变）：守卫 ⑪ 与 e2e 都按它找
@@ -301,8 +410,9 @@ window.__ModuleLoader__.load({
 				//   ⚠ title 里同时说清**真实登录态**（失败 ≠ 已登出，两件事 ✓）。
 				title: (pending
 					? (pending === "signInIde" ? "正在登录（请在系统浏览器里完成）" : "正在登出…")
-					: (auth.error ? "登录失败：" + auth.error + (auth.signedIn ? "（当前仍是已登录状态）" : "")
-						: (auth.signedIn ? name : "未登录（IDE 账号）"))) + " —— 点击打开账号菜单",
+					: (auth.expired ? "企业身份已失效，点击后选「登录」重新登录"
+						: auth.error ? "登录失败：" + auth.error + (auth.signedIn ? "（当前仍是已登录状态）" : "")
+							: (auth.signedIn ? name : "未登录（企业账号）"))) + " —— 点击打开账号菜单",
 				onClick: (e) => {
 					try {
 						const rect = e && e.currentTarget && typeof e.currentTarget.getBoundingClientRect === "function"
@@ -336,7 +446,19 @@ window.__ModuleLoader__.load({
 		function install(ctx, shell) {
 			const bridge = (shell && shell.bridge) || {};
 			const state = (shell && shell.state) || {};
-			const chrome = bridge.surface === "full" || (bridge.surface === "chat" && bridge.chatOnly === false);
+			/**
+			 * 只在**带官方 chrome（有侧栏）**的页面接管账号行。
+			 *
+			 * ★★ 2026-10-24（用户报「左下角的 tof 登录按钮为什么会触发官方的登录，是 profile 错了么」）：
+			 *   原来判据是 `surface === "full" || (chat && !chatOnly)` ⇒ **插件页（`surface=plugin-page`，
+			 *   例如工具页 `/x/skills/?surface=editor`）被排除** ⇒ 我们那颗 TOF 账号行根本没装
+			 *   ⇒ 左下角显示的是**官方账号入口**，点它就走 dsh 官方 DeepSeek 授权（真机日志：
+			 *   `登录/外链弹窗 ⇒ 交给系统浏览器：https://platform.deepseek.com/dsh/authorize?…`，
+			 *   而同期没有任何 `signInIde` / `tof` 调用 ✗✗）。
+			 *   现在改成"**除纯聊天框以外都装**"：full / plugin-page / workbench / sessions / 默认都算 chrome，
+			 *   只有 `surface=chat && chatOnly=true`（IDE 编辑器里那格裸聊天框）不装 ✓。
+			 */
+			const chrome = bridge.surface !== "chat" || bridge.chatOnly === false;
 			if (!chrome) { return; }
 			if (state.accountInstalled) { return; }
 
@@ -357,9 +479,9 @@ window.__ModuleLoader__.load({
 		exports.install = install;
 		// 仅测试用：守卫 ⑪ **先跑 install**（拿 chrome 上下文）再渲染/断言 ✓
 		exports.__test = {
-			AUTH_EVENT, SLOT,
+			AUTH_EVENT, SLOT, TOF_API,
 			menuItems, runMenuAction, displayName, openDshSettings,
-			setPendingAction, getPendingAction,
+			setPendingAction, getPendingAction, fromTofStatus, readAuth, tofHttp, fetchTofStatus,
 			AccountEntry: (props) => (typeof AccountEntryRef === "function" ? AccountEntryRef(props) : null),
 		};
 		return module.exports;

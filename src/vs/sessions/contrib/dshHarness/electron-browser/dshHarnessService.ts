@@ -20,7 +20,15 @@ import { isMacintosh, isWindows } from '../../../../base/common/platform.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IIdeCapabilityEnv, IIdeSelectionRange, buildExecuteNodeRequest, executeIdeCapability, ideFailureSummary } from '../common/dshIdeCapabilities.js';
-import { isPathInside } from '../common/dshPageBridgeProtocol.js';
+import { DSH_UPGRADE_ASSET_KINDS, IDshUpgradeAppState, IDshUpgradeAssetRow, IDshUpgradeBundledRow, IDshUpgradeState, isPathInside } from '../common/dshPageBridgeProtocol.js';
+// ★ 2026-10-23（desktop 窗口「更新」入口）：应用升级的纯逻辑（版本比较 / **降级闸门** / 端点）
+import { buildUpdateEndpoint, decideAppUpdate, parseAppUpdateResponse } from '../common/dshAppUpdate.js';
+import { getDshPluginCenterHost } from '../../agentStudio/browser/dshPluginCenterHost.js';
+import { IProductService } from '../../../../platform/product/common/productService.js';
+import { IRequestService } from '../../../../platform/request/common/request.js';
+import { IUpdateService, StateType } from '../../../../platform/update/common/update.js';
+import { CancellationToken } from '../../../../base/common/cancellation.js';
+import { arch as platformArch } from '../../../../base/common/process.js';
 import { DSH_MODULE_CONTAINERS, DshModuleId, IDshModulePageState, activeModulesFromPlugins, activeModulesOf, containersFromPlugins, pagesFromPlugins, resolveContainerPageState, withWorkbenchClient } from '../common/dshModuleContainers.js';
 // `taskboard` 能力（看板"定位卡片"）：与原 `TasksViewPane` 点条目**同一套实现**（同一个 EditorInput
 // 与同一个 focusTaskInBoard），不另开一条"看起来能跳"的路径。
@@ -67,6 +75,9 @@ import { IStorageService, StorageScope } from '../../../../platform/storage/comm
 // 第一个"读 IDE 内存聚合"的适配（其余读的都是编辑器/工作区状态 ✓）。
 import { IAgentStudioDashboardService } from '../../agentStudio/browser/agentStudioDashboardService.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
+// 读更新源响应体：`IRequestService` 只给 `ctx.stream`（这个 fork 没有 `readAsText` 辅助）
+// ⇒ 用 `streamToBuffer` 收完再 `toString()`（UTF-8 解码由 VSBuffer 负责 ✓）
+import { streamToBuffer } from '../../../../base/common/buffer.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { DSH_HARNESS_CHANNEL, DshColorScheme, DshHarnessChannelCommand, DshHarnessChannelEvent, DshHarnessSettings, DshPageSurface, DshViewSurface, IDshBootstrapArgs, IDshBundledInstallResult, IDshBundledPluginRow, IDshHostStartOptions, IDshHostStatus, IDshIdeClaimReply, IDshIdeRequest, IDshPluginActivationSnapshot, IDshPluginInfo, IDshPluginRowSetResult, IDshPluginSetResult, IDshRuntimeInfo, IDshUpdateDiscoveryResult, IDshUpdatePolicy, IDshUpgradeArgs, IDshViewBounds, IDshViewInfo, IDshWorkspaceSyncState, IDshWorkspaceSyncSummary, shouldRestartForWorkspaceChange, surfaceTakesRoute } from '../common/dshHarness.js';
@@ -146,6 +157,32 @@ export interface IDshHarnessService {
 	 * ⚠ 只推**一句人话**（≤200 字符）：不含堆栈/路径/票据 ✓。
 	 */
 	pushAuthError(error: string): void;
+	/**
+	 * 重新算一份**升级状态**并推给本窗口所有 dsh 视图（2026-10-23，desktop 窗口的「更新」入口）。
+	 *
+	 * 一次快照包含三段：随包插件（可升级 / 未安装）、dsh 运行时（版本 + 通道）、应用（当前版本 + 更新源结论）。
+	 * 页面拿不到返回值（页面桥单向）⇒ 全靠这次推送。
+	 */
+	refreshUpgrade(): Promise<void>;
+	/**
+	 * 升级（或安装）一个**随包插件**（2026-10-23）。真正的安装归 IDE 插件中心
+	 * （`installBundledPlugin`：主进程暂存 → `dsh plugin add`，与启动时装插件同一条路）。
+	 * 完成后会自动再推一次状态 ⇒ 页面行变成"已装 ✓"。
+	 */
+	upgradeBundled(name: string): Promise<{ ok: boolean; error?: string }>;
+	/**
+	 * **一键升级应用（IDE）**（2026-10-23）：检查更新源 → 比版本 →（更新源更新才）下载 → 安装并重启。
+	 * ⚠ 更新源比本地旧 ⇒ 只推回 `action: 'downgrade'`，**不装**（否则就是一键降级 ✗，见 `common/dshAppUpdate.ts`）。
+	 */
+	upgradeApp(): Promise<void>;
+	/**
+	 * 升级一件**商城资产**（技能 / MCP / 智能体 / 工作流 / 工作台；2026-10-23）。
+	 *
+	 * ⚠ skill / workflow 的升级由 **dsh 侧插件**自持（IDE 侧调用会被商城下线闸拒）⇒ 面板对这两类
+	 * 不显示按钮；这里只处理 agent / mcp / workbench（它们必须由 IDE 做：名册刷新 / 内置冲突保护 /
+	 * `dsh plugin add` + 重启）。
+	 */
+	upgradeAsset(kind: string, slug: string): Promise<{ ok: boolean; error?: string }>;
 	/**
 	 * 同步"**IDE 主窗口是我们藏着的**"这个事实给主进程（desktop 模式的窗口守卫，2026-10-21）。
 	 *
@@ -475,6 +512,12 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 		// 它**不在**工作区里、也不在盘上，只能由 IDE 内存给出（这正是反向通道存在的理由 ✓）。
 		@IAgentStudioDashboardService private readonly _dashboardService: IAgentStudioDashboardService,
 		@ICommandService private readonly _commandService: ICommandService,
+		// ★ 2026-10-23（desktop 窗口「更新」入口）：应用自身的版本 / 更新源 / 更新服务。
+		//   `IUpdateService` 在 workbench 里是 eager 注册的（`workbench/services/update`）⇒ 直接注入；
+		//   万一哪天真缺它，`upgradeApp` 里会退回"请手动下载安装包"，不会静默失败 ✓。
+		@IProductService private readonly _productService: IProductService,
+		@IRequestService private readonly _requestService: IRequestService,
+		@IUpdateService private readonly _updateService: IUpdateService,
 		@ILogService private readonly _logService: ILogService,
 		// ★ 2026-10-21：`media`（生图）能力要用的：模型 provider 注册表
 		// （`getModelProviders()` ⇒ 里面有 `generateImage` 的那些就是能出图的源）。
@@ -914,6 +957,9 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 				}
 				return { providers: out };
 			},
+			// ★ 2026-10-24（下线 IDE 侧媒体库）：`importMediaAsset` / `op:'importAsset'` **已移除**。
+			//   媒体库真源搬到 dsh 侧（`@vssaros/dsh-media` 的 `media-store/`），imagegen 生图后
+			//   经 `ctx.inject(['vssarosMediaStore'])` 在 **Host 内直接写** ⇒ 不需要这条跨进程通道。
 			// ★ 2026-10-22：用户主动发起的操作（市场「安装」）的确认 —— 主进程原生模态框；出错 ⇒ 未允许（fail-closed）。
 			confirmUserAction: async ({ title, detail, confirmLabel }) => {
 				try {
@@ -1708,6 +1754,9 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 				this._chatSession.set(chatIdOfView, sessionId);
 			}
 			this._pushTheme(viewId); this._pushWorktrees(viewId); this._pushWorkspaces(viewId); this._pushAuth(viewId);
+			// ★ 2026-10-23：升级状态也补一份（不联网，只有随包插件清单 + 当前版本）——
+			//   侧栏那行「更新 · N 项可用」要在页面一打开就正确，别等用户点开面板 ✗
+			this._pushUpgradeState(viewId);
 		});
 	}
 
@@ -1822,6 +1871,244 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 	/** 当前 IDE 主题的 light/dark（dsh 页面的 palette 模式据此对齐；弹层等非 alias token 跟随 palette 模式）。 */
 	private _colorScheme(): DshColorScheme {
 		return /dark/i.test(String(this._themeService.getColorTheme().type)) ? 'dark' : 'light';
+	}
+
+	// ── 升级（2026-10-23，desktop 窗口的「更新」入口）────────────────────────────────
+	/** 最近一次"应用更新"的结论（含更新源版本）。 */
+	private _appUpdate: IDshUpgradeAppState | undefined;
+	private _upgradeBusy: 'checking' | 'downloading' | 'installing' | undefined;
+	private _upgradeError: string | undefined;
+
+	public async refreshUpgrade(): Promise<void> {
+		this._upgradeError = undefined;
+		this._upgradeBusy = 'checking';
+		await this._pushUpgradeToAll();
+		try {
+			this._appUpdate = await this._checkAppUpdate();
+		} finally {
+			this._upgradeBusy = undefined;
+			await this._pushUpgradeToAll();
+		}
+	}
+
+	public async upgradeBundled(name: string): Promise<{ ok: boolean; error?: string }> {
+		const host = getDshPluginCenterHost();
+		if (!host) {
+			return { ok: false, error: '插件中心服务不可用（这个窗口里没装它）' };
+		}
+		try {
+			const result = await host.installBundledPlugin(name);
+			this._logService.info(`[dshHarness] upgradeBundled ${name}: ok=${result.ok} v=${result.version ?? '-'} prev=${result.previousVersion ?? '-'}`);
+			return result.ok ? { ok: true } : { ok: false, error: result.error ?? '安装失败（原因见插件中心日志）' };
+		} catch (e) {
+			const msg = String((e as Error)?.message ?? e);
+			this._logService.warn(`[dshHarness] upgradeBundled ${name} 抛错：${msg}`);
+			return { ok: false, error: msg };
+		} finally {
+			// 成功失败都重算一次：装上了要显示"已装 ✓"，失败了也要显示原因
+			await this._pushUpgradeToAll();
+		}
+	}
+
+	public async upgradeApp(): Promise<void> {
+		if (this._upgradeBusy) {
+			return;   // 防重入：一次只跑一条（下载/安装期间按钮已置灰，这里再兜一层）
+		}
+		this._upgradeError = undefined;
+		this._upgradeBusy = 'checking';
+		await this._pushUpgradeToAll();
+		try {
+			const checked = await this._checkAppUpdate();
+			this._appUpdate = checked;
+			if (checked.action !== 'upgrade') {
+				// 已最新 / **更新源更旧** / 查不到 ⇒ 一律不下载。
+				// ★ 这一条就是"一键升级"不变成"一键降级"的地方（真机更新源现在比本地旧）。
+				this._logService.info(`[dshHarness] upgradeApp: 不升级（action=${checked.action} local=${checked.current} remote=${checked.remote ?? '-'}）`);
+				return;
+			}
+			const svc = this._updateService;
+			if (!svc) {
+				throw new Error('这个构建没有可用的更新服务，请手动下载安装包覆盖安装');
+			}
+			this._upgradeBusy = 'downloading';
+			await this._pushUpgradeToAll();
+			await svc.checkForUpdates(true);
+			if (!(await this._waitUpdateReady(svc, 180_000))) {
+				throw new Error('下载超时（3 分钟内没就绪），请稍后重试');
+			}
+			this._upgradeBusy = 'installing';
+			await this._pushUpgradeToAll();
+			// 应用会重启：正在跑的会话中断（面板上已写明，不再弹二次确认 —— 用户点的是"一键"）
+			svc.quitAndInstall();
+		} catch (e) {
+			this._upgradeError = String((e as Error)?.message ?? e);
+			this._logService.warn(`[dshHarness] upgradeApp 失败：${this._upgradeError}`);
+		} finally {
+			this._upgradeBusy = undefined;
+			await this._pushUpgradeToAll();
+		}
+	}
+
+	public async upgradeAsset(kind: string, slug: string): Promise<{ ok: boolean; error?: string }> {
+		// skill / workflow 由 dsh 侧自持：这里**不**替它们兜底（IDE 侧会被下线闸拒 ⇒ 只会看到一句报错 ✗）。
+		// 页面本来就不给这两类画按钮，走到这里说明是陈旧快照 ⇒ 明确回一句原因 ✓。
+		if (kind === 'skill' || kind === 'workflow') {
+			return { ok: false, error: `${kind} 的升级由 dsh 侧负责（在商城页操作）` };
+		}
+		try {
+			const res = await runMarketplaceAction({
+				marketplace: this._marketplace,
+				installPluginSpec: async (spec, name) => {
+					const r = await this.installPluginSpec(spec, name);
+					return { ok: r.ok, changed: r.changed, ...(r.version ? { version: r.version } : {}), ...(r.error ? { error: r.error } : {}) };
+				},
+				logService: this._logService,
+			}, { op: 'upgrade', kind, slug });
+			this._logService.info(`[dshHarness] upgradeAsset ${kind}/${slug}: ok=${res.ok}${res.error ? ` error=${res.error}` : ''}`);
+			return res.ok ? { ok: true } : { ok: false, error: res.error ?? '升级失败（原因见商城日志）' };
+		} catch (e) {
+			const msg = String((e as Error)?.message ?? e);
+			this._logService.warn(`[dshHarness] upgradeAsset ${kind}/${slug} 抛错：${msg}`);
+			return { ok: false, error: msg };
+		} finally {
+			await this._pushUpgradeToAll();   // 升完/失败都重算：行要立刻反映新版本
+		}
+	}
+
+	/**
+	 * 收集**可升级的商城资产**（技能 / MCP / 智能体 / 工作流 / 工作台）。
+	 *
+	 * 数据源是 IDE 的商城服务：`getInstalled()`（本地台账真源）+ `checkUpgrades()`（服务端比版本）。
+	 * ⚠ 不走 `runMarketplaceAction({op:'installed'})` —— 那个 op 已被 dsh 侧接管（会抛）✗。
+	 * ⚠ 没登录商城 / 服务端不可达 ⇒ 返回**空数组 + 一句原因**（不能假装"都最新" ✗）。
+	 */
+	private async _collectAssets(): Promise<{ rows: IDshUpgradeAssetRow[]; note?: string }> {
+		try {
+			const installed = await this._marketplace.getInstalled();
+			if (!installed.length) {
+				return { rows: [] };
+			}
+			const upgrades = await this._marketplace.checkUpgrades(
+				installed.map(e => ({ kind: e.kind, storeId: e.storeId, version: e.version })),
+			);
+			const rows: IDshUpgradeAssetRow[] = [];
+			for (const u of upgrades) {
+				if (!(DSH_UPGRADE_ASSET_KINDS as readonly string[]).includes(u.kind)) {
+					continue;   // knowledge 等不在本期范围
+				}
+				rows.push({
+					kind: u.kind as IDshUpgradeAssetRow['kind'],
+					name: u.storeId,
+					current: u.current,
+					latest: u.latest,
+					// 这两类由 dsh 侧自持（见 upgradeAsset 的注释）
+					via: u.kind === 'skill' || u.kind === 'workflow' ? 'dsh' : 'ide',
+				});
+			}
+			return { rows };
+		} catch (e) {
+			const msg = String((e as Error)?.message ?? e);
+			this._logService.trace(`[dshHarness] collectAssets failed: ${msg}`);
+			return { rows: [], note: /登录|login|401|403/i.test(msg) ? '需要先登录商城' : `商城检查失败：${msg.slice(0, 80)}` };
+		}
+	}
+
+	/** 问更新源"最新是哪一版"，并用 `decideAppUpdate` 判能不能升（**不下载**）。 */
+	private async _checkAppUpdate(): Promise<IDshUpgradeAppState> {
+		const current = this._productService.version ?? '0.0.0';
+		const base = this._productService.updateUrl;
+		if (!base) {
+			return { current, action: 'unknown', error: '这个构建没有配置 updateUrl' };
+		}
+		const platform = `${isWindows ? 'win32' : isMacintosh ? 'darwin' : 'linux'}-${platformArch}`;
+		const url = buildUpdateEndpoint(base, platform, this._productService.quality ?? 'stable', this._productService.commit ?? '');
+		try {
+			const ctx = await this._requestService.request({ url, callSite: 'dshHarness.appUpdate' }, CancellationToken.None);
+			if (ctx.res.statusCode !== 200) {
+				return { current, action: 'unknown', error: `更新源返回 HTTP ${ctx.res.statusCode}` };
+			}
+			const body = await streamToBuffer(ctx.stream);
+			const parsed = parseAppUpdateResponse(JSON.parse(body.toString()));
+			const remote = parsed?.productVersion;
+			const action = decideAppUpdate(current, remote);
+			this._logService.info(`[dshHarness] app update: local=${current} remote=${remote ?? '-'} ⇒ ${action}`);
+			return { current, ...(remote ? { remote } : {}), action };
+		} catch (e) {
+			return { current, action: 'unknown', error: String((e as Error)?.message ?? e) };
+		}
+	}
+
+	/** 等更新服务进入"可安装"（`Ready`/`Downloaded`）；`Idle`/`Disabled` 直接判失败（没东西可装）。 */
+	private async _waitUpdateReady(svc: IUpdateService, timeoutMs: number): Promise<boolean> {
+		const deadline = Date.now() + timeoutMs;
+		while (Date.now() < deadline) {
+			const type = svc.state.type;
+			if (type === StateType.Ready || type === StateType.Downloaded) {
+				return true;
+			}
+			if (type === StateType.Idle || type === StateType.Disabled || type === StateType.Uninitialized) {
+				return false;
+			}
+			await new Promise(resolve => setTimeout(resolve, 500));
+		}
+		return false;
+	}
+
+	/** 算一份全量升级状态（不联网；`app` 用最近一次的结论）。 */
+	private async _buildUpgradeState(): Promise<IDshUpgradeState> {
+		let bundled: IDshUpgradeBundledRow[] = [];
+		let error: string | undefined;
+		try {
+			const host = getDshPluginCenterHost();
+			if (host) {
+				const rows = await host.listBundledPlugins();
+				bundled = rows.map(r => ({
+					name: r.name, version: r.version, state: r.state,
+					...(r.installedVersion ? { installedVersion: r.installedVersion } : {}),
+					...(r.module ? { module: r.module } : {}),
+				}));
+			} else {
+				error = '插件中心不可用（这个窗口没装它）';
+			}
+		} catch (e) {
+			error = String((e as Error)?.message ?? e);
+		}
+		const app = this._appUpdate ?? { current: this._productService.version ?? '0.0.0', action: 'unknown' as const };
+		// 商城资产（技能 / MCP / 智能体 / 工作流 / 工作台）：一次快照里带上，面板按五类分组显示 ✓
+		const assets = await this._collectAssets();
+		return {
+			at: Date.now(),
+			app: {
+				...app,
+				...(this._upgradeBusy ? { busy: this._upgradeBusy } : {}),
+				...(this._upgradeError ? { error: this._upgradeError } : {}),
+			},
+			runtime: { channel: String(this._configurationService.getValue(DshHarnessSettings.UpdateChannel) ?? 'stable') },
+			bundled,
+			assets: assets.rows,
+			...(assets.note ? { assetsNote: assets.note } : {}),
+			...(error ? { error } : {}),
+		};
+	}
+
+	private async _pushUpgradeToAll(): Promise<void> {
+		let state: IDshUpgradeState;
+		try {
+			state = await this._buildUpgradeState();
+		} catch (e) {
+			this._logService.trace(`[dshHarness] buildUpgradeState failed: ${String((e as Error)?.message ?? e)}`);
+			return;
+		}
+		for (const viewId of this._ownViews) {
+			void this._channel.call(DshHarnessChannelCommand.PushUpgrade, { viewId, state });
+		}
+	}
+
+	/** 新视图建好时补一份（不联网）—— 侧栏那行「N 项可用」不能等到用户点开面板才出现 ✓。 */
+	private _pushUpgradeState(viewId: string): void {
+		void this._buildUpgradeState().then(state => {
+			void this._channel.call(DshHarnessChannelCommand.PushUpgrade, { viewId, state });
+		}, () => undefined);
 	}
 
 	private _pushThemeToAll(): void {

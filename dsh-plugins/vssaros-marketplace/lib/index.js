@@ -19,6 +19,9 @@
 //   ⇒ 「IDE 桥不在」时，**浏览仍然可用** ✓（真机可验：停桥后 list 照样出数据）
 
 import path from 'node:path';
+import { createHash } from 'node:crypto';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createMarketClient, dataRootOf } from './marketClient.js';
 import { readInstalled, removeInstalled, upsertInstalled } from './installedLedger.js';
@@ -37,6 +40,9 @@ import { toInstalledItem, toPackageDetail, toPackageSummary } from './shape.js';
 
 /** 插件包名（与 package.json 一致；也是 ide.request 的 pluginId => 必须与清单里的 ideCapabilities 对上 ✓）。 */
 const PLUGIN_PACKAGE = '@vssaros/dsh-marketplace';
+
+/** 本页与商城接口所在的插件：**不许**从这里关掉/卸载（否则页面直接不可用）。 */
+const SELF_PLUGIN_NAME = ['@vssaros/dsh-skills', '@vssaros/dsh-marketplace'];
 
 /** 页面路由前缀。 */
 const ROUTE_PREFIX = '/x/marketplace';
@@ -75,6 +81,8 @@ export async function apply(ctx, config) {
 		tof: null,
 		/** 取数据根失败的原因（self-check 会报出来，**不静默**）*/
 		dataRootError: null,
+		/** ★ 2026-10-24：dsh 的进程内插件管理服务（装/卸/升插件与工作台，与 dsh plugin add 同一套） */
+		pluginManager: null,
 	};
 	ctx.inject(['vssarosBridge'], scope => {
 		state.bridge = scope.vssarosBridge ?? null;
@@ -101,6 +109,16 @@ export async function apply(ctx, config) {
 	//   要重启 IDE 才会成为 preset。这里预留调用点，**不强求**：
 	//   服务不在 ⇒ 装完返回 `restartRequired`（如实告知），不假装即时生效 ✗
 	//   ⚠ 用回调式 `ctx.inject`（不是静态 inject）：缺服务时不会让插件永久 pending ✓
+	// ★ 2026-10-24（用户：「插件管理能否在 dsh 侧实现，不走 ide」）：能。
+	//   dsh 把 `dsh plugin add` 做成了进程内服务 pluginManager（@deepseek-ai/dsh-plugin-manager，
+	//   与 CLI 共用 operations.js：文件锁 → pnpm → reconcile bundles）；装了 dsh-hmr 时还能热生效。
+	//   ⚠ 仍然用**回调式**可选注入：老 Host / 无 profileContext 时没有这个服务，
+	//     此时 state.pluginManager 保持 null ⇒ 装/卸自动退回 IDE（不能静态 inject，会让插件 pending ✗）。
+	ctx.inject(['pluginManager'], scope => {
+		state.pluginManager = scope.pluginManager ?? null;
+		return () => { state.pluginManager = null; };
+	});
+
 	ctx.inject(['vssarosAgents'], scope => {
 		state.agentsRescan = typeof scope.vssarosAgents?.rescan === 'function'
 			? () => scope.vssarosAgents.rescan()
@@ -387,6 +405,164 @@ export async function apply(ctx, config) {
 		});
 	}
 
+	/** 把 ChangeResult.error 变成一句人话。 */
+	function mgmtErrorText(e) {
+		if (e === null || e === undefined) { return '商城没返回原因'; }
+		if (typeof e === 'string') { return e; }
+		return String(e.message ?? e.code ?? e.name ?? JSON.stringify(e));
+	}
+
+	/** 版本级 / 包级 distribution（与 IDE 的 distributionOfVersion 同口径）。 */
+	function distributionOf(detail, version) {
+		const versions = Array.isArray(detail?.versions) ? detail.versions : [];
+		const hit = versions.find(v => String(v?.version) === version);
+		return (hit && (hit.distribution || hit.manifest?.distribution)) || detail?.distribution || null;
+	}
+
+	/**
+	 * 发布源 → pnpm spec（与 IDE 的 resolveDistributionSpec 同口径）。
+	 *   npm            ⇒ name@version
+	 *   github-source  ⇒ github:owner/repo(#commit)
+	 *   github-release ⇒ dsh 侧先下载 + 校验 sha256，再 file:<tmp.tgz>
+	 * ⚠ 校验不通过就**不装**（不为了"能装上"而跳过完整性检查）。
+	 */
+	async function specForDistribution(dist, slug, version) {
+		if (!dist || typeof dist !== 'object') {
+			return { error: '这个商品没有登记发布源（distribution）⇒ 不知道从哪儿装' };
+		}
+		if (dist.type === 'npm') {
+			if (!dist.name) { return { error: 'npm 发布源缺少包名' }; }
+			return { spec: dist.name + '@' + version, name: String(dist.name) };
+		}
+		if (dist.type === 'github-source') {
+			if (!dist.name) { return { error: 'github-source 发布源缺少 owner/repo' }; }
+			const commit = dist.commit ? '#' + dist.commit : '';
+			return { spec: 'github:' + dist.name + commit, name: String(dist.name).split('/').pop() };
+		}
+		if (dist.type === 'github-release') {
+			if (!dist.url) { return { error: 'github-release 发布源缺少 url' }; }
+			if (!dist.sha256) { return { error: 'github-release 发布源缺少 sha256（不校验就不装）' }; }
+			const buf = await downloadGitHubTarball(dist.url);
+			const sha = createHash('sha256').update(buf).digest('hex');
+			if (sha !== String(dist.sha256).toLowerCase()) {
+				return { error: '下载包的 sha256 与商城登记不一致（期望 ' + dist.sha256 + '，实际 ' + sha + '）' };
+			}
+			const file = path.join(tmpdir(), 'vssaros-marketplace', slug + '-' + version + '.tgz');
+			await mkdir(path.dirname(file), { recursive: true });
+			await writeFile(file, buf);
+			return { spec: 'file:' + file, name: String(dist.name || slug) };
+		}
+		return { error: 'dsh 侧不认识的发布源类型：' + String(dist.type) };
+	}
+
+	/**
+	 * 插件 / 工作台的装、升、卸 —— **在 dsh 侧执行**。
+	 *
+	 * 依据（2026-10-24 取证）：dsh 有 `ctx.pluginManager`（@deepseek-ai/dsh-plugin-manager），
+	 * 与 `dsh plugin` CLI 共用 operations.js（文件锁 → pnpm → reconcile dsh.profile.bundles），
+	 * 装了 `dsh-hmr` 时返回 application='applied'（**热生效，不用重启 Host**）。
+	 *
+	 * 返回 null = "dsh 侧做不了 ⇒ 调用方退回 IDE"，只有三种：
+	 *   ① 没有 pluginManager；② 卸载时台账里没有包名（历史数据只有 slug）；③ removeBundle 不在。
+	 */
+	async function runLocalPlugin(op, params) {
+		const pm = state.pluginManager;
+		if (!pm || typeof pm.installBundle !== 'function') { return null; }
+
+		// ── 插件状态（开关）──
+		// ★ 2026-10-24（用户：「插件 item 是允许有开关的」）：dsh 的 pluginManager 本来就提供
+		//   setBundleEnabled(name, enabled) —— 改的是 profile 的 `dsh.profile.bundles` 选择，
+		//   有 hmr 时热生效（application=applied），没有就返回 restart-required（如实告知）。
+		if (op === 'pluginState') {
+			if (typeof pm.listBundles !== 'function') { return null; }
+			const bundles = await pm.listBundles();
+			return {
+				ok: true,
+				plugins: (Array.isArray(bundles) ? bundles : []).map(b => ({
+					name: String(b.name || ''),
+					enabled: b.enabled === true,
+					installed: b.installed === true,
+					official: b.official === true,
+					optional: b.optional === true,
+					removable: b.removable === true,
+					version: String(b.version || ''),
+					description: String(b.description || ''),
+				})).filter(x => x.name),
+			};
+		}
+
+		if (op === 'setPluginEnabled') {
+			const name = String(params.name || '');
+			if (!name) { throw new Error('setPluginEnabled 需要 name（npm 包名）'); }
+			if (typeof pm.setBundleEnabled !== 'function') { return null; }
+			// ⚠ 不许关掉本页所在的插件：关掉之后页面直接不可用，用户只能在 IDE 里找回
+			if (SELF_PLUGIN_NAME.includes(name) && params.enabled === false) {
+				return { ok: false, error: '「' + name + '」是当前页面/商城接口所在的插件，不能从这里关闭' };
+			}
+			const want = params.enabled !== false;
+			const r = await pm.setBundleEnabled(name, want);
+			if (r && r.error) { return { ok: false, error: mgmtErrorText(r.error) }; }
+			return {
+				ok: true,
+				changed: r ? r.changed !== false : true,
+				enabled: want,
+				application: r?.application ?? null,
+				restartRequired: r?.application === 'restart-required',
+			};
+		}
+		const kind = String(params.kind || '');
+		const slug = String(params.slug || '');
+		if (!kind || !slug) { throw new Error('marketplace.' + op + ' 需要 kind 与 slug'); }
+		const root = state.dataRoot;
+		if (!root) { throw new Error(state.dataRootError || '数据根未知（foundation 还没就绪）'); }
+
+		if (op === 'uninstall') {
+			const entries = await readInstalled(root);
+			const entry = entries.find(e => e.kind === kind && e.storeId === slug);
+			// ★ 2026-10-24（用户：「插件 item 缺少卸载按钮」）：页面直接给的是**包名**
+			//   （插件页签的条目本来就来自 profile 的 dependencies，slug 就是包名）；
+			//   从商城装的仍走台账里的 packageName。两者都没有才交给 IDE。
+			const pkgName = String(params.packageName || '')
+				|| (entry && entry.packageName ? String(entry.packageName) : '');
+			if (!pkgName) { return null; }   // 包名不知道 ⇒ 交 IDE（它按 storeId 反查）
+			// ⚠ 内置插件（@vssaros/* / @deepseek-ai/*）**不许卸**：那是随产品/官方发布的，
+			//   删掉会把产品自己的插件（含本页所在的插件）一起带走，而且用户没法从商城装回来。
+			if (/^@(vssaros|deepseek-ai)\//.test(pkgName)) {
+				return { ok: false, error: '「' + pkgName + '」是随产品发布的内置插件，不能卸载' };
+			}
+			if (typeof pm.removeBundle !== 'function') { return null; }
+			const r = await pm.removeBundle(pkgName);
+			if (r && r.error) { return { ok: false, error: mgmtErrorText(r.error) }; }
+			await removeInstalled(root, kind, slug);
+			return {
+				ok: true,
+				changed: r ? r.changed !== false : true,
+				application: r?.application ?? null,
+				restartRequired: r?.application === 'restart-required',
+				via: 'dsh',
+			};
+		}
+
+		// install / upgrade
+		const detail = await market().detail(slug);
+		const version = String(params.version || detail.latest_version || detail.latestVersion || '');
+		if (!version) { throw new Error('这个商品没有可用版本'); }
+		const dist = distributionOf(detail, version);
+		const built = await specForDistribution(dist, slug, version);
+		if (built.error) { return { ok: false, error: built.error }; }
+		const r = await pm.installBundle(built.spec, { enabled: true });
+		if (r && r.error) { return { ok: false, error: mgmtErrorText(r.error) }; }
+		await upsertInstalled(root, { kind, storeId: slug, version, packageName: built.name || '' });
+		return {
+			ok: true,
+			changed: r ? r.changed !== false : true,
+			version,
+			application: r?.application ?? null,
+			restartRequired: r?.application === 'restart-required',
+			via: 'dsh',
+		};
+	}
+
 	/**
 	 * 按分派目标执行（★ 2026-10-23：替代原来路由里的 6 层 if）。
 	 *
@@ -399,6 +575,12 @@ export async function apply(ctx, config) {
 	async function runLocalByTarget(target, op, params) {
 		if (target === 'local-read') { return runLocal(op, params); }
 		if (target === 'local-write') { return runLocalWrite(op, params); }
+		// 插件 / 工作台：先试 dsh 侧（pluginManager）；它说做不了（null）再退回 IDE
+		if (target === 'local-plugin') {
+			const local = await runLocalPlugin(op, params);
+			if (local) { return local; }
+			return callIde(op, params);
+		}
 		if (target === 'local-publish') { return runLocalPublish(op, params); }
 		// local-http：编辑元数据 / 管理员审核（纯 HTTP，服务端判权）
 		const m = market();
@@ -586,12 +768,22 @@ export async function apply(ctx, config) {
 			return { ok: false, error: `不认识的商城动作：${op}` };
 		}
 		const timeoutMs = WRITE_OPS.has(op) ? WRITE_TIMEOUT_MS : READ_TIMEOUT_MS;
+		// ★ 2026-10-24（用户：「安装插件失败 … HTTP 404」）：
+		//   商城里有 6704 个 `kind: 'plugin'` 的 dsh 插件（本体在 npm / GitHub，商城只有元数据）。
+		//   旧版 IDE 的安装分支只认 `workbench` ⇒ plugin 掉进"下载包体"那条链 ⇒ 404。
+		//   在**装/卸**这两个写动作上把 plugin 说成 workbench：IDE 侧走的就是「按 distribution
+		//   生成 spec → `dsh plugin add`」这条正确通道（plugin 与 workbench 本质是同一件事）。
+		//   ⚠ 等 IDE 侧也认识 plugin 之后，这段可以删（那边已在同一版本里加了分支）。
+		const ideParams = { op, ...params };
+		if (String(ideParams.kind) === 'plugin' && (op === 'install' || op === 'upgrade' || op === 'uninstall')) {
+			ideParams.kind = 'workbench';
+		}
 		let reply;
 		try {
 			reply = await bridge.callIDE('ide.request', {
 				capability: 'marketplace',
 				pluginId: PLUGIN_PACKAGE,
-				params: { op, ...params },
+				params: ideParams,
 			}, { timeoutMs });
 		} catch (e) {
 			return { ok: false, error: `商城通道出错：${String(e?.message ?? e)}` };

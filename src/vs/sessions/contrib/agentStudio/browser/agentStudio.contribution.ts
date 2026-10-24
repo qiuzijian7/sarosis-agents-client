@@ -298,6 +298,8 @@ import { ChannelEditorPane } from './channelEditorPane.js';
 import { ChannelEditorInput } from './channelEditorInput.js';
 
 import { KnowledgeBaseViewPane } from './views/knowledgeBaseView.js';
+// ★ 2026-10-23：React 版知识库（实验容器 `agentStudio.knowledgeBaseReact`，可整段下线）
+import { AGENT_STUDIO_KB_REACT_VIEW_ID, KbSideviewReactViewPane } from './views/kbSideviewReactViewPane.js';
 // 2026-10-12：「资料库」拆分 —— 记忆 / 代码两个 tab 提升为独立工作台（各自一个新 Pane）。
 import { MemoryLibraryViewPane } from './views/memoryLibraryView.js';
 import { CodebaseLibraryViewPane } from './views/codebaseLibraryView.js';
@@ -530,6 +532,13 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'boolean',
 			default: true,
 			description: localize('agentStudio.codebaseGraph.sqliteBackend', "Codebase 图谱查询/搜索默认走主进程 SQLite（FTS5）后端，避免内存全量扫描。默认开启；设为 false 关闭后回退内存 store。"),
+		},
+		// ★ 2026-10-23（真机：进程级原生崩溃 `0xC000001D`/`0xE06D7363`，每次都在启动后 30–90s，
+		//   最后一次业务日志恒为 `Files changed, running incremental index...`）：自动索引总开关。
+		'saros.codebaseGraph.autoIndex': {
+			type: 'boolean',
+			default: true,
+			description: localize('agentStudio.codebaseGraph.autoIndex', "打开工作区时自动建立/更新 Codebase 图谱（默认开启）。设为 false 后**完全不自动索引**（不扫描、不起文件监听）；需要图谱时用命令手动重建。用途：图索引期间出现进程级崩溃时的逃生口与定位实验。"),
 		},
 		// ⚠⚠ 2026-09-19 恢复（并发改动把这两条注册覆盖掉了 ⇒ 代码里 `getValue('saros.codebaseGraph.artifactFormat')`
 		// / `getValue('saros.codebaseGraph.memoryBudgetMb')` 仍在读，但**设置项不存在** ⇒ 用户无法发现/修改、
@@ -4981,12 +4990,41 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 		// 2026-10-12：拆分 —— 文案改回「知识库」，另外 3 个 tab（记忆 / 代码 / 媒体）提升为
 		// 独立工作台（记忆 / 代码见下与上；媒体库待做）。**容器 id 与存储键一字未动** ⇒
 		// 用户已有的活动栏布局与视图状态不受影响。
+		// ★★ 2026-10-23（A1 切换）：主入口换成 **React 版**。
+		//   它和 agents 窗口的 `/x/kb/sideview` 是**同一份 bundle**（`webview/media/kbSideview.js`）
+		//   ⇒ 两处 UI/功能一致，这才是用户要的「窗口模式与 IDE 侧栏一致」。
+		//   ⚠ 原生实现没有删：挪到 114 位、改名「知识库（经典）」。因为
+		//   `体检 / 整理去重 / 审核队列 / 语义向量检索 / 14 种排序` **只在原生视图里**
+		//   （它们是 `KnowledgeBaseViewPane` 的私有方法，也没注册成命令）⇒ 直接删入口等于砍功能。
+		//   ⚠ `dshActivityBarSource.test.ts` 按**字面量**匹配容器 id/视图 id，这里两者都保持字面量。
 		this._registerModuleToolIcon(viewContainerRegistry, viewsRegistry, {
 			id: 'agentStudio.knowledgeBase',
 			title: localize2('agentStudio.knowledgeBase.title', "知识库"),
 			icon: kbIcon,
-			viewId: AGENT_STUDIO_KB_VIEW_ID,
+			viewId: AGENT_STUDIO_KB_REACT_VIEW_ID,
 			order: 110,
+			viewCtor: KbSideviewReactViewPane,
+		});
+
+		// ★ 2026-10-23（用户：「窗口模式知识库与 IDE sideview 不一致」）：**React 版知识库（实验）**。
+		//
+		// 为什么独立一格、独立 id，而不是往上面那个容器里塞第二个视图：
+		//   `_registerToolIcon` 建容器时用 `mergeViewWithContainerWhenSingleView: true`
+		//   ⇒ 只有一个视图时标题合并成「知识库」；**加第二个视图会让合并不再生效**，
+		//     上面那个视图的标题结构当场变化 ✗（等于改坏既有 UI 来验证新 UI）。
+		//
+		// 渲染物：`webview/media/kbSideview.js`（React，由 `npm run build:kbSideview` 产出）
+		//   ⇒ 同一份组件将来可同时喂给 IDE 侧栏与 agents 窗口插件页，这才是「两边一致」的机制。
+		//
+		// ⚠ 可下线：纯新增、不接管任何现有 id。删掉这一段即完全恢复原状。
+		this._registerModuleToolIcon(viewContainerRegistry, viewsRegistry, {
+			id: 'agentStudio.knowledgeBaseReact',
+			// ★ 2026-10-23（A1 之后）：这一格现在装**原生实现**，作为「知识库（经典）」逃生口。
+			//   容器 id 不改（存储键不动 ⇒ 用户已有布局不被打乱），只把视图与标题换过来。
+			title: localize2('agentStudio.knowledgeBaseReact.title', "知识库（经典）"),
+			icon: kbIcon,
+			viewId: AGENT_STUDIO_KB_VIEW_ID,
+			order: 114,   // 紧接「代码库 113」之后，不扰动已有 110/111/112 的相邻关系
 			viewCtor: KnowledgeBaseViewPane,
 		});
 

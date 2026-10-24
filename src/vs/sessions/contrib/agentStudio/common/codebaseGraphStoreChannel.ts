@@ -49,6 +49,16 @@ export interface ICodebaseGraphSqliteBackend {
 	/** WAL checkpoint（压缩 WAL，防读变慢） */
 	checkpoint(): Promise<void>;
 	/**
+	 * 卸掉边的三个二级索引（**全量灌数据**前用；配对 `ensureIndexes`）。
+	 *
+	 * ★ 2026-10-22：1.25M 条边逐条 upsert 时，三棵边索引的维护占了绝大部分时间
+	 *   ⇒ 全量期间先卸、灌完再建（标准批量装载手法）⇒ 8 分钟压到 1 分钟内。
+	 *   卸载窗口里边查询退化为全表扫描（结果仍正确）；崩在中间由 store 的 `open()` 自愈 ✓。
+	 */
+	suspendEdgeIndexes(): Promise<void>;
+	/** 确保边的二级索引存在（**幂等**）；全量同步结束后必须调 ✓。 */
+	ensureIndexes(): Promise<void>;
+	/**
 	 * ★★★ 2026-09-18（P1-1 第二步）：把当前图库导出为「**SQLite 快照**」制品（`VACUUM INTO` 到 targetPath）。
 	 *
 	 * 动机：制品格式是 gzip + JSON ⇒ 载入端必须**解析 JSON**（真机 3 folder ≈ **7320ms**）。而 SQLite

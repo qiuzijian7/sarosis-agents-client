@@ -66,6 +66,9 @@ export async function upsertInstalled(dataRoot, entry) {
 			kind: entry.kind,
 			storeId: entry.storeId,
 			version: entry.version,
+			// ★ 2026-10-24：插件（npm 包）的卸载只能按**包名**；slug 是商城自己的标识
+			//   （zuoyunlai-dsh-pet-plugin），和包名（dsh-pet-plugin）不是一回事 ⇒ 装的时候记下来。
+			...(entry.packageName ? { packageName: String(entry.packageName) } : {}),
 			installedAt: new Date().toISOString(),
 			source: entry.source ?? 'installed',
 		});

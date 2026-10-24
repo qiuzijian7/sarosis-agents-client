@@ -29,7 +29,7 @@ import { existsSync } from 'node:fs';
 
 import { homedir, tmpdir } from 'node:os';
 
-import { join } from 'node:path';
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 import { fileURLToPath } from 'node:url';
 
@@ -161,7 +161,28 @@ function runLarkCli(exe, args, timeout) {
 				resolve(value);
 			}
 		};
-		const child = spawn(exe, args, { windowsHide: true });
+		// ★★ 2026-10-24（真机：`✗ [启动失败] spawn lark-cli ENOENT`）：
+		//   用户机器上 `lark-cli` **装了**，位置是 `%APPDATA%\npm\lark-cli.cmd`（npm 的 .cmd shim）。
+		//   而 Node 的 `spawn('lark-cli')`：
+		//     · 不会按 PATHEXT 补 `.cmd` ⇒ 报 ENOENT（读起来像"没装"）
+		//     · 即便给了 `.cmd` 全路径，**不经 shell 也起不来**（ENOENT/EINVAL）
+		//   ⇒ 这里先按 PATH + PATHEXT **自己解析**一次，`.cmd/.bat` 则走 shell 启动。
+		//   ⚠ 走 shell 时对含空格的参数加引号（版本查询/列库/升级这三处参数都是简单 token，
+		//     不含用户正文；正文类调用仍走原来的无 shell 路径 ✓）。
+		let resolved = exe;
+		if (process.platform === 'win32' && !(/[\\/]/.test(exe))) {
+			const dirs = String(process.env.PATH || '').split(';').filter(Boolean);
+			for (const dir of dirs) {
+				for (const ext of ['.cmd', '.exe', '.bat', '']) {
+					const cand = join(dir, exe + ext);
+					if (existsSync(cand)) { resolved = cand; break; }
+				}
+				if (resolved !== exe) { break; }
+			}
+		}
+		const useShell = process.platform === 'win32' && /\.(cmd|bat)$/i.test(resolved);
+		const spawnArgs = useShell ? args.map(a => (/\s/.test(String(a)) ? '"' + String(a) + '"' : String(a))) : args;
+		const child = spawn(resolved, spawnArgs, useShell ? { windowsHide: true, shell: true } : { windowsHide: true });
 		const timer = setTimeout(() => {
 			stderr += `\n[超时] 超过 ${Math.round(timeout / 1000)}s 仍未结束，已终止。\n`;
 			try {
@@ -219,6 +240,16 @@ export const name = 'vssaros-kb';
 export const inject = ['tools'];
 
 const ROUTE_PREFIX = '/x/kb';
+/**
+ * 上一次 `/api/page` 渲染时用到的**库根目录**（含外挂库，如 `E:\VsSarosVault`）。
+ *
+ * ★★ 2026-10-23（真机：点击「库」区笔记 ⇒ `拒绝读取库外文件：e:\VsSarosVault\库\方法\…`）：
+ *   根因不是围栏太严，而是 **`/api/doc` 从来没把 extraRoots 传下去**（`readDoc(root, uri)`
+ *   只带数据根）⇒ 页面**列得出**外挂库的文件，却**读不了**它 —— 典型的"能看见不能碰" ✗。
+ *   ⇒ 这里记住"页面上一次列过哪些库"，读取时把它们一并当作允许根：
+ *   **判据仍是段边界**（`root + sep`，见 store.js:406-408）⇒ 不放松任何越权读取 ✓。
+ */
+let LAST_VAULT_DIRS = [];
 
 /**
  * 页面「关系图谱」的图数据缓存（★ 2026-10-19：图谱从 IDE 侧迁到 dsh 页面）。
@@ -248,6 +279,65 @@ function vaultDisplayNameFrom(config, id) {
 	const injected = parseInjectedVaults(config?.kbVaults) ?? [];
 	return injected.find(item => item.id === id)?.name || id;
 }
+/**
+ * 二进制资源读取（2026-10-24 新增，供 React 页的「图片内嵌」用）。
+ *
+ * 为什么要单独一条路由：页面里的 `<img>` 由浏览器直接发请求，拿不到 React 侧的数据；
+ * 而 `/api/doc` 只回文本 ⇒ 图片 / pdf / 音视频在 dsh 侧**永远显示不出来**（真机表现：
+ * 只看到一个坏图标或空行）。⇒ 新增 `GET /api/asset?uri=<绝对路径>` 直接回字节流。
+ *
+ * 围栏口径**与 `/api/doc` 完全一致**：只允许「库根 + 页面列过的库根」之内的文件，
+ * 按**段边界**比较（`root + sep`）⇒ `/vault-other` 不会被 `/vault` 放行 ✓。fail-closed：
+ * 任何异常都返回 `{ error }`，绝不回退到"读数据根下同名文件"。
+ *
+ * ⚠ 只白名单几种展示型 MIME：不认识的扩展名一律拒绝 —— 这条路由是"渲染素材"用的，
+ *   不是通用文件下载器（否则一个 `.env` 都能被页面请求走）。
+ */
+const ASSET_MIME = {
+	png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp',
+	svg: 'image/svg+xml', bmp: 'image/bmp', ico: 'image/x-icon', avif: 'image/avif',
+	pdf: 'application/pdf',
+	mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime',
+	mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg', m4a: 'audio/mp4',
+};
+/** 单文件上限：超过就当"不是素材"处理（避免页面误请求一个 500MB 的视频把内存打满）。 */
+const ASSET_MAX_BYTES = 32 * 1024 * 1024;
+
+async function readAsset(root, uri, extraRoots = []) {
+	const raw = String(uri || '').trim();
+	if (!raw) {
+		return { error: '缺少 uri' };
+	}
+	let p;
+	try {
+		p = resolve(decodeURIComponent(raw));
+	} catch (e) {
+		return { error: '路径不合法：' + String(e?.message ?? e) };
+	}
+	const roots = [root, ...extraRoots].filter(Boolean).map(r => resolve(String(r)));
+	const inside = roots.some(r => p === r || p.startsWith(r.endsWith(sep) ? r : r + sep));
+	if (!inside) {
+		return { error: '拒绝读取库外文件：' + p };
+	}
+	const ext = extname(p).slice(1).toLowerCase();
+	const mime = ASSET_MIME[ext];
+	if (!mime) {
+		return { error: '不支持的类型：.' + ext };
+	}
+	try {
+		const st = await stat(p);
+		if (!st.isFile()) {
+			return { error: '不是文件：' + p };
+		}
+		if (st.size > ASSET_MAX_BYTES) {
+			return { error: '文件过大（>' + Math.round(ASSET_MAX_BYTES / 1024 / 1024) + 'MB）：' + p };
+		}
+		return { bytes: await readFile(p), mime, size: st.size };
+	} catch (e) {
+		return { error: '读取失败：' + String(e?.message ?? e) };
+	}
+}
+
 // ⚠ 这是**声明**的工具名清单（页面自诊断那一栏用它 ✓，且被跨模块探针拿去对账 ✓）。
 // 它必须与 `toolDefinitions()` 里真正注册的名字**集合相同** ✗ —— 2026-10-12 加 `kb_feishu_spaces`
 // 时正是靠 `p3-08` 的"页面 == 注册 == 声明"三方对账抓到的（同 workflow 那次 ✓：两处名单各写一份，
@@ -3619,11 +3709,48 @@ async function runSemanticSearch(rootValue, { wantedVault, query, limit, bridge,
  *   `ReferenceError: externalVaultRecords is not defined` ⇒ 页面 500 ✓，2026-10-15 真踩过）。
  * ⚠ 容错口径同 `parseInjectedVaults`：拿不到 / 坏 JSON / 没有 path ⇒ 空数组 ⇒ 退回"只扫盘"✓（不猜 ✓）。
  */
+/**
+ * dsh 侧**自持**的库登记表（2026-10-24）。
+ *
+ * 为什么需要：IDE 的库清单是启动时注入的静态值，用户想在 dsh 页面里「新建知识库」或
+ * 「打开本地文件夹作为知识库」时，没有地方可写 —— 又不能去改 IDE 的配置（那是宿主的）。
+ * ⇒ 存一份自己的登记表 `<数据根>/.extra-vaults.json`，`externalVaultRecords` 把两份合并。
+ * 这样：IDE 注入的库照旧、dsh 新增的库也照旧参与 listVaults / 读围栏 / 写工具。
+ */
+let EXTRA_VAULTS = [];
+let EXTRA_VAULTS_ROOT = '';
+function loadExtraVaults(root) {
+	try {
+		const p = join(root, '.extra-vaults.json');
+		if (!existsSync(p)) { return []; }
+		const arr = JSON.parse(readFileSync(p, 'utf8'));
+		if (!Array.isArray(arr)) { return []; }
+		return arr.filter(v => v && typeof v.id === 'string' && typeof v.path === 'string' && v.path.trim());
+	} catch {
+		return [];
+	}
+}
+function ensureExtraVaults(root) {
+	if (EXTRA_VAULTS_ROOT !== root) {
+		EXTRA_VAULTS_ROOT = root;
+		EXTRA_VAULTS = loadExtraVaults(root);
+	}
+	return EXTRA_VAULTS;
+}
+
 function externalVaultRecords(config) {
 	const list = parseInjectedVaults(injectedRawOf(config)) ?? [];
-	return list
+	const injected = list
 		.filter(item => typeof item?.path === 'string' && item.path.trim())
 		.map(item => ({ id: String(item.id), dir: String(item.path).trim(), name: item.name, icon: item.icon }));
+	// 合并 dsh 自持登记（按 id 去重，注入的优先 —— 那份是"真源"）
+	let extras = [];
+	try {
+		const root = kbRootOf(config);
+		extras = ensureExtraVaults(root).map(v => ({ id: String(v.id), dir: String(v.path).trim(), name: v.name, icon: 'codicon:library' }));
+	} catch { /* 数据根不可用 ⇒ 只用注入清单 */ }
+	const seen = new Set(injected.map(v => v.id));
+	return injected.concat(extras.filter(v => v.dir && !seen.has(v.id)));
 }
 
 /**
@@ -3663,7 +3790,12 @@ let kbVaultsFromOverlay = '';
 
 /** config 与 overlay 兜底的合并取值：config 有就用 config（将来 dsh 修好会自动优先）。 */
 function injectedRawOf(config) {
-	const fromConfig = typeof config?.kbVaults === 'string' ? config.kbVaults.trim() : '';
+	const raw = config?.kbVaults;
+	// ★ 2026-10-24：**数组形态也接受**。真实注入是 JSON 字符串（YAML 单引号包着），但以代码方式
+	//   装配 config（探针 / 将来的 API）时给的是数组；只认字符串会让「库根」为空 ⇒
+	//   写接口把所有路径判成"库外" ⇒ 保存/上传全 403（本轮写护栏探针就是这样抓到的）。
+	if (Array.isArray(raw)) { return JSON.stringify(raw); }
+	const fromConfig = typeof raw === 'string' ? raw.trim() : '';
 	return fromConfig || kbVaultsFromOverlay;
 }
 /**
@@ -6097,6 +6229,7 @@ export function apply(ctx, config = {}) {
 				res.end(String(rejected));
 				return;
 			}
+
 			// ★ 2026-10-21：**承载表面**（宿主注入 `?surface=sideview|editor`，见 dshPluginPage.ts:65-110）。
 			//   缺省（浏览器直开 / dsh 官方页 / 全部既有探针）⇒ 'full' ⇒ **与改造前逐字相同** ✓。
 			//   ⚠ 这里单独解析一次：下面那条 `let url` 活在 `if (page.connection && req.url)` 块里，
@@ -6150,7 +6283,55 @@ export function apply(ctx, config = {}) {
 				//   ⚠ 如实记：桥的 `openFile` 对"工作区之外"的路径会**先弹确认**（`dshHarness.contribution.ts:758-765` ✓
 				//   原文"DSH 页面请求打开工作区之外的文件"✓）—— vault 常在会话工作区之外 ⇒ 用户会看到那一次确认 ✓
 				//   （那是宿主的既定安全设计 ✓，我们不绕过也不隐藏 ✓）。
-				if (url && url.pathname === `${ROUTE_PREFIX}/api/mindmap`) {
+				// ★ 2026-10-23（用户：「窗口模式知识库要与 IDE sideview 一致」）：React 版知识库页。
+		//   与 IDE 侧栏是**同一份 bundle**（`webview/media/kbSideview.js`，
+		//   由 `scripts/sync-kb-sideview.mjs` 复制到 `lib/web/`）⇒ 两边 UI 不再分叉 ✓。
+		//   `/sideview` 给页面、`/web/kbSideview.js` 给脚本（同源，避免 CORS）。
+		// ★★ 2026-10-24（自动测试咬出来的**约束冲突**，此处只记录、不擅自破规）：
+		//
+		//   目标：让窗口模式的主页也用 React 侧栏（与 IDE 侧栏同一份 bundle）。
+		//   但两条既有守卫互相顶住，**必须产品层面二选一**才能落地：
+		//
+		//   ① `dshPluginPackages.test.ts`：`vssaros.view.route` 必须等于规范默认路由 `/x/kb/`
+		//      ⇒ 不能把清单路由改成 `/x/kb/sideview`（实测报红：view.route 与聚合表不一致）。
+		//   ② `check-page-render-surfaces.mjs`（11 项）：`/x/kb/` **必须**返回带 `?surface=` 三态
+		//      与探针锚点的 SSR 页（full/sideview/editor/diag）
+		//      ⇒ 不能把 `/x/kb/` 直接改成吐静态 `sideview.html`（实测 11 项全红）。
+		//
+		//   ⇒ 现状：`/x/kb/` 保持旧 SSR 页；React 页挂在**追加路径** `/x/kb/sideview`。
+		//     要去掉这条差异，只有两条路（都需要改守卫或改渲染，属于产品决策，不在“自动修复”范围）：
+		//       A. 把 sideview 三态渲染改成「React 页外壳」——即 renderPage 里把 SSR 主体换成我们的
+		//          bundle 宿主（保留 surface 语义与探针锚点）；
+		//       B. 在 /x/kb/ 上按 `?surface=` 分流：无 surface 时 302 到 /x/kb/sideview，
+		//          有 surface 时仍走 renderPage ——需同步调整 ②的判据。
+		// ★★ 2026-10-24（产品决定：知识库 view 必须用新版）：**裸 `/x/kb/` 出 React 侧栏页**。
+		//   与 IDE 侧栏是同一份 bundle ⇒ 两处 UI 一致 ✓。
+		//   ⚠ 带 `?surface=` 的请求**不拦**：经典 SSR 三态（full/sideview/editor）仍由 renderPage 提供，
+		//     因为它被 19 项守卫（`check-page-render-surfaces.mjs`）与既有探针按 URL 钉着。
+		//   ⇒ 判据 = "是不是裸主页（没 surface 参数）"，不是"路径前缀"。
+		// ⚠ 2026-10-24 第二次修正：**不能按 `surface` 参数分流**。
+		//   宿主打开模块页时会自己注入 `?surface=sideview|editor`（`dshPluginPage.ts:65-110`）⇒
+		//   用户点的「知识库」tab 进来的 URL 多半就带 surface ⇒ 按参数分流会让新版**永远轮不到** ✗
+		//   （真机表现：改了代码、重启了进程，页面还是旧的那一份）。
+		//   ⇒ 现在：`/x/kb/`（任何参数）一律出新版；经典三态页退到 `/x/kb/classic`（仍走 renderPage）。
+		const isKbHomePage = url?.pathname === `${ROUTE_PREFIX}/` || url?.pathname === `${ROUTE_PREFIX}`;
+		if (url && (isKbHomePage || url.pathname === `${ROUTE_PREFIX}/sideview` || url.pathname === `${ROUTE_PREFIX}/web/kbSideview.js`)) {
+			const isJs = url.pathname.endsWith('kbSideview.js');
+			try {
+				const body = readFileSync(fileURLToPath(new URL(isJs ? './web/kbSideview.js' : './web/sideview.html', import.meta.url)));
+				res.writeHead(200, {
+					'content-type': isJs ? 'application/javascript; charset=utf-8' : 'text/html; charset=utf-8',
+					'cache-control': 'no-store',
+				});
+				res.end(body);
+			} catch (err) {
+				res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+				res.end(`未找到 ${isJs ? 'kbSideview.js' : 'sideview.html'}：先跑 scripts/sync-kb-sideview.mjs（${String(err?.message ?? err)}）`);
+			}
+			return;
+		}
+
+		if (url && url.pathname === `${ROUTE_PREFIX}/api/mindmap`) {
 					const send = (code, payload) => {
 						res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
 						res.end(JSON.stringify(payload));
@@ -6554,6 +6735,335 @@ export function apply(ctx, config = {}) {
 						return send(500, { ok: false, error: String(e?.message ?? e) });
 					}
 				}
+				// ★ 2026-10-24：**知识库设置**（dsh 侧二级设置页使用）。
+				//   GET  → 读 `<数据根>/.kb-settings.json`（缺省给一份默认值，页面不用写兜底逻辑）
+				//   POST → 整体覆盖写回（页面每次改一个字段就发整份；小文件、无并发需求）
+				//   ⚠ 只放 dsh 侧**真能生效**的项：构建方式 / 飞书开关与映射 / 同步参数。
+				//     IDE 专有的（系统选目录、Embedding provider、全局索引）不在这里假装。
+				if (url && url.pathname === `${ROUTE_PREFIX}/api/kb-settings`) {
+					const send = (code, payload) => {
+						res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(payload));
+					};
+					const file = () => join(kbRootOf(config), '.kb-settings.json');
+					const defaults = {
+						agenticBuild: true,
+						feishu: { enabled: false, schedule: false, intervalMs: 800, conflict: 'skip', deleteRemote: false, mappings: [] },
+					};
+					const readSettings = () => {
+						try {
+							const raw = readFileSync(file(), 'utf8');
+							const obj = JSON.parse(raw);
+							return Object.assign({}, defaults, obj, {
+								feishu: Object.assign({}, defaults.feishu, obj && obj.feishu),
+							});
+						} catch {
+							return defaults;
+						}
+					};
+					try {
+						if (req.method === 'GET') { send(200, { ok: true, settings: readSettings() }); return; }
+						if (req.method !== 'POST') { send(405, { ok: false, error: '请用 GET 或 POST' }); return; }
+						let raw = '';
+						for await (const chunk of req) {
+							raw += chunk;
+							if (raw.length > 65536) { send(413, { ok: false, error: '设置太大' }); return; }
+						}
+						const body = JSON.parse(raw || '{}');
+						const next = Object.assign({}, defaults, body, {
+							feishu: Object.assign({}, defaults.feishu, body && body.feishu),
+						});
+						await writeFile(file(), JSON.stringify(next, null, 2), 'utf8');
+						send(200, { ok: true, settings: next });
+						return;
+					} catch (e) {
+						send(500, { ok: false, error: String(e?.message ?? e) });
+						return;
+					}
+				}
+				// ★ 2026-10-24：**新建知识库 / 本地载入文件夹**（标题行下拉里的两项，对齐 IDE 侧「＋ 配置文件夹为知识库…」）
+				//   · `mode:'attach'`：把一个已有文件夹登记成库（**不移动、不复制**任何文件）
+				//   · `mode:'create'`：在数据根下建一个新库（只建 `笔记/` 与 `库/` 两个空目录）
+				//   落点是自己维护的 `<数据根>/.extra-vaults.json`（不碰 IDE 配置，见 externalVaultRecords 注释）
+				if (url && url.pathname === `${ROUTE_PREFIX}/api/vault-add` && req.method === 'POST') {
+					const send = (code, payload) => {
+						res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(payload));
+					};
+					try {
+						let raw = '';
+						for await (const chunk of req) {
+							raw += chunk;
+							if (raw.length > 8192) { send(413, { ok: false, error: '请求体太大' }); return; }
+						}
+						const payload = JSON.parse(raw || '{}');
+						const mode = String(payload?.mode ?? 'attach');
+						const name = String(payload?.name ?? '').trim();
+						const root = kbRootOf(config);
+						let dir = '';
+						let id = '';
+						if (mode === 'attach') {
+							const wanted = String(payload?.path ?? '').trim();
+							if (!wanted) { send(400, { ok: false, error: '请填写文件夹的绝对路径' }); return; }
+							try { dir = resolve(decodeURIComponent(wanted)); } catch { dir = resolve(wanted); }
+							const st = await stat(dir).catch(() => null);
+							if (!st || !st.isDirectory()) { send(400, { ok: false, error: `路径不存在或不是文件夹：${dir}` }); return; }
+							// 稳定短哈希：同一个文件夹重复登记不会产生两个库
+							let h = 0;
+							for (let i = 0; i < dir.length; i++) { h = (h * 31 + dir.charCodeAt(i)) >>> 0; }
+							id = 'ext-' + h.toString(16);
+						} else {
+							// ★ 2026-10-24（用户要求）：新建知识库**允许指定文件夹路径**，
+							//   并且**文件夹名就是知识库的名字**（不再由用户另取一个名字，避免"名字与目录对不上"）。
+							//   与 attach 的差别只有一点：目录不存在时**建出来**（attach 要求已存在）。
+							const wanted = String(payload?.path ?? '').trim();
+							if (!wanted) {
+								send(400, { ok: false, error: '请填写知识库文件夹的绝对路径（文件夹名就是知识库名字）' });
+								return;
+							}
+							try { dir = resolve(decodeURIComponent(wanted)); } catch { dir = resolve(wanted); }
+							// 必须是绝对路径：相对路径会按宿主进程的 cwd 解析，最终落在哪里不可控
+							if (!isAbsolute(dir)) {
+								send(400, { ok: false, error: '请填写绝对路径，例如 E:\\Notes\\MyVault' });
+								return;
+							}
+							const st = await stat(dir).catch(() => null);
+							if (st && !st.isDirectory()) {
+								send(400, { ok: false, error: '同名文件已存在，不能当作文件夹：' + dir });
+								return;
+							}
+							if (!st) { await mkdir(dir, { recursive: true }); }
+							await mkdir(join(dir, NOTES_DIR), { recursive: true });
+							await mkdir(join(dir, LIBRARY_DIR), { recursive: true });
+							// id 用路径的稳定短哈希 ⇒ 同一文件夹重复"新建"不会长出两个库
+							let h = 0;
+							for (let i = 0; i < dir.length; i++) { h = (h * 31 + dir.charCodeAt(i)) >>> 0; }
+							id = 'kb-' + h.toString(16);
+						}
+						// ⚠ 2026-10-24（探针抓到的真 bug）：全新安装时数据根可能**还不存在**
+						//   （`knowledge-base/` 是懒创建的）。此前只有"库目录在数据根底下"这一种情况
+						//   会顺带把根建出来；一旦用户把新库放在别处（如 `E:\Notes\MyVault`），
+						//   写 `.extra-vaults.json` 就 ENOENT ⇒ 整个新建失败。
+						await mkdir(root, { recursive: true });
+						const list = loadExtraVaults(root).filter(v => v.id !== id);
+						// 新建：**文件夹名即库名**（忽略调用方给的名字，避免两者不一致）；
+						// 载入：优先调用方给的名字（用于给已有文件夹一个更友好的显示名），否则用文件夹名。
+						const finalName = (mode === 'create' ? (basename(dir) || id) : (name || basename(dir) || id));
+						list.push({ id, name: finalName, path: dir });
+						await writeFile(join(root, '.extra-vaults.json'), JSON.stringify(list, null, 2), 'utf8');
+						EXTRA_VAULTS_ROOT = root;
+						EXTRA_VAULTS = list;
+						send(200, { ok: true, vault: { id, name: finalName, path: dir } });
+					} catch (e) {
+						send(500, { ok: false, error: String(e?.message ?? e) });
+					}
+					return;
+				}
+				// ★★ 2026-10-24：**视图数据**（`KbSideviewData` 形状）—— 面板 / 插件页共用的**唯一组装点**。
+				//   为什么要有这条路由：此前 `client.js`（工作台面板）与 `sync-kb-sideview.mjs`（插件页）
+				//   各写一份 buildData/mapNodes/links 映射，字段一旦漂移就会出现「面板 101 篇、页面 102 篇」
+				//   这种只能靠肉眼比才能发现的问题。把组装收回到服务端 ⇒ 两侧都只 `fetch` 一次，
+				//   想改结构只改这里，不可能漂移。
+				//   代价：`links` 要读全库正文（与 `/api/graph` 同一份 60s 缓存，`?refresh=1` 强制重扫）。
+				if (url && url.pathname === `${ROUTE_PREFIX}/api/view-data`) {
+					const send = (code, payload) => {
+						res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(payload));
+					};
+					try {
+						const snapshot = await pageSnapshotOf(kbRootOf(config), { external: externalVaultRecords(config) });
+						LAST_VAULT_DIRS = (snapshot.vaults ?? []).map(v => v.dir).filter(Boolean);
+						const vaults = snapshot.vaults ?? [];
+						// ★ 2026-10-24：支持 `?vault=<id>` —— 面板/插件页的「设置 → 切换库」用它，
+						//   否则只能改 IDE 注入的 `kbActiveVaultId`（那是启动时静态值，页面上切不了）。
+						const active = String(url.searchParams.get('vault') ?? config?.kbActiveVaultId ?? '').trim();
+						const vault = (active && vaults.find(v => v.id === active)) || vaults[0];
+						const out = {
+							vaultName: '(未连接)', activeVaultId: '', vaults: [], noteCount: 0,
+							tree: [], library: [], libraryCount: 0, tags: [], indexState: 'ready',
+						};
+						if (vault) {
+							const countOf = (n) => (n.children ?? []).reduce((acc, c) => acc + (c.isDirectory ? countOf(c) : 1), 0);
+							const mapNodes = (list) => (list ?? []).map((n) => n.isDirectory
+								? { name: n.name, path: n.abs || n.rel, isFolder: true, count: countOf(n), children: mapNodes(n.children) }
+								: { name: String(n.name).replace(/\.md$/i, ''), path: n.abs || n.rel, isFolder: false, size: n.size });
+							// ⚠⚠ 2026-10-24（真机：面板一片空白、`索引就绪 · 0 篇`）：
+							//   `pageSnapshotOf()` 返回的 vault **没有 `sections` 字段** —— `/api/page` 是
+							//   用 `listVaultTree(vault.dir, { section })` **现扫**出来的。我这里一开始读
+							//   `vault.sections.notes` ⇒ 永远 undefined ⇒ 树/篇数/标签全空，
+							//   而状态栏仍然显示 `d10`（字段在、只是内容空），非常容易被误判成"数据没到"。
+							//   ⇒ 必须与 /api/page 走同一条扫描路径。
+							const scanSection = async (section) => {
+								const tree = await listVaultTree(vault.dir, { section });
+								const withAbs = (nodes) => (nodes ?? []).map((n) => (n.isDirectory
+									// ★ 2026-10-24：**目录也要 abs**。之前只给文件拼了绝对路径 ⇒ 目录在页面上
+									//   只剩 `01_学习/游戏设计` 这种「相对区目录」的形态：
+									//   · 目录映射的键少掉 `笔记/` 前缀（写进 space-map 脚本对不上）
+									//   · `relOf()` 无处可折，界面上显示的路径也就不完整
+									? {
+										name: n.name, rel: n.rel, isDirectory: true,
+										abs: join(vault.dir, section, ...String(n.rel).split('/')),
+										children: withAbs(n.children),
+									}
+									: {
+										name: n.name, rel: n.rel, isDirectory: false, size: n.size, mtime: n.mtime,
+										abs: join(vault.dir, section, ...String(n.rel).split('/')),
+									}));
+								return { nodes: withAbs(tree.nodes), files: tree.files ?? 0 };
+							};
+							const notesSection = await scanSection(NOTES_DIR);
+							const libSection = await scanSection(LIBRARY_DIR);
+							// 标签：与 /api/page 同口径（从 `vault.docs` 的 tags 聚合，不读 kernel 缓存）。
+							// ★ 2026-10-24：**每条标签带上它的笔记绝对路径** —— 点标签要能筛选树，
+							//   而视图手里只有节点 path（绝对），没有"哪篇有哪些标签"的信息。
+							//   路径统一成「正斜杠 + 小写」再给出去，视图侧用同一个口径比较（避免 Windows 大小写差异）。
+							const absOfDoc = (doc) => {
+								let s = String(doc?.uri ?? doc?.path ?? '');
+								if (!s) { return ''; }
+								if (s.startsWith('file:///')) { s = s.slice(8); }
+								else if (s.startsWith('file://')) { s = s.slice(7); }
+								try { s = decodeURIComponent(s); } catch { /* 非法转义就按原样用 */ }
+								s = s.replace(/\\/g, '/');
+								if (/^\/[A-Za-z]:\//.test(s)) { s = s.slice(1); }
+								return s.toLowerCase();
+							};
+							const tagMap = new Map();
+							for (const doc of vault.docs ?? []) {
+								const abs = absOfDoc(doc);
+								for (const tag of (Array.isArray(doc.tags) ? doc.tags : []).filter(Boolean).map(String)) {
+									const entry = tagMap.get(tag) ?? { count: 0, paths: new Set() };
+									entry.count += 1;
+									if (abs) { entry.paths.add(abs); }
+									tagMap.set(tag, entry);
+								}
+							}
+							const tags = [...tagMap.entries()]
+								.map(([tag, entry]) => ({ tag, count: entry.count, paths: [...entry.paths] }))
+								.sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag, 'zh'))
+								.slice(0, 300);
+							Object.assign(out, {
+								vaultName: vaultDisplayNameFrom(config, vault.id),
+								activeVaultId: vault.id,
+								vaults: vaults.map(v => ({
+									id: v.id,
+									name: vaultDisplayNameFrom(config, v.id),
+									// 口径：当前库给**笔记篇数**（与状态栏 `N 篇` 同源，避免出现 239 这种混合计数）；
+									// 其它库拿不到叶子计数 ⇒ 退回 totalDocs（仅用于下拉里的粗略提示）。
+									count: v.id === vault.id ? notesSection.files : (v.totalDocs ?? 0),
+									// 写操作要用库根做「绝对路径 → 库内相对路径」折算 ⇒ 一并给出
+									dir: v.dir,
+								})),
+								noteCount: notesSection.files,
+								tree: mapNodes(notesSection.nodes),
+								library: mapNodes(libSection.nodes),
+								libraryCount: libSection.files,
+								tags,
+							});
+							// 双链（可缺）：失败只影响「双链」这一节，不影响主体
+							try {
+								const notesDir = join(vault.dir, NOTES_DIR);
+								const now = Date.now();
+								const cached = graphCache.get(notesDir);
+								const fresh = url.searchParams.get('refresh') === '1' ? undefined
+									: (cached && (now - cached.at) < GRAPH_CACHE_TTL_MS ? cached.data : undefined);
+								const graphData = fresh ?? buildGraphData(await readNotesForGraph(notesDir));
+								if (!fresh) { graphCache.set(notesDir, { at: now, data: graphData }); }
+								const byId = new Map((graphData.nodes ?? []).map(n => [n.id, n]));
+								const base = String(vault.dir || '').replace(/\\/g, '/').replace(/\/+$/, '');
+								const absKey = id => (base ? base + '/' + String(id) : String(id));
+								const labelOf = id => {
+									const n = byId.get(id);
+									return n && n.label ? String(n.label) : String(id).split('/').pop().replace(/\.md$/i, '');
+								};
+								const links = {};
+								const slot = (id) => { const k = absKey(id); return links[k] || (links[k] = { out: [], in: [] }); };
+								for (const e of graphData.edges ?? []) {
+									if (!e || !e.source || !e.target) { continue; }
+									slot(e.source).out.push({ title: labelOf(e.target), path: absKey(e.target) });
+									slot(e.target).in.push({ title: labelOf(e.source), path: absKey(e.source) });
+								}
+								out.links = links;
+							} catch { /* 图谱不可用 ⇒ 组件不显示双链节（如实降级） */ }
+						}
+						send(200, { ok: true, data: out });
+					} catch (e) {
+						send(500, { ok: false, error: String(e?.message ?? e) });
+					}
+					return;
+				}
+				// ★ 2026-10-22（工作台重构 §5 步骤 2，知识库**第一刀：只读面**）：
+				//   库 + 两个文件树（库 / 笔记）+ 标签分类 + 自诊断 ⇒ 一次取全，React 工作台照着画 ✓。
+				//   ⚠ 正文**不塞进这里**（库大时是几百 KB 的重复传输 ✗，与 `/api/doc` 同一条理由）⇒
+				//     点某个文件时再走现成的 `GET /api/doc?uri=` ✓；检索走现成的 `GET /api/search?q=` ✓。
+				if (url && url.pathname === `${ROUTE_PREFIX}/api/page`) {
+					try {
+						const root = kbRootOf(config);
+						const snapshot = await pageSnapshotOf(root, { external: externalVaultRecords(config) });
+			// ★ 2026-10-23：记下本次列出的库根（含外挂库）⇒ `/api/doc` 用它做围栏的允许根
+			LAST_VAULT_DIRS = (snapshot.vaults ?? []).map(v => v.dir).filter(Boolean);
+						const injected = parseInjectedVaults(config?.kbVaults);
+						const nameOf = id => (injected ?? []).find(item => item.id === id)?.name || id;
+						const toolsRegistered = TOOL_NAMES.filter(tool => !!state.tools?.get(tool)).join(',') || '(未注册)';
+						const vaults = [];
+						for (const vault of snapshot.vaults ?? []) {
+							const sections = {};
+							// ⚠ 键用**稳定英文名**（`library` / `notes`），值才是那两节的中文目录名
+							//   —— 直接把 `LIBRARY_DIR` 当键会让客户端读 `sections.library` 时拿到 undefined ✗（实测踩到）。
+							for (const [key, section] of [['library', LIBRARY_DIR], ['notes', NOTES_DIR]]) {
+								const tree = await listVaultTree(vault.dir, { section });
+								// ⚠ 每个**文件**节点带 `abs`：组件拿它直接喂 `/api/doc?uri=`（普通绝对路径也认 ✓，
+								//   不必赌索引里那份 `file:///…` 形态一定匹配得上 ✓）
+								const withAbs = nodes => (nodes ?? []).map(node => (node.isDirectory
+									? { name: node.name, rel: node.rel, isDirectory: true, children: withAbs(node.children) }
+									: { name: node.name, rel: node.rel, isDirectory: false, size: node.size, mtime: node.mtime, abs: join(vault.dir, section, ...String(node.rel).split('/')) }));
+								sections[key] = { label: section, nodes: withAbs(tree.nodes), files: tree.files ?? 0, dirs: tree.dirs ?? 0, truncated: !!tree.truncated, missing: !!tree.missing };
+							}
+							const tagMap = new Map();
+							const untagged = [];
+							for (const doc of vault.docs ?? []) {
+								const names = (Array.isArray(doc.tags) ? doc.tags : []).filter(Boolean).map(String);
+								const label = String(doc.name ?? doc.title ?? doc.uri ?? '');
+								if (!names.length) { untagged.push({ label, uri: String(doc.uri ?? '') }); continue; }
+								for (const tag of names) {
+									const entry = tagMap.get(tag) ?? { count: 0, names: [] };
+									entry.count += 1;
+									entry.names.push({ label, uri: String(doc.uri ?? '') });
+									tagMap.set(tag, entry);
+								}
+							}
+							const tags = [...tagMap.entries()].map(([tag, e]) => ({ tag, count: e.count, names: e.names }))
+								.sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag, 'zh'));
+							vaults.push({
+								id: String(vault.id ?? ''),
+								name: nameOf(vault.id),
+								dir: String(vault.dir ?? ''),
+								totalDocs: vault.totalDocs ?? 0,
+								indexed: snapshot.docCounts?.get(vault.id) ?? 0,
+								kernelBytes: vault.kernelBytes ?? null,
+								notes: Array.isArray(vault.notes) ? vault.notes : [],
+								sections,
+								tags,
+								untagged: untagged.slice(0, 50),
+							});
+						}
+						res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify({
+							ok: true,
+							root,
+							missing: snapshot.missing ?? '',
+							cached: !!snapshot.cached,
+							totalDocs: (snapshot.vaults ?? []).reduce((sum, v) => sum + (v.totalDocs ?? 0), 0),
+							activeVault: typeof config?.kbActiveVaultId === 'string' ? config.kbActiveVaultId.trim() : '',
+							injectedNames: !!injected,
+							tools: toolsRegistered,
+							vaults,
+						}));
+					} catch (e) {
+						res.writeHead(500, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify({ ok: false, error: String(e?.message ?? e) }));
+					}
+					return;
+				}
 				if (url && url.pathname === `${ROUTE_PREFIX}/api/search`) {
 					try {
 						const query = url.searchParams.get('q') ?? '';
@@ -6575,12 +7085,427 @@ export function apply(ctx, config = {}) {
 					}
 					return;
 				}
+				// ★ 2026-10-24：**保存正文**（dsh 侧行内编辑 / 任务清单勾选都用这条）。
+				//   围栏比读取更严一档 —— 只允许写「笔记」区里的 `.md`：
+				//     · 库区（`库/`）是只读素材，任何写请求 403；
+				//     · 路径必须落在「库根 + 页面列过的库根」之内（段边界比较）；
+				//     · 只收 .md、单文件 ≤ 4MB（超出当异常，避免误把二进制当文本写坏）。
+				//   ⚠ 必须放在 GET 那条**之前**：下面那条 `=== /api/doc` 没有方法判断，
+				//     放在后面 POST 会被它当读请求吃掉 ✗。
+				if (url && url.pathname === `${ROUTE_PREFIX}/api/doc` && req.method === 'POST') {
+					const send = (code, payload) => {
+						res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(payload));
+					};
+					try {
+						let raw = '';
+						for await (const chunk of req) {
+							raw += chunk;
+							if (raw.length > 4 * 1024 * 1024) { send(413, { ok: false, error: '正文超过 4MB' }); return; }
+						}
+						const payload = JSON.parse(raw || '{}');
+						const uri = String(payload?.uri ?? '').trim();
+						const text = payload?.text;
+						if (!uri || typeof text !== 'string') { send(400, { ok: false, error: '需要 uri 与 text' }); return; }
+						const p = resolve(decodeURIComponent(uri));
+						const roots = [kbRootOf(config), ...externalVaultRecords(config).map(it => it.dir || it.path || ''), ...LAST_VAULT_DIRS].filter(Boolean).map(r => resolve(String(r)));
+						const inside = roots.some(r => p === r || p.startsWith(r.endsWith(sep) ? r : r + sep));
+						if (!inside) { send(403, { ok: false, error: '拒绝写入库外文件：' + p }); return; }
+						const rel = p.replace(/\\/g, '/');
+						if (!rel.includes('/' + NOTES_DIR + '/')) { send(403, { ok: false, error: '只允许写入「笔记」区（库区只读）：' + p }); return; }
+						if (!/\.md$/i.test(p)) { send(400, { ok: false, error: '只支持 .md 文件' }); return; }
+						// ★ 前置校验（2026-10-24）：客户端带上来"我读到时的 mtime"，若磁盘已变 ⇒ 409，
+						//   让用户决定是否覆盖。容忍 1s 误差（不同文件系统 mtime 精度不同）。
+						const expected = Number(payload?.expectedMtime ?? 0) || 0;
+						let before = null;
+						try { before = await stat(p); } catch { before = null; }
+						if (expected > 0 && before && Math.abs(before.mtimeMs - expected) > 1000) {
+							send(409, {
+								ok: false,
+								conflict: true,
+								mtime: before.mtimeMs,
+								error: '文件已被其他程序修改（磁盘 mtime 比读入时更新）。确认覆盖请重试，或先重新打开该笔记。',
+							});
+							return;
+						}
+						// 备份：写进 `笔记/.kb-backup/`（以 `.kb` 开头 ⇒ 树里被噪音过滤掉，不污染目录）
+						let backup = '';
+						if (before && before.isFile() && before.size > 0) {
+							try {
+								const notesRoot = join(dirname(p), '.kb-backup');
+								await mkdir(notesRoot, { recursive: true });
+								backup = join(notesRoot, `${basename(p)}.${new Date().toISOString().replace(/[:.]/g, '-')}.md.bak`);
+								await writeFile(backup, await readFile(p));
+								// 只保留最近 20 份（文件名带 ISO 时间戳 ⇒ 字典序≈时间序）。
+								// 不清理的话，每保存一次留一份，长期会把 `.kb-backup` 撑到几百个文件。
+								try {
+									const dir = join(dirname(p), '.kb-backup');
+									const prefix = `${basename(p)}.`;
+									const olds = (await readdir(dir)).filter(f => f.startsWith(prefix) && f.endsWith('.md.bak')).sort();
+									for (const f of olds.slice(0, Math.max(0, olds.length - 20))) {
+										await rm(join(dir, f), { force: true });
+									}
+								} catch { /* 清理失败不影响本次保存 */ }
+							} catch { backup = ''; }   // 备份失败不阻断保存（如实返回 backup 为空）
+						}
+						await writeFile(p, text, 'utf8');
+						const after = await stat(p).catch(() => null);
+						send(200, {
+							ok: true, path: p,
+							bytes: Buffer.byteLength(text, 'utf8'),
+							mtime: after ? after.mtimeMs : 0,
+							backup: backup || undefined,
+						});
+					} catch (e) {
+						send(500, { ok: false, error: String(e?.message ?? e) });
+					}
+					return;
+				}
+				// ★ 2026-10-24：**附件上传**（编辑器里粘贴 / 拖入图片）。
+				//   协议：`POST /api/asset/upload?doc=<当前笔记绝对路径>&name=<文件名>`，body = **原始字节**。
+				//   为什么不用 multipart：解析器要自己写一大坨，而这里只需要"一个文件 + 一个文件名"，
+				//   直接把 Blob 当 body 发最省事（浏览器原生支持，服务端按 chunk 收）。
+				//   落点：`<笔记根>/_assets/<时间戳>-<安全名>`（`_assets` 不是 `.kb*` ⇒ 会出现在树里，
+				//   这是有意的：用户要能看到并整理自己的图片）。
+				//   围栏：`doc` 必须落在库根内、且属「笔记」区（库区只读）；扩展名白名单同 `/api/asset`。
+				if (url && url.pathname === `${ROUTE_PREFIX}/api/asset/upload`) {
+					const send = (code, payload) => {
+						res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(payload));
+					};
+					try {
+						if (req.method !== 'POST') { send(405, { ok: false, error: '请用 POST' }); return; }
+						const docPath = resolve(decodeURIComponent(url.searchParams.get('doc') ?? '')).replace(/\\/g, '/');
+						const roots = [kbRootOf(config), ...externalVaultRecords(config).map(it => it.dir || it.path || ''), ...LAST_VAULT_DIRS].filter(Boolean).map(r => resolve(String(r)));
+						// ⚠ 必须**两边都归一成正斜杠**再比：`docPath` 已在上面转成 `/`，
+						//   而 roots 是 `resolve()` 出来的 Windows 反斜杠路径 ⇒ 直接 startsWith 永远 false
+						//   （上一版就是这样：所有上传都判成"库外" ⇒ 403）。用段边界 `root + '/'` 防 `/vault-other`。
+						const slash = (s) => String(s).replace(/\\/g, '/').replace(new RegExp('/+$'), '');
+						const inside = roots.some(r => { const rr = slash(r); return docPath === rr || docPath.startsWith(rr + '/'); });
+						if (!inside) { send(403, { ok: false, error: '拒绝写入库外文件：' + docPath }); return; }
+						const cut = docPath.indexOf('/' + NOTES_DIR + '/');
+						if (cut < 0) { send(403, { ok: false, error: '只能在「笔记」区插入附件' }); return; }
+						const rawName = String(url.searchParams.get('name') ?? 'pasted.png');
+						const ext = extname(rawName).slice(1).toLowerCase();
+						if (!ASSET_MIME[ext]) { send(400, { ok: false, error: '不支持的附件类型：.' + ext }); return; }
+						const safe = (basename(rawName) || 'file.' + ext).replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_');
+						const chunks = [];
+						let total = 0;
+						for await (const chunk of req) {
+							total += chunk.length;
+							if (total > ASSET_MAX_BYTES) { send(413, { ok: false, error: '附件超过 ' + Math.round(ASSET_MAX_BYTES / 1024 / 1024) + 'MB' }); return; }
+							chunks.push(chunk);
+						}
+						const buf = Buffer.concat(chunks);
+						if (!buf.length) { send(400, { ok: false, error: '空文件' }); return; }
+						const notesRoot = docPath.slice(0, cut + 1 + NOTES_DIR.length);
+						const assetsDir = notesRoot + '/_assets';
+						await mkdir(assetsDir, { recursive: true });
+						const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+						const abs = assetsDir + '/' + stamp + '-' + safe;
+						await writeFile(abs, buf);
+						const rel = relative(dirname(docPath), abs).replace(/\\/g, '/');
+						send(200, { ok: true, abs, rel, bytes: buf.length });
+					} catch (e) {
+						send(500, { ok: false, error: String(e?.message ?? e) });
+					}
+					return;
+				}
+				// ★ 2026-10-24：**飞书 CLI 状态 / 升级**（对齐 IDE 设置页的「重新检测 / ⬆️ 升级 lark-cli」）
+				if (url && url.pathname === `${ROUTE_PREFIX}/api/feishu-cli`) {
+					const send = (code, payload) => {
+						res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(payload));
+					};
+					try {
+						let cliPath = String(url.searchParams.get('cli') ?? '').trim();
+						let action = '';
+						if (req.method === 'POST') {
+							let raw = '';
+							for await (const chunk of req) {
+								raw += chunk;
+								if (raw.length > 8192) { send(413, { ok: false, error: '请求体太大' }); return; }
+							}
+							const body = JSON.parse(raw || '{}');
+							action = String(body?.action ?? '');
+							cliPath = String(body?.cliPath ?? cliPath).trim();
+						}
+						// 未显式给路径 ⇒ 用设置里保存的 `feishu.cliPath`（与 IDE 同一个键）
+						if (!cliPath) {
+							try {
+								const obj = JSON.parse(readFileSync(join(kbRootOf(config), '.kb-settings.json'), 'utf8'));
+								cliPath = String((obj && obj.feishu && obj.feishu.cliPath) || '').trim();
+							} catch { /* 无设置文件 ⇒ 走 PATH */ }
+						}
+						const exe = cliPath || DEFAULT_LARK_CLI;
+						if (action === 'upgrade') {
+							const up = await runLarkCli(exe, ['update'], 180000);
+							send(200, {
+								ok: up.code === 0,
+								code: up.code,
+								output: String((up.stdout || '') + (up.stderr || '')).slice(-2000),
+							});
+							return;
+						}
+						const ver = await runLarkCli(exe, ['--version'], 15000);
+						const text = String(ver.stdout || ver.stderr || '').trim();
+						send(200, {
+							ok: ver.code === 0,
+							exe,
+							version: text.split(/\r?\n/)[0] || '',
+							// ★ 2026-10-24：失败时**必须带安装/配置指引**。
+							//   原来只回 `spawn lark-cli ENOENT` —— 那句既可能是"没装"，也可能是
+							//   "npm 装成了 lark-cli.cmd、这种启动方式找不到"，两种对策完全不同，
+							//   只给原始错误等于把判断成本丢给用户。
+							error: ver.code === 0 ? '' : (String(ver.stderr || '').slice(-400) + '\n' + LARK_CLI_MISSING_HINT).trim(),
+						});
+					} catch (e) {
+						send(500, { ok: false, error: String(e?.message ?? e) });
+					}
+					return;
+				}
+				// ★ 2026-10-24：**飞书知识库列表**（目录映射右侧下拉的数据源，对齐 IDE 的「🔄 刷新知识库列表」）
+				if (url && url.pathname === `${ROUTE_PREFIX}/api/feishu-spaces`) {
+					const send = (code, payload) => {
+						res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(payload));
+					};
+					try {
+						// 优先用设置里的 cliPath（IDE 侧同一个键：`…kb.feishu.cliPath`）
+						let cli = String(url.searchParams.get('cli') ?? '').trim();
+						if (!cli) {
+							try {
+								const obj = JSON.parse(readFileSync(join(kbRootOf(config), '.kb-settings.json'), 'utf8'));
+								cli = String((obj && obj.feishu && obj.feishu.cliPath) || '').trim();
+							} catch { /* 无设置文件 */ }
+						}
+						const r = await runLarkCli(cli || DEFAULT_LARK_CLI, SPACE_LIST_ARGS, 30000);
+						if (r.code !== 0) {
+							send(200, {
+								ok: false,
+								error: String((r.stderr || r.stdout || '')).slice(-800) || LARK_CLI_MISSING_HINT,
+							});
+							return;
+						}
+						// 不同 lark-cli 版本的字段名不一致 ⇒ 三种形态都试，拿不到就回空表（不猜）
+						let spaces = [];
+						try {
+							const j = JSON.parse(String(r.stdout || '{}'));
+							// ⚠ 2026-10-24（真机：点「刷新知识库列表」没反应）：lark-cli 的真实形态是
+							//   `{ ok, identity, data: { spaces: [ { name, space_id, … } ] } }`，
+							//   而这里原来只查 `items / data.items / spaces` ⇒ 永远拿到空数组
+							//   ⇒ 接口回 ok:true + 0 条，界面看起来"什么都没发生"。
+							const arr = Array.isArray(j?.data?.spaces) ? j.data.spaces
+								: Array.isArray(j?.spaces) ? j.spaces
+									: Array.isArray(j?.items) ? j.items
+										: Array.isArray(j?.data?.items) ? j.data.items : [];
+							spaces = arr.map(it => ({
+								id: String(it?.space_id ?? it?.token ?? it?.id ?? ''),
+								name: String(it?.name ?? it?.title ?? ''),
+							})).filter(s => s.id);
+						} catch { spaces = []; }
+						send(200, { ok: true, spaces });
+					} catch (e) {
+						send(500, { ok: false, error: String(e?.message ?? e) });
+					}
+					return;
+				}
+				// ★ 2026-10-24：**同步日志**（对齐 IDE 的「📄 查看同步日志」）—— 落盘 `<vault>/.kb-feishu-sync.log`
+				if (url && url.pathname === `${ROUTE_PREFIX}/api/feishu-log`) {
+					const send = (code, payload) => {
+						res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(payload));
+					};
+					try {
+						const want = String(url.searchParams.get('vault') ?? '').trim();
+						const { vaults } = await listAllVaults(kbRootOf(config), config, { withDocs: false });
+						const vault = (want && vaults.find(v => v.id === want)) || vaults.find(v => v.id === config?.kbActiveVaultId) || vaults[0];
+						if (!vault) { send(400, { ok: false, error: '还没有可用的知识库' }); return; }
+						const file = join(vault.dir, '.kb-feishu-sync.log');
+						let text = '';
+						try { text = await readFile(file, 'utf8'); } catch { text = ''; }
+						const n = Math.max(20, Math.min(2000, Number(url.searchParams.get('lines') ?? 200) || 200));
+						const lines = text.split(/\r?\n/).filter(Boolean);
+						send(200, { ok: true, exists: !!text, lines: lines.slice(-n), vault: { id: vault.id, dir: vault.dir } });
+					} catch (e) {
+						send(500, { ok: false, error: String(e?.message ?? e) });
+					}
+					return;
+				}
+				// ★ 2026-10-24：**同步飞书**（面板 / 插件页的「☁」按钮）。
+				//   复用随包脚本 `feishu-sync.mjs`（与 `kb_feishu_sync` 工具同一份实现，不重写逻辑）：
+				//   同步本身是**逐篇串行**的长任务（上限 5 分钟），所以这里同步等待并回日志尾部，
+				//   成功与否以**退出码**为准（脚本对"部分失败"也可能回 0 ⇒ 回里同时给 output 供人判断）。
+				if (url && url.pathname === `${ROUTE_PREFIX}/api/feishu-sync` && req.method === 'POST') {
+					const send = (code, payload) => {
+						res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(payload));
+					};
+					try {
+						// ★ 2026-10-24：读设置里的飞书开关（默认关）。关着就明确拒绝，而不是"点了像成功的空跑"。
+						let feishuCfg = { enabled: false };
+						try {
+							const obj = JSON.parse(readFileSync(join(kbRootOf(config), '.kb-settings.json'), 'utf8'));
+							feishuCfg = Object.assign({ enabled: false }, obj && obj.feishu);
+						} catch { /* 没有设置文件 ⇒ 视为未启用 */ }
+						if (!feishuCfg.enabled) {
+							send(400, { ok: false, error: '飞书同步未启用：请到「设置 → 📤 飞书同步」打开开关后重试。' });
+							return;
+						}
+						const dry = url.searchParams.get('dry') === '1';
+						const { vaults } = await listAllVaults(kbRootOf(config), config, { withDocs: false });
+						const wanted = String(config?.kbActiveVaultId ?? '');
+						const vault = vaults.find(v => v.id === wanted) ?? vaults[0];
+						if (!vault) { send(400, { ok: false, error: '还没有可用的知识库' }); return; }
+						// dry-run 只出计划（apply=false），与设置页「预览同步计划」对应
+						// ★ 2026-10-24：**目录映射**落成脚本认的文件。
+						//   脚本 `feishu-sync.mjs` 默认读 `<vault>/.feishu-space-map.json`
+						//   （`SPACE_MAP_FILE`，格式 `{ mappings: { '相对目录': 'spaceId' } }`，
+						//   也兼容数组写法）⇒ 这里把设置页里配的映射写进去，不额外发明参数。
+						try {
+							const maps = (feishuCfg.mappings ?? []).filter(m => m && m.dir && m.spaceId);
+							if (maps.length) {
+								const obj = { mappings: {} };
+								for (const m of maps) { obj.mappings[String(m.dir).replace(/\\/g, '/')] = String(m.spaceId); }
+								await writeFile(join(vault.dir, '.feishu-space-map.json'), JSON.stringify(obj, null, 2), 'utf8');
+							}
+						} catch { /* 映射写不进去不阻断同步（脚本会退回"未映射类别自动建库"） */ }
+						// ★ 2026-10-24：设置页的三项**真生效**（不是只存不用）：
+						//   · 冲突策略 → `--on-conflict skip|overwrite`（'local' = 本地覆盖 = overwrite）
+						//   · 每篇间隔 → `--interval <ms>`
+						//   · 删除清理 → `--prune`（本地删除的文档同时移除远端节点）
+						//   以及 CLI 路径 → `--cli`（装在非标准位置时）
+						const args = buildFeishuSyncArgs({
+							vault: vault.dir,
+							src: NOTES_DIR,
+							apply: !dry,
+							onConflict: feishuCfg.conflict === 'skip' ? 'skip' : 'overwrite',
+							cliPath: String(feishuCfg.cliPath ?? '').trim(),
+						});
+						const interval = Number(feishuCfg.intervalMs) || 0;
+						if (interval > 0) { args.push('--interval', String(Math.floor(interval))); }
+						if (feishuCfg.deleteRemote === true) { args.push('--prune'); }
+						const { code, output } = await runFeishuSync(args, vault.dir);
+						const text = String(output || '');
+						// 落盘日志（IDE 侧「查看同步日志」的等价物）；写不进去不影响本次结果
+						let logFile = '';
+						try {
+							logFile = join(vault.dir, '.kb-feishu-sync.log');
+							const head = `===== ${new Date().toISOString()} ${dry ? 'dry-run' : 'apply'} code=${code} =====\n`;
+							await appendFile(logFile, head + text.slice(-200000) + '\n', 'utf8');
+						} catch { logFile = ''; }
+						send(200, {
+							ok: code === 0,
+							code,
+							dry: !!dry,
+							vault: { id: vault.id, name: vault.name, dir: vault.dir },
+							output: text.slice(-4000),
+							logFile: logFile || undefined,
+						});
+					} catch (e) {
+						send(500, { ok: false, error: String(e?.message ?? e) });
+					}
+					return;
+				}
+				// ★ 2026-10-24：**备份历史**（先有备份、无法查看/恢复 = 半个功能）。
+				//   `GET  /api/backup?doc=<笔记绝对路径>` → 该笔记的备份列表（时间倒序）
+				//   `POST /api/backup/restore {doc, name}` → 恢复某个备份（**先给当前内容再备一份**）
+				//   围栏与写接口一致：必须在库根内 + 「笔记」区；备份名只接受纯文件名（不许带路径）。
+				if (url && url.pathname === `${ROUTE_PREFIX}/api/backup`) {
+					const send = (code, payload) => {
+						res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(payload));
+					};
+					try {
+						const docPath = resolve(decodeURIComponent(url.searchParams.get('doc') ?? '')).replace(/\\/g, '/');
+						const roots = [kbRootOf(config), ...externalVaultRecords(config).map(it => it.dir || it.path || ''), ...LAST_VAULT_DIRS].filter(Boolean).map(r => resolve(String(r)));
+						const inside = roots.some(r => docPath === r || docPath.startsWith(r.replace(/\\/g, '/') + '/'));
+						if (!inside) { send(403, { ok: false, error: '拒绝访问库外文件：' + docPath }); return; }
+						if (docPath.indexOf('/' + NOTES_DIR + '/') < 0) { send(403, { ok: false, error: '只支持「笔记」区的文件' }); return; }
+						const dir = join(dirname(docPath), '.kb-backup');
+						const prefix = `${basename(docPath)}.`;
+						let names = [];
+						try { names = (await readdir(dir)).filter(f => f.startsWith(prefix) && f.endsWith('.md.bak')); } catch { names = []; }
+						const items = [];
+						for (const name of names.sort().reverse()) {
+							try {
+								const st = await stat(join(dir, name));
+								items.push({ name, size: st.size, mtime: st.mtimeMs });
+							} catch { /* 单个文件读不到就跳过 */ }
+						}
+						send(200, { ok: true, items });
+					} catch (e) {
+						send(500, { ok: false, error: String(e?.message ?? e) });
+					}
+					return;
+				}
+				if (url && url.pathname === `${ROUTE_PREFIX}/api/backup/restore` && req.method === 'POST') {
+					const send = (code, payload) => {
+						res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(payload));
+					};
+					try {
+						let raw = '';
+						for await (const chunk of req) {
+							raw += chunk;
+							if (raw.length > 8192) { send(413, { ok: false, error: '请求体太大' }); return; }
+						}
+						const payload = JSON.parse(raw || '{}');
+						const docPath = resolve(decodeURIComponent(String(payload?.doc ?? ''))).replace(/\\/g, '/');
+						const name = String(payload?.name ?? '');
+						const roots = [kbRootOf(config), ...externalVaultRecords(config).map(it => it.dir || it.path || ''), ...LAST_VAULT_DIRS].filter(Boolean).map(r => resolve(String(r)));
+						const inside = roots.some(r => docPath === r || docPath.startsWith(r.replace(/\\/g, '/') + '/'));
+						if (!inside) { send(403, { ok: false, error: '拒绝访问库外文件：' + docPath }); return; }
+						if (docPath.indexOf('/' + NOTES_DIR + '/') < 0) { send(403, { ok: false, error: '只支持「笔记」区的文件' }); return; }
+						// 备份名只接受纯文件名（含分隔符 ⇒ 直接拒，防目录穿越）
+						if (!name || name !== basename(name) || !name.endsWith('.md.bak')) { send(400, { ok: false, error: '备份名不合法' }); return; }
+						const dir = join(dirname(docPath), '.kb-backup');
+						const srcFile = join(dir, name);
+						if (!existsSync(srcFile)) { send(404, { ok: false, error: '备份不存在：' + name }); return; }
+						const old = await readFile(srcFile, 'utf8');
+						// 恢复前先把**当前内容**再备一份（恢复本身也可撤销）
+						try {
+							const keep = join(dir, `${basename(docPath)}.${new Date().toISOString().replace(/[:.]/g, '-')}.pre-restore.md.bak`);
+							await writeFile(keep, await readFile(docPath));
+						} catch { /* 当前文件读不到（可能刚被删）仍允许恢复 */ }
+						await writeFile(docPath, old, 'utf8');
+						const after = await stat(docPath).catch(() => null);
+						send(200, { ok: true, path: docPath, bytes: Buffer.byteLength(old, 'utf8'), mtime: after ? after.mtimeMs : 0 });
+					} catch (e) {
+						send(500, { ok: false, error: String(e?.message ?? e) });
+					}
+					return;
+				}
 				if (url && url.pathname === `${ROUTE_PREFIX}/api/doc`) {
-					const result = await readDoc(kbRootOf(config), url.searchParams.get('uri') ?? '');
+					// ★ 2026-10-23：把"页面列过的库根"一并交给围栏 —— 否则外挂库的文件列得出、读不到
+					const result = await readDoc(kbRootOf(config), url.searchParams.get('uri') ?? '', LAST_VAULT_DIRS);
+					// ★ 2026-10-24：一并回 `mtime` —— 保存时用它做**前置校验**（防覆盖别人刚改的内容）
+					let mtime = 0;
+					if (!result.error && result.path) {
+						try { mtime = (await stat(result.path)).mtimeMs; } catch { mtime = 0; }
+					}
 					res.writeHead(result.error ? 400 : 200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
 					res.end(JSON.stringify(result.error
 						? { ok: false, error: result.error }
-						: { ok: true, path: result.path, bytes: result.bytes, truncated: result.truncated, content: result.content }));
+						: { ok: true, path: result.path, bytes: result.bytes, truncated: result.truncated, content: result.content, mtime }));
+					return;
+				}
+				// ★ 2026-10-24：图片 / pdf / 音视频的**字节流**（页面 `<img>` 直接请求这条）。
+				//   围栏与 `/api/doc` 同源（库根 + 页面列过的库根，段边界比较）、只白名单展示型 MIME。
+				if (url && url.pathname === `${ROUTE_PREFIX}/api/asset`) {
+					const asset = await readAsset(kbRootOf(config), url.searchParams.get('uri') ?? '', [...LAST_VAULT_DIRS, ...externalVaultRecords(config).map(it => it.dir || it.path || '')]);
+					if (asset.error) {
+						res.writeHead(404, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify({ ok: false, error: asset.error }));
+					} else {
+						res.writeHead(200, {
+							'content-type': asset.mime,
+							'content-length': String(asset.bytes.length),
+							// 素材可能被同名覆盖 ⇒ 只允许浏览器短缓存
+							'cache-control': 'private, max-age=30',
+						});
+						res.end(asset.bytes);
+					}
 					return;
 				}
 			}

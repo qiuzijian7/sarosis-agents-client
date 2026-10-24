@@ -2090,7 +2090,24 @@ export function apply(ctx, config = {}) {
 				const scan = await collect(config, { limit }, state);
 				// 补"未命名会话"的标题：读盘 + 解 zstd ⇒ **必须 await**（同步做会占住 Host 主线程）
 				await prefillFirstPrompts(scan.rows, config);
-				res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+				/**
+				 * ★★ 必须禁缓存（2026-10-24 实测定位）。
+				 *
+				 * 症状：服务端已经输出新渲染（组头是「末两段」如 `GR_qiuzijian_main/S1Game`，
+				 * 且带「N 根」徽标 —— 我用 cookie 直取 HTML 验证过），但 IDE 左栏 webview
+				 * 仍显示旧的短名（`S1Game`），刷新页面、甚至重载窗口都不一定重取。
+				 *
+				 * ⇒ 左栏是 Electron webview，对服务端渲染的 HTML 缓存比普通标签页顽固得多。
+				 *   从服务端禁缓存是唯一可靠的办法，否则每次改渲染都要用户手动清缓存。
+				 *
+				 * ⚠ 这里只禁 HTML 页面的缓存；JSON API（/api/*）不动 —— 那些是页面自己按需拉的。
+				 */
+				res.writeHead(200, {
+					'content-type': 'text/html; charset=utf-8',
+					'cache-control': 'no-store, no-cache, must-revalidate, max-age=0',
+					pragma: 'no-cache',
+					expires: '0',
+				});
 				res.end(pageHtml(scan, config, groupBy, scope, view, status));
 			} catch (e) {
 				res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });

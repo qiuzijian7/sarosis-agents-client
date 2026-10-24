@@ -93,9 +93,11 @@ try {
 function loadClient() {
 	let mod = null;
 	const sandboxWindow = { __ModuleLoader__: { load: ({ factory }) => { mod = factory(require); } } };
-	const fakeReact = { createElement: (...a) => a, Component: class { }, Fragment: 'F', useRef: () => ({}), useLayoutEffect: () => { } };
+	const fakeReact = { createElement: (...a) => a, Component: class { }, Fragment: 'F', useRef: () => ({}), useLayoutEffect: () => { }, useState: init => [typeof init === 'function' ? init() : init, () => { }], useEffect: () => { } };
+	const fakeReactDom = { createPortal: (node, el, key) => ['portal', { el, key }, node] };
 	const require = name => {
 		if (name === 'react') { return fakeReact; }
+		if (name === 'react-dom') { return fakeReactDom; }
 		throw new Error('unexpected require ' + name);
 	};
 	const src = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8');
@@ -105,10 +107,13 @@ function loadClient() {
 }
 const client = loadClient();
 const fakeCtx = () => {
-	const calls = { selected: [], registered: [], disposed: 0 };
+	const calls = { selected: [], registered: [], disposed: 0, injected: [], slotRegs: [] };
 	return {
 		calls,
-		slots: { register: (opts) => { calls.registered.push(opts.key); return () => { calls.disposed++; }; } },
+		slots: {
+			register: (opts, comp) => { if (opts.name === 'main') { calls.registered.push(opts.key); } calls.slotRegs.push({ opts, comp }); return () => { if (opts.name === 'main') { calls.disposed++; } }; },
+			inject: (name, factory) => { calls.injected.push(name); return factory(); },
+		},
 		layout: { selectPanel: key => calls.selected.push(key) },
 	};
 };
@@ -174,6 +179,122 @@ await t('open → selectPanel(面板 key)；leave → selectPanel(null)；未注
 	service.leave();
 	assert.deepEqual(ctx.calls.selected, ['vssaros-wb:vssaros/scheduler', null]);
 	assert.equal(service.current(), null);
+});
+
+// ── ②b 会话接口（2026-10-22）：建会话 ⇒ 登记归属 ⇒ 切到原生对话；归属不可改 ──────────────
+function sessionHarness() {
+	const { service, ctx } = serviceOf();
+	const writes = [];
+	const sessions = { s1: { retainedBy: { mainView: 0 } } };
+	ctx.sessions = {
+		list: { getSnapshot: () => ({ byId: sessions }) },
+		refresh: async () => { },
+		create: async ({ workspaceId }) => { const id = 'new-' + String(workspaceId).replace(/[^A-Za-z0-9-]/g, '-'); sessions[id] = { retainedBy: { mainView: 0 } }; return id; },
+	};
+	ctx.workspaces = { list: { getSnapshot: () => ({ items: [{ workspaceId: 'w1', path: 'C:/p', title: 'p', sessionIds: ['s1'] }] }) }, create: async ({ path }) => ({ workspaceId: 'w:' + path }) };
+	const opened = [];
+	ctx.uiWorkspace = { openSession: id => { opened.push(id); sessions[id] = { retainedBy: { mainView: 1 } }; }, pickDirectory: async () => 'C:/picked' };
+	service.state = emptyState();
+	service.revision = 0;
+	const g = globalThis;
+	const run = async fn => {
+		const saved = g.fetch;
+		g.fetch = async (url, init) => {
+			const body = JSON.parse(init.body);
+			validateState(body.state, service.state);
+			writes.push(body.state);
+			return { ok: true, json: async () => ({ revision: body.revision + 1, state: body.state }) };
+		};
+		try { return await fn(); } finally { g.fetch = saved; }
+	};
+	service.register({ title: 'XHS', repository: 'https://github.com/sara/xhs', customFrame: true }, Comp);
+	return { service, ctx, opened, writes, run };
+}
+await t('会话接口：没打开工作台 ⇒ 拒绝（不替别人建会话）', async () => {
+	const { service, run } = sessionHarness();
+	await run(async () => { await assert.rejects(() => service.newSession('w1'), /请先打开/); });
+});
+await t('★ 整页工作台 newSession：登记归属 ⇒ 对话停靠在工作台里，**不切走**（真机：点 AI 协助后小红书被关掉）', async () => {
+	const { service, ctx, opened, run } = sessionHarness();
+	service.activate('sara/xhs');
+	const id = await run(() => service.newSession('w1'));
+	assert.equal(id, 'new-w1');
+	assert.equal(service.state.sessionBindings['new-w1'], 'sara/xhs');
+	assert.equal(service.state.recentSessions['sara/xhs'], 'new-w1');
+	assert.deepEqual(opened, [], '不许 uiWorkspace.openSession（它会 selectPanel(null) 把工作台换走）');
+	assert.ok(!ctx.calls.selected.includes(null), '不许 selectPanel(null)');
+	assert.equal(service.ownsSession('new-w1'), true);
+	assert.equal(service.currentSession(), 'new-w1', 'currentSession = 停靠会话（第三方据此判断"已经在对话里"）');
+	assert.equal(service.dockTarget(), null, '还没有停靠点 ⇒ 不渲染');
+	const el = { tag: 'dock' };
+	const off = service.registerDock('sara/xhs', el);
+	assert.deepEqual(service.dockTarget(), { id: 'sara/xhs', element: el, sessionId: 'new-w1' });
+	off();
+	assert.equal(service.dockTarget(), null, '停靠点卸载 ⇒ 不渲染');
+});
+await t('停靠目标只认前台工作台；会话打不开 ⇒ 判死后回到"开始对话"', async () => {
+	const { service, run } = sessionHarness();
+	service.register({ title: 'Other', repository: 'https://github.com/a/other', customFrame: true }, Comp);
+	service.activate('sara/xhs');
+	await run(() => service.newSession('w1'));
+	const el = {};
+	service.registerDock('sara/xhs', el);
+	service.activate('a/other');
+	assert.equal(service.dockTarget(), null, '前台换成别的工作台 ⇒ 不往小红书的停靠点渲染');
+	service.activate('sara/xhs');
+	assert.equal(service.dockTarget()?.sessionId, 'new-w1');
+	service.markDead('new-w1', new Error('session archived'));
+	assert.equal(service.dockTarget(), null);
+	assert.equal(service.dockedSessionOf('sara/xhs'), null);
+	assert.match(service.dockError, /archived/);
+});
+await t('标准分栏工作台 newSession：仍切到原生对话（rc.1 还没有分栏外框）', async () => {
+	const { service, ctx, opened, run } = sessionHarness();
+	service.register({ title: 'Std', repository: 'https://github.com/a/std' }, Comp);
+	service.activate('a/std');
+	const id = await run(() => service.newSession('w1'));
+	assert.deepEqual(opened, [id]);
+	assert.equal(ctx.calls.selected.at(-1), null);
+});
+await t('会话接口：newWorkspaceSession 让用户选目录 ⇒ 建工作区 ⇒ 新会话；用户取消 ⇒ undefined', async () => {
+	const { service, ctx, run } = sessionHarness();
+	service.activate('sara/xhs');
+	assert.equal(await run(() => service.newWorkspaceSession()), 'new-w-C--picked');
+	ctx.uiWorkspace.pickDirectory = async () => undefined;
+	assert.equal(await run(() => service.newWorkspaceSession()), undefined);
+});
+await t('会话接口：ensureSession 要 folder；已有会话归属别人 ⇒ 拒绝（归属不可改）', async () => {
+	const { service, run } = sessionHarness();
+	service.activate('sara/xhs');
+	await run(async () => {
+		await assert.rejects(() => service.ensureSession({}), /业务项目文件夹/);
+		service.state.sessionBindings.s1 = 'other/wb';
+		await assert.rejects(() => service.ensureSession({ sessionId: 's1' }), /另一个工作台/);
+		assert.equal(await service.ensureSession({ folder: 'D:/proj' }), 'new-w-D--proj');
+	});
+});
+await t('会话停靠：根覆盖层条目声明 session 作用域子槽（拿 SessionProvider 的唯一条件），子槽里注册对话面板', () => {
+	const { ctx } = serviceOf();
+	const overlay = ctx.calls.slotRegs.find(r => r.opts.name === 'shell.overlay');
+	assert.ok(overlay, '必须注册进 shell.overlay（根布局常驻渲染）');
+	assert.equal(typeof overlay.opts.order, 'number', 'list 槽必须给 order');
+	assert.deepEqual(overlay.opts.children, { 'vssaros.workbench.conversation': { kind: 'single', scope: 'session' } });
+	const panel = ctx.calls.slotRegs.find(r => r.opts.name === 'vssaros.workbench.conversation');
+	assert.ok(panel && typeof panel.comp === 'function', '子槽里必须有对话面板');
+});
+await t('customFrame 组件拿到 active 与 conversation 停靠点；标准分栏不给', () => {
+	const seen = [];
+	const { service } = serviceOf();
+	const Probe = props => { seen.push(Object.keys(props).sort().join(',')); return null; };
+	service.register({ title: 'C', repository: 'https://github.com/a/c', customFrame: true }, Probe);
+	service.register({ title: 'S', repository: 'https://github.com/a/s' }, Probe);
+	const frameOf = id => client.__Frame({ service, entry: service.providers.get(id) });
+	// 夹具里 createElement 返回 [type, props, ...children] ⇒ 沿 children 往下找到业务组件那一层
+	const find = (node, type) => { if (!Array.isArray(node)) { return null; } if (node[0] === type) { return node; } for (const c of node.slice(2)) { const hit = find(c, type); if (hit) { return hit; } } return null; };
+	const c = find(frameOf('a/c'), Probe);
+	const s = find(frameOf('a/s'), Probe);
+	assert.deepEqual(Object.keys(c[1]).sort(), ['active', 'conversation', 'entry', 'service']);
+	assert.deepEqual(Object.keys(s[1]).sort(), ['entry', 'service']);
 });
 
 // ── ③ server apply ───────────────────────────────────────────────────────

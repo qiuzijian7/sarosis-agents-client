@@ -47,6 +47,7 @@ import { DSH_MODULE_CONTAINERS, DSH_MODULE_PAGES } from '../common/dshModuleCont
 // （跨层 import electron-browser → agentStudio/browser 有先例：`dshChatInstanceHost.ts` 就是这么引的 ✓）
 import { IWorkbenchManagerService } from '../../agentStudio/browser/workbenchManagerService.js';
 import { ITofAuthService } from '../../agentStudio/common/tofAuth.js';
+import { DshTofAuthService } from './dshTofAuthService.js';
 // Agents 视图 id（`openAgentRoster` 用它聚焦侧栏那个视图；见该分支的注释 —— 用视图 id 而不是
 // 曾经的 `agentStudio.presetAgent.focus` 假命令 id ✓）
 import { AGENT_STUDIO_PRESET_AGENT_VIEW_ID } from '../../../common/agentStudioConstants.js';
@@ -220,6 +221,10 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 });
 
 registerSingleton(IDshHarnessService, DshHarnessService, InstantiationType.Delayed);
+// 企业身份（TOF/OA）归 dsh 侧（2026-10-22，用户："登录也转移到 dsh 侧实现，ide 侧仅读取状态"）：
+// 桌面版用 dsh 镜像实现**覆盖** agentStudio 里注册的那一份（desktop 入口先装 common 再装本文件 ⇒ 后注册的生效；
+// 服务集合按注册顺序 `set`，同 id 后者覆盖前者）。老 Host 时它内部自动退回原实现。
+registerSingleton(ITofAuthService, DshTofAuthService, InstantiationType.Delayed);
 
 // ─── 命令 ────────────────────────────────────────────────────────────────────
 
@@ -1298,7 +1303,8 @@ class DshPageCommandContribution extends Disposable implements IWorkbenchContrib
 				return;
 			}
 			case 'notify': {
-				const severity = command.kind === 'attention' ? Severity.Warning : Severity.Info;
+				// `warn` 与 `attention` 同为警告级（页面侧两者都在用；见 dshPageBridgeProtocol 的 kind 注释）
+				const severity = command.kind === 'attention' || command.kind === 'warn' ? Severity.Warning : Severity.Info;
 				this._notifications.notify({ severity, message: `DSH: ${command.text}`, source: 'DeepSeek Harness' });
 				return;
 			}
@@ -1370,6 +1376,31 @@ class DshPageCommandContribution extends Disposable implements IWorkbenchContrib
 				//   比丢一个 URL 靠谱 ✓。无参。
 				this._logService.info('[dshHarness] page openFeedback ⇒ 交给 IDE 命令 workbench.action.openIssueReporter');
 				void Promise.resolve(this._commands.executeCommand('workbench.action.openIssueReporter')).catch(() => undefined);
+				return;
+			// ★ 2026-10-23（桥 `18 → 19`）：desktop 窗口侧栏底部那行「更新」。
+			//   三条都**不需要 IDE 出界面**（已登记进 `DSH_PAGE_COMMANDS_WITHOUT_IDE_UI`）——
+			//   否则点一下"检查更新"就把 IDE 主窗口拉到前台，正好违反"只显示 desktop" ✗。
+			case 'upgradeRefresh':
+				// 面板打开 / 点「检查更新」：重算一份状态推回页面（页面桥单向 ⇒ 只能推 ✓）
+				this._logService.info('[dshHarness] page upgradeRefresh ⇒ 重算升级状态');
+				await this._dsh.refreshUpgrade();
+				return;
+			case 'upgradeBundled': {
+				// 升级/安装一个随包插件（真正干活的是 IDE 插件中心那条 `dsh plugin add` 路）
+				const r = await this._dsh.upgradeBundled(command.name);
+				this._logService.info(`[dshHarness] page upgradeBundled ${command.name} ⇒ ok=${r.ok}${r.ok ? '' : ` err=${r.error ?? '-'}`}`);
+				return;
+			}
+			case 'upgradeAsset': {
+				// 升级一件商城资产（agent / mcp / workbench；skill/workflow 走 dsh 侧，这里只回原因）
+				const r = await this._dsh.upgradeAsset(command.kind, command.slug);
+				this._logService.info(`[dshHarness] page upgradeAsset ${command.kind}/${command.slug} ⇒ ok=${r.ok}${r.ok ? '' : ` err=${r.error ?? '-'}`}`);
+				return;
+			}
+			case 'upgradeApp':
+				// 一键升级应用：检查 → 比版本 →（更新源更新才）下载 → 安装并重启
+				this._logService.info('[dshHarness] page upgradeApp ⇒ 一键升级应用');
+				await this._dsh.upgradeApp();
 				return;
 			case 'openMediaGallery':
 				// 媒体库（`agentStudio.openMediaGallery`，2026-10-19；触发点 = dsh 媒体库页

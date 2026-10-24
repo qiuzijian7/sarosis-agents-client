@@ -1031,9 +1031,19 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			(tsJsContent: string) => this._buildWorkerCode(tsJsContent),
 		);
 
-		// Phase 2 接线：经主进程代理的 SQLite 后端（默认不启用；见 `_sqliteBackendEnabled`）。
+		// Phase 2 接线：经主进程代理的 SQLite 后端（默认启用；见 `_sqliteBackendEnabled`）。
 		// renderer sandbox 不能加载原生模块，SQLite 宿主在 main 进程，这里只是透明代理。
 		this._sqliteBackend = createCodebaseGraphSqliteBackend(this._mainProcessService);
+
+		// ★★ 2026-10-23（真机连环崩溃的取证教训）：**启动时把"当前用哪个后端"写进日志**。
+		//   之前排查时只能靠 "有没有 SQLite sync 那行" 反推后端是谁，白白绕了几轮；
+		//   而且同步路径一崩就是整进程原生退出（0xC000001D / 0xE06D7363），日志里什么都不会留下 ✗。
+		//   ⇒ 这行是之后判断"有没有跑那条危险路径"的第一证据 ✓。
+		if (this._sqliteBackendEnabled) {
+			this._logService.info('[CodebaseGraph]', '存储后端：主进程 SQLite（saros.codebaseGraph.sqliteBackend 未关闭）');
+		} else {
+			this._logService.info('[CodebaseGraph]', '存储后端：内存 store（saros.codebaseGraph.sqliteBackend=false ⇒ 不做 SQLite 同步，规避原生崩溃）');
+		}
 
 		// ★★ 2026-10-13（**删除索引 worker 通道**，用户裁决「权限都在 dsh 侧全权处理、逻辑也都转移到 dsh 侧」）：
 		// 这里原有「P2-1 Step 3 探活」—— 启动时真起一个索引 utility process、只为证明"进程能起 + 通道能通"。
@@ -1274,21 +1284,46 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 				+ `若该数持续增长 ⇒ 查重解析是否漏删旧节点 ✗`);
 		}
 
-		// ★★★ 2026-09-19（P0-1）：全量同步**原子化** —— 包进**跨 IPC 显式事务**（begin→…→commit；错 ⇒ abort）。
+				// ★★★ 2026-09-19（P0-1）：全量同步**原子化** —— 包进**跨 IPC 显式事务**（begin→…→commit；错 ⇒ abort）。
 		// ⇒ 崩在中间 = **DB 原样** ✓✓（此前逐批各自 COMMIT ⇒ 崩在 delete 与 insert 之间 ⇒ 项目残缺 ✗）。
 		// ⚠ 事务存续期其它写入（如并发增量补丁）会**加入**本事务 ✗ —— 最坏随 abort 回滚（落后由追平补 ✓），
 		//   不结构性损坏 ✓（机制与风险见 `node/codebaseGraphSqliteStore.ts` 的显式事务头注 ✓）。
 		// ⚠ 事务里**不做 checkpoint**（WAL checkpoint 在打开的写事务里被拒 ✗）⇒ 改到 commit 之后 ✓。
+		//
+		// ★ 2026-10-22（两次卡死事故后的最终形态，两条都必须成立）：
+		//   ① 「删旧」必须在**显式事务之外**：store 现在按 10 万行**分块**删（每块独立事务 + 块间 PASSIVE
+		//      checkpoint）；若在显式事务里，store 的分块会**加入外层** ⇒ 退化回“一个大事务”
+		//      ⇒ 脏页全进 WAL ⇒ 实测 **5GB** ⇒ 提交/回写把主进程**卡死**（0% CPU、30 分钟零进展、
+		//      渲染进程涨到 3GB 后 OOM 崩掉）⇒ 整个 app 死 ✗✗✗。
+		//   ② 插入侧**分段提交**（每 10 万行 commit + checkpoint）⇒ WAL 有界 ⇒ 提交量小 ⇒ 不会卡死 ✓。
+		//   代价：不再“整段原子”（崩在中间 = 部分数据）—— 可自愈：追平会复核节点数，落后就重来 ✓。
+		// ★★ 2026-10-22（实测：全量追平 8+ 分钟、边只有 **2.6k 条/秒**）：**先卸边索引再灌数据**。
+		//   1.25M 条边逐条 upsert 时，每条都要维护 idx_edges_source / target / rel 三棵 B 树
+		//   ⇒ 写入全被索引维护拖死（也是主进程事件循环被长时间挤占的根源）。
+		//   批量装载标准手法：卸索引 → 灌 → 重建（建索引是一次扫描 + 排序）⇒ 快一个数量级 ✓。
+		//   ⚠ 卸载窗口里边查询退化为全表扫描（结果仍正确）；**无论成功/失败都在 finally 里重建**，
+		//     崩在中间则由 store 的 `open()` 自愈 ✓。
+		try { await this._sqliteBackend.suspendEdgeIndexes(); } catch (err) {
+			// 加速失败绝不能影响正确性：照旧灌数据（只是慢），索引本来也还在 ✓
+			this._logService.warn('[CodebaseGraph]', `卸边索引失败（不影响正确性，只是慢）：${err instanceof Error ? err.message : String(err)}`);
+		}
+
+		await this._sqliteBackend.deleteProject(project, { keepFileHashes: true });
 		await this._sqliteBackend.beginProjectSync(project);
 		let __committed = false;
 		try {
-			// 幂等同步：内存 id 空间是会话级序号，跨会话重插会撞 UNIQUE(project, qualified_name)
-			// （旧 id 空间残留，upsert 冲突目标仅 id 主键）——先按项目清除旧数据再写入。
-			// keepFileHashes：保留增量索引哈希，否则下次启动全量重解析。
-			// ⚠（P0-1 缩进说明：本 try 块内部**未重排缩进**，以把原子化 diff 控在最小 ✓ —— 勿据此推断层级 ✗）
-			await this._sqliteBackend.deleteProject(project, { keepFileHashes: true });
-
 		const BATCH = 5000;
+			// *** 2026-10-22 (freeze incident): chunked commit -- every COMMIT_CHUNK rows commit once.
+			//   Before: the whole project (402k nodes + 1.25M edges) went into ONE explicit transaction
+			//   => all dirty pages into the WAL => measured WAL grew to 6.76GB => the post-commit
+			//   checkpoint had to write 6.76GB back into a 1.5GB db => main-process main thread waits
+			//   => the WHOLE app freezes (measured 10+ min unresponsive, 0% CPU).
+			//   Now: chunked commits + PASSIVE checkpoint between chunks (never blocks) => WAL stays
+			//   at ~100MB => checkpoint takes seconds => freeze gone.
+			//   Cost: no longer all-or-nothing (crash mid-way = partial data) -- self-healing: the
+			//   catch-up re-verifies the node count and re-syncs when behind (two-step catch-up).		/** rows per commit (keeps the WAL bounded) */
+		const COMMIT_CHUNK = 100_000;
+		let rowsSinceCommit = 0;
 		const tStart = Date.now();
 
 		// ── 节点 ──（用**去重后**的 syncNodes ✓）
@@ -1310,15 +1345,28 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 				properties: n.properties,
 			}));
 			await this._sqliteBackend.upsertNodesBatch(graphNodes);
+			rowsSinceCommit += chunk.length;
+				if (rowsSinceCommit >= COMMIT_CHUNK) {
+					// commit -> checkpoint (must be OUTSIDE a tx: in-tx checkpoint is rejected/blocks) -> reopen
+					await this._sqliteBackend.commitProjectSync(project);
+					await this._sqliteBackend.checkpoint();
+					await this._sqliteBackend.beginProjectSync(project);
+					rowsSinceCommit = 0;
+				}
 			if ((i + BATCH) % 50000 === 0 || i + BATCH >= syncNodes.length) {
 				const done = Math.min(i + BATCH, syncNodes.length);
 				this._logService.info('[CodebaseGraph]', `SQLite sync nodes: ${done}/${syncNodes.length}`);
 				this._onDidIndexProgress.fire(`💾 同步 SQLite: ${done}/${nodes.length} 节点...`);
 			}
-			// 分批 checkpoint：防止 WAL 膨胀到数百 MB（读查询需合并 WAL 会显著变慢）
-			if ((i + BATCH) % 200000 === 0 || i + BATCH >= nodes.length) {
-				await this._sqliteBackend.checkpoint();
-			}
+			// ★ 2026-10-22：**事务内不做 checkpoint**（原来这里每 20 万节点 checkpoint 一次）。
+			//   ① 它在**显式写事务存续期**执行 —— SQLite 在写事务里 checkpoint 要么被拒、要么**阻塞**
+			//      （TRUNCATE 要等写锁/读者，而 **checkpoint 的等待不受 busy_timeout 约束**
+			//      ⇒ 可以无限期挂住主进程 ✗✗✗）；
+			//   ② 当年它是 TRUNCATE（阻塞式）⇒ 一次全量追平（401k 节点 / 1.25M 边）里被调用多次，
+			//      每次都可能等满 busy_timeout —— 实测整轮同步 551,936ms，其中大半耗在这些等待上 ✗；
+			//   ③ 事务内也**没法**真正 checkpoint（写事务的页还在 WAL 里，回写不了）。
+			//   WAL 的收敛交给：store 的**摊销** checkpoint（每 5000 行一次 PASSIVE，非阻塞 ✓）
+			//   与本方法 `finally` 里**提交后**那次（PASSIVE ✓）。
 			// yield to UI
 			if (i % 20000 === 0 && i > 0) {
 				await new Promise<void>(resolve => setTimeout(resolve, 0));
@@ -1342,6 +1390,14 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 				};
 			});
 			await this._sqliteBackend.upsertEdgesBatch(edgePayloads);
+			rowsSinceCommit += chunk.length;
+				if (rowsSinceCommit >= COMMIT_CHUNK) {
+					// commit -> checkpoint (must be OUTSIDE a tx: in-tx checkpoint is rejected/blocks) -> reopen
+					await this._sqliteBackend.commitProjectSync(project);
+					await this._sqliteBackend.checkpoint();
+					await this._sqliteBackend.beginProjectSync(project);
+					rowsSinceCommit = 0;
+				}
 			if ((i + BATCH) % 50000 === 0 || i + BATCH >= edges.length) {
 				const done = Math.min(i + BATCH, edges.length);
 				this._logService.info('[CodebaseGraph]', `SQLite sync edges: ${done}/${edges.length}`);
@@ -1367,8 +1423,14 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		// `_upsertFTS` 失败会先 DELETE+INSERT 重试、再失败即抛（不静默缺行）。
 		// `rebuildFTS()` 仍保留，供整库修复/手工导入等场景显式调用。
 		// ⚠ 将来若出现「批量写 nodes 但不走 upsertNode」的新路径，必须回来重新评估此处。
-		// 重建后 WAL checkpoint（TRUNCATE）压缩 WAL——否则大同步后 WAL 达数百 MB，读查询要合并 WAL 显著变慢
-		await this._sqliteBackend.checkpoint();
+		// ★ 2026-10-22：**事务内不做 checkpoint**（与本方法 `finally` 里"提交后才 checkpoint"同口径 ✓）。
+		//   原先这里在**显式写事务存续期**就调了一次 checkpoint（当年想的是 TRUNCATE 压缩 WAL）——
+		//   而 checkpoint 在打开的写事务里要么被拒、要么**阻塞**（TRUNCATE 要等写锁/读者，
+		//   且 **SQLite 的 checkpoint 等待不受 busy_timeout 约束** ⇒ 无限期挂住 ✗✗✗
+		//   （2026-10-22 真机：全量追平写完 1.25M 边后，主进程就是在 checkpoint 上僵死 ⇒ 整个 app 无响应）。
+		//   现在：事务内**不**checkpoint；提交后由 `finally` 里那次**非阻塞**（PASSIVE）checkpoint 收敛 ✓。
+		//   WAL 在事务内确实会涨（1.2GB 量级）——这是"单事务原子性"的代价；摊销 checkpoint 在
+		//   `_explicitTx` 期间按设计被跳过（见 store 的 `_scheduleAmortizedCheckpoint`）✓。
 
 		const dur = Date.now() - tStart;
 		this._logService.info('[CodebaseGraph]', `SQLite sync done: ${nodes.length} nodes + ${edges.length} edges in ${dur}ms`);
@@ -1384,6 +1446,11 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			} else {
 				// 异常路径 ⇒ 回滚（不掩盖原始错误 ✓）；幂等 ✓。
 				try { await this._sqliteBackend.abortProjectSync(project); } catch { /* ignore */ }
+			}
+			// ★ 2026-10-22：**无论成功还是失败**都要把边索引建回来 —— 卸载窗口不能漏在异常路径上 ✗。
+			//   （真崩在中间 ⇒ 这里没跑到 ⇒ 下次 `open()` 的 `ensureIndexes()` 自愈 ✓）
+			try { await this._sqliteBackend.ensureIndexes(); } catch (err) {
+				this._logService.warn('[CodebaseGraph]', `重建边索引失败（下次 open 会自愈）：${err instanceof Error ? err.message : String(err)}`);
 			}
 		}
 
@@ -1420,6 +1487,9 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		};
 		try {
 			// 1. 删除变更文件的旧节点/边/FTS（sqlite 侧，含其他文件指向变更节点的边）
+			// ★ 2026-10-23：**先记后做** —— 阶段结束时那句 `markPhase()` 只能证明"做完了"；
+			//   卡在这一段时它永远不出现 ⇒ 日志里看不到"正在做什么"（真机：33s 的主线程阻塞期间一行都没有 ✗）。
+			this._logService.info('[CodebaseGraph]', `[phase] 增量补丁：删旧 开始（${changedRels.length} 个文件）`);
 			for (const rel of changedRels) {
 				await this._sqliteBackend.deleteNodesByFile(project, rel);
 			}
@@ -1456,7 +1526,9 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 					if (typeof n.id === 'number') { changedNodeIds.add(n.id); }
 				}
 			}
+			this._logService.info('[CodebaseGraph]', '[phase] 增量补丁：收集节点/边 开始');
 			markPhase(`收集节点(${nodes.length})`);
+			this._logService.info('[CodebaseGraph]', `[phase] 增量补丁：写节点 开始（${nodes.length}）`);
 			await this._sqliteBackend.upsertNodesBatch(nodes as (GraphNode & { id?: string | number })[]);
 			markPhase(`写节点(${nodes.length})`);
 			// 3. 收集涉及变更文件节点的边（源或目标 ∈ 变更节点），用内存 id 引用，去重后批量 upsert
@@ -1473,6 +1545,7 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			}
 			const edges = [...edgeMap.values()];
 			markPhase(`收集边(${edges.length})`);
+			this._logService.info('[CodebaseGraph]', `[phase] 增量补丁：写边 开始（${edges.length}）`);
 			await this._sqliteBackend.upsertEdgesBatch(edges as (GraphEdge & { sourceId?: number; targetId?: number })[]);
 			markPhase(`写边(${edges.length})`);
 			const dur = Date.now() - tStart;
@@ -2583,6 +2656,16 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			const scope = this._watchScopeCache.get(this._normalizeRoot(rootPath));
 			await this.indexWorkspace(rootPath, { mode: 'fast', excludeDirs: scope ? [...scope.excludeDirs] : [], keepDirs: scope?.keepDirs });
 		} else if (e.type === 'files' && (e.added?.length || e.modified?.length || e.deleted?.length)) {
+			// ★ 2026-10-22（"不定时无响应"的另一半）：**索引进行中不再并发跑第二个**。
+			//   watcher 的轮询间隔可能短于一轮索引的时长（实测 30s+）⇒ 索引跑到一半时基线
+			//   （哈希表）还是"半成品"⇒ watcher 会把**正在处理的文件**当成"新增"⇒ 变更组合每轮都变
+			//   ⇒ 触发下一轮索引 ⇒ 两轮互相踩 ⇒ 主线程反复长阻塞（每轮都"未响应"几十秒）✗✗✗。
+			//   这里直接**跳过**：watcher 的脏状态签名只在状态转干净时重置 ⇒ 下一轮还会把同一批变更
+			//   再报上来（**不会丢**）✓。等本轮索引结束、基线写回，变更集自然收敛 ✓。
+			if (this._indexLocked) {
+				this._logService.info('[CodebaseGraph]', `[TRACE] watcher 变更到达但索引正在进行中 ⇒ 本轮跳过（下一轮会再报，不会丢）: ${rootPath}`);
+				return;
+			}
 			this._logService.info('[CodebaseGraph]', `[TRACE] watcher files changed → incremental index: ${rootPath}`);
 			this._logService.info('[CodebaseGraph]', 'Files changed, running incremental index...');
 			// 把 watcher 已精确算好的变更集传下去，让增量走快路径（跳过全量 _scanFiles +
@@ -2790,12 +2873,32 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			}
 
 			// 1. 删除被删/被改文件的旧节点与边
-			for (const rel of [...classification.deleted, ...classification.modified]) {
+			// ★ 2026-10-22（用户报"**不定时**无响应"）：这一段原本**没有切片** ⇒ 一轮要删
+			//   deleted + modified（实测 6,726 + 6,688 ≈ 1.3 万个文件）的节点/边/度数
+			//   ⇒ 主线程**连续阻塞 29.5 秒**（`WsSwitchDiag`：「主线程阻塞 ≈29544ms」）⇒ 窗口直接"未响应" ✗✗✗。
+			//   ⇒ 按 asyncSlice 的统一口径切片（8ms 预算让出一次）⇒ UI 不冻结（总时长基本不变）✓。
+			//   （同文件里其它大循环——载入节点/边——早就切片了；这条是漏网的 ✗。）
+			const modifiedSet = new Set(classification.modified);
+			const dirtyRels = [...classification.deleted, ...classification.modified];
+			let deleteSliceStart = performance.now();
+			for (let i = 0; i < dirtyRels.length; i++) {
+				const rel = dirtyRels[i];
 				this._graph.deleteByFile(rel);
-				this._graph.store.deleteFileHash(project, rel);
+				// ★ 对 **modified** 不再先删基线 hash（2026-10-22）：删了它，在本轮重解析把新 hash
+				//   写回之前，watcher 的下一轮扫描会把它当"**新增**"⇒ 变更组合每轮都在变
+				//   ⇒ watcher 的「脏状态签名去重」失效 ⇒ **反复**触发增量索引（"不定时"的另一半 ✗✗）。
+				//   保留旧 hash ⇒ 下一轮仍是同一组合（+0 ~N -M）⇒ 签名命中 ⇒ 只索引一次 ✓✓。
+				//   （**deleted** 的必须删：文件已不在磁盘上，不删就永远算"多出来的"✗。）
+				if (!modifiedSet.has(rel)) {
+					this._graph.store.deleteFileHash(project, rel);
+				}
 				// 同步移除旧覆盖率条目：被改文件随后会重新 _recordCoverage，
 				// 被删文件则不应继续留在 coverage（否则 check_index_coverage 报幻影条目）
 				this._indexCoverage.delete(rel);
+				if ((i % SLICE_CHECK_EVERY) === 0 && sliceBudgetExceeded(deleteSliceStart)) {
+					await yieldToEventLoop();
+					deleteSliceStart = performance.now();
+				}
 			}
 			for (const rel of classification.deleted) {
 				this._parseFailCounts.delete(rel);

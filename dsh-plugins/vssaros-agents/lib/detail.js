@@ -116,10 +116,11 @@ h1 .n { margin-left: auto; font-weight: 400; color: var(--vscode-descriptionFore
 .tag { font-size: 10px; line-height: 15px; padding: 0 5px; border-radius: 3px; background: var(--vscode-badge-background, #4d4d4d); color: var(--vscode-badge-foreground, #fff); }
 .tag.gray { background: transparent; border: 1px solid var(--vscode-panel-border, #555); color: var(--vscode-descriptionForeground, #999); }
 .tag.off { background: #7a3d2b; color: #fff; }
-.seg { display: flex; margin: 8px 0 7px; border: 1px solid var(--vscode-panel-border, #555); border-radius: 6px; overflow: hidden; }
+/* v3（2026-10-23）：页签条**按内容宽度**（原来 flex:1 等分 ⇒ 4 个签每个占 1/4 宽，很空）*/
+.seg { display: flex; width: fit-content; margin: 8px 0 7px; border: 1px solid var(--vscode-panel-border, #555); border-radius: 6px; overflow: hidden; }
 /* 2026-10-22：编辑区页去掉了「AGENTS 21」标题行（用户要求）⇒ 页签条成了 header 第一行，上边距归零 */
 header > .seg:first-child { margin-top: 0; }
-.seg button { flex: 1; padding: 3px 0; font: inherit; font-size: 12px; color: var(--vscode-descriptionForeground, #999); background: transparent; border: 0; cursor: pointer; }
+.seg button { flex: 0 0 auto; padding: 3px 14px; font: inherit; font-size: 12px; color: var(--vscode-descriptionForeground, #999); background: transparent; border: 0; cursor: pointer; }
 .seg button + button { border-left: 1px solid var(--vscode-panel-border, #555); }
 .seg button.on { background: var(--vscode-button-background, #0e639c); color: #fff; }
 /* 群聊页签（2026-10-21 重做）：中间栏**直接承载 DSB v3 三栏群聊页**（/x/agents/group/<id>）。
@@ -128,6 +129,53 @@ header > .seg:first-child { margin-top: 0; }
    高度用 calc 兜住：iframe 自己没有内容高度，100% 会塌成 0 ⇒ 页面一片空白 ✗。 */
 .gpframe { height: calc(100vh - 96px); min-height: 420px; }
 .gpframe iframe { display: block; width: 100%; height: 100%; border: 0; background: var(--vscode-editor-background, #1e1e1e); }
+
+/* ═══ 「名册」三栏工作台（v3，2026-10-23 用户指定结构）══════════════════════
+   左 236（Agents + 群聊） / 中 弹性（会话 or 群聊窗口） / 右 320（最近会话·记忆·演化·版本·分支）
+   颜色全走 --vscode-*（跟随宿主主题），断点：≤1080 右栏收窄 280，≤760 右栏变抽屉（后续可加） */
+#roster .wb3 { display: flex; height: calc(100vh - 112px); min-height: 420px; }
+.wb3-l { width: 236px; flex: none; border-right: 1px solid var(--vscode-panel-border, #3c3c3c); display: flex; flex-direction: column; min-height: 0; }
+.wb3lhd { display: flex; align-items: center; gap: 6px; padding: 8px 10px 4px; font-size: 12px; }
+.wb3-sp { flex: 1; }
+.wb3scroll { flex: 1; overflow: auto; }
+.wb3sec { display: flex; justify-content: space-between; padding: 8px 10px 3px; font-size: 10px; letter-spacing: .4px; text-transform: uppercase; color: var(--vscode-descriptionForeground, #999); }
+.wb3row { display: flex; align-items: center; gap: 7px; padding: 6px 10px; cursor: pointer; border-left: 2px solid transparent; }
+.wb3row:hover { background: var(--vscode-list-hoverBackground, rgba(128,128,128,.14)); }
+.wb3row.on { background: var(--vscode-list-activeSelectionBackground, rgba(128,128,128,.22)); border-left-color: var(--vscode-focusBorder, #0078d4); }
+.wb3row.dim .wb3nm { color: var(--vscode-descriptionForeground, #999); }
+.wb3av { width: 22px; height: 22px; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 11px; font-weight: 600; flex: none; }
+.wb3body { min-width: 0; flex: 1; display: flex; flex-direction: column; }
+.wb3nm { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wb3meta { font-size: 10.5px; color: var(--vscode-descriptionForeground, #999); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wb3tag { font-style: normal; font-size: 10px; border: 1px solid var(--vscode-panel-border, #3c3c3c); border-radius: 3px; padding: 0 4px; color: var(--vscode-descriptionForeground, #999); margin-left: 4px; }
+.wb3num { min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--vscode-button-background, #0078d4); color: var(--vscode-button-foreground, #fff); font-size: 10px; display: flex; align-items: center; justify-content: center; flex: none; }
+.wb3dot { width: 6px; height: 6px; border-radius: 50%; background: transparent; flex: none; }
+.wb3dot.ok { background: var(--vscode-charts-green, #89d185); }
+.wb3dot.run { background: var(--vscode-charts-yellow, #cca700); }
+.wb3-m { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
+.wb3mhd { display: flex; align-items: center; gap: 8px; padding: 9px 14px; border-bottom: 1px solid var(--vscode-panel-border, #3c3c3c); flex: none; }
+.wb3mbody { flex: 1; overflow: auto; padding: 12px 14px; }
+.wb3mfoot { padding-top: 10px; }
+.wb3sess { display: flex; justify-content: space-between; gap: 8px; padding: 6px 2px; border-bottom: 1px solid var(--vscode-panel-border, #3c3c3c); font-size: 12px; }
+.wb3sess .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wb3frame { display: block; width: 100%; height: 100%; border: 0; background: var(--vscode-editor-background, #1e1e1e); }
+.wb3-r { width: 320px; flex: none; border-left: 1px solid var(--vscode-panel-border, #3c3c3c); display: flex; flex-direction: column; min-height: 0; }
+.wb3rhd { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--vscode-panel-border, #3c3c3c); font-size: 12px; }
+.wb3rtabs { display: flex; gap: 2px; flex-wrap: wrap; padding: 6px 8px; border-bottom: 1px solid var(--vscode-panel-border, #3c3c3c); }
+.wb3rt { height: 22px; padding: 0 7px; border-radius: 4px; font-size: 10.5px; color: var(--vscode-descriptionForeground, #999); background: transparent; border: 0; cursor: pointer; font-family: inherit; }
+.wb3rt:hover { background: var(--vscode-list-hoverBackground, rgba(128,128,128,.14)); }
+.wb3rt.on { background: var(--vscode-list-activeSelectionBackground, rgba(128,128,128,.22)); color: var(--vscode-foreground, #ccc); font-weight: 600; }
+.wb3rbody { flex: 1; overflow: auto; padding: 8px; }
+.wb3ri { display: flex; align-items: center; gap: 6px; padding: 5px 6px; border-radius: 4px; font-size: 12px; cursor: pointer; }
+.wb3ri:hover { background: var(--vscode-list-hoverBackground, rgba(128,128,128,.14)); }
+.wb3ri .n { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wb3ri .m { font-size: 10px; color: var(--vscode-descriptionForeground, #999); flex: none; }
+.wb3ri .d { width: 6px; height: 6px; border-radius: 50%; background: var(--vscode-charts-green, #89d185); flex: none; }
+.wb3ri .d.run { background: var(--vscode-charts-yellow, #cca700); }
+.wb3diff { font-family: var(--vscode-editor-font-family, monospace); font-size: 12px; white-space: pre-wrap; margin: 0; padding: 8px; border-radius: 6px; background: var(--vscode-textCodeBlock-background, rgba(128,128,128,.1)); }
+.wb3diff .dl { display: block; padding: 0 4px; }
+.wb3diff .dl.add { background: rgba(63,191,114,.18); color: var(--vscode-charts-green, #89d185); }
+.wb3diff .dl.del { background: rgba(224,108,117,.18); color: var(--vscode-errorForeground, #f14c4c); }
 /* 群聊签：中间栏就是群聊页 ⇒ 只收掉名册筛选框（它筛的是名册表，群里没有）。
    ⚠ hero 身份条**保留**（名字/模型/能力/统计 = mockup 款 A 的必备块）✓ */
 body.gptab .search { display: none; }
@@ -489,7 +537,75 @@ export function renderDetailPage({ agents, summary, root, missing, diagnostics, 
 	// 打开工作台默认落在哪个群：第一个群；一个群都没有 ⇒ 打开「新建群」态（页面自带建群弹层 ✓）。
 	const groupOpenId = groupItems[0]?.id ?? 'new';
 	const groupsSection = '<div id="groups"' + (groupItems.length ? '' : ' hidden') + '><div class="gpframe">'
-		+ '<iframe id="gpFrame" title="群聊" src="/x/agents/group/' + escapeHtml(groupOpenId) + '"></iframe>'
+		+ '<iframe id="gpFrame" title="群聊" src="/x/agents/group/' + escapeHtml(groupOpenId) + '?embed=1"></iframe>'
+		+ '</div></div>';
+
+	// ═══ 「名册」三栏工作台（2026-10-23 v3，用户指定结构）════════════════════
+	//   左 236：Agents（已注册/未注册）+ 群聊（混在同一个名册里）
+	//   中 弹性：选中 agent ⇒ 它的会话 + 起手入口；选中群聊 ⇒ iframe 群聊窗口（?embed=1 只留聊天列）
+	//   右 320 ：最近会话 / 记忆 / 演化 / 版本 / 分支（常驻，内部子 tab）
+	// 为什么中间栏对 agent 不画"真聊天"：会话渲染是 dsh 客户端的能力，插件页里没有那个组件
+	//   ⇒ 这里给「会话列表 + 打开（走桥）」，群聊才用 iframe（那本身就是完整聊天页）✓
+	// ⚠ 复用文件上方已有的 liveOf（Map：agentId → 实况行），别再造一个同名箭头函数（会重复声明报错）。
+	const wbAgents = agents.map(a => {
+		const live = liveOf.get(a.id);
+		return {
+			id: a.id,
+			name: a.name,
+			role: a.role ?? '',
+			model: a.model ?? '默认模型',
+			reg: a.registered !== false,          // 与旧名册同口径
+			sessions: live?.sessions ?? 0,
+			turns: live?.turns ?? 0,
+			tokens: live?.tokens ?? 0,
+			lastAt: live?.lastActiveAt ?? 0,
+			att: (assignments?.items ?? []).filter(i => i.agentId === a.id && i.status === 'waiting').length,
+			run: (assignments?.items ?? []).filter(i => i.agentId === a.id && i.status === 'running').length,
+			desc: a.desc ?? '',
+			tools: (a.tools ?? []).length,
+			persona: (a.persona ?? '').length,
+		};
+	});
+	const wbGroups = groupItems.map(g => ({
+		id: g.id, name: g.name, mode: g.mode ?? 'mentions', members: (g.members ?? []).length, unread: g.unread ?? 0,
+	}));
+	// 一次性把渲染所需数据塞给客户端（换人/换签都不必再请求；记忆按需拉 /api/memory ✓）
+	const wbPayload = escapeHtml(JSON.stringify({
+		agents: wbAgents,
+		groups: wbGroups,
+		sessions: (sessionRows ?? []).map(r => ({ id: r.id, title: r.title ?? '', agentId: r.agentId ?? '', turns: r.turns ?? 0, at: r.lastActiveAt ?? 0 })),
+		assign: (assignments?.items ?? []).map(i => ({ id: i.id, agentId: i.agentId ?? '', task: i.task ?? i.title ?? '', status: i.status ?? '' })),
+	}));
+	const wbAgentRow = a => '<div class="wb3row' + (a.reg ? '' : ' dim') + '" data-wb-agent="' + escapeHtml(a.id) + '" onclick="wbPick(\u0027agent\u0027,\u0027' + escapeHtml(a.id) + '\u0027)">'
+		+ '<span class="wb3av" style="background:' + avatarColorOf(a.id) + '">' + renderAvatarContent(null, a.name.slice(0, 1), { size: 16 }) + '</span>'
+		+ '<span class="wb3body"><span class="wb3nm">' + escapeHtml(a.name) + (a.reg ? '' : ' <i class="wb3tag">未注册</i>') + '</span>'
+		+ '<span class="wb3meta">' + escapeHtml(a.model) + ' · 会话 ' + a.sessions + '</span></span>'
+		+ (a.att ? '<span class="wb3num" title="待你处理">' + a.att + '</span>' : '')
+		+ '<span class="wb3dot' + (a.run ? ' run' : (a.sessions ? ' ok' : '')) + '"></span></div>';
+	const wbGroupRow = g => '<div class="wb3row" data-wb-group="' + escapeHtml(g.id) + '" onclick="wbPick(\u0027group\u0027,\u0027' + escapeHtml(g.id) + '\u0027)">'
+		+ '<span class="wb3av g" style="background:' + avatarColorOf(g.id) + '">#</span>'
+		+ '<span class="wb3body"><span class="wb3nm">' + escapeHtml(g.name) + '</span>'
+		+ '<span class="wb3meta">' + (g.mode === 'open' ? 'open 全员' : 'mentions 只 @') + ' · ' + g.members + ' 人</span></span>'
+		+ (g.unread ? '<span class="wb3num">' + g.unread + '</span>' : '') + '</div>';
+	const wbReg = wbAgents.filter(a => a.reg), wbUnreg = wbAgents.filter(a => !a.reg);
+	const rosterSection = '<div id="roster" data-wb-payload="' + wbPayload + '"><div class="wb3">'
+		+ '<aside class="wb3-l"><div class="wb3lhd"><b>名册</b><span class="wb3sp"></span>'
+		+ '<button class="act" onclick="wbNewGroup()" data-vssaros-wb-newgroup="1" title="新建群聊">＋ 群</button></div>'
+		+ '<div class="wb3scroll">'
+		+ '<div class="wb3sec">已注册<span>' + wbReg.length + '</span></div>' + wbReg.map(wbAgentRow).join('')
+		+ (wbUnreg.length ? '<div class="wb3sec">未注册<span>' + wbUnreg.length + '</span></div>' + wbUnreg.map(wbAgentRow).join('') : '')
+		+ '<div class="wb3sec">群聊<span>' + wbGroups.length + '</span></div>'
+		+ (wbGroups.length ? wbGroups.map(wbGroupRow).join('') : '<p class="diag" style="padding:2px 10px 8px">还没有群聊，点右上「＋ 群」。</p>')
+		+ '</div></aside>'
+		+ '<main class="wb3-m" id="wbMain" data-vssaros-wb-main="1">' + (wbAgents[0] ? '' : '<p class="empty">还没有可用的 agent。</p>') + '</main>'
+		+ '<aside class="wb3-r"><div class="wb3rhd"><b id="wbRTitle">—</b><span class="wb3sp"></span><span class="diag" id="wbRMeta"></span></div>'
+		+ '<div class="wb3rtabs">'
+		+ '<button class="wb3rt on" data-wb-rt="recent" onclick="wbRtab(\u0027recent\u0027)">最近会话</button>'
+		+ '<button class="wb3rt" data-wb-rt="mem" onclick="wbRtab(\u0027mem\u0027)">记忆</button>'
+		+ '<button class="wb3rt" data-wb-rt="evo" onclick="wbRtab(\u0027evo\u0027)">演化</button>'
+		+ '<button class="wb3rt" data-wb-rt="ver" onclick="wbRtab(\u0027ver\u0027)">版本</button>'
+		+ '<button class="wb3rt" data-wb-rt="br" onclick="wbRtab(\u0027br\u0027)">分支</button>'
+		+ '</div><div class="wb3rbody" id="wbRBody" data-vssaros-wb-right="1"></div></aside>'
 		+ '</div></div>';
 	// 记忆页签（2026-10-16，二期）：agent 选择器 + 文件列表 + 查看器 + Git 状态/历史。
 	// 数据全走 /x/agents/api/memory（服务端只渲染壳）；写口只有「启用 Git / 提交快照」两个 ✓。
@@ -557,14 +673,14 @@ export function renderDetailPage({ agents, summary, root, missing, diagnostics, 
 	const homeData = buildHomeData({ agents, sessionRows, assignments, groups });
 	const groupFirst = Boolean(groupItems.length);
 	const overview = heroOf
-		? '<div id="overview"' + (groupFirst ? ' hidden' : '') + ' data-vssaros-home data-home="' + escapeHtml(JSON.stringify(homeData)) + '"><section class="pad">'
+		? '<div id="overview" hidden data-vssaros-home data-home="' + escapeHtml(JSON.stringify(homeData)) + '"><section class="pad">'
 			+ '<div class="idstrip"><span class="lbl">身份（.agent.md）</span>'
 			+ '<span class="hchip">📄 <span class="idchip" id="ovFile">' + escapeHtml(heroOf.file ?? '（未知）') + '</span></span>'
 			+ '<span class="hchip" id="ovMem" style="display:none"></span>'
 			+ '<button class="act" onclick="heroSettings()" title="打开该 bot 的 Agent 设置页">打开编辑器</button></div>'
 			+ '<div class="home-grid" id="homeGrid">' + homePanelsHtml(homeData[heroOf.id], escapeHtml) + '</div>'
 			+ '</section></div>'
-		: '<div id="overview"' + (groupFirst ? ' hidden' : '') + '><p class="empty">还没有可用的 agent。</p></div>';
+		: '<div id="overview" hidden><p class="empty">还没有可用的 agent。</p></div>';
 	// ── 「活动」（mockup 款 C：此刻 feed + 待你处理）────────────────────────
 	//   跨数据源聚合：委派 / 群回收 / 审批在途 / 会话。纯函数在 lib/activity.js（探针可单测 ✓）。
 	const activity = buildActivityItems({ agents, sessionRows, assignments, groups, outbox });
@@ -594,16 +710,159 @@ export function renderDetailPage({ agents, summary, root, missing, diagnostics, 
 		+ '<div class="d-tl" id="tlBody" data-vssaros-timeline>'
 		+ (timelineItems.length ? timelineItems.map(timelineRowHtml).join('') : '<p class="diag">还没有事件。</p>')
 		+ '</div></section></div>';
-const tabNav = '<nav class="seg"><button id="tabOverview"' + (groupFirst ? '' : ' class="on"') + ' onclick="showTab(\'overview\')">概览</button>'
-	// ★ 2026-10-21 补齐（用户选「使用 A」+ 补活动/时间线）：款 C 的「此刻 feed」与款 D 的「时间线」
-	+ '<button id="tabActivity" data-vssaros-activity-tab onclick="showTab(\'activity\')">活动</button>'
-	+ '<button id="tabTimeline" data-vssaros-timeline-tab onclick="showTab(\'timeline\')">时间线</button>'
-	+ '<button id="tabRoster" onclick="showTab(\'roster\')">身份 ' + summary.count + '</button>'
-		+ '<button id="tabAssign" data-vssaros-assignments-tab onclick="showTab(\'assignments\')" data-assignments-running="' + (assignments?.running ?? 0) + '">委派 ' + assignmentItems.length + '</button>'
-		+ '<button id="tabGrant" data-vssaros-grants-tab onclick="showTab(\'grants\')">授权 ' + templateItems.length + '</button>'
-		+ '<button id="tabGroup"' + (groupFirst ? ' class="on"' : '') + ' data-vssaros-groups-tab onclick="showTab(\'groups\')">群聊 ' + groupItems.length + '</button>'
-		+ '<button id="tabMemory" data-vssaros-memory-tab onclick="showTab(\'memory\')">记忆</button>'
-		+ (usage ? '<button id="tabUsage" data-vssaros-usage-tab onclick="showTab(\'usage\')" data-usage-sessions="' + usage.totals.sessions + '" data-usage-tokens="' + usage.totals.tokens + '">用量 ' + usage.totals.sessions + '</button>' : '') + '</nav>';
+// ★ 2026-10-23（用户指定 v3 结构）：顶部只留 **4 个签** —— 名册 / 用量 / 委派 / 授权。
+//   「群聊」不再占顶部签：它并入「名册」左栏（点群聊 item ⇒ 中间栏变群聊窗口）；
+//   「记忆 / 演化 / 版本 / 分支」+ 最近会话 ⇒ 移到「名册」右栏（常驻 320，内部子 tab）。
+//   ⚠ 上一版的「概览 / 活动 / 时间线」三个签也一并下线：活动 feed 与时间线并入右栏
+//   （「最近会话」= 会话+委派+群回收的混合流；「演化」= 记忆提交时间线）⇒ 不再是两套入口。
+const tabNav = '<nav class="seg">'
+	+ '<button id="tabRoster" class="on" data-vssaros-roster-tab onclick="showTab(\'roster\')">名册 ' + summary.count + '</button>'
+	+ (usage ? '<button id="tabUsage" data-vssaros-usage-tab onclick="showTab(\'usage\')" data-usage-sessions="' + usage.totals.sessions + '" data-usage-tokens="' + usage.totals.tokens + '">用量 ' + usage.totals.sessions + '</button>' : '')
+	+ '<button id="tabAssign" data-vssaros-assignments-tab onclick="showTab(\'assignments\')" data-assignments-running="' + (assignments?.running ?? 0) + '">委派 ' + assignmentItems.length + '</button>'
+	+ '<button id="tabGrant" data-vssaros-grants-tab onclick="showTab(\'grants\')">授权 ' + templateItems.length + '</button>'
+	+ '</nav>';
+	// ═══ 三栏工作台的页面侧脚本（2026-10-23 v3）═════════════════════════════
+	// ⚠ 这是**拼给页面的字符串**：只能用 /* */ 注释，绝不能出现 `//`（会把同一行后续代码整行吃掉
+	//   ⇒ 花括号不配平 ⇒ 整页交互静默失效，见 check-agents-group-page.mjs 的守卫）。
+	const WB_CLIENT_JS = [
+		'var WBS = { kind: "agent", id: "", rtab: "recent", data: null, mem: null };',
+		'(function () {',
+		'  var el = document.getElementById("roster"); if (!el) { return; }',
+		'  try { WBS.data = JSON.parse(el.getAttribute("data-wb-payload") || "{}"); } catch (e) { WBS.data = {}; }',
+		'  WBS.data.agents = WBS.data.agents || []; WBS.data.groups = WBS.data.groups || [];',
+		'  WBS.data.sessions = WBS.data.sessions || []; WBS.data.assign = WBS.data.assign || [];',
+		'})();',
+		'function wbEsc(t) { return String(t == null ? "" : t).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", "\\"": "&quot;" }[c]; }); }',
+		'function wbTime(ms) { if (!ms) { return "—"; } var d = new Date(ms); var n = new Date(); var hm = ("0" + d.getHours()).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2); return d.toDateString() === n.toDateString() ? hm : (d.getMonth() + 1) + "/" + d.getDate(); }',
+		'function wbFind(kind, id) { var arr = kind === "group" ? WBS.data.groups : WBS.data.agents; for (var i = 0; i < arr.length; i++) { if (arr[i].id === id) { return arr[i]; } } return null; }',
+		'function wbColor(id) { var h = 0, s = String(id); for (var i = 0; i < s.length; i++) { h = (h * 31 + s.charCodeAt(i)) >>> 0; } return "hsl(" + (h % 360) + " 40% 45%)"; }',
+		/* ── 中间栏 ── */
+		'function wbMid() {',
+		'  var m = document.getElementById("wbMain"); if (!m) { return; }',
+		'  if (WBS.kind === "group") {',
+		'    var g = wbFind("group", WBS.id);',
+		'    m.innerHTML = \'<iframe class="wb3frame" title="\' + wbEsc(g ? g.name : "群聊") + \'" src="/x/agents/group/\' + encodeURIComponent(WBS.id) + \'?embed=1"></iframe>\';',
+		'    window.setTimeout(function () { try { syncThemeToFrame(); } catch (e) { } }, 300);',
+		'    window.setTimeout(function () { try { syncThemeToFrame(); } catch (e) { } }, 1300);',
+		'    return;',
+		'  }',
+		'  var a = wbFind("agent", WBS.id);',
+		'  if (!a) { m.innerHTML = \'<p class="empty">还没有可用的 agent。</p>\'; return; }',
+		'  var rows = WBS.data.sessions.filter(function (s) { return s.agentId === a.id; });',
+		'  var html = \'<div class="wb3mhd"><span class="wb3av" style="background:\' + wbColor(a.id) + \'">\' + wbEsc(a.name.slice(0, 1).toUpperCase()) + \'</span>\'',
+		'    + \'<span class="wb3nm">\' + wbEsc(a.name) + \'</span>\' + (a.reg ? "" : \'<i class="wb3tag">未注册</i>\')',
+		'    + (a.role ? \'<i class="wb3tag">\' + wbEsc(a.role) + \'</i>\' : "")',
+		'    + \'<span class="wb3sp"></span>\'',
+		'    + \'<button class="act" onclick="wbAssign(\\\'\' + a.id + \'\\\')">委派任务</button>\'',
+		'    + \'<button class="act" onclick="openAgentSettings(\\\'\' + a.id + \'\\\',\\\'\' + wbEsc(a.name) + \'\\\')">Agent 设置</button></div>\';',
+		'  html += \'<div class="wb3mbody">\';',
+		'  if (rows.length) {',
+		'    html += \'<div class="wb3sec">这个 agent 的会话<span>\' + rows.length + \'</span></div>\';',
+		'    html += rows.map(function (s) { return \'<div class="wb3sess" data-wb-session="\' + wbEsc(s.id) + \'"><span class="t">\' + wbEsc(s.title || "（未命名会话）") + \'</span><span class="diag">\' + (s.turns || 0) + \' 回合 · \' + wbTime(s.at) + \'</span></div>\'; }).join("");',
+		'  } else {',
+		'    html += \'<p class="empty">这个 agent 还没有会话。<br>插件页没有会话渲染组件 —— 点下面在 dsh 里开一个。</p>\';',
+		'  }',
+		'  html += \'<div class="wb3mfoot"><button class="act" onclick="wbNewSession(\\\'\' + a.id + \'\\\')">发起会话（在 dsh 里）</button></div></div>\';',
+		'  m.innerHTML = html;',
+		'}',
+		'function wbNewSession(id) {',
+		'  note("会话回合只能在 dsh 客户端里跑：已尝试切到 Agents 页 —— 请在会话页选 agent「" + id + "」发起。");',
+		'  var b = window.vssarosDsh;',
+		'  if (b && typeof b.openModulePage === "function") { try { b.openModulePage("/x/agents/"); } catch (e) { /* 宿主没实现就算了 */ } }',
+		'}',
+		'function wbAssign(id) {',
+		'  var t = window.prompt("委派给 " + id + " 的任务：");',
+		'  if (!t) { return; }',
+		'  fetch("/x/agents/api/assignments", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "create", agentId: id, task: t }) })',
+		'    .then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { if (!r.ok) { throw new Error(j.error || ("HTTP " + r.status)); } return j; }); })',
+		'    .then(function () { note("委派已创建：" + t); })',
+		'    .catch(function (e) { note("建委派失败：" + e.message); });',
+		'}',
+		/* ── 右栏 ── */
+		'function wbRight() {',
+		'  var body = document.getElementById("wbRBody"); if (!body) { return; }',
+		'  var title = document.getElementById("wbRTitle"), meta = document.getElementById("wbRMeta");',
+		'  if (WBS.kind === "group") {',
+		'    var g = wbFind("group", WBS.id);',
+		'    if (title) { title.textContent = g ? g.name : "群聊"; } if (meta) { meta.textContent = ""; }',
+		'    body.innerHTML = \'<p class="diag" style="padding:6px 4px;line-height:1.7">群聊没有自己的记忆仓库 —— 记忆 / 演化 / 版本 / 分支都是每个 agent 各自的 Git。<br>点左栏任一 agent 看它的。</p>\';',
+		'    return;',
+		'  }',
+		'  var a = wbFind("agent", WBS.id);',
+		'  if (!a) { body.innerHTML = \'\'; return; }',
+		'  if (title) { title.textContent = a.name; } if (meta) { meta.textContent = "会话 " + a.sessions; }',
+		'  if (WBS.rtab === "recent") {',
+		'    var mine = WBS.data.sessions.filter(function (s) { return s.agentId === a.id; });',
+		'    var async_ = WBS.data.assign.filter(function (x) { return x.agentId === a.id; });',
+		'    var h = \'<div class="wb3sec">最近会话<span>\' + mine.length + \'</span></div>\';',
+		'    h += mine.length ? mine.slice(0, 8).map(function (s) { return \'<div class="wb3ri" data-wb-session="\' + wbEsc(s.id) + \'"><span class="d ok"></span><span class="n">\' + wbEsc(s.title || "（未命名）") + \'</span><span class="m">\' + wbTime(s.at) + \'</span></div>\'; }).join("") : \'<p class="diag" style="padding:4px 4px">这个 agent 还没有会话。</p>\';',
+		'    h += \'<div class="wb3sec">委派<span>\' + async_.length + \'</span></div>\';',
+		'    h += async_.length ? async_.map(function (x) { return \'<div class="wb3ri"><span class="d\' + (x.status === "running" ? " run" : " ok") + \'"></span><span class="n">\' + wbEsc(x.task || x.id) + \'</span><span class="m">\' + wbEsc(x.status) + \'</span></div>\'; }).join("") : \'<p class="diag" style="padding:4px 4px">没有委派。</p>\';',
+		'    body.innerHTML = h;',
+		'    return;',
+		'  }',
+		'  wbMem(function (M) {',
+		'    var h = "";',
+		'    if (WBS.rtab === "mem") {',
+		'      h += \'<div class="wb3sec">记忆文件<span>\' + ((M.files || []).length) + \'</span></div>\';',
+		'      h += (M.files || []).map(function (f) { var pin = /^(SOUL|MEMORY)\\.md$/i.test(f.name); return \'<div class="wb3ri"><span>\' + (pin ? "📌" : "📄") + \'</span><span class="n">\' + wbEsc(f.name) + (pin ? \' <i class="wb3tag">常驻</i>\' : "") + \'</span><span class="m">\' + Math.round((f.size || 0) / 1024 * 10) / 10 + \' KB</span></div>\'; }).join("");',
+		'      h += \'<div class="wb3sec">Git 历史<span>\' + ((M.log || []).length) + \'</span></div>\';',
+		'      h += (M.log || []).slice(0, 10).map(function (c) { return \'<div class="wb3ri" onclick="wbCommit(\\\'\' + wbEsc(c.hash) + \'\\\')"><span class="d ok"></span><span class="n">\' + wbEsc(c.subject) + \'</span><span class="m">\' + wbEsc(String(c.hash).slice(0, 7)) + \'</span></div>\'; }).join("");',
+		'      if (!(M.log || []).length) { h += \'<p class="diag" style="padding:4px 4px">还没有记忆提交。</p>\'; }',
+		'    } else if (WBS.rtab === "evo") {',
+		'      if (M.diff) {',
+		'        h += \'<div class="wb3sec">\' + wbEsc(M.diff.hash) + \' · \' + wbEsc(M.diff.file || "MEMORY.md") + \'</div>\';',
+		'        h += \'<pre class="wb3diff">\' + (M.diff.lines || []).map(function (l) { return \'<span class="dl \' + (l[0] === "+" ? "add" : l[0] === "-" ? "del" : "") + \'">\' + wbEsc(l) + \'</span>\'; }).join("") + \'</pre>\';',
+		'        h += \'<div style="padding:6px 2px"><button class="act" onclick="wbDiffClose()">关闭 diff</button></div>\';',
+		'      } else {',
+		'        h += \'<div class="wb3sec">提交时间线<span>\' + ((M.log || []).length) + \'</span></div>\';',
+		'        h += (M.log || []).map(function (c) { return \'<div class="wb3ri" onclick="wbCommit(\\\'\' + wbEsc(c.hash) + \'\\\')"><span class="d ok"></span><span class="n">\' + wbEsc(c.subject) + \'</span><span class="m">\' + wbEsc(c.date || "") + \'</span></div>\'; }).join("");',
+		'      }',
+		'    } else if (WBS.rtab === "ver") {',
+		'      h += \'<div class="wb3sec">版本（tag）<span>\' + ((M.versions || []).length) + \'</span></div>\';',
+		'      h += (M.versions || []).map(function (v) { return \'<div class="wb3ri"><span>🏷</span><span class="n">\' + wbEsc(v.name) + \'</span><span class="m">\' + wbEsc(String(v.hash || "").slice(0, 7)) + \'</span></div>\'; }).join("") || \'<p class="diag" style="padding:4px 4px">还没有 tag。</p>\';',
+		'    } else {',
+		'      h += \'<div class="wb3sec">分支<span>\' + ((M.branches || []).length) + \'</span></div>\';',
+		'      h += (M.branches || []).map(function (b) { return \'<div class="wb3ri"><span>⑂</span><span class="n">\' + wbEsc(b.name) + (b.current ? \' <i class="wb3tag">当前</i>\' : "") + \'</span><span class="m">\' + wbEsc(String(b.hash || "").slice(0, 7)) + \'</span></div>\'; }).join("") || \'<p class="diag" style="padding:4px 4px">只有一个分支。</p>\';',
+		'    }',
+		'    body.innerHTML = h;',
+		'  });',
+		'}',
+		'function wbMem(cb) {',
+		'  if (WBS.mem && WBS.mem.agent === WBS.id) { cb(WBS.mem.data); return; }',
+		'  body(' + "'" + '…' + "'" + ');',
+		'  fetch("/x/agents/api/memory?agent=" + encodeURIComponent(WBS.id) + "&versions=1&branches=1&limit=20")',
+		'    .then(function (r) { return r.ok ? r.json() : null; })',
+		'    .then(function (j) { WBS.mem = { agent: WBS.id, data: j || {} }; cb(WBS.mem.data); })',
+		'    .catch(function () { cb({}); });',
+		'  function body() { var b = document.getElementById("wbRBody"); if (b) { b.innerHTML = \'<p class="diag" style="padding:6px 4px">正在读取记忆…</p>\'; } }',
+		'}',
+		'function wbCommit(hash) {',
+		'  fetch("/x/agents/api/memory?agent=" + encodeURIComponent(WBS.id) + "&rev=" + encodeURIComponent(hash) + "&against=" + encodeURIComponent(hash + "~1") + "&file=MEMORY.md")',
+		'    .then(function (r) { return r.ok ? r.json() : null; })',
+		'    .then(function (j) {',
+		'      WBS.mem = WBS.mem || { agent: WBS.id, data: {} };',
+		'      WBS.mem.data.diff = { hash: hash, file: "MEMORY.md", lines: (j && j.lines) || (j && j.diff ? String(j.diff).split("\\n") : ["（这一版没有 diff 内容）"]) };',
+		'      WBS.rtab = "evo"; wbPaintRtab(); wbRight();',
+		'    })',
+		'    .catch(function (e) { note("读 diff 失败：" + e.message); });',
+		'}',
+		'function wbDiffClose() { if (WBS.mem && WBS.mem.data) { WBS.mem.data.diff = null; } wbRight(); }',
+		'function wbPaintRtab() { var ts = document.querySelectorAll(".wb3rt"); for (var i = 0; i < ts.length; i++) { ts[i].className = "wb3rt" + (ts[i].getAttribute("data-wb-rt") === WBS.rtab ? " on" : ""); } }',
+		'function wbRtab(k) { WBS.rtab = k; wbPaintRtab(); wbRight(); }',
+		'function wbPick(kind, id) {',
+		'  WBS.kind = kind; WBS.id = id; WBS.mem = null; WBS.rtab = "recent";',
+		'  var rows = document.querySelectorAll(".wb3row");',
+		'  for (var i = 0; i < rows.length; i++) {',
+		'    var on = (kind === "agent" && rows[i].getAttribute("data-wb-agent") === id) || (kind === "group" && rows[i].getAttribute("data-wb-group") === id);',
+		'    rows[i].className = "wb3row" + (on ? " on" : "") + (rows[i].className.indexOf("dim") >= 0 ? " dim" : "");',
+		'  }',
+		'  wbPaintRtab(); wbMid(); wbRight();',
+		'}',
+		'function wbNewGroup() { wbPick("group", "new"); }',
+		'(function () { var first = (WBS.data.agents || [])[0]; if (first) { wbPick("agent", first.id); } })();',
+	].join('\n');
+
 	// 页面脚本：页签 + 行展开 + 筛选 + 焦点交接。都是纯前端增强，关掉 JS 也读得到全部内容。
 	const script = '<script>'
 		// 侧栏名册 → 本页的焦点交接键（与 sideview.js 的 FOCUS_KEY 同值；插件内两个页面文件各持一份字面量，
@@ -674,27 +933,33 @@ const tabNav = '<nav class="seg"><button id="tabOverview"' + (groupFirst ? '' : 
 		+ '}).catch(function () { /* 拉不到就只显示委派/会话两类 */ });'
 		+ '}'
 		+ 'function showTab(which) {'
-		+ "var panes = ['overview', 'activity', 'timeline', 'roster', 'usage', 'assignments', 'grants', 'groups', 'memory', 'create'];"
+		// v3（2026-10-23）：只剩 4 个可达视图 + 新建向导；groups/memory/activity/timeline
+		// 已收进 #legacyPanes（hidden）⇒ 这里不再参与切换。
+		+ "var panes = ['roster', 'usage', 'assignments', 'grants', 'create'];"
 		+ "for (var i = 0; i < panes.length; i++) {"
 		+ 'var pane = document.getElementById(panes[i]);'
 		+ 'if (pane) { pane.hidden = panes[i] !== which; }'
 		+ '}'
-		// 切到时间线 ⇒ 拉当前 agent 的记忆提交（Git 历史）补进时间线（服务端只能渲委派/会话两类 ✓）
-		+ 'if (which === "timeline") { loadTimelineMemory(); }'
-		+ 'if (which === "activity") { refreshActivity(); }'
 		// 新建向导要整块宽度 ⇒ 打开时收起 hero（hero 讲的是「当前 agent」，新建时没有当前 agent ✓）
 		// ★ 2026-10-21：hero **不再**在群聊签下收起 —— 身份条（名字/模型/能力/统计）是 mockup 款 A 的
 		//   必备块，收掉后 agents 页看着"空"，用户报"缺少 UI"✗。
 		+ "var heroEl = document.getElementById('hero');"
-		+ "if (heroEl) { heroEl.hidden = which === 'create'; }"
+		// v3：名册签 = 纯三栏 ⇒ hero 也要收（三栏自己的 header 已经承载了身份与动作）
+		+ "if (heroEl) { heroEl.hidden = which === 'create' || which === 'roster'; }"
 		// ★ 群聊签：中间栏就是群聊页 ⇒ 只收掉名册筛选框（它筛的是名册表，群里没有）。
 		+ "document.body.classList.toggle('gptab', which === 'groups');"
-		+ "var tabs = { overview: 'tabOverview', roster: 'tabRoster', usage: 'tabUsage', assignments: 'tabAssign', grants: 'tabGrant', groups: 'tabGroup', memory: 'tabMemory' };"
+		// v3：只剩 4 个签（概览/群聊/记忆 已下线）
+		+ "var tabs = { roster: 'tabRoster', usage: 'tabUsage', assignments: 'tabAssign', grants: 'tabGrant' };"
 		+ 'for (var k in tabs) {'
 		+ 'var t = document.getElementById(tabs[k]);'
 		+ "if (t) { t.classList.toggle('on', k === which); }"
 		+ '}'
 		+ '}'
+		// 三栏工作台的页面侧逻辑（左栏点选 / 右栏子 tab / 群聊 iframe / 记忆按需拉）
+		+ WB_CLIENT_JS
+		// ⚠ 首屏必须**主动调一次 showTab**：hero 的 hidden 只在切换时设置，
+		//   不调的话名册签下还会挂着那块身份卡（截图里占了半屏）。
+		+ 'showTab("roster");'
 		+ 'function toggleRow(el) { var li = el.parentElement; if (li) { li.classList.toggle(\'open\'); updateHero(li); } }'
 		// Hero（款 A）：点名册行 ⇒ hero 换成该 agent（数据全在行的 data-h-* 上，JS 只搬运 ✓）。
 		// 快捷动作：发起会话 = 桥 newChat（绑 preset 的新会话页签 ✓）；委派 = 开委派签并预选；
@@ -810,7 +1075,17 @@ const tabNav = '<nav class="seg"><button id="tabOverview"' + (groupFirst ? '' : 
 		+ 'all[i].hidden = !show;'
 		+ 'if (show) { hit++; }'
 		+ '}'
-		+ 'if (out) { out.textContent = q ? hit + \'/\' + all.length : String(all.length); }'
+		/* v3：三栏左栏也要跟着筛 —— 旧名册表（#roster li.item）在三栏结构里已经不存在了，
+		   只筛它等于"搜索框点了没反应"✗。这里按左栏行的文本（名字/模型/群名）过滤。 */
+		+ 'var wbRows = document.querySelectorAll("#roster .wb3row");'
+		+ 'var hit2 = 0;'
+		+ 'for (var j = 0; j < wbRows.length; j++) {'
+		+ 'var txt = String(wbRows[j].textContent || "").toLowerCase();'
+		+ 'var ok2 = !q || txt.indexOf(q) >= 0;'
+		+ 'wbRows[j].style.display = ok2 ? "" : "none";'
+		+ 'if (ok2) { hit2++; }'
+		+ '}'
+		+ 'if (out) { out.textContent = q ? (hit2 + "/" + wbRows.length) : String(hit ? hit : wbRows.length); }'
 		+ '}'
 		// 焦点交接（2026-10-16，方案 D）：展开指定 agent 的行并滚到它。只在名册页签有意义 ⇒
 		// 交接到达时若停在用量页签，先切回名册（否则"滚过去"滚的是隐藏区块，用户看不见 ✗）。
@@ -1055,7 +1330,7 @@ const tabNav = '<nav class="seg"><button id="tabOverview"' + (groupFirst ? '' : 
 		+ 'function selectGroupById(id) {'
 		+ 'if (!id) { return; }'
 		+ 'G_SELECTED = id;'
-		+ "var fr = document.getElementById('gpFrame');"
+		+ 'var fr = frame();'
 		+ "if (fr) { fr.src = '/x/agents/group/' + encodeURIComponent(id); }"
 		+ '}'
 		// ★ 主题传递：iframe 是**独立文档**，拿不到本页的 --vscode-* 变量 ⇒ 群聊页会退回默认皮
@@ -1072,8 +1347,11 @@ const tabNav = '<nav class="seg"><button id="tabOverview"' + (groupFirst ? '' : 
 		+ '"--vscode-editor-font-family","--vscode-editorOverlay-background","--vscode-editorHighlightBackground",'
 		+ '"--vscode-diffEditor-insertedTextBackground","--vscode-diffEditor-insertedTextForeground",'
 		+ '"--vscode-diffEditor-removedTextBackground","--vscode-diffEditor-removedTextForeground"];'
+		/* v3：群聊 iframe 现在由「名册」三栏的中间栏动态创建（#wbMain iframe）；
+		   旧的 #gpFrame 收进了 #legacyPanes（hidden）⇒ 主题同步必须认"当前可见的那个"。 */
+		+ 'function frame() { return document.querySelector("#wbMain iframe") || document.getElementById("gpFrame"); }'
 		+ 'function syncThemeToFrame() {'
-		+ "var fr = document.getElementById('gpFrame');"
+		+ 'var fr = frame();'
 		+ 'if (!fr) { return; }'
 		+ 'var doc = null;'
 		+ 'try { doc = fr.contentDocument; } catch (e) { return; }'
@@ -1085,7 +1363,7 @@ const tabNav = '<nav class="seg"><button id="tabOverview"' + (groupFirst ? '' : 
 		+ '}'
 		+ '}'
 		+ 'function watchFrameTheme() {'
-		+ "var fr = document.getElementById('gpFrame');"
+		+ 'var fr = frame();'
 		+ 'if (!fr) { return; }'
 		+ 'fr.addEventListener("load", syncThemeToFrame);'
 		+ 'syncThemeToFrame();'
@@ -1097,8 +1375,7 @@ const tabNav = '<nav class="seg"><button id="tabOverview"' + (groupFirst ? '' : 
 		//   （页面所有交互静默失效，连报错都难看到）✗。
 		//   主题切换（IDE 换配色）后 iframe 里的变量不会自己变 ⇒ 轮询同步（可见时才做，开销可忽略）
 		+ 'window.setInterval(function () {'
-		+ "var pane = document.getElementById('groups');"
-		+ 'if (pane && !pane.hidden) { syncThemeToFrame(); }'
+		+ 'if (frame()) { syncThemeToFrame(); }'
 		+ '}, 1200);'
 		+ 'watchFrameTheme();'
 		+ 'window.setInterval(function () {'
@@ -1407,15 +1684,15 @@ ${HOME_CSS}
 <p class="diag note" id="pageNote" hidden></p>
 ${hero}
 ${overview}
-${activitySection}
-${timelineSection}
-<div id="roster" hidden>${body}</div>
+${rosterSection}
 ${usageSection}
 ${assignmentsSection}
 ${grantsSection}
-${groupsSection}
-${memorySection}
 ${renderCreateSection({ agents, create })}
+<!-- 旧面板收进 hidden 容器（2026-10-23 v3）：顶部页签已收敛为 4 个，这些不再是可达视图；
+     DOM 仍然渲染是为了兼容仍被引用的客户端函数与探针锚点（#groups / #gpFrame / #memory / #activity / #timeline），
+     用户看不到它们（hidden）。⚠ 不要再往里加新功能 —— 新结构在 #roster 三栏里。 -->
+<div id="legacyPanes" hidden>${groupsSection}${memorySection}${activitySection}${timelineSection}</div>
 ${problems}
 ${footer}
 ${script}

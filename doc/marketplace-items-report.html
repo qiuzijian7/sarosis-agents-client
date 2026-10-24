@@ -1,0 +1,1145 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>工作台商城 19 个条目 · 源码精读与 UI 复刻</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root{--bg:#0f1115;--bg2:#161a21;--bg3:#1d232c;--bd:#2a313b;--fg:#e6edf3;--fg2:#a7b3c2;--fg3:#7c8896;--ac:#4d9cf7;--ok:#3fb950;--warn:#e0a43a;--err:#f85149;--r:10px}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+a{color:var(--ac);text-decoration:none}
+.layout{display:grid;grid-template-columns:240px 1fr;min-height:100vh}
+aside{position:sticky;top:0;height:100vh;overflow:auto;background:var(--bg2);border-right:1px solid var(--bd);padding:18px 12px}
+.brand{font-weight:700;font-size:15px;margin:0 6px 4px}
+.brand small{display:block;color:var(--fg3);font-weight:400;font-size:11.5px;margin-top:2px}
+.nav-item{display:flex;gap:8px;align-items:center;padding:7px 9px;border-radius:8px;color:var(--fg2);font-size:13px}
+.nav-item:hover{background:var(--bg3);color:var(--fg)}
+.nav-item.active{background:#1e2a3a;color:#cfe4ff}
+.nav-item b{width:18px;text-align:center;font-weight:400}
+main{padding:28px 34px 80px;max-width:1180px}
+h1{font-size:26px;margin:0 0 6px;letter-spacing:-.02em}
+.lead{color:var(--fg2);margin:0 0 6px}
+.meta{color:var(--fg3);font-size:12.5px}
+.item{border:1px solid var(--bd);border-radius:14px;padding:20px 20px 16px;margin:22px 0;background:var(--bg2);scroll-margin-top:16px}
+.item-hd{display:flex;flex-wrap:wrap;gap:10px;justify-content:space-between;align-items:flex-start}
+.item-title{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+.item-title h2{font-size:19px;margin:0}
+.item-title code{color:var(--fg3);font-size:12px}
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+.chip{border:1px solid var(--bd);background:var(--bg3);color:var(--fg2);border-radius:999px;padding:2px 9px;font-size:11.5px}
+.chip.ok{border-color:#24513a;color:#7ee2a8;background:#12251b}
+.chip.warn{border-color:#4d3a15;color:#f0c674;background:#241c10}
+.chip.link{color:var(--ac)}
+.badge.cat{border:1px solid #2b3f57;background:#16222f;color:#9fc7f5;border-radius:6px;padding:2px 7px;font-size:11.5px}
+.one{color:#cfe0f5;margin:12px 0 4px}
+.cols{display:grid;grid-template-columns:1.05fr .95fr;gap:22px;margin-top:10px}
+@media(max-width:960px){.cols{grid-template-columns:1fr}.layout{grid-template-columns:1fr}aside{position:static;height:auto}}
+h3{font-size:12.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--fg3);margin:16px 0 6px}
+h3 small{text-transform:none;letter-spacing:0;color:var(--fg3);font-weight:400}
+ul.fn{margin:0;padding-left:18px;color:var(--fg2)}
+ul.fn li{margin:3px 0}
+.ui,.point{margin:0;color:var(--fg2)}
+.point em{font-style:normal;color:#9fc7f5}
+.demo{border:1px solid var(--bd);border-radius:12px;background:var(--bg);padding:12px;min-height:230px}
+details.src{margin-top:14px;border-top:1px dashed var(--bd);padding-top:10px}
+details.src summary{cursor:pointer;color:var(--fg3);font-size:12.5px}
+.src-body{display:grid;gap:5px;margin-top:8px;color:var(--fg2);font-size:12.5px}
+.src-body code{color:#b9c7d6;background:var(--bg3);padding:1px 5px;border-radius:5px;word-break:break-all}
+/* ── demo 通用 ── */
+.d-tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+.d-tab{border:1px solid var(--bd);background:var(--bg3);color:var(--fg2);border-radius:8px;padding:4px 10px;font-size:12.5px;cursor:pointer}
+.d-tab.on{background:#1e2a3a;color:#cfe4ff;border-color:#2b3f57}
+.d-row{display:flex;gap:8px;align-items:center;padding:6px 8px;border-radius:7px;cursor:pointer;color:var(--fg2);font-size:13px}
+.d-row:hover{background:var(--bg3)}
+.d-row.on{background:#1b2836;color:#dbeafe}
+.d-row .tag{margin-left:auto;color:var(--fg3);font-size:11.5px}
+.d-btn{border:1px solid var(--bd);background:var(--bg3);color:var(--fg);border-radius:7px;padding:4px 10px;font-size:12.5px;cursor:pointer}
+.d-btn.p{background:#1d4ed8;border-color:#2563eb;color:#fff}
+.d-btn.d{background:#2a1517;border-color:#5a2024;color:#ff9c9c}
+.d-input{width:100%;background:var(--bg3);border:1px solid var(--bd);color:var(--fg);border-radius:7px;padding:6px 9px;font:inherit;font-size:13px}
+.d-muted{color:var(--fg3);font-size:12px}
+.d-cols{display:flex;gap:8px}
+.d-col{flex:1 0 76px;background:var(--bg2);border:1px solid var(--bd);border-radius:9px;padding:6px;min-height:120px}
+.d-cols{overflow-x:auto;padding-bottom:2px}
+.d-col h4{margin:0 0 6px;font-size:11.5px;color:var(--fg3);font-weight:600}
+.d-card{background:var(--bg3);border:1px solid var(--bd);border-radius:7px;padding:5px 7px;font-size:12px;line-height:1.35;margin-bottom:6px;cursor:pointer;word-break:break-word}
+.d-card:hover{border-color:#3a4a5e}
+.d-chat{border-left:1px solid var(--bd);padding-left:10px;display:flex;flex-direction:column;gap:6px;min-height:150px}
+.d-msg{background:var(--bg3);border-radius:8px;padding:6px 9px;font-size:12.5px;color:var(--fg2)}
+.d-msg.me{background:#17283d;color:#cfe4ff;align-self:flex-end}
+.d-split{display:grid;grid-template-columns:1.1fr .9fr;gap:10px}
+.d-canvas{position:relative;height:190px;background:radial-gradient(circle at 1px 1px,#243040 1px,transparent 0) 0 0/16px 16px;border:1px solid var(--bd);border-radius:9px;overflow:hidden;cursor:crosshair}
+.d-node{position:absolute;transform:translate(-50%,-50%);background:#1b2836;border:1px solid #2b3f57;color:#cfe4ff;border-radius:8px;padding:4px 9px;font-size:12px;cursor:grab;user-select:none}
+.d-pin{position:absolute;transform:translate(-50%,-100%);font-size:18px;cursor:pointer}
+.d-kpi{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+.d-kpi div{background:var(--bg2);border:1px solid var(--bd);border-radius:9px;padding:8px 10px}
+.d-kpi b{display:block;font-size:18px}
+.d-kpi span{color:var(--fg3);font-size:11.5px}
+.d-cal{display:grid;grid-template-columns:repeat(7,1fr);gap:5px}
+.d-cal button{aspect-ratio:1;border:1px solid var(--bd);background:var(--bg2);color:var(--fg2);border-radius:7px;font-size:11px;cursor:pointer}
+.d-cal button.on{background:#1e3a5f;color:#cfe4ff;border-color:#2b5b8f}
+.d-cal button.has{outline:1px solid #2b3f57}
+.d-slide{background:var(--bg2);border:1px solid var(--bd);border-radius:10px;padding:22px;min-height:120px;display:flex;flex-direction:column;justify-content:center}
+.d-slide h4{margin:0 0 8px;font-size:16px}
+.d-slide p{margin:0;color:var(--fg2)}
+.d-win{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.d-win .w{background:var(--bg2);border:1px solid var(--bd);border-radius:9px;padding:8px}
+.d-win .w h4{margin:0 0 6px;font-size:11.5px;color:var(--fg3)}
+.d-tree div{padding:3px 6px;border-radius:6px;cursor:pointer;color:var(--fg2);font-size:12.5px}
+.d-tree div:hover{background:var(--bg3)}
+.d-tree div.on{background:#1b2836;color:#dbeafe}
+.d-pre{white-space:pre-wrap;background:var(--bg2);border:1px solid var(--bd);border-radius:8px;padding:9px;font-size:12px;color:var(--fg2);max-height:160px;overflow:auto}
+.d-bar{height:6px;background:var(--bg3);border-radius:999px;overflow:hidden}
+.d-bar i{display:block;height:100%;background:var(--ac)}
+.sum{border:1px solid #22303f;background:#131b24;border-radius:14px;padding:22px;margin:26px 0}
+.sum h2{font-size:18px;margin:0 0 10px}
+.sum ol{padding-left:20px;color:var(--fg2)}
+.sum ol li{margin:6px 0}
+.sum code{background:var(--bg3);padding:1px 5px;border-radius:5px;color:#b9c7d6}
+footer{color:var(--fg3);font-size:12px;margin-top:30px}
+</style></head>
+<body><div class="layout">
+<aside>
+	<p class="brand">工作台商城 · 源码精读<small>19 个条目 · 2026-10-23</small></p>
+	<a class="nav-item" href="#wb-0" data-nav="0"><b>⚡</b><span>DSH 思维导图工作台</span></a><a class="nav-item" href="#wb-1" data-nav="1"><b>⚡</b><span>DSH 画板</span></a><a class="nav-item" href="#wb-2" data-nav="2"><b>📈</b><span>跨平台账号看板</span></a><a class="nav-item" href="#wb-3" data-nav="3"><b>✍️</b><span>编曲工作台</span></a><a class="nav-item" href="#wb-4" data-nav="4"><b>⚡</b><span>投标作战室</span></a><a class="nav-item" href="#wb-5" data-nav="5"><b>⚡</b><span>合同审核工作台</span></a><a class="nav-item" href="#wb-6" data-nav="6"><b>✍️</b><span>内容运营工作台</span></a><a class="nav-item" href="#wb-7" data-nav="7"><b>⚡</b><span>装修工作台</span></a><a class="nav-item" href="#wb-8" data-nav="8"><b>🌗</b><span>玄学人生工作台</span></a><a class="nav-item" href="#wb-9" data-nav="9"><b>📈</b><span>门店选址</span></a><a class="nav-item" href="#wb-10" data-nav="10"><b>✍️</b><span>自媒体内容创作工作台</span></a><a class="nav-item" href="#wb-11" data-nav="11"><b>🌗</b><span>花少2 · 花学工作台</span></a><a class="nav-item" href="#wb-12" data-nav="12"><b>📈</b><span>SEO/GEO 监测工作台</span></a><a class="nav-item" href="#wb-13" data-nav="13"><b>🔍</b><span>双11省钱情报局</span></a><a class="nav-item" href="#wb-14" data-nav="14"><b>✍️</b><span>文案转演示素材工作台</span></a><a class="nav-item" href="#wb-15" data-nav="15"><b>✍️</b><span>Oil 内容创作工作台</span></a><a class="nav-item" href="#wb-16" data-nav="16"><b>⚡</b><span>项目总控台</span></a><a class="nav-item" href="#wb-17" data-nav="17"><b>✍️</b><span>小红书笔记创作</span></a><a class="nav-item" href="#wb-18" data-nav="18"><b>🔍</b><span>产品更新追踪</span></a>
+	<a class="nav-item" href="#summary"><b>✦</b><span>制作经验总结</span></a>
+</aside>
+<main>
+	<h1>工作台商城 19 个条目 · 源码精读与 UI 复刻</h1>
+	<p class="lead">全部源码已下载到本机并逐项读过：清单 / 入口 / 数据层 / 界面结构。下面每一项都配一个<strong>可点的 UI 复刻</strong>（按源码里的真实文案与结构做的低保真），右侧是它的制作要点。</p>
+	<p class="meta">样本：<code>market.dshdesktop.com/index.json</code> 的 19 个条目 · 源码落盘 <code>%TEMP%\wb-market-src\&lt;owner&gt;__&lt;repo&gt;</code> · 复刻为低保真（非像素级还原）</p>
+
+	
+<section class="item" id="wb-0">
+	<header class="item-hd">
+		<div class="item-title">
+			<span class="badge cat">效率</span>
+			<h2>DSH 思维导图工作台</h2>
+			<code>andoaidlaksldk/dsh-mind-workbench</code>
+		</div>
+		<div class="chips">
+			<span class="chip">v1.0.15</span>
+			<span class="chip">25 文件 · 2379 行</span>
+			<span class="chip ok">已注册工作台</span>
+			<span class="chip">无共享层</span>
+			<a class="chip link" href="https://github.com/andoaidlaksldk/dsh-mind-workbench" target="_blank" rel="noopener noreferrer">GitHub ↗</a>
+		</div>
+	</header>
+
+	<p class="one">把一套完整导图画布塞进工作台，只接管&quot;文档存哪、开哪份&quot;</p>
+
+	<div class="cols">
+		<div class="col">
+			<h3>功能</h3>
+			<ul class="fn"><li>文档管理：新建 / 打开 / 重命名 / 创建副本 / 删除；导入导出 JSON</li><li>画布能力零改动：节点、关联线、概要、外框、标记、待办、公式、演示、大纲、小地图、水印</li><li>8 种导出：.smm / PNG / SVG / PDF / Markdown / XMind / Txt / JSON</li><li>数据从 localStorage 迁到 DSH 数据目录，卸载不丢</li></ul>
+			<h3>UI 结构</h3>
+			<p class="ui">左侧文档列表（带&quot;已保存/重试&quot;状态条）+ 中间画布 + 右下&quot;AI 协助&quot;可收起</p>
+			<h3>制作要点</h3>
+			<p class="point">内嵌成熟应用的范式：<em>能力不重写，只接管持久化与文档入口</em>；README 第一段就写清"零改动"。</p>
+		</div>
+		<div class="col demo-col">
+			<h3>UI 复刻 <small>（可点：页签 / 筛选 / 卡片 / 输入）</small></h3>
+			<div class="demo" data-demo="0"></div>
+		</div>
+	</div>
+
+	<details class="src">
+		<summary>源码速览</summary>
+		<div class="src-body">
+			<div><b>包名</b> <code>dsh-mind-workbench</code></div>
+			<div><b>注入</b> <code>dsh-desktop-workbenches, @deepseek-ai/dsh-client-locale</code></div>
+			<div><b>接口</b> <code>/api/dsh-mind-workbench</code></div>
+			<div><b>结构</b> <code>.gitignore  ·  .npmignore  ·  app/bridge.js  ·  cordis.patch.yml  ·  docs/agent-tools.md  ·  docs/ai-model-setup.md  ·  docs/market-submission.md  ·  dsh/index.js  ·  INTEGRATION.md  ·  lib/client.js</code></div>
+		</div>
+	</details>
+</section>
+<section class="item" id="wb-1">
+	<header class="item-hd">
+		<div class="item-title">
+			<span class="badge cat">效率</span>
+			<h2>DSH 画板</h2>
+			<code>andoaidlaksldk/dshdrawworkbench</code>
+		</div>
+		<div class="chips">
+			<span class="chip">v1.0.5</span>
+			<span class="chip">95 文件 · 4840 行</span>
+			<span class="chip ok">已注册工作台</span>
+			<span class="chip">无共享层</span>
+			<a class="chip link" href="https://github.com/andoaidlaksldk/DSHDrawWorkbench" target="_blank" rel="noopener noreferrer">GitHub ↗</a>
+		</div>
+	</header>
+
+	<p class="one">内嵌 Drawnix 白板，Agent 可以直接把图画到画板上</p>
+
+	<div class="cols">
+		<div class="col">
+			<h3>功能</h3>
+			<ul class="fn"><li>流程图 / 架构图 / 思维导图 / 手绘</li><li>文档保存在 DSH 数据目录（不是浏览器缓存）</li><li>会话里的 Agent 能把图直接画到画板</li><li>新建 / 打开 / 重命名 / 副本 / 删除 / 导入导出</li></ul>
+			<h3>UI 结构</h3>
+			<p class="ui">左侧画板列表 + 顶部绘图工具条 + 画布</p>
+			<h3>制作要点</h3>
+			<p class="point">与思维导图同一套"外壳 + 内核"分工；<em>画板能被 Agent 写入</em>是它真正的差异点。</p>
+		</div>
+		<div class="col demo-col">
+			<h3>UI 复刻 <small>（可点：页签 / 筛选 / 卡片 / 输入）</small></h3>
+			<div class="demo" data-demo="1"></div>
+		</div>
+	</div>
+
+	<details class="src">
+		<summary>源码速览</summary>
+		<div class="src-body">
+			<div><b>包名</b> <code>dsh-draw-workbench</code></div>
+			<div><b>注入</b> <code>dsh-desktop-workbenches, @deepseek-ai/dsh-client-locale</code></div>
+			<div><b>接口</b> <code>/api/dsh-draw-workbench</code></div>
+			<div><b>结构</b> <code>.gitignore  ·  app/assets  ·  app/favicon.ico  ·  app/index.html  ·  app/logo  ·  app/product_showcase  ·  cordis.patch.yml  ·  docs/screenshots  ·  dsh/index.js  ·  lib/client.js</code></div>
+		</div>
+	</details>
+</section>
+<section class="item" id="wb-2">
+	<header class="item-hd">
+		<div class="item-title">
+			<span class="badge cat">运营</span>
+			<h2>跨平台账号看板</h2>
+			<code>beianbai/cross-platform-account-dashboard</code>
+		</div>
+		<div class="chips">
+			<span class="chip">v0.7.2</span>
+			<span class="chip">120 文件 · 7206 行</span>
+			<span class="chip ok">已注册工作台</span>
+			<span class="chip">无共享层</span>
+			<a class="chip link" href="https://github.com/beianbai/cross-platform-account-dashboard" target="_blank" rel="noopener noreferrer">GitHub ↗</a>
+		</div>
+	</header>
+
+	<p class="one">四平台账号指标看板，连接已登录浏览器同步历史</p>
+
+	<div class="cols">
+		<div class="col">
+			<h3>功能</h3>
+			<ul class="fn"><li>小红书 / 抖音 / B站 / X 的粉丝、关注、作品数、获赞</li><li>每日变化与累计作品库</li><li>连接已登录浏览器，手动同步或按计划积累</li><li>浅色 / 深色两套主题</li></ul>
+			<h3>UI 结构</h3>
+			<p class="ui">平台切换 + 指标卡网格 + 趋势 + 作品列表</p>
+			<h3>制作要点</h3>
+			<p class="point"><em>指标卡 + 平台 tab</em> 是最省事的"多源同构"布局；每个平台的数字口径要写在同一处。</p>
+		</div>
+		<div class="col demo-col">
+			<h3>UI 复刻 <small>（可点：页签 / 筛选 / 卡片 / 输入）</small></h3>
+			<div class="demo" data-demo="2"></div>
+		</div>
+	</div>
+
+	<details class="src">
+		<summary>源码速览</summary>
+		<div class="src-body">
+			<div><b>包名</b> <code>dsh-workbench-personal-social-local</code></div>
+			<div><b>注入</b> <code>dsh-desktop-workbenches</code></div>
+			<div><b>接口</b> <code>（无 /api）</code></div>
+			<div><b>结构</b> <code>.gitattributes  ·  .github/ISSUE_TEMPLATE  ·  .github/pull_request_template.md  ·  .github/workflows  ·  .gitignore  ·  agents.md  ·  assets/account-detail.png  ·  assets/browser-connection.png  ·  assets/browser-connector.png  ·  assets/cover.png</code></div>
+		</div>
+	</details>
+</section>
+<section class="item" id="wb-3">
+	<header class="item-hd">
+		<div class="item-title">
+			<span class="badge cat">内容</span>
+			<h2>编曲工作台</h2>
+			<code>cinderzhan/bianqu-workbench</code>
+		</div>
+		<div class="chips">
+			<span class="chip">v0.1.1</span>
+			<span class="chip">13 文件 · 1013 行</span>
+			<span class="chip ok">已注册工作台</span>
+			<span class="chip">无共享层</span>
+			<a class="chip link" href="https://github.com/cinderzhan/bianqu-workbench" target="_blank" rel="noopener noreferrer">GitHub ↗</a>
+		</div>
+	</header>
+
+	<p class="one">编曲灵感库：旋律动机 / 和声走向 / 歌词片段 / 节奏型</p>
+
+	<div class="cols">
+		<div class="col">
+			<h3>功能</h3>
+			<ul class="fn"><li>按类型记录灵感（含调式、BPM 等可选字段）</li><li>搜索、类型与标签筛选、归档</li><li>三个本机接口：列表+新建 / 更新 / 删除</li><li>AI 对话按需从右侧抽屉打开，不常驻</li></ul>
+			<h3>UI 结构</h3>
+			<p class="ui">整页业务区：筛选行 + 灵感列表 + 新建/编辑弹层；右抽屉放对话</p>
+			<h3>制作要点</h3>
+			<p class="point"><em>"对话是抽屉不是常驻"</em> 写进 README 第一段 —— 布局决策要显式声明，用户才不会误判。</p>
+		</div>
+		<div class="col demo-col">
+			<h3>UI 复刻 <small>（可点：页签 / 筛选 / 卡片 / 输入）</small></h3>
+			<div class="demo" data-demo="3"></div>
+		</div>
+	</div>
+
+	<details class="src">
+		<summary>源码速览</summary>
+		<div class="src-body">
+			<div><b>包名</b> <code>dsh-bianqu-workbench</code></div>
+			<div><b>注入</b> <code>dsh-desktop-workbenches</code></div>
+			<div><b>接口</b> <code>/api/bianqu-workbench/ideas  /api/bianqu-workbench/ideas/update  /api/bianqu-workbench/ideas/remove</code></div>
+			<div><b>结构</b> <code>.gitignore  ·  cordis.patch.yml  ·  docs/images  ·  dsh/index.js  ·  dsh/store.js  ·  lib/client.js  ·  LICENSE  ·  package.json  ·  README.md  ·  scripts/build.mjs</code></div>
+		</div>
+	</details>
+</section>
+<section class="item" id="wb-4">
+	<header class="item-hd">
+		<div class="item-title">
+			<span class="badge cat">效率</span>
+			<h2>投标作战室</h2>
+			<code>cinderzhan/dsh-bid-workbench</code>
+		</div>
+		<div class="chips">
+			<span class="chip">v0.1.0</span>
+			<span class="chip">25 文件 · 470 行</span>
+			<span class="chip ok">已注册工作台</span>
+			<span class="chip">无共享层</span>
+			<a class="chip link" href="https://github.com/cinderzhan/dsh-bid-workbench" target="_blank" rel="noopener noreferrer">GitHub ↗</a>
+		</div>
+	</header>
+
+	<p class="one">投标流程作战室：把&quot;读标书→拆要求→写响应&quot;串成一条线</p>
+
+	<div class="cols">
+		<div class="col">
+			<h3>功能</h3>
+			<ul class="fn"><li>投标项目与关键时间点</li><li>响应要求与来源引用（每条结论可回溯原文）</li><li>状态推进与待办</li><li>本机接口 /api/bid-workbench</li></ul>
+			<h3>UI 结构</h3>
+			<p class="ui">步骤条 + 表格（要求 / 来源引用 / 状态）</p>
+			<h3>制作要点</h3>
+			<p class="point"><em>每条结论都带来源引用</em>：投标/合规类工作台的可信度全押在"能不能点回原文"。</p>
+		</div>
+		<div class="col demo-col">
+			<h3>UI 复刻 <small>（可点：页签 / 筛选 / 卡片 / 输入）</small></h3>
+			<div class="demo" data-demo="4"></div>
+		</div>
+	</div>
+
+	<details class="src">
+		<summary>源码速览</summary>
+		<div class="src-body">
+			<div><b>包名</b> <code>dsh-bid-workbench</code></div>
+			<div><b>注入</b> <code>dsh-desktop-workbenches, @deepseek-ai/dsh-api-session-controller, @deepseek-ai/dsh-api-workspace-controller, @deepseek-ai/dsh-client-ui-workspace</code></div>
+			<div><b>接口</b> <code>/api/bid-workbench</code></div>
+			<div><b>结构</b> <code>.gitignore  ·  cordis.patch.yml  ·  docs/images  ·  dsh/index.mjs  ·  fixtures/mock-bid-materials  ·  fixtures/smart-park-project.json  ·  lib/client.js  ·  LICENSE  ·  package.json  ·  README.md</code></div>
+		</div>
+	</details>
+</section>
+<section class="item" id="wb-5">
+	<header class="item-hd">
+		<div class="item-title">
+			<span class="badge cat">效率</span>
+			<h2>合同审核工作台</h2>
+			<code>cinderzhan/dsh-contract-review-workbench</code>
+		</div>
+		<div class="chips">
+			<span class="chip">v0.3.10</span>
+			<span class="chip">34 文件 · 72422 行</span>
+			<span class="chip ok">已注册工作台</span>
+			<span class="chip">无共享层</span>
+			<a class="chip link" href="https://github.com/cinderzhan/dsh-contract-review-workbench" target="_blank" rel="noopener noreferrer">GitHub ↗</a>
+		</div>
+	</header>
+
+	<p class="one">合同条款审阅 + 逐条修订建议（可采纳 / 忽略）</p>
+
+	<div class="cols">
+		<div class="col">
+			<h3>功能</h3>
+			<ul class="fn"><li>选择规则与模型后做 AI 审核</li><li>问题列表：待处理 / 确认需要修改 / 忽略此项</li><li>修订预览与原文对照</li><li>可保存到本机或项目文件夹</li></ul>
+			<h3>UI 结构</h3>
+			<p class="ui">左：合同文本（可定位到条款）；右：审核问题列表 + 修订预览</p>
+			<h3>制作要点</h3>
+			<p class="point"><em>问题项要能"逐条采纳/忽略"</em>，而不是一键全改；审阅类界面的信任来自可回退。</p>
+		</div>
+		<div class="col demo-col">
+			<h3>UI 复刻 <small>（可点：页签 / 筛选 / 卡片 / 输入）</small></h3>
+			<div class="demo" data-demo="5"></div>
+		</div>
+	</div>
+
+	<details class="src">
+		<summary>源码速览</summary>
+		<div class="src-body">
+			<div><b>包名</b> <code>dsh-contract-review-workbench</code></div>
+			<div><b>注入</b> <code>dsh-desktop-workbenches</code></div>
+			<div><b>接口</b> <code>/api/contract-review/ai  /api/contract-review/project</code></div>
+			<div><b>结构</b> <code>.gitignore  ·  cordis.patch.yml  ·  docs/screenshots  ·  dsh/ai.js  ·  dsh/index.js  ·  dsh/models.js  ·  dsh/project.js  ·  lib/client.js  ·  LICENSE  ·  package-lock.json</code></div>
+		</div>
+	</details>
+</section>
+<section class="item" id="wb-6">
+	<header class="item-hd">
+		<div class="item-title">
+			<span class="badge cat">内容</span>
+			<h2>内容运营工作台</h2>
+			<code>cinderzhan/dsh-media-workbench</code>
+		</div>
+		<div class="chips">
+			<span class="chip">v0.12.6</span>
+			<span class="chip">60 文件 · 1319 行</span>
+			<span class="chip warn">未注册</span>
+			<span class="chip">无共享层</span>
+			<a class="chip link" href="https://github.com/cinderzhan/dsh-media-workbench" target="_blank" rel="noopener noreferrer">GitHub ↗</a>
+		</div>
+	</header>
+
+	<p class="one">内容运营：选题 / 达人 / Campaign / 营销日历四窗口</p>
+
+	<div class="cols">
+		<div class="col">
+			<h3>功能</h3>
+			<ul class="fn"><li>官号选题、达人合作、Campaign 管理</li><li>营销日历（保留状态色）</li><li>内容数据与每日成果</li><li>四个窗口可交换位置、调整大小、收起恢复</li></ul>
+			<h3>UI 结构</h3>
+			<p class="ui"><em>四窗口可自由拼装</em>；黑白极简，只有状态上色</p>
+			<h3>制作要点</h3>
+			<p class="point"><em>黑白底 + 只给状态上色</em>，信息密度高也不吵；可拼装窗口只适合"多信息源并看"。</p>
+		</div>
+		<div class="col demo-col">
+			<h3>UI 复刻 <small>（可点：页签 / 筛选 / 卡片 / 输入）</small></h3>
+			<div class="demo" data-demo="6"></div>
+		</div>
+	</div>
+
+	<details class="src">
+		<summary>源码速览</summary>
+		<div class="src-body">
+			<div><b>包名</b> <code>dsh-media-workbench</code></div>
+			<div><b>注入</b> <code>dsh-desktop-workbenches, @deepseek-ai/dsh-client-ui-slots, @deepseek-ai/dsh-client-ui-sidebar, @deepseek-ai/dsh-client-ui-layout, @deepseek-ai/dsh-client-ui-conversation, @deepseek-ai/dsh-api-session-controller, @deepseek-ai/dsh-api-workspace-controller</code></div>
+			<div><b>接口</b> <code>（无 /api）</code></div>
+			<div><b>结构</b> <code>.gitignore  ·  docs/chart-ui-ux-review.md  ·  docs/conversation-host-bridge.md  ·  docs/plugin-management.zh.md  ·  docs/screenshots  ·  docs/workbench-market-adapter.md  ·  LICENSE  ·  package.json  ·  packages/dsh-media-workbench  ·  patches/@deepseek-ai+dsh-client-ui-layout+0.1.2-rc.1.patch</code></div>
+		</div>
+	</details>
+</section>
+<section class="item" id="wb-7">
+	<header class="item-hd">
+		<div class="item-title">
+			<span class="badge cat">效率</span>
+			<h2>装修工作台</h2>
+			<code>cinderzhan/dsh-zhuangxiu-workbench</code>
+		</div>
+		<div class="chips">
+			<span class="chip">v0.3.1</span>
+			<span class="chip">16 文件 · 103 行</span>
+			<span class="chip ok">已注册工作台</span>
+			<span class="chip">无共享层</span>
+			<a class="chip link" href="https://github.com/cinderzhan/dsh-zhuangxiu-workbench" target="_blank" rel="noopener noreferrer">GitHub ↗</a>
+		</div>
+	</header>
+
+	<p class="one">装修工作台：规划、施工进度、待办、预算与灵感统一管理</p>
+
+	<div class="cols">
+		<div class="col">
+			<h3>功能</h3>
+			<ul class="fn"><li>装修规划与阶段</li><li>施工进度与待办</li><li>预算与灵感收集</li><li>从&quot;选择资料位置并开始会话&quot;进入</li></ul>
+			<h3>UI 结构</h3>
+			<p class="ui">单页分区 + 右侧对话（可收起）</p>
+			<h3>制作要点</h3>
+			<p class="point">源码 5 KB、能力几乎全在 436 KB bundle 里 —— <em>反面样本</em>：可审计性差，用户无法从仓库判断它做什么。</p>
+		</div>
+		<div class="col demo-col">
+			<h3>UI 复刻 <small>（可点：页签 / 筛选 / 卡片 / 输入）</small></h3>
+			<div class="demo" data-demo="7"></div>
+		</div>
+	</div>
+
+	<details class="src">
+		<summary>源码速览</summary>
+		<div class="src-body">
+			<div><b>包名</b> <code>dsh-zhuangxiu-workbench</code></div>
+			<div><b>注入</b> <code>dsh-desktop-workbenches</code></div>
+			<div><b>接口</b> <code>（无 /api）</code></div>
+			<div><b>结构</b> <code>.gitignore  ·  cordis.patch.yml  ·  DESIGN.md  ·  docs/images  ·  dsh/index.js  ·  lib/client.js  ·  LICENSE  ·  package-lock.json  ·  package.json  ·  PRODUCT.md</code></div>
+		</div>
+	</details>
+</section>
+<section class="item" id="wb-8">
+	<header class="item-hd">
+		<div class="item-title">
+			<span class="badge cat">其他</span>
+			<h2>玄学人生工作台</h2>
+			<code>dataelement/dsh-ming-life</code>
+		</div>
+		<div class="chips">
+			<span class="chip">v0.1.3</span>
+			<span class="chip">126 文件 · 6364 行</span>
+			<span class="chip ok">已注册工作台</span>
+			<span class="chip">无共享层</span>
+			<a class="chip link" href="https://github.com/dataelement/dsh-ming-life" target="_blank" rel="noopener noreferrer">GitHub ↗</a>
+		</div>
+	</header>
+
+	<p class="one">命理 / 人生推演：盘面、档案、事件、术法</p>
+
+	<div class="cols">
+		<div class="col">
+			<h3>功能</h3>
+			<ul class="fn"><li>出生信息与档案管理</li><li>盘面 / 事件 / 术法多视图</li><li>把当前内容与问题填进右侧对话，交给 DSH 解读</li><li>可查看&quot;将传给 DSH 的结构&quot;（上下文透明）</li></ul>
+			<h3>UI 结构</h3>
+			<p class="ui">页签（盘面 / 档案 / 事件 / 术法）+ 右侧对话 + &quot;当前上下文&quot;浮层</p>
+			<h3>制作要点</h3>
+			<p class="point"><em>"查看将传给模型的结构"</em> 这一手很值得学：上下文透明化能显著提升信任。</p>
+		</div>
+		<div class="col demo-col">
+			<h3>UI 复刻 <small>（可点：页签 / 筛选 / 卡片 / 输入）</small></h3>
+			<div class="demo" data-demo="8"></div>
+		</div>
+	</div>
+
+	<details class="src">
+		<summary>源码速览</summary>
+		<div class="src-body">
+			<div><b>包名</b> <code>ming-life</code></div>
+			<div><b>注入</b> <code>dsh-desktop-workbenches, @deepseek-ai/dsh-client-ui-conversation, @deepseek-ai/dsh-api-session-controller</code></div>
+			<div><b>接口</b> <code>/api/ming-life</code></div>
+			<div><b>结构</b> <code>.github/workflows  ·  .gitignore  ·  checkhooks.sh  ·  cordis.patch.yml  ·  docs/screenshots  ·  dsh/index.js  ·  index.html  ·  lib/client.js  ·  LICENSE  ·  package-lock.json</code></div>
+		</div>
+	</details>
+</section>
+<section class="item" id="wb-9">
+	<header class="item-hd">
+		<div class="item-title">
+			<span class="badge cat">运营</span>
+			<h2>门店选址</h2>
+			<code>dataelement/dsh-site-selection</code>
+		</div>
+		<div class="chips">
+			<span class="chip">v1.2.2</span>
+			<span class="chip">52 文件 · 6558 行</span>
+			<span class="chip ok">已注册工作台</span>
+			<span class="chip ok">用共享层</span>
+			<a class="chip link" href="https://github.com/dataelement/dsh-site-selection" target="_blank" rel="noopener noreferrer">GitHub ↗</a>
+		</div>
+	</header>
+
+	<p class="one">真实三维城市地图上点任意位置，立刻得到该点选址分析</p>
+
+	<div class="cols">
+		<div class="col">
+			<h3>功能</h3>
+			<ul class="fn"><li>地图点选 → 立刻出该点分析</li><li>大白话提要求 → 按同一模型批量找位置 → 写进名单</li><li>把在租的铺收进来，踩点后回填</li><li>右侧对话全程知道&quot;你选中的是哪个点&quot;</li></ul>
+			<h3>UI 结构</h3>
+			<p class="ui"><em>左地图 / 右对话</em>；顶部项目切换（切换 / 新建 / 重命名 / 删除 / 刷新）</p>
+			<h3>制作要点</h3>
+			<p class="point"><em>选中态要能被对话"读懂"</em>（右侧知道你看的是哪个点）——多模态工作台的关键是共享一个 selection 状态。</p>
+		</div>
+		<div class="col demo-col">
+			<h3>UI 复刻 <small>（可点：页签 / 筛选 / 卡片 / 输入）</small></h3>
+			<div class="demo" data-demo="9"></div>
+		</div>
+	</div>
+
+	<details class="src">
+		<summary>源码速览</summary>
+		<div class="src-body">
+			<div><b>包名</b> <code>dsh-site-selection</code></div>
+			<div><b>注入</b> <code>dsh-desktop-workbenches, @deepseek-ai/dsh-client-ui-conversation</code></div>
+			<div><b>接口</b> <code>/api/site-selection/app  /api/site-selection/session-projects  /api/site-selection/watch  /api/site-selection/bootstrap</code></div>
+			<div><b>结构</b> <code>.gitignore  ·  cordis.patch.yml  ·  DATA-LICENSE.md  ·  docs/market-entry.yml  ·  docs/screenshots  ·  lib/client.js  ·  LICENSE  ·  package.json  ·  public/app.css  ·  public/app.js</code></div>
+		</div>
+	</details>
+</section>
+<section class="item" id="wb-10">
+	<header class="item-hd">
+		<div class="item-title">
+			<span class="badge cat">内容</span>
+			<h2>自媒体内容创作工作台</h2>
+			<code>gjz18342624299-arch/dsh-content-workbench</code>
+		</div>
+		<div class="chips">
+			<span class="chip">v0.2.1</span>
+			<span class="chip">16 文件 · 3645 行</span>
+			<span class="chip ok">已注册工作台</span>
+			<span class="chip">无共享层</span>
+			<a class="chip link" href="https://github.com/gjz18342624299-arch/dsh-content-workbench" target="_blank" rel="noopener noreferrer">GitHub ↗</a>
+		</div>
+	</header>
+
+	<p class="one">左选题看板、右原生对话：一个选题产多平台稿</p>
+
+	<div class="cols">
+		<div class="col">
+			<h3>功能</h3>
+			<ul class="fn"><li>选题带切入方向、目标平台、状态流转（候选→写作中→已完成）</li><li>素材库；跨项目发布数据汇总</li><li>项目可切换 / 重命名 / 移除，位置丢失会显式提示</li><li>7 个接口：bootstrap / projects / relink / delete / action / app / watch</li></ul>
+			<h3>UI 结构</h3>
+			<p class="ui"><em>左侧固定业务面板 + 右侧 DSH 原生对话</em></p>
+			<h3>制作要点</h3>
+			<p class="point"><em>状态流转写进列名</em>（候选/写作中/已完成）比"状态字段 + 筛选器"更快读懂。</p>
+		</div>
+		<div class="col demo-col">
+			<h3>UI 复刻 <small>（可点：页签 / 筛选 / 卡片 / 输入）</small></h3>
+			<div class="demo" data-demo="10"></div>
+		</div>
+	</div>
+
+	<details class="src">
+		<summary>源码速览</summary>
+		<div class="src-body">
+			<div><b>包名</b> <code>dsh-content-workbench</code></div>
+			<div><b>注入</b> <code>dsh-desktop-workbenches, @deepseek-ai/dsh-api-session-controller, @deepseek-ai/dsh-client-ui-workspace, @deepseek-ai/dsh-client-ui-conversation</code></div>
+			<div><b>接口</b> <code>/api/content/app  /api/content/watch  /api/content/bootstrap  /api/content/alldata</code></div>
+			<div><b>结构</b> <code>.gitattributes  ·  .gitignore  ·  cordis.patch.yml  ·  docs/screenshots  ·  lib/client.js  ·  LICENSE  ·  package.json  ·  public/app.css  ·  public/app.js  ·  public/index.html</code></div>
+		</div>
+	</details>
+</section>
+<section class="item" id="wb-11">
+	<header class="item-hd">
+		<div class="item-title">
+			<span class="badge cat">其他</span>
+			<h2>花少2 · 花学工作台</h2>
+			<code>gjz18342624299-arch/dsh-huaxue-workbench</code>
+		</div>
+		<div class="chips">
+			<span class="chip">v0.4.0-rc.1</span>
+			<span class="chip">83 文件 · 4642 行</span>
+			<span class="chip warn">未注册</span>
+			<span class="chip">无共享层</span>
+			<a class="chip link" href="https://github.com/gjz18342624299-arch/dsh-huaxue-workbench" target="_blank" rel="noopener noreferrer">GitHub ↗</a>
+		</div>
+	</header>
+
+	<p class="one">七位&quot;花学旅伴&quot;陪聊 + 花学拆解与情境续演</p>
+
+	<div class="cols">
+		<div class="col">
+			<h3>功能</h3>
+			<ul class="fn"><li>七位角色，可&quot;借个嘴&quot;接话</li><li>花学拆解（轮次 / 人物归属 / 场景）</li><li>「第八位嘉宾」情境续演</li><li>README 给出兼容矩阵与 doctor.mjs 自检</li></ul>
+			<h3>UI 结构</h3>
+			<p class="ui">角色列表 + 对话区 + 情境控制</p>
+			<h3>制作要点</h3>
+			<p class="point"><em>兼容矩阵前置</em>（"只支持实测过的宿主版本 + doctor 脚本"）——比用户装上打不开再回来骂强。</p>
+		</div>
+		<div class="col demo-col">
+			<h3>UI 复刻 <small>（可点：页签 / 筛选 / 卡片 / 输入）</small></h3>
+			<div class="demo" data-demo="11"></div>
+		</div>
+	</div>
+
+	<details class="src">
+		<summary>源码速览</summary>
+		<div class="src-body">
+			<div><b>包名</b> <code>dsh-huaxue-workbench</code></div>
+			<div><b>注入</b> <code>dsh-desktop-workbenches, @deepseek-ai/dsh-client-ui-layout, @deepseek-ai/dsh-client-ui-conversation, @deepseek-ai/dsh-client-ui-settings, @deepseek-ai/dsh-client-ui-workspace</code></div>
+			<div><b>接口</b> <code>/api/huaxue/state</code></div>
+			<div><b>结构</b> <code>.gitattributes  ·  .github/workflows  ·  .gitignore  ·  client.js  ·  compatibility.json  ·  cordis.patch.yml  ·  docs/screenshots  ·  index.js  ·  INSTALL.md  ·  LICENSE</code></div>
+		</div>
+	</details>
+</section>
+<section class="item" id="wb-12">
+	<header class="item-hd">
+		<div class="item-title">
+			<span class="badge cat">运营</span>
+			<h2>SEO/GEO 监测工作台</h2>
+			<code>gjz18342624299-arch/dsh-seo-geo-workbench</code>
+		</div>
+		<div class="chips">
+			<span class="chip">v0.16.8</span>
+			<span class="chip">109 文件 · 4597 行</span>
+			<span class="chip warn">未注册</span>
+			<span class="chip">无共享层</span>
+			<a class="chip link" href="https://github.com/gjz18342624299-arch/dsh-seo-geo-workbench" target="_blank" rel="noopener noreferrer">GitHub ↗</a>
+		</div>
+	</header>
+
+	<p class="one">采集 AI 网站回答、核对品牌证据、生成可追溯行动报告</p>
+
+	<div class="cols">
+		<div class="col">
+			<h3>功能</h3>
+			<ul class="fn"><li>采集 AI 站点回答</li><li>品牌证据核对</li><li>SEO 数据导入与分析</li><li>可追溯的行动报告</li></ul>
+			<h3>UI 结构</h3>
+			<p class="ui">设置 → 任务 → 报告三段式（新用户先落设置、品牌保存有就地反馈）</p>
+			<h3>制作要点</h3>
+			<p class="point">版本节奏很密（0.16.8）；README 记"本轮调整"——<em>变更日志即产品文档</em>，对长期维护的项目很值。</p>
+		</div>
+		<div class="col demo-col">
+			<h3>UI 复刻 <small>（可点：页签 / 筛选 / 卡片 / 输入）</small></h3>
+			<div class="demo" data-demo="12"></div>
+		</div>
+	</div>
+
+	<details class="src">
+		<summary>源码速览</summary>
+		<div class="src-body">
+			<div><b>包名</b> <code>dsh-seo-geo-workbench</code></div>
+			<div><b>注入</b> <code>dsh-desktop-workbenches, @deepseek-ai/dsh-client-ui-conversation, @deepseek-ai/dsh-client-ui-session, @deepseek-ai/dsh-client-ui-settings, @deepseek-ai/dsh-client-ui-workspace</code></div>
+			<div><b>接口</b> <code>（无 /api）</code></div>
+			<div><b>结构</b> <code>.github/workflows  ·  .gitignore  ·  analysis.js  ·  app.css  ·  app.js  ·  build-release.mjs  ·  build.mjs  ·  chrome-bridge.js  ·  chrome-extension/background.js  ·  chrome-extension/manifest.json</code></div>
+		</div>
+	</details>
+</section>
+<section class="item" id="wb-13">
+	<header class="item-hd">
+		<div class="item-title">
+			<span class="badge cat">调研</span>
+			<h2>双11省钱情报局</h2>
+			<code>gjz18342624299-arch/dsh-shopping-workbench</code>
+		</div>
+		<div class="chips">
+			<span class="chip">v0.33.0</span>
+			<span class="chip">24 文件 · 260 行</span>
+			<span class="chip ok">已注册工作台</span>
+			<span class="chip">无共享层</span>
+			<a class="chip link" href="https://github.com/gjz18342624299-arch/dsh-shopping-workbench" target="_blank" rel="noopener noreferrer">GitHub ↗</a>
+		</div>
+	</header>
+
+	<p class="one">买前决策：哪个平台、哪天几点、先领什么券</p>
+
+	<div class="cols">
+		<div class="col">
+			<h3>功能</h3>
+			<ul class="fn"><li>写下想买的东西 → 出购买与领券安排</li><li>促销与领券日历</li><li>可&quot;问 AI 助手&quot;再排一版，或&quot;不改了&quot;定稿</li><li>数据都在本机</li></ul>
+			<h3>UI 结构</h3>
+			<p class="ui">方案区 + 日历 + 对话；顶部&quot;我的购买方案&quot;</p>
+			<h3>制作要点</h3>
+			<p class="point"><em>"帮我排一下 / 不改了"</em> 这对按钮把"再生成"与"接受"分清了，避免用户以为必须一直改。</p>
+		</div>
+		<div class="col demo-col">
+			<h3>UI 复刻 <small>（可点：页签 / 筛选 / 卡片 / 输入）</small></h3>
+			<div class="demo" data-demo="13"></div>
+		</div>
+	</div>
+
+	<details class="src">
+		<summary>源码速览</summary>
+		<div class="src-body">
+			<div><b>包名</b> <code>dsh-shopping-workbench</code></div>
+			<div><b>注入</b> <code>dsh-desktop-workbenches</code></div>
+			<div><b>接口</b> <code>/api/shopping-workbench/  /api/shopping-workbench/service  /api/shopping-workbench/calendar  /api/shopping-workbench/revision</code></div>
+			<div><b>结构</b> <code>.gitignore  ·  cordis.patch.yml  ·  docs/screenshots  ·  dsh/channel-policy.mjs  ·  dsh/decision-core.mjs  ·  dsh/dsh-calendar-browser.mjs  ·  dsh/dsh-calendar-collector.mjs  ·  dsh/index.js  ·  dsh/live-calendar.mjs  ·  dsh/promotion-discovery.mjs</code></div>
+		</div>
+	</details>
+</section>
+<section class="item" id="wb-14">
+	<header class="item-hd">
+		<div class="item-title">
+			<span class="badge cat">内容</span>
+			<h2>文案转演示素材工作台</h2>
+			<code>mfanoffice/text2demo</code>
+		</div>
+		<div class="chips">
+			<span class="chip">v1.0.13</span>
+			<span class="chip">16 文件 · 1909 行</span>
+			<span class="chip ok">已注册工作台</span>
+			<span class="chip">无共享层</span>
+			<a class="chip link" href="https://github.com/mfanoffice/text2demo" target="_blank" rel="noopener noreferrer">GitHub ↗</a>
+		</div>
+	</header>
+
+	<p class="one">口播文案 → 可翻页、可逐步入场的演示动画</p>
+
+	<div class="cols">
+		<div class="col">
+			<h3>功能</h3>
+			<ul class="fn"><li>一段口播稿 → 演示动画（逐步入场）</li><li>顺带生成视频标题、标签、三比例封面</li><li>本机自用：不上架、不上传、不投稿</li></ul>
+			<h3>UI 结构</h3>
+			<p class="ui">输入区 + 分页预览（翻页）+ 生成结果</p>
+			<h3>制作要点</h3>
+			<p class="point"><em>在 README 首段划清边界</em>（"自己在本机用，不上传"）——能力边界本身就是产品说明。</p>
+		</div>
+		<div class="col demo-col">
+			<h3>UI 复刻 <small>（可点：页签 / 筛选 / 卡片 / 输入）</small></h3>
+			<div class="demo" data-demo="14"></div>
+		</div>
+	</div>
+
+	<details class="src">
+		<summary>源码速览</summary>
+		<div class="src-body">
+			<div><b>包名</b> <code>dsh-deck-workbench</code></div>
+			<div><b>注入</b> <code>dsh-desktop-workbenches</code></div>
+			<div><b>接口</b> <code>/api/deck-workbench/app</code></div>
+			<div><b>结构</b> <code>.gitignore  ·  assets/tools  ·  assets/workbench.html  ·  cordis.patch.yml  ·  docs/screenshots  ·  dsh/plugin.js  ·  lib/client.js  ·  LICENSE  ·  package.json  ·  README.md</code></div>
+		</div>
+	</details>
+</section>
+<section class="item" id="wb-15">
+	<header class="item-hd">
+		<div class="item-title">
+			<span class="badge cat">内容</span>
+			<h2>Oil 内容创作工作台</h2>
+			<code>oil-oil/dsh-oil-creator</code>
+		</div>
+		<div class="chips">
+			<span class="chip">v0.2.1</span>
+			<span class="chip">140 文件 · 13631 行</span>
+			<span class="chip warn">未注册</span>
+			<span class="chip">无共享层</span>
+			<a class="chip link" href="https://github.com/oil-oil/dsh-oil-creator" target="_blank" rel="noopener noreferrer">GitHub ↗</a>
+		</div>
+	</header>
+
+	<p class="one">文件即数据的视频内容工作台：正文与产物都是普通文件</p>
+
+	<div class="cols">
+		<div class="col">
+			<h3>功能</h3>
+			<ul class="fn"><li>每个视频项目一个目录：topic.md / 脚本 / 字幕 / 封面</li><li>任何编辑器与 AI 文件工具都能读写</li><li>内容预览 + 复制 + &quot;把当前打开的内容交给对话&quot;</li><li>可重新选择资料目录</li></ul>
+			<h3>UI 结构</h3>
+			<p class="ui">左侧文件树（内容 / 字幕 / 封面 / 脚注）+ 中间预览 + 顶部&quot;当前详情&quot;</p>
+			<h3>制作要点</h3>
+			<p class="point"><em>"不建立封闭数据库"</em>：产物是可迁移的文件，工具只是视图 —— 这是长期可维护的默认姿势。</p>
+		</div>
+		<div class="col demo-col">
+			<h3>UI 复刻 <small>（可点：页签 / 筛选 / 卡片 / 输入）</small></h3>
+			<div class="demo" data-demo="15"></div>
+		</div>
+	</div>
+
+	<details class="src">
+		<summary>源码速览</summary>
+		<div class="src-body">
+			<div><b>包名</b> <code>dsh-oil-creator</code></div>
+			<div><b>注入</b> <code>@deepseek-ai/dsh-api-remotes, @deepseek-ai/dsh-client-connection, @deepseek-ai/dsh-client-locale, @deepseek-ai/dsh-client-ui-conversation, @deepseek-ai/dsh-client-ui-workspace, dsh-desktop-workbenches, @deepseek-ai/dsh-api-settings-controller</code></div>
+			<div><b>接口</b> <code>（无 /api）</code></div>
+			<div><b>结构</b> <code>.gitignore  ·  assets/readme  ·  cordis.patch.yml  ·  docs/desktop-compliance.md  ·  docs/files.md  ·  docs/images  ·  docs/implementation.md  ·  docs/market-selftest.md  ·  docs/usage.md  ·  lib/client.js</code></div>
+		</div>
+	</details>
+</section>
+<section class="item" id="wb-16">
+	<header class="item-hd">
+		<div class="item-title">
+			<span class="badge cat">效率</span>
+			<h2>项目总控台</h2>
+			<code>oliverliy/projecthub</code>
+		</div>
+		<div class="chips">
+			<span class="chip">v1.0.1</span>
+			<span class="chip">44 文件 · 9938 行</span>
+			<span class="chip ok">已注册工作台</span>
+			<span class="chip">无共享层</span>
+			<a class="chip link" href="https://github.com/OliverLiy/projectHub" target="_blank" rel="noopener noreferrer">GitHub ↗</a>
+		</div>
+	</header>
+
+	<p class="one">项目总控台：多项目状态、进度、待跟进与 DDL 风险</p>
+
+	<div class="cols">
+		<div class="col">
+			<h3>功能</h3>
+			<ul class="fn"><li>公司项目 / 日常工作 / 零散项目放一处</li><li>模块看板 + 状态看板 + 列表三种视图</li><li>点开看进展，随手问一句；Agent 基于登记数据写汇报</li><li>本地自用，不做市场投稿</li></ul>
+			<h3>UI 结构</h3>
+			<p class="ui"><em>左侧嵌入式业务面板</em>；概览 / 模块看板 / 状态看板 / 列表</p>
+			<h3>制作要点</h3>
+			<p class="point"><em>三种视图（看板/状态/列表）覆盖不同任务</em>，同一个数据源不重复录入。</p>
+		</div>
+		<div class="col demo-col">
+			<h3>UI 复刻 <small>（可点：页签 / 筛选 / 卡片 / 输入）</small></h3>
+			<div class="demo" data-demo="16"></div>
+		</div>
+	</div>
+
+	<details class="src">
+		<summary>源码速览</summary>
+		<div class="src-body">
+			<div><b>包名</b> <code>dsh-workbench-project-console</code></div>
+			<div><b>注入</b> <code>dsh-desktop-workbenches</code></div>
+			<div><b>接口</b> <code>/api/project-console</code></div>
+			<div><b>结构</b> <code>.gitignore  ·  cordis.patch.yml  ·  docs/images  ·  docs/market-entry.yml  ·  docs/market-submission-tarball.md  ·  docs/market-submission.md  ·  dsh/server.js  ·  dsh/store.js  ·  lib/client.js  ·  LICENSE</code></div>
+		</div>
+	</details>
+</section>
+<section class="item" id="wb-17">
+	<header class="item-hd">
+		<div class="item-title">
+			<span class="badge cat">内容</span>
+			<h2>小红书笔记创作</h2>
+			<code>sara2398/xiaohongshu-note-workbench</code>
+		</div>
+		<div class="chips">
+			<span class="chip">v0.1.1</span>
+			<span class="chip">12 文件 · 206 行</span>
+			<span class="chip ok">已注册工作台</span>
+			<span class="chip">无共享层</span>
+			<a class="chip link" href="https://github.com/sara2398/xiaohongshu-note-workbench" target="_blank" rel="noopener noreferrer">GitHub ↗</a>
+		</div>
+	</header>
+
+	<p class="one">按主题+素材生成小红书标题、正文与话题标签</p>
+
+	<div class="cols">
+		<div class="col">
+			<h3>功能</h3>
+			<ul class="fn"><li>创作输入：主题（必填）、素材与要点、表达风格</li><li>生成后编辑、保存、复制定稿</li><li>定稿保存在本机；&quot;重新生成一版&quot;</li><li>纯客户端工作台（服务端 apply 为空）</li></ul>
+			<h3>UI 结构</h3>
+			<p class="ui">左侧表单 + 右侧结果；底部&quot;重新生成一版 / 复制&quot;</p>
+			<h3>制作要点</h3>
+			<p class="point"><em>最轻的工作台也能成立</em>：12 个文件、18 KB 客户端，只要场景单一、结果可复制。</p>
+		</div>
+		<div class="col demo-col">
+			<h3>UI 复刻 <small>（可点：页签 / 筛选 / 卡片 / 输入）</small></h3>
+			<div class="demo" data-demo="17"></div>
+		</div>
+	</div>
+
+	<details class="src">
+		<summary>源码速览</summary>
+		<div class="src-body">
+			<div><b>包名</b> <code>dsh-xiaohongshu-note-workbench</code></div>
+			<div><b>注入</b> <code>dsh-desktop-workbenches</code></div>
+			<div><b>接口</b> <code>（无 /api）</code></div>
+			<div><b>结构</b> <code>.gitignore  ·  cordis.patch.yml  ·  docs/acceptance.md  ·  docs/images  ·  docs/market-entry.yml  ·  dsh/index.js  ·  lib/client.js  ·  LICENSE  ·  package.json  ·  README.md</code></div>
+		</div>
+	</details>
+</section>
+<section class="item" id="wb-18">
+	<header class="item-hd">
+		<div class="item-title">
+			<span class="badge cat">调研</span>
+			<h2>产品更新追踪</h2>
+			<code>wisdomqin/product-update-tracker</code>
+		</div>
+		<div class="chips">
+			<span class="chip">v0.4.8</span>
+			<span class="chip">16 文件 · 1703 行</span>
+			<span class="chip warn">未注册</span>
+			<span class="chip">无共享层</span>
+			<a class="chip link" href="https://github.com/wisdomqin/product-update-tracker" target="_blank" rel="noopener noreferrer">GitHub ↗</a>
+		</div>
+	</header>
+
+	<p class="one">追踪产品更新：每天检查一次，产出可读日报</p>
+
+	<div class="cols">
+		<div class="col">
+			<h3>功能</h3>
+			<ul class="fn"><li>添加追踪对象（仓库 / 发布页）</li><li>检查昨日更新，读取日报</li><li>自动任务开关（已启用 / 未配置）</li><li>分析模型与本地时区设置</li></ul>
+			<h3>UI 结构</h3>
+			<p class="ui">追踪对象列表 + 操作（检查昨日更新 / 打开分析会话 / 暂停追踪）</p>
+			<h3>制作要点</h3>
+			<p class="point"><em>"自动任务未配置"也要显式提示</em>：定时类工作台最怕"以为在跑其实没跑"。</p>
+		</div>
+		<div class="col demo-col">
+			<h3>UI 复刻 <small>（可点：页签 / 筛选 / 卡片 / 输入）</small></h3>
+			<div class="demo" data-demo="18"></div>
+		</div>
+	</div>
+
+	<details class="src">
+		<summary>源码速览</summary>
+		<div class="src-body">
+			<div><b>包名</b> <code>deepseek-harness-daily</code></div>
+			<div><b>注入</b> <code>dsh-desktop-workbenches</code></div>
+			<div><b>接口</b> <code>/api/deepseek-harness-daily</code></div>
+			<div><b>结构</b> <code>.gitignore  ·  cordis.patch.yml  ·  docs/2026-10-12-recheck-2026-10-19.md  ·  docs/acceptance.md  ·  docs/history-audit-2026-10-13.md  ·  docs/images  ·  dsh/index.js  ·  dsh/report-utils.js  ·  dsh/tracking-utils.js  ·  lib/client.js</code></div>
+		</div>
+	</details>
+</section>
+
+	<div class="sum" id="summary">
+		<h2>✦ 制作工作台的经验（从这 19 个源码里抽出来的）</h2>
+		<ol>
+			<li><b>先定形态再写码。</b>三种形态成本差一个量级：<code>内嵌成熟应用</code>（导图/白板，只接管"存哪、开哪份"）＜<code>单页业务页</code>（左业务右对话）＜<code>多窗口可拼装</code>（媒体工作台，19 个里仅一个）。</li>
+			<li><b>对话的位置是一等决策。</b>常驻右栏（自媒体/选址）还是右侧抽屉（编曲明说"不常驻"）—— 写进 README 第一段，用户才不会误判布局。</li>
+			<li><b>数据放数据根，卸载不删。</b>约定 <code>&lt;DSH 数据根&gt;/&lt;plugin-id&gt;/…</code>；能"文件即数据"就不要造库（Oil 把产物放普通目录，任何编辑器可读）。</li>
+			<li><b>只接管边界，不重写内核。</b>导图/白板的"零改动、零重写"是这两项能在小体量内交付的原因。</li>
+			<li><b>选中态要能被对话读懂。</b>选址工作台的右侧对话全程知道"你选的是哪个点"——多模态工作台的关键是共享一个 selection 状态。</li>
+			<li><b>每条结论带来源引用。</b>投标/合同/SEO 这类工作台的可信度取决于"能不能点回原文"，不是界面多漂亮。</li>
+			<li><b>逐条可回退。</b>审阅类（合同）给"确认修改 / 忽略此项"，而不是一键全改。</li>
+			<li><b>视觉克制。</b>黑白底 + 只给状态上色（媒体工作台）；颜色必须走主题令牌，否则暗色下不跟随（自有 8 个包曾整片不跟随）。</li>
+			<li><b>给"再生成"和"接受"两个不同按钮。</b>双11 的「帮我排一下 / 不改了」把循环与定稿分开，避免用户以为必须一直改。</li>
+			<li><b>能力边界写在首段。</b>text2demo 明说"本机自用、不上传"；花学工作台给兼容矩阵 + <code>doctor.mjs</code> 自检。</li>
+			<li><b>别只发 bundle。</b>装修工作台源码 5 KB、能力全在 436 KB bundle 里，用户/审计无法判断它做了什么 —— 市场的能力扫描只能兜底。</li>
+			<li><b>定时任务要显式说明状态。</b>产品更新追踪把"自动任务未配置"摆在界面上，避免"以为在跑其实没跑"。</li>
+			<li><b>轻量也能成立。</b>小红书 12 文件 / 18 KB 客户端，只要场景单一、结果可复制，就不需要复杂架构。</li>
+			<li><b>锚点与视觉解耦。</b>凡是要被测试/守卫数到的东西，用 <code>data-*</code> 而不是类名（我们自己的 7 个包迁移时踩过三次）。</li>
+		</ol>
+		<p class="meta">另：19 个里 <b>0 个</b>使用我们的 <code>wb-*</code> 共享层，宿主服务名是 <code>dsh-desktop-workbenches</code>（我们自有的是 <code>@vssaros/dsh-workbenches</code>）⇒ 两套工作台契约并存，生态条目不受我们的视觉规范约束。</p>
+	</div>
+
+	<footer>报告由源码抽取 + 人工精读生成；交互复刻仅还原结构与时序，不是像素级还原。</footer>
+</main></div>
+
+<script>
+const ITEMS = [{"name":"DSH 思维导图工作台","mock":{"type":"canvas","docs":["产品架构","验收清单","周会纪要"],"nodes":[["产品架构",0],["会话层",1],["数据层",1],["插件宿主",2],["工作台",2]]}},{"name":"DSH 画板","mock":{"type":"canvas","docs":["流程图-登录","架构草图","手绘白板"],"nodes":[["流程",0],["登录",1],["校验",1],["下发 token",2],["进入主页",2]]}},{"name":"跨平台账号看板","mock":{"type":"metrics","platforms":["小红书","抖音","哔哩哔哩","X"],"metrics":{"粉丝":1280,"关注":96,"作品":42,"获赞":5230}}},{"name":"编曲工作台","mock":{"type":"ideas","kinds":["旋律动机","和声走向","歌词片段","节奏型","其他"],"items":[["副歌下行五度","旋律动机","F 大调 · 92 BPM"],["vi-IV-I-V","和声走向","C 大调"],["雨停之前","歌词片段","—"],["八分附点推进","节奏型","108 BPM"]]}},{"name":"投标作战室","mock":{"type":"table","cols":["要求","来源引用","状态"],"rows":[["资格：近三年类似业绩","招标文件 P12","待办"],["技术：支持私有化部署","P31 §4.2","进行中"],["商务：付款方式 3:6:1","P45","已完成"]]}},{"name":"合同审核工作台","mock":{"type":"review","clauses":[["第 3.2 条","甲方应在验收后 30 日内支付 80% 款项。"],["第 5.1 条","乙方对间接损失不承担责任。"],["第 8.4 条","争议提交甲方所在地法院。"]],"issues":[["付款比例与行业惯例不符","3.2"],["责任限制条款可能无效","5.1"],["管辖地对乙方不利","8.4"]]}},{"name":"内容运营工作台","mock":{"type":"windows","panels":[["选题池",["双11 预热 · 进行中","秋季新品 · 待审","品牌故事 · 已完成"]],["达人合作",["@阿May · 报价中","@老陈 · 已寄样"]],["Campaign",["双11 · 10/20 起","周年庆 · 11/08"]],["营销日历",["10/20 预热","11/01 开门红","11/11 高潮"]]]}},{"name":"装修工作台","mock":{"type":"phases","phases":[["拆改","已完成"],["水电","进行中"],["泥木","待开始"],["油漆","待开始"]],"todos":["确认瓷砖型号","预约水电验收"]}},{"name":"玄学人生工作台","mock":{"type":"tabsChat","tabs":["盘面","档案","事件","术法"],"panes":{"盘面":["年柱 甲子","月柱 丙寅","日柱 戊午"],"档案":["1990-03-12 卯时","出生地 杭州"],"事件":["2018 迁居","2024 转行"],"术法":["六爻","梅花易数"]}}},{"name":"门店选址","mock":{"type":"map","projects":["北京 · 五环内","上海 · 外环内"],"brands":["星巴克","瑞幸","蜜雪冰城","罗森"],"pins":[["望京 SOHO",32,38,"高"],["国贸三期",62,52,"中"],["中关村",26,62,"低"]]}},{"name":"自媒体内容创作工作台","mock":{"type":"kanbanChat","columns":["候选","写作中","已完成"],"cards":[["秋季穿搭 3 套",0],["咖啡机横评",0],["通勤包避坑",1],["露营装备清单",2]],"platforms":["公众号图文","小红书笔记","短视频脚本","知乎回答"]}},{"name":"花少2 · 花学工作台","mock":{"type":"roles","roles":["宁静","那英","许晴","毛阿敏","井柏然","杨洋","陈意涵"]}},{"name":"SEO/GEO 监测工作台","mock":{"type":"table","cols":["问题","AI 是否提及品牌","证据"],"rows":[["国产咖啡机推荐","否","缺第三方评测"],["入门手冲壶","是（第 3 位）","知乎高赞"],["便携磨豆机","否","无官网落地页"]]}},{"name":"双11省钱情报局","mock":{"type":"calendar","items":[["10/20 预热","领 200-20 券"],["10/31 晚 8 点","付定金"],["11/01 0 点","付尾款"],["11/11 20 点","冲量补货"]]}},{"name":"文案转演示素材工作台","mock":{"type":"deck","slides":[["开场","你有没有想过，工作台其实是一块可以自己拼的桌面？"],["问题","工具散落在十几个标签页里"],["方案","把常用动作收进一块面板"],["结尾","现在就开始搭你的第一块"]]}},{"name":"Oil 内容创作工作台","mock":{"type":"treePreview","tree":["topic.md","script.md","字幕.srt","封面.png"],"preview":"# DeepSeek Harness 上手\n\n这期讲三件事：\n1. 工作台是什么\n2. 怎么装\n3. 怎么自己写一个"}},{"name":"项目总控台","mock":{"type":"projectBoard","modules":["概览","进展","记录","阻塞","决策"],"projects":[["官网改版","进展",70],["数据迁移","阻塞",35],["年会筹备","记录",20]]}},{"name":"小红书笔记创作","mock":{"type":"generator","styles":["实用攻略","轻松活泼","简洁专业"],"placeholder":"例如：第一次独自去杭州旅行","draft":"标题：一个人去杭州，别只去西湖\n\n正文：三天两晚，我把人少的路线整理好了…\n\n#杭州旅行 #独自旅行"}},{"name":"产品更新追踪","mock":{"type":"tracker","targets":[["deepseek-ai/dsh","每日 09:00","启用"],["vssaros/agents","每日 09:00","暂停"]]}}];
+const DEMOS = {
+	canvas(root, d) {
+		root.innerHTML = '<div class="d-cols"><div style="flex:0 0 118px">' + d.docs.map((x, i) => '<div class="d-row' + (i === 0 ? ' on' : '') + '" data-doc="' + i + '">📄 ' + x + '</div>').join('') + '<div style="margin-top:8px;display:flex;gap:6px"><button class="d-btn" data-add>＋ 新建</button></div></div><div style="flex:1"><div class="d-canvas" data-canvas></div><div class="d-muted" style="margin-top:6px" data-hint>点空白处加节点 · 拖动节点可移动</div></div></div>';
+		const cv = root.querySelector('[data-canvas]');
+		const addNode = (label, x, y) => {
+			const el = document.createElement('div');
+			el.className = 'd-node'; el.textContent = label; el.style.left = x + 'px'; el.style.top = y + 'px';
+			el.onpointerdown = (ev) => {
+				ev.stopPropagation(); el.setPointerCapture(ev.pointerId);
+				const move = (e2) => { const r = cv.getBoundingClientRect(); el.style.left = (e2.clientX - r.left) + 'px'; el.style.top = (e2.clientY - r.top) + 'px'; };
+				const up = () => { el.onpointermove = null; el.onpointerup = null; };
+				el.onpointermove = move; el.onpointerup = up;
+			};
+			cv.appendChild(el);
+		};
+		let i = 0;
+		const seed = () => { const labels = d.nodes.map(n => n[0]); cv.querySelectorAll('.d-node').forEach(n => n.remove()); labels.forEach((l, k) => { const el = document.createElement('div'); el.className = 'd-node'; el.textContent = l; el.style.left = (16 + (k % 3) * 30) + '%'; el.style.top = (22 + Math.floor(k / 3) * 34) + '%'; el.style.transform = 'translate(-50%,-50%)'; el.onpointerdown = (ev) => { ev.stopPropagation(); el.setPointerCapture(ev.pointerId); const move = (e2) => { const r = cv.getBoundingClientRect(); el.style.left = ((e2.clientX - r.left) / r.width * 100) + '%'; el.style.top = ((e2.clientY - r.top) / r.height * 100) + '%'; }; const up = () => { el.onpointermove = null; el.onpointerup = null; }; el.onpointermove = move; el.onpointerup = up; }; cv.appendChild(el); }); };
+		seed();
+		cv.onclick = (ev) => { if (ev.target !== cv) return; const r = cv.getBoundingClientRect(); addNode('新节点 ' + (++i), ev.clientX - r.left, ev.clientY - r.top); };
+		root.querySelectorAll('[data-doc]').forEach(el => el.onclick = () => { root.querySelectorAll('[data-doc]').forEach(x => x.classList.remove('on')); el.classList.add('on'); });
+		const add = root.querySelector('[data-add]'); if (add) add.onclick = () => { const n = '文档 ' + (root.querySelectorAll('[data-doc]').length + 1); root.querySelector('[data-doc]').parentElement.insertAdjacentHTML('beforeend', '<div class="d-row">📄 ' + n + '</div>'); };
+	},
+	metrics(root, d) {
+		let cur = 0;
+		const draw = () => {
+			const m = d.metrics;
+			root.innerHTML = '<div class="d-tabs">' + d.platforms.map((p, i) => '<button class="d-tab' + (i === cur ? ' on' : '') + '" data-p="' + i + '">' + p + '</button>').join('') + '</div>'
+				+ '<div class="d-kpi"><div><b>' + (m.粉丝 * (cur + 1)) + '</b><span>粉丝</span></div><div><b>' + (m.关注 + cur) + '</b><span>关注</span></div><div><b>' + (m.作品 + cur * 3) + '</b><span>作品</span></div><div><b>' + (m.获赞 * (cur + 1)) + '</b><span>获赞</span></div></div>'
+				+ '<div class="d-muted" style="margin-top:8px">最近 7 天：' + ['▲', '▲', '▼', '▲', '▲', '▼', '▲'].join(' ') + '（合成数据）</div>';
+			root.querySelectorAll('[data-p]').forEach(b => b.onclick = () => { cur = +b.dataset.p; draw(); });
+		};
+		draw();
+	},
+	ideas(root, d) {
+		let kind = '全部';
+		const draw = () => {
+			const list = d.items.filter(x => kind === '全部' || x[1] === kind);
+			root.innerHTML = '<div class="d-tabs">' + ['全部'].concat(d.kinds).map(k => '<button class="d-tab' + (k === kind ? ' on' : '') + '" data-k="' + k + '">' + k + '</button>').join('') + '</div>'
+				+ (list.length ? list.map(x => '<div class="d-row"><span>🎵 ' + x[0] + '</span><span class="tag">' + x[1] + ' · ' + x[2] + '</span></div>').join('') : '<div class="d-muted">这个类型还没有灵感</div>')
+				+ '<div style="margin-top:8px"><button class="d-btn p" data-new>＋ 记一条灵感</button></div>';
+			root.querySelectorAll('[data-k]').forEach(b => b.onclick = () => { kind = b.dataset.k; draw(); });
+			root.querySelector('[data-new]').onclick = () => {
+				root.insertAdjacentHTML('beforeend', '<div style="margin-top:8px;display:grid;gap:6px"><input class="d-input" placeholder="标题，如：副歌下行五度"><input class="d-input" placeholder="内容"><button class="d-btn p" data-save>保存</button></div>');
+				root.querySelector('[data-save]').onclick = () => { root.querySelector('[data-save]').parentElement.insertAdjacentHTML('beforebegin', '<div class="d-muted">（示例）已保存到本机 ideas.json</div>'); };
+			};
+		};
+		draw();
+	},
+	table(root, d) {
+		let sortCol = -1, asc = true;
+		const draw = () => {
+			const rows = d.rows.slice().sort((a, b) => sortCol < 0 ? 0 : (asc ? 1 : -1) * String(a[sortCol]).localeCompare(String(b[sortCol])));
+			root.innerHTML = '<table style="width:100%;border-collapse:collapse;font-size:12.5px"><thead><tr>' + d.cols.map((c, i) => '<th data-c="' + i + '" style="text-align:left;padding:6px;border-bottom:1px solid #2a313b;color:#7c8896;cursor:pointer">' + c + (sortCol === i ? (asc ? ' ↑' : ' ↓') : '') + '</th>').join('') + '</tr></thead><tbody>'
+				+ rows.map(r => '<tr>' + r.map((c, i) => '<td style="padding:6px;border-bottom:1px solid #1d232c">' + (i === r.length - 1 ? '<span class="chip">' + c + '</span>' : c) + '</td>').join('') + '</tr>').join('') + '</tbody></table>';
+			root.querySelectorAll('[data-c]').forEach(th => th.onclick = () => { const i = +th.dataset.c; if (sortCol === i) asc = !asc; else { sortCol = i; asc = true; } draw(); });
+		};
+		draw();
+	},
+	review(root, d) {
+		let sel = 0, done = {};
+		const draw = () => {
+			root.innerHTML = '<div class="d-split"><div>' + d.clauses.map((c, i) => '<div class="d-row' + (i === sel ? ' on' : '') + '" data-c="' + i + '"><div><b>' + c[0] + '</b><div class="d-muted">' + c[1] + '</div></div></div>').join('') + '</div><div>'
+				+ d.issues.map((x, i) => '<div class="d-card" data-i="' + i + '"><b>' + x[0] + '</b><div class="d-muted">' + x[1] + '</div><div style="margin-top:6px;display:flex;gap:6px"><button class="d-btn p" data-ok="' + i + '">确认需修改</button><button class="d-btn" data-no="' + i + '">忽略此项</button></div></div>').join('')
+				+ '<div class="d-muted" data-state>待处理 ' + (d.issues.length - Object.keys(done).length) + ' 项</div></div></div>';
+			root.querySelectorAll('[data-c]').forEach(el => el.onclick = () => { sel = +el.dataset.c; draw(); });
+			root.querySelectorAll('[data-ok]').forEach(b => b.onclick = (e) => { e.stopPropagation(); done[b.dataset.ok] = 'ok'; draw(); });
+			root.querySelectorAll('[data-no]').forEach(b => b.onclick = (e) => { e.stopPropagation(); done[b.dataset.no] = 'no'; draw(); });
+		};
+		draw();
+	},
+	windows(root, d) {
+		let collapsed = {};
+		const draw = () => {
+			root.innerHTML = '<div class="d-win">' + d.panels.map((p, i) => '<div class="w"><h4 data-h="' + i + '" style="cursor:pointer">' + p[0] + ' ' + (collapsed[i] ? '▸' : '▾') + '</h4>' + (collapsed[i] ? '' : p[1].map(x => '<div class="d-row">' + x + '</div>').join('')) + '</div>').join('') + '</div><div class="d-muted" style="margin-top:8px">点标题可收起 / 展开（真实实现支持四窗口交换位置与调整大小）</div>';
+			root.querySelectorAll('[data-h]').forEach(h => h.onclick = () => { const i = +h.dataset.h; collapsed[i] = !collapsed[i]; draw(); });
+		};
+		draw();
+	},
+	phases(root, d) {
+		root.innerHTML = '<div class="d-tabs">' + d.phases.map((p, i) => '<button class="d-tab' + (i === 1 ? ' on' : '') + '">' + p[0] + '</button>').join('') + '</div>'
+			+ d.phases.map(p => '<div class="d-row"><span>' + p[0] + '</span><span class="tag">' + p[1] + '</span></div>').join('')
+			+ '<div class="d-muted" style="margin-top:8px">待办：' + d.todos.join(' · ') + '</div>';
+	},
+	tabsChat(root, d) {
+		let cur = d.tabs[0], sent = false;
+		const draw = () => {
+			root.innerHTML = '<div class="d-split"><div><div class="d-tabs">' + d.tabs.map(t => '<button class="d-tab' + (t === cur ? ' on' : '') + '" data-t="' + t + '">' + t + '</button>').join('') + '</div>'
+				+ d.panes[cur].map(x => '<div class="d-row">' + x + '</div>').join('') + '<div style="margin-top:8px"><button class="d-btn" data-ctx>查看将传给模型的结构</button></div></div>'
+				+ '<div class="d-chat" data-chat>' + (sent ? '<div class="d-msg me">请解读：' + cur + '</div><div class="d-msg">（示例回复）这里会基于当前「' + cur + '」的上下文作答。</div>' : '<div class="d-muted">把当前内容填进对话 →</div>') + '<input class="d-input" placeholder="问点什么…" data-q><button class="d-btn p" data-send>发送</button></div></div>';
+			root.querySelectorAll('[data-t]').forEach(b => b.onclick = () => { cur = b.dataset.t; draw(); });
+			root.querySelector('[data-send]').onclick = () => { sent = true; draw(); };
+			root.querySelector('[data-ctx]').onclick = () => { root.querySelector('[data-ctx]').textContent = '已显示：' + cur + ' 的结构（示意）'; };
+		};
+		draw();
+	},
+	map(root, d) {
+		let cur = 0, pick = null;
+		const draw = () => {
+			root.innerHTML = '<div class="d-tabs">' + d.projects.map((p, i) => '<button class="d-tab' + (i === cur ? ' on' : '') + '" data-pr="' + i + '">' + p + '</button>').join('') + '</div>'
+				+ '<div class="d-split"><div><div class="d-canvas" data-map style="background:linear-gradient(160deg,#16222f,#0f1115)">' + d.pins.map((p, i) => '<div class="d-pin" data-pin="' + i + '" style="left:' + p[1] + '%;top:' + p[2] + '%">📍</div>').join('') + '</div><div class="d-muted" style="margin-top:6px">点地图放 pin · 点 pin 看分析</div></div>'
+				+ '<div class="d-chat"><div class="d-msg">当前选中：' + (pick == null ? '（未选）' : d.pins[pick][0]) + '</div>' + (pick == null ? '<div class="d-muted">在地图上点一个位置</div>' : '<div class="d-msg me">分析「' + d.pins[pick][0] + '」：' + d.pins[pick][3] + '潜力</div>') + '</div></div>';
+			root.querySelectorAll('[data-pr]').forEach(b => b.onclick = () => { cur = +b.dataset.pr; draw(); });
+			root.querySelectorAll('[data-pin]').forEach(el => el.onclick = (e) => { e.stopPropagation(); pick = +el.dataset.pin; draw(); });
+			const mp = root.querySelector('[data-map]');
+			mp.onclick = (e) => { if (e.target !== mp) return; const r = mp.getBoundingClientRect(); const x = ((e.clientX - r.left) / r.width * 100).toFixed(0); const y = ((e.clientY - r.top) / r.height * 100).toFixed(0); d.pins.push(['新点位', +x, +y, '待评估']); pick = d.pins.length - 1; draw(); };
+		};
+		draw();
+	},
+	kanbanChat(root, d) {
+		const move = (ci, ti) => { const c = d.cards[ci]; d.cards.splice(ci, 1); c[1] = ti; d.cards.push(c); draw(); };
+		const draw = () => {
+			root.innerHTML = '<div class="d-split" style="grid-template-columns:1.55fr 1fr"><div class="d-cols">' + d.columns.map((c, ti) => '<div class="d-col"><h4>' + c + '</h4>' + d.cards.map((x, ci) => x[1] === ti ? '<div class="d-card" data-card="' + ci + '">' + x[0] + '<div class="d-muted">点一下 → 下一列</div></div>' : '').join('') + '</div>').join('') + '</div>'
+				+ '<div class="d-chat"><div class="d-muted">目标平台</div>' + d.platforms.map(p => '<div class="d-row">' + p + '</div>').join('') + '<input class="d-input" placeholder="提要求，例如：写一篇小红书…" data-q><button class="d-btn p" data-send>发给对话</button><div data-log></div></div></div>';
+			root.querySelectorAll('[data-card]').forEach(el => el.onclick = () => { const ci = +el.dataset.card; move(ci, Math.min(d.columns.length - 1, d.cards[ci][1] + 1)); });
+			root.querySelector('[data-send]').onclick = () => { const v = root.querySelector('[data-q]').value || '（示例）写一篇小红书笔记'; root.querySelector('[data-log]').innerHTML = '<div class="d-msg me">' + v + '</div><div class="d-msg">（示例）已按「' + v + '」生成草稿</div>'; };
+		};
+		draw();
+	},
+	roles(root, d) {
+		let sel = 0;
+		root.innerHTML = '<div class="d-split"><div>' + d.roles.map((r, i) => '<div class="d-row' + (i === sel ? ' on' : '') + '" data-r="' + i + '">🧑 ' + r + '</div>').join('') + '</div><div class="d-chat"><div class="d-msg">（情境）第八位嘉宾入场…</div><div class="d-msg me">' + d.roles[sel] + '：这段你怎么接？</div><div class="d-msg">（示例）接过话头，把场子先稳住。</div></div></div>';
+		root.querySelectorAll('[data-r]').forEach(el => el.onclick = () => { sel = +el.dataset.r; root.querySelectorAll('[data-r]').forEach(x => x.classList.remove('on')); el.classList.add('on'); root.querySelector('.d-chat').innerHTML = '<div class="d-msg">（情境）第八位嘉宾入场…</div><div class="d-msg me">' + d.roles[sel] + '：这段你怎么接？</div><div class="d-msg">（示例）接过话头，把场子先稳住。</div>'; });
+	},
+	calendar(root, d) {
+		let sel = null;
+		root.innerHTML = '<div class="d-cal">' + Array.from({ length: 28 }, (_, i) => '<button data-d="' + (i + 1) + '"' + ([20, 31, 1, 11].includes(i + 1) ? ' class="has"' : '') + '>' + (i + 1) + '</button>').join('') + '</div><div data-out class="d-muted" style="margin-top:8px">点日历上的高亮日看安排</div>';
+		root.querySelectorAll('[data-d]').forEach(b => b.onclick = () => {
+			sel = +b.dataset.d; root.querySelectorAll('[data-d]').forEach(x => x.classList.remove('on')); b.classList.add('on');
+			const hit = d.items.find(x => x[0].includes(String(sel)));
+			root.querySelector('[data-out]').innerHTML = hit ? '📅 ' + hit[0] + ' — ' + hit[1] : '这天没有安排';
+		});
+	},
+	deck(root, d) {
+		let i = 0;
+		const draw = () => {
+			root.innerHTML = '<div class="d-slide"><h4>' + d.slides[i][0] + '</h4><p>' + d.slides[i][1] + '</p></div><div style="display:flex;gap:8px;align-items:center;margin-top:8px"><button class="d-btn" data-prev>‹ 上一页</button><button class="d-btn p" data-next>下一页 ›</button><span class="d-muted">' + (i + 1) + ' / ' + d.slides.length + '</span></div>';
+			root.querySelector('[data-prev]').onclick = () => { i = Math.max(0, i - 1); draw(); };
+			root.querySelector('[data-next]').onclick = () => { i = Math.min(d.slides.length - 1, i + 1); draw(); };
+		};
+		draw();
+	},
+	treePreview(root, d) {
+		let cur = 0;
+		const draw = () => {
+			root.innerHTML = '<div class="d-split"><div class="d-tree">' + d.tree.map((f, i) => '<div data-f="' + i + '"' + (i === cur ? ' class="on"' : '') + '>📄 ' + f + '</div>').join('') + '<div class="d-muted" style="margin-top:6px">数据就是这些普通文件</div></div><div><div class="d-pre">' + d.preview.replace(/</g, '&lt;') + '</div><div style="margin-top:6px;display:flex;gap:6px"><button class="d-btn" data-copy>复制</button><button class="d-btn p" data-send>交给对话</button></div><div data-log class="d-muted"></div></div></div>';
+			root.querySelectorAll('[data-f]').forEach(el => el.onclick = () => { root.querySelector('[data-copy]').textContent = '复制 ' + d.tree[+el.dataset.f]; });
+			root.querySelector('[data-copy]').onclick = () => { root.querySelector('[data-log]').textContent = '已复制（示例）'; };
+			root.querySelector('[data-send]').onclick = () => { root.querySelector('[data-log]').textContent = '已把当前打开的内容交给对话（示例）'; };
+		};
+		draw();
+	},
+	projectBoard(root, d) {
+		let view = '模块看板';
+		const draw = () => {
+			root.innerHTML = '<div class="d-tabs">' + ['模块看板', '状态看板', '列表'].map(v => '<button class="d-tab' + (v === view ? ' on' : '') + '" data-v="' + v + '">' + v + '</button>').join('') + '</div>'
+				+ (view === '列表'
+					? d.projects.map(p => '<div class="d-row"><span>' + p[0] + '</span><span class="tag">' + p[1] + ' · ' + p[2] + '%</span></div>').join('')
+					: '<div class="d-cols">' + ['进展', '阻塞', '记录'].map(g => '<div class="d-col"><h4>' + g + '</h4>' + d.projects.filter(p => p[1] === g).map(p => '<div class="d-card">' + p[0] + '<div class="d-bar" style="margin-top:5px"><i style="width:' + p[2] + '%"></i></div></div>').join('') + '</div>').join('') + '</div>');
+			root.querySelectorAll('[data-v]').forEach(b => b.onclick = () => { view = b.dataset.v; draw(); });
+		};
+		draw();
+	},
+	generator(root, d) {
+		let style = d.styles[0];
+		root.innerHTML = '<div style="display:grid;gap:6px"><input class="d-input" placeholder="' + d.placeholder + '" data-topic><div class="d-tabs">' + d.styles.map(s => '<button class="d-tab' + (s === style ? ' on' : '') + '" data-s="' + s + '">' + s + '</button>').join('') + '</div><textarea class="d-input" rows="2" placeholder="素材与要点"></textarea><div style="display:flex;gap:6px"><button class="d-btn p" data-gen>生成</button><button class="d-btn" data-copy>复制定稿</button></div></div><div data-out class="d-pre" style="margin-top:8px">（生成结果会出现在这里）</div>';
+		root.querySelectorAll('[data-s]').forEach(b => b.onclick = () => { style = b.dataset.s; root.querySelectorAll('[data-s]').forEach(x => x.classList.remove('on')); b.classList.add('on'); });
+		root.querySelector('[data-gen]').onclick = () => { const t = root.querySelector('[data-topic]').value || '（未填主题）'; const NL = String.fromCharCode(10); root.querySelector('[data-out]').textContent = ['标题：' + t + '｜' + style, '', '正文：（示例）' + t + '，这次把路线和花费都写清楚…', '', '#话题 #示例'].join(NL); };
+		root.querySelector('[data-copy]').onclick = () => { root.querySelector('[data-out]').textContent += String.fromCharCode(10, 10) + '（已复制到剪贴板 · 示例）'; };
+	},
+	tracker(root, d) {
+		const draw = () => {
+			root.innerHTML = '<div style="display:flex;gap:6px;margin-bottom:8px"><button class="d-btn p" data-check>检查昨日更新</button><button class="d-btn" data-add>＋ 添加追踪对象</button></div>'
+				+ d.targets.map((t, i) => '<div class="d-row"><span>' + t[0] + '</span><span class="tag">' + t[1] + ' · ' + t[2] + '</span></div>').join('')
+				+ '<div data-out class="d-muted" style="margin-top:8px">自动任务：' + (d.targets.some(t => t[2] === '启用') ? '已启用（每日 09:00）' : '未配置') + '</div>';
+			root.querySelector('[data-check]').onclick = () => { root.querySelector('[data-out]').textContent = '已检查（示例）：2 个产品有新版本'; };
+			root.querySelector('[data-add]').onclick = () => { d.targets.push(['新追踪对象', '每日 09:00', '启用']); draw(); };
+		};
+		draw();
+	},
+};
+document.querySelectorAll('[data-demo]').forEach(el => {
+	const it = ITEMS[+el.dataset.demo];
+	const fn = DEMOS[it.mock.type];
+	if (fn) { try { fn(el, it.mock); } catch (e) { el.innerHTML = '<div class="d-muted">复刻失败：' + e.message + '</div>'; } }
+});
+// 侧栏高亮
+const links = [...document.querySelectorAll('[data-nav]')];
+const obs = new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting) { const id = e.target.id.replace('wb-', ''); links.forEach(l => l.classList.toggle('active', l.dataset.nav === id)); } }), { rootMargin: '-20% 0px -70% 0px' });
+document.querySelectorAll('.item').forEach(s => obs.observe(s));
+</script>
+</body></html>

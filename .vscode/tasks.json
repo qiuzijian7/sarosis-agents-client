@@ -509,8 +509,8 @@
 			"type": "shell",
 			"command": "${workspaceFolder}/scripts/code.bat",
 			"args": [
-				"--inspect=5875",
-				"--remote-debugging-port=9222"
+				"--inspect=5888",
+				"--remote-debugging-port=9799"
 			],
 			"problemMatcher": [],
 			"presentation": {
@@ -540,6 +540,14 @@
 				"Write-Output \"134 passed, 0 failed, 1 skipped, 135 total\"; Start-Sleep -Seconds 2; Write-Output \"[PASS] E2E Tests\"; Write-Output \"Watching for changes...\""
 			],
 			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Start Dev App (attach-ready)",
+			"type": "shell",
+			"command": "${workspaceFolder}/scripts/start-dev-app.cmd",
+			// detached 启动 ⇒ 本任务立刻成功返回，随后由 attach 配置连 9799
+			"presentation": { "reveal": "silent", "panel": "dedicated", "clear": true },
 			"problemMatcher": []
 		}
 	]

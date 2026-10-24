@@ -1,4 +1,16 @@
 // @vssaros/dsh-kanban — client half：看板工具卡（`tool.call.toolview`）
+// ★ 2026-10-22（工作台重构 §5 步骤 2）：本入口另带**React 工作台**子块 `client.kanban.js`
+//   （经 `require.async` 装载；文件名必须 `client.*.js` ⇒ 装载器只认这个形状 ✓）。
+//   ★ 2026-10-22：工作台改成**左右两档**（用户要求，与工作流页同款）—— 左列 = 六列看板，
+//     右列 = 卡片详情（原右下角浮层改常驻右栏；点左列卡片 ⇒ 右栏换它 ✓）。
+//   ★ 2026-10-22（UI 统一 §6.19）：组件改用**共享层** `wb-*` 原语（宿主注入一份样式表）——
+//     原来那批**不存在的令牌名**（`--dsw-alias-border-default` / `--dsw-alias-state-focus-primary` /
+//     `--dsw-alias-font-family-monospace`）与优先级三色（`#ef4444` …）已全部换成真实语义令牌
+//     （`border-l1/l2`、`brand-primary`、`--wb-mono`、`state-error/warn-primary`）⇒ 明暗主题自动跟随。
+//     守卫 `check-workbench-style.mjs` 的 UNIFIED 白名单里已加入本包（四条：无裸色值 / 宿主渲染标记 /
+//     ≥10 个 wb-* 类 / 工具条锚点唯一）。
+//   ⚠ 规矩：改过任何 `client.*.js` 子块之后，**要再动一下这个入口**（守卫查 mtime ⇒ 漏了必红）✓
+//   —— 否则浏览器会一直吃缓存里的旧 chunk ⇒ 用户看到旧界面（2026-10-21 真机：「主页」那行就是这样丢的）✗。
 //
 // 为什么需要它：`kanban_*` 工具的回执对模型是好的，对人是**一堵 JSON / 长文本**——
 // `kanban_list` 一次可能带几十条任务。这里把同一份数据重绘成一张紧凑卡（列 / 优先级 / 看板 / 条数），
@@ -191,6 +203,25 @@ window.__ModuleLoader__.load({
 			// 而"文件可服务/在 boot 清单里"只是必要条件（P3-17 证的是那一半）。与 chat-surface / bridge
 			// 客户端同一套做法（`window.__vssarosChatSurface` / `window.__vssarosBridgeClient`）。
 			globalThis.__vssarosKanbanClient = { loaded: true, registered, failures, slot: TOOL_SLOT };
+			// ★ 2026-10-22（工作台重构 §5 步骤 2）：**React 工作台**（`lib/client.kanban.js`）。
+			//   它注册进宿主服务 `desktopWorkbenches`（身份 `vssaros/kanban`）⇒ dsh 窗口页签条里
+			//   `/x/kanban/` 那一条自动从 iframe 换成宿主渲染 ✓；IDE 编辑区也会改开 'workbench' 视图。
+			//   ⚠ 子块文件名**必须**是 `client.<名字>.js`（装载器只认 `client.*.js` ⇒ 相对请求会被拒）
+			//     ⇒ 装不上不许拖垮这 10 张工具卡（try/catch + 留痕 ✓）。
+			try {
+				if (typeof require.async !== 'function') { throw new Error('装载器没有 require.async（老运行时）'); }
+				require.async('./client.kanban.js')
+					.then((part) => { if (part && typeof part.install === 'function') { part.install(ctx); } })
+					.catch((e) => {
+						const why = String((e && e.message) || e);
+						globalThis.__vssarosKanbanClient = Object.assign({}, globalThis.__vssarosKanbanClient, { workbenchFailed: why });
+						console.warn(`[vssaros-kanban] 工作台组件装载失败：${why}`);
+					});
+			} catch (e) {
+				const why = String((e && e.message) || e);
+				globalThis.__vssarosKanbanClient = Object.assign({}, globalThis.__vssarosKanbanClient, { workbenchFailed: why });
+				console.warn(`[vssaros-kanban] 工作台组件装载失败：${why}`);
+			}
 			return undefined;
 		}
 

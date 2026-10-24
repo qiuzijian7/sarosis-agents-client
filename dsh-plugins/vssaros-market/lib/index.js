@@ -32,13 +32,41 @@ import {
 } from './catalog.js';
 import { createRemoteReader } from './remoteCatalog.js';
 import { MarketInstallError, resolveInstallTarget } from './installTargets.js';
+import { incompatibleMessage, inspectPackage, mergePolicies, normalizePolicy, policyVerdict } from './inspect.js';
 
 export const name = 'vssaros-market';
 export const inject = [];
 
 const ROUTE_PREFIX = '/x/market';
+/** 本包名（`ide.request` 的 pluginId：IDE 按它的清单 `vssaros.ideCapabilities` 授权）。 */
+const PLUGIN_PACKAGE = '@vssaros/dsh-market';
+/**
+ * 经 IDE 安装的等待预算：用户确认（IDE 侧最多 60s）+ `dsh plugin add`（IDE 侧上限 5 分钟）。
+ * 与 IDE 侧 `ideRequestTimeoutMs('workbenches','install')` 配套，必须**不短于**它。
+ */
+const IDE_INSTALL_TIMEOUT_MS = 8 * 60 * 1000;
+/** 兼容性结论缓存（`<数据根>/market/compat.json`；键 = `id@version`，值里带运行时版本）。 */
+const COMPAT_FILE = 'compat.json';
 /** 随包兜底目录（协议 v2；默认空目录）。 */
 const SEED_URL = new URL('../catalog/index.json', import.meta.url);
+/** 随包策略（产品方下发的停用 / 允许名单）。 */
+const POLICY_URL = new URL('../catalog/policy.json', import.meta.url);
+
+/** 读一份策略文件；读不到或坏了 ⇒ null（坏文件记告警，不当成"不限制"之外的任何东西）。 */
+function readPolicyFile(url, warn) {
+	try {
+		const raw = JSON.parse(readFileSync(url, 'utf8'));
+		return raw?.version === 1 ? normalizePolicy(raw) : null;
+	} catch (e) {
+		if (e?.code !== 'ENOENT' && warn) { warn(`策略文件读不了（${String(url)}）：${String(e?.message ?? e)}`); }
+		return null;
+	}
+}
+/** 当前生效的策略（随包 ∪ 本机 `<数据根>/market/policy.json`；每次读，改了即生效）。 */
+export function currentPolicy(config, warn) {
+	const root = dataRootOf(config);
+	return mergePolicies(readPolicyFile(POLICY_URL, warn), root ? readPolicyFile(`${root}/market/policy.json`, warn) : null);
+}
 /** 远程目录的环境变量名（config 优先）。 */
 const CATALOG_URL_ENV = 'VSSAROS_MARKET_CATALOG_URL';
 /** 市场安装记录文件名（放在数据根下 ⇒ 换 profile 不串号 ✓）。 */
@@ -195,6 +223,12 @@ export function apply(ctx, config = {}) {
 	}
 
 	const seed = readSeedCatalog();
+	// IDE 控制桥（**可选**注入）：在 ⇒ 安装走 IDE 主进程那条可靠通道；不在 ⇒ 回落 Host 的 pluginManager。
+	const state = { bridge: null };
+	ctx.inject(['vssarosBridge'], scope => {
+		state.bridge = scope.vssarosBridge ?? null;
+		return () => { state.bridge = null; };
+	});
 	const remoteUrl = catalogUrlOf(config);
 	let reader = null;
 	try {
@@ -223,14 +257,24 @@ export function apply(ctx, config = {}) {
 		const workbenches = mergeWorkbenches(seed?.workbenches ?? [], remote?.workbenches ?? []);
 		const installed = await installedNames(ctx);
 		const installs = await readInstalls(config);
-		return buildResponse({
-			workbenches,
+		const runtimeVersion = String(process.env.VSSAROS_DSH_RUNTIME_VERSION ?? '').trim();
+		const body = buildResponse({
+			workbenches: withCompatibility(workbenches, readCompatibility(config), runtimeVersion),
 			categories: [...(seed?.categories ?? []), ...(remote?.categories ?? [])],
 			source,
 			error,
 			installed,
 			installedCatalogIds: Object.keys(installs),
 		});
+		// 装上的包名（界面据此把目录条目与**已注册的工作台**对上 ⇒ 卡片才有「打开」）；策略停用的标出来
+		const policy = currentPolicy(config, warn);
+		body.workbenches = body.workbenches.map(entry => {
+			const next = installs[entry.id]?.pluginName ? { ...entry, installedPackage: installs[entry.id].pluginName } : { ...entry };
+			const verdict = policyVerdict(policy, entry.id);
+			if (!verdict.allowed) { next.policy = { allowed: false, reason: verdict.reason }; }
+			return next;
+		});
+		return body;
 	}
 
 	/** 目录里找一个条目（按 id）。 */
@@ -240,40 +284,124 @@ export function apply(ctx, config = {}) {
 	}
 
 	async function install(id) {
-		const mgr = pluginManagerOf(ctx);
-		if (!mgr) { return { ok: false, error: '插件管理器不可用（Host 里没有 pluginManager）', code: 'install_unavailable' }; }
 		const entry = await findEntry(id);
 		if (!entry) { return { ok: false, error: `目录里没有这个工作台：${id}`, code: 'not_listed' }; }
 		if (!entry.installable || !entry.distribution) {
 			return { ok: false, error: '这个条目没有可安装的发布源', code: 'no_distribution' };
 		}
-		const requestId = `vssaros-market-${Date.now()}`;
+		// ★ 2026-10-22（第 4 步）：策略先于一切网络动作 —— 停用的连下载都不做
+		const verdict = policyVerdict(currentPolicy(config, warn), entry.id);
+		if (!verdict.allowed) { return { ok: false, id: entry.id, code: 'blocked_by_policy', error: verdict.reason }; }
+		const bridge = state.bridge;
+		const mgr = pluginManagerOf(ctx);
+		if (!bridge && !mgr) { return { ok: false, error: '没有可用的安装通道（IDE 控制桥与 Host 插件管理器都不在）', code: 'install_unavailable' }; }
 		let target = null;
 		try {
-			// 解析安装目标（下载 ＋ 校验 ＋ 落临时包）—— 失败就是失败，**不换来源** ✗
-			target = await resolveInstallTarget(entry);
+			// 解析安装目标（下载 ＋ 校验 ＋ 解包）—— 失败就是失败，**不换来源** ✗
+			target = await resolveInstallTarget(entry, { packagesRoot: packagesRootOf(config) });
 		} catch (e) {
 			const code = e instanceof MarketInstallError ? e.code : 'install_target_failed';
 			return { ok: false, error: String(e?.message ?? e), code };
 		}
 		try {
-			const res = await mgr.installBundle(target.pluginSpec, { requestId });
-			const changed = res?.changed === true;
-			if (changed) {
-				const installs = await readInstalls(config);
-				installs[entry.id] = {
-					pluginName: target.expectedPluginName,
-					version: target.expectedVersion,
-					source: entry.distribution.type,
-					installedAt: new Date().toISOString(),
-				};
-				await writeInstalls(config, installs);
+			// ★ 2026-10-22：装之前先检查（与 Host 启动同一个兼容判据 / 宿主单例 / 工作台形态）
+			const report = await inspectPackage(target.manifest, { files: target.files });
+			await rememberCompatibility(config, entry, report.compatibility);
+			if (report.compatibility.status === 'incompatible') {
+				return { ok: false, id: entry.id, code: 'incompatible_runtime', error: incompatibleMessage(report.compatibility), compatibility: report.compatibility };
 			}
-			return { ok: true, id: entry.id, ...shapeChange(res, target.pluginSpec, { requestId }) };
+			if (report.blocked.length) {
+				return { ok: false, id: entry.id, code: 'host_singleton', error: report.blocked.join('；'), warnings: report.warnings };
+			}
+			let result;
+			if (bridge) {
+				result = await installViaIde(bridge, entry, target, report);
+			} else {
+				result = await installViaHost(mgr, target);
+			}
+			if (!result.ok) { return { id: entry.id, ...result, warnings: report.warnings }; }
+			const installs = await readInstalls(config);
+			installs[entry.id] = {
+				pluginName: target.expectedPluginName,
+				version: result.version || target.expectedVersion,
+				source: entry.distribution.type,
+				via: result.via,
+				installedAt: new Date().toISOString(),
+			};
+			await writeInstalls(config, installs);
+			// 新装的插件要等 Host 重启才进组合（运行中的进程不热加载新包）⇒ 如实告诉界面
+			return { ok: true, id: entry.id, via: result.via, changed: result.changed !== false, version: installs[entry.id].version, restartRequired: true, warnings: report.warnings };
 		} catch (e) {
 			return { ok: false, error: String(e?.message ?? e), code: 'install_failed' };
 		} finally {
 			try { await target.cleanup(); } catch { /* 临时目录删不掉不影响结果 */ }
+		}
+	}
+
+	/**
+	 * 主通道：经控制桥请 **IDE 主进程**安装（`ide.request{capability:'workbenches', op:'install'}`）。
+	 * 为什么不直接用 Host 的 pluginManager：它在全新 profile 上会剪树并 `operation-error`（README 4.86），
+	 * 而 IDE 那条（暂存进 profile + `dsh plugin add`）与随包插件同源、已验证；IDE 侧还会**向用户要一次确认**，
+	 * 并且装完会刷新 IDE 的插件列表（ActivityBar / 插件中心）。
+	 */
+	async function installViaIde(bridge, entry, target, report) {
+		const params = {
+			op: 'install',
+			id: entry.id,
+			title: String(entry.name || entry.id),
+			source: entry.distribution.type,
+			name: target.expectedPluginName,
+			version: target.expectedVersion,
+			...(target.dir ? { dir: target.dir } : { spec: target.pluginSpec }),
+			...(report.warnings.length ? { warnings: report.warnings.slice(0, 6) } : {}),
+			// 服务端能力审计（静态扫描；null = 看不到包内容）—— IDE 确认框逐条列出
+			capabilities: report.capabilities === null ? null : report.capabilities.map(c => c.label),
+		};
+		let reply;
+		try {
+			reply = await bridge.callIDE('ide.request', { capability: 'workbenches', pluginId: PLUGIN_PACKAGE, params }, { timeoutMs: IDE_INSTALL_TIMEOUT_MS });
+		} catch (e) {
+			return { ok: false, code: 'install_failed', error: `IDE 安装通道出错：${String(e?.message ?? e)}`, via: 'ide' };
+		}
+		if (!reply || reply.ok === false) {
+			const declined = reply?.declined === true;
+			return { ok: false, code: declined ? 'declined' : 'install_failed', error: String(reply?.error ?? reply?.text ?? 'IDE 没有回执'), via: 'ide' };
+		}
+		return { ok: true, via: 'ide', changed: reply.changed !== false, version: reply.version };
+	}
+
+	/** 回落通道：Host 自己的 pluginManager。**如实**判结果：`application:failed` / 带错误码 = 失败。 */
+	async function installViaHost(mgr, target) {
+		const requestId = `vssaros-market-${Date.now()}`;
+		const res = await mgr.installBundle(target.pluginSpec, { requestId });
+		const shaped = shapeChange(res, target.pluginSpec, { requestId });
+		if (shaped.application === 'failed' || shaped.application === 'cancelled' || res?.error) {
+			const firstLine = shaped.diagnostic ? shaped.diagnostic.split('\n').find(l => l.trim())?.trim() : '';
+			return { ...shaped, ok: false, via: 'host', code: 'install_failed', errorCode: shaped.error ?? null, error: `安装没有成功（${shaped.error || shaped.application || 'unknown'}）${firstLine ? '：' + firstLine : ''}` };
+		}
+		if (shaped.pendingBuilds?.length) {
+			return { ...shaped, ok: false, via: 'host', code: 'pending_builds', error: `这个包要运行构建脚本（${shaped.pendingBuilds.join(', ')}），需要先在插件中心批准` };
+		}
+		return { ok: true, via: 'host', changed: shaped.changed, version: target.expectedVersion };
+	}
+
+	/** 只做检查、不装（详情页"检查兼容性"用；结论写进缓存 ⇒ 目录卡片也能标出）。 */
+	async function check(id) {
+		const entry = await findEntry(id);
+		if (!entry) { return { ok: false, error: `目录里没有这个工作台：${id}`, code: 'not_listed' }; }
+		if (!entry.installable || !entry.distribution) { return { ok: false, error: '这个条目没有可安装的发布源', code: 'no_distribution' }; }
+		const verdict = policyVerdict(currentPolicy(config, warn), entry.id);
+		if (!verdict.allowed) { return { ok: false, id: entry.id, code: 'blocked_by_policy', error: verdict.reason }; }
+		let target = null;
+		try {
+			target = await resolveInstallTarget(entry);
+			const report = await inspectPackage(target.manifest, { files: target.files });
+			await rememberCompatibility(config, entry, report.compatibility);
+			return { ok: true, id: entry.id, ...report };
+		} catch (e) {
+			return { ok: false, error: String(e?.message ?? e), code: e instanceof MarketInstallError ? e.code : 'check_failed' };
+		} finally {
+			try { await target?.cleanup(); } catch { /* 临时目录删不掉不影响结果 */ }
 		}
 	}
 
@@ -287,11 +415,13 @@ export function apply(ctx, config = {}) {
 		}
 		try {
 			const res = await mgr.removeBundle(record.pluginName);
-			if (res?.changed === true) {
-				delete installs[id];
-				await writeInstalls(config, installs);
+			const shaped = shapeChange(res, record.pluginName);
+			if (shaped.application === 'failed' || res?.error) {
+				return { ...shaped, ok: false, id, code: 'uninstall_failed', errorCode: shaped.error ?? null, error: `卸载没有成功（${shaped.error || shaped.application}）` };
 			}
-			return { ok: true, id, ...shapeChange(res, record.pluginName) };
+			delete installs[id];
+			await writeInstalls(config, installs);
+			return { ...shaped, ok: true, id, restartRequired: true };
 		} catch (e) {
 			return { ok: false, error: String(e?.message ?? e), code: 'uninstall_failed' };
 		}
@@ -338,6 +468,12 @@ export function apply(ctx, config = {}) {
 					json(200, await uninstall(id));
 					return;
 				}
+				if (url.pathname === `${ROUTE_PREFIX}/api/check` && req.method === 'GET') {
+					const id = String(url.searchParams.get('id') ?? '').trim();
+					if (!id) { json(400, { ok: false, error: '缺 id' }); return; }
+					json(200, await check(id));
+					return;
+				}
 				json(404, { error: `unknown market route: ${url.pathname}` });
 			} catch (e) {
 				json(500, { ok: false, error: String(e?.message ?? e) });
@@ -351,6 +487,49 @@ function snapshotPathOf(config) {
 	const root = dataRootOf(config);
 	if (!root) { return undefined; }
 	return `${root}/market/catalog-snapshot.json`;
+}
+
+/**
+ * Release 包的**持久**解包目录：`<数据根>/market/packages/`。
+ * 为什么持久：装进 profile 后若源目录消失，下次 pnpm 解析会因 `file:` 悬空而整树失败 ✗。拿不到数据根 ⇒ 退回临时目录。
+ */
+function packagesRootOf(config) {
+	const root = dataRootOf(config);
+	return root ? `${root}/market/packages` : undefined;
+}
+
+/** 兼容性结论缓存：读。 */
+export function readCompatibility(config) {
+	const root = dataRootOf(config);
+	if (!root) { return {}; }
+	try {
+		const saved = JSON.parse(readFileSync(`${root}/market/${COMPAT_FILE}`, 'utf8'));
+		return saved?.version === 1 && saved.entries && typeof saved.entries === 'object' ? saved.entries : {};
+	} catch { return {}; }
+}
+
+/** 兼容性结论缓存：写一条（`unknown` 不缓存 —— 那不是结论）。 */
+async function rememberCompatibility(config, entry, compatibility) {
+	const root = dataRootOf(config);
+	if (!root || !compatibility || compatibility.status === 'unknown') { return; }
+	const entries = readCompatibility(config);
+	entries[`${entry.id}@${entry.version}`] = { ...compatibility, checkedAt: new Date().toISOString() };
+	try {
+		const path = `${root}/market/${COMPAT_FILE}`;
+		mkdirSync(dirname(path), { recursive: true });
+		const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
+		writeFileSync(temporary, `${JSON.stringify({ version: 1, entries }, null, 2)}\n`);
+		renameSync(temporary, path);
+	} catch { /* 缓存写不了不影响安装 */ }
+}
+
+/** 把缓存的兼容性结论挂到目录条目上（只认**同一运行时版本**下的结论）。 */
+export function withCompatibility(workbenches, cache, runtimeVersion) {
+	return workbenches.map(entry => {
+		const hit = cache[`${entry.id}@${entry.version}`];
+		if (!hit || (runtimeVersion && hit.runtimeVersion && hit.runtimeVersion !== runtimeVersion)) { return entry; }
+		return { ...entry, compatibility: { status: hit.status, runtimeVersion: hit.runtimeVersion, requirements: hit.requirements ?? {} } };
+	});
 }
 
 /** 市场安装记录路径：`<数据根>/market/market-installs.json`。 */

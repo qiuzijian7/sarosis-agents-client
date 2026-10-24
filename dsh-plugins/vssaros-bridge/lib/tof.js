@@ -38,6 +38,18 @@ export const TOF_LOCAL_CREDENTIAL_REF = 'VSSAROS_TOF_TICKET_DSH';
 export const TOF_IDENTITY_CREDENTIAL_REF = 'VSSAROS_TOF_IDENTITY_DSH';
 
 /**
+ * "用户在 dsh 侧**主动登出**过"的标记（值 '1'，2026-10-22）。
+ *
+ * 登录挪到 dsh 侧后，IDE 会把旧扩展里的登录态**一次性**迁过来（`tof.sync`）——没有这个标记，
+ * 用户在 dsh 侧一登出，IDE 下次启动就把旧扩展里的票原样导回来（"登出不掉" ✗）。
+ * 用户在 dsh 侧再次登录时撤掉。同 CodeBuddy 的 `VSSAROS_CODEBUDDY_SIGNED_OUT`。
+ */
+export const TOF_SIGNED_OUT_REF = 'VSSAROS_TOF_SIGNED_OUT';
+
+/** status() 结果缓存时长：status 每次都打一遍网关 whoami ⇒ 设置页/IDE 频繁查时不能每次都联网 ✓。 */
+const STATUS_TTL_MS = 60_000;
+
+/**
  * 默认参数：**必须与 IDE 侧 `extensions/tof-authentication` 的默认一致**（同一个网关、同一个 appkey）。
  * 不一致 ⇒ 两边登出来的票据在对方那边认不出 ⇒ "两侧同一身份"就成了空话 ✗。
  */
@@ -126,6 +138,11 @@ export class TofLoopbackServer {
 			this._resolveTicket = resolve;
 			this._reject = reject;
 		});
+	}
+
+	/** 取消正在等的登录（设置页 / IDE 点「取消」）⇒ waitForTicket 以"已取消"失败 ✓。 */
+	cancel() {
+		this._fail(new Error('已取消登录'));
 	}
 
 	async stop() {
@@ -344,11 +361,15 @@ function spawnOpen(plans, index) {
  */
 export async function signinViaBrowser(cfg, deps = {}) {
 	const whoami = typeof deps.whoami === 'function' ? deps.whoami : fetchWhoami;
+	const openUrl = typeof deps.openUrl === 'function' ? deps.openUrl : openExternalUrl;
 	const server = new TofLoopbackServer();
+	// 取消钩子（2026-10-22）：登录挪到 dsh 侧后，设置页 / IDE 需要能"取消登录"——
+	//   让 waitForTicket 立刻以"已取消"失败 ⇒ finally 关掉 loopback ✓（不然只能干等 180s 超时 ✗）。
+	if (typeof deps.onServer === 'function') { deps.onServer(server); }
 	try {
 		await server.start(cfg.timeoutSeconds);
 		const signinUrl = server.buildSigninUrl(cfg);
-		await openExternalUrl(signinUrl);
+		await openUrl(signinUrl);
 		const ticket = await server.waitForTicket();
 		const user = await whoami(ticket, cfg.gatewayBaseUrl);
 		return { ticket, user };
@@ -361,6 +382,8 @@ export async function signinViaBrowser(cfg, deps = {}) {
 export function projectUser(user, source) {
 	return {
 		signedIn: true,
+		// 网关给的标准用户 ID（IDE 把它当数据归属键用 ⇒ 必须原样带过去，不能在 IDE 侧按工号猜 ✗）
+		userId: String(user?.user_id ?? (user?.staff_id ? `taihu:staffid:${user.staff_id}` : '')),
 		staffId: String(user?.staff_id ?? ''),
 		loginName: String(user?.login_name ?? ''),
 		team: user?.team ?? null,
@@ -380,8 +403,11 @@ export function projectUser(user, source) {
  * @param {string} args.ideCredentialRef IDE 侧同步过来的那份票据的 ref（由调用方传入 ⇒ 两侧不会各写一份常量）
  * @param {object} [args.config] 覆盖 paasid / siteBaseUrl / gatewayBaseUrl / timeoutSeconds
  * @param {function} [args.whoami] whoami 实现（默认真实现；守卫注入假实现 ⇒ 行为断言不联网 ✓）
+ * @param {function} [args.onChange] 登录态变了（登录成功 / 登出）后回调（不带票据）——index.js 用它通知 IDE 刷新 ✓
+ * @param {function} [args.openUrl] 开浏览器的实现（守卫注入 ⇒ 不真开浏览器 ✓）
+ * @param {function} [args.now] 时钟（守卫注入）
  */
-export function createTofService({ credentials, ideCredentialRef, config = {}, log = () => {}, whoami = fetchWhoami }) {
+export function createTofService({ credentials, ideCredentialRef, config = {}, log = () => {}, whoami = fetchWhoami, onChange = () => {}, openUrl, now = () => Date.now() }) {
 	const cfg = {
 		paasid: String(config.paasid ?? TOF_DEFAULTS.paasid).trim() || TOF_DEFAULTS.paasid,
 		siteBaseUrl: String(config.siteBaseUrl ?? TOF_DEFAULTS.siteBaseUrl).trim() || TOF_DEFAULTS.siteBaseUrl,
@@ -439,42 +465,91 @@ export function createTofService({ credentials, ideCredentialRef, config = {}, l
 		}
 	};
 
+	/** 状态缓存（status 每次都打网关 whoami）；登录 / 登出 / IDE 同步写票后**作废** ✓。 */
+	let statusCache = null;   // { at, value }
+	const invalidate = () => { statusCache = null; };
+	const fireChange = (why) => {
+		invalidate();
+		try { onChange(why); } catch { /* 通知失败不影响登录本身 */ }
+	};
+
 	/** 登录（开浏览器）。并发调用共用同一次登录 ⇒ 不会开出两个浏览器窗口 ✓。 */
 	let inflight = null;
+	let signInDeadline = null;   // 浏览器登录的等待截止时刻（epoch ms）⇒ 设置页显示倒计时
+	let pendingServer = null;    // 正在等回调的 loopback ⇒ cancelSignIn() 用
+	let lastError = '';
 	const signIn = async (overrides = {}) => {
 		if (inflight) { return inflight; }
+		const merged = { ...cfg, ...overrides };
+		lastError = '';
+		signInDeadline = now() + merged.timeoutSeconds * 1000;
 		const run = (async () => {
-			const { ticket, user } = await signinViaBrowser({ ...cfg, ...overrides }, { whoami });
+			const { ticket, user } = await signinViaBrowser(merged, { whoami, ...(openUrl ? { openUrl } : {}), onServer: s => { pendingServer = s; } });
 			await writeRef(TOF_LOCAL_CREDENTIAL_REF, ticket);
 			await writeRef(TOF_IDENTITY_CREDENTIAL_REF, JSON.stringify({ ...projectUser(user, 'dsh'), signedInAt: Date.now() }));
+			// 用户主动登录 ⇒ 撤掉"主动登出过"标记（之后 IDE 的一次性迁移照常可用）✓
+			await dropRef(TOF_SIGNED_OUT_REF);
 			log(`[vssaros-tof] dsh 侧登录成功：${user.login_name}（${user.staff_id}）`);
 			return projectUser(user, 'dsh');
 		})();
 		inflight = run;
 		try {
-			return await run;
+			const out = await run;
+			fireChange('signin');
+			return out;
+		} catch (e) {
+			lastError = String(e?.message ?? e);
+			throw e;
 		} finally {
 			inflight = null;
+			pendingServer = null;
+			signInDeadline = null;
 		}
 	};
 
-	/** 当前身份：有票就实时 whoami；网关不可达时退回缓存（并标 stale）✔。 */
-	const status = async () => {
+	/** 取消正在进行的浏览器登录 ⇒ 返回"是否真有一次在等"。 */
+	const cancelSignIn = () => {
+		const s = pendingServer;
+		if (s && typeof s.cancel === 'function') { s.cancel(); return true; }
+		return false;
+	};
+
+	/** 401 = 网关明确不认这张票（过期 / 被吊销）⇒ 是"已失效"，不是"网关临时不可达" ✓。 */
+	const isRejected = (e) => /（401）|\b401\b/.test(String(e?.message ?? e));
+
+	/** 身份部分（不含"登录中"这类瞬时字段 ⇒ 可以缓存）。 */
+	const identity = async () => {
 		const { ticket, source } = await effectiveTicket();
+		const signedOutByUser = (await readRef(TOF_SIGNED_OUT_REF)) === '1';
 		if (!ticket) {
 			const cached = await readIdentityCache();
 			return cached
-				? { ...cached, signedIn: true, stale: true, error: '当前没有可用票据，下面是缓存的身份信息' }
-				: { signedIn: false };
+				? { ...cached, signedIn: true, stale: true, hasCredential: false, signedOutByUser, error: '当前没有可用票据，下面是缓存的身份信息' }
+				: { signedIn: false, hasCredential: false, signedOutByUser };
 		}
 		try {
 			const user = await whoami(ticket, cfg.gatewayBaseUrl);
-			return { ...projectUser(user, source), stale: false };
+			return { ...projectUser(user, source), stale: false, hasCredential: true, signedOutByUser };
 		} catch (e) {
 			const cached = await readIdentityCache();
+			if (isRejected(e)) {
+				// ★ 票过期：如实说"未登录（已失效）"——**不**自动开浏览器重登（2026-10-22 用户：IDE 侧只读状态，
+				//   登录要由用户自己点；以前 IDE 启动时票过期就自动弹浏览器 ✗）。票先留着：用户重登时会被覆盖 ✓
+				return {
+					signedIn: false,
+					expired: true,
+					hasCredential: true,
+					signedOutByUser,
+					source,
+					error: '企业身份已失效（网关拒绝了票据），请重新登录',
+					...(cached ? { loginName: cached.loginName, staffId: cached.staffId } : {}),
+				};
+			}
 			return {
 				signedIn: true,
 				stale: true,
+				hasCredential: true,
+				signedOutByUser,
 				error: String(e?.message ?? e),
 				source,
 				...(cached ? { staffId: cached.staffId, loginName: cached.loginName, team: cached.team ?? null, isAdmin: !!cached.isAdmin, expiresAt: cached.expiresAt ?? '' } : {}),
@@ -483,10 +558,33 @@ export function createTofService({ credentials, ideCredentialRef, config = {}, l
 	};
 
 	/**
+	 * 当前身份：有票就 whoami（结果缓存 60s；`fresh: true` 强制重查）；网关不可达时退回缓存（并标 stale）；
+	 * 网关明确拒票（401）⇒ 未登录 + expired ✓。另带"登录中"状态（设置页显示倒计时 / 取消）。
+	 */
+	const status = async ({ fresh = false } = {}) => {
+		let value;
+		if (!fresh && statusCache && now() - statusCache.at < STATUS_TTL_MS) {
+			value = statusCache.value;
+		} else {
+			value = await identity();
+			// 网关临时失败（stale）不缓存 ⇒ 下次再试；成功 / 明确失效才缓存 ✓
+			if (!value.stale) { statusCache = { at: now(), value }; }
+		}
+		return {
+			...value,
+			signingIn: !!inflight,
+			...(inflight && signInDeadline ? { signInDeadline } : {}),
+			...(!value.error && lastError && !value.signedIn ? { error: lastError } : {}),
+		};
+	};
+
+	/**
 	 * 登出。默认**只清 dsh 自己那份**；`all: true` 连 IDE 同步过来的那份一起清
 	 * （IDE 仍持有登录态 ⇒ 它下次连上/登录态变化时会把票再同步回来 ⇒ 如实告诉调用方 ✓）。
+	 * `byUser: true`（设置页 / IDE 的「退出登录」）⇒ 记下"主动登出过"⇒ IDE 不会再把旧扩展里的票迁回来 ✓。
 	 */
-	const signOut = async ({ all = false } = {}) => {
+	const signOut = async ({ all = false, byUser = false } = {}) => {
+		cancelSignIn();
 		const before = await effectiveTicket();
 		await dropRef(TOF_LOCAL_CREDENTIAL_REF);
 		await dropRef(TOF_IDENTITY_CREDENTIAL_REF);
@@ -494,9 +592,14 @@ export function createTofService({ credentials, ideCredentialRef, config = {}, l
 		if (all) {
 			ideCleared = await dropRef(ideCredentialRef);
 		}
+		if (byUser) {
+			try { await writeRef(TOF_SIGNED_OUT_REF, '1'); } catch { /* 写不进也不影响登出本身 */ }
+		}
+		lastError = '';
 		// ⚠ "IDE 那份还在"要看**实际是否还在**（不是看刚才用的是哪一张）——
 		//   两份都在时，有效票据是本地那张，但 IDE 那份**仍然留着** ⇒ 登出后它还会被同步回来 ✗。
 		const ideStillThere = all ? false : (await readRef(ideCredentialRef)) !== undefined;
+		fireChange('signout');
 		return {
 			signedIn: false,
 			cleared: before.ticket ? true : false,
@@ -508,11 +611,14 @@ export function createTofService({ credentials, ideCredentialRef, config = {}, l
 
 	return {
 		config: cfg,
-		refs: { local: TOF_LOCAL_CREDENTIAL_REF, identity: TOF_IDENTITY_CREDENTIAL_REF, ide: ideCredentialRef },
+		refs: { local: TOF_LOCAL_CREDENTIAL_REF, identity: TOF_IDENTITY_CREDENTIAL_REF, ide: ideCredentialRef, signedOut: TOF_SIGNED_OUT_REF },
 		signIn,
+		cancelSignIn,
 		signOut,
 		status,
-		/** 给**同 Host 内**的其他插件用的取票口子（跨进程/页面一律不给 ⇒ 页面永远拿不到票据 ✓）。 */
+		/** IDE 同步写票（`tof.sync`）等外部改动后调：作废状态缓存 ✓。 */
+		invalidate,
+		/** 给**同 Host 内**的其他插件、以及经本机命名管道的 IDE 用的取票口子（页面一律不给 ⇒ 页面永远拿不到票据 ✓）。 */
 		ticket: effectiveTicket,
 	};
 }

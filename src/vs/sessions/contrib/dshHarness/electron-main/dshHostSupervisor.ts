@@ -402,6 +402,10 @@ export class DshHostSupervisor extends Disposable {
 			const outcome = await bridge.call<{ allowed?: boolean; outcome?: string; reason?: string }>(
 				'approval.request', args, 65_000,
 			);
+			if (outcome?.allowed !== true) {
+				// 2026-10-22：拒绝原因必须留痕（真机"点安装没反应"就是因为这里静默返回 false，原因 `approval-error` 没人看见）
+				this._opts.log(`[dshHarness] action consent not allowed: outcome=${String(outcome?.outcome ?? '')} reason=${String(outcome?.reason ?? '')}`);
+			}
 			return outcome?.allowed === true;
 		} catch (error) {
 			this._opts.log(`[dshHarness] action consent denied: ${String((error as Error)?.message ?? error)}`);
@@ -806,6 +810,9 @@ export class DshHostSupervisor extends Disposable {
 			const env = sanitizedEnv({
 				...(dshHome ? { DSH_HOME: dshHome } : {}),
 				...(dataRootEnv ? { VSSAROS_DATA_ROOT: dataRootEnv } : {}),
+				// ★ 2026-10-22：Host 运行时版本 ⇒ `@vssaros/dsh-market` 装第三方工作台前用它做兼容判定
+				//   （与 Host 启动时跳过不兼容插件**同一个判据、同一个版本**；没有它就只能用 app-boot 自报的版本）。
+				...(dsh.version ? { VSSAROS_DSH_RUNTIME_VERSION: dsh.version } : {}),
 			});
 			// ★ 2026-10-15：把**随包媒体二进制目录**（ffmpeg / ffprobe / yt-dlp / whisper…，打包管线
 			//   `build/saros/strip-before-pack.mjs` 的 ensureOptionalBin 段）注入 Host 的 PATH ⇒
@@ -1453,7 +1460,9 @@ export class DshHostSupervisor extends Disposable {
 		this._ownershipHeartbeat = setInterval(() => {
 			void fsp.utimes(file, new Date(), new Date()).catch(() => undefined);
 		}, HOST_RUN_OWNERSHIP_HEARTBEAT_MS);
-		this._ownershipHeartbeat.unref?.();
+		// ⚠ 与同文件其它 5 处同口径：`TimeoutHandle` 类型上没有 `unref`（Node/DOM 类型冲突），
+		//   但运行时确实存在 ⇒ 用结构化断言调用，不改成 `as any`（保持可见性）。
+		(this._ownershipHeartbeat as { unref?: () => void } | undefined)?.unref?.();
 	}
 
 	private _stopOwnershipHeartbeat(): void {

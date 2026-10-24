@@ -82,7 +82,7 @@
  *   （用户给的参照布局：设置 / 意见反馈 / 退出登录 + 账号 chip）。两者都只是"请 IDE 打开某个界面"，
  *   页面既不能指定设置项、也不能附带任何内容 ⇒ 无参、无写能力 ✓。
  */
-export const DSH_PAGE_BRIDGE_VERSION = 18;
+export const DSH_PAGE_BRIDGE_VERSION = 19;
 
 /** preload → 主进程的 IPC 通道（经 webContents.ipc，作用域限于该视图）。 */
 export const DSH_PAGE_IPC_INVOKE = 'vssaros:dsh:page';
@@ -199,6 +199,138 @@ export const DSH_PAGE_WORKSPACES_EVENT = 'vssaros-dsh-workspaces';
 export const DSH_PAGE_IPC_AUTH = 'vssaros:dsh:auth';
 /** 同上：preload 派发给页面插件的 DOM 事件名（`detail` = {@link IDshAuthOption}）。 */
 export const DSH_PAGE_AUTH_EVENT = 'vssaros-dsh-auth';
+
+/**
+ * **升级状态推送**（2026-10-23，桥 `18 → 19`）：宿主算好快照 → 主进程 `webContents.send` → preload 写
+ * `documentElement.dataset` + 派 DOM 事件（与主题 / worktree / 登录态逐字同机制）。
+ *
+ * 为什么是推而不是查：页面桥单向（`invoke` 只回 `true`）⇒ 状态只能推；顺带一个好处 ——
+ * 面板打开前状态就已经在页面上了（不会先看到一片"加载中"）。
+ */
+export const DSH_PAGE_IPC_UPGRADE = 'vssaros:dsh:upgrade';
+/** 同上：preload 派发给页面插件的 DOM 事件名（`detail` = {@link IDshUpgradeState}）。 */
+export const DSH_PAGE_UPGRADE_EVENT = 'vssaros-dsh-upgrade';
+
+/** 随包插件的一行（与 `IDshBundledPluginRow` 对齐；页面只读）。 */
+export interface IDshUpgradeBundledRow {
+	readonly name: string;
+	readonly version: string;
+	/** 安装状态（真源在 IDE 侧 `mergeBundledWithInstalled`；页面不得自行比版本 ✗）。 */
+	readonly state: 'missing' | 'installed' | 'upgradable' | 'downgradable';
+	readonly installedVersion?: string;
+	/** 归属模块（`vssaros.module`），面板上标"这是哪个模块"。 */
+	readonly module?: string;
+}
+
+/** 应用（IDE）自身的更新结论（`action` 由 `common/dshAppUpdate.ts` 的闸门给出）。 */
+export interface IDshUpgradeAppState {
+	readonly current: string;
+	/** 更新源给的版本（`productVersion`）；没查到时缺省。 */
+	readonly remote?: string;
+	readonly action: 'upgrade' | 'uptodate' | 'downgrade' | 'unknown';
+	/** 进行中的步骤（有值时面板显示进度文案 / 按钮转圈）。 */
+	readonly busy?: 'checking' | 'downloading' | 'installing';
+	readonly error?: string;
+}
+
+/** 商城资产类别（2026-10-23 用户："增加 skill、mcp、agent、工作流、工作台的升级检查"）。 */
+export const DSH_UPGRADE_ASSET_KINDS = ['skill', 'mcp', 'agent', 'workflow', 'workbench'] as const;
+export type DshUpgradeAssetKind = typeof DSH_UPGRADE_ASSET_KINDS[number];
+
+/** 一件**可升级的商城资产**（技能 / MCP / 智能体 / 工作流 / 工作台）。 */
+export interface IDshUpgradeAssetRow {
+	readonly kind: DshUpgradeAssetKind;
+	/** 商城 slug（`storeId`；面板上直接显示它，名称要额外请求 N 次不划算）。 */
+	readonly name: string;
+	readonly current: string;
+	readonly latest: string;
+	/**
+	 * 升级动作由谁执行：
+	 *  · `ide`  —— agent（名册刷新 + 内置冲突保护）/ mcp / workbench（要 `dsh plugin add` + 重启）；
+	 *  · `dsh`  —— skill / workflow（2026-10-22 起由 dsh 侧插件自持，IDE 侧调用会被下线闸拒 ✗）。
+	 */
+	readonly via: 'ide' | 'dsh';
+}
+
+/** 一次升级状态快照（全量；页面按它整块重画 ⇒ 不需要增量协议 ✓）。 */
+export interface IDshUpgradeState {
+	readonly at: number;
+	readonly app: IDshUpgradeAppState;
+	readonly runtime: { readonly current?: string; readonly channel?: string };
+	readonly bundled: readonly IDshUpgradeBundledRow[];
+	/** 商城资产里**可升级**的那几件（空数组 = 都最新 / 没登录商城 / 没装过）。 */
+	readonly assets: readonly IDshUpgradeAssetRow[];
+	/** 资产那一组为啥是空的（没登录商城 / 检查失败）—— 面板要能说清楚，而不是假装"都最新" ✗。 */
+	readonly assetsNote?: string;
+	/** 取状态本身失败时的原因（页面显示"暂时读不到"，而不是空列表 ✗）。 */
+	readonly error?: string;
+}
+
+/**
+ * 校验一份升级状态（主进程是信任边界：页面会把 `dataset` 当可信数据解析 ✓）。
+ * 只认形状，值域超出的一律丢弃（宁可少显示一行，也不要页面拿到脏数据）。
+ */
+export function validateUpgradeState(value: unknown): IDshUpgradeState | undefined {
+	const v = value as Partial<IDshUpgradeState> | undefined;
+	if (!v || typeof v !== 'object' || !v.app || typeof v.app !== 'object' || !Array.isArray(v.bundled)) {
+		return undefined;
+	}
+	const app = v.app as Partial<IDshUpgradeAppState>;
+	if (typeof app.current !== 'string') {
+		return undefined;
+	}
+	const action = app.action === 'upgrade' || app.action === 'uptodate' || app.action === 'downgrade' ? app.action : 'unknown';
+	const busy = app.busy === 'checking' || app.busy === 'downloading' || app.busy === 'installing' ? app.busy : undefined;
+	const rows: IDshUpgradeBundledRow[] = [];
+	for (const raw of v.bundled) {
+		const r = raw as Partial<IDshUpgradeBundledRow>;
+		if (!r || typeof r.name !== 'string' || typeof r.version !== 'string') {
+			continue;
+		}
+		const st = r.state === 'missing' || r.state === 'installed' || r.state === 'upgradable' || r.state === 'downgradable'
+			? r.state : 'installed';
+		rows.push({
+			name: r.name, version: r.version, state: st,
+			...(typeof r.installedVersion === 'string' ? { installedVersion: r.installedVersion } : {}),
+			...(typeof r.module === 'string' ? { module: r.module } : {}),
+		});
+	}
+	// 商城资产（技能 / MCP / 智能体 / 工作流 / 工作台）：只认白名单里的 kind
+	const assets: IDshUpgradeAssetRow[] = [];
+	for (const raw of Array.isArray(v.assets) ? v.assets : []) {
+		const a = raw as Partial<IDshUpgradeAssetRow>;
+		if (!a || !DSH_UPGRADE_ASSET_KINDS.includes(a.kind as DshUpgradeAssetKind)) {
+			continue;
+		}
+		if (typeof a.name !== 'string' || !a.name) {
+			continue;
+		}
+		assets.push({
+			kind: a.kind as DshUpgradeAssetKind,
+			name: a.name,
+			current: typeof a.current === 'string' ? a.current : '',
+			latest: typeof a.latest === 'string' ? a.latest : '',
+			via: a.via === 'dsh' ? 'dsh' : 'ide',
+		});
+	}
+	return {
+		at: typeof v.at === 'number' ? v.at : Date.now(),
+		app: {
+			current: app.current, action,
+			...(typeof app.remote === 'string' ? { remote: app.remote } : {}),
+			...(busy ? { busy } : {}),
+			...(typeof app.error === 'string' ? { error: app.error } : {}),
+		},
+		runtime: {
+			...(typeof v.runtime?.current === 'string' ? { current: v.runtime.current } : {}),
+			...(typeof v.runtime?.channel === 'string' ? { channel: v.runtime.channel } : {}),
+		},
+		bundled: rows,
+		assets,
+		...(typeof v.assetsNote === 'string' && v.assetsNote ? { assetsNote: v.assetsNote } : {}),
+		...(typeof v.error === 'string' ? { error: v.error } : {}),
+	};
+}
 
 /**
  * IDE 侧登录态的**展示投影**（只含展示必需字段 —— 票据/token 绝不下发到页面 ✗）。
@@ -454,7 +586,15 @@ export type DshPageCommand =
 	| { readonly method: 'openFile'; readonly path: string; readonly startLine?: number; readonly endLine?: number }
 	| { readonly method: 'openMarkdown'; readonly text: string; readonly title?: string }
 	| { readonly method: 'reveal'; readonly path: string }
-	| { readonly method: 'notify'; readonly kind: 'info' | 'done' | 'attention'; readonly text: string }
+	/**
+	 * `kind` 是**展示严重度**：`info` / `done` 走信息条，`warn` / `attention` 走警告条。
+	 * ★ 2026-10-22（真机：桌面页 `Uncaught (in promise) Error: ... vssarosDsh: invalid command`）：
+	 *   页面侧（`client.account.js` 等）一直在用 **`warn`**，而这里原先只允许 `info | done | attention`
+	 *   ⇒ 校验拒掉 ⇒ 页面拿到的是一次 rejected promise ⇒ 账号/人格那几条路径直接报错 ✗。
+	 *   ⇒ 补齐 `warn`（与 `attention` 同为警告级）。**任何新 kind 都必须同步改这里 + 校验器 + 消费端**
+	 *   （守卫 `dshPageBridgeProtocol.test.ts` 会扫页面源码里的实际取值，漏一个就红 ✓）。
+	 */
+	| { readonly method: 'notify'; readonly kind: 'info' | 'done' | 'warn' | 'attention'; readonly text: string }
 	| { readonly method: 'switchPreset'; readonly presetId: string }
 	/**
 	 * 把本视图切到**指定的 dsh 会话**（chat-surface 的「历史会话」菜单）。
@@ -766,7 +906,38 @@ export type DshPageCommand =
 	 * 触发点：同一个账号菜单里的「✈ 意见反馈」。宿主执行 `workbench.action.openIssueReporter`
 	 * （带环境/扩展信息的标准反馈通道，比丢一个 URL 靠谱 ✓）。无参。
 	 */
-	| { readonly method: 'openFeedback' };
+	| { readonly method: 'openFeedback' }
+	/**
+	 * 请宿主**重新算一份升级状态并推回来**（2026-10-23，桥 `18 → 19`）。
+	 *
+	 * 触发点：desktop 窗口侧栏底部那行「更新」—— 打开面板时、点「检查更新」时。
+	 * ⚠ 结果**不走返回值**：页面桥是单向的（`invoke` 只回 `true`）⇒ 宿主算完经
+	 *   {@link DSH_PAGE_IPC_UPGRADE} **推**给页面（与登录态 / worktree 同机制 ✓）。
+	 */
+	| { readonly method: 'upgradeRefresh' }
+	/**
+	 * 升级（或安装）**一个随包插件**（2026-10-23）：`{ name: '@vssaros/dsh-chat-surface' }`。
+	 *
+	 * 真正干活的还是 IDE 的插件中心（`installBundledPlugin`）：它走"主进程暂存到 profile → `dsh plugin add`"，
+	 * 与启动时装伴生插件同一条路（跨盘符安全 ✓）。装完宿主会**再推一份状态**（页面据此把行改成"已装 ✓"）。
+	 * ⚠ 只接受随包清单里存在的包名（宿主侧核对，页面不能借它装任意东西 ✓）。
+	 */
+	| { readonly method: 'upgradeBundled'; readonly name: string }
+	/**
+	 * **一键升级应用（IDE）本身**（2026-10-23）：检查更新源 → 比版本 → 下载 → 安装并重启。
+	 *
+	 * ⚠ 版本闸门在宿主：更新源比本地旧 ⇒ **拒绝**并推回 `action: 'downgrade'`（详见 `common/dshAppUpdate.ts`）。
+	 * ⚠ 成功路径会 `quitAndInstall()` ⇒ 应用重启、当前会话中断（页面要提前说明，见面板文案）。
+	 */
+	| { readonly method: 'upgradeApp' }
+	/**
+	 * 升级一件**商城资产**（技能 / MCP / 智能体 / 工作流 / 工作台；2026-10-23 用户要求"增加五类的升级检查"）。
+	 *
+	 * ⚠ 只有 `kind` 是白名单里的五类才放行（`DSH_UPGRADE_ASSET_KINDS`）；
+	 *   `skill` / `workflow` 的升级由 **dsh 侧插件**自持，IDE 侧会被下线闸拒 ⇒ 面板对这两类不显示按钮，
+	 *   这里也不替它们兜底（宁可少一个按钮，也不要"点了报错" ✗）。
+	 */
+	| { readonly method: 'upgradeAsset'; readonly kind: string; readonly slug: string };
 
 /**
  * **不需要 IDE 主窗口露面**的页面桥命令（2026-10-21 新增；原先是 `dshHarness.contribution.ts` 里的私有静态集，
@@ -796,6 +967,9 @@ export const DSH_PAGE_COMMANDS_WITHOUT_IDE_UI: ReadonlySet<Exclude<DshPageComman
 	'switchWorktree', 'switchWorkspace', // 宿主侧起会话 / 换工作区（无 IDE 界面变化）
 	'kbFeishuSync', 'kbAddVault', 'kbRemoveVault', // 数据动作（原生对话框自带前台）
 	'signInIde', 'signOutIde',   // ★ 账号动作：浏览器里登录，IDE 窗口不必露面 ⇒ 不许切模式 ✗
+	// ★ 2026-10-23（桥 `18 → 19`）：升级动作用的是**图标 + 面板**，全都长在 desktop 窗口里
+	//   ⇒ 不许因为"点了检查更新"就把 IDE 主窗口拉到前台（那正是用户要避免的形态 ✗）。
+	'upgradeRefresh', 'upgradeBundled', 'upgradeApp', 'upgradeAsset',
 ]);
 
 export interface IDshPageKeyEvent {
@@ -874,7 +1048,7 @@ export function validatePageCommand(raw: unknown): DshPageCommand | undefined {
 		case 'reveal':
 			return isPath(r.path) && isAbsoluteFsPath(r.path) ? { method: 'reveal', path: r.path } : undefined;
 		case 'notify': {
-			if ((r.kind !== 'info' && r.kind !== 'done' && r.kind !== 'attention') || typeof r.text !== 'string' || !r.text.trim()) {
+			if ((r.kind !== 'info' && r.kind !== 'done' && r.kind !== 'warn' && r.kind !== 'attention') || typeof r.text !== 'string' || !r.text.trim()) {
 				return undefined;
 			}
 			return { method: 'notify', kind: r.kind, text: r.text.slice(0, MAX_TEXT) };
@@ -1146,6 +1320,30 @@ export function validatePageCommand(raw: unknown): DshPageCommand | undefined {
 			return { method: 'openSettings' };
 		case 'openFeedback':
 			return { method: 'openFeedback' };
+		// 桥 `18 → 19`（2026-10-23）：升级（desktop 窗口侧栏底部那行 + 一键升级应用）。
+		case 'upgradeRefresh':
+			return { method: 'upgradeRefresh' };
+		case 'upgradeApp':
+			return { method: 'upgradeApp' };
+		case 'upgradeAsset': {
+			// 只放**形状**：kind 必须在五类白名单里，slug 走 npm 包名同款字符集（`storeId` 就是 slug）
+			// （"这件东西到底存不存在 / 能不能升"由宿主用自己的台账回答 ✓）
+			if (typeof r.kind !== 'string' || !(DSH_UPGRADE_ASSET_KINDS as readonly string[]).includes(r.kind)) {
+				return undefined;
+			}
+			if (typeof r.slug !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(r.slug)) {
+				return undefined;
+			}
+			return { method: 'upgradeAsset', kind: r.kind, slug: r.slug };
+		}
+		case 'upgradeBundled': {
+			// 只放**包名形状**（npm 名：可选 scope + 64 字符内）；"是不是随包清单里的"由宿主核对 ✓
+			// （页面桥不允许借它装任意包 —— 见协议里 `upgradeBundled` 的注释）。
+			if (typeof r.name !== 'string' || !/^(@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]{0,63}$/i.test(r.name)) {
+				return undefined;
+			}
+			return { method: 'upgradeBundled', name: r.name };
+		}
 			case 'openAgentRoster':
 			return { method: 'openAgentRoster' };
 			case 'openAgentSettings': {

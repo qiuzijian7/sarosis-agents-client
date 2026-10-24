@@ -29,13 +29,15 @@ export function createImageLedger({ limit = DEFAULT_LIMIT } = {}) {
 		 * @param {number} [entry.width]
 		 * @param {number} [entry.height]
 		 * @param {string} [entry.prompt]
+		 * @param {string} [entry.group] ★ 版本族 id（同一条出图线索的若干版）；缺省＝自成一族
 		 */
 		record(entry) {
 			const attachment = entry?.attachment;
 			if (!attachment || !attachment.attachmentId) { return undefined; }
 			seq += 1;
+			const id = `ci-${seq}-${Date.now().toString(36)}`;
 			const item = {
-				id: `ci-${seq}-${Date.now().toString(36)}`,
+				id,
 				attachment,
 				mediaType: String(entry.mediaType || attachment.mediaType || 'image/png'),
 				width: typeof entry.width === 'number' ? entry.width : attachment.width,
@@ -46,11 +48,34 @@ export function createImageLedger({ limit = DEFAULT_LIMIT } = {}) {
 				model: typeof entry.model === 'string' ? entry.model : '',
 				// 来源：`generate`（出图）/ `import`（从磁盘插进画布的）。
 				source: typeof entry.source === 'string' ? entry.source : 'generate',
+				// ★ 2026-10-22（聊天卡「版本切换 / 原位重生成」）：**版本族**。
+				//   同一条出图线索的若干版归一族 ⇒ 客户端可在同一张卡上切版本、再生成一版。
+				//   缺省＝自成一族（第一次出图就是族首 ⇒ 后续 regenerate 传同一个 group）。
+				group: typeof entry.group === 'string' && entry.group ? entry.group : id,
 				at: Date.now(),
 			};
 			items.push(item);
 			while (items.length > limit) { items.shift(); }
 			return item;
+		},
+		/**
+		 * 取某张图所在的**版本族 id**（按账本 id 或 dsh 附件 id 都认）。
+		 * @param {string} key
+		 * @returns {string | undefined}
+		 */
+		groupOf(key) {
+			const item = this.find(key);
+			return item ? item.group : undefined;
+		},
+		/**
+		 * 取某个版本族的**全部版本**（按生成先后升序 ⇒ 最后一版是最新）。
+		 * @param {string} group
+		 * @returns {Array<object>}
+		 */
+		versionsOf(group) {
+			const g = String(group || '');
+			if (!g) { return []; }
+			return items.filter(item => item.group === g).sort((a, b) => a.at - b.at);
 		},
 		/**
 		 * 取「晚于某个时刻」的图（画布页轮询用）。

@@ -375,15 +375,20 @@ function renderTop(data, input, handlers, compact) {
 	]);
 }
 
-/** 徽标状态（provider 数 / 画布 / 页面桥）。 */
-function badgeInfo(data, input) {
-	const providers = data.providers || [];
-	const canvas = data.canvas || {};
-	const bridgeOk = input.bridgeOk !== false;
+/**
+ * 徽标状态（provider 数 / 画布）。
+ *
+ * ★ 2026-10-22：**不再**把"没有页面桥"当黄标 ——
+ *   页面桥只在 IDE 的 webview 里有，而 **dsh 客户端窗口**里的插件页本来就没有它
+ *   （页面由 dsh 自己加载，没有 IDE 的 preload）⇒ 那是**常态**，不是故障；
+ *   挂黄标只会让用户以为坏了（用户报的就是这个 ✗）。
+ *   现在无桥时画布页**同窗口打开**（见 `openPlan.js`）⇒ 不影响可用性 ✓。
+ *   真正该黄的只有"一个 provider 都没有"（生不了图）。
+ */
+export function badgeInfo(data, input) {
+	const providers = (data && data.providers) || [];
+	const canvas = (data && data.canvas) || {};
 	const count = providers.length;
-	if (!bridgeOk) {
-		return { text: '页面桥不可用 · 点此重新检测', short: '页面桥不可用', warn: true };
-	}
 	if (!count) {
 		return { text: '没有可生图的 provider · 点此重新检测', short: '没有可生图的 provider', warn: true };
 	}

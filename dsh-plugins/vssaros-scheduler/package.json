@@ -1,6 +1,6 @@
 {
   "name": "@vssaros/dsh-scheduler",
-  "version": "0.2.1",
+  "version": "0.2.5",
   "description": "VsSaros Scheduler module for DeepSeek Harness: thin wrapper over the official @deepseek-ai/dsh-schedule service (refactor 2.1 pilot). ActivityBar icon + schedule list page at /x/scheduler/ (list/delete via ctx.schedule), plus programmatic migration of legacy agentScheduler definitions (agent.yaml `schedules` entries — never executed by legacy, so migration is zero-regression). Legacy bridgeScheduler (IM channel timers) is NOT migrated here; it belongs to the channels family (2.4).",
   "private": true,
   "type": "module",
@@ -10,7 +10,14 @@
     "./client": "./lib/client.js",
     "./package.json": "./package.json"
   },
-  "files": ["lib/index.js", "lib/client.js", "lib/pageShell.js", "lib/foundationRef.js", "lib/migrate.js", "cordis.patch.yml"],
+  "files": [
+    "lib/index.js",
+    "lib/client.js",
+    "lib/pageShell.js",
+    "lib/foundationRef.js",
+    "lib/migrate.js",
+    "cordis.patch.yml"
+  ],
   "peerDependencies": {
     "@deepseek-ai/dsh": ">=0.1.7-0 <0.3.0-0"
   },
@@ -45,13 +52,16 @@
     },
     "legacyCounterpart": "vssaros.dsh.scheduler",
     "workbench": {
-      "title": "定时任务",
-      "description": "定时任务：按计划自动运行 Agent。",
+      "title": "自动化任务",
+      "description": "自动化任务：按计划自动运行 Agent（建、看、删、查下次运行）。",
       "icon": "codicon:clock",
       "repository": "vssaros:scheduler",
       "customFrame": true,
       "headerLayout": "compact"
     }
   },
-  "license": "MIT"
+  "license": "MIT",
+  "scripts": {
+    "check": "node ./test/run-scheduler-check.mjs"
+  }
 }

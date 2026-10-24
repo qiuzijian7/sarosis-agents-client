@@ -21,6 +21,7 @@ import { CodebaseGraphSqliteStore } from '../node/codebaseGraphSqliteStore.js';
 import type { IGraphStoreOpenOptions } from '../node/codebaseGraphSqliteStore.js';
 import { CODEBASE_GRAPH_STORE_CHANNEL } from '../common/codebaseGraphStoreChannel.js';
 import type { GraphNode, GraphEdge } from '../browser/codebaseGraphService.js';
+import { markMainThreadPhase } from '../../../../code/electron-main/mainThreadBreadcrumb.js';
 
 type LogLevel = 'error' | 'warn' | 'info' | 'debug';
 
@@ -114,6 +115,8 @@ export class CodebaseGraphStoreChannel<TContext> extends Disposable implements I
 	}
 
 	async call<T>(_ctx: TContext, command: string, args?: unknown[]): Promise<T> {
+		// 取证面包屑：主线程每次进 SQLite IPC 都打点（卡住时看门狗报 phase=sqlite-call ✓）
+		markMainThreadPhase('sqlite-call');
 		await this._ensureOpened();
 		const s = this._sqliteStore;
 		switch (command) {
@@ -131,6 +134,8 @@ export class CodebaseGraphStoreChannel<TContext> extends Disposable implements I
 			case 'deleteProject': return s.deleteProject(args![0] as string, args![1] as { keepFileHashes?: boolean } | undefined) as unknown as T;
 			case 'deleteNodesByFile': return s.deleteNodesByFile(args![0] as string, args![1] as string) as unknown as T;
 			case 'checkpoint': return s.checkpoint() as unknown as T;
+			case 'suspendEdgeIndexes': return s.suspendEdgeIndexes() as unknown as T;
+			case 'ensureIndexes': return s.ensureIndexes() as unknown as T;
 			// 显式维护：归还 freelist + 切 INCREMENTAL（阻塞数秒~数十秒，见 store 注释）
 			case 'reclaimSpace': return s.reclaimSpace(args?.[0] as { force?: boolean; migrateToIncremental?: boolean } | undefined) as unknown as T;
 			// ★ 2026-09-18（P1-1 第二步）：导出 SQLite 快照制品（VACUUM INTO）—— 载入端可跳过 JSON 解析

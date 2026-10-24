@@ -13,7 +13,7 @@
 //   render(model, config) → HTML 字符串        ← 服务端渲染（我们的页面是 HTTP 页，没有客户端渲染循环）
 
 import { activityTally, aggregate, filterSessionsByRange, formatMs, formatTokens } from './core/dashboard.js';
-import { GRID_COLUMNS, clampInt } from './layout.js';
+import { GRID_COLUMNS, clampInt, textOf } from './layout.js';
 
 export function escapeHtml(value) {
 	return String(value).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
@@ -216,22 +216,46 @@ export const SESSIONS_LIMIT_MAX = 200;
 /**
  * 会话明细的行 —— **从改造前的 renderPage 原样搬来**（只把 slice 的输入换成参数）。
  */
-export function sessionRowsHtml(shown) {
-	const rows = shown.map(session => {
-		const cells = [
-			`<span class="t">${escapeHtml(session.title ?? '(无标题)')}</span>`,
-			`<small>${escapeHtml(shortPath(session.cwd))} · ${escapeHtml(session.preset ?? '未知 preset')} · ${isoOf(session.createdAt)} · 来源 ${session.source}${escapeHtml(listMetaText(session))}${escapeHtml(titleInputText(session))}</small>`,
-			session.model ? `<small>${escapeHtml(modelText(session))}</small>` : undefined,
-			subagentText(session) ? `<small>${escapeHtml(subagentText(session))}</small>` : undefined,
-			`<small>turn ${session.stats?.turns ?? '未知'} · step ${session.stats?.steps ?? '未知'} · LLM ${formatMs(session.stats?.llmMs)} · 工具 ${formatMs(session.stats?.toolMs)}</small>`,
-			`<small>token：输入 ${formatTokens(session.tokens?.uncachedInput)} · 输出 ${formatTokens(session.tokens?.output)} · 读缓存 ${formatTokens(session.tokens?.cacheRead)} · 表面 ${formatTokens(session.surfaceTokens)}${contextUsageText(session)}${contextBreakdownText(session)}</small>`,
-			// 没有「运行中」信号的会话不渲染这一行（而不是渲染"运行中：0"——那正是"未知伪装成 0"）
-			session.activity ? `<small>运行中：${escapeHtml(activityText(session.activity))}</small>` : undefined,
-		].filter(Boolean);
-		return `<li class="${session.active ? '' : 'cold'}"><code>${escapeHtml(String(session.id))}</code><br>${cells.join('<br>')}</li>`;
-	}).join('');
-	return rows;
+/**
+ * 单条会话行的**展示数据**（纯文本，不含 HTML）—— SSR 与 React 版共用这一处。
+ *
+ * ⚠ 为什么抽出来：主页现在有两套渲染（服务端字符串 / 页面里的 React）⇒ 文案若各写一份必然漂移
+ *   （表现就是"同一个会话在两版里字段不一样"）✗。这里只产出「标题 + 若干行文本」，
+ *   结构（`<li><code><small>`）交给渲染层 ⇒ 文案口径只有一处 ✓。
+ * ⚠ 文案逐字由 `p3-46` 钉着（`来源 cache` / `参与标题的输入` / `turn` / `token：输入` / 子代理身份）。
+ */
+export function sessionRowModel(session) {
+	const lines = [];
+	lines.push(`${shortPath(session.cwd)} · ${session.preset ?? '未知 preset'} · ${isoOf(session.createdAt)} · 来源 ${session.source}${listMetaText(session)}${titleInputText(session)}`);
+	if (session.model) {
+		lines.push(modelText(session));
+	}
+	const sub = subagentText(session);
+	if (sub) {
+		lines.push(sub);
+	}
+	lines.push(`turn ${session.stats?.turns ?? '未知'} · step ${session.stats?.steps ?? '未知'} · LLM ${formatMs(session.stats?.llmMs)} · 工具 ${formatMs(session.stats?.toolMs)}`);
+	lines.push(`token：输入 ${formatTokens(session.tokens?.uncachedInput)} · 输出 ${formatTokens(session.tokens?.output)} · 读缓存 ${formatTokens(session.tokens?.cacheRead)} · 表面 ${formatTokens(session.surfaceTokens)}${contextUsageText(session)}${contextBreakdownText(session)}`);
+	// 没有「运行中」信号的会话不渲染这一行（而不是渲染"运行中：0"——那正是"未知伪装成 0"）
+	if (session.activity) {
+		lines.push(`运行中：${activityText(session.activity)}`);
+	}
+	return {
+		id: String(session.id),
+		title: session.title ?? '(无标题)',
+		cold: !session.active,
+		lines,
+		// ★ 2026-10-23：**结构化字段**（additive，`lines` 一字未动 ⇒ 文案守卫不受影响）。
+		//   为什么要它：主页的会话卡要做成"表格"（turn / step / 耗时各一列），
+		//   从 `lines` 里 regex 抠数字是最脆的写法（文案一改就静默错）。
+		//   值未知时给 `undefined`（渲染层显示「未知」），**不伪装成 0**。
+		turns: session.stats?.turns,
+		steps: session.stats?.steps,
+		llmMs: session.stats?.llmMs,
+		cwd: String(session.cwd ?? ''),
+	};
 }
+
 
 /**
  * 页面级摘要：按**范围**重算聚合 + 运行清点 + token 行。
@@ -277,7 +301,7 @@ export function metaBlock({ data, summary, tally, toolsRegistered = '', liveServ
  *   三条命令**都按 route 白名单**（IDE 侧再把 route 映射成容器 id ✓）⇒ 这里写错 route 的表现是
  *   "点了没反应（命令被静默拒掉）" ✗ ✓。
  */
-const WORKBENCH_MODULES = [
+export const WORKBENCH_MODULES = [
 	// ★ 2026-10-21（用户：「主页item ui中的固定，应该默认固定状态，且不可以取消固定」）：
 	//   主页是 dsh 侧栏的**常驻入口**（那一行永远在）⇒ 活动栏里它也**恒为固定** ⇒ 卡片上
 	//   直接显示「📌 已固定」且**不给取消的入口**（按钮 disabled）✓。
@@ -288,21 +312,39 @@ const WORKBENCH_MODULES = [
 	{ route: '/x/codebase/', name: '代码库', desc: '代码图谱与符号检索', icon: '🕸' },
 	{ route: '/x/media/', name: '媒体库', desc: '只读 media.db 页面', icon: '🎬' },
 	{ route: '/x/imagegen/', name: '生图', desc: '生图工作台 / 最近出图画廊', icon: '🎨' },
-	{ route: '/x/skills/', name: '技能', desc: '技能注册与按需加载', icon: '🧩' },
-	{ route: '/x/mcp/', name: 'MCP', desc: 'MCP 服务器与工具', icon: '🔌' },
+	// ★ 2026-10-23（用户：「技能 item 改名为 工具，描述改为 技能、工具、mcp、agent、工作流、工作台」）：
+	//   文案与侧栏 `DEFAULT_ITEMS` 对齐（那边也叫「工具」）——同一个入口在两处叫不同名字最容易让人找不到。
+	{ route: '/x/skills/', name: '工具', desc: '技能、工具、mcp、agent、工作流、工作台', icon: '🧩' },
+	// ★ 2026-10-23（用户：「移除 mcp 工作台」）：MCP **不是整页模块**（`DSH_MODULE_PAGES` 里没有它，
+	//   服务器挂载在 VsSaros 启动时用 `--patch` 做）⇒ 它既不在侧栏 `DEFAULT_ITEMS`、也不在 route 白名单里
+	//   ⇒ 这张卡片点「打开」本来就会被**静默拒掉**（表现为"点了没反应"）。移除卡片正好把这个假入口清掉 ✓。
+	//   （MCP 服务器本身仍在「工具」页的 MCP 页签里管理 ✓）
 	{ route: '/x/workflow/', name: '流程', desc: '工作流引擎与画布', icon: '⚙' },
-	{ route: '/x/agents/', name: 'Agent', desc: '.agent.md → dsh preset', icon: '🤖' },
+	{ route: '/x/agents/', name: 'Bots', desc: '.agent.md → dsh preset', icon: '🤖' },
 	// ★ 2026-10-22（修 bug：主页没有「商城」卡片）：自营商城工作台（`@vssaros/dsh-marketplace`）。
 	//   ⚠ 漏登记的后果不止"卡片不显示"：`client.workbenchNav.js` 的 `itemByRoute()` 只认
 	//   `DEFAULT_ITEMS` 里的 route ⇒ 卡片就算加进来，点「打开」也会被 route 白名单静默拒掉
 	//   （表现为"点了没反应"）✗ ⇒ **两处必须同时登记**（守卫 `check-workbench-catalog.mjs` 盯着 ✓）。
 	{ route: '/x/marketplace/', name: '商城', desc: 'Agent / Skill / 工作台 / 工作流的安装与发布', icon: '🛒' },
+	// ★ 2026-10-23（用户：「saros 工作台显示站点前端 + 右上角 AI 助手 → 右侧 chat-surface」）：
+	//   萨罗斯管理平台工作台（`@vssaros/dsh-studio`，页面 `/x/studio/` = 站点 iframe + 站点栏）。
+	//   ⚠ 与 `client.workbenchNav.js` 的 `DEFAULT_ITEMS` **必须两处同时登记**，否则「打开」被
+	//   route 白名单静默拒掉（"点了没反应"）；守卫 `check-workbench-catalog.mjs` 盯着。
+	{ route: '/x/studio/', name: '萨罗斯管理平台', desc: '承载 Saroasis Studio System 前端；右上角「AI 助手」开右侧 chat-surface', icon: '◱' },
+	// ★ 2026-10-24：小红书笔记（创作型工作台样板 `@vssaros/dsh-xhs-note`）。
+	//   ⚠ 与 `client.workbenchNav.js` 的 `DEFAULT_ITEMS` 必须两处同时登记（那边同时是 route 白名单）。
+	{ route: '/x/xhs-note/', name: '小红书笔记', desc: '主题与素材整理成笔记；草稿落数据目录，AI 协助可带上下文', icon: '💬' },
 
 	{ route: '/x/sessions/', name: '历史会话', desc: '会话分组 / 人格标记 / 指示灯', icon: '🕘' },
+	// ★ 2026-10-22（用户：「多 TUI 应该设计为一个工作台，在主页中显示 item」）：
+	//   并行 TUI 工作台（`@vssaros/dsh-parallel`）。⚠ 与 `client.workbenchNav.js` 的 `DEFAULT_ITEMS`
+	//   **必须两处同时登记**（漏一处 ⇒ 卡片在、点「打开」被 route 白名单静默拒掉 = 点了没反应 ✗，
+	//   守卫 `check-workbench-catalog.mjs` 盯着）；⚠ route 还必须与宿主 `DSH_MODULE_PAGES` 一致。
+	{ route: '/x/parallel/', name: '并行 TUI 工作台', desc: '并排编排多个并行 LLM 会话：每格一个 TUI，可观察 / 收割 / 接管', icon: '🖥' },
 ];
 
 /** 按 cwd 分组（工作区 = cwd，worktree 目录天然就是另一个 cwd ⇒ 自动分开 ✓）。未知 cwd 单列、不伪造 ✓。 */
-function groupByCwd(sessions, limit) {
+export function groupByCwd(sessions, limit) {
 	const groups = new Map();
 	for (const session of sessions) {
 		const key = typeof session.cwd === 'string' && session.cwd ? session.cwd : '';
@@ -320,7 +362,7 @@ function groupByCwd(sessions, limit) {
 }
 
 /** token 四路构成 + 按**实际模型**（`modelSelection.used`）分桶 —— 「未知」一律如实写未知 ✓。 */
-function usageBuckets(model) {
+export function usageBuckets(model) {
 	const t = model.summary.tokens ?? {};
 	const parts = [
 		{ key: '输入', value: t.uncachedInput, color: '#4C9AFF' },
@@ -346,7 +388,31 @@ function usageBuckets(model) {
  *
  * ⚠ `diag` 这块原先背着 18 个 `data-vssaros-dashboard-*` 锚点；现在锚点搬到页面的隐藏元数据块里
  *   （因为组件可被用户删掉，而探针的锚点必须稳定 —— 见 `index.js` 的 `renderDashboardPage`）。
+ *
+ * ⚠⚠ 2026-10-22（主页改 React 渲染）：**`render()` 这一族已经不是活的渲染路径了** ——
+ *   完整页现在只出「壳 + 数据岛」（`index.js` 的 `renderDashboardPage`），卡片由
+ *   `lib/app/src/app.jsx` 的 React 组件画。这里保留的是**元数据**（`kind` / `name` /
+ *   `defaultSize` / `defaultConfig` / `normalizeConfig`，`serializeCatalog` 与画廊在用）。
+ *   ⇒ 要改外观去改 `app.jsx` / `app.css`；**别在这里加新渲染逻辑**（改了也不会生效，最坑的形态）。
+ *   清理待办：把 `render()` 与随之失去调用方的 `getWidget` / `sessionRowsHtml` / `widgetTitle` 一并删掉。
  */
+/**
+ * 布尔归一化（给 `type: 'toggle'` 的配置字段用）。
+ *
+ * ⚠ 只认 `true/false`（含 JSON 里的字符串形式）—— 手改 `layout.json` 写成 `"abc"` 时**回落 fallback**，
+ *   而不是按 JS 真值当成 true（"未知伪装成已开启"是同一类错 ✗）。
+ */
+function boolOf(value, fallback) {
+	if (value === true || value === 'true') { return true; }
+	if (value === false || value === 'false') { return false; }
+	return fallback;
+}
+
+/** 枚举归一化（给 `type: 'select'` 的配置字段用）：不在白名单里就回落 fallback。 */
+function enumOf(value, allowed, fallback) {
+	return allowed.includes(value) ? value : fallback;
+}
+
 export const WIDGETS = [
 	{
 		kind: 'kpi',
@@ -356,16 +422,6 @@ export const WIDGETS = [
 		accent: '#4C9AFF',
 		defaultSize: { w: GRID_COLUMNS, h: 1 },
 		defaultConfig: () => ({}),
-		render(model) {
-			const { summary, tally } = model;
-			return `<div class="cards">
-	<div class="card"><b>${summary.sessions}</b><span>会话（${summary.active} 个活跃）</span></div>
-	<div class="card"><b>${summary.turns ?? '未知'}</b><span>turn</span></div>
-	<div class="card"><b>${summary.steps ?? '未知'}</b><span>step</span></div>
-	<div class="card"><b>${formatMs(summary.llmMs)}</b><span>模型耗时</span></div>
-	<div class="card"><b>${formatMs(summary.toolMs)}</b><span>工具耗时</span></div>
-${tally.todoSessions !== undefined ? `	<div class="card"><b>${tally.inProgress ?? 0}</b><span>进行中待办（${tally.todoSessions} 个会话有清单）</span></div>\n` : ''}${tally.waiting ? `	<div class="card"><b>${tally.waiting}</b><span>待用户回答 / 审批</span></div>\n` : ''}${tally.activePlans ? `	<div class="card"><b>${tally.activePlans}</b><span>计划模式生效</span></div>\n` : ''}${tally.retrying ? `	<div class="card"><b>${tally.retrying}</b><span>正在重试（LLM）</span></div>\n` : ''}${tally.running ? `	<div class="card"><b>${tally.running}</b><span>回合进行中</span></div>\n` : ''}${tally.queued ? `	<div class="card"><b>${tally.queued}</b><span>排队待发</span></div>\n` : ''}${tally.subagentChildren ? `	<div class="card"><b>${tally.subagentChildren}</b><span>派出的子代理</span></div>\n` : ''}${tally.subagentSessions ? `	<div class="card"><b>${tally.subagentSessions}</b><span>是子代理的会话</span></div>\n` : ''}${tally.subagentRunning ? `	<div class="card"><b>${tally.subagentRunning}</b><span>子代理正在跑</span></div>\n` : ''}</div>`;
-		},
 	},
 	{
 		kind: 'diag',
@@ -375,10 +431,6 @@ ${tally.todoSessions !== undefined ? `	<div class="card"><b>${tally.inProgress ?
 		accent: '#8A8A8E',
 		defaultSize: { w: GRID_COLUMNS, h: 1 },
 		defaultConfig: () => ({}),
-		render(model) {
-			const { data, tokenLine, toolsRegistered, liveServices } = model;
-			return `<p class="diag">token：${tokenLine} · 数据目录 <code>${escapeHtml(data.dir)}</code> · 工具 <code>${escapeHtml(toolsRegistered)}</code> · live 服务 <code>${escapeHtml(liveServices)}</code> · 本轮由 live 覆盖 <code>${data.live ?? 0}</code> 个会话（其余为 cache）</p>`;
-		},
 	},
 	{
 		kind: 'sessions',
@@ -388,27 +440,26 @@ ${tally.todoSessions !== undefined ? `	<div class="card"><b>${tally.inProgress ?
 		accent: '#3FB950',
 		defaultSize: { w: GRID_COLUMNS, h: 3 },
 		defaultConfig: () => ({ limit: SESSIONS_LIMIT_DEFAULT }),
+		// ★ 2026-10-22：**可配字段声明**（渲染层据此自动画设置面板，见 app.jsx 的 CardSettings）。
+		//   ⚠ `min/max/fallback` 必须与 `normalizeConfig` 里的夹紧**同值** —— 守卫用行为断言钉住
+		//     （`normalizeWidgetConfig(max+100) === max`）。面板给的界比夹紧宽 ⇒ 用户填了会被悄悄改掉 ✗。
+		configFields: [
+			{ key: 'limit', label: '最多显示', unit: '条', min: 1, max: SESSIONS_LIMIT_MAX, step: 1, fallback: SESSIONS_LIMIT_DEFAULT },
+			{
+				key: 'order', label: '排序', type: 'select', fallback: 'desc',
+				options: [{ value: 'desc', label: '最新在前' }, { value: 'asc', label: '最早在前' }],
+			},
+			// ★ 文本型配置（2026-10-22）：唯一一个**真有用途**的文本项 —— 按标题/主题过滤会话。
+			//   `maxLength` 必填：不截断的话一个粘贴进去的长串会把面板与卡片撑坏。
+			{ key: 'keyword', label: '只看包含', type: 'text', maxLength: 40, placeholder: '标题里的关键字', fallback: '' },
+		],
 		// 逐组件归一化（R3）：用户填的值也要被纠正后才用。
 		normalizeConfig(raw) {
-			return { limit: clampInt(raw?.limit, 1, SESSIONS_LIMIT_MAX, SESSIONS_LIMIT_DEFAULT) };
-		},
-		render(model, config) {
-			const { summary } = model;
-			const limit = clampInt(config?.limit, 1, SESSIONS_LIMIT_MAX, SESSIONS_LIMIT_DEFAULT);
-			const shown = summary.sorted.slice(0, limit);
-			const rows = shown.length ? sessionRowsHtml(shown) : '';
-			// ⚠ 标题里的计数必须与**实际列出**的条数一致：只按聚合总数写，会出现"56 个"却只列 50 条的自相矛盾 ✗
-			//   （等价重构：默认 limit=50 且库里 ≤ 50 时两个数相等 ⇒ 文案与改造前逐字一致 ✓）
-			const countLabel = shown.length === summary.sorted.length
-				? `${summary.sorted.length} 个（按创建时间倒序）`
-				: `显示 ${shown.length} / 共 ${summary.sorted.length} 个（按创建时间倒序）`;
-			// ⚠ 2026-10-13（用户："会话组件太长了，限制高度使用滚动条滚动即可"）：列表**自己滚动** ✓
-		//   —— 计数行（`<h2>`）留在滚动容器**外面** ⇒ 无论滚到哪都能看见总数 ✓（比塞进去更有用）。
-		//   ⚠ 帽子与"卡片可被拉高"不冲突：`h` 的语义是**最小高度**（见 layout.js），这里是"列表最多
-		//   占视口一半"，超过就滚 ✓ —— 用它而不是 `h` 的原因：**已落盘的布局里 `h` 还是旧值 3** ✗，
-		//   按 `h` 算帽子会让老用户看到只有一两行（等于把改动变成回归 ✗）。
-		return `<h2>会话 <small>${countLabel}</small></h2>
-${rows ? `<div class="dash-scroll" data-dash-scroll="sessions"><ul>${rows}</ul></div>` : '<p class="empty">没有可显示的会话。</p>'}`;
+			return {
+				limit: clampInt(raw?.limit, 1, SESSIONS_LIMIT_MAX, SESSIONS_LIMIT_DEFAULT),
+				order: enumOf(raw?.order, ['desc', 'asc'], 'desc'),
+				keyword: textOf(raw?.keyword, 40, ''),
+			};
 		},
 	},
 	// ── 2026-10-13 新增（用户要求；参考 Obsidian Home Pages 的组件思路，代码自写 ✓）─────────────
@@ -439,33 +490,6 @@ ${rows ? `<div class="dash-scroll" data-dash-scroll="sessions"><ul>${rows}</ul><
 			}
 			return { order };
 		},
-		render(model, config) {
-			// ⚠ 排序规则刻意**保守**：不在顺序里的模块（新装的插件 ✓）排在**最后**、仍按默认序 ✓
-			//   —— 不能因为用户排过序，新模块就"不见了"或跑到奇怪位置 ✗；顺序里已不存在的 route 直接忽略 ✓。
-			const saved = Array.isArray(config?.order) ? config.order : [];
-			const rank = new Map();
-			saved.forEach((route, index) => {
-				if (!rank.has(route)) {
-					rank.set(route, index);
-				}
-			});
-			const ordered = WORKBENCH_MODULES
-				.map((entry, index) => ({ entry, index }))
-				.sort((a, b) => {
-					const ra = rank.has(a.entry.route) ? rank.get(a.entry.route) : Number.MAX_SAFE_INTEGER;
-					const rb = rank.has(b.entry.route) ? rank.get(b.entry.route) : Number.MAX_SAFE_INTEGER;
-					return ra === rb ? a.index - b.index : ra - rb;
-				})
-				.map(item => item.entry);
-			// ⚠ `data-dash-wb-route` 是客户端算"拖后的顺序"用的（只认这个属性和 DOM 次序 ✓，不猜别的 ✓）
-			const cards = ordered.map(m => `<div class="wb-card" data-dash-wb-route="${escapeHtml(m.route)}">
-	<div class="wb-nm"><span>${m.icon}</span>${escapeHtml(m.name)}</div>
-	<div class="wb-desc">${escapeHtml(m.desc)}</div>
-	<div class="wb-ops"><button type="button" class="wb-op" data-dash-action="open-module" data-dash-route="${escapeHtml(m.route)}">↗ 打开</button>${m.alwaysPinned ? '<button type="button" class="wb-op" disabled title="主页恒为固定（不可取消）">📌 已固定</button>' : '<button type="button" class="wb-op" data-dash-action="pin-module" data-dash-route="' + escapeHtml(m.route) + '">📌 固定</button>'}<button type="button" class="wb-op" data-dash-action="hide-module" data-dash-route="${escapeHtml(m.route)}">👁 从活动栏隐藏</button></div>
-</div>`).join('');
-			return `<div class="wb-grid" data-dash-workbench="1">${cards}</div>
-<p class="diag">这些按钮是<b>单向动作</b>：dsh 侧读不到 IDE 的固定 / 显隐状态（用户选的是"dsh 侧自己枚举"）⇒ 卡片<b>不回显</b>"已固定 / 已隐藏"，点了就生效、页面不知道结果。顺序可以直接<b>拖动卡片</b>调整（不需要进"编排"模式 ✓）。</p>`;
-		},
 	},
 	{
 		kind: 'workspaces',
@@ -475,30 +499,11 @@ ${rows ? `<div class="dash-scroll" data-dash-scroll="sessions"><ul>${rows}</ul><
 		accent: '#4C9AFF',
 		defaultSize: { w: 6, h: 2 },
 		defaultConfig: () => ({ limit: 8 }),
+		configFields: [
+			{ key: 'limit', label: '最多显示', unit: '个工作区', min: 1, max: 30, step: 1, fallback: 8 },
+		],
 		normalizeConfig(raw) {
 			return { limit: clampInt(raw?.limit, 1, 30, 8) };
-		},
-		render(model, config) {
-			const limit = clampInt(config?.limit, 1, 30, 8);
-			const groups = groupByCwd(model.summary.sorted, limit);
-			if (!groups.length) {
-				return '<h2>工作区 <small>按 cwd 分组</small></h2><p class="empty">没有可显示的会话。</p>';
-			}
-			const top = groups[0].sessions;
-			const rows = groups.map(g => `<tr>
-	<td><code>${escapeHtml(g.cwd || '（cwd 未知）')}</code></td>
-	<td>${g.sessions}</td>
-	<td>${g.turns ?? '未知'} / ${g.steps ?? '未知'}</td>
-	<td>${g.llmMs === undefined ? '未知' : formatMs(g.llmMs)}</td>
-	<td>${g.output === undefined ? '未知' : formatTokens(g.output)}</td>
-</tr>
-<tr><td colspan="5"><div class="ws-track"><i style="width: ${Math.round((g.sessions / top) * 100)}%"></i></div></td></tr>`).join('');
-			return `<h2>工作区 <small>按 cwd 分组（${model.summary.sorted.length} 个会话）</small></h2>
-<table>
-<tr><th>工作区</th><th>会话</th><th>turn / step</th><th>模型耗时</th><th>输出 token</th></tr>
-${rows}
-</table>
-<p class="diag">未知一律写"未知"，不伪装成 0（某个工作区一条会话都没带该单元时就是这样 ✓）。</p>`;
 		},
 	},
 	{
@@ -508,22 +513,12 @@ ${rows}
 		icon: 'graph-line',
 		accent: '#4EC9B0',
 		defaultSize: { w: 6, h: 2 },
-		defaultConfig: () => ({}),
-		render(model) {
-			const { parts, total, byModel } = usageBuckets(model);
-			const bar = total > 0
-				? `<div class="stack">${parts.filter(p => (p.value ?? 0) > 0).map(p => `<i style="width: ${(p.value / total) * 100}%; background: ${p.color}" title="${escapeHtml(p.key)}"></i>`).join('')}</div>`
-				: '<p class="empty">范围内没有 token 用量可显示。</p>';
-			const legend = parts.map(p => `<span><i style="background: ${p.color}"></i>${escapeHtml(p.key)} ${p.value === undefined ? '未知' : formatTokens(p.value)}</span>`).join('');
-			const modelRows = byModel.map(row => `<tr><td>${escapeHtml(row.key)}</td><td>${row.sessions}</td><td>${row.output === undefined ? '未知' : formatTokens(row.output)}</td></tr>`).join('');
-			return `<h2>用量 <small>四路构成 ＋ 按模型</small></h2>
-${bar}
-<div class="legend">${legend}</div>
-<table>
-<tr><th>实际使用的模型（modelSelection.used）</th><th>会话</th><th>输出 token</th></tr>
-${modelRows}
-</table>
-<p class="diag">数据全来自会话投影缓存；模型只认<b>实际用过</b>的那个（"已选未生效"的不算 ✓）。</p>`;
+		defaultConfig: () => ({ showByModel: true }),
+		configFields: [
+			{ key: 'showByModel', label: '按模型分桶表', type: 'toggle', fallback: true },
+		],
+		normalizeConfig(raw) {
+			return { showByModel: boolOf(raw?.showByModel, true) };
 		},
 	},
 	{
@@ -533,16 +528,13 @@ ${modelRows}
 		icon: 'watch',
 		accent: '#DCDCAA',
 		defaultSize: { w: 3, h: 2 },
-		defaultConfig: () => ({}),
-		render() {
-			// 服务端先渲染一个初值（脚本没跑起来时也不至于空着 ✓），客户端接管让它走 ✓
-			const now = new Date();
-			const p = n => String(n).padStart(2, '0');
-			const week = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][now.getDay()];
-			return `<div class="clock" data-dash-clock="1">
-	<div class="clock-t" data-dash-clock-time>${p(now.getHours())}:${p(now.getMinutes())}:${p(now.getSeconds())}</div>
-	<div class="clock-d" data-dash-clock-date>${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())} ${week}</div>
-</div>`;
+		defaultConfig: () => ({ showSeconds: true, hour12: false }),
+		configFields: [
+			{ key: 'showSeconds', label: '显示秒', type: 'toggle', fallback: true },
+			{ key: 'hour12', label: '12 小时制', type: 'toggle', fallback: false },
+		],
+		normalizeConfig(raw) {
+			return { showSeconds: boolOf(raw?.showSeconds, true), hour12: boolOf(raw?.hour12, false) };
 		},
 	},
 	{
@@ -553,18 +545,12 @@ ${modelRows}
 		accent: '#F48771',
 		defaultSize: { w: 3, h: 3 },
 		defaultConfig: () => ({ focus: 25, break: 5 }),
+		configFields: [
+			{ key: 'focus', label: '专注', unit: '分钟', min: 5, max: 90, step: 5, fallback: 25 },
+			{ key: 'break', label: '休息', unit: '分钟', min: 1, max: 30, step: 1, fallback: 5 },
+		],
 		normalizeConfig(raw) {
 			return { focus: clampInt(raw?.focus, 5, 90, 25), break: clampInt(raw?.break, 1, 30, 5) };
-		},
-		render(model, config) {
-			const focus = clampInt(config?.focus, 5, 90, 25);
-			const brk = clampInt(config?.break, 1, 30, 5);
-			return `<div class="pomo" data-dash-pomodoro="1" data-dash-focus="${focus}" data-dash-break="${brk}">
-	<svg class="pomo-ring" viewBox="0 0 100 100"><circle cx="50" cy="50" r="42" fill="none" stroke="currentColor" stroke-opacity=".12" stroke-width="8"></circle><circle data-dash-pomo-arc cx="50" cy="50" r="42" fill="none" stroke="#4EC9B0" stroke-width="8" stroke-linecap="round" transform="rotate(-90 50 50)"></circle></svg>
-	<div class="pomo-t" data-dash-pomo-time>${String(focus).padStart(2, '0')}:00</div>
-	<div class="pomo-ph" data-dash-pomo-phase>专注 · 第 1 个</div>
-	<div class="pomo-ops"><button type="button" class="dash-btn" data-dash-action="pomo-toggle">开始</button><button type="button" class="dash-btn" data-dash-action="pomo-reset">重置</button></div>
-</div>`;
 		},
 	},
 ];
@@ -590,13 +576,12 @@ export function serializeCatalog(presentKinds) {
 		w: widget.defaultSize.w,
 		h: widget.defaultSize.h,
 		added: have.has(widget.kind),
+		// ★ 2026-10-22：可配字段一并发给页面 ⇒ 设置面板由「声明」自动生成（不是每个组件写一套表单）。
+		//   没有 `configFields` 的组件 ⇒ 面板不出现齿轮（见 app.jsx）。
+		configFields: Array.isArray(widget.configFields) ? widget.configFields : [],
 	}));
 }
 
-/** kind → 定义。未知 kind 返回 `undefined`（调用方据此渲染**占位卡**）。 */
-export function getWidget(kind) {
-	return WIDGETS.find(widget => widget.kind === kind);
-}
 
 /** 全部可用 kind（探针用它断言"默认布局没引用不存在的组件"）。 */
 export const WIDGET_KINDS = new Set(WIDGETS.map(widget => widget.kind));
@@ -609,11 +594,3 @@ export function normalizeWidgetConfig(widget, raw) {
 	return widget.normalizeConfig ? widget.normalizeConfig(raw) : { ...widget.defaultConfig(), ...(raw ?? {}) };
 }
 
-/** 卡片标题（自定义标题优先，否则用目录里的名字）。P3 的编辑态用它。 */
-export function widgetTitle(item) {
-	const custom = typeof item?.title === 'string' ? item.title.trim() : '';
-	if (custom) {
-		return custom;
-	}
-	return getWidget(item?.kind)?.name ?? item?.kind ?? '(未知组件)';
-}

@@ -64,6 +64,16 @@ export class CodeBuddyAuth {
 
 	get authStatus(): AuthStatus { return this._authStatus; }
 
+	/**
+	 * 导出**登录得来**的会话（2026-10-22：CodeBuddy 已搬到 dsh Host 实现，过渡期把这里的登录态一次性迁过去）。
+	 * 只导出缓存的登录态（globalState），**不**导出环境变量 / apiKeyHelper 那几类来源。
+	 */
+	exportSession(): { accessToken: string; refreshToken?: string; expiresAt: number } | undefined {
+		const t = this._cachedToken;
+		if (!t?.accessToken) { return undefined; }
+		return { accessToken: t.accessToken, ...(t.refreshToken ? { refreshToken: t.refreshToken } : {}), expiresAt: t.expiresAt };
+	}
+
 	// ---- Token persistence ----
 
 	private _loadToken(): void {

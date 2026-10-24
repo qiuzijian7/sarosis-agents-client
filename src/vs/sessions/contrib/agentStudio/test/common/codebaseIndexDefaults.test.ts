@@ -18,6 +18,9 @@ import {
 	artifactProducerOf,
 	DSH_ARTIFACT_PRODUCER,
 	EXTERNAL_ARTIFACT_RELOAD_MIN_INTERVAL_MS,
+	COMMON_EXCLUDE_DIRS,
+	excludeDirsForProfile,
+	matchesExcludeDir,
 } from '../../common/codebaseIndexDefaults.js';
 
 suite('Codebase — IndexDefaults', () => {
@@ -264,5 +267,37 @@ suite('Codebase — IndexDefaults', () => {
 			assert.strictEqual(artifactProducerOf({}), undefined);
 			assert.strictEqual(isDshProducedManifest({}), false);
 		});
+	});
+});
+
+/**
+ * ★ 排除 `dsh-runtime`（预装的 dsh 运行时）—— 2026-10-22 用户报"dev 整个 app 卡死"的根因之一。
+ *
+ * 现场（本机实测）：`dsh-runtime/` 有 **86,782 个文件**（其中 profile-seed 15,052 个），全部被索引
+ * ⇒ 本项目图谱涨到 **40 万节点 / 125 万边**；而且它**每次重建**（`build/prepack-dsh-runtime.mjs`）
+ * 都会被 watcher 看成"删了几千个文件" ⇒ 增量补丁 169s ⇒ DB 落后 19.4 万节点 ⇒ **强制全量追平**
+ * （实测 551,936ms ≈ 9.2 分钟）⇒ 主进程在 1.2GB 的 WAL 上阻塞 ⇒ 整个 app 僵死 ✗✗✗。
+ *
+ * 不变量：两个档位（balanced / full）都必须排除它 —— 它是**第三方依赖的物化**，不是源码。
+ */
+suite('codebaseIndexDefaults / 预装的 dsh 运行时必须被排除（否则图谱量级失控 ⇒ app 僵死）', () => {
+
+	test('★ balanced 与 full 两档都排除 dsh-runtime（它是运行时产物，不是源码）', () => {
+		for (const profile of ['balanced', 'full'] as const) {
+			const dirs = excludeDirsForProfile(profile);
+			assert.ok(dirs.includes('dsh-runtime'),
+				`${profile} 档必须排除 dsh-runtime（86,782 个文件；被索引 ⇒ 40 万节点 ⇒ 全量追平 9.2 分钟 ⇒ app 僵死 ✗）`);
+		}
+	});
+
+	test('★ COMMON_EXCLUDE_DIRS 也排除它（手动 MCP 索引那条路同样会爆）', () => {
+		assert.ok(COMMON_EXCLUDE_DIRS.includes('dsh-runtime'),
+			'手动索引路径用 COMMON_EXCLUDE_DIRS ⇒ 同样必须排除 ✗');
+	});
+
+	test('★ 排除判据大小写不敏感（DSH-RUNTIME / Dsh-Runtime 都要命中）', () => {
+		const dirs = new Set(excludeDirsForProfile('balanced'));
+		assert.ok(matchesExcludeDir('DSH-RUNTIME', dirs), '大写形式也要命中（匹配是大小写不敏感的）✗');
+		assert.ok(matchesExcludeDir('dsh-runtime', dirs), '小写形式命中 ✓');
 	});
 });

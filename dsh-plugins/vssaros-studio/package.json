@@ -1,0 +1,61 @@
+{
+  "name": "@vssaros/dsh-studio",
+  "version": "0.1.0",
+  "description": "VsSaros studio workbench: hosts the Saroasis Studio System front end (http://saroasisstudiosystem.saroasis.woa.com:9999/) inside a dsh page, with a top-right 'AI 助手' entry that opens the assistant (chat-surface) in the right sidebar.",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/client.js",
+    "lib/page.js",
+    "cordis.patch.yml"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/dsh": ">=0.1.7-0 <0.3.0-0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": [
+        "./cordis.patch.yml"
+      ]
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-ui-sidebar-right"
+      ]
+    }
+  },
+  "vssaros": {
+    "manifestVersion": 1,
+    "module": "studio",
+    "activityBar": {
+      "containerId": "vssaros.dsh.studio",
+      "title": {
+        "zh": "萨罗斯",
+        "en": "Studio"
+      },
+      "icon": "codicon:globe",
+      "order": 88
+    },
+    "view": {
+      "kind": "page",
+      "route": "/x/studio/"
+    },
+    "workbench": {
+      "title": "萨罗斯管理平台",
+      "description": "承载 Saroasis Studio System 前端；右侧内嵌 AI 助手对话（官方 chat-surface）。",
+      "repository": "vssaros:studio",
+      "icon": "codicon:globe",
+      "customFrame": true
+    }
+  },
+  "license": "MIT"
+}

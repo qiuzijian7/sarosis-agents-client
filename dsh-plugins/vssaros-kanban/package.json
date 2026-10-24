@@ -1,6 +1,6 @@
 {
   "name": "@vssaros/dsh-kanban",
-  "version": "0.8.5",
+  "version": "0.8.13",
   "description": "VsSaros kanban module for DeepSeek Harness: reads the same taskboard.json the IDE writes, exposes read-only tools and a self-hosted page. Data contract: src/vs/sessions/common/agentStudioTypes.ts",
   "private": true,
   "type": "module",
@@ -20,7 +20,8 @@
     "lib/core/taskboard.js",
     "lib/runner.js",
     "cordis.patch.yml",
-    "lib/foundationRef.js"
+    "lib/foundationRef.js",
+    "lib/client.kanban.js"
   ],
   "peerDependencies": {
     "@deepseek-ai/dsh": ">=0.1.7-0 <0.3.0-0"
@@ -34,7 +35,8 @@
     "client": {
       "platform": "web",
       "inject": [
-        "@deepseek-ai/dsh-client-ui-slots"
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@vssaros/dsh-workbenches"
       ]
     }
   },
@@ -64,8 +66,12 @@
       "title": "Tasks",
       "description": "任务看板：按状态管理任务，拖拽改列。",
       "repository": "vssaros:kanban",
-      "customFrame": true
+      "customFrame": true,
+      "icon": "codicon:checklist"
     }
   },
-  "license": "MIT"
+  "license": "MIT",
+  "scripts": {
+    "check": "node ./test/run-kanban-check.mjs"
+  }
 }

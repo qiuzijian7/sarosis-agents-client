@@ -1,11 +1,15 @@
 {
   "name": "@vssaros/dsh-market",
-  "version": "0.2.1",
-  "description": "VsSaros workbench market host half: published catalog API + install channel (npm / GitHub Release / GitHub source).",
+  "version": "0.3.1",
+  "description": "VsSaros workbench market host half: published catalog API + install channel (npm / GitHub Release / GitHub source) with pre-install compatibility / host-singleton checks; installs go through the IDE (ide.request capability 'workbenches') with user consent.",
   "private": true,
   "type": "module",
   "main": "lib/index.js",
-  "files": ["lib/index.js", "lib/catalog.js", "lib/remoteCatalog.js", "lib/installTargets.js", "lib/foundationRef.js", "catalog/index.json", "cordis.patch.yml"],
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": ["lib/index.js", "lib/catalog.js", "lib/remoteCatalog.js", "lib/installTargets.js", "lib/inspect.js", "lib/foundationRef.js", "catalog/index.json", "catalog/policy.json", "cordis.patch.yml"],
   "peerDependencies": {
     "@deepseek-ai/dsh": ">=0.1.7-0 <0.3.0-0"
   },
@@ -21,7 +25,8 @@
     "module": "market",
     "view": {
       "kind": "none"
-    }
+    },
+    "ideCapabilities": ["workbenches"]
   },
   "license": "MIT"
 }
