@@ -478,6 +478,12 @@ interface IViewSlot {
 	 * 否则侧栏那行「更新 · N 项可用」在重载 / 白屏自愈后永远是空的 ✗。
 	 */
 	lastUpgrade?: IDshUpgradeState;
+	/**
+	 * 最近一次 `layout()` 落地的**设备像素**矩形 + 当时的窗口内容尺寸（2026-10-24）。
+	 * 用途：窗口 resize 时主进程按增量立刻缩放（见 `_followWindowSize`），不必等渲染侧下一次 IPC。
+	 */
+	lastBounds?: { x: number; y: number; width: number; height: number };
+	lastWindowContent?: [number, number];
 	lastColorScheme?: DshColorScheme;
 	/** 最近一次页面侧自证的**原文**（见 `_reportPageSurface`）：内容没变就不再写日志 ⇒ 低频轮询也不吵 ✓。 */
 	lastSurfaceReport?: string;
@@ -844,12 +850,24 @@ export class DshViewHost extends Disposable {
 				this._watchWindow(target);
 			}
 		}
-		slot.view.setBounds({
+		const px = {
 			x: Math.round(bounds.x * bounds.zoomFactor),
 			y: Math.round(bounds.y * bounds.zoomFactor),
 			width: Math.max(0, Math.round(bounds.width * bounds.zoomFactor)),
 			height: Math.max(0, Math.round(bounds.height * bounds.zoomFactor)),
-		});
+		};
+		slot.view.setBounds(px);
+		// ★ 2026-10-24（用户："窗口缩小时，没有及时刷新 UI，导致内容被截断"）：
+		//   记下这次布局的**设备像素矩形**与**当时窗口内容尺寸** ⇒ `_watchWindow` 的 resize 跟随
+		//   只要加增量就能立刻跟上窗口（不必等渲染侧下一次 IPC + rAF，那就"不及时"了 ✗）。
+		slot.lastBounds = px;
+		try {
+			const w = slot.attachedTo && !slot.attachedTo.isDestroyed() ? slot.attachedTo : undefined;
+			if (w) {
+				const size = w.getContentSize();
+				slot.lastWindowContent = [size[0], size[1]];
+			}
+		} catch { /* 窗口正在销毁 */ }
 	}
 
 	setVisible(viewId: string, visible: boolean): void {
@@ -1060,6 +1078,51 @@ export class DshViewHost extends Disposable {
 		if (!slot.view.webContents.isDestroyed()) {
 			slot.view.webContents.send(DSH_PAGE_IPC_UPGRADE, state);
 		}
+	}
+
+	/**
+	 * 窗口尺寸变化时**在主进程就地缩放视图**（2026-10-24 用户："窗口缩小时，没有及时刷新UI，导致内容被截断"）。
+	 *
+	 * 为什么渲染侧重排不够：那条路要「窗口 resize → 渲染侧 layout() → IPC → setBounds」，
+	 * 窗口被拖动缩小的过程中至少差一帧（真机截图就是右边被窗口边缘切掉）。
+	 * 这里按"上次布局时的窗口尺寸"算**增量**，立刻把挂在窗口上的视图缩到对应大小：
+	 *   · 对"视图铺满窗口宽"的形态（桌面窗口 / 全窗）是**精确**的；
+	 *   · 对"视图只占一部分"的形态（IDE 里的小聊天框）**不插手**（宽度对不上就跳过，交给渲染侧，避免撑歪 ✗）。
+	 * ⚠ 每次只加增量并同步更新 `lastWindowContent` ⇒ 连续多次 resize 不会重复放大。
+	 */
+	private _followWindowSize(win: BrowserWindow): void {
+		try {
+			if (win.isDestroyed()) {
+				return;
+			}
+			const size = win.getContentSize();
+			for (const slot of this._views.values()) {
+				if (slot.attachedTo !== win || !slot.lastBounds) {
+					continue;
+				}
+				const lastWin = slot.lastWindowContent;
+				const baseW = lastWin ? lastWin[0] : slot.lastBounds.width;
+				const baseH = lastWin ? lastWin[1] : slot.lastBounds.height;
+				// 只跟随"视图宽度≈窗口宽度"的形态；部分区域视图交回渲染侧（那边知道左右留白）
+				if (Math.abs(slot.lastBounds.width - baseW) > 8) {
+					continue;
+				}
+				const dw = size[0] - baseW;
+				const dh = size[1] - baseH;
+				if (dw === 0 && dh === 0) {
+					continue;
+				}
+				slot.lastWindowContent = [size[0], size[1]];
+				const next = {
+					x: slot.lastBounds.x,
+					y: slot.lastBounds.y,
+					width: Math.max(1, slot.lastBounds.width + dw),
+					height: Math.max(1, slot.lastBounds.height + dh),
+				};
+				slot.lastBounds = next;
+				slot.view.setBounds(next);
+			}
+		} catch { /* 窗口销毁 / 尺寸瞬态，下一帧渲染侧会纠正 */ }
 	}
 
 	/**
@@ -1922,7 +1985,18 @@ export class DshViewHost extends Disposable {
 		// 键盘兜底（`input-event` 某些平台/版本对键盘的覆盖不如它稳）
 		wc.on('before-input-event', () => { lastUserInputAt = Date.now(); });
 		wc.on('will-frame-navigate', (details) => {
-			if (!details.isMainFrame) { return; }
+			// ★★ 2026-10-24（第 9 轮）：**子帧导航也要留痕** —— 之前日志在 isMainFrame 早退**之后**，
+			//   于是 iframe 内的导航**完全静默** ⇒ 排查时看不到"点了到底跳没跳"（踩了整整两轮 ✗）
+			//   ⇒ 只对 `/x/` 下的地址打日志（避免子帧里正常业务请求刷屏 ✓）
+			if (!details.isMainFrame) {
+				try {
+					const p = new URL(details.url).pathname;
+					if (p.startsWith('/x/')) {
+						this._logService.info(`[dshHarness][nav-sub] view ${slot.id} subframe -> ${p}（已放行：子帧导航不归主 frame 守卫）`);
+					}
+				} catch { /* 解析不了就不打 ✓ */ }
+				return;
+			}
 			const event = details;
 			const url = details.url;
 			// ★ 2026-10-23：判据抽进 `common/dshViewNavigation.ts`（纯函数、有表驱动单测）——
@@ -2126,6 +2200,16 @@ export class DshViewHost extends Disposable {
 		//   排查「输入框无法输入」时需要回答的就是："这个窗口到底有没有成为 OS 前台"。
 		win.on('focus', () => this._logService.info(`[dshHarness] window ${id} FOCUS (isFocused=${win.isFocused()})`));
 		win.on('blur', () => this._logService.info(`[dshHarness] window ${id} BLUR`));
+		// ★ 2026-10-24（"窗口缩小时，没有及时刷新 UI，内容被截断"）：窗口尺寸一变化，主进程**就地**跟随，
+		//   不等渲染侧（那条路要一次 IPC + 一帧，拖动缩小过程中就是旧尺寸 ✗）。
+		//   全屏切换、最大化/还原同样走这里（它们本质也是内容尺寸变化）。
+		const follow = () => this._followWindowSize(win);
+		win.on('resize', follow);
+		win.on('maximize', follow);
+		win.on('unmaximize', follow);
+		win.on('enter-full-screen', follow);
+		win.on('leave-full-screen', follow);
+		win.on('restore', follow);
 		win.once('closed', () => {
 			this._watchedWindows.delete(win);
 			for (const slot of [...this._views.values()]) {

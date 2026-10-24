@@ -25,6 +25,18 @@ window.__ModuleLoader__.load({
 		const PROMOTE_ROUTE = '/x/memory/promote';
 		const DISCARD_ROUTE = '/x/memory/discard';
 		const DETAIL_HREF = '/x/memory/detail';
+
+// ★★ 2026-10-24（第 9 轮）：**文档级点击探针** —— 用 console.warn（宿主只记 error/warn）。
+//   作用：点一下页面任何地方，日志里就会出现一行 ⇒ 一次分清
+//   "点击根本没到这个文档"（嵌入式宿主吞掉了）还是"到了但按钮处理器没挂上" ✗
+if (typeof document !== 'undefined' && typeof console !== 'undefined' && console.warn) {
+	document.addEventListener('click', ev => {
+		const t = ev && ev.target;
+		const el = t && t.closest ? t.closest('[data-vssaros-memory-action]') : null;
+		console.warn('[vssaros-memory][v0.3.98] doc-click action=' + (el ? el.getAttribute('data-vssaros-memory-action') : '(none)')
+			+ ' tag=' + (t && t.tagName ? t.tagName : '?'));
+	}, true);
+}
 		/** 描述符（与清单 `vssaros.workbench` 同值 ⇒ 守卫逐项比对 ✓）。 */
 		const DESCRIPTOR = {
 			title: '记忆库',
@@ -144,9 +156,10 @@ window.__ModuleLoader__.load({
 							const bridge = typeof window !== 'undefined' ? window.vssarosDsh : undefined;
 							// ★ 2026-10-24：页面侧日志会进 Host 日志（`page console(info)`）⇒ 一次就能看清
 							//   "点击有没有进处理器 / 桥在不在"（之前 7 轮都在盲猜，就是缺这一行 ✗）
-							const probe = '[vssaros-memory][v0.3.96] open-detail click; hasBridge=' + !!bridge
+							const probe = '[vssaros-memory][v0.3.98] open-detail click; hasBridge=' + !!bridge
 								+ ' hasOpenModulePage=' + !!(bridge && typeof bridge.openModulePage === 'function');
-							if (typeof console !== 'undefined' && console.info) { console.info(probe); }
+							// ⚠ 必须用 warn：宿主只把 error/warn 写进日志，info 会被丢弃（本轮踩到 ✗）
+							if (typeof console !== 'undefined' && console.warn) { console.warn(probe); }
 							if (!bridge || typeof bridge.openModulePage !== 'function') {
 								if (typeof console !== 'undefined' && console.warn) { console.warn('[vssaros-memory] 无桥 ⇒ 走 href（纯浏览器退化）'); }
 								return;
@@ -254,6 +267,17 @@ window.__ModuleLoader__.load({
 }
 .wb-mem .wb-acts button:hover, .wb-mem .wb-toolbar button:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.14)); }
 .mem-err { color: var(--dsw-alias-state-error-primary, #f48771); }
+/* 2026-10-24：按**容器**响应（sideview / 右栏只有 320–420px，@media 判不出来） */
+.wb-mem { container-type: inline-size; }
+@container (max-width: 860px) {
+  .mem-hero { flex-wrap: wrap; }
+  .mem-hero-num { font-size: 22px; }
+  .wb-mem .wb-row { grid-template-columns: minmax(0, 1fr); }
+}
+@container (max-width: 560px) {
+  .wb-mem .wb-toolbar { flex-wrap: wrap; row-gap: var(--wb-s1); }
+  .mem-drafts li { font-size: var(--wb-f-xs); }
+}
 `;
 
 function install(ctx) {
