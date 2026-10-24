@@ -617,7 +617,7 @@ function renderFragment({ state, config, toolsRegistered }) {
            OPEN_DETAIL_JS 接管 —— 因为实测"光有 href 点了完全没反应" ✗（见那个常量的注释 ✓）。
            data-vssaros-memory-action 就是给那段 JS 选目标用的 ✓。
            ⚠ 本段在模板字符串内 ⇒ 注释里**绝不能出现反引号**（这条我在本仓已踩四次 ✗✗）。 -->
-      <a class="kb-entry" href="./detail" data-vssaros-memory-action="open-detail" role="button" tabindex="0">
+      <a class="kb-entry" href="?view=detail" data-vssaros-memory-action="open-detail" role="button" tabindex="0">
         <span class="kb-entry-icon">🗃</span>
         <span class="kb-entry-text"><div class="kb-entry-title">查看完整记忆</div><div class="kb-entry-meta">打开记忆详情（复刻 IDE 的 MemoryDetailEditorPane）</div></span>
         <span class="kb-entry-arrow">→</span>
@@ -1062,25 +1062,12 @@ const OPEN_DETAIL_JS = `(function(){
   var go = function (ev) {
     if (ev) { ev.preventDefault(); }
     var at = new Date().toLocaleTimeString();
-    var bridge = window.vssarosDsh;
-    // ★★ 2026-10-24：走宿主的 openModulePage —— 在**编辑区标签页**里打开详情页面。
-    //   为什么不再用 location.href='./detail'：那是**主 frame 整页导航** ⇒
-    //   会把整个 dsh 客户端替换掉 ⇒ **页签栏/侧栏全没了**（用户报"错误的显示成了全屏"）✗✗
-    //   且宿主的导航守卫（只放行 '/'）本来也会拦它 ⇒ 表现为"点了没反应"。
-    //   openModulePage 支持子路由（宿主按"精确 → 前缀归属"匹配已注册模块）✓
-    if (bridge && typeof bridge.openModulePage === 'function') {
-      mark('· ' + at + ' 在编辑区打开详情');
-      try {
-        Promise.resolve(bridge.openModulePage('/x/memory/detail')).then(
-          function () { mark('· ' + at + ' 已在编辑区打开详情'); },
-          function (e) { mark('· ' + at + ' 打开失败：' + ((e && e.message) || e)); }
-        );
-        return;
-      } catch (e) { mark('· ' + at + ' 打开失败：' + ((e && e.message) || e)); return; }
-    }
-    // 无桥（纯浏览器）⇒ 新标签页（这是**真能用**的退化，不是"点了没反应" ✓）
-    mark('· ' + at + ' 新标签页打开详情');
-    window.open('./detail', '_blank', 'noopener');
+    // ★★ 2026-10-24：**同路由 + 查询参数**原地渲染详情 —— 不接桥、不开新窗口。
+    //   为什么不调 openModulePage：本页常在 iframe 里（preload 只注入顶层 frame）
+    //   ⇒ window.vssarosDsh 不在 ⇒ 旧代码退化成 window.open('./detail')
+    //   ⇒ IDE 用内部浏览器打开**没有 token** 的地址 ⇒ **黑屏窗口** ✗✗（真机定案）
+    mark('· ' + at + ' 打开详情（?view=detail）');
+    location.href = '?view=detail';
   };
   el.addEventListener('click', go);
   el.addEventListener('keydown', function (ev) { if (ev.key === 'Enter' || ev.key === ' ') { go(ev); } });
@@ -4411,6 +4398,20 @@ export function apply(ctx, rawConfig = {}) {
 				//   ⚠ 两个表面**同一个路由**（`/x/memory/`）⇒ 判据只能是 `surface`（宿主注入的 ✓，页面自己不猜 ✗）。
 				//   ⚠ 摘要版要数字 ⇒ 取数有**预算**（`summaryForRender` ✓）：等不到就用上次结果渲染并如实标注，
 				//     不把侧栏空着等网关（网关忙时实测会答满 5s 超时 ✗）。
+				// ★★ 2026-10-24：**同路由 + 查询参数**原地渲染详情（`/x/memory/?view=detail`）。
+				//   为什么不跳 `/x/memory/detail`、也不调 openModulePage：
+				//   ① 插件页常在 **iframe** 里（宿主 preload 只注入顶层 frame）⇒ `window.vssarosDsh` **不在**
+				//      ⇒ 旧代码退化成 `window.open('./detail')` ⇒ IDE 用**内部浏览器**打开一个**没有 token** 的地址
+				//      ⇒ 用户看到的就是"**弹出一个黑屏窗口**" ✗✗（真机 2026-10-24 20:55 定案）
+				//   ② 同路由换查询参数 ⇒ **pathname 不变**（仍是 `/x/memory/`）⇒ iframe 内是同帧导航（放行 ✓）、
+				//      顶层文档时也不属于"从 `/` 跳模块页"（守卫允许同模块子树 ✓）
+				//   ⇒ 无桥、无新窗口、无 token 问题，两种承载方式都能用 ✓
+				if (url.searchParams.get('view') === 'detail') {
+					const model = await loadDetailModel({ config, params: url.searchParams, state });
+					res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+					res.end(renderDetailShell(model));
+					return;
+				}
 				if (url.searchParams.get('surface') === 'editor') {
 					const model = await loadDetailModel({ config, params: url.searchParams, state });
 					res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
