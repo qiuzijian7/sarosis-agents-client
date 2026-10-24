@@ -131,6 +131,42 @@ const SKILL_PREVIEW_SCRIPT = `
 		b.addEventListener('click', function () { showTab(b.getAttribute('data-sk-tab')); });
 	});
 
+	/*
+	 * 「加载更多」（2026-10-24 用户要求）：
+	 * 服务端只渲染前 N 个（插件有 6704 个，全渲染会卡死）⇒ 点一次翻一页。
+	 *
+	 * ⚠ 卡片 HTML 由**服务端** `/x/skills/api/plugins` 返回（复用 renderMarketCard）——
+	 *   不在浏览器里重写一遍模板，否则两份迟早漂移 ✗
+	 */
+	Array.prototype.forEach.call(root.querySelectorAll('[data-sk-more-pane]'), function (btn) {
+		btn.addEventListener('click', function () {
+			if (btn.disabled) { return; }
+			var paneName = btn.getAttribute('data-sk-more-pane');
+			var next = Number(btn.getAttribute('data-sk-more-page') || '1') + 1;
+			var pane = root.querySelector('[data-sk-pane="' + paneName + '"]');
+			var grid = pane ? pane.querySelector('ul.tk-market') : null;
+			if (!grid) { return; }
+			btn.disabled = true;
+			var oldText = btn.textContent;
+			btn.textContent = '加载中…';
+			fetch('/x/skills/api/plugins?page=' + next, { credentials: 'same-origin' })
+				.then(function (r) { return r.json(); })
+				.then(function (j) {
+					if (!j || j.ok !== true) { throw new Error(String((j || {}).error || '加载失败')); }
+					if (j.html) { grid.insertAdjacentHTML('beforeend', j.html); }
+					btn.setAttribute('data-sk-more-page', String(j.page));
+					if (!j.hasMore) { btn.parentNode.removeChild(btn); return; }
+					btn.disabled = false;
+					btn.textContent = oldText;
+				})
+				.catch(function (e) {
+					btn.disabled = false;
+					btn.textContent = '加载失败，重试';
+					console.error('[tools] 加载更多失败', e);
+				});
+		});
+	});
+
 	/* ── 筛选条（2026-10-23「每个页签都要能过滤」）─────────────────────────
 	   每个 pane 一条 .tk-fbar：主 chips 单选 + 「更多筛选」多选 + 排序 + 清空。
 	   判据全在服务端写好的 data-f-* 上（src / state / model / ver / act）⇒ 前端只切 hidden。 */
@@ -763,6 +799,33 @@ const MARKET_FETCH_PLAN = [
 
 /** 当前页签最多渲染多少个商城商品（plugin 有 6704 个，全渲染会卡死）。 */
 const MARKET_PAGE_SIZE = { plugin: 60 };
+
+/**
+ * 拉**某一页**某个 kind 的商城商品（「加载更多」用）。
+ *
+ * 与 `fetchMarketItems` 的区别：那个是首屏（各 kind 各一页），这个是**按需翻页**。
+ * 都不带缓存（`cache-control: no-store` 由调用方写）。
+ */
+async function fetchMarketPage(req, kind, page, pageSize) {
+	const host = req.headers?.host;
+	if (!host) { return { ok: false, error: '取不到 Host 头', items: [] }; }
+	try {
+		const res = await fetch(`http://${host}${MARKET_ACTION_ROUTE}`, {
+			method: 'POST',
+			headers: {
+				'content-type': 'application/json',
+				...(req.headers?.cookie ? { cookie: String(req.headers.cookie) } : {}),
+			},
+			body: JSON.stringify({ op: 'list', params: { kind, page, pageSize } }),
+			signal: AbortSignal.timeout(8000),
+		});
+		const j = await res.json().catch(() => null);
+		if (!j || j.ok !== true) { return { ok: false, error: String(j?.error ?? `HTTP ${res.status}`), items: [] }; }
+		return { ok: true, items: Array.isArray(j.items) ? j.items : [], total: Number(j.total) || 0 };
+	} catch (e) {
+		return { ok: false, error: String(e?.message ?? e), items: [] };
+	}
+}
 
 async function fetchMarketItems(req) {
 	const host = req.headers?.host;
@@ -1819,6 +1882,9 @@ function renderPage({ skills, errors, missing, root, nativeSkillTool, provider, 
 					? '<p class="sk-note">商城共 ' + mk.totals.plugin + ' 个插件，这里展示前 ' + MARKET_PAGE_SIZE.plugin + ' 个；完整列表见 <a href="/x/marketplace/" target="_blank" rel="noopener">商城</a>。</p>'
 					: ''}
 				${marketGridHtml(mk, 'plugins')}
+				${marketItemsFor(mk, 'plugins').length && (mk.totals?.plugin ?? 0) > MARKET_PAGE_SIZE.plugin
+					? '<div class="sk-more-wrap"><button type="button" class="sk-hbtn sk-more-btn" data-sk-more-pane="plugins" data-sk-more-page="1">加载更多（还有 ' + ((mk.totals?.plugin ?? 0) - MARKET_PAGE_SIZE.plugin) + ' 个）</button></div>'
+					: ''}
 				${marketItemsFor(mk, 'plugins').length ? '' : '<p class="sk-empty">商城里的插件还没同步过来（跑 tools/sync-dsh-plugins.mjs 即可）。</p>'}
 			</div>
 
@@ -2659,6 +2725,23 @@ export function apply(ctx, config = {}) {
 						content: parsed.skill.content,
 						contentBytes: Buffer.byteLength(parsed.skill.content, 'utf8'),
 					}));
+					return;
+				}
+				// 「加载更多」：返回**已渲染好的卡片 HTML**（客户端只需 insertAdjacentHTML）
+				// ⇒ 不必在浏览器里再实现一遍卡片模板（两份迟早漂移 ✗）
+				if (pathname === `${ROUTE_PREFIX}/api/plugins`) {
+					const u = new URL(req.url ?? '/', 'http://127.0.0.1');
+					const page = Math.max(2, Number(u.searchParams.get('page')) || 2);
+					const pageSize = MARKET_PAGE_SIZE.plugin;
+					const m = await fetchMarketPage(req, 'plugin', page, pageSize);
+					if (!m.ok) {
+						res.writeHead(502, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify({ ok: false, error: m.error }));
+						return;
+					}
+					const html = m.items.filter(it => it && it.kind === 'plugin' && it.slug).map(renderMarketCard).join('');
+					res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+					res.end(JSON.stringify({ ok: true, page, pageSize, html, total: m.total, hasMore: page * pageSize < m.total }));
 					return;
 				}
 				if (pathname === `${ROUTE_PREFIX}/api/skills`) {
