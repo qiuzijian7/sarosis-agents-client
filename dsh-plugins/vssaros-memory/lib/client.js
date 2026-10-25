@@ -4,7 +4,7 @@
 //
 // 本包原先**没有客户端半**（页面是纯 SSR + 两个表单动作）。React 工作台来了之后需要入口：
 // 它只做一件事 —— 把子块 `client.memory.js` 装进来（注册进宿主服务 `desktopWorkbenches`）。
-// 2026-10-24（v0.4.0）：`client.memory.js` 的「查看完整记忆」改走宿主 `openModulePage`（原先只有 href ⇒
+// 2026-10-24（v0.4.1）：`client.memory.js` 的「查看完整记忆」改走宿主 `openModulePage`（原先只有 href ⇒
 //   点击 = 主 frame 整页导航 ⇒ 被导航守卫拦 ⇒ "点了没反应"；详情现在开在编辑区标签页里）✓
 // ⚠ 描述符必须与清单 `vssaros.workbench` **逐字段一致**（description / icon 也一样）：宿主快照直接取描述符、
 //   **不回落到清单** ⇒ 漏写就是"注册表里那一项说明/图标是空的" ✗（2026-10-22 审计发现本包漏了 icon，

@@ -162,10 +162,15 @@ if (typeof document !== 'undefined' && typeof console !== 'undefined' && console
 							//   ② 用 **`?view=detail`（同路由查询参数）**而不是 `/x/memory/detail`：
 							//      · pathname 不变（仍 `/x/memory/`）⇒ 不触发"从 / 跳模块页"的禁令 ✓
 							//      · **文档同源同路径** ⇒ 宿主加载时拼的 token 不会丢 ⇒ 不会再出现"没有 token 的黑屏"✓
-							//   ③ IDE 编辑区场景仍走 `openModulePage`（开标签页、页签栏保留）✓
+							//   ③ IDE 编辑区场景走 `openModulePage`（开标签页、页签栏保留）✓
+							//   ⚠⚠ **`openModulePage` 的 route 不能带查询串**：协议 `validatePluginRoute` 逐段校验
+							//      （每段必须匹配 `SEGMENT_RE`）⇒ `/x/memory/?view=detail` 里的 `?` 直接判**非法**
+							//      ⇒ 宿主回 `vssarosDsh: invalid command`（真机 2026-10-25 13:13 实测 ✗✗）
+							//      ⇒ 这里传**干净子路由** `/x/memory/detail`（宿主按前缀归属到 `/x/memory/` ✓，
+							//        加载时由宿主自己拼 token ⇒ 不会 401）
 							const b = (() => { try { return typeof window !== 'undefined' ? window.vssarosDsh : null; } catch { return null; } })();
 							const topLevel = (() => { try { return window.self === window.top; } catch { return false; } })();
-							const say = m => { if (typeof console !== 'undefined' && console.warn) { console.warn('[vssaros-memory][v0.4.0] ' + m); } };
+							const say = m => { if (typeof console !== 'undefined' && console.warn) { console.warn('[vssaros-memory][v0.4.1] ' + m); } };
 							// ⚠⚠ 目标 URL 必须是**绝对路径 + 继承当前查询参数**：
 							//   ① 相对 `?view=detail` 会按**当前文档**解析 ⇒ 当前若是 `/` 就变成 `/?view=detail`（错）✗
 							//   ② 丢掉当前查询串 ⇒ **token 丢了** ⇒ 服务端 401 ⇒ 又是黑屏 ✗✗
@@ -186,9 +191,9 @@ if (typeof document !== 'undefined' && typeof console !== 'undefined' && console
 							}
 							// ② IDE 编辑区 ⇒ 在标签页里打开（同路由查询参数，服务端会渲染详情）
 							if (b && typeof b.openModulePage === 'function') {
-								say('⇒ 编辑区打开 openModulePage(' + targetUrl + ')');
+								say('⇒ 编辑区打开 openModulePage(/x/memory/detail)');
 								try {
-									Promise.resolve(b.openModulePage(targetUrl)).then(
+									Promise.resolve(b.openModulePage('/x/memory/detail')).then(
 										() => say('openModulePage OK'),
 										e => say('openModulePage FAILED: ' + ((e && e.message) || e))
 									);
