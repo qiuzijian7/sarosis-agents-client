@@ -127,10 +127,17 @@ suite('dshHarness / 视图主 frame 导航决策', () => {
 	//   放行"用户点击触发的主 frame 模块页导航"**体验是错的** —— 它把整个 dsh 客户端整页替换
 	//   ⇒ **页签栏/侧栏全没了** ✗✗ ⇒ 正确做法是页侧调 `openModulePage`（编辑区标签页打开，
 	//   宿主按"精确 → 前缀归属"匹配已注册模块，子路由本来就支持）⇒ 主 frame 因此恢复严格 ✓
-	test('**哪怕用户点的**，主 frame 也不许整页跳到模块页（体验会丢页签栏）', () => {
-		assert.strictEqual(decideMainFrameNavigation(`${ORIGIN}/x/memory/detail`, ORIGIN, `${ORIGIN}/`, true), 'block',
-			'用户点击也不放宽：整页替换 = 页签栏/侧栏消失（用户实测报过）⇒ 该走 openModulePage 开标签页 ✓');
-		assert.strictEqual(decideMainFrameNavigation(`${ORIGIN}/x/dashboard/`, ORIGIN, `${ORIGIN}/`, true), 'block');
+	// ★★ 2026-10-25（第 10 轮，真机 + 仓内既有结论）：**桌面全窗客户端（VsSaros — Desktop）没有编辑区**
+	//   ⇒ 在那里只能"整页导航"到模块页（`client.agents.js` 2026-10-23 已定案；`openModulePage` 会开空编辑器黑屏）
+	//   ⇒ 守卫必须放行"**用户点击触发**的模块页导航"；而"页面自己跳"（无手势）仍是事故来源，必须拦 ✓
+	test('用户点击触发的模块页导航 ⇒ 放行（桌面全窗唯一可行路径）', () => {
+		assert.strictEqual(decideMainFrameNavigation(`${ORIGIN}/x/memory/`, ORIGIN, `${ORIGIN}/`, true), 'allow');
+		assert.strictEqual(decideMainFrameNavigation(`${ORIGIN}/x/dashboard/`, ORIGIN, `${ORIGIN}/`, true), 'allow');
+	});
+
+	test('**没有**用户手势的模块页导航 ⇒ 仍然拦（「主页突然变成会话页」的防线）', () => {
+		assert.strictEqual(decideMainFrameNavigation(`${ORIGIN}/x/memory/`, ORIGIN, `${ORIGIN}/`, false), 'block');
+		assert.strictEqual(decideMainFrameNavigation(`${ORIGIN}/x/dashboard/`, ORIGIN, `${ORIGIN}/`, false), 'block');
 	});
 
 	test('手势参数不影响跨源 / 非 http(s) 的既有判定（安全性不放宽）', () => {

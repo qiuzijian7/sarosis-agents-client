@@ -155,12 +155,16 @@ export function decideMainFrameNavigation(
 	const currentModule = moduleSubtree(currentKey);
 	if (currentModule && currentModule === moduleSubtree(target.pathname)) { return 'allow'; }
 
-	// ★ 2026-10-24 **回退手势放行**：实测放行主 frame 导航的**体验是错的** ——
-	//   它把整个 dsh 客户端整页替换 ⇒ **页签栏/侧栏全没了**（用户报"错误的显示成了全屏"）✗✗
-	//   ⇒ 正确做法是"在编辑区**标签页**里打开子页"（页侧调 `openModulePage`，宿主前缀匹配已支持）
-	//   ⇒ 主 frame 一律保持严格（只放行 `/`），不再按手势放宽 ✓
-	//   `userGestureRecently` 参数**保留**：留给"未来若真的需要"时有据可查，但**不参与判定** ⚠
-	void userGestureRecently;
+	// ★★ 2026-10-25（第 10 轮）：**用户点击触发的模块页导航 ⇒ 放行**。
+	//   为什么上一轮回退是错的：那次"全屏"抱怨的真因不是"放行"，而是**导航目标错了** ——
+	//   目标是子路由 `/x/memory/detail`，而正确目标是**同路由查询参数** `/x/memory/?view=detail`
+	//   （文档不换 ⇒ token 不丢 ⇒ 不黑屏）。
+	//   而**桌面全窗客户端（VsSaros — Desktop）根本没有 IDE 编辑区** ⇒ 在那儿调 `openModulePage`
+	//   只会开出**空编辑器黑屏**（`vssaros-agents/lib/client.agents.js:52-55` 已踩过、结论一致）
+	//   ⇒ 该场景**只能整页导航** ⇒ 主 frame 守卫必须放行"用户点击"这一类 ✓
+	//   ⚠ 仍拦：**没有用户手势**的导航（页面自己跳 = 2026-10-23「主页突然变成会话页」的事故来源）
+	//   ⚠ 仍拦：跨模块 / 非 http(s)（安全性不因手势放宽）
+	if (userGestureRecently && moduleSubtree(target.pathname)) { return 'allow'; }
 	return 'block';
 }
 

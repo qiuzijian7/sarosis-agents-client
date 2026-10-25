@@ -33,7 +33,7 @@ if (typeof document !== 'undefined' && typeof console !== 'undefined' && console
 	document.addEventListener('click', ev => {
 		const t = ev && ev.target;
 		const el = t && t.closest ? t.closest('[data-vssaros-memory-action]') : null;
-		console.warn('[vssaros-memory][v0.3.98] doc-click action=' + (el ? el.getAttribute('data-vssaros-memory-action') : '(none)')
+		console.warn('[vssaros-memory][v0.3.99] doc-click action=' + (el ? el.getAttribute('data-vssaros-memory-action') : '(none)')
 			+ ' tag=' + (t && t.tagName ? t.tagName : '?'));
 	}, true);
 }
@@ -150,24 +150,54 @@ if (typeof document !== 'undefined' && typeof console !== 'undefined' && console
 					//   无桥（纯浏览器）⇒ **不拦**，让 href 自己跳（这是真能用的退化 ✓）
 					h('a', {
 						className: 'wb-btn is-ghost mem-link',
-						href: DETAIL_HREF,
+						href: '/x/memory/?view=detail',   // ★ 无 JS 也至少路径正确（token 由宿主加载时补）
 						'data-vssaros-memory-action': 'open-detail',
 						onClick: ev => {
-							const bridge = typeof window !== 'undefined' ? window.vssarosDsh : undefined;
-							// ★ 2026-10-24：页面侧日志会进 Host 日志（`page console(info)`）⇒ 一次就能看清
-							//   "点击有没有进处理器 / 桥在不在"（之前 7 轮都在盲猜，就是缺这一行 ✗）
-							const probe = '[vssaros-memory][v0.3.98] open-detail click; hasBridge=' + !!bridge
-								+ ' hasOpenModulePage=' + !!(bridge && typeof bridge.openModulePage === 'function');
-							// ⚠ 必须用 warn：宿主只把 error/warn 写进日志，info 会被丢弃（本轮踩到 ✗）
-							if (typeof console !== 'undefined' && console.warn) { console.warn(probe); }
-							if (!bridge || typeof bridge.openModulePage !== 'function') {
-								if (typeof console !== 'undefined' && console.warn) { console.warn('[vssaros-memory] 无桥 ⇒ 走 href（纯浏览器退化）'); }
-								return;
+							if (ev) { ev.preventDefault(); }
+							// ★★ 2026-10-25（第 10 轮）：照抄 `vssaros-agents/lib/client.agents.js` 的 **openModuleRoute** 模式
+							//   —— 那边 2026-10-23 用四轮踩出了同一组坑，结论直接可用：
+							//   ① **桌面全窗客户端（VsSaros — Desktop）没有 IDE 编辑区** ⇒ 调 `openModulePage` 会
+							//      让宿主开出一个**空编辑器** ⇒ 用户看到"**整个窗口黑屏**" ✗✗（真机一致）
+							//      ⇒ 该场景必须**整页导航**。
+							//   ② 用 **`?view=detail`（同路由查询参数）**而不是 `/x/memory/detail`：
+							//      · pathname 不变（仍 `/x/memory/`）⇒ 不触发"从 / 跳模块页"的禁令 ✓
+							//      · **文档同源同路径** ⇒ 宿主加载时拼的 token 不会丢 ⇒ 不会再出现"没有 token 的黑屏"✓
+							//   ③ IDE 编辑区场景仍走 `openModulePage`（开标签页、页签栏保留）✓
+							const b = (() => { try { return typeof window !== 'undefined' ? window.vssarosDsh : null; } catch { return null; } })();
+							const topLevel = (() => { try { return window.self === window.top; } catch { return false; } })();
+							const say = m => { if (typeof console !== 'undefined' && console.warn) { console.warn('[vssaros-memory][v0.4.0] ' + m); } };
+							// ⚠⚠ 目标 URL 必须是**绝对路径 + 继承当前查询参数**：
+							//   ① 相对 `?view=detail` 会按**当前文档**解析 ⇒ 当前若是 `/` 就变成 `/?view=detail`（错）✗
+							//   ② 丢掉当前查询串 ⇒ **token 丢了** ⇒ 服务端 401 ⇒ 又是黑屏 ✗✗
+							const targetUrl = (() => {
+								try {
+									const u = new URL('/x/memory/?view=detail', location.href);
+									for (const kv of new URL(location.href).searchParams) {
+										if (!u.searchParams.has(kv[0])) { u.searchParams.set(kv[0], kv[1]); }
+									}
+									return u.pathname + '?' + u.searchParams.toString();
+								} catch (e) { return '/x/memory/?view=detail'; }
+							})();
+							say('open-detail click; surface=' + (b && b.surface) + ' topLevel=' + topLevel + ' hasBridge=' + !!b);
+							// ① 桌面全窗（无编辑区）⇒ 整页导航到**同路由**的详情视图（不黑屏、不丢 token）
+							if (b && b.surface === 'full' && topLevel) {
+								say('⇒ 桌面全窗：整页导航 ' + targetUrl);
+								try { window.location.assign(targetUrl); return; } catch (e) { say('location.assign 失败：' + ((e && e.message) || e)); }
 							}
-							ev.preventDefault();
-							try {
-								Promise.resolve(bridge.openModulePage(DETAIL_HREF)).catch(() => { /* 失败则退化成整页导航（会被守卫拦，但至少不静默崩） */ });
-							} catch { /* 同上 */ }
+							// ② IDE 编辑区 ⇒ 在标签页里打开（同路由查询参数，服务端会渲染详情）
+							if (b && typeof b.openModulePage === 'function') {
+								say('⇒ 编辑区打开 openModulePage(' + targetUrl + ')');
+								try {
+									Promise.resolve(b.openModulePage(targetUrl)).then(
+										() => say('openModulePage OK'),
+										e => say('openModulePage FAILED: ' + ((e && e.message) || e))
+									);
+									return;
+								} catch (e) { say('openModulePage 抛错：' + ((e && e.message) || e)); }
+							}
+							// ③ 无桥 ⇒ 原样跳同路由（子帧/顶层都可能，最差是"被守卫拦"但绝不黑屏、绝不静默）
+							say('⇒ 无桥兜底：location.assign(' + targetUrl + ')');
+							try { window.location.assign(targetUrl); } catch { /* 放弃 */ }
 						},
 					}, '查看完整记忆 →')),
 				// 主入口 + 统计（与旧页同一组数字口径 ✓）
