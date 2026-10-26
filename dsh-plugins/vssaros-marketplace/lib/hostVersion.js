@@ -20,8 +20,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-/** 只校验这几个"宿主自身"的包（其余的 peer 是业务依赖，不判）。 */
-const HOST_PEERS = ['@deepseek-ai/dsh', '@deepseek-ai/cordis'];
+/**
+ * 只校验**能拿到准确版本**的宿主包。
+ *
+ * ⚠ `@deepseek-ai/cordis` **不在这里**：它的版本线是 `4.x`，而 `currentDshVersion()`
+ *   返回的是 **dsh 的版本**（`0.2.1-*`）。拿 dsh 版本去比 cordis 的 `^4.0.2`
+ *   **必然误报"不兼容"** ✗（本项目刚踩到：`要求 @deepseek-ai/cordis ^4.0.2，但宿主是 0.2.1-rc.2`）
+ *   ⇒ 拿不到 cordis 自己的版本就别判 —— 宁可少报，不可误报。
+ */
+const HOST_PEERS = ['@deepseek-ai/dsh'];
 
 let cached = null;
 

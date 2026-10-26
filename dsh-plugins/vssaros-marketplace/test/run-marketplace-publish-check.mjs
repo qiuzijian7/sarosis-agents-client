@@ -777,8 +777,10 @@ function makeSkill(localId, version, extra = {}) {
 			hv.includes("case '^':") && hv.includes("case '~':") && hv.includes("||'") || hv.includes('.split(\'||\')'));
 		check('㉕ 看不懂的 range 返回 `null`（按「未知」处理，不当不兼容）',
 			hv.includes('return null;') && hv.includes('看不懂'));
-		check('㉕ 只校验宿主自身的包（dsh / cordis），不判业务依赖',
-			hv.includes('HOST_PEERS') && hv.includes("'@deepseek-ai/cordis'"));
+		// ⚠ cordis 的版本线是 4.x，而 currentDshVersion() 给的是 dsh 版本（0.2.1-*）
+		//   ⇒ 拿 dsh 版本比 cordis 的 `^4.0.2` **必然误报**。所以 HOST_PEERS 只留 dsh。
+		check('㉕ 只校验**能拿到准确版本**的包（cordis 版本线不同 ⇒ 不判，避免误报）',
+			hv.includes('HOST_PEERS') && /HOST_PEERS = \['@deepseek-ai\/dsh'\]/.test(hv));
 		check('㉕ 兼容性结论**只进 notes**（不阻断发布）',
 			fs.readFileSync(path.resolve(HERE, '..', 'lib', 'githubInspect.js'), 'utf8').includes('peer 兼容性：'));
 		check('㉕ hostVersion 在 files 白名单', pkg.files.includes('lib/hostVersion.js'));
