@@ -859,6 +859,27 @@ function makeSkill(localId, version, extra = {}) {
 			!pageSrc2.includes('!r.created || !state.agentsRescan'));
 		check('㉗ marketAgent.js 在 files 白名单', pkg2.files.includes('lib/marketAgent.js'));
 	}
+// ── ㉘ 「＋ 新会话」按钮 + `vssarosAgents.rescan`（2026-10-26）────────────
+//   用户两件事：① 商城工作台右侧**没有「＋ 新会话」按钮**（studio 有）
+//              ② 让 `vssaros-agents` 补 `provide + rescan()`（否则装完插件要重启两次）
+{
+	const wb2 = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'workbench.js'), 'utf8');
+	const agPath = path.resolve(HERE, '..', '..', 'vssaros-agents', 'lib', 'index.js');
+	const ag = fs.existsSync(agPath) ? fs.readFileSync(agPath, 'utf8') : '';
+
+	check('㉘ 有「＋ 新会话」按钮', wb2.includes('＋ 新会话') && wb2.includes('data-vssaros-market-neww'));
+	check('㉘ 按钮挂进 **aside**（生命周期与面板绑定，不用轮询显隐）', wb2.includes('mountNewButton(el)'));
+	check('㉘ 用原生 DOM + addEventListener（customFrame+portal 里 React onClick 不触发）',
+		wb2.includes("document.createElement('button')") && wb2.includes("nb.addEventListener('click'"));
+	check('㉘ 点击走宿主 `newSession`（已被我们包过 ⇒ 自动设商城 preset）', wb2.includes('dw.newSession();'));
+
+	check('㉘ `vssaros-agents` 提供 `vssarosAgents` 服务', ag.includes("ctx.provide('vssarosAgents'"));
+	check('㉘ 服务含 `rescan()`（重扫目录 + 增量注册）', ag.includes('rescan: async ()'));
+	check('㉘ rescan 在 agentPresets 未就绪时**抛错**（调用方走重启兜底，不静默）',
+		ag.includes('agentPresets 服务还没就绪'));
+	check('㉘ 暴露 `agentsRoot()`（排查「文件放错地方」用）', ag.includes('agentsRoot: () => agentsRootOf(config)'));
+}
+
 fs.rmSync(dataRoot, { recursive: true, force: true });
 console.log(`\n[marketplace publish] ${pass} passing / ${fails.length} failing`);
 if (fails.length) { console.log('失败：' + fails.join('、')); }

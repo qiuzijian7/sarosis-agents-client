@@ -160,5 +160,18 @@ console.log('── 工具 allowlist ──');
 	check('watchAllowlist 用 deny 收窄、且不用 allow', /restrict\(\{\s*deny:/.test(watchBody) && !/restrict\(\{\s*allow/.test(watchBody), watchBody.length + ' chars');
 }
 
+/* ★ 2026-10-26：把两个**独立单测**纳入包内自检。
+   为什么：它们各自是可执行脚本（`node xxx.test.mjs`），不进 run-all 的 `p3-*` 扫描，
+   也不会被别人顺手跑到 ⇒ 等于没有 CI 覆盖。这里用子进程跑一遍，按退出码判定。 */
+{
+	const { spawnSync } = await import('node:child_process');
+	for (const t of ['mentions.test.mjs', 'dispatch-budget.test.mjs']) {
+		const r = spawnSync(process.execPath, [path.join(HERE, t)], { encoding: 'utf8' });
+		const last = String(r.stdout || '').trim().split('\n').filter(Boolean).pop()
+			|| String(r.stderr || '').slice(0, 120);
+		check(`包内单测 ${t} 通过`, r.status === 0, last);
+	}
+}
+
 console.log(`\n[agents] ${pass} passing / ${fail} failing`);
 process.exit(fail === 0 ? 0 : 1);

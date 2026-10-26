@@ -26,6 +26,7 @@ import { presetIdOf } from './core/agents.js';
 import { AGENT_MESSAGE_KIND, finalAssistantText, findOurSplices } from './core/relay.js';
 import { isShownAgent } from './core/agents.js';
 import { dataRootOf, scanAgentsFromConfig } from './store.js';
+import { normalizeFileRefs } from './groupFiles.js';
 
 /**
  * 群聊能用的 agent 名单 = **内置 + 自定义**（`scanAgentsFromConfig`），去掉显式隐藏的。
@@ -412,13 +413,63 @@ export function parseMentions(text, members, agents) {
 	const wanted = [];
 	const pool = agents.filter(a => members.includes(a.id));
 	for (const agent of pool) {
-		const byId = new RegExp(`@${agent.id}(?![A-Za-z0-9._-])`).test(text);
-		const byName = agent.name && text.includes(`@${agent.name}`);
+		const byId = new RegExp(`@${escapeRe(agent.id)}(?![A-Za-z0-9._-])`).test(text);
+		/* ★ 2026-10-26 修：原来 `text.includes('@'+name)` **没有边界** ——
+		   `@test` 会命中名为 `test1` 的 bot、`@12` 会命中群名/成员 `123`。
+		   这会静默唤醒错人（比不唤醒更难查）。现在要求词尾边界，与 byId 同口径。 */
+		const byName = agent.name
+			&& new RegExp(`@${escapeRe(agent.name)}(?![A-Za-z0-9._-])`).test(text);
 		if (byId || byName) {
 			wanted.push(agent);
 		}
 	}
 	return wanted;
+}
+
+/** 正则转义（id / name 里可能有 `.`、`-`、`(` 等）。 */
+function escapeRe(text) {
+	return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** `@所有人` 的 token（与客户端 `mentions.js` 的 ALL_LABEL 一致）。 */
+const AT_ALL_LABEL = '所有人';
+
+/**
+ * 校验客户端传来的 `mentions[]`（2026-10-26）。
+ *
+ * 为什么要传 offset 而不是让服务端再猜：客户端已经知道"哪些 `@` 是真正的 token"
+ * （邮箱里的 `@`、引号里的 `@` 都不算）。服务端只做**防守性校验**：
+ *   · `start/end` 必须是整数，且 `text.slice(start,end) === '@' + label`
+ *   · `label` 必须是本群成员 id，或 `所有人`
+ *   · 任一条不满足 ⇒ **丢弃那一条**（不影响其它条，也不拒绝整条消息）
+ * ⇒ 老客户端只发 `text` 时，调用方回退到 `parseMentions`（字符串口径），行为不变。
+ */
+export function normalizeMentions(raw, text, members, agents) {
+	const list = Array.isArray(raw) ? raw : [];
+	const memberIds = new Set((Array.isArray(members) ? members : []).map(String));
+	const agentIds = new Set((Array.isArray(agents) ? agents : []).map(a => String(a.id)));
+	const out = [];
+	const seen = new Set();
+	for (const item of list) {
+		if (!item || typeof item !== 'object') { continue; }
+		const start = Number(item.start);
+		const end = Number(item.end);
+		const label = String(item.label || '').trim();
+		if (!Number.isInteger(start) || !Number.isInteger(end) || end <= start) { continue; }
+		if (!label || String(text).slice(start, end) !== '@' + label) { continue; }
+		if (label === AT_ALL_LABEL) {
+			const key = 'all';
+			if (seen.has(key)) { continue; }
+			seen.add(key);
+			out.push({ start, end, label, kind: 'all' });
+			continue;
+		}
+		// 只接受"确实是本群成员、且真的存在这只 agent"的 id
+		if (!memberIds.has(label) || !agentIds.has(label) || seen.has(label)) { continue; }
+		seen.add(label);
+		out.push({ start, end, label, agentId: label });
+	}
+	return out.sort((a, b) => a.start - b.start);
 }
 
 /** 找成员的活会话：没有就现开一条（与 assignments 同路径）。返回 { sessionId, created }。 */
@@ -447,8 +498,16 @@ async function ensureMemberSession(config, state, agent) {
 	return { sessionId, created: true };
 }
 
+/**
+ * 追加一条 transcript（超上限裁最旧，并留一条"已裁掉 N 条"的说明）。
+ *
+ * ★ 2026-10-26：**返回新建的那条**（原来返回 undefined）。原因：投递状态要在派发之后
+ * 补写到"这条用户消息"上，而这里会 `{...entry}` 新建对象 ⇒ 调用方必须拿到引用才改得到。
+ * 现有调用方都忽略返回值 ⇒ 这个改动对它们是零影响。
+ */
 function appendTranscript(group, entry) {
-	group.transcript = [...(group.transcript ?? []), { id: randomUUID(), at: Date.now(), ...entry }];
+	const created = { id: randomUUID(), at: Date.now(), ...entry };
+	group.transcript = [...(group.transcript ?? []), created];
 	if (group.transcript.length > TRANSSCRIPT_KEEP) {
 		const dropped = group.transcript.length - TRANSSCRIPT_KEEP;
 		group.transcript = [
@@ -457,6 +516,7 @@ function appendTranscript(group, entry) {
 		];
 	}
 	group.updatedAt = Date.now();
+	return created;
 }
 
 /** 唤醒策略四档（2026-10-21，对齐 DeepSeekBot 的 GroupWakePolicy）。 */
@@ -504,9 +564,17 @@ function locked(fn) {
 	return next;
 }
 
-/** 派一条文本给目标成员（steer + outbox 登记 + 单个失败如实入 transcript）。 */
+/**
+ * 派一条文本给目标成员（steer + outbox 登记 + 单个失败如实入 transcript）。
+ *
+ * ★ 2026-10-26 返回 `{ dispatched, deliveries }`：
+ *   `deliveries` 是给 UI 用的**逐成员投递状态**（`dispatched / replied / failed`），
+ *   调用方把它挂到那条用户消息上，于是群头部能显示"3 人中 2 人已回"。
+ *   以前只有 `dispatched`（且只含成功的），失败只在 transcript 里留一句话 ⇒ 用户看不出"谁没回"。
+ */
 async function dispatchText(config, state, group, text, targets) {
 	const dispatched = [];
+	const deliveries = [];
 	for (const agent of targets) {
 		try {
 			const { sessionId } = await ensureMemberSession(config, state, agent);
@@ -517,25 +585,76 @@ async function dispatchText(config, state, group, text, targets) {
 			const message = {
 				id: randomUUID(),
 				role: 'user',
-				content: [{ type: 'text', text: `[群聊「${group.name}」· 来自用户]\n${text}\n\n你的答复会回收进群聊记录（最终文本即群消息）。` }],
+				/* ★ 派发正文的**唯一收敛点**（2026-10-26）：所有路径（普通 / digest 汇总 /
+				   `@所有人`）最后都经过这里 ⇒ 预算只需加这一处，不会漏。
+				   `transcript` 里存的是全文，这里只截"喂给成员的那份"。 */
+				content: [{ type: 'text', text: `[群聊「${group.name}」· 来自用户]\n${clipDispatchText(text)}\n\n你的答复会回收进群聊记录（最终文本即群消息）。` }],
 				source: { kind: AGENT_MESSAGE_KIND, from: null, hop: 1, to: agent.id, group: group.id },
 			};
 			live.steer(message);
-			outboxNote(config, { kind: 'group', sessionId, groupId: group.id, messageId: message.id });
+			outboxNote(config, {
+				kind: 'group', sessionId, groupId: group.id, messageId: message.id,
+				// ★ 供投递状态回收用（回复回来时靠 messageId 反查这条 delivery）
+				agentId: agent.id, agentName: agent.name,
+			});
 			dispatched.push({ agentId: agent.id, name: agent.name, sessionId });
+			deliveries.push({
+				id: message.id, agentId: agent.id, name: agent.name,
+				state: 'dispatched', at: Date.now(),
+			});
 		} catch (e) {
+			const why = String(e?.message ?? e);
 			// 单个成员失败不拖垮整批：失败如实写进 transcript ✓
-			appendTranscript(group, { role: 'system', text: `派发给 ${agent.name} 失败：${String(e?.message ?? e)}` });
+			appendTranscript(group, { role: 'system', text: `派发给 ${agent.name} 失败：${why}` });
+			deliveries.push({
+				id: '', agentId: agent.id, name: agent.name,
+				state: 'failed', at: Date.now(), error: why,
+			});
 		}
 	}
 	if (dispatched.length) {
 		appendTranscript(group, { role: 'system', text: `⇢ 已接力：${dispatched.map(d => d.name).join('、')}` });
 	}
-	return dispatched;
+	return { dispatched, deliveries };
 }
 
 /** digest 最多留多少条原文（再多只留计数，避免群文件膨胀）。 */
 const DIGEST_KEEP = 50;
+
+/* ── 派发正文预算（2026-10-26）─────────────────────────────────────────────
+   为什么要有：`digest` 会把最多 `DIGEST_KEEP`(50) 条消息**拼成一条**派发给成员，
+   单条消息也可能是几万字的日志粘贴 ⇒ 一次派发就能把成员的上下文撑爆（模型直接报错或
+   静默丢历史）。参考 DeepSeekBot 的 `GROUP_PROMPT_CHARACTER_BUDGET=24k` /
+   `GROUP_CONTEXT_BODY_LIMIT=1k`，但我们的派发**只含新消息**（不含整份 transcript），
+   所以取更小的量级：整条 12k、digest 里单条 800。
+
+   ⚠ 只在**派给成员的那份文本**上截断；`transcript` 里永远存全文（群记录是真相源，
+     界面也要能看全）。截断处会显式写"省略了多少字"，成员不会被无声误导。 */
+const DISPATCH_BUDGET_CHARS = 12_000;
+const DISPATCH_BODY_LIMIT = 800;
+const DIGEST_MAX_ROWS = DIGEST_KEEP;
+
+/** 单条消息的正文截断：保留开头，末尾标出还剩多少字。 */
+export function clipBody(text, limit = DISPATCH_BODY_LIMIT) {
+	const s = String(text == null ? '' : text).replace(/\s+$/u, '');
+	if (s.length <= limit) { return s; }
+	return s.slice(0, limit) + `…（本条还有 ${s.length - limit} 字）`;
+}
+
+/**
+ * 派发正文的总量预算：超了就**保头部 + 保尾部**（开头通常是诉求，结尾通常是结论/细节），
+ * 中间显式标注省略量。返回字符串（可直接塞进 message.content）。
+ */
+export function clipDispatchText(text, budget = DISPATCH_BUDGET_CHARS) {
+	const s = String(text == null ? '' : text);
+	if (s.length <= budget) { return s; }
+	const headLen = Math.floor(budget * 0.6);
+	const tailLen = Math.max(0, budget - headLen);
+	const omitted = s.length - headLen - tailLen;
+	return s.slice(0, headLen)
+		+ `\n\n…（正文过长：中间省略 ${omitted} 字；完整内容见群聊记录）…\n\n`
+		+ (tailLen > 0 ? s.slice(s.length - tailLen) : '');
+}
 
 /** digest 攒着的状态（计数 / 起始时间 / 原文缓冲）。 */
 function digestPendingOf(group) {
@@ -547,12 +666,45 @@ function digestPendingOf(group) {
 	};
 }
 
-/** 攒着的几条 → 一条汇总文本（1 条原样，多条编号）。 */
-function digestText(pending) {
-	if (pending.length <= 1) {
-		return pending[0] ?? '';
+/**
+ * 攒着的几条 → 一条汇总文本。
+ *
+ * 2026-10-26 起**受预算约束**（原来是无脑 join，50 条长消息能拼出几十万字符）：
+ *   · 单条先按 `bodyLimit` 截断（默认 800 字）
+ *   · 只带**最近** `maxRows` 条，更早的在抬头里写明"未附上 N 条"
+ *   · 总量到 `budget` 就停，剩下的同样在抬头里标注
+ * 编号保持**原始序号**（从被丢掉的那些之后开始），这样成员看到 "151. …" 就知道前面还有。
+ */
+export function digestText(pending, opts = {}) {
+	const rows = Array.isArray(pending) ? pending.map((t) => String(t == null ? '' : t)) : [];
+	const budget = Number.isInteger(opts.budget) ? opts.budget : DISPATCH_BUDGET_CHARS;
+	const bodyLimit = Number.isInteger(opts.bodyLimit) ? opts.bodyLimit : DISPATCH_BODY_LIMIT;
+	const maxRows = Number.isInteger(opts.maxRows) ? opts.maxRows : DIGEST_MAX_ROWS;
+	if (rows.length === 0) { return ''; }
+	// 单条：走同一个总量预算（不必编号）
+	if (rows.length === 1) { return clipDispatchText(rows[0], budget); }
+
+	const tail = rows.slice(-maxRows);
+	const droppedRows = rows.length - tail.length;
+	const lines = [];
+	let used = 0;
+	let budgetStopped = 0;
+	for (let i = 0; i < tail.length; i += 1) {
+		const line = `${i + 1 + droppedRows}. ${clipBody(tail[i], bodyLimit)}`;
+		if (used + line.length > budget) { budgetStopped = tail.length - i; break; }
+		lines.push(line);
+		used += line.length + 1;
 	}
-	return `（汇总 ${pending.length} 条群消息）\n\n` + pending.map((t, i) => `${i + 1}. ${t}`).join('\n');
+	// 预算小到一条都放不下时，至少给第一条（截断到预算），否则成员收到的是个空壳
+	if (lines.length === 0 && tail.length) {
+		lines.push(`${1 + droppedRows}. ` + clipBody(tail[0], Math.max(80, budget - 24)));
+		budgetStopped = tail.length - 1;
+	}
+	const head = `（汇总 ${rows.length} 条群消息`
+		+ (droppedRows ? `；只附最近 ${tail.length} 条、更早 ${droppedRows} 条未附上` : '')
+		+ (budgetStopped ? `；另有 ${budgetStopped} 条因篇幅未附上` : '')
+		+ '）';
+	return `${head}\n\n${lines.join('\n')}`;
 }
 
 /**
@@ -599,7 +751,11 @@ export async function flushDueGroups(config, state) {
 export async function postGroupMessage(config, state, input) {
 	const id = String(input?.id ?? '').trim();
 	const text = String(input?.text ?? '').trim();
-	if (!text) {
+	/* ★ 2026-10-26 附件：允许「只有附件、没有文字」的消息。
+	   `files[]` 只保留 id/name/size/mime（`normalizeFileRefs` 会把非法 id 丢掉）⇒
+	   前端塞什么额外字段都不会落盘。 */
+	const files = normalizeFileRefs(input?.files);
+	if (!text && !files.length) {
 		throw httpError(400, '消息不能为空。');
 	}
 	return locked(async () => {
@@ -609,18 +765,36 @@ export async function postGroupMessage(config, state, input) {
 			throw httpError(404, `没有这个群：${id || '(没给 id)'}`);
 		}
 		const scan = await groupAgentsOf(config);
-		const mentioned = parseMentions(text, group.members, scan.agents);
 		const mode = normalizeGroupMode(group.mode);
 		const everyone = scan.agents.filter(a => group.members.includes(a.id));
-		appendTranscript(group, { role: 'user', text });
+		/* ★ 2026-10-26 `@` 提及：客户端给了带 offset 的 `mentions[]` 就用它（**精确**），
+		   没给（老客户端/独立页）才回退字符串口径 —— 两条路的收件人集合一致，只是精度不同。 */
+		const ats = normalizeMentions(input?.mentions, text, group.members, scan.agents);
+		const atAll = ats.some(m => m.kind === 'all')
+			|| new RegExp(`@${AT_ALL_LABEL}(?![A-Za-z0-9._-])`).test(text);
+		const mentioned = ats.length
+			? everyone.filter(a => ats.some(m => m.agentId === String(a.id)))
+			: parseMentions(text, group.members, scan.agents);
+		appendTranscript(group, {
+			role: 'user',
+			text,
+			...(files.length ? { files } : {}),
+			// 落盘给气泡高亮用（渲染前会再校验 slice===@label，脏 offset 不会显示成错位 chip）
+			...(ats.length ? { mentions: ats } : {}),
+		});
 
 		let targets = [];
-		// 派发用的正文：digest 攒满时要换成"汇总文本"，其余档就是原消息
-		let dispatchBody = text;
+		/* 派发用的正文：digest 攒满时要换成"汇总文本"，其余档就是原消息。
+		   ★ 附件：agent 看不到文件字节（只有名字），所以纯附件消息要补一句说明，
+		     否则派发出去是一条空正文 ⇒ 成员会把"空消息"当成异常。 */
+		let dispatchBody = text || (files.length
+			? `（发来 ${files.length} 个附件：${files.map(f => f.name).join('、')}）`
+			: '');
 		if (mode === 'all') {
 			targets = everyone;
 		} else if (mode === 'mentions') {
-			targets = mentioned;
+			/* `@所有人` ⇒ 唤醒全群（这是"仅 @ 派发"模式下唯一能一次叫醒所有人的方式） */
+			targets = atAll ? everyone : mentioned;
 		} else if (mode === 'silent') {
 			appendTranscript(group, { role: 'system', text: 'silent 模式：这条只进群记录，不唤醒成员（改「唤醒策略」才会派发）。' });
 			await writeGroups(config, groups);

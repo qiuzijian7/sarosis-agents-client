@@ -27,11 +27,129 @@ window.__ModuleLoader__.load({
 		var exports = module.exports;
 		const react = require('react');
 		const h = react.createElement;
-		const { useState, useEffect, useCallback } = react;
+		const { useState, useEffect, useCallback, useRef } = react;
 
 		const API = '/x/agents/api';
 		/** 快速来回切 bot 时防止把同一只反复建成一串会话（模块级 ⇒ 跨渲染保留） */
 		const BOT_SESSION_PENDING = new Set();
+
+		/* ══ 群聊 `@` 提及：纯函数（2026-10-26）════════════════════════════════════
+		   为什么在 chunk 里再写一份：客户端 chunk **不能** import 服务端文件
+		   （装载器只认 `client.*.js` 的相对请求），而服务端/单测要用同一套规则。
+		   ⇒ 服务端权威实现在 `lib/mentions.js`（有 29 条单测），这里是同语义的紧凑版；
+		     `p3-197` 会把下面 `@MENTIONS-BEGIN/END` 之间的代码抽出来跑同一批向量，
+		     两边行为一旦漂移，那条守卫直接红 ⇒ 不会静默分叉。
+		   规则同 `lib/mentions.js` 头注释（token = `@` + agent.id，因为 bot 名含空格）。 */
+		/* @MENTIONS-BEGIN */
+		const AT_ALL = '所有人';
+		const AT_MAX = 8;
+		const AT_MAXQ = 34;
+		const AT_WORD = /[A-Za-z0-9._%+-]/u;
+
+		/** 当前是否正在输入 `@` ⇒ { start, end, query } | undefined */
+		const atQuery = (value, caret) => {
+			const text = String(value == null ? '' : value);
+			const pos = Number.isInteger(caret) ? Math.min(Math.max(caret, 0), text.length) : text.length;
+			const start = text.lastIndexOf('@', pos - 1);
+			if (start < 0 || pos - start > AT_MAXQ) { return undefined; }
+			if (pos <= start) { return undefined; }            // caret 在 @ 之前（lastIndexOf(-1) 的坑）
+			if (start > 0 && AT_WORD.test(text[start - 1])) { return undefined; }   // 邮箱不触发
+			const query = text.slice(start + 1, pos);
+			// 任何空白/`@`/`#` 都算"已不在写这个 token"（打 `@ ` 立刻关浮层；与 lib/mentions.js 同口径）
+			if (/[\s@#]/u.test(query)) { return undefined; }
+			return { start, end: pos, query };
+		};
+
+		/** 选中候选：替换 `@query` 为 `@label` + 恰好一个尾空格；返回新文本与新 caret */
+		const atSelect = (value, query, label) => {
+			const text = String(value == null ? '' : value);
+			const token = '@' + String(label == null ? '' : label);
+			const skip = text[query.end] === ' ' ? 1 : 0;
+			return {
+				value: text.slice(0, query.start) + token + ' ' + text.slice(query.end + skip),
+				caret: query.start + token.length + 1,
+			};
+		};
+
+		/** 从文本反扫 mentions（id 口径 + 词尾边界）；`@所有人` 标 kind:'all' */
+		const atCollect = (text, members) => {
+			const value = String(text == null ? '' : text);
+			const out = [];
+			for (const agent of (Array.isArray(members) ? members : [])) {
+				const id = String((agent && agent.id) || '').trim();
+				if (!id) { continue; }
+				const re = new RegExp('@' + id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![A-Za-z0-9._-])', 'g');
+				let m = re.exec(value);
+				while (m) { out.push({ start: m.index, end: m.index + m[0].length, label: id, agentId: id }); m = re.exec(value); }
+			}
+			const reAll = new RegExp('@' + AT_ALL + '(?![A-Za-z0-9._-])', 'g');
+			let a = reAll.exec(value);
+			while (a) { out.push({ start: a.index, end: a.index + a[0].length, label: AT_ALL, kind: 'all' }); a = reAll.exec(value); }
+			return out.sort((x, y) => x.start - y.start);
+		};
+
+		/** 文本切成 普通/mention 片段（offset 对不上的丢弃） */
+		const atRuns = (value, mentions) => {
+			const text = String(value == null ? '' : value);
+			const list = [...(Array.isArray(mentions) ? mentions : [])]
+				.filter((m) => Number.isInteger(m.start) && Number.isInteger(m.end))
+				.sort((x, y) => x.start - y.start);
+			const runs = [];
+			let cursor = 0;
+			for (const m of list) {
+				if (m.start < cursor || m.end <= m.start || m.end > text.length) { continue; }
+				if (text.slice(m.start, m.end) !== '@' + m.label) { continue; }
+				if (m.start > cursor) { runs.push({ text: text.slice(cursor, m.start) }); }
+				runs.push({ text: text.slice(m.start, m.end), mention: m });
+				cursor = m.end;
+			}
+			if (cursor < text.length) { runs.push({ text: text.slice(cursor) }); }
+			return runs;
+		};
+
+		/** Backspace/Delete 落在 mention 上 ⇒ 整块删（含尾空格）；未命中返回 undefined */
+		const atDelete = (value, mentions, s, e, key) => {
+			const text = String(value == null ? '' : value);
+			const list = (Array.isArray(mentions) ? mentions : [])
+				.filter((m) => Number.isInteger(m.start) && Number.isInteger(m.end));
+			const target = list.find((m) => {
+				const trailingEnd = text[m.end] === ' ' ? m.end + 1 : m.end;
+				if (s !== e) { return s < trailingEnd && e > m.start; }
+				return key === 'Backspace' ? (s > m.start && s <= trailingEnd) : (s >= m.start && s < m.end);
+			});
+			if (!target) { return undefined; }
+			const end = text[target.end] === ' ' ? target.end + 1 : target.end;
+			const start = s === e ? target.start : Math.min(s, target.start);
+			const finish = s === e ? end : Math.max(e, end);
+			return { value: text.slice(0, start) + text.slice(finish), caret: start };
+		};
+
+		/** 候选：成员过滤（name/id 大小写不敏感）+ `@所有人`（成员为空时不给） */
+		const atCandidates = (members, query) => {
+			const list = Array.isArray(members) ? members.filter(Boolean) : [];
+			if (query === undefined || query === null) { return []; }
+			const needle = String(query).toLocaleLowerCase();
+			const bots = list
+				.filter((m) => String(m.name || '').toLocaleLowerCase().includes(needle)
+					|| String(m.id || '').toLocaleLowerCase().includes(needle))
+				.slice(0, AT_MAX)
+				.map((agent) => ({ kind: 'bot', agent }));
+			const offerAll = list.length > 0 && [AT_ALL, 'all', 'everyone']
+				.some((n) => n.toLocaleLowerCase().includes(needle));
+			return offerAll ? [{ kind: 'all', label: AT_ALL }, ...bots] : bots;
+		};
+
+		/** 被 @ 到的 agentId（`@所有人` ⇒ 全群）；发送与派发都用它 */
+		const atTargets = (text, members) => {
+			const mentions = atCollect(text, members);
+			if (mentions.some((m) => m.kind === 'all')) {
+				return (Array.isArray(members) ? members : []).map((m) => String((m && m.id) || '')).filter(Boolean);
+			}
+			const out = [];
+			for (const m of mentions) { if (m.agentId && !out.includes(m.agentId)) { out.push(m.agentId); } }
+			return out;
+		};
+		/* @MENTIONS-END */
 
 		const DESCRIPTOR = {
 			title: 'Bots',
@@ -104,9 +222,33 @@ window.__ModuleLoader__.load({
 			}
 			if (b && typeof b.openModulePage === 'function') {
 				try {
-					Promise.resolve(b.openModulePage(url)).catch(() => { /* 不阻塞 */ });
+					/* ★ 2026-10-26：原来 `.catch(() => {})` 把失败**吞掉**了 —— 用户只看到"点了没反应"
+					   或者一个黑屏页（真机日志里是 `emulate timeout`），完全无从判断。
+					   ⇒ 失败时至少给一条可读提示 + 可复制的地址。 */
+					Promise.resolve(b.openModulePage(url)).then((ok) => {
+						if (ok === false) { throw new Error('宿主拒绝了打开请求'); }
+					}).catch((e) => {
+						const why = String((e && e.message) || e);
+						try { console.warn('[vssaros-agents] 打开模块页失败（' + (label || '') + '）：' + why + ' → ' + url); } catch (err) { /* ignore */ }
+						try { window.prompt('打不开「' + (label || '完整页') + '」（' + why + '）。可复制地址自行打开：', url); } catch (err) { /* ignore */ }
+					});
 					return true;
 				} catch (e) { /* 落到兜底 */ }
+			}
+			/* ★★ 2026-10-26 修「点群设置 ⇒ 黑屏」：
+			   工作台现在跑在**承载页的 iframe** 里（`/x/agents/` → iframe → dsh 客户端），
+			   而 preload 注入的桥只在 iframe 的**父文档**上 ⇒ 这里 `bridge()` 是 undefined。
+			   旧逻辑会落到 `window.open(url, '_blank')`：Electron 里会开一个没有 preload/会话的
+			   空窗口 ⇒ 用户看到**黑屏**。
+			   ⇒ iframe 且同源时，直接导航**顶层**（= Bots 那个 webview，桥和样式都在），
+			     页面在 Bots 页签里正常打开，不再黑屏。
+			   ⚠ 跨域时 `top.location` 会抛（安全限制）⇒ try/catch 兜住，继续走后面的兜底。 */
+			const inFrame = (() => { try { return window.self !== window.top; } catch (e) { return false; } })();
+			if (inFrame) {
+				try {
+					window.top.location.assign(url);
+					return true;
+				} catch (e) { /* 跨域/被拦 ⇒ 落到下面 */ }
 			}
 			try {
 				const w = window.open(url, '_blank', 'noopener');
@@ -205,6 +347,28 @@ window.__ModuleLoader__.load({
 			   ⇒ **永远停在 loading，群聊列表永远是 0**。
 			   ⇒ 依赖改成 `[tab, groupsTick]`：只有切页签或手动刷新才重拉。 */
 			const [groupsTick, setGroupsTick] = useState(0);
+			/* ── 群聊在工作台里**真能聊**（2026-10-26 用户报「复刻未生效」）──────────
+			   真相：工作台的 `midGroup` 原来把 composer 的 submit 接成了
+			   `openModuleRoute('/x/agents/group/…')` —— **点发送是跳页**，不是发消息。
+			   ⇒ 这里补两样东西：
+			     `gOut`   待发送/失败的本地队列（pending/failed，poll 覆盖不掉）
+			     `gDraft` 各群草稿（localStorage，切群不丢）  */
+			const [gOut, setGOut] = useState([]);
+			const [gDraft, setGDraft] = useState({});
+			/* ── 群聊附件（2026-10-26）──────────────────────────────────────────
+			   上传走 `POST /api/group-file?group=&name=`（body = 原始字节），拿到
+			   `{ id, name, size, mime }` 后挂在待发送列表里；发送时随消息带 `files[]`。
+			   `gFiles` 是**全局**待发列表（切群会被清，避免把 A 群的附件发到 B 群）。 */
+			const [gFiles, setGFiles] = useState([]);
+			const [gUpBusy, setGUpBusy] = useState(false);
+			const [gUpErr, setGUpErr] = useState('');
+			const gPickRef = useRef(null);
+			/* ── 群聊 `@` 提及（2026-10-26）──────────────────────────────────────
+			   用户报「输入框敲 @ 没反应」。原来 composer 的 onKeyDown 只处理 Enter，
+			   `@` 就是普通字符。现在：输入框监听 → 算 query → 弹候选 → 选中插入。
+			   `atState.items` 里直接存候选（含 agent 对象），避免渲染时重算。 */
+			const [atState, setAtState] = useState({ open: false, start: 0, end: 0, query: '', active: 0, items: [] });
+			const groupTaRef = useRef(null);
 			// 右栏记忆类数据（mem/evo/ver/br 共用一次 GET）
 			const [memView, setMemView] = useState({ status: 'idle', data: null, error: '' });   // 列表
 			const [memFile, setMemFile] = useState(null);   // { title, content, loading, error }
@@ -215,6 +379,16 @@ window.__ModuleLoader__.load({
 			const [setBusy, setSetBusy] = useState(false);
 			const [setErr, setSetErr] = useState('');
 			const [setOk, setSetOk] = useState('');
+			/* 「群设置」= 二级页面（2026-10-26：用户报「点群设置 ⇒ 黑屏」）
+			   黑屏根因：它原走 `openModuleRoute` ⇒ 宿主新建一个 webview 编辑器页，
+			   实测该 webview `emulate timeout`（没就绪）⇒ 面板纯黑，随后 app 还可能 exit code=1。
+			   ⇒ 改成工作台内二级页：**零新窗口、零新 WebContents**，写动作仍走 `/api/groups`。 */
+			const [groupSetFor, setGroupSetFor] = useState('');   // 正在设置的群 id（''=不在该页）
+			const [gsName, setGsName] = useState('');
+			const [gsMode, setGsMode] = useState('all');
+			const [gsBusy, setGsBusy] = useState(false);
+			const [gsErr, setGsErr] = useState('');
+			const [gsOk, setGsOk] = useState('');
 			// System Prompt 页签（2026-10-25）：受控 textarea + 自己的加载/保存态
 			const [promptText, setPromptText] = useState('');
 			const [promptLoaded, setPromptLoaded] = useState(false);
@@ -387,12 +561,71 @@ window.__ModuleLoader__.load({
 				//   `alive` 就不会被自己的 cleanup 提前置 false（原 bug 见 groupsTick 的注释）
 				if (tab !== 'roster') { return undefined; }
 				let alive = true;
-				setGroupsView({ status: 'loading', data: null, error: '' });
+				/* ★★ 2026-10-26 用户报「bot 页面每隔一段时间抖动一次」：
+				   下面那条 3 秒轮询会 bump `groupsTick` ⇒ 本 effect 重跑 ⇒ 原来**无条件**
+				   `setGroupsView({status:'loading', data:null})` ⇒ 左栏群聊列表先被清空、
+				   再被请求结果填回来（几十毫秒）⇒ 视觉上就是**列表周期性闪一下**。
+				   ⇒ 两条约束：
+				     ① 已经有数据时**不要把 data 置空**（只有首次加载才显示 loading）
+				     ② 请求回来先比**签名**（id/名字/模式/成员数/消息数/最后一条时间），
+				        没变化就返回同一个 state 对象 ⇒ React 直接跳过重渲染（连 diff 都省了） */
+				const sigOf = (body) => {
+					const gs = (body && Array.isArray(body.groups)) ? body.groups : [];
+					return JSON.stringify(gs.map((g) => [
+						String(g.id || ''),
+						String(g.name || ''),
+						String(g.mode || ''),
+						Array.isArray(g.members) ? g.members.length : 0,
+						Array.isArray(g.transcript) ? g.transcript.length : 0,
+						Array.isArray(g.transcript) && g.transcript.length
+							? Number(g.transcript[g.transcript.length - 1].at) || 0 : 0,
+					]));
+				};
+				setGroupsView((prev) => (prev.status === 'ready' && prev.data
+					? prev                                              // 已有数据 ⇒ 保留，别闪空
+					: { status: 'loading', data: null, error: '' }));
 				getJson('/groups')
-					.then(body => { if (alive) { setGroupsView({ status: 'ready', data: body, error: '' }); } })
+					.then(body => {
+						if (!alive) { return; }
+						setGroupsView((prev) => (prev.status === 'ready' && prev.data
+							&& sigOf(prev.data) === sigOf(body)
+							? prev                                      // 内容没变 ⇒ 不换对象（零重渲染）
+							: { status: 'ready', data: body, error: '' }));
+					})
 					.catch(e => { if (alive) { setGroupsView({ status: 'error', data: null, error: String(e && e.message || e) }); } });
 				return () => { alive = false; };
 			}, [tab, groupsTick]);
+
+			/* ── 群聊：选中某个群时**定时刷新**（2026-10-26）────────────────────
+			   原来 `groups` 只在切页签/手动刷新时重拉 ⇒ 群聊面板看不到别人（成员 bot）的新消息。
+			   3 秒一次、页面不可见时跳过（与独立群聊页的 `poll` 同口径）。 */
+			useEffect(() => {
+				if (sel.kind !== 'group' || tab !== 'roster') { return undefined; }
+				const t = setInterval(() => {
+					try {
+						if (!document.hidden) { setGroupsTick((n) => n + 1); }
+					} catch (e) { /* ignore */ }
+				}, 3000);
+				return () => clearInterval(t);
+			}, [sel.kind, sel.id, tab]);
+
+			/* ── 群聊草稿：打开某个群时把它自己的草稿填回来 ──────────────────── */
+			useEffect(() => {
+				if (sel.kind !== 'group' || !sel.id) { return; }
+				const gid = String(sel.id);
+				let v = null;
+				// ⚠ 读不到时返回 null（不是 ''）⇒ 下面直接 return，**保留内存里的草稿**。
+				//   否则 localStorage 被禁用（about:blank / 隐私模式）时会把正在打字的草稿清空
+				//   （2026-10-26 p3-189 抓到的：`SecurityError: Access is denied`）。
+				try { v = window.localStorage.getItem('vssaros.agents.gDraft.' + gid); } catch (e) { v = null; }
+				if (v !== null) { setGDraft((prev) => (prev[gid] === v ? prev : { ...prev, [gid]: v })); }
+				/* ⚠ 切群必须清掉**待发附件**：附件是绑在群上的（上传时就带 group=），
+				   不清的话会把 A 群的附件发到 B 群里去。 */
+				setGFiles([]);
+				setGUpErr('');
+				/* `@` 候选同理：不清的话切群后浮层还挂着上一个群的成员（会 @ 错人）。 */
+				setAtState({ open: false, start: 0, end: 0, query: '', active: 0, items: [] });
+			}, [sel.kind, sel.id]);
 
 			const data = view.data;
 			const agents = (data && data.agents) || [];
@@ -760,22 +993,47 @@ window.__ModuleLoader__.load({
 			}, label);
 
 			const leftPane = h('div', { className: 'ag3-l', 'data-ag-list': String(visible.length), 'data-ag-roster-panel': '', 'data-ag-left': '' },
-				// 「已注册」标题常显（即使 0 个也留着 —— 否则「＋ 新建 Bot」这个唯一入口会消失）
+				/* ★ 2026-10-26 用户要求：创建入口**放进名册页**（左栏顶部），按钮文字就叫「新建 bot」，
+				   打开的面板以**二级页面**呈现（见下方 createPage）。
+				   群聊的入口也一并放这里，与它并列 —— 两个都是"新建"，分开放反而难找。 */
+				h('div', { className: 'ag3-lcreate', 'data-ag-lcreate': '' },
+					h('button', {
+						type: 'button', className: 'wb-btn is-primary ag3-lcreate-main', 'data-ag-act': 'create-agent',
+						title: '新建 bot（写一个 .agent.md）', onClick: () => openCreate('agent'),
+					}, '＋ 新建 bot'),
+					h('button', {
+						type: 'button', className: 'wb-btn ag3-lcreate-side', 'data-ag-act': 'create-group',
+						title: '新建群聊（选成员 + 模式）', onClick: () => openCreate('group'),
+					}, '群聊')),
+				// 「已注册」标题常显（即使 0 个也留着 —— 否则分组就没了折叠入口）
 				sectionHead('reg', '已注册', regRows.length,
-					miniAct('create-agent', '新建 Bot（写一个 .agent.md）', '＋', () => openCreate('agent'))),
+					miniAct('create-agent', '新建 bot（写一个 .agent.md）', '＋', () => openCreate('agent'))),
 				collapsed.reg ? null : regRows.map(agentRow),
 				// 折叠时给一行"被折叠了"的提示，避免用户以为列表空了
 				collapsed.reg && regRows.length ? h('p', { className: 'ag-hint ag3-tip', 'data-ag-folded': 'reg' }, '已折叠 ' + regRows.length + ' 个 —— 点「已注册」展开') : null,
 				unregRows.length ? sectionHead('unreg', '未注册', unregRows.length) : null,
 				collapsed.unreg ? null : unregRows.map(agentRow),
 				collapsed.unreg ? null : (unregRows.length ? h('p', { className: 'ag-hint ag3-tip' }, '未注册 = 花名册里没有它的 preset ⇒ dsh 侧不会加载。') : null),
+				/* 未注册折叠后的提示（必须紧跟它自己的行，不能放到别的分组后面） */
+				collapsed.unreg && unregRows.length ? h('p', { className: 'ag-hint ag3-tip', 'data-ag-folded': 'unreg' }, '已折叠 ' + unregRows.length + ' 个未注册 —— 点「未注册」展开') : null,
 				sectionHead('groups', '群聊', groups.length,
 					h('span', { className: 'ag3-mini-row' },
 						miniAct('create-group', '新建群聊', '＋', () => openCreate('group')),
-						miniAct('groups-app', '去群聊页（建群 / 发消息）', '↗', () => openModuleRoute('/x/agents/group', '群聊页')))),
+						/* ★ 2026-10-26：原本跳独立群聊页（新 webview）。左栏**本来就有**群聊列表
+						   ⇒ 改成直接选中第一个群（发消息就在中间栏）；一个群都没有时才回退到完整页（那里能建群）。 */
+						miniAct('groups-app', '打开群聊（选中第一个群）', '↗', () => {
+							if (groups.length) {
+								setSel({ kind: 'group', id: String(groups[0].id) });
+							} else {
+								openModuleRoute('/x/agents/group', '群聊页');
+							}
+						}))),
 				collapsed.groups ? null : groupsView.status === 'loading' ? h('p', { className: 'ag-hint ag3-tip' }, '正在读群聊…') : null,
 				collapsed.groups ? null : groupsView.status === 'error' ? h('p', { className: 'ag-hint ag3-tip' }, '群聊读不到：' + groupsView.error) : null,
-				collapsed.groups ? null : (groups.length ? groups.map(groupRow) : (groupsView.status === 'ready' ? h('p', { className: 'ag-hint ag3-tip' }, '还没有群聊。') : null)));
+				collapsed.groups ? null : (groups.length ? groups.map(groupRow) : (groupsView.status === 'ready' ? h('p', { className: 'ag-hint ag3-tip' }, '还没有群聊。') : null)),
+				/* ⚠ 2026-10-26（p3-194 抓到的缺口）：群聊分组折叠后原来**没有任何提示**，
+				   列表直接变空 ⇒ 看着像"群聊数据丢了"。与「已注册」保持同一口径。 */
+				collapsed.groups && groups.length ? h('p', { className: 'ag-hint ag3-tip', 'data-ag-folded': 'groups' }, '已折叠 ' + groups.length + ' 个群聊 —— 点「群聊」展开') : null);
 
 			/* ══════ 中间：会话窗口（agent）/ 群聊窗口（group）══════ */
 			/** 空态起手卡（该 agent 还没有会话时） */
@@ -787,12 +1045,11 @@ window.__ModuleLoader__.load({
 					h('button', {
 						type: 'button', className: 'wb-btn is-primary', 'data-ag-act': 'start-chat',
 						onClick: () => { void startSession(a); },
-					}, '发起会话'),
-					h('button', {
-						type: 'button', className: 'wb-btn is-ghost', 'data-ag-act': 'settings-mid',
-						onClick: () => setSettingFor(a.id),
-					}, 'Agent 设置')),
-				h('div', { className: 'ag3-start-hint' }, '点「发起会话」会在这里开会话，消息实时显示。'));
+					}, '发起会话')),
+				/* ⚠ 2026-10-26：这里原来还有「Agent 设置」。已去掉 ——
+				   用户要求把「委派任务 / Agent 设置」都收到**右栏**（`ag3-rhd` 已各有一个图标按钮），
+				   中间栏只放会话内容，不再出现设置入口（空态卡也不留）。 */
+				h('div', { className: 'ag3-start-hint' }, '点「发起会话」会在这里开会话，消息实时显示。设置与委派在右侧栏。'));
 
 			/* ── 一条消息 → 气泡（四层嵌套以内，避免括号错位）─────────────────────────
 			   role: 'user' 右对齐 / 'assistant' 左对齐 / 'system' 折叠 / 'turn' 分隔线 */
@@ -844,11 +1101,28 @@ window.__ModuleLoader__.load({
 				const inputProps = {
 					className: 'ag3-comp-ta', rows: 1, placeholder, 'aria-label': placeholder,
 					'data-ag-composer-input': actKey, disabled: off,
-					onKeyDown: (ev) => { if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); submit(); } },
+					/* ★ 2026-10-26 `@` 提及：调用方给的 `onKeyDown` 先跑 —— 它要处理
+					   ↑↓/Enter/Tab/Esc（候选导航）与 Backspace 整块删 mention。
+					   返回 true = 已消费 ⇒ 这里不再当成"回车发送"。
+					   ⚠ IME 保护在调用方里做（`isComposing` 时不能抢 Enter，否则选词就发出去了）。 */
+					onKeyDown: (ev) => {
+						if (o.onKeyDown && o.onKeyDown(ev) === true) { return; }
+						if (ev.key === 'Enter' && !ev.shiftKey) {
+							if (ev.nativeEvent && ev.nativeEvent.isComposing) { return; }
+							ev.preventDefault();
+							submit();
+						}
+					},
 				};
+				if (o.taRef) { inputProps.ref = o.taRef; }
 				if (actKey === 'chat') {
 					inputProps.value = draft;
 					inputProps.onChange = (ev) => setDraft(ev.target.value);
+				} else if (o.value !== undefined) {
+					/* 2026-10-26：其它 composer（群聊的 `group-send`）也能受控 ——
+					   群聊要按群保存草稿，必须由外部持有输入值。 */
+					inputProps.value = o.value;
+					inputProps.onChange = o.onChange;
 				}
 				const sendBtn = streaming
 					? h('button', {
@@ -860,14 +1134,44 @@ window.__ModuleLoader__.load({
 						'aria-label': '发送消息', disabled: off || busy, title: '发送（真发到当前会话）',
 						onClick: () => submit(),
 					}, sendArrow());
+				/* `@` 候选浮层（2026-10-26）：定位在输入卡片**上方**（`bottom:100%`）。
+				   ⚠ 用 `onMouseDown` + preventDefault 而不是只用 onClick ——
+				   否则点候选时 textarea 先失焦，caret 丢失、插入位置就错了。 */
+				const atPop = (o.at && o.at.open && Array.isArray(o.at.items) && o.at.items.length)
+					? h('div', { className: 'ag3-atpop', 'data-ag-atpop': String(o.at.items.length), role: 'listbox' },
+						o.at.items.map((item, i) => h('button', {
+							key: (item.kind === 'all' ? 'all' : String(item.agent && item.agent.id || i)),
+							type: 'button',
+							className: 'ag3-atitem' + (i === (o.at.active || 0) ? ' is-on' : ''),
+							role: 'option',
+							'aria-selected': i === (o.at.active || 0) ? 'true' : 'false',
+							'data-ag-atitem': item.kind === 'all' ? 'all' : String(item.agent && item.agent.id || ''),
+							onMouseDown: (ev) => { ev.preventDefault(); },
+							onClick: () => { if (o.onAtChoose) { o.onAtChoose(item); } },
+							title: item.kind === 'all'
+								? ('@' + String(item.label || '所有人') + '（唤醒全部成员）')
+								: ('@' + String(item.agent && item.agent.id || '') + ' · ' + String(item.agent && item.agent.name || '')),
+						},
+						h('span', { className: 'ag3-atmark' }, item.kind === 'all' ? '＠' : '@'),
+						h('span', { className: 'ag3-atname' },
+							item.kind === 'all' ? String(item.label || '所有人') : String(item.agent && item.agent.name || item.agent.id || '')),
+						h('span', { className: 'ag3-atid' },
+							item.kind === 'all' ? '全员' : String(item.agent && item.agent.id || '')))))
+					: null;
 				return h('div', { className: 'ag3-compwrap', 'data-ag-composer': actKey },
+					atPop,
 					h('div', { className: 'ag3-compcard' + (off ? ' is-off' : '') },
 						h('div', { className: 'ag3-comp-in' }, h('textarea', inputProps)),
 						h('div', { className: 'ag3-comp-row' },
-							h('button', {
-								type: 'button', className: 'ag3-add', 'aria-label': '添加文件或调用指令',
-								title: '添加文件或调用指令（在会话里）', onClick: () => submit(),
-							}, plusIcon()),
+													h('button', {
+								type: 'button', className: 'ag3-add',
+								/* ⚠ 2026-10-26：以前这里接的是 `submit()` —— 点「＋」会**直接发消息**（误触）。
+								   现在：给了 `onPick` 就选附件（群聊用），否则保持"添加文件或调用指令"的旧提示。 */
+								'aria-label': o.onPick ? '添加附件' : '添加文件或调用指令',
+								title: o.onPick ? '添加附件（图片/文件，单个 ≤20MB）' : '添加文件或调用指令（在会话里）',
+								'data-ag-act': o.onPick ? (actKey + '-pick') : actKey,
+								onClick: () => { if (o.onPick) { o.onPick(); } else { submit(); } },
+								}, plusIcon()),
 							h('span', { className: 'ag3-comp-meta' }, hint),
 							h('span', { className: 'wb-spacer' }),
 							sendBtn)));
@@ -928,8 +1232,307 @@ window.__ModuleLoader__.load({
 			};
 
 
+			/** 发一条群消息：乐观上屏（pending）→ 成功剔除 / 失败转 failed 可重试 */
+			/** 单个附件上限（与后端 `MAX_FILE_BYTES` 同一个数 ⇒ 前端先拦，省一次往返） */
+			const MAX_ATTACH = 20 * 1024 * 1024;
+
+			/** 上传一个附件，成功后挂进待发送列表（`gFiles`） */
+			const uploadGroupFile = async (g, file) => {
+				if (!g || !g.id || !file) { return; }
+				if (file.size > MAX_ATTACH) {
+					setGUpErr(`${file.name} 太大（${(file.size / 1048576).toFixed(1)}MB，上限 20MB）`);
+					return;
+				}
+				setGUpBusy(true);
+				setGUpErr('');
+				try {
+					const res = await fetch('/x/agents/api/group-file?group=' + encodeURIComponent(String(g.id))
+						+ '&name=' + encodeURIComponent(file.name || 'file'), {
+						method: 'POST',
+						headers: { 'content-type': file.type || 'application/octet-stream' },
+						body: file,
+						credentials: 'same-origin',
+					});
+					const j = await res.json().catch(() => ({}));
+					if (!res.ok || j.ok === false) { throw new Error(j.error || ('HTTP ' + res.status)); }
+					if (j.file) { setGFiles((prev) => [...prev, j.file]); }
+				} catch (e) {
+					setGUpErr(String((e && e.message) || e));
+				} finally {
+					setGUpBusy(false);
+				}
+			};
+
+			/* ── `@` 提及：交互层（2026-10-26）────────────────────────────────── */
+			/** 本群成员（按 `g.members` 过滤 agents；候选与派发都用它） */
+			const mentionMembersOf = (g) => {
+				const ids = Array.isArray(g && g.members) ? g.members.map(String) : [];
+				return agents.filter((a) => ids.includes(String(a.id)));
+			};
+
+			const atClose = () => setAtState((s) => (s.open
+				? { open: false, start: 0, end: 0, query: '', active: 0, items: [] } : s));
+
+			/** 输入变化后重算候选（caret 从事件里取，不要用 state —— 会慢一帧） */
+			const atSync = (value, caret, g) => {
+				const q = atQuery(value, caret);
+				if (!q) { atClose(); return; }
+				const items = atCandidates(mentionMembersOf(g), q.query);
+				if (!items.length) { atClose(); return; }
+				setAtState({ open: true, start: q.start, end: q.end, query: q.query, active: 0, items });
+			};
+
+			/** 选中候选：写回草稿 + 把 caret 放到 token 之后 */
+			const atChoose = (item, g) => {
+				if (!item || !g || !g.id) { atClose(); return; }
+				const gid = String(g.id);
+				const value = gDraft[gid] || '';
+				const label = item.kind === 'all' ? AT_ALL : String((item.agent && item.agent.id) || '');
+				if (!label) { atClose(); return; }
+				const r = atSelect(value, { start: atState.start, end: atState.end }, label);
+				setGDraft((prev) => ({ ...prev, [gid]: r.value }));
+				try { window.localStorage.setItem('vssaros.agents.gDraft.' + gid, r.value); } catch (e) { /* ignore */ }
+				const ta = groupTaRef.current;
+				atClose();
+				// 等 React 把 value 写进 DOM 再设选区（否则 selectionStart 会被重置到末尾）
+				requestAnimationFrame(() => {
+					if (!ta) { return; }
+					try { ta.focus(); ta.setSelectionRange(r.caret, r.caret); } catch (e) { /* ignore */ }
+				});
+			};
+
+			/**
+			 * 输入框按键：返回 true = 已消费（composer 不会再当成"回车发送"）。
+			 * 覆盖三类：候选导航（↑↓/Enter/Tab/Esc）、mention 整块删除（Backspace/Delete）、IME 保护。
+			 */
+			const atKey = (ev, g) => {
+				// ⚠ 输入法组词期间**绝不能**抢键：否则打拼音时按 Enter 选词会变成"发送消息"
+				const composing = !!(ev.nativeEvent && ev.nativeEvent.isComposing);
+				if (composing) { return false; }
+				const open = atState.open && Array.isArray(atState.items) && atState.items.length > 0;
+				if (open) {
+					const n = atState.items.length;
+					const cur = atState.active || 0;
+					if (ev.key === 'ArrowDown') {
+						setAtState((s) => ({ ...s, active: (cur + 1) % n })); ev.preventDefault(); return true;
+					}
+					if (ev.key === 'ArrowUp') {
+						setAtState((s) => ({ ...s, active: (cur - 1 + n) % n })); ev.preventDefault(); return true;
+					}
+					if (ev.key === 'Enter' || ev.key === 'Tab') {
+						atChoose(atState.items[cur], g); ev.preventDefault(); return true;
+					}
+					if (ev.key === 'Escape') { atClose(); ev.preventDefault(); return true; }
+				}
+				if ((ev.key === 'Backspace' || ev.key === 'Delete') && g && g.id) {
+					const gid = String(g.id);
+					const value = gDraft[gid] || '';
+					const ta = ev.target;
+					const s = ta && Number.isInteger(ta.selectionStart) ? ta.selectionStart : value.length;
+					const e2 = ta && Number.isInteger(ta.selectionEnd) ? ta.selectionEnd : s;
+					const r = atDelete(value, atCollect(value, mentionMembersOf(g)), s, e2, ev.key);
+					if (r) {
+						setGDraft((prev) => ({ ...prev, [gid]: r.value }));
+						try { window.localStorage.setItem('vssaros.agents.gDraft.' + gid, r.value); } catch (e) { /* ignore */ }
+						requestAnimationFrame(() => {
+							try { ta.setSelectionRange(r.caret, r.caret); } catch (e) { /* ignore */ }
+						});
+						ev.preventDefault();
+						return true;
+					}
+				}
+				return false;
+			};
+
+			const sendGroupMsg = async (g, text) => {
+				const txt = String(text || '').trim();
+				/* ★ 2026-10-26：允许「只有附件」的消息（后端也放开了这条）。 */
+				const filesNow = gFiles.slice();
+				if ((!txt && !filesNow.length) || !g || !g.id) { return; }
+				/* ★ `@` 提及：把 offset 一起发给后端（后端优先用它派发；这是修掉
+				   「子串匹配误唤醒」的关键 —— `@test` 不会再命中 `@test1`）。 */
+				const members = mentionMembersOf(g);
+				const ats = atCollect(txt, members);
+				const cid = 'c' + Date.now().toString(36);
+				setGOut((prev) => [...prev, {
+					cid, gid: String(g.id), text: txt, at: Date.now(), state: 'pending', files: filesNow,
+					mentions: ats,
+				}]);
+				setGFiles([]);
+				setGUpErr('');
+				setGDraft((prev) => { const n = { ...prev }; delete n[String(g.id)]; return n; });
+				try { window.localStorage.removeItem('vssaros.agents.gDraft.' + String(g.id)); } catch (e) { /* ignore */ }
+				try {
+					const res = await fetch('/x/agents/api/groups', {
+						method: 'POST', headers: { 'content-type': 'application/json' },
+						body: JSON.stringify({
+							action: 'message', id: String(g.id), text: txt,
+							...(filesNow.length ? { files: filesNow } : {}),
+							...(ats.length ? { mentions: ats } : {}),
+						}),
+					});
+					const j = await res.json().catch(() => ({}));
+					if (!res.ok || j.ok === false) { throw new Error(j.error || ('HTTP ' + res.status)); }
+					setGOut((prev) => prev.filter((x) => x.cid !== cid));
+					setGroupsTick((t) => t + 1);
+				} catch (e) {
+					/* 失败时把附件**放回**待发列表：否则用户重试时附件没了，还得重新传一遍。 */
+					setGFiles((prev) => [...filesNow, ...prev]);
+					setGOut((prev) => prev.map((x) => (x.cid === cid
+						? { ...x, state: 'failed', err: String((e && e.message) || e) } : x)));
+				}
+			};
+			/** 重试一条失败的群消息（cid 不变，不会越点越多） */
+			const retryGroupMsg = (cid) => {
+				const hit = gOut.find((x) => x.cid === cid);
+				if (!hit) { return; }
+				const g = groups.find((x) => x.id === hit.gid);
+				setGOut((prev) => prev.filter((x) => x.cid !== cid));
+				if (g) { void sendGroupMsg(g, hit.text); }
+			};
+
+			/** 时间分隔文案（对齐 DSB 的 `separatorLabel`：今天只给时间，更早给"昨天/日期 + 时间"） */
+			const sepLabelOf = (at) => {
+				const d = new Date(at || Date.now());
+				const n = new Date();
+				const hm = ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
+				if (d.toDateString() === n.toDateString()) { return hm; }
+				const y = new Date(n.getTime() - 86400000);
+				if (d.toDateString() === y.toDateString()) { return '昨天 ' + hm; }
+				return (d.getMonth() + 1) + '月' + d.getDate() + '日 ' + hm;
+			};
+			/**
+			 * 群消息行 —— **与 `lib/core/groupChat.js` 的 `chatRows` 逐字同构**（2026-10-26 收敛）。
+			 *
+			 * 为什么不是直接 import：本文件是宿主 chunk，跑在 `__ModuleLoader__` 里，
+			 * 拿不到本地模块（`require` 只给 react 等宿主模块）。
+			 * ⇒ React 侧保留这份同构实现，**由 `p3-190` 用同一组夹具比对两边结果**防漂移。
+			 *   改这里的口径时，必须同步改 `core/groupChat.js`，否则 p3-190 立刻红。
+			 */
+			const groupRows = (list, mentionPool) => {
+				const GROUP_MS = 300000;        // 相邻 ≤5 分钟成组（DSB 的 GROUP_MS）
+				const SEPARATOR_MS = 1800000;   // 距上一条 ≥30 分钟插分隔（DSB 的 SEPARATOR_MS）
+				const GROUP_MAX = 8;            // 每组 ≤8 条（我们自己的上限）
+				const dayKeyOf = (at) => {
+					const d = new Date(at);
+					return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate();
+				};
+				const out = [];
+				let prev = null;
+				let groupN = 0;
+				let lastDay = '';
+				for (let i = 0; i < list.length; i += 1) {
+					const m = list[i] || {};
+					const at = Number(m.at) || 0;
+					const isSystem = String(m.role || '') === 'system';
+					const isMe = String(m.role || '') === 'user';
+					const who = isMe ? '__me' : String(m.agentId || m.role || '');
+					const dk = dayKeyOf(at);
+					const crossDay = dk !== lastDay;
+					const bigGap = !!prev && (at - prev.at) >= SEPARATOR_MS;
+
+					// 分隔：跨天 或 距上一条 ≥30 分钟（系统消息不参与，免得把提示前后切成两段）
+					if (!isSystem && (crossDay || bigGap)) {
+						out.push(h('div', { className: 'ag3-gsep', key: 'sep' + i }, sepLabelOf(at)));
+						lastDay = dk;
+						prev = null;
+						groupN = 0;
+					}
+					if (isSystem) {
+						out.push(h('div', { className: 'ag3-gsys', key: 'sys' + i }, String(m.text || '')));
+						prev = null;
+						groupN = 0;
+						continue;
+					}
+
+					const gap = prev ? (at - prev.at) : 1e9;
+					const grp = !!prev && prev.who === who && gap >= 0 && gap <= GROUP_MS && groupN < GROUP_MAX;
+					if (!grp) { groupN = 0; }
+					groupN += 1;
+					const a = isMe ? null : agents.find((x) => x.id === who);
+					const name = isMe ? '你' : String((a && a.name) || who);
+					out.push(h('div', {
+						key: 'm' + i,
+						className: 'ag3-gmsg' + (isMe ? ' is-me' : '') + (grp ? ' is-grp' : '')
+							+ (m.state === 'failed' ? ' is-fail' : '') + (m.state === 'pending' ? ' is-pend' : ''),
+					},
+						h('div', { className: 'ag3-gav' + (grp ? ' is-hidden' : '') }, name.slice(0, 1)),
+						h('div', { className: 'ag3-gcol' },
+							grp ? null : h('div', { className: 'ag3-gwho' }, name),
+							h('div', { className: 'ag3-gbub' + (String(m.text || '') ? '' : ' is-fileonly') },
+								/* @ 提及高亮（2026-10-26）：消息自带 `mentions[]` 就用它（带 offset 校验），
+								   否则按本群成员**从文本反扫** ⇒ 老消息也能正常高亮。 */
+								...(atRuns(String(m.text || ''),
+									(Array.isArray(m.mentions) && m.mentions.length)
+										? m.mentions
+										: atCollect(String(m.text || ''), mentionPool || []))
+									.map((run, ri) => (run.mention
+										? h('span', {
+											key: 'r' + ri,
+											className: 'ag3-gat' + (run.mention.kind === 'all' ? ' is-all' : ''),
+											'data-ag-mention': String(run.mention.agentId || run.mention.label || ''),
+											title: run.mention.kind === 'all' ? '发给全群' : String(run.mention.label || ''),
+										}, run.text)
+										: run.text))),
+								/* 附件（2026-10-26）：图片给缩略图（点开看原图），其它给文件卡片。
+								   href 直接用 GET /api/group-file?id= —— 服务端已按 mime 设 content-type，
+								   浏览器的 <img>/下载 都能直接用，不需要再转 base64。 */
+								(Array.isArray(m.files) && m.files.length)
+									? h('div', { className: 'ag3-gfiles' }, m.files.map((f, fi) => {
+										const url = '/x/agents/api/group-file?id=' + encodeURIComponent(String(f.id || ''));
+										const isImg = /^image\//i.test(String(f.mime || ''));
+										const sizeTxt = (Number(f.size) || 0) >= 1048576
+											? ((Number(f.size) / 1048576).toFixed(1) + 'MB')
+											: (Math.max(1, Math.round((Number(f.size) || 0) / 1024)) + 'KB');
+										return isImg
+											? h('a', {
+												key: 'f' + fi, className: 'ag3-gimg-a', href: url, target: '_blank', rel: 'noreferrer',
+												title: String(f.name || '图片') + ' · ' + sizeTxt, 'data-ag-attach': String(f.id || ''),
+											}, h('img', { className: 'ag3-gimg', src: url, alt: String(f.name || '图片'), loading: 'lazy' }))
+											: h('a', {
+												key: 'f' + fi, className: 'ag3-gfile', href: url, target: '_blank', rel: 'noreferrer',
+												title: String(f.name || '文件') + ' · ' + sizeTxt, 'data-ag-attach': String(f.id || ''),
+											}, h('span', { className: 'ag3-gfile-ic' }, '📄'),
+											h('span', { className: 'ag3-gfile-n' }, String(f.name || '文件')),
+											h('span', { className: 'ag3-gfile-s' }, sizeTxt));
+									}))
+									: null),
+							m.state === 'failed'
+								? h('div', { className: 'ag3-gfail' },
+									h('span', null, '未发送 · ' + String(m.err || '网络错误')),
+									h('button', {
+										type: 'button', className: 'wb-btn is-ghost ag3-mini', 'data-ag-act': 'group-retry',
+										onClick: () => retryGroupMsg(m.cid),
+									}, '重试'))
+								: null,
+							m.state === 'pending' ? h('div', { className: 'ag3-gpend' }, '发送中…') : null)));
+					prev = { at, who };
+				}
+				return out;
+			};
+
+			/**
+			 * 群聊中间栏（2026-10-26 重写，对齐 DeepSeekBot 的 `message-groups.ts`）：
+			 *   · 消息按 **5 分钟成组**（同作者连续），只首条显示名字/头像
+			 *   · 距上一条 **≥30 分钟**或**跨天** ⇒ 插时间分隔
+			 *   · 右对齐自己的、左对齐成员的，各自有头像
+			 *   · 本地 pending / failed 追加在末尾（failed 可点重试）
+			 */
 			const midGroup = (g) => {
-				const msgs = Array.isArray(g.transcript) ? g.transcript : [];
+				const raw = Array.isArray(g.transcript) ? g.transcript : [];
+				// 服务端消息 + 本地待发送/失败（只取这个群的）
+				const mine = gOut.filter((x) => x.gid === String(g.id));
+				const rows = raw.map((m) => ({
+					at: Number(m.at) || 0,
+					text: String(m.text || m.content || ''),
+					role: String(m.role || 'member'),
+					agentId: String(m.agentId || m.name || ''),
+					files: Array.isArray(m.files) ? m.files : [],
+					state: '',
+				})).concat(mine.map((x) => ({
+					at: x.at, text: x.text, role: 'user', agentId: '', state: x.state, cid: x.cid, err: x.err,
+					files: Array.isArray(x.files) ? x.files : [],
+				})));
 				return h('div', { className: 'ag3-m', 'data-ag-mid': 'group' },
 					h('div', { className: 'ag3-mhd' },
 						h('span', { className: 'ag-gmark' }, '#'),
@@ -937,19 +1540,64 @@ window.__ModuleLoader__.load({
 							h('div', { className: 'ag3row-l1' },
 								h('span', { className: 'ag3-mname', 'data-ag-file-name': String(g.name || g.id || '') }, String(g.name || g.id || '?')),
 								h('span', { className: 'wb-badge' }, String(g.mode || 'open'))),
-							h('div', { className: 'ag3row-l2' }, (Array.isArray(g.members) ? g.members.length : 0) + ' 位成员 · ' + msgs.length + ' 条消息')),
+							h('div', { className: 'ag3row-l2' }, (Array.isArray(g.members) ? g.members.length : 0) + ' 位成员 · ' + rows.length + ' 条消息')),
 						h('span', { className: 'wb-spacer' }),
-						h('button', { type: 'button', className: 'wb-btn', 'data-ag-act': 'group-invite', onClick: () => openModuleRoute('/x/agents/group/' + encodeURIComponent(String(g.id || '')), '群设置') }, '邀请成员'),
-						h('button', { type: 'button', className: 'wb-btn is-ghost', 'data-ag-act': 'group-settings', onClick: () => openModuleRoute('/x/agents/group/' + encodeURIComponent(String(g.id || '')), '群设置') }, '群设置')),
-					h('div', { className: 'ag3-mlist', 'data-ag-midlist': 'group' },
-						msgs.length
-							? msgs.slice(-30).map((m, i) => h('div', { key: 'm' + i, className: 'ag3-msg' },
-								h('div', { className: 'ag3-msg-who' }, String(m.who || m.role || m.agentId || '·')),
-								h('div', { className: 'ag3-msg-b' }, String(m.text || m.content || '').slice(0, 500))))
-							: h('p', { className: 'wb-empty', 'data-ag-mid-empty': '' }, '群里还没有消息。')),
+						/* ★ 2026-10-26：两个按钮都改成**页内二级页**（原来走 openModuleRoute ⇒ 新 webview
+						   ⇒ 真机 `emulate timeout` ⇒ 黑屏）。邀请成员 = 同一个设置页（成员区在最下面）。 */
+						h('button', { type: 'button', className: 'wb-btn', 'data-ag-act': 'group-invite', onClick: () => openGroupSet(g) }, '邀请成员'),
+						h('button', { type: 'button', className: 'wb-btn is-ghost', 'data-ag-act': 'group-settings', onClick: () => openGroupSet(g) }, '群设置')),
+					h('div', { className: 'ag3-mlist', 'data-ag-midlist': 'group', 'data-ag-gcount': String(rows.length) },
+						rows.length
+							? groupRows(rows, mentionMembersOf(g))
+							: h('p', { className: 'wb-empty', 'data-ag-mid-empty': '' }, '群里还没有消息 —— 在下面发一句开始。')),
+					/* 待发送附件（2026-10-26）：上传成功的先排成一行 chip，可单个移除。
+					   `gUpBusy` 时显示「上传中…」，失败显示原因（不是静默）。 */
+					(gFiles.length || gUpBusy || gUpErr)
+						? h('div', { className: 'ag3-gup', 'data-ag-gup': String(gFiles.length) },
+							gUpBusy ? h('span', { className: 'ag3-gup-chip is-busy', 'data-ag-gup-busy': '' }, '上传中…') : null,
+							...gFiles.map((f, i) => h('span', { className: 'ag3-gup-chip', key: 'u' + i },
+								/^image\//i.test(String(f.mime || '')) ? '🖼 ' : '📄 ',
+								h('span', { className: 'ag3-gup-name' }, String(f.name || '附件')),
+								h('button', {
+									type: 'button', className: 'ag3-gup-x', 'data-ag-act': 'group-remove-file',
+									'aria-label': '移除附件', title: '移除这个附件',
+									onClick: () => setGFiles((prev) => prev.filter((x) => x.id !== f.id)),
+								}, '✕'))),
+							gUpErr ? h('span', { className: 'ag3-gup-err', 'data-ag-gup-err': '' }, '⚠ ' + gUpErr) : null)
+						: null,
+					// 隐藏的 file input：点 composer 的「＋」时由 gPickRef 触发
+					h('input', {
+						key: 'gpick', type: 'file', multiple: true, className: 'ag3-gpick',
+						ref: gPickRef, 'data-ag-act': 'group-file-input', 'aria-hidden': 'true', tabIndex: -1,
+						onChange: (ev) => {
+							const list = ev.target.files ? Array.from(ev.target.files) : [];
+							ev.target.value = '';   // 清空才能重复选同一个文件
+							for (const f of list) { void uploadGroupFile(g, f); }
+						},
+					}),
+					// ★ 发送**就在这里发**（原来接的是 openModuleRoute「跳去群聊页」，等于发不出去）
 					composer('发消息…', 'group-send',
-						() => openModuleRoute('/x/agents/group/' + encodeURIComponent(String(g.id || '')), '群聊'),
-						'群聊 · ' + String(g.mode || 'open')));
+						() => { void sendGroupMsg(g, gDraft[String(g.id)] || ''); },
+						gFiles.length ? ('群聊 · ' + String(g.mode || 'open') + ' · ' + gFiles.length + ' 个附件') : ('群聊 · ' + String(g.mode || 'open')),
+						{
+							value: gDraft[String(g.id)] || '',
+							taRef: groupTaRef,
+							/* `@` 提及：候选浮层 + 键盘（↑↓/Enter/Tab/Esc）+ Backspace 整块删 */
+							at: atState,
+							onKeyDown: (ev) => atKey(ev, g),
+							onAtChoose: (item) => atChoose(item, g),
+							onChange: (ev) => {
+								const v = ev.target.value;
+								const gid = String(g.id);
+								setGDraft((prev) => { const n = { ...prev }; n[gid] = v; return n; });
+								try { window.localStorage.setItem('vssaros.agents.gDraft.' + gid, v); } catch (e) { /* ignore */ }
+								// ⚠ caret 必须从**事件**里取：state 里的 value 比 DOM 慢一帧，算出来会错位
+								const caret = Number.isInteger(ev.target.selectionStart) ? ev.target.selectionStart : v.length;
+								atSync(v, caret, g);
+							},
+							// 「＋」= 选附件（不传的话点＋会直接发消息，那是旧行为）
+							onPick: () => { try { if (gPickRef.current) { gPickRef.current.click(); } } catch (e) { /* ignore */ } },
+						}));
 			};
 
 			/* ══════ 右栏 320：5 个子 tab ══════ */
@@ -1070,12 +1718,17 @@ window.__ModuleLoader__.load({
 					//   ⚠ 右栏只有 320 宽 ⇒ 用**图标 + title**，不写中文（否则会挤掉"会话 N"）。
 					curAgent ? h('button', {
 						type: 'button', className: 'wb-btn is-ghost ag3-hbtn', 'data-ag-act': 'delegate',
-						title: '委派任务', 'aria-label': '委派任务',
-						onClick: () => openModuleRoute('/x/agents/', '委派任务'),
+						// ★ 2026-10-26 用户确认：右栏用**图标**不写中文（320 宽，文字会挤掉「会话 N」）。
+						//   `data-tip` 走 CSS tooltip（悬停 0ms 出现）；`title`/`aria-label` 保留给
+						//   原生提示与读屏（三者都留，缺一个都会让"图标按钮"变得不可发现/不可读）。
+						title: '委派任务（切到「委派」页签）', 'aria-label': '委派任务', 'data-tip': '委派任务',
+						/* ★ 2026-10-26：原来跳完整页（新开 webview）。工作台**本来就有**「委派」页签
+						   ⇒ 直接切页签，零新窗口、零加载等待。 */
+						onClick: () => setTab('assign'),
 					}, '⇄') : null,
 					curAgent ? h('button', {
 						type: 'button', className: 'wb-btn is-ghost ag3-hbtn', 'data-ag-act': 'settings',
-						title: 'Agent 设置（站内弹层，不开编辑器）', 'aria-label': 'Agent 设置',
+						title: 'Agent 设置（站内弹层，不开编辑器）', 'aria-label': 'Agent 设置', 'data-tip': 'Agent 设置',
 						onClick: () => setSettingFor(curAgent.id),
 					}, gearIcon()) : null,
 					h('span', { className: 'wb-spacer' }),
@@ -1630,8 +2283,12 @@ window.__ModuleLoader__.load({
 								h('span', { className: 'wb-spacer' }),
 								h('button', {
 									type: 'button', className: 'wb-btn is-ghost ag3-mini', 'data-ag-act': 'settings-goto-group',
-									onClick: () => openModuleRoute('/x/agents/group', '群聊页'),
-								}, '去群聊页 ↗'))),
+									/* ★ 2026-10-26：改成"在左栏选中这个群"（零新窗口），不再跳独立群聊页 */
+									onClick: () => {
+										setSettingFor('');
+										setSel({ kind: 'group', id: String(g.id) });
+									},
+								}, '打开这个群 →'))),
 							h('div', { className: 'ag2-row' },
 								h('button', {
 									type: 'button', className: 'wb-btn is-ghost', 'data-ag-act': 'settings-channel-reload',
@@ -1682,85 +2339,20 @@ window.__ModuleLoader__.load({
 						bodyOf()));
 			};
 
-			const rosterPane = () => {
-				// 二级页面优先：有 settingFor 就整块内容区换成设置页
-				if (settingFor) { return settingPage(); }
-				if (view.status === 'loading' && !data) { return h('p', { className: 'wb-empty', 'data-ag-state': 'loading' }, '正在读取名册…'); }
-				if (!visible.length && !groups.length) {
-					return h('p', { className: 'wb-empty', 'data-ag-empty': '' }, agents.length ? '没有匹配的 agent。' : '还没有可用的 agent（每个子目录需要一个带 name 的 .agent.md）。');
-				}
-				return h('div', { className: 'ag3' },
-					leftPane,
-					sel.kind === 'group'
-						? (curGroup ? midGroup(curGroup) : h('div', { className: 'ag3-m' }, h('p', { className: 'wb-empty' }, '这个群不存在了。')))
-						: (curAgent ? midAgent(curAgent) : h('div', { className: 'ag3-m' }, h('p', { className: 'wb-empty' }, '左边选一个 agent 或群聊。'))),
-					rightPane);
-			};
-
-			return h('div', { className: 'wb wb-ag', 'data-vssaros-page': 'agents', 'data-vssaros-surface': 'workbench' },
-				h('header', { className: 'wb-toolbar', 'data-dsh-workbench-toolbar': '' },
-					h('h1', null, 'Bots'),
-					h('span', { className: 'wb-sub' }, data
-						? agents.length + ' 个 · 已注册 ' + registeredCount + ' / 花名册 ' + roster.length + ' · 群聊 ' + groups.length
-						: '只读'),
-					h('span', { className: 'wb-spacer' }),
-					/* ★ 2026-10-25 用户报「缺少创建 agent、创建群聊按钮」：
-					   分组标题右边那个 22px 的「＋」在小屏/21 个 bot 时太容易被忽略 ⇒
-					   工具栏再给两个**文字按钮**（主入口），分组那个「＋」保留做就近操作。
-					   两个都用同一组 `data-ag-act`（`create-agent` / `create-group`）—— 处理函数只有一份。 */
-					tab === 'roster' ? h('button', {
-						type: 'button', className: 'wb-btn is-primary', 'data-ag-act': 'create-agent',
-						title: '新建 Bot（写一个 .agent.md）',
-						onClick: () => openCreate('agent'),
-					}, '＋ Bot') : null,
-					tab === 'roster' ? h('button', {
-						type: 'button', className: 'wb-btn', 'data-ag-act': 'create-group',
-						title: '新建群聊（选成员 + 模式）',
-						onClick: () => openCreate('group'),
-					}, '＋ 群聊') : null,
-					tab === 'roster' ? h('input', {
-						className: 'wb-input ag-search', value: q, placeholder: '筛选', 'aria-label': '筛选 agent',
-						'data-ag-search': '', onChange: (ev) => setQ(ev.target.value),
-					}) : null,
-					h('button', {
-						type: 'button', className: 'wb-btn ag-refresh' + (refreshing ? ' is-busy' : ''),
-						'data-ag-act': 'refresh', 'aria-busy': refreshing ? 'true' : 'false', disabled: refreshing,
-						title: refreshing ? '正在刷新…' : '重新读取（GET /x/agents/api/home）',
-						onClick: () => { void load(); setGroupsTick((t) => t + 1); },
-					}, refreshing ? '⟳ 刷新中…' : '⟳ 刷新'),
-					h('button', {
-						type: 'button', className: 'wb-btn is-primary', 'data-ag-act': 'full',
-						title: '写动作（回滚 / 提交快照 / 改审批模板 / 建群）仍在完整页',
-						onClick: () => openModuleRoute('/x/agents/', '完整页'),
-					}, '完整页 ↗')),
-				// T3 页签（4 个）
-				h('nav', { className: 'ag3-tabs', role: 'tablist', 'data-ag-tabs': '' },
-					TABS.map(t => h('button', {
-						key: t.k, type: 'button', role: 'tab', 'data-ag-tab': t.k,
-						'aria-selected': tab === t.k ? 'true' : 'false',
-						className: 'ag3-tab' + (tab === t.k ? ' is-on' : ''),
-						onClick: () => setTab(t.k),
-					}, t.icon + ' ' + t.label,
-						t.k === 'roster' ? h('span', { className: 'ag3-tabn' }, String(agents.length)) : null,
-						t.k === 'assign' && tabView.data && tabView.data.running ? h('span', { className: 'ag3-tabn' }, String(tabView.data.running)) : null))),
-				tab !== 'roster' && tabView.status === 'loading' ? h('p', { className: 'wb-empty', 'data-ag-state': 'loading' }, '正在读取…') : null,
-				tab !== 'roster' && tabView.status === 'error' ? h('p', { className: 'wb-empty', 'data-ag-state': 'error', role: 'alert' }, '读取失败：' + tabView.error) : null,
-				tab === 'usage' && tabView.status === 'ready' ? usagePanel() : null,
-				tab === 'assign' && tabView.status === 'ready' ? assignPanel() : null,
-				tab === 'auth' && tabView.status === 'ready' ? authPanel() : null,
-				view.status === 'error'
-					? h('p', { className: 'wb-empty', 'data-ag-state': 'error', role: 'alert' }, '读取失败：' + view.error)
-					: null,
-				tab === 'roster' && data && data.missing ? h('p', { className: 'wb-empty' }, 'agent 目录还不存在：', h('code', null, data.missing)) : null,
-				tab === 'roster' ? rosterPane() : null,
-
-				/* ── 创建 Bot / 新建群聊 弹层（站内，不开编辑器）────────────────── */
-				creating ? h('div', { className: 'ag3-mask', 'data-ag-create': creating, onClick: closeCreate },
-					h('div', { className: 'ag3-dlg', onClick: (ev) => ev.stopPropagation() },
-						h('div', { className: 'ag3-dlg-hd' },
-							h('b', null, creating === 'group' ? '新建群聊' : '新建 Bot'),
-							h('span', { className: 'wb-spacer' }),
-							h('button', { type: 'button', className: 'wb-btn is-ghost ag3-mini', 'data-ag-act': 'create-close', onClick: closeCreate }, '✕')),
+			/* ★ 2026-10-26 用户要求：「新建 bot」的面板作为**二级页面**展示。
+			   和 `settingFor`（Agent 设置）同一模式：`rosterPane()` 里优先返回它，
+			   整块内容区切换（三栏让位），顶部一条「← 返回」。
+			   ⚠ 表单本体沿用原来的 81 行（只换了外壳），避免重写字段逻辑出错。 */
+			const createPage = () => (
+				h('div', { className: 'ag3-sub', 'data-ag-create': creating, 'data-ag-subpage': 'create' },
+					h('div', { className: 'ag3-subinner' },
+						h('div', { className: 'ag3-dlg-hd ag3-subhd' },
+							h('button', {
+								type: 'button', className: 'wb-btn is-ghost', 'data-ag-act': 'create-close',
+								title: '返回名册', onClick: closeCreate,
+							}, '← 返回'),
+							h('b', null, creating === 'group' ? '新建群聊' : '新建 bot'),
+							h('span', { className: 'wb-spacer' })),
 						h('div', { className: 'ag3-dlg-bd' },
 							h('label', { className: 'ag3-field' },
 								h('span', null, '名字'),
@@ -1836,7 +2428,208 @@ window.__ModuleLoader__.load({
 								disabled: createBusy, onClick: () => { void submitCreate(); },
 							}, createBusy ? '创建中…' : '创建'),
 							h('button', { type: 'button', className: 'wb-btn is-ghost', onClick: closeCreate }, '取消'))))
+			);
+
+			/* ══ 群设置 = 二级页面（2026-10-26）═══════════════════════════════════════
+			   为什么从「开编辑器页」改成「页内二级页」：
+			     原来「群设置 / 邀请成员」→ `openModuleRoute('/x/agents/group/<id>')` → 宿主新建 webview。
+			     真机日志显示该 webview `emulate prefers-color-scheme failed … emulate timeout`（没就绪）
+			     ⇒ 用户看到**黑屏**；同一个 webview 若再被复制一份，整机还会出现 exit code=1。
+			   现在：零新窗口 / 零新 WebContents，能力不减（改名 / 策略 / 成员增删 / 删群全走 /api/groups）。
+			   保留「打开完整群聊页 ↗」作为逃生通道（历史消息全文、附件管理等 SSR 侧能力在那边）。 */
+
+			/** 调一次 `/api/groups` 的写动作；失败按后端给的 message 抛。 */
+			const postGroupAction = async (body) => {
+				const res = await fetch('/x/agents/api/groups', {
+					method: 'POST', headers: { 'content-type': 'application/json' },
+					body: JSON.stringify(body),
+				});
+				const j = await res.json().catch(() => ({}));
+				if (!res.ok || j.ok === false) { throw new Error(j.error || ('HTTP ' + res.status)); }
+				return j;
+			};
+
+			/** 进群设置页：把该群当前值灌进表单（避免"打开看到的是上一个群"） */
+			const openGroupSet = (g) => {
+				if (!g || !g.id) { return; }
+				setGroupSetFor(String(g.id));
+				setGsName(String(g.name || g.id));
+				setGsMode(String(g.mode || 'all'));
+				setGsErr(''); setGsOk('');
+			};
+
+			/** 统一包一层 busy/错误/成功提示；成功后触发群清单刷新。 */
+			const runGroupAction = async (body, okText) => {
+				setGsBusy(true); setGsErr(''); setGsOk('');
+				try {
+					await postGroupAction(body);
+					setGsOk(okText || '已保存');
+					setGroupsTick((t) => t + 1);
+					return true;
+				} catch (e) {
+					setGsErr(String((e && e.message) || e));
+					return false;
+				} finally {
+					setGsBusy(false);
+				}
+			};
+
+			const groupSetPage = () => {
+				const t = groups.find((x) => String(x.id) === String(groupSetFor));
+				const back = h('button', {
+					type: 'button', className: 'wb-btn is-ghost', 'data-ag-act': 'group-set-back',
+					onClick: () => setGroupSetFor(''),
+				}, '← 返回');
+				if (!t) {
+					return h('div', { className: 'ag3-sub', 'data-ag-gset': 'missing' },
+						h('div', { className: 'ag3-subinner' }, back,
+							h('p', { className: 'wb-empty' }, '这个群不存在了（可能已被删除）。')));
+				}
+				const members = Array.isArray(t.members) ? t.members.map(String) : [];
+				const MODES = [['all', '全员派发'], ['mentions', '仅 @ 派发'], ['digest', '汇总派发'], ['silent', '静默收件']];
+				return h('div', { className: 'ag3-sub', 'data-ag-gset': String(t.id) },
+					h('div', { className: 'ag3-subinner' },
+						h('div', { className: 'ag3-dlg-hd ag3-subhd' },
+							back,
+							h('b', null, '群设置 · ' + String(t.name || t.id)),
+							h('span', { className: 'wb-spacer' }),
+							h('button', {
+								type: 'button', className: 'wb-btn is-ghost', 'data-ag-act': 'group-set-full',
+								onClick: () => openModuleRoute('/x/agents/group/' + encodeURIComponent(String(t.id)), '群聊页'),
+							}, '打开完整群聊页 ↗')),
+						gsErr ? h('p', { className: 'ag2-err', 'data-ag-gset-err': '' }, '⚠ ' + gsErr) : null,
+						gsOk ? h('p', { className: 'ag2-ok', 'data-ag-gset-ok': '' }, '✓ ' + gsOk) : null,
+						h('label', { className: 'ag3-field' },
+							h('span', null, '群名'),
+							h('input', {
+								className: 'wb-input', value: gsName, 'data-ag-gset-name': '',
+								onChange: (ev) => setGsName(ev.target.value),
+							})),
+						h('label', { className: 'ag3-field' },
+							h('span', null, '唤醒策略'),
+							h('select', {
+								className: 'wb-input', value: gsMode, 'data-ag-gset-mode': '',
+								onChange: (ev) => setGsMode(ev.target.value),
+							}, MODES.map(([v, label]) => h('option', { key: v, value: v }, label)))),
+						h('div', { className: 'ag3-field' },
+							h('button', {
+								type: 'button', className: 'wb-btn is-primary', 'data-ag-act': 'group-set-save',
+								disabled: gsBusy,
+								onClick: async () => {
+									// 改名与改策略是两个 action ⇒ 分别发；任一失败都会有红字（不静默）
+									const okName = await runGroupAction({ action: 'rename', id: String(t.id), name: gsName }, '名称已保存');
+									if (okName && String(t.mode || 'all') !== gsMode) {
+										await runGroupAction({ action: 'mode', id: String(t.id), mode: gsMode }, '已保存');
+									}
+								},
+							}, gsBusy ? '保存中…' : '保存名称与策略')),
+						h('div', { className: 'ag3-field' },
+							h('span', null, '成员（' + members.length + '）'),
+							h('div', { className: 'ag3-members', 'data-ag-gset-members': '' },
+								agents.filter((x) => x.registered).map((x) => {
+									const on = members.includes(String(x.id));
+									return h('label', { key: x.id, className: 'ag3-member' + (on ? ' is-on' : '') },
+										h('input', {
+											type: 'checkbox', checked: on, 'data-ag-gset-member': x.id,
+											disabled: gsBusy,
+											onChange: (ev) => {
+												const want = ev.target.checked;
+												void runGroupAction(
+													want
+														? { action: 'invite', id: String(t.id), members: [String(x.id)] }
+														: { action: 'remove', id: String(t.id), member: String(x.id) },
+													want ? ('已加入 ' + String(x.name || x.id)) : ('已移出 ' + String(x.name || x.id)),
+												);
+											},
+										}),
+										h('span', null, String(x.name || x.id)));
+								}))),
+						h('div', { className: 'ag3-field' },
+							h('button', {
+								type: 'button', className: 'wb-btn is-ghost', 'data-ag-act': 'group-set-delete',
+								disabled: gsBusy,
+								onClick: async () => {
+									const yes = (() => { try { return window.confirm('删除群「' + String(t.name || t.id) + '」？消息记录会一起删除，不可恢复。'); } catch (e) { return false; } })();
+									if (!yes) { return; }
+									const ok = await runGroupAction({ action: 'delete', id: String(t.id) }, '已删除');
+									if (ok) { setGroupSetFor(''); }
+								},
+							}, '删除这个群'),
+							h('span', { className: 'ag-hint' }, ' 删除后不可恢复；只想清理成员请用上面的勾选。')),
+					));
+			};
+
+			const rosterPane = () => {
+				// 二级页面优先：有 settingFor 就整块内容区换成设置页
+				if (settingFor) { return settingPage(); }
+				// 群设置也是二级页（2026-10-26）：不再新开 webview（那是黑屏的根因）
+				if (groupSetFor) { return groupSetPage(); }
+				// 创建 bot / 新建群聊也是**二级页面**（2026-10-26）：整块让位，返回名册
+				if (creating) { return createPage(); }
+				if (view.status === 'loading' && !data) { return h('p', { className: 'wb-empty', 'data-ag-state': 'loading' }, '正在读取名册…'); }
+				if (!visible.length && !groups.length) {
+					return h('p', { className: 'wb-empty', 'data-ag-empty': '' }, agents.length ? '没有匹配的 agent。' : '还没有可用的 agent（每个子目录需要一个带 name 的 .agent.md）。');
+				}
+				return h('div', { className: 'ag3' },
+					leftPane,
+					sel.kind === 'group'
+						? (curGroup ? midGroup(curGroup) : h('div', { className: 'ag3-m' }, h('p', { className: 'wb-empty' }, '这个群不存在了。')))
+						: (curAgent ? midAgent(curAgent) : h('div', { className: 'ag3-m' }, h('p', { className: 'wb-empty' }, '左边选一个 agent 或群聊。'))),
+					rightPane);
+			};
+
+			return h('div', { className: 'wb wb-ag', 'data-vssaros-page': 'agents', 'data-vssaros-surface': 'workbench' },
+				h('header', { className: 'wb-toolbar', 'data-dsh-workbench-toolbar': '' },
+					h('h1', null, 'Bots'),
+					h('span', { className: 'wb-sub' }, data
+						? agents.length + ' 个 · 已注册 ' + registeredCount + ' / 花名册 ' + roster.length + ' · 群聊 ' + groups.length
+						: '只读'),
+					h('span', { className: 'wb-spacer' }),
+					/* ★ 2026-10-26 用户要求：创建入口**移进名册页**（左栏顶部），不占工具栏。
+					   （原来这里是 `＋ Bot` / `＋ 群聊` 两个文字按钮 —— 那是 2026-10-25 为
+					     "入口太隐蔽"加的；现在统一收到 `leftPane` 顶部，工具栏只留刷新/完整页。） */
+					tab === 'roster' ? h('input', {
+						className: 'wb-input ag-search', value: q, placeholder: '筛选', 'aria-label': '筛选 agent',
+						'data-ag-search': '', onChange: (ev) => setQ(ev.target.value),
+					}) : null,
+					h('button', {
+						type: 'button', className: 'wb-btn ag-refresh' + (refreshing ? ' is-busy' : ''),
+						'data-ag-act': 'refresh', 'aria-busy': refreshing ? 'true' : 'false', disabled: refreshing,
+						title: refreshing ? '正在刷新…' : '重新读取（GET /x/agents/api/home）',
+						onClick: () => { void load(); setGroupsTick((t) => t + 1); },
+					}, refreshing ? '⟳ 刷新中…' : '⟳ 刷新'),
+					h('button', {
+						type: 'button', className: 'wb-btn is-primary', 'data-ag-act': 'full',
+						title: '写动作（回滚 / 提交快照 / 改审批模板 / 建群）仍在完整页',
+						onClick: () => openModuleRoute('/x/agents/', '完整页'),
+					}, '完整页 ↗')),
+				// T3 页签（4 个）
+				h('nav', { className: 'ag3-tabs', role: 'tablist', 'data-ag-tabs': '' },
+					TABS.map(t => h('button', {
+						key: t.k, type: 'button', role: 'tab', 'data-ag-tab': t.k,
+						'aria-selected': tab === t.k ? 'true' : 'false',
+						className: 'ag3-tab' + (tab === t.k ? ' is-on' : ''),
+						onClick: () => setTab(t.k),
+					}, t.icon + ' ' + t.label,
+						t.k === 'roster' ? h('span', { className: 'ag3-tabn' }, String(agents.length)) : null,
+						t.k === 'assign' && tabView.data && tabView.data.running ? h('span', { className: 'ag3-tabn' }, String(tabView.data.running)) : null))),
+				tab !== 'roster' && tabView.status === 'loading' ? h('p', { className: 'wb-empty', 'data-ag-state': 'loading' }, '正在读取…') : null,
+				tab !== 'roster' && tabView.status === 'error' ? h('p', { className: 'wb-empty', 'data-ag-state': 'error', role: 'alert' }, '读取失败：' + tabView.error) : null,
+				tab === 'usage' && tabView.status === 'ready' ? usagePanel() : null,
+				tab === 'assign' && tabView.status === 'ready' ? assignPanel() : null,
+				tab === 'auth' && tabView.status === 'ready' ? authPanel() : null,
+				view.status === 'error'
+					? h('p', { className: 'wb-empty', 'data-ag-state': 'error', role: 'alert' }, '读取失败：' + view.error)
 					: null,
+				tab === 'roster' && data && data.missing ? h('p', { className: 'wb-empty' }, 'agent 目录还不存在：', h('code', null, data.missing)) : null,
+				tab === 'roster' ? rosterPane() : null,
+
+				/* ── 创建 bot / 新建群聊 = **二级页面**（2026-10-26 用户要求）────────
+				   原来是 `ag3-mask` 居中弹层（点遮罩关闭）。现在改成占满内容区的二级页：
+				     · 容器 `ag3-sub`（不再 fixed 遮罩、点外部不关）
+				     · 顶部一条 header：「← 返回」+ 标题
+				     · 表单区 `ag3-subbd` 直接铺开（原来是窄弹窗，字段挤在一列）
+				   ⚠ 表单本体一个字没改 —— 只换了外壳，避免重写 81 行字段逻辑出错。 */
 				data && (data.errors || []).length
 					? h('p', { className: 'wb-diag' }, (data.errors || []).slice(0, 3).join('；'))
 					: null,
@@ -2117,6 +2910,144 @@ window.__ModuleLoader__.load({
   color:var(--dsw-alias-label-primary, inherit); font-family:var(--wb-font-mono, ui-monospace, Consolas, monospace); }
 .ag2-skill-d { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
   color:var(--dsw-alias-label-tertiary, rgba(230,230,230,.6)); }
+
+/* ── 群聊消息（2026-10-26 复刻 DeepSeekBot 的 message-groups / message-bubble）──
+   5 分钟成组（组内隐藏头像与名字、上方圆角收紧）+ ≥30 分钟插时间分隔 + failed 可重试。 */
+.ag3-gmsg { display:flex; gap:8px; align-items:flex-start; margin-top:3px; }
+.ag3-gmsg.is-grp { margin-top:-6px; }
+.ag3-gmsg.is-me { flex-direction:row-reverse; }
+.ag3-gav { width:26px; height:26px; border-radius:8px; flex:0 0 26px; display:flex; align-items:center;
+  justify-content:center; font-size:11px; font-weight:600;
+  color:var(--dsw-alias-label-primary, #fff);
+  background:var(--dsw-alias-bg-module-platform, rgba(127,127,127,.22)); }
+.ag3-gav.is-hidden { visibility:hidden; }
+.ag3-gcol { min-width:0; max-width:78%; display:flex; flex-direction:column; }
+.ag3-gmsg.is-me .ag3-gcol { align-items:flex-end; }
+.ag3-gwho { font-size:11.5px; font-weight:600; margin-bottom:3px;
+  color:var(--dsw-alias-label-tertiary, rgba(230,230,230,.7)); }
+.ag3-gbub { border-radius:14px; padding:7px 11px; font-size:var(--wb-f-xs); line-height:1.65;
+  white-space:pre-wrap; word-break:break-word;
+  background:var(--dsw-alias-bg-module-platform, rgba(127,127,127,.16));
+  border:1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.2)); }
+.ag3-gmsg.is-grp .ag3-gbub { border-top-left-radius:4px; }
+.ag3-gmsg.is-me .ag3-gbub { background:var(--dsw-alias-brand-primary, #007fd4);
+  border-color:transparent; color:var(--dsw-alias-label-primary, #fff); border-top-right-radius:4px; }
+/* @ 提及：气泡里的 token 用强调色（不是裸 hex —— 跟随主题令牌） */
+.ag3-gat { color:var(--dsw-alias-brand-primary, #4c9aff); font-weight:600; }
+.ag3-gmsg.is-me .ag3-gat { color:inherit; text-decoration:underline; text-underline-offset:2px; }
+.ag3-gat.is-all { color:var(--dsw-alias-state-warning-primary, #e0a43a); }
+/* @ 候选浮层（2026-10-26）：贴着输入卡片上方弹出；320px 宽的右栏/中间栏都能放 */
+.ag3-compwrap { position:relative; }
+.ag3-atpop { position:absolute; left:8px; right:8px; bottom:calc(100% - 2px); z-index:30;
+  display:flex; flex-direction:column; gap:1px; padding:4px;
+  max-height:232px; overflow:auto;
+  border-radius:10px; background:var(--dsw-alias-bg-overlay, rgba(30,30,30,.98));
+  border:1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.28));
+  box-shadow:var(--wb-shadow-dialog, 0 8px 24px rgba(0,0,0,.28)); }
+.ag3-atitem { display:flex; align-items:center; gap:8px; width:100%;
+  padding:6px 8px; border:0; border-radius:7px; cursor:pointer; text-align:left;
+  background:transparent; color:var(--dsw-alias-label-primary, inherit);
+  font-size:var(--wb-f-xs); line-height:1.4; }
+.ag3-atitem:hover, .ag3-atitem.is-on { background:var(--dsw-alias-bg-module-platform, rgba(127,127,127,.22)); }
+.ag3-atitem .ag3-atmark { flex:none; width:14px; text-align:center;
+  color:var(--dsw-alias-brand-primary, #4c9aff); font-weight:600; }
+.ag3-atitem .ag3-atname { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ag3-atitem .ag3-atid { flex:none; max-width:44%;
+  color:var(--dsw-alias-label-quaternary, rgba(230,230,230,.5));
+  font-family:var(--wb-font-mono, monospace); font-size:10px;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ag3-gsep { text-align:center; font-size:11px; margin:10px 0 4px;
+  color:var(--dsw-alias-label-quaternary, rgba(230,230,230,.5)); }
+.ag3-gpend { font-size:11px; margin-top:2px; color:var(--dsw-alias-label-quaternary, rgba(230,230,230,.5)); }
+.ag3-gfail { display:flex; align-items:center; gap:6px; font-size:11px; margin-top:3px;
+  color:var(--dsw-alias-state-error-primary, #e05252); }
+.ag3-gmsg.is-fail .ag3-gbub { opacity:.72;
+  border-color:var(--dsw-alias-state-error-primary, #e05252); }
+
+/* 系统提示（接力/未派发/失败）：居中一行，不占气泡 */
+.ag3-gsys { text-align:center; font-size:11px; margin:6px 0;
+  color:var(--dsw-alias-label-quaternary, rgba(230,230,230,.55)); }
+
+/* 白屏兜底（2026-10-26）：错误边界渲染的提示块 —— 至少让"白屏"变成可截图的错误。 */
+.ag-crash { padding:24px; max-width:720px; margin:0 auto; text-align:left; }
+.ag-crash-msg { margin:8px 0; font-family:ui-monospace,Menlo,monospace; font-size:12px;
+  color:var(--dsw-alias-state-error-primary, #e05252); white-space:pre-wrap; word-break:break-word; }
+.ag-crash-stack { margin:8px 0; padding:8px; max-height:180px; overflow:auto; font-size:11px;
+  line-height:1.5; white-space:pre-wrap; border-radius:6px;
+  background:var(--dsw-alias-bg-module-platform, rgba(127,127,127,.12));
+  color:var(--dsw-alias-label-tertiary, rgba(230,230,230,.7)); }
+
+/* ── 群聊附件（2026-10-26）：气泡里的图片缩略图 / 文件卡片 + 待发 chip 行 ──
+   图片走 <img src="/api/group-file?id=">：服务端按 mime 设 content-type，浏览器直接渲染，
+   不需要前端转 base64（省内存、也避免大图把 DOM 字符串撑大）。 */
+.ag3-gbub.is-fileonly { padding:6px; }
+.ag3-gfiles { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
+.ag3-gbub.is-fileonly .ag3-gfiles { margin-top:0; }
+.ag3-gimg-a { display:block; line-height:0; border-radius:8px; overflow:hidden;
+  border:1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.22)); }
+.ag3-gimg { display:block; max-width:220px; max-height:160px; object-fit:cover; }
+.ag3-gfile { display:inline-flex; align-items:center; gap:6px; padding:5px 9px; border-radius:8px;
+  font-size:var(--wb-f-xs); text-decoration:none; color:inherit;
+  border:1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.22));
+  background:var(--dsw-alias-bg-module-platform, rgba(127,127,127,.10)); }
+.ag3-gfile:hover { background:var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,.18)); }
+.ag3-gfile-n { max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ag3-gfile-s { opacity:.6; }
+.ag3-gup { display:flex; flex-wrap:wrap; gap:6px; align-items:center; padding:6px 2px 2px; }
+.ag3-gup-chip { display:inline-flex; align-items:center; gap:5px; padding:2px 6px 2px 8px;
+  border-radius:999px; font-size:11px;
+  border:1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.25));
+  background:var(--dsw-alias-bg-module-platform, rgba(127,127,127,.12)); }
+.ag3-gup-chip.is-busy { opacity:.7; }
+.ag3-gup-name { max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ag3-gup-x { border:0; background:transparent; color:inherit; cursor:pointer; font-size:11px;
+  line-height:1; padding:0 2px; opacity:.6; }
+.ag3-gup-x:hover { opacity:1; }
+.ag3-gup-err { font-size:11px; color:var(--dsw-alias-state-error-primary, #e05252); }
+.ag3-gpick { display:none; }
+
+/* ── 名册左栏顶部的创建入口（2026-10-26：从工具栏搬进来，主按钮就叫「新建 bot」）──
+   两个按钮并排：「＋ 新建 bot」（主） + 「群聊」（次）。窄屏时自动换行。 */
+.ag3-lcreate { display:flex; gap:6px; padding:2px 8px 8px; flex-wrap:wrap; }
+.ag3-lcreate-main { flex:1 1 auto; min-width:96px; }
+.ag3-lcreate-side { flex:0 0 auto; }
+
+/* ── 创建页 = 二级页面（原来是居中弹层 ag3-mask/ag3-dlg）──
+   它现在由 rosterPane() 直接 return，**替代**整个 .ag3 三栏 ⇒ 必须自己占满并滚动。 */
+.ag3-sub { flex:1 1 auto; min-width:0; min-height:0; display:flex; flex-direction:column;
+  overflow:auto; padding:14px 20px 20px; }
+.ag3-subinner { width:100%; max-width:760px; margin:0 auto; display:flex; flex-direction:column; gap:8px; }
+.ag3-subhd { display:flex; align-items:center; gap:8px; padding:0 0 10px; flex:0 0 auto;
+  border-bottom:1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.18)); }
+/* 表单区：原来窄弹窗里是一列，现在铺开后两列更顺手（字段少的会自动单列） */
+.ag3-sub .ag3-dlg-bd { padding:8px 0 0; overflow:visible; display:grid; gap:8px;
+  grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); }
+.ag3-sub .ag3-field { display:flex; flex-direction:column; gap:4px; }
+/* 成员多选这类"整行"内容跨满所有列 */
+.ag3-sub .ag3-dlg-bd > .ag3-members,
+.ag3-sub .ag3-dlg-bd > .ag3-create-foot { grid-column:1 / -1; }
+
+/* ── 右栏图标按钮的 tooltip（2026-10-26 用户确认「用图标不写文字」）──
+   原生 title 要悬停 ~1s 才出、且样式不可控；右栏窄，图标按钮必须"一看就懂"。
+   ⚠ 用 data-tip 而非子元素：tooltip 不能吃掉点击（pointer-events:none）。
+   ⚠ 定位锚在按钮**右边缘**并向右不超出：右栏 320 宽，居中对齐会压到中间栏。 */
+.ag3-hbtn { position:relative; }
+.ag3-hbtn::after {
+  content:attr(data-tip);
+  position:absolute; top:calc(100% + 6px); right:0;
+  padding:3px 8px; border-radius:6px; white-space:nowrap;
+  font-size:11px; line-height:1.5; font-weight:400;
+  opacity:0; pointer-events:none; transform:translateY(-2px);
+  transition:opacity .12s ease, transform .12s ease;
+  background:var(--dsw-alias-bg-layer-2, rgba(34,34,34,.97));
+  color:var(--dsw-alias-text-primary, #e6e6e6);
+  border:1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.3));
+  z-index:20;
+}
+.ag3-hbtn:hover::after,
+.ag3-hbtn:focus-visible::after { opacity:1; transform:translateY(0); }
+/* 只有 data-tip 为空时不显示（防御：漏传属性不会留一个空框） */
+.ag3-hbtn:not([data-tip])::after { content:none; }
 `;
 
 		function ensureStyle() {
@@ -2138,9 +3069,53 @@ window.__ModuleLoader__.load({
 		     props.conversation —— **官方对话的停靠节点**（SessionProvider + conversation.content）
 		   之前这里写成 `AgentsRoot()` 无参 + `h(AgentsPanel, null)` ⇒ 把官方对话**丢掉了**，
 		   所以中间栏只能自绘。（小红书工作台就是接了 `props.conversation` 才显示真聊天窗的。） */
+		/**
+		 * 白屏兜底（2026-10-26 用户报「bots 工作台白屏」）。
+		 *
+		 * 不加这个的话，任何渲染期异常都会让 React **卸载整棵树** ⇒ 用户看到的是一片纯白，
+		 * 而且没有任何线索可以反馈（我这边也拿不到 IDE 的 console：`%APPDATA%\VsSaros\logs`
+		 * 停在 8 月，不是活的日志通道）。
+		 * ⇒ 兜底成一条可截图的错误行 + 出错位置，至少能定位。
+		 *
+		 * 只在**渲染期**生效（React 的 error boundary 不捕事件处理器与异步里的错，
+		 * 那些由组件内各自的 try/catch 与页面级兜底处理）。
+		 */
+		/* ⚠⚠ 2026-10-26 真机抓到的致命错误：这里原来写的是 `React.Component`，
+		   但本 chunk 只有 `const react = require('react')` + 解构 hooks，**从未定义 `React`**
+		   ⇒ 整个子块加载即抛 `ReferenceError: React is not defined`
+		   ⇒ 工作台根本没注册（`window.__vssarosAgentsClient.workbenchFailed` 里写得一清二楚）
+		   ⇒ Bots 里永远看不到 React 工作台。用 `react.Component`（模块变量）才对。 */
+		class WorkbenchBoundary extends react.Component {
+			constructor(p) {
+				super(p);
+				this.state = { err: '', info: '' };
+			}
+			static getDerivedStateFromError(e) {
+				return { err: String((e && e.message) || e || '未知错误') };
+			}
+			componentDidCatch(e, info) {
+				this.setState({ info: String((info && info.componentStack) || '').slice(0, 400) });
+			}
+			render() {
+				if (this.state.err) {
+					return h('div', { className: 'wb-empty ag-crash', 'data-ag-crash': '', role: 'alert' },
+						h('b', null, '⚠ Bots 工作台渲染出错'),
+						h('p', { className: 'ag-crash-msg', 'data-ag-crash-msg': '' }, this.state.err),
+						this.state.info ? h('pre', { className: 'ag-crash-stack' }, this.state.info) : null,
+						h('p', { className: 'ag-hint' }, '把这段截图反馈即可；「⟳ 刷新」或重开这个页签通常能恢复。'),
+						h('button', {
+							type: 'button', className: 'wb-btn', 'data-ag-act': 'crash-retry',
+							onClick: () => this.setState({ err: '', info: '' }),
+						}, '再试一次'));
+				}
+				return this.props.children;
+			}
+		}
+
 		function AgentsRoot(props) {
 			useEffect(() => { ensureStyle(); }, []);
-			return h(AgentsPanel, props || null);
+			// ⚠ boundary 必须在**最外层**：放在 AgentsPanel 内部的话，panel 自己崩了就没人接住
+			return h(WorkbenchBoundary, null, h(AgentsPanel, props || null));
 		}
 
 		function install(ctx) {

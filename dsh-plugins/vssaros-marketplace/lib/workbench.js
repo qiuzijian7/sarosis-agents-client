@@ -97,6 +97,44 @@ window.__ModuleLoader__.load({
 		 *   如果商城插件在别的页面也去设，就会把用户在其它工作台选的 agent 抢走 ✗
 		 *   ⇒ 触发点只有两个：① 本面板挂载 ② 用户点「+ 新会话」（都说明商城在前台）。
 		 */
+		/**
+		 * 把「＋ 新会话」挂进 **aside 内部**（★ 2026-10-26 用户报「没有这个按钮」）。
+		 *
+		 * 为什么挂 aside 而不是 body：body 上的 fixed 按钮是**全窗级**的，只能靠定时器判断
+		 * "面板在不在屏"来显隐 ⇒ 切走工作台必然残留/误显（studio 踩过并改掉的做法）。
+		 * 挂进 aside ⇒ **生命周期与面板绑定**，卸载即消失，不需要任何轮询 ✓
+		 *
+		 * 为什么用原生 DOM 而不是 React 元素：studio 实测这套 `customFrame` + portal 组合里
+		 * React 的 onClick 不触发（浮标连点击事件都收不到）⇒ 原生 `addEventListener` 才稳。
+		 */
+		function mountNewButton(container) {
+			if (!container || container.__vssarosMarketNewMounted) { return; }
+			container.__vssarosMarketNewMounted = true;
+			try {
+				container.querySelectorAll('[data-vssaros-market-neww]').forEach((el) => el.remove());
+			} catch { /* ignore */ }
+
+			const nb = document.createElement('button');
+			nb.type = 'button';
+			nb.textContent = '＋ 新会话';
+			nb.setAttribute('data-vssaros-market-neww', '');
+			nb.title = '新建一个对话（agent 自动选中「商城助手」）';
+			// absolute 相对 aside（aside 已设 position:relative）⇒ 停在对话栏右上角
+			nb.style.cssText = 'position:absolute;z-index:2147483000;right:10px;top:5px;height:22px;padding:0 10px;'
+				+ 'border-radius:6px;border:1px solid var(--dsw-alias-border-l2,#dcdfe6);'
+				+ 'background:var(--dsw-alias-bg-overlay,#fff);color:var(--dsw-alias-label-primary,#16181d);'
+				+ 'font:11px/20px -apple-system,"Segoe UI",sans-serif;cursor:pointer;pointer-events:auto';
+			nb.addEventListener('click', (ev) => {
+				ev.preventDefault();
+				ev.stopPropagation();
+				const dw = globalThis.__vssarosMarketDw;
+				if (!dw || typeof dw.newSession !== 'function') { return; }
+				// 走宿主自己的 newSession（我们已经在 apply 里包过它：会给新会话设商城 preset）
+				try { dw.newSession(); } catch { /* 失败不抛给用户 */ }
+			});
+			container.appendChild(nb);
+		}
+
 		function ensureMarketDefaults(ctx) {
 			if (tryApplyPreset(ctx)) { seedDraft(ctx); }
 		}
@@ -217,6 +255,8 @@ window.__ModuleLoader__.load({
 				'aside',
 				{
 					'data-vssaros-market-conv': '',
+				// ★ 把「＋ 新会话」挂进对话栏（生命周期与面板绑定）
+				ref: (el) => { if (el) { mountNewButton(el); } },
 					style: {
 						flex: '0 0 auto',
 						position: 'relative',
@@ -270,6 +310,8 @@ window.__ModuleLoader__.load({
 				ctx.inject(['desktopWorkbenches'], (scope) => {
 					const dw = scope.desktopWorkbenches || (scope.get && scope.get('desktopWorkbenches'));
 					if (!dw || typeof dw.register !== 'function') { return; }
+					// 组件是模块级函数、拿不到闭包 ⇒ 用全局引用给「＋ 新会话」按钮用
+					globalThis.__vssarosMarketDw = dw;
 					scope.effect(() => dw.register(DESCRIPTOR, MarketPanelWithDefaults), 'vssaros-marketplace: workbench');
 
 					// ★ 用户点「+ 新会话」⇒ 新会话默认选中商城助手。

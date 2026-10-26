@@ -36,6 +36,9 @@ import { renderDetailPage } from './detail.js';
 import { buildHomeData } from './home.js';
 import { renderGroupPage } from './groupPage.js';
 import { renderMemoryEvoPage } from './memoryEvoPage.js';
+/* 群聊附件（2026-10-26）：上传/读取独立成模块（见 groupFiles.js 头注释的安全边界）。
+   ⚠ MAX_FILE_BYTES 同时用于 readRawBody 的上限 —— 两边必须是同一个常量，别各写一份。 */
+import { MAX_FILE_BYTES, readGroupFile, saveGroupFile } from './groupFiles.js';
 import { addGroupMembers, createGroup, decideGroupJoin, deleteGroup, installGroupTracker, listGroups, markGroupRead, normalizeGroupMode, postGroupMessage, removeGroupMember, setGroupAvatar, updateGroup, wakeOf } from './groups.js';
 import { readLiveSessions } from './live.js';
 import { markSeen, unreadSnapshot } from './seen.js';
@@ -544,6 +547,26 @@ async function readJsonBody(req) {
 	return text ? JSON.parse(text) : {};
 }
 
+/**
+ * 读**原始字节**（2026-10-26，群聊附件上传用）。
+ *
+ * 为什么不用 `readJsonBody`：附件是二进制，塞 JSON 要么 base64（体积 ×1.33 + 巨型字符串），
+ * 要么 multipart（要自己写解析器）。直接收字节最省。
+ * 超过 `limit` 立刻抛 413 —— 不把内存撑爆（前端也会按同一上限先拦一次）。
+ */
+async function readRawBody(req, limit) {
+	const chunks = [];
+	let total = 0;
+	for await (const chunk of req) {
+		total += chunk.length;
+		if (total > limit) {
+			throw Object.assign(new Error(`请求体超过上限 ${Math.round(limit / 1024 / 1024)}MB`), { httpStatus: 413 });
+		}
+		chunks.push(chunk);
+	}
+	return Buffer.concat(chunks);
+}
+
 /** `@deepseek-ai/dsh-llm` 的消息工厂；拿不到就由核心模块自组消息（运行期无校验，安全）。 */
 async function loadCreateUserMessage() {
 	try {
@@ -746,6 +769,44 @@ function applyTopLevel(ctx, config) {
 			await disposeAllPresets(state);
 		};
 	}));
+
+	/**
+	 * ★ 2026-10-26：对外暴露 `vssarosAgents` 服务，让**其它插件**能触发重扫。
+	 *
+	 * ## 为什么需要
+	 * preset **只在本插件启动时扫一次** `<数据根>/agents/<id>/.agent.md`。
+	 * 任何"装插件时才创建 agent 文件"的场景（例如商城插件自动落 `marketplace-bot`）
+	 * 都赶不上那次扫描 ⇒ 用户必须**重启两次**才看得到新 agent ✗
+	 * （实测时间线：Host 16:25:52 启动 → 文件 16:26:00 才被创建 ⇒ 扫不到）
+	 *
+	 * ## 为什么现在才补
+	 * `vssaros-marketplace` 早就写了 `ctx.inject(['vssarosAgents'], s => state.agentsRescan = s.rescan)`
+	 * 并做好了失败兜底 —— 但本插件一直**没 provide**，那段是死代码。
+	 *
+	 * ## 语义
+	 * `rescan()` = 重扫目录 + **增量**注册（`syncPresets` 本来就是增量的：
+	 * 新 agent 注册、消失的撤销、没变的跳过）⇒ **可重复调用、幂等** ✓
+	 */
+	ctx.provide('vssarosAgents', {
+		/**
+		 * 重扫 agent 目录并增量注册 preset。
+		 * @returns {Promise<{ ok: boolean, agentsRoot: string, registered: number }>}
+		 * @throws 服务还没就绪时抛（调用方按"重启兜底"处理，不静默）
+		 */
+		rescan: async () => {
+			if (!state.presets) {
+				throw new Error('agentPresets 服务还没就绪（Host 还在启动）');
+			}
+			await syncPresets(state, state.presets, config);
+			return {
+				ok: true,
+				agentsRoot: agentsRootOf(config),
+				registered: state.registered ? state.registered.size : 0,
+			};
+		},
+		/** 本插件实际扫描的目录（调用方排查"文件放错地方"时很有用）。 */
+		agentsRoot: () => agentsRootOf(config),
+	});
 
 	ctx.inject(['webServer', 'connection'], page => page.effect(() => page.webServer.register({
 		kind: 'prefix',
@@ -1011,6 +1072,42 @@ function applyTopLevel(ctx, config) {
 					}
 				} catch (e) {
 					const status = Number.isInteger(e?.httpStatus) ? e.httpStatus : 400;
+					res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
+					res.end(JSON.stringify({ error: String(e?.message ?? e) }));
+				}
+				return;
+			}
+			/* 群聊**附件**（2026-10-26 用户要求「完善群聊中附件功能」）：
+			     上传 POST /api/group-file?group=<gid>&name=<urlencoded>   body = 原始字节
+			     读取 GET  /api/group-file?id=<fileId>                     （图片可直接当 <img src>）
+			   为什么单独两条路由而不是塞进 /api/groups：附件是**二进制**，得走 readRawBody，
+			   和那边的 JSON 口径完全不同；混在一起会让两边都变复杂。 */
+			if (pathname === `${ROUTE_PREFIX}/api/group-file`) {
+				try {
+					if (req.method === 'POST') {
+						const gid = String(url.searchParams.get('group') || '');
+						const name = String(url.searchParams.get('name') || 'file');
+						const mime = String(req.headers['content-type'] || '');
+						const buf = await readRawBody(req, MAX_FILE_BYTES);
+						const file = await saveGroupFile(config, gid, name, buf, mime);
+						res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify({ ok: true, file }));
+					} else if (req.method === 'GET') {
+						const { meta, buf } = await readGroupFile(config, url.searchParams.get('id'));
+						res.writeHead(200, {
+							'content-type': meta.mime || 'application/octet-stream',
+							'content-length': String(buf.length),
+							// inline：图片/PDF 直接在浏览器里看；filename* 让中文名不乱码
+							'content-disposition': `inline; filename*=UTF-8''${encodeURIComponent(meta.name || 'file')}`,
+							'cache-control': 'private, max-age=86400',
+						});
+						res.end(buf);
+					} else {
+						res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' });
+						res.end(JSON.stringify({ error: '只支持 GET / POST' }));
+					}
+				} catch (e) {
+					const status = Number.isInteger(e?.httpStatus) ? e.httpStatus : 500;
 					res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
 					res.end(JSON.stringify({ error: String(e?.message ?? e) }));
 				}
@@ -1599,6 +1696,33 @@ function applyTopLevel(ctx, config) {
 					}));
 					return;
 				}
+				/* ★★ 2026-10-26（用户要求「让 Bots 页签承载 React 工作台」；插件侧落地）：
+				   Bots 页签在 IDE 里承载的是**本插件的主页路由** `/x/agents/`（SSR 页）。
+				   改 IDE 侧切 `surface=workbench` 需重编译宿主 + 管理员安装（安装目录不可写，实测 EPERM）。
+				   ⇒ 这里在**插件侧**做到同样效果：
+				     · 主页默认返回一个同源的**承载页**，iframe 指向 dsh 客户端并带深链 `?wb=vssaros/agents`
+				       （同源 ⇒ 共用 cookie 认证，不需要传 token）
+				     · `?legacy=1` 回退旧 SSR 页（出问题时有退路，不把人锁死）
+				     · `?surface=sideview` / 所有 `/api/*` 完全不受影响
+				   ⚠ 只在 **GET 页面请求**上生效；POST/PUT 与 API 一律走原逻辑。 */
+				{
+					const isPageGet = req.method === 'GET'
+						&& !url.pathname.includes('/api/')
+						&& url.searchParams.get('surface') !== 'sideview'
+						&& url.searchParams.get('legacy') !== '1'
+						&& !url.searchParams.has('json');
+					if (isPageGet) {
+						const hostHtml = renderWorkbenchHostPage({ module: 'agents' });
+						const encodedHost = encodeBody(req, hostHtml);
+						res.writeHead(200, {
+							'content-type': 'text/html; charset=utf-8',
+							'cache-control': 'no-store',
+							...encodedHost.headers,
+						});
+						res.end(encodedHost.body);
+						return;
+					}
+				}
 				// 实况 + 用量（P1/P5）：projcache 读不到就降级为"没有这两块"（页面主体不受影响 ✓）
 				const live = await readLiveSessions(config).catch(() => null);
 				const liveRows = live ? liveForAgents(scan.agents, aggregateByPreset(live.rows)).rows : [];
@@ -1890,4 +2014,59 @@ export function apply(ctx, config = {}) {
 		return;
 	}
 	applyTopLevel(ctx, config);
+}
+
+/**
+ * 工作台承载页（2026-10-26）：让 IDE 的 Bots 页签（承载本插件主页路由 `/x/agents/`）
+ * **直接显示 React 工作台**，不必改 IDE 侧（那需要重编译宿主 + 管理员安装，实测安装目录不可写）。
+ *
+ * 做法：同源 iframe 指向 dsh 客户端根，带深链 `?wb=<module>`（由 `@vssaros/dsh-workbenches` 打开对应工作台）。
+ * 同源 ⇒ 复用同一份 cookie 认证，**不传 token**（传了等于把凭据放进 URL）。
+ *
+ * ⚠ 三条退路，避免把人锁死：
+ *   · `?legacy=1` ⇒ 直接走旧 SSR 页（本函数不参与）
+ *   · 页面左下角常驻「旧版页面」链接
+ *   · iframe 加载失败 → 显示提示 + 同一个旧版链接（不白屏）
+ */
+function renderWorkbenchHostPage({ module: mod } = {}) {
+	const m = String(mod || 'agents');
+	const wb = `vssaros/${m}`;
+	const legacy = `/x/${m}/?legacy=1`;
+	const css = 'html,body{margin:0;height:100%;background:transparent;overflow:hidden}'
+		+ '#wb{position:absolute;inset:0;border:0;width:100%;height:100%;display:block}'
+		+ '#fb{position:absolute;left:10px;bottom:10px;z-index:5;font:12px/1.5 system-ui;'
+		+ 'color:rgba(160,160,160,.9);background:rgba(0,0,0,.42);padding:2px 8px;border-radius:6px;'
+		+ 'text-decoration:none;transition:opacity .15s}'
+		+ '#fb:hover{color:#eee;background:rgba(0,0,0,.68)}'
+		+ '#err{position:absolute;inset:0;display:none;place-items:center;text-align:center;padding:24px;'
+		+ 'font:13px/1.8 system-ui;color:#c9c9c9}';
+	return '<!doctype html><html lang="zh"><head><meta charset="utf-8">'
+		+ '<meta name="viewport" content="width=device-width,initial-scale=1">'
+		+ '<title>Bots</title><style>' + css + '</style>'
+		/* ★ 深链传递（2026-10-26）：**不能**用 `?wb=` —— Host 会把 `/?token=…` 302 到 `/`，
+		   query 在任何脚本执行前就丢了（实测 `location.href` 在首个脚本里已经是 `/`）。
+		   ⇒ 用同源 `localStorage` 传：iframe 与本页同源，重定向也带不走它；
+		     由 `@vssaros/dsh-workbenches` 读取后**立刻删掉**（一次性，不会影响下次正常打开）。 */
+		+ '<script>try{localStorage.setItem("vssaros.wb.pending","' + wb + '");}catch(e){}</script>'
+		+ '</head><body>'
+		+ '<iframe id="wb" src="/?wb=' + wb + '" title="Bots 工作台"></iframe>'
+		+ '<a id="fb" href="' + legacy + '" title="切回旧的 SSR 页面">旧版页面</a>'
+		+ '<div id="err">React 工作台没加载出来（工作台插件可能没启用）。<br>'
+		+ '<a href="' + legacy + '" style="color:#7ab8ff">改用旧版页面</a></div>'
+		/* 隐藏 dsh 自己的左侧栏（2026-10-26）：
+		   正解是 IDE 侧开 `surface=workbench`，由 preload 注入 `CHAT_ONLY_CSS`；我们是 iframe 绕行，
+		   拿不到 preload ⇒ 但**同源**可以直接往 iframe 文档里注入同一段 CSS，视觉效果等价。
+		   口径照抄 `preload-dshView.ts:54`（两边必须一致，否则"工作台账"会长得不一样）。 */
+		+ '<script>var f=document.getElementById("wb");'
+		+ 'var WB_CSS="[data-slot=\\"sidebar\\"]{display:none !important}"'
+		+ '+"div:has(> [data-shell-overlay]){grid-template-columns:0 minmax(0,1fr) auto !important}";'
+		+ 'function wbInject(){try{var d=f.contentDocument;if(!d||!d.head)return false;'
+		+ 'if(d.getElementById("wb-hide-sidebar"))return true;'
+		+ 'var st=d.createElement("style");st.id="wb-hide-sidebar";st.textContent=WB_CSS;d.head.appendChild(st);'
+		+ 'return true;}catch(e){return false;}}'
+		/* 客户端是异步 boot、iframe 内部还会有路由切换 ⇒ 轮询注入（幂等：有 id 就不重复插） */
+		+ 'var wbTries=0;var wbTimer=setInterval(function(){wbInject();if(++wbTries>=300)clearInterval(wbTimer);},100);'
+		+ 'f.addEventListener("load",function(){wbInject();});'
+		+ 'f.addEventListener("error",function(){document.getElementById("err").style.display="grid";});'
+		+ '<\/script></body></html>';
 }

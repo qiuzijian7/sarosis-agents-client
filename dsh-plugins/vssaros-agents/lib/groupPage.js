@@ -20,6 +20,13 @@
  * 邀请·移出 / 待确认区 / 未读红点 / 已读上报 / 工作四组 / 群头像。
  */
 
+/* ★ 2026-10-26：消息分组/分隔的**唯一真源**在 `core/groupChat.js`。
+   本页是 SSR（内联字符串 JS），没法直接 import 进浏览器 ⇒ 用 `toString()` 把**同一份函数体**
+   注入到内联脚本（见下方 `__chatRows` 的注入处）。
+   工作台面板（client.agents.js）跑在宿主 chunk 加载器里、也 import 不了本地模块，
+   那边保留一份同构实现 —— 由 `p3-190` 用**同一组夹具**比对两边结果，防漂移。 */
+import { chatRows, sepLabel } from './core/groupChat.js';
+
 const CSS = `
 /* ★ 主题：跟随宿主（VS Code 主题变量）—— 不再自带一套写死的浅色皮。
    之前是 --gp-bg:#f7f7f8 那套固定浅色 ⇒ 塞进 IDE 的深色外壳里就是一块白底 ✗。
@@ -137,10 +144,18 @@ code{font-family:var(--vscode-editor-font-family,ui-monospace,Consolas,monospace
 .gp-msg.me{flex-direction:row;justify-content:flex-end}
 .gp-msg.me .bub{background:var(--gp-accent);border-color:transparent;color:var(--vscode-button-foreground,#fff);border-bottom-right-radius:4px;max-width:78%}
 .gp-msg:not(.me) .bub{border-bottom-left-radius:4px}
-/* 组内续接（同作者 + 15s 内）：头像留白占位、上方切角收紧 —— DSB 的成组观感 */
+/* 组内续接（同作者 + 5 分钟内，每组成员 ≤8 条）：头像留白占位、上方切角收紧 —— DSB 的成组观感 */
 .gp-msg.grp:not(.me) .gp-bub{border-top-left-radius:4px}
 .gp-msg.grp.me .bub{border-top-right-radius:4px}
 .gp-msg.grp{margin-top:-9px}
+/* 发送失败（2026-10-26 复刻 DeepSeekBot 的 failed 气泡）：标红 + 重试/删除。
+   失败的发送**留在列表底部**，而不是只弹一行系统提示 —— 用户能看见是哪条没发出去。 */
+.gp-msg.fail .gp-failhd{font-size:11.5px;color:var(--vscode-errorForeground,#e05252);margin-bottom:3px;text-align:right}
+.gp-msg.fail .bub{opacity:.72;border-color:var(--vscode-errorForeground,#e05252)}
+.gp-failacts{display:flex;gap:6px;justify-content:flex-end;margin-top:4px}
+.gp-failacts button{font:inherit;font-size:11.5px;padding:1px 8px;border-radius:5px;cursor:pointer;
+  border:1px solid var(--gp-line);background:var(--gp-panel);color:var(--gp-fg)}
+.gp-failacts button:hover{background:var(--gp-panel2)}
 .gp-bub b{font-weight:600}
 .gp-bub code{background:var(--gp-panel2);border:1px solid var(--gp-line);border-radius:4px;padding:0 4px;font-size:11.5px}
 .gp-bub .men{background:var(--vscode-editorHighlightBackground,rgba(77,170,252,.22));border-radius:3px;padding:0 2px;color:var(--gp-blue)}
@@ -156,6 +171,16 @@ code{font-family:var(--vscode-editor-font-family,ui-monospace,Consolas,monospace
 .gp-clip{position:absolute;left:12px;bottom:11px;width:24px;height:24px;border-radius:6px;display:flex;align-items:center;justify-content:center;color:var(--gp-fg2);font-size:14px}
 .gp-send{position:absolute;right:10px;bottom:8px;width:34px;height:34px;border-radius:50%;background:var(--gp-accent);color:var(--vscode-button-foreground,#fff);display:flex;align-items:center;justify-content:center;font-size:15px}
 .gp-send:hover{background:var(--gp-accent2)}
+/* @ 候选浮层（2026-10-26）：贴输入框上方；320px 宽也能放下 */
+.gp-atpop{position:absolute;left:8px;right:8px;bottom:calc(100% - 4px);z-index:40;display:flex;flex-direction:column;gap:1px;padding:4px;max-height:232px;overflow:auto;border-radius:12px;background:var(--vscode-editorWidget-background,var(--gp-panel));border:1px solid var(--gp-line2);box-shadow:0 8px 24px var(--gp-shadow)}
+.gp-atpop[hidden]{display:none}
+.gp-atitem{display:flex;align-items:center;gap:8px;width:100%;padding:6px 8px;border:0;border-radius:8px;background:transparent;color:var(--gp-fg);font-size:12px;text-align:left;cursor:pointer}
+.gp-atitem:hover,.gp-atitem.is-on{background:var(--gp-hover,rgba(127,127,127,.18))}
+.gp-atitem .m{flex:none;color:var(--gp-accent);font-weight:600}
+.gp-atitem .n{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--gp-fg2)}
+/* 气泡里的 @token（与工作台 .ag3-gat 同视觉口径） */
+.gp-at{color:var(--gp-accent);font-weight:600}
+.gp-msg.me .gp-at{color:inherit;text-decoration:underline;text-underline-offset:2px}
 .gp-send:disabled{opacity:.4;cursor:not-allowed}
 .gp-foot{max-width:min(560px,calc(100% - 84px));margin:0 auto 10px;display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--gp-fg2)}
 .gp-chip{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--gp-line2);border-radius:999px;padding:2px 9px;background:var(--gp-panel)}
@@ -272,6 +297,27 @@ code{font-family:var(--vscode-editor-font-family,ui-monospace,Consolas,monospace
 .gp-diag{font-size:11px;color:var(--gp-fg3);margin-top:5px;line-height:1.6}
 .gp-av-big{width:36px;height:36px;border-radius:9px;flex:none;display:flex;align-items:center;justify-content:center;color:#fff;font-size:14px;overflow:hidden}
 .gp-av-big img{width:100%;height:100%;object-fit:cover}
+
+/* ── 附件（2026-10-26）：气泡内图片缩略图 / 文件卡片；composer 上方的待发 chip 行 ── */
+.gp-files-in { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
+.gp-fimg-a { display:block; line-height:0; border-radius:8px; overflow:hidden;
+  border:1px solid var(--gp-line); }
+.gp-fimg { display:block; max-width:200px; max-height:150px; object-fit:cover; }
+.gp-ffile { display:inline-flex; align-items:center; gap:6px; padding:4px 8px; border-radius:8px;
+  font-size:11.5px; text-decoration:none; color:inherit;
+  border:1px solid var(--gp-line); background:var(--gp-panel2); }
+.gp-ffile:hover { background:var(--gp-panel3); }
+.gp-ffile .n { max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.gp-ffile .s { opacity:.6; }
+.gp-files { display:flex; flex-wrap:wrap; gap:6px; width:min(560px,calc(100% - 84px));
+  margin:0 auto 4px; }
+.gp-files:empty { display:none; }
+.gp-fchip { display:inline-flex; align-items:center; gap:5px; padding:2px 5px 2px 8px;
+  border-radius:999px; font-size:11px; border:1px solid var(--gp-line); background:var(--gp-panel2); }
+.gp-fchip.is-busy { opacity:.7; }
+.gp-fx { border:0; background:transparent; color:inherit; cursor:pointer; font-size:11px;
+  line-height:1; padding:0 2px; opacity:.6; }
+.gp-fx:hover { opacity:1; }
 `;
 
 /** 客户端脚本（无外部依赖）。 */
@@ -283,7 +329,20 @@ function clientJs(keep) {
 	add(' if(location.search.indexOf("embed=1")>=0){document.body.classList.add("embed");}');
 	add('var KEEP=', String(keep), ';');
 	// 状态：groups / agents / active / 右栏 tab / 右栏 agent / 工作列表 / 未读签名
-	add('var S={groups:[],agents:[],active:"",tab:"mem",memAgent:"",work:[],busy:{},readSig:{},rightOpen:true,leftOpen:true,drawer:false};');
+	/* `failed`：**发送失败但还没放弃**的消息（2026-10-26 复刻 DeepSeekBot 的三态）。
+	   为什么不直接塞进 transcript：transcript 会被 `poll()` 用服务端数据覆盖，
+	   本地失败消息一刷就没；独立数组才能"一直挂在那儿等人重试"。
+	   `draft`：当前草稿的镜像（写 localStorage，切群不丢）。 */
+	/* ★ 注入唯一真源：`core/groupChat.js` 的**函数体**（toString ⇒ 浏览器里就是同一份实现）。
+	   ⚠ 那两个函数是自包含的（不引用模块级变量），所以 toString 后仍能跑。 */
+	// ⚠ 显式挂到 window：这段被注入在 IIFE 内部，`var` 不会成为全局
+	//   （p3-190 断言 `typeof window.__chatRows === 'function'` 就是防这个）。
+	add('window.__chatRows = ' + chatRows.toString() + ';');
+	add('window.__sepLabel = ' + sepLabel.toString() + ';');
+	add('var __chatRows = window.__chatRows, __sepLabel = window.__sepLabel;');
+	/* `files`：**待发送附件**（2026-10-26）。切群时清空 —— 附件在上传时就绑定了 group，
+	   带到别的群里去是错的。 */
+	add('var S={groups:[],agents:[],active:"",tab:"mem",memAgent:"",work:[],busy:{},readSig:{},rightOpen:true,leftOpen:true,drawer:false,failed:[],draft:"",files:[]};');
 	add('function $(id){return document.getElementById(id);}');
 	add('function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;"}[c];});}');
 	add('function colorOf(id){return "hsl("+([...String(id)].reduce(function(h,c){return (h*31+c.charCodeAt(0))>>>0;},0)%360)+" 40% 45%)";}');
@@ -293,8 +352,28 @@ function clientJs(keep) {
 	add('function p2(n){return (n<10?"0":"")+n;}');
 	add('function fmtT(at){var d=new Date(at||Date.now());return p2(d.getHours())+":"+p2(d.getMinutes());}');
 	add('function dayKey(at){var d=new Date(at||Date.now());return d.getFullYear()+"-"+p2(d.getMonth()+1)+"-"+p2(d.getDate());}');
+	/* 分隔条文案已收敛到 `core/groupChat.js` 的 sepLabel（注入为 `__sepLabel`）。
+	   ⚠ 这里**不要再写一份** —— 2026-10-26 就是因为两份实现不同步导致"改了没生效"。 */
 	add('function dayLabel(at){var d=new Date(at||Date.now());var n=new Date();if(dayKey(at)===dayKey(n.getTime()))return "今天";var y=new Date(n.getTime()-86400000);if(dayKey(at)===dayKey(y.getTime()))return "昨天";return (d.getMonth()+1)+"月"+d.getDate()+"日";}');
 	add('function md(text){return esc(text).replace(/\\*\\*(.+?)\\*\\*/g,"<b>$1</b>").replace(/`([^`]+)`/g,"<code>$1</code>").replace(/@([^\\s@，。、]+)/g,"<span class=\\"men\\">@$1</span>").replace(/\\n/g,"<br>");}');
+	/* 附件渲染（2026-10-26）：图片给缩略图（点开原图），其它给文件卡片。
+	   href 直接指向 `GET /api/group-file?id=` —— 服务端按 mime 设 content-type，
+	   `<img>` 和下载都能直接用，不需要前端转 base64。 */
+	add('function attachHtml(files){');
+	add(' if(!files||!files.length)return "";');
+	add(' var out="<div class=\\"gp-files-in\\">";');
+	add(' for(var i=0;i<files.length;i++){');
+	add('  var f=files[i]||{};var url="/x/agents/api/group-file?id="+encodeURIComponent(String(f.id||""));');
+	add('  var b=Number(f.size)||0;var sz=b>=1048576?((b/1048576).toFixed(1)+"MB"):(Math.max(1,Math.round(b/1024))+"KB");');
+	add('  var nm=esc(String(f.name||"附件"));');
+	add('  if(/^image\\//.test(String(f.mime||""))){');
+	add('   out+="<a class=\\"gp-fimg-a\\" href=\\""+url+"\\" target=\\"_blank\\" rel=\\"noreferrer\\" title=\\""+nm+" · "+sz+"\\"><img class=\\"gp-fimg\\" src=\\""+url+"\\" alt=\\""+nm+"\\" loading=\\"lazy\\"></a>";');
+	add('  }else{');
+	add('   out+="<a class=\\"gp-ffile\\" href=\\""+url+"\\" target=\\"_blank\\" rel=\\"noreferrer\\" title=\\""+nm+" · "+sz+"\\"><span>📄</span><span class=\\"n\\">"+nm+"</span><span class=\\"s\\">"+sz+"</span></a>";');
+	add('  }');
+	add(' }');
+	add(' return out+"</div>";');
+	add('}');
 	add('var MODE_LABEL={all:"全员派发",mentions:"仅 @ 派发",digest:"汇总派发",silent:"静默收件"};');
 	add('var MODE_SHORT={all:"全员",mentions:"仅 @",digest:"汇总",silent:"静默"};');
 	add('function normMode(m){var v=String(m||"").toLowerCase();if(v==="open")return "all";if(v==="admin")return "mentions";return MODE_LABEL[v]?v:"mentions";}');
@@ -331,48 +410,49 @@ function clientJs(keep) {
 	add('}');
 	// ── 消息（DSB 分组口径：同作者+同天+相邻≤15s+组跨度≤180s+每组≤8 条）──
 	add('function renderStack(){');
-	// ⚠ 群消失时给**明确提示**，不要清空成黑屏（2026-10-26）
 	add(' var g=activeGroup();if(!g){$("gpStack").innerHTML="<div class=gpGone>这个群不在了 —— 从左侧另选一个群，或点右上角刷新。</div>";return;}');
 	add(' var T=(g.transcript||[]).slice(-KEEP);');
-	add(' var flag=[],sid=[],day="",prev=null,groupAt=0,groupN=0,lastSid="";');
-	add(' for(var i=0;i<T.length;i++){');
-	add('  var e=T[i];');
-	add('  if(e.role==="system"){flag.push("sys");sid.push("");prev=null;groupN=0;continue;}');
-	add('  var dk=dayKey(e.at);');
-	add('  if(dk!==day){day=dk;prev=null;groupN=0;}');
-	add('  var isUser=e.role==="user";');
-	add('  var who=isUser?"__me":(e.agentId||e.name||"");');
-	add('  var gap=prev?(e.at-prev.at):1e9;');
-	add('  var grp=!!(prev&&prev.key===who&&gap>=0&&gap<=15000&&(e.at-groupAt)<=180000&&groupN<8);');
-	add('  if(!grp){groupAt=e.at;groupN=0;}');
-	add('  groupN++;');
-	add('  flag.push(grp?"grp":"own");');
-	add('  if(e.sessionId)lastSid=e.sessionId;');
-	add('  sid.push(e.sessionId||lastSid);');
-	add('  prev={at:e.at,key:who};');
-	add(' }');
-	add(' var out="",day2="";');
-	add(' for(var j=0;j<T.length;j++){');
-	add('  var e2=T[j];');
-	add('  if(flag[j]==="sys"){out+="<div class=\\"gp-sys"+((/未派发|失败/.test(e2.text||""))?" warn":"")+"\\">"+esc(e2.text)+"</div>";continue;}');
-	add('  var dk2=dayKey(e2.at);');
-	add('  if(dk2!==day2){day2=dk2;out+="<div class=\\"gp-day\\">"+dayLabel(e2.at)+"</div>";}');
-	add('  var isUser2=e2.role==="user";');
-	add('  var grp2=flag[j]==="grp";');
-	add('  var cls=grp2?" grp":"";');
-	add('  var tail=flag[j+1]!=="grp";');
-	add('  if(isUser2){');
-	add('   out+="<div class=\\"gp-msg me"+cls+"\\"><div class=\\"bub\\">"+md(e2.text)+"</div>"');
-	add('    +"<div class=\\"av"+(grp2?" hid":"")+"\\" style=\\"background:var(--gp-fg3)\\">你</div></div>";');
+	// ★★ 2026-10-26 收敛：分组/分隔**不再本地算一份**，一律走唯一真源 `__chatRows`
+	//    （= `core/groupChat.js` 的 `chatRows`，用 toString 注入到本页；工作台面板用同构的一份，
+	//      由 p3-190 用同一组夹具比对，防两边再漂移）。
+	add(' var rows=__chatRows(T);');
+	// `@` 高亮用的成员表：整轮只算一次（每条消息都算一遍没必要）
+	add(' var AT_MEM=atMembers();');
+	add(' var out="";');
+	add(' for(var r=0;r<rows.length;r++){');
+	add('  var row=rows[r];');
+	add('  if(row.kind==="sep"){out+="<div class=\\"gp-day\\">"+__sepLabel(row.at)+"</div>";continue;}');
+	add('  var e=T[row.index];if(!e)continue;');
+	add('  if(row.kind==="sys"){out+="<div class=\\"gp-sys"+((/未派发|失败/.test(e.text||""))?" warn":"")+"\\">"+esc(e.text)+"</div>";continue;}');
+	add('  var cls=row.grp?" grp":"";');
+	add('  var nxt=rows[r+1];');
+	add('  var tail=!(nxt&&nxt.kind==="msg"&&nxt.grp);');
+	add('  if(row.isMe){');
+	add('   out+="<div class=\\"gp-msg me"+cls+"\\"><div class=\\"bub\\">"+atMarkHtml(md(e.text),AT_MEM)+attachHtml(e.files)+"</div>"');
+	add('    +"<div class=\\"av"+(row.grp?" hid":"")+"\\" style=\\"background:var(--gp-fg3)\\">你</div></div>";');
 	add('  } else {');
-	add('   var a=agentOf(e2.agentId||e2.name);');
+	add('   var a=agentOf(row.who);');
 	add('   var ini=esc(String(a.name||"?").slice(0,1));');
-	add('   var bg=colorOf(e2.agentId||e2.name);');
-	add('   out+="<div class=\\"gp-msg"+cls+"\\"><div class=\\"av"+(grp2?" hid":"")+"\\" style=\\"background:"+bg+"\\">"+ini+"</div>"');
-	add('    +"<div class=\\"col\\">"+(grp2?"":"<div class=\\"who\\">"+esc(a.name||e2.name)+"</div>")');
-	add('    +"<div class=\\"gp-bub\\">"+md(e2.text)+"</div>"');
-	add('    +((sid[j]&&tail)?"<div class=\\"gp-quote\\"><span class=\\"ic\\" style=\\"background:"+bg+"\\">"+ini+"</span>回合结束自动回收进群记录</div>":"")');
+	add('   var bg=colorOf(row.who);');
+	add('   out+="<div class=\\"gp-msg"+cls+"\\"><div class=\\"av"+(row.grp?" hid":"")+"\\" style=\\"background:"+bg+"\\">"+ini+"</div>"');
+	add('    +"<div class=\\"col\\">"+(row.grp?"":"<div class=\\"who\\">"+esc(a.name||row.who)+"</div>")');
+	add('    +"<div class=\\"gp-bub\\">"+atMarkHtml(md(e.text),AT_MEM)+attachHtml(e.files)+"</div>"');
+	add('    +((e.sessionId&&tail)?"<div class=\\"gp-quote\\"><span class=\\"ic\\" style=\\"background:"+bg+"\\">"+ini+"</span>回合结束自动回收进群记录</div>":"")');
 	add('    +"</div></div>";');
+	add('  }');
+	add(' }');
+	/* ★ 复刻 DeepSeekBot 的 failed 气泡（`message-bubble.tsx` 的"未发送 · 重试"）：
+	   失败的发送**留在列表底部**、标红、可点重试或删除 —— 而不是只弹一行系统提示
+	   （用户根本不知道是哪条没发出去）。 */
+	add(' if(S.failed.length){');
+	add('  out+="<div class=\\"gp-day\\">未发送 · "+S.failed.length+" 条</div>";');
+	add('  for(var k=0;k<S.failed.length;k++){');
+	add('   var f=S.failed[k];');
+	add('   out+="<div class=\\"gp-msg me fail\\"><div class=\\"col\\"><div class=\\"gp-failhd\\">未发送 · "+esc(f.err||"网络错误")+"</div>"');
+	add('    +"<div class=\\"bub\\">"+md(f.text)+"</div>"');
+	add('    +"<div class=\\"gp-failacts\\"><button type=\\"button\\" data-retry=\\""+esc(f.cid)+"\\">重试</button>"');
+	add('    +"<button type=\\"button\\" data-drop=\\""+esc(f.cid)+"\\">删除</button></div></div>"');
+	add('    +"<div class=\\"av hid\\"></div></div>";');
 	add('  }');
 	add(' }');
 	add(' $("gpStack").innerHTML=out;');
@@ -632,23 +712,158 @@ function clientJs(keep) {
 	add(' var g=activeGroup();if(!g)return;');
 	add(' postGroups({action:"join-decide",id:g.id,agentId:agentId,accept:accept}).then(function(){poll(true);}).catch(function(e){alert("处理失败："+e.message);});');
 	add('}');
-	add('function mention(id){var el=$("gpIn");el.value=(el.value.replace(/\\s+$/,"")+(el.value.trim()?" ":"")+"@"+nameOf(id)+" ").replace(/^\\s+/,"");el.focus();syncSend();}');
+	/* ⚠ 2026-10-26：token 统一改成 `@<id>`（原来插 `@<name>`）—— bot 名含空格
+	   （`Code Architect`）会让 token 在空格处断开，后端边界判断与 offset 校验全失效。 */
+	add('function mention(id){var el=$("gpIn");el.value=(el.value.replace(/\\s+$/,"")+(el.value.trim()?" ":"")+"@"+id+" ").replace(/^\\s+/,"");el.focus();syncSend();atClose();}');
+	add('function atRender(){var box=$("gpAtPop");if(!box)return;'
+		+ 'if(!AT.open||!AT.items.length){box.hidden=true;box.innerHTML="";return;}'
+		+ 'box.innerHTML="";AT.items.forEach(function(it,i){'
+		+ 'var b=document.createElement("button");b.type="button";b.className="gp-atitem"+(i===AT.active?" is-on":"");b.setAttribute("data-ati",String(i));'
+		+ 'var m=document.createElement("span");m.className="m";m.textContent="@"+(it.kind==="all"?it.label:it.id);'
+		+ 'var n=document.createElement("span");n.className="n";n.textContent=it.label;'
+		+ 'b.appendChild(m);b.appendChild(n);'
+		/* ⚠ 必须 mousedown+preventDefault：否则点候选时 textarea 先失焦，caret 丢失、插入位置错 */
+		+ 'b.addEventListener("mousedown",function(ev){ev.preventDefault();});'
+		+ 'b.addEventListener("click",function(){atChoose(i);});box.appendChild(b);});box.hidden=false;}');
+	add('function atClose(){AT.open=false;AT.items=[];AT.active=0;atRender();}');
+	add('function atScan(){var el=$("gpIn");if(!el)return;var q=atQ(el.value,el.selectionStart);'
+		+ 'if(!q){atClose();return;}var items=atItems(q.query);if(!items.length){atClose();return;}'
+		+ 'AT.open=true;AT.start=q.start;AT.end=q.end;AT.query=q.query;if(AT.active>=items.length)AT.active=0;AT.items=items;atRender();}');
+	add('function atChoose(i){var it=AT.items[i];var el=$("gpIn");if(!it||!el)return;var v=el.value;'
+		+ 'var token="@"+(it.kind==="all"?it.label:it.id);var skip=(v.charAt(AT.end)===" ")?1:0;'
+		+ 'var pos=AT.start+token.length+1;el.value=v.slice(0,AT.start)+token+" "+v.slice(AT.end+skip);'
+		+ 'atClose();el.focus();try{el.setSelectionRange(pos,pos);}catch(e){}syncSend();'
+		+ 'var g=activeGroup();if(g){try{localStorage.setItem("gpDraft:"+g.id,el.value);}catch(e){}}}');
+	/** 返回 true = 已消费（调用方不要再当成 Enter 发送） */
+	add('function atKey(ev){if(!ev)return false;if(ev.isComposing||ev.keyCode===229)return false;'
+		+ 'if(!AT.open||!AT.items.length)return false;var n=AT.items.length;'
+		+ 'if(ev.key==="ArrowDown"){AT.active=(AT.active+1)%n;atRender();ev.preventDefault();return true;}'
+		+ 'if(ev.key==="ArrowUp"){AT.active=(AT.active-1+n)%n;atRender();ev.preventDefault();return true;}'
+		+ 'if(ev.key==="Enter"||ev.key==="Tab"){atChoose(AT.active);ev.preventDefault();return true;}'
+		+ 'if(ev.key==="Escape"){atClose();ev.preventDefault();return true;}return false;}');
+	/** Backspace/Delete 落在 token 上 ⇒ 整块删（与工作台 `atDelete` 同口径） */
+	add('function atDelKey(ev){if(!ev||(ev.key!=="Backspace"&&ev.key!=="Delete"))return false;var el=$("gpIn");if(!el)return false;'
+		+ 'var v=el.value;var s=el.selectionStart,e=el.selectionEnd;var ms=atCollect(v);if(!ms.length)return false;var t=null;'
+		+ 'for(var i=0;i<ms.length;i++){var m=ms[i];var te=(v.charAt(m.end)===" ")?m.end+1:m.end;'
+		+ 'if(s!==e){if(s<te&&e>m.start){t=m;break;}}'
+		+ 'else if(ev.key==="Backspace"){if(s>m.start&&s<=te){t=m;break;}}'
+		+ 'else{if(s>=m.start&&s<m.end){t=m;break;}}}'
+		+ 'if(!t)return false;var end=(v.charAt(t.end)===" ")?t.end+1:t.end;'
+		+ 'var start=(s===e)?t.start:Math.min(s,t.start);var finish=(s===e)?end:Math.max(e,end);'
+		+ 'el.value=v.slice(0,start)+v.slice(finish);try{el.setSelectionRange(start,start);}catch(x){}syncSend();'
+		+ 'var g=activeGroup();if(g){try{localStorage.setItem("gpDraft:"+g.id,el.value);}catch(x){}}'
+		+ 'atClose();ev.preventDefault();return true;}');
+	/** 气泡里把 `@id` 标成高亮（md 输出已转义，`@id` 仍是字面量；id 不含 HTML 特殊字符） */
+	add('function atMarkHtml(html,members){var out=String(html==null?"":html);'
+		+ '(members||[]).forEach(function(a){var id=String((a&&a.id)||"");if(!id)return;var needle="@"+id;'
+		+ 'var idxs=[];var i=out.indexOf(needle);'
+		+ 'while(i>=0){if(!/[A-Za-z0-9._-]/.test(out.charAt(i+needle.length)))idxs.push(i);i=out.indexOf(needle,i+1);}'
+		/* 从后往前插，避免前面的插入把后面的下标顶偏 */
+		+ 'for(var k=idxs.length-1;k>=0;k--){var p=idxs[k];out=out.slice(0,p)+"<span class=\\"gp-at\\">"+needle+"</span>"+out.slice(p+needle.length);}});'
+		+ 'return out;}');
+	add('function atCollect(text){var t=String(text==null?"":text);var out=[];'
+		+ 'atMembers().forEach(function(a){var id=String((a&&a.id)||"");if(!id)return;'
+		+ 'atHits(t,"@"+id).forEach(function(i){out.push({start:i,end:i+1+id.length,label:id,agentId:id});});});'
+		+ 'atHits(t,"@"+AT_ALL).forEach(function(i){out.push({start:i,end:i+1+AT_ALL.length,label:AT_ALL,kind:"all"});});'
+		+ 'out.sort(function(x,y){return x.start-y.start;});return out;}');
 	add('function note(t){var g=activeGroup();if(!g)return;g.transcript=(g.transcript||[]).concat([{role:"system",at:Date.now(),text:t}]);renderStack();}');
 	add('function syncSend(){$("gpSend").disabled=!$("gpIn").value.trim();}');
+	// ── `@` 提及（2026-10-26）────────────────────────────────────────────
+	/* 独立页是**手写 DOM**（没有 React），所以这里是 `lib/mentions.js` 的紧凑移植版。
+	   规则与工作台完全同口径（词边界 / 34 字上限 / token 用 @id），
+	   一致性由 `p3-197` 的向量 + `p3-198` 的页面断言一起守。
+	   ⚠ 页面脚本里一律用**双引号**，避免与外层 `add('…')` 的单引号打架。 */
+	add('var AT_ALL="所有人";');
+	add('var AT={open:false,start:0,end:0,query:"",items:[],active:0};');
+	add('function atMembers(){var g=activeGroup();if(!g)return [];return (g.members||[]).map(function(id){return agentOf(id);});}');
+	add('function atQ(v,caret){var t=String(v==null?"":v);var pos=(caret==null||caret<0)?t.length:caret;var s=t.lastIndexOf("@",pos-1);'
+		+ 'if(s<0||pos-s>34)return null;if(pos<=s)return null;'
+		+ 'if(s>0&&/[A-Za-z0-9._%+-]/.test(t.charAt(s-1)))return null;'
+		/* ③ 2026-10-26：query 里出现**任何空白**就不再是 token —— 打 `@ ` 立刻关浮层。
+		   （id 不含空格，所以"名字带空格"的 bot 不会被 @ 到一半就锁住；要 @ 它请用 id。） */
+		+ 'var q=t.slice(s+1,pos);if(/[\\s@#]/.test(q))return null;return {start:s,end:pos,query:q};}');
+	/* 不用 RegExp 做 id 匹配（转义在 `add('…')` 里极易出错）：手扫 + 词尾边界 */
+	add('function atHits(t,needle){var out=[];var i=t.indexOf(needle);while(i>=0){'
+		+ 'var after=t.charAt(i+needle.length);if(!/[A-Za-z0-9._-]/.test(after))out.push(i);i=t.indexOf(needle,i+1);}return out;}');
+	add('function atItems(q){var ms=atMembers();var n=String(q==null?"":q).toLowerCase();var out=[];'
+		+ 'var allHit=["所有人","all","everyone"].some(function(x){return x.toLowerCase().indexOf(n)>=0;});'
+		+ 'if(ms.length&&allHit)out.push({kind:"all",id:"",label:AT_ALL});'
+		+ 'ms.forEach(function(a){if(!a||out.length>=9)return;'
+		+ 'var hit=(String(a.name||"").toLowerCase().indexOf(n)>=0)||(String(a.id||"").toLowerCase().indexOf(n)>=0);'
+		+ 'if(hit)out.push({kind:"bot",id:String(a.id),label:String(a.name||a.id)});});return out;}');
+	// ── 附件（2026-10-26）────────────────────────────────────────────────
+	/* 上传走 `POST /api/group-file?group=&name=`（body = 原始字节）⇒ 拿 { id,name,size,mime }。
+	   和「工作台群聊面板」用**同一套接口**（`client.agents.js` 的 uploadGroupFile）——
+	   两处 UI 不一样，但附件协议只有一份。 */
+	add('var MAX_ATT=20971520;');
+	add('function pickFile(){var el=$("gpFile");if(el)el.click();}');
+	add('function renderFiles(){');
+	add(' var box=$("gpFiles");if(!box)return;');
+	add(' box.innerHTML=S.files.length?S.files.map(function(f,i){');
+	add('  if(f.pending)return "<span class=\\"gp-fchip is-busy\\">⏳ "+esc(f.name)+"</span>";');
+	add('  return "<span class=\\"gp-fchip\\">"+(/^image\\//.test(String(f.mime||""))?"🖼 ":"📄 ")+esc(f.name)');
+	add('   +"<button type=\\"button\\" class=\\"gp-fx\\" data-fx=\\""+i+"\\" title=\\"移除\\">✕</button></span>";');
+	add(' }).join(""):"";');
+	add('}');
+	add('function uploadFile(file){');
+	add(' var g=activeGroup();if(!g||!file)return;');
+	add(' if(file.size>MAX_ATT){note("「"+file.name+"」太大："+(file.size/1048576).toFixed(1)+"MB，上限 20MB");return;}');
+	add(' var key="p"+Date.now().toString(36)+Math.random().toString(36).slice(2,6);');
+	add(' S.files=S.files.concat([{key:key,name:file.name,size:file.size,mime:file.type||"",pending:true}]);');
+	add(' renderFiles();');
+	add(' fetch("/x/agents/api/group-file?group="+encodeURIComponent(g.id)+"&name="+encodeURIComponent(file.name||"file"),');
+	add('  {method:"POST",headers:{"content-type":file.type||"application/octet-stream"},body:file})');
+	add('  .then(function(r){return r.json().catch(function(){return {};}).then(function(j){return {ok:r.ok,j:j};});})');
+	add('  .then(function(x){');
+	add('   if(!x.ok||x.j.ok===false)throw new Error(x.j.error||("HTTP "+x.ok));');
+	add('   S.files=S.files.filter(function(f){return f.key!==key;}).concat(x.j.file?[x.j.file]:[]);');
+	add('   renderFiles();syncSend();');
+	add('  })');
+	add('  .catch(function(e){');
+	add('   S.files=S.files.filter(function(f){return f.key!==key;});');
+	add('   renderFiles();note("附件上传失败："+(e&&e.message||e));');
+	add('  });');
+	add('}');
 	// ── 发送 ──
 	add('function send(){');
-	add(' var g=activeGroup();var el=$("gpIn");var text=el.value.trim();if(!g||!text)return;');
+	// ★ 2026-10-26 附件：允许「只有附件、没有文字」（后端也放开了这条）
+	add(' var g=activeGroup();var el=$("gpIn");var text=el.value.trim();if(!g)return;');
+	add(' var files=S.files.slice();if(!text&&!files.length)return;');
 	add(' el.value="";syncSend();');
+	// 发出去了 ⇒ 草稿作废（否则下次进这个群又填回来一条重复内容）
+	add(' try{localStorage.removeItem("gpDraft:"+g.id);}catch(x){}');
 	add(' var mode=normMode(g.mode);');
 	add(' var hits=(g.members||[]).filter(function(id){return text.indexOf("@"+nameOf(id))>=0||text.indexOf("@"+id)>=0;});');
 	add(' var ids=mode==="all"?(g.members||[]).slice():(mode==="mentions"?hits:[]);');
 	add(' if(mode==="silent"){note("silent 模式：只进群记录，不唤醒成员。");}');
 	add(' else if(mode==="mentions"&&!ids.length){note("仅 @ 派发模式：没有 @ 到成员，未派发。");}');
 	add(' else if(mode==="digest"){note("digest 模式：这条先攒着；攒满条数或等满秒数就汇总派发。");}');
-	add(' g.transcript=(g.transcript||[]).concat([{role:"user",at:Date.now(),text:text}]);renderStack();');
-	add(' postGroups({action:"message",id:g.id,text:text}).then(function(){ids.forEach(function(id){delete S.busy[id];});poll(true);pollWork();})');
-	add('  .catch(function(e){ids.forEach(function(id){delete S.busy[id];});note("发送失败："+e.message);});');
+	add(' g.transcript=(g.transcript||[]).concat([{role:"user",at:Date.now(),text:text,files:files}]);renderStack();');
+	add(' S.files=[];renderFiles();');
+	add(' var body={action:"message",id:g.id,text:text};if(files.length)body.files=files;'
+		// `@` 提及：把 offset 一起发（后端优先用它派发 ⇒ 修掉子串误判）
+		+ 'var _ats=atCollect(text);if(_ats.length)body.mentions=_ats;'
+		+ 'atClose();');
+	add(' postGroups(body).then(function(){ids.forEach(function(id){delete S.busy[id];});poll(true);pollWork();})');
+	add('  .catch(function(e){');
+	add('   ids.forEach(function(id){delete S.busy[id];});');
+	/* 失败时把附件**放回**待发列表：否则重试时附件没了，得重新传一遍。 */
+	add('   S.files=files.concat(S.files);renderFiles();');
+	/* ★ 2026-10-26 复刻 DeepSeekBot：失败**不是**一句 note 就完事，而是把它挂到
+	   `S.failed` 里常驻（poll 覆盖不掉），在列表底部标红 + 可重试/删除。 */
+	add('   S.failed=S.failed.concat([{cid:"f"+Date.now().toString(36),text:text,at:Date.now(),err:String((e&&e.message)||e)}]);');
+	add('   renderStack();');
+	add('  });');
 	add('}');
+	/* 重试：从 failed 里摘掉 → 重新发；再失败就**放回去**（cid 不变，不会越点越多） */
+	add('function retrySend(cid){');
+	add(' var f=null,i;for(i=0;i<S.failed.length;i++){if(S.failed[i].cid===cid){f=S.failed[i];break;}}');
+	add(' var g=activeGroup();if(!f||!g)return;');
+	add(' S.failed=S.failed.filter(function(x){return x.cid!==cid;});renderStack();');
+	add(' postGroups({action:"message",id:g.id,text:f.text}).then(function(){poll(true);})');
+	add('  .catch(function(e){S.failed=S.failed.concat([{cid:cid,text:f.text,at:f.at,err:String((e&&e.message)||e)}]);renderStack();});');
+	add('}');
+	add('function dropFailed(cid){S.failed=S.failed.filter(function(x){return x.cid!==cid;});renderStack();}');
 	// ── 工作 ──
 	add('function pollWork(){');
 	add(' fetch("/x/agents/api/assignments").then(function(r){return r.json();}).then(function(d){S.work=(d&&d.items)||[];if(S.tab==="work")renderRight();}).catch(function(){});');
@@ -664,12 +879,17 @@ function clientJs(keep) {
 	add('  var gs=d.groups;var sig=JSON.stringify(gs);');
 	add('  if(!force&&sig===S.last)return;S.last=sig;');
 	/* ⚠⚠ 2026-10-26 真机报障「群聊发 test 后黑屏」：
-	   这里原来无条件 `S.groups=gs`。发消息会唤醒成员（写 agent-groups.json），
+	   原代码是无条件 `S.groups=gs`。发消息会写 agent-groups.json，
 	   若那一刻读到**空列表/坏数据**，`activeGroup()` 就返回 null ⇒
-	   `renderStack()` 的 `if(!g){ $("gpStack").innerHTML=""; return }` 会把消息区**清空** ⇒ 看着像黑屏。
-	   ⇒ 空列表不许覆盖已有画面（除非本来就没有群）。 */
+	   `renderStack()` 的 `if(!g){…清空…}` 会把消息区清空 ⇒ 看着像黑屏。
+	   ⇒ 空列表不许覆盖已有画面（除非本来就没有群）。
+	   ⚠ 注意：保护分支 `return` 之后**仍然必须** `S.groups=gs` —— 少了它 `S.groups` 永远是空，
+	     整页消息区/弹层全空（这个错我第一版就犯了，p3-166 八条红抓出来的）。 */
 	add('  if(!gs.length&&S.groups&&S.groups.length){note("群聊列表暂时读不到，已保留当前画面（稍后自动重试）");return;}');
+	add('  S.groups=gs;');
 	add('  if(!S.active&&gs.length)S.active=gs[0].id;');
+	/* ⚠ 切群清空待发附件：附件上传时就绑定了 group，带到别的群里是错的。 */
+	add('  if(S.filesGroup!==S.active){S.filesGroup=S.active;S.files=[];renderFiles();atClose();}');
 	add('  var g=activeGroup();');
 	add('  if(g&&!S.memAgent){S.memAgent=(g.members&&g.members[0])||(S.agents[0]&&S.agents[0].id)||"";}');
 	add('  if(S.memAgent&&S.loadedAgent!==S.memAgent){S.loadedAgent=S.memAgent;R.sel=null;R.diff=null;loadRight();}');
@@ -691,7 +911,16 @@ function clientJs(keep) {
 	add('  $("gpOvl").classList.remove("on");');
 	add(' }');
 	add('}');
+	/* 切群时把该群的草稿填回输入框（同一个群不被覆盖，否则用户正打字会被回滚） */
+	add('function applyDraft(){');
+	add(' var g=activeGroup();if(!g)return;var el=$("gpIn");if(!el)return;');
+	add(' if(S.draftGroup===g.id)return;');
+	add(' S.draftGroup=g.id;');
+	add(' try{el.value=localStorage.getItem("gpDraft:"+g.id)||"";}catch(x){el.value="";}');
+	add(' syncSend();');
+	add('}');
 	add('function render(){');
+	add(' try{applyDraft();}catch(x){}');
 	/* ⚠ 2026-10-26：渲染整体包一层 try/catch —— 之前任何一步抛错都会让 DOM 停在
 	   "清空后没填"的中间态（= 黑屏），而 `poll()` 的 `.catch(()=>{})` 又把异常吞了，
 	   真机上完全看不到原因。现在改成：出错时在状态条上明说。 */
@@ -713,9 +942,33 @@ function clientJs(keep) {
 	add(' var pk=e.target.closest("[data-pick]");');
 	add(' if(pk){var pid=pk.getAttribute("data-pick");PICK[pid]=!PICK[pid];pk.classList.toggle("on",!!PICK[pid]);return;}');
 	add('});');
-	add('$("gpIn").addEventListener("input",syncSend);');
-	add('$("gpIn").addEventListener("keydown",function(ev){if(ev.key==="Enter"&&!ev.shiftKey){ev.preventDefault();send();}});');
+	/* 输入：同步按钮状态 **+ 存草稿**（复刻 DeepSeekBot 的草稿持久化 —— 切群/刷新不丢） */
+	add('$("gpIn").addEventListener("input",function(){syncSend();');
+	add(' var g=activeGroup();if(!g)return;try{localStorage.setItem("gpDraft:"+g.id,$("gpIn").value);}catch(x){}');
+	add('});');
+	/* `@` 候选要**先于**「Enter 发送」处理：返回 true 表示已消费（选候选/关浮层） */
+	add('$("gpIn").addEventListener("keydown",function(ev){if(atKey(ev))return;if(atDelKey(ev))return;if(ev.key==="Enter"&&!ev.shiftKey){ev.preventDefault();send();}});');
+	add('$("gpIn").addEventListener("input",function(){atScan();});');
+	add('$("gpIn").addEventListener("click",function(){atScan();});');
 	add('$("gpSend").onclick=send;');
+	/* 附件入口（2026-10-26）：📎 选文件 → 立刻上传 → chip 出现；chip 上的 ✕ 移除 */
+	add('var _clip=$("gpClip");if(_clip)_clip.onclick=pickFile;');
+	add('var _file=$("gpFile");if(_file)_file.onchange=function(ev){');
+	add(' var list=ev.target.files?Array.prototype.slice.call(ev.target.files):[];');
+	add(' ev.target.value="";');
+	add(' for(var i=0;i<list.length;i++)uploadFile(list[i]);');
+	add('};');
+	add('var _fbox=$("gpFiles");if(_fbox)_fbox.addEventListener("click",function(ev){');
+	add(' var t=ev.target;if(!t||!t.getAttribute)return;');
+	add(' var i=t.getAttribute("data-fx");if(i===null)return;');
+	add(' S.files=S.files.filter(function(f,k){return String(k)!==String(i);});renderFiles();syncSend();');
+	add('});');
+	/* 失败气泡上的「重试 / 删除」——事件委托（气泡是 innerHTML 重建的，直接绑会丢） */
+	add('$("gpStack").addEventListener("click",function(e){');
+	add(' var t=e.target;if(!t||!t.closest)return;');
+	add(' var r=t.closest("[data-retry]");if(r){retrySend(r.getAttribute("data-retry"));return;}');
+	add(' var d=t.closest("[data-drop]");if(d){dropFailed(d.getAttribute("data-drop"));return;}');
+	add('});');
 	add('$("gpLeftBtn").onclick=function(){');
 	add(' var l=$("gpLeft");');
 	add(' if((window.innerWidth||1200)<=1080){S.leftOpen=!l.classList.contains("open");l.classList.toggle("open",S.leftOpen);}');
@@ -793,8 +1046,14 @@ export function renderGroupPage({ groups, agents, activeId, openNew, keep } = {}
 		+ '<section class="gp-chat">'
 		+ '<div class="gp-island"><div class="gp-pill" id="gpPill"></div></div>'
 		+ '<div class="gp-body"><div class="gp-stack" id="gpStack"></div></div>'
-		+ '<div class="gp-comp"><div class="gp-box"><textarea id="gpIn" placeholder="发消息…（Enter 发送，@ 选成员）"></textarea></div>'
-		+ '<button class="gp-clip" title="附件" onclick="note(\'附件还没接上：先把文件路径贴进输入框。\')">📎</button>'
+		// 待发附件条（2026-10-26）：上传成功后显示 chip，可单个移除
+		+ '<div class="gp-files" id="gpFiles"></div>'
+		// `@` 候选浮层（2026-10-26）：贴在看板输入框上方（`.gp-comp` 已是 position:relative）
+		+ '<div class="gp-comp"><div class="gp-atpop" id="gpAtPop" hidden></div>'
+		+ '<div class="gp-box"><textarea id="gpIn" placeholder="发消息…（Enter 发送，@ 选成员）"></textarea></div>'
+		// ★ 2026-10-26 附件真的接上了（原来这行是「附件还没接上：先把文件路径贴进输入框」的占位提示）
+		+ '<input type="file" id="gpFile" multiple hidden>'
+		+ '<button class="gp-clip" id="gpClip" title="添加附件（图片/文件，单个 ≤20MB）">📎</button>'
 		+ '<button class="gp-send" id="gpSend" disabled title="发送">↑</button></div>'
 		+ '<div class="gp-foot"><span class="gp-chip">◈ 默认模型</span><span class="gp-chip">▢ 0 个工作区</span>'
 		+ '<span class="sp"></span><span class="tok" id="gpTok">—</span></div>'
