@@ -930,21 +930,22 @@ export async function apply(ctx, config) {
 	// ── Agent 工具（★ 2026-10-27）：让右侧对话能识别与发布 ──────────────────
 	//   为什么放这里：`market()` 是懒建的（凭据服务晚于 apply 注入），
 	//   所以工具里**不能**预先持有 client，必须每次调 `market()` ✓
-	try {
-		if (ctx.tools && typeof ctx.tools.register === 'function') {
-			ctx.effect(() => marketToolDefinitions({
-				inspectGithubRepo,
-				// ★ 2026-10-27：用 `publishDistribution` 而不是 `publishExternal` ——
-				//   后者把 distribution 硬编码成 `github-source`，而 monorepo（如 BrowserSkill）
-				//   必须发 `npm` 子包，否则「发布成功但装不上」（文档 §7）✗
-				publishDistribution,
-				market,
-			}).map(def => ctx.tools.register(def)), 'vssaros-marketplace: agent tools');
-		}
-	} catch (e) {
-		// 拿不到 tools 服务（老版本 dsh / 非 agent 模板）⇒ 只是没有工具，页面照常可用 ✓
-		console.error('[vssaros-marketplace] 注册 agent 工具失败（页面仍可用）', e);
-	}
+	// ⚠ **必须 `ctx.inject(['tools'])`**（★ 2026-10-26 真机日志抓到）：
+	//   直接读 `ctx.tools` 会抛 `cannot get property "tools" without inject`，
+	//   而它被 catch 吞掉 ⇒ 表现成"商城工具**静默不存在**"（右侧对话里模型说没有这个工具）✗
+	//   证据：`vssaros-agents/lib/index.js` 就是 `export const inject = ['tools']` ✓
+	ctx.inject(['tools'], (scope) => {
+		const tools = scope.tools || (scope.get && scope.get('tools'));
+		if (!tools || typeof tools.register !== 'function') { return; }
+		scope.effect(() => marketToolDefinitions({
+			inspectGithubRepo,
+			// ★ 2026-10-27：用 `publishDistribution` 而不是 `publishExternal` ——
+			//   后者把 distribution 硬编码成 `github-source`，而 monorepo（如 BrowserSkill）
+			//   必须发 `npm` 子包，否则「发布成功但装不上」（文档 §7）✗
+			publishDistribution,
+			market,
+		}).map(def => tools.register(def)), 'vssaros-marketplace: agent tools');
+	});
 
 	ctx.inject(['webServer', 'connection'], webCtx => webCtx.effect(() => webCtx.webServer.register({
 		kind: 'prefix',
