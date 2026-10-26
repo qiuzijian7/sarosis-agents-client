@@ -947,6 +947,18 @@ function makeSkill(localId, version, extra = {}) {
 			ma2.includes('migrated: \'builtin→custom\'') && ma2.includes('/^source:\\s*builtin\\s*$/m'));
 	}
 
+// ── ㉛ preset 必须用**双位置参数** `select(sessionId, presetId)`（2026-10-26 真机）──
+//   官方形态见 `vssaros-chat-surface/lib/client.preset.js:254`：
+//     `ctx.remote.agentPresets.select(sid, id)`
+//   ⚠ 只试「单参」和「对象」两种都**不生效且不报错** ⇒ 静默失败 ✗
+{
+		const wb4 = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'workbench.js'), 'utf8');
+		check('㉛ 试 **双位置参数** `select(sessionId, presetId)`（官方形态）',
+			wb4.includes('svc[name](sessionId, MARKET_PRESET)') && wb4.includes('(sid,id)'));
+		check('㉛ 三种形态都试（双参 → 单参 → 对象），全部记进诊断',
+			wb4.includes('presetDiag.calls.push') && wb4.includes('`${label}.${name}(obj'));
+	}
+
 fs.rmSync(dataRoot, { recursive: true, force: true });
 console.log(`\n[marketplace publish] ${pass} passing / ${fails.length} failing`);
 if (fails.length) { console.log('失败：' + fails.join('、')); }

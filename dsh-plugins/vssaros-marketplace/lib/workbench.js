@@ -108,6 +108,19 @@ window.__ModuleLoader__.load({
 				if (!svc || typeof svc !== 'object') { continue; }
 				for (const name of ['select', 'selectPreset', 'setPreset', 'choose', 'apply']) {
 					if (typeof svc[name] !== 'function') { continue; }
+					// ★★ **两个位置参数** `select(sessionId, presetId)` —— 这才是官方形态
+					//   （`vssaros-chat-surface/lib/client.preset.js:254`：
+					//     `ctx.remote.agentPresets.select(sid, id)`，与官方 seat 内部同一条）
+					//   ⚠ 之前只试「单参」和「对象」两种 ⇒ 都不对，所以一直静默失败 ✗
+					if (sessionId) {
+						try {
+							svc[name](sessionId, MARKET_PRESET);
+							presetDiag.api = `${label}.${name}(sid,id)`;
+							presetDiag.ok = true;
+							globalThis.__vssarosMarketPreset = presetDiag;
+							return true;
+						} catch (e0) { presetDiag.calls.push(`${label}.${name}(sid,id): ${String(e0 && e0.message || e0).slice(0, 60)}`); }
+					}
 					try {
 						svc[name](MARKET_PRESET);
 						presetDiag.api = `${label}.${name}(id)`;
