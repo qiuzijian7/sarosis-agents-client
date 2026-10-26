@@ -1036,6 +1036,31 @@ function makeSkill(localId, version, extra = {}) {
 			pageJs2.includes('d.getFullYear()') && pageJs2.includes('d.getMonth()') && pageJs2.includes('d.getDate()'));
 	}
 
+// ── ㉟ 发布时带上图标（2026-10-26 用户：「通过商城助手上传的 plugin，没有图片」）──
+//   三层根因：① 工具没参数 ② meta 不透传 ③ ensurePackage 不带
+{
+		const at2 = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'agentTools.js'), 'utf8');
+		const pub2 = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'publisher.js'), 'utf8');
+
+		check('㉟ 工具参数有 icon / cover',
+			at2.includes("icon: { type: 'string'") && at2.includes("cover: { type: 'string'"));
+		check('㉟ ensurePackage 把 icon/cover 透传给服务端（服务端本来就接受）',
+			pub2.includes('{ icon: meta.icon.trim() }') && pub2.includes('{ cover: meta.cover.trim() }'));
+
+		// ★ 三级优先：显式 → inspect 的 logo → **从 source 现推 owner 头像**
+		//   第三级不能少：`via` 显式给出时**不调 inspect**（info 为 null），没有它就又没图
+		check('㉟ 图标三级优先（显式 → logo → 现推 owner 头像）',
+			at2.includes('function iconOf({ explicit, logo, repo })')
+			&& at2.includes('github.com/${owner}.png?size=200'));
+		check('㉟ 拿不到 owner 时返回空（**不编造**假 URL）', at2.includes("return owner ? ") );
+
+		// ⚠ `info` 在 `if (!distribution)` 块里是 `const` ⇒ 块外引用会 `info is not defined`
+		//   （真机踩到）⇒ 必须在外面用 `logoFromInspect` 承接
+		check('㉟ 用 `logoFromInspect` 承接（不在块外引用块内 const）',
+			at2.includes('let logoFromInspect') && at2.includes('logoFromInspect = info.logo')
+			&& !/^\s+info,$/m.test(at2));
+	}
+
 fs.rmSync(dataRoot, { recursive: true, force: true });
 console.log(`\n[marketplace publish] ${pass} passing / ${fails.length} failing`);
 if (fails.length) { console.log('失败：' + fails.join('、')); }

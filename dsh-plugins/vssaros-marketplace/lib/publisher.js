@@ -182,6 +182,13 @@ async function ensurePackage({ market, kind, localId, meta = {} }) {
 			...(typeof meta.description === 'string' && meta.description ? { description: meta.description } : {}),
 			...(typeof meta.category === 'string' && meta.category ? { category: meta.category } : {}),
 			...(Array.isArray(meta.tags) && meta.tags.length ? { tags: meta.tags } : {}),
+			// ★ 2026-10-26（用户：「通过商城助手上传的 plugin，没有图片」）：
+			//   服务端 `routes.ts` 的建包 schema **本来就接受** `icon` / `cover`
+			//   （`icon: z.string().optional()` / `cover: z.string().max(2048).optional()`），
+			//   但这里从来**没传** ⇒ 卡片只能显示 📦 兜底 ✗
+			//   ⇒ 透传（`icon` = 小图标，`cover` = 大图；商城页面两者的用途不同）
+			...(typeof meta.icon === 'string' && meta.icon.trim() ? { icon: meta.icon.trim() } : {}),
+			...(typeof meta.cover === 'string' && meta.cover.trim() ? { cover: meta.cover.trim() } : {}),
 		});
 		return true;
 	} catch (e) {

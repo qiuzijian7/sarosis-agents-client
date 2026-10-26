@@ -67,6 +67,27 @@ const INSPECT_SCHEMA = {
  *   market: () => object,
  * }} deps
  */
+/**
+ * 决定商品图标（★ 2026-10-26，用户：「通过商城助手上传的 plugin，没有图片」）。
+ *
+ * 三级优先：
+ * ① 调用方**显式传**的（作者自己指定了图）
+ * ② `inspect` 拿到的 `logo`（`github.com/<owner>.png?size=200`）
+ * ③ **从 repo 现推** owner 头像 —— 这级不能少：`via` 显式给出时**不会调 inspect**
+ *    （`info` 为 null），没有它就又变成"没图"了。推头像**不需要任何网络请求** ✓
+ *
+ * 拿不到 owner（source 不是合法 `owner/repo`）⇒ 返回空串
+ * （调用方不写该字段、让服务端兜底 —— **不编造**一个假 URL）。
+ */
+function iconOf({ explicit, logo, repo }) {
+	const e = typeof explicit === 'string' ? explicit.trim() : '';
+	if (e) { return e; }
+	const fromInfo = typeof logo === 'string' ? logo.trim() : '';
+	if (fromInfo) { return fromInfo; }
+	const owner = String(repo ?? '').split('/')[0];
+	return owner ? `https://github.com/${owner}.png?size=200` : '';
+}
+
 export function marketToolDefinitions(deps) {
 	const { inspectGithubRepo, publishDistribution, market } = deps;
 
@@ -144,6 +165,11 @@ export function marketToolDefinitions(deps) {
 					},
 					npmName: { type: 'string', description: 'via=npm 时的 npm 包名，如 `@wxg-prc-cpg/browser-skill-dsh-plugin`。' },
 					name: { type: 'string', description: '展示名称（可省略）。' },
+					// ★ 2026-10-26（用户：「通过商城助手上传的 plugin，没有图片」）：
+					//   原来工具**根本没有图标参数**，于是卡片只能显示 📦 兜底。
+					//   两个都可省略 —— 省略时自动用仓库 owner 的头像（inspect 的 `logo`）。
+					icon: { type: 'string', description: '小图标 URL（可省略；省略时自动用 GitHub owner 头像）。' },
+					cover: { type: 'string', description: '卡片大图 URL（可省略；省略时同 icon）。' },
 					description: { type: 'string', description: '介绍文案（可省略）。若商品依赖外部 CLI/扩展，**第一行写清依赖**。' },
 					changelog: { type: 'string', description: '本版更新说明（可省略）。' },
 					includeDependencyNote: {
@@ -222,6 +248,10 @@ export function marketToolDefinitions(deps) {
 
 				// ── 决定 distribution ──────────────────────────────────
 				let distribution;
+				// ★ 从 inspect 拿到的图标（只在这个作用域用，见 `iconOf` 的三级优先）
+				//   ⚠ 不能直接把 `info` 提到外面：它在 `if (!distribution)` 块里 `const`，
+				//     块外引用会 `info is not defined`（真机踩到）
+				let logoFromInspect = '';
 				if (via === 'npm') {
 					distribution = { type: 'npm', name: npmName };
 				} else if (via === 'github-source') {
@@ -231,6 +261,8 @@ export function marketToolDefinitions(deps) {
 				} else {
 					// 自动识别：拿不到推荐就**明确报错**，不猜
 					const info = await inspectGithubRepo(source);
+					// 记下 logo 供 meta 用（块外引用会 ReferenceError）
+					if (info && typeof info.logo === 'string') { logoFromInspect = info.logo; }
 					if (!info || info.ok === false) {
 						return { ok: false, error: `识别失败：${(info && info.error) || '未知原因'}` };
 					}
@@ -256,6 +288,21 @@ export function marketToolDefinitions(deps) {
 						meta: {
 							...(String(params?.name ?? '').trim() ? { name: String(params.name).trim() } : {}),
 							...(finalDescription ? { description: finalDescription } : {}),
+							// ★ 2026-10-26（用户：「通过商城助手上传的 plugin，没有图片」）：
+							//   优先级 ① 调用方显式给 ② `inspect` 拿到的仓库 owner 头像
+							//          ③ **从 source 现推**（`github.com/<owner>.png?size=200`）
+							//   ⚠ 第 ③ 条很重要：`via` 显式给出时**不会调 inspect**（`info` 是 null），
+							//     没有它就又变成"没图"了。推 owner 头像**不需要任何网络请求** ✓
+							...(iconOf({
+								explicit: params?.icon,
+								logo: logoFromInspect,
+								repo: normalizeRepo(String(params?.source ?? '')),
+							}) ? { icon: iconOf({ explicit: params?.icon, logo: logoFromInspect, repo: normalizeRepo(String(params?.source ?? '')) }) } : {}),
+							...(iconOf({
+								explicit: params?.cover,
+								logo: logoFromInspect,
+								repo: normalizeRepo(String(params?.source ?? '')),
+							}) ? { cover: iconOf({ explicit: params?.cover, logo: logoFromInspect, repo: normalizeRepo(String(params?.source ?? '')) }) } : {}),
 						},
 					});
 					return {
