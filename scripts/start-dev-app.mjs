@@ -38,6 +38,20 @@ const note = (line) => {
 	try { fs.appendFileSync(EXIT_LOG, `${stamp}  ${line}\n`, 'utf8'); } catch { /* ignore */ }
 };
 
+// 第一行必须在**任何探测之前**写下：只要 F5 触发了 preLaunchTask，这里就一定有记录。
+// 好处：以后"F5 没反应"能一眼区分——完全没有这行 ⇒ 任务没跑（IDE 侧问题）；
+// 有这行却没有后续 ⇒ 卡在某一步（配下面的看门狗定位）。
+note(`LAUNCH pid=${process.pid} argv=${process.argv.slice(2).join(' ').slice(0, 160) || '(none)'}`);
+
+// 看门狗：30s 还没走到 START ⇒ 说明卡在端口探测/进程查询/编译上，把已知状态写出来。
+const STAGE = { stage: 'init' };
+const setStage = (s) => { STAGE.stage = s; };
+const bootWatchdog = setTimeout(() => {
+	note(`WATCHDOG 启动器 30s 仍停在 stage=${STAGE.stage} ⇒ 这一步卡住了（端口幽灵 / PowerShell 查询 / 编译）`);
+	note(`WATCHDOG 现场：node=${process.version} pid=${process.pid}`);
+}, 30000);
+bootWatchdog.unref?.();
+
 /** 跑一条命令并取 stdout（失败返回空串，绝不抛）。 */
 const execSyncSafe = (cmd) => {
 	const r = spawnSync('cmd.exe', ['/d', '/s', '/c', cmd], { encoding: 'utf8', windowsHide: true, timeout: 15000 });
@@ -45,10 +59,17 @@ const execSyncSafe = (cmd) => {
 };
 
 const portFree = (port) => new Promise((resolve) => {
+	// ⚠ 必须带超时：幽灵端口上 `listen` 可能既不报 error 也不报 listening ⇒ Promise 永不
+	//   settle ⇒ 启动器**在写第一条日志之前挂住** ⇒ 用户看到的就是「F5 毫无反应」，
+	//   连 app-exit.log 都没有一行（2026-10-25 实测：多个 node 进程卡死在这里）✗
+	let settled = false;
+	const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+	const timer = setTimeout(() => { try { srv.close(); } catch { /* ignore */ } done(false); }, 1500);
+	timer.unref?.();
 	const srv = net.createServer();
-	srv.once('error', () => resolve(false));
-	srv.once('listening', () => srv.close(() => resolve(true)));
-	srv.listen(port, '127.0.0.1');
+	srv.once('error', () => { clearTimeout(timer); done(false); });
+	srv.once('listening', () => { clearTimeout(timer); srv.close(() => done(true)); });
+	try { srv.listen(port, '127.0.0.1'); } catch { clearTimeout(timer); done(false); }
 });
 
 const running = () => {
@@ -89,12 +110,16 @@ if (running() > 0) {
 		note('SKIP a dev instance is already running (visible window present), attach to it');
 		process.exit(0);
 	}
+	// ★★ 2026-10-24（用户报「F5 无法启动」）：这里原来只**提示**、不动手，于是 F5 每次都被挡
+	//   回去 —— 旧实例进程活着但桌面窗口已销毁 ⇒ 屏幕上什么都没有，新实例又不许起 ⇒ 看起来
+	//   "F5 完全失效"。僵尸实例本来就没有可用界面，直接换掉没有任何损失 ⇒ **自动清理后重开**。
+	//   想保留现场排查时设 `DSH_DEV_KEEP_ZOMBIE=1`。
 	note('SKIP-ZOMBIE 实例在跑但**没有桌面窗口**（窗口已销毁、IDE 主窗口仍被隐藏）⇒ 屏幕上看不到 app');
-	if (process.env.DSH_DEV_FORCE_RESTART !== '1') {
-		note('        处理：① 设 $env:DSH_DEV_FORCE_RESTART=1 再 F5（自动结束僵尸实例并重开）；② 或手动结束 Saroasis harness.exe 后 F5');
+	if (process.env.DSH_DEV_KEEP_ZOMBIE === '1') {
+		note('        已设 DSH_DEV_KEEP_ZOMBIE=1 ⇒ 保留僵尸实例不处理（手动结束 Saroasis harness.exe 后 F5）');
 		process.exit(0);
 	}
-	note('        按 DSH_DEV_FORCE_RESTART=1 ⇒ 结束僵尸实例后重开');
+	note('        AUTO-RESTART 结束僵尸实例后重开（DSH_DEV_KEEP_ZOMBIE=1 可关）');
 	spawnSync('taskkill', ['/F', '/IM', 'Saroasis harness.exe'], { windowsHide: true });
 	await new Promise((r) => setTimeout(r, 4000));
 }
@@ -142,47 +167,82 @@ const waitFreePair = async (d, i, ms) => {
 };
 
 let chosen = null;
-for (let k = 0; k < CANDIDATES.length; k++) {
+// DSH_DEV_PORTS 显式指定时**跳过自动挑端口**（以前会被下面的候选循环覆盖，等于没生效）
+const portsOverridden = /^\d+:\d+$/.test(PORTS_ENV);
+for (let k = 0; portsOverridden ? false : k < CANDIDATES.length; k++) {
 	const [d, i] = CANDIDATES[k];
+	// 先看是"真有活进程占着"还是"幽灵"：
+	//   · 活进程 ⇒ 值得等（可能正在退出），默认组等 20s、其它 3s；
+	//   · 幽灵  ⇒ 占用者进程已死，端口几秒内**不会**释放 ⇒ 立刻换下一组。
+	// 以前不分这两种，默认组在幽灵上白等 20s ⇒ 用户按完 F5 要等 30s 才见窗口，
+	// 主观上就是"按了没反应"（2026-10-25 实测 LAUNCH→PORTBUSY 之间 21s 空档）✗
+	const freeNow = (await portFree(d)) && (await portFree(i));
+	if (freeNow) { chosen = [d, i]; break; }
+	const dd = WHO_OWNS(d), di = WHO_OWNS(i);
+	const ghostOnly = !dd.alive && !di.alive;
+	note(`PORTBUSY ${d}=${dd.alive ? dd.name + ' pid ' + dd.pid : 'GHOST'} ${i}=${di.alive ? di.name + ' pid ' + di.pid : 'GHOST'}${ghostOnly ? ' ⇒ 幽灵，直接换下一组' : ' ⇒ 等待释放'}`);
+	if (ghostOnly) { continue; }
 	const waitMs = (d === DEFAULT_PAIR[0] && i === DEFAULT_PAIR[1]) ? 20000 : 3000;
 	if (await waitFreePair(d, i, waitMs)) { chosen = [d, i]; break; }
-	const dd = WHO_OWNS(d), di = WHO_OWNS(i);
-	note(`PORTBUSY ${d}=${dd.alive ? dd.name + ' pid ' + dd.pid : 'GHOST'} ${i}=${di.alive ? di.name + ' pid ' + di.pid : 'GHOST'}`);
+	note(`PORTWAIT ${d}/${i} 等 ${waitMs / 1000}s 仍被占用 ⇒ 换下一组`);
 }
 if (!chosen) {
-	note(`ABORT 所有候选端口都被占用/幽灵占用 ⇒ 不启动。处理：关掉占用者；或注销会话/重启机器释放幽灵端口；或 $env:DSH_DEV_PORTS='<dbg>:<inspect>' 并同步改 launch.json`);
-	process.exit(2);
+	// 全部候选都不可用（通常是幽灵累积）⇒ 交给系统分配（0），启动后从 DevToolsActivePort
+	// 读回真实端口再同步 launch.json ⇒ 保证 F5 **永不**因为端口问题失败。
+	debugPort = 0;
+	inspectPort = 0;
+	note('PORTRANDOM 所有候选端口都不可用（幽灵累积）⇒ 改用系统分配（--remote-debugging-port=0 / --inspect=0）');
 }
 
-debugPort = chosen[0];
-inspectPort = chosen[1];
+if (chosen) {
+	debugPort = chosen[0];
+	inspectPort = chosen[1];
+}
 
 // 让 attach 配置**永远**跟着实际端口走（否则 F5 必然连不上）。
-// ⚠ 必须无条件同步：幽灵端口释放后我们会回到 9799，而 launch.json 可能还停在上一轮换的
-//   9222（本机 14:52 → 14:57 就撞到过一次）⇒ 两边又不一致。这里读文件里的**当前**端口再改。
-try {
-	const lj = path.join(REPO, '.vscode', 'launch.json');
-	const text = fs.readFileSync(lj, 'utf8');
-	const portAfter = (marker, src) => {
-		const at = src.indexOf(marker);
-		if (at < 0) { return 0; }
-		const m = /"port"\s*:\s*(\d+)/.exec(src.slice(at, at + 4000));
-		return m ? Number(m[1]) : 0;
-	};
-	const curD = portAfter('Launch & Attach Dev', text);
-	const curI = portAfter('Attach to Main Process', text);
-	let next = text;
-	if (curD && curD !== debugPort) { next = next.replace(new RegExp(`("port"\\s*:\\s*)${curD}\\b`, 'g'), `$1${debugPort}`); }
-	if (curI && curI !== inspectPort) { next = next.replace(new RegExp(`("port"\\s*:\\s*)${curI}\\b`, 'g'), `$1${inspectPort}`); }
-	next = next.replace(new RegExp(`\\(${curD}\\)`, 'g'), `(${debugPort})`);
-	if (next !== text) {
-		fs.writeFileSync(lj, next);
-		note(`LAUNCHJSON synced port ${curD}→${debugPort}, ${curI}→${inspectPort}（attach 指向真实端口，F5 可直接用）`);
+// ⚠ 时机很关键：必须等**本实例真的起来**（READY）再改。否则"第二次启动因单实例锁
+//   立刻 exit 0（handoff）"也会跑一遍同步，把已经正确的端口又改回它自己选的那个
+//   ⇒ launch.json 与实际端口错开（本机 21:24 就撞到：实例在 9333，launch.json 被改回 9222）。
+/** 系统分配端口时（debugPort===0），从 DevToolsActivePort 读回真实端口。 */
+const resolveRandomDebugPort = () => {
+	try {
+		const raw = String(fs.readFileSync(path.join(USER_DATA_DIR, 'DevToolsActivePort'), 'utf8')).split(/\r?\n/)[0].trim();
+		const n = Number(raw);
+		return Number.isFinite(n) && n > 0 ? n : 0;
+	} catch { return 0; }
+};
+
+const syncLaunchJsonPorts = () => {
+	try {
+		const lj = path.join(REPO, '.vscode', 'launch.json');
+		const text = fs.readFileSync(lj, 'utf8');
+		const portAfter = (marker, src) => {
+			const at = src.indexOf(marker);
+			if (at < 0) { return 0; }
+			const m = /"port"\s*:\s*(\d+)/.exec(src.slice(at, at + 4000));
+			return m ? Number(m[1]) : 0;
+		};
+		const curD = portAfter('Launch & Attach Dev', text);
+		const curR = portAfter('Attach to VS Code Renderer', text);   // 也是 chrome attach，必须同端口
+		const curI = portAfter('Attach to Main Process', text);
+		// ⚠ 替换值必须用回调：`$1` 后面紧跟数字时（`$19333`）会被当成"第 19333 组"，写坏文件
+		const setPort = (src, from, to) => src.replace(new RegExp(`("port"\\s*:\\s*)${from}\\b`, 'g'), (_m, p1) => p1 + to);
+		let next = text;
+		if (curD && curD !== debugPort) { next = setPort(next, curD, debugPort); }
+		if (curR && curR !== debugPort && curR !== curD) { next = setPort(next, curR, debugPort); }
+		if (curI && curI !== inspectPort) { next = setPort(next, curI, inspectPort); }
+		next = next.split(`(${curD})`).join(`(${debugPort})`);
+		if (curR && curR !== curD) { next = next.split(`(${curR})`).join(`(${debugPort})`); }
+		if (next !== text) {
+			fs.writeFileSync(lj, next);
+			note(`LAUNCHJSON synced port ${curD}→${debugPort}, ${curI}→${inspectPort}（attach 指向真实端口，F5 可直接用）`);
+		}
+	} catch (e) {
+		note(`LAUNCHJSON sync failed: ${String(e && e.message).slice(0, 120)} ⇒ 请手动把 launch.json 的 port 改成 ${debugPort}`);
 	}
-} catch (e) {
-	note(`LAUNCHJSON sync failed: ${String(e && e.message).slice(0, 120)} ⇒ 请手动把 launch.json 的 port 改成 ${debugPort}`);
-}
+};
 note(`PORTS inspect=${inspectPort} debug=${debugPort}`);
+setStage('ports');
 
 
 // ── 保证「改完重启立刻生效」（2026-10-24）────────────────────────────────────────
@@ -209,9 +269,51 @@ const newestUnder = (root, re) => {
 	return { t: best, name };
 };
 
+// ── 并发编译检测 + out/ 完整性预检（2026-10-25）──────────────────────────────────
+// 现场：`npm run watch-client-transpile` 与启动器里的 `npm run transpile-client` **都会先
+// `cleanDir(out/)`**。两者同时在跑 ⇒ out/ 被清空后只写回一两千个文件，应用起来 0.3 秒就
+// `exit=1`（日志里几乎没线索），表现是"F5 起了又没了 / 完全没反应"✗。
+// 这里做两道闸：
+//   ① 检测到 watch 正在跑 ⇒ **跳过自己的编译**（别去跟它抢 out/），只做完整性检查；
+//   ② 生成代码前先确认 out/ 真的完整（关键入口存在 + 文件数够）⇒ 不完整就明确 ABORT。
+const countWatchProcs = () => {
+	// ⚠ 必须排除**探测语句自身**：查询命令的命令行里也含 `watch-client-transpile` 这几个字，
+	//   不加 `Get-CimInstance` 过滤会把自己（cmd + powershell 两个进程）也数进去
+	//   ⇒ 曾经在 watch 已经全部结束时仍报"检测到 2 个"（2026-10-25 实测）✗
+	const ps = "Get-CimInstance Win32_Process"
+		+ " | Where-Object { $_.CommandLine -and $_.CommandLine -notmatch 'Get-CimInstance'"
+		+ " -and ($_.CommandLine -like '*watch-client-transpile*' -or $_.CommandLine -like '*transpile --watch*') }"
+		+ " | Measure-Object | Select-Object -ExpandProperty Count";
+	const r = spawnSync('powershell', ['-NoProfile', '-Command', ps], { encoding: 'utf8', windowsHide: true, timeout: 20000 });
+	const n = Number(String(r.stdout || '').trim());
+	return Number.isFinite(n) ? n : 0;
+};
+
+const OUT_REQUIRED = [
+	'out/main.js',
+	'out/bootstrap-node.js',
+	'out/vs/code/electron-main/main.js',
+	'out/vs/sessions/sessions.desktop.main.js',
+	'out/vs/workbench/workbench.desktop.main.js',
+];
+const countFiles = (root) => {
+	let n = 0;
+	(function walk(d) { let es; try { es = fs.readdirSync(d, { withFileTypes: true }); } catch { return; } for (const e of es) { const p = path.join(d, e.name); if (e.isDirectory()) { walk(p); } else { n++; } } })(root);
+	return n;
+};
+// 正常 21800+；被并发清空时实测只剩 1300~2500。可用环境变量覆盖（便于自测这道闸）
+const OUT_MIN_FILES = Number(process.env.DSH_DEV_OUT_MIN_FILES) > 0 ? Number(process.env.DSH_DEV_OUT_MIN_FILES) : 20000;
+
+const watchCount = countWatchProcs();
 const srcNewest = newestUnder(path.join(REPO, 'src'), /\.ts$/);
 const outNewest = newestUnder(path.join(REPO, 'out'), /\.js$/);
-if (srcNewest.t > outNewest.t) {
+
+if (watchCount > 0) {
+	note(`WATCH 检测到 ${watchCount} 个 transpile --watch 进程 ⇒ 跳过启动器自己的编译（避免互相清空 out/）`);
+	if (srcNewest.t > outNewest.t) {
+		note(`WATCH ⚠ src 比 out 新（${srcNewest.name}）⇒ 那份改动正由 watch 编译，本次启动可能不含它`);
+	}
+} else if (srcNewest.t > outNewest.t) {
 	note(`TRANSPILE src is newer than out (${srcNewest.name}) ⇒ running transpile-client`);
 	const r = spawnSync('cmd.exe', ['/d', '/s', '/c', 'npm run transpile-client'], {
 		cwd: REPO, encoding: 'utf8', windowsHide: true, timeout: 600000,
@@ -226,6 +328,100 @@ if (srcNewest.t > outNewest.t) {
 	note(`TRANSPILE skipped (out is newer: ${outNewest.name})`);
 }
 
+// ② 完整性闸：不完整就别起（否则会 0.3 秒 exit=1，且看不出原因）
+{
+	// out/ 里最能代表"资源已拷"的几个非 JS 文件 —— 缺了它们窗口根本加载不出来
+	const OUT_RESOURCES = [
+		'out/vs/sessions/electron-browser/sessions-dev.html',
+		'out/vs/code/electron-browser/workbench/workbench-dev.html',
+	];
+	let missing = OUT_REQUIRED.filter((rel) => !fs.existsSync(path.join(REPO, rel)));
+	let missingRes = OUT_RESOURCES.filter((rel) => !fs.existsSync(path.join(REPO, rel)));
+	let files = countFiles(path.join(REPO, 'out'));
+
+	// ★ 2026-10-25：JS 齐了、只缺资源 ⇒ 不是"正在编译"，而是 watch 的资源拷贝阶段失败了
+	//   （`npm run watch` 启动时先 cleanDir(out/)，app 若正在跑、占着文件，copyAllNonTsFiles
+	//   就会失败，watch 只打一行 "Initial build failed" 然后**永远不再补**）⇒ out/ 永久残缺，
+	//   每次 F5 都 ABORT ⇒ 用户看到的就是「F5 没反应」。
+	//   ⇒ 这里直接**增量补齐资源**（不清空 out/，与仍在运行的 watch 共存安全）。
+	if (!missing.length && (missingRes.length || files < OUT_MIN_FILES)) {
+		note(`OUT 资源缺失（文件数 ${files}${missingRes.length ? '；缺 ' + missingRes.map((r) => path.basename(r)).join(', ') : ''}）⇒ 增量补齐 src/ 非 TS 资源`);
+		const r = spawnSync(process.execPath, [path.join(HERE, 'copy-src-resources.mjs')], {
+			cwd: REPO, encoding: 'utf8', windowsHide: true, timeout: 300000,
+		});
+		const last = String(r.stdout || '').trim().split(/\r?\n/).pop() || '';
+		note(`OUT ${last || 'copy-src-resources 无输出 status=' + r.status}`);
+		missingRes = OUT_RESOURCES.filter((rel) => !fs.existsSync(path.join(REPO, rel)));
+		files = countFiles(path.join(REPO, 'out'));
+	}
+
+	missing = OUT_REQUIRED.filter((rel) => !fs.existsSync(path.join(REPO, rel)));
+	if (missing.length || missingRes.length || files < OUT_MIN_FILES) {
+		const gone = [...missing, ...missingRes];
+		note(`ABORT out/ 不完整（文件数 ${files} < ${OUT_MIN_FILES}${gone.length ? '；缺 ' + gone.join(', ') : ''}）`);
+		note(watchCount > 0
+			? '        原因：transpile --watch 正在重建 out/ ⇒ 等它跑完再按 F5（或结束 watch 进程后由本启动器编译）'
+			: '        处理：npm run transpile-client（完整编译后再 F5）');
+		process.exit(1);
+	}
+	note(`OUT ok (${files} 个文件，关键入口与资源齐全)`);
+	setStage('out');
+}
+
+// ③ 逐文件闸：src 里每个 .ts 都要有对应的 out/*.js（2026-10-25）
+//   现场：`builtinAgents.ts` 里被写进了未转义的反引号（模板字符串被截断）⇒ esbuild 对这**一个**
+//   文件失败，watch/transpile 都只是跳过它 ⇒ out/ 少 1 个 js、其余全部正常 ⇒ 主进程 import 时
+//   ERR_MODULE_NOT_FOUND，卡在"进程在、窗口无" —— 前两道闸都看不出来 ✗。
+//   这里找出缺失的 js，逐个用 esbuild 转一次：转得过就补上；转不过就 ABORT 并给出**行列号**。
+{
+	const missingJs = [];
+	(function walk(dir, rel) {
+		let es;
+		try { es = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+		for (const e of es) {
+			const r = rel ? rel + '/' + e.name : e.name;
+			if (e.isDirectory()) { walk(path.join(dir, e.name), r); continue; }
+			if (!e.name.endsWith('.ts') || e.name.endsWith('.d.ts')) { continue; }
+			if (!fs.existsSync(path.join(REPO, 'out', r.replace(/\.ts$/, '.js')))) { missingJs.push(r); }
+		}
+	})(path.join(REPO, 'src'), '');
+
+	if (missingJs.length) {
+		note(`OUT 缺 ${missingJs.length} 个转译产物：${missingJs.slice(0, 3).join(', ')}${missingJs.length > 3 ? ' …' : ''}`);
+		let esbuild = null;
+		try {
+			const { createRequire } = await import('node:module');
+			esbuild = createRequire(path.join(REPO, 'package.json'))('esbuild');
+		} catch { /* 没装 esbuild 就只能报告 */ }
+		const broken = [];
+		for (const rel of missingJs.slice(0, 50)) {
+			const src = path.join(REPO, 'src', rel);
+			if (!esbuild) { broken.push(`${rel}（esbuild 不可用，无法自检）`); continue; }
+			try {
+				// 与 build/next/index.ts 的 transformOptions 保持一致（DI 参数装饰器需要 experimentalDecorators）
+				const res = await esbuild.transform(fs.readFileSync(src, 'utf8'), {
+					loader: 'ts', format: 'esm', target: 'es2024', sourcemap: 'inline', sourcesContent: false, sourcefile: rel,
+					tsconfigRaw: JSON.stringify({ compilerOptions: { experimentalDecorators: true, useDefineForClassFields: false } }),
+				});
+				const dst = path.join(REPO, 'out', rel.replace(/\.ts$/, '.js'));
+				fs.mkdirSync(path.dirname(dst), { recursive: true });
+				fs.writeFileSync(dst, res.code);
+			} catch (e) {
+				const er = (e && e.errors && e.errors[0]) || {};
+				const loc = er.location ? `${er.location.line}:${er.location.column}` : '?';
+				broken.push(`src/${rel}:${loc}  ${String(er.text || e).slice(0, 120)}`);
+			}
+		}
+		if (broken.length) {
+			for (const b of broken.slice(0, 5)) { note(`ABORT 源码无法转译 ⇒ ${b}`); }
+			note('        处理：修掉上面的语法错误（常见：模板字符串里写了未转义的 ` 反引号），保存后再 F5');
+			process.exit(1);
+		}
+		note(`OUT 已就地补转 ${missingJs.length} 个文件 ✓`);
+	}
+}
+
+setStage('deploy');
 const deploy = spawnSync(process.execPath, [path.join(HERE, 'dsh-plugin-deploy.mjs'), '--changed'], {
 	cwd: REPO, encoding: 'utf8', windowsHide: true, timeout: 300000,
 });
@@ -234,6 +430,30 @@ if (deployLines.length) {
 	deployLines.forEach((l) => note('PLUGIN ' + l.trim().replace(/^✓\s*/, '')));
 } else {
 	note('PLUGIN no changes (all dsh plugins in profile match repo)');
+}
+
+// ── spawn 前最后复查（2026-10-25）────────────────────────────────────────────────
+// "选端口 → 编译 → 部署" 期间可能已经有别的实例起来了（连按两次 F5、或另一个会话刚启动）。
+// 这时若照旧 spawn，第二个实例会 `Starting inspector on 127.0.0.1:5999 failed: address
+// already in use` + `Cannot start http server for devtools` ⇒ 秒退 code=1，
+// 日志上极易被误读成"崩了"。⇒ 这里复查实例与端口，能复用就复用、能换就换。
+if (running() > 0) {
+	note('SKIP 启动前复查：已有实例在跑（并发启动/连按 F5）⇒ 直接 attach，不再起第二个');
+	process.exit(0);
+}
+if (!(await portFree(debugPort)) || !(await portFree(inspectPort))) {
+	note(`PORTLATE debug=${debugPort}/inspect=${inspectPort} 在编译/部署期间被占用 ⇒ 重新选一组`);
+	let repick = null;
+	for (const [d, i] of CANDIDATES) {
+		if (await portFree(d) && await portFree(i)) { repick = [d, i]; break; }
+	}
+	if (!repick) {
+		note('ABORT 没有可用的 debug/inspect 端口对 ⇒ 不启动');
+		process.exit(2);
+	}
+	debugPort = repick[0];
+	inspectPort = repick[1];
+	note(`PORTS inspect=${inspectPort} debug=${debugPort}（重选）`);
 }
 
 const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
@@ -271,6 +491,7 @@ if (extra) {
 	note(`EXTRA  ${parts.join(' ')}`);
 }
 
+setStage('spawn');
 note(`START  port=${debugPort}`);
 note(`CONSOLE ${errLog}`);
 
@@ -312,9 +533,25 @@ const readyTimer = setInterval(async () => {
 		note(`NOTREADY debug=${debugPort} 90s 内 devtools 未监听 ⇒ attach 会超时（先看 app-stderr-*.log）`);
 		return;
 	}
-	if (await devtoolsAlive(debugPort)) {
+	// 系统分配端口（0）时，先从 DevToolsActivePort 读回真实端口
+	if (debugPort === 0) {
+		const real = resolveRandomDebugPort();
+		if (real) { debugPort = real; note(`PORTRANDOM 真实调试端口 = ${real}（来自 DevToolsActivePort）`); }
+	}
+	if (debugPort && await devtoolsAlive(debugPort)) {
 		clearInterval(readyTimer);
+		clearTimeout(bootWatchdog);
+		setStage('ready');
 		note(`READY  debug=${debugPort} attach-ready after ${Math.round((Date.now() - readyStart) / 1000)}s`);
+		// --inspect=0 时真实端口只出现在 stderr：`Debugger listening on ws://127.0.0.1:PORT/`
+		if (!inspectPort) {
+			try {
+				const m = /ws:\/\/127\.0\.0\.1:(\d+)\//.exec(fs.readFileSync(errLog, 'utf8'));
+				if (m) { inspectPort = Number(m[1]); note(`PORTRANDOM 真实 inspect 端口 = ${inspectPort}（来自 stderr）`); }
+			} catch { /* ignore */ }
+		}
+		// 只有确认本实例真的起来了才改 launch.json（理由见 syncLaunchJsonPorts 的注释）
+		syncLaunchJsonPorts();
 	}
 }, 2000);
 
@@ -322,5 +559,30 @@ child.on('exit', (code, signal) => {
 	clearInterval(readyTimer);
 	const hex = typeof code === 'number' && code !== 0 ? '0x' + (code >>> 0).toString(16).toUpperCase().padStart(8, '0') : '-';
 	note(`EXIT   pid=${child.pid} code=${code} signal=${signal ?? '-'} hex=${hex}`);
+	// 秒退 + 0：多半是单实例锁把启动转交给了已在跑的实例（handoff）⇒ 明确说出来，
+	// 免得又变成"F5 完全没反应，也不知道为什么"。
+	if (code === 0 && Date.now() - readyStart < 15000) {
+		note('HANDOFF 本次 spawn 秒退(0) ⇒ 已有实例持有 profile 锁，无需再启动（attach 到已在跑的那个）');
+	}
+	// 秒退且非 0：最常见是端口被别人抢了（连按 F5 / 另一会话刚起）⇒ 直接点名，别让日志像"崩溃"
+	if (typeof code === 'number' && code !== 0 && Date.now() - readyStart < 15000) {
+		let portClash = false;
+		try {
+			const tailText = fs.readFileSync(errLog, 'utf8');
+			portClash = /address already in use|Cannot start http server for devtools/i.test(tailText);
+			if (portClash) {
+				note('PORT-CLASH 秒退原因：调试端口已被占用（另一个实例刚起来）⇒ 这不是崩溃，直接 attach 到那个实例即可');
+			}
+		} catch { /* 读不到就算了 */ }
+		if (!portClash) {
+			note('KILL? 秒退且非端口冲突 ⇒ 外部结束（taskkill / TerminateProcess 都是 code=1，且不留 dump/will-quit）');
+		}
+	}
+	// 非零退出码 1 + 没有 dump + 没有 will-quit 收尾 ⇒ 典型"被外部 TerminateProcess"
+	// 让用户直接知道去哪儿取证（审计已配好：Scripts\enable-process-audit.ps1 已执行过）
+	if (code === 1) {
+		note('KILL? code=1（TerminateProcess 语义）⇒ 若 app-exit.log 里没有 [run] EXIT code=1 这一行，就是被外部杀的');
+		note('      取证：powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\show-kill-forensics.ps1');
+	}
 });
 child.on('error', (err) => note(`ERROR  spawn failed: ${err.message}`));

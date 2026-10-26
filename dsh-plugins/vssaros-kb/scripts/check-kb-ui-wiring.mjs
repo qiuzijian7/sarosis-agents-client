@@ -20,6 +20,8 @@ const HERE = fileURLToPath(new URL('.', import.meta.url));
 const CLIENT = readFileSync(HERE + '../lib/client.js', 'utf8');
 const BUNDLE = readFileSync(HERE + '../lib/web/kbSideview.js', 'utf8');
 const INDEX = readFileSync(HERE + '../lib/index.js', 'utf8');
+// 插件页（/x/kb/）的宿主脚本：它的动作必须是**真的**（2026-10-25 真机：点 ⚙ 只 console.warn）
+const PAGE_HTML = readFileSync(HERE + '../lib/web/sideview.html', 'utf8');
 
 let pass = 0;
 const failed = [];
@@ -80,6 +82,71 @@ check('知识库列表解析兼容 data.spaces', INDEX.includes('j?.data?.spaces
 check('拉取知识库列表有可见反馈（spacesMsg）', CLIENT.includes('spacesMsg'));
 check('lark-cli 支持 .cmd 启动（Windows npm shim）', INDEX.includes("shell: true"));
 
+// ── 定时同步（2026-10-25）──────────────────────────────────────
+// ① 页面必须能显示"下次运行"，否则开关是黑盒；② 服务端必须有执行器与状态路由。
+check('设置页拉取定定时状态（/api/feishu-schedule）', CLIENT.includes('/x/kb/api/feishu-schedule'));
+check('设置页有定时状态文案', CLIENT.includes('scheduleText'));
+check('服务端有定时执行器', INDEX.includes('startFeishuScheduler'));
+check('定时与手动同步共用一条实现', INDEX.includes('performFeishuSync'));
+check('定时器会 unref（不拖住宿主退出）', INDEX.includes('timer.unref'));
+
+// ── 重建索引（2026-10-25）────────────────────────────────────
+check('设置页能重建索引（/api/reindex）', CLIENT.includes('/x/kb/api/reindex') && CLIENT.includes('runReindex'));
+check('索引状态会显示上次重建时间', CLIENT.includes('reindex.lastAt'));
+// ⚠ dsh 侧没有 embedding provider ⇒ 服务端必须**如实**回 supported:false，不许假装能重建向量
+check('向量索引如实标注不支持', INDEX.includes('vector: { supported: false') && CLIENT.includes('dsh 侧不支持重建'));
+
+// ── 导图 .canvas（2026-10-25 迁到视图层）──────────────────────
+// 历史：渲染器原在面板侧（KbCanvasMap + pane='canvas'）⇒ 插件页用不到，且与视图重复。
+// 现在：视图自己渲染（KbCanvasPane + 覆盖层），宿主只声明能力位 `canvas: true`。
+check('视图自带导图渲染器（KbCanvasPane）', BUNDLE.includes('KbCanvasPane') || BUNDLE.includes('data-kb-canvas-pane'));
+check('视图有导图覆盖层状态（canvasOpen）', BUNDLE.includes('canvasOpen') || BUNDLE.includes('data-kb-canvas-overlay'));
+check('面板只声明能力位 canvas:true', /canvas:\s*true/.test(CLIENT));
+// ⚠ 反向断言：面板**不许**再长出一份导图渲染/分支（那会立刻变成两份实现）
+check('面板不再保留重复的导图组件（无 KbCanvasMap / pane=canvas）',
+	!CLIENT.includes('KbCanvasMap') && !/pane === 'canvas'/.test(CLIENT));
+// 页面同样声明能力位（三端共用视图后，页面也该有 🗺）
+check('插件页声明 canvas 能力位', PAGE_HTML.includes('canvas: true'));
+
+// ── 查重（2026-10-25）────────────────────────────────────────
+check('设置页能查重（/api/dedupe）', CLIENT.includes('/x/kb/api/dedupe') && CLIENT.includes('runDedupe'));
+// ⚠ 查重**只报告不改文件**：这条断言守的是"将来别被改成自动合并"
+check('查重结果里写明"只报告不修改"', CLIENT.includes('只报告，不修改'));
+check('查重不提供写操作（无 delete/merge 调用）',
+	!/dedupe[\s\S]{0,400}?deleteNodes\(/.test(CLIENT));
+
+
+// ── 插件页动作（2026-10-25）────────────────────────────────
+// ⚠ 视图的 ⚙ 逻辑是「有 openSettings 就交给宿主，没有就开内置面板」。
+//   页面曾经提供一个只 console.warn 的 openSettings ⇒ 宿主算"有"，面板永远打不开。
+check('页面不再提供假 openSettings（交给视图内置面板）', !/openSettings\s*:/.test(PAGE_HTML));
+check('页面切库走 URL ?vault=（取数带 wantVault）', PAGE_HTML.includes('wantVault') && PAGE_HTML.includes("searchParams.set('vault'"));
+check('页面能新建/载入库（→ /api/vault-add）', PAGE_HTML.includes('addVault') && PAGE_HTML.includes('/api/vault-add'));
+check('页面标签筛选不再静默无反应', !PAGE_HTML.includes('标签筛选暂未接入'));
+
+// ── 笔记区标题行四动作（2026-10-25）─────────────────────────
+// 视图里「审核 / 去重 / 导图 / 体检」按钮按能力门控；宿主不提供就整块不渲染。
+// 之前面板一个都没提供 ⇒ dsh 侧这四个按钮**永远不出现**。
+check('标题行动作面板已接线（runLint/runDedup/reviewQueue）',
+	/runLint:\s*\(\)\s*=>/.test(CLIENT) && /runDedup:\s*\(\)\s*=>/.test(CLIENT)
+	&& /reviewQueue:\s*\(\)\s*=>/.test(CLIENT));
+check('导图按钮靠能力位（canvas:true）而非重复动作', /canvas:\s*true/.test(CLIENT));
+check('设置页支持 auto 自动执行（跳进来就跑对应动作）', CLIENT.includes('autoRan') && CLIENT.includes('settingsAuto'));
+check('设置页区块有锚点（data-kb-sec）',
+	['health', 'review', 'reindex', 'feishu'].every(k => CLIENT.includes("'data-kb-sec': '" + k + "'")));
+
+// ── 插件页的三项报告（2026-10-25）────────────────────────────
+check('页面提供体检/查重/审核入口（只读报告层）',
+	PAGE_HTML.includes('kbReportOverlay') && PAGE_HTML.includes('runLint')
+	&& PAGE_HTML.includes('runDedup') && PAGE_HTML.includes('reviewQueue'));
+check('页面报告层只读（不调用删除/合并）',
+	!/kbReportOverlay[\s\S]{0,800}?deleteNodes\(/.test(PAGE_HTML));
+
+// ── 遗留动作清理（2026-10-25）────────────────────────────────
+// 导图统一到 `canvas` 能力位、重建索引在设置页 ⇒ 视图不该再留着
+// `openCanvas` / `openMindmap` / `reindex` 三条旧路径（留着就会长出第二套入口）。
+check('视图已清理导图/索引的遗留动作（只认 canvas 能力位）',
+	!BUNDLE.includes('openCanvas') && !BUNDLE.includes('openMindmap') && !BUNDLE.includes('reindex'));
 console.log('\n' + '='.repeat(60));
 if (failed.length) {
 	console.log(`✗ ${failed.length} 项失败 / 共 ${pass + failed.length} 项`);

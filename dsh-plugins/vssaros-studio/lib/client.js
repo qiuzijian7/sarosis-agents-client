@@ -30,8 +30,14 @@ window.__ModuleLoader__.load({
 			return null;
 		};
 
-		/** 本 bot 的 preset 标识（= 内置 agent 的 id；`sessions.create({ agentPreset })` 用它）。 */
-		const STUDIO_PRESET = 'saroasis-studio';
+		/**
+		 * 本 bot 的 preset id。
+		 * ⚠ 规则不是 agent id，而是 `vssaros-` + slugify(agentId)
+		 *   （见 `dsh-plugins/vssaros-agents/lib/core/agents.js:35` 的 `PRESET_ID_PREFIX='vssaros-'`
+		 *     与 `:216` 的 `presetIdOf = (id) => 'vssaros-' + slugify(id)`）。
+		 *   之前传 `saroasis-studio` 一直被 `agent-preset/not-found` 拒，就是少了这个前缀。
+		 */
+		const STUDIO_PRESET = 'vssaros-saroasis-studio';
 		/** 草稿预填文本：让输入框里默认就写着这个 bot（用户口径 2026-10-23）。 */
 		const DRAFT_SEED = '@萨罗斯管理平台 ';
 
@@ -187,9 +193,9 @@ window.__ModuleLoader__.load({
 					// 需要时在控制台执行 `localStorage.__studioDiag='1'` 再刷新；
 					// 关掉后若之前渲染过，顺手把它摘掉。
 					try {
-						// 默认**显示**（用户 2026-10-24 要求"增加日志定位问题"）；
-						// 想隐藏：`localStorage.__studioDiag='0'` 再刷新。
-						if (localStorage.getItem('__studioDiag') !== '0') {
+						// 2026-10-25 用户要求「移除提示信息」⇒ **默认不显示**；
+						// 需要排查时在控制台 `localStorage.__studioDiag='1'` 再刷新即可。
+						if (localStorage.getItem('__studioDiag') === '1') {
 							let d = document.getElementById('__studioDiag');
 							if (!d) {
 								d = document.createElement('div');
@@ -246,10 +252,23 @@ window.__ModuleLoader__.load({
 					},
 					onMouseDown: (ev) => {
 						ev.preventDefault();
-						const aside = ev.currentTarget.nextElementSibling;
+						const splitter = ev.currentTarget;
+						const aside = splitter.nextElementSibling;
 						if (!aside) { return; }
+						const siteWrap = splitter.previousElementSibling;
+
+						// ★ 2026-10-25 修「拖到一半丢了」：拖拽条左边就是 iframe，
+						//   鼠标一进 iframe，父文档就收不到 mousemove/mouseup（iframe 是独立文档）⇒ 拖拽中断。
+						//   ⇒ 拖动期间把 iframe 的 pointer-events 关掉，松手再恢复。
+						const frames = siteWrap ? Array.prototype.slice.call(siteWrap.querySelectorAll('iframe')) : [];
+						frames.forEach((f) => { f.style.pointerEvents = 'none'; });
+						const prevUserSelect = document.body.style.userSelect;
+						document.body.style.userSelect = 'none';
+						document.body.style.cursor = 'col-resize';
+
 						const startX = ev.clientX;
 						const startW = aside.getBoundingClientRect().width;
+
 						const onMove = (e2) => {
 							const next = Math.max(320, Math.min(startW - (e2.clientX - startX), window.innerWidth - 360));
 							aside.style.width = next + 'px';
@@ -257,16 +276,27 @@ window.__ModuleLoader__.load({
 						const onUp = () => {
 							document.removeEventListener('mousemove', onMove, true);
 							document.removeEventListener('mouseup', onUp, true);
+							window.removeEventListener('blur', onUp, true);
+							frames.forEach((f) => { f.style.pointerEvents = ''; });
+							document.body.style.userSelect = prevUserSelect;
+							document.body.style.cursor = '';
 							try { localStorage.setItem('__vssarosStudioConvW', aside.style.width); } catch { /* ignore */ }
 						};
+
 						document.addEventListener('mousemove', onMove, true);
 						document.addEventListener('mouseup', onUp, true);
+						// 窗口失焦（Alt+Tab / 拖出窗口）也要收尾，否则 iframe 一直不可点
+						window.addEventListener('blur', onUp, true);
 					},
 				}),
 				react.createElement('aside', {
 					'data-vssaros-studio-conv': '',
+					// ★ 「＋新会话」挂进**本 aside**（不再是 body 浮层）：生命周期与面板绑定
+					//   ⇒ 切到别的工作台时面板卸载、按钮随之消失，**不可能跨工作区显示** ✓
+					ref: (el) => { if (el) { mountNewButton(el); } },
 					style: {
 						flex: '0 0 auto',
+						position: 'relative',   // 让内部 absolute 的按钮以本面板为定位基准
 						width: (() => {
 							try { return localStorage.getItem('__vssarosStudioConvW') || CONV_WIDTH; } catch { return CONV_WIDTH; }
 						})(),
@@ -437,6 +467,76 @@ window.__ModuleLoader__.load({
 			return sid;
 		}
 
+		/**
+		 * studio 面板**真的在屏**吗（供接管官方「新会话」时收窄范围）。
+		 * ① 面板在 DOM 里 ② 真的可见（offsetParent + 实际尺寸）③ 前台工作台就是 studio。
+		 */
+		function studioOnScreen() {
+			try {
+				const panel = document.querySelector('[data-vssaros-studio-panel]');
+				if (!panel) { return false; }
+				if (panel.offsetParent === null && getComputedStyle(panel).position !== 'fixed') { return false; }
+				const r = panel.getBoundingClientRect();
+				if (r.width <= 1 || r.height <= 1) { return false; }
+				const dw = globalThis.__vssarosStudioDw;
+				if (dw && typeof dw.current === 'function') {
+					const cur = String(dw.current() || '');
+					if (cur && !/studio/.test(cur)) { return false; }
+				}
+				return true;
+			} catch { return false; }
+		}
+
+		/**
+		 * ★ 把「＋ 新会话」挂进**面板内部**的容器（aside）。
+		 *
+		 * 为什么不挂 `document.body`（2026-10-25 用户报「跨工作区显示」）：
+		 *   body 上的 `position: fixed` 按钮是**全窗级**的，与工作台无关；只能靠定时器轮询
+		 *   “面板在不在屏”来显隐 ⇒ 切走工作台后必然有残留/误显示，而且卸载不同步。
+		 *   ⇒ 改为挂进 `aside`：**生命周期与面板绑定** —— 面板卸载按钮随之消失，
+		 *     既不会出现在别的工作台，也不需要任何轮询判断 ✓
+		 * 按钮仍是**原生 DOM + 原生事件**（不走 React 合成事件），保留之前“点得着”的特性。
+		 */
+		function mountNewButton(container) {
+			if (!container || container.__vssarosNewMounted) { return; }
+			container.__vssarosNewMounted = true;
+			try {
+				container.querySelectorAll('[data-vssaros-studio-neww]').forEach((el) => el.remove());
+			} catch { /* ignore */ }
+
+			const nb = document.createElement('button');
+			nb.type = 'button';
+			nb.textContent = '＋ 新会话';
+			nb.setAttribute('data-vssaros-studio-neww', '');
+			// absolute 相对 aside（aside 已设 position:relative）⇒ 停在对话栏右上角，不越出面板
+			nb.style.cssText = 'position:absolute;z-index:2147483000;right:10px;top:5px;height:22px;padding:0 10px;'
+				+ 'border-radius:6px;border:1px solid var(--dsw-alias-border-l2,#dcdfe6);'
+				+ 'background:var(--dsw-alias-bg-overlay,#fff);color:var(--dsw-alias-label-primary,#16181d);'
+				+ 'font:11px/20px -apple-system,"Segoe UI",sans-serif;cursor:pointer;pointer-events:auto';
+			nb.addEventListener('click', (ev) => {
+				ev.preventDefault();
+				ev.stopPropagation();
+				diag.caps.newBtnClick = (diag.caps.newBtnClick || 0) + 1;
+				const dw = globalThis.__vssarosStudioDw;
+				if (!dw) { diag.caps.newSessionError = 'no-desktopWorkbenches'; return; }
+				(async () => {
+					try {
+						const owner = dw.ownerId();
+						const wsObj = typeof dw.defaultWorkspace === 'function' ? dw.defaultWorkspace() : null;
+						const wsId = wsObj && (wsObj.workspaceId || wsObj.id);
+						diag.caps.createTry = { owner, wsId };
+						if (!wsId) { diag.caps.newSessionError = 'no-workspace'; return; }
+						const sid = await createStudioSession(dw, wsId);
+						diag.caps.createdSid = sid;
+						try { await dw.bindSession(owner, sid); } catch (e) { diag.caps.bindErr = String((e && e.message) || e); }
+						try { dw.showSession(sid); } catch (e) { diag.caps.showErr = String((e && e.message) || e); }
+					} catch (e) { diag.caps.newSessionError = String((e && e.message) || e); }
+				})();
+			});
+			container.appendChild(nb);
+			diag.caps.newBtnMounted = (diag.caps.newBtnMounted || 0) + 1;
+		}
+
 		/** 组件里拿不到 ctx，靠这个全局引用（apply 时赋值）。 */
 		let CTX = null;
 
@@ -460,47 +560,14 @@ window.__ModuleLoader__.load({
 				} catch { /* ignore */ }
 			}, true);
 
-			// ★★ 2026-10-24 最终修法：header 里那个 React 按钮**点不到**（探针显示
-			//   `lastDown/topAt` 命中的是 SPAN，不是我们的 BUTTON —— 容器里有东西压在它上面）。
-			//   ⇒ 改用 **body 级原生浮层按钮**：fixed 定位 + 最高 z-index + 原生事件，
-			//   只在我们的工作台面板在屏时显示（用 `[data-vssaros-studio-panel]` 判断）。
-			try {
-				const nb = document.createElement('button');
-				nb.type = 'button';
-				nb.textContent = '＋ 新会话';
-				nb.setAttribute('data-vssaros-studio-neww', '');
-				nb.style.cssText = 'position:fixed;z-index:2147483000;right:16px;top:38px;height:24px;padding:0 10px;'
-					+ 'border-radius:6px;border:1px solid var(--dsw-alias-border-l2,#dcdfe6);'
-					+ 'background:var(--dsw-alias-bg-overlay,#fff);color:var(--dsw-alias-label-primary,#16181d);'
-					+ 'font:11px/22px -apple-system,"Segoe UI",sans-serif;cursor:pointer;display:none';
-				nb.addEventListener('click', (ev) => {
-					ev.preventDefault();
-					ev.stopPropagation();
-					diag.caps.floatBtnClick = (diag.caps.floatBtnClick || 0) + 1;
-					const dw = globalThis.__vssarosStudioDw;
-					if (!dw) { diag.caps.newSessionError = 'no-desktopWorkbenches'; return; }
-					(async () => {
-						try {
-							const owner = dw.ownerId();
-							const wsObj = typeof dw.defaultWorkspace === 'function' ? dw.defaultWorkspace() : null;
-							const wsId = wsObj && (wsObj.workspaceId || wsObj.id);
-							diag.caps.createTry = { owner, wsId };
-							if (!wsId) { diag.caps.newSessionError = 'no-workspace'; return; }
-							const sid = await createStudioSession(dw, wsId);
-							diag.caps.createdSid = sid;
-							try { await dw.bindSession(owner, sid); } catch (e) { diag.caps.bindErr = String((e && e.message) || e); }
-							try { dw.showSession(sid); } catch (e) { diag.caps.showErr = String((e && e.message) || e); }
-						} catch (e) { diag.caps.newSessionError = String((e && e.message) || e); }
-					})();
-				});
-				document.body.appendChild(nb);
-				setInterval(() => {
-					try {
-						nb.style.display = document.querySelector('[data-vssaros-studio-panel]') ? 'block' : 'none';
-					} catch { /* ignore */ }
-				}, 700);
-				diag.caps.floatBtn = 'mounted';
-			} catch (e) { note('float new-session button', e); }
+			// ★★ 2026-10-25（用户报「＋新会话 跨工作区显示」）：
+			//   按钮**不再挂 document.body**。body 上的 fixed 浮层是**全窗级**的，与工作台无关，
+			//   只能靠定时器轮询"面板在不在屏"来显隐 ⇒ 切走工作台后必然残留/误显示。
+			//   ⇒ 改由 mountNewButton() 挂进**面板内部的 aside**（生命周期与面板绑定），
+			//     面板卸载按钮随之消失 ⇒ 不可能出现在别的工作台，也不需要任何轮询 ✓
+			//   这里只保留面板可见性判定，供下面接管官方「新会话」时收窄范围。
+			globalThis.__vssarosStudioOnScreen = studioOnScreen;
+
 
 			// ★ 2026-10-24 兜底：**接管官方的「新会话」入口**（左侧栏那个）。
 			//   我们自己的按钮一直被别的东西盖住点不着（浮标 lastDown 永远是 SPAN），
@@ -510,7 +577,10 @@ window.__ModuleLoader__.load({
 				if (!btn) { return; }
 				const txt = String(btn.textContent || '').replace(/\s+/g, '');
 				if (txt !== '新会话') { return; }
-				if (!document.querySelector('[data-vssaros-studio-panel]')) { return; }   // 只在我们工作台在屏时接管
+				// ⚠ 同样收窄：只在我们工作台**真的在屏**时接管。
+				//   原先只看"DOM 里有没有 [data-vssaros-studio-panel]" ⇒ 切到别的工作台后
+				//   旧面板节点还在，会误接管别人家的「新会话」按钮。
+				if (!(typeof globalThis.__vssarosStudioOnScreen === 'function' && globalThis.__vssarosStudioOnScreen())) { return; }
 				e.preventDefault();
 				e.stopPropagation();
 				diag.caps.officialNewIntercepted = (diag.caps.officialNewIntercepted || 0) + 1;

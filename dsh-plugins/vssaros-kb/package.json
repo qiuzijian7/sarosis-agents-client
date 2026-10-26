@@ -46,6 +46,8 @@
     "lib/core/kbVectorStore.js",
     "lib/client.js",
     "lib/shared/graphPhysics.js",
+    "lib/md/render.js",
+    "vendor",
     "lib/client.kb.js",
     "lib/client.kbview.js",
     "lib/web/kbSideview.js",

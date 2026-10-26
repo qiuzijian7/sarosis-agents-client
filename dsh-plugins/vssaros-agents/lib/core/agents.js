@@ -22,6 +22,8 @@
 
 // 记忆口径的解析真源（零依赖叶子模块 ⇒ 不破坏本文件的"纯逻辑、零 I/O"约定）
 import { parseMemoryLimits } from './memoryLimits.js';
+// agent preset 的共享基座（生成物：`node dsh-plugins/preset-sync.mjs --write-agent-base`）
+import { STANDARD_BASE_ROWS } from './presetBase.generated.js';
 
 /** dsh 侧读的 agent 文件名（VS Code Chat 标准）。 */
 export const AGENT_FILE = '.agent.md';
@@ -39,32 +41,8 @@ export const PERSONA_ROW_NAME = '@vssaros/dsh-agents';
 
 /** dsh 自带行：设定该 Agent 的默认模型。 */
 export const DEFAULT_MODEL_ROW_NAME = '@deepseek-ai/dsh-agent-default-model';
-/** 官方子代理工具（`allowedAgentPresets` 动态清单挂在这一行上；host plane 里它是 disabled 的）。 */
-export const SUBAGENT_ROW_NAME = '@deepseek-ai/dsh-tool-subagent';
-/**
- * 子代理**控制**族（2026-10-21，P1）：`send_message` / `interrupt_agent`（control）与 `list_agents`。
- *
- * 为什么必须在 preset 里自己挂：这三个工具来自 `dsh-tool-subagent-control`，而它在
- * **host plane 是 disabled**（dsh-web-app patch 掉的），只在 official preset（standard/ptc）里启用
- * ⇒ 我们每个 agent 的独立 preset 之前一个都没有。后果很具体：
- *   · 父代理**不能** `send_message` 追问一个后台子代理，也不能 `interrupt_agent` 打断它；
- *   · 也看不到 `list_agents`（谁在跑）。
- * 之前文档里写过"可以 send_message 追问进度"——那是错的，代码层面根本没有这一个工具。
- */
-export const SUBAGENT_CONTROL_ROW_NAME = '@deepseek-ai/dsh-tool-subagent-control';
-export const SUBAGENT_LIST_AGENTS_ROW_NAME = '@deepseek-ai/dsh-tool-subagent-control/list-agents';
-/**
- * 上下文压缩三件套（2026-10-21，P0）：`compaction-basic` + `command-compact` + `tool-result-pruner`。
- *
- * 同样在 host plane 是 disabled、只在 official preset 里启用 ⇒ 我们之前**没有任何压缩**：
- * 长会话一路涨到模型上限；`tool-result-pruner` 缺席还会让大工具输出（读整个文件/长 JSON）
- * 原样留在上下文里。三个包都在 runtime 里（`@deepseek-ai/dsh-compaction-*`），只是没人挂。
- */
-export const COMPACTION_ROW_NAME = '@deepseek-ai/dsh-compaction-basic';
-export const COMMAND_COMPACT_ROW_NAME = '@deepseek-ai/dsh-command-compact';
-export const TOOL_RESULT_PRUNER_ROW_NAME = '@deepseek-ai/dsh-compaction-tool-result-pruner';
-/** `tool-result-pruner` 的阈值：与官方 standard preset 同值（8KB 以上只留首尾）。 */
-export const TOOL_RESULT_PRUNER_CONFIG = Object.freeze({ thresholdChars: 8192, headChars: 4096, tailChars: 1024 });
+// 子代理（control / list-agents / subagent / fork）与压缩三件套的行**不再在这里手写**：
+// 它们随共享基座（presetBase.generated.js，= 官方 standard 的全部行）一起来，见 `toPresetDefinition`。
 
 /** 与 agentMdFormat 的 YAML 解析口径一致的轻量 frontmatter 解析（只认顶层标量 / 逗号数组）。 */
 export function parseFrontmatter(text) {
@@ -392,11 +370,86 @@ export function toDshTools(names) {
 	return out;
 }
 
+/**
+ * 不论 agent 的 `tools` 写没写，都**不许**拿去 deny 的名字。
+ * `skill`：host 层与基座（`tool-skill` 行）**同名**各有一份；`restrict({ deny })` 按名字筛，会把基座那份一起藏掉，
+ * 而 agent 的 `skills:` 只能靠这个工具加载 ⇒ 藏了就等于技能全废。
+ * （同名遮蔽在运行时还会再判一次，见 `allowlistDenyOf` 的 `shadowed`；这里是拿不到作用域视图时的兜底。）
+ */
+export const ALWAYS_KEEP_TOOL_NAMES = Object.freeze(['skill']);
+
+/**
+ * agent 的 `tools` allowlist → 要在 **agent 作用域** `restrict({ deny })` 的全局工具名。
+ *
+ * 口径（2026-10-25）：`tools` 只收窄 **host 层全局工具**（kb_* / memory_* / codebase_* / mcp__* / browser …）；
+ * 基座（presetBase）在 preset 层挂的官方工具（fs / pwsh / web / skill / todo …）**始终可用**。
+ * 为什么用 deny 而不是 allow：allow 一旦生效，agent 从 preset 层**继承**来的基座工具也会被筛掉
+ * （dsh-tools `view()`：restriction filters what a scope inherits — global + every ancestor layer），
+ * 而 preset 层的名字在 preset 作用域里又**不能**写进 allow（restrictableNames 不含本层，直接抛）。
+ *
+ * @param wanted       `toDshTools(agent.tools)`（声明要保留的名字）
+ * @param globalNames  host 层全局工具名（`tools.schemas()` 不带 scope 的结果）
+ * @param shadowed     `(name) => boolean`：该名在 agent 视图里被 preset 层 / agent 自身层的同名实现遮蔽
+ * @returns 去重、排序后的 deny 名单（不含 `run_code`：PTC 保留名，restrict 点名它会抛）
+ */
+export function allowlistDenyOf(wanted, globalNames, shadowed = () => false) {
+	const keep = new Set([...(Array.isArray(wanted) ? wanted : []), ...ALWAYS_KEEP_TOOL_NAMES]);
+	const out = new Set();
+	for (const raw of Array.isArray(globalNames) ? globalNames : []) {
+		const name = String(raw ?? '').trim();
+		if (!name || name === 'run_code' || keep.has(name)) { continue; }
+		let isShadowed = false;
+		try { isShadowed = shadowed(name) === true; } catch { isShadowed = false; }
+		if (!isShadowed) { out.add(name); }
+	}
+	return [...out].sort();
+}
+
+/**
+ * 每个 agent preset 都**必须**带的基座行（缺了 = agent 没有文件/命令/技能/压缩能力）。
+ * 自检（`test/run-agents-check.mjs`）与诊断 notes 都按这张表判；只列"缺了就废"的那几行。
+ */
+export const REQUIRED_BASE_ROW_IDS = Object.freeze(['agent-instructions', 'tool-fs', 'tool-fs-search', 'skill-filesystem', 'tool-skill', 'compaction']);
+
+/** 深拷贝基座（JsExpr 是纯对象 `{ __jsExpr }`，JSON 往返无损）——每个 preset 一份，互不共享引用。 */
+function cloneBaseRows() {
+	return JSON.parse(JSON.stringify(STANDARD_BASE_ROWS));
+}
+
+/** 在行树（含 `cordis:group` 的子行）里按 id 找行。 */
+function findRow(rows, id) {
+	for (const row of rows) {
+		if (row?.id === id) { return row; }
+		if (row?.group && Array.isArray(row.config)) {
+			const hit = findRow(row.config, id);
+			if (hit) { return hit; }
+		}
+	}
+	return undefined;
+}
+
+/** 行树里的全部 id（含 group 子行，深度优先）——自检与诊断用。 */
+export function rowIdsOf(rows) {
+	const out = [];
+	for (const row of Array.isArray(rows) ? rows : []) {
+		if (row?.id) { out.push(row.id); }
+		if (row?.group && Array.isArray(row.config)) { out.push(...rowIdsOf(row.config)); }
+	}
+	return out;
+}
+
 export function toPresetDefinition(agent, options = {}) {
 	const notes = [];
 	// 先算一次（下面 length 判断与传值都要用，别调两遍）
 	const dshTools = toDshTools(agent.tools);
-	const plugins = [{
+	// ★★ 2026-10-25：从**共享基座**起步（= 官方 standard 的全部行，见 presetBase.generated.js），再叠本 agent 的差量。
+	//   之前这里只有 persona / model / compaction / subagent 几行 ⇒ agent 会话里 `tool-fs` / `tool-pwsh` /
+	//   `skill-filesystem` / `tool-skill` / `agent-instructions` 一行都没有（host plane 不提供它们）⇒
+	//   真机：「本会话没有命令执行工具，pwsh、bash、exec 一个都没有」，技能也加载不了。
+	//   缺什么补什么（compaction 10-21、subagent 10-19~21）是同一个根因反复发作 ⇒ 改成生成 + 守卫。
+	const plugins = cloneBaseRows();
+	// 人设行：与官方 persona 行同 id（基座里官方那行已去掉），放第一位
+	plugins.unshift({
 		id: 'persona',
 		name: PERSONA_ROW_NAME,
 		// persona / tools 走 config：本包在该 preset 作用域内被再挂一次，注册提示词 section 与工具 allowlist
@@ -409,7 +462,7 @@ export function toPresetDefinition(agent, options = {}) {
 			...(agent.memoryChars !== undefined ? { memoryChars: agent.memoryChars } : {}),
 			memoryMode: agent.memoryMode ?? 'session',
 		},
-	}];
+	});
 	const provider = typeof options.provider === 'string' ? options.provider.trim() : '';
 	// `options.modelOverride` = 派生 preset（委派版）用它自己的模型；留空就用 agent 自己的 `model`
 	const modelText = typeof options.modelOverride === 'string' && options.modelOverride.trim()
@@ -420,91 +473,67 @@ export function toPresetDefinition(agent, options = {}) {
 		const [maybeProvider, maybeModel] = modelText.includes('/') ? modelText.split('/', 2) : ['', modelText];
 		const route = maybeProvider.trim() || provider;
 		if (route && maybeModel.trim()) {
-			plugins.push({ id: 'default-model', name: DEFAULT_MODEL_ROW_NAME, config: { provider: route, model: maybeModel.trim() } });
+			// 紧跟人设行（行序不影响语义，放前面只是 readDocument 里好找）
+			plugins.splice(1, 0, { id: 'default-model', name: DEFAULT_MODEL_ROW_NAME, config: { provider: route, model: maybeModel.trim() } });
 		} else {
 			notes.push(`模型未映射（agent.md 写了 model=${modelText}，但没配 config.defaultProvider 且不是 provider/model 形式）→ 该 preset 跟随默认模型`);
 		}
 	}
 	if (agent.tools.length) {
-		// tools 转 dsh 的工具 allowlist（`ctx.tools.restrict({ allow })`，在该 preset 作用域内生效）。
-		// 名字是 VS Code 口径，dsh 侧未必同名——运行时只保留真实存在的名字，未知名字写 Host 日志。
-		notes.push(`tools 进 allowlist（${agent.tools.length} 个：${agent.tools.slice(0, 4).join(', ')}${agent.tools.length > 4 ? '…' : ''}）；dsh 里不存在的名字会被忽略（Host 日志会记）`);
+		// tools 转 dsh 的工具 allowlist：运行时在 **agent 作用域** `restrict({ deny })`（见 lib/index.js 的
+		// `installAllowlist` 与上面的 `allowlistDenyOf`）—— 只收窄 host 层全局工具，基座官方工具始终可用。
+		notes.push(`tools 进 allowlist（${agent.tools.length} 个：${agent.tools.slice(0, 4).join(', ')}${agent.tools.length > 4 ? '…' : ''}）；只收窄 host 层全局工具，基座里的官方工具不受约束`);
 	}
 	if (!agent.persona) {
 		notes.push('agent.md 正文为空 → 该 preset 没有人设提示词');
 	}
-	// ── 上下文压缩（2026-10-21，P0）──────────────────────────────────────────────
-	// 为什么每个 agent 都要挂：host plane 的 compaction 三件套是 disabled 的（dsh-web-app patch），
-	// 而 agent preset 是**独立挂载**的（只继承 host plane 的全局工具）⇒ 不挂就等于"没有压缩"。
-	// 用官方 standard preset 同款 **group + isolate** 形状：compaction / toolResultPruner 两个服务
-	// 在本 preset 作用域内被替换，而不是去改全局（改全局会波及所有会话）。
-	// ⚠ 派生 preset（`-assign`）**也挂**：委派会话同样会长，同样需要裁剪。
-	plugins.push({
-		id: 'compaction',
-		name: 'cordis:group',
-		group: true,
-		isolate: { compaction: true, toolResultPruner: true },
-		config: [
-			{ id: 'compaction-basic', name: COMPACTION_ROW_NAME },
-			{ id: 'command-compact', name: COMMAND_COMPACT_ROW_NAME },
-			{ id: 'tool-result-pruner', name: TOOL_RESULT_PRUNER_ROW_NAME, config: { ...TOOL_RESULT_PRUNER_CONFIG } },
-		],
-	});
-	// ── 子代理工具（2026-10-19，用户要求「allowedAgentPresets 动态化」）────────────────
-	// 背景：host plane 的 `tool-subagent` 被 dsh-web-app **disabled**，只在 preset 内启用
-	//   （我们 `cordis.presets.yml` 的 standard preset 里有）。而每个 agent 的 preset 是**独立
-	//   挂载**的（只含 persona/model 行）⇒ 我们的 agent 之前**根本没有 `subagent` 工具**。
-	// 这里给每个 agent preset 补一行，清单 = 展示面里其它 agent 的 preset id（动态、随增删更新）。
-	// ⚠ 只给**本体** preset 加（`-assign` 不加）：委派执行会话再往下 fan-out 没有意义，
-	//   且能少一半重挂（清单变一次要重挂所有带清单的 preset）。
+	// ── 上下文压缩：基座已带官方 `compaction` 组（compaction-basic + command-compact + tool-result-pruner，
+	//    group + isolate 形状、阈值与官方同值）⇒ 不再手抄（2026-10-21 那次 P0 就是手抄补上的）。
+	//    派生 preset（`-assign`）同样保留：委派会话同样会长，同样需要裁剪。
+	//
+	// ── 子代理（2026-10-19 起）：基座的 `delegation` 组 = 官方 control → list-agents → subagent → fork
+	//    + workflow-ptc / tool-workflow。这里只做差量：
+	//    · 本体 preset：`tool-subagent` 补 `backgroundMode: 'continuable'` 与动态清单 `allowedAgentPresets`；
+	//      `tool-subagent-fork` 补 `backgroundMode`（⚠ fork **不能**带清单：fork 继承父上下文，
+	//      `assertProvider` 会拒绝"继承上下文 + 独立选 preset"，直接抛错）。
+	//    · `subagents: false`（审查族"只有一个席位"）与派生 preset（`-assign`，不再 fan-out）：
+	//      **整组去掉**。为什么不能靠 tools 里不写 subagent 来关：`restrict()` 拦不住本 preset 作用域内
+	//      挂的行（见上）⇒ 只能在装配层不给这一组 —— 提示词里的「One Seat」是意愿，这里才是真闸。
+	//    清单为空时**不带** `allowedAgentPresets` = 官方语义"继承父会话的 preset"（工具仍在，只是看不到
+	//    `agent_preset` 参数）；且清单一直为空时配置不变 ⇒ 新建/删除 agent 不触发重挂（churn=0）。
 	const allowed = Array.isArray(options.allowedAgentPresets)
 		? [...new Set(options.allowedAgentPresets.filter(id => typeof id === 'string' && id && id !== presetIdOf(agent.id)))].sort()
 		: [];
 	const isDerivedPreset = typeof options.idSuffix === 'string' && options.idSuffix !== '';
-	// ★ 2026-10-20：`.agent.md` 写了 `subagents: false` ⇒ **一行都不挂**（连 fork 也不挂）。
-	//
-	// 为什么不能靠"tools 里不写 subagent"来关：dsh 的 `tools.restrict()` 只作用于**继承来的
-	// 全局工具**（`dsh-tools` 原文：`Restrictions intersect; scoped registrations remain visible.`），
-	// 而 `subagent` 是我们**在同一 preset 作用域内**挂的行 ⇒ allowlist 拦不住它 ✗。
-	// 审查族（code-reviewer / task-reviewer / re-reviewer）要的是"只有一个审查席位"，
-	// 所以只能在**装配层**不给这一行 —— 提示词里的「One Seat」为意願，这里才是真闸 ✓。
-	if (agent.subagents === false) {
-		notes.push('subagents: false → 该 agent 不挂 tool-subagent / fork 行（审查族只有一个席位）');
-	}
-	// ★ 2026-10-20：**总是挂** `tool-subagent` 行，只有清单非空时才带 `allowedAgentPresets`。
-	//
-	// 为什么不再"清单空就不挂行"：opt-in 之后，默认没有任何 agent 标 `subagent: true` ⇒ 若不挂行，
-	// `subagent` 工具会从所有会话里消失（host plane 的这行是 disabled 的），委派能力整体失效。
-	// 不挂清单 = 官方语义"继承父会话的 preset"，工具仍在、模型只是看不到 `agent_preset` 参数 ✓。
-	// 另一个好处：清单一直为空时配置完全不变 ⇒ 新建/删除 agent **不触发任何重挂**（churn=0）。
-	if (!isDerivedPreset && agent.subagents !== false) {
+	const delegationIndex = plugins.findIndex(row => row?.id === 'delegation');
+	if (isDerivedPreset || agent.subagents === false) {
+		if (agent.subagents === false) {
+			notes.push('subagents: false → 该 agent 不挂 delegation 组（subagent / fork / workflow；审查族只有一个席位）');
+		}
+		if (delegationIndex >= 0) {
+			plugins.splice(delegationIndex, 1);
+		}
+	} else {
 		if (!allowed.length) {
 			notes.push('没有 agent 标 `subagent: true` ⇒ 子代理只能继承当前 preset（不显示可选清单）');
 		}
-		// ── 子代理控制族（2026-10-21，P1）────────────────────────────────────────
-		// 顺序与官方 standard preset 一致：control → list-agents → subagent → fork。
-		// 只在**真的挂了 subagent** 时挂（`subagents: false` 的审查族、`-assign` 派生版都不挂：
-		// 它们本来就不许再派/不再 fan-out，挂上 `send_message` 只会给一个用不了的入口）。
-		plugins.push({ id: 'tool-subagent-control', name: SUBAGENT_CONTROL_ROW_NAME });
-		plugins.push({ id: 'tool-subagent-list-agents', name: SUBAGENT_LIST_AGENTS_ROW_NAME });
-		plugins.push({
-			id: 'tool-subagent',
-			name: SUBAGENT_ROW_NAME,
-			config: {
-				provider: 'spawn',
-				toolName: 'subagent',
-				modelSelectionSettings: true,
-				backgroundMode: 'continuable',
-				...(allowed.length ? { allowedAgentPresets: allowed } : {}),
-			},
-		});
-		// ⚠ fork 行刻意**不**带 `allowedAgentPresets`：fork provider 继承父上下文，
-		//   `tool-subagent` 的 `assertProvider` 会拒绝"继承上下文 + 独立选 preset"的组合（会直接抛错）。
-		plugins.push({
-			id: 'tool-subagent-fork',
-			name: SUBAGENT_ROW_NAME,
-			config: { provider: 'fork', toolName: 'subagent_fork', backgroundMode: 'continuable' },
-		});
+		const sub = findRow(plugins, 'tool-subagent');
+		const fork = findRow(plugins, 'tool-subagent-fork');
+		if (!sub || !fork) {
+			notes.push('基座里没有 tool-subagent / tool-subagent-fork 行（官方 standard 结构变了？）⇒ 本 agent 没有子代理工具');
+		}
+		if (sub) {
+			sub.config = { ...(sub.config ?? {}), backgroundMode: 'continuable', ...(allowed.length ? { allowedAgentPresets: allowed } : {}) };
+		}
+		if (fork) {
+			fork.config = { ...(fork.config ?? {}), backgroundMode: 'continuable' };
+		}
+	}
+	// 基座完整性：缺任何一行"缺了就废"的行都写进 notes（页面/日志可见，不静默）
+	const presentIds = new Set(rowIdsOf(plugins));
+	const missing = REQUIRED_BASE_ROW_IDS.filter(id => !presentIds.has(id));
+	if (missing.length) {
+		notes.push(`基座缺行：${missing.join(', ')}（跑 node dsh-plugins/preset-sync.mjs --write-agent-base）`);
 	}
 	const idSuffix = typeof options.idSuffix === 'string' ? options.idSuffix : '';
 	const nameSuffix = typeof options.nameSuffix === 'string' ? options.nameSuffix : '';
@@ -513,6 +542,10 @@ export function toPresetDefinition(agent, options = {}) {
 		name: agent.name + nameSuffix,
 		plugins,
 	};
+	// 人设行带上本 preset 的 id：运行时 allowlist 只认"会话 agentPreset == 本 id"的 agent（防误伤别的 preset）
+	if (plugins[0]?.id === 'persona' && plugins[0].config) {
+		plugins[0].config.presetId = definition.id;
+	}
 	if (agent.description) {
 		definition.description = agent.description;
 	}

@@ -31,6 +31,33 @@ const STEPS = [
 	// ★ 2026-10-24：面板单块里**不许有未定义标识符**
 	//   （真机 `c is not defined` 让整个工作台变成"渲染时出错"；node --check 抓不到）
 	{ file: 'check-kb-client-no-undef.mjs', desc: '面板 client.js：no-undef 静态检查' },
+	// ★ 2026-10-25：**Markdown 渲染回归** —— 用真实渲染器 + react-dom/server 断言 27 类语法
+	//   （frontmatter / Callout / 双链 / 表格 / 嵌套列表 / mermaid / 数学 / 删除线 …）
+	// ★ 2026-10-25：**服务端渲染**（markdown-it + Obsidian 方言，vendor 随包）
+	{ file: 'check-kb-md-node.mjs', desc: '服务端 Markdown 渲染（28 项）' },
+	// ★ 2026-10-25：**真实库全文扫描** —— 每篇渲染后检查有无残留原始标记（缺库则跳过）
+	{ file: 'check-kb-md-vault.mjs', desc: '真实库渲染覆盖扫描（无残留标记）' },
+	// ★ 2026-10-25：`/api/doc` 端到端（渲染结果 + 磁盘缓存命中/失效）
+	{ file: 'check-kb-doc-route.mjs', desc: '/api/doc 端到端：渲染 + 缓存 + 失效（8 项）' },
+	// ★ 2026-10-24：飞书能力搬到 dsh 侧 —— CLI 检测 / 库列表 / 同步日志 / 同步门禁
+	{ file: 'check-kb-feishu-routes.mjs', desc: '飞书路由：CLI / 库列表 / 日志 / 门禁（9 项）' },
+	// ★ 2026-10-25：重建索引（临时库；含"向量索引如实标注不支持"的边界断言）
+	{ file: 'check-kb-reindex.mjs', desc: '重建索引：内核缓存 + 状态 + 能力边界（6 项）' },
+	// ★ 2026-10-25：视图数据缓存（命中 / 目录变化后失效 / refresh 绕过）
+	{ file: 'check-kb-view-cache.mjs', desc: 'view-data 缓存（7 项）' },
+	// ★ 2026-10-25：**源码完整性** —— 防"replace 的 $' 把文件整段复制一份"这类事故
+	//   （`node --check` 查不出：两份代码都合法，只是后者覆盖前者）
+	{ file: 'check-kb-file-integrity.mjs', desc: '源码完整性：符号唯一 / 无整段重复（21 项，含自测）' },
+	// ★ 2026-10-25：导图（.canvas）解析契约（临时库；坏 JSON / 错扩展名都要如实报错）
+	{ file: 'check-kb-canvas.mjs', desc: '导图路由：清单 / 解析 / 错误 / 扩展名（8 项）' },
+	// ★ 2026-10-25：查重（只检测）—— 近似/完全重复能查到，无关笔记不误报
+	{ file: 'check-kb-dedupe.mjs', desc: '查重：近似 / 完全重复 / 不误报（7 项）' },
+	// ★ 2026-10-25：审核（状态在 frontmatter；保留其它键 + 改前备份 + 拒绝越界路径）
+	{ file: 'check-kb-review.mjs', desc: '审核：状态判定 / frontmatter 保留 / 备份（13 项）' },
+	// ★ 2026-10-25：**全路由冒烟** —— 能力堆到 20+ 条路由后，最容易出现"某条没人调、悄悄 500"
+	{ file: 'check-kb-routes-smoke.mjs', desc: '全路由冒烟（17 条路由 + 越界负例）' },
+	// 2026-10-25：前端手写渲染器已删除（服务端渲染为唯一实现）⇒ 它的 27 项回归一并退场，
+	// 语义覆盖由 `check-kb-md-node`（28 项）+ `check-kb-md-vault`（全库扫描）承接。
 ];
 
 const failed = [];

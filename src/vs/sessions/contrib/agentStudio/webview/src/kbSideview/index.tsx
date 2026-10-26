@@ -97,6 +97,12 @@ export interface KbSideviewActions {
 	openNode?(path: string): void;
 	refresh?(): void;
 	openGraph?(): void;
+
+	/**
+	 * 能力位：宿主服务端有 `/api/canvas` ⇒ 视图**自己**渲染导图（2026-10-25 起三端统一）。
+	 * 用能力位而不是动作：动作只能"请宿主去画"，而绘制实现已经在视图里了。
+	 */
+	canvas?: boolean;
 	openSettings?(): void;
 	/** 同步飞书（只在宿主真能执行时提供 —— 面板走 `/api/feishu-sync`，IDE 侧栏走命令桥） */
 	feishuSync?(): void;
@@ -108,8 +114,7 @@ export interface KbSideviewActions {
 	 * `attach`：给已有文件夹的**绝对路径**（不移动、不复制文件）。
 	 */
 	addVault?(mode: 'create' | 'attach', path?: string, name?: string): void;
-	/** 重建索引（宿主有能力时提供；dsh 面板走 `/api/reindex` 一类路由） */
-	reindex?(): void;
+
 	switchVault?(vaultId: string): void;
 	/**
 	 * 检索。`mode='fulltext'` 时**返回 Promise<结果>** 才算支持全文检索：
@@ -120,11 +125,6 @@ export interface KbSideviewActions {
 	openLink?(path: string): void;
 	/** 拖拽移动（支持多选批量）：把 `fromPaths` 全部移到目录 `toFolderPath` 下（落盘由宿主做） */
 	moveNodes?(fromPaths: readonly string[], toFolderPath: string): void;
-	/**
-	 * 打开思维导图（生成/打开 `mindmap.canvas`）。**宿主不提供时不显示按钮** ——
-	 * 与其放一个点了没反应的按钮，不如让能力差异可见（IDE 侧有、插件页暂无）。
-	 */
-	openMindmap?(): void;
 	/** 体检（结构校验，产出 `lint-report.md`）。同样：宿主不提供就不显示按钮 */
 	runLint?(): void;
 	/** 整理去重（检测 + `dedup-report.md`；合并流程仍在经典视图里） */
@@ -145,7 +145,20 @@ export interface KbSideviewActions {
 	 * 取正文（插件页 / 工作台面板用）：有它 ⇒ 视图进入"内嵌阅读"模式（右栏显示正文）。
 	 * IDE 侧栏**不提供** ⇒ 正文由编辑区打开，行为不变。
 	 */
-	loadDoc?(path: string): Promise<{ title: string; text: string; /** 文档所在目录（绝对），图片相对路径要用它折算 */ base?: string } | null>;
+	loadDoc?(path: string): Promise<{
+		title: string;
+		text: string;
+		/** 文档所在目录（绝对），图片相对路径要用它折算 */
+		base?: string;
+		/**
+		 * **服务端已渲染好的 HTML**（dsh 侧由 markdown-it + Obsidian 方言生成）。
+		 * 有它就直接注入并走事件委托；没有（IDE 侧）则回落到视图内手写渲染器。
+		 */
+		html?: string;
+		/** 正文含公式 ⇒ 需要引入 `/x/kb/vendor/katex/katex.min.css` */
+		math?: boolean;
+		mtime?: number;
+	} | null>;
 	/**
 	 * 把笔记里的**相对图片路径**折成可请求的 URL。
 	 * dsh 侧实现为 `/x/kb/api/asset?uri=<绝对路径>`；IDE 侧不提供 ⇒ 图片退化成 alt 文字，不显示坏图。
@@ -558,324 +571,6 @@ function countOf(nodes: readonly KbTreeNode[]): number {
 	return n;
 }
 
-/**
- * 极简 Markdown 渲染（**无第三方依赖**）。
- *
- * 为什么自建：插件页 / 工作台面板里没有 IDE 的 Markdown 渲染器可用，之前右栏直接 `<pre>` 输出
- * 原文 ⇒ `>`、`**`、`1)` 全裸露，和 IDE 侧栏里看到的排版完全两样（2026-10-24 用户报）。
- * 引 `marked` + `dompurify` 会给**常驻侧栏** bundle 增重几十 KB，并引入 XSS 面 ⇒ 只做「结构可读」：
- * 标题 / 段落 / 有序无序列表 / 引用 / 代码块 / 分隔线 + 行内粗体·斜体·行内代码·链接。
- * 表格与更复杂语法按原文给出（等宽显示），**不假装支持**。
- */
-const INLINE_RE = /(!\[[^\]]*\]\([^)]+\)|\*\*[^*]+\*\*|`[^`]+`|\*[^*\n]+\*|\[[^\]]+\]\([^)]+\))/g;
-
-/**
- * 渲染期上下文（图片要用宿主的资源路由 + 当前文档所在目录）。
- *
- * 为什么用模块级变量而不是一路传参：`renderInline` 在标题/列表/引用/表格里都被调用，
- * 逐层加参数会污染十几个调用点；而渲染是**同步**的，进入 `renderMarkdown` 时赋值即可。
- */
-let MD_CTX: {
-	assetUrl?: (absPath: string) => string;
-	base?: string;
-	/** 点任务清单的勾选框时回调（传入该行在 Markdown 里的**行号**） */
-	onTaskToggle?: (lineIndex: number) => void;
-} = {};
-
-/** 把 Markdown 里的图片地址折成**绝对路径**，再交给宿主的资源路由。 */
-function resolveAssetSrc(src: string): string | undefined {
-	const raw = src.trim();
-	if (/^(https?:|data:|blob:)/i.test(raw)) { return raw; }        // 外链直用
-	const build = MD_CTX.assetUrl;
-	if (!build) { return undefined; }                                // 宿主没有资源路由 ⇒ 当普通文字
-	const base = (MD_CTX.base ?? '').replace(/\\/g, '/').replace(/\/+$/, '');
-	let abs: string;
-	if (/^[A-Za-z]:[\\/]/.test(raw) || raw.startsWith('/')) { abs = raw; }
-	else if (raw.startsWith('../')) {
-		// 逐级回退（相对当前文档目录）
-		const parts = base.split('/');
-		let rest = raw;
-		while (rest.startsWith('../')) { parts.pop(); rest = rest.slice(3); }
-		abs = parts.join('/') + '/' + rest;
-	} else { abs = base ? base + '/' + raw : raw; }
-	return build(abs);
-}
-
-function renderInline(text: string, keyPrefix: string): React.ReactNode[] {
-	const out: React.ReactNode[] = [];
-	let last = 0;
-	let i = 0;
-	for (const m of text.matchAll(INLINE_RE)) {
-		const idx = m.index ?? 0;
-		if (idx > last) { out.push(text.slice(last, idx)); }
-		const tok = m[0];
-		const key = keyPrefix + '-i' + (i++);
-		if (tok.startsWith('![')) {
-			// 资产：解析出 alt 与 src；宿主无资源路由时退化成「alt」文字（不显示坏图）
-			const mm = /^!\[([^\]]*)\]\(([^)]+)\)$/.exec(tok);
-			const src = mm ? resolveAssetSrc(mm[2]) : undefined;
-			if (!mm || !src) {
-				out.push(<span key={key} style={{ opacity: .7 }}>{mm ? mm[1] || '（附件）' : tok}</span>);
-				continue;
-			}
-			// ★ 2026-10-24：按扩展名分流 —— 以前一律塞 `<img>`，pdf / 视频会渲染成坏图 ✗
-			const ext = (mm[2].split(/[?#]/)[0].split('.').pop() ?? '').toLowerCase();
-			const label = mm[1] || (mm[2].split('/').pop() ?? '附件');
-			if (ext === 'pdf') {
-				// 优先内嵌（Chromium 自带 PDF 阅读器）；不支持时下面那条链接可兜底（同 webview 内跳转）
-				out.push(
-					<div key={key} style={{ margin: '8px 0' }}>
-						<embed src={src} type="application/pdf"
-							style={{ width: '100%', height: 520, border: '1px solid rgba(127,127,127,.35)', borderRadius: 4, background: 'rgba(127,127,127,.08)' }} />
-						<a href={src} style={{ display: 'inline-block', marginTop: 4, fontSize: 11.5, opacity: .8, textDecoration: 'underline', color: 'inherit' }}>
-							PDF · {label}（打不开就点这里）
-						</a>
-					</div>);
-			} else if (['mp4', 'webm', 'mov'].includes(ext)) {
-				out.push(<video key={key} src={src} controls style={{ maxWidth: '100%', margin: '6px 0', borderRadius: 4, display: 'block' }} />);
-			} else if (['mp3', 'wav', 'ogg', 'm4a'].includes(ext)) {
-				out.push(<audio key={key} src={src} controls style={{ width: '100%', margin: '6px 0' }} />);
-			} else {
-				// 图片：点击在新标签放大（不引灯箱，省一个组件）
-				out.push(
-					<a key={key} href={src} target="_blank" rel="noreferrer" title="点击放大">
-						<img src={src} alt={label} loading="lazy"
-							style={{ maxWidth: '100%', borderRadius: 4, margin: '6px 0', display: 'block', border: '1px solid rgba(127,127,127,.25)' }} />
-					</a>);
-			}
-		}
-		else if (tok.startsWith('**')) { out.push(<strong key={key}>{tok.slice(2, -2)}</strong>); }
-		else if (tok.startsWith('`')) { out.push(<code key={key} style={{ fontFamily: 'var(--vscode-editor-font-family, monospace)', background: 'rgba(127,127,127,.18)', padding: '1px 4px', borderRadius: 3 }}>{tok.slice(1, -1)}</code>); }
-		else if (tok.startsWith('[')) {
-			const mm = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(tok);
-			out.push(mm ? <a key={key} href={mm[2]} style={{ color: 'var(--vscode-textLink-foreground, #3794ff)' }}>{mm[1]}</a> : tok);
-		} else { out.push(<em key={key}>{tok.slice(1, -1)}</em>); }
-		last = idx + tok.length;
-	}
-	if (last < text.length) { out.push(text.slice(last)); }
-	return out;
-}
-
-/**
- * 极简语法高亮（无第三方依赖）。
- *
- * 只做四类记号：注释 / 字符串 / 数字 / 关键字 —— 这四类已经能覆盖「代码块一眼可读」的需求。
- * 刻意不引 highlight.js（+~30KB 且要按语言注册）：侧栏是常驻视图，收益不抵体积。
- * `#` 注释只对 py/sh/yaml 系生效，否则 JS 的私有字段名会被误判成注释。
- */
-const HL_KEYWORDS = new Set([
-	'const', 'let', 'var', 'function', 'return', 'if', 'else', 'for', 'while', 'class', 'new', 'import', 'from', 'export',
-	'async', 'await', 'try', 'catch', 'finally', 'throw', 'typeof', 'interface', 'type', 'implements', 'extends', 'public',
-	'private', 'readonly', 'enum', 'switch', 'case', 'break', 'continue', 'default', 'yield', 'in', 'of', 'do', 'void',
-	'null', 'undefined', 'true', 'false', 'this', 'super', 'static', 'def', 'elif', 'lambda', 'pass', 'with', 'as', 'not',
-	'and', 'or', 'is', 'None', 'True', 'False', 'echo', 'then', 'fi', 'esac', 'local',
-]);
-const HASH_COMMENT_LANGS = new Set(['py', 'python', 'sh', 'bash', 'shell', 'zsh', 'yaml', 'yml', 'toml', 'conf', 'dockerfile']);
-
-function highlight(code: string, lang: string): React.ReactNode[] {
-	const useHash = HASH_COMMENT_LANGS.has(lang.toLowerCase());
-	// 顺序敏感：注释 > 字符串 > 数字 > 标识符
-	const re = new RegExp(
-		(useHash ? '(#[^\\n]*)' : '(\\/\\/[^\\n]*|\\/\\*[\\s\\S]*?\\*\\/)')
-		+ '|("(?:[^"\\\\\\n]|\\\\.)*"|\'(?:[^\'\\\\\\n]|\\\\.)*\'|`(?:[^`\\\\]|\\\\.)*`)'
-		+ '|\\b(\\d+(?:\\.\\d+)?)\\b'
-		+ '|\\b([A-Za-z_$][\\w$]*)\\b',
-		'g',
-	);
-	const out: React.ReactNode[] = [];
-	let last = 0;
-	let i = 0;
-	for (const m of code.matchAll(re)) {
-		const idx = m.index ?? 0;
-		if (idx > last) { out.push(code.slice(last, idx)); }
-		const key = 'h' + (i++);
-		if (m[1] !== undefined) { out.push(<span key={key} style={{ color: '#6a9955' }}>{m[1]}</span>); }
-		else if (m[2] !== undefined) { out.push(<span key={key} style={{ color: '#ce9178' }}>{m[2]}</span>); }
-		else if (m[3] !== undefined) { out.push(<span key={key} style={{ color: '#b5cea8' }}>{m[3]}</span>); }
-		else if (m[4] !== undefined && HL_KEYWORDS.has(m[4])) { out.push(<span key={key} style={{ color: '#569cd6' }}>{m[4]}</span>); }
-		else { out.push(m[0]); }
-		last = idx + m[0].length;
-	}
-	if (last < code.length) { out.push(code.slice(last)); }
-	return out;
-}
-
-function renderMarkdown(md: string, ctx?: { assetUrl?: (absPath: string) => string; base?: string; onTaskToggle?: (lineIndex: number) => void }): React.ReactNode[] {
-	MD_CTX = ctx ?? {};
-	const lines = md.replace(/\r\n?/g, '\n').split('\n');
-	const blocks: React.ReactNode[] = [];
-	let i = 0;
-	let k = 0;
-	const key = () => 'md' + (k++);
-
-	while (i < lines.length) {
-		const line = lines[i];
-
-		// 代码块（带极简高亮：注释/字符串/数字/关键字）
-		if (/^\s*```/.test(line)) {
-			const lang = line.replace(/^\s*```/, '').trim();
-			const buf: string[] = [];
-			i++;
-			while (i < lines.length && !/^\s*```/.test(lines[i])) { buf.push(lines[i++]); }
-			i++;
-			const codeText = buf.join('\n');
-			blocks.push(
-				<div key={key()} style={{ position: 'relative', margin: '8px 0' }}>
-					<button
-						type="button"
-						title="复制代码"
-						onClick={e => {
-							// 不引状态：直接改按钮文案（避免为每个代码块加一个 useState）
-							const btn = e.currentTarget;
-							void navigator.clipboard?.writeText(codeText).then(() => {
-								btn.textContent = '已复制';
-								setTimeout(() => { btn.textContent = '复制'; }, 1200);
-							}).catch(() => { btn.textContent = '复制失败'; });
-						}}
-						style={{
-							position: 'absolute', top: 6, right: 6, height: 20, padding: '0 8px',
-							fontSize: 10.5, cursor: 'pointer', borderRadius: 3,
-							background: 'rgba(127,127,127,.18)', color: 'inherit',
-							border: '1px solid rgba(127,127,127,.35)', opacity: .8,
-						}}
-					>复制</button>
-					<pre style={{ margin: 0, padding: '8px 10px', background: 'rgba(127,127,127,.12)', borderRadius: 4, overflow: 'auto', fontSize: 12, lineHeight: 1.6, fontFamily: 'var(--vscode-editor-font-family, monospace)' }}>
-						{highlight(codeText, lang)}
-					</pre>
-					{lang ? (
-						<span style={{ position: 'absolute', top: 6, left: 8, fontSize: 9.5, opacity: .45, textTransform: 'uppercase', letterSpacing: '.05em' }}>{lang}</span>
-					) : null}
-				</div>);
-			continue;
-		}
-
-		// 标题
-		const h = /^(#{1,4})\s+(.*)$/.exec(line);
-		if (h) {
-			const lv = h[1].length;
-			const size = lv === 1 ? 16 : lv === 2 ? 15 : lv === 3 ? 14 : 13;
-			blocks.push(<div key={key()} style={{ fontSize: size, fontWeight: 600, margin: '14px 0 6px' }}>{renderInline(h[2], key())}</div>);
-			i++;
-			continue;
-		}
-
-		// 分隔线
-		if (/^\s*(-{3,}|\*{3,})\s*$/.test(line)) {
-			blocks.push(<div key={key()} style={{ height: 1, background: 'rgba(127,127,127,.3)', margin: '12px 0' }} />);
-			i++;
-			continue;
-		}
-
-		// 引用块（连续 > 行合并）
-		if (/^\s*>/.test(line)) {
-			const buf: string[] = [];
-			while (i < lines.length && /^\s*>/.test(lines[i])) { buf.push(lines[i].replace(/^\s*>\s?/, '')); i++; }
-			blocks.push(
-				<div key={key()} style={{ borderLeft: '3px solid rgba(127,127,127,.45)', padding: '2px 0 2px 10px', margin: '8px 0', color: 'var(--vscode-descriptionForeground, #9d9d9d)' }}>
-					{renderInline(buf.join('\n'), key())}
-				</div>);
-			continue;
-		}
-
-		// 列表（有序 / 无序，按缩进给一级子项）
-		if (/^\s*([-*+]|\d+[.)])\s+/.test(line)) {
-			const items: React.ReactNode[] = [];
-			while (i < lines.length && /^\s*([-*+]|\d+[.)])\s+/.test(lines[i])) {
-				const li = lines[i];
-				const lineIndex = i;   // 任务清单切换要回写**这一行**，先记下行号
-				const indent = (li.match(/^\s*/)?.[0].length ?? 0) >= 2 ? 16 : 0;
-				const rawBody = li.replace(/^\s*([-*+]|\d+[.)])\s+/, '');
-				const ordered = /^\s*\d+[.)]\s+/.test(li);
-				// 任务列表：`- [ ]` / `- [x]` ⇒ 真勾选框（只读；点击即切换属于编辑，dsh 侧不做）
-				const task = /^\[([ xX])\]\s+/.exec(rawBody);
-				const body = task ? rawBody.slice(task[0].length) : rawBody;
-				const bullet = task
-					? (task[1].toLowerCase() === 'x' ? '☑' : '☐')
-					: (ordered ? (li.trim().match(/^\d+/)?.[0] ?? '') + '.' : '•');
-				items.push(
-					<div key={key()} style={{ display: 'flex', gap: 6, marginLeft: indent, marginBottom: 2 }}>
-						<span
-							// 任务清单：宿主提供 onTaskToggle 时才能点（点击=切换 `[ ]`/`[x]`，会写回文件）
-							onClick={task && MD_CTX.onTaskToggle ? () => MD_CTX.onTaskToggle?.(lineIndex) : undefined}
-							title={task && MD_CTX.onTaskToggle ? '点击切换完成状态' : undefined}
-							style={{
-								color: task ? 'var(--vscode-textLink-foreground, #3794ff)' : 'var(--vscode-descriptionForeground, #9d9d9d)',
-								minWidth: task ? 14 : (ordered ? 16 : 10),
-								cursor: task && MD_CTX.onTaskToggle ? 'pointer' : 'default',
-							}}>{bullet}</span>
-						<span style={{ flex: 1, minWidth: 0, opacity: task && task[1].toLowerCase() === 'x' ? .75 : 1 }}>{renderInline(body, key())}</span>
-					</div>);
-				i++;
-			}
-			blocks.push(<div key={key()} style={{ margin: '6px 0' }}>{items}</div>);
-			continue;
-		}
-
-		// 表格（2026-10-24：从"等宽原文"升级为真表格，带边框与对齐）
-		if (/^\s*\|/.test(line)) {
-			const rows: string[][] = [];
-			while (i < lines.length && /^\s*\|/.test(lines[i])) {
-				const raw = lines[i].trim();
-				// 去掉首尾竖线后按 | 切（不支持转义竖线 —— 笔记里极少出现，先不假装支持）
-				const cells = raw.replace(/^\|/, '').replace(/\|$/, '').split('|').map(c => c.trim());
-				rows.push(cells);
-				i++;
-			}
-			const isSep = (cells: string[]) => cells.every(c => /^:?-{2,}:?$/.test(c));
-			const sep = rows.length > 1 && isSep(rows[1]) ? rows[1] : undefined;
-			const head = sep ? rows[0] : undefined;
-			const body = sep ? rows.slice(2) : rows;
-			const alignOf = (idx: number): 'left' | 'center' | 'right' => {
-				const c = sep?.[idx] ?? '';
-				if (c.startsWith(':') && c.endsWith(':')) { return 'center'; }
-				if (c.endsWith(':')) { return 'right'; }
-				return 'left';
-			};
-			const cellStyle = (idx: number): React.CSSProperties => ({
-				padding: '5px 9px', border: '1px solid rgba(127,127,127,.35)', textAlign: alignOf(idx), verticalAlign: 'top',
-			});
-			blocks.push(
-				<div key={key()} style={{ margin: '10px 0', overflowX: 'auto' }}>
-					<table style={{ borderCollapse: 'collapse', fontSize: 12.5, minWidth: '50%' }}>
-						{head ? (
-							<thead>
-								<tr>{head.map((c, ci) => (
-									<th key={ci} style={{ ...cellStyle(ci), background: 'rgba(127,127,127,.14)', fontWeight: 600 }}>{renderInline(c, key())}</th>
-								))}</tr>
-							</thead>
-						) : null}
-						<tbody>
-							{body.map((cells, ri) => (
-								<tr key={ri}>{cells.map((c, ci) => (
-									<td key={ci} style={cellStyle(ci)}>{renderInline(c, key())}</td>
-								))}</tr>
-							))}
-						</tbody>
-					</table>
-				</div>);
-			continue;
-		}
-
-		// 空行
-		if (!line.trim()) { i++; continue; }
-
-		// 段落：连续非空行合并
-		const buf: string[] = [];
-		while (i < lines.length && lines[i].trim() && !/^\s*(#{1,4}\s|>|[-*+]\s|\d+[.)]\s|```|\|)/.test(lines[i]) && !/^\s*(-{3,}|\*{3,})\s*$/.test(lines[i])) {
-			buf.push(lines[i]); i++;
-		}
-		if (buf.length) {
-			blocks.push(<p key={key()} style={{ margin: '8px 0', lineHeight: 1.75 }}>{renderInline(buf.join(' '), key())}</p>);
-		} else { i++; }
-	}
-	return blocks;
-}
-
-/**
- * 组件内联的少量 CSS（只放**伪类**能表达的东西，其余仍走 inline style）。
- * 目前只有一条：树行右侧的大小/子项数**默认隐藏，hover 或选中时淡入**（Obsidian 观感）。
- * 用 `<style>` 而不是每行 `useState` 的理由：一棵树动辄上百行，状态化 hover 会带来整树重渲染。
- */
 const KB_SCOPED_CSS = `
 .kb-meta { opacity: 0; transition: opacity .1s ease; }
 .kb-row:hover .kb-meta, .kb-row[aria-selected="true"] .kb-meta { opacity: .85; }
@@ -885,6 +580,47 @@ const KB_SCOPED_CSS = `
 /* 排序条同理：hover 整节时才出现，默认保持 Obsidian 的干净版面 */
 .kb-sortbar { opacity: 0; transition: opacity .1s ease; }
 .kb-sec:hover .kb-sortbar, .kb-sortbar:hover { opacity: 1; }
+
+/* ── 服务端渲染的 Markdown（class 由 lib/md/render.js 产出，2026-10-25）──────
+   为什么样式放在视图、HTML 放服务端：HTML 要能被三个宿主共用，而配色/间距属于
+   「看的人」这一侧（IDE 与 dsh 的主题变量不同）。 */
+.kb-md { font-size: 13px; line-height: 1.75; word-break: break-word; }
+.kb-md h1 { font-size: 1.55em; margin: .7em 0 .4em; }
+.kb-md h2 { font-size: 1.3em; margin: .7em 0 .4em; }
+.kb-md h3 { font-size: 1.12em; margin: .6em 0 .3em; }
+.kb-md h4, .kb-md h5, .kb-md h6 { font-size: 1em; margin: .6em 0 .3em; }
+.kb-md p { margin: .5em 0; }
+.kb-md ul, .kb-md ol { margin: .4em 0; padding-left: 1.7em; }
+.kb-md li { margin: .15em 0; }
+.kb-md blockquote { border-left: 3px solid rgba(127,127,127,.45); margin: .6em 0; padding: .1em 0 .1em 10px; color: var(--vscode-descriptionForeground, #9d9d9d); }
+.kb-md .kb-callout { border-left: 3px solid #3794ff; background: rgba(127,127,127,.07); border-radius: 4px; padding: 6px 10px; margin: .7em 0; }
+.kb-md .kb-callout > p:first-of-type { margin-top: 0; }
+.kb-md .kb-callout::before {
+	content: attr(data-callout-title);
+	display: block; font-size: 12px; font-weight: 600; color: #3794ff; margin-bottom: 3px;
+}
+.kb-md .kb-callout[data-callout="tip"]::before, .kb-md .kb-callout[data-callout="hint"]::before { color: #3fb950; }
+.kb-md .kb-callout[data-callout="warning"]::before, .kb-md .kb-callout[data-callout="caution"]::before { color: #d29922; }
+.kb-md .kb-callout[data-callout="danger"]::before, .kb-md .kb-callout[data-callout="error"]::before, .kb-md .kb-callout[data-callout="bug"]::before { color: #f85149; }
+.kb-md .kb-callout[data-callout="quote"]::before { color: #9d9d9d; }
+.kb-md .kb-wiki { color: var(--vscode-textLink-foreground, #3794ff); cursor: pointer; text-decoration: none; }
+.kb-md .kb-wiki:hover { text-decoration: underline; }
+.kb-md .kb-wiki-missing { border-bottom: 1px dashed rgba(127,127,127,.6); opacity: .72; }
+.kb-md .kb-task { margin-right: 6px; vertical-align: middle; cursor: pointer; }
+.kb-md table.kb-table { border-collapse: collapse; margin: .7em 0; font-size: 12.5px; }
+.kb-md .kb-table th, .kb-md .kb-table td { border: 1px solid rgba(127,127,127,.3); padding: 4px 10px; }
+.kb-md .kb-table th { background: rgba(127,127,127,.12); font-weight: 600; }
+.kb-md pre.kb-code { margin: .7em 0; padding: 8px 10px; background: rgba(127,127,127,.12); border-radius: 4px; overflow: auto; font-size: 12px; line-height: 1.6; }
+.kb-md code { font-family: var(--vscode-editor-font-family, monospace); background: rgba(127,127,127,.14); padding: 1px 4px; border-radius: 3px; }
+.kb-md pre.kb-code code { background: none; padding: 0; }
+/* 服务端轻量高亮的四类记号（与旧的视图内高亮同色口径） */
+.kb-md .kb-tok-kw { color: #569cd6; }
+.kb-md .kb-tok-str { color: #ce9178; }
+.kb-md .kb-tok-num { color: #b5cea8; }
+.kb-md .kb-tok-com { color: #6a9955; }
+.kb-md img { max-width: 100%; border-radius: 4px; }
+.kb-md hr { border: 0; border-top: 1px solid rgba(127,127,127,.3); margin: 1em 0; }
+.kb-md a { color: var(--vscode-textLink-foreground, #3794ff); }
 `;
 
 /** 非 Markdown 文件的预览类型（点树上的 pdf/图片/音视频时用，不再走 `/api/doc` 读文本） */
@@ -895,6 +631,245 @@ function assetKindOf(path: string): 'image' | 'pdf' | 'video' | 'audio' | null {
 	if (['mp4', 'webm', 'mov'].includes(ext)) { return 'video'; }
 	if (['mp3', 'wav', 'ogg', 'm4a'].includes(ext)) { return 'audio'; }
 	return null;
+}
+
+type KbCanvasNode = { id: string; x: number; y: number; w: number; h: number; type: string; color: string; text: string; file: string };
+type KbCanvasDoc = { name: string; path: string; notesRoot?: string; nodes: KbCanvasNode[]; edges: { from: string; to: string; label: string }[] };
+
+/**
+ * 导图（.canvas）只读渲染（2026-10-25 从面板侧迁到视图层）。
+ *
+ * 为什么迁到视图：渲染器原先在 `client.js`（工作台面板）里 ⇒ **插件页 `/x/kb/` 用不到**，
+ * 「导图」按钮在页面上永远不出现。迁到这里后三端（IDE/面板/页面）共用一份实现，
+ * 面板侧那份 200 行重复代码同时删掉。
+ *
+ * 能力门控：宿主声明 `actions.canvas === true`（表示它的服务端有 `/api/canvas`）才显示按钮。
+ * IDE 侧不声明 ⇒ 不显示（它自己的「思维导图」是开编辑器）。
+ */
+function KbCanvasPane({ onClose, onOpenNote }: { onClose: () => void; onOpenNote: (abs: string) => void }) {
+	const wrapRef = useRef<HTMLDivElement | null>(null);
+	const canvasRef = useRef<HTMLCanvasElement | null>(null);
+	const [list, setList] = useState<{ name: string; rel: string; abs: string; size: number }[] | null>(null);
+	const [doc, setDoc] = useState<KbCanvasDoc | null>(null);
+	const [error, setError] = useState('');
+	const viewRef = useRef({ s: 1, x: 0, y: 0 });
+	const layoutRef = useRef<{ nodes: KbCanvasNode[] }>({ nodes: [] });
+
+	useEffect(() => {
+		let alive = true;
+		fetch('/x/kb/api/canvas-list', { credentials: 'same-origin' })
+			.then(r => r.json())
+			.then(b => {
+				if (!alive) { return; }
+				if (!b || b.ok === false) { setError(String(b?.error || '读取导图清单失败')); setList([]); return; }
+				setList(Array.isArray(b.files) ? b.files : []);
+			})
+			.catch(e => { if (alive) { setError(String(e?.message || e)); setList([]); } });
+		return () => { alive = false; };
+	}, []);
+
+	const openFile = (abs: string) => {
+		setError('');
+		fetch('/x/kb/api/canvas?uri=' + encodeURIComponent(abs), { credentials: 'same-origin' })
+			.then(r => r.json())
+			.then(b => {
+				if (!b || b.ok === false) { setError(String(b?.error || '解析 .canvas 失败')); return; }
+				setDoc(b as KbCanvasDoc);
+			})
+			.catch(e => setError(String(e?.message || e)));
+	};
+
+	// 只有一份时自动打开
+	useEffect(() => {
+		if (!doc && list && list.length === 1) { openFile(list[0].abs); }
+	}, [list, doc]);
+
+	// 绘制：包围盒 → 适应视图 → 静态绘制（无物理模拟：550 节点也不卡）
+	useEffect(() => {
+		if (!doc) { return; }
+		const canvas = canvasRef.current;
+		const wrap = wrapRef.current;
+		if (!canvas || !wrap) { return; }
+		const ctx = canvas.getContext('2d');
+		if (!ctx) { return; }
+		const nodes = doc.nodes || [];
+		const byId = new Map(nodes.map(n => [n.id, n]));
+		layoutRef.current = { nodes };
+
+		const dpr = () => window.devicePixelRatio || 1;
+		const resize = () => {
+			const w = wrap.clientWidth || 600;
+			const h = wrap.clientHeight || 400;
+			canvas.width = Math.round(w * dpr());
+			canvas.height = Math.round(h * dpr());
+			ctx.setTransform(dpr(), 0, 0, dpr(), 0, 0);
+		};
+
+		let minX = Infinity; let minY = Infinity; let maxX = -Infinity; let maxY = -Infinity;
+		for (const n of nodes) {
+			minX = Math.min(minX, n.x); minY = Math.min(minY, n.y);
+			maxX = Math.max(maxX, n.x + n.w); maxY = Math.max(maxY, n.y + n.h);
+		}
+		if (!Number.isFinite(minX)) { minX = 0; minY = 0; maxX = 100; maxY = 100; }
+		const bw = Math.max(1, maxX - minX);
+		const bh = Math.max(1, maxY - minY);
+		const fit = () => {
+			const w = wrap.clientWidth || 600;
+			const h = wrap.clientHeight || 400;
+			const s = Math.max(0.02, Math.min(1, Math.min((w - 40) / bw, (h - 40) / bh)));
+			viewRef.current = { s, x: (w - bw * s) / 2 - minX * s, y: (h - bh * s) / 2 - minY * s };
+		};
+
+		const PALETTE = ['#3a3a3a', '#8b3a3a', '#8b6b3a', '#3a8b5a', '#3a6b8b', '#6b3a8b', '#8b3a6b'];
+		const wrapText = (text: string, maxChars: number) => {
+			const clean = String(text || '').replace(/\*\*/g, '').replace(/\r/g, '');
+			const out: string[] = [];
+			for (const para of clean.split('\n')) {
+				let cur = '';
+				for (const ch of para) {
+					if (cur.length >= maxChars) { out.push(cur); cur = ''; }
+					cur += ch;
+				}
+				out.push(cur);
+			}
+			return out.filter(l => l.length);
+		};
+
+		const draw = () => {
+			const w = wrap.clientWidth || 600;
+			const h = wrap.clientHeight || 400;
+			const v = viewRef.current;
+			ctx.clearRect(0, 0, w, h);
+			ctx.save();
+			ctx.translate(v.x, v.y);
+			ctx.scale(v.s, v.s);
+			ctx.strokeStyle = 'rgba(150,150,150,.55)';
+			ctx.lineWidth = Math.max(0.5, 1.2 / v.s);
+			for (const e of (doc.edges || [])) {
+				const a = byId.get(e.from);
+				const b = byId.get(e.to);
+				if (!a || !b) { continue; }
+				const ax = a.x + a.w / 2; const ay = a.y + a.h / 2;
+				const bx = b.x + b.w / 2; const by = b.y + b.h / 2;
+				const mx = (ax + bx) / 2;
+				ctx.beginPath();
+				ctx.moveTo(ax, ay);
+				ctx.bezierCurveTo(mx, ay, mx, by, bx, by);
+				ctx.stroke();
+			}
+			ctx.font = '13px sans-serif';
+			ctx.textBaseline = 'top';
+			for (const n of nodes) {
+				const ci = Number(n.color);
+				ctx.fillStyle = PALETTE[ci >= 1 && ci <= 6 ? ci : 0];
+				ctx.strokeStyle = 'rgba(200,200,200,.35)';
+				ctx.lineWidth = Math.max(0.4, 1 / v.s);
+				const r = 6;
+				ctx.beginPath();
+				ctx.moveTo(n.x + r, n.y);
+				ctx.arcTo(n.x + n.w, n.y, n.x + n.w, n.y + n.h, r);
+				ctx.arcTo(n.x + n.w, n.y + n.h, n.x, n.y + n.h, r);
+				ctx.arcTo(n.x, n.y + n.h, n.x, n.y, r);
+				ctx.arcTo(n.x, n.y, n.x + n.w, n.y, r);
+				ctx.closePath();
+				ctx.fill();
+				ctx.stroke();
+				if (v.s > 0.45) {
+					ctx.fillStyle = '#e6e6e6';
+					const maxChars = Math.max(6, Math.floor((n.w - 16) / 7));
+					const maxLines = Math.max(1, Math.floor((n.h - 12) / 17));
+					const lines = wrapText(n.text, maxChars).slice(0, maxLines);
+					let ty = n.y + 8;
+					for (const line of lines) { ctx.fillText(line, n.x + 8, ty); ty += 17; }
+				}
+			}
+			ctx.restore();
+		};
+
+		resize();
+		fit();
+		draw();
+		let ro: ResizeObserver | null = null;
+		try {
+			ro = new ResizeObserver(() => { resize(); draw(); });
+			ro.observe(wrap);
+		} catch { /* 老内核无 RO */ }
+
+		const onClick = (ev: MouseEvent) => {
+			const rect = canvas.getBoundingClientRect();
+			const v = viewRef.current;
+			const gx = (ev.clientX - rect.left - v.x) / v.s;
+			const gy = (ev.clientY - rect.top - v.y) / v.s;
+			for (const n of layoutRef.current.nodes) {
+				if (gx < n.x || gx > n.x + n.w || gy < n.y || gy > n.y + n.h) { continue; }
+				if (!n.file) { return; }
+				const root = String(doc.notesRoot || '').replace(/\/+$/, '');
+				onOpenNote(root ? root + '/' + n.file : n.file);
+				return;
+			}
+		};
+		canvas.addEventListener('click', onClick);
+		return () => {
+			if (ro) { ro.disconnect(); }
+			canvas.removeEventListener('click', onClick);
+		};
+	}, [doc, onOpenNote]);
+
+	const barStyle: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, height: 32, padding: '0 10px', borderBottom: '1px solid rgba(127,127,127,.25)', flex: '0 0 auto' };
+	const btnStyle: React.CSSProperties = { height: 22, padding: '0 10px', fontSize: 11.5, cursor: 'pointer', borderRadius: 3, background: 'transparent', color: 'inherit', border: '1px solid rgba(127,127,127,.35)' };
+
+	const bar = (
+		<div style={barStyle}>
+			<button type="button" onClick={onClose} style={btnStyle}>← 返回笔记</button>
+			<span style={{ fontSize: 12, opacity: 0.75, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+				{doc ? `${doc.name}  ·  ${doc.nodes.length} 节点 / ${doc.edges.length} 连线` : '思维导图'}
+			</span>
+			<span style={{ marginLeft: 'auto', fontSize: 11, opacity: 0.6 }}>
+				{doc ? '点击有来源的节点可跳到笔记' : ''}
+			</span>
+		</div>
+	);
+
+	if (error) {
+		return (
+			<div data-kb-canvas-pane="1" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+				{bar}
+				<div style={{ padding: 16, opacity: 0.8, fontSize: 12 }}>导图打开失败：{error}</div>
+			</div>
+		);
+	}
+	if (!doc) {
+		const files = list || [];
+		return (
+			<div data-kb-canvas-pane="1" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+				{bar}
+				<div style={{ padding: 12, overflow: 'auto' }}>
+					{list === null ? (
+						<div style={{ fontSize: 12, opacity: 0.6 }}>正在查找 .canvas…</div>
+					) : files.length === 0 ? (
+						<div style={{ fontSize: 12, opacity: 0.7 }}>「笔记」区里还没有 .canvas。生成导图请在会话里用 kb_mindmap。</div>
+					) : files.map(f => (
+						<div
+							key={f.abs}
+							onClick={() => openFile(f.abs)}
+							style={{ display: 'flex', alignItems: 'center', gap: 8, height: 26, padding: '0 8px', cursor: 'pointer', fontSize: 12.5, borderRadius: 4 }}
+						>
+							<span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.rel}</span>
+							<span style={{ fontSize: 10.5, opacity: 0.6 }}>{Math.round((f.size || 0) / 1024)}KB</span>
+						</div>
+					))}
+				</div>
+			</div>
+		);
+	}
+	return (
+		<div data-kb-canvas-pane="1" style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+			{bar}
+			<div ref={wrapRef} style={{ flex: '1 1 auto', minHeight: 0, position: 'relative' }}>
+				<canvas ref={canvasRef} data-kb-canvas-map="1" style={{ display: 'block', width: '100%', height: '100%' }} />
+			</div>
+		</div>
+	);
 }
 
 export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; actions?: KbSideviewActions; /** 诊断串：显示"数据来自哪层 / 动作数"，出问题一张截图即可定位 */ debug?: string }) => {
@@ -1063,6 +1038,8 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 	/** `base` = 该文档所在目录（绝对）；`path` = 该文档路径（保存时回写用） */
 	const [doc, setDoc] = useState<{
 		title: string; text: string; base?: string; path?: string; mtime?: number;
+		/** 服务端渲染好的 HTML（有它就不走手写渲染器）；`math` 决定是否引入 KaTeX 样式 */
+		html?: string; math?: boolean;
 		/** 非 Markdown 文件的预览信息（有它就不渲染 Markdown，也不显示「编辑」） */
 		asset?: { kind: 'image' | 'pdf' | 'video' | 'audio'; url: string };
 	} | null>(null);
@@ -1113,6 +1090,8 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 	const [showSettings, setShowSettings] = useState(false);
 	/** 标题行的「库下拉」（切换 / 新建 / 本地载入） */
 	const [vaultMenu, setVaultMenu] = useState(false);
+	/** 导图覆盖层（三端共用同一份 `KbCanvasPane`） */
+	const [canvasOpen, setCanvasOpen] = useState(false);
 
 	const openHistory = async () => {
 		const list = actions?.listBackups;
@@ -1263,6 +1242,13 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 				<span style={{ flex: 1 }} />
 				{actions?.refresh ? <IconBtn title="刷新" label="⟳" onClick={() => actions?.refresh?.()} /> : null}
 				{actions?.openGraph ? <IconBtn title="关系图谱" label="🕸" onClick={() => actions?.openGraph?.()} /> : null}
+				{/*
+				 * 导图（.canvas）：只有宿主能「就地渲染」时才出现。
+				 * 宿主声明 `canvas: true`（服务端有 /api/canvas）⇒ 视图自己画；
+				 */}
+				{actions?.canvas
+					? <IconBtn title="思维导图（.canvas）" label="🗺" onClick={() => setCanvasOpen(true)} />
+					: null}
 				{actions?.feishuSync ? <IconBtn title="同步飞书" label="☁" onClick={() => actions?.feishuSync?.()} /> : null}
 
 				{/* 库下拉：列表 + 新建 + 本地载入（照 IDE 侧「＋ 配置文件夹为知识库…」的位置） */}
@@ -1480,7 +1466,7 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 								>{label}</button>
 							))}
 							{/* 右侧动作（宿主没提供就整块不渲染，不留死按钮） */}
-							{(actions?.openMindmap || actions?.runLint || actions?.runDedup || actions?.reviewQueue) && <span style={{ flex: 1 }} />}
+							{(actions?.runLint || actions?.runDedup || actions?.reviewQueue) && <span style={{ flex: 1 }} />}
 							{actions?.reviewQueue && (
 								<button
 									type="button"
@@ -1503,11 +1489,11 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 									}}
 								>去重</button>
 							)}
-							{actions?.openMindmap && (
+							{actions?.canvas && (
 								<button
 									type="button"
-									title="打开/生成思维导图"
-									onClick={() => actions?.openMindmap?.()}
+									title="打开思维导图（.canvas 只读预览）"
+									onClick={() => setCanvasOpen(true)}
 									style={{
 										height: 19, padding: '0 8px', fontSize: 10.5, cursor: 'pointer', borderRadius: 3,
 										background: 'transparent', color: c.fgDim, border: `1px solid ${c.line}`,
@@ -1752,11 +1738,50 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 								/>
 							) : (
 								<div style={{ opacity: .95 }}>
-									{renderMarkdown(doc.text, {
-										assetUrl: actions?.assetUrl,
-										base: doc.base,
-										onTaskToggle: actions?.saveDoc && doc.path ? (li) => { void toggleTask(li); } : undefined,
-									})}
+									{/*
+									 * ★ 2026-10-25：**优先用服务端渲染的 HTML**（markdown-it + Obsidian 方言）。
+									 *   宿主给了 `html` ⇒ 直接注入，并靠事件委托处理双链点击与任务勾选；
+									 *   没给（IDE 侧）⇒ 回落到下面的手写渲染器，行为不变。
+									 */}
+									{doc.html ? (
+										<>
+											{doc.math ? <link rel="stylesheet" href="/x/kb/vendor/katex/katex.min.css" /> : null}
+											<div
+												className="kb-md"
+												// 服务端 `html:false`（原始 HTML 一律转义）⇒ 这里的 HTML 由我们自己拼接，安全
+												dangerouslySetInnerHTML={{ __html: doc.html }}
+												onClick={e => {
+													const el = e.target as HTMLElement;
+													const link = el.closest('[data-wiki]');
+													if (link) {
+														e.preventDefault();
+														const p = link.getAttribute('data-wiki');
+														if (p) { (actions?.openLink ?? actions?.openNode)?.(p); }
+														return;
+													}
+													const box = el.closest('[data-task-line]') as HTMLInputElement | null;
+													if (box && actions?.saveDoc) {
+														const line = Number(box.getAttribute('data-task-line'));
+														box.checked = !box.checked;    // 先给即时反馈，写盘失败由 toggleTask 弹错
+														if (Number.isInteger(line) && line >= 0) { void toggleTask(line); }
+													}
+												}}
+											/>
+										</>
+									) : (
+										/*
+										 * 兜底：宿主既没给服务端 HTML、我们也不再内置解析器（2026-10-25 删除手写渲染器）。
+										 * 如实按纯文本显示并说明原因 —— 比"渲染出一半 Markdown"更不容易误解为解析错误。
+										 */
+										<div>
+											<div style={{ fontSize: 11, opacity: .6, marginBottom: 6 }}>
+												当前宿主未提供服务端渲染结果，以下按纯文本显示。
+											</div>
+											<pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12.5, lineHeight: 1.7, fontFamily: 'var(--vscode-editor-font-family, monospace)' }}>
+												{doc.text}
+											</pre>
+										</div>
+									)}
 								</div>
 							)}
 						</>
@@ -1767,6 +1792,26 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 			) : null}
 
 			{/* 设置面板（⚙）：dsh 侧没有宿主设置页，这里给出真正能用的几项 */}
+			{/*
+			 * 导图覆盖层（2026-10-25 从面板侧迁到视图）：三端共用一份 `KbCanvasPane`。
+			 * 与设置面板同一套「父 relative + 子 absolute」定位（不用 fixed：宿主容器带 transform）。
+			 */}
+			{canvasOpen ? (
+				<div
+					data-kb-canvas-overlay="1"
+					style={{
+						position: 'absolute', inset: 0, zIndex: 46,
+						background: 'var(--vscode-sideBar-background, #252526)',
+						display: 'flex', flexDirection: 'column', minHeight: 0,
+					}}
+				>
+					<KbCanvasPane
+						onClose={() => setCanvasOpen(false)}
+						onOpenNote={(abs) => { setCanvasOpen(false); (actions?.openLink ?? actions?.openNode)?.(abs); }}
+					/>
+				</div>
+			) : null}
+
 			{showSettings ? (
 				<div
 					data-kb-settings="1"

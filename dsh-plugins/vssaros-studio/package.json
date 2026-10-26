@@ -1,6 +1,6 @@
 {
   "name": "@vssaros/dsh-studio",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "VsSaros studio workbench: hosts the Saroasis Studio System front end (http://saroasisstudiosystem.saroasis.woa.com:9999/) inside a dsh page, with a top-right 'AI 助手' entry that opens the assistant (chat-surface) in the right sidebar.",
   "private": true,
   "type": "module",

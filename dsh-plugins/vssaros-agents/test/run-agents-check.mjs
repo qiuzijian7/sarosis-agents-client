@@ -8,6 +8,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { agoLabel, clipText, timeLabel } from '../lib/activity.js';
 import { clampImportLimit } from '../lib/agentmemoryImport.js';
+import { allowlistDenyOf, REQUIRED_BASE_ROW_IDS, rowIdsOf, toPresetDefinition } from '../lib/core/agents.js';
+import { STANDARD_BASE_ROWS } from '../lib/core/presetBase.generated.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
@@ -90,6 +92,72 @@ console.log('── clampImportLimit ──');
 	const huge = clampImportLimit(1e9);
 	check('超大值被夹到上限（且不大于入参）', huge > 0 && huge < 1e9, String(huge));
 	check('上限是幂等的（再夹一次不变）', clampImportLimit(huge) === huge, String(clampImportLimit(huge)));
+}
+
+// ── agent preset = 共享基座 ⊕ 差量（2026-10-25）────────────────────────────────────
+// 回归点：之前 agent preset 只有 persona/model/compaction/subagent ⇒ 会话里没有 fs / pwsh / skill。
+console.log('── agent preset 共享基座 ──');
+{
+	const base = { id: 'probe', name: 'Probe', persona: '你是探针', tools: ['read', 'pwsh'], model: '' };
+	const { definition, notes } = toPresetDefinition(base, { provider: 'p', allowedAgentPresets: ['vssaros-other'] });
+	const ids = rowIdsOf(definition.plugins);
+	check('files 里含基座生成物', (pkg.files || []).includes('lib/core/presetBase.generated.js'));
+	check('基座必需行齐全', REQUIRED_BASE_ROW_IDS.every(id => ids.includes(id)), REQUIRED_BASE_ROW_IDS.filter(id => !ids.includes(id)).join(','));
+	check('含 pwsh / bash 两行（按平台 disabled）', ids.includes('tool-pwsh') && ids.includes('tool-bash'));
+	const pwsh = definition.plugins.find(r => r.id === 'tool-pwsh');
+	check('pwsh 的 disabled 保留为 JsExpr', !!pwsh?.disabled && typeof pwsh.disabled.__jsExpr === 'string', JSON.stringify(pwsh?.disabled));
+	check('第一行是本包人设行', definition.plugins[0]?.id === 'persona' && definition.plugins[0]?.name === '@vssaros/dsh-agents');
+	check('没有官方 dsh-persona 行', !JSON.stringify(definition.plugins).includes('@deepseek-ai/dsh-persona'));
+	check('没有 @vssaros/* 模块行（host 层已加载，重复挂会撞服务）', definition.plugins.slice(1).every(r => !String(r.name).startsWith('@vssaros/')));
+	check('id 不重复', new Set(ids).size === ids.length, ids.length + ' 行');
+	const findDeep = (rows, id) => { for (const r of rows) { if (r.id === id) { return r; } if (r.group && Array.isArray(r.config)) { const h = findDeep(r.config, id); if (h) { return h; } } } return undefined; };
+	const sub = findDeep(definition.plugins, 'tool-subagent');
+	check('subagent 带 backgroundMode + 动态清单', sub?.config?.backgroundMode === 'continuable' && sub?.config?.allowedAgentPresets?.[0] === 'vssaros-other', JSON.stringify(sub?.config));
+	const fork = findDeep(definition.plugins, 'tool-subagent-fork');
+	check('fork 带 backgroundMode 且不带清单', fork?.config?.backgroundMode === 'continuable' && !fork?.config?.allowedAgentPresets, JSON.stringify(fork?.config));
+	check('notes 里没有"基座缺行"', !notes.some(n => n.startsWith('基座缺行')), notes.find(n => n.startsWith('基座缺行')));
+
+	const lone = toPresetDefinition({ ...base, subagents: false }, { provider: 'p' });
+	check('subagents:false ⇒ 无 delegation 组', !rowIdsOf(lone.definition.plugins).includes('delegation') && !rowIdsOf(lone.definition.plugins).includes('tool-subagent'));
+	check('subagents:false 仍有 fs / skill', ['tool-fs', 'tool-skill'].every(id => rowIdsOf(lone.definition.plugins).includes(id)));
+	const derived = toPresetDefinition({ ...base, model: 'm' }, { provider: 'p', idSuffix: '-assign' });
+	check('-assign ⇒ 无 delegation 组、有 default-model', !rowIdsOf(derived.definition.plugins).includes('delegation') && rowIdsOf(derived.definition.plugins).includes('default-model'));
+	check('-assign 的 preset id 带后缀', derived.definition.id === 'vssaros-probe-assign', derived.definition.id);
+
+	// 两次构造互不影响（基座是深拷贝，不能被上一个 agent 的差量污染）
+	const again = toPresetDefinition(base, { provider: 'p' });
+	const sub2 = findDeep(again.definition.plugins, 'tool-subagent');
+	check('基座深拷贝（上次的清单不残留）', !sub2?.config?.allowedAgentPresets, JSON.stringify(sub2?.config));
+	check('基座本体未被改写', !JSON.stringify(STANDARD_BASE_ROWS).includes('backgroundMode'));
+	check('人设行带本 preset id（运行时 allowlist 防误伤）', definition.plugins[0]?.config?.presetId === 'vssaros-probe' && derived.definition.plugins[0]?.config?.presetId === 'vssaros-probe-assign', JSON.stringify([definition.plugins[0]?.config?.presetId, derived.definition.plugins[0]?.config?.presetId]));
+}
+
+// ── 工具 allowlist（2026-10-25 真机：saroasis-studio 会话里只剩 skill + subagent）──────────
+// 旧实现在 preset 作用域 `restrict({ allow: [全局名] })` ⇒ agent 从 preset 层继承的基座工具被一起筛掉。
+// 新实现：agent 作用域 `restrict({ deny: allowlistDenyOf(...) })`。下面钉**绝对期望值**（不是相对比较）。
+console.log('── 工具 allowlist ──');
+{
+	const globals = ['skill', 'browser', 'kb_search', 'codebase_search', 'mcp__x__y', 'run_code', 'memory_list'];
+	const deny = allowlistDenyOf(['read', 'write', 'pwsh', 'web_search', 'skill'], globals);
+	check('saroasis 口径：deny = 其余全局工具', JSON.stringify(deny) === JSON.stringify(['browser', 'codebase_search', 'kb_search', 'mcp__x__y', 'memory_list']), JSON.stringify(deny));
+	check('基座工具名（read/pwsh…）永不进 deny', !deny.some(n => ['read', 'write', 'pwsh', 'web_search'].includes(n)));
+	const noSkill = allowlistDenyOf(['codebase_search'], globals);
+	check('没声明 skill 也不藏 skill（与基座同名，按名 deny 会连基座一起藏）', !noSkill.includes('skill') && noSkill.includes('kb_search'), JSON.stringify(noSkill));
+	check('run_code 永不进 deny（PTC 保留名，点名会抛）', !noSkill.includes('run_code'));
+	const shadow = allowlistDenyOf([], ['browser', 'web_fetch'], n => n === 'web_fetch');
+	check('被基座遮蔽的同名全局工具不进 deny', JSON.stringify(shadow) === JSON.stringify(['browser']), JSON.stringify(shadow));
+	const throwing = allowlistDenyOf([], ['browser'], () => { throw new Error('x'); });
+	check('shadowed 抛错 ⇒ 当作未遮蔽（照常 deny）', JSON.stringify(throwing) === JSON.stringify(['browser']), JSON.stringify(throwing));
+	check('空输入安全', JSON.stringify(allowlistDenyOf(undefined, undefined)) === '[]');
+
+	// 静态：applyPersona 不许再在 preset 作用域上挂 allow 掩码；必须走 agent/created + deny
+	const idx = strip(read('lib/index.js'));
+	const personaBody = idx.slice(idx.indexOf('function applyPersona('), idx.indexOf('function installAllowlist('));
+	check('applyPersona 里没有 restrict({ allow', !/restrict\(\s*\{\s*allow/.test(personaBody));
+	const bodyOf = (name) => { const at = idx.indexOf('function ' + name + '('); if (at < 0) { return ''; } const end = idx.indexOf('\nfunction ', at + 10); const end2 = idx.indexOf('\nexport function ', at + 10); const stop = [end, end2].filter(n => n > 0).sort((a, b) => a - b)[0] ?? idx.length; return idx.slice(at, stop); };
+	check('installAllowlist 订阅 agent/created', /ctx\.on\(\s*'agent\/created'/.test(bodyOf('installAllowlist')));
+	const watchBody = bodyOf('watchAllowlist');
+	check('watchAllowlist 用 deny 收窄、且不用 allow', /restrict\(\{\s*deny:/.test(watchBody) && !/restrict\(\{\s*allow/.test(watchBody), watchBody.length + ' chars');
 }
 
 console.log(`\n[agents] ${pass} passing / ${fail} failing`);

@@ -450,7 +450,18 @@ window.__ModuleLoader__.load({
 		 * 内容照 IDE 五节裁剪：只保留 dsh 侧真能生效的（目录 / 构建方式 / 飞书 / 状态）；
 		 * 系统选目录、Embedding provider、全局索引这些属于宿主，不在这里假装。
 		 */
-		function KbSettingsPage({ onClose, onSwitchVault, onAddVault, vaultRef }) {
+		/**
+		 * 导图（.canvas）在面板内**只读渲染**（2026-10-25）。
+		 *
+		 * 为什么自己做：IDE 侧「思维导图」是**在编辑器里打开** .canvas；
+		 * dsh 面板没有编辑器，`/api/mindmap` 只回文件路径 ⇒ 在面板里等于打不开。
+		 * 这里把 .canvas 的 nodes/edges 画成静态图：矩形 + 折行文本 + 连线，
+		 * 点带 source.file 的节点可跳回对应笔记。
+		 *
+		 * 不做物理模拟（图谱那套在 550 节点上没必要），只做「适应视图」的等比缩放。
+		 */
+
+		function KbSettingsPage({ onClose, onSwitchVault, onAddVault, vaultRef, auto }) {
 			/**
 			 * ★★ 2026-10-24（真机：工作台「知识库」渲染时出错 · `c is not defined`）：
 			 *   本组件在 3 处引用 `c.line` / `c.fgFaint`，但作用域里**从来没有 c**
@@ -463,6 +474,24 @@ window.__ModuleLoader__.load({
 				fgFaint: 'var(--vscode-descriptionForeground, #9d9d9d)',
 			};
 			const [settings, setSettings] = useState(null);
+			/**
+			 * ★ 2026-10-25：从**笔记区标题行**的「体检 / 审核 / 去重」按钮跳进来时，
+			 *   自动跑对应动作并滚到该区块。
+			 *   为什么不是各做一个独立 pane：这三件事的结果都是**一段报告**，
+			 *   分三个页面会让"同一个设置页"变成四份重复布局。
+			 */
+			const autoRan = react.useRef('');
+			useEffect(() => {
+				if (!auto || autoRan.current === auto) { return; }
+				autoRan.current = auto;
+				if (auto === 'review') { loadReview(); }
+				else if (auto === 'dedupe') { runDedupe(); }
+				else if (auto === 'health') { runHealth(); }
+				try {
+					const el = document.querySelector('[data-kb-sec="' + auto + '"]');
+					if (el && el.scrollIntoView) { el.scrollIntoView({ block: 'start' }); }
+				} catch { /* 滚动失败不影响功能 */ }
+			}, [auto]);
 			const [stats, setStats] = useState(null);
 			const [busy, setBusy] = useState(false);
 			const [out, setOut] = useState('');
@@ -484,6 +513,20 @@ window.__ModuleLoader__.load({
 			const [spaceMenu, setSpaceMenu] = useState(false);
 			/** 拉取知识库列表的结果反馈（"点按钮没反应"就是因为原先没有任何可见结果） */
 			const [spacesMsg, setSpacesMsg] = useState('');
+			/** 体检报告（只读）：孤立 / 断链 / 无标签 / 空目录 / 同名 */
+			const [health, setHealth] = useState(null);
+			const [healthBusy, setHealthBusy] = useState(false);
+			/** 定时同步状态（下次运行 / 上次结果），来自 `/api/feishu-schedule` */
+			const [schedule, setSchedule] = useState(null);
+			/** 重建索引状态（上次时间 / 篇数 / 是否支持向量） */
+			const [reindex, setReindex] = useState(null);
+			/** 查重结果（文本摘要；只报告不修改） */
+			const [dedupe, setDedupe] = useState('');
+			/** 审核清单（状态存在笔记 frontmatter 的 review 键） */
+			const [review, setReview] = useState(null);
+			const [reviewBusy, setReviewBusy] = useState(false);
+			const [dedupeBusy, setDedupeBusy] = useState(false);
+			const [reindexBusy, setReindexBusy] = useState(false);
 
 			useEffect(() => {
 				let alive = true;
@@ -574,6 +617,209 @@ window.__ModuleLoader__.load({
 					.catch((e) => window.alert('读取日志失败：' + String((e && e.message) || e)));
 			};
 
+			/** 运行体检（只读，不改任何文件） */
+			/** 运行体检（只读）：结果拼成多行文本，直接丢给一个 <pre> 样式的块 */
+			const runHealth = () => {
+				setHealthBusy(true);
+				const v = String((vaultRef && vaultRef.current && vaultRef.current.id) || '');
+				fetch('/x/kb/api/health' + (v ? ('?vault=' + encodeURIComponent(v)) : ''), { credentials: 'same-origin' })
+					.then((r) => r.json())
+					.then((b) => {
+						if (!b || b.ok === false) { window.alert('体检失败：' + String((b && b.error) || '未知原因')); return; }
+						// 存**对象**：报告与"清理空目录"按钮都要用计数
+						setHealth(b.report || {});
+					})
+					.catch((e) => window.alert('体检失败：' + String((e && e.message) || e)))
+					.then(() => setHealthBusy(false));
+			};
+
+			/** 把体检报告拼成多行文本（单块 <pre> 渲染，避免深层嵌套的 h(...)） */
+			const healthTextOf = (r) => {
+				if (!r) { return ''; }
+				const NL = String.fromCharCode(10);
+				const out = [];
+				out.push('笔记 ' + r.total + ' · 图谱节点 ' + r.nodes + ' · 边 ' + r.edges);
+				out.push('孤立 ' + r.orphanCount + ' · 断链 ' + r.brokenCount + ' · 无标签 ' + r.noTagCount
+					+ ' · 空目录 ' + r.emptyDirCount + ' · 同名 ' + r.dupNameCount);
+				if (r.brokenCount) {
+					out.push('');
+					out.push('断链（前 8）：');
+					for (const x of (r.broken || []).slice(0, 8)) { out.push('  ' + String(x.from).split('/').pop() + '  →  ' + x.target); }
+				}
+				if (r.orphanCount) {
+					out.push('');
+					out.push('孤立笔记（无入链无出链，前 8）：');
+					for (const x of (r.orphans || []).slice(0, 8)) { out.push('  ' + String(x).split('/').pop()); }
+				}
+				if (r.emptyDirCount) {
+					out.push('');
+					out.push('空目录（前 8）：');
+					for (const x of (r.emptyDirs || []).slice(0, 8)) { out.push('  ' + String(x)); }
+				}
+				return out.join(NL);
+			};
+
+			/** 清理空目录（低风险写操作：非递归删除，非空目录会失败而不是连带删内容） */
+			const cleanupEmptyDirs = () => {
+				const n = (health && health.emptyDirCount) || 0;
+				if (!n) { return; }
+				if (!window.confirm('将删除 ' + n + ' 个空目录（不含任何文件）。继续？')) { return; }
+				setHealthBusy(true);
+				const v = String((vaultRef && vaultRef.current && vaultRef.current.id) || '');
+				fetch('/x/kb/api/health/cleanup', {
+					method: 'POST', credentials: 'same-origin',
+					headers: { 'content-type': 'application/json' },
+					body: JSON.stringify({ vault: v }),
+				}).then((r) => r.json()).then((b) => {
+					if (!b || b.ok === false) { window.alert('清理失败：' + String((b && b.error) || '未知原因')); return; }
+					setOut('已删除 ' + b.deletedCount + ' 个空目录' + (b.skippedCount ? ('，跳过 ' + b.skippedCount + ' 个') : '')
+						+ (b.deleted && b.deleted.length ? (String.fromCharCode(10) + b.deleted.join(String.fromCharCode(10))) : ''));
+					runHealth();
+				}).catch((e) => window.alert('清理失败：' + String((e && e.message) || e)))
+					.then(() => setHealthBusy(false));
+			};
+
+			/** 修一条断链：只替换 `[[目标` 前缀（别名与 #段落 原样保留），服务端会先备份 */
+			const fixBrokenLink = (x) => {
+				if (!x || !x.suggest) { return; }
+				const NL = String.fromCharCode(10);
+				if (!window.confirm('把 [[ ' + x.target + ' ]] 改成 [[ ' + x.suggest + ' ]] ？' + NL + NL + '只改这一处前缀，别名与段落引用保留；改前会自动备份。')) { return; }
+				setHealthBusy(true);
+				fetch('/x/kb/api/health/fix-link', {
+					method: 'POST', credentials: 'same-origin',
+					headers: { 'content-type': 'application/json' },
+					body: JSON.stringify({ uri: x.fromAbs, target: x.target, replacement: x.suggest }),
+				}).then((r) => r.json()).then((b) => {
+					if (!b || b.ok === false) { window.alert('修复失败：' + String((b && b.error) || '未知原因')); return; }
+					setOut('已修复 ' + b.replaced + ' 处断链：' + x.target + ' → ' + x.suggest);
+					runHealth();
+				}).catch((e) => window.alert('修复失败：' + String((e && e.message) || e)))
+					.then(() => setHealthBusy(false));
+			};
+
+			/** 拉取定时同步状态（设置页显示"下次运行"，避免用户以为开关没生效） */
+			const loadSchedule = () => {
+				fetch('/x/kb/api/feishu-schedule', { credentials: 'same-origin' })
+					.then((r) => r.json())
+					.then((b) => { if (b && b.ok) { setSchedule(b); } })
+					.catch(() => { /* 状态读不到不影响其它功能 */ });
+			};
+
+			/** 把状态压成一句人话（不显示原始时间戳） */
+			const scheduleText = () => {
+				const hm = (ms) => { const d = new Date(ms); const p2 = (n) => (n < 10 ? '0' + n : String(n)); return p2(d.getHours()) + ':' + p2(d.getMinutes()); };
+				if (!schedule) { return '（点「刷新状态」查看）'; }
+				if (!schedule.enabled) { return '飞书同步未启用'; }
+				if (!schedule.schedule) { return '已启用同步，但未开启定时'; }
+				const parts = [];
+				if (schedule.running) { parts.push('正在运行'); }
+				if (schedule.nextRunAt) { parts.push('下次 ' + hm(schedule.nextRunAt)); }
+				if (schedule.lastRunAt) { parts.push('上次 ' + hm(schedule.lastRunAt) + (schedule.lastCode === 0 ? ' 成功' : (schedule.lastCode === null ? ' 失败' : ' code=' + schedule.lastCode))); }
+				return '每 ' + schedule.everyMinutes + ' 分钟 · ' + parts.join(' · ');
+			};
+
+			// 进页面拉一次状态（与设置一起）
+			useEffect(() => { loadSchedule(); }, []);
+
+			/** 读重建索引状态 */
+			const loadReindex = () => {
+				fetch('/x/kb/api/reindex', { credentials: 'same-origin' })
+					.then((r) => r.json())
+					.then((b) => { if (b && b.ok) { setReindex(b); } })
+					.catch(() => { /* 状态读不到不影响其它功能 */ });
+			};
+
+			/** 重建内核索引（纯本地计算；向量索引 dsh 侧不支持，如实标注） */
+			const runReindex = () => {
+				if (!window.confirm('将重建当前库的索引缓存（.kbkernel.json）。这不会修改你的笔记，只需几秒。继续？')) { return; }
+				setReindexBusy(true);
+				setOut('重建索引中…');
+				const v = String((vaultRef && vaultRef.current && vaultRef.current.id) || '');
+				fetch('/x/kb/api/reindex' + (v ? ('?vault=' + encodeURIComponent(v)) : ''), { method: 'POST', credentials: 'same-origin' })
+					.then((r) => r.json())
+					.then((b) => {
+						if (!b || b.ok === false) { setOut('重建失败：' + String((b && b.error) || '未知原因')); return; }
+						setOut('索引已重建：' + b.docs + ' 篇 · ' + (b.kernelFile || '.kbkernel.json'));
+						loadReindex();
+					})
+					.catch((e) => setOut('重建失败：' + String((e && e.message) || e)))
+					.then(() => setReindexBusy(false));
+			};
+
+			// 进页面拉一次（与设置、定时状态一起）
+			useEffect(() => { loadReindex(); }, []);
+
+			/** 查重（只检测）：完全重复 + 近似重复候选对 */
+			const runDedupe = () => {
+				setDedupeBusy(true);
+				setDedupe('正在比对…');
+				const v = String((vaultRef && vaultRef.current && vaultRef.current.id) || '');
+				fetch('/x/kb/api/dedupe' + (v ? ('?vault=' + encodeURIComponent(v)) : ''), { credentials: 'same-origin' })
+					.then((r) => r.json())
+					.then((b) => {
+						if (!b || b.ok === false) { setDedupe('查重失败：' + String((b && b.error) || '未知原因')); return; }
+						const NL = String.fromCharCode(10);
+						const out = [];
+						out.push('已扫描 ' + b.scanned + ' 篇 · 完全重复 ' + b.exactCount + ' 组 · 近似重复 ' + b.pairCount + ' 对（阈值 ' + b.threshold + '）');
+						if (b.exactCount) {
+							out.push('');
+							out.push('完全重复（内容逐字相同）：');
+							for (const list of (b.exact || []).slice(0, 8)) { out.push('  ' + list.map((x) => String(x).split('/').pop()).join('  =  ')); }
+						}
+						if (b.pairCount) {
+							out.push('');
+							out.push('近似重复（前 10 对）：');
+							for (const x of (b.pairs || []).slice(0, 10)) {
+								out.push('  ' + Math.round(x.similarity * 100) + '%  ' + String(x.a).split('/').pop() + '  ↔  ' + String(x.b).split('/').pop());
+							}
+						}
+						if (!b.exactCount && !b.pairCount) { out.push(''); out.push('没有发现重复（这通常是好事）'); }
+						out.push('');
+						out.push('（只报告，不修改任何文件 —— 合并/删除请自行决定）');
+						setDedupe(out.join(NL));
+					})
+					.catch((e) => setDedupe('查重失败：' + String((e && e.message) || e)))
+					.then(() => setDedupeBusy(false));
+			};
+
+			/** 拉未审清单 */
+			const loadReview = () => {
+				setReviewBusy(true);
+				const v = String((vaultRef && vaultRef.current && vaultRef.current.id) || '');
+				fetch('/x/kb/api/review' + (v ? ('?vault=' + encodeURIComponent(v)) : ''), { credentials: 'same-origin' })
+					.then((r) => r.json())
+					.then((b) => {
+						if (!b || b.ok === false) { window.alert('读取审核清单失败：' + String((b && b.error) || '未知原因')); return; }
+						setReview(b);
+					})
+					.catch((e) => window.alert('读取审核清单失败：' + String((e && e.message) || e)))
+					.then(() => setReviewBusy(false));
+			};
+
+			/** 单篇标记通过 / 驳回（只改 frontmatter 的 review/reviewedAt，改前备份） */
+			const markReview = (row, status) => {
+				if (!row || !row.abs) { return; }
+				const label = status === 'approved' ? '通过' : (status === 'rejected' ? '驳回' : '重置为未审');
+				if (!window.confirm('把《' + String(row.rel).split('/').pop() + '》标记为「' + label + '」？' + String.fromCharCode(10) + String.fromCharCode(10) + '只写 frontmatter 的 review / reviewedAt，改前自动备份。')) { return; }
+				setReviewBusy(true);
+				fetch('/x/kb/api/review/mark', {
+					method: 'POST', credentials: 'same-origin',
+					headers: { 'content-type': 'application/json' },
+					body: JSON.stringify({ uri: row.abs, status: status }),
+				}).then((r) => r.json()).then((b) => {
+					if (!b || b.ok === false) { window.alert('标记失败：' + String((b && b.error) || '未知原因')); return; }
+					setOut('已标记「' + label + '」：' + String(row.rel).split('/').pop());
+					loadReview();
+				}).catch((e) => window.alert('标记失败：' + String((e && e.message) || e)))
+					.then(() => setReviewBusy(false));
+			};
+
+			/** 审核状态一句话 */
+			const reviewText = () => {
+				if (!review) { return '尚未扫描（状态存在笔记 frontmatter 的 review 键：approved / rejected）'; }
+				return '共 ' + review.total + ' 篇 · 已审 ' + review.approvedCount + ' · 未审 ' + review.unreviewedCount + ' · 驳回 ' + (review.rejectedCount || 0);
+			};
+
 			const runSync = (label, dry) => {
 				setBusy(true);
 				setOut(label + ' …');
@@ -649,14 +895,37 @@ window.__ModuleLoader__.load({
 							h('span', null, 'Agentic 构建（知识库专家 Agent：技能注入 + 工具，质量更高但更慢）')),
 						h('div', { style: { fontSize: 11, opacity: .6, marginLeft: 22 } }, '关闭后走纯直连 LLM 管线（更快更省，无工具能力）')),
 
+					// 🧬 索引（对应 IDE 的 Embedding / 重建索引；向量部分如实标注不支持）
+					h('div', { style: sec, 'data-kb-sec': 'reindex' },
+						h('div', { style: h2 }, '🧬 索引'),
+						h('div', { style: { fontSize: 11.5, lineHeight: 1.8, opacity: .85 } },
+							h('div', null, '内核缓存（.kbkernel.json）：' + (reindex && reindex.lastAt
+								? ('上次重建 ' + new Date(reindex.lastAt).toLocaleString() + ' · ' + reindex.lastDocs + ' 篇')
+								: '尚未在 dsh 侧重建')),
+							h('div', { style: { opacity: .6 } }, '向量索引（embedding）需要 IDE 侧的 provider 配置，dsh 侧不支持重建')),
+						h('div', { style: row },
+							h('button', { type: 'button', style: btn, disabled: reindexBusy, onClick: () => runReindex() }, reindexBusy ? '重建中…' : '🔄 重建索引'),
+							h('button', { type: 'button', style: btn, onClick: () => { void loadReindex(); } }, '刷新状态'))),
+
 					// 📤 飞书同步
-					h('div', { style: sec },
+					h('div', { style: sec, 'data-kb-sec': 'feishu' },
 						h('div', { style: h2 }, '📤 飞书同步'),
 						h('label', { style: row },
 							h('input', { type: 'checkbox', checked: !!(settings && settings.feishu && settings.feishu.enabled), onChange: (e) => patchFeishu('enabled', e.target.checked) }),
 							h('span', null, '启用飞书同步'),
 							h('input', { type: 'checkbox', checked: !!(settings && settings.feishu && settings.feishu.schedule), onChange: (e) => patchFeishu('schedule', e.target.checked) }),
 							h('span', null, '允许定时同步')),
+						// 定时间隔 + 运行状态（后台每 60s 醒一次，按这里的分钟数判断是否到期）
+						h('div', { style: row },
+							h('span', null, '定时间隔(分钟)'),
+							h('input', {
+								type: 'number', min: 5, max: 1440,
+								value: String((settings && settings.feishu && settings.feishu.scheduleMinutes) || 60),
+								onChange: (e) => patchFeishu('scheduleMinutes', Math.max(5, Math.min(1440, Number(e.target.value) || 60))),
+								style: { width: 76, height: 24, padding: '0 8px', background: 'transparent', color: 'inherit', border: '1px solid rgba(127,127,127,.35)', borderRadius: 4, fontSize: 12 },
+							}),
+							h('span', { style: { flex: 1, minWidth: 0, fontSize: 10.5, opacity: .75, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: scheduleText() }, scheduleText()),
+							h('button', { type: 'button', style: btn, onClick: () => { void loadSchedule(); } }, '刷新状态')),
 						// 飞书 CLI：路径配置（IDE 的 `…kb.feishu.cliPath`）+ 状态 + 重新检测 + 升级
 						h('div', { style: row },
 							h('span', null, 'CLI 路径'),
@@ -728,6 +997,52 @@ window.__ModuleLoader__.load({
 								} }, '＋ 添加映射')),
 							h('div', { style: { fontSize: 10.5, opacity: .6 } }, '同步时会写成 <vault>/.feishu-space-map.json；路径相对**库根**（以「笔记/」开头）。'))),
 
+					// 🩺 体检（只读报告）
+					h('div', { style: sec, 'data-kb-sec': 'health' },
+						h('div', { style: h2 }, '🩺 体检'),
+						health
+							? h('pre', { style: { margin: '4px 0 8px', maxHeight: 240, overflow: 'auto', fontSize: 11, lineHeight: 1.7, whiteSpace: 'pre-wrap', fontFamily: 'var(--vscode-editor-font-family, monospace)', background: 'rgba(127,127,127,.10)', borderRadius: 4, padding: 8 } }, healthTextOf(health))
+							: h('div', { style: { fontSize: 11, opacity: .6 } }, '尚未运行体检（只读扫描，不会改动任何文件）'),
+						// 有候选目标时给出"一键改指向"（最多 5 条，避免面板变长）
+						(health && health.brokenCount)
+							? h('div', { style: { margin: '4px 0 8px' } },
+								health.broken.filter((x) => x && x.suggest).slice(0, 5).map((x, i) => h('div', {
+									key: String(i),
+									style: { display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, marginBottom: 3 },
+								},
+									h('span', { style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'var(--vscode-editor-font-family, monospace)' } },
+										String(x.from).split('/').pop() + ' → ' + x.target),
+									h('button', { type: 'button', style: btn, disabled: healthBusy, onClick: () => fixBrokenLink(x) }, '改为 ' + x.suggest))))
+							: null,
+						h('div', { style: row },
+							h('button', { type: 'button', style: btn, disabled: healthBusy, onClick: () => runHealth() }, healthBusy ? '扫描中…' : '🩺 运行体检'),
+							// 只有扫描出空目录时才给"清理"按钮（能力缺失/无事可做都不显示）
+							(health && health.emptyDirCount)
+								? h('button', { type: 'button', style: btn, disabled: healthBusy, onClick: () => cleanupEmptyDirs() }, '🧹 清理空目录（' + health.emptyDirCount + '）')
+								: null),
+							// 查重：只报告，不修改（合并/删除由人决定）
+							h('button', { type: 'button', style: btn, disabled: dedupeBusy, onClick: () => runDedupe() }, dedupeBusy ? '比对中…' : '🔍 查重')),
+						dedupe
+							? h('pre', { style: { margin: '4px 0 8px', maxHeight: 240, overflow: 'auto', fontSize: 11, lineHeight: 1.7, whiteSpace: 'pre-wrap', fontFamily: 'var(--vscode-editor-font-family, monospace)', background: 'rgba(127,127,127,.10)', borderRadius: 4, padding: 8 } }, dedupe)
+							: null),
+
+					// 📋 审核（状态在 frontmatter；只改那两个键，改前备份）
+					h('div', { style: sec, 'data-kb-sec': 'review' },
+						h('div', { style: h2 }, '📋 审核'),
+						h('div', { style: { fontSize: 11.5, opacity: .85, marginBottom: 6 } }, reviewText()),
+						review
+							? h('div', { style: { marginBottom: 6 } },
+								(review.unreviewed || []).slice(0, 8).map((r, i) => h('div', {
+									key: String(i),
+									style: { display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, marginBottom: 3 },
+								},
+									h('span', { style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'var(--vscode-editor-font-family, monospace)' }, title: r.rel }, r.rel),
+									h('button', { type: 'button', style: btn, disabled: reviewBusy, onClick: () => markReview(r, 'approved') }, '通过'),
+									h('button', { type: 'button', style: btn, disabled: reviewBusy, onClick: () => markReview(r, 'rejected') }, '驳回'))))
+							: null,
+						h('div', { style: row },
+							h('button', { type: 'button', style: btn, disabled: reviewBusy, onClick: () => loadReview() }, reviewBusy ? '扫描中…' : '📋 扫描未审'))),
+
 					// 📊 状态
 					h('div', { style: Object.assign({}, sec, { borderBottom: '1px solid rgba(127,127,127,.25)' }) },
 						h('div', { style: h2 }, '📊 状态'),
@@ -735,7 +1050,7 @@ window.__ModuleLoader__.load({
 							'笔记 ' + ((stats && stats.noteCount) || 0) + ' 篇 · 库 ' + ((stats && stats.libraryCount) || 0) + ' 个文件',
 							h('br'),
 							'索引：' + ((stats && stats.indexState === 'ready') ? '就绪' : '未就绪') + ' · 标签 ' + (((stats && stats.tags) || []).length) + ' 个'),
-						)))
+						))
 			;
 		}
 		function KbWorkbenchPanel() {
@@ -748,6 +1063,8 @@ window.__ModuleLoader__.load({
 			const remountRef = react.useRef(null);
 			/** 面板内视图：tree（默认） | graph（关系图谱，/x/kb/graph） */
 			const [pane, setPane] = useState('tree');
+			/** 进设置页要自动跑的动作（health / review / dedupe） */
+			const [settingsAuto, setSettingsAuto] = useState('');
 			/** 用户从「设置 → 切换库」选中的库（空 = 跟随 IDE 注入的当前库） */
 			const vaultWantRef = react.useRef('');
 
@@ -874,6 +1191,9 @@ window.__ModuleLoader__.load({
 						title: String(raw).split('/').pop().replace(/\.md$/i, ''),
 						text: last && last.ok ? String(last.text) : ('读取失败：' + String((last && last.error) || '找不到该文件')),
 						mtime: (last && last.mtime) || 0,
+						// ★ 2026-10-25：服务端渲染好的 HTML（markdown-it + Obsidian 方言）
+						html: (last && typeof last.html === 'string') ? last.html : '',
+						math: !!(last && last.math),
 						// 文档所在目录：视图用它把 `![](相对路径)` 折成绝对路径，再走 /api/asset
 						base: String(first).replace(/\\/g, '/').replace(new RegExp('/[^/]*$'), ''),
 					};
@@ -934,6 +1254,13 @@ window.__ModuleLoader__.load({
 				},
 				// 设置：IDE 侧由宿主开 editor pane；面板侧开**二级页面**（整页 + ← 返回）
 				openSettings: () => setPane('settings'),
+				// 导图（.canvas）：能力位 —— 渲染实现已迁到**视图层**（三端共用），
+				// 面板只声明「服务端有 /api/canvas」即可。
+				canvas: true,
+				// 笔记区标题行的四个动作（视图里有按钮；宿主不提供就整块不渲染）
+				runLint: () => { setSettingsAuto('health'); setPane('settings'); },
+				runDedup: () => { setSettingsAuto('dedupe'); setPane('settings'); },
+				reviewQueue: () => { setSettingsAuto('review'); setPane('settings'); },
 				// 关系图谱：在面板内就地承载 `/x/kb/graph`（不跳转整壳）
 				openGraph: () => { setPane('graph'); },
 				// 同步飞书：走插件路由跑随包脚本（与 kb_feishu_sync 同一份实现）
@@ -1118,7 +1445,9 @@ window.__ModuleLoader__.load({
 						setPane('tree');
 					},
 					vaultRef: vaultRef,
+					auto: settingsAuto,
 				})) : null);
+
 		}
 
 function install(ctx) {
@@ -1169,3 +1498,25 @@ function install(ctx) {
 // 2026-10-24 (37): touch after feishu cli path + tag buckets
 // 2026-10-24 (38): touch after custom dropdowns + dir abs
 // 2026-10-24 (39): touch after spaces parser + feedback
+// 2026-10-25 (1): touch after wikilink rendering
+// 2026-10-25 (2): touch after md render fixes
+// 2026-10-25 (3): touch after server-side markdown (markdown-it)
+// 2026-10-25 (4): touch after md highlight + vault scan
+// 2026-10-25 (5): touch after dropping hand renderer
+// 2026-10-25 (6): touch after html disk cache
+// 2026-10-25 (7): touch after health report
+// 2026-10-25 (8): touch after empty-dir cleanup
+// 2026-10-25 (9): touch after broken-link fix
+// 2026-10-25 (10): touch after feishu routes moved to dsh
+// 2026-10-25 (11): touch after scheduled feishu sync
+// 2026-10-25 (12): touch after reindex UI
+// 2026-10-25 (13): touch after view-data cache
+// 2026-10-25 (14): touch after canvas (mindmap) pane
+// 2026-10-25 (15): touch after dedupe (report-only)
+// 2026-10-25 (16): touch after review (frontmatter status)
+// 2026-10-25 (17): touch after page actions (settings/switch/add vault)
+// 2026-10-25 (18): touch after notes-header actions wiring
+// 2026-10-25 (19): touch after page report overlays
+// 2026-10-25 (20): touch after canvas moved to view layer
+// 2026-10-25 (21): touch after legacy action cleanup
+// 2026-10-25 (22): touch after /x/kb/doc page rendering

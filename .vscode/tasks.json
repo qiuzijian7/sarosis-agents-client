@@ -544,9 +544,14 @@
 		},
 		{
 			"label": "Start Dev App (attach-ready)",
-			"type": "shell",
-			"command": "${workspaceFolder}/scripts/start-dev-app.cmd",
-			// detached 启动 ⇒ 本任务立刻成功返回，随后由 attach 配置连 9799
+			// ★ 2026-10-25：从 `type: shell` 改成 `type: process` + 显式 cmd.exe。
+			//   用户报「F5 没反应」时，IDE 侧**没有任何任务执行痕迹**，而 shell 任务依赖
+			//   默认 shell 配置（profile / PATH / 引号规则都可能变）⇒ 改成 process 后
+			//   由 VS Code 直接 CreateProcess，不再经过任何 shell 解析，行为确定 ✓
+			"type": "process",
+			"command": "cmd.exe",
+			"args": ["/d", "/s", "/c", "${workspaceFolder}\\scripts\\start-dev-app.cmd"],
+			// detached 启动 ⇒ 本任务立刻成功返回，随后由 attach 配置连 launch.json 里的端口
 			"presentation": { "reveal": "silent", "panel": "dedicated", "clear": true },
 			"problemMatcher": []
 		}

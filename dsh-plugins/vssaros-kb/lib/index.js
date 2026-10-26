@@ -19,13 +19,15 @@ import { bindFoundation } from './foundationRef.js';
 //   图标位一律用 codicon(字形名) 出 span（scripts/check-codicon-subset.mjs 守着"引用 ⊆ 子集" ✓）。
 //   详见 lib/codiconSubset.js 头部的许可说明（含 CC BY 署名）。
 import { CODICON_FONT_CSS, codicon } from './codiconSubset.js';
-import { appendFile, mkdir, mkdtemp, readFile, readdir, rename as renameFile, rm, stat, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, readFile, readdir, rename as renameFile, rm, rmdir, stat, writeFile } from 'node:fs/promises';
 // ★ 2026-10-20：**同步**读 roots overlay（见 readKbVaultsFromOverlay 的注释 ——
 //   `externalVaultRecords` 是同步函数、被 20+ 处调用 ⇒ 不能改成 async）。
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 
 // `.cmd`/`.bat` shim 的**同步**探测（见 `runLarkCli` 的 error 处理：那里不能 await ✗）
 import { existsSync } from 'node:fs';
+
+import { createHash } from 'node:crypto';
 
 import { homedir, tmpdir } from 'node:os';
 
@@ -37,6 +39,9 @@ import { fileURLToPath } from 'node:url';
 // ★ 复刻（§15.38）：分区改成「库」/「笔记」两节 ⇒ 两边的目录名都要（`NOTES_DIR` 是这轮补进 import 的 ✓，
 //   漏了它会在渲染期 `ReferenceError` ⇒ 页面直接 500 ✗）。
 import { escapeHtml, isVaultId, searchDocs, FEISHU_SYNC_SCRIPT, LIBRARY_DIR, NOTES_DIR, MAX_DOC_BYTES, TOPIC_OVERVIEW_FILE, buildFeishuSyncArgs } from './core/kb.js';
+
+// ★ 2026-10-25：服务端 Markdown 渲染（markdown-it + Obsidian 方言；vendor 已随包）
+import { renderMarkdownHtml } from './md/render.js';
 
 // 正文检索（`kb_search mode=fulltext`）：口径逐字照 IDE 侧 `kbIndex.ts`，见 core/kbFulltext.js 文件头。
 import { searchFulltext } from './core/kbFulltext.js';
@@ -262,6 +267,58 @@ let LAST_VAULT_DIRS = [];
  */
 const GRAPH_CACHE_TTL_MS = 60_000;
 const graphCache = new Map();
+
+/**
+ * 渲染结果磁盘缓存（2026-10-25）。
+ *
+ * 为什么缓存：`/api/doc` 每次打开都要跑一遍 markdown-it（82 篇里最长的一篇约 10ms），
+ * 而笔记内容在两次打开之间通常**完全没变**。键取 `路径(小写) 的 sha1`，值里存
+ * `mtime + bytes` 做失效判定 —— 文件一改，mtime/大小就变，缓存自动失效，不需要手动清。
+ *
+ * 落点 `<库根>/.kb-html-cache/`：`.kb` 前缀会被视图的 isNoise 过滤掉，不会出现在树里。
+ * 任何异常（只读盘、权限）都只让缓存失效，**不阻断**正文返回。
+ */
+const HTML_CACHE_DIR = '.kb-html-cache';
+function htmlCacheFileOf(vaultDir, absPath) {
+	const h = createHash('sha1').update(String(absPath).toLowerCase()).digest('hex').slice(0, 20);
+	return join(vaultDir, HTML_CACHE_DIR, h + '.json');
+}
+
+/**
+ * `[[双链]]` 解析索引（2026-10-25，供 `/api/doc` 的服务端渲染用）。
+ * 键：`笔记名（去扩展名、小写）` 与 `区/相对路径（去扩展名、小写）` → 值：文件绝对路径。
+ * 60s 缓存：一次目录扫描即可覆盖整库，比每篇文档都扫一次划算得多。
+ */
+const wikiIndexCache = new Map();
+async function wikiResolverFor(vaultDir) {
+	if (!vaultDir) { return () => undefined; }
+	const now = Date.now();
+	const hit = wikiIndexCache.get(vaultDir);
+	let map = hit && (now - hit.at) < GRAPH_CACHE_TTL_MS ? hit.map : null;
+	if (!map) {
+		map = new Map();
+		for (const section of [NOTES_DIR, LIBRARY_DIR]) {
+			let nodes = [];
+			try { nodes = (await listVaultTree(vaultDir, { section })).nodes ?? []; } catch { nodes = []; }
+			const walk = (list) => {
+				for (const n of list ?? []) {
+					if (n.isDirectory) { walk(n.children); continue; }
+					const abs = join(vaultDir, section, ...String(n.rel).split('/'));
+					map.set(String(n.name).replace(/\.md$/i, '').toLowerCase(), abs);
+					map.set(`${section}/${String(n.rel)}`.replace(/\.md$/i, '').toLowerCase(), abs);
+				}
+			};
+			walk(nodes);
+		}
+		wikiIndexCache.set(vaultDir, { at: now, map });
+	}
+	return (target) => {
+		const t = String(target ?? '').replace(/\\/g, '/').trim();
+		if (!t) { return undefined; }
+		const noExt = t.replace(/\.md$/i, '').toLowerCase();
+		return map.get(noExt) ?? map.get(t.toLowerCase()) ?? map.get(noExt.split('/').pop() ?? '');
+	};
+}
 
 /**
  * 库的显示名（**模块级**版本，供路由 handler 使用）。
@@ -6109,6 +6166,128 @@ async function startBuildJob({ ctx, state, config, vault, pending, params, exec,
 	};
 }
 
+
+/**
+ * 飞书设置读取（默认值兜底）。
+ * 与 `/api/kb-settings` 用同一份文件，避免"页面改了但同步读不到"。
+ */
+async function readFeishuSettings(config) {
+	const base = { enabled: false, schedule: false, scheduleMinutes: 60, intervalMs: 800, conflict: 'skip', deleteRemote: false, mappings: [], cliPath: '' };
+	try {
+		const obj = JSON.parse(await readFile(join(kbRootOf(config), '.kb-settings.json'), 'utf8'));
+		return Object.assign(base, obj && obj.feishu);
+	} catch {
+		return base;
+	}
+}
+
+/** 定时同步的运行状态（进程内；重启后重置，下一次到期即会重跑） */
+const SYNC_STATE = { running: false, lastAt: 0, lastCode: null, lastError: '', lastDry: false };
+
+/** 重建索引的运行状态（同上：进程内，够用且不需要落盘） */
+const REINDEX_STATE = { running: false, lastAt: 0, docs: 0, lastError: '' };
+
+/**
+ * `/api/view-data` 的组装结果缓存（2026-10-25）。
+ *
+ * 为什么需要：面板每次挂载/切库都会打这条路由，而它要**扫两遍目录**（笔记 + 库）再读全库正文算双链，
+ * 首次实测约 200ms。同一份内容在几秒内被反复请求是常态（面板打开 → 设置页 → 切回）。
+ *
+ * 失效判据（两道一起，缺一不可）：
+ *   · `sig` = 笔记/库 两个目录的 mtime ⇒ **新增/删除/改名**会立刻变（这正是树变化的原因）
+ *   · TTL 10s ⇒ 兜住"目录 mtime 不变但内容变了"的情况（如改某篇正文只影响双链，不影响树）
+ * `?refresh=1` 无条件绕过。
+ */
+const VIEW_DATA_CACHE = new Map();
+async function vaultSigOf(dir) {
+	const a = await stat(join(dir, NOTES_DIR)).catch(() => null);
+	const b = await stat(join(dir, LIBRARY_DIR)).catch(() => null);
+	return `${a ? a.mtimeMs : 0}|${b ? b.mtimeMs : 0}`;
+}
+
+/**
+ * **执行一次同步**（页面按钮与定时器走同一条路径）。
+ *
+ * 为什么抽出来：之前这段逻辑只存在于 HTTP 路由里，定时器要复用就得复制 40 行
+ * （映射文件、冲突策略、间隔、prune、日志落盘），复制必然漂移。
+ */
+async function performFeishuSync(config, { dry = false } = {}) {
+	const feishuCfg = await readFeishuSettings(config);
+	if (!feishuCfg.enabled) {
+		return { ok: false, code: null, error: '飞书同步未启用：请到「设置 → 📤 飞书同步」打开开关后重试。' };
+	}
+	const { vaults } = await listAllVaults(kbRootOf(config), config, { withDocs: false });
+	const wanted = String(config?.kbActiveVaultId ?? '');
+	const vault = vaults.find(v => v.id === wanted) ?? vaults[0];
+	if (!vault) { return { ok: false, code: null, error: '还没有可用的知识库' }; }
+
+	// 目录映射 → 脚本认的文件（`{ mappings: { 相对目录: spaceId } }`）
+	try {
+		const maps = (feishuCfg.mappings ?? []).filter(m => m && m.dir && m.spaceId);
+		if (maps.length) {
+			const obj = { mappings: {} };
+			for (const m of maps) { obj.mappings[String(m.dir).replace(/\\/g, '/')] = String(m.spaceId); }
+			await writeFile(join(vault.dir, '.feishu-space-map.json'), JSON.stringify(obj, null, 2), 'utf8');
+		}
+	} catch { /* 写不进去不阻断（脚本会退回"未映射类别自动建库"） */ }
+
+	const args = buildFeishuSyncArgs({
+		vault: vault.dir,
+		src: NOTES_DIR,
+		apply: !dry,
+		onConflict: feishuCfg.conflict === 'skip' ? 'skip' : 'overwrite',
+		cliPath: String(feishuCfg.cliPath ?? '').trim(),
+	});
+	const interval = Number(feishuCfg.intervalMs) || 0;
+	if (interval > 0) { args.push('--interval', String(Math.floor(interval))); }
+	if (feishuCfg.deleteRemote === true) { args.push('--prune'); }
+
+	const { code, output } = await runFeishuSync(args, vault.dir);
+	const text = String(output || '');
+	let logFile = '';
+	try {
+		logFile = join(vault.dir, '.kb-feishu-sync.log');
+		const head = `===== ${new Date().toISOString()} ${dry ? 'dry-run' : 'apply'} code=${code} =====\n`;
+		await appendFile(logFile, head + text.slice(-200000) + '\n', 'utf8');
+	} catch { logFile = ''; }
+	return { ok: code === 0, code, dry: !!dry, output: text.slice(-4000), vault: { id: vault.id, name: vault.name, dir: vault.dir }, logFile: logFile || undefined };
+}
+
+/**
+ * 定时同步：**每 60s 醒一次**，按 `scheduleMinutes` 判断是否到期。
+ *
+ * 三条保护（缺一条就会出事故）：
+ *   · `enabled && schedule` 同时为真才跑（IDE 侧也是"与"关系）
+ *   · 上一次还在跑就跳过（同步是分钟级长任务，叠加会互相踩）
+ *   · 定时器 `unref()`，且 dispose 时 clearInterval —— 不能让插件拖住宿主退出
+ */
+function startFeishuScheduler(config) {
+	const TICK_MS = 60 * 1000;
+	const tick = async () => {
+		try {
+			const cfg = await readFeishuSettings(config);
+			if (!cfg.enabled || !cfg.schedule) { return; }
+			const everyMin = Math.max(5, Number(cfg.scheduleMinutes) || 60);
+			if (Date.now() - SYNC_STATE.lastAt < everyMin * 60 * 1000) { return; }
+			if (SYNC_STATE.running) { return; }
+			SYNC_STATE.running = true;
+			try {
+				const r = await performFeishuSync(config, { dry: false });
+				SYNC_STATE.lastCode = r.code ?? null;
+				SYNC_STATE.lastError = r.ok ? '' : String(r.error || '');
+			} catch (e) {
+				SYNC_STATE.lastError = String(e?.message ?? e);
+			} finally {
+				SYNC_STATE.lastAt = Date.now();
+				SYNC_STATE.running = false;
+			}
+		} catch { /* 单次失败不影响下一次 */ }
+	};
+	const timer = setInterval(() => { void tick(); }, TICK_MS);
+	try { timer.unref?.(); } catch { /* 老内核无 unref */ }
+	return () => { try { clearInterval(timer); } catch { /* 已清 */ } };
+}
+
 export function apply(ctx, config = {}) {
 	// 重构 1.3：绑定 foundation 共享服务（dataRoot/dshHome/pageShell/lock 的真源）。
 	{
@@ -6216,6 +6395,13 @@ export function apply(ctx, config = {}) {
 			}
 		};
 	});
+
+	// ★ 2026-10-25：**定时同步执行器**（与页面按钮同一条实现）。
+	//   `ctx.effect` 在宿主里负责生命周期：插件卸载/重载时调用我们返回的 stop，
+	//   不会留下"重载后两个定时器同时跑"的隐患。宿主没有 effect 时静默跳过（手动同步仍可用）。
+	try {
+		ctx.effect(() => startFeishuScheduler(config));
+	} catch { /* 无 effect 能力 ⇒ 只是没有定时同步 */ }
 
 	// 页面路由（**可选**依赖）：`webServer` / `connection` 只在 web 模板里存在（见静态 `inject` 的注释）。
 	// 不在 web 模板 ⇒ 只是**没有页面** ✓，工具照常可用 ✓。
@@ -6748,7 +6934,8 @@ export function apply(ctx, config = {}) {
 					const file = () => join(kbRootOf(config), '.kb-settings.json');
 					const defaults = {
 						agenticBuild: true,
-						feishu: { enabled: false, schedule: false, intervalMs: 800, conflict: 'skip', deleteRemote: false, mappings: [] },
+						// `scheduleMinutes`：定时同步的间隔（分钟）；`cliPath`：lark-cli 的非标准路径
+						feishu: { enabled: false, schedule: false, scheduleMinutes: 60, intervalMs: 800, conflict: 'skip', deleteRemote: false, mappings: [], cliPath: '' },
 					};
 					const readSettings = () => {
 						try {
@@ -6878,6 +7065,18 @@ export function apply(ctx, config = {}) {
 						//   否则只能改 IDE 注入的 `kbActiveVaultId`（那是启动时静态值，页面上切不了）。
 						const active = String(url.searchParams.get('vault') ?? config?.kbActiveVaultId ?? '').trim();
 						const vault = (active && vaults.find(v => v.id === active)) || vaults[0];
+						// ★ 2026-10-25：命中缓存就直接回（`sig` = 两个区的目录 mtime，10s TTL 兜底）
+						const force = url.searchParams.get('refresh') === '1';
+						let cacheKey = '';
+						if (vault) {
+							cacheKey = vault.id;
+							const sig = await vaultSigOf(vault.dir);
+							const hit = VIEW_DATA_CACHE.get(cacheKey);
+							if (!force && hit && hit.sig === sig && (Date.now() - hit.at) < 10_000) {
+								send(200, { ok: true, cached: true, data: hit.data });
+								return;
+							}
+						}
 						const out = {
 							vaultName: '(未连接)', activeVaultId: '', vaults: [], noteCount: 0,
 							tree: [], library: [], libraryCount: 0, tags: [], indexState: 'ready',
@@ -6985,7 +7184,11 @@ export function apply(ctx, config = {}) {
 								out.links = links;
 							} catch { /* 图谱不可用 ⇒ 组件不显示双链节（如实降级） */ }
 						}
-						send(200, { ok: true, data: out });
+						// 只在有库时缓存（未连接状态不值得缓存，也不该挡住"接上库之后立刻可见"）
+						if (cacheKey) {
+							try { VIEW_DATA_CACHE.set(cacheKey, { at: Date.now(), sig: await vaultSigOf(vault.dir), data: out }); } catch { /* 缓存失败不影响返回 */ }
+						}
+						send(200, { ok: true, cached: false, data: out });
 					} catch (e) {
 						send(500, { ok: false, error: String(e?.message ?? e) });
 					}
@@ -7342,68 +7545,736 @@ export function apply(ctx, config = {}) {
 						res.end(JSON.stringify(payload));
 					};
 					try {
-						// ★ 2026-10-24：读设置里的飞书开关（默认关）。关着就明确拒绝，而不是"点了像成功的空跑"。
-						let feishuCfg = { enabled: false };
-						try {
-							const obj = JSON.parse(readFileSync(join(kbRootOf(config), '.kb-settings.json'), 'utf8'));
-							feishuCfg = Object.assign({ enabled: false }, obj && obj.feishu);
-						} catch { /* 没有设置文件 ⇒ 视为未启用 */ }
-						if (!feishuCfg.enabled) {
-							send(400, { ok: false, error: '飞书同步未启用：请到「设置 → 📤 飞书同步」打开开关后重试。' });
-							return;
-						}
 						const dry = url.searchParams.get('dry') === '1';
-						const { vaults } = await listAllVaults(kbRootOf(config), config, { withDocs: false });
-						const wanted = String(config?.kbActiveVaultId ?? '');
-						const vault = vaults.find(v => v.id === wanted) ?? vaults[0];
-						if (!vault) { send(400, { ok: false, error: '还没有可用的知识库' }); return; }
-						// dry-run 只出计划（apply=false），与设置页「预览同步计划」对应
-						// ★ 2026-10-24：**目录映射**落成脚本认的文件。
-						//   脚本 `feishu-sync.mjs` 默认读 `<vault>/.feishu-space-map.json`
-						//   （`SPACE_MAP_FILE`，格式 `{ mappings: { '相对目录': 'spaceId' } }`，
-						//   也兼容数组写法）⇒ 这里把设置页里配的映射写进去，不额外发明参数。
-						try {
-							const maps = (feishuCfg.mappings ?? []).filter(m => m && m.dir && m.spaceId);
-							if (maps.length) {
-								const obj = { mappings: {} };
-								for (const m of maps) { obj.mappings[String(m.dir).replace(/\\/g, '/')] = String(m.spaceId); }
-								await writeFile(join(vault.dir, '.feishu-space-map.json'), JSON.stringify(obj, null, 2), 'utf8');
-							}
-						} catch { /* 映射写不进去不阻断同步（脚本会退回"未映射类别自动建库"） */ }
-						// ★ 2026-10-24：设置页的三项**真生效**（不是只存不用）：
-						//   · 冲突策略 → `--on-conflict skip|overwrite`（'local' = 本地覆盖 = overwrite）
-						//   · 每篇间隔 → `--interval <ms>`
-						//   · 删除清理 → `--prune`（本地删除的文档同时移除远端节点）
-						//   以及 CLI 路径 → `--cli`（装在非标准位置时）
-						const args = buildFeishuSyncArgs({
-							vault: vault.dir,
-							src: NOTES_DIR,
-							apply: !dry,
-							onConflict: feishuCfg.conflict === 'skip' ? 'skip' : 'overwrite',
-							cliPath: String(feishuCfg.cliPath ?? '').trim(),
-						});
-						const interval = Number(feishuCfg.intervalMs) || 0;
-						if (interval > 0) { args.push('--interval', String(Math.floor(interval))); }
-						if (feishuCfg.deleteRemote === true) { args.push('--prune'); }
-						const { code, output } = await runFeishuSync(args, vault.dir);
-						const text = String(output || '');
-						// 落盘日志（IDE 侧「查看同步日志」的等价物）；写不进去不影响本次结果
-						let logFile = '';
-						try {
-							logFile = join(vault.dir, '.kb-feishu-sync.log');
-							const head = `===== ${new Date().toISOString()} ${dry ? 'dry-run' : 'apply'} code=${code} =====\n`;
-							await appendFile(logFile, head + text.slice(-200000) + '\n', 'utf8');
-						} catch { logFile = ''; }
+						// 与定时器共用同一条实现（映射/冲突策略/间隔/prune/日志都在 performFeishuSync 里）
+						const r = await performFeishuSync(config, { dry });
+						if (r.error) { send(400, { ok: false, error: r.error }); return; }
+						send(200, r);
+					} catch (e) {
+						send(500, { ok: false, error: String(e?.message ?? e) });
+					}
+					return;
+				}
+				// ★ 2026-10-25：**定时同步状态**（设置页用来显示"下次运行 / 上次结果"）
+				if (url && url.pathname === `${ROUTE_PREFIX}/api/feishu-schedule`) {
+					const send = (code, payload) => {
+						res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(payload));
+					};
+					try {
+						const cfg = await readFeishuSettings(config);
+						const everyMin = Math.max(5, Number(cfg.scheduleMinutes) || 60);
+						const active = !!(cfg.enabled && cfg.schedule);
+						const nextRunAt = active
+							? (SYNC_STATE.lastAt ? SYNC_STATE.lastAt + everyMin * 60000 : Date.now() + 60000)
+							: 0;
 						send(200, {
-							ok: code === 0,
-							code,
-							dry: !!dry,
-							vault: { id: vault.id, name: vault.name, dir: vault.dir },
-							output: text.slice(-4000),
-							logFile: logFile || undefined,
+							ok: true,
+							active,
+							enabled: !!cfg.enabled,
+							schedule: !!cfg.schedule,
+							everyMinutes: everyMin,
+							running: SYNC_STATE.running,
+							lastRunAt: SYNC_STATE.lastAt,
+							lastCode: SYNC_STATE.lastCode,
+							lastError: SYNC_STATE.lastError,
+							nextRunAt,
 						});
 					} catch (e) {
 						send(500, { ok: false, error: String(e?.message ?? e) });
+					}
+					return;
+				}
+				// ★ 2026-10-25：**体检报告（只读）** —— 对应 IDE 侧的「体检」入口。
+				//   为什么先做只读：它会给出"哪篇该修"的判断，改不改由用户决定；
+				//   自动改（去重/迁移）属于写操作，风险完全不同，留到确认后再做。
+				//   数据全部来自已有扫描（树 + 图谱缓存 + 双链解析器）⇒ 不额外解析正文。
+				if (url && url.pathname === `${ROUTE_PREFIX}/api/health`) {
+					const send = (code, payload) => {
+						res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(payload));
+					};
+					try {
+						const snapshot = await pageSnapshotOf(kbRootOf(config), { external: externalVaultRecords(config) });
+						const vaults = snapshot.vaults ?? [];
+						const want = String(url.searchParams.get('vault') ?? config?.kbActiveVaultId ?? '').trim();
+						const vault = (want && vaults.find(v => v.id === want)) || vaults[0];
+						if (!vault) { send(400, { ok: false, error: '还没有可用的知识库' }); return; }
+						LAST_VAULT_DIRS = vaults.map(v => v.dir).filter(Boolean);
+
+						const tree = await listVaultTree(vault.dir, { section: NOTES_DIR });
+						const files = [];
+						const emptyDirs = [];
+						const walk = (nodes, rel) => {
+							for (const n of nodes ?? []) {
+								const relPath = rel ? rel + '/' + n.rel : n.rel;
+								if (n.isDirectory) {
+									// 隐藏目录（`.module` 等）不算"空目录"，否则报告里全是噪音
+									if (!(n.children ?? []).length && !String(n.name).startsWith('.')) { emptyDirs.push(relPath); }
+									walk(n.children, rel);
+								} else if (!String(n.name).startsWith('.')) {
+									files.push({ rel: relPath, name: n.name, size: n.size });
+								}
+							}
+						};
+						walk(tree.nodes, '');
+
+						// 双链：用与渲染同一套解析器，找出**指向不存在笔记**的链接
+						const notesDir = join(vault.dir, NOTES_DIR);
+						const now = Date.now();
+						const cachedGraph = graphCache.get(notesDir);
+						const graphData = (cachedGraph && (now - cachedGraph.at) < GRAPH_CACHE_TTL_MS)
+							? cachedGraph.data
+							: buildGraphData(await readNotesForGraph(notesDir));
+						if (!cachedGraph || (now - cachedGraph.at) >= GRAPH_CACHE_TTL_MS) { graphCache.set(notesDir, { at: now, data: graphData }); }
+
+						const resolveWiki = await wikiResolverFor(vault.dir);
+						const fs2 = await readNotesForGraph(notesDir);
+						// 候选目标（供"断链修复"用）：库里所有笔记名（去扩展名）
+						const allNames = fs2.map(n => String(n.rel).replace(/\\/g, '/').split('/').pop().replace(/\.md$/i, ''));
+						const nameSet = new Set(allNames.map(s => s.toLowerCase()));
+						const lev = (a, b) => {
+							// 小编辑距离：只用于"这批断链里最像哪一个"，不上大算法
+							const m = a.length; const n = b.length;
+							if (Math.abs(m - n) > 3) { return 99; }
+							let prev = Array.from({ length: n + 1 }, (_, j) => j);
+							for (let i = 1; i <= m; i++) {
+								const cur = [i];
+								for (let j = 1; j <= n; j++) {
+									cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+								}
+								prev = cur;
+							}
+							return prev[n];
+						};
+						const suggestOf = (target) => {
+							const t = String(target).toLowerCase();
+							if (nameSet.has(t)) { return allNames.find(s => s.toLowerCase() === t) || ''; }
+							// 包含关系（`05 DSH 框架原理` ⊂ `05a DSH 框架原理（讲懂版）`）
+							const subset = allNames.filter(s => s.toLowerCase().includes(t) || t.includes(s.toLowerCase()));
+							if (subset.length === 1) { return subset[0]; }
+							let best = '';
+							let bestD = 3;
+							for (const s of allNames) {
+								const d = lev(t, s.toLowerCase());
+								if (d < bestD) { bestD = d; best = s; }
+							}
+							return bestD <= 2 ? best : '';
+						};
+
+						const broken = [];
+						const seenBroken = new Set();
+						for (const note of fs2) {
+							const content = String(note.content ?? note.text ?? '');
+							const rel = String(note.rel).replace(/\\/g, '/');
+							const re = /\[\[([^\]\n]+)\]\]/g;
+							let m;
+							while ((m = re.exec(content)) !== null) {
+								// 表格里的双链要写 `[[笔记\|别名]]` ⇒ 先还原转义竖线再拆，否则目标名带反斜杠必然"断链"
+								const target = m[1].replace(/\\\|/g, '|').split('|')[0].split('#')[0].trim();
+								if (!target) { continue; }
+								if (resolveWiki(target)) { continue; }
+								const key = rel + '->' + target;
+								if (seenBroken.has(key)) { continue; }
+								seenBroken.add(key);
+								broken.push({
+									from: rel,
+									fromAbs: join(notesDir, ...rel.split('/')),
+									target,
+									suggest: suggestOf(target),
+								});
+								if (broken.length >= 200) { break; }
+							}
+						}
+
+						// 孤立笔记：图谱里入度出度都为 0
+						const degree = new Map();
+						for (const n of graphData.nodes ?? []) { degree.set(n.id, 0); }
+						for (const e of graphData.edges ?? []) {
+							degree.set(e.source, (degree.get(e.source) ?? 0) + 1);
+							degree.set(e.target, (degree.get(e.target) ?? 0) + 1);
+						}
+						const orphans = (graphData.nodes ?? [])
+							.filter(n => (degree.get(n.id) ?? 0) === 0)
+							.map(n => String(n.id))
+							.slice(0, 200);
+
+						// 无标签 / 无 frontmatter
+						const noTags = [];
+						const noFrontmatter = [];
+						for (const doc of vault.docs ?? []) {
+							const rel = String(doc.rel ?? doc.uri ?? '').replace(/\\/g, '/');
+							if (!Array.isArray(doc.tags) || !doc.tags.length) { noTags.push(rel); }
+						}
+						for (const note of fs2) {
+							if (!/^---\r?\n/.test(String(note.content ?? note.text ?? ''))) {
+								noFrontmatter.push(String(note.rel).replace(/\\/g, '/'));
+							}
+						}
+
+						// 同名笔记（双链 `[[名字]]` 会解析到其中一篇，容易指错）
+						const byName = new Map();
+						for (const f of files) {
+							const base = String(f.name).replace(/\.md$/i, '');
+							const list = byName.get(base) ?? [];
+							list.push(f.rel);
+							byName.set(base, list);
+						}
+						const dupNames = [...byName.entries()]
+							.filter(([, list]) => list.length > 1)
+							.map(([name, paths]) => ({ name, paths }))
+							.slice(0, 50);
+
+						send(200, {
+							ok: true,
+							vault: { id: vault.id, name: vaultDisplayNameFrom(config, vault.id), dir: vault.dir },
+							report: {
+								total: files.length,
+								nodes: (graphData.nodes ?? []).length,
+								edges: (graphData.edges ?? []).length,
+								orphanCount: orphans.length,
+								orphans: orphans.slice(0, 50),
+								brokenCount: broken.length,
+								broken: broken.slice(0, 50),
+								noTagCount: noTags.length,
+								noTags: noTags.slice(0, 50),
+								noFrontmatterCount: noFrontmatter.length,
+								noFrontmatter: noFrontmatter.slice(0, 50),
+								emptyDirCount: emptyDirs.length,
+								emptyDirs: emptyDirs.slice(0, 50),
+								dupNameCount: dupNames.length,
+								dupNames,
+							},
+						});
+					} catch (e) {
+						send(500, { ok: false, error: String(e?.message ?? e) });
+					}
+					return;
+				}
+				// ★ 2026-10-25：**清理空目录**（体检的"动手"第一项，风险最低）。
+				//   安全基线：
+				//     · 只在**当前库的「笔记」区**内操作（越界一律拒绝）
+				//     · 删除前**重新 readdir**，只有真为 0 项才删（防止扫描后有人往里放了文件）
+				//     · 非递归删除（`rm` 不带 recursive）⇒ 非空目录直接失败，不会连带删内容
+				//     · 隐藏目录（`.kb-*` / `.module`）跳过
+				if (url && url.pathname === `${ROUTE_PREFIX}/api/health/cleanup` && req.method === 'POST') {
+					const send = (code, payload) => {
+						res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(payload));
+					};
+					try {
+						let raw = '';
+						for await (const chunk of req) {
+							raw += chunk;
+							if (raw.length > 8192) { send(413, { ok: false, error: '请求体太大' }); return; }
+						}
+						const body = JSON.parse(raw || '{}');
+						const snapshot = await pageSnapshotOf(kbRootOf(config), { external: externalVaultRecords(config) });
+						const vaults = snapshot.vaults ?? [];
+						const want = String(body?.vault ?? config?.kbActiveVaultId ?? '').trim();
+						const vault = (want && vaults.find(v => v.id === want)) || vaults[0];
+						if (!vault) { send(400, { ok: false, error: '还没有可用的知识库' }); return; }
+						const notesRoot = join(vault.dir, NOTES_DIR);
+						const deleted = [];
+						const skipped = [];
+						// 多轮扫描：删掉最内层空目录后，父目录可能也空了
+						for (let round = 0; round < 5; round++) {
+							const empties = [];
+							const walk = async (dir) => {
+								let ents = [];
+								try { ents = await readdir(dir, { withFileTypes: true }); } catch { return; }
+								const subdirs = ents.filter(e => e.isDirectory() && !e.name.startsWith('.'));
+								for (const d of subdirs) { await walk(join(dir, d.name)); }
+								if (!ents.length) { empties.push(dir); }
+							};
+							await walk(notesRoot);
+							if (!empties.length) { break; }
+							let removed = 0;
+							for (const dir of empties) {
+								if (dir === notesRoot) { continue; }   // 笔记根永远保留
+								try {
+									const left = await readdir(dir);
+									if (left.length) { skipped.push({ dir, reason: '已非空' }); continue; }
+									// `rm(dir, { recursive: false })` 会 EISDIR（Node 的 rm 不接受目录）⇒ 用 `rmdir`：
+									// 它**只删空目录**，非空时抛 ENOTEMPTY —— 正是我们要的"绝不会连带删内容"语义。
+									await rmdir(dir);
+									deleted.push(dir);
+									removed += 1;
+								} catch (e) {
+									skipped.push({ dir, reason: String(e?.message ?? e) });
+								}
+							}
+							if (!removed) { break; }
+						}
+						send(200, {
+							ok: true,
+							vault: { id: vault.id, name: vaultDisplayNameFrom(config, vault.id) },
+							deletedCount: deleted.length,
+							deleted: deleted.slice(0, 100).map(d => String(d).replace(/\\/g, '/').slice(String(vault.dir).replace(/\\/g, '/').length + 1)),
+							skippedCount: skipped.length,
+							skipped: skipped.slice(0, 20),
+						});
+					} catch (e) {
+						send(500, { ok: false, error: String(e?.message ?? e) });
+					}
+					return;
+				}
+				// ★ 2026-10-25：**修一条断链**（体检的第二个写操作）。
+				//   只做**最小改动**：把 `[[目标` 这个前缀替换成 `[[新目标`，别名与 `#段落` 原样保留。
+				//   围栏与 `POST /api/doc` 同源（库内 + 笔记区 + .md），并同样做 mtime 前置校验 + 自动备份。
+				if (url && url.pathname === `${ROUTE_PREFIX}/api/health/fix-link` && req.method === 'POST') {
+					const send = (code, payload) => {
+						res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(payload));
+					};
+					try {
+						let raw = '';
+						for await (const chunk of req) {
+							raw += chunk;
+							if (raw.length > 65536) { send(413, { ok: false, error: '请求体太大' }); return; }
+						}
+						const body = JSON.parse(raw || '{}');
+						const target = String(body?.target ?? '').trim();
+						const replacement = String(body?.replacement ?? '').trim();
+						if (!target || !replacement) { send(400, { ok: false, error: '需要 target 与 replacement' }); return; }
+						const p = resolve(String(body?.uri ?? ''));
+						const roots = [kbRootOf(config), ...externalVaultRecords(config).map(it => it.dir || it.path || ''), ...LAST_VAULT_DIRS]
+							.filter(Boolean).map(s => String(s).replace(/\\/g, '/').replace(/\/+$/, ''));
+						const abs = p.replace(/\\/g, '/');
+						const inside = roots.some(r => abs.toLowerCase().startsWith(r.toLowerCase() + '/'));
+						if (!inside) { send(403, { ok: false, error: '拒绝写入库外文件：' + p }); return; }
+						if (!abs.includes('/' + NOTES_DIR + '/')) { send(403, { ok: false, error: '只允许修改「笔记」区' }); return; }
+						if (!/\.md$/i.test(p)) { send(400, { ok: false, error: '只支持 .md 文件' }); return; }
+						// 新目标必须**能解析到真实笔记**，否则等于把断链换成另一条断链
+						const vaultDir2 = roots.filter(r => abs.toLowerCase().startsWith(r.toLowerCase() + '/')).sort((a, b) => b.length - a.length)[0] || '';
+						const resolver = await wikiResolverFor(vaultDir2);
+						if (!resolver(replacement)) { send(400, { ok: false, error: '新目标在库里找不到：' + replacement }); return; }
+
+						const text = await readFile(p, 'utf8');
+						const from = '[[' + target;
+						const occur = text.split(from).length - 1;
+						if (!occur) { send(400, { ok: false, error: '该文件里找不到 [[' + target + '（可能已修过）' }); return; }
+
+						const expected = Number(body?.expectedMtime ?? 0) || 0;
+						const before = await stat(p).catch(() => null);
+						if (expected > 0 && before && Math.abs(before.mtimeMs - expected) > 1000) {
+							send(409, { ok: false, conflict: true, mtime: before.mtimeMs, error: '文件已被其他程序修改，请重新打开该笔记后再修。' });
+							return;
+						}
+						// 备份（与保存同一条路径：`.kb-backup/` 不进树）
+						try {
+							const dir = join(dirname(p), '.kb-backup');
+							await mkdir(dir, { recursive: true });
+							await writeFile(join(dir, `${basename(p)}.${new Date().toISOString().replace(/[:.]/g, '-')}.md.bak`), text, 'utf8');
+						} catch { /* 备份失败不阻断（如实回 backup 省略） */ }
+
+						const next = text.split(from).join('[[' + replacement);
+						await writeFile(p, next, 'utf8');
+						const after = await stat(p).catch(() => null);
+						send(200, { ok: true, replaced: occur, mtime: after ? after.mtimeMs : 0 });
+					} catch (e) {
+						send(500, { ok: false, error: String(e?.message ?? e) });
+					}
+					return;
+				}
+				// ★ 2026-10-25：**重建索引**（对应 IDE 设置页的「🔄 重新构建向量索引」）。
+				//   ⚠ 如实分界：
+				//     · `kernel`（`.kbkernel.json`）与全文 BM25 都是**纯本地计算** ⇒ dsh 侧可以重建；
+				//     · **向量索引（embedding）需要模型 provider**，那是 IDE 侧能力 ⇒ dsh 侧不做，
+				//       路由里明确回 `vector: { supported: false, reason }`，页面也照实标注，不放假按钮。
+				if (url && url.pathname === `${ROUTE_PREFIX}/api/reindex`) {
+					const send = (code, payload) => {
+						res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(payload));
+					};
+					if (req.method === 'GET') {
+						send(200, {
+							ok: true,
+							running: REINDEX_STATE.running,
+							lastAt: REINDEX_STATE.lastAt,
+							lastDocs: REINDEX_STATE.docs,
+							lastError: REINDEX_STATE.lastError,
+							vector: { supported: false, reason: '向量索引需要 embedding provider（IDE 侧全局配置），dsh 侧暂无该能力' },
+						});
+						return;
+					}
+					if (req.method !== 'POST') { send(405, { ok: false, error: '请用 GET 或 POST' }); return; }
+					if (REINDEX_STATE.running) { send(409, { ok: false, error: '已有重建任务在进行' }); return; }
+					REINDEX_STATE.running = true;
+					REINDEX_STATE.lastError = '';
+					try {
+						const snapshot = await pageSnapshotOf(kbRootOf(config), { external: externalVaultRecords(config) });
+						const vaults = snapshot.vaults ?? [];
+						const want = String(url.searchParams.get('vault') ?? config?.kbActiveVaultId ?? '').trim();
+						const vault = (want && vaults.find(v => v.id === want)) || vaults[0];
+						if (!vault) { send(400, { ok: false, error: '还没有可用的知识库' }); return; }
+						// 重建内核缓存（含逐篇正文提取与标签），返回 docs 数组用于计数
+						const r = await rebuildKernelCache(vault.dir);
+						const docs = Array.isArray(r?.docs) ? r.docs.length : 0;
+						REINDEX_STATE.lastAt = Date.now();
+						REINDEX_STATE.docs = docs;
+						send(200, {
+							ok: true,
+							vault: { id: vault.id, name: vaultDisplayNameFrom(config, vault.id), dir: vault.dir },
+							docs,
+							kernelFile: r?.path ? String(r.path).replace(/\\/g, '/').split('/').pop() : '',
+							vector: { supported: false, reason: '向量索引需要 embedding provider（IDE 侧全局配置），dsh 侧暂无该能力' },
+						});
+					} catch (e) {
+						REINDEX_STATE.lastError = String(e?.message ?? e);
+						send(500, { ok: false, error: REINDEX_STATE.lastError });
+					} finally {
+						REINDEX_STATE.running = false;
+					}
+					return;
+				}
+				// ★ 2026-10-25：**导图（.canvas）**—— IDE 侧「思维导图」的等价入口。
+				//   为什么不是"跳编辑器"：dsh 面板没有编辑器，`/api/mindmap` 那条只回"文件路径"，
+				//   在面板里等于打不开。⇒ 这里**把 .canvas 解析成节点/边**回给前端自己画，
+				//   点击带 `source.file` 的节点可以跳回对应笔记。
+				if (url && url.pathname === `${ROUTE_PREFIX}/api/canvas`) {
+					const send = (code, payload) => {
+						res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(payload));
+					};
+					try {
+						const uri = String(url.searchParams.get('uri') ?? '');
+						if (!uri) { send(400, { ok: false, error: '缺少 uri' }); return; }
+						const p = resolve(decodeURIComponent(uri));
+						const roots = [kbRootOf(config), ...externalVaultRecords(config).map(it => it.dir || it.path || ''), ...LAST_VAULT_DIRS]
+							.filter(Boolean).map(s => String(s).replace(/\\/g, '/').replace(/\/+$/, ''));
+						const abs = p.replace(/\\/g, '/');
+						if (!roots.some(r => abs.toLowerCase().startsWith(r.toLowerCase() + '/'))) {
+							send(403, { ok: false, error: '拒绝读取库外文件' });
+							return;
+						}
+						if (!/\.canvas$/i.test(p)) { send(400, { ok: false, error: '只支持 .canvas' }); return; }
+						const raw = await readFile(p, 'utf8');
+						const j = JSON.parse(raw);
+						const rawNodes = Array.isArray(j?.nodes) ? j.nodes : [];
+						const rawEdges = Array.isArray(j?.edges) ? j.edges : [];
+						// 上限保护：真实文件里见过 550 节点，留 4 倍余量
+						const nodes = rawNodes.slice(0, 2000).map(n => ({
+							id: String(n?.id ?? ''),
+							x: Number(n?.x) || 0,
+							y: Number(n?.y) || 0,
+							w: Number(n?.width) || 240,
+							h: Number(n?.height) || 80,
+							type: String(n?.type ?? 'text'),
+							color: String(n?.color ?? ''),
+							text: String(n?.content ?? n?.text ?? '').slice(0, 2000),
+							file: n?.source && n.source.file ? String(n.source.file).replace(/\\/g, '/') : '',
+						})).filter(n => n.id);
+						const ids = new Set(nodes.map(n => n.id));
+						const edges = rawEdges.slice(0, 4000).map(e => ({
+							from: String(e?.fromNode ?? ''),
+							to: String(e?.toNode ?? ''),
+							label: String(e?.label ?? ''),
+						})).filter(e => ids.has(e.from) && ids.has(e.to));
+						// ★ 2026-10-25：`notesRoot` —— 视图侧要把节点里的 `source.file`
+						//   （相对「笔记」区）折算回绝对路径才能跳笔记。视图手里没有库根，
+						//   所以由服务端直接给（这里有 roots，可以安全反推）。
+						const notesRoot = roots
+							.map(r => r + '/' + NOTES_DIR)
+							.filter(nr => abs.toLowerCase().startsWith(nr.toLowerCase() + '/'))
+							.sort((a, b) => b.length - a.length)[0] || '';
+						send(200, {
+							ok: true,
+							name: basename(p).replace(/\.canvas$/i, ''),
+							path: abs,
+							notesRoot,
+							nodes,
+							edges,
+							totalNodes: rawNodes.length,
+							totalEdges: rawEdges.length,
+						});
+					} catch (e) {
+						send(400, { ok: false, error: '解析 .canvas 失败：' + String(e?.message ?? e) });
+					}
+					return;
+				}
+				// 导图清单：`笔记` 区里所有 .canvas（面板里的选择器用它）
+				if (url && url.pathname === `${ROUTE_PREFIX}/api/canvas-list`) {
+					const send = (code, payload) => {
+						res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(payload));
+					};
+					try {
+						const snapshot = await pageSnapshotOf(kbRootOf(config), { external: externalVaultRecords(config) });
+						const vaults = snapshot.vaults ?? [];
+						const want = String(url.searchParams.get('vault') ?? config?.kbActiveVaultId ?? '').trim();
+						const vault = (want && vaults.find(v => v.id === want)) || vaults[0];
+						if (!vault) { send(400, { ok: false, error: '还没有可用的知识库' }); return; }
+						LAST_VAULT_DIRS = vaults.map(v => v.dir).filter(Boolean);
+						const notesRoot = join(vault.dir, NOTES_DIR);
+						const out = [];
+						const walk = async (dir, rel) => {
+							let ents = [];
+							try { ents = await readdir(dir, { withFileTypes: true }); } catch { return; }
+							for (const e of ents) {
+								if (e.name.startsWith('.')) { continue; }
+								const childRel = rel ? rel + '/' + e.name : e.name;
+								if (e.isDirectory()) { await walk(join(dir, e.name), childRel); continue; }
+								if (!/\.canvas$/i.test(e.name)) { continue; }
+								const st = await stat(join(dir, e.name)).catch(() => null);
+								out.push({
+									name: e.name.replace(/\.canvas$/i, ''),
+									rel: childRel,
+									abs: join(dir, e.name).replace(/\\/g, '/'),
+									size: st ? st.size : 0,
+									mtime: st ? st.mtimeMs : 0,
+								});
+								if (out.length >= 200) { return; }
+							}
+						};
+						await walk(notesRoot, '');
+						send(200, { ok: true, vault: { id: vault.id, name: vaultDisplayNameFrom(config, vault.id) }, files: out });
+					} catch (e) {
+						send(500, { ok: false, error: String(e?.message ?? e) });
+					}
+					return;
+				}
+				// ★ 2026-10-25：**查重（只检测，不改文件）**。
+				//   为什么只检测：合并/删除笔记属于不可逆写操作，判定标准因人而异
+				//   （"两篇 70% 相似"到底该合还是该留，得人来定）。这里只给候选对 + 相似度，
+				//   点开就能读原文自行决定 ⇒ 不会出现"工具把我的笔记改了"这种事。
+				//   算法：MinHash(64) + LSH 分带取候选 → 再算真实 Jaccard（阈值 0.6）。
+				if (url && url.pathname === `${ROUTE_PREFIX}/api/dedupe`) {
+					const send = (code, payload) => {
+						res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(payload));
+					};
+					try {
+						const snapshot = await pageSnapshotOf(kbRootOf(config), { external: externalVaultRecords(config) });
+						const vaults = snapshot.vaults ?? [];
+						const want = String(url.searchParams.get('vault') ?? config?.kbActiveVaultId ?? '').trim();
+						const vault = (want && vaults.find(v => v.id === want)) || vaults[0];
+						if (!vault) { send(400, { ok: false, error: '还没有可用的知识库' }); return; }
+						LAST_VAULT_DIRS = vaults.map(v => v.dir).filter(Boolean);
+						const notes = (await readNotesForGraph(join(vault.dir, NOTES_DIR))).slice(0, 500);
+
+						const normalize = (s) => String(s ?? '')
+							.replace(/^---\n[\s\S]*?\n---\n/, '')      // frontmatter
+							.replace(/```[\s\S]*?```/g, '')            // 代码块（代码雷同不代表内容重复）
+							.toLowerCase()
+							.replace(/[\s\p{P}\p{S}]+/gu, '');         // 空白/标点/符号
+						const hash32 = (s) => {
+							let h = 2166136261;
+							for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
+							return h >>> 0;
+						};
+						const K = 5;          // 字符 5-gram
+						const SIG = 64;       // 签名长度
+						const MAXSH = 3000;   // 每篇最多取多少 shingle（控制成本）
+
+						const items = [];
+						const exactMap = new Map();
+						for (const n of notes) {
+							const text = normalize(n.content ?? n.text ?? '');
+							if (text.length < 40) { continue; }   // 太短的不参与（噪声大）
+							const key = text.slice(0, 400) + '|' + text.length;
+							const bucket = exactMap.get(key) ?? [];
+							bucket.push(String(n.rel));
+							exactMap.set(key, bucket);
+							const sh = new Set();
+							for (let i = 0; i + K <= text.length && sh.size < MAXSH; i++) { sh.add(hash32(text.slice(i, i + K))); }
+							if (sh.size < 8) { continue; }
+							const sig = new Uint32Array(SIG);
+							sig.fill(0xFFFFFFFF);
+							for (const h of sh) {
+								for (let s = 0; s < SIG; s++) {
+									// 每个槽位一个不同的乘子 ⇒ 近似独立置换
+									const v = (Math.imul(h ^ (s * 0x9E3779B1), 0x85EBCA6B + s) >>> 0);
+									if (v < sig[s]) { sig[s] = v; }
+								}
+							}
+							items.push({ rel: String(n.rel).replace(/\\/g, '/'), sig, sh });
+						}
+
+						// LSH：16 带 × 4 行
+						const BANDS = 16;
+						const ROWS = SIG / BANDS;
+						const buckets = new Map();
+						for (let i = 0; i < items.length; i++) {
+							for (let b = 0; b < BANDS; b++) {
+								const part = Array.from(items[i].sig.subarray(b * ROWS, (b + 1) * ROWS)).join(',');
+								const key = b + '#' + hash32(part);
+								const arr = buckets.get(key) ?? [];
+								arr.push(i);
+								buckets.set(key, arr);
+							}
+						}
+						const cand = new Set();
+						for (const arr of buckets.values()) {
+							if (arr.length < 2 || arr.length > 40) { continue; }   // 超大桶多半是模板文本，跳过
+							for (let i = 0; i < arr.length; i++) {
+								for (let j = i + 1; j < arr.length; j++) {
+									const a = Math.min(arr[i], arr[j]);
+									const b = Math.max(arr[i], arr[j]);
+									cand.add(a + ',' + b);
+								}
+							}
+						}
+						const pairs = [];
+						for (const key of cand) {
+							const [ai, bi] = key.split(',').map(Number);
+							const A = items[ai]; const B = items[bi];
+							let inter = 0;
+							const [small, big] = A.sh.size <= B.sh.size ? [A.sh, B.sh] : [B.sh, A.sh];
+							for (const h of small) { if (big.has(h)) { inter += 1; } }
+							const uni = A.sh.size + B.sh.size - inter;
+							const sim = uni ? inter / uni : 0;
+							if (sim >= 0.6) { pairs.push({ a: A.rel, b: B.rel, similarity: Math.round(sim * 100) / 100 }); }
+							if (pairs.length >= 100) { break; }
+						}
+						pairs.sort((x, y) => y.similarity - x.similarity);
+						const exact = [...exactMap.values()].filter(list => list.length > 1).map(list => list.map(p => String(p).replace(/\\/g, '/')));
+
+						send(200, {
+							ok: true,
+							scanned: items.length,
+							threshold: 0.6,
+							exactCount: exact.length,
+							exact,
+							pairCount: pairs.length,
+							pairs,
+						});
+					} catch (e) {
+						send(500, { ok: false, error: String(e?.message ?? e) });
+					}
+					return;
+				}
+				// ★ 2026-10-25：**审核（review）**—— IDE 侧「审核」入口的等价物。
+				//   设计选择（可解释、可回滚）：
+				//     · 状态只写在**笔记自己的 frontmatter**（`review: approved|rejected|pending`
+				//       + `reviewedAt`）⇒ 不用另建索引文件，跟着笔记走、随 git 一起版本化；
+				//     · 只提供**单篇标记**（不做批量），每次写前备份到 `.kb-backup/`，
+				//       且只改这几个键，其它 frontmatter 原样保留。
+				//   ⇒ "未审" 的定义：没有 `review` 键，或值不是 approved。
+				if (url && url.pathname === `${ROUTE_PREFIX}/api/review`) {
+					const send = (code, payload) => {
+						res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(payload));
+					};
+					try {
+						const snapshot = await pageSnapshotOf(kbRootOf(config), { external: externalVaultRecords(config) });
+						const vaults = snapshot.vaults ?? [];
+						const want = String(url.searchParams.get('vault') ?? config?.kbActiveVaultId ?? '').trim();
+						const vault = (want && vaults.find(v => v.id === want)) || vaults[0];
+						if (!vault) { send(400, { ok: false, error: '还没有可用的知识库' }); return; }
+						LAST_VAULT_DIRS = vaults.map(v => v.dir).filter(Boolean);
+						const notesDir = join(vault.dir, NOTES_DIR);
+						const notes = await readNotesForGraph(notesDir);
+						const statusOf = (text) => {
+							const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(String(text ?? ''));
+							if (!m) { return 'none'; }
+							const line = m[1].split(/\r?\n/).find(l => /^review\s*:/.test(l.trim()));
+							if (!line) { return 'none'; }
+							return String(line.split(':')[1] ?? '').trim().replace(/^["']|["']$/g, '') || 'none';
+						};
+						const rows = notes.map((n) => {
+							const rel = String(n.rel).replace(/\\/g, '/');
+							return { rel, abs: join(notesDir, ...rel.split('/')).replace(/\\/g, '/'), status: statusOf(n.content ?? n.text) };
+						});
+						const unreviewed = rows.filter(r => r.status !== 'approved');
+						send(200, {
+							ok: true,
+							vault: { id: vault.id, name: vaultDisplayNameFrom(config, vault.id) },
+							total: rows.length,
+							approvedCount: rows.length - unreviewed.length,
+							unreviewedCount: unreviewed.length,
+							unreviewed: unreviewed.slice(0, 200),
+							rejectedCount: rows.filter(r => r.status === 'rejected').length,
+						});
+					} catch (e) {
+						send(500, { ok: false, error: String(e?.message ?? e) });
+					}
+					return;
+				}
+				// 单篇标记（approved / rejected / pending）—— 只改 frontmatter 的那几个键
+				if (url && url.pathname === `${ROUTE_PREFIX}/api/review/mark` && req.method === 'POST') {
+					const send = (code, payload) => {
+						res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(payload));
+					};
+					try {
+						let raw = '';
+						for await (const chunk of req) {
+							raw += chunk;
+							if (raw.length > 8192) { send(413, { ok: false, error: '请求体太大' }); return; }
+						}
+						const body = JSON.parse(raw || '{}');
+						const status = String(body?.status ?? '').trim();
+						if (!['approved', 'rejected', 'pending'].includes(status)) {
+							send(400, { ok: false, error: 'status 只能是 approved / rejected / pending' });
+							return;
+						}
+						const p = resolve(String(body?.uri ?? ''));
+						const roots = [kbRootOf(config), ...externalVaultRecords(config).map(it => it.dir || it.path || ''), ...LAST_VAULT_DIRS]
+							.filter(Boolean).map(s => String(s).replace(/\\/g, '/').replace(/\/+$/, ''));
+						const abs = p.replace(/\\/g, '/');
+						if (!roots.some(r => abs.toLowerCase().startsWith(r.toLowerCase() + '/')) || !abs.includes('/' + NOTES_DIR + '/')) {
+							send(403, { ok: false, error: '拒绝写入库外/非笔记区文件：' + p });
+							return;
+						}
+						if (!/\.md$/i.test(p)) { send(400, { ok: false, error: '只支持 .md' }); return; }
+
+						const text = await readFile(p, 'utf8');
+						const stamp = new Date().toISOString().slice(0, 10);
+						const patch = { review: status, reviewedAt: stamp };
+						const fmMatch = /^---\r?\n([\s\S]*?)\r?\n---(\r?\n)?/.exec(text);
+						let next = '';
+						if (!fmMatch) {
+							// 没有 frontmatter ⇒ 补一个（不吞掉原有第一行）
+							next = `---\n${Object.entries(patch).map(([k, v]) => `${k}: ${v}`).join('\n')}\n---\n\n${text.replace(/^\uFEFF/, '')}`;
+						} else {
+							const keep = fmMatch[1].split(/\r?\n/).filter(line => !/^(review|reviewedAt)\s*:/.test(line.trim()));
+							for (const [k, v] of Object.entries(patch)) { keep.push(`${k}: ${v}`); }
+							next = `---\n${keep.join('\n')}\n---${fmMatch[2] ?? '\n'}` + text.slice(fmMatch[0].length);
+						}
+						// 备份（与保存同一条路径）
+						try {
+							const dir = join(dirname(p), '.kb-backup');
+							await mkdir(dir, { recursive: true });
+							await writeFile(join(dir, `${basename(p)}.${new Date().toISOString().replace(/[:.]/g, '-')}.md.bak`), text, 'utf8');
+						} catch { /* 备份失败不阻断，但要如实回 backup:false */ }
+						await writeFile(p, next, 'utf8');
+						const after = await stat(p).catch(() => null);
+						send(200, { ok: true, status, path: abs, mtime: after ? after.mtimeMs : 0 });
+					} catch (e) {
+						send(500, { ok: false, error: String(e?.message ?? e) });
+					}
+					return;
+				}
+				// ★ 2026-10-25：**vendored 前端资产**（KaTeX 样式与字体）。
+				//   为什么不走 CDN：三端都在离线环境，且 IDE webview 的 CSP 会拦外域。
+				//   围栏：只放行两条精确形态（`katex/katex.min.css`、`katex/fonts/<file>.<ext>`），
+				//   不拼接用户输入 ⇒ 不存在目录穿越面。
+				if (url && url.pathname.startsWith(`${ROUTE_PREFIX}/vendor/`)) {
+					const rel = decodeURIComponent(url.pathname.slice((ROUTE_PREFIX + '/vendor/').length)).replace(/\\/g, '/');
+					const okPath = /^katex\/(katex\.min\.css|fonts\/[A-Za-z0-9._-]+\.(woff2|woff|ttf))$/.test(rel);
+					if (!okPath) {
+						res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+						res.end('not found');
+						return;
+					}
+					const MIME = {
+						css: 'text/css; charset=utf-8',
+						woff2: 'font/woff2',
+						woff: 'font/woff',
+						ttf: 'font/ttf',
+					};
+					const ext = (rel.split('.').pop() ?? '').toLowerCase();
+					try {
+						const buf = await readFile(fileURLToPath(new URL(`../vendor/${rel}`, import.meta.url)));
+						res.writeHead(200, {
+							'content-type': MIME[ext] ?? 'application/octet-stream',
+							'cache-control': 'public, max-age=31536000, immutable',
+						});
+						res.end(buf);
+					} catch {
+						res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+						res.end('not found');
 					}
 					return;
 				}
@@ -7484,10 +8355,68 @@ export function apply(ctx, config = {}) {
 					if (!result.error && result.path) {
 						try { mtime = (await stat(result.path)).mtimeMs; } catch { mtime = 0; }
 					}
+					// ★ 2026-10-25：**服务端渲染 HTML**（markdown-it + Obsidian 方言）。
+					//   视图拿到 `html` 直接注入，无需在前端打包解析器（bundle 不增重）；
+					//   IDE 侧不提供该字段 ⇒ 视图回落到原手写渲染器（能力差异可见）。
+					let html = '';
+					let math = false;
+					let cached = false;
+					if (!result.error && typeof result.content === 'string') {
+						try {
+							const abs = String(result.path).replace(/\\/g, '/');
+							const rootsAll = [
+								kbRootOf(config),
+								...externalVaultRecords(config).map(it => it.dir || it.path || ''),
+								...LAST_VAULT_DIRS,
+							].filter(Boolean).map(s => String(s).replace(/\\/g, '/').replace(/\/+$/, ''));
+							const vaultDir = rootsAll
+								.filter(v => abs.toLowerCase().startsWith(v.toLowerCase() + '/'))
+								.sort((a, b) => b.length - a.length)[0] || '';
+							// ① 先查磁盘缓存（mtime + 字节数都对得上才算命中）
+							const cacheFile = vaultDir ? htmlCacheFileOf(vaultDir, result.path) : '';
+							if (cacheFile) {
+								try {
+									const j = JSON.parse(await readFile(cacheFile, 'utf8'));
+									if (j && j.mtime === mtime && j.bytes === result.bytes && typeof j.html === 'string') {
+										html = j.html;
+										math = !!j.math;
+										cached = true;
+									}
+								} catch { /* 无缓存 / 缓存损坏 ⇒ 下面重渲染 */ }
+							}
+							// ② 没命中就渲染，并把结果写回缓存（写失败不影响返回）
+							if (!cached) {
+								const r = renderMarkdownHtml(result.content, { resolveWiki: await wikiResolverFor(vaultDir) });
+								html = r.html;
+								math = r.math;
+								if (cacheFile) {
+									try {
+										await mkdir(dirname(cacheFile), { recursive: true });
+										const tmpFile = cacheFile + '.tmp';
+										await writeFile(tmpFile, JSON.stringify({ mtime, bytes: result.bytes, math, html }), 'utf8');
+										await renameFile(tmpFile, cacheFile);
+										// 约 2% 概率顺手清理：只保留最近 400 份，避免长期堆积
+										if (Math.random() < 0.02) {
+											const dir = dirname(cacheFile);
+											const olds = (await readdir(dir)).filter(f => f.endsWith('.json'));
+											if (olds.length > 400) {
+												const stats = [];
+												for (const f of olds) {
+													try { stats.push({ f, at: (await stat(join(dir, f))).mtimeMs }); } catch { /* 忽略 */ }
+												}
+												stats.sort((a, b) => b.at - a.at);
+												for (const s of stats.slice(400)) { await rm(join(dir, s.f), { force: true }); }
+											}
+										}
+									} catch { /* 缓存写失败：只影响下次是否重渲染 */ }
+								}
+							}
+						} catch { html = ''; math = false; }   // 渲染失败 ⇒ 视图按纯文本降级
+					}
 					res.writeHead(result.error ? 400 : 200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
 					res.end(JSON.stringify(result.error
 						? { ok: false, error: result.error }
-						: { ok: true, path: result.path, bytes: result.bytes, truncated: result.truncated, content: result.content, mtime }));
+						: { ok: true, path: result.path, bytes: result.bytes, truncated: result.truncated, content: result.content, mtime, html, math, cached }));
 					return;
 				}
 				// ★ 2026-10-24：图片 / pdf / 音视频的**字节流**（页面 `<img>` 直接请求这条）。
@@ -7509,6 +8438,85 @@ export function apply(ctx, config = {}) {
 					return;
 				}
 			}
+				// ★★ 2026-10-25（真机：知识库中的文档未渲染 —— 满屏 frontmatter 与 [!quote]）：
+				//   `/x/kb/doc?uri=` **从来没有专门路由**，一路落到旧三态页 `renderPage`，
+				//   而那条路径把正文当纯文本塞进 `<pre>` ⇒ 什么都没渲染。
+				//   ⇒ 这里补一个真正的文档页：服务端 `renderMarkdownHtml` + 自带样式，只读。
+				// ⚠ 这段在 `url` 的作用域之外（它在更早的 if 块里）⇒ 自己算一份
+				const docUrl = (() => { try { return new URL(String(req.url ?? '/'), 'http://localhost'); } catch { return null; } })();
+				if (docUrl && docUrl.pathname === `${ROUTE_PREFIX}/doc`) {
+					const uri = docUrl.searchParams.get('uri') ?? '';
+					const result = await readDoc(kbRootOf(config), uri, LAST_VAULT_DIRS);
+					let body = '';
+					let math = false;
+					let title = '';
+					if (result.error) {
+						body = '<p class="kb-err">读不到正文：' + escapeHtml(result.error) + '</p>';
+					} else {
+						title = String(result.path || uri).split(/[\\/]/).pop() || '';
+						try {
+							const abs = String(result.path).replace(/\\/g, '/');
+							const roots = [kbRootOf(config), ...externalVaultRecords(config).map(it => it.dir || it.path || ''), ...LAST_VAULT_DIRS]
+								.filter(Boolean).map(s => String(s).replace(/\\/g, '/').replace(/\/+$/, ''));
+							const vaultDir = roots.filter(v => abs.toLowerCase().startsWith(v.toLowerCase() + '/')).sort((a, b) => b.length - a.length)[0] || '';
+							const r = renderMarkdownHtml(result.content, { resolveWiki: await wikiResolverFor(vaultDir) });
+							body = r.html;
+							math = r.math;
+						} catch (e) {
+							// 渲染失败就**如实退化成纯文本**（至少不会空白），并在页面上说明
+							body = '<p class="kb-err">渲染失败（已退化为纯文本）：' + escapeHtml(String(e?.message ?? e)) + '</p>'
+								+ '<pre>' + escapeHtml(String(result.content ?? '')) + '</pre>';
+						}
+					}
+					const css = [
+						':root { color-scheme: dark light; }',
+						'html, body { margin: 0; height: 100%; background: var(--vscode-editor-background, #1e1e1e); }',
+						'body { color: var(--vscode-editor-foreground, #ddd); font: 14px/1.75 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif; }',
+						'#bar { position: sticky; top: 0; display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 12px;',
+						'  background: var(--vscode-sideBar-background, #252526); border-bottom: 1px solid rgba(127,127,127,.3); z-index: 5; }',
+						'#bar a { color: var(--vscode-textLink-foreground, #3794ff); text-decoration: none; font-size: 12.5px; }',
+						'#bar .t { font-size: 12.5px; opacity: .75; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }',
+						'#doc { max-width: 860px; margin: 0 auto; padding: 18px 22px 80px; }',
+						'h1, h2, h3, h4 { line-height: 1.35; margin: 1.1em 0 .5em; }',
+						'h1 { font-size: 1.7em; } h2 { font-size: 1.35em; border-bottom: 1px solid rgba(127,127,127,.3); padding-bottom: .25em; }',
+						'h3 { font-size: 1.15em; } h4 { font-size: 1.02em; }',
+						'p { margin: .65em 0; } ul, ol { padding-left: 1.8em; margin: .5em 0; } li { margin: .2em 0; }',
+						'blockquote { margin: .8em 0; padding: .2em 0 .2em 12px; border-left: 3px solid rgba(127,127,127,.45); color: var(--vscode-descriptionForeground, #9d9d9d); }',
+						'.kb-callout { margin: .9em 0; padding: 8px 12px; border-radius: 5px; border-left: 3px solid #3794ff; background: rgba(127,127,127,.08); }',
+						'.kb-callout::before { content: attr(data-callout-title); display: block; font-size: 12px; font-weight: 600; color: #3794ff; margin-bottom: 4px; }',
+						'.kb-callout[data-callout="tip"]::before, .kb-callout[data-callout="hint"]::before { color: #3fb950; }',
+						'.kb-callout[data-callout="warning"]::before, .kb-callout[data-callout="caution"]::before { color: #d29922; }',
+						'.kb-callout[data-callout="danger"]::before, .kb-callout[data-callout="error"]::before, .kb-callout[data-callout="bug"]::before { color: #f85149; }',
+						'.kb-wiki { color: var(--vscode-textLink-foreground, #3794ff); text-decoration: none; cursor: pointer; }',
+						'.kb-wiki:hover { text-decoration: underline; }',
+						'.kb-wiki-missing { border-bottom: 1px dashed rgba(127,127,127,.6); opacity: .72; }',
+						'table.kb-table { border-collapse: collapse; margin: .9em 0; font-size: 13px; }',
+						'.kb-table th, .kb-table td { border: 1px solid rgba(127,127,127,.35); padding: 5px 10px; }',
+						'.kb-table th { background: rgba(127,127,127,.14); }',
+						'pre.kb-code { margin: .9em 0; padding: 10px 12px; background: rgba(127,127,127,.13); border-radius: 5px; overflow: auto; font-size: 12.5px; line-height: 1.6; }',
+						'code { font-family: var(--vscode-editor-font-family, monospace); background: rgba(127,127,127,.15); padding: 1px 4px; border-radius: 3px; }',
+						'pre.kb-code code { background: none; padding: 0; }',
+						'.kb-tok-kw { color: #569cd6; } .kb-tok-str { color: #ce9178; } .kb-tok-num { color: #b5cea8; } .kb-tok-com { color: #6a9955; }',
+						'img { max-width: 100%; border-radius: 4px; } hr { border: 0; border-top: 1px solid rgba(127,127,127,.35); margin: 1.4em 0; }',
+						'a { color: var(--vscode-textLink-foreground, #3794ff); }',
+						'.kb-err { color: #f85149; }',
+					].join('\n');
+					const back = `<div id="bar"><a href="${ROUTE_PREFIX}/">← 返回知识库</a><span class="t">${escapeHtml(title)}</span></div>`;
+					res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+					res.end('<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">'
+						+ '<meta name="viewport" content="width=device-width,initial-scale=1">'
+						+ `<title>${escapeHtml(title || '知识库文档')}</title>`
+						+ `<style>${css}</style>`
+						+ (math ? `<link rel="stylesheet" href="${ROUTE_PREFIX}/vendor/katex/katex.min.css">` : '')
+						+ `</head><body>${back}<div id="doc" data-kb-doc-page="1">${body}</div>`
+						// 双链点击：同源跳转（这条页面只读，不需要接宿主事件）
+						+ '<script>(function(){document.getElementById("doc").addEventListener("click",function(ev){'
+						+ 'var a=ev.target.closest("[data-wiki]");if(!a){return;}ev.preventDefault();'
+						+ 'var p=a.getAttribute("data-wiki");if(p){location.href="/x/kb/doc?uri="+encodeURIComponent(p);}});})();</script>'
+						+ '</body></html>');
+					return;
+				}
+
 			try {
 				// 先渲染再 writeHead（渲染抛错还能干净回 500，不切 socket）
 				const html = await renderPage({ config, state, surface });

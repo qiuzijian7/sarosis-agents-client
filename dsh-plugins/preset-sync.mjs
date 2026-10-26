@@ -26,6 +26,22 @@ const DIR = path.join(HERE, 'vssaros-agents');
 export const BASELINE_PATH = path.join(DIR, 'preset-standard.baseline.yml');
 export const ROWS_PATH = path.join(DIR, 'preset-vssaros.rows.yml');
 export const PRESET_PATH = path.join(DIR, 'cordis.presets.yml');
+/**
+ * ★ 2026-10-25：**每个 agent preset 的共享基座**（生成物，JS 数据模块）。
+ *
+ * 为什么要它：agent preset 由 `vssaros-agents/lib/core/agents.js` 的 `toPresetDefinition` 在运行时合成，
+ * 之前只放 persona / model / compaction / subagent 几行 —— 官方 standard 里的 `tool-fs` / `tool-pwsh` /
+ * `skill-filesystem` / `tool-skill` / `agent-instructions` … 一行都没有 ⇒ agent 会话**没有任何文件/命令/技能能力**。
+ * 而且每次发现缺一类就手抄一类（compaction 10-21、subagent 10-19~21 都是这么补的）⇒ 必然再漏。
+ * ⇒ 改成**从同一份 baseline 生成**：agent preset = 基座 ⊕ 本 agent 的差量（按行 id 覆盖）。
+ *
+ * 基座 = baseline 的全部行（去掉官方 persona 行，由 agent 自己的人设行顶替）
+ *      + rows 文件里**官方包**（`@deepseek-ai/*`）的补充行（如 `tool-working-directory`）。
+ * ⚠ **不含 `@vssaros/*` 行**：它们已在 profile bundles 里（host 层总是加载），preset 再挂一次会重复注册服务
+ *   （真机 2026-10-24：`service 'vssarosMediaStore' has been registered` / `vssaros-skills: never started`）。
+ * `!!js` 表达式保留成 loader 的 JsExpr 形态 `{ __jsExpr }`（`cordis-plugin-loader` 的 `interpolate` 原样求值）。
+ */
+export const BASE_ROWS_PATH = path.join(DIR, 'lib', 'core', 'presetBase.generated.js');
 
 /** 我们的 preset 标识（`config.id`，会话保存的就是它 ✓）。 */
 export const OUR_PRESET_ID = 'vssaros-standard';
@@ -321,13 +337,77 @@ export function expectedPresetText(baselineText, ourRowsText) {
 	].join('\n');
 }
 
+// ── agent preset 共享基座（2026-10-25）─────────────────────────────────────────────
+/** 解析 YAML，`!!js` 转成 loader 的 JsExpr（`{ __jsExpr }`）—— 与 cordis-plugin-loader 读 YAML 的结果同形。 */
+async function loadYamlWithJs(text) {
+	const { default: yaml } = await import('js-yaml');
+	const jsType = new yaml.Type('tag:yaml.org,2002:js', { kind: 'scalar', construct: data => ({ __jsExpr: String(data) }) });
+	return yaml.load(text, { schema: yaml.DEFAULT_SCHEMA.extend([jsType]) });
+}
+
+/** 官方包前缀：rows 文件里只有这类行进基座（`@vssaros/*` 由 host 层提供，进 preset 会重复挂载）。 */
+const OFFICIAL_ROW_PREFIX = '@deepseek-ai/';
+
+/**
+ * 算出 agent preset 的共享基座（行数组）。
+ * @param baselineText 官方 standard preset（`preset-standard.baseline.yml`）
+ * @param ourRowsText `preset-vssaros.rows.yml`（10 空格缩进的行片段）
+ */
+export async function buildAgentBaseRows(baselineText, ourRowsText) {
+	const doc = await loadYamlWithJs(normEol(baselineText));
+	const plugins = doc?.[0]?.insert?.[0]?.config?.plugins;
+	if (!Array.isArray(plugins)) {
+		throw new Error('baseline 里找不到 `insert[0].config.plugins`（官方 preset 结构变了 ⇒ 生成器要跟着改 ✗）');
+	}
+	// 官方 persona 行去掉：agent 自己的人设行用同一个 id（`persona`）顶替（与 vssaros-standard 删 persona 同理）
+	const official = plugins.filter(row => row?.id !== 'persona');
+	// rows 片段是 10 空格缩进的列表 ⇒ 去掉公共缩进再解析；缩进更浅的非注释行 = 结构变了，直接报错
+	const lines = normEol(ourRowsText).split('\n').map((line, i) => {
+		if (line.trim() === '' || line.trim().startsWith('#')) { return ''; }
+		if (!line.startsWith(' '.repeat(10))) { throw new Error(`rows 文件第 ${i + 1} 行缩进不足 10 空格（结构变了？）：${line.trim().slice(0, 60)}`); }
+		return line.slice(10);
+	});
+	const ours = (await loadYamlWithJs(lines.join('\n'))) ?? [];
+	const supplements = (Array.isArray(ours) ? ours : []).filter(row => typeof row?.name === 'string' && row.name.startsWith(OFFICIAL_ROW_PREFIX));
+	const ids = new Set();
+	for (const row of [...official, ...supplements]) {
+		if (ids.has(row.id)) { throw new Error(`基座行 id 重复：${row.id}`); }
+		ids.add(row.id);
+	}
+	return [...official, ...supplements];
+}
+
+/** 基座模块的期望文本（生成器与守卫共用）。 */
+export async function expectedBaseRowsText(baselineText, ourRowsText) {
+	const rows = await buildAgentBaseRows(baselineText, ourRowsText);
+	return [
+		'// ⚠ 本文件由 `dsh-plugins/preset-sync.mjs --write-agent-base` 生成，**不要手改**（`node dsh-plugins/preset-sync.mjs` 会判红）。',
+		'//',
+		'// 每个 agent preset 的**共享基座**（`core/agents.js` 的 `toPresetDefinition` = 本基座 ⊕ 该 agent 的差量）：',
+		'//   · 官方 standard preset（`preset-standard.baseline.yml`）的全部行，去掉官方 persona 行（由 agent 人设行顶替）；',
+		'//   · `preset-vssaros.rows.yml` 里**官方包**（`@deepseek-ai/*`）的补充行；',
+		'//   · **不含** `@vssaros/*` 行：它们在 profile bundles 里（host 层总是加载），preset 再挂会重复注册服务。',
+		'// `!!js` 表达式保留为 loader 的 JsExpr 形态 `{ __jsExpr }`，由 cordis-plugin-loader 原样求值。',
+		`export const STANDARD_BASE_ROWS = ${JSON.stringify(rows, null, '\t')};`,
+		'',
+	].join('\n');
+}
+
 // ── CLI ─────────────────────────────────────────────────────────────────────
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {
 	const write = process.argv.includes('--write');
+	// 只重生成 agent 基座（不碰 baseline / cordis.presets.yml）：不需要 runtime，也不会顺手重写别的生成物
+	const writeAgentBase = process.argv.includes('--write-agent-base');
 	const ourRows = fs.existsSync(ROWS_PATH) ? fs.readFileSync(ROWS_PATH, 'utf8') : '';
 	if (!ourRows.trim()) { console.error(`✗ 缺少我们的行源文件：${path.relative(process.cwd(), ROWS_PATH)}`); process.exit(1); }
 
-	if (write) {
+	if (writeAgentBase) {
+		const baseline = fs.readFileSync(BASELINE_PATH, 'utf8');
+		const text = await expectedBaseRowsText(baseline, ourRows);
+		fs.writeFileSync(BASE_ROWS_PATH, normEol(text), 'utf8');
+		const rows = await buildAgentBaseRows(baseline, ourRows);
+		console.log(`已写入 ${path.relative(process.cwd(), BASE_ROWS_PATH)}（${rows.length} 行：${rows.map(r => r.id).join(', ')}）`);
+	} else if (write) {
 		const runtime = runtimeStandardPresetPath();
 		if (!runtime) { console.error('✗ 找不到 runtime 里的官方 standard preset（先装 poc/dsh-p0/.runtime）'); process.exit(1); }
 		const baseline = fs.readFileSync(runtime, 'utf8');
@@ -336,9 +416,11 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToP
 		//   跟着混 ⇒ 提交进 git 后 blob 混行、checkout 又被 autocrlf 统一转换 ⇒ 比对/diff 都难说清。
 		//   归一化后生成物是纯 LF，git 负责按平台 checkout ✓。
 		fs.writeFileSync(PRESET_PATH, normEol(expectedPresetText(baseline, ourRows)), 'utf8');
+		fs.writeFileSync(BASE_ROWS_PATH, normEol(await expectedBaseRowsText(baseline, ourRows)), 'utf8');
 		console.log(`已写入（baseline 来自 ${path.relative(process.cwd(), runtime)}）：`);
 		console.log(`  ${path.relative(process.cwd(), BASELINE_PATH)}（${baseline.split(/\r?\n/).length} 行）`);
 		console.log(`  ${path.relative(process.cwd(), PRESET_PATH)}（${expectedPresetText(baseline, ourRows).split(/\r?\n/).length} 行）`);
+		console.log(`  ${path.relative(process.cwd(), BASE_ROWS_PATH)}`);
 	} else {
 		const problems = [];
 		if (!fs.existsSync(BASELINE_PATH)) { problems.push('缺 baseline 文件（跑 --write）'); }
@@ -354,6 +436,12 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToP
 			const expected = expectedPresetText(baseline, ourRows);
 			if (!samePresetContent(fs.readFileSync(PRESET_PATH, 'utf8'), expected)) {
 				problems.push('cordis.presets.yml 与"baseline + 我们的行"不一致（手改过？或 rows 文件改了没重生成？）⇒ 跑 --write');
+			}
+			// agent 共享基座：必须等于"baseline + rows 里的官方行"（谁手改了基座、或 baseline 变了没重生成 ⇒ 红）
+			if (!fs.existsSync(BASE_ROWS_PATH)) {
+				problems.push(`缺 agent 共享基座 ${path.relative(process.cwd(), BASE_ROWS_PATH)}（跑 --write-agent-base）`);
+			} else if (!samePresetContent(fs.readFileSync(BASE_ROWS_PATH, 'utf8'), await expectedBaseRowsText(baseline, ourRows))) {
+				problems.push('agent 共享基座（presetBase.generated.js）与 baseline 不一致（手改过？或 baseline/rows 变了没重生成？）⇒ 跑 --write-agent-base');
 			}
 			// ★ 自检（2026-10-21）：拿一份**真的 CRLF 文件**走一遍比对 ⇒ 必须判一致。
 			//   这条就是"逐字比对"回归的守卫：谁把比对改回 `!==`，这里立刻红（而不是等某个新克隆踩到）。

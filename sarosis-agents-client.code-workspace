@@ -127,6 +127,18 @@
 	"tasks": {
 		"version": "2.0.0",
 		"tasks": [
+			// ★ 2026-10-25：本工作区是 multi-root（.code-workspace），**工作区级 tasks 段会覆盖
+			//   各 folder 的 .vscode/tasks.json**。此前这里没有该任务，于是 F5 的 preLaunchTask
+			//   "Start Dev App (attach-ready)" 解析不到 ⇒ 任务不执行、调试器也不起来
+			//   （表现就是「按 F5 完全没反应」，且没有任何日志）✗ ⇒ 必须同时存在于这里。
+			{
+				"label": "Start Dev App (attach-ready)",
+				"type": "process",
+				"command": "cmd.exe",
+				"args": ["/d", "/s", "/c", "${workspaceFolder:sarosis-agents-client}\\scripts\\start-dev-app.cmd"],
+				"presentation": { "reveal": "silent", "panel": "dedicated", "clear": true },
+				"problemMatcher": []
+			},
 			{
 				"label": "Compile Check (tsgo)",
 				"type": "shell",

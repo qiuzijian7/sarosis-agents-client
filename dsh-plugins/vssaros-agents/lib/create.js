@@ -8,9 +8,9 @@
 
 import { randomUUID } from 'node:crypto';
 import { mkdir, readdir, readFile, rename, rm, rmdir, stat, unlink, writeFile } from 'node:fs/promises';
-import { isAbsolute, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import { AGENT_FILE, agentFromFile, isHiddenAgent, presetIdOf, toPresetDefinition } from './core/agents.js';
-import { AGENT_ID_RE, normalizeDraft, serializeAgentMd, setMemoryFrontmatter, setSubagentFlag, stripModelFromAgentMd, validateDraft } from './core/create.js';
+import { AGENT_ID_RE, draftFromAgentMd, normalizeDraft, serializeAgentMd, setMemoryFrontmatter, setSubagentFlag, stripModelFromAgentMd, validateDraft } from './core/create.js';
 import { MEMORY_CHARS_MAX, MEMORY_CHARS_MIN, normalizeMemoryMode } from './core/memoryLimits.js';
 import { agentsBuiltinRootOf, agentsRootOf, scanAgents, scanAgentsFromConfig } from './store.js';
 
@@ -72,6 +72,121 @@ export async function createAgentFromDraft(config, raw) {
 		throw e;
 	}
 	return { id: preview.draft.id, name: preview.draft.name, presetId: preview.presetId, file: preview.file, warnings: preview.warnings };
+}
+
+/**
+ * 按 id 解析 Agent 的**实际文件**：自定义根优先，其次内置根。
+ *
+ * ★★ 2026-10-26 真机报障（截图：「这个 Agent 不存在：code-architect」，但左栏明明有它）：
+ *   `scanAgentsFromConfig` 是扫**两个根**并合并的（内置 `agentsBuiltinRoot` + 自定义 `agentsRoot`，
+ *   同 id 时自定义优先），而 `readAgentDraft` / `updateAgentFromDraft` 只认 `agentsRootOf`
+ *   ⇒ 只要 agent 来自**内置根**（Code Architect / Coder 那些 `source: builtin` 的），
+ *   读就 404、改就写不进去。
+ *
+ * ⚠ 内置根是 Host 启动期由代码真源生成的**副本**，改它会被下次启动覆盖
+ *   ⇒ 调用方（`updateAgentFromDraft`）遇到 `isBuiltin` 必须**写到自定义根**（用户覆写层）。
+ *
+ * @returns `{ file, root, isBuiltin }`；两处都没有 ⇒ `null`（调用方自己决定 404 文案）
+ */
+export async function resolveAgentFile(config, id) {
+	const agentId = String(id || '').trim();
+	if (!agentId) { return null; }
+	const tryStat = async (p) => {
+		try { await stat(p); return true; } catch { return false; }
+	};
+	const customRoot = agentsRootOf(config);
+	const customFile = join(customRoot, agentId, AGENT_FILE);
+	if (await tryStat(customFile)) { return { file: customFile, root: customRoot, isBuiltin: false }; }
+	const builtinRoot = agentsBuiltinRootOf(config);
+	if (builtinRoot) {
+		const builtinFile = join(builtinRoot, agentId, AGENT_FILE);
+		if (await tryStat(builtinFile)) { return { file: builtinFile, root: builtinRoot, isBuiltin: true }; }
+	}
+	return null;
+}
+
+/**
+ * **读**一个 Agent 的完整草稿（2026-10-25，给设置页的「System Prompt」页签回填用）。
+ *
+ * 为什么需要：`/api/home` 只给 `personaBytes`（**字数**），拿不到正文
+ * ⇒ 设置页里那个编辑框没法回填，只能显示"当前人设 1234 字"这种没用的信息。
+ * 而写回早就通了（`updateAgentFromDraft` 的 `draft.persona` 会写进正文），
+ * 差的只是这一条读。
+ *
+ * 复用 `draftFromAgentMd`（与"导入"同一套反解）⇒ 读出来的 draft 能直接送回
+ * `updateAgentFromDraft`，不会出现"读的格式和写的格式不一致"。
+ */
+export async function readAgentDraft(config, id) {
+	const agentId = String(id || '').trim();
+	if (!agentId) { throw httpError(400, '缺 id'); }
+	// ⚠ 必须走 resolveAgentFile（自定义根 → 内置根），不能只用 agentsRootOf：
+	//   内置 agent（source: builtin）的文件在 `agentsBuiltinRoot` 里，只认自定义根会 404。
+	const hit = await resolveAgentFile(config, agentId);
+	if (!hit) { throw httpError(404, '这个 Agent 不存在：' + agentId); }
+	const file = hit.file;
+	let text = '';
+	try {
+		text = await readFile(file, 'utf8');
+	} catch {
+		throw httpError(404, '这个 Agent 不存在：' + agentId);
+	}
+	const parsed = draftFromAgentMd(text);
+	if (!parsed || parsed.error) {
+		throw httpError(500, '这个 .agent.md 解析不了：' + String((parsed && parsed.error) || '未知原因'));
+	}
+	/* ⚠ `draftFromAgentMd` 返回的是**双层**结构：`{ draft: { name, persona, … } }`
+	   （它外层那个 `draft` 是"给 create 用的入参包装"，不是草稿本身）。
+	   少解一层就会读到 `persona: undefined` ⇒ 设置页的编辑框永远是空的（p3-183 抓到的）。 */
+	const draft = parsed.draft;
+	if (!draft) { throw httpError(500, '这个 .agent.md 解析不出草稿：' + agentId); }
+	return { id: agentId, file, draft, bytes: text.length };
+}
+
+/**
+ * **改**一个已有 Agent 的元数据（2026-10-25，为「dsh 侧设置页」补的写口）。
+ *
+ * 为什么需要它：IDE 侧的设置页能改 name / 头像 / System Prompt / 模型，而 dsh 侧
+ * `/api/agents` 原来只有 `create`/`delete`/`resetModel`/`set-subagent`
+ * ⇒ 设置页里除了"重置模型"什么都改不了。
+ *
+ * 复用 **同一套** 序列化器与校验器（`serializeAgentMd` / `validateDraft`），只放开一件事：
+ * 把 `existingIds` 里的**自己**剔掉，这样"同名目录"不会被当成冲突
+ * （`createAgentFromDraft` 那条 409 是给"新建重名"用的，改自己时不该触发）。
+ *
+ * ⚠ `id` **不允许改**：改 id 等于移动目录，会断掉会话归属与 preset 注册，
+ *   要改就得走"新建 + 删旧"，那是另一件事（本函数显式忽略 raw.id）。
+ * ⚠ 覆盖写用 `writeFile`（不是 `wx`）：这是"改"，不是"建"。
+ */
+export async function updateAgentFromDraft(config, editingId, raw) {
+	const id = String(editingId || '').trim();
+	if (!id) { throw httpError(400, '缺 id'); }
+	const hit = await resolveAgentFile(config, id);
+	if (!hit) { throw httpError(404, '这个 Agent 不存在：' + id); }
+
+	/* ⚠⚠ 目标是**内置 agent** 时，不能改内置那份 —— 它是 Host 启动期由代码真源生成的副本，
+	   改了会被下次启动覆盖（用户改了看不到效果，还以为没保存）。
+	   ⇒ 写到**自定义根**（用户覆写层）。`scanAgentsFromConfig` 的合并顺序是"自定义优先"，
+	     所以写进去后立刻生效，且不会被内置覆盖。 */
+	const customRoot = agentsRootOf(config);
+	const file = hit.isBuiltin ? join(customRoot, id, AGENT_FILE) : hit.file;
+
+	const draft = normalizeDraft({ ...(raw || {}), id });   // id 固定为编辑目标
+	const existingIds = (await existingIdsOf(customRoot).catch(() => [])).filter((x) => x !== id);
+	const result = validateDraft(draft, { existingIds, provider: config?.defaultProvider, isAbsolute });
+	if (result.errors.length) {
+		throw httpError(400, result.errors.join('；'), { errors: result.errors });
+	}
+	if (hit.isBuiltin) { await mkdir(dirname(file), { recursive: true }); }
+	await writeFile(file, serializeAgentMd(draft), 'utf8');
+	return {
+		id,
+		name: draft.name,
+		presetId: result.presetId,
+		file,
+		// 让调用方/探针能看出这次是"改内置 ⇒ 落用户覆写层"，便于真机排查
+		overrodeBuiltin: hit.isBuiltin,
+		warnings: result.warnings || [],
+	};
 }
 
 /**

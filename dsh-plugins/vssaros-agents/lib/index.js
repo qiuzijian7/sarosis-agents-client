@@ -25,8 +25,8 @@
 
 import { randomUUID } from 'node:crypto';
 import { askAssignment, cancelAssignment, createAssignment, installAssignmentTracker, listAssignments } from './assignments.js';
-import { assignmentPresetIdOf, avatarColorOf, isDelegatableAgent, isShownAgent, presetIdOf, summarizeAgents, toPresetDefinition } from './core/agents.js';
-import { createAgentFromDraft, deleteAgent, previewAgentDraft, resetAgentModel, setAgentMemoryLimits, setAgentSubagent } from './create.js';
+import { allowlistDenyOf, assignmentPresetIdOf, avatarColorOf, isDelegatableAgent, isShownAgent, presetIdOf, summarizeAgents, toPresetDefinition } from './core/agents.js';
+import { createAgentFromDraft, deleteAgent, previewAgentDraft, readAgentDraft, resetAgentModel, setAgentMemoryLimits, setAgentSubagent, updateAgentFromDraft } from './create.js';
 import { draftFromAgentMd, modelCandidatesOf } from './core/create.js';
 import { lineDiff } from './core/diff.js';
 import { aggregateByPreset, liveForAgents, usageByAgent } from './core/live.js';
@@ -204,24 +204,122 @@ function applyPersona(ctx, config) {
 		})));
 	}
 
-	// 工具 allowlist：`.agent.md` 的 `tools` 是 VS Code 口径，dsh 侧未必同名。
-	// **只保留 dsh 里真实存在的名字**，未知名字写 Host 日志（能看到、能改）——否则一个名字对不上就会把
-	// 该 Agent 的工具**静默清空**（模型突然什么都不能用，且没人知道为什么）。
-	ctx.inject(['tools'], child => child.effect(() => {
-		const wanted = Array.isArray(config.tools) ? config.tools.filter(t => typeof t === 'string' && t.trim()) : [];
-		if (!wanted.length) {
+	// 工具 allowlist（★ 2026-10-25 重写；真机：saroasis-studio 会话里只剩 `skill` + `subagent`）。
+	// 旧实现两处错叠在一起：
+	//   ① 在 **preset 作用域**里调 `child.tools.schemas()` —— 不传 scope 拿到的是**全局视图**，
+	//      基座在 preset 层注册的 read / write / pwsh / web_search … 一个都看不到 ⇒ 全判"不认识"丢掉；
+	//   ② 剩下的全局名（skill / codebase_* …）拿去 `restrict({ allow })`，挂在 **preset 层** ——
+	//      agent 作用域的父链是 preset ⇒ 对 agent 而言 preset 层的工具是"继承来的"，被这张 allow 一起筛掉
+	//      （dsh-tools `view()`：restriction filters what a scope inherits — global + every ancestor layer）。
+	//   ⇒ 只要 tools 里有一个全局名，agent 就只剩那几个（saroasis-studio=skill；coder/tester=codebase_*）。
+	// 新做法：口径不变（只收窄 host 层全局工具、基座官方工具始终可用），实现搬到 **agent 作用域**，用 deny。
+	const wanted = Array.isArray(config.tools) ? config.tools.filter(t => typeof t === 'string' && t.trim()) : [];
+	if (wanted.length) {
+		installAllowlist(ctx, config, wanted);
+	}
+}
+
+/**
+ * 在**本 preset 的每个 agent** 的作用域里装 allowlist：`restrict({ deny: 全局名 − 声明 − 被遮蔽的同名 })`。
+ *
+ * · 为什么在 agent 作用域：`agent/created` 由 agent 的 carrier 派发，preset 作用域里的监听只收**后代** agent
+ *   的事件（dsh-scope `scopeTarget`）；agent 的作用域 key 就是 agent 本身（dsh-agent-loop `createScope(loopCtx, this)`），
+ *   所以 `tools.get(name, agent)` 能读到它真正看到的定义 —— 用来判"同名被基座遮蔽"（典型：skill）。
+ * · 为什么 deny 只增不减 + 订阅 tools/change：MCP 等全局工具是异步注册的；deny 名单只看**全局视图**
+ *   （不受本 agent 掩码影响）⇒ 不会出现 10-20 那次"掩码振荡"。
+ * · 为什么再核一次会话的 agentPreset：事件准入是按作用域链判的，这里是防御 —— 万一收到别的 preset 的 agent，
+ *   拿本 agent 的名单去收窄它就是事故。
+ */
+function installAllowlist(ctx, config, wanted) {
+	const label = config.agentId ?? '(unknown)';
+	const presetId = typeof config.presetId === 'string' ? config.presetId : '';
+	let projections;
+	ctx.inject(['sessionProjections'], child => child.effect(() => {
+		projections = child.sessionProjections;
+		return () => { projections = undefined; };
+	}));
+	const attached = new WeakSet();
+	const attach = (agent) => {
+		if (!agent?.ctx || attached.has(agent)) { return; }
+		if (presetId && projections && agent.session) {
+			let current;
+			try { current = projections.stateOf(agent.session, 'agentPreset'); } catch { current = undefined; }
+			if (typeof current === 'string' && current && current !== presetId) { return; }
+		}
+		attached.add(agent);
+		try {
+			agent.ctx.inject(['tools'], runtime => runtime.effect(() => watchAllowlist(runtime, agent, label, wanted)));
+		} catch (error) {
+			console.warn(`[vssaros-agents] agent ${label} 的工具白名单没装上（${String(error?.message ?? error)}）`);
+		}
+	};
+	try {
+		ctx.on('agent/created', ({ agent }) => { attach(agent); });
+	} catch (error) {
+		console.warn(`[vssaros-agents] agent ${label}：订阅 agent/created 失败，工具白名单不生效（${String(error?.message ?? error)}）`);
+	}
+}
+
+/** agent 作用域里的 deny 同步：只增不减、防重入、去抖（与 denyTools 同一套纪律）。 */
+function watchAllowlist(runtime, agent, label, wanted) {
+	const tools = runtime.tools;
+	let dispose;
+	let applied = new Set();
+	let reported = false;
+	let warnedScope = false;
+	let running = false;
+	let rerun = false;
+	let timer;
+	const shadowed = (name) => {
+		const mine = tools.get?.(name, agent);
+		return mine !== undefined && mine !== tools.get?.(name);
+	};
+	const syncOnce = () => {
+		let globalNames;
+		try {
+			globalNames = (tools.schemas?.() ?? []).map(schema => schema?.name).filter(Boolean);
+		} catch {
 			return;
 		}
-		const known = new Set((child.tools.schemas?.() ?? []).map(schema => schema?.name).filter(Boolean));
-		const allow = wanted.filter(name => known.has(name));
-		const unknown = wanted.filter(name => !known.has(name));
-		if (unknown.length) {
-			console.warn(`[vssaros-agents] agent ${config.agentId ?? '(unknown)'} 的 tools 里有 dsh 不认识的名字，已忽略：${unknown.join(', ')}`);
+		const next = new Set([...applied, ...allowlistDenyOf(wanted, globalNames, shadowed)]);
+		if (next.size === 0 || (dispose && next.size === applied.size)) { return; }
+		try {
+			const previous = dispose;
+			dispose = tools.restrict({ deny: [...next] });
+			applied = next;
+			previous?.();
+			if (!reported) {
+				reported = true;
+				console.warn(`[vssaros-agents] agent ${label} 工具白名单：隐藏 ${next.size} 个 host 层工具（保留声明的 ${wanted.length} 个 + 基座官方工具）`);
+			}
+		} catch (error) {
+			if (!warnedScope) {
+				warnedScope = true;
+				console.warn(`[vssaros-agents] agent ${label} 工具白名单未生效（${String(error?.message ?? error)}）`);
+			}
 		}
-		if (allow.length) {
-			return child.tools.restrict({ allow });
-		}
-	}));
+	};
+	const schedule = () => {
+		if (timer) { return; }
+		timer = setTimeout(() => { timer = undefined; sync(); }, 150);
+		timer.unref?.();
+	};
+	const sync = () => {
+		if (running) { rerun = true; return; }
+		running = true;
+		try { syncOnce(); } finally { running = false; }
+		if (rerun) { rerun = false; schedule(); }
+	};
+	sync();
+	let off;
+	try { off = runtime.on?.('tools/change', () => schedule()); } catch { off = undefined; }
+	return () => {
+		try { off?.(); } catch { /* 退订失败不影响收尾 */ }
+		try { if (timer) { clearTimeout(timer); timer = undefined; } } catch { /* 同上 */ }
+		try { dispose?.(); } catch { /* 同上 */ }
+		dispose = undefined;
+		applied = new Set();
+	};
 }
 
 /** 一次挂载的状态（顶层角色用；页面与注册共用同一份，免得两处看到两份数据）。 */
@@ -1149,6 +1247,16 @@ function applyTopLevel(ctx, config) {
 							});
 						}
 						result = { ...created, registered: state.roster.includes(created.presetId) };
+					} else if (action === 'update') {
+						/* 改已有 Agent 的元数据（2026-10-25，给 dsh 侧设置页用）。
+						   与 create 同一条序列化/校验链，改完立刻重注册 preset（人设变化要马上生效）。 */
+						const updated = await updateAgentFromDraft(config, body?.id, body?.draft);
+						if (state.presets) {
+							await syncPresets(state, state.presets, config).catch(e => {
+								state.errors = [...state.errors, `同步 preset 失败：${String(e?.message ?? e)}`];
+							});
+						}
+						result = { ...updated, registered: state.roster.includes(updated.presetId) };
 					} else if (action === 'seen') {
 						// 点开一个 Agent ⇒ 记「看到了此刻」（侧栏未读角标清零；lib/seen.js 头注释有口径）
 						const id = typeof body?.id === 'string' ? body.id.trim() : '';
@@ -1430,6 +1538,21 @@ function applyTopLevel(ctx, config) {
 				}
 				return;
 			}
+			/* 读**单个** Agent 的完整草稿：`GET /api/agents?id=<id>`
+			   （2026-10-25，给设置页的 System Prompt 页签回填 —— `/api/home` 只有 personaBytes 字数）。
+			   ⚠ 必须放在下面"全量列表"分支**之前**，否则 `?id=` 会被那个分支吞掉。 */
+			if (pathname === `${ROUTE_PREFIX}/api/agents` && req.method === 'GET' && url.searchParams.get('id')) {
+				try {
+					const one = await readAgentDraft(config, url.searchParams.get('id'));
+					res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+					res.end(JSON.stringify({ ok: true, ...one }));
+				} catch (e) {
+					const status = Number(e?.httpStatus) || 500;
+					res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
+					res.end(JSON.stringify({ ok: false, error: String(e?.message ?? e) }));
+				}
+				return;
+			}
 			if (pathname === `${ROUTE_PREFIX}/api/agents`) {
 					// 实况（2026-10-13）：会话归属与用量**不另建状态文件**——projcache 里 `agentPreset` /
 					// `tokenUsage` / `sessionStats` 都是现成的（ds-bot 的 state.json 名册在我们这里不需要）。
@@ -1531,6 +1654,12 @@ function applyTopLevel(ctx, config) {
 						usage,
 						unread: unreadData,
 						home: buildHomeData({ agents: shownAgents, sessionRows: live?.rows ?? [], assignments: assignmentsData, groups: groupsData }),
+						/* 2026-10-26 用户要求「模型改成下拉框」：
+						   候选来源与 `GET /api/agents` 同一份（`modelCandidatesOf` 只收**合法**的
+						   `provider/model` 引用 ⇒ `claude-sonnet-4-20250514` 这种裸名进不来 ✓）。
+						   放在 home 里是省一次请求：设置页本来就要读 home。 */
+						modelCandidates: modelCandidatesOf(live?.rows, scan.agents),
+						hasDefaultProvider: typeof config.defaultProvider === 'string' && config.defaultProvider.trim() !== '',
 					}));
 					return;
 				}

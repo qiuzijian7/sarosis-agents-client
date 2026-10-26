@@ -35,7 +35,10 @@ async function boot() {
 	let data = { vaultName: '(未连接)', vaults: [], noteCount: 0, tree: [], library: [], libraryCount: 0, tags: [], indexState: 'ready' };
 	window.__KB_SIDEVIEW_DATA__ = data;
 	try {
-		const res = await fetch('/x/kb/api/view-data', { credentials: 'same-origin', cache: 'no-store' });
+		// supportPageVaultSwitch：页面切库靠 URL 参数 ?vault= 传下去。
+		// 之前固定打 /api/view-data（不带参数）⇒ 即便下拉里选了别的库，取数仍是默认库。
+		const wantVault = new URLSearchParams(window.location.search).get('vault') || '';
+		const res = await fetch('/x/kb/api/view-data' + (wantVault ? ('?vault=' + encodeURIComponent(wantVault)) : ''), { credentials: 'same-origin', cache: 'no-store' });
 		const body = await res.json();
 		if (body && body.ok && body.data) {
 			data = body.data;
@@ -71,13 +74,87 @@ async function boot() {
 		window.location.reload();            // 写成功后整页重载（数据是服务端渲染进 html 的）
 	}).catch(e => window.alert('操作失败：' + (e && e.message ? e.message : e)));
 
+	// ── 只读报告层（2026-10-25）────────────────────────────────────────
+	// 为什么页面上要自己做一个：视图的「体检 / 审核 / 去重」按钮按能力门控，
+	//   而设置页容器在**工作台面板**侧（React）。插件页没有那个容器 ⇒ 之前三个按钮不出现。
+	//   这里用最小 DOM 弹层承载**同样的报告**，数据全部来自已有路由（不重写后端逻辑）。
+	// ⚠ 本段在模板串里 ⇒ 注释不许出现反引号，换行用 String.fromCharCode(10)。
+	const kbReportOverlay = (title, lines, actions) => {
+		const NL = String.fromCharCode(10);
+		const old = document.getElementById("kb-report");
+		if (old) { old.remove(); }
+		const wrap = document.createElement("div");
+		wrap.id = "kb-report";
+		wrap.style.cssText = "position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;";
+		const box = document.createElement("div");
+		box.style.cssText = "width:min(760px,92vw);max-height:80vh;display:flex;flex-direction:column;background:var(--vscode-sideBar-background,#252526);color:inherit;border:1px solid rgba(127,127,127,.35);border-radius:6px;box-shadow:0 12px 32px rgba(0,0,0,.5);";
+		const bar = document.createElement("div");
+		bar.style.cssText = "display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid rgba(127,127,127,.25);";
+		const h2 = document.createElement("div");
+		h2.textContent = title;
+		h2.style.cssText = "font:600 13px/1.4 system-ui,sans-serif;";
+		const spacer = document.createElement("div");
+		spacer.style.flex = "1";
+		bar.appendChild(h2); bar.appendChild(spacer);
+		for (const a of (actions || [])) {
+			const b = document.createElement("button");
+			b.textContent = a.label;
+			b.style.cssText = "height:24px;padding:0 10px;font-size:11.5px;cursor:pointer;border-radius:4px;background:transparent;color:inherit;border:1px solid rgba(127,127,127,.35);";
+			b.onclick = a.onClick;
+			bar.appendChild(b);
+		}
+		const close = document.createElement("button");
+		close.textContent = "关闭";
+		close.style.cssText = "height:24px;padding:0 10px;font-size:11.5px;cursor:pointer;border-radius:4px;background:transparent;color:inherit;border:1px solid rgba(127,127,127,.35);";
+		close.onclick = () => wrap.remove();
+		bar.appendChild(close);
+		const pre = document.createElement("pre");
+		pre.textContent = (lines || []).join(NL);
+		pre.style.cssText = "margin:0;padding:12px;overflow:auto;white-space:pre-wrap;font:12px/1.7 var(--vscode-editor-font-family,monospace);";
+		box.appendChild(bar); box.appendChild(pre);
+		wrap.appendChild(box);
+		wrap.addEventListener("click", ev => { if (ev.target === wrap) { wrap.remove(); } });
+		document.body.appendChild(wrap);
+		return wrap;
+	};
+
+	// 体检 / 查重 / 审核：都是"拉一次 → 显示一段文本"，共用同一个弹层
+	const renderHealthText = r => {
+		const out = [];
+		out.push("笔记 " + r.total + " · 图谱节点 " + r.nodes + " · 边 " + r.edges);
+		out.push("孤立 " + r.orphanCount + " · 断链 " + r.brokenCount + " · 无标签 " + r.noTagCount + " · 空目录 " + r.emptyDirCount + " · 同名 " + r.dupNameCount);
+		if (r.brokenCount) { out.push(""); out.push("断链（前 10）："); for (const x of (r.broken || []).slice(0, 10)) { out.push("  " + String(x.from).split("/").pop() + "  ->  " + x.target); } }
+		if (r.orphanCount) { out.push(""); out.push("孤立笔记（前 10）："); for (const x of (r.orphans || []).slice(0, 10)) { out.push("  " + String(x).split("/").pop()); } }
+		if (r.emptyDirCount) { out.push(""); out.push("空目录（前 10）："); for (const x of (r.emptyDirs || []).slice(0, 10)) { out.push("  " + String(x)); } }
+		return out;
+	};
 	window.__KB_SIDEVIEW_ACTIONS__ = {
 		openNode: p => { window.location.href = '/x/kb/doc?uri=' + encodeURIComponent(p); },
 		openLink: p => { window.location.href = '/x/kb/doc?uri=' + encodeURIComponent(p); },
 		refresh: () => window.location.reload(),
 		openGraph: () => { window.location.href = '/x/kb/graph'; },
-		openSettings: () => console.warn('[kb-sideview] 设置页在插件侧暂未提供'),
-		switchVault: () => console.warn('[kb-sideview] 切库暂未接入（多库时由 /api/page 选有内容的那个）'),
+		// ★ 2026-10-25（真机：插件页点 ⚙ 没反应）：**不再提供假的 openSettings**。
+		//   视图的逻辑是「有 openSettings 就交给宿主；没有就打开自己的设置面板」。
+		//   之前这里只是 console.warn ⇒ 宿主算"有"，面板却永远打不开。
+		//   现在不提供 ⇒ 视图用自己的设置面板（库切换 / 排序 / 能力清单 / 诊断）。
+		switchVault: id => {
+			const u = new URL(window.location.href);
+			u.searchParams.set('vault', String(id || ''));
+			window.location.href = u.href;
+		},
+		// 新建 / 本地载入库：POST /api/vault-add，成功后带新库 id 重开页面
+		addVault: (mode, path, name) => {
+			fetch('/x/kb/api/vault-add', {
+				method: 'POST', credentials: 'same-origin',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ mode: mode, path: path, name: name }),
+			}).then(r => r.json()).then(b => {
+				if (!b || b.ok === false) { window.alert('操作失败：' + String((b && b.error) || '未知错误')); return; }
+				const u = new URL(window.location.href);
+				u.searchParams.set('vault', String((b.vault && b.vault.id) || ''));
+				window.location.href = u.href;
+			}).catch(e => window.alert('操作失败：' + String((e && e.message) || e)));
+		},
 		// 全文检索（2026-10-23）：同源 fetch，天然异步 ⇒ 直接返回 Promise（组件按 Promise 兑现）
 		// 失败/字段不符 ⇒ 返回 undefined（组件退回"按名过滤"，不显示假的空结果 ✗）
 		search: (q, m) => {
@@ -96,7 +173,48 @@ async function boot() {
 				})
 				.catch(() => undefined);
 		},
-		pickTag: t => console.warn('[kb-sideview] 标签筛选暂未接入：', t),
+		// 插件页没有"按标签过滤"这条路由 ⇒ 如实告知（原来只 console.warn，看起来像坏了）
+		pickTag: t => window.alert('插件页暂不支持按标签筛选：' + String(t) + String.fromCharCode(10) + '请在工作台面板里使用「标签分类」。'),
+		// ── 三项只读报告（2026-10-25）：页面也有入口，数据来自已有路由 ──
+		runLint: () => {
+			fetch("/x/kb/api/health", { credentials: "same-origin" })
+				.then(r => r.json())
+				.then(b => {
+					if (!b || b.ok === false) { window.alert("体检失败：" + String((b && b.error) || "未知原因")); return; }
+					kbReportOverlay("体检报告", renderHealthText(b.report || {}));
+				})
+				.catch(e => window.alert("体检失败：" + String((e && e.message) || e)));
+		},
+		runDedup: () => {
+			const NL = String.fromCharCode(10);
+			fetch("/x/kb/api/dedupe", { credentials: "same-origin" })
+				.then(r => r.json())
+				.then(b => {
+					if (!b || b.ok === false) { window.alert("查重失败：" + String((b && b.error) || "未知原因")); return; }
+					const out = ["已扫描 " + b.scanned + " 篇 · 完全重复 " + b.exactCount + " 组 · 近似重复 " + b.pairCount + " 对（阈值 " + b.threshold + "）"];
+					if (b.exactCount) { out.push(""); out.push("完全重复："); for (const list of (b.exact || []).slice(0, 10)) { out.push("  " + list.map(x => String(x).split("/").pop()).join("  =  ")); } }
+					if (b.pairCount) { out.push(""); out.push("近似重复（前 10 对）："); for (const x of (b.pairs || []).slice(0, 10)) { out.push("  " + Math.round(x.similarity * 100) + "%  " + String(x.a).split("/").pop() + "  <->  " + String(x.b).split("/").pop()); } }
+					if (!b.exactCount && !b.pairCount) { out.push(""); out.push("没有发现重复（这通常是好事）"); }
+					out.push(""); out.push("（只报告，不修改任何文件）");
+					kbReportOverlay("查重报告", out);
+				})
+				.catch(e => window.alert("查重失败：" + String((e && e.message) || e)));
+		},
+		reviewQueue: () => {
+			fetch("/x/kb/api/review", { credentials: "same-origin" })
+				.then(r => r.json())
+				.then(b => {
+					if (!b || b.ok === false) { window.alert("读取审核清单失败：" + String((b && b.error) || "未知原因")); return; }
+					const out = ["共 " + b.total + " 篇 · 已审 " + b.approvedCount + " · 未审 " + b.unreviewedCount + " · 驳回 " + (b.rejectedCount || 0)];
+					out.push("");
+					out.push("未审（前 20）：");
+					for (const x of (b.unreviewed || []).slice(0, 20)) { out.push("  " + x.rel); }
+					if (!(b.unreviewed || []).length) { out.push("  （都审完了）"); }
+					out.push(""); out.push("（标记请在 设置 → 📋 审核 里逐篇操作）");
+					kbReportOverlay("审核概览", out);
+				})
+				.catch(e => window.alert("读取审核清单失败：" + String((e && e.message) || e)));
+		},
 		// 2026-10-24：Electron 不支持 window.prompt（confirm 也不可靠）⇒ 视图自己弹框，宿主只执行
 		// 同步飞书（2026-10-24）：走插件路由跑随包脚本，与 kb_feishu_sync 同一份实现。
 		// 注意：本段处在模板串里 —— 注释里不能出现反引号（会把模板提前闭合），
@@ -113,6 +231,8 @@ async function boot() {
 				})
 				.catch(e => window.alert('同步失败：' + String((e && e.message) || e)));
 		},
+		// 三端共用视图后页面也有导图：只需声明"服务端有 /api/canvas"
+		canvas: true,
 		useInlineDialogs: true,
 		// 内嵌阅读：插件页没有 IDE 编辑区 ⇒ 提供 loadDoc，视图渲染右栏正文
 		loadDoc: p => fetch('/x/kb/api/doc?uri=' + encodeURIComponent(p), { credentials: 'same-origin' })
@@ -126,6 +246,9 @@ async function boot() {
 					base: String(p).replace(new RegExp('[\\/][^\\/]*$'), ''),
 					// 保存时的前置校验用（磁盘 mtime；0 = 未知，服务端跳过校验）
 					mtime: (b && b.mtime) || 0,
+					// 服务端渲染好的 HTML（markdown-it + Obsidian 方言）
+					html: (b && typeof b.html === 'string') ? b.html : '',
+					math: !!(b && b.math),
 				};
 			})
 			.catch(() => ({ title: String(p).split('/').pop(), text: '读取失败' })),
