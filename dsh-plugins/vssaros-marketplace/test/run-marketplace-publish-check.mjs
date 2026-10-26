@@ -906,6 +906,17 @@ function makeSkill(localId, version, extra = {}) {
 	check('㉙ 收起状态持久化（关掉再打开还是上次那样）',
 		wb3.includes('__vssarosMarketCollapsed') && wb3.includes('localStorage.setItem(COLLAPSE_KEY'));
 	check('㉙ 收起时不挂「＋ 新会话」（对话栏都隐藏了）', wb3.includes('if (el && !collapsed)'));
+
+	// ★ 2026-10-26 用户报「聊天框没显示商城助手」的**真因**：
+	//   `ctx.get('agentPresets')` 在**未声明 inject 的插件里返回 undefined**
+	//   （studio 注释原话：`uiSession` 也只能靠动态 inject 拿到）
+	//   ⇒ 之前 `tryApplyPreset` 一直 no-service，**静默失败** ⇒ 下拉仍是「标准模式」✗
+	check('㉙ 用 `ctx.inject` 拿 `agentPresets`（不能只靠 `ctx.get`）',
+		wb3.includes('ctx.inject([key]') && wb3.includes("['agentPresets', 'remote.agentPresets']"));
+	check('㉙ 服务到手就**立即**试一次（不等下一次面板挂载）',
+		wb3.includes('ensureMarketDefaults(ctx); } catch'));
+	check('㉙ 有预设诊断（`__vssarosMarketPreset`，排查"到底哪步失败"）',
+		wb3.includes('globalThis.__vssarosMarketPreset'));
 }
 
 fs.rmSync(dataRoot, { recursive: true, force: true });

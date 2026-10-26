@@ -49,20 +49,50 @@ window.__ModuleLoader__.load({
 		 *
 		 * @returns {boolean} 是否设成功
 		 */
+		/**
+		 * `apply` 里通过 `ctx.inject` 捕获到的 `agentPresets` 服务对象。
+		 *
+		 * ⚠ 为什么不能只靠 `ctx.get('agentPresets')`：**在未声明 inject 的插件里 `ctx.get` 返回 undefined**
+		 *   （studio 的注释原话："`uiSession` 也只能靠**动态 inject** 拿到"）。
+		 *   ⇒ 之前 `tryApplyPreset` 十有八九一直是 `no-service`，静默失败 ✗
+		 */
+		let PRESET_API = null;
+		/** 诊断（浏览器控制台可见）：`__vssarosMarketPreset`）。 */
+		const presetDiag = { api: 'init', calls: [], ok: false, error: '' };
+
 		function tryApplyPreset(ctx) {
 			const candidates = [];
-			try { const a = ctx.get && ctx.get('agentPresets'); if (a) { candidates.push(a); } } catch { /* ignore */ }
-			try { const b = ctx.get && ctx.get('remote.agentPresets'); if (b) { candidates.push(b); } } catch { /* ignore */ }
-			if (!candidates.length) { return false; }
+			if (PRESET_API) { candidates.push(['injected', PRESET_API]); }
+			try { const a = ctx.get && ctx.get('agentPresets'); if (a) { candidates.push(['agentPresets', a]); } } catch { /* ignore */ }
+			try { const b = ctx.get && ctx.get('remote.agentPresets'); if (b) { candidates.push(['remote.agentPresets', b]); } } catch { /* ignore */ }
+			if (!candidates.length) {
+				presetDiag.api = 'no-service';
+				globalThis.__vssarosMarketPreset = presetDiag;
+				return false;
+			}
 
-			for (const svc of candidates) {
+			for (const [label, svc] of candidates) {
 				if (!svc || typeof svc !== 'object') { continue; }
 				for (const name of ['select', 'selectPreset', 'setPreset', 'choose', 'apply']) {
 					if (typeof svc[name] !== 'function') { continue; }
-					try { svc[name](MARKET_PRESET); return true; } catch { /* 试 obj 形态 */ }
-					try { svc[name]({ agentPreset: MARKET_PRESET }); return true; } catch { /* 试下一个方法 */ }
+					try {
+						svc[name](MARKET_PRESET);
+						presetDiag.api = `${label}.${name}(id)`;
+						presetDiag.ok = true;
+						globalThis.__vssarosMarketPreset = presetDiag;
+						return true;
+					} catch (e1) { presetDiag.calls.push(`${label}.${name}(id): ${String(e1 && e1.message || e1).slice(0, 60)}`); }
+					try {
+						svc[name]({ agentPreset: MARKET_PRESET });
+						presetDiag.api = `${label}.${name}(obj)`;
+						presetDiag.ok = true;
+						globalThis.__vssarosMarketPreset = presetDiag;
+						return true;
+					} catch (e2) { presetDiag.calls.push(`${label}.${name}(obj): ${String(e2 && e2.message || e2).slice(0, 60)}`); }
 				}
 			}
+			presetDiag.api = `none(${candidates.map(c => c[0]).join('|')})`;
+			globalThis.__vssarosMarketPreset = presetDiag;
 			return false;
 		}
 
@@ -374,6 +404,29 @@ window.__ModuleLoader__.load({
 		}
 
 		function apply(ctx) {
+			// ★ 用 `ctx.inject` 捕获 `agentPresets`（★ 2026-10-26 用户报「聊天框没显示商城助手」）
+			//   ⚠ **不能只靠 `ctx.get`**：在未声明 inject 的插件里它返回 undefined
+			//     （studio 自己注释里写过这条：`uiSession` 也只能靠动态 inject 拿到）
+			//     ⇒ 之前 `tryApplyPreset` 大概率一直 `no-service`，**静默失败** ✗
+			//   两个名字都试（它可能是 remote 服务，也可能挂在根上）
+			for (const key of ['agentPresets', 'remote.agentPresets']) {
+				try {
+					ctx.inject([key], (scope) => {
+						const svc = (scope.agentPresets && scope.agentPresets)
+							|| (scope['remote.agentPresets'] && scope['remote.agentPresets'])
+							|| (scope.get && scope.get(key))
+							|| null;
+						if (svc && !PRESET_API) {
+							PRESET_API = svc;
+							presetDiag.api = `injected(${key})`;
+							globalThis.__vssarosMarketPreset = presetDiag;
+							// 服务一到就试一次（面板可能已经在前台了，别等下一次挂载）
+							try { ensureMarketDefaults(ctx); } catch { /* ignore */ }
+						}
+					});
+				} catch { /* 该服务名不存在 ⇒ 试下一个 */ }
+			}
+
 			/**
 			 * 包一层：面板**挂载时**说明商城在前台 ⇒ 顺手把当前会话的 agent 设成商城助手。
 			 *
