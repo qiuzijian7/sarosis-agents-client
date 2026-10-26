@@ -155,7 +155,22 @@ function renderDetailTab(tab, m, filters) {
 				arr(x.tags).length ? h('span', { className: 'md2-row-top' }, arr(x.tags).map((t, j) => h('span', { key: 'tag' + j, className: 'md2-badge md2-badge-type' }, String(t)))) : null)));
 	}
 	if (tab === 'consolidation') {
+		// ★ 2026-10-26：**自动沉淀计数**（含「回合摘要」）—— 用户要求显示在固化页签上。
+		//   为什么不显示就等于没有：之前 106/106 `no-candidate` 完全不可见，用户以为"沉淀在跑"，
+		//   实际一条都没产 ⇒ 计数必须上页面 ✓
+		const ds = (m.distillStats && typeof m.distillStats === 'object') ? m.distillStats : {};
+		const n = v => String(Number(v) || 0);
 		return h('div', { 'data-memory-detail-list': 'consolidation' },
+			h('div', { className: 'md2-cards', 'data-memory-distill-stats': '' },
+				kvRow('回合', n(ds.turns)),
+				kvRow('候选', n(ds.candidates)),
+				kvRow('会话摘要', n(ds.summaries)),
+				kvRow('回合摘要', n(ds.turnSummaries)),
+				kvRow('已写草稿', n(ds.written)),
+				kvRow('跳过', n(ds.skipped)),
+				kvRow('失败', n(ds.failed))),
+			h('p', { className: 'md2-hint', 'data-memory-distill-hint': '' },
+				'「回合摘要」= 按回合自动沉淀的条数（普通对话也会产草稿；仍需在记忆库里「提升」才进长期记忆）'),
 			h('div', { className: 'md2-cards' },
 				kvRow('Episodic', arr(m.episodicItems).length),
 				kvRow('Semantic', arr(m.semanticItems).length),

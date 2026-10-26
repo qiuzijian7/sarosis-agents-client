@@ -1,10 +1,11 @@
+// 2026-10-26 touch：client.memory.js 详情页改用共享 wbToolbar（吸顶锚点收敛为 1 处）⇒ 入口置新。
 // 2026-10-24 touch：client.memory.js 经变异测试改写后置新（chunk 守卫按 mtime 判）。
 // 2026-10-24 touch：client.memory.js：补 @container ⇒ 入口置新（chunk 守卫按 mtime 判）。
 // @vssaros/dsh-memory — 客户端入口（工作台重构 §5 步骤 2，2026-10-22）。
 //
 // 本包原先**没有客户端半**（页面是纯 SSR + 两个表单动作）。React 工作台来了之后需要入口：
 // 它只做一件事 —— 把子块 `client.memory.js` 装进来（注册进宿主服务 `desktopWorkbenches`）。
-// 2026-10-26（v0.6.3）：**记忆详情 = React 二级页**（同一工作台内 state 切换，10 个页签，
+// 2026-10-26（v0.6.4）：**记忆详情 = React 二级页**（同一工作台内 state 切换，10 个页签，
 //   数据来自新增的 `GET /x/memory/api/detail?view=…`）⇒ 不再导航/不开窗/不需要桥 ✓
 // 2026-10-24（历史）：曾改走宿主 `openModulePage`（原先只有 href ⇒
 //   点击 = 主 frame 整页导航 ⇒ 被导航守卫拦 ⇒ "点了没反应"；详情现在开在编辑区标签页里）✓

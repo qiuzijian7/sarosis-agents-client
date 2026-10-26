@@ -907,6 +907,16 @@ function renderSessionDetail(s, summary, model) {
  */
 function renderConsolidationView(params, model) {
 	const ctx = typeof model.consolidationContext === 'string' ? model.consolidationContext : '';
+	// ★ 2026-10-26：**自动沉淀计数**（含「回合摘要」）—— 页面上看不到这些数，用户就无法判断
+	//   "自动沉淀到底在不在跑"（之前 106/106 no-candidate 就因为完全不可见 ✗）
+	const ds = model.distillStats && typeof model.distillStats === 'object' ? model.distillStats : {};
+	const distillChips = [
+		['回合', ds.turns], ['候选', ds.candidates], ['会话摘要', ds.summaries], ['回合摘要', ds.turnSummaries],
+		['已写草稿', ds.written], ['跳过', ds.skipped], ['失败', ds.failed],
+	].map(([k, v]) => '<span class="md-meta-chip" data-vssaros-md-distill="' + escapeHtml(String(k)) + '">'
+		+ escapeHtml(String(k) + ': ' + String(Number(v) || 0)) + '</span>').join('');
+	const distillCard = '<div class="md-card" style="margin:8px 20px 0"><div class="md-content" data-vssaros-md-distill-stats style="max-height:none">'
+		+ distillChips + '<div class="md-hint" style="margin-top:6px">「回合摘要」= 按回合自动沉淀的条数（普通对话也会产草稿，仍需人工「提升」才进长期记忆）</div></div></div>';
 	const ctxCard = ctx
 		? '<div class="md-card" style="margin:8px 20px 8px"><div class="md-content" style="max-height:200px">'
 			+ '<pre>' + escapeHtml(ctx) + '</pre></div></div>'
@@ -947,7 +957,7 @@ function renderConsolidationView(params, model) {
 				+ '</details>';
 		}
 	}
-	return ctxCard
+	return distillCard + ctxCard
 		+ '<div class="md-toolbar"><a class="md-btn" href="./detail?' + queryString(params, {}) + '">🔄 刷新</a>'
 		+ '<span class="md-filter-label">只读 · 三层固化结果（空层整层跳过 ✓）</span></div>'
 		+ '<div class="md-list">' + (body || '<div class="md-empty">三层都还没有固化产出 ✓（引擎在会话结束 / 达到阈值时才沉淀 ✗）。</div>')

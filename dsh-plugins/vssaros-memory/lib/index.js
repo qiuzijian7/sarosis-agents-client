@@ -315,7 +315,7 @@ function createState() {
 		/** 自动沉淀：每个会话已读到的事件位置（`session.seq` 偏移；缺省 0 ⇒ 从会话开头读）✓ */
 		distillSeqs: new Map(),
 		/** 自动沉淀的计数（页面/探针自诊断：**跳过与失败都要可见**，否则"没产出"分不清是哪种 ✗）✓ */
-		distill: { turns: 0, candidates: 0, summaries: 0, written: 0, skipped: 0, failed: 0, judged: 0, judgeDropped: 0, judgeSkipped: 0 },
+		distill: { turns: 0, candidates: 0, summaries: 0, turnSummaries: 0, written: 0, skipped: 0, failed: 0, judged: 0, judgeDropped: 0, judgeSkipped: 0 },
 		/**
 		 * 草稿区的**读回缓存**（页面渲染是同步的、读文件是异步的 ⇒ 页面请求时后台读一份放这里 ✓）。
 		 * 为什么需要它：草稿如果只有文件、没有界面，就等于**不存在** ✗ —— 自动沉淀的价值全在
@@ -1315,6 +1315,9 @@ async function loadDetailModel({ config, params, state }) {
 		// ★ 槽位页要的**固定槽位名单**由本文件注入（`detail.js` 不能 import 本文件 ⇒ 会成环 ✗；
 		//   而让它自己再抄一份就多了一个会漂移的真源 ✗ ⇒ 注入是唯一既单一真源又不引环的做法 ✓）
 		slotNames: SLOT_NAMES,
+		// ★ 2026-10-26：**自动沉淀计数**（「固化」页签直接展示）—— 含新增的 `turnSummaries`
+		//   （按回合摘要自动沉淀的次数）。不暴露的话用户在页面上看不出沉淀到底在不在跑 ✗
+		distillStats: state && state.distill && typeof state.distill === 'object' ? state.distill : {},
 	};
 	if (!base) { return model; }
 

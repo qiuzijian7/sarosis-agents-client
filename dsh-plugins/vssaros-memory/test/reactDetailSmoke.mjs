@@ -226,6 +226,26 @@ check('⑫ 生成块（client.memory.js）能渲染 —— 与真源同源', () 
 	return 'ok';
 });
 
+// ── ⑬ 固化页：自动沉淀计数（含「回合摘要」，★ 2026-10-26 用户要求）─────────────
+check('⑬ 固化页显示自动沉淀计数（含「回合摘要」）', () => {
+	const html = draw(renderDetailTab('consolidation', {
+		distillStats: { turns: 12, candidates: 0, summaries: 0, turnSummaries: 7, written: 7, skipped: 3, failed: 0 },
+		episodicItems: [1], semanticItems: [], proceduralItems: [], consolidationContext: '上下文C',
+	}));
+	contains(html, 'data-memory-distill-stats', '固化页统计行');
+	contains(html, '回合摘要', '固化页（回合摘要这一项必须有）');
+	contains(html, '7', '固化页（turnSummaries 的值要显示出来）');
+	contains(html, '上下文C', '固化页上下文仍要显示');
+	return 'ok';
+});
+
+check('⑬b 无 distillStats 时显示 0（不能崩、不能空白）', () => {
+	const html = draw(renderDetailTab('consolidation', {}));
+	contains(html, 'data-memory-distill-stats', '固化页统计行');
+	contains(html, '回合摘要', '固化页');
+	return 'ok';
+});
+
 // ── 汇总 ─────────────────────────────────────────────────────────────────
 const failed = results.filter(r => !r.ok);
 for (const r of results) {
