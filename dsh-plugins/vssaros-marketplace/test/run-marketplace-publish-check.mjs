@@ -884,20 +884,28 @@ function makeSkill(localId, version, extra = {}) {
 {
 	const wb3 = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'workbench.js'), 'utf8');
 
-	check('㉙ 有折叠按钮', wb3.includes("'data-vssaros-market-collapse'"));
-	// ★ 折叠后**不能是 0 宽度**：收成 0 连"展开"按钮都没地方放 ⇒ 用户再也点不回来 ✗
-	check('㉙ 折叠留窄条（**不是 0**，否则点不回来）',
-		wb3.includes("COLLAPSED_W = '30px'") && !wb3.includes("COLLAPSED_W = '0"));
-	check('㉙ 窄条里能展开（竖排「AI 助手」+ 箭头）',
-		wb3.includes("writingMode: 'vertical-rl'") && wb3.includes("'AI 助手'"));
-	// ★ 折叠只 `display:none`，**不卸载** ⇒ 否则会话状态 / 滚动位置 / 正在流式的回复全丢
-	check('㉙ 折叠**不卸载**对话（只 display none，保住流式与会话状态）',
+	// ★ 收起后**整个对话栏隐藏**（`display:none`），只留面板右上角一个小按钮。
+	//   为什么不再用"30px 窄条"：竖排文字在真实主题下会被拆成两列（实测截图，很难看）✗
+	check('㉙ 收起时整个对话栏隐藏（不是收成窄条）',
 		wb3.includes("display: collapsed ? 'none' : 'flex'"));
-	check('㉙ 折叠时藏起拖拽条（宽度由 state 控制，拖了会被覆盖 ⇒ 表现成"拖不动"）',
+	// ★ 隐藏 ≠ 卸载：DOM 还在 ⇒ 会话状态 / 滚动位置 / 正在流式的回复都保住
+	check('㉙ 收起**不卸载**对话（`display:none`，保住流式与会话状态）',
+		wb3.includes('collapsed ? \'none\' : \'flex\'') && !wb3.includes('collapsed ? null : conversation'));
+	check('㉙ 面板是定位上下文（浮动按钮才能贴右上角）',
+		wb3.includes("'data-vssaros-market-panel'") && wb3.includes("position: 'relative',"));
+	check('㉙ 收起后**右上角**浮一个「« AI 助手」按钮',
+		wb3.includes("'data-vssaros-market-expand'") && wb3.includes("right: '10px', top: '8px'")
+		&& wb3.includes("'AI 助手'"));
+	check('㉙ 展开态按钮是「» 收起」、只做收起（setCollapsed(true)）',
+		wb3.includes('» 收起') && wb3.includes('setCollapsed(true)'));
+	check('㉙ 浮动按钮做展开（setCollapsed(false)）', wb3.includes('setCollapsed(false)'));
+	check('㉙ 不再用竖排文字（`writing-mode: vertical-rl` 会被拆成两列）',
+		!wb3.includes('vertical-rl'));
+	check('㉙ 收起时藏起拖拽条（宽度由 state 控制，拖了会被覆盖 ⇒ 表现成"拖不动"）',
 		wb3.includes("display: collapsed ? 'none' : undefined"));
-	check('㉙ 折叠状态持久化（关掉再打开还是上次那样）',
+	check('㉙ 收起状态持久化（关掉再打开还是上次那样）',
 		wb3.includes('__vssarosMarketCollapsed') && wb3.includes('localStorage.setItem(COLLAPSE_KEY'));
-	check('㉙ 折叠时不挂「＋ 新会话」（窄条里放不下）', wb3.includes('if (el && !collapsed)'));
+	check('㉙ 收起时不挂「＋ 新会话」（对话栏都隐藏了）', wb3.includes('if (el && !collapsed)'));
 }
 
 fs.rmSync(dataRoot, { recursive: true, force: true });

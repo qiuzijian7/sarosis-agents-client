@@ -284,60 +284,41 @@ window.__ModuleLoader__.load({
 					style: {
 						flex: '0 0 auto',
 						position: 'relative',
-						// ★ 伸缩：折叠后收成一条窄条（**必须留宽度**，否则没法点回来 ✗）
-						width: collapsed ? COLLAPSED_W : savedConvWidth(),
-						minWidth: collapsed ? COLLAPSED_W : CONV_MIN + 'px',
-						maxWidth: collapsed ? COLLAPSED_W : '70%',
+						// ★ 收起时**整个对话栏隐藏**（用户：收起后右上角留一个按钮即可）
+						//   ⚠ 不是收成窄条 —— 30px 里塞竖排文字会被拆成两列，很难看（实测截图）
+						//   ⚠ 也不能卸载：会话状态 / 滚动位置 / 正在流式的回复都会丢 ✗
+						//   ⇒ `display: none`（DOM 还在，只是不占位、不可见）
+						display: collapsed ? 'none' : 'flex',
+						width: savedConvWidth(),
+						minWidth: CONV_MIN + 'px',
+						maxWidth: '70%',
 						height: '100%',
 						minHeight: 0,
-						display: 'flex',
 						flexDirection: 'column',
 						overflow: 'hidden',
 						borderLeft: '1px solid var(--dsw-alias-border-subtle, rgba(128,128,128,.22))',
-						// 折叠时背景与面板同色，看起来像一条"抽屉边"
-						background: collapsed ? 'var(--dsw-alias-bg-overlay, transparent)' : undefined,
-						transition: 'width .16s ease',
 					},
 				},
-				// ── 折叠/展开按钮（★ 2026-10-26 用户：「AI 助手栏增加伸缩按钮」）──
+				// ── 收起按钮（★ 只出现在**展开态**；折叠态的展开按钮在面板层，见下）──
 				react.createElement('button', {
 					type: 'button',
 					'data-vssaros-market-collapse': collapsed ? 'collapsed' : 'expanded',
-					title: collapsed ? '展开 AI 助手' : '收起 AI 助手',
+					title: '收起 AI 助手',
 					onClick: (ev) => {
 						ev.preventDefault();
 						ev.stopPropagation();
-						setCollapsed(!collapsed);
+						setCollapsed(true);
 					},
-					style: collapsed
-						? {
-							// 窄条态：占满整条，竖排箭头 + 竖排文字
-							position: 'absolute', inset: 0, width: '100%', height: '100%',
-							border: 0, background: 'transparent', cursor: 'pointer',
-							display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '8px',
-							color: 'var(--dsw-alias-label-secondary, #6b7280)', padding: 0,
-							font: '11px/1 -apple-system,"Segoe UI",sans-serif',
-						}
-						: {
-							position: 'absolute', zIndex: 2147483000, left: '8px', top: '5px',
-							height: '22px', padding: '0 8px', borderRadius: '6px',
-							border: '1px solid var(--dsw-alias-border-l2,#dcdfe6)',
-							background: 'var(--dsw-alias-bg-overlay,#fff)',
-							color: 'var(--dsw-alias-label-secondary, #6b7280)',
-							font: '11px/20px -apple-system,"Segoe UI",sans-serif',
-							cursor: 'pointer', pointerEvents: 'auto',
-						},
-				},
-					collapsed
-						? [
-							react.createElement('span', { key: 'i', style: { fontSize: '13px' } }, '◀'),
-							react.createElement('span', {
-								key: 't',
-								style: { writingMode: 'vertical-rl', letterSpacing: '2px' },
-							}, 'AI 助手'),
-						]
-						: '» 收起',
-				),
+					style: {
+						position: 'absolute', zIndex: 2147483000, left: '8px', top: '5px',
+						height: '22px', padding: '0 8px', borderRadius: '6px',
+						border: '1px solid var(--dsw-alias-border-l2,#dcdfe6)',
+						background: 'var(--dsw-alias-bg-overlay,#fff)',
+						color: 'var(--dsw-alias-label-secondary, #6b7280)',
+						font: '11px/20px -apple-system,"Segoe UI",sans-serif',
+						cursor: 'pointer', pointerEvents: 'auto',
+					},
+				}, '» 收起'),
 				// 官方对话本体（会话 / hero / 输入框全在里面）
 				// ⚠ 折叠时**不卸载**（否则会话状态、滚动位置、正在流式的回复全丢 ✗），只藏起来
 				react.createElement('div', {
@@ -352,11 +333,43 @@ window.__ModuleLoader__.load({
 				'div',
 				{
 					'data-vssaros-market-panel': '',
-					style: { display: 'flex', flex: '1 1 auto', minWidth: 0, minHeight: 0, height: '100%' },
+					style: {
+						display: 'flex', flex: '1 1 auto', minWidth: 0, minHeight: 0, height: '100%',
+						// 折叠态那个浮动「AI 助手」按钮要绝对定位到面板右上角
+						position: 'relative',
+					},
 				},
 				siteWrap,
 				splitter,
 				aside,
+				// ★ 收起态：面板**右上角**浮一个小按钮（用户：「收起时右上角显示一个按钮（AI助手）即可」）
+				//   为什么放面板层而不是 aside 里：aside 已经 `display:none` 了，里面的按钮也跟着消失 ✗
+				collapsed
+					? react.createElement('button', {
+						type: 'button',
+						'data-vssaros-market-expand': '',
+						title: '展开 AI 助手',
+						onClick: (ev) => {
+							ev.preventDefault();
+							ev.stopPropagation();
+							setCollapsed(false);
+						},
+						style: {
+							position: 'absolute', zIndex: 2147483000, right: '10px', top: '8px',
+							height: '24px', padding: '0 10px', borderRadius: '6px',
+							border: '1px solid var(--dsw-alias-border-l2,#dcdfe6)',
+							background: 'var(--dsw-alias-bg-overlay,#fff)',
+							color: 'var(--dsw-alias-label-primary,#16181d)',
+							font: '11px/22px -apple-system,"Segoe UI",sans-serif',
+							cursor: 'pointer', pointerEvents: 'auto',
+							boxShadow: '0 1px 4px rgba(0,0,0,.08)',
+							display: 'inline-flex', alignItems: 'center', gap: '4px',
+						},
+					},
+						react.createElement('span', { key: 'i', style: { fontSize: '12px' } }, '«'),
+						react.createElement('span', { key: 't' }, 'AI 助手'),
+					)
+					: null,
 			);
 		}
 
