@@ -142,6 +142,15 @@ window.__ModuleLoader__.load({
 		const CONV_WIDTH = '440px';
 		const CONV_MIN = 320;
 		const STORE_KEY = '__vssarosMarketConvW';
+		/**
+		 * 折叠后的宽度（★ 2026-10-26 用户：「AI 助手栏增加伸缩按钮」）。
+		 *
+		 * ⚠ **不能是 0**：收成 0 就连"展开"按钮都没地方放了，用户再也点不回来 ✗
+		 *   ⇒ 留一条 30px 的窄条，里面是竖排「◀ AI 助手」，点一下展开。
+		 */
+		const COLLAPSED_W = '30px';
+		/** 折叠状态持久化（关掉工作台再打开还是收起的）。 */
+		const COLLAPSE_KEY = '__vssarosMarketCollapsed';
 
 		const DESCRIPTOR = {
 			title: '商城工作台',
@@ -171,6 +180,17 @@ window.__ModuleLoader__.load({
 		 */
 		function MarketPanel(props) {
 			const conversation = props && props.conversation ? props.conversation : null;
+
+			// ★ 伸缩状态（★ 2026-10-26 用户：「AI 助手栏增加伸缩按钮」）
+			//   持久化：关掉工作台再打开还是上次那个状态（收起的人不想每次重新收）
+			const collapsedState = react.useState(() => {
+				try { return localStorage.getItem(COLLAPSE_KEY) === '1'; } catch { return false; }
+			});
+			const collapsed = collapsedState[0];
+			const setCollapsed = (next) => {
+				collapsedState[1](next);
+				try { localStorage.setItem(COLLAPSE_KEY, next ? '1' : '0'); } catch { /* ignore */ }
+			};
 
 			const site = react.createElement('iframe', {
 				src: SITE_PATH,
@@ -205,6 +225,9 @@ window.__ModuleLoader__.load({
 				style: {
 					flex: '0 0 auto', width: '6px', cursor: 'col-resize',
 					background: 'transparent', position: 'relative', zIndex: 5,
+					// ⚠ 折叠时**藏起拖拽条**：此时宽度由 state 控制，拖了会被 React 覆盖回去，
+					//   表现成"拖不动"（比看不见更困惑）⇒ 干脆不显示 ✗
+					display: collapsed ? 'none' : undefined,
 				},
 				onDoubleClick: (ev) => {
 					const aside = ev.currentTarget.nextElementSibling;
@@ -255,25 +278,73 @@ window.__ModuleLoader__.load({
 				'aside',
 				{
 					'data-vssaros-market-conv': '',
-				// ★ 把「＋ 新会话」挂进对话栏（生命周期与面板绑定）
-				ref: (el) => { if (el) { mountNewButton(el); } },
+					// ★ 把「＋ 新会话」挂进对话栏（生命周期与面板绑定）
+					//   ⚠ 折叠时**不要**挂（窄条里放不下，而且 newSession 也没意义）
+					ref: (el) => { if (el && !collapsed) { mountNewButton(el); } },
 					style: {
 						flex: '0 0 auto',
 						position: 'relative',
-						width: savedConvWidth(),
-						minWidth: CONV_MIN + 'px',
-						maxWidth: '70%',
+						// ★ 伸缩：折叠后收成一条窄条（**必须留宽度**，否则没法点回来 ✗）
+						width: collapsed ? COLLAPSED_W : savedConvWidth(),
+						minWidth: collapsed ? COLLAPSED_W : CONV_MIN + 'px',
+						maxWidth: collapsed ? COLLAPSED_W : '70%',
 						height: '100%',
 						minHeight: 0,
 						display: 'flex',
 						flexDirection: 'column',
 						overflow: 'hidden',
 						borderLeft: '1px solid var(--dsw-alias-border-subtle, rgba(128,128,128,.22))',
+						// 折叠时背景与面板同色，看起来像一条"抽屉边"
+						background: collapsed ? 'var(--dsw-alias-bg-overlay, transparent)' : undefined,
+						transition: 'width .16s ease',
 					},
 				},
+				// ── 折叠/展开按钮（★ 2026-10-26 用户：「AI 助手栏增加伸缩按钮」）──
+				react.createElement('button', {
+					type: 'button',
+					'data-vssaros-market-collapse': collapsed ? 'collapsed' : 'expanded',
+					title: collapsed ? '展开 AI 助手' : '收起 AI 助手',
+					onClick: (ev) => {
+						ev.preventDefault();
+						ev.stopPropagation();
+						setCollapsed(!collapsed);
+					},
+					style: collapsed
+						? {
+							// 窄条态：占满整条，竖排箭头 + 竖排文字
+							position: 'absolute', inset: 0, width: '100%', height: '100%',
+							border: 0, background: 'transparent', cursor: 'pointer',
+							display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '8px',
+							color: 'var(--dsw-alias-label-secondary, #6b7280)', padding: 0,
+							font: '11px/1 -apple-system,"Segoe UI",sans-serif',
+						}
+						: {
+							position: 'absolute', zIndex: 2147483000, left: '8px', top: '5px',
+							height: '22px', padding: '0 8px', borderRadius: '6px',
+							border: '1px solid var(--dsw-alias-border-l2,#dcdfe6)',
+							background: 'var(--dsw-alias-bg-overlay,#fff)',
+							color: 'var(--dsw-alias-label-secondary, #6b7280)',
+							font: '11px/20px -apple-system,"Segoe UI",sans-serif',
+							cursor: 'pointer', pointerEvents: 'auto',
+						},
+				},
+					collapsed
+						? [
+							react.createElement('span', { key: 'i', style: { fontSize: '13px' } }, '◀'),
+							react.createElement('span', {
+								key: 't',
+								style: { writingMode: 'vertical-rl', letterSpacing: '2px' },
+							}, 'AI 助手'),
+						]
+						: '» 收起',
+				),
 				// 官方对话本体（会话 / hero / 输入框全在里面）
+				// ⚠ 折叠时**不卸载**（否则会话状态、滚动位置、正在流式的回复全丢 ✗），只藏起来
 				react.createElement('div', {
-					style: { flex: '1 1 auto', minHeight: 0, overflow: 'auto' },
+					style: {
+						flex: '1 1 auto', minHeight: 0, overflow: 'auto',
+						display: collapsed ? 'none' : 'flex', flexDirection: 'column',
+					},
 				}, conversation),
 			);
 

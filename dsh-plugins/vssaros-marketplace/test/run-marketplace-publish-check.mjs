@@ -880,6 +880,26 @@ function makeSkill(localId, version, extra = {}) {
 	check('㉘ 暴露 `agentsRoot()`（排查「文件放错地方」用）', ag.includes('agentsRoot: () => agentsRootOf(config)'));
 }
 
+// ── ㉙ AI 助手栏伸缩按钮（2026-10-26 用户：「AI 助手栏增加伸缩按钮」）──────
+{
+	const wb3 = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'workbench.js'), 'utf8');
+
+	check('㉙ 有折叠按钮', wb3.includes("'data-vssaros-market-collapse'"));
+	// ★ 折叠后**不能是 0 宽度**：收成 0 连"展开"按钮都没地方放 ⇒ 用户再也点不回来 ✗
+	check('㉙ 折叠留窄条（**不是 0**，否则点不回来）',
+		wb3.includes("COLLAPSED_W = '30px'") && !wb3.includes("COLLAPSED_W = '0"));
+	check('㉙ 窄条里能展开（竖排「AI 助手」+ 箭头）',
+		wb3.includes("writingMode: 'vertical-rl'") && wb3.includes("'AI 助手'"));
+	// ★ 折叠只 `display:none`，**不卸载** ⇒ 否则会话状态 / 滚动位置 / 正在流式的回复全丢
+	check('㉙ 折叠**不卸载**对话（只 display none，保住流式与会话状态）',
+		wb3.includes("display: collapsed ? 'none' : 'flex'"));
+	check('㉙ 折叠时藏起拖拽条（宽度由 state 控制，拖了会被覆盖 ⇒ 表现成"拖不动"）',
+		wb3.includes("display: collapsed ? 'none' : undefined"));
+	check('㉙ 折叠状态持久化（关掉再打开还是上次那样）',
+		wb3.includes('__vssarosMarketCollapsed') && wb3.includes('localStorage.setItem(COLLAPSE_KEY'));
+	check('㉙ 折叠时不挂「＋ 新会话」（窄条里放不下）', wb3.includes('if (el && !collapsed)'));
+}
+
 fs.rmSync(dataRoot, { recursive: true, force: true });
 console.log(`\n[marketplace publish] ${pass} passing / ${fails.length} failing`);
 if (fails.length) { console.log('失败：' + fails.join('、')); }
