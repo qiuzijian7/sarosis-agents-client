@@ -105,6 +105,14 @@ export function marketAgentMarkdown(now = new Date()) {
 		'source: custom',
 		'version: 1.0.0',
 		`storeId: ${MARKET_AGENT_ID}`,
+		// ★ 2026-10-26：欢迎卡的建议问题，由 agent 自己声明（`vssaros-agents` 解析 → `/api/agents`
+		//   → chat-surface 的欢迎卡三级兜底取 ①）。
+		//   ⚠ **文案里不要用半角逗号** —— `parseFrontmatter` 会把 YAML 列表拼成逗号串再 `split(',')`，
+		//     半角逗号会把一句话切成两条。用「，」或「·」。
+		'suggestions:',
+		'  - 帮我找一个能自动操作浏览器的小工具',
+		'  - 把一个 GitHub 项目发布到商城',
+		'  - 商城里有哪些工作台？怎么装',
 		`createdAt: "${stamp}"`,
 		`updatedAt: "${stamp}"`,
 		'---',
@@ -159,6 +167,23 @@ export async function ensureMarketAgent(opts = {}) {
 						patched = `${fm}\n\n${PERSONA}\n`;
 						migrations.push('persona-v2');
 					}
+				}
+
+				// ③ 补 `suggestions:`（★ 2026-10-26）：老文件没有这个字段 ⇒ 欢迎卡只能走
+				//   `SUGGESTIONS_BY_PRESET` 硬编码兜底。补上之后由 agent 自己声明（更干净）。
+				//   ⚠ 只在能锚定到我们生成的 `storeId: <id>` 时才插，避免动用户手写文件。
+				if (!/^suggestions:/m.test(patched) && patched.includes(`storeId: ${MARKET_AGENT_ID}`)) {
+					patched = patched.replace(
+						new RegExp(`^(storeId: ${MARKET_AGENT_ID})$`, 'm'),
+						[
+							`$1`,
+							'suggestions:',
+							'  - 帮我找一个能自动操作浏览器的小工具',
+							'  - 把一个 GitHub 项目发布到商城',
+							'  - 商城里有哪些工作台？怎么装',
+						].join('\n'),
+					);
+					migrations.push('suggestions');
 				}
 
 				if (migrations.length) {

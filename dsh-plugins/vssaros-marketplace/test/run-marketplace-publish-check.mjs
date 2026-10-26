@@ -978,8 +978,39 @@ function makeSkill(localId, version, extra = {}) {
 			w5.includes('SUGGESTIONS_BY_PRESET') && w5.includes('function suggestionsOf('));
 		check('㉜ 商城助手的三张卡是**商城话术**（查找 / 发布 / 安装）',
 			w5.includes('vssaros-marketplace-bot') && w5.includes('把一个 GitHub 项目发布到商城'));
-		check('㉜ 用**外层 presetId**（cardModel 不返回它）', w5.includes('suggestionsOf(presetId)'));
-		check('㉜ 其它 agent 仍走通用兜底', w5.includes('own.length ? own : SUGGESTIONS'));
+		// ⚠ 2026-10-26 升级为「三级兜底」后签名变 `suggestionsOf(presetId, own)`
+	check('㉜ 用**外层 presetId**（cardModel 不返回它）', w5.includes('suggestionsOf(presetId,'));
+		check('㉜ 其它 agent 仍走通用兜底', w5.includes('mapped.length ? mapped : SUGGESTIONS'));
+	}
+
+// ── ㉝ `.agent.md` 自带 `suggestions:`（2026-10-26 用户：「现在做」）──────
+//   链路：`.agent.md` suggestions → vssaros-agents 解析 → /api/agents → 欢迎卡三级兜底
+{
+		const ma4 = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'marketAgent.js'), 'utf8');
+		const ag2 = fs.readFileSync(path.resolve(HERE, '..', '..', 'vssaros-agents', 'lib', 'core', 'agents.js'), 'utf8');
+		const w6p = path.resolve(HERE, '..', '..', 'vssaros-chat-surface', 'lib', 'client.welcome.js');
+		const w6 = fs.existsSync(w6p) ? fs.readFileSync(w6p, 'utf8') : '';
+		const ideP = path.resolve(HERE, '..', '..', '..', 'src', 'vs', 'sessions', 'contrib', 'agentStudio', 'common', 'agentMdFormat.ts');
+		const ide = fs.existsSync(ideP) ? fs.readFileSync(ideP, 'utf8') : '';
+
+		check('㉝ .agent.md 模板写 `suggestions:`（YAML 列表）',
+			ma4.includes("'suggestions:'") && ma4.includes('帮我找一个能自动操作浏览器的小工具'));
+		check('㉝ 文案**不含半角逗号**（那是列表分隔符，会把一句切成两条）',
+			!(/^\s*- .*[^，]、?.*,.*$/m.test(ma4)));
+		check('㉝ 老文件会**自动补** suggestions（锚定 storeId，不动手写文件）',
+			ma4.includes("migrations.push('suggestions')") && ma4.includes('storeId: ${MARKET_AGENT_ID}'));
+
+		check('㉝ dsh 侧解析出 suggestions', ag2.includes('const suggestions = listValue(meta.suggestions)')
+			&& ag2.includes('...(suggestions.length ? { suggestions } : {})'));
+
+		check('㉝ 欢迎卡**三级兜底**：agent 自带 → 内置映射 → 通用',
+			w6.includes('function suggestionsOf(presetId, own)') && w6.includes('SUGGESTIONS_BY_PRESET'));
+		check('㉝ cardModel 带上 suggestions（API 给数组或逗号串都兼容）',
+			w6.includes('suggestions: Array.isArray(agent.suggestions)'));
+
+		check('㉝ IDE 侧**序列化回写**（否则编辑一次就丢）',
+			ide.includes('fm.suggestions') && ide.includes('agent as any).suggestions'));
+		check('㉝ IDE 侧解析读出', ide.includes('suggestions: parseStringArray(raw.suggestions)'));
 	}
 
 fs.rmSync(dataRoot, { recursive: true, force: true });

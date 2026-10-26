@@ -71,20 +71,52 @@ window.__ModuleLoader__.load({
 			};
 		};
 
-		/** 从文本反扫 mentions（id 口径 + 词尾边界）；`@所有人` 标 kind:'all' */
+		/** 成员的显示名（空则退回 id）—— token 里写它，用户看到的是人话不是 slug */
+		const atLabelOf = (agent) => {
+			const name = String((agent && agent.name) || '').trim();
+			return name || String((agent && agent.id) || '').trim();
+		};
+
+		/**
+		 * 从文本反扫 mentions（同时认显示名与 id；**长串优先、丢弃重叠**）；`@所有人` 标 kind:'all'。
+		 * ⚠ 长串优先是必须的：`@Code Architect` 不能先被 `@Code` 命中（会静默 @ 错人）。
+		 */
 		const atCollect = (text, members) => {
 			const value = String(text == null ? '' : text);
 			const out = [];
+			const taken = [];
+			const needles = [];
 			for (const agent of (Array.isArray(members) ? members : [])) {
 				const id = String((agent && agent.id) || '').trim();
 				if (!id) { continue; }
-				const re = new RegExp('@' + id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![A-Za-z0-9._-])', 'g');
+				const label = atLabelOf(agent);
+				if (label) { needles.push({ needle: '@' + label, label, agentId: id }); }
+				if (label !== id) { needles.push({ needle: '@' + id, label: id, agentId: id }); }
+			}
+			needles.sort((a, b) => b.needle.length - a.needle.length);
+			for (const n of needles) {
+				const re = new RegExp(n.needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![A-Za-z0-9._-])', 'g');
 				let m = re.exec(value);
-				while (m) { out.push({ start: m.index, end: m.index + m[0].length, label: id, agentId: id }); m = re.exec(value); }
+				while (m) {
+					const start = m.index;
+					const end = start + n.needle.length;
+					if (!taken.some((t) => start < t.end && end > t.start)) {
+						taken.push({ start, end });
+						out.push({ start, end, label: n.label, agentId: n.agentId });
+					}
+					m = re.exec(value);
+				}
 			}
 			const reAll = new RegExp('@' + AT_ALL + '(?![A-Za-z0-9._-])', 'g');
 			let a = reAll.exec(value);
-			while (a) { out.push({ start: a.index, end: a.index + a[0].length, label: AT_ALL, kind: 'all' }); a = reAll.exec(value); }
+			while (a) {
+				const start = a.index;
+				const end = start + a[0].length;
+				if (!taken.some((t) => start < t.end && end > t.start)) {
+					out.push({ start, end, label: AT_ALL, kind: 'all' });
+				}
+				a = reAll.exec(value);
+			}
 			return out.sort((x, y) => x.start - y.start);
 		};
 
@@ -124,19 +156,40 @@ window.__ModuleLoader__.load({
 			return { value: text.slice(0, start) + text.slice(finish), caret: start };
 		};
 
+		/**
+		 * 显示名去歧义：名字唯一 ⇒ 名字；**同名冲突** ⇒ `名字 · id`。
+		 * 只影响**显示**（不删数据、不改 token），重名时用户才分得清是哪一只。
+		 */
+		const atDisplayLabels = (members) => {
+			const list = Array.isArray(members) ? members.filter(Boolean) : [];
+			const counts = new Map();
+			for (const a of list) {
+				const k = atLabelOf(a).toLocaleLowerCase();
+				counts.set(k, (counts.get(k) || 0) + 1);
+			}
+			const out = new Map();
+			for (const a of list) {
+				const name = atLabelOf(a);
+				const dup = (counts.get(name.toLocaleLowerCase()) || 0) > 1;
+				out.set(String(a.id), dup ? (name + ' · ' + String(a.id)) : name);
+			}
+			return out;
+		};
+
 		/** 候选：成员过滤（name/id 大小写不敏感）+ `@所有人`（成员为空时不给） */
 		const atCandidates = (members, query) => {
 			const list = Array.isArray(members) ? members.filter(Boolean) : [];
 			if (query === undefined || query === null) { return []; }
 			const needle = String(query).toLocaleLowerCase();
+			const labels = atDisplayLabels(list);
 			const bots = list
 				.filter((m) => String(m.name || '').toLocaleLowerCase().includes(needle)
 					|| String(m.id || '').toLocaleLowerCase().includes(needle))
 				.slice(0, AT_MAX)
-				.map((agent) => ({ kind: 'bot', agent }));
+				.map((agent) => ({ kind: 'bot', agent, display: labels.get(String(agent.id)) || atLabelOf(agent) }));
 			const offerAll = list.length > 0 && [AT_ALL, 'all', 'everyone']
 				.some((n) => n.toLocaleLowerCase().includes(needle));
-			return offerAll ? [{ kind: 'all', label: AT_ALL }, ...bots] : bots;
+			return offerAll ? [{ kind: 'all', label: AT_ALL, display: AT_ALL }, ...bots] : bots;
 		};
 
 		/** 被 @ 到的 agentId（`@所有人` ⇒ 全群）；发送与派发都用它 */
@@ -569,13 +622,25 @@ window.__ModuleLoader__.load({
 				     ① 已经有数据时**不要把 data 置空**（只有首次加载才显示 loading）
 				     ② 请求回来先比**签名**（id/名字/模式/成员数/消息数/最后一条时间），
 				        没变化就返回同一个 state 对象 ⇒ React 直接跳过重渲染（连 diff 都省了） */
+				/* ⚠⚠ 2026-10-26 踩过的坑：签名最初只比 id/名字/模式/成员数/消息数/最后时间。
+				   于是改 **relay / dispatchMode / wakePolicies / ownerAgentId** 这类
+				   "不改变上述字段" 的设置时，签名不变 ⇒ 返回同一个 state 对象 ⇒ React 不重渲染
+				   ⇒ **界面上设置看起来回滚了**（POST 已经成功，磁盘也改了）。
+				   `p3-189` 的 ⑦s 就是靠"复选框点了之后仍是未选中"抓到它的。
+				   ⇒ 原则：**签名必须覆盖 UI 会渲染的每一个字段**，否则去重就是在骗自己。 */
 				const sigOf = (body) => {
 					const gs = (body && Array.isArray(body.groups)) ? body.groups : [];
 					return JSON.stringify(gs.map((g) => [
 						String(g.id || ''),
 						String(g.name || ''),
 						String(g.mode || ''),
-						Array.isArray(g.members) ? g.members.length : 0,
+						String(g.dispatchMode || ''),
+						String(g.ownerAgentId || ''),
+						g.requireApproval === true ? '1' : '0',
+						String(g.avatar || '').length,
+						JSON.stringify(g.relay || null),
+						JSON.stringify(g.wakePolicies || null),
+						Array.isArray(g.members) ? g.members.join(',') : '',
 						Array.isArray(g.transcript) ? g.transcript.length : 0,
 						Array.isArray(g.transcript) && g.transcript.length
 							? Number(g.transcript[g.transcript.length - 1].at) || 0 : 0,
@@ -1150,13 +1215,18 @@ window.__ModuleLoader__.load({
 							onClick: () => { if (o.onAtChoose) { o.onAtChoose(item); } },
 							title: item.kind === 'all'
 								? ('@' + String(item.label || '所有人') + '（唤醒全部成员）')
-								: ('@' + String(item.agent && item.agent.id || '') + ' · ' + String(item.agent && item.agent.name || '')),
+								/* slug 只留在 tooltip 里（排查时有用），列表上一律显示名字 */
+								: ('@' + String(item.agent && item.agent.name || item.agent && item.agent.id || '')
+									+ '  ·  id: ' + String(item.agent && item.agent.id || '')),
 						},
 						h('span', { className: 'ag3-atmark' }, item.kind === 'all' ? '＠' : '@'),
+						/* ★ 2026-10-26 用户要求「显示可读名字，不要 slug」：
+						   只渲染名字；**同名冲突**时 `item.display` 自带 ` · id` 后缀（否则两行长得一样，
+						   看起来就是"重复 bot"）。正常情况下与名字完全一致。 */
 						h('span', { className: 'ag3-atname' },
-							item.kind === 'all' ? String(item.label || '所有人') : String(item.agent && item.agent.name || item.agent.id || '')),
-						h('span', { className: 'ag3-atid' },
-							item.kind === 'all' ? '全员' : String(item.agent && item.agent.id || '')))))
+							item.kind === 'all'
+								? String(item.label || '所有人')
+								: String(item.display || (item.agent && item.agent.name) || (item.agent && item.agent.id) || '')))))
 					: null;
 				return h('div', { className: 'ag3-compwrap', 'data-ag-composer': actKey },
 					atPop,
@@ -1287,7 +1357,9 @@ window.__ModuleLoader__.load({
 				if (!item || !g || !g.id) { atClose(); return; }
 				const gid = String(g.id);
 				const value = gDraft[gid] || '';
-				const label = item.kind === 'all' ? AT_ALL : String((item.agent && item.agent.id) || '');
+				/* ★ 2026-10-26：插入的是**显示名**（`@Code Architect`），不是 id —— 用户看到的是人话。
+				   `agentId` 由事后反扫 `atCollect` 得出，服务端用 offset + agentId 派发。 */
+				const label = item.kind === 'all' ? AT_ALL : atLabelOf(item.agent);
 				if (!label) { atClose(); return; }
 				const r = atSelect(value, { start: atState.start, end: atState.end }, label);
 				setGDraft((prev) => ({ ...prev, [gid]: r.value }));
@@ -1409,6 +1481,44 @@ window.__ModuleLoader__.load({
 			 * ⇒ React 侧保留这份同构实现，**由 `p3-190` 用同一组夹具比对两边结果**防漂移。
 			 *   改这里的口径时，必须同步改 `core/groupChat.js`，否则 p3-190 立刻红。
 			 */
+			/* ── 投递状态摘要（2026-10-26）──────────────────────────────────────
+			   服务端在每条用户消息上写 `deliveries: [{ id, agentId, name, state, at, repliedAt?, error? }]`
+			   （state: dispatched / replied / failed）。这里把它压成群头部的一行字：
+			     `已回 2/3 · 等 1`，`title` 里给具体人名。
+			   ⚠ 「超时」是**读时判定**（`dispatched` 且超过 10 分钟），不改磁盘
+			   —— 否则得为它专门跑一个扫描器，收益不值。 */
+			const DELIVERY_TIMEOUT_MS = 10 * 60 * 1000;
+			const summarizeDeliveries = (list, nowMs) => {
+				const rows = Array.isArray(list) ? list.filter(Boolean) : [];
+				if (!rows.length) { return null; }
+				const now = Number.isFinite(nowMs) ? nowMs : Date.now();
+				const names = (arr) => arr.join('、');
+				let replied = 0;
+				const wait = [];
+				const slow = [];
+				const bad = [];
+				for (const d of rows) {
+					const name = String(d.name || d.agentId || '?');
+					if (d.state === 'replied') { replied += 1; continue; }
+					if (d.state === 'failed') { bad.push(name); continue; }
+					const at = Number(d.at) || 0;
+					if (at && now - at > DELIVERY_TIMEOUT_MS) { slow.push(name); } else { wait.push(name); }
+				}
+				const total = rows.length;
+				const text = '已回 ' + replied + '/' + total
+					+ (bad.length ? ' · 失败 ' + bad.length : '')
+					+ (slow.length ? ' · 超时 ' + slow.length : '')
+					+ (wait.length ? ' · 等 ' + wait.length : '');
+				const parts = [];
+				const repliedNames = rows.filter((d) => d.state === 'replied')
+					.map((d) => String(d.name || d.agentId || '?'));
+				if (repliedNames.length) { parts.push('已回：' + names(repliedNames)); }
+				if (wait.length) { parts.push('等待中：' + names(wait)); }
+				if (slow.length) { parts.push('超时未回：' + names(slow)); }
+				if (bad.length) { parts.push('派发失败：' + names(bad)); }
+				return { text, title: parts.join('\n'), pending: wait.length + slow.length, failed: bad.length };
+			};
+
 			const groupRows = (list, mentionPool) => {
 				const GROUP_MS = 300000;        // 相邻 ≤5 分钟成组（DSB 的 GROUP_MS）
 				const SEPARATOR_MS = 1800000;   // 距上一条 ≥30 分钟插分隔（DSB 的 SEPARATOR_MS）
@@ -1540,7 +1650,20 @@ window.__ModuleLoader__.load({
 							h('div', { className: 'ag3row-l1' },
 								h('span', { className: 'ag3-mname', 'data-ag-file-name': String(g.name || g.id || '') }, String(g.name || g.id || '?')),
 								h('span', { className: 'wb-badge' }, String(g.mode || 'open'))),
-							h('div', { className: 'ag3row-l2' }, (Array.isArray(g.members) ? g.members.length : 0) + ' 位成员 · ' + rows.length + ' 条消息')),
+							h('div', { className: 'ag3row-l2' },
+								(Array.isArray(g.members) ? g.members.length : 0) + ' 位成员 · ' + rows.length + ' 条消息',
+								/* 投递状态：取**最近一条带 deliveries 的用户消息**（一次派发的真实结果） */
+								(() => {
+									const last = [...raw].reverse()
+										.find((m) => Array.isArray(m.deliveries) && m.deliveries.length);
+									const sum = last ? summarizeDeliveries(last.deliveries) : null;
+									if (!sum) { return null; }
+									return h('span', {
+										className: 'ag3-dl' + (sum.pending ? ' is-wait' : (sum.failed ? ' is-bad' : ' is-done')),
+										'data-ag-delivery': sum.text,
+										title: sum.title,
+									}, ' · ' + sum.text);
+								})())),
 						h('span', { className: 'wb-spacer' }),
 						/* ★ 2026-10-26：两个按钮都改成**页内二级页**（原来走 openModuleRoute ⇒ 新 webview
 						   ⇒ 真机 `emulate timeout` ⇒ 黑屏）。邀请成员 = 同一个设置页（成员区在最下面）。 */
@@ -2505,12 +2628,72 @@ window.__ModuleLoader__.load({
 								className: 'wb-input', value: gsName, 'data-ag-gset-name': '',
 								onChange: (ev) => setGsName(ev.target.value),
 							})),
+						/* ★ 2026-10-26 群主：设了群主后，改名/改策略/加人/移人/删群**只有群主 bot 或人**能做。
+						   （不设 = 人管，向后兼容存量群） */
+						h('label', { className: 'ag3-field' },
+							h('span', null, '群主'),
+							h('select', {
+								className: 'wb-input', 'data-ag-gset-owner': '',
+								value: String(t.ownerAgentId || ''),
+								disabled: gsBusy,
+								onChange: (ev) => {
+									const v = String(ev.target.value || '');
+									const nm = (agents.find((a) => String(a.id) === v) || {}).name || v;
+									void runGroupAction(
+										{ action: 'mode', id: String(t.id), ownerAgentId: v },
+										v ? ('群主已移交给 ' + nm) : '已取消群主（由人管理）',
+									);
+								},
+							}, [h('option', { key: '__none', value: '' }, '我（人管，不设群主）')]
+								.concat(members.map((id) => h('option', { key: id, value: id },
+									String((agents.find((a) => String(a.id) === id) || {}).name || id))))),
+							h('span', { className: 'ag-hint' },
+								'设了群主后：改名 / 改策略 / 加人 / 移人 / 删群都只允许群主 bot 或人。')),
 						h('label', { className: 'ag3-field' },
 							h('span', null, '唤醒策略'),
 							h('select', {
 								className: 'wb-input', value: gsMode, 'data-ag-gset-mode': '',
 								onChange: (ev) => setGsMode(ev.target.value),
 							}, MODES.map(([v, label]) => h('option', { key: v, value: v }, label)))),
+						/* ★ 2026-10-26 群内接力：默认**关闭**。开启后成员回复里 @ 到别人会转给对方。
+						   四道闸（hop≤4 / 同根不重复叫醒 / 单根≤6 次 / 只认显式 @）在服务端
+						   `planRelay` 里 —— 这里只做开关，别在前端再算一遍策略。 */
+						h('label', { className: 'ag3-field ag3-field-row' },
+							h('input', {
+								type: 'checkbox', 'data-ag-gset-relay': '',
+								checked: !!(t.relay && t.relay.enabled === true),
+								disabled: gsBusy,
+								onChange: (ev) => {
+									const on = ev.target.checked === true;
+									void runGroupAction(
+										{ action: 'mode', id: String(t.id), allowRelay: on },
+										on ? '已开启群内接力（成员回复里 @ 别人会转给他）' : '已关闭群内接力',
+									);
+								},
+							}),
+							h('span', null, '群内接力'),
+							h('span', { className: 'ag-hint' },
+								'开启后：成员答复里 @ 到的同群成员会收到这条答复（最多 4 跳，同一根消息不重复叫醒同一人，单根最多 6 次）。@所有人 在接力里不生效。')),
+
+						/* ★ 2026-10-26 派发方式：steer 会**注入正在跑的回合**（可能把话插进中间），
+						   followup 则**等这一回合结束**再作为新回合处理（不打断，消息也不会丢）。 */
+						h('label', { className: 'ag3-field' },
+							h('span', null, '派发方式'),
+							h('select', {
+								className: 'wb-input', 'data-ag-gset-dispatch': '',
+								value: String(t.dispatchMode || 'steer'),
+								disabled: gsBusy,
+								onChange: (ev) => {
+									const v = String(ev.target.value || 'steer');
+									void runGroupAction(
+										{ action: 'dispatch', id: String(t.id), dispatchMode: v },
+										v === 'followup' ? '已改为排队（等成员当前回合结束再派）' : '已改为抢断（立刻注入成员当前回合）',
+									);
+								},
+							}, [['steer', '抢断（立刻注入当前回合）'], ['followup', '排队（等当前回合结束）']]
+								.map(([v, label]) => h('option', { key: v, value: v }, label))),
+							h('span', { className: 'ag-hint' },
+								'抢断：成员正在生成时会立刻看到这条（可能打断它）；排队：等它这一回合跑完再开新回合。')),
 						h('div', { className: 'ag3-field' },
 							h('button', {
 								type: 'button', className: 'wb-btn is-primary', 'data-ag-act': 'group-set-save',
@@ -2526,8 +2709,27 @@ window.__ModuleLoader__.load({
 						h('div', { className: 'ag3-field' },
 							h('span', null, '成员（' + members.length + '）'),
 							h('div', { className: 'ag3-members', 'data-ag-gset-members': '' },
-								agents.filter((x) => x.registered).map((x) => {
+								(() => {
+									/* 同名冲突时给成员行补 ` · id`（只改显示，不删数据）—— 否则两行一模一样 */
+									const pool = agents.filter((x) => x.registered);
+									const counts = new Map();
+									for (const x of pool) {
+										const k = String(x.name || x.id).toLocaleLowerCase();
+										counts.set(k, (counts.get(k) || 0) + 1);
+									}
+									return pool.map((x) => ({
+										agent: x,
+										disp: (counts.get(String(x.name || x.id).toLocaleLowerCase()) || 0) > 1
+											? (String(x.name || x.id) + ' · ' + String(x.id)) : String(x.name || x.id),
+									}));
+								})().map(({ agent: x, disp }) => {
 									const on = members.includes(String(x.id));
+									/* ★ 2026-10-26 成员级接收策略：`inherit` = 跟随群默认（后端算好生效值放在
+									   `t.wakeEffective[id]`，这里只判断"有没有个人配置"用于显示）。
+									   群成员才给下拉 —— 非成员连消息都收不到，改策略没有意义。 */
+									const MODE_LABEL = { all: '全员', mentions: '仅 @', digest: '汇总', silent: '静默' };
+									const own = (t.wakePolicies && t.wakePolicies[String(x.id)]) || 'inherit';
+									const eff = (t.wakeEffective && t.wakeEffective[String(x.id)]) || String(t.mode || 'all');
 									return h('label', { key: x.id, className: 'ag3-member' + (on ? ' is-on' : '') },
 										h('input', {
 											type: 'checkbox', checked: on, 'data-ag-gset-member': x.id,
@@ -2538,11 +2740,31 @@ window.__ModuleLoader__.load({
 													want
 														? { action: 'invite', id: String(t.id), members: [String(x.id)] }
 														: { action: 'remove', id: String(t.id), member: String(x.id) },
-													want ? ('已加入 ' + String(x.name || x.id)) : ('已移出 ' + String(x.name || x.id)),
+													want ? ('已加入 ' + disp) : ('已移出 ' + disp),
 												);
 											},
 										}),
-										h('span', null, String(x.name || x.id)));
+										h('span', { className: 'ag3-mname2' }, disp),
+									on ? h('select', {
+										className: 'ag3-gmode',
+										'data-ag-gset-member-mode': String(x.id),
+										title: own === 'inherit'
+											? ('跟随群默认：' + MODE_LABEL[eff] + '（' + eff + '）')
+											: ('个人策略：' + MODE_LABEL[own] + '（' + own + '）'),
+										value: own,
+										disabled: gsBusy,
+										/* 阻止冒泡：member 是 <label>，点 select 会顺带切换 checkbox（=邀请/移出） */
+										onClick: (ev) => ev.stopPropagation(),
+										onChange: (ev) => {
+											const mode = String(ev.target.value || 'inherit');
+											void runGroupAction(
+												{ action: 'policy', id: String(t.id), agentId: String(x.id), mode },
+												'已更新 ' + String(x.name || x.id) + ' 的接收策略：'
+													+ (mode === 'inherit' ? ('继承（' + MODE_LABEL[eff] + '）') : MODE_LABEL[mode]),
+											);
+										},
+									}, [['inherit', '继承'], ['all', '全员'], ['mentions', '仅 @'], ['digest', '汇总'], ['silent', '静默']]
+										.map(([v, label]) => h('option', { key: v, value: v }, label))) : null);
 								}))),
 						h('div', { className: 'ag3-field' },
 							h('button', {
@@ -2699,6 +2921,11 @@ window.__ModuleLoader__.load({
 .ag3row-main { min-width:0; flex:1 1 auto; display:flex; flex-direction:column; gap:1px; }
 .ag3row-l1 { display:flex; align-items:center; gap:var(--wb-s1); min-width:0; }
 .ag3row-l2 { font-size:10px; color:var(--dsw-alias-label-tertiary, rgba(230,230,230,.65)); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* 投递状态（群头部"已回 2/3"） */
+.ag3-dl { font-variant-numeric:tabular-nums; }
+.ag3-dl.is-wait { color:var(--dsw-alias-state-warning-primary, #e0a43a); }
+.ag3-dl.is-bad { color:var(--dsw-alias-state-error-primary, #e05252); }
+.ag3-dl.is-done { color:var(--dsw-alias-state-success-primary, #3fb950); }
 .ag-avatar { width:24px; height:24px; border-radius:6px; display:flex; align-items:center; justify-content:center;
   font-size:var(--wb-f-xs); font-weight:600; color:var(--dsw-alias-label-primary-inverted, #fff); flex:0 0 auto; }
 .ag-avatar-lg { width:34px; height:34px; border-radius:var(--wb-r-md); font-size:var(--wb-f-md); }
@@ -2841,6 +3068,10 @@ window.__ModuleLoader__.load({
 .ag3-field { display:flex; flex-direction:column; gap:4px; font-size:var(--wb-f-xs); }
 .ag3-field > span { color:var(--dsw-alias-label-tertiary, rgba(230,230,230,.65)); }
 .ag3-field .wb-input, .ag3-field .wb-select { width:100%; }
+/* 带 checkbox 的一行式字段（群内接力开关等）：复选框与标题同行，说明折到下一行 */
+.ag3-field-row { flex-direction:row; flex-wrap:wrap; align-items:center; gap:6px; }
+.ag3-field-row input[type="checkbox"] { margin:0; flex:0 0 auto; }
+.ag3-field-row > .ag-hint { flex:1 1 100%; }
 .ag3-create-ta { width:100%; resize:vertical; min-height:64px; padding:6px 8px; border-radius:var(--wb-r-sm);
   border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.35)); background:transparent;
   color:var(--dsw-alias-label-primary, inherit); font:inherit; font-size:var(--wb-f-xs); line-height:1.6; }
@@ -2850,6 +3081,12 @@ window.__ModuleLoader__.load({
   border-radius:var(--wb-r-sm); cursor:pointer; color:var(--dsw-alias-label-secondary, inherit); }
 .ag3-member.is-on { background:var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,.16));
   color:var(--dsw-alias-label-primary, inherit); }
+/* 成员级接收策略下拉（2026-10-26）：成员是 <label>，下拉要能单独点而不误触邀请/移出 */
+.ag3-member .ag3-mname2 { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ag3-gmode { flex:0 0 auto; font-size:10px; padding:1px 2px; border-radius:4px; cursor:pointer;
+  background:var(--dsw-alias-bg-module-platform, rgba(127,127,127,.16));
+  color:var(--dsw-alias-label-secondary, inherit);
+  border:1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.28)); }
 .ag3-err-txt { margin:0; font-size:var(--wb-f-xs); color:var(--dsw-alias-state-error-primary, #e05252); }
 .ag3-mini-row { display:inline-flex; gap:2px; align-items:center; }
 /* 分组标题右侧的小动作键（＋ / ↗ / ✕）：原来**没有样式**，只吃 wb-btn 默认值 ⇒

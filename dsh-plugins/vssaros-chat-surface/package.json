@@ -1,6 +1,6 @@
 {
   "name": "@vssaros/dsh-chat-surface",
-  "version": "0.2.245",
+  "version": "0.2.246",
   "description": "VsSaros chat-surface plugin for DeepSeek Harness: binds the chat surface to the VsSaros-owned session (方案 5.13.2 / 7.x). Client-only; the host half is inert. 0.2.209（2026-10-22，品牌改名）：dsh 客户端品牌位与 IDE 产品名统一改为 **Saroasis harness**（client.brand.js 的 TITLE / 两处「回到 … 窗口」tooltip / **document.title**（顶掉上游写死的 `<title>DeepSeek Harness</title>`）+ product.json 的 nameShort/nameLong）。⚠ 未动身份字段（applicationName / win32DirName / win32AppUserModelId / win32MutexName / urlProtocol）—— 改了等于换一个应用（数据目录、单实例互斥、任务栏固定、协议全变，设置与会话全丢）。0.2.244（2026-10-26，用户报障「窗口模式下工作区的 ＋ 点了没反应」+「工作区下有大量空会话」）：① ＋ 按钮改走 **已声明** 的 uiWorkspace.pickDirectory（原来读未声明的 ctx.remote.directoryPicker ⇒ 恒 undefined ⇒ 直接早退），并按官方口径读**路径字符串**（原来读 res.value.path ⇒ 恒 undefined），失败**就地渲染**在区里（原来只写从不渲染的 state.addWorkspaceError ⇒ 100% 静默；窗口模式没有宿主桥 ⇒ notify 也是空转）；区头的全角「＋」换成 ASCII '+'（U+FF0B 在部分渲染环境无字形 ⇒ 显示成豆腐块）。② 侧栏**隐藏空会话**（官方 roster 的 blank 位；官方侧栏同口径过滤）并披露隐藏条数。",
   "private": true,
   "type": "module",

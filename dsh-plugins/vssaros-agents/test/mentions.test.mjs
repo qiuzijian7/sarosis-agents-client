@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 import {
 	ALL_LABEL, activeMentionQuery, collectMentions, deleteSelectedMention,
-	escapeRe, mentionCandidates, mentionRuns, mentionedAgentIds, rebaseMentions, selectMention,
+	displayLabels, escapeRe, mentionCandidates, mentionRuns, mentionedAgentIds, rebaseMentions, selectMention,
 } from '../lib/mentions.js';
 
 let pass = 0;
@@ -158,6 +158,80 @@ check('★ 多个 mention 按位置排序', () => {
 	const ms = collectMentions('@writer 和 @coder', MEMBERS);
 	assert.deepEqual(ms.map((m) => m.label), ['writer', 'coder']);
 });
+/* ★ 2026-10-26：label 从 id 改成**显示名**（用户报「@ 时显示的是 slug」）。
+   这几条把新语义钉住 —— 尤其"名字带空格"和"长串优先"，它们是最容易回归的两处。 */
+check('★ 扫出**名字型** mention（名字含空格也算一个整体）', () => {
+	const ms = collectMentions('@Code Architect 看下', MEMBERS);
+	assert.equal(ms.length, 1);
+	assert.equal(ms[0].label, 'Code Architect');
+	assert.equal(ms[0].agentId, 'code-architect');
+	assert.deepEqual([ms[0].start, ms[0].end], [0, 15]);
+});
+check('★ 长串优先：@Coder Two 不能被短名 @Coder 先吃掉', () => {
+	const ms = collectMentions('@Coder Two 你好', MEMBERS);
+	assert.deepEqual(ms.map((m) => m.agentId), ['coder-2'], '应命中 coder-2，而不是 coder');
+	assert.equal(ms[0].label, 'Coder Two');
+});
+check('旧写法 @id 仍然认（兼容历史消息 / 手打）', () => {
+	const ms = collectMentions('@code-architect 你好', MEMBERS);
+	assert.deepEqual(ms.map((m) => [m.label, m.agentId]), [['code-architect', 'code-architect']]);
+});
+check('★ 选中候选后插入的是**可读名字**，且 caret 落在空格之后', () => {
+	const r = selectMention('hi @co', { start: 3, end: 6, query: 'co' }, 'Code Architect');
+	assert.equal(r.value, 'hi @Code Architect ');
+	assert.equal(r.caret, r.value.length);
+});
+check('名字型 mention 也能被 mentionRuns 正确切片（offset 校验按 @label）', () => {
+	const text = '@Code Architect 你好';
+	const runs = mentionRuns(text, [{ start: 0, end: 15, label: 'Code Architect', agentId: 'code-architect' }]);
+	assert.equal(runs.length, 2);
+	assert.equal(runs[0].text, '@Code Architect');
+	assert.equal(runs[1].text, ' 你好');
+});
+check('名字型 mention 的整块删除（含尾空格）', () => {
+	const text = 'hi @Code Architect 你看';
+	const ms = collectMentions(text, MEMBERS);
+	const caret = text.indexOf('Architect') + 'Architect'.length;   // 落在 token 尾部
+	const r = deleteSelectedMention(text, ms, caret, caret, 'Backspace');
+	assert.ok(r, '应当命中');
+	assert.equal(r.value, 'hi  你看'.replace('  ', ' '), String(r.value));
+});
+/* ── displayLabels：重名时"别显示成两个一样的"（2026-10-26）────────────
+   用户明确：**只改显示，不删数据**。所以重名是允许的，但列表里必须分得清。 */
+check('名字唯一 ⇒ 原样显示（不加后缀，不露 slug）', () => {
+	const m = displayLabels(MEMBERS);
+	assert.equal(m.get('coder'), 'Coder');
+	assert.equal(m.get('code-architect'), 'Code Architect');
+});
+check('★ 同名冲突 ⇒ 追加 ` · id`（唯一名不受影响）', () => {
+	const dup = [
+		{ id: 'coder', name: 'Coder' },
+		{ id: 'coder-2', name: 'Coder' },
+		{ id: 'writer', name: 'Writer' },
+	];
+	const m = displayLabels(dup);
+	assert.equal(m.get('coder'), 'Coder · coder');
+	assert.equal(m.get('coder-2'), 'Coder · coder-2');
+	assert.equal(m.get('writer'), 'Writer', '不冲突的那只不该被加上后缀');
+});
+check('★ 只差大小写也算重名（`Coder` vs `coder`）', () => {
+	const m = displayLabels([{ id: 'a', name: 'Coder' }, { id: 'b', name: 'coder' }]);
+	assert.equal(m.get('a'), 'Coder · a');
+	assert.equal(m.get('b'), 'coder · b');
+});
+check('没名字的走 id 显示', () => {
+	const m = displayLabels([{ id: 'x', name: '' }]);
+	assert.equal(m.get('x'), 'x');
+});
+check('★ 候选条目带 display（重名时才带后缀），且 agent 仍是原对象', () => {
+	const dup = [{ id: 'coder', name: 'Coder' }, { id: 'coder-2', name: 'Coder' }];
+	const items = mentionCandidates(dup, '');
+	const byId = new Map(items.filter((i) => i.kind === 'bot').map((i) => [String(i.agent.id), i]));
+	assert.equal(byId.get('coder').display, 'Coder · coder');
+	assert.equal(byId.get('coder-2').display, 'Coder · coder-2');
+	assert.equal(byId.get('coder').agent.name, 'Coder', 'agent 对象不能被改名（插入 token 用的是纯名字）');
+});
+
 check('@所有人', () => {
 	const ms = collectMentions('@@', MEMBERS); // 无
 	assert.deepEqual(ms, []);
@@ -198,6 +272,32 @@ check('escapeRe 转义正则元字符', () => {
 			{ ...at('所有人'), label: '所有人', kind: 'all' },
 		], TEXT, ['coder', 'code-architect'], [{ id: 'coder' }, { id: 'code-architect' }]);
 		assert.deepEqual(out.map((m) => m.label), ['coder', 'code-architect', '所有人']);
+	});
+	check('★ 服务端：label 是**带空格的名字**也接受（id 走 agentId）', () => {
+		/* 文本里的 token 现在是 `@Code Architect`（名字），id 单独带 —— 这是 2026-10-26 的语义变更 */
+		const text = 'hi @Code Architect 看下';
+		const start = text.indexOf('@Code Architect');
+		const out = normalizeMentions(
+			[{ start, end: start + '@Code Architect'.length, label: 'Code Architect', agentId: 'architect' }],
+			text, ['architect'], [{ id: 'architect', name: 'Code Architect' }],
+		);
+		assert.equal(out.length, 1);
+		assert.equal(out[0].label, 'Code Architect');
+		assert.equal(out[0].agentId, 'architect');
+	});
+	check('★ 服务端：label 与 slice 不符 ⇒ 丢弃（名字写错也会被挡）', () => {
+		const text = 'hi @Code Architect 看下';
+		const start = text.indexOf('@Code Architect');
+		const out = normalizeMentions(
+			[{ start, end: start + '@Code Architect'.length, label: 'Coder', agentId: 'architect' }],
+			text, ['architect', 'coder'], [{ id: 'architect' }, { id: 'coder' }],
+		);
+		assert.deepEqual(out, []);
+	});
+	check('★ 服务端：老客户端只给 label（无 agentId）⇒ 回落成 id 口径', () => {
+		const out = normalizeMentions([{ start: 3, end: 9, label: 'coder' }], 'hi @coder 在吗', ['coder'], [{ id: 'coder' }]);
+		assert.equal(out.length, 1);
+		assert.equal(out[0].agentId, 'coder');
 	});
 	check('★ 服务端：slice 对不上的 offset 被丢弃（防伪造/防漂移）', () => {
 		const out = normalizeMentions([{ start: 0, end: 9, label: 'coder' }], TEXT, ['coder'], [{ id: 'coder' }]);

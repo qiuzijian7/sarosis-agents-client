@@ -66,10 +66,16 @@ window.__ModuleLoader__.load({
 				"商城里有哪些工作台？怎么装",
 			],
 		};
-		/** 取某个 preset 的建议（专属优先，否则通用兜底）。 */
-		function suggestionsOf(presetId) {
-			const own = SUGGESTIONS_BY_PRESET[String(presetId || "")];
-			return Array.isArray(own) && own.length ? own : SUGGESTIONS;
+		/**
+		 * 取建议（**三级兜底**）：
+		 *   ① **agent 自带的** `suggestions:`（`.agent.md` 里写的，最准 —— 2026-10-26 新增）
+		 *   ② `SUGGESTIONS_BY_PRESET`（内置 agent 的专属话术，历史硬编码）
+		 *   ③ `SUGGESTIONS`（通用三条）
+		 */
+		function suggestionsOf(presetId, own) {
+			if (Array.isArray(own) && own.length) { return own; }
+			const mapped = SUGGESTIONS_BY_PRESET[String(presetId || "")];
+			return Array.isArray(mapped) && mapped.length ? mapped : SUGGESTIONS;
 		}
 		/** 焦点交接的值（与 agents 插件 sideview.js 同格式：前缀:参数|时间戳）。 */
 		function handoffValue(prefix, arg, now) {
@@ -86,6 +92,12 @@ window.__ModuleLoader__.load({
 					role: agent.role ? String(agent.role) : "",
 					description: agent.description ? String(agent.description) : "",
 					skills: Array.isArray(agent.skills) ? agent.skills.map(String) : [],
+					// ★ 2026-10-26：`.agent.md` 的 `suggestions:`（API 可能给数组，也可能是逗号串）
+					suggestions: Array.isArray(agent.suggestions)
+						? agent.suggestions.map(String).filter(Boolean)
+						: (typeof agent.suggestions === "string" && agent.suggestions.trim()
+							? agent.suggestions.split(",").map((x) => String(x).trim()).filter(Boolean)
+							: []),
 					model: agent.model ? String(agent.model) : "",
 					full: true,
 				};
@@ -295,7 +307,7 @@ window.__ModuleLoader__.load({
 							model.skills.length ? e("div", { style: CSS.skills }, model.skills.slice(0, 6).map((s) => chip("s-" + s, "skill: " + s))) : null,
 							e("div", { style: CSS.sugg, "data-vssaros-welcome-suggestions": "1" },
 								// ⚠ 用**外层 `presetId`**（`cardModel` 的返回里没有 presetId —— 它只装展示字段）
-			(suggestionsOf(presetId).map((text, i) => e("button", {
+			(suggestionsOf(presetId, model && model.suggestions).map((text, i) => e("button", {
 									key: "q" + i, type: "button", style: Object.assign({}, CSS.suggItem, i === SUGGESTIONS.length - 1 ? { borderBottom: "none" } : {}),
 									"data-vssaros-welcome-ask": String(i), onClick: () => ask(text),
 								}, text)))),

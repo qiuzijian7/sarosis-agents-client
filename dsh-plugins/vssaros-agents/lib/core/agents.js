@@ -239,6 +239,8 @@ export function agentFromFile(text, { id, file }) {
 	// 没写就不带（role 不显示标签、skills 不显示 chip）——不伪造"assistant"这种无信息默认 ✗。
 	const role = (meta.role || '').trim() || undefined;
 	const skills = listValue(meta.skills);
+	// 欢迎卡建议问题（★ 2026-10-26）：`.agent.md` 的 `suggestions:`（YAML 列表）⇒ 数组。
+	const suggestions = listValue(meta.suggestions);
 	// Workspace Grant（2026-10-16 二期；mockup doc/agents-grants-outbox-mockup.html 拍板点 ①）：
 	// `workspaces-read: <路径,...>` / `workspaces-write: <路径,...>`（绝对路径，逗号分隔）。
 	// **字段不写 = 收紧缺省：只允许引擎缺省 cwd（不显式给 cwd）**——显式跨工作区必须显式声明 ✓。
@@ -274,6 +276,10 @@ export function agentFromFile(text, { id, file }) {
 			...(String(meta.subagent ?? '').trim().toLowerCase() === 'true' ? { delegatable: true } : {}),
 			...(role ? { role } : {}),
 			...(skills.length ? { skills } : {}),
+			// 欢迎卡的「建议问题」（★ 2026-10-26）：`.agent.md` 写 YAML 列表，
+			// `parseFrontmatter` 会拼成逗号串 ⇒ 这里 `listValue` 还原成数组。
+			// ⚠ 文案里**不要用半角逗号**（那是分隔符）；用全角「，」或「·」。
+			...(suggestions.length ? { suggestions } : {}),
 			...(memoryChars !== undefined ? { memoryChars } : {}),
 			memoryMode,
 			...(modelAssignment ? { modelAssignment } : {}),

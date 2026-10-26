@@ -50,6 +50,8 @@ interface AgentMdRaw {
 	version?: string;
 	storeId?: string;
 	skills?: string[];
+	/** 欢迎卡建议问题（YAML 列表；★ 2026-10-26）。 */
+	suggestions?: string | string[];
 	enabledToolsets?: string[];
 	disabledToolsets?: string[];
 	temperature?: number;
@@ -226,6 +228,9 @@ export function buildAgentMd(agent: Agent): string {
 	if (agent.version) { fm.version = agent.version; }
 	if (agent.storeId) { fm.storeId = agent.storeId; }
 	if (agent.skills && agent.skills.length > 0) { fm.skills = agent.skills; }
+	// ★ 2026-10-26：`suggestions` 必须回写 —— 否则用户在 Agent Studio 改别的字段时，
+	//   这个字段会被**静默丢掉**（聊天欢迎卡退回通用话术）。
+	if ((agent as any).suggestions && (agent as any).suggestions.length > 0) { fm.suggestions = (agent as any).suggestions; }
 	if (agent.enabledToolsets && agent.enabledToolsets.length > 0) { fm.enabledToolsets = agent.enabledToolsets; }
 	if (agent.disabledToolsets && agent.disabledToolsets.length > 0) { fm.disabledToolsets = agent.disabledToolsets; }
 	if (agent.temperature !== undefined) { fm.temperature = agent.temperature; }
@@ -309,6 +314,8 @@ export function parseAgentMd(content: string): { agent: Partial<Agent>; systemPr
 		version: typeof raw.version === 'string' ? raw.version : undefined,
 		storeId: typeof raw.storeId === 'string' ? raw.storeId : undefined,
 		skills: parseStringArray(raw.skills),
+		// ★ 2026-10-26：欢迎卡建议问题（YAML 列表或逗号串都认）
+		suggestions: parseStringArray(raw.suggestions),
 		tools: toolsArr,
 		enabledToolsets: parseStringArray(raw.enabledToolsets),
 		disabledToolsets: parseStringArray(raw.disabledToolsets),

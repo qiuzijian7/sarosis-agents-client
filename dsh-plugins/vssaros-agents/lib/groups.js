@@ -27,6 +27,8 @@ import { AGENT_MESSAGE_KIND, finalAssistantText, findOurSplices } from './core/r
 import { isShownAgent } from './core/agents.js';
 import { dataRootOf, scanAgentsFromConfig } from './store.js';
 import { normalizeFileRefs } from './groupFiles.js';
+// 提及解析的**唯一真源**（同时认显示名与 id、长串优先、词尾边界）——别再在这儿写第二套正则
+import { collectMentions } from './mentions.js';
 
 /**
  * 群聊能用的 agent 名单 = **内置 + 自定义**（`scanAgentsFromConfig`），去掉显式隐藏的。
@@ -110,7 +112,20 @@ export function unreadOf(group) {
 /** API/页面用：清单（transcript 一并给；量已被 TRANSSCRIPT_KEEP 兜住 ✓；`unread` 现算）。 */
 export async function listGroups(config) {
 	const groups = await readGroups(config);
-	return { groups: groups.map(g => ({ ...g, unread: unreadOf(g), pending: pendingOf(g) })), keep: TRANSSCRIPT_KEEP };
+	return {
+		groups: groups.map(g => ({
+			...g,
+			unread: unreadOf(g),
+			pending: pendingOf(g),
+			/* ★ 2026-10-26 成员级策略：把**生效值**一并算好给前端。
+			   客户端就不必重复"个人 > 群默认"的回落逻辑（两处实现必然漂移）——
+			   它只用 `g.wakePolicies?.[id]` 判断是否「继承」用于显示。 */
+			wakeEffective: Object.fromEntries(
+				(Array.isArray(g.members) ? g.members : []).map(id => [String(id), effectiveModeFor(g, id)]),
+			),
+		})),
+		keep: TRANSSCRIPT_KEEP,
+	};
 }
 
 /**
@@ -164,6 +179,7 @@ export async function setGroupAvatar(config, input) {
 		if (!group) {
 			throw httpError(404, `没有这个群：${id}`);
 		}
+		assertMutable(group, input?.actor);   // 群主权限（2026-10-26）
 		if (avatar) {
 			group.avatar = avatar;
 		} else {
@@ -222,7 +238,26 @@ export async function createGroup(config, input) {
 	if (groups.some(g => g.name === name)) {
 		throw httpError(409, `已有同名群：${name}`);
 	}
-	const group = { id: randomUUID(), name, mode, wake, members, createdAt: Date.now(), updatedAt: Date.now(), transcript: [] };
+	/* 建群时可指定群主（2026-10-26）：必须是成员；不指定 ⇒ 无群主（人管）。
+	   ⚠ 只有**人**能在建群时指定群主（bot 建群不能给自己塞群主，避免提权）。 */
+	let ownerAgentId = '';
+	if (input?.ownerAgentId !== undefined && input.ownerAgentId !== null) {
+		if (normalizeActor(input?.actor).kind !== 'human') {
+			throw httpError(403, '只有人能在建群时指定群主。');
+		}
+		const owner = String(input.ownerAgentId).trim();
+		if (owner) {
+			if (!members.includes(owner)) {
+				throw httpError(400, `群主必须是成员之一：${owner}`);
+			}
+			ownerAgentId = owner;
+		}
+	}
+	const group = {
+		id: randomUUID(), name, mode, wake, members,
+		...(ownerAgentId ? { ownerAgentId } : {}),
+		createdAt: Date.now(), updatedAt: Date.now(), transcript: [],
+	};
 	await writeGroups(config, [...groups, group]);
 	return group;
 }
@@ -231,6 +266,11 @@ export async function createGroup(config, input) {
 export async function deleteGroup(config, input) {
 	const id = String(input?.id ?? '').trim();
 	const groups = await readGroups(config);
+	// 群主权限（2026-10-26）：删群是破坏性操作，有群主时只允许群主本人或人
+	const target = groups.find(g => g.id === id);
+	if (target) {
+		assertMutable(target, input?.actor);
+	}
 	const next = groups.filter(g => g.id !== id);
 	if (next.length !== groups.length) {
 		await writeGroups(config, next);
@@ -251,6 +291,24 @@ export async function updateGroup(config, input) {
 	if (!group) {
 		throw httpError(404, `没有这个群：${id || '(没给 id)'}`);
 	}
+	assertMutable(group, input?.actor);   // 群主权限（2026-10-26）
+	/* 移交群主：只有**人**能做（`ownerAgentId: ''` = 取消群主）。
+	   ⚠ 不能让群主 bot 自己移交 —— 那等于给了它"提权另一个 bot"的能力。 */
+	if (input?.ownerAgentId !== undefined) {
+		if (normalizeActor(input?.actor).kind !== 'human') {
+			throw httpError(403, '只有人能移交群主（bot 不能改群主，避免互相提权）。');
+		}
+		const owner = String(input.ownerAgentId ?? '').trim();
+		if (!owner) {
+			delete group.ownerAgentId;
+		} else {
+			const members = Array.isArray(group.members) ? group.members.map(String) : [];
+			if (!members.includes(owner)) {
+				throw httpError(400, `群主必须是本群成员：${owner}`);
+			}
+			group.ownerAgentId = owner;
+		}
+	}
 	if (input?.name !== undefined) {
 		const name = String(input.name).trim().slice(0, GROUP_NAME_MAX);
 		if (!name) {
@@ -263,6 +321,26 @@ export async function updateGroup(config, input) {
 	}
 	if (input?.mode !== undefined) {
 		group.mode = normalizeGroupMode(input.mode);
+	}
+	/* 派发方式（2026-10-26）：`steer`（抢断当前回合）/ `followup`（排队等回合结束）。
+	   `turn` 当别名接受（那是 DeepSeekBot 的叫法，读代码的人容易顺手写）。 */
+	if (input?.dispatchMode !== undefined) {
+		const raw = String(input.dispatchMode ?? '').trim().toLowerCase();
+		const next = raw === 'turn' ? 'followup' : raw;
+		if (!DISPATCH_MODES.includes(next)) {
+			throw httpError(400, `未知派发方式：${raw || '(空)'}（支持 ${DISPATCH_MODES.join('/')}）`);
+		}
+		group.dispatchMode = next;
+	}
+	/* 群内接力（2026-10-26）：**默认关闭**。开启后成员回复里 @ 到别人会转给对方，
+	   四道闸（hop / 根事件去重 / 单根上限 / 只认显式 @）在 `planRelay` 里。 */
+	if (input?.allowRelay !== undefined || input?.relayMaxHops !== undefined || input?.relayMaxPerRoot !== undefined) {
+		const cur = relayOf(group);
+		group.relay = {
+			enabled: input.allowRelay !== undefined ? input.allowRelay === true : cur.enabled,
+			maxHops: Number.isInteger(input.relayMaxHops) ? input.relayMaxHops : cur.maxHops,
+			maxPerRoot: Number.isInteger(input.relayMaxPerRoot) ? input.relayMaxPerRoot : cur.maxPerRoot,
+		};
 	}
 	// 加入需确认（2026-10-21）：开关本身不碰待确认队列 —— 队列里的条目仍由人逐条决定
 	if (input?.requireApproval !== undefined) {
@@ -279,6 +357,193 @@ export async function updateGroup(config, input) {
 	group.updatedAt = Date.now();
 	await writeGroups(config, groups);
 	return group;
+}
+
+/* ── 成员级唤醒策略（2026-10-26）────────────────────────────────────────────
+   背景：原来一个群只有一个 `mode`（all/mentions/digest/silent）**一刀切** ——
+   A bot 想"只 @ 才理"做不到，B bot 想"群里所有消息都跟"也做不到，只能整群迁就。
+
+   现在：`group.wakePolicies = { [agentId]: 'all'|'mentions'|'digest'|'silent' }`，
+   缺省（没有该 key）⇒ **继承群 `mode`**。`effectiveModeFor()` 是唯一判据。
+
+   ⚠ 已知取舍（有意为之，不是遗漏）：
+     · **digest 攒批仍是群级一份**（`group.digest.pending`）。成员级只决定
+       "是否绕过攒批立刻收"（`all`）/"是否完全不收"（`silent`/`mentions`），
+       不各自维护独立队列 —— 那是 DeepSeekBot（SQLite per-recipient admission）的做法，
+       我们这点消息量不值得引入。
+     · 改策略会**清空攒批**（同 `updateGroup` 的既有口径）：否则 digest ⇒ all 会
+       莫名补发一批，all ⇒ digest 又会立刻触发一次超时冲刷。
+*/
+const MEMBER_POLICY_INHERIT = 'inherit';
+
+/** 某成员在某群里**实际生效**的唤醒策略（没有个人配置 ⇒ 继承群）。 */
+export function effectiveModeFor(group, agentId) {
+	const own = group?.wakePolicies?.[String(agentId ?? '')];
+	if (typeof own === 'string' && GROUP_MODES.includes(own)) {
+		return own;
+	}
+	return normalizeGroupMode(group?.mode);
+}
+
+/**
+ * 设置/清除某个成员的唤醒策略。
+ * `mode: 'inherit'` ⇒ 删掉该成员的个人配置（回到继承群）。
+ * 返回 `{ group, agentId, mode }`（`mode` 是**生效值**，方便 UI 直接回填）。
+ */
+export async function setGroupMemberPolicy(config, input) {
+	const id = String(input?.id ?? '').trim();
+	const agentId = String(input?.agentId ?? '').trim();
+	const raw = String(input?.mode ?? '').trim();
+	const groups = await readGroups(config);
+	const group = groups.find(g => g.id === id);
+	if (!group) {
+		throw httpError(404, `没有这个群：${id || '(没给 id)'}`);
+	}
+	assertMutable(group, input?.actor);   // 群主权限（2026-10-26）
+	if (!agentId) {
+		throw httpError(400, 'agentId 不能为空。');
+	}
+	const members = Array.isArray(group.members) ? group.members.map(String) : [];
+	if (!members.includes(agentId)) {
+		throw httpError(400, `不是本群成员：${agentId}`);
+	}
+	if (raw !== MEMBER_POLICY_INHERIT && !GROUP_MODES.includes(raw)) {
+		throw httpError(400, `未知策略：${raw}（支持 inherit/${GROUP_MODES.join('/')}）`);
+	}
+	const next = { ...(group.wakePolicies ?? {}) };
+	if (raw === MEMBER_POLICY_INHERIT) {
+		delete next[agentId];
+	} else {
+		next[agentId] = raw;
+	}
+	group.wakePolicies = next;
+	if (Object.keys(next).length === 0) {
+		delete group.wakePolicies;
+	}
+	// 与 updateGroup 同口径：策略变了就把攒着的那批清掉（避免"补发"或"立刻触发超时"）
+	group.digest = { count: 0, since: Date.now(), pending: [] };
+	group.updatedAt = Date.now();
+	await writeGroups(config, groups);
+	return { group, agentId, mode: effectiveModeFor(group, agentId) };
+}
+
+/* ── 群内接力（2026-10-26）──────────────────────────────────────────────────
+   目标：成员 A 的回复里 `@` 了 B ⇒ 把 A 的答复转给 B，B 可以接着补充。
+   这是**放大器**，不设闸门一定变成刷屏机器，所以默认**关闭**，且四道闸同时生效：
+
+     ① `hop`：用户消息 = 1，每接力一次 +1，超过 `maxHops`(4) 停
+        （用户 → A(1) → B(2) → C(3) → D(4) → 停）
+     ② **根事件去重**：同一个根消息**不会重复叫醒同一个 bot**
+        —— 没有它，A↔B 会无限对答（这是最致命的一条，优先于 hop）
+     ③ 单根上限：一个根事件最多触发 `maxPerRoot`(6) 次接力派发，限制了扇出宽度
+     ④ 只认**显式 @ 成员**：`@所有人` 在接力里**不生效**（否则一条回复能叫醒全群，
+        瞬间爆炸）。这条是靠 `parseMentions` 只匹配成员 id/name 天然实现的。
+
+   ⚠ 为什么不用 DeepSeekBot 的 `MAX_BOT_HOPS=8`：他们群里有几十个 bot 且消息持久化，
+     我们是单机小群，4 跳已经够表达"转给谁补充"，再深只会放大噪音。
+*/
+export const RELAY_MAX_HOPS = 4;
+export const RELAY_MAX_PER_ROOT = 6;
+const RELAY_LOG_KEEP = 200;
+
+/** 群的接力配置（缺省=关闭；阈值收敛到安全区间，防止手改成 999）。 */
+export function relayOf(group) {
+	const r = (group && typeof group.relay === 'object' && group.relay) || {};
+	const clamp = (v, def, lo, hi) => (Number.isInteger(v) ? Math.min(Math.max(v, lo), hi) : def);
+	return {
+		enabled: r.enabled === true,
+		maxHops: clamp(r.maxHops, RELAY_MAX_HOPS, 1, 8),
+		maxPerRoot: clamp(r.maxPerRoot, RELAY_MAX_PER_ROOT, 1, 20),
+	};
+}
+
+/**
+ * 纯决策：一条成员回复该不该触发接力？
+ *
+ * 返回 `{ targets, reason, nextHop }`：
+ *   · `targets` 为空 ⇒ 不接力；`reason` 说明原因（用于系统提示与单测断言）
+ *   · 只有 `reason === 'ok'` 才有 `nextHop`
+ * 抽成纯函数的原因：这套闸门一旦写错就是**刷屏 / 死循环**，必须在单测里逐条钉住，
+ * 而不是靠"上线看看"。
+ */
+export function planRelay({ group, replyText, hop, rootId, members, agents, log }) {
+	const cfg = relayOf(group);
+	if (!cfg.enabled) { return { targets: [], reason: 'relay-off' }; }
+	const root = String(rootId || '');
+	if (!root) { return { targets: [], reason: 'no-root' }; }
+	const nextHop = (Number(hop) || 1) + 1;
+	if (nextHop > cfg.maxHops) { return { targets: [], reason: 'hop-limit' }; }
+
+	const entries = (Array.isArray(log) ? log : []).filter((e) => e && String(e.rootId || '') === root);
+	if (entries.length >= cfg.maxPerRoot) { return { targets: [], reason: 'root-cap' }; }
+	const woken = new Set(entries.map((e) => String(e.agentId || '')));
+
+	// 只认成员：`parseMentions` 按 members 过滤，且带词尾边界（`@test` 不命中 `test1`）
+	const mentioned = parseMentions(String(replyText || ''), Array.isArray(members) ? members : [],
+		Array.isArray(agents) ? agents : []);
+	const targets = mentioned.filter((a) => !woken.has(String(a.id)));
+	if (!targets.length) {
+		return { targets: [], reason: mentioned.length ? 'all-deduped' : 'no-mention' };
+	}
+	return { targets, reason: 'ok', nextHop };
+}
+
+/* ── 群主（2026-10-26）──────────────────────────────────────────────────────
+   为什么需要：群现在有"改名 / 改策略 / 加人 / 移人 / 删群"这些**破坏性操作**，
+   而以后若让成员 bot 也能动群（比如"群主 bot 拉人入群"），必须先有**权限主体**，
+   否则任何一个 bot 都能把别人的群改掉。
+
+   模型（比 DeepSeekBot 的 `ownerBotSlug` 简化，但语义对齐）：
+     · `group.ownerAgentId`：群主是某个 agent；**空 = 无群主**（向后兼容：存量群谁都能改）
+     · **人永远可以改**（当前只有一个人在用，不需要"人类管理员列表"）
+     · 有群主时，**只有群主本人或人**能改
+     · 群主**不能自己移交**群主（避免 bot 互相提权）；只有人能移交
+*/
+/** 把调用方归一成 `{ kind:'human' } | { kind:'bot', agentId }`（缺省 = 人）。 */
+export function normalizeActor(input) {
+	const raw = input && typeof input === 'object' ? input : {};
+	const kind = String(raw.kind ?? 'human').trim().toLowerCase();
+	if (kind === 'bot') {
+		return { kind: 'bot', agentId: String(raw.agentId ?? '').trim() };
+	}
+	return { kind: 'human' };
+}
+
+/**
+ * 纯判定：`null` = 允许改；否则返回**给人看的原因**（调用方抛 403）。
+ * 单独抠成纯函数是为了能直接单测 —— 权限判定写错的代价很高（要么谁都能删群，要么谁都改不了）。
+ */
+export function groupMutableDenial(group, actor) {
+	const owner = String(group?.ownerAgentId ?? '').trim();
+	const a = normalizeActor(actor);
+	if (!owner) { return null; }            // 无群主 ⇒ 不设限
+	if (a.kind === 'human') { return null; } // 人永远可以
+	if (a.agentId && a.agentId === owner) { return null; }  // 群主本人可以
+	return `这个群有群主（${owner}），只有群主本人或人可以修改；当前调用方：${a.agentId || '(未署名 bot)'}`;
+}
+
+/** 写入口统一用这个：不允许就抛 403（消息里带原因，前端能直接显示）。 */
+function assertMutable(group, actor) {
+	const denial = groupMutableDenial(group, actor);
+	if (denial) { throw httpError(403, denial); }
+}
+
+/* ── 派发方式：抢断 vs 排队（2026-10-26）───────────────────────────────────
+   对应 dsh 的两种投递方法（`tools.js` 里的口径说得很清楚）：
+     · `steer`    —— 注入**当前回合**："它在干活则下一 step 读到，空闲则直接开回合"
+                     ⇒ 长回合会被打断/混进新指令（用户看到"话没说完就被插话"）
+     · `followup` —— **等当前回合结束**再作为新回合处理（消息不会丢，只是排队）
+   群级开关 `group.dispatchMode`：缺省 `steer`（保持既有行为，不惊扰存量群）。
+   ⚠ 不需要自建队列 —— dsh 的 followup 本身就是排队语义，我们再排一层只会更难对账。
+*/
+export const DISPATCH_MODES = ['steer', 'followup'];
+
+/** 群的派发方式（非法/缺省 ⇒ steer，与改动前行为一致）。 */
+export function dispatchModeOf(group) {
+	const raw = String(group?.dispatchMode ?? '').trim().toLowerCase();
+	// `turn` 是给人读的别名（DeepSeekBot 的叫法），内部统一成 followup
+	if (raw === 'turn') { return 'followup'; }
+	return DISPATCH_MODES.includes(raw) ? raw : 'steer';
 }
 
 /**
@@ -306,6 +571,7 @@ export async function addGroupMembers(config, input) {
 	if (!group) {
 		throw httpError(404, `没有这个群：${id || '(没给 id)'}`);
 	}
+	assertMutable(group, input?.actor);   // 群主权限（2026-10-26）
 	const scan = await groupAgentsOf(config);
 	const known = new Set(scan.agents.map(a => a.id));
 	const unknown = wanted.filter(m => !known.has(m));
@@ -396,6 +662,7 @@ export async function removeGroupMember(config, input) {
 	if (!group) {
 		throw httpError(404, `没有这个群：${id || '(没给 id)'}`);
 	}
+	assertMutable(group, input?.actor);   // 群主权限（2026-10-26）
 	if (!(group.members ?? []).includes(member)) {
 		return { group, removed: false };
 	}
@@ -409,27 +676,25 @@ export async function removeGroupMember(config, input) {
 }
 
 /** 从消息文本里解析被 @ 的成员（@id 或 @名字；名字含空格的先试最长匹配）。 */
+/**
+ * 从文本猜收件人（**回退路径**：老客户端/独立页没带 `mentions[]` 时才用）。
+ *
+ * ★ 2026-10-26：不再自己写一套正则 —— 直接复用 `mentions.js` 的 `collectMentions`
+ *   （它同时认显示名与 id、长串优先、词尾边界、丢弃重叠）。
+ *   两套实现是漂移之源：之前这里 `includes('@'+name)` 没有边界，
+ *   `@test` 会唤醒 `test1`（静默叫错人，比不叫更难查）。
+ */
 export function parseMentions(text, members, agents) {
-	const wanted = [];
-	const pool = agents.filter(a => members.includes(a.id));
-	for (const agent of pool) {
-		const byId = new RegExp(`@${escapeRe(agent.id)}(?![A-Za-z0-9._-])`).test(text);
-		/* ★ 2026-10-26 修：原来 `text.includes('@'+name)` **没有边界** ——
-		   `@test` 会命中名为 `test1` 的 bot、`@12` 会命中群名/成员 `123`。
-		   这会静默唤醒错人（比不唤醒更难查）。现在要求词尾边界，与 byId 同口径。 */
-		const byName = agent.name
-			&& new RegExp(`@${escapeRe(agent.name)}(?![A-Za-z0-9._-])`).test(text);
-		if (byId || byName) {
-			wanted.push(agent);
-		}
-	}
-	return wanted;
+	const memberSet = new Set((Array.isArray(members) ? members : []).map(String));
+	const pool = (Array.isArray(agents) ? agents : []).filter(a => memberSet.has(String(a.id)));
+	const hit = collectMentions(text, pool)
+		.filter(m => m.agentId)
+		.map(m => String(m.agentId));
+	const wanted = new Set(hit);
+	return pool.filter(a => wanted.has(String(a.id)));
 }
 
-/** 正则转义（id / name 里可能有 `.`、`-`、`(` 等）。 */
-function escapeRe(text) {
-	return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
+/* （`escapeRe` 已删：解析统一走 `mentions.js`，本文件不再自建正则。） */
 
 /** `@所有人` 的 token（与客户端 `mentions.js` 的 ALL_LABEL 一致）。 */
 const AT_ALL_LABEL = '所有人';
@@ -464,10 +729,14 @@ export function normalizeMentions(raw, text, members, agents) {
 			out.push({ start, end, label, kind: 'all' });
 			continue;
 		}
-		// 只接受"确实是本群成员、且真的存在这只 agent"的 id
-		if (!memberIds.has(label) || !agentIds.has(label) || seen.has(label)) { continue; }
-		seen.add(label);
-		out.push({ start, end, label, agentId: label });
+		/* ★ 2026-10-26：`label` 现在是**显示名**（可有空格），id 走 `agentId`。
+		   · 新客户端：`{ start, end, label:'Code Architect', agentId:'code-architect' }`
+		   · 老客户端：只给了 `{ label:'code-architect' }` ⇒ 回落成 agentId=label（向后兼容） */
+		const agentId = String(item.agentId || '').trim()
+			|| (memberIds.has(label) ? label : '');
+		if (!agentId || !memberIds.has(agentId) || !agentIds.has(agentId) || seen.has(agentId)) { continue; }
+		seen.add(agentId);
+		out.push({ start, end, label, agentId });
 	}
 	return out.sort((a, b) => a.start - b.start);
 }
@@ -517,6 +786,26 @@ function appendTranscript(group, entry) {
 	}
 	group.updatedAt = Date.now();
 	return created;
+}
+
+/**
+ * 把某条投递标成「已回」（2026-10-26）。
+ * 按派发时的 `messageId` 在 transcript 里反查 —— 这是唯一能把"成员的回包"对回
+ * "当初派给它的那条投递"的键（outbox 条目里也带着同一个 id）。
+ */
+function markDeliveryReplied(group, messageId, agentId) {
+	if (!messageId || !Array.isArray(group?.transcript)) { return false; }
+	for (const m of group.transcript) {
+		if (!Array.isArray(m?.deliveries)) { continue; }
+		const d = m.deliveries.find(x => x && x.id === messageId);
+		if (d) {
+			d.state = 'replied';
+			d.repliedAt = Date.now();
+			if (!d.agentId && agentId) { d.agentId = String(agentId); }
+			return true;
+		}
+	}
+	return false;
 }
 
 /** 唤醒策略四档（2026-10-21，对齐 DeepSeekBot 的 GroupWakePolicy）。 */
@@ -572,15 +861,20 @@ function locked(fn) {
  *   调用方把它挂到那条用户消息上，于是群头部能显示"3 人中 2 人已回"。
  *   以前只有 `dispatched`（且只含成功的），失败只在 transcript 里留一句话 ⇒ 用户看不出"谁没回"。
  */
-async function dispatchText(config, state, group, text, targets) {
+async function dispatchText(config, state, group, text, targets, meta = {}) {
 	const dispatched = [];
 	const deliveries = [];
+	/* 接力元信息（2026-10-26）：`hop` 是链路深度，`rootId` 是"这条链从哪条消息起头"。
+	   两者都要落进 outbox —— 成员回复时靠它判断"还能不能再往下传"。 */
+	const hop = Number(meta.hop) > 0 ? Number(meta.hop) : 1;
+	const rootId = String(meta.rootId || '');
+	const fromName = String(meta.fromName || '用户');
 	for (const agent of targets) {
 		try {
 			const { sessionId } = await ensureMemberSession(config, state, agent);
 			const live = state.agents?.get?.(sessionId);
-			if (!live || typeof live.steer !== 'function') {
-				throw httpError(503, `会话不在运行或不支持 steer：${sessionId}`);
+			if (!live || (typeof live.steer !== 'function' && typeof live.followup !== 'function')) {
+				throw httpError(503, `会话不在运行，或不支持 steer/followup：${sessionId}`);
 			}
 			const message = {
 				id: randomUUID(),
@@ -588,19 +882,43 @@ async function dispatchText(config, state, group, text, targets) {
 				/* ★ 派发正文的**唯一收敛点**（2026-10-26）：所有路径（普通 / digest 汇总 /
 				   `@所有人`）最后都经过这里 ⇒ 预算只需加这一处，不会漏。
 				   `transcript` 里存的是全文，这里只截"喂给成员的那份"。 */
-				content: [{ type: 'text', text: `[群聊「${group.name}」· 来自用户]\n${clipDispatchText(text)}\n\n你的答复会回收进群聊记录（最终文本即群消息）。` }],
-				source: { kind: AGENT_MESSAGE_KIND, from: null, hop: 1, to: agent.id, group: group.id },
+				content: [{
+					type: 'text',
+					text: hop > 1
+						/* 接力消息：抬头要写清"这是谁的答复转给你的"，否则成员会以为是用户说话 */
+						? `[群聊「${group.name}」· 接力自 ${fromName}（第 ${hop} 跳）]\n${clipDispatchText(text)}\n\n`
+							+ '你的答复会回收进群聊记录（最终文本即群消息）。'
+							+ '如果还需要别人补充，在答复里 @他；不需要就别 @（每次接力都会占用一次唤醒）。'
+						: `[群聊「${group.name}」· 来自用户]\n${clipDispatchText(text)}\n\n`
+							+ '你的答复会回收进群聊记录（最终文本即群消息）。',
+				}],
+				source: {
+					kind: AGENT_MESSAGE_KIND, from: null, hop, to: agent.id, group: group.id,
+					...(rootId ? { root: rootId } : {}),
+				},
 			};
-			live.steer(message);
+			/* 按群的派发方式投递（2026-10-26）：
+			   `followup` ⇒ 它跑完当前回合再开新回合（不打断）；`steer` ⇒ 注入当前回合。
+			   只有一种方法可用时用它（dsh 版本差异），别因为缺一个就整条失败。 */
+			const via = dispatchModeOf(group);
+			if (via === 'followup' && typeof live.followup === 'function') {
+				live.followup(message);
+			} else if (typeof live.steer === 'function') {
+				live.steer(message);
+			} else {
+				live.followup(message);
+			}
 			outboxNote(config, {
-				kind: 'group', sessionId, groupId: group.id, messageId: message.id,
+				kind: 'group', sessionId, groupId: group.id, messageId: message.id, via,
 				// ★ 供投递状态回收用（回复回来时靠 messageId 反查这条 delivery）
 				agentId: agent.id, agentName: agent.name,
+				// ★ 接力用：回复回来时要据此判断"还能不能再往下传"
+				hop, rootId,
 			});
 			dispatched.push({ agentId: agent.id, name: agent.name, sessionId });
 			deliveries.push({
 				id: message.id, agentId: agent.id, name: agent.name,
-				state: 'dispatched', at: Date.now(),
+				state: 'dispatched', at: Date.now(), via,
 			});
 		} catch (e) {
 			const why = String(e?.message ?? e);
@@ -719,26 +1037,40 @@ export async function flushDueGroups(config, state) {
 		const now = Date.now();
 		const flushed = [];
 		for (const group of groups) {
-			if (normalizeGroupMode(group.mode) !== 'digest') {
+			/* ★ 2026-10-26 成员级策略：群级 mode 不再是"要不要看"的唯一判据 ——
+			   只要**有成员**按 digest 收（继承群 digest，或个人指定 digest），队列就该被检查。 */
+			const d0 = digestPendingOf(group);
+			if (!d0.pending.length) {
 				continue;
 			}
-			const d = digestPendingOf(group);
-			if (!d.pending.length) {
+			const scan0 = await groupAgentsOf(config).catch(() => ({ agents: [] }));
+			const pool0 = scan0.agents.filter(a => (group.members ?? []).includes(a.id));
+			const digestMembers = pool0.filter(a => effectiveModeFor(group, a.id) === 'digest');
+			if (!digestMembers.length) {
+				// 没人按攒批收了（策略被改过）⇒ 清掉队列，别让它永远挂着
+				group.digest = { count: 0, since: now, pending: [] };
+				flushed.push({ groupId: group.id, count: 0, dropped: true });
 				continue;
 			}
+			const d = d0;
 			const wake = wakeOf(group);
 			if (now - d.since < wake.intervalSeconds * 1000) {
 				continue;
 			}
-			const scan = await groupAgentsOf(config).catch(() => ({ agents: [] }));
-			const everyone = scan.agents.filter(a => (group.members ?? []).includes(a.id));
 			const text = digestText(d.pending);
 			group.digest = { count: 0, since: now, pending: [] };
 			appendTranscript(group, {
 				role: 'system',
-				text: `digest 模式：等满 ${wake.intervalSeconds} 秒没攒够 ${wake.count} 条，先汇总派发 ${d.pending.length} 条。`,
+				text: `digest：等满 ${wake.intervalSeconds} 秒没攒够 ${wake.count} 条，先汇总派发 ${d.pending.length} 条（${digestMembers.length} 位成员按攒批接收）。`,
 			});
-			await dispatchText(config, state, group, text, everyone);
+			/* 接力的根 = 这批消息里**最新那条用户消息**（与投递状态挂同一处，语义一致） */
+			const rootUser = [...(group.transcript ?? [])].reverse().find(m => m.role === 'user');
+			const { deliveries } = await dispatchText(config, state, group, text, digestMembers,
+				{ hop: 1, rootId: rootUser?.id || '' });
+			/* digest 的投递状态挂到"最新那条用户消息"上（一次汇总派发对应一批消息，
+			   挂最新一条是可接受的近似；UI 只拿它算"几人已回"）。 */
+			const lastUser = [...(group.transcript ?? [])].reverse().find(m => m.role === 'user');
+			if (lastUser && deliveries.length) { lastUser.deliveries = deliveries; }
 			flushed.push({ groupId: group.id, count: d.pending.length });
 		}
 		if (flushed.length) {
@@ -765,7 +1097,7 @@ export async function postGroupMessage(config, state, input) {
 			throw httpError(404, `没有这个群：${id || '(没给 id)'}`);
 		}
 		const scan = await groupAgentsOf(config);
-		const mode = normalizeGroupMode(group.mode);
+		// ⚠ 不再整群取一个 `mode` 提前分支：逐成员生效策略见下面 `effectiveModeFor`
 		const everyone = scan.agents.filter(a => group.members.includes(a.id));
 		/* ★ 2026-10-26 `@` 提及：客户端给了带 offset 的 `mentions[]` 就用它（**精确**），
 		   没给（老客户端/独立页）才回退字符串口径 —— 两条路的收件人集合一致，只是精度不同。 */
@@ -775,7 +1107,9 @@ export async function postGroupMessage(config, state, input) {
 		const mentioned = ats.length
 			? everyone.filter(a => ats.some(m => m.agentId === String(a.id)))
 			: parseMentions(text, group.members, scan.agents);
-		appendTranscript(group, {
+		/* ★ 记住这条用户消息的引用：派发完成后要往它上面写 `deliveries`（逐成员投递状态），
+		   供群头部显示"3 人中 2 人已回"。`appendTranscript` 会新建对象 ⇒ 必须用它返回的那份。 */
+		const userEntry = appendTranscript(group, {
 			role: 'user',
 			text,
 			...(files.length ? { files } : {}),
@@ -790,17 +1124,31 @@ export async function postGroupMessage(config, state, input) {
 		let dispatchBody = text || (files.length
 			? `（发来 ${files.length} 个附件：${files.map(f => f.name).join('、')}）`
 			: '');
-		if (mode === 'all') {
-			targets = everyone;
-		} else if (mode === 'mentions') {
-			/* `@所有人` ⇒ 唤醒全群（这是"仅 @ 派发"模式下唯一能一次叫醒所有人的方式） */
-			targets = atAll ? everyone : mentioned;
-		} else if (mode === 'silent') {
-			appendTranscript(group, { role: 'system', text: 'silent 模式：这条只进群记录，不唤醒成员（改「唤醒策略」才会派发）。' });
-			await writeGroups(config, groups);
-			return { group, dispatched: [] };
-		} else {
-			// digest：攒条数；满 count 条**立刻**汇总派发，攒不满则等 tick 超时冲刷
+		/* ★★ 2026-10-26 成员级策略：不再「整群一个 mode」一刀切，而是**逐成员**算生效策略
+		   （`effectiveModeFor`：个人配置 > 群默认）。
+		   判定顺序（对每个成员）：
+		     ① 个人策略是 `silent` ⇒ 永不被唤醒（连 @ 也不 —— 与群级 silent 的既有语义一致）
+		     ② 被 @ 到（含 `@所有人`）⇒ 立刻派发（与群级无关，这是"点名"的最高优先级）
+		     ③ 个人策略 `all` ⇒ 立刻派发（哪怕群是 mentions/digest）
+		     ④ 个人策略 `digest` ⇒ 进攒批队列（攒满/超时再派）
+		     ⑤ `mentions` 且没被 @ ⇒ 这条不派
+		   ⇒ 于是同一群里可以"A 只 @ 才理、B 全跟、C 攒批看" (DeepSeekBot 的 per-member 效果)。
+		   ⚠ 攒批**(队列仍是群级一份)**：只按"谁该收攒批"决定 flush 的收件人，见 `digestMembersOf`。 */
+		const atHit = new Set((atAll ? everyone : mentioned).map(a => String(a.id)));
+		const nowTargets = [];
+		const digestTargets = [];
+		const muted = [];
+		for (const agent of everyone) {
+			const eff = effectiveModeFor(group, agent.id);
+			if (eff === 'silent') { muted.push(agent); continue; }
+			if (atHit.has(String(agent.id))) { nowTargets.push(agent); continue; }
+			if (eff === 'all') { nowTargets.push(agent); continue; }
+			if (eff === 'digest') { digestTargets.push(agent); continue; }
+			muted.push(agent);   // mentions 且没被 @
+		}
+
+		if (digestTargets.length) {
+			// 攒条数：满 count 条**立刻**汇总派发，攒不满则等 tick 超时冲刷
 			const wake = wakeOf(group);
 			const d = digestPendingOf(group);
 			d.count += 1;
@@ -809,26 +1157,46 @@ export async function postGroupMessage(config, state, input) {
 			if (d.count < wake.count) {
 				appendTranscript(group, {
 					role: 'system',
-					text: `digest 模式：已攒 ${d.count}/${wake.count} 条（最多等 ${wake.intervalSeconds} 秒）；攒满或到点就汇总派发。`,
+					text: `digest：已攒 ${d.count}/${wake.count} 条（最多等 ${wake.intervalSeconds} 秒；`
+						+ `${digestTargets.length} 位成员按攒批接收）；攒满或到点就汇总派发。`,
 				});
-				await writeGroups(config, groups);
-				return { group, dispatched: [] };
+				// 仍有成员要「立刻收」时不 return（下面继续派 nowTargets）
+				if (!nowTargets.length) {
+					await writeGroups(config, groups);
+					return { group, dispatched: [], deliveries: [] };
+				}
+			} else {
+				group.digest = { count: 0, since: Date.now(), pending: [] };
+				appendTranscript(group, { role: 'system', text: `digest：攒满 ${wake.count} 条，汇总派发给 ${digestTargets.length} 位成员。` });
+				// 汇总派发用汇总正文；立刻派发用原消息（两批人看到的内容本就不同）
+				const { deliveries: digestDeliveries } = await dispatchText(
+					config, state, group, digestText(d.pending), digestTargets,
+					{ hop: 1, rootId: userEntry.id },
+				);
+				const lastUser = [...(group.transcript ?? [])].reverse().find(m => m.role === 'user');
+				if (lastUser && digestDeliveries.length) { lastUser.deliveries = digestDeliveries; }
 			}
-			group.digest = { count: 0, since: Date.now(), pending: [] };
-			appendTranscript(group, { role: 'system', text: `digest 模式：攒满 ${wake.count} 条，汇总派发一次。` });
-			dispatchBody = digestText(d.pending);
-			targets = everyone;
 		}
 
+		targets = nowTargets;
 		if (targets.length === 0) {
-			// mentions 模式没 @ 到任何人：不派发，留系统提示（不静默 ✓）
-			appendTranscript(group, { role: 'system', text: '仅 @ 派发模式：这条消息没有 @ 到任何成员，未派发。用 @成员名 指定响应者。' });
+			// 没人该被立刻唤醒：不静默 —— 说清"为什么这条没派发"
+			appendTranscript(group, {
+				role: 'system',
+				text: digestTargets.length
+					? `这条已进攒批队列（${digestTargets.length} 位成员按攒批接收）。`
+					: '没有成员需要这条消息（各自策略：静默 / 仅 @ / 攒批）。用 @成员名 或调「唤醒策略」可改变。',
+			});
 			await writeGroups(config, groups);
-			return { group, dispatched: [] };
+			return { group, dispatched: [], deliveries: [] };
 		}
-		const dispatched = await dispatchText(config, state, group, dispatchBody, targets);
+		/* 接力的根 = 这条用户消息的 transcript id（成员回复时带上它做去重） */
+		const { dispatched, deliveries } = await dispatchText(config, state, group, dispatchBody, targets,
+			{ hop: 1, rootId: userEntry.id });
+		/* 逐成员投递状态挂在**这条**用户消息上（成员级策略后，"立刻收"的那批就是针对这条消息） */
+		if (deliveries.length) { userEntry.deliveries = deliveries; }
 		await writeGroups(config, groups);
-		return { group, dispatched };
+		return { group, dispatched, deliveries };
 	});
 }
 
@@ -892,7 +1260,53 @@ export function installGroupTracker(ctx, config, state) {
 				text: final ? final.text + (final.interrupted ? '（这条回合被打断了，内容可能不完整）' : '') : '（回合结束了但没有文本产出——可能被工具调用占满或被打断）',
 				sessionId: session.id,
 			});
+			// ★ 投递状态：把"当初派给它的那条"标成 replied（群头部据此算"N 人中 M 人已回"）
+			markDeliveryReplied(group, entry.messageId, entry.agentId);
 			dirty = true;
+
+			/* ★★ 群内接力（2026-10-26）：这条成员答复里 `@` 了别人 ⇒ 转给对方。
+			   四道闸全在 `planRelay` 里（默认关 / hop / 根事件去重 / 单根上限 / 只认显式 @）。
+			   ⚠ 只在 `ok` 时派发；被规则挡住时**只在"确实有人被 @"的情况下**留一条系统提示，
+			   否则 hop-limit 这种会每轮刷一行，把群记录淹了。 */
+			const plan = planRelay({
+				group,
+				replyText: final ? final.text : '',
+				hop: entry.hop,
+				rootId: entry.rootId,
+				members: group.members,
+				agents: scan?.agents ?? [],
+				log: group.relayLog,
+			});
+			if (plan.targets.length) {
+				const speakerName = speaker?.name ?? (preset || session.id);
+				group.relayLog = [
+					...(group.relayLog ?? []),
+					...plan.targets.map(a => ({ rootId: String(entry.rootId || ''), agentId: String(a.id), at: Date.now() })),
+				].slice(-RELAY_LOG_KEEP);
+				appendTranscript(group, {
+					role: 'system',
+					text: `↪ 接力（第 ${plan.nextHop} 跳）：${speakerName} 的答复转给 ${plan.targets.map(a => a.name || a.id).join('、')}`,
+				});
+				const relay = await dispatchText(
+					config, state, group,
+					String(final.text || ''),
+					plan.targets,
+					{ hop: plan.nextHop, rootId: entry.rootId, fromName: speakerName },
+				).catch(e => ({ dispatched: [], deliveries: [], error: String(e?.message ?? e) }));
+				if (relay.error) {
+					appendTranscript(group, { role: 'system', text: `接力派发失败：${relay.error}` });
+				}
+			} else if (plan.reason === 'hop-limit' || plan.reason === 'root-cap' || plan.reason === 'all-deduped') {
+				appendTranscript(group, {
+					role: 'system',
+					text: plan.reason === 'hop-limit'
+						? `接力已到 ${relayOf(group).maxHops} 跳上限，这条不再往下传。`
+						: plan.reason === 'root-cap'
+							? `这个根消息已经触发 ${relayOf(group).maxPerRoot} 次接力，不再往下传（防刷屏）。`
+							: '被 @ 的成员这一轮已经收到过了（同一根消息不重复唤醒）。',
+				});
+				dirty = true;
+			}
 		}
 		// 写盘失败 ⇒ 条目留队下回合再试 ✓；群已删（没东西可写）⇒ 正常出队 ✓
 		let writeFailed = false;

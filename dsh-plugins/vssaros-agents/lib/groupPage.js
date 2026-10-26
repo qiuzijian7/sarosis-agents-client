@@ -714,14 +714,18 @@ function clientJs(keep) {
 	add('}');
 	/* ⚠ 2026-10-26：token 统一改成 `@<id>`（原来插 `@<name>`）—— bot 名含空格
 	   （`Code Architect`）会让 token 在空格处断开，后端边界判断与 offset 校验全失效。 */
-	add('function mention(id){var el=$("gpIn");el.value=(el.value.replace(/\\s+$/,"")+(el.value.trim()?" ":"")+"@"+id+" ").replace(/^\\s+/,"");el.focus();syncSend();atClose();}');
+	/* ★ 2026-10-26：点成员行插入的是**显示名**（`@Code Architect`），不再是 slug。
+	   token 里可以带空格了 —— 因为消息会带 `mentions[]` offset，后端不靠分词。 */
+	add('function mention(id){var el=$("gpIn");el.value=(el.value.replace(/\\s+$/,"")+(el.value.trim()?" ":"")+"@"+atLabelOf(agentOf(id))+" ").replace(/^\\s+/,"");el.focus();syncSend();atClose();}');
 	add('function atRender(){var box=$("gpAtPop");if(!box)return;'
 		+ 'if(!AT.open||!AT.items.length){box.hidden=true;box.innerHTML="";return;}'
 		+ 'box.innerHTML="";AT.items.forEach(function(it,i){'
 		+ 'var b=document.createElement("button");b.type="button";b.className="gp-atitem"+(i===AT.active?" is-on":"");b.setAttribute("data-ati",String(i));'
-		+ 'var m=document.createElement("span");m.className="m";m.textContent="@"+(it.kind==="all"?it.label:it.id);'
-		+ 'var n=document.createElement("span");n.className="n";n.textContent=it.label;'
-		+ 'b.appendChild(m);b.appendChild(n);'
+		/* ★ 2026-10-26：只显示**可读名字**（`@Code Architect`）。
+		   slug 不再显示在列表里（用户要求「不要显示 slug」），只在 tooltip 里留作排查线索。 */
+		+ 'var m=document.createElement("span");m.className="m";m.textContent="@"+(it.display||it.label);'
+		+ 'b.title=(it.kind==="all"?"@所有人（唤醒全部成员）":("@"+it.label+"  ·  id: "+String(it.id||"")));'
+		+ 'b.appendChild(m);'
 		/* ⚠ 必须 mousedown+preventDefault：否则点候选时 textarea 先失焦，caret 丢失、插入位置错 */
 		+ 'b.addEventListener("mousedown",function(ev){ev.preventDefault();});'
 		+ 'b.addEventListener("click",function(){atChoose(i);});box.appendChild(b);});box.hidden=false;}');
@@ -730,7 +734,8 @@ function clientJs(keep) {
 		+ 'if(!q){atClose();return;}var items=atItems(q.query);if(!items.length){atClose();return;}'
 		+ 'AT.open=true;AT.start=q.start;AT.end=q.end;AT.query=q.query;if(AT.active>=items.length)AT.active=0;AT.items=items;atRender();}');
 	add('function atChoose(i){var it=AT.items[i];var el=$("gpIn");if(!it||!el)return;var v=el.value;'
-		+ 'var token="@"+(it.kind==="all"?it.label:it.id);var skip=(v.charAt(AT.end)===" ")?1:0;'
+		/* ★ 2026-10-26：插入**显示名**（`@Code Architect`），不是 slug —— `it.label` 就是名字 */
+		+ 'var token="@"+it.label;var skip=(v.charAt(AT.end)===" ")?1:0;'
 		+ 'var pos=AT.start+token.length+1;el.value=v.slice(0,AT.start)+token+" "+v.slice(AT.end+skip);'
 		+ 'atClose();el.focus();try{el.setSelectionRange(pos,pos);}catch(e){}syncSend();'
 		+ 'var g=activeGroup();if(g){try{localStorage.setItem("gpDraft:"+g.id,el.value);}catch(e){}}}');
@@ -753,18 +758,37 @@ function clientJs(keep) {
 		+ 'el.value=v.slice(0,start)+v.slice(finish);try{el.setSelectionRange(start,start);}catch(x){}syncSend();'
 		+ 'var g=activeGroup();if(g){try{localStorage.setItem("gpDraft:"+g.id,el.value);}catch(x){}}'
 		+ 'atClose();ev.preventDefault();return true;}');
-	/** 气泡里把 `@id` 标成高亮（md 输出已转义，`@id` 仍是字面量；id 不含 HTML 特殊字符） */
-	add('function atMarkHtml(html,members){var out=String(html==null?"":html);'
-		+ '(members||[]).forEach(function(a){var id=String((a&&a.id)||"");if(!id)return;var needle="@"+id;'
-		+ 'var idxs=[];var i=out.indexOf(needle);'
-		+ 'while(i>=0){if(!/[A-Za-z0-9._-]/.test(out.charAt(i+needle.length)))idxs.push(i);i=out.indexOf(needle,i+1);}'
+	/* 气泡里把 `@名字`（或旧的 `@id`）标成高亮。
+	   ★ 2026-10-26：同时认显示名与 id，**长串优先 + 丢弃重叠**（`@Code Architect` 不能被 `@Code` 先吃掉），
+	   与 `atCollect` 同一套规则 —— 两处口径必须一致，否则会出现"高亮切一半"的怪状。 */
+	add('function atMarkHtml(html,members){var out=String(html==null?"":html);var needles=[];'
+		+ '(members||[]).forEach(function(a){var id=String((a&&a.id)||"");if(!id)return;var lb=atLabelOf(a);'
+		+ 'if(lb)needles.push("@"+lb);if(lb!==id)needles.push("@"+id);});'
+		+ 'needles.sort(function(x,y){return y.length-x.length;});'
+		+ 'var hits=[];needles.forEach(function(nd){var i=out.indexOf(nd);while(i>=0){'
+		+ 'if(!/[A-Za-z0-9._-]/.test(out.charAt(i+nd.length)))hits.push({s:i,e:i+nd.length});'
+		+ 'i=out.indexOf(nd,i+1);}});'
+		+ 'hits.sort(function(x,y){return (y.e-y.s)-(x.e-x.s)||x.s-y.s;});'
+		+ 'var keep=[];hits.forEach(function(h){'
+		+ 'if(!keep.some(function(k){return h.s<k.e&&h.e>k.s;}))keep.push(h);});'
 		/* 从后往前插，避免前面的插入把后面的下标顶偏 */
-		+ 'for(var k=idxs.length-1;k>=0;k--){var p=idxs[k];out=out.slice(0,p)+"<span class=\\"gp-at\\">"+needle+"</span>"+out.slice(p+needle.length);}});'
+		+ 'keep.sort(function(x,y){return y.s-x.s;});'
+		+ 'keep.forEach(function(h){out=out.slice(0,h.s)+"<span class=\\"gp-at\\">"+out.slice(h.s,h.e)+"</span>"+out.slice(h.e);});'
 		+ 'return out;}');
-	add('function atCollect(text){var t=String(text==null?"":text);var out=[];'
-		+ 'atMembers().forEach(function(a){var id=String((a&&a.id)||"");if(!id)return;'
-		+ 'atHits(t,"@"+id).forEach(function(i){out.push({start:i,end:i+1+id.length,label:id,agentId:id});});});'
-		+ 'atHits(t,"@"+AT_ALL).forEach(function(i){out.push({start:i,end:i+1+AT_ALL.length,label:AT_ALL,kind:"all"});});'
+	/* 显示名：token 里写它（`@Code Architect`），id 走 agentId 单独带 */
+	add('function atLabelOf(a){var n=String((a&&a.name)||"").trim();return n||String((a&&a.id)||"");}');
+	/* 反扫：同时认名字与 id，**长串优先 + 丢弃重叠**（`@Code Architect` 不能被 `@Code` 先吃掉） */
+	add('function atCollect(text){var t=String(text==null?"":text);var out=[];var taken=[];var needles=[];'
+		+ 'atMembers().forEach(function(a){var id=String((a&&a.id)||"");if(!id)return;var lb=atLabelOf(a);'
+		+ 'if(lb)needles.push({n:"@"+lb,label:lb,agentId:id});'
+		+ 'if(lb!==id)needles.push({n:"@"+id,label:id,agentId:id});});'
+		+ 'needles.sort(function(x,y){return y.n.length-x.n.length;});'
+		+ 'needles.forEach(function(nd){atHits(t,nd.n).forEach(function(i){var s=i,e=i+nd.n.length;'
+		+ 'if(taken.some(function(x){return s<x.end&&e>x.start;}))return;'
+		+ 'taken.push({start:s,end:e});out.push({start:s,end:e,label:nd.label,agentId:nd.agentId});});});'
+		+ 'atHits(t,"@"+AT_ALL).forEach(function(i){var s=i,e=i+1+AT_ALL.length;'
+		+ 'if(taken.some(function(x){return s<x.end&&e>x.start;}))return;'
+		+ 'out.push({start:s,end:e,label:AT_ALL,kind:"all"});});'
 		+ 'out.sort(function(x,y){return x.start-y.start;});return out;}');
 	add('function note(t){var g=activeGroup();if(!g)return;g.transcript=(g.transcript||[]).concat([{role:"system",at:Date.now(),text:t}]);renderStack();}');
 	add('function syncSend(){$("gpSend").disabled=!$("gpIn").value.trim();}');
@@ -785,12 +809,16 @@ function clientJs(keep) {
 	/* 不用 RegExp 做 id 匹配（转义在 `add('…')` 里极易出错）：手扫 + 词尾边界 */
 	add('function atHits(t,needle){var out=[];var i=t.indexOf(needle);while(i>=0){'
 		+ 'var after=t.charAt(i+needle.length);if(!/[A-Za-z0-9._-]/.test(after))out.push(i);i=t.indexOf(needle,i+1);}return out;}');
+	/* 显示名去歧义：名字唯一 ⇒ 名字；同名冲突 ⇒ `名字 · id`（只影响显示，不改 token、不删数据） */
+	add('function atDisplayLabels(ms){var counts={};ms.forEach(function(a){var k=atLabelOf(a).toLowerCase();counts[k]=(counts[k]||0)+1;});'
+		+ 'var out={};ms.forEach(function(a){var nm=atLabelOf(a);out[String(a.id)]=counts[nm.toLowerCase()]>1?(nm+" · "+String(a.id)):nm;});return out;}');
 	add('function atItems(q){var ms=atMembers();var n=String(q==null?"":q).toLowerCase();var out=[];'
+		+ 'var DL=atDisplayLabels(ms);'
 		+ 'var allHit=["所有人","all","everyone"].some(function(x){return x.toLowerCase().indexOf(n)>=0;});'
-		+ 'if(ms.length&&allHit)out.push({kind:"all",id:"",label:AT_ALL});'
+		+ 'if(ms.length&&allHit)out.push({kind:"all",id:"",label:AT_ALL,display:AT_ALL});'
 		+ 'ms.forEach(function(a){if(!a||out.length>=9)return;'
 		+ 'var hit=(String(a.name||"").toLowerCase().indexOf(n)>=0)||(String(a.id||"").toLowerCase().indexOf(n)>=0);'
-		+ 'if(hit)out.push({kind:"bot",id:String(a.id),label:String(a.name||a.id)});});return out;}');
+		+ 'if(hit)out.push({kind:"bot",id:String(a.id),label:atLabelOf(a),display:(DL[String(a.id)]||atLabelOf(a))});});return out;}');
 	// ── 附件（2026-10-26）────────────────────────────────────────────────
 	/* 上传走 `POST /api/group-file?group=&name=`（body = 原始字节）⇒ 拿 { id,name,size,mime }。
 	   和「工作台群聊面板」用**同一套接口**（`client.agents.js` 的 uploadGroupFile）——

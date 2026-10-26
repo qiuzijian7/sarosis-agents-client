@@ -39,7 +39,7 @@ import { renderMemoryEvoPage } from './memoryEvoPage.js';
 /* 群聊附件（2026-10-26）：上传/读取独立成模块（见 groupFiles.js 头注释的安全边界）。
    ⚠ MAX_FILE_BYTES 同时用于 readRawBody 的上限 —— 两边必须是同一个常量，别各写一份。 */
 import { MAX_FILE_BYTES, readGroupFile, saveGroupFile } from './groupFiles.js';
-import { addGroupMembers, createGroup, decideGroupJoin, deleteGroup, installGroupTracker, listGroups, markGroupRead, normalizeGroupMode, postGroupMessage, removeGroupMember, setGroupAvatar, updateGroup, wakeOf } from './groups.js';
+import { addGroupMembers, createGroup, decideGroupJoin, deleteGroup, effectiveModeFor, installGroupTracker, listGroups, markGroupRead, normalizeGroupMode, postGroupMessage, removeGroupMember, setGroupAvatar, setGroupMemberPolicy, updateGroup, wakeOf } from './groups.js';
 import { readLiveSessions } from './live.js';
 import { markSeen, unreadSnapshot } from './seen.js';
 import { backupMemory, clampMemoryChars, enableGit, gitLogOf, gitShowMemoryFile, gitStatusOf, installMemoryBackupWatcher, listBranches, listMemoryBackups, listMemoryFiles, listVersions, MEMORY_CHARS_MAX, readMemoryFile, readMemorySnapshot, restoreMemoryBackup, restoreMemoryFile, setVersion, snapshotGit, switchBranch, writeCoreMemory } from './memory.js';
@@ -1131,6 +1131,10 @@ function applyTopLevel(ctx, config) {
 										: action === 'mode' ? await updateGroup(config, body)
 											: action === 'invite' ? await addGroupMembers(config, body)
 												: action === 'remove' ? await removeGroupMember(config, body)
+								// 成员级唤醒策略（2026-10-26）：mode=inherit 表示回到继承群默认
+								: action === 'policy' ? await setGroupMemberPolicy(config, body)
+									// 派发方式（2026-10-26）：steer（抢断）/ followup（排队等回合结束）
+									: action === 'dispatch' ? await updateGroup(config, body)
 													// 加入需确认（2026-10-21）：群级开关 + 待确认队列
 													: action === 'approval' ? await updateGroup(config, body)
 														: action === 'join-decide' ? await decideGroupJoin(config, body)

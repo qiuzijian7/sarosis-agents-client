@@ -4,12 +4,17 @@
  * 为什么单独一个文件：这套逻辑要被三处共用（工作台 composer / 独立群聊页 / 服务端派发），
  * 而且全是"字符串 + 光标位置"的计算，**不该依赖 DOM 或 React** ⇒ 可以纯 node 跑单测。
  *
- * 语义移植自 DeepSeekBot 的 `packages/client/src/client/mentions.ts`（同一条规则集），
- * 只做了一处**有意的偏离**：
- *   · 那边 token 是 `@` + displayName；我们**用 `@` + agent.id**。
- *     原因：我们的 bot 名含空格（`Code Architect`），`@Code Architect ` 会在空格处断开，
- *     后端的 `(?![A-Za-z0-9._-])` 边界判断和 `slice(start,end)===@label` 校验都会失效。
- *     id 是 `code-architect` 这种无空格稳定串 ⇒ token 可靠。候选项仍**显示 name**。
+ * 语义移植自 DeepSeekBot 的 `packages/client/src/client/mentions.ts`（同一条规则集）。
+ *
+ * ★★ 2026-10-26 语义修正（用户报「输入框 @ 时显示的是 slug，要可读名字」）：
+ *   原来 token 用 `@` + agent.id（`@code-architect`）—— 理由是 bot 名含空格
+ *   （`Code Architect`），怕在空格处断开。但这是**在"靠字符串分词"的前提下的顾虑**；
+ *   我们已经随消息发送 `mentions[]{start,end,label,agentId}` 了 ⇒ token 里**可以有空格**，
+ *   分词不再必要。
+ *   ⇒ 现在：`label` = **显示名**（`@Code Architect`），`agentId` 单独带（`code-architect`）。
+ *      · 服务端/渲染都用 `label` 校验 `slice(start,end) === '@'+label`，用 `agentId` 派发
+ *      · 反扫（老消息、独立页）**同时**认名字与 id，且**长串优先 + 丢弃重叠**
+ *        （否则 `@Code Architect` 会先被 `@Code` 命中，切出一个错的短 token）
  *
  * 关键规则（与参考实现一致，逐条都有对应测试）：
  *   ① `@` 前一个字符若是 `[A-Za-z0-9._%+-]` ⇒ **不触发**（所以 `a@b.com` 不会弹候选）
@@ -154,6 +159,32 @@ export function deleteSelectedMention(value, mentions, selectionStart, selection
 }
 
 /**
+ * 显示名去歧义（2026-10-26）：名字唯一时就是名字；**同名冲突**时追加 ` · id`。
+ *
+ * 为什么需要：`@` 候选与成员列表都按显示名渲染，两个 bot 都叫 `Coder` 时会出现
+ * 两行一模一样的条目 —— 用户无法选择，看起来就是"重复 bot"。
+ *
+ * ⚠ 只影响**显示**：插入到输入框里的 token 仍是纯名字，派发靠 `mentions[].agentId`，
+ *   所以这个后缀**不会**污染文本、也不会影响后端匹配。
+ * ⚠ 也**不动任何数据** —— 重名是可以的，只是要让用户分得清。
+ */
+export function displayLabels(members) {
+	const list = Array.isArray(members) ? members.filter(Boolean) : [];
+	const counts = new Map();
+	for (const a of list) {
+		const key = mentionLabelOf(a).toLocaleLowerCase();
+		counts.set(key, (counts.get(key) || 0) + 1);
+	}
+	const out = new Map();
+	for (const a of list) {
+		const name = mentionLabelOf(a);
+		const dup = (counts.get(name.toLocaleLowerCase()) || 0) > 1;
+		out.set(String(a.id), dup ? `${name} · ${String(a.id)}` : name);
+	}
+	return out;
+}
+
+/**
  * 候选列表。`members` 是本群成员（**已按成员表过滤**，调用方负责）。
  * 返回 `[{ kind:'bot', agent }]` 或 `[{ kind:'all', label }]`（`@所有人` 永远排第一）。
  *
@@ -164,40 +195,69 @@ export function mentionCandidates(members, query) {
 	const list = Array.isArray(members) ? members.filter(Boolean) : [];
 	if (query === undefined || query === null) { return []; }
 	const needle = String(query).toLocaleLowerCase();
+	/* `display` 只给 UI 用（同名时带 ` · id` 后缀）；`agent` 原样带出去，插入时仍用纯名字 */
+	const labels = displayLabels(list);
 	const bots = list
 		.filter((m) => String(m.name || '').toLocaleLowerCase().includes(needle)
 			|| String(m.id || '').toLocaleLowerCase().includes(needle))
 		.slice(0, MAX_CANDIDATES)
-		.map((agent) => ({ kind: 'bot', agent }));
+		.map((agent) => ({ kind: 'bot', agent, display: labels.get(String(agent.id)) || mentionLabelOf(agent) }));
 	const allNames = [ALL_LABEL, 'all', 'everyone'];
 	const offerAll = list.length > 0 && allNames.some((n) => n.toLocaleLowerCase().includes(needle));
-	return offerAll ? [{ kind: 'all', label: ALL_LABEL }, ...bots] : bots;
+	return offerAll ? [{ kind: 'all', label: ALL_LABEL, display: ALL_LABEL }, ...bots] : bots;
+}
+
+/** 成员的**显示名**（空则退回 id）：token 里写它，用户看到的就是人话。 */
+export function mentionLabelOf(agent) {
+	const name = String((agent && agent.name) || '').trim();
+	if (name) { return name; }
+	return String((agent && agent.id) || '').trim();
 }
 
 /**
- * 从**文本**扫出 mentions（id 口径 + 词尾边界）。
+ * 从**文本**扫出 mentions（同时认「显示名」与「id」，长串优先、丢弃重叠）。
  *
- * 为什么不让 UI 维护 offset：编辑（含输入法上屏、粘贴、撤销）会让手维护的 offset 频繁失效，
- * 而这套 token 是 `@` + 无空格 id ⇒ **从文本反扫**既准确又永远和显示一致。
+ * 为什么不让 UI 维护 offset：编辑（含输入法上屏、粘贴、撤销）会让手维护的 offset 频繁失效。
  * 返回按 start 升序，`@所有人` 单独用 `kind:'all'` 标记。
+ *
+ * ⚠ 长串优先是必须的：成员叫 `Code Architect` 时，若先扫 `@Code`（另一个 bot 的名字）
+ *   就会把 `@Code Architect` 切成 `@Code` + ` Architect` —— 静默 @ 错人。
  */
 export function collectMentions(text, members) {
 	const value = String(text == null ? '' : text);
 	const out = [];
+	const taken = [];
+	const needles = [];
 	for (const agent of (Array.isArray(members) ? members : [])) {
-		const id = String(agent && agent.id || '').trim();
+		const id = String((agent && agent.id) || '').trim();
 		if (!id) { continue; }
-		const re = new RegExp('@' + escapeRe(id) + '(?![A-Za-z0-9._-])', 'g');
+		const label = mentionLabelOf(agent);
+		if (label) { needles.push({ needle: '@' + label, label, agentId: id }); }
+		// 兼容旧消息 / 手写 `@id`
+		if (label !== id) { needles.push({ needle: '@' + id, label: id, agentId: id }); }
+	}
+	needles.sort((a, b) => b.needle.length - a.needle.length);
+	for (const n of needles) {
+		const re = new RegExp(escapeRe(n.needle) + '(?![A-Za-z0-9._-])', 'g');
 		let m = re.exec(value);
 		while (m) {
-			out.push({ start: m.index, end: m.index + m[0].length, label: id, agentId: id });
+			const start = m.index;
+			const end = start + n.needle.length;
+			if (!taken.some((t) => start < t.end && end > t.start)) {
+				taken.push({ start, end });
+				out.push({ start, end, label: n.label, agentId: n.agentId });
+			}
 			m = re.exec(value);
 		}
 	}
 	const allRe = new RegExp('@' + escapeRe(ALL_LABEL) + '(?![A-Za-z0-9._-])', 'g');
 	let all = allRe.exec(value);
 	while (all) {
-		out.push({ start: all.index, end: all.index + all[0].length, label: ALL_LABEL, kind: 'all' });
+		const start = all.index;
+		const end = start + all[0].length;
+		if (!taken.some((t) => start < t.end && end > t.start)) {
+			out.push({ start, end, label: ALL_LABEL, kind: 'all' });
+		}
 		all = allRe.exec(value);
 	}
 	return out.sort((a, b) => a.start - b.start);
