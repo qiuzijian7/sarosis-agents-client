@@ -31,7 +31,7 @@ import { fileURLToPath } from 'node:url';
 import { bindFoundation, foundation } from './foundationRef.js';
 import { buildAuditRow } from './core/audit.js';
 
-import { DEFAULT_TOKEN_BUDGET, LEGACY_PARTITION, MAX_INJECT_CHARS, REQUEST_MARKER, SECTION_NAME, SEARCH_CONFIDENCE_THRESHOLD, SECTION_ORDER_FALLBACK, admitSnapshot, buildWriteReason, createSnapshot, isMemoryWriteRequest, isWriteIntent, normalizeSearchResults, parseWriteReason, partitionOf, personaIdOf, policyMemoryTypeOf, readPartitionsOf, renderWorkingContext, resolveWritePolicy, snapshotKeyOf, splitByConfidence, summarizeStats, targetKeyOf, targetLabelOf, validateWritePolicies, validateWritePolicy, WRITE_VERBS } from './core/memory.js';
+import { DEFAULT_TOKEN_BUDGET, LEGACY_PARTITION, MAX_INJECT_CHARS, REQUEST_MARKER, SECTION_NAME, SEARCH_CONFIDENCE_THRESHOLD, SECTION_ORDER_FALLBACK, admitSnapshot, buildWriteReason, createSnapshot, isMemoryWriteRequest, isWriteIntent, normalizeSearchResults, parseWriteReason, partitionOf, writePartitionOf, personaIdOf, policyMemoryTypeOf, readPartitionsOf, renderWorkingContext, resolveWritePolicy, snapshotKeyOf, splitByConfidence, summarizeStats, targetKeyOf, targetLabelOf, validateWritePolicies, validateWritePolicy, WRITE_VERBS } from './core/memory.js';
 
 import { createAuditWriter } from './audit.js';
 
@@ -2096,7 +2096,15 @@ function toolDefinitions(ctx, state, config, auditAppend) {
 			}
 			// ★ 写入预算（与 legacy 同纪律；口径 = **每 Host 运行**，见 `writeBudgetOf`）——
 			// 拦在**打网关之前**：超限时不产生任何网络调用、也不消耗写配额 ✓。
-			const agentId = agentIdOf(config);
+			// ★★ 2026-10-26（用户要求「没选 agent 时按 preset 映射」）：**写分区人设优先** ——
+			//   会话选中了 preset（`vssaros-<id>`）就写人设分区（dsh 侧真正读的地方），
+			//   否则退回工作区分区 `ws-*`（保持原行为，不乱猜 ✓）。规则见 `writePartitionOf`。
+			const primaryPartition = agentIdOf(config);
+			const personaPartition = personaIdOf(ctx?.agent, state?.projections);
+			const agentId = writePartitionOf(primaryPartition, personaPartition);
+			// 观测：把"这次写按 preset 映射到了哪个分区"留在内存态里（页面/探针可读）；
+			// ⚠ 不往审计账本里塞新动作（账本的动作词表是别处按口径用的，乱加会污染 ✓）
+			state.lastWriteScope = { at: Date.now(), primary: primaryPartition, persona: personaPartition, used: agentId };
 			const budget = writeBudgetOf(config, agentId);
 			const used = state.writes.get(agentId) ?? 0;
 			if (used >= budget) {

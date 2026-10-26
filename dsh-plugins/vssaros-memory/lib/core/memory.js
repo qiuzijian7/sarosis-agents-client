@@ -165,6 +165,28 @@ export const PERSONA_PROJECTION_KEY = 'vssaros-persona';
  * @param {unknown} presetId
  * @returns {string}
  */
+/**
+ * **写分区**的选取规则（★ 2026-10-26，用户要求「没选 agent 时按 preset 映射」）。
+ *
+ * 优先级：**会话人设（来自 preset）** > 工作区分区（`ws-<workspaceId>`）。
+ *
+ * 为什么人设优先：
+ *   · dsh 侧的会话/观测/检索**都落在纯 agent 分区**（`personaIdFromPreset('vssaros-<id>')` ⇒ `<id>`）；
+ *   · 而历史实现把写入落在 `ws-<workspaceId>` ⇒ 与读的地方**不是同一个分区** ⇒
+ *     "边聊边记"写进去也没人读（实测：`ws-*` 四层恒 0，人设分区有数千条）✗✗
+ * ⇒ 只要会话选中了 preset（`vssaros-<id>`，非 `vssaros-standard`）就写人设分区；
+ *   否则退回工作区分区（保持原行为，不乱猜 ✓）。
+ *
+ * @param {string} primary 工作区分区（`agentIdOf(config)`）
+ * @param {string} persona 会话人设（`personaIdOf(agent, projections)`，`''` 表示没有人设）
+ * @returns {string}
+ */
+export function writePartitionOf(primary, persona) {
+	const p = typeof persona === 'string' ? persona.trim() : '';
+	if (p) { return p; }
+	return typeof primary === 'string' ? primary : '';
+}
+
 export function personaIdFromPreset(presetId) {
 	if (typeof presetId !== 'string') { return ''; }
 	const id = presetId.trim();
