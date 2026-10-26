@@ -81,6 +81,27 @@ check('⑥ 超长输入 ⇒ 截断到上限（不把整段对话塞进记忆）'
 	return `len=${out[0].text.length}`;
 });
 
+// ── ⑦ **真实事件形状**回归（2026-10-26 对照 dsh 运行时 `types.d.ts` 核对）─────────
+//   `assistant/message` 的 payload 是 `{ turn, step, message: AssistantMessage, stream, usage? }`
+//   ⇒ 文本在 **data.message.content**，**没有** data.content ✗
+//   ⇒ 早期只读 data.content ⇒ 助手文本恒空 ⇒ 真机账本 101/101 no-candidate
+check('⑦ assistant/message 的真实形状（data.message.content）⇒ 必须能产候选', () => {
+	const events = [
+		{ type: 'user/message', data: { content: USER_OK, source: { kind: 'user' } } },
+		{ type: 'assistant/message', data: { turn: 1, step: 0, message: { role: 'assistant', content: [{ type: 'text', text: ASSIST_OK }] }, stream: [] } },
+	];
+	const out = turnCandidatesOf(events, { sessionId: 's-real', turn: 1, now: 1 });
+	assert.equal(out.length, 1, '真实形状下必须产 1 条（读错字段就会是 0，这正是 101/101 no-candidate 的根因 ✗）');
+	assert.ok(out[0].text.includes('⇒'), '文本应含分隔符');
+	return out[0].text.slice(0, 50);
+});
+
+check('⑦b 旧形状（data.content）仍然兼容', () => {
+	const out = turnCandidatesOf([user(USER_OK), assistant(ASSIST_OK)], {});
+	assert.equal(out.length, 1, 'data.content 形状不能因为兼容新形状而回归 ✗');
+	return 'ok';
+});
+
 const failed = results.filter(r => !r.ok);
 for (const r of results) { console.log(`${r.ok ? '✓' : '✗'} ${r.name}${r.detail ? ' — ' + r.detail : ''}`); }
 console.log('');

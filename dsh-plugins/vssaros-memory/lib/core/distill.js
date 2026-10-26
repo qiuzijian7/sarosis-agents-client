@@ -322,12 +322,25 @@ export const TURN_MATCHED_TAG = 'turn-summary';
 export const TURN_MIN_USER_CHARS = 10;
 export const TURN_MIN_ASSISTANT_CHARS = 24;
 
-/** 取事件里的纯文本（字符串 content 或 text 分片数组）。 */
+/**
+ * 取事件里的纯文本。
+ *
+ * ⚠⚠ **两种真实形状都要认**（2026-10-26 对照 dsh 运行时 `types.d.ts` 核对出来的）：
+ *   · `user/message`      ⇒ `event.data.content`（字符串或 text 分片数组）
+ *   · `assistant/message` ⇒ **`event.data.message.content`** —— 事件体是
+ *     `{ turn, step, message: AssistantMessage, stream, usage? }`，**没有** `data.content` ✗✗
+ *   ⇒ 早期只读 `data.content` ⇒ 助手文本**恒为空** ⇒ 回合摘要永远凑不够字数 ⇒
+ *     真机账本 **101/101 `no-candidate`**（"按回合摘要自动沉淀"看起来上线了、其实一条都没产）✗
+ */
 function textOfEvent(event) {
-	const content = event?.data?.content;
-	if (typeof content === 'string') { return content; }
-	if (Array.isArray(content)) {
-		return content.filter(part => part?.type === 'text' && typeof part.text === 'string').map(part => part.text).join(' ');
+	const d = event?.data;
+	const candidates = [d?.content, d?.message?.content, d?.text, d?.message?.text];
+	for (const c of candidates) {
+		if (typeof c === 'string' && c.trim()) { return c; }
+		if (Array.isArray(c)) {
+			const text = c.filter(part => part?.type === 'text' && typeof part.text === 'string').map(part => part.text).join(' ');
+			if (text.trim()) { return text; }
+		}
 	}
   return '';
 }
