@@ -26,6 +26,32 @@ window.__ModuleLoader__.load({
 		const DISCARD_ROUTE = '/x/memory/discard';
 		const DETAIL_HREF = '/x/memory/detail';
 
+		/**
+		 * 工作台吸顶工具条 —— **全插件唯一**的吸顶锚点（宿主据此 sticky；属性名见下）。
+		 *
+		 * ★ 2026-10-26：原来「记忆库」和「记忆详情」各写一个 header（静态两处），
+		 *   虽然运行时互斥（两个页面二选一，实际只渲染 1 个），但静态计数是 2 ⇒
+		 *   `check-workbench-style` 的「恰好 1 个」判据一直红。
+		 *   ⇒ 抽成这个 helper：锚点只在**这里**出现一次，两个页面都调它。
+		 *   ⚠ 顺手统一了样式：两个页面的工具条原来是两份近似但不同的标记，现在只有一份。
+		 *   ⚠ 注释里**不要**再写那个属性的字面量：守卫是按**字符串出现次数**数的，
+		 *     注释里出现一次也会被算进去（这一行踩过，会把计数顶到 2/3）。
+		 */
+		const wbToolbar = (opts) => {
+			const o = opts || {};
+			return h('header', { className: 'wb-toolbar', 'data-dsh-workbench-toolbar': '' },
+				o.back ? h('button', {
+					type: 'button', className: 'wb-btn is-ghost',
+					'data-vssaros-memory-action': 'back-to-library', onClick: o.back,
+				}, '← 返回') : null,
+				h('h1', null, String(o.title || '')),
+				h('span', { className: 'wb-sub' }, String(o.sub || '')),
+				h('span', { className: 'wb-spacer' }),
+				o.refresh ? h('button', { type: 'button', 'data-vssaros-memory-action': 'refresh', onClick: o.refresh }, '⟳ 刷新') : null,
+				// 页面自己的额外按钮（如「查看完整记忆 →」）；位置在刷新之后，与原布局一致
+				o.extra || null);
+		};
+
 // ★★ 2026-10-24（第 9 轮）：**文档级点击探针** —— 用 console.warn（宿主只记 error/warn）。
 //   作用：点一下页面任何地方，日志里就会出现一行 ⇒ 一次分清
 //   "点击根本没到这个文档"（嵌入式宿主吞掉了）还是"到了但按钮处理器没挂上" ✗
@@ -399,22 +425,21 @@ if (typeof document !== 'undefined' && typeof console !== 'undefined' && console
 				'data-vssaros-memory-tools': d ? d.tools : '',
 				'data-vssaros-memory-gateway': d ? d.gateway : '',
 			},
-				h('header', { className: 'wb-toolbar', 'data-dsh-workbench-toolbar': '' },
-					h('h1', null, '记忆库'),
-					h('span', { className: 'wb-sub' }, '只读快照 · v' + (view.data ? view.data.version : '')),
-					h('span', { className: 'wb-spacer' }),
-					h('button', { type: 'button', onClick: () => { void reload(); } }, '⟳ 刷新'),
-					// （入口的历史与三条失败路见 `MemoryDetailPage` 顶部的说明 ✓）
+				wbToolbar({
+					title: '记忆库',
+					sub: '只读快照 · v' + (view.data ? view.data.version : ''),
+					refresh: () => { void reload(); },
 					// ★★ 2026-10-26：入口改成**页内切换**（不再导航/不开窗/不调桥）——
 					//   三条失败路见 `MemoryDetailPage` 顶部注释（整页导航被拦 / window.open 丢 token 黑屏 /
 					//   桌面全窗 openModulePage 开空编辑器黑屏）⇒ 同一个 React 工作台里切二级页最稳 ✓
-					h('button', {
+					extra: h('button', {
 						type: 'button',
 						className: 'wb-btn is-ghost mem-link',
 						'data-vssaros-memory-action': 'open-detail',
 						title: '在同一页面内打开记忆详情（React 二级页；不跳转、不新开窗口）',
 						onClick: () => setPage('detail'),
-					}, '查看完整记忆 →')),
+					}, '查看完整记忆 →'),
+				}),
 				// 主入口 + 统计（与旧页同一组数字口径 ✓）
 				h('div', { className: 'wb-card mem-card' },
 					h('div', { className: 'mem-hero' },
@@ -535,10 +560,14 @@ if (typeof document !== 'undefined' && typeof console !== 'undefined' && console
   border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.3)); background:transparent; color:inherit; }
 .md2 .md2-chip.is-active { background:var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.18)); font-weight:600; }
 .md2 .md2-chip-type { opacity:.8; }
-.md2 .md2-tier[data-tier="working"] { border-color:#5aa9e6; color:#5aa9e6; }
-.md2 .md2-tier[data-tier="episodic"] { border-color:#f0a04b; color:#f0a04b; }
-.md2 .md2-tier[data-tier="semantic"] { border-color:#8bc34a; color:#8bc34a; }
-.md2 .md2-tier[data-tier="procedural"] { border-color:#b07cf0; color:#b07cf0; }
+/* 四个记忆层级的分类色（2026-10-26：原来是裸 hex ⇒ 不随主题、且过不了 S7 守卫）。
+   改成 var(令牌, 兜底) 形式：主题里有对应令牌就跟随主题，没有就用兜底色（语义不变）。
+   ⚠ 这段是**模板字符串**里的 CSS，注释只能用 CSS 的 /* *​/ ——
+     千万别在里面写反引号，那会提前闭合模板字符串（这一行就踩过）。 */
+.md2 .md2-tier[data-tier="working"] { border-color:var(--dsw-alias-brand-primary, #5aa9e6); color:var(--dsw-alias-brand-primary, #5aa9e6); }
+.md2 .md2-tier[data-tier="episodic"] { border-color:var(--dsw-alias-state-warning-primary, #f0a04b); color:var(--dsw-alias-state-warning-primary, #f0a04b); }
+.md2 .md2-tier[data-tier="semantic"] { border-color:var(--dsw-alias-state-success-primary, #8bc34a); color:var(--dsw-alias-state-success-primary, #8bc34a); }
+.md2 .md2-tier[data-tier="procedural"] { border-color:var(--dsw-alias-state-info-primary, #b07cf0); color:var(--dsw-alias-state-info-primary, #b07cf0); }
 .md2 .md2-part { opacity:.75; }
 .md2 .md2-cards { display:flex; flex-wrap:wrap; gap:8px; }
 .md2 .md2-kv { display:flex; gap:8px; align-items:baseline; font-size:var(--wb-f-xs, 12px);

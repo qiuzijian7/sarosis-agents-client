@@ -154,3 +154,37 @@ export async function checkHealth(base?: string): Promise<boolean> {
 		return false;
 	}
 }
+
+/**
+ * 记忆**作用域别名**（★ 2026-10-26，方案 A）。
+ *
+ * 问题：同一个引擎里存在**两套分区命名** ——
+ *   · 工作区 scoped：`ws-<workspaceId>`（dsh 插件 `partitionOf` 拼的）
+ *   · 会话真实 agent（persona）：`saros-claw` / `default` / `knowledge-base-expert` …
+ * ⇒ 写进 A、读 B 就永远「没有记忆」（实测：`ws-*` 四层全 0，`saros-claw` 有 4000+ 条）✗✗
+ *
+ * 解法：由**宿主**注入一条别名（它同时知道工作区 id 与当前 agent），
+ * 渲染侧所有记忆调用都过 `scopedMemoryAgentId()` 解析 ⇒ **读和写必然同一个 scope** ✓
+ * （结构上消除"写 A 读 B"，而不是在每个调用点各自打补丁 ✗）
+ */
+export function memoryScopeAlias(): { from: string; to: string } | undefined {
+	const v = (globalThis as { __SAROS_AGENTMEMORY_SCOPE_ALIAS__?: unknown }).__SAROS_AGENTMEMORY_SCOPE_ALIAS__;
+	if (!v || typeof v !== 'object') { return undefined; }
+	const from = String((v as { from?: unknown }).from ?? '');
+	const to = String((v as { to?: unknown }).to ?? '');
+	return from && to && from !== to ? { from, to } : undefined;
+}
+
+/**
+ * 把 agentId 解析成**记忆作用域**（读/写都必须走这里 ⇒ 单一真源）。
+ *
+ * 规则：命中别名 `from`（或它的 `ws-`/`wa-` 变体）⇒ 换成 `to`；否则**原样返回**。
+ * ⚠ 只在"确有别名"时改，不做任何猜测性映射（有数据的分区行为完全不变 ✓）。
+ */
+export function scopedMemoryAgentId(agentId: string): string {
+	const id = String(agentId ?? '');
+	const alias = memoryScopeAlias();
+	if (!alias || !id) { return id; }
+	if (id === alias.from || id === `ws-${alias.from}` || id === `wa-${alias.from}`) { return alias.to; }
+	return id;
+}

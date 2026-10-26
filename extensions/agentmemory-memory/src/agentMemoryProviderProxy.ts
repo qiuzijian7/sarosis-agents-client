@@ -15,7 +15,7 @@
  *  「AgentMemoryProviderV2 不在插件中实现」的重构目标。
  *--------------------------------------------------------------------------------------------*/
 
-import { serverBase, serverBaseCandidates, setResolvedServerBase, REQUEST_TIMEOUT_MS, checkHealth } from './serverConfig.js';
+import { scopedMemoryAgentId, serverBase, serverBaseCandidates, setResolvedServerBase, REQUEST_TIMEOUT_MS, checkHealth } from './serverConfig.js';
 
 /** 极简日志口（与 ILogService 子集兼容；缺省回退 console——capability-plugin
  *  上下文可能不提供 logService）。R9（2026-09-10）：日志必须能进 VS Code 日志
@@ -263,6 +263,8 @@ export class AgentMemoryProviderProxy {
 	}
 	async loadContext(agentId: string, sessionId: string, query?: string, options?: any): Promise<any> {
 		// 网关不可达时返回安全空上下文（避免下游 null.longTermMemories 崩溃）
+		// ★ 方案 A：**读**也过作用域解析（与写共用同一个解析器 ⇒ 读写必然同 scope）
+		agentId = scopedMemoryAgentId(agentId);
 		let ctx = (await this._call('loadContext', agentId, sessionId, query, options))
 			?? { longTermMemories: [], shortTermMemories: [], injectedContext: '' };
 		if (this._gatewayUp) {
@@ -298,7 +300,8 @@ export class AgentMemoryProviderProxy {
 	}
 
 	async writeMemory(agentId: string, entry: any): Promise<void> {
-		const ok = await this._call('writeMemory', agentId, entry);
+		// ★ 方案 A：**写**过作用域解析
+		const ok = await this._call('writeMemory', scopedMemoryAgentId(agentId), entry);
 		const noticeId = entry?.metadata?.['noticeId'] as string | undefined;
 		const memoryType = (entry?.metadata?.['memoryType'] as string) ?? entry?.type;
 		// 串台防护：透传 entry.metadata.sessionId，使消费方按 agentId::sessionId 精确路由。
@@ -553,11 +556,12 @@ export class AgentMemoryProviderProxy {
 	}
 
 	async observe(agentId: string, payload: any): Promise<void> {
-		await this._call('observe', agentId, payload);
+		// ★ 方案 A：**写**过作用域解析（与读同一个解析器）
+		await this._call('observe', scopedMemoryAgentId(agentId), payload);
 	}
 
 	async observeList(agentId: string, sessionId: string): Promise<any[]> {
-		return (await this._call('observeList', agentId, sessionId)) ?? [];
+		return (await this._call('observeList', scopedMemoryAgentId(agentId), sessionId)) ?? [];
 	}
 
 	async triggerHook(type: string, ctx: Record<string, unknown>): Promise<void> {

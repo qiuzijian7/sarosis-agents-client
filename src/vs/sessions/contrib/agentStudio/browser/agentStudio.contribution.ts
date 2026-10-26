@@ -4295,6 +4295,30 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 			__SAROS_AGENTMEMORY_WANT_DATADIR__?: string;
 			__SAROS_AGENTMEMORY_INJECT__?: boolean | string;
 		};
+
+		// ★★ 2026-10-26（方案 A）：**记忆作用域别名** —— 把"工作区 scoped id"归一到"会话真实 agent"。
+		//   问题：同一引擎里存在两套分区名 —— `ws-<workspaceId>`（dsh 插件 `partitionOf` 拼的）与
+		//   persona（`saros-claw` / `default` / `knowledge-base-expert` …）⇒ 写 A 读 B 就永远"没有记忆"
+		//   （实测：`ws-*` 四层全 0，`saros-claw` 有 4000+ 条）✗✗
+		//   ⇒ 由宿主注入一条别名（**只有这里同时知道 workspaceId 与当前 agent**），
+		//     渲染侧所有记忆调用都过 `scopedMemoryAgentId()` ⇒ **读和写必然同一个 scope** ✓
+		//   ⚠ 拿不到 agent ⇒ **不注入**（宁可保持原行为，也不做猜测性映射 ✗）
+		try {
+			const studio = this.instantiationService.invokeFunction(a => a.get(IAgentStudioService));
+			const wsId = studio.getActiveWorkspaceId();
+			const persona = (await studio.getLastSelectedAgentId()) ?? undefined;
+			if (wsId && persona) {
+				(g as { __SAROS_AGENTMEMORY_SCOPE_ALIAS__?: { from: string; to: string } }).__SAROS_AGENTMEMORY_SCOPE_ALIAS__ = {
+					from: `ws-${wsId}`,
+					to: persona,
+				};
+				this.logService.info(`[AgentMemory] 记忆作用域别名: ws-${wsId} ⇒ ${persona}（读写同一个分区）`);
+			} else {
+				this.logService.info(`[AgentMemory] 记忆作用域别名未注入（workspaceId=${wsId ?? '(无)'} agent=${persona ?? '(无)'}）—— 保持原行为`);
+			}
+		} catch (err) {
+			this.logService.info(`[AgentMemory] 记忆作用域别名注入失败（不影响功能）: ${err instanceof Error ? err.message : String(err)}`);
+		}
 		if (typeof g.__SAROS_AGENTMEMORY_URL__ === 'string' && g.__SAROS_AGENTMEMORY_URL__.length > 0) {
 			return; // 本窗口只注入一次
 		}
