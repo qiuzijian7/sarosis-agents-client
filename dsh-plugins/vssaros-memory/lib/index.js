@@ -4295,6 +4295,27 @@ export function apply(ctx, rawConfig = {}) {
 				//   ⇒ 两个界面的数字与文案口径一致 ✓（各算一遍迟早分叉 ✗）。
 				//   ⚠ 不在这里 `void refresh(...)`：那是**渲染**的副作用（页面每次打开刷一次）⇒
 				//     放进 GET 接口会让轮询/重取把网关打爆 ✗。要新鲜数据由页面上的「刷新」显式触发 ✓。
+				// ★★ 2026-10-26：**记忆详情的 JSON 接口**（React 二级页面用，用户要求"详情用 React 实现"）。
+				//   为什么要有它：详情页过去只有**服务端渲染**一条路 ⇒ React 工作台想展示详情只能靠
+				//   ① 整页导航（丢上下文/黑屏）或 ② `openModulePage`（桌面全窗没有编辑区 ⇒ 空编辑器黑屏）
+				//   ⇒ 把 `loadDetailModel` 的结果**原样暴露成 JSON** ⇒ React 就地渲染二级页 ✓
+				//   ⚠ `params` 是 URLSearchParams（不可 JSON 化）⇒ 单独转普通对象；其余字段都是纯数据 ✓
+				//   ⚠ 取数与 SSR 详情页**同一个函数**（`loadDetailModel`）⇒ 两个界面的口径不会再分叉 ✓
+				if (pathname === `${PAGE_ROUTE}api/detail` || pathname === `${PAGE_ROUTE}api/detail/`) {
+					try {
+						const model = await loadDetailModel({ config, params: url.searchParams, state });
+						const payload = Object.assign({ ok: true, version: PKG_VERSION }, model, {
+							params: Object.fromEntries(url.searchParams),
+						});
+						res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(payload));
+					} catch (e) {
+						const message = String(e?.message ?? e);
+						res.writeHead(500, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify({ ok: false, error: message }));
+					}
+					return;
+				}
 				if (pathname === `${PAGE_ROUTE}api/page` || pathname === `${PAGE_ROUTE}api/page/`) {
 					// 草稿是**渲染依赖** ⇒ 读一次（只读本地 jsonl，代价可忽略 ✓，与 SSR 页同口径）
 					await draftStore.read()

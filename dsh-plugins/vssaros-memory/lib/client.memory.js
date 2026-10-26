@@ -56,12 +56,213 @@ if (typeof document !== 'undefined' && typeof console !== 'undefined' && console
 			return body;
 		}
 
+
+		/* ─── **记忆详情：React 二级页**（2026-10-26；用户要求"二级页面 + React 实现"）────────
+		   历史：这个入口先后试过 3 条路，全都不对 ——
+		     · `location.href='/x/memory/detail'` ⇒ **主 frame 整页导航** ⇒ 被导航守卫拦（"点了没反应"），
+		       或把整个客户端替换掉（丢页签栏/全屏）；
+		     · `window.open('./detail')` ⇒ 内部浏览器打开**没有 token** 的地址 ⇒ **黑屏窗口**；
+		     · `openModulePage('/x/memory/detail')` ⇒ 桌面全窗客户端**没有编辑区** ⇒ 宿主开出空编辑器 ⇒ **黑屏**
+		       （`vssaros-agents/lib/client.agents.js:52-55` 2026-10-23 已踩过同一坑）；且它**不接受带查询串的 route**
+		       （`validatePluginRoute` 逐段校验 ⇒ `?` 判非法 ⇒ invalid command）。
+		   ⇒ 正解：**在同一个 React 工作台里用 state 切二级页**（不导航、不开窗、不需要桥）
+		     ⇒ 页签栏/侧栏/会话上下文全保留，也没有任何 token 问题 ✓
+		   数据：`GET /x/memory/api/detail?view=<id>` ⇒ 服务端复用 `loadDetailModel`（与 SSR 详情页同一份取数 ⇒ 口径不分叉）✓ */
+		const DETAIL_TABS = [
+			{ id: 'memories', label: '🧠 记忆' },
+			{ id: 'sessions', label: '💬 会话' },
+			{ id: 'slots', label: '📌 槽位' },
+			{ id: 'lessons', label: '📖 教训' },
+			{ id: 'consolidation', label: '🔄 固化' },
+			{ id: 'audit', label: '📋 审计' },
+			{ id: 'hooks', label: '🪝 钩子' },
+			{ id: 'commits', label: '🔀 提交' },
+			{ id: 'report', label: '📊 报告' },
+			{ id: 'skills', label: '⚡ 技能' },
+		];
+
+		async function loadDetail(view) {
+			const res = await fetch(API + '/detail?view=' + encodeURIComponent(view), { cache: 'no-store' });
+			const body = await res.json().catch(() => ({}));
+			if (!res.ok || body.ok === false) { throw new Error(body.error || ('HTTP ' + res.status)); }
+			return body;
+		}
+
+		/** 一行 label/value（详情页到处要用，统一在这儿 ✓）。 */
+		const kvRow = (label, value) => h('div', { className: 'md2-kv' },
+			h('span', { className: 'md2-k' }, String(label)),
+			h('span', { className: 'md2-v' }, typeof value === 'string' ? value : JSON.stringify(value)));
+
+		const emptyHint = text => h('p', { className: 'wb-empty', 'data-memory-detail-empty': '' }, text);
+
+		const badge = (text, cls) => h('span', { className: 'md2-badge ' + (cls || '') }, String(text));
+
+		/** 每条数据的**首列摘要**（不同来源字段名不同 ⇒ 统一在这里挑一个能看的 ✓）。 */
+		function rowText(row, keys) {
+			for (let i = 0; i < keys.length; i++) {
+				const v = row && row[keys[i]];
+				if (typeof v === 'string' && v.trim()) { return v.trim(); }
+			}
+			try { return JSON.stringify(row).slice(0, 300); } catch (e) { return '(无法显示)'; }
+		}
+
+		function MemoryDetailPage(props) {
+			const [tab, setTab] = useState('memories');
+			const [st, setSt] = useState({ status: 'loading', data: null, error: '' });
+			const reload = useCallback(async () => {
+				setSt(prev => ({ status: 'loading', data: prev.data, error: '' }));
+				try {
+					const body = await loadDetail(tab);
+					setSt({ status: 'ready', data: body, error: '' });
+				} catch (e) {
+					setSt({ status: 'error', data: null, error: String((e && e.message) || e) });
+				}
+			}, [tab]);
+			useEffect(() => { void reload(); }, [reload]);
+
+			const m = st.data || {};
+			const arr = v => (Array.isArray(v) ? v : []);
+
+			const rowsOfView = () => {
+				if (tab === 'memories') {
+					const items = arr(m.items);
+					if (!items.length) { return emptyHint('这个分区里没有记忆条目（换页签/换分区看看；空 ≠ 出错，服务端口径已核对 ✓）'); }
+					return h('ul', { className: 'md2-list', 'data-memory-detail-list': 'memories' }, items.slice(0, 200).map((it, i) =>
+						h('li', { key: 'm' + i, className: 'md2-row' },
+							h('span', { className: 'md2-row-top' },
+								badge(String(it.tier || '?')), it.type ? badge(String(it.type), 'md2-badge-type') : null,
+								it.timestamp ? h('span', { className: 'md2-time' }, new Date(Number(it.timestamp) || 0).toLocaleString()) : null),
+							h('span', { className: 'md2-row-text' }, String(it.content || '').slice(0, 400)))));
+				}
+				if (tab === 'sessions') {
+					const ss = arr(m.sessions), sm = arr(m.summaries);
+					return h('div', { 'data-memory-detail-list': 'sessions' },
+						m.sessionsError ? h('p', { className: 'mem-err' }, '会话读取失败：' + String(m.sessionsError)) : null,
+						h('h4', { className: 'md2-h' }, '会话（' + ss.length + '）'),
+						ss.length ? h('ul', { className: 'md2-list' }, ss.slice(0, 100).map((x, i) =>
+							h('li', { key: 's' + i, className: 'md2-row' }, h('span', { className: 'md2-row-text mono' }, String(x.sessionId || x.id || rowText(x, ['sessionId', 'id'])))))
+						) : emptyHint('没有会话记录'),
+						h('h4', { className: 'md2-h' }, '摘要（' + sm.length + '）'),
+						sm.length ? h('ul', { className: 'md2-list' }, sm.slice(0, 100).map((x, i) =>
+							h('li', { key: 'sm' + i, className: 'md2-row' }, h('span', { className: 'md2-row-text' }, rowText(x, ['summary', 'text', 'content']).slice(0, 400))))
+						) : emptyHint('没有会话摘要'));
+				}
+				if (tab === 'slots') {
+					const slots = arr(m.slots);
+					const names = arr(m.slotNames);
+					const byName = {};
+					slots.forEach(x => { byName[String(x.name || x.slot || '')] = x; });
+					const list = names.length ? names.map(n => byName[n] || { name: n, content: '' }) : slots;
+					if (!list.length) { return emptyHint('没有固定槽位'); }
+					return h('div', { 'data-memory-detail-list': 'slots' }, list.map((x, i) => {
+						const content = String(x.content || '');
+						return h('div', { key: 'sl' + i, className: 'md2-slot' },
+							h('div', { className: 'md2-slot-head' }, h('strong', null, String(x.name || '(未命名)')),
+								badge(content.trim() ? (content.length + ' 字') : '(空)', content.trim() ? '' : 'md2-badge-empty')),
+							content.trim() ? h('pre', { className: 'md2-pre' }, content.slice(0, 1200)) : null);
+					}));
+				}
+				if (tab === 'lessons') {
+					const ls = arr(m.lessons);
+					if (!ls.length) { return emptyHint('还没有教训 —— 教训要**显式提炼**才会产生（不是自动攒的）'); }
+					return h('ul', { className: 'md2-list', 'data-memory-detail-list': 'lessons' }, ls.slice(0, 200).map((x, i) =>
+						h('li', { key: 'l' + i, className: 'md2-row' },
+							h('span', { className: 'md2-row-text' }, String(x.content || '').slice(0, 400)),
+							arr(x.tags).length ? h('span', { className: 'md2-row-top' }, arr(x.tags).map((t, j) => badge(String(t), 'md2-badge-type'))) : null)));
+				}
+				if (tab === 'consolidation') {
+					return h('div', { 'data-memory-detail-list': 'consolidation' },
+						h('div', { className: 'md2-cards' },
+							kvRow('Episodic', arr(m.episodicItems).length),
+							kvRow('Semantic', arr(m.semanticItems).length),
+							kvRow('Procedural', arr(m.proceduralItems).length)),
+						h('h4', { className: 'md2-h' }, '固化上下文'),
+						String(m.consolidationContext || '').trim()
+							? h('pre', { className: 'md2-pre' }, String(m.consolidationContext).slice(0, 4000))
+							: emptyHint('没有固化上下文（引擎未返回）'));
+				}
+				if (tab === 'audit') {
+					const summary = m.auditSummary || {};
+					const log = arr(m.auditLog);
+					return h('div', { 'data-memory-detail-list': 'audit' },
+						h('div', { className: 'md2-cards' }, Object.keys(summary).map((k, i) => h('span', { key: 'as' + i }, kvRow(k, summary[k])))),
+						h('h4', { className: 'md2-h' }, '审计日志（落盘账本 + 内存态，' + log.length + ' 条）'),
+						log.length ? h('ul', { className: 'md2-list' }, log.slice(0, 200).map((x, i) =>
+							h('li', { key: 'au' + i, className: 'md2-row' },
+								h('span', { className: 'md2-row-top' }, badge(String(x.operation || x.action || '?')),
+									x.type || x.tool ? badge(String(x.type || x.tool), 'md2-badge-type') : null,
+									x.timestamp ? h('span', { className: 'md2-time' }, new Date(Number(x.timestamp) || 0).toLocaleString()) : null),
+								h('span', { className: 'md2-row-text' }, String(x.content || x.target || '').slice(0, 300)))))
+							: emptyHint('账本里没有审计条目'));
+				}
+				if (tab === 'hooks') {
+					const stats = m.hookStats || {};
+					const keys = Object.keys(stats);
+					if (!keys.length) { return emptyHint('没有钩子统计'); }
+					return h('div', { className: 'md2-cards', 'data-memory-detail-list': 'hooks' }, keys.map((k, i) => h('span', { key: 'h' + i }, kvRow(k, stats[k]))));
+				}
+				if (tab === 'commits') {
+					const stats = m.commitStats || {};
+					const cs = arr(m.commits);
+					return h('div', { 'data-memory-detail-list': 'commits' },
+						h('div', { className: 'md2-cards' }, Object.keys(stats).map((k, i) => h('span', { key: 'cs' + i }, kvRow(k, stats[k])))),
+						cs.length ? h('ul', { className: 'md2-list' }, cs.map((x, i) =>
+							h('li', { key: 'c' + i, className: 'md2-row' },
+								h('span', { className: 'md2-row-top mono' }, String(x.sha || '').slice(0, 10),
+									x.timestamp ? h('span', { className: 'md2-time' }, new Date(Number(x.timestamp) || 0).toLocaleString()) : null),
+								h('span', { className: 'md2-row-text' }, String(x.message || '').slice(0, 300)))))
+							: emptyHint('记忆库没记过提交（这一页统计的是**记忆库自己记录的提交**，不是代码库 git 历史）'));
+				}
+				if (tab === 'report') {
+					const r = m.report;
+					if (!r) { return emptyHint('报告为空（引擎未返回）'); }
+					if (typeof r === 'string') { return h('pre', { className: 'md2-pre' }, r.slice(0, 6000)); }
+					const keys = Object.keys(r);
+					return h('div', { className: 'md2-cards', 'data-memory-detail-list': 'report' }, keys.map((k, i) => h('span', { key: 'r' + i }, kvRow(k, r[k]))));
+				}
+				// skills
+				const stats = m.skillStats || {};
+				const skills = arr(m.skills);
+				return h('div', { 'data-memory-detail-list': 'skills' },
+					h('div', { className: 'md2-cards' }, Object.keys(stats).map((k, i) => h('span', { key: 'ks' + i }, kvRow(k, stats[k])))),
+					skills.length ? h('ul', { className: 'md2-list' }, skills.map((x, i) =>
+						h('li', { key: 'k' + i, className: 'md2-row' },
+							h('span', { className: 'md2-row-top' }, badge(String(x.confidence != null ? x.confidence : '?')),
+								x.skillMdWritten ? badge('SKILL.md ✓') : badge('未写文件', 'md2-badge-empty')),
+							h('span', { className: 'md2-row-text' }, String(x.title || x.trigger || x.id || '').slice(0, 300)))))
+						: emptyHint('没有技能（技能需显式提取；旧口径数据在 mem:skills 里，读侧已兼容）'));
+			};
+
+			return h('div', { className: 'wb wb-mem md2', 'data-vssaros-page': 'memory-detail' },
+				h('header', { className: 'wb-toolbar', 'data-dsh-workbench-toolbar': '' },
+					h('button', { type: 'button', className: 'wb-btn is-ghost', 'data-vssaros-memory-action': 'back-to-library', onClick: () => props.onBack() }, '← 返回记忆库'),
+					h('h1', null, '记忆详情'),
+					h('span', { className: 'wb-sub' }, 'v' + String(m.version || '') + (m.agentId ? ' · ' + String(m.agentId) : '')),
+					h('span', { className: 'wb-spacer' }),
+					h('button', { type: 'button', onClick: () => { void reload(); } }, '⟳ 刷新')),
+				h('nav', { className: 'md2-tabs', 'data-memory-detail-tabs': '' }, DETAIL_TABS.map(t =>
+					h('button', {
+						key: t.id, type: 'button',
+						className: 'md2-tab' + (t.id === tab ? ' is-active' : ''),
+						'data-memory-detail-tab': t.id,
+						'aria-selected': t.id === tab ? 'true' : 'false',
+						onClick: () => setTab(t.id),
+					}, t.label))),
+				st.status === 'error'
+					? h('p', { className: 'wb-empty mem-err', role: 'alert', 'data-memory-detail-state': 'error' }, '详情读取失败：' + st.error)
+					: (st.status === 'loading' && !st.data
+						? h('p', { className: 'wb-empty', 'data-memory-detail-state': 'loading' }, '正在读取详情…')
+						: h('section', { className: 'md2-body', 'data-memory-detail-state': 'ready' }, rowsOfView())));
+		}
+
 		function MemoryPanel() {
 			const [view, setView] = useState({ status: 'loading', data: null, error: '' });
 			const [note, setNote] = useState('');
 			const [noteError, setNoteError] = useState(false);
 			const [busy, setBusy] = useState('');
 			const [diagOpen, setDiagOpen] = useState(false);
+			// ★ 2026-10-26：**页内二级页**（不导航/不开窗）—— 见 MemoryDetailPage 顶部注释里的三条失败路 ✗
+			const [page, setPage] = useState('library');
 
 			const say = (text, isError) => { setNote(String(text || '')); setNoteError(!!isError); };
 			const reload = useCallback(async () => {
@@ -117,6 +318,9 @@ if (typeof document !== 'undefined' && typeof console !== 'undefined' && console
 				h('div', { className: 'wb-card-num' }, String(value)),
 				h('div', { className: 'wb-card-label' }, label));
 
+			// 二级页：同一个工作台内切换（页签栏/侧栏/会话上下文全保留 ✓）
+			if (page === 'detail') { return h(MemoryDetailPage, { onBack: () => setPage('library') }); }
+
 			if (view.status === 'loading' && !view.data) {
 				return h('div', { className: 'wb wb-mem', 'data-vssaros-page': 'memory' }, h('p', { className: 'wb-empty', 'data-memory-state': 'loading' }, '正在读取记忆…'));
 			}
@@ -142,68 +346,16 @@ if (typeof document !== 'undefined' && typeof console !== 'undefined' && console
 					h('span', { className: 'wb-sub' }, '只读快照 · v' + (view.data ? view.data.version : '')),
 					h('span', { className: 'wb-spacer' }),
 					h('button', { type: 'button', onClick: () => { void reload(); } }, '⟳ 刷新'),
-					// ★★ 2026-10-24（第 7 轮，真机定案）：**这一屏是 dsh 客户端渲染的**（不是服务端 SSR 页）
-					//   ⇒ 服务端注入的 OPEN_DETAIL_JS **跑不到这里** ⇒ 之前这个 <a> 只有 href
-					//   ⇒ 点击 = 普通**主 frame 整页导航** ⇒ 被宿主导航守卫（只放行 `/`）拦掉
-					//   ⇒ 用户看到的就是"点了没反应" ✗✗（日志：`[nav] … target=/x/memory/detail => block`）
-					//   ⇒ 改成走宿主的 `openModulePage`：在**编辑区标签页**打开详情（页签栏保留、可切回）✓
-					//   无桥（纯浏览器）⇒ **不拦**，让 href 自己跳（这是真能用的退化 ✓）
-					h('a', {
+					// （入口的历史与三条失败路见 `MemoryDetailPage` 顶部的说明 ✓）
+					// ★★ 2026-10-26：入口改成**页内切换**（不再导航/不开窗/不调桥）——
+					//   三条失败路见 `MemoryDetailPage` 顶部注释（整页导航被拦 / window.open 丢 token 黑屏 /
+					//   桌面全窗 openModulePage 开空编辑器黑屏）⇒ 同一个 React 工作台里切二级页最稳 ✓
+					h('button', {
+						type: 'button',
 						className: 'wb-btn is-ghost mem-link',
-						href: '/x/memory/?view=detail',   // ★ 无 JS 也至少路径正确（token 由宿主加载时补）
 						'data-vssaros-memory-action': 'open-detail',
-						onClick: ev => {
-							if (ev) { ev.preventDefault(); }
-							// ★★ 2026-10-25（第 10 轮）：照抄 `vssaros-agents/lib/client.agents.js` 的 **openModuleRoute** 模式
-							//   —— 那边 2026-10-23 用四轮踩出了同一组坑，结论直接可用：
-							//   ① **桌面全窗客户端（VsSaros — Desktop）没有 IDE 编辑区** ⇒ 调 `openModulePage` 会
-							//      让宿主开出一个**空编辑器** ⇒ 用户看到"**整个窗口黑屏**" ✗✗（真机一致）
-							//      ⇒ 该场景必须**整页导航**。
-							//   ② 用 **`?view=detail`（同路由查询参数）**而不是 `/x/memory/detail`：
-							//      · pathname 不变（仍 `/x/memory/`）⇒ 不触发"从 / 跳模块页"的禁令 ✓
-							//      · **文档同源同路径** ⇒ 宿主加载时拼的 token 不会丢 ⇒ 不会再出现"没有 token 的黑屏"✓
-							//   ③ IDE 编辑区场景走 `openModulePage`（开标签页、页签栏保留）✓
-							//   ⚠⚠ **`openModulePage` 的 route 不能带查询串**：协议 `validatePluginRoute` 逐段校验
-							//      （每段必须匹配 `SEGMENT_RE`）⇒ `/x/memory/?view=detail` 里的 `?` 直接判**非法**
-							//      ⇒ 宿主回 `vssarosDsh: invalid command`（真机 2026-10-25 13:13 实测 ✗✗）
-							//      ⇒ 这里传**干净子路由** `/x/memory/detail`（宿主按前缀归属到 `/x/memory/` ✓，
-							//        加载时由宿主自己拼 token ⇒ 不会 401）
-							const b = (() => { try { return typeof window !== 'undefined' ? window.vssarosDsh : null; } catch { return null; } })();
-							const topLevel = (() => { try { return window.self === window.top; } catch { return false; } })();
-							const say = m => { if (typeof console !== 'undefined' && console.warn) { console.warn('[vssaros-memory][v0.4.1] ' + m); } };
-							// ⚠⚠ 目标 URL 必须是**绝对路径 + 继承当前查询参数**：
-							//   ① 相对 `?view=detail` 会按**当前文档**解析 ⇒ 当前若是 `/` 就变成 `/?view=detail`（错）✗
-							//   ② 丢掉当前查询串 ⇒ **token 丢了** ⇒ 服务端 401 ⇒ 又是黑屏 ✗✗
-							const targetUrl = (() => {
-								try {
-									const u = new URL('/x/memory/?view=detail', location.href);
-									for (const kv of new URL(location.href).searchParams) {
-										if (!u.searchParams.has(kv[0])) { u.searchParams.set(kv[0], kv[1]); }
-									}
-									return u.pathname + '?' + u.searchParams.toString();
-								} catch (e) { return '/x/memory/?view=detail'; }
-							})();
-							say('open-detail click; surface=' + (b && b.surface) + ' topLevel=' + topLevel + ' hasBridge=' + !!b);
-							// ① 桌面全窗（无编辑区）⇒ 整页导航到**同路由**的详情视图（不黑屏、不丢 token）
-							if (b && b.surface === 'full' && topLevel) {
-								say('⇒ 桌面全窗：整页导航 ' + targetUrl);
-								try { window.location.assign(targetUrl); return; } catch (e) { say('location.assign 失败：' + ((e && e.message) || e)); }
-							}
-							// ② IDE 编辑区 ⇒ 在标签页里打开（同路由查询参数，服务端会渲染详情）
-							if (b && typeof b.openModulePage === 'function') {
-								say('⇒ 编辑区打开 openModulePage(/x/memory/detail)');
-								try {
-									Promise.resolve(b.openModulePage('/x/memory/detail')).then(
-										() => say('openModulePage OK'),
-										e => say('openModulePage FAILED: ' + ((e && e.message) || e))
-									);
-									return;
-								} catch (e) { say('openModulePage 抛错：' + ((e && e.message) || e)); }
-							}
-							// ③ 无桥 ⇒ 原样跳同路由（子帧/顶层都可能，最差是"被守卫拦"但绝不黑屏、绝不静默）
-							say('⇒ 无桥兜底：location.assign(' + targetUrl + ')');
-							try { window.location.assign(targetUrl); } catch { /* 放弃 */ }
-						},
+						title: '在同一页面内打开记忆详情（React 二级页；不跳转、不新开窗口）',
+						onClick: () => setPage('detail'),
 					}, '查看完整记忆 →')),
 				// 主入口 + 统计（与旧页同一组数字口径 ✓）
 				h('div', { className: 'wb-card mem-card' },
@@ -302,6 +454,32 @@ if (typeof document !== 'undefined' && typeof console !== 'undefined' && console
 }
 .wb-mem .wb-acts button:hover, .wb-mem .wb-toolbar button:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.14)); }
 .mem-err { color: var(--dsw-alias-state-error-primary, #f48771); }
+/* ── 记忆详情（React 二级页，2026-10-26）────────────────────────────── */
+.md2 .md2-tabs { display:flex; flex-wrap:wrap; gap:4px; padding:0 16px; margin:6px 0 2px; }
+.md2 .md2-tab { padding:3px 10px; border-radius:var(--wb-r-pill, 999px); font-size:var(--wb-f-xs, 12px);
+  border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.3)); background:transparent; color:inherit; cursor:pointer; }
+.md2 .md2-tab.is-active { background:var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.18)); font-weight:600; }
+.md2 .md2-body { padding:8px 16px 20px; overflow:auto; }
+.md2 .md2-h { margin:12px 0 6px; font-size:var(--wb-f-xs, 12px); opacity:.75; font-weight:600; }
+.md2 .md2-list { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:6px; }
+.md2 .md2-row { display:flex; flex-direction:column; gap:3px; padding:6px 8px; border-radius:6px;
+  border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.22)); }
+.md2 .md2-row-top { display:flex; flex-wrap:wrap; gap:4px; align-items:center; }
+.md2 .md2-row-text { font-size:var(--wb-f-xs, 12px); line-height:1.5; white-space:pre-wrap; word-break:break-word; }
+.md2 .md2-row-text.mono { font-family:var(--wb-font-mono, monospace); }
+.md2 .md2-badge { padding:1px 6px; border-radius:999px; font-size:11px;
+  border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.3)); opacity:.9; }
+.md2 .md2-badge-empty { opacity:.55; }
+.md2 .md2-time { font-size:11px; opacity:.6; }
+.md2 .md2-cards { display:flex; flex-wrap:wrap; gap:8px; }
+.md2 .md2-kv { display:flex; gap:8px; align-items:baseline; font-size:var(--wb-f-xs, 12px);
+  border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.22)); border-radius:6px; padding:3px 8px; }
+.md2 .md2-k { opacity:.7; }
+.md2 .md2-v { font-weight:600; }
+.md2 .md2-slot { border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.22)); border-radius:8px; padding:8px 10px; margin-bottom:8px; }
+.md2 .md2-slot-head { display:flex; gap:8px; align-items:center; margin-bottom:4px; }
+.md2 .md2-pre { margin:4px 0 0; padding:8px; border-radius:6px; white-space:pre-wrap; word-break:break-word;
+  background:var(--dsw-alias-bg-l2, rgba(127,127,127,.08)); font-size:11px; max-height:320px; overflow:auto; }
 /* 2026-10-24：按**容器**响应（sideview / 右栏只有 320–420px，@media 判不出来） */
 .wb-mem { container-type: inline-size; }
 @container (max-width: 860px) {
