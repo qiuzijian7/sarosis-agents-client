@@ -324,31 +324,20 @@ const SKILL_PREVIEW_SCRIPT = `
 
 	if (input) { input.addEventListener('input', applyFilter); }
 
-	/* 行内抽屉：点一行就地展开正文（取代原来钉在底部的预览面板 —— 那个面板在窄栏里抢纵向空间）。 */
+	/*
+	 * ★ 2026-10-26（用户：「已安装的 skill item，点击后即会展开，又会弹出UI，希望仅弹出UI即可」）：
+	 *   以前点一行会**同时**做两件事 —— 展开行内抽屉 + 打开详情弹层（两个独立的 click 监听器）。
+	 *   抽屉里的内容（激活 / 技能 id / 商城商品 / 文件目录 / 正文）弹层里**全都有**，
+	 *   而且弹层是后来统一过的"唯一详情入口"⇒ 行内抽屉在这里已经没有存在价值。
+	 *
+	 * 现在的口径：
+	 *   · 点行 = 只开弹层（由页尾那段委派处理器统一处理，五类条目一致）；
+	 *   · <li class="sk-drawer"> **保留在 DOM 里但永远不展开** —— 它是弹层的数据源
+	 *     （openMkDlg 从这里取 文件/目录 与 pre[data-sk-body]），删掉弹层就没内容了；
+	 *   · 键盘：Enter / 空格 → row.click()，同样只走弹层（<li> 不会自己触发 click，必须转一次）。
+	 */
 	rows.forEach(function (row) {
-		row.setAttribute('aria-expanded', 'false');
 		row.setAttribute('tabindex', '0');
-		row.addEventListener('click', function () {
-			var id = row.getAttribute('data-skill-id');
-			var panel = detailOf(row);
-			if (!id || !panel) { return; }
-			if (!panel.hidden) { collapse(row); return; }
-			rows.forEach(collapse);
-			row.classList.add('open');
-			row.setAttribute('aria-expanded', 'true');
-			panel.hidden = false;
-			var body = panel.querySelector('[data-sk-body]');
-			if (!body || panel.getAttribute('data-loaded') === '1') { return; }
-			body.textContent = '读取中…';
-			window.fetch('/x/skills/api/skill?id=' + encodeURIComponent(id), { credentials: 'same-origin' })
-				.then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
-				.then(function (r) {
-					if (!r.ok) { body.textContent = '读不了：' + ((r.data && r.data.error) || '未知原因'); return; }
-					panel.setAttribute('data-loaded', '1');
-					body.textContent = (r.data.content || '') + '\\n\\n（' + (r.data.contentBytes || 0) + ' 字节 · ' + (r.data.path || '') + '）';
-				})
-				.catch(function (e) { body.textContent = '读不了：' + e; });
-		});
 		row.addEventListener('keydown', function (ev) {
 			if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); row.click(); }
 		});
@@ -461,6 +450,125 @@ const SKILL_PREVIEW_SCRIPT = `
 	 * 为什么点开才拉：商品正文每条几 KB，上百条就是几百 KB —— 列表不该背着它；
 	 * 而且大多数人只是扫一眼卡片。失败如实写在面板里（不回退成空白）。
 	 */
+	/**
+	 * 极简 Markdown → HTML。
+	 *
+	 * 商城的 detail_md 是 markdown，以前直接当 HTML 塞进弹层 ⇒ 用户看到的是满屏 # 和 **。
+	 * 只支持我们实际会用到的那点语法：标题 / 列表 / 代码块 / 行内代码 / 粗体 / 链接 / 分隔线 / 引用。
+	 *
+	 * ⚠ 本函数在**模板字符串**里：不能出现反引号，也不能写带 \r \n 的正则（会被模板吃掉，踩过 6 次）。
+	 */
+	function mdToHtml(src) {
+		var BT = String.fromCharCode(96);
+		var NL = String.fromCharCode(10);
+		var CR = String.fromCharCode(13);
+		var lines = String(src || '').split(CR).join('').split(NL);
+		var html = '';
+		var inCode = false;
+		var inList = false;
+		var para = [];
+
+		function inlineMd(text) {
+			var out = escapeHtmlClient(text);
+			var bi = out.indexOf('**');
+			while (bi >= 0) {
+				var bj = out.indexOf('**', bi + 2);
+				if (bj < 0) { break; }
+				out = out.slice(0, bi) + '<strong>' + out.slice(bi + 2, bj) + '</strong>' + out.slice(bj + 2);
+				bi = out.indexOf('**', bi + 8);
+			}
+			var ci = out.indexOf(BT);
+			while (ci >= 0) {
+				var cj = out.indexOf(BT, ci + 1);
+				if (cj < 0) { break; }
+				out = out.slice(0, ci) + '<code>' + out.slice(ci + 1, cj) + '</code>' + out.slice(cj + 1);
+				ci = out.indexOf(BT, ci + 6);
+			}
+			var li = out.indexOf('[');
+			while (li >= 0) {
+				var lc = out.indexOf(']', li);
+				var lp = lc >= 0 ? out.indexOf('(', lc) : -1;
+				var lq = lp >= 0 ? out.indexOf(')', lp) : -1;
+				if (lc < 0 || lp !== lc + 1 || lq < 0) { break; }
+				var label = out.slice(li + 1, lc);
+				var href = out.slice(lp + 1, lq);
+				if (href.indexOf('http') !== 0) { break; }
+				var anchor = '<a href="' + href + '" target="_blank" rel="noopener">' + label + '</a>';
+				out = out.slice(0, li) + anchor + out.slice(lq + 1);
+				li = out.indexOf('[', li + anchor.length);
+			}
+			return out;
+		}
+
+		function flushPara() {
+			if (!para.length) { return; }
+			html += '<p>' + inlineMd(para.join(' ')) + '</p>';
+			para = [];
+		}
+
+		function closeList() {
+			if (inList) { html += '</ul>'; inList = false; }
+		}
+
+		function isNum(str) {
+			if (!str) { return false; }
+			for (var k = 0; k < str.length; k++) {
+				var ch = str.charAt(k);
+				if (ch < '0' || ch > '9') { return false; }
+			}
+			return true;
+		}
+
+		for (var i = 0; i < lines.length; i++) {
+			var line = lines[i];
+			var trimmed = line.trim();
+			if (trimmed.indexOf(BT + BT + BT) === 0) {
+				flushPara();
+				if (inCode) { html += '</code></pre>'; inCode = false; }
+				else { closeList(); html += '<pre class="mk-pre"><code>'; inCode = true; }
+				continue;
+			}
+			if (inCode) { html += escapeHtmlClient(line) + NL; continue; }
+			if (!trimmed) { flushPara(); closeList(); continue; }
+			if (trimmed === '---' || trimmed === '***' || trimmed === '___') {
+				flushPara(); closeList(); html += '<hr>'; continue;
+			}
+			var h = 0;
+			while (h < 6 && trimmed.charAt(h) === '#') { h++; }
+			if (h > 0 && trimmed.charAt(h) === ' ') {
+				flushPara(); closeList();
+				var lv = h + 2 > 6 ? 6 : h + 2;
+				html += '<h' + lv + '>' + inlineMd(trimmed.slice(h + 1).trim()) + '</h' + lv + '>';
+				continue;
+			}
+			if (trimmed.charAt(0) === '>') {
+				flushPara(); closeList();
+				html += '<blockquote>' + inlineMd(trimmed.slice(1).trim()) + '</blockquote>';
+				continue;
+			}
+			var isBullet = (trimmed.charAt(0) === '-' || trimmed.charAt(0) === '*' || trimmed.charAt(0) === '+')
+				&& trimmed.charAt(1) === ' ';
+			if (isBullet) {
+				flushPara();
+				if (!inList) { html += '<ul>'; inList = true; }
+				html += '<li>' + inlineMd(trimmed.slice(2).trim()) + '</li>';
+				continue;
+			}
+			var numEnd = trimmed.indexOf('. ');
+			if (numEnd > 0 && numEnd <= 2 && isNum(trimmed.slice(0, numEnd))) {
+				flushPara();
+				if (!inList) { html += '<ul>'; inList = true; }
+				html += '<li>' + inlineMd(trimmed.slice(numEnd + 2).trim()) + '</li>';
+				continue;
+			}
+			para.push(trimmed);
+		}
+		flushPara();
+		closeList();
+		if (inCode) { html += '</code></pre>'; }
+		return html;
+	}
+
 	function loadMarketDetail(slug, det) {
 		var body = det.querySelector('.mk-detail-body');
 		if (!body) { return; }
@@ -478,7 +586,8 @@ const SKILL_PREVIEW_SCRIPT = `
 					+ (j && j.error ? '（' + escapeHtmlClient(String(j.error)) + '）' : '') + '。</p>';
 				return;
 			}
-			body.innerHTML = '<div class="mk-detail">' + html + '</div>';
+			// ★ 2026-10-26：detail_md 是 markdown，以前直接当 HTML 塞 ⇒ 满屏 # 和 **
+			body.innerHTML = '<div class="mk-detail">' + mdToHtml(html) + '</div>';
 		}).catch(function (e) {
 			body.innerHTML = '<p class="mk-loading">加载失败：' + escapeHtmlClient(String((e && e.message) || e)) + '</p>';
 		});
@@ -655,7 +764,11 @@ const SKILL_PREVIEW_SCRIPT = `
 	var mkDlg = root.querySelector('[data-mk-dlg]');
 
 	function closeMkDlg() {
-		if (mkDlg) { mkDlg.hidden = true; }
+		if (!mkDlg) { return; }
+		// 2026-10-26：发布表单是动态插进正文的，关的时候一并清掉
+		var pub = mkDlg.querySelector('.mk-pub');
+		if (pub && pub.parentNode) { pub.parentNode.removeChild(pub); }
+		mkDlg.hidden = true;
 	}
 
 	/**
@@ -668,6 +781,30 @@ const SKILL_PREVIEW_SCRIPT = `
 	 *
 	 * 名字保留 openMkDlg：p3-57 拿它做存在性断言，换名会让守卫红。
 	 */
+	/**
+	 * 把技能的正文取回来填进 pre[data-sk-body]（弹层与抽屉共用同一段接口）。
+	 *
+	 * ★ 2026-10-26（用户：「技能内容 显示 读取中 不刷新」）：
+	 *   行内抽屉是"点行时取一次"，弹层是"复制抽屉的 HTML" ⇒ 复制品永远不会被填。
+	 *   这里给弹层补一次同样的请求；已经取好的（正文末尾带「N 字节 · 路径」）直接跳过。
+	 */
+	function fillSkillBody(scope, id) {
+		if (!scope || !id) { return; }
+		var pre = scope.querySelector('[data-sk-body]');
+		if (!pre) { return; }
+		var cur = String(pre.textContent || '');
+		if (cur.indexOf('字节 ·') >= 0) { return; }   // 抽屉里已经取好了，复制过来的就是成品
+		pre.textContent = '读取中…';
+		window.fetch('/x/skills/api/skill?id=' + encodeURIComponent(id), { credentials: 'same-origin' })
+			.then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
+			.then(function (r) {
+				if (!r.ok) { pre.textContent = '读不了：' + ((r.data && r.data.error) || '未知原因'); return; }
+				pre.textContent = (r.data.content || '') + String.fromCharCode(10) + String.fromCharCode(10)
+					+ '（' + (r.data.contentBytes || 0) + ' 字节 · ' + (r.data.path || '') + '）';
+			})
+			.catch(function (e) { pre.textContent = '读不了：' + e; });
+	}
+
 	function openMkDlg(card, marketSlug) {
 		if (!mkDlg) { return; }
 		var slug = String(marketSlug || card.getAttribute('data-market-open') || '');
@@ -715,15 +852,59 @@ const SKILL_PREVIEW_SCRIPT = `
 			if (sib && sib.hasAttribute('data-skill-detail')) { local = sib; }
 		}
 		if (body) {
-			if (local && String(local.innerHTML).trim()) {
-				body.innerHTML = '<div class="mk-detail mk-detail-local">' + local.innerHTML + '</div>';
-			} else if (slug) {
-				body.innerHTML = '<div class="mk-detail-body"></div>';
-				loadMarketDetail(slug, body);
-			} else {
-				body.innerHTML = '<p class="mk-loading">这条没有更多信息（没有落盘文件可读）。</p>';
+			// ★ 2026-10-26（用户：「点击后的弹出页缺少该项的详细说明」）：
+			//   以前正文只有两块之一：本地条目的「文件/目录」块，或者商城条目的 detail_md。
+			//   ⇒ 插件点开只看到包名和路径（它原本的描述就是包名）；商城条目 detail_md 大多为空。
+			//   现在固定四段：① 说明（完整描述）② 关键信息（类型/版本/来源…）③ 本地明细 ④ 商城长文
+			var descText = String(card.getAttribute('data-item-desc') || '');
+			if (!descText) {
+				var dsEl = card.querySelector('.tk-ds') || card.querySelector('.sk-ds');
+				descText = dsEl ? String(dsEl.textContent || '') : '';
+			}
+			var factList = [];
+			try { factList = JSON.parse(String(card.getAttribute('data-item-facts') || '[]')); } catch (e) { factList = []; }
+			if (!(factList instanceof Array)) { factList = []; }
+			var outHtml = '';
+			if (descText.trim()) {
+				outHtml += '<div class="mk-sec"><h4>说明</h4><p>' + escapeHtmlClient(descText) + '</p></div>';
+			}
+			if (factList.length) {
+				var dlHtml = '<dl class="mk-facts">';
+				for (var fi = 0; fi < factList.length; fi++) {
+					var pair = factList[fi] || [];
+					var fk = String(pair[0] === undefined || pair[0] === null ? '' : pair[0]);
+					var fv = String(pair[1] === undefined || pair[1] === null ? '' : pair[1]);
+					if (!fk || !fv) { continue; }
+					dlHtml += '<dt>' + escapeHtmlClient(fk) + '</dt><dd>' + escapeHtmlClient(fv) + '</dd>';
+				}
+				dlHtml += '</dl>';
+				if (dlHtml.indexOf('<dt>') >= 0) { outHtml += dlHtml; }
+			}
+			// ⚠ 商城卡**自带**一个 .tk-detail（商品信息：标识/版本/作者），以前的条件是
+			//   「没有本地块才拉 detail_md」⇒ 商城商品的完整介绍**从来没显示过**（老问题）。
+			//   现在：只要有商城 slug 就一定拉，两块同时显示（长文在前，商品信息在后）。
+			var needRemote = !!slug;
+			if (needRemote) {
+				outHtml += '<div class="mk-sec"><h4>完整介绍</h4><div class="mk-detail-body"></div></div>';
+			}
+			var localHtml = local && String(local.innerHTML).trim() ? String(local.innerHTML) : '';
+			if (localHtml) {
+				outHtml += '<div class="mk-detail mk-detail-local">' + localHtml + '</div>';
+			}
+			if (!outHtml) {
+				outHtml = '<p class="mk-loading">这条没有更多信息（既没有描述，也没有落盘文件可读）。</p>';
+			}
+			body.innerHTML = outHtml;
+			if (needRemote) { loadMarketDetail(slug, body); }
+			// ★ 2026-10-26（用户：「技能内容 显示 读取中 不刷新」）：
+			//   技能行里那块 pre[data-sk-body] 的正文是**点行时才异步取**的，而弹层只是把抽屉的
+			//   HTML 复制了一份 ⇒ 复制品永远停在「读取中…」（取回的结果只填给了抽屉里那一份）。
+			//   ⇒ 弹层自己也要取一次（已经取好的会带「字节 ·」后缀，见函数内的早退）。
+			if (card.hasAttribute('data-skill-row')) {
+				fillSkillBody(body, String(card.getAttribute('data-skill-id') || ''));
 			}
 		}
+
 		// ⑤ 底部动作
 		buildItemActions(card, slug);
 		mkDlg.hidden = false;
@@ -737,6 +918,277 @@ const SKILL_PREVIEW_SCRIPT = `
 	 * · 有落盘目录（技能/工作流/Agent）⇒「删除」（走商城 trash，移到 .trash-时间戳，可恢复）；
 	 * · 内置条目（工作台）没有上述任何操作 ⇒ 说明一句，而不是摆三个灰按钮。
 	 */
+	/**
+	 * 「上传到商城」表单（★ 2026-10-26：用户「本地新建的…没有上传UI入口」）。
+	 *
+	 * 两种通道，与后端 publish op 的两个分支一一对应：
+	 *   · skill / workflow / agent ⇒ **打包上传**（publishVersion：把目录打成 tar.gz 传上去）
+	 *   · workbench / plugin      ⇒ **登记外部来源**（publishExternal：本体在 npm / GitHub，只登记地址）
+	 *
+	 * 为什么不给 workbench/plugin 也做打包上传：它们的本体是 dsh 插件（在 profile 的
+	 * node_modules 里，不在数据根），dsh 侧没有「打包一个已装插件」的能力；
+	 * 而服务端 external 接口对任何 kind 都收 ⇒ 让它填 GitHub 地址才是诚实的路径。
+	 */
+	/**
+	 * 把本地 id 压成服务端能接受的 slug（^[a-z0-9][a-z0-9_-]*$）。
+	 *
+	 * 为什么需要：插件行的 id 就是 npm 包名（@tt-a1i/archify-dsh），带 @ 和 /，
+	 * 服务端会直接拒；而商城标识必须是小写字母开头。⇒ 表单里给一个**可编辑**的默认值。
+	 */
+	function slugifyId(raw) {
+		var s = String(raw || '').toLowerCase();
+		var out = '';
+		for (var i = 0; i < s.length; i++) {
+			var c = s.charAt(i);
+			if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c === '_' || c === '-') { out += c; }
+			else { out += '-'; }
+		}
+		out = out.replace(/-+/g, '-').replace(/^-+/, '').replace(/-+$/, '');
+		if (!out) { out = 'item'; }
+		if (!/^[a-z0-9]/.test(out)) { out = 'x' + out; }
+		return out;
+	}
+
+	function isSlugOk(v) {
+		if (!v) { return false; }
+		if (!/^[a-z0-9][a-z0-9_-]*$/.test(v)) { return false; }
+		return true;
+	}
+
+	function publishKeyOf(btn) {
+		var key = String(btn.getAttribute('data-publish') || '');
+		var idx = key.indexOf(':');
+		if (idx <= 0) { return null; }
+		return {
+			kind: key.slice(0, idx),
+			id: key.slice(idx + 1),
+			external: btn.getAttribute('data-publish-external') === '1',
+			name: String(btn.getAttribute('data-publish-name') || ''),
+			ver: String(btn.getAttribute('data-publish-ver') || ''),
+		};
+	}
+
+	function openPublishForm(btn) {
+		var info = publishKeyOf(btn);
+		if (!info) { return; }
+		// ★ 行内的「上传/登记」按钮在**弹层外面**：先把弹层开起来（它会重写正文），再往里插表单。
+		//   顺序反了就是"插进去又被 openMkDlg 冲掉"（实测这版真踩了）。
+		if (mkDlg.hidden) {
+			var host = btn.closest ? (btn.closest('[data-item-row]') || btn.closest('[data-skill-row]') || btn.closest('[data-tk-card]')) : null;
+			if (host) { openMkDlg(host, host.getAttribute('data-market-open') || ''); }
+		}
+		var body = mkDlg.querySelector('[data-mk-body]');
+		if (!body) { return; }
+		var old = body.querySelector('.mk-pub');
+		if (old && old.parentNode) { old.parentNode.removeChild(old); }
+		var html = '<div class="mk-pub" data-pub-kind="' + escapeHtmlClient(info.kind)
+			+ '" data-pub-id="' + escapeHtmlClient(info.id)
+			+ '" data-pub-external="' + (info.external ? '1' : '0') + '">'
+			+ '<h4>' + (info.external ? '登记到商城（本体在 npm / GitHub）' : '上传当前条目到商城') + '</h4>'
+			+ '<div class="mk-pub-row"><label>标识</label><code>' + escapeHtmlClient(info.kind + ' · ' + info.id) + '</code></div>'
+			+ '<div class="mk-pub-row"><label>商城标识</label><input data-pub-slug value="' + escapeHtmlClient(slugifyId(info.id)) + '" placeholder="小写字母/数字/-/_" title="商城里的唯一标识；插件包名带 @scope/ 会被压成 scope-包名，可自行改"></div>'
+			+ '<div class="mk-pub-row"><label>名称</label><input data-pub-name value="' + escapeHtmlClient(info.name || info.id) + '"></div>'
+			+ '<div class="mk-pub-row"><label>版本</label><input data-pub-ver value="' + escapeHtmlClient(info.ver || '1.0.0') + '" placeholder="1.0.0"></div>'
+			+ (info.external
+				? '<div class="mk-pub-row"><label>地址 / npm 名</label><input data-pub-source placeholder="https://github.com/owner/repo 或 @scope/pkg"></div>'
+				: '')
+			+ '<div class="mk-pub-row"><label>更新说明</label><textarea data-pub-changelog rows="2" placeholder="这一版改了什么（可空）"></textarea></div>'
+			+ '<p class="mk-pub-note">' + (info.external
+				? '只登记来源、不上传包体；别人从商城安装时会按这个地址拉取。'
+				: '会把这个目录打包上传（自动排除 node_modules / .git / .upgrade-backup / 备份）。')
+			+ '</p>'
+			+ '<div class="mk-pub-ops"><button type="button" class="tk-btn primary" data-pub-submit>提交</button>'
+			+ '<button type="button" class="tk-btn" data-pub-cancel>取消</button></div>'
+			+ '<div class="mk-pre" data-pub-pre></div>'
+			+ '<p class="mk-pub-err" data-pub-err></p>'
+			+ '</div>';
+		body.insertAdjacentHTML('afterbegin', html);
+		var box = body.querySelector('.mk-pub');
+		if (box && box.scrollIntoView) { try { box.scrollIntoView({ block: 'nearest' }); } catch (e) { } }
+		var nameInput = body.querySelector('[data-pub-name]');
+		if (nameInput && nameInput.focus) { try { nameInput.focus(); } catch (e) { } }
+	}
+
+	/** 用户填的「外部来源」是 npm 包名，还是 GitHub 地址。 */
+	function looksLikeNpmName(v) {
+		var s = String(v || '').trim();
+		if (!s) { return false; }
+		if (s.indexOf('github.com') >= 0) { return false; }
+		// owner/repo 这种简写算 GitHub，不算 npm 名
+		if (/^[A-Za-z0-9_.-]+\\/[A-Za-z0-9_.-]+$/.test(s)) { return false; }
+		return /^(@[a-z0-9][a-z0-9._-]*\\/)?[a-z0-9][a-z0-9._-]*$/i.test(s);
+	}
+
+	/** 把体检结果画进表单（pass / warn / error 三色，逐条列出）。 */
+	function renderPreflight(box, result) {
+		var host = box.querySelector('[data-pub-pre]');
+		if (!host) { return; }
+		var level = String((result && result.level) || 'error');
+		var checks = (result && result.checks) || [];
+		var head = level === 'error'
+			? '体检未通过 —— 先按下面提示修，再提交'
+			: (level === 'warn' ? '体检有提醒（可以继续提交）' : '体检通过');
+		var html = '<div class="mk-pre-head mk-pre-' + level + '">' + escapeHtmlClient(head) + '</div>';
+		if (checks.length) {
+			html += '<ul class="mk-pre-list">';
+			for (var i = 0; i < checks.length; i++) {
+				var c = checks[i] || {};
+				html += '<li class="mk-pre-item mk-pre-' + String(c.level || 'pass') + '">'
+					+ '<b>' + escapeHtmlClient(String(c.title || '')) + '</b>'
+					+ (c.detail ? '<span>' + escapeHtmlClient(String(c.detail)) + '</span>' : '')
+					+ '</li>';
+			}
+			html += '</ul>';
+		}
+		if (result && result.suggestion) {
+			html += '<button type="button" class="tk-btn" data-pub-apply="'
+				+ escapeHtmlClient(encodeURIComponent(JSON.stringify(result.suggestion))) + '">按建议修正</button>';
+		}
+		host.innerHTML = html;
+	}
+
+	function submitPublish(btn) {
+		var box = btn.closest ? btn.closest('.mk-pub') : null;
+		if (!box) { return; }
+		// 上下文记在表单元素上（行内按钮不在弹层里，querySelector 找不到它）
+		var info = {
+			kind: String(box.getAttribute('data-pub-kind') || ''),
+			id: String(box.getAttribute('data-pub-id') || ''),
+			external: box.getAttribute('data-pub-external') === '1',
+		};
+		if (!info.kind || !info.id) { return; }
+		var val = function (sel) {
+			var el = box.querySelector(sel);
+			return el && typeof el.value === 'string' ? el.value.trim() : '';
+		};
+		var errEl = box.querySelector('[data-pub-err]');
+		var fail = function (msg) {
+			if (errEl) { errEl.textContent = msg; }
+			btn.disabled = false;
+			btn.textContent = '提交';
+		};
+		var version = val('[data-pub-ver]');
+		var name = val('[data-pub-name]');
+		var changelog = val('[data-pub-changelog]');
+		var source = val('[data-pub-source]');
+		var slug = val('[data-pub-slug]');
+		if (!version) { fail('版本号不能为空'); return; }
+		if (info.external && !source) { fail('登记外部来源需要填 GitHub 地址或 npm 包名'); return; }
+		var isNpm = info.external && looksLikeNpmName(source);
+		if (info.external && isNpm && !/^(@[a-z0-9][a-z0-9._-]*\\/)?[a-z0-9][a-z0-9._-]*$/i.test(source)) {
+			fail('npm 包名不合法：' + source); return;
+		}
+		// 商城标识必须符合服务端规则（插件包名 @scope/x 不合法）⇒ 前端先拦一次，别白跑一趟
+		if (!isSlugOk(slug)) { fail('商城标识不合法：只能小写字母开头，且仅含 a-z 0-9 _ -（当前：' + slug + '）'); return; }
+
+		var params = { kind: info.kind, localId: slug, version: version };
+		if (name) { params.name = name; }
+		if (changelog) { params.changelog = changelog; }
+		if (info.external) {
+			// npm 源 → npmName；GitHub → source（两条通道都在 dsh 侧自持）
+			if (isNpm) { params.npmName = source; } else { params.source = source; }
+		}
+
+		var doPublish = function () {
+			btn.disabled = true;
+			btn.textContent = '提交中…';
+			window.fetch('/x/marketplace/api/action', {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ op: 'publish', params: params }),
+			}).then(function (r) { return r.json(); }).then(function (j) {
+				if (!j || !j.ok) { fail('提交失败：' + String((j && j.error) || '商城没返回原因')); return; }
+				var msg = (j.created ? '已新建商品' : '已新增版本') + ' · ' + String(j.version || version);
+				if (j.bytes) { msg += ' · ' + Math.round(j.bytes / 1024) + 'KB'; }
+				// ★ 2026-10-26：同一发布源被别的商品登记过 ⇒ 服务端回 duplicates（不阻断）
+				var dup = (j && j.duplicates) || [];
+				var dupHtml = '';
+				if (dup.length) {
+					var names = [];
+					for (var di = 0; di < dup.length; di++) { names.push(String((dup[di] || {}).slug || '')); }
+					dupHtml = '<p class="mk-pub-warn">⚠ 这个发布源已被这些商品登记：'
+						+ escapeHtmlClient(names.join(' / '))
+						+ '（可能是重复上架，建议删掉多余的那条）</p>';
+				}
+				box.innerHTML = '<h4>已提交：' + escapeHtmlClient(msg) + '</h4>'
+					+ dupHtml
+					+ '<p class="mk-pub-note">本地条目没有改动。刷新商城列表后就能看到这一件。</p>'
+					+ '<div class="mk-pub-ops"><button type="button" class="tk-btn primary" data-pub-reload>刷新页面看结果</button></div>';
+			}).catch(function (e) {
+				fail('提交失败：' + String((e && e.message) || e));
+			});
+		};
+
+		// ★ 2026-10-26（用户：「有没有校验机制，避免发布错误」）：
+		//   提交前先跑一次体检：判断这个发布源**到底能不能装**（是不是 dsh 插件 / 版本对不对）。
+		//   error ⇒ 拦下；warn ⇒ 让用户确认；pass ⇒ 直接发。
+		btn.disabled = true;
+		btn.textContent = '体检中…';
+		var pre = { kind: info.kind, version: version };
+		if (info.external) {
+			if (isNpm) { pre.npmName = source; } else { pre.source = source; }
+		}
+		window.fetch('/x/marketplace/api/action', {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ op: 'preflightPublish', params: pre }),
+		}).then(function (r) { return r.json(); }).then(function (pf) {
+			var result = pf && pf.level ? pf : {
+				level: 'error',
+				checks: [{ level: 'error', title: '体检没跑起来：' + String((pf && pf.error) || '商城没返回原因') }],
+			};
+			renderPreflight(box, result);
+			btn.disabled = false;
+			btn.textContent = '提交';
+			if (result.level === 'error') { return; }
+			if (result.level === 'warn') {
+				var lines = [];
+				var checks = result.checks || [];
+				for (var i = 0; i < checks.length; i++) {
+					if (checks[i].level === 'warn') { lines.push('· ' + String(checks[i].title || '')); }
+				}
+				var ask = '体检有 ' + lines.length + ' 条提醒：' + String.fromCharCode(10) + lines.join(String.fromCharCode(10))
+					+ String.fromCharCode(10) + String.fromCharCode(10) + '仍然提交？';
+				if (!window.confirm(ask)) { return; }
+			}
+			doPublish();
+		}).catch(function (e) {
+			// 体检本身挂了（网络/桥）⇒ 不阻断发布，但要说清楚
+			if (errEl) { errEl.textContent = '体检未完成：' + String((e && e.message) || e) + '（已跳过，直接提交）'; }
+			btn.disabled = false;
+			btn.textContent = '提交';
+			doPublish();
+		});
+	}
+
+	function handlePublishClick(t) {
+		if (!t || !t.closest) { return false; }
+		if (t.closest('[data-pub-cancel]')) {
+			var box = t.closest('.mk-pub');
+			if (box && box.parentNode) { box.parentNode.removeChild(box); }
+			return true;
+		}
+		if (t.closest('[data-pub-reload]')) { location.reload(); return true; }
+		if (t.closest('[data-pub-apply]')) {
+			var raw = t.closest('[data-pub-apply]').getAttribute('data-pub-apply') || '';
+			var sug = null;
+			try { sug = JSON.parse(decodeURIComponent(raw)); } catch (e) { sug = null; }
+			var box2 = t.closest('.mk-pub');
+			if (sug && box2) {
+				var src = box2.querySelector('[data-pub-source]');
+				if (src && sug.name) { src.value = String(sug.name); }
+				var ver = box2.querySelector('[data-pub-ver]');
+				if (ver && sug.version) { ver.value = String(sug.version); }
+				var e2 = box2.querySelector('[data-pub-err]');
+				if (e2) { e2.textContent = '已按建议填写，请再点一次「提交」'; }
+			}
+			return true;
+		}
+		if (t.closest('[data-pub-submit]')) { submitPublish(t.closest('[data-pub-submit]')); return true; }
+		if (t.closest('[data-publish]')) { openPublishForm(t.closest('[data-publish]')); return true; }
+		return false;
+	}
+
 	function buildItemActions(card, marketSlug) {
 		var foot = mkDlg.querySelector('[data-mk-foot]');
 		if (!foot) { return; }
@@ -774,6 +1226,31 @@ const SKILL_PREVIEW_SCRIPT = `
 				+ (dPkg ? ' data-tk-pkg="' + escapeHtmlClient(dPkg) + '"' : '')
 				+ '>' + (dOp === 'uninstall' ? '卸载' : '删除') + '</button>';
 		}
+		// ★ 2026-10-26（用户：「本地新建的技能/agent/工作流/工作台/插件，没有上传UI入口」）
+		//   本地条目（不是商城卡）加发布入口，两种通道见 openPublishForm 的注释。
+		//   内置的（随产品发布的 @vssaros/*）不给：它已经在商城里，重复登记只会冲突。
+		var fSrc = String(card.getAttribute('data-f-src') || '');
+		var bundleKind = kind === 'skill' || kind === 'workflow' || kind === 'agent';
+		var externalKind = kind === 'workbench' || kind === 'plugin';
+		if (!marketSlug && itemSlug && fSrc !== 'builtin' && (bundleKind || externalKind)) {
+			var nmEl = card.querySelector('.sk-nm') || card.querySelector('.tk-nm');
+			var pubName = nmEl ? String(nmEl.textContent || '') : itemSlug;
+			html += '<button type="button" class="tk-btn" data-publish="'
+				+ escapeHtmlClient(kind + ':' + itemSlug) + '"'
+				+ ' data-publish-external="' + (externalKind ? '1' : '0') + '"'
+				+ ' data-publish-name="' + escapeHtmlClient(pubName) + '"'
+				+ ' data-publish-ver="' + escapeHtmlClient(lver) + '"'
+				+ ' title="' + (externalKind
+					? '登记到商城：本体在 npm / GitHub，只登记来源'
+					: '打包上传到商城：生成新版本，别人可以从商城安装') + '">'
+				+ (externalKind ? '登记到商城…' : '上传到商城…') + '</button>';
+		}
+		// 内置条目没有发布入口时**要说清为什么**，否则就是用户看到的那种「没有入口」。
+		// 2026-10-26：工作台 13 个、插件 32 个都是随产品发布的 @vssaros/*，已在商城里。
+		if (!marketSlug && itemSlug && fSrc === 'builtin' && (bundleKind || externalKind)) {
+			html += '<span class="mk-note">内置条目（随产品发布）已在商城中，无需再上传。</span>';
+		}
+
 		if (!html) {
 			html = '<span class="mk-note">内置条目：不涉及安装 / 升级 / 删除。</span>';
 		}
@@ -783,6 +1260,8 @@ const SKILL_PREVIEW_SCRIPT = `
 	root.addEventListener('click', function (ev) {
 		var t = ev.target;
 		if (t && t.closest && t.closest('[data-mk-close]')) { ev.preventDefault(); closeMkDlg(); return; }
+		// ★ 发布表单走同一个委派入口（弹层内点击原本会被下面的 early-return 吃掉）
+		if (handlePublishClick(t)) { if (ev.preventDefault) { ev.preventDefault(); } if (ev.stopPropagation) { ev.stopPropagation(); } return; }
 		// 弹层内的按钮不回流到卡片逻辑（安装按钮由上面那个监听器处理）
 		if (t && t.closest && t.closest('[data-mk-dlg]')) { return; }
 		if (t && t.closest && (t.closest('[data-market-install]') || t.closest('[data-tk-open]'))) { return; }
@@ -814,6 +1293,7 @@ const SKILL_PREVIEW_SCRIPT = `
 		var t = ev.target;
 		if (!t || !t.closest) { return; }
 		if (t.closest('[data-mk-dlg]') || t.closest('[data-market-install]') || t.closest('[data-tk-del]')
+			|| t.closest('[data-publish]')   // ★ 2026-10-26：行内「上传」按钮，别同时把弹层也开起来
 			|| t.closest('[data-sk-sw]')
 			|| t.closest('[data-sk-settings]') || t.closest('[data-sk-copy]') || t.closest('.sk-gear')) { return; }
 		var host = t.closest('[data-tk-card]') || t.closest('[data-skill-row]') || t.closest('[data-item-row]');
@@ -1021,6 +1501,27 @@ function shortStoreDesc(d) {
 	return String(d || '').split(/\n\s*---/)[0].replace(/\s+/g, ' ').trim();
 }
 
+/**
+ * 商城商品的**上传日期**（★ 2026-10-26 用户：「为每个 item 加上上传日期」）。
+ *
+ * 服务端字段是 `created_at`（毫秒时间戳、蛇形命名）。
+ * 口径与商城页面一致：7 天内「3 天前」，更早给 `YYYY-MM-DD`；读不到返回空串。
+ */
+function fmtUploadDate(ms) {
+	const n = Number(ms);
+	if (!Number.isFinite(n) || n <= 0) { return ''; }
+	const d = new Date(n);
+	if (Number.isNaN(d.getTime())) { return ''; }
+	const diff = Date.now() - n;
+	const day = 86400000;
+	if (diff >= 0 && diff < day) { return '今天'; }
+	if (diff >= day && diff < 7 * day) { return Math.floor(diff / day) + ' 天前'; }
+	// 本地时区（不用 toISOString —— 那是 UTC，跨时区差一天）
+	const mo = d.getMonth() + 1;
+	const dd = d.getDate();
+	return d.getFullYear() + '-' + (mo < 10 ? '0' + mo : mo) + '-' + (dd < 10 ? '0' + dd : dd);
+}
+
 function renderMarketCard(it) {
 	const name = String(it.name || it.slug);
 	const key = String(it.kind) + ':' + String(it.slug);
@@ -1041,7 +1542,19 @@ function renderMarketCard(it) {
 	// 详情抽屉/弹层也要这张图（openMkDlg 从卡片里取 img，取不到就退回字形）
 	it.cover = bigImage || cover;
 	return '<li class="tk-card tk-market-card" data-tk-card data-tk-src="market" data-tk-state="market" data-market-open="' + escapeHtml(String(it.slug)) + '"'
-		+ fAttrs({ src: 'market', ver: it.version ? 'yes' : 'no' }) + ' title="' + escapeHtml(key) + '">'
+		+ fAttrs({ src: 'market', ver: it.version ? 'yes' : 'no' })
+		// ★ 2026-10-26：弹层需要「说明 + 关键信息」，而商城 90% 的商品 detail_md 是空的
+		// ⚠ 必须走 shortStoreDesc：商城描述末尾常带「来源: xxx」这类元信息，
+		//   p3-57 有一条断言守着「尾巴不进页面」（藏进属性里也算进 ✗）
+		+ ' data-item-desc="' + escapeHtml(shortStoreDesc(String(it.description || ''))) + '"'
+		+ ' data-item-facts="' + escapeHtml(JSON.stringify([
+			['类型', ({ skill: '技能', workflow: '工作流', agent: 'Agent', mcp: '连接器', workbench: '工作台', plugin: '插件' })[kind] || kind],
+			['商城标识', key],
+			['版本', String(it.version || '未声明')],
+			['作者', String(it.author || '商城')],
+			...(Array.isArray(it.tags) && it.tags.length ? [['标签', it.tags.join('、')]] : []),
+		])) + '"'
+		+ ' title="' + escapeHtml(key) + '">'
 		+ '<div class="tk-cover" style="background:' + iconBgOf(String(it.slug || name)) + '">' + coverInner + '</div>'
 		+ '<div class="tk-body">'
 		+ '<div class="tk-pills"><span class="tk-pill acc">商城</span>'
@@ -1049,7 +1562,9 @@ function renderMarketCard(it) {
 		+ '<span class="tk-pill dim" title="slug（技术 id）">' + escapeHtml(String(it.slug || '')) + '</span>'
 		+ (it.version ? '<span class="tk-pill">' + escapeHtml(String(it.version)) + '</span>' : '') + '</div>'
 		+ '<div class="tk-nm">' + escapeHtml(name) + '</div>'
-		+ '<div class="tk-sub">' + escapeHtml(String(it.author || '商城')) + '</div>'
+		// ★ 2026-10-26：作者 · 上传日期（字段名是蛇形 `created_at`）
+		+ '<div class="tk-sub">' + escapeHtml(String(it.author || '商城'))
+		+ (fmtUploadDate(it.created_at) ? ' · ' + escapeHtml(fmtUploadDate(it.created_at)) : '') + '</div>'
 		+ (it.description ? '<div class="tk-ds">' + escapeHtml(shortStoreDesc(it.description).slice(0, 140)) + '</div>' : '')
 		// ★ 能不能装**由服务端说了算**（`installable` = 有包体 或 有外部发布源）。
 		//   2026-10-24（用户：「安装插件失败 … HTTP 404」）：以前只判 `it.version`，
@@ -1394,21 +1909,50 @@ const COVER_ONERROR = "this.style.display='none';var g=this.parentNode?this.pare
  */
 function renderItemRow({ kind, slug, name, desc, icon, src, f, store, localVer, tags, delKind, delOp, delPkg, delLabel, delTitle, paths,
 	// 插件开关（2026-10-24）：toggleOn 是**当前**状态（从 profile 的 bundles 选择读出来的）
-	togglePkg, toggleOn, toggleLocked, toggleTitle }) {
+	togglePkg, toggleOn, toggleLocked, toggleTitle,
+	// ★ 2026-10-26（用户：「点击后的弹出页缺少该项的详细说明」）：
+	//   行上只放一行描述（CSS 会截断），**完整说明**与「关键信息」要带给弹层，
+	//   否则点开只有一串文件路径（插件尤其明显：描述就是包名）。
+	fullDesc, facts }) {
 	const storeSlug = store ? String(store.slug || '') : '';
 	const storeVer = store ? String(store.version || '') : '';
+	// ★ 2026-10-26（用户：已安装的 item 要显示版本号；与商城不一致给「升级」；本地自建给「上传」）：
+	//   三个判据都只看**已有数据**（本地版本 / 商城对应件与它的版本 / 是否内置）。
+	const lv = String(localVer || '');
+	const isBuiltinRow = String(src || 'installed') === 'builtin';
+	// 内置（@vssaros/*）不在这里升级：它们走 dshUpgrade 那条通道，走商城 install 会打架
+	const canUp = !!storeSlug && !!storeVer && (!lv || lv !== storeVer) && !isBuiltinRow;
+	const canPublish = !storeSlug && String(src || 'installed') !== 'builtin';
 	const itemAttrs = ' data-item-kind="' + escapeHtml(String(kind || '')) + '" data-item-slug="' + escapeHtml(String(slug || '')) + '"'
 		+ (storeSlug ? ' data-item-store="' + escapeHtml(storeSlug) + '" data-item-upver="' + escapeHtml(storeVer) + '"' : '')
 		+ ' data-item-lver="' + escapeHtml(String(localVer || '')) + '"'
 		+ (delKind ? ' data-item-del="' + escapeHtml(delKind) + '"' : '')
 		+ (delKind && delOp ? ' data-item-delop="' + escapeHtml(delOp) + '"' : '')
-		+ (delKind && delPkg ? ' data-item-pkg="' + escapeHtml(delPkg) + '"' : '');
+		+ (delKind && delPkg ? ' data-item-pkg="' + escapeHtml(delPkg) + '"' : '')
+		// ★ 2026-10-26：弹层的「说明」与「关键信息」从这里取（行上只显示一行，会被截断）
+		+ ' data-item-desc="' + escapeHtml(String(fullDesc || desc || '')) + '"'
+		+ (facts && facts.length ? ' data-item-facts="' + escapeHtml(JSON.stringify(facts)) + '"' : '');
 	const swBtn = togglePkg
 		? '<button type="button" class="sk-sw" role="switch" aria-checked="' + (toggleOn ? 'true' : 'false') + '"'
 			+ ' data-sk-sw="' + escapeHtml(String(togglePkg)) + '" data-sk-sw-on="' + (toggleOn ? '1' : '0') + '"'
 			+ (toggleLocked ? ' disabled' : '')
 			+ ' title="' + escapeHtml(toggleTitle || (toggleOn ? '已启用（点一下停用）' : '已停用（点一下启用）')) + '">'
 			+ '<i></i></button>'
+		: '';
+	const upBtn = canUp
+		? '<button type="button" class="sk-act sk-act-up" data-market-install="'
+			+ escapeHtml(String(delKind || kind) + ':' + storeSlug) + '" data-market-upgrade title="用商城的 '
+			+ escapeHtml(storeVer) + ' 覆盖本地（旧目录先进回收站）">升级</button>'
+		: '';
+	const pubBtn = canPublish && slug
+		? '<button type="button" class="sk-act sk-act-pub" data-publish="'
+			+ escapeHtml(String(kind) + ':' + String(slug)) + '" data-publish-external="'
+			+ ((kind === 'workbench' || kind === 'plugin') ? '1' : '0') + '"'
+			+ ' data-publish-name="' + escapeHtml(String(name)) + '"'
+			+ ' data-publish-ver="' + escapeHtml(lv) + '"'
+			+ ' title="' + ((kind === 'workbench' || kind === 'plugin')
+				? '登记到商城：本体在 npm / GitHub，只登记来源' : '打包上传到商城，别人可以从商城安装') + '">'
+			+ ((kind === 'workbench' || kind === 'plugin') ? '登记' : '上传') + '</button>'
 		: '';
 	const delBtn = delKind && slug
 		? '<button type="button" class="sk-act tk-del" data-tk-del="' + escapeHtml(String(slug)) + '"'
@@ -1425,9 +1969,15 @@ function renderItemRow({ kind, slug, name, desc, icon, src, f, store, localVer, 
 		+ renderIcon({ icon, kind: KIND_OF_TYPE[({ flow: 'workflow', agent: 'agent', wb: 'workbench', plugin: 'plugin' })[kind] || kind], seed: slug || name, cls: 'sk-ico' })
 		+ '<div class="sk-main"><div class="sk-l1"><span class="sk-nm">' + escapeHtml(String(name)) + '</span></div>'
 		+ '<div class="sk-ds">' + escapeHtml(String(desc || '')) + '</div>'
-		+ '<div class="sk-rowmeta">' + (tags || []).map(t =>
+		+ '<div class="sk-rowmeta">'
+		// 版本号放最前（用户要求：已安装的 item 都要显示版本）
+		+ (lv ? '<span class="sk-tag ver">v' + escapeHtml(lv) + '</span>' : '<span class="sk-tag ver">v?</span>')
+		+ (canUp ? '<span class="sk-tag up" title="商城已有 ' + escapeHtml(storeVer) + '">可升级 v' + escapeHtml(storeVer) + '</span>' : '')
+		+ (tags || []).map(t =>
 			'<span class="sk-tag' + (t.acc ? ' acc' : '') + '">' + escapeHtml(String(t.text)) + '</span>').join('') + '</div></div>'
 		+ swBtn
+		+ upBtn
+		+ pubBtn
 		+ delBtn
 		+ (paths ? '<div class="tk-detail" hidden>' + paths + '</div>' : '')
 		+ '</li>';
@@ -1449,7 +1999,7 @@ function renderToolCard({ name, desc, tags, foot, path, src, state, type, cur, p
 	// ★ 2026-10-24（用户：「插件 item 缺少卸载按钮」）：插件的删除**不是** trash ——
 	//   插件装在 profile 的 node_modules 里，只能走 marketplace 的 uninstall（dsh 侧 removeBundle）。
 	//   所以按钮要能带 op / 包名 / 文案；默认仍是 删除 + trash，不影响其它类型。
-	delSlug, itemSlug, delOp, delPkg, delLabel, delTitle }) {
+	delSlug, itemSlug, delOp, delPkg, delLabel, delTitle, fullDesc, facts }) {
 	const kind = KIND_OF_TYPE[type] || '';
 	// ★ 2026-10-23（用户：「每个 item 点击后用独立 UI 展示详情，包含升级、删除等按钮」）：
 	//   详情弹层是**统一的**，它靠这几个 data-item-* 自己决定底部给哪些按钮：
@@ -1466,7 +2016,10 @@ function renderToolCard({ name, desc, tags, foot, path, src, state, type, cur, p
 		+ ' data-item-lver="' + escapeHtml(localVer) + '"'
 		+ (delKind ? ' data-item-del="' + escapeHtml(delKind) + '"' : '')
 		+ (delKind && delOp ? ' data-item-delop="' + escapeHtml(delOp) + '"' : '')
-		+ (delKind && delPkg ? ' data-item-pkg="' + escapeHtml(delPkg) + '"' : '');
+		+ (delKind && delPkg ? ' data-item-pkg="' + escapeHtml(delPkg) + '"' : '')
+		// ★ 2026-10-26：弹层的「说明」与「关键信息」
+		+ ' data-item-desc="' + escapeHtml(String(fullDesc || desc || '')) + '"'
+		+ (facts && facts.length ? ' data-item-facts="' + escapeHtml(JSON.stringify(facts)) + '"' : '');
 	const icon = (cur && (cur.icon || (cur.metadata && cur.metadata.icon))) || '';
 	// slug 放最前、视觉弱化：两样信息都在（可读名做标题、slug 做标签）
 	const pills = (slug ? '<span class="tk-pill dim" title="slug（技术 id）">' + escapeHtml(String(slug)) + '</span>' : '')
@@ -1515,18 +2068,51 @@ function renderToolCard({ name, desc, tags, foot, path, src, state, type, cur, p
  * （`<li data-mcp-server-row data-mcp-server="X"><span class="id">X</span>`）。
  * 名字来源：商城同名商品（`knot-mcp-iwiki-3` → 「iWiki」）→ 否则把 serverName 人类化。
  */
-function decorateMcpHtml(html, lookup) {
+/** 本机已装的 MCP 包版本：`<数据根>/mcp/<id>/config.json` 的 `version`（读不到就当空）。 */
+function readInstalledMcpVersions(dataRoot) {
+	const out = {};
+	if (!dataRoot) { return out; }
+	try {
+		for (const name of readdirSync(join(dataRoot, 'mcp'))) {
+			try {
+				const cfg = JSON.parse(readFileSync(join(dataRoot, 'mcp', name, 'config.json'), 'utf8'));
+				out[name] = String(cfg.version || '');
+			} catch { out[name] = ''; }
+		}
+	} catch { /* 没有 mcp 目录 = 一个都没装 */ }
+	return out;
+}
+
+function decorateMcpHtml(html, lookup, metaOf) {
 	// ⚠ 2026-10-23：服务器行改成了「<li><div class="mcp-l1"><span class="id">…」两层结构，
 	//   所以 .id 不再**紧贴** <li> 开头 —— 正则必须容忍中间那层包裹（原来的写法会静默不匹配，
 	//   表现就是"可读名没生效、界面上还是 comfy-mcp"）。
 	return String(html || '').replace(
 		/(<li data-mcp-server-row[^>]*data-mcp-server="([^"]+)"[^>]*>\s*(?:<div class="mcp-l1">)?\s*)<span class="id">([^<]*)<\/span>/g,
-		(all, prefix, server, shown) => prefix
-			+ '<span class="id">' + escapeHtml(readableName({ slug: server, name: shown, storeName: lookup(server) })) + '</span>',
+		(all, prefix, server, shown) => {
+			// ★ 2026-10-26（用户：已安装的 mcp 也要显示版本 / 升级 / 上传）：
+			//   行是**另一个插件**渲染的（vssaros-mcp），我们只在它渲染好的 HTML 上做定点补充。
+			const info = (metaOf && metaOf(server)) || {};
+			const lv = String(info.lv || '');
+			const sv = String(info.sv || '');
+			const canUp = !!sv && (!lv || lv !== sv);
+			let extra = '<span class="sk-tag ver">v' + escapeHtml(lv || '?') + '</span>';
+			if (canUp) {
+				extra += '<span class="sk-tag up" title="商城已有 ' + escapeHtml(sv) + '">可升级 v' + escapeHtml(sv) + '</span>';
+				extra += '<button type="button" class="sk-act sk-act-up" data-market-install="mcp:' + escapeHtml(server)
+					+ '" data-market-upgrade title="用商城的 ' + escapeHtml(sv) + ' 覆盖本地安装">升级</button>';
+			} else if (!sv) {
+				extra += '<button type="button" class="sk-act sk-act-pub" data-publish="mcp:' + escapeHtml(server)
+					+ '" data-publish-external="0" data-publish-name="' + escapeHtml(server)
+					+ '" data-publish-ver="' + escapeHtml(lv) + '" title="把这个连接器打包上传到商城">上传</button>';
+			}
+			return prefix + '<span class="id">'
+				+ escapeHtml(readableName({ slug: server, name: shown, storeName: lookup(server) })) + '</span>' + extra;
+		},
 	);
 }
 
-function renderPage({ skills, errors, missing, root, nativeSkillTool, provider, skillishTools, mcpSection, workflows, agents, market }) {
+function renderPage({ skills, errors, missing, root, nativeSkillTool, provider, skillishTools, mcpSection, workflows, agents, market, mcpInstalled }) {
 	// `totals` 是各 kind 的总数（页面用它说「共 N 个，展示前 M 个」）
 	const mk = market || { ok: false, items: [], totals: {} };
 	// slug → 商城商品（用于"装前装后同一个名字"）
@@ -1549,6 +2135,17 @@ function renderPage({ skills, errors, missing, root, nativeSkillTool, provider, 
 	const enabledBundles = new Set(profilePlugins.bundles || []);
 	// 本页/商城接口所在插件：开关锁住（关掉页面就没了），与后端 SELF_PLUGIN_NAME 一致
 	const SELF_LOCKED_PLUGINS = ['@vssaros/dsh-skills', '@vssaros/dsh-marketplace'];
+	// ★ 2026-10-26（用户：工作台也要显示版本）：工作台 = 某个 dsh 插件（provider 是短名），
+	//   所以版本从 profile 里那个插件的 package.json 版本取：vssaros-dashboard ⇒ @vssaros/dsh-dashboard。
+	const pluginVersionOfProvider = provider => {
+		const short = String(provider || '').replace(/^@vssaros\/dsh-/, '').replace(/^vssaros-/, '');
+		if (!short) { return ''; }
+		const hit = profilePlugins.items.find(x => {
+			const bare = String(x.name || '').replace(/^@[^/]+\//, '').replace(/^dsh-/, '');
+			return bare === short;
+		});
+		return hit && hit.version ? String(hit.version) : '';
+	};
 	// 包名 → 可读名：@vssaros/dsh-skills ⇒ Skills；archify-dsh ⇒ Archify；
 	// dsh-experimental-voice-input-bundle ⇒ Experimental Voice Input Bundle
 	// （直接用包名当标题会 35 字符换 3 行，卡片被顶到 284px ✗）
@@ -1594,6 +2191,16 @@ function renderPage({ skills, errors, missing, root, nativeSkillTool, provider, 
 		const st = pluginStoreOf(name);
 		return (st && (st.icon || st.cover)) || '';
 	};
+	// ★ 2026-10-26（用户：「弹出页缺少该项的详细说明」）：插件的行描述只有包名，
+	//   弹层里必须有一段真说明 —— 商城有同款商品就用它的描述，没有才说清它是什么。
+	const pluginDescOf = (name, isBuiltin) => {
+		const st = pluginStoreOf(name);
+		const d = st && st.description ? shortStoreDesc(String(st.description)) : '';
+		if (d) { return d; }
+		return isBuiltin
+			? '随产品发布的内置插件（@vssaros / @deepseek-ai 范围），不需要安装，随 Host 启动加载；在这里可以临时停用。'
+			: '从商城安装的第三方 dsh 插件：运行在 Host 进程里，装/卸/启停都在本页完成。';
+	};
 
 	// 插件详情块（行与弹层共用；卡片已改成行，这里只剩这一份）
 	const pluginPathsHtml = (it, isBuiltin) => '<div class="paths"><h4>插件信息</h4>'
@@ -1620,9 +2227,25 @@ function renderPage({ skills, errors, missing, root, nativeSkillTool, provider, 
 		// `data-skill-row ` 前面（p3-04 数的是 /<li data-skill-row / 这个字面前缀 ✓）。
 		// 统一详情弹层的元信息（与卡片口径一致）：技能也能在详情里升级/删除
 		const skLocalVer = String((s.metadata && s.metadata.version) || '');
+		// ★ 2026-10-26（用户：已安装都要显示版本；与商城不一致给升级；本地自建给上传）
+		const skStoreVer = String((store && store.version) || '');
+		const skBuiltin = String(skillSrcOf(s.path)) === 'builtin';
+		const skCanUp = !!store && !!skStoreVer && (!skLocalVer || skLocalVer !== skStoreVer) && !skBuiltin;
+		const skCanPub = !store && !skBuiltin;
 		const skItemAttrs = ' data-item-kind="skill" data-item-slug="' + escapeHtml(id) + '"'
 			+ (store ? ' data-item-store="' + escapeHtml(String(store.slug)) + '" data-item-upver="' + escapeHtml(String(store.version || '')) + '"' : '')
-			+ ' data-item-lver="' + escapeHtml(skLocalVer) + '" data-item-del="skill"';
+			+ ' data-item-lver="' + escapeHtml(skLocalVer) + '" data-item-del="skill"'
+			// 弹层里的「说明」用完整描述（行上的 .sk-ds 只有一行）
+			+ ' data-item-desc="' + escapeHtml(shownDesc || '') + '"'
+			+ ' data-item-facts="' + escapeHtml(JSON.stringify([
+				['类型', '技能（skill）'],
+				['技能 id', id],
+				['激活方式', activationWord(s.activation)],
+				['来源', String(skillSrcOf(s.path)) === 'builtin' ? '随产品发布（内置）' : '本地 / 商城安装'],
+				...(s.metadata && s.metadata.version ? [['本地版本', String(s.metadata.version)]] : []),
+				...(store ? [['商城商品', String(store.slug)], ['商城版本', String(store.version || '未声明')]] : []),
+			])) + '"';
+
 		return `<li data-skill-row data-skill-id="${escapeHtml(id)}" data-act="${escapeHtml(s.activation)}" data-f-src="${skillSrcOf(s.path)}" data-f-act="${escapeHtml(s.activation)}" class="sk-row" data-slug="${escapeHtml(id)}"${skItemAttrs} title="${escapeHtml(shownName)} — ${escapeHtml(shownDesc)}（${escapeHtml(id)}）">`
 			+ '<i class="sk-bar"></i>'
 			+ renderIcon({ icon: s.metadata && s.metadata.icon, kind: 'skill', seed: store ? String(store.slug) : s.name, cls: 'sk-ico' })
@@ -1635,11 +2258,21 @@ function renderPage({ skills, errors, missing, root, nativeSkillTool, provider, 
 			+ `<div class="sk-ds">${escapeHtml(shownDesc)}</div>`
 			// slug 太长的（cola-orange-line-illustration）在 268px 卡里会一个字一行 ⇒ 放 tooltip 里，
 			// 界面上只留可读名（用户的要求就是"UI 展示可读名"），技术 id 仍可在详情抽屉里看到。
-			+ `<div class="sk-rowmeta">${activationTag(s.activation)}${extra ? `<span class="sk-tag ver">${escapeHtml(extra)}</span>` : ''}<span class="sk-slug" hidden>${escapeHtml(id)}</span></div></div>`
+			// 版本号打头（此前它混在 extra 里，和分类挤成一段文字，看不出版本是多少）
+			+ `<div class="sk-rowmeta"><span class="sk-tag ver">v${escapeHtml(skLocalVer || '?')}</span>`
+			+ (skCanUp ? `<span class="sk-tag up" title="商城已有 ${escapeHtml(skStoreVer)}">可升级 v${escapeHtml(skStoreVer)}</span>` : '')
+			+ `${activationTag(s.activation)}${extra ? `<span class="sk-tag ver">${escapeHtml(extra)}</span>` : ''}<span class="sk-slug" hidden>${escapeHtml(id)}</span></div></div>`
 			// 设置齿轮（2026-10-15，桥 `9 → 10`）：点了请宿主打开**资源管理详情页**（改 SKILL.md / 启停 / 卸载）。
 			// ⚠ 它是 .sk-row 内部的按钮 ⇒ 点击必须 `stopPropagation`（否则会同时把抽屉展开 ✓）。
 			// 触发逻辑在页尾那段**委派**处理器里（`[data-sk-settings]`）—— MCP 段（另一插件渲染的行）也带同样的
 			// 属性 ⇒ 一处处理两类 ✓（那边没有自己的页内 JS，只能由本页代劳 ✓）。
+			// 升级 / 上传（与其它行同一套属性，复用页尾那两个委派处理器）
+			+ (skCanUp
+				? `<button type="button" class="sk-act sk-act-up" data-market-install="skill:${escapeHtml(String(store.slug))}" data-market-upgrade title="用商城的 ${escapeHtml(skStoreVer)} 覆盖本地（旧目录先进回收站）">升级</button>`
+				: '')
+			+ (skCanPub
+				? `<button type="button" class="sk-act sk-act-pub" data-publish="skill:${escapeHtml(id)}" data-publish-external="0" data-publish-name="${escapeHtml(shownName)}" data-publish-ver="${escapeHtml(skLocalVer)}" title="打包上传到商城">上传</button>`
+				: '')
 			+ `<button type="button" class="sk-gear" data-sk-settings data-sk-kind="skill" data-sk-id="${escapeHtml(id)}" title="设置（在编辑区修改这个技能）">\u2699</button>`
 			+ '<span class="sk-arrow">\u203A</span></li>'
 			+ `<li class="sk-drawer" data-skill-detail hidden><dl><dt>激活</dt><dd>${activationWord(s.activation)}</dd>`
@@ -1960,6 +2593,32 @@ function renderPage({ skills, errors, missing, root, nativeSkillTool, provider, 
 .mk-detail pre code { background: transparent; padding: 0; }
 .mk-detail img { max-width: 100%; height: auto; border-radius: 6px; margin: 8px 0; display: block; }
 .mk-detail a { color: var(--dsw-alias-brand-primary, #4C9AFF); }
+/* ── 「上传/登记到商城」表单（2026-10-26）── */
+.mk-pub { margin: 0 0 14px; padding: 12px; border-radius: 6px; border: 1px solid var(--vscode-focusBorder, #007acc); background: var(--vscode-editorWidget-background, rgba(0,122,204,.06)); }
+.mk-pub h4 { margin: 0 0 10px; font-size: 12.5px; font-weight: 600; }
+.mk-pub-row { display: grid; grid-template-columns: 72px minmax(0, 1fr); align-items: center; gap: 8px; margin-bottom: 8px; }
+.mk-pub-row label { font-size: 11.5px; color: var(--vscode-descriptionForeground, #999); }
+.mk-pub-row input, .mk-pub-row textarea { width: 100%; box-sizing: border-box; font: inherit; font-size: 12px; padding: 4px 6px; border-radius: 4px; color: var(--vscode-input-foreground, #ddd); background: var(--vscode-input-background, rgba(128,128,128,.12)); border: 1px solid var(--vscode-input-border, rgba(128,128,128,.4)); }
+.mk-pub-row textarea { resize: vertical; min-height: 40px; }
+.mk-pub-note { margin: 0 0 10px; font-size: 11.5px; line-height: 1.5; color: var(--vscode-descriptionForeground, #999); }
+.mk-pub-ops { display: flex; gap: 8px; }
+/* ── 发布前体检结果（2026-10-26）── */
+/* 重复发布源提醒（2026-10-26）*/
+.mk-pub-warn { margin: 6px 0 0; font-size: 11.5px; line-height: 1.5;
+	color: var(--vscode-charts-yellow, #d29922); }
+.mk-pre { margin: 10px 0 0; }
+.mk-pre-head { font-size: 12px; font-weight: 600; margin-bottom: 6px; }
+.mk-pre-head.mk-pre-pass { color: var(--vscode-charts-green, #3fb950); }
+.mk-pre-head.mk-pre-warn { color: var(--vscode-charts-yellow, #d29922); }
+.mk-pre-head.mk-pre-error { color: var(--vscode-errorForeground, #f48771); }
+.mk-pre-list { margin: 0 0 8px; padding-left: 16px; }
+.mk-pre-item { font-size: 11.5px; line-height: 1.55; margin-bottom: 3px; }
+.mk-pre-item b { font-weight: 600; }
+.mk-pre-item span { display: block; opacity: .85; margin-top: 1px; }
+.mk-pre-item.mk-pre-pass { color: var(--vscode-charts-green, #3fb950); }
+.mk-pre-item.mk-pre-warn { color: var(--vscode-charts-yellow, #d29922); }
+.mk-pre-item.mk-pre-error { color: var(--vscode-errorForeground, #f48771); }
+.mk-pub-err { margin: 8px 0 0; font-size: 11.5px; color: var(--vscode-errorForeground, #f48771); min-height: 14px; }
 .mk-detail blockquote { margin: 8px 0; padding-left: 10px; border-left: 2px solid var(--dsw-alias-border-l2, rgba(127,127,127,.4)); }
 .mk-detail table { border-collapse: collapse; width: 100%; margin: 8px 0; }
 .mk-detail th, .mk-detail td { border: 1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.3)); padding: 4px 8px; text-align: left; }
@@ -2136,8 +2795,35 @@ function renderPage({ skills, errors, missing, root, nativeSkillTool, provider, 
 .sk-sw[aria-checked="true"] i { transform: translateX(14px); background: #fff; }
 .sk-sw:hover:not([disabled]) { border-color: var(--vscode-focusBorder, #007acc); }
 .sk-sw[disabled] { opacity: .4; cursor: not-allowed; }
+/* ── 版本 / 可升级 / 升级·上传（2026-10-26）── */
+.sk-tag.ver { font-variant-numeric: tabular-nums; opacity: .9; }
+.sk-tag.up { color: var(--vscode-charts-yellow, #d7ba7d); border: 1px solid currentColor; border-radius: 999px; padding: 0 6px; }
+/* 行内动作：升级 / 上传 与删除同一套悬停出现，但升级用主色区分 */
+.sk-act-up { color: var(--vscode-textLink-foreground, #3794ff); }
+.sk-act-pub { color: var(--vscode-descriptionForeground, #999); }
+/* 连接器行是别的插件渲染的：没有 .sk-row 的悬停机制 ⇒ 这两个按钮常显，并排进第一行 */
+.sk-pane-mcp .sk-act { opacity: 1; margin-left: 6px; font-size: 11px; padding: 1px 6px; border-radius: 4px;
+	border: 1px solid var(--vscode-panel-border, rgba(128,128,128,.4)); background: transparent; cursor: pointer; }
+.sk-pane-mcp .sk-tag { margin-left: 6px; }
 .sk-row.is-off { opacity: .62; }
 .sk-row.is-off .sk-nm { text-decoration: line-through; text-decoration-thickness: 1px; }
+/* ── 详情弹层的正文（2026-10-26 用户：「弹出页缺少该项的详细说明」）── */
+.mk-sec { margin: 0 0 14px; }
+.mk-sec h4 { margin: 0 0 6px; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--vscode-descriptionForeground, #999); }
+.mk-sec p { margin: 0; font-size: 12.5px; line-height: 1.62; color: var(--vscode-foreground, #ddd); white-space: pre-wrap; word-break: break-word; }
+.mk-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 14px; margin: 0 0 14px; padding: 10px 12px; border-radius: 6px; background: var(--vscode-editorWidget-background, rgba(128,128,128,.06)); border: 1px solid var(--vscode-panel-border, rgba(128,128,128,.25)); }
+.mk-facts dt { font-size: 11.5px; color: var(--vscode-descriptionForeground, #999); }
+.mk-facts dd { margin: 0; font-size: 12px; min-width: 0; word-break: break-all; }
+.mk-detail h5, .mk-detail h6 { margin: 14px 0 6px; font-size: 12.5px; font-weight: 600; }
+.mk-detail p { margin: 0 0 8px; font-size: 12.5px; line-height: 1.62; }
+.mk-detail ul { margin: 0 0 8px; padding-left: 18px; }
+.mk-detail li { font-size: 12.5px; line-height: 1.6; }
+.mk-detail code { font-family: ui-monospace, Consolas, monospace; font-size: 11.5px; padding: 1px 4px; border-radius: 3px; background: rgba(128,128,128,.16); }
+.mk-detail pre.mk-pre { margin: 0 0 10px; padding: 10px 12px; border-radius: 6px; overflow: auto; background: rgba(128,128,128,.12); }
+.mk-detail pre.mk-pre code { padding: 0; background: none; white-space: pre; }
+.mk-detail hr { border: 0; border-top: 1px solid var(--vscode-panel-border, rgba(128,128,128,.3)); margin: 12px 0; }
+.mk-detail a { color: var(--vscode-textLink-foreground, #3794ff); }
+.mk-detail blockquote { margin: 0 0 8px; padding-left: 10px; border-left: 2px solid var(--vscode-panel-border, rgba(128,128,128,.4)); color: var(--vscode-descriptionForeground, #999); }
 </style>
 </head>
 <body data-vssaros-page="skills" data-vssaros-skills-mcp-section="${mcpSection.state}" data-vssaros-skills-preview="enabled">
@@ -2170,7 +2856,12 @@ function renderPage({ skills, errors, missing, root, nativeSkillTool, provider, 
 					[{ k: 'ver:yes', t: '有可安装版本' }, { k: 'ver:no', t: '仅浏览（无包体）' }],
 				)}
 				${dnNote}${foldHtml('skills', skills.length, list)}${marketGridHtml(mk, 'skills')}</div>
-			<div data-sk-pane="mcp" hidden><div class="sk-pane-mcp">${decorateMcpHtml(mcpSection.html, id => (mkBySlug.get(String(id)) || {}).name)}</div>${marketGridHtml(mk, 'conn')}</div>
+			<div data-sk-pane="mcp" hidden><div class="sk-pane-mcp">${decorateMcpHtml(mcpSection.html, id => (mkBySlug.get(String(id)) || {}).name, (name) => {
+				// 本地版本来自 <数据根>/mcp/<name>/config.json；商城版本来自同名商品
+				const lv = (mcpInstalled && mcpInstalled[name]) || '';
+				const st = mkBySlug.get(String(name));
+				return { lv, sv: st ? String(st.version || '') : '' };
+			})}</div>${marketGridHtml(mk, 'conn')}</div>
 
 			<div data-sk-pane="workflows" hidden>
 				${filterBarHtml('workflows',
@@ -2186,6 +2877,14 @@ function renderPage({ skills, errors, missing, root, nativeSkillTool, provider, 
 						name: readableName({ slug: w.id, name: w.name, storeName: storeOfId(w.id)?.name }),
 						desc: (storeOfId(w.id) ? (shortStoreDesc(storeOfId(w.id).description).slice(0, 140) || w.desc) : w.desc),
 						localVer: w.version,
+						fullDesc: (storeOfId(w.id) ? (shortStoreDesc(String(storeOfId(w.id).description || '')) || w.desc) : w.desc),
+						facts: [
+							['类型', '工作流'],
+							['状态', w.active ? '已启用' : '已停用'],
+							['节点', String(w.nodes) + ' 个'],
+							['更新时间', w.updatedAt ? new Date(w.updatedAt).toISOString().slice(0, 10) : '未知'],
+							['工作流 id', w.id],
+						].concat(storeOfId(w.id) ? [['商城商品', String(storeOfId(w.id).slug)]] : []),
 						src: 'installed',
 						f: { src: 'installed', state: w.active ? 'on' : 'off' },
 						tags: [{ text: w.active ? '已启用' : '已停用', acc: w.active }, { text: '已安装' }, { text: w.nodes + ' 个节点' }],
@@ -2214,6 +2913,13 @@ function renderPage({ skills, errors, missing, root, nativeSkillTool, provider, 
 						name: readableName({ slug: a.id, name: a.name, storeName: storeOfId(a.id)?.name }),
 						desc: (storeOfId(a.id) ? (shortStoreDesc(storeOfId(a.id).description).slice(0, 140) || a.desc) : a.desc),
 						localVer: a.version,
+						fullDesc: (storeOfId(a.id) ? (shortStoreDesc(String(storeOfId(a.id).description || '')) || a.desc) : a.desc),
+						facts: [
+							['类型', 'Agent'],
+							['Agent id', a.id],
+						].concat(a.role ? [['角色', a.role]] : [])
+							.concat(a.model ? [['模型', a.model]] : [])
+							.concat(storeOfId(a.id) ? [['商城商品', String(storeOfId(a.id).slug)]] : []),
 						src: 'installed',
 						f: { src: 'installed', model: a.model ? 'yes' : 'no' },
 						tags: [{ text: '已安装' }].concat(a.role ? [{ text: a.role }] : []).concat(a.model ? [{ text: a.model }] : []),
@@ -2248,12 +2954,22 @@ function renderPage({ skills, errors, missing, root, nativeSkillTool, provider, 
 								desc: x.name + ' · ' + (x.version || '版本未知'),
 								src: 'builtin', f: { src: 'builtin' },
 								icon: pluginIconOf(x.name),
+								store: pluginStoreOf(x.name),
+								localVer: x.version,
 								togglePkg: x.name,
 								toggleOn: enabledBundles.has(x.name),
 								toggleLocked: SELF_LOCKED_PLUGINS.includes(x.name),
 								toggleTitle: SELF_LOCKED_PLUGINS.includes(x.name)
 									? '这是当前页面/商城接口所在的插件，不能在这里关闭'
 									: (enabledBundles.has(x.name) ? '已启用（点一下停用）' : '已停用（点一下启用）'),
+								fullDesc: pluginDescOf(x.name, true),
+								facts: [
+									['类型', '插件（dsh plugin）'],
+									['包名', x.name],
+									['版本', x.version || '未声明'],
+									['来源', '随产品发布（内置）'],
+									['启用状态', enabledBundles.has(x.name) ? '已启用' : '已停用'],
+								],
 								tags: [{ text: '内置' }, { text: '随包' }],
 								paths: pluginPathsHtml(x, true),
 							})).join('')
@@ -2263,9 +2979,19 @@ function renderPage({ skills, errors, missing, root, nativeSkillTool, provider, 
 								desc: x.name + ' · ' + (x.version || '版本未知'),
 								src: 'installed', f: { src: 'installed' },
 								icon: pluginIconOf(x.name),
+								store: pluginStoreOf(x.name),
+								localVer: x.version,
 								togglePkg: x.name,
 								toggleOn: enabledBundles.has(x.name),
 								toggleTitle: enabledBundles.has(x.name) ? '已启用（点一下停用）' : '已停用（点一下启用）',
+								fullDesc: pluginDescOf(x.name, false),
+								facts: [
+									['类型', '插件（dsh plugin）'],
+									['包名', x.name],
+									['版本', x.version || '未声明'],
+									['来源', '从商城安装'],
+									['启用状态', enabledBundles.has(x.name) ? '已启用' : '已停用'],
+								],
 								tags: [{ text: '已安装' }, { text: '商城安装' }],
 								delKind: 'plugin', delOp: 'uninstall', delPkg: x.name,
 								delLabel: '卸载',
@@ -2299,6 +3025,15 @@ function renderPage({ skills, errors, missing, root, nativeSkillTool, provider, 
 							kind: 'workbench', slug: id,
 							name: readableName({ slug: id, name: w.name }),
 							desc: w.desc,
+							// 工作台没有自己的版本号 —— 它就是那个 dsh 插件（provider = vssaros-xxx ⇒ @vssaros/dsh-xxx）
+							localVer: pluginVersionOfProvider(w.provider),
+							fullDesc: w.desc,
+							facts: [
+								['类型', '工作台'],
+								['路由', w.route],
+								['提供方', w.provider],
+								['内置', '是（随产品发布，注册在宿主服务里）'],
+							],
 							src: 'builtin', f: { src: 'builtin' },
 							tags: [{ text: '内置' }, { text: w.route }],
 							paths: P('wb', w),
@@ -3180,6 +3915,8 @@ export function apply(ctx, config = {}) {
 					skillishTools: state.skillishTools,
 					// MCP 区块（`@vssaros/dsh-mcp` 的片段）：同源转发 Cookie 取回；没装/没激活都只是"未内嵌"。
 					mcpSection: await fetchMcpSection(req),
+					// 已装 MCP 包的版本（详情里的「版本 / 升级 / 上传」靠它）
+					mcpInstalled: readInstalledMcpVersions(root ? dirname(root) : ''),
 				});
 				res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
 				res.end(html);

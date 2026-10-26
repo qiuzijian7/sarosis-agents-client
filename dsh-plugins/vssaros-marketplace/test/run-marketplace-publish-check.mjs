@@ -1013,6 +1013,29 @@ function makeSkill(localId, version, extra = {}) {
 		check('㉝ IDE 侧解析读出', ide.includes('suggestions: parseStringArray(raw.suggestions)'));
 	}
 
+// ── ㉞ 商品卡片显示**上传日期**（2026-10-26 用户：「为每个 item 加上上传日期」）──
+{
+		const pageJs2 = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'client.js'), 'utf8');
+		const skPath = path.resolve(HERE, '..', '..', 'vssaros-skills', 'lib', 'index.js');
+		const sk = fs.existsSync(skPath) ? fs.readFileSync(skPath, 'utf8') : '';
+
+		check('㉞ 商城页面有 fmtUploadDate', pageJs2.includes('function fmtUploadDate(ms)'));
+		check('㉞ 卡片 meta 里显示日期', pageJs2.includes('fmtUploadDate(pkg.created_at)'));
+		check('㉞ 工具工作台也有 fmtUploadDate', sk.includes('function fmtUploadDate(ms)'));
+		check('㉞ 工具工作台卡片显示日期', sk.includes('fmtUploadDate(it.created_at)'));
+
+		// ★ 字段名必须是 **蛇形 `created_at`**（服务端就是这么返回的；用 createdAt 会永远拿不到）
+		//    而且解析不了时必须给空串，**不能渲染 `Invalid Date`**（那是肉眼可见的 bug）
+		check('㉞ 用**蛇形 `created_at`**（不是 createdAt）',
+			pageJs2.includes('pkg.created_at') && sk.includes('it.created_at') && !pageJs2.includes('pkg.createdAt'));
+		check('㉞ 解析失败返回空串（不渲染 Invalid Date）',
+			pageJs2.includes('isNaN(d.getTime())') && sk.includes('Number.isNaN(d.getTime())'));
+		// ⚠ 用**正向**断言：检查确实用本地时区三件套（`getFullYear/getMonth/getDate`）。
+		//   不能反向查 `toISOString` —— 注释里写着"不用 toISOString"，会误报。
+		check('㉞ 用**本地时区**拼日期（getFullYear/getMonth/getDate）',
+			pageJs2.includes('d.getFullYear()') && pageJs2.includes('d.getMonth()') && pageJs2.includes('d.getDate()'));
+	}
+
 fs.rmSync(dataRoot, { recursive: true, force: true });
 console.log(`\n[marketplace publish] ${pass} passing / ${fails.length} failing`);
 if (fails.length) { console.log('失败：' + fails.join('、')); }

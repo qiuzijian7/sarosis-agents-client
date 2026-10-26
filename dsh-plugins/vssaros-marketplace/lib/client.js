@@ -226,6 +226,28 @@
 	];
 	/** 记住上次选择（localStorage；dsh 页面同源，隐私模式下读不到就回落默认）。 */
 	var SIZE_KEY = 'vs-mp-card-size';
+
+	/**
+	 * 商城商品的上传日期（★ 2026-10-26 用户：「为每个 item 加上上传日期」）。
+	 *
+	 * 服务端字段是 **`created_at`**（毫秒时间戳、蛇形命名），不是 `createdAt`。
+	 * 展示口径：7 天内 ⇒「3 天前」；更早 ⇒ `2026-10-26`。
+	 * 解析失败/无值 ⇒ 返回空串（**绝不显示 `Invalid Date`**）。
+	 */
+	function fmtUploadDate(ms) {
+		var n = Number(ms);
+		if (!isFinite(n) || n <= 0) { return ''; }
+		var d = new Date(n);
+		if (isNaN(d.getTime())) { return ''; }
+		var diff = Date.now() - n;
+		var day = 86400000;
+		if (diff >= 0 && diff < day) { return '今天'; }
+		if (diff >= day && diff < 7 * day) { return Math.floor(diff / day) + ' 天前'; }
+		// 本地时区 YYYY-MM-DD（不用 toISOString —— 那是 UTC，跨时区会差一天）
+		var mo = d.getMonth() + 1;
+		var dd = d.getDate();
+		return d.getFullYear() + '-' + (mo < 10 ? '0' + mo : mo) + '-' + (dd < 10 ? '0' + dd : dd);
+	}
 	function loadSizeId() {
 		try {
 			var saved = localStorage.getItem(SIZE_KEY);
@@ -369,7 +391,9 @@
 			),
 			h('div', { className: 'vs-mp-card-meta' },
 				textOf(pkg.author) || '暂无',
-				pkg.version ? ' · v' + String(pkg.version) : ''
+				pkg.version ? ' · v' + String(pkg.version) : '',
+				// ★ 2026-10-26：上传日期（字段名是蛇形 `created_at`）
+				fmtUploadDate(pkg.created_at) ? ' · ' + fmtUploadDate(pkg.created_at) : ''
 			),
 			h('div', { className: 'vs-mp-card-desc' },
 				textOf(pkg.description) || '这个商品暂时还没有填写介绍。'
