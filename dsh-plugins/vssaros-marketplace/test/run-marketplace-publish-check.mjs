@@ -814,6 +814,44 @@ function makeSkill(localId, version, extra = {}) {
 		check('㉖ 检测失败**不影响发布**', at2.includes('检测失败不影响发布'));
 		check('㉖ 介绍仍受 2048 上限约束', at2.includes('.slice(0, 2048)'));
 	}
+
+	// ── ㉗ 商城专用 agent（新建会话默认选中，2026-10-26）──────────────────
+	//   用户："商城工作台中… 新建会话时，使用专门的商城 agent"
+	//   ⚠ preset **只由 `vssaros-agents` 扫 `<数据根>/agents/*/.agent.md` 注册**
+	//     ⇒ 本插件不直接 `ctx.agentPresets.register()`（那要深依赖它的 `toPresetDefinition`
+	//       与 `presetBase.generated.js`，换装法路径就变了 ✗），而是**落一个 .agent.md**。
+	{
+		const maPath = path.resolve(HERE, '..', 'lib', 'marketAgent.js');
+		const ma = fs.existsSync(maPath) ? fs.readFileSync(maPath, 'utf8') : '';
+		const wb = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'workbench.js'), 'utf8');
+		const pageSrc2 = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'index.js'), 'utf8');
+		const pkg2 = JSON.parse(fs.readFileSync(path.resolve(HERE, '..', 'package.json'), 'utf8'));
+
+		check('㉗ 有 marketAgent.js', ma.length > 0, maPath);
+		check('㉗ agent id = marketplace-bot', ma.includes("MARKET_AGENT_ID = 'marketplace-bot'"));
+		check('㉗ preset id = `vssaros-marketplace-bot`（单前缀，多一层就永远 not-found）',
+			ma.includes("MARKET_PRESET = 'vssaros-marketplace-bot'") && wb.includes("MARKET_PRESET = 'vssaros-marketplace-bot'"));
+		check('㉗ **不写 tools 白名单**（allowlist 会把没列的全 deny ⇒ 变哑巴）',
+			!ma.includes('"tools"'));
+		check('㉗ 落在 `<数据根>/agents/<id>/.agent.md`（与用户自建 bot 同构）',
+			ma.includes("'agents'") && ma.includes("'.agent.md'"));
+		check('㉗ **幂等**：已存在不覆写（用户可能改过人设）',
+			ma.includes('if (await exists(file))'));
+		check('㉗ 有 rescan 时立即生效（不用重启）',
+			pageSrc2.includes('state.agentsRescan') && pageSrc2.includes('await state.agentsRescan()'));
+
+		check('㉗ 工作台包了 `newSession`（点「+ 新会话」也带同款 preset）',
+			wb.includes('origNewSession') && wb.includes('dw.newSession = patched'));
+		check('㉗ 包装**会还原**（dispose 放回原函数）', wb.includes('dw.newSession = origNewSession'));
+		check('㉗ 不覆盖别人的钩子（已被包过就不挂）',
+			wb.includes('if (dw.newSession !== origNewSession) { return; }'));
+		check('㉗ 只在**面板挂载 / 新会话**时设（agentPresets 是全局的，不能抢别人的）',
+			wb.includes('useEffect') && wb.includes('ensureMarketDefaults(ctx)'));
+		check('㉗ 输入框预填 `@商城助手`', wb.includes("DRAFT_SEED = '@商城助手 '"));
+		check('㉗ 预设 API 试多种方法名（没有公开文档）',
+			wb.includes("'select'") && wb.includes("'setPreset'") && wb.includes("'selectPreset'"));
+		check('㉗ marketAgent.js 在 files 白名单', pkg2.files.includes('lib/marketAgent.js'));
+	}
 fs.rmSync(dataRoot, { recursive: true, force: true });
 console.log(`\n[marketplace publish] ${pass} passing / ${fails.length} failing`);
 if (fails.length) { console.log('失败：' + fails.join('、')); }

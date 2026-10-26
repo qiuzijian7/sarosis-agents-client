@@ -28,6 +28,78 @@ window.__ModuleLoader__.load({
 		const react = require('react');
 
 		const SITE_PATH = '/x/marketplace/';
+		/**
+		 * 商城专用 agent 的 preset id（★ 2026-10-26 用户：「新建会话时使用专门的商城 agent」）。
+		 *
+		 * ⚠ 规则是 `vssaros-` + slugify(agentId)，**不是** agent id 本身
+		 *   （`vssaros-agents/lib/core/agents.js` 的 `presetIdOf`）。
+		 *   agent 文件由 Host 侧 `lib/marketAgent.js` 写到 `<数据根>/agents/marketplace-bot/`，
+		 *   ⇒ 这里必须写 `vssaros-marketplace-bot`。少前缀会被 `agent-preset/not-found` 拒。
+		 */
+		const MARKET_PRESET = 'vssaros-marketplace-bot';
+		/** 输入框预填（`@商城助手 `）：让用户一眼看到「这个会话是谁」。 */
+		const DRAFT_SEED = '@商城助手 ';
+
+		/**
+		 * 把**当前会话**的 agent preset 设成商城助手。
+		 *
+		 * 官方 `agentPresets` 的语义是「**第一轮开始前**选择 preset」⇒ blank 阶段设它合法。
+		 * 方法名/参数形态没有公开文档（`select` / `selectPreset` / `setPreset` / `choose` / `apply`
+		 * 逐个试，全是 try/catch）—— studio 已经用同一套摸出来了，这里照抄。
+		 *
+		 * @returns {boolean} 是否设成功
+		 */
+		function tryApplyPreset(ctx) {
+			const candidates = [];
+			try { const a = ctx.get && ctx.get('agentPresets'); if (a) { candidates.push(a); } } catch { /* ignore */ }
+			try { const b = ctx.get && ctx.get('remote.agentPresets'); if (b) { candidates.push(b); } } catch { /* ignore */ }
+			if (!candidates.length) { return false; }
+
+			for (const svc of candidates) {
+				if (!svc || typeof svc !== 'object') { continue; }
+				for (const name of ['select', 'selectPreset', 'setPreset', 'choose', 'apply']) {
+					if (typeof svc[name] !== 'function') { continue; }
+					try { svc[name](MARKET_PRESET); return true; } catch { /* 试 obj 形态 */ }
+					try { svc[name]({ agentPreset: MARKET_PRESET }); return true; } catch { /* 试下一个方法 */ }
+				}
+			}
+			return false;
+		}
+
+		/**
+		 * 给输入框预填 `DRAFT_SEED`（只在目标会话就是当前会话时）。
+		 *
+		 * 会话是异步挂载的 ⇒ 轮询最多 ~5s；失败就算了（预填只是锦上添花，
+		 * 绝不能因此报错或反复重试打日志）。
+		 */
+		function seedDraft(ctx) {
+			let tries = 0;
+			const timer = setInterval(() => {
+				tries += 1;
+				try {
+					const ui = ctx.get && ctx.get('uiSession');
+					const binding = ui && ui.adapter && ui.adapter.current ? ui.adapter.current.getSnapshot() : null;
+					const actions = binding && binding.props ? binding.props.inputActions : null;
+					if (actions && typeof actions.setDraft === 'function') {
+						clearInterval(timer);
+						actions.setDraft(DRAFT_SEED);
+						return;
+					}
+				} catch { /* 继续等 */ }
+				if (tries > 10) { clearInterval(timer); }
+			}, 500);
+		}
+
+		/**
+		 * 商城工作台**在前台**时调用：设 preset + 预填。
+		 *
+		 * ⚠ 为什么必须"前台才做"：`agentPresets` 是**全局的当前会话选择**，
+		 *   如果商城插件在别的页面也去设，就会把用户在其它工作台选的 agent 抢走 ✗
+		 *   ⇒ 触发点只有两个：① 本面板挂载 ② 用户点「+ 新会话」（都说明商城在前台）。
+		 */
+		function ensureMarketDefaults(ctx) {
+			if (tryApplyPreset(ctx)) { seedDraft(ctx); }
+		}
 		/** 对话栏默认宽度 / 最小宽度（与 studio 同口径，用户肌肉记忆一致）。 */
 		const CONV_WIDTH = '440px';
 		const CONV_MIN = 320;
@@ -178,13 +250,46 @@ window.__ModuleLoader__.load({
 		}
 
 		function apply(ctx) {
+			/**
+			 * 包一层：面板**挂载时**说明商城在前台 ⇒ 顺手把当前会话的 agent 设成商城助手。
+			 *
+			 * ⚠ 不能无条件包（见 `ensureMarketDefaults` 的注释）：`agentPresets` 是全局的
+			 *   当前会话选择，在别的页面设会把用户选的 agent 抢走。
+			 */
+			function MarketPanelWithDefaults(props) {
+				react.useEffect(() => {
+					// 首次挂载 = 进了商城工作台 ⇒ 设一次（成功就不再打扰）
+					ensureMarketDefaults(ctx);
+				}, []);
+				return react.createElement(MarketPanel, props);
+			}
+
 			// 注册式工作台：宿主 Frame 会给我们 `props.conversation`（对话停靠点）。
 			// ⚠ 宿主较旧（没有 desktopWorkbenches）⇒ 直接跳过，页面路由照常工作 ✓
 			try {
 				ctx.inject(['desktopWorkbenches'], (scope) => {
 					const dw = scope.desktopWorkbenches || (scope.get && scope.get('desktopWorkbenches'));
 					if (!dw || typeof dw.register !== 'function') { return; }
-					scope.effect(() => dw.register(DESCRIPTOR, MarketPanel), 'vssaros-marketplace: workbench');
+					scope.effect(() => dw.register(DESCRIPTOR, MarketPanelWithDefaults), 'vssaros-marketplace: workbench');
+
+					// ★ 用户点「+ 新会话」⇒ 新会话默认选中商城助手。
+					//   为什么要包：`newSession()` 自己不传 preset（宿主不认得我们的 bot），
+					//   而 hero 的懒创建不经过任何我们能插手的代码 ⇒ 这是唯一可靠路径。
+					//   ⚠ 必须还原（dispose 时把原函数放回去），否则卸载后还挂着我们的钩子。
+					const origNewSession = typeof dw.newSession === 'function' ? dw.newSession : null;
+					if (!origNewSession) { return; }
+					const patched = function (...args) {
+						const out = origNewSession.apply(dw, args);
+						// 会话是异步建的 ⇒ 稍等再设（`ensureMarketDefaults` 内部会再等输入框就绪）
+						setTimeout(() => { try { ensureMarketDefaults(ctx); } catch { /* ignore */ } }, 350);
+						return out;
+					};
+					scope.effect(() => {
+						// 只在没被别的插件包过时挂上去（避免覆盖别人的钩子）
+						if (dw.newSession !== origNewSession) { return; }
+						dw.newSession = patched;
+						return () => { if (dw.newSession === patched) { dw.newSession = origNewSession; } };
+					}, 'vssaros-marketplace: newSession preset');
 				});
 			} catch (e) {
 				console.error('[vssaros-marketplace] 注册工作台失败（页面仍可用）', e);

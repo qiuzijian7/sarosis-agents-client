@@ -40,6 +40,8 @@ import { inspectGithubRepo } from './githubInspect.js';
 import { preflightPublish } from './publishPreflight.js';
 // ★ 2026-10-27 阶段 3：让工作台右侧的对话能**真的**查找/发布
 import { marketToolDefinitions } from './agentTools.js';
+// ★ 2026-10-26：商城专用 agent（写 .agent.md，让新建会话默认选中）
+import { ensureMarketAgent, MARKET_PRESET } from './marketAgent.js';
 import { ALL_OPS, LOCAL_WRITE_KINDS, WRITE_OPS, isKnownOp, resolveOp } from './dispatch.js';
 // ★ 服务端 pkg → 前端形状的**唯一映射**（list/detail/reviewList/installed 共用）
 import { toInstalledItem, toPackageDetail, toPackageSummary } from './shape.js';
@@ -147,6 +149,30 @@ export async function apply(ctx, config) {
 			state.dataRootError = String(e?.message ?? e);
 		}
 	}
+
+	// ── 商城专用 agent（★ 2026-10-26 用户：「新建会话时使用专门的商城 agent」）──
+	//   落成 `<数据根>/agents/marketplace-bot/.agent.md`（与"用户自己建 bot"同构），
+	//   然后让 `vssaros-agents` 重扫 ⇒ **不用重启**就能在新建会话里选到 ✓
+	//   `vssarosAgents.rescan()` 不在（老版本）⇒ 文件已落好，重启后自然扫到（如实记录）。
+	ctx.effect(() => {
+		let cancelled = false;
+		(async () => {
+			if (!state.dataRoot) { return; }
+			const r = await ensureMarketAgent({ dataRoot: state.dataRoot });
+			state.marketAgent = { ok: r.ok, created: r.created, preset: MARKET_PRESET, error: r.error ?? '' };
+			if (cancelled || !r.ok || !r.created || !state.agentsRescan) { return; }
+			try {
+				await state.agentsRescan();
+				state.marketAgent.rescanned = true;
+			} catch (e) {
+				state.marketAgent.rescanned = false;
+				state.marketAgent.rescanError = String(e?.message ?? e).slice(0, 160);
+			}
+		})().catch(e => {
+			state.marketAgent = { ok: false, created: false, preset: MARKET_PRESET, error: String(e?.message ?? e).slice(0, 160) };
+		});
+		return () => { cancelled = true; };
+	}, 'vssaros-marketplace: market agent');
 
 	ctx.inject(['vssarosFoundation'], scope => {
 		try {
