@@ -24,7 +24,7 @@
  *   **靠人设约束范围**而不是靠白名单。宁可工具多，不能一个都没有。
  */
 
-import { mkdir, writeFile, access } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, access } from 'node:fs/promises';
 import { join } from 'node:path';
 
 /** agent id（同时是目录名）。⚠ 必须 `[a-z][a-z0-9-]*`，它会进 preset id。 */
@@ -74,7 +74,12 @@ export function marketAgentMarkdown(now = new Date()) {
 		`id: ${MARKET_AGENT_ID}`,
 		'role: 商城资源查找与发布专家',
 		'category: Marketplace',
-		'source: builtin',
+		// ⚠ **必须 `custom`**（★ 2026-10-26 真机定位到的根因）：
+		//   IDE 侧 `filterUserFacingAgents` 的规则是
+		//   `source !== 'builtin' || USER_FACING_BUILTIN_AGENT_IDS.has(id)`
+		//   白名单只有 saros-claw / knowledge-base-expert / tob / mediaclawer
+		//   ⇒ 写 `builtin` 会被 **IDE 的下拉框静默过滤掉**（dsh 的 /x/agents 反而能看到，两边规则不同）✗
+		'source: custom',
 		'version: 1.0.0',
 		`storeId: ${MARKET_AGENT_ID}`,
 		`createdAt: "${stamp}"`,
@@ -107,6 +112,17 @@ export async function ensureMarketAgent(opts = {}) {
 	const file = join(dir, '.agent.md');
 	try {
 		if (await exists(file)) {
+			// ★ 迁移（★ 2026-10-26 真机定位到的根因）：早期版本写的是 `source: builtin`
+			//   ⇒ 被 IDE 的 `filterUserFacingAgents` **静默过滤掉**，下拉框里根本看不到。
+			//   只改这一行，**不动用户改过的其它内容**（人设 / 名字 / 技能）。
+			try {
+				const text = await readFile(file, 'utf8');
+				if (/^source:\s*builtin\s*$/m.test(text)) {
+					const patched = text.replace(/^source:\s*builtin\s*$/m, 'source: custom');
+					await writeFile(file, patched, 'utf8');
+					return { ok: true, created: false, migrated: 'builtin→custom', file, preset: MARKET_PRESET };
+				}
+			} catch { /* 迁移失败不影响流程（下次还会再试） */ }
 			return { ok: true, created: false, file, preset: MARKET_PRESET };
 		}
 		await mkdir(dir, { recursive: true });

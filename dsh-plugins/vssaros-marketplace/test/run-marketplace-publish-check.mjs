@@ -935,6 +935,18 @@ function makeSkill(localId, version, extra = {}) {
 	check('㉙ inject `uiSession`（`ctx.get` 拿不到）', wb3.includes("ctx.inject(['uiSession']"));
 }
 
+// ── ㉚ agent 必须 `source: custom`（2026-10-26 真机定位的根因）────────────
+//   IDE 侧 `filterUserFacingAgents`：`source !== 'builtin'; USER_FACING_BUILTIN_AGENT_IDS.has(id)`
+//   白名单只有 saros-claw / knowledge-base-expert / tob / mediaclawer
+//   ⇒ 写 `builtin` 会被 **IDE 下拉框静默过滤**（dsh 的 /x/agents 反而能看到，两边规则不同）
+{
+		const ma2 = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'marketAgent.js'), 'utf8');
+		check('㉚ agent 用 `source: custom`（不是 builtin，否则 IDE 下拉看不到）',
+			ma2.includes("'source: custom'") && !ma2.includes("'source: builtin',"));
+		check('㉚ 旧文件会**自动迁移** builtin→custom（只改这一行，保留用户改动）',
+			ma2.includes('migrated: \'builtin→custom\'') && ma2.includes('/^source:\\s*builtin\\s*$/m'));
+	}
+
 fs.rmSync(dataRoot, { recursive: true, force: true });
 console.log(`\n[marketplace publish] ${pass} passing / ${fails.length} failing`);
 if (fails.length) { console.log('失败：' + fails.join('、')); }
