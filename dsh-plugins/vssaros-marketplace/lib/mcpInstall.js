@@ -81,6 +81,37 @@ export async function registerMcpServer(dataRoot, storeId, config) {
 }
 
 /**
+ * 启用 / 停用某个 MCP 服务器（★ 2026-10-26 用户：「连接器每个 item 增加开关」）。
+ *
+ * 做法就是写 mcp.json 里那条 entry 的 `disabled` —— 与 IDE 侧 `mcpInstaller` 读的是同一份文件、
+ * 同一个字段（它注册时也会写 `disabled: false`）。
+ *
+ * ⚠ **不是热生效**：dsh 的 MCP 是一台服务器一个组合行，行由 Host 启动时按 mcp.json 生成的
+ *   `--patch` 覆盖层决定（见 IDE 的 `dshMcpConfig.ts`）⇒ 改完要重启 Host 才真正挂上/摘掉。
+ *   调用方必须把这件事如实告诉用户，不能让它看起来"点了就生效"。
+ *
+ * @param {string} dataRoot
+ * @param {string} storeId 服务器名（mcp.json 里的 key）
+ * @param {boolean} enabled
+ * @returns {Promise<{ changed: boolean, disabled: boolean }>}
+ */
+export async function setMcpEnabled(dataRoot, storeId, enabled) {
+	const mcp = await readMcpJson(dataRoot);
+	const entry = mcp.servers && mcp.servers[storeId];
+	if (!entry || typeof entry !== 'object') {
+		throw new Error(`mcp.json 里没有「${storeId}」这条服务器（可能已被删除）`);
+	}
+	const wantDisabled = enabled === false;
+	const wasDisabled = entry.disabled === true;
+	const changed = wasDisabled !== wantDisabled;
+	if (changed) {
+		entry.disabled = wantDisabled;
+		await writeMcpJson(dataRoot, mcp);
+	}
+	return { changed, disabled: wantDisabled };
+}
+
+/**
  * 从 mcp.json **注销**某个 MCP 服务器（幂等：本来没有也不算失败）。
  *
  * @returns {Promise<boolean>} 真的删掉了一条吗

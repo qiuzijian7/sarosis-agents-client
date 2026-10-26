@@ -1,7 +1,7 @@
 {
 	"nameShort": "Saroasis harness",
 	"nameLong": "Saroasis harness",
-	"version": "2.2.26195",
+	"version": "2.2.26196",
 	"extensionEngineVersion": "1.120.0",
 	"applicationName": "vssaros",
 	"dataFolderName": ".vssaros",

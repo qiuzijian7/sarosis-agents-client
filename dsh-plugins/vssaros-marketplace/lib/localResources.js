@@ -35,6 +35,54 @@ const ENTRY_OF = { skill: 'SKILL.md', workflow: 'workflow.json', agent: '.agent.
  * @param {string} dir
  * @param {string} kind
  */
+/**
+ * 目录内**最新修改时间**（递归，但限深限量 —— 发布前要快，不能卡住页面）。
+ *
+ * 为什么不用"今天"：那样同一天发两次就是同一个版本号 ⇒ 服务端撞 409 ✗
+ * 用文件 mtime 的**分钟精度**：内容一改就变，同一天多次也能区分 ✓
+ */
+async function latestMtimeMs(dir, depth = 0) {
+	let newest = 0;
+	let seen = 0;
+	try {
+		const entries = await readdir(dir, { withFileTypes: true });
+		for (const e of entries) {
+			if (seen > 300 || depth > 4) { break; }   // 防空转（node_modules 之类）
+			// ⚠ **不能跳过所有 `.` 开头的条目** —— agent 的入口就叫 `.agent.md`！
+			//   只跳过已知的内部目录（备份 / 回收站 / 升级备份）。
+			if (/^\.(upgrade-backup|trash|saros|git)(-|$)/.test(e.name)) { continue; }
+			const full = join(dir, e.name);
+			if (e.isDirectory()) {
+				newest = Math.max(newest, await latestMtimeMs(full, depth + 1));
+				continue;
+			}
+			seen += 1;
+			try { newest = Math.max(newest, (await stat(full)).mtimeMs); } catch { /* 跳过读不到的 */ }
+		}
+	} catch { /* 目录不存在 / 无权限 */ }
+	return newest;
+}
+
+/**
+ * **自动推导版本号**（★ 2026-10-26 用户选方案 A）。
+ *
+ * 何时用：资源文件里**没有写 `version`** 时（`workflow.json` 大多没写）。
+ * 格式：`0.1.<YYYYMMDDHHmm>`（12 位）—— 语义化 3 段、能区分同一天多次发布。
+ * 依据：目录内**最新文件 mtime** ⇒ 内容一改版本就变（确定性，不依赖"当前时间"）。
+ *
+ * ⚠ 这是**兜底**，不是替代：作者写了版本就用作者的（语义化版本比时间戳有意义）。
+ *
+ * @param {string} dir 资源目录
+ * @returns {Promise<string>} 推导出的版本；连文件都读不到 ⇒ 空串（调用方自己兜）
+ */
+export async function deriveVersion(dir) {
+	const ms = await latestMtimeMs(dir);
+	if (!ms) { return ''; }
+	const d = new Date(ms);
+	const pad = (n) => String(n).padStart(2, '0');
+	return `0.1.${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}${pad(d.getHours())}${pad(d.getMinutes())}`;
+}
+
 async function versionOf(dir, kind) {
 	try {
 		// skill 与 agent 都从 markdown 的 frontmatter 取 version（agent 是 `.agent.md`）
@@ -43,7 +91,9 @@ async function versionOf(dir, kind) {
 			const head = md.split(/\r?\n---/)[0] ?? '';
 			const m = /^version:\s*(.+)$/m.exec(head);
 			// frontmatter 里可能写成 `version: "1.0.0"`（带引号）⇒ 去引号
-			return m ? m[1].trim().replace(/^["']|["']$/g, '') : '';
+			const v = m ? m[1].trim().replace(/^["']|["']$/g, '') : '';
+			// 没写版本 ⇒ **自动推导**（方案 A），不让页面留空 / 不让用户瞎填
+			return v || await deriveVersion(dir);
 		}
 		// ★ 2026-10-26 修：以前这里**写死读 `workflow.json`** ⇒ `mcp` 会去读一个不存在的
 		//   文件（它的入口是 `config.json`）⇒ 抛错被 catch 吞掉 ⇒ 版本永远空串 ✗
@@ -51,9 +101,12 @@ async function versionOf(dir, kind) {
 		const entry = ENTRY_OF[kind];
 		if (!entry) { return ''; }
 		const j = JSON.parse(await readFile(join(dir, entry), 'utf8'));
-		return typeof j?.version === 'string' ? j.version.trim() : '';
+		const jv = typeof j?.version === 'string' ? j.version.trim() : '';
+		// 同样兜底：`workflow.json` 大多**没写 version** ⇒ 自动推导
+		return jv || await deriveVersion(dir);
 	} catch {
-		return '';
+		// 连入口文件都读不到（不该发生，listPublishables 已过滤）⇒ 最后再试一次推导
+		return deriveVersion(dir);
 	}
 }
 

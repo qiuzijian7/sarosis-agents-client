@@ -31,9 +31,9 @@ import { PUBLISHABLE_KINDS, deletePackage, deleteVersion, publishDistribution, p
 // ★ 2026-10-22：外部源（GitHub 地址作本体）—— 归一化 / 安全边界 / 定位安装根 / 下载
 import { downloadGitHubTarball, locateInstallRoot, resolveDownloadUrl } from './githubSource.js';
 import { listTarGzEntries } from './tar.js';
-import { listPublishables } from './localResources.js';
+import { listPublishables, deriveVersion } from './localResources.js';
 // ★ 2026-10-23（用户「都转移到 dsh 侧实现」）：mcp 装完要注册进 `<数据根>/mcp.json`
-import { readMcpPackageConfig, registerMcpServer, removeMcpCompletely } from './mcpInstall.js';
+import { readMcpPackageConfig, registerMcpServer, removeMcpCompletely, setMcpEnabled } from './mcpInstall.js';
 // ★ 2026-10-27（用户：贴 GitHub 链接自动填写并发布）
 import { inspectGithubRepo } from './githubInspect.js';
 // ★ 2026-10-26：发布前体检（发布源到底是不是一个可装的 dsh 插件）
@@ -329,6 +329,15 @@ export async function apply(ctx, config) {
 		// （`syncPresets` 没有文件监听）⇒ 装完必须重启才注册成 preset。
 		// 如实返回，不让用户以为"装完就能用"✗（重启后自然生效，代码里不需要额外动作）
 		if (!slug) { throw new Error(`marketplace.${op} 需要 slug`); }
+
+		// ★ 2026-10-26（用户：「连接器每个 item 增加开关」）：开关 = mcp.json 里那条的 `disabled`。
+		//   ⚠ 不是热生效：MCP 行是 Host 启动时按 mcp.json 生成覆盖层 ⇒ 重启 Host 才真正挂/摘。
+		if (op === 'setMcpEnabled') {
+			if (kind !== 'mcp') { throw new Error('setMcpEnabled 只适用于连接器（kind=mcp）'); }
+			const want = params.enabled !== false;
+			const r = await setMcpEnabled(dataRoot, slug, want);
+			return { ok: true, changed: r.changed, enabled: !r.disabled, restartRequired: true };
+		}
 
 		// ★ 2026-10-23：删除到回收站（可恢复）。工作流/Agent 这类本地条目没有商城包可重装，
 		//   直接 rm 太狠 ⇒ 移到 <数据根>/.trash-<时间戳>/ 下，用户能捞回来。

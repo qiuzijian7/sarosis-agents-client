@@ -1139,6 +1139,35 @@ function makeSkill(localId, version, extra = {}) {
 		check('㊳ 可发布种类仍只有落盘类（workbench/plugin 无本地副本，不列）',
 			!/workbench:/.test(lr) && !/plugin:/.test(lr));
 	}
+// ── ㊴ 版本号**自动推导**（方案 A，2026-10-26 用户选的）──
+//   背景：用户报「本地 skill/agent/工作流 默认版本都是 1.0.0」，真相是
+//   ① 作者没写 version（workflow 大多如此）② 写了但建完没改过。
+//   方案 A：**没写就推导**（`0.1.<YYYYMMDDHHmm>`，依据目录最新 mtime）——
+//   确定性（同内容同版本）、能区分同日多次（分钟精度）、语义化 3 段合法。
+{
+		const lr2 = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'localResources.js'), 'utf8');
+
+		check('㊴ 有 deriveVersion 且导出', /export async function deriveVersion/.test(lr2));
+		// ⚠ 用 mtime 而不是「今天」：用今天的话同一天发两次就是同一个版本 ⇒ 服务端撞 409
+		check('㊴ 依据**目录最新 mtime**（内容改了就变，不用「今天」）',
+			lr2.includes('latestMtimeMs') && lr2.includes('mtimeMs'));
+		check('㊴ 格式 0.1.YYYYMMDDHH**mm**（分钟精度，能区分同日多次）',
+			lr2.includes('0.1.${d.getFullYear()}') && lr2.includes('pad(d.getMinutes())'));
+
+		// ★ 三个分支都要兜底：markdown（skill/agent）、JSON（workflow/mcp）、以及整体 catch
+		check('㊴ markdown 分支没版本时推导', lr2.includes('return v || await deriveVersion(dir)'));
+		check('㊴ JSON 分支没版本时推导', lr2.includes('return jv || await deriveVersion(dir)'));
+		check('㊴ 读不到入口时也试一次推导', /catch \{[\s\S]{0,120}return deriveVersion\(dir\)/.test(lr2));
+
+		// ⚠⚠ 踩过的坑：一开始跳过所有 `.` 开头的条目 ⇒ agent 入口 `.agent.md` 被跳过
+		//     ⇒ agent 的推导版本永远空 ✗ 现在只跳过已知内部目录
+		// ⚠ 跳过规则必须是**内部目录白名单**（`.upgrade-backup` / `.trash` / `.saros` / `.git`），
+		//   不能 `startsWith('.')` 一刀切 —— agent 的入口就叫 `.agent.md`，会被跳过 ⇒ 版本永远空
+		check('㊴ 只跳已知内部目录（不用 startsWith 一刀切）',
+			lr2.includes('upgrade-backup|trash|saros|git'));
+		check('㊴ 作者写了版本就用作者的（推导只是兜底）',
+			lr2.includes('const v = m ?') && lr2.includes('return v || await'));
+	}
 fs.rmSync(dataRoot, { recursive: true, force: true });
 console.log(`\n[marketplace publish] ${pass} passing / ${fails.length} failing`);
 if (fails.length) { console.log('失败：' + fails.join('、')); }

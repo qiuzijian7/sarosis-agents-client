@@ -30,7 +30,8 @@ export const LOCAL_READ_OPS = new Set(['list', 'detail', 'installed', 'publishab
  *   ⚠ 必须加进这个集合 —— 否则 `isKnownOp` 不认，页面点「删除」只会拿到
  *   「不认识的商城动作：trash」（我在浏览器里是 stub 掉 confirm 测的，差点漏掉这条）。
  */
-export const LOCAL_WRITE_OPS = new Set(['install', 'upgrade', 'uninstall', 'trash']);
+// ★ 2026-10-26：`setMcpEnabled` 写的是 `<数据根>/mcp.json` 的 disabled（与装/卸同一类落盘操作）
+export const LOCAL_WRITE_OPS = new Set(['install', 'upgrade', 'uninstall', 'trash', 'setMcpEnabled']);
 
 /**
  * 这三类 op 里，dsh 侧能自持的 kind。
