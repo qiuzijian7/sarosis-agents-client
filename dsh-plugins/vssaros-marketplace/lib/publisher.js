@@ -230,6 +230,40 @@ export async function publishExternal({ market, kind, localId, version, source, 
  * @param {string} [args.changelog]
  * @param {{ name?: string, description?: string, category?: string, tags?: string[] }} [args.meta]
  */
+/**
+ * 建包成功后、发版本失败 ⇒ **回滚这次新建的空包**。
+ *
+ * 背景（`doc/marketplace-workbench-github-flow.html` §10「发布原子性」）：
+ * 发布是两次 HTTP（建包 → 发版本），第二步失败会留下一个
+ * **用户能看到的空商品**（列表里有它，点进去没有版本）✗
+ *
+ * ★ 只回滚 `created === true` 的（**本次新建**）。
+ *   已存在的包**绝不能删** —— 那会连带软删掉它已有的历史版本（灾难）✗✗
+ *
+ * @param {object} market
+ * @param {string} localId
+ * @param {boolean} created `ensurePackage` 的返回值
+ * @returns {Promise<{ rolledBack: boolean, reason?: string }>}
+ */
+async function rollbackEmptyPackage(market, localId, created) {
+	if (!created) { return { rolledBack: false, reason: '包本来就有，不回滚' }; }
+	try {
+		await market.request('DELETE', `/packages/${encodeURIComponent(localId)}`);
+		return { rolledBack: true };
+	} catch (e) {
+		// ⚠ 回滚也会失败（例如 slug 被别人占了 ⇒ DELETE 403）⇒ **必须如实带出去**，
+		//   否则用户以为干净了，实际上商城留了一个空商品 ✗
+		return { rolledBack: false, reason: String(e?.message ?? e).slice(0, 160) };
+	}
+}
+
+/** 把回滚结果拼成一句人话（附在原始错误后面）。 */
+function rollbackNote(created, rb) {
+	if (!created) { return ''; }
+	if (rb.rolledBack) { return '；已回滚刚建的空包（商城无残留）'; }
+	return `；⚠ 回滚失败（${rb.reason}）—— 商城里可能留了一个空商品，需要手工删除`;
+}
+
 export async function publishDistribution({ market, kind, localId, version, distribution, changelog = '', meta = {} }) {
 	if (!/^[a-z0-9][a-z0-9_-]*$/.test(localId)) {
 		throw new Error(`slug 只能是 a-z0-9_- 且小写字母开头：${localId}（服务端规则）`);
@@ -247,14 +281,27 @@ export async function publishDistribution({ market, kind, localId, version, dist
 		: '';
 
 	const created = await ensurePackage({ market, kind, localId, meta: { ...meta, description: safeDescription } });
-	await market.request('POST', `/packages/${encodeURIComponent(localId)}/versions/external`, {
-		version: safeVersion,
-		...(changelog ? { changelog } : {}),
-		...(safeDescription ? { description: safeDescription } : {}),
-		...(typeof meta.category === 'string' && meta.category ? { category: meta.category } : {}),
-		distribution,
-	});
-	return { ok: true, version: safeVersion, created, distribution, external: true };
+	// ★ 2026-10-26：服务端会在同一个发布源已被别的商品登记时回 `duplicates`
+	//   （不阻断发布）—— 这里原样透传，由页面提示作者去删多余的那条 ✓
+	let saved;
+	try {
+		saved = await market.request('POST', `/packages/${encodeURIComponent(localId)}/versions/external`, {
+			version: safeVersion,
+			...(changelog ? { changelog } : {}),
+			...(safeDescription ? { description: safeDescription } : {}),
+			...(typeof meta.category === 'string' && meta.category ? { category: meta.category } : {}),
+			distribution,
+		});
+	} catch (e) {
+		// ★ 发布原子性（`doc/marketplace-workbench-github-flow.html` §10）：
+		//   建包成功但发版本失败 ⇒ 回滚**本次新建**的空包，别让用户看到空壳商品
+		const rb = await rollbackEmptyPackage(market, localId, created);
+		throw new Error(`${String(e?.message ?? e).slice(0, 320)}${rollbackNote(created, rb)}`);
+	}
+	return {
+		ok: true, version: safeVersion, created, distribution, external: true,
+		...(saved && Array.isArray(saved.duplicates) && saved.duplicates.length ? { duplicates: saved.duplicates } : {}),
+	};
 }
 
 export async function publishVersion({ market, dataRoot, kind, localId, version, changelog = '', meta = {} }) {
@@ -271,11 +318,21 @@ export async function publishVersion({ market, dataRoot, kind, localId, version,
 	} });
 
 	// ② 传版本（raw tar.gz）
-	const uploaded = await market.upload(
-		`/packages/${encodeURIComponent(localId)}/versions/raw`,
-		prepared.gzBuffer,
-		{ changelog },
-	);
+	//
+	// ★ 发布原子性（§10）：这一步失败时，如果包是**刚建的**，回滚掉 ——
+	//   否则商城会留一个"有包无版本"的空壳，用户能看见但装不了 ✗
+	//   （`preparePublishBundle` 已在上一步完成，这里只包网络这一步）
+	let uploaded;
+	try {
+		uploaded = await market.upload(
+			`/packages/${encodeURIComponent(localId)}/versions/raw`,
+			prepared.gzBuffer,
+			{ changelog },
+		);
+	} catch (e) {
+		const rb = await rollbackEmptyPackage(market, localId, created);
+		throw new Error(`${String(e?.message ?? e).slice(0, 320)}${rollbackNote(created, rb)}`);
+	}
 	return {
 		ok: true,
 		version: typeof uploaded?.version === 'string' ? uploaded.version : version,

@@ -727,6 +727,23 @@ function makeSkill(localId, version, extra = {}) {
 	}
 }
 
+
+	// ── ㉔ 发布原子性（`doc/…github-flow.html` §10）：失败时回滚空包（2026-10-26）──
+	//   发布是两次 HTTP（建包 → 发版本）；第二步失败会留下**用户能看到的空商品**
+	//   （列表里有它、点进去没版本）⇒ 若包是这次**刚建**的，就回滚掉。
+	{
+		const pub = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'publisher.js'), 'utf8');
+
+		check('㉔ 有 rollbackEmptyPackage 辅助函数', pub.includes('async function rollbackEmptyPackage('));
+		check('㉔ 只回滚 `created === true`（**已存在的包绝不能删** —— 会连带删掉历史版本）',
+			pub.includes('if (!created) { return { rolledBack: false, reason:'));
+		check('㉔ 回滚失败时**如实说明**（不谎称干净了）', pub.includes('回滚失败') && pub.includes('需要手工删除'));
+		check('㉔ 成功回滚时明确告知「商城无残留」', pub.includes('已回滚刚建的空包（商城无残留）'));
+		// 两条发布路径都要回滚：external（登记来源）与 raw（打包上传）
+		const calls = (pub.match(/rollbackEmptyPackage\(market, localId, created\)/g) || []).length;
+		check('㉔ publishDistribution 与 publishVersion **两条路径都回滚**', calls >= 2, `实际 ${calls} 处`);
+		check('㉔ 抛出的错误里带上回滚结论（rollbackNote）', pub.includes('rollbackNote(created, rb)'));
+	}
 fs.rmSync(dataRoot, { recursive: true, force: true });
 console.log(`\n[marketplace publish] ${pass} passing / ${fails.length} failing`);
 if (fails.length) { console.log('失败：' + fails.join('、')); }
