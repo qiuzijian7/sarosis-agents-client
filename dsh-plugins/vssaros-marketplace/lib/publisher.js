@@ -24,7 +24,7 @@ import { packTarGz } from './tar.js';
 // ★ 2026-10-22：`localId` 也要挡越界（`../` 会让 `join(root, ...)` 读到数据根外）
 import { assertSafeStoreId } from './installers.js';
 // ★ 2026-10-22：外部源发布（本体就是一个 GitHub 地址）⇒ 归一化 + 安全边界在它里面
-import { parseGitHubSource } from './githubSource.js';
+import { parseGitHubSource, resolveCommitSha } from './githubSource.js';
 
 /** 可发布的三类（workbench 走外部发布源，不打包）；agent 的**发布**是目录镜像 ⇒ 也能发 ✓。 */
 // ⚠ **不含 `agent`**（2026-10-22 自查后收窄）：agent 的商城包格式是 `agent.json`
@@ -280,6 +280,20 @@ export async function publishDistribution({ market, kind, localId, version, dist
 		? meta.description.trim().slice(0, 2048)
 		: '';
 
+	// ★ 2026-10-26（文档 §10 第一条）：`github-source` 补 **commit sha**
+	//   只记 `owner/repo` 时，作者 force-push 后同一地址内容会变 ⇒ 装到的东西**不可复现**。
+	//   抓不到（无 Release/atom 404/网络问题）**不阻断发布** —— 只是少了可复现性。
+	// 补 commit 的提示（成功才非空；**不放进 error**，只做提示）
+	let shaNote = '';
+	let dist = distribution;
+	if (dist.type === 'github-source' && !dist.commit) {
+		const sha = await resolveCommitSha(String(dist.name ?? ''), '');
+		if (sha) {
+			dist = { ...dist, commit: sha };
+			shaNote = `已锁定 commit ${sha.slice(0, 12)}`;
+		}
+	}
+
 	const created = await ensurePackage({ market, kind, localId, meta: { ...meta, description: safeDescription } });
 	// ★ 2026-10-26：服务端会在同一个发布源已被别的商品登记时回 `duplicates`
 	//   （不阻断发布）—— 这里原样透传，由页面提示作者去删多余的那条 ✓
@@ -299,7 +313,9 @@ export async function publishDistribution({ market, kind, localId, version, dist
 		throw new Error(`${String(e?.message ?? e).slice(0, 320)}${rollbackNote(created, rb)}`);
 	}
 	return {
-		ok: true, version: safeVersion, created, distribution, external: true,
+		ok: true, version: safeVersion, created, distribution: dist, external: true,
+		// 「已锁定 commit abc123…」—— 让调用方/页面能说明"这一版绑定在哪棵树上"
+		...(shaNote ? { shaNote } : {}),
 		...(saved && Array.isArray(saved.duplicates) && saved.duplicates.length ? { duplicates: saved.duplicates } : {}),
 	};
 }

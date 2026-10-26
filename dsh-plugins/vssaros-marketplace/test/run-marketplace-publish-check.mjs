@@ -744,6 +744,45 @@ function makeSkill(localId, version, extra = {}) {
 		check('㉔ publishDistribution 与 publishVersion **两条路径都回滚**', calls >= 2, `实际 ${calls} 处`);
 		check('㉔ 抛出的错误里带上回滚结论（rollbackNote）', pub.includes('rollbackNote(created, rb)'));
 	}
+
+	// ── ㉕ 文档 §10 剩余两项：commit 锁定 + peer 兼容性提示（2026-10-26）──────
+	{
+		const gs = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'githubSource.js'), 'utf8');
+		const pub = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'publisher.js'), 'utf8');
+		const hvPath = path.resolve(HERE, '..', 'lib', 'hostVersion.js');
+		const hv = fs.existsSync(hvPath) ? fs.readFileSync(hvPath, 'utf8') : '';
+		// ⚠ `pkg` 在 ㉒ 块里是 `const`（块级作用域）⇒ 本块必须自己声明一次
+		const pkg = JSON.parse(fs.readFileSync(path.resolve(HERE, '..', 'package.json'), 'utf8'));
+
+		// ── ① github-source 锁 commit（防 force-push 漂移 / 可复现）
+		check('㉕ 有 resolveCommitSha', gs.includes('export async function resolveCommitSha('));
+		check('㉕ 用 `.atom` 取 sha（**不占 GitHub API 额度**）',
+			gs.includes('/commits/') && gs.includes('.atom')
+			// 只查代码行（注释里解释「为什么不用 API」是应该存在的，不算违规）
+			&& !gs.split(/\r?\n/).filter(l => !/^\s*(\*|\/\/|\/\*)/.test(l)).some(l => l.includes('api.github.com')));
+		check('㉕ 抓不到 sha **返回空串**（不当失败）', gs.includes("return '';") && gs.includes('取不到返回'));
+		check('㉕ `publishDistribution` 对 github-source 自动补 commit',
+			pub.includes('resolveCommitSha(') && pub.includes("dist.type === 'github-source' && !dist.commit"));
+		check('㉕ 抓不到 commit **不阻断发布**（注释写明）', pub.includes('不阻断发布'));
+		check('㉕ 安装侧本来就会用 `dist.commit`（可复现闭环）',
+			gs.includes("dist.commit ?? ''") || gs.includes('dist.commit'));
+
+		// ── ② peerDependencies 兼容性：只提示、不阻断
+		check('㉕ 有 hostVersion.js', hv.length > 0, hvPath);
+		check('㉕ 宿主版本优先从 `process.argv[1]` 上溯（最可靠）',
+			hv.includes('process.argv[1]') && hv.includes("'@deepseek-ai/dsh'"));
+		check('㉕ 版本来源不可靠时**不报不兼容**（防误报 —— 多版本目录名未必是运行中的那个）',
+			hv.includes('const reliable = ') && hv.includes('if (!reliable)'));
+		check('㉕ satisfies 支持 `^` / `~` / `>=` / `||`',
+			hv.includes("case '^':") && hv.includes("case '~':") && hv.includes("||'") || hv.includes('.split(\'||\')'));
+		check('㉕ 看不懂的 range 返回 `null`（按「未知」处理，不当不兼容）',
+			hv.includes('return null;') && hv.includes('看不懂'));
+		check('㉕ 只校验宿主自身的包（dsh / cordis），不判业务依赖',
+			hv.includes('HOST_PEERS') && hv.includes("'@deepseek-ai/cordis'"));
+		check('㉕ 兼容性结论**只进 notes**（不阻断发布）',
+			fs.readFileSync(path.resolve(HERE, '..', 'lib', 'githubInspect.js'), 'utf8').includes('peer 兼容性：'));
+		check('㉕ hostVersion 在 files 白名单', pkg.files.includes('lib/hostVersion.js'));
+	}
 fs.rmSync(dataRoot, { recursive: true, force: true });
 console.log(`\n[marketplace publish] ${pass} passing / ${fails.length} failing`);
 if (fails.length) { console.log('失败：' + fails.join('、')); }

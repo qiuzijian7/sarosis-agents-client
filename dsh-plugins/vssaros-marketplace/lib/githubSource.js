@@ -126,6 +126,51 @@ export function isAllowedHost(host) {
  * @param {{ type: string, name?: string, url?: string, commit?: string }} dist
  * @returns {string}
  */
+/**
+ * 取一个 GitHub 仓库某个 ref 的 **commit sha**（★ 2026-10-26，文档 §10 第一条）。
+ *
+ * ## 为什么需要
+ * `github-source` 只记 `owner/repo` ⇒ 作者 **force-push** 之后，同一个地址的内容就变了，
+ * 用户装到的东西**不可复现**（也说不清"当时装的是哪一版"）。
+ * 记下 commit 后：`resolveDownloadUrl` 会用 `dist.commit` 当前缀
+ * （`codeload.github.com/<o>/<r>/tar.gz/<sha>`）⇒ 装的是**当时那棵树** ✓
+ *
+ * ## 为什么用 `.atom` 而不是 API
+ * 未认证的 `api.github.com` 只有 **60 请求/小时**（本项目反复撞过）；
+ * `github.com/<o>/<r>/commits/<ref>.atom` 是普通页面资源，**不占额度**，
+ * 且 `<id>tag:github.com,2008:Grit::Commit/<40位sha></id>` 直接给出 sha ✓
+ *
+ * ⚠ 只对**分支/HEAD** 有效；tag 若 atom 不认（404）⇒ 返回空串，调用方**不要**当失败
+ *   （没有 commit 也能装，只是不可复现 —— 不能因此挡住发布）。
+ *
+ * @param {string} repo `owner/repo`
+ * @param {string} [ref] 分支名或 HEAD（缺省 HEAD）
+ * @returns {Promise<string>} 40 位 sha；取不到返回 ''
+ */
+export async function resolveCommitSha(repo, ref) {
+	const m = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/.exec(String(repo ?? '').trim());
+	if (!m) { return ''; }
+	const owner = m[1];
+	const name = stripGit(m[2]);
+	const tries = [String(ref ?? '').trim() || 'HEAD'];
+	if (tries[0] !== 'HEAD') { tries.push('HEAD'); }
+	for (const r of tries) {
+		try {
+			const res = await fetch(`https://github.com/${owner}/${name}/commits/${encodeURIComponent(r)}.atom`, {
+				headers: { 'user-agent': 'VsSarosMarket/1.0 (+self-hosted marketplace)', accept: 'application/atom+xml' },
+				signal: AbortSignal.timeout(12000),
+			});
+			if (!res.ok) { continue; }
+			const text = await res.text();
+			const sha = /Grit::Commit\/([0-9a-f]{40})/.exec(text)?.[1] ?? '';
+			if (sha) { return sha; }
+		} catch {
+			/* 试下一个（HEAD） */
+		}
+	}
+	return '';
+}
+
 export function resolveDownloadUrl(dist) {
 	if (!dist || typeof dist !== 'object') { throw new Error('缺少发布源描述'); }
 	if (dist.type === 'github-source') {

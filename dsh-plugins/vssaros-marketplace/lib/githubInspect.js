@@ -28,6 +28,8 @@ import { createHash } from 'node:crypto';
 // ★ 2026-10-27（依据 doc/marketplace-workbench-github-flow.html §6/§7）：
 //   monorepo 的根不是插件，真身是已发到 npm 的子包 ⇒ 必须能识别出「该用 npm 发布源」
 import { findNpmPackagesForRepo, peerRangeOf } from './npmLookup.js';
+// ★ 2026-10-26（文档 §10 最后一条）：peerDependencies 兼容性**提示**（不阻断）
+import { checkPeerCompat } from './hostVersion.js';
 
 /** 把各种 GitHub 写法归一成 `owner/repo`。 */
 export function normalizeRepo(input) {
@@ -200,6 +202,10 @@ export async function inspectGithubRepo(input) {
 	let npmCandidates = [];
 	try { npmCandidates = await findNpmPackagesForRepo(repo); } catch { notes.push('npm 反查失败（可忽略）'); }
 	const dshPkgs = npmCandidates.filter(c => c.hasDsh);
+	// ★ 给每个 dsh 候选算一次「与当前宿主的 peer 兼容性」（只提示，不阻断发布）
+	for (const c of dshPkgs) {
+		try { c.peerCompat = checkPeerCompat(c.peerDependencies); } catch { /* 算不出来就不给 */ }
+	}
 
 	// ⑥ **该用哪种发布源**（文档 §7 的核心结论：monorepo 只能发 npm 子包）
 	let recommendedDistribution = null;
@@ -212,6 +218,11 @@ export async function inspectGithubRepo(input) {
 		const range = peerRangeOf(best.peerDependencies);
 		recommendedDistribution = { type: 'npm', name: best.name, ...(range ? { peerRange: range } : {}) };
 		recommendWhy = `根不可直接安装（monorepo 或 private）；子包已发 npm：${best.name}@${best.version}`;
+		// ★ peer 兼容性（只提示）：不匹配就写进 notes，**不阻断**发布
+		const pc = best.peerCompat;
+		if (pc && Array.isArray(pc.warnings) && pc.warnings.length) {
+			for (const w of pc.warnings) { notes.push(`peer 兼容性：${w}`); }
+		}
 	} else if (pkgPrivate) {
 		recommendWhy = '根 package.json 是 private:true ⇒ pnpm 会拒绝；需先让作者发布到 npm';
 	} else if (hasWorkspaces) {
