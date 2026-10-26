@@ -106,6 +106,126 @@ if (typeof document !== 'undefined' && typeof console !== 'undefined' && console
 			try { return JSON.stringify(row).slice(0, 300); } catch (e) { return '(无法显示)'; }
 		}
 
+
+		/**
+		 * **按页签渲染详情正文**（★ 2026-10-26 从 `MemoryDetailPage` 抽出来的**纯函数**）。
+		 *
+		 * 为什么要抽：SSR（`react-dom/server`）里 `useEffect` **不跑** ⇒ 组件永远停在 loading 态
+		 * ⇒ 自动化测试只能测到页签壳、测不到每个页签的内容 ✗
+		 * ⇒ 抽成纯函数后可以直接 `renderToStaticMarkup(renderDetailTab('slots', 假模型))` ✓
+		 * ⚠ 纯函数：**不许读 state、不许发请求**（只吃 `(tab, model)` 两个入参 ✓）。
+		 */
+		function renderDetailTab(tab, m) {
+			const arr = v => (Array.isArray(v) ? v : []);
+			if (tab === 'memories') {
+				const items = arr(m.items);
+				if (!items.length) { return emptyHint('这个分区里没有记忆条目（换页签/换分区看看；空 ≠ 出错，服务端口径已核对 ✓）'); }
+				return h('ul', { className: 'md2-list', 'data-memory-detail-list': 'memories' }, items.slice(0, 200).map((it, i) =>
+					h('li', { key: 'm' + i, className: 'md2-row' },
+						h('span', { className: 'md2-row-top' },
+							badge(String(it.tier || '?')), it.type ? badge(String(it.type), 'md2-badge-type') : null,
+							it.timestamp ? h('span', { className: 'md2-time' }, new Date(Number(it.timestamp) || 0).toLocaleString()) : null),
+						h('span', { className: 'md2-row-text' }, String(it.content || '').slice(0, 400)))));
+			}
+			if (tab === 'sessions') {
+				const ss = arr(m.sessions), sm = arr(m.summaries);
+				return h('div', { 'data-memory-detail-list': 'sessions' },
+					m.sessionsError ? h('p', { className: 'mem-err' }, '会话读取失败：' + String(m.sessionsError)) : null,
+					h('h4', { className: 'md2-h' }, '会话（' + ss.length + '）'),
+					ss.length ? h('ul', { className: 'md2-list' }, ss.slice(0, 100).map((x, i) =>
+						h('li', { key: 's' + i, className: 'md2-row' }, h('span', { className: 'md2-row-text mono' }, String(x.sessionId || x.id || rowText(x, ['sessionId', 'id'])))))
+					) : emptyHint('没有会话记录'),
+					h('h4', { className: 'md2-h' }, '摘要（' + sm.length + '）'),
+					sm.length ? h('ul', { className: 'md2-list' }, sm.slice(0, 100).map((x, i) =>
+						h('li', { key: 'sm' + i, className: 'md2-row' }, h('span', { className: 'md2-row-text' }, rowText(x, ['summary', 'text', 'content']).slice(0, 400))))
+					) : emptyHint('没有会话摘要'));
+			}
+			if (tab === 'slots') {
+				const slots = arr(m.slots);
+				const names = arr(m.slotNames);
+				const byName = {};
+				slots.forEach(x => { byName[String(x.name || x.slot || '')] = x; });
+				const list = names.length ? names.map(n => byName[n] || { name: n, content: '' }) : slots;
+				if (!list.length) { return emptyHint('没有固定槽位'); }
+				return h('div', { 'data-memory-detail-list': 'slots' }, list.map((x, i) => {
+					const content = String(x.content || '');
+					return h('div', { key: 'sl' + i, className: 'md2-slot' },
+						h('div', { className: 'md2-slot-head' }, h('strong', null, String(x.name || '(未命名)')),
+							badge(content.trim() ? (content.length + ' 字') : '(空)', content.trim() ? '' : 'md2-badge-empty')),
+						content.trim() ? h('pre', { className: 'md2-pre' }, content.slice(0, 1200)) : null);
+				}));
+			}
+			if (tab === 'lessons') {
+				const ls = arr(m.lessons);
+				if (!ls.length) { return emptyHint('还没有教训 —— 教训要**显式提炼**才会产生（不是自动攒的）'); }
+				return h('ul', { className: 'md2-list', 'data-memory-detail-list': 'lessons' }, ls.slice(0, 200).map((x, i) =>
+					h('li', { key: 'l' + i, className: 'md2-row' },
+						h('span', { className: 'md2-row-text' }, String(x.content || '').slice(0, 400)),
+						arr(x.tags).length ? h('span', { className: 'md2-row-top' }, arr(x.tags).map((t, j) => h('span', { key: 'tag' + j, className: 'md2-badge md2-badge-type' }, String(t)))) : null)));
+			}
+			if (tab === 'consolidation') {
+				return h('div', { 'data-memory-detail-list': 'consolidation' },
+					h('div', { className: 'md2-cards' },
+						kvRow('Episodic', arr(m.episodicItems).length),
+						kvRow('Semantic', arr(m.semanticItems).length),
+						kvRow('Procedural', arr(m.proceduralItems).length)),
+					h('h4', { className: 'md2-h' }, '固化上下文'),
+					String(m.consolidationContext || '').trim()
+						? h('pre', { className: 'md2-pre' }, String(m.consolidationContext).slice(0, 4000))
+						: emptyHint('没有固化上下文（引擎未返回）'));
+			}
+			if (tab === 'audit') {
+				const summary = m.auditSummary || {};
+				const log = arr(m.auditLog);
+				return h('div', { 'data-memory-detail-list': 'audit' },
+					h('div', { className: 'md2-cards' }, Object.keys(summary).map((k, i) => h('span', { key: 'as' + i }, kvRow(k, summary[k])))),
+					h('h4', { className: 'md2-h' }, '审计日志（落盘账本 + 内存态，' + log.length + ' 条）'),
+					log.length ? h('ul', { className: 'md2-list' }, log.slice(0, 200).map((x, i) =>
+						h('li', { key: 'au' + i, className: 'md2-row' },
+							h('span', { className: 'md2-row-top' }, badge(String(x.operation || x.action || '?')),
+								x.type || x.tool ? badge(String(x.type || x.tool), 'md2-badge-type') : null,
+								x.timestamp ? h('span', { className: 'md2-time' }, new Date(Number(x.timestamp) || 0).toLocaleString()) : null),
+							h('span', { className: 'md2-row-text' }, String(x.content || x.target || '').slice(0, 300)))))
+						: emptyHint('账本里没有审计条目'));
+			}
+			if (tab === 'hooks') {
+				const stats = m.hookStats || {};
+				const keys = Object.keys(stats);
+				if (!keys.length) { return emptyHint('没有钩子统计'); }
+				return h('div', { className: 'md2-cards', 'data-memory-detail-list': 'hooks' }, keys.map((k, i) => h('span', { key: 'h' + i }, kvRow(k, stats[k]))));
+			}
+			if (tab === 'commits') {
+				const stats = m.commitStats || {};
+				const cs = arr(m.commits);
+				return h('div', { 'data-memory-detail-list': 'commits' },
+					h('div', { className: 'md2-cards' }, Object.keys(stats).map((k, i) => h('span', { key: 'cs' + i }, kvRow(k, stats[k])))),
+					cs.length ? h('ul', { className: 'md2-list' }, cs.map((x, i) =>
+						h('li', { key: 'c' + i, className: 'md2-row' },
+							h('span', { className: 'md2-row-top mono' }, String(x.sha || '').slice(0, 10),
+								x.timestamp ? h('span', { className: 'md2-time' }, new Date(Number(x.timestamp) || 0).toLocaleString()) : null),
+							h('span', { className: 'md2-row-text' }, String(x.message || '').slice(0, 300)))))
+						: emptyHint('记忆库没记过提交（这一页统计的是**记忆库自己记录的提交**，不是代码库 git 历史）'));
+			}
+			if (tab === 'report') {
+				const r = m.report;
+				if (!r) { return emptyHint('报告为空（引擎未返回）'); }
+				if (typeof r === 'string') { return h('pre', { className: 'md2-pre' }, r.slice(0, 6000)); }
+				const keys = Object.keys(r);
+				return h('div', { className: 'md2-cards', 'data-memory-detail-list': 'report' }, keys.map((k, i) => h('span', { key: 'r' + i }, kvRow(k, r[k]))));
+			}
+			// skills
+			const stats = m.skillStats || {};
+			const skills = arr(m.skills);
+			return h('div', { 'data-memory-detail-list': 'skills' },
+				h('div', { className: 'md2-cards' }, Object.keys(stats).map((k, i) => h('span', { key: 'ks' + i }, kvRow(k, stats[k])))),
+				skills.length ? h('ul', { className: 'md2-list' }, skills.map((x, i) =>
+					h('li', { key: 'k' + i, className: 'md2-row' },
+						h('span', { className: 'md2-row-top' }, badge(String(x.confidence != null ? x.confidence : '?')),
+							x.skillMdWritten ? badge('SKILL.md ✓') : badge('未写文件', 'md2-badge-empty')),
+						h('span', { className: 'md2-row-text' }, String(x.title || x.trigger || x.id || '').slice(0, 300)))))
+					: emptyHint('没有技能（技能需显式提取；旧口径数据在 mem:skills 里，读侧已兼容）'));
+		}
+
 		function MemoryDetailPage(props) {
 			const [tab, setTab] = useState('memories');
 			const [st, setSt] = useState({ status: 'loading', data: null, error: '' });
@@ -121,117 +241,6 @@ if (typeof document !== 'undefined' && typeof console !== 'undefined' && console
 			useEffect(() => { void reload(); }, [reload]);
 
 			const m = st.data || {};
-			const arr = v => (Array.isArray(v) ? v : []);
-
-			const rowsOfView = () => {
-				if (tab === 'memories') {
-					const items = arr(m.items);
-					if (!items.length) { return emptyHint('这个分区里没有记忆条目（换页签/换分区看看；空 ≠ 出错，服务端口径已核对 ✓）'); }
-					return h('ul', { className: 'md2-list', 'data-memory-detail-list': 'memories' }, items.slice(0, 200).map((it, i) =>
-						h('li', { key: 'm' + i, className: 'md2-row' },
-							h('span', { className: 'md2-row-top' },
-								badge(String(it.tier || '?')), it.type ? badge(String(it.type), 'md2-badge-type') : null,
-								it.timestamp ? h('span', { className: 'md2-time' }, new Date(Number(it.timestamp) || 0).toLocaleString()) : null),
-							h('span', { className: 'md2-row-text' }, String(it.content || '').slice(0, 400)))));
-				}
-				if (tab === 'sessions') {
-					const ss = arr(m.sessions), sm = arr(m.summaries);
-					return h('div', { 'data-memory-detail-list': 'sessions' },
-						m.sessionsError ? h('p', { className: 'mem-err' }, '会话读取失败：' + String(m.sessionsError)) : null,
-						h('h4', { className: 'md2-h' }, '会话（' + ss.length + '）'),
-						ss.length ? h('ul', { className: 'md2-list' }, ss.slice(0, 100).map((x, i) =>
-							h('li', { key: 's' + i, className: 'md2-row' }, h('span', { className: 'md2-row-text mono' }, String(x.sessionId || x.id || rowText(x, ['sessionId', 'id'])))))
-						) : emptyHint('没有会话记录'),
-						h('h4', { className: 'md2-h' }, '摘要（' + sm.length + '）'),
-						sm.length ? h('ul', { className: 'md2-list' }, sm.slice(0, 100).map((x, i) =>
-							h('li', { key: 'sm' + i, className: 'md2-row' }, h('span', { className: 'md2-row-text' }, rowText(x, ['summary', 'text', 'content']).slice(0, 400))))
-						) : emptyHint('没有会话摘要'));
-				}
-				if (tab === 'slots') {
-					const slots = arr(m.slots);
-					const names = arr(m.slotNames);
-					const byName = {};
-					slots.forEach(x => { byName[String(x.name || x.slot || '')] = x; });
-					const list = names.length ? names.map(n => byName[n] || { name: n, content: '' }) : slots;
-					if (!list.length) { return emptyHint('没有固定槽位'); }
-					return h('div', { 'data-memory-detail-list': 'slots' }, list.map((x, i) => {
-						const content = String(x.content || '');
-						return h('div', { key: 'sl' + i, className: 'md2-slot' },
-							h('div', { className: 'md2-slot-head' }, h('strong', null, String(x.name || '(未命名)')),
-								badge(content.trim() ? (content.length + ' 字') : '(空)', content.trim() ? '' : 'md2-badge-empty')),
-							content.trim() ? h('pre', { className: 'md2-pre' }, content.slice(0, 1200)) : null);
-					}));
-				}
-				if (tab === 'lessons') {
-					const ls = arr(m.lessons);
-					if (!ls.length) { return emptyHint('还没有教训 —— 教训要**显式提炼**才会产生（不是自动攒的）'); }
-					return h('ul', { className: 'md2-list', 'data-memory-detail-list': 'lessons' }, ls.slice(0, 200).map((x, i) =>
-						h('li', { key: 'l' + i, className: 'md2-row' },
-							h('span', { className: 'md2-row-text' }, String(x.content || '').slice(0, 400)),
-							arr(x.tags).length ? h('span', { className: 'md2-row-top' }, arr(x.tags).map((t, j) => badge(String(t), 'md2-badge-type'))) : null)));
-				}
-				if (tab === 'consolidation') {
-					return h('div', { 'data-memory-detail-list': 'consolidation' },
-						h('div', { className: 'md2-cards' },
-							kvRow('Episodic', arr(m.episodicItems).length),
-							kvRow('Semantic', arr(m.semanticItems).length),
-							kvRow('Procedural', arr(m.proceduralItems).length)),
-						h('h4', { className: 'md2-h' }, '固化上下文'),
-						String(m.consolidationContext || '').trim()
-							? h('pre', { className: 'md2-pre' }, String(m.consolidationContext).slice(0, 4000))
-							: emptyHint('没有固化上下文（引擎未返回）'));
-				}
-				if (tab === 'audit') {
-					const summary = m.auditSummary || {};
-					const log = arr(m.auditLog);
-					return h('div', { 'data-memory-detail-list': 'audit' },
-						h('div', { className: 'md2-cards' }, Object.keys(summary).map((k, i) => h('span', { key: 'as' + i }, kvRow(k, summary[k])))),
-						h('h4', { className: 'md2-h' }, '审计日志（落盘账本 + 内存态，' + log.length + ' 条）'),
-						log.length ? h('ul', { className: 'md2-list' }, log.slice(0, 200).map((x, i) =>
-							h('li', { key: 'au' + i, className: 'md2-row' },
-								h('span', { className: 'md2-row-top' }, badge(String(x.operation || x.action || '?')),
-									x.type || x.tool ? badge(String(x.type || x.tool), 'md2-badge-type') : null,
-									x.timestamp ? h('span', { className: 'md2-time' }, new Date(Number(x.timestamp) || 0).toLocaleString()) : null),
-								h('span', { className: 'md2-row-text' }, String(x.content || x.target || '').slice(0, 300)))))
-							: emptyHint('账本里没有审计条目'));
-				}
-				if (tab === 'hooks') {
-					const stats = m.hookStats || {};
-					const keys = Object.keys(stats);
-					if (!keys.length) { return emptyHint('没有钩子统计'); }
-					return h('div', { className: 'md2-cards', 'data-memory-detail-list': 'hooks' }, keys.map((k, i) => h('span', { key: 'h' + i }, kvRow(k, stats[k]))));
-				}
-				if (tab === 'commits') {
-					const stats = m.commitStats || {};
-					const cs = arr(m.commits);
-					return h('div', { 'data-memory-detail-list': 'commits' },
-						h('div', { className: 'md2-cards' }, Object.keys(stats).map((k, i) => h('span', { key: 'cs' + i }, kvRow(k, stats[k])))),
-						cs.length ? h('ul', { className: 'md2-list' }, cs.map((x, i) =>
-							h('li', { key: 'c' + i, className: 'md2-row' },
-								h('span', { className: 'md2-row-top mono' }, String(x.sha || '').slice(0, 10),
-									x.timestamp ? h('span', { className: 'md2-time' }, new Date(Number(x.timestamp) || 0).toLocaleString()) : null),
-								h('span', { className: 'md2-row-text' }, String(x.message || '').slice(0, 300)))))
-							: emptyHint('记忆库没记过提交（这一页统计的是**记忆库自己记录的提交**，不是代码库 git 历史）'));
-				}
-				if (tab === 'report') {
-					const r = m.report;
-					if (!r) { return emptyHint('报告为空（引擎未返回）'); }
-					if (typeof r === 'string') { return h('pre', { className: 'md2-pre' }, r.slice(0, 6000)); }
-					const keys = Object.keys(r);
-					return h('div', { className: 'md2-cards', 'data-memory-detail-list': 'report' }, keys.map((k, i) => h('span', { key: 'r' + i }, kvRow(k, r[k]))));
-				}
-				// skills
-				const stats = m.skillStats || {};
-				const skills = arr(m.skills);
-				return h('div', { 'data-memory-detail-list': 'skills' },
-					h('div', { className: 'md2-cards' }, Object.keys(stats).map((k, i) => h('span', { key: 'ks' + i }, kvRow(k, stats[k])))),
-					skills.length ? h('ul', { className: 'md2-list' }, skills.map((x, i) =>
-						h('li', { key: 'k' + i, className: 'md2-row' },
-							h('span', { className: 'md2-row-top' }, badge(String(x.confidence != null ? x.confidence : '?')),
-								x.skillMdWritten ? badge('SKILL.md ✓') : badge('未写文件', 'md2-badge-empty')),
-							h('span', { className: 'md2-row-text' }, String(x.title || x.trigger || x.id || '').slice(0, 300)))))
-						: emptyHint('没有技能（技能需显式提取；旧口径数据在 mem:skills 里，读侧已兼容）'));
-			};
 
 			return h('div', { className: 'wb wb-mem md2', 'data-vssaros-page': 'memory-detail' },
 				h('header', { className: 'wb-toolbar', 'data-dsh-workbench-toolbar': '' },
@@ -252,7 +261,7 @@ if (typeof document !== 'undefined' && typeof console !== 'undefined' && console
 					? h('p', { className: 'wb-empty mem-err', role: 'alert', 'data-memory-detail-state': 'error' }, '详情读取失败：' + st.error)
 					: (st.status === 'loading' && !st.data
 						? h('p', { className: 'wb-empty', 'data-memory-detail-state': 'loading' }, '正在读取详情…')
-						: h('section', { className: 'md2-body', 'data-memory-detail-state': 'ready' }, rowsOfView())));
+						: h('section', { className: 'md2-body', 'data-memory-detail-state': 'ready' }, renderDetailTab(tab, m))));
 		}
 
 		function MemoryPanel() {
@@ -508,6 +517,11 @@ function install(ctx) {
 			});
 			return undefined;
 		}
+
+		// ★ 2026-10-26：**测试钩子**（`test/reactDetailSmoke.mjs` 用；线上不依赖它们 ✓）
+		//   `__renderDetailTab` 是纯函数 ⇒ SSR 直渲 10 个页签；`__MemoryDetailPage` 测页签壳/返回按钮。
+		exports.__renderDetailTab = renderDetailTab;
+		exports.__MemoryDetailPage = MemoryDetailPage;
 
 		exports.install = install;
 		exports.apply = install;
