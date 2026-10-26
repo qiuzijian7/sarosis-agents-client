@@ -242,9 +242,28 @@ export class AgentMemoryProviderProxy {
 
 	// ─── 核心异步方法（显式，保证事件与返回正确）────────────────────
 
+	/** 上下文是否**实质为空**（只有骨架/零条目）—— 跨分区兜底的判据（★ 2026-10-26）。 */
+	private _isContextEmpty(ctx: any): boolean {
+		if (!ctx || typeof ctx !== 'object') { return true; }
+		const n = (v: any) => (Array.isArray(v) ? v.length : 0);
+		const prompt = typeof ctx.systemPrompt === 'string' ? ctx.systemPrompt.trim() : '';
+		const injected = typeof ctx.injectedContext === 'string' ? ctx.injectedContext.trim() : '';
+		return n(ctx.longTermMemories) === 0; n(ctx.shortTermMemories) === 0; !prompt; !injected;
+	}
+
+	/** 有数据的分区（最多 3 个候选；失败就当没有 ⇒ 不影响主路径 ✓）。 */
+	private async _fallbackPartitions(exclude: string): Promise<string[]> {
+		try {
+			const all = await this._call('listAllAgentsWithData');
+			const list = Array.isArray(all) ? all.map((x: any) => String(x?.agentId ?? x?.id ?? x)).filter(Boolean) : [];
+			return list.filter((a: string) => a !== exclude).slice(0, 3);
+		} catch {
+			return [];
+		}
+	}
 	async loadContext(agentId: string, sessionId: string, query?: string, options?: any): Promise<any> {
 		// 网关不可达时返回安全空上下文（避免下游 null.longTermMemories 崩溃）
-		const ctx = (await this._call('loadContext', agentId, sessionId, query, options))
+		let ctx = (await this._call('loadContext', agentId, sessionId, query, options))
 			?? { longTermMemories: [], shortTermMemories: [], injectedContext: '' };
 		if (this._gatewayUp) {
 			this._log.info?.(
@@ -252,6 +271,28 @@ export class AgentMemoryProviderProxy {
 				`short=${ctx.shortTermMemories?.length ?? 0} long=${ctx.longTermMemories?.length ?? 0} ` +
 				`sysPrompt=${(ctx.systemPrompt ?? '').length} chars`
 			);
+		}
+
+		// ★★ 2026-10-26：**跨分区兜底** —— 主分区空 ⇒ 试"有数据的分区"，命中即用并记日志（不静默）。
+		//   真机实测：IDE 的 chat agentId 是 `ws-<workspaceId>` ⇒ 该分区四层全 0、`loadContext` 只回 **124B**
+		//   空壳（`systemPrompt:""`），而**同一引擎**里 `saros-claw` 有 4039 条、回 **5.4KB** 带
+		//   `<agentmemory-context>` 段 ⇒ "会话没有记忆"不是读取坏了，是**读的分区不对** ✗✗
+		//   ⚠ 只在主分区**实质为空**且 id 形如 `ws-*` 时才兜底 ⇒ 有数据的分区行为完全不变 ✓
+		if (this._isContextEmpty(ctx) && /^ws[_-]/.test(String(agentId))) {
+			const candidates = await this._fallbackPartitions(String(agentId));
+			for (const alt of candidates) {
+				try {
+					const altCtx = await this._call('loadContext', alt, sessionId, query, options);
+					if (!this._isContextEmpty(altCtx)) {
+						this._log.info?.(`[AgentMemory] 注入跨分区兜底：${agentId}（空）⇒ 改用 ${alt}（有数据）`);
+						ctx = altCtx;
+						break;
+					}
+				} catch { /* 单个分区失败不影响其它 ✓ */ }
+			}
+			if (this._isContextEmpty(ctx)) {
+				this._log.info?.(`[AgentMemory] ${agentId} 与候选 ${candidates.join(',') || '(无)'} 都没有记忆 ⇒ 按空注入`);
+			}
 		}
 		return ctx;
 	}

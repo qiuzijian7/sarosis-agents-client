@@ -2686,7 +2686,16 @@ export class CodeApplication extends Disposable {
 	private static readonly AGENTMEMORY_GATEWAY_RETRY_DELAYS_MS = [1_000, 3_000, 10_000, 30_000, 60_000];
 	private static readonly AGENTMEMORY_GATEWAY_RETRY_STEADY_MS = 300_000;
 
-	/**
+		/**
+	 * 周期性 `/health` 检查的**连续失败次数**（★ 2026-10-26）。
+	 *
+	 * 为什么需要它：原有自愈**只在"子进程非零退出"时触发** ⇒ 实测网关 10-26 17:14 静默死亡（或卡死）后
+	 * 两小时无人拉起，记忆读取/注入/存储**全部静默失效**，用户只看到"网关 5000ms 未响应" ✗✗
+	 * ⇒ 每 60s 探一次，**连续 2 次**失败才重建（避开瞬时抖动）。
+	 */
+	private _agentMemoryGatewayHealthMisses = 0;
+
+/**
 	 * 网关于进程异常退出后的自愈。
 	 *
 	 * 背景（用户日志实测）：dev 窗口启动时若端口被安装版占用 ⇒ EADDRINUSE ⇒ 子进程 code=1 退出，
@@ -2788,6 +2797,26 @@ export class CodeApplication extends Disposable {
 				}
 			});
 
+			// ★★ 2026-10-26：**周期性健康检查**（原有自愈只在"子进程非零退出"时触发 ⇒
+			//   "进程活着但卡死/端口不响应"永远不会自愈 ✗✗；实测网关静默死了两小时）。
+			//   每 60s 探一次 `/health`（2s 超时），**连续 2 次失败**才动手（避开瞬时抖动）；
+			//   动手 = `_probeOrSpawnAgentMemoryGateway`（它自己会先探活：活着就复用、死了才 spawn ✓）。
+			const healthTimer = setInterval(() => {
+				void (async () => {
+					try {
+						const res = await net.fetch(`http://127.0.0.1:${this._resolveAgentMemoryPort()}/health`, { timeout: 2000 } as any);
+						if (res && res.ok) { this._agentMemoryGatewayHealthMisses = 0; return; }
+					} catch { /* 计一次失败 */ }
+					this._agentMemoryGatewayHealthMisses += 1;
+					if (this._agentMemoryGatewayHealthMisses >= 2) {
+						this._agentMemoryGatewayHealthMisses = 0;
+						this.logService.warn('[agentmemory-gateway] /health 连续 2 次失败 ⇒ 触发探活/重建（记忆功能此前可能已静默失效）');
+						await this._probeOrSpawnAgentMemoryGateway(hostPath);
+					}
+				})();
+			}, 60_000);
+			healthTimer.unref?.();
+			childProc.once('exit', () => { try { clearInterval(healthTimer); } catch { /* ignore */ } });
 			childProc.on('exit', (code, signal) => {
 				// 非零退出 = 网关不可用（本窗口此后只能降级或复用他实例网关）⇒ 必须是 warning，
 				// 否则「子进程退出: code=1」会淹没在 info 里，用户只看得到 renderer 侧那条没有任何原因的
