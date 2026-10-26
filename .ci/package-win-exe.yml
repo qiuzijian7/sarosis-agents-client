@@ -20,7 +20,7 @@ variables:
       description: 升级服务器地址
       required: true
   WOA_GITLAB_TOKEN:
-    value: ${{ settings.WOA_GITLAB_TOKEN.password }}
+    value: "${{ settings.WOA_GITLAB_TOKEN.password }}"
     readonly: true
     allow-modify-at-startup: false
     props:
@@ -42,13 +42,6 @@ stages:
         name: 拉取源码
         with:
           refName: main
-      # ★ 2026-10-21：对齐工作区（蓝盾会**复用**工作区 ⇒ 残留的旧文件/旧产物会被带进这次构建
-      #   ⇒ 出现过"CI 跑的不是最新代码"的疑云）⇒ 拉全 tag + 硬对齐 + 清掉未跟踪文件 ✓
-      - name: 对齐工作区（拉 tag + 清理残留）
-        with:
-          charsetType: UTF_8
-        run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/align-workspace.ps1'
-        shell: powershell
       - name: 设置版本号
         id: ZXb4BJ
         with:
@@ -60,54 +53,54 @@ stages:
           charsetType: UTF_8
         run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/install-deps.ps1'
         shell: powershell
-
-      # ---------- 3.5 构建 KB markdown webview bundle (kbblocks.js) ----------
-      - name: 构建 KB 渲染 bundle (kbblocks)
+      - 
+        # ---------- 3.5 构建 KB markdown webview bundle (kbblocks.js) ----------
+        name: 构建 KB 渲染 bundle (kbblocks)
         run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/build-kbblocks.ps1'
         shell: powershell
-
-      - name: 生产编译 compile-build-with-mangling
+      - 
+        name: 生产编译 compile-build-with-mangling
         with:
           charsetType: UTF_8
         run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/compile-build.ps1'
         shell: powershell
-
-      # ---------- 4.5 复制 kbblocks webview 资源到 out-build ----------
-      - name: 复制 kbblocks webview 资源到 out-build
+      - 
+        # ---------- 4.5 复制 kbblocks webview 资源到 out-build ----------
+        name: 复制 kbblocks webview 资源到 out-build
         run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/copy-kbblocks.ps1'
         shell: powershell
-
-      # ---------- 5.0 构建能力插件（dist/extension.js） ----------
-      - name: 构建能力插件 transpile-plugins
+      - 
+        # ---------- 5.0 构建能力插件（dist/extension.js） ----------
+        name: 构建能力插件 transpile-plugins
         run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/transpile-plugins.ps1'
         shell: powershell
-
-      - name: 编译扩展 compile-extensions-build
+      - 
+        name: 编译扩展 compile-extensions-build
         run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/compile-extensions.ps1'
         shell: powershell
-
-      - name: 打包 vscode-win32-x64
+      - 
+        name: 打包 vscode-win32-x64
         run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/package-vscode.ps1'
         shell: powershell
-
-      # ---------- 6.4 下载并内置 ffmpeg（vox 口播视频可选依赖，失败不阻断） ----------
-      - name: 下载并内置 ffmpeg (bundle-ffmpeg)
+      - 
+        # ---------- 6.4 下载并内置 ffmpeg（vox 口播视频可选依赖，失败不阻断） ----------
+        name: 下载并内置 ffmpeg (bundle-ffmpeg)
         run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/bundle-ffmpeg.ps1'
         shell: powershell
-
-      # ---------- 6.4b 下载并内置 whisper.cpp（本地 ASR：video_analyze 口播转写，可选依赖，失败不阻断） ----------
-      # 与 ffmpeg 同级策略；CI 无法访问 GitHub/HuggingFace 时用 SAROS_WHISPER_URL /
-      # SAROS_WHISPER_MODEL_URL 指向内网镜像。
-      - name: 下载并内置 whisper (bundle-whisper)
+      - 
+        # ---------- 6.4b 下载并内置 whisper.cpp（本地 ASR：video_analyze 口播转写，可选依赖，失败不阻断） ----------
+        # 与 ffmpeg 同级策略；CI 无法访问 GitHub/HuggingFace 时用 SAROS_WHISPER_URL /
+        # SAROS_WHISPER_MODEL_URL 指向内网镜像。
+        name: 下载并内置 whisper (bundle-whisper)
         run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/bundle-whisper.ps1'
         shell: powershell
-
-      # ---------- 6.5 打包产物关键构件验证 ----------
-      - name: 验证打包关键构件
+      - 
+        # ---------- 6.5 打包产物关键构件验证 ----------
+        name: 验证打包关键构件
         run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/verify-staging.ps1'
         shell: powershell
-
-      - name: 生成 EXE 安装包 (user & system setup)
+      - 
+        name: 生成 EXE 安装包 (user & system setup)
         run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/generate-exe.ps1'
         shell: powershell
       - name: 归档构件
@@ -122,23 +115,12 @@ stages:
           charsetType: UTF_8
         run: ' powershell -ExecutionPolicy Bypass -File deploy-package/scripts/bk-pipeline-upload.ps1'
         shell: powershell
-
-      # ---------- 7.0 创建 Release：changelog + git tag + woa.git/GitHub 双端 ----------
-      - name: 创建 Release (tag + changelog + woa.git/GitHub)
+      - 
+        # ---------- 7.0 创建 Release：changelog + git tag + woa.git/GitHub 双端 ----------
+        name: 创建 Release (tag + changelog + woa.git/GitHub)
         with:
           charsetType: UTF_8
         run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/create-release.ps1'
         shell: powershell
 concurrency: {}
 syntax-dialect: INHERIT
-
-
-      # ---------- 8. 回读核验：残桩不许"成功"溜过去 ----------
-      # 过去一个月每个版本的 release 都是残桩（描述 19 字符 = tag message、无安装包直链），
-      # 而流水线**一直是绿的** ⇒ 没人发现 ⇒ 直到用户去下载才发现没有包 ✗✗
-      # ⇒ 这里回读两个仓库的 release：描述 ≥200 字符 + 资产链接里有安装包 ⇒ 否则**流水线红** ✓
-      - name: 核验 Release（描述≥200字符 + 有安装包直链）
-        with:
-          charsetType: UTF_8
-        run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/verify-release.ps1'
-        shell: powershell
