@@ -23,10 +23,18 @@
  * - 服务端 403/409 原文原样带出
  */
 
-import { normalizeRepo } from './githubInspect.js';
+import { normalizeRepo, detectExternalDeps } from './githubInspect.js';
 
 const KIND_SET = new Set(['skill', 'workflow', 'agent', 'mcp', 'plugin', 'workbench']);
 const VIA_SET = new Set(['npm', 'github-source']);
+
+/**
+ * 作者**已经**写明运行前依赖的迹象（命中就不重复追加）。
+ *
+ * 只认很明确的词：安装脚本名、中英文的"需先装/前置依赖"、英文 prerequisite / requires。
+ * ⚠ 宁可漏判（多追加一行，作者能改）也不要误判（作者的说明被我们当成了已有 ⇒ 依赖没传达）
+ */
+const DEP_MENTIONED = /install\.(?:sh|ps1)|需先装|需要先装|前置依赖|依赖安装|prerequisite|requires?\s+(?:the\s+)?(?:cli|extension)/i;
 
 /** 识别结果的输出 schema（与 `inspectGithubRepo` 返回逐字段对齐）。 */
 const INSPECT_SCHEMA = {
@@ -138,6 +146,10 @@ export function marketToolDefinitions(deps) {
 					name: { type: 'string', description: '展示名称（可省略）。' },
 					description: { type: 'string', description: '介绍文案（可省略）。若商品依赖外部 CLI/扩展，**第一行写清依赖**。' },
 					changelog: { type: 'string', description: '本版更新说明（可省略）。' },
+					includeDependencyNote: {
+						type: 'boolean',
+						description: '是否自动在介绍末尾补一行「运行前依赖」（默认 true）。作者已在介绍里写明时不会重复追加。',
+					},
 				},
 				required: ['source', 'kind', 'slug', 'version'],
 			},
@@ -193,6 +205,21 @@ export function marketToolDefinitions(deps) {
 					return { ok: false, error: 'via=npm 时必须给 npmName（npm 包名）' };
 				}
 
+				// ★ 外部依赖（文档 §10 最后一条）：把"跑起来还要装什么"写进介绍
+				//   原则：**只追加、不覆盖、不重复** —— 作者的原文一个字都不动，
+				//   我们在末尾加一段并标明"商城自动检测，发布后可编辑"。
+				let finalDescription = String(params?.description ?? '').trim();
+				if (params?.includeDependencyNote !== false && !DEP_MENTIONED.test(finalDescription)) {
+					try {
+						const deps = await detectExternalDeps(source);
+						if (deps && deps.note) {
+							// 原文为空时**不要**留前导空行（会变成"\n\n---"开头的介绍）
+							const sep = finalDescription ? '\n\n---\n' : '';
+							finalDescription = (finalDescription + sep + '运行前依赖（商城自动检测，发布后可编辑）：' + deps.note).slice(0, 2048);
+						}
+					} catch { /* 检测失败不影响发布 */ }
+				}
+
 				// ── 决定 distribution ──────────────────────────────────
 				let distribution;
 				if (via === 'npm') {
@@ -228,7 +255,7 @@ export function marketToolDefinitions(deps) {
 						changelog: String(params?.changelog ?? '').trim(),
 						meta: {
 							...(String(params?.name ?? '').trim() ? { name: String(params.name).trim() } : {}),
-							...(String(params?.description ?? '').trim() ? { description: String(params.description).trim() } : {}),
+							...(finalDescription ? { description: finalDescription } : {}),
 						},
 					});
 					return {

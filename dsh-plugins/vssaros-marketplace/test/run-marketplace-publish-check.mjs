@@ -785,6 +785,35 @@ function makeSkill(localId, version, extra = {}) {
 			fs.readFileSync(path.resolve(HERE, '..', 'lib', 'githubInspect.js'), 'utf8').includes('peer 兼容性：'));
 		check('㉕ hostVersion 在 files 白名单', pkg.files.includes('lib/hostVersion.js'));
 	}
+
+	// ── ㉖ 外部依赖写进商品介绍（文档 §10 最后一条，2026-10-26）──────────────
+	//   商城只表达"装什么"，表达不了"装完还要装什么"。
+	//   典型：BrowserSkill 的插件只给 `bsk_*` 工具，真正跑浏览器还要 bsk CLI + 扩展。
+	//   ★ 原则：**只追加、不覆盖、不重复、可关** —— 作者的原文一个字都不动。
+	{
+		const gi = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'githubInspect.js'), 'utf8');
+		const at2 = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'agentTools.js'), 'utf8');
+
+		check('㉖ 有 detectExternalDeps 且已 export', gi.includes('export async function detectExternalDeps('));
+		check('㉖ 检测走 raw（**不占 GitHub API 额度**）', gi.includes('readRaw(repo, f)') || gi.includes('readRaw(repo, readme)'));
+		// 检测规则确实同时覆盖「脚本名」与「包管理器」两类信号（探针用 flat 字符串，避免正则转义踩坑）
+		check('㉖ 只认**明确信号**：安装脚本 / 一行式安装命令 / 包管理器安装',
+			['install.sh', 'setup.sh', 'cargo', 'brew'].every(k => gi.includes(k)));
+		// ★ 关键：只匹配到 `pip install x` 这类**弱信号**时不写进介绍
+		//   （实测 modelcontextprotocol/servers 的 README 里有 `pip install mcp-server-git`
+		//     只是它收录的某个 server 的装法 ⇒ 写进介绍就是误导）
+		check('㉖ **只有自带安装脚本才写进介绍**（弱信号不写，防误导）',
+			gi.includes('files.length ? parts.join') && gi.includes('弱信号'));
+		check('㉖ 拿不到明确信号返回 null（不编造）', gi.includes('if (!files.length && !installHint) { return null; }'));
+
+		check('㉖ 只**追加**、不覆盖原文（空介绍不留前导空行）',
+			at2.includes("const sep = finalDescription ? '\\n\\n---\\n' : ''") || at2.includes('const sep = finalDescription'));
+		check('㉖ 作者已写明依赖时**不重复追加**', at2.includes('DEP_MENTIONED') && at2.includes('!DEP_MENTIONED.test(finalDescription)'));
+		check('㉖ 可用 `includeDependencyNote: false` 关掉', at2.includes('includeDependencyNote !== false'));
+		check('㉖ 追加内容**标明来源**（可编辑）', at2.includes('商城自动检测，发布后可编辑'));
+		check('㉖ 检测失败**不影响发布**', at2.includes('检测失败不影响发布'));
+		check('㉖ 介绍仍受 2048 上限约束', at2.includes('.slice(0, 2048)'));
+	}
 fs.rmSync(dataRoot, { recursive: true, force: true });
 console.log(`\n[marketplace publish] ${pass} passing / ${fails.length} failing`);
 if (fails.length) { console.log('失败：' + fails.join('、')); }

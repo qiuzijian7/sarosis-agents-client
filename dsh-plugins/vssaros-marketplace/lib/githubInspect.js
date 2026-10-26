@@ -117,6 +117,63 @@ async function readRaw(repo, file) {
 	return got.ok ? got.text : null;
 }
 
+/**
+ * 检测**运行前的外部依赖**（★ 2026-10-26，文档 §10 最后一条）。
+ *
+ * ## 为什么需要
+ * 商城只表达"装什么"，表达不了"装完之后还要装什么"。
+ * 典型例子：`Tencent/BrowserSkill` 的 dsh 插件只提供 `bsk_*` 工具，
+ * 真正跑浏览器动作还依赖 **`bsk` CLI + 浏览器扩展**（都不在 npm 包里）
+ * ⇒ 用户装完插件以为能用了，一调工具就报"命令不存在"。
+ *
+ * ## 检测什么（只认**明确信号**，不猜）
+ * ① 仓库根有 `install.sh` / `install.ps1` / `setup.sh` ⇒ 几乎一定需要跑安装脚本
+ * ② README 里有 `curl … install.sh | sh` 这类**一行式安装命令** ⇒ 抄原文
+ * ③ README 里有 `npm i -g X` / `pip install X` / `cargo install X` / `brew install X` ⇒ 抄原文
+ *
+ * ⚠ 全都拿不到 ⇒ 返回 `null`（**不编造**"可能需要 Node"这种废话）。
+ * ⚠ 全部走 `raw.githubusercontent.com`，**不占 GitHub API 额度**。
+ *
+ * @param {string} repo `owner/repo`
+ * @returns {Promise<null | { files: string[], installHint: string, note: string }>}
+ */
+export async function detectExternalDeps(repo) {
+	const candidates = ['install.sh', 'install.ps1', 'setup.sh'];
+	const files = [];
+	for (const f of candidates) {
+		// 只探到第一个就够（再多请求收益递减）
+		const t = await readRaw(repo, f);
+		if (t) { files.push(f); break; }
+	}
+
+	let installHint = '';
+	for (const readme of ['README.md', 'README.zh-CN.md']) {
+		const text = await readRaw(repo, readme);
+		if (!text) { continue; }
+		// ① 一行式安装（BrowserSkill 就是 `curl -fsSL …/install.sh | sh`）
+		const oneLiner = /(?:curl|wget)[^\n\r]{0,220}install\.(?:sh|ps1)[^\n\r]{0,60}/i.exec(text);
+		if (oneLiner) { installHint = oneLiner[0].trim().slice(0, 200); break; }
+		// ② 包管理器安装
+		const pkg = /(?:npm\s+i(?:nstall)?\s+(?:-g|--global)|pip3?\s+install|cargo\s+install|brew\s+install)\s+[^\s`'\n]{1,80}/i.exec(text);
+		if (pkg) { installHint = pkg[0].trim().slice(0, 200); break; }
+	}
+
+	if (!files.length && !installHint) { return null; }
+
+	const parts = [];
+	if (files.length) { parts.push(`仓库提供安装脚本（${files.join('、')}）`); }
+	if (installHint) { parts.push(`安装命令：${installHint}`); }
+
+	// ⚠ **只有"仓库自带安装脚本"才写进商品介绍**（强信号）。
+	//   只匹配到 `pip install x` / `npm i -g y` 时**不写** —— 那常是 README 里
+	//   **某一个用法示例**，不代表整个仓库的前置依赖。
+	//   实测：`modelcontextprotocol/servers` 的 README 里有 `pip install mcp-server-git`
+	//   （只是它收录的其中一个 server 的装法）⇒ 写进介绍就是**误导** ✗
+	//   ⇒ `installHint` 仍然返回（供 Agent 参考），但 `note` 留空 ⇒ 调用方不追加。
+	const note = files.length ? parts.join('；') : '';
+	return { files, installHint, note };
+}
+
 /** 从 Releases 的 302 Location 里取 tag（不占 API 额度）。 */
 async function readReleaseTag(repo) {
 	try {
@@ -197,7 +254,13 @@ export async function inspectGithubRepo(input) {
 	// ④ logo：owner 头像（真实、不占额度）
 	const logo = `https://github.com/${owner}.png?size=200`;
 
-	// ⑤ npm 反查：找「repository 指向该仓库」且自己带 `dsh` 字段的包
+	// ⑤ 外部依赖（跑起来还要装什么）—— 只认明确信号，拿不到就 null
+	let externalDeps = null;
+	try { externalDeps = await detectExternalDeps(repo); } catch { notes.push('外部依赖检测失败（可忽略）'); }
+	// note 为空表示"只匹配到弱信号"，不值得写进 notes（见 detectExternalDeps 的说明）
+	if (externalDeps && externalDeps.note) { notes.push(`运行前依赖：${externalDeps.note}`); }
+
+	// ⑥ npm 反查：找「repository 指向该仓库」且自己带 `dsh` 字段的包
 	//   ⚠ 不占 GitHub API 额度（未认证 60/h 早就撞过）
 	let npmCandidates = [];
 	try { npmCandidates = await findNpmPackagesForRepo(repo); } catch { notes.push('npm 反查失败（可忽略）'); }
@@ -258,6 +321,8 @@ export async function inspectGithubRepo(input) {
 		recommendWhy,
 		// npm 上「repository 指向本仓库」的包（含是否带 dsh 字段）
 		npmCandidates,
+		// 运行前还要装什么（null = 没检测到明确信号）
+		externalDeps,
 		rootHasDsh,
 		rootPrivate: pkgPrivate,
 		hasWorkspaces,
