@@ -68,6 +68,8 @@ if (typeof document !== 'undefined' && typeof console !== 'undefined' && console
 		   ⇒ 正解：**在同一个 React 工作台里用 state 切二级页**（不导航、不开窗、不需要桥）
 		     ⇒ 页签栏/侧栏/会话上下文全保留，也没有任何 token 问题 ✓
 		   数据：`GET /x/memory/api/detail?view=<id>` ⇒ 服务端复用 `loadDetailModel`（与 SSR 详情页同一份取数 ⇒ 口径不分叉）✓ */
+		/* @generated:detailView begin —— 由 `webapp/build.mjs` 从 `webapp/src/detailView.js` 生成，**别手改** ✗
+		   （改真源后跑 `node dsh-plugins/vssaros-memory/webapp/build.mjs`；守卫会比对这块与真源是否一致）*/
 		const DETAIL_TABS = [
 			{ id: 'memories', label: '🧠 记忆' },
 			{ id: 'sessions', label: '💬 会话' },
@@ -88,7 +90,6 @@ if (typeof document !== 'undefined' && typeof console !== 'undefined' && console
 			return body;
 		}
 
-		/** 一行 label/value（详情页到处要用，统一在这儿 ✓）。 */
 		const kvRow = (label, value) => h('div', { className: 'md2-kv' },
 			h('span', { className: 'md2-k' }, String(label)),
 			h('span', { className: 'md2-v' }, typeof value === 'string' ? value : JSON.stringify(value)));
@@ -309,6 +310,8 @@ if (typeof document !== 'undefined' && typeof console !== 'undefined' && console
 						? h('p', { className: 'wb-empty', 'data-memory-detail-state': 'loading' }, '正在读取详情…')
 						: h('section', { className: 'md2-body', 'data-memory-detail-state': 'ready' }, renderDetailTab(tab, m, { layer, type }))));
 		}
+		/* @generated:detailView end */
+
 
 		function MemoryPanel() {
 			const [view, setView] = useState({ status: 'loading', data: null, error: '' });

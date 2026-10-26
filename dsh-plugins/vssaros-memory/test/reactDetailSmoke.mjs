@@ -210,6 +210,22 @@ check('②e 记忆：层筛选生效（layer=working ⇒ 只剩 working）', () 
 	return 'ok';
 });
 
+// ── ⑫ client.memory.js 的**生成块**能渲染（验证"单一真源"确实产出可用代码）──────
+check('⑫ 生成块（client.memory.js）能渲染 —— 与真源同源', () => {
+	const CHUNK = path.join(HERE, '..', 'lib', 'client.memory.js');
+	const chunk = fs.readFileSync(CHUNK, 'utf8');
+	const m = /@generated:detailView begin[\s\S]*?\*\/([\s\S]*?)\/\* @generated:detailView end \*\//.exec(chunk);
+	assert(m, 'client.memory.js 缺少 @generated:detailView 标记块');
+	// 把生成块当函数体执行：h/hooks/API 由外层注入（与 chunk 里同样的自由变量）
+	const factory = new Function('h', 'useState', 'useEffect', 'useCallback', 'API',
+		m[1] + '\n		return { renderDetailTab, MemoryDetailPage };');
+	const built = factory(React.createElement, React.useState, React.useEffect, React.useCallback, '/x/memory/api');
+	assert(typeof built.renderDetailTab === 'function', '生成块里没有 renderDetailTab');
+	const html = draw(built.renderDetailTab('memories', { items: [{ tier: 'semantic', content: '生成块X' }] }, { layer: 'all', type: '' }));
+	contains(html, '生成块X', '生成块渲染');
+	return 'ok';
+});
+
 // ── 汇总 ─────────────────────────────────────────────────────────────────
 const failed = results.filter(r => !r.ok);
 for (const r of results) {

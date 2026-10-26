@@ -138,6 +138,39 @@ if (fs.existsSync(IDE_AGENT)) {
   }
 }
 
+// ── ⑤ client.memory.js 的详情视图必须是**生成块**，且与单一真源**逐行一致**
+//   为什么钉住：这是"彻底消灭重复"的落点 —— 手改生成块（或改了真源忘了跑
+//   `webapp/build.mjs`）都会让 dsh 客户端与 IDE/独立页**悄悄分叉** ✗✗
+const CHUNK = path.join(HERE, 'vssaros-memory', 'lib', 'client.memory.js');
+const MARK = /\/\* @generated:detailView begin[\s\S]*?\*\/([\s\S]*?)\/\* @generated:detailView end \*\//;
+const chunkText = fs.readFileSync(CHUNK, 'utf8');
+const gm = MARK.exec(chunkText);
+if (!gm) {
+  problems.push('client.memory.js 缺少 @generated:detailView 标记块 ⇒ 详情视图又变回手写副本了 ✗');
+} else if (fs.existsSync(VIEW_SRC)) {
+  /** 归一：逐行去缩进、丢空行（只比内容，不比排版）。 */
+  const norm = t => t.split(/\r?\n/).map(l => l.trim()).filter(Boolean).join('\n');
+  // 用与 build.mjs **完全相同**的规则从真源算一遍
+  const viewSrc = fs.readFileSync(VIEW_SRC, 'utf8');
+  const A = 'export function createDetailView(react) {';
+  const a = viewSrc.indexOf(A);
+  const B = '  return { DETAIL_TABS, renderDetailTab, MemoryDetailPage };';
+  const b = viewSrc.indexOf(B);
+  if (a < 0 || b < 0) {
+    problems.push('detailView.js 结构变了（找不到 createDetailView 或 return 行）⇒ 生成规则要更新');
+  } else {
+    let body = viewSrc.slice(viewSrc.indexOf('\n', a) + 1, b);
+    body = body
+      .replace(/^\s*const h = react\.createElement;\s*$/m, '')
+      .replace(/^\s*const \{ useState, useEffect, useCallback \} = react;\s*$/m, '')
+      .replace(/^\s*\/\*\*[^*]*\*\/\s*$/gm, '');
+    body = body.split('\n').filter(l => !l.includes("const API = '/x/memory/api';")).join('\n');
+    if (norm(gm[1]) !== norm(body)) {
+      problems.push('client.memory.js 的 @generated:detailView 与单一真源**不一致** ⇒ 跑 `node dsh-plugins/vssaros-memory/webapp/build.mjs`（别手改生成块 ✗）');
+    }
+  }
+}
+
 if (problems.length) {
 	console.error(`✗ 记忆详情（React 二级页）口径检查失败（${problems.length} 项）：`);
 	for (const p of problems) { console.error(`  · ${p}`); }
