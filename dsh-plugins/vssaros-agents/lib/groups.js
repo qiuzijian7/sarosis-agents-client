@@ -20,7 +20,7 @@
 //    模块级 PENDING_DISPATCH 已撤——重启丢待回收回复的缺口由 outbox 补上 ✓）。
 
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { presetIdOf } from './core/agents.js';
 import { AGENT_MESSAGE_KIND, finalAssistantText, findOurSplices } from './core/relay.js';
@@ -58,12 +58,23 @@ function httpError(status, message, extra = {}) {
 }
 
 async function readGroups(config) {
-	try {
-		const text = await readFile(join(dataRootOf(config), FILE_NAME), 'utf8');
+	const file = join(dataRootOf(config), FILE_NAME);
+	const parse = (text) => {
 		const parsed = JSON.parse(text);
 		return Array.isArray(parsed?.groups) ? parsed.groups.filter(g => g && typeof g.id === 'string') : [];
-	} catch {
-		return []; // 缺文件/坏 JSON ⇒ 空（页面照常出，错误在 API 写操作时才会显形 ✓）
+	};
+	try {
+		return parse(await readFile(file, 'utf8'));
+	} catch (e) {
+		// 文件不存在 ⇒ 真的还没有群
+		if (e && e.code === 'ENOENT') { return []; }
+		/* ★★ 2026-10-26 真机报障「群聊发消息后黑屏」：
+		   解析失败**不再直接返回空**。发消息走"读-改-整体覆盖写"，前端紧接着 `poll(true)`；
+		   如果读到写了一半的文件，这里原先返回 `[]` ⇒ 前端 `S.groups=[]` ⇒ `activeGroup()`
+		   变 null ⇒ 消息区被清空（= 黑屏）。
+		   ⇒ 给一次 30ms 后的重试（覆盖写通常几十微秒就完成），仍失败才返回空。 */
+		await new Promise(r => setTimeout(r, 30));
+		try { return parse(await readFile(file, 'utf8')); } catch { return []; }
 	}
 }
 
@@ -72,7 +83,14 @@ async function writeGroups(config, groups) {
 	await mkdir(root, { recursive: true });
 	const text = JSON.stringify({ version: 1, groups }, null, 2);
 	JSON.parse(text); // 自证产物合法 ✓
-	await writeFile(join(root, FILE_NAME), text, 'utf8');
+	/* ★★ 原子写（2026-10-26）：先写临时文件再 `rename` 覆盖 ——
+	   `writeFile` 直接覆盖会出现"文件已被截断、内容还没写完"的中间态，
+	   而读方（前端 poll / 另一个请求）恰好那一刻读 ⇒ 解析失败 ⇒ 返回空群列表 ⇒ 黑屏。
+	   POSIX / Windows 上同目录 `rename` 都是原子替换 ⇒ 读方要么看到旧内容、要么看到新内容。 */
+	const target = join(root, FILE_NAME);
+	const tmp = target + '.tmp-' + String(process.pid) + '-' + Date.now().toString(36);
+	await writeFile(tmp, text, 'utf8');
+	await rename(tmp, target);
 }
 
 /**

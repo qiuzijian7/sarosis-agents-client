@@ -331,7 +331,8 @@ function clientJs(keep) {
 	add('}');
 	// ── 消息（DSB 分组口径：同作者+同天+相邻≤15s+组跨度≤180s+每组≤8 条）──
 	add('function renderStack(){');
-	add(' var g=activeGroup();if(!g){$("gpStack").innerHTML="";return;}');
+	// ⚠ 群消失时给**明确提示**，不要清空成黑屏（2026-10-26）
+	add(' var g=activeGroup();if(!g){$("gpStack").innerHTML="<div class=gpGone>这个群不在了 —— 从左侧另选一个群，或点右上角刷新。</div>";return;}');
 	add(' var T=(g.transcript||[]).slice(-KEEP);');
 	add(' var flag=[],sid=[],day="",prev=null,groupAt=0,groupN=0,lastSid="";');
 	add(' for(var i=0;i<T.length;i++){');
@@ -652,11 +653,22 @@ function clientJs(keep) {
 	add('function pollWork(){');
 	add(' fetch("/x/agents/api/assignments").then(function(r){return r.json();}).then(function(d){S.work=(d&&d.items)||[];if(S.tab==="work")renderRight();}).catch(function(){});');
 	add('}');
+	/* ⚠ 2026-10-26：全局兜底 —— 之前未捕获的异常在真机上**完全无声**（页面直接空白），
+	   排查只能靠用户描述。现在一律写进状态条，截图就能看出原因。 */
+	add('window.addEventListener("error",function(e){try{note("脚本错误："+((e&&e.message)||e));}catch(x){}});');
+	add('window.addEventListener("unhandledrejection",function(e){try{var r=e&&e.reason;note("未处理的异常："+((r&&r.message)||r));}catch(x){}});');
 	// ── 轮询 ──
 	add('function poll(force){');
 	add(' fetch("/x/agents/api/groups",{headers:{"cache-control":"no-cache"}}).then(function(r){return r.json();}).then(function(d){');
-	add('  var gs=(d&&d.groups)||[];var sig=JSON.stringify(gs);');
-	add('  if(!force&&sig===S.last)return;S.last=sig;S.groups=gs;');
+	add('  if(!d||d.ok===false||!Array.isArray(d.groups)){note("群聊数据读取异常，已保留当前画面");return;}');
+	add('  var gs=d.groups;var sig=JSON.stringify(gs);');
+	add('  if(!force&&sig===S.last)return;S.last=sig;');
+	/* ⚠⚠ 2026-10-26 真机报障「群聊发 test 后黑屏」：
+	   这里原来无条件 `S.groups=gs`。发消息会唤醒成员（写 agent-groups.json），
+	   若那一刻读到**空列表/坏数据**，`activeGroup()` 就返回 null ⇒
+	   `renderStack()` 的 `if(!g){ $("gpStack").innerHTML=""; return }` 会把消息区**清空** ⇒ 看着像黑屏。
+	   ⇒ 空列表不许覆盖已有画面（除非本来就没有群）。 */
+	add('  if(!gs.length&&S.groups&&S.groups.length){note("群聊列表暂时读不到，已保留当前画面（稍后自动重试）");return;}');
 	add('  if(!S.active&&gs.length)S.active=gs[0].id;');
 	add('  var g=activeGroup();');
 	add('  if(g&&!S.memAgent){S.memAgent=(g.members&&g.members[0])||(S.agents[0]&&S.agents[0].id)||"";}');
@@ -680,7 +692,10 @@ function clientJs(keep) {
 	add(' }');
 	add('}');
 	add('function render(){');
-	add(' renderLeft();renderPill();renderStack();renderRight();applyRight();');
+	/* ⚠ 2026-10-26：渲染整体包一层 try/catch —— 之前任何一步抛错都会让 DOM 停在
+	   "清空后没填"的中间态（= 黑屏），而 `poll()` 的 `.catch(()=>{})` 又把异常吞了，
+	   真机上完全看不到原因。现在改成：出错时在状态条上明说。 */
+	add(' try{renderLeft();renderPill();renderStack();renderRight();applyRight();}catch(err){note("渲染出错："+((err&&err.message)||err));return;}');
 	add(' var g=activeGroup();');
 	add(' $("gpCrumb").innerHTML=g?("<span>群聊</span><span>›</span><b>"+esc(g.name)+"</b>"):"<span>群聊</span>";');
 	add(' $("gpStatus").textContent=g?((g.members||[]).length+" 位成员 · "+MODE_LABEL[normMode(g.mode)]):"";');
