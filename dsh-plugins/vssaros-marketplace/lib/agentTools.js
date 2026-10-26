@@ -146,6 +146,99 @@ export function marketToolDefinitions(deps) {
 		},
 
 		{
+			// ★ 2026-10-26（用户：「是否支持搜索满足特定需求的技能/mcp/工作流/工作台/插件」）
+			//   结论是**之前不支持** —— 底层（服务端 `q`/`kind`/`sort` + `marketClient.list`）
+			//   一直都在、页面也在用，但**没暴露给 Agent** ⇒ 助手只能说"你去搜" ✗
+			name: 'market_search',
+			description:
+				'在 VsSaros 商城里**搜索**商品（技能 / 工作流 / Agent / 连接器 / 插件 / 工作台）。'
+				+ '按关键词 + 类型筛选，返回符合条件的商品摘要（含 slug / 名称 / 介绍 / 作者 / 版本 / 是否可装）。'
+				+ '用户说"找一个能做 X 的…"、"有没有 Y 类型的…"时**先调它**，不要凭印象编造商品。'
+				+ '只读，可以放心多次调用。',
+			parameters: {
+				type: 'object',
+				properties: {
+					q: { type: 'string', description: '关键词（匹配名称 / 介绍 / 标识）。留空 ⇒ 按类型/时间列最新。' },
+					kind: {
+						type: 'string',
+						description: '限定类型：skill / workflow / agent / mcp / plugin / workbench。省略 ⇒ 全部类型。',
+						enum: ['skill', 'workflow', 'agent', 'mcp', 'plugin', 'workbench'],
+					},
+					sort: {
+						type: 'string',
+						description: '排序：recent（最新，默认）/ popular（最热）/ name（按名）。',
+						enum: ['recent', 'popular', 'name'],
+					},
+					limit: { type: 'number', description: '返回条数（默认 10，最多 30）。' },
+				},
+				required: [],
+			},
+			output: {
+				schema: {
+					type: 'object',
+					properties: {
+						ok: { type: 'boolean' },
+						total: { type: 'number' },
+						items: { type: 'array' },
+						error: { type: 'string' },
+					},
+					required: ['ok'],
+				},
+				render: (_args, res) => {
+					if (!res || res.ok === false) {
+						return [{ type: 'text', text: `搜索失败：${(res && res.error) || '未知原因'}` }];
+					}
+					const items = Array.isArray(res.items) ? res.items : [];
+					if (!items.length) {
+						return [{ type: 'text', text: '商城里没有符合条件的商品（换个关键词或放宽类型试试）。' }];
+					}
+					const lines = [`共 ${res.total} 条，显示 ${items.length} 条：`];
+					for (const it of items) {
+						// 一行讲清「是什么 · 干什么 · 装之前要不要额外准备」
+						lines.push(
+							`· ${it.name}（${it.kind}）\`${it.slug}\``
+							+ (it.version ? ` v${it.version}` : '')
+							+ (it.installable === false ? ' ⚠ 当前不可安装' : '')
+							+ `\n  ${String(it.description || '').replace(/\s+/g, ' ').slice(0, 110)}`,
+						);
+					}
+					return [{ type: 'text', text: lines.join('\n') }];
+				},
+			},
+			// 只读、无副作用 ⇒ 并发安全
+			isConcurrencySafe: () => true,
+			execute: async (params) => {
+				const limitRaw = Number(params?.limit);
+				// ⚠ 夹到 1..30：太多会灌爆上下文，太少又筛不到
+				const limit = Number.isFinite(limitRaw) ? Math.min(30, Math.max(1, Math.trunc(limitRaw))) : 10;
+				try {
+					const r = await market().list({
+						q: String(params?.q ?? '').trim() || undefined,
+						kind: String(params?.kind ?? '').trim() || undefined,
+						sort: String(params?.sort ?? '').trim() || undefined,
+						pageSize: limit,
+						page: 1,
+					});
+					// 只回 Agent 真正需要的字段（**不要**把整条商品塞进去：
+					// permissions / distribution_meta 之类对决策没用，还占上下文）
+					const items = (Array.isArray(r?.items) ? r.items : []).slice(0, limit).map((it) => ({
+						slug: String(it.slug ?? ''),
+						name: String(it.name ?? ''),
+						kind: String(it.kind ?? ''),
+						version: String(it.latest_version ?? ''),
+						author: String(it.author_name ?? ''),
+						description: String(it.description ?? '').slice(0, 300),
+						installable: it.installable !== false,
+						createdAt: Number(it.created_at) || 0,
+					}));
+					return { ok: true, total: Number(r?.total) || items.length, items };
+				} catch (e) {
+					return { ok: false, error: String(e?.message ?? e).slice(0, 300) };
+				}
+			},
+		},
+
+		{
 			// ★ 2026-10-26（用户：「商城助手中，增加安装功能」）
 			name: 'market_install',
 			description:

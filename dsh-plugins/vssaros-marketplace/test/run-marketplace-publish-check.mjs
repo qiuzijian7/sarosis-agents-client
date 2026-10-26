@@ -1088,6 +1088,38 @@ function makeSkill(localId, version, extra = {}) {
 			ma3.includes('不要') && ma3.includes('写操作'));
 	}
 
+// ── ㊲ 商城助手能**搜索**商品（2026-10-26 用户问「是否支持搜索」）──
+//   分析结论：**之前不支持** —— 服务端 `q`/`kind`/`sort` 与 `marketClient.list`
+//   一直都在、页面也在用，但**没暴露给 Agent** ⇒ 助手只能说「你去搜」✗
+{
+		const at4 = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'agentTools.js'), 'utf8');
+		const mc4 = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'marketClient.js'), 'utf8');
+		const ma4 = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'marketAgent.js'), 'utf8');
+
+		check('㊲ 有 market_search 工具', at4.includes(String.fromCharCode(39) + 'market_search' + String.fromCharCode(39)));
+		// 全部可选：既能「按关键词搜」，也能「列出某类最新」
+		check('㊲ 参数全可选', /name: 'market_search'[\s\S]{0,900}required: \[\]/.test(at4));
+		check('㊲ kind 有 enum（不让模型瞎传）',
+			/name: 'market_search'[\s\S]{0,1400}enum: \['skill', 'workflow', 'agent', 'mcp', 'plugin', 'workbench'\]/.test(at4));
+		check('㊲ 只读 ⇒ isConcurrencySafe 为 true',
+			/name: 'market_search'[\s\S]{0,3600}isConcurrencySafe: \(\) => true/.test(at4));
+
+		// ★ 只回 Agent 决策要用的字段：整条商品（permissions / distribution_meta）会灌爆上下文
+		check('㊲ 结果裁剪字段（不回 permissions / distribution_meta）',
+			at4.includes('installable: it.installable !== false') && at4.includes('slug: String(it.slug'));
+		check('㊲ limit 夹到 1..30（太多灌上下文、太少筛不到）',
+			at4.includes('Math.max(1, Math.trunc(limitRaw))'));
+		check('㊲ 空结果给友好提示（不说「搜索失败」）', at4.includes('商城里没有符合条件的商品'));
+
+		check('㊲ 走已有 market().list（不新增网络代码）', at4.includes('await market().list('));
+		check('㊲ marketClient.list 支持 q / kind / sort / pageSize',
+			mc4.includes("qs.set('q'") && mc4.includes("qs.set('kind'")
+			&& mc4.includes("qs.set('sort'") && mc4.includes("qs.set('pageSize'"));
+
+		check('㊲ 人设「找资源」明确先搜再答',
+			ma4.includes('`market_search`') && ma4.includes('搜一遍'));
+		check('㊲ 人设禁止编造商品', ma4.includes('绝不凭印象编造商品'));
+	}
 fs.rmSync(dataRoot, { recursive: true, force: true });
 console.log(`\n[marketplace publish] ${pass} passing / ${fails.length} failing`);
 if (fails.length) { console.log('失败：' + fails.join('、')); }
