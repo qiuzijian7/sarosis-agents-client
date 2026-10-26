@@ -939,6 +939,27 @@ export async function apply(ctx, config) {
 		if (!tools || typeof tools.register !== 'function') { return; }
 		scope.effect(() => marketToolDefinitions({
 			inspectGithubRepo,
+			// ★ 2026-10-26（用户：「商城助手中，增加安装功能」）：
+			//   把两条已有的安装路径**统一成一个入口**给 Agent 用 ——
+			//   · `LOCAL_WRITE_KINDS`（skill / workflow / agent / mcp）⇒ `runLocalWrite`
+			//   · `LOCAL_PLUGIN_KINDS`（plugin / workbench）⇒ `runLocalPlugin`（走 ctx.pluginManager）
+			//   ⚠ **kind 由服务端登记说了算**，不信调用方传的值（传错会装错目录 ✗）
+			installPackage: async ({ slug, version }) => {
+				const s = String(slug ?? '').trim();
+				if (!s) { throw new Error('market_install 需要 slug'); }
+				const detail = await market().detail(s);
+				const kind = String(detail?.kind ?? '').trim();
+				if (!kind) { throw new Error(`商城里查不到「${s}」的类型（可能 slug 写错）`); }
+				const v = String(version ?? '').trim() || undefined;
+				if (LOCAL_PLUGIN_KINDS.has(kind)) {
+					return { kind, ...(await runLocalPlugin('install', { kind, slug: s, version: v })) };
+				}
+				if (LOCAL_WRITE_KINDS.has(kind)) {
+					return { kind, ...(await runLocalWrite('install', { kind, slug: s, version: v })) };
+				}
+				// knowledge 之类：dsh 侧没有可落盘的本体 ⇒ 如实拒绝，别让 Agent 以为装上了
+				throw new Error(`「${kind}」这一类暂不支持由 dsh 侧安装（请在商城页面上操作）`);
+			},
 			// ★ 2026-10-27：用 `publishDistribution` 而不是 `publishExternal` ——
 			//   后者把 distribution 硬编码成 `github-source`，而 monorepo（如 BrowserSkill）
 			//   必须发 `npm` 子包，否则「发布成功但装不上」（文档 §7）✗

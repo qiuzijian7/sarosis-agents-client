@@ -89,7 +89,7 @@ function iconOf({ explicit, logo, repo }) {
 }
 
 export function marketToolDefinitions(deps) {
-	const { inspectGithubRepo, publishDistribution, market } = deps;
+	const { inspectGithubRepo, publishDistribution, installPackage, market } = deps;
 
 	return [
 		{
@@ -142,6 +142,68 @@ export function marketToolDefinitions(deps) {
 					return { ok: false, error: String((info && info.error) || '识别失败'), repo };
 				}
 				return info;
+			},
+		},
+
+		{
+			// ★ 2026-10-26（用户：「商城助手中，增加安装功能」）
+			name: 'market_install',
+			description:
+				'从 VsSaros 商城**安装或升级**一个商品到本机（技能 / 工作流 / Agent / 连接器 / 插件 / 工作台）。'
+				+ '⚠ 这是**写操作**：会真的落盘，装完可能提示要重启。'
+				+ '类型（kind）由商城登记决定，不用你传 —— 传了也会被忽略。'
+				+ '只想看看有什么、不想装时**不要调它**。',
+			parameters: {
+				type: 'object',
+				properties: {
+					slug: { type: 'string', description: '商品的商城标识（slug，不是展示名）。' },
+					version: { type: 'string', description: '要装的版本号；省略 ⇒ 装最新版。' },
+				},
+				required: ['slug'],
+			},
+			output: {
+				schema: {
+					type: 'object',
+					properties: {
+						ok: { type: 'boolean' },
+						kind: { type: 'string' },
+						version: { type: 'string' },
+						restartRequired: { type: 'boolean' },
+						slug: { type: 'string' },
+						error: { type: 'string' },
+					},
+					required: ['ok'],
+				},
+				render: (_args, res) => {
+					if (!res || res.ok === false) {
+						return [{ type: 'text', text: `安装失败：${(res && res.error) || '未知原因'}` }];
+					}
+					const lines = [`已安装 ${res.slug}（${res.kind}）· v${res.version}`];
+					if (res.restartRequired) {
+						lines.push('⚠ 需要**重启 VsSaros** 才生效。');
+					}
+					// 不同 kind 的"生效条件"不一样 —— 如实带出，别让用户以为装完就能用
+					if (res.mcpNote) { lines.push(res.mcpNote); }
+					if (res.skillsReload) { lines.push(`技能库重读：${res.skillsReload}`); }
+					if (res.agentsRescan) { lines.push(`agent 重扫：${res.agentsRescan}`); }
+					return [{ type: 'text', text: lines.join('\n') }];
+				},
+			},
+			// 同 slug 并发安装会互相覆盖目录 ⇒ 不安全
+			isConcurrencySafe: () => false,
+			execute: async (params) => {
+				const slug = String(params?.slug ?? '').trim();
+				if (!slug) { return { ok: false, error: '缺少 slug 参数' }; }
+				try {
+					const r = await installPackage({
+						slug,
+						version: String(params?.version ?? '').trim() || undefined,
+					});
+					return { ...r, slug, ok: r?.ok !== false };
+				} catch (e) {
+					// 服务端 / 落盘错误原样带出（比"安装失败"有用得多）
+					return { ok: false, slug, error: String(e?.message ?? e).slice(0, 400) };
+				}
 			},
 		},
 

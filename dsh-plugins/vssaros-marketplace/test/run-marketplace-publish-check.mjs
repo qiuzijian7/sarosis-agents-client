@@ -1061,6 +1061,33 @@ function makeSkill(localId, version, extra = {}) {
 			&& !/^\s+info,$/m.test(at2));
 	}
 
+// ── ㊱ 商城助手能**安装**商品（2026-10-26 用户：「增加安装功能」）──
+{
+		const at3 = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'agentTools.js'), 'utf8');
+		const ix3 = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'index.js'), 'utf8');
+		const ma3 = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'marketAgent.js'), 'utf8');
+
+		check('㊱ 有 `market_install` 工具', at3.includes("'market_install'"));
+		check('㊱ 只要求 `slug`（version 可选、**kind 不用传**）',
+			/required: \['slug'\]/.test(at3));
+		check('㊱ 标记 `isConcurrencySafe: false`（同 slug 并发会互相覆盖目录）',
+			/name: 'market_install'[\s\S]{0,2400}isConcurrencySafe: \(\) => false/.test(at3));
+		check('㊱ 有 render（只写 schema 会抛）', /name: 'market_install'[\s\S]{0,1800}render:/.test(at3));
+
+		// ★ 关键设计：**kind 由服务端登记决定**，不信调用方传的值（传错会装错目录）
+		check('㊱ kind 从 `market().detail` 取（不信调用方）',
+			ix3.includes('const detail = await market().detail(s)') && ix3.includes("const kind = String(detail?.kind ?? '')"));
+		check('㊱ 按 kind 分派到两条已有路径（local-write / local-plugin）',
+			ix3.includes('LOCAL_PLUGIN_KINDS.has(kind)') && ix3.includes('LOCAL_WRITE_KINDS.has(kind)'));
+		check('㊱ 未知 kind **如实拒绝**（不让 Agent 以为装上了）',
+			ix3.includes('暂不支持由 dsh 侧安装'));
+
+		check('㊱ 人设提到 `market_install` 与「四类任务」',
+			ma3.includes('`market_install`') && ma3.includes('## 四类任务'));
+		check('㊱ 人设强调「只是看看时不要装」（写操作边界）',
+			ma3.includes('不要') && ma3.includes('写操作'));
+	}
+
 fs.rmSync(dataRoot, { recursive: true, force: true });
 console.log(`\n[marketplace publish] ${pass} passing / ${fails.length} failing`);
 if (fails.length) { console.log('失败：' + fails.join('、')); }
