@@ -20,12 +20,12 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const CHUNK = path.join(HERE, '..', 'lib', 'client.memory.js');
+const SRC_VIEW = path.join(HERE, '..', 'webapp', 'src', 'detailView.js');
 
 const results = [];
 const check = (name, fn) => {
@@ -41,36 +41,13 @@ const contains = (html, needle, what) => {
 	assert(html.includes(needle), `${what || '输出'} 里找不到 ${JSON.stringify(needle)}（实际长度 ${html.length}）`);
 };
 
-// ── 载入宿主 chunk，抓出导出（含测试钩子）─────────────────────────────────
-let captured = null;
-const fakeEl = () => ({ id: '', textContent: '', remove() { }, appendChild() { } });
-const fakeDocument = {
-	addEventListener() { },
-	getElementById() { return null; },
-	createElement() { return fakeEl(); },
-	head: { appendChild() { } },
-	body: { appendChild() { } },
-};
-const fakeWindow = {
-	__ModuleLoader__: { load(mod) { captured = mod; } },
-};
-const fakeRequire = id => {
-	if (id === 'react') { return React; }
-	throw new Error('smoke: 意外的 require(' + id + ')（chunk 只许 require 宿主 react ✓）');
-};
-
-const code = fs.readFileSync(CHUNK, 'utf8');
-// eslint-disable-next-line no-new-func
-new Function('window', 'document', 'console', 'fetch', 'require', code)(
-	fakeWindow, fakeDocument, console, () => { throw new Error('smoke: 纯渲染不该发请求'); }, fakeRequire,
-);
-
-assert(captured, '没抓到 `window.__ModuleLoader__.load(...)` ⇒ chunk 结构变了？');
-const exportsObj = captured.factory(fakeRequire);
-const renderDetailTab = exportsObj.__renderDetailTab;
-const MemoryDetailPage = exportsObj.__MemoryDetailPage;
-assert(typeof renderDetailTab === 'function', '缺少测试钩子 `__renderDetailTab`（纯渲染函数应导出）');
-assert(typeof MemoryDetailPage === 'function', '缺少测试钩子 `__MemoryDetailPage`');
+// ── 载入**单一真源** `webapp/src/detailView.js`（ESM，直接 import ✓）────────
+//   ⚠ 以前这里是"假 window/ModuleLoader 把 client.memory.js 的 factory 抠出来"，
+//     现在详情视图已经抽成单一真源（dsh chunk 里那份由 build 生成）⇒ 直接测真源更有意义 ✓
+const { createDetailView } = await import(pathToFileURL(SRC_VIEW).href);
+const { renderDetailTab, MemoryDetailPage } = createDetailView(React);
+assert(typeof renderDetailTab === 'function', 'detailView.js 必须导出 createDetailView(...).renderDetailTab');
+assert(typeof MemoryDetailPage === 'function', 'detailView.js 必须导出 createDetailView(...).MemoryDetailPage');
 
 const draw = el => renderToStaticMarkup(el);
 

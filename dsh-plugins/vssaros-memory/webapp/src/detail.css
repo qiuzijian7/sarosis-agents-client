@@ -1,0 +1,50 @@
+/*---------------------------------------------------------------------------------------------
+ *  detail.css — 「记忆详情」的样式（**单一真源**，2026-10-26）
+ *
+ * 三个使用方：
+ *   ① standalone 页（`/x/memory/react-detail`）—— 服务端读本文件后内联进 <style> ✓
+ *   ② IDE webview（同一个 URL）—— 同上 ✓
+ *   ③ dsh 客户端工作台（`client.memory.js` 的 CSS 串）—— 由 `webapp/build.mjs` 生成到 @generated 标记块
+ *
+ * ⚠ 只用 `--wb-*` / `--dsw-alias-*` 令牌（主题切换自动跟随）；不要写死颜色 ✗
+ *--------------------------------------------------------------------------------------------*/
+
+/* ── 记忆详情（React 二级页，2026-10-26）────────────────────────────── */
+.md2 .md2-tabs { display:flex; flex-wrap:wrap; gap:4px; padding:0 16px; margin:6px 0 2px; }
+.md2 .md2-tab { padding:3px 10px; border-radius:var(--wb-r-pill, 999px); font-size:var(--wb-f-xs, 12px);
+  border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.3)); background:transparent; color:inherit; cursor:pointer; }
+.md2 .md2-tab.is-active { background:var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.18)); font-weight:600; }
+.md2 .md2-body { padding:8px 16px 20px; overflow:auto; }
+.md2 .md2-h { margin:12px 0 6px; font-size:var(--wb-f-xs, 12px); opacity:.75; font-weight:600; }
+.md2 .md2-list { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:6px; }
+.md2 .md2-row { display:flex; flex-direction:column; gap:3px; padding:6px 8px; border-radius:6px;
+  border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.22)); }
+.md2 .md2-row-top { display:flex; flex-wrap:wrap; gap:4px; align-items:center; }
+.md2 .md2-row-text { font-size:var(--wb-f-xs, 12px); line-height:1.5; white-space:pre-wrap; word-break:break-word; }
+.md2 .md2-row-text.mono { font-family:var(--wb-font-mono, monospace); }
+.md2 .md2-badge { padding:1px 6px; border-radius:999px; font-size:11px;
+  border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.3)); opacity:.9; }
+.md2 .md2-badge-empty { opacity:.55; }
+.md2 .md2-time { font-size:11px; opacity:.6; }
+.md2 .md2-stats { display:flex; flex-wrap:wrap; gap:10px; padding:2px 0 8px; font-size:11px; opacity:.75; }
+.md2 .md2-filters { display:flex; flex-wrap:wrap; gap:4px; padding:0 16px 6px; }
+.md2 .md2-chip { padding:2px 8px; border-radius:999px; font-size:11px; cursor:pointer;
+  border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.3)); background:transparent; color:inherit; }
+.md2 .md2-chip.is-active { background:var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.18)); font-weight:600; }
+.md2 .md2-chip-type { opacity:.8; }
+.md2 .md2-tier[data-tier="working"] { border-color:#5aa9e6; color:#5aa9e6; }
+.md2 .md2-tier[data-tier="episodic"] { border-color:#f0a04b; color:#f0a04b; }
+.md2 .md2-tier[data-tier="semantic"] { border-color:#8bc34a; color:#8bc34a; }
+.md2 .md2-tier[data-tier="procedural"] { border-color:#b07cf0; color:#b07cf0; }
+.md2 .md2-part { opacity:.75; }
+.md2 .md2-cards { display:flex; flex-wrap:wrap; gap:8px; }
+.md2 .md2-kv { display:flex; gap:8px; align-items:baseline; font-size:var(--wb-f-xs, 12px);
+  border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.22)); border-radius:6px; padding:3px 8px; }
+.md2 .md2-k { opacity:.7; }
+.md2 .md2-v { font-weight:600; }
+.md2 .md2-slot { border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.22)); border-radius:8px; padding:8px 10px; margin-bottom:8px; }
+.md2 .md2-slot-head { display:flex; gap:8px; align-items:center; margin-bottom:4px; }
+.md2 .md2-pre { margin:4px 0 0; padding:8px; border-radius:6px; white-space:pre-wrap; word-break:break-word;
+  background:var(--dsw-alias-bg-l2, rgba(127,127,127,.08)); font-size:11px; max-height:320px; overflow:auto; }
+/* 2026-10-24：按**容器**响应（sideview / 右栏只有 320–420px，@media 判不出来） */
+.wb-mem { container-type: inline-size; }

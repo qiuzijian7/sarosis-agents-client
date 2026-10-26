@@ -26,7 +26,8 @@
 //      `cannot get required service "tools" in inactive context`；
 //   ② 用 `ctx.inject(...)` 的子 ctx 读工具表 → 拿不到（子 ctx 的可见范围与根不同）。
 
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { bindFoundation, foundation } from './foundationRef.js';
 import { buildAuditRow } from './core/audit.js';
 
@@ -4404,6 +4405,44 @@ export function apply(ctx, rawConfig = {}) {
 						res.writeHead(500, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
 						res.end(JSON.stringify({ ok: false, error: message }));
 					}
+					return;
+				}
+				// ★★ 2026-10-26：**独立 React 详情页**（IDE webview 与浏览器共用同一份实现/数据源）。
+				//   为什么不复用 `/x/memory/detail`（SSR 版）：那份是服务端拼 HTML，React 只在 dsh 客户端里跑；
+				//   IDE 要在**编辑区**显示 React 版 ⇒ 需要一个**自包含**的页面：壳 + 自带 React 的 bundle ✓
+				//   ⚠ 路由**不带查询串**（`openModulePage` / 模块页白名单都要求干净路径 ✓），
+				//     token 由宿主加载时拼（与其它模块页同机制）。
+				if (pathname === `${PAGE_ROUTE}react-detail` || pathname === `${PAGE_ROUTE}react-detail/`) {
+					const bundlePath = fileURLToPath(new URL('./detail.bundle.js', import.meta.url));
+					const cssPath = fileURLToPath(new URL('./detail.css', import.meta.url));
+					if (!existsSync(bundlePath)) {
+						res.writeHead(500, { 'content-type': 'text/html; charset=utf-8' });
+						res.end('<h1>记忆详情（React）未构建</h1><p>缺少 <code>detail.bundle.js</code> ⇒ 跑 <code>node dsh-plugins/vssaros-memory/webapp/build.mjs</code></p>');
+						return;
+					}
+					const css = existsSync(cssPath) ? readFileSync(cssPath, 'utf8') : '';
+					res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+					res.end([
+						'<!doctype html><html lang="zh-CN"><head>',
+						'<meta charset="utf-8">',
+						'<meta name="viewport" content="width=device-width,initial-scale=1">',
+						'<title>记忆详情</title>',
+						// 独立页没有 IDE 的 CSS 令牌 ⇒ 这里给**明暗兜底色**（否则深色下会黑字黑底 ✗）
+						'<style>:root{color-scheme:light dark}body{margin:0;font:13px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif;background:#ffffff;color:#1f1f1f}',
+						'@media (prefers-color-scheme: dark){body{background:#1e1e1e;color:#d4d4d4}}',
+						css,
+						'</style></head><body><div id="root"></div>',
+						'<script src="/x/memory/react-detail.js"></script>',
+						'</body></html>',
+					].join(''));
+					return;
+				}
+				// bundle 本体（IIFE，自带 React ⇒ 不需要宿主注入任何东西 ✓）
+				if (pathname === `${PAGE_ROUTE}react-detail.js`) {
+					const bundlePath = fileURLToPath(new URL('./detail.bundle.js', import.meta.url));
+					if (!existsSync(bundlePath)) { res.writeHead(404).end(); return; }
+					res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-store' });
+					res.end(readFileSync(bundlePath));
 					return;
 				}
 				if (pathname === `${PAGE_ROUTE}api/page` || pathname === `${PAGE_ROUTE}api/page/`) {

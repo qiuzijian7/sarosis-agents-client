@@ -96,6 +96,48 @@ if (apiIdx >= 0 && !server.slice(apiIdx, apiIdx + 900).includes('loadDetailModel
 	problems.push('`api/detail` 没有复用 `loadDetailModel` ⇒ 与 SSR 详情页的取数口径会分叉 ✗');
 }
 
+// ── ④ 单一真源 + 独立 React bundle（2026-10-26：用户要求"IDE 侧改用 react 版本记忆，统一数据源"）
+//   为什么必须钉住：以前有两套实现（dsh 的 React / IDE 的 2.3k 行原生 DOM），口径必然分叉 ✗
+const VIEW_SRC = path.join(HERE, 'vssaros-memory', 'webapp', 'src', 'detailView.js');
+const BUNDLE = path.join(HERE, 'vssaros-memory', 'lib', 'detail.bundle.js');
+const CSS = path.join(HERE, 'vssaros-memory', 'lib', 'detail.css');
+if (!fs.existsSync(VIEW_SRC)) {
+  problems.push('缺少单一真源 webapp/src/detailView.js（详情视图只应有这一份实现）');
+} else {
+  const view = fs.readFileSync(VIEW_SRC, 'utf8');
+  if (!/export function createDetailView\(react\)/.test(view)) {
+    problems.push('detailView.js 必须导出 createDetailView(react)（依赖注入 react，两边才能共用）');
+  }
+  for (const id of TABS) {
+    if (!view.includes(`id: '${id}'`)) { problems.push(`detailView.js 缺少页签 ${id}`); }
+  }
+}
+if (!fs.existsSync(BUNDLE)) { problems.push('缺少 lib/detail.bundle.js ⇒ IDE/独立页打不开（跑 webapp/build.mjs）'); }
+else if (!fs.readFileSync(BUNDLE, 'utf8').includes('data-memory-detail-tabs')) {
+  problems.push('detail.bundle.js 里没有详情页标记 ⇒ 产物过期或打错了入口（跑 webapp/build.mjs）');
+}
+if (!fs.existsSync(CSS)) { problems.push('缺少 lib/detail.css（样式单一真源 webapp/src/detail.css 的产物）'); }
+
+// 服务端必须托管「壳 + bundle」两个路径（IDE webview 才能加载）
+if (!server.includes('react-detail')) { problems.push('服务端没有 /x/memory/react-detail ⇒ IDE 打不开 React 版详情'); }
+if (!server.includes('react-detail.js')) { problems.push('服务端没有托管 /x/memory/react-detail.js（bundle）⇒ 页面白屏'); }
+
+// IDE 侧必须走 React 版（命令 → 插件页），而不是旧的 2.3k 行原生 DOM 面板
+const IDE_CONTRIB = path.join(HERE, '..', 'src', 'vs', 'sessions', 'contrib', 'dshHarness', 'electron-browser', 'dshHarness.contribution.ts');
+const IDE_AGENT = path.join(HERE, '..', 'src', 'vs', 'sessions', 'contrib', 'agentStudio', 'browser', 'agentStudio.contribution.ts');
+if (fs.existsSync(IDE_CONTRIB)) {
+  const c = stripComments(fs.readFileSync(IDE_CONTRIB, 'utf8'));
+  if (!c.includes('/x/memory/react-detail')) {
+    problems.push('IDE 侧没有打开 /x/memory/react-detail 的入口 ⇒ "IDE 改用 React 版记忆"没做到');
+  }
+}
+if (fs.existsSync(IDE_AGENT)) {
+  const a = stripComments(fs.readFileSync(IDE_AGENT, 'utf8'));
+  if (!a.includes('dshHarness.openMemoryDetailReact')) {
+    problems.push('agentStudio.openMemoryDetail 没有委托给 React 版命令 ⇒ 仍会打开旧的原生 DOM 面板');
+  }
+}
+
 if (problems.length) {
 	console.error(`✗ 记忆详情（React 二级页）口径检查失败（${problems.length} 项）：`);
 	for (const p of problems) { console.error(`  · ${p}`); }

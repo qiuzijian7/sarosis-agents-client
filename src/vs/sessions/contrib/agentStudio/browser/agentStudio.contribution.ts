@@ -6,6 +6,7 @@
 import { Disposable, DisposableStore, type IDisposable } from '../../../../base/common/lifecycle.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
+import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
@@ -2854,6 +2855,13 @@ registerAction2(class extends Action2 {
 				agentId = agents[0]?.id;
 			} catch { /* best effort */ }
 		}
+		// ★★ 2026-10-26：**改用 React 版记忆详情**（用户要求"IDE 侧改用 react 版本记忆，统一数据源"）。
+//   实现 = 插件自带的独立 React 页 `/x/memory/react-detail`（与 dsh 客户端同一份 `detailView.js`，
+//   数据只走 `GET /x/memory/api/detail` ⇒ 同口径）。兜底：命令不可用 ⇒ 回退旧面板（不至于"点了没反应"）✓
+		try {
+			await accessor.get(ICommandService).executeCommand('dshHarness.openMemoryDetailReact');
+			return;
+		} catch { /* 回退旧面板 */ }
 		const id = agentId ?? 'default';
 		const input = MemoryDetailEditorInput.getOrCreate(id);
 		await editorService.openEditor(input, { pinned: true });

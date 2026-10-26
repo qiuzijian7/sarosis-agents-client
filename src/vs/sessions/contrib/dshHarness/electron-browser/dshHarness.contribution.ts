@@ -78,6 +78,14 @@ import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/l
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 
 const DSH_COMMAND_CHECK_UPDATES = 'dshHarness.checkUpdates';
+
+/**
+ * 「意见反馈」的去处（2026-10-26 用户指定）：飞书问卷。
+ *
+ * 以前这条菜单项交给 IDE 的 issue reporter（`workbench.action.openIssueReporter`），
+ * 那个面板是 VS Code 的、提交去 GitHub —— 我们这边根本没人看 ⇒ 改成打开产品自己的问卷。
+ */
+const DSH_FEEDBACK_URL = 'https://sarosgame.feishu.cn/share/base/form/shrcnLSwbX5eJtTW9DxVmVMxiag';
 import { DshHarnessSettings, DSH_DEFAULT_PROFILE, IDshHostStatus, IDshViewInfo } from '../common/dshHarness.js';
 import { DshHarnessService, IDshHarnessService } from './dshHarnessService.js';
 import { DshChatHostContribution } from './dshChatInstanceHost.js';
@@ -228,6 +236,27 @@ registerSingleton(ITofAuthService, DshTofAuthService, InstantiationType.Delayed)
 
 // ─── 命令 ────────────────────────────────────────────────────────────────────
 
+// ★★ 2026-10-26：**记忆详情 = React 版独立页**（用户要求"IDE 侧改用 react 版本记忆，统一数据源"）。
+//   为什么走插件页而不是旧的 `MemoryDetailEditorPane`（2.3k 行原生 DOM）：
+//     ① React 版是**同一份实现**（`webapp/src/detailView.js`）⇒ dsh 客户端与 IDE 不再两套 UI/两套口径 ✗
+//     ② 数据只走 `GET /x/memory/api/detail`（服务端 `loadDetailModel`，**跨分区**）⇒ 数据源统一 ✓
+//     ③ 页面自包含（bundle 自带 React）⇒ IDE 主包不必引入 React ✓
+//   ⚠ 路由**不带查询串**（模块页白名单 / `openModulePage` 都要求干净路径）
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: 'dshHarness.openMemoryDetailReact',
+			title: localize2('dshHarness.openMemoryDetailReact', 'Open Memory Detail (React)'),
+			f1: true,
+			category: localize2('dshHarness.category', 'Dsh'),
+		});
+	}
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const editorService = accessor.get(IEditorService);
+		const input = DshPluginPageEditorInput.getOrCreate('agentStudio.memory', '记忆库', '/x/memory/react-detail');
+		await editorService.openEditor(input, { pinned: true });
+	}
+});
 registerAction2(class extends Action2 {
 	constructor() {
 		super({ id: DSH_COMMAND_RESTART_HOST, title: localize2('dshHarness.restartHost', "重启 Host"), category: CATEGORY, f1: true, precondition: ENABLED });
@@ -1372,10 +1401,13 @@ class DshPageCommandContribution extends Disposable implements IWorkbenchContrib
 				void Promise.resolve(this._commands.executeCommand('workbench.action.openSettings')).catch(() => undefined);
 				return;
 			case 'openFeedback':
-				// 同一菜单的「✈ 意见反馈」：用 IDE 标准的反馈通道（自动带上环境/扩展信息），
-				//   比丢一个 URL 靠谱 ✓。无参。
-				this._logService.info('[dshHarness] page openFeedback ⇒ 交给 IDE 命令 workbench.action.openIssueReporter');
-				void Promise.resolve(this._commands.executeCommand('workbench.action.openIssueReporter')).catch(() => undefined);
+				// ★ 2026-10-26（用户：「意见反馈跳转到 <飞书问卷>」）：
+				//   不再开 IDE 的 issue reporter（那是 VS Code 的面板、提交去 GitHub，没人看 ✗），
+				//   直接交给系统浏览器打开产品自己的问卷 —— 与窗口里其它「外链」同一套行为 ✓。无参。
+				this._logService.info(`[dshHarness] page openFeedback ⇒ 系统浏览器打开反馈问卷 ${DSH_FEEDBACK_URL}`);
+				void Promise.resolve(this._nativeHostService.openExternal(DSH_FEEDBACK_URL)).catch(err => {
+					this._logService.warn('[dshHarness] 打开反馈问卷失败（URL 已记在上一条日志里，可手动打开）', err);
+				});
 				return;
 			// ★ 2026-10-23（桥 `18 → 19`）：desktop 窗口侧栏底部那行「更新」。
 			//   三条都**不需要 IDE 出界面**（已登记进 `DSH_PAGE_COMMANDS_WITHOUT_IDE_UI`）——
