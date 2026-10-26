@@ -917,6 +917,22 @@ function makeSkill(localId, version, extra = {}) {
 		wb3.includes('ensureMarketDefaults(ctx); } catch'));
 	check('㉙ 有预设诊断（`__vssarosMarketPreset`，排查"到底哪步失败"）',
 		wb3.includes('globalThis.__vssarosMarketPreset'));
+
+	// ★★ 2026-10-26 对照 studio 找到的**两个关键差异**（此前只试一次 ⇒ 必然失败）
+	//   ① hero 空态时**会话还没建出来** ⇒ `select` 无处可设
+	//   ② 服务本身可能还在异步就绪
+	//   studio 的做法：`setInterval` 400ms、最多 12 次（≈4.8s），成功即停
+	check('㉙ **轮询** 12 次 × 400ms（hero 空态时会话还没建，只试一次必失败）',
+		wb3.includes('tries >= 12') && wb3.includes('}, 400);'));
+	check('㉙ 轮询成功后立即停（不空转）', wb3.includes('presetDiag.ok === true || tries >= 12'));
+	check('㉙ 挂载时**立即**先试一次（服务可能早就绪）',
+		wb3.includes('ensureMarketDefaults(ctx); } catch'));
+	// studio 的 obj 形态是 `{ sessionId, agentPreset }` —— 部分实现要求"给哪个会话设"
+	check('㉙ obj 形态**带 sessionId**（对齐 studio）', wb3.includes('sessionId ? { sessionId } : {}'));
+	check('㉙ 会话 id 三来源兜底（uiSession / DOM / dockedSessionOf）',
+		wb3.includes('function currentSessionId') && wb3.includes('data-vssaros-wb-docked-session')
+		&& wb3.includes('dockedSessionOf'));
+	check('㉙ inject `uiSession`（`ctx.get` 拿不到）', wb3.includes("ctx.inject(['uiSession']"));
 }
 
 fs.rmSync(dataRoot, { recursive: true, force: true });

@@ -60,7 +60,40 @@ window.__ModuleLoader__.load({
 		/** 诊断（浏览器控制台可见）：`__vssarosMarketPreset`）。 */
 		const presetDiag = { api: 'init', calls: [], ok: false, error: '' };
 
+		/**
+		 * 当前**停靠会话**的 id（hero 空态时可能是 null —— 那正是要轮询的原因）。
+		 *
+		 * 三个来源（照 studio 的顺序，逐个兜底）：
+		 * ① `uiSession.adapter.current`（**也要 inject 才拿得到**，`ctx.get` 拿不到）
+		 * ② 停靠点 DOM 上的 `data-vssaros-wb-docked-session`
+		 * ③ `dw.dockedSessionOf(entryId)`
+		 */
+		function currentSessionId(ctx) {
+			try {
+				const ui = globalThis.__vssarosMarketUiSession || (ctx.get && ctx.get('uiSession'));
+				const b = ui && ui.adapter && ui.adapter.current ? ui.adapter.current.getSnapshot() : null;
+				const sid = b && (b.sessionId || b.id);
+				if (sid) { return sid; }
+			} catch { /* 下一条 */ }
+			try {
+				const el = document.querySelector('[data-vssaros-wb-docked-session]');
+				const v = el && el.getAttribute('data-vssaros-wb-docked-session');
+				if (v) { return v; }
+			} catch { /* 下一条 */ }
+			try {
+				const dw = globalThis.__vssarosMarketDw;
+				const entry = presetDiag.entryId;
+				if (dw && typeof dw.dockedSessionOf === 'function' && entry) {
+					const v = dw.dockedSessionOf(entry);
+					if (v) { return v; }
+				}
+			} catch { /* ignore */ }
+			return null;
+		}
+
 		function tryApplyPreset(ctx) {
+			const sessionId = currentSessionId(ctx);
+			presetDiag.sessionId = sessionId || null;
 			const candidates = [];
 			if (PRESET_API) { candidates.push(['injected', PRESET_API]); }
 			try { const a = ctx.get && ctx.get('agentPresets'); if (a) { candidates.push(['agentPresets', a]); } } catch { /* ignore */ }
@@ -83,8 +116,9 @@ window.__ModuleLoader__.load({
 						return true;
 					} catch (e1) { presetDiag.calls.push(`${label}.${name}(id): ${String(e1 && e1.message || e1).slice(0, 60)}`); }
 					try {
-						svc[name]({ agentPreset: MARKET_PRESET });
-						presetDiag.api = `${label}.${name}(obj)`;
+						// ★ 带上 sessionId（studio 的做法）：部分实现要求"给哪个会话设"
+						svc[name]({ ...(sessionId ? { sessionId } : {}), agentPreset: MARKET_PRESET });
+						presetDiag.api = `${label}.${name}(obj${sessionId ? '+sid' : ''})`;
 						presetDiag.ok = true;
 						globalThis.__vssarosMarketPreset = presetDiag;
 						return true;
@@ -409,6 +443,13 @@ window.__ModuleLoader__.load({
 			//     （studio 自己注释里写过这条：`uiSession` 也只能靠动态 inject 拿到）
 			//     ⇒ 之前 `tryApplyPreset` 大概率一直 `no-service`，**静默失败** ✗
 			//   两个名字都试（它可能是 remote 服务，也可能挂在根上）
+			// 会话服务：同样只能靠动态 inject（`ctx.get('uiSession')` 拿不到）
+			try {
+				ctx.inject(['uiSession'], (scope) => {
+					globalThis.__vssarosMarketUiSession = scope.uiSession || (scope.get && scope.get('uiSession')) || null;
+				});
+			} catch { /* 老宿主没有该服务 ⇒ currentSessionId 会退回 DOM / dockedSessionOf */ }
+
 			for (const key of ['agentPresets', 'remote.agentPresets']) {
 				try {
 					ctx.inject([key], (scope) => {
@@ -435,8 +476,20 @@ window.__ModuleLoader__.load({
 			 */
 			function MarketPanelWithDefaults(props) {
 				react.useEffect(() => {
-					// 首次挂载 = 进了商城工作台 ⇒ 设一次（成功就不再打扰）
-					ensureMarketDefaults(ctx);
+					// ★★ **必须轮询**（★ 2026-10-26 对照 studio 找到的关键差异）
+					//   hero 空态时**会话还没建出来** ⇒ `agentPresets.select` 无处可设，
+					//   或者服务本身还在异步就绪 ⇒ 只试一次几乎必然失败（studio 也是踩过才改成轮询）。
+					//   studio：`setInterval` 400ms、最多 12 次（≈4.8s）。
+					if (props && props.entry && props.entry.id) { presetDiag.entryId = props.entry.id; }
+					let tries = 0;
+					const timer = setInterval(() => {
+						tries += 1;
+						try { ensureMarketDefaults(ctx); } catch { /* ignore */ }
+						if (presetDiag.ok === true || tries >= 12) { clearInterval(timer); }
+					}, 400);
+					// 立刻先试一次（服务可能早就绪了，不必等 400ms）
+					try { ensureMarketDefaults(ctx); } catch { /* ignore */ }
+					return () => clearInterval(timer);
 				}, []);
 				return react.createElement(MarketPanel, props);
 			}
