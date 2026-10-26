@@ -4317,7 +4317,15 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 			for (const a of Array.isArray(liveAgents) ? liveAgents : []) {
 				if (a && a.id) { activeIds.add(a.id); }
 			}
-			const persona = cursor && activeIds.has(cursor) ? cursor : undefined;
+			// ★★ 2026-10-26（真机实测后补）：**没有有效 agent ⇒ 退到通用分区 default**。
+			//   实测证据（网关 3112）：`loadContext('ws-…')` 只回 124B / systemPrompt **0B** / 无语境段，
+			//   而 `default` 分区有 **4970 条** episodic、`loadContext` 回 1154B 且带 <agentmemory-context>
+			//   ⇒ 会话的 `ws-*` 是**空壳**，读写都落在那儿 = 写了没人读、读了没内容 ✗✗
+			//   ⇒ 没选 agent（游标被清 / 从未选）时退到 `default`（引擎通用分区，历史数据都在这里）✓
+			const DEFAULT_MEMORY_PARTITION = 'default';
+			const resolvedByCursor = !!(cursor && activeIds.has(cursor));
+			const persona = resolvedByCursor ? cursor! : DEFAULT_MEMORY_PARTITION;
+			const personaSource = resolvedByCursor ? 'cursor' : 'default-fallback';
 			if (wsId && cursor && !persona) {
 				this.logService.warn(
 					'[AgentMemory] 记忆作用域别名未注入：游标 agent "' + cursor + '" 已不在活动注册表（现存: '
@@ -4330,7 +4338,7 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 					from: `ws-${wsId}`,
 					to: persona,
 				};
-				this.logService.info(`[AgentMemory] 记忆作用域别名: ws-${wsId} ⇒ ${persona}（读写同一个分区）`);
+				this.logService.info(`[AgentMemory] 记忆作用域别名: ws-${wsId} ⇒ ${persona}（读写同一个分区；来源=${personaSource}）`);
 			} else {
 				this.logService.info(`[AgentMemory] 记忆作用域别名未注入（workspaceId=${wsId ?? '(无)'} agent=${persona ?? '(无)'}）—— 保持原行为`);
 			}
