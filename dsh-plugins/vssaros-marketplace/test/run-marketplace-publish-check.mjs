@@ -944,7 +944,7 @@ function makeSkill(localId, version, extra = {}) {
 		check('㉚ agent 用 `source: custom`（不是 builtin，否则 IDE 下拉看不到）',
 			ma2.includes("'source: custom'") && !ma2.includes("'source: builtin',"));
 		check('㉚ 旧文件会**自动迁移** builtin→custom（只改这一行，保留用户改动）',
-			ma2.includes('migrated: \'builtin→custom\'') && ma2.includes('/^source:\\s*builtin\\s*$/m'));
+			ma2.includes("migrations.push('builtin→custom')") && ma2.includes('builtin'));
 	}
 
 // ── ㉛ preset 必须用**双位置参数** `select(sessionId, presetId)`（2026-10-26 真机）──
@@ -957,6 +957,29 @@ function makeSkill(localId, version, extra = {}) {
 			wb4.includes('svc[name](sessionId, MARKET_PRESET)') && wb4.includes('(sid,id)'));
 		check('㉛ 三种形态都试（双参 → 单参 → 对象），全部记进诊断',
 			wb4.includes('presetDiag.calls.push') && wb4.includes('`${label}.${name}(obj'));
+	}
+
+// ── ㉜ 商城助手人设 + 专属建议卡（2026-10-26 用户：「重构商城助手的提示词」）──
+{
+		const ma3 = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'marketAgent.js'), 'utf8');
+		const wb3p = path.resolve(HERE, '..', '..', 'vssaros-chat-surface', 'lib', 'client.welcome.js');
+		const w5 = fs.existsSync(wb3p) ? fs.readFileSync(wb3p, 'utf8') : '';
+
+		check('㉜ 人设分「三类任务」（找 / 装 / 发），不是笼统介绍',
+			ma3.includes('## 三类任务') && ma3.includes('### 一、找资源')
+			&& ma3.includes('### 二、装 / 升级') && ma3.includes('### 三、发布 GitHub 项目'));
+		check('㉜ 保留**三条硬规矩**（先 inspect / monorepo 用 npm / 发布前讲清）',
+			ma3.includes('三条硬规矩') && ma3.includes('先 inspect 再 publish'));
+		check('㉜ 有**能力边界**（不写代码、不替用户决定）', ma3.includes('## 你不做什么'));
+		check('㉜ 旧人设会**自动升级**（只认旧版特征，用户改过就不动）',
+			ma3.includes("migrations.push('persona-v2')") && ma3.includes('## 你能做什么'));
+
+		check('㉜ 建议卡**按 preset 定制**（不是全局固定三条）',
+			w5.includes('SUGGESTIONS_BY_PRESET') && w5.includes('function suggestionsOf('));
+		check('㉜ 商城助手的三张卡是**商城话术**（查找 / 发布 / 安装）',
+			w5.includes('vssaros-marketplace-bot') && w5.includes('把一个 GitHub 项目发布到商城'));
+		check('㉜ 用**外层 presetId**（cardModel 不返回它）', w5.includes('suggestionsOf(presetId)'));
+		check('㉜ 其它 agent 仍走通用兜底', w5.includes('own.length ? own : SUGGESTIONS'));
 	}
 
 fs.rmSync(dataRoot, { recursive: true, force: true });

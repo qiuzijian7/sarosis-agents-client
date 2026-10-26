@@ -90,9 +90,20 @@ window.__ModuleLoader__.load({
 
 		const pendingRows = s => (s && Array.isArray(s.bundled) ? s.bundled : [])
 			.filter(r => r && (r.state === "missing" || r.state === "upgradable"));
+		/**
+		 * ★★ 2026-10-26（用户："改成只算升级"）：**计数 / 徽标 / 这一行的显隐，只认"可升级"**。
+		 *
+		 * 为什么改：原来把"未安装"也算一项 ⇒ 本机永远显示「2 项可用」，点进去按钮却是「安装」，
+		 * 而且每次发新版随包插件都会把这一行顶出来 —— 用户要的是"有没有**新版**要升"这个信号 ✓。
+		 * ⚠ **未安装的仍然列在面板里**（有自己的「安装」按钮），只是不参与计数、不足以单独把这一行顶出来。
+		 *   要装未安装的：打开面板（有升级项时）/ IDE 插件中心，两条路都还在。
+		 */
+		const upgradableRows = s => (s && Array.isArray(s.bundled) ? s.bundled : [])
+			.filter(r => r && r.state === "upgradable");
 		/** 商城资产（技能 / MCP / 智能体 / 工作流 / 工作台）：宿主已经筛成"只含可升级的" ✓ */
 		const assetRows = s => (s && Array.isArray(s.assets) ? s.assets : []);
-		const totalPending = s => pendingRows(s).length + assetRows(s).length;
+		// 「待升级」= 可升级的随包插件 + 可升级的商城资产（**不含未安装**，见 upgradableRows 的注释）
+		const totalPending = s => upgradableRows(s).length + assetRows(s).length;
 		const KIND_LABEL = { skill: "技能", mcp: "MCP", agent: "智能体", workflow: "工作流", workbench: "工作台" };
 		const KIND_ORDER = ["skill", "mcp", "agent", "workflow", "workbench"];
 		const busyOf = s => (s && s.app && s.app.busy) || "";
@@ -184,7 +195,11 @@ window.__ModuleLoader__.load({
 		/** 面板（四段：随包插件 / 资产 / dsh 运行时 / 应用）。 */
 		function Panel(props) {
 			const s = props.state;
-			const n = pendingRows(s).length;
+			// ⚠ 两个数要分开（2026-10-26「只算升级」）：
+			//   `nAll` = 面板里**列出来**的行数（含未安装，所以标题写"项待处理"对得上）；
+			//   `nUp`  = 真正**能升级**的数量（"全部升级"只跑这些；未安装的各自点「安装」）。
+			const nAll = pendingRows(s).length;
+			const nUp = upgradableRows(s).length;
 			const app = (s && s.app) || {};
 			const busy = busyOf(s);
 			const appDisabled = !!busy || app.action === "uptodate";
@@ -199,12 +214,12 @@ window.__ModuleLoader__.load({
 					react.createElement("span", null, `${(s && s.bundled ? s.bundled.length : 0)} 个随包插件`)),
 				react.createElement("div", { className: "vu-sec" },
 					react.createElement("span", null, "随包插件"),
-					react.createElement("span", null, `${n} 项待处理`),
+					react.createElement("span", null, nAll ? `${nAll} 项待处理${nAll !== nUp ? `（可升级 ${nUp}）` : ""}` : "已最新"),
 					react.createElement("span", { className: "vu-sp" }),
 					react.createElement("button", {
-						className: "vu-btn", "data-primary": "1", disabled: !n || !!busy,
+						className: "vu-btn", "data-primary": "1", disabled: !nUp || !!busy,
 						onClick: () => props.onAll(),
-					}, n ? `全部升级（${n}）` : "已最新")),
+					}, nUp ? `全部升级（${nUp}）` : "无可升级")),
 				bundledRows(s, props.onOne),
 				...assetsSection(s, props.onAsset),
 				react.createElement("div", { className: "vu-sec" },
@@ -352,7 +367,8 @@ window.__ModuleLoader__.load({
 					// 资产升级：只有 IDE 侧那三类有按钮（技能/工作流由 dsh 侧升，页面不画按钮）
 					onAsset: (kind, slug) => call(() => b.upgradeAsset(kind, slug)),
 					onAll: () => {
-						for (const r of pendingRows(state)) { call(() => b.upgradeBundled(r.name)); }
+						// ⚠ 只跑**可升级**的（2026-10-26）：未安装的不属于"升级"，各自点「安装」✓
+						for (const r of upgradableRows(state)) { call(() => b.upgradeBundled(r.name)); }
 						for (const a of assetRows(state)) {
 							if (a.via === 'ide') { call(() => b.upgradeAsset(a.kind, a.name)); }
 						}
@@ -388,7 +404,7 @@ window.__ModuleLoader__.load({
 					));
 				} catch { /* 装不上就不出现入口（聊天本体不受影响） */ }
 			},
-			__test: { readState, pendingRows, actionText, MARK, ROW_H },
+			__test: { readState, pendingRows, upgradableRows, totalPending, actionText, MARK, ROW_H },
 		};
 	},
 });

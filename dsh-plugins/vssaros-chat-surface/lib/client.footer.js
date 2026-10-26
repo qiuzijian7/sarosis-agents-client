@@ -87,14 +87,25 @@ window.__ModuleLoader__.load({
 				}, []);
 
 				let sessions = 0;
+				let blanks = 0;
 				try {
 					const snap = ctx.sessions && ctx.sessions.list ? ctx.sessions.list.getSnapshot() : null;
-					sessions = snap && snap.byId ? Object.keys(snap.byId).length : 0;
+					const byId = snap && snap.byId ? snap.byId : null;
+					if (byId) {
+						const ids = Object.keys(byId);
+						sessions = ids.length;
+						// ★ 2026-10-26：侧栏已隐藏**空会话**（官方 roster 的 blank 位）⇒ 页脚口径
+						//   必须跟着走，否则"118 条会话"和"1931 条会话"两个数字同时出现在屏幕上 ✗。
+						//   空会话的条数**如实写出来**（不装作没有）✓。
+						blanks = ids.filter((id) => byId[id] && byId[id].blank === true).length;
+						sessions -= blanks;
+					}
 				} catch { /* 快照不可读 ⇒ 0 */ }
 				const workspaces = readRecords().length;
-				state.footer = { workspaces, sessions };
+				state.footer = { workspaces, sessions, blanks };
 
-				const text = "VsSaros · " + workspaces + " 个工作区 · " + sessions + " 条会话";
+				const text = "VsSaros · " + workspaces + " 个工作区 · " + sessions + " 条会话"
+					+ (blanks > 0 ? "（另有 " + blanks + " 条空会话已隐藏）" : "");
 				// ⚠ 这一行是**信息**（别再做成"可点的灰字"：用户看不出能点 ✗）。
 				//   「回到 IDE」按钮现在挂在品牌行右侧（`client.brand.js` 的 BrandName）✓。
 				return react.createElement("div", { style: S.row, title: text, "data-vssaros-footer": "1" },

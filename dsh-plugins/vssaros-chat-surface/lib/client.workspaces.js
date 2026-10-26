@@ -14,9 +14,24 @@
 //     降噪口径 ✓）；
 //   · 没被任何 IDE 记录认领的 dsh 条目保持**平铺**（回落契约，与 client.workspace.js 的
 //     buildTree 同口径 ✓）；
-//   · 搜索框（条目多时）、＋添加工作区（官方同一条链：directoryPicker.pick + workspaces.create ✓）。
+//   · 搜索框（条目多时）、＋添加工作区（官方同一条链：uiWorkspace.pickDirectory + workspaces.create ✓）。
 // ⚠ 代价（拍板过的范围）：官方区的会话行菜单（pin/rename/fork/archive）本版**不带**。
 // ⚠ chat-only 形态侧栏整列被 CSS 裁掉 ⇒ 本区只在全窗可见；chat 形态注册是无害空转 ✓。
+//
+// ── 2026-10-26（用户报障：「窗口模式下工作区的 ＋ 点了没反应」+「工作区下有大量空会话」）──
+// ① ＋按钮原来**三重静默失败**（窗口模式尤其致命）：
+//    a) 取选择器用 `ctx.remote.directoryPicker` —— 官方 client-ui-workspace 的 inject 里
+//       **声明了** "remote" + "remote.directoryPicker"，我们**只声明了** "remote" ⇒ 这个名字
+//       不是我们的服务（动态 client 门面读不到）⇒ picker 恒 undefined ⇒ 直接早退。
+//       ⇒ 改走**已声明**的 `ctx.uiWorkspace.pickDirectory()`（官方同一份能力；本仓
+//         vssaros-workbenches 早就在用这条 ✓）。
+//    b) 老代码读 `res.value.path`，而 `pickDirectory()` 返回的是**路径字符串**
+//       （原生 picker 的 value 就是 path）⇒ 恒 undefined ⇒ 选完目录也什么都不做。
+//    c) 失败只写 `state.addWorkspaceError`，而**它从来没被渲染过**（全仓只有赋值）⇒
+//       100% 静默；且窗口模式**没有宿主桥**（`window.vssarosDsh` 不存在）⇒ 连
+//       `bridge.notify` 也是空转 ⇒ 用户只看到"点了没反应"。⇒ 现在错误**就地渲染**。
+// ② 空会话：官方 roster 的每条会话带 `blank` 位（dsh-api-session-controller/types/list.js），
+//    官方侧栏同样按 `!row.blank` 过滤 ⇒ 我们照做（当前会话例外）⇒ 列表不再被空会话刷屏。
 window.__ModuleLoader__.load({
 	id: "@vssaros/dsh-chat-surface",
 	chunk: "client.workspaces.js",
@@ -140,6 +155,9 @@ window.__ModuleLoader__.load({
 					isPrimaryRoot: isPrimaryRoot !== false,
 					isCurrent: sid === currentId,
 					archived: archived.indexOf(sid) >= 0,
+					// ★ 空会话（官方 roster 的 `blank` 位：这条会话没有任何对话内容）。
+					//   官方侧栏同样按它过滤（`!row.archived && !row.blank`）⇒ 我们同口径 ✓。
+					blank: s.blank === true,
 				};
 			};
 			const sortSess = (list) => list.some((s) => s.at > 0)
@@ -150,28 +168,39 @@ window.__ModuleLoader__.load({
 					&& rec.roots.some((r) => samePath(r.path, it.path)));
 				for (const m of members) { claimed[m.workspaceId] = true; }
 				const sessions = [];
+				let hiddenBlanks = 0;
 				for (const m of members) {
 					const root = rec.roots.filter((r) => samePath(r.path, m.path))[0];
 					for (const sid of (Array.isArray(m.sessionIds) ? m.sessionIds : [])) {
 						// 稿 1 降噪：只有**非主根**会话才带根名标签（守卫 ⑤ 钉住 ✓）
 						const s = mkSess(sid, root && !root.isPrimary ? root.name : null, root ? root.isPrimary : true);
-						if (!s.archived) { sessions.push(s); }
+						if (s.archived) { continue; }
+						// ★ 空会话不显示（2026-10-26 用户报「工作区下有大量空会话」）：
+						//   这些会话一条消息都没有、标题只能回落到 id ⇒ 在列表里是纯噪音
+						//   （本机实测 1931 条会话里 1813 条是这种空壳）⇒ 隐藏并**计数**
+						//   （诚实披露，不装作没有）。★ 当前会话永远显示（哪怕它是空的）。
+						if (s.blank && !s.isCurrent) { hiddenBlanks += 1; continue; }
+						sessions.push(s);
 					}
 				}
-				rows.push({ kind: "group", record: rec, sessions: sortSess(sessions) });
+				rows.push({ kind: "group", record: rec, sessions: sortSess(sessions), hiddenBlanks });
 			}
 			for (const it of items) {
 				if (!it || !it.workspaceId || claimed[it.workspaceId]) { continue; }
 				const sessions = [];
+				let hiddenBlanks = 0;
 				for (const sid of (Array.isArray(it.sessionIds) ? it.sessionIds : [])) {
 					const s = mkSess(sid, null, true);
-					if (!s.archived) { sessions.push(s); }
+					if (s.archived) { continue; }
+					if (s.blank && !s.isCurrent) { hiddenBlanks += 1; continue; }
+					sessions.push(s);
 				}
 				rows.push({
 					kind: "flat",
 					label: (typeof it.name === "string" && it.name.trim()) ? it.name.trim() : (baseName(it.path) || it.workspaceId),
 					path: it.path || null,
 					sessions: sortSess(sessions),
+					hiddenBlanks,
 				});
 			}
 			return rows;
@@ -232,22 +261,53 @@ window.__ModuleLoader__.load({
 					notify("warn", "打开会话失败：" + String((e && e.message) || e));
 				}
 			};
-			// ＋ 添加工作区：官方同一条链（directoryPicker.pick → workspaces.create）✓
-			// 两个服务都不进 inject（硬依赖教训 ✓），读不到就记错误，不静默。
-			const addWorkspace = () => {
+			// ＋ 添加工作区：官方同一条链（uiWorkspace.pickDirectory → workspaces.create）✓
+			// 两个服务都不进 inject（硬依赖教训 ✓），读不到就**如实说清**、不静默。
+			//
+			// ★ 2026-10-26（窗口模式点了没反应）—— 原来这条链有**三处**各自能静默失败：
+			//   ① `ctx.remote.directoryPicker`：官方 client-ui-workspace 的 inject 里声明了
+			//      "remote" **和** "remote.directoryPicker"，我们只声明了 "remote" ⇒ 后者不是
+			//      我们的服务（动态 client 门面读不到）⇒ picker 恒 undefined ⇒ 直接早退。
+			//      ⇒ 改用**已声明**的 `ctx.uiWorkspace.pickDirectory()`（官方同一份能力；
+			//        本仓 vssaros-workbenches 早就在用这条 ✓）。
+			//   ② 返回形状：`pickDirectory()` 返回的是**路径字符串**（原生 picker 的 value 就是
+			//      path），老代码读 `res.value.path` ⇒ 恒 undefined ⇒ 选完也什么都不做。
+			//   ③ 失败只写 `state.addWorkspaceError`，而它**从来没被渲染** ⇒ 100% 静默；
+			//      且窗口模式没有宿主桥（`window.vssarosDsh` 不存在）⇒ `bridge.notify` 也是空转。
+			//      ⇒ 现在错误**就地渲染**在区里（见 Browser 的 wsError），成功也写一行。
+			const addWorkspace = (setError) => {
+				const say = (text, kind) => {
+					state.addWorkspaceError = kind === "error" ? text : null;
+					state.addWorkspaceNote = kind === "error" ? null : text;
+					try { if (setError) { setError({ kind: kind === "error" ? "error" : "note", text: String(text) }); } } catch { /* 渲染失败不影响别的 */ }
+					notify(kind === "error" ? "warn" : "info", text);
+				};
 				try {
-					const picker = ctx.remote && ctx.remote.directoryPicker;
+					const uw = ctx.uiWorkspace;
 					const ws = typeof ctx.get === "function" ? ctx.get("workspaces") : undefined;
-					if (!picker || !ws || typeof ws.create !== "function") {
-						state.addWorkspaceError = "目录选择器 / workspaces 服务不可用";
+					if (!uw || typeof uw.pickDirectory !== "function") {
+						say("添加工作区失败：宿主没有目录选择器（uiWorkspace.pickDirectory 不可用）", "error");
 						return;
 					}
-					void Promise.resolve(picker.pick()).then((res) => {
-						const path = res && res.ok && res.value && typeof res.value.path === "string" ? res.value.path : null;
-						if (path) { return ws.create({ path }); }
-						return undefined;
-					}).catch((e) => { state.addWorkspaceError = String((e && e.message) || e); });
-				} catch (e) { state.addWorkspaceError = String((e && e.message) || e); }
+					if (!ws || typeof ws.create !== "function") {
+						say("添加工作区失败：workspaces 服务不可用", "error");
+						return;
+					}
+					void Promise.resolve(uw.pickDirectory()).then((picked) => {
+						// 取消 = 用户主动关闭 ⇒ 不算错误，但也**要说清**（否则像"点了没反应"）。
+						if (typeof picked !== "string" || !picked) {
+							say("已取消选择目录（未添加工作区）", "note");
+							return undefined;
+						}
+						return Promise.resolve(ws.create({ path: picked })).then(() => {
+							say("已添加工作区：" + picked, "note");
+						});
+					}).catch((e) => {
+						say("添加工作区失败：" + String((e && e.message) || e), "error");
+					});
+				} catch (e) {
+					say("添加工作区失败：" + String((e && e.message) || e), "error");
+				}
 			};
 
 			function useData() {
@@ -361,6 +421,8 @@ window.__ModuleLoader__.load({
 				const [searchOn, setSearchOn] = react.useState(false);
 				const [collapsed, setCollapsed] = react.useState({});
 				const [hover, setHover] = react.useState(null); // {key, x, y}
+				// ★ 2026-10-26：＋按钮的成败**必须看得见**（窗口模式没有宿主桥 ⇒ notify 是空转）
+				const [wsMsg, setWsMsg] = react.useState(null); // {kind:'error'|'note', text}
 				const hoverTimer = react.useRef(null);
 
 				const sessSnap = readSessSnapshot();
@@ -389,6 +451,8 @@ window.__ModuleLoader__.load({
 				const shown = rows.filter(matchRow);
 				const totalRows = rows.reduce((n, r2) => n + 1 + r2.sessions.length, 0);
 				const withSearch = totalRows > 8;
+				// ★ 被隐藏的空会话总数（所有工作区，含折叠的）—— 诚实披露，不装作没有。
+				const hiddenBlanks = rows.reduce((n, r2) => n + (r2.hiddenBlanks || 0), 0);
 
 				if (!wide) {
 					// 窄轨（rail）形态：与官方一致，一枚图标，点击展开侧栏。
@@ -422,9 +486,25 @@ window.__ModuleLoader__.load({
 						// 2026-10-18：与官方中文 UI 对齐（此前写死英文 `Workspaces`，弹窗里和
 				// 「新会话 / 插件 / 自动化任务」并排显得割裂 ✓）
 				react.createElement("span", { style: S.headT }, "工作区"),
-						withSearch ? react.createElement("button", { style: S.iconBtn, title: "搜索", onClick: () => setSearchOn(!searchOn) }, "🔍") : null,
-						react.createElement("button", { style: S.iconBtn, title: "添加工作区…", onClick: addWorkspace }, "＋"),
+						withSearch ? react.createElement("button", { style: S.iconBtn, title: "搜索工作区 / 会话", "aria-label": "搜索工作区 / 会话", onClick: () => setSearchOn(!searchOn) }, "🔍") : null,
+						// ★ 用 ASCII "+"：原来的全角「＋」(U+FF0B) 在某些渲染环境**没有字形**
+						//   ⇒ 界面上是一个豆腐块（用户截图里那个方框就是它）⇒ 点了像"没反应" ✓
+						react.createElement("button", {
+							style: Object.assign({}, S.iconBtn, { fontSize: 14, fontWeight: 600, minWidth: 18, textAlign: "center" }),
+							title: "添加工作区…", "aria-label": "添加工作区", onClick: () => addWorkspace(setWsMsg),
+						}, "+"),
 					),
+					// ★ 2026-10-26：＋ 的成败**就地可见**（窗口模式没有宿主桥 ⇒ notify 是空转）
+					wsMsg ? react.createElement("div", {
+						style: {
+							fontSize: 11, lineHeight: "1.5", padding: "2px 8px 4px", whiteSpace: "normal",
+							color: wsMsg.kind === "error" ? "#f48771" : "var(--dsw-alias-label-tertiary, #737373)",
+						},
+					}, wsMsg.text) : null,
+					// 空会话已隐藏 ⇒ 说清数量（不装作没有）
+					hiddenBlanks > 0 ? react.createElement("div", {
+						style: { fontSize: 10.5, padding: "0 8px 3px", color: "var(--dsw-alias-label-tertiary, #737373)" },
+					}, "已隐藏 " + hiddenBlanks + " 条空会话") : null,
 					searchOn && withSearch ? react.createElement("input", {
 						style: S.search, placeholder: "搜索工作区 / 会话…", value: query,
 						onChange: (e) => setQuery(e.target.value),

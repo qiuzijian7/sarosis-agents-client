@@ -50,6 +50,27 @@ window.__ModuleLoader__.load({
 			"帮我规划今天的工作",
 			"看看我当前的工作区，有什么你能帮上忙的",
 		];
+		/**
+		 * **按 preset 定制的建议**（★ 2026-10-26 用户：「帮我重构商城助手的提示词」）。
+		 *
+		 * 为什么需要：默认三条是通用话术，挂到专门 agent 上会答非所问
+		 *   （商城助手的卡片里写着"帮我规划今天的工作"，用户一看就知道不是给它写的 ✗）。
+		 *
+		 * ⚠ 过渡方案：`.agent.md` 将来若支持 `suggestions:` 字段，应改成读 agent 自己的；
+		 *   这里只留「内置 agent 的专属话术」。新增时**必须紧扣它真实能做的事**，不写愿景。
+		 */
+		const SUGGESTIONS_BY_PRESET = {
+			"vssaros-marketplace-bot": [
+				"帮我找一个能自动操作浏览器的小工具",
+				"把一个 GitHub 项目发布到商城",
+				"商城里有哪些工作台？怎么装",
+			],
+		};
+		/** 取某个 preset 的建议（专属优先，否则通用兜底）。 */
+		function suggestionsOf(presetId) {
+			const own = SUGGESTIONS_BY_PRESET[String(presetId || "")];
+			return Array.isArray(own) && own.length ? own : SUGGESTIONS;
+		}
 		/** 焦点交接的值（与 agents 插件 sideview.js 同格式：前缀:参数|时间戳）。 */
 		function handoffValue(prefix, arg, now) {
 			return prefix + ":" + String(arg || "") + "|" + String(now);
@@ -273,10 +294,11 @@ window.__ModuleLoader__.load({
 							e("div", { style: CSS.desc }, model.description || "我是你的专属 Agent。挑一个问题开始，或者直接在下面的输入框里说你要做什么。"),
 							model.skills.length ? e("div", { style: CSS.skills }, model.skills.slice(0, 6).map((s) => chip("s-" + s, "skill: " + s))) : null,
 							e("div", { style: CSS.sugg, "data-vssaros-welcome-suggestions": "1" },
-								SUGGESTIONS.map((text, i) => e("button", {
+								// ⚠ 用**外层 `presetId`**（`cardModel` 的返回里没有 presetId —— 它只装展示字段）
+			(suggestionsOf(presetId).map((text, i) => e("button", {
 									key: "q" + i, type: "button", style: Object.assign({}, CSS.suggItem, i === SUGGESTIONS.length - 1 ? { borderBottom: "none" } : {}),
 									"data-vssaros-welcome-ask": String(i), onClick: () => ask(text),
-								}, text))),
+								}, text)))),
 							e("button", { type: "button", style: CSS.modelRow, onClick: openSettings, title: "打开这个 Agent 的设置（改模型、人设、工具）", "data-vssaros-welcome-model": "1" },
 								e("span", null, "🧠"),
 								e("span", null, "模型"),
@@ -302,7 +324,7 @@ window.__ModuleLoader__.load({
 
 		exports.install = install;
 		// 仅测试用：纯逻辑
-		exports.__test = { isAgentPreset, pickAgent, cardModel, handoffValue, SUGGESTIONS, ENTRY_ID, ENTRY_ORDER, SLOT, seeded };
+		exports.__test = { isAgentPreset, pickAgent, cardModel, handoffValue, SUGGESTIONS, SUGGESTIONS_BY_PRESET, suggestionsOf, ENTRY_ID, ENTRY_ORDER, SLOT, seeded };
 		return module.exports;
 	}
 });
