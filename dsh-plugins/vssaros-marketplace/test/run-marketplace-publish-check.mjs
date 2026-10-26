@@ -850,6 +850,10 @@ function makeSkill(localId, version, extra = {}) {
 		check('㉗ 输入框预填 `@商城助手`', wb.includes("DRAFT_SEED = '@商城助手 '"));
 		check('㉗ 预设 API 试多种方法名（没有公开文档）',
 			wb.includes("'select'") && wb.includes("'setPreset'") && wb.includes("'selectPreset'"));
+		// ★ 必须**无论 created 都 rescan**：文件已存在时（`created:false`）看似无事可做，
+		//   但本次 Host 启动可能还没扫过它（插件后装 / 用户手动放文件）⇒ 不 rescan 就永远没 preset
+		check('㉗ **无论 created 都 rescan**（否则文件早已存在时永远没 preset）',
+			!pageSrc2.includes('!r.created || !state.agentsRescan'));
 		check('㉗ marketAgent.js 在 files 白名单', pkg2.files.includes('lib/marketAgent.js'));
 	}
 fs.rmSync(dataRoot, { recursive: true, force: true });

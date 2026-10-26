@@ -160,7 +160,10 @@ export async function apply(ctx, config) {
 			if (!state.dataRoot) { return; }
 			const r = await ensureMarketAgent({ dataRoot: state.dataRoot });
 			state.marketAgent = { ok: r.ok, created: r.created, preset: MARKET_PRESET, error: r.error ?? '' };
-			if (cancelled || !r.ok || !r.created || !state.agentsRescan) { return; }
+			// ⚠ 必须**无论 created 都 rescan**：
+			//   文件已存在时（`created:false`）看起来"没什么要做"，但**本次 Host 启动可能还没扫过它**
+			//   （比如插件是后装的、或用户手动放了文件）⇒ 不 rescan 就永远没有 preset ✗
+			if (cancelled || !r.ok || !state.agentsRescan) { return; }
 			try {
 				await state.agentsRescan();
 				state.marketAgent.rescanned = true;
