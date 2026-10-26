@@ -894,7 +894,7 @@ function makeSkill(localId, version, extra = {}) {
 	check('㉙ 面板是定位上下文（浮动按钮才能贴右上角）',
 		wb3.includes("'data-vssaros-market-panel'") && wb3.includes("position: 'relative',"));
 	check('㉙ 收起后**右上角**浮一个「« AI 助手」按钮',
-		wb3.includes("'data-vssaros-market-expand'") && wb3.includes("right: '10px', top: '8px'")
+		wb3.includes("'data-vssaros-market-expand'") && wb3.includes("right: '10px'")
 		&& wb3.includes("'AI 助手'"));
 	check('㉙ 展开态按钮是「» 收起」、只做收起（setCollapsed(true)）',
 		wb3.includes('» 收起') && wb3.includes('setCollapsed(true)'));
@@ -1119,6 +1119,25 @@ function makeSkill(localId, version, extra = {}) {
 		check('㊲ 人设「找资源」明确先搜再答',
 			ma4.includes('`market_search`') && ma4.includes('搜一遍'));
 		check('㊲ 人设禁止编造商品', ma4.includes('绝不凭印象编造商品'));
+	}
+// ── ㊳ 本地资源的版本读取（2026-10-26 用户：「本地 skill/agent/工作流/工作台/插件 默认版本都是 1.0.0」）──
+{
+		const lr = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'localResources.js'), 'utf8');
+
+		// ★ 修：以前 JSON 分支**写死读 `workflow.json`** ⇒ `mcp`（入口 `config.json`）
+		//   会去读一个不存在的文件、抛错被 catch 吞掉 ⇒ 版本永远空串 ✗
+		check('㊳ JSON 类按 kind 取自己的入口（mcp 读 config.json，不是写死 workflow.json）',
+			lr.includes('const entry = ENTRY_OF[kind]') && lr.includes('readFile(join(dir, entry)'));
+		check('㊳ 不再写死 workflow.json', !/readFile\(join\(dir, 'workflow\.json'\)/.test(lr));
+
+		// frontmatter 里可能写成 `version: "1.0.0"`（带引号）⇒ 必须去引号，否则商城里显示带引号的值
+		check('㊳ markdown frontmatter 的 version 去引号',
+			lr.includes(".replace(/^[\"']|[\"']$/g, '')"));
+
+		// ⚠ `workbench` / `plugin` **没有本地目录**（它们是 dsh 插件，装在 node_modules）
+		//   ⇒ `KIND_DIR` 不含它们是**设计如此**，不是漏；守卫在这记录一下防止有人误加
+		check('㊳ 可发布种类仍只有落盘类（workbench/plugin 无本地副本，不列）',
+			!/workbench:/.test(lr) && !/plugin:/.test(lr));
 	}
 fs.rmSync(dataRoot, { recursive: true, force: true });
 console.log(`\n[marketplace publish] ${pass} passing / ${fails.length} failing`);

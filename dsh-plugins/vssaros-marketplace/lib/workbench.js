@@ -220,13 +220,13 @@ window.__ModuleLoader__.load({
 		const CONV_MIN = 320;
 		const STORE_KEY = '__vssarosMarketConvW';
 		/**
-		 * 折叠后的宽度（★ 2026-10-26 用户：「AI 助手栏增加伸缩按钮」）。
+		 * 折叠状态持久化（关掉工作台再打开还是收起的）。
 		 *
-		 * ⚠ **不能是 0**：收成 0 就连"展开"按钮都没地方放了，用户再也点不回来 ✗
-		 *   ⇒ 留一条 30px 的窄条，里面是竖排「◀ AI 助手」，点一下展开。
+		 * ★ 2026-10-26 定稿：收起 = 对话栏**整体隐藏**（`display:none`，DOM 保留），
+		 *   展开入口放**面板右上角**「« AI 助手」。不再保留"30px 窄条 + 竖排字"的方案
+		 *   —— 真机截图里窄条会把字拆成两列，很难看。所有工作台同一套做法
+		 *   （守卫：`dsh-plugins/check-assistant-collapse.mjs`）。
 		 */
-		const COLLAPSED_W = '30px';
-		/** 折叠状态持久化（关掉工作台再打开还是收起的）。 */
 		const COLLAPSE_KEY = '__vssarosMarketCollapsed';
 
 		const DESCRIPTOR = {
@@ -432,7 +432,10 @@ window.__ModuleLoader__.load({
 							setCollapsed(false);
 						},
 						style: {
-							position: 'absolute', zIndex: 2147483000, right: '10px', top: '8px',
+							// ★ 2026-10-26 修「与宿主头部的『外部浏览器打开』按钮重叠」：
+							//   面板顶部的 8px 正好落在工作台 header 那一行（宿主在那里放 已加载/外部打开 等按钮）
+							//   ⇒ 改为右侧**垂直居中**，彻底避开头部按钮。
+							position: 'absolute', zIndex: 2147483000, right: '10px', top: '50%', transform: 'translateY(-50%)',
 							height: '24px', padding: '0 10px', borderRadius: '6px',
 							border: '1px solid var(--dsw-alias-border-l2,#dcdfe6)',
 							background: 'var(--dsw-alias-bg-overlay,#fff)',

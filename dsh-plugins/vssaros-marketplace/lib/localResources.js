@@ -42,10 +42,16 @@ async function versionOf(dir, kind) {
 			const md = await readFile(join(dir, ENTRY_OF[kind]), 'utf8');
 			const head = md.split(/\r?\n---/)[0] ?? '';
 			const m = /^version:\s*(.+)$/m.exec(head);
-			return m ? m[1].trim() : '';
+			// frontmatter 里可能写成 `version: "1.0.0"`（带引号）⇒ 去引号
+			return m ? m[1].trim().replace(/^["']|["']$/g, '') : '';
 		}
-		const wf = JSON.parse(await readFile(join(dir, 'workflow.json'), 'utf8'));
-		return typeof wf?.version === 'string' ? wf.version : '';
+		// ★ 2026-10-26 修：以前这里**写死读 `workflow.json`** ⇒ `mcp` 会去读一个不存在的
+		//   文件（它的入口是 `config.json`）⇒ 抛错被 catch 吞掉 ⇒ 版本永远空串 ✗
+		//   ⇒ 按 kind 取自己的入口文件（`ENTRY_OF` 就是那张表）
+		const entry = ENTRY_OF[kind];
+		if (!entry) { return ''; }
+		const j = JSON.parse(await readFile(join(dir, entry), 'utf8'));
+		return typeof j?.version === 'string' ? j.version.trim() : '';
 	} catch {
 		return '';
 	}
