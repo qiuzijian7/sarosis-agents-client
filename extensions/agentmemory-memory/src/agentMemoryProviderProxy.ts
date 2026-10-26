@@ -519,6 +519,22 @@ export class AgentMemoryProviderProxy {
 	}
 
 	/** 单会话观察列表（mem:obs:<agent>:<session>） */
+	/**
+	 * **写回合观测**（mem:obs:* 暂存层）★ 2026-10-26。
+	 *
+	 * 为什么必须补：IDE 侧每迭代都会调 memoryProvider.observe?.(request.agentId, {...})
+	 * （parts/turnPostIteration.ts:414-420，**可选调用** ?.）把本回合的助手产出与工具结果
+	 * 写进暂存层，再由固化/提升变成长期记忆 —— 这是"**边聊边记**"的唯一自动入口。
+	 * 而本 proxy 之前**只有 observeList、没有 observe** ⇒ ?.() 静默 no-op
+	 * ⇒ 真机实测：observeList(ws-…) = 0 条、四层全 0、addMemory/writeMemory 0 次
+	 *   ⇒ 会话记忆**从来没被写进去** ✗✗
+	 *   （dsh 侧有 18889 条，是因为 dsh 插件走引擎 V2 的 observe/writeMemory，不经过本 proxy）
+	 * ⚠ 引擎 V2 **有** observe（agentMemoryProviderV2.ts:838）⇒ 这里只是把它暴露给渲染侧 ✓
+	 */
+	async observe(agentId: string, payload: any): Promise<void> {
+		await this._call('observe', agentId, payload);
+	}
+
 	async observeList(agentId: string, sessionId: string): Promise<any[]> {
 		return (await this._call('observeList', agentId, sessionId)) ?? [];
 	}
