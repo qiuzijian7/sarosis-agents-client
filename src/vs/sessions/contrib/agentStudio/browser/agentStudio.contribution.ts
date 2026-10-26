@@ -4306,7 +4306,25 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 		try {
 			const studio = this.instantiationService.invokeFunction(a => a.get(IAgentStudioService));
 			const wsId = studio.getActiveWorkspaceId();
-			const persona = (await studio.getLastSelectedAgentId()) ?? undefined;
+			const cursor = (await studio.getLastSelectedAgentId()) ?? undefined;
+			// ⚠⚠ 必须校验游标是否仍有效（2026-10-26 真机教训）：
+			//   getLastSelectedAgentId() 读的是持久游标 last-active-agent.json —— 实测它停在
+			//   2026-09-16 的 saros-claw，而 saros-claw 早已不在活动 agent 注册表
+			//   （只剩 agents-backup-... 里的旧文件）⇒ 直接拿它当别名目标会把**新记忆写进废弃分区** ✗✗
+			//   ⇒ 只有"仍在注册表里"的 agent 才允许作为目标；否则**不注入**（宁可不统一，也不写错）✓
+			const liveAgents = wsId ? await studio.getAgents().catch(() => []) : [];
+			const activeIds = new Set<string>();
+			for (const a of Array.isArray(liveAgents) ? liveAgents : []) {
+				if (a && a.id) { activeIds.add(a.id); }
+			}
+			const persona = cursor && activeIds.has(cursor) ? cursor : undefined;
+			if (wsId && cursor && !persona) {
+				this.logService.warn(
+					'[AgentMemory] 记忆作用域别名未注入：游标 agent "' + cursor + '" 已不在活动注册表（现存: '
+					+ (Array.from(activeIds).slice(0, 8).join(', ') || '(无)')
+					+ '）⇒ 为避免记忆写进已废弃分区，保持原行为。处置：在 Agent Studio 重新选一次 agent 刷新游标，或删除过期游标。',
+				);
+			}
 			if (wsId && persona) {
 				(g as { __SAROS_AGENTMEMORY_SCOPE_ALIAS__?: { from: string; to: string } }).__SAROS_AGENTMEMORY_SCOPE_ALIAS__ = {
 					from: `ws-${wsId}`,
