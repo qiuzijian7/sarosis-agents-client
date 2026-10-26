@@ -34,6 +34,8 @@ import { listTarGzEntries } from './tar.js';
 import { listPublishables } from './localResources.js';
 // ★ 2026-10-23（用户「都转移到 dsh 侧实现」）：mcp 装完要注册进 `<数据根>/mcp.json`
 import { readMcpPackageConfig, registerMcpServer, removeMcpCompletely } from './mcpInstall.js';
+// ★ 2026-10-27（用户：贴 GitHub 链接自动填写并发布）
+import { inspectGithubRepo } from './githubInspect.js';
 import { ALL_OPS, LOCAL_WRITE_KINDS, WRITE_OPS, isKnownOp, resolveOp } from './dispatch.js';
 // ★ 服务端 pkg → 前端形状的**唯一映射**（list/detail/reviewList/installed 共用）
 import { toInstalledItem, toPackageDetail, toPackageSummary } from './shape.js';
@@ -191,6 +193,14 @@ export async function apply(ctx, config) {
 				items: res.items.map(pkg => toPackageSummary(pkg, { review: true })),
 			};
 		}
+		// ★ 2026-10-27：从 GitHub 链接**自动识别**可发布信息（名称/描述/版本/logo/kind）
+		//   全程走不占 GitHub API 额度的通道（og 标签 / raw 文件 / releases 302）
+		//   ⇒ 未认证 60 请求/小时的限制不会挡住发布流程 ✓
+		if (op === 'inspectGithub') {
+			const r = await inspectGithubRepo(String(params.repo ?? params.url ?? params.source ?? ''));
+			return r;
+		}
+
 		if (op === 'list') {
 			const res = await market().list({
 					...(params.kind ? { kind: String(params.kind) } : {}),

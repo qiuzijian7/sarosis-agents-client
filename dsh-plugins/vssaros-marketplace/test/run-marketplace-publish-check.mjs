@@ -610,6 +610,49 @@ function makeSkill(localId, version, extra = {}) {
 	})());
 }
 
+
+// ── ㉑ 商城「AI/智能发布助手」：贴 GitHub 链接自动填写（2026-10-27）──────────
+//   用户："增加一个 ai 助手…当用户发要发布一个 github 链接时，自动填写相关信息并上传"
+//   ⚠ dsh 没有给页面暴露模型 API（查过 ctx.models/ctx.chat 都不存在）⇒ 这里是**规则驱动**：
+//     从 GitHub 的 og 标签 / raw 文件 / releases 302 里抓元数据，不是 LLM 对话。
+//   ★ 硬要求：**全程不占 GitHub API 额度**（未认证只有 60 请求/小时，试几次就 403）
+{
+	const inspectPath = path.resolve(HERE, '..', 'lib', 'githubInspect.js');
+	const src = fs.existsSync(inspectPath) ? fs.readFileSync(inspectPath, 'utf8') : '';
+	check('㉑ 有 GitHub 识别模块', src.length > 0, inspectPath);
+	check('㉑ 元数据走 og 标签（不占 API 额度）', /og:title/.test(src) && /og:description/.test(src) && /github\.com\/\$\{repo\}/.test(src));
+	check('㉑ 版本走 raw package.json（不占额度）', /raw\.githubusercontent\.com/.test(src) && /package\.json/.test(src));
+	check('㉑ 版本兜底走 releases 的 302 Location（不占额度）',
+		/redirect:\s*'manual'/.test(src) && /releases\/latest/.test(src) && src.includes('releases') && src.includes('tag') && src.includes('location'));
+	check('㉑ **代码里**不出现 api.github.com（注释里说明原因是可以的）',
+		!src.split(/\r?\n/).filter(l => !/^\s*(\*|\/\/|\/\*)/.test(l)).some(l => l.includes('api.github.com')));
+	check('㉑ tag 前缀剥离是**宽松**的（`cli-v0.3.3` → `0.3.3`）', /\^\[A-Za-z@\._\/-\]\*\(\?=\\d\)/.test(src) || src.includes('[A-Za-z@._/-]*(?='));
+	check('㉑ kind 自动判定（SKILL.md ⇒ skill / package.json 的 dsh ⇒ plugin）', /hasSkillMd/.test(src) && /isDshPlugin/.test(src));
+	check('㉑ logo 用 owner 头像（真实且不占额度）', /github\.com\/\$\{owner\}\.png/.test(src));
+
+	// 纯函数用例（不联网）
+	const mod = await import(pathToFileURL(inspectPath).href);
+	check('㉑ 链接归一化：完整 URL', mod.normalizeRepo('https://github.com/Tencent/BrowserSkill/') === 'Tencent/BrowserSkill');
+	check('㉑ 链接归一化：owner/repo 简写', mod.normalizeRepo('Tencent/BrowserSkill') === 'Tencent/BrowserSkill');
+	check('㉑ 链接归一化：带子路径只取前两段', mod.normalizeRepo('https://github.com/Tencent/BrowserSkill/tree/main/x') === 'Tencent/BrowserSkill');
+	check('㉑ 链接归一化：无效输入返回空（不猜）', mod.normalizeRepo('not-a-repo') === '' && mod.normalizeRepo('') === '');
+	check('㉑ slug 合法（小写 + 合法字符 + ≤64）', (() => { const x = mod.slugOfRepo('Tencent/BrowserSkill'); return /^[a-z0-9][a-z0-9_-]*$/.test(x) && x.length <= 64; })(), mod.slugOfRepo('Tencent/BrowserSkill'));
+
+	// 接线：op 是**只读**（不该进写白名单），且 UI 有按钮
+	const dispatchSrc = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'dispatch.js'), 'utf8');
+	const pageSrc = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'client.js'), 'utf8');
+	const idxSrc = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'index.js'), 'utf8');
+	check("㉑ `inspectGithub` 在 LOCAL_READ_OPS（只读，不触发写审批）", /LOCAL_READ_OPS = new Set\(\[[^\]]*'inspectGithub'/.test(dispatchSrc));
+	check("㉑ Host 有 `inspectGithub` 分支", /op === 'inspectGithub'/.test(idxSrc));
+	check('㉑ 页面有「✨ 自动填写」按钮', pageSrc.includes('✨ 自动填写'));
+	check('㉑ 自动填写只补空字段（不抢用户手填的）', /String\(pub\.slug \|\| ''\)\.trim\(\) \|\| r\.slug/.test(pageSrc));
+	check('㉑ 识别结果看得见（成功/失败都有提示）', /st\.inspectNote/.test(pageSrc) && /正在识别/.test(pageSrc));
+	check('㉑ 识别模块在 files 白名单里（否则装到用户机就缺文件）', (() => {
+		const pkg = JSON.parse(fs.readFileSync(path.resolve(HERE, '..', 'package.json'), 'utf8'));
+		return pkg.files.includes('lib/githubInspect.js');
+	})());
+}
+
 fs.rmSync(dataRoot, { recursive: true, force: true });
 console.log(`\n[marketplace publish] ${pass} passing / ${fails.length} failing`);
 if (fails.length) { console.log('失败：' + fails.join('、')); }

@@ -350,3 +350,8 @@ body {
 	margin: 0 0 12px;
 	border-radius: 12px;
 }
+
+/* 「GitHub 地址 + ✨自动填写」一行（2026-10-27）：输入框占满剩余宽度，按钮不换行 */
+.vs-mp-inspect-row { display: flex; gap: 8px; align-items: stretch; }
+.vs-mp-inspect-row .vs-mp-input { flex: 1 1 auto; min-width: 0; }
+.vs-mp-inspect-row .vs-mp-btn { flex: 0 0 auto; white-space: nowrap; }

@@ -66,13 +66,19 @@ console.log('★ 商城动作分派\n');
 }
 
 // ── ③ 装升卸的 kind 边界 ────────────────────────────────────────
-//   ★ 2026-10-23（用户「都转移到 dsh 侧实现」）：**mcp 已搬 dsh 侧** ⇒ 只剩
-//     workbench（要 `dsh plugin add` + 重启）和 knowledge 还交 IDE
+//   ★ 2026-10-23（用户「都转移到 dsh 侧实现」）：**mcp 已搬 dsh 侧**
+//   ★ 2026-10-27：**workbench 也已被 `LOCAL_PLUGIN_KINDS` 收进 dsh 侧**
+//     （装/升/卸 ⇒ `local-plugin`：有 pluginManager 就自己装，没有则调用方兜底回 IDE）
+//     ⇒ 现在只剩 **knowledge** 还纯交 IDE
 {
-	for (const kind of ['workbench', 'knowledge']) {
+	for (const kind of ['knowledge']) {
 		check(`③ install(${kind}) ⇒ ide`, resolveOp('install', { kind }) === 'ide', resolveOp('install', { kind }));
 		check(`③ upgrade(${kind}) ⇒ ide`, resolveOp('upgrade', { kind }) === 'ide');
 		check(`③ uninstall(${kind}) ⇒ ide`, resolveOp('uninstall', { kind }) === 'ide');
+	}
+	// workbench：装/升/卸走 **local-plugin**（不是 ide —— 那会让它默默绕回 IDE）
+	for (const op of ['install', 'upgrade', 'uninstall']) {
+		check(`③ ${op}(workbench) ⇒ local-plugin`, resolveOp(op, { kind: 'workbench' }) === 'local-plugin', resolveOp(op, { kind: 'workbench' }));
 	}
 	// mcp 必须走本地（否则又会默默绕回 IDE）
 	check('③ install(mcp) ⇒ local-write（已搬 dsh 侧）', resolveOp('install', { kind: 'mcp' }) === 'local-write', resolveOp('install', { kind: 'mcp' }));

@@ -514,12 +514,25 @@
 						})
 					),
 					h(Field, { key: 'src', label: 'GitHub 地址（owner/repo 或 https://github.com/...）' },
-						h('input', {
-							className: 'vs-mp-input',
-							placeholder: 'owner/repo 或 https://github.com/owner/repo/tree/main',
-							value: st.source,
-							onChange: function (e) { props.onChange({ source: e.target.value }); }
-						})
+						// ★ 2026-10-27（用户：贴链接自动填写并发布）：填完点一下就把
+						//   名称/描述/版本/图标/类型 都从 GitHub 抓回来回填 ✓
+						h('div', { className: 'vs-mp-inspect-row' },
+							h('input', {
+								className: 'vs-mp-input',
+								placeholder: 'owner/repo 或 https://github.com/owner/repo/tree/main',
+								value: st.source,
+								onChange: function (e) { props.onChange({ source: e.target.value }); },
+								// 回车也触发识别（少点一次鼠标）
+								onKeyDown: function (e) { if (e.key === 'Enter') { e.preventDefault(); props.onInspect && props.onInspect(); } },
+							}),
+							h('button', {
+								className: 'vs-mp-btn',
+								type: 'button',
+								disabled: st.busy,
+								title: '从 GitHub 自动识别名称 / 介绍 / 版本 / 图标 / 类型并填写',
+								onClick: function () { props.onInspect && props.onInspect(); },
+							}, st.busy ? '识别中…' : '✨ 自动填写')
+						)
 					),
 					h(Field, { key: 'n', label: '名称（可空，默认用标识）' },
 						h('input', {
@@ -561,6 +574,9 @@
 					})
 				),
 				st.error ? h('div', { className: 'vs-mp-msg error' }, st.error) : null,
+				// ★ 识别结果（版本从哪来、有没有需要手改的地方）—— 成功也要看得见，
+				//   否则用户不知道"自动填写"到底填了什么 ✗
+				st.inspectNote ? h('div', { className: 'vs-mp-msg' }, st.inspectNote) : null,
 				h('div', { className: 'vs-mp-drawer-actions' },
 					h('button', { className: 'vs-mp-btn primary', disabled: st.busy, onClick: props.onSubmit }, st.busy ? '发布中…' : '发布'),
 					h('button', { className: 'vs-mp-btn', onClick: props.onClose }, '取消')
@@ -739,6 +755,39 @@
 					: (list.length ? '' : '本机没有可发布的 skill / workflow —— 可以把「来源」切到 GitHub 地址'),
 				kind: 'skill', slug: '', source: '', name: '', description: '',
 			});
+		}
+
+		/**
+		 * 从 GitHub 链接**自动识别并回填**（★ 2026-10-27 用户需求）。
+		 *
+		 * 只填**还空着**的字段 ⇒ 用户手改过的不覆盖（自动填写不能抢人的输入 ✗）。
+		 * 识别走 `inspectGithub` op（Host 侧全程用不占 GitHub API 额度的通道）。
+		 */
+		async function inspectGithub() {
+			if (!pub) { return; }
+			var repo = String(pub.source || '').trim();
+			if (!repo) {
+				setPub(Object.assign({}, pub, { error: '请先填 GitHub 地址' }));
+				return;
+			}
+			setPub(Object.assign({}, pub, { busy: true, error: '', inspectNote: '正在识别 ' + repo + ' …' }));
+			var r = await action('inspectGithub', { repo: repo });
+			if (!r || r.ok === false) {
+				setPub(Object.assign({}, pub, { busy: false, inspectNote: '', error: String((r && r.error) || '识别失败') }));
+				return;
+			}
+			setPub(Object.assign({}, pub, {
+				busy: false,
+				error: '',
+				slug: String(pub.slug || '').trim() || r.slug || '',
+				name: String(pub.name || '').trim() || r.name || '',
+				description: String(pub.description || '').trim() || r.description || '',
+				version: String(pub.version || '').trim() || r.version || '',
+				kind: r.kind || pub.kind || 'skill',
+				inspectNote: '已识别 ' + r.repo + '（版本来自 ' + r.versionFrom + '）'
+					+ (r.kind ? ' · 类型判定：' + r.kind : ' · 类型没判定出来，请手选')
+					+ (Array.isArray(r.notes) && r.notes.length ? ' · ' + r.notes.join('；') : ''),
+			}));
 		}
 
 		async function submitPublish() {
@@ -950,7 +999,9 @@
 				state: pub,
 				onClose: function () { setPub(null); },
 				onChange: function (patch) { setPub(Object.assign({}, pub, patch, { error: '' })); },
-				onSubmit: submitPublish
+				onSubmit: submitPublish,
+				// ★ 2026-10-27：贴 GitHub 链接 ⇒ 自动识别并回填
+				onInspect: inspectGithub
 			}) : null,
 
 			edit ? h(EditDrawer, {

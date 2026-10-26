@@ -18,7 +18,9 @@
 import { PUBLISHABLE_KINDS } from './publisher.js';
 
 /** 走本地只读的 op（不碰 IDE 桥 ✓）。 */
-export const LOCAL_READ_OPS = new Set(['list', 'detail', 'installed', 'publishables', 'reviewList']);
+// ★ 2026-10-27：`inspectGithub` 也是只读（只抓 GitHub 元数据，不写盘、不写商城）
+//   ⇒ 放进 LOCAL_READ_OPS，这样它不需要审批、不会误判成写操作 ✓
+export const LOCAL_READ_OPS = new Set(['list', 'detail', 'installed', 'publishables', 'reviewList', 'inspectGithub']);
 
 /**
  * 走本地落盘的**写** op（装 / 升 / 卸）。
