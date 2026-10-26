@@ -531,6 +531,27 @@ export class AgentMemoryProviderProxy {
 	 *   （dsh 侧有 18889 条，是因为 dsh 插件走引擎 V2 的 observe/writeMemory，不经过本 proxy）
 	 * ⚠ 引擎 V2 **有** observe（agentMemoryProviderV2.ts:838）⇒ 这里只是把它暴露给渲染侧 ✓
 	 */
+	/**
+	 * **报告**（详情页的"报告"页签用）★ 2026-10-26。
+	 *
+	 * 为什么补：`memoryDetailEditorPane.ts:1424` 调 `memProvider.generateReport(type, aid)`，
+	 * 而 proxy **没有实现** ⇒ 走代理时直接 `TypeError: not a function`（不是静默，但照样崩）✗
+	 * 引擎 V2 有它（`agentMemoryProviderV2.ts:1036`）⇒ 这里只做转发 ✓
+	 */
+	async generateReport(type: string, agentId: string): Promise<Record<string, unknown>> {
+		return (await this._call('generateReport', type, agentId)) ?? {};
+	}
+
+	/**
+	 * **扩展诊断**（详情页诊断块用）★ 2026-10-26。
+	 *
+	 * ⚠ IDE 侧是**不 await 直接拿 promise**（`memoryDetailEditorPane.ts:2363`）
+	 *   ⇒ 这里必须**返回 promise**（不能内部 await 后返回普通值，否则调用方 `.then` 会炸 ✗）
+	 */
+	runExtendedDiagnostics(agentId: string): Promise<any> {
+		return this._call('runExtendedDiagnostics', agentId);
+	}
+
 	async observe(agentId: string, payload: any): Promise<void> {
 		await this._call('observe', agentId, payload);
 	}

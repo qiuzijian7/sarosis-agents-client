@@ -52,3 +52,24 @@ suite('记忆写入入口：proxy.observe（2026-10-26）', () => {
 		assert.deepEqual(hit!.args[1], payload, 'payload 必须原样透传（sessionId/hookType/data 一个都不能丢）');
 	});
 });
+
+suite('记忆 provider 方法覆盖（generateReport / runExtendedDiagnostics）', () => {
+
+	test('generateReport 转发 (type, agentId)', async () => {
+		const calls: Array<{ method: string; args: any[] }> = [];
+		const p: any = makeProxy(calls);
+		p._call = async (method: string, ...args: any[]) => { calls.push({ method, args }); return { totalMemories: 7 }; };
+		const r = await p.generateReport('daily', 'ws-proj-abc');
+		const hit = calls.find(c => c.method === 'generateReport');
+		assert.ok(hit, '没有转发 generateReport');
+		assert.deepEqual(hit!.args, ['daily', 'ws-proj-abc'], '参数必须原样透传');
+		assert.equal((r as any).totalMemories, 7, '返回值必须透传');
+	});
+
+	test('runExtendedDiagnostics 必须**同步返回 promise**（IDE 侧不 await 直接拿）', () => {
+		const p: any = makeProxy([]);
+		p._call = async () => ({ ok: true });
+		const out = p.runExtendedDiagnostics('ws-proj-abc');
+		assert.ok(out && typeof out.then === 'function', '必须返回 promise（IDE 侧 memoryDetailEditorPane.ts:2363 不 await ✗）');
+	});
+});
