@@ -26,31 +26,6 @@ window.__ModuleLoader__.load({
 		const DISCARD_ROUTE = '/x/memory/discard';
 		const DETAIL_HREF = '/x/memory/detail';
 
-		/**
-		 * 工作台吸顶工具条 —— **全插件唯一**的吸顶锚点（宿主据此 sticky；属性名见下）。
-		 *
-		 * ★ 2026-10-26：原来「记忆库」和「记忆详情」各写一个 header（静态两处），
-		 *   虽然运行时互斥（两个页面二选一，实际只渲染 1 个），但静态计数是 2 ⇒
-		 *   `check-workbench-style` 的「恰好 1 个」判据一直红。
-		 *   ⇒ 抽成这个 helper：锚点只在**这里**出现一次，两个页面都调它。
-		 *   ⚠ 顺手统一了样式：两个页面的工具条原来是两份近似但不同的标记，现在只有一份。
-		 *   ⚠ 注释里**不要**再写那个属性的字面量：守卫是按**字符串出现次数**数的，
-		 *     注释里出现一次也会被算进去（这一行踩过，会把计数顶到 2/3）。
-		 */
-		const wbToolbar = (opts) => {
-			const o = opts || {};
-			return h('header', { className: 'wb-toolbar', 'data-dsh-workbench-toolbar': '' },
-				o.back ? h('button', {
-					type: 'button', className: 'wb-btn is-ghost',
-					'data-vssaros-memory-action': 'back-to-library', onClick: o.back,
-				}, '← 返回') : null,
-				h('h1', null, String(o.title || '')),
-				h('span', { className: 'wb-sub' }, String(o.sub || '')),
-				h('span', { className: 'wb-spacer' }),
-				o.refresh ? h('button', { type: 'button', 'data-vssaros-memory-action': 'refresh', onClick: o.refresh }, '⟳ 刷新') : null,
-				// 页面自己的额外按钮（如「查看完整记忆 →」）；位置在刷新之后，与原布局一致
-				o.extra || null);
-		};
 
 // ★★ 2026-10-24（第 9 轮）：**文档级点击探针** —— 用 console.warn（宿主只记 error/warn）。
 //   作用：点一下页面任何地方，日志里就会出现一行 ⇒ 一次分清
@@ -96,6 +71,30 @@ if (typeof document !== 'undefined' && typeof console !== 'undefined' && console
 		   数据：`GET /x/memory/api/detail?view=<id>` ⇒ 服务端复用 `loadDetailModel`（与 SSR 详情页同一份取数 ⇒ 口径不分叉）✓ */
 		/* @generated:detailView begin —— 由 `webapp/build.mjs` 从 `webapp/src/detailView.js` 生成，**别手改** ✗
 		   （改真源后跑 `node dsh-plugins/vssaros-memory/webapp/build.mjs`；守卫会比对这块与真源是否一致）*/
+		/**
+		 * 工作台吸顶工具条 —— **全插件唯一**的吸顶锚点（宿主据此 sticky）。
+		 *
+		 * ★ 2026-10-26：原来「记忆库」（MemoryPanel）与「记忆详情」（本文件）各写一个 header，
+		 *   运行时互斥但**静态计数是 2** ⇒ `check-workbench-style` 的「恰好 1 个」判据一直红。
+		 *   ⇒ 抽成这个 helper：锚点只在**这里**出现一次，两个页面都调它。
+		 *   ⚠ 定义**只允许这一份**：chunk 侧那份已删，靠 `webapp/build.mjs` 生成同步；
+		 *     否则真源与生成块会漂移（`check-memory-detail-react` 会红 ✓）。
+		 */
+		const wbToolbar = (opts) => {
+		  const o = opts || {};
+		  return h('header', { className: 'wb-toolbar', 'data-dsh-workbench-toolbar': '' },
+		    o.back ? h('button', {
+		      type: 'button', className: 'wb-btn is-ghost',
+		      'data-vssaros-memory-action': 'back-to-library', onClick: o.back,
+		    }, '← 返回记忆库') : null,
+		    h('h1', null, String(o.title || '')),
+		    h('span', { className: 'wb-sub' }, String(o.sub || '')),
+		    h('span', { className: 'wb-spacer' }),
+		    o.refresh ? h('button', { type: 'button', 'data-vssaros-memory-action': 'refresh', onClick: o.refresh }, '⟳ 刷新') : null,
+		    // 页面自己的额外按钮（如「查看完整记忆 →」）；位置在刷新之后，与原布局一致
+		    o.extra || null);
+		};
+
 		const DETAIL_TABS = [
 			{ id: 'memories', label: '🧠 记忆' },
 			{ id: 'sessions', label: '💬 会话' },
@@ -313,12 +312,13 @@ if (typeof document !== 'undefined' && typeof console !== 'undefined' && console
 			const m = st.data || {};
 
 			return h('div', { className: 'wb wb-mem md2', 'data-vssaros-page': 'memory-detail' },
-				h('header', { className: 'wb-toolbar', 'data-dsh-workbench-toolbar': '' },
-					h('button', { type: 'button', className: 'wb-btn is-ghost', 'data-vssaros-memory-action': 'back-to-library', onClick: () => props.onBack() }, '← 返回记忆库'),
-					h('h1', null, '记忆详情'),
-					h('span', { className: 'wb-sub' }, 'v' + String(m.version || '') + (m.agentId ? ' · ' + String(m.agentId) : '')),
-					h('span', { className: 'wb-spacer' }),
-					h('button', { type: 'button', onClick: () => { void reload(); } }, '⟳ 刷新')),
+				// 吸顶工具条走**唯一** helper（锚点字面量全插件只出现一次 ⇒ 守卫可数 ✓）
+				wbToolbar({
+					back: () => props.onBack(),
+					title: '记忆详情',
+					sub: 'v' + String(m.version || '') + (m.agentId ? ' · ' + String(m.agentId) : ''),
+					refresh: () => { void reload(); },
+				}),
 				h('nav', { className: 'md2-tabs', 'data-memory-detail-tabs': '' }, DETAIL_TABS.map(t =>
 					h('button', {
 						key: t.id, type: 'button',

@@ -34,6 +34,30 @@ export function createDetailView(react) {
   /** 详情 JSON 基址（与页面同一 Host ⇒ 同源，cookie/token 一致 ✓）。 */
   const API = '/x/memory/api';
 
+  /**
+   * 工作台吸顶工具条 —— **全插件唯一**的吸顶锚点（宿主据此 sticky）。
+   *
+   * ★ 2026-10-26：原来「记忆库」（MemoryPanel）与「记忆详情」（本文件）各写一个 header，
+   *   运行时互斥但**静态计数是 2** ⇒ `check-workbench-style` 的「恰好 1 个」判据一直红。
+   *   ⇒ 抽成这个 helper：锚点只在**这里**出现一次，两个页面都调它。
+   *   ⚠ 定义**只允许这一份**：chunk 侧那份已删，靠 `webapp/build.mjs` 生成同步；
+   *     否则真源与生成块会漂移（`check-memory-detail-react` 会红 ✓）。
+   */
+  const wbToolbar = (opts) => {
+    const o = opts || {};
+    return h('header', { className: 'wb-toolbar', 'data-dsh-workbench-toolbar': '' },
+      o.back ? h('button', {
+        type: 'button', className: 'wb-btn is-ghost',
+        'data-vssaros-memory-action': 'back-to-library', onClick: o.back,
+      }, '← 返回记忆库') : null,
+      h('h1', null, String(o.title || '')),
+      h('span', { className: 'wb-sub' }, String(o.sub || '')),
+      h('span', { className: 'wb-spacer' }),
+      o.refresh ? h('button', { type: 'button', 'data-vssaros-memory-action': 'refresh', onClick: o.refresh }, '⟳ 刷新') : null,
+      // 页面自己的额外按钮（如「查看完整记忆 →」）；位置在刷新之后，与原布局一致
+      o.extra || null);
+  };
+
 const DETAIL_TABS = [
 	{ id: 'memories', label: '🧠 记忆' },
 	{ id: 'sessions', label: '💬 会话' },
@@ -252,12 +276,13 @@ function MemoryDetailPage(props) {
 	const m = st.data || {};
 
 	return h('div', { className: 'wb wb-mem md2', 'data-vssaros-page': 'memory-detail' },
-		h('header', { className: 'wb-toolbar', 'data-dsh-workbench-toolbar': '' },
-			h('button', { type: 'button', className: 'wb-btn is-ghost', 'data-vssaros-memory-action': 'back-to-library', onClick: () => props.onBack() }, '← 返回记忆库'),
-			h('h1', null, '记忆详情'),
-			h('span', { className: 'wb-sub' }, 'v' + String(m.version || '') + (m.agentId ? ' · ' + String(m.agentId) : '')),
-			h('span', { className: 'wb-spacer' }),
-			h('button', { type: 'button', onClick: () => { void reload(); } }, '⟳ 刷新')),
+		// 吸顶工具条走**唯一** helper（锚点字面量全插件只出现一次 ⇒ 守卫可数 ✓）
+		wbToolbar({
+			back: () => props.onBack(),
+			title: '记忆详情',
+			sub: 'v' + String(m.version || '') + (m.agentId ? ' · ' + String(m.agentId) : ''),
+			refresh: () => { void reload(); },
+		}),
 		h('nav', { className: 'md2-tabs', 'data-memory-detail-tabs': '' }, DETAIL_TABS.map(t =>
 			h('button', {
 				key: t.id, type: 'button',
