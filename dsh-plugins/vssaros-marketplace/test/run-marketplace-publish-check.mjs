@@ -693,7 +693,10 @@ function makeSkill(localId, version, extra = {}) {
 	check('㉒ 写工具 `market_publish`', at.includes("'market_publish'"));
 	check('㉒ 写工具的 slug/version/source 是**必填**（不给默认值）', /required: \['source', 'kind', 'slug', 'version'\]/.test(at));
 	check('㉒ 写工具标记 `isConcurrencySafe: false`（同 slug 并发会撞 409）', /isConcurrencySafe: \(\) => false/.test(at));
-	check('㉒ 工具注册在 index.js 且缺 tools 服务时降级', pageJs.includes('marketToolDefinitions({') && pageJs.includes('注册 agent 工具失败（页面仍可用）'));
+	// ⚠ 2026-10-26 改：`ctx.tools` **必须**走 `ctx.inject(['tools'])`（直接访问会抛
+	//   `cannot get property "tools" without inject`，被 catch 吞掉 ⇒ 工具静默不存在）
+	check('㉒ 工具注册走 `ctx.inject([tools])`，缺服务时优雅跳过',
+		pageJs.includes("ctx.inject(['tools']") && pageJs.includes('typeof tools.register !== \'function\''));
 	check('㉒ 两个新文件都在 files 白名单（否则装到用户机就缺）', pkg.files.includes('lib/workbench.js') && pkg.files.includes('lib/agentTools.js'));
 
 	// ── ㉓ 按 `doc/marketplace-workbench-github-flow.html` 完善（2026-10-27）──────
