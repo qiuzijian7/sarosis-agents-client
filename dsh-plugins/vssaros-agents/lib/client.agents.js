@@ -264,7 +264,9 @@ window.__ModuleLoader__.load({
 		 *   `openModuleRoute` 在桌面全窗退化成整页导航，不会黑屏、也不会静默。
 		 */
 		const startChat = () => openModuleRoute('/x/agents/', '发起会话');
-		const openSessionById = () => openModuleRoute('/x/agents/', '续聊');
+		/* ⚠ 这里原本有个**无参的桩**：忽略 sessionId、只打开完整页 ⇒ 右栏「最近会话」点了
+		   打开的不是那条会话。现在真正的实现在组件内（`focusDock` 切换停靠）。
+		   ⚠ 注释里别写出旧签名（守卫按字符串匹配，注释也会被算进去 —— 这里踩过一次）。 */
 		/** 打开完整页 / 群聊页（IDE 编辑区）。⚠ 桌面全窗窗口没有编辑区 ⇒ 退化成整页导航，避免黑屏。 */
 		function openModuleRoute(url, label) {
 			const b = bridge();
@@ -363,6 +365,23 @@ window.__ModuleLoader__.load({
 				} catch (e) { /* 停靠服务拒绝 ⇒ 保持现状，不打断 */ }
 			};
 
+			/**
+			 * 打开某条会话（2026-10-27 修正）。
+			 *
+			 * ⚠ 原来模块级那个 `openSessionById` 是个**桩**：忽略参数、只 `openModuleRoute('/x/agents/')`
+			 * ⇒ 右栏「最近会话」列表点了之后只是把完整页打开，**并不是**你点的那条会话
+			 * （用户看到的就是"点了没用/不对"）。这里用组件内的 `focusDock` 真正把停靠切过去。
+			 * 没有停靠服务时（无 props 的降级渲染 / 桌面全窗）退回：
+			 *   有 agent ⇒ 走 `ensureBotSession`（它会挑最近会话或新建一条）
+			 *   否则    ⇒ 打开完整页，至少不静默失败。
+			 */
+			const openSessionById = (sessionId, agent) => {
+				const sid = String(sessionId || '').trim();
+				if (sid && dockService) { focusDock(sid); return; }
+				if (agent) { ensureBotSession(agent); return; }
+				openModuleRoute('/x/agents/', '会话');
+			};
+
 			/** 切到某个 bot 的会话：有最近会话就用它；没有就按**它的 preset** 建一条再绑定 */
 			const ensureBotSession = (a) => {
 				if (!a) { return; }
@@ -437,6 +456,21 @@ window.__ModuleLoader__.load({
 			   实测该 webview `emulate timeout`（没就绪）⇒ 面板纯黑，随后 app 还可能 exit code=1。
 			   ⇒ 改成工作台内二级页：**零新窗口、零新 WebContents**，写动作仍走 `/api/groups`。 */
 			const [groupSetFor, setGroupSetFor] = useState('');   // 正在设置的群 id（''=不在该页）
+			/* ── IM 绑定（2026-10-27，P0）────────────────────────────────────────
+			   `bindFor = { targetKind:'agent'|'group', targetId, name }`（null = 不在该页）。
+			   P0 只做「一个目标 ⇄ 一个 IM 会话」的配置 + 演练（loopback 模拟器）；
+			   飞书适配器 P2 接入后，这里一行都不用改。 */
+			const [bindFor, setBindFor] = useState(null);
+			const [bindView, setBindView] = useState({ status: 'idle', data: null, error: '' });
+			const [bindForm, setBindForm] = useState({
+				platform: 'loopback', chatId: '', chatType: 'p2p', direction: 'both',
+				mentionPolicy: 'at', allowFrom: '', enabled: true,
+				webhookUrl: '', webhookSecret: '',
+			});
+			const [bindBusy, setBindBusy] = useState(false);
+			const [bindMsg, setBindMsg] = useState('');
+			/* 飞书**入站**（长连接）启停中：与绑定保存分开，避免按钮态互相干扰 */
+			const [inboundBusy, setInboundBusy] = useState(false);
 			const [gsName, setGsName] = useState('');
 			const [gsMode, setGsMode] = useState('all');
 			const [gsBusy, setGsBusy] = useState(false);
@@ -549,7 +583,9 @@ window.__ModuleLoader__.load({
 					const body = await loadHome();
 					setView({ status: 'ready', data: body, error: '' });
 					const first = body && Array.isArray(body.agents) && body.agents[0] ? body.agents[0].id : '';
-					setSel(prev => (prev.kind === 'agent' && prev.id ? prev : { kind: 'agent', id: first }));
+					/* ⚠ 2026-10-26 修：原来只保留 `kind==='agent'` 的选中 ⇒ 正看着**群**时点「刷新」
+					   会被强行跳回第一个 agent（看起来像"群页刷没了"）。任何有效选中都应保留。 */
+					setSel(prev => (prev && prev.id ? prev : { kind: 'agent', id: first }));
 				} catch (e) {
 					setView({ status: 'error', data: null, error: String(e && e.message || e) });
 				} finally {
@@ -640,6 +676,8 @@ window.__ModuleLoader__.load({
 						String(g.avatar || '').length,
 						JSON.stringify(g.relay || null),
 						JSON.stringify(g.wakePolicies || null),
+						// ⚠ 新设置字段必须进签名，否则改完重拉也不会重渲染（踩过一次，见文件内注释）
+						JSON.stringify(g.memberSessions || null),
 						Array.isArray(g.members) ? g.members.join(',') : '',
 						Array.isArray(g.transcript) ? g.transcript.length : 0,
 						Array.isArray(g.transcript) && g.transcript.length
@@ -697,7 +735,18 @@ window.__ModuleLoader__.load({
 			const home = (data && data.home) || {};
 			const summary = (data && data.summary) || {};
 			const roster = (data && data.roster) || [];
-			const registeredCount = roster.filter(id => id.startsWith('vssaros-') && !/-assign$/.test(id)).length;
+			/* ★★ 2026-10-27 修「看起来有重复 bot」的根源：**preset ≠ bot**。
+			   `roster` 是 dsh 侧注册的 **preset 列表**，里面既有本插件注册的 agent preset，
+			   也有运行时/IDE 自己的 preset（`standard` / `ptc` / `minimal` / `cordis`，
+			   以及 IDE 侧另起的 `vssaros-standard` / `vssaros-ptc` / `vssaros-full` /
+			   `vssaros-saros-claw`）。后者**不对应任何 agent**，却原来被算进「花名册」，
+			   于是顶栏显示 `花名册 31` 而名册只有 23 个 —— 看起来就像"有 8 个重复 bot"。
+			   ⇒ 现在：bot 数一律按 `agents` 算；孤儿 preset 只作为**单独一项**提示（可 hover 看清单），
+			     不再混进 bot 计数，也不去删它们（那是运行时/IDE 的数据，插件无权也不该动）。 */
+			const rosterIds = roster.map(String).filter(id => !/-assign$/.test(id));
+			const agentPresetIds = new Set(agents.map(a => String(a.presetId || '')).filter(Boolean));
+			const orphanPresets = rosterIds.filter(id => !agentPresetIds.has(id));
+			const registeredCount = agents.filter(a => a.registered).length;
 			const needle = q.trim().toLowerCase();
 			const visible = needle
 				? agents.filter(a => (a.id + ' ' + a.name + ' ' + (a.description || '')).toLowerCase().includes(needle))
@@ -1261,7 +1310,15 @@ window.__ModuleLoader__.load({
 						' · ', statusText)),
 				// 2026-10-25：「委派任务」移到**右栏 header**（和 Agent 设置放一起）；
 				//   中间栏这里只留身份信息，把宽度让给会话内容。
-				h('span', { className: 'wb-spacer' }));
+				h('span', { className: 'wb-spacer' }),
+				/* ★ 2026-10-26：有会话之后再无"新建"入口（原来只有空态卡里有「发起会话」）。
+				   补一个常驻按钮：开会话 → 把停靠会话切过去（`startSession` 已经处理）。 */
+				h('button', {
+					type: 'button', className: 'wb-btn', 'data-ag-act': 'agent-newsession',
+					disabled: !a.presetId,
+					title: a.presetId ? '新建一条会话（旧会话保留）' : '该 agent 没有 preset，开不了会话',
+					onClick: () => { void startSession(a); },
+				}, '新建会话'));
 
 			const midAgent = (a) => {
 				const items = live.items;
@@ -1414,6 +1471,42 @@ window.__ModuleLoader__.load({
 					}
 				}
 				return false;
+			};
+
+			/* ── 群「新建会话」（2026-10-26 / 2026-10-27 改）────────────────────────
+			   群没有"一条会话"这个概念：派发是按成员各自的会话走的。
+			   ★ 2026-10-27 改为**服务端批量 + 群级绑定**（一个请求，不再逐成员串行 N 次）：
+			     · `mode:'group'`（默认）⇒ 新会话**只绑到本群**，该 bot 在私聊/其它群的上下文不受影响
+			     · `mode:'all'`       ⇒ 同时清掉该成员在其它群的绑定（那些群回落到"最近活跃"= 新会话）
+			   为什么要绑定：原来会话是**按 preset**取的（最近活跃那条），与群无关 ⇒
+			   "给这个群新建会话"会连带把该 bot 在别处的上下文也换掉（用户看不到，也不可逆）。 */
+			const [gSessBusy, setGSessBusy] = useState(false);
+			const newGroupSessions = async (g, mode) => {
+				if (!g || !g.id) { return false; }
+				setGSessBusy(true);
+				try {
+					const res = await fetch('/x/agents/api/groups', {
+						method: 'POST', headers: { 'content-type': 'application/json' },
+						body: JSON.stringify({ action: 'session', id: String(g.id), mode: mode === 'all' ? 'all' : 'group' }),
+					});
+					const j = await res.json().catch(() => ({}));
+					if (!res.ok || j.ok === false) { throw new Error(j.error || ('HTTP ' + res.status)); }
+					try {
+						window.console.info('[vssaros-agents] 群新建会话：'
+							+ (Array.isArray(j.created) ? j.created.length : 0) + ' 位成员（mode=' + (j.mode || mode) + '）'
+							+ (Array.isArray(j.failed) && j.failed.length ? ('；失败 ' + j.failed.length) : ''));
+					} catch (e) { /* ignore */ }
+					/* 刷两处：`load()` 拉 home（右栏最近会话 / 成员会话时间），
+					   `groupsTick` 拉群（成员行的**绑定会话**在群数据里）。
+					   ⚠ 只刷 home 的话，成员行会一直显示旧的「跟随」——踩过一次。 */
+					void load().catch(() => undefined);
+					setGroupsTick((n) => n + 1);
+					return true;
+				} catch (e) {
+					return false;
+				} finally {
+					setGSessBusy(false);
+				}
 			};
 
 			const sendGroupMsg = async (g, text) => {
@@ -1667,6 +1760,14 @@ window.__ModuleLoader__.load({
 						h('span', { className: 'wb-spacer' }),
 						/* ★ 2026-10-26：两个按钮都改成**页内二级页**（原来走 openModuleRoute ⇒ 新 webview
 						   ⇒ 真机 `emulate timeout` ⇒ 黑屏）。邀请成员 = 同一个设置页（成员区在最下面）。 */
+						/* ★ 2026-10-26 用户报「群会话中缺少新建会话按钮」：
+						   群没有单一会话 ⇒ 这个按钮= 给**每个成员**各开一条新会话（旧会话保留）。 */
+						h('button', {
+							type: 'button', className: 'wb-btn', 'data-ag-act': 'group-newsession',
+							disabled: gSessBusy,
+							title: '给群内每个成员各开一条新会话并**只绑到本群**（旧会话保留，私聊/其它群不受影响）',
+							onClick: () => { void newGroupSessions(g, 'group'); },
+						}, gSessBusy ? '新建中…' : '新建会话'),
 						h('button', { type: 'button', className: 'wb-btn', 'data-ag-act': 'group-invite', onClick: () => openGroupSet(g) }, '邀请成员'),
 						h('button', { type: 'button', className: 'wb-btn is-ghost', 'data-ag-act': 'group-settings', onClick: () => openGroupSet(g) }, '群设置')),
 					h('div', { className: 'ag3-mlist', 'data-ag-midlist': 'group', 'data-ag-gcount': String(rows.length) },
@@ -1725,6 +1826,54 @@ window.__ModuleLoader__.load({
 
 			/* ══════ 右栏 320：5 个子 tab ══════ */
 			const rbody = () => {
+				/* ★★ 2026-10-26 用户报「群里 最近会话/记忆/演化/版本/分支 都不生效」：
+				   原来群选中时直接给一句"群聊没有会话，选个 agent 再看" —— 五个页签全是死胡同。
+				   实际上这些数据都是**成员各自**的（会话、记忆 Git、提交/tag/分支）⇒
+				   群这一层应该做**成员维度的入口**：列出成员 + 各自的状态，点进去就看那个成员的对应页签。
+				   这样既诚实（群确实没有自己的记忆库），又不让页签失效。 */
+				if (sel.kind === 'group' && curGroup) {
+					const memberIds = (Array.isArray(curGroup.members) ? curGroup.members : []).map(String);
+					const members = agents.filter((a) => memberIds.includes(String(a.id)));
+					const sessOf = (a) => ((home[a.id] || {}).sessions || [])[0] || null;
+					const rlabel = { recent: '最近会话', mem: '记忆', evo: '演化', ver: '版本', br: '分支' }[rtab] || rtab;
+					const row = (a) => {
+						const s = sessOf(a);
+						const running = !!(home[a.id] || {}).running;
+						const go = () => {
+							if (rtab === 'recent') {
+								if (s && s.id) { openSessionById(s.id, a); return; }
+								// 没有会话 ⇒ 选中它（会按需建一条），落在它的会话页
+								setSel({ kind: 'agent', id: String(a.id) });
+								ensureBotSession(a);
+								setRtab('recent');
+								return;
+							}
+							setSel({ kind: 'agent', id: String(a.id) });
+							setRtab(rtab);
+						};
+						return h('div', {
+							key: 'm' + a.id, className: 'ag3-item ag3-click', role: 'button', tabIndex: 0,
+							'data-ag-rmember': String(a.id),
+							onClick: go,
+							onKeyDown: (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); go(); } },
+						},
+							h('span', { className: 'ag-st' }, running ? '🟢' : '💬'), ' ',
+							String(a.name || a.id),
+							rtab === 'recent'
+								? (s ? h('small', null, ' · ' + String(s.title || '会话') + ' · ' + String(s.ago ?? '') + '前')
+									: h('small', null, ' · 还没有会话（点一下新建）'))
+								: h('small', null, ' · 查看' + rlabel));
+					};
+					if (rtab === 'recent') {
+						return h('div', { 'data-ag-rtab-body': 'recent', 'data-ag-rgroup': String(curGroup.id) },
+							h('div', { className: 'ag3-sechd' }, '成员会话', h('small', null, String(members.length) + ' 人')),
+							members.length ? members.map(row) : h('p', { className: 'wb-empty' }, '这个群还没有成员。'),
+							h('p', { className: 'ag-hint' }, '群没有单一会话 —— 派发走每个成员各自的会话；点一行看它的最近会话。'));
+					}
+					return h('div', { 'data-ag-rtab-body': rtab, 'data-ag-rgroup': String(curGroup.id) },
+						h('p', { className: 'wb-empty' }, '群没有自己的' + rlabel + '仓库 —— 那是每个 agent 各自的。选一个成员查看：'),
+						members.length ? members.map(row) : h('p', { className: 'wb-empty' }, '这个群还没有成员。'));
+				}
 				if (rtab === 'recent') {
 					const rows = curAgent ? (Array.isArray((home[curAgent.id] || {}).sessions) ? home[curAgent.id].sessions : []) : [];
 					if (!curAgent) { return h('p', { className: 'wb-empty' }, '群聊没有"会话"；选中左边某个 agent 再看。'); }
@@ -1849,6 +1998,14 @@ window.__ModuleLoader__.load({
 						   ⇒ 直接切页签，零新窗口、零加载等待。 */
 						onClick: () => setTab('assign'),
 					}, '⇄') : null,
+					/* IM 绑定（2026-10-27）：把这个 bot 接到一个 IM 会话（飞书等）。
+					   图标用 `⇋`（与委派的 `⇄` 区分），title/data-tip 都写清用途。 */
+					curAgent ? h('button', {
+						type: 'button', className: 'wb-btn is-ghost ag3-hbtn', 'data-ag-act': 'im-bind',
+						title: 'IM 绑定（把这个 bot 接到飞书等 IM 会话）',
+						'aria-label': 'IM 绑定', 'data-tip': 'IM 绑定',
+						onClick: () => openBindPage('agent', String(curAgent.id), String(curAgent.name || curAgent.id)),
+					}, '⇋') : null,
 					curAgent ? h('button', {
 						type: 'button', className: 'wb-btn is-ghost ag3-hbtn', 'data-ag-act': 'settings',
 						title: 'Agent 设置（站内弹层，不开编辑器）', 'aria-label': 'Agent 设置', 'data-tip': 'Agent 设置',
@@ -2694,9 +2851,43 @@ window.__ModuleLoader__.load({
 								.map(([v, label]) => h('option', { key: v, value: v }, label))),
 							h('span', { className: 'ag-hint' },
 								'抢断：成员正在生成时会立刻看到这条（可能打断它）；排队：等它这一回合跑完再开新回合。')),
+						/* ★ 2026-10-27 IM 绑定：群 ⇄ IM 群（双向镜像；默认关，绑了才生效） */
 						h('div', { className: 'ag3-field' },
-							h('button', {
-								type: 'button', className: 'wb-btn is-primary', 'data-ag-act': 'group-set-save',
+							h('span', null, 'IM 绑定'),
+							h('div', { className: 'ag3-btnrow' },
+								h('button', {
+									type: 'button', className: 'wb-btn', 'data-ag-act': 'group-im-bind',
+									disabled: gsBusy,
+									onClick: () => openBindPage('group', String(t.id), String(t.name || t.id)),
+								}, '配置 IM 绑定…'),
+								h('span', { className: 'ag-hint' },
+									(() => {
+										const b = (((bindView.data && bindView.data.bindings) || []).find((x) => x.targetKind === 'group' && String(x.targetId) === String(t.id)) || null);
+										return b ? ('已绑：' + b.platform + ' · ' + b.chatId) : '未绑定';
+									})()))),
+
+						/* ★ 2026-10-27 群内会话：两个语义**不同**的按钮（这是与参考实现的关键差异） */
+						h('div', { className: 'ag3-field' },
+							h('span', null, '群内会话'),
+							h('div', { className: 'ag3-btnrow' },
+								h('button', {
+									type: 'button', className: 'wb-btn', 'data-ag-act': 'group-newsession-group',
+									disabled: gsBusy,
+									title: '给每个成员各开一条新会话，并只绑到这个群',
+									onClick: () => { void newGroupSessions(t, 'group'); },
+								}, '仅本群新建'),
+								h('button', {
+									type: 'button', className: 'wb-btn is-ghost', 'data-ag-act': 'group-newsession-all',
+									disabled: gsBusy,
+									title: '同时清掉这些成员在其它群的会话绑定（那些群会回落到最新会话）',
+									onClick: () => { void newGroupSessions(t, 'all'); },
+								}, '全部（含其它群）')),
+							h('span', { className: 'ag-hint' },
+								'仅本群：新会话只绑这个群，该 bot 在私聊 / 其它群的上下文不受影响。'
+								+ '全部：同时让其它群也换到新会话。旧会话都不删。')),
+							h('div', { className: 'ag3-field' },
+							  h('button', {
+							    type: 'button', className: 'wb-btn is-primary', 'data-ag-act': 'group-set-save',
 								disabled: gsBusy,
 								onClick: async () => {
 									// 改名与改策略是两个 action ⇒ 分别发；任一失败都会有红字（不静默）
@@ -2745,6 +2936,59 @@ window.__ModuleLoader__.load({
 											},
 										}),
 										h('span', { className: 'ag3-mname2' }, disp),
+									/* ★ 2026-10-27「切回旧会话」：把绑定角标做成**下拉**，列出该成员已有的会话
+									   （来自 `/api/home` 的 `home[agentId].sessions`，含标题与时间）。
+									   · 选「跟随最近」⇒ 解绑（sessionId: ''）
+									   · 选某条 ⇒ 绑定到它（服务端会校验"是该成员的、且活着"）
+									   ⚠ 当前绑定如果不在最近若干条里（比如更早的），也要作为一项出现 ——
+									     否则下拉显示不出当前值，用户会以为没绑。 */
+									(() => {
+										if (!on) { return null; }
+										const bound = String((t.memberSessions && t.memberSessions[String(x.id)]) || '');
+										const sess = (home[String(x.id)] || {}).sessions || [];
+										const rows = sess.slice(0, 8).map((s) => ({
+											id: String(s.id || ''),
+											text: String(s.title || '会话').slice(0, 18) + ' · ' + String(s.ago ?? '') + '前',
+										})).filter((r) => r.id);
+										if (bound && !rows.some((r) => r.id === bound)) {
+											// 当前绑定不在最近的几条里 ⇒ 置顶补一项，保证下拉能显示"现在绑的是哪条"
+											rows.unshift({ id: bound, text: '当前绑定 · ' + bound.slice(0, 8) });
+										}
+										return h('span', { className: 'ag3-gsesswrap' },
+											h('select', {
+												className: 'ag3-gsess' + (bound ? ' is-bound' : ''),
+												'data-ag-gset-member-session': String(x.id),
+												title: bound ? ('本群绑定会话：' + bound) : '跟随最近活跃会话（未绑定到本群）',
+												value: bound,
+												disabled: gsBusy,
+												onClick: (ev) => ev.stopPropagation(),
+												onChange: (ev) => {
+													const sid = String(ev.target.value || '');
+													void runGroupAction(
+														{ action: 'session', id: String(t.id), agentId: String(x.id), sessionId: sid },
+														sid
+															? ('已把 ' + String(x.name || x.id) + ' 在本群的会话切到 ' + sid.slice(0, 8))
+															: ('已让 ' + String(x.name || x.id) + ' 跟随最近会话'),
+													);
+												},
+											}, [
+												h('option', { key: '__follow', value: '' }, '跟随最近'),
+												...rows.map((r) => h('option', { key: r.id, value: r.id }, r.text)),
+											]),
+											/* 「打开这条会话」（2026-10-27）：真的把 dsh 停靠切到它，
+											   而不是只开完整页 —— 切回来之后总要能看看它聊了什么。 */
+											h('button', {
+												type: 'button', className: 'ag3-gopen',
+												'data-ag-gset-open-session': String(x.id),
+												title: bound ? ('打开这条会话：' + bound) : '打开该成员最近的会话',
+												onClick: (ev) => {
+													ev.stopPropagation();
+													const target = bound || (rows[0] && rows[0].id) || '';
+													if (target) { openSessionById(target, x); }
+													else { ensureBotSession(x); }
+												},
+											}, '↗'));
+									})(),
 									on ? h('select', {
 										className: 'ag3-gmode',
 										'data-ag-gset-member-mode': String(x.id),
@@ -2781,8 +3025,259 @@ window.__ModuleLoader__.load({
 					));
 			};
 
+			/* ══════ IM 绑定（2026-10-27，P0）══════════════════════════════════════
+			   数据：`GET /api/bindings`（绑定表 + 适配器 + 模拟器发件记录）
+			   写入：`POST /api/bindings` `{ action: create|update|delete }`
+			   ⚠ **三条安全默认由服务端保证**（白名单 fail-closed / 群聊只认 @ / 只有人能改）。
+			     这里只做表单，绝不在前端再实现一遍策略 —— 两处实现必然漂移，而这一处写松了
+			     就等于"外部 IM 能驱动你的 bot"。 */
+			const loadBindings = useCallback(async () => {
+				setBindView((v) => ({ ...v, status: 'loading' }));
+				try {
+					const res = await fetch('/x/agents/api/bindings');
+					const j = await res.json().catch(() => ({}));
+					if (!res.ok) { throw new Error(j.error || ('HTTP ' + res.status)); }
+					setBindView({ status: 'ready', data: j, error: '' });
+				} catch (e) {
+					setBindView({ status: 'error', data: null, error: String((e && e.message) || e) });
+				}
+			}, []);
+
+			const bindingOf = (kind, id) => (((bindView.data && bindView.data.bindings) || [])
+				.find((b) => b.targetKind === kind && String(b.targetId) === String(id)) || null);
+
+			const openBindPage = (kind, id, name) => {
+				const cur = bindingOf(kind, id);
+				setBindMsg('');
+				setBindForm(cur ? {
+					platform: cur.platform, chatId: cur.chatId, chatType: cur.chatType,
+					direction: cur.direction, mentionPolicy: cur.mentionPolicy,
+					allowFrom: (cur.allowFrom || []).join(','), enabled: cur.enabled === true,
+					webhookUrl: String(cur.webhookUrl || ''), webhookSecret: '',
+				} : {
+					platform: 'loopback', chatId: '', chatType: kind === 'group' ? 'group' : 'p2p',
+					direction: 'both', mentionPolicy: 'at', allowFrom: '', enabled: true,
+					webhookUrl: '', webhookSecret: '',
+				});
+				setBindFor({ targetKind: kind, targetId: String(id), name: String(name || id) });
+				void loadBindings();
+			};
+
+			const submitBinding = async () => {
+				if (!bindFor) { return; }
+				setBindBusy(true);
+				setBindMsg('');
+				try {
+					const cur = bindingOf(bindFor.targetKind, bindFor.targetId);
+					const res = await fetch('/x/agents/api/bindings', {
+						method: 'POST', headers: { 'content-type': 'application/json' },
+						body: JSON.stringify({
+							action: cur ? 'update' : 'create',
+							...(cur ? { id: cur.id } : {}),
+							targetKind: bindFor.targetKind,
+							targetId: bindFor.targetId,
+							platform: bindForm.platform,
+							chatId: String(bindForm.chatId || '').trim(),
+							chatType: bindForm.chatType,
+							direction: bindForm.direction,
+							mentionPolicy: bindForm.mentionPolicy,
+							allowFrom: String(bindForm.allowFrom || '').split(',').map((s) => s.trim()).filter(Boolean),
+							enabled: bindForm.enabled === true,
+							webhookUrl: String(bindForm.webhookUrl || '').trim(),
+							/* 密钥留空 ⇒ **不发这个字段**（服务端约定：undefined = 保留原值）。
+							   发空串是"清除"，会让用户以为"没改"其实清掉了。 */
+							...(String(bindForm.webhookSecret || '').trim()
+								? { webhookSecret: String(bindForm.webhookSecret).trim() } : {}),
+						}),
+					});
+					const j = await res.json().catch(() => ({}));
+					if (!res.ok || j.error) { throw new Error(j.error || ('HTTP ' + res.status)); }
+					setBindMsg(cur ? '已更新绑定' : '已创建绑定');
+					await loadBindings();
+				} catch (e) {
+					setBindMsg('失败：' + String((e && e.message) || e));
+				} finally {
+					setBindBusy(false);
+				}
+			};
+
+			const dropBinding = async (id) => {
+				setBindBusy(true);
+				setBindMsg('');
+				try {
+					const res = await fetch('/x/agents/api/bindings', {
+						method: 'POST', headers: { 'content-type': 'application/json' },
+						body: JSON.stringify({ action: 'delete', id }),
+					});
+					const j = await res.json().catch(() => ({}));
+					if (!res.ok || j.error) { throw new Error(j.error || ('HTTP ' + res.status)); }
+					setBindMsg('已解绑');
+					await loadBindings();
+				} catch (e) {
+					setBindMsg('失败：' + String((e && e.message) || e));
+				} finally {
+					setBindBusy(false);
+				}
+			};
+
+			/** 二级页：IM 绑定（与群设置同构，不新开 webview） */
+			/**
+			 * 启停飞书入站（长连接）。
+			 * ⚠ 后端在缺 SDK / 缺凭据时会抛 `unavailable：…`，这里**原样显示**给用户 ——
+			 *   "到底卡在哪"从翻日志变成界面上的一行字，这是本轮（A）的全部目的。
+			 * 失败后仍然刷新一次：把后端最近的 `lastError` / 重试次数带上来。
+			 */
+			const controlInbound = async (action) => {
+				setInboundBusy(true);
+				setBindMsg('');
+				try {
+					const res = await fetch('/x/agents/api/bindings', {
+						method: 'POST', headers: { 'content-type': 'application/json' },
+						body: JSON.stringify({ action }),
+					});
+					const j = await res.json().catch(() => ({}));
+					if (!res.ok || j.error) { throw new Error(j.error || ('HTTP ' + res.status)); }
+					setBindMsg(action === 'inbound-start' ? '入站已启动' : '入站已停止');
+				} catch (e) {
+					setBindMsg('失败：' + String((e && e.message) || e));
+				} finally {
+					setInboundBusy(false);
+					await loadBindings().catch(() => undefined);
+				}
+			};
+
+			const bindPage = () => {
+				if (!bindFor) { return null; }
+				const cur = bindingOf(bindFor.targetKind, bindFor.targetId);
+				const fieldSel = (key, opts, hint) => h('label', { className: 'ag3-field' },
+					h('span', null, hint),
+					h('select', {
+						className: 'wb-input', 'data-ag-bind': key,
+						value: String(bindForm[key]), disabled: bindBusy,
+						onChange: (ev) => { const v = ev.target.value; setBindForm((f) => ({ ...f, [key]: v })); },
+					}, opts.map(([v, label]) => h('option', { key: v, value: v }, label))));
+				const sentRows = ((bindView.data && bindView.data.loopbackSent) || []).slice(-5);
+				return h('div', { className: 'ag3-sub', 'data-ag-bindpage': '' },
+					h('div', { className: 'ag3-subinner' },
+						h('div', { className: 'ag3-dlg-hd ag3-subhd' },
+							h('button', {
+								type: 'button', className: 'wb-btn is-ghost', 'data-ag-act': 'bind-back',
+								onClick: () => setBindFor(null),
+							}, '← 返回'),
+							h('b', null, 'IM 绑定 · ' + bindFor.name),
+							h('span', { className: 'wb-spacer' }),
+							h('small', { className: 'ag-hint' },
+								(bindView.data && Array.isArray(bindView.data.adapters) ? bindView.data.adapters : []).join(' / '))),
+						cur ? h('p', { className: 'ag-hint', 'data-ag-bind-state': 'bound' },
+							'当前：' + cur.platform + ' · ' + cur.chatId + ' · ' + cur.direction
+							+ ' · ' + (cur.enabled ? '启用' : '已停用'))
+							: h('p', { className: 'ag-hint', 'data-ag-bind-state': 'unbound' }, '当前未绑定'),
+						/* ★ 2026-10-27（A）：**入站状态**一眼可见。
+						   之前入站"没反应"只能翻 Host 日志（`[vssaros-agents][im-in]`）；
+						   现在把 status / 重试次数 / 最近错误直接摆在配置页上。
+						   ⚠ 三种不可用要分开说：没配凭据 / 没装 SDK / 连上但报错 —— 处置完全不同。 */
+						(() => {
+							const inb = (bindView.data && bindView.data.inbound) || null;
+							const fsCfg = (bindView.data && bindView.data.feishu) || {};
+							const st = String(inb && inb.status ? inb.status : 'idle');
+							const text = !fsCfg.configured
+								/* ★ 2026-10-27：凭据搬进 **IDE 设置**（`sessions.agentStudio.im.feishu.*`，
+								   经 `--patch` 覆盖层注入插件行 `config.feishu`）——
+								   所以这里必须**指明去哪填**，否则用户只看到"未配置"却无处下手。 */
+								? '未配置应用凭据 —— 到「设置」搜「飞书」填 App ID / App Secret（出站 webhook 不需要）'
+								: st === 'ready'
+									? ('已连接' + (inb.lastEventAt ? ' · 最近事件 ' + new Date(inb.lastEventAt).toLocaleTimeString() : ''))
+									: st === 'connecting' ? '连接中…'
+										: st === 'error' ? ('连接失败（第 ' + String(inb.attempts || 0) + ' 次退避重试）')
+											: st === 'stopped' ? '已停止'
+												: '未启动';
+							const canStart = !!fsCfg.configured && st !== 'ready' && st !== 'connecting';
+							return h('div', { className: 'ag3-field', 'data-ag-inbound': st },
+								h('span', null, '飞书入站'),
+								h('div', { className: 'ag3-btnrow' },
+									h('span', { className: 'ag-hint', 'data-ag-inbound-text': '' }, text),
+									canStart ? h('button', {
+										type: 'button', className: 'wb-btn', 'data-ag-act': 'inbound-start',
+										disabled: inboundBusy,
+										onClick: () => { void controlInbound('inbound-start'); },
+									}, inboundBusy ? '启动中…' : '启动入站') : null,
+									(st === 'ready' || st === 'connecting') ? h('button', {
+										type: 'button', className: 'wb-btn is-ghost', 'data-ag-act': 'inbound-stop',
+										disabled: inboundBusy,
+										onClick: () => { void controlInbound('inbound-stop'); },
+									}, '停止') : null),
+								inb && inb.lastError
+									? h('span', { className: 'ag2-err', 'data-ag-inbound-err': '' },
+										'最近错误：' + String(inb.lastError).slice(0, 160))
+									: null);
+						})(),
+						fieldSel('platform', [['loopback', '模拟器（进程内，无需凭据）'], ['feishu', '飞书（自定义机器人 webhook）']], '平台'),
+						h('label', { className: 'ag3-field' },
+							h('span', null, 'IM 会话 id'),
+							h('input', {
+								className: 'wb-input', 'data-ag-bind-chatid': '',
+								value: String(bindForm.chatId), disabled: bindBusy,
+								placeholder: '飞书是 chat_id（oc_…）；模拟器随便填',
+								onChange: (ev) => { const v = ev.target.value; setBindForm((f) => ({ ...f, chatId: v })); },
+							})),
+						bindForm.platform === 'feishu' ? h('label', { className: 'ag3-field' },
+						h('span', null, '飞书 webhook URL'),
+						h('input', {
+							className: 'wb-input', 'data-ag-bind-webhook': '',
+							value: String(bindForm.webhookUrl || ''), disabled: bindBusy,
+							placeholder: 'https://open.feishu.cn/open-apis/bot/v2/hook/…',
+							onChange: (ev) => { const v = ev.target.value; setBindForm((f) => ({ ...f, webhookUrl: v })); },
+						})) : null,
+					bindForm.platform === 'feishu' ? h('label', { className: 'ag3-field' },
+						h('span', null, '签名密钥'),
+						h('input', {
+							className: 'wb-input', 'data-ag-bind-secret': '', type: 'password',
+							value: String(bindForm.webhookSecret || ''), disabled: bindBusy,
+							placeholder: cur && cur.hasSecret ? '已配置（留空 = 不改）' : '没开签名校验就留空',
+							onChange: (ev) => { const v = ev.target.value; setBindForm((f) => ({ ...f, webhookSecret: v })); },
+						})) : null,
+					fieldSel('chatType', [['p2p', '私聊'], ['group', '群聊']], '会话类型'),
+						fieldSel('direction', [['both', '双向'], ['in', '只收（IM→bot）'], ['out', '只发（bot→IM）']], '方向'),
+						fieldSel('mentionPolicy', [['at', '只认 @（推荐）'], ['all', '全部消息']], '群内触发'),
+						h('label', { className: 'ag3-field' },
+							h('span', null, '发送者白名单'),
+							h('input', {
+								className: 'wb-input', 'data-ag-bind-allow': '',
+								value: String(bindForm.allowFrom), disabled: bindBusy,
+								placeholder: '飞书 open_id，逗号分隔；空 = 拒绝所有',
+								onChange: (ev) => { const v = ev.target.value; setBindForm((f) => ({ ...f, allowFrom: v })); },
+							})),
+						h('label', { className: 'ag3-field' },
+							h('span', null, '启用'),
+							h('input', {
+								type: 'checkbox', 'data-ag-bind-enabled': '',
+								checked: bindForm.enabled === true, disabled: bindBusy,
+								onChange: (ev) => { const v = ev.target.checked === true; setBindForm((f) => ({ ...f, enabled: v })); },
+							})),
+						bindMsg ? h('p', { className: bindMsg.startsWith('失败') ? 'ag2-err' : 'ag2-ok', 'data-ag-bind-msg': '' }, bindMsg) : null,
+						h('div', { className: 'ag3-field' },
+							h('button', {
+								type: 'button', className: 'wb-btn is-primary', 'data-ag-act': 'bind-save',
+								disabled: bindBusy || !String(bindForm.chatId || '').trim(),
+								onClick: () => { void submitBinding(); },
+							}, bindBusy ? '保存中…' : (cur ? '保存修改' : '创建绑定')),
+							cur ? h('button', {
+								type: 'button', className: 'wb-btn is-ghost', 'data-ag-act': 'bind-remove',
+								disabled: bindBusy, onClick: () => { void dropBinding(cur.id); },
+							}, '解绑') : null),
+						h('p', { className: 'ag-hint' },
+							'白名单为空 = 拒绝所有（fail-closed）；群聊默认只认 @；只有人能改绑定。'
+							+ '「模拟器」是进程内适配器 —— 不连外网，只把发出去的内容记下来（见下），用于自测整条链路。'),
+						sentRows.length ? h('div', null,
+							h('div', { className: 'ag3-sechd' }, '模拟器最近发出', h('small', null, String(sentRows.length))),
+							sentRows.map((s, i) => h('div', { key: 'ls' + i, className: 'ag3-item' },
+								h('code', null, String(s.chatId || '?')), ' ',
+								h('small', null, String(s.text || '').slice(0, 60))))) : null));
+			};
+
 			const rosterPane = () => {
-				// 二级页面优先：有 settingFor 就整块内容区换成设置页
+				// 二级页面优先：IM 绑定 / bot 设置 / 群设置 / 创建页
+				if (bindFor) { return bindPage(); }
 				if (settingFor) { return settingPage(); }
 				// 群设置也是二级页（2026-10-26）：不再新开 webview（那是黑屏的根因）
 				if (groupSetFor) { return groupSetPage(); }
@@ -2804,8 +3299,19 @@ window.__ModuleLoader__.load({
 				h('header', { className: 'wb-toolbar', 'data-dsh-workbench-toolbar': '' },
 					h('h1', null, 'Bots'),
 					h('span', { className: 'wb-sub' }, data
-						? agents.length + ' 个 · 已注册 ' + registeredCount + ' / 花名册 ' + roster.length + ' · 群聊 ' + groups.length
+						/* bot 口径一律按 agents 算（原来「花名册」用的是 preset 数 ⇒ 31 vs 23 像有重复） */
+						? [agents.length + ' 个', '已注册 ' + registeredCount,
+							'花名册 ' + agents.length, '群聊 ' + groups.length].join(' · ')
 						: '只读'),
+					/* 孤儿 preset 单独标出来：它们不参与 bot 计数，插件也不管理（属运行时候的数据） */
+					orphanPresets.length
+						? h('span', {
+							className: 'wb-sub ag3-orphan',
+							'data-ag-orphan-presets': String(orphanPresets.length),
+							title: '这些是 dsh/运行时注册的 preset，但**不对应任何 bot**：\n'
+								+ orphanPresets.join('\n') + '\n（不计入 bot 数；本插件不创建也不删除它们）',
+						}, ' · 孤儿 preset ' + orphanPresets.length)
+						: null,
 					h('span', { className: 'wb-spacer' }),
 					/* ★ 2026-10-26 用户要求：创建入口**移进名册页**（左栏顶部），不占工具栏。
 					   （原来这里是 `＋ Bot` / `＋ 群聊` 两个文字按钮 —— 那是 2026-10-25 为
@@ -2923,7 +3429,7 @@ window.__ModuleLoader__.load({
 .ag3row-l2 { font-size:10px; color:var(--dsw-alias-label-tertiary, rgba(230,230,230,.65)); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 /* 投递状态（群头部"已回 2/3"） */
 .ag3-dl { font-variant-numeric:tabular-nums; }
-.ag3-dl.is-wait { color:var(--dsw-alias-state-warning-primary, #e0a43a); }
+.ag3-dl.is-wait { color:var(--dsw-alias-state-warn-primary, #e0a43a); }
 .ag3-dl.is-bad { color:var(--dsw-alias-state-error-primary, #e05252); }
 .ag3-dl.is-done { color:var(--dsw-alias-state-success-primary, #3fb950); }
 .ag-avatar { width:24px; height:24px; border-radius:6px; display:flex; align-items:center; justify-content:center;
@@ -3083,6 +3589,27 @@ window.__ModuleLoader__.load({
   color:var(--dsw-alias-label-primary, inherit); }
 /* 成员级接收策略下拉（2026-10-26）：成员是 <label>，下拉要能单独点而不误触邀请/移出 */
 .ag3-member .ag3-mname2 { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* 顶栏「孤儿 preset」提示（不对应任何 bot 的 preset；hover 看清单） */
+.ag3-orphan { cursor:help; color:var(--dsw-alias-label-tertiary, rgba(230,230,230,.45));
+  text-decoration:underline dotted; text-underline-offset:2px; }
+.ag3-orphan:hover { color:var(--dsw-alias-label-secondary, rgba(230,230,230,.75)); }
+
+/* 群设置里的按钮行（群内会话：仅本群 / 全部） */
+.ag3-btnrow { display:flex; gap:6px; flex-wrap:wrap; }
+/* 成员行上的「本群会话」下拉 + 打开按钮（切回旧会话；'跟随最近' = 未绑定） */
+.ag3-gsesswrap { flex:0 0 auto; display:inline-flex; align-items:center; gap:2px; }
+.ag3-gopen { flex:0 0 auto; width:16px; height:16px; padding:0; line-height:1;
+  border:0; border-radius:4px; cursor:pointer; font-size:11px;
+  color:var(--dsw-alias-label-tertiary, rgba(230,230,230,.65));
+  background:transparent; }
+.ag3-gopen:hover { color:var(--dsw-alias-brand-primary, #4c9aff);
+  background:var(--dsw-alias-bg-module-platform, rgba(127,127,127,.18)); }
+.ag3-gsess { flex:0 0 auto; max-width:132px; font-size:10px; font-family:var(--wb-font-mono, monospace);
+  padding:1px 2px; border-radius:4px; cursor:pointer;
+  color:var(--dsw-alias-label-tertiary, rgba(230,230,230,.5));
+  background:var(--dsw-alias-bg-module-platform, rgba(127,127,127,.12));
+  border:1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.28)); }
+.ag3-gsess.is-bound { color:var(--dsw-alias-brand-primary, #4c9aff); }
 .ag3-gmode { flex:0 0 auto; font-size:10px; padding:1px 2px; border-radius:4px; cursor:pointer;
   background:var(--dsw-alias-bg-module-platform, rgba(127,127,127,.16));
   color:var(--dsw-alias-label-secondary, inherit);
@@ -3125,7 +3652,7 @@ window.__ModuleLoader__.load({
   border-color:var(--dsw-alias-border-l2, rgba(127,127,127,.4)); }
 .ag2-field { display:flex; flex-direction:column; gap:3px; max-width:520px; margin-bottom:6px; }
 .ag2-field-lb { font-size:var(--wb-f-xs); color:var(--dsw-alias-label-tertiary, rgba(230,230,230,.65)); }
-.ag2-field-hint { font-size:var(--wb-f-xs); color:var(--dsw-alias-label-quaternary, rgba(230,230,230,.5)); }
+.ag2-field-hint { font-size:var(--wb-f-xs); color:var(--dsw-alias-label-tertiary, rgba(230,230,230,.5)); }
 .ag2-row { display:flex; gap:var(--wb-s1); flex-wrap:wrap; }
 .ag2-ok { font-size:var(--wb-f-xs); color:var(--dsw-alias-state-success-primary, #3fa45b); }
 .ag2-err { margin:0 0 6px; font-size:var(--wb-f-xs); color:var(--dsw-alias-state-error-primary, #e05252); }
@@ -3172,7 +3699,7 @@ window.__ModuleLoader__.load({
 /* @ 提及：气泡里的 token 用强调色（不是裸 hex —— 跟随主题令牌） */
 .ag3-gat { color:var(--dsw-alias-brand-primary, #4c9aff); font-weight:600; }
 .ag3-gmsg.is-me .ag3-gat { color:inherit; text-decoration:underline; text-underline-offset:2px; }
-.ag3-gat.is-all { color:var(--dsw-alias-state-warning-primary, #e0a43a); }
+.ag3-gat.is-all { color:var(--dsw-alias-state-warn-primary, #e0a43a); }
 /* @ 候选浮层（2026-10-26）：贴着输入卡片上方弹出；320px 宽的右栏/中间栏都能放 */
 .ag3-compwrap { position:relative; }
 .ag3-atpop { position:absolute; left:8px; right:8px; bottom:calc(100% - 2px); z-index:30;
@@ -3190,12 +3717,12 @@ window.__ModuleLoader__.load({
   color:var(--dsw-alias-brand-primary, #4c9aff); font-weight:600; }
 .ag3-atitem .ag3-atname { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .ag3-atitem .ag3-atid { flex:none; max-width:44%;
-  color:var(--dsw-alias-label-quaternary, rgba(230,230,230,.5));
+  color:var(--dsw-alias-label-tertiary, rgba(230,230,230,.5));
   font-family:var(--wb-font-mono, monospace); font-size:10px;
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .ag3-gsep { text-align:center; font-size:11px; margin:10px 0 4px;
-  color:var(--dsw-alias-label-quaternary, rgba(230,230,230,.5)); }
-.ag3-gpend { font-size:11px; margin-top:2px; color:var(--dsw-alias-label-quaternary, rgba(230,230,230,.5)); }
+  color:var(--dsw-alias-label-tertiary, rgba(230,230,230,.5)); }
+.ag3-gpend { font-size:11px; margin-top:2px; color:var(--dsw-alias-label-tertiary, rgba(230,230,230,.5)); }
 .ag3-gfail { display:flex; align-items:center; gap:6px; font-size:11px; margin-top:3px;
   color:var(--dsw-alias-state-error-primary, #e05252); }
 .ag3-gmsg.is-fail .ag3-gbub { opacity:.72;
@@ -3203,7 +3730,7 @@ window.__ModuleLoader__.load({
 
 /* 系统提示（接力/未派发/失败）：居中一行，不占气泡 */
 .ag3-gsys { text-align:center; font-size:11px; margin:6px 0;
-  color:var(--dsw-alias-label-quaternary, rgba(230,230,230,.55)); }
+  color:var(--dsw-alias-label-tertiary, rgba(230,230,230,.55)); }
 
 /* 白屏兜底（2026-10-26）：错误边界渲染的提示块 —— 至少让"白屏"变成可截图的错误。 */
 .ag-crash { padding:24px; max-width:720px; margin:0 auto; text-align:left; }
@@ -3277,7 +3804,7 @@ window.__ModuleLoader__.load({
   opacity:0; pointer-events:none; transform:translateY(-2px);
   transition:opacity .12s ease, transform .12s ease;
   background:var(--dsw-alias-bg-layer-2, rgba(34,34,34,.97));
-  color:var(--dsw-alias-text-primary, #e6e6e6);
+  color:var(--dsw-alias-label-primary, #e6e6e6);
   border:1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.3));
   z-index:20;
 }

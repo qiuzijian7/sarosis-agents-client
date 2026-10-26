@@ -81,8 +81,10 @@
  * 2026-10-21：`17 → 18`，新增 `openSettings` / `openFeedback` —— 窗口**左下角账号菜单**的两条菜单项
  *   （用户给的参照布局：设置 / 意见反馈 / 退出登录 + 账号 chip）。两者都只是"请 IDE 打开某个界面"，
  *   页面既不能指定设置项、也不能附带任何内容 ⇒ 无参、无写能力 ✓。
+ * 2026-10-26：`19 → 20`，新增 `importCodeWorkspace` —— 请 IDE 侧导入一个 `.code-workspace` 文件
+ *   （选文件 → 解析 folders → 落一条多根工作区记录 → 各根注册进 dsh）。**只导入，不切窗口** ✓。
  */
-export const DSH_PAGE_BRIDGE_VERSION = 19;
+export const DSH_PAGE_BRIDGE_VERSION = 20;
 
 /** preload → 主进程的 IPC 通道（经 webContents.ipc，作用域限于该视图）。 */
 export const DSH_PAGE_IPC_INVOKE = 'vssaros:dsh:page';
@@ -880,6 +882,20 @@ export type DshPageCommand =
  */
 | { readonly method: 'switchWorkspace'; readonly workspaceId: string }
 	/**
+	 * 请 **IDE 侧**导入一个 `.code-workspace` 文件（2026-10-26，桥 `19 → 20`）。
+	 *
+	 * 场景：dsh 侧的工作区模型**只能单目录** ⇒ 一个多根工作区在 dsh 里是 N 条平级记录；
+	 * 用户手里有一份 `.code-workspace`（`folders[]` 多个）⇒ 页面没法自己读文件、也没有文件选择器
+	 * ⇒ 只能请 IDE 侧做：选文件 → 解析 → 落一条多根工作区记录 → 把各根注册进 dsh ✓。
+	 *
+	 * ⚠ **无参**：页面只表达"我要导入"这个意图（选文件、解析、落记录全在 IDE 侧）✓
+	 *   —— 页面不许指定路径（那是 IDE 的 fs 权限范围之外的事 ✗）。
+	 * ⚠ **只导入、不切窗口**：与既有的「打开工作区文件」不同 —— 那条会把 IDE 窗口切进那个工作区，
+	 *   而这条只落记录 + 注册到 dsh（desktop 模式下把 IDE 窗口拽出来重载是不可接受的 ✗）。
+	 * ⚠ 页面桥是**单向**的（只回 true）⇒ 结果（成功/失败）由 IDE 侧通知 + 工作区记录推送体现 ✓。
+	 */
+	| { readonly method: 'importCodeWorkspace' }
+	/**
 	 * 请 **IDE 侧**登录（2026-10-21，桥 `16 → 17`）：dsh 窗口里的「登录」按钮**不自己登录**，
 	 * 而是请 IDE 走它那套账号流程（TOF/OA：开系统浏览器）⇒ 窗口与 IDE **同一份登录态** ✓。
 	 *
@@ -903,8 +919,11 @@ export type DshPageCommand =
 	/**
 	 * 打开 **IDE 的意见反馈**（2026-10-21 新增，桥 `17 → 18`，与 `openSettings` 同批）。
 	 *
-	 * 触发点：同一个账号菜单里的「✈ 意见反馈」。宿主执行 `workbench.action.openIssueReporter`
-	 * （带环境/扩展信息的标准反馈通道，比丢一个 URL 靠谱 ✓）。无参。
+	 * 触发点：同一个账号菜单里的「✈ 意见反馈」。
+	 *
+	 * ★ 2026-10-26（用户指定）：宿主**不再**执行 `workbench.action.openIssueReporter`，
+	 *   改为用系统浏览器打开产品自己的飞书问卷（`DSH_FEEDBACK_URL`）—— IDE 那个 reporter 提交去 GitHub，
+	 *   我们这边没人看。协议本身不变（仍是无参命令，页面不传 URL，避免被页面诱导打开任意地址 ✓）。
 	 */
 	| { readonly method: 'openFeedback' }
 	/**
@@ -966,6 +985,9 @@ export const DSH_PAGE_COMMANDS_WITHOUT_IDE_UI: ReadonlySet<Exclude<DshPageComman
 	'switchPreset', 'newSession',       // 聊天宿主自己换绑 / 本页新会话
 	'switchWorktree', 'switchWorkspace', // 宿主侧起会话 / 换工作区（无 IDE 界面变化）
 	'kbFeishuSync', 'kbAddVault', 'kbRemoveVault', // 数据动作（原生对话框自带前台）
+	// ★ 2026-10-26（桥 `19 → 20`）：导入 .code-workspace 用的是**原生文件对话框**（自带前台）
+	//   ⇒ 不许因为"点了导入"就把 IDE 主窗口拉到前台（desktop 模式下那正是用户要避免的形态 ✗）。
+	'importCodeWorkspace',
 	'signInIde', 'signOutIde',   // ★ 账号动作：浏览器里登录，IDE 窗口不必露面 ⇒ 不许切模式 ✗
 	// ★ 2026-10-23（桥 `18 → 19`）：升级动作用的是**图标 + 面板**，全都长在 desktop 窗口里
 	//   ⇒ 不许因为"点了检查更新"就把 IDE 主窗口拉到前台（那正是用户要避免的形态 ✗）。
@@ -1133,6 +1155,12 @@ export function validatePageCommand(raw: unknown): DshPageCommand | undefined {
 				return undefined;
 			}
 			return { method: 'switchWorkspace', workspaceId };
+		}
+		case 'importCodeWorkspace': {
+			// 无参白名单：多余字段一律丢掉 ✓（页面只表达意图；选文件/解析/落记录都在 IDE 侧）。
+			// ⚠ 漏了这个 case ⇒ 命令落到 default 被**静默丢弃** ⇒ 页面点了没反应（日志里也什么都没有）✗
+			//   —— 这正是本文件里 `newSession` 那条注释警告过的事 ⇒ 新增命令必须在这里加 case ✓。
+			return { method: 'importCodeWorkspace' };
 		}
 		case 'newSession': {
 			// 「＋ 新建会话」= 给**当前页签**换一段新对话：不需要任何参数（id 由宿主派生）。

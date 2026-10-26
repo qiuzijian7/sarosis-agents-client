@@ -164,7 +164,35 @@ suite('dshHarness / desktop 窗口的「更新」入口', () => {
 			order![1].split(',').map(s => s.trim().replace(/["']/g, '')),
 			['skill', 'mcp', 'agent', 'workflow', 'workbench'],
 			'KIND_ORDER 必须与协议的 DSH_UPGRADE_ASSET_KINDS 同序（否则汇总行与宿主顺序不一致）✗');
-		assert.ok(/const totalPending = s => pendingRows\(s\)\.length \+ assetRows\(s\)\.length;/.test(page),
-			'徽标数必须是"随包插件 + 资产"合计（只算插件会让用户以为资产不用升 ✗）');
+		assert.ok(/const totalPending = s => upgradableRows\(s\)\.length \+ assetRows\(s\)\.length;/.test(page),
+			'徽标数必须是"可升级的随包插件 + 可升级资产"合计（漏了资产会让用户以为资产不用升 ✗）');
+	});
+
+	// ★ 2026-10-26（用户："改成只算升级"）：**未安装不算一项** —— 否则本机永远显示「2 项可用」，
+	//   点进去按钮却是「安装」，而且每次发新版随包插件都会把这一行顶出来（不是用户要的信号 ✗）。
+	test('⑨ 计数只认"可升级"；未安装仍可单独安装，但不顶出这一行', () => {
+		const page = fs.readFileSync(CHUNK, 'utf8');
+
+		// ① 只认 upgradable 的那个集合必须存在且判据精确（不许用 !== 'installed' 这种"差不多"写法）
+		const upAt = page.indexOf('const upgradableRows = s =>');
+		assert.ok(upAt > 0, '缺少 upgradableRows（"只算升级"的判据集合）✗');
+		const upBody = page.slice(upAt, upAt + 400);
+		assert.ok(/r\.state === "upgradable"/.test(upBody),
+			'upgradableRows 必须只认 state === "upgradable"（把 missing 算进来就退回旧口径 ✗）');
+		assert.ok(!/missing/.test(upBody), 'upgradableRows 里不许出现 missing ✗');
+
+		// ② 徽标/显隐用的总数 = 可升级 + 资产（不含未安装）
+		assert.ok(/const totalPending = s => upgradableRows\(s\)\.length \+ assetRows\(s\)\.length;/.test(page),
+			'totalPending 必须是"可升级 + 资产"（含 missing ⇒ 未安装也会把这一行顶出来 ✗）');
+
+		// ③ 但面板里**仍要列出**未安装的（有「安装」按钮）⇒ 列表继续用 pendingRows
+		assert.ok(/const nAll = pendingRows\(s\)\.length;/.test(page),
+			'面板列表必须仍用 pendingRows（否则未安装的没有安装入口 ✗）');
+
+		// ④ 「全部升级」只跑可升级的（未安装的各自点「安装」）
+		const allAt = page.indexOf('onAll: () => {');
+		assert.ok(allAt > 0, '找不到 onAll ✗');
+		assert.ok(/for \(const r of upgradableRows\(state\)\)/.test(page.slice(allAt, allAt + 400)),
+			'「全部升级」只能跑 upgradableRows（把未安装的一起"升级"是语义错误 ✗）');
 	});
 });

@@ -26,14 +26,14 @@ import { fileURLToPath } from 'node:url';
 import { createMarketClient, dataRootOf } from './marketClient.js';
 import { readInstalled, removeInstalled, upsertInstalled } from './installedLedger.js';
 // ⚠ 不再直接 import `sha256Of`：校验已下沉到 `installBundle`（可单测）
-import { installBundle, uninstallBundle } from './installers.js';
+import { installBundle, trashBundle, uninstallBundle } from './installers.js';
 import { PUBLISHABLE_KINDS, deletePackage, deleteVersion, publishDistribution, publishExternal, publishVersion } from './publisher.js';
 // ★ 2026-10-22：外部源（GitHub 地址作本体）—— 归一化 / 安全边界 / 定位安装根 / 下载
 import { downloadGitHubTarball, locateInstallRoot, resolveDownloadUrl } from './githubSource.js';
 import { listTarGzEntries } from './tar.js';
 import { listPublishables, deriveVersion } from './localResources.js';
 // ★ 2026-10-23（用户「都转移到 dsh 侧实现」）：mcp 装完要注册进 `<数据根>/mcp.json`
-import { readMcpPackageConfig, registerMcpServer, removeMcpCompletely, setMcpEnabled } from './mcpInstall.js';
+import { readMcpPackageConfig, registerMcpServer, removeMcpCompletely, setMcpEnabled, mcpJsonPath, writeMcpJson } from './mcpInstall.js';
 // ★ 2026-10-27（用户：贴 GitHub 链接自动填写并发布）
 import { inspectGithubRepo } from './githubInspect.js';
 // ★ 2026-10-26：发布前体检（发布源到底是不是一个可装的 dsh 插件）
@@ -319,6 +319,36 @@ export async function apply(ctx, config) {
 		const dataRoot = state.dataRoot;
 		if (!dataRoot) {
 			throw new Error('dsh 侧拿不到数据根（config.dataRoot 未注入，且 vssarosFoundation 服务不可用）⇒ 无法落盘');
+		}
+		// ★ 2026-10-26（用户：「需要一个统一的 mcp 配置按钮入口」「点击弹出二级页面可编辑」）：
+		//   整份 mcp.json 的保存。**故意不带 kind** ⇒ 必须放在下面那段 kind 校验**之前**。
+		//   校验比"能存进去"更重要：非法 JSON 一旦落盘，下次 Host 启动会整份读不到（所有连接器消失）。
+		if (op === 'saveMcpConfig') {
+			const text = String(params.text ?? '');
+			if (!text.trim()) { throw new Error('内容为空（要清空 mcp.json 请直接删文件）'); }
+			let parsed;
+			try {
+				parsed = JSON.parse(text);
+			} catch (e) {
+				throw new Error('不是合法 JSON：' + String((e && e.message) || e).slice(0, 160));
+			}
+			if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+				throw new Error('顶层必须是对象（形如 { servers: { … } }）');
+			}
+			if (parsed.servers !== undefined
+				&& (typeof parsed.servers !== 'object' || Array.isArray(parsed.servers))) {
+				throw new Error('servers 必须是对象：键=服务器名，值=该服务器的配置');
+			}
+			const file = mcpJsonPath(dataRoot);
+			let backup = '';
+			try {
+				const { copyFile, stat } = await import('node:fs/promises');
+				await stat(file);
+				backup = file + '.bak-' + Date.now();
+				await copyFile(file, backup);
+			} catch { /* 文件本来不存在 ⇒ 不用备份 */ }
+			await writeMcpJson(dataRoot, parsed);
+			return { ok: true, bytes: Buffer.byteLength(text, 'utf8'), backup, file };
 		}
 		const kind = String(params.kind ?? '');
 		const slug = String(params.slug ?? '');

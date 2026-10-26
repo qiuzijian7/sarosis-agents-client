@@ -520,6 +520,15 @@ export interface IDshHostStartOptions {
 	 */
 	readonly kbRoot?: string;
 	/**
+	 * IM（飞书）**应用**凭据 —— 入站长连接用（2026-10-27，来自 IDE 设置
+	 * `sessions.channel.feishu.appId/appSecret`）。
+	 *
+	 * 只服务「收消息」；出站（把答复推到飞书群）用每个绑定自己的自定义机器人 webhook。
+	 * 两项**都有**才注入 `vssaros-agents` 行的 `config.feishu`（半份凭据只换来反复 unavailable）。
+	 */
+	readonly imFeishuAppId?: string;
+	readonly imFeishuAppSecret?: string;
+	/**
 	 * **知识库的库记录**（2026-10-15 用户报"不该有 uid 式的根 / 只应显示当前库"✓）：把 IDE storage 里
 	 * `agentStudio.kb.vaults` 的**展示字段**（id / name / icon / customPath / closed ✓）序列化成 JSON
 	 * 交给 kb 插件的**页面** ✓ —— 名字与图标**只存在 IDE storage 里** ✗（库目录里只有索引缓存，
@@ -837,6 +846,13 @@ export const enum DshHarnessChannelCommand {
 	DiscoverUpdates = 'discoverUpdates',
 	/** 窗口上报自己的工作区目录（`{ windowId, paths }`，整体替换），已连接时立即注册新增的目录。 */
 	SetWindowWorkspaces = 'setWindowWorkspaces',
+	/**
+	 * 登记**与窗口无关**的一批工作区目录（`{ paths }`）—— 2026-10-26「从 .code-workspace 导入多根工作区」。
+	 *
+	 * 为什么单开一条：窗口那条是**整体替换**（窗口上报什么就换成什么）⇒ 拿它登记"导入来的根"
+	 * 会把窗口自己的目录顶掉 ✗。
+	 */
+	EnsureWorkspaces = 'ensureWorkspaces',
 	/**
 	 * 推**运行期工作区上下文**给 Host（`IBridgeWorkspaceContextArgs` → 桥 `workspace.context`）。
 	 * 2026-10-17：切工作区**不必重启 Host** 的落点 —— 老 Host/老插件不认识这条时回 `applied:false`，

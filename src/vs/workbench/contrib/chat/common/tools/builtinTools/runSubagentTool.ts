@@ -575,7 +575,10 @@ export class RunSubagentTool extends Disposable implements IToolImpl {
 				agentName: isGeneralPurpose ? GeneralPurposeAgentName : (subagent?.name ?? args.agentName),
 				prompt: args.prompt,
 				modelName: resolved.resolvedModelName,
-				groupId,
+				// ⚠ `...(groupId ? { groupId } : {})` 而不是直接写 `groupId`：
+				//   直接写会留下 `groupId: undefined` —— 线上 JSON 里它会被丢掉（等价），
+				//   但**对象形状**多了个键 ⇒ 快照/深比较测试会无谓地红（2026-10-27 清理）。
+				...(groupId ? { groupId } : {}),
 			},
 		};
 	}

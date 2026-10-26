@@ -1999,6 +1999,12 @@ export class CodeApplication extends Disposable {
 		));
 		mainProcessElectronServer.registerChannel(DSH_HARNESS_CHANNEL, dshHarnessChannel);
 
+		// ★ 2026-10-26：媒体库**双写**接线 —— IDE 侧落库成功后，再推一份给 dsh 媒体库（真源）。
+		//   `POST <host>/x/media/api/import`（带认证 cookie，见 dshHostHttp.ts）。
+		//   `originId` 用 IDE 资产 id ⇒ 与 dsh 的 `ideSync` 幂等（推成功过的不会被再插一条）；
+		//   Host 没起 / 认证失败 / 超时都只记日志，IDE 侧行为完全不变（失败的那批仍会被 sync 收编）。
+		mediaStoreChannel.setDshPush(input => { void dshHarnessChannel.pushMediaToHost(input); });
+
 
 		// Logger
 		const loggerChannel = new LoggerChannel(accessor.get(ILoggerMainService),);

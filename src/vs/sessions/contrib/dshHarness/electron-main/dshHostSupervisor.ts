@@ -1119,6 +1119,10 @@ export class DshHostSupervisor extends Disposable {
 					// A 组缺口（2026-10-12）：这两条过去**根本没有等价配置键** ⇒ 用户在 IDE 里改了知识库存储根 /
 					// unreal bridge 地址，dsh 侧照旧读默认值（前者表现为"资料库/画布空着但不报错" ✗）。
 					...(options.kbRoot?.trim() ? { kbRoot: options.kbRoot.trim() } : {}),
+					/* ★ IM（飞书）入站凭据（2026-10-27）：与 agentsRoot 写进**同一行**
+					   （`renderAgentsOverlay` 产出；同一行两份覆盖层时 config 是整体替换 ⇒ 不能拆）。 */
+					...(options.imFeishuAppId?.trim() ? { imFeishuAppId: options.imFeishuAppId.trim() } : {}),
+					...(options.imFeishuAppSecret?.trim() ? { imFeishuAppSecret: options.imFeishuAppSecret.trim() } : {}),
 					// ★ 库记录（2026-10-15）：与 kbRoot 同一份覆盖层 ✓（`renderDataRootOverlay` 里写进
 					//   `vssaros-kb` 那一行 ✓ —— 那份 config 整体替换 ⇒ 拆两份会互相擦掉 ✗）。
 					...(options.kbVaults?.trim() ? { kbVaults: options.kbVaults.trim() } : {}),

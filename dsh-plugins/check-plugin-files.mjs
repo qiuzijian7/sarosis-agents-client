@@ -114,6 +114,26 @@ for (const name of names) {
 		const ghost = files.filter(f => !f.includes('*') && !existsSync(join(dir, f)));
 		check(`${name}：files 里列的文件都真实存在（${files.length} 项）`,
 			ghost.length === 0, ghost.length ? `死链：${ghost.join(', ')}` : '');
+
+		/* ★★ 2026-10-26（Bots 白屏）：上面那条只查"**列了的**文件是否存在"（死链），
+		   查不到"**该列的没列**"。而后者才是致命方向：
+		     · vssaros-agents 漏了 lib/groupFiles.js ⇒ 已装副本缺文件 ⇒ import 失败 ⇒ 白屏
+		     · vssaros-imagegen 漏了 lib/canvas/**（29 个）⇒ 画布功能在真机上必然坏
+		     · vssaros-xhs-note 漏了 lib/index.js 等 6 个 ⇒ 装上也不可用
+		   ⇒ 这里反过来查：files 必须覆盖 `lib/`、`bin/` 下所有 js/mjs + 根目录的 yml。 */
+		const runtimeFiles = [
+			...walk(join(dir, 'lib')).map((f) => 'lib/' + f),
+			...(existsSync(join(dir, 'bin')) ? walk(join(dir, 'bin')).map((f) => 'bin/' + f) : []),
+			...readdirSync(dir).filter((f) => /^[^/]+\.ya?ml$/.test(f)),
+		].filter((f) => /\.(js|mjs|ya?ml)$/.test(f));
+		const listedSet = new Set(files.map((f) => String(f).replace(/\\/g, '/')));
+		const notListed = runtimeFiles.filter((f) => !listedSet.has(f));
+		check(`${name}：files 白名单**覆盖全部运行时文件**（lib/bin/yml 共 ${runtimeFiles.length} 个）`,
+			notListed.length === 0,
+			notListed.length
+				? `没列：${notListed.slice(0, 8).join(', ')}${notListed.length > 8 ? ` 等 ${notListed.length} 个` : ''}`
+				+ '（⇒ IDE 按 files 打包 ⇒ 装上缺文件 ⇒ import 失败 ⇒ 整页白屏）'
+				: '');
 	}
 
 	// B 已装副本对照（**只对 agents 插件**做）：它走 pnpm file: 安装 ⇒ files 漏一条就
@@ -130,10 +150,14 @@ for (const name of names) {
 	}
 	let instPkg = {};
 	try { instPkg = JSON.parse(readFileSync(join(inst, 'package.json'), 'utf8')); } catch { /* 忽略 */ }
-	if (instPkg.version !== pkg.version) {
-		console.log(`  --   ${name}：已装副本是 ${instPkg.version}（仓库 ${pkg.version}）⇒ 版本不同，跳过已装对照`);
-		continue;
-	}
+	/* ★★ 2026-10-26 真实事故（Bots 整页白屏，排查了一整轮）：这里原来是
+	   「已装副本版本 ≠ 仓库版本 ⇒ 跳过已装对照」。而"刚 bump 完还没同步"这个**最常见**
+	   的中间状态，恰好就是版本不同 ⇒ 守卫在**最该报警的时候静默跳过** ✗。
+	   那次的实况：仓库加了 lib/groupFiles.js，真实 home 的已装副本没有 ⇒
+	   index.js 的 import 失败 ⇒ agents 插件整个不加载 ⇒ Bots 白屏；
+	   而这条守卫报"67/67 全绿"，把我带偏了很久。
+	   ⇒ 现在：版本不同**不再跳过**，照常比对 lib 文件集，只把"副本是旧版本"写进原因。 */
+	const stale = String(instPkg.version || '?') !== String(pkg.version || '?');
 	const repoLib = walk(join(dir, 'lib')).map(f => 'lib/' + f);
 	const instLib = walk(join(inst, 'lib')).map(f => 'lib/' + f);
 	const instSet = new Set(instLib);
@@ -141,8 +165,47 @@ for (const name of names) {
 	check(`${name}：已装副本包含仓库的全部 lib 文件（${repoLib.length} 个）`,
 		notInstalled.length === 0,
 		notInstalled.length
-			? `没装上：${notInstalled.join(', ')}（⇒ 插件 import 失败 ⇒ 整页白屏 ✗；请补进 package.json 的 files）`
-			: '');
+			? `没装上：${notInstalled.join(', ')}（⇒ 插件 import 失败 ⇒ 整页白屏 ✗；`
+			+ '先确认它在 package.json 的 files 白名单里，再跑一次 install-to-ide-home）'
+			+ (stale ? `【已装副本是 ${instPkg.version}、仓库是 ${pkg.version} ⇒ 副本过期，需重新同步】` : '')
+			: (stale ? `【注意：副本版本 ${instPkg.version} ≠ 仓库 ${pkg.version}，文件集却一致 —— 建议重新同步】` : ''));
+}
+
+/* ── ★ 客户端 chunk 不许**裸用 `React.`**（2026-10-26 实锤：Bots 里永远看不到 React 工作台）
+   ------------------------------------------------------------------
+   事故：`client.agents.js` 里我加了 `class WorkbenchBoundary extends React.Component`，
+   但该 chunk 只有 `const react = require('react')` + 解构 hooks，**从未定义 `React`**
+   ⇒ 子块一加载就抛 `ReferenceError: React is not defined`
+   ⇒ `require.async(...).catch` 把错误吞成 `__vssarosAgentsClient.workbenchFailed`
+   ⇒ 工作台**静默不注册**（不白屏、不报错，只是永远打不开）。
+   `node --check` 查不出（语法合法），只能跑起来才发现 ⇒ 静态守一条。 */
+{
+	const clientFiles = [];
+	for (const name of names) {
+		const dir = join(PLUGINS_DIR, name, 'lib');
+		let entries = [];
+		try { entries = readdirSync(dir); } catch { continue; }
+		for (const e of entries) {
+			if (/^client.*\.js$/.test(e)) { clientFiles.push(join(dir, e)); }
+		}
+	}
+	const bare = [];
+	for (const f of clientFiles) {
+		let text = '';
+		try { text = readFileSync(f, 'utf8'); } catch { continue; }
+		// 去掉块注释与行注释（注释里提到 React.Component 是正常的）
+		const stripped = text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+		if (!/require\('react'\)/.test(stripped)) { continue; }
+		/* ⚠ 有 `const React = require('react')` 的 chunk 裸用 `React.` 是**合法**的
+		   （vssaros-scheduler 就是这种）；只有"只解构 hooks、从未绑定 React"的才致命。
+		   ⇒ 先看有没有 React 绑定，有就跳过。 */
+		const bound = /\b(?:const|let|var)\s+React\s*=/.test(stripped) || /\(React[,)]/.test(stripped);
+		if (bound) { continue; }
+		// 真·裸用：前面不是 `.`/标识符字符，且不属于 `react.`（大小写已区分）
+		if (/(^|[^.\w])React\.[A-Za-z]/.test(stripped)) { bare.push(f.slice(ROOT.length + 1)); }
+	}
+	check('客户端 chunk 没有**裸用 `React.`**（只解构了 hooks 的 chunk 里裸用会抛 ReferenceError，工作台会静默不注册）',
+		bare.length === 0, bare.length ? `命中：${bare.join(', ')}（改成 react.Component）` : `${clientFiles.length} 个 client 文件`);
 }
 
 // ── ★ 入口**真的能 import**（2026-10-24 实锤：工具页整页空白）───────────────────────

@@ -4,8 +4,8 @@
 //   ★ 2026-10-22：工作台改成**左右两档**（用户要求，与工作流页同款）—— 左列 = 六列看板，
 //     右列 = 卡片详情（原右下角浮层改常驻右栏；点左列卡片 ⇒ 右栏换它 ✓）。
 //   ★ 2026-10-22（UI 统一 §6.19）：组件改用**共享层** `wb-*` 原语（宿主注入一份样式表）——
-//     原来那批**不存在的令牌名**（`--dsw-alias-border-default` / `--dsw-alias-state-focus-primary` /
-//     `--dsw-alias-font-family-monospace`）与优先级三色（`#ef4444` …）已全部换成真实语义令牌
+//     原来那批**不存在的令牌名**（`--dsw-alias-border-l2` / `--dsw-alias-state-focus-primary` /
+//     `--dsh-font-family-code-default`）与优先级三色（`#ef4444` …）已全部换成真实语义令牌
 //     （`border-l1/l2`、`brand-primary`、`--wb-mono`、`state-error/warn-primary`）⇒ 明暗主题自动跟随。
 //     守卫 `check-workbench-style.mjs` 的 UNIFIED 白名单里已加入本包（四条：无裸色值 / 宿主渲染标记 /
 //     ≥10 个 wb-* 类 / 工具条锚点唯一）。
@@ -138,15 +138,15 @@ window.__ModuleLoader__.load({
 
 		const WRAP_STYLE = { margin: '6px 0 0', fontSize: 12, borderRadius: 6, border: '1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.25))', overflow: 'hidden' };
 		const TITLE_STYLE = { display: 'flex', alignItems: 'center', gap: 6, padding: '6px 8px', fontWeight: 600, background: 'var(--dsw-alias-bg-base, transparent)' };
-		const CHIP_STYLE = { fontSize: 11, fontWeight: 400, padding: '1px 6px', borderRadius: 999, background: 'var(--dsw-alias-bg-elevated, rgba(127,127,127,.12))', color: 'var(--dsw-alias-label-secondary, currentColor)' };
+		const CHIP_STYLE = { fontSize: 11, fontWeight: 400, padding: '1px 6px', borderRadius: 999, background: 'var(--dsw-alias-bg-layer-2, rgba(127,127,127,.12))', color: 'var(--dsw-alias-label-secondary, currentColor)' };
 		const HEAD_STYLE = { padding: '0 8px 6px', color: 'var(--dsw-alias-label-secondary, currentColor)' };
 		const RAW_STYLE = {
-			fontFamily: 'var(--dsw-alias-font-mono, ui-monospace, monospace)', fontSize: 11, margin: 0,
+			fontFamily: 'var(--dsh-font-family-code-default, ui-monospace, monospace)', fontSize: 11, margin: 0,
 			padding: '6px 8px', whiteSpace: 'pre-wrap', wordBreak: 'break-all',
 			borderTop: '1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.25))',
 			color: 'var(--dsw-alias-label-secondary, currentColor)',
 		};
-		const LINK_BUTTON_STYLE = { fontSize: 11, background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--dsw-alias-label-link, currentColor)' };
+		const LINK_BUTTON_STYLE = { fontSize: 11, background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--dsw-alias-brand-primary, currentColor)' };
 
 		/** 卡片本体（React.createElement 手写，不引入 JSX 构建）。 */
 		function KanbanToolCard(props) {

@@ -93,6 +93,31 @@ export class DshWorkspaceSync extends Disposable {
 	}
 
 	/**
+	 * 登记**与窗口无关**的一批路径（2026-10-26：「从 .code-workspace 导入多根工作区」）。
+	 *
+	 * 为什么不能走 `setWindowWorkspaces`：那条是**按窗口整体替换**的（窗口上报什么就换成什么）
+	 * ⇒ 拿它登记"导入来的根"会把窗口自己的目录**顶掉** ✗（窗口的工作区就乱了）。
+	 *
+	 * 为什么需要这条通道：dsh 的工作区模型**只能单目录** ⇒ 一个多根工作区在 dsh 侧是
+	 * **N 条平级记录** ⇒ 导入一个 .code-workspace（多个 folder）必须把这 N 个根都注册进去，
+	 * 否则那些根在 dsh 里根本不是工作区 ⇒ 会话挂不上去、侧栏也认领不到。
+	 *
+	 * 幂等：已注册过（且上次成功）的路径直接跳过 ⇒ 重复导入不会重复注册 ✓；
+	 * 上次失败的会重试（与窗口那条同口径 ✓）。
+	 */
+	async ensurePaths(rawPaths: unknown): Promise<readonly IBridgeWorkspace[]> {
+		const paths = sanitizeWorkspacePaths(rawPaths);
+		if (!paths.length) {
+			return [];
+		}
+		const pending = paths.filter(p => !this._results.has(p) || this._results.get(p)?.error);
+		if (pending.length && this._ensure) {
+			await this._run(pending);
+		}
+		return paths.map(p => this._results.get(p)).filter((r): r is IBridgeWorkspace => !!r);
+	}
+
+	/**
 	 * 新连接（控制桥握手成功）：清空上一连接的结果并全量注册。调用方应等它完成后再让视图加载页面。
 	 * 传 undefined 表示断开。
 	 */

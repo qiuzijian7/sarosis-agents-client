@@ -33,6 +33,8 @@ import { IMenuService } from '../../../platform/actions/common/actions.js';
 import { CommandsRegistry, ICommandService } from '../../../platform/commands/common/commands.js';
 import { IJSONEditingService } from '../../../workbench/services/configuration/common/jsonEditing.js';
 import { planAppendWorkspaceFolders, normalizeFolderPathForCompare } from '../../contrib/agentStudio/common/workspaceFileFolders.js';
+// ★ 2026-10-26：`.code-workspace` 的解析口径只有这一份（导入命令也用它）⇒ 不能各写一份 ✗。
+import { parseCodeWorkspaceFolders } from '../../contrib/agentStudio/common/codeWorkspaceFolders.js';
 import { Separator } from '../../../base/common/actions.js';
 import { IHoverService } from '../../../platform/hover/browser/hover.js';
 import { Extensions } from '../../../workbench/browser/panecomposite.js';
@@ -59,8 +61,6 @@ import { ILogService } from '../../../platform/log/common/log.js';
 import { IHostService } from '../../../workbench/services/host/browser/host.js';
 import { IWorkbenchEnvironmentService } from '../../../workbench/services/environment/common/environmentService.js';
 import { hasWorkspaceFileExtension, IWorkspaceContextService } from '../../../platform/workspace/common/workspace.js';
-import { parse as parseJsonc } from '../../../base/common/json.js';
-import type { ParseError } from '../../../base/common/json.js';
 import { IWindowOpenable } from '../../../platform/window/common/window.js';
 import { planWindowOnDeleteWorkspace, workspaceIdentityFromWindow, matchWorkspaceIdentity, IWorkspaceIdentity } from '../../contrib/agentStudio/common/workspaceFolderSyncPolicy.js';
 import { URI } from '../../../base/common/uri.js';
@@ -2363,33 +2363,21 @@ export class SidebarPart extends AbstractPaneCompositePart {
 		//
 		// 同一坑已有先例：`agentStudio/browser/codebaseMemoryMcpService.ts:269-273`
 		// （日志 2026-08-09 同样踩过），沿用同一写法。
-		const parseErrors: ParseError[] = [];
-		const parsed = parseJsonc(text, parseErrors);
-		if (parseErrors.length > 0) {
-			this._diag(`warn: JSONC parse of ${fileUri.fsPath} had ${parseErrors.length} tolerated error(s): ${parseErrors.slice(0, 3).map(e => `@${e.offset}`).join(',')}`);
+		// ★ 2026-10-26：解析口径抽到 `contrib/agentStudio/common/codeWorkspaceFolders.ts`（**唯一一份**）——
+		//   「从 .code-workspace 导入多根工作区」那条新命令要同一份解析 ⇒ 两处各写一份就会
+		//   "有的文件能导入、有的不能"（格式演进时不同步）✗。
+		//   基准目录 = 工作区文件**所在目录**（相对路径按它解析，与原实现逐字同口径 ✓）。
+		const parsed = parseCodeWorkspaceFolders(text, URI.joinPath(fileUri, '..').fsPath);
+		if (parsed.parseErrorCount > 0) {
+			this._diag(`warn: JSONC parse of ${fileUri.fsPath} had ${parsed.parseErrorCount} tolerated error(s)`);
 		}
-		const folders: Array<{ path?: string; uri?: string; name?: string }> = parsed?.folders ?? [];
-
-		const resolveOne = (folder: { path?: string; uri?: string; name?: string }): string | undefined => {
-			const rawPath: string | undefined = folder.path
-				?? (folder.uri ? URI.parse(folder.uri).fsPath : undefined);
-			if (!rawPath) { return undefined; }
-			if (/^[A-Za-z]:[\\/]/.test(rawPath) || rawPath.startsWith('/')) {
-				return URI.file(rawPath).fsPath;
-			}
-			return URI.joinPath(fileUri, '..', rawPath).fsPath;
-		};
-
-		const primaryPath = folders.length > 0 ? resolveOne(folders[0]) : undefined;
-		const extraFolders: { path: string; name: string }[] = folders.slice(1)
-			.filter(f => resolveOne(f) !== undefined)
-			.map(f => ({ path: resolveOne(f)!, name: f.name || '' }));
-
-		const filesExclude: Record<string, boolean> | undefined = parsed?.settings?.['files.exclude'];
+		const primaryPath = parsed.primaryPath;
+		const extraFolders: { path: string; name: string }[] = parsed.extraFolders.map(f => ({ path: f.path, name: f.name }));
+		const filesExclude: Record<string, boolean> | undefined = parsed.filesExclude;
 
 		// 提取 codebase-memory 配置并应用到 index config
-		const codebaseMemoryRaw = parsed?.settings?.['codebase-memory'];
-		if (codebaseMemoryRaw && typeof codebaseMemoryRaw === 'object') {
+		const codebaseMemoryRaw = parsed.codebaseMemory;
+		if (codebaseMemoryRaw) {
 			try {
 				const cbmService = this.instantiationService.invokeFunction(a => a.get(ICodebaseMemoryMcpService));
 				if (cbmService) {

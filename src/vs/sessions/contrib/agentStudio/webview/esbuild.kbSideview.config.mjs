@@ -20,7 +20,12 @@ const MEDIA = resolve(__dirname, 'media');
 
 /** @type {esbuild.BuildOptions} */
 const buildOptions = {
-	entryPoints: [resolve(__dirname, 'src/kbSideview/index.tsx')],
+	// 两个入口：侧栏（常驻）与编辑器（进入编辑态才按需加载）
+	//   ⚠ 刻意**不合并**：编辑器带 CodeMirror，塞进侧栏会让每次打开面板都多背 180KB。
+	entryPoints: [
+		{ in: resolve(__dirname, 'src/kbSideview/index.tsx'), out: 'kbSideview' },
+		{ in: resolve(__dirname, 'src/kbEditor/index.ts'), out: 'kbEditor' },
+	],
 	bundle: true,
 	outdir: MEDIA,
 	format: 'iife',
@@ -29,7 +34,9 @@ const buildOptions = {
 	target: ['es2022'],
 	minify: !isWatch,
 	sourcemap: isWatch ? 'inline' : false,
-	entryNames: 'kbSideview',
+	// ★ 2026-10-26：CodeMirror 依赖放在 `vendor-codemirror/`（离线可用、随仓库提交），
+	//   用 nodePaths 让 `@codemirror/*` 这类裸导入解析到那里（与 tsconfig.paths 对齐）。
+	nodePaths: [resolve(__dirname, 'vendor-codemirror')],
 	loader: {
 		'.ts': 'ts',
 		'.tsx': 'tsx',

@@ -1,6 +1,6 @@
 {
   "name": "@vssaros/dsh-kanban",
-  "version": "0.8.13",
+  "version": "0.8.14",
   "description": "VsSaros kanban module for DeepSeek Harness: reads the same taskboard.json the IDE writes, exposes read-only tools and a self-hosted page. Data contract: src/vs/sessions/common/agentStudioTypes.ts",
   "private": true,
   "type": "module",

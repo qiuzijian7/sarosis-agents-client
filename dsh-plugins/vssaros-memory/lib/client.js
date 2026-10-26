@@ -14,7 +14,7 @@
 //   已在 `client.memory.js` 补 `codicon:database`；守卫 `dshPluginPackages` 也补了这条比对）。
 // ★ 2026-10-22（UI 统一 §6.19）：组件改用**共享层** `wb-*` 原语（宿主注入一份样式表）——
 //   自写 CSS 从 30 行压到 18 行（只留 hero 大数字、草稿列表、错误色），间距/圆角/字号走 `--wb-*`；
-//   顺带修掉**不存在的令牌名**（`--dsw-alias-border-default` / `-label-link` / `-font-family-monospace`，
+//   顺带修掉**不存在的令牌名**（`--dsw-alias-border-l2` / `-label-link` / `-font-family-monospace`，
 //   它们一直静默回落硬编码 ⇒ 从没跟随过主题）。守卫 UNIFIED 白名单已加入本包。
 //   ⚠ **机器锚点用 `data-*`**：统计卡 `data-vssaros-memory-stat`、槽位 `data-vssaros-memory-slot(s)`
 //     —— 类名属于视觉层（统一时会换成 `wb-*`），拿类名当锚点一改样式探针就瞎 ✗（迁移当场踩到）。

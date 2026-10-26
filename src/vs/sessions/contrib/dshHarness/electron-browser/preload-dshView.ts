@@ -130,7 +130,8 @@
 		// ★ 2026-10-21：`16 → 17`（新增 `signInIde` / `signOutIde` —— 窗口里的登录接管 IDE 账号）。
 		// ★ 2026-10-21：`17 → 18`（新增 `openSettings` / `openFeedback` —— 左下角账号菜单的两条菜单项）。
 		// ★ 2026-10-23：`18 → 19`（新增 `upgradeRefresh` / `upgradeBundled` / `upgradeApp` —— desktop 窗口的「更新」入口）。
-		bridgeVersion: 19,
+		// ★ 2026-10-26：`19 → 20`（新增 `importCodeWorkspace` —— 从 .code-workspace 导入多根工作区）。
+		bridgeVersion: 20,
 		surface,
 		// ★ 2026-10-18：`chatOnly` 也放进 bridge（**同步可知**）。
 		//   为什么不能只靠 `data-vssaros-chat-only`：那个 DOM 标记要等 DOMContentLoaded 才写，
@@ -157,8 +158,9 @@
 		signInIde: () => invoke({ method: 'signInIde' }),
 		signOutIde: () => invoke({ method: 'signOutIde' }),
 		// ★ 2026-10-21（桥 `17 → 18`）：左下角账号菜单里的「⚙ 设置 / ✈ 意见反馈」。
-		//   两者都是"请 IDE 打开发某个界面"（`workbench.action.openSettings` / `openIssueReporter`），
-		//   页面自己做不到（设置编辑器 / 反馈面板都长在 IDE 窗口里）⇒ 只能经宿主 ✓。无参。
+		//   设置是"请 IDE 打开设置编辑器"（页面开不了）；
+		//   反馈是"请宿主用系统浏览器打开飞书问卷"（2026-10-26 改为问卷，不再开 IDE 的 issue reporter）。
+		//   ⚠ 两者都**无参** —— 页面不能传 URL（否则等于给了页面一个任意开窗能力 ✗）。
 		openSettings: () => invoke({ method: 'openSettings' }),
 		openFeedback: () => invoke({ method: 'openFeedback' }),
 		// ★ 2026-10-23（桥 `18 → 19`）：desktop 窗口的「更新」入口。
@@ -232,6 +234,11 @@
 		// （不是 dsh 的 workspaceId ✗）。与 `switchWorktree` 分工：这条只负责"窗口换工作区（多根一起进、
 		// 不重载）"，会话仍由 `switchWorktree(根路径)` 起 ⇒ 两条各管一件事 ✓（见协议里的注释）。
 		switchWorkspace: (workspaceId: string) => invoke({ method: 'switchWorkspace', workspaceId }),
+		// 请 **IDE 侧**导入一个 `.code-workspace` 文件（桥 `19 → 20`，2026-10-26）：
+		// 页面读不了文件、也没有文件选择器 ⇒ 只能请 IDE 做（选文件 → 解析 folders → 落一条多根
+		// 工作区记录 → 各根注册进 dsh）。**只导入，不切窗口** ✓（页面桥是单向的 ⇒ 结果由 IDE 通知
+		// + 工作区记录推送体现）。
+		importCodeWorkspace: () => invoke({ method: 'importCodeWorkspace' }),
 		// 打开 Agent 商城（输入框 Agents 面板的底部动作）：商城是编辑器页，页面自己开不了 ⇒ 交宿主。
 		openAgentMarket: () => invoke({ method: 'openAgentMarket' }),
 		// 打开原生 Agent 列表（花名册的宿主等价入口）；宿主找不到该视图时会回落资源管理页。

@@ -125,6 +125,41 @@ for (const c of cases) {
 	t(c.name, r.status < 500 && c.expect(r.body), 'status=' + r.status + ' body=' + JSON.stringify(r.body).slice(0, 120));
 }
 
+
+// ── 页面 CSP 与脚本外置（2026-10-26，P4）──────────────────────
+// 只要还有内联脚本，CSP 就只能写 unsafe-inline（等于没加）⇒ 这里同时钉住三件事：
+//   ① 两个 HTML 页面都带 CSP 头；② 页面里没有内联脚本；③ 外置脚本能取到。
+const rawCall = async (path) => {
+	const out = [];
+	let status = 0;
+	let headers = {};
+	await handler({ method: 'GET', url: path }, {
+		writeHead(code, h) { status = code; headers = h || {}; },
+		end(b) { out.push(String(b ?? '')); },
+	});
+	return { status, headers, body: out.join('') };
+};
+
+{
+	const page = await rawCall('/x/kb/');
+	const csp = String(page.headers['content-security-policy'] || '');
+	t('页面带 CSP 头', csp.includes("script-src 'self'"), csp.slice(0, 120) || '(无)');
+	t('CSP 不允许内联脚本', !/script-src[^;]*unsafe-inline/.test(csp), csp.slice(0, 120));
+	t('页面无内联脚本', !/<script(?![^>]*src=)/.test(page.body));
+	t('page-boot.js 可访问', (await rawCall('/x/kb/web/page-boot.js')).status === 200);
+	t('doc-boot.js 可访问', (await rawCall('/x/kb/web/doc-boot.js')).status === 200);
+	// 编辑器 bundle：进入编辑态才会被请求（独立于侧栏，727KB 不进主包）
+	t('kbEditor.js 可访问（按需加载的编辑器）', (await rawCall('/x/kb/web/kbEditor.js')).status === 200);
+	// mermaid：3.4MB 的图表库，只有正文有 mermaid 块时才被请求
+	// 2026-10-26：mermaid 已改为服务端 pele 渲染 ⇒ 客户端引擎不该再被服务出去
+	t('客户端 mermaid 引擎已下线（404）', (await rawCall('/x/kb/vendor/mermaid/mermaid.min.js')).status === 404);
+	t('vendor 目录非白名单文件被拒', (await rawCall('/x/kb/vendor/mermaid/package.json')).status === 404);
+	const docPage = await rawCall('/x/kb/doc?uri=' + encodeURIComponent(notePath.replace(/\\/g, '/')));
+	t('文档页带 CSP 头', String(docPage.headers['content-security-policy'] || '').includes("script-src 'self'"));
+	t('文档页脚本已外置', docPage.body.includes('doc-boot.js') && !/<script>/.test(docPage.body));
+	// 静态资源白名单：不该把任意 lib 文件当 js 吐出去
+	t('web 目录非白名单文件被拒', (await rawCall('/x/kb/web/index.js')).status === 404);
+}
 console.log('='.repeat(60));
 if (failed.length) {
 	console.log(`✗ ${failed.length} 项失败 / 共 ${pass + failed.length} 项（全路由冒烟）`);

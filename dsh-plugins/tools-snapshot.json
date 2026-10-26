@@ -1,6 +1,6 @@
 {
   "note": "由 dsh-plugins/tools-snapshot.mjs 生成；被 dshHarness/test/common/dshToolSnapshot.test.ts 钉住。不要手改，跑 --write。",
-  "total": 146,
+  "total": 153,
   "plugins": {
     "vssaros-agents": [
       {
@@ -1061,6 +1061,64 @@
         "descriptionHash": "377a4154e670"
       }
     ],
+    "vssaros-marketplace": [
+      {
+        "name": "market_inspect_github",
+        "required": [
+          "repo"
+        ],
+        "params": [
+          "repo"
+        ],
+        "descriptionHash": "95816d0f4422"
+      },
+      {
+        "name": "market_install",
+        "required": [
+          "slug"
+        ],
+        "params": [
+          "slug",
+          "version"
+        ],
+        "descriptionHash": "c66fcb3e3ce5"
+      },
+      {
+        "name": "market_publish",
+        "required": [
+          "kind",
+          "slug",
+          "source",
+          "version"
+        ],
+        "params": [
+          "changelog",
+          "cover",
+          "description",
+          "icon",
+          "includeDependencyNote",
+          "kind",
+          "name",
+          "npmName",
+          "slug",
+          "source",
+          "version",
+          "via"
+        ],
+        "descriptionHash": "4657ed586371"
+      },
+      {
+        "name": "market_search",
+        "required": [],
+        "params": [
+          "kind",
+          "limit",
+          "q",
+          "sort"
+        ],
+        "descriptionHash": "cd249fc873ee"
+      }
+    ],
     "vssaros-mcp": [
       {
         "name": "mcp_install",
@@ -1106,6 +1164,29 @@
         "descriptionHash": "31176976addc"
       },
       {
+        "name": "media_autotag",
+        "required": [],
+        "params": [
+          "dryRun",
+          "ids",
+          "limit",
+          "rules"
+        ],
+        "descriptionHash": "93eb0dad70a3"
+      },
+      {
+        "name": "media_board_plan",
+        "required": [],
+        "params": [
+          "dryRun",
+          "limit",
+          "mode",
+          "overwrite",
+          "prefix"
+        ],
+        "descriptionHash": "16cc35ee4bc8"
+      },
+      {
         "name": "media_list",
         "required": [],
         "params": [
@@ -1119,6 +1200,14 @@
         "required": [],
         "params": [],
         "descriptionHash": "835dca4d1ab9"
+      },
+      {
+        "name": "media_tag_merge",
+        "required": [],
+        "params": [
+          "dryRun"
+        ],
+        "descriptionHash": "7562cf589c0e"
       },
       {
         "name": "text_to_speech",

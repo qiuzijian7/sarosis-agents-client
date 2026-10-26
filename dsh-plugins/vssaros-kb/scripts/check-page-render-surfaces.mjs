@@ -18,6 +18,9 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const KB_INDEX = fileURLToPath(new URL('../lib/index.js', import.meta.url));
+// ★ 2026-10-26（P4）：页面脚本已外置到 `web/page-boot.js`（为了开严格 CSP）
+//   ⇒ "注入数据 + 拉 bundle" 这两件事现在写在那个文件里，断言必须去那里看。
+const PAGE_BOOT = (() => { try { return readFileSync(fileURLToPath(new URL('../lib/web/page-boot.js', import.meta.url)), 'utf8'); } catch { return ''; } })();
 const FOUNDATION = fileURLToPath(new URL('../../vssaros-foundation/lib/index.js', import.meta.url));
 
 let pass = 0;
@@ -101,14 +104,17 @@ try {
 	check('未知 surface 回落完整页', unknown.html.includes('data-vssaros-surface="full"'));
 
 	// 2026-10-24：钉住"裸主页 = React 壳"这条产品决定（否则将来有人把接管改回去，没人会发现 ✗）
-	check('裸 /x/kb/ 出 React 壳（注入数据 + bundle 都在）',
-		bare.html.includes('__KB_SIDEVIEW_DATA__') && bare.html.includes('kbSideview.js'));
+	check('裸 /x/kb/ 出 React 壳（外置脚本引用 + 脚本里注入数据/拉 bundle）',
+		bare.html.includes('page-boot.js')
+		&& PAGE_BOOT.includes('__KB_SIDEVIEW_DATA__') && PAGE_BOOT.includes('kbSideview.js'));
+	check('裸 /x/kb/ 无内联脚本（CSP 才敢写 script-src self）',
+		!/<script(?![^>]*src=)/.test(bare.html));
 	check('裸 /x/kb/ 不再出经典三态页（无 data-vssaros-surface）',
 		!bare.html.includes('data-vssaros-surface'));
 	// ★ 宿主真实进入形态：`dshPluginPage.ts` 会注入 `?surface=sideview` ⇒ 这条必须也出 React 壳，
 	//   否则真机上"改了代码页面不变"（2026-10-24 踩过：按 surface 分流把新版整条路堵死了）。
 	check('/x/kb/?surface=sideview 也出 React 壳（宿主注入参数时不能退回旧页）',
-		sideviewWithParam.html.includes('__KB_SIDEVIEW_DATA__') && !sideviewWithParam.html.includes('data-vssaros-surface'));
+		sideviewWithParam.html.includes('page-boot.js') && !sideviewWithParam.html.includes('data-vssaros-surface'));
 
 	check('full 有目录块', full.html.includes('data-vault-block'));
 	check('full 有页内预览脚本', full.html.includes('data-preview-title'));

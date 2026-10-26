@@ -43,7 +43,7 @@ window.__ModuleLoader__.load({
 
 [${MARK}-pop]{position:fixed;z-index:2147482100;width:396px;max-height:min(560px,calc(100vh - 80px));overflow:auto;
   border-radius:12px;border:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.3));
-  background:var(--dsw-alias-bg-elevated,#1c1d21);color:var(--dsw-alias-label-primary,#e8e9ec);
+  background:var(--dsw-alias-bg-layer-2,#1c1d21);color:var(--dsw-alias-label-primary,#e8e9ec);
   box-shadow:0 18px 48px rgba(0,0,0,.5);font:inherit;font-size:12.5px}
 [${MARK}-pop] .vu-hd{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.22))}
 [${MARK}-pop] .vu-hd b{font-size:12.5px}

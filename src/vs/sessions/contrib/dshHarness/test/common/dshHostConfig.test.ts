@@ -234,4 +234,41 @@ suite('dshHostConfig（中立配置源：配置 → 覆盖层）', () => {
 			'Host 空闲自退的**默认**时长（解法 A：12h 覆盖一个工作日的多次重启）—— 改了常量就要来改这条，'
 			+ '并回头复审 `dshHarness.contribution.ts` 里 `hostKeepAlive` 的那句用户可见文案');
 	});
+
+	/**
+	 * IM（飞书）入站凭据的注入（2026-10-27）。
+	 *
+	 * 三条必须钉住：
+	 * 1. **两项齐全才写** —— 半份凭据会让 Host 反复报 `unavailable：缺少 app_id`，
+	 *    用户会以为插件坏了；宁可完全不注入，让页面显示「未配置」。
+	 * 2. **写进 agents 那一行** —— 同一行被两份覆盖层打时 `config` 是**整体替换**
+	 *    （见文件头纪律 1）⇒ 单开一条覆盖层会把 agentsRoot / agentsBuiltinRoot 擦掉。
+	 * 3. **中立配置要透传** —— `IDshHostConfig` 里加了字段而聚合器没往下传，
+	 *    症状就是"设置填了但不生效"（这类沉默故障是本文件存在的理由）。
+	 */
+	test('★ IM 飞书凭据：两项齐全才写进 agents 行（半份不注入）', () => {
+		const withBoth = renderAgentsOverlay('/a/agents', '/b/builtin', { appId: 'cli_x', appSecret: 'sec_x' });
+		assert.ok(withBoth.includes('    feishu:'), '应写出 feishu 段：\n' + withBoth);
+		assert.ok(withBoth.includes("      appId: 'cli_x'"), 'appId 要写进去：\n' + withBoth);
+		assert.ok(withBoth.includes("      appSecret: 'sec_x'"), 'appSecret 要写进去：\n' + withBoth);
+		assert.ok(withBoth.includes("    agentsRoot: '/a/agents'"), '同一行里的 agentsRoot 不能被挤掉：\n' + withBoth);
+		assert.ok(withBoth.includes("    agentsBuiltinRoot: '/b/builtin'"), 'agentsBuiltinRoot 同理：\n' + withBoth);
+
+		const onlyId = renderAgentsOverlay('/a/agents', undefined, { appId: 'cli_x' });
+		assert.ok(!onlyId.includes('feishu:'), '只有 appId 时**不要**写（半份凭据只会导致反复 unavailable）：\n' + onlyId);
+		const none = renderAgentsOverlay('/a/agents', undefined, undefined);
+		assert.ok(!none.includes('feishu:'), '不传就不该出现：\n' + none);
+	});
+
+	test('★ 中立配置把 IM 凭据透传给 agents 覆盖层（不然"设置填了不生效"）', () => {
+		const src = readIfExists(HOST_CONFIG);
+		if (!src) {
+			return;	// cwd 不是仓库根 ⇒ 与文件里其它源码级断言同样跳过
+		}
+		assert.ok(src.includes('imFeishuAppId'), 'IDshHostConfig / 聚合器要有 imFeishuAppId');
+		assert.ok(src.includes('imFeishuAppSecret'), 'IDshHostConfig / 聚合器要有 imFeishuAppSecret');
+		assert.ok(/renderAgentsOverlay\(\s*agentsRoot,\s*agentsBuiltinRoot,\s*\{/.test(src),
+			'第三参数必须真的传下去（`renderAgentsOverlay(agentsRoot, agentsBuiltinRoot, { appId, appSecret })`）：\n'
+			+ src.split('\n').filter(l => l.includes('renderAgentsOverlay')).join('\n'));
+	});
 });

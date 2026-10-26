@@ -15,6 +15,7 @@
  * 回退值用 VS Code Dark+ 的等价色 ⇒ 单独打开也不会难看。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { continueMarkdownList, indentAt } from './mdList';
 import { createRoot } from 'react-dom/client';
 
 // ─── 数据契约（宿主注入）─────────────────────────────────────────────────────
@@ -85,6 +86,40 @@ export interface KbSideviewData {
 	readonly selectedPath?: string;
 }
 
+/**
+ * 搜索结果高亮（2026-10-26，P3）：把命中词包成 `<mark>`。
+ *
+ * 为什么在前端做而不是服务端返回 HTML：结果列表要能点、要能被 React 复用，
+ * 塞 HTML 就得 dangerousSetInnerHTML（又多一个注入口）。这里只做字符串切片，零风险。
+ * 大小写不敏感；单条最多标 20 处（避免超长片段把 DOM 撑大）。
+ */
+function highlightMatch(text: string, query: string): React.ReactNode {
+	const src = String(text ?? '');
+	const q = String(query ?? '').trim();
+	if (!q) { return src; }
+	const lower = src.toLowerCase();
+	const needle = q.toLowerCase();
+	const out: React.ReactNode[] = [];
+	let from = 0;
+	let n = 0;
+	while (n < 20) {
+		const at = lower.indexOf(needle, from);
+		if (at < 0) { break; }
+		if (at > from) { out.push(src.slice(from, at)); }
+		out.push(
+			<mark key={'m' + n} style={{ background: 'rgba(255,204,0,.30)', color: 'inherit', borderRadius: 2, padding: '0 1px' }}>
+				{src.slice(at, at + needle.length)}
+			</mark>,
+		);
+		from = at + needle.length;
+		n += 1;
+	}
+	out.push(src.slice(from));
+	return out;
+}
+
+/**
+
 /** 宿主可以监听这些事件；未接线时是 no-op。 */
 /** 全文检索命中（`path` 与树的 path 同一命名空间，可直接 `openNode`） */
 export interface KbSearchHit {
@@ -103,6 +138,13 @@ export interface KbSideviewActions {
 	 * 用能力位而不是动作：动作只能"请宿主去画"，而绘制实现已经在视图里了。
 	 */
 	canvas?: boolean;
+	/** 打开站外链接（面板/页面：window.open；被拦时复制链接并提示）。缺省则视图自己 window.open */
+	openUrl?(url: string): void;
+	/**
+	 * 在系统文件管理器里定位某个文件（2026-10-26）。
+	 * 缺省时视图**不显示**该菜单项 —— 宁可不给，也不放一个点了没反应的按钮。
+	 */
+	reveal?(path: string): void;
 	openSettings?(): void;
 	/** 同步飞书（只在宿主真能执行时提供 —— 面板走 `/api/feishu-sync`，IDE 侧栏走命令桥） */
 	feishuSync?(): void;
@@ -577,14 +619,18 @@ const KB_SCOPED_CSS = `
 /* 节头右侧的工具按钮：默认隐藏，hover 才现（Obsidian 的节头没有任何工具条） */
 .kb-sec-extra { opacity: 0; transition: opacity .1s ease; }
 .kb-sec-head:hover .kb-sec-extra { opacity: 1; }
-/* 排序条同理：hover 整节时才出现，默认保持 Obsidian 的干净版面 */
-.kb-sortbar { opacity: 0; transition: opacity .1s ease; }
-.kb-sec:hover .kb-sortbar, .kb-sortbar:hover { opacity: 1; }
 
 /* ── 服务端渲染的 Markdown（class 由 lib/md/render.js 产出，2026-10-25）──────
    为什么样式放在视图、HTML 放服务端：HTML 要能被三个宿主共用，而配色/间距属于
    「看的人」这一侧（IDE 与 dsh 的主题变量不同）。 */
 .kb-md { font-size: 13px; line-height: 1.75; word-break: break-word; }
+/*
+ * ★ 2026-10-26（性能，P1）：长文档一次性注入整篇 HTML 时，浏览器会把**屏外**内容也全部布局。
+ *   content-visibility: auto 让屏外块跳过布局与绘制；contain-intrinsic-size 给个占位高度，
+ *   以免滚动条乱跳。首块不加（避免首屏测量被推迟）。
+ *   对 1 万字以上的笔记首屏更快；短笔记无感。
+ */
+.kb-md > *:not(:first-child) { content-visibility: auto; contain-intrinsic-size: auto 2.4em; }
 .kb-md h1 { font-size: 1.55em; margin: .7em 0 .4em; }
 .kb-md h2 { font-size: 1.3em; margin: .7em 0 .4em; }
 .kb-md h3 { font-size: 1.12em; margin: .6em 0 .3em; }
@@ -613,6 +659,12 @@ const KB_SCOPED_CSS = `
 .kb-md pre.kb-code { margin: .7em 0; padding: 8px 10px; background: rgba(127,127,127,.12); border-radius: 4px; overflow: auto; font-size: 12px; line-height: 1.6; }
 .kb-md code { font-family: var(--vscode-editor-font-family, monospace); background: rgba(127,127,127,.14); padding: 1px 4px; border-radius: 3px; }
 .kb-md pre.kb-code code { background: none; padding: 0; }
+/*
+ * mermaid 由**服务端**用 pele 渲染成内联 SVG（2026-10-26）⇒ 客户端零脚本。
+ * 这里只负责让它自适应宽度并居中；配色已内联在 SVG 根节点的 style 里。
+ */
+.kb-md .kb-mermaid-block { margin: .8em 0; text-align: center; }
+.kb-md .kb-mermaid-block > svg { max-width: 100%; height: auto; }
 /* 服务端轻量高亮的四类记号（与旧的视图内高亮同色口径） */
 .kb-md .kb-tok-kw { color: #569cd6; }
 .kb-md .kb-tok-str { color: #ce9178; }
@@ -872,6 +924,19 @@ function KbCanvasPane({ onClose, onOpenNote }: { onClose: () => void; onOpenNote
 	);
 }
 
+/** 绝对路径 → 文件名（Tab 与细条面包屑用） */
+function fileNameOf(p?: string): string {
+	const s = String(p ?? "").replace(/\\/g, "/").replace(/\/+$/, "");
+	return s ? (s.split("/").pop() || s) : "";
+}
+
+/** 绝对路径 → 上一级目录名（细条面包屑中点） */
+function parentNameOf(p?: string): string {
+	const s = String(p ?? "").replace(/\\/g, "/").replace(/\/+$/, "");
+	const parts = s.split("/").filter(Boolean);
+	return parts.length >= 2 ? String(parts[parts.length - 2]) : "";
+}
+
 export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; actions?: KbSideviewActions; /** 诊断串：显示"数据来自哪层 / 动作数"，出问题一张截图即可定位 */ debug?: string }) => {
 	const [query, setQuery] = useState('');
 	const [mode, setMode] = useState<'fulltext' | 'filename'>('fulltext');
@@ -1045,6 +1110,48 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 	} | null>(null);
 	/** 行内编辑草稿（`null` = 不在编辑态） */
 	const [draft, setDraft] = useState<string | null>(null);
+	/**
+	 * 已读过的正文缓存（2026-10-26）：`path → doc`。
+	 * 为什么需要：切换笔记时每次都要等一次请求 + 一次整篇 HTML 注入，回来回去就"卡"；
+	 * 命中缓存**先上屏**，同时后台按 ETag 再校验一次（304 极便宜），内容变了才替换。
+	 */
+	const docCacheRef = useRef(new Map<string, { title: string; text: string; html?: string; math?: boolean; base?: string; path?: string; mtime?: number; asset?: { kind: "image" | "pdf" | "video" | "audio"; url: string } }>());
+	/** 正在取正文（缓存未命中时给个可见反馈，避免"点了像没反应"） */
+	const [docLoading, setDocLoading] = useState(false);
+
+	/*
+	 * ★ 2026-10-26（方案 C+D）：右栏改成「多文档 Tab + 极简细条」。
+	 *   C 的动机：点树就覆盖当前正文 ⇒ 两篇对照要来回重开（还丢滚动位置）。
+	 *     ⇒ 现在每篇开一个 Tab，切回**保留滚动位置与未保存草稿**。
+	 *   D 的动机：原来标题行随正文滚动而消失，滚到中段就不知道在看哪篇、也够不到动作。
+	 *     ⇒ 细条常驻 28px：折叠面包屑 + 预览/编辑 + ⋯ + 阅读进度线。
+	 */
+	const [tabs, setTabs] = useState<{ path: string; title: string }[]>([]);
+	const [activePath, setActivePath] = useState("");
+	/** 每个 Tab 的现场（doc / draft / 滚动位置）；切走时存、切回时还原 */
+	const tabSnapRef = useRef(new Map<string, { doc: unknown; draft: string | null; scroll: number }>());
+	/** 细条与正文之间要还原的滚动位置（等内容渲染完再滚，否则滚不动） */
+	const pendingScrollRef = useRef<number | null>(null);
+	const docScrollRef = useRef<HTMLDivElement | null>(null);
+	const [docScrollTop, setDocScrollTop] = useState(0);
+	const [docProgress, setDocProgress] = useState(0);
+	/** 细条右侧 ⋯ 菜单（完整路径 / 历史 / 资源管理器） */
+	const [docMenu, setDocMenu] = useState(false);
+	/** 空转的 rAF 标记：滚动时只按帧更新一次状态，避免每像素一次 render */
+	const scrollRafRef = useRef(0);
+
+
+	/** 正文 HTML 容器（mermaid 渲染要往里找块） */
+	const docHtmlRef = useRef<HTMLDivElement | null>(null);
+	/**
+	 * 编辑器状态（2026-10-26）：
+	 *   'idle' = 还没进入编辑态 · 'ok' = CodeMirror 已挂上 · 'fail' = 拉不到编辑器脚本 ⇒ 用 textarea
+	 * 为什么要三态：编辑器是**按需加载**的独立 bundle；IDE webview 没有那条 HTTP 路由，
+	 * 加载必然失败 —— 那时必须**静默退回 textarea**，而不是让用户对着空白框发呆。
+	 */
+	const [cmState, setCmState] = useState<'idle' | 'ok' | 'fail'>('idle');
+	const editorDivRef = useRef<HTMLDivElement | null>(null);
+	const editorHandleRef = useRef<{ destroy(): void } | null>(null);
 
 	/**
 	 * 保存正文。
@@ -1066,6 +1173,59 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 		}
 		return { ok: true, mtime: r?.mtime };
 	};
+
+	/** 拉一次编辑器 bundle（同源；失败就记住失败，别每次重试刷控制台） */
+	const ensureEditor = (): Promise<boolean> => new Promise((resolve) => {
+		const w = window as unknown as { __KB_EDITOR_MOUNT__?: unknown };
+		if (typeof w.__KB_EDITOR_MOUNT__ === 'function') { resolve(true); return; }
+		const s = document.createElement('script');
+		s.src = '/x/kb/web/kbEditor.js';
+		s.onload = () => resolve(true);
+		s.onerror = () => resolve(false);
+		document.head.appendChild(s);
+	});
+
+	/* 进入编辑态 ⇒ 尝试挂 CodeMirror；任何一步失败都退回 textarea */
+	useEffect(() => {
+		if (draft === null) {
+			if (editorHandleRef.current) { try { editorHandleRef.current.destroy(); } catch { /* 忽略 */ } editorHandleRef.current = null; }
+			setCmState('idle');
+			return;
+		}
+		let cancelled = false;
+		void ensureEditor().then((ok) => {
+			if (cancelled) { return; }
+			const mount = (window as unknown as { __KB_EDITOR_MOUNT__?: (el: HTMLElement, text: string, o: unknown) => { destroy(): void } }).__KB_EDITOR_MOUNT__;
+			if (!ok || typeof mount !== 'function' || !editorDivRef.current) { setCmState('fail'); return; }
+			try {
+				editorHandleRef.current = mount(editorDivRef.current, draft, {
+					onChange: (v: string) => setDraft(v),
+					onSave: () => { void commitDraftRef.current?.(); },
+					onEscape: () => { setDraft(null); },
+				});
+				setCmState('ok');
+			} catch { setCmState('fail'); }
+		});
+		return () => {
+			cancelled = true;
+			if (editorHandleRef.current) { try { editorHandleRef.current.destroy(); } catch { /* 忽略 */ } editorHandleRef.current = null; }
+		};
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [draft !== null]);
+
+	/** `onSave` 要在 effect 里调用，但 `commitDraft` 定义在下面 ⇒ 用 ref 转一手 */
+	const commitDraftRef = useRef<null | (() => Promise<void>)>(null);
+
+	/**
+	 * 提交草稿（2026-10-26）：保存按钮与 Ctrl/Cmd+S 共用这一条，
+	 * 避免"按钮能存、快捷键另写一份"导致行为分叉。
+	 */
+	const commitDraft = async () => {
+		if (draft === null || !doc?.path) { return; }
+		const res = await saveDocText(doc.path, draft, doc.mtime);
+		if (res.ok) { setDoc({ ...doc, text: draft, mtime: res.mtime }); setDraft(null); }
+	};
+	commitDraftRef.current = commitDraft;
 
 	/** 任务清单勾选：翻转该行的 `[ ]` ↔ `[x]` 并写回 */
 	const toggleTask = async (lineIndex: number) => {
@@ -1090,8 +1250,44 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 	const [showSettings, setShowSettings] = useState(false);
 	/** 标题行的「库下拉」（切换 / 新建 / 本地载入） */
 	const [vaultMenu, setVaultMenu] = useState(false);
+	/** 排序档位 → 中文（菜单里要显示当前值，否则用户不知道现在是哪种排序） */
+	const SORT_LABEL: Record<string, string> = {
+		name: "名称 ↑", nameDesc: "名称 ↓", size: "大小 ↓", mtime: "时间 ↓", mtimeAsc: "时间 ↑",
+	};
+
 	/** 导图覆盖层（三端共用同一份 `KbCanvasPane`） */
 	const [canvasOpen, setCanvasOpen] = useState(false);
+	/**
+	 * 「笔记」节的一行收纳菜单（2026-10-26 方案 B）。
+	 * 原来 9 个按钮平铺在第二行，340px 面板里被压成竖排单字 ⇒ 现在收进 ⋯ 菜单，
+	 * 节头只留「排序：名称 ↑ ▾ / ＋ / ⋯」，**永远一行、永不溢出**。
+	 */
+	const [notesMenu, setNotesMenu] = useState<{ x: number; y: number } | null>(null);
+
+	/**
+	 * 复制文本到剪贴板（2026-10-26）。
+	 * `navigator.clipboard` 在非安全上下文/无权限时会抛 ⇒ 回退到隐藏 textarea + execCommand，
+	 * 保证「复制绝对路径」在三个宿主里都真的生效。
+	 */
+	const copyText = async (text: string) => {
+		try {
+			if (navigator.clipboard && navigator.clipboard.writeText) {
+				await navigator.clipboard.writeText(text);
+				return true;
+			}
+		} catch { /* 落到兜底 */ }
+		try {
+			const ta = document.createElement("textarea");
+			ta.value = text;
+			ta.style.position = "fixed";
+			ta.style.opacity = "0";
+			document.body.appendChild(ta);
+			ta.select();
+			const ok = document.execCommand("copy");
+			document.body.removeChild(ta);
+			return ok;
+		} catch { return false; }
+	};
 
 	const openHistory = async () => {
 		const list = actions?.listBackups;
@@ -1162,6 +1358,142 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 		| null
 	>(null);
 
+	/**
+	 * 在**本视图右栏**里打开一篇正文（2026-10-26）。
+	 *
+	 * 为什么要有它：文档里的 `[[双链]]` 原来交给宿主 `actions.openLink`，
+	 * 而面板那个实现只是 `setDoc(...)` 更新**宿主自己的**状态 —— 界面上显示的却是
+	 * 视图内部的 doc ⇒ 用户看到"点了没反应"。这里让视图自己开，宿主只做兜底。
+	 */
+	const loadIntoView = useCallback((path: string, fallbackName?: string) => {
+		const load = actions?.loadDoc;
+		if (!load) { return false; }
+		const name = fallbackName || String(path).split("/").pop() || path;
+		ensureTab(path, name);      // 每次打开正文都确保有对应 Tab
+		const kind = assetKindOf(path);
+		if (kind && actions?.assetUrl) {
+			setDoc({ title: name, text: "", path, asset: { kind, url: actions.assetUrl(path) } });
+			return true;
+		}
+		const cached = docCacheRef.current.get(path);
+		if (cached) {
+			setDoc(cached);
+			void load(path).then(d => {
+				if (!d) { return; }
+				const next = { ...d, path };
+				docCacheRef.current.set(path, next);
+				setDoc(prev => (prev && prev.path === path ? next : prev));
+			}).catch(() => { /* 后台校验失败沿用缓存 */ });
+			return true;
+		}
+		setDocLoading(true);
+		void load(path)
+			.then(d => {
+				const next = { ...(d ?? { title: name, text: "读取失败：宿主没有返回正文" }), path };
+				if (d) { docCacheRef.current.set(path, next); }
+				setDoc(next);
+			})
+			.catch(() => setDoc({ title: name, text: "读取失败", path }))
+			.finally(() => setDocLoading(false));
+		return true;
+	}, [actions]);
+
+	/** `loadIntoView` 的引用（Tab 切换需要它，但它定义在后面） */
+	const loadIntoViewRef = useRef<null | ((path: string, name?: string) => boolean)>(null);
+
+	/* 切 Tab 时记下的滚动位置：等内容落到 DOM 再滚（否则容器还没高度，滚了也没用） */
+	useEffect(() => {
+		const want = pendingScrollRef.current;
+		if (want == null) { return; }
+		const el = docScrollRef.current;
+		if (!el) { return; }
+		pendingScrollRef.current = null;
+		requestAnimationFrame(() => { el.scrollTop = want; });
+	}, [doc?.html, doc?.path]);
+	// 每次渲染都刷新一次引用：Tab 切换时用的永远是最新闭包（含最新的 docCache / actions）
+	loadIntoViewRef.current = loadIntoView;
+
+	/** 确保某篇有 Tab 并激活它（已存在则只激活） */
+	const ensureTab = useCallback((path: string, title: string) => {
+		setTabs(prev => (prev.some(x => x.path === path) ? prev : [...prev, { path, title }]));
+		setActivePath(path);
+	}, []);
+
+	/** 切到某个 Tab：先存下当前现场，再还原目标现场（没有现场就去加载） */
+	const switchTab = useCallback((path: string) => {
+		if (path === activePath) { return; }
+		setDoc(prev => {
+			if (prev && prev.path) {
+				tabSnapRef.current.set(prev.path, { doc: prev, draft, scroll: docScrollRef.current ? docScrollRef.current.scrollTop : 0 });
+			}
+			return prev;
+		});
+		setDraft(cur => {
+			const prevPath = activePath;
+			if (prevPath) {
+				const snap = tabSnapRef.current.get(prevPath);
+				if (snap) { snap.draft = cur; }
+			}
+			return cur;
+		});
+		setActivePath(path);
+		const snap = tabSnapRef.current.get(path);
+		if (snap && snap.doc) {
+			setDoc(snap.doc as typeof doc);
+			setDraft(snap.draft);
+			pendingScrollRef.current = snap.scroll;
+			return;
+		}
+		const title = (tabs.find(x => x.path === path) || { title: fileNameOf(path) }).title;
+		loadIntoViewRef.current?.(path, title);
+	}, [activePath, draft, tabs]);
+
+	/** 关闭 Tab：删现场；关的是当前 Tab 就切到邻居，全关了就回到空态 */
+	const closeTab = useCallback((path: string) => {
+		/*
+		 * 关掉"正在编辑且有改动"的那篇时要拦一下：Tab 关了就取不回来，
+		 * 而草稿只存在内存里（磁盘上还是旧内容）⇒ 静默丢弃等于删了用户的工作。
+		 */
+		if (path === activePath && draft !== null && doc && typeof doc.text === 'string' && draft !== doc.text) {
+			if (!window.confirm('这篇有未保存的修改，关闭标签页会丢弃这些改动。确定关闭？')) { return; }
+		}
+		tabSnapRef.current.delete(path);
+		const idx = tabs.findIndex(x => x.path === path);
+		const rest = tabs.filter(x => x.path !== path);
+		setTabs(rest);
+		if (path !== activePath) { return; }
+		const next = rest[Math.min(idx, rest.length - 1)];
+		if (!next) {
+			setActivePath("");
+			setDoc(null);
+			setDraft(null);
+			return;
+		}
+		setActivePath(next.path);
+		const snap = tabSnapRef.current.get(next.path);
+		if (snap && snap.doc) {
+			setDoc(snap.doc as typeof doc);
+			setDraft(snap.draft);
+			pendingScrollRef.current = snap.scroll;
+		} else {
+			loadIntoViewRef.current?.(next.path, next.title);
+		}
+	}, [activePath, tabs]);
+
+	/** 细条上的滚动处理：按帧节流，只更新进度与是否显示「回到顶部」 */
+	const onDocScroll = useCallback(() => {
+		if (scrollRafRef.current) { return; }
+		scrollRafRef.current = requestAnimationFrame(() => {
+			scrollRafRef.current = 0;
+			const el = docScrollRef.current;
+			if (!el) { return; }
+			const top = el.scrollTop;
+			const max = Math.max(1, el.scrollHeight - el.clientHeight);
+			setDocScrollTop(top);
+			setDocProgress(Math.max(0, Math.min(1, top / max)));
+		});
+	}, []);
+
 	const onOpenNode = useCallback((node: KbTreeNode) => {
 		// 普通单击 = 单选举中（并把选中集收敛成这一项）；目录不改变选中集
 		if (!node.isFolder) { setSelected([node.path]); }
@@ -1175,9 +1507,7 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 		}
 		const load = actions?.loadDoc;
 		if (load && !node.isFolder) {
-			void load(node.path)
-				.then(d => setDoc({ ...(d ?? { title: node.name, text: '读取失败：宿主没有返回正文' }), path: node.path }))
-				.catch(() => setDoc({ title: node.name, text: '读取失败', path: node.path }));
+			loadIntoView(node.path, node.name);
 			return;
 		}
 		actions?.openNode?.(node.path);
@@ -1362,6 +1692,25 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 										actions?.renameNode?.(menu.path);
 									},
 								}]),
+							// 2026-10-26：右键菜单补齐「复制绝对路径 / 在资源管理器中打开」
+							{
+								label: '复制绝对路径',
+								run: () => {
+									const target = (menu.paths && menu.paths[0]) || menu.path || "";
+									if (!target) { return; }
+									void copyText(target).then(ok => {
+										if (!ok) { window.alert("复制失败，路径：" + String.fromCharCode(10) + target); }
+									});
+								},
+							},
+							// 只有宿主声明了 reveal 才显示（没有就整项不出现，而不是给个空按钮）
+							...(actions?.reveal ? [{
+								label: '在资源管理器中打开',
+								run: () => {
+									const target = (menu.paths && menu.paths[0]) || menu.path || "";
+									if (target) { actions?.reveal?.(target); }
+								},
+							}] : []),
 								{
 									label: menu.paths.length > 1 ? `删除这 ${menu.paths.length} 项` : '删除',
 									run: () => {
@@ -1395,10 +1744,10 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 							{results.map(r => (
 								<div key={r.path} onClick={() => actions?.openNode?.(r.path)}
 									style={{ padding: '3px 0', cursor: 'pointer' }}>
-									<div style={{ fontSize: 12, color: c.fg }}>{r.title}</div>
+									<div style={{ fontSize: 12, color: c.fg }}>{highlightMatch(r.title, query)}</div>
 									{r.snippet && (
 										<div style={{ fontSize: 11, color: c.fgFaint, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-											{r.snippet}
+											{highlightMatch(r.snippet, query)}
 										</div>
 									)}
 								</div>
@@ -1431,87 +1780,99 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 						onToggle={() => toggle('notes')}
 						onDropRoot={paths => onMoveNode(paths, '笔记')}
 						extra={
-							<span style={{ display: 'flex', gap: 2 }}>
+							/*
+							 * ★ 2026-10-26（方案 B · 单行收纳）：
+							 *   节头一行放完：排序（当前值可点开菜单）+ 新建笔记 + ⋯（体检/查重/审核/导图/新建目录）。
+							 *   刻意**不放** 4 个独立图标 —— 340px 面板里放不下，历史上就被压成竖排单字。
+							 */
+							<span style={{ display: "flex", alignItems: "center", gap: 4, flex: "0 0 auto", whiteSpace: "nowrap" }}>
+								<button
+									type="button"
+									title="排序与更多操作"
+									onClick={e => {
+										e?.stopPropagation?.();
+										const r = (e?.currentTarget as HTMLElement)?.getBoundingClientRect?.();
+										setNotesMenu({ x: Math.max(8, (r ? r.right : 200) - 208), y: (r ? r.bottom : 100) + 4 });
+									}}
+									style={{
+										height: 20, padding: "0 6px", fontSize: 10.5, cursor: "pointer", borderRadius: 3, flex: "0 0 auto",
+										background: "transparent", color: c.fgDim, border: `1px solid ${c.line}`, whiteSpace: "nowrap",
+									}}
+								>
+									排序：{SORT_LABEL[sortKey] ?? "名称 ↑"} ▾
+								</button>
 								<IconBtn title="新建笔记" label="＋" onClick={e => {
 									e?.stopPropagation?.();
-									if (actions?.useInlineDialogs) { setDialog({ kind: 'newNote', value: '未命名笔记' }); return; }
-									actions?.createNote?.('');
+									if (actions?.useInlineDialogs) { setDialog({ kind: "newNote", value: "未命名笔记" }); return; }
+									actions?.createNote?.("");
 								}} />
-								<IconBtn title="新建目录" label="▤" onClick={e => {
+								<IconBtn title="更多（新建目录 / 体检 / 查重 / 审核 / 导图 / 排序）" label="⋯" onClick={e => {
 									e?.stopPropagation?.();
-									if (actions?.useInlineDialogs) { setDialog({ kind: 'newFolder', value: '新目录' }); return; }
-									actions?.newFolder?.('');
+									const r = (e?.currentTarget as HTMLElement)?.getBoundingClientRect?.();
+									setNotesMenu({ x: Math.max(8, (r ? r.right : 200) - 208), y: (r ? r.bottom : 100) + 4 });
 								}} />
 							</span>
 						}
 					/>
-					{expanded.notes && (
-						<div className="kb-sortbar" style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '0 10px 4px' }}>
-							<span style={{ fontSize: 10.5, color: c.fgFaint }}>排序</span>
-							{([
-								['name', '名称↑'], ['nameDesc', '名称↓'],
-								['size', '大小↓'],
-								['mtime', '时间↓'], ['mtimeAsc', '时间↑'],
-							] as const).map(([k, label]) => (
-								<button
-									key={k}
-									type="button"
-									onClick={() => setSortKey(k)}
-									style={{
-										height: 19, padding: '0 7px', fontSize: 10.5, cursor: 'pointer', borderRadius: 3,
-										background: sortKey === k ? c.sel : 'transparent',
-										color: sortKey === k ? c.selFg : c.fgDim,
-										border: `1px solid ${sortKey === k ? c.sel : c.line}`,
-									}}
-								>{label}</button>
-							))}
-							{/* 右侧动作（宿主没提供就整块不渲染，不留死按钮） */}
-							{(actions?.runLint || actions?.runDedup || actions?.reviewQueue) && <span style={{ flex: 1 }} />}
-							{actions?.reviewQueue && (
-								<button
-									type="button"
-									title="查看 .review/ 待审条目（只读）"
-									onClick={() => actions?.reviewQueue?.()}
-									style={{
-										height: 19, padding: '0 8px', fontSize: 10.5, cursor: 'pointer', borderRadius: 3,
-										background: 'transparent', color: c.fgDim, border: `1px solid ${c.line}`,
-									}}
-								>审核</button>
-							)}
-							{actions?.runDedup && (
-								<button
-									type="button"
-									title="检测疑似重复，产出 dedup-report.md"
-									onClick={() => actions?.runDedup?.()}
-									style={{
-										height: 19, padding: '0 8px', fontSize: 10.5, cursor: 'pointer', borderRadius: 3,
-										background: 'transparent', color: c.fgDim, border: `1px solid ${c.line}`,
-									}}
-								>去重</button>
-							)}
-							{actions?.canvas && (
-								<button
-									type="button"
-									title="打开思维导图（.canvas 只读预览）"
-									onClick={() => setCanvasOpen(true)}
-									style={{
-										height: 19, padding: '0 8px', fontSize: 10.5, cursor: 'pointer', borderRadius: 3,
-										background: 'transparent', color: c.fgDim, border: `1px solid ${c.line}`,
-									}}
-								>导图</button>
-							)}
-							{actions?.runLint && (
-								<button
-									type="button"
-									title="跑结构校验，产出 lint-report.md"
-									onClick={() => actions?.runLint?.()}
-									style={{
-										height: 19, padding: '0 8px', fontSize: 10.5, cursor: 'pointer', borderRadius: 3,
-										background: 'transparent', color: c.fgDim, border: `1px solid ${c.line}`,
-									}}
-								>体检</button>
-							)}
-						</div>
+					{/*
+					 * 「笔记」节的 ⋯ 菜单（方案 B）。数据全部来自已有动作 ⇒ 不新增后端；
+					 * 每个条目仍按**能力**显示（宿主没提供就不出现，绝不留死按钮）。
+					 */}
+					{notesMenu && (
+						<>
+							<div
+								data-kb-notes-menu-backdrop="1"
+								onClick={() => setNotesMenu(null)}
+								onContextMenu={e => { e.preventDefault(); setNotesMenu(null); }}
+								style={{ position: "fixed", inset: 0, zIndex: 40 }}
+							/>
+							<div
+								data-kb-notes-menu="1"
+								style={{
+									position: "fixed", left: notesMenu.x, top: notesMenu.y, zIndex: 41, minWidth: 208,
+									background: "var(--vscode-menu-background, #252526)", border: `1px solid ${c.line}`,
+									borderRadius: 4, padding: 4, boxShadow: "0 4px 16px rgba(0,0,0,.5)", fontSize: 12.5,
+								}}
+							>
+								{[
+									{ label: "新建笔记", run: () => { if (actions?.useInlineDialogs) { setDialog({ kind: "newNote", value: "未命名笔记" }); return; } actions?.createNote?.(""); }, show: true },
+									{ label: "新建目录", run: () => { if (actions?.useInlineDialogs) { setDialog({ kind: "newFolder", value: "新目录" }); return; } actions?.newFolder?.(""); }, show: true },
+									{ label: "体检", run: () => actions?.runLint?.(), show: !!actions?.runLint },
+									{ label: "查重", run: () => actions?.runDedup?.(), show: !!actions?.runDedup },
+									{ label: "审核", run: () => actions?.reviewQueue?.(), show: !!actions?.reviewQueue },
+									{ label: "思维导图", run: () => setCanvasOpen(true), show: !!actions?.canvas },
+								].filter(item => item.show).map(item => (
+									<div
+										key={item.label}
+										role="menuitem"
+										tabIndex={0}
+										onClick={() => { setNotesMenu(null); item.run(); }}
+										onKeyDown={e => { if (e.key === "Enter") { setNotesMenu(null); item.run(); } }}
+										style={{ display: "flex", alignItems: "center", height: 24, padding: "0 8px", borderRadius: 3, cursor: "pointer" }}
+										onMouseEnter={ev => { (ev.currentTarget as HTMLElement).style.background = c.hover; }}
+										onMouseLeave={ev => { (ev.currentTarget as HTMLElement).style.background = "transparent"; }}
+									>{item.label}</div>
+								))}
+								<div style={{ height: 1, background: c.line, margin: "4px 6px" }} />
+								<div style={{ padding: "2px 8px 3px", fontSize: 10.5, color: c.fgFaint }}>排序</div>
+								{(Object.keys(SORT_LABEL) as string[]).map(k => (
+									<div
+										key={k}
+										role="menuitemradio"
+										aria-checked={sortKey === k}
+										tabIndex={0}
+										onClick={() => { setSortKey(k as Parameters<typeof setSortKey>[0]); setNotesMenu(null); }}
+										onKeyDown={e => { if (e.key === "Enter") { setSortKey(k as Parameters<typeof setSortKey>[0]); setNotesMenu(null); } }}
+										style={{ display: "flex", alignItems: "center", gap: 6, height: 24, padding: "0 8px", borderRadius: 3, cursor: "pointer" }}
+										onMouseEnter={ev => { (ev.currentTarget as HTMLElement).style.background = c.hover; }}
+										onMouseLeave={ev => { (ev.currentTarget as HTMLElement).style.background = "transparent"; }}
+									>
+										<span style={{ width: 10, color: c.selFg }}>{sortKey === k ? "✓" : ""}</span>
+										{SORT_LABEL[k]}
+									</div>
+								))}
+							</div>
+						</>
 					)}
 
 					{expanded.notes && noteTree.map(node => (
@@ -1653,36 +2014,133 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 
 			{/* 右栏：内嵌正文（插件页 / 工作台面板没有 IDE 编辑区时用它，见 docMode） */}
 			{docMode ? (
-				<div style={{ flex: '1 1 auto', minWidth: 0, minHeight: 0, overflow: 'auto', borderLeft: `1px solid ${c.line}`, padding: '14px 18px' }}>
+				/*
+				 * ★ 2026-10-26（方案 C+D）：外层**不再滚动**，改成「Tab 条 / 细条 / 滚动区」三段。
+				 *   之前整个右栏是一个 overflow:auto 容器 ⇒ 标题行跟着正文滚走（滚到中段不知道在看哪篇、
+				 *   也够不到「编辑/历史」）。现在顶部两段固定，只有正文滚动。
+				 */
+				<div style={{ flex: '1 1 auto', minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', borderLeft: `1px solid ${c.line}` }}>
 					{doc ? (
 						<>
-							{/* 标题行：右端「编辑 / 保存·取消」——只有宿主提供 saveDoc 时才出现 */}
-							<div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-								<div style={{ fontSize: 14, fontWeight: 600, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{doc.title}</div>
+							{/* ── C：多文档 Tab（每篇保留滚动位置与草稿）────────────── */}
+							<div
+								data-kb-tabs="1"
+								style={{ display: 'flex', alignItems: 'stretch', height: 30, flex: '0 0 auto', overflowX: 'auto', overflowY: 'hidden', whiteSpace: 'nowrap', background: 'rgba(127,127,127,.06)', borderBottom: `1px solid ${c.line}` }}
+							>
+								{tabs.map(tab => {
+									const on = tab.path === activePath;
+									const dirty = on && draft !== null && doc.path === tab.path && draft !== doc.text;
+									return (
+										<div
+											key={tab.path}
+											role="tab"
+											tabIndex={0}
+											aria-selected={on}
+											title={tab.path}
+											onClick={() => switchTab(tab.path)}
+											onKeyDown={e => { if (e.key === "Enter") { switchTab(tab.path); } }}
+											style={{
+												display: "flex", alignItems: "center", gap: 6, flex: "0 0 auto", maxWidth: 190,
+												padding: "0 8px 0 10px", fontSize: 11.5, cursor: "pointer",
+												color: on ? c.fg : c.fgDim,
+												background: on ? "var(--vscode-editor-background, #1e1e1e)" : "transparent",
+												borderRight: `1px solid ${c.line}`,
+												boxShadow: on ? "inset 0 2px 0 var(--vscode-focusBorder, #3794ff)" : "none",
+											}}
+										>
+											{dirty ? <span title="有未保存修改" style={{ width: 6, height: 6, borderRadius: "50%", background: "#d29922", flex: "0 0 auto" }} /> : null}
+											<span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{tab.title}</span>
+											<span
+												role="button"
+												tabIndex={0}
+												title="关闭"
+												aria-label="关闭"
+												onClick={ev => { ev.stopPropagation(); closeTab(tab.path); }}
+												onKeyDown={ev => { if (ev.key === "Enter") { ev.stopPropagation(); closeTab(tab.path); } }}
+												style={{ opacity: .55, fontSize: 13, lineHeight: 1, flex: "0 0 auto" }}
+											>×</span>
+										</div>
+									);
+								})}
+							</div>
+
+							{/* ── D：极简细条（28px）：折叠面包屑 + 预览/编辑 + ⋯ + 进度 ── */}
+							<div
+								data-kb-docbar="1"
+								style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 6, height: 28, flex: '0 0 auto', padding: '0 6px 0 10px', whiteSpace: 'nowrap', overflow: 'hidden', background: 'rgba(127,127,127,.03)', borderBottom: `1px solid ${c.line}` }}
+							>
+								<span role="button" tabIndex={0} title="完整路径 / 更多操作" onClick={() => setDocMenu(v => !v)}
+									onKeyDown={e => { if (e.key === "Enter") { setDocMenu(v => !v); } }}
+									style={{ cursor: "pointer", color: c.fgFaint, flex: "0 0 auto" }}>…</span>
+								<span style={{ color: c.fgFaint, flex: "0 0 auto" }}>/</span>
+								<span style={{ color: c.fgFaint, flex: "0 0 auto", maxWidth: 110, overflow: "hidden", textOverflow: "ellipsis" }}>{parentNameOf(doc.path)}</span>
+								<span style={{ color: c.fgFaint, flex: "0 0 auto" }}>/</span>
+								<span style={{ color: c.fg, flex: "0 1 auto", overflow: "hidden", textOverflow: "ellipsis" }}>{fileNameOf(doc.path) || doc.title}</span>
+								<span style={{ flex: 1 }} />
+								{docLoading ? <span style={{ fontSize: 10.5, color: c.fgFaint, flex: "0 0 auto" }}>载入中…</span> : null}
+								{draft !== null ? (
+									<span style={{ fontSize: 10.5, flex: "0 0 auto", color: draft === doc.text ? c.fgFaint : "#d29922" }}>
+										{draft === doc.text ? "未修改" : "● 未保存"}
+									</span>
+								) : null}
 								{!doc.asset && actions?.saveDoc && doc.path ? (
-									draft === null ? (
-										<button type="button" onClick={() => setDraft(doc.text)} title="在当前面板里编辑并保存"
-											style={{ height: 22, padding: '0 9px', fontSize: 11, cursor: 'pointer', borderRadius: 3, background: 'transparent', color: 'inherit', border: `1px solid ${c.line}` }}>编辑</button>
-									) : (
+									<span data-kb-mode="1" style={{ display: "flex", border: `1px solid ${c.line}`, borderRadius: 3, overflow: "hidden", flex: "0 0 auto" }}>
+										<button type="button" title="预览" onClick={() => { if (draft !== null) { setDraft(null); } }}
+											style={{ height: 18, padding: "0 7px", fontSize: 10.5, border: 0, cursor: "pointer", background: draft === null ? "var(--vscode-button-background, #0e639c)" : "transparent", color: draft === null ? "var(--vscode-button-foreground, #fff)" : c.fgDim }}>预览</button>
+										<button type="button" title="编辑 Markdown 源码" onClick={() => { if (draft === null) { setDraft(doc.text); } }}
+											style={{ height: 18, padding: "0 7px", fontSize: 10.5, border: 0, cursor: "pointer", background: draft !== null ? "var(--vscode-button-background, #0e639c)" : "transparent", color: draft !== null ? "var(--vscode-button-foreground, #fff)" : c.fgDim }}>编辑</button>
+									</span>
+								) : null}
+								<button type="button" title="更多（完整路径 / 历史 / 资源管理器）" onClick={() => setDocMenu(v => !v)}
+									style={{ width: 22, height: 20, flex: "0 0 auto", border: 0, borderRadius: 3, background: "transparent", color: c.fgDim, cursor: "pointer" }}>⋯</button>
+								{/* 阅读进度：贴细条底边，越长越满 */}
+								<div style={{ position: "absolute", left: 0, bottom: -1, height: 2, width: Math.round(docProgress * 100) + "%", background: "var(--vscode-focusBorder, #3794ff)", opacity: .75, pointerEvents: "none" }} />
+								{docMenu ? (
+									<>
+										<div onClick={() => setDocMenu(false)} onContextMenu={e => { e.preventDefault(); setDocMenu(false); }} style={{ position: "fixed", inset: 0, zIndex: 40 }} />
+										<div style={{ position: "absolute", right: 4, top: 26, zIndex: 41, minWidth: 240, background: "var(--vscode-menu-background, #252526)", border: `1px solid ${c.line}`, borderRadius: 4, padding: 4, boxShadow: "0 4px 16px rgba(0,0,0,.5)", fontSize: 11.5 }}>
+											<div style={{ padding: "4px 8px", color: c.fgFaint, wordBreak: "break-all", lineHeight: 1.5 }}>{doc.path || "(无路径)"}</div>
+											<div style={{ height: 1, background: c.line, margin: "4px 6px" }} />
+											{actions?.listBackups && doc.path && !doc.asset ? (
+												<div role="menuitem" tabIndex={0} onClick={() => { setDocMenu(false); if (backups) { setBackups(null); } else { void openHistory(); } }}
+													style={{ height: 24, display: "flex", alignItems: "center", padding: "0 8px", borderRadius: 3, cursor: "pointer" }}>{backups ? "收起历史备份" : "历史备份"}</div>
+											) : null}
+											{actions?.reveal && doc.path ? (
+												<div role="menuitem" tabIndex={0} onClick={() => { setDocMenu(false); actions?.reveal?.(doc.path as string); }}
+													style={{ height: 24, display: "flex", alignItems: "center", padding: "0 8px", borderRadius: 3, cursor: "pointer" }}>在资源管理器中打开</div>
+											) : null}
+										</div>
+									</>
+								) : null}
+							</div>
+
+							{/* ── 正文滚动区（只有它滚；Tab/细条固定）──────────────── */}
+							<div ref={docScrollRef} onScroll={onDocScroll} style={{ flex: '1 1 auto', minHeight: 0, overflow: 'auto', padding: '12px 18px 72px', position: 'relative' }}>
+							{/* 标题行：右端「编辑 / 保存·取消」——只有宿主提供 saveDoc 时才出现 */}
+							{/*
+							 * 文档头（C+D 之后）：模式切换与「历史」已经移到顶部细条（预览/编辑 + ⋯），
+							 * 这里只留**身份信息**与**编辑态的两个必答动作**（保存 / 取消）。
+							 * 重复的按钮会让"该点哪个"变成新的问题。
+							 */}
+							<div style={{ marginBottom: 10 }}>
+								<div style={{ fontSize: 17, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+									{doc.title}
+								</div>
+								<div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 3, fontSize: 10.5, color: c.fgFaint }}>
+									{!doc.asset && doc.path ? <span>{(doc.path.split('/').pop() || '')}</span> : null}
+									{draft !== null
+										? <span>{draft.length} 字{draft === doc.text ? '' : ' · 未保存'}</span>
+										: (doc.text ? <span>{doc.text.length} 字</span> : null)}
+									<span style={{ flex: 1 }} />
+									{draft !== null && !doc.asset ? (
 										<>
-											<button type="button" onClick={() => { void (async () => {
-												if (!doc.path) { return; }
-												const res = await saveDocText(doc.path, draft, doc.mtime);
-												if (res.ok) { setDoc({ ...doc, text: draft, mtime: res.mtime }); setDraft(null); }
-											})(); }}
-												style={{ height: 22, padding: '0 9px', fontSize: 11, cursor: 'pointer', borderRadius: 3, background: 'var(--vscode-button-background, #0e639c)', color: 'var(--vscode-button-foreground, #fff)', border: '1px solid transparent' }}>保存</button>
-											<button type="button" onClick={() => setDraft(null)}
-												style={{ height: 22, padding: '0 9px', fontSize: 11, cursor: 'pointer', borderRadius: 3, background: 'transparent', color: 'inherit', border: `1px solid ${c.line}` }}>取消</button>
+											<button type="button" onClick={() => { void commitDraft(); }}
+												style={{ height: 22, padding: '0 10px', fontSize: 11, cursor: 'pointer', borderRadius: 3, background: 'var(--vscode-button-background, #0e639c)', color: 'var(--vscode-button-foreground, #fff)', border: '1px solid transparent' }}>保存</button>
+											<button type="button" onClick={() => { if (draft !== doc.text && !window.confirm('放弃未保存的修改？')) { return; } setDraft(null); }}
+												style={{ height: 22, padding: '0 10px', fontSize: 11, cursor: 'pointer', borderRadius: 3, background: 'transparent', color: 'inherit', border: `1px solid ${c.line}` }}>取消</button>
 										</>
-									)
-								) : null}
-								{!doc.asset && actions?.listBackups && doc.path ? (
-									<button type="button" title="查看自动备份，可一键恢复"
-										onClick={() => { if (backups) { setBackups(null); } else { void openHistory(); } }}
-										style={{ height: 22, padding: '0 9px', fontSize: 11, cursor: 'pointer', borderRadius: 3, background: 'transparent', color: 'inherit', border: `1px solid ${c.line}` }}>
-										{backups ? '收起历史' : '历史'}
-									</button>
-								) : null}
+									) : null}
+								</div>
 							</div>
 
 							{/* 备份列表：保存时自动生成（`笔记/.kb-backup/`），这里只读列出 + 恢复 */}
@@ -1712,6 +2170,14 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 									<div style={{ marginTop: 6, fontSize: 11, opacity: .55 }}>{doc.asset.url}</div>
 								</div>
 							) : draft !== null ? (
+								<>
+									{/* 编辑器挂载点：拉到 kbEditor.js 后由它接管；失败时这块保持隐藏 */}
+									<div
+										ref={editorDivRef}
+										data-kb-editor="cm"
+										style={{ display: cmState === 'ok' ? 'block' : 'none', minHeight: 420, border: `1px solid ${c.line}`, borderRadius: 4, overflow: 'hidden' }}
+									/>
+									{cmState === 'ok' ? null : (
 								<textarea
 									ref={editorRef}
 									value={draft}
@@ -1729,6 +2195,43 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 										const img = Array.from(e.dataTransfer?.files ?? []).find(f => f.type.startsWith('image/'));
 										if (img) { e.preventDefault(); void insertAsset(img); }
 									}}
+									/*
+									 * 键盘行为（2026-10-26）：编辑态没有任何快捷键时，用户会以为"这编辑器是半成品"。
+									 * 只加四条最基本、且**不会与浏览器/宿主冲突**的：
+									 *   Ctrl/Cmd+S 保存 · Esc 取消 · Tab 缩进两空格 · Enter 续写列表
+									 */
+									onKeyDown={e => {
+										const el = e.currentTarget;
+										if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')) {
+											e.preventDefault();
+											void commitDraft();
+											return;
+										}
+										if (e.key === 'Escape') {
+											e.preventDefault();
+											if (draft !== doc.text && !window.confirm('放弃未保存的修改？')) { return; }
+											setDraft(null);
+											return;
+										}
+										if (e.key === 'Tab') {
+											e.preventDefault();
+											const start = el.selectionStart ?? 0;
+											const end = el.selectionEnd ?? 0;
+											const r = indentAt(draft, start, end);
+											setDraft(r.next);
+											requestAnimationFrame(() => { el.selectionStart = r.start; el.selectionEnd = r.end; });
+											return;
+										}
+										if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+											const caret = el.selectionStart ?? 0;
+											const r = continueMarkdownList(draft, caret);
+											if (r) {
+												e.preventDefault();
+												setDraft(r.next);
+												requestAnimationFrame(() => { el.selectionStart = el.selectionEnd = r.caret; });
+											}
+										}
+									}}
 									style={{
 										width: '100%', minHeight: 420, boxSizing: 'border-box', resize: 'vertical',
 										padding: '8px 10px', background: c.inputBg, color: c.inputFg, border: `1px solid ${c.line}`,
@@ -1736,6 +2239,8 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 										fontFamily: 'var(--vscode-editor-font-family, monospace)',
 									}}
 								/>
+									)}
+								</>
 							) : (
 								<div style={{ opacity: .95 }}>
 									{/*
@@ -1748,16 +2253,70 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 											{doc.math ? <link rel="stylesheet" href="/x/kb/vendor/katex/katex.min.css" /> : null}
 											<div
 												className="kb-md"
+												ref={docHtmlRef}
 												// 服务端 `html:false`（原始 HTML 一律转义）⇒ 这里的 HTML 由我们自己拼接，安全
 												dangerouslySetInnerHTML={{ __html: doc.html }}
 												onClick={e => {
 													const el = e.target as HTMLElement;
+													/*
+													 * ★ 2026-10-26（真机：超链接无法跳转）：
+													 *   笔记里的 `[[05 DSH 框架原理]]` 在库里**并不存在** ⇒ 渲染成灰色虚线（不可点），
+													 *   用户看到的就是"点了没反应"。这里给出明确反馈：告诉用户找的是哪一篇。
+													 */
+													const missing = el.closest('[data-wiki-missing]');
+													if (missing) {
+														e.preventDefault();
+														const target = missing.getAttribute('data-wiki-missing') || '';
+														window.alert('找不到这篇笔记：' + target + String.fromCharCode(10, 10)
+															+ '可能原因：笔记已改名/删除，或双链名字与实际文件名不一致。');
+														return;
+													}
 													const link = el.closest('[data-wiki]');
 													if (link) {
 														e.preventDefault();
 														const p = link.getAttribute('data-wiki');
-														if (p) { (actions?.openLink ?? actions?.openNode)?.(p); }
+														if (p) {
+															/*
+															 * ★ 2026-10-26（真机：文档里点双链没反应）：
+															 *   面板的 `openLink` 只更新了**宿主自己的**状态，而界面显示的是视图内部的
+															 *   doc ⇒ 点了什么都看不到。有 `loadDoc` 时**由视图自己打开**，宿主只兜底。
+															 */
+															if (!loadIntoView(p)) { (actions?.openLink ?? actions?.openNode)?.(p); }
+														}
 														return;
+													}
+													/*
+													 * ★★ 2026-10-26（真机：超链接点了没反应）：
+													 *   这条分支之前只处理双链与任务勾选 ⇒ 普通链接 `[文字](https://…)`
+													 *   点了会尝试**导航当前 webview**，被宿主拦掉 ⇒ 表现就是"没反应"。
+													 *   现在：站外链接交给宿主 `openUrl`（面板/页面都会 window.open 并在被拦时复制链接）；
+													 *   站内 `#锚点` 就地滚动（双链已经走 data-wiki，不吃这条）。
+													 */
+													const anchor = el.closest('a[href]') as HTMLAnchorElement | null;
+													if (anchor) {
+														const href = String(anchor.getAttribute('href') || '').trim();
+														if (!href) { e.preventDefault(); return; }
+														if (href.startsWith('#')) {
+															// 锚点能找到就就地滚动；找不到就**放行**（浏览器的同页跳转不会刷新，无害）
+															const id = href.slice(1);
+															const target = id ? (document.getElementById(id) ?? document.querySelector(`[data-anchor="${CSS.escape(id)}"]`)) : null;
+															if (target && 'scrollIntoView' in target) {
+																e.preventDefault();
+																(target as HTMLElement).scrollIntoView({ block: 'start', behavior: 'smooth' });
+															}
+															return;
+														}
+														if (/^(https?:|mailto:)/i.test(href)) {
+															e.preventDefault();
+															if (actions?.openUrl) { actions.openUrl(href); }
+															else { window.open(href, '_blank', 'noopener'); }
+															return;
+														}
+														// 其它（相对路径附件等）也不让 webview 自己导航：交给宿主按 URL 打开
+														if (/^(file:|[A-Za-z]:[\\/]|\.{0,2}\/)/.test(href)) {
+															e.preventDefault();
+															if (actions?.openUrl) { actions.openUrl(href); }
+														}
 													}
 													const box = el.closest('[data-task-line]') as HTMLInputElement | null;
 													if (box && actions?.saveDoc) {
@@ -1784,9 +2343,17 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 									)}
 								</div>
 							)}
+							</div>
+
+							{/* 回到顶部：滚过一屏才出现，避免小文档也挂一个按钮 */}
+							{docScrollTop > 300 ? (
+								<button type="button" title="回到顶部" aria-label="回到顶部"
+									onClick={() => { const el = docScrollRef.current; if (el) { el.scrollTo({ top: 0, behavior: "smooth" }); } }}
+									style={{ position: 'absolute', right: 16, bottom: 14, width: 28, height: 28, borderRadius: '50%', border: `1px solid ${c.line}`, background: 'var(--vscode-editorWidget-background, #2a2d2e)', color: c.fgDim, cursor: 'pointer', zIndex: 5 }}>↑</button>
+							) : null}
 						</>
 					) : (
-						<div style={{ color: c.fgFaint, fontSize: 12 }}>点左边的笔记看正文</div>
+						<div style={{ padding: '14px 18px', color: c.fgFaint, fontSize: 12 }}>点左边的笔记看正文</div>
 					)}
 				</div>
 			) : null}

@@ -908,7 +908,7 @@ window.__ModuleLoader__.load({
 		const STYLE_ID = 'vssaros-codebase-workbench-layout';
 		// ★ 2026-10-22（工作台 UI 统一，方案稿 §6.19）：**通用视觉交给共享层**（宿主注入的 `wb-*`），
 		//   这里只留代码库特有的东西（统计卡的四色强调、检索控件、节点行、键值对、分布条、小节标题）。
-		// ⚠ 原来写的 `--dsw-alias-border-default` / `--dsw-alias-label-link` **不存在** ⇒ 一直回落硬编码兜底
+		// ⚠ 原来写的 `--dsw-alias-border-l2` / `--dsw-alias-label-link` **不存在** ⇒ 一直回落硬编码兜底
 		//   ⇒ 从没跟随过主题 ✗（同一批问题在 kanban / memory 也各有一份，统一时一起清掉）。
 		const CSS = `
 .wb-cbm { overflow:auto; container-type: inline-size; }
@@ -966,7 +966,7 @@ window.__ModuleLoader__.load({
 .cbm-viz-svg { width:100%; height:420px; display:block; border-radius:var(--wb-r-md); background: var(--dsw-alias-bg-layer-1, rgba(127,127,127,.1)); cursor:grab; touch-action:none; }
 .cbm-viz-svg:active { cursor:grabbing; }
 .cbm-viz-edge { stroke: var(--dsw-alias-border-l2, rgba(127,127,127,.35)); stroke-width:1; }
-.cbm-viz-node { stroke: var(--dsw-alias-bg-layer-0, rgba(0,0,0,.4)); stroke-width:1; cursor:pointer; }
+.cbm-viz-node { stroke: var(--dsw-alias-bg-base, rgba(0,0,0,.4)); stroke-width:1; cursor:pointer; }
 .cbm-viz-node:hover { stroke: var(--dsw-alias-label-primary, rgba(255,255,255,.9)); stroke-width:2; }
 .cbm-viz-node.l0 { fill: var(--dsw-alias-brand-primary, #4c9aff); }
 .cbm-viz-node.l1 { fill: var(--dsw-alias-state-success-primary, #3fb950); }

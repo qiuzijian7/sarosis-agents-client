@@ -223,16 +223,43 @@ export function startRenderHeartbeat(logService: ILogService, options: IRenderHe
 
 	// ── rAF：可见期间是否真的在绘制（区分 JS 卡 vs 合成器/GPU 卡）─────────────
 	let rafHandle: number | undefined;
+	// ── 自愈（2026-10-26）：连续严重掉帧 ⇒ 自动 reload 本窗口 ────────────────────
+	// 真机两次事故（10-25 21:35 / 10-26 21:07）同一种死法：rAF 停摆 100s+、heap 1~1.7GB、
+	// 长任务最差 11s ⇒ 窗口在屏幕上但**完全不绘制** ⇒ 用户看到「F5 启动了却没有窗口」✗。
+	// reload 是这类假死唯一可靠的自愈手段（新页面 = 新合成器层 + 清空泄漏堆）。
+	// 阈值刻意收紧到「连续 3 次掉帧且都在可见期」，正常重负载到不了连续 3 次；10 分钟冷却防循环。
+	const STALL_HEAL_STREAK = 3;
+	const STALL_HEAL_COOLDOWN_MS = 10 * 60_000;
+	let stallStreak = 0;
+	let lastHealAt = 0;
 	const rafTick = (t: number) => {
 		if (disposed) { return; }
 		if (lastRafAt > 0) {
 			const gap = Math.round(t - lastRafAt);
 			if (gap > rafMaxMs) { rafMaxMs = gap; }
-			if (gap >= rafStallWarnMs && shouldWarn()) {
+			if (gap >= rafStallWarnMs) {
+				stallStreak++;
+				if (gap >= rafStallWarnMs && shouldWarn()) {
+					logService.warn(
+						`${RENDER_HEARTBEAT_TAG} RAF_STALL ts=${localStamp(Date.now())} 间隔=${gap}ms ` +
+						`（窗口可见但连续未绘制 ⇒ 疑似合成器/GPU 侧，JS 心跳同期 ${maxLagMs < slowTickMs ? '正常' : '也在卡'}）`,
+					);
+				}
+			} else {
+				stallStreak = 0;
+			}
+			// 自愈判定：可见 + 连续 3 次 rAF 缺席 + 冷却期已过。JS 线程被冻结时这段代码
+			// 只会在线程醒来的瞬间执行一次 reload —— 正好是"解冻但仍不绘制"的恢复点 ✓
+			if (stallStreak >= STALL_HEAL_STREAK && hasDom && document.visibilityState === 'visible' && Date.now() - lastHealAt > STALL_HEAL_COOLDOWN_MS) {
+				lastHealAt = Date.now();
+				stallStreak = 0;
+				const mem = (performance as { memory?: { usedJSHeapSize?: number } }).memory?.usedJSHeapSize;
 				logService.warn(
-					`${RENDER_HEARTBEAT_TAG} RAF_STALL ts=${localStamp(Date.now())} 间隔=${gap}ms ` +
-					`（窗口可见但连续未绘制 ⇒ 疑似合成器/GPU 侧，JS 心跳同期 ${maxLagMs < slowTickMs ? '正常' : '也在卡'}）`,
+					`${RENDER_HEARTBEAT_TAG} SELF-HEAL ts=${localStamp(Date.now())} 连续 ${STALL_HEAL_STREAK} 次 rAF 缺席 ` +
+					`(gap=${gap}ms, heap=${mem ? Math.round(mem / 1048576) + 'MB' : '?'}) ⇒ reload 本窗口恢复绘制` +
+					`（若重启后很快再次堆涨 ⇒ 是内存泄漏，需按窗口定位来源）`,
 				);
+				try { setTimeout(() => window.location.reload(), 50); } catch { /* ignore */ }
 			}
 		}
 		lastRafAt = t;

@@ -427,6 +427,120 @@ export async function setGroupMemberPolicy(config, input) {
 	return { group, agentId, mode: effectiveModeFor(group, agentId) };
 }
 
+/**
+ * 把某成员在本群的会话绑定**切到一条已有会话**（2026-10-27，「切回旧会话」）。
+ *
+ * 与 `newGroupSessions` 的分工：那个是**新建**，这个是**改绑**。
+ * 校验很关键：只接受"确实是该成员的 preset、且当前活着"的会话 ——
+ * 绑到一条已归档/别人的会话上，派发会静默 503（用户只会看到"没反应"）。
+ */
+export async function bindGroupSession(config, state, input) {
+	const id = String(input?.id ?? '').trim();
+	const agentId = String(input?.agentId ?? '').trim();
+	const sessionId = String(input?.sessionId ?? '').trim();
+	const groups = await readGroups(config);
+	const group = groups.find(g => g.id === id);
+	if (!group) {
+		throw httpError(404, `没有这个群：${id || '(没给 id)'}`);
+	}
+	assertMutable(group, input?.actor);
+	if (!agentId) {
+		throw httpError(400, 'agentId 不能为空。');
+	}
+	const members = (Array.isArray(group.members) ? group.members : []).map(String);
+	if (!members.includes(agentId)) {
+		throw httpError(400, `不是本群成员：${agentId}`);
+	}
+	// 空 sessionId ⇒ 解绑（回到"跟随最近活跃"）
+	if (!sessionId) {
+		bindMemberSession(group, agentId, '');
+		group.updatedAt = Date.now();
+		await writeGroups(config, groups);
+		return { group, agentId, sessionId: '', bound: false };
+	}
+	const wantPreset = presetIdOf(agentId);
+	const { readLiveSessions } = await import('./live.js');
+	const liveRows = await readLiveSessions(config).catch(() => null);
+	const liveIds = new Set((state?.agents?.roots?.() ?? []).map(a => a?.session?.id ?? a?.id).filter(Boolean).map(String));
+	const row = (liveRows?.rows ?? []).find(r => String(r.id) === sessionId);
+	if (!row || String(row.presetId ?? '') !== wantPreset) {
+		throw httpError(400, `这条会话不属于 ${agentId}：${sessionId}（只接受该成员自己的会话）`);
+	}
+	/* 只接受**活着**的会话：绑到一条已归档的会话上，派发会在 `dispatchText` 里 503，
+	   而用户只看到"发了没反应" —— 这类错必须在这里拦住并说清原因。 */
+	if (!liveIds.has(sessionId)) {
+		throw httpError(409, `这条会话当前不在运行，切过去也收不到消息：${sessionId}（先在完整页打开它，或选别的）`);
+	}
+	bindMemberSession(group, agentId, sessionId);
+	group.updatedAt = Date.now();
+	await writeGroups(config, groups);
+	return { group, agentId, sessionId, bound: true };
+}
+
+/**
+ * 给群（或其成员）新建会话，并把绑定落到**本群**（2026-10-27）。
+ *
+ * `mode`：
+ *   · `'group'`（默认，安全）：新会话**只绑到本群** —— 该 bot 在私聊/其它群的上下文不受影响。
+ *   · `'all'`：新会话绑到本群，**同时清掉该成员在其它群的绑定**（那些群会回落到
+ *     "最近活跃" = 这条新会话）⇒ 等价于"到处都换新"。
+ *
+ * ⚠ 与 DeepSeekBot 的 `/new` 有意不同：那边会 `archiveSession(旧)`，副作用波及该 bot 在
+ * **别处**的会话；我们只改**绑定关系**，旧会话原样保留、可以再切回去（不破坏任何数据）。
+ */
+export async function newGroupSessions(config, state, input) {
+	const id = String(input?.id ?? '').trim();
+	const mode = String(input?.mode ?? 'group').trim().toLowerCase();
+	const onlyAgent = String(input?.agentId ?? '').trim();
+	if (mode !== 'group' && mode !== 'all') {
+		throw httpError(400, `未知 mode：${mode}（支持 group / all）`);
+	}
+	const groups = await readGroups(config);
+	const group = groups.find(g => g.id === id);
+	if (!group) {
+		throw httpError(404, `没有这个群：${id || '(没给 id)'}`);
+	}
+	assertMutable(group, input?.actor);   // 改群上下文属于群设置 ⇒ 走群主闸门
+	const scan = await groupAgentsOf(config);
+	const memberIds = (Array.isArray(group.members) ? group.members : []).map(String);
+	const pool = scan.agents.filter(a => memberIds.includes(String(a.id)));
+	const targets = onlyAgent ? pool.filter(a => String(a.id) === onlyAgent) : pool;
+	if (!targets.length) {
+		throw httpError(400, onlyAgent ? `不是本群成员：${onlyAgent}` : '这个群没有成员。');
+	}
+	const sc = state?.sessionController;
+	if (typeof sc?.create !== 'function') {
+		throw httpError(503, '没有 sessionController 服务，开不了会话（dsh 版本不匹配？）。');
+	}
+	const created = [];
+	const failed = [];
+	for (const agent of targets) {
+		try {
+			const res = await sc.create({ agentPreset: presetIdOf(agent.id) });
+			const sessionId = String(res?.sessionId ?? '').trim();
+			if (!sessionId) { throw new Error('创建成功但没回 sessionId'); }
+			bindMemberSession(group, agent.id, sessionId);
+			if (mode === 'all') {
+				for (const other of groups) {
+					if (other.id === group.id) { continue; }
+					if (boundSessionOf(other, agent.id)) { bindMemberSession(other, agent.id, ''); }
+				}
+			}
+			created.push({ agentId: String(agent.id), name: agent.name, sessionId });
+		} catch (e) {
+			failed.push({ agentId: String(agent.id), name: agent.name, error: String(e?.message ?? e) });
+		}
+	}
+	appendTranscript(group, {
+		role: 'system',
+		text: `已为 ${created.length} 位成员新建会话（${mode === 'all' ? '并同步其它群' : '仅本群'}）`
+			+ (failed.length ? `；失败：${failed.map(f => f.name || f.agentId).join('、')}` : ''),
+	});
+	group.updatedAt = Date.now();
+	await writeGroups(config, groups);
+	return { group, mode, created, failed };
+}
+
 /* ── 群内接力（2026-10-26）──────────────────────────────────────────────────
    目标：成员 A 的回复里 `@` 了 B ⇒ 把 A 的答复转给 B，B 可以接着补充。
    这是**放大器**，不设闸门一定变成刷屏机器，所以默认**关闭**，且四道闸同时生效：
@@ -669,6 +783,8 @@ export async function removeGroupMember(config, input) {
 	const scan = await groupAgentsOf(config).catch(() => ({ agents: [] }));
 	const name = scan.agents.find(a => a.id === member)?.name ?? member;
 	group.members = group.members.filter(m => m !== member);
+	// ★ 2026-10-27：移出时清掉它的会话绑定，否则群数据里留一个悬空 id（再拉回来会莫名复用旧上下文）
+	if (boundSessionOf(group, member)) { bindMemberSession(group, member, ''); }
 	group.updatedAt = Date.now();
 	appendTranscript(group, { role: 'system', text: `已移出：${name}` });
 	await writeGroups(config, groups);
@@ -741,19 +857,73 @@ export function normalizeMentions(raw, text, members, agents) {
 	return out.sort((a, b) => a.start - b.start);
 }
 
-/** 找成员的活会话：没有就现开一条（与 assignments 同路径）。返回 { sessionId, created }。 */
-async function ensureMemberSession(config, state, agent) {
+/* ── 群级会话绑定（2026-10-27）──────────────────────────────────────────────
+   问题：会话是**按 preset** 的（`ensureMemberSession` 取"该 preset 最近活跃的那条"），
+   与群无关 ⇒ 同一个 bot 在 A 群、B 群、私聊里共用一条上下文。于是"给群新建会话"
+   只能逐成员新开一条，副作用是该 bot 在**别处**的上下文也一起换了（用户看不到、也不可逆）。
+
+   办法：群上存 `memberSessions = { [agentId]: sessionId }`，派发时**优先用它**：
+     · 有绑定且会话还活着 ⇒ 就用它（本群上下文独立、稳定，不会被私聊抢走）
+     · 有绑定但会话没了（被删/被归档）⇒ 清掉绑定，回落到"最近活跃"
+     · 没有绑定 ⇒ 回落"最近活跃"（**不做自动采纳**：否则一旦绑定，用户改私聊也不会同步，
+       反而更困惑；显式「新建会话」才建立绑定，语义清楚）
+   参考实现（DeepSeekBot）没做到这一层 —— 它的 session 就是 bot 全局一条。
+*/
+
+/** 群内给某成员绑定的会话 id（没有则空串）。 */
+export function boundSessionOf(group, agentId) {
+	const sid = String((group && group.memberSessions && group.memberSessions[String(agentId ?? '')]) ?? '').trim();
+	return sid;
+}
+
+/**
+ * 纯函数：算出**新的** memberSessions（不改入参）。
+ * `sessionId` 传空 ⇒ 删掉该成员的绑定。两者都清空 ⇒ 返回 `undefined`（不落空对象）。
+ */
+export function withMemberSession(current, agentId, sessionId) {
+	const next = { ...(current && typeof current === 'object' ? current : {}) };
+	const key = String(agentId ?? '').trim();
+	if (!key) { return Object.keys(next).length ? next : undefined; }
+	const sid = String(sessionId ?? '').trim();
+	if (!sid) { delete next[key]; } else { next[key] = sid; }
+	return Object.keys(next).length ? next : undefined;
+}
+
+/** 就地改 group 的绑定（调用方负责落盘）。 */
+function bindMemberSession(group, agentId, sessionId) {
+	const next = withMemberSession(group.memberSessions, agentId, sessionId);
+	if (next === undefined) { delete group.memberSessions; } else { group.memberSessions = next; }
+}
+
+/**
+ * 找成员的活会话：**群内绑定优先**，否则"最近活跃"，都没有就现开一条。
+ * 返回 `{ sessionId, created, bound, staleBound }`：
+ *   `bound` = 用的是群内绑定；`staleBound` = 绑定的会话已失效（已清掉，调用方该落盘）。
+ */
+export async function ensureMemberSession(config, state, agent, group) {
 	const wantPreset = presetIdOf(agent.id);
 	const live = state.agents;
 	// projcache 最近活跃的该 preset 会话 ∩ 运行注册表（与 agent_message 的选取同口径 ✓）
 	const { readLiveSessions } = await import('./live.js');
 	const liveRows = await readLiveSessions(config).catch(() => null);
 	const liveIds = new Set((live?.roots?.() ?? []).map(a => a?.session?.id ?? a?.id).filter(Boolean));
+
+	const bound = group ? boundSessionOf(group, agent.id) : '';
+	let staleBound = false;
+	if (bound) {
+		if (liveIds.has(bound)) {
+			return { sessionId: bound, created: false, bound: true, staleBound: false };
+		}
+		// 绑定的会话已经不在了（被删/归档）⇒ 清掉绑定，继续走回落
+		bindMemberSession(group, agent.id, '');
+		staleBound = true;
+	}
+
 	const candidate = (liveRows?.rows ?? [])
 		.filter(r => r.presetId === wantPreset && liveIds.has(r.id))
 		.sort((a, b) => (b.lastActiveAt ?? 0) - (a.lastActiveAt ?? 0))[0];
 	if (candidate) {
-		return { sessionId: candidate.id, created: false };
+		return { sessionId: candidate.id, created: false, bound: false, staleBound };
 	}
 	const sc = state.sessionController;
 	if (typeof sc?.create !== 'function') {
@@ -764,7 +934,7 @@ async function ensureMemberSession(config, state, agent) {
 	if (!sessionId) {
 		throw httpError(500, `给 ${agent.name} 开会话：创建成功但没回 sessionId。`);
 	}
-	return { sessionId, created: true };
+	return { sessionId, created: true, bound: false, staleBound };
 }
 
 /**
@@ -871,7 +1041,8 @@ async function dispatchText(config, state, group, text, targets, meta = {}) {
 	const fromName = String(meta.fromName || '用户');
 	for (const agent of targets) {
 		try {
-			const { sessionId } = await ensureMemberSession(config, state, agent);
+			// ★ 传 group：只有群内绑定能保证"本群上下文独立"（见 `ensureMemberSession` 头注释）
+			const { sessionId } = await ensureMemberSession(config, state, agent, group);
 			const live = state.agents?.get?.(sessionId);
 			if (!live || (typeof live.steer !== 'function' && typeof live.followup !== 'function')) {
 				throw httpError(503, `会话不在运行，或不支持 steer/followup：${sessionId}`);
@@ -1220,7 +1391,9 @@ export function installGroupTracker(ctx, config, state) {
 		if (!session?.id || typeof session.snapshotEvents !== 'function') {
 			return;
 		}
-		const pending = outboxPendingFor(session.id).filter(e => e.kind === 'group');
+		/* ★ 2026-10-27：`kind:'im'` 是 IM 绑定派出去的消息 —— 与群派发走**同一条**回复回收，
+		   否则 IM 那条回合结束时这里看不见它（也就永远推不回 IM）。 */
+		const pending = outboxPendingFor(session.id).filter(e => e.kind === 'group' || e.kind === 'im');
 		if (pending.length === 0) {
 			return;
 		}
@@ -1248,6 +1421,23 @@ export function installGroupTracker(ctx, config, state) {
 		const speaker = scan?.agents.find(a => presetIdOf(a.id) === preset);
 		let dirty = false;
 		for (const entry of pending.filter(p => answered.has(p.messageId))) {
+			/* ★ IM 绑定（2026-10-27）：这条回合是 IM 派发的 ⇒ 把最终文本推回那个 IM 会话。
+			   不进 transcript（它不属于任何群），失败只记日志 + 交给 deliveries 侧后续展示。 */
+			if (entry.kind === 'im') {
+				const text = final ? final.text : '（这回合没产出文本）';
+				const hub = state.bindingHub;
+				if (hub && typeof hub.deliverForEntry === 'function') {
+					hub.deliverForEntry(entry, text)
+						.then((r) => {
+							if (r && r.ok === false) {
+								console.warn(`[vssaros-agents] IM 回传失败（${entry.platform || '?'}:${entry.chatId || '?'}）：${r.reason}`
+									+ (r.error ? ' · ' + String(r.error).slice(0, 120) : ''));
+							}
+						})
+						.catch(() => undefined);
+				}
+				continue;
+			}
 			const group = groups.find(g => g.id === entry.groupId);
 			if (!group) {
 				continue; // 群已删 ⇒ 回复无处安放（成员会话日志里仍有 ✓）
@@ -1263,6 +1453,27 @@ export function installGroupTracker(ctx, config, state) {
 			// ★ 投递状态：把"当初派给它的那条"标成 replied（群头部据此算"N 人中 M 人已回"）
 			markDeliveryReplied(group, entry.messageId, entry.agentId);
 			dirty = true;
+
+			/* ★ 群镜像（2026-10-27）：这个群如果绑了 IM，成员答复**一并**推过去。
+			   带【成员名】前缀 —— IM 那边看不出是谁说的（我们没有 IM 侧的身份映射）。
+			   ⚠ 只推最终文本；system 消息（"已接力"等）不推，否则 IM 会被流程噪音淹没。 */
+			{
+				const hub = state.bindingHub;
+				const body = final?.text ?? '';
+				const who = speaker?.name ?? (preset || session.id);
+				if (hub && typeof hub.deliverForTarget === 'function' && body) {
+					hub.deliverForTarget('group', group.id, `【${who}】${body}`)
+						.then((rs) => {
+							for (const r of rs || []) {
+								if (r.ok === false) {
+									console.warn(`[vssaros-agents] 群镜像推送到 ${r.platform}:${r.chatId} 失败：${r.reason}`
+										+ (r.error ? ' · ' + String(r.error).slice(0, 120) : ''));
+								}
+							}
+						})
+						.catch(() => undefined);
+				}
+			}
 
 			/* ★★ 群内接力（2026-10-26）：这条成员答复里 `@` 了别人 ⇒ 转给对方。
 			   四道闸全在 `planRelay` 里（默认关 / hop / 根事件去重 / 单根上限 / 只认显式 @）。

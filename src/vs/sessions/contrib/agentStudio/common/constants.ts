@@ -140,6 +140,24 @@ export const AGENT_STUDIO_BROWSER_CDP_PORT_SETTING = 'sessions.agentStudio.brows
  *   这条解决"yt-dlp 能抓到"。要拿到视频本体/字幕时，这条才是判据。
  */
 export const AGENT_STUDIO_BROWSER_COOKIES_FROM_BROWSER_SETTING = 'sessions.agentStudio.browserCdp.cookiesFromBrowser';
+
+/**
+ * 飞书（Channel）应用凭据 —— **dsh 侧入站**（长连接收消息）真正读取的两个键。
+ *
+ * ⚠ 2026-10-27 收敛：这两项原先只出现在「设置 → Channel 配置 → Feishu」的表单里，
+ *   **没有任何代码消费它们**（填了不生效）✗；而插件读的是 `config.feishu`
+ *   （经 `--patch` 覆盖层注入）。现在两者合成一套键：
+ *
+ *     设置（Channel 页签） → dshHarnessService → dshHostConfig → renderAgentsOverlay
+ *       → `vssaros-agents` 行 `config.feishu` → `createSdkTransport({ appId, appSecret })`
+ *
+ *   常量放在这里是为了「注册（`CHANNEL_DEFINITIONS` 的 configFields）」与「消费
+ *   （`dshHarnessService`）」用的是**同一个字符串** —— 两边各写一遍就一定会漂移。
+ *
+ * ⚠ 只服务**入站**；出站（把答复推到飞书群）用每条绑定自己的自定义机器人 webhook。
+ */
+export const CHANNEL_FEISHU_APP_ID_SETTING = 'sessions.channel.feishu.appId';
+export const CHANNEL_FEISHU_APP_SECRET_SETTING = 'sessions.channel.feishu.appSecret';
 /**
  * 当 Chrome 的调试端口不可达时，是否由 VsSaros **自己拉起一个可调试的 Chrome 实例**
  * （专属 profile + `--user-data-dir`，因此**不需要**用户手动开远程调试、也**不需要**勾那个同意框）。
@@ -678,8 +696,11 @@ export const CHANNEL_DEFINITIONS: IChannelDefinition[] = [
 		aliases: ['lark'],
 		configFields: [
 			...commonFields('feishu'),
-			{ key: 'sessions.channel.feishu.appId', label: 'App ID', description: '飞书应用 App ID', type: 'string', default: '' },
-			{ key: 'sessions.channel.feishu.appSecret', label: 'App Secret', description: '飞书应用 App Secret', type: 'password', default: '' },
+			/* ★ 2026-10-27：这两项**真的生效**了 —— 填了之后经 `--patch` 覆盖层注入
+			   `vssaros-agents` 行的 `config.feishu`，Bots 工作台「IM 绑定」页才能「启动入站」。
+			   键用常量（与 `dshHarnessService` 消费处同一份），避免两边写错。 */
+			{ key: CHANNEL_FEISHU_APP_ID_SETTING, label: 'App ID', description: '飞书应用 App ID（开放平台 → 企业自建应用 → 凭证与基础信息）。填了它和下面的 App Secret 之后，Bots 工作台「IM 绑定」页才能启动**入站**（长连接收飞书消息）；只做**出站**（把答复推到飞书群）不需要这两项。改动经覆盖层注入 Host ⇒ **Host 重启后生效**。', type: 'string', default: '' },
+			{ key: CHANNEL_FEISHU_APP_SECRET_SETTING, label: 'App Secret', description: '飞书应用 App Secret（与上面的 App ID 配套）。⚠ 明文存储在**本机**设置里（MACHINE scope，不参与同步）；只交给本地 Host 进程，Bots 页面的接口只回「是否已配置」，不回值。', type: 'password', default: '' },
 			// ★ 2026-09-22（D-07）：入站唯一路径是长连接；官方协议 POST /callback/ws/endpoint 换 wss 地址
 			{ key: 'sessions.channel.feishu.useWs', label: '长连接接收事件', description: '通过 WebSocket 长连接接收飞书事件（无需公网回调地址，推荐开启）', type: 'boolean', default: true },
 			{ key: 'sessions.channel.feishu.verificationToken', label: 'Verification Token', description: '事件订阅验证 Token（仅 Webhook 回调模式使用，当前版本未启用该模式）', type: 'password', default: '' },

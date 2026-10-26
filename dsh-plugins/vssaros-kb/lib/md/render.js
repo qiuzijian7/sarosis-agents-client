@@ -108,7 +108,7 @@ export function renderMarkdownHtml(text, ctx = {}) {
 			const token = state.push('html_inline', '', 0);
 			token.content = path
 				? `<a class="kb-wiki" data-wiki="${escapeHtml(path)}" title="${escapeHtml(path)}">${escapeHtml(label)}</a>`
-				: `<span class="kb-wiki-missing" title="未找到这篇笔记：${escapeHtml(target)}">${escapeHtml(label)}</span>`;
+				: `<span class="kb-wiki-missing" data-wiki-missing="${escapeHtml(target)}" title="未找到这篇笔记：${escapeHtml(target)}">${escapeHtml(label)}</span>`;
 		}
 		state.pos = end + 2;
 		return true;
@@ -224,10 +224,37 @@ export function renderMarkdownHtml(text, ctx = {}) {
 	mdit.renderer.rules.fence = (tokens, idx) => {
 		const t = tokens[idx];
 		const info = String(t.info ?? '').trim().split(/\s+/)[0].toLowerCase();
+		// ── mermaid：服务端用 pele 渲染成**内联 SVG**（2026-10-26）────────────
+		//   为什么放服务端：三个宿主读同一份 html，客户端就不需要任何脚本；
+		//   而 pele 是同步、零 DOM 依赖的 ⇒ Node 里能直接出 SVG。
+		//   `ctx.renderMermaid` 返回空串表示"当前环境渲染不了"（没装 pele / 语法错 / 超限）
+		//   ⇒ 保留源码块：源码本身也是信息，绝不吞内容。
+		if (info === 'mermaid' && typeof ctx.renderMermaid === 'function') {
+			let svg = '';
+			try { svg = String(ctx.renderMermaid(t.content) ?? ''); } catch { svg = ''; }
+			if (svg) {
+				return `<div class="kb-mermaid-block" data-mermaid="svg">${svg}</div>\n`;
+			}
+			return `<pre class="kb-code lang-mermaid" title="mermaid 未能渲染，已按源码显示"><code>${escapeHtml(t.content)}</code></pre>\n`;
+		}
 		const cls = info ? ` class="kb-code lang-${escapeHtml(info)}"` : ' class="kb-code"';
-		// mermaid 是**图表源码**，四色高亮反而更难读 ⇒ 原样等宽输出（真机 33 处）
+		// 其余代码块走四色高亮；mermaid 在此分支里只可能是"渲染失败后的源码"
 		const body = info === 'mermaid' ? escapeHtml(t.content) : highlightCode(t.content);
 		return `<pre${cls}><code>${body}</code></pre>\n`;
+	};
+
+	// ── 站外链接补 `target` / `rel`（2026-10-26）──────────────────────────
+	// 为什么在渲染器里补而不是前端改 DOM：三端（面板 / 插件页 / 独立文档页）读的是同一份 HTML，
+	// 在这里补一次就全都有；前端只在"点了之后"接管行为。
+	// `rel="noopener noreferrer"` 是必需的：站外页面拿不到 `window.opener`，也无法读 Referer。
+	mdit.renderer.rules.link_open = (tokens, idx, options) => {
+		const t = tokens[idx];
+		const href = String(t.attrGet('href') ?? '');
+		if (/^https?:/i.test(href)) {
+			t.attrSet('target', '_blank');
+			t.attrSet('rel', 'noopener noreferrer');
+		}
+		return mdit.renderer.renderToken(tokens, idx, options);
 	};
 
 	return { html: mdit.render(src), frontmatter, math: hasMath };

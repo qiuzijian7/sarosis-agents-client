@@ -7,7 +7,12 @@
 // （别把 `webServer` / `connection` 写进去 —— 那会让插件在 headless / tui profile 里**永久
 // pending**，连工具一起失效，kanban 实测过），页面路由走可选 `ctx.inject([...])` 动态挂。
 
-import { escapeHtml, renderChips, renderShell } from './pageShell.js';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { readFile as readFileAsync } from 'node:fs/promises';
+import { dirname } from 'node:path';
+// ★ 2026-10-26（改版 A 案）：页面拆成三块 —— 渲染层 `mediaPage.js`（SSR）、客户端 `mediaApp.js`
+//   （作为 `/x/media/app.js` 单独下发）、本文件（路由 + API + 工具）。拆开的理由见 mediaPage.js 头注释。
+import { KIND_LABEL, renderMediaPage, toView } from './mediaPage.js';
 // ★ 2026-10-24：dsh 侧媒体库**真源**（用户拍板 A：IDE 侧下线，全部搬 dsh）。
 //   与 `store.js`（IDE media.db 的**只读镜像**）并存一段时间：迁移已完成、API 先接新库，
 //   页面默认仍读旧镜像（`?source=dsh` 可看新库），等写入方全部改向后再切默认并下线 IDE 侧。
@@ -30,9 +35,11 @@ const PAGE_ROUTE = '/x/media/';
 /** ★ 2026-10-24：媒体库 API 前缀（读写的都是 **dsh 侧真源** `media-store/`）。 */
 const API_PREFIX = '/x/media/api/';
 /** 本插件注册的工具名（页面自诊断用，探针据此断言）。 */
-const TOOL_NAMES = ['media_list', 'media_stats'];
-/** 页面默认列出的资产条数。 */
-const PAGE_LIMIT = 30;
+const TOOL_NAMES = ['media_list', 'media_stats', 'media_autotag', 'media_tag_merge', 'media_board_plan'];
+/** 页面首屏列出的资产条数（600+ 条别一次拉完；底部「加载更多」按这个步长翻页）。 */
+const PAGE_LIMIT = 60;
+/** 缩略图缓存宽度（`media-store/thumbs/<sha8>.webp` 都是这个宽度；`?w=` 只作契约声明）。 */
+const THUMB_WIDTH = 256;
 /** 支持的资产类型（与 VsSaros 侧 `MediaAsset.kind` 一致）。 */
 const KINDS = ['image', 'video', 'audio', 'text'];
 
@@ -84,6 +91,23 @@ function needLightAIDefault(state, target) {
 	if (!state.lightai) { return false; }
 	return 'IDE 侧目前没有可用的视频/音频 provider（`media` 能力只实现了生图 / 改图 / 能力表）'
 		+ '——请在 设置 → 模型 → LightAI 登录后生成（也可显式指定 provider / model 走 IDE 侧）';
+}
+
+/**
+ * 「IDE 侧没实现这个 op」的统一出口（2026-10-26 审计）。
+ *
+ * 事实：`dshIdeCapabilities.ts` 的 `media` 分支只认 `generateImage` / `editImage` / `capabilities`，
+ * 其它 op 一律抛「media 的 op 不认识」。而本插件的视频生成 / 语音合成 / 视觉分析 / 视频分析 / 抽帧
+ * 以前都是「显式选了非 LightAI 就回退 IDE」⇒ **那条回退 100% 必失败**，用户还会收到一句
+ * "IDE 没回（provider 没实现 xxx？）"的模糊话。
+ * ⇒ 改成在**发桥之前**就说清为什么 + 给出路（去登录 LightAI / 显式指定 LightAI 模型）。
+ * ⚠ 哪天 IDE 侧补了这些 op，把各工具里那句 `throw ideMissingOp(...)` 换回 `bridge.callIDE` 即可
+ *   （调用形状留在各处的注释里）。
+ */
+function ideMissingOp(what) {
+	return new Error(`${what}目前只能用 dsh 侧直连的 LightAI：IDE 的 media 能力只实现了「生图 / 按参考图改图 / 能力表」，`
+		+ '没有这个能力对应的 op（dshIdeCapabilities.ts 会回「media 的 op 不认识」）。'
+		+ '⇒ 去 设置 → 模型 → LightAI 登录，再让它走默认路由；或调用时显式指定 LightAI 的 provider_id / model_id。');
 }
 
 /** ★ 2026-10-24：dsh 侧真源（懒建 + 记住；建不起来就如实报，不让整页 500）。 */
@@ -143,6 +167,22 @@ async function readJsonBody(req, limit = 64 * 1024 * 1024) {
 	return JSON.parse(text);
 }
 
+/**
+ * 读**裸字节**请求体（缩略图上传用；JSON 那套 `readJsonBody` 会把二进制当文本解坏）。
+ * @param {import('node:http').IncomingMessage} req
+ * @param {number} limit 上限（超了抛错，不 OOM）
+ */
+async function readRawBody(req, limit) {
+	const chunks = [];
+	let size = 0;
+	for await (const chunk of req) {
+		size += chunk.length;
+		if (size > limit) { throw new Error(`请求体太大（>${Math.round(limit / 1024 / 1024)}MB）`); }
+		chunks.push(chunk);
+	}
+	return Buffer.concat(chunks);
+}
+
 /** 查询参数里的布尔/数字（页面与本机脚本都会用，口径统一）。 */
 function boolParam(url, name) {
 	const value = url.searchParams.get(name);
@@ -177,133 +217,6 @@ function shortRef(ref) {
 	if (!text.includes('/') && !text.includes('\\')) { return text; }
 	const parts = text.split(/[\\/]/).filter(Boolean);
 	return parts.length > 2 ? `…/${parts.slice(-2).join('/')}` : text;
-}
-
-/**
- * 「打开媒体库」按钮的点击行为（2026-10-19；用户要求"媒体库统一成一个 editor pane"）。
- *
- * 退化链（逐级，最后一级一定"真能用"，不留死按钮 ✗）：
- *   ① 有页面桥 ⇒ `bridge.openMediaGallery()`：宿主在**编辑区**打开 VsSaros 原生媒体库
- *      （`MediaGalleryEditorPane`：缩略图网格 / 收藏 / 分组 / 标签 / 本地化 / 清理）—— 与工作流
- *      工具栏「🖼 媒体库」、IDE「媒体库」工作台是**同一个**页 ✓；
- *   ② 老宿主没这条命令（桥 < 15）⇒ 退回 `bridge.openModulePage(location.pathname)`：把本页
- *      （纯文本列表）放大到编辑区 —— 比"没反应"好，但**不是**同一份样式，属降级 ✓；
- *   ③ 桥在但两条都没有 ⇒ 整页跳转；
- *   ④ 完全没桥（纯浏览器打开这页）⇒ 新标签页打开。
- *
- * ⚠ 已经在**编辑区**表面（`?surface=editor`）里 ⇒ 把按钮摘掉：那里点它不会有任何变化（不是"点了没反应"的死链）✓。
- * ⚠ 桥对象变量名**必须**叫 `bridge`：`dshPageCommandWiring.test.ts` ③ 按 `bridge.<方法>(` 的**字面形态**
- *   采集本页的调用点，改名 = 这次接线落进守卫盲区 ✗。
- * ⚠ 本段是页面脚本的字符串（不是模板串）⇒ 里面别写反引号，也别写 `$` 花括号 ✓。
- */
-const OPEN_PAGE_JS = '(function(){'
-	+ "var btn=document.querySelector('[data-vssaros-media-open]');if(!btn){return;}"
-	+ 'if(/(?:^|[?&])surface=editor(?:&|$)/.test(location.search)){btn.remove();return;}'
-	+ "btn.addEventListener('click',function(ev){"
-	+ 'if(ev&&ev.preventDefault){ev.preventDefault();}'
-	+ "btn.classList.add('busy');btn.textContent='正在打开媒体库…';"
-	+ 'var bridge=window.vssarosDsh;'
-	+ "if(bridge&&typeof bridge.openMediaGallery==='function'){try{bridge.openMediaGallery();return;}catch(e){}}"
-	+ "if(bridge&&typeof bridge.openModulePage==='function'){try{bridge.openModulePage(location.pathname);return;}catch(e){}}"
-	+ 'if(bridge){location.href=location.pathname;return;}'
-	+ "window.open(location.pathname,'_blank','noopener');"
-	+ '});})();';
-
-/** 媒体库专属样式（外壳之外的那点：统计行 + 资产条目）。 */
-const MEDIA_CSS = `
-/* ★ 2026-10-15（统一 sideview 风格 ✓）：与 codebase / 记忆库 **同一套 token** —— 同一份圆角(9px)/间距(8px)/
-   卡底色(editor-background)/大数字字号(19px)/主题变量（--vscode-*）✓。统计 = **仪表盘卡**：3 张主卡 + 一行分类格 ✓；
-   页顶另有**置顶主操作**（.dsh-actbar ✓）。
-   ⚠ 本块是**模板字符串**内容 ⇒ 注释里**不能出现反引号** ✗（会直接把字符串截断 —— 2026-10-15 现场踩到 ✓）。 */
-.dsh-actbar { display: flex; gap: 8px; align-items: center; padding: 6px 10px 0; }
-.dsh-btn { display: inline-flex; align-items: center; gap: 6px; border-radius: 6px; padding: 5px 12px; text-decoration: none; font-weight: 600; font-size: 12px; font-family: inherit; cursor: pointer; }
-.dsh-btn-primary { background: var(--vscode-button-background, var(--vscode-focusBorder, #007acc)); color: var(--vscode-button-foreground, #fff); border: 1px solid transparent; }
-.dsh-btn-primary:hover { filter: brightness(1.08); }
-/* 「打开媒体库」= 次要动作（2026-10-19）：描边按钮，不跟「刷新」抢主色。 */
-.dsh-btn-secondary { background: transparent; color: var(--vscode-foreground, inherit); border: 1px solid var(--vscode-panel-border, rgba(128,128,128,.5)); }
-.dsh-btn-secondary:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,.18)); }
-.dsh-btn-secondary.busy { opacity: .6; cursor: default; }
-.dsh-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; padding: 8px 10px 4px; }
-.dsh-card { background: var(--vscode-editor-background, rgba(128,128,128,.06)); border: 1px solid var(--vscode-panel-border, rgba(128,128,128,.35)); border-radius: 9px; padding: 10px 11px; }
-.dsh-card b { display: block; font-size: 19px; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
-.dsh-card span { font-size: 10.5px; color: var(--vscode-descriptionForeground, #999); }
-.dsh-kinds { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; padding: 2px 10px 6px; }
-.dsh-kind { border: 1px solid var(--vscode-panel-border, rgba(128,128,128,.35)); border-radius: 7px; padding: 6px 8px; text-align: center; }
-.dsh-kind b { display: block; font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.dsh-kind span { font-size: 10px; color: var(--vscode-descriptionForeground, #999); }
-.dsh-asset { display: flex; gap: 8px; align-items: baseline; }
-.dsh-asset-kind { flex-shrink: 0; font-size: 11px; width: 42px; color: var(--vscode-descriptionForeground, #999); }
-.dsh-fav { color: #f59e0b; }
-`;
-
-function renderPage({ stats, assets, kind, root, dbPath, toolsRegistered, via, error, sync }) {
-	const chips = [{ value: 'all', label: '全部', active: !kind }].concat(
-		KINDS.map(k => ({ value: k, label: k, active: kind === k })));
-
-	// ★ 2026-10-15（统一 sideview 风格 ✓）：统计从"一排小格"变成**仪表盘卡** ——
-	//   3 张**主卡**（个资产 / 占用 / 回收站 ✓，与 codebase、记忆库同一套卡片 token）+ 一行**分类格**（image/video/… ✓）。
-	//   ⚠ `data-vssaros-media-*` 锚点**原样保留**（`p3-37` 断的就是它们 ✓、不是类名 ✗）。
-	const statsHtml = stats ? `<div class="dsh-cards">
-	<div class="dsh-card"><b>${escapeHtml(String(stats.assetCount))}</b><span>个资产</span></div>
-	<div class="dsh-card"><b>${escapeHtml(formatBytes(stats.totalBytes))}</b><span>占用</span></div>
-	<div class="dsh-card"><b>${escapeHtml(String(stats.deletedCount))}</b><span>回收站</span></div>
-</div>
-<div class="dsh-kinds">
-${KINDS.map(k => `<div class="dsh-kind"><b>${escapeHtml(String(stats.byKind[k] ?? 0))}</b><span>${escapeHtml(k)}</span></div>`).join('\n')}
-</div>` : '';
-
-	// ★ 2026-10-15："**按钮置顶**" ✓ —— 本页是**只读**的（同记忆库 ✓）⇒ 主操作是**刷新** ✓。
-	//   放在**统计卡之前**（第一眼就是它 ✓）；用 `<a>` 而不是表单/脚本 ⇒ 刷新这一步保持零脚本 ✓。
-	//   ⚠ 带 `?kind=` 时**保住当前筛选**（刷新不该把用户的筛选悄悄丢掉 ✗）。
-	// ★ 2026-10-19（用户报「媒体库 sideview 缺少打开页面按钮」→ 后改为"统一成同一个编辑区页"）：
-	//   置顶给一枚「打开媒体库」—— 侧栏只有三百来像素，**完整版是 VsSaros 原生媒体库页**
-	//   （`MediaGalleryEditorPane`，与工作流工具栏「🖼 媒体库」同一个界面），页面自己开不了编辑器
-	//   ⇒ 交宿主（桥 `openMediaGallery`；老宿主降级到 `openModulePage`）。
-	//   ⚠ 桥对象名必须叫 bridge —— 接线守卫（`dshPageCommandWiring.test.ts` ③）按
-	//     `bridge.<方法>(` 这个**字面形态**采集本页的调用点，改名 = 落进盲区（点了没反应也没人拦 ✗）。
-	const refreshHref = kind ? `./?kind=${encodeURIComponent(kind)}` : './';
-	const actionHtml = `<div class="dsh-actbar"><a class="dsh-btn dsh-btn-primary" href="${refreshHref}" title="重新读取媒体库（只读）" aria-label="刷新媒体库">⟳ 刷新</a><button type="button" class="dsh-btn dsh-btn-secondary" data-vssaros-media-open title="在编辑区打开媒体库（缩略图 / 收藏 / 分组 / 标签 / 清理）">↗ 打开媒体库</button></div>`;
-
-	const rows = assets.map(asset => {
-		const meta = [
-			asset.sizeBytes ? formatBytes(asset.sizeBytes) : '',
-			isoOf(asset.createdAt),
-			asset.board ? `分组 ${asset.board}` : '',
-			asset.tags?.length ? asset.tags.map(t => `#${t}`).join(' ') : '',
-		].filter(Boolean).join(' · ');
-		return `<li class="dsh-item"><div class="dsh-item-content">
-<div class="dsh-item-title dsh-asset"><span class="dsh-asset-kind">${escapeHtml(asset.kind)}</span>${asset.favorite ? '<span class="dsh-fav">★</span> ' : ''}${escapeHtml(asset.fileName ?? shortRef(asset.ref))}</div>
-<div class="dsh-item-meta">${escapeHtml(meta)}</div>
-</div></li>`;
-	}).join('');
-
-	const body = error
-		? `<p class="dsh-empty">读取媒体库失败：${escapeHtml(error)}</p>`
-		: `${actionHtml}${statsHtml}
-<p class="dsh-diag" data-vssaros-media-assets="${escapeHtml(String(stats?.assetCount ?? ''))}"
-	data-vssaros-media-deleted="${escapeHtml(String(stats?.deletedCount ?? ''))}"
-	data-vssaros-media-bytes="${escapeHtml(String(stats?.totalBytes ?? ''))}"
-	data-vssaros-media-kind="${escapeHtml(kind || 'all')}"
-	data-vssaros-media-count="${escapeHtml(String(assets.length))}"
-	data-vssaros-media-dir="${escapeHtml(dbPath)}"
-	data-vssaros-media-via="${escapeHtml(via)}"
-	data-vssaros-media-sync="${escapeHtml(String(sync?.imported ?? ''))}"
-	data-vssaros-media-tools="${escapeHtml(toolsRegistered)}">库文件 <code>${escapeHtml(dbPath)}</code> · 读取 <code>${escapeHtml(via)}</code>${sync ? ` · 本次收编 ${escapeHtml(String(sync.imported ?? 0))} 条（IDE 暂存区已有 ${escapeHtml(String(sync.alreadyThere ?? 0))} 条）` : ''} · 工具 <code>${escapeHtml(toolsRegistered)}</code> · 列表 ${escapeHtml(String(assets.length))} 条${kind ? `（过滤 ${escapeHtml(kind)}）` : ''}</p>
-${assets.length ? `<ul class="dsh-scroll">${rows}</ul>` : '<p class="dsh-empty">暂无媒体资产（工作流产出图片后会出现在这里）。</p>'}`;
-
-	const script = "document.querySelectorAll('.dsh-chip').forEach(function(b){b.addEventListener('click',function(){var v=b.getAttribute('data-chip');location.search=(v&&v!=='all')?('?kind='+encodeURIComponent(v)):'';});});"
-		+ OPEN_PAGE_JS;
-
-	return renderShell({
-		kind: 'media',
-		title: '媒体库',
-		subtitle: '只读 · 直连 media.db',
-		chipsHtml: renderChips(chips),
-		bodyHtml: body,
-		attrs: `data-vssaros-media-root="${escapeHtml(root)}"`,
-		extraCss: MEDIA_CSS,
-		script,
-	});
 }
 
 /** 资产行（页面与工具共用；`unknown` 一律写"未知"，不写 0）。 */
@@ -488,16 +401,11 @@ function toolDefinitions(state, config) {
 			}
 			const hint = needLightAIDefault(state, target);
 			if (hint) { throw new Error(hint); }
-			const bridge = state.bridge;
-			if (!bridge || typeof bridge.callIDE !== 'function') {
-				throw new Error('视频生成要经桥回 IDE（模型 provider 在 IDE 进程），但 vssarosBridge 不在（bridge 插件没装/没连）——或在 设置 → 模型 → LightAI 登录，用 LightAI 生成视频');
-			}
-			const reply = await bridge.callIDE('ide.request', {
-				capability: 'media',
-				pluginId: 'vssaros-media',
-				params: { op: 'generateVideo', ...params },
-			}, { timeoutMs: 10 * 60 * 1000 });  // 视频生成更慢（与 legacy VIDEO_TIMEOUT_HINT_MS 同量级）
-			return reply ?? { ok: false, error: 'IDE 没回（provider 没实现 generateVideo？）' };
+			// ★ 2026-10-26：IDE 侧没有 `generateVideo` 这个 op ⇒ 不再发注定被拒的桥请求（见 `ideMissingOp`）。
+			//   IDE 补上之后换回：
+			//   bridge.callIDE('ide.request', { capability: 'media', pluginId: 'vssaros-media',
+			//     params: { op: 'generateVideo', ...params } }, { timeoutMs: 10 * 60 * 1000 })
+			throw ideMissingOp('视频生成');
 		},
 	}, {
 		// 重构 4（2026-10-16）：`text_to_speech`——语音合成。与 image_generate 同构（经桥回 IDE）。
@@ -558,16 +466,9 @@ function toolDefinitions(state, config) {
 			}
 			const hint = needLightAIDefault(state, target);
 			if (hint) { throw new Error(hint); }
-			const bridge = state.bridge;
-			if (!bridge || typeof bridge.callIDE !== 'function') {
-				throw new Error('语音合成要经桥回 IDE（模型 provider 在 IDE 进程），但 vssarosBridge 不在（bridge 插件没装/没连）——或在 设置 → 模型 → LightAI 登录，用 LightAI 合成语音');
-			}
-			const reply = await bridge.callIDE('ide.request', {
-				capability: 'media',
-				pluginId: 'vssaros-media',
-				params: { op: 'generateAudio', ...params },
-			}, { timeoutMs: 10 * 60 * 1000 });  // 音频生成也可能慢（与 legacy 同量级）
-			return reply ?? { ok: false, error: 'IDE 没回（provider 没实现 generateAudio？）' };
+			// ★ 2026-10-26：IDE 侧没有 `generateAudio` 这个 op（见 `ideMissingOp`）。IDE 补上后换回
+			//   bridge.callIDE('ide.request', { capability: 'media', params: { op: 'generateAudio', ...params } }, …)。
+			throw ideMissingOp('语音合成');
 		},
 	}, {
 		// 重构 4（2026-10-16）：`vision_analyze`——视觉分析（"读图"，不是生成）。与生成三件套同构
@@ -604,16 +505,9 @@ function toolDefinitions(state, config) {
 			const query = String(params?.query ?? '').trim();
 			if (!image) { throw new Error('image 必填（本地路径 / data URL / base64 / http(s) URL）'); }
 			if (!query) { throw new Error('query 必填（关于图片的问题）'); }
-			const bridge = state.bridge;
-			if (!bridge || typeof bridge.callIDE !== 'function') {
-				throw new Error('视觉分析要经桥回 IDE（视觉模型在 IDE 进程），但 vssarosBridge 不在（bridge 插件没装/没连）');
-			}
-			const reply = await bridge.callIDE('ide.request', {
-				capability: 'media',
-				pluginId: 'vssaros-media',
-				params: { op: 'visionAnalyze', ...params },
-			}, { timeoutMs: 5 * 60 * 1000 });  // 视觉分析比生成快（5 分钟够了）
-			return reply ?? { ok: false, error: 'IDE 没回（provider 没实现 visionAnalyze？）' };
+			// ★ 2026-10-26：IDE 侧没有 `visionAnalyze` 这个 op（见 `ideMissingOp`）。IDE 补上后换回
+			//   bridge.callIDE('ide.request', { capability: 'media', params: { op: 'visionAnalyze', ...params } }, …)。
+			throw ideMissingOp('视觉分析（读图）');
 		},
 	}, {
 		// 重构 4（2026-10-16）：`video_analyze`——视频分析（一次调用完成：抽帧 + 字幕/口播转写 +
@@ -658,16 +552,9 @@ function toolDefinitions(state, config) {
 			const query = String(params?.query ?? '').trim();
 			if (!videoUrl) { throw new Error('video_url 必填（http(s) 视频链接或本地视频文件路径）'); }
 			if (!query) { throw new Error('query 必填（要问这段视频什么问题）'); }
-			const bridge = state.bridge;
-			if (!bridge || typeof bridge.callIDE !== 'function') {
-				throw new Error('视频分析要经桥回 IDE（ffmpeg/whisper/多模态模型都在 IDE 进程），但 vssarosBridge 不在（bridge 插件没装/没连）');
-			}
-			const reply = await bridge.callIDE('ide.request', {
-				capability: 'media',
-				pluginId: 'vssaros-media',
-				params: { op: 'videoAnalyze', ...params },
-			}, { timeoutMs: 15 * 60 * 1000 });  // 抽帧 + ASR + 多模态，给足时间（比生成还慢 ✓）
-			return reply ?? { ok: false, error: 'IDE 没回（provider 没实现 videoAnalyze？）' };
+			// ★ 2026-10-26：IDE 侧没有 `videoAnalyze` 这个 op（见 `ideMissingOp`）。IDE 补上后换回
+			//   bridge.callIDE('ide.request', { capability: 'media', params: { op: 'videoAnalyze', ...params } }, …)。
+			throw ideMissingOp('视频分析（抽帧 + 转写 + 多模态）');
 		},
 	}, {
 		// 重构 4（2026-10-16）：`extract_video_frames`——只抽帧（给帧图路径，不分析；要把帧当证据落进
@@ -705,17 +592,118 @@ function toolDefinitions(state, config) {
 		execute: async (params) => {
 			const source = String(params?.source ?? '').trim();
 			if (!source) { throw new Error('source 必填（http(s) 视频链接或本地视频文件路径）'); }
-			const bridge = state.bridge;
-			if (!bridge || typeof bridge.callIDE !== 'function') {
-				throw new Error('抽帧要经桥回 IDE（ffmpeg 在 IDE 进程），但 vssarosBridge 不在（bridge 插件没装/没连）');
-			}
-			const reply = await bridge.callIDE('ide.request', {
-				capability: 'media',
-				pluginId: 'vssaros-media',
-				params: { op: 'extractVideoFrames', ...params },
-			}, { timeoutMs: 10 * 60 * 1000 });  // 抽帧（不含 ASR）比 video_analyze 快
-			return reply ?? { ok: false, error: 'IDE 没回（provider 没实现 extractVideoFrames？）' };
+			// ★ 2026-10-26：IDE 侧没有 `extractVideoFrames` 这个 op（见 `ideMissingOp`）。IDE 补上后换回
+			//   bridge.callIDE('ide.request', { capability: 'media', params: { op: 'extractVideoFrames', ...params } }, …)。
+			throw ideMissingOp('视频抽帧');
 		},
+	}, {
+		// ★ 2026-10-26（用户要求：「媒体库管家」要能自动打标 / 整理标签 / 整理目录）：
+		//   三件事都不需要"看图"，所以放在 Host 侧做成**确定性规则**（可复核、可 dryRun）。
+		//   ⚠ 语义标签（角色/风格/场景）需要视觉能力，当前 dsh 侧没有（Host 无编码器、无视觉模型）
+		//     ⇒ 这里明确写进工具描述，别让 agent 以为能"看图打标"。
+		name: 'media_autotag',
+		description: [
+			'给媒体库里的资产**按元数据规则**自动补标签（只追加，不覆盖已有标签）。',
+			'规则：orientation（横图/竖图/方图）、size（大图/小图）、keyword（从 prompt 与文件名抽词）、',
+			'month（YYYY-MM）、provider（来源:xxx）；默认 orientation+size+keyword。',
+			'⚠ 这是"按元数据"，**不是"看图"**：当前没有视觉模型，打不出角色/风格/场景这类语义标签。',
+			'先 dryRun 看 changes 再真跑（dryRun=true 只算不写）。一次最多 500 条。',
+		].join(''),
+		parameters: {
+			type: 'object',
+			properties: {
+				ids: { type: 'array', items: { type: 'string' }, description: '只处理这些资产 id（省略 = 全库未删的）' },
+				rules: { type: 'array', items: { type: 'string' }, description: '要应用的规则名（默认 orientation/size/keyword）' },
+				limit: { type: 'number', description: '最多处理多少条（默认 200，上限 500）' },
+				dryRun: { type: 'boolean', description: 'true = 只算不写（默认 false）' },
+			},
+		},
+		output: {
+			schema: {
+				type: 'object',
+				properties: {
+					ok: { type: 'boolean' }, dryRun: { type: 'boolean' },
+					scanned: { type: 'integer' }, tagged: { type: 'integer' },
+					changes: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, name: { type: 'string' }, add: { type: 'array', items: { type: 'string' } } } } },
+				},
+			},
+			render: (_args, value) => [{
+				type: 'text',
+				text: (value.dryRun ? '【预演】' : '') + `扫了 ${value.scanned} 条，给 ${value.tagged} 条加了标签`
+					+ (value.changes?.length ? '\n' + value.changes.slice(0, 8).map(c => `· ${c.name} → ${c.add.join(' / ')}`).join('\n') : ''),
+			}],
+		},
+		execute: async (params) => {
+			const result = ownStoreOf(config).autoTag({
+				ids: params?.ids, rules: params?.rules, limit: params?.limit, dryRun: params?.dryRun === true,
+			});
+			return { ok: true, ...result };
+		},
+	}, {
+		name: 'media_tag_merge',
+		description: [
+			'整理标签：把"同义/大小写/多余空白"的写法合并成一个（`Cat` / `cat` / ` cat ` → 一个）。',
+			'返回 mapping（旧写法 → 保留写法）与受影响条数。先 dryRun=true 看 mapping 再真跑。',
+		].join(''),
+		parameters: {
+			type: 'object',
+			properties: { dryRun: { type: 'boolean', description: 'true = 只出 mapping 不写（默认 false）' } },
+		},
+		output: {
+			schema: {
+				type: 'object',
+				properties: {
+					ok: { type: 'boolean' }, dryRun: { type: 'boolean' },
+					mergedTags: { type: 'integer' }, affected: { type: 'integer' },
+					mapping: { type: 'object', additionalProperties: { type: 'string' } },
+				},
+			},
+			render: (_args, value) => [{
+				type: 'text',
+				text: (value.dryRun ? '【预演】' : '') + `合并 ${value.mergedTags} 个写法，影响 ${value.affected} 条`
+					+ (value.mergedTags ? '\n' + Object.entries(value.mapping ?? {}).slice(0, 10).map(([from, to]) => `· ${from} → ${to}`).join('\n') : '（没有需要合并的）'),
+			}],
+		},
+		execute: async (params) => ({ ok: true, ...ownStoreOf(config).mergeTags({ dryRun: params?.dryRun === true }) }),
+	}, {
+		name: 'media_board_plan',
+		description: [
+			'整理**目录（分组）**：给还没分组的资产按规则归到一个 board。mode：provider（按来源）/ kind（图片视频…）/',
+			'date（YYYY-MM）/ tag（用第一个标签）。默认 **dryRun=true**（只出方案）；真跑要显式 dryRun=false。',
+			'默认**不动**已经有分组的资产（overwrite=true 才覆盖）。',
+		].join(''),
+		parameters: {
+			type: 'object',
+			properties: {
+				mode: { type: 'string', enum: ['provider', 'kind', 'date', 'tag'], description: '归类依据（默认 provider）' },
+				prefix: { type: 'string', description: '分组名前缀（如 "归档-"）' },
+				overwrite: { type: 'boolean', description: '已有分组的也覆盖（默认 false）' },
+				limit: { type: 'number', description: '最多移动多少条（默认 500）' },
+				dryRun: { type: 'boolean', description: '默认 true = 只出方案；真跑传 false' },
+			},
+		},
+		output: {
+			schema: {
+				type: 'object',
+				properties: {
+					ok: { type: 'boolean' }, dryRun: { type: 'boolean' }, mode: { type: 'string' },
+					moved: { type: 'integer' }, skipped: { type: 'integer' },
+					boards: { type: 'array', items: { type: 'object', properties: { board: { type: 'string' }, n: { type: 'integer' } } } },
+				},
+			},
+			render: (_args, value) => [{
+				type: 'text',
+				text: (value.dryRun ? '【预演·未落库】' : '') + `按 ${value.mode} 归类：移动 ${value.moved} 条，跳过 ${value.skipped} 条\n`
+					+ (value.boards ?? []).slice(0, 10).map(b => `· ${b.board}（${b.n}）`).join('\n'),
+			}],
+		},
+		execute: async (params) => ({
+			ok: true,
+			...ownStoreOf(config).planBoards({
+				mode: params?.mode, prefix: params?.prefix, overwrite: params?.overwrite === true,
+				limit: params?.limit, dryRun: params?.dryRun !== false,
+			}),
+		}),
 	}];
 }
 
@@ -736,7 +724,7 @@ function toolDefinitions(state, config) {
  * ⚠ 为什么先只做 API 不切页面默认：页面还读 IDE 镜像（`store.js`）—— 并存期用于对账；
  *   等写入方（imagegen / ComfyUI 工作流）全部改向 dsh、IDE 侧下线时再切默认。
  */
-async function handleMediaApi(config, { req, res, url }) {
+async function handleMediaApi(config, { req, res, url, authenticatedUrl }) {
 	const method = String(req.method ?? 'GET').toUpperCase();
 	const path = url.pathname.slice(API_PREFIX.length);
 	const reply = (status, payload) => sendJson(res, status, payload);
@@ -751,16 +739,94 @@ async function handleMediaApi(config, { req, res, url }) {
 				board: url.searchParams.get('board') || undefined,
 				tag: url.searchParams.get('tag') || undefined,
 				favorite: boolParam(url, 'favorite') || undefined,
+				// ★ 2026-10-26（改版 A 案左栏）：Eagle 的两个默认导航 + 只看回收站。
+				untagged: boolParam(url, 'untagged') || undefined,
+				unclassified: boolParam(url, 'unclassified') || undefined,
+				onlyDeleted: boolParam(url, 'deleted') || undefined,
 				includeDeleted: boolParam(url, 'includeDeleted'),
 				limit: numberParam(url, 'limit'),
 				offset: numberParam(url, 'offset'),
 			});
-			reply(200, { ok: true, ...result });
+			// `hasThumb` 是**页面才关心**的派生字段（工具输出不需要）⇒ 在这里补，不污染 store 的资产形状。
+			const items = result.items.map(asset => ({ ...asset, hasThumb: store.hasThumbOf(asset.sha8) }));
+			reply(200, { ok: true, items, total: result.total });
 			return;
 		}
 		if (path === 'stats' && method === 'GET') {
 			reply(200, { ok: true, stats: store.stats() });
 			return;
+		}
+		// ★ 2026-10-26（页面「↗ 外开」）：外开是**另一个浏览器**，没有当前这份 Cookie；
+		//   `?token=` 只在"还没有有效 Cookie"时用、认证完就被消费掉 ⇒ 必须由服务端现签一条带 token 的深链。
+		//   口径与 `vssaros-workbenches` 的 `/link` 完全一致（`connection.authenticatedUrl`）。
+		if (path === 'link' && method === 'GET') {
+			// ⚠ origin 必须带端口：`new URL(req.url, 'http://127.0.0.1')` 的 host 里**没有端口**
+			//   （Host 每实例随机端口在 `Host` 头上）⇒ 用头拼，否则签出来的链接指向 80 端口。
+			const hostHeader = String(req.headers?.host ?? '').trim();
+			const origin = hostHeader ? `http://${hostHeader}` : `${url.protocol}//${url.host}`;
+			let target = '';
+			try {
+				target = typeof authenticatedUrl === 'function' ? String(authenticatedUrl(origin + PAGE_ROUTE)) : '';
+			} catch { target = ''; }
+			if (!target) { reply(501, { ok: false, error: '这台 Host 没有 authenticatedUrl（宿主太旧），无法签外开链接' }); return; }
+			reply(200, { ok: true, url: target });
+			return;
+		}
+		// ★ 2026-10-26（改版 A 案）：左栏聚合（分组 / 标签 / 来源 / 类型计数 + 未分类 / 未标签 / 收藏 / 回收站）。
+		if (path === 'facets' && method === 'GET') {
+			reply(200, { ok: true, facets: store.facets() });
+			return;
+		}
+		// ★ 2026-10-26（改版 A 案，用户拍板 ⑤）：256px webp 缩略图缓存。
+		//   `GET` 命中就回 webp（内容寻址 ⇒ immutable）；没命中回 404（页面据此回退到原图并在页面侧生成）。
+		//   `POST` 收页面编好的 webp 落盘（Host 侧零依赖、没有编码器 ⇒ 编码这一步由页面完成，见 mediaApp.js）。
+		//   ⚠ `?w=` 只是契约声明：缓存只有 256 一档（多档会让去重文件数翻倍，收益极小）。
+		if (path.startsWith('thumb/')) {
+			const id = decodeURIComponent(path.slice('thumb/'.length));
+			const asset = store.get(id);
+			if (!asset) { reply(404, { ok: false, error: '没有这张资产' }); return; }
+			const file = store.thumbPathOf(asset.sha8);
+			if (method === 'GET') {
+				if (!asset.sha8 || !existsSync(file)) {
+					res.writeHead(404, {
+						'content-type': 'application/json; charset=utf-8',
+						'cache-control': 'no-store',
+						'x-vssaros-thumb': 'missing',
+					});
+					res.end(JSON.stringify({ ok: false, error: '缩略图还没生成（首屏由页面生成后回传）' }));
+					return;
+				}
+				let bytes;
+				try { bytes = await readFileAsync(file); } catch { reply(404, { ok: false, error: '缩略图读不出来' }); return; }
+				res.writeHead(200, {
+					'content-type': 'image/webp',
+					'content-length': String(bytes.length),
+					'cache-control': 'private, max-age=31536000, immutable',
+					'x-vssaros-thumb': `hit;w=${THUMB_WIDTH}`,
+				});
+				res.end(bytes);
+				return;
+			}
+			if (method === 'POST') {
+				if (!asset.sha8) { reply(409, { ok: false, error: '这条资产没有内容寻址键（仅引用资产），不能生成缩略图' }); return; }
+				const raw = await readRawBody(req, 4 * 1024 * 1024);
+				// 只收 webp：魔数 `RIFF....WEBP`（别把任意二进制塞进缓存目录）
+				const isWebp = raw.length > 12
+					&& raw.toString('latin1', 0, 4) === 'RIFF'
+					&& raw.toString('latin1', 8, 12) === 'WEBP';
+				if (!isWebp) { reply(415, { ok: false, error: '只接受 webp（RIFF/WEBP）' }); return; }
+				mkdirSync(dirname(file), { recursive: true });
+				const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+				writeFileSync(tmp, raw);
+				try {
+					if (!existsSync(file)) { renameSync(tmp, file); } else { rmSync(tmp, { force: true }); }
+				} catch (e) {
+					rmSync(tmp, { force: true });
+					throw e;
+				}
+				reply(200, { ok: true, bytes: raw.length, width: THUMB_WIDTH });
+				return;
+			}
 		}
 		// ★ 2026-10-24（P4）：把 IDE 侧 media.db 里**新出现**的资产收编进来（幂等，可随时调）。
 		//   IDE 那条 `media.import` 暂时原样保留（当"暂存区"）；等 IDE 侧下线后这里是唯一入口。
@@ -771,15 +837,52 @@ async function handleMediaApi(config, { req, res, url }) {
 		}
 		if (path.startsWith('bytes/') && method === 'GET') {
 			const id = decodeURIComponent(path.slice('bytes/'.length));
-			const asset = store.get(id);
-			const bytes = store.readBytes(id);
-			if (!asset || !bytes) { reply(404, { ok: false, error: '没有这张资产（或文件已不在）' }); return; }
+			// ★ 2026-10-26（真机卡顿）：这里原来 `readFileSync` ⇒ 一次要几十个大文件（尤其**视频**）时
+			//   Host 主线程被同步 I/O 顶住，整个 dsh 界面连切页签都卡。改成异步读。
+			const loaded = await store.readBytesAsync(id);
+			if (!loaded) { reply(404, { ok: false, error: '没有这张资产（或文件已不在）' }); return; }
 			res.writeHead(200, {
-				'content-type': asset.mime || 'application/octet-stream',
-				'content-length': String(bytes.length),
+				'content-type': loaded.asset.mime || 'application/octet-stream',
+				'content-length': String(loaded.bytes.length),
 				'cache-control': 'private, max-age=31536000, immutable',
 			});
-			res.end(bytes);
+			res.end(loaded.bytes);
+			return;
+		}
+		// ★ 2026-10-26：**不带 id** 的三条破坏性/巡检端点要排在下面的 `if (!id) 400` 之前
+		//   （否则 body 为空 ⇒ 还没进到分支就先被"要 body.id"挡掉了）。
+		if (method === 'POST' && path === 'purge-deleted') {
+			reply(200, { ok: true, ...store.purgeDeleted() });
+			return;
+		}
+		if (method === 'POST' && path === 'clean-orphans') {
+			reply(200, { ok: true, ...store.cleanOrphaned() });
+			return;
+		}
+		// ---- 「媒体库管家」的三个整理动作（2026-10-26）----
+		//   都支持 **dryRun**（默认见各端点注释）：整理是**改结构**的动作，先出方案再落库。
+		if (method === 'POST' && path === 'auto-tag') {
+			const body = await readJsonBody(req);
+			reply(200, { ok: true, ...store.autoTag({
+				ids: body.ids, limit: body.limit, rules: body.rules, dryRun: body.dryRun === true,
+			}) });
+			return;
+		}
+		if (method === 'POST' && path === 'tag-merge') {
+			const body = await readJsonBody(req);
+			reply(200, { ok: true, ...store.mergeTags({ dryRun: body.dryRun === true }) });
+			return;
+		}
+		if (method === 'POST' && path === 'board-plan') {
+			const body = await readJsonBody(req);
+			reply(200, { ok: true, ...store.planBoards({
+				mode: body.mode, prefix: body.prefix, overwrite: body.overwrite === true,
+				limit: body.limit, dryRun: body.dryRun !== false,
+			}) });
+			return;
+		}
+		if (method === 'GET' && path === 'usage') {
+			reply(200, { ok: true, usage: store.usage() });
 			return;
 		}
 		if (method === 'POST') {
@@ -833,6 +936,20 @@ async function handleMediaApi(config, { req, res, url }) {
 			}
 			if (path === 'board') {
 				reply(200, { ok: true, asset: store.setBoard(id, body.board ?? '') });
+				return;
+			}
+			// ★ 2026-10-26（改版 A 案，用户拍板 ⑥）：检查器的「注释」列。
+			if (path === 'note') {
+				reply(200, { ok: true, asset: store.setNote(id, body.note ?? '') });
+				return;
+			}
+			// ★ 2026-10-26（用户要求补「清空回收站 / 永久删除」）：**物理删除**行 + 文件。
+			//   单条走这里；批量由页面串行调用（与批量收藏/软删同一口径：一次 ≤20 条、3 路并发）。
+			//   ⚠ 内容寻址：同一 sha8 还有别的行在用时**只删行、不删文件**（由 store.purge 判断）。
+			if (path === 'purge') {
+				const result = store.purge(id);
+				if (!result.ok) { reply(404, { ok: false, error: result.error ?? '没有这条资产' }); return; }
+				reply(200, { ok: true, ...result });
 				return;
 			}
 		}
@@ -923,7 +1040,24 @@ export function apply(ctx, config = {}) {
 				// ★ 2026-10-24：媒体库 API（读写真源 `media-store/`）。
 				//   鉴权已在上面 `connection.requestRejection` 那层做过 ⇒ 这里不再重复判。
 				if (url.pathname.startsWith(API_PREFIX)) {
-					await handleMediaApi(config, { req, res, url });
+					// `authenticatedUrl` 交给 API（「外开」要服务端现签带 token 的深链）。
+					// ⚠ 老 Host / 探针的 connection 可能没有这个方法 ⇒ 传 undefined，端点会如实回 501（不抛）。
+					const signUrl = typeof page.connection?.authenticatedUrl === 'function'
+						? (target => page.connection.authenticatedUrl(target))
+						: undefined;
+					await handleMediaApi(config, { req, res, url, authenticatedUrl: signUrl });
+					return;
+				}
+				// ★ 2026-10-26：页面脚本单独下发（真正的 .js 文件，不进模板字符串；理由见 mediaApp.js 头）。
+				if (url.pathname === `${ROUTE_PREFIX}/app.js`) {
+					const script = readFileSync(new URL('./mediaApp.js', import.meta.url));
+					res.writeHead(200, {
+						'content-type': 'application/javascript; charset=utf-8',
+						'content-length': String(script.length),
+						// 页面本身 no-store ⇒ 脚本也 no-store（改完刷新即生效，不被中间层缓存坑）
+						'cache-control': 'no-store',
+					});
+					res.end(script);
 					return;
 				}
 				if (url.pathname !== PAGE_ROUTE) {
@@ -936,15 +1070,46 @@ export function apply(ctx, config = {}) {
 				const toolsRegistered = TOOL_NAMES.filter(tool => !!state.tools?.get(tool)).join(',') || '(未注册)';
 				// 读失败不 500：把原因渲染进页面（"库还没建"/"node:sqlite 不可用"都是用户能自己处理的）
 				// ★ 2026-10-24：**默认读 dsh 侧真源**（`media-store/`），与"IDE 侧下线"的口径一致。
-				//   `?source=ide` 仍可看 IDE 镜像（`store.js`）—— 并存期对账 / 排查老数据用。
+				//   `?source=ide` 仍可看 IDE 镜像（`store.js`）—— 并存期对账 / 排查老数据用（只读）。
 				const source = url.searchParams.get('source') === 'ide' ? 'ide' : 'dsh';
-				let stats;
-				let assets = [];
+				// 深链参数：SSR 首屏就按它过滤（`?kind=image` 是探针钉的那条；其余给书签/分享用）
+				const filter = {
+					kind,
+					provider: url.searchParams.get('provider') ?? '',
+					board: url.searchParams.get('board') ?? '',
+					tag: url.searchParams.get('tag') ?? '',
+					query: url.searchParams.get('query') ?? '',
+					favorite: boolParam(url, 'favorite'),
+					untagged: boolParam(url, 'untagged'),
+					unclassified: boolParam(url, 'unclassified'),
+					deleted: boolParam(url, 'deleted'),
+					nav: url.searchParams.get('nav') ?? '',
+				};
+				filter.nav = filter.nav || (filter.board ? `board:${filter.board}`
+					: filter.tag ? `tag:${filter.tag}`
+						: filter.deleted ? 'trash'
+							: filter.untagged ? 'untagged'
+								: filter.unclassified ? 'unclassified'
+									: filter.favorite ? 'favorite'
+										: kind ? `kind:${kind}` : 'all');
+				filter.label = filter.board ? filter.board
+					: filter.tag ? `#${filter.tag}`
+						: filter.deleted ? '回收站'
+							: filter.untagged ? '未标签'
+								: filter.unclassified ? '未分类'
+									: filter.favorite ? '收藏'
+										: kind ? (KIND_LABEL[kind] ?? kind) : '全部';
+
+				let stats = { assetCount: 0, totalBytes: 0, deletedCount: 0, byKind: {} };
+				let facets;
+				let views = [];
+				let total = 0;
 				let error;
 				let root = mediaRootOf(config);
 				let dbPath = mediaDbPathOf(config);
 				let via = lastReadModeOf();
 				let sync = null;
+				const writable = source === 'dsh';
 				try {
 					if (source === 'dsh') {
 						// ★ 打开新库时顺带**收编 IDE 增量**（节流 60s）：用户在 IDE 里跑完 ComfyUI 工作流后，
@@ -959,27 +1124,57 @@ export function apply(ctx, config = {}) {
 							deletedCount: ownStats.total - ownStats.live,
 							byKind: Object.fromEntries(ownStats.byKind.map(row => [String(row.kind), Number(row.n ?? 0)])),
 						};
-						assets = own.list({ kind: kind || undefined, limit: PAGE_LIMIT }).items
-							// 页面老字段名兜底（自己库用 bytes/fileName）
-							.map(asset => ({ ...asset, sizeBytes: asset.bytes, ref: asset.fileName ?? '' }));
+						facets = own.facets();
+						const result = own.list({
+							kind: filter.kind || undefined,
+							provider: filter.provider || undefined,
+							board: filter.board || undefined,
+							tag: filter.tag || undefined,
+							query: filter.query || undefined,
+							favorite: filter.favorite || undefined,
+							untagged: filter.untagged || undefined,
+							unclassified: filter.unclassified || undefined,
+							onlyDeleted: filter.deleted || undefined,
+							limit: PAGE_LIMIT,
+						});
+						// `hasThumb` 是页面派生的（工具输出不需要）⇒ 在这里补，别污染 store 的资产形状
+						views = result.items
+							.map(asset => ({ ...asset, hasThumb: own.hasThumbOf(asset.sha8) }))
+							.map(asset => toView(asset, { source: 'dsh', apiPrefix: API_PREFIX }));
+						total = result.total;
 						root = own.root;
 						dbPath = own.dbPath;
 						via = 'dsh';
 					} else {
 						stats = await statsOf(config);
-						assets = await listAssets(config, { kind: kind || undefined, limit: PAGE_LIMIT });
+						const assets = await listAssets(config, { kind: kind || undefined, limit: PAGE_LIMIT });
+						views = assets.map(asset => toView(asset, { source: 'ide', apiPrefix: API_PREFIX }));
+						total = views.length;
 					}
 				} catch (e) {
 					error = String(e?.message ?? e);
 				}
+				const boot = {
+					source,
+					writable,
+					api: API_PREFIX,
+					filter,
+					views,
+					facets: facets ?? null,
+					stats,
+					total,
+					limit: PAGE_LIMIT,
+					// 缩略图的实际产出方式（诊断锚点会写出来）：`page` = 页面首次渲染时编 webp 回传落盘
+					thumbMode: writable ? 'page' : 'readonly',
+				};
 				// 先渲染再 writeHead（渲染抛错还能干净回 500）
-				const html = renderPage({
-					stats, assets, kind, root, dbPath,
-					toolsRegistered,
-					sync,
+				const html = renderMediaPage({
+					views, facets, stats, filter, writable,
+					root, dbPath, toolsRegistered, sync,
 					// 读成功之后才取样：它由 store 在**实际打开**时记录（直连 / 私有快照 / dsh）
 					via,
 					error,
+					boot,
 				});
 				res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
 				res.end(html);

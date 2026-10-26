@@ -27,6 +27,8 @@ window.__ModuleLoader__.load({
 		const h = React.createElement;
 
 		const STATE_URL = '/api/vssaros-workbenches/state';
+		/** 服务端现签的「带 token 深链」；外开必须用它（另一个浏览器没有当前 Cookie）。 */
+		const LINK_PATH_PREFIX = '/api/vssaros-workbenches/link';
 		const PANEL_PREFIX = 'vssaros-wb:';
 		const VSSAROS_SCHEME = 'vssaros:';
 		const GITHUB_RE = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/;
@@ -456,11 +458,344 @@ window.__ModuleLoader__.load({
 					h('button', { type: 'button', disabled: busy, onClick: () => run(() => service.newWorkspaceSession()) }, '选择文件夹…')),
 				error ? h('p', { className: 'vssWbConversationError', role: 'alert' }, error) : null);
 		}
+		/**
+		 * 拼「外开」深链：dsh web 地址 + 工作台（用 **hash** 传 —— Host 的 302 会丢掉 query，但保留 hash）。
+		 * token 从当前 webview 的 query 抄过来；没有就不带（浏览器里可能已有登录态）。
+		 */
+		function buildWorkbenchDeepLink(origin, pathname, search, workbenchId) {
+			const base = String(origin || '') + (pathname && pathname !== '/' ? pathname : '/');
+			let token = '';
+			try { token = new URLSearchParams(String(search || '')).get('token') || ''; } catch (e) { token = ''; }
+			// ★ `alone=1`：外开只显示工作台 —— 进入后自动收起 dsh 左侧会话栏（见下方深链消费）。
+			return base + (token ? '?token=' + encodeURIComponent(token) : '')
+				+ '#wb=' + encodeURIComponent(workbenchId) + '&alone=1';
+		}
+
+		/** 当前 URL 是不是「外开」打开的（hash/query 里带 `alone=1`）。 */
+		function isAloneDeepLink(search, hash) {
+			const read = (raw) => {
+				try { return new URLSearchParams(String(raw || '').replace(/^#/, '')).get('alone'); } catch (e) { return null; }
+			};
+			return read(hash) === '1' || read(search) === '1';
+		}
+
+		/**
+		 * 从 URL 里读出"要打开哪个工作台"。
+		 * 优先级：**hash**（外开链接）> query（手工调试）> localStorage（承载页写过的一次性标记）。
+		 */
+		function parseDeepLinkWorkbench(search, hash, pending) {
+			const pick = (raw) => {
+				try { return String(new URLSearchParams(String(raw || '').replace(/^#/, '')).get('wb') || '').trim(); } catch (e) { return ''; }
+			};
+			const want = pick(hash) || pick(search) || String(pending || '').trim();
+			return want ? want.replace(/^vssaros:/, 'vssaros/') : '';
+		}
+
+		/**
+		 * 向服务端要「带 token 的工作台深链」（服务端用 `connection.authenticatedUrl` 现签）。
+		 * ★ 外开是另一个浏览器、没有当前 Cookie ⇒ 不带 token 会 401/白屏（真机 bug）。
+		 */
+		async function requestWorkbenchLink(workbenchId) {
+			try {
+				// 带上浏览器自己的 origin：服务端那个 ctx 上没有 webServer.port，
+				// 自己猜 origin 会拼出 127.0.0.1:undefined（真机 500）。
+				const origin = (() => { try { return window.location.origin; } catch (e) { return ''; } })();
+				const url = `${LINK_PATH_PREFIX}?wb=${encodeURIComponent(workbenchId)}&origin=${encodeURIComponent(origin)}`;
+				const res = await fetch(url, { credentials: 'same-origin' });
+				if (!res.ok) {
+					try {
+						const bad = await res.json();
+						window.__vssarosWbLinkError = bad;
+					} catch (e) { /* ignore */ }
+					return '';
+				}
+				const json = await res.json();
+				return String((json && json.url) || '');
+			} catch (e) {
+				try { window.__vssarosWbLinkError = String((e && e.message) || e); } catch (e2) { /* ignore */ }
+				return '';
+			}
+		}
+
+		/**
+		 * 在系统浏览器里打开当前工作台；返回是否成功唤起（被拦截 ⇒ false）。
+		 * ⚠ 必须**同步**调用 window.open（点击手势内），否则会被弹窗拦截 ⇒ 先开空白窗、再异步导航。
+		 */
+		/**
+		 * 在系统浏览器里打开当前工作台。
+		 *
+		 * ⚠ 2026-10-26 两次真机教训：
+		 *   ① 链接里的 token 是**当前进程**的 —— 宿主重启后旧链接必然 401
+		 *      （报 `dsh web authentication required`）⇒ **每次点击都要现取**，不能挂载时缓存一次；
+		 *   ② 但 `await` 之后再 `window.open` 会被弹窗拦截
+		 *      ⇒ 先**同步**开一个空白窗口占位，拿到链接后再导航。
+		 */
+		function openWorkbenchInBrowser(workbenchId, onResult) {
+			let win = null;
+			try { win = window.open('', '_blank'); } catch (e) { win = null; }
+
+			const go = (url) => {
+				if (win && !win.closed) {
+					try { win.opener = null; } catch (e) { /* ignore */ }
+					try { win.location.href = url; return true; } catch (e) { /* 回落到再开一个 */ }
+				}
+				try { return !!window.open(url, '_blank', 'noopener'); } catch (e) { return false; }
+			};
+
+			requestWorkbenchLink(workbenchId).then((fresh) => {
+				let url = String(fresh || '');
+				if (!url) {
+					try {
+						const loc = window.location;
+						url = buildWorkbenchDeepLink(loc.origin, loc.pathname, loc.search, workbenchId);
+					} catch (e) { url = ''; }
+				}
+				// 服务端给的链接可能不带 alone（服务端老版本），这里补齐：外开一律"只显示工作台"
+				if (url && url.indexOf('#wb=') >= 0 && url.indexOf('alone=') < 0) { url += '&alone=1'; }
+				// 可观测：真机排查时读 window.__vssarosWbOpenExternal 就知道拼出了什么
+				try { window.__vssarosWbOpenExternal = url; } catch (e) { /* ignore */ }
+				const ok = url ? go(url) : false;
+				if (!ok) { try { if (win && !win.closed) { win.close(); } } catch (e) { /* ignore */ } }
+				if (typeof onResult === 'function') { try { onResult(ok, url); } catch (e) { /* ignore */ } }
+			});
+			return true;
+		}
+
+		/** S2 一体条的位置（相对工作台面板左上角）；没拖过就回默认「右边缘垂直居中」。 */
+		const ACTIONS_POS_KEY = '__vssarosWbActionsPos';
+		/** 宿主 header 高度：落点不得高于它，否则会压住「已加载 / 外部打开」那一行。 */
+		const ACTIONS_SAFE_TOP = 30;
+
+		/** 把位置夹回面板内，并抬到安全区以下（组高变化后也用它修正）。 */
+		function clampActions(el, frameEl, pos) {
+			const fr = frameEl.getBoundingClientRect();
+			const br = el.getBoundingClientRect();
+			const maxL = Math.max(0, fr.width - br.width);
+			const maxT = Math.max(0, fr.height - br.height);
+			return {
+				x: Math.round(Math.min(Math.max(0, pos.x), maxL)),
+				y: Math.round(Math.min(Math.max(ACTIONS_SAFE_TOP, pos.y), maxT)),
+			};
+		}
+
+		function applyActionsPos(el, pos) {
+			el.__vssPos = pos || null;
+			if (!pos) {
+				el.style.left = ''; el.style.top = '';
+				el.style.right = '12px'; el.style.transform = 'translateY(-50%)';
+				el.removeAttribute('data-moved');
+				return;
+			}
+			el.style.left = pos.x + 'px';
+			el.style.top = pos.y + 'px';
+			el.style.right = 'auto';
+			el.style.transform = 'none';
+			el.setAttribute('data-moved', '');
+		}
+
+		/**
+		 * 整组拖拽（S2 一体条）。
+		 * · 位移 <3px 视为**点击** ⇒ 不拦 click，按钮各自的 onClick 照常生效
+		 * · 真拖过之后吞掉紧随的那一次 click，否则"松手即展开"
+		 * · 落点夹在面板内，且不高于 header 安全区
+		 * · 右键复位；位置写 localStorage
+		 */
+		function attachActionsDrag(el, frameEl) {
+			let drag = null;
+
+			el.addEventListener('pointerdown', (ev) => {
+				if (ev.button !== 0 && ev.pointerType === 'mouse') { return; }
+				const fr = frameEl.getBoundingClientRect();
+				const br = el.getBoundingClientRect();
+				drag = {
+					frame: fr, br,
+					startX: ev.clientX, startY: ev.clientY,
+					baseLeft: br.left - fr.left, baseTop: br.top - fr.top,
+					moved: false, latest: null, pointerId: ev.pointerId,
+				};
+			});
+
+			el.addEventListener('contextmenu', (ev) => {
+				ev.preventDefault();
+				applyActionsPos(el, null);
+				try { localStorage.removeItem(ACTIONS_POS_KEY); } catch (e) { /* ignore */ }
+			});
+
+			window.addEventListener('pointermove', (ev) => {
+				if (!drag || ev.pointerId !== drag.pointerId) { return; }
+				if (!el.isConnected) { drag = null; return; }
+				const dx = ev.clientX - drag.startX;
+				const dy = ev.clientY - drag.startY;
+				if (!drag.moved && Math.abs(dx) + Math.abs(dy) < 3) { return; }
+				if (!drag.moved) {
+					drag.moved = true;
+					el.setAttribute('data-dragging', '');
+					try { el.setPointerCapture(ev.pointerId); } catch (e) { /* ignore */ }
+				}
+				const maxL = Math.max(0, drag.frame.width - drag.br.width);
+				const maxT = Math.max(0, drag.frame.height - drag.br.height);
+				drag.latest = {
+					x: Math.round(Math.min(Math.max(0, drag.baseLeft + dx), maxL)),
+					y: Math.round(Math.min(Math.max(ACTIONS_SAFE_TOP, drag.baseTop + dy), maxT)),
+				};
+				applyActionsPos(el, drag.latest);
+			}, true);
+
+			const finish = () => {
+				if (!drag) { return; }
+				const moved = drag.moved;
+				const latest = drag.latest;
+				drag = null;
+				if (!moved) { return; }
+				el.removeAttribute('data-dragging');
+				const swallow = (e) => { e.stopPropagation(); e.preventDefault(); };
+				el.addEventListener('click', swallow, true);
+				setTimeout(() => el.removeEventListener('click', swallow, true), 0);
+				if (latest) {
+					try { localStorage.setItem(ACTIONS_POS_KEY, JSON.stringify(latest)); } catch (e) { /* ignore */ }
+				}
+				// 位置变了 ⇒ 标签方向可能也要翻（贴左边就改到右侧）
+				if (el.__vssSyncLabel) { el.__vssSyncLabel(); }
+			};
+			window.addEventListener('pointerup', finish, true);
+			window.addEventListener('pointercancel', finish, true);
+
+			// 恢复上次位置（并夹一次，防止窗口变小后越界）
+			try {
+				const saved = JSON.parse(localStorage.getItem(ACTIONS_POS_KEY) || 'null');
+				if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)) {
+					applyActionsPos(el, clampActions(el, frameEl, saved));
+				}
+			} catch (e) { /* ignore */ }
+		}
+
+		/**
+		 * 统一挂载 S2 一体条：拖拽 + 跟随工作台的「助手栏收起态」。
+		 *
+		 * 联动约定（工作台侧只写一个属性，不必知道外壳长什么样）：
+		 *   · 工作台在**面板根**上写 `data-vssaros-assist-collapsed="1|0"`
+		 *   · 点「«」时外壳在 frame 上派发 `vssaros:assist-expand` 事件，工作台监听后展开
+		 */
+		function mountActions(el, frameEl) {
+			if (!el || !frameEl || el.__vssMounted) { return; }
+			el.__vssMounted = true;
+
+			// 标签方向：贴着面板左边缘时翻到右侧，否则往左伸（面板右边缘那侧才有空间）
+			const syncLabelSide = () => {
+				try {
+					const r = el.getBoundingClientRect();
+					const fr = frameEl.getBoundingClientRect();
+					el.setAttribute('data-label', (r.left - fr.left) < 110 ? 'right' : 'left');
+				} catch (e) { /* ignore */ }
+			};
+			el.__vssSyncLabel = syncLabelSide;
+			el.addEventListener('pointerenter', syncLabelSide);
+			syncLabelSide();
+
+			attachActionsDrag(el, frameEl);
+
+			const syncAssist = () => {
+				const host = frameEl.querySelector('[data-vssaros-assist-collapsed]');
+				/* 三态（2026-10-26 用户要求「展开后按钮变成 收缩/外开」）：
+				   · none     —— 这个工作台没有 AI 助手栏 ⇒ 只显示「外开」
+				   · 1（收起） —— 显示「« 展开」
+				   · 0（展开） —— 显示「» 收起」（不再是消失） */
+				const state = !host ? 'none' : (host.getAttribute('data-vssaros-assist-collapsed') === '1' ? '1' : '0');
+				el.setAttribute('data-assist', state);
+				// 同一个按钮两副面孔：图标 / title / hover 文案一起换
+				const btn = el.querySelector('.wbActAssist');
+				if (btn) {
+					const text = state === '1' ? '展开 AI 助手' : '收起 AI 助手';
+					const icon = state === '1' ? '«' : '»';
+					if (btn.textContent !== icon) { btn.textContent = icon; }
+					if (btn.title !== text) { btn.title = text; }
+					const label = btn.parentElement ? btn.parentElement.querySelector('.wbLabel') : null;
+					if (label && label.textContent !== text) { label.textContent = text; }
+				}
+				// 展开态整组变矮 ⇒ 位置可能越界，重新夹一次
+				if (el.__vssPos) { applyActionsPos(el, clampActions(el, frameEl, el.__vssPos)); }
+			};
+			try {
+				const mo = new MutationObserver(syncAssist);
+				mo.observe(frameEl, {
+					childList: true, subtree: true, attributes: true,
+					attributeFilter: ['data-vssaros-assist-collapsed'],
+				});
+				el.__vssAssistObserver = mo;
+			} catch (e) { /* ignore */ }
+			syncAssist();
+		}
+
 		function Frame({ service, entry }) {
 			useService(service);
 			const props = { service, entry };
 			if (entry.customFrame) { props.active = service.active === entry.id; props.conversation = h(ConversationMount, { service, entry }); }
-			return h(HeaderHost, { entry }, h(PanelBoundary, { entry }, h(entry.Component, props)));
+			// ★ 外开链接**不再挂载时预取**：token 属于当前进程，宿主一重启旧链接就 401。
+			//   改为每次点击现取（`openWorkbenchInBrowser` 里同步开窗 + 异步导航）。
+			return h(HeaderHost, { entry },
+				// ★ S2 一体条：AI 助手展开 + 外开 合成一条竖直胶囊，整组可拖。
+				//   外壳只渲染一次 ⇒ 所有工作台自动都有；「«」的显隐跟随工作台的助手收起态。
+				h('div', {
+					className: 'vssWbActions',
+					'data-vssaros-wb-actions': entry.id,
+					'data-assist': 'none',
+					ref: (el) => {
+						if (!el) { return; }
+						mountActions(el, el.closest('.vssWbFrame') || el.parentElement);
+					},
+				},
+					h('div', { className: 'wbWrap wbWrapAssist' },
+						h('button', {
+							type: 'button',
+							className: 'wbAct wbActAssist',
+							'data-vssaros-wb-assist': entry.id,
+							title: '展开 AI 助手',
+							onClick: (ev) => {
+								ev.preventDefault();
+								ev.stopPropagation();
+								const frameEl = ev.currentTarget.closest('.vssWbFrame');
+								if (!frameEl) { return; }
+								/* ★ 一个按钮两种动作（2026-10-26 用户要求）：
+								   已收起 ⇒ 派发 `assist-expand`；已展开 ⇒ 派发 `assist-collapse`。
+								   状态取外壳自己维护的 `data-assist`（syncAssist 同步的，比再查 DOM 稳）。
+								   ⚠ 事件必须派发到**面板根**：CustomEvent 只向上冒泡，在 frame 上派发
+								   到不了子节点，而工作台是在面板根/ window 上监听的（踩过）。 */
+								const holder = ev.currentTarget.closest('[data-vssaros-wb-actions]');
+								const collapsedNow = holder && holder.getAttribute('data-assist') === '1';
+								const type = collapsedNow ? 'vssaros:assist-expand' : 'vssaros:assist-collapse';
+								const target = frameEl.querySelector('[data-vssaros-assist-collapsed]') || frameEl;
+								target.dispatchEvent(new CustomEvent(type, {
+									bubbles: true,
+									// ⚠ 不能用 `el`：那是上面 ref 回调的形参，在 onClick 作用域里未定义，
+									//   一读就抛 ReferenceError ⇒ 事件根本没派发（2026-10-26 真机：点了没反应）。
+									detail: { workbench: entry.id },
+								}));
+							},
+						}, '«'),
+						// S4：hover 时在左侧滑出文字（面板右边缘 ⇒ 左侧才有空间）
+						h('span', { className: 'wbLabel' }, '展开 AI 助手'),
+					),
+					h('div', { className: 'wbDivider' }),
+					h('div', { className: 'wbWrap wbWrapOpen' },
+						h('button', {
+							type: 'button',
+							className: 'wbAct wbActOpen',
+							'data-vssaros-wb-open-external': entry.id,
+							title: '在浏览器中打开这个工作台（含右侧 AI 助手；被拦截时按钮会变橙，再点一次即可）',
+							onClick: (ev) => {
+								ev.preventDefault();
+								ev.stopPropagation();
+								const btn = ev.currentTarget;
+								// 结果异步回来（要先现取带 token 的链接），拿到再更新按钮状态
+								openWorkbenchInBrowser(entry.id, (ok) => {
+									try { btn.dataset.state = ok ? 'opened' : 'blocked'; } catch (e) { /* ignore */ }
+								});
+							},
+						}, '↗'),
+						h('span', { className: 'wbLabel' }, '在浏览器打开'),
+					),
+				),
+				h(PanelBoundary, { entry }, h(entry.Component, props)));
 		}
 
 		// ── 会话停靠：根覆盖层条目（声明 session 作用域子槽）+ 子槽里的对话面板 ─────────────────
@@ -529,7 +864,7 @@ window.__ModuleLoader__.load({
 		const STYLE_ID = 'vssaros-workbenches-style';
 		const CSS = `
 .vssWbFrame { position:relative; display:flex; flex-direction:column; flex:1; min-width:0; min-height:0; height:100%; overflow:auto; container-type:inline-size; container-name:vss-workbench; }
-.vssWbFailure { margin:48px auto; max-width:520px; padding:24px; border-radius:12px; border:1px solid var(--dsw-alias-border-default, rgba(127,127,127,.3)); }
+.vssWbFailure { margin:48px auto; max-width:520px; padding:24px; border-radius:12px; border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.3)); }
 .vssWbFailure h2 { margin:0 0 8px; font-size:16px; }
 .vssWbFailure p { margin:0 0 12px; opacity:.8; font-size:13px; line-height:1.6; }
 .vssWbFailure pre { margin:0 0 12px; padding:8px; font-size:12px; white-space:pre-wrap; word-break:break-all; background:rgba(127,127,127,.12); border-radius:6px; }
@@ -538,11 +873,29 @@ window.__ModuleLoader__.load({
 .vssWbConversation p { margin:0; opacity:.85; }
 .vssWbConversationActions { display:flex; gap:8px; flex-wrap:wrap; }
 .vssWbConversationActions button { padding:6px 14px; border-radius:999px; cursor:pointer; border:1px solid var(--dsw-alias-border-l2, #3e3e3e); background: var(--dsw-alias-bg-layer-1, #262626); color: inherit; font: inherit; }
-.vssWbConversationError { color: var(--dsw-alias-state-danger-primary, #e5484d); }
+.vssWbConversationError { color: var(--dsw-alias-state-error-primary, #e5484d); }
 .vssWbDockHost { display:flex; flex-direction:column; flex:1; min-height:0; min-width:0; height:100%; }
 .vssWbDockHost > .vssWbConversation { margin:16px; }
 .vssWbDock { display:flex; flex-direction:column; flex:1; min-height:0; min-width:0; }
 .vssWbDock[hidden] { display:none; }
+/* ★ 2026-10-26「S2 一体条」：AI 助手展开 + 外开 合成一条竖直胶囊，整组可拖（所有工作台共用一份） */
+.vssWbActions { position:absolute; right:12px; top:50%; transform:translateY(-50%); z-index:2147482000; display:flex; flex-direction:column; padding:3px; border-radius:10px; border:1px solid var(--dsw-alias-border-l2, #dcdfe6); background:var(--dsw-alias-bg-layer-1, #fff); box-shadow:0 1px 5px rgba(0,0,0,.12); opacity:.9; cursor:grab; touch-action:none; user-select:none; }
+.vssWbActions:hover { opacity:1; }
+.vssWbActions[data-dragging] { cursor:grabbing; }
+.vssWbActions[data-moved] { transform:none; }
+.vssWbActions .wbWrap { position:relative; display:flex; }
+.vssWbActions .wbAct { width:26px; height:25px; padding:0; display:inline-flex; align-items:center; justify-content:center; border:0; border-radius:7px; background:transparent; color:var(--dsw-alias-label-secondary, #5a6270); font:13px/1 -apple-system, "Segoe UI", sans-serif; cursor:pointer; }
+.vssWbActions .wbAct:hover { background:var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.14)); color:var(--dsw-alias-label-primary, #16181d); }
+.vssWbActions .wbDivider { height:1px; margin:1px 3px; background:var(--dsw-alias-border-l1, #eceef2); }
+/* 三态：none = 该工作台没有 AI 助手栏（只剩「外开」）；1 = 已收起（« 展开）；0 = 已展开（» 收起） */
+.vssWbActions[data-assist="none"] .wbDivider, .vssWbActions[data-assist="none"] .wbWrapAssist { display:none; }
+.vssWbActions .wbAct[data-state="blocked"] { color:var(--dsw-alias-state-warn-primary, #d97706); }
+/* ★ S4：hover 时在**左侧**滑出文字标签（面板右边缘 ⇒ 左侧才有空间） */
+.vssWbActions .wbLabel { position:absolute; right:34px; top:50%; transform:translateY(-50%) translateX(4px); white-space:nowrap; font:10px/1.6 -apple-system, "Segoe UI", sans-serif; color:var(--dsw-alias-label-primary, #16181d); background:var(--dsw-alias-bg-layer-1, #fff); border:1px solid var(--dsw-alias-border-l2, #dcdfe6); border-radius:6px; padding:1px 7px; box-shadow:0 1px 4px rgba(0,0,0,.12); opacity:0; pointer-events:none; transition:opacity .14s, transform .14s; }
+.vssWbActions .wbWrap:hover .wbLabel { opacity:1; transform:translateY(-50%) translateX(0); }
+/* 组被拖到左侧时标签翻转（否则会溢出面板、触发横向滚动条） */
+.vssWbActions[data-label="right"] .wbLabel { right:auto; left:34px; transform:translateY(-50%) translateX(-4px); }
+.vssWbActions[data-label="right"] .wbWrap:hover .wbLabel { transform:translateY(-50%) translateX(0); }
 .vssWbDockedConversation { display:flex; flex-direction:column; flex:1; min-height:0; min-width:0; height:100%; }
 `;
 		function maintainStyles() {
@@ -559,6 +912,81 @@ window.__ModuleLoader__.load({
 			service.View = makeView(service);
 			ctx.effect(maintainStyles, 'vssaros-workbenches: styles');
 			ctx.effect(() => ctx.reflect.provide('desktopWorkbenches', service), 'vssaros-workbenches: service');
+
+			/* ★ 2026-10-26 深链：`?wb=vssaros/agents`（也接受 `vssaros:agents`）⇒ 注册后自动打开该工作台。
+			   为什么加：IDE 的 **Bots 页签目前承载的是插件 SSR 页**（`/x/agents/`，内容是旧的），
+			   而 React 工作台只存在于 dsh 客户端里。有了深链，宿主/用户可以用 URL 直接打开它，
+			   不必等 IDE 侧的 surface 改造（那需要重编译 + 管理员权限安装）。
+			   ⚠ 只在**带参数**时生效；各工作台注册有先后 ⇒ 轮询等待，最多 12s 后放弃（不打扰正常使用）。 */
+			ctx.effect(() => {
+				let want = '';
+				/* ⚠ 2026-10-26 实测：**不能只读 query** —— Host 会把 `/?token=…` 302 到 `/`，
+				   query 在首个脚本执行前就没了。所以两路都读：
+				     ① `?wb=`（手工调试用，若哪天不再重定向就仍然有效）
+				     ② `localStorage['vssaros.wb.pending']`（承载页写的一次性标记，重定向带不走）
+				   读到 localStorage 的那份后**立即删除**，避免下次普通打开也被切走。 */
+				let pendingRaw = '';
+				try {
+					const pending = window.localStorage.getItem('vssaros.wb.pending');
+					if (pending) {
+						pendingRaw = String(pending).trim();
+						window.localStorage.removeItem('vssaros.wb.pending');
+					}
+				} catch (e) { /* 隐私模式读不到就算了 */ }
+				// ★ 2026-10-26：新增 hash 通道（`#wb=vssaros/studio`）—— 「外开」按钮用它，
+				//   因为 Host 的 302 会丢掉 query，但 hash 会被浏览器保留。
+				want = parseDeepLinkWorkbench(window.location.search, window.location.hash, pendingRaw);
+				if (!want) { return undefined; }
+				// ★「外开只显示工作台」：链接带 `alone=1` ⇒ 打开工作台后收起 dsh 左侧会话栏。
+				const alone = isAloneDeepLink(window.location.search, window.location.hash);
+				/* 可观测状态：真机排查时读 `window.__vssarosWbDeepLink` 就能知道
+				   "深链跑没跑 / 试了几次 / open() 抛了什么"，不必靠猜。 */
+				const dbg = { want, tries: 0, opened: false, lastErr: '', providers: [] };
+				window.__vssarosWbDeepLink = dbg;
+				let tries = 0;
+				const timer = setInterval(() => {
+					tries += 1;
+					dbg.tries = tries;
+					try {
+						dbg.providers = Array.from(service.providers ? service.providers.keys() : []);
+					} catch (e) { /* ignore */ }
+					let opened = false;
+					try {
+						opened = service.open(want) === true;
+					} catch (e) {
+						dbg.lastErr = String((e && e.message) || e);
+						opened = false;
+					}
+					if (opened) {
+						dbg.opened = true;
+						clearInterval(timer);
+						/* 外开：收起左侧会话栏，只留工作台（+ 右侧 AI 助手）。
+						   `toggleSidebar()` 是唯一能把 `layoutInfo.sidebar` 置 0 的入口
+						   （`setSidebar` 会被 clamp 到 264）；store 初始值固定 280，
+						   所以新开的窗口 toggle 一次必定变成 0（收成 56px 图标栏）。 */
+						if (alone) {
+							try {
+								/* ⚠ 窄屏（<1024）时 `toggleSidebar` 只切 `narrowExpanded`，
+								   不动 `layoutInfo.sidebar` ⇒ 侧栏不会收起（窄屏本来就自动收成图标栏）。
+								   记下宽度，避免排查时把"没生效"误判成"调用失败"。 */
+								dbg.viewportWidth = window.innerWidth;
+								dbg.narrow = window.innerWidth < 1024;
+								ctx.layout.toggleSidebar();
+								dbg.sidebarCollapsed = true;
+							} catch (e) {
+								dbg.sidebarError = String((e && e.message) || e);
+							}
+						}
+						return;
+					}
+					if (tries >= 60) {
+						clearInterval(timer);
+						console.warn('[vssaros-workbenches] 深链没打开（这个工作台可能没注册）：' + want
+							+ ' 已注册=[' + dbg.providers.join(',') + ']' + (dbg.lastErr ? ' 错误=' + dbg.lastErr : ''));
+					}
+				}, 200);
+				return () => clearInterval(timer);
+			}, 'vssaros-workbenches: deep link (?wb=)');
 
 			/* ★★ 2026-10-24 真机报障（用户第 2 次报）「bot 工作台里切换工作区 ⇒ 整个工作台被换成会话页」。
 			   根因在 dsh 自己的客户端包里（不是我们的代码）：

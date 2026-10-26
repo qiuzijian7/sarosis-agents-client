@@ -62,6 +62,7 @@ for (const step of steps) {
   const r = spawnSync(step.cmd, step.args, {
     cwd: ROOT,
     encoding: 'utf8',
+    windowsHide: true,          // dsh Host 无控制台 ⇒ 不加会闪窗（check-spawn-hide 判据）
     shell: isWin,               // Windows 下 npm 是 .cmd ⇒ 需要 shell
     timeout: step.timeout ?? 120_000,
   });

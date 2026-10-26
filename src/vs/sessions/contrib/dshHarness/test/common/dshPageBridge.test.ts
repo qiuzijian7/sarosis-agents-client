@@ -76,6 +76,52 @@ suite('dshHarness / page bridge', () => {
 			'历史页签那种带下划线的 chatId 也要被规范化成合法 id');
 	});
 
+	test('importCodeWorkspace：无参白名单（桥 19 → 20）+ 属"不需要 IDE 主窗口露面"名单', () => {
+		// 2026-10-26：dsh 侧的工作区模型只能单目录 ⇒ 用户手里的 .code-workspace（多 folder）
+		// 只能由 IDE 侧导入（选文件 + 解析 + 落记录 + 注册到 dsh）⇒ 页面发一条**无参**命令。
+		// ① 校验器必须有 case（漏了 ⇒ 命令被静默丢弃 ⇒ 点了没反应 ✗）；
+		// ② 多余字段一律丢掉（页面不许指定路径 ⇒ 那是 IDE 的权限范围之外的事 ✗）；
+		// ③ 必须在 "不需要 IDE 出界面" 名单里（用的是原生文件对话框，自带前台；
+		//    否则点一下"导入"就把 IDE 主窗口拉到前台 —— desktop 模式下那正是用户要避免的形态 ✗）。
+		assert.deepStrictEqual(validatePageCommand({ method: 'importCodeWorkspace' }), { method: 'importCodeWorkspace' });
+		assert.deepStrictEqual(validatePageCommand({ method: 'importCodeWorkspace', path: 'C:\\x' }), { method: 'importCodeWorkspace' });
+		assert.ok(DSH_PAGE_COMMANDS_WITHOUT_IDE_UI.has('importCodeWorkspace'),
+			'importCodeWorkspace 必须登记进"不需要 IDE 主窗口露面"名单（原生对话框自带前台）');
+	});
+
+	test('★★ 页面命令 `importCodeWorkspace`：宿主必须处理它，且它转成的 IDE 命令必须**真的注册了**（否则点了没反应）', () => {
+		// 背景（2026-10-26）：dsh 侧的工作区模型只能单目录 ⇒ 导入 .code-workspace 必须由 IDE 侧做
+		// （选文件 → 解析 → 落多根记录 → 注册到 dsh）⇒ 页面发一条无参命令，宿主转成 IDE 命令。
+		// 失效形态（★ 本仓高频）：**协议有 / 校验有 / preload 有 / 宿主 case 也有**，但那条 IDE 命令
+		//   **没人注册** ⇒ `executeCommand` 抛"命令不存在" ⇒ 页面点了没反应、日志里只有一条 warn ✗✗。
+		// ⇒ 这里把「宿主转成的命令 id」与「仓库里 registerAction2 的 id」对账。
+		const repo = process.env.DSH_TEST_REPO_ROOT ?? process.cwd();
+		const hostSrc = readFileSync(join(repo, 'src', 'vs', 'sessions', 'contrib', 'dshHarness', 'electron-browser', 'dshHarness.contribution.ts'), 'utf8');
+		const at = hostSrc.indexOf("case 'importCodeWorkspace'");
+		assert.ok(at >= 0, '宿主 _handle 必须处理 importCodeWorkspace（没有 ⇒ 页面点了没反应）');
+		const tail = hostSrc.slice(at, at + 800);
+		const m = /executeCommand\('([^']+)'\)/.exec(tail);
+		assert.ok(m, '宿主必须把它转成一条 IDE 命令（executeCommand）');
+		const cmdId = m![1];
+		// 扫 contrib 下的浏览器层源码：那条命令必须真的被注册（`id: '<cmdId>'`）。
+		const roots = [
+			join(repo, 'src', 'vs', 'sessions', 'contrib', 'dshHarness', 'electron-browser'),
+			join(repo, 'src', 'vs', 'sessions', 'contrib', 'agentStudio', 'browser'),
+		];
+		let registered = false;
+		for (const root of roots) {
+			let files: string[] = [];
+			try { files = readdirSync(root, { withFileTypes: true, recursive: true } as any).filter((d: any) => d.isFile() && String(d.name).endsWith('.ts')).map((d: any) => join(d.parentPath ?? d.path, d.name)); } catch { continue; }
+			for (const f of files) {
+				try {
+					if (readFileSync(f, 'utf8').includes(`id: '${cmdId}'`)) { registered = true; break; }
+				} catch { /* 读不到就当没有 */ }
+			}
+			if (registered) { break; }
+		}
+		assert.ok(registered, `IDE 命令 ${cmdId} 在仓库里没有 registerAction2（id: '${cmdId}'）⇒ 宿主执行它必抛"命令不存在" ⇒ 页面点了没反应 ✗`);
+	});
+
 	test('openTerminal：cwd 必须绝对、command 有上限；页面桥**只填空不执行**', () => {
 		// 2026-10-13：工具卡里"跑过的命令"要能一键在 VsSaros 终端重现。协议侧刻意**不做 runInTerminal**
 		// （页面里任何第三方前端插件都能调页面桥 ⇒ 替用户执行命令属于执行类能力 ✗✗）——

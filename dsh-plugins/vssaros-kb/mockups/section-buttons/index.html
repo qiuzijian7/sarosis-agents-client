@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>知识库「笔记」节 · 按钮布局（4 个方案）</title>
+<style>
+	:root{--fg:#cccccc;--dim:#9d9d9d;--line:#3c3c3c;--accent:#3794ff}
+	*{box-sizing:border-box}
+	body{margin:0;background:#121212;color:var(--fg);font:13px/1.6 "Segoe UI","Microsoft YaHei",system-ui,sans-serif;padding:18px 20px 40px}
+	h1{font-size:16px;font-weight:600;margin:0 0 6px}
+	.lead{margin:0 0 16px;color:var(--dim);font-size:12px;max-width:1100px}
+	.item{border:1px solid var(--line);border-radius:6px;margin-bottom:12px;overflow:hidden;background:#161616}
+	.item > summary{cursor:pointer;padding:9px 12px;font-size:12.5px;list-style:none;background:#1d1d1d;border-bottom:1px solid transparent}
+	.item[open] > summary{border-bottom-color:var(--line)}
+	.item > summary::-webkit-details-marker{display:none}
+	.item > summary::before{content:"▸ ";color:var(--dim)}
+	.item[open] > summary::before{content:"▾ "}
+	.item > summary em{font-style:normal;color:var(--dim);font-size:11.5px;margin-left:8px}
+	.demo{padding:14px;background:#121212;overflow:auto}
+	/* 说明：下面这段是各 mockup 自己的样式（已加前缀，互不污染） */
+/* ── A · 两行分层（图标化） ─────────────────────────── */
+
+	:root{
+		--bg:#1e1e1e; --panel:#252526; --fg:#cccccc; --fg-dim:#9d9d9d; --fg-faint:#7a7a7a;
+		--line:#3c3c3c; --hover:#2a2d2e; --sel:#094771; --accent:#3794ff;
+	}
+	*{box-sizing:border-box}
+	body{margin:0;background:#181818;color:var(--fg);font:13px/1.5 "Segoe UI","Microsoft YaHei",system-ui,sans-serif}
+	.va-frame{width:340px;height:560px;background:var(--panel);border:1px solid var(--line);border-radius:6px;overflow:hidden;margin:16px}
+	/* 顶部：库下拉 + 搜索（真实面板里的上下文） */
+	.va-head{display:flex;align-items:center;gap:6px;padding:8px 10px;border-bottom:1px solid var(--line);font-size:12px}
+	.va-head .va-vault{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+	.va-search{margin:8px 10px;display:flex;align-items:center;gap:6px}
+	.va-search input{flex:1;height:24px;background:#3c3c3c;border:1px solid transparent;border-radius:3px;color:var(--fg);padding:0 8px;font-size:12px}
+	.va-search .va-seg{display:flex;border:1px solid var(--line);border-radius:3px;overflow:hidden;font-size:11px}
+	.va-search .va-seg b{padding:2px 6px;background:#0e639c;color:#fff;font-weight:400}
+	.va-search .va-seg span{padding:2px 6px;color:var(--fg-dim)}
+
+	/* ── 本节：笔记 ───────────────────────────────────────── */
+	.va-sec{border-bottom:1px solid #2b2b2b}
+	.va-sec-head{display:flex;align-items:center;gap:6px;height:30px;padding:0 8px 0 10px;background:#232323;border-bottom:1px solid var(--line)}
+	.va-sec-head .va-caret{width:10px;color:var(--fg-dim);font-size:9px}
+	.va-sec-head .va-title{font-size:12px;font-weight:600;letter-spacing:.02em}
+	.va-sec-head .va-count{font-size:11px;color:var(--fg-faint)}
+	.va-sec-head .va-spacer{flex:1}
+	/* 图标按钮：18px 见方，hover 才有底 */
+	.va-iconbtn{width:20px;height:20px;display:grid;place-items:center;border:0;border-radius:3px;background:transparent;color:var(--fg-dim);cursor:pointer}
+	.va-iconbtn:hover{background:var(--hover);color:var(--fg)}
+	.va-iconbtn svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+	.va-sec-tools{display:flex;align-items:center;gap:2px;opacity:.75;transition:opacity .1s}
+	.va-sec:hover .va-sec-tools{opacity:1}
+
+	/* 第二行：排序 + 动作（图标化，不再用汉字，避免挤压换行） */
+	.va-sec-bar{display:flex;align-items:center;gap:6px;padding:4px 8px 6px 10px;white-space:nowrap;overflow:hidden}
+	.va-sec-bar .va-lbl{font-size:10.5px;color:var(--fg-faint);flex:0 0 auto}
+	.va-sec-bar select{flex:0 0 auto;height:20px;max-width:96px;font-size:10.5px;background:#3c3c3c;color:var(--fg);border:1px solid var(--line);border-radius:3px;cursor:pointer}
+	.va-sec-bar .va-spacer{flex:1}
+	.va-sec-bar .va-actions{display:flex;align-items:center;gap:2px;flex:0 0 auto}
+
+	/* 树 */
+	.va-tree{padding:4px 0 10px}
+	.va-row{display:flex;align-items:center;gap:4px;height:24px;padding-right:6px;margin-right:6px;border-radius:4px;font-size:12.5px}
+	.va-row:hover{background:rgba(127,127,127,.09)}
+	.va-row .va-caret{width:10px;font-size:9px;color:var(--fg-dim);text-align:center}
+	.va-row .va-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+	.va-ind1{padding-left:14px}.va-ind2{padding-left:26px}.va-ind3{padding-left:38px}
+	.va-tag{margin-left:6px;font-size:10px;color:var(--fg-faint)}
+
+	/* 说明条（只在 mockup 里出现） */
+	.va-note{max-width:340px;margin:0 16px 16px;padding:10px 12px;background:#20262b;border-left:3px solid var(--accent);border-radius:4px;font-size:11.5px;line-height:1.7;color:#b9c4cc}
+	.va-note b{color:#e6edf3}
+
+/* ── B · 单行收纳（⋯ 更多） ─────────────────────────── */
+
+	:root{
+		--bg:#1e1e1e; --panel:#252526; --fg:#cccccc; --fg-dim:#9d9d9d; --fg-faint:#7a7a7a;
+		--line:#3c3c3c; --hover:#2a2d2e; --accent:#3794ff; --menu:#252526;
+	}
+	*{box-sizing:border-box}
+	body{margin:0;background:#181818;color:var(--fg);font:13px/1.5 "Segoe UI","Microsoft YaHei",system-ui,sans-serif}
+	.vb-frame{position:relative;width:340px;height:560px;background:var(--panel);border:1px solid var(--line);border-radius:6px;overflow:hidden;margin:16px}
+	.vb-head{display:flex;align-items:center;gap:6px;padding:8px 10px;border-bottom:1px solid var(--line);font-size:12px}
+	.vb-head .vb-vault{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+	.vb-search{margin:8px 10px;display:flex;align-items:center;gap:6px}
+	.vb-search input{flex:1;height:24px;background:#3c3c3c;border:1px solid transparent;border-radius:3px;color:var(--fg);padding:0 8px;font-size:12px}
+	.vb-search .vb-seg{display:flex;border:1px solid var(--line);border-radius:3px;overflow:hidden;font-size:11px}
+	.vb-search .vb-seg b{padding:2px 6px;background:#0e639c;color:#fff;font-weight:400}
+	.vb-search .vb-seg span{padding:2px 6px;color:var(--fg-dim)}
+
+	.vb-sec{border-bottom:1px solid #2b2b2b}
+	/* 一行塞下：笔记 96 | 排序▾ | ⋯ —— 超过宽度就整条横向滚动（不换行、不压缩） */
+	.vb-sec-head{display:flex;align-items:center;gap:6px;height:32px;padding:0 8px 0 10px;background:#232323;border-bottom:1px solid var(--line);white-space:nowrap;overflow:hidden}
+	.vb-sec-head .vb-caret{width:10px;color:var(--fg-dim);font-size:9px;flex:0 0 auto}
+	.vb-sec-head .vb-title{font-size:12px;font-weight:600;flex:0 0 auto}
+	.vb-sec-head .vb-count{font-size:11px;color:var(--fg-faint);flex:0 0 auto}
+	.vb-sec-head .vb-spacer{flex:1}
+	.vb-sortpick{display:flex;align-items:center;gap:4px;height:20px;padding:0 6px;border:1px solid var(--line);border-radius:3px;font-size:10.5px;color:var(--fg-dim);cursor:pointer;flex:0 0 auto}
+	.vb-sortpick:hover{border-color:#5a5a5a;color:var(--fg)}
+	.vb-iconbtn{width:22px;height:20px;display:grid;place-items:center;border:0;border-radius:3px;background:transparent;color:var(--fg-dim);cursor:pointer;flex:0 0 auto}
+	.vb-iconbtn:hover{background:var(--hover);color:var(--fg)}
+	.vb-iconbtn svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+
+	/* 展开的「更多」菜单 */
+	.vb-menu{position:absolute;right:8px;top:118px;min-width:176px;background:var(--menu);border:1px solid #454545;border-radius:5px;padding:4px;box-shadow:0 8px 24px rgba(0,0,0,.5);font-size:12px;z-index:5}
+	.vb-menu .vb-item{display:flex;align-items:center;gap:8px;height:26px;padding:0 8px;border-radius:4px;cursor:pointer;color:var(--fg)}
+	.vb-menu .vb-item:hover{background:#04395e}
+	.vb-menu .vb-item svg{width:14px;height:14px;fill:none;stroke:#9d9d9d;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+	.vb-menu .vb-item kbd{margin-left:auto;font:10px/1 monospace;color:#7a7a7a;border:1px solid #454545;border-radius:3px;padding:1px 4px}
+	.vb-menu .vb-sep{height:1px;background:#3c3c3c;margin:4px 6px}
+	.vb-menu .vb-hint{padding:5px 8px 3px;font-size:10.5px;color:#7a7a7a}
+
+	.vb-tree{padding:4px 0 10px}
+	.vb-row{display:flex;align-items:center;gap:4px;height:24px;padding-right:6px;margin-right:6px;border-radius:4px;font-size:12.5px}
+	.vb-row:hover{background:rgba(127,127,127,.09)}
+	.vb-row .vb-caret{width:10px;font-size:9px;color:var(--fg-dim);text-align:center}
+	.vb-row .vb-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+	.vb-ind1{padding-left:14px}.vb-ind2{padding-left:26px}.vb-ind3{padding-left:38px}
+	.vb-tag{margin-left:6px;font-size:10px;color:var(--fg-faint)}
+
+	.vb-note{max-width:340px;margin:0 16px 16px;padding:10px 12px;background:#20262b;border-left:3px solid var(--accent);border-radius:4px;font-size:11.5px;line-height:1.7;color:#b9c4cc}
+	.vb-note b{color:#e6edf3}
+	.vb-note code{background:#2b3238;padding:1px 4px;border-radius:3px}
+
+/* ── C · 工具条常驻（胶囊 + 状态点） ─────────────────────────── */
+
+	:root{
+		--bg:#1e1e1e; --panel:#252526; --fg:#cccccc; --fg-dim:#9d9d9d; --fg-faint:#7a7a7a;
+		--line:#3c3c3c; --hover:#2a2d2e; --accent:#3794ff;
+	}
+	*{box-sizing:border-box}
+	body{margin:0;background:#181818;color:var(--fg);font:13px/1.5 "Segoe UI","Microsoft YaHei",system-ui,sans-serif}
+	.vc-frame{width:340px;height:560px;background:var(--panel);border:1px solid var(--line);border-radius:6px;overflow:hidden;margin:16px}
+	.vc-head{display:flex;align-items:center;gap:6px;padding:8px 10px;border-bottom:1px solid var(--line);font-size:12px}
+	.vc-head .vc-vault{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+	.vc-search{margin:8px 10px;display:flex;align-items:center;gap:6px}
+	.vc-search input{flex:1;height:24px;background:#3c3c3c;border:1px solid transparent;border-radius:3px;color:var(--fg);padding:0 8px;font-size:12px}
+	.vc-search .vc-seg{display:flex;border:1px solid var(--line);border-radius:3px;overflow:hidden;font-size:11px}
+	.vc-search .vc-seg b{padding:2px 6px;background:#0e639c;color:#fff;font-weight:400}
+	.vc-search .vc-seg span{padding:2px 6px;color:var(--fg-dim)}
+
+	.vc-sec{border-bottom:1px solid #2b2b2b}
+	.vc-sec-head{display:flex;align-items:center;gap:6px;height:30px;padding:0 8px 0 10px;background:#232323;border-bottom:1px solid var(--line);white-space:nowrap;overflow:hidden}
+	.vc-sec-head .vc-caret{width:10px;color:var(--fg-dim);font-size:9px;flex:0 0 auto}
+	.vc-sec-head .vc-title{font-size:12px;font-weight:600;flex:0 0 auto}
+	.vc-sec-head .vc-count{font-size:11px;color:var(--fg-faint);flex:0 0 auto}
+	.vc-sec-head .vc-spacer{flex:1}
+	.vc-sec-head .vc-iconbtn{width:20px;height:20px;display:grid;place-items:center;border:0;border-radius:3px;background:transparent;color:var(--fg-dim);cursor:pointer;flex:0 0 auto}
+	.vc-sec-head .vc-iconbtn:hover{background:var(--hover);color:var(--fg)}
+	.vc-sec-head svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+
+	/* 常驻工具条：分组胶囊（排序 | 报告 | 视图），分隔线明确 */
+	.vc-toolbar{display:flex;align-items:center;gap:0;padding:4px 8px 6px 10px;white-space:nowrap;overflow:hidden}
+	.vc-group{display:flex;align-items:center;gap:2px;height:22px;padding:0 3px;border:1px solid var(--line);border-radius:4px;flex:0 0 auto}
+	.vc-group + .vc-group{margin-left:6px}
+	.vc-group .vc-cap{font-size:10px;color:var(--fg-faint);padding:0 4px 0 2px}
+	.vc-tbtn{display:flex;align-items:center;gap:3px;height:16px;padding:0 5px;border:0;border-radius:3px;background:transparent;color:var(--fg-dim);font-size:10.5px;cursor:pointer}
+	.vc-tbtn:hover{background:var(--hover);color:var(--fg)}
+	.vc-tbtn.vc-on{background:#0e639c;color:#fff}
+	.vc-tbtn svg{width:12px;height:12px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+	/* 状态点：有未审 / 有重复 时亮起（把"要不要点"的信息外显） */
+	.vc-dot{width:5px;height:5px;border-radius:50%;background:#0e639c;margin-left:1px}
+	.vc-dot.vc-warn{background:#d29922}
+	.vc-spacer{flex:1}
+
+	.vc-tree{padding:4px 0 10px}
+	.vc-row{display:flex;align-items:center;gap:4px;height:24px;padding-right:6px;margin-right:6px;border-radius:4px;font-size:12.5px}
+	.vc-row:hover{background:rgba(127,127,127,.09)}
+	.vc-row .vc-caret{width:10px;font-size:9px;color:var(--fg-dim);text-align:center}
+	.vc-row .vc-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+	.vc-ind1{padding-left:14px}.vc-ind2{padding-left:26px}.vc-ind3{padding-left:38px}
+	.vc-tag{margin-left:6px;font-size:10px;color:var(--fg-faint)}
+
+	.vc-note{max-width:340px;margin:0 16px 16px;padding:10px 12px;background:#20262b;border-left:3px solid var(--accent);border-radius:4px;font-size:11.5px;line-height:1.7;color:#b9c4cc}
+	.vc-note b{color:#e6edf3}
+	.vc-note code{background:#2b3238;padding:1px 4px;border-radius:3px}
+
+/* ── D · 搜索行内联（Obsidian 风） ─────────────────────────── */
+
+	:root{
+		--bg:#1e1e1e; --panel:#252526; --fg:#cccccc; --fg-dim:#9d9d9d; --fg-faint:#7a7a7a;
+		--line:#3c3c3c; --hover:#2a2d2e; --accent:#3794ff;
+	}
+	*{box-sizing:border-box}
+	body{margin:0;background:#181818;color:var(--fg);font:13px/1.5 "Segoe UI","Microsoft YaHei",system-ui,sans-serif}
+	.vd-frame{width:340px;height:560px;background:var(--panel);border:1px solid var(--line);border-radius:6px;overflow:hidden;margin:16px}
+	.vd-head{display:flex;align-items:center;gap:6px;padding:8px 10px;border-bottom:1px solid var(--line);font-size:12px}
+	.vd-head .vd-vault{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+	/* 搜索行：输入框 + 排序 + 4 个动作（全部内联在一行，靠右侧排列） */
+	.vd-searchrow{display:flex;align-items:center;gap:4px;padding:8px 8px 8px 10px;white-space:nowrap;overflow:hidden;border-bottom:1px solid var(--line)}
+	.vd-searchrow input{flex:1 1 auto;min-width:60px;height:24px;background:#3c3c3c;border:1px solid transparent;border-radius:3px;color:var(--fg);padding:0 8px;font-size:12px}
+	.vd-iconbtn{width:22px;height:22px;display:grid;place-items:center;border:0;border-radius:3px;background:transparent;color:var(--fg-dim);cursor:pointer;flex:0 0 auto}
+	.vd-iconbtn:hover{background:var(--hover);color:var(--fg)}
+	.vd-iconbtn svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+	.vd-sep{width:1px;height:16px;background:var(--line);margin:0 3px;flex:0 0 auto}
+	/* 排序：单按钮循环（点击在 名称↑ → 名称↓ → 时间↓ 之间轮转），不占下拉的宽度 */
+	.vd-sortcycle{display:flex;align-items:center;gap:2px;height:22px;padding:0 6px;border:1px solid var(--line);border-radius:3px;font-size:10.5px;color:var(--fg-dim);cursor:pointer;flex:0 0 auto}
+	.vd-sortcycle:hover{color:var(--fg);border-color:#5a5a5a}
+	.vd-sortcycle b{font-weight:400;color:var(--fg)}
+
+	.vd-sec{border-bottom:1px solid #2b2b2b}
+	.vd-sec-head{display:flex;align-items:center;gap:6px;height:30px;padding:0 8px 0 10px;background:#232323;border-bottom:1px solid var(--line);white-space:nowrap;overflow:hidden}
+	.vd-sec-head .vd-caret{width:10px;color:var(--fg-dim);font-size:9px;flex:0 0 auto}
+	.vd-sec-head .vd-title{font-size:12px;font-weight:600;flex:0 0 auto}
+	.vd-sec-head .vd-count{font-size:11px;color:var(--fg-faint);flex:0 0 auto}
+	.vd-sec-head .vd-spacer{flex:1}
+	.vd-sec-head .vd-iconbtn{width:20px;height:20px}
+	.vd-sec-head svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+
+	.vd-tree{padding:4px 0 10px}
+	.vd-row{display:flex;align-items:center;gap:4px;height:24px;padding-right:6px;margin-right:6px;border-radius:4px;font-size:12.5px}
+	.vd-row:hover{background:rgba(127,127,127,.09)}
+	.vd-row .vd-caret{width:10px;font-size:9px;color:var(--fg-dim);text-align:center}
+	.vd-row .vd-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+	.vd-ind1{padding-left:14px}.vd-ind2{padding-left:26px}.vd-ind3{padding-left:38px}
+	.vd-tag{margin-left:6px;font-size:10px;color:var(--fg-faint)}
+
+	.vd-note{max-width:340px;margin:0 16px 16px;padding:10px 12px;background:#20262b;border-left:3px solid var(--accent);border-radius:4px;font-size:11.5px;line-height:1.7;color:#b9c4cc}
+	.vd-note b{color:#e6edf3}
+	.vd-note code{background:#2b3238;padding:1px 4px;border-radius:3px}
+
+</style>
+</head>
+<body>
+<h1>知识库「笔记」节 · 按钮布局（4 个方案）</h1>
+<p class="lead">统一约束：面板宽 <b>340px</b>（真机最窄形态）、深色主题、按钮<b>不缩不断行</b>（这是当初被压成竖排单字的根因）。<br>本页**不用 iframe**（IDE 预览器会拦 file:// 子框架 ⇒ 一片空白），四个方案已内联，点标题展开/收起。</p>
+<details class="item" open>
+	<summary><b>A · 两行分层（图标化）</b><em>节头留新建；第二行 = 排序下拉 + 4 个动作图标</em></summary>
+	<div class="demo va-demo">
+
+<div class="va-frame">
+	<div class="va-head"><span class="va-vault">🗂 我的知识库 ▾</span><span style="color:#7a7a7a">⚙</span><span style="color:#7a7a7a">↻</span></div>
+	<div class="va-search">
+		<input placeholder="搜索笔记或库…">
+		<div class="va-seg"><b>全文</b><span>文件名</span></div>
+	</div>
+
+	<div class="va-sec">
+		<div class="va-sec-head">
+			<span class="va-caret">▾</span><span class="va-title">笔记</span><span class="va-count">96</span>
+			<span class="va-spacer"></span>
+			<!-- 节头：新建类放这里（低频、语义明确） -->
+			<span class="va-sec-tools">
+				<button class="va-iconbtn" title="新建笔记"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+				<button class="va-iconbtn" title="新建目录"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></button>
+			</span>
+		</div>
+		<!-- 第二行：排序 + 4 个动作，全部图标 -->
+		<div class="va-sec-bar">
+			<span class="va-lbl">排序</span>
+			<select><option>名称 ↑</option><option>名称 ↓</option><option>大小 ↓</option><option>时间 ↓</option><option>时间 ↑</option></select>
+			<span class="va-spacer"></span>
+			<span class="va-actions">
+				<button class="va-iconbtn" title="审核：查看待审条目（只读）"><svg viewBox="0 0 24 24"><path d="M9 11l3 3 6-6"/><path d="M21 12a9 9 0 1 1-6.2-8.6"/></svg></button>
+				<button class="va-iconbtn" title="查重（只报告，不改文件）"><svg viewBox="0 0 24 24"><rect x="8" y="3" width="12" height="12" rx="2"/><rect x="4" y="9" width="12" height="12" rx="2"/></svg></button>
+				<button class="va-iconbtn" title="思维导图（.canvas 只读预览）"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="19" cy="18" r="2"/><path d="M7 12l5-5 5 0M12 12l5 5"/></svg></button>
+				<button class="va-iconbtn" title="体检（结构校验，只读报告）"><svg viewBox="0 0 24 24"><path d="M3 12h4l2-6 3 12 2-6h5"/></svg></button>
+			</span>
+		</div>
+
+		<div class="va-tree">
+			<div class="va-row va-ind1"><span class="va-caret">▾</span><span class="va-name">01_学习</span></div>
+			<div class="va-row va-ind2"><span class="va-caret">▾</span><span class="va-name">财经</span></div>
+			<div class="va-row va-ind3"><span class="va-name">· 投资</span></div>
+			<div class="va-row va-ind3"><span class="va-name">· 游戏案例拆解</span></div>
+			<div class="va-row va-ind3"><span class="va-name">· 游戏设计</span></div>
+			<div class="va-row va-ind2"><span class="va-caret">▾</span><span class="va-name">AI_Agent</span></div>
+			<div class="va-row va-ind3"><span class="va-name">· _assets</span><span class="va-tag">32</span></div>
+			<div class="va-row va-ind3"><span class="va-name">· DSH专题</span></div>
+			<div class="va-row va-ind2"><span class="va-name">· ComfyUI技术</span></div>
+			<div class="va-row va-ind2"><span class="va-name">· UnrealEngine</span></div>
+			<div class="va-row va-ind1"><span class="va-caret">▸</span><span class="va-name">02_工作</span></div>
+			<div class="va-row va-ind1"><span class="va-caret">▸</span><span class="va-name">03_生活</span></div>
+		</div>
+	</div>
+</div>
+
+</div>
+</details>
+<details class="item">
+	<summary><b>B · 单行收纳（⋯ 更多）</b><em>全部收进一行，低频动作进菜单（已实现）</em></summary>
+	<div class="demo vb-demo">
+
+<div class="vb-frame">
+	<div class="vb-head"><span class="vb-vault">🗂 我的知识库 ▾</span><span style="color:#7a7a7a">⚙</span><span style="color:#7a7a7a">↻</span></div>
+	<div class="vb-search">
+		<input placeholder="搜索笔记或库…">
+		<div class="vb-seg"><b>全文</b><span>文件名</span></div>
+	</div>
+
+	<div class="vb-sec">
+		<!-- 全部收进一行：节头 + 排序 + 更多（菜单已展开，示范交互） -->
+		<div class="vb-sec-head">
+			<span class="vb-caret">▾</span><span class="vb-title">笔记</span><span class="vb-count">96</span>
+			<span class="vb-spacer"></span>
+			<span class="vb-sortpick">排序：名称 ↑ ▾</span>
+			<button class="vb-iconbtn" title="新建笔记"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+			<button class="vb-iconbtn" title="更多（体检 / 查重 / 审核 / 导图 / 新建目录）" style="background:#2a2d2e;color:#ccc">
+				<svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/></svg>
+			</button>
+		</div>
+
+		<!-- 展开态 -->
+		<div class="vb-menu">
+			<div class="vb-item"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>新建笔记<kbd>Ctrl N</kbd></div>
+			<div class="vb-item"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>新建目录</div>
+			<div class="vb-sep"></div>
+			<div class="vb-hint">只读报告</div>
+			<div class="vb-item"><svg viewBox="0 0 24 24"><path d="M3 12h4l2-6 3 12 2-6h5"/></svg>体检</div>
+			<div class="vb-item"><svg viewBox="0 0 24 24"><rect x="8" y="3" width="12" height="12" rx="2"/><rect x="4" y="9" width="12" height="12" rx="2"/></svg>查重</div>
+			<div class="vb-item"><svg viewBox="0 0 24 24"><path d="M9 11l3 3 6-6"/><path d="M21 12a9 9 0 1 1-6.2-8.6"/></svg>审核</div>
+			<div class="vb-item"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="19" cy="18" r="2"/><path d="M7 12l5-5 5 0M12 12l5 5"/></svg>思维导图</div>
+			<div class="vb-sep"></div>
+			<div class="vb-hint">排序</div>
+			<div class="vb-item" style="background:#04395e">名称 ↑</div>
+			<div class="vb-item">名称 ↓</div>
+			<div class="vb-item">时间 ↓</div>
+		</div>
+
+		<div class="vb-tree">
+			<div class="vb-row vb-ind1"><span class="vb-caret">▾</span><span class="vb-name">01_学习</span></div>
+			<div class="vb-row vb-ind2"><span class="vb-caret">▾</span><span class="vb-name">财经</span></div>
+			<div class="vb-row vb-ind3"><span class="vb-name">· 投资</span></div>
+			<div class="vb-row vb-ind3"><span class="vb-name">· 游戏案例拆解</span></div>
+			<div class="vb-row vb-ind2"><span class="vb-caret">▾</span><span class="vb-name">AI_Agent</span></div>
+			<div class="vb-row vb-ind3"><span class="vb-name">· _assets</span><span class="vb-tag">32</span></div>
+			<div class="vb-row vb-ind3"><span class="vb-name">· DSH专题</span></div>
+			<div class="vb-row vb-ind2"><span class="vb-name">· ComfyUI技术</span></div>
+			<div class="vb-row vb-ind1"><span class="vb-caret">▸</span><span class="vb-name">02_工作</span></div>
+			<div class="vb-row vb-ind1"><span class="vb-caret">▸</span><span class="vb-name">03_生活</span></div>
+		</div>
+	</div>
+</div>
+
+</div>
+</details>
+<details class="item">
+	<summary><b>C · 工具条常驻（胶囊 + 状态点）</b><em>分组常驻可见，用状态点外显"有没有事"</em></summary>
+	<div class="demo vc-demo">
+
+<div class="vc-frame">
+	<div class="vc-head"><span class="vc-vault">🗂 我的知识库 ▾</span><span style="color:#7a7a7a">⚙</span><span style="color:#7a7a7a">↻</span></div>
+	<div class="vc-search">
+		<input placeholder="搜索笔记或库…">
+		<div class="vc-seg"><b>全文</b><span>文件名</span></div>
+	</div>
+
+	<div class="vc-sec">
+		<div class="vc-sec-head">
+			<span class="vc-caret">▾</span><span class="vc-title">笔记</span><span class="vc-count">96</span>
+			<span class="vc-spacer"></span>
+			<button class="vc-iconbtn" title="新建笔记"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+			<button class="vc-iconbtn" title="新建目录"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></button>
+		</div>
+
+		<!-- 常驻工具条：三组胶囊 -->
+		<div class="vc-toolbar">
+			<div class="vc-group">
+				<span class="vc-cap">排序</span>
+				<button class="vc-tbtn vc-on">名称 ↑</button>
+				<button class="vc-tbtn">大小</button>
+				<button class="vc-tbtn">时间</button>
+			</div>
+			<div class="vc-group">
+				<span class="vc-cap">报告</span>
+				<button class="vc-tbtn" title="体检（结构校验）"><svg viewBox="0 0 24 24"><path d="M3 12h4l2-6 3 12 2-6h5"/></svg>检</button>
+				<button class="vc-tbtn" title="查重"><svg viewBox="0 0 24 24"><rect x="8" y="3" width="12" height="12" rx="2"/><rect x="4" y="9" width="12" height="12" rx="2"/></svg>重<i class="vc-dot vc-warn"></i></button>
+				<button class="vc-tbtn" title="审核未审"><svg viewBox="0 0 24 24"><path d="M9 11l3 3 6-6"/><path d="M21 12a9 9 0 1 1-6.2-8.6"/></svg>审<i class="vc-dot"></i></button>
+			</div>
+			<div class="vc-group">
+				<span class="vc-cap">视图</span>
+				<button class="vc-tbtn" title="思维导图"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="19" cy="18" r="2"/><path d="M7 12l5-5 5 0M12 12l5 5"/></svg>图</button>
+			</div>
+		</div>
+
+		<div class="vc-tree">
+			<div class="vc-row vc-ind1"><span class="vc-caret">▾</span><span class="vc-name">01_学习</span></div>
+			<div class="vc-row vc-ind2"><span class="vc-caret">▾</span><span class="vc-name">财经</span></div>
+			<div class="vc-row vc-ind3"><span class="vc-name">· 投资</span></div>
+			<div class="vc-row vc-ind3"><span class="vc-name">· 游戏案例拆解</span></div>
+			<div class="vc-row vc-ind2"><span class="vc-caret">▾</span><span class="vc-name">AI_Agent</span></div>
+			<div class="vc-row vc-ind3"><span class="vc-name">· _assets</span><span class="vc-tag">32</span></div>
+			<div class="vc-row vc-ind3"><span class="vc-name">· DSH专题</span></div>
+			<div class="vc-row vc-ind2"><span class="vc-name">· ComfyUI技术</span></div>
+			<div class="vc-row vc-ind1"><span class="vc-caret">▸</span><span class="vc-name">02_工作</span></div>
+			<div class="vc-row vc-ind1"><span class="vc-caret">▸</span><span class="vc-name">03_生活</span></div>
+		</div>
+	</div>
+</div>
+
+</div>
+</details>
+<details class="item">
+	<summary><b>D · 搜索行内联（Obsidian 风）</b><em>动作移到搜索行，省一行高度</em></summary>
+	<div class="demo vd-demo">
+
+<div class="vd-frame">
+	<div class="vd-head"><span class="vd-vault">🗂 我的知识库 ▾</span><span style="color:#7a7a7a">⚙</span><span style="color:#7a7a7a">↻</span></div>
+
+	<!-- 搜索 + 排序 + 动作：一行内联 -->
+	<div class="vd-searchrow">
+		<input placeholder="搜索笔记或库…">
+		<span class="vd-sortcycle" title="点击切换排序：名称↑ / 名称↓ / 时间↓">⇅ <b>名称 ↑</b></span>
+		<span class="vd-sep"></span>
+		<button class="vd-iconbtn" title="体检（结构校验，只读）"><svg viewBox="0 0 24 24"><path d="M3 12h4l2-6 3 12 2-6h5"/></svg></button>
+		<button class="vd-iconbtn" title="查重（只报告）"><svg viewBox="0 0 24 24"><rect x="8" y="3" width="12" height="12" rx="2"/><rect x="4" y="9" width="12" height="12" rx="2"/></svg></button>
+		<button class="vd-iconbtn" title="审核（未审清单）"><svg viewBox="0 0 24 24"><path d="M9 11l3 3 6-6"/><path d="M21 12a9 9 0 1 1-6.2-8.6"/></svg></button>
+		<button class="vd-iconbtn" title="思维导图（.canvas）"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="19" cy="18" r="2"/><path d="M7 12l5-5 5 0M12 12l5 5"/></svg></button>
+	</div>
+
+	<div class="vd-sec">
+		<div class="vd-sec-head">
+			<span class="vd-caret">▾</span><span class="vd-title">笔记</span><span class="vd-count">96</span>
+			<span class="vd-spacer"></span>
+			<button class="vd-iconbtn" title="新建笔记"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+			<button class="vd-iconbtn" title="新建目录"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></button>
+		</div>
+		<div class="vd-tree">
+			<div class="vd-row vd-ind1"><span class="vd-caret">▾</span><span class="vd-name">01_学习</span></div>
+			<div class="vd-row vd-ind2"><span class="vd-caret">▾</span><span class="vd-name">财经</span></div>
+			<div class="vd-row vd-ind3"><span class="vd-name">· 投资</span></div>
+			<div class="vd-row vd-ind3"><span class="vd-name">· 游戏案例拆解</span></div>
+			<div class="vd-row vd-ind2"><span class="vd-caret">▾</span><span class="vd-name">AI_Agent</span></div>
+			<div class="vd-row vd-ind3"><span class="vd-name">· _assets</span><span class="vd-tag">32</span></div>
+			<div class="vd-row vd-ind3"><span class="vd-name">· DSH专题</span></div>
+			<div class="vd-row vd-ind2"><span class="vd-name">· ComfyUI技术</span></div>
+			<div class="vd-row vd-ind1"><span class="vd-caret">▸</span><span class="vd-name">02_工作</span></div>
+			<div class="vd-row vd-ind1"><span class="vd-caret">▸</span><span class="vd-name">03_生活</span></div>
+		</div>
+	</div>
+</div>
+
+</div>
+</details>
+</body>
+</html>

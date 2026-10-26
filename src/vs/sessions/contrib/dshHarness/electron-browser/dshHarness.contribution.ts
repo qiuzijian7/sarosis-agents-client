@@ -63,7 +63,9 @@ import { resolveSarosPath, SarosPath, userDataRootFromRoamingHome } from '../../
 import { DshPluginPageEditorInput } from './dshPluginPageEditorInput.js';
 // side-effect import：注册「dsh 插件页的编辑区承载」（editor pane），见该文件头注释 ✓
 import './dshPluginPageEditor.contribution.js';
-import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
+import { IDialogService, IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
+// ★ 2026-10-26：`.code-workspace` 的解析口径只有这一份（sidebarPart 也用它）⇒ 不能各写一份 ✗。
+import { parseCodeWorkspaceFolders } from '../../agentStudio/common/codeWorkspaceFolders.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -321,6 +323,130 @@ registerAction2(class extends Action2 {
 	}
 	run(accessor: ServicesAccessor): Promise<unknown> {
 		return accessor.get(ICommandService).executeCommand('workbench.action.openSettings', 'sessions.dshHarness');
+	}
+});
+
+// ─── 从 .code-workspace 文件导入多根工作区（2026-10-26）────────────────────────
+
+/** 路径比较（判"是不是同一个工作区"）：忽略大小写与尾斜杠。 */
+function samePathLoose(a: string | undefined, b: string | undefined): boolean {
+	if (!a || !b) { return false; }
+	const norm = (p: string) => p.replace(/[\\/]+$/, '').toLowerCase();
+	return norm(a) === norm(b);
+}
+
+/**
+ * 导入一个 `.code-workspace` 文件：把它的 `folders[]` 落成**一条多根工作区记录**，
+ * 并把各根注册进 dsh。
+ *
+ * 为什么要这条（用户 2026-10-26：「增加从 code-workspace 文件导入多根工作区的能力」）：
+ *   · dsh 的工作区模型**只能单目录** ⇒ 一个多根工作区在 dsh 侧是 **N 条平级记录**
+ *     ⇒ 想在 dsh 侧用一个 .code-workspace，就得把它的每个 folder 都注册进去；
+ *   · 既有「打开工作区文件」（`sidebarPart._openFileAsWorkspace`）是**打开**（把 IDE 窗口切进去），
+ *     而"导入"是**只落记录 + 注册到 dsh，窗口不动** ⇒ 适合"我想在 dsh 侧用它"的场景，
+ *     也不会在 desktop（窗口）模式下把 IDE 窗口拽出来重载 ✓。
+ *
+ * 落点说明：命令**注册在 dshHarness 侧**（而不是 agentStudio 侧）—— 因为它要写 dsh 的工作区注册表，
+ *   而 dshHarness → agentStudio 已有依赖方向（`IAgentStudioService`）；反向 import 会成环 ✗。
+ *
+ * ⚠ 失败必须**可见**（通知条）：本仓纪律「点了没反应」是高频缺陷形态 ⇒ 解析不到根、注册失败
+ *   都要说出来，不能只落日志 ✓。
+ */
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: 'agentStudio.workspace.importCodeWorkspace',
+			title: localize2('dshHarness.importCodeWorkspace', "从 .code-workspace 文件导入多根工作区"),
+			category: CATEGORY,
+			f1: true,
+		});
+	}
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const dialogs = accessor.get(IFileDialogService);
+		const files = accessor.get(IFileService);
+		const studio = accessor.get(IAgentStudioService);
+		const dsh = accessor.get(IDshHarnessService);
+		const notifications = accessor.get(INotificationService);
+		const log = accessor.get(ILogService);
+
+		const uris = await dialogs.showOpenDialog({
+			canSelectFiles: true,
+			canSelectFolders: false,
+			canSelectMany: false,
+			openLabel: localize('dshHarness.importCodeWorkspace.open', "导入"),
+			title: localize('dshHarness.importCodeWorkspace.title', "选择 .code-workspace 文件"),
+			filters: [{ name: 'Workspace', extensions: ['code-workspace'] }],
+		});
+		const fileUri = uris && uris.length > 0 ? uris[0] : undefined;
+		if (!fileUri) {
+			return;   // 用户取消 ⇒ **不是错误**（不弹任何提示 ✓）
+		}
+
+		let roots: string[];
+		let name: string;
+		let filesExclude: Record<string, boolean> | undefined;
+		try {
+			const content = await files.readFile(fileUri);
+			const parsed = parseCodeWorkspaceFolders(content.value.toString(), URI.joinPath(fileUri, '..').fsPath);
+			if (parsed.parseErrorCount > 0) {
+				log.warn(`[dshHarness] importCodeWorkspace: ${fileUri.fsPath} 有 ${parsed.parseErrorCount} 处可容忍的 JSONC 错误`);
+			}
+			roots = [parsed.primaryPath, ...parsed.extraFolders.map(f => f.path)].filter((p): p is string => !!p);
+			filesExclude = parsed.filesExclude;
+			const base = fileUri.fsPath.replace(/[\\/]+$/, '').split(/[/\\]/).pop() || fileUri.fsPath;
+			name = base.replace(/\.code-workspace$/i, '') || base;
+		} catch (e) {
+			const msg = String((e as Error)?.message ?? e);
+			log.warn(`[dshHarness] importCodeWorkspace: 解析 ${fileUri.fsPath} 失败：${msg}`);
+			notifications.error(localize('dshHarness.importCodeWorkspace.parseFailed', "读不出这个工作区文件的内容：{0}", msg));
+			return;
+		}
+
+		if (roots.length === 0) {
+			notifications.warn(localize('dshHarness.importCodeWorkspace.noRoots', "这个工作区文件里没有可用的 folder（folders[] 为空，或路径不是本地目录）"));
+			return;
+		}
+
+		// 落一条记录：同一个 .code-workspace（或同一个主根）就更新，不新建重复的 ✓
+		const all = await studio.getWorkspaces().catch(() => [] as readonly { id: string; path?: string; codeWorkspacePath?: string; relatedFolders?: { path: string }[] }[]);
+		const existing = all.find(w => samePathLoose(w.codeWorkspacePath, fileUri.fsPath) || samePathLoose(w.path, roots[0]));
+		let target: { id: string; relatedFolders?: { path: string }[] };
+		try {
+			if (existing) {
+				target = await studio.updateWorkspace(existing.id, { name, path: roots[0], filesExclude, codeWorkspacePath: fileUri.fsPath });
+			} else {
+				target = await studio.createWorkspace({ name, path: roots[0], filesExclude, codeWorkspacePath: fileUri.fsPath });
+			}
+		} catch (e) {
+			const msg = String((e as Error)?.message ?? e);
+			log.warn(`[dshHarness] importCodeWorkspace: 落工作区记录失败：${msg}`);
+			notifications.error(localize('dshHarness.importCodeWorkspace.recordFailed', "没能把这个多根工作区登记进来：{0}", msg));
+			return;
+		}
+
+		// 其余根补进 relatedFolders（按路径去重 —— 重复导入不会把记录弄脏 ✓）
+		const have = new Set((target.relatedFolders ?? []).map(f => f.path.replace(/[\\/]+$/, '').toLowerCase()));
+		for (const p of roots.slice(1)) {
+			if (have.has(p.replace(/[\\/]+$/, '').toLowerCase())) { continue; }
+			try {
+				await studio.addRelatedFolder(target.id, p);
+			} catch (e) {
+				log.warn(`[dshHarness] importCodeWorkspace: 追加关联根失败（${p}）：${String((e as Error)?.message ?? e)}`);
+			}
+		}
+
+		// 注册到 dsh（**与窗口无关**的追加登记；窗口那条是整体替换 ⇒ 不能混用 ✓）
+		try {
+			await dsh.ensureDshWorkspaces(roots);
+		} catch (e) {
+			const msg = String((e as Error)?.message ?? e);
+			log.warn(`[dshHarness] importCodeWorkspace: 注册到 dsh 失败（${roots.length} 个根）：${msg}`);
+			notifications.error(localize('dshHarness.importCodeWorkspace.registerFailed', "工作区已登记，但没能注册到 dsh（Host 可能没连上）：{0}", msg));
+			return;
+		}
+
+		log.info(`[dshHarness] importCodeWorkspace: 已导入「${name}」（${roots.length} 个根）⇒ ${roots.join(' | ')}`);
+		notifications.info(localize('dshHarness.importCodeWorkspace.done', "已导入多根工作区「{0}」（{1} 个根）并注册到 dsh；窗口未切换。", name, roots.length));
 	}
 });
 
@@ -1340,6 +1466,15 @@ class DshPageCommandContribution extends Disposable implements IWorkbenchContrib
 			case 'switchPreset':
 				// 方案 5.15：由拥有该视图的聊天宿主（DshChatBinding）按 chatId 处理，这里不消费。
 				return;
+			case 'importCodeWorkspace': {
+				// ★ 2026-10-26（桥 `19 → 20`）：从 .code-workspace 文件导入多根工作区。
+				//   页面读不了文件、也没有文件选择器 ⇒ 全部在 IDE 侧做（命令 `agentStudio.workspace.importCodeWorkspace`：
+				//   选文件 → 解析 folders → 落一条多根记录 → 各根注册进 dsh）。**只导入，不切窗口** ✓。
+				//   ⚠ 页面桥是单向的（拿不到回执）⇒ 成功/失败由那条命令自己通知 + 工作区记录推送体现 ✓。
+				this._logService.info('[dshHarness] page importCodeWorkspace ⇒ 交给 IDE 命令 agentStudio.workspace.importCodeWorkspace');
+				await this._commands.executeCommand('agentStudio.workspace.importCodeWorkspace');
+				return;
+			}
 			case 'openAgentMarket':
 				// Agent 商城是**编辑器页**（`agentStudio.openMarket`）：页面无法创建编辑器 ⇒ 宿主执行官方命令。
 				// ★ 留痕（2026-10-15）：转发类命令一律先记一笔（"点了没反应且日志无线索"是最差的一种 ✓）。

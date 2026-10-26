@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>知识库右侧栏 · 文档顶部固定栏（4 个方案）</title>
+<style>
+	:root{--fg:#cccccc;--dim:#9d9d9d;--line:#3c3c3c;--accent:#3794ff}
+	*{box-sizing:border-box}
+	body{margin:0;background:#121212;color:var(--fg);font:13px/1.6 "Segoe UI","Microsoft YaHei",system-ui,sans-serif;padding:18px 20px 40px}
+	h1{font-size:16px;font-weight:600;margin:0 0 6px}
+	.lead{margin:0 0 16px;color:var(--dim);font-size:12px;max-width:1100px}
+	.item{border:1px solid var(--line);border-radius:6px;margin-bottom:12px;overflow:hidden;background:#161616}
+	.item > summary{cursor:pointer;padding:9px 12px;font-size:12.5px;list-style:none;background:#1d1d1d;border-bottom:1px solid transparent}
+	.item[open] > summary{border-bottom-color:var(--line)}
+	.item > summary::-webkit-details-marker{display:none}
+	.item > summary::before{content:"▸ ";color:var(--dim)}
+	.item[open] > summary::before{content:"▾ "}
+	.item > summary em{font-style:normal;color:var(--dim);font-size:11.5px;margin-left:8px}
+	.demo{padding:14px;background:#121212;overflow:auto}
+	/* 说明：下面这段是各 mockup 自己的样式（已加前缀，互不污染） */
+/* ── A · 双行（面包屑 + 工具行） ─────────────────────────── */
+
+	:root{--bg:#1e1e1e;--panel:#252526;--bar:#232323;--fg:#cccccc;--dim:#9d9d9d;--faint:#7a7a7a;--line:#3c3c3c;--hover:#2a2d2e;--accent:#3794ff}
+	*{box-sizing:border-box}
+	body{margin:0;background:#141414;color:var(--fg);font:13px/1.65 "Segoe UI","Microsoft YaHei",system-ui,sans-serif}
+	/* 右栏外壳：模拟面板宽度 620px、高 560px；内部滚动，头部 sticky */
+	.va-pane{position:relative;width:620px;height:560px;margin:16px;background:#1b1b1b;border:1px solid var(--line);border-radius:6px;overflow:hidden;display:flex;flex-direction:column}
+	.va-pane-body{flex:1;overflow:auto;position:relative}
+
+	/* ── 固定栏（sticky）：两行 ─────────────────────────────── */
+	.va-hdr{position:sticky;top:0;z-index:10;background:rgba(35,35,35,.96);backdrop-filter:blur(6px);border-bottom:1px solid var(--line)}
+	.va-crumb-row{display:flex;align-items:center;gap:6px;height:30px;padding:0 10px;font-size:11.5px;color:var(--dim);white-space:nowrap;overflow:hidden}
+	.va-crumb{display:flex;align-items:center;gap:4px;min-width:0;overflow:hidden}
+	.va-crumb a{color:var(--dim);text-decoration:none;padding:1px 3px;border-radius:3px;flex:0 0 auto}
+	.va-crumb a:hover{background:var(--hover);color:var(--fg)}
+	.va-crumb .va-sep{color:#5a5a5a;flex:0 0 auto}
+	.va-crumb .va-cur{color:var(--fg);overflow:hidden;text-overflow:ellipsis;flex:0 1 auto}
+	.va-spacer{flex:1}
+	.va-iconbtn{width:24px;height:22px;display:grid;place-items:center;border:0;border-radius:3px;background:transparent;color:var(--dim);cursor:pointer;flex:0 0 auto}
+	.va-iconbtn:hover{background:var(--hover);color:var(--fg)}
+	.va-iconbtn.va-on{background:#0e639c;color:#fff}
+	.va-iconbtn svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+	.va-divider{width:1px;height:15px;background:var(--line);margin:0 3px;flex:0 0 auto}
+
+	/* 第二行：标题 + 元信息 + 主动作 */
+	.va-title-row{display:flex;align-items:center;gap:8px;padding:0 10px 8px;white-space:nowrap}
+	.va-title-row h1{margin:0;font-size:14px;font-weight:600;overflow:hidden;text-overflow:ellipsis;flex:0 1 auto}
+	.va-badge{font-size:10px;padding:1px 6px;border-radius:9px;border:1px solid var(--line);color:var(--dim);flex:0 0 auto}
+	.va-badge.va-ok{color:#3fb950;border-color:#2b4c33;background:rgba(63,185,80,.10)}
+	.va-meta{font-size:10.5px;color:var(--faint);flex:0 0 auto}
+	.va-btn{height:22px;padding:0 9px;font-size:11.5px;border-radius:3px;border:1px solid var(--line);background:transparent;color:var(--fg);cursor:pointer;flex:0 0 auto}
+	.va-btn:hover{background:var(--hover)}
+	.va-btn.va-primary{background:#0e639c;border-color:transparent;color:#fff}
+
+	/* ── 正文 ─────────────────────────────────────────────── */
+	.va-doc{padding:14px 22px 60px;max-width:760px}
+	.va-doc h2{font-size:15px;margin:1.1em 0 .5em;border-bottom:1px solid var(--line);padding-bottom:.25em}
+	.va-doc p{margin:.6em 0;color:#d4d4d4}
+	.va-doc .va-callout{border-left:3px solid var(--accent);background:rgba(55,148,255,.08);padding:7px 11px;border-radius:4px;margin:.8em 0}
+	.va-doc .va-callout b{color:var(--accent);font-size:11.5px;display:block;margin-bottom:2px}
+	.va-doc pre{background:#202020;border:1px solid var(--line);border-radius:4px;padding:8px 10px;overflow:auto;font-size:12px}
+	.va-doc code{font-family:Consolas,monospace;color:#ce9178}
+
+	.va-note{max-width:620px;margin:0 16px 16px;padding:10px 12px;background:#20262b;border-left:3px solid var(--accent);border-radius:4px;font-size:11.5px;line-height:1.7;color:#b9c4cc}
+	.va-note b{color:#e6edf3}
+
+/* ── B · 单行（面包屑即标题） ─────────────────────────── */
+
+	:root{--bg:#1e1e1e;--bar:#232323;--fg:#cccccc;--dim:#9d9d9d;--faint:#7a7a7a;--line:#3c3c3c;--hover:#2a2d2e;--accent:#3794ff}
+	*{box-sizing:border-box}
+	body{margin:0;background:#141414;color:var(--fg);font:13px/1.65 "Segoe UI","Microsoft YaHei",system-ui,sans-serif}
+	.vb-pane{width:620px;height:560px;margin:16px;background:#1b1b1b;border:1px solid var(--line);border-radius:6px;overflow:hidden;display:flex;flex-direction:column}
+	.vb-pane-body{flex:1;overflow:auto;position:relative}
+
+	/* 单行固定栏：一行放完（面包屑 + 动作），高度 34px */
+	.vb-hdr{position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:6px;height:34px;padding:0 8px 0 10px;
+		background:rgba(35,35,35,.96);backdrop-filter:blur(6px);border-bottom:1px solid var(--line);white-space:nowrap;overflow:hidden}
+	.vb-crumb{display:flex;align-items:center;gap:3px;min-width:0;font-size:11.5px;color:var(--dim);overflow:hidden}
+	.vb-crumb a{color:var(--dim);text-decoration:none;padding:1px 3px;border-radius:3px;flex:0 0 auto}
+	.vb-crumb a:hover{background:var(--hover);color:var(--fg)}
+	.vb-crumb .vb-sep{color:#5a5a5a;flex:0 0 auto}
+	.vb-crumb .vb-cur{color:var(--fg);font-size:12.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;flex:0 1 auto;padding-left:2px}
+	.vb-spacer{flex:1}
+	/* 动作：默认半透明，hover 才显影（正文优先） */
+	.vb-acts{display:flex;align-items:center;gap:1px;flex:0 0 auto;opacity:.6;transition:opacity .12s}
+	.vb-hdr:hover .vb-acts{opacity:1}
+	.vb-iconbtn{width:24px;height:22px;display:grid;place-items:center;border:0;border-radius:3px;background:transparent;color:var(--dim);cursor:pointer}
+	.vb-iconbtn:hover{background:var(--hover);color:var(--fg)}
+	.vb-iconbtn.vb-on{background:#0e639c;color:#fff}
+	.vb-iconbtn svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+	.vb-divider{width:1px;height:14px;background:var(--line);margin:0 3px;flex:0 0 auto}
+	.vb-dirty{font-size:9px;color:#d29922;flex:0 0 auto}
+
+	/* 正文里再出现一次"文档标题"（H1），固定栏因此可以只放面包屑 */
+	.vb-doc{padding:18px 24px 60px;max-width:760px}
+	.vb-doc .vb-h1{font-size:20px;font-weight:600;margin:0 0 4px}
+	.vb-doc .vb-sub{font-size:11px;color:var(--faint);margin-bottom:14px}
+	.vb-doc h2{font-size:15px;margin:1.2em 0 .5em}
+	.vb-doc p{margin:.6em 0;color:#d4d4d4}
+	.vb-doc .vb-callout{border-left:3px solid var(--accent);background:rgba(55,148,255,.08);padding:7px 11px;border-radius:4px;margin:.8em 0}
+	.vb-doc .vb-callout b{color:var(--accent);font-size:11.5px;display:block;margin-bottom:2px}
+	.vb-doc pre{background:#202020;border:1px solid var(--line);border-radius:4px;padding:8px 10px;font-size:12px}
+	.vb-doc code{font-family:Consolas,monospace;color:#ce9178}
+
+	.vb-note{max-width:620px;margin:0 16px 16px;padding:10px 12px;background:#20262b;border-left:3px solid var(--accent);border-radius:4px;font-size:11.5px;line-height:1.7;color:#b9c4cc}
+	.vb-note b{color:#e6edf3}
+
+/* ── C · 多文档 Tab + 工具行 ─────────────────────────── */
+
+	:root{--bar:#232323;--fg:#cccccc;--dim:#9d9d9d;--faint:#7a7a7a;--line:#3c3c3c;--hover:#2a2d2e;--accent:#3794ff}
+	*{box-sizing:border-box}
+	body{margin:0;background:#141414;color:var(--fg);font:13px/1.65 "Segoe UI","Microsoft YaHei",system-ui,sans-serif}
+	.vc-pane{width:620px;height:560px;margin:16px;background:#1b1b1b;border:1px solid var(--line);border-radius:6px;overflow:hidden;display:flex;flex-direction:column}
+	.vc-pane-body{flex:1;overflow:auto;position:relative}
+
+	/* ── 固定栏 ①：Tab 条（多文档，IDE 语义） ───────────────── */
+	.vc-hdr{position:sticky;top:0;z-index:10;background:rgba(30,30,30,.97);backdrop-filter:blur(6px);border-bottom:1px solid var(--line)}
+	.vc-tabs{display:flex;align-items:stretch;height:32px;overflow-x:auto;scrollbar-width:none}
+	.vc-tabs::-webkit-scrollbar{display:none}
+	.vc-tab{display:flex;align-items:center;gap:6px;padding:0 10px;font-size:12px;color:var(--dim);border-right:1px solid var(--line);white-space:nowrap;cursor:pointer;flex:0 0 auto;position:relative}
+	.vc-tab:hover{background:var(--hover)}
+	.vc-tab.vc-active{color:var(--fg);background:#1b1b1b}
+	.vc-tab.vc-active::after{content:"";position:absolute;left:0;right:0;top:0;height:2px;background:var(--accent)}
+	.vc-tab .vc-x{opacity:.5;font-size:13px;line-height:1}
+	.vc-tab .vc-x:hover{opacity:1}
+	.vc-tab .vc-dot{width:6px;height:6px;border-radius:50%;background:#d29922}
+
+	/* ── 固定栏 ②：面包屑 + 动作 ───────────────────────────── */
+	.vc-bar{display:flex;align-items:center;gap:6px;height:30px;padding:0 8px 0 10px;font-size:11.5px;color:var(--dim);white-space:nowrap;overflow:hidden}
+	.vc-crumb{display:flex;align-items:center;gap:3px;min-width:0;overflow:hidden}
+	.vc-crumb a{color:var(--dim);text-decoration:none;padding:1px 3px;border-radius:3px;flex:0 0 auto}
+	.vc-crumb a:hover{background:var(--hover);color:var(--fg)}
+	.vc-crumb .vc-sep{color:#5a5a5a;flex:0 0 auto}
+	.vc-crumb .vc-cur{color:var(--fg);overflow:hidden;text-overflow:ellipsis;flex:0 1 auto}
+	.vc-spacer{flex:1}
+	.vc-iconbtn{width:24px;height:22px;display:grid;place-items:center;border:0;border-radius:3px;background:transparent;color:var(--dim);cursor:pointer;flex:0 0 auto}
+	.vc-iconbtn:hover{background:var(--hover);color:var(--fg)}
+	.vc-iconbtn.vc-on{background:#0e639c;color:#fff}
+	.vc-iconbtn svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+	.vc-divider{width:1px;height:14px;background:var(--line);margin:0 3px;flex:0 0 auto}
+	.vc-meta{font-size:10.5px;color:var(--faint);flex:0 0 auto;padding-right:2px}
+
+	.vc-doc{padding:14px 22px 60px;max-width:760px}
+	.vc-doc h2{font-size:15px;margin:1.1em 0 .5em;border-bottom:1px solid var(--line);padding-bottom:.25em}
+	.vc-doc p{margin:.6em 0;color:#d4d4d4}
+	.vc-doc .vc-callout{border-left:3px solid var(--accent);background:rgba(55,148,255,.08);padding:7px 11px;border-radius:4px;margin:.8em 0}
+	.vc-doc .vc-callout b{color:var(--accent);font-size:11.5px;display:block;margin-bottom:2px}
+	.vc-doc pre{background:#202020;border:1px solid var(--line);border-radius:4px;padding:8px 10px;font-size:12px}
+	.vc-doc code{font-family:Consolas,monospace;color:#ce9178}
+
+	.vc-note{max-width:620px;margin:0 16px 16px;padding:10px 12px;background:#20262b;border-left:3px solid var(--accent);border-radius:4px;font-size:11.5px;line-height:1.7;color:#b9c4cc}
+	.vc-note b{color:#e6edf3}
+
+/* ── D · 极简细条 + 阅读进度 ─────────────────────────── */
+
+	:root{--fg:#cccccc;--dim:#9d9d9d;--faint:#7a7a7a;--line:#3c3c3c;--hover:#2a2d2e;--accent:#3794ff}
+	*{box-sizing:border-box}
+	body{margin:0;background:#141414;color:var(--fg);font:13px/1.65 "Segoe UI","Microsoft YaHei",system-ui,sans-serif}
+	.vd-pane{width:620px;height:560px;margin:16px;background:#1b1b1b;border:1px solid var(--line);border-radius:6px;overflow:hidden;display:flex;flex-direction:column}
+	.vd-pane-body{flex:1;overflow:auto;position:relative}
+
+	/* 极简固定栏：28px，一行；左侧缩略面包屑（只留末两级），右侧 2 个主动作 + ⋯ */
+	.vd-hdr{position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:6px;height:28px;padding:0 6px 0 10px;
+		background:rgba(28,28,28,.94);backdrop-filter:blur(8px);border-bottom:1px solid rgba(60,60,60,.7);white-space:nowrap;overflow:hidden}
+	.vd-crumb{display:flex;align-items:center;gap:3px;min-width:0;font-size:11px;color:var(--faint);overflow:hidden}
+	.vd-crumb .vd-dots{flex:0 0 auto;cursor:pointer;padding:0 2px;border-radius:3px}
+	.vd-crumb .vd-dots:hover{background:var(--hover);color:var(--fg)}
+	.vd-crumb .vd-sep{color:#555;flex:0 0 auto}
+	.vd-crumb .vd-cur{color:var(--fg);overflow:hidden;text-overflow:ellipsis;flex:0 1 auto}
+	.vd-spacer{flex:1}
+	.vd-seg{display:flex;border:1px solid var(--line);border-radius:3px;overflow:hidden;flex:0 0 auto}
+	.vd-seg button{height:18px;padding:0 7px;font-size:10.5px;border:0;background:transparent;color:var(--dim);cursor:pointer}
+	.vd-seg button:hover{background:var(--hover);color:var(--fg)}
+	.vd-seg button.vd-on{background:#0e639c;color:#fff}
+	.vd-iconbtn{width:22px;height:20px;display:grid;place-items:center;border:0;border-radius:3px;background:transparent;color:var(--dim);cursor:pointer;flex:0 0 auto}
+	.vd-iconbtn:hover{background:var(--hover);color:var(--fg)}
+	.vd-iconbtn svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+	/* 阅读进度：贴在固定栏底边 */
+	.vd-progress{position:absolute;left:0;bottom:-1px;height:2px;width:38%;background:linear-gradient(90deg,#3794ff,#6ab0ff)}
+
+	.vd-doc{padding:16px 24px 70px;max-width:760px}
+	.vd-doc .vd-h1{font-size:19px;font-weight:600;margin:0 0 3px}
+	.vd-doc .vd-sub{font-size:10.5px;color:var(--faint);margin-bottom:16px}
+	.vd-doc h2{font-size:15px;margin:1.2em 0 .5em}
+	.vd-doc p{margin:.6em 0;color:#d4d4d4}
+	.vd-doc .vd-callout{border-left:3px solid var(--accent);background:rgba(55,148,255,.08);padding:7px 11px;border-radius:4px;margin:.8em 0}
+	.vd-doc .vd-callout b{color:var(--accent);font-size:11.5px;display:block;margin-bottom:2px}
+	.vd-doc pre{background:#202020;border:1px solid var(--line);border-radius:4px;padding:8px 10px;font-size:12px}
+	.vd-doc code{font-family:Consolas,monospace;color:#ce9178}
+	/* 右下角「回到顶部」 */
+	.vd-fab{position:absolute;right:16px;bottom:16px;width:30px;height:30px;border-radius:50%;background:#2a2d2e;border:1px solid var(--line);
+		display:grid;place-items:center;color:var(--dim);cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.4);z-index:9}
+	.vd-fab:hover{color:var(--fg)}
+
+	.vd-note{max-width:620px;margin:0 16px 16px;padding:10px 12px;background:#20262b;border-left:3px solid var(--accent);border-radius:4px;font-size:11.5px;line-height:1.7;color:#b9c4cc}
+	.vd-note b{color:#e6edf3}
+
+</style>
+</head>
+<body>
+<h1>知识库右侧栏 · 文档顶部固定栏（4 个方案）</h1>
+<p class="lead">现状：右栏只有一行不吸顶的标题（标题 + ●未保存·字数 + 编辑/历史），滚动后无任何上下文。参照 IDE 侧 <code>kbMarkdown</code> 的 <code>kb-toolbar</code> 与编辑器面包屑。每块都可滚动，验证吸顶效果。<br>本页**不用 iframe**（IDE 预览器会拦 file:// 子框架 ⇒ 一片空白），四个方案已内联，点标题展开/收起。</p>
+<details class="item" open>
+	<summary><b>A · 双行（面包屑 + 工具行）</b><em>最贴近 IDE：上行面包屑+工具，下行标题+元信息+主动作</em></summary>
+	<div class="demo va-demo">
+<div class="va-pane">
+	<div class="va-pane-body">
+		<!-- ① 固定栏：面包屑行 + 标题行 -->
+		<div class="va-hdr">
+			<div class="va-crumb-row">
+				<div class="va-crumb">
+					<a href="#">笔记</a><span class="va-sep">/</span>
+					<a href="#">01_学习</a><span class="va-sep">/</span>
+					<a href="#">AI_Agent</a><span class="va-sep">/</span>
+					<a href="#">DSH专题</a><span class="va-sep">/</span>
+					<span class="va-cur">05a DSH 框架原理（讲懂版）.md</span>
+				</div>
+				<span class="va-spacer"></span>
+				<button class="va-iconbtn va-on" title="预览 (Ctrl+1)"><svg viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="2.6"/></svg></button>
+				<button class="va-iconbtn" title="编辑 (Ctrl+2)"><svg viewBox="0 0 24 24"><path d="M16 4l4 4-9.5 9.5L4 19l1.5-6.5z"/></svg></button>
+				<span class="va-divider"></span>
+				<button class="va-iconbtn" title="大纲"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h13"/></svg></button>
+				<button class="va-iconbtn" title="复制 Markdown"><svg viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a1 1 0 0 1 1-1h9"/></svg></button>
+				<button class="va-iconbtn" title="版本历史"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg></button>
+				<button class="va-iconbtn" title="在资源管理器中打开"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></button>
+				<button class="va-iconbtn" title="更多"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/></svg></button>
+			</div>
+			<div class="va-title-row">
+				<h1>05a DSH 框架原理（讲懂版）</h1>
+				<span class="va-badge va-ok">已审</span>
+				<span class="va-meta">19.2 KB · 1 260 字 · 改于 10-26 14:02</span>
+				<span class="va-spacer"></span>
+				<button class="va-btn">历史</button>
+				<button class="va-btn va-primary">编辑</button>
+			</div>
+		</div>
+
+		<!-- ② 正文（滚动时固定栏不动） -->
+		<div class="va-doc">
+			<h2>一、一句话结论</h2>
+			<p>DSH 的框架本质是「一个共享 Context + 一堆平权插件」：所有能力都以服务/事件的形式挂在 ctx 上，插件之间不互相 import。</p>
+			<div class="va-callout"><b>注意</b>本段 2026-10-26 重新核对了运行时版本（0.2.1-rc.1），与旧稿的差异已标注。</div>
+			<h2>二、运行时结构</h2>
+			<pre><code>ctx = { services, events, effect }
+plugin.apply(ctx) → 注册服务 / 监听事件 / 声明清理</code></pre>
+			<p>插件生命周期由 <code>ctx.effect()</code> 管理：返回的函数会在插件卸载时调用。这一点决定了「热重载不留定时器」。</p>
+			<h2>三、为什么不用全局单例</h2>
+			<p>全局单例在测试里无法隔离、在多实例下会串数据。共享 Context 把「作用域」显式化，代价是每个插件都要声明依赖。</p>
+			<h2>四、与本知识库的关系</h2>
+			<p>知识库插件同时挂 3 个宿主（IDE 侧栏 / 工作台面板 / HTTP 页面），靠的就是这套 Context：同一份视图、同一套 <code>/api/*</code>。</p>
+			<h2>五、常见坑</h2>
+			<p>1) 在 <code>apply</code> 里做异步初始化而不登记 effect；2) 事件监听忘记释放；3) 用 <code>ctx.get</code> 拿可选依赖、却在缺失时崩溃。</p>
+			<h2>六、小结</h2>
+			<p>把「共享 Context」理解成前端的 DI 容器，很多设计选择就顺了：依赖显式、生命周期可控、测试可隔离。</p>
+		</div>
+	</div>
+</div>
+
+</div>
+</details>
+<details class="item">
+	<summary><b>B · 单行（面包屑即标题）</b><em>34px 一行，动作 hover 显影，正文顶部保留 H1</em></summary>
+	<div class="demo vb-demo">
+<div class="vb-pane">
+	<div class="vb-pane-body">
+		<!-- 固定栏：一行 -->
+		<div class="vb-hdr">
+			<div class="vb-crumb">
+				<a href="#">笔记</a><span class="vb-sep">/</span>
+				<a href="#">AI_Agent</a><span class="vb-sep">/</span>
+				<a href="#">DSH专题</a><span class="vb-sep">/</span>
+				<span class="vb-cur">05a DSH 框架原理（讲懂版）</span>
+			</div>
+			<span class="vb-dirty" title="有未保存修改">●</span>
+			<span class="vb-spacer"></span>
+			<span class="vb-acts">
+				<button class="vb-iconbtn vb-on" title="预览"><svg viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="2.6"/></svg></button>
+				<button class="vb-iconbtn" title="编辑"><svg viewBox="0 0 24 24"><path d="M16 4l4 4-9.5 9.5L4 19l1.5-6.5z"/></svg></button>
+				<span class="vb-divider"></span>
+				<button class="vb-iconbtn" title="大纲"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h13"/></svg></button>
+				<button class="vb-iconbtn" title="复制"><svg viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a1 1 0 0 1 1-1h9"/></svg></button>
+				<button class="vb-iconbtn" title="历史"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg></button>
+				<button class="vb-iconbtn" title="更多"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/></svg></button>
+			</span>
+		</div>
+
+		<div class="vb-doc">
+			<div class="vb-h1">05a DSH 框架原理（讲懂版）</div>
+			<div class="vb-sub">01_学习 / AI_Agent / DSH专题 · 19.2 KB · 1 260 字 · 改于 10-26 14:02 · 已审</div>
+			<h2>一、一句话结论</h2>
+			<p>DSH 的框架本质是「一个共享 Context + 一堆平权插件」：所有能力都以服务/事件的形式挂在 ctx 上。</p>
+			<div class="vb-callout"><b>注意</b>本段 2026-10-26 重新核对了运行时版本（0.2.1-rc.1）。</div>
+			<h2>二、运行时结构</h2>
+			<pre><code>ctx = { services, events, effect }</code></pre>
+			<p>插件生命周期由 <code>ctx.effect()</code> 管理：返回的函数会在插件卸载时调用。</p>
+			<h2>三、为什么不用全局单例</h2>
+			<p>全局单例在测试里无法隔离、在多实例下会串数据。</p>
+			<h2>四、与本知识库的关系</h2>
+			<p>知识库插件同时挂 3 个宿主（IDE 侧栏 / 工作台面板 / HTTP 页面）。</p>
+			<h2>五、常见坑</h2>
+			<p>1) 在 <code>apply</code> 里做异步初始化而不登记 effect；2) 事件监听忘记释放。</p>
+		</div>
+	</div>
+</div>
+
+</div>
+</details>
+<details class="item">
+	<summary><b>C · 多文档 Tab + 工具行</b><em>62px：Tab 条 + 面包屑/工具行，可多篇并存</em></summary>
+	<div class="demo vc-demo">
+<div class="vc-pane">
+	<div class="vc-pane-body">
+		<div class="vc-hdr">
+			<!-- Tab 条：多篇同时打开，切换不丢滚动位置 -->
+			<div class="vc-tabs">
+				<div class="vc-tab"><span>01 智能体是什么</span><span class="vc-x">×</span></div>
+				<div class="vc-tab vc-active"><span class="vc-dot" title="有未保存修改"></span><span>05a DSH 框架原理（讲懂版）</span><span class="vc-x">×</span></div>
+				<div class="vc-tab"><span>02 智能体发展史</span><span class="vc-x">×</span></div>
+			</div>
+			<!-- 面包屑 + 动作行 -->
+			<div class="vc-bar">
+				<div class="vc-crumb">
+					<a href="#">笔记</a><span class="vc-sep">/</span>
+					<a href="#">01_学习</a><span class="vc-sep">/</span>
+					<a href="#">AI_Agent</a><span class="vc-sep">/</span>
+					<a href="#">DSH专题</a><span class="vc-sep">/</span>
+					<span class="vc-cur">05a DSH 框架原理（讲懂版）.md</span>
+				</div>
+				<span class="vc-meta">1 260 字 · 改于 10-26 14:02</span>
+				<span class="vc-spacer"></span>
+				<button class="vc-iconbtn vc-on" title="预览"><svg viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="2.6"/></svg></button>
+				<button class="vc-iconbtn" title="编辑"><svg viewBox="0 0 24 24"><path d="M16 4l4 4-9.5 9.5L4 19l1.5-6.5z"/></svg></button>
+				<span class="vc-divider"></span>
+				<button class="vc-iconbtn" title="大纲"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h13"/></svg></button>
+				<button class="vc-iconbtn" title="历史"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg></button>
+				<button class="vc-iconbtn" title="更多"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/></svg></button>
+			</div>
+		</div>
+
+		<div class="vc-doc">
+			<h2>一、一句话结论</h2>
+			<p>DSH 的框架本质是「一个共享 Context + 一堆平权插件」。</p>
+			<div class="vc-callout"><b>注意</b>本段 2026-10-26 重新核对运行时版本（0.2.1-rc.1）。</div>
+			<h2>二、运行时结构</h2>
+			<pre><code>ctx = { services, events, effect }</code></pre>
+			<p>插件生命周期由 <code>ctx.effect()</code> 管理。</p>
+			<h2>三、为什么不用全局单例</h2>
+			<p>全局单例在测试里无法隔离、多实例下会串数据。</p>
+			<h2>四、与本知识库的关系</h2>
+			<p>知识库插件同时挂 3 个宿主，靠的就是这套 Context。</p>
+			<h2>五、常见坑</h2>
+			<p>1) 异步初始化不登记 effect；2) 监听忘记释放；3) <code>ctx.get</code> 拿可选依赖却在缺失时崩溃。</p>
+		</div>
+	</div>
+</div>
+
+</div>
+</details>
+<details class="item">
+	<summary><b>D · 极简细条 + 阅读进度</b><em>28px，面包屑折叠 + 预览/编辑分段 + 进度线</em></summary>
+	<div class="demo vd-demo">
+<div class="vd-pane">
+	<div class="vd-pane-body">
+		<div class="vd-hdr">
+			<div class="vd-crumb">
+				<span class="vd-dots" title="完整路径：笔记 / 01_学习 / AI_Agent / DSH专题">…</span>
+				<span class="vd-sep">/</span>
+				<a href="#" style="color:var(--faint);text-decoration:none">DSH专题</a>
+				<span class="vd-sep">/</span>
+				<span class="vd-cur">05a DSH 框架原理（讲懂版）.md</span>
+			</div>
+			<span class="vd-spacer"></span>
+			<div class="vd-seg">
+				<button class="vd-on">预览</button>
+				<button>编辑</button>
+			</div>
+			<button class="vd-iconbtn" title="大纲"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h13"/></svg></button>
+			<button class="vd-iconbtn" title="更多（复制 / 历史 / 资源管理器 / 在编辑器中打开）"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/></svg></button>
+			<div class="vd-progress"></div>
+		</div>
+
+		<div class="vd-doc">
+			<div class="vd-h1">05a DSH 框架原理（讲懂版）</div>
+			<div class="vd-sub">19.2 KB · 1 260 字 · 改于 10-26 14:02 · 已审 · 笔记 / 01_学习 / AI_Agent / DSH专题</div>
+			<h2>一、一句话结论</h2>
+			<p>DSH 的框架本质是「一个共享 Context + 一堆平权插件」：所有能力都以服务/事件的形式挂在 ctx 上，插件之间不互相 import。</p>
+			<div class="vd-callout"><b>注意</b>本段 2026-10-26 重新核对了运行时版本（0.2.1-rc.1）。</div>
+			<h2>二、运行时结构</h2>
+			<pre><code>ctx = { services, events, effect }</code></pre>
+			<p>插件生命周期由 <code>ctx.effect()</code> 管理：返回的函数会在插件卸载时调用。</p>
+			<h2>三、为什么不用全局单例</h2>
+			<p>全局单例在测试里无法隔离、在多实例下会串数据。</p>
+			<h2>四、与本知识库的关系</h2>
+			<p>知识库插件同时挂 3 个宿主（IDE 侧栏 / 工作台面板 / HTTP 页面）。</p>
+			<h2>五、常见坑</h2>
+			<p>1) 异步初始化不登记 effect；2) 监听忘记释放；3) <code>ctx.get</code> 拿可选依赖却在缺失时崩溃。</p>
+		</div>
+		<div class="vd-fab" title="回到顶部">↑</div>
+	</div>
+</div>
+
+</div>
+</details>
+</body>
+</html>

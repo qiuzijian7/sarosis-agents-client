@@ -56,7 +56,7 @@ window.__ModuleLoader__.load({
 			task: { flex: 1, minWidth: 0, color: "var(--dsw-alias-label-primary, #e6e6e6)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
 			taskDone: { flex: 1, minWidth: 0, opacity: 0.65, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
 			act: { marginLeft: "auto", fontSize: 10.5, color: "var(--dsw-alias-brand-primary, #3794ff)", cursor: "pointer", opacity: 0.85, flex: "0 0 auto" },
-			actDanger: { marginLeft: 6, fontSize: 10.5, color: "var(--dsw-alias-error, #f48771)", cursor: "pointer", opacity: 0.9, flex: "0 0 auto" },
+			actDanger: { marginLeft: 6, fontSize: 10.5, color: "var(--dsw-alias-state-error-primary, #f48771)", cursor: "pointer", opacity: 0.9, flex: "0 0 auto" },
 			note: { padding: "3px 6px 2px", fontSize: 10.5, opacity: 0.6 },
 		};
 

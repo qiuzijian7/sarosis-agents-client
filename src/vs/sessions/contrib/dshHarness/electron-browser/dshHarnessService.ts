@@ -34,6 +34,8 @@ import { DSH_MODULE_CONTAINERS, DshModuleId, IDshModulePageState, activeModulesF
 // 与同一个 focusTaskInBoard），不另开一条"看起来能跳"的路径。
 import { TaskOverviewEditorInput } from '../../agentStudio/browser/taskOverviewEditorInput.js';
 import { ITofAuthService } from '../../agentStudio/common/tofAuth.js';
+// IM（飞书）入站凭据的设置键（2026-10-27）：与注册处共用同一份常量，避免两边写错字符串。
+import { CHANNEL_FEISHU_APP_ID_SETTING, CHANNEL_FEISHU_APP_SECRET_SETTING } from '../../agentStudio/common/constants.js';
 // ★ 2026-10-21：商城清单能力（`skills` / `mcp`）——认证（商城 JWT）在 IDE 侧 ⇒ 复用它 ✓。
 import { IMarketplaceService } from '../../agentStudio/common/marketplace.js';
 // ★ 2026-10-22：商城工作台的执行面（`marketplace` 能力的落地实现）。
@@ -310,6 +312,14 @@ export interface IDshHarnessService {
 	discoverUpdates(): Promise<IDshUpdateDiscoveryResult>;
 	/** 上报本窗口的工作区目录（整体替换）；控制桥已连接时立即注册为 dsh 工作区。 */
 	setWindowWorkspaces(windowId: number, paths: readonly string[]): Promise<void>;
+	/**
+	 * 登记**与窗口无关**的一批工作区目录（2026-10-26：从 .code-workspace 导入多根工作区）。
+	 *
+	 * 与 `setWindowWorkspaces` 的区别：那条是**按窗口整体替换** ⇒ 只能表达"窗口现在开着哪些根"；
+	 * 这条是**追加**语义 ⇒ 用来把"导入来的多根"注册进 dsh（dsh 的工作区模型只能单目录 ⇒
+	 * 一个多根工作区在 dsh 侧是 N 条平级记录 ⇒ 这些根必须都被注册，否则会话挂不上去）。
+	 */
+	ensureDshWorkspaces(paths: readonly string[]): Promise<void>;
 	listWorkspaces(): Promise<IBridgeWorkspace[]>;
 	/** 经控制桥建/接管一个 dsh 会话（`sessionId` 给定时幂等接管）；控制桥不可用时抛错。 */
 	startSession(args: IBridgeSessionStartArgs): Promise<IBridgeSessionStartResult>;
@@ -1119,6 +1129,11 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 			//（口径与 IDE 侧 `knowledgeBaseView.rootUri` 同一份实现 `resolveKbRoot` ✓）。不给的话 kb 与 canvas
 			// 只认 `<数据根>/knowledge-base` ⇒ 用户改过就**空着且不报错** ✗。
 			kbRoot: this._kbRoot(),
+			// ★ IM（飞书）**入站**凭据（2026-10-27）：IDE 设置 → 覆盖层 → `vssaros-agents` 行
+			//   `config.feishu` → 插件的 `createSdkTransport({ appId, appSecret })`。
+			//   只做**出站**不需要它（出站用每个绑定自己的 webhook URL）。
+			imFeishuAppId: this._imFeishuSetting(CHANNEL_FEISHU_APP_ID_SETTING),
+			imFeishuAppSecret: this._imFeishuSetting(CHANNEL_FEISHU_APP_SECRET_SETTING),
 			// ★ 库记录（2026-10-15）：与 kbRoot 同一份覆盖层 ✓（写进 `vssaros-kb` 那一行 ✓ —— 那份 config
 			//   整体替换 ⇒ 拆两份会互相擦掉 ✗）。拿不到 ⇒ `undefined` ⇒ 渲染器**不产生那两行** ✓。
 			kbVaults: this._kbVaultsJson(),
@@ -1341,6 +1356,22 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 	}
 
 	/**
+	 * IM（飞书）设置项读取（2026-10-27）：`sessions.channel.feishu.appId` / `.appSecret`。
+	 *
+	 * 空 ⇒ 返回 `undefined` ⇒ 覆盖层**不写这一项** ⇒ 插件页面显示「未配置」。
+	 * 刻意**不**用空串兜底：空串会让插件的 `createSdkTransport` 走到"缺凭据"分支后
+	 * 又被当成"已配置"，日志与页面会互相矛盾。
+	 *
+	 * ⚠ secret 只经覆盖层交给本地 Host 进程；插件的 `GET /api/bindings` 只回 `hasSecret`，
+	 *   不会把值发到浏览器侧（这条在 `bindings.js` 的 `listBindings` 里有硬约束）。
+	 */
+	private _imFeishuSetting(key: string): string | undefined {
+		const raw = this._configurationService.getValue<string>(key);
+		const value = typeof raw === 'string' ? raw.trim() : '';
+		return value || undefined;
+	}
+
+	/**
 	 * VsSaros 的 agent 目录（`<数据根>/agents`，与 `agentStudioService._getSarosAgentsDir()` 同源）。
 	 *
 	 * 交给 agents 模块（主进程渲染成 `config.agentsRoot` 覆盖层，行 id `vssaros-agents`）：模块自己的
@@ -1549,6 +1580,16 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 
 	async setWindowWorkspaces(windowId: number, paths: readonly string[]): Promise<void> {
 		await this._channel.call(DshHarnessChannelCommand.SetWindowWorkspaces, { windowId, paths });
+	}
+
+	/**
+	 * 登记**与窗口无关**的一批工作区目录（2026-10-26：从 .code-workspace 导入多根工作区）。
+	 *
+	 * 失败**如实抛**：调用方要把"导入失败"告诉用户（页面桥是单向的 ⇒ 页面拿不到回执 ⇒
+	 * 只能靠宿主自己提示 ⇒ 这里不能吞）✓。
+	 */
+	async ensureDshWorkspaces(paths: readonly string[]): Promise<void> {
+		await this._channel.call(DshHarnessChannelCommand.EnsureWorkspaces, { paths });
 	}
 
 	/**

@@ -1,6 +1,6 @@
 {
   "name": "@vssaros/dsh-xhs-note",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "private": true,
   "type": "module",
   "description": "主题与素材整理成小红书笔记：标题、正文、话题标签；草稿落本机数据目录，AI 协助可带上下文",
@@ -12,7 +12,13 @@
   },
   "files": [
     "cordis.patch.yml",
-    "lib/"
+    "lib/",
+    "lib/client.js",
+    "lib/client.xhs-note.js",
+    "lib/foundationRef.js",
+    "lib/index.js",
+    "lib/prefill.js",
+    "lib/store.js"
   ],
   "dsh": {
     "bundle": {

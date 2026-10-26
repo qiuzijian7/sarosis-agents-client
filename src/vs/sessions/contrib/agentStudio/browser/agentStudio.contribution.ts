@@ -2785,11 +2785,18 @@ registerAction2(class extends Action2 {
 	}
 });
 
-// 打开 **媒体库**（`MediaGalleryEditorPane`）—— dsh 媒体库页 `/x/media/` 的置顶按钮
-// 「打开媒体库」经页面桥 `openMediaGallery` 转过来（桥 `14 → 15`，2026-10-19；用户要求
-// "媒体库统一成一个 editor pane"）。与 `agentStudio.openSkillMarket` 同款理由：
-// 媒体库是原生 `EditorPane`，**页面开不了编辑器** ⇒ 交宿主执行命令 ✓。
-// ⚠ 一律 `applyContext({})`（全库）：从 dsh 页/工作台进来时不该沿用上次"只看某工作流"的范围 ✗。
+// 打开 **媒体库** —— dsh 媒体库页 `/x/media/` 的「在编辑区打开」按钮经页面桥
+// `openMediaGallery` 转过来（桥 `14 → 15`，2026-10-19）。与 `agentStudio.openSkillMarket` 同款理由：
+// 页面开不了编辑器 ⇒ 交宿主执行命令 ✓。
+//
+// ★ 2026-10-26（媒体库真源已全在 dsh 侧）：**dsh 引擎下改成打开 dsh 自己的三栏页 `/x/media/`**
+//   （`DshPluginPageEditorInput` 容器单例，与 Agents/看板/知识库同一条落点）。
+//   原因：原先进的是 IDE 原生 `MediaGalleryEditorPane`，它读的是**主进程那份旧库**
+//   （`common/mediaStoreChannel.ts` 的 IMediaBackend）—— 而现在 imagegen 只往 dsh 的 `media-store/` 写，
+//   ⇒ 从 dsh 页面点「在编辑区打开」会被带到**看不到新图**的旧库（等于自带一个错入口）。
+//   legacy 引擎（未启用 dsh 模块）仍走旧页：那时 dsh 页根本不存在，没有替代品。
+//   ⚠ 旧页 `MediaGalleryEditorPane` 的注册**暂时保留**（工作流工具栏仍带 `workflowId` 上下文进它），
+//     去掉它的前提是把工作流那条也改向 + 旧库不再被 `media.import` 写。
 registerAction2(class extends Action2 {
 	constructor() {
 		super({
@@ -2801,8 +2808,16 @@ registerAction2(class extends Action2 {
 	}
 	async run(accessor: ServicesAccessor): Promise<void> {
 		const editorService = accessor.get(IEditorService);
+		const configurationService = accessor.get(IConfigurationService);
+		if (isDshModuleEngine(configurationService)) {
+			// 与 openModulePage 同一落点：容器单例输入（dshModuleContainers.ts 的 media 容器）✓
+			const input = DshPluginPageEditorInput.getOrCreate('agentStudio.media', '媒体库');
+			await editorService.openEditor(input, { pinned: true });
+			return;
+		}
 		const editorGroupsService = accessor.get(IEditorGroupsService);
 		const input = MediaGalleryEditorInput.getOrCreate();
+		// ⚠ 一律 `applyContext({})`（全库）：从 dsh 页/工作台进来时不该沿用上次"只看某工作流"的范围 ✗。
 		input.applyContext({});
 		const groups = editorGroupsService.getGroups(0 /* GroupsOrder.CREATION_TIME */);
 		await editorService.openEditor(input, { pinned: true }, groups.length <= 1 ? SIDE_GROUP : groups[0]);

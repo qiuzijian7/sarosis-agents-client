@@ -20,7 +20,7 @@ window.__ModuleLoader__.load({
 		//   （今天就因此丢了侧栏「主页」那一行：18:15 改了 client.workbenchNav.js，没动入口 ⇒
 		//    rev 没变 ⇒ 用户窗口里侧栏仍是旧版；22:17 补改入口后才恢复。）
 		// ⇒ 规矩：**改任何 `client.*.js` 之后，把下面这个 stamp 改掉**（守卫会查 ⇒ 漏了必红）✓
-		const CLIENT_BUILD_STAMP = "2026-10-22/模式chip当前名称不冒充(P0-1)/03+第三方工作台固定到侧栏+空白会话预选Bot(P0-2)/04+固定行启动兜底也同步(重启后固定图标不丢)+2026-10-22/工作流页改左右两档(左列表右画布)+2026-10-22/工作台导航登记商城(主页不显示商城的修复)+2026-10-22/DEFAULT_ITEMS登记并行工作台+2026-10-22/模型下拉框加创作模型三行(S2)/07+2026-10-22/品牌改名Saroasis-harness(品牌位+页面title)+2026-10-23/中栏工作台面板不被救援抢回会话+2026-10-23/desktop窗口加更新入口(随包插件+一键升级应用)/02+2026-10-23/更新面板加五类资产升级检查(skill/mcp/agent/工作流/工作台)+2026-10-23/工作台导航登记萨罗斯平台(studio)+2026-10-23/页签支持拖拽排序/02+2026-10-23/更新行不透明且不压状态行+2026-10-23/LLM模型下拉移除创作模型三行(SHOW_IN_LLM_MENU=false)+2026-10-23/模型chip按方案B恢复创作模型分组(文字vs图片视频音频+二级面板搜索+首开聚焦)+2026-10-23/创作模型行直接绑click(文档级委托没命中的兜底)+2026-10-23/模型菜单选择器加结构匹配兜底(window.__vssarosCreative.probe)+2026-10-23/scan走findMenu(不再只认中文aria-label)+2026-10-23/更新行不透明不压状态行+无可升级内容时不显示更新UI+2026-10-24/账号行在所有surface接管(插件页不再露官方DeepSeek登录)+2026-10-24/侧栏隐藏官方插件行+2026-10-24/自动化任务收进工作台(侧栏那行隐藏)/02+2026-10-26/更新入口只算升级(未安装不计)+2026-10-26/侧栏工作区+按钮改走uiWorkspace.pickDirectory(修窗口模式点了没反应:旧读未声明的ctx.remote.directoryPicker+读res.value.path)+侧栏隐藏空会话(官方blank位)+页脚口径跟着剔空会话/03";
+		const CLIENT_BUILD_STAMP = "2026-10-22/模式chip当前名称不冒充(P0-1)/03+第三方工作台固定到侧栏+空白会话预选Bot(P0-2)/04+固定行启动兜底也同步(重启后固定图标不丢)+2026-10-22/工作流页改左右两档(左列表右画布)+2026-10-22/工作台导航登记商城(主页不显示商城的修复)+2026-10-22/DEFAULT_ITEMS登记并行工作台+2026-10-22/模型下拉框加创作模型三行(S2)/07+2026-10-22/品牌改名Saroasis-harness(品牌位+页面title)+2026-10-23/中栏工作台面板不被救援抢回会话+2026-10-23/desktop窗口加更新入口(随包插件+一键升级应用)/02+2026-10-23/更新面板加五类资产升级检查(skill/mcp/agent/工作流/工作台)+2026-10-23/工作台导航登记萨罗斯平台(studio)+2026-10-23/页签支持拖拽排序/02+2026-10-23/更新行不透明且不压状态行+2026-10-23/LLM模型下拉移除创作模型三行(SHOW_IN_LLM_MENU=false)+2026-10-23/模型chip按方案B恢复创作模型分组(文字vs图片视频音频+二级面板搜索+首开聚焦)+2026-10-23/创作模型行直接绑click(文档级委托没命中的兜底)+2026-10-23/模型菜单选择器加结构匹配兜底(window.__vssarosCreative.probe)+2026-10-23/scan走findMenu(不再只认中文aria-label)+2026-10-23/更新行不透明不压状态行+无可升级内容时不显示更新UI+2026-10-24/账号行在所有surface接管(插件页不再露官方DeepSeek登录)+2026-10-24/侧栏隐藏官方插件行+2026-10-24/自动化任务收进工作台(侧栏那行隐藏)/02+2026-10-26/更新入口只算升级(未安装不计)+2026-10-26/侧栏工作区+按钮改走uiWorkspace.pickDirectory(修窗口模式点了没反应:旧读未声明的ctx.remote.directoryPicker+读res.value.path)+侧栏隐藏空会话(官方blank位)+页脚口径跟着剔空会话/03+2026-10-26/侧栏+变菜单:加单目录+从.code-workspace导入多根(走宿主桥importCodeWorkspace)";
 		// 挂到 window 上 ⇒ 真机取证能一眼看出"这个窗口跑的是哪一版"（`window.__vssarosChatSurfaceBuild`）✓
 		try { window.__vssarosChatSurfaceBuild = CLIENT_BUILD_STAMP; } catch { /* 极端环境 */ }
 		// 注意：**不**把 `workspaces` 加进 inject —— 本仓库实测结论是 Cordis 4 的 inject 数组是
@@ -1092,7 +1092,7 @@ window.__ModuleLoader__.load({
 					el = document.createElement("div");
 					el.id = STATUS_ID;
 					el.setAttribute("data-vssaros-connect", "1");
-					el.style.cssText = "position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:2147483000;display:flex;align-items:center;gap:10px;padding:6px 14px;border-radius:999px;font:12px/1.4 system-ui,-apple-system,'Segoe UI','Microsoft YaHei',sans-serif;color:var(--dsw-alias-label-secondary,#d0d0d0);background:var(--dsw-alias-background-elevated,#2a2a2a);border:1px solid var(--dsw-alias-border-default,#3a3a3a);box-shadow:0 2px 10px rgba(0,0,0,.35);pointer-events:none;white-space:nowrap;";
+					el.style.cssText = "position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:2147483000;display:flex;align-items:center;gap:10px;padding:6px 14px;border-radius:999px;font:12px/1.4 system-ui,-apple-system,'Segoe UI','Microsoft YaHei',sans-serif;color:var(--dsw-alias-label-secondary,#d0d0d0);background:var(--dsw-alias-bg-layer-2,#2a2a2a);border:1px solid var(--dsw-alias-border-l2,#3a3a3a);box-shadow:0 2px 10px rgba(0,0,0,.35);pointer-events:none;white-space:nowrap;";
 					const dot = document.createElement("span");
 					dot.style.cssText = "width:6px;height:6px;border-radius:3px;background:var(--dsw-alias-brand-primary,#297aa0);flex:0 0 auto;";
 					const text = document.createElement("span");
@@ -1101,7 +1101,7 @@ window.__ModuleLoader__.load({
 					btn.setAttribute("data-k", "retry");
 					btn.type = "button";
 					btn.textContent = "重试";
-					btn.style.cssText = "display:none;pointer-events:auto;cursor:pointer;padding:2px 10px;border-radius:999px;border:1px solid var(--dsw-alias-border-default,#4a4a4a);background:transparent;color:inherit;font:inherit;";
+					btn.style.cssText = "display:none;pointer-events:auto;cursor:pointer;padding:2px 10px;border-radius:999px;border:1px solid var(--dsw-alias-border-l2,#4a4a4a);background:transparent;color:inherit;font:inherit;";
 					btn.addEventListener("click", (ev) => { ev.stopPropagation(); retryNow(); });
 					el.append(dot, text, btn);
 					document.body.appendChild(el);

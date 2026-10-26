@@ -611,7 +611,7 @@ const loadVisiblePresetIds = () => {
 					title: (row && row.description) || "当前模式 / Agent preset",
 					style: {
 						display: "inline-flex", alignItems: "center", gap: 4, height: 22, padding: "0 6px",
-						borderRadius: 4, background: "var(--dsw-alias-fill-tsp-secondary, transparent)",
+						borderRadius: 4, background: "var(--dsw-alias-interactive-bg-hover, transparent)",
 						color: "var(--dsw-alias-label-tertiary, currentColor)", fontSize: 12, lineHeight: "22px",
 						whiteSpace: "nowrap", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis",
 					},

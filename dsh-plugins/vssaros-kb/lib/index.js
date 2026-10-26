@@ -42,6 +42,10 @@ import { escapeHtml, isVaultId, searchDocs, FEISHU_SYNC_SCRIPT, LIBRARY_DIR, NOT
 
 // ★ 2026-10-25：服务端 Markdown 渲染（markdown-it + Obsidian 方言；vendor 已随包）
 import { renderMarkdownHtml } from './md/render.js';
+// 2026-10-26：mermaid 改用仓库已有的 **pele** 引擎（同步、零 DOM ⇒ 服务端可渲染）。
+// 与 IDE 侧 `peleDiagramRenderer.ts`、dsh Host 的 `render_diagram` 同一份产物。
+// 拿不到引擎时 `renderMermaidSvg` 返回空串 ⇒ 渲染器保留源码块（不吞内容）。
+import { renderMermaidSvg } from './md/pele.js';
 
 // 正文检索（`kb_search mode=fulltext`）：口径逐字照 IDE 侧 `kbIndex.ts`，见 core/kbFulltext.js 文件头。
 import { searchFulltext } from './core/kbFulltext.js';
@@ -245,6 +249,28 @@ export const name = 'vssaros-kb';
 export const inject = ['tools'];
 
 const ROUTE_PREFIX = '/x/kb';
+
+/**
+ * 自带页面的 CSP（2026-10-26，P4）。
+ *
+ * 为什么现在才能加：之前 `/x/kb/` 与 `/x/kb/doc` 都含**内联脚本**，要放行就得写
+ * `script-src 'unsafe-inline'` —— 那等于没有防护。现在两处脚本都已外置
+ * （`/x/kb/web/page-boot.js`、`/x/kb/web/doc-boot.js`）⇒ 这里要求 `script-src 'self'`。
+ *
+ * `style-src 'unsafe-inline'` 仍然需要：视图把主题样式作为 <style> 注入，正文里也有
+ * `style="…"` 属性（表格对齐、Callout 色条）。样式注入的危害面远小于脚本注入。
+ */
+const KB_PAGE_CSP = [
+	"default-src 'self'",
+	"script-src 'self'",
+	"style-src 'self' 'unsafe-inline'",
+	"img-src 'self' data: blob:",
+	"font-src 'self' data:",
+	"media-src 'self'",
+	"connect-src 'self'",
+	"object-src 'none'",
+	"base-uri 'none'",
+].join('; ');
 /**
  * 上一次 `/api/page` 渲染时用到的**库根目录**（含外挂库，如 `E:\VsSarosVault`）。
  *
@@ -279,6 +305,16 @@ const graphCache = new Map();
  * 任何异常（只读盘、权限）都只让缓存失效，**不阻断**正文返回。
  */
 const HTML_CACHE_DIR = '.kb-html-cache';
+/**
+ * 渲染管线版本（2026-10-26 引入）。
+ *
+ * 为什么必须有：缓存键是「路径 + mtime + 字节数」，**换个渲染器不会改变这两者** ⇒
+ *   mermaid 从「客户端脚本渲染」改成「服务端 pele 出 SVG」后，旧缓存里的 HTML
+ *   仍被判为命中，页面继续显示“源码块”（真机实测踩到：/api/doc 无 SVG，
+ *   而独立文档页 /x/kb/doc 是新的、有 SVG —— 两者的唯一差别就是走了缓存）。
+ * ⇒ 任何改变输出形状的渲染改动（规则/主题/引擎）都要把这个数字 +1。
+ */
+const HTML_CACHE_VERSION = 3;
 function htmlCacheFileOf(vaultDir, absPath) {
 	const h = createHash('sha1').update(String(absPath).toLowerCase()).digest('hex').slice(0, 20);
 	return join(vaultDir, HTML_CACHE_DIR, h + '.json');
@@ -6500,19 +6536,43 @@ export function apply(ctx, config = {}) {
 		//   用户点的「知识库」tab 进来的 URL 多半就带 surface ⇒ 按参数分流会让新版**永远轮不到** ✗
 		//   （真机表现：改了代码、重启了进程，页面还是旧的那一份）。
 		//   ⇒ 现在：`/x/kb/`（任何参数）一律出新版；经典三态页退到 `/x/kb/classic`（仍走 renderPage）。
+		// ★ 2026-10-26（P4）：**静态前端资源白名单**。以前只服务 kbSideview.js，
+		//   而页面里还有内联脚本 ⇒ CSP 只能写 unsafe-inline。现在三段脚本全部外置，
+		//   这里按**精确文件名**放行（不做路径拼接 ⇒ 无穿越面）。
+		if (url && url.pathname.startsWith(`${ROUTE_PREFIX}/web/`)) {
+			const name = url.pathname.slice((ROUTE_PREFIX + '/web/').length);
+			if (/^(kbSideview|page-boot|doc-boot|kbEditor)\.js$/.test(name)) {
+				try {
+					const body = readFileSync(fileURLToPath(new URL(`./web/${name}`, import.meta.url)));
+					res.writeHead(200, {
+						'content-type': 'application/javascript; charset=utf-8',
+						'cache-control': 'no-store',
+					});
+					res.end(body);
+				} catch (err) {
+					res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+					res.end(`未找到 ${name}：先跑 scripts/sync-kb-sideview.mjs（${String(err?.message ?? err)}）`);
+				}
+				return;
+			}
+			res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+			res.end('not found');
+			return;
+		}
 		const isKbHomePage = url?.pathname === `${ROUTE_PREFIX}/` || url?.pathname === `${ROUTE_PREFIX}`;
-		if (url && (isKbHomePage || url.pathname === `${ROUTE_PREFIX}/sideview` || url.pathname === `${ROUTE_PREFIX}/web/kbSideview.js`)) {
-			const isJs = url.pathname.endsWith('kbSideview.js');
+		if (url && (isKbHomePage || url.pathname === `${ROUTE_PREFIX}/sideview`)) {
 			try {
-				const body = readFileSync(fileURLToPath(new URL(isJs ? './web/kbSideview.js' : './web/sideview.html', import.meta.url)));
+				const body = readFileSync(fileURLToPath(new URL('./web/sideview.html', import.meta.url)));
 				res.writeHead(200, {
-					'content-type': isJs ? 'application/javascript; charset=utf-8' : 'text/html; charset=utf-8',
+					'content-type': 'text/html; charset=utf-8',
 					'cache-control': 'no-store',
+					// 严格 CSP：脚本只允许同源文件（内联脚本已在 2026-10-26 外置）
+					'content-security-policy': KB_PAGE_CSP,
 				});
 				res.end(body);
 			} catch (err) {
 				res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
-				res.end(`未找到 ${isJs ? 'kbSideview.js' : 'sideview.html'}：先跑 scripts/sync-kb-sideview.mjs（${String(err?.message ?? err)}）`);
+				res.end(`未找到 sideview.html：先跑 scripts/sync-kb-sideview.mjs（${String(err?.message ?? err)}）`);
 			}
 			return;
 		}
@@ -8246,12 +8306,53 @@ export function apply(ctx, config = {}) {
 					}
 					return;
 				}
+				// ★ 2026-10-26：**在系统文件管理器里定位**（右键菜单「在资源管理器中打开」）。
+				//   为什么由服务端做：面板/页面都在渲染进程里，没有直接调系统外壳的能力；
+				//   而插件跑在 Node 侧，`explorer /select,` 这种参数形态最可靠。
+				//   围栏与读文件同源：只允许库内路径（不让人用它当任意文件探测器）。
+				if (url && url.pathname === `${ROUTE_PREFIX}/api/reveal` && req.method === 'POST') {
+					const send = (code, payload) => {
+						res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(payload));
+					};
+					try {
+						let raw = '';
+						for await (const chunk of req) {
+							raw += chunk;
+							if (raw.length > 8192) { send(413, { ok: false, error: '请求体太大' }); return; }
+						}
+						const body = JSON.parse(raw || '{}');
+						const p = resolve(String(body?.uri ?? ''));
+						const roots = [kbRootOf(config), ...externalVaultRecords(config).map(it => it.dir || it.path || ''), ...LAST_VAULT_DIRS]
+							.filter(Boolean).map(s => String(s).replace(/\\/g, '/').replace(/\/+$/, ''));
+						const abs = p.replace(/\\/g, '/');
+						if (!roots.some(r => abs.toLowerCase().startsWith(r.toLowerCase() + '/'))) {
+							send(403, { ok: false, error: '拒绝定位库外路径：' + p });
+							return;
+						}
+						if (!existsSync(p)) { send(404, { ok: false, error: '路径不存在：' + p }); return; }
+						const platform = process.platform;
+						const args = platform === 'win32' ? ['/select,', p]
+							: platform === 'darwin' ? ['-R', p]
+								: [dirname(p)];
+						const exe = platform === 'win32' ? 'explorer.exe' : platform === 'darwin' ? 'open' : 'xdg-open';
+						const child = spawn(exe, args, { detached: true, stdio: 'ignore', windowsHide: true });
+						child.unref();
+						child.on('error', () => { /* 打不开也不影响回包（下面如实回 exe） */ });
+						send(200, { ok: true, exe, path: abs });
+					} catch (e) {
+						send(500, { ok: false, error: String(e?.message ?? e) });
+					}
+					return;
+				}
 				// ★ 2026-10-25：**vendored 前端资产**（KaTeX 样式与字体）。
 				//   为什么不走 CDN：三端都在离线环境，且 IDE webview 的 CSP 会拦外域。
 				//   围栏：只放行两条精确形态（`katex/katex.min.css`、`katex/fonts/<file>.<ext>`），
 				//   不拼接用户输入 ⇒ 不存在目录穿越面。
 				if (url && url.pathname.startsWith(`${ROUTE_PREFIX}/vendor/`)) {
 					const rel = decodeURIComponent(url.pathname.slice((ROUTE_PREFIX + '/vendor/').length)).replace(/\\/g, '/');
+					// 2026-10-26：**mermaid 已改由服务端 pele 渲染**（同步、零 DOM）⇒ 不再需要
+					//   客户端 3.4MB 引擎，`vendor/mermaid/*` 就从白名单里移除（目录也已删除）。
 					const okPath = /^katex\/(katex\.min\.css|fonts\/[A-Za-z0-9._-]+\.(woff2|woff|ttf))$/.test(rel);
 					if (!okPath) {
 						res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
@@ -8263,6 +8364,7 @@ export function apply(ctx, config = {}) {
 						woff2: 'font/woff2',
 						woff: 'font/woff',
 						ttf: 'font/ttf',
+						js: 'application/javascript; charset=utf-8',
 					};
 					const ext = (rel.split('.').pop() ?? '').toLowerCase();
 					try {
@@ -8377,7 +8479,7 @@ export function apply(ctx, config = {}) {
 							if (cacheFile) {
 								try {
 									const j = JSON.parse(await readFile(cacheFile, 'utf8'));
-									if (j && j.mtime === mtime && j.bytes === result.bytes && typeof j.html === 'string') {
+									if (j && j.v === HTML_CACHE_VERSION && j.mtime === mtime && j.bytes === result.bytes && typeof j.html === 'string') {
 										html = j.html;
 										math = !!j.math;
 										cached = true;
@@ -8386,14 +8488,14 @@ export function apply(ctx, config = {}) {
 							}
 							// ② 没命中就渲染，并把结果写回缓存（写失败不影响返回）
 							if (!cached) {
-								const r = renderMarkdownHtml(result.content, { resolveWiki: await wikiResolverFor(vaultDir) });
+								const r = renderMarkdownHtml(result.content, { resolveWiki: await wikiResolverFor(vaultDir), renderMermaid: renderMermaidSvg });
 								html = r.html;
 								math = r.math;
 								if (cacheFile) {
 									try {
 										await mkdir(dirname(cacheFile), { recursive: true });
 										const tmpFile = cacheFile + '.tmp';
-										await writeFile(tmpFile, JSON.stringify({ mtime, bytes: result.bytes, math, html }), 'utf8');
+										await writeFile(tmpFile, JSON.stringify({ v: HTML_CACHE_VERSION, mtime, bytes: result.bytes, math, html }), 'utf8');
 										await renameFile(tmpFile, cacheFile);
 										// 约 2% 概率顺手清理：只保留最近 400 份，避免长期堆积
 										if (Math.random() < 0.02) {
@@ -8413,10 +8515,26 @@ export function apply(ctx, config = {}) {
 							}
 						} catch { html = ''; math = false; }   // 渲染失败 ⇒ 视图按纯文本降级
 					}
-					res.writeHead(result.error ? 400 : 200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+					// ★ 2026-10-26（P2）：**ETag + 304**。
+					//   判据用 `mtime + bytes`：内容一变必然变其中一个（与磁盘缓存同一套判据）。
+					//   `If-None-Match` 命中 ⇒ 304 空体，客户端复用上次解析好的对象（省一份 ~4KB JSON 与一次解析）。
+					const etag = result.error ? '' : '"' + Number(mtime).toString(16) + '-' + Number(result.bytes).toString(16) + '"';
+					if (etag) {
+						const inm = String(req?.headers?.['if-none-match'] ?? '').trim();
+						if (inm && inm === etag) {
+							res.writeHead(304, { etag, 'cache-control': 'no-store' });
+							res.end();
+							return;
+						}
+					}
+					res.writeHead(result.error ? 400 : 200, {
+						'content-type': 'application/json; charset=utf-8',
+						'cache-control': 'no-store',
+						...(etag ? { etag } : {}),
+					});
 					res.end(JSON.stringify(result.error
 						? { ok: false, error: result.error }
-						: { ok: true, path: result.path, bytes: result.bytes, truncated: result.truncated, content: result.content, mtime, html, math, cached }));
+						: { ok: true, path: result.path, bytes: result.bytes, truncated: result.truncated, content: result.content, mtime, html, math, cached, etag }));
 					return;
 				}
 				// ★ 2026-10-24：图片 / pdf / 音视频的**字节流**（页面 `<img>` 直接请求这条）。
@@ -8459,7 +8577,7 @@ export function apply(ctx, config = {}) {
 							const roots = [kbRootOf(config), ...externalVaultRecords(config).map(it => it.dir || it.path || ''), ...LAST_VAULT_DIRS]
 								.filter(Boolean).map(s => String(s).replace(/\\/g, '/').replace(/\/+$/, ''));
 							const vaultDir = roots.filter(v => abs.toLowerCase().startsWith(v.toLowerCase() + '/')).sort((a, b) => b.length - a.length)[0] || '';
-							const r = renderMarkdownHtml(result.content, { resolveWiki: await wikiResolverFor(vaultDir) });
+							const r = renderMarkdownHtml(result.content, { resolveWiki: await wikiResolverFor(vaultDir), renderMermaid: renderMermaidSvg });
 							body = r.html;
 							math = r.math;
 						} catch (e) {
@@ -8477,6 +8595,8 @@ export function apply(ctx, config = {}) {
 						'#bar a { color: var(--vscode-textLink-foreground, #3794ff); text-decoration: none; font-size: 12.5px; }',
 						'#bar .t { font-size: 12.5px; opacity: .75; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }',
 						'#doc { max-width: 860px; margin: 0 auto; padding: 18px 22px 80px; }',
+						// 长文档性能（P1）：屏外块跳过布局/绘制，首屏更快；块高给个估算值防止滚动条乱跳
+						'#doc > *:not(:first-child) { content-visibility: auto; contain-intrinsic-size: auto 2.4em; }',
 						'h1, h2, h3, h4 { line-height: 1.35; margin: 1.1em 0 .5em; }',
 						'h1 { font-size: 1.7em; } h2 { font-size: 1.35em; border-bottom: 1px solid rgba(127,127,127,.3); padding-bottom: .25em; }',
 						'h3 { font-size: 1.15em; } h4 { font-size: 1.02em; }',
@@ -8502,17 +8622,20 @@ export function apply(ctx, config = {}) {
 						'.kb-err { color: #f85149; }',
 					].join('\n');
 					const back = `<div id="bar"><a href="${ROUTE_PREFIX}/">← 返回知识库</a><span class="t">${escapeHtml(title)}</span></div>`;
-					res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+					res.writeHead(200, {
+						'content-type': 'text/html; charset=utf-8',
+						'cache-control': 'no-store',
+						'content-security-policy': KB_PAGE_CSP,
+					});
 					res.end('<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">'
 						+ '<meta name="viewport" content="width=device-width,initial-scale=1">'
 						+ `<title>${escapeHtml(title || '知识库文档')}</title>`
+						// 内联样式仍需要（正文里有 style 属性）⇒ CSP 的 style-src 带 unsafe-inline，
+						// 而脚本已外置（doc-boot.js）⇒ script-src 只允许 self。
 						+ `<style>${css}</style>`
 						+ (math ? `<link rel="stylesheet" href="${ROUTE_PREFIX}/vendor/katex/katex.min.css">` : '')
 						+ `</head><body>${back}<div id="doc" data-kb-doc-page="1">${body}</div>`
-						// 双链点击：同源跳转（这条页面只读，不需要接宿主事件）
-						+ '<script>(function(){document.getElementById("doc").addEventListener("click",function(ev){'
-						+ 'var a=ev.target.closest("[data-wiki]");if(!a){return;}ev.preventDefault();'
-						+ 'var p=a.getAttribute("data-wiki");if(p){location.href="/x/kb/doc?uri="+encodeURIComponent(p);}});})();</script>'
+						+ `<script src="${ROUTE_PREFIX}/web/doc-boot.js" defer></script>`
 						+ '</body></html>');
 					return;
 				}

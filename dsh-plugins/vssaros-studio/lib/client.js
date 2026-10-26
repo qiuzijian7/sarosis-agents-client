@@ -168,6 +168,18 @@ window.__ModuleLoader__.load({
 		/** 右侧对话栏宽度（与 mockup 一致：560 上限 / 半屏）。 */
 		const CONV_WIDTH = 'min(560px, 52vw)';
 		const BORDER = '1px solid var(--dsw-alias-border-l1, #e5e7ee)';
+		/**
+		 * 「AI 助手栏」伸缩 —— **与商城工作台（vssaros-marketplace/lib/workbench.js）同一套实现**。
+		 * 改动这套行为时必须同步所有工作台，否则用户会看到两种手感（守卫 `check-assistant-collapse.mjs` 兜底）。
+		 *
+		 * 约定：
+		 *  - 收起 = aside `display:none`（**不卸载**，否则会话状态 / 滚动位置 / 流式回复全丢）
+		 *  - 收起后不再收成窄条（30px 里塞竖排字会被拆成两列，实测很难看）
+		 *  - 展开入口 = 面板**右上角**浮一颗「« AI 助手」；收起入口 = 对话栏左上角「» 收起」
+		 *  - 拖拽条在收起时隐藏（此时宽度由 state 决定，拖了会被渲染覆盖）
+		 */
+		const CONV_MIN = 320;
+		const CONV_COLLAPSE_KEY = '__vssarosStudioConvCollapsed';
 
 		/**
 		 * 工作台面板：左 = 站点（iframe），右 = 官方对话（`props.conversation`）。
@@ -215,6 +227,37 @@ window.__ModuleLoader__.load({
 				return () => { if (globalThis.__vssarosStudioActive === active) { globalThis.__vssarosStudioActive = false; } };
 			}, [active]);
 			const conversation = props && props.conversation ? props.conversation : null;
+			// ★ 伸缩状态（与商城工作台一致：React state + localStorage 持久化）
+			const collapsedState = react.useState(() => {
+				try { return localStorage.getItem(CONV_COLLAPSE_KEY) === '1'; } catch { return false; }
+			});
+			const collapsed = collapsedState[0];
+			const setCollapsed = (next) => {
+				collapsedState[1](next);
+				try { localStorage.setItem(CONV_COLLAPSE_KEY, next ? '1' : '0'); } catch { /* ignore */ }
+				diag.caps.convCollapsed = next;
+			};
+			// ★ 2026-10-26「S2 一体条」：展开按钮与拖拽已收归外壳（vssaros-workbenches）统一渲染，
+			//   本工作台只负责两件事：
+			//     ① 在面板根上写 `data-vssaros-assist-collapsed`（外壳据此切换「« 展开 / » 收起」）
+			//     ② 收到外壳派发的 expand / collapse 就跟着开合
+			//   ⚠ 监听必须挂在 **window** 上：CustomEvent 只向上冒泡，外壳在面板根/帧上派发，
+			//     挂在更深的子节点上收不到（2026-10-26 真机 bug：点「«」没反应）。
+			react.useEffect(() => {
+				const onToggle = (ev) => {
+					const target = ev && ev.detail && ev.detail.workbench;
+					if (target && target !== 'vssaros/studio') { return; }
+					const open = ev.type === 'vssaros:assist-expand';
+					collapsedState[1](!open);
+					try { localStorage.setItem(CONV_COLLAPSE_KEY, open ? '0' : '1'); } catch { /* ignore */ }
+				};
+				window.addEventListener('vssaros:assist-expand', onToggle);
+				window.addEventListener('vssaros:assist-collapse', onToggle);
+				return () => {
+					window.removeEventListener('vssaros:assist-expand', onToggle);
+					window.removeEventListener('vssaros:assist-collapse', onToggle);
+				};
+			}, []);
 			const site = react.createElement('iframe', {
 				src: '/x/studio/',
 				title: '萨罗斯管理平台',
@@ -230,7 +273,12 @@ window.__ModuleLoader__.load({
 
 			return react.createElement('div', {
 				'data-vssaros-studio-panel': '',
-				style: { display: 'flex', flex: '1 1 auto', minWidth: 0, minHeight: 0, height: '100%' },
+				// 外壳（vssaros-workbenches 的 S2 一体条）据此决定「«」显隐：1 = 助手栏已收起
+				'data-vssaros-assist-collapsed': collapsed ? '1' : '0',
+				style: {
+					display: 'flex', flex: '1 1 auto', minWidth: 0, minHeight: 0, height: '100%',
+					position: 'relative',
+				},
 			},
 				react.createElement('div', { style: { flex: '1 1 auto', minWidth: 0, minHeight: 0, display: 'flex' } }, site),
 				// ★ 拖动条（2026-10-24 用户要求「AI 助手和网站页之间能左右拖动」）
@@ -242,12 +290,16 @@ window.__ModuleLoader__.load({
 					style: {
 						flex: '0 0 auto', width: '6px', cursor: 'col-resize',
 						background: 'transparent', position: 'relative', zIndex: 5,
+						// 收起时藏起拖拽条：此时宽度由 state 控制，拖了会被渲染覆盖（表现成"拖不动"）
+						display: collapsed ? 'none' : undefined,
 					},
 					onDoubleClick: (ev) => {
 						const aside = ev.currentTarget.nextElementSibling;
 						if (aside) {
-							aside.style.width = CONV_WIDTH;
+							// 双击复位：宽度回默认；若正收起着，顺带展开（否则复位看不见效果）
 							try { localStorage.removeItem('__vssarosStudioConvW'); } catch { /* ignore */ }
+							aside.style.width = CONV_WIDTH;
+							if (collapsed) { setCollapsed(false); }
 						}
 					},
 					onMouseDown: (ev) => {
@@ -291,24 +343,47 @@ window.__ModuleLoader__.load({
 				}),
 				react.createElement('aside', {
 					'data-vssaros-studio-conv': '',
-					// ★ 「＋新会话」挂进**本 aside**（不再是 body 浮层）：生命周期与面板绑定
-					//   ⇒ 切到别的工作台时面板卸载、按钮随之消失，**不可能跨工作区显示** ✓
-					ref: (el) => { if (el) { mountNewButton(el); } },
+					// ★「＋新会话」挂进**本 aside**（不再是 body 浮层）：生命周期与面板绑定
+					//   ⚠ 收起时不挂（窄条/隐藏态里没意义，也点不到）
+					ref: (el) => { if (el && !collapsed) { mountNewButton(el); } },
 					style: {
 						flex: '0 0 auto',
 						position: 'relative',   // 让内部 absolute 的按钮以本面板为定位基准
+						// ★ 收起 = 整个对话栏隐藏（不卸载；也不收成窄条 —— 窄条里塞竖排字会被拆成两列）
+						display: collapsed ? 'none' : 'flex',
 						width: (() => {
 							try { return localStorage.getItem('__vssarosStudioConvW') || CONV_WIDTH; } catch { return CONV_WIDTH; }
 						})(),
-						minWidth: 0, minHeight: 0,
-						display: 'flex', flexDirection: 'column',
+						minWidth: CONV_MIN + 'px',
+						maxWidth: '70%',
+						height: '100%',
+						minHeight: 0,
+						flexDirection: 'column',
+						overflow: 'hidden',
 						borderLeft: BORDER, background: 'var(--dsw-alias-bg-base, #fff)',
 					},
 				},
+					// ★ 收起入口（只出现在展开态）：对话栏左上角「» 收起」
+					react.createElement('button', {
+						type: 'button',
+						'data-vssaros-studio-collapse': 'collapse',
+						title: '收起 AI 助手',
+						onClick: (ev) => { ev.preventDefault(); ev.stopPropagation(); setCollapsed(true); },
+						style: {
+							position: 'absolute', zIndex: 2147483000, left: '8px', top: '5px',
+							height: '22px', padding: '0 8px', borderRadius: '6px',
+							border: '1px solid var(--dsw-alias-border-l2,#dcdfe6)',
+							background: 'var(--dsw-alias-bg-layer-1,#fff)',
+							color: 'var(--dsw-alias-label-secondary,#6b7280)',
+							font: '11px/20px -apple-system,"Segoe UI",sans-serif',
+							cursor: 'pointer', pointerEvents: 'auto',
+						},
+					}, '» 收起'),
 					react.createElement('div', {
 						style: {
 							flex: '0 0 auto', height: '32px', display: 'flex', alignItems: 'center', gap: '6px',
-							padding: '0 12px', borderBottom: BORDER, fontSize: '12px', fontWeight: 600,
+							// 左侧给「» 收起」按钮留位（8px 起、约 58px 宽），否则会压住「✨ AI 助手」
+							padding: '0 12px 0 74px', borderBottom: BORDER, fontSize: '12px', fontWeight: 600,
 							color: 'var(--dsw-alias-label-primary, #16181d)',
 						},
 					}, react.createElement('span', null, '✨ AI 助手'),
@@ -379,8 +454,15 @@ window.__ModuleLoader__.load({
 								} catch (e) { diag.caps.newSessionError = String((e && e.message) || e); }
 							},
 						}, '＋ 新会话')),
-					react.createElement('div', { style: { flex: '1 1 auto', minHeight: 0, overflow: 'auto' } }, conversation),
-				));
+					// 官方对话本体：收起时只藏不卸载（否则会话状态 / 滚动位置 / 流式回复全丢）
+					react.createElement('div', {
+						style: {
+							flex: '1 1 auto', minHeight: 0, overflow: 'auto',
+							display: collapsed ? 'none' : 'flex', flexDirection: 'column',
+						},
+					}, conversation),
+				),
+			);
 		}
 
 		const DESCRIPTOR = {
@@ -497,6 +579,7 @@ window.__ModuleLoader__.load({
 		 *     既不会出现在别的工作台，也不需要任何轮询判断 ✓
 		 * 按钮仍是**原生 DOM + 原生事件**（不走 React 合成事件），保留之前“点得着”的特性。
 		 */
+
 		function mountNewButton(container) {
 			if (!container || container.__vssarosNewMounted) { return; }
 			container.__vssarosNewMounted = true;
@@ -509,9 +592,10 @@ window.__ModuleLoader__.load({
 			nb.textContent = '＋ 新会话';
 			nb.setAttribute('data-vssaros-studio-neww', '');
 			// absolute 相对 aside（aside 已设 position:relative）⇒ 停在对话栏右上角，不越出面板
-			nb.style.cssText = 'position:absolute;z-index:2147483000;right:10px;top:5px;height:22px;padding:0 10px;'
+			// right:34px 是给右边的伸缩按钮（20px + 间距）让位，两者不重叠
+			nb.style.cssText = 'position:absolute;z-index:2147483000;right:34px;top:5px;height:22px;padding:0 10px;'
 				+ 'border-radius:6px;border:1px solid var(--dsw-alias-border-l2,#dcdfe6);'
-				+ 'background:var(--dsw-alias-bg-overlay,#fff);color:var(--dsw-alias-label-primary,#16181d);'
+				+ 'background:var(--dsw-alias-bg-layer-1,#fff);color:var(--dsw-alias-label-primary,#16181d);'
 				+ 'font:11px/20px -apple-system,"Segoe UI",sans-serif;cursor:pointer;pointer-events:auto';
 			nb.addEventListener('click', (ev) => {
 				ev.preventDefault();

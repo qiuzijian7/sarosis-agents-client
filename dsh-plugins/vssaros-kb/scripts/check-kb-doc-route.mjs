@@ -117,6 +117,16 @@ t('缓存文件已落盘', existsSync(cacheDir) && readdirSync(cacheDir).some(f 
 // 顺带验一次服务端渲染器本身（防止 html 字段被换成原文）
 t('html 是标签而非原文', /<(h1|p|ul|table|blockquote)\b/.test(String(first.html || '')));
 
+/** 带响应头的原始调用（304 没有 body，不能用 JSON.parse） */
+const callRaw = async (path, headers = {}) => {
+	const out = [];
+	let status = 0;
+	await handler(
+		{ method: 'GET', url: path, headers },
+		{ writeHead(code) { status = code; }, end(b) { out.push(String(b ?? '')); } },
+	);
+	return { status, text: out.join('') };
+};
 // ── 体检报告（只读）────────────────────────────────────────────
 const health = await call('/x/kb/api/health');
 const rep = health.report || {};
@@ -128,6 +138,25 @@ t('断链项带候选目标字段（字符串，可为空）',
 t('体检不把隐藏文件算进去', !(rep.dupNames ?? []).some(d => String(d.name).startsWith('.'))
 	&& !(rep.emptyDirs ?? []).some(d => String(d).split('/').pop().startsWith('.')));
 
+// ── ETag / 304（2026-10-26，P2）────────────────────────────
+// 客户端带 If-None-Match 再要同一篇时必须回 304 空体；内容一变必须回 200。
+{
+	// 复用上面已经挑好的样本（`pick` = 绝对路径，`uri` = 已编码好的 API 路径）
+	const first = await call(uri);
+	t('响应里带 etag', typeof first.etag === 'string' && first.etag.length > 2, 'etag=' + first.etag);
+	const again = await callRaw(uri, { 'if-none-match': first.etag });
+	t('带相同 etag 再请求返回 304', again.status === 304, 'status=' + again.status);
+	t('304 没有响应体', again.text === '', 'len=' + again.text.length);
+	// 改内容（追加一行注释并推 mtime）后，旧 etag 必须失效
+	const old = readFileSync(pick, 'utf8');
+	writeFileSync(pick, old + '\n\n<!-- etag-probe -->\n', 'utf8');
+	const later = new Date(Date.now() + 5000);
+	utimesSync(pick, later, later);
+	const after = await callRaw(uri, { 'if-none-match': first.etag });
+	t('内容变了以后旧 etag 不再命中（回 200）', after.status === 200, 'status=' + after.status);
+	// 复原样本，别污染真实库
+	writeFileSync(pick, old, 'utf8');
+}
 // ── 清理空目录（**必须用临时库**，绝不能拿真实库做删除测试）──────────
 {
 	const tmpVault = mkdtempSync(join(tmpdir(), 'kb-clean-'));
@@ -165,6 +194,18 @@ t('体检不把隐藏文件算进去', !(rep.dupNames ?? []).some(d => String(d.
 	t('修复前留了备份', existsSync(join(notes, '.kb-backup')));
 	const badFix = await call('/x/kb/api/health/fix-link', 'POST', JSON.stringify({ uri: uri2, target: '目标笔记', replacement: '根本不存在的一篇' }));
 	t('新目标不存在时拒绝', badFix.ok === false && String(badFix.error || '').includes('找不到'));
+}
+
+
+
+// ── reveal（在资源管理器中定位）只测围栏，不真的弹窗口 ──────────
+{
+	const out1 = await call('/x/kb/api/reveal', 'POST', JSON.stringify({ uri: 'C:/Windows/notepad.exe' }));
+	t('reveal 拒绝库外路径（403）', out1.ok === false && String(out1.error || '').includes('库外'), JSON.stringify(out1).slice(0, 120));
+	// 库内但不存在 ⇒ 404（**不 spawn**，所以测试不会真的弹出资源管理器）。
+	// 这里按源码断言：临时库里没有可安全引用的绝对路径变量（作用域在各块内）。
+	const src = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8');
+	t('reveal 在 spawn 之前检查路径存在（404 分支在位）', /api\/reveal[\s\S]{0,1200}?existsSync\(p\)/.test(src));
 }
 
 console.log('='.repeat(60));

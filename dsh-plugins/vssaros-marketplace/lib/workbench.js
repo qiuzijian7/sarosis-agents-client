@@ -184,69 +184,6 @@ window.__ModuleLoader__.load({
 		 * 为什么用原生 DOM 而不是 React 元素：studio 实测这套 `customFrame` + portal 组合里
 		 * React 的 onClick 不触发（浮标连点击事件都收不到）⇒ 原生 `addEventListener` 才稳。
 		 */
-		/**
-		 * 让浮动「« AI 助手」按钮可拖拽（★ 2026-10-26 用户：「展开按钮支持任意拖拽位置」）。
-		 *
-		 * 规则（两个工作台同一份实现，守卫 check-assistant-collapse 会查）：
-		 *  · 左键按下才开始拖；位移 <3px 视为**点击**（松手回调 onClick）
-		 *  · 拖动中落点夹在面板内（右/下边界按按钮自身尺寸让位）
-		 *  · 拖动期间把面板里的 iframe `pointer-events` 关掉 —— iframe 是独立文档，
-		 *    鼠标一进去父文档就收不到 pointermove，拖到一半会断（拖拽条踩过同一个坑）
-		 *  · 松手回调 onDragEnd({x,y})，坐标相对面板左上角
-		 */
-		function attachExpandDrag(btn, getPanel, opts) {
-			const onDragEnd = (opts && opts.onDragEnd) || function () { /* noop */ };
-			const onClick = (opts && opts.onClick) || function () { /* noop */ };
-			btn.addEventListener('pointerdown', (ev) => {
-				// 只接管左键；右键留给 onContextMenu（复位位置）
-				if (ev.button !== 0 && ev.pointerType === 'mouse') { return; }
-				ev.preventDefault();
-				ev.stopPropagation();
-				const panel = getPanel();
-				if (!panel) { return; }
-				const pr = panel.getBoundingClientRect();
-				const br = btn.getBoundingClientRect();
-				const startX = ev.clientX;
-				const startY = ev.clientY;
-				const baseLeft = br.left - pr.left;
-				const baseTop = br.top - pr.top;
-				const frames = Array.prototype.slice.call(panel.querySelectorAll('iframe'));
-				frames.forEach((f) => { f.style.pointerEvents = 'none'; });
-				let moved = false;
-				let latest = null;
-				try { btn.setPointerCapture(ev.pointerId); } catch { /* ignore */ }
-				const onMove = (e2) => {
-					const dx = e2.clientX - startX;
-					const dy = e2.clientY - startY;
-					if (!moved && Math.abs(dx) + Math.abs(dy) < 3) { return; }
-					moved = true;
-					const maxL = Math.max(0, pr.width - br.width);
-					const maxT = Math.max(0, pr.height - br.height);
-					latest = {
-						x: Math.round(Math.min(Math.max(0, baseLeft + dx), maxL)),
-						y: Math.round(Math.min(Math.max(0, baseTop + dy), maxT)),
-					};
-					btn.style.left = latest.x + 'px';
-					btn.style.top = latest.y + 'px';
-					btn.style.right = 'auto';
-					btn.style.transform = 'none';
-					btn.style.cursor = 'grabbing';
-				};
-				const onUp = () => {
-					window.removeEventListener('pointermove', onMove, true);
-					window.removeEventListener('pointerup', onUp, true);
-					window.removeEventListener('pointercancel', onUp, true);
-					window.removeEventListener('blur', onUp, true);
-					frames.forEach((f) => { f.style.pointerEvents = ''; });
-					if (moved && latest) { onDragEnd(latest); } else { onClick(); }
-				};
-				window.addEventListener('pointermove', onMove, true);
-				window.addEventListener('pointerup', onUp, true);
-				window.addEventListener('pointercancel', onUp, true);
-				window.addEventListener('blur', onUp, true);
-			});
-		}
-
 		function mountNewButton(container) {
 			if (!container || container.__vssarosMarketNewMounted) { return; }
 			container.__vssarosMarketNewMounted = true;
@@ -262,7 +199,7 @@ window.__ModuleLoader__.load({
 			// absolute 相对 aside（aside 已设 position:relative）⇒ 停在对话栏右上角
 			nb.style.cssText = 'position:absolute;z-index:2147483000;right:10px;top:5px;height:22px;padding:0 10px;'
 				+ 'border-radius:6px;border:1px solid var(--dsw-alias-border-l2,#dcdfe6);'
-				+ 'background:var(--dsw-alias-bg-overlay,#fff);color:var(--dsw-alias-label-primary,#16181d);'
+				+ 'background:var(--dsw-alias-bg-layer-1,#fff);color:var(--dsw-alias-label-primary,#16181d);'
 				+ 'font:11px/20px -apple-system,"Segoe UI",sans-serif;cursor:pointer;pointer-events:auto';
 			nb.addEventListener('click', (ev) => {
 				ev.preventDefault();
@@ -291,8 +228,6 @@ window.__ModuleLoader__.load({
 		 *   （守卫：`dsh-plugins/check-assistant-collapse.mjs`）。
 		 */
 		const COLLAPSE_KEY = '__vssarosMarketCollapsed';
-		/** 展开按钮被拖到哪（像素，相对面板左上角）；没拖过就不存 ⇒ 回默认「右侧垂直居中」。 */
-		const EXPAND_POS_KEY = '__vssarosMarketExpandPos';
 
 		const DESCRIPTOR = {
 			title: '商城工作台',
@@ -333,38 +268,27 @@ window.__ModuleLoader__.load({
 				collapsedState[1](next);
 				try { localStorage.setItem(COLLAPSE_KEY, next ? '1' : '0'); } catch { /* ignore */ }
 			};
-			// ★ 2026-10-26 用户要求「展开按钮支持任意拖拽位置」：
-			//   拖过 ⇒ 用记录的 left/top；没拖过 ⇒ 保持默认的右侧垂直居中。
-			const expandPosState = react.useState(() => {
-				try {
-					const p = JSON.parse(localStorage.getItem(EXPAND_POS_KEY) || 'null');
-					if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) { return { x: p.x, y: p.y }; }
-				} catch { /* ignore */ }
-				return null;
-			});
-			const expandPos = expandPosState[0];
-			const setExpandPos = expandPosState[1];
-			const panelHostRef = react.useRef(null);
-			// 窗口变小 / 面板变窄时，把按钮拉回面板内（否则会跑到面板外压住别的东西）
+			// ★ 2026-10-26「S2 一体条」：展开按钮与拖拽已收归外壳（vssaros-workbenches）统一渲染，
+			//   本工作台只负责两件事：
+			//     ① 在面板根上写 `data-vssaros-assist-collapsed`（外壳据此切换「« 展开 / » 收起」）
+			//     ② 收到外壳派发的 expand / collapse 就跟着开合
+			//   ⚠ 监听必须挂在 **window** 上：CustomEvent 只向上冒泡，挂在子节点上收不到
+			//     （2026-10-26 真机 bug：点「«」没反应）。
 			react.useEffect(() => {
-				if (!expandPos) { return undefined; }
-				const clamp = () => {
-					const panel = panelHostRef.current;
-					if (!panel) { return; }
-					const pr = panel.getBoundingClientRect();
-					const maxL = Math.max(0, pr.width - 88);
-					const maxT = Math.max(0, pr.height - 28);
-					const x = Math.min(expandPos.x, maxL);
-					const y = Math.min(expandPos.y, maxT);
-					if (x !== expandPos.x || y !== expandPos.y) {
-						setExpandPos({ x, y });
-						try { localStorage.setItem(EXPAND_POS_KEY, JSON.stringify({ x, y })); } catch { /* ignore */ }
-					}
+				const onToggle = (ev) => {
+					const target = ev && ev.detail && ev.detail.workbench;
+					if (target && target !== 'vssaros/marketplace') { return; }
+					const open = ev.type === 'vssaros:assist-expand';
+					collapsedState[1](!open);
+					try { localStorage.setItem(COLLAPSE_KEY, open ? '0' : '1'); } catch { /* ignore */ }
 				};
-				window.addEventListener('resize', clamp);
-				clamp();
-				return () => window.removeEventListener('resize', clamp);
-			}, [expandPos]);
+				window.addEventListener('vssaros:assist-expand', onToggle);
+				window.addEventListener('vssaros:assist-collapse', onToggle);
+				return () => {
+					window.removeEventListener('vssaros:assist-expand', onToggle);
+					window.removeEventListener('vssaros:assist-collapse', onToggle);
+				};
+			}, []);
 
 			const site = react.createElement('iframe', {
 				src: SITE_PATH,
@@ -470,7 +394,7 @@ window.__ModuleLoader__.load({
 						minHeight: 0,
 						flexDirection: 'column',
 						overflow: 'hidden',
-						borderLeft: '1px solid var(--dsw-alias-border-subtle, rgba(128,128,128,.22))',
+						borderLeft: '1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.22))',
 					},
 				},
 				// ── 收起按钮（★ 只出现在**展开态**；折叠态的展开按钮在面板层，见下）──
@@ -487,7 +411,7 @@ window.__ModuleLoader__.load({
 						position: 'absolute', zIndex: 2147483000, left: '8px', top: '5px',
 						height: '22px', padding: '0 8px', borderRadius: '6px',
 						border: '1px solid var(--dsw-alias-border-l2,#dcdfe6)',
-						background: 'var(--dsw-alias-bg-overlay,#fff)',
+						background: 'var(--dsw-alias-bg-layer-1,#fff)',
 						color: 'var(--dsw-alias-label-secondary, #6b7280)',
 						font: '11px/20px -apple-system,"Segoe UI",sans-serif',
 						cursor: 'pointer', pointerEvents: 'auto',
@@ -507,8 +431,8 @@ window.__ModuleLoader__.load({
 				'div',
 				{
 					'data-vssaros-market-panel': '',
-					// 收起态那颗可拖拽的「« AI 助手」以本面板为坐标系（拖拽时按它的 rect 夹取）
-					ref: panelHostRef,
+					// 外壳（vssaros-workbenches 的 S2 一体条）据此决定「«」显隐：1 = 助手栏已收起
+					'data-vssaros-assist-collapsed': collapsed ? '1' : '0',
 					style: {
 						display: 'flex', flex: '1 1 auto', minWidth: 0, minHeight: 0, height: '100%',
 						position: 'relative',
@@ -517,51 +441,6 @@ window.__ModuleLoader__.load({
 				siteWrap,
 				splitter,
 				aside,
-				// ★ 收起态：浮一颗「« AI 助手」。放在面板层（aside 已 display:none，里面按钮会跟着消失）。
-				//   位置：拖过就用记录的 left/top；没拖过默认「右侧垂直居中」（顶部那行是宿主 header，
-				//   贴顶会和「外部浏览器打开」重叠）。拖拽与点击二选一：位移 <3px 视为点击。
-				collapsed
-					? react.createElement('button', {
-						type: 'button',
-						'data-vssaros-market-expand': '',
-						title: '点击展开 AI 助手 · 拖动可换位置 · 右键复位位置',
-						onContextMenu: (ev) => {
-							ev.preventDefault();
-							ev.stopPropagation();
-							setExpandPos(null);
-							try { localStorage.removeItem(EXPAND_POS_KEY); } catch { /* ignore */ }
-						},
-						// 拖拽挂在 ref 上（不进 props 闭包）⇒ 每次渲染不重建监听
-						ref: (el) => {
-							if (!el || el.__vssDragBound) { return; }
-							el.__vssDragBound = true;
-							attachExpandDrag(el, () => panelHostRef.current, {
-								onDragEnd: (p) => {
-									setExpandPos(p);
-									try { localStorage.setItem(EXPAND_POS_KEY, JSON.stringify(p)); } catch { /* ignore */ }
-								},
-								onClick: () => setCollapsed(false),
-							});
-						},
-						style: Object.assign({
-							position: 'absolute', zIndex: 2147483000,
-							height: '24px', padding: '0 10px', borderRadius: '6px',
-							border: '1px solid var(--dsw-alias-border-l2,#dcdfe6)',
-							background: 'var(--dsw-alias-bg-overlay,#fff)',
-							color: 'var(--dsw-alias-label-primary,#16181d)',
-							font: '11px/22px -apple-system,"Segoe UI",sans-serif',
-							pointerEvents: 'auto', touchAction: 'none', userSelect: 'none',
-							boxShadow: '0 1px 4px rgba(0,0,0,.08)',
-							display: 'inline-flex', alignItems: 'center', gap: '4px',
-							cursor: expandPos ? 'grab' : 'pointer',
-						}, expandPos
-							? { left: expandPos.x + 'px', top: expandPos.y + 'px' }
-							: { right: '10px', top: '50%', transform: 'translateY(-50%)' }),
-					},
-						react.createElement('span', { key: 'i', style: { fontSize: '12px' } }, '«'),
-						react.createElement('span', { key: 't' }, 'AI 助手'),
-					)
-					: null,
 			);
 		}
 

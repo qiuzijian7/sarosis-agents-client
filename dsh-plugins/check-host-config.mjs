@@ -509,7 +509,29 @@ checkSame('写锁 lock.js 委托层（4 份同形）', allJs
 	}
 	// ⚠ vssaros-agents 暂豁免（2026-10-16：它正被并行会话重构，它的两份拷贝等那边落地后再收编）
 	const agentsLegacy = ['vssaros-agents/lib/store.js', 'vssaros-agents/lib/live.js'];
-	const stray = violationsB2.filter(v => !agentsLegacy.some(a => v.startsWith(a)));
+	/**
+	 * ★ 2026-10-27 登记「**有意不同**」的那一份（守卫自己的纪律要求：有意不同要写清理由并在此登记）。
+	 *
+	 * `vssaros-marketplace/lib/marketClient.js` 的 `dataRootOf` 不是纯委托，而是三档：
+	 *   ① `config.dataRoot`（IDE 覆盖层写入，最可靠）→ ② `foundation().dataRootOf` →
+	 *   ③ **本地兜底**（`VSSAROS_DATA_ROOT` → `~/.vssaros`，并打日志说明走了兜底）。
+	 *
+	 * 为什么必须留 ③（真机 2026-10-23）：`vssarosFoundation` 明明在 bundles 里却没绑上 ⇒
+	 * `foundation()` 直接抛 ⇒ 装/升/卸/发布**全部失效**，页面表现是"点安装没反应"✗。
+	 * marketplace 是独立安装包，不该因为一个**可选**服务缺失就整体报废；③ 的规则与
+	 * `vssaros-foundation/lib/paths.js` 逐条一致 ⇒ 不会算出不同答案。
+	 *
+	 * ⇒ 结论：它是**有意的保命实现**，不是漏改的拷贝。登记在此之后，**新出现的**第三份实现仍会红。
+	 */
+	const deliberate = [
+		{
+			file: 'vssaros-marketplace/lib/marketClient.js',
+			fn: 'dataRootOf',
+			why: 'foundation 服务可能未绑上（真机 2026-10-23 点安装没反应）；本地兜底与真源同规则',
+		},
+	];
+	const isDeliberate = (v) => deliberate.some(d => v.startsWith(d.file) && v.includes(`的 ${d.fn} `));
+	const stray = violationsB2.filter(v => !agentsLegacy.some(a => v.startsWith(a)) && !isDeliberate(v));
 	const inScope = entries.filter(e => !agentsLegacy.includes(e.file));
 	const delegates = inScope.filter(e => e.hash === 'delegate');
 	const reals = inScope.filter(e => e.hash === 'real');
@@ -523,8 +545,17 @@ checkSame('写锁 lock.js 委托层（4 份同形）', allJs
 		detail: `${inScope.length} 个定义点`,
 	});
 	if (!ok) { violations++; }
-	if (violationsB2.length !== stray.length) {
-		console.log(`  ℹ  vssaros-agents 遗留拷贝 ${violationsB2.length - stray.length} 份（豁免期，2026-10-16 起）`);
+	const excused = violationsB2.length - stray.length;
+	if (excused > 0) {
+		/* 豁免要**看得见**（不能悄悄吞掉）：列出被登记的每一份与理由。 */
+		for (const d of deliberate) {
+			if (violationsB2.some(v => v.startsWith(d.file))) {
+				console.log(`  ℹ  豁免：${d.file} 的 ${d.fn} —— ${d.why}`);
+			}
+		}
+		if (agentsLegacy.some(a => violationsB2.some(v => v.startsWith(a)))) {
+			console.log('  ℹ  豁免：vssaros-agents 遗留拷贝（豁免期，2026-10-16 起）');
+		}
 	}
 }
 

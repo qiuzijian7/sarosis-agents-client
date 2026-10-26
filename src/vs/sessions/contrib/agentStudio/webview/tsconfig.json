@@ -16,7 +16,11 @@
     "outDir": "./dist",
     "rootDir": "./src",
     "paths": {
-      "@/*": ["./*"]
+      "@/*": ["./*"],
+      "@codemirror/*": ["./vendor-codemirror/@codemirror/*"],
+      "@lezer/*": ["./vendor-codemirror/@lezer/*"],
+      "style-mod": ["./vendor-codemirror/style-mod"],
+      "w3c-keyname": ["./vendor-codemirror/w3c-keyname"]
     }
   },
   "include": ["src/**/*.ts", "src/**/*.tsx"],

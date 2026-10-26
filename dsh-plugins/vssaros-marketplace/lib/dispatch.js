@@ -88,6 +88,12 @@ export const PUBLISH_LOCAL_KINDS = PUBLISHABLE_KINDS;
  */
 export const PLUGIN_STATE_OPS = new Set(['pluginState', 'setPluginEnabled']);
 
+/**
+ * ★ 2026-10-26（用户：「需要一个统一的 mcp 配置按钮入口」）：mcp.json 的**整份保存**。
+ * 它不带 kind（操作对象是文件，不是某个资源）⇒ 与插件开关一样按 op 名分派到本地写。
+ */
+export const MCP_CONFIG_OPS = new Set(['saveMcpConfig']);
+
 /** 全部**能被处理**的 op（本地 + IDE）。对外声明（`/api/meta`）与白名单都用它 ✓ */
 export const ALL_OPS = [
 	...LOCAL_READ_OPS,
@@ -97,6 +103,7 @@ export const ALL_OPS = [
 	'publish',
 	'self-check',
 	...PLUGIN_STATE_OPS,
+	...MCP_CONFIG_OPS,
 ];
 
 /** 需要用户确认、耗时较长的 op（转 IDE 时用长超时）。 */
@@ -116,6 +123,8 @@ export function resolveOp(op, params = {}) {
 	if (LOCAL_READ_OPS.has(name)) { return 'local-read'; }
 	// 插件开关：不带 kind，按 op 名直接给 dsh 侧（能力不足时调用方退回 IDE）
 	if (PLUGIN_STATE_OPS.has(name)) { return 'local-plugin'; }
+	// mcp.json 整份保存：本地写文件（不带 kind）
+	if (MCP_CONFIG_OPS.has(name)) { return 'local-write'; }
 	if (LOCAL_WRITE_OPS.has(name)) {
 		// 插件 / 工作台：dsh 侧有 pluginManager 就能自己装（调用方按能力再兜底回 IDE）
 		if (LOCAL_PLUGIN_KINDS.has(kind)) { return 'local-plugin'; }

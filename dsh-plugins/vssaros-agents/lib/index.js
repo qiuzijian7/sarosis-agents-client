@@ -39,13 +39,21 @@ import { renderMemoryEvoPage } from './memoryEvoPage.js';
 /* 群聊附件（2026-10-26）：上传/读取独立成模块（见 groupFiles.js 头注释的安全边界）。
    ⚠ MAX_FILE_BYTES 同时用于 readRawBody 的上限 —— 两边必须是同一个常量，别各写一份。 */
 import { MAX_FILE_BYTES, readGroupFile, saveGroupFile } from './groupFiles.js';
-import { addGroupMembers, createGroup, decideGroupJoin, deleteGroup, effectiveModeFor, installGroupTracker, listGroups, markGroupRead, normalizeGroupMode, postGroupMessage, removeGroupMember, setGroupAvatar, setGroupMemberPolicy, updateGroup, wakeOf } from './groups.js';
+import { addGroupMembers, bindGroupSession, createGroup, decideGroupJoin, deleteGroup, effectiveModeFor, ensureMemberSession, installGroupTracker, listGroups, markGroupRead, newGroupSessions, normalizeGroupMode, postGroupMessage, removeGroupMember, setGroupAvatar, setGroupMemberPolicy, updateGroup, wakeOf } from './groups.js';
 import { readLiveSessions } from './live.js';
 import { markSeen, unreadSnapshot } from './seen.js';
 import { backupMemory, clampMemoryChars, enableGit, gitLogOf, gitShowMemoryFile, gitStatusOf, installMemoryBackupWatcher, listBranches, listMemoryBackups, listMemoryFiles, listVersions, MEMORY_CHARS_MAX, readMemoryFile, readMemorySnapshot, restoreMemoryBackup, restoreMemoryFile, setVersion, snapshotGit, switchBranch, writeCoreMemory } from './memory.js';
 // 从 AgentMemory 网关库拉一份 MEMORY.md **草稿**（只读；不落盘 —— 落盘仍走 write-memory 由人确认）
 import { importMemoryDraft } from './agentmemoryImport.js';
 import { ensureOutboxLoaded, outboxList, outboxRetry } from './outbox.js';
+/* IM 绑定（2026-10-27，P0）：每个 bot / 群可绑一个 IM 会话，双向流转。
+   适配器端口与 `vssaros-channels/lib/core/ports.js` 同形 ⇒ 飞书适配器将来可直接搬。 */
+import { createBinding, createBindingHub, deleteBinding, dispatchImToAgent, listBindings, updateBinding } from './bindings.js';
+import { createLoopbackAdapter } from './adapters/loopback.js';
+import { createFeishuAdapter } from './adapters/feishu.js';
+/* 入站（P2 骨架）：传输层注入 —— 装了官方 SDK 才能真连长连接，没装就如实 unavailable。 */
+import { createFeishuGateway, createSdkTransport } from './adapters/feishuInbound.js';
+import { flushInboundSeen, markInboundSeen } from './imSeen.js';
 import { encodeBody } from './gzip.js';
 import { botFromSoulText, importDsbBot } from './importDsb.js';
 import { exportAgent, importAgent, saveExport } from './pack.js';
@@ -691,6 +699,56 @@ function applyTopLevel(ctx, config) {
 	// 审批模板闸谓词（2026-10-16，P2）：tools.js 的 pre-execute 先查它；读失败按"没有"（照常问 ✓）。
 	state.approvalTemplates = templateGate(config);
 
+	/* ── IM 绑定（2026-10-27，P0）──────────────────────────────────────────────
+	   装配顺序很重要：Hub 先建好挂到 state 上，`installGroupTracker` 里的回复回收
+	   才能在回合结束时把 IM 那条答复推回去（tracker 读 `state.bindingHub`）。
+	   `loopback` 适配器是**进程内模拟器**：没有飞书凭据也能把整条链路跑通（演练/自测）。 */
+	const loopbackAdapter = createLoopbackAdapter();
+	state.bindingHub = createBindingHub({
+		config,
+		log: (level, msg) => {
+			try { (level === 'warn' ? console.warn : console.info)(`[vssaros-agents][im] ${msg}`); } catch { /* 忽略 */ }
+		},
+		scanAgents: (cfg) => scanAgentsFromConfig(cfg),
+		groupExists: async (cfg, id) => (await listGroups(cfg)).groups.some(g => String(g.id) === String(id)),
+		/* 幂等跨重启（imSeen.js）：飞书会重投事件，只靠内存去重会在 Host 重启后失效
+		   —— 表现是"同一条消息被回两遍"，很容易被当成重复 bot。 */
+		seen: { mark: (key) => markInboundSeen(config, key) },
+		dispatchAgent: (cfg, binding, msg) => dispatchImToAgent(cfg, state, binding, msg, {
+			scanAgents: (c) => scanAgentsFromConfig(c),
+			ensureSession: (c, st, agent) => ensureMemberSession(c, st, agent, undefined),
+		}),
+		dispatchGroup: async (cfg, binding, msg) => {
+			/* 群里入站 ⇒ 走**既有** `postGroupMessage`：于是成员级唤醒策略、digest、
+			   `@` 提及、接力全部照常生效，IM 只是另一个入口（不是另一套逻辑）。 */
+			const who = String(msg?.userName || msg?.userId || 'IM 用户');
+			const r = await postGroupMessage(cfg, state, {
+				id: binding.targetId,
+				text: `[${binding.platform} · ${who}] ${String(msg?.content ?? '')}`,
+			});
+			return { groupId: binding.targetId, dispatched: r?.dispatched ?? [] };
+		},
+	});
+	state.bindingHub.register(loopbackAdapter);
+	state.loopbackAdapter = loopbackAdapter;
+	/* 飞书**出站**（P1）：自定义机器人 webhook。入站（长连接）在 P2 的适配器里补，
+	   路由层与 UI 都不用改 —— 这就是留 `ports` 接缝的意义。 */
+	state.bindingHub.register(createFeishuAdapter());
+	/* 飞书**入站**（P2）：长连接。传输层用官方 SDK；没装/没凭据 ⇒ start() 抛 unavailable，
+	   由 API 如实回报（不假装"正在连接"）。这里**不自动 start** —— 没凭据时反复重连只是噪音。 */
+	const feishuCfg = (config && config.feishu) || {};
+	const feishuAppId = String(feishuCfg.appId || process.env.VSSAROS_FEISHU_APP_ID || '');
+	const feishuAppSecret = String(feishuCfg.appSecret || process.env.VSSAROS_FEISHU_APP_SECRET || '');
+	state.feishuCreds = { appId: feishuAppId, appSecret: feishuAppSecret };
+	state.feishuInbound = createFeishuGateway({
+		transport: createSdkTransport({ appId: feishuAppId, appSecret: feishuAppSecret }),
+		/* 事件 → 与手动演练（action:'inbound'）**同一条**入口，策略/幂等/派发完全一致 */
+		onMessage: (msg) => state.bindingHub.handleInbound(msg),
+		log: (level, msg) => {
+			try { (level === 'warn' ? console.warn : console.info)(`[vssaros-agents][im-in] ${msg}`); } catch { /* 忽略 */ }
+		},
+	});
+
 	// 会话投影（顶层再注册一份，与 preset 作用域那份共享同一个单元）——切换后 UI/诊断按 sessionId 读它。
 	ctx.inject(['sessionProjections'], child => child.effect(() => {
 		state.projections = child.sessionProjections;
@@ -743,6 +801,8 @@ function applyTopLevel(ctx, config) {
 	ctx.effect(() => installAssignmentTracker(ctx, config, state));
 	// 群聊回复回收（2026-10-16，二期）：同一钩子（lib/groups.js 头注释——承载面为何自托管写在那里 ✓）。
 	ctx.effect(() => installGroupTracker(ctx, config, state));
+	/* Host 退出前把 IM 幂等表落盘（写盘是去抖的，不 flush 会丢最后几条 ⇒ 重启后重复处理） */
+	ctx.effect(() => () => { void flushInboundSeen(config); });
 	// 记忆自动备份（2026-10-21）：回合结束 ⇒ 记忆变了就留一份档（DSB 的「一次对话结束」口径）。
 	ctx.effect(() => installMemoryBackupWatcher(ctx, config));
 	// Outbox 读回（2026-10-16 二期）：启动即把盘上"等回收"的条目读回内存——relay/群聊的 tracker
@@ -1026,6 +1086,53 @@ function applyTopLevel(ctx, config) {
 			}
 			// 委派 API（2026-10-16，P1）：GET 列表 / POST 创建（默认）· ask 追问 · cancel 中断。
 			// 错误带 HTTP 语义（assignments.js 的 httpError：409 = 并发满/状态冲突，404 = 无此委派）✓。
+			/* IM 绑定（2026-10-27，P0）：每个 bot / 群 ⇄ 一个 IM 会话。
+			   GET  = 绑定表 + 适配器清单 + 模拟器发件记录（自测用）
+			   POST = create / update / delete / **inbound**（模拟一条 IM 入站，无需真实平台）
+			   ⚠ 只有人能增删改（`assertHuman`）；`inbound` 只在本机演练/探针里用。 */
+			if (pathname === `${ROUTE_PREFIX}/api/bindings`) {
+				try {
+					const deps = {
+						scanAgents: (cfg) => scanAgentsFromConfig(cfg),
+						groupExists: async (cfg, id) => (await listGroups(cfg)).groups.some(g => String(g.id) === String(id)),
+					};
+					if (req.method === 'GET') {
+						const out = await listBindings(config, deps);
+						const loop = state.loopbackAdapter;
+						res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify({
+							...out,
+							adapters: state.bindingHub?.adapters?.() ?? [],
+							/* 演练档：模拟器"发出去的东西"也返回，方便自测整条链路（没注册就没有这段） */
+							...(loop ? { loopbackSent: loop.sent.slice(-20) } : {}),
+							/* 入站（P2）：状态 + 是否配了凭据。UI 据此显示「未配置 / 未安装 SDK / 已连接」。 */
+							inbound: state.feishuInbound ? state.feishuInbound.state() : null,
+							feishu: { configured: !!(state.feishuCreds && state.feishuCreds.appId && state.feishuCreds.appSecret) },
+						}));
+					} else if (req.method === 'POST') {
+						const body = await readJsonBody(req);
+						const action = typeof body?.action === 'string' && body.action.trim() ? body.action.trim() : 'create';
+						const result = action === 'create' ? await createBinding(config, body, deps)
+							: action === 'update' ? await updateBinding(config, body, deps)
+								: action === 'delete' ? await deleteBinding(config, body)
+									: action === 'inbound' ? await state.bindingHub.handleInbound(body.message ?? body)
+										/* 入站长连接启停（P2）：没装 SDK / 没凭据时会抛 unavailable，错误原样返回 */
+										: action === 'inbound-start' ? (await state.feishuInbound.start(), state.feishuInbound.state())
+											: action === 'inbound-stop' ? (await state.feishuInbound.stop(), state.feishuInbound.state())
+										: (() => { throw Object.assign(new Error(`未知 action：${action}（支持 create/update/delete/inbound）`), { httpStatus: 400 }); })();
+						res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(result));
+					} else {
+						res.writeHead(405, { 'content-type': 'text/plain; charset=utf-8', allow: 'GET, POST' });
+						res.end('GET or POST');
+					}
+				} catch (e) {
+					const status = Number.isInteger(e?.httpStatus) ? e.httpStatus : 400;
+					res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
+					res.end(JSON.stringify({ error: String(e?.message ?? e) }));
+				}
+				return;
+			}
 			if (pathname === `${ROUTE_PREFIX}/api/assignments`) {
 				try {
 					if (req.method === 'GET') {
@@ -1133,8 +1240,13 @@ function applyTopLevel(ctx, config) {
 												: action === 'remove' ? await removeGroupMember(config, body)
 								// 成员级唤醒策略（2026-10-26）：mode=inherit 表示回到继承群默认
 								: action === 'policy' ? await setGroupMemberPolicy(config, body)
-									// 派发方式（2026-10-26）：steer（抢断）/ followup（排队等回合结束）
-									: action === 'dispatch' ? await updateGroup(config, body)
+								// 群级会话（2026-10-27）：带 `sessionId` ⇒ 改绑到已有会话（切回旧会话）；
+								// 否则 ⇒ 新建（mode=group 只绑本群 / all 同步其它群）
+								: action === 'session' ? (body && body.sessionId !== undefined
+								  ? await bindGroupSession(config, state, body)
+								  : await newGroupSessions(config, state, body))
+								// 派发方式（2026-10-26）：steer（抢断）/ followup（排队等回合结束）
+								: action === 'dispatch' ? await updateGroup(config, body)
 													// 加入需确认（2026-10-21）：群级开关 + 待确认队列
 													: action === 'approval' ? await updateGroup(config, body)
 														: action === 'join-decide' ? await decideGroupJoin(config, body)

@@ -384,6 +384,84 @@ const SKILL_PREVIEW_SCRIPT = `
 	/* 商城入口是普通链接（href=/x/marketplace/，2026-10-23 用户：改名「商城」并打开商城网页）
 	   ⇒ 不再需要宿主桥 openSkillMarket；没装商城插件时是 404，而不是"按钮点了没反应"。 */
 
+	/* ── mcp.json 编辑（2026-10-26，统一入口）───────────────────────────────
+	   数据来源：页面里内嵌的那段 JSON 字符串（script[type=application/json][data-mcp-raw]）。
+	   保存：POST { op: saveMcpConfig, params: { text } }，dsh 侧校验 + 备份 + 落盘。
+	   ⚠ 元素必须**每次现查**：编辑弹层的 DOM 在页面末尾，而这段脚本可能比它先执行
+	     （踩过：脚本启动时 querySelector 拿到 null ⇒ 点了「编辑配置」毫无反应）。 */
+	var mcpRawCache = null;
+	function mcpRawText() {
+		if (mcpRawCache !== null) { return mcpRawCache; }
+		var el = document.querySelector('[data-mcp-raw]');
+		if (!el) { mcpRawCache = ''; return mcpRawCache; }
+		try {
+			mcpRawCache = String(JSON.parse(el.textContent || '""'));
+		} catch (e) {
+			mcpRawCache = String(el.textContent || '');
+		}
+		return mcpRawCache;
+	}
+	function mcpEdNodes() {
+		var ed = document.querySelector('[data-mcp-ed]');
+		return {
+			ed: ed,
+			ta: ed ? ed.querySelector('[data-mcp-ed-text]') : null,
+			err: ed ? ed.querySelector('[data-mcp-ed-err]') : null,
+			save: ed ? ed.querySelector('[data-mcp-ed-save]') : null,
+		};
+	}
+	function openMcpEditor() {
+		var n = mcpEdNodes();
+		if (!n.ed || !n.ta) { return; }
+		n.ta.value = mcpRawText();
+		if (n.err) { n.err.textContent = ''; }
+		n.ed.hidden = false;
+		try { n.ta.focus(); } catch (e) { }
+	}
+	function closeMcpEditor() {
+		var n = mcpEdNodes();
+		if (n.ed) { n.ed.hidden = true; }
+	}
+	function saveMcpEditor(btn) {
+		var n = mcpEdNodes();
+		if (!n.ta || !n.err) { return; }
+		var text = String(n.ta.value || '');
+		try {
+			JSON.parse(text);
+		} catch (e) {
+			n.err.textContent = 'JSON 语法错误（未提交）：' + String((e && e.message) || e);
+			return;
+		}
+		btn.disabled = true;
+		btn.textContent = '保存中…';
+		fetch('/x/marketplace/api/action', {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ op: 'saveMcpConfig', params: { text: text } }),
+		}).then(function (r) { return r.json(); }).then(function (j) {
+			if (!j || !j.ok) {
+				n.err.textContent = '保存失败：' + String((j && j.error) || '商城没返回原因');
+				btn.disabled = false;
+				btn.textContent = '保存';
+				return;
+			}
+			n.err.textContent = '已保存 ' + (j.bytes ? (Math.round(j.bytes / 102.4) / 10) + 'KB' : '') + '，正在刷新…';
+			// 页签有记忆（localStorage），刷新后仍停在这个页签 ✓
+			location.reload();
+		}).catch(function (e) {
+			n.err.textContent = '保存失败：' + String((e && e.message) || e);
+			btn.disabled = false;
+			btn.textContent = '保存';
+		});
+	}
+	root.addEventListener('click', function (ev) {
+		var t = ev.target;
+		if (!t || !t.closest) { return; }
+		if (t.closest('[data-mcp-edit]')) { ev.preventDefault(); openMcpEditor(); return; }
+		if (t.closest('[data-mcp-ed-cancel]')) { closeMcpEditor(); return; }
+		var saveBtn = t.closest('[data-mcp-ed-save]');
+		if (saveBtn) { ev.preventDefault(); saveMcpEditor(saveBtn); return; }
+	});
 	/* 设置齿轮（2026-10-15，桥 9 → 10）：**技能行**与**MCP 段的服务器/工具行**都带 [data-sk-settings]
 	   ⇒ 在这里**一处**处理（MCP 段由另一个插件渲染，它没有自己的页内 JS，只能由本页代劳 ✓）。
 	   用**捕获阶段 + stopPropagation**：技能行自己有个"点开抽屉"的 click（挂在那行上），不拦的话点齿轮
@@ -404,6 +482,30 @@ const SKILL_PREVIEW_SCRIPT = `
 		}
 		var tip = btn.getAttribute('title') || '';
 		btn.setAttribute('title', (bridge && bridge.openResourceSettings ? '打开设置失败' : '宿主版本较旧，不支持"打开设置"') + (tip ? '（' + tip + '）' : ''));
+		// ★ 2026-10-26：只改 title = 用户点了「毫无反应」⇒ 就地给一句看得见的说明
+		var boom = (bridge && bridge.openResourceSettings)
+			? '打开配置失败：宿主拒绝了这次请求'
+			: '宿主版本较旧，不支持「打开配置」（需要 0.1.4 以上的 VsSaros）';
+		var rowEl2 = btn.closest ? btn.closest('.sk-row') : null;
+		var box2 = rowEl2 ? rowEl2.querySelector('.sk-main') : null;
+		if (box2) {
+			var err2 = box2.querySelector('.tk-err');
+			if (!err2) { err2 = document.createElement('div'); err2.className = 'tk-err'; box2.appendChild(err2); }
+			err2.textContent = boom;
+		} else {
+			// 弹层底部的按钮在 [data-mk-foot] 里，而正文是它的**兄弟** ⇒ closest([data-mk-body]) 找不到；
+			// 提示就放在底栏里（左起一个 mk-note），比塞进正文更贴近这次点击。
+			var foot2 = btn.closest ? btn.closest('[data-mk-foot]') : null;
+			if (foot2) {
+				var note2 = foot2.querySelector('.mk-note');
+				if (!note2) {
+					note2 = document.createElement('span');
+					note2.className = 'mk-note';
+					foot2.insertBefore(note2, foot2.firstChild);
+				}
+				note2.textContent = boom;
+			}
+		}
 	}, true);
 
 	/**
@@ -623,6 +725,76 @@ const SKILL_PREVIEW_SCRIPT = `
 		});
 	});
 
+	/*
+	 * ★ 2026-10-26（用户：「工作流 item 点击删除没有清除」）：
+	 *   删除失败的原因必须**看得见**。原来的写法只认 .tk-card .tk-err（卡片式条目），
+	 *   而技能/工作流/Agent/插件现在是**行式**（.sk-row，没有 .tk-card）⇒ 错误被直接丢掉，
+	 *   用户看到的就是"点了没反应"。这里统一收口：卡片 → 卡片内；行 → .sk-main 里 12px 红字。
+	 */
+	function showRowError(btn, msg) {
+		if (!btn || !btn.closest) { return; }
+		var card = btn.closest('.tk-card');
+		var row = btn.closest('.sk-row');
+		var host = card ? (card.querySelector('.tk-body') || card) : (row ? row.querySelector('.sk-main') : null);
+		if (!host) { return; }
+		var box = host.querySelector('.tk-err');
+		if (!box) { box = document.createElement('div'); box.className = 'tk-err'; host.appendChild(box); }
+		box.textContent = msg;
+	}
+
+	/*
+	 * ★ 2026-10-26（用户：「删除 item ，所有UI都抖动一下」）：
+	 *   删除成功后**不再整页刷新**，就地摘掉那一行并修页签计数。
+	 *   ⚠ 找不到行时（例如卡片式条目）才退回 location.reload() 兜底 —— 宁可闪一次，也不能留下假行。
+	 */
+	function removeRowOf(btn, slug) {
+		var row = btn && btn.closest ? btn.closest('.sk-row') : null;
+		if (!row) {
+			// 从详情弹层底部删的：按 slug 反查（技能行的属性名是 data-skill-id）
+			try {
+				row = document.querySelector('[data-item-row][data-item-slug="' + slug + '"]')
+					|| document.querySelector('[data-skill-row][data-skill-id="' + slug + '"]');
+			} catch (e) { row = null; }
+		}
+		if (!row) { location.reload(); return; }
+		var pane = row.closest ? row.closest('[data-sk-pane]') : null;
+		// 技能行的抽屉是**兄弟节点**，一起收掉（否则会在原地留一块空白）
+		var sib = row.nextElementSibling;
+		if (sib && sib.classList && sib.classList.contains('sk-drawer')) { sib.remove(); }
+		row.remove();
+		if (mkDlg && !mkDlg.hidden) { mkDlg.hidden = true; }
+		refreshTabCounts();
+		if (pane) { markPaneEmptyIfNeeded(pane); }
+	}
+
+	/** 页签上的数字按"当前还剩下几行"重算（不重拉页面）。 */
+	function refreshTabCounts() {
+		var tabs = document.querySelectorAll('[data-sk-tab]');
+		for (var i = 0; i < tabs.length; i++) {
+			var k = tabs[i].getAttribute('data-sk-tab');
+			var pane = document.querySelector('[data-sk-pane="' + k + '"]');
+			if (!pane) { continue; }
+			var n = pane.querySelectorAll('[data-item-row],[data-skill-row]').length;
+			// ⚠ 不能用 \\s/\\d（模板里 \\s 会被吃成 s、\\d 也危险）⇒ 用显式字符类，零反斜杠
+			// ⚠ 页面脚本在**模板字符串**里：\s \d \t 这类转义都会被吃（\s→s、\t→真制表符）⇒
+			//   这里只用字面空格 + [0-9]，一个反斜杠都不写，渲染后才与源码一致。
+			var label = String(tabs[i].textContent || '').replace(/ *[0-9]+ *$/, '');
+			tabs[i].textContent = label + ' ' + n;
+		}
+	}
+
+	/** 删空了就给一句说明（否则整块空白，像是页面加载失败）。 */
+	function markPaneEmptyIfNeeded(pane) {
+		var n = pane.querySelectorAll('[data-item-row],[data-skill-row]').length;
+		if (n > 0) { return; }
+		var fold = pane.querySelector('.sk-fold');
+		if (!fold || fold.querySelector('.sk-empty')) { return; }
+		var p = document.createElement('p');
+		p.className = 'sk-empty';
+		p.textContent = '这一类现在是空的（已删掉的条目在 <数据根>/.trash-<时间戳>/ 下，可捞回）。';
+		fold.appendChild(p);
+	}
+
 	/* 删除已安装条目：先 confirm，再走商城 op 'trash'（移到回收站，可恢复）。
 	   失败**就地显示原因**（与安装失败同一个原则：不许只在 tooltip 里）。 */
 	root.addEventListener('click', function (ev) {
@@ -654,40 +826,40 @@ const SKILL_PREVIEW_SCRIPT = `
 				? { kind: kind, slug: slug, packageName: pkgName }
 				: { kind: kind, slug: slug } }),
 		}).then(function (r) { return r.json(); }).then(function (j) {
-			if (j && j.ok) { location.reload(); return; }
+			if (j && j.ok) {
+				// ★ 2026-10-26（用户：「删除 item ，所有UI都抖动一下」）：
+				//   原来是 location.reload() —— 整页重拉时先白一下再画回来（看起来就是全屏抖一下），
+				//   滚动位置也会丢。删除只影响**这一行** ⇒ 就地摘掉 + 改页签计数即可。
+				removeRowOf(btn, slug);
+				return;
+			}
 			btn.disabled = false;
 			btn.textContent = label;
-			var card = btn.closest ? btn.closest('.tk-card') : null;
-			var body = card ? (card.querySelector('.tk-body') || card) : null;
-			if (body) {
-				var box = body.querySelector('.tk-err');
-				if (!box) { box = document.createElement('div'); box.className = 'tk-err'; body.appendChild(box); }
-				box.textContent = (opName === 'uninstall' ? '卸载失败：' : '删除失败：') + String((j && j.error) || '商城没返回原因');
-			}
+			showRowError(btn, (opName === 'uninstall' ? '卸载失败：' : '删除失败：') + String((j && j.error) || '商城没返回原因'));
 		}).catch(function (e) {
 			btn.disabled = false;
 			btn.textContent = label;
-			var card = btn.closest ? btn.closest('.tk-card') : null;
-			var body = card ? (card.querySelector('.tk-body') || card) : null;
-			if (body) {
-				var box = body.querySelector('.tk-err');
-				if (!box) { box = document.createElement('div'); box.className = 'tk-err'; body.appendChild(box); }
-				box.textContent = (opName === 'uninstall' ? '卸载失败：' : '删除失败：') + String((e && e.message) || e);
-			}
+			showRowError(btn, (opName === 'uninstall' ? '卸载失败：' : '删除失败：') + String((e && e.message) || e));
 		});
 	});
 
 	/* 插件开关：POST setPluginEnabled（dsh 侧改 profile 的 bundles 选择）。
 	   ⚠ 和删除按钮一样，必须 ev.preventDefault + stopPropagation，否则会连带打开详情弹层。 */
 	root.addEventListener('click', function (ev) {
-		var sw = ev.target && ev.target.closest ? ev.target.closest('[data-sk-sw]') : null;
+		var sw = ev.target && ev.target.closest
+			? (ev.target.closest('[data-sk-sw]') || ev.target.closest('[data-mcp-sw]'))
+			: null;
 		if (!sw) { return; }
 		ev.preventDefault();
 		if (ev.stopPropagation) { ev.stopPropagation(); }
 		if (sw.disabled) { return; }
-		var pkg = String(sw.getAttribute('data-sk-sw') || '');
+		// ★ 2026-10-26：连接器的开关绑的是另一个 op（setMcpEnabled），属性名也不同
+		var isMcp = sw.hasAttribute('data-mcp-sw');
+		var swKey = isMcp ? 'data-mcp-sw' : 'data-sk-sw';
+		var onKey = swKey + '-on';
+		var pkg = String(sw.getAttribute(swKey) || '');
 		if (!pkg) { return; }
-		var on = sw.getAttribute('data-sk-sw-on') === '1';
+		var on = sw.getAttribute(onKey) === '1';
 		sw.disabled = true;
 		function fail(msg) {
 			sw.disabled = false;
@@ -701,7 +873,9 @@ const SKILL_PREVIEW_SCRIPT = `
 		fetch('/x/marketplace/api/action', {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },
-			body: JSON.stringify({ op: 'setPluginEnabled', params: { name: pkg, enabled: !on } }),
+			body: JSON.stringify(isMcp
+				? { op: 'setMcpEnabled', params: { kind: 'mcp', slug: pkg, enabled: !on } }
+				: { op: 'setPluginEnabled', params: { name: pkg, enabled: !on } }),
 		}).then(function (r) { return r.json(); }).then(function (j) {
 			if (j && j.ok) {
 				// ★ 2026-10-24（用户：「开关插件后，不要全屏刷新UI，导致莫名切换到了其他页签」）：
@@ -709,18 +883,46 @@ const SKILL_PREVIEW_SCRIPT = `
 				//   之前用 location.reload()：整页重拉 → 页签回到默认的「技能」→ 用户以为"跳页了"。
 				var nowOn = (j.enabled === undefined) ? !on : (j.enabled === true);
 				sw.setAttribute('aria-checked', nowOn ? 'true' : 'false');
-				sw.setAttribute('data-sk-sw-on', nowOn ? '1' : '0');
-				sw.setAttribute('title', nowOn ? '已启用（点一下停用）' : '已停用（点一下启用）');
+				sw.setAttribute(onKey, nowOn ? '1' : '0');
+				sw.setAttribute('title', nowOn
+					? (isMcp ? '已启用（点一下停用，重启 Host 后生效）' : '已启用（点一下停用）')
+					: (isMcp ? '已停用（点一下启用，重启 Host 后生效）' : '已停用（点一下启用）'));
 				sw.disabled = false;
 				var rowEl = sw.closest ? sw.closest('.sk-row') : null;
 				if (rowEl) { rowEl.classList.toggle('is-off', !nowOn); }
+				// ★ 2026-10-26：连接器的「状态」同时出现在**行标签**与**弹层关键信息**里，
+				//   就地刷新这两处，否则点完开关再打开详情还写着「已启用」（自相矛盾）。
+				if (isMcp && rowEl) {
+					var tagEls = rowEl.querySelectorAll('.sk-tag');
+					for (var ti = 0; ti < tagEls.length; ti++) {
+						var tx = String(tagEls[ti].textContent || '');
+						if (tx === '已启用' || tx === '已停用') {
+							tagEls[ti].textContent = nowOn ? '已启用' : '已停用';
+							if (nowOn) { tagEls[ti].classList.remove('acc'); } else { tagEls[ti].classList.add('acc'); }
+						}
+					}
+					var factsRaw = rowEl.getAttribute('data-item-facts');
+					if (factsRaw) {
+						try {
+							var factsArr = JSON.parse(factsRaw);
+							for (var fi = 0; fi < factsArr.length; fi++) {
+								if (factsArr[fi] && factsArr[fi][0] === '状态') {
+									factsArr[fi][1] = nowOn ? '已启用' : '已停用（重启 Host 后不加载）';
+								}
+							}
+							rowEl.setAttribute('data-item-facts', JSON.stringify(factsArr));
+						} catch (e2) { /* 坏 JSON 就不动，弹层会显示旧值但不报错 */ }
+					}
+				}
 				// 需要重启才生效时给一句就地提示（仍然不刷新）
 				if (j.restartRequired && rowEl) {
 					var box2 = rowEl.querySelector('.sk-main');
 					if (box2) {
 						var note = box2.querySelector('.tk-err');
 						if (!note) { note = document.createElement('div'); note.className = 'tk-err'; box2.appendChild(note); }
-						note.textContent = '已保存：重启 Host 后生效（本页数据不变）';
+						note.textContent = isMcp
+							? '已保存：重启 Host 后该连接器才' + (nowOn ? '重新加载' : '不再加载')
+							: '已保存：重启 Host 后生效（本页数据不变）';
 					}
 				}
 				return;
@@ -1295,6 +1497,9 @@ const SKILL_PREVIEW_SCRIPT = `
 		if (t.closest('[data-mk-dlg]') || t.closest('[data-market-install]') || t.closest('[data-tk-del]')
 			|| t.closest('[data-publish]')   // ★ 2026-10-26：行内「上传」按钮，别同时把弹层也开起来
 			|| t.closest('[data-sk-sw]')
+			// ★ 2026-10-26：连接器开关也算「行内控件」，别同时把详情弹层开起来
+			//   （stopPropagation 挡不住**同一节点**上的其它监听器，必须在这里排除）
+			|| t.closest('[data-mcp-sw]')
 			|| t.closest('[data-sk-settings]') || t.closest('[data-sk-copy]') || t.closest('.sk-gear')) { return; }
 		var host = t.closest('[data-tk-card]') || t.closest('[data-skill-row]') || t.closest('[data-item-row]');
 		if (!host) { return; }
@@ -1910,6 +2115,12 @@ const COVER_ONERROR = "this.style.display='none';var g=this.parentNode?this.pare
 function renderItemRow({ kind, slug, name, desc, icon, src, f, store, localVer, tags, delKind, delOp, delPkg, delLabel, delTitle, paths,
 	// 插件开关（2026-10-24）：toggleOn 是**当前**状态（从 profile 的 bundles 选择读出来的）
 	togglePkg, toggleOn, toggleLocked, toggleTitle,
+	// ★ 2026-10-26：开关的属性名前缀。插件用默认的 data-sk-sw；
+	//   连接器用 data-mcp-sw（两者绑的是不同的 op：setPluginEnabled / setMcpEnabled）
+	swAttr,
+	// ★ 2026-10-26（用户：「连接器页签缺少打开配置按钮」）：给这类行加一个「配置」按钮，
+	//   点了走已有的 [data-sk-settings] 通道（ID 侧打开 mcp.json 的资源设置页）。
+	settingsKind,
 	// ★ 2026-10-26（用户：「点击后的弹出页缺少该项的详细说明」）：
 	//   行上只放一行描述（CSS 会截断），**完整说明**与「关键信息」要带给弹层，
 	//   否则点开只有一串文件路径（插件尤其明显：描述就是包名）。
@@ -1932,9 +2143,10 @@ function renderItemRow({ kind, slug, name, desc, icon, src, f, store, localVer, 
 		// ★ 2026-10-26：弹层的「说明」与「关键信息」从这里取（行上只显示一行，会被截断）
 		+ ' data-item-desc="' + escapeHtml(String(fullDesc || desc || '')) + '"'
 		+ (facts && facts.length ? ' data-item-facts="' + escapeHtml(JSON.stringify(facts)) + '"' : '');
+	const swName = String(swAttr || 'data-sk-sw');
 	const swBtn = togglePkg
 		? '<button type="button" class="sk-sw" role="switch" aria-checked="' + (toggleOn ? 'true' : 'false') + '"'
-			+ ' data-sk-sw="' + escapeHtml(String(togglePkg)) + '" data-sk-sw-on="' + (toggleOn ? '1' : '0') + '"'
+			+ ' ' + swName + '="' + escapeHtml(String(togglePkg)) + '" ' + swName + '-on="' + (toggleOn ? '1' : '0') + '"'
 			+ (toggleLocked ? ' disabled' : '')
 			+ ' title="' + escapeHtml(toggleTitle || (toggleOn ? '已启用（点一下停用）' : '已停用（点一下启用）')) + '">'
 			+ '<i></i></button>'
@@ -1962,6 +2174,18 @@ function renderItemRow({ kind, slug, name, desc, icon, src, f, store, localVer, 
 			+ ' title="' + escapeHtml(delTitle || '移到回收站（.trash-时间戳，可恢复）') + '">'
 			+ escapeHtml(delLabel || '删除') + '</button>'
 		: '';
+	// 「配置」按钮（目前只有连接器有）：属性与页内那段 [data-sk-settings] 处理器约定一致
+	const cfgBtn = settingsKind && slug
+		? '<button type="button" class="sk-act sk-act-cfg" data-sk-settings data-sk-kind="'
+			+ escapeHtml(String(settingsKind)) + '" data-sk-id="' + escapeHtml(String(slug)) + '"'
+			+ ' title="打开配置（在编辑区修改这台服务器）">配置</button>'
+		: '';
+	// ★ 2026-10-26（用户：「mcp item ui 的开关摆放在最右侧」）：
+	//   原来顺序是 开关 → 动作按钮，而动作按钮 opacity:0 **仍占宽度** ⇒ 开关被挤到中间。
+	//   现在统一收进 .sk-ops（margin-left:auto 贴右），顺序 = 配置 / 动作 / **开关最后**。
+	const opsHtml = (cfgBtn || upBtn || pubBtn || delBtn || swBtn)
+		? '<div class="sk-ops">' + cfgBtn + upBtn + pubBtn + delBtn + swBtn + '</div>'
+		: '';
 	return '<li class="sk-row' + (togglePkg && !toggleOn ? ' is-off' : '') + '" data-item-row' + itemAttrs + ' data-f-src="' + escapeHtml(String(src || 'installed')) + '"'
 		+ fAttrs(f) + ' data-slug="' + escapeHtml(String(slug || '')) + '" title="'
 		+ escapeHtml(String(name) + ' — ' + String(desc || '') + '（' + String(slug || '') + '）') + '">'
@@ -1975,10 +2199,7 @@ function renderItemRow({ kind, slug, name, desc, icon, src, f, store, localVer, 
 		+ (canUp ? '<span class="sk-tag up" title="商城已有 ' + escapeHtml(storeVer) + '">可升级 v' + escapeHtml(storeVer) + '</span>' : '')
 		+ (tags || []).map(t =>
 			'<span class="sk-tag' + (t.acc ? ' acc' : '') + '">' + escapeHtml(String(t.text)) + '</span>').join('') + '</div></div>'
-		+ swBtn
-		+ upBtn
-		+ pubBtn
-		+ delBtn
+		+ opsHtml
 		+ (paths ? '<div class="tk-detail" hidden>' + paths + '</div>' : '')
 		+ '</li>';
 }
@@ -2068,6 +2289,54 @@ function renderToolCard({ name, desc, tags, foot, path, src, state, type, cur, p
  * （`<li data-mcp-server-row data-mcp-server="X"><span class="id">X</span>`）。
  * 名字来源：商城同名商品（`knot-mcp-iwiki-3` → 「iWiki」）→ 否则把 serverName 人类化。
  */
+/** `<数据根>/mcp.json` 的路径（dsh 与 IDE 共用这一份）。 */
+function mcpJsonFileOf(dataRoot) {
+	if (!dataRoot) { return ''; }
+	return String(dataRoot).replace(/[\\/]+$/, '') + '/mcp.json';
+}
+
+/** `<数据根>/mcp/<name>` 安装目录。 */
+function mcpDirOfPath(dataRoot, name) {
+	if (!dataRoot) { return ''; }
+	return String(dataRoot).replace(/[\\/]+$/, '') + '/mcp/' + String(name);
+}
+
+/**
+ * 读 `<数据根>/mcp.json` 里登记了哪些连接器。
+ *
+ * 为什么自己读而不继续用 `vssaros-mcp` 渲染的片段：那个片段是**另一套 class**
+ * （`.mcp-l1` / `.id` / `<code>`），既没有开关也不能点开详情；要"复刻技能行"只能自己渲染。
+ * 代价是工具数量（`N 工具`）拿不到 —— 那是运行时才知道的，配置里没有。
+ */
+function readMcpServers(dataRoot) {
+	if (!dataRoot) { return []; }
+	let parsed;
+	try { parsed = JSON.parse(readFileSync(mcpJsonFileOf(dataRoot), 'utf8')); } catch { return []; }
+	const servers = parsed && typeof parsed === 'object' ? parsed.servers : null;
+	if (!servers || typeof servers !== 'object' || Array.isArray(servers)) { return []; }
+	return Object.keys(servers).map(name => {
+		const e = servers[name] && typeof servers[name] === 'object' ? servers[name] : {};
+		return { name, entry: e, disabled: e.disabled === true };
+	});
+}
+
+/** `<数据根>/mcp.json` 的**原文**（编辑弹层要用；读不到就给空壳，不抛）。 */
+function readMcpRawText(dataRoot) {
+	if (!dataRoot) { return ''; }
+	try { return readFileSync(mcpJsonFileOf(dataRoot), 'utf8'); } catch { return ''; }
+}
+
+/** 连接器的"能看到的那一行"：stdio 给命令，http 给端点。 */
+function mcpTargetOf(entry) {
+	const type = String((entry && entry.type) || 'stdio');
+	if (type === 'stdio') {
+		const cmd = String((entry && entry.command) || '');
+		const args = Array.isArray(entry && entry.args) ? entry.args.map(String) : [];
+		return (cmd + (args.length ? ' ' + args.join(' ') : '')).trim() || '（未配置 command）';
+	}
+	return String((entry && entry.url) || '（未配置 url）');
+}
+
 /** 本机已装的 MCP 包版本：`<数据根>/mcp/<id>/config.json` 的 `version`（读不到就当空）。 */
 function readInstalledMcpVersions(dataRoot) {
 	const out = {};
@@ -2112,7 +2381,7 @@ function decorateMcpHtml(html, lookup, metaOf) {
 	);
 }
 
-function renderPage({ skills, errors, missing, root, nativeSkillTool, provider, skillishTools, mcpSection, workflows, agents, market, mcpInstalled }) {
+function renderPage({ skills, errors, missing, root, nativeSkillTool, provider, skillishTools, mcpSection, workflows, agents, market, mcpInstalled, mcpTools }) {
 	// `totals` 是各 kind 的总数（页面用它说「共 N 个，展示前 M 个」）
 	const mk = market || { ok: false, items: [], totals: {} };
 	// slug → 商城商品（用于"装前装后同一个名字"）
@@ -2127,6 +2396,12 @@ function renderPage({ skills, errors, missing, root, nativeSkillTool, provider, 
 	const wf = workflows || { root: '', items: [], errors: [] };
 	const ag = agents || { root: '', items: [], errors: [] };
 	const summary = summarizeCatalog(skills);
+	// 连接器页签：直接读 mcp.json 自己渲染（不再转发 vssaros-mcp 的 HTML 片段）
+	const mcpServers = readMcpServers(dataRoot);
+	// 本地版本：`<数据根>/mcp/<name>/config.json`；路由里已经扫过一次就复用
+	const mcpVersions = mcpInstalled || readInstalledMcpVersions(dataRoot);
+	// 编辑弹层的初始内容：把原文**包成 JSON 字符串字面量**内嵌（原文不合法也能原样显示）
+	const mcpRawJson = JSON.stringify(readMcpRawText(dataRoot)).replace(/</g, '\\u003c');
 	// 插件页签的三档数据源：内置（随包）/ 已安装（商城装的）/ 可安装（商城还没装）
 	const profilePlugins = readProfilePlugins(dataRoot);
 	const builtinPlugins = profilePlugins.items.filter(x => x.builtin);
@@ -2568,9 +2843,9 @@ function renderPage({ skills, errors, missing, root, nativeSkillTool, provider, 
 /* 安装失败的红字（卡片内、按钮下方）：失败原因必须看得见，不能只塞进 title。 */
 .tk-err {
 	margin-top: 6px; font-size: 11.5px; line-height: 1.45;
-	color: var(--dsw-alias-label-error, #F14C4C);
+	color: var(--dsw-alias-state-error-primary, #F14C4C);
 	word-break: break-word;
-	border-left: 2px solid var(--dsw-alias-label-error, #F14C4C);
+	border-left: 2px solid var(--dsw-alias-state-error-primary, #F14C4C);
 	padding-left: 6px;
 }
 
@@ -2603,6 +2878,15 @@ function renderPage({ skills, errors, missing, root, nativeSkillTool, provider, 
 .mk-pub-note { margin: 0 0 10px; font-size: 11.5px; line-height: 1.5; color: var(--vscode-descriptionForeground, #999); }
 .mk-pub-ops { display: flex; gap: 8px; }
 /* ── 发布前体检结果（2026-10-26）── */
+/* ── 连接器详情里的工具清单（2026-10-26）── */
+/* 注意：旧的 .sk-pane-mcp details.mcp-tools 是**老 MCP 片段**的样式，本页的行已不在那个容器里，
+   所以这里另起一套（不要复用，否则不生效且下次有人以为样式坏了）。 */
+.mk-detail .mcp-tools { margin: 10px 0 6px; }
+.mk-detail .mcp-tools-h { font-size: 11.5px; color: var(--vscode-descriptionForeground, #999); margin-bottom: 5px; }
+.mk-detail .mcp-tools-list { display: flex; flex-wrap: wrap; gap: 4px; }
+.mk-detail .mcp-tools-list code { font-size: 11px; padding: 1px 6px; border-radius: 4px;
+	background: var(--vscode-textCodeBlock-background, rgba(128,128,128,.16)); }
+.mk-detail .mcp-tools-empty { font-size: 11.5px; color: var(--vscode-descriptionForeground, #999); }
 /* 重复发布源提醒（2026-10-26）*/
 .mk-pub-warn { margin: 6px 0 0; font-size: 11.5px; line-height: 1.5;
 	color: var(--vscode-charts-yellow, #d29922); }
@@ -2703,7 +2987,7 @@ function renderPage({ skills, errors, missing, root, nativeSkillTool, provider, 
 .tk-more-item.off { opacity: .5; }
 /* 连接器行的 slug（可读名在 .id 里，slug 弱化在右边）。 */
 .sk-note.sk-warn {
-	border-left: 2px solid var(--dsw-alias-label-warning, #E3A008);
+	border-left: 2px solid var(--dsw-alias-state-warn-label, #E3A008);
 	padding-left: 8px; opacity: 1;
 }
 /* 服务器卡片的第一行（名字 + 传输/工具数 + 齿轮横排）。 */
@@ -2779,6 +3063,38 @@ function renderPage({ skills, errors, missing, root, nativeSkillTool, provider, 
 .sk-row:hover .sk-act, .sk-row:focus-within .sk-act, .sk-act:focus { opacity: 1; }
 .sk-act:hover { color: var(--vscode-errorForeground, #f14c4c); border-color: currentColor; }
 .sk-act[disabled] { opacity: .6; cursor: default; }
+/* ── 连接器页签顶部：统一配置入口（2026-10-26）── */
+.mcp-bar { display: flex; align-items: center; gap: 10px; margin: 0 10px 8px; padding: 6px 10px;
+	border: 1px solid var(--vscode-panel-border, rgba(128,128,128,.3)); border-radius: 6px;
+	background: rgba(128,128,128,.05); font-size: 11.5px; }
+.mcp-bar-path { color: var(--vscode-descriptionForeground, #999); min-width: 0; overflow: hidden;
+	text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.mcp-bar-btn { flex: 0 0 auto; height: 22px; padding: 0 10px; border-radius: 11px; font: inherit;
+	font-size: 11px; line-height: 20px; cursor: pointer; color: var(--vscode-textLink-foreground, #3794ff);
+	border: 1px solid currentColor; background: none; }
+.mcp-bar-btn:hover { background: rgba(55,148,255,.12); }
+/* ── 编辑 mcp.json 的二级弹层 ── */
+.mcp-ed { position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center;
+	background: rgba(0,0,0,.45); }
+.mcp-ed[hidden] { display: none; }
+.mcp-ed-box { width: min(920px, 92vw); max-height: 86vh; display: flex; flex-direction: column;
+	background: var(--vscode-editorWidget-background, #1e1e1e); border: 1px solid var(--vscode-panel-border, rgba(128,128,128,.4));
+	border-radius: 10px; padding: 14px; box-shadow: 0 12px 40px rgba(0,0,0,.45); }
+.mcp-ed-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; font-size: 13px; }
+.mcp-ed-path { color: var(--vscode-descriptionForeground, #999); font-size: 11px; overflow: hidden;
+	text-overflow: ellipsis; white-space: nowrap; }
+.mcp-ed-ta { flex: 1; min-height: 320px; resize: vertical; font-family: ui-monospace, Consolas, monospace;
+	font-size: 12px; line-height: 1.55; padding: 10px; border-radius: 6px; color: var(--vscode-editor-foreground, #ddd);
+	background: var(--vscode-editor-background, #111); border: 1px solid var(--vscode-panel-border, rgba(128,128,128,.35)); }
+.mcp-ed-err { margin-top: 6px; min-height: 15px; font-size: 11.5px; color: var(--vscode-errorForeground, #f48771); }
+.mcp-ed-foot { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.mcp-ed-hint { flex: 1; font-size: 11px; color: var(--vscode-descriptionForeground, #999); }
+/* ★ 2026-10-26：尾部控件组（配置 / 动作 / 开关）——贴右排列，开关永远最右。 */
+.sk-ops { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; margin-left: auto; padding-left: 4px; }
+.sk-ops .sk-act { margin-right: 0; }
+.sk-ops .sk-sw { margin-right: 0; }
+.sk-act-cfg { color: var(--vscode-textLink-foreground, #3794ff); }
+.sk-act-cfg:hover { color: var(--vscode-textLink-activeForeground, #4daafc); border-color: currentColor; }
 /* 插件开关（2026-10-24 用户：「插件 item 是允许有开关的」）：30×16 的滑动开关 */
 .sk-sw {
 	flex: 0 0 auto; align-self: center; margin-right: 8px; padding: 0;
@@ -2842,7 +3158,7 @@ function renderPage({ skills, errors, missing, root, nativeSkillTool, provider, 
 		<div class="sk-panel-content">
 			<div class="sk-seg">
 				<button type="button" data-sk-tab="skills" class="on">技能 ${summary.count}</button>
-				<button type="button" data-sk-tab="mcp">连接器</button>
+				<button type="button" data-sk-tab="mcp">连接器 ${mcpServers.length}</button>
 				<button type="button" data-sk-tab="workflows">工作流 ${wf.items.length}</button>
 				<button type="button" data-sk-tab="agents">Agent ${ag.items.length}</button>
 				<button type="button" data-sk-tab="workbenches">工作台 ${TOOLS_WORKBENCHES.length}</button>
@@ -2856,12 +3172,82 @@ function renderPage({ skills, errors, missing, root, nativeSkillTool, provider, 
 					[{ k: 'ver:yes', t: '有可安装版本' }, { k: 'ver:no', t: '仅浏览（无包体）' }],
 				)}
 				${dnNote}${foldHtml('skills', skills.length, list)}${marketGridHtml(mk, 'skills')}</div>
-			<div data-sk-pane="mcp" hidden><div class="sk-pane-mcp">${decorateMcpHtml(mcpSection.html, id => (mkBySlug.get(String(id)) || {}).name, (name) => {
-				// 本地版本来自 <数据根>/mcp/<name>/config.json；商城版本来自同名商品
-				const lv = (mcpInstalled && mcpInstalled[name]) || '';
-				const st = mkBySlug.get(String(name));
-				return { lv, sv: st ? String(st.version || '') : '' };
-			})}</div>${marketGridHtml(mk, 'conn')}</div>
+			<div data-sk-pane="mcp" hidden>
+				<!-- ★ 2026-10-26（用户：「需要一个统一的 mcp 配置按钮入口，不是每一个 item 一个配置按钮」）：
+				     整份 mcp.json 的入口放在**页签顶部**，行上不再各挂一个「配置」。 -->
+				<div class="mcp-bar">
+					<span class="mcp-bar-path">配置文件 <code>${escapeHtml(prettyPath(mcpJsonFileOf(dataRoot)))}</code></span>
+					<button type="button" class="mcp-bar-btn" data-mcp-edit title="编辑 mcp.json（保存后需重启 Host 生效）">编辑配置</button>
+				</div>
+				<!-- ★ 2026-10-26（用户：「连接器页签下每个 mcp 的 item ui 样式复刻 skill item 的样式，
+				     增加开关，点击展开详情，详情里加删除」）：
+				   **不再转发 vssaros-mcp 渲染的 HTML 片段**（那套是另一组 class、没有开关、行不可点），
+				   改为在本地直接读 <数据根>/mcp.json 自己渲染 —— 与技能行同一套 renderItemRow ✓。 -->
+				${foldHtml('mcp', mcpServers.length,
+					mcpServers.length ? '<ul class="sk-list">' + mcpServers.map(s => {
+						const store = mkBySlug.get(s.name) || null;
+						const lv = String((mcpVersions && mcpVersions[s.name]) || '');
+						const type = String(s.entry.type || 'stdio');
+						const target = mcpTargetOf(s.entry);
+						// ★ 2026-10-26：这台服务器在**运行时注册表**里暴露了哪些工具
+						const toolsOfThis = (mcpTools && mcpTools[s.name]) || [];
+						const toolsHtml = toolsOfThis.length
+							? '<div class="mcp-tools"><div class="mcp-tools-h">工具 ' + toolsOfThis.length + ' 个</div>'
+								+ '<div class="mcp-tools-list">'
+								+ toolsOfThis.map(t => '<code title="' + escapeHtml(String(t.description || '')) + '">'
+									+ escapeHtml(String(t.name)) + '</code>').join('')
+								+ '</div></div>'
+							: '<div class="mcp-tools"><div class="mcp-tools-h">工具</div>'
+								+ '<div class="mcp-tools-empty">Host 里还没有这台服务器的工具：可能未连接、或已停用。'
+								+ '重启 Host 后再看。</div></div>';
+						return renderItemRow({
+							kind: 'mcp',
+							slug: s.name,
+							store,
+							name: readableName({ slug: s.name, name: s.name, storeName: store && store.name }),
+							desc: target,
+							fullDesc: (store ? shortStoreDesc(String(store.description || '')) : '')
+								|| (type + ' 连接器：' + target),
+							facts: [
+								['类型', '连接器（MCP）'],
+								['服务名', s.name],
+								['传输', type],
+								[type === 'stdio' ? '命令' : '端点', target],
+								['状态', s.disabled ? '已停用（重启 Host 后不加载）' : '已启用'],
+								['工具', toolsOfThis.length ? toolsOfThis.length + ' 个' : '（未连接或已停用）'],
+								['本地版本', lv || '未声明'],
+							].concat(store ? [['商城商品', String(store.slug)], ['商城版本', String(store.version || '未声明')]] : []),
+							localVer: lv,
+							src: 'installed',
+							f: { src: 'installed' },
+							tags: [
+								{ text: type },
+								s.disabled ? { text: '已停用', acc: true } : { text: '已启用' },
+							],
+							// 开关：写 mcp.json 的 disabled（dsh 侧 setMcpEnabled）；重启 Host 生效
+							togglePkg: s.name,
+							toggleOn: !s.disabled,
+							swAttr: 'data-mcp-sw',
+							toggleTitle: s.disabled
+								? '已停用（点一下启用，重启 Host 后生效）'
+								: '已启用（点一下停用，重启 Host 后生效）',
+							// 删除 = 从 mcp.json 注销 + 删目录（卸载）。用 uninstall 而不是 trash：
+							// 只挪目录会留下指向空目录的 entry。
+							delKind: 'mcp', delOp: 'uninstall', delPkg: s.name,
+							delLabel: '卸载',
+							delTitle: '从 mcp.json 注销并删除安装目录（重启 Host 后不再加载）',
+							paths: toolsHtml
+								+ '<div class="path-row"><span class="pk">配置文件</span><span class="pv"><code>'
+								+ escapeHtml(prettyPath(mcpJsonFileOf(dataRoot))) + '</code></span></div>'
+								+ '<div class="path-row"><span class="pk">安装目录</span><span class="pv"><code>'
+								+ escapeHtml(prettyPath(mcpDirOfPath(dataRoot, s.name))) + '</code></span></div>',
+						});
+					}).join('') + '</ul>' : '',
+					'<p class="sk-empty">mcp.json 里还没有连接器：在下面「商城 · 可直接安装」装一个，或手工编辑 <code>'
+						+ escapeHtml(prettyPath(mcpJsonFileOf(dataRoot))) + '</code></p>',
+				)}
+				${marketGridHtml(mk, 'conn')}
+			</div>
 
 			<div data-sk-pane="workflows" hidden>
 				${filterBarHtml('workflows',
@@ -3070,6 +3456,25 @@ function renderPage({ skills, errors, missing, root, nativeSkillTool, provider, 
 	</div>
 </div>
 <script data-vssaros-skills-preview-script="">${SKILL_PREVIEW_SCRIPT}</script>
+<!-- ★ 2026-10-26：mcp.json 的编辑页（页面内二级弹层）。
+     为什么不走宿主桥：openResourceSettings('mcp') 在部分宿主里不可用（用户实测提示"宿主版本较旧"），
+     而"改一份 JSON 文件"本就不需要 IDE 参与 —— 读（内嵌本页）+ 校验 + 落盘（dsh 侧 saveMcpConfig）即可。 -->
+<div class="mcp-ed" data-mcp-ed hidden>
+	<div class="mcp-ed-box">
+		<div class="mcp-ed-head">
+			<b>编辑 mcp.json</b>
+			<span class="mcp-ed-path"><code>${escapeHtml(prettyPath(mcpJsonFileOf(dataRoot)))}</code></span>
+		</div>
+		<textarea class="mcp-ed-ta" data-mcp-ed-text spellcheck="false" autocomplete="off"></textarea>
+		<div class="mcp-ed-err" data-mcp-ed-err></div>
+		<div class="mcp-ed-foot">
+			<span class="mcp-ed-hint">保存前自动备份；保存后**重启 Host** 才生效。</span>
+			<button type="button" class="tk-btn" data-mcp-ed-cancel>关闭</button>
+			<button type="button" class="tk-btn primary" data-mcp-ed-save>保存</button>
+		</div>
+	</div>
+</div>
+<script type="application/json" data-mcp-raw>${mcpRawJson}</script>
 </body>
 </html>`;
 }
@@ -3447,12 +3852,43 @@ export function apply(ctx, config = {}) {
 			const list = Array.isArray(value) ? value : (value && typeof value === 'object' ? Object.values(value) : []);
 			return list.map(item => (typeof item === 'string' ? item : item?.name)).filter(name => typeof name === 'string');
 		};
+		/**
+		 * 全局注册表里的 MCP 工具：`mcp__<server>__<tool>` ⇒ `{ server: [{ name, description }] }`。
+		 *
+		 * ★ 2026-10-26（用户：「mcp 的详情中，应该有工具列表」）：
+		 *   工具名只有运行时注册表才知道（mcp.json 里没有），而本插件本来就有 `tools.schemas()` 这个
+		 *   唯一被真机证明可用的入口（技能诊断栏也靠它）⇒ 直接复用，别再让 `vssaros-mcp` 单独给一份。
+		 */
+		const mcpToolsOf = () => {
+			let value;
+			try {
+				value = tools.tools.schemas?.();
+			} catch {
+				return {};
+			}
+			const list = Array.isArray(value) ? value : (value && typeof value === 'object' ? Object.values(value) : []);
+			/** @type {Record<string, Array<{ name: string, description: string }>>} */
+			const map = {};
+			for (const item of list) {
+				const full = typeof item === 'string' ? item : (item && item.name);
+				if (typeof full !== 'string') { continue; }
+				const m = /^mcp__(.+?)__(.+)$/.exec(full);
+				if (!m) { continue; }
+				const desc = item && typeof item.description === 'string' ? item.description : '';
+				if (!map[m[1]]) { map[m[1]] = []; }
+				map[m[1]].push({ name: m[2], description: desc });
+			}
+			for (const key of Object.keys(map)) { map[key].sort((a, b) => a.name.localeCompare(b.name)); }
+			return map;
+		};
 		const sync = () => {
 			// 记下**实际看到的名字**（含 "skill" 字样的那几个）—— 不只为断言，更是为**说得出为什么** ✓：
 			// 真机读数长时间是 absent ⇒ 要么它真没注册 ✓，要么名字被**命名空间化**了 ✗（mcp 的工具名就是
 			// `mcp__probe__probe_ping` 那种形式 ✓）。没有这一栏，只能猜 ✓。
 			state.skillishTools = namesOf().filter(name => /skill/i.test(name)).slice(0, 4);
 			state.nativeSkillToolPresent = namesOf().includes(NATIVE_SKILL_TOOL);
+			// 连接器详情里的「工具列表」用它（工具增减时随 tools/change 一起刷新）
+			state.mcpTools = mcpToolsOf();
 		};
 		sync();
 		tools.on('tools/change', sync);
@@ -3917,6 +4353,8 @@ export function apply(ctx, config = {}) {
 					mcpSection: await fetchMcpSection(req),
 					// 已装 MCP 包的版本（详情里的「版本 / 升级 / 上传」靠它）
 					mcpInstalled: readInstalledMcpVersions(root ? dirname(root) : ''),
+					// 连接器详情里的工具列表（运行时注册表快照；工具增减会随 tools/change 更新）
+					mcpTools: state.mcpTools || {},
 				});
 				res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
 				res.end(html);

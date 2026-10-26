@@ -17,6 +17,26 @@ import type { MediaImportRequest, MediaListFilter } from '../common/mediaStoreCh
 
 type LogLevel = 'error' | 'warn' | 'info' | 'debug';
 
+/**
+ * 「这件资产刚落进 IDE 库」的回执（供外部把同一份字节**再推一份**给 dsh 媒体库）。
+ *
+ * ★ 2026-10-26：媒体库真源已搬到 dsh 侧（`@vssaros/dsh-media` 的 `media-store/`），
+ *   而 ComfyUI / 工作流的产出仍是 IDE 主进程写进自己的 `media.db`。
+ *   这里只负责"发生时吱一声"，真正怎么推（HTTP + 认证 cookie）由 dshHarness 那边实现 ——
+ *   本 channel **不依赖** dshHarness，接线在 `app.ts` 一处完成（依赖方向：壳 → 两个通道）。
+ */
+export interface IMediaDshPushInput {
+	/** IDE 库里的资产 id（推送方用它当 `originId` ⇒ 与 dsh 的 `ideSync` 幂等） */
+	readonly id: string;
+	readonly filePath?: string;
+	readonly fileName?: string;
+	readonly kind?: string;
+	readonly mime?: string;
+	readonly ext?: string;
+	readonly provider?: string;
+	readonly metaJson?: string;
+}
+
 /** 主进程 channel：把 IMediaBackend 方法派发到 MediaStore（文件 + SQLite）。 */
 export class MediaStoreChannel<TContext> extends Disposable implements IServerChannel<TContext> {
 
@@ -25,6 +45,17 @@ export class MediaStoreChannel<TContext> extends Disposable implements IServerCh
 	private _rootDir: string;
 	/** 构造失败原因（better-sqlite3 原生绑定缺失等），透传给 renderer 便于定位。 */
 	private _initError: string | undefined;
+	/** 「入库后顺手推给 dsh」的钩子（可选；见 {@link IMediaDshPushInput}）。 */
+	private _dshPush: ((input: IMediaDshPushInput) => void) | undefined;
+
+	/**
+	 * 接线（`app.ts` 在建好 dshHarnessChannel 之后调一次）。
+	 * ⚠ 钩子必须是**同步返回、内部自己 fire-and-forget** 的函数：这里绝不 await，
+	 *   否则 dsh 的慢/死会把 IDE 自己的入库路径拖住。
+	 */
+	setDshPush(sink: (input: IMediaDshPushInput) => void): void {
+		this._dshPush = sink;
+	}
 
 	constructor(
 		defaultRootDir: string,
@@ -123,8 +154,28 @@ export class MediaStoreChannel<TContext> extends Disposable implements IServerCh
 		}
 		try {
 			switch (command) {
-				case 'importAsset':
-					return this._mediaStore.importAsset((args?.[0] ?? {}) as MediaImportRequest);
+				case 'importAsset': {
+					const request = (args?.[0] ?? {}) as MediaImportRequest;
+					// ⚠ `MediaStore.importAsset` 是 **async**（落盘 + 下载远程 ref）⇒ 必须 await
+					const asset = await this._mediaStore.importAsset(request);
+					// ★ 2026-10-26：IDE 侧写完立刻**推一份**给 dsh 媒体库（真源）。
+					//   失败/没有 Host 都只记日志 —— 调用方拿到的仍是 IDE 库里的那条（行为不变）。
+					//   `originId` 用 IDE 资产 id（与 `ideSync` 同约定）⇒ 推过的不会再被 sync 插一条。
+					try {
+						this._dshPush?.({
+							id: asset.id,
+							filePath: asset.filePath,
+							fileName: asset.fileName,
+							kind: asset.kind,
+							mime: asset.mime,
+							provider: asset.provider,
+							metaJson: request.metaJson,
+						});
+					} catch (err) {
+						this._log('warn', `media push 钩子抛错（忽略）：${(err as Error)?.message ?? String(err)}`);
+					}
+					return asset;
+				}
 				case 'list':
 					return this._mediaStore.list((args?.[0] ?? {}) as MediaListFilter);
 				case 'get':

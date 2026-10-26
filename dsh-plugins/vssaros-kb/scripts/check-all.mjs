@@ -36,6 +36,8 @@ const STEPS = [
 	// ★ 2026-10-25：**服务端渲染**（markdown-it + Obsidian 方言，vendor 随包）
 	{ file: 'check-kb-md-node.mjs', desc: '服务端 Markdown 渲染（28 项）' },
 	// ★ 2026-10-25：**真实库全文扫描** —— 每篇渲染后检查有无残留原始标记（缺库则跳过）
+	// ★ 2026-10-26：mermaid → pele（服务端渲染）——**路径探测**按三种安装布局各验一遍
+	{ file: 'check-kb-pele.mjs', desc: 'mermaid → pele：路径探测 / 渲染 / 降级（10 项）' },
 	{ file: 'check-kb-md-vault.mjs', desc: '真实库渲染覆盖扫描（无残留标记）' },
 	// ★ 2026-10-25：`/api/doc` 端到端（渲染结果 + 磁盘缓存命中/失效）
 	{ file: 'check-kb-doc-route.mjs', desc: '/api/doc 端到端：渲染 + 缓存 + 失效（8 项）' },
@@ -55,7 +57,10 @@ const STEPS = [
 	// ★ 2026-10-25：审核（状态在 frontmatter；保留其它键 + 改前备份 + 拒绝越界路径）
 	{ file: 'check-kb-review.mjs', desc: '审核：状态判定 / frontmatter 保留 / 备份（13 项）' },
 	// ★ 2026-10-25：**全路由冒烟** —— 能力堆到 20+ 条路由后，最容易出现"某条没人调、悄悄 500"
-	{ file: 'check-kb-routes-smoke.mjs', desc: '全路由冒烟（17 条路由 + 越界负例）' },
+	{ file: 'check-kb-routes-smoke.mjs', desc: '全路由冒烟（19 条路由 + 越界负例）' },
+	// ★ 2026-10-26：编辑态键盘行为（列表续写 / 空白条目跳出 / Tab 缩进）
+	//   被测函数刻意做成纯函数单独文件（mdList.ts）⇒ 守卫只需 bundle 那 40 行
+	{ file: 'check-kb-editor-keys.mjs', desc: '编辑态键盘：列表续写 / 缩进（8 项）' },
 	// 2026-10-25：前端手写渲染器已删除（服务端渲染为唯一实现）⇒ 它的 27 项回归一并退场，
 	// 语义覆盖由 `check-kb-md-node`（28 项）+ `check-kb-md-vault`（全库扫描）承接。
 ];

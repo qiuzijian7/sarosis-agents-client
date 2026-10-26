@@ -434,7 +434,7 @@ window.__ModuleLoader__.load({
 					style: {
 						flex: "0 0 auto", display: "inline-flex", alignItems: "center", justifyContent: "center",
 						width: 20, height: 20, borderRadius: "50%", fontSize: 11, lineHeight: 1,
-						background: "var(--dsw-alias-bg-elevated, rgba(255,255,255,.10))",
+						background: "var(--dsw-alias-bg-layer-2, rgba(255,255,255,.10))",
 					},
 				}, "👤"),
 				react.createElement("span", {

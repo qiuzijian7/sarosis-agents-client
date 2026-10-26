@@ -1149,6 +1149,21 @@ export class DshViewHost extends Disposable {
 		return out;
 	}
 
+	/**
+	 * 某个视图所在的窗口（`ownerWindowId`，2026-10-26）。
+	 *
+	 * 用途：桌面窗口要十几秒才 materialize（页面装配），"建好就提一次"会落空 ⇒ 需要在
+	 * 视图 attach 那一刻再提一次；调用方（通道）自己判"是不是该提"（守卫处于隐藏态）。
+	 */
+	ownerWindowOfView(viewId: string): BrowserWindow | undefined {
+		const slot = this._views.get(viewId);
+		if (!slot) {
+			return undefined;
+		}
+		const win = this._windowById(slot.ownerWindowId);
+		return win && !win.isDestroyed() ? win : undefined;
+	}
+
 	pushWorkspaces(viewId: string, options: readonly IDshWorkspaceOption[]): void {
 		const slot = this._views.get(viewId);
 		if (!slot) {

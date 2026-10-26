@@ -230,7 +230,7 @@ export function buildAgentMd(agent: Agent): string {
 	if (agent.skills && agent.skills.length > 0) { fm.skills = agent.skills; }
 	// ★ 2026-10-26：`suggestions` 必须回写 —— 否则用户在 Agent Studio 改别的字段时，
 	//   这个字段会被**静默丢掉**（聊天欢迎卡退回通用话术）。
-	if ((agent as any).suggestions && (agent as any).suggestions.length > 0) { fm.suggestions = (agent as any).suggestions; }
+	if (agent.suggestions && agent.suggestions.length > 0) { fm.suggestions = agent.suggestions; }
 	if (agent.enabledToolsets && agent.enabledToolsets.length > 0) { fm.enabledToolsets = agent.enabledToolsets; }
 	if (agent.disabledToolsets && agent.disabledToolsets.length > 0) { fm.disabledToolsets = agent.disabledToolsets; }
 	if (agent.temperature !== undefined) { fm.temperature = agent.temperature; }

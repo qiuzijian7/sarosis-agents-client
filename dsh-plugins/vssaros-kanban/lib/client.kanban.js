@@ -399,8 +399,8 @@ window.__ModuleLoader__.load({
 		const STYLE_ID = 'vssaros-kanban-workbench-layout';
 		// ★ 2026-10-22（工作台 UI 统一，方案稿 §6.19）：**通用视觉全部交给共享层**（宿主注入的 `wb-*`），
 		//   这里只留看板特有的结构 —— 六列、列内滚动、卡片内几行、详情字段。
-		// ⚠ 原来这里写了一批**不存在的令牌名**（`--dsw-alias-border-default` / `--dsw-alias-state-focus-primary` /
-		//   `--dsw-alias-font-family-monospace`）⇒ 一律回落到硬编码兜底 ⇒ 切暗色主题时这些地方**不跟着变** ✗。
+		// ⚠ 原来这里写了一批**不存在的令牌名**（`--dsw-alias-border-l2` / `--dsw-alias-state-focus-primary` /
+		//   `--dsh-font-family-code-default`）⇒ 一律回落到硬编码兜底 ⇒ 切暗色主题时这些地方**不跟着变** ✗。
 		//   现在统一成真实令牌（`border-l1/l2`、`brand-primary`、`--wb-mono`）。
 		const CSS = `
 .wb-kanban { gap: var(--wb-s2); }

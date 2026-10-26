@@ -261,6 +261,19 @@ window.__ModuleLoader__.load({
 					notify("warn", "打开会话失败：" + String((e && e.message) || e));
 				}
 			};
+			/**
+			 * ＋ 菜单的两个动作共用的"说清楚"通道（**就地渲染**，不只靠 notify）。
+			 *
+			 * ★ 窗口模式（desktop）里**没有宿主桥** ⇒ `bridge.notify` 是空转 ⇒ 失败若只写
+			 *   `state.*` 就是 100% 静默（用户看到的就是"点了没反应"）✗ ⇒ 必须在区里渲染一行 ✓。
+			 */
+			const makeSayer = (setMsg) => (text, kind) => {
+				const isErr = kind === "error";
+				state.addWorkspaceError = isErr ? text : null;
+				state.addWorkspaceNote = isErr ? null : text;
+				try { if (setMsg) { setMsg({ kind: isErr ? "error" : "note", text: String(text) }); } } catch { /* 渲染失败不影响别的 */ }
+				notify(isErr ? "warn" : "info", text);
+			};
 			// ＋ 添加工作区：官方同一条链（uiWorkspace.pickDirectory → workspaces.create）✓
 			// 两个服务都不进 inject（硬依赖教训 ✓），读不到就**如实说清**、不静默。
 			//
@@ -274,14 +287,9 @@ window.__ModuleLoader__.load({
 			//      path），老代码读 `res.value.path` ⇒ 恒 undefined ⇒ 选完也什么都不做。
 			//   ③ 失败只写 `state.addWorkspaceError`，而它**从来没被渲染** ⇒ 100% 静默；
 			//      且窗口模式没有宿主桥（`window.vssarosDsh` 不存在）⇒ `bridge.notify` 也是空转。
-			//      ⇒ 现在错误**就地渲染**在区里（见 Browser 的 wsError），成功也写一行。
-			const addWorkspace = (setError) => {
-				const say = (text, kind) => {
-					state.addWorkspaceError = kind === "error" ? text : null;
-					state.addWorkspaceNote = kind === "error" ? null : text;
-					try { if (setError) { setError({ kind: kind === "error" ? "error" : "note", text: String(text) }); } } catch { /* 渲染失败不影响别的 */ }
-					notify(kind === "error" ? "warn" : "info", text);
-				};
+			//      ⇒ 现在错误**就地渲染**在区里（见 Browser 的 wsMsg），成功也写一行。
+			const addWorkspace = (setMsg) => {
+				const say = makeSayer(setMsg);
 				try {
 					const uw = ctx.uiWorkspace;
 					const ws = typeof ctx.get === "function" ? ctx.get("workspaces") : undefined;
@@ -307,6 +315,35 @@ window.__ModuleLoader__.load({
 					});
 				} catch (e) {
 					say("添加工作区失败：" + String((e && e.message) || e), "error");
+				}
+			};
+
+			/**
+			 * 从 `.code-workspace` 文件**导入多根工作区**（2026-10-26，用户要求）。
+			 *
+			 * 为什么必须请 IDE 侧做：页面是浏览器上下文 ⇒ ① 读不了文件；② 没有**文件**选择器
+			 *   （dsh 只有目录选择器）⇒ 选文件、解析 `folders[]`、落一条多根记录、把各根注册进 dsh，
+			 *   全都要 IDE 侧的能力 ⇒ 走页面桥的 `importCodeWorkspace`（宿主转成 IDE 命令
+			 *   `agentStudio.workspace.importCodeWorkspace`）。
+			 *
+			 * ⚠ 页面桥是**单向**的（只回 true）⇒ 这里拿不到"导入成功/失败" ⇒
+			 *   ① 成功时只说"已请求导入，导入完成后会出现在下面"（真正成功由 IDE 通知 + 列表刷新体现）；
+			 *   ② **没有桥**（官方 dsh desktop）⇒ 明确说清，不静默 ✗。
+			 */
+			const importCodeWorkspace = (setMsg) => {
+				const say = makeSayer(setMsg);
+				if (!bridge || typeof bridge.importCodeWorkspace !== "function") {
+					say("当前环境不支持导入（这一版没有宿主桥，无法选 .code-workspace 文件）", "error");
+					return;
+				}
+				try {
+					void Promise.resolve(bridge.importCodeWorkspace()).then(() => {
+						say("已请 IDE 侧选一个 .code-workspace 文件；导入完成后它会作为一个「N 个根」的工作区出现在下面", "note");
+					}).catch((e) => {
+						say("导入请求失败：" + String((e && e.message) || e), "error");
+					});
+				} catch (e) {
+					say("导入请求失败：" + String((e && e.message) || e), "error");
 				}
 			};
 
@@ -380,6 +417,12 @@ window.__ModuleLoader__.load({
 					boxShadow: "0 16px 40px rgba(0,0,0,.6)", color: "var(--dsw-alias-label-primary, #e6e6e6)",
 				},
 				search: { width: "100%", margin: "2px 0 6px", padding: "4px 8px", borderRadius: 6, border: "1px solid var(--dsw-alias-border-l2, #383838)", background: "var(--dsw-alias-bg-layer-1, #262626)", color: "inherit", fontSize: 12, outline: "none" },
+				// ＋ 菜单里的条目（两个动作：加单目录 / 导入多根）
+				menuItem: {
+					display: "block", width: "100%", textAlign: "left", background: "none", border: "none",
+					color: "inherit", cursor: "pointer", fontSize: 12, lineHeight: "1.4",
+					padding: "6px 8px", borderRadius: 6,
+				},
 			};
 
 			/** hover 详情卡（fixed 定位到条目右侧；夹进视口——WebContentsView 外会被裁 ✗）。 */
@@ -423,7 +466,27 @@ window.__ModuleLoader__.load({
 				const [hover, setHover] = react.useState(null); // {key, x, y}
 				// ★ 2026-10-26：＋按钮的成败**必须看得见**（窗口模式没有宿主桥 ⇒ notify 是空转）
 				const [wsMsg, setWsMsg] = react.useState(null); // {kind:'error'|'note', text}
+				// ＋ 菜单（两个动作：加单目录 / 从 .code-workspace 导入多根）；null = 关闭
+				const [menu, setMenu] = react.useState(null); // {x, y}
 				const hoverTimer = react.useRef(null);
+				// 点外面 ⇒ 关菜单（与官方菜单同口径；不关就会"菜单糊在侧栏上"✗）
+				react.useEffect(() => {
+					if (!menu) { return undefined; }
+					const onDown = (ev) => {
+						try {
+							const t = ev.target;
+							if (t && t.closest && t.closest("[data-vssaros-ws-menu]")) { return; }
+							setMenu(null);
+						} catch { setMenu(null); }
+					};
+					const onKey = (ev) => { if (ev.key === "Escape") { setMenu(null); } };
+					document.addEventListener("mousedown", onDown, true);
+					document.addEventListener("keydown", onKey, true);
+					return () => {
+						document.removeEventListener("mousedown", onDown, true);
+						document.removeEventListener("keydown", onKey, true);
+					};
+				}, [menu]);
 
 				const sessSnap = readSessSnapshot();
 				const currentId = bridge && bridge.sessionId ? bridge.sessionId : null;
@@ -489,11 +552,45 @@ window.__ModuleLoader__.load({
 						withSearch ? react.createElement("button", { style: S.iconBtn, title: "搜索工作区 / 会话", "aria-label": "搜索工作区 / 会话", onClick: () => setSearchOn(!searchOn) }, "🔍") : null,
 						// ★ 用 ASCII "+"：原来的全角「＋」(U+FF0B) 在某些渲染环境**没有字形**
 						//   ⇒ 界面上是一个豆腐块（用户截图里那个方框就是它）⇒ 点了像"没反应" ✓
+						// ★ 2026-10-26：它现在是一个**菜单**（两个动作：加单目录 / 从 .code-workspace 导入多根）。
 						react.createElement("button", {
 							style: Object.assign({}, S.iconBtn, { fontSize: 14, fontWeight: 600, minWidth: 18, textAlign: "center" }),
-							title: "添加工作区…", "aria-label": "添加工作区", onClick: () => addWorkspace(setWsMsg),
+							title: "添加工作区…", "aria-label": "添加工作区", "aria-haspopup": "true",
+							onClick: (e) => {
+								try {
+									const rect = e.currentTarget.getBoundingClientRect();
+									// fixed 定位（不用 absolute）：侧栏列可能有 overflow ⇒ 绝对定位会被裁掉 ✗
+									const w = typeof window !== "undefined" ? window.innerWidth : 0;
+									const h = typeof window !== "undefined" ? window.innerHeight : 0;
+									let x = rect.left - 180;
+									let y = rect.bottom + 4;
+									if (w > 0) { x = Math.max(8, Math.min(x, w - 220)); }
+									if (h > 0) { y = Math.max(8, Math.min(y, h - 90)); }
+									setMenu({ x, y });
+								} catch { setMenu(null); }
+							},
 						}, "+"),
 					),
+					// ＋ 菜单本体（fixed 定位 ⇒ 不被侧栏的 overflow 裁掉 ✓）
+					menu ? react.createElement("div", {
+						"data-vssaros-ws-menu": "1",
+						style: {
+							position: "fixed", left: menu.x, top: menu.y, zIndex: 70, minWidth: 210, padding: "4px",
+							borderRadius: 8, background: "var(--dsw-alias-bg-layer-2, #262626)",
+							border: "1px solid var(--dsw-alias-border-l2, #3e3e3e)",
+							boxShadow: "0 12px 32px rgba(0,0,0,.5)", color: "var(--dsw-alias-label-primary, #e6e6e6)",
+						},
+					},
+						react.createElement("button", {
+							style: S.menuItem,
+							onClick: () => { setMenu(null); addWorkspace(setWsMsg); },
+						}, "添加工作区（单个目录）"),
+						react.createElement("button", {
+							style: S.menuItem,
+							title: bridge && typeof bridge.importCodeWorkspace === "function" ? "" : "当前环境没有宿主桥，无法选 .code-workspace 文件",
+							onClick: () => { setMenu(null); importCodeWorkspace(setWsMsg); },
+						}, "从 .code-workspace 导入（多根）"),
+					) : null,
 					// ★ 2026-10-26：＋ 的成败**就地可见**（窗口模式没有宿主桥 ⇒ notify 是空转）
 					wsMsg ? react.createElement("div", {
 						style: {
@@ -528,7 +625,7 @@ window.__ModuleLoader__.load({
 									),
 									isOpen ? row.sessions.map((s) => react.createElement("div", {
 										key: s.id,
-										style: Object.assign({}, S.row, { paddingLeft: 30, fontSize: 12.5 }, s.isCurrent ? { background: "var(--dsw-alias-bg-selected, rgba(91,140,255,.15))", color: "var(--dsw-alias-label-primary, #e6e6e6)" } : null),
+										style: Object.assign({}, S.row, { paddingLeft: 30, fontSize: 12.5 }, s.isCurrent ? { background: "var(--dsw-alias-interactive-bg-active, rgba(91,140,255,.15))", color: "var(--dsw-alias-label-primary, #e6e6e6)" } : null),
 										title: s.rootName ? s.rootName + " · " + s.id : s.id,
 										onClick: () => openSession(s.id),
 									},
@@ -552,7 +649,7 @@ window.__ModuleLoader__.load({
 								),
 								isOpen ? row.sessions.map((s) => react.createElement("div", {
 									key: s.id,
-									style: Object.assign({}, S.row, { paddingLeft: 30, fontSize: 12.5 }, s.isCurrent ? { background: "var(--dsw-alias-bg-selected, rgba(91,140,255,.15))", color: "var(--dsw-alias-label-primary, #e6e6e6)" } : null),
+									style: Object.assign({}, S.row, { paddingLeft: 30, fontSize: 12.5 }, s.isCurrent ? { background: "var(--dsw-alias-interactive-bg-active, rgba(91,140,255,.15))", color: "var(--dsw-alias-label-primary, #e6e6e6)" } : null),
 									title: s.id,
 									onClick: () => openSession(s.id),
 								},

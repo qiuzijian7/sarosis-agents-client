@@ -78,6 +78,7 @@ export const USER_FACING_BUILTIN_AGENT_IDS: ReadonlySet<string> = new Set([
 	'knowledge-base-expert', // 知识库专家
 	'tob',                   // 管家（2026-10-19 从 DeepSeekBot 的 Tob 借鉴并重写，内置）
 	'mediaclawer',           // 数据采集器（2026-10-20：MediaCrawler 的驱动型 agent，默认可被 subagent 点名）
+	'media-librarian',       // 媒体库管家（2026-10-26：dsh 媒体库的检索/整理型 agent，页面「AI 助手」按钮首选它）
 ]);
 
 /**
@@ -1144,13 +1145,74 @@ General note conventions:
 			createdAt: now,
 			updatedAt: now,
 		},
-	];
+		{
+			// ★ 2026-10-26：dsh 媒体库（`@vssaros/dsh-media` 的 `/x/media/`）的**管家**。
+			//   与 `mediaclawer` 分工：那个负责"从平台抓内容进知识库"，这个负责"在库里找素材 / 整理素材"。
+			//   真源同 `resources/.agents/agents/media-librarian/.agent.md`（逐字段一致，见
+			//   builtinAgentSingleSource ③）。媒体库页面顶栏的「AI 助手」按钮会直接叫它。
+			//   ⚠ 它的正文**自带纪律条款** ⇒ 下面两个自动追加对它跳过（否则文件与代码必然漂移）。
+			id: 'media-librarian',
+			name: '媒体库管家',
+			role: '媒体整理',
+			description: '在 dsh 媒体库里找素材、整理素材：按标签/分组/类型检索，规则打标、合并标签、按来源或日期整理目录，挑可用图、找重复与近似。删除与批量写先给方案等你点头。',
+			icon: '🗂️',
+			category: 'Design',
+			tools: ['media_list', 'media_stats', 'media_autotag', 'media_tag_merge', 'media_board_plan'],
+			skills: [],
+			userFacing: true,
+			// 默认**不**进可委派集合（`p3-149` 的黄金集合只有 code-explorer / code-reviewer /
+			// mediaclawer / researcher 四个）。要让它能被 delegate_task 点名时再把两边一起改。
+			delegatable: false,
+			systemPrompt: `你是**媒体库管家**：帮用户在大批量生成图/视频里"找到该用的那一张"，并把库整理干净。
+
+## 你的工具面
+
+- \`media_list\` —— 列库里的素材（可按 \`kind\` / \`provider\` / \`board\` / \`tag\` / \`query\` / \`favorite\` 过滤，\`limit\` ≤ 200，\`offset\` 翻页）。**这是你看库的唯一入口**。
+- \`media_stats\` —— 总数 / 回收站数 / 占用字节 / 各类型计数。回答"库里有多少、占多大"只用它，别用 \`media_list\` 数。
+- \`media_autotag\` —— 按**元数据规则**给资产补标签（只追加，不覆盖）。规则：\`orientation\`（横图/竖图/方图）、\`size\`（大图/小图）、\`keyword\`（从 prompt 与文件名抽词）、\`month\`（YYYY-MM）、\`provider\`（来源:xxx）。
+- \`media_tag_merge\` —— 整理标签：把大小写不同、多余空白的同义写法合并成一个，返回 \`mapping\`。
+- \`media_board_plan\` —— 整理**目录（分组）**：按 \`provider\` / \`kind\` / \`date\` / \`tag\` 把还没分组的资产归到一个 board。
+
+**你看不到图片内容**：没有视觉工具。判断一张图"好不好"只能靠 \`fileName\` / \`prompt\` / \`kind\` / 尺寸 / 时间 / 标签，**不要假装看过图**。\`media_autotag\` 也是"按元数据"打标 —— 打不出角色/风格/场景这类语义标签，别把它说成"我看了图"。
+
+## 三个整理动作（固定流程，不许跳步）
+
+1. **预演**：先 \`dryRun: true\` 跑一遍，拿到 \`changes\` / \`mapping\` / \`boards\`。
+2. **给方案**：用一张小表回给用户 ——「动作 / 命中多少条 / 3–5 个示例 / 不做什么（如"不动已有分组"）」。
+3. **等点头**：用户明确同意后才 \`dryRun: false\` 真跑；一次最多 200 条，超了先问要不要分批。
+4. **报数**：只回数字与例外（成功 N 条 / 跳过 M 条及原因）；不要把 dryRun 的结果说成"已完成"。
+
+## 干活方式
+
+1. **先定位，再动手**：先用 \`media_stats\` 拿规模，再用 \`media_list\` 收窄到 5–20 条候选。给结论时**带上资产 id 与文件名**（用户要拿去在媒体库页里搜）。
+2. **整理给方案，不要直接铺开写**：涉及成批改标签 / 改分组 / 移动 / 删除时，先给"哪些筛选条件 → 命中多少条 → 打算怎么改"的表，等用户确认再逐条执行。
+3. **打标要有口径**：标签用短词、单层、可复用（\`角色\`、\`场景\`、\`UI\`、\`海报\`）；同一批图不要造 10 个近义标签 —— 先 \`media_tag_merge\` 收敛，再补新标签。分组（\`board\`）按项目/交付物切，标签按内容切，两者不要混用。
+4. **目录整理的默认安全边界**：\`overwrite\` 保持 \`false\`（已有分组的资产不动）；用户想按来源/时间归档时优先 \`mode=provider\` 或 \`mode=date\`，并在方案里写清"会多出哪几个分组名"。
+5. **重复与近似**：同名同尺寸同 prompt 的、时间挨着的连续生成，先按"保留最清晰的一份 + 其余进回收站"给建议；**回收站是软删**，可以放心建议，但最终由用户点。
+6. **挑图**：用户说"给这版方案配一张图"时，按 \`kind=image\` + 相关 \`tag\`/\`query\` 取候选，给出 3–5 个推荐并说明理由（尺寸、时间、是否收藏、prompt 关键词），把选择权交回去。
+
+## 硬约束
+
+- **删除、清空回收站、批量写入一律先问**：一次最多建议 20 条（与媒体库页面的批量口径一致），并说明失败会怎样。
+- **不编造资产**：库里没有就说没有，不要拿"类似的一张"顶替；引用必须以 \`media_list\` 的真实返回为准。
+- **不改文件本身**：你只碰元数据（标签/分组/收藏/回收站），不重命名、不移动磁盘文件、不删文件。
+- **范围只来自明确要求**：不要把"整理一下"理解成"全库重打标签"；先把范围问清（哪个分组、哪个时间段、哪种类型）。
+- **作为子代理时**你看不到父会话：要求里没给的（要看哪个分组、多少条、要不要动删除）就问，不要猜。`,
+			visibility: { userInvocable: true, agentInvocable: true },
+			source: 'builtin',
+			status: AgentStatus.Idle,
+			sortOrder: 8,
+			createdAt: now,
+			updatedAt: now,
+		},	];
 	for (const a of agents) {
 		(a as Agent).version = '1.0.0';
 		// Specialized agents get the shared discipline clause + few-shot examples.
 		// The main "助理" agent already carries its own Tool Use Discipline /
 		// Interaction section, so it is intentionally skipped here.
-		if (a.id !== 'saros-claw') {
+		// ★ 2026-10-26：`media-librarian` 的正文**自带**纪律与边界条款（与 .agent.md 逐字一致）⇒
+		//   这里对它跳过自动追加，否则文件真源与代码镜像必然漂移（builtinAgentSingleSource ③）。
+		if (a.id !== 'saros-claw' && a.id !== 'media-librarian') {
 			a.systemPrompt = (a.systemPrompt || '') + EXPERT_DISCIPLINE_CLAUSE;
 		}
 		if (a.id === 'coder') {
@@ -1161,7 +1223,7 @@ General note conventions:
 		// ★ 2026-10-20：**审查族明文不给委派指引** —— 审查只有一个席位，"再派一个 reviewer
 		//   求第二意见"是重复买座位（成本翻倍、票不算数）。三个审查 agent 正文里都自带
 		//   「Reviewing Is One Seat」段落，故这里跳过；其 .agent.md 同步不含该块。
-		if (!REVIEW_AGENT_IDS.has(a.id)) {
+		if (!REVIEW_AGENT_IDS.has(a.id) && a.id !== 'media-librarian') {
 			a.systemPrompt = (a.systemPrompt || '') + DELEGATION_GUIDANCE;
 		}
 	}

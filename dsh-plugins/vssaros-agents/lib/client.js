@@ -1,7 +1,7 @@
 // 2026-10-26 touch：client.agents.js 今日多次变更（群聊附件 / 分组折叠 / 左栏「新建 bot」/ 右栏图标 / 创建二级页）
 //   ⇒ **必须动这个入口**，否则 chunk 的 ?rev 不变，浏览器一直吃旧缓存 —— 这就是"改了一天都没生效"的真正原因。
 //   （下面这行 STAMP 是给守卫/人看的；真正的判据是**本文件的 mtime**。）
-// CLIENT_BUILD_STAMP 2026-10-27T00:55：重名只做显示去歧义（不删数据）后置新入口
+// CLIENT_BUILD_STAMP 2026-10-27T12:05：凭据移到 IDE 设置后，页内提示指向设置项
 // @vssaros/dsh-agents — 客户端入口（工作台重构 §5 步骤 2，2026-10-22）。
 //
 // 本包原先**没有客户端半**（页面是纯 SSR + 页内脚本）。React 工作台（**第一刀：名册面**）需要入口：
@@ -25,7 +25,7 @@
 //   （它比的是时间，不是内容）⇒ 变异测试之后必须重新动一次入口 + 升版本 ✓。
 // ★ 2026-10-22（UI 统一 §6.19）：组件改用**共享层** `wb-*` 原语（宿主注入一份样式表）——
 //   自写 CSS 从 58 行压到 30 行（只留 ag-item / ag-row / 头像 / 两行信息 / 事实表 / 药丸三色）；
-//   顺带修掉**不存在的令牌名**（`--dsw-alias-border-default` / `-label-link` / `-font-family-monospace` /
+//   顺带修掉**不存在的令牌名**（`--dsw-alias-border-l2` / `-label-link` / `-font-family-monospace` /
 //   `-state-focus-primary`）与写死的药丸色（`#e0a43a` / `#4C9AFF`）⇒ 之前从没跟随过主题 ✗。
 // ⚠ 探针锚点：名册行 `data-ag-row`、名字 `data-ag-name`（类名属视觉层 ⇒ 不当锚点）。
 window.__ModuleLoader__.load({

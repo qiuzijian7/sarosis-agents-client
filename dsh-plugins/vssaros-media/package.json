@@ -1,7 +1,7 @@
 {
   "name": "@vssaros/dsh-media",
-  "version": "0.5.14",
-  "description": "VsSaros media library for DeepSeek Harness. **As of 2026-10-24 the authoritative store is on the dsh side**: `{dataRoot}/media-store/media.db` + content-addressed objects under `{dataRoot}/media-store/objects/<sha8[0..2]>/<sha8>.<ext>`, created and owned by this module (single writer), with a full read/write HTTP API under `/x/media/api/*` (list / stats / bytes / import / delete / restore / favorite / tags / board). The old VsSaros main-process store (`{rootDir}/media.db`, bytes at `{rootDir}/{yyyy}/{mm}/{id}.{ext}`) is still readable as a **read-only mirror** for the transition period (`lib/store.js`); the page keeps reading that mirror by default and can read the new store with `?source=dsh`.",
+  "version": "0.7.2",
+  "description": "VsSaros media library for DeepSeek Harness. **As of 2026-10-24 the authoritative store is on the dsh side**: `{dataRoot}/media-store/media.db` + content-addressed objects under `{dataRoot}/media-store/objects/<sha8[0..2]>/<sha8>.<ext>`, created and owned by this module (single writer), with a full read/write HTTP API under `/x/media/api/*` (list / facets / stats / bytes / thumb / import / delete / restore / favorite / tags / board / note). The page (`/x/media/`, rewritten 2026-10-26 after Eagle) is a three-column asset manager: left navigation (kind / favorites / unclassified / untagged / trash / boards / tags), a filter bar with three view modes, a detail inspector with inline editing, and batch writes throttled to 20 items x 3 lanes. 256px webp thumbnails are cached content-addressed at `{dataRoot}/media-store/thumbs/<sha8>.webp` (the Host has no image encoder, so the page encodes on first paint and posts the bytes back). The old VsSaros main-process store (`{rootDir}/media.db`) is still readable as a **read-only mirror** for reconciliation (`?source=ide`).",
   "private": true,
   "type": "module",
   "main": "lib/index.js",
@@ -15,6 +15,8 @@
     "lib/store.js",
     "lib/ownStore.js",
     "lib/ideSync.js",
+    "lib/mediaPage.js",
+    "lib/mediaApp.js",
     "cordis.patch.yml",
     "lib/foundationRef.js"
   ],
@@ -50,7 +52,7 @@
     ],
     "workbench": {
       "title": "媒体库",
-      "description": "媒体库：浏览生成与导入的图片、视频等素材（只读）。",
+      "description": "媒体库：浏览 / 分组 / 标签 / 收藏 / 回收站，三栏素材管理台。",
       "repository": "vssaros:media",
       "customFrame": true
     }

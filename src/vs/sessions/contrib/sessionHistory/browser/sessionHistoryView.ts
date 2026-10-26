@@ -844,6 +844,20 @@ export class SessionHistoryViewPane extends ViewPane {
 		const searchTerm = this.currentSearchTerm;
 
 		this.filteredSessions = this.allSessions.filter(s => {
+			/**
+			 * ★ 2026-10-26（用户要求）：**空会话（0 条消息）不进列表**。
+			 *
+			 * 现象：点「新会话」→ IDE 立刻落一条空会话 → 列表马上多出一项（截图实证），
+			 *   但用户期望的是"发第一条消息之后才真正出现"。
+			 *
+			 * ⚠ 语义说明：这里不是"延迟创建"（创建仍然立刻发生，聊天框已经绑上它了），
+			 *   而是**不把还没说过话的会话当成历史记录展示**。两者对用户是一回事，
+			 *   但改过滤的成本远低于改创建流程（后者牵动 chat 面板的绑定时机）。
+			 *
+			 * ⚠ 风险：dsh 会话的 `messageCount` 来自 `turns`，**读不到时也是 0**
+			 *   ⇒ 如果有老会话被误藏，说明 turns 的读取有缺口，应该去补读取，而不是放宽这一行。
+			 */
+			if (s.info.messageCount === 0) { return false; }
 			if (agentFilter && s.info.agentId !== agentFilter) { return false; }
 			if (searchTerm) {
 				const inTitle = s.info.sessionName.toLowerCase().includes(searchTerm);
@@ -1393,6 +1407,20 @@ export class SessionHistoryViewPane extends ViewPane {
 		const searchTerm = this.currentSearchTerm;
 
 		this.filteredSessions = this.allSessions.filter(s => {
+			/**
+			 * ★ 2026-10-26（用户要求）：**空会话（0 条消息）不进列表**。
+			 *
+			 * 现象：点「新会话」→ IDE 立刻落一条空会话 → 列表马上多出一项（截图实证），
+			 *   但用户期望的是"发第一条消息之后才真正出现"。
+			 *
+			 * ⚠ 语义说明：这里不是"延迟创建"（创建仍然立刻发生，聊天框已经绑上它了），
+			 *   而是**不把还没说过话的会话当成历史记录展示**。两者对用户是一回事，
+			 *   但改过滤的成本远低于改创建流程（后者牵动 chat 面板的绑定时机）。
+			 *
+			 * ⚠ 风险：dsh 会话的 `messageCount` 来自 `turns`，**读不到时也是 0**
+			 *   ⇒ 如果有老会话被误藏，说明 turns 的读取有缺口，应该去补读取，而不是放宽这一行。
+			 */
+			if (s.info.messageCount === 0) { return false; }
 			if (agentFilter && s.info.agentId !== agentFilter) { return false; }
 			if (searchTerm) {
 				const inTitle = s.info.sessionName.toLowerCase().includes(searchTerm);

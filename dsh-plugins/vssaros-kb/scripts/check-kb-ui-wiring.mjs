@@ -21,7 +21,9 @@ const CLIENT = readFileSync(HERE + '../lib/client.js', 'utf8');
 const BUNDLE = readFileSync(HERE + '../lib/web/kbSideview.js', 'utf8');
 const INDEX = readFileSync(HERE + '../lib/index.js', 'utf8');
 // 插件页（/x/kb/）的宿主脚本：它的动作必须是**真的**（2026-10-25 真机：点 ⚙ 只 console.warn）
-const PAGE_HTML = readFileSync(HERE + '../lib/web/sideview.html', 'utf8');
+// ★ 2026-10-26（P4）：页面脚本已外置到 page-boot.js ⇒ "页面实现了什么动作"要看那份文件。
+const PAGE_HTML = readFileSync(HERE + '../lib/web/sideview.html', 'utf8')
+	+ (() => { try { return readFileSync(HERE + '../lib/web/page-boot.js', 'utf8'); } catch { return ''; } })();
 
 let pass = 0;
 const failed = [];
@@ -147,6 +149,105 @@ check('页面报告层只读（不调用删除/合并）',
 // `openCanvas` / `openMindmap` / `reindex` 三条旧路径（留着就会长出第二套入口）。
 check('视图已清理导图/索引的遗留动作（只认 canvas 能力位）',
 	!BUNDLE.includes('openCanvas') && !BUNDLE.includes('openMindmap') && !BUNDLE.includes('reindex'));
+
+// ── 面板右栏渲染（2026-10-26 真机：md 没渲染，显示"按纯文本显示"）──────
+// 服务端 `/api/doc` 早就回了 html，但面板 `loadDoc` 的 fetchDoc 只取了 text
+// ⇒ 视图拿不到 html ⇒ 走纯文本降级。这条断言锁住"必须透传"。
+check('面板 loadDoc 透传服务端 html（否则右栏退化成纯文本）',
+	CLIENT.includes("typeof payload.html === 'string'") && CLIENT.includes('math: !!(payload && payload.math)'));
+
+// ── 普通链接（2026-10-26 真机：超链接点了没反应）──────────────
+// 双链走 data-wiki；普通 `[文字](https://…)` 在 webview 里导航会被拦掉 ⇒
+// 必须有 openUrl 动作把它交给宿主，否则表现为"点了没反应"。
+check('视图把普通链接交给 openUrl（不再让 webview 自己导航）', BUNDLE.includes('openUrl'));
+check('面板提供 openUrl（被拦时复制链接并提示）', /openUrl:\s*\(?u/.test(CLIENT) || CLIENT.includes('openUrl:'));
+check('插件页提供 openUrl', PAGE_HTML.includes('openUrl:'));
+
+// ── 长文档渲染（2026-10-26，P1）──────────────────────────────
+// 屏外块跳过布局：视图（面板/页面）与独立文档页两处样式都要有，缺一处就有一端白慢。
+check('视图样式启用 content-visibility（长文档首屏优化）', BUNDLE.includes('content-visibility'));
+check('独立文档页样式同样启用 content-visibility', INDEX.includes('content-visibility'));
+
+// ── ETag / 304（2026-10-26，P2）──────────────────────────────
+// 服务端回 etag 只是第一步：两个宿主都必须**带着它再请求**并按 304 复用旧对象，
+// 否则 304 分支永远不会被走到（等于白加一条机制）。
+check('服务端支持 If-None-Match（304 空体）', INDEX.includes('if-none-match') && INDEX.includes('304'));
+check('面板 loadDoc 带 docEtagCache + If-None-Match', CLIENT.includes('docEtagCache') && CLIENT.includes('if-none-match'));
+check('插件页 loadDoc 同样支持（304 复用旧对象）', PAGE_HTML.includes('docEtagCache') && PAGE_HTML.includes('if-none-match'));
+
+// ── 搜索结果高亮（2026-10-26，P3）────────────────────────────
+// 高亮在前端做（字符串切片 + <mark>），不走 innerHTML ⇒ 不新增注入口。
+// ⚠ esbuild 会重命名局部函数 ⇒ 不能按 `highlightMatch` 断言，改盯**高亮的样式字面量**
+check('搜索结果高亮已接线（<mark> 样式字面量在 bundle 里）', BUNDLE.includes('rgba(255,204,0,.30)'));
+check('高亮不引入 innerHTML（仍走 React 文本节点）',
+	!/rgba\(255,204,0,\.30\)[\s\S]{0,400}?innerHTML/.test(BUNDLE));
+
+// ── 编辑器（2026-10-26）：独立 bundle + 失败降级 ─────────────
+// 侧栏常驻，编辑是偶发动作 ⇒ 编辑器必须**按需加载**；拉不到（IDE webview 没这条路由）
+// 时要**静默退回 textarea**，否则用户会对着空白框发呆。
+check('视图按需加载编辑器（/x/kb/web/kbEditor.js）', BUNDLE.includes('/x/kb/web/kbEditor.js'));
+check('编辑器拉不到时退回 textarea（__KB_EDITOR_MOUNT__ 检测）', BUNDLE.includes('__KB_EDITOR_MOUNT__'));
+check('编辑器 bundle 已随包（lib/web/kbEditor.js）',  (() => { try { return readFileSync(HERE + '../lib/web/kbEditor.js', 'utf8').length > 1000; } catch { return false; } })());
+check('主 bundle 不含 CodeMirror（没有把编辑器塞进侧栏）', !BUNDLE.includes('cm-content') && !BUNDLE.includes('cm-scroller'));
+
+// ── 三项真机修复（2026-10-26）──────────────────────────────
+// ① mermaid 渲染：服务端只出源码，客户端按需拉 3.4MB 后转 SVG
+	// 2026-10-26：mermaid 改由**服务端 pele** 渲染（同步、零 DOM）⇒ 客户端零脚本
+	check('视图不再加载 mermaid 引擎（改为服务端出 SVG）',
+		!BUNDLE.includes('mermaid.min.js') && !BUNDLE.includes('loadMermaid'));
+	check('mermaid 的样式钩子是服务端产出的 kb-mermaid-block', BUNDLE.includes('kb-mermaid-block'));
+// ② 切笔记卡顿：命中缓存先上屏 + 后台 ETag 校验 + 载入态提示
+// ⚠ 局部变量与中文串在压缩后都不可靠 ⇒ 直接看**视图源码**（这一条守的是实现存在，不是产物形态）
+check('正文缓存（切回已读笔记应瞬时）', (() => {
+	try {
+		const src = readFileSync(HERE + '../../../src/vs/sessions/contrib/agentStudio/webview/src/kbSideview/index.tsx', 'utf8');
+		return src.includes('docCacheRef') && src.includes('docLoading');
+	} catch { return false; }
+})());
+// ③ 超链接没反应：被拦时必须给反馈（不能静默）
+check('外链被拦时有明确反馈（复制 + 提示）', CLIENT.includes('宿主没有打开新窗口') && PAGE_HTML.includes('宿主没有打开新窗口'));
+
+
+// ── 右键菜单 · 缺失双链（2026-10-26）────────────────────────
+// ⚠ 中文标签在压缩产物里会被转义，不能直接搜字符串 ⇒ 看**视图源码**
+const VIEW_SRC = (() => { try { return readFileSync(HERE + '../../../src/vs/sessions/contrib/agentStudio/webview/src/kbSideview/index.tsx', 'utf8'); } catch { return ''; } })();
+check('右键菜单有「复制绝对路径」', VIEW_SRC.includes('复制绝对路径') && VIEW_SRC.includes('copyText'));
+check('右键菜单有「在资源管理器中打开」（宿主声明 reveal 才显示）',
+	VIEW_SRC.includes('在资源管理器中打开') && VIEW_SRC.includes('actions?.reveal'));
+check('面板/页面都实现了 reveal（POST /api/reveal）',
+	CLIENT.includes('/x/kb/api/reveal') && PAGE_HTML.includes('/x/kb/api/reveal'));
+check('缺失双链可点击并给出反馈（不再静默）',
+	BUNDLE.includes('data-wiki-missing') || BUNDLE.includes('找不到这篇笔记'));
+
+
+// ── 窄面板布局 · 文档内跳转（2026-10-26 真机）────────────────
+// ① 排序条原来 9 个按钮平铺，340px 面板里被压成竖排单字（"名 称 ↑"）⇒ 改成 select + 单字图标。
+// ② 2026-10-26 方案 B：节头**一行**收纳（排序 + ＋ + ⋯），不再有第二行按钮条。
+//    这条同时守住"别再把一排按钮塞回去"（那正是 340px 面板里被压成竖排的成因）。
+check('笔记节改为单行收纳（⋯ 菜单在，第二行已删除）',
+	VIEW_SRC.includes('notesMenu') && VIEW_SRC.includes('data-kb-notes-menu') && !VIEW_SRC.includes('kb-sortbar'));
+check('⋯ 菜单里含体检/查重/审核/导图（按能力显示）',
+	['体检', '查重', '审核', '思维导图'].every(k => VIEW_SRC.includes("label: \"" + k + "\"")));
+check('节头控件不缩不断行（nowrap）',
+	/setNotesMenu\(\{ x:/.test(VIEW_SRC) && VIEW_SRC.includes('whiteSpace: "nowrap"'));
+// ② 文档内双链原来交给宿主 openLink，而宿主只改了自己的状态 ⇒ 界面没反应。
+check('文档内双链由视图自己打开（loadIntoView）',
+	VIEW_SRC.includes('loadIntoView') && VIEW_SRC.includes('if (!loadIntoView(p))'));
+
+
+// ── 右栏 C+D（2026-10-26）：多文档 Tab + 极简细条 ──────────────
+// 动机：点树就覆盖当前正文（丢滚动位置、丢掉对照）；标题行随正文滚走（中段不知道在看哪篇）。
+check('右栏有文档 Tab 条（开关 + 切换）',
+	VIEW_SRC.includes('data-kb-tabs') && VIEW_SRC.includes('switchTab') && VIEW_SRC.includes('closeTab'));
+check('Tab 切换保留现场（滚动位置 + 草稿）',
+	VIEW_SRC.includes('tabSnapRef') && VIEW_SRC.includes('pendingScrollRef'));
+check('关掉有未保存改动的 Tab 会二次确认',
+	/确定关闭/.test(VIEW_SRC) && VIEW_SRC.includes('closeTab'));
+check('细条常驻：折叠面包屑 + 预览/编辑分段 + ⋯',
+	VIEW_SRC.includes('data-kb-docbar') && VIEW_SRC.includes('data-kb-mode') && VIEW_SRC.includes('fileNameOf'));
+check('阅读进度条 + 回到顶部',
+	VIEW_SRC.includes('docProgress') && VIEW_SRC.includes('回到顶部'));
+
 console.log('\n' + '='.repeat(60));
 if (failed.length) {
 	console.log(`✗ ${failed.length} 项失败 / 共 ${pass + failed.length} 项`);

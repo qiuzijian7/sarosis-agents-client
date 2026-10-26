@@ -466,6 +466,77 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 			problems.push('buildSidebar: 无记录时必须全部平铺（回落契约被破坏 ✗）');
 		}
 		notes.push('client.workspaces.js: buildSidebar 分组/回落契约断言通过');
+		// ── ⑤-b 空会话过滤（2026-10-26 用户报障「工作区下有大量空会话」）────────────────
+		// 病根：dsh 客户端每次启动都会在「最近用的工作区」里建一条**空会话**
+		//   （官方 restoreSelection → connectWorkspace → connectBlank → sessions.create，
+		//   id 形如 session-<uuid>、无任何消息、标题只能回落到 id）⇒ 侧栏被空壳刷屏。
+		//   官方侧栏自己也是按 `!row.blank` 过滤的 ⇒ 我们同口径（当前会话例外）。
+		{
+			const blankRows = t.buildSidebar({
+				workspaces: [{ workspaceId: 'w1', path: 'G:/WS/client', sessionIds: ['b1', 's1', 'b2'] }],
+				records: [{ id: 'ide-1', name: 'Saros', roots: [{ path: 'G:/WS/client', name: 'client', isPrimary: true }] }],
+				sessionsById: {
+					s1: { title: 'A', updatedAt: 300 },
+					b1: { blank: true, updatedAt: 250 },
+					b2: { blank: true, updatedAt: 200 },
+				},
+				archivedIds: [],
+				currentSessionId: 'b1',
+			});
+			const bg = blankRows.find((r) => r.kind === 'group');
+			const ids = bg ? bg.sessions.map((s) => s.id) : [];
+			if (ids.indexOf('b2') >= 0) { problems.push('buildSidebar: 空会话（blank）必须隐藏（用户报「工作区下大量空会话」）✗'); }
+			if (ids.indexOf('s1') < 0) { problems.push('buildSidebar: 有内容的会话必须照常显示 ✗'); }
+			if (ids.indexOf('b1') < 0) { problems.push('buildSidebar: 当前会话即使是空壳也必须显示 ✗'); }
+			if (!bg || bg.hiddenBlanks !== 1) { problems.push(`buildSidebar: 隐藏的空会话数应被计数为 1，实际 ${bg ? bg.hiddenBlanks : '(无)'} ✗（不计数=装作没有）`); }
+			notes.push('client.workspaces.js: 空会话过滤（blank 位 + 当前会话例外 + 计数）断言通过');
+		}
+		// ── ⑤-c ＋ 按钮（2026-10-26 用户报障「窗口模式点了没反应」）────────────────────
+		// 三处**各自都能静默失败**的坑（任一回归 ⇒ 用户只看到"点了没反应"）：
+		//   ① 读未声明的 `ctx.remote.directoryPicker`（官方声明了它，我们没声明 ⇒ 读不到）
+		//      ⇒ 必须走**已声明**的 `ctx.uiWorkspace` 的 pickDirectory。
+		//   ② 读 `res.value.path`（官方 pickDirectory 返回的是**路径字符串**）⇒ 恒 undefined。
+		//   ③ 失败只写从不渲染的 state.addWorkspaceError ⇒ 100% 静默（窗口模式没有宿主桥，
+		//      连 bridge.notify 都是空转）⇒ 必须**就地渲染**。
+		{
+			// 只扫**代码**（注释里可以引用旧写法来解释病根，不该把守卫带红）✓
+			const code = String(src).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+			const must = [
+				['const uw = ctx.uiWorkspace;', '＋按钮必须走**已声明**的 uiWorkspace 服务（const uw = ctx.uiWorkspace;）'],
+				['uw.pickDirectory(', '＋按钮必须调 uiWorkspace.pickDirectory（官方同一条链）'],
+				['ctx.get("workspaces")', 'workspaces 服务必须运行时取（ctx.get）'],
+				['setWsMsg', '＋按钮的结果必须进 React state（否则不重渲染=看不见）'],
+				['添加工作区失败', '失败文案必须出现在页面上（不许只写 state）'],
+				// ★ 2026-10-26：从 .code-workspace 导入多根工作区（页面 → 桥 → IDE）
+				['importCodeWorkspace', '必须提供「从 .code-workspace 导入」这个动作'],
+				['bridge.importCodeWorkspace', '导入必须走宿主桥（页面读不了文件、也没有文件选择器）'],
+				['data-vssaros-ws-menu', '＋ 菜单必须有标记（点外面要能关掉它 ⇒ 靠这个选择器）'],
+			];
+			for (const [needle, why] of must) {
+				if (code.indexOf(needle) < 0) { problems.push(`client.workspaces.js: 缺「${needle}」—— ${why} ✗`); }
+			}
+			const banned = [
+				['ctx.remote.directoryPicker', '不能读未声明的 remote.directoryPicker（恒读不到 ⇒ 点了没反应）'],
+				['.value.path', '不能读 res.value.path（官方返回的是路径字符串 ⇒ 恒 undefined）'],
+			];
+			for (const [needle, why] of banned) {
+				if (code.indexOf(needle) >= 0) { problems.push(`client.workspaces.js: 出现「${needle}」—— ${why} ✗`); }
+			}
+			notes.push('client.workspaces.js: ＋按钮（取法 / 返回形状 / 失败可见）断言通过');
+		}
+		// ── ⑤-d 页脚口径必须与侧栏一致（2026-10-26）────────────────────────────────────
+		// 侧栏隐藏了空会话 ⇒ 页脚若还报"1931 条会话" ⇒ 屏幕上同时出现两个互相矛盾的数字 ✗。
+		{
+			const fSrc = fs.readFileSync(path.join(LIB, 'client.footer.js'), 'utf8');
+			const fCode = String(fSrc).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+			for (const [needle, why] of [
+				['blank === true', '页脚必须按 blank 位把空会话剔出计数'],
+				['空会话已隐藏', '页脚必须如实写出被隐藏的空会话条数'],
+			]) {
+				if (fCode.indexOf(needle) < 0) { problems.push(`client.footer.js: 缺「${needle}」—— ${why} ✗`); }
+			}
+			notes.push('client.footer.js: 页脚口径（剔空会话 + 如实披露）断言通过');
+		}
 		// ── client.workspace.js：hero 面板「只认 chip 发起的 open」（2026-10-17 真机 bug）──────
 		// 病根：官方 hero 的 `open` 有两条来源（chip 点击 / 输入框 inert 的 onRequestWorkspace），
 		// props 不带来源 ⇒ 我们的 540px 面板被"点输入框"打开、压住会话 ✗。判定抽成 isOpenFromAnchor。

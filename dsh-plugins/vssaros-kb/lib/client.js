@@ -89,7 +89,7 @@ window.__ModuleLoader__.load({
 		const STYLE_ID = 'vssaros-kb-workbench-layout';
 		// ★ 2026-10-22（工作台 UI 统一，方案稿 §6.19）：**通用视觉交给共享层**（宿主注入的 `wb-*`），
 		//   这里只留知识库特有的东西：文件树行、检索命中行、正文列、新建/重命名的输入行。
-		// ⚠ 原来写的 `--dsw-alias-border-default` / `-label-link` / `-font-family-monospace` / `-state-focus-primary`
+		// ⚠ 原来写的 `--dsw-alias-border-l2` / `-label-link` / `-font-family-monospace` / `-state-focus-primary`
 		//   **都不存在** ⇒ 一律回落硬编码兜底 ⇒ 从没跟随过主题 ✗（迁移时统一换成真实令牌 / `--wb-*`）。
 		const CSS = `
 .wb-kbt .wb-field-row input { flex:1 1 auto; min-width:0; }
@@ -1053,6 +1053,13 @@ window.__ModuleLoader__.load({
 						))
 			;
 		}
+		/**
+		 * `/api/doc` 的 ETag 备忘（2026-10-26，P2）：`uri → { etag, doc }`。
+		 * 命中 304 时直接复用上次解析好的对象 —— 省一次 JSON 传输与解析；
+		 * 与「服务端磁盘缓存」配合，二次打开基本只剩一次状态码往返。
+		 */
+		const docEtagCache = new Map();
+
 		function KbWorkbenchPanel() {
 			const hostRef = react.useRef(null);
 			const disposeRef = react.useRef(null);
@@ -1168,10 +1175,35 @@ window.__ModuleLoader__.load({
 					const base = String(vaultRef.current.dir || '').replace(/\\/g, '/').replace(new RegExp('/+$'), '');
 					const isAbs = /^[A-Za-z]:[\\/]/.test(raw) || raw.startsWith('/');
 					const fetchDoc = async (uri) => {
-						const r = await fetch('/x/kb/api/doc?uri=' + encodeURIComponent(uri), { credentials: 'same-origin' });
+						// ★ 2026-10-26（P2）：带 `If-None-Match` 取正文。命中 304 时直接复用上次解析好的对象
+						//   （省一份 JSON 传输 + 一次 JSON.parse；渲染 HTML 由服务端磁盘缓存兜着，两边配合才是"打开即出"）。
+						const prev = docEtagCache.get(uri);
+						const r = await fetch('/x/kb/api/doc?uri=' + encodeURIComponent(uri), {
+							credentials: 'same-origin',
+							headers: prev && prev.etag ? { 'if-none-match': prev.etag } : undefined,
+						});
+						if (r.status === 304 && prev) { return prev.doc; }
 						const payload = await r.json().catch(() => null);
 						const t = payload && (payload.text ?? payload.content ?? payload.body);
-						return { ok: typeof t === 'string', text: t, error: payload && payload.error, mtime: (payload && payload.mtime) || 0 };
+						// ★★ 2026-10-26（真机：面板右栏"未渲染，按纯文本显示"）：
+						//   服务端 `/api/doc` 早就回了 `html`（markdown-it 渲染结果），但这里**只取了 text**
+						//   ⇒ 视图拿不到 html ⇒ 走纯文本降级（正是那句提示的来历）。
+						//   ⇒ html / math 必须原样带出来，否则前面所有渲染工作等于白做。
+						const mapped = {
+							ok: typeof t === 'string',
+							text: t,
+							error: payload && payload.error,
+							mtime: (payload && payload.mtime) || 0,
+							html: payload && typeof payload.html === 'string' ? payload.html : '',
+							math: !!(payload && payload.math),
+						};
+						// 只有"读成功且有 etag"才记；失败不记（否则下次会拿缓存冒充成功）
+						if (mapped.ok && payload && typeof payload.etag === 'string' && payload.etag) {
+							docEtagCache.set(uri, { etag: payload.etag, doc: mapped });
+						} else if (!mapped.ok) {
+							docEtagCache.delete(uri);
+						}
+						return mapped;
 					};
 					const candidates = [];
 					const first = isAbs ? raw : (base ? base + '/' + raw : raw);
@@ -1257,6 +1289,36 @@ window.__ModuleLoader__.load({
 				// 导图（.canvas）：能力位 —— 渲染实现已迁到**视图层**（三端共用），
 				// 面板只声明「服务端有 /api/canvas」即可。
 				canvas: true,
+				// 打开站外链接（2026-10-26：正文里的 https 链接点了没反应 —— webview 导航被宿主拦掉）
+				// 被弹窗拦截时**复制链接**并提示，至少不是静默失败
+				openUrl: (u) => {
+					const url = String(u);
+					// ★ 2026-10-26（真机：点超链接没反应）：
+					//   ① 带 noopener 时 window.open 规范上可能返回 null ⇒ 不能据此判断"被拦"；
+					//   ② Electron 宿主常用 setWindowOpenHandler 静默 deny：返回对象非空但窗口立刻关闭；
+					//   ⇒ 统一延迟 500ms 复查 closed，被拦就**复制链接 + 明确提示**（保证"有反应"）。
+					let w = null;
+					try { w = window.open(url, '_blank'); } catch { w = null; }
+					window.setTimeout(() => {
+						let blocked = false;
+						try { blocked = !w || w.closed === true; } catch { blocked = true; }
+						if (!blocked) { return; }
+						try {
+							if (navigator.clipboard && navigator.clipboard.writeText) { void navigator.clipboard.writeText(url); }
+						} catch { /* 剪贴板不可用不影响提示 */ }
+						window.alert('宿主没有打开新窗口（可能被安全策略拦截）。链接已复制：' + String.fromCharCode(10) + url);
+					}, 500);
+				},
+				// 在系统文件管理器里定位（2026-10-26）：交给服务端 spawn，渲染进程没有外壳权限
+				reveal: (p) => {
+					fetch('/x/kb/api/reveal', {
+						method: 'POST', credentials: 'same-origin',
+						headers: { 'content-type': 'application/json' },
+						body: JSON.stringify({ uri: String(p) }),
+					}).then(r => r.json()).then(b => {
+						if (!b || b.ok === false) { window.alert('打开资源管理器失败：' + String((b && b.error) || '未知原因')); }
+					}).catch(e => window.alert('打开资源管理器失败：' + String((e && e.message) || e)));
+				},
 				// 笔记区标题行的四个动作（视图里有按钮；宿主不提供就整块不渲染）
 				runLint: () => { setSettingsAuto('health'); setPane('settings'); },
 				runDedup: () => { setSettingsAuto('dedupe'); setPane('settings'); },
@@ -1520,3 +1582,17 @@ function install(ctx) {
 // 2026-10-25 (20): touch after canvas moved to view layer
 // 2026-10-25 (21): touch after legacy action cleanup
 // 2026-10-25 (22): touch after /x/kb/doc page rendering
+// 2026-10-26 (1): touch after loadDoc html passthrough
+// 2026-10-26 (2): touch after openUrl wiring
+// 2026-10-26 (3): touch after long-doc perf + link rel
+// 2026-10-26 (4): touch after ETag/304 (doc route)
+// 2026-10-26 (5): touch after page CSP + external boot scripts
+// 2026-10-26 (6): touch after search highlight
+// 2026-10-26 (7): touch after editor shortcuts (list continue / save / indent)
+// 2026-10-26 (8): touch after codemirror editor (on-demand bundle)
+// 2026-10-26 (9): touch after mermaid + doc cache + link feedback
+// 2026-10-26 (10): touch after pele (server-side mermaid)
+// 2026-10-26 (11): touch after context menu + reveal + pele path fix
+// 2026-10-26 (12): touch after sortbar layout + in-view wikilink open
+// 2026-10-26 (13): touch after plan B (single-row section head + overflow menu)
+// 2026-10-26 (14): touch after right-pane C+D (tabs + thin bar)

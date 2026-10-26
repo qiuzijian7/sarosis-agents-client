@@ -48,7 +48,7 @@ window.__ModuleLoader__.load({
 				'padding:8px 10px;font:inherit;line-height:1.55}',
 				'.xb-area{min-height:112px;resize:vertical}.xb-editor{min-height:220px}',
 				'.xb-input:focus-visible,.xb-area:focus-visible,.xb-select:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#4d9cf7);outline-offset:1px}',
-				'.xb-primary{background:var(--xb-brand);border-color:var(--xb-brand);color:var(--dsw-alias-label-on-brand,#fff)}',
+				'.xb-primary{background:var(--xb-brand);border-color:var(--xb-brand);color:var(--dsw-alias-label-primary-foreground,#fff)}',
 				'.xb-titles{display:grid;gap:6px}',
 				'.xb-title-choice{text-align:left;border:1px solid var(--dsw-alias-border-l1,#eceef2);border-radius:var(--wb-r-sm,6px);',
 				'background:var(--dsw-alias-bg-layer-2,#fff);color:var(--dsw-alias-label-primary,#111);padding:8px 10px;cursor:pointer}',

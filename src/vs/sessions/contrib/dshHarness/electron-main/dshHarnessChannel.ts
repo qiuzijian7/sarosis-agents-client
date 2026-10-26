@@ -42,6 +42,8 @@ import { ideWindowGuardAction, validateSetIdeWindowHiddenArgs } from '../common/
 // ★ 2026-10-24（用户口径：app 开关三条规则）—— 关窗收场的判据只在这一处，主进程两个关窗路径都调它
 import { decideDesktopWindowClose, decideIdeWindowClose } from '../common/dshAppLifecycle.js';
 import { listBundledPlugins, mergeBundledWithInstalled } from './dshBundledPlugins.js';
+// ★ 2026-10-26：IDE → dsh 的**推送**通道（媒体库真源在 dsh 侧，ComfyUI 产出在 IDE 侧）
+import { DshHostHttp } from './dshHostHttp.js';
 import { hasWorkbenchClient, IVssarosPluginManifest, isBuiltinPluginName, tryParseVssarosManifest } from '../common/vssarosPluginManifest.js';
 import { DshPluginActivationStore } from './dshPluginActivationStore.js';
 import { DshIdeRequestGate } from './dshIdeRequestGate.js';
@@ -136,6 +138,13 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 	 * 状态在**主进程**（那边才观察得到窗口事件）；渲染进程用通道命令同步"我们藏起来了"这个事实 ✓。
 	 */
 	private _ideWindowGuard: { windowId: number; dispose: () => void } | undefined;
+	/**
+	 * IDE 主窗口是不是**我们**为 desktop 模式藏起来的（2026-10-26）。
+	 *
+	 * 用途：这条为真时"把桌面窗口提到前台"才是用户想要的（屏幕上只有桌面窗口）；
+	 * 用户主动回到 IDE 模式后必须为假 ⇒ 绝不跟他抢焦点 ✗。
+	 */
+	private _ideHiddenByUs = false;
 	/**
 	 * 应用是不是**正在退出**（`before-quit` 之后）。
 	 *
@@ -359,6 +368,67 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 	private readonly _bridgeInfo: { version?: string; peerRange?: string };
 	private readonly _workspaces: DshWorkspaceSync;
 	private _connectionGen = 0;
+
+	/**
+	 * IDE → dsh 的 HTTP 客户端（懒取连接：Host 会重启换端口，缓存 connection 必然打到旧端口）。
+	 * 目前只用于媒体库推送，见 {@link pushMediaToHost}。
+	 */
+	private readonly _hostHttp = new DshHostHttp(() => this._supervisor.connection, this._logService);
+
+	/**
+	 * 把一件**IDE 侧刚落库**的媒体资产推给 dsh 媒体库（`POST /x/media/api/import`）。
+	 *
+	 * 为什么要它：媒体库真源在 dsh 侧（`media-store/`），但 ComfyUI / 工作流的产出是 IDE 主进程
+	 * 写进自己的 `media.db` 的。以前只靠 dsh 的 `ideSync` 在"打开页面 / 显式 sync"时**拉**，
+	 * 于是页面开着时新图不出现、真源里也迟迟没有。
+	 *
+	 * ⚠ 三条不许破的约定：
+	 *  1. **绝不抛**：IDE 侧写入是主路径，dsh 不在 / 认证失败 / 超时都只记日志（dsh 下次 sync 仍会收编）；
+	 *  2. `originId` 用 **IDE 那条资产 id**（与 `ideSync` 同一约定）⇒ 推成功后 sync 不会再插一条；
+	 *  3. 只有"有本地字节"的才推：仅引用资产（`/view?filename=…`）交给 `ideSync` 按 URL 收。
+	 */
+	async pushMediaToHost(input: {
+		readonly id: string;
+		readonly filePath?: string;
+		readonly fileName?: string;
+		readonly kind?: string;
+		readonly mime?: string;
+		readonly ext?: string;
+		readonly provider?: string;
+		readonly metaJson?: string;
+	}): Promise<void> {
+		if (!this._supervisor.connection) { return; }          // Host 没起：静默跳过（下次 sync 兜底）
+		const filePath = input.filePath;
+		if (!filePath) { return; }                              // 仅引用资产没有字节
+		let bytes: Buffer;
+		try {
+			bytes = await fsp.readFile(filePath);
+		} catch (err) {
+			this._logService.warn(`[dshHarness] media push 读文件失败（跳过）：${filePath} ${String((err as Error)?.message ?? err)}`);
+			return;
+		}
+		if (!bytes.length) { return; }
+		const ext = input.ext ?? (filePath.includes('.') ? filePath.slice(filePath.lastIndexOf('.') + 1) : undefined);
+		const reply = await this._hostHttp.postJson('/x/media/api/import', {
+			base64: bytes.toString('base64'),
+			// ★ 与 ideSync 同一约定（IDE 资产 id）⇒ 幂等：推成功过的话 sync 会命中 getByOrigin 直接跳过
+			originId: input.id,
+			kind: input.kind ?? 'image',
+			mime: input.mime,
+			ext,
+			provider: input.provider ?? 'local',
+			// `source` 与 `ideSync` 同口径：comfyui 的记 comfyui，其余（工作流/KB 上传/下载落盘）记 ide
+			source: input.provider === 'comfyui' ? 'comfyui' : 'ide',
+			fileName: input.fileName ?? (filePath.split(/[\\/]/).pop() ?? undefined),
+			metaJson: input.metaJson,
+			createdAt: Date.now(),
+		}, 30_000);
+		if (reply.ok) {
+			this._logService.info(`[dshHarness] media push ok id=${input.id} bytes=${bytes.length}`);
+		} else {
+			this._logService.warn(`[dshHarness] media push 失败（IDE 侧已入库，dsh 稍后 sync 会收编）：status=${reply.status} ${reply.text.slice(0, 160)}`);
+		}
+	}
 
 	/**
 	 * 连接变化时：先把连接交给视图池（页面立刻开始加载），同时经控制桥注册各窗口的工作区
@@ -662,15 +732,43 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 			}
 			this._logService.info(`[dshHarness] desktop 模式：IDE 主窗口被${event === 'show' ? '显示' : '聚焦'} ⇒ 立刻再藏起来（desktop 模式下它不该露面 ✗）`);
 			win.hide();
+			// ★ 2026-10-26：藏回去之后**必须把焦点交还桌面窗口**。只 hide 时，系统会把前台交给
+			//   z 序里的下一扇窗口 —— 常常是别的应用（用户按 F5 时所在的编辑器）⇒ 桌面窗口被压到后面，
+			//   用户看到的就是"F5 后没有打开 desktop 窗口"✗（真机 2026-10-26 21:18:00：window 2 BLUR 后
+			//   再没拿回焦点，直到用户 50s 后自己从任务栏点出来）。此刻本应用刚拿过前台 ⇒ 交接一定成功 ✓。
+			this._raiseDesktopWindow(windowId, `IDE 主窗口被${event === 'show' ? '显示' : '聚焦'}后压回`);
 		};
 		const onShow = () => rehide('show');
 		const onFocus = () => rehide('focus');
 		win.on('close', onClose);
 		win.on('show', onShow);
 		win.on('focus', onFocus);
+		// ★ 2026-10-26：hidden=true 只在「启动开窗成功 ⇒ 藏 IDE」时下发。
+		//   F5 由后台启动器拉起（preLaunchTask → node → exe），用户此时多半还在编辑器里操作 ⇒
+		//   Windows 前台锁让新窗口**建在后面**、只闪任务栏（真机 2026-10-26 21:07 那次：桌面窗口
+		//   一次焦点都没拿到，直到用户 20s 后自己点出来）⇒ 主动提一次 ✓。
+		//   ⚠ **必须轮询**：真机 21:59:05.3 装守卫时辅助窗口已建（21:59:04.78）但**还不可见**
+		//   （页面要 21:59:25.7 才 materialize）⇒ 只提一次的写法落空，窗口被别的窗口盖住 ✗
+		//   （用户报"仍然没有显示 desktop 窗口"）⇒ 8s 内每 300ms 找一次，拿到焦点即收工。
+		let raiseTimer: NodeJS.Timeout | undefined;
+		this._ideHiddenByUs = hidden;
+		if (hidden) {
+			let tries = 0;
+			raiseTimer = setInterval(() => {
+				tries++;
+				if (this._raiseDesktopWindow(windowId, '启动：IDE 已藏，桌面窗口提到前台') || tries >= 26) {
+					clearInterval(raiseTimer);
+					raiseTimer = undefined;
+				}
+			}, 300);
+		}
 		this._ideWindowGuard = {
 			windowId,
 			dispose: () => {
+				if (raiseTimer) {
+					clearInterval(raiseTimer);
+					raiseTimer = undefined;
+				}
 				win.off('close', onClose);
 				win.off('show', onShow);
 				win.off('focus', onFocus);
@@ -680,6 +778,54 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 		if (!hidden) {
 			this._logService.info('[dshHarness] desktop 守卫：IDE 主窗口该露着了（只保留"关窗不带走桌面窗口"这条）');
 		}
+	}
+
+	/**
+	 * 把桌面窗口提到最前并尽量给它焦点（desktop 模式，2026-10-26）。
+	 *
+	 * 候选：优先「承载 dsh 视图的窗口」（`desktopWindowsOtherThan`，最准）；启动那一刻视图可能还没
+	 * attach ⇒ 退到「非 IDE 主窗口的其它窗口」（即刚建好的桌面窗口壳）。只挑**可见**的。
+	 *
+	 * 为什么要"置顶来回切一次"：Windows 前台锁下，后台进程的 `focus()` / `HWND_TOP` 会被系统拒绝
+	 * （只闪任务栏）；切到 topmost 再切回来不受这条限制 ⇒ 至少保证窗口**在最上层看得见** ✓，
+	 * 能拿到前台时 `focus()` 也会顺带生效。
+	 */
+	/**
+	 * @returns `true` = 已经处理完（提到前台 / 它已经是前台）⇒ 调用方可以停止重试。
+	 */
+	/** @param preferred 已知就是桌面窗口那一扇（例如刚 attach 的视图所在窗口）⇒ 优先提它。 */
+	private _raiseDesktopWindow(ideWindowId: number, reason: string, preferred?: BaseWindow): boolean {
+		const ideWins = new Set<BaseWindow>();
+		for (const w of this._windowsMainService.getWindows()) {
+			if (w.win) {
+				ideWins.add(w.win);
+			}
+		}
+		const candidates: BaseWindow[] = [
+			...(preferred ? [preferred] : []),
+			...this._views.desktopWindowsOtherThan(ideWindowId),
+			...BaseWindow.getAllWindows().filter(w => !ideWins.has(w)),
+		].filter(w => !w.isDestroyed() && w.isVisible());
+		const desk = candidates[0];
+		if (!desk) {
+			return false;   // 还没可见 ⇒ 继续等（启动期窗口要十几秒才 materialize）
+		}
+		if (desk.isFocused()) {
+			return true;    // 已经是前台 ⇒ 收工
+		}
+		try {
+			if (desk.isMinimized()) {
+				desk.restore();
+			}
+			desk.setAlwaysOnTop(true);
+			desk.focus();
+			desk.setAlwaysOnTop(false);
+		} catch (e) {
+			this._logService.warn(`[dshHarness] desktop 模式：桌面窗口提到前台失败（${reason}）：${String((e as Error)?.message ?? e)}`);
+			return true;
+		}
+		this._logService.info(`[dshHarness] desktop 模式：桌面窗口 ${desk.id} 提到前台（${reason}；focused=${desk.isFocused()}）`);
+		return true;
 	}
 
 	private async _discover(policy: IDshUpdatePolicy, start: IDshHostStartOptions): Promise<IDshUpdateDiscoveryResult> {
@@ -1026,6 +1172,12 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 					throw new Error('[dshHarness] setWindowWorkspaces: windowId required');
 				}
 				return this._workspaces.setWindowWorkspaces(a.windowId, a.paths);
+			}
+			case DshHarnessChannelCommand.EnsureWorkspaces: {
+				// ★ 2026-10-26：「从 .code-workspace 导入多根工作区」—— 登记**与窗口无关**的一批根。
+				//   不能走 SetWindowWorkspaces（那条是按窗口**整体替换**的 ⇒ 会把窗口自己的目录顶掉 ✗）。
+				const a = arg as { paths: unknown };
+				return this._workspaces.ensurePaths(a?.paths);
 			}
 			case DshHarnessChannelCommand.SetWorkspaceContext: {
 				// 运行期工作区上下文（2026-10-17）：形状先在这里卡住（畸形载荷不出进程 ✓），
@@ -1577,6 +1729,16 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 				this._views.setVisible(a.viewId, a.visible);
 				if (a.visible && a.focus) {
 					this._views.focus(a.viewId);
+				}
+				// ★ 2026-10-26：桌面窗口要十几秒才 materialize ⇒ "建好就提一次"会落空（用户报
+				//   "仍然没有显示 desktop 窗口"）。视图 attach 在这一刻发生 ⇒ 再提一次 ✓
+				//   （只在"IDE 被我们藏着"的 desktop 模式里提，正常 IDE 模式绝不抢焦点 ✗）。
+				if (a.visible && this._ideHiddenByUs) {
+					const guard = this._ideWindowGuard;
+					const desk = this._views.ownerWindowOfView(a.viewId);
+					if (guard && desk) {
+						this._raiseDesktopWindow(guard.windowId, '桌面视图已就位 ⇒ 提到前台', desk);
+					}
 				}
 				return;
 			}

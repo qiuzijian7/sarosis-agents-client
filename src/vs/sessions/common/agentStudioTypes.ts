@@ -337,6 +337,17 @@ export interface Agent {
 	 */
 	imageProviderId?: string;
 	skills: string[];
+	/**
+	 * 欢迎卡建议问题（2026-10-26）。
+	 *
+	 * ⚠ 为什么必须在这里声明：`agentMdFormat` 会把 `.agent.md` 里的 `suggestions`
+	 *   解析进 `Partial<Agent>`，而**不声明**的话那个字段在类型层面直接消失 ⇒
+	 *   回写 frontmatter 时只能靠 `as any` 绕开类型检查（实际上照样会丢），
+	 *   结果是"用户在 Agent Studio 改别的字段 ⇒ 建议问题被静默抹掉"。
+	 *   形状以**解析后**为准（`parseStringArray` ⇒ `string[] | undefined`）；
+	 *   YAML 里写成列表或逗号串都认，落库一律是数组。
+	 */
+	suggestions?: string[];
 	tools?: string[];
 	/**
 	 * 启用的工具集 ID 列表。

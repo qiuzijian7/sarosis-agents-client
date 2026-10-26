@@ -534,7 +534,7 @@ if (typeof document !== 'undefined' && typeof console !== 'undefined' && console
 		const STYLE_ID = 'vssaros-memory-workbench-layout';
 		// ★ 2026-10-22（工作台 UI 统一，方案稿 §6.19）：**通用视觉交给共享层**（宿主注入的 `wb-*`），
 		//   这里只留记忆库特有的排版（大数字 hero、草稿列表、错误色）。
-		// ⚠ 原来写的 `--dsw-alias-border-default` / `--dsw-alias-label-link` / `--dsw-alias-font-family-monospace`
+		// ⚠ 原来写的 `--dsw-alias-border-l2` / `--dsw-alias-label-link` / `--dsh-font-family-code-default`
 		//   **都不存在** ⇒ 一律回落硬编码兜底 ⇒ 从没跟随过主题 ✗（迁移时统一换成真实令牌 / 共享层的 `--wb-*`）。
 		const CSS = `
 .wb-mem { overflow:auto; }
@@ -580,9 +580,9 @@ if (typeof document !== 'undefined' && typeof console !== 'undefined' && console
    ⚠ 这段是**模板字符串**里的 CSS，注释只能用 CSS 的 /* *​/ ——
      千万别在里面写反引号，那会提前闭合模板字符串（这一行就踩过）。 */
 .md2 .md2-tier[data-tier="working"] { border-color:var(--dsw-alias-brand-primary, #5aa9e6); color:var(--dsw-alias-brand-primary, #5aa9e6); }
-.md2 .md2-tier[data-tier="episodic"] { border-color:var(--dsw-alias-state-warning-primary, #f0a04b); color:var(--dsw-alias-state-warning-primary, #f0a04b); }
+.md2 .md2-tier[data-tier="episodic"] { border-color:var(--dsw-alias-state-warn-primary, #f0a04b); color:var(--dsw-alias-state-warn-primary, #f0a04b); }
 .md2 .md2-tier[data-tier="semantic"] { border-color:var(--dsw-alias-state-success-primary, #8bc34a); color:var(--dsw-alias-state-success-primary, #8bc34a); }
-.md2 .md2-tier[data-tier="procedural"] { border-color:var(--dsw-alias-state-info-primary, #b07cf0); color:var(--dsw-alias-state-info-primary, #b07cf0); }
+.md2 .md2-tier[data-tier="procedural"] { border-color:var(--dsw-alias-brand-primary, #b07cf0); color:var(--dsw-alias-brand-primary, #b07cf0); }
 .md2 .md2-part { opacity:.75; }
 .md2 .md2-cards { display:flex; flex-wrap:wrap; gap:8px; }
 .md2 .md2-kv { display:flex; gap:8px; align-items:baseline; font-size:var(--wb-f-xs, 12px);
@@ -592,7 +592,7 @@ if (typeof document !== 'undefined' && typeof console !== 'undefined' && console
 .md2 .md2-slot { border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.22)); border-radius:8px; padding:8px 10px; margin-bottom:8px; }
 .md2 .md2-slot-head { display:flex; gap:8px; align-items:center; margin-bottom:4px; }
 .md2 .md2-pre { margin:4px 0 0; padding:8px; border-radius:6px; white-space:pre-wrap; word-break:break-word;
-  background:var(--dsw-alias-bg-l2, rgba(127,127,127,.08)); font-size:11px; max-height:320px; overflow:auto; }
+  background:var(--dsw-alias-bg-layer-2, rgba(127,127,127,.08)); font-size:11px; max-height:320px; overflow:auto; }
 /* 2026-10-24：按**容器**响应（sideview / 右栏只有 320–420px，@media 判不出来） */
 .wb-mem { container-type: inline-size; }
 @container (max-width: 860px) {

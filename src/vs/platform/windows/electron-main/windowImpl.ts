@@ -1318,6 +1318,16 @@ export class CodeWindow extends BaseWindow implements ICodeWindow {
 		if (!this.environmentMainService.isBuilt && !this.environmentMainService.extensionTestsLocationURI) {
 			this._register(new RunOnceScheduler(() => {
 				if (this._win && !this._win.isVisible() && !this._win.isMinimized()) {
+					// ★ 2026-10-26 Saros（用户报"F5 启动后没有打开 desktop 窗口"）：
+					//   隐藏启动（desktop 模式）下这扇窗口**本来就该**是隐藏的，不是"加载出错"。
+					//   不跳过的话，每次 F5 在 +10s 都会 show + Force focus + 开 DevTools ⇒ main 守卫
+					//   再把它藏回去 ⇒ 焦点被交给别的应用、桌面窗口被压到后面（真机日志 2026-10-26 当天
+					//   6 次启动全部在 +10s 出现「IDE 主窗口被显示 ⇒ 立刻再藏起来」+ devtools_app 装载）✗。
+					//   这种模式的"一个窗口都没有"兜底由上面的 45s hiddenStart 负责 ✓。
+					if (this._startHidden) {
+						this.logService.info('window#load: 10s 仍隐藏，但这是隐藏启动（desktop 模式）⇒ 跳过 dev 兜底（不 show、不开 DevTools）');
+						return;
+					}
 					this._win.show();
 					this.focus({ mode: FocusMode.Force });
 					this._win.webContents.openDevTools();

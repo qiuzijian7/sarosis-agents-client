@@ -41,7 +41,10 @@ const h = (md, ctx) => renderMarkdownHtml(md, ctx).html;
 	t('双链解析成 data-wiki 链接', hit.includes('data-wiki="E:/v/笔记/笔记A.md"'));
 	t('双链支持 |别名', hit.includes('>别名</a>'));
 	const miss = h('见 [[不存在]]', { resolveWiki: () => undefined });
-	t('未解析的双链不当链接', miss.includes('kb-wiki-missing') && !miss.includes('data-wiki'));
+	// ⚠ 不能写 `!miss.includes('data-wiki')`：2026-10-26 起缺失双链带 `data-wiki-missing`
+	//   （供视图点击时给反馈），它包含子串 `data-wiki` ⇒ 会误判。判据要盯**链接属性本身**。
+	t('未解析的双链不当链接（但带 data-wiki-missing 以便提示）',
+		miss.includes('kb-wiki-missing') && !miss.includes('data-wiki="') && !miss.includes('data-wiki='));
 }
 // ④ 任务清单（30 处）+ 行号要能对上磁盘行
 {
@@ -89,6 +92,31 @@ const h = (md, ctx) => renderMarkdownHtml(md, ctx).html;
 	t('裸 URL 变链接', h('见 https://example.com/x 结束').includes('href="https://example.com/x"'));
 	// 开头单独的 `---` 会被 frontmatter 规则吃掉，测真分隔线要用两段之间
 	t('分隔线渲染', h('段落一\n\n---\n\n段落二').includes('<hr>'));
+}
+
+
+	// ── 站外链接的安全属性（2026-10-26）──────────────────────────
+	// 三个宿主读同一份 HTML ⇒ 在渲染器里补一次就全覆盖；缺了 rel 等于把 window.opener 交给站外页面。
+	{
+		const r = h('[链接](https://example.com/a)');
+		t('站外链接带 target=_blank', r.includes('target="_blank"'), r.slice(0, 120));
+		t('站外链接带 rel=noopener noreferrer', r.includes('rel="noopener noreferrer"'));
+		const inner = h('[相对](./其他.md)');
+		t('站内相对链接不加 target', !inner.includes('target="_blank"'), inner.slice(0, 120));
+	}
+
+// ── mermaid：服务端渲染成 SVG（2026-10-26）────────────────────
+// 渲染器本身不引 pele（保持纯文本 → HTML），由调用方注入 `renderMermaid`：
+// 这样本守卫能脱离 pele 验证「注入就出 SVG / 不注入就保留源码」两条路径。
+{
+	const md = '```mermaid' + String.fromCharCode(10) + 'graph LR' + String.fromCharCode(10) + 'A-->B' + String.fromCharCode(10) + '```';
+	const plain = renderMarkdownHtml(md).html;
+	t('未注入 renderMermaid 时保留源码块', plain.includes('lang-mermaid') && !plain.includes('kb-mermaid-block'));
+	const withSvg = renderMarkdownHtml(md, { renderMermaid: () => '<svg data-x="1"></svg>' }).html;
+	t('注入后 mermaid 交给 ctx.renderMermaid 并内联 SVG', withSvg.includes('kb-mermaid-block') && withSvg.includes('<svg'));
+	t('渲染成功后不再保留源码块', !withSvg.includes('lang-mermaid'));
+	const failed = renderMarkdownHtml(md, { renderMermaid: () => '' }).html;
+	t('renderMermaid 返回空串时降级为源码（不吞内容）', failed.includes('lang-mermaid') && !failed.includes('kb-mermaid-block'));
 }
 
 console.log('='.repeat(60));

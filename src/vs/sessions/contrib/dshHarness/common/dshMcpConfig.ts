@@ -112,6 +112,14 @@ export function parseMcpServers(
 			continue;
 		}
 		const config = raw as Record<string, unknown>;
+		// ★ 2026-10-26（用户：「连接器每个 item 增加开关」）：
+		//   连接器页的开关写的就是这个字段（`<数据根>/mcp.json` 里那条的 `disabled`）。
+		//   不认它的话开关点了也是白点 —— Host 照旧按这份配置挂载，用户会以为"关不掉"。
+		//   生效时机仍是重启 Host（覆盖层在启动时生成），文案里已经这么告诉用户了。
+		if (config.disabled === true) {
+			skip('已停用（在「工具 → 连接器」里打开开关，然后重启 Host）');
+			continue;
+		}
 		const type = typeof config.type === 'string' ? config.type : '';
 		const unsupported = UNSUPPORTED_TRANSPORTS[type];
 		if (unsupported) {

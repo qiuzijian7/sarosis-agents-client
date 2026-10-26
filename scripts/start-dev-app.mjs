@@ -88,6 +88,20 @@ if (!fs.existsSync(EXE)) {
 //   VsSaros — Desktop 页面）：没有就明确告知，并允许 `DSH_DEV_FORCE_RESTART=1` 直接换掉它。
 // 「屏幕上到底有没有它的窗口」用 Win32 枚举（scripts/has-visible-window.ps1）判定。
 // 不用 CDP：DevToolsActivePort 可能过期 ⇒ 连错端口误判；aux 桌面窗口也没有 MainWindowHandle。
+/**
+ * 把已经在跑的实例的窗口提到最前（2026-10-26）。
+ *
+ * ★ 为什么必须有这一步：F5 走到 SKIP 分支时**不会**起新实例，屏幕上也不会有任何变化；
+ *   而那扇已存在的窗口常常被别的（最大化的）应用窗口盖住 ⇒ 用户看到的就是"按了 F5 毫无反应"
+ *   （本次报障：实例在跑、桌面窗口可见，但被 CodeBuddy 最大化的窗口完全盖住 ✗）。
+ *   ⇒ SKIP 时把它的窗口提上来，让"F5 ⇒ 看到 app"这件事在两种分支下都成立 ✓。
+ */
+const raiseExistingWindow = () => {
+	const ps1 = path.join(HERE, 'raise-dev-window.ps1');
+	const r = spawnSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ps1], { encoding: 'utf8', windowsHide: true, timeout: 20000 });
+	return String(r.stdout || '').trim().split(/\r?\n/).pop() || `NO-OUTPUT(${r.status})`;
+};
+
 const hasVisibleAppWindow = () => {
 	const ps1 = path.join(HERE, 'has-visible-window.ps1');
 	const r = spawnSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ps1], { encoding: 'utf8', windowsHide: true, timeout: 20000 });
@@ -104,10 +118,14 @@ if (running() > 0) {
 	const ageSec = /^\d+$/.test(ageRaw) ? Number(ageRaw) : -1;
 	if (ageSec >= 0 && ageSec < 90) {
 		note(`SKIP a dev instance is still starting (age=${ageSec}s < 90s grace), attach to it`);
+		note(`RAISE ${raiseExistingWindow()}`);
 		process.exit(0);
 	}
 	if (hasVisibleAppWindow()) {
 		note('SKIP a dev instance is already running (visible window present), attach to it');
+		// ★ 2026-10-26：SKIP 也必须让用户**看到**那个已存在的窗口（否则"F5 没反应" ✗）。
+		//   顺带提示"主进程代码比这个实例新"——这类改动只在重启后生效，用户往往不知道 ✗。
+		note(`RAISE ${raiseExistingWindow()}`);
 		process.exit(0);
 	}
 	// ★★ 2026-10-24（用户报「F5 无法启动」）：这里原来只**提示**、不动手，于是 F5 每次都被挡
@@ -307,6 +325,12 @@ const OUT_MIN_FILES = Number(process.env.DSH_DEV_OUT_MIN_FILES) > 0 ? Number(pro
 const watchCount = countWatchProcs();
 const srcNewest = newestUnder(path.join(REPO, 'src'), /\.ts$/);
 const outNewest = newestUnder(path.join(REPO, 'out'), /\.js$/);
+
+// ★ 2026-10-26：SKIP 分支看不到这里（它在上面就 exit 了）⇒ 这条只对"真起了新实例"有效：
+//   `out/` 比本次启动还新 ⇒ watch 刚在编译，本次跑的可能是半新不旧的产物 ⇒ 明确留痕。
+if (outNewest.t > Date.now()) {
+	note(`STALE out/ 比本次启动还新（${outNewest.name}）⇒ watch 正在改产物，看到的行为可能不一致`);
+}
 
 if (watchCount > 0) {
 	note(`WATCH 检测到 ${watchCount} 个 transpile --watch 进程 ⇒ 跳过启动器自己的编译（避免互相清空 out/）`);

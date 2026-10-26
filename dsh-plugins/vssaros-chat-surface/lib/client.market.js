@@ -184,7 +184,7 @@ a.vssWbTitleText:hover { text-decoration:underline; }
 .vssWbStep { border:1px solid var(--dsw-alias-border-l2, #3e3e3e); border-radius:10px; padding:14px 16px; display:flex; flex-direction:column; gap:8px; }
 .vssWbStep strong { font-size:13.5px; }
 .vssWbStep p { margin:0; font-size:12.5px; line-height:1.7; color: var(--dsw-alias-label-secondary, #a3a3a3); }
-.vssWbStepNum { display:inline-grid; place-items:center; width:20px; height:20px; border-radius:50%; background: var(--dsw-alias-accent, #0a84ff); color:#fff; font-size:11px; font-weight:700; }
+.vssWbStepNum { display:inline-grid; place-items:center; width:20px; height:20px; border-radius:50%; background: var(--dsw-alias-brand-primary, #0a84ff); color:#fff; font-size:11px; font-weight:700; }
 .vssWbStepActions { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
 .vssWbStepLink { background:none; border:none; color: var(--dsw-alias-label-secondary, #a3a3a3); text-decoration:underline; cursor:pointer; font-size:12px; padding:0; }
 .vssWbPrompt { width:100%; min-height:180px; resize:vertical; padding:10px; border-radius:8px; border:1px solid var(--dsw-alias-border-l2, #3e3e3e); background: var(--dsw-alias-bg-layer-1, #252526); color: var(--dsw-alias-label-primary, #e6e6e6); font-family: var(--dsw-font-mono, monospace); font-size:12px; line-height:1.6; }
@@ -192,7 +192,7 @@ a.vssWbTitleText:hover { text-decoration:underline; }
 .vssWbSubmitOutcome { font-size:12px; }
 /* ── 2026-10-22：兼容性标记 / 卸载 ─────────────────────────────────────────── */
 .vssWbCompat { font-size:11px; line-height:16px; padding:1px 7px; border-radius:999px; white-space:nowrap; flex:0 0 auto; border:1px solid currentColor; }
-.vssWbCompat[data-status="incompatible"] { color: var(--dsw-alias-state-warning-primary, #e0a43a); }
+.vssWbCompat[data-status="incompatible"] { color: var(--dsw-alias-state-warn-primary, #e0a43a); }
 .vssWbCompat[data-status="ok"] { color: var(--dsw-alias-label-tertiary, #737373); }
 .vssWbCompat[data-status="pending"] { color: var(--dsw-alias-state-business-primary, #4d7cfe); }
 .vssWbLink { background:none; border:none; color: var(--dsw-alias-label-tertiary, #737373); font:inherit; font-size:12px; cursor:pointer; padding:0 2px; text-decoration:underline; flex:0 0 auto; }
@@ -907,7 +907,7 @@ a.vssWbTitleText:hover { text-decoration:underline; }
 					uiState.message ? react.createElement("div", {
 						className: "vssWbNotice", role: uiState.message.kind === "warn" ? "alert" : "status",
 						"data-vssaros-market-message": uiState.message.kind,
-						style: { display: "flex", alignItems: "flex-start", gap: 10, borderColor: uiState.message.kind === "warn" ? "var(--dsw-alias-state-warning-primary, #e0a43a)" : undefined },
+						style: { display: "flex", alignItems: "flex-start", gap: 10, borderColor: uiState.message.kind === "warn" ? "var(--dsw-alias-state-warn-primary, #e0a43a)" : undefined },
 					},
 						react.createElement("span", { style: { flex: "1 1 auto", minWidth: 0, whiteSpace: "pre-wrap", wordBreak: "break-word" } }, uiState.message.text),
 						react.createElement("button", { type: "button", className: "vssWbLink", "aria-label": "关闭消息", onClick: () => { ui.message = null; bumpUi(); } }, "关闭"),

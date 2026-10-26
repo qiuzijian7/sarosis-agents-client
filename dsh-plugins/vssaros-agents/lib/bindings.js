@@ -1,0 +1,525 @@
+// @vssaros/dsh-agents — IM 绑定（P0）
+//
+// ── 这个模块解决什么 ────────────────────────────────────────────────────────
+// 已有的 `vssaros-channels` 插件把「一个 IM 会话 ⇄ 一条匿名 dsh 会话」跑通了，
+// 但它**不认识我们的 bot 和群**。本模块补上那一层：把 **指定的 bot / 群** 与
+// **指定的 IM 会话** 绑起来，双向流转。
+//
+//   IM 平台 ──适配器──> 入站事件 ──> [binding 表] ──> dispatchAgent / dispatchGroup
+//      ▲                                   │                      │
+//      └──────────── 出站（deliver）──── 回复回收 <────────────────┘
+//
+// ── 适配器端口 ──────────────────────────────────────────────────────────────
+// 与 `vssaros-channels/lib/core/ports.js` **同形**（`{ id, name, send(ctx,text) }`），
+// 所以将来飞书适配器可以直接搬过来用，这里的路由一行不改 —— 这就是留这个接缝的目的。
+//
+// ── P0 的范围（明确不做）────────────────────────────────────────────────────
+// · 不做飞书真实适配器（要 app 凭据 + 长连接；P2 接入）
+// · 幂等表只在内存（有界 500 条）—— Host 重启会丢；P2 落盘
+// · 出站只做纯文本分段（图片/卡片 P4）
+//
+// ── 三条安全默认（都是 fail-closed）────────────────────────────────────────
+// ① 白名单为空 ⇒ **拒绝所有**（与 channels 的 allowFrom 口径一致）
+// ② 绑定只能由**人**创建/修改/删除（bot 不能把自己的输出外发到外部 IM）
+// ③ 群聊默认 `mentionPolicy='at'`：没 @ 到 bot 的消息不处理
+import { randomUUID } from 'node:crypto';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+
+import { dataRootOf } from './store.js';
+import { outboxNote } from './outbox.js';
+import { AGENT_MESSAGE_KIND } from './core/relay.js';
+import { clipDispatchText, dispatchModeOf, normalizeActor } from './groups.js';
+
+const FILE_NAME = 'agent-bindings.json';
+
+/** 支持的平台。`loopback` 是**测试/演练**适配器（进程内，不需要真实凭据）。 */
+export const BINDING_PLATFORMS = ['feishu', 'loopback'];
+/** 方向：`in` = 只 IM→我们；`out` = 只我们→IM；`both` = 双向。 */
+export const BINDING_DIRECTIONS = ['both', 'in', 'out'];
+/** 群里什么消息才算给 bot：`at` 只认 @；`all` 全部消息。 */
+export const BINDING_MENTION_POLICIES = ['at', 'all'];
+/** 出站单条长度上限（保守值；飞书实际更大，但分段小一点更容易读）。 */
+export const OUT_SEGMENT_CHARS = 3000;
+/** 入站幂等表容量（有界，避免无限增长）。 */
+export const SEEN_KEEP = 500;
+
+function httpError(status, message) {
+	const e = new Error(message);
+	/* ⚠ 路由层的 catch 读的是 `e.httpStatus`（全插件统一口径）；只设 `status` 会被当成 400。
+	   两个都设，避免以后有人改了一边。 */
+	e.httpStatus = status;
+	e.status = status;
+	return e;
+}
+
+/** 绑定文件路径（单测直接用）。 */
+export function bindingsPathOf(config) {
+	return join(dataRootOf(config), FILE_NAME);
+}
+
+/** 读绑定表（文件不存在 / 解析失败 ⇒ 空表，不抛）。 */
+export async function readBindings(config) {
+	try {
+		const text = await readFile(bindingsPathOf(config), 'utf8');
+		const body = JSON.parse(text);
+		return Array.isArray(body?.bindings) ? body.bindings : [];
+	} catch {
+		return [];
+	}
+}
+
+/** 原子写（tmp + rename；与 groups 同口径 —— 半截文件会让读方拿到空表）。 */
+async function writeBindings(config, bindings) {
+	const root = dataRootOf(config);
+	await mkdir(root, { recursive: true });
+	const text = JSON.stringify({ version: 1, bindings }, null, 2);
+	JSON.parse(text); // 自证合法
+	const target = bindingsPathOf(config);
+	const tmp = target + '.tmp-' + String(process.pid) + '-' + Date.now().toString(36);
+	await writeFile(tmp, text, 'utf8');
+	await rename(tmp, target);
+}
+
+/** 只有人能动绑定（bot 自绑 = 把内部输出外发，属数据外泄面）。 */
+function assertHuman(actor) {
+	if (normalizeActor(actor).kind !== 'human') {
+		throw httpError(403, '只有人能创建/修改/删除 IM 绑定（bot 不能自绑）。');
+	}
+}
+
+/** 把用户输入归一成合法绑定（`existing` 给了就是"局部更新"语义）。 */
+export function normalizeBinding(input, existing) {
+	const cur = existing || {};
+	const pick = (key, allowed, fallback) => {
+		const raw = input?.[key] === undefined ? cur[key] : input[key];
+		const val = String(raw ?? '').trim().toLowerCase();
+		return allowed.includes(val) ? val : fallback;
+	};
+	const platform = pick('platform', BINDING_PLATFORMS, 'loopback');
+	const targetKind = String((input?.targetKind === undefined ? cur.targetKind : input.targetKind) ?? '').trim() === 'group'
+		? 'group' : 'agent';
+	const targetId = String((input?.targetId === undefined ? cur.targetId : input.targetId) ?? '').trim();
+	const chatId = String((input?.chatId === undefined ? cur.chatId : input.chatId) ?? '').trim();
+	const chatType = String((input?.chatType === undefined ? cur.chatType : input.chatType) ?? 'p2p').trim() === 'group'
+		? 'group' : 'p2p';
+	const rawAllow = input?.allowFrom === undefined ? cur.allowFrom : input.allowFrom;
+	const allowFrom = (Array.isArray(rawAllow) ? rawAllow : String(rawAllow ?? '').split(','))
+		.map(s => String(s ?? '').trim()).filter(Boolean);
+	/* 飞书出站凭据（P1 只支持「自定义机器人 webhook」）。
+	   `webhookSecret` 的语义：`undefined` = 保留原值（局部更新时不误清）；`''` = 显式清除。 */
+	const webhookUrl = String((input?.webhookUrl === undefined ? cur.webhookUrl : input.webhookUrl) ?? '').trim();
+	const webhookSecret = input?.webhookSecret === undefined
+		? String(cur.webhookSecret ?? '')
+		: String(input.webhookSecret ?? '');
+	return {
+		webhookUrl,
+		webhookSecret,
+		platform,
+		chatId,
+		chatType,
+		chatName: String((input?.chatName === undefined ? cur.chatName : input.chatName) ?? '').trim(),
+		targetKind,
+		targetId,
+		direction: pick('direction', BINDING_DIRECTIONS, 'both'),
+		mentionPolicy: pick('mentionPolicy', BINDING_MENTION_POLICIES, 'at'),
+		allowFrom,
+		dispatchMode: dispatchModeOf({ dispatchMode: input?.dispatchMode === undefined ? cur.dispatchMode : input.dispatchMode }),
+		enabled: (input?.enabled === undefined ? (cur.enabled === undefined ? true : cur.enabled) : input.enabled) === true,
+	};
+}
+
+/**
+ * 传输层校验（按平台分）：飞书 P1 只支持「自定义机器人 webhook」。
+ * 放在服务端而不是前端 —— 前端能绕过，而"没配 webhook 却以为绑好了"会静默丢消息。
+ */
+function assertTransport(binding) {
+	if (binding.platform !== 'feishu') {
+		return;
+	}
+	if (!binding.webhookUrl) {
+		throw httpError(400, '飞书绑定需要 webhookUrl（P1 只支持「自定义机器人」；应用模式需 app 凭据，P2 再做）。');
+	}
+	if (!/^https?:\/\//i.test(binding.webhookUrl)) {
+		throw httpError(400, 'webhookUrl 必须是 http(s) 地址（在飞书群 → 设置 → 群机器人 → 自定义机器人里拿）。');
+	}
+}
+
+/** 校验（新建/更新共用）：目标必须存在且是合法组合。 */
+async function assertBindingTarget(config, binding, deps) {
+	if (!binding.chatId) {
+		throw httpError(400, 'chatId 不能为空（IM 侧的会话 id）。');
+	}
+	if (!binding.targetId) {
+		throw httpError(400, 'targetId 不能为空（要绑定哪个 bot / 群）。');
+	}
+	const scan = await deps.scanAgents(config);
+	if (binding.targetKind === 'agent') {
+		if (!scan.agents.some(a => String(a.id) === binding.targetId)) {
+			throw httpError(400, `没有这个 bot：${binding.targetId}`);
+		}
+		return;
+	}
+	if (deps.groupExists && !(await deps.groupExists(config, binding.targetId))) {
+		throw httpError(400, `没有这个群：${binding.targetId}`);
+	}
+}
+
+/** 同一 (platform, chatId) 只能绑一个目标 —— 否则入站不知道该给谁。 */
+function assertChatUnique(bindings, binding, selfId) {
+	const dup = bindings.find(b => b.id !== selfId
+		&& b.platform === binding.platform && b.chatId === binding.chatId);
+	if (dup) {
+		throw httpError(409, `这个 IM 会话（${binding.platform}:${binding.chatId}）已经绑给 ${dup.targetKind}:${dup.targetId} 了。`);
+	}
+}
+
+/** 新建绑定。 */
+export async function createBinding(config, input, deps) {
+	assertHuman(input?.actor);
+	const binding = { id: randomUUID(), ...normalizeBinding(input), createdAt: Date.now(), updatedAt: Date.now() };
+	assertTransport(binding);
+	await assertBindingTarget(config, binding, deps);
+	const bindings = await readBindings(config);
+	assertChatUnique(bindings, binding, '');
+	await writeBindings(config, [...bindings, binding]);
+	return { binding, bindings: [...bindings, binding] };
+}
+
+/** 更新绑定（局部字段）。 */
+export async function updateBinding(config, input, deps) {
+	assertHuman(input?.actor);
+	const id = String(input?.id ?? '').trim();
+	const bindings = await readBindings(config);
+	const idx = bindings.findIndex(b => b.id === id);
+	if (idx < 0) {
+		throw httpError(404, `没有这个绑定：${id || '(没给 id)'}`);
+	}
+	const next = { ...bindings[idx], ...normalizeBinding(input, bindings[idx]), updatedAt: Date.now() };
+	assertTransport(next);
+	await assertBindingTarget(config, next, deps);
+	assertChatUnique(bindings, next, id);
+	const out = bindings.slice();
+	out[idx] = next;
+	await writeBindings(config, out);
+	return { binding: next, bindings: out };
+}
+
+/** 删除绑定（`id` 或 `(platform, chatId)` 二选一）。 */
+export async function deleteBinding(config, input) {
+	assertHuman(input?.actor);
+	const id = String(input?.id ?? '').trim();
+	const platform = String(input?.platform ?? '').trim().toLowerCase();
+	const chatId = String(input?.chatId ?? '').trim();
+	const bindings = await readBindings(config);
+	const out = bindings.filter(b => (id ? b.id !== id
+		: !(b.platform === platform && b.chatId === chatId)));
+	if (out.length === bindings.length) {
+		throw httpError(404, '没找到要删的绑定。');
+	}
+	await writeBindings(config, out);
+	return { bindings: out, removed: bindings.length - out.length };
+}
+
+/** 绑定表（带目标显示名，UI 直接用，不用再自己查一遍）。 */
+export async function listBindings(config, deps) {
+	const bindings = await readBindings(config);
+	const scan = await deps.scanAgents(config).catch(() => ({ agents: [] }));
+	const nameOf = new Map(scan.agents.map(a => [String(a.id), String(a.name || a.id)]));
+	return {
+		/* ⚠ 密钥**永不出现在响应里**：只给 `hasSecret`（前端据此显示"已配置/未配置"）。
+		   这一条是硬约束 —— 一旦把 webhookSecret 返回，它就会出现在浏览器 devtools、
+		   截图、以及别人复制走的 JSON 里。 */
+		bindings: bindings.map(({ webhookSecret, ...b }) => ({
+			...b,
+			...(webhookSecret ? { hasSecret: true } : {}),
+			targetName: String(nameOf.get(String(b.targetId)) || b.chatName || b.targetId),
+		})),
+		platforms: BINDING_PLATFORMS,
+	};
+}
+
+/* ── 纯函数：入站该不该处理 ───────────────────────────────────────────────── */
+
+/**
+ * 入站判定。返回 `{ ok, reason }`；`reason` 用于日志/系统提示（不静默丢弃）。
+ *
+ * 判定顺序（先便宜后昂贵，且**安全项优先**）：
+ *   ① 绑定停用 ⇒ disabled
+ *   ② 方向只出不进 ⇒ direction
+ *   ③ 白名单为空 ⇒ no-whitelist（fail-closed，与 channels 一致）
+ *   ④ 发送者不在白名单 ⇒ sender
+ *   ⑤ 群聊且只认 @ 却没 @ 到 ⇒ no-mention
+ */
+export function shouldAcceptInbound(binding, msg) {
+	if (!binding || binding.enabled !== true) {
+		return { ok: false, reason: 'disabled' };
+	}
+	if (binding.direction === 'out') {
+		return { ok: false, reason: 'direction' };
+	}
+	const allow = Array.isArray(binding.allowFrom) ? binding.allowFrom : [];
+	if (!allow.length) {
+		return { ok: false, reason: 'no-whitelist' };
+	}
+	const sender = String(msg?.userId ?? '').trim();
+	if (!allow.includes(sender)) {
+		return { ok: false, reason: 'sender' };
+	}
+	const isGroup = String(msg?.chatType ?? binding.chatType) === 'group';
+	if (isGroup && binding.mentionPolicy === 'at' && msg?.mentionsBot !== true) {
+		return { ok: false, reason: 'no-mention' };
+	}
+	return { ok: true, reason: 'ok' };
+}
+
+/** 入站幂等键（平台消息 id 是唯一的；缺了就退化成时间+内容指纹）。 */
+export function inboundKeyOf(msg) {
+	const platform = String(msg?.platform ?? '').trim();
+	const id = String(msg?.messageId ?? '').trim();
+	if (platform && id) {
+		return `${platform}:${id}`;
+	}
+	return `${platform}:${String(msg?.userId ?? '')}:${String(msg?.content ?? '').slice(0, 32)}`;
+}
+
+/**
+ * 出站分段（纯函数）。
+ * 优先在**换行**处切，避免把一个词/一条命令劈开；找不到换行才硬切。
+ */
+export function splitOutbound(text, limit = OUT_SEGMENT_CHARS) {
+	const s = String(text ?? '');
+	if (!s) {
+		return [];
+	}
+	if (s.length <= limit) {
+		return [s];
+	}
+	const out = [];
+	let rest = s;
+	while (rest.length > limit) {
+		const window = rest.slice(0, limit);
+		const cut = Math.max(window.lastIndexOf('\n'), window.lastIndexOf('。'));
+		const at = cut > limit * 0.5 ? cut + 1 : limit;   // 太靠前就硬切，否则会切出很多碎片
+		out.push(rest.slice(0, at));
+		rest = rest.slice(at);
+	}
+	if (rest) {
+		out.push(rest);
+	}
+	return out;
+}
+
+/** 找 (platform, chatId) 对应的绑定。 */
+export function findBindingForChat(bindings, platform, chatId) {
+	const p = String(platform ?? '').trim().toLowerCase();
+	const c = String(chatId ?? '').trim();
+	return (Array.isArray(bindings) ? bindings : []).find(b => b.platform === p && b.chatId === c) || null;
+}
+
+/** 找某个 bot / 群**启用中的**出站绑定（可能有多条）。 */
+export function findOutboundBindings(bindings, targetKind, targetId) {
+	return (Array.isArray(bindings) ? bindings : []).filter(b => b.enabled === true
+		&& b.direction !== 'in'
+		&& b.targetKind === targetKind
+		&& String(b.targetId) === String(targetId));
+}
+
+/* ── 出站管线（Hub）─────────────────────────────────────────────────────── */
+
+/**
+ * 建 Hub。`deps`：
+ *   · `scanAgents(config)` / `groupExists(config,id)` —— 校验目标
+ *   · `dispatchAgent(config, binding, msg)` —— 入站派给某个 bot（返回 { sessionId, messageId }）
+ *   · `dispatchGroup(config, binding, msg)` —— 入站派给某个群
+ *   · `log(level, msg)`
+ *
+ * 适配器通过 `register(adapter)` 注入；没注册的平台 ⇒ 出站如实失败（不假装成功）。
+ */
+export function createBindingHub(deps) {
+	const adapters = new Map();
+	const seen = [];
+	const seenSet = new Set();
+
+	function log(level, msg) {
+		try { deps.log?.(level, msg); } catch { /* 日志失败不影响主流程 */ }
+	}
+
+	function markSeen(key) {
+		if (seenSet.has(key)) {
+			return false;
+		}
+		seenSet.add(key);
+		seen.push(key);
+		while (seen.length > SEEN_KEEP) {
+			const old = seen.shift();
+			seenSet.delete(old);
+		}
+		return true;
+	}
+
+	async function handleInbound(msg) {
+		const platform = String(msg?.platform ?? '').trim().toLowerCase();
+		const chatId = String(msg?.chatId ?? '').trim();
+		const key = inboundKeyOf({ ...msg, platform });
+		/* 幂等：优先用**跨重启**的存储（`deps.seen`，见 imSeen.js）；
+		   没注入就退回进程内（单测/演练够用，但 Host 重启后会重复处理 —— 那条注释写在 imSeen 里）。 */
+		const firstTime = deps.seen && typeof deps.seen.mark === 'function'
+			? await deps.seen.mark(key)
+			: markSeen(key);
+		if (!firstTime) {
+			return { ok: false, reason: 'duplicate', key };
+		}
+		const bindings = await readBindings(deps.config);
+		const binding = findBindingForChat(bindings, platform, chatId);
+		if (!binding) {
+			return { ok: false, reason: 'unbound', key };
+		}
+		const verdict = shouldAcceptInbound(binding, { ...msg, chatType: msg?.chatType ?? binding.chatType });
+		if (!verdict.ok) {
+			log('info', `入站被拒（${platform}:${chatId}）：${verdict.reason}`);
+			return { ok: false, reason: verdict.reason, key, binding };
+		}
+		try {
+			const r = binding.targetKind === 'group'
+				? await deps.dispatchGroup(deps.config, binding, msg)
+				: await deps.dispatchAgent(deps.config, binding, msg);
+			return { ok: true, reason: 'ok', key, binding, ...r };
+		} catch (e) {
+			log('warn', `入站派发失败（${platform}:${chatId}）：${String(e?.message ?? e)}`);
+			return { ok: false, reason: 'dispatch-error', key, binding, error: String(e?.message ?? e) };
+		}
+	}
+
+	/** 出站：分段 + 逐段发送。返回真实结果（失败不吞）。 */
+	async function deliver(binding, text) {
+		const adapter = adapters.get(String(binding?.platform ?? ''));
+		if (!adapter) {
+			return { ok: false, reason: 'no-adapter', sent: 0, failed: 0, segments: 0 };
+		}
+		const segments = splitOutbound(text);
+		if (!segments.length) {
+			return { ok: true, reason: 'empty', sent: 0, failed: 0, segments: 0 };
+		}
+		const ctx = {
+			sessionKey: `chat:${binding.platform}:${binding.chatId}`,
+			chatId: binding.chatId,
+			chatType: binding.chatType,
+			bindingId: binding.id,
+			/* 平台凭据在这里交给适配器（P1：飞书的 webhook URL 与签名密钥）。
+			   ⚠ 只进内存，不进日志、不进 GET 响应（`listBindings` 会把 secret 挡掉）。 */
+			webhookUrl: binding.webhookUrl || '',
+			webhookSecret: binding.webhookSecret || '',
+		};
+		let sent = 0;
+		let failed = 0;
+		let lastError = '';
+		for (const seg of segments) {
+			try {
+				await adapter.send(ctx, seg);
+				sent += 1;
+			} catch (e) {
+				failed += 1;
+				lastError = String(e?.message ?? e);
+			}
+		}
+		return { ok: failed === 0, reason: failed ? 'send-failed' : 'ok', sent, failed, segments: segments.length, error: lastError };
+	}
+
+	/**
+	 * 回复回收后调用：把这条答复推给**该绑定**对应的 IM 会话。
+	 * `entry` 来自 outbox（`kind:'im'`），里面带着 `bindingId`。
+	 */
+	async function deliverForEntry(entry, text) {
+		if (!entry?.bindingId) {
+			return { ok: false, reason: 'no-binding' };
+		}
+		const bindings = await readBindings(deps.config);
+		const binding = bindings.find(b => b.id === entry.bindingId);
+		if (!binding || binding.enabled !== true || binding.direction === 'in') {
+			return { ok: false, reason: 'binding-inactive' };
+		}
+		return deliver(binding, text);
+	}
+
+	/**
+	 * 把一条答复推给某个 bot / 群的**所有**出站绑定（群镜像用）。
+	 * 返回逐绑定的结果数组 —— 调用方可以把失败写进 deliveries / 日志，不静默。
+	 */
+	async function deliverForTarget(targetKind, targetId, text) {
+		const bindings = await readBindings(deps.config);
+		const targets = findOutboundBindings(bindings, targetKind, targetId);
+		if (!targets.length) {
+			return [];
+		}
+		const out = [];
+		for (const b of targets) {
+			const r = await deliver(b, text);
+			out.push({ bindingId: b.id, platform: b.platform, chatId: b.chatId, ...r });
+		}
+		return out;
+	}
+
+	return {
+		register(adapter) {
+			adapters.set(String(adapter.id), adapter);
+			return adapter.id;
+		},
+		adapters() { return [...adapters.keys()]; },
+		handleInbound,
+		deliver,
+		deliverForEntry,
+		deliverForTarget,
+		/** 仅测试：清空幂等表。 */
+		resetSeen() { seen.length = 0; seenSet.clear(); },
+	};
+}
+
+/* ── 入站派发实现（P0 只做 bot 侧；群侧走既有 postGroupMessage）────────── */
+
+/**
+ * 把一条 IM 文本派给某个 bot 的会话。
+ *
+ * ⚠ 为什么不走 `runs.run({sessionId})`（channels 的做法）：那是给**专用会话**用的，
+ *   会**新开一个回合**；而这里的会话是用户正在 IDE 里用的同一条，必须走
+ *   `steer`/`followup`（与群派发同一套），否则会和交互式回合打架。
+ */
+export async function dispatchImToAgent(config, state, binding, msg, deps) {
+	const agent = (await deps.scanAgents(config)).agents.find(a => String(a.id) === String(binding.targetId));
+	if (!agent) {
+		throw httpError(404, `绑定指向的 bot 不存在：${binding.targetId}`);
+	}
+	const { sessionId } = await deps.ensureSession(config, state, agent);
+	const live = state.agents?.get?.(sessionId);
+	if (!live || (typeof live.steer !== 'function' && typeof live.followup !== 'function')) {
+		throw httpError(503, `会话不在运行，收不了 IM 消息：${sessionId}`);
+	}
+	const who = String(msg?.userName || msg?.userId || 'IM 用户');
+	const where = String(msg?.chatType ?? binding.chatType) === 'group' ? '群' : '私聊';
+	const header = `[${binding.platform} ${where} · ${who}]`;
+	const message = {
+		id: randomUUID(),
+		role: 'user',
+		content: [{ type: 'text', text: `${header}\n${clipDispatchText(String(msg?.content ?? ''))}\n\n你的答复会回传到这个 IM 会话。` }],
+		source: { kind: AGENT_MESSAGE_KIND, from: null, hop: 1, to: agent.id, im: `${binding.platform}:${binding.chatId}` },
+	};
+	if (binding.dispatchMode === 'followup' && typeof live.followup === 'function') {
+		live.followup(message);
+	} else if (typeof live.steer === 'function') {
+		live.steer(message);
+	} else {
+		live.followup(message);
+	}
+	/* outbox 记 `kind:'im'`：回复回收时据 `bindingId` 找回绑定并推回 IM */
+	outboxNote(config, {
+		kind: 'im',
+		sessionId,
+		bindingId: binding.id,
+		messageId: message.id,
+		agentId: String(agent.id),
+		agentName: String(agent.name || agent.id),
+		platform: binding.platform,
+		chatId: binding.chatId,
+	});
+	return { sessionId, messageId: message.id, agentId: String(agent.id), agentName: String(agent.name || agent.id) };
+}

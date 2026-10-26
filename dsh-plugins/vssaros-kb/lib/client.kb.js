@@ -427,7 +427,7 @@ window.__ModuleLoader__.load({
 		const STYLE_ID = 'vssaros-kb-workbench-layout';
 		// ★ 2026-10-22（工作台 UI 统一，方案稿 §6.19）：**通用视觉交给共享层**（宿主注入的 `wb-*`），
 		//   这里只留知识库特有的东西：文件树行、检索命中行、正文列、新建/重命名的输入行。
-		// ⚠ 原来写的 `--dsw-alias-border-default` / `-label-link` / `-font-family-monospace` / `-state-focus-primary`
+		// ⚠ 原来写的 `--dsw-alias-border-l2` / `-label-link` / `-font-family-monospace` / `-state-focus-primary`
 		//   **都不存在** ⇒ 一律回落硬编码兜底 ⇒ 从没跟随过主题 ✗（迁移时统一换成真实令牌 / `--wb-*`）。
 		const CSS = `
 .wb-kbt .wb-field-row input { flex:1 1 auto; min-width:0; }

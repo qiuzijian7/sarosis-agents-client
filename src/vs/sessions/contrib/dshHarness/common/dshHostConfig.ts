@@ -90,6 +90,16 @@ export interface IDshHostConfig {
 	 *   插件按"用户目录同 id 优先"与 `agentsRoot` 合并 ✓。
 	 */
 	readonly agentsBuiltinRoot?: string;
+	/**
+	 * IM（飞书）应用凭据 —— 「入站」长连接用（2026-10-27）。
+	 *
+	 * 来自 IDE 设置 `sessions.channel.feishu.appId/appSecret`（MACHINE scope）。
+	 * 两项**都有**才写进 `vssaros-agents` 行的 `config.feishu`；缺一项就不写
+	 * （半份凭据只会让 Host 反复报 unavailable，反而更难判断）。
+	 * ⚠ 只服务入站；出站用每个绑定自己的 webhook URL，不需要这两项。
+	 */
+	readonly imFeishuAppId?: string;
+	readonly imFeishuAppSecret?: string;
 	/** 技能目录（须真实存在；调用方过滤，渲染器不查盘）。⚠ **不含内置** —— 内置走下面的 `bundledSkillDir`。 */
 	readonly skillDirs?: readonly string[];
 	/**
@@ -231,11 +241,17 @@ export function renderHostOverlays(config: IDshHostConfig): readonly IDshHostOve
 	}
 	const agentsRoot = trimmed(config.agentsRoot);
 	const agentsBuiltinRoot = trimmed(config.agentsBuiltinRoot);
-	if (agentsRoot || agentsBuiltinRoot) {
+	const imFeishuAppId = trimmed(config.imFeishuAppId);
+	const imFeishuAppSecret = trimmed(config.imFeishuAppSecret);
+	if (agentsRoot || agentsBuiltinRoot || (imFeishuAppId && imFeishuAppSecret)) {
 		// 模块自身的兜底数据根是 `~/.vssaros`，而 dev 实例是 `~/.vssaros-dev` ⇒ 不注入时 dev 会把**生产**的
 		// agent 列进聊天框（2026-10-11 实测）。注入后 dev / 生产各读各的，与 IDE 的 `_getSarosAgentsDir()` 同源。
 		// 内置那份（agentsBuiltinRoot）是启动期由代码真源生成的 md 副本 ⇒ Host 侧才能列出内置 agent ✓。
-		out.push({ kind: 'agents', text: renderAgentsOverlay(agentsRoot, agentsBuiltinRoot) });
+		// ★ IM 入站凭据（2026-10-27）也写这**同一行**（整体替换 ⇒ 不能拆第二份覆盖层）。
+		out.push({
+			kind: 'agents',
+			text: renderAgentsOverlay(agentsRoot, agentsBuiltinRoot, { appId: imFeishuAppId, appSecret: imFeishuAppSecret }),
+		});
 	}
 	if (dataRoot) {
 		// kb / canvas / workflow / skills 的兜底数据根都是 `~/.vssaros`，dev 是 `~/.vssaros-dev` ⇒ 不注入时

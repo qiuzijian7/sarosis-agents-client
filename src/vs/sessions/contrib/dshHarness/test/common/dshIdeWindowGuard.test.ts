@@ -36,6 +36,7 @@ const CHANNEL = 'src/vs/sessions/contrib/dshHarness/electron-main/dshHarnessChan
 const SERVICE = 'src/vs/sessions/contrib/dshHarness/electron-browser/dshHarnessService.ts';
 const FULL_WINDOW = 'src/vs/sessions/contrib/dshHarness/electron-browser/dshFullWindowContribution.ts';
 const CONTRIBUTION = 'src/vs/sessions/contrib/dshHarness/electron-browser/dshHarness.contribution.ts';
+const WINDOW_IMPL = 'src/vs/platform/windows/electron-main/windowImpl.ts';
 
 function read(rel: string): string {
 	const abs = path.join(process.cwd(), rel);
@@ -281,5 +282,76 @@ suite('desktop 模式：IDE 主窗口不许露面（点登录也不许）', () =
 		const showAt = full.indexOf('private async _showIdeWindow(');
 		const show = full.slice(showAt, full.indexOf('\n\tprivate ', showAt + 1));
 		assert.match(show, /this\._ideShowEpoch\+\+/, '_showIdeWindow 必须推进显示代数（否则上面那道闸永远不触发 ✗）');
+	});
+
+	// ★ 2026-10-26（用户："当前F5启动后，没有打开 vssaros desktop窗口"）：真机 `logs/20261026T211749/main.log` ——
+	//   21:17:54.5 桌面窗口建好 → 21:18:00.156「IDE 主窗口被显示 ⇒ 立刻再藏起来」→ window 2 BLUR → devtools_app 装载
+	//   → 桌面窗口再没拿回焦点（用户 50s 后自己从任务栏点出来）。当天 6 次启动**全部**在窗口加载 +10s 出现同一序列。
+	//   拉出 IDE 的是上游 `windowImpl.load()` 的 dev 兜底（10s 没显示 ⇒ show + Force focus + 开 DevTools）；
+	//   守卫把它藏回去后焦点交给了别的应用 ⇒ 桌面窗口被压到后面。
+	test('⑦ 启动：dev 10s 兜底不许拉出隐藏的 IDE；压回 / 启动藏 IDE 后必须把桌面窗口提到前台', () => {
+		const impl = stripComments(read(WINDOW_IMPL));
+		const devAt = impl.indexOf('this._win.webContents.openDevTools();');
+		assert.ok(devAt > 0, '找不到 load() 里的 dev 兜底（openDevTools）——上游改形态了？断言要跟着改 ✗');
+		const schedAt = impl.lastIndexOf('new RunOnceScheduler(', devAt);
+		assert.ok(schedAt > 0 && devAt - schedAt < 1500, 'dev 兜底不在 RunOnceScheduler 里了（切片口径失效）✗');
+		const block = impl.slice(schedAt, devAt);
+		const iGate = block.indexOf('if (this._startHidden) {');
+		const iShow = block.indexOf('this._win.show();');
+		assert.ok(iShow >= 0, 'dev 兜底里没有 show（切片口径失效）✗');
+		assert.ok(iGate >= 0 && iGate < iShow,
+			'dev 兜底必须在 show **之前**判 _startHidden（否则每次 F5 都在 +10s 把隐藏的 IDE 拉出来 ⇒ 桌面窗口被压到后面 ✗）');
+		assert.match(block.slice(iGate, iShow), /return;/,
+			'隐藏启动下 dev 兜底必须直接 return（只打日志不 return = 照样 show + 开 DevTools ✗）');
+
+		const channel = stripComments(read(CHANNEL));
+		const rAt = channel.indexOf('const rehide = (event');
+		const rEnd = channel.indexOf('const onShow = ', rAt);
+		assert.ok(rAt > 0 && rEnd > rAt, '找不到守卫的 rehide ✗');
+		const rehide = channel.slice(rAt, rEnd);
+		const iHide = rehide.indexOf('win.hide();');
+		const iRaise = rehide.indexOf('this._raiseDesktopWindow(windowId,');
+		assert.ok(iHide >= 0, 'rehide 里没有 win.hide() ✗');
+		assert.ok(iRaise > iHide,
+			'压回 IDE 之后必须把桌面窗口提到前台（只 hide ⇒ 前台交给别的应用，桌面窗口被压到后面 ✗）');
+
+		// ★★ 必须是**轮询**，不能只提一次：真机 2026-10-26 21:59:05.3 装守卫时辅助窗口已建
+		//   （21:59:04.78）却还不可见（21:59:25.7 才 materialize）⇒ 一次性提窗落空 ✗。
+		assert.match(channel, /raiseTimer = setInterval\(/,
+			'启动提窗必须轮询（窗口要十几秒才可见，只提一次会落空 ✗）');
+		assert.match(channel, /_raiseDesktopWindow\(windowId, '启动：IDE 已藏，桌面窗口提到前台'\) \|\| tries >= 26/,
+			'轮询必须在"提到前台 / 已在前台"时收工（无限重试会在用户切走后反复抢焦点 ✗）');
+		// ⚠ 必须**按位置**断言 dispose 里那一次：文件里另有"轮询收工"那一次 clearInterval
+		//   ⇒ 只查"出现过"时，把 dispose 里那行删掉也照样绿（实测假绿 ✗）。
+		const gAt = channel.indexOf('this._ideWindowGuard = {');
+		assert.ok(gAt > 0, '找不到守卫对象 ✗');
+		const gBody = channel.slice(gAt, channel.indexOf('};', gAt));
+		assert.match(gBody, /if \(raiseTimer\) \{[\s\S]{0,80}clearInterval\(raiseTimer\)/,
+			'dispose 里必须清定时器（漏了 ⇒ 撤守卫后仍会反复抢焦点 ✗）');
+
+		// 视图 attach（SetViewVisible）时再提一次：这是窗口真正可见的那一刻，最准 ✓
+		const svAt = channel.indexOf('case DshHarnessChannelCommand.SetViewVisible:');
+		assert.ok(svAt > 0, '找不到 SetViewVisible ✗');
+		const sv = channel.slice(svAt, channel.indexOf('case DshHarnessChannelCommand.', svAt + 1));
+		assert.match(sv, /if \(a\.visible && this\._ideHiddenByUs\)/,
+			'attach 时提窗必须先判"IDE 是不是我们藏着的"（否则正常 IDE 模式会被抢焦点 ✗）');
+		assert.match(sv, /ownerWindowOfView\(a\.viewId\)/, 'attach 时必须按视图定位它自己那扇窗口 ✗');
+		assert.match(sv, /_raiseDesktopWindow\(guard\.windowId, '桌面视图已就位 ⇒ 提到前台', desk\)/,
+			'attach 时必须提一次桌面窗口（窗口十几秒后才可见，靠这一脚才准 ✗）');
+
+		const hAt = channel.indexOf('private _raiseDesktopWindow(');
+		assert.ok(hAt > 0, '找不到 _raiseDesktopWindow ✗');
+		const helper = channel.slice(hAt, channel.indexOf('\n\tprivate ', hAt + 1));
+		assert.match(helper, /desktopWindowsOtherThan\(ideWindowId\)/,
+			'候选必须优先取承载 dsh 视图的窗口 ✗');
+		assert.match(helper, /!ideWins\.has\(w\)/,
+			'兜底候选必须排除 IDE 主窗口（否则可能把藏着的 IDE 当成桌面窗口 ✗）');
+		assert.match(helper, /\.filter\(w => !w\.isDestroyed\(\) && w\.isVisible\(\)\)/,
+			'只许提**可见**且未销毁的窗口 ✗');
+		const iTopOn = helper.indexOf('setAlwaysOnTop(true)');
+		const iFocus = helper.indexOf('desk.focus()');
+		const iTopOff = helper.indexOf('setAlwaysOnTop(false)');
+		assert.ok(iTopOn >= 0 && iFocus > iTopOn && iTopOff > iFocus,
+			'顺序必须是 置顶 → focus → 取消置顶（漏了取消 = 桌面窗口永久置顶；漏了置顶 = 前台锁下提不上来 ✗）');
 	});
 });
