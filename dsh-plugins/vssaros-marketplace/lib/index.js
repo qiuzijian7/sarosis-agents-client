@@ -36,6 +36,8 @@ import { listPublishables } from './localResources.js';
 import { readMcpPackageConfig, registerMcpServer, removeMcpCompletely } from './mcpInstall.js';
 // ★ 2026-10-27（用户：贴 GitHub 链接自动填写并发布）
 import { inspectGithubRepo } from './githubInspect.js';
+// ★ 2026-10-26：发布前体检（发布源到底是不是一个可装的 dsh 插件）
+import { preflightPublish } from './publishPreflight.js';
 // ★ 2026-10-27 阶段 3：让工作台右侧的对话能**真的**查找/发布
 import { marketToolDefinitions } from './agentTools.js';
 import { ALL_OPS, LOCAL_WRITE_KINDS, WRITE_OPS, isKnownOp, resolveOp } from './dispatch.js';
@@ -201,6 +203,18 @@ export async function apply(ctx, config) {
 		if (op === 'inspectGithub') {
 			const r = await inspectGithubRepo(String(params.repo ?? params.url ?? params.source ?? ''));
 			return r;
+		}
+		// ★ 2026-10-26（用户：「有没有校验机制，避免发布错误」）：
+		//   发布前先判断「这个发布源能不能装」—— 字段校验拦不住 BrowserSkill 那类
+		//   「根目录是 private monorepo、真插件在子包」的错误。
+		if (op === 'preflightPublish') {
+			return preflightPublish({
+				kind: String(params.kind ?? ''),
+				source: params.source == null ? undefined : String(params.source),
+				npmName: params.npmName == null ? undefined : String(params.npmName),
+				version: params.version == null ? undefined : String(params.version),
+				sha256: params.sha256 == null ? undefined : String(params.sha256),
+			});
 		}
 
 		if (op === 'list') {
@@ -678,6 +692,30 @@ export async function apply(ctx, config) {
 		// ★ 2026-10-22（用户需求）：本体是一个 **GitHub 地址** ⇒ 只登记来源，不打包上传。
 		//   这条对**所有 kind** 都成立（服务端 external 接口不限类型）；
 		//   而"能不能装"另说：skill / workflow 可装，其余见 installFromExternal 的说明 ✓
+		// ★ 2026-10-26（用户：「有没有校验机制，避免发布错误」）：
+		//   登记 **npm 源**（`{type:'npm', name}`）—— 工作台/插件最常见的形态。
+		//   像 Tencent/BrowserSkill 这种 monorepo 仓库，只有子包的 npm 名才是能装的；
+		//   以前这里只认 GitHub 地址 ⇒ 那类仓库只能按"根目录"发，必然装不上。
+		const npmName = String(params.npmName ?? '').trim();
+		if (npmName) {
+			if (!/^(@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i.test(npmName)) {
+				throw new Error(`npm 包名不合法：${npmName}`);
+			}
+			return publishDistribution({
+				market: m,
+				kind,
+				localId,
+				version,
+				distribution: { type: 'npm', name: npmName },
+				changelog: String(params.changelog ?? ''),
+				meta: {
+					...(typeof params.name === 'string' ? { name: params.name } : {}),
+					...(typeof params.description === 'string' ? { description: params.description } : {}),
+					...(typeof params.category === 'string' ? { category: params.category } : {}),
+				},
+			});
+		}
+
 		const source = String(params.source ?? '').trim();
 		if (source) {
 			return publishExternal({
@@ -867,7 +905,10 @@ export async function apply(ctx, config) {
 		if (ctx.tools && typeof ctx.tools.register === 'function') {
 			ctx.effect(() => marketToolDefinitions({
 				inspectGithubRepo,
-				publishExternal,
+				// ★ 2026-10-27：用 `publishDistribution` 而不是 `publishExternal` ——
+				//   后者把 distribution 硬编码成 `github-source`，而 monorepo（如 BrowserSkill）
+				//   必须发 `npm` 子包，否则「发布成功但装不上」（文档 §7）✗
+				publishDistribution,
 				market,
 			}).map(def => ctx.tools.register(def)), 'vssaros-marketplace: agent tools');
 		}

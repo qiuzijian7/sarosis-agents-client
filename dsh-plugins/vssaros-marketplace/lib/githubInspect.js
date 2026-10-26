@@ -25,6 +25,9 @@
  */
 
 import { createHash } from 'node:crypto';
+// ★ 2026-10-27（依据 doc/marketplace-workbench-github-flow.html §6/§7）：
+//   monorepo 的根不是插件，真身是已发到 npm 的子包 ⇒ 必须能识别出「该用 npm 发布源」
+import { findNpmPackagesForRepo, peerRangeOf } from './npmLookup.js';
 
 /** 把各种 GitHub 写法归一成 `owner/repo`。 */
 export function normalizeRepo(input) {
@@ -154,13 +157,23 @@ export async function inspectGithubRepo(input) {
 	// ② package.json / SKILL.md —— 判断形态 + 取版本
 	const pkgJsonText = await readRaw(repo, 'package.json');
 	let pkgVersion = '';
-	let isDshPlugin = false;
+	let pkgPrivate = false;
+	let rootHasDsh = false;
+	let hasWorkspaces = false;
 	if (pkgJsonText) {
 		try {
 			const j = JSON.parse(pkgJsonText);
 			if (typeof j.version === 'string') { pkgVersion = j.version.trim(); }
-			isDshPlugin = Boolean(j.dsh) || /^@vssaros\//.test(String(j.name ?? ''));
+			// ⚠ `private: true` 是 pnpm 拒绝安装的直接原因（文档 §7 ②）⇒ 必须记下来
+			pkgPrivate = j.private === true;
+			rootHasDsh = Boolean(j.dsh);
+			hasWorkspaces = Array.isArray(j.workspaces) || Boolean(j.workspaces && j.workspaces.packages);
 		} catch { notes.push('根目录 package.json 不是合法 JSON'); }
+	}
+	// monorepo 的第二种标志（raw 文件，不占 API 额度）
+	if (!hasWorkspaces) {
+		const ws = await readRaw(repo, 'pnpm-workspace.yaml');
+		if (ws) { hasWorkspaces = true; }
 	}
 	const skillMd = await readRaw(repo, 'SKILL.md');
 	const hasSkillMd = Boolean(skillMd);
@@ -182,10 +195,43 @@ export async function inspectGithubRepo(input) {
 	// ④ logo：owner 头像（真实、不占额度）
 	const logo = `https://github.com/${owner}.png?size=200`;
 
-	// ⑤ kind：有 SKILL.md ⇒ skill；是 dsh 插件 ⇒ plugin；否则 null（让用户选）
+	// ⑤ npm 反查：找「repository 指向该仓库」且自己带 `dsh` 字段的包
+	//   ⚠ 不占 GitHub API 额度（未认证 60/h 早就撞过）
+	let npmCandidates = [];
+	try { npmCandidates = await findNpmPackagesForRepo(repo); } catch { notes.push('npm 反查失败（可忽略）'); }
+	const dshPkgs = npmCandidates.filter(c => c.hasDsh);
+
+	// ⑥ **该用哪种发布源**（文档 §7 的核心结论：monorepo 只能发 npm 子包）
+	let recommendedDistribution = null;
+	let recommendWhy = '';
+	if (rootHasDsh && !pkgPrivate) {
+		recommendedDistribution = { type: 'github-source', name: repo };
+		recommendWhy = '仓库根就是 dsh 插件（有 dsh 字段、非 private）⇒ github-source 即可';
+	} else if (dshPkgs.length) {
+		const best = dshPkgs[0];
+		const range = peerRangeOf(best.peerDependencies);
+		recommendedDistribution = { type: 'npm', name: best.name, ...(range ? { peerRange: range } : {}) };
+		recommendWhy = `根不可直接安装（monorepo 或 private）；子包已发 npm：${best.name}@${best.version}`;
+	} else if (pkgPrivate) {
+		recommendWhy = '根 package.json 是 private:true ⇒ pnpm 会拒绝；需先让作者发布到 npm';
+	} else if (hasWorkspaces) {
+		recommendWhy = '这是 monorepo，根目录不是插件，npm 上也没找到对应子包 ⇒ 当前无法安装';
+	} else {
+		recommendWhy = '根目录没有 dsh 字段、npm 也没找到子包 ⇒ 可能不是 dsh 插件';
+	}
+	if (pkgPrivate) { notes.push('根 package.json 是 private:true（pnpm 会拒绝直接装这个仓库）'); }
+	if (hasWorkspaces) { notes.push('仓库是 monorepo ⇒ 只能发布其中的 npm 子包'); }
+
+	// ⑦ kind：有 SKILL.md ⇒ skill；根或子包是 dsh 插件 ⇒ plugin；否则 null（让调用方选）
 	let kind = null;
 	if (hasSkillMd) { kind = 'skill'; }
-	else if (isDshPlugin) { kind = 'plugin'; }
+	else if (rootHasDsh || dshPkgs.length) { kind = 'plugin'; }
+
+	// ⑧ slug：优先跟**推荐发布源**走（文档 §6 的 A1 就是 npm 名派生的 slug）
+	const slugFromRepo = slugOfRepo(repo);
+	const slugFromNpm = recommendedDistribution && recommendedDistribution.type === 'npm'
+		? slugOfRepo(String(recommendedDistribution.name).replace(/^@/, '').replace(/\//g, '-'))
+		: slugFromRepo;
 
 	const name = (og.name || repo.split('/')[1] || repo).slice(0, 128);
 	const description = (og.description || '').slice(0, 1500);
@@ -193,7 +239,17 @@ export async function inspectGithubRepo(input) {
 	return {
 		ok: true,
 		repo,
-		slug: slugOfRepo(repo),
+		slug: slugFromNpm,
+		// 两种 slug 都给（npm 派生与仓库派生不同，调用方可能要对照）
+		slugFromRepo,
+		// ★ 该用哪种发布源 + 为什么（不让调用方去猜）
+		recommendedDistribution,
+		recommendWhy,
+		// npm 上「repository 指向本仓库」的包（含是否带 dsh 字段）
+		npmCandidates,
+		rootHasDsh,
+		rootPrivate: pkgPrivate,
+		hasWorkspaces,
 		name,
 		description,
 		version,

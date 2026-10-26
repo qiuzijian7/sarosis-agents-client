@@ -20,7 +20,8 @@ import { PUBLISHABLE_KINDS } from './publisher.js';
 /** 走本地只读的 op（不碰 IDE 桥 ✓）。 */
 // ★ 2026-10-27：`inspectGithub` 也是只读（只抓 GitHub 元数据，不写盘、不写商城）
 //   ⇒ 放进 LOCAL_READ_OPS，这样它不需要审批、不会误判成写操作 ✓
-export const LOCAL_READ_OPS = new Set(['list', 'detail', 'installed', 'publishables', 'reviewList', 'inspectGithub']);
+// ★ 2026-10-26：`preflightPublish` 发布前体检（只抓上游元数据，不写盘、不写商城）⇒ 只读
+export const LOCAL_READ_OPS = new Set(['list', 'detail', 'installed', 'publishables', 'reviewList', 'inspectGithub', 'preflightPublish']);
 
 /**
  * 走本地落盘的**写** op（装 / 升 / 卸）。
@@ -130,6 +131,8 @@ export function resolveOp(op, params = {}) {
 		//   用户填的 GitHub 地址被静默忽略，变成"打包上传"（workbench 根本没包可打）✗。
 		//   服务端 external 接口不限 kind，dsh 侧 publishExternal 也能发任意 kind ⇒ 直接本地发 ✓。
 		if (String(params?.source ?? '').trim()) { return 'local-publish'; }
+		// 同一条理由：npm 源的登记也只是发一段 JSON（服务端 external 接口不限 kind）
+		if (String(params?.npmName ?? '').trim()) { return 'local-publish'; }
 		// 其余（真正的"打包上传"）：workbench 要 dsh plugin add + 重启 ⇒ 交 IDE
 		return 'ide';
 	}

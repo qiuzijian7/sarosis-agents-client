@@ -627,7 +627,7 @@ function makeSkill(localId, version, extra = {}) {
 	check('㉑ **代码里**不出现 api.github.com（注释里说明原因是可以的）',
 		!src.split(/\r?\n/).filter(l => !/^\s*(\*|\/\/|\/\*)/.test(l)).some(l => l.includes('api.github.com')));
 	check('㉑ tag 前缀剥离是**宽松**的（`cli-v0.3.3` → `0.3.3`）', /\^\[A-Za-z@\._\/-\]\*\(\?=\\d\)/.test(src) || src.includes('[A-Za-z@._/-]*(?='));
-	check('㉑ kind 自动判定（SKILL.md ⇒ skill / package.json 的 dsh ⇒ plugin）', /hasSkillMd/.test(src) && /isDshPlugin/.test(src));
+	check('㉑ kind 自动判定（SKILL.md ⇒ skill / 根或子包带 dsh ⇒ plugin）', /hasSkillMd/.test(src) && /rootHasDsh/.test(src) && /dshPkgs/.test(src));
 	check('㉑ logo 用 owner 头像（真实且不占额度）', /github\.com\/\$\{owner\}\.png/.test(src));
 
 	// 纯函数用例（不联网）
@@ -690,12 +690,41 @@ function makeSkill(localId, version, extra = {}) {
 	// ── 阶段 3：Agent 工具 ────────────────────────────────────
 	check('㉒ 有 agentTools.js', at.length > 0, toolsPath);
 	check('㉒ 只读工具 `market_inspect_github`', at.includes("'market_inspect_github'"));
-	check('㉒ 写工具 `market_publish_github`', at.includes("'market_publish_github'"));
+	check('㉒ 写工具 `market_publish`', at.includes("'market_publish'"));
 	check('㉒ 写工具的 slug/version/source 是**必填**（不给默认值）', /required: \['source', 'kind', 'slug', 'version'\]/.test(at));
-	check('㉒ 写工具先校验 slug/version（错在本地就报出来）', /\^\[a-z0-9\]\[a-z0-9_-\]\*\$/.test(at) && /\^\\d\+\\.\\d\+\\.\\d\+/.test(at));
 	check('㉒ 写工具标记 `isConcurrencySafe: false`（同 slug 并发会撞 409）', /isConcurrencySafe: \(\) => false/.test(at));
 	check('㉒ 工具注册在 index.js 且缺 tools 服务时降级', pageJs.includes('marketToolDefinitions({') && pageJs.includes('注册 agent 工具失败（页面仍可用）'));
 	check('㉒ 两个新文件都在 files 白名单（否则装到用户机就缺）', pkg.files.includes('lib/workbench.js') && pkg.files.includes('lib/agentTools.js'));
+
+	// ── ㉓ 按 `doc/marketplace-workbench-github-flow.html` 完善（2026-10-27）──────
+	//   §7 反面案例：monorepo（根 private:true、无 dsh）当 github-source 发 ⇒
+	//   **发布成功但装不上**（pnpm 拒绝 + 根没有 dsh 字段 ⇒ 装了没效果）
+	//   ⇒ 必须识别出「该用 npm 子包」
+	{
+		const gi = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'githubInspect.js'), 'utf8');
+		const nlPath = path.resolve(HERE, '..', 'lib', 'npmLookup.js');
+		const nl = fs.existsSync(nlPath) ? fs.readFileSync(nlPath, 'utf8') : '';
+
+		check('㉓ 有 npm 反查模块', nl.length > 0, nlPath);
+		check('㉓ 反查走 npm search（不占 GitHub API 额度）', /registry\.npmjs\.org/.test(nl) && nl.includes('/v1/search'));
+		check('㉓ 用 `repository` 字段证明归属（不是碰巧同名）', nl.includes('links?.repository') || nl.includes('repository?.url'));
+		check('㉓ 反查结果带 `hasDsh`（决定它是不是 dsh 插件）', nl.includes('hasDsh'));
+		check('㉓ peerRange 由 peerDependencies 压出（服务端有该字段）', nl.includes('peerRangeOf') && nl.includes('peerDependencies'));
+
+		check('㉓ 识别根 `private: true`（pnpm 拒绝的直接原因）', gi.includes('pkgPrivate = j.private === true'));
+		check('㉓ 识别 monorepo（workspaces 或 pnpm-workspace.yaml）', gi.includes('hasWorkspaces') && gi.includes('pnpm-workspace.yaml'));
+		check('㉓ 给出 `recommendedDistribution`（不让调用方去猜）', gi.includes('recommendedDistribution'));
+		check('㉓ **根可装才给 github-source**（rootHasDsh && !pkgPrivate）', gi.includes('rootHasDsh && !pkgPrivate'));
+		check('㉓ 根不可装时**优先给 npm 子包**', gi.includes("type: 'npm'") && gi.includes('best.name'));
+		check('㉓ 推荐不出时**如实说明理由**（不猜）', gi.includes('recommendWhy'));
+		check('㉓ slug 跟推荐发布源走（npm 名派生，与文档 §6 A1 一致）', gi.includes('slugFromNpm'));
+
+		check('㉓ 写工具支持 `via`（npm / github-source）', at.includes('VIA_SET') && at.includes("'github-source'"));
+		check('㉓ `via=npm` 必须给 npmName', at.includes('via=npm 时必须给 npmName'));
+		check('㉓ 自动识别失败时**报错并给原因**（不静默降级）', at.includes('不能直接发布'));
+		check('㉓ 用 `publishDistribution`（不是硬编码 github-source 的 publishExternal）', pageJs.includes('publishDistribution,'));
+		check('㉓ npmLookup 在 files 白名单', pkg.files.includes('lib/npmLookup.js'));
+	}
 }
 
 fs.rmSync(dataRoot, { recursive: true, force: true });
