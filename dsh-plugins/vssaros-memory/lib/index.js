@@ -50,7 +50,7 @@ const PKG_VERSION = (() => {
 		return JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version ?? '(未知)';
 	} catch { return '(未知)'; }
 })();
-import { extractCandidates, parseFormUrlEncoded, SUMMARY_MATCHED_TAG, summaryCandidatesOf, userTextsOf } from './core/distill.js';
+import { extractCandidates, turnCandidatesOf, parseFormUrlEncoded, SUMMARY_MATCHED_TAG, summaryCandidatesOf, userTextsOf } from './core/distill.js';
 
 import { createDraftStore, draftRowsOf } from './draft.js';
 import { recallHistory, renderHistory } from './history.js';
@@ -4290,6 +4290,19 @@ export function apply(ctx, rawConfig = {}) {
 				});
 				// 摘要草稿**不过** LLM 判定：判定器的提示词是为"短约定"设计的（只能减少候选），
 				// 对一整段摘要没有可用的判据 —— 摘要的把关就是人工「提升」✓。
+				// ★★ 2026-10-26：**按回合摘要自动沉淀** —— 正则只认显式句式（以后/记住/…）⇒ 普通对话
+				//   106/106 `no-candidate`；这里在"本回合没有显式候选"时，从 user+assistant 造一条摘要候选
+				//   （保守阈值 + digest 去重 + 每回合最多 1 条；仍是**草稿**，要人工「提升」才进长期记忆 ✓）
+				const turnCandidates = raw.length === 0
+					? turnCandidatesOf(events, {
+						sessionId: String(session.id ?? ''),
+						turn: payload?.turn,
+						seenDigests,
+						now: Date.now(),
+					})
+					: [];
+				state.distill.turnSummaries = (state.distill.turnSummaries ?? 0) + turnCandidates.length;
+
 				const summaries = hasSummary
 					? summaryCandidatesOf(events, { sessionId: String(session.id ?? ''), turn: payload?.turn, seenDigests, now: Date.now() })
 					: [];
@@ -4312,7 +4325,7 @@ export function apply(ctx, rawConfig = {}) {
 						}
 					}
 				}
-				const written = await draftStore.append(draftRowsOf([...candidates, ...summaries]));
+				const written = await draftStore.append(draftRowsOf([...candidates, ...summaries, ...turnCandidates]));
 				state.distill.written += written;
 				// ⚠ 写盘之后**必须**让 `state.drafts` 跟上（2026-10-13 修）：页面渲染读的是它 ✗ ——
 				// 不更新的话，刚沉淀出来的草稿在页面上看不见（要等下一次页面请求才读盘 ✓）。
@@ -4325,10 +4338,10 @@ export function apply(ctx, rawConfig = {}) {
 					action: 'distill',
 					agentId: agentIdOf(config),
 					sessionId: String(session.id ?? ''),
-					outcome: candidates.length === 0 && summaries.length === 0
+					outcome: candidates.length === 0 && summaries.length === 0 && turnCandidates.length === 0
 						? 'no-candidate'
-						: `drafted:${written}${summaries.length ? `(summary:${summaries.length})` : ''}`,
-					content: [...candidates, ...summaries].map(candidate => candidate.text.slice(0, 200)).join(' | '),
+						: `drafted:${written}${summaries.length ? `(summary:${summaries.length})` : ''}${turnCandidates.length ? `(turn:${turnCandidates.length})` : ''}`,
+					content: [...candidates, ...summaries, ...turnCandidates].map(candidate => candidate.text.slice(0, 200)).join(' | '),
 				});
 			} catch (error) {
 				state.distill.failed++;

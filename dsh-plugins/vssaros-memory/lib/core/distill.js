@@ -298,6 +298,90 @@ export const SUMMARY_MIN_CHARS = 40;
  * @param {{sessionId?: string, turn?: number, seenDigests?: Set<string> | readonly string[], now?: number}} [options]
  * @returns {Array<{id: string, at: number, text: string, chars: number, digest: string, matched: string, source: {sessionId: string, turn: number}}>}
  */
+/**
+ * **按回合摘要自动沉淀**（★ 2026-10-26，用户要求）。
+ *
+ * ## 为什么需要它
+ * 旧的自动沉淀只认**显式句式**（`DISTILL_PATTERNS`：以后/记住/约定/注意/务必/always…）⇒
+ * 普通对话（"帮我看看这个 bug"）一条候选都产不出来 ⇒ 账本实测 **106/106 `no-candidate`**、
+ * 四层记忆恒 0 ⇒ 用户感受就是"聊了半天什么都没记住" ✗✗
+ * 而另一条 `summaryCandidatesOf` 只认 `compaction/summary`（**上下文压缩**时才有的模型摘要）
+ * ⇒ 短会话永远等不到。
+ *
+ * ## 做法（保守优先，宁少不脏）
+ * 取本回合**最后一条人说的用户消息** + **最后一条助手回复**，压成一句 `用户诉求 ⇒ 助手结论`，
+ * 截到 `DISTILL_MAX_CHARS`（200）⇒ 作为**草稿**（`draft`，仍需人工「提升」才进长期记忆 ✓）。
+ * 判据（任一不满足就不产）：
+ *   · 用户文本 ≥ `TURN_MIN_USER_CHARS`（10 字，寒暄/单词不算）
+ *   · 助手文本 ≥ `TURN_MIN_ASSISTANT_CHARS`（24 字，避免"好的/收到"这类空回复）
+ *   · 与历史草稿 digest 去重（`seenDigests`）
+ *   · 每回合**最多 1 条**
+ * ⚠ 只在"本回合没有显式候选"时才调用（由调用方判定）⇒ 不会与正则候选重复 ✓
+ */
+export const TURN_MATCHED_TAG = 'turn-summary';
+export const TURN_MIN_USER_CHARS = 10;
+export const TURN_MIN_ASSISTANT_CHARS = 24;
+
+/** 取事件里的纯文本（字符串 content 或 text 分片数组）。 */
+function textOfEvent(event) {
+	const content = event?.data?.content;
+	if (typeof content === 'string') { return content; }
+	if (Array.isArray(content)) {
+		return content.filter(part => part?.type === 'text' && typeof part.text === 'string').map(part => part.text).join(' ');
+	}
+  return '';
+}
+
+/** 压成单行（去系统包装 + 合并空白），并截断到上限。 */
+function collapseOneLine(raw, maxChars) {
+	const t = stripSystemWrappers(String(raw ?? ''))
+		.replace(/[ \t]+/g, ' ')
+		.replace(/\s*\n\s*/g, ' ')
+		.trim();
+	return t.length > maxChars ? `${t.slice(0, maxChars)}…` : t;
+}
+
+export function turnCandidatesOf(events, options = {}) {
+	const sessionId = typeof options.sessionId === 'string' ? options.sessionId : '';
+	const turn = Number.isFinite(options.turn) ? options.turn : 0;
+	const now = Number.isFinite(options.now) ? options.now : 0;
+	const seen = options.seenDigests instanceof Set ? options.seenDigests : new Set(Array.isArray(options.seenDigests) ? options.seenDigests : []);
+	let userRaw = lastUserRaw(events);
+	let assistantRaw = lastAssistantText(events);
+	const user = collapseOneLine(userRaw, 120);
+	const assistant = collapseOneLine(assistantRaw, 160);
+	if (user.length < TURN_MIN_USER_CHARS || assistant.length < TURN_MIN_ASSISTANT_CHARS) { return []; }
+	const text = collapseOneLine(`${user} ⇒ ${assistant}`, DISTILL_MAX_CHARS);
+	const digest = auditDigestOf(text);
+	if (!digest || seen.has(digest)) { return []; }
+	return [{
+		id: `turn-${digest.slice(0, 12)}`,
+		at: now,
+		text,
+		chars: text.length,
+		digest,
+		matched: TURN_MATCHED_TAG,
+		source: { sessionId, turn },
+	}];
+}
+
+/** 本回合**最后一条人说的**用户消息（复用 `userTextsOf` 的过滤口径 ⇒ 压缩摘要不算用户话 ✓）。 */
+function lastUserRaw(events) {
+	const texts = userTextsOf(events);
+	return texts.length > 0 ? texts[texts.length - 1] : '';
+}
+
+/** 本回合**最后一条**助手回复文本。 */
+function lastAssistantText(events) {
+	let last = '';
+	for (const event of Array.isArray(events) ? events : []) {
+		if (event?.type !== 'assistant/message') { continue; }
+		const t = textOfEvent(event);
+		if (t.trim()) { last = t; }
+	}
+	return last;
+}
+
 export function summaryCandidatesOf(events, options = {}) {
 	const sessionId = typeof options.sessionId === 'string' ? options.sessionId : '';
 	const turn = Number.isFinite(options.turn) ? options.turn : 0;
