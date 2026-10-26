@@ -123,8 +123,15 @@ export function resolveOp(op, params = {}) {
 	if (LOCAL_HTTP_OPS.has(name)) { return 'local-http'; }
 	if (LOCAL_PUBLISH_OPS.has(name)) { return 'local-publish'; }
 	if (name === 'publish') {
-		// ⚠ 唯一按 kind 分流的 publish（workbench 必须 IDE：要 dsh plugin add + 重启）
-		return PUBLISH_LOCAL_KINDS.includes(kind) ? 'local-publish' : 'ide';
+		if (PUBLISH_LOCAL_KINDS.includes(kind)) { return 'local-publish'; }
+		// ★ 2026-10-26（分析工作台 GitHub 发布流程时发现）：**带 source（GitHub 地址）的登记**
+		//   必须留在 dsh 侧。原来这里只看 kind ⇒ workbench / plugin 一律转 IDE，
+		//   而 IDE 的 publish 分支只读 version / changelog、**把 source 丢了** ⇒
+		//   用户填的 GitHub 地址被静默忽略，变成"打包上传"（workbench 根本没包可打）✗。
+		//   服务端 external 接口不限 kind，dsh 侧 publishExternal 也能发任意 kind ⇒ 直接本地发 ✓。
+		if (String(params?.source ?? '').trim()) { return 'local-publish'; }
+		// 其余（真正的"打包上传"）：workbench 要 dsh plugin add + 重启 ⇒ 交 IDE
+		return 'ide';
 	}
 	// 未知 / 纯 IDE 的 op ⇒ 兜底交 IDE（由 IDE 侧白名单给出"不认识"的可读报错）
 	return 'ide';

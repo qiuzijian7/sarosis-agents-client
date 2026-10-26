@@ -653,6 +653,51 @@ function makeSkill(localId, version, extra = {}) {
 	})());
 }
 
+
+// ── ㉒ 商城工作台：左侧商城页 + 右侧官方对话（2026-10-27）────────────────
+//   用户："参考小红书、萨罗斯工作台的 ai 助手实现方式，生成解决方案" → "直接阶段 2-3"
+//
+//   ★ 调研结论（别再绕）：AI 助手**不是**页面自己调模型，而是
+//     `customFrame: true` 的注册式工作台由宿主注入 `props.conversation`
+//     （内部 = 官方 chat-surface 本体）。studio 已经把"自绘浮层 iframe 指向 dsh 根"
+//     那版**删掉了** —— 会出现两套助手，且浮层里的客户端拿不到会话上下文 ✗
+{
+	const wbPath = path.resolve(HERE, '..', 'lib', 'workbench.js');
+	const wb = fs.existsSync(wbPath) ? fs.readFileSync(wbPath, 'utf8') : '';
+	const toolsPath = path.resolve(HERE, '..', 'lib', 'agentTools.js');
+	const at = fs.existsSync(toolsPath) ? fs.readFileSync(toolsPath, 'utf8') : '';
+	const pkg = JSON.parse(fs.readFileSync(path.resolve(HERE, '..', 'package.json'), 'utf8'));
+	const pageJs = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'index.js'), 'utf8');
+
+	check('㉒ 有工作台 chunk（workbench.js）', wb.length > 0, wbPath);
+	check('㉒ chunk 走 `__ModuleLoader__`（不是页面脚本）', /__ModuleLoader__\.load\(/.test(wb));
+	check('㉒ 用 `require(\'react\')`（chunk 才能这么拿 React）', /require\('react'\)/.test(wb));
+	check('㉒ `customFrame: true`（只有它为真才注入 props.conversation）', /customFrame: true/.test(wb) && pkg.vssaros.workbench.customFrame === true);
+	check('㉒ 声明 `dsh.client`（否则 chunk 不会被加载）', pkg.dsh?.client?.platform === 'web');
+	check('㉒ `exports["./client"]` 指向 workbench.js', pkg.exports['./client'] === './lib/workbench.js');
+
+	// ★ 页面脚本**不能被 chunk 顶掉**：它走 `/x/marketplace/client.js` 路由
+	check('㉒ 页面脚本仍由路由 serve（不被 chunk 顶掉）', /\$\{ROUTE_PREFIX\}\/client\.js/.test(pageJs) || pageJs.includes('/client.js'));
+	check('㉒ 左侧就是现有商城页（iframe 指向 /x/marketplace/）', wb.includes("'/x/marketplace/'") || wb.includes('\"/x/marketplace/\"'));
+	check('㉒ 没有对话停靠点 ⇒ 优雅降级成整页（不报错）', /if \(!conversation\)/.test(wb));
+
+	// 拖拽条的经典坑：iframe 是独立文档，鼠标一进去父文档收不到 mouseup
+	check('㉒ 拖拽期间关掉 iframe 的 pointer-events（否则拖一半断）', /pointerEvents = 'none'/.test(wb));
+	check('㉒ 拖拽收尾覆盖 blur（Alt+Tab 也要恢复）', /addEventListener\('blur', onUp/.test(wb));
+	// 注册要能在缺少服务时跳过（老宿主 / 非工作台形态）
+	check('㉒ 缺 desktopWorkbenches 时跳过注册（页面照常可用）', /typeof dw\.register !== 'function'/.test(wb));
+
+	// ── 阶段 3：Agent 工具 ────────────────────────────────────
+	check('㉒ 有 agentTools.js', at.length > 0, toolsPath);
+	check('㉒ 只读工具 `market_inspect_github`', at.includes("'market_inspect_github'"));
+	check('㉒ 写工具 `market_publish_github`', at.includes("'market_publish_github'"));
+	check('㉒ 写工具的 slug/version/source 是**必填**（不给默认值）', /required: \['source', 'kind', 'slug', 'version'\]/.test(at));
+	check('㉒ 写工具先校验 slug/version（错在本地就报出来）', /\^\[a-z0-9\]\[a-z0-9_-\]\*\$/.test(at) && /\^\\d\+\\.\\d\+\\.\\d\+/.test(at));
+	check('㉒ 写工具标记 `isConcurrencySafe: false`（同 slug 并发会撞 409）', /isConcurrencySafe: \(\) => false/.test(at));
+	check('㉒ 工具注册在 index.js 且缺 tools 服务时降级', pageJs.includes('marketToolDefinitions({') && pageJs.includes('注册 agent 工具失败（页面仍可用）'));
+	check('㉒ 两个新文件都在 files 白名单（否则装到用户机就缺）', pkg.files.includes('lib/workbench.js') && pkg.files.includes('lib/agentTools.js'));
+}
+
 fs.rmSync(dataRoot, { recursive: true, force: true });
 console.log(`\n[marketplace publish] ${pass} passing / ${fails.length} failing`);
 if (fails.length) { console.log('失败：' + fails.join('、')); }

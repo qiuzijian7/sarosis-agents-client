@@ -36,6 +36,8 @@ import { listPublishables } from './localResources.js';
 import { readMcpPackageConfig, registerMcpServer, removeMcpCompletely } from './mcpInstall.js';
 // ★ 2026-10-27（用户：贴 GitHub 链接自动填写并发布）
 import { inspectGithubRepo } from './githubInspect.js';
+// ★ 2026-10-27 阶段 3：让工作台右侧的对话能**真的**查找/发布
+import { marketToolDefinitions } from './agentTools.js';
 import { ALL_OPS, LOCAL_WRITE_KINDS, WRITE_OPS, isKnownOp, resolveOp } from './dispatch.js';
 // ★ 服务端 pkg → 前端形状的**唯一映射**（list/detail/reviewList/installed 共用）
 import { toInstalledItem, toPackageDetail, toPackageSummary } from './shape.js';
@@ -856,6 +858,22 @@ export async function apply(ctx, config) {
 			'cache-control': 'public, max-age=604800, immutable',
 		});
 		res.end(body);
+	}
+
+	// ── Agent 工具（★ 2026-10-27）：让右侧对话能识别与发布 ──────────────────
+	//   为什么放这里：`market()` 是懒建的（凭据服务晚于 apply 注入），
+	//   所以工具里**不能**预先持有 client，必须每次调 `market()` ✓
+	try {
+		if (ctx.tools && typeof ctx.tools.register === 'function') {
+			ctx.effect(() => marketToolDefinitions({
+				inspectGithubRepo,
+				publishExternal,
+				market,
+			}).map(def => ctx.tools.register(def)), 'vssaros-marketplace: agent tools');
+		}
+	} catch (e) {
+		// 拿不到 tools 服务（老版本 dsh / 非 agent 模板）⇒ 只是没有工具，页面照常可用 ✓
+		console.error('[vssaros-marketplace] 注册 agent 工具失败（页面仍可用）', e);
 	}
 
 	ctx.inject(['webServer', 'connection'], webCtx => webCtx.effect(() => webCtx.webServer.register({
