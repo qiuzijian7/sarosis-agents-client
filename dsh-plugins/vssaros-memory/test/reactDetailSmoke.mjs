@@ -203,6 +203,36 @@ check('⑪ 技能：标题 + 置信度 + SKILL.md 标记', () => {
 	return 'ok';
 });
 
+// ── ⑫ 记忆页复刻细节（本轮修的两个真坑）──────────────────────────────────
+check('②c 记忆：时间是**已格式化字符串**（不得退化 1970）', () => {
+	const html = draw(renderDetailTab('memories', {
+		items: [{ tier: 'episodic', type: 'fact', content: 'X', timestamp: '10-26 12:34' }],
+	}, { layer: 'all', type: '' }));
+	contains(html, '10-26 12:34', '记忆页时间');
+	assert(!html.includes('1970'), '时间被当成数字解析了（会全显示 1970）✗');
+	return 'ok';
+});
+
+check('②d 记忆：tier 徽标带 data-tier + 来源分区徽标 + 统计行', () => {
+	const html = draw(renderDetailTab('memories', {
+		agentId: 'ws-cur', total: 1, itemLimit: 200, partitions: ['ws-cur', 'saros-claw'],
+		items: [{ tier: 'semantic', type: 'fact', content: 'Y', partition: 'saros-claw', timestamp: '10-26' }],
+	}, { layer: 'all', type: '' }));
+	contains(html, 'data-tier="semantic"', 'tier 徽标');
+	contains(html, 'data-partition="saros-claw"', '来源分区徽标');
+	contains(html, 'data-memory-detail-stats', '统计行');
+	contains(html, '已查 2 个分区', '统计行分区数');
+	return 'ok';
+});
+
+check('②e 记忆：层筛选生效（layer=working ⇒ 只剩 working）', () => {
+	const html = draw(renderDetailTab('memories', { agentId: 'a', items: [
+		{ tier: 'working', content: 'W条' }, { tier: 'episodic', content: 'E条' } ] }, { layer: 'working' }));
+	contains(html, 'W条', '筛选后');
+	assert(!html.includes('E条'), 'layer=working 时不该出现 episodic 条目 ✗');
+	return 'ok';
+});
+
 // ── 汇总 ─────────────────────────────────────────────────────────────────
 const failed = results.filter(r => !r.ok);
 for (const r of results) {

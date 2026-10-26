@@ -1321,31 +1321,62 @@ async function loadDetailModel({ config, params, state }) {
 		try { return await providerCall(base, method, [agentId]); } catch { return null; }
 	};
 	const settled = await Promise.allSettled([
-		call('getEpisodicMemories'), call('getSemanticMemories'), call('proceduralList'), call('coreMemoryList'),
 		call('getExtendedStats'), call('listAllAgentsWithData'),
 	]);
-	// ⚠ `rowsOf` 已提升到模块作用域（摘要版与详情页共用同一份形状归一 ✓ —— 别在这里再写一份 ✗）
-	const tiers = [
-		['episodic', rowsOf(settled[0].value)],
-		['semantic', rowsOf(settled[1].value)],
-		['procedural', rowsOf(settled[2].value)],
-		['working', rowsOf(settled[3].value)],
-	];
-	const ext = settled[4].value;
-	model.extStats = ext && typeof ext === 'object' ? ext : {};
-	const agents = settled[5].value;
+	const ext = settled[0].value;
+
+	// ★★ 2026-10-26：**跨分区取数**（与 IDE 侧 `memoryDetailEditorPane` 同口径）。
+	//   病根（真机 2026-10-26）：详情页只查**当前分区**（`ws-<workspaceId>`，真库里 0 条）
+	//   ⇒ 页签全空、用户看到"未显示内容" ✗✗ —— 而数据其实在**纯 agent id** 的分区里
+	//   （`saros-claw` / `default` / `knowledge-base-expert` …，IDE 侧早就是"工作区 + 所有有数据的 agent 分区"合并）。
+	//   ⇒ 这里按同一口径扇出：读分区 = 当前分区 + `listAllAgentsWithData` 给的全部 agent 分区 ✓
+	//   ⚠ 上限 8 个分区：每多一个分区多 4 次引擎调用，别把网关打爆 ✗
+	const partitions = [];
+	const pushPartition = a => { const v = String(a ?? ""); if (v && !partitions.includes(v)) { partitions.push(v); } };
+	pushPartition(agentId);
+	const agents = settled[1].value;
 	model.agents = Array.isArray(agents) ? agents.map(a => String(a?.agentId ?? a?.id ?? a)).filter(Boolean) : [];
+	for (const a of model.agents) { pushPartition(a); }
+	const MAX_PARTITIONS = 8;
+	model.partitions = partitions.slice(0, MAX_PARTITIONS);
+	model.partitionsTruncated = partitions.length > MAX_PARTITIONS;
+
+	/** 在**指定分区**上调用（原来的 `call` 绑死了当前 agentId ⇒ 扇出必须按分区调 ✓）。 */
+	const callIn = async (aid, method) => {
+		try { return await providerCall(base, method, [aid]); } catch { return null; }
+	};
+
+	// 四层 × N 分区 ⇒ 一次性并发（每分区内部再并发，整体仍是一个 Promise.allSettled ✓）
+	const tierSettled = await Promise.allSettled(model.partitions.map(aid => Promise.all([
+		callIn(aid, 'getEpisodicMemories'), callIn(aid, 'getSemanticMemories'),
+		callIn(aid, 'proceduralList'), callIn(aid, 'coreMemoryList'),
+	])));
+	// ⚠ `rowsOf` 已提升到模块作用域（摘要版与详情页共用同一份形状归一 ✓ —— 别在这里再写一份 ✗）
+	const tiers = [];
+	for (let p = 0; p < model.partitions.length; p++) {
+		const r = tierSettled[p];
+		const rows = r && r.status === 'fulfilled' ? r.value : [];
+		for (const [tier, raw] of [['episodic', rows[0]], ['semantic', rows[1]], ['procedural', rows[2]], ['working', rows[3]]]) {
+			tiers.push([tier, rowsOf(raw), model.partitions[p]]);
+		}
+	}
+	model.extStats = ext && typeof ext === 'object' ? ext : {};
 
 	const seen = new Set();
 	model.items = [];
-	for (const [tier, rows] of tiers) {
-		model.tierCounts[tier] = rows.length;
+	for (const [tier, rows, partition] of tiers) {
+		model.tierCounts[tier] = (model.tierCounts[tier] ?? 0) + rows.length;
 		for (const row of rows) {
 			if (!row || typeof row !== 'object') { continue; }
 			const id = String(row.id ?? '');
-			if (!id || seen.has(id)) { continue; }
-			seen.add(id);
-			model.items.push(toDetailItem(row, tier));
+			// ⚠ 去重键要带分区：不同分区可能有同名/同 id 的条目（各分区独立生成 id 的情况）
+			const key = partition + '|' + id;
+			if (!id || seen.has(key)) { continue; }
+			seen.add(key);
+			const item = toDetailItem(row, tier);
+			// ★ 标来源分区（UI 上只在"非当前分区"时才显示徽标 ✓，与 IDE 侧同口径）
+			item.partition = partition;
+			model.items.push(item);
 		}
 	}
 	model.total = model.items.length;
@@ -1364,8 +1395,12 @@ async function loadDetailModel({ config, params, state }) {
 	if (q) { model.items = model.items.filter(i => i.content.toLowerCase().includes(q)); }
 	// ⚠ `total` 保持"筛选前"的总数（= 上面那行统计的数字 ✓）；筛选后的条数是 `filtered` ✓
 	model.filtered = model.items.length;
-	model.truncated = model.items.length > DETAIL_ITEMS_LIMIT;
-	model.items = model.items.slice(0, DETAIL_ITEMS_LIMIT);
+	// ★ 2026-10-26：条数上限**可由请求带**（React 二级页 200 条；SSR 详情页仍默认 50 ⇒ 首屏快 ✓）
+	const limitRaw = Number(params.get('limit'));
+	const itemLimit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(Math.floor(limitRaw), 500) : DETAIL_ITEMS_LIMIT;
+	model.itemLimit = itemLimit;
+	model.truncated = model.items.length > itemLimit;
+	model.items = model.items.slice(0, itemLimit);
 
 	// ── 按页签取数：**只取当前那页要的** ✓（不做"每次都把全部拉一遍" —— 那是给引擎添无谓负载 ✗）
 	// ⚠⚠ `getAuditLog` 这里**是页面直调**，而且**不能前置 agentId** ✗：
@@ -1373,10 +1408,34 @@ async function loadDetailModel({ config, params, state }) {
 	//   塞进 `memory_api` 会被前置成 `getAuditLog(agentId, {limit:200})` ⇒ 引擎参数错位 ✗）。
 	//   ⇒ 正确的调法就是 IDE 侧那句的形状：`getAuditLog({ limit: 200 })` ✓（页面 ≠ 给模型的工具 ✓）
 	if (model.view === 'slots') {
-		model.slots = rowsOf(await call('getSlots'));
+		// ★ 跨分区：同名槽位**当前分区优先**（与 IDE 侧 `_fanout` 同口径 ✓）
+		const byName = new Map();
+		for (const aid of model.partitions) {
+			for (const row of rowsOf(await callIn(aid, 'getSlots'))) {
+				const name = String(row?.name ?? row?.slot ?? '');
+				if (!name) { continue; }
+				const prev = byName.get(name);
+				// 当前分区（partitions[0]）优先保留；其余分区只在没占位时补进去
+				if (!prev || (prev.partition !== agentId && aid === agentId)) {
+					byName.set(name, Object.assign({}, row, { partition: aid, sourcePartition: aid }));
+				}
+			}
+		}
+		model.slots = [...byName.values()];
 	}
 	if (model.view === 'lessons') {
-		model.lessons = rowsOf(await call('getLessons'));
+		// ★ 跨分区（教训也是按分区存的 ⇒ 只查当前（空）分区 ⇒ 恒空 ✗）
+		const rows = [];
+		const seenLesson = new Set();
+		for (const aid of model.partitions) {
+			for (const row of rowsOf(await callIn(aid, 'getLessons'))) {
+				const id = String(row?.id ?? row?.content ?? '');
+				if (!id || seenLesson.has(id)) { continue; }
+				seenLesson.add(id);
+				rows.push(Object.assign({}, row, { partition: aid }));
+			}
+		}
+		model.lessons = rows;
 	}
 	if (model.view === 'audit') {
 		model.auditSummary = (await call('getAuditSummary')) ?? {};
@@ -1441,8 +1500,35 @@ async function loadDetailModel({ config, params, state }) {
 		// ⚠ IDE 侧那页还会**直读用户目录** `~/.vssaros/skills/*/.usage.json` 拿 usage 统计
 		//   （read_skill 调用 / 近30天活跃 / 已钉选 ✗）—— 本页**不读用户目录** ✓（只读口径 + 单写者；
 		//   数据只从网关来 ✓）；缺的那几项在页面上**如实标注** ✓（见 `detail.js` 的 `renderSkillsView`）
-		model.skillStats = (await call('getSkillStats')) ?? {};
-		model.skills = rowsOf(await call('listSkills'));
+		// ★ 跨分区：统计按各分区**加权**合并（不能把各分区平均再平均 ⇒ 会失真 ✗，与 IDE 侧同口径）
+		let totalSkills = 0, sumUsage = 0, writtenCount = 0, sumConf = 0, sumSteps = 0, parts = 0;
+		const skillRows = [];
+		const seenSkill = new Set();
+		for (const aid of model.partitions) {
+			const st = (await callIn(aid, 'getSkillStats')) ?? {};
+			const n = Number(st.totalSkills) || 0;
+			totalSkills += n;
+			sumUsage += Number(st.totalUsage) || 0;
+			writtenCount += Number(st.writtenCount) || 0;
+			sumConf += (Number(st.avgConfidence) || 0) * n;
+			sumSteps += (Number(st.avgSteps) || 0) * n;
+			if (n) { parts += 1; }
+			for (const row of rowsOf(await callIn(aid, 'listSkills'))) {
+				const id = String(row?.id ?? row?.title ?? '');
+				if (!id || seenSkill.has(id)) { continue; }
+				seenSkill.add(id);
+				skillRows.push(Object.assign({}, row, { partition: aid }));
+			}
+		}
+		model.skillStats = {
+			totalSkills,
+			avgConfidence: totalSkills ? sumConf / totalSkills : 0,
+			avgSteps: totalSkills ? sumSteps / totalSkills : 0,
+			totalUsage: sumUsage,
+			writtenCount,
+			partitions: parts,
+		};
+		model.skills = skillRows;
 	}
 	if (model.tool === 'diag') {
 		const diag = await call('diagnose');
@@ -4303,9 +4389,13 @@ export function apply(ctx, rawConfig = {}) {
 				//   ⚠ 取数与 SSR 详情页**同一个函数**（`loadDetailModel`）⇒ 两个界面的口径不会再分叉 ✓
 				if (pathname === `${PAGE_ROUTE}api/detail` || pathname === `${PAGE_ROUTE}api/detail/`) {
 					try {
-						const model = await loadDetailModel({ config, params: url.searchParams, state });
+						// ★ React 二级页要看到更多条目（SSR 页为省首屏只取 50）⇒ 这里默认 200、上限 500
+						//   ⚠ 用副本改参数：url.searchParams 是共享对象，直接 set 会影响同请求的其它分支 ✗
+						const detailParams = new URLSearchParams(url.searchParams);
+						if (!detailParams.get('limit')) { detailParams.set('limit', '200'); }
+						const model = await loadDetailModel({ config, params: detailParams, state });
 						const payload = Object.assign({ ok: true, version: PKG_VERSION }, model, {
-							params: Object.fromEntries(url.searchParams),
+							params: Object.fromEntries(detailParams),
 						});
 						res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
 						res.end(JSON.stringify(payload));

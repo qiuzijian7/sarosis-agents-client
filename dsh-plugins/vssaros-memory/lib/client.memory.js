@@ -115,17 +115,42 @@ if (typeof document !== 'undefined' && typeof console !== 'undefined' && console
 		 * ⇒ 抽成纯函数后可以直接 `renderToStaticMarkup(renderDetailTab('slots', 假模型))` ✓
 		 * ⚠ 纯函数：**不许读 state、不许发请求**（只吃 `(tab, model)` 两个入参 ✓）。
 		 */
-		function renderDetailTab(tab, m) {
+		function renderDetailTab(tab, m, filters) {
 			const arr = v => (Array.isArray(v) ? v : []);
 			if (tab === 'memories') {
-				const items = arr(m.items);
-				if (!items.length) { return emptyHint('这个分区里没有记忆条目（换页签/换分区看看；空 ≠ 出错，服务端口径已核对 ✓）'); }
-				return h('ul', { className: 'md2-list', 'data-memory-detail-list': 'memories' }, items.slice(0, 200).map((it, i) =>
-					h('li', { key: 'm' + i, className: 'md2-row' },
-						h('span', { className: 'md2-row-top' },
-							badge(String(it.tier || '?')), it.type ? badge(String(it.type), 'md2-badge-type') : null,
-							it.timestamp ? h('span', { className: 'md2-time' }, new Date(Number(it.timestamp) || 0).toLocaleString()) : null),
-						h('span', { className: 'md2-row-text' }, String(it.content || '').slice(0, 400)))));
+				// ★★ 2026-10-26：复刻 IDE 侧（memoryDetailEditorPane 的记忆页）——
+				//   · 层筛选 = 纯前端（IDE 侧切筛选也不发请求 ✓）；子类型 chips 来自 typeCounts
+				//   · 统计行：总数 / 当前显示 / 是否截断 / 已查分区数（空要能分辨「没有」与「没查到」✓）
+				//   · 每行：tier 徽标（data-tier ⇒ 颜色由 CSS 给）+ 类型 + 时间 + 来源分区（非当前分区才显示）
+				//   ⚠ item.timestamp 是**已格式化的字符串**（toDetailItem 里 toLocaleString 过）
+				//     ⇒ 这里不能再 new Date(Number(...))（会全变 1970 ✗，冒烟测试已覆盖此点）
+				const all = arr(m.items);
+				const layer = (filters && filters.layer) || 'all';
+				const type = (filters && filters.type) || '';
+				const cur = String(m.agentId || '');
+				const shown = all.filter(it => (layer === 'all' || it.tier === layer)
+					&& (!type || String(it.type || '').toLowerCase() === type));
+				const parts = arr(m.partitions);
+				const stats = h('div', { className: 'md2-stats', 'data-memory-detail-stats': '' },
+					h('span', null, '共 ' + String(m.total != null ? m.total : all.length) + ' 条'),
+					h('span', null, '显示 ' + shown.length + (m.truncated ? '（已截断到 ' + String(m.itemLimit || all.length) + ' 条）' : '')),
+					h('span', null, '已查 ' + parts.length + ' 个分区' + (m.partitionsTruncated ? '（部分）' : '')));
+				if (!shown.length) {
+					return h('div', null, stats, emptyHint(all.length
+						? '当前筛选下没有条目（共 ' + all.length + ' 条 ⇒ 换层/换类型试试）'
+						: '这些分区里确实没有记忆条目（已查 ' + parts.length + ' 个分区：' + parts.slice(0, 6).join('、') + '）'));
+				}
+				return h('div', null, stats,
+					h('ul', { className: 'md2-list', 'data-memory-detail-list': 'memories' }, shown.map((it, i) =>
+						h('li', { key: 'm' + i, className: 'md2-row', 'data-memory-item-tier': String(it.tier || '') },
+							h('span', { className: 'md2-row-top' },
+								h('span', { className: 'md2-badge md2-tier', 'data-tier': String(it.tier || '?') }, String(it.tier || '?')),
+								it.type ? badge(String(it.type), 'md2-badge-type') : null,
+								it.partition && String(it.partition) !== cur
+									? h('span', { className: 'md2-badge md2-part', 'data-partition': String(it.partition) }, '🗂 ' + String(it.partition))
+									: null,
+								it.timestamp ? h('span', { className: 'md2-time' }, String(it.timestamp)) : null),
+							h('span', { className: 'md2-row-text' }, String(it.content || '').slice(0, 500))))));
 			}
 			if (tab === 'sessions') {
 				const ss = arr(m.sessions), sm = arr(m.summaries);
@@ -228,6 +253,9 @@ if (typeof document !== 'undefined' && typeof console !== 'undefined' && console
 
 		function MemoryDetailPage(props) {
 			const [tab, setTab] = useState('memories');
+			// ★ 层筛选是纯前端（与 IDE 侧同口径：切筛选不发请求 ✓）
+			const [layer, setLayer] = useState('all');
+			const [type, setType] = useState('');
 			const [st, setSt] = useState({ status: 'loading', data: null, error: '' });
 			const reload = useCallback(async () => {
 				setSt(prev => ({ status: 'loading', data: prev.data, error: '' }));
@@ -257,11 +285,29 @@ if (typeof document !== 'undefined' && typeof console !== 'undefined' && console
 						'aria-selected': t.id === tab ? 'true' : 'false',
 						onClick: () => setTab(t.id),
 					}, t.label))),
+				// 层筛选行（复刻 IDE 侧第二行标签：全部 / Working / Episodic / Semantic / Procedural）
+				// ⚠ 只在记忆页签显示：其它页签不是「层」结构，显示这行会误导 ✗
+				tab === 'memories' ? h('nav', { className: 'md2-filters', 'data-memory-detail-filters': '' },
+					[['all', '全部'], ['working', 'Working'], ['episodic', 'Episodic'], ['semantic', 'Semantic'], ['procedural', 'Procedural']].map(f =>
+						h('button', {
+							key: f[0], type: 'button',
+							className: 'md2-chip' + (layer === f[0] ? ' is-active' : ''),
+							'data-memory-layer': f[0],
+							onClick: () => setLayer(f[0]),
+						}, f[1])),
+					type ? h('button', { type: 'button', className: 'md2-chip', onClick: () => setType('') }, '✕ ' + type) : null,
+					Object.keys(m.typeCounts || {}).slice(0, 8).map(k =>
+						h('button', {
+							key: 't-' + k, type: 'button',
+							className: 'md2-chip md2-chip-type' + (type === k ? ' is-active' : ''),
+							'data-memory-type': k,
+							onClick: () => setType(type === k ? '' : k),
+						}, k + ' (' + String((m.typeCounts || {})[k]) + ')'))) : null,
 				st.status === 'error'
 					? h('p', { className: 'wb-empty mem-err', role: 'alert', 'data-memory-detail-state': 'error' }, '详情读取失败：' + st.error)
 					: (st.status === 'loading' && !st.data
 						? h('p', { className: 'wb-empty', 'data-memory-detail-state': 'loading' }, '正在读取详情…')
-						: h('section', { className: 'md2-body', 'data-memory-detail-state': 'ready' }, renderDetailTab(tab, m))));
+						: h('section', { className: 'md2-body', 'data-memory-detail-state': 'ready' }, renderDetailTab(tab, m, { layer, type }))));
 		}
 
 		function MemoryPanel() {
@@ -480,6 +526,17 @@ if (typeof document !== 'undefined' && typeof console !== 'undefined' && console
   border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.3)); opacity:.9; }
 .md2 .md2-badge-empty { opacity:.55; }
 .md2 .md2-time { font-size:11px; opacity:.6; }
+.md2 .md2-stats { display:flex; flex-wrap:wrap; gap:10px; padding:2px 0 8px; font-size:11px; opacity:.75; }
+.md2 .md2-filters { display:flex; flex-wrap:wrap; gap:4px; padding:0 16px 6px; }
+.md2 .md2-chip { padding:2px 8px; border-radius:999px; font-size:11px; cursor:pointer;
+  border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.3)); background:transparent; color:inherit; }
+.md2 .md2-chip.is-active { background:var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.18)); font-weight:600; }
+.md2 .md2-chip-type { opacity:.8; }
+.md2 .md2-tier[data-tier="working"] { border-color:#5aa9e6; color:#5aa9e6; }
+.md2 .md2-tier[data-tier="episodic"] { border-color:#f0a04b; color:#f0a04b; }
+.md2 .md2-tier[data-tier="semantic"] { border-color:#8bc34a; color:#8bc34a; }
+.md2 .md2-tier[data-tier="procedural"] { border-color:#b07cf0; color:#b07cf0; }
+.md2 .md2-part { opacity:.75; }
 .md2 .md2-cards { display:flex; flex-wrap:wrap; gap:8px; }
 .md2 .md2-kv { display:flex; gap:8px; align-items:baseline; font-size:var(--wb-f-xs, 12px);
   border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.22)); border-radius:6px; padding:3px 8px; }
