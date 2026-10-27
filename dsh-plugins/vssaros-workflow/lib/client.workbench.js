@@ -255,7 +255,7 @@ window.__ModuleLoader__.load({
 				'data-wf-selected': selectedId || '',
 			},
 				h('header', { className: 'wb-toolbar', 'data-dsh-workbench-toolbar': '' },
-					h('h1', null, 'Workflow', h('small', null, ' ' + summary.count + ' 个 · 只读')),
+					h('h1', { className: 'wb-title' }, 'Workflow', h('small', null, ' ' + summary.count + ' 个 · 只读')),
 					h('span', { className: 'wb-spacer' }),
 					h('span', { className: 'wb-stat' }, '已显示 ', h('b', { 'data-wf-shown': '' }, String(visible.length)), ' / ' + summary.count, ' · 节点 ', summary.nodes, ' · 边 ', edgeTotal, ' · 运行中 ', summary.active, ' · 待整理 ', tidyCount),
 					h('button', { type: 'button', title: '刷新（重新读盘）', onClick: () => { void reload(''); } }, '⟳'),

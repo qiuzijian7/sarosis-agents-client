@@ -351,7 +351,7 @@ window.__ModuleLoader__.load({
 				'data-kanban-runner-why': diag ? String(diag.runnerWhy || '') : '',
 			},
 				h('div', { className: 'wb-toolbar wb-header' },
-					h('h1', null, 'Tasks ', h('small', null, total + ' 条（只读）')),
+					h('h1', { className: 'wb-title' }, 'Tasks ', h('small', null, total + ' 条（只读）')),
 					h('div', { className: 'wb-field-row', 'data-dsh-workbench-toolbar': '' },
 						h('input', { className: 'wb-input', type: 'search', value: query, 'data-kanban-search': '', placeholder: '搜索卡片（标题 / id / 负责人）', 'aria-label': '搜索卡片', onChange: (ev) => setQuery(ev.target.value) }),
 						h('select', { className: 'wb-select', value: board, 'data-kanban-board': '', 'aria-label': '按看板筛选', onChange: (ev) => setBoard(ev.target.value) },

@@ -53,9 +53,12 @@ body {
 }
 
 /* ── 页头 ───────────────────────────────────────────────── */
-.vs-mp-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
-.vs-mp-head h1 { margin: 0; font-size: 22px; font-weight: 600; color: var(--vs-mp-fg); }
-.vs-mp-sub { margin: 4px 0 0; font-size: 12px; color: var(--vs-mp-fg-dim); opacity: .78; }
+/* ★ 2026-10-27（用户反馈「title 太大」）：本页头与共享层 `.wb-toolbar` 对齐 ——
+   `align-items:center`（原来 flex-end 让标题贴底）、gap 16→8、标题 22px→14px、副标题 12→11px。
+   ⚠ 这里必须写**字面量**：页面不加载共享层的 `--wb-f-title`（它是独立 page.css）*/
+.vs-mp-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; min-height: 32px; }
+.vs-mp-head h1 { margin: 0; font-size: 14px; font-weight: 600; line-height: 1.25; color: var(--vs-mp-fg); }
+.vs-mp-sub { margin: 2px 0 0; font-size: 11px; color: var(--vs-mp-fg-dim); opacity: .78; }
 .vs-mp-tools { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 
 .vs-mp-input {

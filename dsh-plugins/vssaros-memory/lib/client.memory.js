@@ -87,7 +87,7 @@ if (typeof document !== 'undefined' && typeof console !== 'undefined' && console
 		      type: 'button', className: 'wb-btn is-ghost',
 		      'data-vssaros-memory-action': 'back-to-library', onClick: o.back,
 		    }, '← 返回记忆库') : null,
-		    h('h1', null, String(o.title || '')),
+		    h('h1', { className: 'wb-title' }, String(o.title || '')),
 		    h('span', { className: 'wb-sub' }, String(o.sub || '')),
 		    h('span', { className: 'wb-spacer' }),
 		    o.refresh ? h('button', { type: 'button', 'data-vssaros-memory-action': 'refresh', onClick: o.refresh }, '⟳ 刷新') : null,

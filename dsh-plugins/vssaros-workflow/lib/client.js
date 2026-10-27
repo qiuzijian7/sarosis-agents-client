@@ -1,3 +1,4 @@
+// ★ 2026-10-27 工作台标题统一（Workflow 标题走 .wb-title）—— 触碰入口使产物 revision 更新
 // 2026-10-24 touch：client.workbench.js：补 @container（S9 容器查询） ⇒ 入口置新（chunk 守卫按 mtime 判）。
 // @vssaros/dsh-workflow — 客户端半（dsh web 的客户端插件）。
 //

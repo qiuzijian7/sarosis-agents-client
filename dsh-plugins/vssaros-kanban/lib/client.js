@@ -1,3 +1,4 @@
+// ★ 2026-10-27 工作台标题统一（Tasks 标题走 .wb-title）—— 触碰入口使产物 revision 更新
 // @vssaros/dsh-kanban — client half：看板工具卡（`tool.call.toolview`）
 // ★ 2026-10-22（工作台重构 §5 步骤 2）：本入口另带**React 工作台**子块 `client.kanban.js`
 //   （经 `require.async` 装载；文件名必须 `client.*.js` ⇒ 装载器只认这个形状 ✓）。

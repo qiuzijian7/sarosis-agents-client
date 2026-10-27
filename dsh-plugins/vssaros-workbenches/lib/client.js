@@ -1,3 +1,4 @@
+// ★ 2026-10-27 工作台标题统一（共享层：工具条标题规格（--wb-f-title / .wb-toolbar h1））—— 触碰入口使产物 revision 更新
 // @vssaros/dsh-workbenches — 工作台宿主（客户端半）。
 //
 // 提供客户端服务 `desktopWorkbenches`（与 dsh-desktop 官方宿主**同名同形**，见 doc/workbench-refactor-plan.md §4.1）。

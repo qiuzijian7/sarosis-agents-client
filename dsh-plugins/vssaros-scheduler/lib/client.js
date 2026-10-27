@@ -1,3 +1,4 @@
+// ★ 2026-10-27 工作台标题统一（自动化任务标题走 .wb-title）—— 触碰入口使产物 revision 更新
 // @vssaros/dsh-scheduler — 客户端：「自动化任务」工作台（2026-10-24 用户：「移除自动化任务 item，
 // 将自动化任务包装成一个 自动化任务工作台，并设计工作台UI」）。
 //
@@ -172,7 +173,7 @@ window.__ModuleLoader__.load({
 
 			return h('div', { className: 'wb wb-sched', 'data-vssaros-page': 'scheduler', 'data-vssaros-surface': 'workbench' },
 				h('header', { className: 'wb-toolbar', 'data-dsh-workbench-toolbar': '' },
-					h('h1', null, h('span', { className: 'vssSchedH1Ico', 'aria-hidden': 'true' }, '🕒'), TITLE),
+					h('h1', { className: 'wb-title' }, h('span', { className: 'vssSchedH1Ico', 'aria-hidden': 'true' }, '🕒'), TITLE),
 					h('span', { className: 'wb-stat' },
 						view.status === 'ready' && view.available ? entries.length + ' 条 · ' + active.length + ' 已启用' : ''),
 					h('span', { className: 'wb-spacer' }),

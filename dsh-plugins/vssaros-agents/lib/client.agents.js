@@ -443,10 +443,22 @@ window.__ModuleLoader__.load({
 			const groupTaRef = useRef(null);
 			// 右栏记忆类数据（mem/evo/ver/br 共用一次 GET）
 			const [memView, setMemView] = useState({ status: 'idle', data: null, error: '' });   // 列表
+			/* 记忆页签的空态入口（2026-10-27）：一键创建 MEMORY.md，避免"永远是 0 条" */
+			const [memBusy, setMemBusy] = useState(false);
+			const [memMsg, setMemMsg] = useState('');
 			const [memFile, setMemFile] = useState(null);   // { title, content, loading, error }
+			/* AgentMemory 候选（2026-10-27）：只读展示 + 人勾选导入 */
+			const [amView, setAmView] = useState({ state: 'idle', data: null, error: '' });
+			const [amPick, setAmPick] = useState({});
+			const [amBusy, setAmBusy] = useState(false);
+			/* 演化页签的 AgentMemory 附加数据（结晶 / 治理审计） */
+			const [amExtra, setAmExtra] = useState({ state: 'idle', data: null });
 			const [evoDiff, setEvoDiff] = useState(null);   // { title, rows, added, removed, coarse, loading, error }
 			// 「Agent 设置」= 二级页面（**React 实现**，数据源只有 /x/agents/api/*，不开编辑器 ⇒ 桌面窗口不黑屏）
 			const [settingFor, setSettingFor] = useState('');
+			/* 会话条目右键菜单（{x,y,sid,title}）与重命名弹层（{sid,value,busy,err}）—— 2026-10-27 */
+			const [sesMenu, setSesMenu] = useState(null);
+			const [renaming, setRenaming] = useState(null);
 			const [stab, setStab] = useState('basic');           // 设置页当前页签（basic|prompt|runtime|versions|skills|channel|mcp|rules）
 			const [setBusy, setSetBusy] = useState(false);
 			const [setErr, setSetErr] = useState('');
@@ -563,6 +575,35 @@ window.__ModuleLoader__.load({
 				const big = 1e9;
 				return rows.slice().sort((x, y) => (idx.has(x.id) ? idx.get(x.id) : big) - (idx.has(y.id) ? idx.get(y.id) : big));
 			};
+			/**
+			 * 右栏头部的三个图标（2026-10-27 统一）。
+			 *
+			 * 原来是两个**文字字形** `⇄`（委派）/ `⇋`（IM 绑定）+ 一个 13px SVG（设置）：
+			 *   · 两个箭头肉眼几乎分不清（用户反馈「图标看着不对」）
+			 *   · 文字字形随字体变大小/粗细，和 13px 的 SVG 摆在一起不像一套
+			 *   · 小字号下 `⇄` 的细线容易糊成一团
+			 * ⇒ 三个都改成**同规格 SVG**（16 viewBox / 13px / stroke 1.2 / round cap），
+			 *   语义也换准：委派=分叉、绑定=链条、设置=齿轮。
+			 * ⚠ strokeWidth 必须 camelCase，写成 'stroke-width' 会让 React 报
+			 *   `Invalid DOM property`（p3-179 的 console 监听抓到过，齿轮那处也踩过）。
+			 */
+			/** 委派：一条主干分叉到两个节点（比 ⇄ 更能表达"派给子任务"） */
+			const delegateIcon = () => h('svg', {
+				width: 13, height: 13, viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor',
+				strokeWidth: 1.2, strokeLinecap: 'round', 'aria-hidden': 'true',
+			},
+			h('circle', { cx: 4.5, cy: 3.5, r: 1.7 }),
+			h('circle', { cx: 4.5, cy: 12.5, r: 1.7 }),
+			h('circle', { cx: 11.5, cy: 8, r: 1.7 }),
+			h('path', { d: 'M4.5 5.2v5.6' }),
+			h('path', { d: 'M6.2 8h3.6' }));
+			/** IM 绑定：链环（两端各一个环，中间扣在一起） */
+			const linkIcon = () => h('svg', {
+				width: 13, height: 13, viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor',
+				strokeWidth: 1.2, strokeLinecap: 'round', 'aria-hidden': 'true',
+			},
+			h('path', { d: 'M6.9 9.9a2.9 2.9 0 0 0 4.2.3l1.6-1.6a2.9 2.9 0 0 0-4.1-4.1l-1 1' }),
+			h('path', { d: 'M9.1 6.1a2.9 2.9 0 0 0-4.2-.3L3.3 7.4a2.9 2.9 0 0 0 4.1 4.1l1-1' }));
 			const gearIcon = () => h('svg', {
 				width: 13, height: 13, viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor',
 				// ⚠ 必须是 camelCase：写成 'stroke-width' React 会报
@@ -958,6 +999,222 @@ window.__ModuleLoader__.load({
 					.catch(e => { if (alive) { setMemView({ status: 'error', data: null, error: String(e && e.message || e) }); } });
 				return () => { alive = false; };
 			}, [tab, rtab, curAgent && curAgent.id]);
+
+			/** 拉 AgentMemory 候选（只读）。网关离线/未配置都不算错 —— 只是这一块显示状态。 */
+			const loadAgentMemory = async () => {
+				const agentId = curAgent ? curAgent.id : '';
+				if (!agentId) { setAmView({ state: 'idle', data: null }); return; }
+				setAmView((v) => ({ ...v, state: 'loading' }));
+				try {
+					const res = await fetch('/x/agents/api/agentmemory?agent=' + encodeURIComponent(agentId) + '&limit=40', {
+						credentials: 'same-origin',
+					});
+					const j = await res.json().catch(() => ({}));
+					if (!res.ok || j.ok === false) { throw new Error(j.error || ('HTTP ' + res.status)); }
+					setAmView({ state: String(j.state || 'online'), data: j });
+				} catch (e) {
+					setAmView({ state: 'offline', data: null, error: String((e && e.message) || e) });
+				}
+			};
+
+			/** 把勾选的候选**追加**到 MEMORY.md 末尾（不覆盖已有内容，写前再读一次）。 */
+			const importPicked = async () => {
+				const agentId = curAgent ? curAgent.id : '';
+				const items = ((amView.data && amView.data.items) || []).filter((x) => amPick[String(x.id)]);
+				if (!agentId || !items.length) { return; }
+				setAmBusy(true); setMemMsg('');
+				try {
+					const cur = await getJson('/memory?agent=' + encodeURIComponent(agentId) + '&file=MEMORY.md').catch(() => null);
+					const base = String((cur && cur.content && cur.content.text) || '').replace(/\s+$/, '');
+					const added = items.map((x) => '- [' + String(x.type || 'note') + '] ' + String(x.content || '')).join('\n');
+					const next = (base ? base + '\n\n' : '') + '<!-- 从 AgentMemory 导入 ' + items.length + ' 条（'
+						+ new Date().toISOString().slice(0, 10) + '） -->\n' + added + '\n';
+					const res = await fetch('/x/agents/api/memory', {
+						method: 'POST', headers: { 'content-type': 'application/json' },
+						body: JSON.stringify({ action: 'write-memory', agent: agentId, text: next }),
+					});
+					const j = await res.json().catch(() => ({}));
+					if (!res.ok || j.ok === false) { throw new Error(j.error || ('HTTP ' + res.status)); }
+					setMemMsg('✓ 已追加 ' + items.length + ' 条到 MEMORY.md（记得点「提交快照」留版本）');
+					setAmPick({});
+					const body = await getJson('/memory?agent=' + encodeURIComponent(agentId));
+					setMemView({ status: 'ready', data: body, error: '' });
+				} catch (e) {
+					setMemMsg('⚠ ' + String((e && e.message) || e));
+				} finally {
+					setAmBusy(false);
+				}
+			};
+
+			/** AgentMemory 那一块的渲染（状态行 + 勾选列表 + 导入按钮）。 */
+			/**
+			 * 把 `MEMORY.md` 的条目**单向**写进 AgentMemory（2026-10-27，C 档）。
+			 *
+			 * 为什么单向：`MEMORY.md` 会被注入 system prompt，必须是可审阅的唯一真源；
+			 * 让库反写文件 = 未审阅内容进前缀。所以这里只「文件 → 库」，且库只增不改。
+			 * 去重在服务端做（按内容 hash，存 `<dataRoot>/agent-memory-sync.json`）。
+			 */
+			const syncToAgentMemory = async () => {
+				const agentId = curAgent ? curAgent.id : '';
+				if (!agentId) { return; }
+				setAmBusy(true); setMemMsg('');
+				try {
+					const res = await fetch('/x/agents/api/agentmemory', {
+						method: 'POST', headers: { 'content-type': 'application/json' },
+						body: JSON.stringify({ action: 'sync', agent: agentId }),
+					});
+					const j = await res.json().catch(() => ({}));
+					if (!res.ok || j.ok === false) { throw new Error(j.error || ('HTTP ' + res.status)); }
+					const msg = j.state === 'unconfigured' ? '网关未配置（找不到地址）'
+						: j.state === 'offline' ? '网关离线，稍后再试'
+							: j.empty ? 'MEMORY.md 里没有可同步的条目'
+								: ('已写入 ' + j.added + ' 条'
+									+ (j.skipped ? '（跳过 ' + j.skipped + ' 条已同步）' : '')
+									+ (j.failed && j.failed.length ? '，失败 ' + j.failed.length + ' 条' : ''));
+					setMemMsg('✓ ' + msg);
+					if (j.added) { void loadAgentMemory(); }
+				} catch (e) {
+					setMemMsg('⚠ ' + String((e && e.message) || e));
+				} finally {
+					setAmBusy(false);
+				}
+			};
+
+			const amBlock = () => {
+				const d0 = (amView.data || {});
+				const items = Array.isArray(d0.items) ? d0.items : [];
+				const pickedCount = items.filter((x) => amPick[String(x.id)]).length;
+				const st = String(amView.state || 'idle');
+				const label = st === 'online' ? ('在线 · ' + String(d0.gateway || ''))
+					: st === 'offline' ? '离线（拉不到候选）'
+						: st === 'unconfigured' ? '未配置（找不到网关地址）'
+							: st === 'loading' ? '读取中…' : '未读取';
+				return h('div', { className: 'ag3-sechd', 'data-ag-am': st, style: { marginTop: '8px' } },
+					h('span', null, '来自 AgentMemory', h('small', null, ' · ' + label)),
+					h('button', {
+						type: 'button', className: 'wb-btn is-ghost ag3-mini', 'data-ag-am-reload': '',
+						disabled: st === 'loading', onClick: () => { void loadAgentMemory(); },
+					}, '刷新'),
+					items.length
+						? h('div', null,
+							items.slice(0, 20).map((x) => h('label', {
+								key: String(x.id), 'data-ag-am-item': String(x.id),
+								className: 'ag3-item', style: { display: 'flex', gap: '6px', alignItems: 'flex-start', cursor: 'pointer' },
+							},
+							h('input', {
+								type: 'checkbox', checked: !!amPick[String(x.id)],
+								onChange: (ev) => {
+									const on = ev.target.checked;
+									setAmPick((m0) => { const m = { ...m0 }; if (on) { m[String(x.id)] = true; } else { delete m[String(x.id)]; } return m; });
+								},
+							}),
+							h('span', { style: { flex: 1, minWidth: 0 } },
+								h('span', { className: 'wb-badge' }, String(x.type || 'note')), ' ',
+								String(x.content || '').slice(0, 90)))),
+							h('div', { className: 'ag3-btnrow', style: { marginTop: '4px' } },
+								h('button', {
+									type: 'button', className: 'wb-btn is-primary ag3-mini', 'data-ag-am-import': '',
+									disabled: amBusy === true || !pickedCount,
+									onClick: () => { void importPicked(); },
+								}, amBusy ? '导入中…' : ('导入勾选的 ' + pickedCount + ' 条')),
+								/* ★ 2026-10-27（C 档）：把 MEMORY.md 的条目**单向**写进库（只增不改） */
+								h('button', {
+									type: 'button', className: 'wb-btn is-ghost ag3-mini', 'data-ag-am-sync': '',
+									disabled: amBusy === true,
+									onClick: () => { void syncToAgentMemory(); },
+								}, '→ 同步 MEMORY.md 到库'),
+								h('small', null, '导入 = 追加到 MEMORY.md（不覆盖）；同步 = 把文件条目写进库（只增不改，库不回改文件）')))
+						: h('p', { className: 'wb-empty' },
+							st === 'online' ? '条目库是空的。' : '拿不到候选 —— 网关起来后再点「刷新」。'));
+			};
+
+			/** 拉结晶 + 治理审计（演化页签用；只读，三态不抛）。 */
+			const loadAmExtra = async () => {
+				const agentId = curAgent ? curAgent.id : '';
+				if (!agentId) { setAmExtra({ state: 'idle', data: null }); return; }
+				setAmExtra((v) => ({ ...v, state: 'loading' }));
+				try {
+					const res = await fetch('/x/agents/api/agentmemory?agent=' + encodeURIComponent(agentId) + '&what=extras', { credentials: 'same-origin' });
+					const j = await res.json().catch(() => ({}));
+					if (!res.ok || j.ok === false) { throw new Error(j.error || ('HTTP ' + res.status)); }
+					setAmExtra({ state: String(j.state || 'online'), data: j });
+				} catch (e) {
+					setAmExtra({ state: 'offline', data: null, error: String((e && e.message) || e) });
+				}
+			};
+
+			/* 演化页签激活时拉一次 */
+			useEffect(() => {
+				if (tab !== 'roster' || rtab !== 'evo') { return undefined; }
+				void loadAmExtra();
+				return undefined;
+			}, [tab, rtab, curAgent && curAgent.id]);
+
+			/** 结晶 + 治理审计的渲染（与「提交时间线」并列，标题标明来源）。 */
+			const amExtraBlock = () => {
+				const d0 = amExtra.data || {};
+				const crystals = Array.isArray(d0.crystals) ? d0.crystals : [];
+				const audit = Array.isArray(d0.audit) ? d0.audit : [];
+				const st = String(amExtra.state || 'idle');
+				const label = st === 'online' ? '在线' : st === 'offline' ? '离线' : st === 'unconfigured' ? '未配置' : st === 'loading' ? '读取中…' : '未读取';
+				const hint = st === 'online' ? null : '拿不到 —— 网关起来后再点「刷新」。';
+				return h('div', { 'data-ag-am-evo': st },
+					h('div', { className: 'ag3-sechd', style: { marginTop: '8px' } },
+						'记忆结晶', h('small', null, ' · AgentMemory · ' + label + ' · ' + crystals.length),
+						h('button', {
+							type: 'button', className: 'wb-btn is-ghost ag3-mini', 'data-ag-am-evo-reload': '',
+							disabled: st === 'loading', onClick: () => { void loadAmExtra(); },
+						}, '刷新')),
+					crystals.length
+						? crystals.slice(0, 10).map((x, i) => h('div', {
+							key: 'c' + i, className: 'ag3-item', 'data-ag-am-crystal': String(x.id),
+						}, h('span', null, '💎 '), h('small', null, String(x.title || '').slice(0, 70)),
+							h('span', { className: 'wb-spacer' }),
+							h('small', null, String(x.at || '').slice(0, 16))))
+						: h('p', { className: 'wb-empty' }, hint || '还没有结晶（记忆强度够时 AgentMemory 会自动结晶）。'),
+					h('div', { className: 'ag3-sechd', style: { marginTop: '8px' } },
+						'治理审计', h('small', null, ' · AgentMemory · ' + audit.length)),
+					audit.length
+						? audit.slice(0, 8).map((x, i) => h('div', {
+							key: 'a' + i, className: 'ag3-item', 'data-ag-am-audit': String(x.id),
+						}, h('span', { className: 'wb-badge' }, String(x.action || '')), ' ',
+							h('small', null, (String(x.target || '') + ' ' + String(x.at || '')).trim().slice(0, 60))))
+						: h('p', { className: 'wb-empty' }, hint || '没有治理记录。'),
+					(d0.warn && d0.warn.length) ? h('p', { className: 'ag-hint', 'data-ag-am-warn': '' }, String(d0.warn.join('；'))) : null);
+			};
+
+			/* 记忆页签激活时拉一次候选；网关离线只影响这一块的状态行，不影响主数据 */
+			useEffect(() => {
+				if (tab !== 'roster' || rtab !== 'mem') { return undefined; }
+				void loadAgentMemory();
+				return undefined;
+			}, [tab, rtab, curAgent && curAgent.id]);
+
+			/** 一键创建 MEMORY.md（空态入口）：写一份模板，之后的追加由 agent / 人自己改 */
+			const seedMemory = async () => {
+				const agentId = curAgent ? curAgent.id : '';
+				if (!agentId) { return; }
+				setMemBusy(true); setMemMsg('');
+				try {
+					const seed = '# 记忆\n\n'
+						+ '<!-- 这个文件会注入到 system prompt（按 memory-chars 截断）。\n'
+						+ '     追加一条 Markdown 列表项来记住一件事；改动在**新会话**生效。 -->\n\n'
+						+ '- （还没记任何事 —— 在这里加一条）\n';
+					const res = await fetch('/x/agents/api/memory', {
+						method: 'POST', headers: { 'content-type': 'application/json' },
+						body: JSON.stringify({ action: 'write-memory', agent: agentId, text: seed }),
+					});
+					const j = await res.json().catch(() => ({}));
+					if (!res.ok || j.ok === false) { throw new Error(j.error || ('HTTP ' + res.status)); }
+					setMemMsg('✓ 已创建 MEMORY.md（记得点「提交快照」留个版本）');
+					const body = await getJson('/memory?agent=' + encodeURIComponent(agentId));
+					setMemView({ status: 'ready', data: body, error: '' });
+				} catch (e) {
+					setMemMsg('⚠ ' + String((e && e.message) || e));
+				} finally {
+					setMemBusy(false);
+				}
+			};
 
 			// 点记忆文件 ⇒ 只读查看（`&file=` / `&rev=&file=`）
 			const openMemFile = useCallback(async (file, rev) => {
@@ -1881,6 +2138,15 @@ window.__ModuleLoader__.load({
 						? h('div', { 'data-ag-rtab-body': 'recent' }, rows.slice(0, 12).map((s, i) => h('div', {
 							key: 'r' + i, className: 'ag3-item ag3-click', role: 'button', tabIndex: 0,
 							'data-ag-recent': String(s.id || ''),
+							/* ★ 2026-10-27 用户要求：右键出菜单（重命名 / 在会话窗口中打开） */
+							onContextMenu: (ev) => {
+								ev.preventDefault();
+								setSesMenu({
+									x: ev.clientX, y: ev.clientY,
+									sid: String(s.id || ""),
+									title: String(s.title || ""),
+								});
+							},
 							onClick: () => openSessionById(s.id, curAgent),
 						}, h('span', { className: 'ag-st' }, '💬'), ' ', String(s.title || '（未命名会话）'),
 							h('small', null, ' · ' + String(s.ago) + '前'))))
@@ -1932,7 +2198,20 @@ window.__ModuleLoader__.load({
 									pin ? h('span', { className: 'wb-badge' }, '常驻') : null,
 									f && f.bytes !== undefined ? h('small', null, ' · ' + f.bytes + ' B') : null);
 							})
-							: h('p', { className: 'wb-empty' }, '没有记忆文件。'),
+							: h('div', { 'data-ag-mem-empty': '' },
+								h('p', { className: 'wb-empty' }, '还没有记忆文件。'),
+								h('div', { className: 'ag3-btnrow', style: { marginTop: '4px' } },
+									h('button', {
+										type: 'button', className: 'wb-btn is-primary ag3-mini', 'data-ag-mem-seed': '',
+										disabled: memBusy === true,
+										onClick: () => { void seedMemory(); },
+									}, memBusy ? '创建中…' : '＋ 新建 MEMORY.md')),
+								memMsg
+									? h('p', { className: 'wb-empty', 'data-ag-mem-msg': '' }, String(memMsg))
+									: null,
+								h('p', { className: 'wb-empty' },
+									'记忆由 agent 自己写（插件只负责注入与审阅）。内置 bot 的记忆存在数据根 agent-memory 下；'
+									+ '写一次这里就会出现内容与 Git 历史。')),
 						h('div', { className: 'ag3-sechd', style: { marginTop: '6px' } }, 'Git 历史', h('small', null, String(log.length))),
 						log.length
 							? log.slice(0, 10).map((c, i) => h('div', {
@@ -1943,6 +2222,11 @@ window.__ModuleLoader__.load({
 								String(c.message || c.subject || '').slice(0, 40),
 								h('small', null, ' · ' + String(c.hash || c.rev || '').slice(0, 8))))
 							: h('p', { className: 'wb-empty' }, '还没有记忆提交。'),
+						/* ── AgentMemory 只读候选（2026-10-27）────────────────────────
+						   数据来自 `/api/agentmemory`：条目库里的原始条目，**没经过审阅**，
+						   所以这里只给「勾选 → 追加到 MEMORY.md」，不自动注入、不自动保存。 */
+						amBlock(),
+
 						memFile
 							? h('div', { className: 'ag3-memview', 'data-ag-mem-view': '' },
 								h('div', { className: 'ag3-sechd' }, String(memFile.title || ''),
@@ -1979,7 +2263,9 @@ window.__ModuleLoader__.load({
 									? h('p', { className: 'wb-empty' }, '算不出来：' + evoDiff.error)
 									: h('pre', { className: 'wb-pre', 'data-ag-evo-rows': String((evoDiff.rows || []).length) },
 										(evoDiff.rows || []).map(r => (r.type === 'add' ? '+ ' : r.type === 'del' ? '- ' : '  ') + String(r.text ?? '')).join('\n'))))
-						: h('p', { className: 'ag-hint' }, '点一条提交看它与当前工作区的逐行差异（只读）；回滚在完整页。'));
+						: h('p', { className: 'ag-hint' }, '点一条提交看它与当前工作区的逐行差异（只读）；回滚在完整页。'),
+					/* ★ 2026-10-27：把 AgentMemory 的结晶与治理审计并列展示（只读，见下） */
+					amExtraBlock());
 			};
 
 			const rightPane = h('div', { className: 'ag3-r', 'data-ag-right': '' },
@@ -1988,29 +2274,33 @@ window.__ModuleLoader__.load({
 					// 2026-10-25：按用户要求，「委派任务」从中间栏搬到这里；「Agent 设置」也在这里给一个入口
 					//   （左栏 item 的 hover 齿轮仍保留 —— 那是"在这一行上顺手点"，这里是"看完档案再改"）。
 					//   ⚠ 右栏只有 320 宽 ⇒ 用**图标 + title**，不写中文（否则会挤掉"会话 N"）。
-					curAgent ? h('button', {
-						type: 'button', className: 'wb-btn is-ghost ag3-hbtn', 'data-ag-act': 'delegate',
-						// ★ 2026-10-26 用户确认：右栏用**图标**不写中文（320 宽，文字会挤掉「会话 N」）。
-						//   `data-tip` 走 CSS tooltip（悬停 0ms 出现）；`title`/`aria-label` 保留给
-						//   原生提示与读屏（三者都留，缺一个都会让"图标按钮"变得不可发现/不可读）。
-						title: '委派任务（切到「委派」页签）', 'aria-label': '委派任务', 'data-tip': '委派任务',
-						/* ★ 2026-10-26：原来跳完整页（新开 webview）。工作台**本来就有**「委派」页签
-						   ⇒ 直接切页签，零新窗口、零加载等待。 */
-						onClick: () => setTab('assign'),
-					}, '⇄') : null,
-					/* IM 绑定（2026-10-27）：把这个 bot 接到一个 IM 会话（飞书等）。
-					   图标用 `⇋`（与委派的 `⇄` 区分），title/data-tip 都写清用途。 */
-					curAgent ? h('button', {
-						type: 'button', className: 'wb-btn is-ghost ag3-hbtn', 'data-ag-act': 'im-bind',
-						title: 'IM 绑定（把这个 bot 接到飞书等 IM 会话）',
-						'aria-label': 'IM 绑定', 'data-tip': 'IM 绑定',
-						onClick: () => openBindPage('agent', String(curAgent.id), String(curAgent.name || curAgent.id)),
-					}, '⇋') : null,
-					curAgent ? h('button', {
-						type: 'button', className: 'wb-btn is-ghost ag3-hbtn', 'data-ag-act': 'settings',
-						title: 'Agent 设置（站内弹层，不开编辑器）', 'aria-label': 'Agent 设置', 'data-tip': 'Agent 设置',
-						onClick: () => setSettingFor(curAgent.id),
-					}, gearIcon()) : null,
+					/* ★ 2026-10-27：三个图标收进一个**工具条容器**（`.ag3-hbtns`，gap 2px）。
+					   原来它们是 header 的直接子节点，靠 `.ag3-rhd` 的 gap 均分 ⇒ 与标题、「会话 N」
+					   之间的间距和图标之间一样大，看着散；收进容器后图标成组、与文字分开。 */
+					curAgent ? h('span', { className: 'ag3-hbtns' },
+						h('button', {
+							type: 'button', className: 'wb-btn is-ghost ag3-hbtn', 'data-ag-act': 'delegate',
+							// ★ 2026-10-26 用户确认：右栏用**图标**不写中文（320 宽，文字会挤掉「会话 N」）。
+							//   `data-tip` 走 CSS tooltip（悬停 0ms 出现）；`title`/`aria-label` 保留给
+							//   原生提示与读屏（三者都留，缺一个都会让"图标按钮"变得不可发现/不可读）。
+							title: '委派任务（切到「委派」页签）', 'aria-label': '委派任务', 'data-tip': '委派任务',
+							/* ★ 2026-10-26：原来跳完整页（新开 webview）。工作台**本来就有**「委派」页签
+							   ⇒ 直接切页签，零新窗口、零加载等待。 */
+							onClick: () => setTab('assign'),
+						}, delegateIcon()),
+						/* IM 绑定（2026-10-27）：把这个 bot 接到一个 IM 会话（飞书等）。
+						   图标是**链条**（不再是形近的箭头字形），title/data-tip 都写清用途。 */
+						h('button', {
+							type: 'button', className: 'wb-btn is-ghost ag3-hbtn', 'data-ag-act': 'im-bind',
+							title: 'IM 绑定（把这个 bot 接到飞书等 IM 会话）',
+							'aria-label': 'IM 绑定', 'data-tip': 'IM 绑定',
+							onClick: () => openBindPage('agent', String(curAgent.id), String(curAgent.name || curAgent.id)),
+						}, linkIcon()),
+						h('button', {
+							type: 'button', className: 'wb-btn is-ghost ag3-hbtn', 'data-ag-act': 'settings',
+							title: 'Agent 设置（站内弹层，不开编辑器）', 'aria-label': 'Agent 设置', 'data-tip': 'Agent 设置',
+							onClick: () => setSettingFor(curAgent.id),
+						}, gearIcon())) : null,
 					h('span', { className: 'wb-spacer' }),
 					curAgent ? h('small', null, '会话 ' + String((home[curAgent.id] || {}).sessionsTotal || 0)) : null),
 				h('div', { className: 'ag3-rtabs', 'data-ag-rtabs': '' },
@@ -2729,6 +3019,20 @@ window.__ModuleLoader__.load({
 				return j;
 			};
 
+			/**
+			 * 会话重命名：`POST /x/agents/api/session-rename` ⇒ Host 的 `sessionController.rename`。
+			 * 为什么要绕 Host：rename 是 **Host 服务**，客户端 chunk 里拿不到（`ctx` 只有 slots）。
+			 */
+			const postSessionRename = async (sessionId, title) => {
+				const res = await fetch("/x/agents/api/session-rename", {
+					method: "POST", headers: { "content-type": "application/json" },
+					body: JSON.stringify({ sessionId, title }),
+				});
+				const j = await res.json().catch(() => ({}));
+				if (!res.ok || j.ok === false) { throw new Error(j.error || ("HTTP " + res.status)); }
+				return j;
+			};
+
 			/** 进群设置页：把该群当前值灌进表单（避免"打开看到的是上一个群"） */
 			const openGroupSet = (g) => {
 				if (!g || !g.id) { return; }
@@ -3184,7 +3488,11 @@ window.__ModuleLoader__.load({
 								/* ★ 2026-10-27：凭据搬进 **IDE 设置**（`sessions.agentStudio.im.feishu.*`，
 								   经 `--patch` 覆盖层注入插件行 `config.feishu`）——
 								   所以这里必须**指明去哪填**，否则用户只看到"未配置"却无处下手。 */
-								? '未配置应用凭据 —— 到「设置」搜「飞书」填 App ID / App Secret（出站 webhook 不需要）'
+								/* ★ 2026-10-27「数据源统一」：IDE 侧那套 `sessions.channel.feishu.*`
+								   已**整段下线**（设置项、覆盖层注入、窗口模式页签都删了）。
+								   凭据只在 **dsh 设置 → 渠道** 里填，存 `<dataRoot>/agent-im-accounts.json`，
+								   由插件自己的 `POST /api/bindings {action:'credentials'}` 写入。 */
+								? '未配置应用凭据 —— 到「设置 → 渠道」填 App ID / App Secret（dsh 侧真源；出站 webhook 不需要）'
 								: st === 'ready'
 									? ('已连接' + (inb.lastEventAt ? ' · 最近事件 ' + new Date(inb.lastEventAt).toLocaleTimeString() : ''))
 									: st === 'connecting' ? '连接中…'
@@ -3275,6 +3583,96 @@ window.__ModuleLoader__.load({
 								h('small', null, String(s.text || '').slice(0, 60))))) : null));
 			};
 
+			/**
+			 * 会话条目右键菜单（2026-10-27，用户要求）。
+			 *
+			 * 三项：在会话窗口中打开 / 重命名 / 复制 id。
+			 * ⚠ 「重命名」走的是 dsh 的 `sessionController.rename`（**真改名**，会话窗口里也变），
+			 *   不是我们自己的别名表 —— 别名只会在这一页生效，用户会以为"改了没生效"。
+			 * ⚠ 菜单用 fixed + 全屏遮罩：右栏是 overflow 容器，absolute 会被裁掉。 */
+			const sesMenuNode = () => {
+				if (!sesMenu) { return null; }
+				const close = () => setSesMenu(null);
+				const vw = (typeof window !== "undefined" && window.innerWidth) || 900;
+				const vh = (typeof window !== "undefined" && window.innerHeight) || 700;
+				return h("div", {
+					className: "ag3-ctxmask", "data-ag-sesmenu-mask": "",
+					onMouseDown: close,
+					onContextMenu: (ev) => { ev.preventDefault(); close(); },
+				}, h("div", {
+					className: "ag3-ctx", "data-ag-sesmenu": String(sesMenu.sid),
+					style: {
+						left: Math.max(8, Math.min(sesMenu.x, vw - 200)) + "px",
+						top: Math.max(8, Math.min(sesMenu.y, vh - 130)) + "px",
+					},
+					onMouseDown: (ev) => ev.stopPropagation(),
+				},
+					h("div", { className: "cap", title: sesMenu.title || sesMenu.sid }, sesMenu.title || "（未命名会话）"),
+					h("button", {
+						type: "button", "data-ag-sesmenu-act": "open",
+						onClick: () => { const sid = sesMenu.sid; close(); focusDock(sid); },
+					}, "在会话窗口中打开"),
+					h("button", {
+						type: "button", "data-ag-sesmenu-act": "rename",
+						onClick: () => {
+							const v = sesMenu;
+							close();
+							setRenaming({ sid: v.sid, value: v.title || "", busy: false, err: "" });
+						},
+					}, "重命名…"),
+					h("div", { className: "sep" }),
+					h("button", {
+						type: "button", "data-ag-sesmenu-act": "copy",
+						onClick: () => {
+							try { navigator.clipboard.writeText(sesMenu.sid); } catch (e) { /* 剪贴板被拒就忽略 */ }
+							close();
+						},
+					}, "复制会话 id")));
+			};
+
+			/** 重命名弹层：Enter 保存 / Esc 取消（保存后刷新列表） */
+			const renameDlgNode = () => {
+				if (!renaming) { return null; }
+				const submit = async () => {
+					const v = String(renaming.value || "").trim();
+					if (!v) { setRenaming((r) => ({ ...r, err: "标题不能为空" })); return; }
+					setRenaming((r) => ({ ...r, busy: true, err: "" }));
+					try {
+						await postSessionRename(renaming.sid, v);
+						setRenaming(null);
+						load();
+					} catch (e) {
+						setRenaming((r) => ({ ...r, busy: false, err: String((e && e.message) || e) }));
+					}
+				};
+				return h("div", { className: "ag3-rnmask", "data-ag-rename": String(renaming.sid) },
+					h("div", { className: "ag3-rndlg" },
+						h("h4", null, "重命名会话"),
+						h("input", {
+							className: "wb-input", "data-ag-rename-input": "",
+							value: String(renaming.value || ""),
+							disabled: renaming.busy === true,
+							onChange: (ev) => { const val = ev.target.value; setRenaming((r) => ({ ...r, value: val })); },
+							onKeyDown: (ev) => {
+								if (ev.key === "Enter") { ev.preventDefault(); void submit(); }
+								if (ev.key === "Escape") { setRenaming(null); }
+							},
+						}),
+						renaming.err
+							? h("p", { className: "ag2-err", "data-ag-rename-err": "" }, String(renaming.err))
+							: null,
+						h("div", { className: "ag3-btnrow" },
+							h("button", {
+								type: "button", className: "wb-btn is-primary", "data-ag-rename-save": "",
+								disabled: renaming.busy === true,
+								onClick: () => { void submit(); },
+							}, renaming.busy ? "保存中…" : "保存"),
+							h("button", {
+								type: "button", className: "wb-btn is-ghost", "data-ag-rename-cancel": "",
+								onClick: () => setRenaming(null),
+							}, "取消"))));
+			};
+
 			const rosterPane = () => {
 				// 二级页面优先：IM 绑定 / bot 设置 / 群设置 / 创建页
 				if (bindFor) { return bindPage(); }
@@ -3292,12 +3690,14 @@ window.__ModuleLoader__.load({
 					sel.kind === 'group'
 						? (curGroup ? midGroup(curGroup) : h('div', { className: 'ag3-m' }, h('p', { className: 'wb-empty' }, '这个群不存在了。')))
 						: (curAgent ? midAgent(curAgent) : h('div', { className: 'ag3-m' }, h('p', { className: 'wb-empty' }, '左边选一个 agent 或群聊。'))),
-					rightPane);
+					rightPane,
+					sesMenuNode(),
+					renameDlgNode());
 			};
 
 			return h('div', { className: 'wb wb-ag', 'data-vssaros-page': 'agents', 'data-vssaros-surface': 'workbench' },
 				h('header', { className: 'wb-toolbar', 'data-dsh-workbench-toolbar': '' },
-					h('h1', null, 'Bots'),
+					h('h1', { className: 'wb-title' }, 'Bots'),
 					h('span', { className: 'wb-sub' }, data
 						/* bot 口径一律按 agents 算（原来「花名册」用的是 preset 数 ⇒ 31 vs 23 像有重复） */
 						? [agents.length + ' 个', '已注册 ' + registeredCount,
@@ -3559,8 +3959,33 @@ window.__ModuleLoader__.load({
 
 /* ── 右栏 header 的图标按钮（委派 ⇄ / 设置 ⚙）──────────────────────────
    右栏固定 320 宽，写中文会挤掉「会话 N」⇒ 只放图标 + title 提示。 */
-.ag3-hbtn { height:20px; min-width:20px; padding:0 4px; font-size:var(--wb-f-xs); line-height:1; opacity:.7; }
-.ag3-hbtn:hover { opacity:1; }
+/* 右栏头部图标工具条：三个图标成组（与标题、「会话 N」分开） */
+/* ── 会话条目右键菜单（2026-10-27）：重命名 / 在会话窗口中打开 ──
+   用 fixed 定位 + 全屏透明遮罩：点空白处关闭，且不会被右栏的 overflow 裁掉。 */
+.ag3-ctxmask { position:fixed; inset:0; z-index:70; }
+.ag3-ctx { position:fixed; min-width:176px; background:var(--dsw-alias-bg-module-platform, #26262a);
+  border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.28)); border-radius:8px; padding:4px;
+  box-shadow:0 12px 30px var(--dsw-alias-shadow-overlay, rgba(0,0,0,.5)); display:flex; flex-direction:column; }
+.ag3-ctx button { text-align:left; font:inherit; font-size:12px; padding:6px 10px; border:0;
+  border-radius:5px; background:transparent; color:inherit; cursor:pointer; }
+.ag3-ctx button:hover { background:var(--dsw-alias-bg-module-platform, rgba(127,127,127,.18)); }
+.ag3-ctx .cap { font-size:10.5px; opacity:.7; padding:3px 10px 5px; white-space:nowrap;
+  overflow:hidden; text-overflow:ellipsis; max-width:240px; }
+.ag3-ctx .sep { height:1px; background:var(--dsw-alias-border-l1, rgba(127,127,127,.2)); margin:3px 4px; }
+/* 重命名弹层（不复用已废弃的 .ag3-mask —— 那是"改成二级页"之前的样式） */
+.ag3-rnmask { position:fixed; inset:0; z-index:80; background:var(--dsw-alias-bg-mask, rgba(0,0,0,.42));
+  display:flex; align-items:center; justify-content:center; }
+.ag3-rndlg { width:min(360px, 86vw); background:var(--dsw-alias-bg-module-platform, #232326); border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.3));
+  border-radius:10px; padding:14px; display:flex; flex-direction:column; gap:9px; }
+.ag3-rndlg h4 { margin:0; font-size:13px; }
+.ag3-hbtns { display:inline-flex; align-items:center; gap:2px; flex:none; }
+/* 右栏头部的图标按钮（2026-10-27 统一成 22×22 方形 + 居中 SVG）
+   原来 height/min-width 20px + padding 0 4px + 文字字形 ⇒ 三个图标视觉大小不一致、看着不像一套 */
+.ag3-hbtn { height:22px; min-width:22px; padding:0; display:inline-flex; align-items:center;
+  justify-content:center; line-height:1; opacity:.75; border-radius:5px; }
+.ag3-hbtn > svg { display:block; width:13px; height:13px; }
+.ag3-hbtn:hover { opacity:1; background:var(--dsw-alias-bg-module-platform, rgba(127,127,127,.16)); }
+.ag3-hbtn:active { background:var(--dsw-alias-bg-module-platform, rgba(127,127,127,.26)); }
 
 /* ── 分组折叠（2026-10-25）：标题整行可点，caret 折叠时转 -90° ──────────── */
 .ag3-sechd-toggle { cursor:pointer; user-select:none; }

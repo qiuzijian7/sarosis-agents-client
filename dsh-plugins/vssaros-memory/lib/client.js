@@ -1,3 +1,4 @@
+// ★ 2026-10-27 工作台标题统一（记忆库标题走 .wb-title（单一真源 detailView.js））—— 触碰入口使产物 revision 更新
 // 2026-10-26 touch：client.memory.js 详情页改用共享 wbToolbar（吸顶锚点收敛为 1 处）⇒ 入口置新。
 // 2026-10-24 touch：client.memory.js 经变异测试改写后置新（chunk 守卫按 mtime 判）。
 // 2026-10-24 touch：client.memory.js：补 @container ⇒ 入口置新（chunk 守卫按 mtime 判）。
