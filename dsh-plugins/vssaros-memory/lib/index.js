@@ -50,7 +50,7 @@ const PKG_VERSION = (() => {
 		return JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version ?? '(未知)';
 	} catch { return '(未知)'; }
 })();
-import { extractCandidates, turnCandidatesOf, parseFormUrlEncoded, SUMMARY_MATCHED_TAG, summaryCandidatesOf, userTextsOf } from './core/distill.js';
+import { buildTurnObservation, extractCandidates, turnCandidatesOf, parseFormUrlEncoded, SUMMARY_MATCHED_TAG, summaryCandidatesOf, userTextsOf } from './core/distill.js';
 
 import { createDraftStore, draftRowsOf } from './draft.js';
 import { recallHistory, renderHistory } from './history.js';
@@ -316,6 +316,12 @@ function createState() {
 		distillSeqs: new Map(),
 		/** 自动沉淀的计数（页面/探针自诊断：**跳过与失败都要可见**，否则"没产出"分不清是哪种 ✗）✓ */
 		distill: { turns: 0, candidates: 0, summaries: 0, turnSummaries: 0, written: 0, skipped: 0, failed: 0, judged: 0, judgeDropped: 0, judgeSkipped: 0 },
+		/**
+		 * **回合观测**计数（阶段③ 2026-10-27）：从 IDE 渲染侧搬到本插件后的可观测性。
+		 * 为什么不复用 `distill` 计数：观测是**暂存层流水**（每回合都想写），
+		 * 与"草稿候选"是两层（见 `core/distill.js` 的 buildTurnObservation 注释）⇒ 混在一起会看不清 ✗
+		 */
+		observe: { turns: 0, written: 0, failed: 0, skipped: 0 },
 		/**
 		 * 草稿区的**读回缓存**（页面渲染是同步的、读文件是异步的 ⇒ 页面请求时后台读一份放这里 ✓）。
 		 * 为什么需要它：草稿如果只有文件、没有界面，就等于**不存在** ✗ —— 自动沉淀的价值全在
@@ -4220,6 +4226,9 @@ export function apply(ctx, rawConfig = {}) {
 	// 抓住（反向突变 M-L 实测：把注入这处改成"默认开"、钩子那处仍把关 ⇒ 行为不变、67/67 全绿 ✗✓）。
 	// 抽出单一来源之后，任何一处改动都会体现在行为上 ✓。
 	const judgeEnabled = config.distillJudge === true;
+	// ★ 2026-10-27（阶段③）：**回合观测开关**（默认开）。关掉 ⇒ 完全不写 `mem:obs:*`，
+	//   与改动前（IDE 渲染侧负责）行为一致 —— 留这个开关是为了能一键回到旧路径 ✓
+	const observeOnTurn = config.observeOnTurn !== false;
 	if (judgeEnabled) {
 		ctx.inject(['llm'], child => child.effect(() => {
 			llmRuntime = child.llm;
@@ -4288,6 +4297,31 @@ export function apply(ctx, rawConfig = {}) {
 		// ⚠ `judgeEnabled` 来自**外层**（与"要不要注入 `llm`"是同一个常量 ✓），不在这里重算 ——
 		// 两处判断可能漂移，而漂移出的那一种组合**不会**被探针抓住 ✗。
 		const judgeTarget = judgeEnabled ? modelTargetOf(payload?.agent) : null;
+
+		// ★★ 2026-10-27（阶段③）：**回合观测**（`mem:obs:*` 暂存层）—— 从 IDE 渲染侧搬到本插件。
+		//   为什么搬：IDE 那几处 `observe` 依赖"渲染进程存活 + 代理可用 + IDE 重启才生效"；
+		//   而本 hook 的事件源与 distill **完全相同**（同一个 `agent/turn-stopping`）
+		//   ⇒ 放这里更稳、也少一处跨进程调用 ✓（用户要求"边聊边记"不该依赖 IDE 前端）
+		//   ⚠ 同样纪律：**同步**取好回合期对象（`payload`/`agent` 在后台不可靠，与 judgeTarget 同理）
+		const obsBase = gatewayUrlOf(config);
+		const obsPartition = writePartitionOf(agentIdOf(config), personaIdOf(payload?.agent, state?.projections));
+		const observation = buildTurnObservation(events, {
+			sessionId: String(session.id ?? ''),
+			turn: payload?.turn,
+			now: Date.now(),
+		});
+		if (observation && obsBase && observeOnTurn) {
+			state.observe.turns++;
+			void providerCall(obsBase, 'observe', [obsPartition, observation]).then(
+				() => { state.observe.written++; },
+				error => {
+					state.observe.failed++;
+					try { auditLogger?.warn?.(`[vssaros-memory] 回合观测写入失败（不影响回合）：${error?.message ?? error}`); } catch { /* 绝不再抛 ✓ */ }
+				},
+			);
+		} else if (observation) {
+			state.observe.skipped++;
+		}
 		// ⚠ 从这里起**全是后台**（`void` + 队列）：钩子已经返回，回合不会被这一跳拖住 ✓
 		// 用队列而不是裸 `void async`：并发上限 + 超时 + 可观测（`state.distill` 里的计数即来自它的结果 ✓）。
 		void distillQueue.push(async () => {

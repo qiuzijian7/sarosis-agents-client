@@ -33,6 +33,7 @@ const steps = [
   { name: '守卫：IDE 调用的记忆方法 ⊆ proxy', cmd: 'node', args: [path.join('dsh-plugins', 'check-memory-provider-parity.mjs')] },
   { name: '测试：详情页真渲染（18 项）', cmd: 'node', args: [path.join('dsh-plugins', 'vssaros-memory', 'test', 'reactDetailSmoke.mjs')] },
   { name: '测试：回合摘要自动沉淀（6 项）', cmd: 'node', args: [path.join('dsh-plugins', 'vssaros-memory', 'test', 'turnDistill.test.mjs')] },
+  { name: '测试：回合观测（dsh 侧，7 项）', cmd: 'node', args: [path.join('dsh-plugins', 'vssaros-memory', 'test', 'turnObserve.test.mjs')] },
   { name: '测试：preset⇒人设⇒写分区（6 项）', cmd: 'node', args: [path.join('dsh-plugins', 'vssaros-memory', 'test', 'writeScope.test.mjs')] },
   {
     name: '单测：引擎（跨分区兜底 / observe / 作用域）',

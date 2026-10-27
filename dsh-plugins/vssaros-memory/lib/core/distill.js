@@ -354,6 +354,51 @@ function collapseOneLine(raw, maxChars) {
 	return t.length > maxChars ? `${t.slice(0, maxChars)}…` : t;
 }
 
+/**
+ * **回合观测**（`mem:obs:*` 暂存层）★ 2026-10-27（阶段③）。
+ *
+ * ## 为什么要搬到 dsh 侧
+ * IDE 渲染进程此前每回合调 `memoryProvider.observe(...)`（"边聊边记"的唯一自动入口）
+ * ⇒ 依赖**渲染进程存活 + 代理可用 + IDE 重启才生效**；而 dsh 插件本来就在同一个
+ * `agent/turn-stopping` hook 上跑 distill（事件源完全一样）⇒ 搬到这里更稳：
+ *   ① 不需要 IDE 渲染侧参与；② 与 distill 共用同一份事件游标，不会漏回合；③ 可单测。
+ *
+ * ## 与 `turnCandidatesOf` 的关系（两层，别混）
+ *   · 本函数 ⇒ **观测**（暂存层，流水，由引擎固化管线消费）
+ *   · `turnCandidatesOf` ⇒ **草稿**（需人工「提升」才进长期记忆）
+ * ⇒ 两者都在同一批事件上产出，但落点不同、生命周期不同 ✓
+ *
+ * ## 门槛（比草稿宽松：观测是流水，不追求"值不值得记"）
+ *   · 用户或助手**至少一边有内容**就产（都空 ⇒ `null`，不写噪音）
+ *   · 分别截断到 `TURN_OBS_USER_MAX` / `TURN_OBS_ASSISTANT_MAX`（避免把整段对话塞进暂存层）
+ *
+ * @returns {{ sessionId: string, hookType: string, timestamp: string, data: object } | null}
+ */
+export const TURN_OBS_HOOK_TYPE = 'turn_end';
+export const TURN_OBS_USER_MAX = 300;
+export const TURN_OBS_ASSISTANT_MAX = 500;
+
+export function buildTurnObservation(events, options = {}) {
+	const sessionId = typeof options.sessionId === 'string' ? options.sessionId : '';
+	const turn = Number.isFinite(options.turn) ? options.turn : 0;
+	const now = Number.isFinite(options.now) ? options.now : Date.now();
+	const user = collapseOneLine(lastUserRaw(events), TURN_OBS_USER_MAX);
+	const assistant = collapseOneLine(lastAssistantText(events), TURN_OBS_ASSISTANT_MAX);
+	if (!user && !assistant) { return null; }
+	return {
+		sessionId,
+		hookType: TURN_OBS_HOOK_TYPE,
+		timestamp: new Date(now).toISOString(),
+		data: {
+			turn,
+			user,
+			assistant,
+			chars: { user: user.length, assistant: assistant.length },
+			source: 'dsh-plugin',
+		},
+	};
+}
+
 export function turnCandidatesOf(events, options = {}) {
 	const sessionId = typeof options.sessionId === 'string' ? options.sessionId : '';
 	const turn = Number.isFinite(options.turn) ? options.turn : 0;
