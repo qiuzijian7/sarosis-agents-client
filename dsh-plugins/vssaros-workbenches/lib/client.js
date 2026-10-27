@@ -1,3 +1,4 @@
+// ★ 2026-10-27 修复共享层 CSS 被反引号截断（0.2.21）—— 触碰入口使产物 revision 更新
 // ★ 2026-10-27 工作台标题统一（共享层：工具条标题规格（--wb-f-title / .wb-toolbar h1））—— 触碰入口使产物 revision 更新
 // @vssaros/dsh-workbenches — 工作台宿主（客户端半）。
 //

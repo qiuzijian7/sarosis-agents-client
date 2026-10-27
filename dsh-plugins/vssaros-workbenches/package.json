@@ -1,6 +1,6 @@
 {
   "name": "@vssaros/dsh-workbenches",
-  "version": "0.2.20",
+  "version": "0.2.21",
   "description": "VsSaros workbench host for DeepSeek Harness: a same-name, same-shape compatible host of dsh-desktop's `dsh-desktop-workbenches` (doc/workbench-refactor-plan.md route B). Client service `desktopWorkbenches` (register / open / home / leave / subscribe / add / remove; official validation, error boundary, compact-toolbar check) rendered into dsh `main` keyed panels; server keeps state.json (atomic write, revision lock, immutable session ownership) and provides read-only `desktopWorkbenchOwnership`. Server state logic ported from dsh-desktop (MIT).",
   "private": true,
   "type": "module",

@@ -29,7 +29,7 @@ const WORKBENCH_UI_CSS = `
 	--wb-r-sm: 6px; --wb-r-md: 10px; --wb-r-pill: 999px;
 	--wb-f-xs: 11px; --wb-f-sm: 12px; --wb-f-md: 13px; --wb-f-lg: 16px;
 	/* ★ 2026-10-27：**工具条标题**专用字号（用户反馈"每个工作台的 title 太大"）。
-	   独立于 `--wb-f-lg`：后者还给"空态/区块标题"用（scheduler、xhs-note），语义不同 ✗ */
+	   独立于 '--wb-f-lg'：后者还给"空态/区块标题"用（scheduler、xhs-note），语义不同 ✗ */
 	--wb-f-title: 14px;
 	--wb-lh: 1.5;
 	--wb-mono: var(--dsw-static-font-family-monospace, ui-monospace, SFMono-Regular, Menlo, monospace);
@@ -51,9 +51,9 @@ const WORKBENCH_UI_CSS = `
 }
 .wb-title { margin: 0; font-size: var(--wb-f-lg); font-weight: 600; white-space: nowrap; }
 /* ★ 2026-10-27（用户反馈「每个工作台的 title 太大」）：**工具条标题的唯一规格**。
-   同时命中 `.wb-title` 与**裸 h1** —— 历史上有 7 个工作台标题写的是裸 `h1`（没加类），
+   同时命中 '.wb-title' 与**裸 h1** —— 历史上有 7 个工作台标题写的是裸 h1（没加类），
    会吃宿主默认的 1.5em+ 大字号 ⇒ 9 个工作台标题大小不一 ✗ ⇒ 这里兜住，规格只定义一次 ✓
-   ⚠ 上面 `.wb-title` 的 16px **保留**（空态/区块标题在用），只在工具条上下文压到 14px。 */
+   ⚠ 上面 '.wb-title' 的 16px **保留**（空态/区块标题在用），只在工具条上下文压到 14px。 */
 .wb-toolbar h1, .wb-toolbar .wb-title {
 	margin: 0; font-size: var(--wb-f-title); font-weight: 600; line-height: 1.25; white-space: nowrap;
 }
