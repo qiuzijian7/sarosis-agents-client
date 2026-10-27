@@ -10,7 +10,7 @@
  * `_openMemoryDetailEditor`（只把「tab 面板 + 中间容器」那层收掉，见 `renderBody`）。
  * DOM 类名与样式沿用 `views/media/kbView.css`，所以视觉与拆分前完全一致。
  *
- * ⚠ 记忆数据本身由 `MemoryDetailEditorPane` 独立维护，这里只做**计数与入口** ——
+ * ⚠ 记忆数据本身由**记忆详情页（React 版）**独立维护，这里只做**计数与入口** ——
  * 一次性渲染 9k+ 条会直接卡死侧栏（原实现的注释原话）。
  */
 
@@ -27,12 +27,11 @@ import { ILogService } from '../../../../../platform/log/common/log.js';
 import { IOpenerService } from '../../../../../platform/opener/common/opener.js';
 import { IThemeService } from '../../../../../platform/theme/common/themeService.js';
 import { IViewDescriptorService } from '../../../../../workbench/common/views.js';
-import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
 import { IViewPaneOptions, ViewPane } from '../../../../../workbench/browser/parts/views/viewPane.js';
 import { IAgentOSService } from '../../common/agentOS.js';
 import { IAgentStudioService } from '../../common/agentStudio.js';
 import { IModelSelectorService } from '../../common/modelSelector.js';
-import { MemoryDetailEditorInput } from '../memoryDetailEditorInput.js';
+import { ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { headerBtn, statCell, statsHint } from './libraryStatHelpers.js';
 
 /**
@@ -66,8 +65,8 @@ export class MemoryLibraryViewPane extends ViewPane {
 		@IOpenerService openerService: IOpenerService,
 		@IThemeService themeService: IThemeService,
 		@IHoverService hoverService: IHoverService,
-		@IEditorService private readonly _editorService: IEditorService,
 		@ILogService private readonly _logService: ILogService,
+		@ICommandService private readonly _commandService: ICommandService,
 		@IAgentOSService private readonly _agentOSService: IAgentOSService,
 		@IModelSelectorService private readonly _modelSelectorService: IModelSelectorService,
 		@IAgentStudioService private readonly _agentStudioService: IAgentStudioService,
@@ -122,7 +121,7 @@ export class MemoryLibraryViewPane extends ViewPane {
 		if (!list) { return; }
 		list.replaceChildren();
 
-		// ── ① 入口置顶：打开 MemoryDetailEditorPane（用户指定的第一顺位动作）──
+		// ── ① 入口置顶：打开记忆详情（React 版；2026-10-27 旧面板已下线）──
 		const entry = $('div.kb-entry');
 		entry.onclick = () => this._openDetailEditor();
 
@@ -131,7 +130,7 @@ export class MemoryLibraryViewPane extends ViewPane {
 		const entryTitle = $('div.kb-entry-title');
 		entryTitle.textContent = '查看完整记忆';
 		const entryMeta = $('div.kb-entry-meta');
-		entryMeta.textContent = '打开 MemoryDetailEditorPane';
+		entryMeta.textContent = '打开记忆详情（React 版）';
 		entryText.replaceChildren(entryTitle, entryMeta);
 		const entryArrow = $('span.kb-entry-arrow.codicon.codicon-arrow-right');
 		entry.replaceChildren(entryIcon, entryText, entryArrow);
@@ -249,12 +248,11 @@ export class MemoryLibraryViewPane extends ViewPane {
 
 	/** 打开「记忆详情」编辑器面板（搬自 `_openMemoryDetailEditor`）。 */
 	private _openDetailEditor(): void {
+		// ★ 2026-10-27（阶段①下线旧面板）：记忆详情统一走 **React 版**（编辑区标签页）
 		try {
-			const agentId = this._modelSelectorService.getSelectedAgentId() ?? 'default';
-			const input = MemoryDetailEditorInput.getOrCreate(agentId);
-			void this._editorService.openEditor(input, { pinned: true });
+			void this._commandService.executeCommand('dshHarness.openMemoryDetailReact');
 		} catch (err) {
-			this._logService.error(`[MemoryLibrary] failed to open MemoryDetailEditorPane: ${err}`);
+			this._logService.error(`[MemoryLibrary] 打开记忆详情失败: ${err}`);
 		}
 	}
 }

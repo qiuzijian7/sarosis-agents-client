@@ -47,9 +47,7 @@ import { KbImportController, createKbImportHandler } from './kbImportController.
 import { SkillExtractionController } from './skillExtractionController.js';
 import { ChatEditorIntegration } from './chatEditorIntegration.js';
 import { CompressionDetailEditorInput } from './compressionDetailEditorInput.js';
-import { MemoryDetailEditorInput } from './memoryDetailEditorInput.js';
 import { AgentStreamRecorder } from './agentStreamRecorder.js';
-import { MemoryDetailEditorPane } from './memoryDetailEditorPane.js';
 import { CodebaseMemoryDetailEditorInput } from './codebaseMemoryDetailEditorInput.js';
 import { AgentSettingsEditorInput } from './agentSettingsEditorInput.js';
 import { UrlPreviewEditorInput } from './urlPreviewEditorInput.js';
@@ -2458,23 +2456,12 @@ export class NativeChatEditorPane extends EditorPane {
 			});
 		});
 		this._chatPanel?.setOpenMemoryDetailCallback((agentId, memoryType, contentPreview) => {
-			const input = MemoryDetailEditorInput.getOrCreate(agentId);
-			input.targetMemoryId = null;
-			input.targetLayer = memoryType ?? null;
-			input.fromAgentChat = true; // 标记从聊天框跳转，仅显示当前 agent 数据
-			this._openInMainColumn(input, { pinned: true }).then(() => {
-				const pane = this._editorService.activeEditorPane;
-				if (pane instanceof MemoryDetailEditorPane) {
-					// 技能沉淀消息点击：跳转到技能页签
-					if (memoryType === 'skill') {
-						(pane as any)._currentView = 'skills';
-						(pane as any)._renderFull();
-					} else {
-						pane.navigateToTarget(memoryType ?? undefined, contentPreview);
-					}
-				}
-			}).catch(err => {
-				this._logService.error('[NativeChatEditorPane] Failed to open memory detail:', err);
+			// ★ 2026-10-27（阶段①下线旧面板）：记忆详情统一走 **React 版**（编辑区标签页）。
+			//   ⚠ 旧面板独有的"跳到指定层 / 技能页签 + 定位到某条内容"随旧面板一起下线；
+			//     这里只能打开详情默认页签（React 页有 10 个页签，用户自行切换）—— 属**已知能力收敛** ✓
+			this._logService.debug(`[NativeChatEditorPane] open memory detail (React): agent=${agentId} type=${memoryType ?? '-'} preview=${contentPreview ? 'yes' : 'no'}`);
+			this._commandService.executeCommand('dshHarness.openMemoryDetailReact').catch(err => {
+				this._logService.error('[NativeChatEditorPane] Failed to open React memory detail:', err);
 			});
 		});
 		this._chatPanel?.setOpenCodebaseDetailCallback(() => {
@@ -3196,14 +3183,10 @@ export class NativeChatEditorPane extends EditorPane {
 					this._currentAgentSkills = skills;
 					this._logService.debug(`[NativeChatEditorPane] skills cache updated: ${this._currentAgentSkills.length}`);
 				},
-				refreshMemoryDetailPane: async () => {
-					try {
-						const activePane = this._editorService.activeEditorPane;
-						if (activePane instanceof MemoryDetailEditorPane) {
-							await (activePane as MemoryDetailEditorPane).refreshCurrentView();
-						}
-					} catch { /* best-effort */ }
-				},
+			refreshMemoryDetailPane: async () => {
+				// ★ 2026-10-27（阶段①）：旧面板已下线；React 详情页在打开/切页签时自己拉数，
+				//   这里保留空实现以维持接口（skillExtractionController 会调）✓
+			},
 			},
 		));
 

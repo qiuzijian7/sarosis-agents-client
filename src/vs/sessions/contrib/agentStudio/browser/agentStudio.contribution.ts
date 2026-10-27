@@ -345,8 +345,6 @@ import { UrlPreviewEditorPane } from './urlPreviewEditorPane.js';
 import { UrlPreviewEditorInput } from './urlPreviewEditorInput.js';
 import { CompressionDetailEditorPane } from './compressionDetailEditorPane.js';
 import { CompressionDetailEditorInput } from './compressionDetailEditorInput.js';
-import { MemoryDetailEditorPane } from './memoryDetailEditorPane.js';
-import { MemoryDetailEditorInput } from './memoryDetailEditorInput.js';
 import { CodebaseMemoryDetailEditorPane } from './codebaseMemoryDetailEditorPane.js';
 import { CodebaseMemoryDetailEditorInput } from './codebaseMemoryDetailEditorInput.js';
 import { MediaGalleryEditorPane } from './mediaGalleryEditorPane.js';
@@ -1565,18 +1563,8 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 	]
 );
 
-// Register MemoryDetailEditorPane — shows memory entries (Working/Episodic/Semantic/Procedural)
-// for the current agent. Opened from the system message panel toolbar.
-Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
-	EditorPaneDescriptor.create(
-		MemoryDetailEditorPane,
-		MemoryDetailEditorPane.ID,
-		localize('memoryDetailEditor', "Memory Detail"),
-	),
-	[
-		new SyncDescriptor(MemoryDetailEditorInput)
-	]
-);
+// ★ 2026-10-27（阶段①下线旧面板）：`MemoryDetailEditorPane` 不再注册为 EditorPane ——
+//   记忆详情统一走 React 版（命令 `dshHarness.openMemoryDetailReact` ⇒ `/x/memory/react-detail`）
 
 // Register CodebaseMemoryDetailEditorPane — shows codebase memory info.
 Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
@@ -2857,29 +2845,18 @@ registerAction2(class extends Action2 {
 			category: localize2('agentStudio.category', 'Agent Studio'),
 		});
 	}
-	async run(accessor: ServicesAccessor, agentId?: string): Promise<void> {
-		const editorService = accessor.get(IEditorService);
-		const agentStudioService = accessor.get(IAgentStudioService);
-		// 优先使用传入的 agentId，其次从持久化存储获取，最后从 agent 列表获取第一个
-		if (!agentId) {
-			agentId = (await agentStudioService.getLastSelectedAgentId()) ?? undefined;
-		}
-		if (!agentId) {
-			try {
-				const agents = await agentStudioService.getAgents();
-				agentId = agents[0]?.id;
-			} catch { /* best effort */ }
-		}
-		// ★★ 2026-10-26：**改用 React 版记忆详情**（用户要求"IDE 侧改用 react 版本记忆，统一数据源"）。
-//   实现 = 插件自带的独立 React 页 `/x/memory/react-detail`（与 dsh 客户端同一份 `detailView.js`，
-//   数据只走 `GET /x/memory/api/detail` ⇒ 同口径）。兜底：命令不可用 ⇒ 回退旧面板（不至于"点了没反应"）✓
+	async run(accessor: ServicesAccessor, _agentId?: string): Promise<void> {
+		// ★★ 2026-10-27（阶段①）：**旧面板已下线** ⇒ 只走 React 版记忆详情
+		//   （`/x/memory/react-detail`；与 dsh 客户端同一份 `webapp/src/detailView.js`，
+		//    数据只走 `GET /x/memory/api/detail` ⇒ 数据源统一 ✓）
+		//   ⚠ 失败时**明确报错**，不再静默回退到已删除的面板（回退只会让用户以为"没反应" ✗）
 		try {
 			await accessor.get(ICommandService).executeCommand('dshHarness.openMemoryDetailReact');
-			return;
-		} catch { /* 回退旧面板 */ }
-		const id = agentId ?? 'default';
-		const input = MemoryDetailEditorInput.getOrCreate(id);
-		await editorService.openEditor(input, { pinned: true });
+		} catch (err) {
+			accessor.get(INotificationService).error(
+				`打开记忆详情失败：${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
 	}
 });
 
@@ -2900,18 +2877,22 @@ registerAction2(class extends Action2 {
 		});
 	}
 	async run(accessor: ServicesAccessor): Promise<void> {
+		// ★ 2026-10-27（阶段①下线旧记忆面板）：这里**内联**原
+		//   `MemoryDetailEditorPane.activateCodebaseViewAndIndex()` 的实质逻辑 ——
+		//   它本来就是"必要时触发索引 + 打开 CodebaseGraphViewer"，与记忆面板无关；
+		//   旧面板删除后这个命令的能力**不能跟着丢** ✓
 		const editorService = accessor.get(IEditorService);
-		const agentStudioService = accessor.get(IAgentStudioService);
-		const agentId = (await agentStudioService.getLastSelectedAgentId()) ?? 'default';
-		const input = MemoryDetailEditorInput.getOrCreate(agentId);
-		await editorService.openEditor(input, { pinned: true });
-		// 等待 editor pane 渲染完成
-		await new Promise(r => setTimeout(r, 200));
-		// 获取打开的 EditorPane 并调用 activateCodebaseViewAndIndex
-		const activeEditorPane = editorService.activeEditorPane;
-		if (activeEditorPane instanceof MemoryDetailEditorPane) {
-			await activeEditorPane.activateCodebaseViewAndIndex();
+		const graphService = accessor.get(ICodebaseGraphService);
+		const cbmService = accessor.get(ICodebaseMemoryMcpService);
+		const notificationService = accessor.get(INotificationService);
+		if (!graphService.isIndexing && !graphService.hasGraphData()) {
+			try {
+				await cbmService.indexRepository();
+			} catch (err) {
+				notificationService.error(`自动索引失败: ${err instanceof Error ? err.message : String(err)}`);
+			}
 		}
+		await editorService.openEditor(CodebaseGraphViewerEditorInput.getOrCreate(), { pinned: true });
 	}
 });
 

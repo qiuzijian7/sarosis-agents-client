@@ -171,6 +171,39 @@ if (!gm) {
   }
 }
 
+// ── ⑥ **旧面板不得复活**（阶段① 2026-10-27 下线；删除后防回归的钉子）───────────
+//   背景：旧 `MemoryDetailEditorPane`（2.3k 行原生 DOM）与 React 版并存 ⇒ 两套实现/两套口径必然分叉。
+//   已删：pane / input / spec / 对应测试；IDE 侧三个入口（命令、侧栏、聊天框回调）全部改走 React。
+{
+  const gone = [
+    'src/vs/sessions/contrib/agentStudio/browser/memoryDetailEditorPane.ts',
+    'src/vs/sessions/contrib/agentStudio/browser/memoryDetailEditorInput.ts',
+    'src/vs/sessions/contrib/agentStudio/browser/memoryDetailSpec.ts',
+  ];
+  for (const rel of gone) {
+    if (fs.existsSync(path.join(path.join(HERE, '..'), rel))) {
+      problems.push(`${rel} 应已删除（阶段①下线旧面板）⇒ 否则会出现两套实现 ✗`);
+    }
+  }
+  const entries = [
+    ['src/vs/sessions/contrib/agentStudio/browser/agentStudio.contribution.ts', 'MemoryDetailEditorInput.getOrCreate'],
+    ['src/vs/sessions/contrib/agentStudio/browser/views/memoryLibraryView.ts', 'memoryDetailEditorInput.js'],
+    ['src/vs/sessions/contrib/agentStudio/browser/nativeChatEditorPane.ts', 'memoryDetailEditorInput.js'],
+  ];
+  for (const [rel, needle] of entries) {
+    const p = path.join(path.join(HERE, '..'), rel);
+    if (!fs.existsSync(p)) { continue; }
+    if (stripComments(fs.readFileSync(p, 'utf8')).includes(needle)) {
+      problems.push(`${rel} 仍在引用旧面板（${needle}）⇒ 必须走 dshHarness.openMemoryDetailReact ✗`);
+    }
+  }
+  const agentContrib = path.join(path.join(HERE, '..'), 'src/vs/sessions/contrib/agentStudio/browser/agentStudio.contribution.ts');
+  const cmd = stripComments(fs.readFileSync(agentContrib, 'utf8'));
+  if (!cmd.includes('dshHarness.openMemoryDetailReact')) {
+    problems.push('agentStudio.openMemoryDetail 必须委托 dshHarness.openMemoryDetailReact');
+  }
+}
+
 if (problems.length) {
 	console.error(`✗ 记忆详情（React 二级页）口径检查失败（${problems.length} 项）：`);
 	for (const p of problems) { console.error(`  · ${p}`); }
