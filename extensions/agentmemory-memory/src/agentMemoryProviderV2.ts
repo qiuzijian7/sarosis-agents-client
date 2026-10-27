@@ -1066,6 +1066,51 @@ export class AgentMemoryProviderV2 {
 	}
 
 	/**
+	 * 记忆作用域文件路径（★ 2026-10-27，跨进程真源）。
+	 *
+	 * 与审计账本**同根**（`VSSAROS_DATA_ROOT` 或 `dirname(AGENTMEMORY_DATA_DIR)`）
+	 * ⇒ dsh 插件用同样的规则能读到同一个文件 ✓
+	 */
+	_scopeFilePath(): string | undefined {
+		const explicit = readEnv('VSSAROS_DATA_ROOT');
+		const dataDir = readEnv('AGENTMEMORY_DATA_DIR');
+		const root = explicit ?? (dataDir ? _path.dirname(dataDir) : undefined);
+		if (!root) { return undefined; }
+		return _path.join(root, 'memory-scope.json');
+	}
+
+	/**
+	 * 把「记忆作用域别名」落到**文件**（★ 2026-10-27）。
+	 *
+	 * ## 为什么必须有文件（而不是只靠 globalThis）
+	 * 别名有两个消费者，但它们在**不同进程**：
+	 *   ① 渲染侧（IDE 注入/写入）→ 读宿主注入的 `globalThis.__SAROS_AGENTMEMORY_SCOPE_ALIAS__`（零成本 ✓）
+	 *   ② **dsh 插件**（沉淀 / 工具写入）→ 它在另一个进程，**读不到**渲染侧的全局对象 ✗
+	 * ⇒ 只注入全局 ⇒ 插件仍按自己的规则解析 ⇒ **两套口径会再次分叉** ✗✗
+	 * ⇒ 真源落**文件**：网关写（有 fs）、插件读（有 fs）⇒ 三处共用同一份数据 ✓
+	 *
+	 * @param alias `{ from, to }`；传 `undefined` 表示**撤销**（删文件）
+	 */
+	async setScopeAlias(alias?: { from?: unknown; to?: unknown }): Promise<{ ok: boolean; file?: string; error?: string }> {
+		const file = this._scopeFilePath();
+		if (!file) { return { ok: false, error: '无法定位数据根（VSSAROS_DATA_ROOT / AGENTMEMORY_DATA_DIR 都缺失）' }; }
+		try {
+			if (!alias) {
+				await _fs.rm(file, { force: true });
+				return { ok: true, file };
+			}
+			const from = String(alias.from ?? '').trim();
+			const to = String(alias.to ?? '').trim();
+			if (!from || !to || from === to) { return { ok: false, error: '别名无效（from/to 必须非空且不同）' }; }
+			await _fs.mkdir(_path.dirname(file), { recursive: true });
+			await _fs.writeFile(file, JSON.stringify({ from, to, updatedAt: Date.now(), source: 'agentStudio' }, null, 2), 'utf8');
+			return { ok: true, file };
+		} catch (e) {
+			return { ok: false, error: '写作用域文件失败：' + (e instanceof Error ? e.message : String(e)) };
+		}
+	}
+
+	/**
 	 * 读审计账本（尾部 N 行，最新在前；坏行跳过）。
 	 * 失败一律返回空数组 —— **审计读不到不该影响主流程**（与账本写入侧同纪律 ✓）。
 	 */

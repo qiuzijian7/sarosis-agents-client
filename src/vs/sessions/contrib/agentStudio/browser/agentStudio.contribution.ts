@@ -4335,6 +4335,15 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 					to: persona,
 				};
 				this.logService.info(`[AgentMemory] 记忆作用域别名: ws-${wsId} ⇒ ${persona}（读写同一个分区；来源=${personaSource}）`);
+			// ★★ 2026-10-27：**同时落到文件**（跨进程真源）。
+			//   为什么：dsh 插件在**另一个进程**，读不到上面注入的全局对象 ⇒ 只注入全局的话，
+			//   插件仍按自己的规则解析写入分区 ⇒ 两套口径会再次分叉 ✗✗
+			//   渲染进程没有 fs（sandbox）⇒ 委托网关写文件，插件读同一个文件 ✓
+			//   best-effort：它失败只影响"插件侧能否同步到别名"，不影响渲染侧的注入 ✓
+			try {
+				const memProvider = (this.agentOSService as { getActiveMemoryProvider?: () => { setScopeAlias?: (a: { from: string; to: string }) => Promise<unknown> } | undefined } | undefined)?.getActiveMemoryProvider?.();
+				void memProvider?.setScopeAlias?.({ from: `ws-${wsId}`, to: persona });
+			} catch { /* best-effort */ }
 			} else {
 				this.logService.info(`[AgentMemory] 记忆作用域别名未注入（workspaceId=${wsId ?? '(无)'} agent=${persona ?? '(无)'}）—— 保持原行为`);
 			}

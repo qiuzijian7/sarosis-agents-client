@@ -555,6 +555,17 @@ export class AgentMemoryProviderProxy {
 		return this._call('runExtendedDiagnostics', agentId);
 	}
 
+	/**
+	 * 把「记忆作用域别名」交给网关落到**文件**（★ 2026-10-27，跨进程真源）。
+	 *
+	 * 渲染进程**没有 fs**（sandbox）⇒ 只能委托网关写；dsh 插件随后读同一个文件
+	 * ⇒ 渲染侧与插件侧共用同一份 `{from,to}`，不再各按各的规则解析 ✓
+	 * ⚠ best-effort：调用方不要因它失败而中断（它只影响"插件侧能否同步到别名"）。
+	 */
+	async setScopeAlias(alias?: { from: string; to: string }): Promise<any> {
+		return this._call('setScopeAlias', alias);
+	}
+
 	async observe(agentId: string, payload: any): Promise<void> {
 		// ★ 方案 A：**写**过作用域解析（与读同一个解析器）
 		await this._call('observe', scopedMemoryAgentId(agentId), payload);

@@ -31,7 +31,7 @@ import { fileURLToPath } from 'node:url';
 import { bindFoundation, foundation } from './foundationRef.js';
 import { buildAuditRow } from './core/audit.js';
 
-import { DEFAULT_TOKEN_BUDGET, LEGACY_PARTITION, MAX_INJECT_CHARS, REQUEST_MARKER, SECTION_NAME, SEARCH_CONFIDENCE_THRESHOLD, SECTION_ORDER_FALLBACK, admitSnapshot, buildWriteReason, createSnapshot, isMemoryWriteRequest, isWriteIntent, normalizeSearchResults, parseWriteReason, partitionOf, writePartitionOf, personaIdOf, policyMemoryTypeOf, readPartitionsOf, renderWorkingContext, resolveWritePolicy, snapshotKeyOf, splitByConfidence, summarizeStats, targetKeyOf, targetLabelOf, validateWritePolicies, validateWritePolicy, WRITE_VERBS } from './core/memory.js';
+import { DEFAULT_TOKEN_BUDGET, LEGACY_PARTITION, MAX_INJECT_CHARS, REQUEST_MARKER, SECTION_NAME, SEARCH_CONFIDENCE_THRESHOLD, SECTION_ORDER_FALLBACK, admitSnapshot, buildWriteReason, createSnapshot, isMemoryWriteRequest, isWriteIntent, normalizeSearchResults, parseWriteReason, partitionOf, personaIdOf, policyMemoryTypeOf, readPartitionsOf, renderWorkingContext, resolveWritePolicy, snapshotKeyOf, splitByConfidence, summarizeStats, targetKeyOf, targetLabelOf, validateWritePolicies, validateWritePolicy, WRITE_VERBS } from './core/memory.js';
 
 import { createAuditWriter } from './audit.js';
 
@@ -50,6 +50,7 @@ const PKG_VERSION = (() => {
 		return JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version ?? '(未知)';
 	} catch { return '(未知)'; }
 })();
+import { readScopeSync, resolveMemoryScope } from './core/scope.js';
 import { buildTurnObservation, extractCandidates, turnCandidatesOf, parseFormUrlEncoded, SUMMARY_MATCHED_TAG, summaryCandidatesOf, userTextsOf } from './core/distill.js';
 
 import { createDraftStore, draftRowsOf } from './draft.js';
@@ -2107,7 +2108,14 @@ function toolDefinitions(ctx, state, config, auditAppend) {
 			//   否则退回工作区分区 `ws-*`（保持原行为，不乱猜 ✓）。规则见 `writePartitionOf`。
 			const primaryPartition = agentIdOf(config);
 			const personaPartition = personaIdOf(ctx?.agent, state?.projections);
-			const agentId = writePartitionOf(primaryPartition, personaPartition);
+			// ★ 2026-10-27：**三处写入统一走 `resolveMemoryScope`**（跨进程真源）。
+			//   优先级：跨进程别名（宿主写、网关落文件）＞ 会话人设 ＞ 主分区。
+			//   ⇒ 与渲染侧 `scopedMemoryAgentId()` 给出**同一个答案**，不再各按各的规则 ✗
+			const agentId = resolveMemoryScope({
+				agentId: primaryPartition,
+				persona: personaPartition,
+				scope: readScopeSync(config),
+			});
 			// 观测：把"这次写按 preset 映射到了哪个分区"留在内存态里（页面/探针可读）；
 			// ⚠ 不往审计账本里塞新动作（账本的动作词表是别处按口径用的，乱加会污染 ✓）
 			state.lastWriteScope = { at: Date.now(), primary: primaryPartition, persona: personaPartition, used: agentId };
@@ -4266,7 +4274,9 @@ export function apply(ctx, rawConfig = {}) {
 		remember,
 		// ★ getter（2026-10-20）：调用时现取 —— 切换工作区后提升写进**当前**分区（见 `promote.js` 的注释）
 		gatewayBase: () => gatewayUrlOf(config),
-		agentId: () => agentIdOf(config),
+		// ★ 2026-10-27：提升也走同一解析（否则"草稿提升"会写回 `ws-*` ⇒ 与读分叉 ✗）。
+		//   提升是**页面触发**、没有会话上下文 ⇒ persona 传空，只靠跨进程别名归一 ✓
+		agentId: () => resolveMemoryScope({ agentId: agentIdOf(config), scope: readScopeSync(config) }),
 		auditAppend,
 	});
 	// ⚠ `toolsOnly`（preset plane 那一次）不注册本钩子 —— 否则**每回合 distill 跑两遍**
@@ -4304,7 +4314,12 @@ export function apply(ctx, rawConfig = {}) {
 		//   ⇒ 放这里更稳、也少一处跨进程调用 ✓（用户要求"边聊边记"不该依赖 IDE 前端）
 		//   ⚠ 同样纪律：**同步**取好回合期对象（`payload`/`agent` 在后台不可靠，与 judgeTarget 同理）
 		const obsBase = gatewayUrlOf(config);
-		const obsPartition = writePartitionOf(agentIdOf(config), personaIdOf(payload?.agent, state?.projections));
+		// 与 memory_remember 同一解析器（别名 ＞ 人设 ＞ 主分区）⇒ 观测与写入必落同一分区 ✓
+		const obsPartition = resolveMemoryScope({
+			agentId: agentIdOf(config),
+			persona: personaIdOf(payload?.agent, state?.projections),
+			scope: readScopeSync(config),
+		});
 		const observation = buildTurnObservation(events, {
 			sessionId: String(session.id ?? ''),
 			turn: payload?.turn,
