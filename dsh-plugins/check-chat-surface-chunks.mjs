@@ -583,6 +583,29 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 				if (code2.indexOf(needle) < 0) { problems.push(`client.workspaces.js: 缺「${needle}」—— ${why} ✗`); }
 			}
 		}
+		// ── ⑤-f 启动时**不得**自动展开右栏（2026-10-28 用户报障）──────────────────────
+		// 病根：入口（client.js）里有一段"启动时自动点官方 expand 按钮"的逻辑（2026-10-18 加的，
+		//   目的是复刻官方 desktop"一进来右栏就是「开始」面板"）⇒ 官方 settle rule 在"空栏被展开"
+		//   那一刻才播种「开始」页 ⇒ 我们一自动展开，右栏里就凭空多一个「开始」页 ✗；而且展开态
+		//   会被官方**按 session 持久化** ⇒ **每次启动都自动展开** ✗✗。
+		// ⇒ 需求：启动时右栏**默认不展开** ⇒ 入口里不许再有"自动点 expand"的代码。
+		// ⚠ 但 `client.workbenchNav.js` 里那处 expand **必须留着**：那是用户点了「主页/工作台」
+		//   入口之后的动作（用户主动要求看那个页面），不是启动时自动做的 ⇒ 一起删掉就是功能回退 ✗。
+		{
+			const stripC = (s) => String(s).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+			const entryCode = stripC(fs.readFileSync(path.join(LIB, 'client.js'), 'utf8'));
+			if (entryCode.indexOf('data-sidebar-right-expand') >= 0) {
+				problems.push('client.js（入口）: 不许在启动时点官方 expand 按钮自动展开右栏 ——'
+					+ ' 官方右栏默认就是收起态，「开始」页是"空栏被展开"时才播种的；'
+					+ ' 自动展开还会被按 session 持久化 ⇒ 每次启动都自动展开（2026-10-28 用户报障）✗');
+			}
+			const navCode = stripC(fs.readFileSync(path.join(LIB, 'client.workbenchNav.js'), 'utf8'));
+			if (navCode.indexOf('data-sidebar-right-expand') < 0) {
+				problems.push('client.workbenchNav.js: 丢了「用户点了主页/工作台入口后撑开右栏」那处 expand ——'
+					+ ' 那不是启动时自动做的，是用户主动要求的（删了就是功能回退 ✗）');
+			}
+			notes.push('client.js / client.workbenchNav.js: 右栏展开时机（启动不自动展开 + 用户点入口仍撑开）断言通过');
+		}
 		// ── client.workspace.js：hero 面板「只认 chip 发起的 open」（2026-10-17 真机 bug）──────
 		// 病根：官方 hero 的 `open` 有两条来源（chip 点击 / 输入框 inert 的 onRequestWorkspace），
 		// props 不带来源 ⇒ 我们的 540px 面板被"点输入框"打开、压住会话 ✗。判定抽成 isOpenFromAnchor。

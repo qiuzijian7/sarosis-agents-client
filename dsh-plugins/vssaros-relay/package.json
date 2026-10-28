@@ -1,6 +1,6 @@
 {
   "name": "@vssaros/dsh-relay",
-  "version": "0.3.26",
+  "version": "0.3.29",
   "description": "Saros relay workbench: hosts the Saros relay station web (AnyDev deployment, default http://21.6.92.5:8000/) inside a dsh page (/x/relay/), with a status bar (reachability / version / refresh / open in browser). The machine registers itself as a relay node from the IDE side after the user logs into the CodeBuddy provider. Since 0.3.0 it also runs the Node Agent (reverse WebSocket channel) inside the dsh Host: auto-started on every app launch, and started by the register button.",
   "private": true,
   "type": "module",

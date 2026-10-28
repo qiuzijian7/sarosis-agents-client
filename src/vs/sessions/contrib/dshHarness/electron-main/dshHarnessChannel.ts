@@ -21,6 +21,9 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { dirname, join } from '../../../../base/common/path.js';
 // dsh 会话投影解析（纯逻辑 + 单测：`test/common/dshSessionIndex.test.ts`）
 import { buildDshSessionList } from '../common/dshSessionIndex.js';
+// 静态真源（与插件中心「随包」段、容器聚合表同一份）：用来和"扫目录"的结果对账，
+// 缺一个模块就在 supervisor 里响亮报错（2026-10-28：kb / kanban 目录被删空 ⇒ 工作台白屏且无任何报错）。
+import { DSH_BUILTIN_MODULES } from '../common/dshModuleContainers.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IAuxiliaryWindowsMainService } from '../../../../platform/auxiliaryWindow/electron-main/auxiliaryWindows.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -249,6 +252,9 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 			archifyPluginDir: existsSync(join(bundledArchify, 'package.json')) ? bundledArchify : undefined,
 			egoPluginDir: existsSync(join(bundledEgo, 'package.json')) ? bundledEgo : undefined,
 			modulePluginDirs,
+			// 静态真源对账（2026-10-28）：扫目录丢掉的模块要让 supervisor **点名报错**，
+			// 而不是静静地从安装清单里消失（`planned` 的预留位不算缺失）。
+			expectedModulePlugins: DSH_BUILTIN_MODULES.filter(m => m.planned !== true).map(m => m.pluginName),
 			defaultDshHome: options.isBuilt ? undefined : join(options.userDataPath, 'dsh-home'),
 			instanceId: `vssaros-${process.pid}-${generateUuid().slice(0, 8)}`,
 			log,

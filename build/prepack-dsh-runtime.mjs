@@ -167,7 +167,8 @@ console.log(`[prepack-dsh] done: dsh ${actual} ready at ${target} (${Math.round(
 await safeBuildProfileSeed(target, bin, actual);
 
 /**
- * `dsh-plugins/` 下的**全部随包插件目录**（24 个：16 个模块插件 + 7 个 patch 型 + 1 个 vendored）。
+ * `dsh-plugins/` 下的**全部随包插件目录**（数量不硬编码：凡包名 `@vssaros/*` 或 `@tt-a1i/*` 的目录全收。
+ * 2026-10-28 实测仓库 33 个，而旧种子里只有 26 个 —— 这类偏差现在会被 `seedPluginGaps` 点名）。
  *
  * ⚠ 判据不能只看 `vssaros.module`（2026-10-19 现场）：patch 型插件（`cordis.patch.yml` 插一行，
  *   **没有** `vssaros.module`）同样必须进种子 —— 尤其 `vssaros-foundation`：它是所有模块插件的
@@ -189,6 +190,7 @@ function discoverRepoPluginDirs(baseDir) {
 	} catch {
 		return out;
 	}
+	const skipped = [];
 	for (const entry of entries) {
 		if (!entry.isDirectory()) {
 			continue;
@@ -200,8 +202,15 @@ function discoverRepoPluginDirs(baseDir) {
 			// `@vssaros/*` = 自家插件；`@tt-a1i/archify-dsh` = vendored 第三方技能包（宿主也随包装）
 			if (name.startsWith('@vssaros/') || name.startsWith('@tt-a1i/')) {
 				out.push(dir);
+			} else {
+				// ★ 2026-10-28：有 package.json 却没被收 ⇒ **点名**。新增插件若忘了用 `@vssaros/*`
+				//   命名，它会静默缺席种子（首启再补装需要 pnpm，用户机器上不一定有 ✗）。
+				skipped.push(`${entry.name}（包名 ${name || '空'}）`);
 			}
 		} catch { /* 不是包 / 读不动 ⇒ 跳过（与宿主侧同口径） */ }
+	}
+	if (skipped.length) {
+		console.log(`[prepack-dsh] ⚠ dsh-plugins 下这些目录有 package.json 但没进种子（包名须是 @vssaros/* 或 @tt-a1i/*）：${skipped.join(', ')}`);
 	}
 	// 确定性顺序（marker 比对用 JSON.stringify，必须稳定）。foundation 排第一：它是所有消费者的
 	// 依赖（宿主安装清单里也刻意放在模块插件之前，见 `dshHostSupervisor` 的注释）。
@@ -210,6 +219,32 @@ function discoverRepoPluginDirs(baseDir) {
 		const fb = b.endsWith(`${sep}vssaros-foundation`) ? 0 : 1;
 		return fa - fb || a.localeCompare(b);
 	});
+}
+
+/**
+ * 种子**实际覆盖**核对：把 `wantPlugins`（= 仓库全部随包插件）与 `profileDir/node_modules` 里
+ * 真实装上的 package.json 逐个对账，返回「缺 / 版本不符」的名字列表（空数组 = 全覆盖）。
+ *
+ * 为什么要它（2026-10-28）：种子只按 marker 判定"已是最新"时，**磁盘与 marker 可能不一致**
+ * （本机实测：marker 26 个、仓库已 33 个；两个插件目录还曾被删空过）。种子少一个 ⇒ 用户首启
+ * 走 `dsh plugin add` 补装 ⇒ 需要 pnpm（用户机器不一定有）⇒ 「首启零下载」直接破功，而且**没有任何报错**。
+ * ⇒ 这里把它们变成构建期的显式失败/显式点名。
+ */
+function seedPluginGaps(profileDir, wantPlugins) {
+	const gaps = [];
+	for (const [name, version] of Object.entries(wantPlugins)) {
+		const manifest = join(profileDir, 'node_modules', ...name.split('/'), 'package.json');
+		let actual;
+		try {
+			actual = JSON.parse(readFileSync(manifest, 'utf8')).version;
+		} catch { /* 缺文件 / 空白 */ }
+		if (!actual) {
+			gaps.push(`${name}（缺）`);
+		} else if (String(actual) !== String(version)) {
+			gaps.push(`${name}（应 ${version}，实为 ${actual}）`);
+		}
+	}
+	return gaps;
 }
 
 /** 在 <target>/profile-seed 里建好 vssaros profile（含伴生插件 + 全部模块插件 + web 模板依赖）。 */
@@ -240,8 +275,16 @@ async function buildProfileSeed(runtimeDir, dshBin, dshVersion) {
 	if (existsSync(markerPath)) {
 		const marker = JSON.parse(readFileSync(markerPath, 'utf8'));
 		if (marker.dsh === dshVersion && JSON.stringify(marker.plugins) === JSON.stringify(wantPlugins) && existsSync(join(profileDir, 'package.json'))) {
-			console.log('[prepack-dsh] profile seed 已是最新，跳过');
-			return;
+			// ★ 2026-10-28：marker 只说明"上次建的时候清单是这个"，**不说明磁盘上真有**。
+			//   实测（本机 0.2.1-rc.1 种子）：marker 26 个插件、仓库已 33 个，两个插件目录曾被删空过，
+			//   而 marker 与清单恰好一致 ⇒ 永不自愈 ⇒ 装机后首启还要 `dsh plugin add`（需 pnpm）✗。
+			//   ⇒ 命中 marker 之后**仍要按磁盘对账**，缺一个/版本不符就重建（而不是"已是最新"）。
+			const gaps = seedPluginGaps(profileDir, wantPlugins);
+			if (gaps.length === 0) {
+				console.log('[prepack-dsh] profile seed 已是最新，跳过');
+				return;
+			}
+			console.log(`[prepack-dsh] seed marker 说已最新，但磁盘对不上 ${gaps.length} 个 ⇒ 重建：${gaps.join(', ')}`);
 		}
 	}
 	console.log('[prepack-dsh] building profile seed（约 1–3 分钟，仅构建期一次性）…');
@@ -328,8 +371,15 @@ async function buildProfileSeed(runtimeDir, dshBin, dshVersion) {
 		rmSync(seedCreds, { force: true });
 		console.log('[prepack-dsh] seed credentials scrubbed（首启自生成 ✓）');
 	}
+	// ★ 2026-10-28：**先对账再写 marker** —— 写早了等于给一个残缺种子盖章"已是最新"。
+	//   装不上的插件上面已经 throw；这里挡的是"装上了但数量/版本对不上清单"的那类（例如清单在
+	//   构建中途变化、或 pnpm 把某个 file: 依赖当成没变化而跳过替换）。
+	const seedGaps = seedPluginGaps(profileDir, wantPlugins);
+	if (seedGaps.length) {
+		throw new Error(`profile seed 不完整（${seedGaps.length}/${Object.keys(wantPlugins).length} 个插件没到位）：${seedGaps.join(', ')}`);
+	}
 	writeFileSync(markerPath, JSON.stringify({ dsh: dshVersion, plugins: wantPlugins, createdAt: new Date().toISOString() }, undefined, 2));
-	console.log(`[prepack-dsh] profile seed ready (${Math.round(dirSize(seed) / 1024 / 1024)} MB)`);
+	console.log(`[prepack-dsh] profile seed ready (${Math.round(dirSize(seed) / 1024 / 1024)} MB)；覆盖全部 ${Object.keys(wantPlugins).length} 个随包插件 ✓`);
 }
 
 /**

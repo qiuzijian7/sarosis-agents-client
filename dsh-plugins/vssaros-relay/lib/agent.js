@@ -175,6 +175,9 @@ export function createNodeAgent(deps) {
 			// ★ token 的**声明**（iss/sub/exp/aud —— 不含任何秘密）⇒ 能直接看出
 			//   「这是谁的凭据 / 是不是已过期 / 是不是另一种 token（API Key 而非 OAuth）」✓
 			tokenClaims: tokenClaims(String(getAccessToken() || '')),
+			// ★ 目录 token 的指纹（**另一个** token：拉目录专用）
+			//   ⇒ 能一眼对出"聊天用的 token"与"拉目录用的 token"分别是谁 ✓
+			catalogTokenFingerprint: tokenFingerprint(String((getCatalogToken ? getCatalogToken() : '') || '')),
 			catalogError: catalogError || '',
 		});
 	};
@@ -215,11 +218,14 @@ export function createNodeAgent(deps) {
 		const token = String((getCatalogToken ? getCatalogToken() : getAccessToken()) || '').trim();
 		if (!token) {
 			catalogCache = { ok: false, models: [], model_meta: {}, error: 'no_credential', message: '本机还没有 CodeBuddy 登录态' };
-			catalogFetchedAt = now;
+			// ★ 失败**不缓存**（catalogFetchedAt=0）⇒ token 一到位就能立刻重拉，
+			//   不用干等 5 分钟 TTL ⇒ "模型数 0" 不会卡 5 分钟才自愈 ✓
+			catalogFetchedAt = 0;
 			return catalogCache;
 		}
 		catalogCache = await listModelsImpl(token, { endpoint: codebuddyEndpoint });
-		catalogFetchedAt = now;
+		// ★ 同上：**失败不缓存**（成功才缓存 5 分钟）⇒ 平台/凭据恢复后立刻能拉到目录 ✓
+		catalogFetchedAt = (catalogCache && catalogCache.ok) ? now : 0;
 		return catalogCache;
 	};
 
@@ -381,9 +387,18 @@ export function createNodeAgent(deps) {
 			if (type === FRAME_INVOKE) { void handleInvoke(payload); return; }
 			if (type === 'refresh_catalog') { void reportCatalog(); }
 		};
-		ws.onerror = () => {
+		ws.onerror = (event) => {
 			lastError = 'WebSocket 连接出错';
 			publish();
+			// ★ 2026-10-28：**断开也要留痕**。
+			//   实测那次掉线：只触发了 `onerror`、**没有** `onclose`
+			//   ⇒ 执行日志里没有 `channel_close` ⇒ 页面显示"未连接"却查不到原因 ✗
+			//   ⇒ 这里补一条 `channel_error`（带原因），下次一眼能看出是被踢、是超时、还是网络断 ✓
+			pushExec({
+				kind: 'channel_error',
+				error: lastError,
+				detail: String((event && (event.message || event.reason || event.code)) || ''),
+			});
 			// ★ 握手失败最常见的原因是**令牌被中转站轮换作废**（每次 auto-enroll 都会轮换）
 			//   ⇒ 下一次重连前**强制重新注册**一次，拿新的长期令牌 ⇒ 通道能自愈 ✓
 			//   （否则：节点在线、通道永远连不上、调用 502 ✗）
@@ -473,6 +488,7 @@ export function createNodeAgent(deps) {
 				models: (catalogCache && catalogCache.models) ? catalogCache.models.length : 0,
 				hasToken: !!String(getAccessToken() || '').trim(),
 				tokenFingerprint: tokenFingerprint(String(getAccessToken() || '')),
+				catalogTokenFingerprint: tokenFingerprint(String((getCatalogToken ? getCatalogToken() : '') || '')),
 				catalogError: catalogError || '',
 				logCount: execLog.length,
 			};

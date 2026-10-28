@@ -29,6 +29,28 @@ import { collectQuotaViaBrowser, loginInBrowser, readWoaCookies } from './quotaB
  */
 let browserService;
 
+/**
+ * ★ CodeBuddy token 的**同步缓存**（2026-10-28 实测修掉的元凶）。
+ *
+ * 病根：`readAccessToken` / `readCatalogToken` 是 **async**，而 `lib/agent.js` 的 getter
+ * 是**同步**用法（`String(getAccessToken() || '')`）⇒ 传出去的是字符串
+ * **"[object Promise]"** ⇒ 平台 `/v3/config` 回 `data.models:null` ⇒
+ * **节点模型数 0** ✗（页面上的 `tokenFingerprint` 恒为 `b4e6060006b9`
+ * —— 那正是 `sha256("[object Promise]")` 的前 12 位，是自欺欺人的"指纹" ✗✗）。
+ *
+ * ⇒ 这里把 token 读进**同步可读**的缓存，agent 只读缓存；
+ *   凭据服务可用时定时刷新（token 会轮换/过期）⇒ 刷新后让 agent 立刻重拉目录 ✓
+ */
+let cachedAccessToken = '';
+let cachedCatalogToken = '';
+
+/** 刷新 token 缓存（返回是否拿到）。 */
+async function refreshCodebuddyTokens() {
+	cachedAccessToken = await readAccessToken();
+	cachedCatalogToken = await readCatalogToken();
+	return !!(cachedAccessToken || cachedCatalogToken);
+}
+
 const ROUTE_PREFIX = '/x/relay';
 
 /** 探测超时（毫秒）。 */
@@ -302,9 +324,9 @@ async function ensureAgent() {
 				nodeId: String((state.localNode && state.localNode.id) || ''),
 				nodeToken: String((state.localNode && state.localNode.token) || ''),
 			}),
-			getAccessToken: readAccessToken,
+			getAccessToken: () => cachedAccessToken,
 			// ★ 拉目录用 **OAuth token**（专用 ref）⇒ 避免拿到 API Key 导致平台拒答、模型数为 0 ✓
-			getCatalogToken: readCatalogToken,
+			getCatalogToken: () => cachedCatalogToken,
 			/**
 			 * ★ 自愈式注册：agent 拿不到节点凭据（跨 plane / 令牌被轮换）时**自己**注册一次。
 			 *   这样"节点在线但通道连不上"的死结才能自愈 ✓
@@ -549,6 +571,38 @@ function startQuotaTimer() {
 }
 
 export function apply(ctx) {
+	// ★ 通道"半开"自愈（2026-10-28）。
+	//
+	// 现象：服务端把这条通道摘掉（踢下线 / 超时清理 / 服务重启）后，
+	//   **客户端收不到 close**（只收到 error，甚至什么都没收到）
+	//   ⇒ 本地 `state=connected`（socket 半开，写入不报错）
+	//   ⇒ 但中转站 registry 里已经没有它 ⇒ 页面显示「未连接」（这是**服务端事实** ✓）
+	//   ⇒ 中转站派活发不到 ⇒ 调用 502；执行日志里也没有 `channel_close` ⇒ 查不到原因 ✗✗
+	//
+	// ⇒ **纯客户端**自愈：每 60 秒问一次中转站「我这条通道还在吗」
+	//   （号池摘要里的 `channel_connected` 是唯一真实来源）⇒ 不在 ⇒ 强制 `agent.reconnect()` ✓
+	//   （不依赖服务端改动 —— 远端 `/data/chatgpt2api` 的改动会被回滚 ⇒ 客户端自愈更可靠）
+	const verifyChannel = async () => {
+		const agent = state.agent;
+		if (!agent) { return; }
+		let localState = '';
+		try { localState = String((agent.status && agent.status().state) || ''); } catch { /* ignore */ }
+		if (localState !== 'connected') { return; }
+		try {
+			const pool = await listNodes();
+			const local = (pool.nodes || []).find((node) => node.isLocal);
+			if (local && local.channelConnected === false) {
+				console.warn('[vssaros-relay] 中转站已无本机通道（本地 socket 半开）⇒ 强制重连');
+				agent.reconnect();
+			}
+		} catch {
+			/* 中转站暂时不可达：等下一轮，别乱重连 */
+		}
+	};
+	// ⚠ `apply()` 可能被重复调用（热重载）⇒ 先清掉上一个定时器，别越堆越多 ✓
+	if (state.channelWatch) { clearInterval(state.channelWatch); }
+	state.channelWatch = setInterval(() => { void verifyChannel(); }, 60_000);
+	state.channelWatch.unref?.();
 	// ★ 浏览器插件（**可选**依赖）：额度采集靠它读**真实浏览器**里的 woa 会话 ⇒ 全自动、零手工。
 	//   （与 vssaros-bridge 的 LightAI 同一套接法：动态 inject，缺席时如实说明，不影响其它功能。）
 	try {
@@ -564,18 +618,42 @@ export function apply(ctx) {
 	//   服务不在时插件照常起，只是「自动启动」退化成「每次手动注册」。
 	ctx.inject?.(['credentials'], child => child.effect(() => {
 		state.credentials = child.credentials;
-		// ★ 有了凭据服务就能定时刷新「额度/积分」（cookie 存在 `VSSAROS_QUOTA_COOKIE`）。
+		// ★ 有了凭据服务就能定时刷新「额度/积分」（浏览器侧的 woa 会话）。
 		startQuotaTimer();
+		// ★ CodeBuddy token 进**同步缓存**（agent 的 getter 是同步的 ⇒ 必须有缓存，见上方注释）。
+		const refreshTokens = async () => {
+			try {
+				const ok = await refreshCodebuddyTokens();
+				if (ok) {
+					// token 刚拿到/刚换过 ⇒ 让 agent 立刻重拉目录（否则要等 5 分钟 TTL）✓
+					void state.agent?.refreshCatalog?.();
+				}
+				return ok;
+			} catch {
+				return false;
+			}
+		};
+		void refreshTokens();
+		// 定时刷新（token 会轮换/过期 ⇒ 2 分钟一次足够）
+		const tokenTimer = setInterval(() => { void refreshTokens(); }, 2 * 60 * 1000);
+		tokenTimer.unref?.();
 		// ★ 2026-10-28：**启动即自动连通道**（这是"每次重启都 offline"的根治点）。
 		//   之前这里受 `agentEnabled=false` 挡住（当时 Agent 在主进程那份）⇒ 主进程已删
 		//   ⇒ 若仍不自动起，就**没有任何实例**去连 ⇒ 页面永远「未连接 / offline」✗
 		//   `ensureAgent()` 内部只在**有节点记录**时才 start ⇒ 未注册的机器不会乱连 ✓
 		if (state.agentEnabled) {
-			void ensureAgent().catch((e) => {
+			void (async () => {
+				await ensureAgent();
+				// ★ Agent 建好后**再刷一次** token 缓存并立刻重拉目录
+				//   （否则首次拉目录时缓存可能还是空的 ⇒ 目录要等下一轮定时刷新才有 ⇒ 慢 2 分钟）✓
+				await refreshTokens();
+				void state.agent?.refreshCatalog?.();
+			})().catch((e) => {
 				console.warn(`[vssaros-relay] 自动启动 Agent 失败：${String((e && e.message) || e)}`);
 			});
 		}
 		return () => {
+			clearInterval(tokenTimer);
 			state.agent?.stop();
 			state.agent = undefined;
 		};

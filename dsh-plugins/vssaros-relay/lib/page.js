@@ -41,6 +41,14 @@ font:inherit;font-size:11.5px;cursor:pointer;white-space:nowrap;text-decoration:
 .btn.danger{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 55%,var(--stroke2))}
 .btn.danger:hover{background:color-mix(in srgb,var(--bad) 12%,transparent)}
 .btn[disabled]{opacity:.55;cursor:default}
+/* ★ 额度进度条（2026-10-28）：已用占比一眼可见；≥70% 转黄、≥90% 转红 */
+.qbar{margin:2px 0 8px}
+.qbar-track{height:9px;border-radius:999px;background:var(--stroke2);overflow:hidden}
+.qbar-fill{height:100%;border-radius:999px;background:var(--ok);transition:width .3s ease}
+.qbar-fill.warn{background:var(--warn)}
+.qbar-fill.hot{background:var(--bad)}
+.qbar-meta{display:flex;justify-content:space-between;margin-top:5px;font-size:11.5px;color:var(--muted)}
+.qbar-pct{color:var(--fg);font-weight:600}
 textarea{width:100%;box-sizing:border-box;margin:4px 0;padding:6px 8px;border-radius:6px;
 border:1px solid var(--stroke2);background:var(--bg);color:var(--fg);font:inherit;font-size:11.5px;resize:vertical}
 textarea::placeholder{color:var(--faint)}
@@ -628,6 +636,21 @@ export function renderPage(input) {
       ['账号消耗', fmtNum(q.total_consumed != null ? q.total_consumed : q.used, 2)]
     ];
     var html = '';
+    /* ★ 进度条（2026-10-28 用户要求：更直观）——
+       已用占额度的比例；配色随水位变化：<70% 绿 / 70~90% 黄 / ≥90% 红（快用完了）✓ */
+    var totalQuota = Number(q.total_quota);
+    var usedValue = Number(q.used);
+    var hasRatio = isFinite(totalQuota) && totalQuota > 0 && isFinite(usedValue);
+    if (hasRatio) {
+      var pct = Math.max(0, Math.min(100, usedValue / totalQuota * 100));
+      var level = pct >= 90 ? ' hot' : (pct >= 70 ? ' warn' : '');
+      html += '<div class="qbar">'
+        + '<div class="qbar-track"><div class="qbar-fill' + level + '" style="width:' + pct.toFixed(2) + '%"></div></div>'
+        + '<div class="qbar-meta">'
+        + '<span>已用 <b class="qbar-pct">' + pct.toFixed(1) + '%</b></span>'
+        + '<span>剩余 ' + fmtNum(q.remaining, 2) + '</span>'
+        + '</div></div>';
+    }
     for (var i = 0; i < rows.length; i++){
       html += '<div style="display:flex;justify-content:space-between;padding:3px 0">'
         + '<span style="color:#6b7280">' + rows[i][0] + '</span>'

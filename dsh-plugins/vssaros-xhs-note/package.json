@@ -20,6 +20,9 @@
     "lib/prefill.js",
     "lib/store.js"
   ],
+  "peerDependencies": {
+    "@deepseek-ai/dsh": ">=0.1.7-0 <0.3.0-0"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
@@ -32,6 +35,11 @@
     }
   },
   "vssaros": {
+    "manifestVersion": 1,
+    "view": {
+      "kind": "page",
+      "route": "/x/xhs-note/"
+    },
     "workbench": {
       "title": "小红书笔记",
       "description": "主题与素材整理成小红书笔记：标题、正文、话题标签；草稿落本机数据目录，AI 协助可带上下文",
@@ -40,6 +48,11 @@
       "customFrame": true
     },
     "activityBar": {
+      "containerId": "vssaros.dsh.xhs-note",
+      "title": {
+        "zh": "小红书笔记",
+        "en": "XHS Note"
+      },
       "icon": "codicon:comment-discussion",
       "order": 42
     }

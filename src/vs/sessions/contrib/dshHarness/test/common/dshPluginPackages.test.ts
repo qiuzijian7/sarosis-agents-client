@@ -415,6 +415,9 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 			// ★ 2026-10-22：商城工作台 —— 它**写** `<数据根>/skills|workflows`（落盘）与
 			// `installed-packages.json`（台账）⇒ 必须被注入数据根，否则 dev 实例写生产 ✗
 			['vssaros-marketplace', ['dataRoot']],
+			// ★ 2026-10-28：小红书笔记 —— 草稿落 `<数据根>/xhs-note/` ⇒ 必须被注入数据根，
+			//   否则 dev 实例把草稿写进**生产**数据根（与 marketplace 同病）。
+			['vssaros-xhs-note', ['dataRoot']],
 			['vssaros-kb', ['dataRoot', 'kbRoot', 'kbVaults', 'kbActiveVaultId']],
 			['vssaros-web-content-import', ['dataRoot', 'kbRoot']],
 			['vssaros-dsh-mcp', ['path']],

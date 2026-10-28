@@ -193,6 +193,16 @@ export interface IDshHostSupervisorOptions {
 	 * kanban / workflow / dashboard / ide。空数组合法（老构建没带 `dsh-plugins/`）。
 	 */
 	readonly modulePluginDirs: readonly (readonly [string, string])[];
+	/**
+	 * **静态真源**的随包模块插件名（`DSH_BUILTIN_MODULES` 里 `planned !== true` 的 `pluginName`）。
+	 *
+	 * 为什么要它（2026-10-28）：`modulePluginDirs` 是**扫 `dsh-plugins/` 目录**得到的 —— 目录被删空/
+	 * 改名时，该模块就从清单里**静静消失**，`dsh plugin add` 的 bundle 集合随之变窄、profile 里那条被摘掉，
+	 * 而启动流程**一行报错都没有**（现场：kb / kanban 两个目录被删空 ⇒ 知识库/看板工作台打开一片空白，
+	 * 只有用户报障才发现）。⇒ 启动时用静态表与扫描结果对账，缺一个就记日志 + 进 `_startupPluginProblems`。
+	 * 缺省 undefined ⇒ 老构建/单测夹具行为不变。
+	 */
+	readonly expectedModulePlugins?: readonly string[];
 	/** 未显式配置 dshHome 时使用的目录；undefined 表示沿用 `$DSH_HOME` / dsh 默认 `~/.dsh`。 */
 	readonly defaultDshHome: string | undefined;
 	readonly instanceId: string;
@@ -905,6 +915,20 @@ export class DshHostSupervisor extends Disposable {
 			//   只写日志并继续，于是缺包的 profile 最终表现为"60 秒没有任何进展"✗（真因埋在 Host 日志里）。
 			//   清单交给启动失败文案说出来（见 `_startupPluginProblems` 与 `startupExpiryMessage`）。
 			this._startupPluginProblems = [];
+			// ★ 2026-10-28（用户报「看板 / 知识库工作台打开空白」）：**静态真源 vs 扫描结果**对账。
+			//   `modulePluginDirs` 是扫目录来的 ⇒ 目录被删空/改名时该模块静静缺席安装清单，profile 里那条
+			//   被摘掉、对应页面与工具全部消失，而全程没有一行报错。这条对账把它变成**响亮的一条**：
+			//   日志点名胜包里缺哪个模块，同时进 `_startupPluginProblems`（启动失败文案里也会带上）。
+			{
+				const expected = this._opts.expectedModulePlugins ?? [];
+				const discovered = new Set(this._opts.modulePluginDirs.map(([name]) => name));
+				const missing = expected.filter(name => !discovered.has(name));
+				if (missing.length) {
+					this._appendLog(`⚠ 随包模块插件缺源码目录（本次不会装进 profile ⇒ 对应工作台/工具会消失）：${missing.join(', ')}`
+						+ ' —— 修法：确认 dsh-plugins/ 下对应目录存在且 package.json 的 name 匹配；打包场景再跑一次 node build/prepack-dsh-runtime.mjs');
+					this._startupPluginProblems.push(`随包模块缺源码目录：${missing.join(', ')}`);
+				}
+			}
 			// ★ 2026-10-13 首启提速（用户报"首次启动很慢：安装伴生插件→启动 host→加载工作区"）：
 			//   原来这里逐个 `await _ensurePlugin(...)` ⇒ **每个变更插件**一次 `dsh plugin add`
 			//   （= 一个 pnpm 进程，实测 2–5 s）**串行叠加**：dev 实例实测 6 个变更 = 17 s 才轮到起 Host，

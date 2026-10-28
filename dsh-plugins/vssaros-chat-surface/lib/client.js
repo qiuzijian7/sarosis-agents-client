@@ -22,7 +22,7 @@ window.__ModuleLoader__.load({
 		//   （今天就因此丢了侧栏「主页」那一行：18:15 改了 client.workbenchNav.js，没动入口 ⇒
 		//    rev 没变 ⇒ 用户窗口里侧栏仍是旧版；22:17 补改入口后才恢复。）
 		// ⇒ 规矩：**改任何 `client.*.js` 之后，把下面这个 stamp 改掉**（守卫会查 ⇒ 漏了必红）✓
-		const CLIENT_BUILD_STAMP = "2026-10-22/模式chip当前名称不冒充(P0-1)/03+第三方工作台固定到侧栏+空白会话预选Bot(P0-2)/04+固定行启动兜底也同步(重启后固定图标不丢)+2026-10-22/工作流页改左右两档(左列表右画布)+2026-10-22/工作台导航登记商城(主页不显示商城的修复)+2026-10-22/DEFAULT_ITEMS登记并行工作台+2026-10-22/模型下拉框加创作模型三行(S2)/07+2026-10-22/品牌改名Saroasis-harness(品牌位+页面title)+2026-10-23/中栏工作台面板不被救援抢回会话+2026-10-23/desktop窗口加更新入口(随包插件+一键升级应用)/02+2026-10-23/更新面板加五类资产升级检查(skill/mcp/agent/工作流/工作台)+2026-10-23/工作台导航登记萨罗斯平台(studio)+2026-10-23/页签支持拖拽排序/02+2026-10-23/更新行不透明且不压状态行+2026-10-23/LLM模型下拉移除创作模型三行(SHOW_IN_LLM_MENU=false)+2026-10-23/模型chip按方案B恢复创作模型分组(文字vs图片视频音频+二级面板搜索+首开聚焦)+2026-10-23/创作模型行直接绑click(文档级委托没命中的兜底)+2026-10-23/模型菜单选择器加结构匹配兜底(window.__vssarosCreative.probe)+2026-10-23/scan走findMenu(不再只认中文aria-label)+2026-10-23/更新行不透明不压状态行+无可升级内容时不显示更新UI+2026-10-24/账号行在所有surface接管(插件页不再露官方DeepSeek登录)+2026-10-24/侧栏隐藏官方插件行+2026-10-24/自动化任务收进工作台(侧栏那行隐藏)/02+2026-10-26/更新入口只算升级(未安装不计)+2026-10-26/侧栏工作区+按钮改走uiWorkspace.pickDirectory(修窗口模式点了没反应:旧读未声明的ctx.remote.directoryPicker+读res.value.path)+侧栏隐藏空会话(官方blank位)+页脚口径跟着剔空会话/03+2026-10-26/侧栏+变菜单:加单目录+从.code-workspace导入多根(走宿主桥importCodeWorkspace)+2026-10-28/侧栏会话item高亮跟随当前会话(官方selection优先+乐观高亮+失败撤回)/02";
+		const CLIENT_BUILD_STAMP = "2026-10-22/模式chip当前名称不冒充(P0-1)/03+第三方工作台固定到侧栏+空白会话预选Bot(P0-2)/04+固定行启动兜底也同步(重启后固定图标不丢)+2026-10-22/工作流页改左右两档(左列表右画布)+2026-10-22/工作台导航登记商城(主页不显示商城的修复)+2026-10-22/DEFAULT_ITEMS登记并行工作台+2026-10-22/模型下拉框加创作模型三行(S2)/07+2026-10-22/品牌改名Saroasis-harness(品牌位+页面title)+2026-10-23/中栏工作台面板不被救援抢回会话+2026-10-23/desktop窗口加更新入口(随包插件+一键升级应用)/02+2026-10-23/更新面板加五类资产升级检查(skill/mcp/agent/工作流/工作台)+2026-10-23/工作台导航登记萨罗斯平台(studio)+2026-10-23/页签支持拖拽排序/02+2026-10-23/更新行不透明且不压状态行+2026-10-23/LLM模型下拉移除创作模型三行(SHOW_IN_LLM_MENU=false)+2026-10-23/模型chip按方案B恢复创作模型分组(文字vs图片视频音频+二级面板搜索+首开聚焦)+2026-10-23/创作模型行直接绑click(文档级委托没命中的兜底)+2026-10-23/模型菜单选择器加结构匹配兜底(window.__vssarosCreative.probe)+2026-10-23/scan走findMenu(不再只认中文aria-label)+2026-10-23/更新行不透明不压状态行+无可升级内容时不显示更新UI+2026-10-24/账号行在所有surface接管(插件页不再露官方DeepSeek登录)+2026-10-24/侧栏隐藏官方插件行+2026-10-24/自动化任务收进工作台(侧栏那行隐藏)/02+2026-10-26/更新入口只算升级(未安装不计)+2026-10-26/侧栏工作区+按钮改走uiWorkspace.pickDirectory(修窗口模式点了没反应:旧读未声明的ctx.remote.directoryPicker+读res.value.path)+侧栏隐藏空会话(官方blank位)+页脚口径跟着剔空会话/03+2026-10-26/侧栏+变菜单:加单目录+从.code-workspace导入多根(走宿主桥importCodeWorkspace)+2026-10-28/侧栏会话item高亮跟随当前会话(官方selection优先+乐观高亮+失败撤回)/02+2026-10-28/启动不再自动展开右栏(删掉自动点expand:官方右栏默认收起,「开始」页是空栏被展开时播种的,且展开态会被持久化⇒每次启动都自动展开)";
 		// 挂到 window 上 ⇒ 真机取证能一眼看出"这个窗口跑的是哪一版"（`window.__vssarosChatSurfaceBuild`）✓
 		try { window.__vssarosChatSurfaceBuild = CLIENT_BUILD_STAMP; } catch { /* 极端环境 */ }
 		// 注意：**不**把 `workspaces` 加进 inject —— 本仓库实测结论是 Cordis 4 的 inject 数组是
@@ -443,30 +443,20 @@ window.__ModuleLoader__.load({
 					if (!/^zh/i.test(cur)) { loc.setLocale('zh'); }
 				}
 			} catch { /* locale 服务缺席不影响功能 */ }
-			// 右栏默认**展开**一次（与官方 desktop 一致：一进来就是「开始」面板：
-			// 工作区文件 / 新建终端 / 浏览器）。官方按 per-session 的存储决定展开态，
-			// 新会话默认收起 ⇒ 这里点一次 official 的 expand 按钮；只做一次（用户关掉后
-			// 本次会话不再强行打开 ✓，下次重开窗口再由这里展开一次）。
-			// ⚠ 2026-10-18 实测两点：① 官方按 per-session 存储决定展开态，新会话默认收起；
-			//   ② expand 按钮（`[data-sidebar-right-expand]`）**只在会话打开后**才渲染 ——
-			//   早 1.2s 点它是空操作（parity 取证：手动点一次 ⇒ `开始/工作区文件/新建终端` 全 true）
-			//   ⇒ 必须**重试**到它出现、点完消失为止 ✓。
-			try {
-				let tries = 0;
-				const expandTimer = window.setInterval(() => {
-					tries += 1;
-					if (tries > 12) { window.clearInterval(expandTimer); return; }
-					try {
-						const btn = document.querySelector('[data-sidebar-right-expand]');
-						if (!btn) {
-							// 按钮不在了：要么已展开成功，要么本会话没有可展开内容 ⇒ 收工
-							if (document.querySelector('[data-sidebar-right-session]')) { window.clearInterval(expandTimer); }
-							return;
-						}
-						if (typeof btn.click === 'function') { btn.click(); }
-					} catch { /* 忽略 */ }
-				}, 1500);
-			} catch { /* 忽略 */ }
+			// ⚠ 2026-10-28（用户报障「启动 app 后，聊天框右侧栏的『开始』页被自动打开」）：
+			//   原来这里有一段**启动时自动点 official 的 expand 按钮**的逻辑（2026-10-18 加的，
+			//   目的是"复刻官方 desktop：一进来右栏就是「开始」面板"）⇒ **删掉了** ✓。
+			//
+			//   为什么删：官方右栏的默认形态本来就是**收起**（`createSurface()`：collapsed / one pane /
+			//   no tabs），「开始」页是官方 **settle rule** 在"**空栏被展开**"那一刻才播种的
+			//   （`the settle rule seeds it when the column first expands still empty`）⇒
+			//   我们一自动展开，就等于替用户"点开了右栏" ⇒ 右栏里凭空多出一个「开始」页 ✗，
+			//   而且这个展开态会被官方按 session 持久化 ⇒ **每次启动都自动展开** ✗✗。
+			//
+			//   ⇒ 需求（用户原话）：**启动时默认不展开** ⇒ 这里什么都不做（右栏保持官方默认的收起态）✓。
+			//   ⇒ 用户自己点右栏的 expand 按钮仍然照常工作（官方行为）✓；
+			//     我们在「主页/工作台」入口里撑开右栏的那处（client.workbenchNav.js）**保留**
+			//     —— 那是**用户点了某个入口**之后的动作，不是启动时自动做的 ✓。
 		}
 		// ★ 2026-10-21 真机取证（窗口模式：中间栏没有页签 + 打开的工作台没有页签）：
 		//   这里的 require 列表与**下面的 `PART_CHUNKS` 有重叠**（workbenchNav / workspaces /

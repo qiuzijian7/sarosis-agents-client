@@ -239,6 +239,67 @@ for (const label of ['注册本机到号池', '已注册 · 通道已连接', '�
 		fail(`index.js 用了 ${missing.join('、')} 但缺少对应 import ⇒ 运行期会 ReferenceError（注册等接口返回空响应）`);
 	}
 }
+// ★★ 防"async getter 被当同步用"（2026-10-28 真实事故：models 恒为 0）
+//   `lib/agent.js` 的 getter 是**同步**用法（`String(getAccessToken() || '')`）⇒
+//   若传进去的是 async 函数 ⇒ 传出去的是字符串 "[object Promise]" ⇒
+//   平台 `/v3/config` 回 models:null ⇒ **节点模型数 0**，而且指纹恒为
+//   sha256("[object Promise]") 的 b4e6060006b9（自欺欺人的"token 指纹"）✗✗
+{
+	const relayIndex = fs.readFileSync(path.join(PKG, 'lib', 'index.js'), 'utf8');
+	if (/getAccessToken:\s*\(\)\s*=>\s*cachedAccessToken/.test(relayIndex)
+		&& /getCatalogToken:\s*\(\)\s*=>\s*cachedCatalogToken/.test(relayIndex)) {
+		ok('agent 的 token getter 是同步的（读缓存，不是 async 函数）');
+	} else {
+		fail('agent 的 getAccessToken/getCatalogToken 必须传同步 getter（读缓存）⇒ 否则 token 变成 "[object Promise]"，模型数恒为 0');
+	}
+	if (/refreshCodebuddyTokens/.test(relayIndex) && /cachedCatalogToken/.test(relayIndex)) {
+		ok('CodeBuddy token 有同步缓存 + 定时刷新');
+	} else {
+		fail('缺少 CodeBuddy token 的同步缓存（cachedCatalogToken / refreshCodebuddyTokens）');
+	}
+}
+// ★ 通道"半开"自愈（2026-10-28）：服务端摘掉通道后客户端收不到 close ⇒ 必须客户端自查
+{
+	const relayIndex = fs.readFileSync(path.join(PKG, 'lib', 'index.js'), 'utf8');
+	const agentSrc = fs.readFileSync(path.join(PKG, 'lib', 'agent.js'), 'utf8');
+	if (/verifyChannel/.test(relayIndex) && /channelConnected === false/.test(relayIndex)) {
+		ok('有「中转站说没连 ⇒ 强制重连」的自愈（verifyChannel）');
+	} else {
+		fail('缺少通道半开自愈（verifyChannel）⇒ 服务端摘通道后本机会一直假装连着');
+	}
+	if (/kind: 'channel_error'/.test(agentSrc)) {
+		ok('onerror 也留痕（channel_error）⇒ 掉线原因可查');
+	} else {
+		fail('onerror 没有留痕 ⇒ 只触发 error 不触发 close 时查不到掉线原因');
+	}
+}
+// ★ 额度进度条（2026-10-28 用户要求：更直观）
+for (const [needle, label] of [
+	['qbar-track', '额度进度条的槽'],
+	['qbar-fill', '额度进度条的填充'],
+]) {
+	if (html.includes(needle)) {
+		ok(`额度卡片有${label}`);
+	} else {
+		fail(`额度卡片缺${label}（${needle}）`);
+	}
+}
+// 百分比与配色档位在**内联脚本**里（渲染时才出现）⇒ 查源码
+{
+	const pageSrc = fs.readFileSync(path.join(PKG, 'lib', 'page.js'), 'utf8');
+	for (const [needle, label] of [
+		['qbar-pct', '已用百分比'],
+		["pct >= 90 ? ' hot'", '水位 ≥90% 转红'],
+		["pct >= 70 ? ' warn'", '水位 70~90% 转黄'],
+		['usedValue / totalQuota * 100', '已用占比的计算'],
+	]) {
+		if (pageSrc.includes(needle)) {
+			ok(`额度进度条有${label}`);
+		} else {
+			fail(`额度进度条缺${label}（${needle}）`);
+		}
+	}
+}
 // ★ Token 用量超链接（2026-10-28 用户要求）：指向 token.woa.com，个人额度/用量看板
 if (html.includes('href="https://token.woa.com/"') && html.includes('Token 用量')) {
 	ok('页面有「🔗 Token 用量」超链接（token.woa.com）');

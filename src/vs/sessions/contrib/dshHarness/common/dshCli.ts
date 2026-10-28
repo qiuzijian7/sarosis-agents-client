@@ -618,7 +618,9 @@ export function renderDataRootOverlay(dataRoot: string, mcpConfigPath?: string, 
 	// ⚠ 不加这行：dev 实例会把商城下载的包与台账写进**生产数据根**（且 `installed` 页签读到生产的台账）✗✗
 	//   —— 比只读的那几个危险得多，这条由 `dshPluginPackages.test.ts` 按源码实际读法对账兜住。
 	// ⚠ kb / canvas 单独两行（不放进上面的循环）：它们除了数据根，还要**各自的根** —— 见下。
-	for (const id of ['vssaros-workflow', 'vssaros-skills', 'vssaros-media', 'vssaros-dashboard', 'vssaros-marketplace']) {
+	// xhs-note（2026-10-28）：草稿落 `<数据根>/xhs-note/` ⇒ 也读 `config.dataRoot`。
+	// ⚠ 不加这行：dev 实例的草稿会写进**生产数据根**（与 marketplace 那类同病）。
+	for (const id of ['vssaros-workflow', 'vssaros-skills', 'vssaros-media', 'vssaros-dashboard', 'vssaros-marketplace', 'vssaros-xhs-note']) {
 		lines.push(`- id: ${id}`);
 		lines.push('  config:');
 		lines.push(`    dataRoot: ${yamlSingleQuoted(dataRoot)}`);
