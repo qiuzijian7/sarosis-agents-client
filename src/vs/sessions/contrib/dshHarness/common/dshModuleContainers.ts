@@ -73,6 +73,10 @@ export type DshModuleId =
 	//   页面里 iframe 承载 AnyDev 上部署的中转站 Web；本机登录 CodeBuddy provider 后，
 	//   由 IDE 侧（`extensions/codebuddy-provider/src/relay.ts`）自动把本机注册成中转站节点。
 	| 'relay'
+	// 2026-10-28：小红书笔记工作台（`@vssaros/dsh-xhs-note`，整页 `/x/xhs-note/`）——
+	//   主题与素材整理成笔记（标题/正文/话题标签），草稿落 `<数据根>/xhs-note/drafts/`。
+	//   带 ActivityBar 图标（order 42）；⚠ 登记三张表必须同批（联合体 / 内置模块表 / 页面表）。
+	| 'xhs-note'
 	| 'studio';
 
 export interface IDshBuiltinModule {
@@ -146,6 +150,9 @@ export const DSH_BUILTIN_MODULES: readonly IDshBuiltinModule[] = [
 	// 本机登录 CodeBuddy provider 后由 IDE 侧自动注册成中转站节点（注册体只含身份与模型目录，
 	// **不含任何 CodeBuddy 凭据** —— 中转站永不持有凭据）。
 	{ module: 'relay', pluginName: '@vssaros/dsh-relay', summary: '萨罗斯中转站：承载 AnyDev 上部署的中转站 Web；本机登录 CodeBuddy provider 后自动注册为中转站节点（页面 /x/relay/）' },
+	// 2026-10-28：小红书笔记工作台（`@vssaros/dsh-xhs-note`）。图标 + `/x/xhs-note/` 页面；
+	// 草稿落 `<数据根>/xhs-note/drafts/`（服务端 `lib/store.js`，页面与工作台读同一份 ⇒ 不会漂移）。
+	{ module: 'xhs-note', pluginName: '@vssaros/dsh-xhs-note', summary: '小红书笔记：主题与素材整理成笔记（标题/正文/话题标签），草稿落本机数据目录（页面 /x/xhs-note/）' },
 ];
 
 /**
@@ -299,6 +306,15 @@ export const DSH_MODULE_CONTAINERS: readonly IDshModuleContainer[] = [
 		note: '2026-10-27：萨罗斯中转站工作台。页面 iframe 直连 AnyDev 环境「我的开发环境」（21.6.92.5）上的中转站 Web（http://zijianqiu-any1.devcloud.woa.com:8000/，该站不设 X-Frame-Options ⇒ 可嵌）；页面自带状态栏（可达性 / 版本 / 刷新 / 外开）与探针 `/x/relay/api/ping`。本机登录 CodeBuddy provider 后，IDE 侧自动把本机注册成中转站节点（只报身份 + 模型目录，不报凭据）。',
 	},
 	{
+		// 小红书笔记工作台（2026-10-28）：`@vssaros/dsh-xhs-note` 的 `/x/xhs-note/` 整页。
+		// **page-only** —— IDE 侧没有对应 legacy 页（笔记编辑与草稿都只在 dsh 侧）。
+		// order 42 = 「创作」类入口，排在画布(85)/商城(86)之前。
+		// ⚠ 活动栏 title/icon/order 必须与插件清单 `vssaros.activityBar` **同值**（双轨对账守卫盯着）。
+		containerId: 'vssaros.dsh.xhs-note', modules: ['xhs-note'], status: 'page-only',
+		activityBar: { containerId: 'vssaros.dsh.xhs-note', title: { zh: '小红书笔记', en: 'XHS Note' }, icon: 'codicon:comment-discussion', order: 42 },
+		note: '2026-10-28：小红书笔记工作台。服务端 `lib/index.js` 注册 `/x/xhs-note`（kind=prefix）+ 页面壳；草稿落 `<数据根>/xhs-note/drafts/`，工作台里的 React 面板接管编辑。',
+	},
+	{
 		containerId: 'agentStudio.dashboard', modules: ['dashboard'], status: 'existing',
 		// order 5 = **活动栏第一位**（2026-10-12 用户要求；原 150 = 最后一位）。
 		// 静态注册侧（`agentStudio.contribution.ts` 的 `_registerModuleToolIcon`）必须同值，
@@ -377,6 +393,9 @@ export const DSH_MODULE_PAGES: readonly IDshModulePage[] = [
 	// 2026-10-27：萨罗斯中转站工作台（整页 `/x/relay/`，页面里 iframe 承载 AnyDev 上的中转站 Web）。
 	// ⚠ 这条同时是主页/侧栏点「打开」的**白名单**（`openModulePage` 精确匹配）⇒ 漏登记 = 点了没反应。
 	{ module: 'relay', kind: 'page', route: '/x/relay/' },
+	// 2026-10-28：小红书笔记工作台（整页 `/x/xhs-note/`，与服务端 `ROUTE_PREFIX` 逐字一致）。
+	// ⚠ 这条同时是主页/侧栏点「打开」的**白名单**（`openModulePage` 精确匹配）⇒ 漏登记 = 点了没反应。
+	{ module: 'xhs-note', kind: 'page', route: '/x/xhs-note/' },
 ];
 
 /** 容器页路由的解析结果（见 {@link pageRouteForActiveModules}）。 */

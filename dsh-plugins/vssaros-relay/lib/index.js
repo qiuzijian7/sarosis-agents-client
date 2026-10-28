@@ -14,7 +14,31 @@
 //   · CodeBuddy 登录态从 **dsh 凭据库**取（`VSSAROS_CODEBUDDY_KEY`，与 vssaros-bridge
 //     **同一份**，不复制第二份 token）；本机的节点令牌存在 `VSSAROS_RELAY_NODE`。
 import os from 'node:os';
+import { stat } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import { renderPage, DEFAULT_RELAY } from './page.js';
+
+const PAGE_FILE = fileURLToPath(new URL('./page.js', import.meta.url));
+
+/**
+ * 按 **文件 mtime** 缓存 `page.js` 模块（与 vssaros-studio 同一套修法）。
+ *
+ * ⚠ 原 `import('./page.js?t=' + Date.now())` 每次请求都生成新模块，ESM 模块不会被 GC
+ *   ⇒ 内存只增不减。mtime 当 cache-busting：没改就复用，改了才重新加载。
+ */
+let pageModuleCache = { mtimeMs: 0, render: null };
+
+async function loadPageRender() {
+	try {
+		const { mtimeMs } = await stat(PAGE_FILE);
+		if (pageModuleCache.render && pageModuleCache.mtimeMs === mtimeMs) { return pageModuleCache.render; }
+		const mod = await import('./page.js?t=' + mtimeMs);
+		pageModuleCache = { mtimeMs, render: mod.renderPage };
+		return pageModuleCache.render;
+	} catch {
+		return renderPage;
+	}
+}
 import { createNodeAgent, AGENT_STATE } from './agent.js';
 import { identityOf } from './codebuddy.js';
 import { toReportPayload } from './quota.js';
@@ -901,8 +925,8 @@ export function apply(ctx) {
 			}
 			let html;
 			try {
-				const mod = await import('./page.js?t=' + Date.now());
-				html = mod.renderPage({ relayUrl: state.relayUrl });
+				const render = await loadPageRender();
+				html = render({ relayUrl: state.relayUrl });
 			} catch (e) {
 				html = renderPage({ relayUrl: state.relayUrl });
 			}

@@ -524,7 +524,7 @@ Rules that keep delegation effective:
 			skills: ['saroasis-platform', 'tapd-skill', 'analysis', 'summarize'],
 			// 2026-10-24 用户口径：**平台侧只负责"读"**（URL + 它统计出来的数据），
 			//   单据的读写操作交给 tapd 技能 ⇒ 不需要 studio_* 工具（也不该让模型直接写 TAPD）。
-			suggestions: ['萨罗斯现在有哪些工作台', '帮我发布一个工作台到商城', '这次的会话为什么报错'],
+			suggestions: ['我名下有哪些缺陷', '未关闭的缺陷按负责人分布', '这条单什么情况'],
 			tools: ['read', 'write', 'edit', 'glob', 'grep', 'pwsh', 'web_search', 'skill'],
 			visibility: { userInvocable: true, agentInvocable: true },
 			source: 'builtin',

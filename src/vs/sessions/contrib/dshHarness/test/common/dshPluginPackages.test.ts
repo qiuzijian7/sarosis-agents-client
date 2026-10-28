@@ -819,6 +819,10 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 			// web-content-import（2026-10-15 新增）：`content_import` 的 `mode:"write"` 把内容写进知识库
 			// `库/raw/`（跨会话持久 ✓）⇒ 挂官方钩子；`read` 是纯读 ⇒ 闸里明确只拦 write（不拦只读 ✓）。
 			{ dir: 'vssaros-web-content-import', gate: 'hook' },
+			// marketplace（2026-10-28）：过闸的是 `market_install`（真落盘 skills/workflows +
+			// installed-packages.json 台账）与 `market_publish`（上传发布，不可撤销）；
+			// `market_search` / `market_inspect_github` 纯只读 ⇒ 闸里明确放行（`dryRun` 也放行）。
+			{ dir: 'vssaros-marketplace', gate: 'hook' },
 			// agents（2026-10-13，P2 生命周期工具）：过闸的是 `agent_switch_persona`（改运行中会话的提示词）
 			// 与 `agent_stop`（停别人的回合）✓；`agent_list` 只读 ✓。
 			{

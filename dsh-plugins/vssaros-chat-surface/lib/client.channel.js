@@ -125,9 +125,9 @@ window.__ModuleLoader__.load({
 	};
 
 	const toneColor = (tone) => {
-		if (tone === "ok") { return "var(--dsw-alias-label-success, #3fb950)"; }
-		if (tone === "warn") { return "var(--dsw-alias-label-warning, #d29922)"; }
-		if (tone === "err") { return "var(--dsw-alias-label-danger, #f85149)"; }
+		if (tone === "ok") { return "var(--dsw-alias-state-success-primary, #3fb950)"; }
+		if (tone === "warn") { return "var(--dsw-alias-state-warn-label, #d29922)"; }
+		if (tone === "err") { return "var(--dsw-alias-state-error-primary, #f85149)"; }
 		return undefined;
 	};
 

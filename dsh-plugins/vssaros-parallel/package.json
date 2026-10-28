@@ -35,6 +35,7 @@
   "vssaros": {
     "manifestVersion": 1,
     "module": "parallel",
+    "legacyCounterpart": "vssaros.dsh.parallel",
     "activityBar": {
       "containerId": "vssaros.dsh.parallel",
       "title": "并行工作台",

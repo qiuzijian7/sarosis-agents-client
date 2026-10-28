@@ -36,6 +36,8 @@
   },
   "vssaros": {
     "manifestVersion": 1,
+    "module": "xhs-note",
+    "legacyCounterpart": "vssaros.dsh.xhs-note",
     "view": {
       "kind": "page",
       "route": "/x/xhs-note/"

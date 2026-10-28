@@ -108,9 +108,13 @@ if (!src) {
 	const during = { left: env.el.style.left, top: env.el.style.top };
 	env.fireWin('pointerup', {});
 	const saved = JSON.parse(env.store.get('__vssarosWbActionsPos') || 'null');
-	ck('拖动中把组挪到 left/top', during.left === '672px' && during.top === '331px', JSON.stringify(during));
+	// ★ 2026-10-28 口径收窄（用户：「浮动工具栏仅可以在 app 最右侧上下移动」）：
+	//   x 恒为 `maxL - ACTIONS_RIGHT_GAP(12)`，横向怎么拖都不动；只有 y 生效。
+	//   面板 800 − 组宽 32 = 768，再减 12 ⇒ 756。
+	ck('拖动中只改 y，x 恒定贴最右', during.left === '756px' && during.top === '331px', JSON.stringify(during));
+	ck('横向拖 100px 也不动 x（仅可上下）', during.left === '756px', `左移 100 后 left=${during.left}`);
 	ck('拖动中清掉 right/transform', env.el.style.right === 'auto' && env.el.style.transform === 'none');
-	ck('松手写 localStorage', !!saved && saved.x === 672 && saved.y === 331, JSON.stringify(saved));
+	ck('松手写 localStorage', !!saved && saved.x === 756 && saved.y === 331, JSON.stringify(saved));
 	ck('松手清掉 data-dragging', !env.attrs.has('data-dragging'));
 	ck('松手吞掉那次 click', (env.el.__ev.click || []).length === 1);
 	ck('拖动后组带 data-moved', env.attrs.has('data-moved'));
@@ -137,7 +141,7 @@ if (!src) {
 	env.fireWin('pointermove', { pointerId: 1, clientX: 4000, clientY: 4000 });
 	env.fireWin('pointerup', {});
 	const saved = JSON.parse(env.store.get('__vssarosWbActionsPos') || 'null');
-	ck('拖出右下 ⇒ 夹到 (768, 542)', !!saved && saved.x === 800 - 32 && saved.y === 600 - 58, JSON.stringify(saved));
+	ck('拖出右下 ⇒ 夹到 (756, 542)（右侧留 12px）', !!saved && saved.x === 800 - 32 - 12 && saved.y === 600 - 58, JSON.stringify(saved));
 }
 
 // ⑤ 右键 ⇒ 复位 + 清存储
@@ -145,7 +149,8 @@ if (!src) {
 	const env = makeEnv({ stored: { x: 100, y: 120 } });
 	const drag = compile(env);
 	drag(env.el, env.frameEl);
-	ck('恢复上次位置', env.el.style.left === '100px' && env.el.style.top === '120px', `${env.el.style.left}/${env.el.style.top}`);
+	// 存档里的 x 已经不作数（口径是"贴最右"）⇒ 恢复时被夹到 756，y 照旧
+	ck('恢复上次位置（x 夹到最右，y 沿用存档）', env.el.style.left === '756px' && env.el.style.top === '120px', `${env.el.style.left}/${env.el.style.top}`);
 	let prevented = false;
 	env.fireEl('contextmenu', { preventDefault: () => { prevented = true; } });
 	ck('右键复位到默认（右中）', env.el.style.right === '12px' && env.el.style.transform === 'translateY(-50%)');
@@ -170,7 +175,7 @@ if (!src) {
 	const env = makeEnv({ stored: { x: 5000, y: 5000 } });
 	const drag = compile(env);
 	drag(env.el, env.frameEl);
-	ck('越界存档被夹回面板内', env.el.style.left === '768px' && env.el.style.top === '542px',
+	ck('越界存档被夹回面板内', env.el.style.left === '756px' && env.el.style.top === '542px',
 		`${env.el.style.left}/${env.el.style.top}`);
 }
 

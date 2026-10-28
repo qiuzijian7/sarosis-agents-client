@@ -248,6 +248,32 @@ check('细条常驻：折叠面包屑 + 预览/编辑分段 + ⋯',
 check('阅读进度条 + 回到顶部',
 	VIEW_SRC.includes('docProgress') && VIEW_SRC.includes('回到顶部'));
 
+// ══════════════════════════════════════════════════════════════════════════
+// ★ 2026-10-28：两份**曾丢失**的断言在这里重建（工作副本曾被回退到 HEAD，
+//   旧断言随之消失；现在按当前实现重新钉住，别再依赖"当时加过"）。
+// ══════════════════════════════════════════════════════════════════════════
+
+// ── ① 知识库助手必须绑「知识库专家」（当前实现的真实形态：包 newSession）──
+//   ⚠ 2026-10-28 记录：这份 client.js 曾被回退到更早的版本（1745 行），
+//     当时那套 `applyKbPresetAsync + 回读校验 + MutationObserver` **已不在此文件中**；
+//     现行实现是"包 `desktopWorkbenches.newSession`，新会话建好后 select 预设"。
+//     ⇒ 断言按**现存的实现**写，不按"我记得加过什么"写（否则守卫永远红）。
+check('新会话默认用知识库专家（newSession 补丁 + preset id）',
+	CLIENT.includes('__vssarosKbPreset') && CLIENT.includes("'vssaros-knowledge-base-expert'")
+		&& /presets\.select\(sid, 'vssaros-knowledge-base-expert'\)/.test(CLIENT));
+check('只有本工作台在前台时才改 preset（不带走别的工作台会话）',
+	CLIENT.includes('__vssarosKbActive'));
+
+// ── ② 聊天框与文档**不许重叠**（按商城工作台的分栏口径）─────────────────
+check('业务区基准 0%（助手栏出现时必定收缩）',
+	/flex: '1 1 0%'/.test(CLIENT));
+check('业务区裁剪溢出（overflow: hidden）',
+	/data-vssaros-kb-panel[\s\S]{0,1800}?overflow: 'hidden'/.test(CLIENT));
+check('助手栏自建层叠与裁剪（position:relative + overflow:hidden + maxWidth）',
+	/'data-vssaros-kb-conv'[\s\S]{0,800}?position: 'relative'[\s\S]{0,400}?overflow: 'hidden'[\s\S]{0,400}?maxWidth: '70%'/.test(CLIENT));
+check('对话有自己的滚动容器（minHeight:0 + overflow:auto）',
+	/flexDirection: 'column'[\s\S]{0,500}?flex: '1 1 auto'[\s\S]{0,300}?overflow: 'auto'/.test(CLIENT));
+
 console.log('\n' + '='.repeat(60));
 if (failed.length) {
 	console.log(`✗ ${failed.length} 项失败 / 共 ${pass + failed.length} 项`);

@@ -71,6 +71,25 @@ export function explainEndpointFailure(error) {
 }
 
 /**
+ * 这个端点上的**是不是 Chrome**（而不是别的 CDP 服务）。
+ *
+ * ★ 2026-10-28 实测事故：IDE 自己的 DevTools 也监听 **9222**（Chrome 的惯例调试端口）
+ *   ⇒ 插件把 **IDE** 当成了 Chrome ⇒ 两个症状同时出现：
+ *     ① `Storage.getCookies` 读到的是 **Electron 的 cookie**（里面没有 Chrome 的登录态）；
+ *     ② `Target.createTarget` **不被支持** ⇒ 登录页开不出来
+ *   ⇒ 表现为「还没有额度数据：CDP Target.createTarget failed (code -32000): Not supported」✗
+ *
+ * ⇒ `/json/version` 的 `Browser` 字段能区分：Chrome 是 `Chrome/…`，Electron 是 `Electron/…`
+ *   ⇒ 明确不是 Chrome 的端点一律**跳过**（当作不可达）⇒ 继续试下一个候选
+ *   ⇒ 全都不是 ⇒ 走「拉起专属 Chrome 实例」那条路 ✓
+ * ⚠ `product` 缺失（undefined）时**不排除**（不因信息缺失而误杀真浏览器）。
+ */
+export function isChromeProduct(product) {
+	if (typeof product !== 'string' || !product.trim()) { return true; }
+	return /^chrome\//i.test(product.trim());
+}
+
+/**
  * 并行探测所有候选端点，按**候选顺序**取第一个连上的（不是"谁先回来选谁"）。
  * 真源：`browserCdp.ts:118-148`（连不上的连接必须在这里关掉，否则留常驻连接）。
  */
@@ -161,9 +180,17 @@ export class CdpHost {
 		const candidates = cdpEndpointCandidates(this._config.port);
 		try {
 			const { endpoint, value } = await connectPreferredEndpoint(
-				candidates,
-				async ep => await discoverEndpoint(ep.url),
-				() => { /* 发现阶段没有要关的连接 */ },
+					candidates,
+					async ep => {
+						const found = await discoverEndpoint(ep.url);
+						// ★ 明确不是 Chrome 的端点（多半是 IDE 自己的 Electron DevTools 占了 9222）
+						//   ⇒ 当作不可达跳过 ⇒ 继续试下一个候选 / 拉专属实例 ✓
+						if (!isChromeProduct(found.product)) {
+							throw new Error(`端点 ${ep.url} 不是 Chrome（是 ${found.product}）`);
+						}
+						return found;
+					},
+					() => { /* 发现阶段没有要关的连接 */ },
 			);
 			return { ok: true, endpoint: endpoint.url, selfLaunched: endpoint.selfLaunched, browser: value.product };
 		} catch (error) {
@@ -217,6 +244,10 @@ export class CdpHost {
 					cdpEndpointCandidates(this._config.port),
 					async ep => {
 						const found = await discoverEndpoint(ep.url);
+						// ★ 同上：不是 Chrome 的端点（IDE 的 Electron DevTools 占了 9222）⇒ 跳过
+						if (!isChromeProduct(found.product)) {
+							throw new Error(`端点 ${ep.url} 不是 Chrome（是 ${found.product}）`);
+						}
 						const ws = new WebSocket(found.wsUrl);
 						await new Promise((resolve, reject) => {
 							ws.onopen = () => resolve();
@@ -257,6 +288,10 @@ export class CdpHost {
 				while (Date.now() < deadline) {
 					try {
 						const found = await discoverEndpoint(url);
+						// ★ 专属端口上同样要确认是 Chrome（否则又连到某个别的 CDP 服务）
+						if (!isChromeProduct(found.product)) {
+							throw new Error(`专属端点 ${url} 不是 Chrome（是 ${found.product}）`);
+						}
 						const ws = new WebSocket(found.wsUrl);
 						await new Promise((resolve, reject) => {
 							ws.onopen = () => resolve();

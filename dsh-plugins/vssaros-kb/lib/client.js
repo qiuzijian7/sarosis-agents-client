@@ -471,7 +471,7 @@ window.__ModuleLoader__.load({
 			 */
 			const c = {
 				line: 'rgba(127,127,127,.35)',
-				fgFaint: 'var(--vscode-descriptionForeground, #9d9d9d)',
+				fgFaint: 'var(--dsw-alias-label-secondary, var(--vscode-descriptionForeground, #9d9d9d))',
 			};
 			const [settings, setSettings] = useState(null);
 			/**
@@ -855,7 +855,7 @@ window.__ModuleLoader__.load({
 			const cur = vaults.find((v) => v.id === (stats && stats.activeVaultId)) || vaults[0];
 			const row = { display: 'flex', alignItems: 'center', gap: 8, margin: '6px 0', fontSize: 12 };
 			/** 下拉面板（绝对定位、可滚动、最高 240px） */
-			const menuBox = { position: 'absolute', left: 0, right: 0, top: 26, zIndex: 60, maxHeight: 240, overflow: 'auto', background: 'var(--vscode-menu-background, #252526)', border: '1px solid rgba(127,127,127,.4)', borderRadius: 4, boxShadow: '0 8px 24px rgba(0,0,0,.45)' };
+			const menuBox = { position: 'absolute', left: 0, right: 0, top: 26, zIndex: 60, maxHeight: 240, overflow: 'auto', background: 'var(--dsw-alias-bg-layer-2, var(--vscode-menu-background, #252526))', border: '1px solid rgba(127,127,127,.4)', borderRadius: 4, boxShadow: '0 8px 24px rgba(0,0,0,.45)' };
 			const menuItem = { padding: '4px 8px', fontSize: 11.5, cursor: 'pointer', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' };
 			const btn = { height: 24, padding: '0 10px', fontSize: 11.5, cursor: 'pointer', borderRadius: 4, background: 'transparent', color: 'inherit', border: '1px solid rgba(127,127,127,.35)' };
 			const sec = { borderTop: '1px solid rgba(127,127,127,.25)', padding: '12px 16px' };
@@ -1001,7 +1001,7 @@ window.__ModuleLoader__.load({
 					h('div', { style: sec, 'data-kb-sec': 'health' },
 						h('div', { style: h2 }, '🩺 体检'),
 						health
-							? h('pre', { style: { margin: '4px 0 8px', maxHeight: 240, overflow: 'auto', fontSize: 11, lineHeight: 1.7, whiteSpace: 'pre-wrap', fontFamily: 'var(--vscode-editor-font-family, monospace)', background: 'rgba(127,127,127,.10)', borderRadius: 4, padding: 8 } }, healthTextOf(health))
+							? h('pre', { style: { margin: '4px 0 8px', maxHeight: 240, overflow: 'auto', fontSize: 11, lineHeight: 1.7, whiteSpace: 'pre-wrap', fontFamily: 'var(--vssaros-font-mono, monospace)', background: 'rgba(127,127,127,.10)', borderRadius: 4, padding: 8 } }, healthTextOf(health))
 							: h('div', { style: { fontSize: 11, opacity: .6 } }, '尚未运行体检（只读扫描，不会改动任何文件）'),
 						// 有候选目标时给出"一键改指向"（最多 5 条，避免面板变长）
 						(health && health.brokenCount)
@@ -1010,7 +1010,7 @@ window.__ModuleLoader__.load({
 									key: String(i),
 									style: { display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, marginBottom: 3 },
 								},
-									h('span', { style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'var(--vscode-editor-font-family, monospace)' } },
+									h('span', { style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'var(--vssaros-font-mono, monospace)' } },
 										String(x.from).split('/').pop() + ' → ' + x.target),
 									h('button', { type: 'button', style: btn, disabled: healthBusy, onClick: () => fixBrokenLink(x) }, '改为 ' + x.suggest))))
 							: null,
@@ -1023,7 +1023,7 @@ window.__ModuleLoader__.load({
 							// 查重：只报告，不修改（合并/删除由人决定）
 							h('button', { type: 'button', style: btn, disabled: dedupeBusy, onClick: () => runDedupe() }, dedupeBusy ? '比对中…' : '🔍 查重')),
 						dedupe
-							? h('pre', { style: { margin: '4px 0 8px', maxHeight: 240, overflow: 'auto', fontSize: 11, lineHeight: 1.7, whiteSpace: 'pre-wrap', fontFamily: 'var(--vscode-editor-font-family, monospace)', background: 'rgba(127,127,127,.10)', borderRadius: 4, padding: 8 } }, dedupe)
+							? h('pre', { style: { margin: '4px 0 8px', maxHeight: 240, overflow: 'auto', fontSize: 11, lineHeight: 1.7, whiteSpace: 'pre-wrap', fontFamily: 'var(--vssaros-font-mono, monospace)', background: 'rgba(127,127,127,.10)', borderRadius: 4, padding: 8 } }, dedupe)
 							: null),
 
 					// 📋 审核（状态在 frontmatter；只改那两个键，改前备份）
@@ -1036,7 +1036,7 @@ window.__ModuleLoader__.load({
 									key: String(i),
 									style: { display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, marginBottom: 3 },
 								},
-									h('span', { style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'var(--vscode-editor-font-family, monospace)' }, title: r.rel }, r.rel),
+									h('span', { style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'var(--vssaros-font-mono, monospace)' }, title: r.rel }, r.rel),
 									h('button', { type: 'button', style: btn, disabled: reviewBusy, onClick: () => markReview(r, 'approved') }, '通过'),
 									h('button', { type: 'button', style: btn, disabled: reviewBusy, onClick: () => markReview(r, 'rejected') }, '驳回'))))
 							: null,
@@ -1508,7 +1508,7 @@ window.__ModuleLoader__.load({
 					'data-kb-graph-overlay': '1',
 					style: {
 						position: 'absolute', inset: 0, zIndex: 30,
-						background: 'var(--vscode-sideBar-background, #252526)',
+						background: 'var(--dsw-alias-bg-layer-1, var(--vscode-sideBar-background, #252526))',
 						display: 'flex', flexDirection: 'column', minHeight: 0,
 					},
 				}, h(KbGraph, {
@@ -1526,7 +1526,7 @@ window.__ModuleLoader__.load({
 					'data-kb-settings-overlay': '1',
 					style: {
 						position: 'absolute', inset: 0, zIndex: 31,
-						background: 'var(--vscode-sideBar-background, #252526)',
+						background: 'var(--dsw-alias-bg-layer-1, var(--vscode-sideBar-background, #252526))',
 						display: 'flex', flexDirection: 'column', minHeight: 0,
 					},
 				}, h(KbSettingsPage, {
@@ -1571,8 +1571,18 @@ window.__ModuleLoader__.load({
 				'data-vssaros-assist-collapsed': kbCollapsed ? '1' : '0',
 				style: { display: 'flex', flex: '1 1 auto', minWidth: 0, minHeight: 0, height: '100%' },
 			};
+			/*
+			 * ★ 2026-10-28（真机：聊天框与知识文档**重叠**；要求"参考商城工作台的实现"）：
+			 *   商城的做法（`vssaros-marketplace/lib/workbench.js:309-453`）有三条这里缺了：
+			 *     ① 业务区 `flex: 1 1 0%`（基准 0）⇒ 助手栏出现时必定收缩到剩余宽度；
+			 *        原来 `1 1 auto` 的基准是**内容宽度**，内容越宽越不肯收 ⇒ 被助手栏盖住 ✗
+			 *     ② 业务区 `overflow: hidden` ⇒ 内部宽表格/图片不会顶出容器
+			 *     ③ 助手栏 `position: relative` + `overflow: hidden` + 对话包一层
+			 *        `flex:1 1 auto; minHeight:0; overflow:auto` 的滚动容器
+			 *        ⇒ 对话自身滚自己的，绝不画到左边文档上
+			 */
 			const siteWrap = h('div', {
-				style: { display: 'flex', flex: '1 1 auto', minWidth: 0, minHeight: 0, height: '100%' },
+				style: { display: 'flex', flex: '1 1 0%', minWidth: 0, minHeight: 0, height: '100%', overflow: 'hidden' },
 			}, kbShell);
 			if (!conversation) {
 				// 没有对话停靠点（宿主较旧）⇒ 整页知识库，照旧可用
@@ -1595,12 +1605,30 @@ window.__ModuleLoader__.load({
 					width: kbCollapsed ? '0px' : KB_CONV_WIDTH,
 					display: kbCollapsed ? 'none' : 'flex',
 					flexDirection: 'column',
-					minWidth: 0,
+					// 与商城同口径：<aside> 自己就是**独立的层叠上下文 + 裁剪盒**
+					// ⇒ 对话里任何 absolute/fixed 元素都只在栏内生效，不会盖到左侧文档
+					position: 'relative',
+					overflow: 'hidden',
+					minWidth: kbCollapsed ? 0 : '260px',
+					maxWidth: '70%',
 					minHeight: 0,
 					borderLeft: '1px solid rgba(128,128,128,.22)',
 				},
-			}, conversation);
-			return h('div', rootAttrs, siteWrap, splitter, aside);
+			},
+			// 对话本体包一层滚动容器（商城的 `flex:1 1 auto; minHeight:0; overflow:auto`）
+			h('div', {
+				style: {
+					flex: '1 1 auto',
+					minHeight: 0,
+					overflow: 'auto',
+					display: 'flex',
+					flexDirection: 'column',
+				},
+			}, conversation));
+			return h('div', Object.assign({}, rootAttrs, {
+				// 面板层也定位：分栏（siteWrap/splitter/aside）全部在 flow 里，不做浮层
+				style: Object.assign({}, rootAttrs.style, { position: 'relative', overflow: 'hidden' }),
+			}), siteWrap, splitter, aside);
 		}
 
 function install(ctx) {

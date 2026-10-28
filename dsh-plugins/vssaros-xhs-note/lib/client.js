@@ -39,7 +39,10 @@ window.__ModuleLoader__.load({
 		}
 
 		exports.apply = apply;
-		exports.inject = ['desktopWorkbenches'];
+		// ⚠ 留空：`desktopWorkbenches` **不许**写进静态 inject —— 宿主没装 workbenches 时
+		// 静态注入失败会让整次 web boot 失败（2026-10-28 守卫实测）。子块里有
+		// `ctx.inject(['desktopWorkbenches'])` 兜底，服务缺席时只是不注册组件、不影响启动。
+		exports.inject = [];
 		return module.exports;
 	},
 });

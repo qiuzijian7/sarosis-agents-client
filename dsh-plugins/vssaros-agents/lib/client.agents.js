@@ -3969,7 +3969,7 @@ window.__ModuleLoader__.load({
 .ag3-ctxmask { position:fixed; inset:0; z-index:70; }
 .ag3-ctx { position:fixed; min-width:176px; background:var(--dsw-alias-bg-module-platform, #26262a);
   border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.28)); border-radius:8px; padding:4px;
-  box-shadow:0 12px 30px var(--dsw-alias-shadow-overlay, rgba(0,0,0,.5)); display:flex; flex-direction:column; }
+  box-shadow:0 12px 30px var(--dsw-alias-bg-mask-1, rgba(0,0,0,.5)); display:flex; flex-direction:column; }
 .ag3-ctx button { text-align:left; font:inherit; font-size:12px; padding:6px 10px; border:0;
   border-radius:5px; background:transparent; color:inherit; cursor:pointer; }
 .ag3-ctx button:hover { background:var(--dsw-alias-bg-module-platform, rgba(127,127,127,.18)); }
@@ -3977,7 +3977,7 @@ window.__ModuleLoader__.load({
   overflow:hidden; text-overflow:ellipsis; max-width:240px; }
 .ag3-ctx .sep { height:1px; background:var(--dsw-alias-border-l1, rgba(127,127,127,.2)); margin:3px 4px; }
 /* 重命名弹层（不复用已废弃的 .ag3-mask —— 那是"改成二级页"之前的样式） */
-.ag3-rnmask { position:fixed; inset:0; z-index:80; background:var(--dsw-alias-bg-mask, rgba(0,0,0,.42));
+.ag3-rnmask { position:fixed; inset:0; z-index:80; background:var(--dsw-alias-bg-mask-1, rgba(0,0,0,.42));
   display:flex; align-items:center; justify-content:center; }
 .ag3-rndlg { width:min(360px, 86vw); background:var(--dsw-alias-bg-module-platform, #232326); border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.3));
   border-radius:10px; padding:14px; display:flex; flex-direction:column; gap:9px; }

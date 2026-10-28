@@ -5,7 +5,37 @@
 // 我们**不代理**站点接口 —— 代理会引入一堆绝对路径/Cookie 问题，收益为零。
 //
 // 可选配置：`siteUrl`（默认线上站点）。宿主可用 `--patch` 覆盖 cordis 行里的 config。
+import { stat } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import { renderPage } from './page.js';
+
+const PAGE_FILE = fileURLToPath(new URL('./page.js', import.meta.url));
+
+/**
+ * 按 **文件 mtime** 缓存 `page.js` 的模块实例。
+ *
+ * ⚠ 原来写的是 `import('./page.js?t=' + Date.now())`：每次请求都带一个新时间戳 ⇒
+ *   Node 把它当成**全新模块**（重新读盘 + 编译 + 执行），而 **ESM 模块实例永远不会被 GC**
+ *   ⇒ 请求一次就永久多一份，进程跑久了内存只增不减（2026-10-28 实测：运行 15 分钟已 2.1GB），
+ *   切换工作台时 GC 停顿变长，表现为"内容刷新特别慢"。
+ *
+ * 用 mtime 当 cache-busting：文件没变 ⇒ 复用已加载的模块（零开销）；
+ * 改了 page.js ⇒ mtime 变 ⇒ URL 变 ⇒ 正常热更新（保留"改页面只需刷新"的开发便利）。
+ */
+let pageModuleCache = { mtimeMs: 0, render: null };
+
+async function loadPageRender() {
+	try {
+		const { mtimeMs } = await stat(PAGE_FILE);
+		if (pageModuleCache.render && pageModuleCache.mtimeMs === mtimeMs) { return pageModuleCache.render; }
+		const mod = await import('./page.js?t=' + mtimeMs);
+		pageModuleCache = { mtimeMs, render: mod.renderPage };
+		return pageModuleCache.render;
+	} catch {
+		// 读不到 stat / 动态 import 失败 ⇒ 用顶部静态 import 的那份（永远可用）
+		return renderPage;
+	}
+}
 
 const ROUTE_PREFIX = '/x/studio';
 const DEFAULT_SITE = 'http://saroasisstudiosystem.saroasis.woa.com:9999/';
@@ -42,13 +72,12 @@ export function apply(ctx) {
 				res.end('not found');
 				return;
 			}
-			// ★ 每次请求都**重新加载 page.js**（带时间戳 query 绕过 ESM 模块缓存）：
-			//   host 侧是 node 模块，改 page.js 后原本必须重启 dsh 才生效 —— 这正是
-			//   "改了页面却还是老 UI"的原因。动态 import 之后，改页面只需刷新页面即可。
+			// 按 mtime 缓存（见 loadPageRender 注释）：文件没变不重新加载，
+			// 改了 page.js 仍然下一次请求就生效（无需重启 dsh）。
 			let html;
 			try {
-				const mod = await import('./page.js?t=' + Date.now());
-				html = mod.renderPage({ siteUrl: state.siteUrl });
+				const render = await loadPageRender();
+				html = render({ siteUrl: state.siteUrl });
 			} catch (e) {
 				html = renderPage({ siteUrl: state.siteUrl });
 			}

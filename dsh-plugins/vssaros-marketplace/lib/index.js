@@ -973,6 +973,33 @@ export async function apply(ctx, config) {
 	//   直接读 `ctx.tools` 会抛 `cannot get property "tools" without inject`，
 	//   而它被 catch 吞掉 ⇒ 表现成"商城工具**静默不存在**"（右侧对话里模型说没有这个工具）✗
 	//   证据：`vssaros-agents/lib/index.js` 就是 `export const inject = ['tools']` ✓
+	// ── 写类工具的**审批闸**（2026-10-28）──────────────────────────────────────
+	//   与 kb / kanban / workflow 同一把：官方派发前决策钩子 `tools/pre-execute`（waterfall ✓），
+	//   返回 `{ kind: 'ask' }` ＝ 先问用户；没有审批支持的部署 degrade 成 deny（fail-closed ✓，正是想要的）。
+	//   闸这两个：`market_install` 会**真落盘**（skills / workflows + installed-packages.json 台账）、
+	//   `market_publish` 会**上传发布**（不可撤销）。`market_search` / `market_inspect_github` 纯只读 ⇒ 放行。
+	//   ⚠ 判据带上参数：`dryRun` 只出计划不落盘（预检/预览）⇒ 不该弹窗（与 kb 的 apply=true 同一取舍）。
+	ctx.effect(() => ctx.on('tools/pre-execute', (exec, next) => {
+		const toolName = exec && typeof exec.name === 'string' ? exec.name : '';
+		if (toolName !== 'market_install' && toolName !== 'market_publish') {
+			return next();
+		}
+		const args = exec.arguments && typeof exec.arguments === 'object' ? exec.arguments : {};
+		if (args.dryRun === true) {
+			return next();
+		}
+		const target = String(args.slug ?? args.name ?? '').trim() || '(未命名)';
+		return {
+			kind: 'ask',
+			reason: toolName === 'market_install'
+				? `market_install 会把「${target}」落盘到本机商城安装目录（skills / workflows / installed-packages.json 台账）`
+				: `market_publish 会把「${target}」上传发布到商城（不可撤销）`,
+			displayReason: toolName === 'market_install'
+				? { zh: `允许把「${target}」安装到本机？`, en: `Allow installing "${target}" locally?` }
+				: { zh: `允许把「${target}」发布到商城？`, en: `Allow publishing "${target}" to the marketplace?` },
+		};
+	}), 'vssaros-marketplace: write-tool approval gate');
+
 	ctx.inject(['tools'], (scope) => {
 		const tools = scope.tools || (scope.get && scope.get('tools'));
 		if (!tools || typeof tools.register !== 'function') { return; }

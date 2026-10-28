@@ -114,7 +114,10 @@ suite('dshModuleContainers（容器聚合与注册计划）', () => {
 				assert.strictEqual(page.route, undefined, `${page.module} 是无页面模块，不该有 route`);
 				continue;
 			}
-			assert.match(String(page.route), /^\/x\/[a-z]+\//, `${page.module} 的 route 不合法：${String(page.route)}`);
+			// ⚠ 2026-10-28：字符集要与**模块 id** 对齐 —— `xhs-note` 是合法模块 id，
+		//   `defaultPageRoute()` 对它的推导就是 `/x/xhs-note/`；原先只认 `[a-z]+` 会把连字符判红
+		//   （现有带连字符的 `web-content-import` 恰好 kind=none 没有路由，所以一直没暴露）。
+		assert.match(String(page.route), /^\/x\/[a-z][a-z0-9-]*\//, `${page.module} 的 route 不合法：${String(page.route)}`);
 			if (page.kind === 'section') {
 				assert.ok(page.host, `section 模块 ${page.module} 必须记下宿主模块`);
 				assert.notStrictEqual(page.host, page.module, `section 模块 ${page.module} 的宿主不能是自己`);

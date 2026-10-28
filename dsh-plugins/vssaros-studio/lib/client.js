@@ -56,8 +56,11 @@ window.__ModuleLoader__.load({
 		 */
 		function applyPresetToCurrent(ctx, sessionId) {
 			// ⚠ agentPresets 是 **remote** 服务（chat-surface 的 inject 里就是 `remote.agentPresets`），
-			//   直接 ctx.get('agentPresets') 通常拿不到 ⇒ 两个名字都试。
+			//   直接 ctx.get('agentPresets') 通常拿不到 ⇒ 优先用 `ctx.inject(['remote.agentPresets'])`
+			//   已经捕获到的那个句柄（`globalThis.__vssarosStudioPresets`），其余名字只作兜底。
 			const candidates = [];
+			const held = globalThis.__vssarosStudioPresets;
+			if (held) { candidates.push(['injected', held]); }
 			try { const a = ctx.get && ctx.get('agentPresets'); if (a) { candidates.push(['agentPresets', a]); } } catch { /* ignore */ }
 			try { const b = ctx.get && ctx.get('remote.agentPresets'); if (b) { candidates.push(['remote.agentPresets', b]); } } catch { /* ignore */ }
 			if (!candidates.length) { diag.caps.presetApi = 'no-service'; return; }
@@ -66,8 +69,33 @@ window.__ModuleLoader__.load({
 				if (!svc || typeof svc !== 'object') { continue; }
 				for (const name of names) {
 					if (typeof svc[name] !== 'function') { continue; }
-					try { svc[name](STUDIO_PRESET); diag.caps.presetApi = label + '.' + name + '(id)'; diag.caps.defaults = 'done'; return; } catch (e) { /* 换下一种 */ }
-					try { svc[name]({ sessionId, agentPreset: STUDIO_PRESET }); diag.caps.presetApi = label + '.' + name + '(obj)'; diag.caps.defaults = 'done'; return; } catch (e) { /* 换下一种 */ }
+					/* ★★ 官方形态是**两个位置参数** `select(sessionId, presetId)`
+					   （`vssaros-chat-surface/lib/client.preset.js` 里就是 `ctx.remote.agentPresets.select(sid, id)`）。
+					   ⚠ 2026-10-27 真机 bug「萨罗斯工作台的助手显示成商城助手」：
+					   本工作台的对话是**停靠一条已存在的 blank 会话**，只能靠"给这个会话设 preset"，
+					   而这里原来只试了「单参」和「对象」两种 ⇒ 单参 `select(id)` 把 id 当 sessionId 静默吞掉（不抛错），
+					   于是被当成"设置成功"，实际沿用了上一次的 preset（商城助手）。 */
+					if (sessionId) {
+						try {
+							svc[name](sessionId, STUDIO_PRESET);
+							diag.caps.presetApi = label + '.' + name + '(sid,id)';
+							diag.caps.defaults = 'done';
+							return;
+						} catch (e0) { /* 换下一种 */ }
+					}
+					try {
+						svc[name]({ ...(sessionId ? { sessionId } : {}), agentPreset: STUDIO_PRESET });
+						diag.caps.presetApi = label + '.' + name + '(obj' + (sessionId ? '+sid' : '') + ')';
+						diag.caps.defaults = 'done';
+						return;
+					} catch (e1) { /* 换下一种 */ }
+					// 单参放最后：最容易"假成功"（参数被当成 sessionId 吞掉且不抛错）
+					try {
+						svc[name](STUDIO_PRESET);
+						diag.caps.presetApi = label + '.' + name + '(id)';
+						diag.caps.defaults = 'weak';   // 不可信，调用方据此允许后续重试
+						return;
+					} catch (e2) { /* 换下一种 */ }
 				}
 			}
 			diag.caps.presetApi = 'none(' + candidates.map(c => c[0]).join('|') + ')';
@@ -124,7 +152,13 @@ window.__ModuleLoader__.load({
 			if (diag.caps.presetOk !== true) {
 				applyPresetToCurrent(ctx, sid);
 				const api = String(diag.caps.presetApi || '');
-				if (api && api.indexOf('none') !== 0 && api !== 'no-service') { diag.caps.presetOk = true; }
+				/* 只有「带会话 id」的两种形态才算真成功：
+				   · `xxx(sid,id)` —— 官方双参
+				   · `xxx(obj+sid)` / `xxx(obj)` —— 对象形态
+				   单参 `xxx(id)` 会把 presetId 当成 sessionId 吞掉且不抛错（假成功），
+				   不能据此停止重试，否则永远停在"上次的 preset"。 */
+				const strong = api.indexOf('(sid,id)') > 0 || api.indexOf('(obj') > 0;
+				if (strong) { diag.caps.presetOk = true; }
 			}
 			if (!sid) {
 				if (diag.caps.presetOk !== true) { diag.caps.defaults = 'no-session'; }

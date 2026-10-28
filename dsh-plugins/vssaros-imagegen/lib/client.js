@@ -301,7 +301,9 @@ window.__ModuleLoader__.load({
 
 		/**
 		 * 卡片样式：随插件注入一份 <style>（客户端插件没有 CSS module 通道）。
-		 * 只用 dsh 的 CSS 变量（--vscode-*），跟随主题 ✓。
+		 * 令牌顺序：`--dsw-alias-*`（dsh 原生界面唯一真实可用的那套）→ `--vscode-*`（老 Host / VS Code
+		 *   侧壳里才有）→ 写死回退色。⚠ 2026-10-28：之前只写 `--vscode-*`，而 dsh 原生界面里**没有**
+		 *   这些变量 ⇒ 全部落进写死的 fallback（#999 / #3c3c3c / #0e639c），浅色深色都不跟随且不报错 ✗。
 		 */
 		function injectStyles() {
 			if (typeof document === "undefined" || !document.head) { return; }
@@ -311,24 +313,24 @@ window.__ModuleLoader__.load({
 			style.textContent = [
 				".vssaros-imagegen-row{display:flex;flex-direction:column;gap:8px;padding:8px 0;}",
 				".vssaros-imagegen-caption{display:flex;flex-direction:column;gap:2px;}",
-				".vssaros-imagegen-prompt{color:var(--vscode-foreground,inherit);word-break:break-word;}",
-				".vssaros-imagegen-meta{color:var(--vscode-descriptionForeground,#999);font-size:.92em;}",
+				".vssaros-imagegen-prompt{color:var(--dsw-alias-label-primary,var(--vscode-foreground,inherit));word-break:break-word;}",
+				".vssaros-imagegen-meta{color:var(--dsw-alias-label-secondary,var(--vscode-descriptionForeground,#999));font-size:.92em;}",
 				".vssaros-imagegen-shots{display:flex;flex-wrap:wrap;gap:8px;}",
-				".vssaros-imagegen-shot{position:relative;display:inline-block;border:1px solid var(--vscode-panel-border,#3c3c3c);border-radius:6px;overflow:hidden;cursor:zoom-in;background:#000;}",
+				".vssaros-imagegen-shot{position:relative;display:inline-block;border:1px solid var(--dsw-alias-border-l2,var(--vscode-panel-border,#3c3c3c));border-radius:6px;overflow:hidden;cursor:zoom-in;background:#000;}",
 				".vssaros-imagegen-shot img{display:block;width:220px;height:auto;}",
 				".vssaros-imagegen-shot.busy img{filter:grayscale(.7) brightness(.5);}",
 				".vssaros-imagegen-badge{position:absolute;left:6px;top:6px;background:rgba(0,0,0,.62);color:#fff;font-size:10px;padding:1px 6px;border-radius:3px;}",
 				".vssaros-imagegen-spin{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#fff;font-size:12px;}",
 				".vssaros-imagegen-versions{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}",
-				".vssaros-imagegen-lab,.vssaros-imagegen-count,.vssaros-imagegen-note,.vssaros-imagegen-hint{color:var(--vscode-descriptionForeground,#999);font-size:.9em;}",
-				".vssaros-imagegen-vchip{border:1px solid var(--vscode-button-border,transparent);background:transparent;color:var(--vscode-foreground,inherit);border-radius:999px;padding:2px 10px;font-size:.9em;cursor:pointer;}",
-				".vssaros-imagegen-vchip[aria-pressed=true]{background:var(--vscode-button-background,#0e639c);color:var(--vscode-button-foreground,#fff);}",
+				".vssaros-imagegen-lab,.vssaros-imagegen-count,.vssaros-imagegen-note,.vssaros-imagegen-hint{color:var(--dsw-alias-label-secondary,var(--vscode-descriptionForeground,#999));font-size:.9em;}",
+				".vssaros-imagegen-vchip{border:1px solid var(--dsw-alias-border-l2,var(--vscode-button-border,transparent));background:transparent;color:var(--dsw-alias-label-primary,var(--vscode-foreground,inherit));border-radius:999px;padding:2px 10px;font-size:.9em;cursor:pointer;}",
+				".vssaros-imagegen-vchip[aria-pressed=true]{background:var(--dsw-alias-button-primary-fill,var(--vscode-button-background,#0e639c));color:var(--dsw-alias-label-primary-inverted,var(--vscode-button-foreground,#fff));}",
 				".vssaros-imagegen-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}",
-				".vssaros-imagegen-btn{background:transparent;color:var(--vscode-button-secondaryForeground,inherit);border:1px solid var(--vscode-button-border,transparent);border-radius:4px;padding:3px 10px;font-size:.92em;cursor:pointer;}",
-				".vssaros-imagegen-btn:hover{background:var(--vscode-toolbar-hoverBackground,rgba(255,255,255,.08));}",
-				".vssaros-imagegen-btn.primary{background:var(--vscode-button-background,#0e639c);color:var(--vscode-button-foreground,#fff);}",
+				".vssaros-imagegen-btn{background:transparent;color:var(--dsw-alias-label-primary,var(--vscode-button-secondaryForeground,inherit));border:1px solid var(--dsw-alias-border-l2,var(--vscode-button-border,transparent));border-radius:4px;padding:3px 10px;font-size:.92em;cursor:pointer;}",
+				".vssaros-imagegen-btn:hover{background:var(--dsw-alias-interactive-bg-hover,var(--vscode-toolbar-hoverBackground,rgba(255,255,255,.08)));}",
+				".vssaros-imagegen-btn.primary{background:var(--dsw-alias-button-primary-fill,var(--vscode-button-background,#0e639c));color:var(--dsw-alias-label-primary-inverted,var(--vscode-button-foreground,#fff));}",
 				".vssaros-imagegen-editor{display:flex;flex-direction:column;gap:6px;}",
-				".vssaros-imagegen-editor textarea{width:100%;min-height:60px;background:var(--vscode-input-background,#3c3c3c);color:var(--vscode-input-foreground,#ccc);border:1px solid var(--vscode-input-border,transparent);border-radius:4px;padding:6px;font:inherit;resize:vertical;}",
+				".vssaros-imagegen-editor textarea{width:100%;min-height:60px;background:var(--dsw-alias-bg-layer-2,var(--vscode-input-background,#3c3c3c));color:var(--dsw-alias-label-primary,var(--vscode-input-foreground,#ccc));border:1px solid var(--dsw-alias-border-l2,var(--vscode-input-border,transparent));border-radius:4px;padding:6px;font:inherit;resize:vertical;}",
 				".vssaros-imagegen-editor-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}",
 				".vssaros-imagegen-lightbox{position:fixed;inset:0;background:rgba(0,0,0,.86);display:flex;align-items:center;justify-content:center;z-index:9999;padding:40px;}",
 				".vssaros-imagegen-lightbox img{max-width:92vw;max-height:86vh;border-radius:4px;}",

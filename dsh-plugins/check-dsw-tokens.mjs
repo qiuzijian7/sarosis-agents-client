@@ -23,15 +23,33 @@ let fail = 0;
 const ok = (n) => { pass += 1; console.log('  ✓ ' + n); };
 const bad = (n, d = '') => { fail += 1; console.log('  ✗ ' + n + (d ? '\n      ' + d : '')); };
 
-/** 找到本仓自带的 dsh 运行时里的主题包（多个版本时取路径最短的，即最新）。 */
+/**
+ * 找到本仓自带的 dsh 运行时里的主题包。
+ *
+ * ⚠ 必须取**版本号最大**的那个：`dsh-runtime/` 下可能同时存在 `0.2.1-rc.1` 和 `0.2.1-rc.2`，
+ *   而实际运行的是新版。原来按"路径最短"排序，rc.1 恰好更短 ⇒ 会拿旧白名单去校验新代码，
+ *   报出一堆"未定义 token"的假红（2026-10-27 踩过）。
+ */
 function themeFile() {
 	const base = path.join(ROOT, 'dsh-runtime');
 	if (!fs.existsSync(base)) { return ''; }
-	const hits = fs.readdirSync(base)
-		.map((v) => path.join(base, v, 'node_modules/@deepseek-ai/dsh-client-ui-theme/lib/client.js'))
-		.filter((p) => fs.existsSync(p))
-		.sort((a, b) => a.length - b.length);
-	return hits[0] || '';
+	const norm = (v) => v.split(/[.-]/).map((x) => (/^\d+$/.test(x) ? Number(x) : x));
+	const cmp = (a, b) => {
+		const x = norm(a); const y = norm(b);
+		for (let i = 0; i < Math.max(x.length, y.length); i += 1) {
+			const p = x[i] === undefined ? -1 : x[i];
+			const q = y[i] === undefined ? -1 : y[i];
+			if (p === q) { continue; }
+			if (typeof p === 'number' && typeof q === 'number') { return q - p; }
+			return String(q).localeCompare(String(p));
+		}
+		return 0;
+	};
+	const versions = fs.readdirSync(base)
+		.filter((v) => fs.existsSync(path.join(base, v, 'node_modules/@deepseek-ai/dsh-client-ui-theme/lib/client.js')))
+		.sort(cmp);
+	if (!versions.length) { return ''; }
+	return path.join(base, versions[0], 'node_modules/@deepseek-ai/dsh-client-ui-theme/lib/client.js');
 }
 
 const theme = themeFile();
