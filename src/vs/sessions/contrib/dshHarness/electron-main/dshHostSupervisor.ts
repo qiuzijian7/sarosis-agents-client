@@ -24,6 +24,7 @@ import { DshBridgeMethod, IBridgeHello, IBridgePluginRow, IBridgeReverseRequest,
 import { bridgePipePath, buildHostArgs, buildPluginAddArgs, buildPluginAddArgsMany, buildProfileInitArgs, DSH_SHARED_INSTANCE_PACKAGES, memoryGatewayUrlFromEnv, parseAuthUrl, resolveSiblingPackage, toFileSpec } from '../common/dshCli.js';
 import { isDshRowsBundleRegistered, parseMcpServers, renderMcpOverlay } from '../common/dshMcpConfig.js';
 import { auditBundledPluginVersions, isVersionNewer, renderBundledVersionAudit } from '../common/dshPluginVersionAudit.js';
+import { describeManualUpgrade, IThirdPartyPlugin, pickThirdPartyPlugins, upgradableSpecOf } from '../common/dshPluginUpgrade.js';
 import { DSH_HOST_IDLE_TTL_MS, DshHostOverlayKind, hostOverlayFileName, IDshHostConfig, renderHostOverlays } from '../common/dshHostConfig.js';
 import { HOST_RUN_OWNERSHIP_HEARTBEAT_MS, hostRunOwnershipFileName } from '../common/dshHostRunOwnership.js';
 import { DSH_ARCHIFY_PLUGIN_NAME, DSH_BRIDGE_PLUGIN_NAME, DSH_EGO_PLUGIN_NAME, DSH_BROWSER_PLUGIN_NAME, DSH_CHAT_SURFACE_PLUGIN_NAME, DSH_DEFAULT_PROFILE, DSH_FOUNDATION_PLUGIN_NAME, DSH_KB_REFS_PLUGIN_NAME, DSH_SCHEDULE_BUNDLE_PLUGIN_NAME, DSH_UNREAL_PLUGIN_NAME, DSH_VOICE_BUNDLE_PLUGIN_NAME, DSH_WEB_APP_BUNDLE_NAME, DSH_WORKBENCHES_PLUGIN_NAME, IDshBundledInstallResult, IDshHostStartOptions, IDshHostStatus, IDshPluginInfo, sameStartOptions } from '../common/dshHarness.js';
@@ -700,6 +701,62 @@ export class DshHostSupervisor extends Disposable {
 	}
 
 	/**
+	 * 列 profile 里**用户自己装的**第三方插件（2026-10-28）。
+	 *
+	 * 判据在 `common/dshPluginUpgrade.ts`：排除随包插件与 `file:…/.vssaros/plugins/` 暂存目录那批
+	 * （后者是本仓自己 `dsh plugin add` 进去的随包/伴生插件，归启动安装流程管）。
+	 *
+	 * 为什么需要它：本仓对随包插件有完整闭环，而"用户从 npm / GitHub 装的插件"既看不到装了什么，
+	 * 也没有升级入口 ⇒ 只能自己敲 pnpm。
+	 */
+	listThirdPartyPlugins(): IThirdPartyPlugin[] {
+		const { profile, dshHome } = this._resolveProfileAndHome();
+		const env = sanitizedEnv(dshHome ? { DSH_HOME: dshHome } : {});
+		const profileDir = this._profileDir(profile, env);
+		let deps: Readonly<Record<string, string>> | undefined;
+		try {
+			const raw = readFileSync(join(profileDir, 'package.json'), 'utf8');
+			deps = (JSON.parse(raw) as { dependencies?: Record<string, string> }).dependencies;
+		} catch {
+			return [];   // profile 还没初始化 ⇒ 没有第三方插件（不是错误）
+		}
+		const own = (this._opts.modulePluginDirs ?? []).map(([name]) => name);
+		return pickThirdPartyPlugins(deps, own, (name) =>
+			this._readPkgVersion(join(profileDir, 'node_modules', ...name.split('/'), 'package.json')));
+	}
+
+	/**
+	 * 升级一个第三方插件（2026-10-28）。
+	 *
+	 * ⚠ **只有 registry 形态才会真的执行**：git 源写 `@latest` 会把源换成 npm 上的同名包、
+	 *   本地目录写 `add` 会把链接换成注册表版本 —— 这两种只返回"该怎么做"的说明，绝不代劳
+	 *   （判据与文案见 `common/dshPluginUpgrade.ts`）。
+	 *
+	 * 成功后置 `_pluginsStale` ⇒ 下一次 `start()` 换 Host 进程（否则内存里还是旧插件代码，
+	 * 又是一次"前端新、后端旧"✗）。
+	 */
+	async upgradeThirdPartyPlugin(name: string): Promise<{ ok: boolean; message: string }> {
+		const target = this.listThirdPartyPlugins().find(p => p.name === name);
+		if (!target) {
+			return { ok: false, message: `profile 里没有 ${name}（可能已被移除或改名）` };
+		}
+		const spec = upgradableSpecOf(target);
+		if (!spec) {
+			return { ok: false, message: describeManualUpgrade(target.kind, name) };
+		}
+		// 复用既有 spec 安装路径：它已经带齐「profile 初始化 → 暂存元数据修复 → 装完按包名核对版本 →
+		// 置 `_pluginsStale`（下次 start 换 Host 进程）」⇒ 少一份会漂移的实现 ✓。
+		const r = await this.installPluginSpec(spec, name);
+		if (!r.ok) {
+			this._appendLog(`第三方插件升级失败：${name}（${spec}）：${r.error ?? '未知原因'}`);
+			return { ok: false, message: `${name} 升级失败：${r.error ?? '未知原因'}` };
+		}
+		const after = r.version ?? r.bundledVersion ?? this.listThirdPartyPlugins().find(p => p.name === name)?.installedVersion;
+		this._appendLog(`第三方插件已升级：${name} → ${after ?? '(版本读不到)'}（${spec}）；需重启 Host 生效`);
+		return { ok: true, message: `${name} 已升级到 ${after ?? '最新版'}；重启 Host 后生效` };
+	}
+
+	/**
 	 * 升级后的健康检查（方案第 3.3 节，去掉需要模型凭据的"发一条消息"那项）：
 	 * Host 运行、控制桥握手（插件随包分发时）、认证换 Cookie、首页带 `__DSH_BOOT__` 且启动图里有伴生插件前端。
 	 */
@@ -726,6 +783,22 @@ export class DshHostSupervisor extends Disposable {
 			}
 		} catch (e) {
 			checks.push({ name: 'page reachable', ok: false, detail: String((e as Error)?.message ?? e) });
+		}
+		// ★★ 2026-10-28（升级闸门的最后一块）：**插件图**也要体检。
+		//   上面几项全绿只证明"Host 起来了、页面能开"，证明不了"插件都挂上了"——
+		//   真机形态：Host ready、首页 200、`__DSH_BOOT__` 也在，但 `vssaros-agents` 等插件 `never started`
+		//   ⇒ 新建会话被拒、桌面窗口停在 hero。这种"半新半坏"如果判成功，升级闸门就形同虚设 ✗✗。
+		//   `_failedPluginRows()` 返回 undefined = 桥不可用（**无从判断**）⇒ 不记这一项：
+		//   宁可漏判，也不要误判成失败触发一次白回退 ✓。
+		const failedPlugins = await this._failedPluginRows();
+		if (failedPlugins) {
+			checks.push({
+				name: 'plugin graph',
+				ok: failedPlugins.length === 0,
+				detail: failedPlugins.length
+					? failedPlugins.map(r => `${r.moduleName ?? r.entryId}(${r.phase})`).join(', ')
+					: 'all plugins activated',
+			});
 		}
 		return summarizeHealth(checks);
 	}
@@ -1341,18 +1414,35 @@ export class DshHostSupervisor extends Disposable {
 	 *
 	 * 自愈：认出这种状态 ⇒（一次）换一个进程重新 import 磁盘当前代码 ✓。
 	 */
-	private async _auditPluginGraph(why: string): Promise<void> {
+	/**
+	 * 问一次 Host 的插件行，只留**不可用**的那些（`phase === 'failed'`）。
+	 *
+	 * 两个调用方共用这一份口径（2026-10-28）：① 启动后的插件图自检（`_auditPluginGraph`，会自愈）；
+	 * ② **升级后的健康检查**（`healthCheck`）—— 后者是本轮补的口子：
+	 *   从前健康检查只看"Host ready + 握手 + 首页能打开"，而 Host 完全可以 **ready 但若干插件 failed**
+	 *   （真机形态：聊天页白屏、新建会话报 `agent-preset/invalid: … never started`）
+	 *   ⇒ 升级"成功"（ready、体检全绿）但用户拿到的是一个半坏的 Host，而且**不会回退** ✗✗。
+	 *
+	 * @returns `undefined` = 桥不可用 / 查询失败（**无从判断**，调用方不许当成"不健康"，否则会白回退一次）。
+	 */
+	private async _failedPluginRows(): Promise<readonly IBridgePluginRow[] | undefined> {
 		const bridge = this._bridge;
 		if (!bridge) {
-			return;
+			return undefined;
 		}
-		let rows: readonly IBridgePluginRow[];
 		try {
-			rows = await bridge.call<readonly IBridgePluginRow[]>(DshBridgeMethod.PluginsList, undefined, 20_000);
+			const rows = await bridge.call<readonly IBridgePluginRow[]>(DshBridgeMethod.PluginsList, undefined, 20_000);
+			return (rows ?? []).filter(r => r.phase === 'failed');
 		} catch {
+			return undefined;
+		}
+	}
+
+	private async _auditPluginGraph(why: string): Promise<void> {
+		const failed = await this._failedPluginRows();
+		if (!failed) {
 			return;   // 自检本身不许变成新的故障源
 		}
-		const failed = (rows ?? []).filter(r => r.phase === 'failed');
 		if (failed.length === 0) {
 			this._pluginAuditRestarted = false;
 			return;

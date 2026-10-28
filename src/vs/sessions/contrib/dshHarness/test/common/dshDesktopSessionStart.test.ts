@@ -61,6 +61,22 @@ suite('desktop 窗口：会话启动失败 ⇒ 重试 + 把原因显示给用户
 		//   （只查"出现 retry"会被"去掉 FATAL_MARKERS"骗过 ✗）。
 		assert.strictEqual(decideSessionStartRetry('unknown session (never started)', 1, 3), 'fail',
 			'致命特征必须优先于可重试特征 ✗');
+		// ★★ 2026-10-28 真机原文（桌面窗口弹出的那条）：Host 被外部杀掉后 supervisor 自动重启
+		//   （实测 25.8s），重启窗口期 `bridge` 为 undefined ⇒ startSession 抛这条中文文案。
+		//   它**明显是瞬时态**，必须重试（否则第 1 次就判死、窗口停在提示条上 ✗✗）。
+		// ⚠ 每条用例只留**一个**特征：真机原文里既有"控制桥不可用"又有"Host 未运行"，
+		//   直接拿它当用例会让"删掉其中一个特征"仍然绿（实测假绿 ✗）。
+		assert.strictEqual(
+			decideSessionStartRetry('[dshHarness] startSession: 控制桥不可用', 1, 3),
+			'retry',
+			'"控制桥不可用"必须可重试（Host 重启期只有 ~26s，等一等就好 ✗）');
+		assert.strictEqual(decideSessionStartRetry('未安装伴生插件或 Host 未运行', 1, 3), 'retry');
+		assert.strictEqual(decideSessionStartRetry('Host 意外退出（code -1）', 1, 3), 'retry');
+		assert.strictEqual(decideSessionStartRetry('Host exited unexpectedly (code 4294967295)', 1, 3), 'retry');
+		// 真机原文整体也必须判 retry（回归用例）
+		assert.strictEqual(
+			decideSessionStartRetry('[dshHarness] startSession: 控制桥不可用（未安装伴生插件或 Host 未运行）', 1, 3),
+			'retry');
 		// 未知错误 ⇒ 别瞎重试（真机上这是"什么都不知道"）
 		assert.strictEqual(decideSessionStartRetry('something else entirely', 1, 3), 'fail');
 		// 空消息 ⇒ 不重试
@@ -86,7 +102,10 @@ suite('desktop 窗口：会话启动失败 ⇒ 重试 + 把原因显示给用户
 		const d2 = sessionStartRetryDelayMs(2);
 		const d3 = sessionStartRetryDelayMs(3);
 		assert.ok(d1 > 0 && d2 > d1 && d3 > d2, `退避必须递增（${d1}/${d2}/${d3}）✗`);
-		assert.ok(d1 + d2 >= 10_000, `前两跳要盖到 ~11s 的量级（实际 ${d1 + d2}ms）✗`);
+		assert.ok(d1 + d2 >= 10_000, `前两跳要盖到 mux 就绪的 ~11s 量级（实际 ${d1 + d2}ms）✗`);
+		// ★ 2026-10-28：Host 被杀后的自动重启实测 25.8s ⇒ 三跳合计必须**明显**盖住它
+		//   （3/8/15=26s 只是勉强擦边，实测那次重启 25.774s + 首跳前的开销就会超 ⇒ 阈值取 35s）✗。
+		assert.ok(d1 + d2 + d3 >= 35_000, `三跳合计要明显盖住一次 Host 重启（实测 25.8s，实际 ${d1 + d2 + d3}ms）✗`);
 		// 越界不抖
 		assert.strictEqual(sessionStartRetryDelayMs(99), d3);
 		assert.strictEqual(sessionStartRetryDelayMs(0), d1);

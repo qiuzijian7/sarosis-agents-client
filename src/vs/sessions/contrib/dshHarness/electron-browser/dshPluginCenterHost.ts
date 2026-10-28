@@ -18,6 +18,7 @@ import { IDshBundledInstallResult, IDshBundledPluginRow, IDshInspectResult, IDsh
 import { IBridgeInstallResult } from '../common/dshBridgeProtocol.js';
 import { DshHarnessSettings, IDshPluginInfo } from '../common/dshHarness.js';
 import { isBundleDisableForbidden } from '../common/dshPluginActivation.js';
+import { IThirdPartyPlugin } from '../common/dshPluginUpgrade.js';
 import { containerOfModule, moduleIdForPluginName } from '../common/dshModuleContainers.js';
 import { IDshHarnessService } from './dshHarnessService.js';
 
@@ -155,6 +156,16 @@ export class DshPluginCenterHost extends Disposable implements IDshPluginCenterH
 
 	async installPluginSpec(spec: string, name: string): Promise<IDshBundledInstallResult> {
 		return await this._dsh.installPluginSpec(spec, name);
+	}
+
+	/** 列 profile 里用户自己装的第三方插件（2026-10-28）。 */
+	async listThirdPartyPlugins(): Promise<IThirdPartyPlugin[]> {
+		return await this._dsh.listThirdPartyPlugins();
+	}
+
+	/** 升级一个第三方插件（只有 registry 形态会真的执行）。 */
+	async upgradeThirdPartyPlugin(name: string): Promise<{ ok: boolean; message: string }> {
+		return await this._dsh.upgradeThirdPartyPlugin(name);
 	}
 
 	private _toInstallResult(r: IBridgeInstallResult): IDshInstallResult {

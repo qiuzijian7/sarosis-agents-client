@@ -113,9 +113,30 @@ window.__ModuleLoader__.load({
 		 * 收敛成渲染模型（模块作用域 ⇒ __test 直接断言；回落契约见文件头）。
 		 * 返回 [{ kind: "group", record, sessions: [{id,title,at,rootName,isPrimaryRoot,isCurrent}] }
 		 *        | { kind: "flat", item, sessions: [...] }]。
-		 * 会话归属：dsh 快照条目的 sessionIds（真源 ✓）；条目按路径被记录认领 ⇒ 该条目的会话
-		 * 都算这一组的；会话的根标签 = 它所在条目的 path 命中记录的哪个根。
+		 * 会话归属：dsh 快照条目的 sessionIds（分组记录）；条目按路径被记录认领 ⇒ 该条目的会话
+		 * 都算这一组的；会话的根标签 = **会话自己的 `cwd`** 命中记录的哪个根（见 `rootOfSession`）。
 		 */
+		/**
+		 * 会话真正跑在哪个根上 —— **先认会话自己的 `cwd`**，取不到才回落 dsh 条目对应的根。
+		 *
+		 * ★ 2026-10-28（用户报障「左侧工作区 hover 卡片的"当前会话"根，与聊天输入框上方 chip 的
+		 *   工作区不一致」）：真机现场 = 会话 `cwd` 是 `…\sarosis-agents-client`（主根），而 dsh 快照里
+		 *   它仍被列在 `…\Saros-switch` 那条条目的 `sessionIds` 里 ⇒ 侧栏按条目 path 标根 ⇒ 标成
+		 *   Saros-switch，chip 的下拉按 cwd 标 ⇒ 标成主根 ⇒ 同一屏两个"当前" ✗。
+		 *
+		 * 两个事实的权威性不同：
+		 *   · `sessions.byId[sid].cwd` = **宿主持有的事实**（`session.start({cwd})` 一落就定死，
+		 *     会话真正读写就在那里）⇒ 第一权威 ✓；
+		 *   · `items[].sessionIds` = dsh 侧的**分组记录**（会话换过目录后仍可能挂在旧条目上）⇒ 兜底 ✓。
+		 * 取不到 cwd（旧快照 / 会话不在 roster）时**不猜**，用条目 path 推出根（改动前逐字相同的回落 ✓）。
+		 */
+		function rootOfSession(byId, roots, sid, fallback) {
+			const s = (byId && byId[sid]) || {};
+			const cwd = typeof s.cwd === "string" && s.cwd ? s.cwd : null;
+			if (!cwd) { return fallback; }
+			const hit = (roots || []).filter((r) => r && samePath(r.path, cwd))[0];
+			return hit || fallback;
+		}
 		/**
 		 * 会话显示标题（2026-10-21，用户：左栏要像 dsh-desktop ⇒ 不许整列 `session-xxxx`）。
 		 *
@@ -203,8 +224,10 @@ window.__ModuleLoader__.load({
 				const sessions = [];
 				let hiddenBlanks = 0;
 				for (const m of members) {
-					const root = rec.roots.filter((r) => samePath(r.path, m.path))[0];
+					// 回落值 = 该条目 path 对应的根；真正用哪个根由 `rootOfSession` 按会话 cwd 定（★ 2026-10-28）
+					const fallbackRoot = rec.roots.filter((r) => samePath(r.path, m.path))[0];
 					for (const sid of (Array.isArray(m.sessionIds) ? m.sessionIds : [])) {
+						const root = rootOfSession(byId, rec.roots, sid, fallbackRoot);
 						// 稿 1 降噪：只有**非主根**会话才带根名标签（守卫 ⑤ 钉住 ✓）
 						const s = mkSess(sid, root && !root.isPrimary ? root.name : null, root ? root.isPrimary : true);
 						if (s.archived) { continue; }
@@ -629,12 +652,20 @@ window.__ModuleLoader__.load({
 					currentSessionId: currentId,
 				}), [wsSnap, records, sessSnap, currentId, officialTick]);
 
-				// 当前会话 cwd 所在根的路径（详情卡绿框用）：当前会话的 dsh 条目 path。
-				let currentRootPath = null;
-				for (const it of (wsSnap && wsSnap.items) || []) {
-					if (it && Array.isArray(it.sessionIds) && currentId && it.sessionIds.indexOf(currentId) >= 0) {
-						currentRootPath = it.path || null;
-						break;
+				// 当前会话 cwd 所在根的路径（详情卡绿框 + 会话根标签用）。
+				// ★ 2026-10-28（用户报「hover 卡片的"当前会话"根 ≠ 输入框 chip 的工作区」）：
+				//   **先认会话自己的 `cwd`**（宿主持有的事实），dsh 条目的 `sessionIds` 只是分组记录
+				//   （会话换过目录后仍可能挂在旧条目上 ⇒ 原来只按条目反查，会把"当前会话"标到错的根 ✗）。
+				//   与 `client.workspace.js` 的 chip / 下拉（`readCurrentDir` + `currentRootOf`）**同一判据** ✓。
+				const currentRow = currentId && sessSnap && sessSnap.byId ? sessSnap.byId[currentId] : null;
+				let currentRootPath = currentRow && typeof currentRow.cwd === "string" && currentRow.cwd ? currentRow.cwd : null;
+				if (!currentRootPath) {
+					// 回落：拿不到 cwd（旧快照 / 会话不在 roster）⇒ 仍按 dsh 条目反查（改动前逐字相同的回落 ✓）
+					for (const it of (wsSnap && wsSnap.items) || []) {
+						if (it && Array.isArray(it.sessionIds) && currentId && it.sessionIds.indexOf(currentId) >= 0) {
+							currentRootPath = it.path || null;
+							break;
+						}
 					}
 				}
 
@@ -809,7 +840,7 @@ window.__ModuleLoader__.load({
 
 		exports.install = install;
 		// 仅测试用：分组收敛 / 路径比较 / 时间文案的纯逻辑（插件装载只读 install）。
-		exports.__test = { samePath, baseName, parseRecords, timeLabel, buildSidebar, nextCollapsed, pickCurrentSessionId };
+		exports.__test = { samePath, baseName, parseRecords, timeLabel, buildSidebar, rootOfSession, nextCollapsed, pickCurrentSessionId };
 		return module.exports;
 	}
 });

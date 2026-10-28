@@ -381,7 +381,29 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
 		// 构建期预装的 dsh 运行时（build/prepack-dsh-runtime.mjs 生成，版本由 dsh-compat.json 的
 		// bundled 字段 pin 定）：原样打进 <appPath>/dsh-runtime/，全新安装首启零下载。
 		// 不进 asar（pnpm 要真实目录）；未跑 prepack 时 allowEmpty 跳过，退回运行时 npm 安装引导。
-		const dshRuntime = gulp.src(['dsh-runtime/*/node_modules/**', 'dsh-runtime/*/package.json', 'dsh-runtime/*/profile-seed/**'], { base: '.', allowEmpty: true, dot: true });
+		//
+		// ★ 2026-10-28：glob 必须**只认 bundled 那一个版本**。旧写法 `dsh-runtime/*\/…` 会把工作区里
+		//   历史残留的版本一起打进包（本机实测 rc.1 1073MB + rc.2 939MB ⇒ 安装包白胖 1GB），而宿主
+		//   `dshRuntimeManager` 过去取"目录里最高版本"、不是 compat pin 的版本 ⇒ 残留一个更高但未
+		//   验证的版本，装出来的包跑的就是它。清单读不到时退回旧写法（allowEmpty 兜底，不比以前更糟）。
+		const dshBundledVersion = (() => {
+			try {
+				const manifestPath = path.join(import.meta.dirname, '..', 'dsh-plugins', 'dsh-compat.json');
+				const bundled = (JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as { bundled?: unknown }).bundled;
+				const v = typeof bundled === 'string' ? bundled.trim() : '';
+				if (!v) {
+					console.warn('[dsh] dsh-compat.json 缺 bundled 字段 ⇒ 退回"目录里有什么打什么"');
+				}
+				return v;
+			} catch (e) {
+				console.warn(`[dsh] 读不到 dsh-plugins/dsh-compat.json（${String((e as Error)?.message ?? e)}）⇒ 退回"目录里有什么打什么"`);
+				return '';
+			}
+		})();
+		const dshRuntimeGlob = dshBundledVersion
+			? [`dsh-runtime/${dshBundledVersion}/node_modules/**`, `dsh-runtime/${dshBundledVersion}/package.json`, `dsh-runtime/${dshBundledVersion}/profile-seed/**`]
+			: ['dsh-runtime/*/node_modules/**', 'dsh-runtime/*/package.json', 'dsh-runtime/*/profile-seed/**'];
+		const dshRuntime = gulp.src(dshRuntimeGlob, { base: '.', allowEmpty: true, dot: true });
 
 		const jsFilter = util.filter(data => !data.isDirectory() && /\.js$/.test(data.path));
 		const root = path.resolve(path.join(import.meta.dirname, '..'));

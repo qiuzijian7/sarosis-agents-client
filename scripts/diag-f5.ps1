@@ -18,7 +18,8 @@ foreach ($p in 9222,5875,8420,8520) {
 }
 
 Write-Host "=== 2. Remove stale single-instance markers ===" -ForegroundColor Cyan
-$U = Join-Path $env:USERPROFILE ".vssaros-dev"
+# 2026-10-28：userData 统一为 ~/.vssaros（dev 不再用 .vssaros-dev）；旧目录仍清一遍以防残留锁文件
+$U = Join-Path $env:USERPROFILE ".vssaros"
 foreach ($f in "DevToolsActivePort","SingletonLock","SingletonCookie","SingletonSocket","code.lock") {
   $fp = Join-Path $U $f
   if (Test-Path $fp) { Remove-Item $fp -Force -ErrorAction SilentlyContinue; Write-Host "  removed $f" }

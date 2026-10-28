@@ -167,11 +167,12 @@ export interface ISkillRootResolution {
  *
  * 为什么要三个候选（`<DSH_HOME>/skills` 在我们产品里是哪个目录，取决于运行形态 ✗）：
  * - `dshHome`：用户显式配了 `sessions.dshHarness.dshHome` ⇒ 官方语义下的用户级根就在那儿 ✓；
- * - `dataRoot + '/dsh-home'`：**dev 实例**的默认 DSH_HOME（`dshHarnessChannel` 的
- *   `defaultDshHome: isBuilt ? undefined : join(userDataPath, 'dsh-home')` ✓）⇒ 本机实测
- *   `~/.vssaros-dev/dsh-home` 确实存在 ✓；
- * - `userHome + '/.dsh'`：**打包版**没有 defaultDshHome ⇒ 回落到 dsh 默认的 `~/.dsh`
- *   （= 官方文档里那个位置 ✓），也是用户用独立 dsh 时技能所在处 ✓。
+ * - `dataRoot + '/dsh-home'`：**两种形态的默认 DSH_HOME**（`dshHarnessChannel` 的
+ *   `defaultDshHome: join(userDataPath, 'dsh-home')` ✓）。⚠ 2026-10-28 之前只有 dev 走这条
+ *   （打包版是 `undefined` ⇒ 回落 `~/.dsh`），两套 profile 因此长期不同步 ⇒ 现在统一走这条，
+ *   目标目录是 `~/.vssaros/dsh-home` ✓；
+ * - `userHome + '/.dsh'`：**官方 dsh 的默认位置**（用户用独立 dsh 时技能在这里 ✓）。
+ *   统一后本产品不再落在这里，但**保留候选**：老数据可能还在、用户也可能手动指过去。
  *
  * 三者可能指向同一目录（用户把 DshHome 指到 `~/.dsh` 时）⇒ 由 {@link resolveSkillRoots} 的去重兜住 ✓；
  * 不存在的候选由各侧的存在性过滤丢掉 ✓（多给一个候选的代价 = 一次 `stat` ✗ 可忽略）。

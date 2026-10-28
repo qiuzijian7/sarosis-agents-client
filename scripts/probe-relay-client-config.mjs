@@ -28,7 +28,7 @@ const PROMPT = '只回复两个字符：ok';
 
 function readAccessToken() {
 	for (const file of [
-		join(homedir(), '.vssaros-dev', 'dsh-home', '.credentials.yaml'),
+		join(homedir(), '.vssaros', 'dsh-home', '.credentials.yaml'),
 		join(homedir(), '.vssaros', 'dsh-home', '.credentials.yaml'),
 	]) {
 		try {

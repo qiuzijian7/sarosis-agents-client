@@ -148,7 +148,14 @@ export function buildFeishuSyncArgs({ vault, src = [], apply = false, limit = 0,
 		// 与 IDE 的 `sessions.agentStudio.kb.feishu.cliPath` 同一个语义（装在非标准位置时用）
 		args.push('--cli', String(cliPath));
 	}
-	for (const dir of src) {
+	/*
+	 * ★ 2026-10-28：`src` 允许传**字符串**（单个目录）或数组。
+	 *   为什么要在这里兜：`for (const dir of '笔记')` 会按**字符**迭代 ⇒ 下发
+	 *   `--src 笔 --src 记`，脚本扫不到任何文档却"正常退出"（真机踩过，日志只有
+	 *   `create=0 update=0 skip=0`，看不出根因）。纯函数这层兜住，调用方写错也炸不出来。
+	 */
+	const srcList = Array.isArray(src) ? src : (typeof src === 'string' && src.trim() ? [src] : []);
+	for (const dir of srcList) {
 		const trimmed = String(dir ?? '').trim();
 		if (trimmed) {
 			args.push('--src', trimmed);

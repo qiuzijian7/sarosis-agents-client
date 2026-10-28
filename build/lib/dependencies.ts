@@ -8,11 +8,15 @@ import path from 'path';
 import cp from 'child_process';
 const root = fs.realpathSync(path.dirname(path.dirname(import.meta.dirname)));
 
-function getNpmProductionDependencies(folder: string): string[] {
+function getNpmProductionDependencies(folder: string, omitOptional = false): string[] {
 	let raw: string;
 
+	// omitOptional：optionalDependencies 按 npm 语义「可以不存在」，调用方若确认运行期会降级
+	// 就可以不随包（否则 onnxruntime / opentelemetry 这类 200MB 级可选树会被塞进安装包）。
+	const args = ['ls', '--all', '--omit=dev', ...(omitOptional ? ['--omit=optional'] : []), '--parseable'];
+
 	try {
-		raw = cp.execSync('npm ls --all --omit=dev --parseable', { cwd: folder, encoding: 'utf8', env: { ...process.env, NODE_ENV: 'production' }, stdio: [null, null, null] });
+		raw = cp.execSync(`npm ${args.join(' ')}`, { cwd: folder, encoding: 'utf8', env: { ...process.env, NODE_ENV: 'production' }, stdio: [null, null, null] });
 	} catch (err) {
 		const regex = /^npm ERR! .*$/gm;
 		let match: RegExpExecArray | null;
@@ -37,15 +41,15 @@ function getNpmProductionDependencies(folder: string): string[] {
 	});
 }
 
-export function getProductionDependencies(folderPath: string): string[] {
-	const result = getNpmProductionDependencies(folderPath);
+export function getProductionDependencies(folderPath: string, options: { omitOptional?: boolean } = {}): string[] {
+	const result = getNpmProductionDependencies(folderPath, options.omitOptional);
 	// Account for distro npm dependencies
 	const realFolderPath = fs.realpathSync(folderPath);
 	const relativeFolderPath = path.relative(root, realFolderPath);
 	const distroFolderPath = `${root}/.build/distro/npm/${relativeFolderPath}`;
 
 	if (fs.existsSync(distroFolderPath)) {
-		result.push(...getNpmProductionDependencies(distroFolderPath));
+		result.push(...getNpmProductionDependencies(distroFolderPath, options.omitOptional));
 	}
 
 	return [...new Set(result)];

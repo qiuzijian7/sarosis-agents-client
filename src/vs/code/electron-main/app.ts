@@ -2831,7 +2831,8 @@ export class CodeApplication extends Disposable {
 					}
 				})();
 			}, 60_000);
-			healthTimer.unref?.();
+			// `TimeoutHandle` 类型上没有 unref（见 src/typings/base-common.d.ts），运行时才有
+			(healthTimer as { unref?: () => void })?.unref?.();
 			childProc.once('exit', () => { try { clearInterval(healthTimer); } catch { /* ignore */ } });
 			childProc.on('exit', (code, signal) => {
 				// 非零退出 = 网关不可用（本窗口此后只能降级或复用他实例网关）⇒ 必须是 warning，

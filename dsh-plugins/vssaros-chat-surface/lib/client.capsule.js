@@ -38,7 +38,35 @@ window.__ModuleLoader__.load({
 			return id.startsWith(VSSAROS_PREFIX) && MODE_PRESETS.indexOf(id.slice(VSSAROS_PREFIX.length)) < 0;
 		}
 
-		function install(ctx, shell) {
+		/**
+	 * 把弹层的**视口位置**夹进视口（纯函数 ⇒ 可单测 ✓；模块作用域，两个 chunk 同一口径 ✓）。
+	 *
+	 * ★ 2026-10-28（用户报障「点 preset/胶囊 chip，弹出框 UI 位置错误」）：
+	 *   胶囊 chip 在 header **左侧** ⇒ 菜单若"右对齐 chip 右缘"（`right: 0`）就会整体
+	 *   **越出视图左边缘** ⇒ 被裁掉一半（截图里就是"只看得见右半截、字被切掉"）✗。
+	 *   ⇒ 统一口径：**先按倾向对齐，再左右都夹进视口**（放不下就往另一边收）✓。
+	 *
+	 * @param anchor 触发器矩形（视口坐标）：{left, right, bottom}
+	 * @param size 菜单尺寸：{w, h}
+	 * @param viewport：{vw, vh}
+	 * @param align 倾向：'right' = 菜单右缘贴 chip 右缘；'left' = 左缘贴 chip 左缘
+	 */
+	function fitMenuBox(anchor, size, viewport, align) {
+		const vw = viewport && viewport.vw ? viewport.vw : 0;
+		const vh = viewport && viewport.vh ? viewport.vh : 0;
+		const w = size && size.w ? size.w : 0;
+		const h = size && size.h ? size.h : 0;
+		// 量不到锚点/视口 ⇒ 交出零值由调用方回落（**不猜**位置 ✗）
+		if (!anchor || !vw) { return { left: 0, top: 0 }; }
+		let left = align === "left" ? anchor.left : anchor.right - w;
+		if (left < 8) { left = 8; }                                   // 不越左缘
+		if (left + w > vw - 8) { left = Math.max(8, vw - 8 - w); }    // 不越右缘
+		let top = anchor.bottom + 4;
+		if (vh && top + h > vh - 8) { top = Math.max(8, vh - 8 - h); } // 下方不够就往上收
+		return { left: Math.round(left), top: Math.round(top) };
+	}
+
+	function install(ctx, shell) {
 			const state = shell.state;
 			const bridge = shell.bridge;
 			let rosterCache = null;
@@ -97,6 +125,14 @@ window.__ModuleLoader__.load({
 				const [roster, setRoster] = react.useState(null);
 				const [open, setOpen] = react.useState(false);
 				const rootRef = react.useRef(null);
+				// ★ 2026-10-28（用户报障「点 preset/胶囊 chip，弹出框 UI 位置错误」）：
+				//   菜单原来用 `right: 0`（右对齐 chip 右缘 ⇒ 向**左**展开）⇒ 胶囊 chip 在 header **左侧**
+				//   ⇒ 菜单整体越出视图左边缘 ⇒ **被裁掉一半**（截图里就是"只看得见右半截、字被切掉"）✗。
+				//   ⇒ 改成：打开后量一次菜单**真实尺寸**，把位置**夹进视口**（左右都不许越界）✓。
+				//   ⚠ 位置是**相对 chip 容器**（容器 position: relative）的偏移 ⇒ 不用 fixed
+				//     （fixed 在有 transform 的祖先下会变成相对那个祖先 ⇒ 视口坐标全错 ✗）。
+				const menuRef = react.useRef(null);
+				const [box, setBox] = react.useState(null); // {left, top} 相对 chip 容器
 				react.useEffect(() => subscribeSessions(() => force((n) => n + 1)), []);
 				const summary = readSummary(sid);
 				const presetId = summary && summary.projectionValues && summary.projectionValues.agentPreset;
@@ -122,6 +158,39 @@ window.__ModuleLoader__.load({
 					if (!open || !shell.menus) { return; }
 					shell.menus.closeOthers(MENU_ID);
 					return shell.menus.register(MENU_ID, () => setOpen(false));
+				}, [open]);
+				// ★ 2026-10-28：把菜单**夹进视口**（量自己的真实尺寸 ⇒ 不用猜宽度）。
+				//   默认仍"贴着 chip 右缘"（右对齐，符合它在 header 左边的观感）⇒
+				//   越左缘就贴左、越右缘就往左收 ⇒ **任何宽度下都不会被裁** ✓。
+				react.useEffect(() => {
+					if (!open) { setBox(null); return undefined; }
+					const place = () => {
+						try {
+							const chip = rootRef.current; const menu = menuRef.current;
+							if (!chip || !menu || typeof chip.getBoundingClientRect !== "function") { return; }
+							const cr = chip.getBoundingClientRect();
+							const mr = typeof menu.getBoundingClientRect === "function" ? menu.getBoundingClientRect() : null;
+							const vw = typeof window !== "undefined" ? window.innerWidth : 0;
+							const vh = typeof window !== "undefined" ? window.innerHeight : 0;
+							const mw = mr && mr.width ? mr.width : 220;
+							const mh = mr && mr.height ? mr.height : 140;
+							// ★ 夹进视口（纯函数口径，与 client.preset.js 同一份逻辑 ✓）
+							//   ⇒ 坐标是**视口坐标**（配 position: fixed 用）⇒ 不再减容器偏移 ✓
+							const pos = fitMenuBox({ left: cr.left, right: cr.right, bottom: cr.bottom }, { w: mw, h: mh }, { vw, vh }, "right");
+							setBox({ left: pos.left, top: pos.top });
+						} catch { /* 量不到就保持默认位置（不静默不显示 ✗） */ }
+					};
+					place();
+					// 菜单内容/宽度可能在下一帧才稳定 ⇒ 量两次（第二帧拿到真实宽度）✓
+					const t = window.setTimeout(place, 60);
+					if (typeof window.addEventListener === "function") {
+						window.addEventListener("resize", place);
+						return () => {
+							window.clearTimeout(t);
+							window.removeEventListener("resize", place);
+						};
+					}
+					return () => { window.clearTimeout(t); };
 				}, [open]);
 				if (!show) { return null; }
 				const agent = (roster || []).find((a) => a && a.presetId === presetId) || null;
@@ -163,8 +232,21 @@ window.__ModuleLoader__.load({
 				if (open) {
 					children.push(e("div", {
 						key: "menu", role: "menu",
+						ref: menuRef,
+						// ★ 2026-10-28：位置由上面的「夹进视口」效果算好（`box`，**视口坐标**）⇒
+						//   **不再用 `right: 0`**（那会让菜单越出视图左边缘、被裁一半 ✗）。
+						// ⚠ **`position: fixed` 而不是 absolute**（与 client.workspace.js 的工作区菜单同口径）：
+						//   absolute + zIndex 只在**祖先层叠上下文**内比较 ⇒ dsh header 自己就是带 z-index 的
+						//   定位容器，页面浮层（页签条 / 工作台页）可能压在它上面 ⇒ 菜单被盖住一半、
+						//   看起来就是"层级错误"✗（2026-10-19 工作区菜单踩过同一个坑 ✓）。
+						//   量不到之前的首帧用 chip 右缘下方的落点（不猜、也不闪到别处）✓。
 						style: Object.assign({
-							position: "absolute", top: "100%", right: 0, marginTop: 4, zIndex: 1000,
+							position: "fixed",
+							left: box ? box.left : 0,
+							top: box ? box.top : "100%",
+							right: "auto",
+							marginTop: box ? 0 : 4,
+							zIndex: 1000,
 							padding: 5, borderRadius: 10, minWidth: 190,
 							border: "1px solid var(--dsw-alias-border-l1, transparent)",
 							background: "linear-gradient(var(--dsw-alias-bg-layer-1, transparent), var(--dsw-alias-bg-layer-1, transparent)), var(--dsw-alias-bg-base, #1e1e1e)",
@@ -198,7 +280,7 @@ window.__ModuleLoader__.load({
 
 		exports.install = install;
 		// 仅测试用：纯逻辑
-		exports.__test = { isAgentPreset, ENTRY_ID, ENTRY_ORDER, SLOT, MENU_ID };
+		exports.__test = { isAgentPreset, ENTRY_ID, ENTRY_ORDER, SLOT, MENU_ID, fitMenuBox };
 		return module.exports;
 	}
 });

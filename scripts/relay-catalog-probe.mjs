@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 const PKG = 'g:/SarosWorkspace/sarosis-agents-client/dsh-plugins/vssaros-relay';
 const mod = await import(pathToFileURL(path.join(PKG, 'lib', 'codebuddy.js')).href);
 
-const cred = fs.readFileSync(process.env.USERPROFILE + '/.vssaros-dev/dsh-home/.credentials.yaml', 'utf8');
+const cred = fs.readFileSync(process.env.USERPROFILE + '/.vssaros/dsh-home/.credentials.yaml', 'utf8');
 const tok = /VSSAROS_CODEBUDDY_KEY:\s*'?([A-Za-z0-9_\-.]+)'?/.exec(cred)?.[1] ?? '';
 console.log('token len =', tok.length);
 console.log('identity =', JSON.stringify(mod.identityOf(tok)));

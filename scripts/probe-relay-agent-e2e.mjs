@@ -27,7 +27,7 @@ const PROMPT = argOf('--prompt', '只回复两个字符：ok');
 /** 从 dsh 凭据库取 CodeBuddy access token（与 vssaros-bridge 同一份）。 */
 function readAccessToken() {
 	const files = [
-		join(homedir(), '.vssaros-dev', 'dsh-home', '.credentials.yaml'),
+		join(homedir(), '.vssaros', 'dsh-home', '.credentials.yaml'),
 		join(homedir(), '.vssaros', 'dsh-home', '.credentials.yaml'),
 	];
 	for (const file of files) {

@@ -116,7 +116,34 @@ window.__ModuleLoader__.load({
 			return { id, kind: "unknown", label: id };
 		};
 
-		function install(ctx, shell) {
+		/**
+	 * 把弹层的**视口位置**夹进视口（纯函数 ⇒ 可单测 ✓；与 client.capsule.js **同一份口径** ✓）。
+	 *
+	 * ★ 2026-10-28（用户报障「点 preset chip，弹出框 UI 位置错误」）：
+	 *   模式菜单原来只写 `left: 0`（贴 chip 左缘向右展开）⇒ **没有夹视口** ⇒ chip 靠右时
+	 *   菜单越出右缘被裁（与 capsule 菜单"越左缘"是同一族坑）⇒ 一次全改 ✓。
+	 *
+	 * @param anchor 触发器矩形（视口坐标）：{left, right, bottom}
+	 * @param size 菜单尺寸：{w, h}
+	 * @param viewport：{vw, vh}
+	 * @param align 倾向：'right' = 右缘贴 chip 右缘；'left' = 左缘贴 chip 左缘
+	 */
+	function fitMenuBox(anchor, size, viewport, align) {
+		const vw = viewport && viewport.vw ? viewport.vw : 0;
+		const vh = viewport && viewport.vh ? viewport.vh : 0;
+		const w = size && size.w ? size.w : 0;
+		const h = size && size.h ? size.h : 0;
+		// 量不到锚点/视口 ⇒ 交出零值由调用方回落（**不猜**位置 ✗）
+		if (!anchor || !vw) { return { left: 0, top: 0 }; }
+		let left = align === "left" ? anchor.left : anchor.right - w;
+		if (left < 8) { left = 8; }                                   // 不越左缘
+		if (left + w > vw - 8) { left = Math.max(8, vw - 8 - w); }    // 不越右缘
+		let top = anchor.bottom + 4;
+		if (vh && top + h > vh - 8) { top = Math.max(8, vh - 8 - h); } // 下方不够就往上收
+		return { left: Math.round(left), top: Math.round(top) };
+	}
+
+	function install(ctx, shell) {
 			// ⚠ 无桥环境（dsh desktop / dsh 全窗）：`install(ctx, { bridge, state })` 里 **没有 fitMenu / menus**
 			//   ⇒ 状态与夹视口都得自己兜底（否则菜单会溢出视口 ⇒ 下半截点不到 ✗）。
 			const state = (shell && shell.state) || {};
@@ -232,6 +259,39 @@ window.__ModuleLoader__.load({
 					if (!open || !shell.menus) { return; }
 					shell.menus.closeOthers(MENU_ID);
 					return shell.menus.register(MENU_ID, () => setOpen(false));
+				}, [open]);
+				// ★ 2026-10-28（与 client.capsule.js 同一类坑，一起改）：菜单原来只写
+				//   `left: 0`（贴着 chip 左缘向右展开）⇒ **没有夹视口** ⇒ chip 靠右时菜单越出右缘被裁 ✗
+				//   （用户报的"弹出框 UI 位置错误"就是这一族：菜单被视口裁掉一半）。
+				//   ⇒ 量一次菜单真实尺寸，把位置**夹进视口**（左右都不许越界）✓。
+				//   ⚠ 位置是**相对 chip 容器**的偏移（容器 position: relative）⇒ 不用 fixed ✓。
+				const menuRef = react.useRef(null);
+				const [box, setBox] = react.useState(null); // {left, top} 相对 chip 容器
+				react.useEffect(() => {
+					if (!open) { setBox(null); return undefined; }
+					const place = () => {
+						try {
+							const chip = rootRef.current; const menu = menuRef.current;
+							if (!chip || !menu || typeof chip.getBoundingClientRect !== "function") { return; }
+							const cr = chip.getBoundingClientRect();
+							const mr = typeof menu.getBoundingClientRect === "function" ? menu.getBoundingClientRect() : null;
+							const vw = typeof window !== "undefined" ? window.innerWidth : 0;
+							const vh = typeof window !== "undefined" ? window.innerHeight : 0;
+							const mw = mr && mr.width ? mr.width : 300;
+							const mh = mr && mr.height ? mr.height : 240;
+							// ★ 夹进视口（纯函数口径，与 client.capsule.js 同一份逻辑 ✓）
+							//   ⇒ 坐标是**视口坐标**（配 position: fixed 用）⇒ 不再减容器偏移 ✓
+							const pos = fitMenuBox({ left: cr.left, right: cr.right, bottom: cr.bottom }, { w: mw, h: mh }, { vw, vh }, "left");
+							setBox({ left: pos.left, top: pos.top });
+						} catch { /* 量不到就保持默认位置 */ }
+					};
+					place();
+					const t = setTimeout(place, 60);   // 内容稳定后再量一次（宽度会变）✓
+					if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+						window.addEventListener("resize", place);
+						return () => { clearTimeout(t); window.removeEventListener("resize", place); };
+					}
+					return () => { clearTimeout(t); };
 				}, [open]);
 
 				if (!presets) { return null; }
@@ -376,10 +436,19 @@ window.__ModuleLoader__.load({
 					children.push(react.createElement("div", {
 						key: "m",
 						role: "menu",
+						ref: menuRef,
 						// ⚠ 锚点方向：本 chip 在输入框上方、页面中部 ⇒ 菜单**向右**展开（写 right:0 会越过左边缘被裁 ✗）。
 						// ⚠ 夹视口时必须把**触发器矩形**交出去（只按整页高算 ⇒ 面板底部溢出、滚不到 ✗）。
+						// ★ 2026-10-28：位置改由「夹进视口」的效果算（`box`，**视口坐标**）⇒ 不再只写 `left: 0`
+						//   （那样 chip 靠右时菜单越出右缘、被裁一半 ✗ —— 与 capsule 菜单同一族坑）。
+						// ⚠ **`position: fixed`**：absolute + zIndex 只在**祖先层叠上下文**内比较 ⇒ 菜单会被
+						//   dsh 自己的浮层/页签条压住 ⇒ 看起来"层级错误"✗（与工作区菜单同口径 ✓）。
 						style: Object.assign({
-							position: "absolute", top: "100%", left: 0, marginTop: 4, zIndex: 1000,
+							position: "fixed",
+							left: box ? box.left : 0,
+							top: box ? box.top : "100%",
+							marginTop: box ? 0 : 4,
+							zIndex: 1000,
 							padding: 5, borderRadius: 10,
 							border: "1px solid var(--dsw-alias-border-l1, transparent)",
 							background: "linear-gradient(var(--dsw-alias-bg-layer-1, transparent), var(--dsw-alias-bg-layer-1, transparent)), var(--dsw-alias-bg-base, #1e1e1e)",
@@ -405,7 +474,7 @@ window.__ModuleLoader__.load({
 		}
 		exports.install = install;
 		// 仅测试用：纯逻辑（模式白名单 / 过滤 / 名称）。
-		exports.__test = { MODE_IDS, BUILTIN_MODES, OUR_MODES, modesOf, resolveCurrent };
+		exports.__test = { MODE_IDS, BUILTIN_MODES, OUR_MODES, modesOf, resolveCurrent, fitMenuBox };
 		return module.exports;
 	}
 });

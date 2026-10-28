@@ -473,6 +473,57 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 			problems.push('buildSidebar: 无记录时必须全部平铺（回落契约被破坏 ✗）');
 		}
 		notes.push('client.workspaces.js: buildSidebar 分组/回落契约断言通过');
+		// ── ⑤-a2 「当前工作区 / 当前根」统一按**会话 cwd** 判（2026-10-28 用户报障）──────────
+		// 真机现场：会话 cwd = `…\sarosis-agents-client`（主根），而 dsh 快照的 `sessionIds` 仍把它列在
+		//   `…\Saros-switch` 条目的名下 ⇒ 侧栏 hover 卡片按条目 path 标"当前会话"、chip 下拉按 cwd 标
+		//   ⇒ 同一屏出现两个"当前" ✗。
+		// 口径：`sessions.byId[sid].cwd`（宿主持有、`session.start({cwd})` 落定即定死）**第一权威**，
+		//   `items[].sessionIds`（分组记录，会话换过目录后可能仍挂旧条目）只兜底。
+		if (typeof t.rootOfSession !== 'function') {
+			problems.push('client.workspaces.js: 缺 __test.rootOfSession（"当前会话在哪个根"必须可单测 ✗）');
+		} else {
+			const roots = [
+				{ path: 'G:/WS/client', name: 'client', isPrimary: true },
+				{ path: 'G:/WS/switch', name: 'switch', isPrimary: false },
+			];
+			const fallback = roots[1];
+			const byCwdHit = t.rootOfSession({ s1: { cwd: 'G:\\WS\\client' } }, roots, 's1', fallback);
+			if (!byCwdHit || byCwdHit.name !== 'client') {
+				problems.push('rootOfSession: 会话 cwd 命中某根时必须返回该根（不能继续用条目的根 ✗）');
+			}
+			if (t.rootOfSession({ s1: {} }, roots, 's1', fallback) !== fallback) {
+				problems.push('rootOfSession: 拿不到 cwd 时必须回落条目对应的根（回落契约 ✗）');
+			}
+			const crossRoot = t.buildSidebar({
+				workspaces: [
+					{ workspaceId: 'w1', path: 'G:/WS/client', sessionIds: [] },
+					{ workspaceId: 'w2', path: 'G:/WS/switch', sessionIds: ['s9'] },
+				],
+				records: [{ id: 'ide-1', name: 'Saros', roots }],
+				sessionsById: { s9: { title: 'X', updatedAt: 100, cwd: 'G:/WS/client' } },
+				archivedIds: [],
+				currentSessionId: 's9',
+			});
+			const cg = crossRoot.find((r) => r.kind === 'group');
+			const s9 = cg ? cg.sessions.find((s) => s.id === 's9') : null;
+			if (!s9 || s9.isPrimaryRoot !== true || s9.rootName !== null) {
+				problems.push('buildSidebar: 会话根标签必须按**会话 cwd** 判（现场：cwd 在主根、快照仍挂在另一个根 ⇒ 会标错根 ✗）');
+			}
+			notes.push('client.workspaces.js: 会话根标签/当前根按 cwd 优先（sessionIds 兜底）断言通过');
+		}
+		{
+			const wsSrc = fs.readFileSync(path.join(LIB, 'client.workspaces.js'), 'utf8');
+			if (!/currentRootPath\s*=\s*currentRow[\s\S]{0,80}cwd/.test(wsSrc)) {
+				problems.push('client.workspaces.js: 详情卡的"当前会话"根必须先用会话 cwd（只按 dsh 条目 path ⇒ 与 chip 不一致 ✗）');
+			}
+			const cwSrc = fs.readFileSync(path.join(LIB, 'client.workspace.js'), 'utf8');
+			if (!cwSrc.includes('currentWsByDir')) {
+				problems.push('client.workspace.js: chip 名称必须先用会话 cwd 认领条目（否则与 chip 下拉里的"当前会话 cwd"不一致 ✗）');
+			}
+			if (!/const byRoot = dir[\s\S]{0,240}roots/.test(cwSrc)) {
+				problems.push('client.workspace.js: 下拉面板的"当前组"必须按会话 cwd 优先、且按组的各根比较 ✗');
+			}
+		}
 		// ── ⑤-b 空会话过滤（2026-10-26 用户报障「工作区下有大量空会话」）────────────────
 		// 病根：dsh 客户端每次启动都会在「最近用的工作区」里建一条**空会话**
 		//   （官方 restoreSelection → connectWorkspace → connectBlank → sessions.create，
@@ -582,6 +633,77 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 			]) {
 				if (code2.indexOf(needle) < 0) { problems.push(`client.workspaces.js: 缺「${needle}」—— ${why} ✗`); }
 			}
+		}
+		// ── ⑤-g 弹层必须**夹进视口**（2026-10-28 用户报障「点 preset chip，弹出框 UI 位置错误」）──
+		// 病根（两处同一族）：
+		//   ① capsule 菜单用 `right: 0`（右对齐 chip 右缘 ⇒ 向**左**展开）⇒ 胶囊 chip 在 header **左侧**
+		//      ⇒ 菜单整体越出视图左边缘 ⇒ **被裁掉一半**（截图里就是"只看得见右半截、字被切掉"）✗；
+		//   ② preset/模式菜单只写 `left: 0`（贴 chip 左缘向右展开）⇒ **没夹视口** ⇒ chip 靠右时越出右缘 ✗。
+		// ⇒ 统一口径：纯函数 `fitMenuBox(anchor, size, viewport, align)`（两个 chunk 同一份逻辑）
+		//   —— 先按倾向对齐，再**左右都夹进视口**（放不下往另一边收）✓。
+		{
+			const cases = [
+				{
+					file: 'client.capsule.js',
+					align: 'right',
+					// 胶囊 chip 在 header 左侧（left 10 / right 110），菜单宽 220 ⇒ 旧算法会算出 -110（越左缘）✗
+					anchor: { left: 10, right: 110, bottom: 40 },
+					size: { w: 220, h: 100 },
+					viewport: { vw: 620, vh: 800 },
+					expectLeft: 8,
+					why: 'chip 靠左 + 右对齐 ⇒ 菜单左缘必须夹到 8（不许越出视图左边缘）',
+				},
+				{
+					file: 'client.preset.js',
+					align: 'left',
+					// 模式 chip 靠右（left 500 / right 560），菜单宽 300，视口 620 ⇒ 500+300=800 > 612 ⇒ 越右缘 ✗
+					anchor: { left: 500, right: 560, bottom: 40 },
+					size: { w: 300, h: 200 },
+					viewport: { vw: 620, vh: 800 },
+					expectLeft: 312,
+					why: 'chip 靠右 + 左对齐 ⇒ 菜单左缘必须往左收到视口内（620-8-300）',
+				},
+			];
+			for (const c of cases) {
+				const loaded = loadChunk(c.file, makeDocumentStub(), makeWindowStub(makeDocumentStub()));
+				const tt = loaded && loaded.exports.__test;
+				if (!tt || typeof tt.fitMenuBox !== 'function') {
+					problems.push(`${c.file}: 缺 __test.fitMenuBox（弹层夹视口的口径必须可单测 ✗）`);
+					continue;
+				}
+				const got = tt.fitMenuBox(c.anchor, c.size, c.viewport, c.align);
+				if (!got || got.left !== c.expectLeft) {
+					problems.push(`${c.file}: fitMenuBox 期望 left=${c.expectLeft}，实际 ${got && got.left} —— ${c.why} ✗`);
+				}
+				// 下方不够 ⇒ 往上收（不落到视口外）
+				const bottom = tt.fitMenuBox({ left: 10, right: 110, bottom: 780 }, { w: 200, h: 100 }, { vw: 620, vh: 800 }, 'right');
+				if (!bottom || bottom.top !== 692) {
+					problems.push(`${c.file}: fitMenuBox 下方放不下时应上收到 top=692，实际 ${bottom && bottom.top} ✗`);
+				}
+				// 量不到锚点/视口 ⇒ 交零值让调用方回落（不猜位置）
+				const none = tt.fitMenuBox(null, { w: 200, h: 100 }, { vw: 620, vh: 800 }, 'right');
+				if (!none || none.left !== 0 || none.top !== 0) {
+					problems.push(`${c.file}: fitMenuBox 量不到锚点时应返回 {left:0,top:0}（不猜位置），实际 ${JSON.stringify(none)} ✗`);
+				}
+			}
+			// 静态面：菜单不许再写 `right: 0`（那是被裁的元凶）⇒ 位置必须走夹视口的计算
+			for (const f of ['client.capsule.js', 'client.preset.js']) {
+				const code = String(fs.readFileSync(path.join(LIB, f), 'utf8'))
+					.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+				if (/right:\s*0\b/.test(code)) {
+					problems.push(`${f}: 菜单不许再用 \`right: 0\` 定位（越出视口 ⇒ 被裁一半，2026-10-28 用户报障）✗`);
+				}
+				if (code.indexOf('fitMenuBox(') < 0) {
+					problems.push(`${f}: 菜单位置必须走 fitMenuBox（统一夹视口口径）✗`);
+				}
+				// ⚠ 层级：`absolute` + zIndex 只在**祖先层叠上下文**内比较 ⇒ dsh header/composer 自己
+				//   就是带 z-index 的定位容器 ⇒ 页签条 / 工作台页可能压在菜单上面 ⇒ "层级错误"✗
+				//   （工作区菜单 2026-10-19 已踩过 ⇒ 改 fixed）。两个菜单都必须 fixed ✓。
+				if (!/position:\s*"fixed"/.test(code)) {
+					problems.push(`${f}: 菜单必须是 \`position: fixed\`（absolute 的 zIndex 只在祖先层叠上下文内比较 ⇒ 会被页签条/浮层压住 ⇒ 层级错误 ✗）`);
+				}
+			}
+			notes.push('client.capsule.js / client.preset.js: 弹层夹视口（左右都不越界 + 下方不够上收）断言通过');
 		}
 		// ── ⑤-f 启动时**不得**自动展开右栏（2026-10-28 用户报障）──────────────────────
 		// 病根：入口（client.js）里有一段"启动时自动点官方 expand 按钮"的逻辑（2026-10-18 加的，
@@ -883,7 +1005,12 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 		//   「先改了 chunk、过了两小时才动入口」⇒ 中间那段时间装出来的包 rev 不变 ⇒ 浏览器吃旧片 ✗
 		//   （2026-10-21 真机：18:15 改 chunk、22:17 才动入口 ⇒ 那 4 小时里装出来的窗口全是旧界面）。
 		const TOLERANCE_MS = 2000;
+		// ★ 2026-10-28：**CI 里必须跳过这段**。判据用的是文件系统 mtime，而 git 不保存 mtime ——
+		//   CI 全新 checkout 后所有文件的 mtime 都等于检出时间（相差毫秒级）⇒ 这条"谁先谁后"
+		//   既可能假红也可能假绿，毫无意义。它的价值是**本地开发的即时提醒**（改完 chunk 记得动入口）。
+		const skipMtime = process.env['CI'] === 'true' || process.argv.includes('--skip-mtime');
 		for (const dir of pluginDirs) {
+			if (skipMtime) { continue; }
 			const base = 'dsh-plugins/' + dir + '/lib/';
 			const chunkFiles = touched.filter((p) => p.startsWith(base) && /^client\..+\.js$/.test(p.slice(base.length)));
 			if (!chunkFiles.length) { continue; }
@@ -900,7 +1027,9 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 				problems.push(`${dir}: 入口 lib/client.js 的 mtime 比改过的 chunk（${newestName}）**旧** ⇒ 客户端 chunk 的 ?rev 不会随这次改动变化 ⇒ 浏览器会一直吃缓存里的旧 chunk ⇒ 用户看到旧界面（2026-10-21 真机：「主页」那行就是这样丢的）✗ —— 请在改完 chunk 之后再动一下入口（改 CLIENT_BUILD_STAMP 那行注释即可）`);
 			}
 		}
-		notes.push(`入口指纹守卫：${checked} 个插件有改过的 chunk（入口必须在其后动过）`);
+		notes.push(skipMtime
+			? '入口 mtime 守卫：CI 环境跳过（git 不保存 mtime，检出后的先后顺序无意义 —— 本地跑会检查）'
+			: `入口指纹守卫：${checked} 个插件有改过的 chunk（入口必须在其后动过）`);
 	}
 }
 

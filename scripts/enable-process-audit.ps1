@@ -31,7 +31,8 @@ if (-not (Test-Admin)) {
 $PROC_CREATION = '{0CCE922B-69AE-11D9-BED3-505054503030}'
 
 # 留证：把本次提权执行的输出写进文件（非管理员会话查不了审计策略，只能靠这个看结果）
-$logDir = Join-Path $env:USERPROFILE '.vssaros-dev\logs'
+# 2026-10-28：userData 统一为 ~/.vssaros（dev 不再用 .vssaros-dev）
+$logDir = Join-Path $env:USERPROFILE '.vssaros\logs'
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 $logFile = Join-Path $logDir 'audit-setup.log'
 Start-Transcript -Path $logFile -Append | Out-Null

@@ -14,6 +14,10 @@
  */
 
 import { Event } from '../../../../base/common/event.js';
+import { IThirdPartyPlugin } from '../../dshHarness/common/dshPluginUpgrade.js';
+
+/** 供视图层复用（避免 views 直接深引 dshHarness/common）。 */
+export type { IThirdPartyPlugin } from '../../dshHarness/common/dshPluginUpgrade.js';
 
 /** 插件中心一行（已装插件 + VsSaros 侧启停状态 + 内置模块归属）。 */
 export interface IDshPluginCenterRow {
@@ -242,6 +246,19 @@ export interface IDshPluginCenterHost {
 	 * `name` 必填：装完按它核对实装版本；名字从预检结果取（`kind: 'registry'` 时一定有）。
 	 */
 	installPluginSpec(spec: string, name: string): Promise<IDshBundledInstallResult>;
+	/**
+	 * 列 **profile 里用户自己装的第三方插件**（2026-10-28）。
+	 *
+	 * 与 `listBundledPlugins`（随包那批）互补：那批由启动安装流程管，这批归用户自己，
+	 * 此前既看不到清单也没有升级入口。返回里带 `kind` 与 `upgradable` —— 只有 registry 形态
+	 * 能一键升级（git 源写 `@latest` 会换成 npm 同名包 ✗）。
+	 */
+	listThirdPartyPlugins(): Promise<readonly IThirdPartyPlugin[]>;
+	/**
+	 * 升级一个第三方插件。只有 registry 形态会真的执行；
+	 * 其它形态返回 `ok:false` + 一句"该怎么做"的说明（不要自己拼 `@latest`，见上）。
+	 */
+	upgradeThirdPartyPlugin(name: string): Promise<{ ok: boolean; message: string }>;
 	/** 重启 Host（HMR 未启用、或改了已装包版本时用它）。返回结果摘要。 */
 	restartHost(): Promise<string>;
 	/** 清单或 Host 状态变化（页签据此重绘）。 */

@@ -44,7 +44,7 @@ import { IDshMarketEntry, dshMarketInstallSpec, fetchDshMarketCatalog } from '..
 // ── dsh 插件来源（方案 4.5）──────────────────────────────────────────────────
 // 分层：dsh 通道服务在 electron-browser 层，本视图在 browser 层 ⇒ 只经钩子取实现
 // （同 `dshChatHost.ts`）；未注册（总开关关闭）时「DSH」页签不出现。
-import { DshPluginCenterHmr, getDshPluginCenterHost, IDshBundle, IDshBundledInstallResult, IDshBundledPluginRow, IDshInspectResult, IDshInstallResult, IDshPluginBundlesSnapshot, IDshPluginCenterHost, IDshPluginCenterRow } from '../dshPluginCenterHost.js';
+import { DshPluginCenterHmr, getDshPluginCenterHost, IDshBundle, IDshBundledInstallResult, IDshBundledPluginRow, IDshInspectResult, IDshInstallResult, IDshPluginBundlesSnapshot, IDshPluginCenterHost, IDshPluginCenterRow, IThirdPartyPlugin } from '../dshPluginCenterHost.js';
 import { INotificationService } from '../../../../../platform/notification/common/notification.js';
 // ── VS Code 原生扩展（「扩展」tab）────────────────────────────────────────────
 // ★ 只用**服务层** `IExtensionsWorkbenchService`（agents 窗口已在 sessions.common.main.ts 注册），
@@ -320,6 +320,12 @@ export class PluginsViewPane extends ViewPane {
 
 	/** 随包模块清单（`dsh-plugins/*` + profile 实装版本）；`undefined` = 还没取到。 */
 	private _dshBundled: readonly IDshBundledPluginRow[] | undefined;
+	/** profile 里用户自己装的第三方插件（2026-10-28）；`undefined` = 还没读。 */
+	private _dshThirdParty: readonly IThirdPartyPlugin[] | undefined;
+	/** 正在升级的第三方插件名（并发闸门 + 按钮文案）。 */
+	private _dshThirdPartyBusy: string | undefined;
+	/** 第三方插件段的结果提示（成功/失败/该怎么做）。 */
+	private _dshThirdPartyNote: string | undefined;
 	/** 随包清单的加载闸（「插件」页签与「运行时」页签共用这份数据，避免两边并发重复加载）。 */
 	private _dshBundledLoading = false;
 	/** 正在安装的随包插件名（按钮置灰用）。 */
@@ -1872,15 +1878,18 @@ export class PluginsViewPane extends ViewPane {
 		try {
 			// 三条链并发：VsSaros 侧清单（含启停开关）+ Host 侧组合包视图（批次 2）+ 随包模块清单。
 			// 随包那条**不依赖 Host**（读随包目录 + profile 清单），所以 Host 没起来时也能列出来装。
-			const [snapshot, bundles, bundled] = await Promise.all([
+			const [snapshot, bundles, bundled, thirdParty] = await Promise.all([
 				host.load(),
 				host.loadBundles(),
 				host.listBundledPlugins().catch(() => undefined),
+				// 读 profile 依赖 + 已装版本（纯读盘，不碰 Host ⇒ Host 没起来也能列）
+				host.listThirdPartyPlugins().catch(() => undefined),
 			]);
 			this._dshRows = snapshot.rows;
 			this._dshHmr = snapshot.hmr;
 			this._dshBundles = bundles;
 			this._dshBundled = bundled;
+			this._dshThirdParty = thirdParty;
 			this._renderDshStatus(host);
 			this._renderDshRows();
 			// 组合包数 / Host 状态点（S1）：读完才有数，所以在这一步之后刷一次页签。
@@ -2676,8 +2685,103 @@ export class PluginsViewPane extends ViewPane {
 			};
 		}
 
+		// ★ 2026-10-28：第三方插件段（用户自己 `dsh plugin add` 装的）—— 此前完全没有入口。
+		this._renderThirdPartyInto(this._dshListEl);
+
 		// 「添加插件」入口（原为第 4 段）：不再需要切段，直接跟在现场清单后面。
 		this._renderDshAddSegment();
+	}
+
+	/**
+	 * 「第三方插件」段（2026-10-28）：列出 profile 里**用户自己装的**插件，registry 形态可一键升级。
+	 *
+	 * 口径（写在 `common/dshPluginUpgrade.ts` 的文件头）：**只有 npm registry 来源才给按钮**。
+	 * git / GitHub 源写 `@latest` 会把源换成 npm 同名包、本地目录会把链接换成注册表版本 ⇒
+	 * 那两种只如实展示 + 告诉用户该怎么做（`describeManualUpgrade`）。
+	 */
+	private _renderThirdPartyInto(target: HTMLElement): void {
+		const host = this._dshHost;
+		const box = append(target, $('div.plugins-dsh-bundled'));
+		const title = append(box, $('div.plugins-section'));
+		title.textContent = localize('dshThirdPartyTitle', "第三方插件（你从 npm / GitHub 装的）");
+		const sub = append(box, $('div.plugins-dsh-intro'));
+		sub.textContent = localize(
+			'dshThirdPartyIntro',
+			"这些是你自己用 `dsh plugin add` 装进 profile 的。只有 npm 来源支持一键升级；GitHub / 本地目录改了源码要重启 Host（启动时会按内容自动重装）。升完都要重启 Host 才生效。",
+		);
+		if (!host) {
+			append(box, $('div.plugins-dsh-off')).textContent = localize('dshThirdPartyNoHost', "插件中心未启用（或 Host 组件未加载）时不能升级。");
+			return;
+		}
+		if (this._dshThirdParty === undefined) {
+			append(box, $('div.plugins-dsh-empty')).textContent = localize('dshThirdPartyLoading', "正在读取 profile 依赖…");
+			return;
+		}
+		if (!this._dshThirdParty.length) {
+			append(box, $('div.plugins-dsh-empty')).textContent = localize(
+				'dshThirdPartyEmpty',
+				"没有第三方插件（profile 里只有 VsSaros 随包的那些）。要装就点下面「添加插件」，或命令行 `dsh plugin add <包名>`。",
+			);
+			return;
+		}
+		for (const p of this._dshThirdParty) {
+			const el = append(box, $('div.plugins-dsh-row'));
+			const info = append(el, $('div.plugins-dsh-info'));
+			const name = append(info, $('div.plugins-dsh-name'));
+			name.textContent = p.installedVersion ? `${p.name} v${p.installedVersion}` : p.name;
+			const meta = append(info, $('div.plugins-dsh-meta'));
+			meta.textContent = p.kind === 'registry'
+				? localize('dshThirdPartyRegistryMeta', "npm 来源（{0}）", p.spec)
+				: p.kind === 'git'
+					? localize('dshThirdPartyGitMeta', "git / GitHub 来源（{0}）⇒ 要更新请重新 add 同一 spec", p.spec)
+					: p.kind === 'local'
+						? localize('dshThirdPartyLocalMeta', "本地目录（{0}）⇒ 更新目录后重启 Host", p.spec)
+						: localize('dshThirdPartyUnknownMeta', "依赖写法读不懂（{0}）", p.spec);
+
+			if (!p.upgradable) {
+				// 不给按钮：见上面口径（点了会把源换掉，比"没按钮"更糟 ✗）
+				continue;
+			}
+			const busy = this._dshThirdPartyBusy === p.name;
+			const btn = append(el, $('button.plugins-ext-btn')) as HTMLButtonElement;
+			btn.textContent = busy
+				? localize('dshThirdPartyUpgrading', "升级中…")
+				: localize('dshThirdPartyUpgrade', "升级到最新");
+			btn.disabled = busy || !!this._dshThirdPartyBusy;
+			btn.onclick = () => {
+				void this._upgradeThirdParty(p.name);
+			};
+		}
+		if (this._dshThirdPartyNote) {
+			const note = append(box, $('div.plugins-notice.plugins-dsh-note'));
+			note.textContent = this._dshThirdPartyNote;
+		}
+	}
+
+	/** 升级一个第三方插件（结果落 `_dshThirdPartyNote`，随后重取清单）。 */
+	private async _upgradeThirdParty(pkg: string): Promise<void> {
+		const host = this._dshHost;
+		if (!host || this._dshThirdPartyBusy) {
+			return;
+		}
+		this._dshThirdPartyBusy = pkg;
+		this._dshThirdPartyNote = localize('dshThirdPartyUpgradingNote', "正在升级 {0} …（走 npm，可能要十几秒）", pkg);
+		this._renderDshRows();
+		try {
+			const r = await host.upgradeThirdPartyPlugin(pkg);
+			this._dshThirdPartyNote = r.ok
+				? localize('dshThirdPartyUpgraded', "已升级：{0}", r.message)
+				: localize('dshThirdPartyUpgradeFailed', "升级未执行：{0}", r.message);
+		} catch (e) {
+			this._dshThirdPartyNote = localize(
+				'dshThirdPartyUpgradeError',
+				"升级失败：{0}",
+				e instanceof Error ? e.message : String(e),
+			);
+		} finally {
+			this._dshThirdPartyBusy = undefined;
+			await this._renderDshTab();
+		}
 	}
 
 	protected override layoutBody(height: number, _width: number): void {

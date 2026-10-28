@@ -137,6 +137,15 @@ export class DshRuntimeManager {
 		private readonly _log: IRuntimeLog,
 		/** 安装包内置运行时根目录（打包后 `<appPath>/dsh-runtime`）；缺省/不存在 = 未内置。 */
 		readonly bundledRoot?: string,
+		/**
+		 * 构建期 pin 的 bundled 版本（`dsh-plugins/dsh-compat.json` 的 `bundled`，与打包侧同源）。
+		 *
+		 * 为什么要 pin（2026-10-28）：旧行为取 `listBundled().at(-1)` = **目录里最高的版本**。打包侧一旦
+		 * 残留了更高但没进兼容清单的版本（本机实测 rc.1 + rc.2 并存），装出来的包就会跑一个**没验证过**
+		 * 的运行时；而 pin 的版本才是 `dsh-compat.json` 声明验证过的那一个。
+		 * 缺省（dev 直跑 / 单测）⇒ 仍退回"取最高"，保持旧行为。
+		 */
+		private readonly _bundledVersionPin?: string,
 	) { }
 
 	// ─── 指针 ────────────────────────────────────────────────────────────────
@@ -177,6 +186,27 @@ export class DshRuntimeManager {
 			.filter(isRuntimeVersionDir)
 			.filter(v => existsSync(join(root, v, ...DSH_PKG_BIN)))
 			.sort(compareSemver);
+	}
+
+	/**
+	 * 选定本次要用的 bundled 版本：**compat 清单 pin 的版本优先**，目录里没有才退回"最高版本"。
+	 *
+	 * pin 在包里但目录里没有时不硬失败：那是"打包侧 pin 与产物不一致"，让全新安装直接起不来比
+	 * 退回最高版本更糟 ⇒ 记一行日志（运维能在日志里看到）再退回。
+	 */
+	private _selectBundled(): string | undefined {
+		const versions = this.listBundled();
+		if (versions.length === 0) {
+			return undefined;
+		}
+		const pin = this._bundledVersionPin?.trim();
+		if (pin) {
+			if (versions.includes(pin)) {
+				return pin;
+			}
+			this._log(`bundled pin ${pin}（dsh-compat.json）不在安装包里：实际有 ${versions.join(', ')} ⇒ 退回最高版本`);
+		}
+		return versions[versions.length - 1];
 	}
 
 	getInfo(activeBin?: string): IDshRuntimeInfo {
@@ -319,7 +349,7 @@ export class DshRuntimeManager {
 			return { bin, version: await this._probeDshVersion(node, bin), source: 'managed' };
 		}
 
-		const bundled = this.listBundled().at(-1);
+		const bundled = this._selectBundled();
 		if (bundled) {
 			const bin = toLongPath(join(this.bundledRoot!, bundled, ...DSH_PKG_BIN));
 			const probed = await this._probeDshVersion(node, bin);

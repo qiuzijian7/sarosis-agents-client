@@ -1,7 +1,7 @@
 {
   "name": "@vssaros/dsh-scheduler",
-  "version": "0.2.6",
-  "description": "VsSaros Scheduler module for DeepSeek Harness: thin wrapper over the official @deepseek-ai/dsh-schedule service (refactor 2.1 pilot). ActivityBar icon + schedule list page at /x/scheduler/ (list/delete via ctx.schedule), plus programmatic migration of legacy agentScheduler definitions (agent.yaml `schedules` entries — never executed by legacy, so migration is zero-regression). Legacy bridgeScheduler (IM channel timers) is NOT migrated here; it belongs to the channels family (2.4).",
+  "version": "0.3.0",
+  "description": "VsSaros Scheduler module for DeepSeek Harness: thin wrapper over the official @deepseek-ai/dsh-schedule service. 0.3.0 rewires the workbench to the NATIVE task-manager page (a verbatim MIT copy of @deepseek-ai/dsh-client-ui-schedule's client chunk in lib/client.native.js, whose apply() is replaced by a single desktopWorkbenches.register call). SSR page at /x/scheduler/ + legacy migration stay as before.",
   "private": true,
   "type": "module",
   "main": "lib/index.js",
@@ -13,6 +13,7 @@
   "files": [
     "lib/index.js",
     "lib/client.js",
+    "lib/client.native.js",
     "lib/pageShell.js",
     "lib/foundationRef.js",
     "lib/migrate.js",
@@ -53,11 +54,11 @@
     "legacyCounterpart": "vssaros.dsh.scheduler",
     "workbench": {
       "title": "自动化任务",
-      "description": "自动化任务：按计划自动运行 Agent（建、看、删、查下次运行）。",
+      "description": "自动化任务（原生界面）：搜索、状态筛选、查看详情与投递历史、改时间、删除。",
       "icon": "codicon:clock",
       "repository": "vssaros:scheduler",
-      "customFrame": true,
-      "headerLayout": "compact"
+      "customFrame": false,
+      "headerLayout": "default"
     }
   },
   "license": "MIT",

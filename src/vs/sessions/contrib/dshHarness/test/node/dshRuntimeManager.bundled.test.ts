@@ -67,6 +67,26 @@ suite('dshHarness / bundled runtime resolution', () => {
 		assert.strictEqual(r.version, '0.2.0-rc.2');
 	});
 
+	test('compat pin 优先于"目录里最高版本"（残留的更高版本不许被选中）', async () => {
+		const bundled = join(dir, 'bundled');
+		makeFakeRuntime(bundled, '0.2.1-rc.2');
+		makeFakeRuntime(bundled, '0.3.0'); // 更高但没进兼容清单的残留版本
+		const rt = new DshRuntimeManager(join(dir, 'managed'), () => { }, bundled, '0.2.1-rc.2');
+		const r = await rt.resolveDsh(undefined, node);
+		assert.strictEqual(r.source, 'bundled');
+		assert.strictEqual(r.version, '0.2.1-rc.2', '必须用 dsh-compat.json pin 的版本，不是目录里的最高版本');
+	});
+
+	test('pin 的版本不在包里 ⇒ 退回最高版本并留日志（不硬失败）', async () => {
+		const bundled = join(dir, 'bundled');
+		makeFakeRuntime(bundled, '0.2.1-rc.2');
+		const lines: string[] = [];
+		const rt = new DshRuntimeManager(join(dir, 'managed'), l => lines.push(l), bundled, '0.2.1-rc.99');
+		const r = await rt.resolveDsh(undefined, node);
+		assert.strictEqual(r.version, '0.2.1-rc.2');
+		assert.ok(lines.some(l => l.includes('bundled pin')), `要留一行可诊断日志（实际日志：${lines.join(' | ')}）`);
+	});
+
 	test('bundledRoot 缺省/不存在时 listBundled 为空，不影响原有解析链', async () => {
 		const rt = new DshRuntimeManager(join(dir, 'managed'), () => { }, join(dir, 'nope'));
 		assert.deepStrictEqual(rt.listBundled(), []);

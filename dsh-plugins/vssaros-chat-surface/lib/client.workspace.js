@@ -667,21 +667,37 @@ window.__ModuleLoader__.load({
 				 * `workspace.json · 3 根` 同时带 ✓）。⇒ 先算出**唯一的** `currentGroupKey`，再逐行比 key ✓。
 				 *
 				 * 选谁（优先级）：
-				 *   ① **id 命中**的组 —— header＝会话归属（`workspaceIdOfSession`）、hero＝官方 `selectedId`；
-				 *      `buildTree` 的"一条快照条目只被一条记录认领"保证了这里**至多一个** ✓；
-				 *   ② ①没有（空白屏 / 官方选中态还没跟 / dsh 侧还没登记本会话目录）⇒ 用**会话 cwd** 兜底：
-				 *      `dir` 是宿主持有的事实（`session.start({cwd})` 一落就定死 ✓），而页面侧那两份"应有"
-				 *      都可能滞后一拍（真机 `logs/20261017T093033`：`heroSelected` 还是旧 uuid 而同一次切换的
-				 *      `rebinds` 已经是 2 ✓）；多条路径相同的记录里再按"有 dsh id 的优先 → 根更多的优先"取一条 ✓。
+				 *   ① **会话 cwd 命中的组**（header；`dir` = 宿主持有的 `session.start({cwd})` 事实）——
+				 *      按**组的各根**比（不是只比主根）：会话跑在非主根上也该把整个工作区标成"当前" ✓；
+				 *   ② ①没有 ⇒ 用 **workspaceId 命中**的组 —— header 是 `workspaceIdOfSession`；
+				 *      hero（空白屏**还没有会话**⇒ 没有可信 cwd）是官方 `selectedId`；
+				 *      `buildTree` 的"一条快照条目只被一条记录认领"保证了这里**至多一个** ✓。
+				 *
+				 * ★ 2026-10-28（用户报障「左侧工作区 hover 卡片的"当前会话"根，与聊天输入框上方 chip 的
+				 *   工作区不一致」）：原来 header **先**看 workspaceId（`items[].sessionIds` 归属），cwd 只作兜底
+				 *   ⇒ 而 dsh 那份 `sessionIds` 是**分组记录**，会话换过目录后仍可能挂在旧条目上（真机：会话
+				 *   `cwd` = `…\sarosis-agents-client`，条目却挂在 `…\Saros-switch` 下）⇒ 面板标的"当前"和
+				 *   chip 下拉里那行 `当前会话 cwd` 指两个不同工作区 ✗。现在 header 侧**cwd 优先**，
+				 *   与 chip 的 `readCurrentDir` / 左侧 `client.workspaces.js` 的 `cwd` 口径**完全同一套** ✓。
+				 *   hero 侧不变（空白屏没有会话 ⇒ workspaceId 才是权威 ✓）。
 				 */
 				const currentGroupKey = (() => {
+					const byRoot = dir
+						? tree.groups.filter((g) => (g.roots || []).some((r) => r && samePath(r.path, dir)))
+						: [];
 					const byId = tree.groups.filter((g) => (g.ids || []).indexOf(currentId) >= 0);
+					const bestByRoot = () => {
+						if (!byRoot.length) { return null; }
+						const best = byRoot.filter((g) => (g.ids || []).length > 0)[0]
+							|| byRoot.slice().sort((a, b) => (b.roots ? b.roots.length : 0) - (a.roots ? a.roots.length : 0))[0];
+						return best.key;
+					};
+					if (mode !== "hero") {
+						const keyByRoot = bestByRoot();
+						if (keyByRoot) { return keyByRoot; }
+					}
 					if (byId.length) { return byId[0].key; }
-					const byCwd = dir ? tree.groups.filter((g) => samePath(g.path, dir)) : [];
-					if (!byCwd.length) { return null; }
-					const best = byCwd.filter((g) => (g.ids || []).length > 0)[0]
-						|| byCwd.slice().sort((a, b) => (b.roots ? b.roots.length : 0) - (a.roots ? a.roots.length : 0))[0];
-					return best.key;
+					return mode === "hero" ? bestByRoot() : null;
 				})();
 				/** 组是不是"当前"：只比上面那个**唯一**的 key ✓。 */
 				const isCurrentGroup = (g) => !!currentGroupKey && g.key === currentGroupKey;
@@ -1184,7 +1200,13 @@ window.__ModuleLoader__.load({
 				}
 				const currentId = workspaceIdOfSession(data.snapshot, sid);
 				const dir = readCurrentDir(sid);
-				const currentWs = items.filter((w) => w && w.workspaceId === currentId)[0] || null;
+				// ★ 2026-10-28（用户报「chip 上的工作区 ≠ 它自己下拉里的"当前"」）：**会话 cwd 优先**。
+				//   `items[].sessionIds` 是 dsh 侧的分组记录，会话换过目录后仍可能挂在旧条目上 ⇒ 只按它取
+				//   ⇒ chip 显示的是上一个工作区的名字，而同一枚 chip 展开后按 cwd 标的是另一个 ✗
+				//   （真机：chip = Saros-switch，下拉 = sarosis-agents-client 主根）。
+				//   现在与下拉（`currentGroupKey` 的 cwd 优先）和左侧栏（`rootOfSession`）**同一判据** ✓。
+				const currentWsByDir = dir ? items.filter((w) => w && samePath(w.path, dir))[0] || null : null;
+				const currentWs = currentWsByDir || items.filter((w) => w && w.workspaceId === currentId)[0] || null;
 				const currentWt = worktrees.filter((w) => samePath(w && w.path, dir))[0] || null;
 				// 当前工作区是不是多根（chip 上给一个「N 根」徽标 —— 稿 A 的底线能力 ✓）：
 				// 用当前会话的 cwd 去记录里认领那一条（**不是**用 workspaceId —— 那是 dsh 侧的 id ✓）。

@@ -6269,7 +6269,15 @@ async function performFeishuSync(config, { dry = false } = {}) {
 
 	const args = buildFeishuSyncArgs({
 		vault: vault.dir,
-		src: NOTES_DIR,
+		/*
+		 * ★★ 2026-10-28（真机：`[map] 已配置 6 条映射，但本次没有文档命中`）：
+		 *   这里原先是 `src: NOTES_DIR` —— `NOTES_DIR` 是**字符串** `'笔记'`，
+		 *   而 `buildFeishuSyncArgs` 里是 `for (const dir of src)` ⇒ 字符串按**字符**迭代
+		 *   ⇒ 实际下发 `--src 笔 --src 记`（脚本头部就打印 `src: 笔, 记`）
+		 *   ⇒ 两个不存在的目录 ⇒ 扫不到任何文档 ⇒ `create=0 update=0 skip=0` ✗。
+		 *   必须是数组：`[NOTES_DIR]`。
+		 */
+		src: [NOTES_DIR],
 		apply: !dry,
 		onConflict: feishuCfg.conflict === 'skip' ? 'skip' : 'overwrite',
 		cliPath: String(feishuCfg.cliPath ?? '').trim(),

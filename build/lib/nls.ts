@@ -37,9 +37,17 @@ export function nls(options: { preserveEnglish: boolean }): NodeJS.ReadWriteStre
 				source = path.join(root, source);
 			}
 
-			const typescript = f.sourceMap.sourcesContent![0];
-			if (!typescript) {
+			// 2026-10-28 事故：一个 **0 字节的 .ts**（terminalLiveOutput.ts 搬家后留下的空壳）编译出的
+			// sourcemap 里 `sourcesContent: ['']` ⇒ 老写法 `if (!typescript)` 把「空源文件」当成
+			// 「sourcemap 坏了」，mangling 跑满 44 分钟后整步失败。
+			// 空源文件不可能含 localize() ⇒ 原样透传；只有 sourcesContent **整个缺失** 才算坏。
+			const sourcesContent = f.sourceMap.sourcesContent;
+			if (!sourcesContent || sourcesContent.length === 0) {
 				return this.emit('error', new Error(`File ${f.relative} does not have the original content in the source map.`));
+			}
+			const typescript = sourcesContent[0] ?? '';
+			if (typescript.length === 0) {
+				return this.emit('data', f);
 			}
 
 			base = f.base;

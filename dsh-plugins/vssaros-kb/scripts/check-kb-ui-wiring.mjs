@@ -37,10 +37,14 @@ check('面板定义了 openGraph 且切换到 graph pane',
 	/openGraph:\s*\(\)\s*=>\s*\{\s*setPane\('graph'\);\s*\}/.test(CLIENT));
 // ⚠ 不许再用 `position: fixed`：宿主视图容器带 transform ⇒ fixed 的包含块变成那个容器，
 //   图谱会被钉在面板的下半部分（2026-10-24 真机截图）。必须"父相对 + 子绝对"。
-check('图谱层用面板内绝对定位（父容器 relative）',
-	CLIENT.includes("'data-kb-graph-overlay': '1'")
-	&& /position:\s*'absolute'/.test(CLIENT)
-	&& /position:\s*'relative'/.test(CLIENT));
+// ★ 2026-10-28 口径变更：图谱不再用"父相对 + 子绝对"的整页浮层（会盖住树与正文、
+//   且 fixed 曾被宿主 transform 钉在下半屏），改为**右侧栏的兄弟分支**。
+//   ⇒ 这条断言改成守"树容器常驻"——它才是当初那段相对/绝对定位想保住的真实目的：
+//     挂载视图不能被卸载（effect 只跑一次，卸载后再回来是空白）。
+check('树容器常驻（kbShell 只含 treePane，不随 pane 卸载）',
+	/\}, treePane\);/.test(CLIENT) && !/pane === 'graph' \? h\('div', \{\s*'data-kb-graph-overlay'/.test(CLIENT));
+check('助手栏仍是独立的层叠上下文（图谱/设置/对话都在它内部）',
+	/position: 'relative'/.test(CLIENT) && /position: 'absolute'/.test(CLIENT));
 check('图谱层没有使用 fixed 定位（会被宿主 transform 限制）',
 	!/data-kb-graph-overlay[\s\S]{0,300}?position:\s*'fixed'/.test(CLIENT));
 check('图谱有画布锚点', CLIENT.includes("'data-kb-graph-canvas': '1'"));
@@ -273,6 +277,49 @@ check('助手栏自建层叠与裁剪（position:relative + overflow:hidden + ma
 	/'data-vssaros-kb-conv'[\s\S]{0,800}?position: 'relative'[\s\S]{0,400}?overflow: 'hidden'[\s\S]{0,400}?maxWidth: '70%'/.test(CLIENT));
 check('对话有自己的滚动容器（minHeight:0 + overflow:auto）',
 	/flexDirection: 'column'[\s\S]{0,500}?flex: '1 1 auto'[\s\S]{0,300}?overflow: 'auto'/.test(CLIENT));
+
+// ── ③ 设置 / 关系图谱改在**右侧栏**渲染（2026-10-28 用户要求）─────────────
+//   以前是业务区的整页浮层（`data-kb-*-overlay`）⇒ 盖住树与正文，且"返回"会丢上下文。
+check('设置与图谱在右侧栏渲染（aside 内两个分支）',
+	CLIENT.includes("'data-kb-graph-aside'") && CLIENT.includes("'data-kb-settings-aside'"));
+check('业务区不再有整页浮层（overlay 已移除）',
+	!CLIENT.includes('data-kb-graph-overlay') && !CLIENT.includes('data-kb-settings-overlay'));
+check('图谱/设置时助手栏强制展开（点了必须有反应）',
+	CLIENT.includes("!kbCollapsed || pane !== 'tree'"));
+check('助手聊天切走后不卸载（只切 display）',
+	/display: pane === 'tree' \? 'flex' : 'none'/.test(CLIENT));
+
+// ── ⑤ 设置 / 图谱的**落位**（2026-10-28 用户口径，两次修正后的最终形态）────
+//   dsh 侧：设置是**中栏的独立页签**（与文档页签并列），不是居中弹窗、也不是右栏；
+//          富设置（飞书/映射/CLI）由面板层渲染进 bundle 给的容器。
+//   IDE 侧：设置/图谱开成 editorpane（见上面两条）。
+check('设置/图谱在右侧栏（dsh 的图谱分支）',
+	CLIENT.includes("'data-kb-graph-aside'"));
+
+// ── ④ IDE 侧：设置 / 图谱必须开在 **editorpane**（2026-10-28 用户要求）────────
+//   侧栏只发动作，具体 UI 由命令服务开成编辑器输入（视图里不许自绘面板）。
+check('dsh 设置是**中栏页签**（容器 + 页签标记都在 bundle 里）',
+	BUNDLE.includes('data-kb-host-settings') && BUNDLE.includes('data-kb-settings-tab'));
+check('面板提供 openHostSettings（富设置渲染进中栏）',
+	CLIENT.includes('openHostSettings') && CLIENT.includes('react-dom/client'));
+// ⚠ 中文在**构建产物里是 \u 转义**的 ⇒ 这条读源码 TSX，不读 bundle
+let KB_TSX = '';
+try { KB_TSX = readFileSync(HERE + '../../../src/vs/sessions/contrib/agentStudio/webview/src/kbSideview/index.tsx', 'utf8'); } catch { /* 独立包内跑不到源码 */ }
+check('中栏空态整块居中（不再顶到左上角）',
+	KB_TSX.includes('点左边的笔记看正文')
+	&& /alignItems:\s*'center',\s*justifyContent:\s*'center'/.test(KB_TSX));
+
+let IDE_PANE = '';
+let IDE_CMD = '';
+try {
+	IDE_PANE = readFileSync(HERE + '../../../src/vs/sessions/contrib/agentStudio/browser/views/kbSideviewReactViewPane.ts', 'utf8');
+	IDE_CMD = readFileSync(HERE + '../../../src/vs/sessions/contrib/agentStudio/browser/knowledge/kbCommandService.ts', 'utf8');
+} catch { /* 在独立插件包里跑时读不到源码 ⇒ 下面两条会红，属预期 */ }
+check('IDE 侧「设置/图谱」走命令服务（不在视图里自绘）',
+	/case 'openGraph':[\s\S]{0,120}?openGraph\(\)/.test(IDE_PANE)
+	&& /case 'openSettings':[\s\S]{0,120}?openSettings\(\)/.test(IDE_PANE));
+check('IDE 侧设置与图谱开成编辑器输入（KbSettings / KbGraph EditorInput）',
+	IDE_CMD.includes('new KbSettingsEditorInput(') && IDE_CMD.includes('new KbGraphEditorInput('));
 
 console.log('\n' + '='.repeat(60));
 if (failed.length) {

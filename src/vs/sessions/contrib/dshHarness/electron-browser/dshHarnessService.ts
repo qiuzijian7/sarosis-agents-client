@@ -93,6 +93,7 @@ import { hasWorkspaceFileExtension } from '../../../../platform/workspace/common
 import { basename } from '../../../../base/common/path.js';
 import { buildDshThemeTokens, IDshViewBackgrounds } from '../common/dshThemeBridge.js';
 import { IDshUpgradeResult, IHostActivity, blockingSessions } from '../common/dshUpgrade.js';
+import { IThirdPartyPlugin } from '../common/dshPluginUpgrade.js';
 import { IAgentStudioService } from '../../../common/agentStudioService.js';
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 // 推运行期工作区上下文时带上**本窗口**的 id（2026-10-17）：Host 是多窗口共享的 ⇒ 那只是诊断标签
@@ -253,6 +254,10 @@ export interface IDshHarnessService {
 	 * （选路真源 `agentStudio/common/dshPluginTransport.ts`）。能力差：无进度 / 取消 / 构建脚本批准。
 	 */
 	installPluginSpec(spec: string, name: string): Promise<IDshBundledInstallResult>;
+	/** 列 profile 里用户自己装的第三方插件。 */
+	listThirdPartyPlugins(): Promise<IThirdPartyPlugin[]>;
+	/** 升级一个第三方插件（只有 registry 形态会真的执行）。 */
+	upgradeThirdPartyPlugin(name: string): Promise<{ ok: boolean; message: string }>;
 	/**
 	 * 一个**模块化容器**该加载哪一页（按已激活模块现算，见 `pageRouteForActiveModules`）。
 	 * 不是模块化容器（常驻容器）时返回 `undefined`。
@@ -1461,6 +1466,16 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 
 	installPluginSpec(spec: string, name: string): Promise<IDshBundledInstallResult> {
 		return this._channel.call(DshHarnessChannelCommand.InstallPluginSpec, { spec, name });
+	}
+
+	/** 列 profile 里用户自己装的第三方插件（2026-10-28；见 `common/dshPluginUpgrade.ts`）。 */
+	listThirdPartyPlugins(): Promise<IThirdPartyPlugin[]> {
+		return this._channel.call(DshHarnessChannelCommand.ListThirdPartyPlugins);
+	}
+
+	/** 升级一个第三方插件（只有 registry 形态会真的执行；其它返回"该怎么做"的说明）。 */
+	upgradeThirdPartyPlugin(name: string): Promise<{ ok: boolean; message: string }> {
+		return this._channel.call(DshHarnessChannelCommand.UpgradeThirdPartyPlugin, { name });
 	}
 
 	async resolveModulePage(containerId: string): Promise<IDshModulePageState | undefined> {

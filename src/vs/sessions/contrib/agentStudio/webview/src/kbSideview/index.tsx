@@ -156,6 +156,14 @@ export interface KbSideviewActions {
 	 * `attach`：给已有文件夹的**绝对路径**（不移动、不复制文件）。
 	 */
 	addVault?(mode: 'create' | 'attach', path?: string, name?: string): void;
+	/**
+	 * 打开**系统文件夹选择器**，返回绝对路径（用户取消 ⇒ `null`/空串）。
+	 *
+	 * 为什么要宿主来做：Electron 32+ 移除了 `File.path`，页面里的
+	 * `<input type="file" webkitdirectory>` 只能拿到**相对路径**
+	 * ⇒ 无法作为 vault 的绝对目录。只有原生对话框能给绝对路径。
+	 */
+	pickFolder?(): Promise<string | null> | string | null;
 
 	switchVault?(vaultId: string): void;
 	/**
@@ -706,6 +714,13 @@ function KbCanvasPane({ onClose, onOpenNote }: { onClose: () => void; onOpenNote
 	const [error, setError] = useState('');
 	const viewRef = useRef({ s: 1, x: 0, y: 0 });
 	const layoutRef = useRef<{ nodes: KbCanvasNode[] }>({ nodes: [] });
+
+	/* 宿主富设置：容器出现的**同一帧**就交给宿主渲染（宿主负责建根） */
+	useEffect(() => {
+		if (hostSettingsOpen && hostSettingsRef.current && actions?.openHostSettings) {
+			actions.openHostSettings(hostSettingsRef.current);
+		}
+	}, [hostSettingsOpen]);
 
 	useEffect(() => {
 		let alive = true;
@@ -1261,6 +1276,13 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 	 * 不放"点了没反应"的假开关（比如飞书启用状态——那需要宿主配置，dsh 侧只读）。
 	 */
 	const [showSettings, setShowSettings] = useState(false);
+	/*
+	 * ★ 2026-10-28：**宿主富设置**（飞书同步/目录映射/CLI）也要在「中栏页签」里显示。
+	 *   它属于面板层（另一个 React 树）⇒ 这里只给一个空容器，由宿主往里渲染
+	 *   （`actions.openHostSettings(el)`；宿主用 react-dom/client 建根）。
+	 */
+	const [hostSettingsOpen, setHostSettingsOpen] = useState(false);
+	const hostSettingsRef = useRef<HTMLDivElement | null>(null);
 	/** 标题行的「库下拉」（切换 / 新建 / 本地载入） */
 	const [vaultMenu, setVaultMenu] = useState(false);
 	/** 排序档位 → 中文（菜单里要显示当前值，否则用户不知道现在是哪种排序） */
@@ -1594,6 +1616,8 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 				 *   之前是"没 openSettings 就不渲染按钮"，用户看到的直接结果是"没有设置入口"。
 				 */}
 				<IconBtn title="知识库设置" label="⚙" onClick={() => {
+					// 宿主提供富设置 ⇒ 在中栏开页签（面板层负责往容器里渲染）
+					if (actions?.openHostSettings) { setHostSettingsOpen(true); return; }
 					if (actions?.openSettings) { actions.openSettings(); return; }
 					setShowSettings(true);
 				}} />
@@ -1665,7 +1689,23 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 								>＋ 新建知识库…</button>
 								<button
 									type="button"
-									onClick={() => { setVaultMenu(false); setDialog({ kind: 'vaultAttach', value: '' }); }}
+									onClick={async () => {
+										setVaultMenu(false);
+										/*
+										 * ★ 2026-10-28（用户：导入本地知识库要用**文件夹选择器**）：
+										 *   优先走宿主原生对话框（能拿到绝对路径；Electron 32+ 页面里
+										 *   `File.path` 已移除，`webkitdirectory` 只有相对路径）。
+										 *   宿主没提供 / 调用失败 ⇒ 退回原来的手输框（不丢能力）。
+										 */
+										if (actions?.pickFolder) {
+											try {
+												const picked = await actions.pickFolder();
+												if (picked) { actions.addVault?.('attach', String(picked)); }
+												return;   // 用户取消 ⇒ 直接结束，不再弹手输框
+											} catch { /* 落回手输 */ }
+										}
+										setDialog({ kind: 'vaultAttach', value: '' });
+									}}
 									style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', height: 24, padding: '0 8px', background: 'transparent', border: 0, borderRadius: 3, color: 'inherit', fontSize: 12, cursor: 'pointer' }}
 								>＋ 本地载入文件夹…</button>
 							</>
@@ -2070,8 +2110,13 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 				 *   之前整个右栏是一个 overflow:auto 容器 ⇒ 标题行跟着正文滚走（滚到中段不知道在看哪篇、
 				 *   也够不到「编辑/历史」）。现在顶部两段固定，只有正文滚动。
 				 */
-				<div style={{ flex: '1 1 auto', minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', borderLeft: `1px solid ${c.line}` }}>
-					{doc ? (
+				<div style={{
+					flex: '1 1 auto', minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column',
+					borderLeft: `1px solid ${c.line}`, position: 'relative',
+					// 与空态/正文同一个底色：否则空态、正文、容器三段会拼出竖缝（2026-10-28 用户截图）
+					background: 'var(--vscode-editor-background, #1e1e1e)',
+				}}>
+					{(doc || showSettings || hostSettingsOpen) ? (
 						<>
 							{/* ── C：多文档 Tab（每篇保留滚动位置与草稿）────────────── */}
 							<div
@@ -2088,7 +2133,7 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 											tabIndex={0}
 											aria-selected={on}
 											title={tab.path}
-											onClick={() => switchTab(tab.path)}
+											onClick={() => { setShowSettings(false); setHostSettingsOpen(false); switchTab(tab.path); }}
 											onKeyDown={e => { if (e.key === "Enter") { switchTab(tab.path); } }}
 											style={{
 												display: "flex", alignItems: "center", gap: 6, flex: "0 0 auto", maxWidth: 190,
@@ -2113,6 +2158,16 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 										</div>
 									);
 								})}
+								{/* 设置：与文档并列的**独立页签**（dsh 侧没有宿主设置页 ⇒ 就地打开） */}
+								{(showSettings || hostSettingsOpen) ? (
+									<div
+										data-kb-settings-tab="1"
+										role="tab"
+										aria-selected
+										title="知识库设置"
+										style={{ display: 'flex', alignItems: 'center', gap: 6, flex: '0 0 auto', padding: '0 10px', fontSize: 11.5, cursor: 'default', color: c.fg, background: 'var(--vscode-editor-background, #1e1e1e)', borderRight: `1px solid ${c.line}`, boxShadow: 'inset 0 2px 0 var(--vscode-focusBorder, #3794ff)' }}
+									>⚙ 设置</div>
+								) : null}
 							</div>
 
 							{/* ── D：极简细条（28px）：折叠面包屑 + 预览/编辑 + ⋯ + 进度 ── */}
@@ -2404,60 +2459,44 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 							) : null}
 						</>
 					) : (
-						<div style={{ padding: '14px 18px', color: c.fgFaint, fontSize: 12 }}>点左边的笔记看正文</div>
+						/*
+						 * ★ 2026-10-28（用户：空态右侧大片空白、颜色不一致）：
+						 *   空态必须**铺满整个中栏并自带背景** —— 否则它只有一行高度、
+						 *   下面露出容器底色，两段颜色拼成一道竖缝（截图里那道）。
+						 *   背景取与中栏容器**同一个令牌**，水平方向才连续。
+						 */
+						<div style={{
+							flex: '1 1 auto', minWidth: 0, minHeight: 0, width: '100%',
+							display: 'flex', alignItems: 'center', justifyContent: 'center',
+							background: 'var(--vscode-editor-background, #1e1e1e)',
+							color: c.fgFaint, fontSize: 12,
+						}}>点左边的笔记看正文</div>
 					)}
-				</div>
-			) : null}
-
-			{/* 设置面板（⚙）：dsh 侧没有宿主设置页，这里给出真正能用的几项 */}
-			{/*
-			 * 导图覆盖层（2026-10-25 从面板侧迁到视图）：三端共用一份 `KbCanvasPane`。
-			 * 与设置面板同一套「父 relative + 子 absolute」定位（不用 fixed：宿主容器带 transform）。
-			 */}
-			{/* 轻提示：底部居中浮层（pointerEvents: none 不挡点击） */}
-			{toast ? (
-				<div
-					data-kb-toast="1"
-					role="status"
-					style={{ position: 'absolute', left: '50%', bottom: 16, transform: 'translateX(-50%)', zIndex: 60, maxWidth: '90%', padding: '7px 12px', borderRadius: 6, fontSize: 12, lineHeight: 1.5, color: '#fff', background: 'rgba(30,30,30,.95)', border: '1px solid rgba(255,255,255,.16)', boxShadow: '0 6px 20px rgba(0,0,0,.45)', pointerEvents: 'none' }}
-				>
-					{toast}
-				</div>
-			) : null}
-
-			{canvasOpen ? (
-				<div
-					data-kb-canvas-overlay="1"
-					style={{
-						position: 'absolute', inset: 0, zIndex: 46,
-						background: 'var(--vscode-sideBar-background, #252526)',
-						display: 'flex', flexDirection: 'column', minHeight: 0,
-					}}
-				>
-					<KbCanvasPane
-						onClose={() => setCanvasOpen(false)}
-						onOpenNote={(abs) => { setCanvasOpen(false); (actions?.openLink ?? actions?.openNode)?.(abs); }}
-					/>
-				</div>
-			) : null}
-
 			{showSettings ? (
 				<div
 					data-kb-settings="1"
-					role="dialog"
-					aria-modal="true"
-					onClick={() => setShowSettings(false)}
-					style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', zIndex: 61, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+					role="tabpanel"
+					style={{ position: 'absolute', inset: 0, zIndex: 40, display: 'flex', alignItems: 'stretch', justifyContent: 'stretch', background: 'var(--vscode-editor-background, #1e1e1e)' }}
 				>
 					<div
 						onClick={e => e.stopPropagation()}
-						style={{ width: 460, maxHeight: '82%', overflow: 'auto', background: 'var(--vscode-menu-background, #252526)', border: `1px solid ${c.line}`, borderRadius: 6, padding: 14, boxShadow: '0 10px 30px rgba(0,0,0,.5)' }}
+						style={{ width: '100%', height: '100%', maxHeight: 'none', overflow: 'auto', background: 'transparent', border: 0, borderRadius: 0, padding: 14 }}
 					>
 						<div style={{ display: 'flex', alignItems: 'center', marginBottom: 10 }}>
 							<div style={{ fontSize: 13, fontWeight: 600, flex: 1 }}>知识库设置</div>
 							<button type="button" onClick={() => setShowSettings(false)}
+
 								style={{ height: 22, padding: '0 10px', fontSize: 11.5, cursor: 'pointer', borderRadius: 4, background: 'transparent', color: 'inherit', border: `1px solid ${c.line}` }}>关闭</button>
 						</div>
+
+					{/* 宿主富设置容器（面板层用 react-dom/client 往里渲染） */}
+					{hostSettingsOpen ? (
+						<div
+							data-kb-host-settings="1"
+							ref={hostSettingsRef}
+							style={{ position: 'absolute', inset: 0, zIndex: 41, background: 'var(--vscode-editor-background, #1e1e1e)', overflow: 'auto' }}
+						/>
+					) : null}
 
 						{/* ① 当前库 */}
 						<div style={{ fontSize: 11, color: c.fgFaint, marginBottom: 4 }}>当前库</div>
@@ -2547,6 +2586,41 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 					</div>
 				</div>
 			) : null}
+				</div>
+			) : null}
+
+			{/* 设置面板（⚙）：dsh 侧没有宿主设置页，这里给出真正能用的几项 */}
+			{/*
+			 * 导图覆盖层（2026-10-25 从面板侧迁到视图）：三端共用一份 `KbCanvasPane`。
+			 * 与设置面板同一套「父 relative + 子 absolute」定位（不用 fixed：宿主容器带 transform）。
+			 */}
+			{/* 轻提示：底部居中浮层（pointerEvents: none 不挡点击） */}
+			{toast ? (
+				<div
+					data-kb-toast="1"
+					role="status"
+					style={{ position: 'absolute', left: '50%', bottom: 16, transform: 'translateX(-50%)', zIndex: 60, maxWidth: '90%', padding: '7px 12px', borderRadius: 6, fontSize: 12, lineHeight: 1.5, color: '#fff', background: 'rgba(30,30,30,.95)', border: '1px solid rgba(255,255,255,.16)', boxShadow: '0 6px 20px rgba(0,0,0,.45)', pointerEvents: 'none' }}
+				>
+					{toast}
+				</div>
+			) : null}
+
+			{canvasOpen ? (
+				<div
+					data-kb-canvas-overlay="1"
+					style={{
+						position: 'absolute', inset: 0, zIndex: 46,
+						background: 'var(--vscode-sideBar-background, #252526)',
+						display: 'flex', flexDirection: 'column', minHeight: 0,
+					}}
+				>
+					<KbCanvasPane
+						onClose={() => setCanvasOpen(false)}
+						onOpenNote={(abs) => { setCanvasOpen(false); (actions?.openLink ?? actions?.openNode)?.(abs); }}
+					/>
+				</div>
+			) : null}
+
 
 			{/* 视图内对话框（Electron 不支持 window.prompt ⇒ 改名/新建/删除确认自己弹） */}
 			{dialog ? (

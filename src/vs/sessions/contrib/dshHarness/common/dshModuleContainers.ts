@@ -111,7 +111,7 @@ export const DSH_BUILTIN_MODULES: readonly IDshBuiltinModule[] = [
 	{ module: 'channels', pluginName: '@vssaros/dsh-channels', summary: 'IM 渠道（入站 → 专属会话 → runs 驱动 → 回传；无 ActivityBar 图标）' },
 	// 2026-10-16（重构 2.1 试点）：定时任务模块 —— 官方 dsh-schedule 的薄壳（图标 + `/x/scheduler/` 页面 +
 	// legacy agent.yaml 迁移入口）；调度本身是官方 bundle（宿主安装链登记，见 dshHostSupervisor）。
-	{ module: 'scheduler', pluginName: '@vssaros/dsh-scheduler', summary: '定时任务（官方 dsh-schedule 薄壳：图标 + 清单页 + legacy 迁移）' },
+	{ module: 'scheduler', pluginName: '@vssaros/dsh-scheduler', summary: '定时任务（官方 dsh-schedule 薄壳：图标 + 清单页 + legacy 迁移；工作台 0.3.0 起复用官方原生任务管理页）' },
 	// 2026-10-16（重构 2.4）：Saros Pocket 的 Host 路由（token 鉴权；无 ActivityBar 图标）。
 	{ module: 'pocket', pluginName: '@vssaros/dsh-pocket', summary: 'Pocket 手机端的 Host 路由（列会话 + 发消息；无 ActivityBar 图标）' },
 	// 2026-10-12：历史会话 sideview 的 dsh 页面（`@vssaros/dsh-sessions`，只读，页面 + `/x/sessions/api/sessions`）。

@@ -33,7 +33,7 @@ import type { IEmbeddingService } from '../../common/embeddingProvider.js';
 import type { IRequestService } from '../../../../../platform/request/common/request.js';
 import type { IWebContentExtractorService, ISharedWebContentExtractorService } from '../../../../../platform/webContentExtractor/common/webContentExtractor.js';
 import type { IKbNativeKernelService } from '../../browser/kbNativeKernelService.js';
-import type { IMermaidInlineRenderer } from '../../browser/mermaidInlineRenderer.js';
+import type { IDiagramRenderer } from '../../browser/peleDiagramRenderer.js';
 import type { IDrawioInlineRenderer } from '../../browser/drawioInlineRenderer.js';
 import { KbSettingsEditorInput } from '../../browser/kbSettingsEditorInput.js';
 import { IKbCommandService, KbCommandService } from '../../browser/knowledge/kbCommandService.js';
@@ -211,7 +211,7 @@ function makeHarness(): IHarness {
 			buildVectorIndex: async () => { vectorBuilds.count++; }, getVectorStatus: () => ({ chunkCount: 3, dimensions: 8 }),
 			exportVectorToFile: async () => { }, hasActiveVault: () => false,
 		} as unknown as IKbNativeKernelService,
-		{ renderToSvg: async () => '' } as unknown as IMermaidInlineRenderer,
+		{ renderToSvg: async () => '' } as unknown as IDiagramRenderer,
 		{ renderToSvg: async () => '' } as unknown as IDrawioInlineRenderer,
 		{ warn: () => { }, info: () => { }, error: () => { }, trace: () => { }, debug: () => { } } as unknown as ILogService,
 	);

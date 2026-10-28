@@ -52,9 +52,11 @@ const navSrc = read(path.join(HERE, 'vssaros-chat-surface', 'lib', 'client.workb
 const navItems = new Set([...navSrc.matchAll(/route:\s*"([^"]+)"/g)].map(m => m[1]));
 
 // 主页**故意**不收的模块（写明原因；只对"主页卡片"这一处生效）
-const HOST_EXEMPT = {
-	scheduler: '定时任务是"自动化任务"不是工作台 ⇒ 主页不收（但侧栏有它 ⇒ 必须在 DEFAULT_ITEMS 里）',
-};
+// ⚠ 2026-10-28：`scheduler` 的豁免**已删** —— 用户要求「dsh 侧增加定时任务工作台，复用原生的定时任务 UI」，
+//   scheduler 0.3.0 起是正经工作台（官方 TaskManagerPage 满页渲染）⇒ 老理由
+//   「自动化任务是"自动化任务"不是工作台」不再成立，主页必须给入口。
+//   教训：豁免理由一旦过期就会变成"这个工作台永远没人找得到"，删豁免比留着更安全。
+const HOST_EXEMPT = {};
 
 /* ⚠ 2026-10-23：宿主页表里既登记"模块主页"（`/x/kb/`），也可能登记**子路由**
    （`/x/kb/sideview`）。两份清单一向只登记**模块主页**（那是用户点的入口）

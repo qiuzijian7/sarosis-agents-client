@@ -287,6 +287,9 @@ function fromLocalEsbuild(extensionPath: string, esbuildConfigFileName: string):
 // 子树内的文件，任何指向外部的 junction / 符号链接一律不下钻。
 const WALK_MAX_DEPTH = 64;
 
+// Windows 路径大小写不敏感：统一小写后比较前缀，避免 realpath 规范化后大小写差异误判。
+const normalizePath = (p: string) => process.platform === 'win32' ? p.toLowerCase() : p;
+
 function walkFiles(dir: string): string[] {
 	const out: string[] = [];
 	const seen = new Set<string>();
@@ -297,9 +300,7 @@ function walkFiles(dir: string): string[] {
 		return out;
 	}
 	seen.add(rootReal);
-	// Windows 路径大小写不敏感：统一小写后比较前缀，避免 realpath 规范化后大小写差异误判。
-	const normalize = (p: string) => process.platform === 'win32' ? p.toLowerCase() : p;
-	const rootPrefix = normalize(rootReal.endsWith(path.sep) ? rootReal : rootReal + path.sep);
+	const rootPrefix = normalizePath(rootReal.endsWith(path.sep) ? rootReal : rootReal + path.sep);
 
 	const stack: Array<{ dir: string; depth: number }> = [{ dir, depth: 0 }];
 	while (stack.length) {
@@ -325,7 +326,7 @@ function walkFiles(dir: string): string[] {
 				}
 				// 包含性检查：真实路径逃出起始目录子树（junction 指向仓库根 / 根
 				// node_modules 等）一律不下钻，否则整个仓库会被卷入文件列表。
-				if (!normalize(real).startsWith(rootPrefix)) {
+				if (!normalizePath(real).startsWith(rootPrefix)) {
 					continue;
 				}
 				if (seen.has(real)) {
@@ -380,7 +381,36 @@ function fromLocalNormal(extensionPath: string, restoreProductionDependencies = 
 				// enumerates these via vsce with PackageManager.Npm; we switched to
 				// PackageManager.None to avoid npm ls on bundled/esbuild extensions, so we
 				// recover them explicitly here for the tsc branch only.
-				const productionDependencyFiles = getProductionDependencies(extensionPath).flatMap(dep => {
+				// 2026-10-28 生产事故修复（exe 出不来）：`dependencies` 带 `file:../..` 自引用时
+				// （extensions/agentmemory-memory 的 `vssaros`，2026-10-21 随 jieba 一起加入），
+				// npm ls 会把**仓库根**当成一个生产依赖 ⇒ walkFiles 顺着 junction 遍历整个仓库
+				// （含根 node_modules，20 万+ 文件），打包阶段并发 open 触发 EMFILE ⇒
+				// compile-extensions-build 与 vscode-win32-x64 双双失败、最终无 exe 可归档。
+				// ① 只认物理位于本扩展 node_modules 下的依赖（distro 的 .build/distro/npm 另算）；
+				// ② 排除 optionalDependencies（按 npm 语义可缺失，使用者已有 try/catch 降级：
+				//    extensions/agentmemory-memory/src/{reranker,vectorIndex,serverConfig}.ts）。
+				//    ⚠ 不排除会白带 onnxruntime(157MB) + opentelemetry(42MB)。要恢复本地语义检索实体，
+				//    把 omitOptional 改回 false 即可。
+				const allowedDepRoots: string[] = [normalizePath(path.join(root, '.build')) + path.sep];
+				try {
+					allowedDepRoots.push(normalizePath(fs.realpathSync(path.join(extensionPath, 'node_modules'))) + path.sep);
+				} catch { /* 没有 node_modules ⇒ 只剩 distro 侧 */ }
+				const allDeps = getProductionDependencies(extensionPath, { omitOptional: true });
+				const localDeps = allDeps.filter(dep => {
+					try {
+						const real = normalizePath(fs.realpathSync(dep)) + path.sep;
+						return allowedDepRoots.some(p => real.startsWith(p));
+					} catch {
+						return false;
+					}
+				});
+				if (localDeps.length !== allDeps.length) {
+					// 必须在日志里可见：某个依赖被跳过了，说明它不在本扩展 node_modules 下
+					// （自引用 / workspace 链接 / 被 npm 提升到仓库根）——提升到根的那种若真属
+					// 运行期必需，这个扩展装出来会 Cannot find module。
+					fancyLog(ansiColors.yellow(`[deps] ${path.basename(extensionPath)}: skipped ${allDeps.length - localDeps.length}/${allDeps.length} non-local dependencies (self-link/hoisted)`));
+				}
+				const productionDependencyFiles = localDeps.flatMap(dep => {
 					// dep is the absolute package dir (e.g. .../node_modules/@vscode/fs-copyfile).
 					// Rebuild an absolute path so gulp/vinyl and fs.statSync agree on it —
 					// path.relative() already contains the `node_modules/` prefix, so joining
@@ -416,6 +446,11 @@ function fromLocalNormal(extensionPath: string, restoreProductionDependencies = 
 
 			// Push files one-by-one with backpressure to avoid EMFILE
 			// when packaging large extensions with many files.
+			// 2026-10-28：再补一层 —— 队列里的每个文件原本都握着 createReadStream 打开的描述符
+			// （createReadStream 的 open 走 Node 内部实现，绕不过 graceful-fs 的排队，见文件头注释），
+			// 随包文件上千时仍会 EMFILE（CI 实测点在 extensions/agentmemory-memory 的依赖树）。
+			// 小文件直接读成 Buffer：句柄立刻归还，队列里不再挂住 fd。
+			const BUFFERED_COPY_MAX_BYTES = 2 * 1024 * 1024;
 			let i = 0;
 			function pushNext() {
 				if (i >= allFiles.length) {
@@ -423,11 +458,12 @@ function fromLocalNormal(extensionPath: string, restoreProductionDependencies = 
 					return;
 				}
 				const filePath = allFiles[i++];
+				const stat = fs.statSync(filePath);
 				const file = new File({
 					path: filePath,
-					stat: fs.statSync(filePath),
+					stat,
 					base: extensionPath,
-					contents: fs.createReadStream(filePath)
+					contents: stat.size <= BUFFERED_COPY_MAX_BYTES ? fs.readFileSync(filePath) : fs.createReadStream(filePath)
 				});
 				// Respect stream backpressure: if the writable can't accept
 				// more data, wait for 'drain' before pushing the next file.

@@ -14,7 +14,8 @@
  * P0-3 验证：同一 partition 内 token 换得的 Cookie 被多视图共享，不需要认证代理。
  */
 
-import { session as electronSession, shell, webContents, WebContentsView, type BrowserWindow, type IpcMainEvent, type IpcMainInvokeEvent, type Session } from 'electron';
+// 2026-10-28：`dialog` + `ipcMain` + `BrowserWindow`（值）—— 页面「本地载入文件夹」需要原生目录选择器
+import { session as electronSession, shell, webContents, WebContentsView, BrowserWindow, dialog, ipcMain, type IpcMainEvent, type IpcMainInvokeEvent, type Session } from 'electron';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { FileAccess } from '../../../../base/common/network.js';
@@ -512,6 +513,42 @@ interface IViewSlot {
 
 const OFFSCREEN = { x: -10000, y: -10000, width: 1024, height: 768 };
 
+/**
+ * 页面「本地载入文件夹」的**原生目录选择器**通道（2026-10-28）。
+ *
+ * 为什么必须有：Electron 32+ 移除了 `File.path`，页面里的
+ * `<input type="file" webkitdirectory>` 只能给出相对路径 ⇒ 无法作为知识库 vault 的绝对目录。
+ * 用 `ipcMain.handle` 返回**字符串路径**（普通页面桥只回 true/pong，拿不到值）。
+ *
+ * 幂等：`DshViewHost` 可能被多次实例化（测试/多窗口），重复 handle 会抛
+ * "Attempted to register a second handler" ⇒ 用模块级标志只注册一次。
+ */
+const PICK_FOLDER_CHANNEL = 'vssaros:dsh:pick-folder';
+let pickFolderChannelReady = false;
+function ensurePickFolderChannel(logService: ILogService): void {
+	if (pickFolderChannelReady) { return; }
+	pickFolderChannelReady = true;
+	try {
+		ipcMain.handle(PICK_FOLDER_CHANNEL, async (event: IpcMainInvokeEvent) => {
+			const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+			const opts = {
+				title: '选择知识库文件夹',
+				properties: ['openDirectory', 'createDirectory'] as Array<'openDirectory' | 'createDirectory'>,
+			};
+			try {
+				const r = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts);
+				return r.canceled || !r.filePaths.length ? '' : r.filePaths[0];
+			} catch (e) {
+				logService.warn('[dshHarness] pickFolder 打开对话框失败', e);
+				return '';
+			}
+		});
+	} catch (e) {
+		pickFolderChannelReady = false;
+		logService.warn('[dshHarness] pickFolder 通道注册失败', e);
+	}
+}
+
 export class DshViewHost extends Disposable {
 
 	/**
@@ -565,6 +602,7 @@ export class DshViewHost extends Disposable {
 		private readonly _preloadPath: string = FileAccess.asFileUri(PRELOAD).fsPath,
 	) {
 		super();
+		ensurePickFolderChannel(this._logService);
 	}
 
 	private get session(): Session {

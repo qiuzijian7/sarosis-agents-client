@@ -34,6 +34,16 @@ export type SessionStartRetry =
 const RETRYABLE_MARKERS: readonly string[] = [
 	'never started',                 // agent-preset/invalid: <plugin> (@<pkg>): never started
 	'agent-preset/invalid',
+	// ★★ 2026-10-28（真机：桌面窗口弹出「会话启动失败（第1/3次）：[dshHarness] startSession:
+	//   控制桥不可用（未安装伴生插件或 Host 未运行）」）：
+	//   Host 进程被外部杀掉（`Host exited unexpectedly (code 4294967295)`）后 supervisor 会**自动重启**，
+	//   真机这次重启花了 25.8s。而重启窗口期里 `_supervisor.bridge` 是 undefined ⇒ `startSession`
+	//   抛的正是这条**中文**文案 —— 之前它不在特征表里 ⇒ 被判死 ⇒ 第 1 次就放弃，
+	//   窗口停在提示条上（其实再等 20 秒就好了）✗✗。
+	'控制桥不可用',
+	'host 未运行',
+	'host 意外退出',
+	'host exited unexpectedly',
 	'not ready',
 	'starting',
 	'socket hang up',
@@ -91,11 +101,13 @@ export function decideSessionStartRetry(message: string, attempt: number, maxAtt
 /**
  * 重试之间的等待（毫秒）：**指数退避 + 上限**。
  *
- * 为什么是 3s/8s：真机上 mux 可用发生在 Host ready 之后约 11s ⇒ 前两跳要盖到这个量级；
- * 又不该更长（桌面窗口是启动即开的界面，用户盯着它）。
+ * 为什么是 4s/12s/24s（累计 40s）：两种"等一等就好"的现场各自要一个量级 ——
+ *   · mux 路由在 Host ready 之后约 **11s** 才可用；
+ *   · Host 被外部杀掉后的**自动重启实测 25.8s**（2026-10-28 真机）。
+ * 前两跳盖住前者、三跳合计盖住后者；再长就不合适了（桌面窗口是启动即开的界面，用户盯着它）。
  */
 export function sessionStartRetryDelayMs(attempt: number): number {
-	const delays = [3_000, 8_000, 15_000];
+	const delays = [4_000, 12_000, 24_000];
 	const idx = Math.max(0, Math.min(delays.length - 1, (Number.isFinite(attempt) ? Math.trunc(attempt) : 0) - 1));
 	return delays[idx];
 }

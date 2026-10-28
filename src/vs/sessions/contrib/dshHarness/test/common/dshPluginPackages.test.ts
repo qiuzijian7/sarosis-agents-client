@@ -1925,11 +1925,24 @@ suite('dshHarness / 打包链：内置 dsh 运行时（缺它 = 首启要用户�
 		assert.match(rel, /dsh-runtime\\\$bundledVer\\node_modules\\@deepseek-ai\\dsh\\lib\\bin\.js/, '仍要把运行时入口列为必需项');
 	});
 
-	test('★ gulp 资源流仍在拷 dsh-runtime（路径与宿主 appPath 同源）', () => {
+	test('★ gulp 资源流只拷 compat pin 的那一个运行时版本（残留版本一起进包 + 跑未验证版本）', () => {
 		const gulp = read(REL_GULP)!;
-		assert.match(gulp, /dsh-runtime\/\*\/node_modules\/\*\*/, '资源流必须仍在拷 dsh-runtime 的 node_modules（否则上面两道门都会红）');
+		// ★ 2026-10-28：旧写法 `dsh-runtime/*\/…` 会把工作区里历史残留的版本一并打进包
+		//   （本机实测 rc.1 1073MB + rc.2 939MB），而宿主当时取"目录里最高版本"⇒ 会跑一个
+		//   没进兼容清单的运行时。glob 必须按 dsh-compat.json 的 bundled 拼。
+		assert.match(gulp, /const dshBundledVersion = /, '要从 dsh-compat.json 读 bundled（不许写死版本、不许通配）');
+		assert.match(gulp, /dsh-plugins', 'dsh-compat\.json'/, '清单路径要与 strip-before-pack / verify-staging 同源');
+		assert.match(gulp, /dsh-runtime\/\$\{dshBundledVersion\}\/node_modules\/\*\*/, 'pin 分支要按 dsh-runtime/<bundled>/node_modules 拼 glob');
+		assert.match(gulp, /gulp\.src\(dshRuntimeGlob/, 'gulp.src 必须用 pin 后的 glob（否则上面的 pin 是空跑）');
+		const wildcardUses = gulp.match(/'dsh-runtime\/\*\/node_modules\/\*\*'/g) ?? [];
+		assert.strictEqual(wildcardUses.length, 1, `通配版本的 glob 只许留在"清单读不到"的兜底分支里一次（实际 ${wildcardUses.length} 处）`);
+		// 宿主侧：pin 必须真的传下去并参与选择
 		const channel = read('src/vs/sessions/contrib/dshHarness/electron-main/dshHarnessChannel.ts')!;
 		assert.match(channel, /join\(app\.getAppPath\(\), 'dsh-runtime'\)/, '宿主读的就是 <appPath>/dsh-runtime（两处必须同源）');
+		assert.match(channel, /new DshRuntimeManager\([\s\S]{0,600}?bundledPin\)/, '必须把 compat 的 bundled 作为 pin 传给运行时管理器');
+		const mgr = read('src/vs/sessions/contrib/dshHarness/electron-main/dshRuntimeManager.ts')!;
+		assert.match(mgr, /private _selectBundled\(\)/, '运行时侧要按 pin 选版本');
+		assert.ok(!/const bundled = this\.listBundled\(\)\.at\(-1\)/.test(mgr), '不许再"目录里取最高"（旧行为会让残留的更高版本被选中 ✗）');
 	});
 
 	test('★★ generate-exe 必须在调 Inno **之前**硬拦缺运行时（流水线"失败也继续" ⇒ 只有这里拦得住）', () => {
@@ -2020,10 +2033,10 @@ suite('dshHarness / 打包链：内置 dsh 运行时（缺它 = 首启要用户�
 		}
 	});
 
-	test('★★ profile 种子是加速项：建不出来**不许**拦出包，且要自己解决 pnpm（2026-10-16 第二次现场）', () => {
+	test('★★ prepack 自己不许抛（种子失败由 verify-staging 判死），但必须把原因打全 + 提示与硬门一致', () => {
 		const prepack = read(REL_PREPACK)!;
 		// ① 主流程与"已安装跳过"那条都必须走 safeBuildProfileSeed（裸 await buildProfileSeed 会把
-		//    `'pnpm' is not recognized` 变成"打包失败"——2026-10-16 第二次现场正是它 ✗）
+		//    `'pnpm' is not recognized` 变成"prepack 崩"——2026-10-16 第二次现场正是它 ✗）
 		const calls = prepack.match(/await buildProfileSeed\(/g) ?? [];
 		assert.strictEqual(calls.length, 1, `裸 buildProfileSeed 只应出现在 safeBuildProfileSeed 内部（实际 ${calls.length} 处）`);
 		const safeCalls = prepack.match(/await safeBuildProfileSeed\(/g) ?? [];
@@ -2036,20 +2049,47 @@ suite('dshHarness / 打包链：内置 dsh 运行时（缺它 = 首启要用户�
 		//    （`_profileSeedDir`）⇒ 半成品会被当好的整目录拷进 DSH_HOME ✗✗
 		assert.match(prepack, /removeTree\(join\(runtimeDir, 'profile-seed'\)\)/, '失败必须清掉半成品种子');
 		assert.match(prepack, /宁可没有，也不给一个装不起来的 profile/, '清理要留一行可读的说明');
+		// ④ ★ 2026-10-28：种子升为出包硬门 ⇒ 失败必须**可诊断**。原写法只打 `e.message` 第一行，
+		//    而 execFileSync 的第一行是命令行、真正原因在 stderr（CI 现场只剩 `Command failed: …` ✗）。
+		assert.match(prepack, /失败输出（末尾 2000 字符）/, '失败要打 stderr 尾巴（否则 CI 上没法定位）');
+		assert.match(prepack, /err\?\.stderr/, '要从 err.stderr 取（execFileSync 的错误体里才有 pnpm 的报错）');
+		// ⑤ 提示口径要与出包侧一致：别再宣称"跳过种子不影响出包"
+		assert.match(prepack, /本次出包会被 verify-staging 判失败/, '跳过种子时要说清"这一包出不来"（软门口径已作废）');
+		assert.match(prepack, /不是"可接受地降级"/, '缺 pnpm 那条也要说清后果');
 	});
 
-	test('★★ verify-staging：种子只告警、运行时本体才硬性（加速项不许拦出包）', () => {
+	test('★★ verify-staging：运行时与 profile 种子都是硬性（2026-10-28 收紧；软门会静默出"首启要 pnpm"的包）', () => {
 		const verify = read(REL_VERIFY)!;
-		const seedDeclAt = verify.indexOf('$seedWarn = @(');
-		assert.ok(seedDeclAt > 0, '种子要单独列成 $seedWarn（守卫不能空跑）');
-		const seedBlock = verify.slice(seedDeclAt, verify.indexOf(')', seedDeclAt));
-		assert.match(seedBlock, /profile-seed/, '$seedWarn 里放种子项');
-		// $required 段里不许再出现 profile-seed（放回去 = 没有 pnpm 的构建机又不许出包 ✗）
 		const requiredAt = verify.indexOf('$required += "dsh-runtime');
-		const requiredBlock = verify.slice(requiredAt, seedDeclAt);
-		assert.ok(!requiredBlock.includes('profile-seed'), 'profile-seed 不许留在 $required 里（那是硬拦）');
-		assert.match(requiredBlock, /node_modules\\@deepseek-ai\\dsh\\lib\\bin\.js/, '运行时本体仍必须是硬性');
-		assert.match(verify, /\[WARN\][^\n]*profile seed missing/, '缺种子要在日志里可见（否则"首启慢"会被当偶发）');
+		assert.ok(requiredAt > 0, '找不到 dsh 运行时的 $required 段（守卫不能空跑）');
+		const missingAt = verify.indexOf('$missing = @()');
+		assert.ok(missingAt > requiredAt, '找不到 $required 的结算点（守卫不能空跑）');
+		const requiredBlock = verify.slice(requiredAt, missingAt);
+		assert.match(requiredBlock, /node_modules\\@deepseek-ai\\dsh\\lib\\bin\.js/, '运行时本体必须是硬性');
+		// 种子的三条都要在**硬性清单**里：marker 证明它是 prepack 建的；profile package.json +
+		// 伴生插件到位才证明"首启零下载"真的成立（缺一个就要用户自己 pnpm 装）。
+		assert.match(requiredBlock, /profile-seed\\seed\.json/, '种子 marker 必须硬性（缺它无法证明种子是 prepack 建的）');
+		assert.match(requiredBlock, /profile-seed\\profiles\\vssaros\\package\.json/, '种子 profile 必须硬性（缺它首启要自己 pnpm 装）');
+		assert.match(requiredBlock, /profile-seed\\profiles\\vssaros\\node_modules\\@vssaros\\dsh-bridge\\package\.json/, '种子里的伴生插件必须真到位');
+		assert.ok(!/\$seedWarn/.test(verify), '不许再留"种子只告警"的软门（它会放过"首启要 pnpm"的包 ✗）');
+	});
+
+	test('★ profile 名单源：prepack / verify-staging 的字面量必须等于 DSH_DEFAULT_PROFILE', () => {
+		// 为什么需要：种子的路径是 `<种子>/profiles/<名字>`，而构建脚本不能 import TS ⇒ 名字在
+		// prepack（4 处）+ verify-staging（1 处）+ 宿主常量（1 处）各写一遍。改名时只要漏掉一处，
+		// 种子就拷不进 profile / 校验静默空过（2026-10-28 统一 profile 时正是这个风险面）。
+		const harness = read('src/vs/sessions/contrib/dshHarness/common/dshHarness.ts')!;
+		const m = /export const DSH_DEFAULT_PROFILE\s*=\s*'([^']+)'/.exec(harness);
+		assert.ok(m, '找不到 DSH_DEFAULT_PROFILE（守卫不能空跑）');
+		const profile = m![1];
+		const prepack = read(REL_PREPACK)!;
+		assert.ok(prepack.includes(`const profileDir = join(seed, 'profiles', '${profile}')`), `prepack 的种子目录必须用 ${profile}`);
+		assert.ok(prepack.includes(`['--profile', '${profile}', '--from-default-profile', 'web'`), `prepack 初始化 profile 必须用 ${profile}`);
+		assert.ok(prepack.includes(`['plugin', '--profile', '${profile}', 'add'`), `prepack 装插件必须用 ${profile}`);
+		assert.ok(prepack.includes(`'--profile', '${profile}', '--no-open'`), `prepack 试启动必须用 ${profile}`);
+		const verify = read(REL_VERIFY)!;
+		assert.ok(verify.includes(`profile-seed\\profiles\\${profile}\\package.json`), `verify-staging 的种子路径必须用 ${profile}`);
+		assert.ok(verify.includes(`profile-seed\\profiles\\${profile}\\node_modules\\@vssaros\\dsh-bridge\\package.json`), `verify-staging 的伴生插件路径必须用 ${profile}`);
 	});
 
 	test('★ CI 依赖步骤要备好 pnpm（否则种子在 CI 上永远建不出来）', () => {

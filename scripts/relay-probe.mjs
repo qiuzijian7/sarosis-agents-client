@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 
 const home = process.env.USERPROFILE;
-const hostJson = JSON.parse(fs.readFileSync(home + '/.vssaros-dev/dsh-home/host.json', 'utf8'));
+const hostJson = JSON.parse(fs.readFileSync(home + '/.vssaros/dsh-home/host.json', 'utf8'));
 const token = String(hostJson.authUrl).split('token=')[1];
 const origin = hostJson.origin;
 

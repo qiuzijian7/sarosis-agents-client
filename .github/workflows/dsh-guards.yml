@@ -1,0 +1,57 @@
+name: DSH Guards
+
+# 为什么单独一个 workflow（2026-10-28）：
+#   本仓有 50+ 个 `dsh-plugins/check-*.mjs` 守卫，但 `.github/workflows` 里**一处都没引用**
+#   ⇒ 它们只在开发者本地手动跑，PR 门禁完全不拦。这里先把**零依赖**的那几支接进来
+#   （只 import node 内置，不需要 `npm ci`，十几秒跑完）；其余守卫依赖 `out/` 或完整
+#   node_modules，仍在发布机 / 本地跑（见 `npm run check:dsh-plugins`）。
+
+on:
+  pull_request:
+    branches:
+      - main
+      - 'release/*'
+    paths:
+      - 'dsh-plugins/**'
+      - 'build/saros/**'
+      - 'build/prepack-dsh-runtime.mjs'
+      - 'scripts/dsh-plugin-deploy.mjs'
+      - 'src/vs/sessions/contrib/dshHarness/**'
+      - 'src/vs/sessions/contrib/agentStudio/browser/views/pluginsView.ts'
+      - 'src/vs/sessions/contrib/agentStudio/browser/dshPluginCenterHost.ts'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dsh-guards-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  guards:
+    name: dsh guards（零依赖）
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          # 需要 base 分支的 ref 来比"改了 lib/** 但没 bump 版本"（见 check-dsh-release）
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+
+      - name: 插件包结构 + 入口能真正 import
+        run: node dsh-plugins/check-plugin-files.mjs
+
+      - name: Host 配置覆盖层（dev/prod 数据根不许串）
+        run: node dsh-plugins/check-host-config.mjs
+
+      - name: chat-surface chunk 接线（页签面板 / 空白屏 / 引导）
+        run: node dsh-plugins/check-chat-surface-chunks.mjs
+
+      - name: 发布一致性（改了 lib 没 bump / compat pin / 产物对账）
+        run: node build/saros/check-dsh-release.mjs --base=origin/${{ github.base_ref || 'main' }}

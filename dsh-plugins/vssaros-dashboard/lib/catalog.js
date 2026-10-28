@@ -346,6 +346,14 @@ export const WORKBENCH_MODULES = [
 	//   ⚠ 与 `client.workbenchNav.js` 的 `DEFAULT_ITEMS` **必须两处同时登记**（那边同时是 route 白名单
 	//   ⇒ 漏登记 = 卡片在、点「打开」被静默拒掉 = "点了没反应"✗）；route 还必须与宿主 `DSH_MODULE_PAGES` 一致。
 	{ route: '/x/relay/', name: '萨罗斯中转站', desc: '承载 AnyDev 上的中转站 Web；登录 CodeBuddy provider 后本机自动注册为节点', icon: '📡' },
+	// ★ 2026-10-28（用户：「dsh 侧增加定时任务工作台，复用原生的定时任务 UI」）：
+	//   scheduler 0.3.0 起工作台内容 = 官方原生任务管理页（`@deepseek-ai/dsh-client-ui-schedule` 的
+	//   `TaskManagerPage`），它已经是**正经工作台**（页签 + 满页渲染）⇒ 主页必须给入口。
+	//   ⚠ 原先这里**故意豁免**了它（当时的理由是"自动化任务不是工作台"，见
+	//   `check-workbench-catalog.mjs` 的 HOST_EXEMPT）—— 那个理由现在不成立了 ⇒ 豁免已删。
+	//   ⚠ 与 `client.workbenchNav.js` 的 `DEFAULT_ITEMS` 必须两处同时登记（那边同时是 route 白名单
+	//   ⇒ 漏登记 = 卡片在、点「打开」被静默拒掉 = "点了没反应"）。
+	{ route: '/x/scheduler/', name: '自动化任务', desc: '按计划自动运行 Agent；原生任务页（搜索 / 筛选 / 详情 / 投递历史）', icon: '⏰' },
 ];
 
 /** 按 cwd 分组（工作区 = cwd，worktree 目录天然就是另一个 cwd ⇒ 自动分开 ✓）。未知 cwd 单列、不伪造 ✓。 */

@@ -314,12 +314,12 @@
 				"--remote-debugging-port=9799",
 				"--no-cached-data",
 				"--open-devtools",
-				"--crash-reporter-directory=${userHome}/.vssaros-dev/Crashpad",
+				"--crash-reporter-directory=${userHome}/.vssaros/Crashpad",
 				// for general runtime freezes: https://github.com/microsoft/vscode/issues/127861#issuecomment-904144910
 				"--disable-features=CalculateNativeWinOcclusion",
 				"--disable-extension=vscode.vscode-api-tests"
 			],
-			"userDataDir": "${userHome}/.vssaros-dev",
+			"userDataDir": "${userHome}/.vssaros",
 			"webRoot": "${workspaceFolder}",
 			"cascadeTerminateToConfigurations": [
 				"Attach to Extension Host"
@@ -384,7 +384,7 @@
 				"--remote-debugging-port=9799",
 				"--no-cached-data",
 				"--open-devtools",
-				"--crash-reporter-directory=${userHome}/.vssaros-dev/Crashpad",
+				"--crash-reporter-directory=${userHome}/.vssaros/Crashpad",
 				// for general runtime freezes: https://github.com/microsoft/vscode/issues/127861#issuecomment-904144910
 				"--disable-features=CalculateNativeWinOcclusion",
 				"--disable-extension=vscode.vscode-api-tests",
@@ -396,7 +396,7 @@
 				// in `ensureAgentsWindow()` because only it carries a workspace extension.
 				"${workspaceFolder}/sarosis-agents-client.code-workspace"
 			],
-			"userDataDir": "${userHome}/.vssaros-dev",
+			"userDataDir": "${userHome}/.vssaros",
 			"webRoot": "${workspaceFolder}",
 			"cascadeTerminateToConfigurations": [
 				"Attach to Extension Host"
@@ -445,12 +445,12 @@
 			"runtimeArgs": [
 				"--inspect=5888",
 				"--no-cached-data",
-				"--crash-reporter-directory=${userHome}/.vssaros-dev/Crashpad",
+				"--crash-reporter-directory=${userHome}/.vssaros/Crashpad",
 				// for general runtime freezes: https://github.com/microsoft/vscode/issues/127861#issuecomment-904144910
 				"--disable-features=CalculateNativeWinOcclusion",
 				"--disable-extension=vscode.vscode-api-tests"
 			],
-			"userDataDir": "${userHome}/.vssaros-dev",
+			"userDataDir": "${userHome}/.vssaros",
 			"webRoot": "${workspaceFolder}",
 			"cascadeTerminateToConfigurations": [
 				"Attach to Extension Host"

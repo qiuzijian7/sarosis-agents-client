@@ -839,6 +839,19 @@ export const enum DshHarnessChannelCommand {
 	 */
 	ClaimDesktopAutoOpen = 'claimDesktopAutoOpen',
 	/**
+	 * 列 **profile 里用户自己装的第三方插件**（2026-10-28）。
+	 *
+	 * 为什么单独一条：本仓对**随包插件**有完整闭环（启动判定 / 批量安装 / 内容指纹 / 不降级），
+	 * 但 `dsh plugin add` 装进来的第三方插件此前既看不到清单、也没有升级入口 ——
+	 * 而那正是"从 npm / GitHub 装了个开源插件"的场景（判据见 `common/dshPluginUpgrade.ts`）。
+	 */
+	ListThirdPartyPlugins = 'listThirdPartyPlugins',
+	/**
+	 * 升级一个第三方插件。**只有 registry 形态会真的执行**（`<name>@latest`）；
+	 * git 源写 `@latest` 会把源换成 npm 同名包、本地目录会把链接换成注册表版本 ⇒ 那两种只返回说明。
+	 */
+	UpgradeThirdPartyPlugin = 'upgradeThirdPartyPlugin',
+	/**
 	 * dsh 侧会话摘要（读 `<dshHome>/storages/session_projcache/sessions/*.json`）。
 	 *
 	 * 为什么要有（2026-10-19 用户报「新增的聊天框会话，在左侧会话历史中，没有实时同步更新」）：

@@ -177,7 +177,10 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 	/** 「最后一个界面 ⇒ 退出」这件事**只武装一次**（见 `_requestAppQuit`）。 */
 	private _quitRequested = false;
 	/** 强退兜底定时器（退出流程没往下走时的最后手段）。 */
-	private _forceQuitTimer: NodeJS.Timeout | undefined;
+	// ⚠ 不用 `NodeJS.Timeout` 标注：CI 全量编译时全局 setTimeout 可能解析到
+	//   src/typings/base-common.d.ts 的 `TimeoutHandle`（空接口）⇒ 赋值报 TS2741。
+	//   用 ReturnType 跟随实际解析到的签名，两种解析下都成立。
+	private _forceQuitTimer: ReturnType<typeof setTimeout> | undefined;
 	/** 已经给哪些桌面窗口挂过 `once('closed')`（避免反复关/开 IDE 时重复挂 ⇒ 重复 quit ✓）。 */
 	private readonly _desktopCloseWatch = new WeakSet<object>();
 	/**
@@ -205,7 +208,21 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 		// 内置运行时目录（构建期 prepack，见 build/prepack-dsh-runtime.mjs）：存在即传给管理器，
 		// 解析顺序 setting → managed → bundled → global（bundled 只在全新安装时兜底）。
 		const bundledRuntime = join(app.getAppPath(), 'dsh-runtime');
-		this._runtime = new DshRuntimeManager(options.managedRoot ?? join(options.userDataPath, 'dsh-runtime'), log, existsSync(bundledRuntime) ? bundledRuntime : undefined);
+		// bundled 版本 pin：与**打包侧 / strip 自愈 / verify-staging 同源**（dsh-compat.json 的 bundled）。
+		// 缺了它，管理器取"目录里最高的版本"——包里残留旧/新版本时就会跑未验证的那个（2026-10-28）。
+		const bundledPin = (() => {
+			try {
+				const manifestPath = options.compatBundledPath ?? join(app.getAppPath(), 'dsh-plugins', 'dsh-compat.json');
+				if (!existsSync(manifestPath)) {
+					return undefined;
+				}
+				const v = (JSON.parse(readFileSync(manifestPath, 'utf8')) as { bundled?: unknown }).bundled;
+				return typeof v === 'string' && v.trim() ? v.trim() : undefined;
+			} catch {
+				return undefined;
+			}
+		})();
+		this._runtime = new DshRuntimeManager(options.managedRoot ?? join(options.userDataPath, 'dsh-runtime'), log, existsSync(bundledRuntime) ? bundledRuntime : undefined, bundledPin);
 		// 随包插件根：`vssaros-bridge` / `vssaros-chat-surface` / **模块插件**都在这一层。
 		// 伴生插件的解析与插件中心「随包」段的枚举**必须同源**（否则会出现"列表里有、装的时候找不到"）。
 		this._bundledPluginsRoot = options.bundledPluginsPath ?? join(app.getAppPath(), 'dsh-plugins');
@@ -255,7 +272,17 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 			// 静态真源对账（2026-10-28）：扫目录丢掉的模块要让 supervisor **点名报错**，
 			// 而不是静静地从安装清单里消失（`planned` 的预留位不算缺失）。
 			expectedModulePlugins: DSH_BUILTIN_MODULES.filter(m => m.planned !== true).map(m => m.pluginName),
-			defaultDshHome: options.isBuilt ? undefined : join(options.userDataPath, 'dsh-home'),
+			// ★★ 2026-10-28（用户要求「两套路径统一成一套，变成一份 profile」）：
+			//   原来是 `options.isBuilt ? undefined : join(userDataPath,'dsh-home')` —— 即
+			//   **dev 的 DSH_HOME = `<userData>/dsh-home`，打包版 = 不给（dsh 回落到 `~/.dsh`）**
+			//   ⇒ 同一个 profile 名（`vssaros`）在两处各有一份、版本还不同（真机：`~/.dsh` 里
+			//   chat-surface 0.2.259，dev 的 `dsh-home` 里 0.2.269）⇒ 旧的一侧启动时会尝试"降级重装"
+			//   （一条 `dsh plugin add` 装 8 个包，跑满 4 分钟超时 + 逐项回退再失败），
+			//   而且两边的会话历史/技能/看板/知识库各是一份，用户在两个 app 里看到的世界不一样 ✗。
+			//   现在**两种形态都用 `<userData>/dsh-home`**，配合 userData 统一为 `~/.vssaros`
+			//   ⇒ 一份 profile、一份会话历史、一份插件版本 ✓（旧数据迁移见
+			//   `scripts/migrate-userdata-dev-to-prod.mjs`）。
+			defaultDshHome: join(options.userDataPath, 'dsh-home'),
 			instanceId: `vssaros-${process.pid}-${generateUuid().slice(0, 8)}`,
 			log,
 			// 启动阶段进度透传到状态区（profile 初始化/伴生插件 i/n/Host 启动）。
@@ -783,7 +810,7 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 		//   ⚠ **必须轮询**：真机 21:59:05.3 装守卫时辅助窗口已建（21:59:04.78）但**还不可见**
 		//   （页面要 21:59:25.7 才 materialize）⇒ 只提一次的写法落空，窗口被别的窗口盖住 ✗
 		//   （用户报"仍然没有显示 desktop 窗口"）⇒ 8s 内每 300ms 找一次，拿到焦点即收工。
-		let raiseTimer: NodeJS.Timeout | undefined;
+		let raiseTimer: ReturnType<typeof setInterval> | undefined;
 		this._ideHiddenByUs = hidden;
 		if (hidden) {
 			let tries = 0;
@@ -1369,6 +1396,17 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 			 * 给（界面侧选路真源 `agentStudio/common/dshPluginTransport.ts` 要求 `kind==='registry'` 且有名字
 			 * 才走这条 ✓）。
 			 */
+			case DshHarnessChannelCommand.ListThirdPartyPlugins:
+				// 只读 profile 的 package.json + node_modules 版本，不碰 Host（Host 没起来也能看）✓
+				return this._supervisor.listThirdPartyPlugins();
+			case DshHarnessChannelCommand.UpgradeThirdPartyPlugin: {
+				const a = arg as { name?: unknown };
+				const name = typeof a?.name === 'string' ? a.name.trim() : '';
+				if (!name) {
+					throw new Error('[dshHarness] upgradeThirdPartyPlugin: 需要 { name: string }');
+				}
+				return this._supervisor.upgradeThirdPartyPlugin(name);
+			}
 			case DshHarnessChannelCommand.InstallPluginSpec: {
 				const { spec, name } = (arg ?? {}) as { spec?: unknown; name?: unknown };
 				if (typeof spec !== 'string' || !spec.trim()) {

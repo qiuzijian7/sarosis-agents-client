@@ -100,7 +100,9 @@ export function installRunJournal(logger: IRunJournalLogger): void {
 	mark(startedAt);
 	// 10s 一次：太小会白写盘，太大则"活了几秒就崩"算不准（30s 时短命运行一律显示 0s ✗）
 	const timer = setInterval(() => mark(Date.now()), 10_000);
-	timer.unref?.();
+	// `TimeoutHandle`（src/typings/base-common.d.ts 的空接口）类型上没有 unref，运行时才有
+	// ⇒ 结构化断言调用（与 dshHostSupervisor.ts 同口径），不做 `as any`。
+	(timer as { unref?: () => void })?.unref?.();
 
 	app.on('will-quit', () => {
 		clearInterval(timer);

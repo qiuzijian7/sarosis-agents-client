@@ -12,7 +12,7 @@
 //   code=0xE06D7363 (3765269347)      => unhandled C++ exception
 //   code=0                            => the app quit itself (window close etc.)
 //
-// Everything lands in ~/.vssaros-dev/logs/app-exit.log, and the child's
+// Everything lands in ~/.vssaros/logs/app-exit.log, and the child's
 // stdout/stderr go to app-stdout-<ts>.log / app-stderr-<ts>.log (the only
 // place a native crash stack can appear, since WER is disabled on this box).
 // ============================================================================
@@ -27,9 +27,18 @@ import { fileURLToPath } from 'node:url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.dirname(HERE);
 const EXE = path.join(REPO, '.build', 'electron', 'Saroasis harness.exe');
-/** dev 专用 user-data-dir（`DevToolsActivePort` 也在这里，用来查真实调试端口）。 */
-const USER_DATA_DIR = path.join(os.homedir(), '.vssaros-dev');
-const LOG_DIR = path.join(os.homedir(), '.vssaros-dev', 'logs');
+/**
+ * user-data-dir（`DevToolsActivePort` 也在这里，用来查真实调试端口）。
+ *
+ * ★ 2026-10-28（用户要求「两套路径 ~/.vssaros 与 ~/.vssaros-dev 统一成一套」）：
+ *   以前 dev 用 `.vssaros-dev`、打包版用 `.vssaros` ⇒ **两个独立 profile**，
+ *   同一个插件在两处版本不同（真机：打包 0.2.243 / dev 0.2.268）⇒ 旧的一侧启动时
+ *   会尝试"降级重装"、界面行为也不一致 ⇒ 用户以为"我明明升级过"。
+ *   现在 dev 也落在 `.vssaros`：**一份 profile、一份会话历史、一份插件版本** ✓。
+ *   （数据迁移见 `scripts/migrate-userdata-dev-to-prod.mjs`。）
+ */
+const USER_DATA_DIR = path.join(os.homedir(), '.vssaros');
+const LOG_DIR = path.join(os.homedir(), '.vssaros', 'logs');
 const EXIT_LOG = path.join(LOG_DIR, 'app-exit.log');
 fs.mkdirSync(LOG_DIR, { recursive: true });
 

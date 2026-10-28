@@ -65,7 +65,8 @@ async function safeBuildProfileSeed(runtimeDir, dshBin, dshVersion) {
 	const how = ensurePnpm();
 	if (!how) {
 		console.log('[prepack-dsh] ⚠ 找不到 pnpm（PATH / corepack / npm -g 都不行）⇒ **跳过** profile 种子。'
-			+ '本包仍可用：首启会自己装 profile，但要求用户机器上有 pnpm，且慢 1-2 分钟。'
+			+ '⚠ 2026-10-28 起种子是**硬门**（verify-staging 缺它就判出包失败）——'
+			+ '所以这不是"可接受地降级"，而是"这一包出不来"。'
 			+ 'CI 上请让 install-deps 装一个（`.ci/scripts/install-deps.ps1` 已加）。');
 		return;
 	}
@@ -73,8 +74,20 @@ async function safeBuildProfileSeed(runtimeDir, dshBin, dshVersion) {
 	try {
 		await buildProfileSeed(runtimeDir, dshBin, dshVersion);
 	} catch (e) {
-		console.log(`[prepack-dsh] ⚠ profile 种子构建失败：${String(e?.message ?? e).split('\n')[0]}`);
-		console.log('[prepack-dsh]   ⇒ 跳过种子（运行时已就绪 ✓；首启会自己装 profile，慢 1-2 分钟且要求用户有 pnpm）。');
+		const err = e;
+		const first = String(err?.message ?? e).split('\n')[0];
+		// ★ 2026-10-28：种子现在是**硬门**（verify-staging 缺它就判出包失败），所以失败必须能诊断。
+		// 原写法只打第一行，而 `execFileSync` 的第一行是命令行，**真正原因在 stderr**（2026-10-28
+		// CI 现场就只留下 `Command failed: … dsh plugin add file:…`，尾部的 pnpm 报错被吞了）。
+		const tail = [err?.stderr, err?.stdout]
+			.map(s => (typeof s === 'string' ? s : s ? String(s) : ''))
+			.filter(Boolean).join('\n').trim().slice(-2000);
+		console.log(`[prepack-dsh] ⚠ profile 种子构建失败：${first}`);
+		if (tail) {
+			console.log(`[prepack-dsh]   失败输出（末尾 2000 字符）：\n${tail}`);
+		}
+		console.log('[prepack-dsh]   ⇒ 种子缺失：**本次出包会被 verify-staging 判失败**（2026-10-28 起种子是硬门）。'
+			+ '修好上面的原因后重跑本脚本即可（运行时本体已就绪 ✓，重跑只补种子）。');
 		// ★ 必须清掉半成品：宿主侧判"种子可用"只看 `profile-seed/profiles/<p>/package.json` 在不在
 		//（`_profileSeedDir`）——而它就创建在建种子的早期 ⇒ 半成品会被当成好种子整目录拷进 DSH_HOME，
 		// 用户拿到一个"缺依赖的 profile"（比没有种子更糟 ✗✗）。清掉 = 干净的"没种子"回退 ✓。

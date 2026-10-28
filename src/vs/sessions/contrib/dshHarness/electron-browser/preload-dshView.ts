@@ -266,6 +266,14 @@
 		// agentId = `.agent.md` 的目录名（与 VsSaros `Agent.id` 同值，页面上就是行上的 id）；name 仅作显示回退。
 		// 与 `openModulePage` 同理：**页面开不了编辑器** ⇒ 交宿主；宿主只负责把 IDE 自己的设置界面显示出来 ✓。
 		openAgentSettings: (agentId: string, name?: string) => invoke({ method: 'openAgentSettings', agentId, name }),
+	/*
+	 * ★ 2026-10-28：原生**文件夹选择器**（返回绝对路径；取消 ⇒ 空串）。
+	 *   为什么不是普通页面能力：Electron 32+ 移除了 `File.path`，
+	 *   页面里的 `<input type="file" webkitdirectory>` 只能给出相对路径
+	 *   ⇒ 无法作为知识库 vault 的绝对目录。
+	 *   走**专用通道**（不经页面命令白名单）：它需要返回一个字符串路径。
+	 */
+	pickFolder: () => ipcRenderer.invoke('vssaros:dsh:pick-folder'),
 	// 方案 C2（桥 `20 → 21`）：一次点击 = 中栏会话 + 右栏设置（左右并排由宿主布局）
 	openBot: (agentId: string, name?: string) => invoke({ method: 'openBot', agentId, name }),
 		// 打开知识库设置 / 关系图谱（桥 `6 → 7`，2026-10-15）：与上面 `openAgentSettings` 同源 ——

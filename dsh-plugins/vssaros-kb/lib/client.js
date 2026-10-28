@@ -19,6 +19,8 @@ window.__ModuleLoader__.load({
 		const react = require('react');
 		const h = react.createElement;
 		const { useState, useEffect, useCallback } = react;
+// ★ 2026-10-28：把「富设置页」渲染进 bundle 的中栏页签容器里，需要自己建 React 根
+const reactDom = require('react-dom/client');
 
 		const API = '/x/kb/api';
 		/** 「笔记」区（可写区）的目录名 —— 与后端 `NOTES_DIR` 同值（`lib/core/kb.js`）。 */
@@ -1196,6 +1198,7 @@ window.__ModuleLoader__.load({
 				await remountRef.current?.();
 			}).catch((e) => window.alert('操作失败：' + String((e && e.message) || e)));
 
+			let hostSettingsRoot = null;   // 中栏设置页签的 React 根（复用，避免每次建新根）
 			const actions = {
 				// 视图自己弹对话框（Electron 不支持 window.prompt）
 				useInlineDialogs: true,
@@ -1320,7 +1323,48 @@ window.__ModuleLoader__.load({
 					}).catch((e) => window.alert('操作失败：' + String((e && e.message) || e)));
 				},
 				// 设置：IDE 侧由宿主开 editor pane；面板侧开**二级页面**（整页 + ← 返回）
+				/*
+				 * ★ 2026-10-28（用户：设置要在**中栏的独立页签**里，不要在右栏）——
+				 *   bundle 的 ⚙ 现在优先调这个钩子：它给一个空容器，我们往里渲染 `KbSettingsPage`。
+				 *   ⚠ 容器是 bundle 的页签，所以「返回」由 bundle 的页签切换负责（不需要 onClose 关右栏）。
+				 */
+				openHostSettings: (el) => {
+					if (!el) { return; }
+					try {
+						if (!hostSettingsRoot) { hostSettingsRoot = reactDom.createRoot(el); }
+						hostSettingsRoot.render(h(KbSettingsPage, {
+							onClose: () => setPane('tree'),
+							onSwitchVault: (id) => {
+								vaultWantRef.current = String(id || '');
+								void remountRef.current?.();
+							},
+							onAddVault: (mode, path, name) => {
+								if (typeof actions.addVault === 'function') { actions.addVault(mode, path, name); }
+							},
+							vaultRef: vaultRef,
+							auto: settingsAuto,
+						}));
+					} catch (e) {
+						// 渲染失败不能静默：报告到控制台 + 退回右栏设置（至少能用）
+						console.error('[kb-workbench] 富设置渲染失败，退回右栏', e);
+						setPane('settings');
+					}
+				},
+				// 兜底：老 bundle 没有 openHostSettings 时仍走右栏
 				openSettings: () => setPane('settings'),
+				/*
+				 * ★ 2026-10-28（用户：导入本地知识库要用**文件夹选择器**）：
+				 *   dsh 页面拿不到绝对路径（Electron 32+ 移除了 `File.path`）⇒ 交给宿主预加载脚本
+				 *   走原生 `dialog.showOpenDialog({ properties: ['openDirectory'] })`。
+				 *   宿主没暴露（老版本 / 独立浏览器）⇒ 返回空串，bundle 会退回手输框。
+				 */
+				pickFolder: () => {
+					try {
+						const bridge = typeof window !== 'undefined' ? window.vssarosDsh : null;
+						if (bridge && typeof bridge.pickFolder === 'function') { return bridge.pickFolder(); }
+					} catch { /* 落到空串 */ }
+					return Promise.resolve('');
+				},
 				// 导图（.canvas）：能力位 —— 渲染实现已迁到**视图层**（三端共用），
 				// 面板只声明「服务端有 /api/canvas」即可。
 				canvas: true,
@@ -1499,51 +1543,18 @@ window.__ModuleLoader__.load({
 			//   面板的一部分高度 ⇒ 图谱被"钉"在下半区。
 			//   ⇒ 改回**面板内部绝对定位**：父容器 `position: relative` + 图谱层 `absolute inset:0`。
 			//     树始终保留（不再 display:none），既提供高度、也保证返回时不需要重新挂载。
+			/*
+			 * ★ 2026-10-28（用户要求）：设置 / 关系图谱**不再在业务区做整页浮层**，
+			 *   改到**右侧栏**（aside）里渲染 —— 与「知识库助手」共用同一栏，
+			 *   左侧树与正文始终可见（用户不必先返回再找）。
+			 *
+			 * ⚠ 树容器必须**常驻**（不随 pane 卸载）：挂载视图的 effect 只在首次 mount 跑，
+			 *   卸载后再回来就是空白（2026-10-24 真机踩过）。
+			 */
 			const kbShell = h('div', {
 				'data-kb-workbench': 'shell',
 				style: { position: 'relative', display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 },
-			},
-				treePane,
-				pane === 'graph' ? h('div', {
-					'data-kb-graph-overlay': '1',
-					style: {
-						position: 'absolute', inset: 0, zIndex: 30,
-						background: 'var(--dsw-alias-bg-layer-1, var(--vscode-sideBar-background, #252526))',
-						display: 'flex', flexDirection: 'column', minHeight: 0,
-					},
-				}, h(KbGraph, {
-					onClose: () => setPane('tree'),
-					onOpen: (abs) => { setPane('tree'); void openDoc(abs); },
-					vaultDir: () => vaultRef.current.dir,
-					vaultId: () => vaultRef.current.id,
-				})) : null,
-				// ★★ 2026-10-24（真机：设置按钮点了没反应）：
-				//   `openSettings` 把 pane 切成了 `'settings'`，但这里**只有 graph 一个分支**
-				//   ⇒ 状态变了、画面不变，表现就是"点了没反应"。KbSettingsPage 早就写好了，
-				//   却从来没被渲染过（等于死代码）。
-				//   ⇒ 补上这条分支：整页覆盖（与 IDE 侧"独立 editor pane"等价），带「← 返回知识库」。
-				pane === 'settings' ? h('div', {
-					'data-kb-settings-overlay': '1',
-					style: {
-						position: 'absolute', inset: 0, zIndex: 31,
-						background: 'var(--dsw-alias-bg-layer-1, var(--vscode-sideBar-background, #252526))',
-						display: 'flex', flexDirection: 'column', minHeight: 0,
-					},
-				}, h(KbSettingsPage, {
-					onClose: () => setPane('tree'),
-					// 切库 / 建库都会重挂视图 ⇒ 顺手收起设置页，避免看到旧库的统计
-					onSwitchVault: (id) => {
-						vaultWantRef.current = String(id || '');
-						setPane('tree');
-						void remountRef.current?.();
-					},
-					onAddVault: (mode, path, name) => {
-						if (typeof actions.addVault === 'function') { actions.addVault(mode, path, name); }
-						setPane('tree');
-					},
-					vaultRef: vaultRef,
-					auto: settingsAuto,
-				})) : null);
+			}, treePane);
 
 			// ── 外壳：左 = 知识库本体，右 = 内嵌对话列（方案 A）─────────────────────────
 			const KB_CONV_WIDTH = 'min(520px, 46vw)';
@@ -1588,7 +1599,11 @@ window.__ModuleLoader__.load({
 				// 没有对话停靠点（宿主较旧）⇒ 整页知识库，照旧可用
 				return h('div', Object.assign({}, rootAttrs, { 'data-vssaros-assist-collapsed': '1' }), siteWrap);
 			}
-			const splitter = kbCollapsed ? null : h('div', {
+			// 图谱 / 设置占用右侧栏时必须**强制展开**（否则点了看不到任何反应）
+			// ⚠ 必须在 splitter 之前声明：分隔条要用它判显隐（TDZ）
+			const asideOpen = !kbCollapsed || pane !== 'tree';
+			// 分隔条跟随 aside 的**实际展开态**（图谱/设置也会把栏撑开，不能只判 kbCollapsed）
+			const splitter = !asideOpen ? null : h('div', {
 				'data-vssaros-kb-split': '',
 				title: '左右拖动调节宽度（双击复位）',
 				onMouseDown: KbSplitStart,
@@ -1598,33 +1613,65 @@ window.__ModuleLoader__.load({
 				},
 				style: { flex: '0 0 auto', width: '6px', cursor: 'col-resize', background: 'transparent', position: 'relative', zIndex: 5 },
 			});
+			const asidePane = pane === 'graph'
+				? h('div', {
+					'data-kb-graph-aside': '1',
+					style: { flex: '1 1 auto', minHeight: 0, minWidth: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' },
+				}, h(KbGraph, {
+					onClose: () => setPane('tree'),
+					onOpen: (abs) => { setPane('tree'); void openDoc(abs); },
+					vaultDir: () => vaultRef.current.dir,
+					vaultId: () => vaultRef.current.id,
+				}))
+				: pane === 'settings'
+					? h('div', {
+						'data-kb-settings-aside': '1',
+						style: { flex: '1 1 auto', minHeight: 0, minWidth: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' },
+					}, h(KbSettingsPage, {
+						onClose: () => setPane('tree'),
+						onSwitchVault: (id) => {
+							vaultWantRef.current = String(id || '');
+							setPane('tree');
+							void remountRef.current?.();
+						},
+						onAddVault: (mode, path, name) => {
+							if (typeof actions.addVault === 'function') { actions.addVault(mode, path, name); }
+							setPane('tree');
+						},
+						vaultRef: vaultRef,
+						auto: settingsAuto,
+					}))
+					: null;
+
 			const aside = h('aside', {
 				'data-vssaros-kb-conv': '',
 				style: {
 					flex: '0 0 auto',
-					width: kbCollapsed ? '0px' : KB_CONV_WIDTH,
-					display: kbCollapsed ? 'none' : 'flex',
+					width: asideOpen ? KB_CONV_WIDTH : '0px',
+					display: asideOpen ? 'flex' : 'none',
 					flexDirection: 'column',
-					// 与商城同口径：<aside> 自己就是**独立的层叠上下文 + 裁剪盒**
-					// ⇒ 对话里任何 absolute/fixed 元素都只在栏内生效，不会盖到左侧文档
+					// 与商城同口径：<aside> 自己就是独立的层叠上下文 + 裁剪盒
 					position: 'relative',
 					overflow: 'hidden',
-					minWidth: kbCollapsed ? 0 : '260px',
+					minWidth: asideOpen ? '260px' : 0,
 					maxWidth: '70%',
 					minHeight: 0,
 					borderLeft: '1px solid rgba(128,128,128,.22)',
 				},
 			},
-			// 对话本体包一层滚动容器（商城的 `flex:1 1 auto; minHeight:0; overflow:auto`）
+			// 助手聊天**不卸载**（会话状态 / 滚动位置 / 流式回复都会丢）⇒ 只切 display；
+			// 图谱 / 设置是它的**兄弟节点**，占满同一栏
 			h('div', {
 				style: {
 					flex: '1 1 auto',
 					minHeight: 0,
 					overflow: 'auto',
-					display: 'flex',
+					display: pane === 'tree' ? 'flex' : 'none',
 					flexDirection: 'column',
 				},
-			}, conversation));
+			}, conversation),
+			asidePane);
+
 			return h('div', Object.assign({}, rootAttrs, {
 				// 面板层也定位：分栏（siteWrap/splitter/aside）全部在 flow 里，不做浮层
 				style: Object.assign({}, rootAttrs.style, { position: 'relative', overflow: 'hidden' }),

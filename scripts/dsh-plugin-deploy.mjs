@@ -44,7 +44,23 @@ import { fileURLToPath } from 'node:url';
 
 const REPO = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PLUGINS = path.join(REPO, 'dsh-plugins');
-const HOME = path.join(os.homedir(), '.vssaros-dev', 'dsh-home', 'profiles');
+
+/**
+ * profile 根：**2026-10-28 起 userData 统一为 `~/.vssaros`**（dev 不再用 `.vssaros-dev`）。
+ *
+ * 仍保留对旧目录的探测：迁移完成前 / 别人机器上还没迁移时，部署要落到**实际在用的**那一份，
+ * 否则会出现"脚本说同步成功、宿主读的还是旧目录"这种最难查的假成功 ✗。
+ */
+const pickProfilesRoot = () => {
+	for (const dirName of ['.vssaros', '.vssaros-dev']) {
+		const root = path.join(os.homedir(), dirName, 'dsh-home', 'profiles');
+		if (fs.existsSync(root)) {
+			return root;
+		}
+	}
+	return path.join(os.homedir(), '.vssaros', 'dsh-home', 'profiles');
+};
+const HOME = pickProfilesRoot();
 
 /** 安装份本来就不含的目录（只在 repo 里）。 */
 const SKIP_DIRS = new Set(['node_modules', 'test', 'tests', 'scripts', 'vendor', '.git', 'e2e', 'dist.e2e']);
