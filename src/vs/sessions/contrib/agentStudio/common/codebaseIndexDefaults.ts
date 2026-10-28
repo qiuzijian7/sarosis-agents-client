@@ -360,7 +360,7 @@ export function planForeignProjectPrune(
 }
 
 /**
- * 是否应**延迟加载**某 folder 的图谱（2026-09-15 用户裁决「方案 C」）。
+ * 是否应**延迟加载**某 folder 的图谱（2026-09-15 用户裁决「方案 C」；2026-10-27 扩展到主 root）。
  *
  * 背景：`codebaseGraphBootstrap._bootstrap()` 原本无条件加载**所有** folder 的图，
  * 而图谱解压/反序列化是 CPU/内存密集的**同步**重活 —— 实测：
@@ -374,33 +374,118 @@ export function planForeignProjectPrune(
  * 这一刻并不必要 ⇒ 延迟到**真正用到**时（codebase 工具 / 子代理预检会调
  * `ensureDeferredGraphsLoaded()`）再加载。
  *
+ * ★ 2026-10-27（用户报「IDE 鼠标点击特别卡顿」）：**主 root 也纳入延迟**。
+ * 现场（真机）：`sarosis-agents-client` 的制品 **129MB / 42 万节点** ⇒ 打开工作区时
+ * `loadGraphMerge` 同步 **18.3s** + BM25 重建 **4.5s** ⇒ 主线程冻结二十多秒 ⇒
+ * 那个窗口里 ActivityBar 点击与编辑器输入**全部无响应**。
+ * 而「打开工作区」这一刻**并不需要**图谱（真正用到时 `ensureGraphForUi()` 会调
+ * `ensureDeferredGraphsLoaded('codebase UI open')` 自动加载并显示进度 ✓）⇒ 主 root 同样该延后。
+ *
  * 纯函数（bootstrap 是 DI 贡献类、无法单测；判据下沉到这里锁死语义）。
  *
- * @param folderIndex 该 folder 在工作区 `folders` 中的下标（**0 = 主 root，永不延迟**）
+ * @param folderIndex 该 folder 在工作区 `folders` 中的下标（**0 = 主 root**）
  * @param artifactSizeBytes `graph.db.zst` 的字节数（文件不存在/读不到时传 0）
- * @param deferLargeNonPrimaryRootsMB 设置值（MB）；**<= 0 表示关闭延迟**（保持旧行为）
+ * @param deferLargeNonPrimaryRootsMB 设置值（MB）；**<= 0 表示关闭非主 root 延迟**（保持旧行为）
  * @param alreadyDeferred 该 folder 是否已在延迟集合里（幂等：一旦延迟就保持）
+ * @param deferLargePrimaryRootMB 设置值（MB）；**<= 0 表示主 root 不延迟**（保持旧行为）
  */
 export function shouldDeferGraphLoad(
 	folderIndex: number,
 	artifactSizeBytes: number,
 	deferLargeNonPrimaryRootsMB: number,
 	alreadyDeferred = false,
+	deferLargePrimaryRootMB = 0,
 ): boolean {
 	// 幂等优先：已延迟的直接保持，避免每次 folder 事件又 stat 一遍并可能改判。
 	if (alreadyDeferred) { return true; }
+	const isPrimary = folderIndex <= 0;
+	// 主 root：2026-10-27 起**也**可延迟（阈值独立，默认 20MB ⇒ 129MB 的图会延后 ✓）。
+	if (isPrimary) {
+		if (deferLargePrimaryRootMB <= 0) { return false; }
+		return artifactSizeBytes > deferLargePrimaryRootMB * 1024 * 1024;
+	}
 	// 关闭延迟 ⇒ 旧行为（打开工作区即加载全部）。
 	if (deferLargeNonPrimaryRootsMB <= 0) { return false; }
-	// 主 root 永不延迟 —— 它就是默认检索作用域，延迟它等于让首次查询缺数据。
-	if (folderIndex <= 0) { return false; }
 	return artifactSizeBytes > deferLargeNonPrimaryRootsMB * 1024 * 1024;
+}
+
+/**
+ * 文件 mtime 比较的**容差**（纳秒）—— 2026-10-27。
+ *
+ * watcher 的「改过没有」判据原本是 `oldHash.mtimeNs !== entry.mtimeNs`（**逐字节相等**），
+ * 而 `oldHash` 来自 **store 里的文件哈希表** —— 那张表可能是**别的生产者**写的：
+ *   · dsh 侧建图（甲档交接后，IDE 只读盘上那份制品）；
+ *   · 队友共享的图谱制品（另一台机器的时间戳精度/取整方式不同）。
+ * 实测（2026-10-27，本机）：`dev-workflow.config.js` old(size=6378, mtime=…213625000)
+ * vs new(size=6378, mtime=…214000000) ⇒ **size 完全相同、mtime 差 375µs**（写入方取整到 µs
+ * vs 本机 stat 的 ns）⇒ 每个文件都被判「改过」⇒ **一轮 6826 个文件被重解析**
+ * （实测 28s、堆 +304MB），而在「产物归 dsh」时结果**存不回去** ⇒ 每轮重报、每轮白烧 ✗✗。
+ *
+ * 为什么 1ms 足够安全：真实的文件改动 ⇒ mtime 变化量 ≫ 1ms（编辑器保存、构建产物重写都是
+ * 毫秒~秒级）；只有「1ms 之内且 size 完全相同」的改动才会被漏判（极端的连续两次同尺寸写入）✓。
+ */
+export const FILE_MTIME_TOLERANCE_NS = 1_000_000; // 1ms
+
+/**
+ * 只靠 stat（size + mtime）判断文件是否**改过**（纯函数 ⇒ 可单测 ✓）。
+ *
+ * @param oldSize 旧 size（字节）
+ * @param oldMtimeNs 旧 mtime（纳秒）
+ * @param newSize 新 size
+ * @param newMtimeNs 新 mtime（纳秒）
+ * @param toleranceNs mtime 容差（缺省 `FILE_MTIME_TOLERANCE_NS`）
+ */
+export function isFileStatChanged(
+	oldSize: number,
+	oldMtimeNs: number,
+	newSize: number,
+	newMtimeNs: number,
+	toleranceNs: number = FILE_MTIME_TOLERANCE_NS,
+): boolean {
+	if (oldSize !== newSize) { return true; }
+	return Math.abs((oldMtimeNs ?? 0) - (newMtimeNs ?? 0)) > toleranceNs;
 }
 
 /** 外部产物重载的**节流下限**：连续检测到外部写入时，两次重载之间的最小间隔（见下）。 */
 export const EXTERNAL_ARTIFACT_RELOAD_MIN_INTERVAL_MS = 5000;
 
-/** 外部产物**轮询**间隔（IDE 侧 `codebaseGraphBootstrap` 的定时器用它）。 */
-export const EXTERNAL_ARTIFACT_POLL_INTERVAL_MS = 10_000;
+/**
+ * 外部产物**轮询**间隔（IDE 侧 `codebaseGraphBootstrap` 的定时器用它）。
+ *
+ * ★ 2026-10-27：10s → **30s**。理由：
+ *   · 轮询只是**兜底**（dsh 写盘 → IDE 发现"盘上更新"）；真正要命的是**重载**本身（18s），
+ *     而它已被「规模闸 + 内容指纹」两道闸挡住 ⇒ 轮询频率对体验的影响只剩"发现得晚一点"；
+ *   · 10s 一次 ⇒ 每分钟读 6 遍 `artifact.json` + `index-meta.json`（每次两三个小文件）⇒ 无谓 I/O；
+ *   · 30s ⇒ IDE 侧图谱落后于 dsh 侧最多 30s（**dsh 侧始终最新** ⇒ Agent 的 codebase 工具不受影响 ✓）。
+ */
+export const EXTERNAL_ARTIFACT_POLL_INTERVAL_MS = 30_000;
+
+/**
+ * **自动**外部重载的规模上限（节点数）—— 超过就不自动重载（2026-10-27，性能止血）。
+ *
+ * ## 为什么要有这条
+ *
+ * 外部重载 = `deleteProject` + `loadGraphMerge`（**整张图**在**渲染进程主线程**上解压 + `JSON.parse`
+ * + 去重 + BM25 重建）。真机实测（2026-10-27，21.9 万节点 / 130 万边 / 129MB 制品）：
+ * 合并 **16.9s** + BM25 重建 **5.6s** ⇒ **主线程冻结 17 秒以上** ⇒
+ * 那个窗口里 ActivityBar 点击、编辑器输入**全部无响应**（用户报「鼠标点击特别卡顿」✓）。
+ *
+ * 而重载的触发频率由**别人**决定：dsh 侧 watcher（`indexWatch: true`）每次写盘都会改 `saved_at`
+ * ⇒ IDE 的 10s 轮询就会看到"磁盘更新" ⇒ 原节流下限只有 **5s** ⇒
+ * **最坏情况：每 10 秒冻一次 17 秒** ⇒ 界面基本不可用 ✗✗。
+ *
+ * ## 为什么阈值取 3 万节点
+ *
+ * 实测合并成本 ≈ **40µs/节点**（16.9s ÷ 42 万）⇒ 3 万节点 ≈ **1.2s**（可接受的抖动上限）；
+ * 再大就不该在主线程里做。⚠ 判据是**节点数**而不是"图谱大小(MB)"：合并耗时随节点数线性涨，
+ * 而边数/文件数会因图谱形状差异大得多 ⇒ 用节点数更贴近真实成本 ✓。
+ *
+ * ## 越限之后怎么办（不许静默）
+ *
+ * 不重载 ⇒ IDE 内存里那份图会**比盘上旧** ⇒ 必须让用户知道 + 给出手动入口
+ * （`decideExternalArtifactReload` 返回 `tooBig: true` ⇒ 调用方记日志 + 状态行说明 ✓）。
+ */
+export const EXTERNAL_RELOAD_MAX_AUTO_NODES = 30_000;
 
 /**
  * **dsh 侧**写进 `artifact.json` 的 `producer` 取值 —— 两侧的**所有权契约**（2026-10-13，用户裁决
@@ -453,6 +538,21 @@ export interface IArtifactFreshness {
 	nodeCount?: number;
 	/** 制品里的边数（同上，仅用于 ③ 自我写识别 —— 单看节点数可能在"重排后节点数相同"时误判）。 */
 	edgeCount?: number;
+	/**
+	 * **内容指纹**（dsh 侧写在同一目录的 `index-meta.json` 里：`graphFingerprint` + `graphRecipe`）。
+	 *
+	 * ★ 2026-10-27：这是**内容级**判据 —— 比 `savedAt`/`mtime` 强得多。
+	 *
+	 * 为什么需要：dsh 侧的 watcher 会**周期性重写**制品（每次写盘都改 `saved_at`/mtime），
+	 * 而"图内容其实没变"（源码没动，只是重写了一遍）⇒ 时间戳判据会说"变了" ⇒ IDE 就去
+	 * **整张重解析 + 合并**（实测 18s 主线程冻结）⇒ 而 dsh 侧的"内容没变不重写"优化
+	 * （`encodeSkipped`）只在**指纹相同且配方相同**时才生效 ⇒ 一旦配方/统计口径变了就会写盘。
+	 *
+	 * ⇒ 有指纹可比时：**指纹相同 ⇒ 图没变 ⇒ 不重载**（哪怕 mtime 变了）✓。
+	 *   指纹不同 ⇒ 真的变了 ⇒ 按原逻辑重载 ✓。
+	 *   两侧缺指纹（老制品 / IDE 自己产的图）⇒ 保守按原逻辑走 ✓。
+	 */
+	fingerprint?: string;
 }
 
 export interface IExternalReloadContext {
@@ -474,10 +574,14 @@ export interface IExternalReloadContext {
 export type ExternalReloadDecision =
 	| { reload: true; reason: string; onDiskFreshness: number }
 	/**
-	 * `adoptAsBaseline`：不重载，但**调用方必须把基线更新成磁盘那份** ✓
-	 * （唯一情形 = 判定"磁盘上这份就是本窗口自己刚落盘的内存镜像"，见第 6 条）。
+	 * 不重载。两个可选标记各自独立：
+	 *  · `adoptAsBaseline`：调用方**必须把基线更新成磁盘那份** ✓
+	 *    （唯一情形 = 判定"磁盘上这份就是本窗口自己刚落盘的内存镜像"，见第 6 条）；
+	 *  · `tooBig`：盘上这份图**太大**，自动重载会冻结主线程十几秒（见第 8 条）⇒
+	 *    调用方**不要**把基线跟上去（基线仍旧 ⇒ 用户手动刷新后仍能重载 ✓），
+	 *    但**必须**把这件事告诉用户（否则现象是"IDE 里搜不到新符号"且毫无提示 ✗）。
 	 */
-	| { reload: false; reason: string; adoptAsBaseline?: boolean };
+	| { reload: false; reason: string; adoptAsBaseline?: boolean; tooBig?: true };
 
 /** 取"多新"：优先 `savedAt`，读不出才退回 mtime（**两侧必须用同一个函数**，否则判据会自相矛盾）✓。 */
 export function artifactFreshnessOf(state: IArtifactFreshness | undefined): number | undefined {
@@ -515,7 +619,11 @@ export function artifactFreshnessOf(state: IArtifactFreshness | undefined): numb
  *      我们最后一次记录的基线**新**，而内容其实就是内存里这份 ⇒ 没有这条就会把自己的写当外部写、
  *      白做一次"删项目 + 重新解析"的重活 ✗（连续增量索引时尤其明显）；
  *   7. 距上次外部重载不足 `minIntervalMs` ⇒ 不重载（重载是"删项目 + 重新解析"的重活，
- *      连续外部写入时必须节流 ✓）。
+ *      连续外部写入时必须节流 ✓）；
+ *   8. **规模闸**（2026-10-27）：盘上那份的节点数 > `EXTERNAL_RELOAD_MAX_AUTO_NODES` ⇒ 不重载
+ *      （重载 = 主线程合并整张图，实测 21.9 万节点要 16.9s ⇒ 冻结界面十几秒 ✗✗；
+ *      而触发频率由 dsh 侧 watcher 决定 ⇒ 原节流 5s + 轮询 10s ⇒ 最坏每 10s 冻一次 ✗）。
+ *      ⇒ 返回 `tooBig: true`，调用方**要告诉用户**（否则表现为"IDE 里搜不到新符号"且无提示 ✗）。
  *
  * ⚠ **调用方的一条硬纪律**：本窗口**自己**做完一次加载/索引之后，必须把"内存里这份图对应哪次保存"
  * 记成基线 ✓（加载完 ⇒ 基线 = 当时磁盘的 `saved_at`；索引完 ⇒ 内存比磁盘新，等落盘后由第 6 条
@@ -547,6 +655,19 @@ export function decideExternalArtifactReload(
 	if (diskFresh <= loadedFresh) {
 		return { reload: false, reason: `磁盘上的不比内存里的新（${diskFresh} ≤ ${loadedFresh}）—— 平手最常见的情形就是"我们自己刚写完" ✓` };
 	}
+	// ★ 2026-10-27（内容级判据）：**指纹相同 ⇒ 图没变 ⇒ 不重载**（哪怕 mtime/saved_at 变了）。
+	//
+	// 为什么这一条值钱：dsh 侧的 watcher 周期性重写制品 ⇒ 时间戳判据每次都说"变了"
+	// ⇒ IDE 就去整张重解析+合并（实测 18s 主线程冻结）⇒ 而内容其实一模一样 ✗✗。
+	// ⇒ 两侧都有指纹时按指纹判 ⇒ 只在**真变了**时才重载 ✓。
+	// ⚠ 只有**一侧**有指纹（老制品 / IDE 自己产的图）⇒ 不可比 ⇒ 按原逻辑走（保守 ✓）。
+	if (onDisk?.fingerprint && loaded?.fingerprint && onDisk.fingerprint === loaded.fingerprint) {
+		return {
+			reload: false,
+			adoptAsBaseline: true,
+			reason: `磁盘上的时间戳更新（${diskFresh} > ${loadedFresh}），但**内容指纹一致**（${onDisk.fingerprint.slice(0, 16)}…）⇒ 图没变 ⇒ 不重载（只把基线跟上）✓`,
+		};
+	}
 	// 空制品守卫：只在"本来有图"时生效（内存里 0 节点 ⇒ 换不换都一样，交给上面第 4 条 ✓）
 	const diskNodes = Number(onDisk?.nodeCount);
 	const loadedNodes = Number(loaded?.nodeCount);
@@ -554,10 +675,16 @@ export function decideExternalArtifactReload(
 		return { reload: false, reason: `磁盘制品是空的（0 节点）而内存里有 ${loadedNodes} 个 ⇒ 不拿空图换好图 ✗` };
 	}
 	// 第 6 条：自我写识别 —— 节点数**与边数**都一致 ⇒ 盘上这份就是内存镜像（延迟落盘的那次）✓
+	//
+	// ★ 2026-10-27：两侧**都有指纹**时，指纹优先 —— 「数量相同」不再等于「内容相同」
+	// （换图谱/换解析器可能产出同样的节点数但内容不同）⇒ 指纹不同 ⇒ **不得**判为自己写的 ✓。
 	const diskEdges = Number(onDisk?.edgeCount);
 	const loadedEdges = Number(loaded?.edgeCount);
+	const fpComparable = !!(onDisk?.fingerprint && loaded?.fingerprint);
+	const fpSame = fpComparable && onDisk!.fingerprint === loaded!.fingerprint;
 	if (Number.isFinite(diskNodes) && Number.isFinite(loadedNodes) && diskNodes === loadedNodes
-		&& Number.isFinite(diskEdges) && Number.isFinite(loadedEdges) && diskEdges === loadedEdges) {
+		&& Number.isFinite(diskEdges) && Number.isFinite(loadedEdges) && diskEdges === loadedEdges
+		&& (!fpComparable || fpSame)) {
 		return {
 			reload: false,
 			adoptAsBaseline: true,
@@ -568,9 +695,18 @@ export function decideExternalArtifactReload(
 	if (ctx.lastReloadAt !== undefined && ctx.now - ctx.lastReloadAt < minInterval) {
 		return { reload: false, reason: `距上次外部重载不足 ${minInterval}ms（节流；重载是"删项目 + 重新解析"的重活 ✓）` };
 	}
+	// 第 8 条：**规模闸**（2026-10-27）—— 盘上这份图太大 ⇒ 自动重载会在主线程冻结界面十几秒 ⇒ 不自动重载。
+	// ⚠ 放在节流**之后**：节流更便宜（一次比较），先过它 ⇒ 连续写入时不会每 10s 都走到这里 ✓。
+	if (Number.isFinite(diskNodes) && diskNodes > EXTERNAL_RELOAD_MAX_AUTO_NODES) {
+		return {
+			reload: false,
+			tooBig: true,
+			reason: `盘上这份图有 ${diskNodes} 个节点（> ${EXTERNAL_RELOAD_MAX_AUTO_NODES}）⇒ 自动重载要在主线程合并整张图（实测十几秒）会冻结界面 ⇒ 不自动重载（需要时请手动刷新代码库工作台）`,
+		};
+	}
 	return {
 		reload: true,
 		onDiskFreshness: diskFresh,
-		reason: `磁盘上的制品比内存里的新（${diskFresh} > ${loadedFresh}${Number.isFinite(diskNodes) ? `，节点 ${diskNodes}≠${Number.isFinite(loadedNodes) ? loadedNodes : '?'}` : ''}）⇒ 别人重写过这份图，重载 ✓`,
+		reason: `磁盘上的制品比内存里的新（${diskFresh} > ${loadedFresh}${Number.isFinite(diskNodes) ? `，节点 ${diskNodes}${Number.isFinite(loadedNodes) && loadedNodes === diskNodes ? '=' : '≠'}${Number.isFinite(loadedNodes) ? loadedNodes : '?'}` : ''}）⇒ 别人重写过这份图，重载 ✓`,
 	};
 }

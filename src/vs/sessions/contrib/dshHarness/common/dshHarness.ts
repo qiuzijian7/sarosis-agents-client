@@ -340,6 +340,14 @@ export const enum DshHarnessSettings {
 	 * 两边同时跑会双执行 ⇒ 只能二选一；回退到 legacy 时把这个设为 legacy。
 	 */
 	EntryKanban = 'sessions.dshHarness.entry.kanban',
+	/**
+	 * 是否在 **IDE 的 ActivityBar** 上显示工作台（主页 / 知识库 / 商城 / …）入口。
+	 *
+	 * 默认 `false`（2026-10-27 用户要求："IDE 侧的 activitybar 中，不要显示工作台的页签"）：
+	 * 工作台是**窗口模式**的形态；IDE 侧应当只用「sideview + editorpane」这条路径。
+	 * 需要窗口形态时把它设 `true` 并重载窗口。
+	 */
+	WorkbenchInActivityBar = 'sessions.dshHarness.workbenchInActivityBar',
 }
 
 /**
@@ -519,15 +527,6 @@ export interface IDshHostStartOptions {
 	 *（2026-10-15：canvas 模块已移除 ⇒ 不再注入它 ✓。）
 	 */
 	readonly kbRoot?: string;
-	/**
-	 * IM（飞书）**应用**凭据 —— 入站长连接用（2026-10-27，来自 IDE 设置
-	 * `sessions.channel.feishu.appId/appSecret`）。
-	 *
-	 * 只服务「收消息」；出站（把答复推到飞书群）用每个绑定自己的自定义机器人 webhook。
-	 * 两项**都有**才注入 `vssaros-agents` 行的 `config.feishu`（半份凭据只换来反复 unavailable）。
-	 */
-	readonly imFeishuAppId?: string;
-	readonly imFeishuAppSecret?: string;
 	/**
 	 * **知识库的库记录**（2026-10-15 用户报"不该有 uid 式的根 / 只应显示当前库"✓）：把 IDE storage 里
 	 * `agentStudio.kb.vaults` 的**展示字段**（id / name / icon / customPath / closed ✓）序列化成 JSON
@@ -827,6 +826,18 @@ export const enum DshHarnessChannelCommand {
 	DisposeView = 'disposeView',
 	ResetWindow = 'resetWindow',
 	ListViews = 'listViews',
+	/**
+	 * **「启动自动开桌面窗口」只允许做一次**（2026-10-27 真机：一启动就出现两扇桌面窗口）。
+	 *
+	 * 现场（`logs/20261027T225616`）：22:56:24 启动自动开窗 ⇒ 23:01:24 **又开了一扇**
+	 * （`renderer.log` 两次 `startup: open the dsh desktop window by default`）。原因是这段逻辑
+	 * 跑在 `DshFullWindowContribution` 构造函数里，而 **IDE 主窗口渲染进程重载**（心跳自愈等）
+	 * 会重造贡献 ⇒ 2.5s 后又走一遍 ⇒ 多一扇壳 + 多一个视图（用户看到的可能是那扇空壳，白屏）。
+	 *
+	 * 判定必须落在**主进程**（进程级、不随渲染重载清零）：入参 `{ windowId }`，
+	 * 返回 `true` = 本窗口的启动自动开窗**还没做过**（可以开）；`false` = 已经做过（跳过）。
+	 */
+	ClaimDesktopAutoOpen = 'claimDesktopAutoOpen',
 	/**
 	 * dsh 侧会话摘要（读 `<dshHome>/storages/session_projcache/sessions/*.json`）。
 	 *

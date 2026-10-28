@@ -34,6 +34,7 @@ import {
 	fetchWithRetry,
 } from '@saros/shared';
 import { CodeBuddyAuth } from './auth';
+import { RelayRegistration } from './relay';
 
 // ── Compile-time macro switches ───────────────────────────────────────────────
 // 调试构建时改为 true，可绕过 runtime config 强制开启文件日志。
@@ -1731,6 +1732,16 @@ export function activate(context: vscode.ExtensionContext): void {
 	const auth = new CodeBuddyAuth(context.globalState);
 	context.subscriptions.push(auth);
 
+	// 2026-10-27：萨罗斯中转站「自动注册」——用户登录 CodeBuddy provider 之后，
+	// 把**本机**注册成中转站的节点（只报身份 + 模型目录，不报凭据）。
+	const relay = new RelayRegistration({
+		context,
+		auth,
+		identityHeaders: (token: string) => buildCodeBuddyIdentityHeaders(token),
+	});
+	relay.start();
+	context.subscriptions.push(relay);
+
 	const provider = new CodeBuddyChatProvider(auth, context);
 	context.subscriptions.push(provider);
 
@@ -1827,6 +1838,36 @@ export function activate(context: vscode.ExtensionContext): void {
 	context.subscriptions.push(
 		vscode.commands.registerCommand('codebuddy.logout', async () => {
 			await auth.logout();
+		}),
+	);
+
+	// 2026-10-27：萨罗斯中转站——手动注册 / 查看本机节点。
+	context.subscriptions.push(
+		vscode.commands.registerCommand('codebuddy.relay.register', async () => {
+			await relay.sync('manual');
+			const node = relay.node();
+			// ⚠ 2026-10-28：必须说清楚「IDE 侧注册 ≠ 可被调用」。
+			//   中转站的调用走**节点反向通道（WebSocket）**；IDE 扩展只发 HTTP 心跳，
+			//   **不开通道** ⇒ 这个节点虽然 status=online，但**不会被选点选中**
+			//   （服务端已加「可达性」第四道闸）⇒ 注册它没有调度价值。
+			//   ⇒ 引导用户去工作台点「注册本机到号池」（dsh Host 里的 Node Agent 会开通道）。
+			void vscode.window.showWarningMessage(
+				node
+					? `CodeBuddy：已注册到萨罗斯中转站（节点 ${node.nodeId}），但 IDE 侧不建立反向通道，该节点不会被调度。` +
+						'请在「工作台 → 中转站」点「注册本机到号池」以启用这台机器。'
+					: 'CodeBuddy：尚未注册到萨罗斯中转站（检查 codebuddy.relay.enrollKey / 网络）。',
+			);
+		}),
+	);
+
+	context.subscriptions.push(
+		vscode.commands.registerCommand('codebuddy.relay.status', async () => {
+			const node = relay.node();
+			void vscode.window.showInformationMessage(
+				node
+					? `CodeBuddy 中转站节点：${node.nodeId}（${node.relayUrl}，更新于 ${new Date(node.updatedAt).toLocaleString()}）`
+					: 'CodeBuddy：本机尚未注册到萨罗斯中转站。',
+			);
 		}),
 	);
 

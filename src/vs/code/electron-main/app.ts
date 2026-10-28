@@ -1991,8 +1991,18 @@ export class CodeApplication extends Disposable {
 		// ——与窗口/工作台启动并行，否则渲染进程必须等聊天框随布局挂载（约窗口起来 5 s）才开始起 Host。
 		// 其余情况仍是懒启动：只有 renderer 调用 start/createView 才拉起。退出时 dispose 结束 Host 进程树
 		// （keepAlive 打开时保留，由桥插件的空闲 TTL 自退兜底）。方案见 doc/dsh-foundation-refactor-plan.html。
+		// ★ 2026-10-27（用户报「IDE 点关闭按钮无法关闭 app」）：把 `ILifecycleMainService.quit`
+		//   交给 dsh 通道 —— 判定"该退了"之后必须**主动发起退出**，不能干等窗口关掉：
+		//   VS Code 的 `LifecycleMainService` 在 `win.on('close')` 里无条件 `preventDefault()`
+		//   再走 `unload()`（要 renderer 回话）⇒ renderer 不回话时 `closed` 永不发生 ✗
+		//   （真机：13 秒内 22 条"关闭后退出应用"，一条 before-quit 都没有）。
+		const lifecycleMainService = accessor.get(ILifecycleMainService);
 		const dshHarnessChannel = this._register(new DshHarnessChannel(
-			{ userDataPath: this.environmentMainService.userDataPath, isBuilt: this.environmentMainService.isBuilt },
+			{
+				userDataPath: this.environmentMainService.userDataPath,
+				isBuilt: this.environmentMainService.isBuilt,
+				requestQuit: (willRestart: boolean) => lifecycleMainService.quit(willRestart),
+			},
 			accessor.get(IWindowsMainService),
 			accessor.get(IAuxiliaryWindowsMainService),
 			this.logService,

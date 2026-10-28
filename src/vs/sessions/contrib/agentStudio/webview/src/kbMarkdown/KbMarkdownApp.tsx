@@ -410,6 +410,21 @@ export function KbMarkdownApp(): React.ReactElement {
 					{/* git-branch icon */}
 					<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 01-9 9"/></svg>
 				</button>
+				{/*
+				 * ★ 2026-10-28（用户：「知识库浮动工具栏缺少 AI 助手，展开后显示 知识库专家 agent」）：
+				 *   按钮只发消息（webview 不能自己开会话）；真正的打开动作在宿主 `KbBlocksEditorPane`，
+				 *   它带 `presetId = vssaros-knowledge-base-expert` ⇒ 展开后就是知识库专家。
+				 *   带上当前文件 uri：宿主可以据此把笔记路径塞进首条上下文。
+				 */}
+				<button
+					className="kb-tool-btn kb-tool-btn--ai"
+					title="AI 助手（知识库专家）"
+					aria-label="AI 助手"
+					onClick={() => postMessage('kbblocks.openAssistant', { docId: init.docId, uri: init.currentFilePath })}
+				>
+					{/* sparkle icon */}
+					<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3l1.8 4.6L18.5 9.4 13.8 11.2 12 16l-1.8-4.8L5.5 9.4l4.7-1.8z"/><path d="M18.5 15.5l.9 2.1 2.1.9-2.1.9-.9 2.1-.9-2.1-2.1-.9 2.1-.9z"/></svg>
+				</button>
 				{dirty && <span className="kb-dirty-indicator" title="有未保存的修改">●</span>}
 			</div>
 			<span className="kb-version">pipeline v0.3</span>

@@ -1,6 +1,6 @@
 {
   "name": "@vssaros/dsh-chat-surface",
-  "version": "0.2.248",
+  "version": "0.2.266",
   "description": "VsSaros chat-surface plugin for DeepSeek Harness: binds the chat surface to the VsSaros-owned session (方案 5.13.2 / 7.x). Client-only; the host half is inert. 0.2.209（2026-10-22，品牌改名）：dsh 客户端品牌位与 IDE 产品名统一改为 **Saroasis harness**（client.brand.js 的 TITLE / 两处「回到 … 窗口」tooltip / **document.title**（顶掉上游写死的 `<title>DeepSeek Harness</title>`）+ product.json 的 nameShort/nameLong）。⚠ 未动身份字段（applicationName / win32DirName / win32AppUserModelId / win32MutexName / urlProtocol）—— 改了等于换一个应用（数据目录、单实例互斥、任务栏固定、协议全变，设置与会话全丢）。0.2.244（2026-10-26，用户报障「窗口模式下工作区的 ＋ 点了没反应」+「工作区下有大量空会话」）：① ＋ 按钮改走 **已声明** 的 uiWorkspace.pickDirectory（原来读未声明的 ctx.remote.directoryPicker ⇒ 恒 undefined ⇒ 直接早退），并按官方口径读**路径字符串**（原来读 res.value.path ⇒ 恒 undefined），失败**就地渲染**在区里（原来只写从不渲染的 state.addWorkspaceError ⇒ 100% 静默；窗口模式没有宿主桥 ⇒ notify 也是空转）；区头的全角「＋」换成 ASCII '+'（U+FF0B 在部分渲染环境无字形 ⇒ 显示成豆腐块）。② 侧栏**隐藏空会话**（官方 roster 的 blank 位；官方侧栏同口径过滤）并披露隐藏条数。0.2.247（2026-10-26，用户要求「增加从 code-workspace 文件导入多根工作区的能力」）：区头的「+」改成**菜单**（添加工作区（单个目录） / 从 .code-workspace 导入（多根））；导入走**宿主桥** `importCodeWorkspace`（页面读不了文件、dsh 也只有目录选择器 ⇒ 必须由 IDE 侧选文件+解析+落多根记录+注册到 dsh；**只导入不切窗口**），无桥环境如实说清。",
   "private": true,
   "type": "module",
@@ -11,6 +11,7 @@
     "./package.json": "./package.json"
   },
   "files": [
+    "cordis.patch.yml",
     "lib/client.*.js",
     "lib/client.account.js",
     "lib/client.agents.js",
@@ -19,6 +20,8 @@
     "lib/client.brand.js",
     "lib/client.capsule.js",
     "lib/client.cardActions.js",
+    "lib/client.channel.js",
+    "lib/client.creative.js",
     "lib/client.delegate.js",
     "lib/client.fileCards.js",
     "lib/client.footer.js",
@@ -27,8 +30,6 @@
     "lib/client.js",
     "lib/client.market.js",
     "lib/client.modelAccounts.js",
-    "lib/client.creative.js",
-    "lib/client.upgrade.js",
     "lib/client.openInApp.js",
     "lib/client.persona.js",
     "lib/client.preset.js",
@@ -39,14 +40,14 @@
     "lib/client.subagents.js",
     "lib/client.todos.js",
     "lib/client.tools.js",
+    "lib/client.upgrade.js",
     "lib/client.usage.js",
     "lib/client.welcome.js",
     "lib/client.workbenchNav.js",
     "lib/client.workflowRun.js",
     "lib/client.workspace.js",
     "lib/client.workspaces.js",
-    "lib/index.js",
-    "cordis.patch.yml"
+    "lib/index.js"
   ],
   "peerDependencies": {
     "@deepseek-ai/dsh": ">=0.1.7-0 <0.3.0-0"

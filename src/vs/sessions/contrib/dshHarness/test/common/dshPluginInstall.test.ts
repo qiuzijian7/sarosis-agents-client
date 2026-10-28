@@ -131,6 +131,22 @@ suite('dshHarness / 已装副本的内容校验（版本相同也要复查）', 
 			'兜底单装路径也要做内容比对（批量装失败会回退到它 ⇒ 只看版本就还是修不了坏副本 ✗）');
 	});
 
+	// ★★ 2026-10-28（真机：打包版 exe 启动卡在"正在启动 VsSaros…"六分钟）：
+	//   exe 随包 chat-surface@0.2.243，profile 里已装 0.2.259 ⇒ 只判"不相等"就安排安装 ⇒
+	//   **每次启动降级重装 8 个包**（一条 `dsh plugin add` 装 8 个，跑满 4 分钟超时 + 逐项回退再失败）
+	//   ⇒ 用户看到的就是长时间卡死。已装更新必须保留。
+	test('★ 降级保护：已装比随包**新** ⇒ 不装（exe 比 profile 旧是正常状态）', () => {
+		const body = fnBody('private _planPluginInstall(');
+		const guard = body.indexOf('isVersionNewer(installed, bundled)');
+		assert.ok(guard > 0, '`_planPluginInstall` 必须用 `isVersionNewer` 拦住"降级安装"（否则旧 exe 会把已装的新版本打回去 ✗）');
+		assert.ok(body.includes('不降级'), '跳过降级必须留一行日志（否则"为什么没装"没人知道 ✓）');
+		// 顺序：必须排在「skipUpgrade 那条跳过」之后（= 已走到"要装"之前就拦住）。
+		// ⚠ 不拿函数末尾的 `return { … }` 当锚点：fnBody 切片长度有限，长函数尾会被截掉 ⇒ 假红（实测）。
+		const skipAt = body.indexOf('skipUpgrade && installed');
+		assert.ok(skipAt > 0 && guard > skipAt, '拦截必须排在 skipUpgrade 之后（顺序反了等于照装 ✗）');
+		assert.ok(body.indexOf('return undefined;', guard) > guard, '拦到降级必须 return undefined（不许继续安排安装 ✗）');
+	});
+
 	test('★ 校验器保守方向：读不到 = 不一致（宁可白装一遍，也不能带着坏插件起 Host）', () => {
 		// 2026-10-14 重构：入口读取抽成 `_readEntryFile`（同一份入口定义要同时服务"内容比对"与
 		// "暂存目录指纹"）。断言跟着落点走，**不变量一字不改**。

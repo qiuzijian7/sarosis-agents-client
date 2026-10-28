@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>媒体库 · 工作流与数据流（2026-10-27，vssaros-media 0.7.9）</title>
+<style>
+	/* ══ 文档外壳（不是产品 UI）══════════════════════════════════════════ */
+	:root {
+		color-scheme: dark;
+		--doc-bg: #141414; --doc-card: #1b1b1b; --doc-card2: #202020; --doc-fg: #c9c9c9; --doc-dim: #8d8d8d;
+		--doc-border: #333; --doc-border2: #4a4a4a;
+		--ok: #7bc96f; --warn: #e0a23c; --danger: #f14c4c; --accent: #4d9fff; --link: #8ab4f8;
+		--mono: ui-monospace, Consolas, "Courier New", monospace;
+	}
+	* { box-sizing: border-box; }
+	body { margin: 0; padding: 0 0 80px; background: var(--doc-bg); color: var(--doc-fg);
+		font: 13px/1.65 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; }
+	.doc { max-width: 1280px; margin: 0 auto; padding: 26px 24px; }
+	h1 { font-size: 21px; margin: 0 0 6px; }
+	h2 { font-size: 15px; margin: 30px 0 10px; padding-bottom: 6px; border-bottom: 1px solid var(--doc-border); }
+	h3 { font-size: 13px; margin: 18px 0 8px; color: #dcdcdc; }
+	.sub { color: var(--doc-dim); font-size: 12px; margin: 0 0 18px; }
+	code { font-family: var(--mono); font-size: 11.5px; background: rgba(255,255,255,.06);
+		padding: 1px 5px; border-radius: 3px; }
+	.muted { color: var(--doc-dim); }
+	ul.tight { margin: 6px 0; padding-left: 20px; }
+	ul.tight li { margin: 3px 0; }
+
+	/* ══ 图 1：数据流矩阵（来源 → 入口 → 落点）════════════════════════ */
+	.matrix { display: grid; grid-template-columns: minmax(0,1fr) 26px minmax(0,1.15fr) 26px minmax(0,1.1fr);
+		gap: 8px 4px; align-items: stretch; margin-top: 10px; }
+	.cell { background: var(--doc-card); border: 1px solid var(--doc-border); border-radius: 7px;
+		padding: 9px 11px; min-width: 0; }
+	.cell.entry { background: var(--doc-card2); border-color: var(--doc-border2); }
+	.cell.drop { border-left: 3px solid var(--accent); }
+	.cell.drop.plain { border-left-color: #5f6b7a; }
+	.cell .t { font-weight: 600; font-size: 12.5px; display: block; margin-bottom: 2px; }
+	.cell .d { color: var(--doc-dim); font-size: 11.5px; display: block; }
+	.arr { display: flex; align-items: center; justify-content: center; color: #6a6a6a; font-size: 15px; }
+	.arr.dash { color: var(--warn); }
+	.hd { font-size: 10.5px; letter-spacing: .07em; text-transform: uppercase; color: var(--doc-dim); padding-left: 2px; }
+	.badge { display: inline-block; font-size: 10px; padding: 0 5px; border-radius: 8px; margin-left: 5px;
+		background: rgba(123,201,111,.16); color: var(--ok); border: 1px solid rgba(123,201,111,.35); vertical-align: 1px; }
+	.badge.warn { background: rgba(224,162,60,.15); color: var(--warn); border-color: rgba(224,162,60,.4); }
+	.badge.danger { background: rgba(241,76,76,.14); color: var(--danger); border-color: rgba(241,76,76,.38); }
+
+	/* ══ 库内部 ══ */
+	.vault { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 10px; margin-top: 10px; }
+	.vault .cell { border-top: 3px solid #4a7fb5; }
+	.vault .cell.db { border-top-color: var(--ok); }
+	.vault .cell.thumbs { border-top-color: #b58ad4; }
+	.vault .cell.archive { border-top-color: var(--warn); }
+	.vault .cell.objects { border-top-color: var(--accent); }
+
+	/* ══ 图 2：进程与通道 ══ */
+	.procs { display: grid; grid-template-columns: minmax(0,1fr) 92px minmax(0,1fr) 92px minmax(0,1.15fr);
+		align-items: stretch; margin-top: 10px; }
+	.proc { background: var(--doc-card); border: 1px solid var(--doc-border); border-radius: 8px; padding: 10px 12px; }
+	.proc.host { background: #1a2028; border-color: #2f4560; }
+	.proc h4 { margin: 0 0 6px; font-size: 12px; color: #e4e4e4; }
+	.proc ul { margin: 4px 0 0; padding-left: 16px; font-size: 11.5px; color: var(--doc-dim); }
+	.proc li { margin: 3px 0; }
+	.chan { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; }
+	.chan .line { width: 100%; border-top: 1px dashed #6e5a2e; position: relative; height: 1px; }
+	.chan .line::after { content: "▶"; position: absolute; right: -1px; top: -8px; font-size: 9px; color: #6e5a2e; }
+	.chan .lab { font-size: 10px; color: var(--warn); text-align: center; line-height: 1.35; }
+	.chan .lab.blue { color: var(--link); }
+
+	/* ══ 表 ══ */
+	table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 11.8px; }
+	th, td { text-align: left; padding: 6px 9px; border-bottom: 1px solid #2a2a2a; vertical-align: top; }
+	th { color: var(--doc-dim); font-weight: 600; font-size: 11px; letter-spacing: .04em; background: #1c1c1c; }
+	td code { white-space: nowrap; }
+	.banner { border: 1px solid var(--doc-border); background: var(--doc-card); border-radius: 7px;
+		padding: 10px 13px; margin: 10px 0; }
+	.banner.warn { border-color: #5a4a22; background: #221d10; }
+	.banner.danger { border-color: #5a2a2a; background: #241416; }
+	.banner b { color: #f0f0f0; }
+	.seq { counter-reset: s; margin: 8px 0 0; padding: 0; list-style: none; }
+	.seq li { counter-increment: s; position: relative; padding: 4px 0 4px 30px; font-size: 12px; }
+	.seq li::before { content: counter(s); position: absolute; left: 0; top: 4px; width: 20px; height: 20px;
+		border-radius: 50%; background: #23303f; color: var(--link); font-size: 10.5px;
+		display: flex; align-items: center; justify-content: center; border: 1px solid #33506e; }
+	.legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 11px; color: var(--doc-dim); margin: 8px 0 0; }
+	.legend span::before { content: "■"; margin-right: 4px; }
+	.legend .l1::before { color: var(--accent); }
+	.legend .l2::before { color: var(--ok); }
+	.legend .l3::before { color: var(--warn); }
+	.legend .l4::before { color: #b58ad4; }
+	@media (max-width: 900px) {
+		.matrix, .vault, .procs { grid-template-columns: minmax(0,1fr); }
+		.arr { justify-content: flex-start; padding-left: 6px; }
+		.arr::after { content: " ↓"; }
+		.chan { flex-direction: row; gap: 8px; }
+		.chan .line { width: 40px; }
+	}
+</style>
+</head>
+<body>
+<div class="doc">
+
+	<h1>媒体库 · 工作流与数据流</h1>
+	<p class="sub">
+		对应 <code>@vssaros/dsh-media</code> 0.7.9（2026-10-27）。<b>一句话</b>：字节始终是**独立文件**
+		（<code>objects/</code> 内容寻址 + <code>archive/</code> 可读名硬链接），SQLite 只当索引；
+		写入侧有五条入口（聊天生图直写 / ComfyUI 推送 / 页面导入 / 链接文件夹 / LightAI 产物回源下载），
+		读出侧有页面 / agent / 导出三条出口。
+	</p>
+
+	<div class="legend">
+		<span class="l1">实线 = 字节落盘（复制或硬链接）</span>
+		<span class="l2">数据库 = 元数据行</span>
+		<span class="l3">虚线 = 只记路径（弱引用）/ 通道</span>
+		<span class="l4">紫色 = 页面生成的缓存</span>
+	</div>
+
+	<h2>图 1 · 数据流：谁把字节写进库，谁读它</h2>
+	<div class="matrix">
+		<div class="hd">来源</div><div></div><div class="hd">写入入口</div><div></div><div class="hd">落到哪</div>
+
+		<!-- 1 聊天生图 -->
+		<div class="cell">
+			<span class="t">聊天框生图（imagegen）</span>
+			<span class="d">BYOK / LightAI，工具 <code>generate_image</code></span>
+		</div>
+		<div class="arr">→</div>
+		<div class="cell entry">
+			<span class="t">Host 内直连服务</span>
+			<span class="d"><code>ctx.inject(['vssarosMediaStore'])</code> → <code>importAsset({bytes})</code>（不经桥）</span>
+		</div>
+		<div class="arr">→</div>
+		<div class="cell drop">
+			<span class="t">库 + 归档 <span class="badge">自动</span></span>
+			<span class="d">另有一份工作区文件（<code>attachments.saveImage</code>，<code>save_dir</code> 可指定）—— 那是用户文件，与库无关</span>
+		</div>
+
+		<!-- 2 ComfyUI -->
+		<div class="cell">
+			<span class="t">ComfyUI 工作流（IDE 内）</span>
+			<span class="d">产出先落 IDE 主进程的 <code>media.db</code></span>
+		</div>
+		<div class="arr dash">⇢</div>
+		<div class="cell entry">
+			<span class="t">IDE → dsh 推送（HTTP）</span>
+			<span class="d"><code>MediaStoreChannel.setDshPush</code> → <code>DshHostHttp</code> →
+				<code>POST /x/media/api/import</code>（带认证 cookie，<code>originId</code>=IDE 资产 id）</span>
+		</div>
+		<div class="arr">→</div>
+		<div class="cell drop">
+			<span class="t">库 + 归档 <span class="badge">自动</span></span>
+			<span class="d">推送失败不阻塞：dsh 下次 <code>ideSync</code> 按 <code>originId</code> 幂等收编（拉模式兜底，节流 60s）</span>
+		</div>
+
+		<!-- 3 页面导入 -->
+		<div class="cell">
+			<span class="t">页面导入 文件 / 文件夹</span>
+			<span class="d">原生 <code>&lt;input type=file&gt;</code> / <code>webkitdirectory</code> / 拖拽</span>
+		</div>
+		<div class="arr">→</div>
+		<div class="cell entry">
+			<span class="t">页面 → 同源 API</span>
+			<span class="d"><code>FileReader</code> → base64 → <code>POST api/import</code>（3 路并发，&gt;60MB 跳过）</span>
+		</div>
+		<div class="arr">→</div>
+		<div class="cell drop">
+			<span class="t">库 + 归档 <span class="badge">自动</span></span>
+			<span class="d">同内容不同文件 ⇒ 合并成一份（内容寻址去重）</span>
+		</div>
+
+		<!-- 4 链接文件夹 -->
+		<div class="cell">
+			<span class="t">链接文件夹（引用）</span>
+			<span class="d">用户已有的素材目录，不想复制</span>
+		</div>
+		<div class="arr">→</div>
+		<div class="cell entry">
+			<span class="t"><code>POST api/link-folder</code></span>
+			<span class="d">只写行：<code>file_path</code> 指向**用户的绝对路径**，<code>provider=folder</code></span>
+		</div>
+		<div class="arr dash">⇢</div>
+		<div class="cell drop plain">
+			<span class="t">只有 DB 行 <span class="badge warn">弱引用</span></span>
+			<span class="d">预览实时读原文件；源文件被改名/移走 ⇒ 该卡片变占位字形（<code>purge</code> 也**只删行、不删用户文件**）</span>
+		</div>
+
+		<!-- 5 LightAI 视频/音频 -->
+		<div class="cell">
+			<span class="t">LightAI 视频 / 语音</span>
+			<span class="d">工具 <code>video_generate</code> / <code>text_to_speech</code></span>
+		</div>
+		<div class="arr">→</div>
+		<div class="cell entry">
+			<span class="t">LightAI 直连 + 回源下载</span>
+			<span class="d">服务只回 <code>{url}</code>（CDN）⇒ Host 把 URL 下成字节再 <code>importAsset</code></span>
+		</div>
+		<div class="arr">→</div>
+		<div class="cell drop">
+			<span class="t">库 + 归档 <span class="badge">自动</span></span>
+			<span class="d">归档名 <code>视频-&lt;模型&gt;-&lt;时间&gt;-&lt;sha6&gt;.mp4</code>。<b>best-effort</b>：CDN 要鉴权 / 超时 / &gt;512MB ⇒ 只留 <code>ref</code>，工具照常成功</span>
+		</div>
+	</div>
+
+	<h3>库内部：四个落点</h3>
+	<div class="vault">
+		<div class="cell db">
+			<span class="t">media.db（SQLite）</span>
+			<span class="d">元数据唯一真源：id / sha8 / kind / 尺寸 / 字节数 / file_path / board / tags / note / is_deleted</span>
+			<span class="d" style="margin-top:4px">实测 368KB（667 条）—— <b>图不在库里</b></span>
+		</div>
+		<div class="cell objects">
+			<span class="t">objects/&lt;sha8[0..2]&gt;/&lt;sha8&gt;.ext</span>
+			<span class="d">字节本体，内容寻址 ⇒ 同图只一份、改名/移动免疫；<code>/api/bytes/&lt;id&gt;</code> 异步读</span>
+			<span class="d" style="margin-top:4px">实测 328 文件 / 323MB</span>
+		</div>
+		<div class="cell thumbs">
+			<span class="t">thumbs/&lt;sha8&gt;.webp</span>
+			<span class="d">256px 缩略图 / 视频海报。Host 无编码器 ⇒ <b>页面 canvas 生成后回传</b>，缓存命中即免解码</span>
+		</div>
+		<div class="cell archive">
+			<span class="t">archive/&lt;来源&gt;/&lt;年-月&gt;/&lt;名字&gt;-&lt;sha8前6&gt;.ext</span>
+			<span class="d">入库即归档的可读副本；同卷**硬链接**（与 objects 同 inode，不占空间）</span>
+			<span class="d" style="margin-top:4px">可用 <code>config.archiveDir</code> 指到别的盘（会真复制）</span>
+		</div>
+	</div>
+
+	<h3>读出与交付</h3>
+	<div class="matrix">
+		<div class="hd">出口</div><div></div><div class="hd">怎么拿</div><div></div><div class="hd">用途</div>
+		<div class="cell"><span class="t">/x/media/ 页面</span><span class="d">SSR 首屏 + <code>app.js</code>；轮询 <code>api/rev</code> 自动同步</span></div>
+		<div class="arr">→</div>
+		<div class="cell entry"><span class="t">三栏 UI</span><span class="d">左导航 / 三视图 / 检查器 / 批量（<code>api/list|facets|rev|context</code>）</span></div>
+		<div class="arr">→</div>
+		<div class="cell drop plain"><span class="t">人看、人改</span><span class="d">改完页面自己刷新；点「AI 助手」把筛选交给 agent</span></div>
+
+		<div class="cell"><span class="t">媒体库管家（agent）</span><span class="d"><code>media-librarian</code>，7 个工具</span></div>
+		<div class="arr">→</div>
+		<div class="cell entry"><span class="t"><code>media_list / stats / context / autotag / tag_merge / board_plan / export</code></span><span class="d">整理三件事都要先 dryRun 给方案</span></div>
+		<div class="arr">→</div>
+		<div class="cell drop plain"><span class="t">规则打标 / 标签收敛 / 目录归档 / 导出</span><span class="d">改完页面自动同步（不叫人手动刷新）</span></div>
+
+		<div class="cell"><span class="t">导出到任意文件夹</span><span class="d"><code>POST api/export-folder</code> 或右键「📤 导出到…」</span></div>
+		<div class="arr">→</div>
+		<div class="cell entry"><span class="t">副本（可读名）</span><span class="d">同卷硬链接；<b>幂等</b>（同名跳过）⇒ 重跑即重试</span></div>
+		<div class="arr">→</div>
+		<div class="cell drop plain"><span class="t">交付给 PS / 网盘 / Finder</span><span class="d">删了导出目录不影响库</span></div>
+	</div>
+
+	<h2>图 2 · 进程与通道（为什么需要两条通道）</h2>
+	<div class="procs">
+		<div class="proc">
+			<h4>① Renderer · WebContentsView</h4>
+			<ul>
+				<li><code>/x/media/</code> 页面（SSR + app.js）</li>
+				<li>同源 <code>fetch('/x/media/api/*')</code></li>
+				<li>页面桥 <code>window.vssarosDsh</code>（newChat / insertChatReference / reveal）</li>
+			</ul>
+		</div>
+		<div class="chan">
+			<div class="line"></div>
+			<div class="lab blue">同源 HTTP<br>（带 cookie）</div>
+			<div class="line"></div>
+			<div class="lab">页面桥 IPC<br>↓ 命名管道</div>
+		</div>
+		<div class="proc">
+			<h4>② IDE 主进程（Electron）</h4>
+			<ul>
+				<li><code>MediaStore</code>（旧库 <code>media.db</code> + <code>yyyy/mm/uuid.ext</code>）</li>
+				<li><code>MediaStoreChannel.setDshPush</code> → <code>DshHostHttp</code>（cookie 缓存 + 401 重试）</li>
+				<li><code>agentStudio.openMediaGallery</code> → dsh 页（dsh 引擎下）</li>
+			</ul>
+		</div>
+		<div class="chan">
+			<div class="line"></div>
+			<div class="lab">HTTP POST<br><code>api/import</code>（推送）</div>
+			<div class="line"></div>
+			<div class="lab">命名管道 RPC<br>（宿主 ↔ 插件）</div>
+		</div>
+		<div class="proc host">
+			<h4>③ dsh Host · @vssaros/dsh-media</h4>
+			<ul>
+				<li><code>ownStore</code>：media.db + objects + thumbs + archive（单写者）</li>
+				<li>HTTP：<code>/x/media/</code>、<code>/x/media/app.js</code>、<code>/x/media/api/*</code></li>
+				<li>服务：<code>ctx.provide('vssarosMediaStore')</code>（imagegen 直连）</li>
+				<li>工具：12 个（含 <code>media_*</code> 7 个）</li>
+			</ul>
+		</div>
+	</div>
+	<p class="muted" style="margin-top:8px">
+		<b>为什么推送不能复用命名管道</b>：管道的协议是 dsh 自己定的固定动词，插件侧加不了新动词；
+		渲染进程的 <code>fetch</code> 又拿不到 dsh 的登录 cookie（它在各 WebContentsView 的独立分区里）
+		⇒ IDE 侧要写 dsh，只能“主进程 + 自带认证 cookie 的 HTTP”。
+	</p>
+
+	<h2>时序：生成一张图 → 出现在页面 → 已归档</h2>
+	<ol class="seq">
+		<li>模型调 <code>generate_image</code> → imagegen 拿到字节（BYOK 经桥回 IDE，或 LightAI 直连）</li>
+		<li>imagegen 先存工作区一份（<code>attachments.saveImage</code>，用户可见）</li>
+		<li>再 <code>vssarosMediaStore.importAsset({bytes})</code> → 写 <code>objects/&lt;sha8&gt;.ext</code> + 插一行元数据</li>
+		<li>同一步里 <code>archiveOne()</code> 给 <code>archive/&lt;来源&gt;/&lt;年-月&gt;/…</code> 建**硬链接**（失败只记账，不影响生图）</li>
+		<li>打开着的页面靠 <code>GET api/rev</code>（SQLite <code>total_changes()</code>）发现变更 → 自动 <code>reload</code>，保留选中</li>
+		<li>首屏卡片无缩略图 → <code>IntersectionObserver</code> 只对可视附近做：图片缩 256、视频 seek 一帧 → <code>POST api/thumb/&lt;id&gt;</code> 落盘</li>
+		<li>用户点「📤 导出到文件夹」→ 同卷硬链接一份到指定目录（幂等，可反复跑）</li>
+	</ol>
+
+	<h2>落点对照</h2>
+	<table>
+		<thead><tr><th style="width:230px">位置</th><th style="width:110px">存什么</th><th style="width:150px">谁写</th><th>谁读 / 备注</th></tr></thead>
+		<tbody>
+			<tr><td><code>media-store/media.db</code></td><td>元数据</td><td>ownStore（单写者）</td><td>页面、工具、api；<b>图不在里面</b></td></tr>
+			<tr><td><code>media-store/objects/…</code></td><td>字节（去重）</td><td>importAsset</td><td><code>/api/bytes</code>；<code>purge</code> 只在无其它行引用时删</td></tr>
+			<tr><td><code>media-store/thumbs/…</code></td><td>256px webp</td><td><b>页面</b>（canvas）→ POST</td><td>卡片 / 检查器；命中即免解码</td></tr>
+			<tr><td><code>media-store/archive/…</code></td><td>可读副本</td><td>importAsset 尾钩</td><td>人 / 外部工具；同卷硬链接不占空间</td></tr>
+			<tr><td>IDE <code>{root}/yyyy/mm/uuid.ext</code> + <code>media.db</code></td><td>ComfyUI 暂存</td><td>IDE 主进程 MediaStore</td><td>推给 dsh 后仍保留；<code>ideSync</code> 兜底收编</td></tr>
+			<tr><td>用户目录（链接文件夹）</td><td>用户的原始文件</td><td><b>不写</b></td><td>预览直接读；<code>purge</code> 只删行不删文件</td></tr>
+			<tr><td>导出目录（任意盘）</td><td>副本</td><td>exportAssets</td><td>交付用；删了不影响库</td></tr>
+		</tbody>
+	</table>
+
+	<h2>不变量与坑（都踩过）</h2>
+	<ul class="tight">
+		<li><b>图从来不在 SQLite 里</b>：库 368KB vs 字节 323MB。谈“换存储”其实只影响 <code>objects/</code> 的命名与分层。</li>
+		<li><b>SSR 是内存快照</b>：改 <code>mediaPage.js</code> 必须重启 Host；<code>app.js</code> 每次请求读磁盘 ⇒ 改它刷新页面即可。</li>
+		<li><b>页面不能拿绝对路径</b>：<code>&lt;input webkitdirectory&gt;</code> 不给路径（新版 Electron 无 <code>File.path</code>）⇒ 链接/导出都靠**手填路径**，Host 侧读。</li>
+		<li><b>弱引用会烂</b>：链接文件夹的源文件被移走 ⇒ 卡片变字形；这是“引用”而非“副本”的固有代价。</li>
+		<li><b>归档失败不报错</b>：只进 <code>usage.archive</code>（ok/copied/failed/lastError）；重试 = 再点一次导出（幂等）。</li>
+		<li><b>硬链接跨卷会失败</b>：同卷才 <code>bytes=0</code>；异盘自动退回复制并把占用算出来。</li>
+		<li><b>视频别塞 <code>&lt;img&gt;</code></b>：曾导致 79 条视频各拉整段 + <code>readFileSync</code> 堵死事件循环 ⇒ 切页签卡死。现在 <code>imgUrl</code> 只给“有海报”或“就是图片”。</li>
+		<li><b>加工具必须重生成快照</b>：<code>node dsh-plugins/tools-snapshot.mjs --write</code> + <code>check-agent-tools</code>，否则 agent 的 tools 白名单守卫红（名字不认识 = 那个工具被静默摘掉）。</li>
+	</ul>
+
+	<h2>当前缺口（诚实标注）</h2>
+	<div class="banner">
+		<b>① 已补（0.7.9）</b>：<code>video_generate</code> / <code>text_to_speech</code> 现在把 LightAI 产物
+		<b>下载成字节 → 入库 → 自动归档</b>（`importExternalOutput`）。原来它们只回 <code>{url}</code>，库里因此**有图没视频**。
+		返回里多一个 <code>media:[{id, archivePath}]</code>；<b>下不来就只留 URL</b>（404 / 鉴权 / 超时 / &gt;512MB 都只记 warning，绝不让生成失败）——
+		这条有反证探针（p3-107 ⑰d：产物 404 时工具仍 <code>ok:true</code>、<code>media</code> 为空）。
+	</div>
+	<div class="banner warn">
+		<b>② 老数据不追溯归档</b>：归档只发生在**入库那一刻**。现有 667 条要点一次「📤 导出到文件夹」才会补出来（幂等，随便跑）。<br>
+		<b>③ 104 条只有外链、没有本地字节</b>（ComfyUI 的 <code>/view?filename=…</code>）：导出时计入 <code>skipped.noFile</code>，预览保持占位字形。
+	</div>
+
+</div>
+</body>
+</html>

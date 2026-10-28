@@ -521,13 +521,54 @@ const _SHARED_GUIDANCE_SECTION = [
 'The number is right-aligned and padded with spaces to 6 characters.',
 ];
 
+/**
+ * 硬规则（2026-10-27，L2）：对齐开源 harness 的三条修辞共识。
+ *
+ * 依据（arXiv:2609.00006，11 个开源 coding agent 源码研究）：
+ *   · anti-gold-plating：6/11 用同构措辞禁止扩大改动范围；
+ *   · read-before-edit：Mistral Vibe 更严（同一轮读完就改也算违规）；
+ *   · verify-before-claim：普遍存在，但少有成体系（我们已有「完成前自检」，这里再钉一句不可谎报）。
+ *
+ * ⚠ 为什么放在 GLOBAL_SYSTEM_PREFIX **最前面**：长 prompt 里，前置的大写标签（IMPORTANT/NEVER）
+ *   比段中的加粗更稳；4 个独立系统收敛到大写标签不是巧合。
+ * ⚠ 这三条是**声明式约束**，不能替代机制：工具侧的审批闸、只读围栏仍然要各自成立。
+ */
+const _HARD_RULES_SECTION = [
+	'## 硬规则（优先级高于任何 agent 人设）',
+	'',
+	'IMPORTANT: 只做被明确要求的事 —— 不要顺手重构、不要新增「改进」、不要扩大改动范围。',
+	'IMPORTANT: 没读过的文件不要改；同一轮里「刚读完就改」也算违规：先读，下一轮再动手。',
+	'NEVER: 声称「已完成 / 已验证 / 测试通过」，除非本轮真的执行过对应命令、并有输出可引用。',
+	'',
+] as const;
+
+/**
+ * 输出纪律（2026-10-27，L2）：篇幅预算 + 中文禁用表达。
+ *
+ * 开源对照：9/11 有 verbosity 指令，最激进的是「<4 行」（OpenCode）、「<150 words」（Mistral Vibe）；
+ * 禁用词表有两份独立实现（Mistral 合并清单、OpenCode 的第二份）⇒ 属于被反复验证过的低成本手段。
+ *
+ * ⚠ 用「字」而不是「词」：中文按字更可判；代码/表格/清单不计入，避免为了压篇幅而删必要信息。
+ */
+const _OUTPUT_DISCIPLINE_SECTION = [
+	'## 输出纪律',
+	'',
+	'- **先结论，后依据**：第一段就能看出结果，后面再展开原因。',
+	'- **篇幅**：一般答复 ≤150 字；方案 / 评审 / 复盘类 ≤400 字；代码、表格、清单不计入。',
+	'- **禁用表达**（LLM 腔调，出现即不合格）：总的来说、需要注意的是、让我们、首先/其次/最后、赋能、无缝、优雅、强大、一站式、极大提升。',
+	'- 不复述用户刚说过的话，不预告「我准备做什么」。',
+	'',
+] as const;
+
 /** 主代理全局前缀（含委派导向段落）。 */
 export const GLOBAL_SYSTEM_PREFIX = [
+	..._HARD_RULES_SECTION,          // ★ 置顶：三条最高优先级约束
 	..._PARALLEL_WORK_SECTION,
 	..._BATCH_TOOL_CALLS_SECTION,
 	..._PROGRESS_UPDATES_SECTION,
 	..._DELEGATE_USAGE_SECTION,
 	..._SHARED_GUIDANCE_SECTION,
+	..._OUTPUT_DISCIPLINE_SECTION,   // ★ 置底：篇幅与腔调
 ].join('\n');
 
 /**
@@ -540,9 +581,11 @@ export const GLOBAL_SYSTEM_PREFIX = [
  * 单工具串行的浪费在子代理里同样成立（且子代理有软预算，往返浪费更致命）。
  */
 export const GLOBAL_SYSTEM_PREFIX_SUBAGENT = [
+	..._HARD_RULES_SECTION,          // ★ 子代理同样受三条硬规则约束
 	..._BATCH_TOOL_CALLS_SECTION,
 	..._PROGRESS_UPDATES_SECTION,
 	..._SHARED_GUIDANCE_SECTION,
+	..._OUTPUT_DISCIPLINE_SECTION,
 ].join('\n');
 
 /**

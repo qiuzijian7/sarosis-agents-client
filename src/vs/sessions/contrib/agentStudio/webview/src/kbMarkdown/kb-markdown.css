@@ -50,6 +50,10 @@ html, body {
 	transition: background 0.12s, color 0.12s, border-color 0.12s;
 }
 .kb-tool-btn:hover { background: #2a2a2a; color: #fff; }
+/* AI 助手（2026-10-28）：与普通工具按钮同尺寸，但用强调色区分，避免混在「复制/版本」里被忽略 */
+.kb-tool-btn--ai { color: var(--vscode-textLink-foreground, #4a8cff); }
+.kb-tool-btn--ai:hover { background: var(--vscode-toolbar-hoverBackground, rgba(90,93,94,.31)); }
+
 .kb-tool-btn--active {
 	background: #1f3a52;
 	color: #cfe6ff;

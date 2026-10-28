@@ -1135,6 +1135,19 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 	const docScrollRef = useRef<HTMLDivElement | null>(null);
 	const [docScrollTop, setDocScrollTop] = useState(0);
 	const [docProgress, setDocProgress] = useState(0);
+	/**
+	 * 轻提示（2026-10-27）：双链缺失、复制失败这类反馈**必须看得见**。
+	 * 为什么不用 `window.alert`：面板/页面都在宿主 webview 里，alert 可能被静默吞掉，
+	 * 用户看到的就是"点了没反应"。改成视图自绘的底部条，三端同一个表现。
+	 */
+	const [toast, setToast] = useState("");
+	const toastTimerRef = useRef(0);
+	const showToast = useCallback((msg: string) => {
+		setToast(msg);
+		window.clearTimeout(toastTimerRef.current);
+		toastTimerRef.current = window.setTimeout(() => setToast(""), 4000);
+	}, []);
+
 	/** 细条右侧 ⋯ 菜单（完整路径 / 历史 / 资源管理器） */
 	const [docMenu, setDocMenu] = useState(false);
 	/** 空转的 rAF 标记：滚动时只按帧更新一次状态，避免每像素一次 render */
@@ -1412,6 +1425,43 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 	}, [doc?.html, doc?.path]);
 	// 每次渲染都刷新一次引用：Tab 切换时用的永远是最新闭包（含最新的 docCache / actions）
 	loadIntoViewRef.current = loadIntoView;
+
+	/*
+	 * ★★ 2026-10-27（真机反复报「点链接没反应」）—— 兜底监听：
+	 *   正文点击本来就由 React 合成事件处理（`.kb-md` 的 onClick）。但在这套
+	 *   `customFrame + portal + dangerouslySetInnerHTML` 组合里，合成事件**偶发整条不触发**
+	 *   （studio 也遇到过同类问题），表现就是"点了什么都不发生"。
+	 *   ⇒ 在 document 冒泡阶段再挂一条：只有 React **没处理**（defaultPrevented === false）时才兜。
+	 *   顺序是成立的：React 18 把监听挂在 root 容器上，比 document 更早冒泡；
+	 *   只要它处理过就会 preventDefault ⇒ 这条自动跳过，不会重复执行。
+	 */
+	useEffect(() => {
+		const kbClickSafetyNet = (ev: MouseEvent) => {
+			if (ev.defaultPrevented) { return; }
+			const t0 = ev.target as HTMLElement | null;
+			if (!t0 || typeof t0.closest !== 'function' || !t0.closest('.kb-md')) { return; }
+			const missing = t0.closest('[data-wiki-missing]');
+			if (missing) {
+				ev.preventDefault();
+				showToast('找不到这篇笔记：' + (missing.getAttribute('data-wiki-missing') || ''));
+				return;
+			}
+			const link = t0.closest('[data-wiki]');
+			if (link) {
+				ev.preventDefault();
+				const p = link.getAttribute('data-wiki');
+				if (p && !loadIntoView(p)) { (actions?.openLink ?? actions?.openNode)?.(p); }
+				return;
+			}
+			const a = t0.closest('a[href]') as HTMLAnchorElement | null;
+			if (a) {
+				const href = String(a.getAttribute('href') || '').trim();
+				if (/^(https?:|mailto:)/i.test(href)) { ev.preventDefault(); actions?.openUrl?.(href); }
+			}
+		};
+		document.addEventListener('click', kbClickSafetyNet, false);
+		return () => document.removeEventListener('click', kbClickSafetyNet, false);
+	}, [actions, loadIntoView, showToast]);
 
 	/** 确保某篇有 Tab 并激活它（已存在则只激活） */
 	const ensureTab = useCallback((path: string, title: string) => {
@@ -1699,7 +1749,7 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 									const target = (menu.paths && menu.paths[0]) || menu.path || "";
 									if (!target) { return; }
 									void copyText(target).then(ok => {
-										if (!ok) { window.alert("复制失败，路径：" + String.fromCharCode(10) + target); }
+										if (!ok) { showToast("复制失败，路径：" + target); }
 									});
 								},
 							},
@@ -1788,7 +1838,7 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 							<span style={{ display: "flex", alignItems: "center", gap: 4, flex: "0 0 auto", whiteSpace: "nowrap" }}>
 								<button
 									type="button"
-									title="排序与更多操作"
+									title="排序（点击选择）与更多操作"
 									onClick={e => {
 										e?.stopPropagation?.();
 										const r = (e?.currentTarget as HTMLElement)?.getBoundingClientRect?.();
@@ -1799,7 +1849,8 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 										background: "transparent", color: c.fgDim, border: `1px solid ${c.line}`, whiteSpace: "nowrap",
 									}}
 								>
-									排序：{SORT_LABEL[sortKey] ?? "名称 ↑"} ▾
+									{/* ⇅ 比「排序：」三个字省 ~28px，窄面板更稳（2026-10-27） */}
+									<span style={{ marginRight: 3, opacity: .85 }}>⇅</span>{SORT_LABEL[sortKey] ?? "名称 ↑"} ▾
 								</button>
 								<IconBtn title="新建笔记" label="＋" onClick={e => {
 									e?.stopPropagation?.();
@@ -2267,8 +2318,7 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 													if (missing) {
 														e.preventDefault();
 														const target = missing.getAttribute('data-wiki-missing') || '';
-														window.alert('找不到这篇笔记：' + target + String.fromCharCode(10, 10)
-															+ '可能原因：笔记已改名/删除，或双链名字与实际文件名不一致。');
+														showToast("找不到这篇笔记：" + target + "（可能已改名/删除；可用「体检 → 修断链」修正）");
 														return;
 													}
 													const link = el.closest('[data-wiki]');
@@ -2321,7 +2371,8 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 													const box = el.closest('[data-task-line]') as HTMLInputElement | null;
 													if (box && actions?.saveDoc) {
 														const line = Number(box.getAttribute('data-task-line'));
-														box.checked = !box.checked;    // 先给即时反馈，写盘失败由 toggleTask 弹错
+														e.preventDefault();            // 捕获阶段：阻止原生 toggle（下面的手动翻转才是唯一来源）
+						box.checked = !box.checked;    // 先给即时反馈，写盘失败由 toggleTask 弹错
 														if (Number.isInteger(line) && line >= 0) { void toggleTask(line); }
 													}
 												}}
@@ -2363,6 +2414,17 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 			 * 导图覆盖层（2026-10-25 从面板侧迁到视图）：三端共用一份 `KbCanvasPane`。
 			 * 与设置面板同一套「父 relative + 子 absolute」定位（不用 fixed：宿主容器带 transform）。
 			 */}
+			{/* 轻提示：底部居中浮层（pointerEvents: none 不挡点击） */}
+			{toast ? (
+				<div
+					data-kb-toast="1"
+					role="status"
+					style={{ position: 'absolute', left: '50%', bottom: 16, transform: 'translateX(-50%)', zIndex: 60, maxWidth: '90%', padding: '7px 12px', borderRadius: 6, fontSize: 12, lineHeight: 1.5, color: '#fff', background: 'rgba(30,30,30,.95)', border: '1px solid rgba(255,255,255,.16)', boxShadow: '0 6px 20px rgba(0,0,0,.45)', pointerEvents: 'none' }}
+				>
+					{toast}
+				</div>
+			) : null}
+
 			{canvasOpen ? (
 				<div
 					data-kb-canvas-overlay="1"

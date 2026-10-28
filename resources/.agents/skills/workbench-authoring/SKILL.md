@@ -106,6 +106,7 @@ function apply(ctx) {
 ⚠ **自绘 iframe 浮层做助手是死路**（两套助手，且浮层里的第二份客户端拿不到会话上下文）。
 
 详见 `references/embedding-ai-assistant.md` 与 `references/assistant-collapse.md`。
+**联调外壳时**（点会话没反应 / agent 显示错 / 浮条重复或被裁 / 业务面板消失 / 改完不生效）→ `references/panel-agent-and-chrome-pitfalls.md`。
 
 ## 第六步：验证（缺一不算完成）
 
@@ -140,6 +141,11 @@ node src/vs/sessions/contrib/dshHarness/test/common/run-all-common-tests.mjs
 11. 守卫/体检选了**死文件**（子块已并进入口）⇒ 对死代码给"已达标"的假结论。选文件顺序：入口里有 `register(` → 用入口；否则用入口 `require.async('./client.X.js')` 的那个。
 12. 未注册的工作台「能装 ≠ 能跑」；界面要显式说「重启后可用」。
 
+19. **`customFrame: true` 写了、但没有 client chunk**（`dsh.client` + `exports['./client']` + `files`）⇒ 永远只有"页面形态"、右侧**永远没有对话列**，而且**不报任何错**。
+20. **「打开工作台后点会话 item 没反应」= 没装面板守卫**：会话点击走 `selectPanel(null)` 清空中栏，customFrame 页签却不会因它消失 ⇒ 中栏空了、页签还在。修法：拦 `selectPanel(null/undefined/'')` + `openSession` 后 `dw.showSession(id)`（都只在 `props.active` 时生效）。
+21. **浮动工具条「多出一条」/「被右边缘裁掉」/「文字常显样式全乱」**：① 页面自带浮条与外壳 `.vssWbActions` 位置几乎重合（嵌入时摘掉页面那条）② 浮条挂在内容容器里会被挤出去（挂页面根层）③ **CSS 一条未闭合花括号会吞掉其后所有后代规则** —— 纯字符串断言抓不到，守卫要**数花括号**。
+22. **改完不生效先分辨"模块半边 / 前端半边"**：`lib/index.js` 类改的是 Host 进程（重启 Host）；`lib/client*.js` 类改的是页面 chunk（重载 dsh 页面）；`chat-surface` / `workbenches` 的外壳 client 在 **IDE webview** 里（重载 IDE 视图）。判据：IDE 进程启动时间 vs 安装时间 + 磁盘那份里搜本次改动的特征串。
+
 ## 脚本
 
 ```powershell
@@ -161,6 +167,7 @@ node "$S\audit_workbench.mjs" dsh-plugins/vssaros-tasks
 | `references/ui-tokens-and-primitives.md` | `wb-*` 原语全清单、`--wb-*` 刻度、`--dsw-alias-*` 用法、三种布局骨架 |
 | `references/embedding-ai-assistant.md` | `props.conversation` / customFrame / 默认 agent preset / 布局细节 |
 | `references/assistant-collapse.md` | **AI 助手栏伸缩的统一契约**（当前所有工作台必须一致） |
+| `references/panel-agent-and-chrome-pitfalls.md` | **外壳四处联调**（媒体库实录）：面板守卫（点会话没反应）/ agent preset 抢占与 `.agent.md` / 浮动工具条重复与位置 / CSS 未闭合花括号 / 右侧面板被窄屏断点藏掉 / 模块半边 vs 前端半边的生效路径 + 逐条打勾清单 |
 | `references/verification.md` | 守卫清单、探针写法、变异测试、常见假绿 |
 | `scripts/scaffold_workbench.mjs` | 生成工作台骨架 |
 | `scripts/audit_workbench.mjs` | 单包体检（13 条） |

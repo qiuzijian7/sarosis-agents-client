@@ -42,6 +42,14 @@ export interface IBundledPluginVersion {
 export interface IBundledVersionAudit {
 	/** 真正不一致的条目（已装 ≠ 随包）。 */
 	readonly mismatched: readonly IBundledPluginVersion[];
+	/**
+	 * 「已装比随包**新**」的条目（2026-10-28）。
+	 *
+	 * 这类**不是错配**：exe 比 profile 旧是正常状态（先跑新 dev、再跑旧安装包）。
+	 * 分开记是为了两件事：① 不触发降级重装（见 `_planPluginInstall`）；
+	 * ② 日志里别把它们混进"版本不一致，先看这里"的告警里（那会把人引到错方向）。
+	 */
+	readonly newer: readonly IBundledPluginVersion[];
 	/** 直接可贴进日志的行（每行一个插件）。 */
 	readonly lines: readonly string[];
 }
@@ -54,6 +62,7 @@ export interface IBundledVersionAudit {
  */
 export function auditBundledPluginVersions(entries: readonly IBundledPluginVersion[]): IBundledVersionAudit {
 	const mismatched: IBundledPluginVersion[] = [];
+	const newer: IBundledPluginVersion[] = [];
 	const lines: string[] = [];
 	for (const entry of entries) {
 		const bundled = entry?.bundled;
@@ -65,10 +74,68 @@ export function auditBundledPluginVersions(entries: readonly IBundledPluginVersi
 		if (installed === bundled) {
 			continue;
 		}
+		// ★ 2026-10-28：已装比随包**新** ⇒ 不是错配（exe 比 profile 旧属正常），单独归类、不进告警。
+		if (isVersionNewer(installed, bundled)) {
+			newer.push(entry);
+			continue;
+		}
 		mismatched.push(entry);
 		lines.push(`${entry.label} ${entry.name}：已装 ${installed ?? '（缺失）'} / 随包 ${bundled}`);
 	}
-	return { mismatched, lines };
+	return { mismatched, newer, lines };
+}
+
+/**
+ * `a` 是否比 `b` **新**（用于"已装比随包新 ⇒ 不降级"）。
+ *
+ * 为什么需要（2026-10-28 真机：打包版 exe 启动卡在"正在启动 VsSaros…"六分钟）：
+ *   那个 exe 里随包的 `@vssaros/dsh-chat-surface@0.2.243`，而 profile 里已经装着 0.2.259
+ *   （dev 侧一路升上来的）⇒ `_planPluginInstall` 只判"不相等"就安排安装 ⇒ **每次启动都降级重装
+ *   8 个包**（`dsh plugin add` 一条命令装 8 个，实测跑满 4 分钟超时，然后逐项回退再失败）
+ *   ⇒ 用户看到的就是长时间卡在启动占位。
+ *   exe 比 profile 旧是**正常状态**（用户先用新 dev、再跑旧安装包），绝不该把已装的新版本回退 ✗。
+ *
+ * 口径：只做"数字段逐段比较"（本仓版本恒为 `x.y.z` 或带 `-prerelease`）：
+ *   · 主次修订号：逐段数字比较，缺失段按 0；
+ *   · 主次修订全等时：**没有 prerelease 的更大**（`1.0.0` > `1.0.0-rc.1`）；
+ *     两边都有 prerelease ⇒ 字符串比较（够用，且不会把 `rc.2` 判成比 `rc.1` 旧）。
+ * 读不懂的版本（含字母/格式异常）⇒ 返回 false（**保守：不据此跳过安装**，宁可多装一次也别漏装）。
+ */
+export function isVersionNewer(a: string | undefined, b: string | undefined): boolean {
+	if (!a || !b || a === b) {
+		return false;
+	}
+	const parse = (v: string) => {
+		const [core, pre] = v.split('-', 2);
+		const nums = core.split('.');
+		if (!nums.length || nums.some(n => !/^\d+$/.test(n))) {
+			return undefined;
+		}
+		return { nums: nums.map(n => Number(n)), pre };
+	};
+	const pa = parse(a);
+	const pb = parse(b);
+	if (!pa || !pb) {
+		return false;
+	}
+	const len = Math.max(pa.nums.length, pb.nums.length);
+	for (let i = 0; i < len; i++) {
+		const x = pa.nums[i] ?? 0;
+		const y = pb.nums[i] ?? 0;
+		if (x !== y) {
+			return x > y;
+		}
+	}
+	if (pa.pre === pb.pre) {
+		return false;
+	}
+	if (!pa.pre) {
+		return true;    // 正式版 > 预发布
+	}
+	if (!pb.pre) {
+		return false;
+	}
+	return pa.pre > pb.pre;
 }
 
 /**
@@ -78,11 +145,19 @@ export function auditBundledPluginVersions(entries: readonly IBundledPluginVersi
  * @returns 整段文本；没有错配时返回空串。
  */
 export function renderBundledVersionAudit(audit: IBundledVersionAudit): string {
-	if (!audit || !audit.lines?.length) {
+	const hasMismatch = !!audit?.lines?.length;
+	const newer = audit?.newer ?? [];
+	if (!hasMismatch && !newer.length) {
 		return '';
 	}
-	return [
-		`⚠ profile 与随包插件版本不一致（${audit.lines.length} 项）—— 若报 "agent-preset/invalid … never started" 或新建会话失败，先看这里：`,
-		...audit.lines.map(line => `  · ${line}`),
-	].join('\n');
+	const out: string[] = [];
+	if (hasMismatch) {
+		out.push(`⚠ profile 与随包插件版本不一致（${audit.lines.length} 项）—— 若报 "agent-preset/invalid … never started" 或新建会话失败，先看这里：`);
+		out.push(...audit.lines.map(line => `  · ${line}`));
+	}
+	if (newer.length) {
+		// ★ 2026-10-28：这一类**不是**错配，单独一句话说清（否则会把人引去查"版本没装齐"，方向全错）。
+		out.push(`（另有 ${newer.length} 项已装比随包**新** ⇒ 保留已装版本、不降级：${newer.map(e => `${e.name} ${e.installed} > ${e.bundled}`).join('；')}）`);
+	}
+	return out.join('\n');
 }

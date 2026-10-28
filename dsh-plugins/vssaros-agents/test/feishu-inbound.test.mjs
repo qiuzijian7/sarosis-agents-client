@@ -135,7 +135,10 @@ await checkAsync('★ 收到事件 ⇒ 解析后交给 onMessage；app 消息不
 await checkAsync('★ transport 起不来 ⇒ 退避重试；stop 后不再重试', async () => {
 	let tries = 0;
 	const gw = createFeishuGateway({
-		transport: { start: async () => { tries += 1; throw new Error('unavailable：没装 SDK'); } },
+		/* ⚠ 2026-10-27 换样本：原来这里用 `unavailable：没装 SDK` 当"可重试错误"，
+		   但真机证明**缺依赖重试不会变好** —— 现在 `unavailable` 会被判定为不可恢复并直接停下。
+		   "transport 起不来 ⇒ 退避重试"这条语义只对**可恢复**错误成立 ⇒ 用网络抖动当样本。 */
+		transport: { start: async () => { tries += 1; throw new Error('ECONNRESET'); } },
 		onMessage: () => undefined,
 		log: () => undefined,
 		baseDelayMs: 5,
@@ -156,7 +159,9 @@ await checkAsync('★ SDK transport 缺凭据 ⇒ 明确 unavailable（不假装
 });
 await checkAsync('★ SDK 没装 ⇒ unavailable 并给出安装指引', async () => {
 	const t = createSdkTransport({ appId: 'a', appSecret: 'b', importSdk: async () => { throw new Error('MODULE_NOT_FOUND'); } });
-	await assert.rejects(() => t.start({}), /未安装 @larksuiteoapi\/node-sdk/);
+	/* ⚠ 2026-10-27 方案 C：SDK 已 vendor 进包，默认路径不再"缺依赖"。
+	   注入的 importSdk 抛错时**原样透出** —— 把真实错误盖成一句"未安装"会掩盖真问题。 */
+	await assert.rejects(() => t.start({}), /MODULE_NOT_FOUND/);
 });
 
 /* ── 跨重启幂等 ───────────────────────────────────────────────────────── */

@@ -19,7 +19,35 @@ function badness(def) {
 	if (!o || typeof o !== 'object') { return p.concat('output 缺失'); }
 	if (typeof o.render !== 'function') { p.push('output.render 必须是函数'); }
 	if (!o.schema || typeof o.schema !== 'object') { p.push('output.schema 必须是对象'); }
+	// ★ 2026-10-27（白屏事故后加）：dsh 的 JSON Schema 是**受限子集**，
+	//   `additionalProperties` 只能是**布尔**；写成对象 schema 会抛
+	//   `unsupported JSON schema: … additionalProperties must be a boolean`
+	//   ⇒ **整个插件不挂载**（工具没有、页面路由也没有 ⇒ 媒体库白屏，且没有任何报错）。
+	//   先例：`vssaros-workflow/lib/index.js` 里的注释。
+	const sp = [];
+	schemaBadness(def.parameters, 'parameters', sp);
+	schemaBadness(o.schema, 'output.schema', sp);
+	p.push(...sp);
 	return p;
+}
+
+/** 递归找 schema 里的"受限子集违规"。 */
+function schemaBadness(schema, where, out) {
+	if (!schema || typeof schema !== 'object' || Array.isArray(schema)) { return; }
+	if (Object.prototype.hasOwnProperty.call(schema, 'additionalProperties')
+		&& typeof schema.additionalProperties !== 'boolean') {
+		out.push(where + '.additionalProperties 必须是布尔（写成对象 schema ⇒ 整个插件不挂载）');
+	}
+	for (const [key, v] of Object.entries(schema)) {
+		if (!v || typeof v !== 'object') { continue; }
+		if (key === 'properties') {
+			for (const [k, sub] of Object.entries(v)) { schemaBadness(sub, where + '.properties.' + k, out); }
+		} else if (key === 'items') {
+			schemaBadness(v, where + '.items', out);
+		} else if (key === 'oneOf' && Array.isArray(v)) {
+			v.forEach((s, i) => schemaBadness(s, where + '.oneOf[' + i + ']', out));
+		}
+	}
 }
 
 let total = 0, bad = 0;

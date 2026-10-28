@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang=zh-CN>
+<head>
+<meta charset=utf-8>
+<title>媒体库 · 浮动操作区（AI 助手 / 外开）· A 方案 + 边缘高亮 · Mockup</title>
+<style>
+:root{--bg:#16161a;--panel:#1e1e23;--line:rgba(128,128,128,.22);--fg:#d7d7dc;--dim:#9a9aa4}
+:root{--brand:#2f81f7}
+*{box-sizing:border-box}
+body{margin:0;padding:26px 28px 56px;background:var(--bg);color:var(--fg);font:13px/1.6 -apple-system,Segoe UI,Microsoft YaHei,sans-serif}
+h1{font-size:19px;margin:0 0 6px}
+h3{font-size:13px;margin:26px 0 6px}
+.sub{color:var(--dim);margin:0 0 20px;font-size:12.5px;max-width:1000px}
+.sub b{color:var(--fg)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:18px}
+.v{background:var(--panel);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+.v>header{display:flex;align-items:baseline;gap:8px;padding:10px 13px;border-bottom:1px solid var(--line)}
+.v h2{font-size:13.5px;margin:0}
+.tag{font-size:11px;color:var(--dim);border:1px solid var(--line);padding:1px 6px;border-radius:999px}
+.pick{margin-left:auto;font-size:11px;color:#3fb950}
+.stage{position:relative;height:200px;background:linear-gradient(115deg,#1c1c21,#232329 60%,#1b1b20);overflow:hidden}
+.g2{position:absolute;inset:14px 120px 14px 14px;display:grid;grid-template-columns:repeat(4,1fr);gap:8px;align-content:start}
+.g2 div{aspect-ratio:1;border-radius:6px;background:linear-gradient(135deg,#3a3a46,#26262e)}
+.g2 div:nth-child(3n){background:linear-gradient(135deg,#4a3a2c,#2a2420)}
+.side{position:absolute;left:14px;top:14px;bottom:14px;width:50px;border-right:1px solid var(--line)}
+.notes{padding:9px 13px 12px;color:var(--dim);font-size:11.8px}
+.notes b{color:var(--fg)}
+.notes ul{margin:5px 0 0;padding-left:16px}
+.notes li{margin:2px 0}:is(.capA0,.capA1,.capA2,.capA3,.capA4){position:absolute;right:16px;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;padding:3px;border-radius:10px}
+:is(.capA0,.capA1,.capA2,.capA3,.capA4) .w{position:relative;display:flex}
+:is(.capA0,.capA1,.capA2,.capA3,.capA4) button{width:26px;height:25px;border:0;border-radius:7px;background:transparent;color:#9d9da7;font-size:13px;display:grid;place-items:center;cursor:pointer}
+:is(.capA0,.capA1,.capA2,.capA3,.capA4) button.p{color:#6cb0ff}
+:is(.capA0,.capA1,.capA2,.capA3,.capA4) .sep{height:1px;margin:1px 3px;background:var(--line)}
+:is(.capA0,.capA1,.capA2,.capA3,.capA4) .lbl{position:absolute;right:34px;top:50%;transform:translateY(-50%) translateX(4px);white-space:nowrap;font:10px/1.6 -apple-system,Segoe UI,sans-serif;color:#d7d7dc;background:#25252a;border:1px solid var(--line);border-radius:6px;padding:1px 7px;opacity:0;pointer-events:none;transition:opacity .14s,transform .14s}
+:is(.capA0,.capA1,.capA2,.capA3,.capA4) .w:hover .lbl{opacity:1;transform:translateY(-50%) translateX(0)}
+:is(.capA0,.capA1,.capA2,.capA3,.capA4) .bar{position:absolute;left:-1px;top:6px;bottom:6px;width:2px;border-radius:2px;background:linear-gradient(180deg,#6cb0ff,rgba(47,129,247,.15));box-shadow:0 0 8px rgba(47,129,247,.8)}
+/* A0 现状：灰边 + 半透明（对照） */
+.capA0{border:1px solid rgba(128,128,128,.35);background:#25252a;box-shadow:0 1px 5px rgba(0,0,0,.35);opacity:.9}
+/* A1 常亮品牌描边 + 外发光（推荐 · 已实现） */
+.capA1{border:1px solid rgba(47,129,247,.55);background:linear-gradient(180deg,rgba(38,38,44,.96),rgba(30,30,35,.96));box-shadow:0 0 0 1px rgba(47,129,247,.16),0 0 16px rgba(47,129,247,.30),0 4px 12px rgba(0,0,0,.45);transition:box-shadow .16s,border-color .16s}
+.capA1:hover{border-color:rgba(47,129,247,.85);box-shadow:0 0 0 1px rgba(47,129,247,.35),0 0 26px rgba(47,129,247,.45),0 6px 18px rgba(0,0,0,.5)}
+.capA1 .sep{background:linear-gradient(90deg,transparent,rgba(47,129,247,.75),transparent)}
+.capA1 button.p:hover{box-shadow:0 0 12px rgba(47,129,247,.55) inset;color:#a8d2ff}
+/* A2 = A1 + 左侧能量条 */
+.capA2{border:1px solid rgba(47,129,247,.55);background:linear-gradient(180deg,rgba(38,38,44,.96),rgba(30,30,35,.96));box-shadow:0 0 16px rgba(47,129,247,.28),0 4px 12px rgba(0,0,0,.45)}
+.capA2 .sep{background:linear-gradient(90deg,transparent,rgba(47,129,247,.75),transparent)}
+/* A3 常态弱、hover 强 */
+.capA3{border:1px solid rgba(47,129,247,.22);background:rgba(32,32,38,.9);box-shadow:0 2px 8px rgba(0,0,0,.35);transition:box-shadow .18s,border-color .18s}
+.capA3:hover{border-color:rgba(47,129,247,.8);box-shadow:0 0 22px rgba(47,129,247,.5),0 4px 14px rgba(0,0,0,.45)}
+/* A4 玻璃拟态 + 上下渐隐高光 */
+.capA4{border:1px solid rgba(47,129,247,.35);background:linear-gradient(180deg,rgba(60,64,76,.42),rgba(24,24,28,.42));backdrop-filter:blur(9px);box-shadow:0 0 18px rgba(47,129,247,.22),inset 0 1px 0 rgba(150,190,255,.35),inset 0 -1px 0 rgba(150,190,255,.12)}
+/* B 品牌实心文字胶囊（上一版，留作对照） */
+.capB{position:absolute;right:16px;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;gap:6px}
+.capB button{width:auto;height:34px;padding:0 14px 0 11px;gap:7px;font-size:12.5px;font-weight:600;color:#fff;background:linear-gradient(180deg,#4a94ff,#2f81f7);border-radius:999px;box-shadow:0 4px 14px rgba(47,129,247,.42);display:flex;align-items:center}
+.capB .sec{width:auto;height:30px;padding:0 13px 0 11px;color:var(--fg);font-weight:600;background:rgba(37,37,42,.92);border:1px solid var(--line);border-radius:999px;display:flex;align-items:center}
+.capB .lbl{display:none}
+/* C 悬停展开（对照） */
+.capC{position:absolute;right:16px;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;gap:4px;align-items:flex-end}
+.capC .w{gap:7px}
+.capC button{width:30px;height:30px;border-radius:50%;border:1px solid var(--line);background:#25252a}
+.capC button.p{background:linear-gradient(180deg,#4a94ff,#2f81f7);border-color:transparent;color:#fff}
+.capC .lbl{position:absolute;right:34px;top:50%;transform:translateY(-50%) translateX(4px);white-space:nowrap;font:10px/1.6 -apple-system,Segoe UI,sans-serif;color:#d7d7dc;background:#25252a;border:1px solid var(--line);border-radius:6px;padding:1px 7px;opacity:0;pointer-events:none;transition:opacity .14s,transform .14s}
+.capC .w:hover .lbl{opacity:1;transform:translateY(-50%) translateX(0)}
+/* D 底部横排（对照） */
+.capD{position:absolute;right:16px;bottom:12px;display:flex;align-items:center;gap:4px;padding:4px;border-radius:999px;background:rgba(32,32,38,.9);border:1px solid var(--line);box-shadow:0 6px 22px rgba(0,0,0,.45)}
+.capD button{width:auto;height:30px;padding:0 12px;gap:6px;font-size:12px;color:var(--fg);display:flex;align-items:center}
+.capD button.p{background:linear-gradient(180deg,#4a94ff,#2f81f7);color:#fff;font-weight:600}
+table{border-collapse:collapse;width:100%;max-width:1040px;font-size:12px}
+th,td{text-align:left;padding:6px 9px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--dim);font-weight:600}
+td b{color:var(--fg)}
+.win{color:#3fb950}
+.warn{color:#d29922}
+</style>
+</head>
+<body>
+<h1>媒体库 · 浮动操作区（AI 助手 / 外开）· A 方案 + 边缘高亮</h1>
+<p class=sub>形态定稿 = <b>A</b>（工作台同款 26px 细竖胶囊、纯字形、hover 滑出文字标签）；<b>突出靠「边缘高亮」</b>，不靠加大按钮、不靠文字常显。<br>A1–A4 是同一形态的四种高亮强度；B / C / D 是上一轮的对照方案。</p>
+<div class=grid>
+<section class=v><header><h2>A0 · 现状（灰边 + 半透明）</h2><span class=tag>对照</span></header>
+<div class=stage><div class=side></div><div class=g2><div></div><div></div><div></div><div></div><div></div><div></div><div></div><div></div></div><div class=capA0><div class=w><button class=p>✦</button><span class=lbl>AI 助手</span></div><div class=sep></div><div class=w><button>↗</button><span class=lbl>在浏览器打开</span></div></div>
+<div class=notes><b>问题</b><ul><li>灰边 + 半透明 ⇒ 在深色网格上几乎看不见</li><li>这就是用户说「不突出」的那一版</li></ul></div></section>
+<section class=v><header><h2>A1 · 常亮品牌描边 + 外发光</h2><span class=tag>推荐</span><span class=pick>★ 已实现</span></header>
+<div class=stage><div class=side></div><div class=g2><div></div><div></div><div></div><div></div><div></div><div></div><div></div><div></div></div><div class=capA1><div class=w><button class=p>✦</button><span class=lbl>AI 助手</span></div><div class=sep></div><div class=w><button>↗</button><span class=lbl>在浏览器打开</span></div></div>
+<div class=notes><b>做法</b><ul><li>胶囊外框 = 品牌蓝描边（.55 透明度）</li><li>外发光 16px 品牌蓝 + 黑色投影；hover 描边更亮、外发光扩到 26px</li><li>分隔线换成品牌蓝渐变；AI 助手图标品牌蓝（hover 内发光）</li></ul></div></section>
+<section class=v><header><h2>A2 · A1 + 左侧能量条</h2><span class=tag>更醒目</span></header>
+<div class=stage><div class=side></div><div class=g2><div></div><div></div><div></div><div></div><div></div><div></div><div></div><div></div></div><div class=capA2><i class=bar></i><div class=w><button class=p>✦</button><span class=lbl>AI 助手</span></div><div class=sep></div><div class=w><button>↗</button><span class=lbl>在浏览器打开</span></div></div>
+<div class=notes><b>做法</b><ul><li>在 A1 基础上，胶囊左侧加一条 2px 品牌渐变竖条（自带 8px 辉光）</li><li>像「能量条」⇒ 视线更容易被抓住，但仍保持 34px 宽</li></ul></div></section>
+<section class=v><header><h2>A3 · 常态弱、hover 强</h2><span class=tag>安静</span></header>
+<div class=stage><div class=side></div><div class=g2><div></div><div></div><div></div><div></div><div></div><div></div><div></div><div></div></div><div class=capA3><div class=w><button class=p>✦</button><span class=lbl>AI 助手</span></div><div class=sep></div><div class=w><button>↗</button><span class=lbl>在浏览器打开</span></div></div>
+<div class=notes><b>做法</b><ul><li>常态只有很淡的蓝边（.22），几乎不打扰网格</li><li>鼠标移上去才亮起来（22px 外发光 + 亮蓝边）</li><li>适合「不希望界面一直有光晕」的偏好</li></ul></div></section>
+<section class=v><header><h2>A4 · 玻璃拟态 + 上下渐隐高光</h2><span class=tag>质感</span></header>
+<div class=stage><div class=side></div><div class=g2><div></div><div></div><div></div><div></div><div></div><div></div><div></div><div></div></div><div class=capA4><div class=w><button class=p>✦</button><span class=lbl>AI 助手</span></div><div class=sep></div><div class=w><button>↗</button><span class=lbl>在浏览器打开</span></div></div>
+<div class=notes><b>做法</b><ul><li>半透明毛玻璃（blur 9px）+ 上下两道内高光（inset）</li><li>像悬浮玻璃片，最不「贴」在网格上</li></ul></div></section>
+<section class=v><header><h2>B · 品牌实心文字胶囊</h2><span class=tag>上一版</span></header>
+<div class=stage><div class=side></div><div class=g2><div></div><div></div><div></div><div></div><div></div><div></div><div></div><div></div></div><div class=capB><div class=w><button class=p>✦ AI 助手</button></div><div class=w><button class=sec>↗ 外开</button></div></div>
+<div class=notes><b>特点</b><ul><li>文字常显、最显眼，但形态与工作台不一致（不再是细胶囊）</li><li>用户最终选 <b>A + 边缘高亮</b> ⇒ 保留细胶囊形态，只加强边缘</li></ul></div></section>
+<section class=v><header><h2>C · 悬停展开</h2><span class=tag>对照</span></header>
+<div class=stage><div class=side></div><div class=g2><div></div><div></div><div></div><div></div><div></div><div></div><div></div><div></div></div><div class=capC><div class=w><span class=lbl>AI 助手</span><button class=p>✦</button></div><div class=w><span class=lbl>在浏览器打开</span><button>↗</button></div></div>
+<div class=notes><b>特点</b><ul><li>默认只有圆钮，最省空间；但不 hover 时仍「像两个小图标」</li></ul></div></section>
+<section class=v><header><h2>D · 底部横排悬浮条</h2><span class=tag>对照</span></header>
+<div class=stage><div class=side></div><div class=g2><div></div><div></div><div></div><div></div><div></div><div></div><div></div><div></div></div><div class=capD><button class=p>✦ AI 助手</button><button>↗ 外开</button><button>📤 导出</button></div>
+<div class=notes><b>特点</b><ul><li>最显眼，但与工作台竖胶囊形态不一致、且挡右下素材 ⇒ 不采用</li></ul></div></section>
+</div>
+<h3>对比</h3>
+<table>
+<tr><th>方案</th><th>形态</th><th>突出方式</th><th>与工作台一致</th><th>结论</th></tr>
+<tr><td><b>A0 现状</b></td><td>细竖胶囊</td><td>无（灰边 + 半透明）</td><td>一致</td><td class=warn>用户反馈「不突出」</td></tr>
+<tr><td><b>A1 常亮描边 + 外发光</b></td><td>细竖胶囊</td><td>品牌蓝描边 + 16px 外发光，hover 增强</td><td>一致</td><td class=win>★ 采用并已实现</td></tr>
+<tr><td><b>A2 + 能量条</b></td><td>细竖胶囊</td><td>A1 + 左侧 2px 渐变竖条</td><td>一致</td><td>更醒目，可再叠一层</td></tr>
+<tr><td><b>A3 弱→强</b></td><td>细竖胶囊</td><td>常态 .22 淡边，hover 22px 发光</td><td>一致</td><td>想要「安静」时选它</td></tr>
+<tr><td><b>A4 玻璃拟态</b></td><td>细竖胶囊</td><td>毛玻璃 + 上下内高光</td><td>一致</td><td>质感路线</td></tr>
+<tr><td><b>B 品牌实心</b></td><td>文字药丸</td><td>主色实心</td><td>不一致</td><td>形态被否</td></tr>
+<tr><td><b>C 悬停展开</b></td><td>圆钮</td><td>hover 文字</td><td>交互一致</td><td>不采用</td></tr>
+<tr><td><b>D 底部横排</b></td><td>横条</td><td>玻璃条</td><td>不一致</td><td>不采用</td></tr>
+</table>
+<p class=sub>已落地：<b>A1</b> —— 胶囊外框 1px 品牌蓝（.55）+ 16px 品牌蓝外发光 + 黑色投影；hover 描边 .85 / 外发光 26px；分隔线是品牌蓝渐变；AI 助手图标品牌蓝（hover 内发光 12px）。形态仍是 26px 细竖胶囊、纯字形、hover 左侧滑出文字标签、整组可拖。</p>
+</body>
+</html>

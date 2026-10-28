@@ -81,6 +81,61 @@ const built = [];
 const buildFailedFiles = [];
 const tempFiles = [];
 
+/**
+ * ★ 2026-10-27：启动时**清扫陈旧残留**（上一批/上一次崩掉的 bundle）。
+ *
+ * 为什么必须做：正常路径末尾会 `unlink` 掉全部临时 bundle ⇒ 平时不占空间；
+ * 但**中途抛异常**（最常见：磁盘写满 ⇒ esbuild `There is not enough space on the disk`
+ * ⇒ build 失败 ⇒ 脚本抛错 ⇒ 末尾的清理**根本没执行**）⇒ 110 个 bundle 留在 `%TEMP%`
+ * ⇒ 磁盘更满 ⇒ 下一批又失败 ⇒ **死循环**（2026-10-27 真机踩过：C 盘被填到 0 字节，
+ * 表现是"所有测试 BUILD-FAIL"，看起来像代码坏了 ✗✗）。
+ *
+ * ⇒ 清扫只动**本 runner 自己的命名空间**（`agentstudio-common-all-*`）且**跳过本批的 stamp**
+ *   ⇒ 不会误删别的进程正在用的文件 ✓。
+ */
+function sweepStaleBundles(keepStamp) {
+	let removed = 0;
+	let bytes = 0;
+	let entries = [];
+	try {
+		entries = fsSync.readdirSync(os.tmpdir());
+	} catch {
+		return { removed: 0, bytes: 0 };
+	}
+	for (const name of entries) {
+		if (!name.startsWith('agentstudio-common-all-') || !name.endsWith('.cjs')) { continue; }
+		const full = path.join(os.tmpdir(), name);
+		// 本批的（stamp 在文件名里）不删。
+		if (name.includes(`-${keepStamp}-`)) { continue; }
+		try {
+			const st = fsSync.statSync(full);
+			bytes += st.size;
+			fsSync.unlinkSync(full);
+			removed++;
+		} catch { /* 忽略：可能已被别人删 */ }
+	}
+	return { removed, bytes };
+}
+
+const swept = sweepStaleBundles(stamp);
+if (swept.removed > 0) {
+	console.log(`[cleanup] swept ${swept.removed} stale bundle(s) from previous runs (${(swept.bytes / 1048576).toFixed(0)} MB) ✓`);
+}
+
+/**
+ * ★ 2026-10-27：**退出即清理**（幂等；正常路径末尾还会再清一次 ⇒ 无副作用）。
+ *
+ * 之前只有"跑到最后一行"才清理 ⇒ 中途抛异常（磁盘满 ⇒ esbuild 写不出 bundle ⇒ build 失败
+ * ⇒ 脚本抛错）时**清理被跳过** ⇒ 110 个 bundle 留在 `%TEMP%` ⇒ 磁盘更满 ⇒ 下一批又失败
+ * ⇒ 死循环（C 盘被填到 0 字节的现场）。`process.on('exit')` 在未捕获异常时**也会**触发 ✓。
+ */
+function cleanupTempBundles() {
+	for (const f of tempFiles) {
+		try { fsSync.unlinkSync(f); } catch { /* ignore */ }
+	}
+}
+process.on('exit', cleanupTempBundles);
+
 for (const entry of testFiles) {
 	const label = path.basename(entry, '.test.ts');
 	const framework = detectFramework(entry);

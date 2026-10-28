@@ -20,6 +20,8 @@
 //   · 身份：除 `https://github.com/<owner>/<repo>` 外，接受内置保留身份 `vssaros:<module>` → `vssaros/<module>`
 //     （"只许 @vssaros/* 用"由清单解析器 `vssarosPluginManifest.ts` 在安装面钉住，客户端拿不到调用方包名）；
 //   · 标准分栏（customFrame=false）P1 暂按整页渲染（右栏承载在 P2 做，方案 §4.3）。
+// 构建标记：在页面 console 里输入 __vssarosWorkbenchBuild 即可知道窗口加载的是哪个版本
+globalThis.__vssarosWorkbenchBuild = '0.2.39';
 window.__ModuleLoader__.load({
 	id: '@vssaros/dsh-workbenches',
 	factory: (require) => {
@@ -186,7 +188,51 @@ window.__ModuleLoader__.load({
 				this.dockError = String(error && error.message || error || '对话打不开');
 				console.warn('[vssaros-workbenches] 停靠会话打不开：' + sessionId, error);
 				this.publish();
+				}
+				/**
+				* 会话是否**还存在**（被删/归档 ⇒ `sessions.retain` 会抛 `unknown session`）。
+				* ★ 2026-10-28 真机：侧栏里那条失效会话点了以后 `retain` 抛错 ⇒ 对话列永远停在"开始对话"
+				*   ⇒ 看起来就是"点会话没反应"。所以停靠之前必须先验活。
+				* ⚠ 读不到快照时**保守当它存在**（宁可 retain 抛错，也不要误杀正常会话）。
+				*/
+				sessionExists(sessionId) {
+				if (!sessionId) { return false; }
+				try {
+					const list = this.ctx.sessions.list.getSnapshot();
+					if (list && list.byId && list.byId[sessionId]) { return true; }
+					return false;
+				} catch { return true; }
+				}
+				/**
+			 * 这个会话**能不能被 retain**。
+			 * ★ 2026-10-28 真机（两轮）：先用"blank 且没被任何视图持有"来**猜**，结果把**刚新建的会话**
+			 *   也判成不可用（新建的会话此刻就是 blank 且 retainedBy 为空）⇒ 自己新建的会话反而 dock 不上 ✗
+			 *   ⇒ 改成**直接试**：`ctx.sessions.retain(sid)` 成功即可用（立刻 release 掉，保持计数平衡），
+			 *     抛异常（unknown session）才判定不可用。
+			 *   （dsh 自己的口径是 retain 抛不抛，不是我们猜的字段。）
+			 */
+			sessionRetainable(sessionId) {
+				if (!sessionId) { return false; }
+				let ref = null;
+				try {
+					ref = this.ctx.sessions.retain(sessionId);
+				} catch (e) {
+					console.warn('[vssaros-workbenches] 会话无法 retain：' + sessionId + '（' + String((e && e.message) || e) + '）');
+					return false;
+				}
+				try { if (ref && typeof ref.release === 'function') { ref.release(); } } catch (e) { /* 忽略 */ }
+				return true;
 			}
+			/** 自愈：清掉指向**已失效会话**的绑定/最近会话（否则每次打开工作台都卡在同一条死会话上）。 */
+				clearStaleBinding(owner, sessionId) {
+				if (!owner || !sessionId) { return; }
+				try {
+					Promise.resolve(this.commit((state) => {
+						if (state.recentSessions && state.recentSessions[owner] === sessionId) { state.recentSessions[owner] = null; }
+						if (state.sessionBindings && state.sessionBindings[sessionId] === owner) { delete state.sessionBindings[sessionId]; }
+					})).catch(() => { /* 忽略 */ });
+				} catch { /* 忽略 */ }
+				}
 			/** 当前会话：整页工作台 ⇒ 它停靠的会话；否则主视图里的会话（官方判据：retainedBy.mainView > 0）。 */
 			currentSession() {
 				if (this.docksConversation(this.active)) {
@@ -236,6 +282,9 @@ window.__ModuleLoader__.load({
 			 */
 			showSession(sessionId) {
 				const id = this.active;
+				// ⚠ 2026-10-28：这里**不做** sessionExists 前置 —— 新建会话在这一刻往往还没进
+				//   sessions.list 快照，前置检查会把它误判成"已不存在"⇒「＋ 新建会话」没反应。
+				//   真失效的会话交给停靠区的 retain 判定（失败 ⇒ markDead + 清绑定 ⇒ 回到「开始对话」）。
 				if (this.docksConversation(id) && this.state) {
 					const owner = this.state.sessionBindings[sessionId];
 					if (owner === id) { this.dockTo(id, sessionId); return; }
@@ -567,6 +616,8 @@ window.__ModuleLoader__.load({
 		const ACTIONS_POS_KEY = '__vssarosWbActionsPos';
 		/** 宿主 header 高度：落点不得高于它，否则会压住「已加载 / 外部打开」那一行。 */
 		const ACTIONS_SAFE_TOP = 30;
+		/** 贴右留白（px）：用户要求「只能在最右侧上下移动」⇒ x 固定 = maxL - 12，与默认态一致。 */
+		const ACTIONS_RIGHT_GAP = 12;
 
 		/** 把位置夹回面板内，并抬到安全区以下（组高变化后也用它修正）。 */
 		function clampActions(el, frameEl, pos) {
@@ -574,8 +625,10 @@ window.__ModuleLoader__.load({
 			const br = el.getBoundingClientRect();
 			const maxL = Math.max(0, fr.width - br.width);
 			const maxT = Math.max(0, fr.height - br.height);
+			// ★ 2026-10-28（用户：「浮动工具栏仅可以在 app 最右侧上下移动」）：
+			//   口径收窄为「贴右边缘、只允许上下」—— x 恒定夹到最右，y 仍受安全区与面板高度限制。
 			return {
-				x: Math.round(Math.min(Math.max(0, pos.x), maxL)),
+				x: Math.max(0, maxL - ACTIONS_RIGHT_GAP),
 				y: Math.round(Math.min(Math.max(ACTIONS_SAFE_TOP, pos.y), maxT)),
 			};
 		}
@@ -637,7 +690,8 @@ window.__ModuleLoader__.load({
 				const maxL = Math.max(0, drag.frame.width - drag.br.width);
 				const maxT = Math.max(0, drag.frame.height - drag.br.height);
 				drag.latest = {
-					x: Math.round(Math.min(Math.max(0, drag.baseLeft + dx), maxL)),
+					// 只允许上下：x 永远贴最右（用户：仅可在 app 最右侧上下移动）
+					x: Math.max(0, maxL - ACTIONS_RIGHT_GAP),
 					y: Math.round(Math.min(Math.max(ACTIONS_SAFE_TOP, drag.baseTop + dy), maxT)),
 				};
 				applyActionsPos(el, drag.latest);
@@ -702,7 +756,11 @@ window.__ModuleLoader__.load({
 				   · none     —— 这个工作台没有 AI 助手栏 ⇒ 只显示「外开」
 				   · 1（收起） —— 显示「« 展开」
 				   · 0（展开） —— 显示「» 收起」（不再是消失） */
-				const state = !host ? 'none' : (host.getAttribute('data-vssaros-assist-collapsed') === '1' ? '1' : '0');
+				// ★ 2026-10-28（用户：「知识库中的浮动工具栏中，缺少 ai 助手」）：
+				//   以前没有 `[data-vssaros-assist-collapsed]`（页面型工作台 / 知识库）⇒ 状态 `none`
+				//   ⇒ CSS 把「AI 助手」按钮整组隐藏 ⇒ 那条浮动条只剩「在浏览器打开」。
+				//   现在**一律显示**：没有页内对话列时按「收起」态显示（点它走外壳兜底：开会话/开聊天页）。
+				const state = !host ? '1' : (host.getAttribute('data-vssaros-assist-collapsed') === '1' ? '1' : '0');
 				el.setAttribute('data-assist', state);
 				// 同一个按钮两副面孔：图标 / title / hover 文案一起换
 				const btn = el.querySelector('.wbActAssist');
@@ -728,6 +786,31 @@ window.__ModuleLoader__.load({
 			syncAssist();
 		}
 
+		/** 工作台 id → 它的 AI 助手 preset（页面形态下兜底开助手会话用）。 */
+		const ASSIST_PRESET_BY_WB = {
+			'vssaros/studio': 'vssaros-saroasis-studio',
+			'vssaros/marketplace': 'vssaros-marketplace-bot',
+			'vssaros/media': 'vssaros-media-librarian',
+			// ★ 2026-10-28（用户：「知识库的展开 AI 助手点不动，展开后应显示知识库专家」）：
+			//   知识库是**页面型**工作台（面板里没有对话列）⇒ 点击只能走外壳兜底开会话；
+			//   而兜底要带 preset —— 之前没这一条，传空串 ⇒ `newChat('')` 等于空转 ⇒「点了没反应」。
+			//   `knowledge-base-expert` 是内置 agent（名称「知识库专家」）⇒ preset = vssaros- + id。
+			'vssaros/kb': 'vssaros-knowledge-base-expert',
+		};
+		/**
+		 * 「用户主动导航」的时间戳（毫秒）。
+		 * ★ 2026-10-28（用户：「点工作区左侧会话 item 时，要求切换到会话页进行展示」）：
+		 *   侧栏点会话 = `uiWorkspace.openSession()`；侧栏「新建会话」= `uiWorkspace.startSession()`。
+		 *   两者都应**放行** `selectPanel(null)` ⇒ 中栏切到**会话页**（离开工作台）。
+		 *   而工作台内部切会话/切工作区不走这两个入口 ⇒ 仍然拦下来停靠。
+		 *   用时间窗（不是布尔量）是因为 startSession 是**异步**的：`replaceMain` 在其 Promise 之后才发生。
+		 */
+		let navIntentAt = 0;
+		function markUserNav() { navIntentAt = Date.now(); }
+
+		function assistantPresetOf(workbenchId) {
+			return ASSIST_PRESET_BY_WB[String(workbenchId || '')] || '';
+		}
 		function Frame({ service, entry }) {
 			useService(service);
 			const props = { service, entry };
@@ -772,6 +855,42 @@ window.__ModuleLoader__.load({
 									//   一读就抛 ReferenceError ⇒ 事件根本没派发（2026-10-26 真机：点了没反应）。
 									detail: { workbench: entry.id },
 								}));
+								/* ★ 2026-10-27（用户：「点展开 AI 助手，右侧没出现聊天框」）：
+								   有些入口是**页面**（媒体库/商城/萨罗斯 作为 dashboard 目录里的 module page 打开），
+								   页面里**没有对话停靠点**（自托管页拿不到宿主的 props.conversation）⇒ 事件没人接 ⇒ 点了没反应。
+								   ⇒ 派发后**同步看一眼**页面有没有把折叠属性改成 0（接住了就是它处理的）：
+								     · 接住了（customFrame 工作台 / 媒体库页面）⇒ 什么都不做；
+								     · 没接住 ⇒ **外壳兜底**：请 IDE 侧开一个助手会话（该工作台自己的 preset）。
+								   ⚠ 这里用的是同步检查：接住的一方都会**同步**改属性（媒体库页面 handler 的第一句就是 setAssistCollapsed(false)）。 */
+								const after = target.getAttribute && target.getAttribute('data-vssaros-assist-collapsed');
+								// ★ 2026-10-28（知识库「点展开没反应」第三层）：页面用 React state 更新属性 ⇒
+								//   **同步读到的还是旧值**，外壳会误判"没人接"⇒ 直接开会话跳走（把工作台顶掉）。
+								//   ⇒ 展开时**延迟复查**：等一帧后再看属性；已有展开的面板也算接住了。
+								const willFallback = type === 'vssaros:assist-expand' && after !== '0';
+								if (willFallback) {
+									setTimeout(() => {
+										try {
+											const host = frameEl.querySelector('[data-vssaros-assist-collapsed]');
+											const cur = host && host.getAttribute('data-vssaros-assist-collapsed');
+											if (cur === '0' || frameEl.querySelector('[data-vssaros-assist-collapsed="0"]')) { return; }
+										} catch (e) { /* 读不到就按未处理走兜底 */ }
+										const preset = assistantPresetOf(entry.id);
+										let opened = false;
+										try {
+											const ws = service && service.ctx && service.ctx.uiWorkspace;
+											if (ws && typeof ws.startSession === 'function') {
+												ws.startSession(undefined, preset ? { agentPreset: preset } : undefined);
+												opened = true;
+											}
+										} catch (e) { opened = false; }
+										if (!opened) {
+											const bridge = window.vssarosDsh;
+											if (bridge && typeof bridge.newChat === 'function' && preset) {
+												try { bridge.newChat(preset); } catch (e) { /* 忽略 */ }
+											}
+										}
+									}, 200);
+								}
 							},
 						}, '«'),
 						// S4：hover 时在左侧滑出文字（面板右边缘 ⇒ 左侧才有空间）
@@ -819,6 +938,8 @@ window.__ModuleLoader__.load({
 						ref = service.ctx.sessions.retain(sessionId, { source: 'workbench' });
 					} catch (error) {
 						service.markDead(sessionId, error);
+						// 自愈：清掉指向这条失效会话的绑定 ⇒ 下次打开工作台不再卡在它上面
+						service.clearStaleBinding(service.active, sessionId);
 						return undefined;
 					}
 					setReference({ sessionId, ref });
@@ -881,21 +1002,23 @@ window.__ModuleLoader__.load({
 .vssWbDock { display:flex; flex-direction:column; flex:1; min-height:0; min-width:0; }
 .vssWbDock[hidden] { display:none; }
 /* ★ 2026-10-26「S2 一体条」：AI 助手展开 + 外开 合成一条竖直胶囊，整组可拖（所有工作台共用一份） */
-.vssWbActions { position:absolute; right:12px; top:50%; transform:translateY(-50%); z-index:2147482000; display:flex; flex-direction:column; padding:3px; border-radius:10px; border:1px solid var(--dsw-alias-border-l2, #dcdfe6); background:var(--dsw-alias-bg-layer-1, #fff); box-shadow:0 1px 5px rgba(0,0,0,.12); opacity:.9; cursor:grab; touch-action:none; user-select:none; }
-.vssWbActions:hover { opacity:1; }
+/* ★ 2026-10-27：与媒体库的浮动区**完全同一套样式**（A 方案 + 边缘高亮）
+.   —— vssaros-media 的 .m-fab 与这条 .vssWbActions 的高亮参数必须逐字一致（由
+.   dsh-plugins/check-assistant-collapse.mjs 的跨插件一致性断言钉住）✓ */
+.vssWbActions { position:absolute; right:12px; top:50%; transform:translateY(-50%); z-index:2147482000; display:flex; flex-direction:column; padding:3px; border-radius:10px; border:1px solid rgba(47,129,247,.55); background:linear-gradient(180deg, rgba(38,38,44,.96), rgba(30,30,35,.96)); box-shadow:0 0 0 1px rgba(47,129,247,.16), 0 0 16px rgba(47,129,247,.30), 0 4px 12px rgba(0,0,0,.45); opacity:.96; cursor:grab; touch-action:none; user-select:none; transition:box-shadow .16s, border-color .16s; }
+.vssWbActions:hover { border-color:rgba(47,129,247,.85); box-shadow:0 0 0 1px rgba(47,129,247,.35), 0 0 26px rgba(47,129,247,.45), 0 6px 18px rgba(0,0,0,.5); }
 .vssWbActions[data-dragging] { cursor:grabbing; }
 .vssWbActions[data-moved] { transform:none; }
 .vssWbActions .wbWrap { position:relative; display:flex; }
-.vssWbActions .wbAct { width:26px; height:25px; padding:0; display:inline-flex; align-items:center; justify-content:center; border:0; border-radius:7px; background:transparent; color:var(--dsw-alias-label-secondary, #5a6270); font:13px/1 -apple-system, "Segoe UI", sans-serif; cursor:pointer; }
-.vssWbActions .wbAct:hover { background:var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.14)); color:var(--dsw-alias-label-primary, #16181d); }
-.vssWbActions .wbDivider { height:1px; margin:1px 3px; background:var(--dsw-alias-border-l1, #eceef2); }
-/* 三态：none = 该工作台没有 AI 助手栏（只剩「外开」）；1 = 已收起（« 展开）；0 = 已展开（» 收起） */
+.vssWbActions .wbAct { width:26px; height:25px; padding:0; display:inline-flex; align-items:center; justify-content:center; border:0; border-radius:7px; background:transparent; color:var(--dsw-alias-label-secondary, #9d9da7); font:13px/1 -apple-system, Segoe UI, sans-serif; cursor:pointer; transition:color .14s, background .14s, box-shadow .14s; }
+.vssWbActions .wbAct:hover { background:var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.16)); color:var(--dsw-alias-label-primary, #e6e6ea); }
+.vssWbActions .wbActAssist { color:#6cb0ff; }
+.vssWbActions .wbActAssist:hover { color:#a8d2ff; box-shadow:0 0 12px rgba(47,129,247,.55) inset; }
+.vssWbActions .wbDivider { height:1px; margin:1px 3px; background:linear-gradient(90deg, transparent, rgba(47,129,247,.75), transparent); }
 .vssWbActions[data-assist="none"] .wbDivider, .vssWbActions[data-assist="none"] .wbWrapAssist { display:none; }
-.vssWbActions .wbAct[data-state="blocked"] { color:var(--dsw-alias-state-warn-primary, #d97706); }
-/* ★ S4：hover 时在**左侧**滑出文字标签（面板右边缘 ⇒ 左侧才有空间） */
-.vssWbActions .wbLabel { position:absolute; right:34px; top:50%; transform:translateY(-50%) translateX(4px); white-space:nowrap; font:10px/1.6 -apple-system, "Segoe UI", sans-serif; color:var(--dsw-alias-label-primary, #16181d); background:var(--dsw-alias-bg-layer-1, #fff); border:1px solid var(--dsw-alias-border-l2, #dcdfe6); border-radius:6px; padding:1px 7px; box-shadow:0 1px 4px rgba(0,0,0,.12); opacity:0; pointer-events:none; transition:opacity .14s, transform .14s; }
+.vssWbActions .wbAct[data-state="blocked"] { color:var(--dsw-alias-state-warn-primary, #d29922); }
+.vssWbActions .wbLabel { position:absolute; right:34px; top:50%; transform:translateY(-50%) translateX(4px); white-space:nowrap; font:10px/1.6 -apple-system, Segoe UI, sans-serif; color:var(--dsw-alias-label-primary, #e6e6ea); background:var(--dsw-alias-bg-layer-1, #25252a); border:1px solid rgba(47,129,247,.45); border-radius:6px; padding:1px 7px; box-shadow:0 0 12px rgba(47,129,247,.30), 0 1px 4px rgba(0,0,0,.35); opacity:0; pointer-events:none; transition:opacity .14s, transform .14s; }
 .vssWbActions .wbWrap:hover .wbLabel { opacity:1; transform:translateY(-50%) translateX(0); }
-/* 组被拖到左侧时标签翻转（否则会溢出面板、触发横向滚动条） */
 .vssWbActions[data-label="right"] .wbLabel { right:auto; left:34px; transform:translateY(-50%) translateX(-4px); }
 .vssWbActions[data-label="right"] .wbWrap:hover .wbLabel { transform:translateY(-50%) translateX(0); }
 .vssWbDockedConversation { display:flex; flex-direction:column; flex:1; min-height:0; min-width:0; height:100%; }
@@ -1007,12 +1130,86 @@ window.__ModuleLoader__.load({
 				if (!layout || typeof layout.selectPanel !== 'function') { return undefined; }
 				if (layout.selectPanel.__vssarosGuarded) { return undefined; }
 				const original = layout.selectPanel.bind(layout);
+				/**
+				 * ⚠ 2026-10-28（用户：「打开工作台后，点工作区里的会话 item 没反应」——媒体库、商城都报过）：
+				 *   根因就在这个拦截器**只拦不接**：
+				 *   `dsh-client-ui-workspace` 的 `openSession()` → `replaceMain(target, …, 'reveal')` 会
+				 *   ① `selection.set({ sessionId })`（会话**已经换选了**）② 末尾 `layout.selectPanel(null)`。
+				 *   我们拦住 ② ⇒ 中栏保持工作台（正确），但**没人把新选中的会话停靠进对话列**
+				 *   ⇒ 用户看到的就是"点了没反应"。
+				 *   ⇒ 拦下来时必须补一步：`service.showSession(刚选中的会话)`（它内部会校验归属/自动绑定，
+				 *     归属别的工作台时只写 `dockError`，不会把用户踢出去 ✓）。
+				 */
+				const currentMainSessionId = () => {
+					// ① 最可靠：`replaceMain()` 在调 `selectPanel(null)` 的**前一行**刚把 mainReference 换成目标会话
+					//   （新建会话此刻还没进 sessions.list 快照，只有这里有它）。
+					try {
+						const ref = ctx.uiWorkspace && ctx.uiWorkspace.mainReference;
+						const sid = ref && ref.sessionId;
+						if (typeof sid === 'string' && sid) { return sid; }
+					} catch (e) { /* 读不到就换下一种 */ }
+					try {
+						const snap = ctx.uiWorkspace && ctx.uiWorkspace.selection && ctx.uiWorkspace.selection.getSnapshot
+							? ctx.uiWorkspace.selection.getSnapshot() : null;
+						const sid = snap && snap.sessionId;
+						if (typeof sid === 'string' && sid) { return sid; }
+					} catch (e) { /* 读不到就换下一种 */ }
+					try {
+						const byId = ctx.sessions.list.getSnapshot().byId || {};
+						const hit = Object.values(byId).find((s) => s && s.retainedBy && (s.retainedBy.mainView || 0) > 0);
+						return hit ? hit.id : undefined;
+					} catch (e) { return undefined; }
+				};
 				const guarded = (panel) => {
 					try {
+						/**
+						 * ★ 2026-10-28（用户：「点工作区左侧会话 item 时，**要求切换到会话页进行展示**」）：
+						 *   **侧栏导航必须放行** —— 让 dsh 走原生 `replaceMain` ⇒ 中栏切到**会话页**。
+						 *   只有"工作台**内部**的切会话/切工作区"（不经过 openSession/startSession 的那条）
+						 *   才拦下来停靠进工作台对话列（那是 2026-10-24 报障的要求：别把用户踢出工作台）。
+						 *   判据：`navIntentAt` 由被包的 openSession / startSession 打时间戳，
+						 *   2.5s 内视为"用户主动导航"（startSession 是异步的，所以用时间窗而不是布尔量）。
+						 */
+						if (Date.now() - navIntentAt < 2500) {
+							// ★ 2026-10-28（用户：「点会话 item 没切过去，手动点会话页又是空白」）：
+							//   只放行 `selectPanel(null)` 还不够 —— 前台工作台如果正在**停靠对话**
+							//   （`shell.overlay` 把 `conversation` portal 进工作台的 dock），
+							//   主面板就没有对话可渲染 ⇒ 会话页**空白**。
+							//   ⇒ 用户主动导航时先 `leave()`：把 active 置空（覆盖层停止 portal）+ 回会话面板。
+							try {
+								if (service.active && service.docksConversation(service.active)) { service.leave(); }
+							} catch (e) { /* 停靠停止失败不影响导航 */ }
+							return original(panel);
+						}
 						if (panel === null && service.active && service.docksConversation(service.active)) {
-							console.warn('[vssaros-workbenches] 已拦截 selectPanel(null)：前台整页工作台 = ' + service.active
-								+ '（多半是工作台里的官方对话在切工作区/会话）');
-							return;
+							const sid = currentMainSessionId();
+							// ⚠ 2026-10-28：**不要**在这里用 sessionExists（查 sessions.list）做前置 ——
+							//   侧栏「＋ 新建会话」走 startSession → connectBlank → replaceMain，新会话此刻
+							//   **还没进列表快照** ⇒ 会被误判"已不存在" ⇒ 新建会话"没反应"。
+							//   真失效的会话由停靠区自己的 retain 判定（失败 ⇒ markDead ⇒ 回到「开始对话」）。
+							if (sid) {
+								console.warn('[vssaros-workbenches] 已拦截 selectPanel(null)：前台整页工作台 = ' + service.active
+									+ '；把会话 ' + sid + ' 停靠到工作台对话列');
+								try { service.showSession(sid); } catch (e) {
+									console.warn('[vssaros-workbenches] 停靠会话失败：' + String((e && e.message) || e));
+								}
+								// ★ 2026-10-28（用户：「点左侧栏顶部的新建会话，没有任何反应」）：
+								//   如果右侧对话列当时是**收起**状态，新会话会停靠进一个看不见的列
+								//   ⇒ 用户依然"看不到任何变化"。⇒ 有会话进来就**自动展开**（派发外壳的展开事件）。
+								try {
+									const collapsedEl = document.querySelector('[data-vssaros-assist-collapsed="1"]');
+									if (collapsedEl) {
+										collapsedEl.dispatchEvent(new CustomEvent('vssaros:assist-expand', {
+											bubbles: true,
+											detail: { workbench: service.active },
+										}));
+									}
+								} catch (e) { /* 展开失败不影响停靠 */ }
+								return;   // 保住工作台 + 会话落到对话列
+							}
+							// 读不到目标会话 ⇒ 放行（别把界面卡死）
+							console.warn('[vssaros-workbenches] 拦截 selectPanel(null) 时读不到目标会话 ⇒ 放行');
+							return original(panel);
 						}
 					} catch (e) { /* 判断失败就放行，别把布局搞死 */ }
 					return original(panel);
@@ -1026,7 +1223,59 @@ window.__ModuleLoader__.load({
 					return undefined;
 				}
 				return () => { try { layout.selectPanel = original; } catch (e) { /* 卸载时尽力还原 */ } };
-			}, 'vssaros-workbenches: layout guard');
+			}, 'vssaros-workbenches: layout guard');			// ★ 2026-10-28：会话**能否被 retain** 的前置校验 —— 必须在调用原 openSession **之前**做：
+			//   `sessions.retain` 抛错会中断整条链路（我们的 selectPanel 守卫根本没机会执行），
+			//   表现就是"点侧栏会话没反应"。失效（已删除 / 空白草稿且没人持有）⇒ 不调用原函数（不抛），
+			//   改为明确提示 + 自愈（清掉指向它的绑定）。
+			ctx.effect(() => {
+				const ws = ctx.uiWorkspace;
+				if (!ws || typeof ws.openSession !== 'function' || ws.openSession.__vssarosWbOpenGuard) { return undefined; }
+				const originalOpen = ws.openSession.bind(ws);
+				const patchedOpen = function (target) {
+					// ★ 用户点侧栏会话 ⇒ 视为"主动导航" ⇒ selectPanel 守卫放行 ⇒ 切到会话页
+					markUserNav();
+					const sid = typeof target === 'string' ? target : (target && target.sessionId) || '';
+					// ★ 不预判「能不能打开」—— 让 dsh 自己判断，它抛我们接住：
+					//   空白草稿 / 已删除的会话在 replaceMain 里会抛 unknown session，
+					//   异常一旦逃出去，整条链路（选中 → 停靠 → 显示）全断 ⇒ 界面看着「点了没反应」。
+					try {
+						return originalOpen(target);
+					} catch (e) {
+						console.warn('[vssaros-workbenches] 打开会话失败：' + sid + '（' + String((e && e.message) || e) + '）');
+						service.markDead(sid, '这条会话已失效（空白草稿或已被删除），打不开');
+						service.clearStaleBinding(service.active, sid);
+						return undefined;   // 吞掉异常 ⇒ 界面不卡死，用户看到明确提示
+					}
+				};
+				patchedOpen.__vssarosWbOpenGuard = true;
+				try { ws.openSession = patchedOpen; }
+				catch (e) {
+					console.warn('[vssaros-workbenches] uiWorkspace.openSession 不可写，守卫未安装：' + String((e && e.message) || e));
+					return undefined;
+				}
+				return () => { try { ws.openSession = originalOpen; } catch (e) { /* 卸载时尽力还原 */ } };
+			}, 'vssaros-workbenches: openSession guard');
+
+			// ★ 2026-10-28（用户：「点工作区左侧会话 item 时，要求切换到会话页进行展示」）：
+			//   侧栏「新建会话」走的是 `startSession`（**不经过** openSession）⇒ 也标记成"用户导航"，
+			//   selectPanel 守卫才会放行 ⇒ 新会话在**会话页**里打开。
+			ctx.effect(() => {
+				const ws = ctx.uiWorkspace;
+				if (!ws || typeof ws.startSession !== 'function' || ws.startSession.__vssarosWbStartGuard) { return undefined; }
+				const originalStart = ws.startSession.bind(ws);
+				const patchedStart = function () {
+					markUserNav();
+					return originalStart.apply(null, arguments);
+				};
+				patchedStart.__vssarosWbStartGuard = true;
+				try { ws.startSession = patchedStart; }
+				catch (e) {
+					console.warn('[vssaros-workbenches] uiWorkspace.startSession 不可写，导航标记未安装：' + String((e && e.message) || e));
+					return undefined;
+				}
+				return () => { try { ws.startSession = originalStart; } catch (e) { /* 卸载时尽力还原 */ } };
+			}, 'vssaros-workbenches: startSession nav');
+
 			ctx.effect(() => { void service.load(); return undefined; }, 'vssaros-workbenches: state');
 			// 会话停靠（整页工作台的 AI 对话显示在工作台自己页面里，不切走）：根覆盖层条目声明 session 子槽，
 			// 子槽里放对话面板。覆盖层由根布局常驻渲染 ⇒ 不论工作台开在页签里还是整页面板里都能停靠。

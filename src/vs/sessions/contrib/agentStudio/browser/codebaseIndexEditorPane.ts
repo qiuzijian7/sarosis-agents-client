@@ -158,7 +158,9 @@ export class CodebaseIndexEditorPane extends EditorPane {
 				if (nodeCount > 0 || edgeCount > 0) {
 					statusText = `✓ 已索引（${nodeCount} 节点, ${edgeCount} 边）`;
 				} else if (status.size) {
-					statusText = `✓ 已索引（${(status.size / 1024).toFixed(0)} KB）`;
+					// ★ 2026-10-27：制品在盘上、但**内存里还没有**（大图按需加载的常态）⇒
+					//   说清"未载入内存"，否则用户会以为图谱坏了/丢了 ✗（写死的文案会随状态变假）。
+					statusText = `✓ 已索引（未载入内存 · ${(status.size / 1024).toFixed(0)} KB · 首次使用时自动载入）`;
 				} else {
 					statusText = '✓ 已索引';
 				}

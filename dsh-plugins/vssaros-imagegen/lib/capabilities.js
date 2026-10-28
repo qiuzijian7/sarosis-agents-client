@@ -21,17 +21,33 @@ export const LIGHTAI_PROVIDER_ID = 'lightai';
 
 /**
  * 这一次生图走哪条路（纯函数 ⇒ 守卫直接断言）。
- *   · 指定了 provider ⇒ 是 LightAI 就直连，否则交给 IDE；
- *   · 只指定了 model ⇒ `picture_*`（LightAI 的模型 id 形状）直连，其它交给 IDE；
- *   · 都没指定 ⇒ dsh 侧 LightAI 已登录就直连，否则交给 IDE（老行为）。
- * @returns {'lightai' | 'ide'}
+ *
+ * ★ 2026-10-27（用户：「生图逻辑都在 dsh 侧，后续废除 IDE 生图」）：新增 **`dsh`** 这一档 ——
+ *   BYOK 的 OpenAI 兼容 provider 现在也能在 Host 里直连（`lib/imageApi.js`），
+ *   因为 dsh 设置里本来就有每个 provider 的 `baseURL`，Key 也在 dsh 的 `.credentials.yaml` 里
+ *   （`vssaros-bridge` 的 `providers.sync` 两样都写）。
+ *
+ *   · 指定了 provider ⇒ LightAI 走 LightAI；**是 dsh 路由就走 dsh**；都不是才交给 IDE；
+ *   · 只指定了 model ⇒ `picture_*`（LightAI 形状）走 LightAI；其它走 dsh（模型 id 已经足够具体）；
+ *   · 都没指定 ⇒ LightAI 已登录就 LightAI，其次 dsh（只有一个可直连的 provider 时），否则 IDE。
+ * @returns {'lightai' | 'dsh' | 'ide'}
  */
-export function pickImageRoute(target, { lightaiReady = false } = {}) {
+export function pickImageRoute(target, { lightaiReady = false, dshProviders = [] } = {}) {
 	const provider = String(target?.provider ?? '').trim();
 	const model = String(target?.model ?? '').trim();
-	if (provider) { return LIGHTAI_PROVIDER_IDS.has(provider) ? 'lightai' : 'ide'; }
-	if (model) { return /^picture_/.test(model) ? 'lightai' : 'ide'; }
-	return lightaiReady ? 'lightai' : 'ide';
+	const dsh = new Set((dshProviders ?? []).map(p => String(typeof p === 'string' ? p : p?.id ?? '')).filter(Boolean));
+	const dshId = ids => id => dsh.has(id) || [...dsh].some(k => k.toLowerCase() === String(id).toLowerCase());
+	if (provider) {
+		if (LIGHTAI_PROVIDER_IDS.has(provider)) { return 'lightai'; }
+		if (dshId()(provider)) { return 'dsh'; }
+		// `lm:xxx` / `byok:xxx` 这种前缀写法也认（dsh 路由键与 IDE 的 id 不完全一致）
+		const bare = provider.replace(/^(lm|byok|provider)[:.]/i, '');
+		if (bare !== provider && dshId()(bare)) { return 'dsh'; }
+		return 'ide';
+	}
+	if (model) { return /^picture_/.test(model) ? 'lightai' : (dsh.size > 0 ? 'dsh' : 'ide'); }
+	if (lightaiReady) { return 'lightai'; }
+	return dsh.size > 0 ? 'dsh' : 'ide';
 }
 
 /** dsh 侧 LightAI 是否可直接生图（服务在 + 已登录）。读不到状态 ⇒ 当不可用。 */
@@ -45,12 +61,39 @@ export async function lightaiReady(state) {
 	}
 }
 
-/** 解析路由（含"没指定时看 LightAI 登录没"）。 */
+/** 解析路由（含"没指定时看 LightAI 登录没 / dsh 侧有哪些可直连的 provider"）。 */
 export async function resolveImageRoute(state, target) {
 	const provider = String(target?.provider ?? '').trim();
 	const model = String(target?.model ?? '').trim();
-	if (provider || model) { return pickImageRoute(target); }
-	return pickImageRoute(target, { lightaiReady: await lightaiReady(state) });
+	if (provider || model) {
+		// 显式指定时也要 dsh 那一档（否则 BYOK 会被误判成 ide）
+		return pickImageRoute(target, { dshProviders: await dshProviderIds(state) });
+	}
+	const [ready, dsh] = await Promise.all([lightaiReady(state), dshProviderIds(state)]);
+	return pickImageRoute(target, { lightaiReady: ready, dshProviders: dsh });
+}
+
+/**
+ * dsh 侧可直连的 provider（懒算 + 短缓存：读设置 + 解析凭据都是本地操作，但别每次生图都扫一遍）。
+ *
+ * ⚠ 缓存必须**按 settings 服务实例**分（WeakMap），不能用模块级单例：
+ *   同一进程里换一份 settings（探针会连续 apply 多次；宿主里也可能重挂服务）时，
+ *   上一份的 id 会被当成这一份的 ⇒ 路由判到 `dsh` 却解析不到 provider（2026-10-27 探针 ⑧ 抓到的真 bug）。
+ * @returns {Promise<string[]>} provider id 列表（空 = 没有可直连的，路由会回落 IDE）
+ */
+const dshCache = new WeakMap();
+export async function dshProviderIds(state) {
+	const settings = state?.settings;
+	const entry = settings && typeof settings === 'object' ? dshCache.get(settings) : undefined;
+	if (entry && Date.now() - entry.at < 15_000) { return entry.ids; }
+	let ids = [];
+	try {
+		const { listDshProviders } = await import('./imageApi.js');
+		const list = await listDshProviders({ settings, credentials: state?.credentials });
+		ids = list.map(item => String(item.id));
+	} catch { ids = []; }
+	if (settings && typeof settings === 'object') { dshCache.set(settings, { at: Date.now(), ids }); }
+	return ids;
 }
 
 /** LightAI 在能力表里的那一项（已登录才有）。 */
@@ -110,16 +153,33 @@ export function createCapabilityCache(state) {
 
 	async function load(options) {
 		const force = options?.force === true;
-		const [lightai, ide] = await Promise.all([
+		// ★ 2026-10-27：dsh 侧可直连的 provider 也进能力表（不依赖 IDE）
+		const [lightai, ide, dsh] = await Promise.all([
 			lightaiProviderEntry(state),
 			loadIde(force).then(v => ({ ok: true, v }), e => ({ ok: false, e })),
+			(async () => {
+				try {
+					const { listDshProviders } = await import('./imageApi.js');
+					return await listDshProviders({ settings: state?.settings, credentials: state?.credentials });
+				} catch { return []; }
+			})(),
 		]);
-		// IDE 读不到、LightAI 也没有 ⇒ 如实报 IDE 那边的错（老行为）；有 LightAI 就不因 IDE 不在而失败 ✓
-		if (!ide.ok && !lightai) { throw ide.e; }
-		const ideProviders = ide.ok ? ide.v.providers.filter(p => !LIGHTAI_PROVIDER_IDS.has(String(p?.id ?? ''))) : [];
+		// IDE 读不到、LightAI 和 dsh 都没有 ⇒ 如实报 IDE 那边的错（老行为）；有别的就不因 IDE 不在而失败 ✓
+		if (!ide.ok && !lightai && dsh.length === 0) { throw ide.e; }
+		const ideIds = new Set(dsh.map(item => item.id));
+		const ideProviders = ide.ok
+			? ide.v.providers.filter(p => !LIGHTAI_PROVIDER_IDS.has(String(p?.id ?? '')) && !ideIds.has(String(p?.id ?? '')))
+			: [];
+		// dsh 那几项没有"模型清单"（设置里只有聊天模型）⇒ 标明"模型 id 要你自己给"
+		const dshEntries = dsh.map(item => ({
+			id: item.id,
+			name: item.name + '（dsh 直连）',
+			models: [],
+			needsModel: true,
+		}));
 		merged = {
 			at: Date.now(),
-			providers: [...(lightai ? [lightai] : []), ...ideProviders],
+			providers: [...(lightai ? [lightai] : []), ...dshEntries, ...ideProviders],
 			...(!ide.ok ? { ideError: String(ide.e?.message ?? ide.e) } : {}),
 		};
 		return merged;

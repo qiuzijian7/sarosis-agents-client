@@ -7,6 +7,9 @@
 import { maybeSaveToWorkspace } from './workspaceSave.js';
 import { decodeBase64, decodeDataUrl, normalizeMediaType } from './imageBytes.js';
 import { resolveImageRoute } from './capabilities.js';
+// ★ 2026-10-27（用户：「生图逻辑都在 dsh 侧，后续废除 IDE 生图」）：改图也走 dsh 直连
+//   —— 否则 IDE 一废除，`edit_image` 就断（生图可以不带参考图，改图必然带）。
+import { generateViaDsh, pickDshProvider } from './imageApi.js';
 
 const IDE_TIMEOUT_MS = 10 * 60 * 1000;
 
@@ -49,6 +52,30 @@ async function requestEdit(state, { prompt, image, model, provider, signal }) {
 		// 参考图走 LightAI 的上传（/api/public/upload）⇒ 模型按参考图出图（gpt-image 自动切 edits 端点）
 		const out = await service.generate('image', { prompt, imageInput: image, ...(model ? { modelId: model } : {}) }, { signal });
 		return { images: Array.isArray(out?.images) ? out.images : [], degraded: false, degradedReason: '' };
+	}
+	// ★ 2026-10-27：BYOK 的改图由 Host 直连（multipart `/images/edits`），不经 IDE
+	if (route === 'dsh') {
+		// `edit_image` 的入参只有 model / source（没有 provider）⇒ 没给就取第一个可直连的
+		const resolved = await pickDshProvider({ settings: state.settings, credentials: state.credentials }, provider);
+		if (!resolved) {
+			throw new Error(`改图用的 provider「${provider || '(未指定)'}」在 dsh 侧没有可直连的配置：`
+				+ '需要 `llm-pi-ai` 里那条路由（baseURL）+ 凭据库里的 Key。');
+		}
+		const decoded = /^data:/i.test(image) ? decodeDataUrl(image) : undefined;
+		const bytes = decoded?.bytes ?? decodeBase64(image);
+		if (!bytes || bytes.length === 0) {
+			throw new Error('参考图解不开：dsh 直连改图要 **data URL** 或裸 base64（`source:"path"` 那条路仍需 IDE）');
+		}
+		const out = await generateViaDsh(resolved, {
+			prompt, model, n: 1, signal,
+			reference: [{ bytes, mediaType: decoded?.mediaType || 'image/png', name: 'reference.png' }],
+		});
+		return { images: out.rawImages, degraded: false, degradedReason: '' };
+	}
+	if (state.allowIdeFallback === false) {
+		throw new Error('IDE 侧改图已关闭（`allowIdeFallback: false`）—— '
+			+ `provider「${provider || '(未指定)'}」在 dsh 侧既不是 LightAI 也不是可直连的 BYOK 路由。`
+			+ '去 设置 → 模型 → LightAI 登录，或在 `llm-pi-ai` 里配好这条 provider。');
 	}
 	const bridge = state.bridge;
 	if (!bridge || typeof bridge.callIDE !== 'function') {

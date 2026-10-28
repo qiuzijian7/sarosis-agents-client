@@ -1,6 +1,6 @@
 {
   "note": "由 dsh-plugins/tools-snapshot.mjs 生成；被 dshHarness/test/common/dshToolSnapshot.test.ts 钉住。不要手改，跑 --write。",
-  "total": 153,
+  "total": 155,
   "plugins": {
     "vssaros-agents": [
       {
@@ -614,7 +614,7 @@
           "save_to_workspace",
           "size"
         ],
-        "descriptionHash": "ab4f1535b02b"
+        "descriptionHash": "cdaef7b51a2a"
       },
       {
         "name": "image_models",
@@ -622,7 +622,7 @@
         "params": [
           "refresh"
         ],
-        "descriptionHash": "e1eefcb916d4"
+        "descriptionHash": "62c213ce6fad"
       },
       {
         "name": "view_canvas",
@@ -1185,6 +1185,28 @@
           "prefix"
         ],
         "descriptionHash": "16cc35ee4bc8"
+      },
+      {
+        "name": "media_context",
+        "required": [],
+        "params": [],
+        "descriptionHash": "a20ac69ae99d"
+      },
+      {
+        "name": "media_export",
+        "required": [
+          "dir"
+        ],
+        "params": [
+          "dir",
+          "dryRun",
+          "filter",
+          "ids",
+          "layout",
+          "limit",
+          "overwrite"
+        ],
+        "descriptionHash": "b1d87de67733"
       },
       {
         "name": "media_list",

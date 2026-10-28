@@ -34,6 +34,20 @@ registerAction2(class FindGraphSymbolAction extends Action2 {
 			category: localize2('sarosis.category', 'Saros'),
 			keybinding: {
 				primary: KeyMod.Shift | KeyMod.Alt | KeyCode.KeyS,
+				// ★ 2026-10-27（用户报「IDE 侧 Alt+Shift+S 完全没反应，F1 也搜不到」）：
+				// 加一个**不被输入法抢**的备用键位。
+				//
+				// 为什么需要：中文输入法（搜狗 / QQ / 微信 / 百度 等）默认把「中英切换」绑在
+				// **Alt+Shift** ⇒ IME 先吞掉这个组合键，IDE **根本收不到** ⇒ 表现为"按了完全没反应"
+				// （而命令本身是好的：真机按一次能弹 Find Symbol 模态、F1 面板里也能搜到 ✓）。
+				// ⇒ 另给 `Ctrl+Shift+Alt+S`（sessions 壳内无人占用 ✓，也不与 VS Code 内置键冲突 ✓）。
+				//
+				// ⚠ 顺带一个**用法坑**：`F1` 在本产品里默认开的是**文件模式**（不是命令模式）⇒
+				//   要搜命令得按 `Ctrl+Shift+P`，或先输 `>` ⇒ 否则"搜不到"是搜索模式不对，不是命令没了 ✓。
+				// ⚠ `KeyMod` 里**没有** `Ctrl`（只有 CtrlCmd / Shift / Alt / WinCtrl）⇒ 写 `KeyMod.Ctrl`
+				//   会直接编译不过（TS2339）⇒ 这里用 `KeyMod.CtrlCmd`：Windows/Linux 上就是 Ctrl ✓
+				//   （macOS 上是 Cmd —— 这条本来就是给中文输入法场景用的备用键位，不影响主键位 Alt+Shift+S）。
+				secondary: [KeyMod.CtrlCmd | KeyMod.Shift | KeyMod.Alt | KeyCode.KeyS],
 				weight: KeybindingWeight.WorkbenchContrib,
 			},
 		});

@@ -18,9 +18,10 @@
 // ⚠ git 是**子进程**（机器上可能没有 git ⇒ 所有 Git 操作如实报错「找不到 git」，不伪装 ✗）。
 // ⚠ 文件名防穿越：只认 basename 白名单字符（记忆是 Markdown 平铺文件，不允许子目录 ✓）。
 
+import { renameWithRetry } from './atomicWrite.js';
 import { execFile } from 'node:child_process';
-import { realpathSync } from 'node:fs';
-import { cp, mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { existsSync, realpathSync } from 'node:fs';
+import { cp, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join, basename } from 'node:path';
 import { promisify } from 'node:util';
 import { agentsRootOf, dataRootOf, scanAgentsFromConfig } from './store.js';
@@ -54,6 +55,21 @@ const LOG_LIMIT = 20;
 const LOG_LIMIT_MAX = 100;
 
 /** 归一化历史条数：非法/缺省 → 20，夹到 (0, 100]。 */
+/**
+ * 「核记忆」模板（首次自动创建时写入；之后**绝不覆盖**）。
+ * 与 DeepSeekBot 的 `CORE_MEMORY_TEMPLATE` 同定位：只放"不该忘的事实/指针"，细节进别的文件。
+ */
+export const CORE_MEMORY_TEMPLATE = [
+	'# 记忆',
+	'',
+	'<!-- 每轮注入到 system prompt（按 memory-chars 截断）。',
+	'     这里只放"不该忘的事实 / 偏好 / 约定"；细节放到别的文件，这里只放指针。',
+	'     加一条：追加一个 Markdown 列表项。改动在**新会话**生效。 -->',
+	'',
+	'- （还没有条目 —— 在这里加第一条）',
+	'',
+].join('\n');
+
 export function clampLogLimit(value) {
 	const n = typeof value === 'string' ? Number(value.trim()) : value;
 	if (typeof n !== 'number' || !Number.isFinite(n) || n <= 0) {
@@ -64,7 +80,16 @@ export function clampLogLimit(value) {
 
 /** 记忆目录。 */
 export function memoryDirOf(config, agentId) {
-	return join(agentsRootOf(config), String(agentId ?? ''), 'memory');
+	const id = String(agentId ?? '');
+	/* 自定义 agent：与 `.agent.md` 同目录树（原行为，一个字没改） */
+	const ownRoot = join(agentsRootOf(config), id);
+	if (id && existsSync(ownRoot)) { return join(ownRoot, 'memory'); }
+	/* ★ 2026-10-27「记忆没有内容」：内置/预设 agent 在 `agentsRoot` 下**没有**目录
+	   （md 在 `agents-builtin/<id>/`，那是每次启动重建的 runDir 副本 ⇒ 写进去会丢）。
+	   以前返回 `agentsRoot/<id>/memory` —— 那个目录永远不存在 ⇒
+	   「记忆」页签恒为 0 条，agent 写了也随重启消失。
+	   ⇒ 落到数据根下一个稳定位置。 */
+	return join(dataRootOf(config), 'agent-memory', id);
 }
 
 /* ── 记忆备份（2026-10-21，对齐 DSB 的 `memory/recovery.ts`）──────────────────
@@ -524,6 +549,81 @@ export async function enableGit(config, agentId) {
 	return gitStatusOf(config, agentId);
 }
 
+/**
+ * 确保记忆库「可用且非空」（2026-10-27，幂等）。
+ *
+ * 做的事，按这个**顺序**（顺序有意义）：
+ *   ① mkdir 记忆目录
+ *   ② 写 `MEMORY.md` 模板 —— **只在不存在时**写，绝不覆盖已有内容
+ *   ③ `enableGit`（init + 初始提交）—— 必须在 ② 之后，否则它会写入自己那版简陋 README
+ *
+ * ⚠ git 失败**不抛**（返回 `git:'unavailable'`）：没有 git 的机器仍该能用文件模式的记忆 ——
+ *   这是我们相对 DeepSeekBot 的优势（它 `git-not-found` 直接判记忆不可用）。
+ * ⚠ 调用点：建 bot 之后 + `/api/memory` 的 GET 入口（后者让**老 bot** 也被照顾到，不用重建）。
+ */
+export async function ensureMemoryRepo(config, agentId) {
+	const id = String(agentId ?? '').trim();
+	if (!id) { return { ok: false, reason: 'no-agent' }; }
+	const dir = memoryDirOf(config, id);
+	await mkdir(dir, { recursive: true });
+
+	/* ② 模板：缺失才写（`stat` 成功就说明已有文件） */
+	let wroteTemplate = false;
+	const corePath = join(dir, 'MEMORY.md');
+	let exists = false;
+	try { await stat(corePath); exists = true; } catch { exists = false; }
+	if (!exists) {
+		await writeFile(corePath, CORE_MEMORY_TEMPLATE, 'utf8');
+		wroteTemplate = true;
+	}
+
+	/* ③ git：软失败 */
+	let gitState = 'ready';
+	try {
+		const st = await gitStatusOf(config, id);
+		if (!st.enabled) {
+			await enableGit(config, id);
+			gitState = 'initialized';
+		}
+	} catch (e) {
+		/* 没装 git / 版本太老：文件模式照常可用，只是没有版本与分支 */
+		gitState = 'unavailable';
+	}
+
+	/* ④ 初始版本（2026-10-27）：让「版本」页签也有内容。
+	   「版本」= git tag，前一步只保证有提交与分支，还得有人手动打第一个 tag。
+	   用户在截图里报的是"记忆/演化/版本/分支都没内容"，这是最后一个空格子。
+	   ⚠ 只在**一个 tag 都没有**时打 —— 绝不覆盖用户已有的版本名。
+	   ⚠ 打 tag 失败不影响记忆可用性（只是「版本」页签继续空着，不该让整次初始化失败）。 */
+	let tagged = '';
+	if (gitState !== 'unavailable') {
+		try {
+			const vers = await listVersions(config, id);
+			if (vers.enabled && !vers.versions.length) {
+				await setVersion(config, id, INITIAL_VERSION_TAG);
+				tagged = INITIAL_VERSION_TAG;
+			}
+		} catch {
+			tagged = '';
+		}
+	}
+
+	return {
+		ok: true,
+		created: wroteTemplate || gitState === 'initialized',
+		wroteTemplate,
+		git: gitState,
+		tagged,
+	};
+}
+
+/**
+ * 初始化时打的那个版本名（`v0` 而不是 `v1`：它是"起点"，不是"第一个正式版本"）。
+ * 用户之后按「打 tag」起的名字与它并列，互不影响。
+ */
+export const INITIAL_VERSION_TAG = 'v0';
+
+
 /** 提交快照（人按按钮；没有变更 ⇒ 如实说，不造空提交 ✓）。 */
 /**
  * 「版本」= 记忆仓库的 **git tag**（2026-10-21，对齐 DeepSeekBot 的 `MemoryVersion`）。
@@ -644,7 +744,7 @@ export async function restoreMemoryFile(config, agentId, rev, name, message) {
 	const target = join(dir, shown.name);
 	const tmp = `${target}.tmp-${Date.now()}`;
 	await writeFile(tmp, shown.text, 'utf8');
-	await rename(tmp, target);
+	await renameWithRetry(tmp, target);
 	let snapshot;
 	try {
 		snapshot = await snapshotGit(config, agentId, String(message ?? '').trim() || `回滚 ${shown.name} 到 ${shown.rev}`);

@@ -307,9 +307,18 @@ DerivedDataCache
 | 命令 ID / 快捷键 | 说明 |
 | --- | --- |
 | `Agent Studio: Codebase Memory Init`（`agentStudio.codebaseMemoryInit`） | 打开 Codebase 相关面板；无图时引导索引 |
-| `Shift+Alt+S`（`sarosis.findGraphSymbol`） | Find Symbol in Codebase |
+| `Shift+Alt+S` **或 `Ctrl+Shift+Alt+S`**（`sarosis.findGraphSymbol`） | Find Symbol in Codebase |
 | `Alt+Shift+G`（`sarosis.classHierarchy.show`） | Show Class Hierarchy |
 | `sarosis.openGraphFile` / `sarosis.findGraphReferences` / `sarosis.gotoGraphImplementation` / `sarosis.listGraphMethods` / `sarosis.searchSelectionInFiles` | 编辑器内图谱跳转与检索（C++ 在无 LSP 时由此兜底） |
+
+> **⚠ 按快捷键"完全没反应"？先查这两件事（2026-10-27 真机取证）**
+>
+> 1. **中文输入法可能把 `Alt+Shift` 吃了**：搜狗 / QQ / 微信 / 百度等输入法默认把「中英切换」绑在
+>    **Alt+Shift** ⇒ IME 先吞掉这个组合键，**IDE 根本收不到** ⇒ 看起来就是"按了毫无反应"。
+>    ⇒ Find Symbol 另给了 **`Ctrl+Shift+Alt+S`** 备用键位 ✓（`Alt+Shift+G` 等同族命令若也失效，
+>    可在 **Ctrl+K Ctrl+S（键盘快捷方式）** 里自行改绑 ✓）。
+> 2. **命令面板的搜索模式**：`F1` 在本产品默认开的是**文件模式** ⇒ 直接输 `Find Symbol` 会搜文件、
+>    搜不到命令 ⇒ 要搜命令请按 **`Ctrl+Shift+P`**，或在 `F1` 里先输一个 `>` 再输命令名 ✓。
 
 ### 2.13 停机/清理/重建
 

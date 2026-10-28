@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>F2 · 同一套「表 + 行内展开」，宽容器版（880px）</title>
+<style>
+:root{--bg:#121214;--panel:#202024;--card:#232326;--bd:#2f2f33;--tx:#e6e6e6;--tx2:#a8a8a8;--tx3:#737373;
+--pri:#4c9aff;--ok:#3fb950;--warn:#d29922;--err:#f85149;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:13px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif;
+display:grid;place-items:center;min-height:100vh;padding:20px}
+/* 宽容器：假设渠道页将来升成独立面板（或弹窗可加宽） */
+.panel{width:880px;height:660px;background:var(--panel);border:1px solid var(--bd);border-radius:12px;
+overflow:hidden;display:flex;flex-direction:column;box-shadow:0 18px 50px rgba(0,0,0,.5)}
+.ph{display:flex;align-items:center;gap:9px;padding:12px 16px 9px;border-bottom:1px solid var(--bd);flex-wrap:wrap}
+.ph h2{margin:0;font-size:15px}
+.ph .sp{flex:1}
+.ph .muted{color:var(--tx3);font-size:11px}
+.kpi{font-size:11px;padding:1.5px 8px;border-radius:999px;border:1px solid var(--bd);background:#26262a;color:var(--tx2);
+display:flex;gap:5px;align-items:center}
+.kpi b{font-variant-numeric:tabular-nums;color:var(--tx)}
+.kpi.hot{border-color:rgba(210,153,34,.42);background:rgba(210,153,34,.12);color:#e3b341}
+.kpi.hot b{color:#e3b341}
+.kpi.ok{border-color:rgba(63,185,80,.32);background:rgba(63,185,80,.1);color:#7ee787}
+.kpi.ok b{color:#7ee787}
+.filters{display:flex;gap:6px;padding:0 16px 9px;align-items:center;flex-wrap:wrap}
+.chip{font-size:11px;padding:2px 9px;border-radius:999px;border:1px solid var(--bd);background:#26262a;color:var(--tx2);cursor:pointer}
+.chip.on{border-color:var(--pri);background:rgba(76,154,255,.14);color:#dbeafe}
+button{font:inherit;font-size:11px;padding:3px 9px;border-radius:6px;cursor:pointer;border:1px solid var(--bd);
+background:#2a2a2e;color:var(--tx)}
+button:hover{background:#313136}
+button.pri{background:var(--pri);border-color:transparent;color:#fff;font-weight:600}
+button.ghost{background:transparent}
+button:disabled{opacity:.45;cursor:not-allowed}
+.scroll{flex:1;overflow:auto;padding:0 16px 16px}
+table{width:100%;border-collapse:collapse;font-size:12px}
+thead th{text-align:left;color:var(--tx3);font-weight:600;font-size:10.5px;padding:7px 9px;
+border-bottom:1px solid var(--bd);white-space:nowrap;background:#26262a}
+tbody tr.row{cursor:pointer}
+tbody tr.row:hover{background:#27272c}
+tbody tr.row.open{background:rgba(76,154,255,.09)}
+td{padding:8px 9px;border-bottom:1px solid #26262a;color:var(--tx2);vertical-align:middle}
+.pl{display:flex;align-items:center;gap:7px;color:var(--tx);font-weight:600;white-space:nowrap}
+.ico{width:20px;height:20px;border-radius:5px;display:grid;place-items:center;background:#2c2c31;font-size:11px;flex:none}
+.pill{font-size:10.5px;padding:1px 7px;border-radius:999px;white-space:nowrap}
+.p-ok{color:#7ee787;background:rgba(63,185,80,.14)}
+.p-warn{color:#e3b341;background:rgba(210,153,34,.14)}
+.p-off{color:var(--tx3);background:#2a2a2e}
+.n{font-variant-numeric:tabular-nums;text-align:right}
+.n.hot{color:#e3b341;font-weight:600}
+.n.err{color:#ff9f97;font-weight:600}
+.n.zero{color:#4a4a50}
+.caret{width:18px;text-align:center;color:var(--tx3);transition:transform .15s;font-size:9.5px}
+tr.row.open .caret{transform:rotate(90deg)}
+tr.detail>td{padding:0;background:#1e1e21;border-bottom:1px solid #26262a}
+/* ★ 关键差异：宽容器里展开区用**两列网格**，纵向高度减半 */
+.dwrap{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:10px 11px 12px}
+.blk{background:var(--card);border:1px solid var(--bd);border-radius:8px;overflow:hidden;min-width:0}
+.blk.wide{grid-column:1 / -1}
+.blk>.cap{display:flex;align-items:center;gap:6px;padding:5.5px 9px;background:#26262a;border-bottom:1px solid var(--bd)}
+.blk>.cap b{font-size:11px}
+.blk>.cap .cnt{font-size:10px;padding:0 6px;border-radius:999px;background:#33333a;color:var(--tx2);font-variant-numeric:tabular-nums}
+.blk>.cap .cnt.hot{background:rgba(210,153,34,.2);color:#e3b341}
+.blk>.cap .sp{flex:1}
+.fld{display:grid;grid-template-columns:64px minmax(0,1fr);gap:5px 8px;padding:8px 9px;align-items:center;font-size:11.5px}
+.fld label{color:var(--tx2)}
+input{font:inherit;font-size:11.5px;padding:4px 8px;border-radius:5px;border:1px solid var(--bd);
+background:#1a1a1d;color:var(--tx);width:100%;min-width:0}
+input::placeholder{color:#5c5c63}
+.hintline{padding:7px 9px;color:var(--tx3);font-size:10.5px;line-height:1.55}
+.blk table{width:100%;border-collapse:collapse;font-size:11px}
+.blk thead th{font-size:10px;padding:4px 8px;background:transparent;border-bottom:1px solid var(--bd)}
+.blk td{padding:5px 8px;border-bottom:1px solid #26262a;font-size:11px}
+.blk tr:last-child td{border-bottom:0}
+.blk td b{color:var(--tx);font-weight:600}
+.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px}
+.reason{font-weight:600}
+.r-sender,.r-mention{color:#e3b341}
+.r-loop,.r-unbound{color:#ff9f97}
+.ellip{max-width:210px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-block;vertical-align:bottom}
+.note{margin:11px 0 0;color:var(--tx3);font-size:11px;line-height:1.6;border-top:1px dashed var(--bd);padding-top:9px}
+</style>
+</head>
+<body>
+<div class="panel">
+  <div class="ph">
+    <h2>渠道</h2>
+    <span class="muted">全部在本机 dsh 侧 · 点行展开</span>
+    <span class="sp"></span>
+    <span class="kpi ok">已连接 <b>1</b></span>
+    <span class="kpi hot">待批准 <b>2</b></span>
+    <span class="kpi hot">失败 <b>3</b></span>
+    <button class="ghost">策略</button>
+  </div>
+  <div class="filters">
+    <span class="chip on">全部</span><span class="chip">仅异常 (1)</span><span class="chip">已接入 (2)</span>
+  </div>
+
+  <div class="scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>平台</th><th style="width:118px">凭据</th><th style="width:132px">入站</th>
+          <th class="n" style="width:52px">绑定</th><th class="n" style="width:60px">待批准</th>
+          <th class="n" style="width:52px">失败</th><th style="width:20px"></th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr class="row open" data-k="feishu">
+          <td><span class="pl"><span class="ico">🐦</span>飞书</span></td>
+          <td><span class="pill p-ok">已配置</span> <span class="muted code">cli_a1…</span></td>
+          <td><span class="pill p-ok">已连接</span> <span class="muted" style="font-size:10.5px">17:32</span></td>
+          <td class="n">2</td><td class="n hot">2</td><td class="n err">3</td>
+          <td class="caret">▶</td>
+        </tr>
+        <tr class="detail" data-for="feishu">
+          <td colspan="7">
+            <div class="dwrap">
+              <div class="blk">
+                <div class="cap"><b>入站</b><span class="sp"></span>
+                  <span style="font-size:10px;color:var(--tx3)">WS 长连接</span><button>停止</button></div>
+                <div class="hintline">最近事件 17:32:07。出站用每条绑定自己的 webhook，不需要应用凭据。</div>
+              </div>
+
+              <div class="blk">
+                <div class="cap"><b>凭据</b><span class="sp"></span><button class="pri">保存</button></div>
+                <div class="fld">
+                  <label>App ID</label><input value="cli_a1b2c3d4e5f6g7h8">
+                  <label>Secret</label><input type="password" placeholder="已配置 · 留空 = 不改">
+                </div>
+              </div>
+
+              <div class="blk wide">
+                <div class="cap"><b>绑定</b><span class="cnt">2</span><span class="sp"></span>
+                  <button class="ghost">+ 新建</button><button class="ghost">打开 Bots 工作台</button></div>
+                <table>
+                  <thead><tr><th>IM 会话</th><th>绑定对象</th><th>方向</th><th>准入</th><th>状态</th></tr></thead>
+                  <tbody>
+                    <tr><td class="code">oc_5f2a9d</td><td><b>群 · 评测群</b></td><td>双向</td><td>@ 触发</td><td>启用</td></tr>
+                    <tr><td class="code">oc_88c1e2</td><td><b>Bot · Coder</b></td><td>只发</td><td>—</td><td>启用</td></tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <div class="blk">
+                <div class="cap"><b>待批准</b><span class="cnt hot">2</span><span class="sp"></span>
+                  <span style="font-size:10px;color:var(--tx3)">只给私聊</span></div>
+                <table>
+                  <tbody>
+                    <tr><td class="code">JXT457YC</td><td>张三</td><td class="n" style="color:var(--tx3)">42 分</td>
+                      <td class="n"><button class="pri">批准</button></td></tr>
+                    <tr><td class="code">QW8N3KPD</td><td>李四</td><td class="n" style="color:var(--tx3)">12 分</td>
+                      <td class="n"><button class="pri">批准</button></td></tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <div class="blk">
+                <div class="cap"><b>最近失败</b><span class="cnt hot">3</span><span class="sp"></span>
+                  <button class="ghost">清空</button></div>
+                <table>
+                  <tbody>
+                    <tr><td class="reason r-sender">sender</td><td>u_bad</td><td><span class="ellip code">我不在白名单</span></td></tr>
+                    <tr><td class="reason r-mention">no-mention</td><td>王五</td><td><span class="ellip code">@所有人 帮我看下这个报错…</span></td></tr>
+                    <tr><td class="reason r-loop">loop</td><td>bot_a</td><td><span class="ellip code">冷却 60s</span></td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </td>
+        </tr>
+
+        <tr class="row" data-k="telegram">
+          <td><span class="pl"><span class="ico">✈️</span>Telegram</span></td>
+          <td><span class="pill p-ok">已配置</span> <span class="muted code">77…</span></td>
+          <td><span class="pill p-warn">未启动</span></td>
+          <td class="n">1</td><td class="n zero">0</td><td class="n zero">0</td>
+          <td class="caret">▶</td>
+        </tr>
+        <tr class="detail" data-for="telegram" hidden>
+          <td colspan="7"><div class="dwrap">
+            <div class="blk">
+              <div class="cap"><b>入站</b><span class="sp"></span>
+                <span style="font-size:10px;color:var(--tx3)">HTTP 长轮询</span><button class="pri">启动</button></div>
+              <div class="hintline">未开始。群聊默认只认 @。</div>
+            </div>
+            <div class="blk">
+              <div class="cap"><b>凭据</b><span class="sp"></span><button class="pri">保存</button></div>
+              <div class="fld">
+                <label>Token</label><input type="password" placeholder="已配置 · 留空 = 不改">
+                <label>Username</label><input placeholder="my_bot（可选）">
+              </div>
+            </div>
+            <div class="blk wide">
+              <div class="cap"><b>绑定</b><span class="cnt">1</span><span class="sp"></span><button class="ghost">+ 新建</button></div>
+              <table><tbody><tr><td class="code">-100200</td><td><b>Bot · Coder</b></td><td>双向</td><td>@ 触发</td><td>启用</td></tr></tbody></table>
+            </div>
+          </div></td>
+        </tr>
+
+        <tr class="row dim" data-k="discord">
+          <td><span class="pl" style="color:var(--tx3)"><span class="ico">🎮</span>Discord</span></td>
+          <td><span class="pill p-off">未配置</span></td>
+          <td><span class="pill p-off">未接入</span></td>
+          <td class="n zero">—</td><td class="n zero">—</td><td class="n zero">—</td>
+          <td class="caret" style="opacity:.3">▶</td>
+        </tr>
+        <tr class="detail" data-for="discord" hidden>
+          <td colspan="7"><div class="dwrap">
+            <div class="blk wide"><div class="hintline">适配器尚未实现 —— 不给表单，避免“填了不生效”。</div></div>
+          </div></td>
+        </tr>
+
+        <tr class="row dim" data-k="wecom">
+          <td><span class="pl" style="color:var(--tx3)"><span class="ico">🏢</span>企业微信</span></td>
+          <td><span class="pill p-off">未配置</span></td>
+          <td><span class="pill p-off">未接入</span></td>
+          <td class="n zero">—</td><td class="n zero">—</td><td class="n zero">—</td>
+          <td class="caret" style="opacity:.3">▶</td>
+        </tr>
+        <tr class="detail" data-for="wecom" hidden>
+          <td colspan="7"><div class="dwrap">
+            <div class="blk wide"><div class="hintline">适配器尚未实现（同 Discord）。</div></div>
+          </div></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p class="note">F2 是 F1 的**同一套结构**在宽容器（880px）下的样子：主表多两列（凭据 / 入站），
+      展开区改成**两列网格**（入站 + 凭据并排，绑定跨两列，配对 + 失败并排）⇒ 纵向高度大约是 F1 的一半。
+      实现上只是 `.dwrap{grid-template-columns:1fr 1fr}` 与列数不同，组件与数据完全一致。</p>
+  </div>
+</div>
+
+<script>
+  const rows = [...document.querySelectorAll('tr.row')];
+  const detailOf = (k) => document.querySelector('tr.detail[data-for="' + k + '"]');
+  rows.forEach((tr) => {
+    tr.addEventListener('click', (ev) => {
+      if (ev.target.tagName === 'BUTTON') { return; }
+      const d = detailOf(tr.dataset.k);
+      if (!d) { return; }
+      const willOpen = !tr.classList.contains('open');
+      rows.forEach((r) => {
+        r.classList.remove('open');
+        const o = detailOf(r.dataset.k);
+        if (o) { o.hidden = true; }
+      });
+      if (willOpen) { tr.classList.add('open'); d.hidden = false; }
+    });
+  });
+</script>
+</body>
+</html>

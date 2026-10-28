@@ -166,6 +166,7 @@ export class SettingsViewPane extends ViewPane {
 			{ id: 'general', label: 'General' },
 		];
 
+
 		// Add tabs from registry
 		for (const tab of this.settingsTabRegistry.tabs) {
 			tabs.push({ id: tab.id, label: tab.label });
@@ -322,7 +323,7 @@ export class SettingsViewPane extends ViewPane {
 
 	// ─── Plugin Tab (Generic Renderer) ────────────────────────────────────────
 
-	private _loadPluginConfig(): void {
+		private _loadPluginConfig(): void {
 		for (const tab of this.settingsTabRegistry.tabs) {
 			const fieldMap = new Map<string, any>();
 			for (const field of tab.fields) {

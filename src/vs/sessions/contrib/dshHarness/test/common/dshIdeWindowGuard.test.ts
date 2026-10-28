@@ -37,6 +37,7 @@ const SERVICE = 'src/vs/sessions/contrib/dshHarness/electron-browser/dshHarnessS
 const FULL_WINDOW = 'src/vs/sessions/contrib/dshHarness/electron-browser/dshFullWindowContribution.ts';
 const CONTRIBUTION = 'src/vs/sessions/contrib/dshHarness/electron-browser/dshHarness.contribution.ts';
 const WINDOW_IMPL = 'src/vs/platform/windows/electron-main/windowImpl.ts';
+const WINDOWS_MAIN = 'src/vs/platform/windows/electron-main/windowsMainService.ts';
 
 function read(rel: string): string {
 	const abs = path.join(process.cwd(), rel);
@@ -161,8 +162,15 @@ suite('desktop 模式：IDE 主窗口不许露面（点登录也不许）', () =
 			"缺少 'close' 分支（规则③：都开着时关 IDE 只关它自己）✗");
 		assert.match(body, /action === 'hide'[\s\S]{0,260}event\.preventDefault\(\)[\s\S]{0,140}win\.hide\(\)/,
 			"缺少 'hide' 分支，或没真 preventDefault+hide —— 桌面窗口的 opener 就是 IDE ⇒ 真关会把它一起带走 ✗");
-		assert.match(body, /win\.once\('closed'[\s\S]{0,240}app\.quit\(\)/,
-			'规则①②：关掉的若是最后一个界面，必须显式退出（隐藏窗口不计入 window-all-closed ✗）');
+		// ★★ 2026-10-27（用户报「IDE 点关闭按钮无法关闭 app」）：'quit' 分支**不许再干等窗口关掉**。
+		//   旧写法 `win.once('closed', () => app.quit())` 在本仓根本不成立 —— VS Code 的
+		//   `LifecycleMainService` 在 `win.on('close')` 里无条件 `preventDefault()` 再走 `unload()`
+		//   （要 renderer 回话）⇒ renderer 不回话时 `closed` 永不发生 ⇒ `app.quit()` 永远不被调用 ✗
+		//   （真机：13s 内 22 条"关闭后退出应用"，一条 before-quit 都没有）。
+		assert.ok(!/win\.once\('closed'/.test(body),
+			"'quit' 分支不许再挂 win.once('closed') 干等（VS Code 的 close 被 preventDefault + unload 卡住时它永不发生 ✗）");
+		assert.match(body, /this\._requestAppQuit\(\)/,
+			'判定该退时必须**主动发起**退出（等窗口自己关掉 = 点了关不掉 ✗）');
 
 		// ④ 负对照：旧的内联判据不许复活
 		assert.ok(!/const others = this\._windowsMainService\.getWindows\(\)\.filter/.test(body),
@@ -338,6 +346,100 @@ suite('desktop 模式：IDE 主窗口不许露面（点登录也不许）', () =
 		assert.match(sv, /ownerWindowOfView\(a\.viewId\)/, 'attach 时必须按视图定位它自己那扇窗口 ✗');
 		assert.match(sv, /_raiseDesktopWindow\(guard\.windowId, '桌面视图已就位 ⇒ 提到前台', desk\)/,
 			'attach 时必须提一次桌面窗口（窗口十几秒后才可见，靠这一脚才准 ✗）');
+	});
+
+	// ★★ 2026-10-28（用户：「打包出的 exe 打开后会闪一下 IDE 窗口」）：隐藏启动判据不许只认
+	//   `isEmbeddedApp`（间接证据 + 依赖 main.ts 赋值时机 ⇒ 打包版判 false ⇒ IDE 建出来就可见）。
+	test('⑩ 打包版也要建窗即隐藏（不许先闪一下 IDE）+ 首启等待要有阶段文案', () => {
+		const wms = stripComments(read(WINDOWS_MAIN));
+		const at = wms.indexOf('private _wantsHiddenStart(): boolean {');
+		assert.ok(at > 0, '找不到 _wantsHiddenStart ✗');
+		const body = wms.slice(at, wms.indexOf('\n\tprivate ', at + 1));
+		assert.match(body, /this\.environmentMainService\.isBuilt/,
+			'隐藏启动判据必须包含 `environmentMainService.isBuilt`（打包版直接判据；只认 isEmbeddedApp ⇒ 打包版会闪 IDE ✗）');
+		assert.match(body, /const hidden = !hasTarget && \(isBuilt \|\| isEmbedded\)/,
+			'判据必须是「无目标参数 && (打包版 || isEmbeddedApp)」（带目录/文件的启动仍要露 IDE ✗）');
+		assert.match(body, /wantsHiddenStart=\$\{hidden\}/,
+			'必须有可诊断日志（再出"闪 IDE"时能直接看出是哪个判据没成立 ✗）');
+
+		const full = stripComments(read(FULL_WINDOW));
+		// 首启等待要分阶段：Host 就绪后换文案（否则用户看不出是卡住还是在干活）
+		assert.match(full, /后台服务已就绪，正在加载界面/, 'Host 就绪后必须更新占位文案（阶段感）✗');
+		// 延时缩短之后必须等工作区，不能把"还没到"当成"没打开工作区"
+		assert.match(full, /await this\._waitForWorkspaceCwd\(3_000\)/,
+			'会话解析必须等工作区就绪（延时缩到 800ms 后工作区可能还没落定 ✗）');
+		assert.match(full, /private async _waitForWorkspaceCwd\(/, '必须有 _waitForWorkspaceCwd ✗');
+	});
+
+	// ★ 2026-10-27（真机：一次启动出现**两扇**桌面窗口）：启动自动开窗必须"每窗口只一次"。
+	test('⑨ 启动自动开窗只做一次（渲染进程重载不该再开第二扇桌面窗口）', () => {
+		const full = stripComments(read(FULL_WINDOW));
+		const timerAt = full.indexOf('const timer = setTimeout(');
+		assert.ok(timerAt > 0, '找不到启动开窗的定时器 ✗');
+		// ⚠ 锚点跟着延时走：2026-10-28 把启动开窗延时从 2500ms 缩到 800ms（首启等待优化）
+		const timerBody = full.slice(timerAt, full.indexOf('}, 800);', timerAt));
+		const iClaim = timerBody.indexOf('claimDesktopAutoOpen(');
+		const iLog = timerBody.indexOf("startup: open the dsh desktop window by default");
+		assert.ok(iClaim >= 0, '启动开窗前必须 claim（否则渲染进程重载会再开一扇 ✗）');
+		assert.ok(iLog > iClaim, 'claim 必须排在"开窗"之前（顺序反了 = 先开再问，白问 ✗）');
+		assert.match(timerBody, /if \(!first\) \{[\s\S]{0,200}return;/, 'claim 说"已做过"时必须 return（不许继续开 ✗）');
+		assert.match(timerBody, /async \(\) =>/, '这个回调必须是 async（要 await claim）✗');
+
+		// 状态必须在主进程（进程级）：放渲染侧会随重载丢失 = 本缺陷成因
+		const channel = stripComments(read(CHANNEL));
+		assert.match(channel, /private readonly _desktopAutoOpened = new Set<number>\(\)/,
+			'"已自动开窗"的状态必须是主进程的进程级集合（渲染侧重载不清零）✗');
+		const caseAt = channel.indexOf('case DshHarnessChannelCommand.ClaimDesktopAutoOpen:');
+		assert.ok(caseAt > 0, '主进程缺少 ClaimDesktopAutoOpen 的落点 ✗');
+		const caseBody = channel.slice(caseAt, channel.indexOf('case DshHarnessChannelCommand.', caseAt + 1));
+		assert.match(caseBody, /this\._desktopAutoOpened\.has\(windowId\)/, '必须按 windowId 判重 ✗');
+		assert.match(caseBody, /this\._desktopAutoOpened\.add\(windowId\)/, '判过之后必须占位（否则每次都说"第一次"✗）');
+		assert.match(caseBody, /Number\.isInteger\(a\.windowId\) && a\.windowId > 0/,
+			'windowId 必须校验（跨进程边界 ⇒ 脏值不许进 ✗）');
+
+		// ⚠ 必须断言**实现里真的发了这条命令**：只查签名会被"接口声明还在、实现被删掉"骗过（实测假绿 ✗）。
+		const service = stripComments(read(SERVICE));
+		assert.match(service, /claimDesktopAutoOpen\(windowId: number\): Promise<boolean>;/, '渲染侧服务接口必须声明这个方法 ✗');
+		assert.match(service, /claimDesktopAutoOpen\(windowId: number\): Promise<boolean> \{[\s\S]{0,200}DshHarnessChannelCommand\.ClaimDesktopAutoOpen/,
+			'实现里必须发 ClaimDesktopAutoOpen 这条命令（只留接口声明 = 调用静默失败 ✗）');
+	});
+	test('⑧ 判定该退 ⇒ 主动请求退出（不等窗口自己关掉）+ 只武装一次 + 卡住时强退', () => {
+		const channel = stripComments(read(CHANNEL));
+		const qAt = channel.indexOf('private _requestAppQuit(');
+		assert.ok(qAt > 0, '找不到 _requestAppQuit ✗');
+		const q = channel.slice(qAt, channel.indexOf('\n\tprivate ', qAt + 1));
+
+		// ① 幂等：连点关闭不许叠加（真机 22 次点击 ⇒ 22 个定时器/22 次 quit ✗）
+		assert.match(q, /if \(this\._appQuitting \|\| this\._quitRequested\) \{\s*return;\s*\}/,
+			'退出请求必须幂等（连点关闭会叠加调用/定时器 ✗）');
+		assert.match(q, /this\._quitRequested = true;/, '武装后必须置位（否则下一次点击又来一遍 ✗）');
+
+		// ② 优先用注入的生命周期服务（VS Code 自己的退出流程：处理 joiner / 弹确认框）
+		assert.match(q, /const hook = this\._requestQuit;/, '必须优先用注入的 requestQuit ✗');
+		assert.match(q, /const veto = await hook\(false\);/, '调 requestQuit 必须带 willRestart=false（不是重启）✗');
+		assert.match(q, /app\.quit\(\)/, '没有注入钩子时必须退回 app.quit()（老宿主/测试不能变成关不掉 ✗）');
+
+		// ③ 被 veto ⇒ 撤掉强退并**解除武装**（用户处理完弹窗后还能再点一次）
+		const vetoAt = q.indexOf('if (veto) {');
+		assert.ok(vetoAt > 0, '缺少 veto 分支 ✗');
+		const vetoBody = q.slice(vetoAt, q.indexOf('\n\t\t\t\t\t}', vetoAt));
+		assert.match(vetoBody, /this\._cancelForceQuit\(\)/, '被 veto 时必须撤掉强退兜底 ✗');
+		assert.match(vetoBody, /this\._quitRequested = false;/, '被 veto 后必须解除武装（否则用户处理完弹窗也关不掉 ✗）');
+
+		// ④ 超时强退：VS Code 的退出流程本身卡住（renderer 不回话）时的最后手段
+		assert.match(channel, /QUIT_FORCE_AFTER_MS = 6_000/, '强退兜底的超时必须是 6s（太长 = 用户盯着不动的窗口 ✗）');
+		assert.match(q, /setTimeout\(\(\) => \{[\s\S]{0,200}app\.exit\(0\);/, '兜底必须真的 app.exit(0)（否则还是关不掉 ✗）');
+
+		// ⑤ 退出流程真往下走 ⇒ 撤掉强退（不能把正常退出也打断 ✗）
+		assert.match(channel, /app\.on\('will-quit', \(\) => \{ this\._cancelForceQuit\(\); \}\)/,
+			'will-quit 时必须撤掉强退兜底 ✗');
+		assert.match(channel, /private _cancelForceQuit\(\)/, '必须有撤掉兜底定时器的方法 ✗');
+
+		// ⑥ 接线：`app.ts` 真的把生命周期服务注入进去了（没注入 ⇒ 走 app.quit 这条弱路径 ✗）
+		const appTs = stripComments(read('src/vs/code/electron-main/app.ts'));
+		assert.match(appTs, /requestQuit: \(willRestart: boolean\) => \w+\.quit\(willRestart\)/,
+			'app.ts 必须把 ILifecycleMainService.quit 注入给 dsh 通道 ✗');
+		assert.match(appTs, /accessor\.get\(ILifecycleMainService\)/, 'app.ts 里要取到生命周期服务 ✗');
 
 		const hAt = channel.indexOf('private _raiseDesktopWindow(');
 		assert.ok(hAt > 0, '找不到 _raiseDesktopWindow ✗');

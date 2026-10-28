@@ -322,7 +322,18 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 		}
 		const hasTarget = (Array.isArray(args._) && args._.length > 0)
 			|| !!args['folder-uri'] || !!args['file-uri'] || !!args['diff'] || !!args['merge'];
-		return !hasTarget && !!(process as INodeProcess).isEmbeddedApp;
+		// ★★ 2026-10-28（用户：「打包出的 exe 打开后会**闪一下 IDE 窗口**，然后才打开 dsh 窗口」）：
+		//   原来只认 `(process as INodeProcess).isEmbeddedApp`。它由 `main.ts` 在 `startup()` 里赋值，
+		//   对本产品只是**间接**证据 ⇒ 打包版出现过判 false 的现场（判 false ⇒ `options.show` 保持默认
+		//   ⇒ IDE 建出来就是可见的 ⇒ 渲染进程过一会儿才把它藏起来 ⇒ 用户看到"闪一下"✗）。
+		//   `environmentMainService.isBuilt`（打包版）是**直接**判据，且不依赖任何赋值时机 ✓。
+		//   仍然要求"没有目标参数"：带文件夹/文件/diff 的启动，用户的意图就是开 IDE，藏起来才是 bug。
+		const isBuilt = this.environmentMainService.isBuilt;
+		const isEmbedded = !!(process as INodeProcess).isEmbeddedApp;
+		const hidden = !hasTarget && (isBuilt || isEmbedded);
+		// 留一条可诊断的日志：打包版再出现"闪 IDE"时，这行就能直接判定是哪个判据没成立。
+		this.logService.info(`[windowsManager] wantsHiddenStart=${hidden}（isBuilt=${isBuilt}, isEmbeddedApp=${isEmbedded}, hasTarget=${hasTarget}）`);
+		return hidden;
 	}
 
 	async openAgentsWindow(openConfig: IOpenConfiguration, folderUri?: URI): Promise<ICodeWindow[]> {

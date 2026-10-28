@@ -30,7 +30,8 @@ import { IQuickInputService } from '../../../../platform/quickinput/common/quick
 import { FocusMode, INativeHostService } from '../../../../platform/native/common/native.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
-import { IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
+// GroupDirection：方案 C2 里 openBot 要在 chat 组**右侧**新建分组放设置页（左右并排）
+import { GroupDirection, IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { mainWindow } from '../../../../base/browser/window.js';
@@ -1663,6 +1664,40 @@ class DshPageCommandContribution extends Disposable implements IWorkbenchContrib
 				if (!opened) {
 					await Promise.resolve(this._commands.executeCommand('agentStudio.openResourceManager')).catch(() => undefined);
 				}
+				return;
+			}
+			case 'openBot': {
+				/*
+				 * ★ 方案 C2（2026-10-27）：一次点击 = **中栏开会话（绑该 bot 人格）+ 右栏开设置**。
+				 *
+				 * 为什么单独一条命令而不是页面连调两个：
+				 *   · 连调时两次调用各自选分组，**顺序和焦点都不受控** —— 设置页会顶替 chat 所在的组，
+				 *     用户看到的是"设置把会话挤走了"✗（真机上很难归因）；
+				 *   · 这里由宿主**显式布局**：chat 进当前组 → 在它**右侧新建分组** → 设置开在新组里。
+				 *
+				 * preset id 口径与 `presetIdOf(agentId)` 一致（`vssaros-` + slug）。
+				 */
+				const preset = command.agentId.startsWith('vssaros-') ? command.agentId : `vssaros-${command.agentId}`;
+				this._logService.info(`[dshHarness] page openBot ${command.agentId}（preset=${preset}）⇒ 中栏会话 + 右栏设置`);
+				try {
+					await this._commands.executeCommand('agentStudio.newChatInEditor', { presetId: preset });
+				} catch (e) {
+					// 聊天开不出来也要继续开设置页 —— 半成品比什么都不开好，且日志留痕
+					this._logService.warn('[dshHarness] page openBot：打开会话失败（继续开设置页）', e);
+				}
+				const chatGroup = this._editorGroups.mainPart.activeGroup;
+				let targetGroup = chatGroup;
+				try {
+					targetGroup = this._editorGroups.addGroup(chatGroup, GroupDirection.RIGHT);
+				} catch (e) {
+					// 分组建不出来 ⇒ 退回当前组（至少设置页能看到），不静默
+					this._logService.warn('[dshHarness] page openBot：右侧分组创建失败，设置页退回当前组', e);
+				}
+				await this._editorService.openEditor(
+					new AgentSettingsEditorInput(command.agentId, command.name),
+					{ pinned: true },
+					targetGroup,
+				);
 				return;
 			}
 			case 'openAgentSettings': {

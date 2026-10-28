@@ -351,3 +351,6 @@ resources/.agents/skills/**/.usage.json
 # dsh 试点与诊断临时产物（运行时生成，不入库）
 /poc/
 /_diag/
+
+# 飞书 SDK vendor 产物（10.5MB，用 npm run vendor 生成，不进仓库）
+dsh-plugins/vssaros-agents/lib/adapters/vendor/

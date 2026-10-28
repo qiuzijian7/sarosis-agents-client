@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>E3 · 双表并行（左平台表 / 右详情表）</title>
+<style>
+:root{--bg:#1b1b1d;--card:#232326;--bd:#2f2f33;--tx:#e6e6e6;--tx2:#a8a8a8;--tx3:#737373;
+--pri:#4c9aff;--ok:#3fb950;--warn:#d29922;--err:#f85149;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:13px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif}
+.hd{display:flex;align-items:center;gap:9px;padding:12px 16px 8px;flex-wrap:wrap}
+.hd h2{margin:0;font-size:16px}
+.muted{color:var(--tx3);font-size:11.5px}
+.hd .sp{flex:1}
+button{font:inherit;font-size:11.5px;padding:3.5px 9px;border-radius:6px;cursor:pointer;border:1px solid var(--bd);
+background:#2a2a2e;color:var(--tx)}
+button:hover{background:#313136}
+button.pri{background:var(--pri);border-color:transparent;color:#fff;font-weight:600}
+button.ghost{background:transparent}
+button:disabled{opacity:.4;cursor:not-allowed}
+.split{display:grid;grid-template-columns:352px minmax(0,1fr);gap:12px;padding:0 16px 18px;align-items:start}
+@media(max-width:980px){.split{grid-template-columns:1fr}}
+table{width:100%;border-collapse:collapse;font-size:12px;background:var(--card);
+border:1px solid var(--bd);border-radius:10px;overflow:hidden}
+thead th{text-align:left;color:var(--tx3);font-weight:600;font-size:10.5px;padding:7px 9px;
+background:#26262a;border-bottom:1px solid var(--bd);white-space:nowrap}
+tbody td{padding:7px 9px;border-bottom:1px solid #26262a;color:var(--tx2);vertical-align:middle}
+tbody tr:last-child td{border-bottom:0}
+tbody tr{cursor:pointer}
+tbody tr:hover{background:#26262a}
+tbody tr.on{background:rgba(76,154,255,.1);box-shadow:inset 2px 0 0 var(--pri)}
+td b{color:var(--tx);font-weight:600}
+.pl{display:flex;align-items:center;gap:7px;color:var(--tx);font-weight:600}
+.ico{width:20px;height:20px;border-radius:5px;display:grid;place-items:center;background:#2c2c31;font-size:11px;flex:none}
+.dot{width:6px;height:6px;border-radius:50%;background:#4a4a50;flex:none}
+.dot.ok{background:var(--ok)}
+.dot.warn{background:var(--warn)}
+.pill{font-size:10.5px;padding:1px 7px;border-radius:999px;white-space:nowrap}
+.p-ok{color:#7ee787;background:rgba(63,185,80,.14)}
+.p-warn{color:#e3b341;background:rgba(210,153,34,.14)}
+.p-off{color:var(--tx3);background:#2a2a2e}
+.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px}
+.num{font-variant-numeric:tabular-nums;text-align:right}
+.num.hot{color:#e3b341;font-weight:600}
+.num.err{color:#ff9f97;font-weight:600}
+.right{display:flex;flex-direction:column;gap:10px;min-width:0}
+.block{background:var(--card);border:1px solid var(--bd);border-radius:10px;overflow:hidden}
+.block>.cap{display:flex;align-items:center;gap:7px;padding:6px 10px;background:#26262a;border-bottom:1px solid var(--bd)}
+.block>.cap b{font-size:11.5px}
+.block>.cap .n{font-size:10.5px;padding:0 6px;border-radius:999px;background:#33333a;color:var(--tx2);font-variant-numeric:tabular-nums}
+.block>.cap .n.hot{background:rgba(210,153,34,.2);color:#e3b341}
+.block>.cap .sp{flex:1}
+.fld{display:grid;grid-template-columns:84px minmax(0,1fr) 84px minmax(0,1fr);gap:6px 9px;padding:9px 10px;align-items:center;font-size:11.5px}
+.fld label{color:var(--tx2)}
+input,select{font:inherit;font-size:11.5px;padding:4px 8px;border-radius:6px;border:1px solid var(--bd);
+background:#1e1e21;color:var(--tx);width:100%;min-width:0}
+input::placeholder{color:#5c5c63}
+.reason{font-weight:600;font-size:11px}
+.r-sender{color:#e3b341}.r-mention{color:#e3b341}.r-loop{color:#ff9f97}
+.note{margin:10px 16px 0;padding:8px 11px;border-left:2px solid #3d3d44;color:var(--tx3);font-size:11.5px}
+.legend{display:flex;gap:10px;flex-wrap:wrap;padding:0 16px 8px;font-size:11px;color:var(--tx3)}
+</style>
+</head>
+<body>
+<div class="hd">
+  <h2>渠道</h2>
+  <span class="muted">左表选平台 · 右表看明细（数字即异常）</span>
+  <span class="sp"></span>
+  <button class="ghost">策略</button><button class="ghost">刷新</button>
+</div>
+<div class="legend">
+  <span>● 绿 = 已连接</span><span>● 黄 = 未启动</span><span>● 灰 = 未接入</span>
+  <span>数字黄 = 待批准</span><span>数字红 = 失败</span>
+</div>
+
+<div class="split">
+  <!-- ═══ 左：D 的平台运维表（窄，只有必要列） ═══ -->
+  <table>
+    <thead><tr><th>平台</th><th class="num">绑定</th><th class="num">待批</th><th class="num">失败</th></tr></thead>
+    <tbody>
+      <tr class="on"><td><span class="pl"><span class="dot ok"></span><span class="ico">🐦</span>飞书</span></td><td class="num">2</td><td class="num hot">2</td><td class="num err">3</td></tr>
+      <tr><td><span class="pl"><span class="dot warn"></span><span class="ico">✈️</span>Telegram</span></td><td class="num">1</td><td class="num">0</td><td class="num">0</td></tr>
+      <tr><td><span class="pl"><span class="dot"></span><span class="ico">🎮</span>Discord</span></td><td class="num muted">—</td><td class="num muted">—</td><td class="num muted">—</td></tr>
+      <tr><td><span class="pl"><span class="dot"></span><span class="ico">🏢</span>企业微信</span></td><td class="num muted">—</td><td class="num muted">—</td><td class="num muted">—</td></tr>
+    </tbody>
+  </table>
+
+  <!-- ═══ 右：B 的详情，但每块都是表 ═══ -->
+  <div class="right">
+    <div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap">
+      <span style="font-size:15px;font-weight:600">🐦 飞书</span>
+      <span class="pill p-ok">已连接</span>
+      <span class="muted">WS 长连接 · 17:32 · cli_a1…h8</span>
+      <span class="sp" style="flex:1"></span>
+      <button>停止</button>
+    </div>
+
+    <div class="block">
+      <div class="cap"><b>凭据</b><span class="sp"></span>
+        <span style="font-size:10.5px;color:var(--tx3)">唯一填写处 · agent-im-accounts.json</span>
+        <button class="pri">保存</button></div>
+      <div class="fld">
+        <label>App ID</label><input value="cli_a1b2c3d4e5f6g7h8">
+        <label>App Secret</label><input type="password" placeholder="已配置 · 留空 = 不改">
+      </div>
+    </div>
+
+    <div class="block">
+      <div class="cap"><b>绑定</b><span class="n">2</span><span class="sp"></span><button class="ghost">+ 新建</button></div>
+      <table>
+        <thead><tr><th>IM 会话</th><th>绑定对象</th><th>方向</th><th>准入</th><th>状态</th></tr></thead>
+        <tbody>
+          <tr><td class="code">oc_5f2a9d</td><td><b>群 · 评测群</b></td><td>双向</td><td>@ 触发</td><td>启用</td></tr>
+          <tr><td class="code">oc_88c1e2</td><td><b>Bot · Coder</b></td><td>只发</td><td>—</td><td>启用</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="block">
+      <div class="cap"><b>待批准</b><span class="n hot">2</span><span class="sp"></span>
+        <span style="font-size:10.5px;color:var(--tx3)">批准只给私聊权限</span></div>
+      <table>
+        <thead><tr><th>配对码</th><th>发送者</th><th class="num">剩余</th><th class="num">操作</th></tr></thead>
+        <tbody>
+          <tr><td class="code">JXT457YC</td><td>张三</td><td class="num">42 分钟</td><td class="num"><button class="pri">批准</button></td></tr>
+          <tr><td class="code">QW8N3KPD</td><td>李四</td><td class="num">12 分钟</td><td class="num"><button class="pri">批准</button></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="block">
+      <div class="cap"><b>最近失败</b><span class="n hot">3</span><span class="sp"></span><button class="ghost">清空</button></div>
+      <table>
+        <thead><tr><th>原因</th><th>发送者</th><th>内容</th><th class="num">时间</th></tr></thead>
+        <tbody>
+          <tr><td class="reason r-sender">sender</td><td>u_bad</td><td class="code">我不在白名单</td><td class="num muted">17:29</td></tr>
+          <tr><td class="reason r-mention">no-mention</td><td>王五</td><td class="code">@所有人 帮我看下这个报错…</td><td class="num muted">17:24</td></tr>
+          <tr><td class="reason r-loop">loop</td><td>bot_a</td><td class="code">连环触发已被冷却 60s</td><td class="num muted">17:18</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<p class="note">E3 设计意图：左表只有 4 列（平台 + 三个数字），窄到 352px，右侧留给详情；
+      两者都是表 ⇒ 视觉统一、不需要抽屉/跳页。代价：左表信息少（看不到入站状态文字），窄屏下会上下堆叠。</p>
+</body>
+</html>

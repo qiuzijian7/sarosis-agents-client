@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Agents 工作台 → IDE 拆分：按「窗口模式功能清单」重设计</title>
+<style>
+	:root {
+		--bg: #1e1e1e; --panel: #252526; --panel2: #2b2b2d; --line: #3c3c3c;
+		--fg: #ddd; --fg-dim: #9d9d9d; --fg-faint: #6f6f6f;
+		--accent: #4a8cff; --ok: #4caf50; --warn: #d9a441; --danger: #e05252;
+	}
+	* { box-sizing: border-box; }
+	body { margin: 0; padding: 26px 30px 70px; background: #141414; color: var(--fg);
+		font: 13px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; }
+	h1 { font-size: 19px; margin: 0 0 6px; }
+	.sub { color: var(--fg-dim); font-size: 12.5px; margin-bottom: 18px; max-width: 980px; }
+	h2 { font-size: 14px; margin: 34px 0 8px; padding-top: 14px; border-top: 1px solid #2a2a2a; }
+	h2 .tag { font-size: 11px; color: var(--fg-faint); font-weight: 400; margin-left: 8px; }
+	.note { color: var(--fg-dim); font-size: 12px; margin: 6px 0 12px; max-width: 980px; }
+	.note b { color: var(--fg); }
+	code { font-family: Consolas, monospace; font-size: 11.5px; color: #9fc0ff; }
+	table.cmp { border-collapse: collapse; font-size: 11.5px; margin: 10px 0 6px; }
+	table.cmp th, table.cmp td { border: 1px solid #2f2f2f; padding: 4px 9px; text-align: left; vertical-align: top; }
+	table.cmp th { background: #1b1b1b; color: var(--fg-dim); font-weight: 600; }
+	table.cmp td.k { color: var(--fg-faint); white-space: nowrap; }
+	.frame { width: 820px; height: 520px; display: flex; border: 1px solid #333; border-radius: 6px;
+		overflow: hidden; background: var(--bg); box-shadow: 0 6px 24px rgba(0,0,0,.45); }
+
+	/* ── 共用：左栏 ── */
+	.side { width: 230px; flex: 0 0 auto; background: var(--panel); border-right: 1px solid var(--line);
+		display: flex; flex-direction: column; }
+	.side-hd { height: 30px; display: flex; align-items: center; justify-content: space-between;
+		padding: 0 10px; font-size: 10.5px; letter-spacing: .05em; color: var(--fg-dim);
+		border-bottom: 1px solid var(--line); }
+	.side-hd .cnt { color: var(--fg-faint); }
+	.side-search { margin: 7px 8px; height: 24px; border: 1px solid var(--line); border-radius: 3px;
+		background: #1b1b1b; color: var(--fg-faint); font-size: 11.5px; display: flex;
+		align-items: center; padding: 0 8px; }
+	.side-scroll { flex: 1; overflow: auto; }
+	.grp { display: flex; align-items: center; gap: 5px; padding: 5px 10px 2px; font-size: 10.5px;
+		color: var(--fg-faint); }
+	.grp .n { background: #333; border-radius: 8px; padding: 0 5px; font-size: 10px; }
+	.it { display: flex; align-items: center; gap: 7px; padding: 5px 10px; cursor: pointer;
+		border-left: 2px solid transparent; font-size: 12.5px; }
+	.it:hover { background: #2a2a2c; }
+	.it.on { background: #2f3542; border-left-color: var(--accent); }
+	.it .ic { width: 18px; text-align: center; }
+	.it .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.it .st { width: 7px; height: 7px; border-radius: 50%; background: var(--fg-faint); }
+	.it .st.on { background: var(--ok); }
+	.it .st.dim { background: #555; }
+	.it.dim { opacity: .55; }
+	.side-ft { border-top: 1px solid var(--line); padding: 7px 8px; display: flex; gap: 6px; }
+	.mini { flex: 1; height: 22px; font-size: 11px; border-radius: 3px; border: 1px solid var(--line);
+		background: transparent; color: var(--fg); cursor: pointer; }
+	.mini.pri { background: #0e639c; border-color: transparent; color: #fff; }
+
+	/* ── 共用：右栏 ── */
+	.main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+	.bar { height: 34px; display: flex; align-items: center; gap: 8px; padding: 0 12px;
+		border-bottom: 1px solid var(--line); font-size: 12px; }
+	.bar .crumb { color: var(--fg-faint); }
+	.bar .sp { flex: 1; }
+	.btn { height: 22px; padding: 0 10px; font-size: 11.5px; border-radius: 3px;
+		border: 1px solid var(--line); background: transparent; color: var(--fg); cursor: pointer; }
+	.btn.pri { background: #0e639c; border-color: transparent; color: #fff; }
+	.badge { font-size: 10px; padding: 1px 6px; border-radius: 8px; background: #2f3542; color: #9fc0ff; }
+	.badge.warn { background: #3a3320; color: #e0bf7a; }
+
+	/* V1：全量页签 */
+	.v1-tabs { display: flex; height: 30px; border-bottom: 1px solid var(--line); background: #1b1b1b; }
+	.v1-tab { padding: 0 12px; font-size: 11.5px; color: var(--fg-dim); display: flex;
+		align-items: center; cursor: pointer; border-right: 1px solid #262626; gap: 4px; }
+	.v1-tab.on { color: #fff; background: var(--bg); box-shadow: inset 0 -1px 0 var(--accent); }
+	.v1-tab .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--warn); }
+	.body { flex: 1; overflow: auto; padding: 14px 18px; }
+	.row { display: flex; gap: 10px; padding: 6px 0; border-bottom: 1px dashed #2a2a2a; font-size: 12px; }
+	.row:last-child { border: 0; }
+	.k { width: 92px; flex: 0 0 auto; color: var(--fg-dim); font-size: 11.5px; }
+	.v { flex: 1; min-width: 0; }
+	.inp { border: 1px solid var(--line); border-radius: 3px; background: #1b1b1b;
+		padding: 4px 7px; font-size: 12px; }
+	.chips { display: flex; flex-wrap: wrap; gap: 5px; }
+	.chip { font-size: 10.5px; padding: 1px 7px; border: 1px solid var(--line); border-radius: 9px;
+		background: #1f1f21; color: #b9d4ff; font-family: Consolas, monospace; }
+	.chip.off { color: var(--fg-faint); border-style: dashed; }
+	.grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px 10px; margin-top: 5px; }
+	.tl { display: flex; align-items: center; gap: 6px; font-size: 11.5px; }
+	.cb { width: 11px; height: 11px; border: 1px solid var(--line); border-radius: 2px; background: #0e639c; flex: 0 0 auto; }
+	.cb.off { background: transparent; }
+	.ta { min-height: 96px; border: 1px solid var(--line); border-radius: 3px; background: #1b1b1b;
+		padding: 7px; font-family: Consolas, monospace; font-size: 11px; color: #cfd8e3; white-space: pre-wrap; }
+	.hint { color: var(--fg-faint); font-size: 10.5px; margin-top: 4px; }
+	.warnbox { border: 1px solid #3a3320; background: #2a2618; color: #e0bf7a; font-size: 11px;
+		padding: 6px 9px; border-radius: 4px; margin: 8px 0; }
+
+	/* V2：上下分屏 */
+	.v2-split { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+	.v2-top { flex: 0 0 58%; overflow: auto; padding: 12px 18px; border-bottom: 1px solid var(--line); }
+	.v2-bot { flex: 1; min-height: 0; display: flex; }
+	.v2-bot > div { flex: 1; min-width: 0; overflow: auto; padding: 8px 12px; }
+	.v2-bot > div + div { border-left: 1px solid var(--line); }
+	.v2-hd { font-size: 10.5px; color: var(--fg-faint); letter-spacing: .04em; margin-bottom: 6px; }
+	.li { font-size: 11.5px; padding: 3px 0; color: #cfd8e3; display: flex; gap: 6px; }
+	.li .t { color: var(--fg-faint); font-size: 10.5px; margin-left: auto; }
+
+	/* V3：卡片头 + 折叠面板 */
+	.v3-head { padding: 14px 18px 10px; border-bottom: 1px solid var(--line); display: flex; gap: 12px; }
+	.v3-icon { width: 44px; height: 44px; border-radius: 8px; background: #2f3542; display: flex;
+		align-items: center; justify-content: center; font-size: 22px; flex: 0 0 auto; }
+	.v3-sec { border-bottom: 1px solid var(--line); }
+	.v3-sec-hd { display: flex; align-items: center; gap: 7px; padding: 7px 18px; font-size: 12px;
+		color: var(--fg-dim); cursor: pointer; background: #1b1b1b; }
+	.v3-sec-hd .arrow { font-size: 9px; color: var(--fg-faint); }
+	.v3-sec-bd { padding: 8px 18px 10px; }
+	.v3-mini { border: 1px solid var(--line); border-radius: 6px; background: var(--panel2); padding: 10px; }
+	.v3-sug { border: 1px solid var(--line); border-radius: 4px; background: #1f1f21; padding: 5px 8px;
+		font-size: 11px; color: #cfd8e3; margin-top: 5px; }
+</style>
+</head>
+<body>
+
+<h1>Agents 工作台 → IDE 拆分（左栏 name 列表 + 右栏 details）· 按窗口功能清单重设计</h1>
+<div class="sub">
+	清单见同目录 <code>inventory.md</code>（A 布局 / B 可编辑字段 / C 群聊 / D 记忆 / E 全局页签 / F 15 个后端动作）。
+	三个方案都覆盖同一份清单，差别只在“信息怎么分层”。左栏只做「选谁」，右栏承载全部编辑。
+</div>
+
+<h2>先看「哪些功能搬、搬到哪」<span class="tag">这是本次重设计的依据</span></h2>
+<table class="cmp">
+	<tr><th>窗口模式功能</th><th>IDE 侧落位</th><th>为什么</th></tr>
+	<tr><td class="k">名册左栏（已注册/未注册/群聊）</td><td><b>sideview 左栏</b> + 顶部计数/筛选/刷新</td><td>与知识库一致：左栏只做“选谁”</td></tr>
+	<tr><td class="k">名称/描述/角色/模型/人设/建议词</td><td><b>右栏·概览 / 人设</b></td><td>单 agent 编辑，最常用</td></tr>
+	<tr><td class="k">技能白名单 / 工具白名单</td><td><b>右栏·工具与技能</b>（勾选）</td><td>手填名字必拼错 ⇒ 拼错 = allowlist 静默 deny</td></tr>
+	<tr><td class="k">记忆参数 + MEMORY.md + 提交快照</td><td><b>右栏·记忆</b></td><td>低频但需要上下文</td></tr>
+	<tr><td class="k">委派开关 + 可派给谁</td><td><b>右栏·委派</b></td><td>权限类，独立成页签免误触</td></tr>
+	<tr><td class="k">最近会话（中栏）</td><td><b>右栏·会话</b>（只列 + 跳会话页）</td><td>IDE 里跑不了真实回合，不做假 chat</td></tr>
+	<tr><td class="k">演化 / 版本 / 分支</td><td><b>右栏·版本</b>（tag 接口未暴露 ⇒ 标注“在完整页”）</td><td>如实说明，不编</td></tr>
+	<tr><td class="k">群聊（新建/模式/策略/邀请/transcript）</td><td><b>右栏·群聊</b>（选中群时切换）</td><td>群也是“一个对象”</td></tr>
+	<tr><td class="k">用量 / 委派总览 / 授权（审批模板+outbox）</td><td><b>独立编辑器 Tab</b>（全局，不属于单 agent）</td><td>塞进详情会误导“这是这个 agent 的”</td></tr>
+</table>
+
+<!-- ═══════════ V1 ═══════════ -->
+<h2>V1 · 全量页签式 <span class="tag">推荐：与窗口版一一对应，7 个页签装完</span></h2>
+<div class="note">右栏顶部固定 agent 身份条（图标/名称/来源/未保存点），下面 7 个页签：<b>概览 · 人设与建议 · 工具与技能 · 记忆 · 委派 · 会话 · 版本</b>。群聊选中时同一位置换成“群聊”页签组。</div>
+
+<div class="frame">
+	<div class="side">
+		<div class="side-hd"><span>AGENTS</span><span class="cnt">21 · ⟳ · 筛选</span></div>
+		<div class="side-search">搜索名称 / id / 技能…</div>
+		<div class="side-scroll">
+			<div class="grp">已注册 <span class="n">19</span></div>
+			<div class="it"><span class="ic">🐾</span><span class="nm">Saros Claw</span><span class="st on"></span></div>
+			<div class="it on"><span class="ic">💻</span><span class="nm">Coder</span><span class="st on"></span></div>
+			<div class="it"><span class="ic">🔍</span><span class="nm">Code Reviewer</span><span class="st on"></span></div>
+			<div class="it"><span class="ic">🧭</span><span class="nm">Code Architect</span><span class="st"></span></div>
+			<div class="it"><span class="ic">🧪</span><span class="nm">Tester</span><span class="st dim"></span></div>
+			<div class="it"><span class="ic">📚</span><span class="nm">知识库专家</span><span class="st on"></span></div>
+			<div class="it"><span class="ic">🎨</span><span class="nm">Designer</span><span class="st"></span></div>
+			<div class="grp">未注册 <span class="n">2</span></div>
+			<div class="it dim"><span class="ic">🗂</span><span class="nm">media-librarian</span><span class="st dim"></span></div>
+			<div class="grp">群聊 <span class="n">3</span></div>
+			<div class="it"><span class="ic">#</span><span class="nm">GR 埋点协作</span><span class="st"></span></div>
+			<div class="it"><span class="ic">#</span><span class="nm">周末值班</span><span class="st"></span></div>
+		</div>
+		<div class="side-ft"><button class="mini pri">＋ Bot</button><button class="mini">＋ 群聊</button></div>
+	</div>
+	<div class="main">
+		<div class="bar">
+			<span class="crumb">Agents / 内置 /</span> <b>💻 Coder</b> <span class="badge">内置</span>
+			<span style="color:var(--warn)">●</span>
+			<span class="sp"></span>
+			<button class="btn">在完整页打开</button><button class="btn">取消</button><button class="btn pri">保存</button>
+		</div>
+		<div class="v1-tabs">
+			<div class="v1-tab on">概览</div>
+			<div class="v1-tab">人设与建议 <span class="dot"></span></div>
+			<div class="v1-tab">工具与技能</div>
+			<div class="v1-tab">记忆</div>
+			<div class="v1-tab">委派</div>
+			<div class="v1-tab">会话</div>
+			<div class="v1-tab">版本</div>
+		</div>
+		<div class="body">
+			<div class="row"><div class="k">名称</div><div class="v"><div class="inp">Coder</div></div></div>
+			<div class="row"><div class="k">id（不可改）</div><div class="v"><code>coder</code></div></div>
+			<div class="row"><div class="k">角色</div><div class="v"><div class="inp">Software Engineer</div></div></div>
+			<div class="row"><div class="k">描述</div><div class="v"><div class="inp">Writes, reviews, and refactors code with deep understanding of programming patterns.</div></div></div>
+			<div class="row"><div class="k">模型</div><div class="v"><div class="inp" style="width:220px">hy3-ioa</div>
+				<div class="hint">恢复默认：<code>resetModel</code>（窗口版同名动作）</div></div></div>
+			<div class="row"><div class="k">来源</div><div class="v">
+				builtin · 真源 <code>builtinAgents.ts</code>
+				<div class="warnbox">内置 agent 的提示词/工具在 IDE 侧**只读**：这里改不会生效，要改真源。</div>
+			</div></div>
+			<div class="row"><div class="k">用量（近 7 天）</div><div class="v">12 次会话 · 48.2k tokens · 31 回合 · 最近 2 小时前</div></div>
+		</div>
+	</div>
+</div>
+
+<!-- ═══════════ V2 ═══════════ -->
+<h2>V2 · 上下分屏（编辑区 + 会话/记忆） <span class="tag">少切页签：常用三块同屏</span></h2>
+<div class="note">上半是字段编辑（概览 + 工具/技能勾选），下半固定两栏：<b>最近会话</b> 与 <b>记忆</b>。适合“边改边看在跑什么”。页签只留 3 个（概览/人设/版本），其余都在下方常驻。</div>
+
+<div class="frame">
+	<div class="side">
+		<div class="side-hd"><span>AGENTS</span><span class="cnt">21 · ⟳</span></div>
+		<div class="side-search">搜索…</div>
+		<div class="side-scroll">
+			<div class="grp">已注册 <span class="n">19</span></div>
+			<div class="it on"><span class="ic">💻</span><span class="nm">Coder</span><span class="st on"></span></div>
+			<div class="it"><span class="ic">🔍</span><span class="nm">Code Reviewer</span><span class="st on"></span></div>
+			<div class="it"><span class="ic">📚</span><span class="nm">知识库专家</span><span class="st on"></span></div>
+			<div class="it"><span class="ic">🧪</span><span class="nm">Tester</span><span class="st dim"></span></div>
+			<div class="grp">群聊 <span class="n">3</span></div>
+			<div class="it"><span class="ic">#</span><span class="nm">GR 埋点协作</span><span class="st"></span></div>
+		</div>
+		<div class="side-ft"><button class="mini pri">＋ Bot</button><button class="mini">＋ 群聊</button></div>
+	</div>
+	<div class="main">
+		<div class="bar"><span class="crumb">Agents /</span> <b>💻 Coder</b> <span class="badge">内置</span>
+			<span class="sp"></span><button class="btn pri">保存</button></div>
+		<div class="v1-tabs" style="height:28px">
+			<div class="v1-tab on">概览</div><div class="v1-tab">人设</div><div class="v1-tab">版本</div>
+		</div>
+		<div class="v2-split">
+			<div class="v2-top">
+				<div class="row"><div class="k">名称 / 角色</div><div class="v">Coder · Software Engineer</div></div>
+				<div class="row"><div class="k">描述</div><div class="v">Writes, reviews, and refactors code with deep understanding of programming patterns.</div></div>
+				<div class="row"><div class="k">技能（3）</div><div class="v"><div class="chips">
+					<span class="chip">code-review</span><span class="chip">refactor</span><span class="chip">code-gen</span></div></div></div>
+				<div class="row"><div class="k">工具（17）</div><div class="v">
+					<div class="grid">
+						<div class="tl"><span class="cb"></span> read</div><div class="tl"><span class="cb"></span> write</div><div class="tl"><span class="cb"></span> edit</div>
+						<div class="tl"><span class="cb"></span> pwsh</div><div class="tl"><span class="cb"></span> grep</div><div class="tl"><span class="cb"></span> codebase_search</div>
+						<div class="tl"><span class="cb off"></span> <span style="color:var(--fg-faint)">vision_analyze</span></div>
+						<div class="tl"><span class="cb off"></span> <span style="color:var(--fg-faint)">kb_search</span></div>
+						<div class="tl"><span class="cb off"></span> <span style="color:var(--fg-faint)">feishu_doc_read</span></div>
+					</div>
+					<div class="hint">未勾选 = 对它**静默不可用**（allowlist deny）。灰显是为了让“缺什么”看得见。</div>
+				</div></div>
+			</div>
+			<div class="v2-bot">
+				<div>
+					<div class="v2-hd">最近会话</div>
+					<div class="li">修 concurrency 报错 <span class="t">2h</span></div>
+					<div class="li">给埋点模块加单测 <span class="t">昨天</span></div>
+					<div class="li">重构 kb 侧栏 <span class="t">3 天</span></div>
+					<div class="hint" style="margin-top:8px">点条目 → 打开会话页续聊（IDE 里不跑真实回合）</div>
+				</div>
+				<div>
+					<div class="v2-hd">记忆（MEMORY.md）</div>
+					<div class="li">注入上限 2048 字符 · 冻结策略 session</div>
+					<div class="li">条目库 12 条 · 已追加 5 条</div>
+					<div class="li" style="margin-top:6px"><button class="btn">追加条目</button> <button class="btn">提交快照</button></div>
+				</div>
+			</div>
+		</div>
+	</div>
+</div>
+
+<!-- ═══════════ V3 ═══════════ -->
+<h2>V3 · 卡片头 + 折叠面板 <span class="tag">一眼看到“用户看到什么”，低频项默认收起</span></h2>
+<div class="note">顶部大卡片 = 欢迎卡实际样子（图标/名称/描述/三条建议词），下面折叠面板按清单顺序排：人设 → 工具与技能 → 记忆 → 委派 → 会话 → 版本。默认只展开前两块。</div>
+
+<div class="frame">
+	<div class="side">
+		<div class="side-hd"><span>AGENTS</span><span class="cnt">21</span></div>
+		<div class="side-search">搜索…</div>
+		<div class="side-scroll">
+			<div class="grp">已注册 <span class="n">19</span></div>
+			<div class="it"><span class="ic">💻</span><span class="nm">Coder</span><span class="st on"></span></div>
+			<div class="it on"><span class="ic">🔍</span><span class="nm">Code Reviewer</span><span class="st on"></span></div>
+			<div class="it"><span class="ic">🧭</span><span class="nm">Code Architect</span><span class="st"></span></div>
+			<div class="it"><span class="ic">📚</span><span class="nm">知识库专家</span><span class="st on"></span></div>
+			<div class="grp">未注册 <span class="n">2</span></div>
+			<div class="it dim"><span class="ic">🎯</span><span class="nm">GR埋点专家</span><span class="st dim"></span></div>
+		</div>
+		<div class="side-ft"><button class="mini pri">＋ Bot</button></div>
+	</div>
+	<div class="main">
+		<div class="bar"><span class="crumb">Agents /</span> <b>🔍 Code Reviewer</b> <span class="sp"></span>
+			<button class="btn">在完整页打开</button><button class="btn pri">保存</button></div>
+		<div class="body" style="padding:0">
+			<div class="v3-head">
+				<div class="v3-icon">🔍</div>
+				<div style="flex:1;min-width:0">
+					<div style="display:flex;align-items:center;gap:8px">
+						<b style="font-size:15px">Code Reviewer</b><span class="badge">内置</span>
+						<span style="color:var(--fg-faint);font-size:11px">Reviewer</span>
+					</div>
+					<div style="font-size:11.5px;color:var(--fg-dim);margin-top:3px">
+						Reviews a change and returns two verdicts — does it match what was asked, and is it well built.
+					</div>
+				</div>
+				<div style="width:210px;flex:0 0 auto">
+					<div class="v3-mini">
+						<div style="font-size:10.5px;color:var(--fg-faint);margin-bottom:4px">用户看到的欢迎卡</div>
+						<div class="v3-sug">审一下我这次改动有什么风险</div>
+						<div class="v3-sug">这段并发代码有问题吗</div>
+						<div class="v3-sug">找一下这个模块的边界条件漏洞</div>
+					</div>
+				</div>
+			</div>
+
+			<div class="v3-sec">
+				<div class="v3-sec-hd"><span class="arrow">▾</span> 人设（persona） <span style="margin-left:auto;color:var(--fg-faint);font-size:10.5px">3 段 · 84 行</span></div>
+				<div class="v3-sec-bd">
+					<div class="ta">## Scope: Two Modes
+- Spec compliance: does it match what was asked
+- Code quality: is it well built
+## Work From the Diff
+…</div>
+					<div class="hint">内置 agent 只读（真源 <code>builtinAgents.ts</code>）；自定义 agent 可直接编辑。</div>
+				</div>
+			</div>
+
+			<div class="v3-sec">
+				<div class="v3-sec-hd"><span class="arrow">▾</span> 工具与技能 <span style="margin-left:auto;color:var(--fg-faint);font-size:10.5px">9 工具 · 2 技能</span></div>
+				<div class="v3-sec-bd">
+					<div class="grid" style="grid-template-columns:repeat(4,1fr)">
+						<div class="tl"><span class="cb"></span> read</div><div class="tl"><span class="cb"></span> grep</div>
+						<div class="tl"><span class="cb"></span> codebase_changes</div><div class="tl"><span class="cb"></span> codebase_trace</div>
+						<div class="tl"><span class="cb"></span> codebase_snippet</div><div class="tl"><span class="cb"></span> codebase_search</div>
+						<div class="tl"><span class="cb"></span> glob</div><div class="tl"><span class="cb"></span> skill</div>
+						<div class="tl"><span class="cb off"></span> <span style="color:var(--fg-faint)">write</span></div>
+						<div class="tl"><span class="cb off"></span> <span style="color:var(--fg-faint)">pwsh</span></div>
+					</div>
+				</div>
+			</div>
+
+			<div class="v3-sec">
+				<div class="v3-sec-hd"><span class="arrow">▸</span> 记忆 <span style="margin-left:auto;color:var(--fg-faint);font-size:10.5px">2048 字符 · session</span></div>
+			</div>
+			<div class="v3-sec">
+				<div class="v3-sec-hd"><span class="arrow">▸</span> 委派 <span style="margin-left:auto;color:var(--fg-faint);font-size:10.5px">不接收委派</span></div>
+			</div>
+			<div class="v3-sec">
+				<div class="v3-sec-hd"><span class="arrow">▸</span> 最近会话 <span style="margin-left:auto;color:var(--fg-faint);font-size:10.5px">3 条</span></div>
+			</div>
+			<div class="v3-sec">
+				<div class="v3-sec-hd"><span class="arrow">▸</span> 版本 / 分支 <span style="margin-left:auto;color:var(--fg-faint);font-size:10.5px">在完整页</span></div>
+			</div>
+		</div>
+	</div>
+</div>
+
+<h2>三个方案的取舍</h2>
+<table class="cmp">
+	<tr><th>&nbsp;</th><th>V1 全量页签</th><th>V2 上下分屏</th><th>V3 卡片+折叠</th></tr>
+	<tr><td class="k">覆盖清单</td><td>7 页签全覆盖</td><td>3 页签 + 常驻两块</td><td>折叠面板全覆盖</td></tr>
+	<tr><td class="k">“用户看到什么”</td><td>人设页签里可放预览</td><td>看不到</td><td><b>顶部常驻</b></td></tr>
+	<tr><td class="k">工具勾选（清单 B4）</td><td>独立页签，空间大</td><td>上半区，空间中</td><td>折叠区内，空间中</td></tr>
+	<tr><td class="k">切页签次数</td><td>多（7 个）</td><td><b>少</b></td><td>中（折叠）</td></tr>
+	<tr><td class="k">字段继续变多</td><td><b>最好扩展</b>（加页签）</td><td>上半区会挤</td><td>加折叠项即可</td></tr>
+	<tr><td class="k">实现成本</td><td>中</td><td>中</td><td>低（折叠面板最省）</td></tr>
+</table>
+
+<div class="note" style="margin-top:14px">
+	共同点（三个方案都遵守）：<br>
+	· 左栏只做“选谁”，顶部固定 <b>计数 / 筛选 / 刷新</b>，底部 <b>＋Bot / ＋群聊</b>。<br>
+	· <b>内置 agent 的提示词标只读</b>（真源 <code>builtinAgents.ts</code>），避免“改了产物以为生效”。<br>
+	· <b>白名单用勾选</b>，未选项灰显 —— 手填名字拼错会让 allowlist 静默 deny。<br>
+	· <b>建议词校验</b>：≤3 条、禁半角逗号（会被 <code>parseFrontmatter</code> 切成两条）。<br>
+	· <b>不做假 chat</b>：会话只列、点击跳会话页；版本/分支标注“在完整页”。<br>
+	· <b>用量 / 委派总览 / 授权</b> 是全局页签，放独立编辑器 Tab，不塞进单 agent 详情。
+</div>
+
+</body>
+</html>

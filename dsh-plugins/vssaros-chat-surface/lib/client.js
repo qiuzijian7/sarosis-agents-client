@@ -1,3 +1,5 @@
+// CLIENT_BUILD_STAMP 缺依赖不重试 @ 2026-10-27T11:11 + 2026-10-27T22:55 工作台导航登记萨罗斯中转站(relay)
+// CHUNK_BUILD_STAMP 2026-10-27T18:22：渠道页可编辑凭据（写 dsh 侧 agent-im-accounts.json）
 // @vssaros/dsh-chat-surface — client half (hand-written dsh client module).
 // Binds the chat surface to the session VsSaros created for this chat tab:
 // the VsSaros preload exposes window.vssarosDsh { surface, sessionId }（页面桥 v1 +
@@ -20,7 +22,7 @@ window.__ModuleLoader__.load({
 		//   （今天就因此丢了侧栏「主页」那一行：18:15 改了 client.workbenchNav.js，没动入口 ⇒
 		//    rev 没变 ⇒ 用户窗口里侧栏仍是旧版；22:17 补改入口后才恢复。）
 		// ⇒ 规矩：**改任何 `client.*.js` 之后，把下面这个 stamp 改掉**（守卫会查 ⇒ 漏了必红）✓
-		const CLIENT_BUILD_STAMP = "2026-10-22/模式chip当前名称不冒充(P0-1)/03+第三方工作台固定到侧栏+空白会话预选Bot(P0-2)/04+固定行启动兜底也同步(重启后固定图标不丢)+2026-10-22/工作流页改左右两档(左列表右画布)+2026-10-22/工作台导航登记商城(主页不显示商城的修复)+2026-10-22/DEFAULT_ITEMS登记并行工作台+2026-10-22/模型下拉框加创作模型三行(S2)/07+2026-10-22/品牌改名Saroasis-harness(品牌位+页面title)+2026-10-23/中栏工作台面板不被救援抢回会话+2026-10-23/desktop窗口加更新入口(随包插件+一键升级应用)/02+2026-10-23/更新面板加五类资产升级检查(skill/mcp/agent/工作流/工作台)+2026-10-23/工作台导航登记萨罗斯平台(studio)+2026-10-23/页签支持拖拽排序/02+2026-10-23/更新行不透明且不压状态行+2026-10-23/LLM模型下拉移除创作模型三行(SHOW_IN_LLM_MENU=false)+2026-10-23/模型chip按方案B恢复创作模型分组(文字vs图片视频音频+二级面板搜索+首开聚焦)+2026-10-23/创作模型行直接绑click(文档级委托没命中的兜底)+2026-10-23/模型菜单选择器加结构匹配兜底(window.__vssarosCreative.probe)+2026-10-23/scan走findMenu(不再只认中文aria-label)+2026-10-23/更新行不透明不压状态行+无可升级内容时不显示更新UI+2026-10-24/账号行在所有surface接管(插件页不再露官方DeepSeek登录)+2026-10-24/侧栏隐藏官方插件行+2026-10-24/自动化任务收进工作台(侧栏那行隐藏)/02+2026-10-26/更新入口只算升级(未安装不计)+2026-10-26/侧栏工作区+按钮改走uiWorkspace.pickDirectory(修窗口模式点了没反应:旧读未声明的ctx.remote.directoryPicker+读res.value.path)+侧栏隐藏空会话(官方blank位)+页脚口径跟着剔空会话/03+2026-10-26/侧栏+变菜单:加单目录+从.code-workspace导入多根(走宿主桥importCodeWorkspace)";
+		const CLIENT_BUILD_STAMP = "2026-10-22/模式chip当前名称不冒充(P0-1)/03+第三方工作台固定到侧栏+空白会话预选Bot(P0-2)/04+固定行启动兜底也同步(重启后固定图标不丢)+2026-10-22/工作流页改左右两档(左列表右画布)+2026-10-22/工作台导航登记商城(主页不显示商城的修复)+2026-10-22/DEFAULT_ITEMS登记并行工作台+2026-10-22/模型下拉框加创作模型三行(S2)/07+2026-10-22/品牌改名Saroasis-harness(品牌位+页面title)+2026-10-23/中栏工作台面板不被救援抢回会话+2026-10-23/desktop窗口加更新入口(随包插件+一键升级应用)/02+2026-10-23/更新面板加五类资产升级检查(skill/mcp/agent/工作流/工作台)+2026-10-23/工作台导航登记萨罗斯平台(studio)+2026-10-23/页签支持拖拽排序/02+2026-10-23/更新行不透明且不压状态行+2026-10-23/LLM模型下拉移除创作模型三行(SHOW_IN_LLM_MENU=false)+2026-10-23/模型chip按方案B恢复创作模型分组(文字vs图片视频音频+二级面板搜索+首开聚焦)+2026-10-23/创作模型行直接绑click(文档级委托没命中的兜底)+2026-10-23/模型菜单选择器加结构匹配兜底(window.__vssarosCreative.probe)+2026-10-23/scan走findMenu(不再只认中文aria-label)+2026-10-23/更新行不透明不压状态行+无可升级内容时不显示更新UI+2026-10-24/账号行在所有surface接管(插件页不再露官方DeepSeek登录)+2026-10-24/侧栏隐藏官方插件行+2026-10-24/自动化任务收进工作台(侧栏那行隐藏)/02+2026-10-26/更新入口只算升级(未安装不计)+2026-10-26/侧栏工作区+按钮改走uiWorkspace.pickDirectory(修窗口模式点了没反应:旧读未声明的ctx.remote.directoryPicker+读res.value.path)+侧栏隐藏空会话(官方blank位)+页脚口径跟着剔空会话/03+2026-10-26/侧栏+变菜单:加单目录+从.code-workspace导入多根(走宿主桥importCodeWorkspace)+2026-10-28/侧栏会话item高亮跟随当前会话(官方selection优先+乐观高亮+失败撤回)/02";
 		// 挂到 window 上 ⇒ 真机取证能一眼看出"这个窗口跑的是哪一版"（`window.__vssarosChatSurfaceBuild`）✓
 		try { window.__vssarosChatSurfaceBuild = CLIENT_BUILD_STAMP; } catch { /* 极端环境 */ }
 		// 注意：**不**把 `workspaces` 加进 inject —— 本仓库实测结论是 Cordis 4 的 inject 数组是
@@ -535,7 +537,7 @@ window.__ModuleLoader__.load({
 			//   （`/x/skills/?surface=editor`，无 sessionId ⇒ 走 BLANK_SESSION_PARTS）里压根没被 require
 			//   ⇒ 左下角是**官方账号行**，点它就走 dsh 官方 DeepSeek 授权 ✗✗。
 			//   它自己用 `state.accountInstalled` 防重复 + `chrome` 判据决定是否真的注册 ⇒ 无条件装载是安全的 ✓。
-			const ALWAYS_CHUNKS = ["./client.preset.js", "./client.botEntry.js", "./client.modelAccounts.js", "./client.creative.js", "./client.upgrade.js", "./client.account.js"];
+			const ALWAYS_CHUNKS = ["./client.preset.js", "./client.botEntry.js", "./client.modelAccounts.js", "./client.creative.js", "./client.upgrade.js", "./client.account.js", "./client.channel.js"];
 			Promise.all(ALWAYS_CHUNKS.map((p) => require.async(p)))
 				.then((parts) => {
 					for (const part of parts) {
@@ -584,9 +586,14 @@ window.__ModuleLoader__.load({
 			// ★ 2026-10-21 再补 `client.brand.js`：品牌行（logo + 标题）在**空白会话屏也在渲染**，
 			//   不装它的话"桌面窗口没拿到会话 id"时左上角又回到官方的鱼形标 + deepseek ✗。
 			// ★ 2026-10-21 补 `client.workbenchNav.js`：页签条（常驻 overlay 槽）**不依赖会话** ——
-		//   它只读 DOM 几何 + 自己的 localStorage ⇒ 首屏还没绑到会话时也该有 ⇒
-		//   否则窗口模式首屏（没 sessionId ⇒ 只装 BLANK_SESSION_PARTS）里**整条页签条不存在** ✗。
-		const BLANK_SESSION_PARTS = ["./client.workspace.js", "./client.hero.js", "./client.welcome.js", "./client.footer.js", "./client.brand.js", "./client.workbenchNav.js"];
+			//   它只读 DOM 几何 + 自己的 localStorage ⇒ 首屏还没绑到会话时也该有 ⇒
+			//   否则窗口模式首屏（没 sessionId ⇒ 只装 BLANK_SESSION_PARTS）里**整条页签条不存在** ✗。
+			// ★ 2026-10-27 补 `client.workspaces.js`（用户截图：窗口模式下侧栏工作区是**官方平铺列表**、
+			//   没有多根单条目）：它注册 `sidebar.workspaces`（priority -10）遮蔽官方 WorkspaceBrowser，
+			//   只读 workspaces/sessions 快照、**完全不依赖会话**。漏了它的后果正是本次报障 ——
+			//   会话没建起来（空白会话屏）⇒ 多根侧栏整支不装 ⇒ 用户看到官方把多根摊平成一堆条目 ✗。
+			//   而"没有会话"恰恰是用户最需要先看到工作区列表来选一个的时刻 ⇒ 必须在这里 ✓。
+			const BLANK_SESSION_PARTS = ["./client.workspace.js", "./client.hero.js", "./client.welcome.js", "./client.footer.js", "./client.brand.js", "./client.workbenchNav.js", "./client.workspaces.js"];
 			let restPartsInstalled = !!bridge.sessionId;
 
 			// ── 会话绑定（含方案 5.15 的重绑）─────────────────────────────────
@@ -624,10 +631,18 @@ window.__ModuleLoader__.load({
 			};
 			const looksBlankPage = () => {
 				try {
+					// ★★ 2026-10-28（用户报「点击会话 item 没有打开对应会话」）：
+					//   **不许**把 `[data-composer-card]` 当成"已经有会话在渲染"。
+					//   hero（还没打开任何会话）**本身就带输入框** ⇒ 那一项恒为真 ⇒ 本函数恒返回 false
+					//   ⇒ 主包轮询每轮都在下面 `!looksBlankPage()` 处早退 ⇒ **navigate 一次都不发**
+					//   （真机自证：`attempts=0 / opened=false / heroVisible=true / composer=true`）
+					//   ⇒ 会话永远停在 hero；用户从侧栏点会话也只走一次性的 openSession，失败就没人再试 ✗✗。
+					//   判据只认"**会话真的在渲染**"的证据：右侧栏会话条目 / 消息流 / 消息锚点
+					//   （`opened` 判定用的也是 `[data-sidebar-right-session]`，两者口径一致 ✓）。
+					//   正在看的**空会话**也带 right-session 节点 ⇒ 仍然不会被打扰 ✓。
 					return !document.querySelector("[data-sidebar-right-session]")
 						&& !document.querySelector("[data-chat-flow]")
-						&& !document.querySelector("[data-chat-anchor-key]")
-						&& !document.querySelector("[data-composer-card]");
+						&& !document.querySelector("[data-chat-anchor-key]");
 				} catch { return true; }
 			};
 			/**
@@ -1723,4 +1738,8 @@ window.__ModuleLoader__.load({
 	}
 });
 // 2026-10-24 touch: 修「首次点击页签却切中主页」后刷新入口 mtime ⇒ 客户端 chunk 的 ?rev 变化，浏览器不再吃旧缓存。
+// 2026-10-28 touch: 页签面板高度兜底（client.workbenchNav.js）⇒ 同样必须动入口，否则浏览器吃旧 chunk。
+// ⚠ 编辑顺序：**先改 chunk，最后再动入口**（入口 mtime 必须最新，守卫会红）。
+// 2026-10-28 touch#2: 侧栏点会话失败要重试 + 就地可见（client.workspaces.js）⇒ 同步刷新入口 mtime。
+// ⚠ 跑过反向突变脚本之后必须**再动一次这里**：脚本重写 chunk 会刷新它的 mtime，入口就又"变旧"了。
 

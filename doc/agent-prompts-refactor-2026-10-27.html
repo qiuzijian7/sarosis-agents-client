@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<title>内置 Agent 提示词重构报告（第二版·以真源为准）</title>
+<style>
+	:root{--bg:#12141a;--card:#1a1d25;--card2:#20242e;--fg:#d8dee9;--dim:#8b94a3;--line:#2b303b;--ok:#3fb950;--warn:#d29922;--bad:#f85149;--accent:#4c9aff}
+	*{box-sizing:border-box}
+	body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.7 -apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif}
+	.wrap{max-width:1180px;margin:0 auto;padding:32px 24px 72px}
+	h1{font-size:22px;margin:0 0 6px}
+	h2{font-size:16px;margin:32px 0 12px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+	h3{font-size:14px;margin:20px 0 8px}
+	code{background:#252b36;padding:1px 5px;border-radius:4px;font:12px/1.5 Consolas,monospace;color:#a8c7fa}
+	pre{background:var(--card2);border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow:auto;font:12.5px/1.65 Consolas,monospace;color:#c9d4e3}
+	.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px}
+	.kpi{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+	.kpi .k{font-size:11.5px;color:var(--dim);letter-spacing:.04em;text-transform:uppercase}
+	.kpi .v{font-size:23px;font-weight:600;margin-top:4px}
+	.kpi .d{font-size:12px;color:var(--dim);margin-top:2px}
+	table{border-collapse:collapse;width:100%;font-size:12.5px;background:var(--card);border-radius:8px;overflow:hidden}
+	th,td{border-bottom:1px solid var(--line);padding:7px 9px;text-align:left}
+	th{background:#232935;font-size:11.5px;color:#aab4c4;white-space:nowrap}
+	.num{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+	.chk{text-align:center;white-space:nowrap;color:var(--dim)}
+	.ok{color:var(--ok)}.up{color:var(--warn)}.mono{font-family:Consolas,monospace}.dim{color:var(--dim)}
+	.crit{border-left:3px solid var(--bad);background:#241a1c;border-radius:8px;padding:14px 16px;margin:16px 0}
+	.note{border-left:3px solid var(--accent);background:#1a2230;border-radius:8px;padding:12px 14px;color:#bcc7d6;font-size:13px;margin:14px 0}
+	.cols{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+	.box{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+	.box ul{margin:0;padding-left:20px}.box li{margin:5px 0}
+	.good{border-left:3px solid var(--ok)}.bad{border-left:3px solid var(--warn)}
+	.foot{margin-top:34px;padding-top:14px;border-top:1px solid var(--line);color:var(--dim);font-size:12px}
+</style></head><body><div class="wrap">
+
+<h1>内置 Agent 提示词重构报告（第二版 · 以真源为准）</h1>
+<p class="dim">2026-10-27 · 真源 <code>src/vs/sessions/contrib/agentStudio/common/builtinAgents.ts</code> · 对比基线 <code>git HEAD</code></p>
+
+<div class="crit">
+	<b>⚠ 第一版报告有一个方向性错误，这里更正。</b><br>
+	我当时改的是 <code>resources/.agents/agents/&lt;id&gt;/.agent.md</code>，并以为那就是提示词真源。
+	实际上它是**产物**：Host 启动时由 <code>buildAgentMd()</code> 从 <code>builtinAgents.ts</code> 的
+	<code>systemPrompt</code> 重新生成 ⇒ 改 md <b>完全不生效</b>（真源一字未动）。
+	本版把重构真正写回了真源，并把守卫也改成读真源。
+</div>
+
+<div class="kpis">
+	<div class="kpi"><div class="k">提示词总行数（真源）</div><div class="v">625 → 1078</div><div class="d">+453 行（三段约束）</div></div>
+	<div class="kpi"><div class="k">「停下来问」覆盖</div><div class="v">0% → 100%</div><div class="d">排除 2 个内部 agent</div></div>
+	<div class="kpi"><div class="k">「完成前自检」覆盖</div><div class="v">5% → 100%</div><div class="d">同上</div></div>
+	<div class="kpi"><div class="k">欢迎卡建议词</div><div class="v">0 → 19 / 21</div><div class="d">写进 TS 的 <code>suggestions</code>，不会再被覆盖</div></div>
+</div>
+
+<h2>一、这一轮真正做什么</h2>
+<table>
+	<thead><tr><th>步骤</th><th>动作</th><th>为什么必须这样</th></tr></thead>
+	<tbody>
+		<tr><td>1</td><td>把 19 个 md 正文写回 TS 的 <code>systemPrompt</code>（模板字符串转义：反斜杠 / 反引号 / <code>${</code>）</td><td>真源在 TS；md 是产物</td></tr>
+		<tr><td>2</td><td><b>把 tools 恢复成 git 原值</b></td><td>我误把 md 里的 VS Code 口径工具名（<code>file_read</code> / <code>search_code</code> / <code>terminal</code>…）写回去 ⇒ <code>check-agent-tools</code> 立刻报 16 个未知工具。工具白名单必须用 dsh 真名</td></tr>
+		<tr><td>3</td><td>给 <code>knowledge-base-expert</code> 补 6 个 kb 工具（<code>kb_list</code> / <code>kb_read</code> / <code>kb_topic_overviews</code> / <code>kb_write_note</code> / <code>kb_build</code> / <code>kb_mindmap</code>）</td><td>重构后的提示词让 Agent 调它们，但白名单里没有 ⇒ <code>allowlistDenyOf</code> 会<b>静默 deny</b>，Agent 变成"只会说话"</td></tr>
+		<tr><td>4</td><td>给 19 个条目加 <code>suggestions</code>（<code>Agent</code> 接口本来就有这个字段）</td><td>只写 md 的话，下次启动被 <code>buildAgentMd</code> 抹掉</td></tr>
+		<tr><td>5</td><td>守卫改为读真源（159 项）；工具维度仍交给 <code>check-agent-tools</code></td><td>第一版守卫查的是产物 ⇒ 会"绿着但没生效"</td></tr>
+	</tbody>
+</table>
+
+<h2>二、逐 agent 变化（真源版）</h2>
+<table>
+	<thead><tr><th>agent</th><th>提示词行数前</th><th>后</th><th>Δ</th><th>建议词</th><th>停手</th><th>自检</th><th>输出</th><th>工具数</th></tr></thead>
+	<tbody><tr>
+		<td class="mono">saros-claw</td>
+		<td class="num">26</td><td class="num">46</td>
+		<td class="num up">+20</td>
+		<td class="num">0 → <b>3</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="num">27</td>
+	</tr>
+<tr>
+		<td class="mono">coder</td>
+		<td class="num">53</td><td class="num">82</td>
+		<td class="num up">+29</td>
+		<td class="num">0 → <b>3</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="chk"><b class="ok">✓</b> → <b class="ok">✓</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="num">17</td>
+	</tr>
+<tr>
+		<td class="mono">researcher</td>
+		<td class="num">15</td><td class="num">29</td>
+		<td class="num up">+14</td>
+		<td class="num">0 → <b>3</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="num">3</td>
+	</tr>
+<tr>
+		<td class="mono">saroasis-studio</td>
+		<td class="num">81</td><td class="num">100</td>
+		<td class="num up">+19</td>
+		<td class="num">0 → <b>3</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="num">8</td>
+	</tr>
+<tr>
+		<td class="mono">writer</td>
+		<td class="num">7</td><td class="num">26</td>
+		<td class="num up">+19</td>
+		<td class="num">0 → <b>3</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="num">3</td>
+	</tr>
+<tr>
+		<td class="mono">designer</td>
+		<td class="num">7</td><td class="num">26</td>
+		<td class="num up">+19</td>
+		<td class="num">0 → <b>3</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="num">2</td>
+	</tr>
+<tr>
+		<td class="mono">planner</td>
+		<td class="num">7</td><td class="num">26</td>
+		<td class="num up">+19</td>
+		<td class="num">0 → <b>3</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="num">3</td>
+	</tr>
+<tr>
+		<td class="mono">tester</td>
+		<td class="num">56</td><td class="num">77</td>
+		<td class="num up">+21</td>
+		<td class="num">0 → <b>3</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="num">13</td>
+	</tr>
+<tr>
+		<td class="mono">devops</td>
+		<td class="num">7</td><td class="num">26</td>
+		<td class="num up">+19</td>
+		<td class="num">0 → <b>3</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="num">8</td>
+	</tr>
+<tr>
+		<td class="mono">version-manager</td>
+		<td class="num">7</td><td class="num">26</td>
+		<td class="num up">+19</td>
+		<td class="num">0 → <b>3</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="num">5</td>
+	</tr>
+<tr>
+		<td class="mono">data</td>
+		<td class="num">7</td><td class="num">26</td>
+		<td class="num up">+19</td>
+		<td class="num">0 → <b>3</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="num">5</td>
+	</tr>
+<tr>
+		<td class="mono">code-explorer</td>
+		<td class="num">7</td><td class="num">26</td>
+		<td class="num up">+19</td>
+		<td class="num">0 → <b>3</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="num">14</td>
+	</tr>
+<tr>
+		<td class="mono">code-architect</td>
+		<td class="num">7</td><td class="num">60</td>
+		<td class="num up">+53</td>
+		<td class="num">0 → <b>3</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="num">13</td>
+	</tr>
+<tr>
+		<td class="mono">code-reviewer</td>
+		<td class="num">77</td><td class="num">84</td>
+		<td class="num up">+7</td>
+		<td class="num">0 → <b>3</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="chk"><b class="ok">✓</b> → <b class="ok">✓</b></td>
+		<td class="num">9</td>
+	</tr>
+<tr>
+		<td class="mono">task-reviewer</td>
+		<td class="num">76</td><td class="num">76</td>
+		<td class="num ">±0</td>
+		<td class="num">0 → <b>0</b></td>
+		<td class="chk">· → ·</td>
+		<td class="chk">· → ·</td>
+		<td class="chk"><b class="ok">✓</b> → <b class="ok">✓</b></td>
+		<td class="num">9</td>
+	</tr>
+<tr>
+		<td class="mono">re-reviewer</td>
+		<td class="num">43</td><td class="num">43</td>
+		<td class="num ">±0</td>
+		<td class="num">0 → <b>0</b></td>
+		<td class="chk">· → ·</td>
+		<td class="chk"><b class="ok">✓</b> → <b class="ok">✓</b></td>
+		<td class="chk"><b class="ok">✓</b> → <b class="ok">✓</b></td>
+		<td class="num">9</td>
+	</tr>
+<tr>
+		<td class="mono">workflow-agent</td>
+		<td class="num">7</td><td class="num">26</td>
+		<td class="num up">+19</td>
+		<td class="num">0 → <b>3</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="num">4</td>
+	</tr>
+<tr>
+		<td class="mono">knowledge-base-expert</td>
+		<td class="num">59</td><td class="num">128</td>
+		<td class="num up">+69</td>
+		<td class="num">0 → <b>3</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="num">25</td>
+	</tr>
+<tr>
+		<td class="mono">tob</td>
+		<td class="num">14</td><td class="num">36</td>
+		<td class="num up">+22</td>
+		<td class="num">0 → <b>3</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="num">0</td>
+	</tr>
+<tr>
+		<td class="mono">mediaclawer</td>
+		<td class="num">27</td><td class="num">46</td>
+		<td class="num up">+19</td>
+		<td class="num">0 → <b>3</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="num">6</td>
+	</tr>
+<tr>
+		<td class="mono">media-librarian</td>
+		<td class="num">35</td><td class="num">63</td>
+		<td class="num up">+28</td>
+		<td class="num">0 → <b>3</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="chk">· → <b class="ok">✓</b></td>
+		<td class="num">5</td>
+	</tr></tbody>
+</table>
+
+<h2>三、优缺点</h2>
+<div class="cols">
+	<div class="box good">
+		<h3>✔ 现在真的生效了</h3>
+		<ul>
+			<li>19 个 agent 的三段约束进了 <code>systemPrompt</code>：歧义先问、不可逆先确认、缺上下文如实说</li>
+			<li>kb 专家拿到 25 个工具（含 <code>kb_write_note</code>）⇒ 提示词说的话与权限边界一致</li>
+			<li>欢迎卡建议词持久化在 TS，重启不会被抹</li>
+			<li>新增守卫 <code>check-agent-prompts.mjs</code>（159 项，读真源）+ 既有 <code>check-agent-tools</code>（工具名）</li>
+			<li><code>tools</code> 一律以 dsh 真名为准 ⇒ allowlist 不再静默失效</li>
+		</ul>
+	</div>
+	<div class="box bad">
+		<h3>✘ 代价与仍未做的</h3>
+		<ul>
+			<li><b>通用段有重复</b>：19 份提示词各贴一遍三段约束（+453 行），改一处要改 19 处</li>
+			<li><b>薄 agent 人设没重写</b>：designer / writer / planner 等仍缺"什么算做好"的判据（本轮只补结构与约束）</li>
+			<li><b>中英文标题并存</b>：coder / tob 保留英文小标题（守卫做成中英等价，不为守卫改文风）</li>
+			<li><b>md 产物未回写</b>：<code>resources/.agents</code> 里的 tools 仍是旧名，等 Host 下次启动自然重生</li>
+			<li><b>真机行为未回归</b>：结构可测、行为不可测；IDE 侧 912 passing / 21 failing，失败项全是既有的插件/容器守卫问题，与提示词无关</li>
+		</ul>
+	</div>
+</div>
+
+<h2>四、验证</h2>
+<pre>
+node dsh-plugins/check-agent-prompts.mjs   <b># ✓ 159 项：三段 / 建议词 / 去重 / 占位符（读真源）</b>
+node dsh-plugins/check-agent-tools.mjs     <b># ✓ 21 个 agent 的 tools/skills 都是 dsh 真名</b>
+node src/vs/sessions/contrib/dshHarness/test/common/run-all-common-tests.mjs
+                                           <b># 912 passing / 21 failing（失败项与提示词无关，见报告第三节）</b>
+</pre>
+<p class="note">
+	验证方式变了：<b>别再改 md 来判断是否生效</b>。要看真源里 <code>systemPrompt</code> 的内容，
+	或者启动后看 Agent 详情页（它由 <code>buildAgentMd</code> 从真源生成）。
+</p>
+
+<h2>五、下一步（按 ROI）</h2>
+<table>
+	<thead><tr><th>项</th><th>收益</th><th>成本</th></tr></thead>
+	<tbody>
+		<tr><td>把三段通用约束改成"公共前缀"（加载期拼接）</td><td>消除 19 份重复，改一次全生效</td><td>中（要动 <code>getBuiltinAgents()</code> 或 <code>buildAgentMd</code>）</td></tr>
+		<tr><td>薄 agent 人设重写（6~8 个）</td><td>复杂任务下行为最不可控的那批</td><td>中（逐个审阅）</td></tr>
+		<tr><td>真机行为回归（每个 agent 一个代表任务）</td><td>结构对 ≠ 行为对</td><td>中高</td></tr>
+		<tr><td>把 <code>resources/.agents</code> 从仓库移除或标注"产物勿改"</td><td>避免下一个人重复我这次的错误</td><td>低</td></tr>
+	</tbody>
+</table>
+
+<div class="foot">本报告由脚本从 <code>git HEAD</code> 与当前真源计算，数字可复核 · 生成于 2026-10-27</div>
+</div></body></html>

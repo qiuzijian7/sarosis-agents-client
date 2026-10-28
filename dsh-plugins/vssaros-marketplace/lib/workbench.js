@@ -258,6 +258,15 @@ window.__ModuleLoader__.load({
 		function MarketPanel(props) {
 			const conversation = props && props.conversation ? props.conversation : null;
 
+			// ★ 2026-10-28（用户：「商城工作台有完全相同的问题……把这段守卫照搬到 vssaros-marketplace」）：
+			//   记录「本工作台是否在前台」—— 外壳 Frame 对 customFrame 入口会传 `props.active`。
+			//   所有"面板级"补丁（selectPanel 守卫 / 会话落到对话列）都靠这个标志开关，
+			//   否则会把别的工作台的会话也带跑。
+			react.useEffect(() => {
+				globalThis.__vssarosMarketActive = props && props.active === true;
+				return () => { globalThis.__vssarosMarketActive = false; };
+			}, [props && props.active]);
+
 			// ★ 伸缩状态（★ 2026-10-26 用户：「AI 助手栏增加伸缩按钮」）
 			//   持久化：关掉工作台再打开还是上次那个状态（收起的人不想每次重新收）
 			const collapsedState = react.useState(() => {
@@ -519,13 +528,19 @@ window.__ModuleLoader__.load({
 					if (!origNewSession) { return; }
 					const patched = function (...args) {
 						const out = origNewSession.apply(dw, args);
-						// 会话是异步建的 ⇒ 稍等再设（`ensureMarketDefaults` 内部会再等输入框就绪）
-						setTimeout(() => { try { ensureMarketDefaults(ctx); } catch { /* ignore */ } }, 350);
+						// ★ 2026-10-28：只在「商城工作台在前台」时才把默认 agent 设成商城助手
+						//   （以前无条件设 ⇒ 打开别的工作台新建会话也会被带成商城助手）。
+						if (globalThis.__vssarosMarketActive) {
+							// 会话是异步建的 ⇒ 稍等再设（`ensureMarketDefaults` 内部会再等输入框就绪）
+							setTimeout(() => { try { ensureMarketDefaults(ctx); } catch { /* ignore */ } }, 350);
+						}
 						return out;
 					};
 					scope.effect(() => {
-						// 只在没被别的插件包过时挂上去（避免覆盖别人的钩子）
-						if (dw.newSession !== origNewSession) { return; }
+						// ★ 2026-10-28（媒体库那次真机教训）：**总是链式包**。
+						//   原来这里是「`dw.newSession !== origNewSession` ⇒ 放弃」，本意是"别覆盖别人的钩子"，
+						//   实际效果是**后装的工作台永远包不上**（媒体库因此一直沿用商城的 preset）✗
+						//   ⇒ 改成把"当时"的 dw.newSession 沿用下来再套一层；dispose 时只在还是自己时才还原。
 						dw.newSession = patched;
 						return () => { if (dw.newSession === patched) { dw.newSession = origNewSession; } };
 					}, 'vssaros-marketplace: newSession preset');
@@ -533,7 +548,13 @@ window.__ModuleLoader__.load({
 			} catch (e) {
 				console.error('[vssaros-marketplace] 注册工作台失败（页面仍可用）', e);
 			}
-		}
+
+			// ⚠ 2026-10-28：这里**不再**给 `layout.selectPanel` / `uiWorkspace.openSession` 打补丁。
+			//   之前照搬过一层「前台时 selectPanel(null) 直接 return」，结果它装在外壳
+			//   （vssaros-workbenches）那道守卫的**外面**，把 null **吞掉不往下传** ⇒ 外壳
+			//   "拦下后把会话停靠进对话列"那一步永远执行不到 ⇒ 点会话 / 「＋ 新建会话」都"没反应"。
+			//   ⇒ 面板守卫**只由外壳负责一处**；业务插件碰这两个函数只会互相架空。
+			}
 
 		module.exports = { apply, install: apply };
 		module.exports.inject = ['slots'];

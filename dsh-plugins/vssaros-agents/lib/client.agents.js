@@ -3496,7 +3496,11 @@ window.__ModuleLoader__.load({
 								: st === 'ready'
 									? ('已连接' + (inb.lastEventAt ? ' · 最近事件 ' + new Date(inb.lastEventAt).toLocaleTimeString() : ''))
 									: st === 'connecting' ? '连接中…'
-										: st === 'error' ? ('连接失败（第 ' + String(inb.attempts || 0) + ' 次退避重试）')
+										/* ★ 2026-10-27：`unavailable`（缺依赖/缺凭据）后端不再重试 ⇒ attempts 为 0，
+										   这时说"第 0 次退避重试"会让用户以为等着就行。 */
+										: st === 'error' ? (Number(inb.attempts || 0) > 0
+											? ('连接失败（第 ' + String(inb.attempts) + ' 次退避重试）')
+											: '无法启动（缺依赖或凭据，处理后重点「启动入站」）')
 											: st === 'stopped' ? '已停止'
 												: '未启动';
 							const canStart = !!fsCfg.configured && st !== 'ready' && st !== 'connecting';

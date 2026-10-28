@@ -20,9 +20,14 @@
  */
 
 import { mainWindow } from '../../../../../base/browser/window.js';
+// ★ 2026-10-27：IDE 侧点击笔记要打开 **KB 笔记编辑器**（渲染好的正文），
+//   而不是 .md 的默认纯文本编辑器 —— 用户的原话是"在 editorpane 中显示详细内容"。
+import { KbNoteEditorInput } from '../kbNoteEditorInput.js';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { IQuickInputService } from '../../../../../platform/quickinput/common/quickInput.js';
+// ★ 2026-10-27：点文档失败要有可感知反馈（原来只写日志，用户看到的是「点了没反应」）
+import { INotificationService } from '../../../../../platform/notification/common/notification.js';
 import { generateUuid } from '../../../../../base/common/uuid.js';
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { IContextKeyService } from '../../../../../platform/contextkey/common/contextkey.js';
@@ -44,6 +49,8 @@ import { loadActiveKbVault, resolveKbRootUri, resolveVaultNotesDir } from '../kn
 import { IKbCommandService } from '../knowledge/kbCommandService.js';
 // 双链/反链：复用 IDE 侧栏（knowledgeBaseView）已在用的同一个图索引，不另写一份解析 ✗
 import { KbLinkGraph } from './knowledgeBase/kbGraph.js';
+// 两栏工作台的 side pane 外壳（CSP / nonce / 数据注入 / 脚本顺序）统一来自这里
+import { buildSidePaneHtml } from '../../common/workbenchSidePaneHost.js';
 
 /** 双链索引缓存（60s）：图索引要读全库正文，不能每次刷新都重建 */
 let LINK_CACHE: { key: string; at: number; graph: KbLinkGraph } | undefined;
@@ -165,6 +172,48 @@ interface IKbAction {
 	readonly tag?: string;
 }
 
+/**
+ * side pane 的**动作桥**（组件 → 宿主）。
+ *
+ * 提取自 `_getHtml` 里的内联脚本，内容一字未改：动作名即契约（见 split-workbenches.json 的 openAction），
+ * 宿主侧 `_onAction` 按同名分发。新增动作要**两边一起加**，否则组件点了没反应。
+ */
+const KB_SIDE_PANE_ACTIONS_JS = `// 检索结果回推通道：宿主 postMessage({type:'searchResults', requestId, items}) ⇒ 兑现对应 Promise
+const PENDING_SEARCH = {};
+window.addEventListener('message', ev => {
+	const m = ev.data;
+	if (m && m.type === 'searchResults' && m.requestId && PENDING_SEARCH[m.requestId]) {
+		PENDING_SEARCH[m.requestId](Array.isArray(m.items) ? m.items : []);
+		delete PENDING_SEARCH[m.requestId];
+	}
+});
+window.__KB_SIDEVIEW_ACTIONS__ = {
+	openNode: p => acquireVsCodeApi().postMessage({ type: 'openNode', path: p }),
+	refresh: () => acquireVsCodeApi().postMessage({ type: 'refresh' }),
+	openGraph: () => acquireVsCodeApi().postMessage({ type: 'openGraph' }),
+	openSettings: () => acquireVsCodeApi().postMessage({ type: 'openSettings' }),
+	switchVault: id => acquireVsCodeApi().postMessage({ type: 'switchVault', id }),
+	// 全文检索是**双向**的：发消息带 requestId，宿主回推 searchResults 时按 id 兑现 Promise。
+	// 插件页那边是 fetch（同源、天然异步）⇒ 组件只依赖"返回 Promise"这一条契约 ✓。
+	search: (q, m) => new Promise(resolve => {
+		const api = acquireVsCodeApi();
+		const requestId = 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+		PENDING_SEARCH[requestId] = resolve;
+		api.postMessage({ type: 'search', query: q, mode: m, requestId });
+		// 8s 兜底：宿主没回就把 Promise 兑成空结果，避免 pending 永久泄漏
+		setTimeout(() => { if (PENDING_SEARCH[requestId]) { PENDING_SEARCH[requestId]([]); delete PENDING_SEARCH[requestId]; } }, 8000);
+	}),
+	pickTag: t => acquireVsCodeApi().postMessage({ type: 'pickTag', tag: t }),
+	openLink: p => acquireVsCodeApi().postMessage({ type: 'openLink', path: p }),
+	moveNodes: (paths, to) => acquireVsCodeApi().postMessage({ type: 'moveNode', paths, toPath: to }),
+	deleteNodes: paths => acquireVsCodeApi().postMessage({ type: 'deleteNodes', paths }),
+	// 思维导图的生成/打开逻辑只有一份（KbMindmapGenerator + canvas 编辑器），这里只转发
+	openMindmap: () => acquireVsCodeApi().postMessage({ type: 'openMindmap' }),
+	// 体检：规则/报告只有一份（kbLint），这里仅转发
+	runLint: () => acquireVsCodeApi().postMessage({ type: 'runLint' }),
+	runDedup: () => acquireVsCodeApi().postMessage({ type: 'runDedup' }),
+	reviewQueue: () => acquireVsCodeApi().postMessage({ type: 'reviewQueue' }),
+};`;
 export class KbSideviewReactViewPane extends ViewPane {
 
 	static readonly ID = AGENT_STUDIO_KB_REACT_VIEW_ID;
@@ -193,6 +242,7 @@ export class KbSideviewReactViewPane extends ViewPane {
 		@IQuickInputService private readonly _quickInput: IQuickInputService,
 		@INativeEnvironmentService private readonly _environmentService: INativeEnvironmentService,
 		@ILogService private readonly _logService: ILogService,
+		@INotificationService private readonly _notificationService: INotificationService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 	}
@@ -463,8 +513,36 @@ export class KbSideviewReactViewPane extends ViewPane {
 		//   （`<vault>/笔记/库/…`，同 `_baseDirOf` 修掉的那批问题）。现在按首段解析基准目录，
 		//   库区的 pdf / canvas / 图片也能真正由编辑器 resolver 打开 ✓
 		const base = await this._baseDirOf(relPath);
-		if (!base) { return; }
+		if (!base) {
+			// 静默 return 是本文件最难查的一类"点了没反应"：说清是哪条路径解析不出来
+			this._notificationService.warn('找不到这篇笔记：' + relPath + '（可能已改名或不在当前库）');
+			this._logService.warn('[KB] _openNote 无法解析基准目录：' + relPath);
+			return;
+		}
 		const uri = URI.joinPath(base.dir, ...base.segs);
+		/*
+		 * ★ 2026-10-27（用户要求：IDE 里点笔记要在 editorpane 显示详细内容）：
+		 *   原来一律 `openEditor({ resource })` ⇒ `.md` 落到**纯文本编辑器**（满屏源码），
+		 *   而知识库自己的富文本面板（`KbBlocksEditorPane`，react-markdown + Obsidian 方言）
+		 *   根本没被用上 —— 用户看到的"没有详细内容"就是这个原因。
+		 *   ⇒ 按扩展名分流：
+		 *     · `.md/.markdown` ⇒ `override` 成 KB 笔记编辑器（渲染态 + 工具条 + 大纲/历史）
+		 *     · 其它（pdf / 图片 / 图表 / 纯文本）⇒ 仍交给默认 resolver（各自已有查看器）
+		 *   ⚠ 这里用 `override` 而不是 `new KbNoteEditorInput(...)`：resolver 会复用已打开的 input，
+		 *     不会因为反复点击产生无人 dispose 的 input（`knowledgeBaseView` 当年踩过 LEAKED DISPOSABLE）。
+		 */
+		if (/\.(md|markdown)$/i.test(uri.path)) {
+			try {
+				await this._editorService.openEditor({
+					resource: uri,
+					options: { override: KbNoteEditorInput.ID, pinned: true },
+				});
+				return;
+			} catch (err) {
+				// KB 笔记面板解析失败不该让"打开文档"整个失败 ⇒ 退回普通编辑器（至少能看到内容）
+				this._logService.warn('[KB] 打开 KB 笔记面板失败，回退普通编辑器：' + uri.toString(), err);
+			}
+		}
 		await this._editorService.openEditor({ resource: uri });
 	}
 
@@ -662,63 +740,14 @@ export class KbSideviewReactViewPane extends ViewPane {
 	}
 
 	private _getHtml(js: string, css: string, nonce: string, data: KbSideviewPayload): string {
-		const styleTag = css ? `<style nonce="${nonce}">${css}</style>` : '';
-		// `<` 转义成 \\u003c：笔记名里出现 `</script>` 时内联脚本会被 HTML 解析器提前截断
-		const dataJson = JSON.stringify(data).replace(/</g, '\\u003c');
-		return `<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: https:; script-src 'nonce-${nonce}';">
-<style nonce="${nonce}">html,body{height:100%;margin:0;padding:0;overflow:hidden}</style>
-${styleTag}
-</head>
-<body>
-<div id="root"></div>
-<script nonce="${nonce}">
-// ── 数据由宿主注入（组件不做任何 IO）──
-window.__KB_SIDEVIEW_DATA__ = ${dataJson};
-// ── 动作桥：组件只发消息，由本 Pane 决定怎么执行（IDE 走命令 / 插件页走 HTTP）──
-// 检索结果回推通道：宿主 postMessage({type:'searchResults', requestId, items}) ⇒ 兑现对应 Promise
-const PENDING_SEARCH = {};
-window.addEventListener('message', ev => {
-	const m = ev.data;
-	if (m && m.type === 'searchResults' && m.requestId && PENDING_SEARCH[m.requestId]) {
-		PENDING_SEARCH[m.requestId](Array.isArray(m.items) ? m.items : []);
-		delete PENDING_SEARCH[m.requestId];
-	}
-});
-window.__KB_SIDEVIEW_ACTIONS__ = {
-	openNode: p => acquireVsCodeApi().postMessage({ type: 'openNode', path: p }),
-	refresh: () => acquireVsCodeApi().postMessage({ type: 'refresh' }),
-	openGraph: () => acquireVsCodeApi().postMessage({ type: 'openGraph' }),
-	openSettings: () => acquireVsCodeApi().postMessage({ type: 'openSettings' }),
-	switchVault: id => acquireVsCodeApi().postMessage({ type: 'switchVault', id }),
-	// 全文检索是**双向**的：发消息带 requestId，宿主回推 searchResults 时按 id 兑现 Promise。
-	// 插件页那边是 fetch（同源、天然异步）⇒ 组件只依赖"返回 Promise"这一条契约 ✓。
-	search: (q, m) => new Promise(resolve => {
-		const api = acquireVsCodeApi();
-		const requestId = 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-		PENDING_SEARCH[requestId] = resolve;
-		api.postMessage({ type: 'search', query: q, mode: m, requestId });
-		// 8s 兜底：宿主没回就把 Promise 兑成空结果，避免 pending 永久泄漏
-		setTimeout(() => { if (PENDING_SEARCH[requestId]) { PENDING_SEARCH[requestId]([]); delete PENDING_SEARCH[requestId]; } }, 8000);
-	}),
-	pickTag: t => acquireVsCodeApi().postMessage({ type: 'pickTag', tag: t }),
-	openLink: p => acquireVsCodeApi().postMessage({ type: 'openLink', path: p }),
-	moveNodes: (paths, to) => acquireVsCodeApi().postMessage({ type: 'moveNode', paths, toPath: to }),
-	deleteNodes: paths => acquireVsCodeApi().postMessage({ type: 'deleteNodes', paths }),
-	// 思维导图的生成/打开逻辑只有一份（KbMindmapGenerator + canvas 编辑器），这里只转发
-	openMindmap: () => acquireVsCodeApi().postMessage({ type: 'openMindmap' }),
-	// 体检：规则/报告只有一份（kbLint），这里仅转发
-	runLint: () => acquireVsCodeApi().postMessage({ type: 'runLint' }),
-	runDedup: () => acquireVsCodeApi().postMessage({ type: 'runDedup' }),
-	reviewQueue: () => acquireVsCodeApi().postMessage({ type: 'reviewQueue' }),
-};
-</script>
-<script nonce="${nonce}">${js}</script>
-</body>
-</html>`;
+		// 外壳（CSP / nonce / 数据注入 / 脚本顺序）统一由 workbenchSidePaneHost 提供；
+		// 本工作台只负责"注入哪份数据、挂哪些动作"。三条不可动的细节见该模块头部注释。
+		return buildSidePaneHtml({
+			nonce, js, css,
+			dataVar: '__KB_SIDEVIEW_DATA__',
+			data,
+			actionsJs: KB_SIDE_PANE_ACTIONS_JS,
+		});
 	}
 }
 

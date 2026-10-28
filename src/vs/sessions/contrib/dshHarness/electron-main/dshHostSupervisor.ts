@@ -23,7 +23,7 @@ import { basename, delimiter, join, resolve } from '../../../../base/common/path
 import { DshBridgeMethod, IBridgeHello, IBridgePluginRow, IBridgeReverseRequest, IBridgeWorkspaceContextArgs, IBridgeWorkspaceContextResult } from '../common/dshBridgeProtocol.js';
 import { bridgePipePath, buildHostArgs, buildPluginAddArgs, buildPluginAddArgsMany, buildProfileInitArgs, DSH_SHARED_INSTANCE_PACKAGES, memoryGatewayUrlFromEnv, parseAuthUrl, resolveSiblingPackage, toFileSpec } from '../common/dshCli.js';
 import { isDshRowsBundleRegistered, parseMcpServers, renderMcpOverlay } from '../common/dshMcpConfig.js';
-import { auditBundledPluginVersions, renderBundledVersionAudit } from '../common/dshPluginVersionAudit.js';
+import { auditBundledPluginVersions, isVersionNewer, renderBundledVersionAudit } from '../common/dshPluginVersionAudit.js';
 import { DSH_HOST_IDLE_TTL_MS, DshHostOverlayKind, hostOverlayFileName, IDshHostConfig, renderHostOverlays } from '../common/dshHostConfig.js';
 import { HOST_RUN_OWNERSHIP_HEARTBEAT_MS, hostRunOwnershipFileName } from '../common/dshHostRunOwnership.js';
 import { DSH_ARCHIFY_PLUGIN_NAME, DSH_BRIDGE_PLUGIN_NAME, DSH_EGO_PLUGIN_NAME, DSH_BROWSER_PLUGIN_NAME, DSH_CHAT_SURFACE_PLUGIN_NAME, DSH_DEFAULT_PROFILE, DSH_FOUNDATION_PLUGIN_NAME, DSH_KB_REFS_PLUGIN_NAME, DSH_SCHEDULE_BUNDLE_PLUGIN_NAME, DSH_UNREAL_PLUGIN_NAME, DSH_VOICE_BUNDLE_PLUGIN_NAME, DSH_WEB_APP_BUNDLE_NAME, DSH_WORKBENCHES_PLUGIN_NAME, IDshBundledInstallResult, IDshHostStartOptions, IDshHostStatus, IDshPluginInfo, sameStartOptions } from '../common/dshHarness.js';
@@ -1121,8 +1121,6 @@ export class DshHostSupervisor extends Disposable {
 					...(options.kbRoot?.trim() ? { kbRoot: options.kbRoot.trim() } : {}),
 					/* ★ IM（飞书）入站凭据（2026-10-27）：与 agentsRoot 写进**同一行**
 					   （`renderAgentsOverlay` 产出；同一行两份覆盖层时 config 是整体替换 ⇒ 不能拆）。 */
-					...(options.imFeishuAppId?.trim() ? { imFeishuAppId: options.imFeishuAppId.trim() } : {}),
-					...(options.imFeishuAppSecret?.trim() ? { imFeishuAppSecret: options.imFeishuAppSecret.trim() } : {}),
 					// ★ 库记录（2026-10-15）：与 kbRoot 同一份覆盖层 ✓（`renderDataRootOverlay` 里写进
 					//   `vssaros-kb` 那一行 ✓ —— 那份 config 整体替换 ⇒ 拆两份会互相擦掉 ✗）。
 					...(options.kbVaults?.trim() ? { kbVaults: options.kbVaults.trim() } : {}),
@@ -1735,6 +1733,15 @@ export class DshHostSupervisor extends Disposable {
 		}
 		if (skipUpgrade && installed) {
 			this._appendLog(`${label} upgrade skipped (skipPluginInstall): keeping ${installed}, bundled is ${bundled} — ${name}`);
+			return undefined;
+		}
+		// ★★ 2026-10-28（真机：打包版 exe 启动卡在"正在启动 VsSaros…"六分钟）：
+		//   **已装比随包新 ⇒ 不降级**。现场：那个 exe 随包 chat-surface@0.2.243，而 profile 里已是
+		//   0.2.259（dev 侧升上来的）⇒ 原来只判"不相等"就安排安装 ⇒ 每次启动降级重装 8 个包
+		//   （一条 `dsh plugin add` 装 8 个，跑满 4 分钟超时 + 逐项回退再失败）⇒ 用户面对长时间卡死 ✗。
+		//   "exe 比 profile 旧"是**正常状态**（先跑新 dev、再跑旧安装包）⇒ 保留已装的新版本 ✓。
+		if (installed && isVersionNewer(installed, bundled)) {
+			this._appendLog(`${label} 已装 ${installed} 比随包 ${bundled} 新 ⇒ 不降级，保留已装版本 — ${name}`);
 			return undefined;
 		}
 		// ★ 指纹随计划一起带走（2026-10-14）：暂存目录名要用它 ⇒ 同一版本下**内容变了**也会换 spec 路径。

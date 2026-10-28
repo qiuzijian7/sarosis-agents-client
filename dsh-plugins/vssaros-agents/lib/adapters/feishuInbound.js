@@ -15,6 +15,9 @@
 //
 // 幂等不在这里做 —— 它在 `imSeen.js`（跨重启），因为飞书会重投事件。
 
+import { sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 /** 去掉飞书 @ 占位符（`@_user_1`）并收拾多余空格。 */
 export function stripAtPlaceholders(text) {
 	return String(text ?? '')
@@ -127,6 +130,55 @@ export function parseFeishuEvent(payload) {
  *
  * `onMessage(msg)`：解析出的消息（调用方一般接到 `hub.handleInbound`）。
  */
+/**
+ * 本文件所在包的**安装位置**（用来告诉用户"在哪装依赖"）。
+ *
+ * 为什么能这么算：本文件在 `<profile>/node_modules/@vssaros/dsh-agents/lib/adapters/`，
+ * 上溯 5 层正好是 `<profile>`。装法不同（比如装进项目 node_modules）时，
+ * 结果同样是"npm install 在这个目录执行就能被解析到"的那个目录 —— 语义不会错。
+ *
+ * ⚠ 只说"npm i 后重启 Host"是不够的：用户会在项目目录执行，装到不相干的地方，
+ *   然后回来看到**一样的报错** —— 这次真机就差点是这样。
+ */
+/**
+ * 从任意文件路径推出"该在哪个目录装依赖"（纯函数，可测）。
+ *
+ * 按 `node_modules` 定位，而不是"上溯 N 层"：
+ *   · 真机：`<profile>/node_modules/@vssaros/dsh-agents/lib/adapters/x.js` → `<profile>` ✓
+ *   · 源码：`G:/…/dsh-plugins/vssaros-agents/lib/adapters/x.js` 里**没有** node_modules
+ *     ⇒ 返回空串，让调用方用通用提示。
+ *
+ * ⚠ 我第一版写的是"上溯 5 层"，在源码环境下返回 `G:\SarosWorkspace` ——
+ *   一个看起来很像答案、但完全错误的目录。**宁可返回空，也不给错答案。**
+ * ⚠ 同一路径里有多个 `node_modules` 时取**最后一个**（离文件最近的）：
+ *   在那安装同样能被解析到（npm 逐级向上查找）。
+ */
+export function profileDirFrom(filePath) {
+	const s = String(filePath ?? '');
+	const marker = sep + 'node_modules' + sep;
+	const idx = s.lastIndexOf(marker);
+	return idx > 0 ? s.slice(0, idx) : '';
+}
+
+export function installDirOf() {
+	try {
+		return profileDirFrom(fileURLToPath(import.meta.url));
+	} catch {
+		return '';
+	}
+}
+
+/**
+ * 这个错误重试也不会有结果 ⇒ 直接停（缺依赖 / 缺凭据）。
+ *
+ * 判据用"消息前缀 + 关键字"而不是错误类：`unavailable` 是本项目**约定**的前缀
+ * （见各适配器抛错处），不需要为此引入错误类型体系。
+ */
+export function isUnrecoverableError(e) {
+	const msg = String((e && e.message) || e);
+	return msg.startsWith('unavailable') || /未安装|缺少 app_id|缺少 app_secret|缺少 Bot Token/.test(msg);
+}
+
 export function createFeishuGateway({ transport, onMessage, log, baseDelayMs = 1000, maxDelayMs = 30_000 } = {}) {
 	let handle = null;
 	let stopped = false;
@@ -188,6 +240,15 @@ export function createFeishuGateway({ transport, onMessage, log, baseDelayMs = 1
 		} catch (e) {
 			state.status = 'error';
 			state.lastError = String(e?.message ?? e);
+			/* ★ 2026-10-27 真机反馈：`unavailable`（缺依赖 / 缺凭据）是**不可恢复**的。
+			   重试一百次也不会变好，却让界面一直显示"失败（第 1 次重试）"，
+			   用户以为"等一会儿就好"，实际要做的是 `npm i` 或去填凭据。
+			   ⇒ 直接停下（stopped=true），把原因留给用户看；他处理完再点「启动入站」。 */
+			if (isUnrecoverableError(e)) {
+				stopped = true;
+				note('warn', `飞书入站已停止（不可恢复）：${state.lastError}`);
+				return;
+			}
 			scheduleRetry();
 		}
 	}
@@ -217,20 +278,56 @@ export function createFeishuGateway({ transport, onMessage, log, baseDelayMs = 1
  * ⚠ 我们这个包**不把 SDK 作为依赖**（几十 MB，且只有真机用）：装了才用，没装就如实报
  *   `unavailable` —— 这一条比"假装连上了"重要得多（否则用户会一直等一个不存在的事件）。
  */
-export function createSdkTransport({ appId, appSecret, importSdk } = {}) {
+export function createSdkTransport({ appId, appSecret, resolve, importSdk } = {}) {
 	return {
 		async start({ onEvent, onError }) {
-			const id = String(appId ?? '').trim();
-			const secret = String(appSecret ?? '').trim();
-			if (!id || !secret) {
-				throw new Error('unavailable：缺少 app_id / app_secret（飞书开放平台 → 企业自建应用）');
+			/* ★ 2026-10-27：凭据改成**每次 start 现取**（`resolve`）。
+			   原来吃的是 apply 期的快照 ⇒ 用户在设置里填完必须重启 Host 才生效，
+			   与"设置里改了应该有反应"的直觉冲突。`resolve` 缺省时回落到静态 appId/appSecret。 */
+			let id = String(appId ?? '').trim();
+			let secret = String(appSecret ?? '').trim();
+			if (typeof resolve === 'function') {
+				const r = (await resolve().catch(() => null)) || {};
+				id = String(r.appId ?? '').trim() || id;
+				secret = String(r.appSecret ?? '').trim() || secret;
 			}
-			const load = importSdk || (() => import('@larksuiteoapi/node-sdk'));
+			if (!id || !secret) {
+				throw new Error('unavailable：缺少 app_id / app_secret（在「设置 → 渠道」里填，或 IDE 设置 → Channel 配置 → Feishu）');
+			}
+			/* ★ 2026-10-27 方案 C：**包内 vendor 优先**，装完即用。
+			   顺序：
+			     ① `./vendor/node-sdk/lib/index.js` —— 打进包里的运行时（10.5MB，见 scripts/vendor-lark-sdk.mjs）
+			     ② `@larksuiteoapi/node-sdk` —— 用户自己在 profile 里装过的话也能用
+			     ③ 两个都没有 ⇒ 报错里给**具体目录 + 可复制命令**（推不出目录时给通用提示）
+			   ⚠ 不能只留 ②：新装包的人一律缺 SDK，而"在哪个目录 npm i"是用户不知道的信息。 */
+			const loadVendored = () => import('./vendor/node-sdk/lib/index.js');
+			const loadNpm = () => import('@larksuiteoapi/node-sdk');
+			const loadDefault = async () => {
+				let vendorError = null;
+				try {
+					return await loadVendored();
+				} catch (e) {
+					vendorError = e;
+				}
+				try {
+					return await loadNpm();
+				} catch (npmError) {
+					const dir = installDirOf();
+					const err = new Error('unavailable：飞书 SDK 不可用（包内自带的那份也没能加载）。'
+						+ (dir ? `\n  可手动安装后重试：\n  cd "${dir}"\n  npm i @larksuiteoapi/node-sdk`
+							: '\n  可手动安装后重试：在 dsh profile 目录执行 npm i @larksuiteoapi/node-sdk')
+						+ `\n  包内：${String((vendorError && vendorError.message) || vendorError).slice(0, 160)}`
+						+ `\n  npm ：${String((npmError && npmError.message) || npmError).slice(0, 160)}`);
+					throw err;
+				}
+			};
+			const load = importSdk || loadDefault;
 			let sdk;
 			try {
 				sdk = await load();
-			} catch {
-				throw new Error('unavailable：未安装 @larksuiteoapi/node-sdk（npm i @larksuiteoapi/node-sdk 后重启 Host）');
+			} catch (e) {
+				/* 测试注入的 importSdk 抛错时走这里；默认路径已在 loadDefault 里成型 */
+				throw e instanceof Error ? e : new Error(String(e));
 			}
 			const WSClient = sdk?.WSClient || sdk?.default?.WSClient;
 			if (typeof WSClient !== 'function') {

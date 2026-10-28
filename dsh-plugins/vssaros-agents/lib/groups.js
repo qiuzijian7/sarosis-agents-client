@@ -19,11 +19,12 @@
 // ⚠ 派发登记的真源在 **lib/outbox.js**（2026-10-16 二期起落盘，Host 重启读回 ✓；本文件曾有的
 //    模块级 PENDING_DISPATCH 已撤——重启丢待回收回复的缺口由 outbox 补上 ✓）。
 
+import { renameWithRetry } from './atomicWrite.js';
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { presetIdOf } from './core/agents.js';
-import { AGENT_MESSAGE_KIND, finalAssistantText, findOurSplices } from './core/relay.js';
+import { AGENT_MESSAGE_KIND, finalAssistantContent, finalAssistantText, findOurSplices } from './core/relay.js';
 import { isShownAgent } from './core/agents.js';
 import { dataRootOf, scanAgentsFromConfig } from './store.js';
 import { normalizeFileRefs } from './groupFiles.js';
@@ -93,7 +94,7 @@ async function writeGroups(config, groups) {
 	const target = join(root, FILE_NAME);
 	const tmp = target + '.tmp-' + String(process.pid) + '-' + Date.now().toString(36);
 	await writeFile(tmp, text, 'utf8');
-	await rename(tmp, target);
+	await renameWithRetry(tmp, target);
 }
 
 /**
@@ -1424,10 +1425,14 @@ export function installGroupTracker(ctx, config, state) {
 			/* ★ IM 绑定（2026-10-27）：这条回合是 IM 派发的 ⇒ 把最终文本推回那个 IM 会话。
 			   不进 transcript（它不属于任何群），失败只记日志 + 交给 deliveries 侧后续展示。 */
 			if (entry.kind === 'im') {
-				const text = final ? final.text : '（这回合没产出文本）';
+				/* ★ 2026-10-27 出站富媒体：IM 回传用**带图**的那份（`finalAssistantContent`），
+				   群聊仍用 `final`（纯文本）—— 群 transcript 不该因为出现图就改变形状。 */
+				const rich = finalAssistantContent(events);
+				const text = (rich && rich.text) || '（这回合没产出文本）';
+				const pics = (rich && Array.isArray(rich.images)) ? rich.images : [];
 				const hub = state.bindingHub;
 				if (hub && typeof hub.deliverForEntry === 'function') {
-					hub.deliverForEntry(entry, text)
+					hub.deliverForEntry(entry, text, pics)
 						.then((r) => {
 							if (r && r.ok === false) {
 								console.warn(`[vssaros-agents] IM 回传失败（${entry.platform || '?'}:${entry.chatId || '?'}）：${r.reason}`

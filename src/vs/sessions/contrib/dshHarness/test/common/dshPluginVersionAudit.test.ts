@@ -21,7 +21,7 @@
 
 import assert from 'assert';
 
-import { auditBundledPluginVersions, renderBundledVersionAudit } from '../../common/dshPluginVersionAudit.js';
+import { auditBundledPluginVersions, isVersionNewer, renderBundledVersionAudit } from '../../common/dshPluginVersionAudit.js';
 
 suite('dsh 插件版本错配审计', () => {
 	test('全部一致 ⇒ 不产出任何行（不刷屏）', () => {
@@ -61,6 +61,32 @@ suite('dsh 插件版本错配审计', () => {
 		]);
 		assert.equal(audit.mismatched.length, 0);
 		assert.equal(renderBundledVersionAudit(audit), '');
+	});
+
+	// ★★ 2026-10-28（真机：打包版 exe 启动卡在"正在启动 VsSaros…"六分钟）：
+	//   那个 exe 随包 chat-surface@0.2.243，profile 里已装 0.2.259 ⇒ 原来判"不相等就装" ⇒
+	//   每次启动降级重装 8 个包（一条命令装 8 个，跑满 4 分钟超时 + 逐项回退再失败）✗。
+	test('已装比随包**新** ⇒ 不算错配、不进告警（且安装侧据此不降级）', () => {
+		const audit = auditBundledPluginVersions([
+			{ name: '@vssaros/dsh-chat-surface', label: '聊天界面', installed: '0.2.259', bundled: '0.2.243' },
+		]);
+		assert.equal(audit.mismatched.length, 0, '已装更新不是错配 ✗');
+		assert.equal(audit.newer.length, 1, '必须归到 newer 里（供安装侧跳过降级）✗');
+		const text = renderBundledVersionAudit(audit);
+		assert.ok(!text.includes('never started'), '"已装更新"不许混进"版本不一致 ⇒ 先看这里"的告警（会把人引错方向 ✗）');
+		assert.ok(text.includes('不降级'), '要写明保留已装版本（否则看不出发生了什么）✗');
+	});
+
+	test('版本比较（isVersionNewer）：数字段 / 预发布 / 脏值', () => {
+		assert.equal(isVersionNewer('0.2.259', '0.2.243'), true);
+		assert.equal(isVersionNewer('0.2.243', '0.2.259'), false);
+		assert.equal(isVersionNewer('0.10.0', '0.9.9'), true, '按数字段比，不能按字符串比 ✗');
+		assert.equal(isVersionNewer('1.0.0', '1.0.0-rc.1'), true, '正式版比预发布新 ✗');
+		assert.equal(isVersionNewer('1.0.0-rc.1', '1.0.0'), false);
+		assert.equal(isVersionNewer('1.0.0', '1.0.0'), false, '相同不算更新 ✗');
+		// 读不懂 ⇒ 保守返回 false（宁可多装一次，也别漏装）
+		assert.equal(isVersionNewer('abc', '1.0.0'), false);
+		assert.equal(isVersionNewer(undefined, '1.0.0'), false);
 	});
 
 	test('反向突变：把"缺失"当一致 ⇒ 必须变红（这是本守卫要抓的回归）', () => {

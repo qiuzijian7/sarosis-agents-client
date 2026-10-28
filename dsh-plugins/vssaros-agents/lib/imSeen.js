@@ -9,7 +9,8 @@
 // `<dataRoot>/agent-im-seen.json`：`{ version:1, keys:[ ... ] }`，**FIFO 有界**（默认 2000）。
 // 写入是**去抖**的（默认 2s）：入站是低频操作，但每条都同步写盘没有必要；
 // Host 退出前会 `flush`（见 apply 里的 disposal）。
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { renameWithRetry } from './atomicWrite.js';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { dataRootOf } from './store.js';
@@ -52,7 +53,7 @@ async function writeNow(config) {
 	const target = seenPathOf(config);
 	const tmp = target + '.tmp-' + String(process.pid) + '-' + Date.now().toString(36);
 	await writeFile(tmp, text, 'utf8');
-	await rename(tmp, target);
+	await renameWithRetry(tmp, target);
 }
 
 function scheduleFlush(config) {

@@ -136,6 +136,39 @@ window.__ModuleLoader__.load({
 			return flat.length > 48 ? flat.slice(0, 48) + "…" : flat;
 		}
 
+		/**
+		 * 选"当前会话"（高亮用）—— 纯函数（可单测 ✓）。
+		 *
+		 * ★ 2026-10-28（用户报障「左侧工作区中，切换会话 item，item 的高亮没有同步切换」）：
+		 *   高亮原来**只看 `bridge.sessionId`** —— 那是**宿主绑给这个视图的会话**（一个窗口里
+		 *   基本不变），而用户点列表里的 item 走的是官方 `uiWorkspace.openSession(sid)`
+		 *   ⇒ **官方当前会话变了、宿主绑定没变** ⇒ 高亮永远钉在原来那条 ✗。
+		 *   ⇒ 现在三个来源按优先级取：
+		 *     ① official = 官方 selection store（`dsh.sessions.current` —— 官方自己记"当前会话"的地方）；
+		 *     ② local    = 我们刚点的那条（**乐观高亮**：官方导航要几百毫秒才落地，先让用户看到反应 ✓）；
+		 *     ③ bridged  = 宿主绑定的会话（兜底：官方还没初始化时用这个）。
+		 *   ⚠ 只有**在册**的候选才配当"当前"：官方那条 selection 是**按 origin 持久化**的 ⇒
+		 *     可能是**别的窗口**留下的会话 ⇒ 拿它高亮本窗口的列表就是假高亮 ✗ ⇒ 用 known 过滤 ✓。
+		 */
+		function pickCurrentSessionId(opts) {
+			const o = opts || {};
+			const official = o.official || null;
+			const local = o.local || null;
+			const bridged = o.bridged || null;
+			const known = o.known || null;
+			const has = (id) => {
+				if (!id) { return false; }
+				if (!known) { return true; }
+				if (typeof known.has === "function") { return known.has(id); }
+				return !!known[id];
+			};
+			if (has(official)) { return official; }
+			if (has(local)) { return local; }
+			if (has(bridged)) { return bridged; }
+			// 都不在册 ⇒ 仍交出第一个有值的（上层据此"不高亮"而不是"高亮错的那条" ✓）
+			return official || local || bridged || null;
+		}
+
 		function buildSidebar(options) {
 			const items = (options && options.workspaces) || [];
 			const records = (options && options.records) || [];
@@ -235,18 +268,81 @@ window.__ModuleLoader__.load({
 			const notify = (kind, text) => {
 				try { if (bridge && typeof bridge.notify === "function") { bridge.notify(kind, text); } } catch { /* 通知失败不影响别的 */ }
 			};
-			const openSession = (sid) => {
-				// ★ 2026-10-18：`openSession` 是 **Promise** —— 不接住 ⇒ 失败静默（"点 session 没反应" ✓）
-				const doOpen = () => {
-					const fail = (e) => {
-						const msg = String((e && e.message) || e);
+			/**
+			 * 读**官方**的"当前会话"（2026-10-28：高亮不同步的根因）。
+			 *
+			 * 官方 `UiWorkspaceService` 里有个持久化的 selection store（`dsh.sessions.current`），
+			 * 官方自己用它记"当前打开的是哪条会话"（`replaceMain` / `openSession` 都会写它）。
+			 * ⚠ 那个字段在官方源码里是**私有**的（TS private，运行期不存在）⇒ 读不到就**如实返回 null**
+			 *   （上层会退回"我们刚点的那条"与宿主绑定）⇒ 官方哪天改了名，我们只是不高亮，不会崩 ✓。
+			 */
+			const readOfficialCurrent = () => {
+				try {
+					const uw = ctx.uiWorkspace;
+					const sel = uw && uw.selection;
+					if (sel && typeof sel.getSnapshot === "function") {
+						const snap = sel.getSnapshot() || {};
+						if (typeof snap.sessionId === "string" && snap.sessionId) { return snap.sessionId; }
+					}
+				} catch { /* 官方字段不存在/改名 ⇒ 回落 */ }
+				return null;
+			};
+			/**
+			 * 点侧栏里的会话 ⇒ 打开它。
+			 *
+			 * ★★ 2026-10-28（用户报「左侧工作区中，点击会话 item，没有打开对应会话」）：
+			 *   原来这里**只调一次** `openSession`，失败就一句 `notify(warn)` —— 而桌面窗口
+			 *   **没有宿主桥**（`bridge.notify` 空转）⇒ 用户看到的就是"点了完全没反应"✗✗。
+			 *   而 `unknown session` / `is released` 是**预期内的瞬时态**（会话还没进 roster、
+			 *   引用被回收），主包的 `navigate()` 对这两种错误会 retain + 轮询重试，
+			 *   侧栏这条一次性路径从来不重试 ⇒ 只要第一次撞上就永久打不开。
+			 *   ⇒ 现在：① 瞬时错误先 `sessions.retain` 再退避重试（最稳，与主包同口径）；
+			 *            ② 每次失败**就地渲染**一行（`setMsg`，与「＋添加工作区」同一套可见性）；
+			 *            ③ 成功则清掉那行，不残留噪声。
+			 *
+			 * @param setMsg 区内的就地提示回调（`{kind,text} | null`）；窗口模式唯一可见的反馈通道。
+			 * @param setCurrent 乐观高亮回调（点哪条先亮哪条；打不开就撤回 ⇒ 不会高亮一条没打开的会话）。
+			 */
+			const openSession = (sid, setMsg, setCurrent) => {
+				const RETRY_DELAYS = [300, 900, 2000];
+				const say = (text, kind) => {
+					state.openSessionError = kind === "error" ? text : null;
+					try { if (typeof setMsg === "function") { setMsg(text ? { kind: kind || "note", text: text } : null); } } catch { /* 渲染失败不影响打开 */ }
+				};
+				// ★ 2026-10-28（高亮不同步）：**乐观高亮** —— 官方导航要几百毫秒才落地，
+				//   先把点的那条点亮（用户点哪条哪条立刻有反应）⇒ 官方 selection 落地后由它接管 ✓。
+				try { if (typeof setCurrent === "function") { setCurrent(sid); } } catch { /* 渲染失败不影响打开 */ }
+				let attempt = 0;
+				const transient = (msg) => /unknown session|is released|not found|no such/i.test(msg);
+				const attemptOpen = () => {
+					attempt++;
+					const onRejected = (e) => {
+						const msg = String((e && e.message) || e || "未知错误");
 						state.lastOpenError = msg;
+						state.openSessionTries = attempt;
+						if (transient(msg) && attempt <= RETRY_DELAYS.length) {
+							// 会话不在 roster / 引用被释放 ⇒ 先 retain 拿回引用，再退避重试（同主包口径）
+							try {
+								const svc = ctx.sessions;
+								if (svc && typeof svc.retain === "function") { void Promise.resolve(svc.retain(sid)).catch(() => undefined); }
+							} catch { /* 下一跳还会再试 */ }
+							say("正在打开会话…（第 " + (attempt + 1) + " 次，会话还没就绪）", "note");
+							try { window.setTimeout(attemptOpen, RETRY_DELAYS[attempt - 1]); } catch { /* 没有 setTimeout */ }
+							return;
+						}
+						say("打开会话失败：" + msg, "error");
 						notify("warn", "打开会话失败：" + msg);
+						// ★ 2026-10-28：真的打不开 ⇒ 撤回乐观高亮（否则会一直亮着一条**没打开**的会话 ✗）
+						try { if (typeof setCurrent === "function") { setCurrent(null); } } catch { /* 忽略 */ }
 					};
 					try {
 						const r = ctx.uiWorkspace.openSession(sid);
-						if (r && typeof r.then === "function") { r.then(undefined, fail); }
-					} catch (e) { fail(e); }
+						if (r && typeof r.then === "function") {
+							r.then(() => { state.lastOpenError = null; say(null); }, onRejected);
+						} else {
+							say(null);
+						}
+					} catch (e) { onRejected(e); }
 				};
 				try {
 					const ws = typeof ctx.get === "function" ? ctx.get("workspaces") : undefined;
@@ -256,9 +352,11 @@ window.__ModuleLoader__.load({
 					//   **新建一条空会话**再导航过去（见 client.js alignWorkspace 的注释）。
 					//   工作区由选中会话推出，直接 openSession 即可。`owner` 只用于诊断。
 					state.lastOpenOwner = owner ? owner.workspaceId : null;
-					doOpen();
+					attemptOpen();
 				} catch (e) {
-					notify("warn", "打开会话失败：" + String((e && e.message) || e));
+					const msg = String((e && e.message) || e);
+					say("打开会话失败：" + msg, "error");
+					notify("warn", "打开会话失败：" + msg);
 				}
 			};
 			/**
@@ -468,6 +566,10 @@ window.__ModuleLoader__.load({
 				const [wsMsg, setWsMsg] = react.useState(null); // {kind:'error'|'note', text}
 				// ＋ 菜单（两个动作：加单目录 / 从 .code-workspace 导入多根）；null = 关闭
 				const [menu, setMenu] = react.useState(null); // {x, y}
+				// ★ 2026-10-28（高亮不同步）：`localCurrent` = 我们刚点的会话（乐观高亮）；
+				//   `officialTick` = 官方 selection 变化的计数（**读到新值也得重渲染**，否则高亮不动 ✗）。
+				const [localCurrent, setLocalCurrent] = react.useState(null);
+				const [officialTick, setOfficialTick] = react.useState(0);
 				const hoverTimer = react.useRef(null);
 				// 点外面 ⇒ 关菜单（与官方菜单同口径；不关就会"菜单糊在侧栏上"✗）
 				react.useEffect(() => {
@@ -487,16 +589,45 @@ window.__ModuleLoader__.load({
 						document.removeEventListener("keydown", onKey, true);
 					};
 				}, [menu]);
+				// ★ 2026-10-28：订阅官方 selection（当前会话）—— 官方导航一变就重渲染 ⇒ 高亮跟着动 ✓。
+				//   官方那个字段是私有的 ⇒ 读不到就退化成"乐观高亮 + 宿主绑定"（不会崩 ✓）。
+				react.useEffect(() => {
+					let sub = null;
+					try {
+						const sel = ctx.uiWorkspace && ctx.uiWorkspace.selection;
+						if (sel && typeof sel.subscribe === "function") {
+							sub = sel.subscribe(() => setOfficialTick((n) => n + 1));
+						}
+					} catch { /* 官方字段改名了 ⇒ 靠乐观高亮顶着 */ }
+					return () => { try { if (typeof sub === "function") { sub(); } } catch { /* 已释放 */ } };
+				}, []);
 
 				const sessSnap = readSessSnapshot();
-				const currentId = bridge && bridge.sessionId ? bridge.sessionId : null;
+				// ★ 2026-10-28（高亮不同步）：当前会话有三个来源，优先级见 pickCurrentSessionId 的注释。
+				//   ① official = 官方 selection（官方自己记的"当前会话"）—— 用户点 item 后它会变 ✓
+				//   ② local    = 我们刚点的那条（乐观高亮：官方导航落地前就先动 ✓）
+				//   ③ bridged  = 宿主绑定的会话（兜底）
+				const bridgedCurrent = bridge && bridge.sessionId ? bridge.sessionId : null;
+				const knownIds = {};
+				for (const it of (wsSnap && wsSnap.items) || []) {
+					if (it && Array.isArray(it.sessionIds)) {
+						for (const sid of it.sessionIds) { knownIds[sid] = true; }
+					}
+				}
+				for (const sid of Object.keys((sessSnap && sessSnap.byId) || {})) { knownIds[sid] = true; }
+				const currentId = pickCurrentSessionId({
+					official: readOfficialCurrent(),
+					local: localCurrent,
+					bridged: bridgedCurrent,
+					known: knownIds,
+				});
 				const rows = react.useMemo(() => buildSidebar({
 					workspaces: (wsSnap && wsSnap.items) || [],
 					records,
 					sessionsById: (sessSnap && sessSnap.byId) || {},
 					archivedIds: (sessSnap && sessSnap.archivedSessionIds) || [],
 					currentSessionId: currentId,
-				}), [wsSnap, records, sessSnap, currentId]);
+				}), [wsSnap, records, sessSnap, currentId, officialTick]);
 
 				// 当前会话 cwd 所在根的路径（详情卡绿框用）：当前会话的 dsh 条目 path。
 				let currentRootPath = null;
@@ -627,7 +758,7 @@ window.__ModuleLoader__.load({
 										key: s.id,
 										style: Object.assign({}, S.row, { paddingLeft: 30, fontSize: 12.5 }, s.isCurrent ? { background: "var(--dsw-alias-interactive-bg-active, rgba(91,140,255,.15))", color: "var(--dsw-alias-label-primary, #e6e6e6)" } : null),
 										title: s.rootName ? s.rootName + " · " + s.id : s.id,
-										onClick: () => openSession(s.id),
+										onClick: () => openSession(s.id, setWsMsg, setLocalCurrent),
 									},
 										react.createElement("span", { style: S.lbl }, s.title),
 										// 稿 1：只有**非主根**的会话才带根名标签 ✓
@@ -651,7 +782,7 @@ window.__ModuleLoader__.load({
 									key: s.id,
 									style: Object.assign({}, S.row, { paddingLeft: 30, fontSize: 12.5 }, s.isCurrent ? { background: "var(--dsw-alias-interactive-bg-active, rgba(91,140,255,.15))", color: "var(--dsw-alias-label-primary, #e6e6e6)" } : null),
 									title: s.id,
-									onClick: () => openSession(s.id),
+									onClick: () => openSession(s.id, setWsMsg, setLocalCurrent),
 								},
 									react.createElement("span", { style: S.lbl }, s.title),
 									react.createElement("span", { style: S.meta }, timeLabel(s.at)),
@@ -678,7 +809,7 @@ window.__ModuleLoader__.load({
 
 		exports.install = install;
 		// 仅测试用：分组收敛 / 路径比较 / 时间文案的纯逻辑（插件装载只读 install）。
-		exports.__test = { samePath, baseName, parseRecords, timeLabel, buildSidebar, nextCollapsed };
+		exports.__test = { samePath, baseName, parseRecords, timeLabel, buildSidebar, nextCollapsed, pickCurrentSessionId };
 		return module.exports;
 	}
 });

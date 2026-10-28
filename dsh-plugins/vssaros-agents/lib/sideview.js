@@ -239,18 +239,34 @@ export function renderSideviewPage({ agents, summary, root, missing, diagnostics
 		+ 'var FOCUS_KEY = "vssaros.agents.focus";'
 		// 点条目：先写焦点交接（同源 localStorage，完整页加载时消费 / 已开着时走 storage 事件），
 		// 再请宿主在编辑区打开完整页（openModulePage 白名单只认模块页表路由 ✓）。
-		+ 'function openAgent(id) {'
+		/*
+		 * ★ 2026-10-27（方案 C2）：点条目改成**分栏打开** ——
+		 *   中栏开会话（`bridge.newChat(preset)`，新页签绑该 bot 人格）
+		 *   + 右栏开设置（`bridge.openAgentSettings(id)`，IDE 的 Agent 设置编辑器页）。
+		 *   两个能力都在时**不再**打开编辑区整页（整页是 C1 的老形态，会盖掉分栏）。
+		 *   ⚠ 缺任一能力（老桥）⇒ 退回 `openModulePage('/x/agents/')` 打开整页，
+		 *     并如实提示，不静默 ✗。
+		 */
+		+ 'function openAgent(id, preset) {'
 		+ 'if (!id) { return; }'
 		+ 'try { if (window.localStorage) { localStorage.setItem(FOCUS_KEY, id + "|" + Date.now()); } } catch (e) {}'
 		// 点开 = 看过（未读角标清零；函数在下方 create 段里，同一个 script ✓）
 		+ 'if (window.svSeenNow) { svSeenNow(id); }'
 		+ 'var bridge = window.vssarosDsh;'
+		// ★ 首选：`openBot`（桥 21）—— 由**宿主**布局：chat 进当前组、设置开在右侧新组，
+		//   顺序与分组都不受页面控制，避免"设置把会话挤走"。
+		+ "if (bridge && typeof bridge.openBot === 'function') { try { bridge.openBot(id); note('已在中栏打开会话、右栏打开设置'); return; } catch (e) {} }"
+		// 兜底（老桥）：连调两个方法；两次调用都可能落在同一组，所以只承诺"都开了"，不承诺布局
+		+ 'var ok = 0;'
+		+ "if (bridge && typeof bridge.newChat === 'function' && preset) { try { bridge.newChat(preset); ok++; } catch (e) {} }"
+		+ "if (bridge && typeof bridge.openAgentSettings === 'function') { try { bridge.openAgentSettings(id); ok++; } catch (e) {} }"
+		+ 'if (ok >= 2) { note("已打开会话与设置（老桥：可能在同一组）"); return; }'
 		+ "if (!bridge || typeof bridge.openModulePage !== 'function') { note('当前宿主不支持在编辑区打开（需要桥版本 3+ 的宿主）'); return; }"
 		+ "try { bridge.openModulePage('/x/agents/'); note(''); } catch (e) { note('打开编辑区页面失败：' + e); }"
 		+ '}'
 		+ 'function openFull(el) {'
 		+ "var row = el && el.closest ? el.closest('.row') : null;"
-		+ "openAgent(row ? row.getAttribute('data-agent-id') : '');"
+		+ "openAgent(row ? row.getAttribute('data-agent-id') : '', row ? row.getAttribute('data-preset') : '');"
 		+ '}'
 		// 点群条目：交接 'group:<id>'（detail 页 applyFocus 认这个前缀 ⇒ 开群聊页签选中该群 ✓）
 		+ 'function openGroup(el) {'

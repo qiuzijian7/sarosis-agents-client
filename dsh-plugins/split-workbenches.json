@@ -1,0 +1,43 @@
+{
+  "$comment": [
+    "两栏工作台（master-detail）的**唯一注册表**（2026-10-27）。",
+    "",
+    "为什么要有它：窗口里的工作台是「左列表 + 右详情」两栏；到了 IDE 侧希望拆成",
+    "「左栏进 sideview、右栏进 editorpane」。这个拆分不是每个工作台各自手写一遍，",
+    "而是靠同一份契约 + 两个参数化基类（WorkbenchSidePane / WorkbenchDetailInput）。",
+    "在基类落地之前，这份表先承担两件事：① 声明哪些工作台属于 master-detail 型；",
+    "② 让 check-split-workbenches.mjs 能按同一套规则逐个校验（否则只能靠人记）。",
+    "",
+    "契约四条（守卫逐条检查，见 check-split-workbenches.mjs）：",
+    "  R1 注册了就必须有 IDE 侧 side pane（否则点了没反应）",
+    "  R2 side pane **不得**注入 loadDoc（否则侧栏里又长出右栏，正文出现两份）",
+    "  R3 点击节点走 openNode → detail input（不许把详情塞回侧栏）",
+    "  R4 bundle 必须实现「没有 loadDoc ⇒ 单列」的缺省分支（同一份代码两处复用）",
+    "",
+    "只收 master-detail 型：像 vssaros-parallel（多路 TUI）、vssaros-kanban（看板）",
+    "不是主从结构，硬套会变形 ⇒ 它们继续只在窗口里打开，不登记。",
+    "",
+    "R5（2026-10-27 新增）：side pane 的 HTML 外壳必须来自 sidePaneHost —— 否则每个工作台",
+    "各自拼 CSP/nonce/脚本顺序，抄错一次就是白屏或脚本被截断，而且只在手点时才发现。"
+  ],
+  "detailStrategies": [
+    "markdown",
+    "html",
+    "custom"
+  ],
+  "workbenches": {
+    "vssaros-kb": {
+      "title": "知识库",
+      "plugin": "vssaros-kb",
+      "sidePane": "KbSideviewReactViewPane",
+      "sidePaneFile": "src/vs/sessions/contrib/agentStudio/browser/views/kbSideviewReactViewPane.ts",
+      "bundleSource": "src/vs/sessions/contrib/agentStudio/webview/src/kbSideview/index.tsx",
+      "bundleBuilt": "dsh-plugins/vssaros-kb/lib/web/kbSideview.js",
+      "detail": "markdown",
+      "detailInput": "KbNoteEditorInput",
+      "openAction": "openNode",
+      "sidePaneHost": "src/vs/sessions/contrib/agentStudio/common/workbenchSidePaneHost.ts"
+    }
+  },
+  "sidePaneHost": "src/vs/sessions/contrib/agentStudio/common/workbenchSidePaneHost.ts"
+}

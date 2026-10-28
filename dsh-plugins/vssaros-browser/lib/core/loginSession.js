@@ -30,6 +30,31 @@ export const LOGIN_OWNER_PREFIX = 'vssaros-login:';
  */
 export const LOGIN_PROFILES = Object.freeze({
 	lightai: Object.freeze({ hostSuffix: 'aigclsp.com', cookieNames: Object.freeze(['sessionid', 'uid']) }),
+	/**
+	 * ★ 2026-10-28：**企业内网额度看板**（token.woa.com / aitoken.woa.com）。
+	 *
+	 * 为什么需要它：`token.woa.com` / `aitoken.woa.com` 的个人额度只认 **passport 会话 cookie**
+	 * （`.woa.com` 域，httpOnly）。dsh Host 是 Node 进程 ⇒ 读不到 Chrome 的 cookie
+	 * （App-Bound Encryption，SYSTEM 也解不开）⇒ **只能从真实浏览器进程里读**。
+	 *
+	 * 走这里的三个好处（与 LightAI 同构）：
+	 *   ① `Storage.getCookies` 拿的是**浏览器进程里已解密的** cookie ⇒ 绕开 ABE ✓
+	 *   ② `open()` 在**用户可见的浏览器**里开登录页 ⇒ 企业 SSO（iOA 推送）在真实浏览器里
+	 *      **回执正常**（在 Electron 窗口里实测收不到，见 quotaSync 的教训）✓
+	 *   ③ 窄口子不变：只认登记域名 + 只回登记 cookie 名 ✓
+	 *
+	 * ⚠ cookie 名取的是企业 SSO 的**常见会话 cookie 名**（不猜具体某一个）——
+	 *   拿到哪几个就用哪几个（Cookie 头是拼在一起的）⇒ 判定标准是"能不能让
+	 *   `token.woa.com` 返回带 `pt` 的页面"，而不是"名字对不对" ✓
+	 */
+	woa: Object.freeze({
+		hostSuffix: 'woa.com',
+		cookieNames: Object.freeze([
+			'RIO_TOKEN', 'P_RIO_TOKEN', 'p_skey', 'skey', 'ptui_token', 'ptoken', 'ptui',
+			'SSO_ID', 'Ticket', 'ticket', 'LoginTicket', 'staff_session', 'StaffSession',
+			'sessionid', 'uid', 'jwt', 'token', 'Token', 'login_uin', 'wxuin',
+		]),
+	}),
 });
 
 function profileOf(name) {

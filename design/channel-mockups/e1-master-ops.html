@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>E1 · 主从 + 运维摘要头（B×D）</title>
+<style>
+:root{--bg:#1b1b1d;--card:#232326;--bd:#2f2f33;--tx:#e6e6e6;--tx2:#a8a8a8;--tx3:#737373;
+--pri:#4c9aff;--ok:#3fb950;--warn:#d29922;--err:#f85149;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:13px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}
+.wrap{display:flex;flex-direction:column;height:100vh}
+/* ── D 的运维摘要条（可数的异常） ── */
+.sum{display:flex;align-items:center;gap:8px;padding:10px 16px;border-bottom:1px solid var(--bd);background:#1e1e21;flex-wrap:wrap}
+.sum h3{margin:0 8px 0 0;font-size:13.5px}
+.kpi{display:flex;align-items:center;gap:6px;font-size:11.5px;padding:2.5px 9px;border-radius:999px;
+border:1px solid var(--bd);background:#26262a;color:var(--tx2)}
+.kpi b{font-variant-numeric:tabular-nums;color:var(--tx)}
+.kpi.hot{border-color:rgba(210,153,34,.42);background:rgba(210,153,34,.12);color:#e3b341}
+.kpi.hot b{color:#e3b341}
+.kpi.ok{border-color:rgba(63,185,80,.35);background:rgba(63,185,80,.1);color:#7ee787}
+.kpi.ok b{color:#7ee787}
+.sum .sp{flex:1}
+/* ── B 的主体：左列表 + 右详情 ── */
+.body{display:flex;flex:1;min-height:0}
+.list{width:200px;flex:none;border-right:1px solid var(--bd);overflow:auto;padding:8px}
+.item{display:flex;align-items:center;gap:8px;padding:8px 9px;border-radius:8px;cursor:pointer;color:var(--tx2);position:relative}
+.item:hover{background:#2a2a2e}
+.item.on{background:rgba(76,154,255,.14);color:#dbeafe}
+.dot{width:7px;height:7px;border-radius:50%;background:#4a4a50;flex:none}
+.dot.ok{background:var(--ok);box-shadow:0 0 0 3px rgba(63,185,80,.16)}
+.dot.warn{background:var(--warn)}
+.item .nm{flex:1;font-size:12.5px}
+.item .n{font-size:10.5px;min-width:16px;height:16px;padding:0 4px;border-radius:999px;display:grid;place-items:center;
+background:#33333a;color:var(--tx2);font-variant-numeric:tabular-nums}
+.item .n.hot{background:rgba(210,153,34,.2);color:#e3b341;font-weight:600}
+.item .n.err{background:rgba(248,81,73,.18);color:#ff9f97;font-weight:600}
+.detail{flex:1;overflow:auto;padding:14px 18px 26px;min-width:0}
+.hd{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:2px}
+.hd h2{margin:0;font-size:16px}
+.pill{font-size:11px;padding:1.5px 8px;border-radius:999px;white-space:nowrap}
+.p-ok{color:#7ee787;background:rgba(63,185,80,.14)}
+.p-warn{color:#e3b341;background:rgba(210,153,34,.14)}
+.p-off{color:var(--tx3);background:#2a2a2e}
+.sub{color:var(--tx3);font-size:11.5px;margin:2px 0 12px}
+button{font:inherit;font-size:11.5px;padding:4px 10px;border-radius:6px;cursor:pointer;border:1px solid var(--bd);
+background:#2a2a2e;color:var(--tx)}
+button:hover{background:#313136}
+button.pri{background:var(--pri);border-color:transparent;color:#fff;font-weight:600}
+button.ghost{background:transparent}
+button:disabled{opacity:.45;cursor:not-allowed}
+/* ── 详情里的小节：D 的紧凑表格 ── */
+.sec{border:1px solid var(--bd);border-radius:10px;margin-bottom:10px;overflow:hidden;background:var(--card)}
+.sec>.cap{display:flex;align-items:center;gap:7px;padding:7px 11px;background:#26262a;border-bottom:1px solid var(--bd)}
+.sec>.cap b{font-size:12px}
+.sec>.cap .n{font-size:10.5px;padding:0 6px;border-radius:999px;background:#33333a;color:var(--tx2);font-variant-numeric:tabular-nums}
+.sec>.cap .n.hot{background:rgba(210,153,34,.2);color:#e3b341}
+.sec>.cap .sp{flex:1}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{text-align:left;color:var(--tx3);font-weight:600;font-size:11px;padding:5px 10px;border-bottom:1px solid var(--bd);white-space:nowrap}
+td{padding:6px 10px;border-bottom:1px solid #26262a;color:var(--tx2)}
+tr:last-child td{border-bottom:0}
+tbody tr:hover{background:#26262a}
+td b{color:var(--tx);font-weight:600}
+.num{font-variant-numeric:tabular-nums;text-align:right}
+.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
+.reason{font-weight:600;font-size:11.5px}
+.r-sender{color:#e3b341}.r-mention{color:#e3b341}.r-loop{color:#ff9f97}.r-unbound{color:#ff9f97}
+.grid2{display:grid;grid-template-columns:96px 1fr 96px 1fr;gap:7px 10px;padding:10px 11px;align-items:center;font-size:12px}
+.grid2 label{color:var(--tx2)}
+input,select{font:inherit;font-size:12px;padding:4.5px 8px;border-radius:6px;border:1px solid var(--bd);
+background:#1e1e21;color:var(--tx);min-width:0;width:100%}
+input::placeholder{color:#5c5c63}
+.note{margin:12px 0 0;padding:8px 11px;border-left:2px solid #3d3d44;color:var(--tx3);font-size:11.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <!-- ═══ D 的运维摘要条：一眼数清异常 ═══ -->
+  <div class="sum">
+    <h3>渠道</h3>
+    <span class="kpi ok">已接入 <b>2</b></span>
+    <span class="kpi ok">已连接 <b>1</b></span>
+    <span class="kpi hot">待批准 <b>2</b></span>
+    <span class="kpi hot">失败 <b>3</b></span>
+    <span class="sp"></span>
+    <button class="ghost">刷新</button>
+    <button class="ghost">策略</button>
+  </div>
+
+  <div class="body">
+    <!-- ═══ B 的左列：状态点 + 异常数字 ═══ -->
+    <div class="list">
+      <div class="item on"><span class="dot ok"></span><span class="nm">🐦 飞书</span><span class="n hot">2</span></div>
+      <div class="item"><span class="dot warn"></span><span class="nm">✈️ Telegram</span><span class="n">0</span></div>
+      <div class="item"><span class="dot"></span><span class="nm">🎮 Discord</span></div>
+      <div class="item"><span class="dot"></span><span class="nm">🏢 企业微信</span></div>
+    </div>
+
+    <!-- ═══ B 的右详情，但每块用 D 的表格 ═══ -->
+    <div class="detail">
+      <div class="hd">
+        <h2>🐦 飞书</h2><span class="pill p-ok">已连接</span>
+        <span style="flex:1"></span>
+        <button>停止</button><button class="pri">保存凭据</button>
+      </div>
+      <p class="sub">WS 长连接 · 最近事件 17:32:07 · 凭据来源：本机 dsh 设置（cli_a1…h8）</p>
+
+      <div class="sec">
+        <div class="cap"><b>凭据</b><span class="sp"></span><span style="font-size:11px;color:var(--tx3)">唯一填写处 · 存 <span class="code">agent-im-accounts.json</span></span></div>
+        <div class="grid2">
+          <label>App ID</label><input value="cli_a1b2c3d4e5f6g7h8">
+          <label>App Secret</label><input type="password" placeholder="已配置 · 留空 = 不改">
+        </div>
+      </div>
+
+      <div class="sec">
+        <div class="cap"><b>绑定</b><span class="n">2</span><span class="sp"></span><button class="ghost">+ 新建</button></div>
+        <table>
+          <thead><tr><th>IM 会话</th><th>绑定对象</th><th>方向</th><th>准入</th><th>状态</th><th class="num">操作</th></tr></thead>
+          <tbody>
+            <tr><td class="code">oc_5f2a9d</td><td><b>群 · 评测群</b></td><td>双向</td><td>@ 触发</td><td>启用</td><td class="num"><button class="ghost">改</button></td></tr>
+            <tr><td class="code">oc_88c1e2</td><td><b>Bot · Coder</b></td><td>只发</td><td>—</td><td>启用</td><td class="num"><button class="ghost">改</button></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="sec">
+        <div class="cap"><b>待批准</b><span class="n hot">2</span><span class="sp"></span><span style="font-size:11px;color:var(--tx3)">批准只给私聊权限</span></div>
+        <table>
+          <thead><tr><th>配对码</th><th>发送者</th><th class="num">剩余</th><th class="num">操作</th></tr></thead>
+          <tbody>
+            <tr><td class="code">JXT457YC</td><td>张三</td><td class="num">42 分钟</td><td class="num"><button class="pri">批准</button></td></tr>
+            <tr><td class="code">QW8N3KPD</td><td>李四</td><td class="num">12 分钟</td><td class="num"><button class="pri">批准</button></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="sec">
+        <div class="cap"><b>最近失败</b><span class="n hot">3</span><span class="sp"></span><button class="ghost">清空</button></div>
+        <table>
+          <thead><tr><th>原因</th><th>发送者</th><th>内容</th><th class="num">时间</th></tr></thead>
+          <tbody>
+            <tr><td class="reason r-sender">sender</td><td>u_bad</td><td class="code">我不在白名单</td><td class="num" style="color:var(--tx3)">17:29</td></tr>
+            <tr><td class="reason r-mention">no-mention</td><td>王五</td><td class="code">@所有人 帮我看下这个报错…</td><td class="num" style="color:var(--tx3)">17:24</td></tr>
+            <tr><td class="reason r-loop">loop</td><td>bot_a</td><td class="code">连环触发已被冷却 60s</td><td class="num" style="color:var(--tx3)">17:18</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p class="note">E1 设计意图：D 的摘要条放在最上方（异常随时可数，切平台也不丢），B 的左列承担“选平台”，右详情里每一块都用 D 的表格密度。代价：摘要条是全局的，单平台详情里仍需重复一次该平台的数字（否则切到别的平台后看不到对比）。</p>
+    </div>
+  </div>
+</div>
+</body>
+</html>

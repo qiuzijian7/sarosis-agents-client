@@ -89,6 +89,10 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 	 * **永远不再重试**（用户视角：图谱突然空了、而且再也不会回来 ✗✗）。记下来 ⇒ 每轮继续重试 ✓。
 	 */
 	private readonly _failedReloads = new Set<string>();
+	/**
+	 * 已经就"图太大 ⇒ 不自动重载"**提示过用户**的 folder（2026-10-27）⇒ 只说一次，不刷屏 ✓。
+	 */
+	private readonly _tooBigNotified = new Set<string>();
 
 	constructor(
 		@ICodebaseGraphService private readonly _graphService: ICodebaseGraphService,
@@ -255,6 +259,9 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 		for (const key of [...this._failedReloads]) {
 			if (!current.has(key)) { this._failedReloads.delete(key); }
 		}
+		for (const key of [...this._tooBigNotified]) {
+			if (!current.has(key)) { this._tooBigNotified.delete(key); }
+		}
 		if (ready || deferred || pending) {
 			this._logService.info(LOG_TAG, `forgot folders that left the workspace (${reason}): ready=${ready}, deferred=${deferred}, pendingIndex=${pending}`);
 		}
@@ -310,6 +317,10 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 		// ★ 方案 C 判据（2026-09-15 用户裁决）：非主 root 的大图**延迟加载**。
 		// 判据本体在 `common/codebaseIndexDefaults.shouldDeferGraphLoad()`（纯函数、可单测）。
 		const deferMB = this._configurationService.getValue<number>('saros.codebaseGraph.deferLargeNonPrimaryRootsMB') ?? 5;
+		// ★ 2026-10-27：**主 root 的大图也延迟**（129MB / 42 万节点 ⇒ 打开工作区时同步合并 18.3s
+		//   ⇒ 主线程冻结二十多秒 ⇒ 鼠标点击与编辑器输入全无响应）。真源在 dsh 侧（始终最新）⇒
+		//   延后只影响 IDE 本地检索；真正用到时 `ensureGraphForUi()` 会自动按需加载并显示进度 ✓。
+		const deferPrimaryMB = this._configurationService.getValue<number>('saros.codebaseGraph.deferLargePrimaryRootMB') ?? 20;
 
 		for (let i = 0; i < toLoad.length; i++) {
 			const folder = toLoad[i];
@@ -335,8 +346,12 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 			const alreadyDeferred = this._deferredFolders.has(key);
 			// ★ 2026-09-16：**切换触发**（`deferLoads`）时要**不问大小**地延迟 ⇒ 必须拿到体积；
 			// 其余情况维持原优化（只对「可能被延迟」的 folder 才 stat，避免无谓 IO）。
+			// ★ 2026-10-27：主 root 也要 stat（它现在**也可能**被延迟 ⇒ 否则永远拿不到体积 ⇒ 永不延迟 ✗）。
 			const wantDeferLoad = opts?.deferLoads === true;
-			const sizeBytes = (wantDeferLoad || (deferMB > 0 && folderIndex > 0 && !alreadyDeferred))
+			const mightDefer = wantDeferLoad
+				|| (deferMB > 0 && folderIndex > 0)
+				|| (deferPrimaryMB > 0 && folderIndex <= 0);
+			const sizeBytes = (mightDefer && !alreadyDeferred)
 				? await this._sizeBytes(graphFileUri)
 				: 0;
 
@@ -352,10 +367,15 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 				continue;
 			}
 
-			if (shouldDeferGraphLoad(folderIndex, sizeBytes, deferMB, alreadyDeferred)) {
+			if (shouldDeferGraphLoad(folderIndex, sizeBytes, deferMB, alreadyDeferred, deferPrimaryMB)) {
 				this._deferredFolders.set(key, folder.uri.fsPath);
 				if (!alreadyDeferred) {
-					this._logService.info(LOG_TAG, `Deferring large non-primary root graph for "${project}" (${Math.round(sizeBytes / 1024 / 1024)} MB > ${deferMB} MB) — loads on first codebase use.`);
+					const limitMB = folderIndex <= 0 ? deferPrimaryMB : deferMB;
+					const which = folderIndex <= 0 ? 'primary root' : 'non-primary root';
+					this._logService.info(LOG_TAG, `Deferring large ${which} graph for "${project}" (${Math.round(sizeBytes / 1024 / 1024)} MB > ${limitMB} MB) — loads on first codebase use.`
+						+ (folderIndex <= 0
+							? '（主 root：合并这张图要十几秒，同步做会冻结整个界面；图谱真源在 dsh 侧，Agent 侧始终是最新 ✓）'
+							: ''));
 				}
 				continue;
 			}
@@ -517,11 +537,30 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 	 *     ⇒ 跳过自动索引」同一教训：对超大/损坏图谱反复全量重建远比不加载糟糕
 	 *     （用户视角"莫名扫描"）。
 	 */
-	private async _loadDeferredGraphs(reason: string): Promise<void> {
+	private async _loadDeferredGraphs(reason: string, opts?: { primaryOnly?: boolean }): Promise<void> {
 		if (this._deferredFolders.size === 0) { return; }
 		const current = new Set(this._workspaceService.getWorkspace().folders.map(f => this._normalize(f.uri.fsPath)));
-		const all = [...this._deferredFolders.entries()];
-		this._deferredFolders.clear();
+		let all = [...this._deferredFolders.entries()];
+		// ★ 2026-10-27：`primaryOnly` ⇒ 只载**主 root**那一份（其余留在延迟集合里）。
+		//
+		// 为什么需要：主 root 延后之后，「默认检索作用域」（`_resolveActiveProject()`）会漂到
+		// **别的已加载仓** ⇒ Find Symbol 之类的查询会打到错的图谱（搜不到主仓的符号）✗✗。
+		// 而 UI 打开时**只需要**主 root（默认作用域）⇒ 先把它载进来，作用域即恢复 ✓。
+		// 非主 root 的大图（UE5EA 24.6MB 那种）**不**在这一步拉进来 ⇒ 仍按需加载 ✓。
+		if (opts?.primaryOnly) {
+			const folders = this._workspaceService.getWorkspace().folders;
+			const primaryKey = folders.length ? this._normalize(folders[0].uri.fsPath) : '';
+			const before = all.length;
+			all = all.filter(([key]) => key === primaryKey);
+			if (all.length < before) {
+				this._logService.info(LOG_TAG, `Deferred load (${reason}, primaryOnly): keeping ${before - all.length} non-primary folder(s) deferred.`);
+			}
+			if (all.length === 0) { return; }
+		}
+		// 取走集合并清空 ⇒ 重复调用是空操作（服务侧还有 in-flight 去重）。
+		// ⚠ 只清掉**本次真要载的**那些：`primaryOnly` 时其余的必须留在集合里 ✓。
+		const taken = new Set(all.map(([key]) => key));
+		for (const key of taken) { this._deferredFolders.delete(key); }
 
 		// ★ 必须先**过滤掉已不属于本窗口**的 folder（延迟期间用户可能已切走工作区，
 		//   切换不 reload renderer）—— 否则会把旧工作区的巨图读进内存（正是方案 C 要避免的重活）。
@@ -555,6 +594,8 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 				this._logService.info(LOG_TAG, `Deferred graph for "${project}" loaded on demand.`);
 				// ★ 2026-10-13：延迟加载完成 ⇒ 同样记基线（否则这个 folder 一旦被别人换新就检测不到 ✓）
 				await this._rememberArtifactBaseline(key, fsPath);
+				// ★ 2026-10-27：产物归 dsh 时**不起监听** —— 闸在 service 的 `startWatching`（监听启动的
+				//   唯一收口）里 ⇒ 这里照旧调用即可，将来新增调用点也不会漏 ✓。
 				await this._startWatching(fsPath);
 			} else {
 				this._logService.warn(LOG_TAG, `Deferred graph for "${project}" failed to load — keeping it unloaded (no auto-index).`);
@@ -622,6 +663,14 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 				this._loadedArtifactFreshness.set(key, disk);
 				this._logService.info(LOG_TAG, `[external] "${project}" 基线跟上自落盘 ✓`);
 			}
+			// ★ 2026-10-27：规模闸命中 ⇒ **告诉用户**（否则表现为"IDE 里搜不到新符号"且毫无提示 ✗）。
+			//   只说一次（`_tooBigNotified`）⇒ 不刷屏 ✓；基线**不**跟上（用户手动刷新后仍能重载 ✓）。
+			if (decision.tooBig && !this._tooBigNotified.has(key)) {
+				this._tooBigNotified.add(key);
+				this._logService.warn(LOG_TAG, `[external] "${project}"：${decision.reason}`);
+				this._logService.info(LOG_TAG, `[external] "${project}" 提示：IDE 内存里这份图谱暂不自动更新；`
+					+ 'dsh 侧仍是最新（Agent 的 codebase 工具读的是 dsh 那份 ✓）。需要 IDE 侧同步时，在「代码库」面板点「刷新」即可。');
+			}
 			return;
 		}
 		this._logService.info(LOG_TAG, `[external] "${project}"：${decision.reason}`);
@@ -672,6 +721,8 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 		this._loadedArtifactFreshness.set(key, {
 			...(fresh !== undefined ? { savedAt: fresh } : {}),
 			...(disk?.mtimeMs !== undefined ? { mtimeMs: disk.mtimeMs } : {}),
+			// ★ 2026-10-27：基线里也要带**内容指纹** ⇒ 后面才能判"盘上只是被重写了一遍、内容没变" ✓
+			...(disk?.fingerprint !== undefined ? { fingerprint: disk.fingerprint } : {}),
 			...this._projectCounts(project),
 		});
 	}
@@ -700,7 +751,34 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 				nodeCount = Number.isFinite(Number(parsed?.node_count)) ? Number(parsed.node_count) : undefined;
 				edgeCount = Number.isFinite(Number(parsed?.edge_count)) ? Number(parsed.edge_count) : undefined;
 			} catch { /* 清单读不动/畸形 ⇒ 只用 mtime 判据（保守 ✓，且自我写识别会自动不生效 ✓） */ }
-			return { savedAt, mtimeMs: stat.mtime, nodeCount, edgeCount };
+			// ★ 2026-10-27：**内容指纹**（dsh 侧写在同一目录的 `index-meta.json` 里）——
+			//   有它就能判"内容其实没变"（dsh watcher 周期性重写制品 ⇒ 时间戳变了但图没变）⇒
+			//   不必整张重解析+合并（实测那一步要 18s 主线程冻结）✓。读不到就当没有（保守 ✓）。
+			const fingerprint = await this._readGraphFingerprint(
+				artifactUri.with({ path: artifactUri.path.replace(/[^/\\]+$/, 'index-meta.json') }));
+			return { savedAt, mtimeMs: stat.mtime, nodeCount, edgeCount, fingerprint };
+		} catch {
+			return undefined;
+		}
+	}
+
+	/**
+	 * 读 `index-meta.json` 里的**内容指纹**（dsh 侧写：`graphFingerprint` + `graphRecipe`）。
+	 *
+	 * 为什么要拼上 `graphRecipe`：dsh 侧明确要求「改『提取/构图语义』必须 +1 配方版本，
+	 * 否则『代码变了但文件没变』会被判成『图没变』」⇒ 只比指纹不够 ⇒ **指纹 + 配方版本**才是
+	 * 完整的"内容等价"判据 ✓（与 dsh 侧 `indexService.js` 的比较口径逐字对齐）。
+	 *
+	 * 读不到（老制品 / IDE 自己产的图）⇒ `undefined` ⇒ 判据自动退回"按时间戳"（保守 ✓）。
+	 */
+	private async _readGraphFingerprint(metaUri: URI): Promise<string | undefined> {
+		try {
+			const raw = (await this._fileService.readFile(metaUri)).value.toString();
+			const parsed = JSON.parse(raw) as { graphFingerprint?: string; graphRecipe?: number; meta?: { graphFingerprint?: string; graphRecipe?: number } };
+			const fp = parsed?.graphFingerprint ?? parsed?.meta?.graphFingerprint;
+			const recipe = parsed?.graphRecipe ?? parsed?.meta?.graphRecipe;
+			if (!fp) { return undefined; }
+			return `${fp}#r${Number.isFinite(Number(recipe)) ? Number(recipe) : 0}`;
 		} catch {
 			return undefined;
 		}

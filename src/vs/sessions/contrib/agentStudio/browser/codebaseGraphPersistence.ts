@@ -34,6 +34,8 @@ import { resetMaxBlockMs, takeMaxBlockMs, wsStage, wsStageEnd } from './wsSwitch
 import { IAgentStudioLogService } from './agentStudioLogService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { SLICE_CHECK_EVERY, sliceBudgetExceeded, yieldToEventLoop } from '../common/asyncSlice.js';
+// ★ 2026-10-27：gunzip worker 的 Blob URL 必须包成 CSP TrustedScriptURL（渲染进程启用了 Trusted Types）
+import { wrapWorkerUrl } from './shared/workerPoolManager.js';
 
 // Legacy format header (for backward compatibility)
 const LEGACY_MAGIC = 0x43424d47;  // "CBMG" = CodeBase Memory Graph
@@ -778,6 +780,12 @@ export class GraphPersistence {
 				jsonBytes = await this._gzipDecompress(compressed, uncompressedSize);
 			} else if (magic === 0x1f8b0800 || magic === 0x1f8b0808) {
 				// Gzip magic bytes (0x1f 0x8b 0x08 ...) — pure gzip stream (new format)
+				// ★ 2026-10-27（P2）：**优先在 worker 里解压+解码**（主线程不再被 inflate 阻塞 2.1s ✓）。
+				//   ⚠ worker 内部会先拷贝再转移 ⇒ 失败降级时 `allBytes` 仍然可用 ✓。
+				const workerText = await this._decompressInWorker(allBytes);
+				if (workerText !== undefined) {
+					return workerText;
+				}
 				jsonBytes = await this._gzipDecompress(allBytes, 0);
 			} else {
 				// Try plain JSON (uncompressed fallback)
@@ -943,7 +951,12 @@ export class GraphPersistence {
 		if (bufLen > 0) { yield enc.encode(buf.join('')); }
 	}
 
-	/** Gzip decompress using browser native DecompressionStream API */
+	/**
+	 * Gzip decompress using browser native DecompressionStream API
+	 *
+	 * ★ 2026-10-27（P2）：**解压已搬到专用 Worker**（见 `_decompressInWorker`）——
+	 * 本方法保留为**降级路径**（Worker 不可用 / 出错时用），语义不变 ✓。
+	 */
 	private async _gzipDecompress(data: Uint8Array, _expectedSize: number): Promise<Uint8Array> {
 		if (typeof DecompressionStream !== 'undefined') {
 			const ds = new DecompressionStream('gzip');
@@ -969,5 +982,143 @@ export class GraphPersistence {
 		}
 		// Fallback: assume uncompressed
 		return data;
+	}
+
+	// ─── 专用 gunzip Worker（2026-10-27，P2）────────────────────────────────
+	//
+	// ## 为什么要有它
+	//
+	// Chromium 的 `DecompressionStream` **在渲染主线程上**执行 ⇒ 129MB 制品的 inflate 实测
+	// **阻塞主线程 2.1s**（真机 2026-10-27：按需加载大图时唯一的 LONG_TASK = 2123ms，
+	// 时间戳与「解压制品=2203ms」完全对上 ⇒ 就是它）⇒ 那 2.1 秒里 ActivityBar 点击、
+	// 键盘输入全部无响应 ✗。
+	//
+	// ⇒ 把「inflate + UTF-8 解码」整体搬进 Worker：
+	//   · inflate 在 worker 线程 ⇒ **主线程不再阻塞** ✓；
+	//   · 压缩缓冲区**转移**（transfer）进 worker、结果字符串回传 ⇒ 零拷贝 ✓；
+	//   · 回传**字符串**而不是字节：V8 反序列化字符串 ≈ memcpy，比主线程 `TextDecoder().decode()`
+	//     解 500MB 文本更快（后者本身就是一大块同步）✓。
+	//
+	// ## 降级（不许因为它把加载搞挂）
+	//
+	// Worker 不可用（无 Blob/Worker）、出错、或超时（`GUNZIP_WORKER_TIMEOUT_MS`）⇒
+	// 自动回退到主线程的 `DecompressionStream`（行为与改动前一致，只是会卡 2s）✓。
+
+	/** gunzip worker 的源码（自包含；不依赖任何模块）。 */
+	private static readonly _GUNZIP_WORKER_SOURCE = `
+self.onmessage = async function (e) {
+	var msg = e.data || {};
+	var id = msg.id;
+	try {
+		var bytes = new Uint8Array(msg.buffer);
+		var ds = new DecompressionStream('gzip');
+		var writer = ds.writable.getWriter();
+		writer.write(bytes);
+		writer.close();
+		var reader = ds.readable.getReader();
+		var chunks = [];
+		var total = 0;
+		while (true) {
+			var r = await reader.read();
+			if (r.done) { break; }
+			chunks.push(r.value);
+			total += r.value.length;
+		}
+		var out = new Uint8Array(total);
+		var off = 0;
+		for (var i = 0; i < chunks.length; i++) { out.set(chunks[i], off); off += chunks[i].length; }
+		self.postMessage({ id: id, ok: true, text: new TextDecoder().decode(out) });
+	} catch (err) {
+		self.postMessage({ id: id, ok: false, error: String(err && err.message ? err.message : err) });
+	}
+};
+`;
+
+	/** gunzip worker 超时（ms）—— 超时 ⇒ 回退主线程解压（不许把加载永久挂住）。 */
+	private static readonly _GUNZIP_WORKER_TIMEOUT_MS = 120_000;
+
+	private _gunzipWorker: Worker | null = null;
+	private _gunzipWorkerBroken = false;
+	private _gunzipSeq = 0;
+	private readonly _gunzipPending = new Map<number, { resolve: (text: string) => void; reject: (err: any) => void }>();
+
+	/** 懒创建 gunzip worker；不可用时置 `_gunzipWorkerBroken`（不再重试，避免每次加载都试错）。 */
+	private _ensureGzipWorker(): Worker | null {
+		if (this._gunzipWorkerBroken) { return null; }
+		if (this._gunzipWorker) { return this._gunzipWorker; }
+		try {
+			if (typeof Worker === 'undefined' || typeof Blob === 'undefined' || typeof URL?.createObjectURL !== 'function') {
+				throw new Error('no Worker/Blob support');
+			}
+			const blob = new Blob([GraphPersistence._GUNZIP_WORKER_SOURCE], { type: 'application/javascript' });
+			const rawUrl = URL.createObjectURL(blob);
+			try {
+				// ★ 2026-10-27：渲染进程启用了 **Trusted Types** ⇒ `new Worker(blobUrl)` 会抛
+				//   「This document requires 'TrustedScriptURL' assignment」⇒ 必须经 `wrapWorkerUrl`
+				//   包成 CSP TrustedScriptURL（与 `codebaseGraphParserPool` 的 worker 同一口径 ✓）。
+				const worker = new Worker(wrapWorkerUrl(rawUrl));
+				worker.onmessage = (ev: MessageEvent) => {
+					const data = ev.data || {};
+					const pending = this._gunzipPending.get(data.id);
+					if (!pending) { return; }
+					this._gunzipPending.delete(data.id);
+					if (data.ok) { pending.resolve(String(data.text ?? '')); }
+					else { pending.reject(new Error(String(data.error || 'gunzip worker failed'))); }
+				};
+				worker.onerror = () => {
+					this._gunzipWorkerBroken = true;
+					for (const [, p] of this._gunzipPending) { p.reject(new Error('gunzip worker error')); }
+					this._gunzipPending.clear();
+				};
+				this._gunzipWorker = worker;
+				return worker;
+			} finally {
+				URL.revokeObjectURL(rawUrl);
+			}
+		} catch (err) {
+			this._gunzipWorkerBroken = true;
+			this._logService?.warn('[GraphPersistence]', `gunzip worker unavailable ⇒ falling back to main-thread decompression: ${err}`);
+			return null;
+		}
+	}
+
+	/**
+	 * 在 worker 里解压 + 解码（返回文本）。
+	 * @returns 成功 ⇒ 文本；不可用/出错 ⇒ `undefined`（调用方回退到主线程路径 ✓）
+	 */
+	private async _decompressInWorker(data: Uint8Array): Promise<string | undefined> {
+		const worker = this._ensureGzipWorker();
+		if (!worker) { return undefined; }
+		const id = ++this._gunzipSeq;
+		try {
+			const text = await new Promise<string>((resolve, reject) => {
+				const timer = setTimeout(() => {
+					this._gunzipPending.delete(id);
+					reject(new Error('gunzip worker timeout'));
+				}, GraphPersistence._GUNZIP_WORKER_TIMEOUT_MS);
+				this._gunzipPending.set(id, {
+					resolve: (t) => { clearTimeout(timer); resolve(t); },
+					reject: (e) => { clearTimeout(timer); reject(e); },
+				});
+				try {
+					// ⚠ **先拷贝再转移**：`postMessage` 的 transfer 会让**被转移的 buffer 失效**
+					//   ⇒ 若直接转移调用方的 buffer，worker 出错后降级路径就读不到原始字节了 ✗。
+					//   拷贝一份（129MB ≈ 几十毫秒）远小于 inflate 的 2.1s ⇒ 划算 ✓。
+					const copy = new Uint8Array(data.byteLength);
+					copy.set(data);
+					worker.postMessage({ id, buffer: copy.buffer }, [copy.buffer]);
+				} catch (err) {
+					clearTimeout(timer);
+					this._gunzipPending.delete(id);
+					reject(err);
+				}
+			});
+			return text;
+		} catch (err) {
+			this._logService?.warn('[GraphPersistence]', `gunzip worker failed ⇒ falling back to main-thread decompression: ${err}`);
+			// worker 连续出错就别再试了（避免每次加载都白等一次超时）
+			this._gunzipWorkerBroken = true;
+			return undefined;
+		}
 	}
 }

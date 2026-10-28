@@ -68,6 +68,10 @@ export class DshPluginViewPane extends ViewPane {
 	/** 有值时 = 该容器当前没有可加载的页面（状态框显示这段说明，且**不拉 Host**）。 */
 	private _noPageNote: HTMLElement | undefined;
 	private _rectZero = true;
+	/** 上一次真正发给主进程的矩形（取整后）：完全相同就**不再发 IPC**（打断布局回授环）。 */
+	private _lastLaidOutRect: { x: number; y: number; width: number; height: number } | undefined;
+	/** 同一帧内的 ResizeObserver 回调合并标志（见 ResizeObserver 注册处）。 */
+	private _layoutQueued = false;
 	private _overlayVisible = false;
 	private _viewShown = false;
 	/** 「以为显示了」是否已由**主进程的实际状态**背书（见 `_verifyMainVisible`；与聊天宿主同口径）。 */
@@ -154,6 +158,7 @@ export class DshPluginViewPane extends ViewPane {
 		if (this._viewId) {
 			void this._dsh.disposeView(this._viewId).catch(() => undefined);
 			this._viewId = undefined;
+			this._lastLaidOutRect = undefined;
 		}
 		super.dispose();
 	}
@@ -187,7 +192,17 @@ export class DshPluginViewPane extends ViewPane {
 		//   （`_layoutView` 自带"矩形为 0 时按 rAF 重试"的兜底 ✓，所以过渡态不会把视图摆到 0x0 ✗）。
 		const resizeObserver = new win.ResizeObserver(() => {
 			this._updateVisibility();
-			this._layoutView();
+			// ★ 2026-10-27：同一帧内的多次回调**合并成一次** `_layoutView`。
+			//   过渡动画/拖动分隔条时回调会密集触发，每次都跨进程改 bounds 会把主线程拖住
+			//   （与 `_layoutView` 内的"矩形未变就不发 IPC"一起构成两道闸）。
+			if (this._layoutQueued) {
+				return;
+			}
+			this._layoutQueued = true;
+			win.requestAnimationFrame(() => {
+				this._layoutQueued = false;
+				this._layoutView();
+			});
 		});
 		resizeObserver.observe(this._root);
 		this._register(toDisposable(() => resizeObserver.disconnect()));
@@ -333,6 +348,17 @@ export class DshPluginViewPane extends ViewPane {
 			.finally(() => this._starting = false);
 	}
 
+	/**
+	 * 把原生视图摆到 `_root` 的矩形上。
+	 *
+	 * ★ 2026-10-27（用户报：切到 agents 侧栏就卡死）：
+	 *   ResizeObserver 每帧回调 → `layoutView`（跨进程 IPC）→ 主进程改视图 bounds
+	 *   → 侧栏 splitview 重新布局 → 观察器再次回调 … 只要两侧对"最终尺寸"有一点不一致，
+	 *   就会形成**布局回授环**，表现为主窗口 `detected unresponsive`。
+	 *   两道闸：
+	 *     ① 幂等：矩形与上次**完全相同**就不发 IPC（消除"无变化的重排"）；
+	 *     ② 合并：同一帧内的多次回调只发一次（rAF 收敛），避免抖动放大。
+	 */
 	private _layoutView(retries = 2): void {
 		if (!this._viewId) {
 			return;
@@ -345,12 +371,20 @@ export class DshPluginViewPane extends ViewPane {
 			}
 			return;
 		}
+		const next = {
+			x: Math.round(rect.left),
+			y: Math.round(rect.top),
+			width: Math.round(rect.width),
+			height: Math.round(rect.height),
+		};
+		const prev = this._lastLaidOutRect;
+		if (prev && prev.x === next.x && prev.y === next.y && prev.width === next.width && prev.height === next.height) {
+			return;   // ① 尺寸没变：不发 IPC（这是打断回授环的关键一步）
+		}
+		this._lastLaidOutRect = next;
 		void this._dsh.layoutView(this._viewId, {
 			windowId: this._windowId,
-			x: rect.left,
-			y: rect.top,
-			width: rect.width,
-			height: rect.height,
+			...next,
 			zoomFactor: getZoomFactor(win),
 		});
 	}
@@ -387,6 +421,9 @@ export class DshPluginViewPane extends ViewPane {
 		if (this._canHostPage && !this._viewId && this._route) {
 			const viewId = this._viewIdForContainer;
 			this._viewId = viewId;
+			// ★ 换了视图 id（Host 重启后会重建）⇒ 必须清掉"上次摆位"的记录，
+			//   否则矩形恰好没变时幂等闸会跳过**首次** `layoutView` ⇒ 新原生视图停在 0x0（白屏）。
+			this._lastLaidOutRect = undefined;
 			// ⚠ 第 5 参是 route、第 6 参是**承载表面**（2026-10-13）：侧栏传 `sideview` ⇒ 插件渲染摘要版
 			//   （完整页反过来由编辑区承载时传 `editor`）✓
 			void this._dsh.createView(viewId, this._windowId, 'plugin-page', undefined, this._route, 'sideview')

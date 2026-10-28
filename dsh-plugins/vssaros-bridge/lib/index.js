@@ -66,6 +66,19 @@ const IDLE_TTL_DEFAULT_MS = 30 * 60_000;
  *   代价是宿主恢复后那次会是冷启动（比"会话一直被占用"划算 ✓）。
  * ★ 两侧是**一对**常量（阈值 ≥ 3× 心跳），由 `test/common/dshOwnerWatchdog.test.ts` 的配对守卫钉住 ✓。
  */
+/**
+ * ★ 2026-10-28（用户：「商城、媒体库加载很慢，切回会话也很慢」）真机取证：
+ *   `providers.sync` 每轮都要 `settings.mutate('llm-pi-ai', …)` ≈ 2s，而 `vssaros-ollama` 路由
+ *   在 `stale` ↔ `route-absent` 之间**来回震荡**（写进去下一轮又"不在"，于是再写）
+ *   ⇒ 每轮 2s 的设置写入持续占着 Host 事件循环 ⇒ 同期的 `/api/session/list`、`/api/commands/list`
+ *   等全部排队（实测这些接口 0.8–1.5s，而空闲时 5ms）。
+ *   ⇒ 对"连续写不进去"的路由**停止重写**：连续 N 轮只有它的 stale/absent 差异 ⇒ 本轮跳过 mutate。
+ *   一旦它真的写成功了（下一轮没有它的差异）⇒ 计数清零，恢复正常。
+ */
+const ROUTE_WRITE_STREAK_LIMIT = 2;
+/** route → 连续"写不进去"的轮数（模块级：跨 sync 调用累计） */
+const routeWriteStreak = new Map();
+
 const OWNER_STALE_MS = 3 * 20_000;
 /** 看门狗的巡检间隔（比阈值小一个数量级 ⇒ 够及时，且几乎不耗 CPU ✓）。 */
 const OWNER_WATCH_INTERVAL_MS = 20_000;
@@ -1222,7 +1235,30 @@ export function apply(ctx, config = {}) {
 									diffNotes.push(`${k}:${why.join('+') || '?'}`);
 								}
 							}
-							const changed = diffNotes.length > 0;
+							// ★「写不进去的路由别再写」：只统计 `:stale` / `:route-absent` 这类**残留**差异
+							//   （它不是我们负载里的字段，写进去也可能被宿主再次丢弃 ⇒ 会无限来回）。
+							const stuckNotes = diffNotes.filter(n => /:(stale|route-absent)$/.test(n));
+							const otherNotes = diffNotes.filter(n => !/:(stale|route-absent)$/.test(n));
+							let skipStuck = false;
+							if (stuckNotes.length > 0) {
+								const stuckRoutes = stuckNotes.map(n => n.split(':')[0]);
+								if (otherNotes.length === 0) {
+									const tried = stuckRoutes.map(r => routeWriteStreak.get(r) || 0);
+									skipStuck = tried.every(n => n >= ROUTE_WRITE_STREAK_LIMIT);
+								}
+								stuckRoutes.forEach(r => routeWriteStreak.set(r, (routeWriteStreak.get(r) || 0) + 1));
+							}
+							// 本轮没有差异的路由 ⇒ 说明上次写成功了 ⇒ 计数清零（避免永久拉黑）
+							try {
+								for (const [r, n] of routeWriteStreak) {
+									if (!stuckNotes.some(x => x.startsWith(r + ':'))) { routeWriteStreak.delete(r); }
+								}
+							} catch { /* ignore */ }
+							if (skipStuck) {
+								console.log('[vssaros-bridge] providers.sync: 跳过反复写不进去的路由（' + stuckNotes.join(', ')
+									+ '），避免每轮 2s 的设置写入拖慢整个 Host');
+							}
+							const changed = diffNotes.length > 0 && !skipStuck;
 							const tMutate = Date.now();
 							if (changed) {
 								const merged = {};
@@ -1270,6 +1306,12 @@ export function apply(ctx, config = {}) {
 							const tProbe = Date.now();
 							const modelsOnline = {};
 							for (const route of Object.keys(ours)) {
+								// 反复写不进去的路由（典型：ollama 没在跑）⇒ 不再探模型清单，
+								// 否则每次 sync 都要为它等一次超时（也是"整机变慢"的一部分）。
+								if ((routeWriteStreak.get(route) || 0) >= ROUTE_WRITE_STREAK_LIMIT) {
+									modelsOnline[route] = 'SKIP（路由反复写不进去，已暂停探测）';
+									continue;
+								}
 								try {
 									modelsOnline[route] = (await llm.listModels(route)).map(m => String(m?.id ?? m));
 								} catch (e) {

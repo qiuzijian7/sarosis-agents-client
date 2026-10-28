@@ -42,9 +42,9 @@ import { MAX_FILE_BYTES, readGroupFile, saveGroupFile } from './groupFiles.js';
 import { addGroupMembers, bindGroupSession, createGroup, decideGroupJoin, deleteGroup, effectiveModeFor, ensureMemberSession, installGroupTracker, listGroups, markGroupRead, newGroupSessions, normalizeGroupMode, postGroupMessage, removeGroupMember, setGroupAvatar, setGroupMemberPolicy, updateGroup, wakeOf } from './groups.js';
 import { readLiveSessions } from './live.js';
 import { markSeen, unreadSnapshot } from './seen.js';
-import { backupMemory, clampMemoryChars, enableGit, gitLogOf, gitShowMemoryFile, gitStatusOf, installMemoryBackupWatcher, listBranches, listMemoryBackups, listMemoryFiles, listVersions, MEMORY_CHARS_MAX, readMemoryFile, readMemorySnapshot, restoreMemoryBackup, restoreMemoryFile, setVersion, snapshotGit, switchBranch, writeCoreMemory } from './memory.js';
+import { backupMemory, ensureMemoryRepo, clampMemoryChars, enableGit, gitLogOf, gitShowMemoryFile, gitStatusOf, installMemoryBackupWatcher, listBranches, listMemoryBackups, listMemoryFiles, listVersions, MEMORY_CHARS_MAX, readMemoryFile, readMemorySnapshot, restoreMemoryBackup, restoreMemoryFile, setVersion, snapshotGit, switchBranch, writeCoreMemory, memoryDirOf } from './memory.js';
 // 从 AgentMemory 网关库拉一份 MEMORY.md **草稿**（只读；不落盘 —— 落盘仍走 write-memory 由人确认）
-import { importMemoryDraft } from './agentmemoryImport.js';
+import { importMemoryDraft, listAgentMemoryCandidates, listAgentMemoryExtras, syncMemoryToAgentMemory } from './agentmemoryImport.js';
 import { ensureOutboxLoaded, outboxList, outboxRetry } from './outbox.js';
 /* IM 绑定（2026-10-27，P0）：每个 bot / 群可绑一个 IM 会话，双向流转。
    适配器端口与 `vssaros-channels/lib/core/ports.js` 同形 ⇒ 飞书适配器将来可直接搬。 */
@@ -53,6 +53,20 @@ import { createLoopbackAdapter } from './adapters/loopback.js';
 import { createFeishuAdapter } from './adapters/feishu.js';
 /* 入站（P2 骨架）：传输层注入 —— 装了官方 SDK 才能真连长连接，没装就如实 unavailable。 */
 import { createFeishuGateway, createSdkTransport } from './adapters/feishuInbound.js';
+/* Telegram 适配器（2026-10-27）：纯 HTTP 长轮询，不需要 SDK —— 用来证明"加渠道只写薄适配器"。 */
+import { createHttpTransport, createTelegramAdapter, createTelegramGateway } from './adapters/telegram.js';
+import { createDiscordAdapter, createDiscordGateway } from './adapters/discord.js';
+import { createWecomAdapter, handleWecomCallback } from './adapters/wecom.js';
+/* IM 应用凭据（**dsh 侧真源**，2026-10-27）：设置弹窗「渠道」页读写 `<dataRoot>/agent-im-accounts.json`；
+   `config.feishu`（IDE 覆盖层）降级为兼容回落 —— 优先级 dsh 文件 → config → 环境变量。 */
+import { describeFeishu, describePlatforms, migrateLegacyFeishu, resolveFeishu, savePlatform } from './imCredentials.js';
+/* 平台与字段定义（**单一真源**）：随 GET 发给客户端渲染表单，两端不各写一份 */
+import { IM_PLATFORM_DEFS } from './imPlatforms.js';
+/* DM 配对（OpenClaw 同构，2026-10-27）：`dmPolicy=pairing` 的码表 + 批准表。
+   批准只写 **DM 白名单**，不碰群权限（群由 groupAllowFrom / rooms 单独管）。 */
+import { approvePairing, approvedUserIds, listPairings, requestPairing, revokePairing } from './pairing.js';
+/* 入站死信（OpenClaw `channels dead-letters` 同构）：被拒/失败的消息落盘，界面可列 */
+import { clearDeadLetters, listDeadLetters, recordDeadLetter } from './deadLetters.js';
 import { flushInboundSeen, markInboundSeen } from './imSeen.js';
 import { encodeBody } from './gzip.js';
 import { botFromSoulText, importDsbBot } from './importDsb.js';
@@ -210,7 +224,17 @@ function applyPersona(ctx, config) {
 			text: (context) => {
 				const base = switchedPersonaText(projections, context) ?? staticPersona;
 				const mem = memoryTextFor(context);
-				return mem ? base + mem : base;
+				/* ★ 2026-10-27：以前只注入**内容**、不说文件在哪 ⇒ agent 不知道往哪写
+				   ⇒ 记忆永远空（用户报「记忆没有显示内容」）。现在把绝对路径与写法一并给出。
+				   ⚠ 只在真有记忆内容时追加（没有记忆就不打扰每个会话）。
+				   ⚠ 路径用 `memoryDirOf` 算 —— 内置 agent 与自定义 agent 的目录不同。 */
+				const memHint = (mem && config.agentId)
+					? ('\n\n## 记忆\n长期记忆文件：' + join(memoryDirOf(config, config.agentId), 'MEMORY.md')
+						+ '（当前 ' + String(mem.length) + ' 字符）\n'
+						+ '想把某件事记住时，直接编辑这个文件、追加一条 Markdown 列表项；不要新建子目录，也不要改其它文件。\n'
+						+ '改动在**新会话**生效（当前会话已冻结，以保证 prompt 缓存命中）。')
+					: '';
+				return mem ? base + mem + memHint : base;
 			},
 		})));
 	}
@@ -714,6 +738,14 @@ function applyTopLevel(ctx, config) {
 		/* 幂等跨重启（imSeen.js）：飞书会重投事件，只靠内存去重会在 Host 重启后失效
 		   —— 表现是"同一条消息被回两遍"，很容易被当成重复 bot。 */
 		seen: { mark: (key) => markInboundSeen(config, key) },
+		/* 配对（2026-10-27）：Hub 在 `pairing-required` 时登记请求 + 回码；
+		   准入判定把**已批准的人**并入白名单（与 config allowFrom 合并）。 */
+		pairing: {
+			approvedFor: (platform) => approvedUserIds(config, platform),
+			request: (input) => requestPairing(config, input),
+		},
+		/* 死信：只在"被拒/失败"时记（duplicate / pairing-required 不记，见 deadLetters.js 头） */
+		deadLetters: { record: (entry) => recordDeadLetter(config, entry) },
 		dispatchAgent: (cfg, binding, msg) => dispatchImToAgent(cfg, state, binding, msg, {
 			scanAgents: (c) => scanAgentsFromConfig(c),
 			ensureSession: (c, st, agent) => ensureMemberSession(c, st, agent, undefined),
@@ -735,19 +767,74 @@ function applyTopLevel(ctx, config) {
 	   路由层与 UI 都不用改 —— 这就是留 `ports` 接缝的意义。 */
 	state.bindingHub.register(createFeishuAdapter());
 	/* 飞书**入站**（P2）：长连接。传输层用官方 SDK；没装/没凭据 ⇒ start() 抛 unavailable，
-	   由 API 如实回报（不假装"正在连接"）。这里**不自动 start** —— 没凭据时反复重连只是噪音。 */
-	const feishuCfg = (config && config.feishu) || {};
-	const feishuAppId = String(feishuCfg.appId || process.env.VSSAROS_FEISHU_APP_ID || '');
-	const feishuAppSecret = String(feishuCfg.appSecret || process.env.VSSAROS_FEISHU_APP_SECRET || '');
-	state.feishuCreds = { appId: feishuAppId, appSecret: feishuAppSecret };
+	   由 API 如实回报（不假装"正在连接"）。这里**不自动 start** —— 没凭据时反复重连只是噪音。
+	   ★ 2026-10-27「数据源统一到 dsh 侧」：凭据真源改为 `<dataRoot>/agent-im-accounts.json`
+	     （dsh 设置弹窗「渠道」页直接读写），`config.feishu`（IDE 覆盖层）降级为兼容回落。
+	     ⇒ transport 不再吃**启动时快照**，而是每次 `start()` 现取（`resolve`）——
+	       用户在设置里填完点「启动入站」就生效，不用重启 Host。 */
+	/* ★ 2026-10-27「数据源统一」：把**旧位置**（IDE 设置 → `--patch` 覆盖层 → `config.feishu`）
+	   的凭据**一次性**搬进 `<dataRoot>/agent-im-accounts.json`。
+	   为什么先搬再下线：用户可能已经在 IDE 里填过 —— 直接删旧链路会让他"配过却显示未配置"，
+	   而原值被删掉的 UI 挡住、拿不回来。搬一次之后，dsh 侧文件是唯一真源。
+	   ⚠ `apply` 是同步函数 ⇒ fire-and-forget；迁移失败只记日志，绝不能影响插件装配。 */
+	migrateLegacyFeishu(config)
+		.then((r) => {
+			if (r && r.migrated) {
+				console.info(`[vssaros-agents][im] 已把 IDE 覆盖层里的飞书凭据迁到 dsh 侧（${r.appIdMasked}）`);
+			}
+		})
+		.catch(() => undefined);
+
 	state.feishuInbound = createFeishuGateway({
-		transport: createSdkTransport({ appId: feishuAppId, appSecret: feishuAppSecret }),
+		transport: createSdkTransport({
+			resolve: () => resolveFeishu(config),
+			importSdk: state.feishuImportSdk,
+		}),
 		/* 事件 → 与手动演练（action:'inbound'）**同一条**入口，策略/幂等/派发完全一致 */
 		onMessage: (msg) => state.bindingHub.handleInbound(msg),
 		log: (level, msg) => {
 			try { (level === 'warn' ? console.warn : console.info)(`[vssaros-agents][im-in] ${msg}`); } catch { /* 忽略 */ }
 		},
 	});
+
+	/* Telegram（2026-10-27）：出站 `sendMessage` + 入站长轮询。
+	   凭据从 **dsh 侧**（`agent-im-accounts.json` 的 telegram.botToken）现取 ⇒ 设置里改完不必重启 Host。
+	   ⚠ 适配器的 id 必须与绑定里的 platform 同值（telegram），否则出站会 no-adapter。 */
+	state.bindingHub.register(createTelegramAdapter({
+		getCreds: () => resolvePlatform(config, 'telegram'),
+	}));
+	state.telegramInbound = createTelegramGateway({
+		transport: createHttpTransport({ getCreds: () => resolvePlatform(config, 'telegram') }),
+		onMessage: (msg) => state.bindingHub.handleInbound(msg),
+		log: (level, msg) => {
+			try { (level === 'warn' ? console.warn : console.info)(`[vssaros-agents][im-in] ${msg}`); } catch { /* 忽略 */ }
+		},
+	});
+
+	/* Discord（2026-10-27）：出站 REST + 入站 Gateway WebSocket（Node 22 自带 WebSocket，无依赖）。
+	   与飞书/Telegram 同一条纪律：凭据**每次 start 现取** ⇒ 设置里改完不必重启 Host。
+	   ⚠ MESSAGE_CONTENT 是 privileged intent，必须在 Discord 开发者后台开启，
+	     否则事件里 content 为空（症状：消息收到了但内容全空）。 */
+	state.bindingHub.register(createDiscordAdapter({
+		resolve: () => resolvePlatform(config, 'discord'),
+	}));
+	state.discordInbound = createDiscordGateway({
+		resolve: () => resolvePlatform(config, 'discord'),
+		onMessage: (msg) => state.bindingHub.handleInbound(msg),
+		log: (msg) => {
+			try { console.info(`[vssaros-agents][im-in] discord：${msg}`); } catch { /* 忽略 */ }
+		},
+		onError: (e) => {
+			try { console.warn(`[vssaros-agents][im-in] discord 错误：${String((e && e.message) || e)}`); } catch { /* 忽略 */ }
+		},
+	});
+
+	/* 企业微信（2026-10-27）：出站 REST（换 token + message/send）；入站是**被动回调**，
+	   没有 start/stop —— 由 `/api/wecom/callback` 路由接（需要公网反代）。
+	   凭据每次现取：设置里改完不必重启 Host。 */
+	state.bindingHub.register(createWecomAdapter({
+		resolve: () => resolvePlatform(config, 'wecom'),
+	}));
 
 	// 会话投影（顶层再注册一份，与 preset 作用域那份共享同一个单元）——切换后 UI/诊断按 sessionId 读它。
 	ctx.inject(['sessionProjections'], child => child.effect(() => {
@@ -1090,6 +1177,43 @@ function applyTopLevel(ctx, config) {
 			   GET  = 绑定表 + 适配器清单 + 模拟器发件记录（自测用）
 			   POST = create / update / delete / **inbound**（模拟一条 IM 入站，无需真实平台）
 			   ⚠ 只有人能增删改（`assertHuman`）；`inbound` 只在本机演练/探针里用。 */
+			/* 会话重命名（2026-10-27，用户要求「会话条目右键 → 重命名」）。
+			   ⚠ 转发给 **dsh 的 `sessionController.rename`**（真改名，会话窗口里也变）；
+			     不做"插件本地别名"—— 别名只在本页生效，用户会以为改了没生效。
+			   ⚠ 版本兼容：老 dsh 没这个服务 ⇒ 503 且说清原因，不静默失败。 */
+			if (pathname === `${ROUTE_PREFIX}/api/session-rename`) {
+				try {
+					if (req.method !== 'POST') {
+						res.writeHead(405, { 'content-type': 'text/plain; charset=utf-8', allow: 'POST' });
+						res.end('POST');
+						return;
+					}
+					const body = await readJsonBody(req);
+					const sessionId = String(body?.sessionId ?? '').trim();
+					const title = String(body?.title ?? '').trim();
+					if (!sessionId) { throw Object.assign(new Error('缺少 sessionId'), { httpStatus: 400 }); }
+					if (!title) { throw Object.assign(new Error('标题不能为空'), { httpStatus: 400 }); }
+					if (title.length > 200) { throw Object.assign(new Error('标题太长（最多 200 字）'), { httpStatus: 400 }); }
+					const sc = state.sessionController;
+					if (!sc || typeof sc.rename !== 'function') {
+						throw Object.assign(new Error('当前 dsh 未提供 sessionController.rename（版本不支持）'), { httpStatus: 503 });
+					}
+					const r = await sc.rename({ sessionId, title });
+					res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+					res.end(JSON.stringify({
+						ok: true,
+						/* Host 会做 normalize（比如裁空白/限长）⇒ 回它认可的那个值，前端据此提示 */
+						title: (r && typeof r.title === 'string') ? r.title : title,
+						seq: (r && Number.isFinite(r.seq)) ? r.seq : undefined,
+					}));
+				} catch (e) {
+					const status = Number.isInteger(e?.httpStatus) ? e.httpStatus : 400;
+					res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
+					res.end(JSON.stringify({ error: String(e?.message ?? e) }));
+				}
+				return;
+			}
+
 			if (pathname === `${ROUTE_PREFIX}/api/bindings`) {
 				try {
 					const deps = {
@@ -1107,19 +1231,75 @@ function applyTopLevel(ctx, config) {
 							...(loop ? { loopbackSent: loop.sent.slice(-20) } : {}),
 							/* 入站（P2）：状态 + 是否配了凭据。UI 据此显示「未配置 / 未安装 SDK / 已连接」。 */
 							inbound: state.feishuInbound ? state.feishuInbound.state() : null,
-							feishu: { configured: !!(state.feishuCreds && state.feishuCreds.appId && state.feishuCreds.appSecret) },
+							/* 各平台入站状态（飞书 WS / Telegram 长轮询）—— 配置页按平台分别显示 */
+							inbounds: {
+								feishu: state.feishuInbound ? state.feishuInbound.state() : null,
+								telegram: state.telegramInbound ? state.telegramInbound.state() : null,
+							},
+							feishu: await describeFeishu(config),
+							/* 多渠道（2026-10-27）：每平台的掩码状态 + 字段定义。
+							   ⚠ secret 只以 `hasSecret` 出现，明文永不出这个进程。 */
+							channels: await describePlatforms(config),
+							channelDefs: IM_PLATFORM_DEFS,
+							/* 待批准的配对请求 + 已批准名单（设置页「渠道」里直接批） */
+							pairings: await listPairings(config),
+							/* 最近被拒/失败的消息（新的在前；含 reason 与发送者，直接显示） */
+							deadLetters: await listDeadLetters(config, { limit: 20 }),
+							/* 最近出现过的 IM 会话 id（帮用户拿到 Telegram chat_id 之类） */
+							recentChats: state.bindingHub && typeof state.bindingHub.recentChats === 'function'
+								? state.bindingHub.recentChats() : [],
 						}));
 					} else if (req.method === 'POST') {
 						const body = await readJsonBody(req);
+						/* ★ 2026-10-27 多渠道入站：按 `body.platform` 选网关（缺省 feishu，向后兼容）。
+						   飞书是 WS 长连接、Telegram 是 HTTP 长轮询 —— 上层只认 `state()/start()/stop()` 这组接口。 */
+						const inboundOf = (b) => {
+							const p = String((b && b.platform) || 'feishu').trim().toLowerCase();
+							/* 用映射而不是三元链：每加一个渠道都要改这里一次，但三元链改到第四个就无法阅读了 */
+							const map = {
+								feishu: state.feishuInbound,
+								telegram: state.telegramInbound,
+								discord: state.discordInbound,
+							};
+						if (p === 'wecom') {
+							throw Object.assign(new Error(
+								'企业微信是**被动回调**（企业微信服务器来连我们），没有「启动入站」这一步；'
+								+ '填好回调 Token / EncodingAESKey，并把公网地址反代到 /x/agents/api/wecom/callback 后自动收消息。',
+							), { httpStatus: 400 });
+						}
+							const gw = map[p];
+							if (!gw) {
+								throw Object.assign(
+									new Error(`平台 ${p} 的入站网关不可用（适配器未装配：当前支持 ${Object.keys(map).join(' / ')}）`),
+									{ httpStatus: 400 },
+								);
+							}
+							return gw;
+						};
 						const action = typeof body?.action === 'string' && body.action.trim() ? body.action.trim() : 'create';
 						const result = action === 'create' ? await createBinding(config, body, deps)
 							: action === 'update' ? await updateBinding(config, body, deps)
 								: action === 'delete' ? await deleteBinding(config, body)
+									/* 写飞书应用凭据（2026-10-27）：真源在 dsh 侧。`appSecret` 缺省 = 保留原值。 */
+									/* 写凭据（多平台，2026-10-27）：`platform` 缺省 = feishu（向后兼容）。
+									   平台与字段由 `IM_PLATFORM_DEFS` 定义 ⇒ 新增平台只改那一个文件。 */
+									/* 配对批准（2026-10-27）：只加 DM 白名单；撤销同理。 */
+									: action === 'pairing-approve' ? await approvePairing(config, body)
+										: action === 'pairing-revoke' ? await revokePairing(config, body)
+										: action === 'dead-letters-clear' ? await clearDeadLetters(config)
+									: action === 'credentials' ? await savePlatform(
+										config,
+										(body && body.platform) || 'feishu',
+										{ ...(body || {}), actor: body?.actor },
+									)
 									: action === 'inbound' ? await state.bindingHub.handleInbound(body.message ?? body)
 										/* 入站长连接启停（P2）：没装 SDK / 没凭据时会抛 unavailable，错误原样返回 */
-										: action === 'inbound-start' ? (await state.feishuInbound.start(), state.feishuInbound.state())
-											: action === 'inbound-stop' ? (await state.feishuInbound.stop(), state.feishuInbound.state())
-										: (() => { throw Object.assign(new Error(`未知 action：${action}（支持 create/update/delete/inbound）`), { httpStatus: 400 }); })();
+									: action === 'inbound-start' ? (await inboundOf(body).start(), inboundOf(body).state())
+									: action === 'inbound-stop' ? (await inboundOf(body).stop(), inboundOf(body).state())
+									/* 测试发送（2026-10-27）：用**真实适配器**给这条绑定发一条消息 ——
+									   "配完了到底通不通"不必再等真跑一次对话；失败原因原样返回。 */
+									: action === 'test' ? await state.bindingHub.testBinding(body?.id)
+										: (() => { throw Object.assign(new Error(`未知 action：${action}（支持 create/update/delete/inbound/test）`), { httpStatus: 400 }); })();
 						res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
 						res.end(JSON.stringify(result));
 					} else {
@@ -1270,6 +1450,79 @@ function applyTopLevel(ctx, config) {
 			}
 			// 记忆 API（2026-10-16，二期）：GET ?agent= 文件+Git 状态（&file= 读内容）/ POST enable-git·snapshot。
 			// 写口只有「启用 Git」与「提交快照」两个（git 子进程）；模型没有记忆 CRUD 工具 ✗（拍板点 ③⑤）。
+			/* AgentMemory 候选（2026-10-27，记忆页签的只读块）——
+			   独立端点而不是塞进 /api/memory：网关可能离线（5s 超时），不能让主接口跟着慢。
+			   返回 `state` 三态（online / offline / unconfigured），**不抛** —— 它是可选增强。 */
+			/* 企业微信回调（2026-10-27）：GET = URL 验证，POST = 消息推送。
+			   ⚠ 入站是**别人来连我们** ⇒ 没有"启动/停止"这一步；要公网反代到这条路由。
+			   ⚠ GET 验证必须回**纯文本**（明文 echostr），不能包 JSON —— 企业微信会逐字比对。 */
+			if (pathname === `${ROUTE_PREFIX}/api/wecom/callback`) {
+				try {
+					const q = {};
+					for (const [k, v] of url.searchParams.entries()) { q[k] = v; }
+					const rawBody = req.method === 'POST' ? await readRawBody(req, 256 * 1024) : '';
+					const wc = await resolvePlatform(config, 'wecom');
+					const out = await handleWecomCallback({
+						token: String(wc.callbackToken ?? ''),
+						encodingAesKey: String(wc.encodingAesKey ?? ''),
+						corpId: String(wc.corpId ?? ''),
+						onMessage: (msg) => state.bindingHub.handleInbound(msg),
+						log: (m) => { try { console.info('[vssaros-agents][im-in] wecom：' + m); } catch { /* 忽略 */ } },
+					}, { method: req.method, query: q, body: rawBody });
+					res.writeHead(out.status, {
+						'content-type': out.plain ? 'text/plain; charset=utf-8' : 'application/json; charset=utf-8',
+						'cache-control': 'no-store',
+					});
+					res.end(out.plain ? String(out.body) : JSON.stringify({ ok: out.status === 200, ...out }));
+				} catch (e) {
+					res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
+					res.end(JSON.stringify({ error: String(e?.message ?? e) }));
+				}
+				return;
+			}
+
+			if (pathname === `${ROUTE_PREFIX}/api/agentmemory`) {
+				try {
+					/* POST：把 MEMORY.md 的条目**单向**写进 AgentMemory（只增不改，见 agentmemoryImport.js 头注释） */
+					if (req.method === 'POST') {
+						const amBody = await readJsonBody(req);
+						const amAction = String(amBody?.action ?? '').trim();
+						const amTarget = String(amBody?.agent ?? '').trim();
+						if (!amTarget) {
+							throw Object.assign(new Error('需要 agent'), { httpStatus: 400 });
+						}
+						if (amAction !== 'sync') {
+							throw Object.assign(new Error(`未知 action：${amAction || '(空)'}（支持 sync）`), { httpStatus: 400 });
+						}
+						const syncOut = await syncMemoryToAgentMemory(config, amTarget, { limit: amBody?.limit });
+						res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify({ ok: true, agent: amTarget, ...syncOut }));
+						return;
+					}
+					if (req.method !== 'GET') {
+						res.writeHead(405, { 'content-type': 'text/plain; charset=utf-8', allow: 'GET, POST' });
+						res.end('GET');
+						return;
+					}
+					const amAgent = String(url.searchParams.get('agent') ?? '').trim();
+					if (!amAgent) {
+						throw Object.assign(new Error('需要 agent 参数'), { httpStatus: 400 });
+					}
+					const what = String(url.searchParams.get('what') ?? 'candidates').trim().toLowerCase();
+					/* `what=extras` ⇒ 结晶 + 治理审计（演化页签用）；默认仍是记忆候选 */
+					const amOut = what === 'extras'
+						? await listAgentMemoryExtras(config, amAgent)
+						: await listAgentMemoryCandidates(config, amAgent, { limit: url.searchParams.get('limit') });
+					res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+					res.end(JSON.stringify({ ok: true, agent: amAgent, ...amOut }));
+				} catch (e) {
+					const status = Number.isInteger(e?.httpStatus) ? e.httpStatus : 500;
+					res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
+					res.end(JSON.stringify({ error: String(e?.message ?? e) }));
+				}
+				return;
+			}
+
 			if (pathname === `${ROUTE_PREFIX}/api/memory`) {
 				try {
 					if (req.method === 'GET') {
@@ -1279,6 +1532,9 @@ function applyTopLevel(ctx, config) {
 						const agentId = String(url.searchParams.get('agent') ?? '').trim();
 						if (!agentId) {
 							throw Object.assign(new Error('需要 agent 参数'), { httpStatus: 400 });
+						/* ★ 2026-10-27：首次读取即初始化（幂等）—— 老 bot 不用重建也能有内容。
+						   ⚠ 只读接口不该因为 git 不可用而 500 ⇒ ensureMemoryRepo 内部软失败。 */
+						await ensureMemoryRepo(config, agentId).catch(() => undefined);
 						}
 						const file = url.searchParams.get('file');
 						// `gitLogOf` 复用刚算出的 status（旧实现三项并行 ⇒ `gitStatusOf` 在一个请求里跑两遍，
@@ -1454,6 +1710,10 @@ function applyTopLevel(ctx, config) {
 						result = await previewAgentDraft(config, parsed.draft);
 					} else if (action === 'create') {
 						const created = await createAgentFromDraft(config, body?.draft);
+						/* ★ 2026-10-27：新建 bot 立刻初始化记忆库（模板 + git 初始提交）。
+						   不做的后果：四个页签（记忆/演化/版本/分支）全是空 —— 用户会以为功能坏了。
+						   软失败：没装 git 时仍会写模板，只是没有版本历史。 */
+						await ensureMemoryRepo(config, created.id).catch(() => undefined);
 						if (state.presets) {
 							await syncPresets(state, state.presets, config).catch(e => {
 								state.errors = [...state.errors, `同步 preset 失败：${String(e?.message ?? e)}`];
@@ -1785,10 +2045,18 @@ function applyTopLevel(ctx, config) {
 							name: a.name,
 							description: a.description,
 							icon: a.icon,
-							// 聊天框欢迎卡（方案 A 第 3 步，chat-surface 的 client.welcome.js）要的三个字段：
+							// 聊天框欢迎卡（方案 A 第 3 步，chat-surface 的 client.welcome.js）要的字段：
 							// 角色标签、技能、头像底色（底色只有服务端会算 ⇒ 直接给，前端不再抄一份公式 ✓）
 							role: a.role ?? null,
 							skills: a.skills ?? [],
+							/*
+							 * ★ 2026-10-27（真机：所有内置 agent 的欢迎卡都是同一套通用按钮）：
+							 *   `core/agents.js` 早就把 `.agent.md` 的 `suggestions:` 解析进 agent 对象了，
+							 *   但**这份行映射漏了它** ⇒ 前端 `cardModel()` 拿到 undefined
+							 *   ⇒ `suggestionsOf()` 一路兜到最底层的通用三条，于是每个 agent 长得一模一样。
+							 *   空数组也要给：让前端的三级兜底（自带 → preset 表 → 通用）正常生效。
+							 */
+							suggestions: a.suggestions ?? [],
 							color: avatarColorOf(a.id),
 							model: a.model,
 							tools: a.tools,
@@ -1882,6 +2150,8 @@ function applyTopLevel(ctx, config) {
 							icon: a.icon ?? '',
 							role: a.role ?? null,
 							skills: a.skills ?? [],
+							// 与 GET /api/agents 同口径：欢迎卡要读它（漏了就会退回通用三条）
+							suggestions: a.suggestions ?? [],
 							color: avatarColorOf(a.id),
 							model: a.model ?? '',
 							presetId: presetIdOf(a.id),

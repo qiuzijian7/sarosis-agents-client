@@ -33,6 +33,11 @@
 		byId: Object.create(null),
 		sel: Object.create(null),
 		lastId: null,
+		// ★ 2026-10-27（用户报「标签点击添加/输入框回车没有反应」）：
+		//   检查器首屏画的是 `views[0]`（SSR 口径），而那时 `state.lastId` 还是 null
+		//   ⇒ 所有**以 lastId 为准**的写操作（加标签/移分组/存备注/收藏/删除）会**静默无反应**，
+		//   直到用户先点一张卡。⇒ 单独记一个"检查器当前显示的那条"，写操作统一用它。
+		inspId: null,
 		mode: 'grid',
 		offset: 0,
 		limit: boot.limit || 60,
@@ -42,6 +47,9 @@
 		previewActive: 0,
 		previewQueue: [],
 		previewFailed: Object.create(null),
+		// 反向同步（2026-10-27）：库的变更版本号 + 轮询定时器
+		rev: 0,
+		revTimer: 0,
 	};
 	for (var i = 0; i < state.views.length; i++) { state.byId[state.views[i].id] = state.views[i]; }
 
@@ -263,19 +271,45 @@
 		}).join('');
 	}
 
-	function boardOptions(v) {
+	/** 已有分组的名单（datalist 的候选；输入框里手输新名字即新建）。 */
+	function boardListHtml(v) {
 		var boards = (state.facets && state.facets.boards ? state.facets.boards : []).map(function (b) { return b.name; });
 		if (v.board && boards.indexOf(v.board) < 0) { boards.push(v.board); }
-		return ['<option value="">（未分组）</option>'].concat(boards.map(function (b) {
-			return '<option value="' + esc(b) + '"' + (b === v.board ? ' selected' : '') + '>' + esc(b) + '</option>';
-		})).join('');
+		return boards.map(function (b) { return '<option value="' + esc(b) + '"></option>'; }).join('');
+	}
+
+	/**
+	 * 应用「分组」输入框的值（回车或失焦都会走这里）。
+	 * 空 = 未分组；**手输新名字 = 新建分组**（服务端 `setBoard` 直接接受新名字）。
+	 */
+	function applyBoardInput(input) {
+		var id = inspId();
+		if (!id || !input) { return; }
+		var name = String(input.value || '').trim();
+		var cur = state.byId[id] ? String(state.byId[id].board || '') : '';
+		if (name === cur) { return; }
+		setBoard(id, name).catch(function (e) { toast('移动分组失败：' + e.message); });
+	}
+
+	/**
+	 * **检查器当前显示的那条素材 id**（写操作的唯一目标）。
+	 *
+	 * ★ 2026-10-27（用户报「标签点添加/回车没反应」的根因）：
+	 *   检查器首屏显示的是 `views[0]`（SSR 画的），但写操作全按 `state.lastId` 取
+	 *   ⇒ 用户**没点过卡**时 lastId 是 null ⇒ 加标签/移分组/存备注/收藏/删除全部**静默无反应**。
+	 *   这里统一取"检查器正在显示的那条"，与用户眼前的界面一致。
+	 */
+	function inspId() {
+		return state.inspId || state.lastId || (state.views[0] && state.views[0].id) || '';
 	}
 
 	function renderInspector() {
 		var host = $('[data-vssaros-media-insp]');
 		if (!host) { return; }
 		var v = state.lastId ? state.byId[state.lastId] : state.views[0];
-		if (!v) { host.innerHTML = '<div class="m-empty">未选中资产</div>'; return; }
+		if (!v) { host.innerHTML = '<div class="m-empty">未选中资产</div>'; state.inspId = null; return; }
+		// 检查器当前显示的那条（写操作的唯一目标）—— 与首屏 SSR 口径一致
+		state.inspId = v.id;
 		var pv = v.imgUrl
 			? '<img src="' + esc(v.imgUrl) + '" alt="" data-vssaros-media-insp-img>'
 			: '<span class="m-glyph big">' + (KIND_GLYPH[v.kind] || '▣') + '</span>';
@@ -292,8 +326,11 @@
 			+ '<dt>来源</dt><dd>' + esc(v.provider || '—') + '</dd>'
 			+ '<dt>导入</dt><dd>' + esc(fmtTime(v.createdAt)) + '</dd>'
 			+ '</dl></div>'
-			+ '<div class="m-blk"><div class="m-bh">分组</div><select class="m-input" name="board" data-insp-board' + ro + '>'
-			+ boardOptions(v) + '</select></div>'
+			+ '<div class="m-blk"><div class="m-bh">分组</div>'
+			// ★ 2026-10-27：分组改成**可输入的 combo**（input + datalist）——
+			//   以前只有下拉框 ⇒ 没法新建分组（左栏空态提示却写着"在检查器里填「分组」即可新建"）。
+			+ '<input class="m-input" name="board" data-insp-board list="vssaros-media-boards" value="' + esc(v.board || '') + '" placeholder="分组（回车应用；输入新名字即新建）"' + ro + '>'
+			+ '<datalist id="vssaros-media-boards">' + boardListHtml(v) + '</datalist></div>'
 			+ '<div class="m-blk"><div class="m-bh">标签</div><div class="m-tags" data-insp-tags>' + tagsHtml(v) + '</div>'
 			+ (state.writable ? '<div class="m-tagadd"><input class="m-input" name="tag" data-insp-taginput placeholder="加标签后回车" maxlength="24">'
 				+ '<button type="button" class="m-btn sm" data-insp-tagadd>+ 添加</button></div>' : '')
@@ -334,6 +371,65 @@
 			var badge = btn.querySelector('.n');
 			if (badge && n !== undefined) { badge.textContent = String(n); }
 		});
+		// ★ 2026-10-27（用户报「添加标签后左侧栏的标签分组未刷新」）：
+		//   上面只改**已有项**的计数，而「分组 / 标签」两段是 **SSR 画的**（mediaPage.js 的 sideHtml）
+		//   ⇒ 新加的标签/分组在左栏**永远不出现**，直到整页刷新 ⇒ 这里把这两段**重建**。
+		rebuildSideSection('分组', (facets.boards || []).slice(0, 40).map(function (b) {
+			return { key: 'board:' + b.name, label: b.name, count: b.n, icon: '▸', active: state.filter.nav === 'board:' + b.name };
+		}), '（还没有分组；在检查器里填「分组」即可新建，之后可拖拽归类）');
+		rebuildSideSection('标签', (facets.tags || []).slice(0, 40).map(function (t) {
+			return { key: 'tag:' + t.name, label: '#' + t.name, count: t.n, icon: '#', active: state.filter.nav === 'tag:' + t.name };
+		}), '（还没有标签）');
+	}
+
+	/**
+	 * 重建左栏某一段（`.m-sec` 标题之后、下一个 `.m-sec` 之前的那批 nav 节点）。
+	 *
+	 * ★ 用**现有 nav 节点做模板**克隆，而不是在客户端重写一遍 markup ——
+	 *   两边写死同一份结构必然漂（这个仓已经吃过好几次"服务端/客户端两份口径"的亏）。
+	 */
+	function rebuildSideSection(secText, items, emptyText) {
+		var side = $('[data-vssaros-media-side]');
+		if (!side) { return; }
+		var secs = $$('.m-sec', side);
+		var sec = null;
+		for (var i = 0; i < secs.length; i++) {
+			if (secs[i].textContent.trim() === secText) { sec = secs[i]; break; }
+		}
+		if (!sec) { return; }
+		var template = side.querySelector('.m-nav');
+		if (!template) { return; }
+		// 先摘掉这一段的旧节点（模板要在这之前拿到 —— 它在「快捷」段里，安全）
+		var node = sec.nextElementSibling;
+		while (node && !node.classList.contains('m-sec')) {
+			var nx = node.nextElementSibling;
+			node.remove();
+			node = nx;
+		}
+		var frag = document.createDocumentFragment();
+		if (!items.length) {
+			var empty = document.createElement('div');
+			empty.className = 'm-dim';
+			empty.style.padding = '2px 12px 4px';
+			empty.textContent = emptyText;
+			frag.appendChild(empty);
+		} else {
+			for (var j = 0; j < items.length; j++) {
+				var it = items[j];
+				var btn = template.cloneNode(true);
+				btn.setAttribute('data-nav', it.key);
+				btn.setAttribute('title', it.label);
+				var lb = btn.querySelector('.lb');
+				if (lb) { lb.textContent = it.label; }
+				var ic = btn.querySelector('.ic');
+				if (ic && it.icon) { ic.textContent = it.icon; }
+				var n = btn.querySelector('.n');
+				if (n) { n.textContent = String(it.count == null ? 0 : it.count); }
+				if (it.active) { btn.classList.add('on'); } else { btn.classList.remove('on'); }
+				frag.appendChild(btn);
+			}
+		}
+		sec.parentNode.insertBefore(frag, sec.nextSibling);
 	}
 
 	function renderChips() {
@@ -392,6 +488,8 @@
 			if (!keepSelection) { state.sel = Object.create(null); state.lastId = null; }
 			renderAll();
 			toast('');
+			// 自己这次重载已经把最新状态画出来了 ⇒ 把基线抬上去，别让轮询再刷一次
+			markRev();
 		}).catch(function (e) {
 			toast('读取失败：' + (e && e.message ? e.message : e));
 		});
@@ -877,28 +975,100 @@
 	// ── AI 助手（媒体库管家）/ 外开 ──────────────────────────────────────────
 	var MEDIA_AGENT_PRESET = 'vssaros-media-librarian';
 
+	/** 把"人正在看什么"交上去（左栏哪一格 / 筛选 / 选中项 / 命中数）—— 助手用 `media_context` 读回。 */
+	function pushPageContext() {
+		var selectedIds = Object.keys(state.sel).slice(0, 50);
+		var payload = {
+			nav: state.filter.nav || 'all',
+			label: state.filter.label || '',
+			kind: state.filter.kind || '',
+			provider: state.filter.provider || '',
+			board: state.filter.board || '',
+			tag: state.filter.tag || '',
+			query: state.filter.query || '',
+			favorite: state.filter.favorite === true,
+			untagged: state.filter.untagged === true,
+			unclassified: state.filter.unclassified === true,
+			deleted: state.filter.deleted === true,
+			selected: selectedIds,
+			selectedNames: selectedIds.map(function (id) { var v = state.byId[id]; return v ? v.name : ''; }),
+			total: state.total,
+		};
+		// 上下文失败**不该挡**开会话（用户要的是助手，不是这个表单）
+		return postJson('context', payload).catch(function () { return null; });
+	}
+
 	/**
 	 * 「AI 助手」= 叫**媒体库管家**开一段会话（页面里不嵌第二份聊天：自托管页拿不到宿主的
 	 * `props.conversation`，嵌了就是两套助手且没有上下文 —— 这条结论来自 studio 页的返工）。
-	 * 选中了某张素材且它有本地文件时，顺手把文件作为引用投进输入框。
+	 *
+	 * ★ 2026-10-27（交互能力）：先把手上的状态 `POST api/context` 交上去，再开会话 ⇒
+	 *   用户说"就按现在这样整理"时，agent 第一步 `media_context` 就能拿到同样的范围，不用再问。
+	 * 选中了某一张且它有本地文件时，顺手把文件作为引用投进输入框。
 	 */
 	function askAssistant() {
 		var bridge = window.vssarosDsh;
-		if (!bridge || typeof bridge.newChat !== 'function') {
-			toast('这个宿主没有页面桥：请在 agent 列表里手动选「媒体库管家」');
-			return;
-		}
-		var selected = state.lastId ? state.byId[state.lastId] : null;
-		try {
-			bridge.newChat(MEDIA_AGENT_PRESET);
-		} catch (e) {
-			toast('没能打开助手：' + (e && e.message ? e.message : e));
-			return;
-		}
-		if (selected && selected.filePath && typeof bridge.insertChatReference === 'function') {
-			// 两个桥调用都是"发了就算"，失败不影响主流程
-			try { bridge.insertChatReference(selected.filePath); } catch (e) { /* 忽略 */ }
-		}
+		var selected = state.byId[inspId()] || null;
+		// ⚠ 先交上下文再判桥：桥不在时这条路虽然开不了会话，但"用户在看什么"仍然值得记下来
+		//   （比如用户在桌面窗口里看页面、去 IDE 侧叫助手，上下文照样能读到）。
+		pushPageContext().then(function () {
+			if (!bridge || typeof bridge.newChat !== 'function') {
+				// ★ 2026-10-27（用户：「AI 助手按钮点击没反应」）：
+				//   媒体库在**工作台里是 iframe** ⇒ iframe 内**没有页面桥**（preload 只注入顶层 webview）
+				//   ⇒ 以前只能弹一句 toast ⇒ 看起来就是"点了没反应"。
+				//   现在：把请求 **postMessage 给父窗口**（父窗口是 dsh 页面，有 IDE 桥）代开会话。
+				var asked = false;
+				try {
+					if (window.parent && window.parent !== window) {
+						window.parent.postMessage({ type: 'vssaros-media-assistant', preset: MEDIA_AGENT_PRESET }, '*');
+						asked = true;
+					}
+				} catch (e) { asked = false; }
+				toast(asked
+					? '已请求在右侧打开「媒体库管家」（当前筛选已带上）'
+					: '这个宿主没有页面桥：请在 agent 列表里手动选「媒体库管家」（当前筛选已记录）');
+				return;
+			}
+			try {
+				bridge.newChat(MEDIA_AGENT_PRESET);
+				toast('已把当前筛选交给「媒体库管家」');
+			} catch (e) {
+				toast('没能打开助手：' + (e && e.message ? e.message : e));
+				return;
+			}
+			if (selected && selected.filePath && typeof bridge.insertChatReference === 'function') {
+				// 两个桥调用都是"发了就算"，失败不影响主流程
+				try { bridge.insertChatReference(selected.filePath); } catch (e) { /* 忽略 */ }
+			}
+		});
+	}
+
+	// ── 反向同步：助手改了库 ⇒ 打开着的页面自己跟上 ─────────────────────────
+	//
+	// 机制：`GET api/rev` 读 SQLite 的 `total_changes()`（同连接的所有写，**含工具调用**）。
+	// 页面每 2.5s 比一次，变了就 reload（保留选中）。自己的写也会让它变 ⇒ 每次自己 reload 完
+	// 用 `markRev()` 把基线抬上去，避免"自己改一下、自己再刷一次"的空转。
+	function fetchRev() {
+		return jsonFetch(API + 'rev').then(function (body) {
+			return Number(body && body.rev) || 0;
+		}).catch(function () { return state.rev; });
+	}
+
+	function markRev() {
+		return fetchRev().then(function (n) { state.rev = n; });
+	}
+
+	function watchRev() {
+		clearInterval(state.revTimer);
+		state.revTimer = setInterval(function () {
+			if (document.visibilityState !== 'visible') { return; }
+			fetchRev().then(function (next) {
+				if (!next || next === state.rev) { return; }
+				state.rev = next;
+				toast('媒体库有改动（可能是助手动的），已同步');
+				return reload(true).then(refreshFacets).then(refreshStats).then(markRev);
+			});
+		}, 2500);
 	}
 
 	/** 预取「带 token 的深链」：`window.open` 必须同步调用，否则被弹窗拦截器拦掉。 */
@@ -911,10 +1081,18 @@
 	}
 
 	function openExternal() {
+		var btn = $('[data-media-external]');
 		var open = function (url) {
 			if (!url) { toast('服务端没给外开链接（宿主太旧）'); return; }
 			var win = window.open(url, '_blank', 'noopener');
-			if (!win) { toast('浏览器拦了弹窗：再点一次「↗ 外开」'); }
+			if (!win) {
+				// 被弹窗拦截 ⇒ 按钮变橙（与「萨罗斯工作台」同一表现），再点一次即可
+				if (btn) { btn.setAttribute('data-state', 'blocked'); }
+				toast('浏览器拦了弹窗：再点一次「↗ 外开」');
+			} else if (btn) {
+				btn.setAttribute('data-state', 'opened');
+				setTimeout(function () { if (btn) { btn.removeAttribute('data-state'); } }, 1600);
+			}
 		};
 		if (externalUrl) { open(externalUrl); return; }
 		jsonFetch(API + 'link').then(function (body) {
@@ -923,9 +1101,411 @@
 		}).catch(function (e) { toast('外开失败：' + (e && e.message ? e.message : e)); });
 	}
 
+	// ── 链接文件夹（2026-10-27：显示"文件夹里的独立文件"，**不复制字节**）──────
+	//
+	// 为什么是"粘路径"而不是文件夹选择器：浏览器**不给** `<input webkitdirectory>` 的绝对路径
+	// （`File.path` 在新版 Electron 已移除，只有 preload 的 `webUtils.getPathForFile` 能拿到，
+	//  那要动宿主 preload + 桥协议）。所以这里先用内联输入，路径由 Host 侧读（同机、同用户）。
+	var linkBusy = false;
+
+	/**
+	 * 打开/关闭内联输入条。`mode`：
+	 *   · `link`   —— 链接文件夹（库里只记路径，看的是用户那份）
+	 *   · `export` —— 导出到文件夹（把库里的字节再落一份**可读文件**；同卷硬链接）
+	 * 同一个按钮再点一次 = 收起（避免"点了没反应"的错觉）。
+	 */
+	function openFolderBar(mode) {
+		var bar = $('[data-media-linkbar]');
+		if (!bar) { return; }
+		var current = bar.getAttribute('data-mode') || 'link';
+		if (!bar.hasAttribute('hidden') && current === mode) { bar.setAttribute('hidden', ''); return; }
+		bar.setAttribute('data-mode', mode);
+		var isExport = mode === 'export';
+		var label = $('[data-media-linklabel]');
+		if (label) { label.textContent = isExport ? '导出到文件夹' : '链接文件夹'; }
+		var go = $('[data-media-linkgo]');
+		if (go) { go.textContent = isExport ? '导出' : '链接'; }
+		var input = $('[data-media-linkinput]');
+		if (input) {
+			input.placeholder = isExport
+				? '导出到哪个文件夹（绝对路径），如 D:\\AI素材 —— 回车确认；同名已存在则跳过'
+				: '粘贴文件夹绝对路径，如 D:\\素材\\角色（回车确认；不复制文件）';
+			input.focus();
+		}
+		bar.removeAttribute('hidden');
+	}
+
+	function closeFolderBar() {
+		var bar = $('[data-media-linkbar]');
+		if (bar) { bar.setAttribute('hidden', ''); }
+	}
+
+	/** 输入条回车 / 点「确认」：按当前 mode 分派。 */
+	function submitFolderBar() {
+		var bar = $('[data-media-linkbar]');
+		var mode = bar ? (bar.getAttribute('data-mode') || 'link') : 'link';
+		if (mode === 'export') { return exportToFolder(); }
+		return linkFolder();
+	}
+
+	/**
+	 * 「导出到文件夹」：把**选中的**（没有选中就按当前筛选）导出成可读文件名。
+	 * 与「链接」相反 —— 这是**副本**，删了导出目录不影响库；库仍以 `objects/` 为真源。
+	 */
+	function exportToFolder() {
+		if (linkBusy) { return; }
+		var input = $('[data-media-linkinput]');
+		var dir = input ? String(input.value || '').trim() : '';
+		if (!dir) { toast('先填一个文件夹绝对路径'); return; }
+		if (!state.writable) { toast('这是只读镜像，不能导出'); return; }
+		linkBusy = true;
+		var ids = Object.keys(state.sel);
+		var f = state.filter || {};
+		var payload = { dir: dir, layout: 'provider' };
+		if (ids.length) {
+			payload.ids = ids;
+		} else {
+			// 没有选中 ⇒ 导出"当前筛选"，与页面上看到的一致（这是"所见即所得"的关键）
+			payload.filter = {
+				kind: f.kind || undefined,
+				provider: f.provider || undefined,
+				board: f.board || undefined,
+				tag: f.tag || undefined,
+				query: f.query || undefined,
+				favorite: f.favorite === true || undefined,
+				untagged: f.untagged === true || undefined,
+				unclassified: f.unclassified === true || undefined,
+				deleted: f.deleted === true || undefined,
+			};
+		}
+		toast('正在导出…');
+		postJson('export-folder', payload).then(function (body) {
+			var skipped = body.skipped || {};
+			var note = Object.keys(skipped).filter(function (k) { return skipped[k]; })
+				.map(function (k) {
+					return ({ noFile: '仅外链', missing: '文件不在', exists: '已存在', truncated: '超上限' })[k] + ' ' + skipped[k];
+				}).join(' · ');
+			toast('导出 ' + body.exported + ' 条（硬链接 ' + body.linked + ' / 复制 ' + body.copied
+				+ (body.copied ? '，占用 ' + fmtBytes(body.bytes) : '，不额外占空间') + '）'
+				+ (note ? ' · 跳过：' + note : '')
+				+ (body.failed && body.failed.length ? ' · 失败 ' + body.failed.length : ''));
+			if (body.exported > 0) { openFolderBar('export'); if (input) { input.value = ''; } }
+		}).catch(function (e) {
+			toast('导出失败：' + (e && e.message ? e.message : e));
+		}).then(function () { linkBusy = false; });
+	}
+
+	function linkFolder() {
+		if (linkBusy) { return; }
+		var input = $('[data-media-linkinput]');
+		var dir = input ? String(input.value || '').trim() : '';
+		if (!dir) { toast('先填一个文件夹绝对路径'); return; }
+		if (!state.writable) { toast('这是只读镜像，不能链接'); return; }
+		linkBusy = true;
+		toast('正在扫描文件夹…');
+		postJson('link-folder', { dir: dir }).then(function (body) {
+			var skipped = body.skipped || {};
+			var skippedText = Object.keys(skipped).filter(function (k) { return skipped[k]; })
+				.map(function (k) { return ({ linked: '已登记', unreadable: '读不到', unsupported: '不支持的类型', truncated: '超出上限' })[k] + ' ' + skipped[k]; })
+				.join(' · ');
+			toast('链接了 ' + body.added + ' 个文件' + (skippedText ? '（跳过：' + skippedText + '）' : ''));
+			if (body.added > 0) { openFolderBar('link'); if (input) { input.value = ''; } }
+			// 新链接的这批：左栏「来源」里会多一个 folder 分组
+			return reload(false).then(refreshFacets).then(refreshStats);
+		}).catch(function (e) {
+			toast('链接失败：' + (e && e.message ? e.message : e));
+		}).then(function () { linkBusy = false; });
+	}
+
+	// ── 卡片右键菜单（2026-10-27：用户要求「添加到 AI 窗口」）────────────────
+	//
+	// 为什么要自绘：页面在 `WebContentsView` 里，Electron 默认不弹原生菜单（也拿不到"当前这张"的
+	// 语义）⇒ 自己做一个轻量菜单，动作都走已有的页面桥 / 已有写入函数，不新增后端能力。
+	var ctxEl = null;
+
+	function closeCtxMenu() {
+		if (ctxEl) { ctxEl.remove(); ctxEl = null; }
+	}
+
+	function copyText(text, label) {
+		var done = function () { toast('已复制' + label); };
+		var fallback = function () {
+			try {
+				var ta = document.createElement('textarea');
+				ta.value = text;
+				ta.style.position = 'fixed';
+				ta.style.opacity = '0';
+				document.body.appendChild(ta);
+				ta.select();
+				document.execCommand('copy');
+				ta.remove();
+				done();
+			} catch (e) { toast('复制失败：' + (e && e.message ? e.message : e)); }
+		};
+		if (navigator.clipboard && navigator.clipboard.writeText) {
+			navigator.clipboard.writeText(text).then(done, fallback);
+			return;
+		}
+		fallback();
+	}
+
+	function selectedViews() {
+		return Object.keys(state.sel)
+			.map(function (id) { return state.byId[id]; })
+			.filter(Boolean);
+	}
+
+	/**
+	 * 「添加到 AI 窗口」：把素材的**本地文件**作为引用投进激活的聊天草稿（宿主 `insertChatReference`）。
+	 * ⚠ 只有"有本地文件"的资产能投（仅引用资产只有外链，没有可引用的路径）；
+	 *   一次最多 20 条（与批量口径一致），单条失败不影响其它。
+	 */
+	function addToAiWindow(views) {
+		var bridge = window.vssarosDsh;
+		if (!bridge || typeof bridge.insertChatReference !== 'function') {
+			toast('这个宿主没有页面桥：请手动把文件拖进聊天框');
+			return;
+		}
+		var files = views.filter(function (v) { return v.filePath; });
+		if (!files.length) {
+			toast(views.length > 1 ? '这些素材都没有本地文件（只有外链），AI 窗口接不了' : '这条素材没有本地文件（只有外链），AI 窗口接不了');
+			return;
+		}
+		var added = 0;
+		files.slice(0, 20).forEach(function (v) {
+			try { bridge.insertChatReference(v.filePath); added++; } catch (e) { /* 忽略单条 */ }
+		});
+		toast('已加入 ' + added + ' 条到 AI 窗口' + (files.length > 20 ? '（一次最多 20 条）' : ''));
+	}
+
+	function openCtxMenu(x, y) {
+		closeCtxMenu();
+		var views = selectedViews();
+		if (!views.length) { return; }
+		var withFile = views.filter(function (v) { return v.filePath; });
+		var one = views.length === 1 ? views[0] : views[0];   // 单选动作以"第一条"为准
+		var items = [
+			{ act: 'ai', label: '＋ 添加到 AI 窗口', hint: withFile.length ? withFile.length + ' 条' : '无本地文件', disabled: withFile.length === 0 },
+			{ sep: true },
+			{ act: 'reveal', label: '在文件夹中显示', disabled: !one.filePath },
+			// ★ 2026-10-27：右键也能导出（用的是**当前选中的这批**，与动作行同一个输入条）
+			{ act: 'export', label: '📤 导出到…', hint: views.length + ' 条' },
+			{ act: 'copyName', label: '复制文件名' },
+			{ act: 'copyPath', label: '复制路径', disabled: !one.filePath },
+		];
+		if (state.writable) {
+			items.push({ sep: true });
+			items.push({ act: 'toggleDelete', label: one.deleted ? '↺ 从回收站恢复' : '⌫ 移到回收站' });
+		}
+		var menu = document.createElement('div');
+		menu.className = 'm-ctx';
+		menu.setAttribute('data-media-ctx', '');
+		menu.innerHTML = items.map(function (it) {
+			if (it.sep) { return '<div class="sep"></div>'; }
+			return '<button type="button" data-ctx="' + it.act + '"' + (it.disabled ? ' disabled' : '') + '>'
+				+ esc(it.label) + (it.hint ? '<span class="k">' + esc(it.hint) + '</span>' : '') + '</button>';
+		}).join('');
+		document.body.appendChild(menu);
+		// 贴边修正：别让菜单跑出视口（右下角右键时最容易发生）
+		var rect = menu.getBoundingClientRect();
+		menu.style.left = Math.max(4, Math.min(x, window.innerWidth - rect.width - 8)) + 'px';
+		menu.style.top = Math.max(4, Math.min(y, window.innerHeight - rect.height - 8)) + 'px';
+		ctxEl = menu;
+	}
+
+	function runCtxAction(act) {
+		var views = selectedViews();
+		var one = views[0];
+		closeCtxMenu();
+		if (!one) { return; }
+		if (act === 'ai') { addToAiWindow(views); return; }
+		if (act === 'reveal') {
+			var bridge = window.vssarosDsh;
+			if (one.filePath && bridge && typeof bridge.reveal === 'function') {
+				try { bridge.reveal(one.filePath); } catch (e) { toast('打开所在文件夹失败'); }
+			}
+			return;
+		}
+		if (act === 'export') { openFolderBar('export'); return; }
+		if (act === 'copyName') { copyText(one.name, '文件名'); return; }
+		if (act === 'copyPath') { copyText(one.filePath, '路径'); return; }
+		if (act === 'toggleDelete') {
+			setDeleted(one.id, !one.deleted).catch(function (e) { toast('操作失败：' + (e && e.message ? e.message : e)); });
+		}
+	}
+
+	document.addEventListener('contextmenu', function (ev) {
+		var card = ev.target.closest ? ev.target.closest('.m-card') : null;
+		if (!card) { closeCtxMenu(); return; }
+		ev.preventDefault();
+		var id = card.getAttribute('data-id');
+		// 右键一张没选中的卡 ⇒ 先把选中切成它（与桌面文件管理器的直觉一致）
+		if (!state.sel[id]) {
+			state.sel = Object.create(null);
+			state.sel[id] = true;
+			state.lastId = id;
+			renderSelection();
+			renderInspector();
+			renderBatch();
+		} else {
+			state.lastId = id;
+			renderInspector();
+		}
+		openCtxMenu(ev.clientX, ev.clientY);
+	});
+	document.addEventListener('scroll', closeCtxMenu, true);
+	window.addEventListener('resize', closeCtxMenu);
+	window.addEventListener('blur', closeCtxMenu);
+
+	// ── S2 一体条（浮动胶囊）：AI 助手 + 外开 ─────────────────────────────────
+	//
+	// 交互照抄「萨罗斯工作台」的 `.vssWbActions`（`vssaros-workbenches/lib/client.js`）：
+	//   · 右侧吸附（top:50% + translateY(-50%)），**整组可拖**；
+	//   · 拖动时贴边夹紧（不出容器）；拖到左半边时标签翻到右侧（否则溢出、触发横向滚动条）；
+	//   · 位置记 localStorage（下次打开还在）；
+	//   · 外开被弹窗拦截时按钮变橙（`data-state="blocked"`），再点一次即可。
+	var FAB_POS_KEY = 'media.fab.pos';
+
+	function fabEl() { return $('[data-media-fab]'); }
+
+	function clampFab(el, host, pos) {
+		var hr = host.getBoundingClientRect();
+		var br = el.getBoundingClientRect();
+		var maxL = Math.max(0, hr.width - br.width);
+		var maxT = Math.max(0, hr.height - br.height);
+		return {
+			x: Math.round(Math.min(Math.max(0, pos.x), maxL)),
+			y: Math.round(Math.min(Math.max(8, pos.y), maxT)),
+		};
+	}
+
+	function applyFabPos(el, host, pos) {
+		el.__vssPos = pos || null;
+		if (!pos) {
+			el.style.left = ''; el.style.top = '';
+			el.style.right = '12px'; el.style.transform = 'translateY(-50%)';
+			el.removeAttribute('data-moved');
+			el.removeAttribute('data-label');
+			return;
+		}
+		el.style.left = pos.x + 'px';
+		el.style.top = pos.y + 'px';
+		el.style.right = 'auto';
+		el.style.transform = 'none';
+		el.setAttribute('data-moved', '');
+		// 标签翻转：整组在容器左半边 ⇒ 标签朝右（否则会溢出容器）
+		var hr = host.getBoundingClientRect();
+		var br = el.getBoundingClientRect();
+		el.setAttribute('data-label', (pos.x + br.width / 2) < hr.width / 2 ? 'right' : 'left');
+	}
+
+	function attachFabDrag(el, host) {
+		// ★ 2026-10-27（按钮改成实心文字胶囊后，整块都是按钮 ⇒ 拖拽把手也只能是按钮）：
+		//   按下后移动 > 3px 才算拖；真拖了就把随后的那次 click 吃掉（否则会误触发"叫助手"）。
+		el.addEventListener('click', function (ev) {
+			if (el.__vssDragged) { ev.stopPropagation(); ev.preventDefault(); el.__vssDragged = false; }
+		}, true);
+		el.addEventListener('pointerdown', function (ev) {
+			if (ev.button !== 0) { return; }
+			ev.preventDefault();
+			var hr = host.getBoundingClientRect();
+			var br = el.getBoundingClientRect();
+			var origin = el.__vssPos || { x: br.left - hr.left, y: br.top - hr.top };
+			var startX = ev.clientX, startY = ev.clientY;
+			var moved = false;
+			el.setAttribute('data-dragging', '');
+			var onMove = function (e) {
+				var dx = e.clientX - startX, dy = e.clientY - startY;
+				if (!moved && Math.abs(dx) + Math.abs(dy) < 3) { return; }
+				moved = true;
+				applyFabPos(el, host, clampFab(el, host, { x: origin.x + dx, y: origin.y + dy }));
+			};
+			var onUp = function () {
+				el.removeAttribute('data-dragging');
+				document.removeEventListener('pointermove', onMove);
+				document.removeEventListener('pointerup', onUp);
+				if (moved) {
+					el.__vssDragged = true;   // 这次是拖 ⇒ 吃掉随后的 click
+					// ⚠ 浏览器在"拖完仍停在按钮上"时**也会**发 click ⇒ 上面的捕获会吃掉它；
+					//   但若那次 click 压根没来（例如指针移开了），标记会残留 ⇒ 下一次正常点击被误吃。
+					//   ⇒ 兜一个超时清掉。
+					setTimeout(function () { el.__vssDragged = false; }, 400);
+					if (el.__vssPos) {
+						try { localStorage.setItem(FAB_POS_KEY, JSON.stringify(el.__vssPos)); } catch (e) { /* 忽略 */ }
+					}
+				}
+			};
+			document.addEventListener('pointermove', onMove);
+			document.addEventListener('pointerup', onUp);
+		});
+	}
+
+	function initFab() {
+		var el = fabEl();
+		if (!el) { return; }
+		var host = el.parentElement;
+		if (!host) { return; }
+		attachFabDrag(el, host);
+		try {
+			var saved = JSON.parse(localStorage.getItem(FAB_POS_KEY) || 'null');
+			if (saved && typeof saved.x === 'number') { applyFabPos(el, host, clampFab(el, host, saved)); }
+		} catch (e) { /* 忽略 */ }
+	}
+
+	// ── 与「萨罗斯工作台」外壳的 AI 助手栏契约（2026-10-27）────────────────────
+	//
+	// 现象：媒体库被 dashboard 目录收进工作台后，外壳（S2 一体条）会渲染「« 展开 AI 助手」，
+	//   点它 ⇒ 外壳派发 `vssaros:assist-expand` ⇒ **页面没监听 ⇒ 毫无反应**（用户报的现象）。
+	// 契约（见 `dsh-plugins/check-assistant-collapse.mjs` 第 ④ 条）：
+	//   页面侧只写一个属性（`data-vssaros-assist-collapsed`）+ 监听这两个事件，不自己造按钮。
+	// 媒体库**没有页内助手栏**（自托管页拿不到宿主的 props.conversation，嵌了就是两套助手）⇒
+	//   「展开」翻译成「叫媒体库管家」（桥 newChat ⇒ IDE 侧开聊天页签），状态写回属性让按钮换面孔。
+	function setAssistCollapsed(collapsed) {
+		var root = $('[data-vssaros-media-app]');
+		if (root) { root.setAttribute('data-vssaros-assist-collapsed', collapsed ? '1' : '0'); }
+		// ★ 2026-10-27（用户定稿「方案 A」后统一文案）：标签文字与「萨罗斯工作台」**完全一致**
+		//   —— 折叠时「展开 AI 助手」、展开后「收起 AI 助手」（工作台那边也是这两个词）。
+		//   注意：媒体库**没有页内助手栏** ⇒ 这里的「展开」= 叫「媒体库管家」开会话（IDE 侧），
+		//   「收起」则如实告诉用户去 IDE 那边收（会话不在本页）。
+		var btn = $('[data-media-assistant]');
+		var wrap = btn && btn.parentElement;
+		var lab = wrap && wrap.querySelector('.m-fabLabel');
+		var text = collapsed ? '展开 AI 助手' : '收起 AI 助手';
+		if (lab) { lab.textContent = text; }
+		if (btn) {
+			btn.setAttribute('title', text + '：叫「媒体库管家」来帮你找素材 / 整理素材');
+		}
+	}
+
+	/** 胶囊上的 ✦ 按钮：**按当前状态**展开/收起（与工作台的 «/» 按钮同一套语义）。 */
+	function toggleAssistant() {
+		var root = $('[data-vssaros-media-app]');
+		var collapsed = !root || root.getAttribute('data-vssaros-assist-collapsed') !== '0';
+		if (collapsed) {
+			setAssistCollapsed(false);
+			askAssistant();
+		} else {
+			setAssistCollapsed(true);
+			toast('助手会话在 IDE 侧打开着，收起请在那边操作');
+		}
+	}
+	window.addEventListener('vssaros:assist-expand', function () {
+		setAssistCollapsed(false);
+		askAssistant();
+	});
+	window.addEventListener('vssaros:assist-collapse', function () {
+		setAssistCollapsed(true);
+		toast('助手会话在 IDE 侧打开着，收起请在那边操作');
+	});
+
 	// ── 事件接线 ────────────────────────────────────────────────────────────
 	document.addEventListener('click', function (ev) {
 		var target = ev.target;
+
+		// 右键菜单：**先**处理菜单项，再关菜单（顺序反了会把自己的点击吞掉）
+		var ctxBtn = target.closest ? target.closest('[data-ctx]') : null;
+		if (ctxBtn) { runCtxAction(ctxBtn.getAttribute('data-ctx')); return; }
+		if (ctxEl) { closeCtxMenu(); }
 
 		var nav = target.closest('[data-nav]');
 		if (nav) { applyNav(nav.getAttribute('data-nav'), nav.querySelector('.lb') ? nav.querySelector('.lb').textContent : ''); return; }
@@ -933,7 +1513,12 @@
 		// 本地导入 / AI 助手 / 外开（2026-10-26）
 		var importBtn = target.closest('[data-media-import]');
 		if (importBtn) { openPicker(importBtn.getAttribute('data-media-import')); return; }
-		if (target.closest('[data-media-assistant]')) { askAssistant(); return; }
+		// 链接文件夹（不复制字节）与导出到文件夹（落可读副本）：共用一条内联输入
+		if (target.closest('[data-media-link-folder]')) { openFolderBar('link'); return; }
+		if (target.closest('[data-media-export-folder]')) { openFolderBar('export'); return; }
+		if (target.closest('[data-media-linkgo]')) { submitFolderBar(); return; }
+		if (target.closest('[data-media-linkcancel]')) { closeFolderBar(); return; }
+		if (target.closest('[data-media-assistant]')) { toggleAssistant(); return; }
 		if (target.closest('[data-media-external]')) { openExternal(); return; }
 
 		var chipKind = target.closest('[data-kind].m-chip');
@@ -1001,9 +1586,10 @@
 		if (target.closest('[data-media-batch-clear]')) { state.sel = Object.create(null); renderSelection(); renderBatch(); return; }
 
 		var act = target.closest('[data-act]');
-		if (act && state.lastId) {
+		if (act) {
 			var what = act.getAttribute('data-act');
-			var vid = state.lastId;
+			var vid = inspId();
+			if (!vid) { toast('没有可操作的素材'); return; }
 			if (!state.writable) { toast('这是只读镜像，不能写'); return; }
 			if (what === 'fav') {
 				var current = state.byId[vid] ? state.byId[vid].favorite : false;
@@ -1016,6 +1602,7 @@
 				armConfirm(act, '确认永久删除？', function () {
 					return postJson('purge', { id: vid }).then(function (body) {
 						state.lastId = null;
+						state.inspId = null;
 						delete state.byId[vid];
 						toast('已永久删除' + (body.removedFile ? '（含文件，释放 ' + fmtBytes(body.freedBytes) + '）' : '（文件仍被其它条目引用，未删）'));
 						return reload(true).then(refreshFacets).then(refreshStats);
@@ -1055,8 +1642,9 @@
 		}
 
 		var tagDel = target.closest('[data-tag-del]');
-		if (tagDel && state.lastId) {
-			var idForTag = state.lastId;
+		if (tagDel) {
+			var idForTag = inspId();
+			if (!idForTag) { return; }
 			var v = state.byId[idForTag];
 			var rest = (v ? v.tags : []).filter(function (t) { return t !== tagDel.getAttribute('data-tag-del'); });
 			setTags(idForTag, rest).catch(function (e) { toast('移除标签失败：' + e.message); });
@@ -1067,21 +1655,20 @@
 
 	function addTagFromInput() {
 		var input = $('[data-insp-taginput]');
-		if (!input || !state.lastId) { return; }
+		var id = inspId();
+		if (!input || !id) { return; }
 		var text = String(input.value || '').trim().replace(/^#/, '');
 		if (!text) { return; }
-		var v = state.byId[state.lastId];
+		var v = state.byId[id];
 		var next = (v ? v.tags.slice() : []);
 		if (next.indexOf(text) < 0) { next.push(text); }
 		input.value = '';
-		setTags(state.lastId, next).catch(function (e) { toast('加标签失败：' + e.message); });
+		setTags(id, next).catch(function (e) { toast('加标签失败：' + e.message); });
 	}
 
 	document.addEventListener('change', function (ev) {
 		var board = ev.target.closest('[data-insp-board]');
-		if (board && state.lastId) {
-			setBoard(state.lastId, board.value).catch(function (e) { toast('移动分组失败：' + e.message); });
-		}
+		if (board) { applyBoardInput(board); }
 		// 本地导入：文件 / 文件夹选择器
 		if (ev.target.matches('[data-media-file-input],[data-media-folder-input]')) {
 			var files = ev.target.files;
@@ -1162,10 +1749,12 @@
 			return;
 		}
 		var note = ev.target.closest('[data-insp-note]');
-		if (note && state.lastId) {
+		if (note) {
+			var noteId = inspId();
+			if (!noteId) { return; }
 			clearTimeout(noteTimer);
 			var text = note.value;
-			var id = state.lastId;
+			var id = noteId;
 			noteTimer = setTimeout(function () {
 				setNote(id, text).catch(function (e) { toast('保存注释失败：' + e.message); });
 			}, 500);
@@ -1174,7 +1763,12 @@
 
 	document.addEventListener('keydown', function (ev) {
 		if (ev.key === 'Enter' && ev.target.matches('[data-insp-taginput]')) { ev.preventDefault(); addTagFromInput(); return; }
-		if (ev.key === 'Escape') { state.sel = Object.create(null); renderSelection(); renderBatch(); return; }
+		// 分组输入框：回车 ⇒ 失焦 ⇒ 触发 change ⇒ 应用（新建分组同理）
+		// 分组输入框：回车 ⇒ 直接应用（新建分组同理）；不等 blur
+		if (ev.key === 'Enter' && ev.target.matches('[data-insp-board]')) { ev.preventDefault(); applyBoardInput(ev.target); return; }
+		if (ev.key === 'Enter' && ev.target.matches('[data-media-linkinput]')) { ev.preventDefault(); submitFolderBar(); return; }
+		if (ev.key === 'Escape' && ev.target.matches('[data-media-linkinput]')) { ev.stopPropagation(); closeFolderBar(); return; }
+		if (ev.key === 'Escape') { closeCtxMenu(); state.sel = Object.create(null); renderSelection(); renderBatch(); return; }
 		if (ev.key === '/' && !/input|textarea|select/i.test(ev.target.tagName)) {
 			var search = $('[data-media-search]');
 			if (search) { ev.preventDefault(); search.focus(); }
@@ -1211,7 +1805,9 @@
 	});
 
 	// 窄容器（IDE 中栏 / 侧栏）默认把检查器收起来 —— 否则它一上来就盖住半边列表
-	if (window.innerWidth <= 820) {
+	// ★ 2026-10-28（用户：「缺少右侧编辑区」）：阈值跟着 CSS 一起降到 560。
+	//   工作台面板通常 700~900px，以前这里会**自动藏掉检查器** ⇒ 右侧编辑区"消失"。
+	if (window.innerWidth <= 560) {
 		var narrowInsp = $('[data-vssaros-media-insp]');
 		if (narrowInsp) { narrowInsp.classList.add('hide'); }
 	}
@@ -1226,4 +1822,17 @@
 	observePreviews();
 	// 「外开」的深链提前要（点击时必须同步 window.open，否则被弹窗拦截）
 	prefetchExternalLink();
+	// S2 一体条：浮动胶囊的拖拽与位置恢复
+	// ★ 2026-10-28（用户：「移除红框内多余的浮动工具栏」）：
+	//   媒体库被工作台收进面板时是 **iframe**，而外壳（vssaros-workbenches）**已经渲染了自己那条胶囊**
+	//   （.vssWbActions，位置/尺寸/样式与这条几乎完全重合）⇒ 两条叠在一起 ⇒ 看起来就是"多余的工具栏"。
+	//   规则：**被嵌在 iframe 里 ⇒ 页面不自带浮动条**（用外壳那条）；只有独立打开（顶层窗口）才自带。
+	if (window.self !== window.top) {
+		var ownFab = $('[data-media-fab]');
+		if (ownFab && ownFab.parentNode) { ownFab.parentNode.removeChild(ownFab); }
+	} else {
+		initFab();
+	}
+	// 反向同步：先抬基线，再开始比（顺序反了会把"当前状态"当成一次改动，白刷一遍）
+	markRev().then(watchRev);
 })();

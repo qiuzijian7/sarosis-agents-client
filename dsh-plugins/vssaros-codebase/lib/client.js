@@ -124,6 +124,107 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
+		 * ★ 2026-10-27（用户报「codebase 的快捷键功能丢失：Alt+Shift+S」）
+		 * ─────────────────────────────────────────────────────────────────────────
+		 * **独立 dsh 客户端（桌面窗口）里补上 Alt+Shift+S** ⇒ 打开「代码库」工作台并聚焦检索框。
+		 *
+		 * 为什么是这里（真机取证，2026-10-27）：
+		 *  · IDE（VS Code 底座）窗口里 `sarosis.findGraphSymbol` = Shift+Alt+S **一直有效** ——
+		 *    CDP 真按一次会弹出 Find Symbol 模态；F1 面板里也有「Saros: Find Symbol in Codebase」✓
+		 *    ⇒ IDE 侧**不是**丢的那一环，别去改它。
+		 *  · "丢失"发生在 **dsh 桌面客户端**：它是纯网页（**没有** VS Code 的快捷键/命令面板）⇒
+		 *    在那儿按 Alt+Shift+S 或 F1 都毫无反应 ⇒ 用户侧的观感就是"快捷键功能没了" ✓。
+		 *
+		 * ⚠ 与 IDE 侧**不会重复触发**（两条独立理由，任何一条成立就够）：
+		 *  ① IDE 内嵌的 dsh 视图里，我们的 preload 在 window capture 阶段就 `stopPropagation`
+		 *     （`src/vs/sessions/contrib/dshHarness/electron-browser/preload-dshView.ts`）⇒
+		 *     本监听挂在 document capture 上，**根本收不到该按键** ✓；
+		 *  ② 再加 `window.vssarosDsh` 判据兜底：该标记只由 IDE 侧 preload 用 contextBridge 注入
+		 *     （桌面窗口的官方客户端页没有它）⇒ IDE 宿主视图里一律让路给 IDE 的 keybinding ✓。
+		 *
+		 * 行为对齐 IDE 侧那条命令的**用途**（按名字检索符号），但落在 **dsh 真源**上
+		 * （工作台「代码库」的检索框 = `data-codebase-q`）⇒ 不依赖 IDE 进程 ✓。
+		 */
+		const WORKBENCH_ID = 'vssaros/codebase';
+		/** 检索框锚点（与 `lib/client.codebase.js` 里那处同名字段保持一致）。 */
+		const SEARCH_INPUT_SELECTOR = '[data-codebase-q]';
+		/** 聚焦重试上限（面板是异步渲染的 ⇒ 轮询几秒，认不中就不聚焦，不报错）。 */
+		const FOCUS_RETRY_LIMIT = 30;
+		const FOCUS_RETRY_MS = 100;
+
+		/** 在 IDE 宿主视图里吗？（`window.vssarosDsh` 只由 IDE 侧 preload 注入 ✓） */
+		function isInsideIdeView() {
+			try {
+				return typeof window !== 'undefined' && !!window.vssarosDsh;
+			} catch (e) {
+				return false;
+			}
+		}
+
+		/** 聚焦「代码库」工作台里的检索框；当前不在该页 ⇒ 返回 false（不报错 ✓）。 */
+		function focusSearchInput() {
+			try {
+				const el = document.querySelector(SEARCH_INPUT_SELECTOR);
+				if (!el || typeof el.focus !== 'function') { return false; }
+				el.focus();
+				return true;
+			} catch (e) {
+				return false;
+			}
+		}
+
+		/**
+		 * 打开「代码库」工作台。
+		 *
+		 * ⚠ `desktopWorkbenches` 是**可选**宿主服务（桌面客户端才有）⇒ 用 `ctx.get` + try/catch
+		 * （与 `client.market.js` 同口径），**不能**写进 `exports.inject`（那会让整个客户端插件
+		 * 在没有该服务的宿主里不加载 ✗）。
+		 */
+		function openCodebaseWorkbench(ctx) {
+			let svc = null;
+			try {
+				svc = ctx && typeof ctx.get === 'function' ? ctx.get('desktopWorkbenches') : null;
+			} catch (e) {
+				svc = null;
+			}
+			if (!svc || typeof svc.open !== 'function') { return false; }
+			try {
+				if (typeof svc.has === 'function' && !svc.has(WORKBENCH_ID)) { return false; }
+				return !!svc.open(WORKBENCH_ID);
+			} catch (e) {
+				return false;
+			}
+		}
+
+		/** 装 Alt+Shift+S ⇒ 打开「代码库」工作台 + 聚焦检索框（已在页内则只聚焦 ✓）。 */
+		function installFindSymbolShortcut(ctx) {
+			if (typeof document === 'undefined' || typeof document.addEventListener !== 'function') { return; }
+			document.addEventListener('keydown', (event) => {
+				if (isInsideIdeView()) { return; } // IDE 内 ⇒ 让给 IDE 自己的 keybinding（不重复 ✓）
+				if (!event || !event.altKey || !event.shiftKey || event.ctrlKey || event.metaKey) { return; }
+				// 键名或物理键位任一命中即可（部分布局下 Alt+Shift+S 产出的 key 不是 's' ⇒ 按 code 更稳 ✓）
+				const keyName = String(event.key || '').toLowerCase();
+				const keyCode = String(event.code || '');
+				if (keyName !== 's' && keyCode !== 'KeyS') { return; }
+				// 抢在输入框把 Alt+Shift+S 当字符插入之前 ⇒ 阻止默认行为 ✓
+				if (typeof event.preventDefault === 'function') { event.preventDefault(); }
+				if (typeof event.stopPropagation === 'function') { event.stopPropagation(); }
+				const opened = openCodebaseWorkbench(ctx);
+				if (!opened) {
+					// ★ 不静默：没有 desktopWorkbenches 宿主服务（老运行时）⇒ 如实说清，不假装成功 ✓
+					console.warn('[vssaros-codebase] Alt+Shift+S：没有 desktopWorkbenches 宿主服务，未能打开「代码库」工作台');
+				}
+				let tries = 0;
+				const tick = () => {
+					if (focusSearchInput()) { return; }
+					tries += 1;
+					if (tries < FOCUS_RETRY_LIMIT) { setTimeout(tick, FOCUS_RETRY_MS); }
+				};
+				setTimeout(tick, FOCUS_RETRY_MS);
+			}, true);
+		}
+
+		/**
 		 * 客户端插件体：把这张卡按**工具名**注册进 keyed 槽。
 		 *
 		 * ⚠ 必须在 **factory 内**、并经 `module.exports` 导出 —— **不能**写成文件顶层 `export` ✗：
@@ -141,6 +242,8 @@ window.__ModuleLoader__.load({
 				failure = String(e && e.message ? e.message : e);
 				console.warn(`[vssaros-codebase] 卡片注册失败：${failure}`);
 			}
+			// ★ 2026-10-27：装 Alt+Shift+S 快捷键（独立 dsh 客户端用；IDE 内让路给 IDE 自己那条）✓
+			installFindSymbolShortcut(ctx);
 			// 页面自诊断（与看板 `__vssarosKanbanClient` 同一套）：**apply 真的跑过**才是"工具卡能渲染"的
 			// 前提，而"文件可服务 / 在 boot 清单里"只是**必要**条件（README 5.15 的教训 ✓）。
 			globalThis.__vssarosCodebaseClient = { loaded: true, registered, failure, slot: TOOL_SLOT, key: OVERVIEW_TOOL };

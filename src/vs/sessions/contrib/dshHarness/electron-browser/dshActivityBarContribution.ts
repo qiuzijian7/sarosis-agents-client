@@ -38,7 +38,7 @@ import { ViewPaneContainer } from '../../../../workbench/browser/parts/views/vie
 import { DshHarnessSettings, IDshPluginInfo } from '../common/dshHarness.js';
 import { containersFromPlugins, DSH_MODULE_CONTAINERS, IDshModuleContainer, planModuleContainers } from '../common/dshModuleContainers.js';
 import { IDshHarnessService } from './dshHarnessService.js';
-import { AGENT_STUDIO_CODEBASE_VIEW_ID, AGENT_STUDIO_DASHBOARD_VIEW_ID, AGENT_STUDIO_DSH_IMAGEGEN_VIEW_ID, AGENT_STUDIO_DSH_MARKETPLACE_VIEW_ID, AGENT_STUDIO_DSH_SESSIONS_VIEW_ID, AGENT_STUDIO_INTEGRATION_VIEW_ID, AGENT_STUDIO_KB_VIEW_ID, AGENT_STUDIO_MEDIA_VIEW_ID, AGENT_STUDIO_MEMORY_VIEW_ID, AGENT_STUDIO_PRESET_AGENT_VIEW_ID, AGENT_STUDIO_SCHEDULER_VIEW_ID, AGENT_STUDIO_TASKS_VIEW_ID, AGENT_STUDIO_WORKFLOW_VIEW_ID } from '../../../common/agentStudioConstants.js';
+import { AGENT_STUDIO_CODEBASE_VIEW_ID, AGENT_STUDIO_DASHBOARD_VIEW_ID, AGENT_STUDIO_DSH_IMAGEGEN_VIEW_ID, AGENT_STUDIO_DSH_MARKETPLACE_VIEW_ID, AGENT_STUDIO_DSH_RELAY_VIEW_ID, AGENT_STUDIO_DSH_SESSIONS_VIEW_ID, AGENT_STUDIO_INTEGRATION_VIEW_ID, AGENT_STUDIO_KB_VIEW_ID, AGENT_STUDIO_MEDIA_VIEW_ID, AGENT_STUDIO_MEMORY_VIEW_ID, AGENT_STUDIO_PRESET_AGENT_VIEW_ID, AGENT_STUDIO_SCHEDULER_VIEW_ID, AGENT_STUDIO_TASKS_VIEW_ID, AGENT_STUDIO_WORKFLOW_VIEW_ID } from '../../../common/agentStudioConstants.js';
 import { DynamicActivityBarContainers } from '../../agentStudio/browser/dynamicActivityBarContainers.js';
 import { DshPluginViewPane } from './dshPluginViewPane.js';
 
@@ -89,6 +89,8 @@ const MODULE_VIEW_HOSTS: Readonly<Record<string, IModuleViewHost>> = {
 	// 商城工作台（2026-10-22）：`@vssaros/dsh-marketplace` 的 `/x/marketplace/` 整页。
 	// 已知容器显式登记 ⇒ 视图 id 稳定（R1：改 id 会丢用户已存的活动栏布局）✓。
 	'vssaros.dsh.marketplace': pageHost(AGENT_STUDIO_DSH_MARKETPLACE_VIEW_ID, 'vssaros.dsh.marketplace'),
+	// 中转站工作台（2026-10-27）：`@vssaros/dsh-relay` 的 `/x/relay/` 整页（页面里 iframe 承载中转站 Web）。
+	'vssaros.dsh.relay': pageHost(AGENT_STUDIO_DSH_RELAY_VIEW_ID, 'vssaros.dsh.relay'),
 };
 
 /**
@@ -132,6 +134,16 @@ export class DshActivityBarContribution extends Disposable implements IWorkbench
 		super();
 		this._containers = new DynamicActivityBarContainers(this._log, storageService);
 		if (!this._dshEnabled()) {
+			return;
+		}
+		/*
+		 * ★ 2026-10-27（用户要求：「IDE 侧的 activitybar 中，不要显示工作台的页签」）：
+		 *   工作台（主页/知识库/商城/…）是**窗口模式**的入口；IDE 侧应当只用
+		 *   「sideview + editorpane」这条路径 ⇒ ActivityBar 上不再放这些模块图标。
+		 *   做成**设置项**（默认关闭）而不是删代码：切回窗口形态或排查时还能开回来。
+		 */
+		if (this._configurationService.getValue<boolean>(DshHarnessSettings.WorkbenchInActivityBar) !== true) {
+			this._log.info('[DshActivityBar] 工作台入口在 ActivityBar 已关闭（sessions.dshHarness.workbenchInActivityBar=false）⇒ 不注册模块图标');
 			return;
 		}
 		// Host 启动 / 升级后插件集合会变；running 时刷新（不主动拉起进程）。

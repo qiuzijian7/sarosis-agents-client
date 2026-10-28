@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>B · 主从式（列表 + 详情）</title>
+<style>
+:root{--bg:#1b1b1d;--card:#232326;--bd:#2f2f33;--tx:#e6e6e6;--tx2:#a8a8a8;--tx3:#737373;
+--pri:#4c9aff;--ok:#3fb950;--warn:#d29922;--err:#f85149;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:13px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}
+.wrap{display:flex;height:100vh}
+.list{width:216px;flex:none;border-right:1px solid var(--bd);overflow:auto;padding:10px 8px}
+.list .ttl{font-size:11px;letter-spacing:.08em;color:var(--tx3);font-weight:600;padding:4px 8px 8px;text-transform:uppercase}
+.item{display:flex;align-items:center;gap:8px;padding:8px 9px;border-radius:8px;cursor:pointer;color:var(--tx2)}
+.item:hover{background:#2a2a2e}
+.item.on{background:rgba(76,154,255,.14);color:#dbeafe}
+.dot{width:7px;height:7px;border-radius:50%;flex:none;background:#4a4a50}
+.dot.ok{background:var(--ok);box-shadow:0 0 0 3px rgba(63,185,80,.16)}
+.dot.warn{background:var(--warn)}
+.dot.off{background:#3d3d43}
+.item .nm{flex:1;font-size:12.5px}
+.item .bdg{font-size:10.5px;padding:0 6px;border-radius:999px;background:#33333a;color:var(--tx2)}
+.detail{flex:1;overflow:auto;padding:18px 24px 30px}
+h2{margin:0;font-size:16px;display:flex;align-items:center;gap:9px}
+.pill{font-size:11px;padding:1.5px 8px;border-radius:999px}
+.p-ok{color:#7ee787;background:rgba(63,185,80,.14)}
+.p-warn{color:#e3b341;background:rgba(210,153,34,.14)}
+.sub{color:var(--tx3);font-size:11.5px;margin:2px 0 16px}
+.sec{background:var(--card);border:1px solid var(--bd);border-radius:11px;padding:13px 14px;margin-bottom:12px}
+.sec h3{margin:0 0 3px;font-size:12.5px;display:flex;align-items:center;gap:7px}
+.sec .hint{color:var(--tx3);font-size:11.5px;margin:0 0 10px}
+.fld{display:flex;align-items:center;gap:9px;margin-bottom:8px}
+.fld label{width:88px;flex:none;color:var(--tx2);font-size:12px}
+input,select{flex:1;font:inherit;font-size:12px;padding:5px 9px;border-radius:7px;border:1px solid var(--bd);
+background:#1e1e21;color:var(--tx);min-width:0}
+input::placeholder{color:#5c5c63}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+button{font:inherit;font-size:12px;padding:4.5px 11px;border-radius:7px;cursor:pointer;border:1px solid var(--bd);
+background:#2a2a2e;color:var(--tx)}
+button:hover{background:#313136}
+button.pri{background:var(--pri);border-color:transparent;color:#fff;font-weight:600}
+button.ghost{background:transparent}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{text-align:left;color:var(--tx3);font-weight:600;padding:5px 7px;border-bottom:1px solid var(--bd);font-size:11.5px}
+td{padding:5px 7px;border-bottom:1px solid #26262a;color:var(--tx2)}
+td b{color:var(--tx);font-weight:600}
+.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
+.badge{font-size:10.5px;padding:1px 7px;border-radius:999px;background:rgba(210,153,34,.16);color:#e3b341}
+.note{margin:14px 0 0;padding:9px 12px;border-left:2px solid #3d3d44;color:var(--tx3);font-size:11.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="list">
+    <div class="ttl">渠道</div>
+    <div class="item on"><span class="dot ok"></span><span class="nm">🐦 飞书</span><span class="bdg">2</span></div>
+    <div class="item"><span class="dot warn"></span><span class="nm">✈️ Telegram</span><span class="bdg">0</span></div>
+    <div class="item"><span class="dot off"></span><span class="nm">🎮 Discord</span></div>
+    <div class="item"><span class="dot off"></span><span class="nm">🏢 企业微信</span></div>
+  </div>
+
+  <div class="detail">
+    <h2>🐦 飞书 <span class="pill p-ok">已连接</span></h2>
+    <p class="sub">WS 长连接 · 最近事件 17:32:07 · 凭据来源：本机 dsh 设置（cli_a1…h8）</p>
+
+    <div class="sec">
+      <h3>凭据</h3>
+      <p class="hint">只在这里填。存本机 <span class="code">agent-im-accounts.json</span>；接口只回「是否已配置」，不回 secret。</p>
+      <div class="fld"><label>App ID</label><input value="cli_a1b2c3d4e5f6g7h8"></div>
+      <div class="fld"><label>App Secret</label><input type="password" placeholder="已配置 · 留空 = 不改"></div>
+      <div class="row"><button class="pri">保存</button><button class="ghost">清除</button></div>
+    </div>
+
+    <div class="sec">
+      <h3>准入策略 <span class="pill p-warn">共享</span></h3>
+      <p class="hint">这组规则对所有渠道生效（改一次全局生效）——与 OpenClaw 把 Pairing / Groups 独立成配置层同一思路。</p>
+      <div class="fld"><label>私聊</label>
+        <select><option>pairing（陌生人挂起等批准，默认）</option><option>allowlist</option><option>open（需显式写 *）</option><option>disabled</option></select></div>
+      <div class="fld"><label>群聊</label>
+        <select><option>allowlist（fail-closed，默认）</option><option>open</option><option>disabled</option></select></div>
+      <div class="fld"><label>房间白名单</label><input value="oc_5f2a…, oc_88c1…" placeholder="留空 = 不开门"></div>
+      <div class="fld"><label>触发词</label><input value="@claw, hey bot" placeholder="群内除 @ 之外的触发词"></div>
+    </div>
+
+    <div class="sec">
+      <h3>该平台的绑定 <span class="badge">2</span></h3>
+      <table>
+        <thead><tr><th>IM 会话</th><th>绑定对象</th><th>方向</th><th>状态</th></tr></thead>
+        <tbody>
+          <tr><td class="code">oc_5f2a9d</td><td><b>群 · 评测群</b></td><td>双向</td><td>启用</td></tr>
+          <tr><td class="code">oc_88c1e2</td><td><b>Bot · Coder</b></td><td>只发</td><td>启用</td></tr>
+        </tbody>
+      </table>
+      <div class="row" style="margin-top:8px"><button class="ghost">+ 新建绑定</button><button class="ghost">打开 Bots 工作台</button></div>
+    </div>
+
+    <div class="sec">
+      <h3>待批准 <span class="badge">2</span></h3>
+      <table>
+        <tbody>
+          <tr><td class="code">JXT457YC</td><td>张三</td><td>剩 42 分钟</td><td style="text-align:right"><button class="pri">批准</button></td></tr>
+          <tr><td class="code">QW8N3KPD</td><td>李四</td><td>剩 12 分钟</td><td style="text-align:right"><button class="pri">批准</button></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="sec">
+      <h3>最近失败 <span class="badge">3</span></h3>
+      <table>
+        <tbody>
+          <tr><td style="color:#e3b341">sender</td><td>u_bad</td><td>我不在白名单</td></tr>
+          <tr><td style="color:#e3b341">no-mention</td><td>王五</td><td>@所有人 帮我看下这个报错…</td></tr>
+          <tr><td style="color:#e3b341">loop</td><td>bot_a</td><td>连环触发已被冷却</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="note">设计意图：左列给“全局一眼看全”，右侧把该平台的所有事收在一屏（凭据 / 准入 / 绑定 / 配对 / 失败）。代价：准入策略是共享的，放在“单个平台”页里会让人误以为只对这个平台生效 —— 所以给它打了「共享」标记。</p>
+  </div>
+</div>
+</body>
+</html>

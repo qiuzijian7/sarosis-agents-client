@@ -9,7 +9,8 @@
 // 存储：{dataRoot}/agents-seen.json（很小，debounce 500ms 落盘；写失败只记日志式 error，不炸路由）。
 // 容错：文件坏了 ⇒ 当作「都没看过」（角标会偏多，比「全静默清零」更不误导 ✓）。
 
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { renameWithRetry } from './atomicWrite.js';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { dataRootOf } from './store.js';
 import { presetIdOf } from './core/agents.js';
@@ -46,7 +47,7 @@ function persistSoon(config) {
 		// tmp + rename：写一半崩了也不留半截 JSON ✓
 		mkdir(dataRootOf(config), { recursive: true })
 			.then(() => writeFile(tmp, JSON.stringify(cache ?? {}), 'utf8'))
-			.then(() => rename(tmp, file))
+			.then(() => renameWithRetry(tmp, file))
 			.catch(() => { /* 落盘失败：本次内存态仍生效，下轮再写 */ });
 	}, DEBOUNCE_MS);
 	if (typeof writeTimer.unref === 'function') { writeTimer.unref(); }

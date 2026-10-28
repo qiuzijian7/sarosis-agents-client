@@ -373,7 +373,14 @@ const knownSlots = new Set([...OFFICIAL_ENTRIES.map(o => o.slot), 'conversation.
 	// 2026-10-21：回合用量实时那一行（client.usage.js）挂在 composer 下方的常驻槽 ⇒ 补登记 ✓
 	'conversation.composer.dock',
 	// 2026-10-22：设置 → 模型页的两个官方扩展位（client.modelAccounts.js）
-	'settings.models.provider-card', 'settings.models.footer']);
+	'settings.models.provider-card', 'settings.models.footer',
+	// 2026-10-27：设置弹窗左侧导航的分区槽（client.market.js 的「工作台商城」、
+	// client.channel.js 的「渠道」）+ 分区自己的内容子槽。
+	// ⚠ 这两个槽由 dsh 官方 `ui-settings` 声明（`settings.section` 及其 children），
+	//   不是我们新造的槽；登记在此只是让 note 不再重复提示。
+	'settings.section', 'settings.vssaros.channel.item',
+	// `settings.launcher`：左下角账号行的官方槽（client.account.js 一直在用，之前没登记）
+	'settings.launcher']);
 for (const o of ourEntries) {
 	if (!knownSlots.has(o.slot)) { notes.push(`${o.file}: 注册到未登记槽 ${o.slot}（若是新槽，请把槽名补进本脚本的 knownSlots ✗）`); }
 }
@@ -536,6 +543,45 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 				if (fCode.indexOf(needle) < 0) { problems.push(`client.footer.js: 缺「${needle}」—— ${why} ✗`); }
 			}
 			notes.push('client.footer.js: 页脚口径（剔空会话 + 如实披露）断言通过');
+		}
+		// ── ⑤-e 会话 item 高亮必须跟"当前会话"走（2026-10-28 用户报障）──────────────
+		// 病根：高亮只看 `bridge.sessionId` —— 那是**宿主绑给这个视图的会话**（基本不变），
+		//   而点 item 走的是官方 `uiWorkspace.openSession(sid)` ⇒ 官方当前会话变了、宿主绑定没变
+		//   ⇒ 高亮永远钉在原来那条 ✗。
+		// ⇒ 口径：`pickCurrentSessionId`（纯函数）按 官方 selection > 我们刚点的 > 宿主绑定 取，
+		//   且只有**在册**的候选才配当"当前"（官方 selection 是按 origin 持久化的 ⇒ 可能是别的窗口的）。
+		{
+			const t2 = loaded && loaded.exports.__test;
+			if (!t2 || typeof t2.pickCurrentSessionId !== 'function') {
+				problems.push('client.workspaces.js: 缺 __test.pickCurrentSessionId（高亮口径必须可单测 ✗）');
+			} else {
+				const known = { a: true, b: true };
+				// ① 官方当前在册 ⇒ 选它（**即便宿主绑定也在且不同** —— 这正是本次 bug 的核心期望）
+				const p1 = t2.pickCurrentSessionId({ official: 'b', local: 'a', bridged: 'a', known });
+				if (p1 !== 'b') { problems.push(`pickCurrentSessionId: 官方当前会话在册时应选它，实际 ${p1} ✗（高亮就会不跟着切换）`); }
+				// ② 官方当前**不在册**（别的窗口留下的）⇒ 退回我们刚点的那条
+				const p2 = t2.pickCurrentSessionId({ official: 'zz', local: 'a', bridged: 'b', known });
+				if (p2 !== 'a') { problems.push(`pickCurrentSessionId: 官方当前不在册时应退回 local，实际 ${p2} ✗`); }
+				// ③ 没有官方当前 ⇒ 用我们刚点的
+				const p3 = t2.pickCurrentSessionId({ official: null, local: 'a', bridged: 'b', known });
+				if (p3 !== 'a') { problems.push(`pickCurrentSessionId: 没有官方当前时应选 local，实际 ${p3} ✗`); }
+				// ④ local 也不在册 ⇒ 退回宿主绑定
+				const p4 = t2.pickCurrentSessionId({ official: null, local: 'zz', bridged: 'b', known });
+				if (p4 !== 'b') { problems.push(`pickCurrentSessionId: local 不在册时应退回宿主绑定，实际 ${p4} ✗`); }
+				// ⑤ 全空 ⇒ null（不编一个假 id）
+				const p5 = t2.pickCurrentSessionId({});
+				if (p5 !== null) { problems.push(`pickCurrentSessionId: 全空时应为 null，实际 ${p5} ✗`); }
+				notes.push('client.workspaces.js: 高亮口径（官方 selection > 乐观 > 宿主绑定 + 在册过滤）断言通过');
+			}
+			// 静态面：必须**读官方 selection 并订阅它**（读到新值却不重渲染 ⇒ 高亮照样不动 ✗）
+			const code2 = String(src).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+			for (const [needle, why] of [
+				['uiWorkspace.selection', '必须读官方的当前会话（官方自己记在 selection store 里）'],
+				['sel.subscribe', '必须订阅官方 selection（否则读到新值也不会重渲染 ⇒ 高亮不动）'],
+				['pickCurrentSessionId(', '高亮必须走统一口径函数（不许各处自己算）'],
+			]) {
+				if (code2.indexOf(needle) < 0) { problems.push(`client.workspaces.js: 缺「${needle}」—— ${why} ✗`); }
+			}
 		}
 		// ── client.workspace.js：hero 面板「只认 chip 发起的 open」（2026-10-17 真机 bug）──────
 		// 病根：官方 hero 的 `open` 有两条来源（chip 点击 / 输入框 inert 的 onRequestWorkspace），
@@ -1367,6 +1413,197 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 
 	if (!problems.some((p) => /HIDDEN_LABELS|display:none|aria-label|MutationObserver|节流|remove\(\)|vssaros-wb-scheduler/.test(p))) {
 		notes.push('侧栏：隐藏官方「插件」「自动化任务」行（display:none + MutationObserver 节流重贴；只藏行、不删能力；自动化任务由工作台承接）');
+	}
+}
+
+// ── ⑦ 设置分区壳必须用 `renderSlot` 渲染子槽（2026-10-27 真机事故）──────────────
+//
+// `client.channel.js` 第一版把分区内容写成 `props.children` ⇒ **导航项在、内容全空**
+// （用户截图：「设置 → 渠道」点开是白板）。dsh 的 slots 不会把子槽当 children 传进来，
+// 必须显式 `props.renderSlot(<子槽>, {})` —— 当时唯一的可参照实现是 `client.market.js`
+// 的 `WorkbenchSection`，我没有逐字对齐就写了自己的版本，于是踩了这个坑。
+//
+// 判据：凡是声明了 `children: { <槽>: ... }` 的分区，其组件体必须调用 `renderSlot(`。
+{
+	for (const f of fs.readdirSync(LIB)) {
+		if (!/^client\..*\.js$/.test(f)) { continue; }
+		const src = fs.readFileSync(path.join(LIB, f), 'utf8');
+		// 声明了子槽？（⚠ 不能写成 `children:\s*\{[^}]*\}\s*,` —— children 里还有一层嵌套花括号，
+		//   `[^}]*` 会在内层 `}` 处停住 ⇒ 永远判不出"声明了子槽" ⇒ 这条守卫空转）
+		const declaresChild = /children\s*:\s*\{/.test(src);
+		if (!declaresChild) { continue; }
+		// 声明了子槽就必须有 renderSlot 调用（否则内容区必空）
+		if (!/renderSlot\s*\(/.test(src)) {
+			problems.push(`${f}: 声明了 settings.section 的 children 但没有调用 \`props.renderSlot(...)\` `
+				+ '⇒ 设置页里会出现"导航项在、内容空白"（2026-10-27 真机踩过；参照 client.market.js 的 WorkbenchSection）');
+		}
+	}
+}
+
+// ── ⑯ 空白会话屏也必须装「多根工作区侧栏」（2026-10-27 真机）──────────────────
+//   用户截图：窗口模式下侧栏工作区是**官方平铺列表**（Saros-switch / vssaros-homepage / …），
+//   没有我们的「一行 + N 个根」多根条目。同一时刻 `page surface` 自证 `sessionId=null`
+//   ⇒ 页面停在空白会话屏 ⇒ 只装 BLANK_SESSION_PARTS ⇒ 这支 chunk 压根没 require ✗。
+//   `client.workspaces.js` 只注册 `sidebar.workspaces`（priority -10）+ 读 workspaces/sessions
+//   快照，**完全不依赖会话**；而"没有会话"恰恰是用户最需要先看到工作区列表去选一个的时刻 ⇒
+//   必须在 BLANK_SESSION_PARTS 里。
+{
+	const readSrc = (rel) => fs.readFileSync(path.join(LIB, rel), 'utf8');
+	const strip = (s) => String(s).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+	const entry = strip(readSrc('client.js'));
+	const wsChunk = strip(readSrc('client.workspaces.js'));
+
+	const blankAt = entry.indexOf('const BLANK_SESSION_PARTS = [');
+	if (blankAt < 0) {
+		problems.push('client.js: 找不到 BLANK_SESSION_PARTS（空白会话屏装哪些部件无处判定）✗');
+	} else {
+		const blank = entry.slice(blankAt, entry.indexOf('];', blankAt));
+		if (!blank.includes('"./client.workspaces.js"')) {
+			problems.push('client.js: `client.workspaces.js` 必须在 BLANK_SESSION_PARTS 里'
+				+ '（否则没绑到会话时侧栏退回官方平铺列表 ⇒ 多根工作区看不到，2026-10-27 真机 ✗）');
+		}
+	}
+
+	// 它凭什么是"不依赖会话"的：必须只遮蔽 sidebar.workspaces，且 install 里不读 sessionId 做门控
+	if (!/ctx\.slots\.inject\(SLOT,/.test(wsChunk) || !/priority: -10/.test(wsChunk)) {
+		problems.push('client.workspaces.js: 必须 inject + register 到 sidebar.workspaces（priority -10 遮蔽官方）✗');
+	}
+	if (/bridge\.sessionId\s*\)\s*\{?\s*return/.test(wsChunk)) {
+		problems.push('client.workspaces.js: 不许用 bridge.sessionId 做早退（它本来就该在没有会话时也渲染 ✗）');
+	}
+
+	if (!problems.some((p) => /BLANK_SESSION_PARTS|client\.workspaces/.test(p))) {
+		notes.push('空白会话屏也装多根工作区侧栏（侧栏不再退回官方平铺列表）');
+	}
+}
+
+// ── ⑰ 页签面板不许出现"整片空白"（2026-10-28 用户报「会话窗口显示空」）────────────
+//   现场：点页签后中栏纯黑。实测（CDP 驱动 WebContentsView）页面其实**加载完成、内容都在**
+//   （skills 页 innerText 15986 字符）⇒ 空白是**尺寸**问题：面板根节点靠 `height:100%` 继承
+//   父高度，而官方 `main` 槽的 keyed 面板外层不保证是确定高度 ⇒ 根 0 高 ⇒ iframe 全 0 高。
+//   ⇒ 根节点必须"双保险"（flex 拉伸 + height:100%），并带兜底 + 诊断锚点（下次复现能取证）。
+{
+	const readSrc = (rel) => fs.readFileSync(path.join(LIB, rel), 'utf8');
+	const strip = (s) => String(s).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+	const nav = strip(readSrc('client.workbenchNav.js'));
+
+	// ⚠ 用**属性写法**当锚点：文件里另有 `querySelector('[data-vssaros-wb-tabs]')`（探针），
+	//   用裸名会切错位置（第一版就这么假红 ✗）。
+	const panelAt = nav.indexOf('"data-vssaros-wb-tabs": "1"');
+	if (panelAt < 0) {
+		problems.push('client.workbenchNav.js: 找不到页签面板根节点（data-vssaros-wb-tabs）✗');
+	} else {
+		// 取根节点那段 style（往前 600 字符内应包含 style 定义）
+		const around = nav.slice(Math.max(0, panelAt - 600), panelAt);
+		if (!/flex:\s*"1 1 auto"/.test(around)) {
+			problems.push('client.workbenchNav.js: 页签面板根节点必须带 `flex:"1 1 auto"`'
+				+ '（只给 height:100% ⇒ 父级没有确定高度时整片空白，2026-10-28 真机 ✗）');
+		}
+		if (!/height:\s*"100%"/.test(around)) {
+			problems.push('client.workbenchNav.js: 页签面板根节点必须保留 `height:"100%"`（父级非 flex 时靠它 ✓）');
+		}
+		if (!/minHeight:\s*0/.test(around)) {
+			problems.push('client.workbenchNav.js: 页签面板根节点必须 `minHeight:0`（否则 flex 子项被内容撑破/算 0 ✗）');
+		}
+	}
+
+	// 兜底：量到高度异常 ⇒ 给最小高度 + 留诊断（不许只静默）
+	if (!/__vssarosWbPanelDiag/.test(nav)) {
+		problems.push('client.workbenchNav.js: 必须有面板高度诊断（`window.__vssarosWbPanelDiag`）'
+			+ '⇒ 下次报"空白"时才能一键取证，不用再靠猜 ✗');
+	}
+	if (!/rect\.height < 40/.test(nav) || !/minHeight = "240px"/.test(nav)) {
+		problems.push('client.workbenchNav.js: 高度异常（<40px）必须有最小高度兜底（否则用户看到纯空白 ✗）');
+	}
+	if (!/getBoundingClientRect\(\)/.test(nav)) {
+		problems.push('client.workbenchNav.js: 兜底必须真的量一次尺寸（凭空设最小高度是瞎猜 ✗）');
+	}
+
+	if (!problems.some((p) => /页签面板|__vssarosWbPanelDiag|最小高度/.test(p))) {
+		notes.push('页签面板尺寸兜底（flex + height:100% 双保险；异常时最小高度 + 诊断锚点）');
+	}
+}
+
+// ── ⑱ 侧栏点会话：失败必须重试 + 就地可见（2026-10-28 用户报「点会话没打开」）──────
+//   现场：桌面窗口里点工作区下的会话行，界面毫无变化。原代码只调一次 `openSession`，
+//   失败时 `notify(warn)` —— 而窗口模式**没有宿主桥**（bridge.notify 空转）⇒ 100% 静默 ✗。
+//   而 `unknown session` / `is released` 是**预期内瞬时态**（主包 navigate 对这两种会 retain +
+//   轮询重试），侧栏这条一次性路径从不重试 ⇒ 第一次撞上就永久打不开。
+{
+	const readSrc = (rel) => fs.readFileSync(path.join(LIB, rel), 'utf8');
+	const strip = (s) => String(s).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+	const ws = strip(readSrc('client.workspaces.js'));
+
+	// ⚠ 定位用**前缀**（不许钉死整个参数表）：2026-10-28 高亮修复给 openSession 加了第三个参数
+	//   （setCurrent = 乐观高亮回调）⇒ 原来的整串字面量会突然找不到 ⇒ 守卫假红 ✗。
+	const at = ws.indexOf('const openSession = (sid, setMsg');
+	if (at < 0) {
+		problems.push('client.workspaces.js: 找不到 `openSession(sid, setMsg…)`（点会话的入口）✗');
+	} else {
+		const body = ws.slice(at, ws.indexOf('const makeSayer = ', at));
+		if (!/RETRY_DELAYS/.test(body) || !/setTimeout\(attemptOpen/.test(body)) {
+			problems.push('client.workspaces.js: 打开会话失败必须**退避重试**'
+				+ '（unknown session / is released 是瞬时态，一次失败就放弃 = 永久打不开，2026-10-28 真机 ✗）');
+		}
+		if (!/retain\(sid\)/.test(body)) {
+			problems.push('client.workspaces.js: 重试前必须 `sessions.retain(sid)` 拿回引用（会话被 release 时 openSession 必失败 ✗）');
+		}
+		if (!/say\(/.test(body) || !/setMsg\(text \?/.test(body)) {
+			problems.push('client.workspaces.js: 失败必须**就地渲染**（窗口模式没有宿主桥 ⇒ 只 notify 等于静默 ✗）');
+		}
+		// ★ 2026-10-28（高亮不同步）：点会话必须**乐观高亮**（官方导航要几百毫秒才落地），
+		//   而且真打不开时要**撤回**（否则会一直亮着一条没打开的会话 ✗）。
+		if (!/setCurrent\(sid\)/.test(body)) {
+			problems.push('client.workspaces.js: 点会话必须**乐观高亮**（setCurrent(sid)）—— 否则官方导航落地前高亮不动 ✗');
+		}
+		if (!/setCurrent\(null\)/.test(body)) {
+			problems.push('client.workspaces.js: 打不开必须**撤回乐观高亮**（setCurrent(null)）—— 否则会亮着一条没打开的会话 ✗');
+		}
+		if (!/unknown session\|is released\|not found\|no such/.test(body)) {
+			problems.push('client.workspaces.js: 必须只对**瞬时**错误重试（无脑重试会把真错误也拖成 3 次 ✗）');
+		}
+	}
+
+	// 两个渲染分支（分组 / 平铺）的会话行都必须把就地提示通道传进去
+	const clicks = ws.match(/onClick: \(\) => openSession\(s\.id[^)]*\)/g) || [];
+	if (clicks.length < 2) {
+		problems.push(`client.workspaces.js: 两个渲染分支的会话行都要传就地提示通道（实际 ${clicks.length} 处）✗`);
+	} else if (clicks.some((c) => !/setWsMsg/.test(c))) {
+		problems.push('client.workspaces.js: 会话行 onClick 必须传 `setWsMsg`（不传就还是静默 ✗）');
+	}
+
+	if (!problems.some((p) => /openSession|打开会话|session\.retain/.test(p))) {
+		notes.push('点会话：瞬时错误 retain + 退避重试，失败就地可见（窗口模式不再静默）');
+	}
+}
+
+// ── ⑲ blank 判据不许把 hero 的输入框当成"已有会话"（2026-10-28）──────────────
+//   现场自证：`attempts=0 / opened=false / heroVisible=true / composer=true` ⇒ 主包轮询
+//   每轮都在 `!looksBlankPage()` 处早退，**navigate 一次都没发** ⇒ 会话永远停在 hero，
+//   侧栏点会话也只走一次性 openSession。根因就是 blank 判据里含 `[data-composer-card]`，
+//   而 hero 本身就有输入框 ⇒ 恒判"非空白"。
+{
+	const readSrc = (rel) => fs.readFileSync(path.join(LIB, rel), 'utf8');
+	const strip = (s) => String(s).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+	const entry = strip(readSrc('client.js'));
+	const at = entry.indexOf('const looksBlankPage = () => {');
+	if (at < 0) {
+		problems.push('client.js: 找不到 `looksBlankPage`（救援轮询的"要不要抢"判据）✗');
+	} else {
+		const body = entry.slice(at, entry.indexOf('};', at));
+		if (/data-composer-card/.test(body)) {
+			problems.push('client.js: `looksBlankPage` 不许含 `[data-composer-card]`'
+				+ '（hero 本身有输入框 ⇒ 恒判"非空白" ⇒ 轮询永不发起，2026-10-28 真机 attempts=0 ✗）');
+		}
+		for (const marker of ['data-sidebar-right-session', 'data-chat-flow', 'data-chat-anchor-key']) {
+			if (!body.includes(marker)) {
+				problems.push(`client.js: \`looksBlankPage\` 必须包含「${marker}」（会话真的在渲染的证据）✗`);
+			}
+		}
+	}
+
+	if (!problems.some((p) => /looksBlankPage|composer-card/.test(p))) {
+		notes.push('blank 判据只认"会话在渲染"（hero 的输入框不再让轮询瘫痪）');
 	}
 }
 

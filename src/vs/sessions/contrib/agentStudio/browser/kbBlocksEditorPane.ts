@@ -45,6 +45,9 @@ import { KbMediaViewerInput } from './kbMediaViewerPane.js';
 import { serializeBacklinks } from './kbBlocksCodec.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
+// ★ 2026-10-28：笔记工具条的「AI 助手」要开会话（带知识库专家 preset）——
+//   开会话的唯一真源是 `agentStudio.newChatInEditor`（harness 的 newChat 也走它）
+import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IKbNativeKernelService } from './kbNativeKernelService.js';
 import { KbVersionService, IKbVersionService } from './kbVersionService.js';
 import type { KbCommitMeta, KbDiffResult } from './kbVersionTypes.js';
@@ -148,6 +151,7 @@ export class KbBlocksEditorPane extends EditorPane {
 		// 图表文件嵌入 `![[x.drawio]]` 的渲染引擎（与聊天 drawio 卡片同一服务）
 		@IDrawioInlineRenderer private readonly _drawioRenderer: IDrawioInlineRenderer,
 		@IMainProcessService private readonly _mainProcessService: IMainProcessService,
+		@ICommandService private readonly _commandService: ICommandService,
 	) {
 		super(KbBlocksEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -583,6 +587,22 @@ export class KbBlocksEditorPane extends EditorPane {
 			if (typeof payload?.href === 'string' && typeof payload?.fromUri === 'string') {
 				this._openRelative(payload.href, payload.fromUri);
 			}
+		} else if (msg.type === 'kbblocks.openAssistant') {
+			/*
+			 * ★ 2026-10-28（用户：「知识库浮动工具栏缺少 AI 助手，展开后显示 知识库专家 agent」）。
+			 *
+			 * 开会话只有一条真源：`agentStudio.newChatInEditor`（harness 的 `newChat` 也转给它）。
+			 * 带 `presetId` ⇒ 新会话直接是知识库专家，不是"标准模式"。
+			 * ⚠ 这里**不自己 new EditorInput**：聊天宿主与 scope 装配都在那条命令里，
+			 *   自己拼会绕开它（历史上 chat-surface 的 scope 装配就出过问题）。
+			 */
+			const payload = msg.payload as { docId?: string; uri?: string } | undefined;
+			this._logService.info(`[KbBlocksEditorPane] 打开 AI 助手（知识库专家）doc=${payload?.docId ?? '(none)'} uri=${payload?.uri ?? '(none)'}`);
+			void this._commandService.executeCommand('agentStudio.newChatInEditor', { presetId: 'vssaros-knowledge-base-expert' })
+				.catch((err: unknown) => {
+					// 命令不可用（老构建）⇒ 如实记日志，不静默（"点了没反应"最难查）
+					this._logService.warn('[KbBlocksEditorPane] 打开 AI 助手失败', err);
+				});
 		} else if (msg.type === 'kbblocks.openExternal') {
 			const payload = msg.payload as { url?: string } | undefined;
 			if (typeof payload?.url === 'string') {

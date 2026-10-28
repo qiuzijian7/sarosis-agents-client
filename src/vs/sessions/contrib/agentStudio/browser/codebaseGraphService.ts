@@ -314,7 +314,7 @@ export interface ICodebaseGraphService {
 	 * 幂等：没有待加载项时是空操作；进行中复用同一 promise。
 	 * 失败只 warn（**绝不**退化成全量重建 —— 见 `_bootstrap()` 里同名教训）。
 	 */
-	ensureDeferredGraphsLoaded(reason: string): Promise<void>;
+	ensureDeferredGraphsLoaded(reason: string, opts?: { primaryOnly?: boolean }): Promise<void>;
 
 	/** Export the current graph as a compressed artifact (graph.db.zst + artifact.json) for team sharing. opts.slim 默认 true（剔除可重建的 bm25/layout）。 */
 	exportArtifact(targetPath: string, opts?: { slim?: boolean }): Promise<{ size: number; nodeCount: number; edgeCount: number }>;
@@ -2619,12 +2619,22 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		this._rootProjectMap.set(this._normalizeRoot(rootPath), project);
 		// watcher 扫描与索引扫描使用同一套目录排除（否则 Intermediate/ 等目录每轮误报全量 added）。
 		// 排除集解析含异步探测（.cbmignore / workspace exclude 配置），故 start 延后到解析完成。
-		void this._excludeResolver.resolve(rootPath, extraExcludeDirs).then(excludeDirs => {
+		void this._excludeResolver.resolve(rootPath, extraExcludeDirs).then(async excludeDirs => {
 			// 2026-09-15：排除集解析是异步的（含 .cbmignore / 工作区配置探测）。若期间用户切走了
-			// 工作区，这个 root 已不属于本窗口 ⇒ **不要**注册 watcher（否则它会一直轮询并 fire
+			// 工作区，这个 root 已属于本窗口 ⇒ **不要**注册 watcher（否则它会一直轮询并 fire
 			// 变更，把已 prune 的跨工作区数据重建回来）。
 			if (!this._isRootInCurrentWorkspace(this._normalizeRoot(rootPath))) {
 				this._logService.info('[CodebaseGraph]', `Skipped starting watcher for ${rootPath} — no longer part of the current workspace`);
+				return;
+			}
+			// ★ 2026-10-27（性能止血）：产物**归 dsh 负责** ⇒ 不起监听 ✓
+			//
+			// 为什么（真机）：监听只服务于**增量索引**（watcher 变更集 ⇒ 增量重索引），而增量索引已经让路
+			// （`_runIncrementalIndex` 的所有权闸）⇒ 监听就只剩"白扫全仓"：真机 `_scanFiles` 一轮
+			// **200ms+**，且每轮都会产出 `+0 ~6826 -6912` 这种**上万条**变更集 ⇒ 持续占主线程 ✗。
+			// 放在**这里**（监听启动的唯一收口）而不是 bootstrap 的各个调用点 ⇒ 以后新增调用点也不会漏 ✓。
+			if (await this._isIndexOwnedByDsh(rootPath)) {
+				this._logService.info('[CodebaseGraph]', `[ownership] watcher skipped for "${rootPath}" — owned by dsh（IDE 侧只读，不做增量索引 ⇒ 不需要监听）`);
 				return;
 			}
 			const keep = keepDirs?.length ? [...keepDirs] : undefined;
@@ -2702,6 +2712,22 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		if (!rootPath) { return { success: false, message: '未指定监听根路径', kind: 'incremental' }; }
 		if (this._isIndexing) {
 			return { success: false, message: '索引正在进行中，跳过增量索引', rootPath, kind: 'incremental' };
+		}
+		// ★ 2026-10-27（性能止血）：这个工作区的图谱**归 dsh 负责** ⇒ 增量索引也让路 ✓
+		//
+		// 为什么必须在这里也挡（`indexWorkspace()` 那道闸只挡**全量**）：
+		//  · 增量索引是**写侧行为**（解析文件 + 相似度 pass + 克隆检测 + BM25 增量重建 + SQLite 补丁），
+		//    真机实测每次改动 ≈ **50–100ms 主线程占用**（日志：「增量索引阶段耗时 … 合计=49ms」）；
+		//  · 而落盘又被 `_refuseSaveForDshOwned` 挡掉 ⇒ **算完了不落盘** ⇒ 纯白烧 CPU 与内存 ✗
+		//    （真机：渲染进程堆 900MB–1GB，图谱 21.9 万节点）；
+		//  · 更糟：这些内存增量随后会被 dsh 的外部重载**整张覆盖** ⇒ 做完就丢 ✗。
+		// ⇒ 与用户裁决（2026-10-13「权限都在 dsh 侧全权处理、逻辑也都转移到 dsh 侧 ⇒ IDE 只读」）一致 ✓。
+		if (await this._isIndexOwnedByDsh(rootPath)) {
+			const message = '这个工作区的代码图谱由 dsh 负责（artifact.json 里 producer=vssaros-dsh）'
+				+ '⇒ 本窗口不做增量索引（省掉每次改文件的解析/BM25/克隆检测开销）。'
+				+ '要更新图谱，请在 dsh 侧触发 codebase_index ✓';
+			this._logService.info('[CodebaseGraph]', `[ownership] incremental index skipped for "${rootPath}" — owned by dsh.`);
+			return { success: false, message, rootPath, kind: 'incremental' };
 		}
 
 		const cts = new CancellationTokenSource(token);
@@ -4871,7 +4897,7 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 	private _graphLoadingWaiters: (() => void)[] = [];
 
 	/** 由 `codebaseGraphBootstrap` 注入的「按需加载被延迟图谱」回调（见 `registerDeferredGraphLoader`）。 */
-	private _deferredGraphLoader: ((reason: string) => Promise<void>) | undefined;
+	private _deferredGraphLoader: ((reason: string, opts?: { primaryOnly?: boolean }) => Promise<void>) | undefined;
 	/** 进行中的延迟加载（去重，见 `ensureDeferredGraphsLoaded`）。 */
 	private _deferredGraphLoadPromise: Promise<void> | undefined;
 
@@ -4897,7 +4923,7 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 
 	// ── 非主 root 大图的延迟加载（2026-09-15 用户裁决方案 C）──────────────────────
 
-	registerDeferredGraphLoader(loader: (reason: string) => Promise<void>): IDisposable {
+	registerDeferredGraphLoader(loader: (reason: string, opts?: { primaryOnly?: boolean }) => Promise<void>): IDisposable {
 		this._deferredGraphLoader = loader;
 		return toDisposable(() => {
 			// 只清理自己 —— 避免后来者被前一个的 dispose 清掉。
@@ -4907,15 +4933,15 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		});
 	}
 
-	async ensureDeferredGraphsLoaded(reason: string): Promise<void> {
+	async ensureDeferredGraphsLoaded(reason: string, opts?: { primaryOnly?: boolean }): Promise<void> {
 		if (!this._deferredGraphLoader) { return; }
 		// 进行中复用同一 promise（与 `_loadingFolders` 同一教训：别重复发起重量级加载）。
 		if (this._deferredGraphLoadPromise) { return this._deferredGraphLoadPromise; }
 		const loader = this._deferredGraphLoader;
 		this._deferredGraphLoadPromise = (async () => {
 			try {
-				this._logService.info(`[CodebaseGraph] ensureDeferredGraphsLoaded (${reason})`);
-				await loader(reason);
+				this._logService.info(`[CodebaseGraph] ensureDeferredGraphsLoaded (${reason}${opts?.primaryOnly ? ', primaryOnly' : ''})`);
+				await loader(reason, opts);
 			} catch (err) {
 				// 失败只 warn：延迟加载是「让检索更完整」的便利，绝不能因此让查询路径失败。
 				this._logService.warn('[CodebaseGraph] ensureDeferredGraphsLoaded failed:', err);

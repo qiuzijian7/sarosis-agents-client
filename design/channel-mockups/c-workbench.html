@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>C · 工作台式（单页 + 分段）</title>
+<style>
+:root{--bg:#1b1b1d;--card:#232326;--bd:#2f2f33;--tx:#e6e6e6;--tx2:#a8a8a8;--tx3:#737373;
+--pri:#4c9aff;--ok:#3fb950;--warn:#d29922;--err:#f85149;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:13px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}
+.main{padding:20px 24px 30px;max-width:900px}
+h2{margin:0 0 3px;font-size:17px}
+.lead{margin:0 0 16px;color:var(--tx2);font-size:12.5px}
+/* 紧凑平台条 */
+.plat{display:grid;grid-template-columns:repeat(auto-fit,minmax(196px,1fr));gap:10px;margin-bottom:16px}
+.pc{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:11px 12px;display:flex;flex-direction:column;gap:6px}
+.pc.dim{opacity:.6}
+.pc .r1{display:flex;align-items:center;gap:7px}
+.pc .nm{font-weight:600;font-size:12.5px;flex:1}
+.dot{width:7px;height:7px;border-radius:50%;background:#4a4a50;flex:none}
+.dot.ok{background:var(--ok);box-shadow:0 0 0 3px rgba(63,185,80,.16)}
+.dot.warn{background:var(--warn)}
+.pc .st{font-size:11.5px;color:var(--tx3)}
+.pc .st.ok{color:#7ee787}
+.pc .st.warn{color:#e3b341}
+.pc .acts{display:flex;gap:6px}
+button{font:inherit;font-size:11.5px;padding:3.5px 9px;border-radius:6px;cursor:pointer;border:1px solid var(--bd);
+background:#2a2a2e;color:var(--tx)}
+button:hover{background:#313136}
+button.pri{background:var(--pri);border-color:transparent;color:#fff;font-weight:600}
+button.ghost{background:transparent}
+button:disabled{opacity:.45;cursor:not-allowed}
+/* 分段 tab */
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--bd);margin-bottom:12px}
+.tab{padding:7px 12px;font-size:12.5px;color:var(--tx2);cursor:pointer;border-bottom:2px solid transparent;display:flex;gap:6px;align-items:center}
+.tab.on{color:var(--tx);border-bottom-color:var(--pri);font-weight:600}
+.tab .b{font-size:10.5px;padding:0 6px;border-radius:999px;background:#33333a;color:var(--tx2)}
+.panel{background:var(--card);border:1px solid var(--bd);border-radius:11px;padding:12px 14px}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{text-align:left;color:var(--tx3);font-weight:600;padding:5px 7px;border-bottom:1px solid var(--bd);font-size:11.5px}
+td{padding:6px 7px;border-bottom:1px solid #26262a;color:var(--tx2)}
+td b{color:var(--tx);font-weight:600}
+.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
+.rowline{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:9px}
+.hint{color:var(--tx3);font-size:11.5px;margin:8px 0 0}
+.cred{display:grid;grid-template-columns:96px 1fr;gap:8px 10px;align-items:center;font-size:12px;max-width:520px}
+.cred label{color:var(--tx2)}
+input,select{font:inherit;font-size:12px;padding:5px 9px;border-radius:7px;border:1px solid var(--bd);background:#1e1e21;color:var(--tx);min-width:0}
+input::placeholder{color:#5c5c63}
+.note{margin:14px 0 0;padding:9px 12px;border-left:2px solid #3d3d44;color:var(--tx3);font-size:11.5px}
+</style>
+</head>
+<body>
+<div class="main">
+  <h2>渠道</h2>
+  <p class="lead">平台在上、明细在下。一屏之内既能看连接状态，也能处理绑定 / 配对 / 失败 —— 不用来回跳页。</p>
+
+  <div class="plat">
+    <div class="pc">
+      <div class="r1"><span class="dot ok"></span><span class="nm">🐦 飞书</span></div>
+      <div class="st ok">已连接 · 17:32 收过消息</div>
+      <div class="acts"><button class="ghost">配置</button><button>停止</button></div>
+    </div>
+    <div class="pc">
+      <div class="r1"><span class="dot warn"></span><span class="nm">✈️ Telegram</span></div>
+      <div class="st warn">未启动 · 凭据已配</div>
+      <div class="acts"><button class="ghost">配置</button><button class="pri">启动</button></div>
+    </div>
+    <div class="pc dim">
+      <div class="r1"><span class="dot"></span><span class="nm">🎮 Discord</span></div>
+      <div class="st">未接入</div>
+      <div class="acts"><button disabled>配置</button></div>
+    </div>
+    <div class="pc dim">
+      <div class="r1"><span class="dot"></span><span class="nm">🏢 企业微信</span></div>
+      <div class="st">未接入</div>
+      <div class="acts"><button disabled>配置</button></div>
+    </div>
+  </div>
+
+  <div class="tabs">
+    <div class="tab on">绑定 <span class="b">3</span></div>
+    <div class="tab">凭据</div>
+    <div class="tab">待批准 <span class="b">2</span></div>
+    <div class="tab">最近失败 <span class="b">3</span></div>
+    <div class="tab">最近会话 <span class="b">3</span></div>
+  </div>
+
+  <div class="panel">
+    <table>
+      <thead><tr><th>平台</th><th>IM 会话</th><th>绑定对象</th><th>方向</th><th>准入</th><th>状态</th></tr></thead>
+      <tbody>
+        <tr><td>feishu</td><td class="code">oc_5f2a9d</td><td><b>群 · 评测群</b></td><td>双向</td><td>@ 触发</td><td>启用</td></tr>
+        <tr><td>feishu</td><td class="code">oc_88c1e2</td><td><b>Bot · Coder</b></td><td>只发</td><td>—</td><td>启用</td></tr>
+        <tr><td>telegram</td><td class="code">-100200</td><td><b>Bot · Coder</b></td><td>双向</td><td>@ 触发</td><td>启用</td></tr>
+      </tbody>
+    </table>
+    <div class="rowline">
+      <button class="pri">+ 新建绑定</button>
+      <button class="ghost">打开 Bots 工作台</button>
+      <span class="hint">绑定是“哪个 bot / 群 ⇄ 哪个 IM 会话”，与凭据分开管。</span>
+    </div>
+  </div>
+
+  <p class="note">设计意图：把当前实现（平台卡 + 绑定 + 凭据 + 配对 + 失败全堆一页）整理成「上：状态条 / 下：分段」。信息密度最高、改动最小；代价是段内仍需横向滚动看多列。</p>
+</div>
+</body>
+</html>

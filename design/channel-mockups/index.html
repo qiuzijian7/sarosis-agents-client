@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>渠道页重设计 · 9 个方案（F1/F2 最新 + E 融合 + A/B/C/D 基础）</title>
+<style>
+:root{--bg:#17171a;--card:#202024;--bd:#2f2f33;--tx:#e8e8ea;--tx2:#a8a8a8;--tx3:#74747c;
+--pri:#4c9aff;--ok:#3fb950;--warn:#d29922;--err:#f85149;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:13.5px/1.65 system-ui,-apple-system,"Segoe UI",sans-serif}
+.page{max-width:1180px;margin:0 auto;padding:28px 24px 60px}
+h1{margin:0 0 6px;font-size:22px;letter-spacing:-.01em}
+.lead{margin:0 0 22px;color:var(--tx2);max-width:840px}
+h2{margin:34px 0 6px;font-size:15px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+h2 .n{font-size:11px;padding:1px 7px;border-radius:999px;background:#33333a;color:var(--tx2);font-weight:600}
+h2 .fresh{font-size:11px;padding:1px 7px;border-radius:999px;background:rgba(76,154,255,.16);color:#9ecbff;font-weight:600}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:14px 16px}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media(max-width:820px){.two{grid-template-columns:1fr}}
+.two h4{margin:0 0 6px;font-size:12.5px}
+.two ul{margin:6px 0 0;padding-left:18px;color:var(--tx2);font-size:12.5px}
+.two li{margin:3px 0}
+.two code{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;background:#2a2a2e;padding:1px 5px;border-radius:4px}
+.opt{display:grid;grid-template-columns:minmax(0,1fr) 296px;gap:14px;margin-top:12px;align-items:start}
+@media(max-width:960px){.opt{grid-template-columns:1fr}}
+.frame{border:1px solid var(--bd);border-radius:12px;overflow:hidden;background:#1b1b1d}
+.frame img{display:block;width:100%;height:auto}
+.frame a{display:block;line-height:0}
+.meta h3{margin:0 0 2px;font-size:14px}
+.meta .tag{font-size:11px;padding:1px 8px;border-radius:999px;background:rgba(76,154,255,.14);color:#9ecbff}
+.meta p{margin:8px 0;color:var(--tx2);font-size:12.5px}
+.meta .kv{display:flex;gap:6px;font-size:12px;margin:3px 0;align-items:flex-start}
+.meta .kv b{color:var(--tx3);font-weight:600;min-width:42px;flex:none}
+.good{color:#7ee787}.bad{color:#e3b341}
+a.open{display:inline-block;margin-top:8px;font-size:12px;color:#9ecbff;text-decoration:none;
+border-bottom:1px dashed rgba(158,203,255,.4)}
+table.cmp{width:100%;border-collapse:collapse;font-size:12.5px;background:var(--card);
+border:1px solid var(--bd);border-radius:12px;overflow:hidden;margin-top:10px}
+table.cmp th,table.cmp td{padding:8px 10px;border-bottom:1px solid #26262a;text-align:left;vertical-align:top}
+table.cmp th{background:#26262a;color:var(--tx3);font-size:11.5px;font-weight:600;white-space:nowrap}
+table.cmp td:first-child{color:var(--tx);font-weight:600;white-space:nowrap}
+table.cmp tr.hl td{background:rgba(76,154,255,.07)}
+table.cmp tr:last-child td{border-bottom:0}
+.rec{margin-top:16px;border-left:3px solid var(--pri);background:rgba(76,154,255,.07);
+border-radius:0 10px 10px 0;padding:13px 16px}
+.rec h4{margin:0 0 6px;font-size:13px}
+.rec p{margin:4px 0;color:var(--tx2);font-size:12.5px}
+.foot{margin-top:36px;color:var(--tx3);font-size:11.5px;border-top:1px solid var(--bd);padding-top:12px}
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>渠道页 · 9 个方案</h1>
+  <p class="lead">
+    <b>2 个按你最新要求做的方案（F1/F2：以表为主、点行展开）</b> + 3 个 B×D 融合（E1/E2/E3）+ 4 个基础方案（A/B/C/D）。
+    同一份真实数据模型：4 个平台 / 3 条绑定 / 2 条待批准 / 3 条失败。点任意截图可打开交互版。
+  </p>
+
+  <h2>先看 OpenClaw 怎么组织<span class="n">对照基准</span></h2>
+  <div class="two">
+    <div class="card">
+      <h4>OpenClaw 的层次（官方文档导航）</h4>
+      <ul>
+        <li><b>渠道本身</b>：每平台一页，只讲<b>怎么连上</b>（bot token / QR / Socket Mode / app 凭据）</li>
+        <li><b>Configuration 是独立分组</b>：<code>Pairing</code>、<code>Access groups</code>、<code>Groups</code>、<code>Broadcast groups</code>、<code>Channel routing</code>、<code>Troubleshooting</code></li>
+        <li>即：<b>准入与路由是共享配置层</b>，不塞进单个渠道页</li>
+        <li>31 个渠道 ⇒ 必须有「目录 + 过滤」，不能是长表单</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4>我们的现状与这 7 个方案的分歧点</h4>
+      <ul>
+        <li>现状：凭据 / 入站 / 绑定 / 配对 / 死信 / 最近会话<b>全堆一页</b></li>
+        <li>策略字段（dmPolicy / groupPolicy / rooms）<b>已实现但页面无入口</b></li>
+        <li>只有 2 个平台还能看，加到 5 个就崩</li>
+        <li>⇒ 真正的分歧只有两个：<b>「异常数字放哪」</b> 与 <b>「详情怎么出来」</b></li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ══════════════ B×D 融合（本轮重点） ══════════════ -->
+  <h2>F1 · 窄表 + 行内展开<span class="fresh">按最新要求</span><span class="n">贴合 dsh 设置弹窗</span></h2>
+<div class="opt">
+  <div class="frame"><a href="f1-narrow-expand.html" target="_blank" title="打开交互版"><img src="f1-narrow-expand.jpg" alt="F1 截图"></a></div>
+  <div class="meta">
+    <h3>一张表，点行就地展开</h3>
+    <p>弹窗总宽 620px − 左导航 128px ⇒ 内容区只有 <b>约 492px</b>。所以主表压到 5 列，展开区把「入站」并成一行<b>工具条</b>，下面才是凭据 / 绑定 / 待批准 / 失败。</p>
+    <div class="kv"><b>取舍</b><span class="good">展开时其余平台仍在视野内；无抽屉、无跳页</span></div>
+    <div class="kv"><b>代价</b><span class="bad">一次只展开一行；展开内容纵向堆叠，需小幅滚动</span></div>
+    <a class="open" href="f1-narrow-expand.html" target="_blank">打开交互版 ↗</a>
+  </div>
+</div>
+
+<h2>F2 · 同一结构·宽容器<span class="fresh">按最新要求</span><span class="n">880px</span></h2>
+<div class="opt">
+  <div class="frame"><a href="f2-wide-expand.html" target="_blank" title="打开交互版"><img src="f2-wide-expand.jpg" alt="F2 截图"></a></div>
+  <div class="meta">
+    <h3>表多两列，展开区两栏</h3>
+    <p>同一套组件与数据；宽容器下主表加「凭据 / 入站」两列，展开区 `<code>.dwrap</code>` 换成两列网格 ⇒ 展开高度约为窄版一半。</p>
+    <div class="kv"><b>取舍</b><span class="good">信息最全；展开后仍能看到其余所有平台</span></div>
+    <div class="kv"><b>代价</b><span class="bad">需要更宽容器（弹窗 880 或独立面板）</span></div>
+    <a class="open" href="f2-wide-expand.html" target="_blank">打开交互版 ↗</a>
+  </div>
+</div>
+<h2>E1 · 主从 + 运维摘要头<span class="fresh">B×D 融合</span></h2>
+  <div class="opt">
+    <div class="frame"><a href="e1-master-ops.html" target="_blank" title="打开交互版"><img src="e1-master-ops.jpg" alt="E1 截图"></a></div>
+    <div class="meta">
+      <h3>异常在最上面，切平台也不丢</h3>
+      <p>D 的四联 KPI（已接入 / 已连接 / 待批准 / 失败）固定在顶部；B 的左列选平台（带数字徽标）；右详情每一块都是 D 的表格。</p>
+      <div class="kv"><b>取舍</b><span class="good">全局异常始终可见；单平台操作最顺手</span></div>
+      <div class="kv"><b>代价</b><span class="bad">顶部条 + 详情里的数字重复一次（否则切走就失参照）</span></div>
+      <a class="open" href="e1-master-ops.html" target="_blank">打开交互版 ↗</a>
+    </div>
+  </div>
+
+  <h2>E2 · 表为主 + 抽屉详情<span class="fresh">B×D 融合</span></h2>
+  <div class="opt">
+    <div class="frame"><a href="e2-table-drawer.html" target="_blank" title="打开交互版"><img src="e2-table-drawer.jpg" alt="E2 截图"></a></div>
+    <div class="meta">
+      <h3>默认就是一张运维表</h3>
+      <p>D 的骨架（一行一平台、异常可数、筛选 chip）；点行从右侧滑出 B 的详情抽屉（430px，可关闭）。</p>
+      <div class="kv"><b>取舍</b><span class="good">平台再多也不涨高度；窄屏下抽屉自动全屏</span></div>
+      <div class="kv"><b>代价</b><span class="bad">改凭据多一次点击；抽屉遮住表格右半</span></div>
+      <a class="open" href="e2-table-drawer.html" target="_blank">打开交互版 ↗</a>
+    </div>
+  </div>
+
+  <h2>E3 · 双表并行<span class="fresh">B×D 融合</span></h2>
+  <div class="opt">
+    <div class="frame"><a href="e3-split-tables.html" target="_blank" title="打开交互版"><img src="e3-split-tables.jpg" alt="E3 截图"></a></div>
+    <div class="meta">
+      <h3>左表选平台，右表看明细</h3>
+      <p>左表只有 4 列（平台 + 绑定/待批准/失败三个数字，352px 宽）；右侧全部内容也是表 —— 不需要抽屉、不跳页。</p>
+      <div class="kv"><b>取舍</b><span class="good">视觉最统一（两张表）；一屏内完成所有事</span></div>
+      <div class="kv"><b>代价</b><span class="bad">左表看不到“已连接/未启动”文字；窄屏上下堆叠</span></div>
+      <a class="open" href="e3-split-tables.html" target="_blank">打开交互版 ↗</a>
+    </div>
+  </div>
+
+  <h2>方案对比<span class="n">9 个</span></h2>
+  <table class="cmp">
+    <thead><tr><th>方案</th><th>骨骼</th><th>异常怎么看见</th><th>加第 5 个平台</th><th>改动量</th></tr></thead>
+    <tbody>
+      <tr class="hl"><td>F1 窄表+行内展开</td><td>表 + 手风琴</td><td>顶部 KPI + 行内数字</td><td class="good">只多一行</td><td class="good">中（无新布局）</td></tr>
+      <tr class="hl"><td>F2 宽版同构</td><td>同上（两栏展开）</td><td>同上 + 凭据/入站列</td><td class="good">只多一行</td><td>中</td></tr>
+      <tr class="hl"><td>E1 主从+摘要头</td><td>B 的左列表 + 右详情</td><td>顶部 KPI 常驻 + 左列徽标</td><td class="good">只多一行</td><td class="bad">中偏大</td></tr>
+      <tr class="hl"><td>E2 表+抽屉</td><td>D 的运维表</td><td>表格列（可排序/筛选）</td><td class="good">只多一行</td><td>中</td></tr>
+      <tr class="hl"><td>E3 双表并行</td><td>左窄表 + 右表</td><td>左表三列数字 + 颜色</td><td class="good">只多一行</td><td>中</td></tr>
+      <tr><td>A 目录式</td><td>平台卡片 + 策略独立分组</td><td>卡片上的状态 pill</td><td class="good">只多一张卡</td><td class="bad">大</td></tr>
+      <tr><td>B 主从式</td><td>左列表 + 右详情</td><td>左列状态点</td><td class="good">只多一行</td><td class="bad">中偏大</td></tr>
+      <tr><td>C 工作台式</td><td>上状态条 + 下分段 tab</td><td>tab 上的徽标</td><td>tab 内列变多</td><td class="good">小</td></tr>
+      <tr><td>D 运维表</td><td>一行一平台</td><td>待批准/失败列高亮</td><td class="good">只多一行</td><td>中</td></tr>
+    </tbody>
+  </table>
+
+  <div class="rec">
+    <h4>我的建议：F1（弹窗内）／F2（将来独立面板）</h4>
+        <p><b>F1</b> 是唯一真正适配 dsh 设置弹窗的方案 —— 内容区只有 492px 时，主从/双表都放不下，只有「表 + 行内展开」能既不横向溢出、又保留全局视野。</p>
+        <p><b>F2</b> 是同一套结构在 880px 下的样子：主表多两列、展开两栏。若以后渠道页从弹窗升成独立面板，直接换宽度即可，组件不变。</p>
+        <p>两者都把「异常」放在行内数字（待批 / 失败）与顶部 KPI 上，不牺牲 D 的可数性；展开内容按「入站 → 凭据 → 绑定 → 配对 → 失败」顺序，与用户排查顺序一致。</p>
+        <p>告诉我 <b>F1 或 F2</b>，我按它重写 <code>client.channel.js</code>。
+          重写时要一起改守卫与探针（现有断言钉的是 <code>data-vssaros-inbound</code> / <code>data-vssaros-pairings</code> / <code>data-vssaros-dlq</code>，换布局会让它们静默失效）。</p>
+  </div>
+
+  <!-- ══════════════ 基础方案（上一轮，留作参考） ══════════════ -->
+  <h2>A · 目录式<span class="n">OpenClaw 同构</span><span class="n">上一轮</span></h2>
+  <div class="opt">
+    <div class="frame"><a href="a-catalog.html" target="_blank" title="打开交互版"><img src="a-catalog.jpg" alt="A 截图"></a></div>
+    <div class="meta">
+      <h3>平台只是入口，策略单独管</h3>
+      <p>渠道页 = 平台目录；左侧多出「渠道配置」分组（配对 / 访问组 / 房间 / 路由 / 死信）。</p>
+      <div class="kv"><b>取舍</b><span class="good">最接近 OpenClaw，20 个平台也不乱</span></div>
+      <div class="kv"><b>代价</b><span class="bad">多一层导航，单平台操作要跳页</span></div>
+      <a class="open" href="a-catalog.html" target="_blank">打开交互版 ↗</a>
+    </div>
+  </div>
+
+  <h2>B · 主从式<span class="n">上一轮</span></h2>
+  <div class="opt">
+    <div class="frame"><a href="b-master-detail.html" target="_blank" title="打开交互版"><img src="b-master-detail.jpg" alt="B 截图"></a></div>
+    <div class="meta">
+      <h3>左列看全局，右侧做全部事</h3>
+      <p>左列平台（状态点 + 徽标）；右侧该平台凭据 / 准入 / 绑定 / 配对 / 失败一屏。</p>
+      <div class="kv"><b>取舍</b><span class="good">不用跳页</span></div>
+      <div class="kv"><b>代价</b><span class="bad">共享策略放在单平台页里要标「共享」</span></div>
+      <a class="open" href="b-master-detail.html" target="_blank">打开交互版 ↗</a>
+    </div>
+  </div>
+
+  <h2>C · 工作台式<span class="n">上一轮</span></h2>
+  <div class="opt">
+    <div class="frame"><a href="c-workbench.html" target="_blank" title="打开交互版"><img src="c-workbench.jpg" alt="C 截图"></a></div>
+    <div class="meta">
+      <h3>把现状整理干净</h3>
+      <p>顶部紧凑平台条 + 下面分段：绑定 / 凭据 / 待批准 / 失败 / 最近会话。</p>
+      <div class="kv"><b>取舍</b><span class="good">改动最小、风险最低</span></div>
+      <div class="kv"><b>代价</b><span class="bad">平台一多就退化成长页</span></div>
+      <a class="open" href="c-workbench.html" target="_blank">打开交互版 ↗</a>
+    </div>
+  </div>
+
+  <h2>D · 运维表<span class="n">上一轮</span></h2>
+  <div class="opt">
+    <div class="frame"><a href="d-ops-table.html" target="_blank" title="打开交互版"><img src="d-ops-table.jpg" alt="D 截图"></a></div>
+    <div class="meta">
+      <h3>一行一平台，先找红的</h3>
+      <p>列 = 凭据 / 入站 / 绑定 / 待批准 / 失败 / 操作；填凭据在行内展开。</p>
+      <div class="kv"><b>取舍</b><span class="good">异常可数，平台多了仍稳定</span></div>
+      <div class="kv"><b>代价</b><span class="bad">长字段放不下，表单偏运维</span></div>
+      <a class="open" href="d-ops-table.html" target="_blank">打开交互版 ↗</a>
+    </div>
+  </div>
+
+  <p class="foot">
+    预览图是在本机 Chromium 里<b>真实渲染后截的</b>（不是手绘），点图片打开可交互 HTML。
+    数据形状取自插件现有接口（<code>channels</code> / <code>inbounds</code> / <code>bindings</code> /
+    <code>pairings</code> / <code>deadLetters</code> / <code>recentChats</code>），落实现时不需要改数据模型。
+  </p>
+</div>
+</body>
+</html>

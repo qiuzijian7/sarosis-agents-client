@@ -18,10 +18,10 @@
 //
 // ⚠ 迁移口径：`origin_id` 只用于"从 IDE 来"的那批；dsh 侧新产生的资产 origin_id 为 NULL。
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, linkSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 /**
  * 加载内置 `node:sqlite`。
@@ -124,11 +124,29 @@ function toAsset(row) {
  * @param {string} options.dataRoot 数据根（`~/.vssaros-dev`）
  * @returns {object} 库 API（见下面各方法）
  */
-export function createOwnStore({ dataRoot }) {
+export function createOwnStore({ dataRoot, archiveDir, archiveLayout }) {
 	const root = join(String(dataRoot), STORE_DIR);
 	const objectsDir = join(root, 'objects');
 	const dbPath = join(root, 'media.db');
 	mkdirSync(objectsDir, { recursive: true });
+
+	/**
+	 * **自动归档目录**（2026-10-27：「生成时顺手落一份可读文件」）。
+	 *
+	 * 默认 `<数据根>/media-store/archive` —— **刻意放在同一个卷**上：归档走硬链接 ⇒ 不额外占空间。
+	 * 指到别的盘（如 `D:\AI素材`）也能用，但那样会真的复制一份（页面的 usage / toast 会写明"占用"）。
+	 * 传空串 = 关闭自动归档（手动「📤 导出到文件夹」仍可用）。
+	 */
+	const archiveRoot = archiveDir === undefined || archiveDir === null
+		? join(root, 'archive')
+		: String(archiveDir).trim();
+	const archiveMode = ['provider', 'kind', 'date', 'flat'].includes(String(archiveLayout))
+		? String(archiveLayout) : 'provider';
+	/**
+	 * 归档成败计数（不抛、不阻塞生图/入库 —— 用户的图已经生成好了）。
+	 * 「重试」不单独做：导出本身**幂等**（同名跳过）⇒ 之后手动跑一次「导出到文件夹」就把漏的补齐。
+	 */
+	const archiveStats = { dir: archiveRoot, ok: 0, copied: 0, failed: 0, lastError: '' };
 
 	// node:sqlite 是**惰性打开**（构造不报错）⇒ 第一条语句才是真正的探活。
 	const { DatabaseSync } = loadSqlite();
@@ -235,7 +253,10 @@ export function createOwnStore({ dataRoot }) {
 			Array.isArray(input.tags) && input.tags.length ? JSON.stringify(input.tags) : null,
 			input.note ? String(input.note).slice(0, 4000) : null,
 		);
-		return toAsset(stmt.byId.get(id));
+		const created = toAsset(stmt.byId.get(id));
+		// ★ 2026-10-27：入库后顺手归档一份可读文件（失败不影响入库，见 archiveOne 的决策说明）
+		const archivePath = archiveOne(created);
+		return archivePath ? { ...created, archivePath } : created;
 	}
 
 	/**
@@ -547,6 +568,263 @@ export function createOwnStore({ dataRoot }) {
 		};
 	}
 
+	/** 这条资产的文件是不是落在**我们自己的对象库**（`objects/`）里。 */
+	function isManagedPath(filePath) {
+		const p = String(filePath ?? '').replace(/\\/g, '/').toLowerCase();
+		if (!p) { return false; }
+		const root = objectsDir.replace(/\\/g, '/').toLowerCase();
+		return p === root || p.startsWith(root + '/');
+	}
+
+	/** 可链接的文件类型（扩展名 → kind）。 */
+	const LINK_KINDS = {
+		image: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'avif', 'svg'],
+		video: ['mp4', 'webm', 'mov', 'mkv', 'avi'],
+		audio: ['mp3', 'wav', 'flac', 'm4a', 'ogg'],
+		text: ['txt', 'md', 'json'],
+	};
+	const MIME_BY_EXT = {
+		png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif',
+		bmp: 'image/bmp', avif: 'image/avif', svg: 'image/svg+xml',
+		mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime', mkv: 'video/x-matroska', avi: 'video/x-msvideo',
+		mp3: 'audio/mpeg', wav: 'audio/wav', flac: 'audio/flac', m4a: 'audio/mp4', ogg: 'audio/ogg',
+		txt: 'text/plain', md: 'text/markdown', json: 'application/json',
+	};
+	function kindOfExt(ext) {
+		for (const kind of Object.keys(LINK_KINDS)) {
+			if (LINK_KINDS[kind].includes(ext)) { return kind; }
+		}
+		return '';
+	}
+
+	/**
+	 * **链接一个外部文件夹**（2026-10-27，用户问「能否显示文件夹里的独立文件」）：把目录里的媒体文件
+	 * 登记成资产，**不复制、不移动字节** —— `file_path` 直接指向用户的原文件，预览走 `/api/bytes/<id>`。
+	 *
+	 * 与「导入」的区别：
+	 *   · 导入 = 读字节 → 写进 `objects/<sha8>` → 之后与源文件无关（可删可移）；
+	 *   · 链接 = 只登记路径；**源文件被移走/删掉，这条就看不到图**（这是"引用"的固有代价，页面会退化到字形）。
+	 *
+	 * 安全边界（必须守住）：
+	 *   · `purge()` 对"不在 `objects/` 里"的资产**只删行、绝不删文件**（用户的文件不是我们的）；
+	 *   · 幂等：同一个路径已登记过就跳过；`dryRun` 只扫描不落库。
+	 *
+	 * @param {{dir?: string, recursive?: boolean, dryRun?: boolean, limit?: number}} [options]
+	 */
+	function linkFolder(options = {}) {
+		const dir = String(options.dir ?? '').trim();
+		if (!dir) { return { ok: false, error: '要提供文件夹路径' }; }
+		if (!existsSync(dir)) { return { ok: false, error: `文件夹不存在：${dir}` }; }
+		let isDir = false;
+		try { isDir = statSync(dir).isDirectory(); } catch { isDir = false; }
+		if (!isDir) { return { ok: false, error: `不是一个文件夹：${dir}` }; }
+		const recursive = options.recursive !== false;
+		const dryRun = options.dryRun === true;
+		const limit = Math.min(Math.max(Number(options.limit) || 2000, 1), 5000);
+		// 已登记的路径（大小写不敏感，Windows）
+		const known = new Set(db.prepare('SELECT file_path FROM asset WHERE file_path IS NOT NULL').all()
+			.map(row => String(row.file_path).replace(/\\/g, '/').toLowerCase()));
+		const todo = [];
+		const skip = { linked: 0, unreadable: 0, unsupported: 0, truncated: 0 };
+		const walk = (current) => {
+			let entries = [];
+			try { entries = readdirSync(current, { withFileTypes: true }); } catch { skip.unreadable++; return; }
+			for (const entry of entries) {
+				const full = join(current, entry.name);
+				if (entry.isDirectory()) {
+					if (recursive) { walk(full); }
+					continue;
+				}
+				const ext = String(entry.name).split('.').pop().toLowerCase();
+				const kind = kindOfExt(ext);
+				if (!kind) { skip.unsupported++; continue; }
+				if (todo.length >= limit) { skip.truncated++; continue; }
+				const key = full.replace(/\\/g, '/').toLowerCase();
+				if (known.has(key)) { skip.linked++; continue; }
+				let stat;
+				try { stat = statSync(full); } catch { skip.unreadable++; continue; }
+				if (!stat.isFile() || stat.size <= 0) { skip.unreadable++; continue; }
+				let sha8;
+				try {
+					// 大文件（>32MB）不整段读：用「路径 + 大小 + 修改时间」当指纹（缩略图缓存仍然稳定）
+					sha8 = stat.size > 32 * 1024 * 1024
+						? sha8Of(Buffer.from(`${key}|${stat.size}|${Math.round(stat.mtimeMs)}`, 'utf8'))
+						: sha8Of(readFileSync(full));
+				} catch { skip.unreadable++; continue; }
+				known.add(key);
+				todo.push({ path: full, name: entry.name, ext, kind, sha8, bytes: stat.size, createdAt: Math.round(stat.mtimeMs) });
+			}
+		};
+		walk(dir);
+		const ids = [];
+		if (!dryRun) {
+			for (const item of todo) {
+				const id = randomUUID();
+				stmt.insert.run(
+					id,
+					null,
+					item.sha8,
+					item.kind,
+					MIME_BY_EXT[item.ext] ?? null,
+					item.ext,
+					item.bytes,
+					null,
+					null,
+					'folder',                 // provider：左栏「来源」里能单独筛出"链接文件夹"这批
+					'folder',                 // source
+					null,
+					null,
+					JSON.stringify({ linkedFolder: dir }),
+					item.name,
+					item.path,                // ★ 指向用户的原文件，不复制
+					null,
+					item.createdAt,
+					null,
+					null,
+					null,
+				);
+				ids.push(id);
+			}
+		}
+		return {
+			ok: true,
+			dryRun,
+			dir,
+			recursive,
+			added: todo.length,
+			skipped: skip,
+			ids,
+			items: todo.slice(0, 20).map(item => ({ name: item.name, kind: item.kind, path: item.path })),
+		};
+	}
+
+	/** 导出时的文件名：可读 slug + sha8 前 6 位（可读，又不丢唯一性）。 */
+	function exportNameOf(asset) {
+		const base = String(asset.fileName ?? '').replace(/\.[a-z0-9]{1,5}$/i, '');
+		const slug = base.replace(/[\\/:*?"<>|\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 40);
+		const ext = normalizeExt(asset.ext, asset.mime);
+		return `${slug || 'asset'}-${String(asset.sha8 ?? '').slice(0, 6)}.${ext}`;
+	}
+
+	/** 导出/归档的目标绝对路径（`exportAssets` 与"入库即归档"共用同一套命名规则）。 */
+	function exportTargetOf(asset, dir, layout) {
+		const when = new Date(Number(asset.createdAt) || Date.now());
+		const month = `${when.getFullYear()}-${String(when.getMonth() + 1).padStart(2, '0')}`;
+		const group = layout === 'flat' ? ''
+			: layout === 'kind' ? ({ image: '图片', video: '视频', audio: '音频', text: '文本' })[String(asset.kind)] ?? String(asset.kind)
+				: layout === 'date' ? month
+					: (String(asset.provider ?? '') || 'local');
+		const targetDir = layout === 'date' ? join(dir, month)
+			: (group ? join(dir, group, month) : join(dir, month));
+		return join(targetDir, exportNameOf(asset));
+	}
+
+	/**
+	 * 把**刚入库**的一份字节顺手归档成可读文件（`archiveDir` 为空则跳过）。
+	 *
+	 * 决策（用户 2026-10-27 让我定）：
+	 *   · **失败就静默降级**：绝不因为归档失败让生成/入库报错（图已经生成好了）；只记进 `archiveStats`，
+	 *     由 `GET api/usage` 暴露，页面 toast 不打扰；
+	 *   · **不做自动重试**：导出是幂等的（同名跳过），之后手动跑一次「导出到文件夹」就把漏的补齐 ⇒ "重试"就是那个按钮；
+	 *   · 同卷硬链接（默认归档目录在 `media-store/archive` 内）⇒ 不占额外空间；异盘退复制并计入 `copied`。
+	 * @returns {string} 归档后的绝对路径；没归档/失败 ⇒ 空串
+	 */
+	function archiveOne(asset) {
+		if (!archiveRoot || !asset || !asset.filePath) { return ''; }
+		if (!existsSync(asset.filePath)) { return ''; }
+		try {
+			const target = exportTargetOf(asset, archiveRoot, archiveMode);
+			if (existsSync(target)) { return target; }
+			mkdirSync(dirname(target), { recursive: true });
+			let linked = false;
+			try { linkSync(asset.filePath, target); linked = true; } catch { linked = false; }
+			if (!linked) { copyFileSync(asset.filePath, target); archiveStats.copied++; }
+			archiveStats.ok++;
+			return target;
+		} catch (e) {
+			archiveStats.failed++;
+			archiveStats.lastError = String(e?.message ?? e);
+			return '';
+		}
+	}
+
+	/** 按筛选条件/指定 id 收集要导出的资产（`list` 一页最多 500，这里自己翻页）。 */
+	function collectForExport(filter, onlyIds, limit) {
+		if (onlyIds) {
+			return [...onlyIds].map(id => get(id)).filter(asset => asset && !asset.isDeleted);
+		}
+		const out = [];
+		let offset = 0;
+		while (out.length < limit) {
+			let page = [];
+			try {
+				page = list({ ...filter, limit: Math.min(500, limit - out.length), offset }).items;
+			} catch { break; }
+			if (!page.length) { break; }
+			out.push(...page);
+			offset += page.length;
+		}
+		return out;
+	}
+
+	/**
+	 * **导出到文件夹**（2026-10-27，用户问「生成物能否存成指定文件夹里的独立文件」）。
+	 *
+	 * 与「链接」相反：链接是"库里只记路径、看的是用户那份"；导出是"把库里的字节再落一份可读文件"。
+	 * 两者互补，主库仍然是内容寻址的 `objects/`（保证去重、不裂图）——
+	 * 导出目录只是**给人 / 给外部工具（PS、网盘、Finder）用的副本**，删了不影响库。
+	 *
+	 * 落盘结构：`<dir>/<provider 或 kind 或 月份>/<yyyy-MM>/<可读名>-<sha8前6>.<ext>`（`layout=flat` 时不分层）。
+	 * 同卷优先**硬链接**（零额外空间），跨卷/不支持就退回复制；已存在则跳过（`overwrite` 才覆盖）。
+	 *
+	 * @param {{dir?: string, layout?: 'provider'|'kind'|'date'|'flat', ids?: string[], filter?: object,
+	 *   dryRun?: boolean, overwrite?: boolean, hardlink?: boolean, limit?: number}} [options]
+	 */
+	function exportAssets(options = {}) {
+		const dir = String(options.dir ?? '').trim();
+		if (!dir) { return { ok: false, error: '要提供目标文件夹' }; }
+		const layout = ['provider', 'kind', 'date', 'flat'].includes(String(options.layout))
+			? String(options.layout) : 'provider';
+		const dryRun = options.dryRun === true;
+		const overwrite = options.overwrite === true;
+		const hardlink = options.hardlink !== false;
+		const limit = Math.min(Math.max(Number(options.limit) || 2000, 1), 5000);
+		const onlyIds = Array.isArray(options.ids) && options.ids.length ? new Set(options.ids.map(String)) : null;
+		const out = {
+			ok: true, dryRun, dir, layout,
+			exported: 0, linked: 0, copied: 0, bytes: 0,
+			skipped: { noFile: 0, missing: 0, exists: 0, truncated: 0 },
+			failed: [],
+			items: [],
+		};
+		const rows = collectForExport(options.filter, onlyIds, limit);
+		for (const asset of rows) {
+			if (out.exported + Object.values(out.skipped).reduce((a, b) => a + b, 0) >= limit) { out.skipped.truncated++; continue; }
+			// 仅引用资产（只有外链、没有本地文件）没有字节可导
+			if (!asset.filePath) { out.skipped.noFile++; continue; }
+			if (!existsSync(asset.filePath)) { out.skipped.missing++; continue; }
+			const target = exportTargetOf(asset, dir, layout);
+			const targetDir = dirname(target);
+			if (existsSync(target) && !overwrite) { out.skipped.exists++; continue; }
+			if (out.items.length < 20) { out.items.push({ id: asset.id, name: asset.fileName ?? '', to: target }); }
+			if (dryRun) { out.exported++; continue; }
+			try {
+				mkdirSync(targetDir, { recursive: true });
+				if (existsSync(target)) { rmSync(target, { force: true }); }
+				let linked = false;
+				if (hardlink) {
+					try { linkSync(asset.filePath, target); linked = true; } catch { linked = false; }
+				}
+				if (!linked) { copyFileSync(asset.filePath, target); }
+				out.exported++;
+				if (linked) { out.linked++; } else { out.copied++; out.bytes += Number(asset.bytes) || 0; }
+			} catch (e) {
+				out.failed.push({ id: asset.id, name: asset.fileName ?? '', error: String(e?.message ?? e) });
+			}
+		}
+		return out;
+	}
+
 	/**
 	 * 永久删除一条（行 + 文件）。
 	 *
@@ -564,8 +842,12 @@ export function createOwnStore({ dataRoot }) {
 		let removedThumb = false;
 		let freedBytes = 0;
 		const stillUsed = Number(db.prepare('SELECT count(*) AS n FROM asset WHERE sha8 = ?').get(asset.sha8)?.n ?? 0) > 0;
+		// ★ 2026-10-27（链接文件夹）：**只删我们自己对象库里的文件**。
+		//   链接资产（`file_path` 指向用户的目录）删的只能是"行"，绝不能碰用户的文件 ——
+		//   那是"引用"，不是"副本"。`linkedFile: true` 让调用方能如实告诉用户"文件没动"。
+		const linkedFile = !!asset.filePath && !isManagedPath(asset.filePath);
 		if (!stillUsed && asset.sha8) {
-			if (asset.filePath) {
+			if (asset.filePath && !linkedFile) {
 				try {
 					const size = statSync(asset.filePath).size;
 					rmSync(asset.filePath, { force: true });
@@ -575,7 +857,7 @@ export function createOwnStore({ dataRoot }) {
 			}
 			try { rmSync(thumbPathOf(asset.sha8), { force: true }); removedThumb = true; } catch { /* 同上 */ }
 		}
-		return { ok: true, id: String(id), removedFile, removedThumb, freedBytes };
+		return { ok: true, id: String(id), removedFile, removedThumb, freedBytes, linkedFile };
 	}
 
 	/** 清空回收站（只动 `is_deleted = 1` 的行）。返回账目，失败逐条记账不假装成功。 */
@@ -714,6 +996,22 @@ export function createOwnStore({ dataRoot }) {
 		};
 	}
 
+	/**
+	 * **变更版本号**（2026-10-27：让"助手改了库 → 打开着的页面自己刷新"）。
+	 *
+	 * 用 SQLite 的 `total_changes()`（本连接累计改动行数，含我们自己的写）——
+	 * 比自己到处埋 `rev++` 可靠：**工具调用**（agent 走 `autoTag` 等）与 HTTP 写入走同一个连接，
+	 * 都会让它变；页面只需要比较"变了没"。
+	 * ⚠ 它随连接重置（Host 重启 ⇒ 回到 0）：页面同时也重新加载了，不存在误判。
+	 */
+	function revision() {
+		try {
+			return Number(db.prepare('SELECT total_changes() AS n').get()?.n ?? 0);
+		} catch {
+			return 0;
+		}
+	}
+
 	/** 统计（页面头部的"N 张图 / N 段视频"）。 */
 	function stats() {
 		const byKind = db.prepare('SELECT kind, count(*) AS n FROM asset WHERE is_deleted = 0 GROUP BY kind').all();
@@ -742,8 +1040,12 @@ export function createOwnStore({ dataRoot }) {
 		softDelete, restore, setFavorite, setTags, addTags, setBoard, setNote,
 		// 2026-10-26：「媒体库管家」的三个整理动作（规则打标 / 标签整理 / 目录整理）
 		autoTag, mergeTags, planBoards, liveRows,
+		// 2026-10-27：链接外部文件夹（不复制字节）+ 导出可读副本 + 判定"这份文件是不是我们自己的"
+		linkFolder, exportAssets, isManagedPath,
 		// 2026-10-26：破坏性清理（对齐 IDE 侧那套 purgeDeleted / cleanOrphaned / usage）
 		purge, purgeDeleted, cleanOrphaned, usage,
-		stats, facets, close,
+		stats, facets, revision, close,
+		/** 自动归档的账目（目录 / 成功 / 复制 / 失败 / 最后一条错误）—— 暴露给 `GET api/usage`。 */
+		archiveStats: () => ({ ...archiveStats }),
 	};
 }

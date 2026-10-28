@@ -19,6 +19,8 @@ import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { URI } from '../../../../base/common/uri.js';
 import { CodebaseGraphStore } from './codebaseGraphStore.js';
+// ★ 2026-10-27：mtime 容差判据（纯函数，单测在 test/common/codebaseIndexDefaults.test.ts ✓）
+import { isFileStatChanged } from '../common/codebaseIndexDefaults.js';
 
 export interface CodebaseGraphChangeEvent {
 	type: 'git-head' | 'files';
@@ -62,6 +64,7 @@ const FILES_PER_EXTRA_SEC = 500;
  * 与 lastDirtySig 去重互补：sig 拦"完全相同的重复轮"，本去抖拦"不同但在时间上连续的多轮"。
  */
 const CHANGE_DEBOUNCE_MS = 2000;
+
 
 export class CodebaseGraphWatcher extends Disposable {
 	declare readonly _serviceBrand: undefined;
@@ -267,11 +270,17 @@ export class CodebaseGraphWatcher extends Disposable {
 		// 变更判定对齐 C 版：stat-only（mtime+size 来自 resolve() 扫描结果，零额外 I/O），
 		// 全量覆盖而非采样。sha256 仅作记录字段（重索引时写入），判定不走内容哈希——
 		// 旧实现每轮读 200 个整文件算 SHA-256，且采样外的变更会漏判。
+		//
+		// ★ 2026-10-27：mtime 比较**带容差**（判据在 `common/codebaseIndexDefaults.isFileStatChanged`）——
+		// 旧基线（store 的文件哈希）可能来自**别的生产者**（dsh 制品 / 队友制品 / 另一台机器），
+		// 其 mtime 与本机 stat 差亚毫秒级 ⇒ 逐字节相等比较会把**每个**文件判成"改过"
+		// ⇒ 一轮 6826 文件被重解析（实测 28s、堆 +304MB）✗。
 		for (const entry of currentFiles) {
 			const relPath = this._getRelPath(rootPath, entry.path);
 			if (!oldSet.has(relPath)) { continue; } // added 已在上面处理
 			const oldHash = store.getFileHash(project, relPath);
-			if (!oldHash || oldHash.size !== entry.size || oldHash.mtimeNs !== entry.mtimeNs) {
+			if (!oldHash) { continue; }
+			if (isFileStatChanged(oldHash.size, oldHash.mtimeNs ?? 0, entry.size, entry.mtimeNs ?? 0)) {
 				modified.push(relPath);
 			}
 		}

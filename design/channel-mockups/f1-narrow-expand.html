@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>F1 · 窄表 + 行内展开（贴合 dsh 设置弹窗 620px）</title>
+<style>
+:root{--bg:#121214;--popup:#202024;--card:#232326;--bd:#2f2f33;--tx:#e6e6e6;--tx2:#a8a8a8;--tx3:#737373;
+--pri:#4c9aff;--ok:#3fb950;--warn:#d29922;--err:#f85149;}
+*{box-sizing:border-box}
+body{margin:0;background:#121214;color:var(--tx);font:12.5px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif;
+display:grid;place-items:center;min-height:100vh;padding:20px}
+/* 模拟 dsh 设置弹窗：总宽 620，左导航 128，内容 492 */
+.popup{width:620px;height:600px;background:var(--popup);border:1px solid var(--bd);border-radius:12px;
+overflow:hidden;display:flex;box-shadow:0 18px 50px rgba(0,0,0,.5)}
+.nav{width:128px;flex:none;border-right:1px solid var(--bd);padding:10px 7px;background:#1d1d20}
+.nav .t{font-size:10px;letter-spacing:.07em;color:var(--tx3);font-weight:600;padding:2px 7px 7px}
+.nav a{display:flex;align-items:center;gap:6px;padding:5.5px 7px;border-radius:6px;color:var(--tx2);
+text-decoration:none;font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.nav a:hover{background:#29292e}
+.nav a.on{background:rgba(76,154,255,.15);color:#dbeafe;font-weight:600}
+.content{flex:1;min-width:0;display:flex;flex-direction:column}
+.chd{padding:11px 13px 8px;border-bottom:1px solid var(--bd)}
+.chd .r1{display:flex;align-items:center;gap:7px}
+.chd h2{margin:0;font-size:14px}
+.chd .sp{flex:1}
+.chd .r2{display:flex;gap:5px;margin-top:7px;flex-wrap:wrap}
+.kpi{font-size:10.5px;padding:1px 7px;border-radius:999px;border:1px solid var(--bd);background:#26262a;color:var(--tx2);
+display:flex;gap:4px;align-items:center}
+.kpi b{font-variant-numeric:tabular-nums;color:var(--tx)}
+.kpi.hot{border-color:rgba(210,153,34,.42);background:rgba(210,153,34,.12);color:#e3b341}
+.kpi.hot b{color:#e3b341}
+.kpi.ok{border-color:rgba(63,185,80,.32);background:rgba(63,185,80,.1);color:#7ee787}
+.kpi.ok b{color:#7ee787}
+.scroll{flex:1;overflow:auto;padding:9px 13px 16px}
+table{width:100%;border-collapse:collapse;font-size:11.5px}
+thead th{text-align:left;color:var(--tx3);font-weight:600;font-size:10px;padding:5px 7px;
+border-bottom:1px solid var(--bd);white-space:nowrap;background:#26262a}
+thead th:first-child{border-radius:6px 0 0 0}
+thead th:last-child{border-radius:0 6px 0 0}
+tbody tr.row{cursor:pointer}
+tbody tr.row:hover{background:#27272c}
+tbody tr.row.open{background:rgba(76,154,255,.09)}
+td{padding:7px;border-bottom:1px solid #26262a;color:var(--tx2);vertical-align:middle}
+.pl{display:flex;align-items:center;gap:6px;color:var(--tx);font-weight:600;white-space:nowrap}
+.ico{width:18px;height:18px;border-radius:5px;display:grid;place-items:center;background:#2c2c31;font-size:10.5px;flex:none}
+.pill{font-size:10px;padding:1px 6px;border-radius:999px;white-space:nowrap}
+.p-ok{color:#7ee787;background:rgba(63,185,80,.14)}
+.p-warn{color:#e3b341;background:rgba(210,153,34,.14)}
+.p-off{color:var(--tx3);background:#2a2a2e}
+.n{font-variant-numeric:tabular-nums;text-align:right;color:var(--tx2)}
+.n.hot{color:#e3b341;font-weight:600}
+.n.err{color:#ff9f97;font-weight:600}
+.n.zero{color:#4a4a50}
+.caret{width:16px;text-align:center;color:var(--tx3);transition:transform .15s;font-size:9px}
+tr.row.open .caret{transform:rotate(90deg)}
+/* ── 展开行（压缩版：工具条 + 4 块） ── */
+tr.detail>td{padding:0;border-bottom:1px solid #26262a;background:#1e1e21}
+.dwrap{padding:0 0 9px}
+/* ① 工具条：入站信息 + 启停，不单独占块 */
+.toolbar{display:flex;align-items:center;gap:7px;padding:6px 9px;border-bottom:1px dashed var(--bd);
+font-size:10.5px;color:var(--tx3);flex-wrap:wrap}
+.toolbar .dot{width:6px;height:6px;border-radius:50%;background:var(--ok);flex:none}
+.toolbar .dot.warn{background:var(--warn)}
+.toolbar .sp{flex:1}
+.blocks{display:flex;flex-direction:column;gap:6px;padding:8px 9px 0}
+.blk{background:var(--card);border:1px solid var(--bd);border-radius:7px;overflow:hidden}
+.blk>.cap{display:flex;align-items:center;gap:6px;padding:4.5px 8px;background:#26262a;border-bottom:1px solid var(--bd)}
+.blk>.cap b{font-size:10.5px}
+.blk>.cap .cnt{font-size:9.5px;padding:0 5px;border-radius:999px;background:#33333a;color:var(--tx2);font-variant-numeric:tabular-nums}
+.blk>.cap .cnt.hot{background:rgba(210,153,34,.2);color:#e3b341}
+.blk>.cap .sp{flex:1}
+button{font:inherit;font-size:10.5px;padding:2.5px 8px;border-radius:5px;cursor:pointer;border:1px solid var(--bd);
+background:#2a2a2e;color:var(--tx)}
+button:hover{background:#313136}
+button.pri{background:var(--pri);border-color:transparent;color:#fff;font-weight:600}
+button.ghost{background:transparent}
+button:disabled{opacity:.45;cursor:not-allowed}
+.fld{display:grid;grid-template-columns:52px minmax(0,1fr);gap:4px 7px;padding:6px 8px;align-items:center;font-size:10.5px}
+.fld label{color:var(--tx2)}
+input{font:inherit;font-size:10.5px;padding:3px 6px;border-radius:4px;border:1px solid var(--bd);
+background:#1a1a1d;color:var(--tx);width:100%;min-width:0}
+input::placeholder{color:#5c5c63}
+.blk table{width:100%;border-collapse:collapse;font-size:10px}
+.blk thead th{font-size:9px;padding:3px 7px;background:transparent;border-bottom:1px solid var(--bd);color:var(--tx3)}
+.blk td{padding:4px 7px;border-bottom:1px solid #26262a;font-size:10px;color:var(--tx2)}
+.blk tr:last-child td{border-bottom:0}
+.blk td b{color:var(--tx);font-weight:600}
+.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:9.5px}
+.reason{font-weight:600}
+.r-sender,.r-mention{color:#e3b341}
+.r-loop{color:#ff9f97}
+.ellip{max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-block;vertical-align:bottom}
+.empty{font-size:10px;color:var(--tx3);padding:5px 8px}
+.note{margin:10px 0 0;color:var(--tx3);font-size:10.5px;line-height:1.6;border-top:1px dashed var(--bd);padding-top:8px}
+</style>
+</head>
+<body>
+<div class="popup">
+  <nav class="nav">
+    <div class="t">设置</div>
+    <a href="#">通用设置</a>
+    <a href="#">模型</a>
+    <a href="#">内置插件</a>
+    <a href="#">Agent 预设</a>
+    <a href="#">工作台商城</a>
+    <a class="on" href="#">渠道</a>
+    <a href="#">Our Free Model</a>
+    <a href="#">插件市场</a>
+  </nav>
+
+  <div class="content">
+    <div class="chd">
+      <div class="r1">
+        <h2>渠道</h2>
+        <span class="sp"></span>
+        <button class="ghost">刷新</button>
+        <button class="ghost">策略</button>
+      </div>
+      <div class="r2">
+        <span class="kpi ok">已连接 <b>1</b></span>
+        <span class="kpi hot">待批准 <b>2</b></span>
+        <span class="kpi hot">失败 <b>3</b></span>
+        <span class="kpi">绑定 <b>3</b></span>
+      </div>
+    </div>
+
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>平台</th>
+            <th style="width:88px">状态</th>
+            <th class="n" style="width:38px">绑定</th>
+            <th class="n" style="width:40px">待批</th>
+            <th class="n" style="width:38px">失败</th>
+            <th style="width:18px"></th>
+          </tr>
+        </thead>
+        <tbody>
+          <!-- ── 飞书（已连接，收起态：仍可见全部平台） ── -->
+          <tr class="row" data-k="feishu">
+            <td><span class="pl"><span class="ico">🐦</span>飞书</span></td>
+            <td><span class="pill p-ok">已连接</span></td>
+            <td class="n">2</td><td class="n hot">2</td><td class="n err">3</td>
+            <td class="caret">▶</td>
+          </tr>
+          <tr class="detail" data-for="feishu" hidden>
+            <td colspan="6">
+              <div class="dwrap">
+                <div class="toolbar">
+                  <span class="dot"></span><span>WS 长连接 · 最近事件 17:32:07 · cli_a1…h8</span>
+                  <span class="sp"></span><button>停止</button>
+                </div>
+                <div class="blocks">
+                  <div class="blk">
+                    <div class="cap"><b>凭据</b><span class="sp"></span><button class="pri">保存</button></div>
+                    <div class="fld">
+                      <label>App ID</label><input value="cli_a1b2c3d4e5f6g7h8">
+                      <label>Secret</label><input type="password" placeholder="已配置 · 留空 = 不改">
+                    </div>
+                  </div>
+                  <div class="blk">
+                    <div class="cap"><b>绑定</b><span class="cnt">2</span><span class="sp"></span><button class="ghost">+ 新建</button></div>
+                    <table>
+                      <thead><tr><th>IM 会话</th><th>绑定对象</th><th>方向</th><th>状态</th></tr></thead>
+                      <tbody>
+                        <tr><td class="code">oc_5f2a9d</td><td><b>群 · 评测群</b></td><td>双向</td><td>启用</td></tr>
+                        <tr><td class="code">oc_88c1e2</td><td><b>Bot · Coder</b></td><td>只发</td><td>启用</td></tr>
+                      </tbody>
+                    </table>
+                  </div>
+                  <div class="blk">
+                    <div class="cap"><b>待批准</b><span class="cnt hot">2</span><span class="sp"></span>
+                      <span style="font-size:9px;color:var(--tx3)">只给私聊权限</span></div>
+                    <table><tbody>
+                      <tr><td class="code">JXT457YC</td><td>张三</td><td class="n" style="color:var(--tx3)">42 分钟</td>
+                        <td class="n"><button class="pri">批准</button></td></tr>
+                      <tr><td class="code">QW8N3KPD</td><td>李四</td><td class="n" style="color:var(--tx3)">12 分钟</td>
+                        <td class="n"><button class="pri">批准</button></td></tr>
+                    </tbody></table>
+                  </div>
+                  <div class="blk">
+                    <div class="cap"><b>最近失败</b><span class="cnt hot">3</span><span class="sp"></span><button class="ghost">清空</button></div>
+                    <table><tbody>
+                      <tr><td class="reason r-sender">sender</td><td>u_bad</td>
+                        <td><span class="ellip code">我不在白名单</span></td><td class="n" style="color:var(--tx3)">17:29</td></tr>
+                      <tr><td class="reason r-mention">no-mention</td><td>王五</td>
+                        <td><span class="ellip code">@所有人 帮我看下这个报错…</span></td><td class="n" style="color:var(--tx3)">17:24</td></tr>
+                      <tr><td class="reason r-loop">loop</td><td>bot_a</td>
+                        <td><span class="ellip code">连环触发已被冷却 60s</span></td><td class="n" style="color:var(--tx3)">17:18</td></tr>
+                    </tbody></table>
+                  </div>
+                </div>
+              </div>
+            </td>
+          </tr>
+
+          <!-- ── Telegram（默认展开：内容短，能看到它是“手风琴”而不是“长页”） ── -->
+          <tr class="row open" data-k="telegram">
+            <td><span class="pl"><span class="ico">✈️</span>Telegram</span></td>
+            <td><span class="pill p-warn">未启动</span></td>
+            <td class="n">1</td><td class="n zero">0</td><td class="n zero">0</td>
+            <td class="caret">▶</td>
+          </tr>
+          <tr class="detail" data-for="telegram">
+            <td colspan="6">
+              <div class="dwrap">
+                <div class="toolbar">
+                  <span class="dot warn"></span><span>HTTP 长轮询 · 未开始 · token 已配置</span>
+                  <span class="sp"></span><button class="pri">启动入站</button>
+                </div>
+                <div class="blocks">
+                  <div class="blk">
+                    <div class="cap"><b>凭据</b><span class="sp"></span><button class="pri">保存</button></div>
+                    <div class="fld">
+                      <label>Token</label><input type="password" placeholder="已配置 · 留空 = 不改">
+                      <label>Username</label><input placeholder="my_bot（可选，用于精确判 @）">
+                    </div>
+                  </div>
+                  <div class="blk">
+                    <div class="cap"><b>绑定</b><span class="cnt">1</span><span class="sp"></span><button class="ghost">+ 新建</button></div>
+                    <table><tbody>
+                      <tr><td class="code">-100200</td><td><b>Bot · Coder</b></td><td>双向</td><td>启用</td></tr>
+                    </tbody></table>
+                  </div>
+                </div>
+              </div>
+            </td>
+          </tr>
+
+          <!-- ── 未接入：行灰显，展开只给一句说明（不给表单） ── -->
+          <tr class="row" data-k="discord">
+            <td><span class="pl" style="color:var(--tx3)"><span class="ico">🎮</span>Discord</span></td>
+            <td><span class="pill p-off">未接入</span></td>
+            <td class="n zero">—</td><td class="n zero">—</td><td class="n zero">—</td>
+            <td class="caret" style="opacity:.35">▶</td>
+          </tr>
+          <tr class="detail" data-for="discord" hidden>
+            <td colspan="6"><div class="dwrap"><div class="blocks">
+              <div class="blk"><div class="empty">适配器尚未实现 —— 不给表单，避免“填了不生效”。</div></div>
+            </div></div></td>
+          </tr>
+
+          <tr class="row" data-k="wecom">
+            <td><span class="pl" style="color:var(--tx3)"><span class="ico">🏢</span>企业微信</span></td>
+            <td><span class="pill p-off">未接入</span></td>
+            <td class="n zero">—</td><td class="n zero">—</td><td class="n zero">—</td>
+            <td class="caret" style="opacity:.35">▶</td>
+          </tr>
+          <tr class="detail" data-for="wecom" hidden>
+            <td colspan="6"><div class="dwrap"><div class="blocks">
+              <div class="blk"><div class="empty">适配器尚未实现（同 Discord）。</div></div>
+            </div></div></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p class="note">F1：内容区只有 ~492px（弹窗 620 − 导航 128）⇒ 主表<b>压到 5 列</b>，入站信息并进展开区的
+        <b>工具条</b>（一行，不占块），所以展开后只多 2~4 个小块，其余平台仍在视野内。
+        手风琴：一次只开一行（窄容器同时展开会顶掉上下文）。</p>
+    </div>
+  </div>
+</div>
+
+<script>
+  const rows = [...document.querySelectorAll('tr.row')];
+  const detailOf = (k) => document.querySelector('tr.detail[data-for="' + k + '"]');
+  rows.forEach((tr) => {
+    tr.addEventListener('click', (ev) => {
+      if (ev.target.tagName === 'BUTTON') { return; }
+      const d = detailOf(tr.dataset.k);
+      if (!d) { return; }
+      const willOpen = !tr.classList.contains('open');
+      rows.forEach((r) => {
+        r.classList.remove('open');
+        const o = detailOf(r.dataset.k);
+        if (o) { o.hidden = true; }
+      });
+      if (willOpen) { tr.classList.add('open'); d.hidden = false; }
+    });
+  });
+</script>
+</body>
+</html>

@@ -40,6 +40,9 @@ import { registerCanvasRoutes } from './canvasRoutes.js';
 import { maybeSaveToWorkspace } from './workspaceSave.js';
 import { createCapabilityCache, fitToCapabilities, formatCapabilities, resolveImageRoute } from './capabilities.js';
 import { decodeBase64, decodeDataUrl, normalizeMediaType } from './imageBytes.js';
+// ★ 2026-10-27（用户：「生图逻辑都在 dsh 侧，后续废除 IDE 生图」）：BYOK 的 OpenAI 兼容 provider
+//   现在由 Host **直连**（baseURL 与 Key 本来就在 dsh 的设置 / 凭据里，见 imageApi.js 文件头）。
+import { generateViaDsh, pickDshProvider } from './imageApi.js';
 
 export const name = 'vssaros-imagegen';
 
@@ -150,7 +153,18 @@ async function generateOneImage(state, options = {}) {
 			...(matched ? { width: Number(matched[1]), height: Number(matched[2]) } : {}),
 			signal: options.signal,
 		}));
+	} else if (route === 'dsh') {
+		// BYOK / OpenAI 兼容：Host 直连（不再回 IDE）
+		({ rawImages, usedProvider, usedModel } = await requestDshImages(state, {
+			prompt, numImages, model, provider, quality, size, signal: options.signal,
+		}));
 	} else {
+		// 只剩"厂商扩展注册的图像模型"这条要走 IDE；`allowIdeFallback: false` ⇒ 明确关掉（废除 IDE 生图时用）
+		if (state.allowIdeFallback === false) {
+			throw new Error('IDE 侧生图已关闭（`allowIdeFallback: false`）：'
+				+ `provider「${provider || '(未指定)'}」在 dsh 侧既不是 LightAI 也不是可直连的 BYOK 路由。`
+				+ '去 设置 → 模型 → LightAI 登录，或在 `llm-pi-ai` 里配好这条 provider（需要 baseURL + 凭据）。');
+		}
 		({ rawImages, usedProvider, usedModel } = await requestIdeImages(state, { prompt, numImages, matched, model, provider, quality }));
 	}
 	const attachments = state.attachments;
@@ -311,6 +325,33 @@ async function requestIdeImages(state, { prompt, numImages, matched, model, prov
 }
 
 /**
+ * **dsh 侧直连 BYOK 生图**（2026-10-27）：从 dsh 设置拿 `baseURL`、从 `.credentials.yaml` 拿 Key，
+ * 直接 POST `{baseURL}/images/generations`（404/405 回退 `/v1`）。不过桥、不碰 IDE。
+ *
+ * 与 `requestIdeImages` 的分工：那条是"IDE 侧有厂商扩展（`${vendor}.generateImage`）"才需要；
+ * 纯 OpenAI 兼容的网关不该再绕道 IDE —— 而那正是 `providers.sync` 已经同步进 dsh 的那批。
+ * @returns {Promise<{rawImages: object[], usedProvider: string, usedModel: string}>}
+ */
+async function requestDshImages(state, { prompt, numImages, model, provider, quality, size, signal }) {
+	const wanted = String(provider ?? '').trim();
+	// 没给 provider 时（比如画布页调 `state.generateImage`）取第一个可直连的，不猜具体哪家
+	const resolved = await pickDshProvider({ settings: state.settings, credentials: state.credentials }, wanted);
+	if (!resolved) {
+		throw new Error(`provider「${wanted || '(未指定)'}」在 dsh 侧没有可直连的配置：`
+			+ '需要 `llm-pi-ai` 设置里有这条路由（`vssaros-bridge` 的 `providers.sync` 会从 IDE 同步过来），'
+			+ '并且它的 `apiKeyEnv` 能在 dsh 凭据里解析到值。');
+	}
+	const out = await generateViaDsh(resolved, {
+		prompt, model, size, n: numImages, quality, signal,
+	});
+	return {
+		rawImages: out.rawImages,
+		usedProvider: out.providedBy,
+		usedModel: String(out.modelId || model || ''),
+	};
+}
+
+/**
  * LightAI 直连（2026-10-22）：`vssarosLightAI.generate('image', …)` —— 建任务 / 轮询都在 Host 里，不过桥。
  * n 张 = n 个任务并发（LightAI 一个任务出一组；扩展那条路会把 n 静默丢掉 ✗）。部分失败 ⇒ 进 failures；全失败 ⇒ 抛。
  * @returns {Promise<{rawImages: object[], usedProvider: string, usedModel: string}>}
@@ -346,8 +387,9 @@ function toolDefinitions(state) {
 		name: IMAGE_GENERATE_TOOL,
 		description: [
 			'生成图片并把图直接显示在对话里。',
-			'provider=lightai（或 model 是 picture_* 的 LightAI 模型）⇒ 直接调 LightAI（dsh 侧登录，不经 IDE）；',
-			'其它 provider ⇒ 经控制桥回 IDE 用用户在 IDE 里配的图像模型。都不指定 ⇒ LightAI 已登录就用 LightAI，否则用 IDE 默认。',
+			'provider=lightai（或 model 是 picture_* 的 LightAI 模型）⇒ 直接调 LightAI（dsh 侧登录）；',
+			'其它 provider ⇒ **dsh 直连**（用 `llm-pi-ai` 那条路由的 baseURL + 凭据库里的 Key 调 /images/generations，模型 id 由你给）；',
+			'只有"厂商扩展注册的图像模型"才回 IDE。都不指定 ⇒ LightAI 已登录就用 LightAI，其次 dsh 可直连的那家，否则 IDE 默认。',
 			'参数：prompt（画面描述，必填）、size（如 1024x1024，可选）、model（图像模型 id，可选）、n（张数，默认 1）。',
 			'★ 结果会**存进工作区**（默认 <工作区>/.vssaros-images/，内容寻址 ⇒ 同一张图不重复存）；',
 			'   不想要就传 save_to_workspace=false。要改已有图用 edit_image（带参考图的那种）。',
@@ -530,7 +572,10 @@ function toolDefinitions(state) {
 				if (route === 'lightai' && (!state.lightai || typeof state.lightai.generate !== 'function')) {
 					throw new Error('选中了 LightAI，但 dsh 侧 LightAI 生成服务不在（bridge 插件版本太旧，需 ≥ 0.2.38）');
 				}
-				if (route === 'ide' && (!state.bridge || typeof state.bridge.callIDE !== 'function')) {
+				if (route === 'ide' && state.allowIdeFallback === false) {
+			throw new Error('IDE 侧生图已关闭（`allowIdeFallback: false`）—— provider 要用 LightAI 或 `llm-pi-ai` 里可直连的那家。');
+		}
+		if (route === 'ide' && (!state.bridge || typeof state.bridge.callIDE !== 'function')) {
 					throw new Error('图像生成要经控制桥回 IDE（模型 provider 在 IDE 进程），但 vssarosBridge 不在（bridge 插件没装/没连）'
 						+ '——或在 设置 → 模型 → LightAI 登录，直接用 LightAI 生图');
 				}
@@ -596,7 +641,9 @@ function toolDefinitions(state) {
 		{
 			name: IMAGE_MODELS_TOOL,
 			description: [
-				'列出这台 IDE **能生图的 provider 与模型**（要指定某个 provider/模型生图前先用它看看有哪些可选）。',
+				'列出这台机器**能生图的 provider 与模型**（要指定某个 provider/模型生图前先用它看看有哪些可选）。',
+				'包含 LightAI（dsh 直连）、**dsh 侧可直连的 BYOK 路由**（标 needsModel：模型 id 要你给，如 gpt-image-1）、',
+				'以及 IDE 侧厂商扩展注册的那批（正在废弃；`allowIdeFallback:false` 时不再列出）。',
 				'各家支持的比例/质量/尺寸档只有 provider 自己登记了才会有；没登记就是"没登记"（不猜）。',
 				'参数：refresh（是否强制刷新，默认用 60 秒内的缓存）。',
 			].join(''),
@@ -797,6 +844,17 @@ function reserveToolName(ctx, name) {
 
 export function apply(ctx, config = {}) {
 	const state = { bridge: null, lightai: null, mediaStore: null, attachments: null, tools: null, canvas: null, canvasImages: createImageLedger(), pluginName: PLUGIN_PACKAGE };
+	// ★ 2026-10-27（用户：「生图逻辑都在 dsh 侧，后续废除 IDE 生图」）：
+	//   dsh 侧直连 BYOK 生图要读两个**核心服务**（设置里的 provider 路由 + 凭据库里的 Key）。
+	//   ⚠ 用 `reflect.get` 的**惰性 getter**，不用 `ctx.inject` —— 后者会让插件"等"服务，
+	//     而可选依赖变硬依赖正是本仓反复踩的坑（文件头纪律）。服务晚挂也没关系，每次读时现取。
+	const serviceOf = name => {
+		try { return ctx.reflect?.get?.(name, false) ?? null; } catch { return null; }
+	};
+	Object.defineProperty(state, 'settings', { get: () => serviceOf('settings'), enumerable: true });
+	Object.defineProperty(state, 'credentials', { get: () => serviceOf('credentials'), enumerable: true });
+	/** `allowIdeFallback: false` ⇒ 废除 IDE 生图（provider 不认识就如实报错，不偷偷回 IDE）。 */
+	state.allowIdeFallback = config?.allowIdeFallback !== false;
 	// ★ 2026-10-21（二批⑤）：工作区根 —— 落盘与 `edit_image` 的 `source:'path'` 都要它。
 	//
 	// 取值优先级（与 vssaros-codebase 的 `workspaceRootOf` 同口径 ✓）：

@@ -36,6 +36,7 @@ import { IAuxiliaryWindowService } from '../../../../workbench/services/auxiliar
 import { setDshFullWindowOpener } from '../../../common/dshFullWindow.js';
 import { dshChatNewSessionId } from '../common/dshChatSession.js';
 import { DshHarnessSettings } from '../common/dshHarness.js';
+import { decideSessionStartRetry, SESSION_START_MAX_ATTEMPTS, sessionStartRetryDelayMs } from '../common/dshDesktopSessionStart.js';
 import { IDshHarnessService } from './dshHarnessService.js';
 
 /**
@@ -92,7 +93,19 @@ export class DshFullWindowContribution extends Disposable {
 			void this._showIdeWindow('设置里关闭了启动即打开桌面窗口');
 			return;
 		}
-		const timer = setTimeout(() => {
+		const timer = setTimeout(async () => {
+			// ★ 2026-10-27（真机：一次启动出现**两扇**桌面窗口）：本贡献跑在 IDE 主窗口渲染进程里，
+			//   **渲染进程重载**（心跳自愈等）会重造它 ⇒ 2.5s 后又走一遍 ⇒ 多一扇空壳（用户可能盯着
+			//   那扇空壳 ⇒ 白屏 / 看不到侧栏里应有的行）。⇒ 先问主进程"本窗口的启动自动开窗做过没"，
+			//   做过就跳过。状态在主进程 ⇒ 重载不清零 ✓（放渲染侧保存就会随重载丢失 ✗）。
+			const first = await this._dsh.claimDesktopAutoOpen(this._nativeHostService.windowId).catch(err => {
+				this._log.warn('[dshHarness] startup: claimDesktopAutoOpen failed（按首次处理）', err);
+				return true;
+			});
+			if (!first) {
+				this._log.info('[dshHarness] startup: 本窗口的启动自动开窗已经做过（渲染进程重载过）⇒ 不再开第二扇桌面窗口');
+				return;
+			}
 			this._log.info('[dshHarness] startup: open the dsh desktop window by default');
 			// ★ 2026-10-22（用户："启动 app 时，能否仅启动窗口版"）：**窗口壳一出来就藏 IDE**，不再等 Host。
 			//   真机日志（`logs/20261022T084749`）：08:47:57.58 请求开窗 → Host 冷启动到 08:48:13.6 才就绪 →
@@ -117,7 +130,11 @@ export class DshFullWindowContribution extends Disposable {
 					this._log.warn('[dshHarness] startup: opening the dsh desktop window failed', err);
 					return this._quit('桌面窗口开窗失败');
 				});
-		}, 2500);
+			// ★ 2026-10-28（用户：「首次打开加载时间太长」）：这个延时原本是 2.5s，纯粹是"等布局稳定"的空等
+			//   —— 用户在打包版首启要面对 30s+ 的等待，前面再加 2.5s 白屏毫无收益。
+			//   `_open` 自身已经是"先建壳、再等 Host"（壳里带占位文案）⇒ 提前到 800ms，
+			//   会话解析那一步改为**等工作区就绪**（见 `_ensurePopoutSessionId`），不靠这个延时兜。
+		}, 800);
 		this._register(toDisposable(() => clearTimeout(timer)));
 		// 渲染进程侧的兜底：**20s** 内连桌面窗口**壳**都没开出来 ⇒ 显示 IDE（主进程 `windowImpl` 那边还有一道
 		// 45s 的，且露过一次面就作废）。2026-10-22 起壳不再等 Host（见上）⇒ 正常路径 ~3s 就置位，
@@ -137,6 +154,8 @@ export class DshFullWindowContribution extends Disposable {
 	private _desktopWindowOpened = false;
 	/** "显示 IDE"请求的代数：每次 `_showIdeWindow` +1，用来让交错的"启动后隐藏"作废。 */
 	private _ideShowEpoch = 0;
+	/** 桌面窗口里那条「会话启动失败」提示条（2026-10-27；成功/关窗时撤掉）。 */
+	private _startupBanner: HTMLElement | undefined;
 
 	/**
 	 * 开窗结果落定 ⇒ 成功就**隐藏** IDE 主窗口，失败就把它**显示出来**。
@@ -282,6 +301,57 @@ export class DshFullWindowContribution extends Disposable {
 			return 0;
 		}
 		return DESKTOP_TITLEBAR_H;
+	}
+
+	/**
+	 * 在桌面窗口里显示一条**失败提示条**（2026-10-27）。
+	 *
+	 * 为什么必须显示：会话创建失败时桌面窗口会停在官方 hero（输入框被官方 `inert` 禁用），
+	 * 页面自身不会说原因 ⇒ 用户只看到"窗口开了但不能用"，日志里才有答案 ✗。
+	 *
+	 * ⚠ 位置与层级：dsh 界面是主进程的 `WebContentsView`，画在窗口 DOM **之上**；
+	 *   但自绘标题条（`z-index:2`）证明 DOM 也能盖在它上面 ⇒ 这里沿用同一招（`z-index:3`），
+	 *   贴在标题条正下方。右侧留 132px 给 Electron 画的窗控按钮（不要压住它们 ✗）。
+	 *
+	 * @param onRetry 「重试」按钮的动作（重新走一遍会话启动）。
+	 */
+	private _showStartupBanner(
+		container: HTMLElement,
+		titleBarH: number,
+		message: string,
+		attempt: number,
+		onRetry: () => void
+	): void {
+		const banner = append(container, $('.vssaros-desk-banner'));
+		banner.style.cssText = [
+			'position:absolute', 'left:0', 'right:132px', `top:${titleBarH}px`,
+			'box-sizing:border-box', 'display:flex', 'align-items:center', 'gap:10px',
+			'padding:6px 10px', 'font-size:12px', 'line-height:1.4',
+			'z-index:3', 'pointer-events:auto', 'user-select:text',
+			'background:var(--vscode-inputValidation-warningBackground, #5a3a00)',
+			'color:var(--vscode-inputValidation-warningForeground, #ffffff)',
+			'border-bottom:1px solid var(--vscode-inputValidation-warningBorder, #b89500)',
+		].join(';');
+		const text = append(banner, $('span'));
+		text.style.cssText = 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;';
+		text.textContent = `会话启动失败（第 ${attempt}/${SESSION_START_MAX_ATTEMPTS} 次）：${message}`;
+		const retry = append(banner, $('button.vssaros-desk-banner-retry'));
+		retry.style.cssText = [
+			'flex:none', 'padding:3px 10px', 'font-size:12px', 'cursor:pointer',
+			'background:var(--vscode-button-background, #0e639c)',
+			'color:var(--vscode-button-foreground, #ffffff)',
+			'border:1px solid var(--vscode-button-border, transparent)', 'border-radius:2px',
+		].join(';');
+		retry.textContent = '重试';
+		retry.addEventListener('click', () => onRetry());
+		this._startupBanner?.remove();
+		this._startupBanner = banner;
+	}
+
+	/** 撤掉失败提示条（会话启动成功 / 窗口关掉时）。 */
+	private _clearStartupBanner(): void {
+		this._startupBanner?.remove();
+		this._startupBanner = undefined;
 	}
 
 	/**
@@ -459,7 +529,9 @@ export class DshFullWindowContribution extends Disposable {
 		// 占位（原生视图盖上来之前别让用户对着一块纯色猜）。⚠ 用**主窗口** document 建元素（aux 的 createElement 被禁）。
 		const booting = append(auxWindow.container, $('.dsh-desktop-booting'));
 		booting.style.cssText = `position:absolute;inset:${titleBarH}px 0 0 0;display:flex;align-items:center;justify-content:center;color:var(--vscode-descriptionForeground);font-size:13px;`;
-		booting.textContent = '正在启动 VsSaros…（首次启动或插件更新后需要十几秒）';
+		// ★ 2026-10-28（用户：「首次打开加载时间太长」）：文案分阶段。原来一句话挂到底，
+		//   用户看不出是"卡住了"还是"在干活"⇒ 首启 30s 的体感比实际更糟。
+		booting.textContent = '正在启动后台服务…（首次启动或插件更新后需要十几秒，之后会快很多）';
 		// Host 就绪前用户就把窗口关了 ⇒ **退出应用**（2026-10-22 用户要求：桌面模式下不露 IDE）：
 		//   · 隐藏启动下 IDE 主窗口**从出生就是隐藏的**（`_ideHiddenByStartup` 可能还没置位）⇒
 		//     只走 `_quitAfterDesktopClosed` 会判"不是我们藏的"而跳过 ⇒ 进程活着却没有界面 ✗；
@@ -484,6 +556,8 @@ export class DshFullWindowContribution extends Disposable {
 		onShellOpened?.();
 		try {
 			await this._dsh.ensureStarted();
+			// 第 2 阶段：后台服务就绪 ⇒ 换文案（剩下的是建视图 + 页面首帧）
+			booting.textContent = '后台服务已就绪，正在加载界面…';
 		} catch (err) {
 			booting.textContent = `VsSaros 后台服务启动失败：${String((err as Error)?.message ?? err)}`;
 			bootUnload.dispose();
@@ -495,7 +569,17 @@ export class DshFullWindowContribution extends Disposable {
 			return false;
 		}
 		// 会话解析放在窗口之后：独立会话 id 依赖 windowId（见 _ensurePopoutSessionId）
-		const sessionId = await this._ensurePopoutSessionId(windowId);
+		// ★ 2026-10-27：失败时**在窗口里显示原因 + 重试按钮**（否则用户只看到 hero + 禁用输入框，
+		//   而答案只在日志里 ✗）；重试 = 重新跑一遍这整段（含再建视图）。
+		const sessionId = await this._ensurePopoutSessionId(windowId, (message, attempt) => {
+			this._showStartupBanner(auxWindow.container, titleBarH, message, attempt, () => {
+				this._clearStartupBanner();
+				void this._open(args).catch(err => this._log.warn('[dshHarness] desktop: 会话重试失败', err));
+			});
+		});
+		if (sessionId) {
+			this._clearStartupBanner();
+		}
 		// ★ 2026-10-18（默认形态）：**拼装式 desktop** —— 左=会话列表页、右=dsh 聊天（surface=chat）。
 		//   为什么不用上游 `createAuxiliaryEditorPart`：它经渲染进程 `window.open` 建窗，在这个构建里
 		//   建出来的窗口 URL 永远是 `about:blank`（真机实测：窗口存在但从不加载 → 白窗），而本贡献用的
@@ -620,6 +704,30 @@ export class DshFullWindowContribution extends Disposable {
 	}
 
 	/**
+	 * 等第一个工作区目录出现（最多 `timeoutMs`，每 150ms 探一次）。
+	 *
+	 * 为什么要等（2026-10-28）：启动开窗延时缩到 800ms 后，此刻 `workspaceContextService` 里
+	 * 可能还没有目录（工作区恢复晚于这个点）⇒ 直接把"还没到"当成"没打开工作区"。
+	 */
+	private async _waitForWorkspaceCwd(timeoutMs: number): Promise<string | undefined> {
+		const read = () => this._workspaceContextService.getWorkspace().folders[0]?.uri.fsPath;
+		const first = read();
+		if (first) {
+			return first;
+		}
+		const deadline = Date.now() + timeoutMs;
+		while (Date.now() < deadline) {
+			await new Promise<void>(resolve => setTimeout(resolve, 150));
+			const cwd = read();
+			if (cwd) {
+				this._log.info(`[dshHarness] full window: 工作区在等待中出现（${cwd}）`);
+				return cwd;
+			}
+		}
+		return undefined;
+	}
+
+	/**
 	 * 弹窗自己的会话（**与 IDE 里的聊天互相独立**，2026-10-17 用户要求）。
 	 *
 	 * 背景变更：此前弹窗「跟随当前聊天会话」（`_resolveFollowSessionId` 三级回退）—— 好处是内容连续，
@@ -633,20 +741,42 @@ export class DshFullWindowContribution extends Disposable {
 	 * 取不到工作区目录 ⇒ 返回 undefined，弹窗停在官方默认页（hero），由用户在页内选工作区
 	 * （页面侧 0.2.100+ 已能自己把 roster 拉起来，hero 不再是死路 ✓）。
 	 */
-	private async _ensurePopoutSessionId(windowId: number): Promise<string | undefined> {
-		const cwd = this._workspaceContextService.getWorkspace().folders[0]?.uri.fsPath;
+	private async _ensurePopoutSessionId(
+		windowId: number,
+		/** 失败时把原因显示给用户（含第几次重试）；成功时会被清掉。见 `_showStartupBanner`。 */
+		reporter?: (message: string, attempt: number) => void
+	): Promise<string | undefined> {
+		// ★ 2026-10-28：启动开窗延时从 2.5s 缩到 800ms 之后，工作区可能**还没落定** ⇒
+		//   这里不能再"取不到就当没有"，而要**等一会儿**（最多 3s）。否则会把"还在加载"误判成
+		//   "没打开工作区" ⇒ 弹窗停在 hero + 一条红色失败提示（比慢一点更糟 ✗）。
+		const cwd = await this._waitForWorkspaceCwd(3_000);
 		if (!cwd) {
 			this._log.warn('[dshHarness] full window: no workspace folder ⇒ 停在官方默认页（弹窗内可选工作区）');
+			reporter?.('没有打开工作区，无法创建会话 —— 请在 IDE 里打开一个工作区后再开桌面窗口', 1);
 			return undefined;
 		}
 		const target = dshChatNewSessionId('full-popout', String(windowId));
-		try {
-			const res = await this._dsh.startSession({ cwd, sessionId: target });
-			this._log.info(`[dshHarness] full window uses its own session: ${res.sessionId} (cwd=${cwd})`);
-			return res.sessionId;
-		} catch (err) {
-			this._log.warn('[dshHarness] full window: 独立会话启动失败 ⇒ 回落官方默认页', err);
-			return undefined;
+		// ★ 2026-10-27（用户报「弹窗停在 hero、输入框禁用」）：**失败要重试，也要让用户看见**。
+		//   真机：Host ready 后 0.8s 就发起了 `session.start`，报 `vssaros-agents (@vssaros/dsh-agents):
+		//   never started`；而 mux 路由要到 ready 之后 **11.4s** 才可用 ⇒ 那是"插件还没挂载完"，
+		//   重试就能过。以前一次失败就直接放弃 ⇒ 桌面窗口永远停在 hero、且**页面上没有任何说明**
+		//   （用户只看到"窗口开了但不能用"）✗。
+		for (let attempt = 1; ; attempt++) {
+			try {
+				const res = await this._dsh.startSession({ cwd, sessionId: target });
+				this._log.info(`[dshHarness] full window uses its own session: ${res.sessionId} (cwd=${cwd})`);
+				return res.sessionId;
+			} catch (err) {
+				const message = String((err as Error)?.message ?? err);
+				this._log.warn(`[dshHarness] full window: 独立会话启动失败（第 ${attempt}/${SESSION_START_MAX_ATTEMPTS} 次）：${message}`);
+				if (decideSessionStartRetry(message, attempt, SESSION_START_MAX_ATTEMPTS) !== 'retry') {
+					this._log.warn('[dshHarness] full window: 判为不可重试 ⇒ 回落官方默认页');
+					reporter?.(message, attempt);
+					return undefined;
+				}
+				reporter?.(message, attempt);
+				await new Promise<void>(resolve => setTimeout(resolve, sessionStartRetryDelayMs(attempt)));
+			}
 		}
 	}
 

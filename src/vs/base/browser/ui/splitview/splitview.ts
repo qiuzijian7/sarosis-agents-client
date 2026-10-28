@@ -1047,13 +1047,14 @@ export class SplitView<TLayoutContext = undefined, TView extends IView<TLayoutCo
 
 			const item = this.viewItems[index];
 			size = Math.round(size);
-			const beforeClamp = size;
+			// ★ 2026-10-27：这里原有两条 `console.debug`（resizeView / done）。
+			//   它们在**每次布局**的热路径上，而 Electron 会把 renderer 的 console 全量转发给主进程写日志
+			//   ⇒ 布局抖动时日志放大成风暴（用户报"切到 agents 侧栏就卡死"那次的日志里，这类行占了多数）。
+			//   需要排查布局问题时请临时打开，**不要提交**：`#ifdef` 或本地改完就回滚。
 			size = clamp(size, item.minimumSize, Math.min(item.maximumSize, this.size));
-			console.debug(`[SplitView] resizeView: index=${index}, requestedSize=${beforeClamp}, clampedSize=${size}, minSize=${item.minimumSize}, maxSize=${item.maximumSize}, splitSize=${this.size}, contentSize=${this.contentSize}`);
 
 			item.size = size;
 			this.relayout(lowPriorityIndexes, highPriorityIndexes);
-			console.debug(`[SplitView] resizeView done: index=${index}, newSize=${item.size}, allSizes=${this.viewItems.map(v => v.size)}`);
 		} finally {
 			this.state = State.Idle;
 		}

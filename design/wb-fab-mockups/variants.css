@@ -1,0 +1,57 @@
+/* 浮动条通用零件 */
+.fabwrap{position:absolute;z-index:20}
+.fabwrap .wbWrap{position:relative;display:flex}
+.fabwrap .wbAct{width:26px;height:25px;border:0;border-radius:7px;background:transparent;color:#9d9da7;font-size:13px;display:grid;place-items:center;cursor:pointer}
+.fabwrap .wbLabel{position:absolute;right:34px;top:50%;transform:translateY(-50%) translateX(4px);white-space:nowrap;font:10px/1.6 -apple-system,Segoe UI,sans-serif;color:#d7d7dc;background:#25252a;border:1px solid rgba(128,128,128,.35);border-radius:6px;padding:1px 7px;opacity:0;pointer-events:none;transition:opacity .14s,transform .14s}
+.fabwrap .wbWrap:hover .wbLabel{opacity:1;transform:translateY(-50%) translateX(0)}
+.fabwrap .wbDivider{height:1px;margin:1px 3px;background:rgba(128,128,128,.28)}
+
+/* A · 竖排胶囊 + 边缘高亮（与媒体库同款） */
+.fab-a{right:12px;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;padding:3px;border-radius:10px;border:1px solid rgba(47,129,247,.55);background:linear-gradient(180deg,rgba(38,38,44,.96),rgba(30,30,35,.96));box-shadow:0 0 0 1px rgba(47,129,247,.16),0 0 16px rgba(47,129,247,.30),0 4px 12px rgba(0,0,0,.45)}
+.fab-a:hover{border-color:rgba(47,129,247,.85);box-shadow:0 0 0 1px rgba(47,129,247,.35),0 0 26px rgba(47,129,247,.45),0 6px 18px rgba(0,0,0,.5)}
+.fab-a .wbDivider{background:linear-gradient(90deg,transparent,rgba(47,129,247,.75),transparent)}
+.fab-a .wbAct.assist{color:#6cb0ff}
+.fab-a .wbAct.assist:hover{color:#a8d2ff;box-shadow:0 0 12px rgba(47,129,247,.55) inset}
+.fab-a .wbLabel{border-color:rgba(47,129,247,.45);box-shadow:0 0 12px rgba(47,129,247,.30),0 1px 4px rgba(0,0,0,.35)}
+
+/* B · 吸边半隐藏 */
+.fab-b{right:0;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;align-items:flex-end;gap:2px;padding:4px 3px;border-radius:10px 0 0 10px;background:linear-gradient(90deg,rgba(38,38,44,.55),rgba(42,42,48,.98));border:1px solid rgba(128,128,128,.3);border-right:0;box-shadow:-6px 0 16px rgba(0,0,0,.35)}
+.fab-b .wbWrap{justify-content:flex-end;align-items:center}
+.fab-b .wbAct{opacity:.32}
+.fab-b .wbLabel{position:static;right:auto;transform:none;opacity:0;max-width:0;overflow:hidden;border:0;background:none;padding:0;transition:max-width .18s,opacity .18s}
+.fab-b.hovered .wbAct{opacity:1}
+.fab-b.hovered .wbLabel{opacity:1;max-width:150px;margin-right:6px}
+/* C · 底部居中横条 */
+.fab-c{left:50%;bottom:16px;transform:translateX(-50%);display:flex;gap:4px;padding:4px;border-radius:999px;background:rgba(32,32,38,.93);border:1px solid rgba(128,128,128,.28);box-shadow:0 8px 26px rgba(0,0,0,.5)}
+.fab-c .wbWrap{align-items:center}
+.fab-c .wbAct{width:auto;padding:0 4px}
+.fab-c .wbLabel{position:static;right:auto;top:auto;transform:none;opacity:1;background:none;border:0;box-shadow:none;padding:0 8px 0 0;font-size:11.5px;color:#d7d7dc}
+.fab-c .wbWrap:hover .wbLabel{transform:none}
+
+/* D · 单圆钮 + 展开列 */
+.fab-d{right:14px;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;align-items:flex-end;gap:8px}
+.fab-d .knob{width:30px;height:30px;border-radius:50%;border:1px solid rgba(47,129,247,.5);background:#25252a;color:#cfd3da;font-size:14px;cursor:pointer;box-shadow:0 0 12px rgba(47,129,247,.25),0 3px 10px rgba(0,0,0,.4)}
+.fab-d .knobMenu{display:flex;flex-direction:column;gap:5px;align-items:flex-end;opacity:0;transform:translateX(6px) scale(.96);transform-origin:right center;pointer-events:none;transition:opacity .16s,transform .16s}
+.fab-d.hovered .knobMenu{opacity:1;transform:none;pointer-events:auto}
+.fab-d .wbWrap{align-items:center}
+.fab-d .wbLabel{position:static;right:auto;top:auto;transform:none;opacity:1;background:#25252a;border:1px solid rgba(128,128,128,.35);border-radius:6px;padding:3px 9px;white-space:nowrap;font-size:11.5px;box-shadow:0 4px 14px rgba(0,0,0,.4)}
+.fab-d .wbAct{width:28px;height:26px;border:1px solid rgba(128,128,128,.3);background:#25252a}
+.fab-d .wbAct.assist{color:#6cb0ff}
+
+/* E · 玻璃拟态竖条 */
+.fab-e{right:12px;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;padding:3px;border-radius:12px;border:1px solid rgba(255,255,255,.14);background:linear-gradient(180deg,rgba(70,74,86,.45),rgba(24,24,28,.45));backdrop-filter:blur(10px);box-shadow:0 8px 26px rgba(0,0,0,.45),inset 0 1px 0 rgba(180,205,255,.28),inset 0 -1px 0 rgba(180,205,255,.10)}
+.fab-e:hover{box-shadow:0 10px 30px rgba(0,0,0,.55),inset 0 1px 0 rgba(200,220,255,.42)}
+.fab-e .wbAct{color:#b9c6da}
+.fab-e .wbAct.assist{color:#8cc0ff}
+.fab-e .wbLabel{background:rgba(30,30,36,.85);border-color:rgba(180,205,255,.22)}
+
+/* F · 并入顶栏（零浮动占用） */
+.topbtns{display:flex;gap:6px}
+
+/* ── 静态截图用的「交互态」：把 :hover 的效果显式给 .hovered ── */
+.fabwrap.hovered .wbWrap .wbLabel{opacity:1;transform:translateY(-50%) translateX(0)}
+.fab-a.hovered{border-color:rgba(47,129,247,.85);box-shadow:0 0 0 1px rgba(47,129,247,.35),0 0 26px rgba(47,129,247,.45),0 6px 18px rgba(0,0,0,.5)}
+.fab-a.hovered .wbAct.assist{color:#a8d2ff;box-shadow:0 0 12px rgba(47,129,247,.55) inset}
+.fab-e.hovered{box-shadow:0 10px 30px rgba(0,0,0,.55),inset 0 1px 0 rgba(200,220,255,.42)}
+.fab-c.hovered .wbAct{background:rgba(47,129,247,.20);color:#a8d2ff;border-radius:999px}
+.fab-b.hovered .wbAct{opacity:1}

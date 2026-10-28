@@ -6,8 +6,9 @@
 // 并发两次同 id 也只有一次能成功 ✓。
 // 写完由 index.js 立刻 syncPresets ⇒ 不用重启 Host 就进 dsh 花名册（p3-06 已有增量同步的真机断言）。
 
+import { renameWithRetry } from './atomicWrite.js';
 import { randomUUID } from 'node:crypto';
-import { mkdir, readdir, readFile, rename, rm, rmdir, stat, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, rmdir, stat, unlink, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 import { AGENT_FILE, agentFromFile, isHiddenAgent, presetIdOf, toPresetDefinition } from './core/agents.js';
 import { AGENT_ID_RE, draftFromAgentMd, normalizeDraft, serializeAgentMd, setMemoryFrontmatter, setSubagentFlag, stripModelFromAgentMd, validateDraft } from './core/create.js';
@@ -233,7 +234,7 @@ export async function setAgentSubagent(config, agentId, enabled) {
 	}
 	const tmpFile = agent.file + '.tmp-' + randomUUID();
 	await writeFile(tmpFile, edited.text, 'utf8');
-	await rename(tmpFile, agent.file);
+	await renameWithRetry(tmpFile, agent.file);
 	return { id: agent.id, delegatable: check.agent.delegatable === true, presetId: presetIdOf(agent.id) };
 }
 
@@ -280,7 +281,7 @@ export async function setAgentMemoryLimits(config, agentId, input = {}) {
 	// 先写临时文件再 rename：写一半崩了也不会留下半截 .agent.md（与 resetAgentModel 同口径）
 	const tmpFile = agent.file + '.tmp-' + randomUUID();
 	await writeFile(tmpFile, edited.text, 'utf8');
-	await rename(tmpFile, agent.file);
+	await renameWithRetry(tmpFile, agent.file);
 	return {
 		id: agent.id,
 		chars: check.agent.memoryChars,
@@ -358,7 +359,7 @@ export async function resetAgentModel(config, rawId) {
 	const tmp = agent.file + '.tmp-' + randomUUID().slice(0, 8);
 	try {
 		await writeFile(tmp, stripped.text, { encoding: 'utf8', flag: 'wx' });
-		await rename(tmp, agent.file);
+		await renameWithRetry(tmp, agent.file);
 	} catch (e) {
 		await unlink(tmp).catch(() => undefined);
 		throw e;

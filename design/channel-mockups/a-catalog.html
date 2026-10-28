@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>A · 目录式（OpenClaw 同构）</title>
+<style>
+:root{--bg:#1b1b1d;--card:#232326;--card2:#26262a;--bd:#2f2f33;--tx:#e6e6e6;--tx2:#a8a8a8;--tx3:#737373;
+--pri:#4c9aff;--ok:#3fb950;--warn:#d29922;--err:#f85149;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:13px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}
+.shell{display:flex;height:100vh}
+/* 模拟 dsh 设置弹窗左侧导航 */
+.nav{width:196px;flex:none;border-right:1px solid var(--bd);padding:14px 10px;background:#1e1e21}
+.nav h5{margin:0 0 10px;font-size:11px;letter-spacing:.08em;color:var(--tx3);font-weight:600;text-transform:uppercase}
+.nav a{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:7px;color:var(--tx2);text-decoration:none;font-size:12.5px}
+.nav a:hover{background:#2a2a2e;color:var(--tx)}
+.nav a.on{background:rgba(76,154,255,.14);color:#cfe3ff;font-weight:600}
+.nav .sep{height:1px;background:var(--bd);margin:10px 4px}
+.main{flex:1;overflow:auto;padding:20px 26px 28px}
+h2{margin:0 0 4px;font-size:17px}
+.lead{margin:0 0 18px;color:var(--tx2);font-size:12.5px;max-width:640px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(296px,1fr));gap:12px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:11px;padding:14px;display:flex;flex-direction:column;gap:9px}
+.card.dim{opacity:.62}
+.hd{display:flex;align-items:center;gap:9px}
+.ico{width:26px;height:26px;border-radius:7px;display:grid;place-items:center;background:#2c2c31;font-size:14px;flex:none}
+.nm{font-weight:600;font-size:13.5px}
+.pill{font-size:11px;padding:1.5px 8px;border-radius:999px;border:1px solid transparent;white-space:nowrap}
+.p-ok{color:#7ee787;background:rgba(63,185,80,.14);border-color:rgba(63,185,80,.3)}
+.p-warn{color:#e3b341;background:rgba(210,153,34,.14);border-color:rgba(210,153,34,.3)}
+.p-off{color:var(--tx3);background:#2a2a2e;border-color:var(--bd)}
+.rows{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--tx2)}
+.rows b{color:var(--tx);font-weight:600}
+.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;color:#c9d1d9}
+.acts{display:flex;gap:7px;margin-top:2px}
+button{font:inherit;font-size:12px;padding:4.5px 11px;border-radius:7px;cursor:pointer;border:1px solid var(--bd);background:#2a2a2e;color:var(--tx)}
+button:hover{background:#313136}
+button.pri{background:var(--pri);border-color:transparent;color:#fff;font-weight:600}
+button.pri:hover{background:#5aa6ff}
+button:disabled{opacity:.45;cursor:not-allowed}
+.policy{margin-top:20px;background:var(--card);border:1px solid var(--bd);border-radius:11px;padding:12px 14px}
+.policy h4{margin:0 0 3px;font-size:12.5px}
+.policy p{margin:0 0 9px;color:var(--tx3);font-size:11.5px}
+.policy .lnk{display:flex;gap:8px;flex-wrap:wrap}
+.policy .lnk a{font-size:12px;color:#9ecbff;text-decoration:none;border:1px solid rgba(76,154,255,.3);
+background:rgba(76,154,255,.1);padding:3px 10px;border-radius:999px}
+.note{margin:18px 0 0;padding:9px 12px;border-left:2px solid #3d3d44;color:var(--tx3);font-size:11.5px}
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="nav">
+    <h5>设置</h5>
+    <a href="#">通用设置</a>
+    <a href="#">模型</a>
+    <a href="#">内置插件</a>
+    <a href="#">工作台商城</a>
+    <a class="on" href="#">渠道</a>
+    <div class="sep"></div>
+    <h5>渠道配置</h5>
+    <a href="#">配对请求 <span class="pill p-warn" style="margin-left:auto">2</span></a>
+    <a href="#">访问组</a>
+    <a href="#">房间与群</a>
+    <a href="#">路由（渠道 → bot）</a>
+    <a href="#">死信与排查</a>
+  </aside>
+
+  <main class="main">
+    <h2>渠道</h2>
+    <p class="lead">每个平台一张卡片。点「配置」进入该平台的凭据与连接；准入策略（谁能触发、在哪些房间）放在左侧「渠道配置」里统一管。</p>
+
+    <div class="grid">
+      <div class="card">
+        <div class="hd"><span class="ico">🐦</span><span class="nm">飞书</span><span class="pill p-ok">已连接</span></div>
+        <div class="rows">
+          <div>凭据 <b>cli_a1…h8</b> · 本机 dsh 设置</div>
+          <div>入站 <b>WS 长连接</b> · 最近事件 17:32:07</div>
+          <div>绑定 <b>2</b> 个会话</div>
+        </div>
+        <div class="acts"><button class="pri">配置</button><button>停止</button></div>
+      </div>
+
+      <div class="card">
+        <div class="hd"><span class="ico">✈️</span><span class="nm">Telegram</span><span class="pill p-warn">未启动</span></div>
+        <div class="rows">
+          <div>凭据 <b>已配置</b> · 本机 dsh 设置</div>
+          <div>入站 <b>HTTP 长轮询</b> · 未开始</div>
+          <div>绑定 <b>0</b> 个会话</div>
+        </div>
+        <div class="acts"><button class="pri">配置</button><button>启动</button></div>
+      </div>
+
+      <div class="card dim">
+        <div class="hd"><span class="ico">🎮</span><span class="nm">Discord</span><span class="pill p-off">未接入</span></div>
+        <div class="rows">
+          <div>适配器尚未实现</div>
+          <div>可以先填凭据作预配置，但不会连接</div>
+        </div>
+        <div class="acts"><button disabled>配置</button></div>
+      </div>
+
+      <div class="card dim">
+        <div class="hd"><span class="ico">🏢</span><span class="nm">企业微信</span><span class="pill p-off">未接入</span></div>
+        <div class="rows">
+          <div>适配器尚未实现</div>
+          <div>可以先填凭据作预配置，但不会连接</div>
+        </div>
+        <div class="acts"><button disabled>配置</button></div>
+      </div>
+    </div>
+
+    <div class="policy">
+      <h4>渠道策略（与平台解耦，所有渠道共享）</h4>
+      <p>谁能触发 bot、在哪些房间生效 —— 这些规则不绑定具体平台，改一次对所有渠道生效。</p>
+      <div class="lnk"><a href="#">配对请求 2 条待批准</a><a href="#">私聊策略 · pairing</a><a href="#">群策略 · allowlist</a><a href="#">最近失败 3 条</a></div>
+    </div>
+
+    <p class="note">设计意图：把「平台目录」与「准入策略」按 OpenClaw 的 <code>Configuration</code> 分组拆开 —— 渠道页只回答“这个平台连上没有”，策略页回答“谁能用”。代价是多一层导航。</p>
+  </main>
+</div>
+</body>
+</html>

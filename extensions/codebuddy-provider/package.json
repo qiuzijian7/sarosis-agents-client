@@ -288,6 +288,30 @@
 					"description": "请求体注入 previous_response_id（服务端会话续接，复用网关侧上下文/推理缓存）。默认启用；仅在排查网关参数兼容性问题时关闭。",
 					"scope": "application",
 					"markdownDescription": "在 `/v2/chat/completions` 请求体中注入 `previous_response_id`，让网关复用服务端上下文与推理缓存。\n\n默认**启用**。2026-08-19 曾误判此参数为 `400 code 11133` 的根因，经请求体逐条比对已证伪（真因为 messages 以 assistant 结尾，已在 `ensureTrailingUserBoundary` 修复）。保留此开关仅用于后续排查网关参数兼容性。"
+				},
+				"codebuddy.relay.baseUrl": {
+					"type": "string",
+					"default": "http://zijianqiu-any1.devcloud.woa.com:8000",
+					"description": "萨罗斯中转站地址（AnyDev 环境「我的开发环境」，devcloud 域名入口）。登录 CodeBuddy provider 后，本机会自动注册成中转站的一个节点。",
+					"scope": "application"
+				},
+				"codebuddy.relay.enrollKey": {
+					"type": "string",
+					"default": "ccd6d985cdf1cfa69b124046b8784e7194ac896a17ed408b",
+					"description": "中转站自动注册密钥（窄作用域：只能把本机注册成节点，换不到管理员权限）。留空则不做自动注册。",
+					"scope": "application"
+				},
+				"codebuddy.relay.autoRegister": {
+					"type": "boolean",
+					"default": true,
+					"description": "登录 CodeBuddy provider 后，自动把本机注册到萨罗斯中转站（只上报身份与模型目录，不上报凭据）。",
+					"scope": "application"
+				},
+				"codebuddy.relay.nodeName": {
+					"type": "string",
+					"default": "",
+					"description": "本机在中转站里的节点名（留空 = 主机名）。",
+					"scope": "application"
 				}
 			}
 		},
@@ -307,6 +331,14 @@
 			{
 				"command": "codebuddy.logout",
 				"title": "CodeBuddy: Logout"
+			},
+			{
+				"command": "codebuddy.relay.register",
+				"title": "CodeBuddy: Register To Saros Relay"
+			},
+			{
+				"command": "codebuddy.relay.status",
+				"title": "CodeBuddy: Saros Relay Node Status"
 			}
 		]
 	},

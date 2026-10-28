@@ -1,0 +1,148 @@
+<!DOCTYPE html><html lang=zh-CN><head><meta charset=utf-8>
+<title>工作台 · 浮动工具条 重设计 · 6 个方案</title>
+<style>:root{--bg:#1a1a1c;--panel:#202024;--panel2:#25252a;--line:rgba(128,128,128,.22);--fg:#d7d7dc;--dim:#9a9aa4;--brand:#2f81f7;--brand2:#4a94ff}
+*{box-sizing:border-box}
+body{margin:0;padding:24px 26px 60px;background:var(--bg);color:var(--fg);font:13px/1.6 -apple-system,Segoe UI,Microsoft YaHei,sans-serif}
+h1{font-size:19px;margin:0 0 6px}
+h2{font-size:15px;margin:0 0 4px}
+a{color:var(--brand2)}
+.lead{color:var(--dim);max-width:940px;margin:0 0 18px;font-size:12.5px}
+.lead b{color:var(--fg)}
+.wrap{display:flex;gap:22px;align-items:flex-start;flex-wrap:wrap}
+.spec{width:340px;flex:0 0 340px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px;font-size:12.3px}
+.spec .tagline{color:var(--brand2);margin:0 0 10px;font-size:12px}
+.spec dt{color:var(--dim);margin-top:9px;font-size:11.8px}
+.spec dd{margin:2px 0 0}
+.spec ul{margin:9px 0 0;padding-left:17px}
+.spec li{margin:3px 0}
+.spec .go{display:inline-block;margin-top:12px;padding:4px 11px;border:1px solid var(--line);border-radius:7px;background:rgba(255,255,255,.05);color:var(--fg);text-decoration:none;font-size:12px}
+/* ── 聊天面板 mock（模拟 IDE 右侧聊天区）── */
+.chat{position:relative;width:432px;height:540px;background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden;display:flex;flex-direction:column}
+.chat .top{display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid var(--line);background:rgba(255,255,255,.02)}
+.chat .top .t{font-weight:600;font-size:13px}
+.chat .top .sp{flex:1}
+.chat .top .ghost{border:1px solid var(--line);background:rgba(255,255,255,.04);color:var(--fg);border-radius:6px;padding:3px 10px;font-size:12px}
+.chat .msgs{flex:1;padding:14px 12px;display:flex;flex-direction:column;gap:12px;min-height:0}
+.msg{max-width:86%;border-radius:10px;padding:8px 11px;font-size:12.4px;line-height:1.55}
+.msg.me{align-self:flex-end;background:#2b4a7d;color:#eaf2ff}
+.msg.bot{align-self:flex-start;background:var(--panel2);border:1px solid var(--line)}
+.chat .composer{border-top:1px solid var(--line);padding:10px 12px}
+.chat .box{height:62px;border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.03);padding:8px 10px;color:var(--dim);font-size:12.2px}
+.chat .send{display:flex;align-items:center;gap:8px;margin-top:8px}
+.chat .send .ph{flex:1;height:26px;border:1px solid var(--line);border-radius:6px;background:rgba(255,255,255,.03)}
+.chat .send .go{width:26px;height:26px;border-radius:50%;background:var(--brand);color:#fff;display:grid;place-items:center;font-size:13px}
+.stage{position:relative}
+.stage>.cap{position:absolute;left:2px;top:-17px;font-size:11px;color:var(--dim)}
+/* 浮动条通用零件 */
+.fabwrap{position:absolute;z-index:20}
+.fabwrap .wbWrap{position:relative;display:flex}
+.fabwrap .wbAct{width:26px;height:25px;border:0;border-radius:7px;background:transparent;color:#9d9da7;font-size:13px;display:grid;place-items:center;cursor:pointer}
+.fabwrap .wbLabel{position:absolute;right:34px;top:50%;transform:translateY(-50%) translateX(4px);white-space:nowrap;font:10px/1.6 -apple-system,Segoe UI,sans-serif;color:#d7d7dc;background:#25252a;border:1px solid rgba(128,128,128,.35);border-radius:6px;padding:1px 7px;opacity:0;pointer-events:none;transition:opacity .14s,transform .14s}
+.fabwrap .wbWrap:hover .wbLabel{opacity:1;transform:translateY(-50%) translateX(0)}
+.fabwrap .wbDivider{height:1px;margin:1px 3px;background:rgba(128,128,128,.28)}
+
+/* A · 竖排胶囊 + 边缘高亮（与媒体库同款） */
+.fab-a{right:12px;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;padding:3px;border-radius:10px;border:1px solid rgba(47,129,247,.55);background:linear-gradient(180deg,rgba(38,38,44,.96),rgba(30,30,35,.96));box-shadow:0 0 0 1px rgba(47,129,247,.16),0 0 16px rgba(47,129,247,.30),0 4px 12px rgba(0,0,0,.45)}
+.fab-a:hover{border-color:rgba(47,129,247,.85);box-shadow:0 0 0 1px rgba(47,129,247,.35),0 0 26px rgba(47,129,247,.45),0 6px 18px rgba(0,0,0,.5)}
+.fab-a .wbDivider{background:linear-gradient(90deg,transparent,rgba(47,129,247,.75),transparent)}
+.fab-a .wbAct.assist{color:#6cb0ff}
+.fab-a .wbAct.assist:hover{color:#a8d2ff;box-shadow:0 0 12px rgba(47,129,247,.55) inset}
+.fab-a .wbLabel{border-color:rgba(47,129,247,.45);box-shadow:0 0 12px rgba(47,129,247,.30),0 1px 4px rgba(0,0,0,.35)}
+
+/* B · 吸边半隐藏 */
+.fab-b{right:0;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;align-items:flex-end;gap:2px;padding:4px 3px;border-radius:10px 0 0 10px;background:linear-gradient(90deg,rgba(38,38,44,.55),rgba(42,42,48,.98));border:1px solid rgba(128,128,128,.3);border-right:0;box-shadow:-6px 0 16px rgba(0,0,0,.35)}
+.fab-b .wbWrap{justify-content:flex-end;align-items:center}
+.fab-b .wbAct{opacity:.32}
+.fab-b .wbLabel{position:static;right:auto;transform:none;opacity:0;max-width:0;overflow:hidden;border:0;background:none;padding:0;transition:max-width .18s,opacity .18s}
+.fab-b.hovered .wbAct{opacity:1}
+.fab-b.hovered .wbLabel{opacity:1;max-width:150px;margin-right:6px}
+/* C · 底部居中横条 */
+.fab-c{left:50%;bottom:16px;transform:translateX(-50%);display:flex;gap:4px;padding:4px;border-radius:999px;background:rgba(32,32,38,.93);border:1px solid rgba(128,128,128,.28);box-shadow:0 8px 26px rgba(0,0,0,.5)}
+.fab-c .wbWrap{align-items:center}
+.fab-c .wbAct{width:auto;padding:0 4px}
+.fab-c .wbLabel{position:static;right:auto;top:auto;transform:none;opacity:1;background:none;border:0;box-shadow:none;padding:0 8px 0 0;font-size:11.5px;color:#d7d7dc}
+.fab-c .wbWrap:hover .wbLabel{transform:none}
+
+/* D · 单圆钮 + 展开列 */
+.fab-d{right:14px;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;align-items:flex-end;gap:8px}
+.fab-d .knob{width:30px;height:30px;border-radius:50%;border:1px solid rgba(47,129,247,.5);background:#25252a;color:#cfd3da;font-size:14px;cursor:pointer;box-shadow:0 0 12px rgba(47,129,247,.25),0 3px 10px rgba(0,0,0,.4)}
+.fab-d .knobMenu{display:flex;flex-direction:column;gap:5px;align-items:flex-end;opacity:0;transform:translateX(6px) scale(.96);transform-origin:right center;pointer-events:none;transition:opacity .16s,transform .16s}
+.fab-d.hovered .knobMenu{opacity:1;transform:none;pointer-events:auto}
+.fab-d .wbWrap{align-items:center}
+.fab-d .wbLabel{position:static;right:auto;top:auto;transform:none;opacity:1;background:#25252a;border:1px solid rgba(128,128,128,.35);border-radius:6px;padding:3px 9px;white-space:nowrap;font-size:11.5px;box-shadow:0 4px 14px rgba(0,0,0,.4)}
+.fab-d .wbAct{width:28px;height:26px;border:1px solid rgba(128,128,128,.3);background:#25252a}
+.fab-d .wbAct.assist{color:#6cb0ff}
+
+/* E · 玻璃拟态竖条 */
+.fab-e{right:12px;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;padding:3px;border-radius:12px;border:1px solid rgba(255,255,255,.14);background:linear-gradient(180deg,rgba(70,74,86,.45),rgba(24,24,28,.45));backdrop-filter:blur(10px);box-shadow:0 8px 26px rgba(0,0,0,.45),inset 0 1px 0 rgba(180,205,255,.28),inset 0 -1px 0 rgba(180,205,255,.10)}
+.fab-e:hover{box-shadow:0 10px 30px rgba(0,0,0,.55),inset 0 1px 0 rgba(200,220,255,.42)}
+.fab-e .wbAct{color:#b9c6da}
+.fab-e .wbAct.assist{color:#8cc0ff}
+.fab-e .wbLabel{background:rgba(30,30,36,.85);border-color:rgba(180,205,255,.22)}
+
+/* F · 并入顶栏（零浮动占用） */
+.topbtns{display:flex;gap:6px}
+
+/* ── 静态截图用的「交互态」：把 :hover 的效果显式给 .hovered ── */
+.fabwrap.hovered .wbWrap .wbLabel{opacity:1;transform:translateY(-50%) translateX(0)}
+.fab-a.hovered{border-color:rgba(47,129,247,.85);box-shadow:0 0 0 1px rgba(47,129,247,.35),0 0 26px rgba(47,129,247,.45),0 6px 18px rgba(0,0,0,.5)}
+.fab-a.hovered .wbAct.assist{color:#a8d2ff;box-shadow:0 0 12px rgba(47,129,247,.55) inset}
+.fab-e.hovered{box-shadow:0 10px 30px rgba(0,0,0,.55),inset 0 1px 0 rgba(200,220,255,.42)}
+.fab-c.hovered .wbAct{background:rgba(47,129,247,.20);color:#a8d2ff;border-radius:999px}
+.fab-b.hovered .wbAct{opacity:1}
+</style>
+<style>
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px;max-width:1180px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px;text-decoration:none;color:inherit;display:block}
+.card:hover{border-color:rgba(47,129,247,.6);box-shadow:0 0 0 1px rgba(47,129,247,.2),0 0 18px rgba(47,129,247,.18)}
+.card .k{color:#6cb0ff;font-size:11.5px;letter-spacing:.5px}
+.card .n{font-size:14px;margin:3px 0 6px;font-weight:600}
+.card .d{color:var(--dim);font-size:12px}
+.card .go2{color:var(--brand2);font-size:12px;margin-top:9px;display:block}
+.hint{color:var(--dim);font-size:12.5px;max-width:900px;margin:14px 0 18px}
+.hint b{color:var(--fg)}
+</style>
+</head><body>
+<h1>工作台 · 浮动工具条 重设计（6 个方案）</h1>
+<p class=hint><b style=color:#3fb950>已定稿：方案 A（竖排胶囊 + 边缘高亮）</b> —— 2026-10-27 选定；媒体库与工作台两边逐条一致（8 条品牌色声明完全相同）。<br>下面 5 个是备选，留档参考。<br><br>对象：IDE 右侧聊天面板里那条<b>竖直浮动条</b>（收起 AI 助手 / 在浏览器打开）。每个方案页都放了<b>真实的聊天面板上下文</b>与「常态 / 交互态」两态。<br>点下面任意一张卡片进对应方案页；看完回来说编号，我按选中的方案改 <code>vssaros-workbenches</code>（并同步媒体库那边保持一致）。</p>
+<div class=cards>
+<a class=card href=01-vertical-glow.html>
+<span class=k>方案 A ★ 已采用</span>
+<div class=n>竖排胶囊 + 边缘高亮</div>
+<div class=d>与媒体库完全统一；品牌蓝描边 + 外发光</div>
+<span class=go2>查看 mockup →</span>
+</a>
+<a class=card href=02-edge-peek.html>
+<span class=k>方案 B</span>
+<div class=n>吸边半隐藏</div>
+<div class=d>平时只贴边，hover 才滑出</div>
+<span class=go2>查看 mockup →</span>
+</a>
+<a class=card href=03-bottom-bar.html>
+<span class=k>方案 C</span>
+<div class=n>底部居中横条</div>
+<div class=d>图标 + 文字并排，贴在输入框上方</div>
+<span class=go2>查看 mockup →</span>
+</a>
+<a class=card href=04-single-knob.html>
+<span class=k>方案 D</span>
+<div class=n>单圆钮 + 展开列</div>
+<div class=d>常态只有一个圆钮，点开列动作</div>
+<span class=go2>查看 mockup →</span>
+</a>
+<a class=card href=05-glass.html>
+<span class=k>方案 E</span>
+<div class=n>玻璃拟态竖条</div>
+<div class=d>毛玻璃 + 上下内高光</div>
+<span class=go2>查看 mockup →</span>
+</a>
+<a class=card href=06-topbar.html>
+<span class=k>方案 F</span>
+<div class=n>并入顶栏</div>
+<div class=d>零浮动，聊天区完全干净</div>
+<span class=go2>查看 mockup →</span>
+</a>
+</div>
+<h3 style=margin-top:26px;font-size:13px;color:#9a9aa4>现状参考</h3>
+<p class=hint>现在（vssaros-workbenches 0.2.21）是<b>文字常显的两个圆角按钮</b>（收起 AI 助手 / 在浏览器打开），压在聊天内容上。<br>0.2.22 里已改成<b>方案 A</b>（与媒体库同一组高亮参数），但工作台外壳跑在 IDE 的 webview 里 ⇒ 要<b>重启 IDE</b>才会看到。</p>
+</body></html>

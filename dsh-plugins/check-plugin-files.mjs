@@ -127,7 +127,13 @@ for (const name of names) {
 			...readdirSync(dir).filter((f) => /^[^/]+\.ya?ml$/.test(f)),
 		].filter((f) => /\.(js|mjs|ya?ml)$/.test(f));
 		const listedSet = new Set(files.map((f) => String(f).replace(/\\/g, '/')));
-		const notListed = runtimeFiles.filter((f) => !listedSet.has(f));
+		/* ★ 2026-10-27：`files` 允许**目录级声明**（如 `lib/adapters/vendor` 覆盖其下 600+ 文件）。
+		   原来只认逐文件列举 ⇒ 一加 vendor 就红，还提示"没列 623 个"。
+		   判据改为：精确命中 **或** 命中某个已声明目录的前缀。 */
+		const listedPrefixes = [...listedSet]
+			.filter((f) => !/\.[a-z0-9]+$/i.test(f))
+			.map((f) => f.replace(/\/+$/, '') + '/');
+		const notListed = runtimeFiles.filter((f) => !listedSet.has(f) && !listedPrefixes.some((p) => f.startsWith(p)));
 		check(`${name}：files 白名单**覆盖全部运行时文件**（lib/bin/yml 共 ${runtimeFiles.length} 个）`,
 			notListed.length === 0,
 			notListed.length

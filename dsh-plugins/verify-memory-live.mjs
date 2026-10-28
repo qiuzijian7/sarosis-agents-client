@@ -38,7 +38,7 @@ const needle = (lines, re) => lines.filter(l => re.test(l));
 
 /* ── ① 网关 ─────────────────────────────────────────────────────────── */
 {
-	const r = spawnSync('curl', ['-sS', '--max-time', '4', 'http://127.0.0.1:3112/health'], { encoding: 'utf8' });
+	const r = spawnSync('curl', ['-sS', '--max-time', '4', 'http://127.0.0.1:3112/health'], { encoding: 'utf8', windowsHide: true });
 	const ok = r.status === 0 && /"status"\s*:\s*"ok"/.test(r.stdout || '');
 	add('网关 3112 在跑', ok, ok ? (r.stdout || '').trim().slice(0, 120) : '连不上 ⇒ 记忆读写注入全部不可用（起 IDE 会自动拉起）');
 }
@@ -48,7 +48,7 @@ let ideStart = null;
 {
 	const r = spawnSync('powershell', ['-NoProfile', '-Command',
 		"Get-CimInstance Win32_Process -Filter \"Name='Saroasis harness.exe'\" | Select-Object -First 1 -ExpandProperty CreationDate"],
-	{ encoding: 'utf8' });
+	{ encoding: 'utf8', windowsHide: true });
 	const txt = (r.stdout || '').trim();
 	const parsed = txt ? new Date(txt) : null;
 	let resolved = parsed && !Number.isNaN(parsed.getTime()) ? parsed : null;

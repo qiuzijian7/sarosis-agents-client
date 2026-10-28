@@ -1,0 +1,9 @@
+# @vssaros/dsh-relay bundle patch: insert the relay row（挂载整页 `/x/relay/`）。
+#
+# ⚠ 2026-10-27 实测：dsh 的 loader **不会**把这一行的 `config` 交给插件模块的 `init()`
+#   ⇒ 中转站地址与注册密钥的**默认值写在 lib/index.js 里**（DEFAULT_RELAY / DEFAULT_ENROLL_KEY），
+#   这一行只负责把插件挂上。想换中转站 ⇒ 改代码默认值（或由宿主 `--patch` 覆盖这一行）。
+- insert:
+    - id: vssaros-relay
+      name: '@vssaros/dsh-relay'
+      config: {}

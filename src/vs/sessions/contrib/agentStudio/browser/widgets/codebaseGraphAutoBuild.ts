@@ -78,18 +78,19 @@ export async function ensureGraphForUi(
 		host.setNotice(`代码图谱正在加载：${line} —— 请稍候…`, 'progress');
 	}));
 
-	// ① 快速路径：内存 store 里已有图 → 直接刷新（不打扰、无 await 抖动）
-	if (graphService.hasGraphData()) { refreshOnce(); return; }
-
-	// ①b ★★★ 2026-09-16：**切换工作区后的图谱是「按需加载」的**（见 bootstrap 的 folder 变化回调：
-	// 加载一次 3.6~6s 且期间交互延迟实测 ≈0.58s ⇒ 不再在切换后立刻加载）。
-	// 「打开 codebase UI」正是「真正要用图」的入口之一 ⇒ 这里主动触发它。
-	// ⚠ 必须**早于**「无图 ⇒ 自动建图」的判断：否则会退化成**全量索引** —— 磁盘上明明有现成制品，
-	// 那既重得多、方向也错（用户日志里 `bootstrap 完成（待索引 0 个 folder）` 正是「有制品」的证据）。
+	// ①b ★★★ 2026-10-27：**先确保「主 root 的图」在内存里**，再做快速路径判定。
+	//
+	// 为什么必须排在快速路径**之前**：主 root 现在也可能被延迟（2026-10-27 的大图按需加载）⇒
+	// 工作区里有**别的仓已加载**时，`hasGraphData()` 就是 true ⇒ 若走快速路径就永远不载主仓 ⇒
+	// 「默认检索作用域」（`_resolveActiveProject()` 先扫"已加载过的 folder"）会漂到别的仓 ⇒
+	// Find Symbol 之类的查询打到错的图谱（搜不到主仓的符号）✗✗。
+	// ⇒ 这里只载**主 root**那一份（`primaryOnly`）⇒ 作用域恢复 ✓；非主 root 的大图仍按需加载 ✓。
 	// 无待加载项时是空操作（幂等 + 进行中去重，见 `ensureDeferredGraphsLoaded`）。
-	host.setNotice('代码图谱尚未载入内存，正在按需加载（首次使用需几秒）…', 'progress');
-	await graphService.ensureDeferredGraphsLoaded('codebase UI open');
+	host.setNotice('代码图谱尚未载入内存，正在按需加载（大图可能要十几秒，请稍候）…', 'progress');
+	await graphService.ensureDeferredGraphsLoaded('codebase UI open', { primaryOnly: true });
 	if (disposables.isDisposed) { return; } // 模态已被用户关掉 ⇒ 不做后续动作
+
+	// ① 快速路径：内存 store 里已有图 → 直接刷新（不打扰、无 await 抖动）
 	if (graphService.hasGraphData()) { host.setNotice(''); refreshOnce(); return; }
 
 	// ② **加载中 / 构建中**：显示 codebase 状态并**等它结束**（提示用户稍候）。

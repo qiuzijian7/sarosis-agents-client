@@ -14,6 +14,10 @@ import {
 	parseCbmIgnore,
 	planForeignProjectPrune,
 	decideExternalArtifactReload,
+	shouldDeferGraphLoad,
+	isFileStatChanged,
+	FILE_MTIME_TOLERANCE_NS,
+	EXTERNAL_RELOAD_MAX_AUTO_NODES,
 	isDshProducedManifest,
 	artifactProducerOf,
 	DSH_ARTIFACT_PRODUCER,
@@ -299,5 +303,193 @@ suite('codebaseIndexDefaults / 预装的 dsh 运行时必须被排除（否则�
 		const dirs = new Set(excludeDirsForProfile('balanced'));
 		assert.ok(matchesExcludeDir('DSH-RUNTIME', dirs), '大写形式也要命中（匹配是大小写不敏感的）✗');
 		assert.ok(matchesExcludeDir('dsh-runtime', dirs), '小写形式命中 ✓');
+	});
+});
+
+/**
+ * 规模闸（2026-10-27，性能止血）：外部重载 = 主线程合并整张图 ⇒ 图太大时**不许自动重载**。
+ *
+ * 背景（真机）：21.9 万节点 / 130 万边 / 129MB 制品 ⇒ 合并 **16.9s** + BM25 **5.6s**
+ * ⇒ 主线程冻结 17s ⇒ ActivityBar 点击与编辑器输入全无响应（用户报「鼠标点击特别卡顿」）。
+ * 而触发频率由 dsh 侧 watcher 决定（每写一次盘就改一次 `saved_at`）⇒ 原节流 5s + 轮询 10s
+ * ⇒ 最坏情况**每 10 秒冻一次 17 秒** ✗✗。
+ */
+suite('decideExternalArtifactReload / 规模闸：大图不自动重载（2026-10-27）', () => {
+
+	const idle = (now = 1_000_000) => ({ writeInFlight: false, now });
+
+	test('★ 盘上节点数超上限 ⇒ 不重载，并打上 tooBig 标记（调用方据此提示用户）', () => {
+		const got = decideExternalArtifactReload(
+			{ savedAt: 9000, nodeCount: 219036, edgeCount: 1304798 }, { savedAt: 1000, nodeCount: 219000, edgeCount: 1300000 }, idle(),
+		);
+		assert.strictEqual(got.reload, false, '大图不许自动重载（会冻结主线程十几秒）✗');
+		if (!got.reload) {
+			assert.strictEqual(got.tooBig, true, '必须打上 tooBig 标记 ⇒ 调用方要告诉用户 ✗');
+			assert.ok(!got.adoptAsBaseline, '不许把基线跟上去（跟了用户手动刷新后就不会重载了 ✗）');
+			assert.match(got.reason, /节点/);
+		}
+	});
+
+	test('★ 刚好在上限之内 ⇒ 照旧重载（闸不能误伤正常规模）', () => {
+		const got = decideExternalArtifactReload(
+			{ savedAt: 9000, nodeCount: EXTERNAL_RELOAD_MAX_AUTO_NODES, edgeCount: 999 },
+			{ savedAt: 1000, nodeCount: 100, edgeCount: 120 }, idle(),
+		);
+		assert.strictEqual(got.reload, true, '上限之内必须照旧重载 ✓');
+	});
+
+	test('★ 规模闸排在"自我写识别"之后 ⇒ 自己刚落盘的那份仍按基线跟（不误报 tooBig）', () => {
+		const got = decideExternalArtifactReload(
+			{ savedAt: 9000, nodeCount: 219036, edgeCount: 1304798 },
+			{ savedAt: 1000, nodeCount: 219036, edgeCount: 1304798 }, idle(),
+		);
+		assert.strictEqual(got.reload, false);
+		if (!got.reload) {
+			assert.strictEqual(got.adoptAsBaseline, true, '节点/边数逐个一致 ⇒ 判为自己刚落盘 ✓');
+			assert.ok(!got.tooBig, '自己写的不该被当成"图太大"✗');
+		}
+	});
+
+	test('★ 读不出节点数（老制品）⇒ 闸不生效（不许凭空拦下重载）', () => {
+		const got = decideExternalArtifactReload({ savedAt: 9000 }, { savedAt: 1000 }, idle());
+		assert.strictEqual(got.reload, true);
+	});
+});
+
+/**
+ * 内容指纹判据（2026-10-27）：dsh 侧的 watcher 会**周期性重写**制品（时间戳变了、内容没变）
+ * ⇒ 时间戳判据每次都说"变了" ⇒ IDE 就去整张重解析+合并（实测 18s 主线程冻结）✗✗。
+ * ⇒ 有指纹可比时：**指纹相同 ⇒ 图没变 ⇒ 不重载** ✓。
+ */
+suite('decideExternalArtifactReload / 内容指纹（2026-10-27）', () => {
+
+	const idle = (now = 1_000_000) => ({ writeInFlight: false, now });
+
+	test('★ 时间戳更新但**指纹一致** ⇒ 不重载（只把基线跟上）', () => {
+		const got = decideExternalArtifactReload(
+			{ savedAt: 9000, nodeCount: 219036, edgeCount: 1304798, fingerprint: 'abc123#r1' },
+			{ savedAt: 1000, nodeCount: 219036, edgeCount: 1304798, fingerprint: 'abc123#r1' },
+			idle(),
+		);
+		assert.strictEqual(got.reload, false, '内容没变就不该重载（18s 的重活）✓');
+		if (!got.reload) {
+			assert.strictEqual(got.adoptAsBaseline, true, '基线要跟上（否则每轮都重判）✓');
+			assert.match(got.reason, /指纹/);
+		}
+	});
+
+	test('★ 指纹不同 ⇒ 照旧重载（真的变了）', () => {
+		// ⚠ 用**小图**样本：规模闸（>3 万节点不自动重载）会先一步拦下大图 ⇒ 这里测的是指纹判据本身
+		const got = decideExternalArtifactReload(
+			{ savedAt: 9000, nodeCount: 1000, edgeCount: 2000, fingerprint: 'abc123#r1' },
+			{ savedAt: 1000, nodeCount: 1000, edgeCount: 2000, fingerprint: 'def456#r1' },
+			idle(),
+		);
+		assert.strictEqual(got.reload, true, '指纹变了 ⇒ 真变了 ⇒ 重载 ✓');
+	});
+
+	test('★ 只有一侧有指纹 ⇒ 不可比 ⇒ 按原逻辑（保守）', () => {
+		const onlyDisk = decideExternalArtifactReload(
+			{ savedAt: 9000, fingerprint: 'abc#r1' }, { savedAt: 1000 }, idle());
+		assert.strictEqual(onlyDisk.reload, true, '只有盘上有指纹 ⇒ 不可比 ⇒ 照旧 ✓');
+		const onlyLoaded = decideExternalArtifactReload(
+			{ savedAt: 9000 }, { savedAt: 1000, fingerprint: 'abc#r1' }, idle());
+		assert.strictEqual(onlyLoaded.reload, true, '只有内存里有指纹 ⇒ 不可比 ⇒ 照旧 ✓');
+	});
+
+	test('★ 指纹相同 + 节点/边数也相同 ⇒ 仍按"内容没变"处理（指纹优先于计数 ✓）', () => {
+		const got = decideExternalArtifactReload(
+			{ savedAt: 9000, nodeCount: 10, edgeCount: 20, fingerprint: 'x#r1' },
+			{ savedAt: 1000, nodeCount: 10, edgeCount: 20, fingerprint: 'x#r1' },
+			idle(),
+		);
+		assert.strictEqual(got.reload, false);
+	});
+
+	test('★★ 数量相同但**指纹不同** ⇒ 不得判成"自己刚写"（数量相同 ≠ 内容相同）⇒ 重载', () => {
+		const got = decideExternalArtifactReload(
+			{ savedAt: 9000, nodeCount: 1000, edgeCount: 2000, fingerprint: 'new#r1' },
+			{ savedAt: 1000, nodeCount: 1000, edgeCount: 2000, fingerprint: 'old#r1' },
+			idle(),
+		);
+		assert.strictEqual(got.reload, true, '指纹不同 ⇒ 真变了 ⇒ 必须重载（否则 IDE 永远停在旧图 ✗）');
+	});
+
+	test('★ 规模闸**优先于**指纹（超大图即便指纹变了也不自动重载 —— 避免 18s 冻结）', () => {
+		const got = decideExternalArtifactReload(
+			{ savedAt: 9000, nodeCount: 219036, edgeCount: 1304798, fingerprint: 'new#r1' },
+			{ savedAt: 1000, nodeCount: 219036, edgeCount: 1304798, fingerprint: 'old#r1' },
+			idle(),
+		);
+		assert.strictEqual(got.reload, false, '大图不自动重载（规模闸）✓');
+		if (!got.reload) {
+			assert.strictEqual(got.tooBig, true, '标记为 tooBig（调用方要提示用户手动刷新）✓');
+		}
+	});
+});
+
+/**
+ * 主 root 的按需加载（2026-10-27）：129MB / 42 万节点的图在打开工作区时同步合并要 **18.3s**
+ * ⇒ 主线程冻结二十多秒 ⇒ ActivityBar 点击与编辑器输入全无响应。
+ * ⇒ 主 root 也纳入延迟（阈值独立，默认 20MB）；真源在 dsh 侧（始终最新）⇒ 延后只影响 IDE 本地检索。
+ */
+suite('shouldDeferGraphLoad / 主 root 也按需加载（2026-10-27）', () => {
+
+	const MB = 1024 * 1024;
+
+	test('★ 主 root 的图超过阈值 ⇒ 延迟（不再在打开工作区时同步合并）', () => {
+		assert.strictEqual(shouldDeferGraphLoad(0, 129 * MB, 5, false, 20), true,
+			'129MB 的主根图必须延迟（同步合并 = 冻结界面 18s）✓');
+	});
+
+	test('★ 主 root 的图在阈值之内 ⇒ 照旧加载（不能把正常规模也延后）', () => {
+		assert.strictEqual(shouldDeferGraphLoad(0, 3 * MB, 5, false, 20), false);
+	});
+
+	test('★ 主 root 阈值设为 0 ⇒ 不延迟（保留旧行为的退路）', () => {
+		assert.strictEqual(shouldDeferGraphLoad(0, 129 * MB, 5, false, 0), false,
+			'0 = 关闭主根延迟 ⇒ 用户可随时恢复旧行为 ✓');
+	});
+
+	test('★ 非主 root 的旧语义不变（阈值独立、互不影响）', () => {
+		assert.strictEqual(shouldDeferGraphLoad(1, 8 * MB, 5, false, 20), true, '8MB > 5MB ⇒ 延迟 ✓');
+		assert.strictEqual(shouldDeferGraphLoad(1, 3 * MB, 5, false, 20), false, '3MB < 5MB ⇒ 不延迟 ✓');
+		// 主根阈值开着，也不该影响非主根的判定 ✓
+		assert.strictEqual(shouldDeferGraphLoad(1, 3 * MB, 0, false, 20), false, '非主根延迟关了就不延迟 ✓');
+	});
+
+	test('★ 幂等：已在延迟集合里 ⇒ 保持延迟（不因这次 stat 结果改判）', () => {
+		assert.strictEqual(shouldDeferGraphLoad(0, 1 * MB, 5, true, 20), true);
+	});
+});
+
+/**
+ * mtime 容差（2026-10-27）：watcher 的「改过没有」不能拿**别的生产者**写的 mtime 做逐字节比较。
+ *
+ * 现场：store 的图谱来自 dsh 制品（甲档交接）⇒ 其 mtime 与本机 stat 差 375µs、size 相同
+ * ⇒ 每个文件都被判「改过」⇒ 一轮 6826 个文件被重解析（28s、堆 +304MB）✗。
+ */
+suite('isFileStatChanged / mtime 容差（2026-10-27）', () => {
+
+	test('★ size 相同、mtime 只差亚毫秒（跨生产者的取整差异）⇒ 不算改过', () => {
+		// 真机实测的一对：old(size=6378, mtime=…213625000) vs new(size=6378, mtime=…214000000)
+		assert.strictEqual(isFileStatChanged(6378, 1788520092213625000, 6378, 1788520092214000000), false,
+			'差 375µs 的取整差异不是改动 ✗（否则每轮全量重解析）');
+	});
+
+	test('★ size 变了 ⇒ 一定算改过（哪怕 mtime 没动）', () => {
+		assert.strictEqual(isFileStatChanged(6378, 1788520092213625000, 6380, 1788520092213625000), true);
+	});
+
+	test('★ mtime 变化超过容差 ⇒ 算改过（真实编辑必须被抓到 ✓）', () => {
+		const base = 1788520092213625000;
+		assert.strictEqual(isFileStatChanged(6378, base, 6378, base + 50_000_000), true, '50ms ⇒ 改过 ✓');
+		assert.strictEqual(isFileStatChanged(6378, base, 6378, base + 2_000_000), true, '2ms ⇒ 改过 ✓');
+	});
+
+	test('★ 容差可显式覆盖（判据可测、也可按机器调）', () => {
+		const base = 1788520092213625000;
+		assert.strictEqual(isFileStatChanged(6378, base, 6378, base + 100_000, 0), true, '容差 0 ⇒ 逐字节比较 ⇒ 算改过 ✓');
+		assert.strictEqual(isFileStatChanged(6378, base, 6378, base + 100_000, 1_000_000), false, '容差 1ms ⇒ 不算 ✓');
 	});
 });

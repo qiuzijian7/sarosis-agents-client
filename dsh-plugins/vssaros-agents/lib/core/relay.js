@@ -59,6 +59,40 @@ export function finalAssistantText(events) {
 	return found;
 }
 
+/**
+ * 与 `finalAssistantText` **同源**，但额外收集 `image` part（2026-10-27，出站富媒体）。
+ *
+ * 为什么另起一个函数而不是改旧的：`finalAssistantText` 被 relay / 群聊 / assignments 共用，
+ * 它的返回形状（`{ text, interrupted }`）已经被多处消费；改形状会波及三处调用点，而收益只有一处。
+ * ⇒ 新函数返回更宽的形状，谁需要图谁用。
+ *
+ * ⚠ 图片来自 assistant message 的 content 数组。实测这份 content 里**确实可能**有非 text part
+ *   （否则旧函数不需要 `filter(type === 'text')`），但**何时出现**取决于工具是否产出图
+ *   （画图 / 截图类工具）。所以这里只做"有就带上"，不假设一定有。
+ */
+export function finalAssistantContent(events) {
+	let found = null;
+	for (const event of Array.isArray(events) ? events : []) {
+		if (event?.type !== 'assistant/message') {
+			continue;
+		}
+		const content = event.data?.message?.content;
+		const parts = Array.isArray(content) ? content : null;
+		const text = typeof content === 'string'
+			? content.trim()
+			: (parts ? parts.filter((p) => p?.type === 'text').map((p) => p.text).join('\n').trim() : '');
+		const images = parts
+			? parts
+				.filter((p) => p?.type === 'image' && typeof p.data === 'string' && p.data)
+				.map((p) => ({ mediaType: String(p.mediaType ?? ''), data: String(p.data), name: String(p.name ?? '') }))
+			: [];
+		if (text || images.length) {
+			found = { text, images, interrupted: event.data?.interrupted === true };
+		}
+	}
+	return found;
+}
+
 /** 回传消息的正文（`[Reply from …]` 头协议，与触发消息的头同族）。 */
 export function replyText({ responderName, responderSessionId, final }) {
 	const body = final

@@ -21,6 +21,7 @@ import { createOwnStore } from './ownStore.js';
 import { syncFromIdeDb } from './ideSync.js';
 import { bindFoundation } from './foundationRef.js';
 import { dataRootOf, lastReadModeOf, listAssets, mediaDbPathOf, mediaRootOf, statsOf } from './store.js';
+import { ensureMediaAgent } from './mediaAgent.js';
 
 
 export const name = 'vssaros-media';
@@ -35,7 +36,16 @@ const PAGE_ROUTE = '/x/media/';
 /** ★ 2026-10-24：媒体库 API 前缀（读写的都是 **dsh 侧真源** `media-store/`）。 */
 const API_PREFIX = '/x/media/api/';
 /** 本插件注册的工具名（页面自诊断用，探针据此断言）。 */
-const TOOL_NAMES = ['media_list', 'media_stats', 'media_autotag', 'media_tag_merge', 'media_board_plan'];
+const TOOL_NAMES = ['media_list', 'media_stats', 'media_context', 'media_export', 'media_autotag', 'media_tag_merge', 'media_board_plan'];
+
+/**
+ * **页面当前上下文**（2026-10-27「助手 ⇄ UI 交互」的页面→助手 方向）。
+ *
+ * 用户说"就按我页面上现在这样整理"时，agent 光看库不知道"现在这样"是什么（左栏哪一格、什么筛选、
+ * 选中了哪几张）⇒ 页面点「AI 助手」时把这台状态 POST 上来，agent 用 `media_context` 读回。
+ * ⚠ 只存在内存里（一个 Host 一份）：它是"人正在看什么"的瞬时快照，重启后自然失效。
+ */
+let pageContext = null;
 /** 页面首屏列出的资产条数（600+ 条别一次拉完；底部「加载更多」按这个步长翻页）。 */
 const PAGE_LIMIT = 60;
 /** 缩略图缓存宽度（`media-store/thumbs/<sha8>.webp` 都是这个宽度；`?w=` 只作契约声明）。 */
@@ -110,13 +120,122 @@ function ideMissingOp(what) {
 		+ '⇒ 去 设置 → 模型 → LightAI 登录，再让它走默认路由；或调用时显式指定 LightAI 的 provider_id / model_id。');
 }
 
+/** 产物下载上限（视频可能很大）：超过就**不入库**，只把 URL 回给会话。 */
+const IMPORT_MAX_BYTES = 512 * 1024 * 1024;
+const IMPORT_TIMEOUT_MS = 3 * 60 * 1000;
+
+/** content-type → { mime, ext }（认不出来的按 kind 兜底）。 */
+function mimeInfoOf(contentType, kind, urlStr) {
+	const type = String(contentType ?? '').split(';')[0].trim().toLowerCase();
+	const byType = {
+		'video/mp4': ['video/mp4', 'mp4'], 'video/webm': ['video/webm', 'webm'], 'video/quicktime': ['video/quicktime', 'mov'],
+		'audio/mpeg': ['audio/mpeg', 'mp3'], 'audio/mp3': ['audio/mpeg', 'mp3'], 'audio/wav': ['audio/wav', 'wav'],
+		'audio/x-wav': ['audio/wav', 'wav'], 'audio/mp4': ['audio/mp4', 'm4a'], 'audio/ogg': ['audio/ogg', 'ogg'],
+		'audio/flac': ['audio/flac', 'flac'],
+	};
+	if (byType[type]) { return { mime: byType[type][0], ext: byType[type][1] }; }
+	// URL 后缀兜底（CDN 常回 application/octet-stream）
+	const fromUrl = /\.([a-z0-9]{2,4})(?:\?|#|$)/i.exec(String(urlStr ?? ''));
+	const ext = fromUrl ? fromUrl[1].toLowerCase() : (kind === 'video' ? 'mp4' : 'mp3');
+	return { mime: type && type !== 'application/octet-stream' ? type : (kind === 'video' ? 'video/mp4' : 'audio/mpeg'), ext };
+}
+
+/**
+ * **把 LightAI 的产物 URL 下载成字节 → 入库**（2026-10-27，补上"生成时自动归档"漏的一段）。
+ *
+ * 背景：`video_generate` / `text_to_speech` 原来只把 `{url}` 回给会话 —— 既不进库也不归档，
+ * 而 imagegen 的生图是直接 `importAsset({bytes})` 的 ⇒ 库里永远只有图、没有视频/音频。
+ * 入库后**自动归档**（`ownStore.importAsset` 尾钩）也跟着生效。
+ *
+ * ⚠ 三条不变量（与生图入库同口径）：
+ *   · **绝不抛**：CDN 需要鉴权 / 超时 / 文件过大 ⇒ 只记 warning，工具照常返回 URL；
+ *   · 只有 `http(s)` 的产物 URL 才试（`data:` / 本地路径不走这条路）；
+ *   · `ref` 记原始 URL ⇒ 即使字节没下下来，库里也能看到产物地址。
+ *
+ * @returns {Promise<{id: string, archivePath?: string}|undefined>}
+ */
+async function importExternalOutput(store, { kind, url, prompt, model, posterUrl }) {
+	if (!store || typeof store.importAsset !== 'function') { return undefined; }
+	const target = String(url ?? '');
+	if (!/^https?:\/\//i.test(target)) { return undefined; }
+	const timer = new AbortController();
+	const timeout = setTimeout(() => timer.abort(), IMPORT_TIMEOUT_MS);
+	try {
+		const res = await fetch(target, { signal: timer.signal, redirect: 'follow' });
+		if (!res.ok) {
+			console.warn(`[vssaros-media] 产物没下下来（HTTP ${res.status}），只留 URL：${target.slice(0, 120)}`);
+			return undefined;
+		}
+		const declared = Number(res.headers.get('content-length') ?? 0);
+		if (declared > IMPORT_MAX_BYTES) {
+			console.warn(`[vssaros-media] 产物 ${Math.round(declared / 1048576)}MB 超过入库上限，只留 URL：${target.slice(0, 120)}`);
+			return undefined;
+		}
+		const bytes = Buffer.from(await res.arrayBuffer());
+		if (!bytes.length) { return undefined; }
+		if (bytes.length > IMPORT_MAX_BYTES) {
+			console.warn('[vssaros-media] 产物超过入库上限（无 content-length），只留 URL');
+			return undefined;
+		}
+		const { mime, ext } = mimeInfoOf(res.headers.get('content-type'), kind, target);
+		// 可读文件名：归档目录是**给人看的**，别落成 `asset-xxxx.mp4`（exportNameOf 会用它当 slug）
+		const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
+		const label = kind === 'video' ? '视频' : kind === 'audio' ? '音频' : '素材';
+		const asset = await store.importAsset({
+			bytes,
+			kind,
+			mime,
+			ext,
+			fileName: `${label}-${String(model ?? '') || 'lightai'}-${stamp}.${ext}`,
+			provider: 'lightai',
+			source: 'lightai',
+			ref: target,
+			prompt: String(prompt ?? '').slice(0, 2000),
+			model: String(model ?? ''),
+			metaJson: JSON.stringify({ lightaiUrl: target, ...(posterUrl ? { posterUrl } : {}) }),
+		});
+		return asset?.id ? { id: asset.id, archivePath: asset.archivePath } : undefined;
+	} catch (err) {
+		// 取消 / 超时 / 网络错误：记一句就够，绝不影响生成结果
+		console.warn(`[vssaros-media] 产物入库失败（只留 URL）：${String(err?.message ?? err)}`);
+		return undefined;
+	} finally {
+		clearTimeout(timeout);
+	}
+}
+
+/**
+ * 批量入库 LightAI 产物（一次最多 4 条：一批视频已很少，多了纯下载耗时）。
+ * @returns {Promise<Array<{id: string, archivePath?: string}>>} 入库成功的那些（失败的不占位）
+ */
+async function importOutputs(store, kind, list, prompt, model) {
+	const out = [];
+	for (const item of (Array.isArray(list) ? list : []).slice(0, 4)) {
+		const one = await importExternalOutput(store, {
+			kind,
+			url: item?.url,
+			posterUrl: item?.coverUrl ?? item?.posterUrl,
+			prompt,
+			model,
+		});
+		if (one) { out.push(one); }
+	}
+	return out;
+}
+
 /** ★ 2026-10-24：dsh 侧真源（懒建 + 记住；建不起来就如实报，不让整页 500）。 */
 let ownStoreCache = null;
 let ownStoreError = '';
 function ownStoreOf(config) {
 	if (ownStoreCache) { return ownStoreCache; }
 	try {
-		ownStoreCache = createOwnStore({ dataRoot: dataRootOf(config) });
+		ownStoreCache = createOwnStore({
+			dataRoot: dataRootOf(config),
+			// 自动归档：`config.archiveDir`（缺省 = `<数据根>/media-store/archive`，同卷硬链接不占空间；
+			// 传空串关掉）。`archiveLayout` 决定分层（provider/kind/date/flat）。
+			archiveDir: config?.archiveDir,
+			archiveLayout: config?.archiveLayout,
+		});
 		ownStoreError = '';
 	} catch (e) {
 		ownStoreError = String(e?.message ?? e);
@@ -368,12 +487,23 @@ function toolDefinitions(state, config) {
 				properties: {
 					ok: { type: 'boolean' },
 					videos: { type: 'array', items: { type: 'object', properties: { url: { type: 'string' } } } },
+					// ★ 2026-10-27：产物入库结果（有就说明已进媒体库 + 已归档；没有说明只留了 URL）
+					media: {
+						type: 'array',
+						items: {
+							type: 'object',
+							properties: { id: { type: 'string' }, archivePath: { type: 'string' } },
+						},
+					},
 					error: { type: 'string' },
 				},
 			},
 			render: (_args, value) => [{
 				type: 'text',
-				text: value.ok ? `生成了 ${value.videos?.length ?? 0} 个视频` : `生成失败：${value.error ?? '未知原因'}`,
+				text: value.ok
+					? `生成了 ${value.videos?.length ?? 0} 个视频`
+						+ (value.media?.length ? `（已入库 ${value.media.length} 条并归档）` : '（产物没下下来，只留了 URL）')
+					: `生成失败：${value.error ?? '未知原因'}`,
 			}],
 		},
 		execute: async (params) => {
@@ -397,7 +527,10 @@ function toolDefinitions(state, config) {
 				});
 				const videos = Array.isArray(out?.videos) ? out.videos : [];
 				if (videos.length === 0) { throw new Error('LightAI 视频生成完成但没返回视频 URL'); }
-				return { ok: true, videos, model: out.modelId };
+				// ★ 2026-10-27：产物**下载入库**（入库即自动归档）—— 以前只回 URL，库里有图没视频。
+				//   best-effort：下不来就只留 URL（见 importExternalOutput 的三条不变量）。
+				const media = await importOutputs(ownStoreOf(config), 'video', videos, prompt, out.modelId);
+				return { ok: true, videos, model: out.modelId, ...(media.length ? { media } : {}) };
 			}
 			const hint = needLightAIDefault(state, target);
 			if (hint) { throw new Error(hint); }
@@ -435,12 +568,22 @@ function toolDefinitions(state, config) {
 				properties: {
 					ok: { type: 'boolean' },
 					audios: { type: 'array', items: { type: 'object', properties: { url: { type: 'string' } } } },
+					media: {
+						type: 'array',
+						items: {
+							type: 'object',
+							properties: { id: { type: 'string' }, archivePath: { type: 'string' } },
+						},
+					},
 					error: { type: 'string' },
 				},
 			},
 			render: (_args, value) => [{
 				type: 'text',
-				text: value.ok ? `合成了 ${value.audios?.length ?? 0} 段音频` : `合成失败：${value.error ?? '未知原因'}`,
+				text: value.ok
+					? `合成了 ${value.audios?.length ?? 0} 段音频`
+						+ (value.media?.length ? `（已入库 ${value.media.length} 条并归档）` : '（产物没下下来，只留了 URL）')
+					: `合成失败：${value.error ?? '未知原因'}`,
 			}],
 		},
 		execute: async (params) => {
@@ -462,7 +605,9 @@ function toolDefinitions(state, config) {
 				});
 				const audios = Array.isArray(out?.audios) ? out.audios : [];
 				if (audios.length === 0) { throw new Error('LightAI 语音合成完成但没返回音频 URL'); }
-				return { ok: true, audios, model: out.modelId };
+				// ★ 2026-10-27：同视频 —— 下载入库（音频很小，这条几乎总能成功）
+				const media = await importOutputs(ownStoreOf(config), 'audio', audios, text, out.modelId);
+				return { ok: true, audios, model: out.modelId, ...(media.length ? { media } : {}) };
 			}
 			const hint = needLightAIDefault(state, target);
 			if (hint) { throw new Error(hint); }
@@ -597,6 +742,121 @@ function toolDefinitions(state, config) {
 			throw ideMissingOp('视频抽帧');
 		},
 	}, {
+		// ★ 2026-10-27（助手 ⇄ UI 交互）：**用户此刻在页面里看什么**。
+		//   页面点「AI 助手」时会把当前状态（左栏哪一格 / 筛选 / 选中项 / 总数）交上来，
+		//   这里读回来 ⇒ 用户说"就按现在这样整理"时不用再问一遍范围。
+		name: 'media_context',
+		description: [
+			'读用户**当前在媒体库页面里的状态**：左栏在哪一格（全部/收藏/未分类/未标签/回收站/某分组/某标签）、',
+			'激活的筛选（kind / provider / query / favorite …）、选中了哪些资产（id 与文件名）、当前命中总数。',
+			'⚠ 这是"人正在看什么"的瞬时快照，可能为空（用户没从页面点过助手）⇒ 空就按普通流程问范围，别猜。',
+			'用户提到"这些 / 现在这些 / 我选中的 / 当前筛选"时**先调它**，再决定用哪些参数去 media_list 取数据。',
+		].join(''),
+		parameters: { type: 'object', properties: {} },
+		output: {
+			schema: {
+				type: 'object',
+				properties: {
+					ok: { type: 'boolean' },
+					empty: { type: 'boolean' },
+					context: {
+						type: 'object',
+						properties: {
+							nav: { type: 'string' }, label: { type: 'string' }, kind: { type: 'string' },
+							provider: { type: 'string' }, board: { type: 'string' }, tag: { type: 'string' },
+							query: { type: 'string' }, favorite: { type: 'boolean' }, untagged: { type: 'boolean' },
+							unclassified: { type: 'boolean' }, deleted: { type: 'boolean' },
+							selected: { type: 'array', items: { type: 'string' } },
+							total: { type: 'integer' }, at: { type: 'integer' },
+						},
+					},
+				},
+			},
+			render: (_args, value) => [{
+				type: 'text',
+				text: value.empty
+					? '用户还没有从媒体库页面点过「AI 助手」⇒ 没有页面上文，按普通流程问范围。'
+					: `用户正在看：${value.context?.label ?? value.context?.nav ?? '(未知)'}`
+						+ `（命中 ${value.context?.total ?? 0} 条）`
+						+ (value.context?.query ? ` · 搜索「${value.context.query}」` : '')
+						+ (value.context?.selected?.length ? ` · 选中 ${value.context.selected.length} 条` : ''),
+			}],
+		},
+		isConcurrencySafe: () => true,   // 只读
+		execute: async () => ({ ok: true, empty: !pageContext, context: pageContext ?? undefined }),
+	}, {
+		// ★ 2026-10-27（用户要求）：让「媒体库管家」能说"把这批导到 D:\交付\0715"。
+		//   导出的是**副本**（可读文件名 + 按来源/月份分层），库仍以内容寻址的 objects/ 为真源；
+		//   同卷走硬链接不占空间、同名跳过 ⇒ **幂等**，所以重跑就是重试。
+		name: 'media_export',
+		description: [
+			'把媒体库里的素材导出成**可读文件名**的独立文件到指定文件夹（副本，不影响库）。',
+			'目录结构：`<dir>/<provider|kind|月份>/<yyyy-MM>/<可读名>-<sha8前6>.<ext>`（layout 可选 provider/kind/date/flat）。',
+			'范围：给了 ids 就只导这些；否则按 filter（kind/provider/board/tag/query/favorite/untagged/unclassified/deleted）；',
+			'两者都不给 = 整个库。⚠ 导出是**幂等**的（同名跳过），所以先 dryRun=true 报数、再真跑；',
+			'返回 exported/linked/copied/bytes 与 skipped（noFile=仅外链没字节、missing=文件被移走、exists=已存在）。',
+			'同卷用硬链接（bytes=0，不占空间），异盘才复制（bytes>0）。',
+		].join(''),
+		parameters: {
+			type: 'object',
+			properties: {
+				dir: { type: 'string', description: '目标文件夹**绝对路径**（必填，如 D:/交付/0715）' },
+				ids: { type: 'array', items: { type: 'string' }, description: '只导这些资产 id' },
+				filter: {
+					type: 'object',
+					description: '按筛选导出（与 media_list 的参数同名）',
+					properties: {
+						kind: { type: 'string' }, provider: { type: 'string' }, board: { type: 'string' },
+						tag: { type: 'string' }, query: { type: 'string' },
+						favorite: { type: 'boolean' }, untagged: { type: 'boolean' },
+						unclassified: { type: 'boolean' }, deleted: { type: 'boolean' },
+					},
+				},
+				layout: { type: 'string', enum: ['provider', 'kind', 'date', 'flat'], description: '分层方式（默认 provider）' },
+				overwrite: { type: 'boolean', description: '同名覆盖（默认 false = 跳过）' },
+				dryRun: { type: 'boolean', description: 'true = 只报数不落盘' },
+				limit: { type: 'number', description: '最多导出多少条（默认 2000，上限 5000）' },
+			},
+			required: ['dir'],
+		},
+		output: {
+			schema: {
+				type: 'object',
+				properties: {
+					ok: { type: 'boolean' },
+					dryRun: { type: 'boolean' },
+					dir: { type: 'string' },
+					exported: { type: 'integer' },
+					linked: { type: 'integer' },
+					copied: { type: 'integer' },
+					bytes: { type: 'integer' },
+					skipped: {
+						type: 'object',
+						properties: {
+							noFile: { type: 'integer' }, missing: { type: 'integer' },
+							exists: { type: 'integer' }, truncated: { type: 'integer' },
+						},
+					},
+				},
+			},
+			render: (_args, value) => [{
+				type: 'text',
+				text: (value.dryRun ? '【预演·未落盘】' : '') + `导出 ${value.exported ?? 0} 条到 ${value.dir}`
+					+ `（硬链接 ${value.linked ?? 0} / 复制 ${value.copied ?? 0}${value.bytes ? '，占用 ' + value.bytes + ' 字节' : ''}）`
+					+ (value.skipped?.exists ? ` · 已存在 ${value.skipped.exists}` : '')
+					+ (value.skipped?.noFile ? ` · 仅外链 ${value.skipped.noFile}` : '')
+					+ (value.skipped?.missing ? ` · 文件不在 ${value.skipped.missing}` : ''),
+			}],
+		},
+		execute: async (params) => {
+			const result = ownStoreOf(config).exportAssets({
+				dir: params?.dir, ids: params?.ids, filter: params?.filter, layout: params?.layout,
+				overwrite: params?.overwrite === true, dryRun: params?.dryRun === true, limit: params?.limit,
+			});
+			if (result.ok === false) { throw new Error(result.error ?? '导出失败'); }
+			return result;
+		},
+	}, {
 		// ★ 2026-10-26（用户要求：「媒体库管家」要能自动打标 / 整理标签 / 整理目录）：
 		//   三件事都不需要"看图"，所以放在 Host 侧做成**确定性规则**（可复核、可 dryRun）。
 		//   ⚠ 语义标签（角色/风格/场景）需要视觉能力，当前 dsh 侧没有（Host 无编码器、无视觉模型）
@@ -655,7 +915,13 @@ function toolDefinitions(state, config) {
 				properties: {
 					ok: { type: 'boolean' }, dryRun: { type: 'boolean' },
 					mergedTags: { type: 'integer' }, affected: { type: 'integer' },
-					mapping: { type: 'object', additionalProperties: { type: 'string' } },
+					// ⚠ `additionalProperties` 在 dsh 的受限 JSON Schema 子集里**只能是布尔**。
+					//   写成 `{ type:'string' }`（对象 schema）会抛
+					//   `unsupported JSON schema: schema.properties.mapping.additionalProperties must be a boolean`
+					//   ⇒ **整个插件不挂载**（工具没有、页面路由也没有 ⇒ 媒体库白屏，且没有任何报错）。
+					//   先例：`vssaros-workflow/lib/index.js` 里那段注释写的就是这个坑。
+					//   `dsh-plugins/check-tool-definitions.mjs` 现在会盯这条（写错就红）。
+					mapping: { type: 'object', additionalProperties: true },
 				},
 			},
 			render: (_args, value) => [{
@@ -777,6 +1043,41 @@ async function handleMediaApi(config, { req, res, url, authenticatedUrl }) {
 			reply(200, { ok: true, facets: store.facets() });
 			return;
 		}
+		// ★ 2026-10-27（助手 ⇄ UI 交互，方向一）：**变更版本号**。页面每 2.5s 比一次，
+		//   变了就自己重载 ⇒ agent 用 `media_autotag` / `media_board_plan` 改完，打开着的页面会自动跟上。
+		//   `total_changes()` 覆盖**同连接的所有写**（工具调用也走它），不需要每处埋计数。
+		if (path === 'rev' && method === 'GET') {
+			reply(200, { ok: true, rev: store.revision(), at: pageContext?.at ?? 0 });
+			return;
+		}
+		// ★ 2026-10-27（方向二）：页面把"人正在看什么"交上来（左栏哪一格/筛选/选中项），agent 用 `media_context` 读。
+		if (path === 'context') {
+			if (method === 'POST') {
+				const body = await readJsonBody(req);
+				const ids = Array.isArray(body.selected) ? body.selected.map(String).filter(Boolean).slice(0, 50) : [];
+				pageContext = {
+					nav: String(body.nav ?? '').slice(0, 40),
+					label: String(body.label ?? '').slice(0, 60),
+					kind: String(body.kind ?? '').slice(0, 16),
+					provider: String(body.provider ?? '').slice(0, 40),
+					board: String(body.board ?? '').slice(0, 80),
+					tag: String(body.tag ?? '').slice(0, 40),
+					query: String(body.query ?? '').slice(0, 120),
+					favorite: body.favorite === true,
+					untagged: body.untagged === true,
+					unclassified: body.unclassified === true,
+					deleted: body.deleted === true,
+					selected: ids,
+					selectedNames: Array.isArray(body.selectedNames) ? body.selectedNames.map(String).slice(0, 50) : [],
+					total: Number(body.total ?? 0) || 0,
+					at: Date.now(),
+				};
+				reply(200, { ok: true, context: pageContext });
+				return;
+			}
+			reply(200, { ok: true, context: pageContext });
+			return;
+		}
 		// ★ 2026-10-26（改版 A 案，用户拍板 ⑤）：256px webp 缩略图缓存。
 		//   `GET` 命中就回 webp（内容寻址 ⇒ immutable）；没命中回 404（页面据此回退到原图并在页面侧生成）。
 		//   `POST` 收页面编好的 webp 落盘（Host 侧零依赖、没有编码器 ⇒ 编码这一步由页面完成，见 mediaApp.js）。
@@ -859,6 +1160,36 @@ async function handleMediaApi(config, { req, res, url, authenticatedUrl }) {
 			reply(200, { ok: true, ...store.cleanOrphaned() });
 			return;
 		}
+		// ---- 链接外部文件夹（2026-10-27：显示"文件夹里的独立文件"，**不复制字节**）----
+		//   `dir` 由用户在页面上粘绝对路径（浏览器拿不到 `<input webkitdirectory>` 的绝对路径）；
+		//   同一个路径已登记过就跳过 ⇒ 可以反复点（幂等）。`dryRun` 只扫描不落库。
+		if (method === 'POST' && path === 'link-folder') {
+			const body = await readJsonBody(req);
+			const result = store.linkFolder({
+				dir: body.dir, recursive: body.recursive !== false,
+				dryRun: body.dryRun === true, limit: body.limit,
+			});
+			reply(result.ok === false ? 400 : 200, result.ok === false ? { ok: false, error: result.error } : result);
+			return;
+		}
+		// ---- 导出到文件夹（2026-10-27：「生成物也存成指定目录里的独立文件」）----
+		//   与 `link-folder` 相反：那边是"库里只记路径"，这边是"把库里的字节再落一份可读文件"。
+		//   同卷优先硬链接（零额外空间），跨卷/不支持退回复制；已存在就跳过（幂等，可反复跑）。
+		if (method === 'POST' && path === 'export-folder') {
+			const body = await readJsonBody(req);
+			const result = store.exportAssets({
+				dir: body.dir,
+				layout: body.layout,
+				ids: body.ids,
+				filter: body.filter,
+				dryRun: body.dryRun === true,
+				overwrite: body.overwrite === true,
+				hardlink: body.hardlink !== false,
+				limit: body.limit,
+			});
+			reply(result.ok === false ? 400 : 200, result);
+			return;
+		}
 		// ---- 「媒体库管家」的三个整理动作（2026-10-26）----
 		//   都支持 **dryRun**（默认见各端点注释）：整理是**改结构**的动作，先出方案再落库。
 		if (method === 'POST' && path === 'auto-tag') {
@@ -882,7 +1213,9 @@ async function handleMediaApi(config, { req, res, url, authenticatedUrl }) {
 			return;
 		}
 		if (method === 'GET' && path === 'usage') {
-			reply(200, { ok: true, usage: store.usage() });
+			// `archive` = 自动归档的账目（成功/复制/失败 + 最后一条错误）—— 归档是"尽力而为"，
+			// 失败只在这里体现，不去打扰生成流程（见 ownStore.archiveOne 的决策说明）。
+			reply(200, { ok: true, usage: store.usage(), archive: store.archiveStats() });
 			return;
 		}
 		if (method === 'POST') {
@@ -912,7 +1245,13 @@ async function handleMediaApi(config, { req, res, url, authenticatedUrl }) {
 				});
 				if (!asset) { reply(400, { ok: false, error: '没有内容（要 base64 或 bytes）' }); return; }
 				if (body.favorite) { store.setFavorite(asset.id, true); }
-				reply(200, { ok: true, asset: store.get(asset.id) });
+				// ⚠ 别直接用 `store.get()` 覆盖：`importAsset` 返回里那个 `archivePath` 是**瞬时的**
+				//   （自动归档刚落的可读副本路径，不落库）⇒ 重读一次会把它丢掉。这里手动带上。
+				const fresh = store.get(asset.id);
+				reply(200, {
+					ok: true,
+					asset: asset.archivePath ? { ...fresh, archivePath: asset.archivePath } : fresh,
+				});
 				return;
 			}
 			if (!id) { reply(400, { ok: false, error: '要 body.id' }); return; }
@@ -959,7 +1298,41 @@ async function handleMediaApi(config, { req, res, url, authenticatedUrl }) {
 	}
 }
 
+/**
+ * ★ 2026-10-27（"工作台白屏"定位）：apply 外面加一层**可观测**的壳。
+ *
+ * 事实：真 Host 上这个插件的**工具与页面路由全都没注册**（harness 日志里 `media_*` 一个都没命中），
+ * 但**没有任何一行报错** —— dsh 把 apply 抛错吞掉了 ⇒ 只能靠猜。
+ * 这层壳做两件事：进入/完成各打一行、抛错时把栈打出来再原样抛（行为不变）。
+ * 定位完可以留着 —— 它就是"插件没挂上"的唯一线索。
+ */
 export function apply(ctx, config = {}) {
+	console.log('[vssaros-media] apply 开始（config 键：' + Object.keys(config ?? {}).join(',') + '）');
+	try {
+		applyInner(ctx, config);
+	} catch (err) {
+		console.error('[vssaros-media] apply 抛错（插件因此没挂载）：' + String(err?.stack ?? err));
+		throw err;
+	}
+	// ★ 2026-10-28（用户：「媒体库工作台中的 AI 助手内，应该显示 媒体库助手 agent」）：
+	//   媒体库原来**只有工具、没有 agent** ⇒ `vssaros-media-librarian` preset 不存在 ⇒ 右侧对话列
+	//   只能沿用别的插件（商城）的 preset。这里把「媒体库管家」落成 `<数据根>/agents/media-librarian/.agent.md`
+	//   （与用户自建 bot 同构，由 `vssaros-agents` 启动时扫描注册）。
+	//   ⚠ 只在缺文件时创建，不覆盖用户改过的人设；失败只打日志，绝不影响页面/工具。
+	try {
+		ensureMediaAgent({ dataRoot: dataRootOf(config) })
+			.then((r) => {
+				if (r && r.created) { console.log('[vssaros-media] 已创建「媒体库管家」agent：' + r.file); }
+				else if (r && r.ok === false) { console.warn('[vssaros-media] 创建「媒体库管家」agent 失败：' + r.error); }
+			})
+			.catch((e) => console.warn('[vssaros-media] ensureMediaAgent 抛错：' + String(e?.message ?? e)));
+	} catch (e) {
+		console.warn('[vssaros-media] ensureMediaAgent 同步失败：' + String(e?.message ?? e));
+	}
+	console.log('[vssaros-media] apply 完成');
+}
+
+function applyInner(ctx, config = {}) {
 	// 重构 1.3：绑定 foundation 共享服务（dataRoot/dshHome/pageShell/lock 的真源）。
 	{
 		// 同步直读在前：有插件在 apply 的**同步段**就建 store（inject 回调是异步的，会来不及 ✗）。
@@ -1025,7 +1398,8 @@ export function apply(ctx, config = {}) {
 	});
 
 	// ② 页面路由（**可选**依赖：缺 webServer / connection 的模板里只是没有页面，工具照常可用）
-	ctx.inject(['webServer', 'connection'], page => page.effect(() => page.webServer.register({
+	ctx.inject(['webServer', 'connection'], page => page.effect(() => {
+		const disposeRoute = page.webServer.register({
 		kind: 'prefix',
 		path: ROUTE_PREFIX,
 		handler: async (req, res) => {
@@ -1188,5 +1562,11 @@ export function apply(ctx, config = {}) {
 				}
 			}
 		},
-	})));
+		});
+		// ★ 2026-10-27（"工作台白屏"排查）：挂上就打一行。
+		//   以前页面 404 / 白屏时**一句日志都没有** ⇒ 只能靠猜"插件是不是没挂"；
+		//   有这行就能一眼分清「没装上」与「装上了但页面渲染崩了」（后者会有 500 或者页面里的 error 横幅）。
+		console.log(`[vssaros-media] 页面路由已注册：${ROUTE_PREFIX}/（含 ${API_PREFIX}*）`);
+		return disposeRoute;
+	}));
 }

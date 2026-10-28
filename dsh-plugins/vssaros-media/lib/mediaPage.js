@@ -157,9 +157,10 @@ function inspectorHtml(view, { writable, boards }) {
 	const tagChips = view.tags.map(t => `<span class="m-tg" data-tag="${escapeHtml(t)}">#${escapeHtml(t)}`
 		+ (writable ? '<i class="m-tgx" data-tag-del="' + escapeHtml(t) + '" title="移除标签">×</i>' : '')
 		+ '</span>').join('');
-	const boardOptions = ['<option value="">（未分组）</option>'].concat(
-		boards.map(b => `<option value="${escapeHtml(b)}"${b === view.board ? ' selected' : ''}>${escapeHtml(b)}</option>`),
-	).join('');
+	// ★ 2026-10-27（用户：「没有添加分组的入口」）：分组从 <select> 改成**可输入的 combo**
+	//   （input + datalist）—— 以前只有下拉框，选不了"新分组"，而左栏空态提示却写着
+	//   「在检查器里填「分组」即可新建」⇒ 口径不符。现在能下拉选、也能手输新名字（回车即建）。
+	const boardList = boards.map(b => `<option value="${escapeHtml(b)}"></option>`).join('');
 	const ro = writable ? '' : ' disabled';
 	return `<div class="m-pv">${pv}</div>`
 		+ `<h4 class="m-iname" data-vssaros-media-insp-name>${escapeHtml(view.name)}</h4>`
@@ -173,7 +174,7 @@ function inspectorHtml(view, { writable, boards }) {
 		+ `<dt>导入</dt><dd>${escapeHtml(formatTime(view.createdAt))}</dd>`
 		+ `</dl></div>`
 		+ `<div class="m-blk"><div class="m-bh">分组</div>`
-		+ `<select class="m-input" name="board" data-insp-board${ro}>${boardOptions}</select></div>`
+		+ `<input class="m-input" name="board" data-insp-board list="vssaros-media-boards" value="${escapeHtml(view.board || '')}" placeholder="分组（回车应用；输入新名字即新建）"${ro}><datalist id="vssaros-media-boards">${boardList}</datalist></div>`
 		+ `<div class="m-blk"><div class="m-bh">标签</div><div class="m-tags">${tagChips || '<span class="m-dim">（无标签）</span>'}</div>`
 		+ (writable ? '<div class="m-tagadd"><input class="m-input" name="tag" data-insp-taginput placeholder="加标签后回车" maxlength="24"><button type="button" class="m-btn sm" data-insp-tagadd>+ 添加</button></div>' : '')
 		+ '</div>'
@@ -213,7 +214,7 @@ export const MEDIA_CSS = `
 .m-nav .lb { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .m-nav .n { font-size: 10px; opacity: .72; font-variant-numeric: tabular-nums; }
 .m-nav.drop { outline: 1px dashed var(--vscode-focusBorder, #4d9fff); outline-offset: -2px; }
-.m-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.m-main { flex: 1; min-width: 0; display: flex; flex-direction: column; position: relative; }
 .m-top { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 6px 10px;
 	border-bottom: 1px solid var(--vscode-panel-border, rgba(128,128,128,.28)); }
 .m-crumb { font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -358,6 +359,62 @@ export const MEDIA_CSS = `
 	border: 1px solid var(--vscode-widget-border, rgba(128,128,128,.45));
 	box-shadow: 0 8px 22px rgba(0,0,0,.4); }
 .m-up.on { display: block; }
+/* ── S2 一体条（浮动胶囊）：AI 助手 + 外开 ──────────────────────────────────
+   形态与交互照抄「萨罗斯工作台」的 .vssWbActions（见 vssaros-workbenches/lib/client.js）：
+   竖直胶囊、右侧吸附、**整组可拖**、hover 时**左侧**滑出文字标签、被弹窗拦截时 ↗ 变橙。
+   差别只有一处：工作台的「AI 助手」是页内面板的展开/收起（«/»），
+   媒体库没有页内助手（自托管页拿不到宿主的 conversation）⇒ 这里保持「叫媒体库管家开会话」的原语义。 */
+/* ── S2 一体条（浮动胶囊）：AI 助手 + 外开 ──────────────────────────────────
+   ★ 2026-10-27（用户定稿：「A 方案，边缘增加高亮效果」）：
+     形态 = **A**（工作台同款 26px 细竖胶囊、纯字形、hover 出文字标签）；
+     突出 = **边缘高亮**：品牌蓝描边 + 外发光 + 分隔线渐变，hover 再加一档。
+   mockup：design/media-library-fab-mockups/index.html */
+.m-fab { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); z-index: 40;
+	display: flex; flex-direction: column; padding: 3px; border-radius: 10px;
+	border: 1px solid rgba(47,129,247,.55);
+	background: linear-gradient(180deg, rgba(38,38,44,.96), rgba(30,30,35,.96));
+	box-shadow: 0 0 0 1px rgba(47,129,247,.16), 0 0 16px rgba(47,129,247,.30), 0 4px 12px rgba(0,0,0,.45);
+	opacity: .96; cursor: grab; touch-action: none; user-select: none;
+	transition: box-shadow .16s, border-color .16s; }
+.m-fab:hover { border-color: rgba(47,129,247,.85);
+	box-shadow: 0 0 0 1px rgba(47,129,247,.35), 0 0 26px rgba(47,129,247,.45), 0 6px 18px rgba(0,0,0,.5); }
+.m-fab[data-dragging] { cursor: grabbing; }
+.m-fab[data-moved] { transform: none; }
+.m-fab .m-fabWrap { position: relative; display: flex; }
+.m-fab .m-fabAct { width: 26px; height: 25px; padding: 0; display: inline-flex; align-items: center; justify-content: center;
+	border: 0; border-radius: 7px; background: transparent; color: var(--dsw-alias-label-secondary, #9d9da7);
+	font: 13px/1 -apple-system, Segoe UI, sans-serif; cursor: pointer;
+	transition: color .14s, background .14s, box-shadow .14s; }
+.m-fab .m-fabAct:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.16)); color: var(--dsw-alias-label-primary, #e6e6ea); }
+.m-fab .m-fabAct.is-primary { color: #6cb0ff; }
+.m-fab .m-fabAct.is-primary:hover { color: #a8d2ff; box-shadow: 0 0 12px rgba(47,129,247,.55) inset; }
+.m-fab .m-fabDivider { height: 1px; margin: 1px 3px;
+	background: linear-gradient(90deg, transparent, rgba(47,129,247,.75), transparent); }
+.m-fab .m-fabAct[data-state="blocked"] { color: var(--dsw-alias-state-warn-primary, #d29922); }
+.m-fab .m-fabLabel { position: absolute; right: 34px; top: 50%; transform: translateY(-50%) translateX(4px);
+	white-space: nowrap; font: 10px/1.6 -apple-system, Segoe UI, sans-serif; color: var(--dsw-alias-label-primary, #e6e6ea);
+	background: var(--dsw-alias-bg-layer-1, #25252a); border: 1px solid rgba(47,129,247,.45);
+	border-radius: 6px; padding: 1px 7px; box-shadow: 0 0 12px rgba(47,129,247,.30), 0 1px 4px rgba(0,0,0,.35);
+	opacity: 0; pointer-events: none; transition: opacity .14s, transform .14s; }
+.m-fab .m-fabWrap:hover .m-fabLabel { opacity: 1; transform: translateY(-50%) translateX(0); }
+.m-fab[data-label="right"] .m-fabLabel { right: auto; left: 34px; transform: translateY(-50%) translateX(-4px); }
+.m-fab[data-label="right"] .m-fabWrap:hover .m-fabLabel { transform: translateY(-50%) translateX(0); }
+/* 链接文件夹的内联输入条（2026-10-27） */
+.m-linkbar { display: flex; align-items: center; gap: 6px; padding: 6px 12px 0; }
+.m-linkbar[hidden] { display: none; }
+.m-linkbar .m-input { flex: 1 1 auto; min-width: 0; max-width: 520px; }
+/* 卡片右键菜单（2026-10-27：用户要求「添加到 AI 窗口」） */
+.m-ctx { position: fixed; z-index: 60; min-width: 184px; padding: 4px; border-radius: 6px; font-size: 11.5px;
+	background: var(--vscode-menu-background, #252529); color: var(--vscode-menu-foreground, inherit);
+	border: 1px solid var(--vscode-menu-border, rgba(128,128,128,.35));
+	box-shadow: 0 10px 28px rgba(0,0,0,.5); }
+.m-ctx button { display: flex; width: 100%; align-items: center; gap: 7px; padding: 5px 9px; border: 0;
+	border-radius: 4px; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.m-ctx button:hover { background: var(--vscode-menu-selectionBackground, rgba(77,159,255,.25)); }
+.m-ctx button[disabled] { opacity: .45; cursor: default; }
+.m-ctx button[disabled]:hover { background: none; }
+.m-ctx .sep { height: 1px; margin: 4px 6px; background: var(--vscode-menu-separatorBackground, rgba(128,128,128,.28)); }
+.m-ctx .k { margin-left: auto; opacity: .55; font-size: 10px; }
 .m-diag { display: none; }
 .m-side-toggle { display: none; }
 @media (max-width: 1080px) {
@@ -365,8 +422,10 @@ export const MEDIA_CSS = `
 	.m-insp { flex-basis: 240px; width: 240px; }
 }
 /* 窄容器（IDE 中栏 ~700 / 侧栏 ~340）：导航与检查器都改成浮层，列表独占整宽。
-   ⚠ 不这样做的话三栏在 300 多像素下会挤成"卡片被压到几十像素、文字逐字换行"（本仓踩过）。 */
-@media (max-width: 820px) {
+   ⚠ 不这样做的话三栏在 300 多像素下会挤成"卡片被压到几十像素、文字逐字换行"（本仓踩过）。
+   ★ 2026-10-28（用户：「缺少右侧编辑区」）：断点从 820 收到 640 —— 工作台面板（=中栏 700~900）
+     以前会掉进这个断点 ⇒ 检查器被自动藏起来 ⇒ 右侧编辑区"消失"。560 以下才转浮层。 */
+@media (max-width: 560px) {
 	.m-side-toggle { display: inline-flex; }
 	.m-side { position: absolute; left: 0; top: 0; bottom: 0; z-index: 31; display: none;
 		width: 208px; flex-basis: 208px; box-shadow: 8px 0 24px rgba(0,0,0,.45); }
@@ -425,6 +484,30 @@ export function renderMediaPage(opts) {
 		.map(([v, label]) => `<button type="button" class="m-chip${(filter.provider || '') === v ? ' on' : ''}" data-provider="${escapeHtml(v)}">${escapeHtml(label)}</button>`)
 		.join('');
 
+	/**
+	 * **浮动胶囊（S2 一体条）**：AI 助手 + 外开。
+	 *
+	 * ★ 2026-10-27（用户要求：「AI 助手和外开要求使用浮动按钮，功能和样式与萨罗斯工作台一致」）。
+	 * 形态/交互照抄 `vssaros-workbenches/lib/client.js` 的 `.vssWbActions`：
+	 * 竖直胶囊、右侧吸附、**整组可拖**、hover 时**左侧**滑出文字、弹窗被拦时 ↗ 变橙。
+	 * 唯一差别：工作台的「AI 助手」是页内面板的展开/收起（«/»），
+	 * 而媒体库**没有页内助手**（自托管页拿不到宿主的 `props.conversation`，嵌了就是两套助手）⇒
+	 * 这里保留原语义「叫媒体库管家开会话」，只是换了个位置与形态。
+	 */
+	function fabHtml() {
+		return '<div class="m-fab" data-media-fab>'
+			+ '<div class="m-fabWrap">'
+			+ '<button type="button" class="m-fabAct is-primary" data-media-assistant title="展开 AI 助手：叫「媒体库管家」来帮你找素材 / 整理素材">✦</button>'
+			+ '<span class="m-fabLabel">展开 AI 助手</span>'
+			+ '</div>'
+			+ '<div class="m-fabDivider"></div>'
+			+ '<div class="m-fabWrap">'
+			+ '<button type="button" class="m-fabAct" data-media-external title="在浏览器里打开这个媒体库（服务端现签带登录的链接）">↗</button>'
+			+ '<span class="m-fabLabel">在浏览器打开</span>'
+			+ '</div>'
+			+ '</div>';
+	}
+
 	const mainHtml = `<section class="m-main">`
 		+ '<div class="m-top">'
 		+ `<div class="m-crumb">媒体库<span class="sep">/</span><b data-vssaros-media-crumb>${escapeHtml(filter.label)}</b>`
@@ -450,9 +533,13 @@ export function renderMediaPage(opts) {
 		// ★ 2026-10-26：右端三个动作（放在这一行而不是顶栏 —— 顶栏已经满，这行本来就能横向滚）
 		+ '<div class="m-grow"></div>'
 		+ (writable ? '<button type="button" class="m-btn sm" data-media-import="file" title="从本地选图片/视频导入（可多选）">＋ 导入文件</button>' : '')
-		+ (writable ? '<button type="button" class="m-btn sm" data-media-import="folder" title="导入整个文件夹（含子目录）">📁 导入文件夹</button>' : '')
-		+ '<button type="button" class="m-btn sm" data-media-assistant title="叫「媒体库管家」来帮你找素材 / 整理素材">✨ AI 助手</button>'
-		+ '<button type="button" class="m-btn sm" data-media-external title="在浏览器里打开这个媒体库（服务端现签带登录的链接）">↗ 外开</button>'
+		+ (writable ? '<button type="button" class="m-btn sm" data-media-import="folder" title="导入整个文件夹（复制进库，可脱源）">📁 导入文件夹</button>' : '')
+		// ★ 2026-10-27：**链接**文件夹（只登记路径、不复制字节）—— 与"导入"是两件事
+		+ (writable ? '<button type="button" class="m-btn sm" data-media-link-folder title="把一个本地文件夹里的文件登记进库：不复制、不移动原文件（源文件被移走就看不到图）">🔗 链接文件夹</button>' : '')
+		// ★ 2026-10-27：**导出**到文件夹（把库里的字节再落一份可读文件；同卷硬链接，不占额外空间）
+		+ (writable ? '<button type="button" class="m-btn sm" data-media-export-folder title="把当前筛选（或选中的）素材另存成可读文件名到指定文件夹：同卷硬链接不占空间，已存在则跳过">📤 导出到文件夹</button>' : '')
+		// ★ 2026-10-27（用户要求）：「AI 助手」与「外开」从动作行搬下来，做成**浮动胶囊**
+		//   （与「萨罗斯工作台」的 S2 一体条同一套形态与交互：竖直胶囊 / 可拖 / hover 出标签）。
 		+ '</div>'
 		+ (writable ? '' : '<div class="m-banner">只读视图：这是 IDE 侧旧库的镜像（对账用）。写入请用默认的 dsh 真源。</div>')
 		+ (error ? `<div class="m-banner">读取媒体库失败：${escapeHtml(error)}</div>` : '')
@@ -471,15 +558,30 @@ export function renderMediaPage(opts) {
 		+ (writable ? '<button type="button" class="m-btn sm danger" data-media-purge-deleted hidden>清空回收站</button>' : '')
 		+ (writable ? '<button type="button" class="m-btn sm" data-media-clean-orphans title="删掉 objects/thumbs 里没有任何资产引用的残留文件">清理孤儿文件</button>' : '')
 		+ '<button type="button" class="m-btn sm" data-media-more>加载更多</button>'
+		// 链接/导出：都要绝对路径 ⇒ 共用一个内联输入条（浏览器不给 `<input webkitdirectory>` 的绝对路径）
+		//   `data-mode` = link | export，由客户端按点了哪个按钮切换文案与提交端点。
+		+ '<div class="m-linkbar" data-media-linkbar data-mode="link" hidden>'
+		+ '<span class="glabel" data-media-linklabel>链接文件夹</span>'
+		+ '<input class="m-input" name="dir" data-media-linkinput placeholder="粘贴文件夹绝对路径，如 D:\\素材\\角色（回车确认；不复制文件）">'
+		+ '<button type="button" class="m-btn sm" data-media-linkgo>确认</button>'
+		+ '<button type="button" class="m-btn sm" data-media-linkcancel>取消</button>'
+		+ '</div>'
 		// 两个隐藏 input：浏览器原生选择器（文件 / 文件夹），不需要宿主对话框
 		+ '<input type="file" multiple hidden data-media-file-input accept="image/*,video/*,audio/*,.txt,.md,.json">'
 		+ '<input type="file" multiple hidden data-media-folder-input webkitdirectory directory accept="image/*,video/*,audio/*,.txt,.md,.json">'
 		+ '</div>'
+		// ★ 2026-10-28：浮动条**不再挂在 .m-main 里**（真机：.m-main 会被素材网格撑宽、产生横向滚动
+		//   ⇒ 胶囊被定位到看不见的右边缘，只剩一条缝）⇒ 提到页面根层 .m-app（= 视口大小）里挂。
 		+ '</section>';
 
 	const inspHtml = `<aside class="m-insp" data-vssaros-media-insp>${inspectorHtml(views[0], { writable, boards })}</aside>`;
 
-	const bodyHtml = `<div class="m-app" data-vssaros-media-app style="position:relative">`
+	// ★ 2026-10-27：与「萨罗斯工作台」外壳的 **AI 助手栏契约**（`data-vssaros-assist-collapsed`）。
+	//   媒体库被 dashboard 目录收进工作台后，外壳会渲染 S2 一体条的「« 展开 AI 助手」，
+	//   点它 ⇒ 外壳派发 `vssaros:assist-expand` ⇒ 页面不监听就**毫无反应**（用户报的现象）。
+	//   媒体库没有页内助手栏（自托管页拿不到宿主的 props.conversation）⇒ 客户端把「展开」
+	//   翻译成「叫媒体库管家」（桥 newChat，IDE 侧开聊天页签），并把状态写回这个属性。
+	const bodyHtml = `<div class="m-app" data-vssaros-media-app data-vssaros-assist-collapsed="1" style="position:relative">`
 		+ sideHtml + mainHtml + inspHtml
 		+ '<div class="m-batch" data-media-batch>'
 		+ '<span>已选 <b data-media-batch-n>0</b> 项</span>'
@@ -491,6 +593,8 @@ export function renderMediaPage(opts) {
 		+ '<button type="button" class="m-btn sm" data-media-batch-clear>取消</button>'
 		+ '</div>'
 		+ '<div class="m-up" data-media-upload></div>'
+		// ★ 浮动条挂在**页面根层**（.m-app 是视口大小的定位上下文）⇒ 素材区横向滚动也不会把它推出去。
+		+ fabHtml()
 		+ '</div>';
 
 	// ★ 诊断锚点（探针按名字取值；客户端刷新后不会丢，因为只在 SSR 里出现一次）

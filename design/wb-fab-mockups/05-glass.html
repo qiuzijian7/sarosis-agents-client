@@ -1,0 +1,206 @@
+<!DOCTYPE html><html lang=zh-CN><head><meta charset=utf-8>
+<title>方案 E · 玻璃拟态竖条</title>
+<style>:root{--bg:#1a1a1c;--panel:#202024;--panel2:#25252a;--line:rgba(128,128,128,.22);--fg:#d7d7dc;--dim:#9a9aa4;--brand:#2f81f7;--brand2:#4a94ff}
+*{box-sizing:border-box}
+body{margin:0;padding:24px 26px 60px;background:var(--bg);color:var(--fg);font:13px/1.6 -apple-system,Segoe UI,Microsoft YaHei,sans-serif}
+h1{font-size:19px;margin:0 0 6px}
+h2{font-size:15px;margin:0 0 4px}
+a{color:var(--brand2)}
+.lead{color:var(--dim);max-width:940px;margin:0 0 18px;font-size:12.5px}
+.lead b{color:var(--fg)}
+.wrap{display:flex;gap:22px;align-items:flex-start;flex-wrap:wrap}
+.spec{width:340px;flex:0 0 340px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px;font-size:12.3px}
+.spec .tagline{color:var(--brand2);margin:0 0 10px;font-size:12px}
+.spec dt{color:var(--dim);margin-top:9px;font-size:11.8px}
+.spec dd{margin:2px 0 0}
+.spec ul{margin:9px 0 0;padding-left:17px}
+.spec li{margin:3px 0}
+.spec .go{display:inline-block;margin-top:12px;padding:4px 11px;border:1px solid var(--line);border-radius:7px;background:rgba(255,255,255,.05);color:var(--fg);text-decoration:none;font-size:12px}
+/* ── 聊天面板 mock（模拟 IDE 右侧聊天区）── */
+.chat{position:relative;width:432px;height:540px;background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden;display:flex;flex-direction:column}
+.chat .top{display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid var(--line);background:rgba(255,255,255,.02)}
+.chat .top .t{font-weight:600;font-size:13px}
+.chat .top .sp{flex:1}
+.chat .top .ghost{border:1px solid var(--line);background:rgba(255,255,255,.04);color:var(--fg);border-radius:6px;padding:3px 10px;font-size:12px}
+.chat .msgs{flex:1;padding:14px 12px;display:flex;flex-direction:column;gap:12px;min-height:0}
+.msg{max-width:86%;border-radius:10px;padding:8px 11px;font-size:12.4px;line-height:1.55}
+.msg.me{align-self:flex-end;background:#2b4a7d;color:#eaf2ff}
+.msg.bot{align-self:flex-start;background:var(--panel2);border:1px solid var(--line)}
+.chat .composer{border-top:1px solid var(--line);padding:10px 12px}
+.chat .box{height:62px;border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.03);padding:8px 10px;color:var(--dim);font-size:12.2px}
+.chat .send{display:flex;align-items:center;gap:8px;margin-top:8px}
+.chat .send .ph{flex:1;height:26px;border:1px solid var(--line);border-radius:6px;background:rgba(255,255,255,.03)}
+.chat .send .go{width:26px;height:26px;border-radius:50%;background:var(--brand);color:#fff;display:grid;place-items:center;font-size:13px}
+.stage{position:relative}
+.stage>.cap{position:absolute;left:2px;top:-17px;font-size:11px;color:var(--dim)}
+/* 浮动条通用零件 */
+.fabwrap{position:absolute;z-index:20}
+.fabwrap .wbWrap{position:relative;display:flex}
+.fabwrap .wbAct{width:26px;height:25px;border:0;border-radius:7px;background:transparent;color:#9d9da7;font-size:13px;display:grid;place-items:center;cursor:pointer}
+.fabwrap .wbLabel{position:absolute;right:34px;top:50%;transform:translateY(-50%) translateX(4px);white-space:nowrap;font:10px/1.6 -apple-system,Segoe UI,sans-serif;color:#d7d7dc;background:#25252a;border:1px solid rgba(128,128,128,.35);border-radius:6px;padding:1px 7px;opacity:0;pointer-events:none;transition:opacity .14s,transform .14s}
+.fabwrap .wbWrap:hover .wbLabel{opacity:1;transform:translateY(-50%) translateX(0)}
+.fabwrap .wbDivider{height:1px;margin:1px 3px;background:rgba(128,128,128,.28)}
+
+/* A · 竖排胶囊 + 边缘高亮（与媒体库同款） */
+.fab-a{right:12px;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;padding:3px;border-radius:10px;border:1px solid rgba(47,129,247,.55);background:linear-gradient(180deg,rgba(38,38,44,.96),rgba(30,30,35,.96));box-shadow:0 0 0 1px rgba(47,129,247,.16),0 0 16px rgba(47,129,247,.30),0 4px 12px rgba(0,0,0,.45)}
+.fab-a:hover{border-color:rgba(47,129,247,.85);box-shadow:0 0 0 1px rgba(47,129,247,.35),0 0 26px rgba(47,129,247,.45),0 6px 18px rgba(0,0,0,.5)}
+.fab-a .wbDivider{background:linear-gradient(90deg,transparent,rgba(47,129,247,.75),transparent)}
+.fab-a .wbAct.assist{color:#6cb0ff}
+.fab-a .wbAct.assist:hover{color:#a8d2ff;box-shadow:0 0 12px rgba(47,129,247,.55) inset}
+.fab-a .wbLabel{border-color:rgba(47,129,247,.45);box-shadow:0 0 12px rgba(47,129,247,.30),0 1px 4px rgba(0,0,0,.35)}
+
+/* B · 吸边半隐藏 */
+.fab-b{right:0;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;align-items:flex-end;gap:2px;padding:4px 3px;border-radius:10px 0 0 10px;background:linear-gradient(90deg,rgba(38,38,44,.55),rgba(42,42,48,.98));border:1px solid rgba(128,128,128,.3);border-right:0;box-shadow:-6px 0 16px rgba(0,0,0,.35)}
+.fab-b .wbWrap{justify-content:flex-end;align-items:center}
+.fab-b .wbAct{opacity:.32}
+.fab-b .wbLabel{position:static;right:auto;transform:none;opacity:0;max-width:0;overflow:hidden;border:0;background:none;padding:0;transition:max-width .18s,opacity .18s}
+.fab-b.hovered .wbAct{opacity:1}
+.fab-b.hovered .wbLabel{opacity:1;max-width:150px;margin-right:6px}
+/* C · 底部居中横条 */
+.fab-c{left:50%;bottom:16px;transform:translateX(-50%);display:flex;gap:4px;padding:4px;border-radius:999px;background:rgba(32,32,38,.93);border:1px solid rgba(128,128,128,.28);box-shadow:0 8px 26px rgba(0,0,0,.5)}
+.fab-c .wbWrap{align-items:center}
+.fab-c .wbAct{width:auto;padding:0 4px}
+.fab-c .wbLabel{position:static;right:auto;top:auto;transform:none;opacity:1;background:none;border:0;box-shadow:none;padding:0 8px 0 0;font-size:11.5px;color:#d7d7dc}
+.fab-c .wbWrap:hover .wbLabel{transform:none}
+
+/* D · 单圆钮 + 展开列 */
+.fab-d{right:14px;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;align-items:flex-end;gap:8px}
+.fab-d .knob{width:30px;height:30px;border-radius:50%;border:1px solid rgba(47,129,247,.5);background:#25252a;color:#cfd3da;font-size:14px;cursor:pointer;box-shadow:0 0 12px rgba(47,129,247,.25),0 3px 10px rgba(0,0,0,.4)}
+.fab-d .knobMenu{display:flex;flex-direction:column;gap:5px;align-items:flex-end;opacity:0;transform:translateX(6px) scale(.96);transform-origin:right center;pointer-events:none;transition:opacity .16s,transform .16s}
+.fab-d.hovered .knobMenu{opacity:1;transform:none;pointer-events:auto}
+.fab-d .wbWrap{align-items:center}
+.fab-d .wbLabel{position:static;right:auto;top:auto;transform:none;opacity:1;background:#25252a;border:1px solid rgba(128,128,128,.35);border-radius:6px;padding:3px 9px;white-space:nowrap;font-size:11.5px;box-shadow:0 4px 14px rgba(0,0,0,.4)}
+.fab-d .wbAct{width:28px;height:26px;border:1px solid rgba(128,128,128,.3);background:#25252a}
+.fab-d .wbAct.assist{color:#6cb0ff}
+
+/* E · 玻璃拟态竖条 */
+.fab-e{right:12px;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;padding:3px;border-radius:12px;border:1px solid rgba(255,255,255,.14);background:linear-gradient(180deg,rgba(70,74,86,.45),rgba(24,24,28,.45));backdrop-filter:blur(10px);box-shadow:0 8px 26px rgba(0,0,0,.45),inset 0 1px 0 rgba(180,205,255,.28),inset 0 -1px 0 rgba(180,205,255,.10)}
+.fab-e:hover{box-shadow:0 10px 30px rgba(0,0,0,.55),inset 0 1px 0 rgba(200,220,255,.42)}
+.fab-e .wbAct{color:#b9c6da}
+.fab-e .wbAct.assist{color:#8cc0ff}
+.fab-e .wbLabel{background:rgba(30,30,36,.85);border-color:rgba(180,205,255,.22)}
+
+/* F · 并入顶栏（零浮动占用） */
+.topbtns{display:flex;gap:6px}
+
+/* ── 静态截图用的「交互态」：把 :hover 的效果显式给 .hovered ── */
+.fabwrap.hovered .wbWrap .wbLabel{opacity:1;transform:translateY(-50%) translateX(0)}
+.fab-a.hovered{border-color:rgba(47,129,247,.85);box-shadow:0 0 0 1px rgba(47,129,247,.35),0 0 26px rgba(47,129,247,.45),0 6px 18px rgba(0,0,0,.5)}
+.fab-a.hovered .wbAct.assist{color:#a8d2ff;box-shadow:0 0 12px rgba(47,129,247,.55) inset}
+.fab-e.hovered{box-shadow:0 10px 30px rgba(0,0,0,.55),inset 0 1px 0 rgba(200,220,255,.42)}
+.fab-c.hovered .wbAct{background:rgba(47,129,247,.20);color:#a8d2ff;border-radius:999px}
+.fab-b.hovered .wbAct{opacity:1}
+</style>
+</head><body>
+<h1>方案 E · 玻璃拟态竖条</h1>
+<p class=lead>毛玻璃 + 上下内高光：像一块悬浮玻璃片，质感最好。</p>
+<div class=wrap>
+<div class=spec>
+<h2>玻璃拟态竖条</h2>
+<p class=tagline>毛玻璃 + 上下内高光：像一块悬浮玻璃片，质感最好。</p>
+<dl>
+<dt>形态</dt><dd>右侧竖条（与 A 同位置同尺寸），但用 backdrop-filter 毛玻璃 + 上下两道内高光</dd>
+<dt>突出方式</dt><dd>靠「材质」而不是颜色：半透明毛玻璃 + 顶部 1px 冷色高光</dd>
+<dt>交互</dt><dd>与 A 相同：hover 左侧滑出标签、整组可拖</dd>
+</dl>
+<ul>
+<li>✓ 质感高级，与 IDE 的毛玻璃标题栏/浮层语言一致</li>
+<li>✓ 与 A 同位置 ⇒ 迁移成本低（只换 CSS）</li>
+<li>✗ backdrop-filter 在低端机/远程桌面可能掉帧</li>
+<li>✗ 与媒体库的高亮参数不再一致（要另定一套）</li>
+</ul>
+<a class=go href=index.html>← 看全部 6 个方案</a>
+</div>
+<div>
+<div class=stage><span class=cap>常态</span><div data-variant=e></div></div>
+<div class=stage style=margin-top:30px><span class=cap>悬停（高光更亮）</span><div data-variant=e data-state=hover></div></div>
+</div></div>
+<script>// 聊天面板 mock + 六种浮动条形态（每个方案页共用）
+function el(tag, cls, text) {
+	var n = document.createElement(tag);
+	if (cls) { n.className = cls; }
+	if (text != null) { n.textContent = text; }
+	return n;
+}
+
+function buildChat(host, opt) {
+	opt = opt || {};
+	var chat = el('div', 'chat');
+	var top = el('div', 'top');
+	top.appendChild(el('span', 't', '萨罗斯管理平台'));
+	top.appendChild(el('span', 'sp'));
+	if (opt.topbar) { top.appendChild(opt.topbar); }
+	top.appendChild(el('button', 'ghost', '+ 新会话'));
+	chat.appendChild(top);
+	var msgs = el('div', 'msgs');
+	msgs.appendChild(el('div', 'msg bot', '描述你要构建的内容，调用指令、@ 文件或对话'));
+	msgs.appendChild(el('div', 'msg me', '帮我把「探索未至之境」的知识库整理成 FAQ'));
+	msgs.appendChild(el('div', 'msg bot', '好，我先读取知识库索引，再按主题归并。'));
+	chat.appendChild(msgs);
+	var comp = el('div', 'composer');
+	comp.appendChild(el('div', 'box', '输入你的问题…'));
+	var send = el('div', 'send');
+	send.appendChild(el('span', 'ph'));
+	send.appendChild(el('span', 'go', '↑'));
+	comp.appendChild(send);
+	chat.appendChild(comp);
+	var fab = buildFab(opt.variant, opt.state);
+	if (fab) { chat.appendChild(fab); }
+	host.appendChild(chat);
+	return chat;
+}
+
+function labeledBtn(cls, glyph, label) {
+	var w = el('div', 'wbWrap');
+	var b = el('button', 'wbAct ' + (cls || ''), glyph);
+	b.type = 'button';
+	w.appendChild(b);
+	w.appendChild(el('span', 'wbLabel', label));
+	return w;
+}
+
+function buildFab(variant, state) {
+	if (!variant || variant === 'f') { return null; }
+	var wrap = el('div', 'fabwrap fab-' + variant + (state === 'hover' ? ' hovered' : ''));
+	if (variant === 'c') {
+		wrap.appendChild(labeledBtn('assist', '▣', '收起 AI 助手'));
+		wrap.appendChild(labeledBtn('open', '↗', '在浏览器打开'));
+		return wrap;
+	}
+	if (variant === 'd') {
+		var knob = el('button', 'knob', '⋯');
+		knob.type = 'button';
+		wrap.appendChild(knob);
+		var menu = el('div', 'knobMenu');
+		menu.appendChild(labeledBtn('assist', '▣', '收起 AI 助手'));
+		menu.appendChild(labeledBtn('open', '↗', '在浏览器打开'));
+		wrap.appendChild(menu);
+		return wrap;
+	}
+	wrap.appendChild(labeledBtn('assist', '▣', '收起 AI 助手'));
+	wrap.appendChild(el('div', 'wbDivider'));
+	wrap.appendChild(labeledBtn('open', '↗', '在浏览器打开'));
+	return wrap;
+}
+
+function topbarButtons() {
+	var g = el('div', 'topbtns');
+	g.appendChild(el('button', 'ghost', '▣ 收起 AI 助手'));
+	g.appendChild(el('button', 'ghost', '↗ 外开'));
+	return g;
+}
+
+window.buildChat = buildChat;
+window.topbarButtons = topbarButtons;
+window.el = el;
+/* 页面里凡是 data-variant 的容器都会被装配成一个聊天面板 mock（省掉每个页面的内联脚本） */
+document.addEventListener('DOMContentLoaded', function () {
+	var hosts = document.querySelectorAll('[data-variant]');
+	for (var i = 0; i < hosts.length; i++) {
+		var h = hosts[i];
+		var opt = { variant: h.getAttribute('data-variant'), state: h.getAttribute('data-state') };
+		if (opt.variant === 'f') { opt.topbar = topbarButtons(); }
+		buildChat(h, opt);
+	}
+});</script>
+</body></html>

@@ -15,6 +15,9 @@
 		{
 			"name": "vssaros-homepage",
 			"path": "../vssaros-homepage"
+		},
+		{
+			"path": "../Saros-switch"
 		}
 	],
 	"settings": {

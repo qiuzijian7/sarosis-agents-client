@@ -160,12 +160,43 @@ console.log('── 工具 allowlist ──');
 	check('watchAllowlist 用 deny 收窄、且不用 allow', /restrict\(\{\s*deny:/.test(watchBody) && !/restrict\(\{\s*allow/.test(watchBody), watchBody.length + ' chars');
 }
 
+/* ★ 2026-10-27：欢迎卡建议词必须**透出到 API 行**。
+   真机现象：所有内置 agent 的欢迎卡都是同一套通用按钮。
+   根因：`core/agents.js` 解析了 `.agent.md` 的 `suggestions:`，但 `lib/index.js` 的两处
+        行映射（GET /api/agents 与名册 JSON）都**没带这个字段** ⇒ 前端 cardModel() 拿到
+        undefined ⇒ suggestionsOf() 一路兜到通用三条。
+   守它是因为：这属于"解析了但没透出"的静默断链，任何一侧单改都看不出来。 */
+{
+	const idx = strip(read('lib/index.js'));
+	const rowBlocks = idx.split('agents: shownAgents.map(a => ({').slice(1);
+	check('找到 ≥2 处 agent 行映射', rowBlocks.length >= 2, rowBlocks.length + ' 处');
+	for (const [i, blk] of rowBlocks.entries()) {
+		const body = blk.slice(0, 900);
+		check(`行映射 #${i + 1} 透出 suggestions`, /suggestions:\s*a\.suggestions/.test(body));
+	}
+	const core = strip(read('lib/core/agents.js'));
+	check('core/agents.js 仍解析 md 的 suggestions', /const suggestions = listValue\(meta\.suggestions\)/.test(core));
+}
+
+/* ★ 2026-10-27（方案 C2）：侧栏点条目必须**分栏打开** —— 中栏开会话（绑该 bot 人格）+ 右栏开设置。
+   守它是因为：这条链路全靠两个桥方法都在才成立，缺一个就会静默退回"打开整页"（C1 老形态）。 */
+{
+	const sv = strip(read('lib/sideview.js'));
+	check('C2：优先调 openBot（由宿主布局：chat 左、设置右）', /typeof bridge\.openBot === 'function'/.test(sv) && /bridge\.openBot\(id\)/.test(sv));
+	check('C2：点条目调用 newChat(preset)', /bridge\.newChat\(preset\)/.test(sv));
+	check('C2：点条目调用 openAgentSettings(id)', /bridge\.openAgentSettings\(id\)/.test(sv));
+	check('C2：openFull 从行上取 data-preset（新会话才绑得上人格）', /getAttribute\('data-preset'\)/.test(sv));
+	check('C2：两能力都在时不再开整页（提前 return）', /if \(ok >= 2\) \{ note\(.+\n?.{0,40}return; \}/.test(sv) || /if \(ok >= 2\)/.test(sv));
+	check('C2：缺能力时退回 openModulePage（不静默）', /openModulePage\('\/x\/agents\/'\)/.test(sv));
+	check('C2：页面能力检测用 typeof（老桥不炸）', /typeof bridge\.newChat === 'function'/.test(sv) && /typeof bridge\.openAgentSettings === 'function'/.test(sv));
+}
+
 /* ★ 2026-10-26：把两个**独立单测**纳入包内自检。
    为什么：它们各自是可执行脚本（`node xxx.test.mjs`），不进 run-all 的 `p3-*` 扫描，
    也不会被别人顺手跑到 ⇒ 等于没有 CI 覆盖。这里用子进程跑一遍，按退出码判定。 */
 {
 	const { spawnSync } = await import('node:child_process');
-	for (const t of ['mentions.test.mjs', 'dispatch-budget.test.mjs', 'member-policy.test.mjs', 'owner-policy.test.mjs', 'relay-policy.test.mjs', 'group-session.test.mjs', 'bindings.test.mjs', 'feishu-adapter.test.mjs', 'feishu-inbound.test.mjs']) {
+	for (const t of ['mentions.test.mjs', 'dispatch-budget.test.mjs', 'member-policy.test.mjs', 'owner-policy.test.mjs', 'relay-policy.test.mjs', 'group-session.test.mjs', 'bindings.test.mjs', 'feishu-adapter.test.mjs', 'feishu-inbound.test.mjs', 'channel-policy.test.mjs', 'pairing.test.mjs', 'dead-letters.test.mjs', 'telegram-adapter.test.mjs', 'discord-adapter.test.mjs', 'wecom-adapter.test.mjs', 'binding-media.test.mjs', 'outbound-media.test.mjs', 'feishu-gateway.test.mjs', 'memory-dir.test.mjs', 'memory-init.test.mjs', 'agentmemory-candidates.test.mjs', 'agentmemory-sync.test.mjs', 'atomic-write.test.mjs', 'im-credentials.test.mjs']) {
 		const r = spawnSync(process.execPath, [path.join(HERE, t)], { encoding: 'utf8' });
 		const last = String(r.stdout || '').trim().split('\n').filter(Boolean).pop()
 			|| String(r.stderr || '').slice(0, 120);

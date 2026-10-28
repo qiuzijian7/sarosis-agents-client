@@ -1,13 +1,14 @@
 {
   "name": "@vssaros/dsh-media",
-  "version": "0.7.2",
+  "version": "0.7.30",
   "description": "VsSaros media library for DeepSeek Harness. **As of 2026-10-24 the authoritative store is on the dsh side**: `{dataRoot}/media-store/media.db` + content-addressed objects under `{dataRoot}/media-store/objects/<sha8[0..2]>/<sha8>.<ext>`, created and owned by this module (single writer), with a full read/write HTTP API under `/x/media/api/*` (list / facets / stats / bytes / thumb / import / delete / restore / favorite / tags / board / note). The page (`/x/media/`, rewritten 2026-10-26 after Eagle) is a three-column asset manager: left navigation (kind / favorites / unclassified / untagged / trash / boards / tags), a filter bar with three view modes, a detail inspector with inline editing, and batch writes throttled to 20 items x 3 lanes. 256px webp thumbnails are cached content-addressed at `{dataRoot}/media-store/thumbs/<sha8>.webp` (the Host has no image encoder, so the page encodes on first paint and posts the bytes back). The old VsSaros main-process store (`{rootDir}/media.db`) is still readable as a **read-only mirror** for reconciliation (`?source=ide`).",
   "private": true,
   "type": "module",
   "main": "lib/index.js",
   "exports": {
     ".": "./lib/index.js",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./client": "./lib/client.js"
   },
   "files": [
     "lib/index.js",
@@ -18,7 +19,9 @@
     "lib/mediaPage.js",
     "lib/mediaApp.js",
     "cordis.patch.yml",
-    "lib/foundationRef.js"
+    "lib/foundationRef.js",
+    "lib/client.js",
+    "lib/mediaAgent.js"
   ],
   "peerDependencies": {
     "@deepseek-ai/dsh": ">=0.1.7-0 <0.3.0-0"
@@ -27,6 +30,12 @@
     "bundle": {
       "patch": [
         "./cordis.patch.yml"
+      ]
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-slots"
       ]
     }
   },
@@ -51,8 +60,9 @@
       "media"
     ],
     "workbench": {
+      "icon": "codicon:file-media",
       "title": "媒体库",
-      "description": "媒体库：浏览 / 分组 / 标签 / 收藏 / 回收站，三栏素材管理台。",
+      "description": "媒体库：浏览/分组/标签/收藏/回收站；右侧内嵌 AI 助手对话（官方 chat-surface），默认 agent = 媒体库管家。",
       "repository": "vssaros:media",
       "customFrame": true
     }

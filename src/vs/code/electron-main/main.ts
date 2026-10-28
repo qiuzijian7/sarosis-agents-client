@@ -35,6 +35,7 @@ import { Client as NodeIPCClient } from '../../base/parts/ipc/common/ipc.net.js'
 import { connect as nodeIPCConnect, serve as nodeIPCServe, Server as NodeIPCServer, XDG_RUNTIME_DIR } from '../../base/parts/ipc/node/ipc.net.js';
 import { CodeApplication } from './app.js';
 import { startMainHeartbeat } from './mainHeartbeat.js';
+import { createTofLoginBridge, type ITofLoginBridge } from '../../sessions/contrib/dshHarness/electron-main/tofLoginBridge.js';
 import { localize } from '../../nls.js';
 import { IConfigurationService } from '../../platform/configuration/common/configuration.js';
 import { ConfigurationService } from '../../platform/configuration/common/configurationService.js';
@@ -84,6 +85,15 @@ import { addUNCHostToAllowlist, getUNCHost } from '../../base/node/unc.js';
 import { ThemeMainService } from '../../platform/theme/electron-main/themeMainServiceImpl.js';
 import { LINUX_SYSTEM_POLICY_FILE_PATH } from '../../base/common/policy.js';
 import { startMainThreadWatchdog } from './mainThreadWatchdog.js';
+
+/**
+ * TOF（IOA）自动登录桥（模块级，便于 `onWillShutdown` 里 dispose）。
+ *
+ * 它监听 `127.0.0.1:<port>` 接住 TOF 网关 302 过来的票据 ⇒ 本地验票 ⇒ 换一次性 code
+ * ⇒ 把浏览器送回中转站 ⇒ 网页登录**全自动**（不用手贴票据）。
+ * 与 app 同生共死 ⇒ 关掉 app 就不再接票据。
+ */
+let tofLoginBridge: ITofLoginBridge | undefined;
 
 /**
  * The main VS Code entry point.
@@ -156,6 +166,7 @@ class CodeMain {
 
 				// Lifecycle
 				Event.once(lifecycleMainService.onWillShutdown)(evt => {
+					tofLoginBridge?.dispose();
 					fileService.dispose();
 					configurationService.dispose();
 					evt.join('instanceLockfile', promises.unlink(environmentMainService.mainLockfile).catch(() => { /* ignored */ }));
@@ -218,6 +229,26 @@ class CodeMain {
 		disposables.add(startMainThreadWatchdog(logService, {
 			logPath: resolve(environmentMainService.logsHome.with({ scheme: Schemas.file }).fsPath, 'main-hang.log'),
 		}));
+
+		// ★ 2026-10-28：中转站 Node Agent（反向通道客户端）**已移除主进程侧实现**。
+		//   现在只保留 **dsh Host 侧插件**里的那一份（`dsh-plugins/vssaros-relay`）——
+		//   两份实现并存会让它们各自注册、互相轮换节点令牌 ⇒ 通道反复掉线 ✗。
+
+		// ★ 2026-10-28：**TOF（IOA）自动登录桥** —— 监听 127.0.0.1:<port> 接住
+		//   网关 302 过来的票据 ⇒ 本地验票（★ 本机够得到 IDC 网关）⇒ 换一次性 code
+		//   ⇒ 把浏览器送回中转站换会话 ⇒ **用户不用手贴票据**。
+		//   与 app 同生共死（关掉 app 就不再接票据）。
+		tofLoginBridge = createTofLoginBridge({
+			log: message => logService.info(message),
+		});
+		disposables.add(tofLoginBridge);
+
+		// ★ CodeBuddy 额度/积分的采集**已搬到 dsh Host 侧插件**（`dsh-plugins/vssaros-relay`）：
+		//   主进程那份（`quotaSync.ts`，用 Electron session + 登录窗）已删除 ——
+		//   实测企业 SSO 的 iOA 推送在 **Electron 窗口**里**收不到回执**（页面永远停在
+		//   「Verification successful…」⇒ 换不到票），而**真实浏览器**里一切正常 ⇒
+		//   现在由 Host 通过**浏览器插件**（`vssaros-browser` 的 `loginSession`）读真实浏览器里的
+		//   woa 会话 cookie ⇒ 全自动、零手工、不需要 Electron 登录窗 ✓
 
 		// Files
 		const fileService = new FileService(logService);

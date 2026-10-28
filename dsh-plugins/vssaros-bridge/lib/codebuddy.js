@@ -30,6 +30,15 @@ export const CODEBUDDY_ROUTE = 'vssaros-codebuddy';
 export const CODEBUDDY_DISPLAY_NAME = 'CodeBuddy';
 /** access token 的凭据引用（与 IDE 侧 `credentialRefFor('codebuddy')` **逐字一致** ⇒ 换所有权不改 profile）。 */
 export const CODEBUDDY_CREDENTIAL_REF = 'VSSAROS_CODEBUDDY_KEY';
+/**
+ * ★ OAuth access token 的**专用** ref（只有本桥写 ⇒ 不会被 `providers.sync` 抢）。
+ *
+ * 背景（2026-10-28）：`VSSAROS_CODEBUDDY_KEY` 同时被
+ *   ① 本桥（OAuth access token）与 ② IDE `providers.sync`（**API Key**）写
+ * ⇒ 后写者赢 ⇒ Host 侧可能拿到 API Key ⇒ 平台对它的 `/v3/config` 拒答 ⇒ 节点模型数为 0。
+ * ⇒ 需要 OAuth 的调用方（例如中转站 Node Agent 拉模型目录）读**这个** ref ✓
+ */
+export const CODEBUDDY_ACCESS_TOKEN_REF = 'VSSAROS_CODEBUDDY_ACCESS_TOKEN';
 /** 会话信息（refresh token / 过期时间 / 来源）的凭据引用（JSON 字符串）。 */
 export const CODEBUDDY_SESSION_REF = 'VSSAROS_CODEBUDDY_SESSION';
 /**
@@ -361,7 +370,13 @@ export function createCodeBuddyService(deps) {
 		}
 	};
 	const readSession = async () => {
-		const accessToken = await readRef(CODEBUDDY_CREDENTIAL_REF);
+		// ★ 2026-10-28：access token 优先从**专用 ref** 读（`VSSAROS_CODEBUDDY_ACCESS_TOKEN`）。
+		//   原因：`VSSAROS_CODEBUDDY_KEY` 那个槽位有**两个写入方** —— 本桥（OAuth token）与
+		//   IDE 的 `providers.sync`（**API Key**）⇒ 后写者赢 ⇒ 从旧 ref 读到的可能已是 API Key
+		//   ⇒ 拿它拉模型目录会被平台拒答（code:12403）⇒ 节点模型数 0 ✗
+		//   ⇒ OAuth token 另存专用 ref（只有本桥写）⇒ 这里优先读它；旧 ref 只作**回退**
+		//   （老数据：那时那一份确实是 OAuth token）。
+		const accessToken = await readRef(CODEBUDDY_ACCESS_TOKEN_REF) || await readRef(CODEBUDDY_CREDENTIAL_REF);
 		if (!accessToken) { return undefined; }
 		let meta = {};
 		const raw = await readRef(CODEBUDDY_SESSION_REF);
@@ -381,7 +396,13 @@ export function createCodeBuddyService(deps) {
 		if (!credentials || typeof credentials.set !== 'function') {
 			throw new Error('凭据服务不可用（credentials 缺席）—— 无法保存 CodeBuddy 登录态');
 		}
-		await credentials.set(CODEBUDDY_CREDENTIAL_REF, accessToken);
+		// ★ 2026-10-28：**OAuth token 只写专用 ref**（`VSSAROS_CODEBUDDY_ACCESS_TOKEN`）。
+		//   ⚠ **不再写** `VSSAROS_CODEBUDDY_KEY` —— 那个槽位是 pi-ai 路由的 `apiKeyEnv`，
+		//     归 `providers.sync`（**API Key**）所有 ⇒ 本桥往里写 OAuth token 就是**抢**
+		//     ⇒ 谁后写谁赢 ⇒ 路由可能拿到 OAuth token（目录拉不到）或 API Key（目录被拒答）⇒
+		//     表现为"节点模型数 0"这类玄学问题 ✗
+		await credentials.set(CODEBUDDY_ACCESS_TOKEN_REF, accessToken);
+		//   （聊天仍用 API Key —— pi-ai 的 apiKeyEnv 指向 `VSSAROS_CODEBUDDY_KEY` ⇒ 不变 ✓）
 		await credentials.set(CODEBUDDY_SESSION_REF, JSON.stringify({
 			...(refreshToken ? { refreshToken } : {}),
 			expiresAt,
@@ -395,7 +416,7 @@ export function createCodeBuddyService(deps) {
 	};
 	const signedOutByUser = async () => (await readRef(CODEBUDDY_SIGNED_OUT_REF)) === '1';
 	const clearSession = async () => {
-		for (const ref of [CODEBUDDY_CREDENTIAL_REF, CODEBUDDY_SESSION_REF]) {
+		for (const ref of [CODEBUDDY_CREDENTIAL_REF, CODEBUDDY_ACCESS_TOKEN_REF, CODEBUDDY_SESSION_REF]) {
 			try { await credentials?.unset?.(ref); } catch { /* 幂等：缺席即可 */ }
 		}
 		modelsCache = null;

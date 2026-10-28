@@ -42,6 +42,15 @@ import { ideWindowGuardAction, validateSetIdeWindowHiddenArgs } from '../common/
 // ★ 2026-10-24（用户口径：app 开关三条规则）—— 关窗收场的判据只在这一处，主进程两个关窗路径都调它
 import { decideDesktopWindowClose, decideIdeWindowClose } from '../common/dshAppLifecycle.js';
 import { listBundledPlugins, mergeBundledWithInstalled } from './dshBundledPlugins.js';
+
+/**
+ * 请求退出之后，等多久没走完就**强退**（2026-10-27）。
+ *
+ * 6s 的依据：VS Code 的 joiner 阶段实测 ~110ms（见 `ShutdownDiag`），弹一次确认框也在秒级；
+ * 卡住的情况（renderer 不回话 / 扩展宿主不退出）实测要 5 分钟以上才自愈 ⇒ 兜底必须存在，
+ * 且不能太长（用户点关闭后盯着一个不动的窗口）。
+ */
+const QUIT_FORCE_AFTER_MS = 6_000;
 // ★ 2026-10-26：IDE → dsh 的**推送**通道（媒体库真源在 dsh 侧，ComfyUI 产出在 IDE 侧）
 import { DshHostHttp } from './dshHostHttp.js';
 import { hasWorkbenchClient, IVssarosPluginManifest, isBuiltinPluginName, tryParseVssarosManifest } from '../common/vssarosPluginManifest.js';
@@ -72,6 +81,14 @@ export interface IDshHarnessChannelOptions {
 	readonly compatBundledPath?: string;
 	/** 仅测试使用：覆盖**随包插件根**（默认 `<appPath>/dsh-plugins`；`vssaros-bridge` / 模块插件都在这一层）。 */
 	readonly bundledPluginsPath?: string;
+	/**
+	 * **请求应用退出**（2026-10-27）：由 `app.ts` 注入 `ILifecycleMainService.quit`，
+	 * 返回值 = 有没有被 veto（`true` = 用户还得先处理弹窗）。
+	 *
+	 * 为什么必须注入而不是继续"等窗口自己关掉"：见 `_requestAppQuit` 的注释 —— 真机上
+	 * 「点关闭按钮 ⇒ 应用不退」正是因为那条路径只会干等一个永不发生的 `closed`。
+	 */
+	readonly requestQuit?: (willRestart: boolean) => Promise<boolean>;
 }
 
 /** 伴生插件的版本与它声明支持的 dsh 范围（预检 ②）。 */
@@ -152,8 +169,19 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 	 * 必须整体放行，否则关不掉应用 ✗。
 	 */
 	private _appQuitting = false;
+	/** 注入的"请求应用退出"（`ILifecycleMainService.quit`；见 `IDshHarnessChannelOptions.requestQuit`）。 */
+	private readonly _requestQuit: ((willRestart: boolean) => Promise<boolean>) | undefined;
+	/** 「最后一个界面 ⇒ 退出」这件事**只武装一次**（见 `_requestAppQuit`）。 */
+	private _quitRequested = false;
+	/** 强退兜底定时器（退出流程没往下走时的最后手段）。 */
+	private _forceQuitTimer: NodeJS.Timeout | undefined;
 	/** 已经给哪些桌面窗口挂过 `once('closed')`（避免反复关/开 IDE 时重复挂 ⇒ 重复 quit ✓）。 */
 	private readonly _desktopCloseWatch = new WeakSet<object>();
+	/**
+	 * 哪些 IDE 窗口已经做过「启动自动开桌面窗口」（2026-10-27）。
+	 * 进程级 ⇒ **渲染进程重载不会清零** ⇒ 重载后不会再开第二扇（见 `ClaimDesktopAutoOpen`）。
+	 */
+	private readonly _desktopAutoOpened = new Set<number>();
 
 	constructor(
 		options: IDshHarnessChannelOptions,
@@ -163,9 +191,12 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 	) {
 		super();
 		this._windowsMainService = windowsMainService;
+		this._requestQuit = options.requestQuit;
 		// 真退出时放行 IDE 主窗口的 close（否则"只隐藏"会把退出流程卡死 ✗）。
 		// `before-quit` 在关闭窗口之前触发 ⇒ 这里置位就够；用 `on`（不是 `once`）因为 quit 可能被取消后重来。
 		app.on('before-quit', () => { this._appQuitting = true; });
+		// 退出流程真的往下走了（VS Code 的 will-quit）⇒ 撤掉强退兜底（见 `_requestAppQuit`）。
+		app.on('will-quit', () => { this._cancelForceQuit(); });
 		const log = (line: string) => this._logService.info(`[dshHarness] ${line}`);
 		this._fetch = options.fetch ?? ((url: string) => net.fetch(url));
 		// 内置运行时目录（构建期 prepack，见 build/prepack-dsh-runtime.mjs）：存在即传给管理器，
@@ -713,13 +744,9 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 				this._watchDesktopWindowsAfterIdeClose(windowId, win);
 				return;
 			}
-			// 'quit'：这是最后一个界面 ⇒ 关完退出（隐藏窗口不计入 window-all-closed ⇒ 显式退）
-			this._logService.info('[dshHarness] 关 IDE 主窗口 ⇒ 它是最后一个界面，关闭后退出应用');
-			win.once('closed', () => {
-				if (!this._appQuitting) {
-					app.quit();
-				}
-			});
+			// 'quit'：这是最后一个界面 ⇒ 退出应用
+			this._logService.info('[dshHarness] 关 IDE 主窗口 ⇒ 它是最后一个界面，退出应用');
+			this._requestAppQuit();
 		};
 		const state = { hiddenByUs: hidden };
 		const rehide = (event: 'show' | 'focus') => {
@@ -777,6 +804,64 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 		this._logService.info(`[dshHarness] desktop 守卫：已装（窗口 ${windowId}, hidden=${hidden}）`);
 		if (!hidden) {
 			this._logService.info('[dshHarness] desktop 守卫：IDE 主窗口该露着了（只保留"关窗不带走桌面窗口"这条）');
+		}
+	}
+
+	/**
+	 * **请求应用退出**（2026-10-27，用户报「IDE 点关闭按钮无法关闭 app」）。
+	 *
+	 * ★ 为什么不能继续"挂 `win.once('closed')` 等窗口关掉再 `app.quit()`"：
+	 *   VS Code 的 `LifecycleMainService` 在 `win.on('close')` 里**无条件 `preventDefault()`**，
+	 *   然后走 `unload(window, CLOSE)` ⇒ 要 renderer 回话（`onBeforeUnloadWindowInRenderer`）。
+	 *   renderer 忙/没响应时这个 Promise **永远不回来** ⇒ `window.close()` 永远不被调用 ⇒
+	 *   `closed` 永不发生 ⇒ 我们等的那一下永远不来 ✗。真机 2026-10-27 10:18 就是这个形态：
+	 *   13 秒内 22 条「关 IDE ⇒ 关闭后退出应用」，一条 `before-quit` 都没有（= app.quit 从未被调用），
+	 *   直到 10:23:10 `CodeWindow: recovered from unresponsive` + 扩展宿主退出才收场。
+	 *   ⇒ 我们**自己发起退出**（`ILifecycleMainService.quit`），不再干等窗口 ✗✓。
+	 *
+	 * 三道保险：
+	 *   ① **只武装一次**（`_quitRequested`）：连点关闭不会叠加 N 个定时器/调用；
+	 *   ② 退出流程真往下走（`will-quit`）⇒ 撤掉强退兜底；
+	 *   ③ **超时强退**（`QUIT_FORCE_AFTER_MS`）：VS Code 的退出流程本身卡住时（renderer 不回话、
+	 *      扩展宿主不退出）也要能退 —— 兜底用 `app.exit(0)`（不做清理，只在真卡住时发生）。
+	 */
+	private _requestAppQuit(): void {
+		if (this._appQuitting || this._quitRequested) {
+			return;
+		}
+		this._quitRequested = true;
+		// 超时兜底：6s 够 VS Code 走完 joiner / 弹一次确认框；再不退就强退（否则又是"点了关不掉"✗）
+		this._forceQuitTimer = setTimeout(() => {
+			this._forceQuitTimer = undefined;
+			this._logService.warn(`[dshHarness] 退出流程 ${QUIT_FORCE_AFTER_MS}ms 内没有走完 ⇒ 强制退出（app.exit）`);
+			app.exit(0);
+		}, QUIT_FORCE_AFTER_MS);
+		void (async () => {
+			try {
+				const hook = this._requestQuit;
+				if (hook) {
+					const veto = await hook(false);
+					if (veto) {
+						// 被 veto（用户还有弹窗要处理）⇒ 撤掉强退，等用户处理完再点
+						this._cancelForceQuit();
+						this._quitRequested = false;
+						this._logService.info('[dshHarness] 退出被 veto（用户还有未完成的确认）⇒ 等用户处理后再关');
+						return;
+					}
+					return;
+				}
+				// 没有注入钩子（老宿主 / 测试）⇒ 退回 Electron 原生退出
+				app.quit();
+			} catch (e) {
+				this._logService.warn(`[dshHarness] 请求退出失败：${String((e as Error)?.message ?? e)}`);
+			}
+		})();
+	}
+
+	private _cancelForceQuit(): void {
+		if (this._forceQuitTimer) {
+			clearTimeout(this._forceQuitTimer);
+			this._forceQuitTimer = undefined;
 		}
 	}
 
@@ -1837,6 +1922,20 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 				return;
 			case DshHarnessChannelCommand.ListViews:
 				return this._views.describe();
+			case DshHarnessChannelCommand.ClaimDesktopAutoOpen: {
+				// 「启动自动开桌面窗口」每窗口只一次（2026-10-27：渲染进程重载会重造贡献 ⇒ 又开一扇 ✗）。
+				// ⚠ 状态必须在**主进程**（进程级）：放渲染侧会随重载丢失，正是本缺陷的成因。
+				const a = arg as { windowId?: unknown };
+				const windowId = typeof a?.windowId === 'number' && Number.isInteger(a.windowId) && a.windowId > 0 ? a.windowId : 0;
+				if (!windowId) {
+					return false;
+				}
+				if (this._desktopAutoOpened.has(windowId)) {
+					return false;
+				}
+				this._desktopAutoOpened.add(windowId);
+				return true;
+			}
 			case DshHarnessChannelCommand.ResetWindow: {
 				const a = arg as { windowId: number; keep?: unknown };
 				// keep = 派发方（当前 renderer）自己创建的视图：只回收孤儿，别把当前视图也清掉

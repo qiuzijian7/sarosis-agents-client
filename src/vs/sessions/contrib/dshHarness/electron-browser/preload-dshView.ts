@@ -131,7 +131,7 @@
 		// ★ 2026-10-21：`17 → 18`（新增 `openSettings` / `openFeedback` —— 左下角账号菜单的两条菜单项）。
 		// ★ 2026-10-23：`18 → 19`（新增 `upgradeRefresh` / `upgradeBundled` / `upgradeApp` —— desktop 窗口的「更新」入口）。
 		// ★ 2026-10-26：`19 → 20`（新增 `importCodeWorkspace` —— 从 .code-workspace 导入多根工作区）。
-		bridgeVersion: 20,
+		bridgeVersion: 21,
 		surface,
 		// ★ 2026-10-18：`chatOnly` 也放进 bridge（**同步可知**）。
 		//   为什么不能只靠 `data-vssaros-chat-only`：那个 DOM 标记要等 DOMContentLoaded 才写，
@@ -266,6 +266,8 @@
 		// agentId = `.agent.md` 的目录名（与 VsSaros `Agent.id` 同值，页面上就是行上的 id）；name 仅作显示回退。
 		// 与 `openModulePage` 同理：**页面开不了编辑器** ⇒ 交宿主；宿主只负责把 IDE 自己的设置界面显示出来 ✓。
 		openAgentSettings: (agentId: string, name?: string) => invoke({ method: 'openAgentSettings', agentId, name }),
+	// 方案 C2（桥 `20 → 21`）：一次点击 = 中栏会话 + 右栏设置（左右并排由宿主布局）
+	openBot: (agentId: string, name?: string) => invoke({ method: 'openBot', agentId, name }),
 		// 打开知识库设置 / 关系图谱（桥 `6 → 7`，2026-10-15）：与上面 `openAgentSettings` 同源 ——
 		// **页面开不了中间栏编辑器** ⇒ 交宿主；两条都只是"把 IDE 自己的界面显示出来" ✓（不含写能力 ✓）。
 		// ⚠ 宿主侧**不自己 new EditorInput** ✗：设置面板的 host 与图谱数据都来自知识库视图 ⇒

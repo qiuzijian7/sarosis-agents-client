@@ -1060,7 +1060,42 @@ window.__ModuleLoader__.load({
 		 */
 		const docEtagCache = new Map();
 
-		function KbWorkbenchPanel() {
+		function KbWorkbenchPanel(props) {
+			// ★ 2026-10-28（用户选方案 A）：知识库工作台右侧**内嵌**对话列（与商城/萨罗斯同款契约）。
+			//   `props.conversation` 由外壳 Frame 在 customFrame:true 时注入；没有它时退回「整页知识库」。
+			const conversation = props && props.conversation ? props.conversation : null;
+			const KB_COLLAPSE_KEY = '__vssarosKbCollapsed';
+			const kbCollapsedState = react.useState(() => {
+				try { return localStorage.getItem(KB_COLLAPSE_KEY) !== '0'; } catch (e) { return true; }
+			});
+			const kbCollapsed = kbCollapsedState[0];
+			// 「本工作台在前台」标志：只用于新的会话选 preset（别把别的工作台的会话带跑）
+			react.useEffect(() => {
+				globalThis.__vssarosKbActive = props && props.active === true;
+				return () => { globalThis.__vssarosKbActive = false; };
+			}, [props && props.active]);
+			// 外壳的 «/» 按钮派发事件（CustomEvent 只向上冒泡 ⇒ 必须挂 window）
+			react.useEffect(() => {
+				const onToggle = (ev) => {
+					const t = ev && ev.detail && ev.detail.workbench;
+					if (t && t !== 'vssaros/kb') { return; }
+					const open = ev.type === 'vssaros:assist-expand';
+					kbCollapsedState[1](!open);
+					try { localStorage.setItem(KB_COLLAPSE_KEY, open ? '0' : '1'); } catch (e) { /* ignore */ }
+					// ★ 2026-10-28：**同步**写属性 —— React 的 state 更新是异步的，外壳在事件派发后会
+					//   立刻/稍后复查这个属性来判断"页面接住了没有"；只靠 re-render 会读到旧值 ⇒ 被误判成没人接。
+					try {
+						const root = document.querySelector('[data-vssaros-kb-panel]');
+						if (root) { root.setAttribute('data-vssaros-assist-collapsed', open ? '0' : '1'); }
+					} catch (e) { /* ignore */ }
+				};
+				window.addEventListener('vssaros:assist-expand', onToggle);
+				window.addEventListener('vssaros:assist-collapse', onToggle);
+				return () => {
+					window.removeEventListener('vssaros:assist-expand', onToggle);
+					window.removeEventListener('vssaros:assist-collapse', onToggle);
+				};
+			}, []);
 			const hostRef = react.useRef(null);
 			const disposeRef = react.useRef(null);
 			const [phase, setPhase] = useState('loading');   // loading | ready | error
@@ -1464,7 +1499,7 @@ window.__ModuleLoader__.load({
 			//   面板的一部分高度 ⇒ 图谱被"钉"在下半区。
 			//   ⇒ 改回**面板内部绝对定位**：父容器 `position: relative` + 图谱层 `absolute inset:0`。
 			//     树始终保留（不再 display:none），既提供高度、也保证返回时不需要重新挂载。
-			return h('div', {
+			const kbShell = h('div', {
 				'data-kb-workbench': 'shell',
 				style: { position: 'relative', display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 },
 			},
@@ -1510,6 +1545,62 @@ window.__ModuleLoader__.load({
 					auto: settingsAuto,
 				})) : null);
 
+			// ── 外壳：左 = 知识库本体，右 = 内嵌对话列（方案 A）─────────────────────────
+			const KB_CONV_WIDTH = 'min(520px, 46vw)';
+			const KbSplitStart = (ev) => {
+				ev.preventDefault();
+				const el = ev.currentTarget;
+				const aside = el.nextElementSibling;
+				if (!aside) { return; }
+				const startX = ev.clientX;
+				const startW = aside.getBoundingClientRect().width;
+				const onMove = (e) => {
+					const w = Math.max(260, Math.min(760, startW + (startX - e.clientX)));
+					aside.style.width = w + 'px';
+				};
+				const onUp = () => {
+					document.removeEventListener('mousemove', onMove);
+					document.removeEventListener('mouseup', onUp);
+				};
+				document.addEventListener('mousemove', onMove);
+				document.addEventListener('mouseup', onUp);
+			};
+			const rootAttrs = {
+				'data-vssaros-kb-panel': '',
+				// 外壳据此决定「« 展开 / » 收起」：1 = 已收起
+				'data-vssaros-assist-collapsed': kbCollapsed ? '1' : '0',
+				style: { display: 'flex', flex: '1 1 auto', minWidth: 0, minHeight: 0, height: '100%' },
+			};
+			const siteWrap = h('div', {
+				style: { display: 'flex', flex: '1 1 auto', minWidth: 0, minHeight: 0, height: '100%' },
+			}, kbShell);
+			if (!conversation) {
+				// 没有对话停靠点（宿主较旧）⇒ 整页知识库，照旧可用
+				return h('div', Object.assign({}, rootAttrs, { 'data-vssaros-assist-collapsed': '1' }), siteWrap);
+			}
+			const splitter = kbCollapsed ? null : h('div', {
+				'data-vssaros-kb-split': '',
+				title: '左右拖动调节宽度（双击复位）',
+				onMouseDown: KbSplitStart,
+				onDoubleClick: (ev) => {
+					const aside = ev.currentTarget.nextElementSibling;
+					if (aside) { aside.style.width = KB_CONV_WIDTH; }
+				},
+				style: { flex: '0 0 auto', width: '6px', cursor: 'col-resize', background: 'transparent', position: 'relative', zIndex: 5 },
+			});
+			const aside = h('aside', {
+				'data-vssaros-kb-conv': '',
+				style: {
+					flex: '0 0 auto',
+					width: kbCollapsed ? '0px' : KB_CONV_WIDTH,
+					display: kbCollapsed ? 'none' : 'flex',
+					flexDirection: 'column',
+					minWidth: 0,
+					minHeight: 0,
+					borderLeft: '1px solid rgba(128,128,128,.22)',
+				},
+			}, conversation);
+			return h('div', rootAttrs, siteWrap, splitter, aside);
 		}
 
 function install(ctx) {
@@ -1532,6 +1623,33 @@ function install(ctx) {
 			//     且 chunk 的 rev 取自入口文件的 mtime/size —— 不动入口会继续命中 immutable 缓存 ✗）
 			ctx.inject(['desktopWorkbenches'], (c) => {
 				c.effect(() => c.desktopWorkbenches.register(DESCRIPTOR, KbWorkbenchPanel), 'vssaros-kb: workbench');
+
+				// ★ 2026-10-28（方案 A 的配套）：新会话默认用「知识库专家」。
+				//   链式包 `newSession`（不判断"是否已被别人包过"，否则后装者永远包不上）；
+				//   只在本工作台**前台**时改 preset，避免把别的工作台的会话带跑。
+				try {
+					const dw = c.desktopWorkbenches;
+					const presets = (c.get && c.get('remote.agentPresets')) || null;
+					if (dw && typeof dw.newSession === 'function' && !dw.newSession.__vssarosKbPreset) {
+						const orig = dw.newSession;
+						const patched = function (...args) {
+							const out = orig.apply(dw, args);
+							try {
+								Promise.resolve(out).then((sid) => {
+									if (!sid || !globalThis.__vssarosKbActive) { return; }
+									if (!presets || typeof presets.select !== 'function') { return; }
+									try { presets.select(sid, 'vssaros-knowledge-base-expert'); } catch (e) { /* ignore */ }
+								}).catch(() => { /* ignore */ });
+							} catch (e) { /* ignore */ }
+							return out;
+						};
+						patched.__vssarosKbPreset = true;
+						c.effect(() => {
+							dw.newSession = patched;
+							return () => { if (dw.newSession === patched) { dw.newSession = orig; } };
+						}, 'vssaros-kb: newSession preset');
+					}
+				} catch (e) { /* 拿不到服务就只做面板 */ }
 			});
 			return undefined;
 		}

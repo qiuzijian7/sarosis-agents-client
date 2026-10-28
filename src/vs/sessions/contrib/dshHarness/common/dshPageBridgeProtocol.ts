@@ -84,7 +84,7 @@
  * 2026-10-26：`19 → 20`，新增 `importCodeWorkspace` —— 请 IDE 侧导入一个 `.code-workspace` 文件
  *   （选文件 → 解析 folders → 落一条多根工作区记录 → 各根注册进 dsh）。**只导入，不切窗口** ✓。
  */
-export const DSH_PAGE_BRIDGE_VERSION = 20;
+export const DSH_PAGE_BRIDGE_VERSION = 21;   // 2026-10-27：`20 → 21`，新增 `openBot`（分栏：中栏会话 + 右栏设置）
 
 /** preload → 主进程的 IPC 通道（经 webContents.ipc，作用域限于该视图）。 */
 export const DSH_PAGE_IPC_INVOKE = 'vssaros:dsh:page';
@@ -854,6 +854,14 @@ export type DshPageCommand =
  */
 | { readonly method: 'openAgentSettings'; readonly agentId: string; readonly name?: string }
 /**
+ * 打开一个 bot 的**分栏视图**（方案 C2；2026-10-27 新增，桥 `20 → 21`）：
+ *   中栏 = 绑该 bot 人格的新会话 · 右栏 = 该 bot 的设置页（宿主负责左右并排）。
+ *
+ * 与 `openAgentSettings` 的区别：那条只管"开设置"，不管会话；页面若连调两条，
+ * 没法控制两个页签落在哪个分组（设置会顶替会话）⇒ 合并成一条由宿主布局。
+ */
+| { readonly method: 'openBot'; readonly agentId: string; readonly name?: string }
+/**
  * 打开某个**资源条目的设置**（「工具」页（`/x/skills/`）行内齿轮；2026-10-15 新增，桥 `9 → 10`）。
  *
  * 两条落点的取舍（都试过才这么定 ✓）：
@@ -1374,6 +1382,17 @@ export function validatePageCommand(raw: unknown): DshPageCommand | undefined {
 		}
 			case 'openAgentRoster':
 			return { method: 'openAgentRoster' };
+			case 'openBot': {
+			// 方案 C2（桥 `20 → 21`）：形状与 `openAgentSettings` **完全一致**，只是宿主多做"开会话 + 分组并排"。
+			// 校验口径沿用 agentId 字符集；`name` 是展示文本、按 MAX_TEXT 截断。
+			if (typeof r.agentId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(r.agentId)) {
+				return undefined;
+			}
+			const botName = typeof r.name !== 'string' || !r.name.trim() ? undefined : r.name.trim().slice(0, MAX_TEXT);
+			return botName === undefined
+				? { method: 'openBot', agentId: r.agentId }
+				: { method: 'openBot', agentId: r.agentId, name: botName };
+		}
 			case 'openAgentSettings': {
 			// agentId 走 agent id 字符集（= `.agent.md` 目录名，与 `sessionPersona` 的 personaId 同一套：
 			// 字母数字开头、可含 `. _ -`、长度 64 内）；`name` 是纯展示文本、按 MAX_TEXT 截断。

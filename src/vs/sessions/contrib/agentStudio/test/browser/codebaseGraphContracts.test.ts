@@ -508,9 +508,9 @@ suite('方案 C 补强 — 切换工作区时的记账清理', () => {
 
 	test('★★★ 按需加载必须**先过滤、再算 isLast**（否则 BM25 不重建 ⇒ 新节点搜不到）', () => {
 		const src = readCode(BOOTSTRAP);
-		const idx = src.indexOf('private async _loadDeferredGraphs(reason: string): Promise<void>');
+		const idx = src.indexOf('private async _loadDeferredGraphs(reason: string, opts?: { primaryOnly?: boolean }): Promise<void>');
 		assert.ok(idx > 0, '应能找到 _loadDeferredGraphs');
-		const body = src.slice(idx, idx + 1600);
+		const body = src.slice(idx, idx + 2800);
 		const filterAt = body.indexOf('const pending = all.filter(');
 		const lastAt = body.indexOf('const isLast = i === pending.length - 1');
 		assert.ok(filterAt > 0, '必须先过滤掉已离开工作区的 folder（否则会把旧工作区巨图读进内存）');
@@ -749,9 +749,9 @@ suite('★ 切换后按需加载（不得在切换后立刻加载图谱）', () 
 
 	test('★★★ codebase UI 必须触发按需加载（否则 UI 会误判「无图」而发起全量索引）', () => {
 		const auto = readSrc(AUTO);
-		assert.ok(auto.includes("ensureDeferredGraphsLoaded('codebase UI open')"),
+		assert.ok(auto.includes("ensureDeferredGraphsLoaded('codebase UI open'"),
 			'Find Symbol / Open File 打开时必须先触发按需加载');
-		const at = auto.indexOf("ensureDeferredGraphsLoaded('codebase UI open')");
+		const at = auto.indexOf("ensureDeferredGraphsLoaded('codebase UI open'");
 		const after = auto.indexOf('indexWorkspace(', at);
 		assert.ok(at > 0 && (after === -1 || after > at),
 			'触发按需加载必须**早于** `indexWorkspace(` —— 顺序反了就变成「有制品却全量重建」');
@@ -1303,6 +1303,177 @@ suite('所有权 —— dsh 产的清单 ⇒ IDE 不索引、不落盘（2026-10
 	test('⑤ 让路时把**去处**说出来（用户不该猜"为什么不索引了" ✓）', () => {
 		assert.ok(/这个工作区的代码图谱由 dsh 负责/.test(svcSrc), 'message 必须点名 dsh ✓');
 		assert.ok(/要重建图谱，请在 dsh 侧触发 codebase_index/.test(svcSrc), 'message 必须给去处 ✓');
+	});
+});
+
+/**
+ * ★ 2026-10-27（用户报「IDE 鼠标点击特别卡顿」）：**IDE 侧只读**要落到**增量路径 + 监听**上，
+ * 并且**大图不许自动重载**（重载 = 主线程合并整张图 ⇒ 冻结界面十几秒）。
+ *
+ * 现场（真机）：21.9 万节点 / 130 万边 / 129MB 制品 ⇒ `loadGraphMerge` **16.9s** + BM25 **5.6s**
+ * ⇒ 主线程冻结 ⇒ ActivityBar 点击与编辑器输入全无响应（121 次长任务，最长 10.9s，成簇出现）。
+ * 而触发频率由 dsh 侧 watcher 决定 ⇒ 原节流 5s + 轮询 10s ⇒ 最坏每 10s 冻一次 ✗✗。
+ */
+suite('性能止血 —— 产物归 dsh 时 IDE 不自索引；大图不自动重载（2026-10-27）', () => {
+	const svcSrc = fs.readFileSync(path.join(process.cwd(), 'src/vs/sessions/contrib/agentStudio/browser/codebaseGraphService.ts'), 'utf8');
+	const bootSrc = fs.readFileSync(path.join(process.cwd(), 'src/vs/sessions/contrib/agentStudio/browser/codebaseGraphBootstrap.ts'), 'utf8');
+
+	test('① 增量索引也必须让路（`indexWorkspace` 那道闸只挡全量 ⇒ 增量会白烧）', () => {
+		const fn = svcSrc.slice(svcSrc.indexOf('private async _runIncrementalIndex'));
+		const seg = fn.slice(0, 4000);
+		assert.ok(/_isIndexOwnedByDsh\(rootPath\)/.test(seg), '增量路径里必须有所有权闸 ✓');
+		// ⚠ 闸必须在 `this._isIndexing = true` **之前**（置了旗又提前 return ⇒ 后续增量全被自己挡住 ✗✗）
+		const gate = seg.indexOf('_isIndexOwnedByDsh(rootPath)');
+		const flag = seg.indexOf('this._isIndexing = true');
+		assert.ok(gate > 0 && flag > gate, '让路必须在置旗之前 ✓（顺序反了 = 每次增量都被自己挡住 ✗✗）');
+		assert.ok(/不做增量索引/.test(seg), 'message 必须说清"不做增量索引"（用户不该猜 ✓）');
+	});
+
+	test('② 产物归 dsh 时**不起文件监听**（监听只服务增量索引 ⇒ 否则只剩"白扫全仓"）', () => {
+		// ★ 闸放在 service 的 `startWatching`（监听启动的**唯一收口**）⇒ 将来新增调用点也不会漏 ✓
+		const fn = svcSrc.slice(svcSrc.indexOf('startWatching(rootPath: string, extraExcludeDirs?: readonly string[], keepDirs?: readonly string[]): void {'));
+		const seg = fn.slice(0, 3000);
+		assert.ok(/_isIndexOwnedByDsh\(rootPath\)/.test(seg), 'startWatching 里必须有所有权闸 ✓');
+		assert.ok(/watcher skipped for/.test(seg), '必须有一条"跳过监听"的日志（不许静默 ✓）');
+	});
+
+	test('③ 大图不自动重载 ⇒ 必须打 `tooBig` 标记并**告诉用户**（否则表现为"搜不到新符号"且无提示）', () => {
+		assert.ok(/decision\.tooBig/.test(bootSrc), '调用方必须读 tooBig 标记 ✓');
+		assert.ok(/_tooBigNotified/.test(bootSrc), '只提示一次（不许每 10s 刷屏 ✗）');
+		assert.ok(/不自动重载|手动刷新/.test(bootSrc), '提示里必须给出下一步 ✓');
+	});
+
+	test('④ 规模闸的阈值是**单一常量**（判据在纯函数里，单测在 test/common ✓）', () => {
+		const defsSrc = fs.readFileSync(path.join(process.cwd(), 'src/vs/sessions/contrib/agentStudio/common/codebaseIndexDefaults.ts'), 'utf8');
+		assert.ok(/export const EXTERNAL_RELOAD_MAX_AUTO_NODES = \d/.test(defsSrc), '阈值必须是导出的常量 ✓');
+		assert.ok(/EXTERNAL_RELOAD_MAX_AUTO_NODES/.test(defsSrc.split('decideExternalArtifactReload')[1] ?? ''), '判据必须用那个常量 ✓');
+	});
+
+	test('⑤ 内容指纹：判据里有"指纹一致 ⇒ 不重载"这一条（dsh 周期性重写 ⇒ 时间戳会说谎）', () => {
+		const defsSrc = fs.readFileSync(path.join(process.cwd(), 'src/vs/sessions/contrib/agentStudio/common/codebaseIndexDefaults.ts'), 'utf8');
+		assert.ok(/fingerprint/.test(defsSrc), '判据文件里必须有 fingerprint 字段 ✓');
+		assert.ok(/fingerprint\s*===\s*loaded/.test(defsSrc), '必须比较两侧指纹 ✓');
+	});
+
+	test('⑥ 指纹的来源与基线：bootstrap 读 index-meta.json 并把指纹记进基线', () => {
+		const bootSrc = fs.readFileSync(path.join(process.cwd(), 'src/vs/sessions/contrib/agentStudio/browser/codebaseGraphBootstrap.ts'), 'utf8');
+		assert.ok(/index-meta\.json/.test(bootSrc), '必须读 index-meta.json（dsh 侧写指纹的地方）✓');
+		assert.ok(/graphFingerprint/.test(bootSrc), '必须取 graphFingerprint ✓');
+		assert.ok(/graphRecipe/.test(bootSrc), '必须把 graphRecipe 拼进去（配方变了 = 语义变了）✓');
+		assert.ok(/fingerprint:\s*disk\.fingerprint/.test(bootSrc), '基线里必须带指纹 ✓');
+	});
+});
+
+/**
+ * ★ 2026-10-27：打开工作区时**主 root 的大图也不加载**（129MB / 42 万节点 ⇒ 同步合并 18.3s
+ * ⇒ 主线程冻结二十多秒 ⇒ 鼠标点击与编辑器输入全无响应）。
+ *
+ * 真源在 dsh 侧（Agent 的 codebase 工具读 dsh 那份，始终最新）⇒ 延后只影响 IDE 本地检索；
+ * 真正用到时 `ensureGraphForUi()` 会调 `ensureDeferredGraphsLoaded('codebase UI open')` 自动加载 ✓。
+ */
+suite('性能止血 —— 主 root 的大图也按需加载（2026-10-27）', () => {
+	const bootSrc = fs.readFileSync(path.join(process.cwd(), 'src/vs/sessions/contrib/agentStudio/browser/codebaseGraphBootstrap.ts'), 'utf8');
+	const defsSrc = fs.readFileSync(path.join(process.cwd(), 'src/vs/sessions/contrib/agentStudio/common/codebaseIndexDefaults.ts'), 'utf8');
+	const autoSrc = fs.readFileSync(path.join(process.cwd(), 'src/vs/sessions/contrib/agentStudio/browser/widgets/codebaseGraphAutoBuild.ts'), 'utf8');
+
+	test('① 判据支持主 root（多一个主根阈值参数，且缺省 0 = 不改变旧行为）', () => {
+		assert.ok(/deferLargePrimaryRootMB = 0/.test(defsSrc), '主根阈值必须缺省 0（调用方不传就保持旧行为 ✓）');
+		assert.ok(/isPrimary/.test(defsSrc), '判据里必须区分主/非主 root ✓');
+	});
+
+	test('② bootstrap 读了新设置并把它传给判据（否则永远不延迟 ✗）', () => {
+		assert.ok(/saros\.codebaseGraph\.deferLargePrimaryRootMB/.test(bootSrc), '必须读这个设置 ✓');
+		assert.ok(/shouldDeferGraphLoad\(folderIndex, sizeBytes, deferMB, alreadyDeferred, deferPrimaryMB\)/.test(bootSrc),
+			'必须把主根阈值传进判据 ✓');
+	});
+
+	test('③ 主 root 也要 stat 体积（否则拿不到体积 ⇒ 永不延迟 ✗）', () => {
+		assert.ok(/deferPrimaryMB > 0 && folderIndex <= 0/.test(bootSrc), '主根也要进"可能要延迟"的判定 ⇒ 才 stat ✓');
+	});
+
+	test('④ UI 侧说清是"按需加载"而不是"未索引"（写死的文案不能随状态变假 ✗）', () => {
+		assert.ok(/尚未载入内存/.test(autoSrc), '按需加载时必须说清"尚未载入内存" ✓');
+		assert.ok(/正在按需加载/.test(autoSrc), '提示里必须写"按需加载" ✓');
+	});
+
+	test('⑤ ★ 按需加载必须**早于** `hasGraphData()` 快速路径（否则主仓永远不载入）', () => {
+		const loadAt = autoSrc.indexOf("ensureDeferredGraphsLoaded('codebase UI open'");
+		const fastAt = autoSrc.indexOf('if (graphService.hasGraphData())');
+		assert.ok(loadAt > 0, '必须有那次按需加载调用 ✓');
+		assert.ok(fastAt > 0 && loadAt < fastAt,
+			'按需加载必须排在快速路径**之前** —— 顺序反了：store 里已有别的仓 ⇒ hasGraphData() 为真 ⇒ '
+			+ '主 root 永远不载入 ⇒ 默认检索作用域漂到别的仓 ✗✗');
+	});
+
+	test('⑥ 只载主 root（`primaryOnly`）—— 否则 UI 打开会把 UE5EA 那种 24.6MB 的非主图也拉进来 ✗', () => {
+		assert.ok(/primaryOnly: true/.test(autoSrc), 'UI 侧必须只载主 root ✓');
+		assert.ok(/primaryOnly/.test(bootSrc), 'bootstrap 必须认这个选项 ✓');
+	});
+});
+
+/**
+ * ★ 2026-10-27（P2）：**制品解压必须离开渲染主线程**。
+ *
+ * 真机证据：按需加载大图时**唯一**一次 LONG_TASK = **2123ms**，时间戳与阶段耗时里的
+ * 「解压制品=2203ms」完全对上 ⇒ Chromium 的 `DecompressionStream` 在主线程上 inflate
+ * ⇒ 那 2.1 秒里 ActivityBar 点击与键盘输入全无响应 ✗。
+ */
+/**
+ * ★ 2026-10-27（用户报「IDE 侧 Alt+Shift+S 完全没反应，F1 也搜不到」）：
+ * 命令本身是好的（真机按键能弹模态、F1 面板能搜到），真因有二：
+ *   ① 中文输入法默认把「中英切换」绑在 **Alt+Shift** ⇒ IME 先吞键，IDE 收不到 ⇒ 表现为"没反应"；
+ *   ② `F1` 默认是**文件模式** ⇒ 输命令名搜不到（要 `Ctrl+Shift+P` 或先输 `>`）。
+ * ⇒ 给命令加一个**不被输入法抢**的备用键位，并把这个坑写进用户文档 ✓。
+ */
+suite('codebase 快捷键 —— 备用键位与输入法冲突（2026-10-27）', () => {
+	const cmdSrc = fs.readFileSync(path.join(process.cwd(), 'src/vs/sessions/contrib/agentStudio/browser/codebaseGraphFindSymbol.contribution.ts'), 'utf8');
+	const docPath = path.join(process.cwd(), 'doc/内置Codebase代码图谱-简介与使用说明.md');
+
+	test('① 主键位仍是 Shift+Alt+S（不许被改掉）', () => {
+		assert.ok(/primary:\s*KeyMod\.Shift\s*\|\s*KeyMod\.Alt\s*\|\s*KeyCode\.KeyS/.test(cmdSrc),
+			'主键位必须保持 Shift+Alt+S ✓');
+	});
+
+	test('② ★ 有备用键位 Ctrl+Shift+Alt+S（输入法抢 Alt+Shift 时可用）', () => {
+		assert.ok(/secondary:\s*\[\s*KeyMod\.Ctrl\s*\|\s*KeyMod\.Shift\s*\|\s*KeyMod\.Alt\s*\|\s*KeyCode\.KeyS\s*\]/.test(cmdSrc),
+			'必须有备用键位 Ctrl+Shift+Alt+S ✓');
+	});
+
+	test('③ 用户文档写清了两个坑（输入法抢键 / F1 是文件模式）', () => {
+		const doc = fs.readFileSync(docPath, 'utf8');
+		assert.ok(/Ctrl\+Shift\+Alt\+S/.test(doc), '文档要列出备用键位 ✓');
+		assert.ok(/中英切换/.test(doc) && /Alt\+Shift/.test(doc), '文档要写明输入法会抢 Alt+Shift ✓');
+		assert.ok(/Ctrl\+Shift\+P/.test(doc), '文档要写明命令面板用 Ctrl+Shift+P（F1 默认是文件模式）✓');
+	});
+});
+
+suite('性能止血 —— 制品解压搬进 Worker（2026-10-27，P2）', () => {
+	const persSrc = fs.readFileSync(path.join(process.cwd(), 'src/vs/sessions/contrib/agentStudio/browser/codebaseGraphPersistence.ts'), 'utf8');
+
+	test('① 有专用 gunzip worker（inflate 不在主线程）', () => {
+		assert.ok(/_GUNZIP_WORKER_SOURCE/.test(persSrc), '必须有专用 worker 源码 ✓');
+		assert.ok(/DecompressionStream\('gzip'\)/.test(persSrc), 'worker 里要用 DecompressionStream ✓');
+		assert.ok(/new Worker\(/.test(persSrc), '必须真的起 worker ✓');
+	});
+
+	test('② ★ 先拷贝再转移（否则降级路径读到的是已失效的 buffer）', () => {
+		const fn = persSrc.slice(persSrc.indexOf('private async _decompressInWorker'));
+		const seg = fn.slice(0, 4000);
+		assert.ok(/new Uint8Array\(data\.byteLength\)/.test(seg) && /\.set\(data\)/.test(seg),
+			'必须先拷贝一份再转移 ✓（transfer 会让原 buffer 失效 ⇒ 降级会读不到字节 ✗）');
+	});
+
+	test('③ 有降级路径：worker 不可用/出错 ⇒ 回退主线程解压（不许把加载搞挂）', () => {
+		assert.ok(/_gzipDecompress/.test(persSrc), '必须保留主线程解压作为降级 ✓');
+		const read = persSrc.slice(persSrc.indexOf('private async _readJsonText'));
+		const seg = read.slice(0, 4000);
+		assert.ok(/_decompressInWorker/.test(seg) && /workerText !== undefined/.test(seg),
+			'读取路径必须「先试 worker，失败再降级」✓');
+	});
+
+	test('④ worker 有超时上限（不许把加载永久挂住）', () => {
+		assert.ok(/_GUNZIP_WORKER_TIMEOUT_NS|_GUNZIP_WORKER_TIMEOUT_MS\s*=\s*\d/.test(persSrc), '必须有超时常量 ✓');
+		assert.ok(/setTimeout\(/.test(persSrc.slice(persSrc.indexOf('private async _decompressInWorker'))), '必须真的设了超时 ✓');
 	});
 });
 

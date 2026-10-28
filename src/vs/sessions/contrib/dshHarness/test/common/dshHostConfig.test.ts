@@ -246,29 +246,24 @@ suite('dshHostConfig（中立配置源：配置 → 覆盖层）', () => {
 	 * 3. **中立配置要透传** —— `IDshHostConfig` 里加了字段而聚合器没往下传，
 	 *    症状就是"设置填了但不生效"（这类沉默故障是本文件存在的理由）。
 	 */
-	test('★ IM 飞书凭据：两项齐全才写进 agents 行（半份不注入）', () => {
-		const withBoth = renderAgentsOverlay('/a/agents', '/b/builtin', { appId: 'cli_x', appSecret: 'sec_x' });
-		assert.ok(withBoth.includes('    feishu:'), '应写出 feishu 段：\n' + withBoth);
-		assert.ok(withBoth.includes("      appId: 'cli_x'"), 'appId 要写进去：\n' + withBoth);
-		assert.ok(withBoth.includes("      appSecret: 'sec_x'"), 'appSecret 要写进去：\n' + withBoth);
-		assert.ok(withBoth.includes("    agentsRoot: '/a/agents'"), '同一行里的 agentsRoot 不能被挤掉：\n' + withBoth);
-		assert.ok(withBoth.includes("    agentsBuiltinRoot: '/b/builtin'"), 'agentsBuiltinRoot 同理：\n' + withBoth);
-
-		const onlyId = renderAgentsOverlay('/a/agents', undefined, { appId: 'cli_x' });
-		assert.ok(!onlyId.includes('feishu:'), '只有 appId 时**不要**写（半份凭据只会导致反复 unavailable）：\n' + onlyId);
-		const none = renderAgentsOverlay('/a/agents', undefined, undefined);
-		assert.ok(!none.includes('feishu:'), '不传就不该出现：\n' + none);
-	});
-
-	test('★ 中立配置把 IM 凭据透传给 agents 覆盖层（不然"设置填了不生效"）', () => {
-		const src = readIfExists(HOST_CONFIG);
-		if (!src) {
-			return;	// cwd 不是仓库根 ⇒ 与文件里其它源码级断言同样跳过
-		}
-		assert.ok(src.includes('imFeishuAppId'), 'IDshHostConfig / 聚合器要有 imFeishuAppId');
-		assert.ok(src.includes('imFeishuAppSecret'), 'IDshHostConfig / 聚合器要有 imFeishuAppSecret');
-		assert.ok(/renderAgentsOverlay\(\s*agentsRoot,\s*agentsBuiltinRoot,\s*\{/.test(src),
-			'第三参数必须真的传下去（`renderAgentsOverlay(agentsRoot, agentsBuiltinRoot, { appId, appSecret })`）：\n'
-			+ src.split('\n').filter(l => l.includes('renderAgentsOverlay')).join('\n'));
+	/**
+	 * ★ 防回流（2026-10-27「数据源统一到 dsh 侧」）。
+	 *
+	 * IM 凭据的真源是 dsh 侧 `<dataRoot>/agent-im-accounts.json`（dsh 设置 → 渠道 里填，
+	 * 走插件自己的 `POST /api/bindings {action:'credentials'}`）。原先那条
+	 * 「IDE 设置 → `--patch` 覆盖层 → `config.feishu`」已下线：插件启动时
+	 * `migrateLegacyFeishu()` 做一次性搬运。
+	 *
+	 * 这条测试存在的唯一目的：**以后谁再往覆盖层里塞 IM 凭据，会红**。
+	 * （凭据经覆盖层注入的坏处：① 有两处真源 ② 改完要重启 IDE + Host ③ 明文落在 IDE 设置里）
+	 */
+	test('★ 覆盖层不再注入 IM 凭据（真源只在 dsh 侧）', () => {
+		const text = renderAgentsOverlay('/a/agents', '/b/builtin');
+		assert.ok(!text.includes('feishu:'), 'agents 行不该再有 feishu 段：\n' + text);
+		assert.ok(!/appSecret/i.test(text), '覆盖层里不该出现 appSecret：\n' + text);
+		assert.ok(text.includes("    agentsRoot: '/a/agents'"), '原有注入不能被破坏：\n' + text);
+		assert.ok(text.includes("    agentsBuiltinRoot: '/b/builtin'"), '原有注入不能被破坏：\n' + text);
+		// 签名只剩两个参数（第三个若被加回来，这里会因类型不匹配而编译失败）
+		assert.strictEqual(renderAgentsOverlay.length, 2, 'renderAgentsOverlay 只应接受两个参数');
 	});
 });

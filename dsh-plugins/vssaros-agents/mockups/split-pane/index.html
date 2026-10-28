@@ -1,0 +1,786 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Bots 工作台 · 三栏（sideview | chat-surface | 多页签）</title>
+<style>
+	/* ══════════════════════════════════════════════════════════
+	 * KIT 令牌（两个宿主共用）
+	 * ══════════════════════════════════════════════════════════ */
+	:root {
+		--bg: #1e1e1e; --panel: #252526; --panel2: #2b2b2d; --line: #3c3c3c;
+		--fg: #ddd; --fg-dim: #9d9d9d; --fg-faint: #6f6f6f;
+		--accent: #4a8cff; --ok: #4caf50; --warn: #d9a441;
+		--w-left: 232px; --w-right: 372px; --radius: 3px;
+	}
+	* { box-sizing: border-box; }
+	html, body { height: 100%; }
+	body { margin: 0; background: #141414; color: var(--fg);
+		font: 13px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+		display: flex; flex-direction: column; }
+
+	/* ── 演示外壳（不属于 KIT）── */
+	.topbar { flex: 0 0 auto; display: flex; align-items: center; gap: 10px;
+		padding: 9px 16px; border-bottom: 1px solid #2a2a2a; background: #1a1a1a; }
+	.topbar h1 { font-size: 14px; margin: 0; font-weight: 600; }
+	.topbar .grow { flex: 1; }
+	.hostswitch { display: flex; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+	.hostswitch button { height: 26px; padding: 0 12px; font-size: 11.5px; border: 0;
+		background: transparent; color: var(--fg-dim); cursor: pointer; }
+	.hostswitch button.on { background: #0e639c; color: #fff; }
+	.hostswitch button + button { border-left: 1px solid var(--line); }
+	.ribbon { flex: 0 0 auto; padding: 6px 16px; font-size: 11px; color: #9fc0ff;
+		background: #1b2530; border-bottom: 1px solid #253544; line-height: 1.6; }
+	.ribbon b { color: #cfe0ff; }
+	.ribbon code { color: #b9d4ff; }
+
+	/* ── 三栏骨架（两个宿主一致，只有容器不同）── */
+	.app { flex: 1; display: flex; min-height: 0; position: relative; }
+	.app.ide { padding: 0; }
+	.col-left { width: var(--w-left); flex: 0 0 auto; display: flex; flex-direction: column;
+		background: var(--panel); border-right: 1px solid var(--line); }
+	.col-mid { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg); }
+	.col-right { width: var(--w-right); flex: 0 0 auto; display: flex; flex-direction: column;
+		background: var(--panel); border-left: 1px solid var(--line); }
+
+	/* ── KIT 原子（名字即契约）── */
+	.k-side-hd { height: 30px; display: flex; align-items: center; justify-content: space-between;
+		padding: 0 10px; font-size: 10.5px; letter-spacing: .05em; color: var(--fg-dim);
+		border-bottom: 1px solid var(--line); }
+	.k-search { margin: 7px 8px; height: 25px; border: 1px solid var(--line);
+		border-radius: var(--radius); background: #1b1b1b; color: var(--fg);
+		font-size: 12px; padding: 0 8px; outline: none; }
+	.k-search:focus { border-color: var(--accent); }
+	.k-list { flex: 1; overflow: auto; }
+	.k-grp { display: flex; align-items: center; gap: 6px; padding: 6px 10px 3px;
+		font-size: 10.5px; color: var(--fg-faint); }
+	.k-grp .n { background: #333; border-radius: 8px; padding: 0 5px; font-size: 10px; }
+	.k-li { display: flex; align-items: center; gap: 7px; padding: 6px 10px; cursor: pointer;
+		border-left: 2px solid transparent; font-size: 12.5px; }
+	.k-li:hover { background: #2a2a2c; }
+	.k-li.on { background: #2f3542; border-left-color: var(--accent); }
+	.k-li.dim { opacity: .55; }
+	.k-li .ic { width: 18px; text-align: center; }
+	.k-li .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.k-li .st { width: 7px; height: 7px; border-radius: 50%; background: var(--fg-faint); flex: 0 0 auto; }
+	.k-li .st.on { background: var(--ok); }
+	.k-foot { border-top: 1px solid var(--line); padding: 7px 8px; display: flex; gap: 6px; }
+
+	.k-btn { height: 23px; padding: 0 11px; font-size: 11.5px; border-radius: var(--radius);
+		border: 1px solid var(--line); background: transparent; color: var(--fg); cursor: pointer; }
+	.k-btn:hover { background: #2a2a2c; }
+	.k-btn.pri { background: #0e639c; border-color: transparent; color: #fff; }
+	.k-btn.pri:hover { background: #1177bb; }
+	.k-btn.ghost { border-color: transparent; color: var(--fg-dim); }
+	.k-btn.ghost:hover { color: var(--fg); }
+	.k-btn:disabled { opacity: .45; cursor: not-allowed; }
+
+	.k-bar { height: 34px; display: flex; align-items: center; gap: 8px; padding: 0 12px;
+		border-bottom: 1px solid var(--line); font-size: 12px; flex: 0 0 auto; }
+	.k-bar .crumb { color: var(--fg-faint); }
+	.k-bar .sp { flex: 1; }
+	.k-badge { font-size: 10px; padding: 1px 6px; border-radius: 8px; background: #2f3542; color: #9fc0ff; }
+	.k-badge.warn { background: #3a3320; color: #e0bf7a; }
+	.k-badge.mute { background: #2a2a2a; color: var(--fg-faint); }
+	.k-chip { font-size: 10px; padding: 1px 7px; border-radius: 8px;
+		border: 1px solid var(--line); color: var(--fg-dim); }
+	.k-chip.ok { color: #8fd39b; border-color: #2c4a33; }
+	.k-chip.warn { color: #e0bf7a; border-color: #3a3320; }
+
+	.k-tabs { display: flex; height: 31px; border-bottom: 1px solid var(--line);
+		background: #1b1b1b; flex: 0 0 auto; overflow: auto; }
+	.k-tab { padding: 0 11px; font-size: 11.5px; color: var(--fg-dim); display: flex;
+		align-items: center; cursor: pointer; border-right: 1px solid #262626;
+		gap: 4px; white-space: nowrap; }
+	.k-tab:hover { color: var(--fg); background: #232325; }
+	.k-tab.on { color: #fff; background: var(--panel); box-shadow: inset 0 -1px 0 var(--accent); }
+
+	.k-body { flex: 1; overflow: auto; padding: 12px 14px 24px; }
+	.k-sec { font-size: 11px; color: var(--fg-faint); letter-spacing: .04em; margin: 14px 0 6px; }
+	.k-sec:first-child { margin-top: 0; }
+	.k-row { display: flex; gap: 10px; padding: 6px 0; border-bottom: 1px dashed #2a2a2a; font-size: 12px; }
+	.k-row:last-child { border: 0; }
+	.k-row .k { width: 88px; flex: 0 0 auto; color: var(--fg-dim); font-size: 11.5px; padding-top: 2px; }
+	.k-row .v { flex: 1; min-width: 0; }
+	.k-inp { width: 100%; border: 1px solid var(--line); border-radius: var(--radius);
+		background: #1b1b1b; padding: 5px 8px; font-size: 12px; color: var(--fg);
+		outline: none; font-family: inherit; }
+	.k-inp:focus { border-color: var(--accent); }
+	.k-inp.small { width: 100%; }
+	textarea.k-inp { resize: vertical; line-height: 1.5; }
+	.k-hint { color: var(--fg-faint); font-size: 10.5px; margin-top: 4px; line-height: 1.5; }
+	.k-note { font-size: 11px; padding: 7px 10px; border-radius: 4px; margin: 8px 0; line-height: 1.55; }
+	.k-note.warn { border: 1px solid #3a3320; background: #2a2618; color: #e0bf7a; }
+	.k-note.ok { border: 1px solid #234a2b; background: #1b2a1e; color: #8fd39b; }
+	.k-note.info { border: 1px solid #253544; background: #1b2530; color: #9fc0ff; }
+	.k-card { border: 1px solid var(--line); border-radius: 6px; background: var(--panel2);
+		padding: 11px; margin: 8px 0; }
+	.k-card .hd { font-size: 10.5px; color: var(--fg-faint); letter-spacing: .04em; margin-bottom: 8px; }
+	.k-empty { color: var(--fg-faint); font-size: 11.5px; padding: 10px 0; }
+	.k-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; margin-top: 6px; }
+	.k-grid3 { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; margin-top: 6px; }
+	.k-grid4 { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; margin-top: 6px; }
+	.k-tl { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: #cfd8e3; cursor: pointer; }
+	.k-tl.off { color: var(--fg-faint); }
+	.k-cb { width: 12px; height: 12px; border: 1px solid var(--line); border-radius: 2px;
+		background: #0e639c; flex: 0 0 auto; }
+	.k-cb.off { background: transparent; }
+	.k-li2 { display: flex; gap: 8px; align-items: center; padding: 5px 0;
+		border-bottom: 1px solid #262626; font-size: 11.5px; }
+	.k-li2:last-child { border: 0; }
+	.k-li2 .sp2 { flex: 1; }
+	.k-li2 .t { color: var(--fg-faint); font-size: 10.5px; }
+	table.k-tb { border-collapse: collapse; width: 100%; font-size: 11px; margin-top: 6px; }
+	table.k-tb th, table.k-tb td { border-bottom: 1px solid #262626; padding: 5px 6px; text-align: left; }
+	table.k-tb th { color: var(--fg-faint); font-weight: 600; font-size: 10px; }
+	.k-dirty { color: var(--warn); font-size: 12px; display: none; }
+	.k-dirty.show { display: inline; }
+
+	/* ══════════════════════════════════════════════════════════
+	 * 中栏：**dsh chat-surface 宿主区**（本插件不实现，只放它的位置）
+	 * ══════════════════════════════════════════════════════════ */
+	.cs { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+	.cs-hd { height: 34px; display: flex; align-items: center; gap: 7px; padding: 0 12px;
+		border-bottom: 1px solid var(--line); background: #1f1f21; font-size: 11.5px; }
+	.cs-hd .sp { flex: 1; }
+	.cs-tag { font-size: 9.5px; padding: 0 5px; border-radius: 7px; background: #2b3a4a; color: #8fb8e0; }
+	.cs-body { flex: 1; overflow: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+	.bub { display: flex; gap: 8px; align-items: flex-start; max-width: 88%; }
+	.bub.me { align-self: flex-end; flex-direction: row-reverse; }
+	.bub .av { width: 20px; height: 20px; border-radius: 50%; background: #2f3542;
+		display: flex; align-items: center; justify-content: center; font-size: 11px; flex: 0 0 auto; }
+	.bub .b { background: #232325; border: 1px solid #303032; border-radius: 6px;
+		padding: 6px 9px; font-size: 11.5px; color: #d6dde6; line-height: 1.55; }
+	.bub.me .b { background: #1d3a52; border-color: #24506f; }
+	.bub .meta { font-size: 10px; color: var(--fg-faint); margin-bottom: 2px; }
+	.tool { align-self: flex-start; font-size: 10.5px; color: #9fc0ff; background: #1a2430;
+		border: 1px solid #24384a; border-radius: 4px; padding: 3px 8px; }
+	.tool .t { color: var(--fg-faint); margin-left: 6px; }
+	.cs-composer { border-top: 1px solid var(--line); padding: 9px 12px 10px; background: #1b1b1b; }
+	.cs-input { border: 1px solid var(--line); border-radius: 6px; background: #202022;
+		padding: 8px 10px; font-size: 11.5px; color: var(--fg-faint); }
+	.cs-acts { display: flex; align-items: center; gap: 6px; margin-top: 7px; }
+	.cs-acts .sp { flex: 1; }
+	.cs-hostnote { font-size: 10px; color: var(--fg-faint); margin-top: 6px; line-height: 1.5; }
+
+	/* dsh 宿主：顶级页签的整页视图（用量/委派/授权）*/
+	.dsh-full { flex: 1; overflow: auto; padding: 14px 18px 26px; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+	<h1>Bots 工作台 · 三栏（左 sideview ｜ 中 chat-surface ｜ 右 多页签）</h1>
+	<span class="grow"></span>
+	<div class="hostswitch">
+		<button id="host-dsh" title="窗口里的完整页">dsh 窗口</button>
+		<button id="host-ide" title="IDE：左栏进 sideview，中+右进编辑器区">IDE 侧</button>
+	</div>
+	<button class="k-btn" id="btn-reset">重置数据</button>
+</div>
+
+<div class="ribbon" id="ribbon"></div>
+
+<div class="app" id="app"></div>
+
+<script>
+/* ══════════════════════════════════════════════════════════════════════════
+ * 数据（两个宿主共用）
+ * ══════════════════════════════════════════════════════════════════════════ */
+const AGENTS = {
+	coder: {
+		id: 'coder', name: 'Coder', icon: '💻', role: 'Software Engineer',
+		source: 'builtin', version: '1.3.0', userFacing: true,
+		desc: 'Writes, reviews, and refactors code with deep understanding of programming patterns.',
+		model: 'hy3-ioa', modelDefault: 'hy3-ioa', mode: '标准模式',
+		tools: ['read', 'write', 'edit', 'pwsh', 'glob', 'grep', 'skill', 'task',
+			'codebase_search', 'codebase_trace', 'codebase_architecture', 'codebase_snippet',
+			'codebase_changes', 'codebase_impact', 'web_search', 'web_fetch', 'vision_analyze'],
+		skills: ['code-review', 'refactor', 'code-gen'],
+		suggestions: ['帮我把这个函数拆小并加测试', '这段报错是什么原因', '按现有风格实现一个新接口'],
+		persona: 'You are a senior software engineer. Ship working code, not explanations.\n\n'
+			+ '## Tool map\n- Find before you change: codebase_search / grep / glob\n'
+			+ '- Read with read; write with write / edit\n- Run commands with pwsh\n\n'
+			+ '## Done criteria\n- The diff is scoped to what was asked\n'
+			+ '- Build/lint/test actually ran and its output is quoted',
+		memory: { chars: 2048, mode: 'session', entries: 12, appended: 5, updated: '2026-10-26 18:12' },
+		assign: { subagent: true, canDelegateTo: ['code-explorer', 'tester'], delegatedBy: ['saros-claw'] },
+		sessions: [
+			{ t: '修 concurrency 报错', when: '2 小时前', turns: 14, tokens: '18.4k', state: 'ok' },
+			{ t: '给埋点模块加单测', when: '昨天 16:40', turns: 9, tokens: '9.1k', state: 'ok' },
+			{ t: '重构 kb 侧栏', when: '3 天前', turns: 31, tokens: '44.7k', state: 'warn' },
+		],
+		usage: { sessions: 42, turns: 318, tokens: '512k', last: '2 小时前' },
+	},
+	'code-reviewer': {
+		id: 'code-reviewer', name: 'Code Reviewer', icon: '🔍', role: 'Reviewer',
+		source: 'builtin', version: '1.2.0', userFacing: true,
+		desc: 'Reviews a change and returns two verdicts — does it match what was asked, and is it well built.',
+		model: 'hy3-ioa', modelDefault: 'hy3-ioa', mode: '标准模式',
+		tools: ['read', 'grep', 'glob', 'skill', 'codebase_changes', 'codebase_trace',
+			'codebase_snippet', 'codebase_search', 'codebase_impact'],
+		skills: ['code-review', 'qa-risk'],
+		suggestions: ['审一下我这次改动有什么风险', '这段并发代码有问题吗', '找一下这个模块的边界条件漏洞'],
+		persona: '## Scope: Two Modes\n- Spec compliance\n- Code quality\n\n## Work From the Diff\n'
+			+ 'Start with codebase_changes; read touched files; trace before claiming blast radius.',
+		memory: { chars: 1024, mode: 'session', entries: 6, appended: 2, updated: '2026-10-24 09:30' },
+		assign: { subagent: false, canDelegateTo: [], delegatedBy: ['saros-claw', 'coder'] },
+		sessions: [
+			{ t: 'review PR-1187 埋点改动', when: '4 小时前', turns: 6, tokens: '7.8k', state: 'ok' },
+			{ t: 'review kb 侧栏拆分', when: '2 天前', turns: 11, tokens: '15.2k', state: 'ok' },
+		],
+		usage: { sessions: 27, turns: 141, tokens: '198k', last: '4 小时前' },
+	},
+	'knowledge-base-expert': {
+		id: 'knowledge-base-expert', name: '知识库专家', icon: '📚', role: '知识库',
+		source: 'builtin', version: '2.1.0', userFacing: true,
+		desc: '本地资料库的读、写、整理与图谱：先搜再写，不编造未落盘的内容。',
+		model: 'hy3-ioa', modelDefault: 'hy3-ioa', mode: '标准模式',
+		tools: ['read', 'write', 'glob', 'grep', 'skill', 'kb_search', 'kb_list', 'kb_read',
+			'kb_topic_overviews', 'kb_write_note', 'kb_build', 'kb_reindex', 'kb_mkdir',
+			'kb_mindmap', 'kb_lint', 'kb_dedup', 'content_import', 'kb_move', 'kb_delete',
+			'kb_tags', 'kb_vaults', 'kb_stats', 'kb_canvas', 'kb_attach', 'kb_export',
+			'kb_import_obsidian', 'kb_history', 'kb_restore'],
+		skills: ['kb-authoring', 'kb-curation', 'kb-lint', 'kb-import', 'kb-mindmap', 'kb-query'],
+		suggestions: ['库里关于 DSH 框架的内容都讲了什么', '把这几个链接整理成结构化笔记', '体检一下知识库：断链 / 孤立 / 无标签'],
+		persona: '你是知识库专家。库是磁盘上的 md 文件，会被 Obsidian 与 IDE 同时打开。\n\n'
+			+ '## 事实边界\n- 库/ 只读；笔记/ 唯一可写正文区\n- 写正文只走 kb_write_note',
+		memory: { chars: 2048, mode: 'live', entries: 34, appended: 12, updated: '2026-10-27 08:05' },
+		assign: { subagent: true, canDelegateTo: ['code-explorer'], delegatedBy: [] },
+		sessions: [
+			{ t: 'DSH 框架讲了什么', when: '1 小时前', turns: 8, tokens: '12.6k', state: 'ok' },
+			{ t: '整理 5 个链接成笔记', when: '昨天', turns: 17, tokens: '26.1k', state: 'ok' },
+		],
+		usage: { sessions: 88, turns: 641, tokens: '1.02M', last: '1 小时前' },
+	},
+	designer: {
+		id: 'designer', name: 'Designer', icon: '🎨', role: 'UI/UX Designer',
+		source: 'builtin', version: '1.1.0', userFacing: true,
+		desc: '界面设计负责人：产出可直接打开的单文件 HTML 原型，含三态与可访问性判据。',
+		model: 'hy3-ioa', modelDefault: 'hy3-ioa', mode: '标准模式',
+		tools: ['read', 'write'], skills: [],
+		suggestions: ['帮我出一版界面方案', '这个布局怎么改更清楚', '给这个页面配色提建议'],
+		persona: '你是界面设计负责人。产出要回答"用户能不能一眼看懂并完成操作"。',
+		memory: { chars: 1024, mode: 'session', entries: 3, appended: 0, updated: '2026-10-20 11:00' },
+		assign: { subagent: false, canDelegateTo: [], delegatedBy: ['saros-claw'] },
+		sessions: [{ t: '知识库首页改版', when: '昨天', turns: 12, tokens: '14.2k', state: 'ok' }],
+		usage: { sessions: 9, turns: 44, tokens: '58k', last: '昨天' },
+	},
+	'media-librarian': {
+		id: 'media-librarian', name: '媒体库管理员', icon: '🗂', role: '媒体库',
+		source: 'builtin', version: '1.0.4', userFacing: false,
+		desc: '整理媒体库：命名、去重、回收站与标签。',
+		model: 'hy3-ioa', modelDefault: 'hy3-ioa', mode: '标准模式',
+		tools: ['read', 'write', 'glob', 'media_context', 'media_rename', 'media_move'],
+		skills: ['media-curation'],
+		suggestions: ['把这批截图按日期归档', '找出重复的素材', '清理回收站'],
+		persona: '你是媒体库管理员。移动/删除前必须 dry-run 并给出影响条数。',
+		memory: { chars: 512, mode: 'session', entries: 2, appended: 1, updated: '2026-10-18 15:20' },
+		assign: { subagent: false, canDelegateTo: [], delegatedBy: [] },
+		sessions: [], usage: { sessions: 4, turns: 12, tokens: '9k', last: '9 天前' },
+	},
+};
+
+const GROUPS = {
+	'g-gr': {
+		id: 'g-gr', name: 'GR 埋点协作', icon: '#', isGroup: true,
+		mode: 'open', members: ['gr', 'coder', 'code-reviewer', 'knowledge-base-expert'],
+		memberPolicy: { gr: 'group', coder: 'group', 'code-reviewer': 'group', 'knowledge-base-expert': 'all' },
+		created: '2026-09-12', owner: 'qiuzijian', model: '', mode2: '群聊模式',
+		sessions: [
+			{ t: '今天的埋点落地', when: '今天 10:20', turns: 6, tokens: '8.1k', state: 'ok' },
+			{ t: 'Login_Success 字段确认', when: '昨天 16:02', turns: 4, tokens: '3.4k', state: 'ok' },
+		],
+	},
+	'g-duty': {
+		id: 'g-duty', name: '周末值班', icon: '#', isGroup: true,
+		mode: 'group', members: ['saros-claw', 'coder'],
+		memberPolicy: { 'saros-claw': 'group', coder: 'group' },
+		created: '2026-10-01', owner: 'qiuzijian', model: '', mode2: '群聊模式',
+		sessions: [
+			{ t: '周末告警值守', when: '周五 19:41', turns: 2, tokens: '1.2k', state: 'ok' },
+		],
+	},
+};
+
+/* 会话内容（中栏 chat-surface 里显示的那份 transcript） */
+const CHAT = {
+	coder: [
+		{ who: 'user', text: '这个 concurrency 报错能定位一下吗', when: '15:02' },
+		{ who: 'bot', text: '先看调用链再改，我读一下 runtime.js 那段', when: '15:02' },
+		{ tool: "codebase_trace({ symbol: 'acquireLock' })", when: '15:03' },
+		{ who: 'bot', text: '定位到 goroutine 泄漏在 runtime.js:214 —— 锁没在 defer 里释放', when: '15:06' },
+		{ who: 'user', text: '顺手把测试也补上', when: '15:07' },
+		{ tool: 'pwsh({ cmd: "npm test -- runtime.concurrency" })', when: '15:11' },
+		{ who: 'bot', text: '补了 runtime.concurrency.test.ts，测试 12 passed，输出已贴在上面', when: '15:12' },
+	],
+	'code-reviewer': [
+		{ who: 'user', text: '审一下 PR-1187', when: '11:20' },
+		{ tool: "codebase_changes({ range: 'HEAD~1..HEAD' })", when: '11:20' },
+		{ who: 'bot', text: '两个结论分开给：规格符合 ✓；实现有 2 处边界没覆盖', when: '11:24' },
+		{ who: 'user', text: '哪两处', when: '11:25' },
+		{ who: 'bot', text: 'A 空数组输入没短路（442 行）B 并发 map 写同一 slice（461 行）', when: '11:26' },
+	],
+	'knowledge-base-expert': [
+		{ who: 'user', text: '库里关于 DSH 都讲了什么', when: '09:10' },
+		{ tool: "kb_search({ q: 'DSH', limit: 10 })", when: '09:10' },
+		{ who: 'bot', text: '命中 6 篇，主要三篇：01 总览 / 03 分层 / 05 原理', when: '09:10' },
+		{ who: 'user', text: '整理成一篇速览', when: '09:12' },
+		{ tool: "kb_write_note({ path: '笔记/DSH 框架速览.md' })", when: '09:17' },
+		{ who: 'bot', text: '已写入 笔记/DSH 框架速览.md：概述 + 3 节 + 4 条关联双链', when: '09:18' },
+	],
+	designer: [
+		{ who: 'user', text: '知识库首页想让人一眼看懂', when: '14:00' },
+		{ tool: "read({ path: 'web/kb.css' })", when: '14:01' },
+		{ who: 'bot', text: '出三态原型：空库 / 有笔记 / 加载失败；窄屏 360px 不横向滚动', when: '14:09' },
+	],
+	'media-librarian': [
+		{ who: 'user', text: '把这批截图按日期归档', when: '10:00' },
+		{ who: 'bot', text: 'dry-run：共 128 张，将移动 96 张到 2026-10/，32 张重复单列', when: '10:01' },
+	],
+	'g-gr': [
+		{ who: 'gr', text: '登录成功的字段表我贴到需求里了，事件名 Login_Success', when: '10:02' },
+		{ who: 'coder', text: '收到，结构体名用 FLoginSuccessEvent？', when: '10:05' },
+		{ who: 'gr', text: '对，Unit 名 LoginSuccessUnit', when: '10:06' },
+		{ tool: "codebase_search({ q: 'FGSEvaluatorInstanceData_BuryingPoint' })", when: '10:08' },
+		{ who: 'code-reviewer', text: '@coder 提醒：别引累计态，旧结构不要扩', when: '10:11' },
+		{ who: 'coder', text: '已按固定模板生成 2 个文件，未动旧结构', when: '10:20' },
+	],
+	'g-duty': [
+		{ who: 'saros-claw', text: '本周末我盯告警，凌晨 2 点那批已设阈值', when: '周五 19:30' },
+		{ who: 'coder', text: '收到，有异常我先查 trace 再报', when: '周五 19:41' },
+	],
+};
+
+const TOOL_GROUPS = [
+	{ label: '文件与命令', names: ['read', 'write', 'edit', 'glob', 'grep', 'pwsh'] },
+	{ label: '代码库检索', names: ['codebase_search', 'codebase_trace', 'codebase_architecture',
+		'codebase_snippet', 'codebase_changes', 'codebase_impact'] },
+	{ label: '知识库', names: ['kb_search', 'kb_list', 'kb_read', 'kb_topic_overviews', 'kb_write_note',
+		'kb_build', 'kb_reindex', 'kb_mkdir', 'kb_mindmap', 'kb_lint', 'kb_dedup', 'kb_move',
+		'kb_delete', 'kb_tags', 'kb_vaults', 'kb_stats', 'kb_canvas', 'kb_attach', 'kb_export',
+		'content_import'] },
+	{ label: '媒体', names: ['media_context', 'media_rename', 'media_move'] },
+	{ label: '外部信息', names: ['web_search', 'web_fetch', 'vision_analyze'] },
+	{ label: '协作与技能', names: ['skill', 'task', 'subagent', 'subagent_fork', 'todo_write'] },
+];
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * 状态（共用）
+ * ══════════════════════════════════════════════════════════════════════════ */
+const state = {
+	host: 'ide',          // 'dsh' | 'ide'
+	selected: 'coder',
+	rightTab: 'overview', // 右栏多页签
+	dshTab: 'roster',     // dsh 顶级页签（usage/assign/auth 时整页替换三栏）
+	query: '',
+	dirty: {},
+	note: '',
+};
+const clone = (o) => JSON.parse(JSON.stringify(o));
+const DATA = clone({ agents: AGENTS, groups: GROUPS });
+for (const [id, list] of Object.entries(CHAT)) {
+	if (DATA.agents[id]) { DATA.agents[id].chat = list; }
+	if (DATA.groups[id]) { DATA.groups[id].chat = list; }
+}
+
+const TABS_BOT = [
+	{ k: 'overview', label: '身份' }, { k: 'persona', label: '人格与开场白' },
+	{ k: 'tools', label: '工具' }, { k: 'memory', label: '记忆' },
+	{ k: 'assign', label: '委派' }, { k: 'sessions', label: '会话' }, { k: 'versions', label: '版本' },
+];
+const TABS_GROUP = [{ k: 'ginfo', label: '群聊信息' }, { k: 'policy', label: '成员策略' }, { k: 'gsessions', label: '会话' }];
+const TABS_DSH = [{ k: 'roster', label: '名册' }, { k: 'usage', label: '用量' }, { k: 'assign', label: '委派' }, { k: 'auth', label: '授权' }];
+
+const cur = () => DATA.agents[state.selected] || DATA.groups[state.selected];
+const isGroup = () => !!DATA.groups[state.selected];
+const tabsOf = () => (isGroup() ? TABS_GROUP : TABS_BOT);
+
+function esc(s) {
+	return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+		.replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+function toast(msg) { state.note = msg; render(); setTimeout(() => { state.note = ''; render(); }, 2400); }
+function markDirty() {
+	state.dirty[state.selected] = true;
+	document.querySelectorAll('.k-dirty').forEach((d) => d.classList.add('show'));
+	const slot = document.getElementById('preview-slot');
+	if (slot) { slot.innerHTML = blockWelcome(cur()); }
+	const ta = document.getElementById('ta-persona');
+	const pc = document.getElementById('persona-count');
+	if (ta && pc) { pc.textContent = ta.value.split('\n').length + ' 行 · ' + ta.value.length + ' 字符'; }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * KIT 原子
+ * ══════════════════════════════════════════════════════════════════════════ */
+const badge = (t, k) => '<span class="k-badge ' + (k || '') + '">' + esc(t) + '</span>';
+const chip = (t, k) => '<span class="k-chip ' + (k || '') + '">' + esc(t) + '</span>';
+const note = (h, k) => '<div class="k-note ' + (k || 'info') + '">' + h + '</div>';
+const empty = (t) => '<div class="k-empty">' + esc(t) + '</div>';
+const sec = (t) => '<div class="k-sec">' + t + '</div>';
+const fieldRow = (k, v) => '<div class="k-row"><div class="k">' + k + '</div><div class="v">' + v + '</div></div>';
+const inp = (id, v) => '<input class="k-inp" id="' + id + '" value="' + esc(v) + '">';
+const cbLine = (name, on) => '<label class="k-tl' + (on ? '' : ' off') + '"><span class="k-cb' + (on ? '' : ' off') + '"></span>' + esc(name) + '</label>';
+const grpHead = (label, n) => '<div class="k-grp">' + esc(label) + ' <span class="n">' + n + '</span></div>';
+const tabBar = (items, active) => items.map((t) => '<div class="k-tab' + (active === t.k ? ' on' : '') + '" data-tab="' + t.k + '">' + esc(t.label) + '</div>').join('');
+function listItem(o) {
+	const on = o.id === state.selected ? ' on' : '';
+	const dim = o.userFacing === false ? ' dim' : '';
+	const st = o.isGroup ? '' : (o.usage.sessions > 10 ? ' on' : '');
+	return '<div class="k-li' + on + dim + '" data-sel="' + o.id + '">'
+		+ '<span class="ic">' + o.icon + '</span><span class="nm">' + esc(o.name) + '</span>'
+		+ (o.isGroup ? '' : '<span class="st' + st + '"></span>') + '</div>';
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * 共享内容块（右栏多页签 + dsh 设置抽屉都是这些）
+ * ══════════════════════════════════════════════════════════════════════════ */
+function blockWelcome(a) {
+	const sug = (a.suggestions || []).filter((s) => s && s.trim()).slice(0, 3);
+	return '<div class="k-card" id="preview-slot">'
+		+ '<div class="hd">欢迎卡预览</div>'
+		+ '<div style="display:flex;align-items:center;gap:8px"><span style="font-size:17px">' + a.icon + '</span>'
+		+ '<b style="font-size:12.5px">' + esc(a.name) + '</b><span style="margin-left:auto">' + badge(a.role || '') + '</span></div>'
+		+ '<div style="font-size:10.5px;color:var(--fg-dim);margin:5px 0 7px">' + esc(a.desc) + '</div>'
+		+ (sug.length ? sug.map((s) => '<div class="k-chip" style="display:block;margin-top:4px;border-radius:4px;padding:4px 7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(s) + '</div>').join('')
+			: empty('（没有开场白 ⇒ 退回通用三条）'))
+		+ '</div>';
+}
+function blockIdentity(a) {
+	return sec('身份')
+		+ fieldRow('名称', inp('ov-name', a.name))
+		+ fieldRow('id', '<code>' + esc(a.id) + '</code>')
+		+ fieldRow('角色', inp('ov-role', a.role))
+		+ fieldRow('描述', inp('ov-desc', a.desc))
+		+ fieldRow('模型', inp('ov-model', a.model))
+		+ fieldRow('来源', a.source === 'custom' ? '自定义 bot（可编辑）' : '内置 bot · 真源 <code>builtinAgents.ts</code>'
+			+ (a.source === 'builtin' ? note('内置 bot 的人格与工具只读，改真源才生效。', 'warn') : ''))
+		+ fieldRow('版本', esc(a.version) + ' ' + chip('已发布', 'ok'))
+		+ fieldRow('用量', a.usage.sessions + ' 会话 · ' + a.usage.tokens + ' tokens');
+}
+function blockPersona(a) {
+	const locked = a.source === 'builtin';
+	const bad = (a.suggestions || []).filter((s) => s.includes(','));
+	const inputs = (a.suggestions || []).concat(['', '', '']).slice(0, 3).map((s, i) =>
+		'<input class="k-inp" id="sug-' + i + '" value="' + esc(s) + '" style="margin-bottom:5px" placeholder="第 ' + (i + 1) + ' 条开场白">').join('');
+	return sec('人格（提示词）')
+		+ (locked ? note('内置 bot 只读：改 <code>builtinAgents.ts</code> 后要 <code>transpile-client</code> + 重启。', 'warn') : '')
+		+ '<textarea class="k-inp" id="ta-persona" style="min-height:170px;font-family:Consolas,monospace;font-size:10.5px"' + (locked ? ' readonly' : '') + '>' + esc(a.persona) + '</textarea>'
+		+ '<div class="k-hint"><span id="persona-count">' + a.persona.split('\n').length + ' 行 · ' + a.persona.length + ' 字符</span>'
+		+ (locked ? ' · 只读' : '') + ' · 末尾自动追加共享三段</div>'
+		+ sec('开场白建议（≤3 条、禁半角逗号）')
+		+ inputs
+		+ (bad.length ? note('检测到半角逗号：会被切成两条。', 'warn') : note('3 条以内、无半角逗号 ✓', 'ok'))
+		+ sec('预览') + blockWelcome(a);
+}
+function blockTools(a) {
+	const groups = TOOL_GROUPS.map((g) => ({
+		label: g.label,
+		on: g.names.filter((n) => a.tools.includes(n)),
+		off: g.names.filter((n) => !a.tools.includes(n)),
+	})).filter((g) => g.on.length || g.off.length);
+	const other = a.tools.filter((n) => !TOOL_GROUPS.some((g) => g.names.includes(n)));
+	if (other.length) { groups.push({ label: '其它', on: other, off: [] }); }
+	return note('未勾选 = 被 <code>allowlistDenyOf</code> 静默 deny。', 'warn')
+		+ sec('工具（' + a.tools.length + '）')
+		+ groups.map((g) => '<div class="k-hint" style="margin:7px 0 2px">' + g.label + ' <span style="color:var(--fg-faint)">' + g.on.length + '</span></div>'
+			+ '<div class="k-grid4">' + g.on.map((n) => cbLine(n, true)).join('') + g.off.map((n) => cbLine(n, false)).join('') + '</div>').join('')
+		+ sec('技能（' + (a.skills || []).length + '）')
+		+ ((a.skills || []).length ? '<div class="k-grid3">' + a.skills.map((s) => cbLine(s, true)).join('') + '</div>' : empty('没有技能'));
+}
+function blockMemory(a) {
+	const m = a.memory;
+	return sec('注入参数')
+		+ fieldRow('上限', '<input type="range" min="0" max="8192" step="256" value="' + m.chars + '" id="mem-chars">'
+			+ ' <code id="mem-chars-val">' + m.chars + '</code>')
+		+ fieldRow('冻结', '<label class="k-tl"><input type="radio" name="memmode" value="session"' + (m.mode === 'session' ? ' checked' : '') + '> session</label>'
+			+ ' <label class="k-tl" style="margin-left:10px"><input type="radio" name="memmode" value="live"' + (m.mode === 'live' ? ' checked' : '') + '> live</label>')
+		+ fieldRow('统计', '条目库 ' + m.entries + ' · 已注入 ' + m.appended)
+		+ sec('MEMORY.md')
+		+ '<textarea class="k-inp" readonly style="min-height:96px;font-family:Consolas,monospace;font-size:10.5px">'
+		+ esc('# 记忆\n\n## 工程约定\n- 本项目用 tabs\n- 改 src/vs/sessions 后必须 transpile-client')
+		+ '</textarea>'
+		+ '<div style="display:flex;gap:6px;margin-top:8px"><button class="k-btn" data-act="mem-append">追加条目</button>'
+		+ '<button class="k-btn" data-act="mem-snapshot">提交快照</button></div>';
+}
+function blockAssign(a, others) {
+	return sec('接收委派')
+		+ '<label class="k-tl"><span class="k-cb' + (a.assign.subagent ? '' : ' off') + '"></span>允许其它 bot 派活给它</label>'
+		+ sec('它可以派给谁')
+		+ '<div class="k-grid3">' + others.map((x) => cbLine(x.icon + ' ' + x.name, a.assign.canDelegateTo.includes(x.id))).join('') + '</div>'
+		+ sec('谁可以派给它')
+		+ (a.assign.delegatedBy.length
+			? a.assign.delegatedBy.map((id) => '<div class="k-li2">' + (DATA.agents[id] ? DATA.agents[id].icon + ' ' + DATA.agents[id].name : esc(id)) + '</div>').join('')
+			: empty('没有 bot 指向它'))
+		+ note('委派链要闭合：对方人格里没写怎么接活，子任务会答非所问。', 'warn');
+}
+function blockSessions(a) {
+	if (!a.sessions.length) { return empty('还没有会话记录。'); }
+	return note('真实回合在聊天里跑；这里只列历史，供「继续上一次」。', 'ok')
+		+ '<table class="k-tb"><tr><th>标题</th><th>时间</th><th>回合</th><th></th></tr>'
+		+ a.sessions.map((s) => '<tr><td>' + esc(s.t) + '</td><td style="color:var(--fg-faint)">' + s.when + '</td>'
+			+ '<td>' + s.turns + '</td><td><button class="k-btn" data-act="open-session">继续</button></td></tr>').join('')
+		+ '</table>';
+}
+function blockVersions(a) {
+	return note('版本/分支来自记忆仓库；tag/branch 接口未暴露 ⇒ 标注「在完整页」。', 'ok')
+		+ sec('提示词版本')
+		+ '<div class="k-li2">' + chip('当前', 'ok') + '<span>' + esc(a.version) + '</span><span class="sp2"></span><span class="t">10-27</span></div>'
+		+ '<div class="k-li2">' + chip('历史') + '<span>1.2.0 · 补判据</span><span class="sp2"></span><span class="t">10-20</span></div>'
+		+ sec('记忆快照')
+		+ '<div class="k-li2">' + chip('tag', 'ok') + '<span>mem-2026-10-27</span><span class="sp2"></span><span class="t">今天</span></div>';
+}
+function blockGroupInfo(g) {
+	return sec('群聊')
+		+ fieldRow('名称', inp('g-name', g.name))
+		+ fieldRow('会话模式', '<label class="k-tl"><input type="radio" name="gmode" value="open"' + (g.mode === 'open' ? ' checked' : '') + '> open</label>'
+			+ ' <label class="k-tl"><input type="radio" name="gmode" value="group"' + (g.mode === 'group' ? ' checked' : '') + '> group</label>'
+			+ ' <label class="k-tl"><input type="radio" name="gmode" value="all"' + (g.mode === 'all' ? ' checked' : '') + '> all</label>')
+		+ fieldRow('成员', g.members.map((id) => '<span class="k-chip" style="margin:0 4px 4px 0">'
+			+ (DATA.agents[id] ? DATA.agents[id].icon + ' ' + DATA.agents[id].name : esc(id)) + '</span>').join('')
+			+ '<button class="k-btn" style="margin-top:4px" data-act="invite">邀请</button>')
+		+ note('群聊发消息在聊天里；工作台只配置。', 'info');
+}
+function blockGroupPolicy(g) {
+	return '<table class="k-tb"><tr><th>成员</th><th>策略</th></tr>'
+		+ g.members.map((id) => {
+			const a = DATA.agents[id];
+			return '<tr><td>' + (a ? a.icon + ' ' + a.name : esc(id)) + '</td>'
+				+ '<td><code>' + (g.memberPolicy[id] || 'group') + '</code> <button class="k-btn" data-act="policy">切换</button></td></tr>';
+		}).join('') + '</table>';
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * 中栏：dsh chat-surface（宿主组件 —— 这里只是它的**位置与外观示意**）
+ * ══════════════════════════════════════════════════════════════════════════ */
+function chatSurface(o) {
+	const list = o.chat || [];
+	const rows = list.map((m) => {
+		if (m.tool) {
+			return '<div class="tool">🔧 <code>' + esc(m.tool) + '</code><span class="t">' + esc(m.when || '') + '</span></div>';
+		}
+		const a = DATA.agents[m.who];
+		const me = m.who === 'user';
+		const name = a ? a.name : (me ? '我' : m.who);
+		const av = a ? a.icon : (me ? '🙋' : '🤖');
+		return '<div class="bub' + (me ? ' me' : '') + '"><span class="av">' + av + '</span>'
+			+ '<div class="b"><div class="meta">' + esc(name) + ' · ' + esc(m.when || '') + '</div>' + esc(m.text) + '</div></div>';
+	}).join('');
+
+	return '<div class="cs">'
+		+ '<div class="cs-hd">'
+		+ '<span style="font-size:13px">' + o.icon + '</span><b>' + esc(o.name) + '</b>'
+		+ (o.isGroup ? badge('群聊 · ' + o.members.length, 'mute') : badge(o.mode || '标准模式', 'mute'))
+		+ '<span class="cs-tag">chat-surface</span>'
+		+ '<span class="sp"></span>'
+		+ '<button class="k-btn ghost" id="btn-newtalk">＋ 新会话</button>'
+		+ '<button class="k-btn" id="btn-use">▶ 用它开聊</button>'
+		+ '</div>'
+		+ '<div class="cs-body">' + (rows || empty('还没有消息 —— 在下面输入第一条。')) + '</div>'
+		+ '<div class="cs-composer">'
+		+ '<div class="cs-input">' + (o.isGroup ? '在群里说点什么…' : '给 ' + esc(o.name) + ' 派活，或问点什么…') + '</div>'
+		+ '<div class="cs-acts">'
+		+ '<button class="k-btn ghost">＋</button><button class="k-btn ghost">/ 命令</button>'
+		+ '<span class="sp"></span>'
+		+ '<span style="font-size:10px;color:var(--fg-faint)">Enter 发送 · Shift+Enter 换行</span>'
+		+ '<button class="k-btn pri" disabled title="mockup 不连真实运行时">发送</button>'
+		+ '</div>'
+		+ '<div class="cs-hostnote">中栏是宿主注入的 <b>dsh chat-surface</b> 本体（对话、工具调用、模式选择都由它负责）；'
+		+ '本插件只提供两侧 —— 左栏选对象、右栏配对象，<b>不复制一套聊天</b>。</div>'
+		+ '</div></div>';
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * 左栏 / 右栏
+ * ══════════════════════════════════════════════════════════════════════════ */
+function colLeft() {
+	const q = state.query.trim().toLowerCase();
+	const match = (a) => !q || (a.name + ' ' + a.id + ' ' + (a.tools || []).join(' ') + ' ' + (a.skills || []).join('')).toLowerCase().includes(q);
+	const reg = Object.values(DATA.agents).filter((a) => a.userFacing && match(a));
+	const unreg = Object.values(DATA.agents).filter((a) => !a.userFacing && match(a));
+	const grps = Object.values(DATA.groups).filter((g) => !q || g.name.toLowerCase().includes(q));
+	return '<div class="col-left">'
+		+ '<div class="k-side-hd"><span>BOTS</span><span>' + Object.keys(DATA.agents).length + ' bot · ' + Object.keys(DATA.groups).length + ' 群</span></div>'
+		+ '<input class="k-search" id="search" placeholder="搜索名称 / id / 技能…" value="' + esc(state.query) + '">'
+		+ '<div class="k-list">'
+		+ grpHead('已注册', reg.length) + (reg.map(listItem).join('') || '<div class="k-empty" style="padding-left:12px">无匹配</div>')
+		+ grpHead('未注册', unreg.length) + unreg.map(listItem).join('')
+		+ grpHead('群聊', grps.length) + (grps.map(listItem).join('') || '<div class="k-empty" style="padding-left:12px">无</div>')
+		+ '</div>'
+		+ '<div class="k-foot"><button class="k-btn pri" id="btn-new-bot">＋ Bot</button><button class="k-btn" id="btn-new-group">＋ 群聊</button></div>'
+		+ '</div>';
+}
+
+function rightBody(o) {
+	if (o.isGroup) {
+		return state.rightTab === 'ginfo' ? blockGroupInfo(o)
+			: state.rightTab === 'policy' ? blockGroupPolicy(o)
+				: blockSessions(o);
+	}
+	const others = Object.values(DATA.agents).filter((x) => x.id !== o.id && x.userFacing);
+	switch (state.rightTab) {
+		case 'overview': return blockIdentity(o) + sec('欢迎卡') + blockWelcome(o);
+		case 'persona': return blockPersona(o);
+		case 'tools': return blockTools(o);
+		case 'memory': return blockMemory(o);
+		case 'assign': return blockAssign(o, others);
+		case 'sessions': return blockSessions(o);
+		default: return blockVersions(o);
+	}
+}
+
+function colRight(o) {
+	const dirty = state.dirty[state.selected] ? ' show' : '';
+	return '<div class="col-right">'
+		+ '<div class="k-bar"><span>' + (isGroup() ? '群聊' : (o.source === 'custom' ? '自定义 bot' : '内置 bot')) + '</span>'
+		+ '<span class="k-dirty' + dirty + '">●</span>'
+		+ '<span class="sp"></span>'
+		+ '<button class="k-btn ghost" id="btn-save" title="保存（内置只读时不可用）">保存</button>'
+		+ '</div>'
+		+ '<div class="k-tabs">' + tabBar(tabsOf(), state.rightTab) + '</div>'
+		+ '<div class="k-body">' + rightBody(o) + '</div>'
+		+ '</div>';
+}
+
+/* dsh 的全局页签（不进入三栏） */
+function dshGlobal(tab) {
+	if (tab === 'usage') {
+		return '<div class="dsh-full">' + sec('用量（近 7 天）')
+			+ '<table class="k-tb"><tr><th>bot</th><th>会话</th><th>回合</th><th>tokens</th><th>最近</th></tr>'
+			+ Object.values(DATA.agents).map((a) => '<tr><td>' + a.icon + ' ' + esc(a.name) + '</td><td>' + a.usage.sessions
+				+ '</td><td>' + a.usage.turns + '</td><td>' + a.usage.tokens + '</td><td style="color:var(--fg-faint)">' + a.usage.last + '</td></tr>').join('')
+			+ '</table></div>';
+	}
+	if (tab === 'assign') {
+		const bots = Object.values(DATA.agents).filter((a) => a.userFacing);
+		return '<div class="dsh-full">' + sec('委派矩阵（行 = 发起，列 = 目标）')
+			+ '<table class="k-tb"><tr><th>发起</th>' + bots.map((b) => '<th>' + b.icon + '</th>').join('') + '</tr>'
+			+ bots.map((f) => '<tr><td>' + f.icon + ' ' + esc(f.name) + '</td>'
+				+ bots.map((t) => '<td style="text-align:center">' + (f.assign.canDelegateTo.includes(t.id) ? '<span style="color:#8fd39b">✓</span>' : '<span style="color:#555">·</span>') + '</td>').join('')
+				+ '</tr>').join('') + '</table></div>';
+	}
+	return '<div class="dsh-full">' + sec('审批模板')
+		+ '<div class="k-li2">' + chip('已启用', 'ok') + '<span>写文件到 <code>src/**</code></span></div>'
+		+ '<div class="k-li2">' + chip('已启用', 'ok') + '<span>执行 <code>pwsh</code></span></div>'
+		+ sec('发件箱')
+		+ '<div class="k-li2">' + chip('待处理', 'warn') + '<span>把 code-reviewer 设为可委派</span></div>'
+		+ note('授权/用量是<b>全局</b>的：dsh 侧是顶级页签，IDE 侧只能做独立编辑器 Tab。', 'info') + '</div>';
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * 渲染
+ * ══════════════════════════════════════════════════════════════════════════ */
+function render() {
+	const o = cur();
+	if (!tabsOf().some((t) => t.k === state.rightTab)) { state.rightTab = tabsOf()[0].k; }
+
+	/* 顶部 ribbon：讲清两个宿主的容器差异（同一套三栏）*/
+	const ribbon = state.host === 'dsh'
+		? '<b>dsh 窗口</b>：三栏都在工作台页里 —— 左 名册 · 中 <b>chat-surface</b> · 右 详情页签；'
+			+ '「用量 / 委派 / 授权」是<b>顶级页签</b>，切走后整页替换三栏。'
+		: '<b>IDE</b>：左栏进 <b>sideview</b>（Activity Bar 视图），中栏 + 右栏进 <b>编辑器区</b>'
+			+ '（编辑区分左右两组，中间是该 bot 的 chat-surface 会话）。组件与 dsh 侧完全相同，只差容器。';
+	document.getElementById('ribbon').innerHTML = ribbon;
+
+	let html = '';
+	if (state.host === 'dsh') {
+		html = (state.dshTab === 'roster')
+			? colLeft() + '<div class="col-mid">' + chatSurface(o) + '</div>' + colRight(o)
+			: dshGlobal(state.dshTab);
+	} else {
+		html = colLeft() + '<div class="col-mid">' + chatSurface(o) + '</div>' + colRight(o);
+	}
+
+	/* dsh 侧多一条顶级页签栏 */
+	if (state.host === 'dsh') {
+		html = '<div style="display:flex;flex-direction:column;flex:1;min-height:0">'
+			+ '<div class="k-tabs">' + TABS_DSH.map((t) => '<div class="k-tab' + (state.dshTab === t.k ? ' on' : '') + '" data-dshtab="' + t.k + '">' + esc(t.label) + '</div>').join('') + '</div>'
+			+ '<div style="display:flex;flex:1;min-height:0">' + html + '</div></div>';
+	}
+
+	document.getElementById('app').innerHTML = html;
+	document.getElementById('host-dsh').classList.toggle('on', state.host === 'dsh');
+	document.getElementById('host-ide').classList.toggle('on', state.host === 'ide');
+	bind(o);
+}
+
+function bind(o) {
+	const on = (id, ev, fn) => { const el = document.getElementById(id); if (el) { el.addEventListener(ev, fn); } };
+	on('search', 'input', (e) => { state.query = e.target.value; render(); });
+
+	document.querySelectorAll('[data-sel]').forEach((el) => {
+		el.onclick = () => { state.selected = el.getAttribute('data-sel'); state.rightTab = tabsOf()[0].k; render(); };
+	});
+	document.querySelectorAll('[data-tab]').forEach((el) => {
+		el.onclick = () => { state.rightTab = el.getAttribute('data-tab'); render(); };
+	});
+	document.querySelectorAll('[data-dshtab]').forEach((el) => {
+		el.onclick = () => { state.dshTab = el.getAttribute('data-dshtab'); render(); };
+	});
+
+	on('btn-use', 'click', () => toast('已切到「' + o.name + '」开聊（POST /x/agents/api/persona，会话继续）'));
+	on('btn-newtalk', 'click', () => toast('真实实现：新开一条会话（chat-surface 自带）'));
+	on('btn-save', 'click', () => { state.dirty[state.selected] = false; toast('已保存（mockup 示意）'); });
+	on('btn-new-bot', 'click', () => toast('真实实现：新建 bot'));
+	on('btn-new-group', 'click', () => toast('真实实现：新建群聊'));
+
+	if (!o.isGroup) {
+		on('ov-name', 'input', (e) => { o.name = e.target.value; markDirty(); });
+		on('ov-role', 'input', (e) => { o.role = e.target.value; markDirty(); });
+		on('ov-desc', 'input', (e) => { o.desc = e.target.value; markDirty(); });
+		on('ov-model', 'input', (e) => { o.model = e.target.value; markDirty(); });
+		on('ta-persona', 'input', (e) => { o.persona = e.target.value; markDirty(); });
+		[0, 1, 2].forEach((i) => on('sug-' + i, 'input', (e) => {
+			const arr = (o.suggestions || []).slice();
+			while (arr.length < 3) { arr.push(''); }
+			arr[i] = e.target.value;
+			o.suggestions = arr;
+			markDirty();
+		}));
+		on('mem-chars', 'input', (e) => {
+			o.memory.chars = Number(e.target.value);
+			const v = document.getElementById('mem-chars-val');
+			if (v) { v.textContent = e.target.value; }
+			markDirty();
+		});
+		document.querySelectorAll('input[name=memmode]').forEach((el) => {
+			el.onchange = () => { o.memory.mode = el.value; markDirty(); };
+		});
+	} else {
+		on('g-name', 'input', (e) => { o.name = e.target.value; markDirty(); });
+		document.querySelectorAll('input[name=gmode]').forEach((el) => {
+			el.onchange = () => { o.mode = el.value; markDirty(); };
+		});
+	}
+
+	document.querySelectorAll('[data-act]').forEach((el) => {
+		el.onclick = () => {
+			const act = el.getAttribute('data-act');
+			toast({
+				'mem-append': '已追加 2 条到 MEMORY.md',
+				'mem-snapshot': '已记快照 mem-2026-10-27',
+				'open-session': '真实实现：在聊天里继续这条会话',
+				'invite': '真实实现：成员选择器（invite）',
+				'policy': '已切换该成员策略（policy）',
+			}[act] || '（示意）');
+		};
+	});
+}
+
+document.getElementById('host-dsh').onclick = () => { state.host = 'dsh'; render(); };
+document.getElementById('host-ide').onclick = () => { state.host = 'ide'; render(); };
+document.getElementById('btn-reset').onclick = () => {
+	DATA.agents = clone(AGENTS); DATA.groups = clone(GROUPS);
+	for (const [id, list] of Object.entries(CHAT)) {
+		if (DATA.agents[id]) { DATA.agents[id].chat = list; }
+		if (DATA.groups[id]) { DATA.groups[id].chat = list; }
+	}
+	state.dirty = {}; state.selected = 'coder'; state.rightTab = 'overview';
+	state.dshTab = 'roster'; state.query = '';
+	toast('已重置');
+};
+render();
+</script>
+</body>
+</html>

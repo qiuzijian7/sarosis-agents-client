@@ -341,6 +341,11 @@ export const WORKBENCH_MODULES = [
 	//   **必须两处同时登记**（漏一处 ⇒ 卡片在、点「打开」被 route 白名单静默拒掉 = 点了没反应 ✗，
 	//   守卫 `check-workbench-catalog.mjs` 盯着）；⚠ route 还必须与宿主 `DSH_MODULE_PAGES` 一致。
 	{ route: '/x/parallel/', name: '并行 TUI 工作台', desc: '并排编排多个并行 LLM 会话：每格一个 TUI，可观察 / 收割 / 接管', icon: '🖥' },
+	// ★ 2026-10-27：萨罗斯中转站工作台（`@vssaros/dsh-relay`，页面 `/x/relay/` =
+	//   承载 AnyDev 环境上的中转站 Web + 状态栏；本机登录 CodeBuddy provider 后自动注册成中转站节点）。
+	//   ⚠ 与 `client.workbenchNav.js` 的 `DEFAULT_ITEMS` **必须两处同时登记**（那边同时是 route 白名单
+	//   ⇒ 漏登记 = 卡片在、点「打开」被静默拒掉 = "点了没反应"✗）；route 还必须与宿主 `DSH_MODULE_PAGES` 一致。
+	{ route: '/x/relay/', name: '萨罗斯中转站', desc: '承载 AnyDev 上的中转站 Web；登录 CodeBuddy provider 后本机自动注册为节点', icon: '📡' },
 ];
 
 /** 按 cwd 分组（工作区 = cwd，worktree 目录天然就是另一个 cwd ⇒ 自动分开 ✓）。未知 cwd 单列、不伪造 ✓。 */

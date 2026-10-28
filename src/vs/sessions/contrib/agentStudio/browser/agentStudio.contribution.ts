@@ -581,6 +581,11 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			default: 'balanced',
 			description: localize('agentStudio.codebaseGraph.excludeProfile', "Codebase 图谱的目录排除档位。切换后需重新索引才会生效。"),
 		},
+		'saros.codebaseGraph.deferLargePrimaryRootMB': {
+			type: 'number',
+			default: 20,
+			description: localize('agentStudio.codebaseGraph.deferLargePrimaryRootMB', "主 root（工作区 folders[0]）的图谱超过此大小（MB）时，**不在打开工作区时加载**，改为首次真正用到 codebase 能力（Find Symbol / 类层级 / Open File / 子代理预检）时再加载。设为 0 关闭延迟（保持旧行为）。用途：避免「打开工作区时整个窗口卡死」——实测 129MB / 42 万节点的图谱要在渲染进程主线程上同步解压+解析+合并 18 秒以上（期间鼠标点击与编辑器输入全部无响应）。图谱的真源在 dsh 侧（Agent 的 codebase 工具读的是 dsh 那份，始终最新），延后只影响 IDE 侧的本地检索/跳转。"),
+		},
 		'saros.codebaseGraph.deferLargeNonPrimaryRootsMB': {
 			type: 'number',
 			default: 5,
@@ -4900,10 +4905,10 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 	private readonly _staticModuleContainers: boolean;
 
 	constructor(
-		@IConfigurationService configurationService: IConfigurationService,
+		@IConfigurationService private readonly _configurationService: IConfigurationService,
 	) {
 		super();
-		this._staticModuleContainers = !isDshModuleEngine(configurationService);
+		this._staticModuleContainers = !isDshModuleEngine(this._configurationService);
 		this._registerToolbarIcons();
 	}
 
@@ -5157,6 +5162,21 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 		config: IAgentStudioToolIconConfig
 	): void {
 		if (!this._staticModuleContainers) {
+			return;
+		}
+		/*
+		 * ★ 2026-10-27（用户要求 A：「IDE 侧的 activitybar 中，不要显示工作台的页签」）：
+		 *   工作台（主页 / 知识库 / 商城 / 记忆库 / 媒体库 / …）是**窗口模式**的入口；
+		 *   IDE 侧走「sideview + editorpane」这条路径 ⇒ ActivityBar 上一个工作台图标都不放。
+		 *
+		 * 口径：**连容器一起不注册**。只把图标从 pinned 里摘掉是不够的 ——
+		 *   容器还在就会被 `PaneCompositeBar` 当成"未固定项"塞进溢出菜单，仍然"显示了页签"。
+		 *
+		 * 代价（已与用户确认）：知识库 sideview / Bots 侧栏也随之不在 ActivityBar 出现；
+		 *   需要临时用回窗口形态时，把
+		 *   `sessions.dshHarness.workbenchInActivityBar` 设为 `true` 并重载窗口。
+		 */
+		if (this._configurationService.getValue<boolean>(DshHarnessSettings.WorkbenchInActivityBar) !== true) {
 			return;
 		}
 		this._registerToolIcon(viewContainerRegistry, viewsRegistry, config);

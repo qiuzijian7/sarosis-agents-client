@@ -69,6 +69,10 @@ export type DshModuleId =
 	// 2026-10-23：萨罗斯管理平台工作台（`@vssaros/dsh-studio`）—— 页面 `/x/studio/` 里 iframe 承载
 	//   Saroasis Studio System 前端；平台右上角「AI 助手」在右侧栏打开 chat-surface。
 	//   无 ActivityBar 图标：入口走主页卡片 / 侧栏启动器（页面自带 route）。
+	// 2026-10-27：萨罗斯中转站工作台（`@vssaros/dsh-relay`，整页 `/x/relay/`）——
+	//   页面里 iframe 承载 AnyDev 上部署的中转站 Web；本机登录 CodeBuddy provider 后，
+	//   由 IDE 侧（`extensions/codebuddy-provider/src/relay.ts`）自动把本机注册成中转站节点。
+	| 'relay'
 	| 'studio';
 
 export interface IDshBuiltinModule {
@@ -137,6 +141,11 @@ export const DSH_BUILTIN_MODULES: readonly IDshBuiltinModule[] = [
 	// 2026-10-24：萨罗斯管理平台工作台（站点 iframe + 站点栏 + 右栏 AI 助手页签）。
 	// 登记在三张表里必须同批完成（模块联合 / 内置模块表 / 页面表），漏一处就是「未登记的内置模块」✗。
 	{ module: 'studio', pluginName: '@vssaros/dsh-studio', summary: '萨罗斯管理平台：承载平台前端页面，右上角 AI 助手在右栏打开助手会话（页面 /x/studio/）' },
+	// 2026-10-27：萨罗斯中转站工作台（`@vssaros/dsh-relay`，整页 `/x/relay/`）。
+	// 页面里 iframe 承载 AnyDev 上部署的中转站 Web（`http://21.6.92.5:8000/`）；
+	// 本机登录 CodeBuddy provider 后由 IDE 侧自动注册成中转站节点（注册体只含身份与模型目录，
+	// **不含任何 CodeBuddy 凭据** —— 中转站永不持有凭据）。
+	{ module: 'relay', pluginName: '@vssaros/dsh-relay', summary: '萨罗斯中转站：承载 AnyDev 上部署的中转站 Web；本机登录 CodeBuddy provider 后自动注册为中转站节点（页面 /x/relay/）' },
 ];
 
 /**
@@ -281,6 +290,15 @@ export const DSH_MODULE_CONTAINERS: readonly IDshModuleContainer[] = [
 		note: '2026-10-23：萨罗斯管理平台工作台。页面 iframe 直连 http://saroasisstudiosystem.saroasis.woa.com:9999/（站点无 X-Frame-Options，可嵌）；页面自带底色与配色（自托管页拿不到 --dsw-alias-*）；「AI 助手」由 client 侧注册 shell.overlay 入口 + 右栏 studiochat 页签（复用官方 sidebar.chat.conversation）。',
 	},
 	{
+		// 萨罗斯中转站工作台（2026-10-27）：`@vssaros/dsh-relay` 的 `/x/relay/` 整页。
+		// **page-only** —— IDE 侧没有对应 legacy 页（页面 = 中转站 Web 的 iframe + 状态栏，只存在于 dsh 侧）✓
+		// order 89 = 紧跟萨罗斯平台(88)之后（同为「平台/扩展」类入口，排在「看资料」110+ 之前 ✓）。
+		// ⚠ 活动栏 title/icon/order 必须与插件清单 `vssaros.activityBar` **同值**（双轨对账守卫盯着）。
+		containerId: 'vssaros.dsh.relay', modules: ['relay'], status: 'page-only',
+		activityBar: { containerId: 'vssaros.dsh.relay', title: { zh: '中转站', en: 'Relay' }, icon: 'codicon:radio-tower', order: 89 },
+		note: '2026-10-27：萨罗斯中转站工作台。页面 iframe 直连 AnyDev 环境「我的开发环境」（21.6.92.5）上的中转站 Web（http://zijianqiu-any1.devcloud.woa.com:8000/，该站不设 X-Frame-Options ⇒ 可嵌）；页面自带状态栏（可达性 / 版本 / 刷新 / 外开）与探针 `/x/relay/api/ping`。本机登录 CodeBuddy provider 后，IDE 侧自动把本机注册成中转站节点（只报身份 + 模型目录，不报凭据）。',
+	},
+	{
 		containerId: 'agentStudio.dashboard', modules: ['dashboard'], status: 'existing',
 		// order 5 = **活动栏第一位**（2026-10-12 用户要求；原 150 = 最后一位）。
 		// 静态注册侧（`agentStudio.contribution.ts` 的 `_registerModuleToolIcon`）必须同值，
@@ -356,6 +374,9 @@ export const DSH_MODULE_PAGES: readonly IDshModulePage[] = [
 	// 2026-10-23：萨罗斯管理平台工作台（整页 `/x/studio/`）。
 	// ⚠ 这条同时是主页/侧栏点「打开」的**白名单**（`openModulePage` 精确匹配）⇒ 漏登记 = 点了没反应。
 	{ module: 'studio', kind: 'page', route: '/x/studio/' },
+	// 2026-10-27：萨罗斯中转站工作台（整页 `/x/relay/`，页面里 iframe 承载 AnyDev 上的中转站 Web）。
+	// ⚠ 这条同时是主页/侧栏点「打开」的**白名单**（`openModulePage` 精确匹配）⇒ 漏登记 = 点了没反应。
+	{ module: 'relay', kind: 'page', route: '/x/relay/' },
 ];
 
 /** 容器页路由的解析结果（见 {@link pageRouteForActiveModules}）。 */

@@ -129,7 +129,11 @@ window.__ModuleLoader__.load({
 			//   ⚠ 与 `vssaros-dashboard/lib/catalog.js` 的 `WORKBENCH_MODULES` **必须两处同时登记**
 			//   （这份同时是 route 白名单 ⇒ 漏了 = 主页卡片在、点「打开」被静默拒掉）✗
 			{ id: "vssaros-wb-parallel", name: "并行工作台", ico: "🖥️", route: "/x/parallel/" },
-			];
+			// ★ 2026-10-27：萨罗斯中转站工作台（`@vssaros/dsh-relay`，页面 `/x/relay/`）。
+			//   这份表同时是 **route 白名单** ⇒ 不登记 ⇒ 从主页/侧栏点「打开」被静默拒掉（"点了没反应"）。
+			//   ⚠ 与 `vssaros-dashboard/lib/catalog.js` 的 `WORKBENCH_MODULES` 必须两处同时登记。
+			{ id: "vssaros-wb-relay", name: "萨罗斯中转站", ico: "📡", route: "/x/relay/" },
+		];
 		// ★ 暴露给同插件的其它 chunk（`client.market.js` 的「已安装」要用它）：
 		//   本机内置的工作台**不是市场条目**（市场的目录里只有别人上架的工作台），
 		//   但它们属于「本机已装」那一格 ⇒ 商城界面得知道它们存在。
@@ -1227,6 +1231,28 @@ window.__ModuleLoader__.load({
 			function makeTabPanel(pick) {
 				return function WbTabPanel() {
 					const [ver, setVer] = react.useState(0);
+					// ★ 2026-10-28（用户报「会话窗口显示空」）：中栏整片空白的**确定性**成因之一 ——
+					//   面板根节点靠 `height:100%` 继承父高度，而官方 `main` 槽的 keyed 面板外层**不保证**
+					//   是确定高度（切过会话/页签、窗口尺寸变化后可能算成 0）⇒ 根 0 高 ⇒ 里面 iframe
+					//   也 0 高 ⇒ 用户看到的就是"点了页签一片空白"（页面其实加载完成、内容都在）。
+					//   ⇒ 挂载后量一次：高度异常就给最小高度兜底 + 记诊断（真机复现时能直接取证）。
+					const rootRef = react.useRef ? react.useRef(null) : { current: null };
+					react.useEffect(() => {
+						const el = rootRef.current;
+						if (!el) { return undefined; }
+						const t = window.setTimeout(() => {
+							try {
+								const rect = el.getBoundingClientRect();
+								if (rect.height < 40) {
+									el.style.minHeight = "240px";
+									const diag = { height: Math.round(rect.height), width: Math.round(rect.width), active: String(activeTabId || ""), at: Date.now() };
+									window.__vssarosWbPanelDiag = diag;
+									console.warn("[vssaros] 页签面板高度异常 ⇒ 已兜底最小高度：" + JSON.stringify(diag));
+								}
+							} catch { /* 量不到就保持原样 */ }
+						}, 800);
+						return () => window.clearTimeout(t);
+					}, []);
 					react.useEffect(() => {
 						const h = () => setVer(v => v + 1);
 						window.addEventListener(TAB_CHANGE_EVENT, h);
@@ -1256,7 +1282,10 @@ window.__ModuleLoader__.load({
 						try { active = pick(); } catch { /* 取不到就留空态 ✓ */ }
 					}
 					return react.createElement("div", {
-						style: { display: "flex", flexDirection: "column", height: "100%", minHeight: 0 },
+						ref: rootRef,
+						// `flex:1 1 auto` + `minHeight:0`：父级是 flex 时靠拉伸拿高度（不依赖父级有确定高度）；
+						// 父级不是 flex 时仍由 `height:100%` 兜（两者都给，谁生效用谁 ✓）。
+						style: { display: "flex", flexDirection: "column", flex: "1 1 auto", width: "100%", height: "100%", minHeight: 0 },
 						"data-vssaros-wb-tabs": "1",
 					},
 						// ★ 提速：已打开过的页签**保活**（只切 display ⇒ 不重载）✓；没打开过的**不预载** ✓
@@ -1445,7 +1474,21 @@ window.__ModuleLoader__.load({
 						openWorkbenchTab(it);
 						return;
 					}
-					if (data.type !== "vssaros-wb-pin" || !data.route) { return; }
+					// ★ 2026-10-27（用户：「媒体库工作台里的 AI 助手点了没反应」）：
+				//   媒体库在工作台里是 **iframe** ⇒ iframe 内没有页面桥 ⇒ 它把请求 postMessage 过来，
+				//   由**这里**（父窗口 = dsh 页面，有 IDE 桥）代开「媒体库管家」的会话 ⇒ 右侧栏出现 AI 聊天框 ✓。
+				if (data.type === "vssaros-media-assistant") {
+					const preset = String(data.preset || "vssaros-media-librarian");
+					const b = window.vssarosDsh;
+					if (b && typeof b.newChat === "function") {
+						try { b.newChat(preset); notify("info", "已打开「媒体库管家」会话"); }
+						catch (e) { notify("warn", "没能打开助手会话：" + String(e && e.message || e)); }
+					} else {
+						notify("warn", "这个宿主没有页面桥：请手动选「媒体库管家」");
+					}
+					return;
+				}
+				if (data.type !== "vssaros-wb-pin" || !data.route) { return; }
 					const route = String(data.route);
 					const list = readPinned().filter(r => r !== route);
 					if (data.pinned !== false) { list.push(route); }
