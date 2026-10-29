@@ -1005,7 +1005,7 @@ window.__ModuleLoader__.load({
 /* ★ 2026-10-27：与媒体库的浮动区**完全同一套样式**（A 方案 + 边缘高亮）
 .   —— vssaros-media 的 .m-fab 与这条 .vssWbActions 的高亮参数必须逐字一致（由
 .   dsh-plugins/check-assistant-collapse.mjs 的跨插件一致性断言钉住）✓ */
-.vssWbActions { position:absolute; right:12px; top:50%; transform:translateY(-50%); z-index:2147482000; display:flex; flex-direction:column; padding:3px; border-radius:10px; border:1px solid rgba(47,129,247,.55); background:linear-gradient(180deg, rgba(38,38,44,.96), rgba(30,30,35,.96)); box-shadow:0 0 0 1px rgba(47,129,247,.16), 0 0 16px rgba(47,129,247,.30), 0 4px 12px rgba(0,0,0,.45); opacity:.96; cursor:grab; touch-action:none; user-select:none; transition:box-shadow .16s, border-color .16s; }
+.vssWbActions { position:absolute; right:12px; top:50%; transform:translateY(-50%); z-index:2147482000; display:flex; flex-direction:column; padding:3px; border-radius:10px; border:1px solid rgba(47,129,247,.55); background:var(--dsw-alias-bg-layer-1, #25252a) linear-gradient(180deg, rgba(38,38,44,.96), rgba(30,30,35,.96)); box-shadow:0 0 0 1px rgba(47,129,247,.16), 0 0 16px rgba(47,129,247,.30), 0 4px 12px rgba(0,0,0,.45); opacity:.96; cursor:grab; touch-action:none; user-select:none; transition:box-shadow .16s, border-color .16s; }
 .vssWbActions:hover { border-color:rgba(47,129,247,.85); box-shadow:0 0 0 1px rgba(47,129,247,.35), 0 0 26px rgba(47,129,247,.45), 0 6px 18px rgba(0,0,0,.5); }
 .vssWbActions[data-dragging] { cursor:grabbing; }
 .vssWbActions[data-moved] { transform:none; }

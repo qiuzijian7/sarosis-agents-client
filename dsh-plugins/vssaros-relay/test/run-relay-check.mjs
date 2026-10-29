@@ -273,6 +273,39 @@ for (const label of ['注册本机到号池', '已注册 · 通道已连接', '�
 		fail('onerror 没有留痕 ⇒ 只触发 error 不触发 close 时查不到掉线原因');
 	}
 }
+// ★★ 无感策略（2026-10-28 用户要求：「每次启动都自动打开浏览器，有 cookie 时能否用无头」）
+//   · 专属实例默认**无头** ⇒ Host 启动不弹窗；
+//   · 只有需要人工登录时 `loginSession.open()` 才切**有头**（同 profile 不能并存 ⇒ 先杀再拉）；
+//   · 登录完由 relay 调 `ensureHeadless()` 切回无头 ⇒ 可见窗口消失 ✓
+{
+	const browserHost = fs.readFileSync(path.join(REPO, 'dsh-plugins', 'vssaros-browser', 'lib', 'core', 'host.js'), 'utf8');
+	const browserIndex = fs.readFileSync(path.join(REPO, 'dsh-plugins', 'vssaros-browser', 'lib', 'index.js'), 'utf8');
+	const browserSession = fs.readFileSync(path.join(REPO, 'dsh-plugins', 'vssaros-browser', 'lib', 'core', 'loginSession.js'), 'utf8');
+	const quotaBrowser = fs.readFileSync(path.join(PKG, 'lib', 'quotaBrowser.js'), 'utf8');
+	if (/VSSAROS_BROWSER_HEADLESS \?\? '1'/.test(browserIndex)) {
+		ok('专属实例默认无头（VSSAROS_BROWSER_HEADLESS 默认 1 ⇒ 启动不弹窗）');
+	} else {
+		fail('专属实例默认仍是有头 ⇒ Host 启动会弹出 Chrome 窗口（违背"无感"要求）');
+	}
+	if (/async ensureHeaded\(/.test(browserHost) && /async ensureHeadless\(/.test(browserHost)) {
+		ok('浏览器宿主支持无头⇄有头切换（ensureHeaded / ensureHeadless）');
+	} else {
+		fail('浏览器宿主缺少无头⇄有头切换能力');
+	}
+	// ⚠ 2026-10-29：判据要认**两种**取法 —— `loginSession` 现在把 `ensureHeaded` 解构进了参数
+	//   （`createLoginSessions({ …, ensureHeaded })` + `await ensureHeaded()`），旧正则只认
+	//   `deps.ensureHeaded` ⇒ 代码明明接了却判红（假红）。这里改成认「open 里 await 调用」这一形态。
+	if (/await\s+(?:deps\.)?ensureHeaded\(\s*\)/.test(browserSession)) {
+		ok('登录会话在无头下会先切有头再开登录页');
+	} else {
+		fail('loginSession.open 没接 ensureHeaded ⇒ 无头模式下开不出登录页');
+	}
+	if (/ensureHeadless/.test(quotaBrowser)) {
+		ok('额度采集登录完成后会切回无头（用户无感）');
+	} else {
+		fail('quotaBrowser 未在登录后切回无头');
+	}
+}
 // ★ 额度进度条（2026-10-28 用户要求：更直观）
 for (const [needle, label] of [
 	['qbar-track', '额度进度条的槽'],

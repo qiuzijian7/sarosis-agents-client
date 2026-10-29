@@ -58,7 +58,7 @@ node dsh-plugins/check-workbench-catalog.mjs
 node dsh-plugins/check-chat-surface-chunks.mjs
 ```
 
-真机探针（沙箱，**13/13**）：`%TEMP%\wb-xhs-prep.mjs` 装包 → `Saroasis harness.exe %TEMP%\wb-xhs-probe`。
+真机探针（沙箱，**13/13**）：`%TEMP%\wb-xhs-prep.mjs` 装包 → `VsSaros.exe %TEMP%\wb-xhs-probe`。
 断言：注册表有 `vssaros/xhs-note` · 面板渲染（root/toolbar/生成按钮/对话停靠点/`#vssaros-wb-ui`）·
 **切暗色颜色真的变** · 生成出标题 · **保存后 `/api/drafts` 读回且磁盘有 JSON** · 预填事件被认领（回执）· boot 无失败。
 

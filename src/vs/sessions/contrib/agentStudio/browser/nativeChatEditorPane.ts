@@ -17,9 +17,6 @@ import { EditorActivation, IEditorOptions } from '../../../../platform/editor/co
 import { addDisposableListener } from '../../../../base/browser/dom.js';
 import { toDisposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { SessionFollower } from './sessionFollower.js';
-// ★ 2026-09-22：聊天框 header 的渠道绑定标识要显示品牌 logo（与设置页渠道条目同一份 SVG）。
-//   面板在 sessions/browser 层拿不到本模块 ⇒ 由这里构造元素后注入（见 _refreshFeishuBindingBadge）。
-import { createChannelIcon } from './channelIcons.js';
 import { mainWindow } from '../../../../base/browser/window.js';
 import { URI } from '../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
@@ -37,7 +34,6 @@ import { IAgentOSService, type ISubAgentTraceSnapshot } from '../common/agentOS.
 import { buildPromptOptimizeMessages, sanitizeOptimizedOutput } from '../../../browser/agentChat/promptOptimize.js';
 import { filterUserFacingAgents } from '../common/builtinAgents.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { IBridgeService } from './bridge/bridgeService.js';
 
 import { NativeChatEditorInput, type IChatRuntimeState, type ChatTabStatus } from './nativeChatEditorInput.js';
 import { getDshChatHostFactory, IDshChatBinding } from '../../../common/dshChatHost.js';
@@ -83,14 +79,6 @@ import { IEditorService } from '../../../../workbench/services/editor/common/edi
 import { IViewsService } from '../../../../workbench/services/views/common/viewsService.js';
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
-// ★ 2026-09-23：Channel 绑定页签的「飞书 CLI」能力（与编辑器面板 settingsEditorPane /
-//   agentSettingsEditorPane 共用同一套实现，避免两份口径）
-import { getLarkCliStatus, installLarkCli } from './larkCliService.js';
-import { fetchFeishuChats } from './feishuChatList.js';
-import { beginFeishuRegistration, pollFeishuRegistration } from './feishuRegistration.js';
-import { drawQrToCanvas } from './feishuQrCode.js';
-import { createMainProcessRequestService } from './mainProcessRequestService.js';
-import type { IFeishuBotCreationUpdate } from '../common/larkCli.js';
 import { createMediaStoreProxy } from './mediaStoreProxy.js';
 import type { IMediaBackend } from '../common/mediaStoreChannel.js';
 import { AGENT_STUDIO_IMAGE_GEN_PROVIDER, AGENT_STUDIO_IMAGE_GEN_MODEL } from '../common/constants.js';
@@ -520,7 +508,6 @@ export class NativeChatEditorPane extends EditorPane {
 		@ISkillRegistry private readonly _skillRegistry: ISkillRegistry,
 		@IAgentOSService private readonly _agentOSService: IAgentOSService,
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
-		@IBridgeService private readonly _bridgeService: IBridgeService,
 		@IViewsService private readonly _viewsService: IViewsService,
 		@IOpenerService private readonly _openerService: IOpenerService,
 		@IWorktreeService private readonly _worktreeService: IWorktreeService,
@@ -1572,7 +1559,6 @@ export class NativeChatEditorPane extends EditorPane {
 				const session = await this._chatService.createAgentSession(this._currentAgentId, `Session ${new Date().toLocaleString()}`);
 				this._currentSessionId = session.id;
 				void this._updateSessionLock();
-				this._refreshFeishuBindingBadge();
 					this._logService.debug(`[NativeChatEditorPane] onNewSession: created session ${session.id}`);
 					// 持久化 session 到 input（拖拽到新 group 时恢复用），页签显示 session 名
 					if (this.input instanceof NativeChatEditorInput && this._currentAgentId) {
@@ -1650,7 +1636,6 @@ export class NativeChatEditorPane extends EditorPane {
 				}
 				this._currentSessionId = sessionId;
 				void this._updateSessionLock();
-				this._refreshFeishuBindingBadge();
 				this._logService.debug(`[NativeChatEditorPane] onOpenSession: switched to session ${sessionId}`);
 					// 查找 session name 作为页签标题
 					let sessionName: string | undefined;
@@ -2216,176 +2201,6 @@ export class NativeChatEditorPane extends EditorPane {
 			onExtractSkill: (messageContent: string) => {
 				void this._skillExtract?.handleExtractSkill(messageContent);
 			},
-			// ── Channel 绑定（飞书）—— 对齐 AgentSettingsEditorPane ──
-			onListFeishuBindings: () => {
-				try {
-					return this._bridgeService.getEngine().listConversationBindings('feishu');
-				} catch {
-					// 桥接引擎未就绪：返回空
-					return [];
-				}
-			},
-			onAddFeishuBinding: (chatId: string) => {
-				if (!this._currentAgentId) { return; }
-				try {
-					this._bridgeService.getEngine().setConversationAgent('feishu', chatId, this._currentAgentId);
-					this._notificationService.notify({ severity: Severity.Info, message: `已绑定飞书群聊 ${chatId} 到本 Agent` });
-				} catch (err) {
-					this._notificationService.notify({ severity: Severity.Error, message: `绑定失败: ${err instanceof Error ? err.message : String(err)}` });
-				}
-			},
-			onRemoveFeishuBinding: (chatId: string) => {
-				if (!this._currentAgentId) { return; }
-				try {
-					this._bridgeService.getEngine().clearConversationAgent('feishu', chatId);
-					this._notificationService.notify({ severity: Severity.Info, message: `已解除飞书群聊 ${chatId} 的绑定` });
-				} catch (err) {
-					this._notificationService.notify({ severity: Severity.Error, message: `解除失败: ${err instanceof Error ? err.message : String(err)}` });
-				}
-			},
-			onGetFeishuDefaultAgent: () => {
-				return this._configurationService.getValue<string>('sessions.channel.feishu.defaultAgent');
-			},
-			onSetFeishuDefaultAgent: (agentId: string | undefined) => {
-				const key = 'sessions.channel.feishu.defaultAgent';
-				const cur = this._configurationService.getValue<string>(key);
-				if (agentId) {
-					this._configurationService.updateValue(key, agentId);
-					this._notificationService.notify({ severity: Severity.Info, message: '已设为飞书渠道默认 Agent' });
-				} else if (cur) {
-					this._configurationService.updateValue(key, '');
-					// 取消默认 Agent 时同步清除默认会话（会话归属旧 agent，留着是悬空引用）
-					try {
-						this._bridgeService.getEngine().setChannelDefaultSession('feishu', cur, undefined);
-					} catch { /* 引擎未就绪：忽略 */ }
-					this._notificationService.notify({ severity: Severity.Info, message: '已取消飞书渠道默认 Agent' });
-				}
-			},
-			onGetFeishuDefaultSession: () => {
-				try {
-					const def = this._bridgeService.getEngine().getChannelDefaultSession('feishu');
-					// 默认会话仅在其属于当前 agent 时有意义
-					return def && def.agentId === this._currentAgentId ? def.agentSessionId : undefined;
-				} catch {
-					return undefined;
-				}
-			},
-			onSetFeishuDefaultSession: (sessionId: string | undefined) => {
-				if (!this._currentAgentId) { return; }
-				try {
-					this._bridgeService.getEngine().setChannelDefaultSession('feishu', this._currentAgentId, sessionId);
-					this._notificationService.notify({
-						severity: Severity.Info,
-						message: sessionId ? '已设置飞书默认会话（未精确绑定的消息将进入此会话）' : '已恢复为每群自动建专属会话',
-					});
-				} catch (err) {
-					this._notificationService.notify({ severity: Severity.Error, message: `设置失败: ${err instanceof Error ? err.message : String(err)}` });
-				}
-			},
-			// ── Channel 会话级绑定（chat_id ↔ 指定会话）──
-			onListAgentSessions: async () => {
-				if (!this._currentAgentId) { return []; }
-				try {
-					const sessions = await this._chatService.listAgentSessions(this._currentAgentId);
-					return sessions
-						.slice()
-						.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
-						.map(s => ({ id: s.id, name: s.name }));
-				} catch {
-					return [];
-				}
-			},
-			onListFeishuSessionBindings: () => {
-				try {
-					return this._bridgeService.getEngine().listSessionBindings('feishu');
-				} catch {
-					return [];
-				}
-			},
-			onBindFeishuSession: (chatId: string, sessionId: string) => {
-				if (!this._currentAgentId) { return; }
-				try {
-					this._bridgeService.getEngine().bindConversationToSession('feishu', chatId, this._currentAgentId, sessionId);
-					this._notificationService.notify({ severity: Severity.Info, message: `已将飞书群聊 ${chatId} 绑定到所选会话` });
-				} catch (err) {
-					this._notificationService.notify({ severity: Severity.Error, message: `绑定失败: ${err instanceof Error ? err.message : String(err)}` });
-				}
-			},
-			onUnbindFeishuSession: (chatId: string) => {
-				try {
-					this._bridgeService.getEngine().unbindConversationSession('feishu', chatId);
-					this._notificationService.notify({ severity: Severity.Info, message: `已解除飞书群聊 ${chatId} 的会话绑定` });
-				} catch (err) {
-					this._notificationService.notify({ severity: Severity.Error, message: `解除失败: ${err instanceof Error ? err.message : String(err)}` });
-				}
-			},
-			// ── 飞书 CLI（2026-09-23）—— 聊天框 Channel 绑定页签的「飞书 CLI」区块 ──
-			//    探测/安装在主进程（渲染进程无 child_process）；群列表与扫码走渠道自身 app 凭证，
-			//    与设置页、渠道编辑器的「📷 扫码绑定」是同一套实现（避免三处口径漂移）。
-			onGetLarkCliStatus: () => getLarkCliStatus(),
-			// ★ 绑定表在主进程持久化（IPC 异步水合）：面板首渲染后再等一次，避免「重启后看起来丢了」
-			onEnsureBindingsLoaded: () => this._bridgeService.ensureBindingsLoaded(),
-			onInstallLarkCli: () => installLarkCli(),
-			onListFeishuChats: async () => {
-				const appId = String(this._configurationService.getValue('sessions.channel.feishu.appId') ?? '').trim();
-				const appSecret = String(this._configurationService.getValue('sessions.channel.feishu.appSecret') ?? '').trim();
-				if (!appId || !appSecret) {
-					throw new Error('尚未配置飞书应用凭证：先点上方「创建机器人（扫码授权）」，或到设置页「Channel 配置 → 飞书」填写 app_id / app_secret');
-				}
-				// 主进程出口（无 CORS）；非 Electron 宿主回退渲染进程 IRequestService
-				const requestService = createMainProcessRequestService(this._mainProcessService) ?? this._requestService;
-				const chats = await fetchFeishuChats(requestService, appId, appSecret);
-				return chats.map(c => ({ chatId: c.chatId, name: c.name, memberCount: c.memberCount }));
-			},
-			onCreateFeishuBot: async (onUpdate: (update: IFeishuBotCreationUpdate) => void) => {
-				const requestService = createMainProcessRequestService(this._mainProcessService) ?? this._requestService;
-				try {
-					const begin = await beginFeishuRegistration(requestService);
-					// 二维码在 host 侧画好并导出 PNG data URL（面板不依赖 QR 库，只显示图片）
-					let qrDataUrl: string | undefined;
-					try {
-						const canvas = document.createElement('canvas');
-						drawQrToCanvas(canvas, begin.qrUrl);
-						qrDataUrl = canvas.toDataURL('image/png');
-					} catch { /* 绘制失败：下方文案仍给出可点提示，不阻断流程 */ }
-					onUpdate({ message: `请用飞书扫码授权（链接 ${begin.expiresIn}s 内有效）`, qrDataUrl });
-
-					const deadline = Date.now() + begin.expiresIn * 1000;
-					let interval = begin.interval;
-					while (Date.now() < deadline) {
-						await new Promise(r => setTimeout(r, interval * 1000));
-						const polled = await pollFeishuRegistration(requestService, begin.deviceCode);
-						if (polled.status === 'completed') {
-							const appId = polled.appId ?? '';
-							const appSecret = polled.appSecret ?? '';
-							if (!appId || !appSecret) {
-								onUpdate({ message: '❌ 飞书未返回有效凭证', done: true, ok: false });
-								return;
-							}
-							await this._configurationService.updateValue('sessions.channel.feishu.appId', appId);
-							await this._configurationService.updateValue('sessions.channel.feishu.appSecret', appSecret);
-							await this._configurationService.updateValue('sessions.channel.feishu.enabled', true);
-							if (polled.ownerOpenId) {
-								const cur = this._configurationService.getValue<string>('sessions.channel.feishu.allowFrom') ?? '';
-								const lines = cur.split('\n').map(s => s.trim()).filter(Boolean);
-								if (!lines.includes(polled.ownerOpenId)) {
-									await this._configurationService.updateValue('sessions.channel.feishu.allowFrom', (cur ? cur.replace(/\s*$/, '') + '\n' : '') + polled.ownerOpenId);
-								}
-							}
-							this._notificationService.notify({ severity: Severity.Info, message: `飞书机器人已创建：${appId}` });
-							onUpdate({ message: `✅ 机器人已创建：${appId}（凭证已写入渠道配置并启用）`, done: true, ok: true });
-							return;
-						}
-						if (polled.status === 'denied') { onUpdate({ message: '❌ 授权被拒绝', done: true, ok: false }); return; }
-						if (polled.status === 'expired') { onUpdate({ message: '⌛ 授权已过期，请重新发起', done: true, ok: false }); return; }
-						if (polled.status === 'error') { onUpdate({ message: `❌ ${polled.error ?? '授权失败'}`, done: true, ok: false }); return; }
-						if (polled.status === 'slow_down') { interval += 5; }
-					}
-					onUpdate({ message: '⌛ 等待超时，请重新发起', done: true, ok: false });
-				} catch (err) {
-					onUpdate({ message: `❌ 发起失败：${err instanceof Error ? err.message : String(err)}`, done: true, ok: false });
-				}
-			},
 			// ── ConfigHtml（URL 面板 / 本地 HTML）—— 对齐 AgentSettingsEditorPane ──
 			onGetConfigHtmlCfg: async (): Promise<ConfigHtmlCfg | undefined> => {
 				if (!this._currentAgentId) { return undefined; }
@@ -2471,12 +2286,6 @@ export class NativeChatEditorPane extends EditorPane {
 			});
 		});
 
-		// ── 飞书绑定标识：订阅绑定变更即时刷新 + 初次刷新 ──
-		try {
-			const engine = this._bridgeService.getEngine();
-			this._register(engine.onDidChangeBindings(() => this._refreshFeishuBindingBadge()));
-		} catch { /* 引擎未就绪：跳过订阅 */ }
-		this._refreshFeishuBindingBadge();
 		this._logService.debug(`[NativeChatEditorPane][Init] callbacks set up t=${(performance.now() - t0).toFixed(1)}ms`);
 
 		// Load available agents
@@ -6343,7 +6152,6 @@ private _handleStreamDelta(delta: any): void {
 
 		// 从 NativeChatEditorInput 恢复状态（单一真相源）
 		this._currentSessionId = input.sessionId ?? null;
-		this._refreshFeishuBindingBadge();
 
 		// ── 3. 恢复新 chat 的运行时状态 ──
 		const saved = input.getRuntimeState();
@@ -6845,33 +6653,6 @@ override dispose(): void {
 	super.dispose();
 }
 
-/**
- * 刷新聊天框顶部的飞书绑定标识：反查当前 session 是否被某 feishu chat_id 绑定。
- * 在会话切换/新建/绑定变更事件后调用。
- */
-private _refreshFeishuBindingBadge(): void {
-	try {
-		const sid = this._currentSessionId;
-		let chatId: string | null = null;
-		let isDefault = false;
-		if (sid) {
-			const engine = this._bridgeService.getEngine();
-			// 优先精确绑定；否则若本会话是渠道默认会话，显示默认态标识
-			chatId = engine.listSessionBindings('feishu').find(b => b.agentSessionId === sid)?.conversationId ?? null;
-			if (!chatId) {
-				const def = engine.getChannelDefaultSession('feishu');
-				if (def && def.agentSessionId === sid && def.agentId === this._currentAgentId) {
-					chatId = '(default)';
-					isDefault = true;
-				}
-			}
-		}
-		this._chatPanel?.setFeishuBinding?.(chatId, isDefault, chatId ? createChannelIcon('feishu', '🔵', 12) : undefined);
-	} catch {
-		// 引擎未就绪等：静默降级为不显示标识
-		this._chatPanel?.setFeishuBinding?.(null);
-	}
-}
 
 /**
  * 为当前 agent/session 获取会话锁（多开 --instance 同会话双开只读）。

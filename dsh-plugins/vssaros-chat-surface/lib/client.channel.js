@@ -135,6 +135,9 @@ window.__ModuleLoader__.load({
 	function statusOf(def, ch, inb) {
 		if (!def.implemented) { return { text: "未接入", tone: "" }; }
 		if (!ch.configured) { return { text: "未配置", tone: "" }; }
+		/* 企业微信是**被动回调**（企业微信服务器来连我们）：没有「启动入站」这一步，
+		   所以状态也不能报「未启动」—— 那会让人反复找一个不存在的按钮。 */
+		if (def.inboundMode === "callback") { return { text: "已配置 · 等回调", tone: "" }; }
 		const st = String((inb && inb.status) || "idle");
 		if (st === "ready") { return { text: "已连接", tone: "ok" }; }
 		if (st === "connecting") { return { text: "连接中…", tone: "warn" }; }
@@ -151,9 +154,21 @@ window.__ModuleLoader__.load({
 	}
 
 	function inboundKindOf(def) {
-		if (def.key === "feishu") { return "WS 长连接"; }
-		if (def.key === "telegram") { return "HTTP 长轮询"; }
+		/* 传输方式由 imPlatforms 的 `inboundMode / inboundLabel` 声明（单一真源）。
+		   按 key 硬编码时，discord 一接进来就显示空、企业微信还会凭空多出「启动入站」。 */
+		if (!def) { return ""; }
+		if (def.inboundLabel) { return String(def.inboundLabel); }
+		if (def.inboundMode === "ws") { return "WS 长连接"; }
+		if (def.inboundMode === "poll") { return "HTTP 长轮询"; }
+		if (def.inboundMode === "callback") { return "被动回调"; }
 		return "";
+	}
+
+	/** 有没有「启动入站」这一步（被动回调的没有）。老 Host 不带 inboundMode ⇒ 按已知平台回落。 */
+	function startableOf(def) {
+		if (!def) { return false; }
+		if (def.inboundMode) { return def.inboundMode === "ws" || def.inboundMode === "poll"; }
+		return def.key === "feishu" || def.key === "telegram" || def.key === "discord";
 	}
 
 	function ChannelPanel() {
@@ -366,7 +381,16 @@ window.__ModuleLoader__.load({
 						},
 						el("code", { style: { ...S.code, color: toneColor("warn") } }, String(x.reason || "")),
 						el("span", null, String(x.userName || x.userId || "")),
-						el("span", { style: { ...S.code, opacity: 0.7, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, String(x.text || "").slice(0, 40)))))));
+						el("span", { style: { ...S.code, opacity: 0.7, flex: "1 1 auto", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, String(x.text || "").slice(0, 40)),
+						/* ★ 2026-10-29：一键把发送者加进该绑定的白名单。
+						   "我发了消息 bot 没反应"最常见的答案就是"白名单没加我"（fail-closed）；
+						   让用户抄 open_id 再回 Bots 里粘贴，这条排查链必断。 */
+						x.userId ? el("button", {
+							type: "button", style: S.btnGhost, "data-vssaros-dlq-allow": String(x.id),
+							disabled: !!state.busy,
+							title: "把这个发送者加进该绑定白名单（之后它发的消息才会被处理）",
+							onClick: () => post({ action: "dead-letter-allow", id: String(x.id) }, "allow:" + String(x.id), ""),
+						}, state.busy === "allow:" + String(x.id) ? "加入中…" : "加入白名单") : null)))));
 			}
 
 			/* ⑤ 该平台最近出现的会话（帮用户拿 chat_id 去绑定） */
@@ -383,13 +407,13 @@ window.__ModuleLoader__.load({
 				el("span", null, (inboundKindOf(def) ? inboundKindOf(def) + " · " : "") + st.text
 					+ (inb && inb.lastEventAt ? " · 最近事件 " + new Date(inb.lastEventAt).toTimeString().slice(0, 8) : "")),
 				el("span", { style: S.sp }),
-				def.implemented && ch.configured && (st.text === "已连接" || st.text === "连接中…")
+				def.implemented && startableOf(def) && ch.configured && (st.text === "已连接" || st.text === "连接中…")
 					? el("button", {
 						type: "button", style: S.btn, "data-vssaros-inbound-stop": key,
 						disabled: !!state.busy, onClick: () => actPlatform("inbound-stop", key),
 					}, "停止")
 					: null,
-				def.implemented && ch.configured && !(st.text === "已连接" || st.text === "连接中…")
+				def.implemented && startableOf(def) && ch.configured && !(st.text === "已连接" || st.text === "连接中…")
 					? el("button", {
 						type: "button", style: S.btnPrimary, "data-vssaros-inbound-start": key,
 						disabled: !!state.busy, onClick: () => actPlatform("inbound-start", key),

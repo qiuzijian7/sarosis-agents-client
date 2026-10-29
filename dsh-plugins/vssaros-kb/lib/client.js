@@ -9,6 +9,7 @@
 //   不可能再出现"改了却没生效"。
 //
 // ⚠ 以后**不要再拆子块**：要加代码就往这个文件里加。
+// CLIENT_BUILD_STAMP 2026-10-28T00:45：入口晚于 client.kbview.js 的改动（同一批 kb 改动的守卫收尾）。
 // ⚠ 入口里必须先 `var module = { exports: {} };`（否则真机报 `exports is not defined`）。
 window.__ModuleLoader__.load({
 	id: '@vssaros/dsh-kb',
@@ -19,8 +20,35 @@ window.__ModuleLoader__.load({
 		const react = require('react');
 		const h = react.createElement;
 		const { useState, useEffect, useCallback } = react;
-// ★ 2026-10-28：把「富设置页」渲染进 bundle 的中栏页签容器里，需要自己建 React 根
-const reactDom = require('react-dom/client');
+/*
+ * ★ 2026-10-28（真机：点设置整页黑屏）：
+ *   `react-dom/client` 的 require **不能在模块顶层** —— 宿主没提供这个模块 id 时会**同步抛**，
+ *   整个 client.js 模块加载失败 ⇒ 页面一片空白（连左边树都没有）。
+ *   ⇒ 改成**惰性 + 可失败**：拿不到就返回 null，调用方退回右栏设置（不崩页面）。
+ */
+let reactDomModule;
+/*
+ * ★ 2026-10-28（用户：设置要作为**中栏独立页签**）：
+ *   正确做法是**同一个 React 根 + portal** —— 面板的根直接渲染到 bundle 给的容器里。
+ *   上一版用 `react-dom/client` 另建根（两个 React 根、甚至两份 React）⇒ 渲染期抛错会把
+ *   整页卸载（真机黑屏）。portal 不会：它只是"渲染到别处的节点"，错误边界照样生效。
+ */
+let reactDomPortalModule;
+function ensureCreatePortal() {
+	if (reactDomPortalModule === undefined) {
+		try { reactDomPortalModule = require('react-dom'); }
+		catch (e) { reactDomPortalModule = null; console.warn('[kb-workbench] react-dom 不可用，设置退回右栏', e); }
+	}
+	return reactDomPortalModule && typeof reactDomPortalModule.createPortal === 'function'
+		? reactDomPortalModule.createPortal : null;
+}
+function ensureReactDom() {
+	if (reactDomModule === undefined) {
+		try { reactDomModule = require('react-dom/client'); }
+		catch (e) { reactDomModule = null; console.warn('[kb-workbench] react-dom/client 不可用，富设置退回右栏', e); }
+	}
+	return reactDomModule && typeof reactDomModule.createRoot === 'function' ? reactDomModule : null;
+}
 
 		const API = '/x/kb/api';
 		/** 「笔记」区（可写区）的目录名 —— 与后端 `NOTES_DIR` 同值（`lib/core/kb.js`）。 */
@@ -463,7 +491,42 @@ const reactDom = require('react-dom/client');
 		 * 不做物理模拟（图谱那套在 550 节点上没必要），只做「适应视图」的等比缩放。
 		 */
 
-		function KbSettingsPage({ onClose, onSwitchVault, onAddVault, vaultRef, auto }) {
+		/*
+ * ★ 2026-10-28（真机：点设置后**整页黑屏**）：
+ *   React 18 里，纯渲染期抛错且**没有错误边界**时，React 会卸载**整棵**根树。
+ *   本面板的根就是整页（左侧树、中栏、右栏都由它承载）⇒ 一处抛错 = 整页空白，
+ *   连"哪一行出错"都看不到。
+ *
+ *   这个边界做两件事：
+ *     ① 把错误**限制在**出问题的那一块（其余 UI 照常可用）；
+ *     ② 把 message + stack 显示出来 —— 用户截图就能定位，不必再靠日志反推。
+ */
+class KbPanelBoundary extends react.Component {
+	constructor(props) {
+		super(props);
+		this.state = { err: null };
+	}
+	static getDerivedStateFromError(err) {
+		return { err: err };
+	}
+	componentDidCatch(err, info) {
+		// 同时打进控制台（宿主会转发到主进程日志）
+		console.error('[kb-workbench] 渲染异常（已隔离）', err, info);
+	}
+	render() {
+		if (!this.state.err) { return this.props.children; }
+		const e = this.state.err;
+		return h('div', {
+			style: {
+				padding: 16, color: '#e06c75', fontFamily: 'var(--vssaros-font-mono, monospace)',
+				fontSize: 12, lineHeight: 1.6, whiteSpace: 'pre-wrap', overflow: 'auto', height: '100%',
+			},
+		}, '知识库面板这一块渲染出错了（其余部分仍可用）：\n\n'
+			+ String((e && e.stack) || (e && e.message) || e));
+	}
+}
+
+function KbSettingsPage({ onClose, onSwitchVault, onAddVault, vaultRef, auto }) {
 			/**
 			 * ★★ 2026-10-24（真机：工作台「知识库」渲染时出错 · `c is not defined`）：
 			 *   本组件在 3 处引用 `c.line` / `c.fgFaint`，但作用域里**从来没有 c**
@@ -1101,6 +1164,11 @@ const reactDom = require('react-dom/client');
 			const hostRef = react.useRef(null);
 			const disposeRef = react.useRef(null);
 			const [phase, setPhase] = useState('loading');   // loading | ready | error
+			/**
+			 * 富设置渲染失败过 ⇒ 以后点 ⚙ 改用**视图内页签**（bundle 自己的设置页）。
+			 * 目的：**永远不留空页签**（"空白"就是那个空容器）。
+			 */
+			const [inlineFallback, setInlineFallback] = useState(false);
 			const [error, setError] = useState('');
 			const [doc, setDoc] = useState(null);            // { title, text }
 			const vaultRef = react.useRef({ id: '', dir: '' });   // 写操作要 vaultId + 库根（绝对→相对折算）
@@ -1199,6 +1267,33 @@ const reactDom = require('react-dom/client');
 			}).catch((e) => window.alert('操作失败：' + String((e && e.message) || e)));
 
 			let hostSettingsRoot = null;   // 中栏设置页签的 React 根（复用，避免每次建新根）
+			let hostSettingsRootEl = null; // 该根挂在哪个容器上（容器变了必须重建）
+
+			/**
+			 * 把**完整设置页**渲染进 bundle 提供的中栏页签容器。
+			 *
+			 * 为什么不 portal：bundle 是 `bundle: true` 的独立产物、**自带一份 React**；
+			 * 跨实例 portal / 复用组件会直接抛 "Invalid hook call"。
+			 * 所以是"容器共享、根各自建"：bundle 给 div，我们在这个 div 上 createRoot。
+			 *
+			 * @returns {boolean} false ⇒ 宿主没有 react-dom，调用方应退回右栏设置
+			 */
+			function mountHostSettings(el, props) {
+				const rd = ensureReactDom();
+				if (!rd) { return false; }
+				try {
+					if (!hostSettingsRoot || hostSettingsRootEl !== el) {
+						try { hostSettingsRoot?.unmount?.(); } catch { /* 旧根已失效 */ }
+						hostSettingsRoot = rd.createRoot(el);
+						hostSettingsRootEl = el;
+					}
+					hostSettingsRoot.render(h(KbPanelBoundary, null, h(KbSettingsPage, props)));
+					return true;
+				} catch (e) {
+					console.error('[kb-workbench] 富设置建根失败', e);
+					return false;
+				}
+			}
 			const actions = {
 				// 视图自己弹对话框（Electron 不支持 window.prompt）
 				useInlineDialogs: true,
@@ -1322,6 +1417,23 @@ const reactDom = require('react-dom/client');
 						void remountRef.current?.();
 					}).catch((e) => window.alert('操作失败：' + String((e && e.message) || e)));
 				},
+				/*
+				 * ★ 2026-10-28（用户：库下拉每项要有删除按钮）：**只摘登记，不删磁盘**。
+				 *   「本地载入文件夹」登记的库指向用户的真实笔记目录 ⇒ 删一行的后果
+				 *   绝不能是"笔记没了"（那是 `/api/vault-delete` 的语义，只用于数据根内的库）。
+				 */
+				removeVault: (vaultId) => {
+					fetch('/x/kb/api/vault-remove', {
+						method: 'POST', credentials: 'same-origin',
+						headers: { 'content-type': 'application/json' },
+						body: JSON.stringify({ vaultId: String(vaultId || '') }),
+					}).then((r) => r.json()).then((b) => {
+						if (!b || b.ok === false) { window.alert('移除失败：' + ((b && b.error) || '未知错误')); return; }
+						// 移除的正是当前库 ⇒ 让视图回落（否则会停在已不存在的 id 上，页面空白）
+						if (String(vaultWantRef.current) === String(vaultId)) { vaultWantRef.current = ''; }
+						void remountRef.current?.();
+					}).catch((e) => window.alert('移除失败：' + String((e && e.message) || e)));
+				},
 				// 设置：IDE 侧由宿主开 editor pane；面板侧开**二级页面**（整页 + ← 返回）
 				/*
 				 * ★ 2026-10-28（用户：设置要在**中栏的独立页签**里，不要在右栏）——
@@ -1329,27 +1441,46 @@ const reactDom = require('react-dom/client');
 				 *   ⚠ 容器是 bundle 的页签，所以「返回」由 bundle 的页签切换负责（不需要 onClose 关右栏）。
 				 */
 				openHostSettings: (el) => {
-					if (!el) { return; }
-					try {
-						if (!hostSettingsRoot) { hostSettingsRoot = reactDom.createRoot(el); }
-						hostSettingsRoot.render(h(KbSettingsPage, {
-							onClose: () => setPane('tree'),
-							onSwitchVault: (id) => {
-								vaultWantRef.current = String(id || '');
-								void remountRef.current?.();
-							},
-							onAddVault: (mode, path, name) => {
-								if (typeof actions.addVault === 'function') { actions.addVault(mode, path, name); }
-							},
-							vaultRef: vaultRef,
-							auto: settingsAuto,
-						}));
-					} catch (e) {
-						// 渲染失败不能静默：报告到控制台 + 退回右栏设置（至少能用）
-						console.error('[kb-workbench] 富设置渲染失败，退回右栏', e);
-						setPane('settings');
-					}
+					/*
+					 * ★★ 2026-10-28（用户：把**完整设置**搬进中栏页签）——
+					 *
+					 * 硬约束（已验证，改不了）：`media/kbSideview.js` 是 esbuild `bundle: true` 的产物，
+					 * **自带一份 React**；本面板用的是宿主的 `react`。两份实例之间不能 portal / 共用组件，
+					 * 否则 hooks 直接抛 "Invalid hook call"（前面黑屏/空白都是这一类）。
+					 *
+					 * 唯一可行形态：bundle 只给**空容器**（页签里的 `data-kb-host-settings`），
+					 * 本面板在该容器上**建自己的根**渲染 `KbSettingsPage`（各管自己的树，同 document）。
+					 *
+					 * 三道保险，任何一道生效都不会留下"空白页签"：
+					 *   ① 拿不到 react-dom ⇒ 右栏设置；
+					 *   ② 渲染抛错 ⇒ `KbPanelBoundary` 接住显示红字，同时右栏也开一份；
+					 *   ③ 500ms 后容器仍无子节点 ⇒ 判定失败 ⇒ 以后改用**视图内页签**。
+					 */
+					if (!el) { setPane('settings'); return; }
+					const props = {
+						onClose: () => { /* 页签由 bundle 管 */ },
+						onSwitchVault: (id) => {
+							vaultWantRef.current = String(id || '');
+							void remountRef.current?.();
+						},
+						onAddVault: (mode, path, name) => {
+							if (typeof actions.addVault === 'function') { actions.addVault(mode, path, name); }
+						},
+						vaultRef: vaultRef,
+						auto: settingsAuto,
+					};
+					if (!mountHostSettings(el, props)) { setPane('settings'); return; }
+					setTimeout(() => {
+						if (el && el.isConnected && el.childElementCount === 0) {
+							console.warn('[kb-workbench] 富设置未渲染（容器为空）⇒ 下次点击改用视图内页签');
+							setInlineFallback(true);
+							setPane('settings');   // 这次也立刻给个能看的设置页
+						}
+					}, 500);
 				},
+				// 默认走**富设置**（飞书 / 目录映射 / CLI）；只有富设置渲染失败过才改用视图内页签
+								// ★ 2026-10-28：**始终**用视图内页签 —— 跨 React 实例渲染富设置已被验证不可靠（会盖成空白）。
+				preferInlineSettings: true,
 				// 兜底：老 bundle 没有 openHostSettings 时仍走右栏
 				openSettings: () => setPane('settings'),
 				/*
@@ -1405,15 +1536,28 @@ const reactDom = require('react-dom/client');
 				// 关系图谱：在面板内就地承载 `/x/kb/graph`（不跳转整壳）
 				openGraph: () => { setPane('graph'); },
 				// 同步飞书：走插件路由跑随包脚本（与 kb_feishu_sync 同一份实现）
+				/*
+				 * 同步飞书（2026-10-29 改）：**不用 window.alert**。
+				 *   Electron 里 alert 会**阻塞渲染进程**（dsh 页面甚至可能不弹）⇒ 用户看到"点了没反应"
+				 *   而请求还没发出去 ⇒ 服务端**零痕迹**（这正是"同步失败"却查不到日志的原因）。
+				 *   ⇒ 改为：静默发起 + 把结果用 DOM 事件抛给 bundle（bundle 侧显示在页内输出区）。
+				 */
 				feishuSync: () => {
-					window.alert('开始同步飞书…逐篇串行，可能需要几分钟，完成后会给出结果。');
+					const notify = (detail) => {
+						try { window.dispatchEvent(new CustomEvent('kb:feishu-sync-result', { detail })); } catch { /* 没有 bundle 就算了 */ }
+					};
+					notify({ phase: 'start', text: '正在同步飞书…（逐篇串行，可能要几分钟）' });
 					fetch('/x/kb/api/feishu-sync', { method: 'POST', credentials: 'same-origin' })
 						.then((r) => r.json())
 						.then((b) => {
-							const tail = String((b && b.output) || '').split(/\r?\n/).filter(Boolean).slice(-12).join('\n');
-							window.alert((b && b.ok ? '同步完成' : '同步结束（有失败项，见下）') + '\n\n' + (tail || (b && b.error) || '(无输出)'));
+							const tail = String((b && b.output) || '').split(/\r?\n/).filter(Boolean).slice(-40).join('\n');
+							notify({
+								phase: 'done',
+								ok: !!(b && b.ok),
+								text: (b && b.ok ? '同步完成' : '同步结束（有失败项，见下）') + '\n\n' + (tail || (b && b.error) || '(无输出)'),
+							});
 						})
-						.catch((e) => window.alert('同步失败：' + String((e && e.message) || e)));
+						.catch((e) => notify({ phase: 'done', ok: false, text: '同步失败：' + String((e && e.message) || e) }));
 				},
 				createNote: (dir, name) => {
 					const n = String(name || '').trim();
@@ -1533,9 +1677,9 @@ const reactDom = require('react-dom/client');
 			//   **卸载**，而挂载视图的 effect 只在首次 mount 跑一次（`[]` 依赖）⇒ 返回时新 div
 			//   里没有任何东西被渲染，于是空白。
 			//   ⇒ 改成**树常驻、只切 display**：视图永远不会被卸载，图谱作为兄弟节点叠上去。
-			const treePane = h('div', { 'data-kb-workbench': 'panel', style: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, fontFamily: 'inherit' } },
+			const treePane = h('div', { 'data-kb-workbench': 'panel', style: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, width: '100%', minWidth: 0, flex: '1 1 0%', fontFamily: 'inherit' } },
 				phase === 'loading' ? h('div', { style: { padding: 12, opacity: 0.6, fontSize: 12 } }, '正在加载…') : null,
-				h('div', { ref: hostRef, 'data-kb-workbench-tree': '1', style: { flex: '1 1 auto', minHeight: 0, minWidth: 0, overflow: 'hidden' } }));
+				h('div', { ref: hostRef, 'data-kb-workbench-tree': '1', style: { flex: '1 1 0%', minHeight: 0, minWidth: 0, width: '100%', overflow: 'hidden' } }));
 
 			// ⚠ 2026-10-24（真机：图谱只盖住面板下半部分）：
 			//   上一版用 `position: fixed; inset: 0` 想让图谱覆盖整屏，但宿主的视图容器上
@@ -1553,7 +1697,9 @@ const reactDom = require('react-dom/client');
 			 */
 			const kbShell = h('div', {
 				'data-kb-workbench': 'shell',
-				style: { position: 'relative', display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 },
+				// ★ 2026-10-28（真机：设置页水平方向没占满）：这一层是**内容宽** ⇒ 里面的
+				//   树列(340px)把文档列挤到只剩 ~95px。⇒ 宽度必须一路传下来。
+				style: { position: 'relative', display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, width: '100%', minWidth: 0, flex: '1 1 0%' },
 			}, treePane);
 
 			// ── 外壳：左 = 知识库本体，右 = 内嵌对话列（方案 A）─────────────────────────
@@ -1597,7 +1743,7 @@ const reactDom = require('react-dom/client');
 			}, kbShell);
 			if (!conversation) {
 				// 没有对话停靠点（宿主较旧）⇒ 整页知识库，照旧可用
-				return h('div', Object.assign({}, rootAttrs, { 'data-vssaros-assist-collapsed': '1' }), siteWrap);
+return h('div', Object.assign({}, rootAttrs, { 'data-vssaros-assist-collapsed': '1' }), siteWrap);
 			}
 			// 图谱 / 设置占用右侧栏时必须**强制展开**（否则点了看不到任何反应）
 			// ⚠ 必须在 splitter 之前声明：分隔条要用它判显隐（TDZ）
@@ -1672,11 +1818,25 @@ const reactDom = require('react-dom/client');
 			}, conversation),
 			asidePane);
 
+			// ★ 2026-10-28：中栏设置页签的内容由 `mountHostSettings()` 在 bundle 给的容器上
+			//   **单独建根**渲染（不是 portal —— bundle 自带另一份 React，跨实例 portal 会抛 Invalid hook call）。
 			return h('div', Object.assign({}, rootAttrs, {
 				// 面板层也定位：分栏（siteWrap/splitter/aside）全部在 flow 里，不做浮层
 				style: Object.assign({}, rootAttrs.style, { position: 'relative', overflow: 'hidden' }),
 			}), siteWrap, splitter, aside);
 		}
+
+/**
+ * 面板的**安全包装**：把整页面板包进错误边界。
+ *
+ * ★ 2026-10-28（真机：dsh 侧知识库点设置 ⇒ 整页黑屏）：
+ *   React 18 在没有错误边界时会卸载整个根树 —— 而这个根就是「整页」。
+ *   包一层后：出错的只是那一块（并显示 message/stack），左侧树与中栏照常可用。
+ *   症状从"白屏无信息"变成"红字可截图"，这是能否继续定位的分水岭。
+ */
+function KbSafeWorkbenchPanel(props) {
+	return h(KbPanelBoundary, null, h(KbWorkbenchPanel, props));
+}
 
 function install(ctx) {
 			ctx.effect(() => {
@@ -1697,7 +1857,7 @@ function install(ctx) {
 			//   ⚠ 改过子块 `client.kb.js` 必须**再动一下入口 `client.js`**（守卫查 mtime，
 			//     且 chunk 的 rev 取自入口文件的 mtime/size —— 不动入口会继续命中 immutable 缓存 ✗）
 			ctx.inject(['desktopWorkbenches'], (c) => {
-				c.effect(() => c.desktopWorkbenches.register(DESCRIPTOR, KbWorkbenchPanel), 'vssaros-kb: workbench');
+				c.effect(() => c.desktopWorkbenches.register(DESCRIPTOR, KbSafeWorkbenchPanel), 'vssaros-kb: workbench');
 
 				// ★ 2026-10-28（方案 A 的配套）：新会话默认用「知识库专家」。
 				//   链式包 `newSession`（不判断"是否已被别人包过"，否则后装者永远包不上）；

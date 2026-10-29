@@ -350,10 +350,10 @@ protected override _renderSettingsOverlayContent(activeTab: string): void {
 			{ id: 'rules', codicon: 'codicon codicon-checklist', label: '规则' },
 			{ id: 'confightml', codicon: 'codicon codicon-globe', label: 'ConfigHtml' },
 		];
-		// Channel 绑定 tab：仅当提供飞书绑定回调时显示
-		if (this._onListFeishuBindings) {
-			tabs.push({ id: 'channel', codicon: 'codicon codicon-broadcast', label: 'Channel 绑定' });
-		}
+		/* ★ 2026-10-29：IDE 侧的「Channel 绑定」页签**下线** —— 渠道能力全部收敛到 dsh 侧
+		   （dsh 设置 → 渠道：凭据 / 入站 / bot 绑定 / 出站）。
+		   ⚠ 留着它不是"多一个入口"，而是**两套绑定各说各话**：IDE 侧那份绑定已经不更新了，
+		     用户在这里看到的绑定会与 dsh 侧的真实状态不符 ⇒ 误导。 */
 		for (const tab of tabs) {
 			const tabBtn = append(tabBar, $("button.chat-settings-tab"));
 			if (tab.id === activeTab) { tabBtn.classList.add('active'); }

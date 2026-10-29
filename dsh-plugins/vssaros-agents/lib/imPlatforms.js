@@ -15,6 +15,13 @@
 /**
  * 一个平台需要几个凭据字段。`secret: true` 的字段**永不回传明文**
  * （接口只回 `hasSecret`），客户端按 password 渲染、留空 = 保留原值。
+ *
+ * 另外两个字段也是**单一真源**（2026-10-28 补）：
+ *   · `chatIdHint`   —— 「IM 绑定」表单里 chatId 输入框的占位/说明。
+ *     以前写死在绑定页（只有飞书一句 oc_…）⇒ 选了 telegram 也看到飞书的提示。
+ *   · `inboundMode`  —— `ws`（长连接）/ `poll`（长轮询）/ `callback`（被动回调，**没有「启动入站」**）。
+ *     客户端据此决定「启动/停止」按钮出不出现、状态文案怎么说 ——
+ *     原来客户端按 key 硬编码 feishu/telegram，discord 与 wecom 一进来就全错。
  */
 export const IM_PLATFORM_DEFS = [
 	{
@@ -22,7 +29,11 @@ export const IM_PLATFORM_DEFS = [
 		label: '飞书',
 		icon: '🐦',
 		implemented: true,
-		note: '入站走长连接（需 SDK）；出站可另用每条绑定的自定义机器人 webhook（不需要这里的凭据）。',
+		inboundMode: 'ws',
+		inboundLabel: 'WS 长连接',
+		chatIdHint: 'chat_id（oc_…）—— 在「设置 → 渠道」展开飞书看「最近出现的会话」直接复制',
+		note: '入站走长连接（需 SDK）。出站有两种：**填完这里的应用凭据 + 绑定时填 chat_id 就能发**（应用模式，需机器人已在该会话里）；'
+			+ '或在绑定里填自定义机器人 webhook（不消耗应用权限，也不需要这里的凭据）。',
 		fields: [
 			{ key: 'appId', label: 'App ID', type: 'text', required: true, placeholder: 'cli_xxxxxxxxxxxxxxxx', desc: '开放平台 → 企业自建应用 → 凭证与基础信息' },
 			{ key: 'appSecret', label: 'App Secret', type: 'password', required: true, secret: true, desc: '与 App ID 配套；明文只存本机' },
@@ -33,6 +44,9 @@ export const IM_PLATFORM_DEFS = [
 		label: 'Telegram',
 		icon: '✈️',
 		implemented: true,
+		inboundMode: 'poll',
+		inboundLabel: 'HTTP 长轮询',
+		chatIdHint: '数字 chat id（私聊是用户 id；超级群是 -100 开头）',
 		note: '纯 HTTP 长轮询（无 SDK）。填 Bot Token 后到「IM 绑定」里绑会话，再点「启动入站」。'
 			+ '群聊默认只认 @（填了 Bot Username 才能精确判断在叫谁）。',
 		fields: [
@@ -45,6 +59,9 @@ export const IM_PLATFORM_DEFS = [
 		label: 'Discord',
 		icon: '🎮',
 		implemented: true,
+		inboundMode: 'ws',
+		inboundLabel: 'Gateway WebSocket',
+		chatIdHint: 'channel_id（右键频道 → 复制频道 ID，需先在客户端开启开发者模式）',
 		note: 'Gateway WebSocket（Node 自带的 WebSocket，无依赖）。出站走 REST，入站走 WS 长连接；'
 			+ '⚠ 必须在 Discord 开发者后台 → Bot → Privileged Gateway Intents 里开启 MESSAGE_CONTENT，'
 			+ '否则消息能收到但**内容是空的**。'
@@ -59,6 +76,9 @@ export const IM_PLATFORM_DEFS = [
 		label: '企业微信',
 		icon: '🏢',
 		implemented: true,
+		inboundMode: 'callback',
+		inboundLabel: '被动回调',
+		chatIdHint: '成员 UserID（主动发消息）或 @all；群聊填 ChatId',
 		note: '**出站可用**（换 access_token → message/send）；**入站需要公网回调**：'
 			+ '企业微信服务器要 POST 到你的地址，所以必须把 /x/agents/api/wecom/callback 反代到'
 			+ '一个公网可达、已备案的域名。入站没有「启动」这一步 —— '
@@ -86,4 +106,19 @@ export function platformDefOf(platform) {
 export function isPlatformImplemented(platform) {
 	const def = platformDefOf(platform);
 	return !!(def && def.implemented);
+}
+
+/**
+ * 该平台有没有「启动入站」这一步。
+ *
+ * `callback`（企业微信）是**被动回调** —— 企业微信服务器来连我们，
+ * 所以界面上**不该有**启动/停止按钮（点了只会得到 400），状态也不该说"未启动"。
+ * 客户端一律走这个判据，别再按 key 硬编码（那是 discord / wecom 接进来后集体错位的原因）。
+ */
+export function isInboundStartable(platformOrDef) {
+	const def = typeof platformOrDef === 'string' ? platformDefOf(platformOrDef) : platformOrDef;
+	if (!def) { return false; }
+	if (def.inboundMode) { return def.inboundMode === 'ws' || def.inboundMode === 'poll'; }
+	/* 老 Host 不带 inboundMode（客户端与 Host 是两个包，可能各自升级）⇒ 按已知的可启停平台回落 */
+	return def.key === 'feishu' || def.key === 'telegram' || def.key === 'discord';
 }

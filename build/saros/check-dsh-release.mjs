@@ -103,6 +103,85 @@ if (bundledRuntime) {
 	}
 }
 
+// ── ②bis 重型可选项：运行时与种子都不该再有 libreoffice 内核（≈182MB）────────
+// 2026-10-28 实测：prepack 只裁**运行时目录**，而 profile 种子是 pnpm 平铺装出来的依赖闭包
+// ⇒ 官方包的 optionalDependencies（libreoffice 内核）被装回种子 ⇒ 运行时 522MB + 种子 417MB
+// = 体积翻倍。现在 prepack 会对种子跑同一份 PRUNE_LIST；这条守卫负责**在产物层面**确认它真的没了。
+const HEAVY_OPTIONAL = ['libreoffice-kit-win32-x64', 'libreoffice-kit-win32-arm64', 'libreoffice-kit-darwin-x64', 'libreoffice-kit-darwin-arm64'];
+const scanHeavy = (nodeModulesDir, label) => {
+	if (!nodeModulesDir || !fs.existsSync(nodeModulesDir)) {
+		return;
+	}
+	for (const name of HEAVY_OPTIONAL) {
+		const p = path.join(nodeModulesDir, '@deepseek-ai', name);
+		if (fs.existsSync(p)) {
+			problem(`${label} 里还有 @deepseek-ai/${name}（≈182MB 的文档预览内核，聊天框用不到）`
+				+ ' —— 跑 node build/prepack-dsh-runtime.mjs 重新生成（它现在会同时裁运行时与种子）');
+		}
+	}
+};
+if (bundledRuntime) {
+	const rt = path.join(ROOT, 'dsh-runtime', bundledRuntime);
+	scanHeavy(path.join(rt, 'node_modules'), `运行时 dsh-runtime/${bundledRuntime}`);
+	const seedProfiles = path.join(rt, 'profile-seed', 'profiles');
+	if (fs.existsSync(seedProfiles)) {
+		for (const p of fs.readdirSync(seedProfiles, { withFileTypes: true })) {
+			if (p.isDirectory()) {
+				scanHeavy(path.join(seedProfiles, p.name, 'node_modules'), `种子 profile ${p.name}`);
+			}
+		}
+	}
+	note('重型可选项检查完成（运行时 + profile 种子里的 libreoffice 内核）');
+}
+
+// ── ②bis 空源文件（0 字节 .ts）────────────────────────────────────────────────
+// 2026-10-28 事故：一个 0 字节的 .ts（模块搬家后留下的空壳）编译出的 sourcemap 里
+// `sourcesContent: ['']` ⇒ mangling 跑满 44 分钟后整步失败（build/lib/nls.ts 现在会放过空源文件，
+// 但那是**兜底**，不是许可：空 .ts 本身就是"忘了删"或"忘了搬"的残留）。
+// ⇒ 发布前扫一遍：src / extensions 下不许再有 0 字节 .ts。
+const EMPTY_TS_ALLOW = [
+	'extensions/typescript-language-features/test-workspace/'   // TS 扩展的**故意**空 fixture
+];
+function scanEmptySources(dir, label) {
+	const abs = path.join(ROOT, dir);
+	if (!fs.existsSync(abs)) {
+		return;
+	}
+	const stack = [abs];
+	while (stack.length) {
+		const cur = stack.pop();
+		let entries = [];
+		try {
+			entries = fs.readdirSync(cur, { withFileTypes: true });
+		} catch {
+			continue;
+		}
+		for (const e of entries) {
+			if (e.isDirectory()) {
+				if (e.name === 'node_modules' || e.name === '.git' || e.name === 'out' || e.name === 'out-build') {
+					continue;
+				}
+				stack.push(path.join(cur, e.name));
+			} else if (e.isFile() && e.name.endsWith('.ts')) {
+				const full = path.join(cur, e.name);
+				const rel = path.relative(ROOT, full).replace(/\\/g, '/');
+				if (EMPTY_TS_ALLOW.some(a => rel.startsWith(a))) {
+					continue;
+				}
+				try {
+					if (fs.statSync(full).size === 0) {
+						problem(`${label}：${rel} 是 0 字节的 .ts（空源文件 ⇒ sourcemap 里 sourcesContent 是空串，`
+							+ 'mangling 会在 40 多分钟后才炸）—— 删掉它，或把它搬回新位置');
+					}
+				} catch { /* 读不到就跳过 */ }
+			}
+		}
+	}
+}
+scanEmptySources('src', 'src');
+scanEmptySources('extensions', 'extensions');
+note('空源文件检查完成（src / extensions）');
+
 // ── ③ 改了 lib/** 却没 bump 版本（本次守卫的核心）────────────────────────────
 /** 仓库里所有随包插件：`{ name, dir, version }`。 */
 const repoPlugins = [];
@@ -237,7 +316,50 @@ if (DIST) {
 		if (bundledRuntime && !fs.existsSync(path.join(runtimeDir, bundledRuntime, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'))) {
 			problem(`产物里缺少 dsh-runtime/${bundledRuntime}（首启会退化成联网安装）`);
 		}
+		if (bundledRuntime) {
+			// 产物层面再扫一遍重型可选项（运行时 + 随包种子）
+			scanHeavy(path.join(runtimeDir, bundledRuntime, 'node_modules'), '产物运行时');
+			const distSeed = path.join(runtimeDir, bundledRuntime, 'profile-seed', 'profiles');
+			if (fs.existsSync(distSeed)) {
+				for (const p of fs.readdirSync(distSeed, { withFileTypes: true })) {
+					if (p.isDirectory()) {
+						scanHeavy(path.join(distSeed, p.name, 'node_modules'), `产物种子 profile ${p.name}`);
+					}
+				}
+			}
+		}
+		// ★ 2026-10-29（真机：打包 exe 启动即报 `ERR_MODULE_NOT_FOUND: @vscode/deviceid`）：
+		//   `out/main.js` 里 `require('@vscode/deviceid')` 取 machineId —— 非静态 import，
+		//   gulp 的 node_modules 流不会落位它（实测产物 `@vscode/` 下只有 13 个包）。
+		//   它与 dsh 无关，但**同属"发布产物必须自带的关键构件"** ⇒ 一起守，顺手兜住这类漏包。
+		const deviceId = path.join(DIST, 'node_modules', '@vscode', 'deviceid', 'dist', 'index.js');
+		if (!fs.existsSync(deviceId)) {
+			problem('产物里缺少 `@vscode/deviceid`（`out/main.js` 会 require 它 ⇒ 每次启动一条 ERR_MODULE_NOT_FOUND；'
+				+ '`strip-before-pack` 的 2.6c 段负责补回）');
+		}
 		note(`产物核对完成：${repoPlugins.length} 个随包插件`);
+	}
+}
+
+// ── ⑤ 发布脚本自身的关键构件补回（2026-10-29）────────────────────────────────
+//   `strip-before-pack` 里有一组「必须存在/自愈」的构件（tree-sitter-wasm / deviceid / rg.exe…）。
+//   它们都是**运行时按路径解析、静态依赖图看不见**的东西 ⇒ 一旦那段被删，产物就会静默缺包。
+//   这里只钉最关键的两条（本次真机踩到的 deviceid + 之前踩过的 tree-sitter-wasm）。
+{
+	const strip = path.join(ROOT, 'build', 'saros', 'strip-before-pack.mjs');
+	if (!fs.existsSync(strip)) {
+		problem('找不到 build/saros/strip-before-pack.mjs（发布脚本守卫失去依据）');
+	} else {
+		const src = fs.readFileSync(strip, 'utf8');
+		// ⚠ 必须匹配**实际的 ensureDir 调用**，不能只查包名出现：
+		//   文件里大段注释也写着包名（`@vscode/deviceid`），只查字符串会被"注释还在、调用被删"骗过（实测假绿 ✗）。
+		for (const name of ['@vscode/deviceid', '@vscode/tree-sitter-wasm']) {
+			const call = new RegExp(`ensureDir\\(\\s*'${name.replace(/[/@]/g, m => `\\${m}`)}',\\s*'resources/app/node_modules/${name.replace(/[/@]/g, m => `\\${m}`)}'`);
+			if (!call.test(src)) {
+				problem(`strip-before-pack 里缺少 \`${name}\` 的 ensureDir 补回调用`
+					+ '（运行时按路径解析的构件，漏了产物就静默缺包；注释里提到不算）');
+			}
+		}
 	}
 }
 

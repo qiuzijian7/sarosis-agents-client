@@ -28,6 +28,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { dataRootOf } from './store.js';
+import { listDeadLetters, removeDeadLetter } from './deadLetters.js';
 import { outboxNote } from './outbox.js';
 import { AGENT_MESSAGE_KIND } from './core/relay.js';
 import { clipDispatchText, dispatchModeOf, normalizeActor } from './groups.js';
@@ -168,18 +169,31 @@ export function normalizeBinding(input, existing) {
 }
 
 /**
- * 传输层校验（按平台分）：飞书 P1 只支持「自定义机器人 webhook」。
- * 放在服务端而不是前端 —— 前端能绕过，而"没配 webhook 却以为绑好了"会静默丢消息。
+ * 传输层校验（按平台分）。放在服务端而不是前端 —— 前端能绕过，
+ * 而"什么都没配却以为绑好了"会静默丢消息。
+ *
+ * ★ 2026-10-28：飞书 `webhookUrl` **不再是必填**。用户原话「飞书绑定，填 id 应该就可用了吧」
+ *   —— 确实如此：dsh 侧已经存了 App ID / App Secret（「设置 → 渠道」），出站走应用模式
+ *   （`im/v1/messages`，只要 chat_id）。webhook 只是另一条更省权限的通道。
+ *   ⚠ 但仍然 fail-closed：**两条通道都不具备**时报 400，别让人等到真跑一次对话才发现发不出去。
+ *     `deps.appConfigured(platform)` 由 index.js 注入（读凭据文件）；没注入（单测/旧调用）⇒ 跳过该项。
  */
-function assertTransport(binding) {
+async function assertTransport(binding, deps) {
 	if (binding.platform !== 'feishu') {
 		return;
 	}
-	if (!binding.webhookUrl) {
-		throw httpError(400, '飞书绑定需要 webhookUrl（P1 只支持「自定义机器人」；应用模式需 app 凭据，P2 再做）。');
+	const url = String(binding.webhookUrl || '').trim();
+	if (url) {
+		if (!/^https?:\/\//i.test(url)) {
+			throw httpError(400, 'webhookUrl 必须是 http(s) 地址（在飞书群 → 设置 → 群机器人 → 自定义机器人里拿）。');
+		}
+		return;
 	}
-	if (!/^https?:\/\//i.test(binding.webhookUrl)) {
-		throw httpError(400, 'webhookUrl 必须是 http(s) 地址（在飞书群 → 设置 → 群机器人 → 自定义机器人里拿）。');
+	if (deps && typeof deps.appConfigured === 'function') {
+		const configured = await deps.appConfigured('feishu').catch(() => false);
+		if (!configured) {
+			throw httpError(400, '飞书绑定二选一：填自定义机器人 webhook URL，或先在「设置 → 渠道」填 App ID / App Secret（应用模式，机器人需在该会话里）');
+		}
 	}
 }
 
@@ -216,7 +230,7 @@ function assertChatUnique(bindings, binding, selfId) {
 export async function createBinding(config, input, deps) {
 	assertHuman(input?.actor);
 	const binding = { id: randomUUID(), ...normalizeBinding(input), createdAt: Date.now(), updatedAt: Date.now() };
-	assertTransport(binding);
+	await assertTransport(binding, deps);
 	await assertBindingTarget(config, binding, deps);
 	const bindings = await readBindings(config);
 	assertChatUnique(bindings, binding, '');
@@ -234,7 +248,7 @@ export async function updateBinding(config, input, deps) {
 		throw httpError(404, `没有这个绑定：${id || '(没给 id)'}`);
 	}
 	const next = { ...bindings[idx], ...normalizeBinding(input, bindings[idx]), updatedAt: Date.now() };
-	assertTransport(next);
+	await assertTransport(next, deps);
 	await assertBindingTarget(config, next, deps);
 	assertChatUnique(bindings, next, id);
 	const out = bindings.slice();
@@ -257,6 +271,54 @@ export async function deleteBinding(config, input) {
 	}
 	await writeBindings(config, out);
 	return { bindings: out, removed: bindings.length - out.length };
+}
+
+/**
+ * 把某条死信的**发送者**加进对应绑定的白名单（2026-10-29）。
+ *
+ * 为什么做成服务端动作：死信里有 `userId`，而"加白名单"要写绑定 —— 跨两个文件两步，
+ * 让用户自己去「最近失败」抄 id、再回绑定页粘贴，正是"消息没反应"这条排查链最常断的地方。
+ *
+ * 语义（每条都别放松）：
+ *   · 按 `(platform, chatId)` 找绑定；没有 ⇒ 404（**不猜**该绑给谁）
+ *   · 已在白名单 ⇒ 幂等（`already: true`），不重复写
+ *   · 缺 `userId`（有些 reason 没有）⇒ 400，别造一个空串白名单项
+ *   · 成功后把该条死信删掉（已处理的东西不该继续占着"最近失败"）
+ */
+export async function allowDeadLetterSender(config, input) {
+	assertHuman(input?.actor);
+	const items = (await listDeadLetters(config, { limit: 200 })).items;
+	const id = String(input?.id ?? '').trim();
+	const entry = id ? items.find((x) => String(x.id) === id) : null;
+	const platform = String(entry?.platform ?? input?.platform ?? '').trim().toLowerCase();
+	const chatId = String(entry?.chatId ?? input?.chatId ?? '').trim();
+	const userId = String(entry?.userId ?? input?.userId ?? '').trim();
+	if (!platform || !chatId) {
+		throw httpError(400, '缺 platform / chatId（要么直接给这条死信的 id）');
+	}
+	if (!userId) {
+		throw httpError(400, '这条记录没有发送者 id（不猜、不塞空字符串）');
+	}
+	const bindings = await readBindings(config);
+	const idx = bindings.findIndex((b) => String(b.platform) === platform && String(b.chatId) === chatId);
+	if (idx < 0) {
+		throw httpError(404, `这个 IM 会话（${platform}:${chatId}）还没有绑定 —— 先在 Bots 里给它建一条绑定，再加发送者`);
+	}
+	const cur = bindings[idx];
+	const list = Array.isArray(cur.allowFrom) ? cur.allowFrom.slice() : [];
+	const already = list.includes(userId);
+	if (!already) {
+		list.push(userId);
+		const out = bindings.slice();
+		out[idx] = { ...cur, allowFrom: list, updatedAt: Date.now() };
+		await writeBindings(config, out);
+	}
+	if (id) { await removeDeadLetter(config, id).catch(() => undefined); }
+	return {
+		already,
+		userId,
+		binding: { id: cur.id, platform: cur.platform, chatId: cur.chatId, allowFrom: list },
+	};
 }
 
 /** 绑定表（带目标显示名，UI 直接用，不用再自己查一遍）。 */
@@ -688,10 +750,48 @@ export async function dispatchImToAgent(config, state, binding, msg, deps) {
 	if (!agent) {
 		throw httpError(404, `绑定指向的 bot 不存在：${binding.targetId}`);
 	}
-	const { sessionId } = await deps.ensureSession(config, state, agent);
+	/* ★ 2026-10-29（真机：飞书里能收到答复，但 Bots 页/工作区里只有一串「(未命名会话)」）：
+	   每个绑定**固定一条会话**，建好顺手起名。
+	     · 记住的会话还活着 ⇒ 直接复用（上下文稳定，也不会每次新建一条未命名会话）
+	     · 不活（归档 / 删 / Host 重启）⇒ 重新挑或新建，并更新映射
+	     · 只有**新建**的才改名（改名是用户可见动作，已有名字的不覆盖）
+	   映射单独存文件（见 imSessionMap.js 头注释：塞进 binding 会被 normalize 抹掉）。 */
+	const sessMap = deps.imSessions || null;
+	let sessionId = '';
+	let created = false;
+	if (sessMap && typeof sessMap.get === 'function') {
+		sessionId = String((await sessMap.get(config, binding.id).catch(() => '')) || '');
+	}
+	/* 首次派发（还没有映射）即使复用了旧会话，也要命名一次 ——
+	   否则这条绑定永远是一串「(未命名会话)」里的一个，用户认不出来。
+	   之后只在新建时命名，**不覆盖用户手动改过的名字**。 */
+	const firstBind = !sessionId;
+	const canDeliver = (id) => {
+		const l = id ? state.agents?.get?.(id) : null;
+		return !!l && (typeof l.steer === 'function' || typeof l.followup === 'function');
+	};
+	if (sessionId && !canDeliver(sessionId)) { sessionId = ''; }
+	if (!sessionId) {
+		const picked = await deps.ensureSession(config, state, agent);
+		sessionId = picked.sessionId;
+		created = picked.created === true;
+		if (sessMap && typeof sessMap.set === 'function') {
+			await sessMap.set(config, binding.id, sessionId).catch(() => undefined);
+		}
+	}
 	const live = state.agents?.get?.(sessionId);
 	if (!live || (typeof live.steer !== 'function' && typeof live.followup !== 'function')) {
 		throw httpError(503, `会话不在运行，收不了 IM 消息：${sessionId}`);
+	}
+	/* 起名（尽力而为，失败不影响派发）：让它在 Bots 页 / 工作区会话列表里一眼认得出。 */
+	if ((created || firstBind) && typeof deps.renameSession === 'function') {
+		const whereLabel = String(msg?.chatType ?? binding.chatType) === 'group' ? '群' : '私聊';
+		const platLabel = binding.platform === 'feishu' ? '飞书'
+			: binding.platform === 'telegram' ? 'Telegram'
+				: binding.platform === 'discord' ? 'Discord'
+					: binding.platform === 'wecom' ? '企业微信' : String(binding.platform || 'IM');
+		const title = (platLabel + ' · ' + String(binding.chatName || whereLabel)).slice(0, 60);
+		await deps.renameSession(sessionId, title).catch(() => undefined);
 	}
 	const who = String(msg?.userName || msg?.userId || 'IM 用户');
 	const where = String(msg?.chatType ?? binding.chatType) === 'group' ? '群' : '私聊';

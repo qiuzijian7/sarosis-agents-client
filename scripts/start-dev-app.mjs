@@ -26,19 +26,38 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.dirname(HERE);
-const EXE = path.join(REPO, '.build', 'electron', 'Saroasis harness.exe');
+/**
+ * exe 名（`product.json` 的 `nameShort` 决定，2026-10-29 由 `Saroasis harness` 改为 `VsSaros`）。
+ *
+ * ⚠ **两个名字都要认**：改名只影响新产物，`.build/electron/` 里可能还躺着旧名的 exe
+ * （没重新编译 / 刚从旧分支切回来）。只认新名时，F5 会直接 `ABORT exe not found`，
+ * 而且 `running()` 恒 0 ⇒ 以为没实例在跑 ⇒ 重复启动抢锁 ✗。旧名在几周内保留兼容，之后再删。
+ */
+const EXE_NAMES = ['VsSaros.exe', 'Saroasis harness.exe'];
+const EXE = EXE_NAMES
+	.map(name => path.join(REPO, '.build', 'electron', name))
+	.find(p => fs.existsSync(p)) ?? path.join(REPO, '.build', 'electron', EXE_NAMES[0]);
+/** 当前真正在用的 exe 文件名（taskkill / 提示文案用它）。 */
+const EXE_NAME = path.basename(EXE);
+/** 进程名（不带 `.exe`）：`Get-Process` / `has-visible-window.ps1` 用它。 */
+const PROC_NAMES = EXE_NAMES.map(name => name.replace(/\.exe$/i, ''));
 /**
  * user-data-dir（`DevToolsActivePort` 也在这里，用来查真实调试端口）。
  *
- * ★ 2026-10-28（用户要求「两套路径 ~/.vssaros 与 ~/.vssaros-dev 统一成一套」）：
- *   以前 dev 用 `.vssaros-dev`、打包版用 `.vssaros` ⇒ **两个独立 profile**，
- *   同一个插件在两处版本不同（真机：打包 0.2.243 / dev 0.2.268）⇒ 旧的一侧启动时
- *   会尝试"降级重装"、界面行为也不一致 ⇒ 用户以为"我明明升级过"。
- *   现在 dev 也落在 `.vssaros`：**一份 profile、一份会话历史、一份插件版本** ✓。
- *   （数据迁移见 `scripts/migrate-userdata-dev-to-prod.mjs`。）
+ * ★★ 2026-10-28（最终形态）：**开发版与稳定版各用一套 userData** —— 这是"两个实例能同时开着"的
+ *   **唯一**机制（Electron 的单实例锁绑在 userData 上，共用一份就必然互相踢掉）。
+ *
+ *   演化过程：曾把 dev 也指到 `~/.vssaros` 求"一份 profile"，但代价是不能同时跑、dev 升上去的
+ *   插件让打包版新包装不进来、脏数据互串 ⇒ 现在回到业界标准（VS Code 自己就是 `code` /
+ *   `code-insiders` / `code-oss-dev` 三份目录，结构相同、互不干扰）：
+ *
+ *     ~/.vssaros/       ← 稳定版（打包 exe）：dsh-home/ 在里面
+ *     ~/.vssaros-dev/   ← 开发版（本启动器）
+ *
+ *   两者结构完全一致 ⇒ `dshHarnessChannel` 的 DSH_HOME 只需一条规则 `<userData>/dsh-home` ✓。
  */
-const USER_DATA_DIR = path.join(os.homedir(), '.vssaros');
-const LOG_DIR = path.join(os.homedir(), '.vssaros', 'logs');
+const USER_DATA_DIR = path.join(os.homedir(), '.vssaros-dev');
+const LOG_DIR = path.join(os.homedir(), '.vssaros-dev', 'logs');
 const EXIT_LOG = path.join(LOG_DIR, 'app-exit.log');
 fs.mkdirSync(LOG_DIR, { recursive: true });
 
@@ -82,8 +101,13 @@ const portFree = (port) => new Promise((resolve) => {
 });
 
 const running = () => {
-	const r = spawnSync('tasklist', ['/fi', 'IMAGENAME eq Saroasis harness.exe', '/fo', 'csv'], { encoding: 'utf8', windowsHide: true });
-	return String(r.stdout || '').split(/\r?\n/).filter((l) => /Saroasis/.test(l)).length;
+	// 新旧两个 exe 名都数：改名过渡期可能还跑着旧名的实例（否则会以为"没在跑"而重复启动 ✗）
+	let n = 0;
+	for (const name of EXE_NAMES) {
+		const r = spawnSync('tasklist', ['/fi', `IMAGENAME eq ${name}`, '/fo', 'csv'], { encoding: 'utf8', windowsHide: true });
+		n += String(r.stdout || '').split(/\r?\n/).filter((l) => l.toLowerCase().includes(name.toLowerCase())).length;
+	}
+	return n;
 };
 
 if (!fs.existsSync(EXE)) {
@@ -123,7 +147,8 @@ if (running() > 0) {
 	// 这时候做"有没有桌面窗口"的判定会把正常启动误报成僵尸（2026-10-24 实测：起后 4 秒
 	// 再按 F5 就打印了 SKIP-ZOMBIE）✗ ⇒ 先看最早那个实例活了多久。
 	// 让 PowerShell 直接算"最早那个实例活了多久"（自己做 FILETIME 换算容易被格式坑到）
-	const ageRaw = String(execSyncSafe(`powershell -NoProfile -Command "\$p = Get-Process -Name 'Saroasis harness' -ErrorAction SilentlyContinue | Sort-Object StartTime | Select-Object -First 1; if (\$p) { [int]((Get-Date) - \$p.StartTime).TotalSeconds }"`)).trim();
+	const procFilter = PROC_NAMES.map(n => `$_.ProcessName -eq '${n}'`).join(' -or ');
+	const ageRaw = String(execSyncSafe(`powershell -NoProfile -Command "\$p = Get-Process -ErrorAction SilentlyContinue | Where-Object { ${procFilter} } | Sort-Object StartTime | Select-Object -First 1; if (\$p) { [int]((Get-Date) - \$p.StartTime).TotalSeconds }"`)).trim();
 	const ageSec = /^\d+$/.test(ageRaw) ? Number(ageRaw) : -1;
 	if (ageSec >= 0 && ageSec < 90) {
 		note(`SKIP a dev instance is still starting (age=${ageSec}s < 90s grace), attach to it`);
@@ -143,11 +168,14 @@ if (running() > 0) {
 	//   想保留现场排查时设 `DSH_DEV_KEEP_ZOMBIE=1`。
 	note('SKIP-ZOMBIE 实例在跑但**没有桌面窗口**（窗口已销毁、IDE 主窗口仍被隐藏）⇒ 屏幕上看不到 app');
 	if (process.env.DSH_DEV_KEEP_ZOMBIE === '1') {
-		note('        已设 DSH_DEV_KEEP_ZOMBIE=1 ⇒ 保留僵尸实例不处理（手动结束 Saroasis harness.exe 后 F5）');
+		note(`        已设 DSH_DEV_KEEP_ZOMBIE=1 ⇒ 保留僵尸实例不处理（手动结束 ${EXE_NAME} 后 F5）`);
 		process.exit(0);
 	}
 	note('        AUTO-RESTART 结束僵尸实例后重开（DSH_DEV_KEEP_ZOMBIE=1 可关）');
-	spawnSync('taskkill', ['/F', '/IM', 'Saroasis harness.exe'], { windowsHide: true });
+	// 新旧名都杀：过渡期可能残留旧名实例（只杀新名 ⇒ 旧实例继续占着 userData 锁 ✗）
+	for (const name of EXE_NAMES) {
+		spawnSync('taskkill', ['/F', '/IM', name], { windowsHide: true });
+	}
 	await new Promise((r) => setTimeout(r, 4000));
 }
 

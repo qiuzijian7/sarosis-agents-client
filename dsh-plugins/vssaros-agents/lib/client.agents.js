@@ -1246,6 +1246,39 @@ window.__ModuleLoader__.load({
 			}, [curAgent && curAgent.id]);
 
 			const pill = (text, cls, title) => h('span', { className: 'wb-badge ' + (cls || ''), title: title || '' }, text);
+
+			/* ★ 2026-10-29（真机截图反馈）：**渠道状态必须单独一枚徽章**。
+			   原来身份条 l2 只有一个「未连接」，而它说的是"本页订阅的**会话消息流**没连上"——
+			   已经绑好飞书的人读到「未连接」只会以为渠道断了（用户就是这么理解的）。
+			   ⇒ 渠道状态按 `bindings` + `inbounds` 算，和"实时"彻底分开：
+			     · 入站 ready        ⇒ 已连接（绿）
+			     · 有绑定但没启动     ⇒ 入站未启动（黄，并提示去哪点启动）
+			     · 入站报错           ⇒ 连接失败（黄）
+			   ⚠ 入站状态是**平台级全局**的（一个飞书网关），所以同一平台的所有 bot 徽章一致。 */
+			const chLabel = (p) => (p === 'feishu' ? '飞书'
+				: p === 'telegram' ? 'Telegram'
+					: p === 'discord' ? 'Discord'
+						: p === 'wecom' ? '企业微信' : String(p || ''));
+			const channelPillOf = (agentId) => {
+				const data = bindView.data || {};
+				const bs = (Array.isArray(data.bindings) ? data.bindings : [])
+					.filter((b) => String(b.targetKind) === 'agent' && String(b.targetId) === String(agentId));
+				if (!bs.length) { return null; }
+				const inbounds = data.inbounds || {};
+				const parts = bs.map((b) => {
+					const st = String((inbounds[b.platform] || {}).status || 'idle');
+					const ok = st === 'ready';
+					const text = ok ? '已连接' : (st === 'connecting' ? '连接中' : (st === 'error' ? '连接失败' : '入站未启动'));
+					return { label: chLabel(b.platform), text, ok, platform: String(b.platform) };
+				});
+				const allOk = parts.every((x) => x.ok);
+				return h('span', {
+					className: 'wb-badge ' + (allOk ? 'is-ok' : 'is-warn'),
+					'data-ag-channel': parts.map((x) => x.platform + ':' + x.text).join(','),
+					title: 'IM 渠道：' + parts.map((x) => x.label + ' · ' + x.text).join(' / ')
+						+ (allOk ? '' : '（入站没起来时到「设置 → 渠道」点「启动入站」）'),
+				}, parts.map((x) => x.label + ' · ' + x.text).join(' · '));
+			};
 			const badge = (n, title) => h('span', { className: 'ag-numb', title: title || '' }, String(n));
 			const avatar = (a, big) => h('span', {
 				className: 'ag-avatar' + (big ? ' ag-avatar-lg' : ''),
@@ -1561,10 +1594,15 @@ window.__ModuleLoader__.load({
 						h('span', { className: 'ag3-mname', 'data-ag-file-name': String(a.name || a.id) }, a.name || a.id),
 						a.role ? pill(a.role, 'role') : null,
 						a.registered ? null : pill('未注册', 'warn'),
+						channelPillOf(a.id),
 						live.title ? pill(live.title.slice(0, 16), '') : null),
 					h('div', { className: 'ag3row-l2' },
 						'会话 ', h('code', { className: 'ag-id' }, liveSessionId ? liveSessionId.slice(0, 12) : '—'),
-						' · ', statusText)),
+						' · ',
+						/* ★ 2026-10-29：这枚状态说的是**本页订阅的会话消息流**，不是 IM 渠道
+						   （渠道状态是上面那枚「飞书 · …」徽章）。原来文案只写「未连接」，
+						   已绑好渠道的人会当成"渠道断了"（真机截图反馈）。 */
+						h('span', { 'data-ag-live-state': String(live.status || 'idle'), title: '这是本页订阅的会话消息流状态，不是 IM/渠道连接状态' }, statusText))),
 				// 2026-10-25：「委派任务」移到**右栏 header**（和 Agent 设置放一起）；
 				//   中间栏这里只留身份信息，把宽度让给会话内容。
 				h('span', { className: 'wb-spacer' }),
@@ -1580,9 +1618,10 @@ window.__ModuleLoader__.load({
 			const midAgent = (a) => {
 				const items = live.items;
 				const showStart = !liveSessionId;
+				/* 文案必须自证来源：「实时…」= 会话消息流；渠道状态另外一枚徽章（见 channelPillOf）。 */
 				const statusText = live.status === 'ready'
 					? ('实时 ' + items.length + ' 条')
-					: (live.status === 'connecting' ? '连接中…' : (live.status === 'error' ? '连接异常' : '未连接'));
+					: (live.status === 'connecting' ? '实时连接中…' : (live.status === 'error' ? '实时异常' : '实时未连'));
 
 				/* ★★ 有官方对话节点 ⇒ 中间栏**就是 chat-surface**（2026-10-24 用户第 4 次要求）
 				   来源：宿主对 `customFrame` 工作台注入 `props.conversation`
@@ -3347,6 +3386,11 @@ window.__ModuleLoader__.load({
 				}
 			}, []);
 
+			/* ★ 2026-10-29：**进 Bots 页就拉一次绑定表** —— 身份条上的渠道徽章靠它。
+			   原来只在打开「IM 绑定」二级页时才拉 ⇒ 没进过那个页面就永远拿不到数据，
+			   徽章只能显示成"没绑定"（真机截图里那颗「未连接」就是这么被误读的）。 */
+			useEffect(() => { void loadBindings(); }, [loadBindings]);
+
 			const bindingOf = (kind, id) => (((bindView.data && bindView.data.bindings) || [])
 				.find((b) => b.targetKind === kind && String(b.targetId) === String(id)) || null);
 
@@ -3426,18 +3470,20 @@ window.__ModuleLoader__.load({
 
 			/** 二级页：IM 绑定（与群设置同构，不新开 webview） */
 			/**
-			 * 启停飞书入站（长连接）。
+			 * 启停**所配平台**的入站（飞书 WS / Telegram 轮询 / Discord Gateway）。
+			 * ⚠ 必须带 `platform`：后端缺省按 feishu 处理 ⇒ 不带就成了"在 telegram 页点按钮，
+			 *   实际启停飞书网关"（2026-10-28 修）。
 			 * ⚠ 后端在缺 SDK / 缺凭据时会抛 `unavailable：…`，这里**原样显示**给用户 ——
 			 *   "到底卡在哪"从翻日志变成界面上的一行字，这是本轮（A）的全部目的。
 			 * 失败后仍然刷新一次：把后端最近的 `lastError` / 重试次数带上来。
 			 */
-			const controlInbound = async (action) => {
+			const controlInbound = async (action, platform) => {
 				setInboundBusy(true);
 				setBindMsg('');
 				try {
 					const res = await fetch('/x/agents/api/bindings', {
 						method: 'POST', headers: { 'content-type': 'application/json' },
-						body: JSON.stringify({ action }),
+						body: JSON.stringify(platform ? { action, platform } : { action }),
 					});
 					const j = await res.json().catch(() => ({}));
 					if (!res.ok || j.error) { throw new Error(j.error || ('HTTP ' + res.status)); }
@@ -3461,6 +3507,36 @@ window.__ModuleLoader__.load({
 						onChange: (ev) => { const v = ev.target.value; setBindForm((f) => ({ ...f, [key]: v })); },
 					}, opts.map(([v, label]) => h('option', { key: v, value: v }, label))));
 				const sentRows = ((bindView.data && bindView.data.loopbackSent) || []).slice(-5);
+				/* ★ 2026-10-28：平台下拉**不再写死两项**。
+				   `platforms` / `channelDefs` / `channels` 都是服务端给的真源
+				   （BINDING_PLATFORMS / IM_PLATFORM_DEFS / describePlatforms）。
+				   写死的后果：telegram / discord / 企业微信的适配器、凭据、网关全都做好了，
+				   而绑定页根本选不到 ⇒ 功能可达性为零（差的就是这一个下拉）。 */
+				const bdata = bindView.data || {};
+				const defOf = (k) => (Array.isArray(bdata.channelDefs) ? bdata.channelDefs : [])
+					.find((d) => d.key === String(k)) || null;
+				const chOf = (k) => (Array.isArray(bdata.channels) ? bdata.channels : [])
+					.find((c) => c.key === String(k)) || null;
+				const platformOptions = (() => {
+					const allowed = Array.isArray(bdata.platforms) && bdata.platforms.length ? bdata.platforms : null;
+					const out = [['loopback', '模拟器（进程内，无需凭据）']];
+					for (const d of (Array.isArray(bdata.channelDefs) ? bdata.channelDefs : [])) {
+						if (allowed && !allowed.includes(d.key)) { continue; }
+						const ch = chOf(d.key);
+						out.push([d.key, (d.icon ? d.icon + ' ' : '') + d.label + (ch && ch.configured ? '' : '（未配置凭据）')]);
+					}
+					/* 已存在的绑定若用了清单外的平台，仍要能显示（否则一打开就"当前未绑定"，像丢了） */
+					const curP = String(bindForm.platform || '');
+					if (curP && !out.some(([v]) => v === curP)) { out.push([curP, curP + '（不在平台清单里）']); }
+					return out;
+				})();
+				const selDef = defOf(bindForm.platform);
+				const selCh = chOf(bindForm.platform);
+				/* chatId 的含义**按平台不同**（飞书 oc_…、Telegram 数字 id、Discord channel_id、
+				   企业微信 UserID）⇒ 占位文案来自 imPlatforms 的 `chatIdHint`，不在这里猜。 */
+				const chatIdPlaceholder = bindForm.platform === 'loopback'
+					? '模拟器随便填'
+					: String((selDef && selDef.chatIdHint) || 'IM 侧的会话 id');
 				return h('div', { className: 'ag3-sub', 'data-ag-bindpage': '' },
 					h('div', { className: 'ag3-subinner' },
 						h('div', { className: 'ag3-dlg-hd ag3-subhd' },
@@ -3479,65 +3555,75 @@ window.__ModuleLoader__.load({
 						/* ★ 2026-10-27（A）：**入站状态**一眼可见。
 						   之前入站"没反应"只能翻 Host 日志（`[vssaros-agents][im-in]`）；
 						   现在把 status / 重试次数 / 最近错误直接摆在配置页上。
-						   ⚠ 三种不可用要分开说：没配凭据 / 没装 SDK / 连上但报错 —— 处置完全不同。 */
+						   ⚠ 三种不可用要分开说：没配凭据 / 没装 SDK / 连上但报错 —— 处置完全不同。
+						   ★ 2026-10-28：**跟着所选平台走**。原来这块恒为飞书（`data.inbound` + 固定文案）
+						     ⇒ 在 telegram 绑定页点「启动入站」其实启动的是飞书网关；企业微信还会多出一个
+						     必然 400 的按钮。现在按 `inbounds[platform]` 取状态、按 `inboundMode` 决定有没有按钮。 */
 						(() => {
-							const inb = (bindView.data && bindView.data.inbound) || null;
-							const fsCfg = (bindView.data && bindView.data.feishu) || {};
+							const p = String(bindForm.platform || 'loopback');
+							if (p === 'loopback') {
+								return h('p', { className: 'ag-hint', 'data-ag-inbound': 'loopback' },
+									'模拟器是进程内适配器：不连外网、没有入站连接，发出去的内容只记在下面「模拟器最近发出」。');
+							}
+							const inb = ((bdata.inbounds || {})[p]) || null;
+							const startable = !(selDef && selDef.inboundMode === 'callback');
 							const st = String(inb && inb.status ? inb.status : 'idle');
-							const text = !fsCfg.configured
-								/* ★ 2026-10-27：凭据搬进 **IDE 设置**（`sessions.agentStudio.im.feishu.*`，
-								   经 `--patch` 覆盖层注入插件行 `config.feishu`）——
-								   所以这里必须**指明去哪填**，否则用户只看到"未配置"却无处下手。 */
-								/* ★ 2026-10-27「数据源统一」：IDE 侧那套 `sessions.channel.feishu.*`
-								   已**整段下线**（设置项、覆盖层注入、窗口模式页签都删了）。
-								   凭据只在 **dsh 设置 → 渠道** 里填，存 `<dataRoot>/agent-im-accounts.json`，
-								   由插件自己的 `POST /api/bindings {action:'credentials'}` 写入。 */
-								? '未配置应用凭据 —— 到「设置 → 渠道」填 App ID / App Secret（dsh 侧真源；出站 webhook 不需要）'
-								: st === 'ready'
-									? ('已连接' + (inb.lastEventAt ? ' · 最近事件 ' + new Date(inb.lastEventAt).toLocaleTimeString() : ''))
-									: st === 'connecting' ? '连接中…'
-										/* ★ 2026-10-27：`unavailable`（缺依赖/缺凭据）后端不再重试 ⇒ attempts 为 0，
-										   这时说"第 0 次退避重试"会让用户以为等着就行。 */
-										: st === 'error' ? (Number(inb.attempts || 0) > 0
-											? ('连接失败（第 ' + String(inb.attempts) + ' 次退避重试）')
-											: '无法启动（缺依赖或凭据，处理后重点「启动入站」）')
-											: st === 'stopped' ? '已停止'
-												: '未启动';
-							const canStart = !!fsCfg.configured && st !== 'ready' && st !== 'connecting';
+							const text = !(selCh && selCh.configured)
+								? ('未配置凭据 —— 到「设置 → 渠道」填 ' + (selDef ? selDef.label : p) + '，填完再点「启动入站」')
+								: !startable
+									? '被动回调：对方服务器来连我们，没有「启动」这一步（把公网地址反代到 /x/agents/api/wecom/callback）'
+									: st === 'ready'
+										? ('已连接' + (inb.lastEventAt ? ' · 最近事件 ' + new Date(inb.lastEventAt).toLocaleTimeString() : ''))
+										: st === 'connecting' ? '连接中…'
+											/* `unavailable`（缺依赖/缺凭据）后端不再重试 ⇒ attempts 为 0，
+											   这时说"第 0 次退避重试"会让用户以为等着就行。 */
+											: st === 'error' ? (Number(inb.attempts || 0) > 0
+												? ('连接失败（第 ' + String(inb.attempts) + ' 次退避重试）')
+												: '无法启动（缺依赖或凭据，处理后重「启动入站」）')
+												: st === 'stopped' ? '已停止'
+													: '未启动';
+							const canStart = startable && !!(selCh && selCh.configured) && st !== 'ready' && st !== 'connecting';
 							return h('div', { className: 'ag3-field', 'data-ag-inbound': st },
-								h('span', null, '飞书入站'),
+								h('span', null, (selDef ? selDef.label : p) + '入站'),
 								h('div', { className: 'ag3-btnrow' },
 									h('span', { className: 'ag-hint', 'data-ag-inbound-text': '' }, text),
 									canStart ? h('button', {
 										type: 'button', className: 'wb-btn', 'data-ag-act': 'inbound-start',
 										disabled: inboundBusy,
-										onClick: () => { void controlInbound('inbound-start'); },
+										onClick: () => { void controlInbound('inbound-start', p); },
 									}, inboundBusy ? '启动中…' : '启动入站') : null,
-									(st === 'ready' || st === 'connecting') ? h('button', {
+									startable && (st === 'ready' || st === 'connecting') ? h('button', {
 										type: 'button', className: 'wb-btn is-ghost', 'data-ag-act': 'inbound-stop',
 										disabled: inboundBusy,
-										onClick: () => { void controlInbound('inbound-stop'); },
+										onClick: () => { void controlInbound('inbound-stop', p); },
 									}, '停止') : null),
 								inb && inb.lastError
 									? h('span', { className: 'ag2-err', 'data-ag-inbound-err': '' },
 										'最近错误：' + String(inb.lastError).slice(0, 160))
 									: null);
 						})(),
-						fieldSel('platform', [['loopback', '模拟器（进程内，无需凭据）'], ['feishu', '飞书（自定义机器人 webhook）']], '平台'),
+						fieldSel('platform', platformOptions, '平台'),
+						selDef && selDef.implemented && bindForm.platform !== 'loopback' && selCh && !selCh.configured
+							/* 飞书有 webhook 这条替代通道 ⇒ 填了就不算"没配"（2026-10-28）。 */
+							&& !(bindForm.platform === 'feishu' && String(bindForm.webhookUrl || '').trim())
+							? h('p', { className: 'ag-hint', 'data-ag-bind-nocreds': String(bindForm.platform) },
+								selDef.label + ' 还没配凭据 —— 先到「设置 → 渠道」填完点「启动入站」，'
+								+ '否则这条绑定收不到也发不出（飞书出站可以改用下面的 webhook 代替）。')
+							: null,
 						h('label', { className: 'ag3-field' },
 							h('span', null, 'IM 会话 id'),
 							h('input', {
 								className: 'wb-input', 'data-ag-bind-chatid': '',
 								value: String(bindForm.chatId), disabled: bindBusy,
-								placeholder: '飞书是 chat_id（oc_…）；模拟器随便填',
+								placeholder: chatIdPlaceholder,
 								onChange: (ev) => { const v = ev.target.value; setBindForm((f) => ({ ...f, chatId: v })); },
 							})),
 						bindForm.platform === 'feishu' ? h('label', { className: 'ag3-field' },
-						h('span', null, '飞书 webhook URL'),
+						h('span', null, '飞书 webhook URL（可选）'),
 						h('input', {
 							className: 'wb-input', 'data-ag-bind-webhook': '',
 							value: String(bindForm.webhookUrl || ''), disabled: bindBusy,
-							placeholder: 'https://open.feishu.cn/open-apis/bot/v2/hook/…',
+							placeholder: '留空 = 用「设置 → 渠道」的应用凭据发送（只要有 chat_id 就行）',
 							onChange: (ev) => { const v = ev.target.value; setBindForm((f) => ({ ...f, webhookUrl: v })); },
 						})) : null,
 					bindForm.platform === 'feishu' ? h('label', { className: 'ag3-field' },
@@ -3556,7 +3642,7 @@ window.__ModuleLoader__.load({
 							h('input', {
 								className: 'wb-input', 'data-ag-bind-allow': '',
 								value: String(bindForm.allowFrom), disabled: bindBusy,
-								placeholder: '飞书 open_id，逗号分隔；空 = 拒绝所有',
+								placeholder: '发送者 id（飞书 open_id / Telegram 用户 id / Discord 用户 id），逗号分隔；空 = 拒绝所有',
 								onChange: (ev) => { const v = ev.target.value; setBindForm((f) => ({ ...f, allowFrom: v })); },
 							})),
 						h('label', { className: 'ag3-field' },

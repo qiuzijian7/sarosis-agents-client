@@ -84,7 +84,7 @@ function siteFor(profile, url) {
  * @param {boolean} deps.headless 浏览器插件是否无头
  * @param {(line: string) => void} [deps.log]
  */
-export function createLoginSessions({ baseClient, browserCommand, headless, log = () => { } }) {
+export function createLoginSessions({ baseClient, browserCommand, headless, ensureHeaded, ensureHeadless, log = () => { } }) {
 	/** profile → 绑定 tab 的视图（同一站点重复登录 ⇒ 复用同一个 tab ✓）。 */
 	const views = new Map();
 	const viewOf = name => {
@@ -101,11 +101,26 @@ export function createLoginSessions({ baseClient, browserCommand, headless, log 
 		headless: !!headless,
 		profiles: Object.keys(LOGIN_PROFILES),
 
+		/**
+		 * 交互结束后**回到无头**（用户无感）—— 2026-10-28。
+		 * 调用方（额度采集等）在登录成功后调它 ⇒ 可见窗口随即消失 ✓
+		 */
+		async ensureHeadless() {
+			if (typeof ensureHeadless === 'function') {
+				await ensureHeadless();
+			}
+		},
+
 		/** 在可见浏览器里打开登录页并切到前台。 */
 		async open(name, url) {
 			const profile = profileOf(name);
 			siteFor(profile, url);
-			if (headless) {
+			// ★ 2026-10-28：平时是**无头**（Host 启动不弹窗、用户无感），
+			//   但登录要人交互 ⇒ 先把专属实例切成**有头**（Chrome 不允许同 profile 并存，
+			//   切换由 host 负责：先杀再拉）✓
+			if (headless && typeof ensureHeaded === 'function') {
+				await ensureHeaded();
+			} else if (headless) {
 				throw new Error('浏览器插件当前是无头模式（headless），没有可见窗口可以登录 —— 关掉无头模式后再试');
 			}
 			const page = await viewOf(name).openForLogin(String(url));

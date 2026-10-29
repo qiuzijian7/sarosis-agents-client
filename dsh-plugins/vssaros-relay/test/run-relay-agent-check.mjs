@@ -203,6 +203,32 @@ try {
 }
 check('页面内联脚本可解析（没被行注释吃掉）', pageScriptOk, pageScriptError);
 
+// ─── 7) 额度采集不许挡住 Host 就绪（2026-10-29 真机：拖住 18 秒）────────────────
+//   真机（`~/.vssaros/dsh-run/host-52014a34.log`）：`[vssaros-relay] [quota] 浏览器里没有 woa 会话`
+//   出现在 host uptime **24.8s**，而 `[vssaros-bridge] apply` 也在 24.8s ⇒ 这次采集（要经 CDP 驱动
+//   **专属 Chrome**，冷启动实测 18 秒）把 **Host ready 挡住了 18 秒** ⇒ 打包版首启 35s 的一半。
+//   ⇒ ① 读 cookie 必须有硬超时；② 首次采集必须排在 Host 就绪之后。
+{
+	const quotaBrowserCode = readFileSync(join(root, 'lib', 'quotaBrowser.js'), 'utf8');
+	// ⚠ 必须钉住**真的用 timeoutMs 计时**（`Promise.race` + `setTimeout(…, timeoutMs)`），
+	//   只查 "出现 timeoutMs / Promise.race" 会被"把超时分支改成立即 resolve"骗过（实测假绿 ✗）。
+	const hasTimeout = /Promise\.race/.test(quotaBrowserCode)
+		&& /setTimeout\(\(\) => resolve\(undefined\), timeoutMs\)/.test(quotaBrowserCode);
+	check(
+		'读浏览器 cookie 必须有硬超时（Chrome 冷启动实测 18 秒 ⇒ 不设超时就会挡住 Host 就绪）',
+		hasTimeout,
+		'quotaBrowser.js 里找不到 "Promise.race + setTimeout(resolve(undefined), timeoutMs)" 的组合',
+	);
+	// ⚠ 正则要跨过 `.catch(() => { /* ignore */ })` 里的花括号 ⇒ 用宽松匹配 + 惰性（取最近的那个数字）。
+	const delayMatch = /void syncQuota\(\)[\s\S]{0,200}?,\s*([\d_]+)\)/.exec(relayCode);
+	const delayMs = delayMatch ? Number(delayMatch[1].replace(/_/g, '')) : -1;
+	check(
+		'首次额度采集必须延后到 Host 就绪之后（≥15 秒）',
+		delayMs >= 15_000,
+		`实际 ${delayMs} ms（5 秒会撞在 ready 之前 ⇒ 又拖住启动）`,
+	);
+}
+
 // ─── 汇总 ──────────────────────────────────────────────────────────────────
 
 const failed = results.filter((r) => !r.ok);

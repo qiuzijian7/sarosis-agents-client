@@ -25,9 +25,20 @@
  * ── 产物不进 git ──────────────────────────────────────────────────────────
  * `lib/adapters/vendor/` 在 `.gitignore` 里；发布前跑 `npm run vendor`（或直接
  * `node scripts/vendor-lark-sdk.mjs`）生成。**发布脚本必须先跑它**，否则包里没有 SDK。
+ *
+ * ── 产物形态（2026-10-29 修正，两条都是真机事故）────────────────────────────
+ *   lib/adapters/vendor/
+ *     node-sdk/lib/index.js        ← SDK 运行时；其中 6 处裸 require 已被改成 `../../deps/*`
+ *     deps/package.json            ← {"type":"commonjs"}（本包是 ESM，不声明则 module.exports 直接炸）
+ *     deps/{axios.js,qs.js,lodash.*.js}  ← 自包含 shim（真源 = scripts/vendor/*.cjs，入库）
+ *     deps/ws/                     ← 唯一真包（WSClient 核心，零必需依赖）
+ *
+ * ⚠ **绝不能**把依赖放进名为 `node_modules` 的目录：npm 打包会无条件剥掉它（即使 files 里写了），
+ *   装到 profile 后就只剩 node-sdk，SDK 启动必然 `Cannot find module 'axios'` ——
+ *   「包内自带 SDK」从上线起一次都没生效过（2026-10-29 真机：飞书入站从来没起来）。
  */
 import { execFileSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -103,22 +114,88 @@ mkdirSync(sdkOut, { recursive: true });
 cpSync(join(sdkSrc, 'lib'), join(sdkOut, 'lib'), { recursive: true });
 cpSync(join(sdkSrc, 'package.json'), join(sdkOut, 'package.json'));
 
-console.log('④ 复制依赖到 vendor/node_modules（SDK 的 import 会先找到这里）');
-const depOut = join(OUT, 'node_modules');
+/* ★★ 2026-10-29 事故修正（**别再改回 node_modules**）────────────────────────
+   这里原来复制到 `vendor/node_modules/`，指望 SDK 的 `require('axios')` 顺着目录向上找到。
+   但 **npm 打包会无条件剥掉任何 node_modules 目录**（即使写进 `files` 白名单）⇒ 装到 profile
+   后只剩 `vendor/node-sdk` ⇒ SDK 顶部 `require('axios')` 报 `Cannot find module 'axios'`
+   ⇒「包内自带 SDK、装完即用」从上线起就没生效过，飞书入站**从来没真正起来**（2026-10-29 真机定案，
+   症状是点「启动入站」立刻 `unavailable：飞书 SDK 不可用 … Cannot find module 'axios'`）。
+   ⇒ 现在用**普通目录** `vendor/deps/` + 第 ⑥ 步把 SDK 的裸 require 改写成相对路径。
+   ⚠ 另一个坑：本包是 `type: "module"`，而 deps 里的东西是 CJS ⇒ deps/ 必须放一份
+     `{"type":"commonjs"}` 的 package.json（否则 `module.exports` 直接 ReferenceError）。 */
+console.log('④ 复制依赖到 vendor/deps（普通目录，npm 不会剥）');
+const depOut = join(OUT, 'deps');
 mkdirSync(depOut, { recursive: true });
 let depCount = 0;
-for (const entry of readdirSync(SRC)) {
-	if (entry === '.bin' || entry === '.package-lock.json' || entry === '@larksuiteoapi') { continue; }
-	const from = join(SRC, entry);
-	let st = null;
-	try { st = statSync(from); } catch { continue; }
-	if (!st.isDirectory()) { continue; }
-	cpSync(from, join(depOut, entry), { recursive: true });
+
+/** 复制一个真包（只有 ws 需要：WSClient 的核心，且它零必需依赖）。 */
+const copyPkg = (name, to) => {
+	const from = join(SRC, name);
+	if (!existsSync(from)) { throw new Error('临时目录里缺依赖：' + name); }
+	cpSync(from, to, { recursive: true });
+	depCount += 1;
+};
+copyPkg('ws', join(depOut, 'ws'));
+
+/* qs 用**自带的 UMD 构建**（dist/qs.js 自包含）：正规包会拉 side-channel 依赖链，
+   而 vendor 里再嵌一层 node_modules 又会被打包剥掉 ⇒ 永远是坏的。 */
+const qsDist = join(SRC, 'qs', 'dist', 'qs.js');
+if (!existsSync(qsDist)) { throw new Error('qs 缺自包含构建 dist/qs.js'); }
+cpSync(qsDist, join(depOut, 'qs.js'));
+depCount += 1;
+
+/* axios + 三个 lodash.*：用 scripts/vendor/*.cjs 里的实现（能自包含就不引依赖树）。
+   真源入库、可 review；这里只做复制。 */
+for (const name of ['axios', 'lodash.identity', 'lodash.pickby', 'lodash.merge']) {
+	const from = join(HERE, 'vendor', name + '.cjs');
+	if (!existsSync(from)) { throw new Error('缺 shim 源码：scripts/vendor/' + name + '.cjs'); }
+	cpSync(from, join(depOut, name + '.js'));
 	depCount += 1;
 }
+const depsPkg = join(HERE, 'vendor', 'deps.package.json');
+if (!existsSync(depsPkg)) { throw new Error('缺 scripts/vendor/deps.package.json（deps 必须是 commonjs）'); }
+cpSync(depsPkg, join(depOut, 'package.json'));
 
 console.log('⑤ 裁剪（.d.ts / *.map / @types）');
 const removed = prune(OUT);
+
+/* ⑥ 把 SDK 的**裸 require 改写成相对路径** —— 这是「依赖不靠 node_modules 解析」的落点。
+   只改这次真用到的 6 个；万一上游将来多 require 了别的包，下面 `unresolved` 会把它打出来，
+   ⚠ 不要偷偷放过：漏一个就是"点启动入站立刻 unavailable"。 */
+console.log('⑥ 改写 SDK 的裸 require → vendor/deps');
+const SDK_ENTRY = join(OUT, 'node-sdk', 'lib', 'index.js');
+const REQUIRE_MAP = {
+	axios: '../../deps/axios.js',
+	qs: '../../deps/qs.js',
+	'lodash.identity': '../../deps/lodash.identity.js',
+	'lodash.pickby': '../../deps/lodash.pickby.js',
+	'lodash.merge': '../../deps/lodash.merge.js',
+	ws: '../../deps/ws',
+};
+{
+	let text = readFileSync(SDK_ENTRY, 'utf8');
+	let hits = 0;
+	for (const [name, rel] of Object.entries(REQUIRE_MAP)) {
+		const needle = `require('${name}')`;
+		const n = text.split(needle).length - 1;
+		if (!n) { continue; }
+		text = text.split(needle).join(`require('${rel}')`);
+		hits += n;
+	}
+	writeFileSync(SDK_ENTRY, text, 'utf8');
+	/* 剩下还没改写的裸 require：内置模块除外，其余一律报出来（宁可在 vendor 阶段红） */
+	const builtin = new Set(['fs', 'path', 'crypto', 'os', 'util', 'stream', 'events', 'http', 'https', 'zlib', 'url', 'buffer', 'querystring', 'dns', 'net', 'tls', 'assert', 'child_process']);
+	const leftovers = [...text.matchAll(/require\('([^.'/][^']*)'\)/g)]
+		.map((m) => m[1])
+		.filter((name) => !builtin.has(name) && !name.startsWith('node:'));
+	const unresolved = [...new Set(leftovers)];
+	console.log('   改写 ' + hits + ' 处');
+	if (unresolved.length) {
+		console.error('✗ SDK 里还有没接线的外部依赖：' + unresolved.join(', ')
+			+ '（要么加进 REQUIRE_MAP + deps，要么它永远会 Cannot find module）');
+		process.exit(1);
+	}
+}
 
 const total = dirSize(OUT);
 console.log('\n✓ vendor 完成');

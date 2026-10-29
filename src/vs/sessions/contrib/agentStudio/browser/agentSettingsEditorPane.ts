@@ -11,8 +11,6 @@ import { URI } from '../../../../base/common/uri.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
-import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { IBridgeService } from './bridge/bridgeService.js';
 import { EditorPane } from '../../../../workbench/browser/parts/editor/editorPane.js';
 import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
@@ -22,7 +20,7 @@ import { INotificationService } from '../../../../platform/notification/common/n
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
-import { IAgentChatService, IAgentStudioService } from '../common/agentStudio.js';
+	import { IAgentStudioService } from '../common/agentStudio.js';
 import { IAgentOSService } from '../common/agentOS.js';
 import { ISkillRegistry } from '../common/skills.js';
 import { IMarketplaceService, PackageKind } from '../common/marketplace.js';
@@ -45,15 +43,6 @@ import { AgentSettingsEditorInput } from './agentSettingsEditorInput.js';
 import { ResourceManagerEditorInput } from './resourceManagerEditorInput.js';
 import { ResourceManagerEditorPane } from './resourceManagerEditorPane.js';
 import { AVATAR_PRESET_GROUPS, AVATAR_PRESET_TOTAL, findAvatarPreset, type IAgentAvatarPreset } from '../common/agentAvatarPresets.js';
-import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
-import { IRequestService } from '../../../../platform/request/common/request.js';
-// ★ 2026-09-23：Channel 绑定页签新增「飞书 CLI」能力（安装/状态/升级 + 创建机器人 + 获取 chat_id）
-// ★ 2026-10-12：飞书 CLI 区块（含 common/larkCli.js 的徽章与 larkCliService / feishuChatList /
-//   feishuRegistration / feishuQrCode 的调用）已整体外提到 `browser/larkCliSection.ts` ⇒
-//   这里只留一个入口 import（`createMainProcessRequestService` 仍由本文件用于 _requestService）。
-import { LarkCliSection } from './larkCliSection.js';
-import { createMainProcessRequestService } from './mainProcessRequestService.js';
-import { createChannelIcon } from './channelIcons.js';
 import { AgentVersionsSection } from './agentVersionsSection.js';
 import { MCP_TOOL_CATEGORY_PREFIX } from '../common/toolApprovalPolicy.js';
 
@@ -74,7 +63,10 @@ const TABS: TabDef[] = [
 	{ id: 'runtime', label: '运行时配置', icon: '⚙️' },
 	{ id: 'mcp', label: 'MCP 配置', icon: '🔌' },
 	{ id: 'rules', label: 'Rule 配置', icon: '📏' },
-	{ id: 'binding', label: 'Channel 绑定', icon: '🔗' },
+	/* ★ 2026-10-29：IDE 侧的「Channel 绑定」页签下线 —— 渠道能力全部收敛到 dsh 侧
+	   （dsh 设置 → 渠道：凭据 / 入站 / bot 绑定 / 出站）。
+	   ⚠ 留着它不是"多一个入口"，而是两套绑定各说各话：IDE 侧那份绑定不再更新，
+	     用户在这里看到的会与 dsh 侧的真实状态不符 ⇒ 误导。 */
 	{ id: 'confightml', label: 'ConfigHtml', icon: '🌐' },
 ];
 
@@ -131,7 +123,6 @@ export class AgentSettingsEditorPane extends EditorPane {
 	private _uploadDisabled = false;
 	/** 只读原因（用于横幅文案诊断） */
 	private _readOnlyReason: string | undefined;
-	private _bindingAddBtn: HTMLButtonElement | undefined;
 
 	// ── Rename state ──
 	private _renameInput: HTMLInputElement | undefined;
@@ -142,13 +133,6 @@ export class AgentSettingsEditorPane extends EditorPane {
 	private _promptSaveBtn: HTMLButtonElement | undefined;
 	private _promptDirty = false;
 
-	// ── Feishu Binding tab ──
-	private _bindingListContainer: HTMLElement | undefined;
-	/** ★ 是否已等到「绑定表从磁盘水合完成」（只补一次重渲染，避免无限循环）。 */
-	private _bindingsHydrated = false;
-	private _bindingInput: HTMLInputElement | undefined;
-	private _bindingDefaultToggle: HTMLInputElement | undefined;
-	private _bindingDefaultSessionSelect: HTMLSelectElement | undefined;
 	// Runtime config (budget)
 	private _budgetInput: HTMLInputElement | undefined;
 	private _modelProviderSelect: HTMLSelectElement | undefined;
@@ -168,12 +152,6 @@ export class AgentSettingsEditorPane extends EditorPane {
 	//   已随整块外提迁到 `agentVersionsSection.ts` 的 `AgentVersionsSection` —— 宿主只留
 	//   `_versionsSection` 一个引用，别再往这里加"版本相关的 UI 状态" ✗（否则又会长回 3000 行）。
 
-	// ── Channel 绑定页签 · 飞书 CLI（2026-09-23）──
-	/**
-	 * 渠道 HTTP 出口：**优先主进程**（渲染进程直连飞书 OpenAPI 会被 CORS 拦，
-	 * 见 `mainProcessRequestService.ts` 的实测事故记录），非 Electron 宿主回退渲染进程。
-	 */
-	private readonly _requestService: IRequestService;
 	// ★ 2026-10-12：飞书 CLI 的 13 个字段（状态/各 DOM 容器/忙碌与轮询标志）已随整块迁到
 	//   `browser/larkCliSection.ts` 的 `LarkCliSection` —— 宿主只留 `_larkCliSectionInstance`，
 	//   别再往这里加"飞书 CLI 相关状态" ✗（否则又会长回去）。
@@ -193,21 +171,15 @@ export class AgentSettingsEditorPane extends EditorPane {
 		@ILogService private readonly logService: ILogService,
 		@IDialogService private readonly dialogService: IDialogService,
 		@IEditorService private readonly editorService: IEditorService,
-		@IConfigurationService private readonly configurationService: IConfigurationService,
-		@IBridgeService private readonly bridgeService: IBridgeService,
-		@IAgentChatService private readonly agentChatService: IAgentChatService,
 		@IAgentOSService private readonly agentOSService: IAgentOSService,
 		@IAgentVersionService private readonly agentVersionService: IAgentVersionService,
 		@ITofAuthService private readonly tofAuthService: ITofAuthService,
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
 		@IClipboardService private readonly clipboardService: IClipboardService,
-		@IMainProcessService mainProcessService: IMainProcessService,
-		@IRequestService requestService: IRequestService,
 	) {
 		super(AgentSettingsEditorPane.ID, group, telemetryService, themeService, storageService);
 		// ★ 2026-09-23：飞书 CLI 区块（扫码创建机器人 / 列群取 chat_id）需要 HTTP 出口 ——
 		//   优先主进程（渲染进程直连飞书 OpenAPI 会被 CORS 拦），非 Electron 宿主回退渲染进程
-		this._requestService = createMainProcessRequestService(mainProcessService) ?? requestService;
 	}
 
 	protected createEditor(parent: HTMLElement): void {
@@ -283,7 +255,6 @@ export class AgentSettingsEditorPane extends EditorPane {
 		this._buildRuntimeTab();
 		this._buildPlaceholderTab('mcp');
 		this._buildPlaceholderTab('rules');
-		this._buildBindingTab();
 		this._buildConfigHtmlTab();
 
 		this._showTab(this._activeTab);
@@ -506,277 +477,13 @@ export class AgentSettingsEditorPane extends EditorPane {
 		this._tabContentContainer?.appendChild(section);
 	}
 
-	// ── 飞书 CLI 区块（已外提）────────────────────────────────────────────
-	//
-	// ★ 2026-10-12：整块（构建 + 探测/渲染/安装 + 扫码建机器人 + 取 chat_id）共 284 行
-	//   已迁到 `browser/larkCliSection.ts` 的 `LarkCliSection` ⇒ 宿主只保留下面两个入口，
-	//   调用点一字未动（建分组 / 切页签时静默探测）。
-	//   其余 8 个内部方法（渲染/忙碌/安装/输出/扫码/取号/延时）**不在宿主** ——
-	//   那条"宿主不得留第二套实现"的断言在 `test/browser/larkCliSection.test.ts` ✓。
-	private _larkCliSectionInstance: LarkCliSection | undefined;
 
-	private _larkCliSection(): LarkCliSection {
-		return this._larkCliSectionInstance ??= new LarkCliSection({
-			notificationService: this.notificationService,
-			configurationService: this.configurationService,
-			requestService: this._requestService,
-			readOnly: () => this._readOnly,
-			bindingInput: () => this._bindingInput,
-			addFeishuBinding: () => this._addFeishuBinding(),
-		});
-	}
 
-	private _buildLarkCliSection(): HTMLElement {
-		return this._larkCliSection().build();
-	}
 
-	private async _refreshLarkCliStatus(manual: boolean): Promise<void> {
-		return this._larkCliSection().refresh(manual);
-	}
 
-	// ── Channel Binding Tab ──
 
-	private _buildBindingTab(): void {
-		const section = $$('div.agent-settings-tab-pane');
-		section.dataset.tabPane = 'binding';
-
-		const desc = $$('div.tab-pane-desc');
-		desc.textContent = '配置此 Agent 与各消息渠道（Channel）的绑定关系。当前已支持「飞书」渠道：可设为渠道默认处理 Agent，或按会话（chat_id）精确绑定。绑定的渠道会话消息将自动路由给本 Agent。';
-		section.appendChild(desc);
-
-		// ── 渠道分组：飞书（Feishu） ──
-		const group = $$('div.channel-group');
-		const groupHeader = $$('div.channel-group-header');
-		const groupIcon = $$('span.channel-group-icon');
-		// ★ 2026-09-23：与设置页渠道条目一致 —— 用飞书**官方品牌 SVG**（未收录品牌才回退 emoji）
-		groupIcon.appendChild(createChannelIcon('feishu', '🔵', 18));
-		const groupTitle = $$('span.channel-group-title');
-		groupTitle.textContent = '飞书 (Feishu)';
-		groupHeader.appendChild(groupIcon);
-		groupHeader.appendChild(groupTitle);
-		group.appendChild(groupHeader);
-
-		// Section 1: 飞书渠道默认 Agent
-		const sec1 = $$('div.binding-section');
-		const sec1Title = $$('div.binding-section-title');
-		sec1Title.textContent = '飞书渠道默认 Agent';
-		sec1.appendChild(sec1Title);
-
-		const defRow = $$('div.binding-default-row');
-		this._bindingDefaultToggle = document.createElement('input');
-		this._bindingDefaultToggle.type = 'checkbox';
-		this._bindingDefaultToggle.id = 'feishu-default-toggle';
-		this._bindingDefaultToggle.onchange = () => this._toggleFeishuDefault();
-		const defLabel = $$('label.binding-default-label');
-		defLabel.textContent = '将此 Agent 设为飞书渠道的默认处理 Agent（无精确群绑定时生效）';
-		defLabel.setAttribute('for', 'feishu-default-toggle');
-		defRow.appendChild(this._bindingDefaultToggle);
-		defRow.appendChild(defLabel);
-		sec1.appendChild(defRow);
-
-		// 默认会话下拉：勾选默认 Agent 后，未精确绑定的飞书消息统一进入所选会话
-		const defSessionRow = $$('div.binding-default-row');
-		const defSessionLabel = $$('label.binding-default-label');
-		defSessionLabel.textContent = '默认会话（未精确绑定的消息进入此会话；留空则每群自动建专属会话）：';
-		defSessionRow.appendChild(defSessionLabel);
-		this._bindingDefaultSessionSelect = document.createElement('select');
-		this._bindingDefaultSessionSelect.className = 'binding-input';
-		this._bindingDefaultSessionSelect.onchange = () => this._setFeishuDefaultSession();
-		defSessionRow.appendChild(this._bindingDefaultSessionSelect);
-		sec1.appendChild(defSessionRow);
-		group.appendChild(sec1);
-
-		// Section 2: 群聊绑定（按会话 chat_id）
-		const sec2 = $$('div.binding-section');
-		const sec2Title = $$('div.binding-section-title');
-		sec2Title.textContent = '群聊绑定（按会话）';
-		sec2.appendChild(sec2Title);
-
-		const hint = $$('div.binding-hint');
-		// ⚠ 同 `agentChatPanel.dropdowns.ts` 的口径 ✓：取号路径 = 客户端飞书 → 群设置 → 底部「会话 ID」✓
-		hint.textContent = '在客户端飞书中打开该群 → 点右上角「⋯」进入群设置 → 拉到底部，「会话 ID」字段就是本群 chat_id。绑定的群聊消息将自动路由给本 Agent。';
-		sec2.appendChild(hint);
-
-		const addRow = $$('div.binding-add-row');
-		this._bindingInput = document.createElement('input');
-		this._bindingInput.type = 'text';
-		this._bindingInput.className = 'binding-input';
-		this._bindingInput.placeholder = '输入飞书群聊会话 ID（chat_id）';
-		this._bindingInput.onkeydown = (e) => {
-			if (e.key === 'Enter') { e.preventDefault(); void this._addFeishuBinding(); }
-		};
-		addRow.appendChild(this._bindingInput);
-		const addBtn = $$('button.agent-settings-btn primary') as HTMLButtonElement;
-		addBtn.textContent = '➕ 绑定';
-		addBtn.onclick = () => void this._addFeishuBinding();
-		addRow.appendChild(addBtn);
-		this._bindingAddBtn = addBtn;
-		sec2.appendChild(addRow);
-
-		this._bindingListContainer = $$('div.binding-list');
-		sec2.appendChild(this._bindingListContainer);
-		group.appendChild(sec2);
-
-		// Section 3: 飞书 CLI（安装 / 状态 / 升级 + 创建机器人 + 获取 chat_id）
-		group.appendChild(this._buildLarkCliSection());
-
-		section.appendChild(group);
-		this._tabContentContainer?.appendChild(section);
-	}
-
-	private _renderBindingTab(): void {
-		if (!this._agentId) { return; }
-
-		// 飞书 CLI 区块：切入页签时静默探测一次（手动「重新检测」按钮才会弹通知）
-		void this._refreshLarkCliStatus(false);
-
-		// ★ 绑定表在主进程持久化（IPC 读盘异步）：水合完成后再渲染一次，
-		//   否则启动后首次打开列表为空 —— 看起来像「重启后绑定丢了」（实测磁盘上有数据）。
-		if (!this._bindingsHydrated) {
-			void this.bridgeService.ensureBindingsLoaded().then(() => {
-				this._bindingsHydrated = true;
-				this._renderBindingTab();
-			});
-		}
-
-		// 飞书渠道默认 Agent 开关
-		if (this._bindingDefaultToggle) {
-			const cur = this.configurationService.getValue<string>('sessions.channel.feishu.defaultAgent');
-			this._bindingDefaultToggle.checked = (cur === this._agentId);
-		}
-
-		// 默认会话下拉：启用态跟随勾选，选项为本 Agent 名下会话
-		void this._refreshDefaultSessionSelect();
-
-		// 群聊绑定列表
-		if (!this._bindingListContainer) { return; }
-		this._bindingListContainer.replaceChildren();
-		let bindings: Array<{ conversationId: string; agentId: string }> = [];
-		try {
-			bindings = this.bridgeService.getEngine().listConversationBindings('feishu');
-		} catch {
-			// 桥接引擎未就绪：忽略
-		}
-		const mine = bindings.filter(b => b.agentId === this._agentId);
-		if (mine.length === 0) {
-			const empty = $$('div.skills-empty');
-			empty.textContent = '暂无绑定的飞书群聊';
-			this._bindingListContainer.appendChild(empty);
-			return;
-		}
-		for (const b of mine) {
-			const item = $$('div.skill-item installed');
-			const info = $$('div.skill-item-info');
-			const nameEl = $$('span.skill-item-name');
-			nameEl.textContent = b.conversationId;
-			info.appendChild(nameEl);
-			item.appendChild(info);
-			const removeBtn = $$('button.skill-remove-btn') as HTMLButtonElement;
-			removeBtn.title = '解除绑定';
-			removeBtn.textContent = '✕';
-			removeBtn.disabled = this._readOnly;
-			removeBtn.onclick = () => this._removeFeishuBinding(b.conversationId);
-			item.appendChild(removeBtn);
-			this._bindingListContainer.appendChild(item);
-		}
-	}
-
-	private async _addFeishuBinding(): Promise<void> {
-		if (this._readOnly) { return; }
-		if (!this._agentId || !this._bindingInput) { return; }
-		const chatId = this._bindingInput.value.trim();
-		if (!chatId) {
-			this.notificationService.warn('请输入飞书群聊会话 ID（chat_id）');
-			return;
-		}
-		try {
-			this.bridgeService.getEngine().setConversationAgent('feishu', chatId, this._agentId);
-			this._bindingInput.value = '';
-			this.notificationService.info(`已绑定飞书群聊 ${chatId} 到本 Agent`);
-			this._renderBindingTab();
-		} catch (err) {
-			this.notificationService.error(`绑定失败: ${err instanceof Error ? err.message : String(err)}`);
-		}
-	}
-
-	private _removeFeishuBinding(chatId: string): void {
-		if (this._readOnly) { return; }
-		if (!this._agentId) { return; }
-		try {
-			this.bridgeService.getEngine().clearConversationAgent('feishu', chatId);
-			this.notificationService.info(`已解除飞书群聊 ${chatId} 的绑定`);
-			this._renderBindingTab();
-		} catch (err) {
-			this.notificationService.error(`解除失败: ${err instanceof Error ? err.message : String(err)}`);
-		}
-	}
-
-	private _toggleFeishuDefault(): void {
-		if (this._readOnly) { return; }
-		if (!this._agentId || !this._bindingDefaultToggle) { return; }
-		const key = 'sessions.channel.feishu.defaultAgent';
-		const cur = this.configurationService.getValue<string>(key);
-		if (this._bindingDefaultToggle.checked) {
-			this.configurationService.updateValue(key, this._agentId);
-			this.notificationService.info('已设为飞书渠道默认 Agent');
-		} else if (cur === this._agentId) {
-			this.configurationService.updateValue(key, '');
-			// 取消默认 Agent 时同步清除默认会话（会话归属本 agent，留着是悬空引用）
-			try {
-				this.bridgeService.getEngine().setChannelDefaultSession('feishu', this._agentId, undefined);
-			} catch { /* 引擎未就绪：忽略 */ }
-			this.notificationService.info('已取消飞书渠道默认 Agent');
-		}
-		if (this._bindingDefaultSessionSelect) {
-			this._bindingDefaultSessionSelect.disabled = !this._bindingDefaultToggle.checked;
-		}
-	}
 
 	/** 填充默认会话下拉：本 Agent 名下会话 + 当前选中态；启用态跟随默认 Agent 勾选。 */
-	private async _refreshDefaultSessionSelect(): Promise<void> {
-		const select = this._bindingDefaultSessionSelect;
-		if (!select || !this._agentId) { return; }
-		select.disabled = this._readOnly || !(this._bindingDefaultToggle?.checked ?? false);
-		let sessions: Array<{ id: string; name: string }> = [];
-		try {
-			const list = await this.agentChatService.listAgentSessions(this._agentId);
-			sessions = list
-				.slice()
-				.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
-				.map(s => ({ id: s.id, name: s.name }));
-		} catch { /* 列表加载失败：仅显示占位项 */ }
-		select.replaceChildren();
-		const autoOpt = document.createElement('option');
-		autoOpt.value = '';
-		autoOpt.textContent = '（每群自动建专属会话）';
-		select.appendChild(autoOpt);
-		let cur: string | undefined;
-		try {
-			const def = this.bridgeService.getEngine().getChannelDefaultSession('feishu');
-			cur = def && def.agentId === this._agentId ? def.agentSessionId : undefined;
-		} catch { /* 引擎未就绪 */ }
-		for (const s of sessions) {
-			const opt = document.createElement('option');
-			opt.value = s.id;
-			opt.textContent = s.name || s.id;
-			if (s.id === cur) { opt.selected = true; }
-			select.appendChild(opt);
-		}
-	}
-
-	private _setFeishuDefaultSession(): void {
-		if (this._readOnly) { return; }
-		if (!this._agentId || !this._bindingDefaultSessionSelect) { return; }
-		const sessionId = this._bindingDefaultSessionSelect.value || undefined;
-		try {
-			this.bridgeService.getEngine().setChannelDefaultSession('feishu', this._agentId, sessionId);
-			this.notificationService.info(sessionId
-				? '已设置飞书默认会话（未精确绑定的消息将进入此会话）'
-				: '已恢复为每群自动建专属会话');
-		} catch (err) {
-			this.notificationService.error(`设置失败: ${err instanceof Error ? err.message : String(err)}`);
-		}
-	}
 
 	// ── Read-only / Upload-disabled lock ──
 
@@ -803,9 +510,6 @@ export class AgentSettingsEditorPane extends EditorPane {
 			// 禁用固定编辑控件
 			if (this._promptTextarea) { this._promptTextarea.disabled = true; }
 			if (this._promptSaveBtn) { this._promptSaveBtn.style.display = 'none'; }
-			if (this._bindingInput) { this._bindingInput.disabled = true; }
-			if (this._bindingDefaultToggle) { this._bindingDefaultToggle.disabled = true; }
-			if (this._bindingAddBtn) { this._bindingAddBtn.disabled = true; }
 			if (this._renameInput) { this._renameInput.disabled = true; }
 			if (this._budgetInput) { this._budgetInput.disabled = true; }
 			if (this._modelProviderSelect) { this._modelProviderSelect.disabled = true; }
@@ -841,9 +545,6 @@ export class AgentSettingsEditorPane extends EditorPane {
 		else {
 			if (this._promptTextarea) { this._promptTextarea.disabled = false; }
 			if (this._promptSaveBtn) { this._promptSaveBtn.style.display = ''; }
-			if (this._bindingInput) { this._bindingInput.disabled = false; }
-			if (this._bindingDefaultToggle) { this._bindingDefaultToggle.disabled = false; }
-			if (this._bindingAddBtn) { this._bindingAddBtn.disabled = false; }
 			if (this._renameInput) { this._renameInput.disabled = false; }
 			if (this._budgetInput) { this._budgetInput.disabled = false; }
 			if (this._modelProviderSelect) { this._modelProviderSelect.disabled = false; }
@@ -1181,10 +882,6 @@ export class AgentSettingsEditorPane extends EditorPane {
 
 	private _showTab(tabId: TabId): void {
 		if (!this._tabContentContainer) { return; }
-		// 进入绑定页签时刷新，反映外部（/bind 命令）变更
-		if (tabId === 'binding') {
-			this._renderBindingTab();
-		}
 		// 进入版本管理页签时自动加载历史（本地 git + 商城 releases）
 		if (tabId === 'versions') {
 			this._loadVersionHistory();
@@ -1306,9 +1003,6 @@ export class AgentSettingsEditorPane extends EditorPane {
 				this._imageProviderSelect.value = this._agent.imageProviderId || '';
 				await this._refreshImageModelOptions(this._agent.imageModel);
 			}
-
-			// Update bindings tab
-			this._renderBindingTab();
 
 			// 应用只读锁（非 owner / 内置 agent 禁用编辑控件）
 			this._applyReadOnlyState();

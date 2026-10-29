@@ -58,6 +58,7 @@ export function dshHomeCandidates(homes: IDshHomeBases): string[] {
 	}
 	const dataRoot = homes.dataRoot?.trim();
 	if (dataRoot) {
+		// 2026-10-28：userData 按形态分开 ⇒ 两边结构一致，一条即可
 		out.push(joinFsPath(dataRoot, 'dsh-home'));
 	}
 	const userHome = homes.userHome?.trim();

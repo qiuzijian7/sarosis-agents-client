@@ -440,6 +440,15 @@ export interface IDshHostStatus {
 	readonly startupMs?: number;
 	/** true = Host 由另一个 VsSaros 实例拉起，本实例经 `host.json` 探活后复用（方案 7.5）。 */
 	readonly reused?: boolean;
+	/**
+	 * true = Host 的 mux 升级路由**已注册**（页面实时事件可用）。
+	 *
+	 * ★ 2026-10-29：Host ready 之后路由还要几秒才注册（真机 +4.8s ~ +11.4s）⇒ 这段时间里
+	 * `session.start` 必然失败（"控制桥不可用" / "never started"）⇒ 桌面窗口据此**先等路由**再发起，
+	 * 一次成功、不再弹"假失败"黄条、也不必退避 4s/12s 白等。
+	 * 复用既有 Host 时直接为 true（那个 Host 的路由早就注册好了）。
+	 */
+	readonly muxReady?: boolean;
 	readonly error?: string;
 	readonly errorCode?: DshErrorCode;
 }
@@ -816,6 +825,18 @@ export const enum DshHarnessChannelCommand {
 	CreateView = 'createView',
 	LayoutView = 'layoutView',
 	SetViewVisible = 'setViewVisible',
+	/**
+	 * 等页面里出现某个选择器（2026-10-28）。
+	 *
+	 * 为什么需要：第一次启动时，dsh 页面会先渲染**官方默认样式**（官方侧栏 + hero），
+	 * 我们的换皮 chunk（`client.workbenchNav.js` 等）后到 ⇒ 用户看到"闪一下默认样式"。
+	 * 视图创建时本来就是不可见的（`createView` 里 `setVisible(false)`）⇒
+	 * 只要**等到我们的 UI 就位再显示**，中间那段就不会被人看见 ✓。
+	 *
+	 * 入参 `{ viewId, selector, timeoutMs }`，返回 `true` = 等到了（`false` = 超时/视图不存在）。
+	 * ⚠ 调用方必须**超时也照常显示**（否则页面出问题就永远白屏 ✗）。
+	 */
+	WaitViewSelector = 'waitViewSelector',
 	/**
 	 * **抓一帧并让位**：让位（隐藏原生视图）与抓帧必须在**主进程内一步完成**，否则两条 IPC 赛跑 ⇒
 	 * 抓到的是离屏空帧（2026-10-15 实测：那样做 `bgImage` 恒为 `none`，与没做一样 ✗）。

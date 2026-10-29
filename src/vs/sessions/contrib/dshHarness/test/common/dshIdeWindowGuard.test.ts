@@ -35,6 +35,7 @@ const PAGE_PROTOCOL = 'src/vs/sessions/contrib/dshHarness/common/dshPageBridgePr
 const CHANNEL = 'src/vs/sessions/contrib/dshHarness/electron-main/dshHarnessChannel.ts';
 const SERVICE = 'src/vs/sessions/contrib/dshHarness/electron-browser/dshHarnessService.ts';
 const FULL_WINDOW = 'src/vs/sessions/contrib/dshHarness/electron-browser/dshFullWindowContribution.ts';
+const VIEW_HOST = 'src/vs/sessions/contrib/dshHarness/electron-main/dshViewHost.ts';
 const CONTRIBUTION = 'src/vs/sessions/contrib/dshHarness/electron-browser/dshHarness.contribution.ts';
 const WINDOW_IMPL = 'src/vs/platform/windows/electron-main/windowImpl.ts';
 const WINDOWS_MAIN = 'src/vs/platform/windows/electron-main/windowsMainService.ts';
@@ -346,6 +347,50 @@ suite('desktop 模式：IDE 主窗口不许露面（点登录也不许）', () =
 		assert.match(sv, /ownerWindowOfView\(a\.viewId\)/, 'attach 时必须按视图定位它自己那扇窗口 ✗');
 		assert.match(sv, /_raiseDesktopWindow\(guard\.windowId, '桌面视图已就位 ⇒ 提到前台', desk\)/,
 			'attach 时必须提一次桌面窗口（窗口十几秒后才可见，靠这一脚才准 ✗）');
+	});
+
+	// ★★ 2026-10-28（用户：「第一次启动，dsh desktop 会**闪一下 dsh web profile 的默认样式**，
+	//   然后才切到 vssaros 的 profile」）：视图创建时本来不可见，只要**等换皮就位再显示**就不会闪。
+	test('⑪ 桌面视图必须"等换皮就位 → 再显示 → 最后撤占位"（不许先显示官方默认样式）', () => {
+		const full = stripComments(read(FULL_WINDOW));
+		const iWait = full.indexOf("waitViewSelector(chatViewId, '[data-vssaros-wb-tabstrip]'");
+		const iShow = full.indexOf('setViewVisible(chatViewId, true, true)');
+		assert.ok(iWait > 0, '显示视图前必须等换皮就位（`waitViewSelector`）—— 否则用户会看到官方默认样式闪一下 ✗');
+		assert.ok(iShow > iWait, '顺序必须是"先等就位、再显示"（反了等于没等 ✗）');
+
+		// 锚点必须是**常驻**的页签条外壳：里面的 `[data-vssaros-wb-tabs]` 只在"有页签"时才存在 ⇒
+		// 拿它当锚点会让新会话首屏每次都白等满超时 ✗。
+		assert.match(full, /'\[data-vssaros-wb-tabstrip\]'/,
+			'锚点必须是常驻的 `[data-vssaros-wb-tabstrip]`（页签条外壳）✗');
+		assert.ok(!/waitViewSelector\([^)]*'\[data-vssaros-wb-tabs\]'/.test(full),
+			'不许拿 `[data-vssaros-wb-tabs]` 当锚点（只在有页签时存在 ⇒ 新会话首屏永远等不到 ✗）');
+
+		// 超时兜底：等不到也必须显示（页面出问题时不许白屏）
+		assert.match(full, /waitViewSelector\([\s\S]{0,120}\.catch\(\(\) => false\)/,
+			'等不到/抛错必须 `catch(() => false)`（不许把显示流程一起抛掉 ✗）');
+		assert.match(full, /if \(!vssarosReady\) \{[\s\S]{0,200}仍然显示视图/,
+			'超时必须**照常显示**并留日志（否则页面一出问题就永远白屏 ✗）');
+
+		// 占位必须先盖着：撤占位必须排在"显示视图"之后
+		const iRemove = full.indexOf('booting?.remove();', iShow);
+		assert.ok(iRemove > iShow, '`booting?.remove()` 必须在显示视图**之后**（提前撤 ⇒ 中间那段露官方默认样式 ✗）');
+		const firstRemove = full.indexOf('booting?.remove();');
+		assert.strictEqual(firstRemove, iRemove,
+			'`_openComposed` 里只许在"显示之后"撤一次占位（createView 之后那次是 2026-10-28 修的闪烁成因 ✗）');
+
+		// 主进程：命令落点 + 轮询实现 + 超时返回 false
+		const channel = stripComments(read(CHANNEL));
+		assert.ok(channel.includes('case DshHarnessChannelCommand.WaitViewSelector:'), '主进程缺少 WaitViewSelector 落点 ✗');
+		const host = stripComments(read(VIEW_HOST));
+		const implAt = host.indexOf('async waitForSelector(');
+		assert.ok(implAt > 0, '`dshViewHost` 必须有 `waitForSelector` 实现 ✗');
+		const impl = host.slice(implAt, host.indexOf('\n\tasync ', implAt + 1) > 0 ? host.indexOf('\n\tasync ', implAt + 1) : implAt + 2000);
+		assert.match(impl, /document\.querySelector/, '必须真的查 DOM ✗');
+		assert.match(impl, /Date\.now\(\) >= deadline[\s\S]{0,80}return false/, '超时必须返回 false（不许无限轮询 ✗）');
+
+		const service = stripComments(read(SERVICE));
+		assert.match(service, /waitViewSelector\(viewId: string, selector: string, timeoutMs = 9_000\): Promise<boolean> \{[\s\S]{0,200}WaitViewSelector/,
+			'渲染侧服务实现必须真发 WaitViewSelector 命令 ✗');
 	});
 
 	// ★★ 2026-10-28（用户：「打包出的 exe 打开后会闪一下 IDE 窗口」）：隐藏启动判据不许只认

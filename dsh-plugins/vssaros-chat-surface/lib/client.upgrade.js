@@ -102,8 +102,18 @@ window.__ModuleLoader__.load({
 			.filter(r => r && r.state === "upgradable");
 		/** 商城资产（技能 / MCP / 智能体 / 工作流 / 工作台）：宿主已经筛成"只含可升级的" ✓ */
 		const assetRows = s => (s && Array.isArray(s.assets) ? s.assets : []);
-		// 「待升级」= 可升级的随包插件 + 可升级的商城资产（**不含未安装**，见 upgradableRows 的注释）
-		const totalPending = s => upgradableRows(s).length + assetRows(s).length;
+		/**
+		 * 应用（IDE）自身是否可升级（2026-10-29）。
+		 *
+		 * 为什么要单列：之前 `totalPending` 只数"随包插件 + 商城资产"，**应用更新被漏掉了**
+		 * ⇒ 左下角那行在"只有应用有新版"时显示"已最新"，用户完全看不到信号 ✗
+		 * （真机：本地 2.2.26207 / 源上 2.2.26208，就是这么被吞掉的）。
+		 * ⚠ 只认 `action === "upgrade"`：`downgrade`（源比本地旧）**不算**可升级，
+		 *   否则点「一键升级」就变成"一键降级"（那正是 `decideAppUpdate` 要拦的情况）。
+		 */
+		const appUpgradable = s => !!(s && s.app && s.app.action === "upgrade");
+		// 「待升级」= 可升级的随包插件 + 可升级的商城资产 + **应用自身可升级**
+		const totalPending = s => upgradableRows(s).length + assetRows(s).length + (appUpgradable(s) ? 1 : 0);
 		const KIND_LABEL = { skill: "技能", mcp: "MCP", agent: "智能体", workflow: "工作流", workbench: "工作台" };
 		const KIND_ORDER = ["skill", "mcp", "agent", "workflow", "workbench"];
 		const busyOf = s => (s && s.app && s.app.busy) || "";

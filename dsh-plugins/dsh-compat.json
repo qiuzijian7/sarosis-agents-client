@@ -5,7 +5,7 @@
   "versions": [
     {
       "version": "0.2.1-rc.2",
-      "verifiedAt": "2026-10-22",
+      "verifiedAt": "2026-10-28",
       "checks": [
         "runtime-smoke",
         "bridge",
@@ -13,10 +13,14 @@
         "agents-group-page",
         "agents-group-page-interaction",
         "agents-group-theme",
-        "agents-workbench-interaction"
+        "agents-workbench-interaction",
+        "plugin-page",
+        "runtime-version-selfreport",
+        "profile-seed-build",
+        "profile-seed-host-boot"
       ],
       "bridgePlugin": ">=0.1.2",
-      "notes": "npm latest / next（2026-10-22 发布即升）。**bundled 已升级到此版**。实测（本机 rc.2）：p0-01 10/10、p0-04 11/11、p3-115 31/31、p3-153 26/26、p3-166 25/25、p3-167 6/6、p3-96 40/40；启动 18.5s（rc.1 同机同量级）。⚠ p0-10 10/11：唯一红条 `re-adopt with a different preset is rejected` 与 **rc.1 逐字相同** ⇒ 上游自 0.2.1-alpha.4 起定型为「create 收养会话时允许换 preset」，不是 rc.2 回归（我们的幂等接管语义需按\"可换\"理解）。"
+      "notes": "npm latest / next（2026-10-22 发布即升）。**bundled 已升级到此版**。实测（本机 rc.2）：p0-01 10/10、p0-04 11/11、p3-115 31/31、p3-153 26/26、p3-166 25/25、p3-167 6/6、p3-96 40/40；启动 18.5s（rc.1 同机同量级）。⚠ p0-10 10/11：唯一红条 `re-adopt with a different preset is rejected` 与 **rc.1 逐字相同** ⇒ 上游自 0.2.1-alpha.4 起定型为「create 收养会话时允许换 preset」，不是 rc.2 回归（我们的幂等接管语义需按\"可换\"理解）。★ 2026-10-28 复验（rc.2 重装后）：host 组 p0-01 10/10、p0-04 11/11、p0-08 5/5、p0-22 6/6 全绿；p0-10 10/11、p0-11 超时、p3-151（硬编码 rc.1）仍红 ⇒ 与运行时无关。★ 同日新增两项验证：① **引擎版本自报 = rc.2**（工作区曾残留一份自报 alpha.3 的坏安装 ⇒ 装插件全被版本闸门拦 ⇒ 种子建不出来；prepack 现在会核对自报版本并重装）；② **profile 种子建成**（0.9 分钟 / 235MB / 35 个随包插件 / Host 启动正常 / 种子与运行时都裁掉 182MB libreoffice 内核）。⚠ 同期试过 next 通道的 0.2.1-rc.4：版本串自洽、种子也能建，但 host 组 p0-01/p0-04/p0-08 在 rc.4 上**启动即崩**（webServer/connection 不起）⇒ rc.4 是回归，**不切**。"
     },
     {
       "version": "0.2.1-rc.1",

@@ -208,7 +208,13 @@ export function apply(ctx, config = {}) {
 	const launchDedicated = typeof config.launchDedicated === 'boolean'
 		? config.launchDedicated
 		: flag(env.VSSAROS_BROWSER_LAUNCH_DEDICATED ?? '1');
-	const headless = typeof config.headless === 'boolean' ? config.headless : flag(env.VSSAROS_BROWSER_HEADLESS ?? '');
+	/**
+	 * ★ 2026-10-28（用户要求：「每次启动都自动打开浏览器，能不能无感」）：
+	 *   专属实例**默认无头** ⇒ Host 启动**不再弹出任何 Chrome 窗口**；
+	 *   只有需要人交互登录时，`loginSession.open()` 才把它切成**有头**（登录完再切回无头）✓
+	 *   ⚠ 显式配置仍然优先：`config.headless = false` 或 `VSSAROS_BROWSER_HEADLESS=0` 可强制有头。
+	 */
+	const headless = typeof config.headless === 'boolean' ? config.headless : flag(env.VSSAROS_BROWSER_HEADLESS ?? '1');
 	const allowActions = typeof config.allowActions === 'boolean'
 		? config.allowActions
 		: flag(env.VSSAROS_BROWSER_ALLOW_ACTIONS ?? '');
@@ -321,6 +327,9 @@ export function apply(ctx, config = {}) {
 			return res.result;
 		},
 		headless,
+		// ★ 2026-10-28：平时无头（用户无感）；要人登录时切有头；登录完切回无头 ✓
+		ensureHeaded: () => host.ensureHeaded(),
+		ensureHeadless: () => host.ensureHeadless(),
 		log,
 	});
 

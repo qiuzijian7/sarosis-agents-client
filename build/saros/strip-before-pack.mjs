@@ -371,6 +371,19 @@ ensureDir(
 	}
 }
 
+// 2.6c) @vscode/deviceid（2026-10-29，用户报「打包 exe 启动报错」）：
+//   `out/main.js` 里 `require('@vscode/deviceid')` 取 machineId —— 非静态 import ⇒ bundler 看不见，
+//   而该包 `main = dist/index.js`（纯 JS、整包仅 0.04MB，不是原生模块）⇒ 整包落位即可用。
+//   实测产物 `resources/app/node_modules/@vscode/` 只有 13 个包、**没有它**
+//   ⇒ 每次启动一条 `Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@vscode/deviceid' imported from out/main.js`，
+//   设备标识链静默降级（与 tree-sitter-wasm 完全同一成因：依赖树里有、gulp 的 node_modules 流没落位）。
+ensureDir(
+	'@vscode/deviceid',
+	'resources/app/node_modules/@vscode/deviceid',
+	'node_modules/@vscode/deviceid',
+	'dist/index.js',
+);
+
 // 2.5c) ★ 2026-10-12（**决策 2 = wasm 全量随包**）：`dsh-plugins/vssaros-codebase/vendor/`（≈21MB）。
 //    为什么上面 2.5b 的 sentinel **不够**：那个 sentinel 是 `vssaros-bridge/package.json` ——
 //    它只证明 `dsh-plugins/` **被灌满**，**不证明我们插件包里那 21MB 资产在** ✗✗

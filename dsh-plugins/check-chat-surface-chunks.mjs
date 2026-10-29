@@ -1759,6 +1759,27 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 	}
 }
 
+// ── ⑧ 渠道页的平台判据必须来自服务端定义（2026-10-28）───────────────────────────
+//   事故：绑定页把平台列表写死成 loopback + feishu ⇒ telegram / discord / 企业微信选不到；
+//   渠道页把「传输方式 / 有没有启动入站」按 key 硬编码 ⇒ discord 那行没有传输说明、
+//   企业微信（被动回调）多出一个必然 400 的「启动入站」，状态永远「未启动」。
+//   ⇒ 两条约束：传输文案只读 `def.inboundLabel`，启停按钮只由 `startableOf(def)` 决定。
+{
+	const chSrc = fs.readFileSync(path.join(PLUGIN_DIR, 'lib', 'client.channel.js'), 'utf8');
+	if (!/def\.inboundMode === "callback"/.test(chSrc)) {
+		problems.push('client.channel.js 没按 def.inboundMode 处理「被动回调」⇒ 企业微信会显示「未启动」并给出必然 400 的「启动入站」✗');
+	}
+	if (!/function startableOf\(def\)/.test(chSrc) || !/startableOf\(def\) && ch\.configured/.test(chSrc)) {
+		problems.push('client.channel.js 的启停按钮没走 startableOf(def) ⇒ 又在按 key 硬编码，再加渠道就会错位 ✗');
+	}
+	if (!/def\.inboundLabel/.test(chSrc)) {
+		problems.push('client.channel.js 的传输方式没读 def.inboundLabel ⇒ 新渠道那行的工具栏没有传输说明 ✗');
+	}
+	if (!problems.some((p) => /inboundMode|startableOf/.test(p))) {
+		notes.push('渠道页：传输方式/可启停判据读 imPlatforms 的 inboundMode/inboundLabel（不按 key 硬编码）');
+	}
+}
+
 // ── 结果 ────────────────────────────────────────────────────────────────
 console.log('[chat-surface chunks] 我们注册的条目：');
 for (const o of ourEntries) {

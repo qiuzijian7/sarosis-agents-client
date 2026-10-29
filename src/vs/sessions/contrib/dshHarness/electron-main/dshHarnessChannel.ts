@@ -272,16 +272,21 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 			// 静态真源对账（2026-10-28）：扫目录丢掉的模块要让 supervisor **点名报错**，
 			// 而不是静静地从安装清单里消失（`planned` 的预留位不算缺失）。
 			expectedModulePlugins: DSH_BUILTIN_MODULES.filter(m => m.planned !== true).map(m => m.pluginName),
-			// ★★ 2026-10-28（用户要求「两套路径统一成一套，变成一份 profile」）：
-			//   原来是 `options.isBuilt ? undefined : join(userDataPath,'dsh-home')` —— 即
-			//   **dev 的 DSH_HOME = `<userData>/dsh-home`，打包版 = 不给（dsh 回落到 `~/.dsh`）**
-			//   ⇒ 同一个 profile 名（`vssaros`）在两处各有一份、版本还不同（真机：`~/.dsh` 里
-			//   chat-surface 0.2.259，dev 的 `dsh-home` 里 0.2.269）⇒ 旧的一侧启动时会尝试"降级重装"
-			//   （一条 `dsh plugin add` 装 8 个包，跑满 4 分钟超时 + 逐项回退再失败），
-			//   而且两边的会话历史/技能/看板/知识库各是一份，用户在两个 app 里看到的世界不一样 ✗。
-			//   现在**两种形态都用 `<userData>/dsh-home`**，配合 userData 统一为 `~/.vssaros`
-			//   ⇒ 一份 profile、一份会话历史、一份插件版本 ✓（旧数据迁移见
-			//   `scripts/migrate-userdata-dev-to-prod.mjs`）。
+			// ★★ 2026-10-28（最终形态：**userData 按形态分开**，DSH_HOME 统一规则）。
+			//
+			// 演进过程（三个方案都试过，别改回去）：
+			//   ①`isBuilt ? undefined : join(userDataPath,'dsh-home')` —— 打包版**不给** DSH_HOME
+			//     ⇒ dsh 回落 `~/.dsh` ⇒ 同名 profile 两份、版本不同（`~/.dsh` 0.2.259 / dev 0.2.269）
+			//     ⇒ 旧的一侧启动时"降级重装"（一条命令装 8 个包、跑满 4 分钟超时 + 逐项回退）✗。
+			//   ②两种形态共用 `<userData>/dsh-home`：版本只有一个真相 ✓，但**不能同时跑**（抢单实例锁）、
+			//     dev 升上去的插件让打包版的新包永远装不进来、dev 脏数据进生产会话 ✗。
+			//   ③userData 共用 + DSH_HOME 按形态分（`dsh-home` / `dsh-home-dev`）：插件隔离开了 ✓，
+			//     但**仍然不能同时跑** —— 单实例锁由 **userData** 决定，不是 DSH_HOME ✗。
+			//   ⇒ 现在：**userData 本身就是两套**（`~/.vssaros` = 打包版、`~/.vssaros-dev` = 开发版，
+			//     见 `.vscode/launch.json` 与 `scripts/start-dev-app.mjs`）。
+			//     于是 DSH_HOME 回到**一条统一规则** `<userData>/dsh-home` —— 隔离由 userData 承担，
+			//     不再需要任何 `-dev` 特例 ✓（这也是 VS Code 自己的做法：`code` / `code-insiders` /
+			//     `code-oss-dev` 三份目录，每份里面结构完全相同）。
 			defaultDshHome: join(options.userDataPath, 'dsh-home'),
 			instanceId: `vssaros-${process.pid}-${generateUuid().slice(0, 8)}`,
 			log,
@@ -1239,7 +1244,7 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 				const title = String(a.title ?? '确认操作').slice(0, 200);
 				const detail = String(a.detail ?? '').slice(0, 4000);
 				const confirmLabel = typeof a.confirmLabel === 'string' && a.confirmLabel.trim() ? a.confirmLabel.trim().slice(0, 20) : '继续';
-				const options = { type: 'warning' as const, title: 'Saroasis harness', message: title, detail, buttons: [confirmLabel, '取消'], defaultId: 1, cancelId: 1, noLink: true };
+				const options = { type: 'warning' as const, title: 'VsSaros', message: title, detail, buttons: [confirmLabel, '取消'], defaultId: 1, cancelId: 1, noLink: true };
 				const parent = BaseWindow.getFocusedWindow();
 				const { response } = parent ? await dialog.showMessageBox(parent, options) : await dialog.showMessageBox(options);
 				this._logService.info(`[dshHarness] confirmUserAction「${title}」⇒ ${response === 0 ? '允许' : '取消'}（父窗口 ${parent ? parent.id : '无'}）`);
@@ -1870,6 +1875,19 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 					}
 				}
 				return;
+			}
+			case DshHarnessChannelCommand.WaitViewSelector: {
+				// 等我们的换皮装好再显示视图（2026-10-28：桌面窗口第一次启动会"闪一下官方默认样式"）。
+				const a = arg as { viewId?: unknown; selector?: unknown; timeoutMs?: unknown };
+				const viewId = typeof a?.viewId === 'string' ? a.viewId : '';
+				const selector = typeof a?.selector === 'string' ? a.selector : '';
+				if (!viewId || !selector) {
+					return false;
+				}
+				const timeoutMs = typeof a?.timeoutMs === 'number' && Number.isFinite(a.timeoutMs)
+					? Math.max(0, Math.min(60_000, a.timeoutMs))
+					: 9_000;
+				return this._views.waitForSelector(viewId, selector, timeoutMs);
 			}
 			case DshHarnessChannelCommand.FreezeView: {
 				// 浮层让位：**先抓一帧，再把视图藏起来**（顺序必须在主进程内保证 —— 见 `captureAndHide` 的注释）。

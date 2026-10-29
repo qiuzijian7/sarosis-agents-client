@@ -191,12 +191,144 @@ console.log('── 工具 allowlist ──');
 	check('C2：页面能力检测用 typeof（老桥不炸）', /typeof bridge\.newChat === 'function'/.test(sv) && /typeof bridge\.openAgentSettings === 'function'/.test(sv));
 }
 
+/* ★ 2026-10-28：IM 绑定页 / 渠道的平台清单**不许在客户端再写一份**。
+   真机事故：服务端 BINDING_PLATFORMS 有 5 个平台，适配器、凭据、网关全都做好，
+   而绑定页的下拉写死成 `[['loopback',…],['feishu',…]]` ⇒ telegram / discord / 企业微信
+   **根本选不到** ⇒ 功能可达性为零（差的就是一个下拉）。
+   这类"两份清单漂移"在本项目已发生多次（工作台清单 / 工具面快照 / preset 清单），
+   所以用源码断言钉住；平台语义（inboundMode 等）则直接 import 真源做行为断言。 */
+{
+	const bindSrc = read('lib/client.agents.js');
+	const idxSrc = read('lib/index.js');
+	check('IM 绑定页：平台下拉由服务端 platforms / channelDefs 渲染',
+		/bdata\.platforms/.test(bindSrc) && /bdata\.channelDefs/.test(bindSrc));
+	check('IM 绑定页：不再写死平台选项数组（loopback + feishu 两项）',
+		!/\[\['loopback',\s*'模拟器[^']*'\],\s*\['feishu'/.test(bindSrc));
+	check('IM 绑定页：chatId 占位来自 imPlatforms 的 chatIdHint',
+		/selDef\.chatIdHint/.test(bindSrc));
+	check('IM 绑定页：入站状态按所选平台取（不再固定读 data.inbound）',
+		/\(bdata\.inbounds \|\| \{\}\)\[p\]/.test(bindSrc));
+	check('IM 绑定页：启停入站带 platform（否则后端缺省按飞书处理）',
+		/controlInbound\('inbound-start', p\)/.test(bindSrc) && /platform \? \{ action, platform \}/.test(bindSrc));
+	/* ★ 2026-10-29 真机截图：「已绑定 channel 的 bot，UI 却显示未连接」。根因是身份条只有
+	   一枚「未连接」，而它说的是**会话消息流**没连上 ⇒ 渠道状态必须单独一枚徽章，
+	   且实时那枚要把来源写清楚（"实时…"），旧的裸「未连接」不许回来。 */
+	check('身份条：渠道状态单独一枚徽章（data-ag-channel，由 bindings + inbounds 算）',
+		/'data-ag-channel'/.test(bindSrc) && /channelPillOf\(a\.id\)/.test(bindSrc) && /inbounds\[b\.platform\]/.test(bindSrc));
+	check('身份条：实时状态点明来源（data-ag-live-state + 「实时…」），不再裸写「未连接」',
+		/'data-ag-live-state'/.test(bindSrc) && /'实时未连'/.test(bindSrc) && !/'未连接'/.test(bindSrc));
+	check('身份条：进 Bots 页就拉绑定表（否则渠道徽章永远没数据）',
+		/useEffect\(\(\) => \{ void loadBindings\(\); \}, \[loadBindings\]\)/.test(bindSrc));
+
+	/* ★ 2026-10-29 真机：飞书里能收到答复，但 Bots 页/工作区只有一串「(未命名会话)」。
+	   判据：派发必须**每个绑定固定一条会话**（imSessions 映射），且只在新建时起名。 */
+	const bindMod = read('lib/bindings.js');
+	check('IM 派发：优先复用绑定记住的会话（imSessions.get）',
+		/deps\.imSessions/.test(bindMod) && /sessMap\.get\(config, binding\.id\)/.test(bindMod) && /sessMap\.set\(config, binding\.id, sessionId\)/.test(bindMod));
+	check('IM 派发：会话失效才重建（canDeliver 判活）',
+		/canDeliver\(sessionId\)/.test(bindMod) && /typeof live\.steer === 'function'/.test(bindMod));
+	check('IM 派发：首次派发 + 新建时起名（之后不覆盖用户改过的名字）',
+		/\(created \|\| firstBind\) && typeof deps\.renameSession === 'function'/.test(bindMod) && /const firstBind = !sessionId/.test(bindMod));
+	check('index.js：imSessions / renameSession 都注入到 dispatch（走 sessionController.rename）',
+		/getImSession\(c, bindingId\)/.test(idxSrc) && /sc\.rename\(\{ sessionId, title \}\)/.test(idxSrc));
+
+	const { IM_PLATFORM_DEFS, isInboundStartable } = await import('../lib/imPlatforms.js');
+	const impl = IM_PLATFORM_DEFS.filter((d) => d.implemented);
+	check('imPlatforms：每个已接入平台都有 inboundMode / inboundLabel / chatIdHint',
+		impl.every((d) => !!d.inboundMode && !!d.inboundLabel && !!d.chatIdHint),
+		impl.map((d) => d.key + ':' + d.inboundMode).join(' '));
+	check('imPlatforms：inboundMode 只允许 ws / poll / callback',
+		impl.every((d) => ['ws', 'poll', 'callback'].includes(d.inboundMode)));
+	check('isInboundStartable：被动回调平台为 false，其余为 true',
+		impl.filter((d) => d.inboundMode === 'callback').every((d) => !isInboundStartable(d))
+		&& impl.filter((d) => d.inboundMode !== 'callback').every((d) => isInboundStartable(d)));
+	check('index.js：inbounds 覆盖全部可启停平台（漏一个 ⇒ 那平台永远显示"未启动"）',
+		impl.filter((d) => isInboundStartable(d))
+			.every((d) => new RegExp('\\b' + d.key + ':\\s*state\\.').test(idxSrc)),
+		impl.filter((d) => isInboundStartable(d)).map((d) => d.key).join(' '));
+}
+
+/* ★ 2026-10-29：工具名快照（首启提速）—— 纯逻辑 + 接线守卫。
+   背景：`dsh-tools` 的 `schemas(scope)` 会对每个可见工具深拷贝一次 parameters（197 个工具），
+   而 `denyTools` 收敛只要名字 ⇒ 30 个 preset × 每轮 tools/change ⇒ 十几秒白烧。 */
+{
+	const { createToolNameSnapshot, visibleToolNames } = await import('../lib/core/toolNames.js');
+
+	// 快路径：只用内部 view() 的 key，**不碰 schemas()**（深拷贝是那十几秒的大头）。
+	let schemaCalls = 0;
+	const fast = {
+		view: () => ({ visible: new Map([['a', {}], ['b', {}]]) }),
+		schemas: () => { schemaCalls += 1; return [{ name: 'a' }, { name: 'b' }]; },
+	};
+	check('工具名：走内部 view() 取名字（不调用 schemas ⇒ 不做 JSON 深拷贝）',
+		JSON.stringify(visibleToolNames(fast)) === JSON.stringify(['a', 'b']) && schemaCalls === 0,
+		`schemaCalls=${schemaCalls}`);
+
+	// 退回：没有 view() ⇒ 用 schemas()，语义一致。
+	const legacy = { schemas: () => [{ name: 'x' }, { name: 'y' }] };
+	check('工具名：内部 API 不可用时退回 schemas()',
+		JSON.stringify(visibleToolNames(legacy)) === JSON.stringify(['x', 'y']));
+
+	// view() 抛错 ⇒ 也要能退回（不能整轮收敛停摆）。
+	const broken = { view: () => { throw new Error('boom'); }, schemas: () => [{ name: 'z' }] };
+	check('工具名：内部 API 抛错时退回 schemas()',
+		JSON.stringify(visibleToolNames(broken)) === JSON.stringify(['z']));
+
+	// 注册表没就绪 ⇒ null（调用方等下一次 tools/change）
+	check('工具名：schemas() 抛错 ⇒ 返回 null（等下一次 tools/change）',
+		visibleToolNames({ schemas: () => { throw new Error('not ready'); } }) === null);
+	check('工具名：没有 tools ⇒ null', visibleToolNames(undefined) === null);
+
+	// 缓存：同版本复用；invalidate 后重算。
+	let calls = 0;
+	const counting = { view: () => { calls += 1; return { visible: new Map([['t', {}]]) }; } };
+	const snap = createToolNameSnapshot();
+	snap.namesOf(counting);
+	snap.namesOf(counting);
+	check('工具名快照：同版本内复用（不重复枚举）', calls === 1, `calls=${calls}`);
+	snap.invalidate();
+	snap.namesOf(counting);
+	check('工具名快照：收到 tools/change 后必须重算（不漏藏新工具）', calls === 2, `calls=${calls}`);
+
+	// 按实例隔离：两个 preset 的可见集不同 ⇒ 不能互相污染。
+	const instA = { view: () => ({ visible: new Map([['a-tool', {}]]) }) };
+	const instB = { view: () => ({ visible: new Map([['b-tool', {}]]) }) };
+	const snap2 = createToolNameSnapshot();
+	const na = snap2.namesOf(instA);
+	const nb = snap2.namesOf(instB);
+	const na2 = snap2.namesOf(instA);
+	check('工具名快照：按实例隔离（A 的名字不会串到 B）',
+		JSON.stringify(na) === JSON.stringify(['a-tool'])
+		&& JSON.stringify(nb) === JSON.stringify(['b-tool'])
+		&& JSON.stringify(na2) === JSON.stringify(['a-tool']),
+		`${JSON.stringify(na)}/${JSON.stringify(nb)}/${JSON.stringify(na2)}`);
+
+	// 接线：index.js 的收敛必须走快照（不许再直接 schemas()）
+	const idxForTools = strip(read('lib/index.js'));
+	check('index.js：工具面收敛走快照（不许再逐次 schemas() 深拷贝）',
+		/createToolNameSnapshot/.test(idxForTools)
+		&& /nameSnapshot\.namesOf\(child\.tools\)/.test(idxForTools)
+		&& !/child\.tools\.schemas\?\.\(\)/.test(idxForTools));
+	check('index.js：agent allowlist 路径也走快照（每个 agent 一份，同样不许逐次 schemas()）',
+		/nameSnapshot\.namesOf\(tools\)/.test(idxForTools)
+		&& !/tools\.schemas\?\.\(\)/.test(idxForTools));
+	// 去抖窗口：成簇的 tools/change（MCP 一口气注册 39 个工具）必须合并成一轮，
+	// 否则"轮数 × 作用域数"就是首启的十几秒；但也不能放大到没边。
+	const debounceMatch = /const TOOL_SURFACE_DEBOUNCE_MS = (\d+);/.exec(idxForTools);
+	check('index.js：收敛去抖窗口已放大（成簇事件合并成一轮）',
+		!!debounceMatch && Number(debounceMatch[1]) >= 500 && Number(debounceMatch[1]) <= 2000,
+		debounceMatch ? debounceMatch[1] : 'not found');
+	check('index.js：两处收敛 schedule 都用同一个去抖窗口（不许一处改一处没改）',
+		(idxForTools.match(/timer = undefined; sync\(\); \}, TOOL_SURFACE_DEBOUNCE_MS\)/g) || []).length === 2,
+		(idxForTools.match(/TOOL_SURFACE_DEBOUNCE_MS\)/g) || []).length + ' 处引用');
+}
+
 /* ★ 2026-10-26：把两个**独立单测**纳入包内自检。
    为什么：它们各自是可执行脚本（`node xxx.test.mjs`），不进 run-all 的 `p3-*` 扫描，
    也不会被别人顺手跑到 ⇒ 等于没有 CI 覆盖。这里用子进程跑一遍，按退出码判定。 */
 {
 	const { spawnSync } = await import('node:child_process');
-	for (const t of ['mentions.test.mjs', 'dispatch-budget.test.mjs', 'member-policy.test.mjs', 'owner-policy.test.mjs', 'relay-policy.test.mjs', 'group-session.test.mjs', 'bindings.test.mjs', 'feishu-adapter.test.mjs', 'feishu-inbound.test.mjs', 'channel-policy.test.mjs', 'pairing.test.mjs', 'dead-letters.test.mjs', 'telegram-adapter.test.mjs', 'discord-adapter.test.mjs', 'wecom-adapter.test.mjs', 'binding-media.test.mjs', 'outbound-media.test.mjs', 'feishu-gateway.test.mjs', 'memory-dir.test.mjs', 'memory-init.test.mjs', 'agentmemory-candidates.test.mjs', 'agentmemory-sync.test.mjs', 'atomic-write.test.mjs', 'im-credentials.test.mjs']) {
+	for (const t of ['mentions.test.mjs', 'dispatch-budget.test.mjs', 'member-policy.test.mjs', 'owner-policy.test.mjs', 'relay-policy.test.mjs', 'group-session.test.mjs', 'bindings.test.mjs', 'feishu-adapter.test.mjs', 'feishu-inbound.test.mjs', 'channel-policy.test.mjs', 'pairing.test.mjs', 'dead-letters.test.mjs', 'telegram-adapter.test.mjs', 'discord-adapter.test.mjs', 'wecom-adapter.test.mjs', 'binding-media.test.mjs', 'outbound-media.test.mjs', 'feishu-gateway.test.mjs', 'memory-dir.test.mjs', 'memory-init.test.mjs', 'agentmemory-candidates.test.mjs', 'agentmemory-sync.test.mjs', 'atomic-write.test.mjs', 'im-credentials.test.mjs', 'inbound-state.test.mjs', 'im-session-map.test.mjs', 'feishu-raw-ws.test.mjs', 'im-inbound-lock.test.mjs', 'host-self-watch.test.mjs']) {
 		const r = spawnSync(process.execPath, [path.join(HERE, t)], { encoding: 'utf8' });
 		const last = String(r.stdout || '').trim().split('\n').filter(Boolean).pop()
 			|| String(r.stderr || '').slice(0, 120);

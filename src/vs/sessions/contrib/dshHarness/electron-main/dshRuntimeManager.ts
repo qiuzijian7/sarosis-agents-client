@@ -18,6 +18,7 @@ import { join } from '../../../../base/common/path.js';
 import { compareSemver, isRuntimeVersionDir, isSupportedNodeVersion, IRuntimeState, parseRuntimeState, selectRuntimeVersion, withCurrent } from '../common/dshCli.js';
 import { DshErrorCode, IDshRuntimeInfo } from '../common/dshHarness.js';
 import { npmCliCandidates } from '../common/dshNodeDist.js';
+import { runtimeInstallMissing } from '../common/dshRuntimeInstall.js';
 import { FetchLike, installManagedNode, INodeInstallResult, managedNodePath } from './dshNodeInstaller.js';
 
 const DSH_PKG_BIN = ['node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'];
@@ -345,16 +346,37 @@ export class DshRuntimeManager {
 		// bundled 是构建期 pin 的兜底（全新安装时 managed 必为空，自然落到 bundled）。
 		const version = selectRuntimeVersion(this.readState(), this.listInstalled());
 		if (version) {
-			const bin = toLongPath(join(this.managedRoot, version, ...DSH_PKG_BIN));
-			return { bin, version: await this._probeDshVersion(node, bin), source: 'managed' };
+			// ★★ 2026-10-29（真机：打包 exe 启动即报「startSession: 控制桥不可用」）：
+			//   托管副本里的 `@deepseek-ai/dsh-app-boot` 是**空目录**（迁移复制不全），而 `state.json`
+			//   仍指向它 ⇒ 这里原来直接把 bin 交给 `_probeDshVersion` ⇒ `ERR_MODULE_NOT_FOUND` 抛出
+			//   ⇒ Host 一次都没起来、`bridge` 恒 undefined，而日志里只有"控制桥不可用"✗✗。
+			//   ⇒ 先做**廉价文件体检**（不 spawn）：缺构件就跳过这份、继续回落 bundled；
+			//     探测失败（能启动但 --version 报错）同样跳过 —— 坏副本不许劫持整个启动 ✓。
+			const installDir = join(this.managedRoot, version);
+			const missing = runtimeInstallMissing(existsSync, installDir);
+			if (missing.length) {
+				this._log(`managed dsh ${version} 不完整（缺 ${missing.join('、')}）⇒ 跳过它，回落到下一个候选`);
+			} else {
+				const bin = toLongPath(join(installDir, ...DSH_PKG_BIN));
+				try {
+					return { bin, version: await this._probeDshVersion(node, bin), source: 'managed' };
+				} catch (e) {
+					this._log(`managed dsh ${version} 探测失败（${String((e as Error)?.message ?? e)}）⇒ 跳过它，回落到下一个候选`);
+				}
+			}
 		}
 
 		const bundled = this._selectBundled();
 		if (bundled) {
 			const bin = toLongPath(join(this.bundledRoot!, bundled, ...DSH_PKG_BIN));
-			const probed = await this._probeDshVersion(node, bin);
-			this._log(`using bundled dsh ${probed} (${bin})`);
-			return { bin, version: probed, source: 'bundled' };
+			try {
+				const probed = await this._probeDshVersion(node, bin);
+				this._log(`using bundled dsh ${probed} (${bin})`);
+				return { bin, version: probed, source: 'bundled' };
+			} catch (e) {
+				// bundled 也坏 ⇒ 说明打包漏了构件；继续找 global，别让用户看到一句"找不到 dsh" ✗
+				this._log(`bundled dsh ${bundled} 探测失败（${String((e as Error)?.message ?? e)}）⇒ 继续找全局安装`);
+			}
 		}
 
 		const global0 = await this._globalBin(node);

@@ -1,6 +1,6 @@
 // 重载运行中的 dev IDE 主窗口（让扩展宿主重新加载刚构建的 dist/extension.cjs.js）。
 //
-// 用法：node scripts/reload-dev-ide.mjs [--port 9222] [--title "Saroasis harness"]
+// 用法：node scripts/reload-dev-ide.mjs [--port 9222] [--title "VsSaros"]
 //
 // ⚠ 安全约束：**只重载匹配的某一个窗口**，且要求还有别的窗口存在
 //   （只有一个窗口时 Page.reload 可能触发 window-all-closed ⇒ 整个 app 退出）。
@@ -12,7 +12,7 @@ const argOf = (name, fallback) => {
 	return i >= 0 && args[i + 1] ? args[i + 1] : fallback;
 };
 const port = Number(argOf('--port', '9222'));
-const title = argOf('--title', 'Saroasis harness');
+const title = argOf('--title', 'VsSaros');
 
 const targets = await CDP.List({ port });
 const pages = targets.filter(t => t.type === 'page');

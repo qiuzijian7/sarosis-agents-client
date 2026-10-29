@@ -46,19 +46,25 @@ const REPO = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PLUGINS = path.join(REPO, 'dsh-plugins');
 
 /**
- * profile 根：**2026-10-28 起 userData 统一为 `~/.vssaros`**（dev 不再用 `.vssaros-dev`）。
+ * profile 根（2026-10-28 最终形态：**开发版与稳定版各一套 userData**）。
  *
- * 仍保留对旧目录的探测：迁移完成前 / 别人机器上还没迁移时，部署要落到**实际在用的**那一份，
- * 否则会出现"脚本说同步成功、宿主读的还是旧目录"这种最难查的假成功 ✗。
+ * 本脚本是**开发期**工具 ⇒ 目标应优先 dev 的 `~/.vssaros-dev/dsh-home/profiles`；
+ * 其余候选只为兼容过渡期（`~/.vssaros/dsh-home-dev` 是中间方案留下的目录）。
+ * 部署必须落到**实际在用的**那一份，否则会出现"脚本说同步成功、宿主读的还是旧目录"这种最难查的假成功 ✗。
  */
 const pickProfilesRoot = () => {
-	for (const dirName of ['.vssaros', '.vssaros-dev']) {
-		const root = path.join(os.homedir(), dirName, 'dsh-home', 'profiles');
+	const home = os.homedir();
+	const candidates = [
+		path.join(home, '.vssaros-dev', 'dsh-home', 'profiles'),   // dev（最终形态）
+		path.join(home, '.vssaros', 'dsh-home-dev', 'profiles'),   // 中间方案遗留
+		path.join(home, '.vssaros', 'dsh-home', 'profiles'),       // 打包版
+	];
+	for (const root of candidates) {
 		if (fs.existsSync(root)) {
 			return root;
 		}
 	}
-	return path.join(os.homedir(), '.vssaros', 'dsh-home', 'profiles');
+	return candidates[0];
 };
 const HOME = pickProfilesRoot();
 

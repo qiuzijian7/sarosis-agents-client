@@ -1,4 +1,5 @@
-// CLIENT_BUILD_STAMP 缺依赖不重试 @ 2026-10-27T11:11 + 2026-10-27T22:55 工作台导航登记萨罗斯中转站(relay)
+// 2026-10-29 touch: 品牌名统一为 VsSaros（client.brand.js 的 TITLE 与两处「回到 … 窗口」）⇒ 动入口刷新 chunk rev。
+// CLIENT_BUILD_STAMP 缺依赖不重试 @ 2026-10-27T11:11 + 2026-10-27T22:55 工作台导航登记萨罗斯中转站(relay) + 2026-10-28T00:30 渠道页按 inboundMode 决定启停按钮与状态文案/02 + 2026-10-29 死信一键加入白名单/02
 // CHUNK_BUILD_STAMP 2026-10-27T18:22：渠道页可编辑凭据（写 dsh 侧 agent-im-accounts.json）
 // @vssaros/dsh-chat-surface — client half (hand-written dsh client module).
 // Binds the chat surface to the session VsSaros created for this chat tab:

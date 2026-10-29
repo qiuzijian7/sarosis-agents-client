@@ -84,6 +84,7 @@ import { DSH_HARNESS_CHANNEL, DshColorScheme, DshHarnessChannelCommand, DshHarne
 // dsh 侧会话摘要（侧栏合并用；解析规则与测试见 common/dshSessionIndex.ts）
 import type { IDshSessionSummary } from '../common/dshSessionIndex.js';
 import { DshUpdateChannel } from '../common/dshCompat.js';
+import { MUX_READY_POLL_INTERVAL_MS, MUX_READY_WAIT_TIMEOUT_MS, decideMuxWait } from '../common/dshMuxReady.js';
 import { IBridgeBundleInfo, IBridgeCodeBuddyImportArgs, IBridgeCodeBuddyImportResult, IBridgeCodeBuddyStatus, IBridgeInspectResult, IBridgeInstallCancelResult, IBridgeInstallResult, IBridgeLightAIImportArgs, IBridgeLightAIImportResult, IBridgeLightAIStatus, IBridgePluginInventory, IBridgePluginRegistries, IBridgePluginRow, IBridgeProvidersSyncArgs, IBridgeProvidersSyncResult, IBridgeSessionCancelArgs, IBridgeSessionCancelResult, IBridgeSessionRunArgs, IBridgeSessionRunResult, IBridgeSessionStartArgs, IBridgeSessionStartResult, IBridgeTofSyncResult, IBridgeWorkspace, IBridgeWorkspaceContextArgs, IBridgeWorkspaceContextResult, DSH_TOF_CREDENTIAL_REF } from '../common/dshBridgeProtocol.js';
 import { DshChatViewAllocator } from '../common/dshChatViewIds.js';
 import { DSH_WORKSPACE_OPTION_LIMIT, DSH_WORKSPACE_ROOT_LIMIT, DSH_WORKTREE_OPTION_LIMIT, DshPageCommand, DshPageEvent, IDshInsertReference, IDshWorkspaceOption, IDshWorktreeOption } from '../common/dshPageBridgeProtocol.js';
@@ -149,6 +150,15 @@ export interface IDshHarnessService {
 	readonly onDidDshSessionRenamed: Event<IDshSessionRenamedResult>;
 
 	ensureStarted(): Promise<IDshHostStatus>;
+	/**
+	 * 等 Host 的 mux 升级路由注册（★ 2026-10-29）。
+	 *
+	 * 真机：Host ready 之后路由还要 4.8s ~ 11.4s 才注册 ⇒ 这段时间里 `session.start` 必然失败
+	 * ⇒ 桌面窗口先等它再发起，一次成功（不再弹假的"启动失败"黄条，也不必退避 4s/12s）。
+	 *
+	 * @returns true = 已就绪；false = 等不到（Host 没了 / 超过窗口）⇒ 调用方照旧走失败重试路径。
+	 */
+	waitForMuxReady(timeoutMs?: number): Promise<boolean>;
 	/**
 	 * 登录/登出**失败**时把原因推给所有本窗口的 dsh 视图（2026-10-21）。
 	 *
@@ -356,6 +366,8 @@ export interface IDshHarnessService {
 	createView(viewId: string, windowId: number, surface: DshViewSurface, sessionId?: string, route?: string, pageSurface?: DshPageSurface, overrideChatOnlyUi?: boolean, isolatedPool?: boolean): Promise<void>;
 	layoutView(viewId: string, bounds: IDshViewBounds): Promise<void>;
 	setViewVisible(viewId: string, visible: boolean, focus?: boolean): Promise<void>;
+	/** 等页面里出现某个选择器（见 `DshHarnessChannelCommand.WaitViewSelector`）。 */
+	waitViewSelector(viewId: string, selector: string, timeoutMs?: number): Promise<boolean>;
 	/**
 	 * **抓一帧并让位**（隐藏原生视图 + 返回那一帧的 JPEG dataURL）。"浮层让位"时把它贴在占位上 ⇒
 	 * 用户看到的是**冻结的最后一帧**而不是空白（2026-10-15：hover 活动栏图标 ⇒ 侧栏 sideview 内容消失）。
@@ -591,6 +603,13 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 		this._register(this._channel.listen<IDshIdeRequest>(DshHarnessChannelEvent.OnIdeRequest)(request => void this._handleIdeRequest(request)));
 		void this.getWorkspaceSync().catch(() => undefined);
 		void this._channel.call<IDshHostStatus>(DshHarnessChannelCommand.GetStatus).then(s => this._update(s), () => undefined);
+		// ★★ 2026-10-29（用户："打包出的 exe 左下角没有弹出更新（有可更新的版本）"）：
+		//   真机证据：更新源上**确实有新版**（本地 2.2.26207 / 源上 2.2.26208，URL 与响应都验过），
+		//   但左下角那行一直显示"已最新" ⇒ 因为 `_checkAppUpdate()` **只在用户点「检查更新」/
+		//   「一键升级」时**才被调用（`refreshUpgrade` / `upgradeApp`），启动时压根没人查 ✗✗。
+		//   ⇒ 启动后**静默查一次**：结果进 `_appUpdate`（缓存），之后每个新视图都会带上它
+		//   （`_pushUpgradeState`）⇒ 左下角那行与面板里的应用行都能立刻说出"可升级到 X" ✓。
+		this._scheduleSilentAppUpdateCheck();
 	}
 
 	/**
@@ -1284,6 +1303,17 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 			// ⚠ 只带页面要用的字段（少传就少泄漏 ✓，与 `IDshWorktreeOption` 同一条纪律 ✓）。
 			const slim = vaults
 				.filter(v => v && String(v.id ?? '').trim())
+				/*
+				 * ★ 2026-10-28（用户要求：**不要提供「我的知识库」这个默认库**）：
+				 *   旧版 `initVaults()` 首次使用会自动建一个名为「我的知识库」的库；后来用户
+				 *   又把它的 customPath 指到自己的文件夹 ⇒ 但**数据根下那个空目录仍在**
+				 *   （`~/.vssaros/knowledge-base/<时间戳-id>/`，0 篇）⇒ 页面里出现"多余的一条"。
+				 *   真正的库是「本地载入文件夹」登记的 `ext-…`（同名目录、169 篇）。
+				 *   ⇒ 注入时**按名字**剔除这条默认库（不限有没有 customPath ——
+				 *     有 customPath 也一样是"用户没主动建过的那条"）。
+				 *     用户若真想要这个名字，可以自己把另一条改名成它。
+				 */
+				.filter(v => v.name !== '我的知识库')
 				.map(v => ({
 					id: String(v.id),
 					name: typeof v.name === 'string' && v.name.trim() ? v.name.trim() : String(v.id),
@@ -1325,7 +1355,16 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 	private _kbActiveVaultId(): string | undefined {
 		try {
 			const id = this._storageService.get(STORAGE_ACTIVE, StorageScope.APPLICATION);
-			return typeof id === 'string' && id.trim() ? id.trim() : undefined;
+			const active = typeof id === 'string' && id.trim() ? id.trim() : undefined;
+			if (!active) { return undefined; }
+			/*
+			 * ★ 2026-10-28：激活 id 可能指向**已被过滤掉的旧默认库**（见 `_kbVaultsSlim`）。
+			 *   那种情况下继续返回它 ⇒ 页面会去激活一个清单里不存在的库（表现：标题显示旧库、内容为空）。
+			 *   ⇒ 只认 slim 清单里存在的 id。
+			 */
+			const slim = this._kbVaultsSlim();
+			if (!slim || !slim.some(v => v.id === active)) { return undefined; }
+			return active;
 		} catch {
 			return undefined;
 		}
@@ -1431,6 +1470,35 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 			this._logService.info(`[dshHarness] Host ready in ${Date.now() - t0} ms（首次 ensureStarted → running；结合 install / spawned / bridge apply 三行可拆出各段成本）`);
 		}
 		return s;
+	}
+
+	/**
+	 * 等 Host 的 mux 升级路由注册（★ 2026-10-29）。
+	 *
+	 * 真机：Host ready 之后 mux 路由还要 4.8s ~ 11.4s 才注册（`mux route available +N ms after Host ready`），
+	 * 这段时间里任何 `session.start` 都会失败 ⇒ 桌面窗口原本只能退避重试（4s/12s）+ 弹一条**假的**"启动失败"。
+	 * ⇒ 发起会话之前先在这里等路由通，一次成功。
+	 *
+	 * @returns true = 路由已就绪（可以发起）；false = 等不到（Host 没了 / 超过窗口）⇒ 照旧走失败重试路径。
+	 */
+	async waitForMuxReady(timeoutMs: number = MUX_READY_WAIT_TIMEOUT_MS): Promise<boolean> {
+		const t0 = Date.now();
+		for (;;) {
+			let status: IDshHostStatus | undefined;
+			try {
+				status = await this._channel.call<IDshHostStatus>(DshHarnessChannelCommand.GetStatus);
+			} catch {
+				status = undefined;   // 还没拿到状态 ⇒ 继续等（判据里算 'wait'）
+			}
+			const decision = decideMuxWait(status, Date.now() - t0, timeoutMs);
+			if (decision === 'proceed') {
+				return true;
+			}
+			if (decision === 'giveup') {
+				return false;
+			}
+			await new Promise<void>(resolve => setTimeout(resolve, MUX_READY_POLL_INTERVAL_MS));
+		}
 	}
 
 	async restart(): Promise<IDshHostStatus> {
@@ -2048,9 +2116,37 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 		}
 	}
 
+	/**
+	 * 启动后**静默**查一次应用更新（2026-10-29）。
+	 *
+	 * 为什么必须有（用户报障："打包出的 exe 左下角没有弹出更新（有可更新的版本）"）：
+	 *   `_checkAppUpdate()` 原来只在 `refreshUpgrade()`（点「检查更新」）与 `upgradeApp()`
+	 *   （点「一键升级」）里被调用 ⇒ **启动时从来没人查** ⇒ `_appUpdate` 恒 `undefined`
+	 *   ⇒ 快照里 `app.action = 'unknown'`（页面文案"还没检查"）⇒ 左下角那行永远"已最新" ✗✗。
+	 *   真机上更新源**确实有新版**（本地 2.2.26207 / 源上 2.2.26208）—— 纯粹是没去问。
+	 *
+	 * 三条约束：
+	 *   · **延后几秒**再查：避开首启高峰（Host 冷启动要十几秒），也避免与页面首帧抢资源；
+	 *   · **静默**：不设 `_upgradeBusy`（页面不该显示"正在检查更新源…"），失败只记日志；
+	 *   · 结果进 `_appUpdate` 后**每个新视图都会带上**（`_pushUpgradeState`）⇒ 视图晚建也不丢 ✓。
+	 */
+	private _scheduleSilentAppUpdateCheck(): void {
+		const timer = setTimeout(() => {
+			void (async () => {
+				try {
+					this._appUpdate = await this._checkAppUpdate();
+					await this._pushUpgradeToAll();
+				} catch (e) {
+					this._logService.info(`[dshHarness] 静默检查应用更新失败：${String((e as Error)?.message ?? e)}`);
+				}
+			})();
+		}, 8_000);
+		timer.unref?.();
+		this._register({ dispose: () => clearTimeout(timer) });
+	}
+
 	/** 问更新源"最新是哪一版"，并用 `decideAppUpdate` 判能不能升（**不下载**）。 */
-	private async _checkAppUpdate(): Promise<IDshUpgradeAppState> {
-		const current = this._productService.version ?? '0.0.0';
+	private async _checkAppUpdate(): Promise<IDshUpgradeAppState> {		const current = this._productService.version ?? '0.0.0';
 		const base = this._productService.updateUrl;
 		if (!base) {
 			return { current, action: 'unknown', error: '这个构建没有配置 updateUrl' };
@@ -2323,6 +2419,17 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 
 	setViewVisible(viewId: string, visible: boolean, focus?: boolean): Promise<void> {
 		return this._channel.call(DshHarnessChannelCommand.SetViewVisible, { viewId, visible, focus });
+	}
+
+	/**
+	 * 等页面里出现某个选择器（2026-10-28）。
+	 *
+	 * 桌面窗口第一次启动会看到"官方默认样式闪一下"—— 官方 UI 先 paint，我们的换皮 chunk 后到。
+	 * 视图创建时本就不可见 ⇒ 等换皮锚点出现再 `setViewVisible(true)`，中间那段就没人看见。
+	 * ⚠ 调用方必须超时也照常显示（页面出问题时不许白屏）。
+	 */
+	waitViewSelector(viewId: string, selector: string, timeoutMs = 9_000): Promise<boolean> {
+		return this._channel.call(DshHarnessChannelCommand.WaitViewSelector, { viewId, selector, timeoutMs });
 	}
 
 	freezeView(viewId: string): Promise<string | undefined> {

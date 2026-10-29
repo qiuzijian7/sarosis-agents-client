@@ -1,5 +1,5 @@
 ﻿# =============================================================================
-#  show-kill-forensics.ps1 —— 从安全日志 4688 里找出"谁动过 Saroasis harness.exe"
+#  show-kill-forensics.ps1 —— 从安全日志 4688 里找出"谁动过 VsSaros.exe"
 #
 #  前提：先跑过一次 scripts\enable-process-audit.ps1（提权）。
 #  用法：
@@ -10,7 +10,7 @@
 #  输出：时间 | 创建者(父进程) | 新进程命令行
 #  判读：
 #    · 创建者是 `taskkill.exe`/`powershell.exe`/`wmic.exe`/`cmd.exe` 的一条，且新进程
-#      命令行里含 `Saroasis harness.exe` ⇒ 就是它下的手（父进程名往往就是源头工具）。
+#      命令行里含 `VsSaros.exe` ⇒ 就是它下的手（父进程名往往就是源头工具）。
 # =============================================================================
 param(
 	[int]$Hours = 24,
@@ -46,8 +46,8 @@ $rows = foreach ($e in $events) {
 	$newProc = [string]$d['NewProcessName']
 	$creator = [string]$d['ParentProcessName']
 	# 只留"碰过我们应用"或"执行了杀进程命令"的事件
-	$hit = ($cmdline -match 'Saroasis harness') -or
-		($newProc -match 'Saroasis harness') -or
+	$hit = ($cmdline -match 'VsSaros') -or
+		($newProc -match 'VsSaros') -or
 		($cmdline -match 'taskkill|Stop-Process|TerminateProcess')
 	if (-not $hit) { continue }
 	if ($Filter -and ($cmdline -notmatch $Filter) -and ($creator -notmatch $Filter)) { continue }

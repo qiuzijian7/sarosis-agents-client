@@ -5,8 +5,8 @@
 			"type": "chrome",
 			"request": "attach",
 
-			"name": "Launch & Attach Dev (9799)",
-			"port": 9799,
+			"name": "Launch & Attach Dev (9222)",
+			"port": 9222,
 			// 先由 preLaunchTask（scripts/start-dev-app.cmd，detached）把应用起起来，再 attach。
 			// attach 断开**不会**杀 app（launch + cleanUp:wholeBrowser 会，见 killBehavior）。
 			"preLaunchTask": "Start Dev App (attach-ready)",
@@ -91,8 +91,8 @@
 		{
 			"type": "chrome",
 			"request": "attach",
-			"name": "Attach to VS Code Renderer (9799)",
-			"port": 9799,
+			"name": "Attach to VS Code Renderer (9222)",
+			"port": 9222,
 			// ★ 2026-10-25：F5 **会重复上一次选中的配置**。若当前选的是这条"纯 attach"，
 			//   它没有 preLaunchTask ⇒ 应用不会被启动，只会去连那个（可能已是幽灵的）端口，
 			//   表现就是「F5 无法启动、且 app-exit.log 里一点记录都没有」✗。
@@ -105,7 +105,7 @@
 			"request": "attach",
 			"name": "Attach to Main Process",
 			"timeout": 30000,
-			"port": 5888,
+			"port": 5999,
 			// 同上：attach 型配置也要先把应用拉起来（否则 F5 只是干等端口）
 			"preLaunchTask": "Start Dev App (attach-ready)",
 			"continueOnAttach": true,
@@ -279,7 +279,7 @@
 			"type": "chrome",
 			"request": "launch",
 			"name": "Launch VS Code Internal（launch：调试结束会关掉应用）",
-			"runtimeExecutable": "${workspaceFolder}/.build/electron/Saroasis harness.exe",
+			"runtimeExecutable": "${workspaceFolder}/.build/electron/VsSaros.exe",
 			"preLaunchTask": "Transpile Client",
 			"osx": {
 				"runtimeExecutable": "${workspaceFolder}/scripts/code.sh"
@@ -291,7 +291,7 @@
 			// 原因：F5 会**重复上一次选的配置**，而 9334 上留着一个残留监听
 			// （`netstat` LISTENING 但 `wmic` 查该 PID 已 `No Instance(s) Available`）。
 			// 两条都改到 9799 ⇒ 无论 F5 跑哪条，报错端口都能指出它跑的是哪条配置。
-			"port": 9799,
+			"port": 9222,
 			"timeout": 0,
 			"env": {
 				"NODE_ENV": "development",
@@ -319,7 +319,7 @@
 				"--disable-features=CalculateNativeWinOcclusion",
 				"--disable-extension=vscode.vscode-api-tests"
 			],
-			"userDataDir": "${userHome}/.vssaros",
+			"userDataDir": "${userHome}/.vssaros-dev",
 			"webRoot": "${workspaceFolder}",
 			"cascadeTerminateToConfigurations": [
 				"Attach to Extension Host"
@@ -338,7 +338,7 @@
 			"type": "chrome",
 			"request": "launch",
 			"name": "Launch VS Code Agents Internal（launch：调试结束会关掉应用）",
-			"runtimeExecutable": "${workspaceFolder}/.build/electron/Saroasis harness.exe",
+			"runtimeExecutable": "${workspaceFolder}/.build/electron/VsSaros.exe",
 			"preLaunchTask": "Transpile Client",
 			"osx": {
 				"runtimeExecutable": "${workspaceFolder}/scripts/code.sh"
@@ -351,7 +351,7 @@
 			// 会让 F5 报 `Could not connect to debug target at http://localhost:9334:
 			// Could not find any debuggable target`。
 			// ⚠ 注意另一条配置 `Launch VS Code Internal` 仍在用 9334，两者**不要共用**。
-			"port": 9799,
+			"port": 9222,
 			"timeout": 0,
 			"env": {
 				"NODE_ENV": "development",
@@ -396,7 +396,7 @@
 				// in `ensureAgentsWindow()` because only it carries a workspace extension.
 				"${workspaceFolder}/sarosis-agents-client.code-workspace"
 			],
-			"userDataDir": "${userHome}/.vssaros",
+			"userDataDir": "${userHome}/.vssaros-dev",
 			"webRoot": "${workspaceFolder}",
 			"cascadeTerminateToConfigurations": [
 				"Attach to Extension Host"
@@ -450,7 +450,7 @@
 				"--disable-features=CalculateNativeWinOcclusion",
 				"--disable-extension=vscode.vscode-api-tests"
 			],
-			"userDataDir": "${userHome}/.vssaros",
+			"userDataDir": "${userHome}/.vssaros-dev",
 			"webRoot": "${workspaceFolder}",
 			"cascadeTerminateToConfigurations": [
 				"Attach to Extension Host"

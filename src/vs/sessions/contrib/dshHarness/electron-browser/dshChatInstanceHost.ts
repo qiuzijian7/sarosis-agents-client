@@ -784,7 +784,7 @@ class DshChatBinding extends Disposable implements IDshChatBinding {
 		try {
 			this._notifications.notify({
 				severity: Severity.Warning,
-				message: `Saroasis harness：${what} 失败 —— ${detail}`,
+				message: `VsSaros：${what} 失败 —— ${detail}`,
 			});
 		} catch { /* 通知失败不影响别的（日志里已经有真因 ✓） */ }
 	}

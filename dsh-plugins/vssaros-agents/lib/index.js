@@ -31,6 +31,7 @@ import { draftFromAgentMd, modelCandidatesOf } from './core/create.js';
 import { lineDiff } from './core/diff.js';
 import { aggregateByPreset, liveForAgents, usageByAgent } from './core/live.js';
 import { PERSONA_PROJECTION_KEY, personaProjection, personaSwitchMessage, switchedPersonaText } from './core/persona.js';
+import { createToolNameSnapshot } from './core/toolNames.js';
 import { renderDetailPage } from './detail.js';
 // ★ 2026-10-22（工作台重构）：名册 JSON 接口复用**同一份**面板数据构建（页面与工作台不会各算一遍 ✓）
 import { buildHomeData } from './home.js';
@@ -48,18 +49,36 @@ import { importMemoryDraft, listAgentMemoryCandidates, listAgentMemoryExtras, sy
 import { ensureOutboxLoaded, outboxList, outboxRetry } from './outbox.js';
 /* IM 绑定（2026-10-27，P0）：每个 bot / 群可绑一个 IM 会话，双向流转。
    适配器端口与 `vssaros-channels/lib/core/ports.js` 同形 ⇒ 飞书适配器将来可直接搬。 */
-import { createBinding, createBindingHub, deleteBinding, dispatchImToAgent, listBindings, updateBinding } from './bindings.js';
+import { allowDeadLetterSender, createBinding, createBindingHub, deleteBinding, dispatchImToAgent, listBindings, updateBinding } from './bindings.js';
 import { createLoopbackAdapter } from './adapters/loopback.js';
 import { createFeishuAdapter } from './adapters/feishu.js';
 /* 入站（P2 骨架）：传输层注入 —— 装了官方 SDK 才能真连长连接，没装就如实 unavailable。 */
 import { createFeishuGateway, createSdkTransport } from './adapters/feishuInbound.js';
+/* ★ 2026-10-29：飞书入站默认走**自研 WS 协议**（protobuf 二进制帧 + ping/pong + ack 回执）。
+   为什么不用官方 SDK 的 WSClient：2026-10-29 真机上它「握手完成但一条事件都不来」，
+   而 SDK 默认**不打任何日志** ⇒ 分不清"没连上"与"连上了不推"；而 IDE 侧当年**手写**的
+   这套协议（协议出处见 `feishuWsFrames.js` 头注释）是**真收到过事件**的。
+   ⇒ 自研实现优先；`createSdkTransport` 保留在 `feishuInbound.js` 里，要切回改下面这一行即可。 */
+import { createRawWsTransport } from './adapters/feishuRawWs.js';
 /* Telegram 适配器（2026-10-27）：纯 HTTP 长轮询，不需要 SDK —— 用来证明"加渠道只写薄适配器"。 */
 import { createHttpTransport, createTelegramAdapter, createTelegramGateway } from './adapters/telegram.js';
 import { createDiscordAdapter, createDiscordGateway } from './adapters/discord.js';
 import { createWecomAdapter, handleWecomCallback } from './adapters/wecom.js';
 /* IM 应用凭据（**dsh 侧真源**，2026-10-27）：设置弹窗「渠道」页读写 `<dataRoot>/agent-im-accounts.json`；
    `config.feishu`（IDE 覆盖层）降级为兼容回落 —— 优先级 dsh 文件 → config → 环境变量。 */
-import { describeFeishu, describePlatforms, migrateLegacyFeishu, resolveFeishu, savePlatform } from './imCredentials.js';
+import { describeFeishu, describePlatforms, migrateLegacyFeishu, resolveFeishu, resolvePlatform, savePlatform } from './imCredentials.js';
+/* 入站「上次是否在跑」的开关（2026-10-29）：重启 Host 后据此恢复，别让用户以为坏了。 */
+import { readInboundEnabled, setInboundEnabled } from './imInboundState.js';
+/* ★ 2026-10-29：**跨 dataRoot 的入站长连接互斥锁**（见 imInboundLock.js 文件头）。
+   飞书对同一应用只让一条长连接真正收到事件，而这台机器上可能同时有几个 Host
+   （旧 Host 未被回收 / dev 版与正式版是两个 dataRoot、互相看不见）⇒ 必须在 home 下放锁，
+   抢不到就不连。否则表现是「日志全绿 + 心跳正常 + 零事件」，极难查（今天就卡在这）。 */
+import { releaseImLock, startImLockHeartbeat, tryAcquireImLock } from './imInboundLock.js';
+/* ★ 2026-10-29：**父进程看护** —— app 退出后 Host 自己退，避免孤儿 Host 继续占用
+   会话写句柄与 IM 长连接（见 hostSelfWatch.js 文件头；真机上曾攒出 3 个 Host 抢飞书事件）。 */
+import { startAppParentWatch } from './hostSelfWatch.js';
+/* 每条 IM 绑定 ⇄ 一条 dsh 会话（2026-10-29）：否则派发会不断新建「未命名会话」。 */
+import { getImSession, setImSession } from './imSessionMap.js';
 /* 平台与字段定义（**单一真源**）：随 GET 发给客户端渲染表单，两端不各写一份 */
 import { IM_PLATFORM_DEFS } from './imPlatforms.js';
 /* DM 配对（OpenClaw 同构，2026-10-27）：`dmPolicy=pairing` 的码表 + 批准表。
@@ -83,6 +102,23 @@ import { renderSideviewPage } from './sideview.js';
 import { agentsRootOf, scanAgents, scanAgentsFromConfig } from './store.js';
 import { addApprovalTemplate, listApprovalTemplates, removeApprovalTemplate, templateGate } from './templates.js';
 import { registerAgentTools } from './tools.js';
+
+/**
+ * 工具面收敛的**去抖窗口**（2026-10-29）。
+ *
+ * 为什么从 150ms 提到 800ms：
+ *   · `tools/change` 在启动期会**成簇**到达（MCP 一口气注册 39 个工具）⇒ 150ms 的窗口把这一簇
+ *     切成 **4 轮**（真机日志：同一 preset 收敛 4 次：59→61→100→39）。
+ *   · 每一轮都要让**每个作用域**（30 个 preset + 每个 agent 的 allowlist）各算一次 ⇒
+ *     轮数 × 作用域数 = 首启的十几秒（实测 Host 冷启动 24.3s 里有 ~18s 在这里）。
+ *   · 窗口放大到 800ms ⇒ 成簇事件合并成 **1 轮** ⇒ 同样的工作量少跑 3/4。
+ *
+ * 为什么安全：
+ *   · 振荡环（2026-10-20 那次"掩码来回切 600 轮"）是**同步**触发的，靠 `running` 防重入标志切断，
+ *     **不依赖**去抖窗口大小 ⇒ 放大窗口不会让环复活 ✓；
+ *   · 工具面收敛本来就是"稍晚一点生效"的东西（模型看到工具列表晚 0.8s 无感）✓。
+ */
+const TOOL_SURFACE_DEBOUNCE_MS = 800;
 
 /** 与 cordis.patch.yml 的行 id 一致。 */
 export const name = 'vssaros-agents';
@@ -305,16 +341,18 @@ function watchAllowlist(runtime, agent, label, wanted) {
 	let running = false;
 	let rerun = false;
 	let timer;
+	// ★ 2026-10-29：工具名快照（按实例隔离 + 按 `tools/change` 版本失效）。
+	const nameSnapshot = createToolNameSnapshot();
 	const shadowed = (name) => {
 		const mine = tools.get?.(name, agent);
 		return mine !== undefined && mine !== tools.get?.(name);
 	};
 	const syncOnce = () => {
-		let globalNames;
-		try {
-			globalNames = (tools.schemas?.() ?? []).map(schema => schema?.name).filter(Boolean);
-		} catch {
-			return;
+		// ★ 2026-10-29：原来每次都 `tools.schemas()`（每个可见工具一次 parameters 深拷贝）
+		//   ⇒ 这里每个 agent 一份、每轮一次 ⇒ 首启的大头。改成"只要名字"+按实例版本失效的快照。
+		const globalNames = nameSnapshot.namesOf(tools);
+		if (!globalNames) {
+			return;   // 注册表还没就绪：等下一次 `tools/change`
 		}
 		const next = new Set([...applied, ...allowlistDenyOf(wanted, globalNames, shadowed)]);
 		if (next.size === 0 || (dispose && next.size === applied.size)) { return; }
@@ -336,7 +374,7 @@ function watchAllowlist(runtime, agent, label, wanted) {
 	};
 	const schedule = () => {
 		if (timer) { return; }
-		timer = setTimeout(() => { timer = undefined; sync(); }, 150);
+		timer = setTimeout(() => { timer = undefined; sync(); }, TOOL_SURFACE_DEBOUNCE_MS);
 		timer.unref?.();
 	};
 	const sync = () => {
@@ -347,7 +385,10 @@ function watchAllowlist(runtime, agent, label, wanted) {
 	};
 	sync();
 	let off;
-	try { off = runtime.on?.('tools/change', () => schedule()); } catch { off = undefined; }
+	try {
+		// 工具注册/撤销 ⇒ 可见集变了 ⇒ 快照作废（否则新工具会漏藏，且没有下一次事件来补 ✗）。
+		off = runtime.on?.('tools/change', () => { nameSnapshot.invalidate(); schedule(); });
+	} catch { off = undefined; }
 	return () => {
 		try { off?.(); } catch { /* 退订失败不影响收尾 */ }
 		try { if (timer) { clearTimeout(timer); timer = undefined; } } catch { /* 同上 */ }
@@ -749,6 +790,19 @@ function applyTopLevel(ctx, config) {
 		dispatchAgent: (cfg, binding, msg) => dispatchImToAgent(cfg, state, binding, msg, {
 			scanAgents: (c) => scanAgentsFromConfig(c),
 			ensureSession: (c, st, agent) => ensureMemberSession(c, st, agent, undefined),
+			/* ★ 2026-10-29：**每条绑定固定一条会话**（否则每次派发都可能新建一条「未命名会话」，
+			   用户在 Bots 页/工作区里认不出哪条是飞书来的）。映射单独存盘，见 imSessionMap.js。 */
+			imSessions: {
+				get: (c, bindingId) => getImSession(c, bindingId),
+				set: (c, bindingId, sessionId) => setImSession(c, bindingId, sessionId),
+			},
+			/* 新会话起名（`飞书 · VsSaros知识库`）：dsh 只有 sessionController.rename 能真改名，
+			   老版本没有该服务 ⇒ 静默跳过（派发不受影响）。 */
+			renameSession: async (sessionId, title) => {
+				const sc = state.sessionController;
+				if (!sc || typeof sc.rename !== 'function') { return; }
+				await sc.rename({ sessionId, title });
+			},
 		}),
 		dispatchGroup: async (cfg, binding, msg) => {
 			/* 群里入站 ⇒ 走**既有** `postGroupMessage`：于是成员级唤醒策略、digest、
@@ -763,9 +817,12 @@ function applyTopLevel(ctx, config) {
 	});
 	state.bindingHub.register(loopbackAdapter);
 	state.loopbackAdapter = loopbackAdapter;
-	/* 飞书**出站**（P1）：自定义机器人 webhook。入站（长连接）在 P2 的适配器里补，
-	   路由层与 UI 都不用改 —— 这就是留 `ports` 接缝的意义。 */
-	state.bindingHub.register(createFeishuAdapter());
+	/* 飞书**出站**：两条通道（2026-10-28）。
+	   ① 绑定里填了 `webhookUrl` ⇒ 自定义机器人（不消耗应用权限）；
+	   ② 没填 ⇒ **应用模式**：用「设置 → 渠道」里的 App ID / App Secret 换 tenant_access_token，
+	      `im/v1/messages?receive_id_type=chat_id` ⇒ **填个 chat_id 就能发**（用户就是这么预期的）。
+	   `resolveApp` 现取而不是启动快照 ⇒ 在设置里填完立刻生效，不用重启 Host。 */
+	state.bindingHub.register(createFeishuAdapter({ resolveApp: () => resolveFeishu(config) }));
 	/* 飞书**入站**（P2）：长连接。传输层用官方 SDK；没装/没凭据 ⇒ start() 抛 unavailable，
 	   由 API 如实回报（不假装"正在连接"）。这里**不自动 start** —— 没凭据时反复重连只是噪音。
 	   ★ 2026-10-27「数据源统一到 dsh 侧」：凭据真源改为 `<dataRoot>/agent-im-accounts.json`
@@ -786,9 +843,10 @@ function applyTopLevel(ctx, config) {
 		.catch(() => undefined);
 
 	state.feishuInbound = createFeishuGateway({
-		transport: createSdkTransport({
+		/* ★ 2026-10-29：默认**自研协议**实现（理由见上面 import 处注释）。
+		   要切回官方 SDK：把下面换成 `createSdkTransport({ resolve: () => resolveFeishu(config), importSdk: state.feishuImportSdk })`。 */
+		transport: createRawWsTransport({
 			resolve: () => resolveFeishu(config),
-			importSdk: state.feishuImportSdk,
 		}),
 		/* 事件 → 与手动演练（action:'inbound'）**同一条**入口，策略/幂等/派发完全一致 */
 		onMessage: (msg) => state.bindingHub.handleInbound(msg),
@@ -835,6 +893,49 @@ function applyTopLevel(ctx, config) {
 	state.bindingHub.register(createWecomAdapter({
 		resolve: () => resolvePlatform(config, 'wecom'),
 	}));
+
+	/* 锁里只用来"记一下是谁占着"：取值口径与 dataRoot 一致即可（读不到给空串，不影响判活）。 */
+	const lockRoot = () => String((config && config.dataRoot) || process.env.VSSAROS_DATA_ROOT || '');
+
+	/* ★ 2026-10-29：**父进程（app）退出后本 Host 自动退出**。
+	   孤儿 Host 会一直攥着会话写句柄与 IM 长连接，而同一飞书应用的多条长连接**互相抢事件**
+	   （真机上攒出过 3 个 Host 同时活着，表现是"日志全绿 + 心跳正常 + 零事件"）。 */
+	startAppParentWatch({ log: (m) => console.info(`[vssaros-agents]${m}`) });
+
+	/* ★ 2026-10-29：**按上次状态恢复入站**（见 imInboundState.js）。
+	   用户点过「启动入站」⇒ 重启 Host 后自动恢复；没点过 ⇒ 仍然不自动连（不制造重连噪音）。
+	   延迟 3s：先让 Host 把会话/服务装好，别和启动抢资源；失败只记日志，绝不能拖垮装配。 */
+	setTimeout(() => {
+		void (async () => {
+			const enabled = await readInboundEnabled(config).catch(() => ({}));
+			const gateways = {
+				feishu: state.feishuInbound,
+				telegram: state.telegramInbound,
+				discord: state.discordInbound,
+			};
+			for (const platform of Object.keys(gateways)) {
+				const gw = gateways[platform];
+				if (!enabled[platform] || !gw) { continue; }
+				/* ⚠ 恢复前必须抢到**入站锁**（imInboundLock.js）：抢不到说明另一实例正占着这条长连接，
+				   连上去只会把事件抢走一半（飞书只投给一条）⇒ 宁可这一边不连，并写明谁占着。 */
+				const lock = await tryAcquireImLock(platform, { dataRoot: lockRoot() }).catch(() => ({ ok: false, holder: null }));
+				if (!lock.ok) {
+					const h = lock.holder || {};
+					console.warn(`[vssaros-agents][im] 跳过恢复入站（${platform}）：另一实例（pid ${h.pid ?? '?'}，dataRoot=${h.dataRoot || '?'}）正占用该平台长连接 —— 同一应用多条连接会互相抢事件`);
+					continue;
+				}
+				try {
+					await gw.start();
+					state.imLockStops = state.imLockStops || {};
+					state.imLockStops[platform] = startImLockHeartbeat(platform);
+					console.info(`[vssaros-agents][im] 已按上次状态恢复入站：${platform}`);
+				} catch (e) {
+					await releaseImLock(platform).catch(() => undefined);
+					console.warn(`[vssaros-agents][im] 恢复入站失败（${platform}）：${String((e && e.message) || e).slice(0, 200)}`);
+				}
+			}
+		})();
+	}, 3000);
 
 	// 会话投影（顶层再注册一份，与 preset 作用域那份共享同一个单元）——切换后 UI/诊断按 sessionId 读它。
 	ctx.inject(['sessionProjections'], child => child.effect(() => {
@@ -1219,6 +1320,10 @@ function applyTopLevel(ctx, config) {
 					const deps = {
 						scanAgents: (cfg) => scanAgentsFromConfig(cfg),
 						groupExists: async (cfg, id) => (await listGroups(cfg)).groups.some(g => String(g.id) === String(id)),
+						/* 平台是否已配好应用凭据（`bindings.assertTransport` 用）：飞书没填 webhook 时
+						   改为要求「设置 → 渠道」里已有 App ID/Secret（应用模式），否则 400 —— 
+						   这样既不会拦掉"填个 chat_id 就能用"的正路，也不会让人建出一条永远发不出去的绑定。 */
+						appConfigured: async (platform) => (await resolvePlatform(config, platform)).configured,
 					};
 					if (req.method === 'GET') {
 						const out = await listBindings(config, deps);
@@ -1231,10 +1336,13 @@ function applyTopLevel(ctx, config) {
 							...(loop ? { loopbackSent: loop.sent.slice(-20) } : {}),
 							/* 入站（P2）：状态 + 是否配了凭据。UI 据此显示「未配置 / 未安装 SDK / 已连接」。 */
 							inbound: state.feishuInbound ? state.feishuInbound.state() : null,
-							/* 各平台入站状态（飞书 WS / Telegram 长轮询）—— 配置页按平台分别显示 */
+							/* 各平台入站状态（飞书 WS / Telegram 长轮询 / Discord Gateway）—— 配置页按平台分别显示。
+							   ⚠ 这里**漏一个平台**的后果是：那个平台在配置页永远显示"未启动"、按钮点了也没反馈
+							   （discord 2026-10-28 就漏过一次）。企业微信是被动回调 ⇒ 没有网关、也没有"启动"这一步。 */
 							inbounds: {
 								feishu: state.feishuInbound ? state.feishuInbound.state() : null,
 								telegram: state.telegramInbound ? state.telegramInbound.state() : null,
+								discord: state.discordInbound ? state.discordInbound.state() : null,
 							},
 							feishu: await describeFeishu(config),
 							/* 多渠道（2026-10-27）：每平台的掩码状态 + 字段定义。
@@ -1287,15 +1395,32 @@ function applyTopLevel(ctx, config) {
 									: action === 'pairing-approve' ? await approvePairing(config, body)
 										: action === 'pairing-revoke' ? await revokePairing(config, body)
 										: action === 'dead-letters-clear' ? await clearDeadLetters(config)
+										/* ★ 2026-10-29：把死信里的发送者**一键加进该绑定的白名单**。
+										   "我发了消息 bot 没反应"最常见的答案就是"白名单没加我"；
+										   让用户抄 open_id 再回绑定页粘贴，链路太长。 */
+										: action === 'dead-letter-allow' ? await allowDeadLetterSender(config, body)
 									: action === 'credentials' ? await savePlatform(
 										config,
 										(body && body.platform) || 'feishu',
 										{ ...(body || {}), actor: body?.actor },
 									)
 									: action === 'inbound' ? await state.bindingHub.handleInbound(body.message ?? body)
-										/* 入站长连接启停（P2）：没装 SDK / 没凭据时会抛 unavailable，错误原样返回 */
-									: action === 'inbound-start' ? (await inboundOf(body).start(), inboundOf(body).state())
-									: action === 'inbound-stop' ? (await inboundOf(body).stop(), inboundOf(body).state())
+										/* 入站长连接启停（P2）：没装 SDK / 没凭据时会抛 unavailable，错误原样返回。
+										   ★ 2026-10-29：**记住用户点过启动**（start 成功后才写），
+										     重启 Host 时据此恢复 —— 否则"点了启动、重启后又静默回到未启动"，
+										     用户只会看到"消息没反应"（见 imInboundState.js 头注释）。 */
+									: action === 'inbound-start' ? await (async () => {
+										const gw = inboundOf(body);
+										await gw.start();
+										await setInboundEnabled(config, (body && body.platform) || 'feishu', true).catch(() => undefined);
+										return gw.state();
+									})()
+									: action === 'inbound-stop' ? await (async () => {
+										const gw = inboundOf(body);
+										await gw.stop();
+										await setInboundEnabled(config, (body && body.platform) || 'feishu', false).catch(() => undefined);
+										return gw.state();
+									})()
 									/* 测试发送（2026-10-27）：用**真实适配器**给这条绑定发一条消息 ——
 									   "配完了到底通不通"不必再等真跑一次对话；失败原因原样返回。 */
 									: action === 'test' ? await state.bindingHub.testBinding(body?.id)
@@ -2322,16 +2447,19 @@ function applyToolsOnly(ctx, config) {
 		let running = false;
 		let rerun = false;
 		let timer;
+		// ★ 2026-10-29（首启慢的大头）：`child.tools.schemas()` 会对每个可见工具做一次 parameters 的
+		//   JSON 深拷贝（197 个工具）⇒ 30 个 preset × 每轮 `tools/change` ⇒ 十几秒白烧。
+		//   这里改成"只要名字"（内部 `view()` 零深拷贝）+ **按实例隔离、按事件版本失效**的快照。
+		const nameSnapshot = createToolNameSnapshot();
 		const schedule = () => {
 			if (timer) { return; }
-			timer = setTimeout(() => { timer = undefined; sync(); }, 150);
+			timer = setTimeout(() => { timer = undefined; sync(); }, TOOL_SURFACE_DEBOUNCE_MS);
 			timer.unref?.();
 		};
 		const syncOnce = () => {
-			let names;
-			try {
-				names = (child.tools.schemas?.() ?? []).map(schema => schema?.name).filter(Boolean);
-			} catch {
+			// 工具注册/撤销会让可见集变化 ⇒ 快照必须失效（否则新工具漏藏，且没有下一次事件来补 ✗）。
+			const names = nameSnapshot.namesOf(child.tools);
+			if (!names) {
 				return; // 注册表还没就绪：等下一次 `tools/change`
 			}
 			const { deny, misses } = expandDenyPatterns(patterns, names);
@@ -2366,7 +2494,8 @@ function applyToolsOnly(ctx, config) {
 		sync();
 		let off;
 		try {
-			off = child.on?.('tools/change', () => schedule());
+			// 工具注册/撤销 ⇒ 可见集变了 ⇒ 快照作废（否则新工具会漏藏，且没有下一次事件来补 ✗）。
+			off = child.on?.('tools/change', () => { nameSnapshot.invalidate(); schedule(); });
 		} catch {
 			off = undefined; // 事件不可用 ⇒ 只按挂载那一刻算（不抛，别让收敛拖垮预设）
 		}

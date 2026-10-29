@@ -30,6 +30,7 @@ import { $, append } from '../../../../base/browser/dom.js';
 import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { IProductService } from '../../../../platform/product/common/productService.js';
 import { FocusMode, INativeHostService } from '../../../../platform/native/common/native.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IAuxiliaryWindowService } from '../../../../workbench/services/auxiliaryWindow/browser/auxiliaryWindowService.js';
@@ -67,6 +68,8 @@ export class DshFullWindowContribution extends Disposable {
 		// 启动自动开窗成功后把 **IDE 主窗口藏起来**（"F5 只看到这个窗口"）；关窗/回 IDE 再 `showWindow` 还回去。
 		// ⚠ `focusWindow` 对**已隐藏**的窗口无效（主进程 `doFocusWindow` 只处理最小化）⇒ 必须先 `showWindow` ✓。
 		@INativeHostService private readonly _nativeHostService: INativeHostService,
+		// ★ 2026-10-29（用户：desktop 窗口左上角 logo/品牌名**右侧**加版本号）⇒ 需要产品版本。
+		@IProductService private readonly _productService: IProductService,
 	) {
 		super();
 		// 与聊天宿主同一门槛：总开关关闭或 engine=legacy 时不接管，popout 走旧实现。
@@ -288,7 +291,20 @@ export class DshFullWindowContribution extends Disposable {
 				'-webkit-app-region:drag', 'user-select:none',
 				`background:${bg}`, `color:${fg}`,
 			].join(';');
-			bar.textContent = title;
+			/*
+			 * ★ 2026-10-29（用户：左上角 logo 和品牌名**右侧**加版本号）：
+			 *   原来整条标题条只有一行文字（`bar.textContent = title`）⇒ 只能显示品牌名。
+			 *   现在拆成「品牌名 + 版本号」两个节点：版本号小一号、淡一点，紧跟在品牌名右侧。
+			 */
+			const brand = append(bar, $('span.vssaros-desk-brand'));
+			brand.style.cssText = 'flex:none;font-weight:600;';
+			brand.textContent = title;
+			const version = append(bar, $('span.vssaros-desk-version'));
+			version.style.cssText = [
+				'flex:none', 'margin-left:8px', 'font-size:11px', 'font-weight:400',
+				`color:${fg}`, 'opacity:.62', 'letter-spacing:.02em',
+			].join(';');
+			version.textContent = `v${this._productService.version}`;
 			// 窗控按钮（Electron 画在我们这条 DOM 之上）：颜色跟着主题走
 			void this._nativeHostService.updateWindowControls({
 				targetWindowId: win.vscodeWindowId,
@@ -320,30 +336,54 @@ export class DshFullWindowContribution extends Disposable {
 		titleBarH: number,
 		message: string,
 		attempt: number,
-		onRetry: () => void
+		onRetry: () => void,
+		/**
+		 * 提示条的性质（2026-10-29）。
+		 *
+		 * · `error`   —— **真的失败**（不可重试 / 重试用尽）：黄条 + 「重试」按钮 ✓；
+		 * · `waiting` —— **正在重试**（这类错误多半是"桥/会话通道还没就绪"，等一等就好）：
+		 *   用**信息色**、**不给「重试」按钮**（此刻给按钮会误导成"必须手动点"），
+		 *   措辞也从"失败"改成"正在等待…" ✓。
+		 *
+		 * 为什么必须分级（真机 2026-10-29）：Host ready 之后 mux 路由还要几秒才可用，
+		 * 于是 `startSession` 头一两次必然失败 ⇒ 旧口径把**正在重试**也写成
+		 * 「会话启动失败（第 2/3 次）」⇒ 用户看到红色"失败"，其实几十秒后自己就好了 ✗✗。
+		 */
+		level: 'error' | 'waiting' = 'error'
 	): void {
 		const banner = append(container, $('.vssaros-desk-banner'));
+		const waiting = level === 'waiting';
 		banner.style.cssText = [
 			'position:absolute', 'left:0', 'right:132px', `top:${titleBarH}px`,
 			'box-sizing:border-box', 'display:flex', 'align-items:center', 'gap:10px',
 			'padding:6px 10px', 'font-size:12px', 'line-height:1.4',
 			'z-index:3', 'pointer-events:auto', 'user-select:text',
-			'background:var(--vscode-inputValidation-warningBackground, #5a3a00)',
-			'color:var(--vscode-inputValidation-warningForeground, #ffffff)',
-			'border-bottom:1px solid var(--vscode-inputValidation-warningBorder, #b89500)',
+			waiting
+				? 'background:var(--vscode-editorWidget-background, #252526)'
+				: 'background:var(--vscode-inputValidation-warningBackground, #5a3a00)',
+			waiting
+				? 'color:var(--vscode-foreground, #cccccc)'
+				: 'color:var(--vscode-inputValidation-warningForeground, #ffffff)',
+			waiting
+				? 'border-bottom:1px solid var(--vscode-editorWidget-border, #454545)'
+				: 'border-bottom:1px solid var(--vscode-inputValidation-warningBorder, #b89500)',
 		].join(';');
 		const text = append(banner, $('span'));
 		text.style.cssText = 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;';
-		text.textContent = `会话启动失败（第 ${attempt}/${SESSION_START_MAX_ATTEMPTS} 次）：${message}`;
-		const retry = append(banner, $('button.vssaros-desk-banner-retry'));
-		retry.style.cssText = [
-			'flex:none', 'padding:3px 10px', 'font-size:12px', 'cursor:pointer',
-			'background:var(--vscode-button-background, #0e639c)',
-			'color:var(--vscode-button-foreground, #ffffff)',
-			'border:1px solid var(--vscode-button-border, transparent)', 'border-radius:2px',
-		].join(';');
-		retry.textContent = '重试';
-		retry.addEventListener('click', () => onRetry());
+		text.textContent = waiting
+			? `正在等待会话通道就绪（第 ${attempt}/${SESSION_START_MAX_ATTEMPTS} 次）…：${message}`
+			: `会话启动失败（第 ${attempt}/${SESSION_START_MAX_ATTEMPTS} 次）：${message}`;
+		if (!waiting) {
+			const retry = append(banner, $('button.vssaros-desk-banner-retry'));
+			retry.style.cssText = [
+				'flex:none', 'padding:3px 10px', 'font-size:12px', 'cursor:pointer',
+				'background:var(--vscode-button-background, #0e639c)',
+				'color:var(--vscode-button-foreground, #ffffff)',
+				'border:1px solid var(--vscode-button-border, transparent)', 'border-radius:2px',
+			].join(';');
+			retry.textContent = '重试';
+			retry.addEventListener('click', () => onRetry());
+		}
 		this._startupBanner?.remove();
 		this._startupBanner = banner;
 	}
@@ -383,8 +423,11 @@ export class DshFullWindowContribution extends Disposable {
 		// 末一个参数 `isolatedPool = true`：弹窗用**独立网络分区**，不与主窗口争同一个 host:port 的 6 条并发连接
 		//（真机实测：共享池被占满后三页 fetch 全超时、create 永不返回；见 DSH_VIEW_PARTITION_DESKTOP 注释）。
 		await this._dsh.createView(chatViewId, windowId, 'chat', sessionId, undefined, undefined, false, true);
-		// 原生视图已建好、马上盖上来 ⇒ 撤掉"正在启动"占位（留着也被盖住，但缩窗瞬间会露边 ✗）
-		booting?.remove();
+		// ★★ 2026-10-28（用户："第一次启动，dsh desktop 会**闪一下 dsh web profile 的默认样式**，然后才切到 vssaros"）：
+		//   **占位先别撤**。视图在 `createView` 里是 `setVisible(false)` 的，而官方 UI 会先 paint
+		//   一帧、我们的换皮 chunk（品牌头 / 多根侧栏 / 页签条）后到 ⇒ 视图一显示就露出"默认样式"，
+		//   视觉上正是"闪一下"。⇒ 让占位一直盖着，等换皮锚点出现再显示视图（见下面的 `waitViewSelector`），
+		//   到那一刻才撤占位（撤早了会在缩窗瞬间露边）。
 
 		/**
 		 * 把原生视图贴回容器矩形。
@@ -422,7 +465,18 @@ export class DshFullWindowContribution extends Disposable {
 		win.addEventListener('fullscreenchange', layoutSoon);
 		const layoutTimer = win.setInterval(layout, 500);
 
+		// ★ 等我们的换皮装好再显示。
+		//   锚点选 **`data-vssaros-wb-tabstrip`**（页签条外壳）而不是里面的 `data-vssaros-wb-tabs`：
+		//   外壳是**常驻 overlay**（`client.workbenchNav` 一渲染就有节点，几何测不到时只是 `display:none`），
+		//   而里面那个只在"有页签"时才存在 ⇒ 拿它当锚点会在新会话首屏永远等不到（每次都白等满超时 ✗）。
+		//   超时（9s）也照常显示 —— 页面本身出问题时不许白屏 ✗。
+		const vssarosReady = await this._dsh.waitViewSelector(chatViewId, '[data-vssaros-wb-tabstrip]', 9_000).catch(() => false);
+		if (!vssarosReady) {
+			this._log.warn('[dshHarness] desktop: 等换皮超时（9s）⇒ 仍然显示视图（可能是页面本身有问题）');
+		}
 		await this._dsh.setViewVisible(chatViewId, true, true);
+		// 视图已显示（原生层盖住 DOM）⇒ 这时才撤占位（见上面 createView 后的注释）
+		booting?.remove();
 
 		const focusChat = () => { void this._dsh.setViewVisible(chatViewId, true, true).catch(() => undefined); };
 		win.setTimeout(focusChat, 0);
@@ -556,12 +610,24 @@ export class DshFullWindowContribution extends Disposable {
 		onShellOpened?.();
 		try {
 			await this._dsh.ensureStarted();
-			// 第 2 阶段：后台服务就绪 ⇒ 换文案（剩下的是建视图 + 页面首帧）
-			booting.textContent = '后台服务已就绪，正在加载界面…';
+			// 第 2 阶段：后台进程已起 ⇒ 换文案（剩下的是等会话通道 + 建视图 + 页面首帧）
+			booting.textContent = '后台服务已启动，正在等待会话通道就绪…';
 		} catch (err) {
 			booting.textContent = `VsSaros 后台服务启动失败：${String((err as Error)?.message ?? err)}`;
 			bootUnload.dispose();
 			throw err;
+		}
+		// ★★ 2026-10-29（真机 logs/20261029T101501）：Host 说 ready 时，mux 升级路由还没注册
+		//   （mux route available +4777 ms after Host ready，历史样本到 +11.4s）⇒ 这段时间里任何
+		//   session.start 都必然失败 ⇒ 桌面窗口原本只能退避重试（4s/12s）并弹一条假的"启动失败"黄条。
+		//   ⇒ 发起会话之前先等路由通：一次成功、没有黄条，也不必白等 8~16s。
+		//   等不到（Host 没了 / 超过 20s）⇒ 照旧走原来的失败重试路径。
+		const muxReady = await this._dsh.waitForMuxReady();
+		if (muxReady) {
+			booting.textContent = '后台服务已就绪，正在加载界面…';
+		} else {
+			this._log.warn('[dshHarness] full window: mux 路由未在等待窗口内就绪 ⇒ 照旧走会话重试');
+			booting.textContent = '后台服务已启动，正在加载界面…';
 		}
 		if (closedWhileBooting) {
 			bootUnload.dispose();
@@ -571,11 +637,11 @@ export class DshFullWindowContribution extends Disposable {
 		// 会话解析放在窗口之后：独立会话 id 依赖 windowId（见 _ensurePopoutSessionId）
 		// ★ 2026-10-27：失败时**在窗口里显示原因 + 重试按钮**（否则用户只看到 hero + 禁用输入框，
 		//   而答案只在日志里 ✗）；重试 = 重新跑一遍这整段（含再建视图）。
-		const sessionId = await this._ensurePopoutSessionId(windowId, (message, attempt) => {
+		const sessionId = await this._ensurePopoutSessionId(windowId, (message, attempt, level) => {
 			this._showStartupBanner(auxWindow.container, titleBarH, message, attempt, () => {
 				this._clearStartupBanner();
 				void this._open(args).catch(err => this._log.warn('[dshHarness] desktop: 会话重试失败', err));
-			});
+			}, level ?? 'error');
 		});
 		if (sessionId) {
 			this._clearStartupBanner();
@@ -743,8 +809,12 @@ export class DshFullWindowContribution extends Disposable {
 	 */
 	private async _ensurePopoutSessionId(
 		windowId: number,
-		/** 失败时把原因显示给用户（含第几次重试）；成功时会被清掉。见 `_showStartupBanner`。 */
-		reporter?: (message: string, attempt: number) => void
+		/**
+		 * 失败/重试时把原因显示给用户（含第几次重试）；成功时会被清掉。见 `_showStartupBanner`。
+		 *
+		 * 第三个参数 `level`：`'waiting'` = **正在重试**（还没失败）；`'error'` = 真的失败 ✗。
+		 */
+		reporter?: (message: string, attempt: number, level?: 'error' | 'waiting') => void
 	): Promise<string | undefined> {
 		// ★ 2026-10-28：启动开窗延时从 2.5s 缩到 800ms 之后，工作区可能**还没落定** ⇒
 		//   这里不能再"取不到就当没有"，而要**等一会儿**（最多 3s）。否则会把"还在加载"误判成
@@ -771,10 +841,13 @@ export class DshFullWindowContribution extends Disposable {
 				this._log.warn(`[dshHarness] full window: 独立会话启动失败（第 ${attempt}/${SESSION_START_MAX_ATTEMPTS} 次）：${message}`);
 				if (decideSessionStartRetry(message, attempt, SESSION_START_MAX_ATTEMPTS) !== 'retry') {
 					this._log.warn('[dshHarness] full window: 判为不可重试 ⇒ 回落官方默认页');
-					reporter?.(message, attempt);
+					reporter?.(message, attempt, 'error');
 					return undefined;
 				}
-				reporter?.(message, attempt);
+				// ★ 2026-10-29：这一跳**还没失败**，只是"桥/会话通道还没就绪"（真机：Host ready 后
+				//   mux 路由还要几秒 ⇒ 头一两次必然失败，但几十秒后自己就好了）⇒ 提示条按"等待中"显示，
+				//   不写"失败"、也不给「重试」按钮（给按钮会让人以为必须手动点 ✗）。
+				reporter?.(message, attempt, 'waiting');
 				await new Promise<void>(resolve => setTimeout(resolve, sessionStartRetryDelayMs(attempt)));
 			}
 		}

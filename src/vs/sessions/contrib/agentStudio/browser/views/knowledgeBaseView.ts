@@ -34,7 +34,7 @@ import { IFileService, IFileStat, FileChangesEvent, FileKind } from '../../../..
 // ⚠ `IDiagramRenderer` / `IDrawioInlineRenderer` 的注入随飞书同步搬进了 `IKbCommandService`（第 3 期 ✓）
 // ⚠ 图表准备（`prepareDiagramsForSync` / `svgToPng`）随飞书同步一起搬进了 `IKbCommandService`（第 3 期 ✓）
 import { IStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
-import { INotificationService } from '../../../../../platform/notification/common/notification.js';
+import { INotificationService, Severity } from '../../../../../platform/notification/common/notification.js';
 import { ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { IFileDialogService, IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
 import { IWorkingCopyFileService } from '../../../../../workbench/services/workingCopy/common/workingCopyFileService.js';
@@ -86,7 +86,7 @@ import { localize } from '../../../../../nls.js';
 
 import {
 	IKbVault, IKbNode, KbSection,
-	KbSortMode, KB_SORT_GROUPS, newVaultId,
+	KbSortMode, KB_SORT_GROUPS,
 	type KbSearchMode,
 } from './knowledgeBase/kbTypes.js';
 import { KbMindmapGenerator } from './knowledge/kbMindmapGenerator.js';
@@ -99,7 +99,6 @@ import {
 } from './knowledgeBase/kbViewUtils.js';
 import {
 	STORAGE_ACTIVE,
-	isKbDirOccupied, nextVaultDirName, sanitizeVaultDirName,
 } from '../knowledge/kbVaultState.js';
 // ⚠ `IChatModel` 的用法随思维导图生成搬进服务了（第 5 期 ✓ —— 取模型改成共享函数 `resolveKbChatModel`）
 import { KbFullTextIndex, IKbSearchHit, TEXT_EXTS, isKbMarkdownNote } from './knowledgeBase/kbIndex.js';
@@ -134,6 +133,20 @@ const STORAGE_SORT_PREFIX = 'agentStudio.kb.sort.';
 const STORAGE_EXPANDED_PREFIX = 'agentStudio.kb.expanded.';
 /** 分区高度（用户拖拽调整后）持久化前缀：`<prefix><vaultId>` ⇒ `{ regionId: px }` 的 JSON。 */
 const STORAGE_SECTION_HEIGHTS_PREFIX = 'agentStudio.kb.sectionHeights.';
+
+/**
+ * 旧版**自动创建**的默认库：名字恰为「我的知识库」且**没有自定义路径**（`customPath`）。
+ *
+ * ★ 2026-10-28（用户要求：不要提供默认库）：这类库用户从没主动建过，
+ *   目录还落在数据根里 ⇒ 不再展示、不再激活（磁盘文件一个都不动）。
+ *   判据收窄到「名字 + 无 customPath」同时成立，避免误伤用户自己起的同名库。
+ */
+function isLegacyDefaultVault(v: { name?: string; customPath?: string }): boolean {
+	// ★ 2026-10-28：按**名字**剔除（不限 customPath）—— 与 `dshHarnessService._kbVaultsSlim` 同口径：
+	//   用户后来把 customPath 指到自己的文件夹，但**数据根下那个自动建的空目录仍在**，
+	//   页面里就会多出一条「我的知识库（0 篇）」。真正的库是「本地载入文件夹」登记的那条。
+	return v?.name === '我的知识库';
+}
 
 export class KnowledgeBaseViewPane extends ViewPane {
 
@@ -411,11 +424,6 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	// ═══════════════════════════════════════════════════════════
 	//  Paths
 	// ═══════════════════════════════════════════════════════════
-
-	private get rootUri(): URI {
-		// ★ 2026-10-15：算法只有一份，在 `IKbCommandService`（dsh 引擎下命令侧也要算它 ✓）
-		return this._kbCommand.kbRootUri();
-	}
 
 	private vaultUri(v: IKbVault): URI {
 		return this._kbCommand.vaultRootUri(v);
@@ -764,8 +772,38 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	//  Vault lifecycle
 	// ═══════════════════════════════════════════════════════════
 
+	/**
+	 * 「还没有知识库」时的**唯一入口**（2026-10-28 用户要求：不要默认库，让用户自己指定路径）。
+	 *
+	 * 通知条 + 一个按钮：点按钮 → `addVaultFromFolder()`（原生选目录、**文件夹名即库名**、
+	 * 不复制 / 不移动里面任何文件）。
+	 *
+	 * ⚠ `INotificationService.info` 的第二参是 `INotificationActions`（`{ primary: IAction[] }`），
+	 *   直接传 `{ label, run }` 会 TS2554（Expected 1 arguments, but got 2）。
+	 */
+	private _promptPickVaultFolder(): void {
+		/*
+		 * ⚠ 本仓 `INotificationService.info(message)` **只收一个参数**（VS Code 上游是 `info(msg, ...actions)`，
+		 *   这里签名不同）⇒ 带按钮必须用 `notify({ severity, message, actions })`，
+		 *   否则 TS2554「Expected 1 arguments, but got 2」。
+		 */
+		this.notificationService.notify({
+			severity: Severity.Info,
+			message: localize('kb.noVaultPickFolder', '还没有知识库。请选择一个文件夹作为知识库：文件夹名即库名，不会复制或移动里面的文件。'),
+			actions: {
+				primary: [
+					// Action 签名 (id, label, cssClass, enabled, actionCallback) —— run 在第 5 位
+					new Action('kb.pickVaultFolder', localize('kb.pickVaultFolder', '选择文件夹…'), undefined, true,
+						() => { void this._kbCommand.addVaultFromFolder(); }),
+				],
+			},
+		});
+	}
+
 	private async initVaults(): Promise<void> {
-		this._vaults = this.loadVaults();
+		// ★ 2026-10-28：过滤掉旧版**自动创建**的默认库（名字「我的知识库」且没有自定义路径）——
+		//   它不该出现在下拉里；磁盘文件一个都不动。
+		this._vaults = this.loadVaults().filter(v => !isLegacyDefaultVault(v));
 		const activeId = this.storageService.get(STORAGE_ACTIVE, StorageScope.APPLICATION);
 		this._activeVault = this._vaults.find(v => v.id === activeId && !v.closed) ?? this._vaults.find(v => !v.closed);
 		// ★ 2026-09-23 诊断日志（配合 `ensureVaultFolders` 里的 vault-dir 日志）：
@@ -777,8 +815,9 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		this.logService.info(`[KB][vault-dir] initVaults → picked activeVault=${this._activeVault ? `${this._activeVault.id}|${this._activeVault.name}|customPath=${this._activeVault.customPath ?? '(none)'}` : '(none)'}`);
 
 		if (!this._activeVault) {
-			// 首次使用：创建一个默认 Vault（对齐 SiYuan 首次启动的默认笔记本）
-			await this.createVault('我的知识库', '📚');
+			// ★ 2026-10-28（用户要求）：**不再**自动创建「我的知识库」，改为提示用户自己选文件夹。
+			this.logService.info('[KB][vault-dir] 没有任何知识库 ⇒ 空态（不再自动创建默认库）');
+			this._promptPickVaultFolder();
 			return;
 		}
 
@@ -984,39 +1023,6 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	 * ⚠ `vault.id` 仍保留时间戳：它是稳定标识（storage 键 / 排序 / 缓存），目录布局只由
 	 *   `customPath` 决定 —— 这样「改名」不会牵动数据路径。
 	 */
-	private async createVault(name: string, icon = '📚'): Promise<void> {
-		const vault: IKbVault = {
-			id: newVaultId(),
-			name,
-			icon,
-			sort: this._vaults.length,
-			sortMode: 'createdASC',
-			closed: false,
-			path: '',
-		};
-
-		const kbDir = this.rootUri;
-		const usedRoots = this._vaults.map(v => this.vaultUri(v).fsPath);
-		let root: URI;
-		if (!isKbDirOccupied(kbDir.fsPath, usedRoots)) {
-			root = kbDir;                                        // ① 直接复用知识库目录
-		} else {
-			const used = new Set(usedRoots.map(p => p.toLowerCase()));
-			const dirName = nextVaultDirName(sanitizeVaultDirName(name),
-				d => used.has(URI.joinPath(kbDir, d).fsPath.toLowerCase()));   // ② 可读名子目录
-			root = URI.joinPath(kbDir, dirName);
-		}
-		vault.path = root.fsPath;
-		vault.customPath = root.fsPath;
-		this._kbCommand.invalidateVaultFolders(vault.id);   // 新 id ⇒ 本就未就绪，这里显式保证语义
-
-		this._vaults.push(vault);
-		this.saveVaults();
-		await this.ensureVaultFolders(vault);
-		await this.activateVault(vault);
-		this.notificationService.info(localize('kb.vaultCreated', '已创建知识库：{0}', name));
-		void this._logOp('vault.create', 'success', { target: vault.path, detail: { name, icon: vault.icon } });
-	}
 
 	/**
 	 * ★ 永久删除（真源语义）：确认框 → `fileService.del(recursive)` → 移出清单。

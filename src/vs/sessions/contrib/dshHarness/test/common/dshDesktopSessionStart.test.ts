@@ -130,11 +130,14 @@ suite('desktop 窗口：会话启动失败 ⇒ 重试 + 把原因显示给用户
 		assert.ok(liDecide > 0 && liFatalEnd > liDecide && liDelay > liFatalEnd, '找不到"判定 → 判死收尾 → 退避"三处锚点（切片口径失效）✗');
 
 		const fatalBranch = lines.slice(liDecide, liFatalEnd).join('\n');
-		assert.match(fatalBranch, /reporter\?\.\(message, attempt\)/,
+		// ⚠ 2026-10-29：报给页面时**多了第三个参数**（`'error'` / `'waiting'` 用来分级显示）⇒
+		//   正则要接受"可选的第三参"，但仍必须能抓到"完全不调 reporter"（判别力不变 ✓）。
+		//   分级语义由 `dshDesktopSessionBanner` 守（这一条只管"有没有上报"）。
+		assert.match(fatalBranch, /reporter\?\.\(message, attempt(?:, 'error')?\)/,
 			'判为不可重试时必须把原因报给页面（否则用户只看到 hero + 禁用输入框 ✗）');
 
 		const retryBranch = lines.slice(liFatalEnd, liDelay).join('\n');
-		assert.match(retryBranch, /reporter\?\.\(message, attempt\)/,
+		assert.match(retryBranch, /reporter\?\.\(message, attempt(?:, 'waiting')?\)/,
 			'还会重试时也要先报一次（否则前 10 秒窗口上什么都没有 ✗）');
 
 		const bannerAt = src.indexOf('private _showStartupBanner(');

@@ -157,6 +157,14 @@ export interface KbSideviewActions {
 	 */
 	addVault?(mode: 'create' | 'attach', path?: string, name?: string): void;
 	/**
+	 * 把一个库**从列表移除**（2026-10-28 用户要求：下拉每项要有删除按钮）。
+	 *
+	 * 语义约定：只摘登记，**不动磁盘**（外部库是用户的真实笔记目录）；
+	 * 真正删目录的旧接口（`/api/vault-delete`）不能用在这里。
+	 * 宿主若没提供 ⇒ 不渲染删除按钮（不给出会失败的入口）。
+	 */
+	removeVault?(vaultId: string): void;
+	/**
 	 * 打开**系统文件夹选择器**，返回绝对路径（用户取消 ⇒ `null`/空串）。
 	 *
 	 * 为什么要宿主来做：Electron 32+ 移除了 `File.path`，页面里的
@@ -706,6 +714,283 @@ type KbCanvasDoc = { name: string; path: string; notesRoot?: string; nodes: KbCa
  * 能力门控：宿主声明 `actions.canvas === true`（表示它的服务端有 `/api/canvas`）才显示按钮。
  * IDE 侧不声明 ⇒ 不显示（它自己的「思维导图」是开编辑器）。
  */
+/**
+ * **完整设置（飞书同步）** —— 用 bundle 自己的 React 实现（2026-10-28）。
+ *
+ * 为什么在这里重写一份，而不是复用面板的 `KbSettingsPage`：
+ *   bundle 是 esbuild `bundle: true` 的独立产物，**自带一份 React**；面板用的是宿主的 `react`。
+ *   跨实例渲染（portal / 自建根）都不可靠 —— 真机上表现为"设置页被一个不透明空容器盖成空白"。
+ *   所以按**同一组 HTTP 端点**在这里重写：同树渲染，绝无跨实例问题。
+ *
+ * 端点（与面板/插件页完全一致，见 `dsh-plugins/vssaros-kb/lib/index.js`）：
+ *   GET/POST /x/kb/api/kb-settings           读/写设置（含 `feishu.cliPath` / `feishu.mappings`）
+ *   GET      /x/kb/api/feishu-cli?cli=…      检测 lark-cli
+ *   POST     /x/kb/api/feishu-cli            { action: 'upgrade' }
+ *   GET      /x/kb/api/feishu-spaces         飞书知识库列表
+ *   POST     /x/kb/api/feishu-sync[?dry=1]   触发同步（dry = 试运行）
+ *   GET      /x/kb/api/feishu-log?lines=200  上次同步日志
+ *   GET      /x/kb/api/feishu-schedule       定时状态
+ */
+function KbFeishuSettings() {
+	const [open, setOpen] = useState(true);
+	const [settings, setSettings] = useState<any>(null);
+	const [cliPath, setCliPath] = useState('');
+	const [cli, setCli] = useState<any>(null);
+	const [busy, setBusy] = useState('');
+	const [out, setOut] = useState('');
+	const [spaces, setSpaces] = useState<any[]>([]);
+	const [schedule, setSchedule] = useState<any>(null);
+
+	/*
+	 * 面板侧点「同步飞书」的结果（2026-10-29）：面板用 DOM 事件抛过来，
+	 * 这里显示在**页内输出区**（不再用会阻塞渲染进程的 window.alert）。
+	 */
+	useEffect(() => {
+		const onResult = (ev: Event) => {
+			const d = (ev as CustomEvent).detail || {};
+			if (d.phase === 'start') { setBusy('sync'); setOut(String(d.text || '同步中…')); return; }
+			setBusy('');
+			setOut(String(d.text || (d.ok ? '同步完成' : '同步结束（有失败项）')));
+		};
+		window.addEventListener('kb:feishu-sync-result', onResult);
+		return () => window.removeEventListener('kb:feishu-sync-result', onResult);
+	}, []);
+
+	const api = (p: string, init?: RequestInit) => fetch('/x/kb/api/' + p, Object.assign({ credentials: 'same-origin' as const }, init));
+	const feishuOf = (s: any) => (s && s.feishu) || {};
+
+	useEffect(() => {
+		let alive = true;
+		api('kb-settings').then(r => r.json()).then((b) => {
+			if (!alive || !b || !b.ok) { return; }
+			setSettings(b.settings || {});
+			setCliPath(String(feishuOf(b.settings).cliPath || ''));
+		}).catch(() => undefined);
+		api('feishu-schedule').then(r => r.json()).then((b) => { if (alive && b && b.ok) { setSchedule(b); } }).catch(() => undefined);
+		return () => { alive = false; };
+	}, []);
+
+	/** 保存：只合并 feishu 这一段，避免把别的设置覆盖掉 */
+	const save = (patch: any) => {
+		const next = Object.assign({}, settings || {}, { feishu: Object.assign({}, feishuOf(settings), patch) });
+		setSettings(next);
+		api('kb-settings', {
+			method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(next),
+		}).then(r => r.json()).then((b) => { if (!b || b.ok === false) { setOut('保存失败：' + String((b && b.error) || '未知')); } }).catch(e => setOut('保存失败：' + String(e)));
+	};
+
+	const checkCli = () => {
+		setBusy('cli');
+		const q = cliPath.trim();
+		api('feishu-cli' + (q ? '?cli=' + encodeURIComponent(q) : '')).then(r => r.json())
+			.then(b => setCli(b || { ok: false, error: '无响应' }))
+			.catch(e => setCli({ ok: false, error: String(e) }))
+			.then(() => setBusy(''));
+	};
+
+	const upgradeCli = () => {
+		setBusy('cli');
+		api('feishu-cli', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'upgrade' }) })
+			.then(r => r.json()).then(b => setCli(b || { ok: false, error: '无响应' }))
+			.catch(e => setCli({ ok: false, error: String(e) }))
+			.then(() => setBusy(''));
+	};
+
+	const loadSpaces = () => {
+		setBusy('spaces');
+		api('feishu-spaces').then(r => r.json()).then((b) => {
+			setSpaces((b && b.ok && Array.isArray(b.spaces)) ? b.spaces : []);
+			if (!b || !b.ok) { setOut('拉取飞书知识库失败：' + String((b && b.error) || '未知')); }
+		}).catch(e => setOut('拉取飞书知识库失败：' + String(e))).then(() => setBusy(''));
+	};
+
+	const runSync = (dry: boolean) => {
+		setBusy('sync');
+		setOut(dry ? '试运行中…' : '正在同步（逐篇串行，可能几分钟）…');
+		api('feishu-sync' + (dry ? '?dry=1' : ''), { method: 'POST' }).then(r => r.json())
+			.then(b => setOut(String((b && b.output) || (b && b.error) || '(无输出)')))
+			.catch(e => setOut(String(e))).then(() => setBusy(''));
+	};
+
+	const loadLog = () => {
+		api('feishu-log?lines=200').then(r => r.json())
+			.then(b => setOut(b && b.ok ? ((b.lines || []).join('\n') || '（还没有同步日志）') : ('读取日志失败：' + String((b && b.error) || '未知'))))
+			.catch(e => setOut('读取日志失败：' + String(e)));
+	};
+
+	const mappings: any[] = feishuOf(settings).mappings || [];
+	const setMapping = (i: number, patch: any) => {
+		const next = mappings.map((m, k) => (k === i ? Object.assign({}, m, patch) : m));
+		save({ mappings: next });
+	};
+	const addMapping = () => save({ mappings: [...mappings, { dir: '', spaceId: '' }] });
+	const removeMapping = (i: number) => save({ mappings: mappings.filter((_m, k) => k !== i) });
+
+	const row = { display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6, flexWrap: 'wrap' } as const;
+	const inp = { height: 24, padding: '0 8px', fontSize: 11.5, background: 'transparent', color: 'inherit', border: `1px solid ${c.line}`, borderRadius: 4, minWidth: 0 } as const;
+	const btn = { height: 24, padding: '0 10px', fontSize: 11.5, cursor: 'pointer', borderRadius: 4, background: 'transparent', color: 'inherit', border: `1px solid ${c.line}` } as const;
+
+	return (
+		<div style={{ marginBottom: 12 }}>
+			<div role="button" tabIndex={0} onClick={() => setOpen(v => !v)} onKeyDown={e => { if (e.key === 'Enter') { setOpen(v => !v); } }}
+				style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: c.fgFaint, marginBottom: 4, cursor: 'pointer' }}>
+				<span style={{ width: 9, fontSize: 9 }}>{open ? '▾' : '▸'}</span>
+				<span style={{ fontWeight: 700, letterSpacing: '.03em' }}>飞书同步</span>
+				<span style={{ opacity: .8 }}>{feishuOf(settings).enabled ? '已启用' : '未启用'}</span>
+			</div>
+
+			{!open ? null : (
+				<div style={{ paddingLeft: 14 }}>
+					{/* CLI */}
+					<div style={row}>
+						<span style={{ fontSize: 11, color: c.fgFaint, width: 64, flex: '0 0 auto' }}>CLI 路径</span>
+						<input value={cliPath} placeholder="留空 = 走 PATH" onChange={e => setCliPath(e.target.value)} style={{ ...inp, flex: '1 1 auto', minWidth: 0 }} />
+						<button type="button" style={btn} onClick={() => { save({ cliPath }); checkCli(); }}>{busy === 'cli' ? '检测中…' : '保存并检测'}</button>
+						<button type="button" style={btn} onClick={upgradeCli}>升级</button>
+					</div>
+					{cli ? (
+						<div style={{ fontSize: 10.5, color: cli.ok ? c.fgDim : '#e06c75', marginBottom: 8 }}>
+							{cli.ok ? ('✓ ' + String(cli.version || '可用')) : ('✗ ' + String(cli.error || '不可用'))}
+						</div>
+					) : null}
+
+					{/* 开关 */}
+					<div style={row}>
+						<label style={{ fontSize: 11, display: 'flex', alignItems: 'center', gap: 4 }}>
+							<input type="checkbox" checked={!!feishuOf(settings).enabled} onChange={e => save({ enabled: e.target.checked })} />启用
+						</label>
+						<label style={{ fontSize: 11, display: 'flex', alignItems: 'center', gap: 4 }}>
+							<input type="checkbox" checked={!!feishuOf(settings).schedule} onChange={e => save({ schedule: e.target.checked })} />定时同步
+						</label>
+						<span style={{ fontSize: 11, color: c.fgFaint }}>间隔(分钟)</span>
+						<input type="number" value={Number(feishuOf(settings).scheduleMinutes ?? 60)} onChange={e => save({ scheduleMinutes: Number(e.target.value) || 60 })}
+							style={{ ...inp, width: 70 }} />
+						<span style={{ fontSize: 11, color: c.fgFaint }}>
+							{schedule && schedule.nextRunAt ? ('下次 ' + String(schedule.nextRunAt)) : ''}
+						</span>
+					</div>
+
+					{/* 映射 */}
+					<div style={{ ...row, marginTop: 4 }}>
+						<span style={{ fontSize: 11, color: c.fgFaint, width: 64, flex: '0 0 auto' }}>目录映射</span>
+						<button type="button" style={btn} onClick={loadSpaces}>{busy === 'spaces' ? '拉取中…' : '拉取飞书知识库'}</button>
+						<button type="button" style={btn} onClick={addMapping}>＋ 一行</button>
+						<span style={{ fontSize: 10.5, color: c.fgFaint }}>{mappings.length} 条</span>
+					</div>
+					{mappings.map((m, i) => (
+						<div key={i} style={row}>
+							<input value={String(m.dir || '')} placeholder="笔记区相对目录，如 笔记/学习" onChange={e => setMapping(i, { dir: e.target.value })} style={{ ...inp, flex: '1 1 auto' }} />
+							<input value={String(m.spaceId || '')} placeholder="飞书 spaceId" onChange={e => setMapping(i, { spaceId: e.target.value })} style={{ ...inp, flex: '0 1 180px', minWidth: 120 }} />
+							{spaces.length ? (
+								<select onChange={e => e.target.value && setMapping(i, { spaceId: e.target.value })} style={{ ...inp, maxWidth: 160 }} value="">
+									<option value="">选飞书库…</option>
+									{spaces.map((sp: any) => <option key={sp.spaceId || sp.name} value={sp.spaceId}>{sp.name || sp.spaceId}</option>)}
+								</select>
+							) : null}
+							<button type="button" style={btn} onClick={() => removeMapping(i)}>删除</button>
+						</div>
+					))}
+
+					{/* 动作 */}
+					<div style={{ ...row, marginTop: 8 }}>
+						<button type="button" style={btn} onClick={() => runSync(true)}>{busy === 'sync' ? '执行中…' : '试运行'}</button>
+						<button type="button" style={btn} onClick={() => runSync(false)}>立即同步</button>
+						<button type="button" style={btn} onClick={loadLog}>读日志</button>
+					</div>
+					{out ? (
+						<pre style={{ margin: 0, maxHeight: 220, overflow: 'auto', padding: 8, fontSize: 10.5, lineHeight: 1.55, whiteSpace: 'pre-wrap', background: 'rgba(127,127,127,.10)', border: `1px solid ${c.line}`, borderRadius: 4 }}>{out}</pre>
+					) : null}
+				</div>
+			)}
+		</div>
+	);
+}
+
+/**
+ * **关系图谱页签**（bundle 自己的 React · 2026-10-29）。
+ *
+ * 数据源与面板的 `KbGraph` 完全一致：`GET /x/kb/api/graph?refresh=1[&vault=…]`
+ *   → `{ ok, nodes: [{ id, … }], edges: [{ from, to }] }`
+ * 之所以在 bundle 里再写一份：面板那份在**另一棵 React 树**里（跨树渲染 = 空白/黑屏，已踩过三次）。
+ * 这里同树渲染 ⇒ 页签内容必然可见。
+ */
+function KbGraphTab({ vaultId, onOpenNote }: { vaultId?: string; onOpenNote?: (path: string) => void }) {
+	const [phase, setPhase] = useState<'loading' | 'ready' | 'error'>('loading');
+	const [nodes, setNodes] = useState<any[]>([]);
+	const [edges, setEdges] = useState<any[]>([]);
+	const [error, setError] = useState('');
+
+	const load = useCallback(() => {
+		setPhase('loading');
+		fetch('/x/kb/api/graph?refresh=1' + (vaultId ? '&vault=' + encodeURIComponent(vaultId) : ''), { credentials: 'same-origin' })
+			.then(r => r.json())
+			.then((b) => {
+				if (!b || b.ok === false) { setPhase('error'); setError(String((b && b.error) || '读取图谱失败')); return; }
+				const ns: any[] = (b.nodes || []).map((n: any, i: number) => Object.assign({}, n, {
+					x: Math.cos(i * 2.399963) * 160,
+					y: Math.sin(i * 2.399963) * 160,
+				}));
+				const byId = new Map(ns.map(n => [n.id, n]));
+				const es: any[] = (b.edges || [])
+					.map((e: any) => ({ s: byId.get(e.from ?? e.source ?? e.s?.id), t: byId.get(e.to ?? e.target ?? e.t?.id) }))
+					.filter((e: any) => e.s && e.t);
+				setNodes(ns);
+				setEdges(es);
+				setPhase('ready');
+			})
+			.catch((e) => { setPhase('error'); setError(String((e && e.message) || e)); });
+	}, [vaultId]);
+
+	useEffect(() => { load(); }, [load]);
+
+	const labelOf = (n: any) => String(n.title || n.name || n.id || '').replace(/\.md$/i, '').split(/[\\/]/).pop() || '';
+
+	const header = (
+		<div style={{ display: 'flex', alignItems: 'center', gap: 8, height: 30, padding: '0 10px', borderBottom: `1px solid ${c.line}`, flex: '0 0 auto' }}>
+			<span style={{ fontSize: 12, fontWeight: 600 }}>关系图谱</span>
+			<span style={{ fontSize: 10.5, color: c.fgFaint }}>{nodes.length} 个节点 · {edges.length} 条关系</span>
+			<span style={{ flex: 1 }} />
+			<button type="button" onClick={load} style={{ height: 20, padding: '0 8px', fontSize: 11, cursor: 'pointer', background: 'transparent', color: 'inherit', border: `1px solid ${c.line}`, borderRadius: 3 }}>刷新</button>
+		</div>
+	);
+
+	if (phase === 'loading') {
+		return <div style={{ flex: '1 1 auto', minHeight: 0, display: 'flex', flexDirection: 'column', background: 'var(--vscode-editor-background, #1e1e1e)' }}>{header}
+			<div style={{ flex: '1 1 auto', display: 'flex', alignItems: 'center', justifyContent: 'center', color: c.fgFaint, fontSize: 12 }}>正在读取图谱…</div></div>;
+	}
+	if (phase === 'error') {
+		return <div style={{ flex: '1 1 auto', minHeight: 0, display: 'flex', flexDirection: 'column', background: 'var(--vscode-editor-background, #1e1e1e)' }}>{header}
+			<div style={{ flex: '1 1 auto', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#e06c75', fontSize: 12 }}>{error}</div></div>;
+	}
+	if (!nodes.length) {
+		return <div style={{ flex: '1 1 auto', minHeight: 0, display: 'flex', flexDirection: 'column', background: 'var(--vscode-editor-background, #1e1e1e)' }}>{header}
+			<div style={{ flex: '1 1 auto', display: 'flex', alignItems: 'center', justifyContent: 'center', color: c.fgFaint, fontSize: 12 }}>这个库里还没有可画的节点</div></div>;
+	}
+
+	return (
+		<div style={{ flex: '1 1 auto', minHeight: 0, display: 'flex', flexDirection: 'column', background: 'var(--vscode-editor-background, #1e1e1e)' }}>
+			{header}
+			<div style={{ flex: '1 1 auto', minHeight: 0, overflow: 'auto' }}>
+				<svg width="100%" height="100%" viewBox="-220 -220 440 440" preserveAspectRatio="xMidYMid meet" style={{ display: 'block', minHeight: 320 }}>
+					<g stroke={c.line} strokeWidth={0.8}>
+						{edges.map((e, i) => <line key={i} x1={e.s.x} y1={e.s.y} x2={e.t.x} y2={e.t.y} />)}
+					</g>
+					<g>
+						{nodes.map((n, i) => (
+							<g key={i}>
+								<circle cx={n.x} cy={n.y} r={4} fill={String(n.id || '').indexOf('/库/') >= 0 ? '#dcb67a' : '#3794ff'}
+									onClick={() => { if (onOpenNote && n.id) { onOpenNote(String(n.id)); } }}
+									style={{ cursor: onOpenNote ? 'pointer' : 'default' }} />
+								<text x={n.x + 7} y={n.y + 3} fontSize={9} fill={c.fgDim}>{labelOf(n).slice(0, 14)}</text>
+							</g>
+						))}
+					</g>
+				</svg>
+			</div>
+		</div>
+	);
+}
+
 function KbCanvasPane({ onClose, onOpenNote }: { onClose: () => void; onOpenNote: (abs: string) => void }) {
 	const wrapRef = useRef<HTMLDivElement | null>(null);
 	const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -715,12 +1000,6 @@ function KbCanvasPane({ onClose, onOpenNote }: { onClose: () => void; onOpenNote
 	const viewRef = useRef({ s: 1, x: 0, y: 0 });
 	const layoutRef = useRef<{ nodes: KbCanvasNode[] }>({ nodes: [] });
 
-	/* 宿主富设置：容器出现的**同一帧**就交给宿主渲染（宿主负责建根） */
-	useEffect(() => {
-		if (hostSettingsOpen && hostSettingsRef.current && actions?.openHostSettings) {
-			actions.openHostSettings(hostSettingsRef.current);
-		}
-	}, [hostSettingsOpen]);
 
 	useEffect(() => {
 		let alive = true;
@@ -1276,22 +1555,36 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 	 * 不放"点了没反应"的假开关（比如飞书启用状态——那需要宿主配置，dsh 侧只读）。
 	 */
 	const [showSettings, setShowSettings] = useState(false);
+	/**
+	 * ★ 2026-10-29（用户：「点设置 / 关系图谱要显示成**带页签**的页面，与打开文档的页签并列」）：
+	 *   一个状态管三块内容：文档 / 设置 / 关系图谱。页签条上永远有这两个页签，可点击来回切。
+	 */
+	const [activeView, setTab] = useState<'doc' | 'settings' | 'graph' | 'canvas'>('doc');
+	/**
+	 * ★ 2026-10-29（用户：「设置 / 关系图谱页签**只有点击对应按钮**才会打开」）：
+	 *   这两个页签**不常驻**在页签条上 —— 只有用户点了 ⚙ / 🕸 才出现；
+	 *   回到文档时自动收起（点当前激活的页签也能关掉它）。
+	 */
+	const [openViews, setOpenViews] = useState<{ settings: boolean; graph: boolean; canvas: boolean }>({ settings: false, graph: false, canvas: false });
 	/*
 	 * ★ 2026-10-28：**宿主富设置**（飞书同步/目录映射/CLI）也要在「中栏页签」里显示。
 	 *   它属于面板层（另一个 React 树）⇒ 这里只给一个空容器，由宿主往里渲染
 	 *   （`actions.openHostSettings(el)`；宿主用 react-dom/client 建根）。
 	 */
-	const [hostSettingsOpen, setHostSettingsOpen] = useState(false);
-	const hostSettingsRef = useRef<HTMLDivElement | null>(null);
 	/** 标题行的「库下拉」（切换 / 新建 / 本地载入） */
 	const [vaultMenu, setVaultMenu] = useState(false);
+	/**
+	 * 待确认「从列表移除」的库 id（2026-10-28）。
+	 * 两级确认：第一次点 ✕ 只把这一行变成「确认移除?」，2.5s 自复原或点别的行也复原 ——
+	 * 与插件页既有手法一致（Electron 里 `window.confirm` 不可靠，不走它）。
+	 */
+	const [vaultRemoveAsk, setVaultRemoveAsk] = useState('');
 	/** 排序档位 → 中文（菜单里要显示当前值，否则用户不知道现在是哪种排序） */
 	const SORT_LABEL: Record<string, string> = {
 		name: "名称 ↑", nameDesc: "名称 ↓", size: "大小 ↓", mtime: "时间 ↓", mtimeAsc: "时间 ↑",
 	};
 
 	/** 导图覆盖层（三端共用同一份 `KbCanvasPane`） */
-	const [canvasOpen, setCanvasOpen] = useState(false);
 	/**
 	 * 「笔记」节的一行收纳菜单（2026-10-26 方案 B）。
 	 * 原来 9 个按钮平铺在第二行，340px 面板里被压成竖排单字 ⇒ 现在收进 ⋯ 菜单，
@@ -1599,11 +1892,26 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 	return (
 		<div style={{
 			display: 'flex', flexDirection: 'row', height: '100%',
+			// ★ 2026-10-28（真机：设置页水平方向没占满，文档列只剩 ~95px）：
+			//   根行没有宽度 ⇒ 它是**内容宽** ⇒ 340px 的树列把文档列挤到只剩一点点。
+			//   ⇒ 根行必须铺满父容器（width:100% + minWidth:0，让内部 flex 去分配剩余空间）。
+			width: '100%', minWidth: 0, flex: '1 1 0%',
+			// 容器太窄（IDE 窄编辑器组）时**横向滚动**，而不是把正文压成 0 宽
+			overflowX: 'auto', overflowY: 'hidden',
 			background: c.bg, color: c.fg, fontFamily: 'var(--vscode-font-family, "Segoe UI", sans-serif)',
 			fontSize: 13, overflow: 'hidden',
 		}}>
 			<style>{KB_SCOPED_CSS}</style>
-			<div style={{ display: 'flex', flexDirection: 'column', height: '100%', flex: docMode ? '0 0 340px' : '1 1 auto', minWidth: 0, minHeight: 0 }}>
+			<div style={{
+				display: 'flex', flexDirection: 'column', height: '100%',
+				// ★ 2026-10-28（真机：IDE 编辑器被拆成 4 个窄组 ⇒ 页面只有 ~220px 宽）：
+				//   树列原本**固定 340px** ⇒ 在窄容器里把文档列挤成 0（设置页只剩一条窄柱）。
+				//   ⇒ 树列宽度改为**按容器比例**（200~340px），文档列保底 260px，
+				//     容器实在放不下时整行**横向滚动**（而不是把正文压没）。
+				flex: docMode ? '0 0 clamp(200px, 34%, 340px)' : '1 1 auto',
+				maxWidth: docMode ? 340 : undefined,
+				minWidth: 0, minHeight: 0,
+			}}>
 			{/* 标题栏 */}
 			<div style={{ display: 'flex', alignItems: 'center', gap: 8, height: 35, padding: '0 10px', borderBottom: `1px solid ${c.line}`, flex: '0 0 auto' }}>
 				<Svg size={14}><path d="M2 2.5A1.5 1.5 0 0 1 3.5 1H13v14H3.5A1.5 1.5 0 0 1 2 13.5v-11zm2 0v11h8v-11H4z" /></Svg>
@@ -1617,9 +1925,17 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 				 */}
 				<IconBtn title="知识库设置" label="⚙" onClick={() => {
 					// 宿主提供富设置 ⇒ 在中栏开页签（面板层负责往容器里渲染）
-					if (actions?.openHostSettings) { setHostSettingsOpen(true); return; }
+					/*
+					 * ★ 2026-10-28（用户要求：设置要在**中栏作为独立页签**，与文档页签同款式）：
+					 *   宿主若声明 `preferInlineSettings`，就把设置开成**视图内的页签** ——
+					 *   同一个 React 树、没有第二个根，因此不会再出现"跨根渲染整页崩"那类问题。
+					 *   完整设置（飞书 / 目录映射）仍可从该页内的入口跳到宿主设置页。
+					 */
+					// ★ 2026-10-29：设置 = 中栏的**独立页签**（与文档页签并列）
+					if (actions?.preferInlineSettings) { setOpenViews(o => ({ ...o, settings: true })); setTab('settings'); return; }
 					if (actions?.openSettings) { actions.openSettings(); return; }
-					setShowSettings(true);
+					setOpenViews(o => ({ ...o, settings: true }));
+					setTab('settings');
 				}} />
 			</div>
 
@@ -1645,13 +1961,18 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 				</button>
 				<span style={{ flex: 1 }} />
 				{actions?.refresh ? <IconBtn title="刷新" label="⟳" onClick={() => actions?.refresh?.()} /> : null}
-				{actions?.openGraph ? <IconBtn title="关系图谱" label="🕸" onClick={() => actions?.openGraph?.()} /> : null}
+				{actions?.openGraph ? <IconBtn title="关系图谱" label="🕸" onClick={() => {
+					// ★ 2026-10-29：图谱 = 中栏的**独立页签**（与文档页签并列），
+					//   而不是"宿主把它开在右栏"。宿主没有内置图谱时再回退给它。
+					setOpenViews(o => ({ ...o, graph: true }));
+						setTab('graph');
+				}} /> : null}
 				{/*
 				 * 导图（.canvas）：只有宿主能「就地渲染」时才出现。
 				 * 宿主声明 `canvas: true`（服务端有 /api/canvas）⇒ 视图自己画；
 				 */}
 				{actions?.canvas
-					? <IconBtn title="思维导图（.canvas）" label="🗺" onClick={() => setCanvasOpen(true)} />
+					? <IconBtn title="思维导图（.canvas）" label="🗺" onClick={() => { setOpenViews(o => ({ ...o, canvas: true })); setTab('canvas'); }} />
 					: null}
 				{actions?.feishuSync ? <IconBtn title="同步飞书" label="☁" onClick={() => actions?.feishuSync?.()} /> : null}
 
@@ -1664,21 +1985,73 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 							borderRadius: 4, boxShadow: '0 8px 24px rgba(0,0,0,.45)', padding: 4,
 						}}
 					>
-						{(data.vaults ?? []).map(v => (
-							<button
-								key={v.id}
-								type="button"
-								onClick={() => { setVaultMenu(false); actions?.switchVault?.(v.id); }}
-								style={{
-									display: 'flex', alignItems: 'center', gap: 6, width: '100%', height: 24, padding: '0 8px',
-									background: v.id === data.activeVaultId ? 'rgba(127,127,127,.18)' : 'transparent',
-									border: 0, borderRadius: 3, color: 'inherit', fontSize: 12, cursor: 'pointer',
-								}}
-							>
-								<span style={{ flex: 1, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v.name}</span>
-								<span style={{ color: c.fgFaint, fontSize: 10.5, fontVariantNumeric: 'tabular-nums' }}>{v.count}</span>
-							</button>
-						))}
+						{/* 每一项 = 「切库」按钮 + 「从列表移除」✕（2026-10-28 用户要求） */}
+						{(data.vaults ?? []).map(v => {
+							const asking = vaultRemoveAsk === v.id;
+							const on = v.id === data.activeVaultId;
+							return (
+								<div
+									key={v.id}
+									style={{
+										display: 'flex', alignItems: 'center', gap: 2, borderRadius: 3,
+										background: on ? 'rgba(127,127,127,.18)' : 'transparent',
+									}}
+								>
+									<button
+										type="button"
+										onClick={() => { setVaultMenu(false); actions?.switchVault?.(v.id); }}
+										style={{
+											display: 'flex', alignItems: 'center', gap: 6, flex: '1 1 auto', minWidth: 0, height: 24,
+											padding: '0 8px', background: 'transparent', border: 0, borderRadius: 3,
+											color: 'inherit', fontSize: 12, cursor: 'pointer',
+										}}
+									>
+										<span style={{ flex: 1, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v.name}</span>
+										<span style={{ color: c.fgFaint, fontSize: 10.5, fontVariantNumeric: 'tabular-nums' }}>{v.count}</span>
+									</button>
+									{actions?.removeVault ? (
+										<span
+											role="button"
+											tabIndex={0}
+											title={asking
+												? '再点一次：从列表移除（只摘登记，磁盘文件不动）'
+												: '从列表移除（不会删除磁盘上的笔记）'}
+											aria-label="从列表移除"
+											onClick={ev => {
+												ev.stopPropagation();
+												if (asking) {
+													setVaultRemoveAsk('');
+													actions.removeVault?.(v.id);
+													return;
+												}
+												setVaultRemoveAsk(v.id);
+												setTimeout(() => setVaultRemoveAsk(cur => (cur === v.id ? '' : cur)), 2500);
+											}}
+											onKeyDown={ev => {
+												if (ev.key !== 'Enter') { return; }
+												ev.stopPropagation();
+												if (asking) { setVaultRemoveAsk(''); actions.removeVault?.(v.id); } else { setVaultRemoveAsk(v.id); }
+											}}
+											style={{
+												flex: '0 0 auto', padding: '0 6px', height: 24, lineHeight: '24px',
+												fontSize: asking ? 10.5 : 12, cursor: 'pointer', userSelect: 'none',
+												color: asking ? '#e06c75' : c.fgFaint,
+											}}
+										>{asking ? '确认移除?' : '✕'}</span>
+									) : null}
+								</div>
+							);
+						})}
+						{/*
+						 * ★ 2026-10-28（用户要求：不要「我的知识库」默认库）：
+						 *   没有库时不再给一条"看似已就绪"的空库，而是**明说要用户自己选文件夹**。
+						 */}
+						{(data.vaults ?? []).length === 0 ? (
+							<div style={{ padding: '6px 8px', fontSize: 11, color: c.fgFaint, lineHeight: 1.55 }}>
+								还没有知识库。用下面的「＋ 本地载入文件夹…」选择一个文件夹作为知识库
+								（文件夹名即库名，不会复制或移动里面的文件）。
+							</div>
+						) : null}
 						<div style={{ height: 1, background: c.line, margin: '4px 2px' }} />
 						{actions?.addVault ? (
 							<>
@@ -1931,7 +2304,7 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 									{ label: "体检", run: () => actions?.runLint?.(), show: !!actions?.runLint },
 									{ label: "查重", run: () => actions?.runDedup?.(), show: !!actions?.runDedup },
 									{ label: "审核", run: () => actions?.reviewQueue?.(), show: !!actions?.reviewQueue },
-									{ label: "思维导图", run: () => setCanvasOpen(true), show: !!actions?.canvas },
+									{ label: "思维导图", run: () => { setOpenViews(o => ({ ...o, canvas: true })); setTab('canvas'); }, show: !!actions?.canvas },
 								].filter(item => item.show).map(item => (
 									<div
 										key={item.label}
@@ -2113,28 +2486,38 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 				<div style={{
 					flex: '1 1 auto', minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column',
 					borderLeft: `1px solid ${c.line}`, position: 'relative',
+					// ★ 2026-10-28（真机：窄容器里文档列被压成 0 宽）⇒ 保底宽度，放不下就横向滚
+					minWidth: 260,
 					// 与空态/正文同一个底色：否则空态、正文、容器三段会拼出竖缝（2026-10-28 用户截图）
 					background: 'var(--vscode-editor-background, #1e1e1e)',
 				}}>
-					{(doc || showSettings || hostSettingsOpen) ? (
+					{(doc || activeView !== 'doc') ? (
 						<>
 							{/* ── C：多文档 Tab（每篇保留滚动位置与草稿）────────────── */}
 							<div
 								data-kb-tabs="1"
 								style={{ display: 'flex', alignItems: 'stretch', height: 30, flex: '0 0 auto', overflowX: 'auto', overflowY: 'hidden', whiteSpace: 'nowrap', background: 'rgba(127,127,127,.06)', borderBottom: `1px solid ${c.line}` }}
 							>
-								{tabs.map(tab => {
-									const on = tab.path === activePath;
-									const dirty = on && draft !== null && doc.path === tab.path && draft !== doc.text;
+								{tabs.map(t => {
+									const on = activeView === 'doc' && t.path === activePath;   // ★ 2026-10-29：切到设置/图谱时，文档页签不许再高亮
+									/*
+									 * ★ 2026-10-28（真机：点设置整页黑屏，CDP 抓到
+									 *   `TypeError: Cannot read properties of null (reading 'path')`）：
+									 *   页签条原先只在 `doc ? (…)` 里渲染，所以这里可以直接读 `doc.path`；
+									 *   设置页签把它挪到了 `doc || showSettings || hostSettingsOpen` 之下 ⇒
+									 *   **`doc` 为 null 时也会渲染**，这一行当场抛错，整棵 bundle 根被卸载 ⇒ 黑屏。
+									 *   ⇒ 判空前先确认 `doc` 存在。
+									 */
+									const dirty = !!doc && on && draft !== null && doc.path === t.path && draft !== doc.text;
 									return (
 										<div
-											key={tab.path}
+											key={t.path}
 											role="tab"
 											tabIndex={0}
 											aria-selected={on}
-											title={tab.path}
-											onClick={() => { setShowSettings(false); setHostSettingsOpen(false); switchTab(tab.path); }}
-											onKeyDown={e => { if (e.key === "Enter") { switchTab(tab.path); } }}
+											title={t.path}
+											onClick={() => { setTab('doc'); setOpenViews({ settings: false, graph: false, canvas: false }); switchTab(t.path); }}
+											onKeyDown={e => { if (e.key === "Enter") { switchTab(t.path); } }}
 											style={{
 												display: "flex", alignItems: "center", gap: 6, flex: "0 0 auto", maxWidth: 190,
 												padding: "0 8px 0 10px", fontSize: 11.5, cursor: "pointer",
@@ -2145,32 +2528,64 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 											}}
 										>
 											{dirty ? <span title="有未保存修改" style={{ width: 6, height: 6, borderRadius: "50%", background: "#d29922", flex: "0 0 auto" }} /> : null}
-											<span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{tab.title}</span>
+											<span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.title}</span>
 											<span
 												role="button"
 												tabIndex={0}
 												title="关闭"
 												aria-label="关闭"
-												onClick={ev => { ev.stopPropagation(); closeTab(tab.path); }}
-												onKeyDown={ev => { if (ev.key === "Enter") { ev.stopPropagation(); closeTab(tab.path); } }}
+												onClick={ev => { ev.stopPropagation(); closeTab(t.path); }}
+												onKeyDown={ev => { if (ev.key === "Enter") { ev.stopPropagation(); closeTab(t.path); } }}
 												style={{ opacity: .55, fontSize: 13, lineHeight: 1, flex: "0 0 auto" }}
 											>×</span>
 										</div>
 									);
 								})}
-								{/* 设置：与文档并列的**独立页签**（dsh 侧没有宿主设置页 ⇒ 就地打开） */}
-								{(showSettings || hostSettingsOpen) ? (
-									<div
-										data-kb-settings-tab="1"
-										role="tab"
-										aria-selected
-										title="知识库设置"
-										style={{ display: 'flex', alignItems: 'center', gap: 6, flex: '0 0 auto', padding: '0 10px', fontSize: 11.5, cursor: 'default', color: c.fg, background: 'var(--vscode-editor-background, #1e1e1e)', borderRight: `1px solid ${c.line}`, boxShadow: 'inset 0 2px 0 var(--vscode-focusBorder, #3794ff)' }}
-									>⚙ 设置</div>
-								) : null}
+								{/* ★ 2026-10-29：设置 / 关系图谱 = 与文档页签**并列**的两个页签（可点击切换） */}
+									{openViews.settings ? (
+										<div
+											data-kb-settings-tab="1"
+									role="tab"
+									aria-selected={activeView === 'settings'}
+									title="知识库设置"
+									onClick={() => {
+										// 再点一次 = 关闭（回到文档）
+										if (activeView === 'settings') { setTab('doc'); setOpenViews(o => ({ ...o, settings: false })); return; }
+										setTab('settings');
+									}}
+									style={{ display: 'flex', alignItems: 'center', gap: 6, flex: '0 0 auto', padding: '0 10px', fontSize: 11.5, cursor: 'pointer', color: activeView === 'settings' ? c.fg : c.fgDim, background: activeView === 'settings' ? 'var(--vscode-editor-background, #1e1e1e)' : 'transparent', borderRight: `1px solid ${c.line}`, boxShadow: activeView === 'settings' ? 'inset 0 2px 0 var(--vscode-focusBorder, #3794ff)' : 'none' }}
+								>⚙ 设置</div>
+									) : null}
+									{openViews.graph ? (
+										<div
+											data-kb-graph-tab="1"
+									role="tab"
+									aria-selected={activeView === 'graph'}
+									title="关系图谱"
+									onClick={() => {
+										if (activeView === 'graph') { setTab('doc'); setOpenViews(o => ({ ...o, graph: false })); return; }
+										setTab('graph');
+									}}
+									style={{ display: 'flex', alignItems: 'center', gap: 6, flex: '0 0 auto', padding: '0 10px', fontSize: 11.5, cursor: 'pointer', color: activeView === 'graph' ? c.fg : c.fgDim, background: activeView === 'graph' ? 'var(--vscode-editor-background, #1e1e1e)' : 'transparent', borderRight: `1px solid ${c.line}`, boxShadow: activeView === 'graph' ? 'inset 0 2px 0 var(--vscode-focusBorder, #3794ff)' : 'none' }}
+								>🕸 关系图谱</div>
+									) : null}
+										{openViews.canvas ? (
+											<div
+												data-kb-canvas-tab="1"
+												role="tab"
+												aria-selected={activeView === 'canvas'}
+												title="思维导图"
+												onClick={() => {
+													if (activeView === 'canvas') { setTab('doc'); setOpenViews(o => ({ ...o, canvas: false })); return; }
+													setTab('canvas');
+												}}
+												style={{ display: 'flex', alignItems: 'center', gap: 6, flex: '0 0 auto', padding: '0 10px', fontSize: 11.5, cursor: 'pointer', color: activeView === 'canvas' ? c.fg : c.fgDim, background: activeView === 'canvas' ? 'var(--vscode-editor-background, #1e1e1e)' : 'transparent', borderRight: `1px solid ${c.line}`, boxShadow: activeView === 'canvas' ? 'inset 0 2px 0 var(--vscode-focusBorder, #3794ff)' : 'none' }}
+											>🗺 思维导图</div>
+										) : null}
 							</div>
 
 							{/* ── D：极简细条（28px）：折叠面包屑 + 预览/编辑 + ⋯ + 进度 ── */}
+							{activeView === 'doc' ? (<>
 							<div
 								data-kb-docbar="1"
 								style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 6, height: 28, flex: '0 0 auto', padding: '0 6px 0 10px', whiteSpace: 'nowrap', overflow: 'hidden', background: 'rgba(127,127,127,.03)', borderBottom: `1px solid ${c.line}` }}
@@ -2179,21 +2594,21 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 									onKeyDown={e => { if (e.key === "Enter") { setDocMenu(v => !v); } }}
 									style={{ cursor: "pointer", color: c.fgFaint, flex: "0 0 auto" }}>…</span>
 								<span style={{ color: c.fgFaint, flex: "0 0 auto" }}>/</span>
-								<span style={{ color: c.fgFaint, flex: "0 0 auto", maxWidth: 110, overflow: "hidden", textOverflow: "ellipsis" }}>{parentNameOf(doc.path)}</span>
+								<span style={{ color: c.fgFaint, flex: "0 0 auto", maxWidth: 110, overflow: "hidden", textOverflow: "ellipsis" }}>{parentNameOf(doc?.path)}</span>
 								<span style={{ color: c.fgFaint, flex: "0 0 auto" }}>/</span>
-								<span style={{ color: c.fg, flex: "0 1 auto", overflow: "hidden", textOverflow: "ellipsis" }}>{fileNameOf(doc.path) || doc.title}</span>
+								<span style={{ color: c.fg, flex: "0 1 auto", overflow: "hidden", textOverflow: "ellipsis" }}>{fileNameOf(doc?.path) || doc?.title}</span>
 								<span style={{ flex: 1 }} />
 								{docLoading ? <span style={{ fontSize: 10.5, color: c.fgFaint, flex: "0 0 auto" }}>载入中…</span> : null}
 								{draft !== null ? (
-									<span style={{ fontSize: 10.5, flex: "0 0 auto", color: draft === doc.text ? c.fgFaint : "#d29922" }}>
-										{draft === doc.text ? "未修改" : "● 未保存"}
+									<span style={{ fontSize: 10.5, flex: "0 0 auto", color: draft === doc?.text ? c.fgFaint : "#d29922" }}>
+										{draft === doc?.text ? "未修改" : "● 未保存"}
 									</span>
 								) : null}
-								{!doc.asset && actions?.saveDoc && doc.path ? (
+								{!doc?.asset && actions?.saveDoc && doc?.path ? (
 									<span data-kb-mode="1" style={{ display: "flex", border: `1px solid ${c.line}`, borderRadius: 3, overflow: "hidden", flex: "0 0 auto" }}>
 										<button type="button" title="预览" onClick={() => { if (draft !== null) { setDraft(null); } }}
 											style={{ height: 18, padding: "0 7px", fontSize: 10.5, border: 0, cursor: "pointer", background: draft === null ? "var(--vscode-button-background, #0e639c)" : "transparent", color: draft === null ? "var(--vscode-button-foreground, #fff)" : c.fgDim }}>预览</button>
-										<button type="button" title="编辑 Markdown 源码" onClick={() => { if (draft === null) { setDraft(doc.text); } }}
+										<button type="button" title="编辑 Markdown 源码" onClick={() => { if (draft === null) { setDraft(doc?.text); } }}
 											style={{ height: 18, padding: "0 7px", fontSize: 10.5, border: 0, cursor: "pointer", background: draft !== null ? "var(--vscode-button-background, #0e639c)" : "transparent", color: draft !== null ? "var(--vscode-button-foreground, #fff)" : c.fgDim }}>编辑</button>
 									</span>
 								) : null}
@@ -2205,14 +2620,14 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 									<>
 										<div onClick={() => setDocMenu(false)} onContextMenu={e => { e.preventDefault(); setDocMenu(false); }} style={{ position: "fixed", inset: 0, zIndex: 40 }} />
 										<div style={{ position: "absolute", right: 4, top: 26, zIndex: 41, minWidth: 240, background: "var(--vscode-menu-background, #252526)", border: `1px solid ${c.line}`, borderRadius: 4, padding: 4, boxShadow: "0 4px 16px rgba(0,0,0,.5)", fontSize: 11.5 }}>
-											<div style={{ padding: "4px 8px", color: c.fgFaint, wordBreak: "break-all", lineHeight: 1.5 }}>{doc.path || "(无路径)"}</div>
+											<div style={{ padding: "4px 8px", color: c.fgFaint, wordBreak: "break-all", lineHeight: 1.5 }}>{doc?.path || "(无路径)"}</div>
 											<div style={{ height: 1, background: c.line, margin: "4px 6px" }} />
-											{actions?.listBackups && doc.path && !doc.asset ? (
+											{actions?.listBackups && doc?.path && !doc?.asset ? (
 												<div role="menuitem" tabIndex={0} onClick={() => { setDocMenu(false); if (backups) { setBackups(null); } else { void openHistory(); } }}
 													style={{ height: 24, display: "flex", alignItems: "center", padding: "0 8px", borderRadius: 3, cursor: "pointer" }}>{backups ? "收起历史备份" : "历史备份"}</div>
 											) : null}
-											{actions?.reveal && doc.path ? (
-												<div role="menuitem" tabIndex={0} onClick={() => { setDocMenu(false); actions?.reveal?.(doc.path as string); }}
+											{actions?.reveal && doc?.path ? (
+												<div role="menuitem" tabIndex={0} onClick={() => { setDocMenu(false); actions?.reveal?.(doc?.path as string); }}
 													style={{ height: 24, display: "flex", alignItems: "center", padding: "0 8px", borderRadius: 3, cursor: "pointer" }}>在资源管理器中打开</div>
 											) : null}
 										</div>
@@ -2230,19 +2645,19 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 							 */}
 							<div style={{ marginBottom: 10 }}>
 								<div style={{ fontSize: 17, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-									{doc.title}
+									{doc?.title}
 								</div>
 								<div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 3, fontSize: 10.5, color: c.fgFaint }}>
-									{!doc.asset && doc.path ? <span>{(doc.path.split('/').pop() || '')}</span> : null}
+									{!doc?.asset && doc?.path ? <span>{(doc?.path.split('/').pop() || '')}</span> : null}
 									{draft !== null
-										? <span>{draft.length} 字{draft === doc.text ? '' : ' · 未保存'}</span>
-										: (doc.text ? <span>{doc.text.length} 字</span> : null)}
+										? <span>{draft.length} 字{draft === doc?.text ? '' : ' · 未保存'}</span>
+										: (doc?.text ? <span>{doc?.text.length} 字</span> : null)}
 									<span style={{ flex: 1 }} />
-									{draft !== null && !doc.asset ? (
+									{draft !== null && !doc?.asset ? (
 										<>
 											<button type="button" onClick={() => { void commitDraft(); }}
 												style={{ height: 22, padding: '0 10px', fontSize: 11, cursor: 'pointer', borderRadius: 3, background: 'var(--vscode-button-background, #0e639c)', color: 'var(--vscode-button-foreground, #fff)', border: '1px solid transparent' }}>保存</button>
-											<button type="button" onClick={() => { if (draft !== doc.text && !window.confirm('放弃未保存的修改？')) { return; } setDraft(null); }}
+											<button type="button" onClick={() => { if (draft !== doc?.text && !window.confirm('放弃未保存的修改？')) { return; } setDraft(null); }}
 												style={{ height: 22, padding: '0 10px', fontSize: 11, cursor: 'pointer', borderRadius: 3, background: 'transparent', color: 'inherit', border: `1px solid ${c.line}` }}>取消</button>
 										</>
 									) : null}
@@ -2264,16 +2679,16 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 									))}
 								</div>
 							) : null}
-							{doc.asset ? (
+							{doc?.asset ? (
 								<div style={{ padding: '4px 0' }}>
-									{doc.asset.kind === 'image'
-										? <img src={doc.asset.url} alt={doc.title} style={{ maxWidth: '100%', borderRadius: 4, border: '1px solid rgba(127,127,127,.25)', display: 'block' }} />
-										: doc.asset.kind === 'pdf'
-											? <embed src={doc.asset.url} type="application/pdf" style={{ width: '100%', height: 560, border: '1px solid rgba(127,127,127,.35)', borderRadius: 4 }} />
-											: doc.asset.kind === 'video'
-												? <video src={doc.asset.url} controls style={{ maxWidth: '100%', borderRadius: 4 }} />
-												: <audio src={doc.asset.url} controls style={{ width: '100%' }} />}
-									<div style={{ marginTop: 6, fontSize: 11, opacity: .55 }}>{doc.asset.url}</div>
+									{doc?.asset.kind === 'image'
+										? <img src={doc?.asset.url} alt={doc?.title} style={{ maxWidth: '100%', borderRadius: 4, border: '1px solid rgba(127,127,127,.25)', display: 'block' }} />
+										: doc?.asset.kind === 'pdf'
+											? <embed src={doc?.asset.url} type="application/pdf" style={{ width: '100%', height: 560, border: '1px solid rgba(127,127,127,.35)', borderRadius: 4 }} />
+											: doc?.asset.kind === 'video'
+												? <video src={doc?.asset.url} controls style={{ maxWidth: '100%', borderRadius: 4 }} />
+												: <audio src={doc?.asset.url} controls style={{ width: '100%' }} />}
+									<div style={{ marginTop: 6, fontSize: 11, opacity: .55 }}>{doc?.asset.url}</div>
 								</div>
 							) : draft !== null ? (
 								<>
@@ -2315,7 +2730,7 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 										}
 										if (e.key === 'Escape') {
 											e.preventDefault();
-											if (draft !== doc.text && !window.confirm('放弃未保存的修改？')) { return; }
+											if (draft !== doc?.text && !window.confirm('放弃未保存的修改？')) { return; }
 											setDraft(null);
 											return;
 										}
@@ -2354,14 +2769,21 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 									 *   宿主给了 `html` ⇒ 直接注入，并靠事件委托处理双链点击与任务勾选；
 									 *   没给（IDE 侧）⇒ 回落到下面的手写渲染器，行为不变。
 									 */}
-									{doc.html ? (
+{/*
+							 * ★★ 2026-10-28（真机：点 ⚙ 后**整页不显示**）：
+							 *   这里的分支条件是 `draft !== null`（编辑态），**不是 `doc`** ⇒ 没有文档时
+							 *   仍会走到预览分支并读 `doc.html` ⇒ `doc` 为 null 直接抛
+							 *   "Cannot read properties of null (reading 'html')" ⇒ 整棵 React 根被卸载（白屏）。
+							 *   ⇒ 全部改成可选链（doc?.html / doc?.math），没有文档时这一段自然不渲染。
+							 */}
+							{doc?.html ? (
 										<>
-											{doc.math ? <link rel="stylesheet" href="/x/kb/vendor/katex/katex.min.css" /> : null}
+											{doc?.math ? <link rel="stylesheet" href="/x/kb/vendor/katex/katex.min.css" /> : null}
 											<div
 												className="kb-md"
 												ref={docHtmlRef}
 												// 服务端 `html:false`（原始 HTML 一律转义）⇒ 这里的 HTML 由我们自己拼接，安全
-												dangerouslySetInnerHTML={{ __html: doc.html }}
+												dangerouslySetInnerHTML={{ __html: doc?.html }}
 												onClick={e => {
 													const el = e.target as HTMLElement;
 													/*
@@ -2443,7 +2865,7 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 												当前宿主未提供服务端渲染结果，以下按纯文本显示。
 											</div>
 											<pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12.5, lineHeight: 1.7, fontFamily: 'var(--vscode-editor-font-family, monospace)' }}>
-												{doc.text}
+												{doc?.text}
 											</pre>
 										</div>
 									)}
@@ -2459,46 +2881,75 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 							) : null}
 						</>
 					) : (
-						/*
-						 * ★ 2026-10-28（用户：空态右侧大片空白、颜色不一致）：
-						 *   空态必须**铺满整个中栏并自带背景** —— 否则它只有一行高度、
-						 *   下面露出容器底色，两段颜色拼成一道竖缝（截图里那道）。
-						 *   背景取与中栏容器**同一个令牌**，水平方向才连续。
-						 */
-						<div style={{
-							flex: '1 1 auto', minWidth: 0, minHeight: 0, width: '100%',
-							display: 'flex', alignItems: 'center', justifyContent: 'center',
-							background: 'var(--vscode-editor-background, #1e1e1e)',
-							color: c.fgFaint, fontSize: 12,
-						}}>点左边的笔记看正文</div>
+						/* 2026-10-28（用户要求）：空态不再显示任何文案，只保留整块底色 */
+						<div style={{ flex: '1 1 auto', minHeight: 0, background: 'var(--vscode-editor-background, #1e1e1e)' }} />
 					)}
-			{showSettings ? (
+							</>) : null}
+			{activeView === 'graph' ? (
+				<KbGraphTab vaultId={data.activeVaultId} onOpenNote={actions?.openNode} />
+			) : null}
+
+				{activeView === 'canvas' ? (
+					<div style={{ flex: '1 1 auto', minHeight: 0, minWidth: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: 'var(--vscode-editor-background, #1e1e1e)' }}>
+						<KbCanvasPane
+							onClose={() => { setTab('doc'); setOpenViews(o => ({ ...o, canvas: false })); }}
+							onOpenNote={(abs) => {
+								setTab('doc');
+								setOpenViews({ settings: false, graph: false, canvas: false });
+								(actions?.openLink ?? actions?.openNode)?.(abs);
+							}}
+						/>
+					</div>
+				) : null}
+
+			{activeView === 'settings' ? (
 				<div
 					data-kb-settings="1"
 					role="tabpanel"
-					style={{ position: 'absolute', inset: 0, zIndex: 40, display: 'flex', alignItems: 'stretch', justifyContent: 'stretch', background: 'var(--vscode-editor-background, #1e1e1e)' }}
+					style={{ flex: '1 1 auto', minHeight: 0, minWidth: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: 'var(--vscode-editor-background, #1e1e1e)' }}
 				>
 					<div
 						onClick={e => e.stopPropagation()}
-						style={{ width: '100%', height: '100%', maxHeight: 'none', overflow: 'auto', background: 'transparent', border: 0, borderRadius: 0, padding: 14 }}
+						style={{ width: '100%', height: '100%', maxHeight: 'none', overflow: 'auto', boxSizing: 'border-box',
+							// ★ 2026-10-29（用户：设置页面右侧太贴边）：内容紧贴容器右缘 ⇒ 控件被裁。
+							//   ⇒ 加左右内边距 + 内容最大宽度（超宽屏上不至于拉成一条线）。
+							padding: '14px 20px 28px', maxWidth: '1180px',
+						}}
 					>
 						<div style={{ display: 'flex', alignItems: 'center', marginBottom: 10 }}>
 							<div style={{ fontSize: 13, fontWeight: 600, flex: 1 }}>知识库设置</div>
+							{/*
+							 * ★ 2026-10-28：完整设置（飞书同步 / 目录映射 / CLI 路径）**不在**本页签内
+							 *   （跨 React 实例渲染不可靠），这里给一个明确入口 ⇒ 宿主把它开在右栏。
+							 */}
+							{actions?.openSettings ? (
+								<button
+									type="button"
+									title="完整设置：飞书同步 / 目录映射 / CLI 路径"
+									onClick={() => { setShowSettings(false); actions.openSettings!(); }}
+									style={{ height: 22, padding: '0 10px', marginRight: 6, fontSize: 11.5, cursor: 'pointer', borderRadius: 4, background: 'transparent', color: c.fgDim, border: `1px solid ${c.line}` }}
+								>完整设置…</button>
+							) : null}
 							<button type="button" onClick={() => setShowSettings(false)}
 
 								style={{ height: 22, padding: '0 10px', fontSize: 11.5, cursor: 'pointer', borderRadius: 4, background: 'transparent', color: 'inherit', border: `1px solid ${c.line}` }}>关闭</button>
 						</div>
 
-					{/* 宿主富设置容器（面板层用 react-dom/client 往里渲染） */}
-					{hostSettingsOpen ? (
-						<div
-							data-kb-host-settings="1"
-							ref={hostSettingsRef}
-							style={{ position: 'absolute', inset: 0, zIndex: 41, background: 'var(--vscode-editor-background, #1e1e1e)', overflow: 'auto' }}
-						/>
-					) : null}
+					{/*
+					 * ★★ 2026-10-28（真机：点设置后**整块空白**，且三次都没修好）：
+					 *   原因就是这个容器 —— 它在**设置页内部**，却用
+					 *   `position:absolute; inset:0; zIndex:41` + 不透明背景 ⇒ 一旦 `hostSettingsOpen`
+					 *   为真，它就把整个设置页盖住；而面板往里渲染的内容若不可见，用户看到的就是"空白"。
+					 *
+					 *   结论：**跨 React 实例渲染面板富设置这条路放弃**（bundle 自带另一份 React，
+					 *   既不能 portal，也保证不了可见性）。设置页签只渲染 bundle 自己的设置页；
+					 *   完整设置（飞书 / 目录映射 / CLI）通过下面的「完整设置」按钮开在右栏。
+					 */}
 
-						{/* ① 当前库 */}
+						{/* 完整设置（飞书）：bundle 自己的 React，同树渲染 */}
+						<KbFeishuSettings />
+
+{/* ① 当前库 */}
 						<div style={{ fontSize: 11, color: c.fgFaint, marginBottom: 4 }}>当前库</div>
 						<div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginBottom: 12 }}>
 							{(data.vaults ?? []).map(v => (
@@ -2605,21 +3056,6 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 				</div>
 			) : null}
 
-			{canvasOpen ? (
-				<div
-					data-kb-canvas-overlay="1"
-					style={{
-						position: 'absolute', inset: 0, zIndex: 46,
-						background: 'var(--vscode-sideBar-background, #252526)',
-						display: 'flex', flexDirection: 'column', minHeight: 0,
-					}}
-				>
-					<KbCanvasPane
-						onClose={() => setCanvasOpen(false)}
-						onOpenNote={(abs) => { setCanvasOpen(false); (actions?.openLink ?? actions?.openNode)?.(abs); }}
-					/>
-				</div>
-			) : null}
 
 
 			{/* 视图内对话框（Electron 不支持 window.prompt ⇒ 改名/新建/删除确认自己弹） */}

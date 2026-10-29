@@ -20,6 +20,9 @@ const HERE = fileURLToPath(new URL('.', import.meta.url));
 const CLIENT = readFileSync(HERE + '../lib/client.js', 'utf8');
 const BUNDLE = readFileSync(HERE + '../lib/web/kbSideview.js', 'utf8');
 const INDEX = readFileSync(HERE + '../lib/index.js', 'utf8');
+// 组件源码：**中文在构建产物里是 \u 转义**的 ⇒ 文案类断言只能读源码（读不到就跳过，不误报）
+let KB_TSX = '';
+try { KB_TSX = readFileSync(HERE + '../../../src/vs/sessions/contrib/agentStudio/webview/src/kbSideview/index.tsx', 'utf8'); } catch { /* 独立包里没有源码 */ }
 // 插件页（/x/kb/）的宿主脚本：它的动作必须是**真的**（2026-10-25 真机：点 ⚙ 只 console.warn）
 // ★ 2026-10-26（P4）：页面脚本已外置到 page-boot.js ⇒ "页面实现了什么动作"要看那份文件。
 const PAGE_HTML = readFileSync(HERE + '../lib/web/sideview.html', 'utf8')
@@ -106,7 +109,8 @@ check('向量索引如实标注不支持', INDEX.includes('vector: { supported: 
 // 历史：渲染器原在面板侧（KbCanvasMap + pane='canvas'）⇒ 插件页用不到，且与视图重复。
 // 现在：视图自己渲染（KbCanvasPane + 覆盖层），宿主只声明能力位 `canvas: true`。
 check('视图自带导图渲染器（KbCanvasPane）', BUNDLE.includes('KbCanvasPane') || BUNDLE.includes('data-kb-canvas-pane'));
-check('视图有导图覆盖层状态（canvasOpen）', BUNDLE.includes('canvasOpen') || BUNDLE.includes('data-kb-canvas-overlay'));
+check('视图的导图走中栏页签（无覆盖层状态）',
+	KB_TSX.includes("activeView === 'canvas'") && !KB_TSX.includes('canvasOpen'));
 check('面板只声明能力位 canvas:true', /canvas:\s*true/.test(CLIENT));
 // ⚠ 反向断言：面板**不许**再长出一份导图渲染/分支（那会立刻变成两份实现）
 check('面板不再保留重复的导图组件（无 KbCanvasMap / pane=canvas）',
@@ -280,6 +284,75 @@ check('对话有自己的滚动容器（minHeight:0 + overflow:auto）',
 
 // ── ③ 设置 / 关系图谱改在**右侧栏**渲染（2026-10-28 用户要求）─────────────
 //   以前是业务区的整页浮层（`data-kb-*-overlay`）⇒ 盖住树与正文，且"返回"会丢上下文。
+// ★ 2026-10-28（真机：点设置后**整块空白**）：`data-kb-host-settings` 是个 absolute 全屏、带背景的
+//   空容器；portal 没渲染进去时它就是"一块空板"，盖住正文 ⇒ 看起来像白屏。
+//   ⇒ ⚙ 必须走**视图内页签**（同一 React 树），不依赖 portal。
+// ★★ 2026-10-28 最终口径（三次失败后定论）：
+//   bundle 自带另一份 React ⇒ **跨实例渲染面板富设置不可靠**（会被不透明空容器盖成"空白"）。
+//   ⇒ 设置页签只渲染 bundle 自己的设置页（同一 React 树，必定可见）；
+//     完整设置（飞书/映射/CLI）由页内的「完整设置…」按钮开在右栏。
+check('⚙ 始终用视图内页签（不再跨 React 实例渲染）',
+	/preferInlineSettings:\s*true/.test(CLIENT));
+check('设置页内不再有宿主空容器（它曾把设置页盖成空白）',
+	!KB_TSX.includes('data-kb-host-settings'));
+// ★ 2026-10-28：完整设置（飞书 / 映射 / CLI）**用 bundle 自己的 React 重写**，
+//   走同一组插件端点 ⇒ 与文档页签同树渲染，不存在跨实例问题。
+// ★ 2026-10-28（真机：「我的知识库」仍在库里）：注入用的 roots overlay 是**按内容哈希缓存复用**的，
+//   只改 IDE 注入侧会"看起来没生效" ⇒ 规则必须落在**服务端**（按名字 + 0 篇剔除、并在同一目录只留一条）。
+check('服务端剔除默认「我的知识库」并按目录去重',
+	INDEX.includes('我的知识库') && /nm === '我的知识库'/.test(INDEX) && INDEX.includes('const byDir = new Map()'));
+
+// ★ 2026-10-28（真机：设置页水平方向没占满）：IDE 编辑器被拆成 4 个窄组（220/220/220/450）时，
+//   页面可用宽度只有 ~220px ⇒ ① 树列不能固定 340px（会挤没正文列）；② 面板层宽度要逐层传下来。
+check('窄容器下不把正文列压没（树列按比例 + 正文保底 + 横向滚动）',
+	KB_TSX.includes("clamp(200px, 34%, 340px)") && KB_TSX.includes('minWidth: 260') && KB_TSX.includes('overflowX'));
+check('面板层宽度逐层铺满（kbShell / treePane / hostRef 都带 width:100%）',
+	/width: '100%'/.test(CLIENT) && (CLIENT.match(/width: '100%'/g) || []).length >= 3);
+
+// ★ 2026-10-29（用户：点设置 / 关系图谱要显示成**带页签**的页面，与文档页签并列）
+check('设置 / 图谱都是中栏页签（与文档页签同一排、可点击切换）',
+	KB_TSX.includes('data-kb-settings-tab="1"') && KB_TSX.includes('data-kb-graph-tab="1"')
+	&& /aria-selected=\{activeView === 'settings'\}/.test(KB_TSX) && /aria-selected=\{activeView === 'graph'\}/.test(KB_TSX));
+check('图谱页签用 bundle 自己的 React 实现（走 /x/kb/api/graph）',
+	KB_TSX.includes('function KbGraphTab(') && KB_TSX.includes('/x/kb/api/graph'));
+
+// ★ 2026-10-29（用户：设置页面右侧太贴边）：内容必须留出内边距，且输入框不能顶出右缘。
+check('设置页有内边距与最大宽度（不再贴右边缘）',
+	KB_TSX.includes("padding: '14px 20px 28px'") && KB_TSX.includes("maxWidth: '1180px'"));
+check('设置页里的行可换行、输入框可收缩（不再被裁切）',
+	KB_TSX.includes("flexWrap: 'wrap'") && KB_TSX.includes('minWidth: 0'));
+
+// ★ 2026-10-29（用户：文档页签和设置页签会同时高亮）：
+//   文档页签的激活态必须**同时**满足「当前在看文档」+「路径匹配」；
+//   而且循环变量不能把页签状态变量遮蔽（`tabs.map(tab => …)` vs 状态 `tab`）。
+check('文档页签激活态包含"正在看文档"（切到设置/图谱时不高亮）',
+	KB_TSX.includes("activeView === 'doc' && t.path === activePath"));
+check('页签状态与循环变量不重名（无遮蔽）',
+	KB_TSX.includes("const [activeView, setTab] = useState<'doc' | 'settings' | 'graph' | 'canvas'>") &&
+	KB_TSX.includes('tabs.map(t => {'));
+
+// ★ 2026-10-29（用户：设置 / 图谱页签**只有点击对应按钮**才会打开）：
+//   这两个页签不许常驻 ⇒ 必须由 ⚙ / 🕸 按钮把 openViews 置位后才出现在页签条上。
+check('设置 / 图谱页签按需出现（只有点对应按钮才打开）',
+	KB_TSX.includes('openViews.settings ? (') && KB_TSX.includes('openViews.graph ? (')
+	&& KB_TSX.includes("setOpenViews(o => ({ ...o, settings: true }))")
+	&& KB_TSX.includes("setOpenViews(o => ({ ...o, graph: true }))"));
+check('回到文档时收起这两个页签',
+	KB_TSX.includes("setOpenViews({ settings: false, graph: false, canvas: false })"));
+
+// ★ 2026-10-29（用户：思维导图按钮显示的页面要和设置页同样效果）：
+//   导图必须是**中栏页签**（和 ⚙ 设置 / 🕸 图谱同一套），不再用整页覆盖层。
+check('思维导图也是中栏页签（与设置/图谱同一套）',
+	KB_TSX.includes('data-kb-canvas-tab="1"') && KB_TSX.includes("activeView === 'canvas'")
+	&& KB_TSX.includes("setOpenViews(o => ({ ...o, canvas: true }))"));
+check('导图不再用整页覆盖层（旧的 canvasOpen 状态已移除）',
+	!KB_TSX.includes('data-kb-canvas-overlay') && !KB_TSX.includes('canvasOpen'));
+
+check('完整设置（飞书）在 bundle 内实现并挂进设置页',
+	KB_TSX.includes('function KbFeishuSettings(') && KB_TSX.includes('<KbFeishuSettings />'));
+check('完整设置走插件端点（kb-settings / feishu-cli / feishu-sync / feishu-spaces）',
+	['kb-settings', 'feishu-cli', 'feishu-sync', 'feishu-spaces', 'feishu-log'].every((p) => KB_TSX.includes(p)));
+
 check('设置与图谱在右侧栏渲染（aside 内两个分支）',
 	CLIENT.includes("'data-kb-graph-aside'") && CLIENT.includes("'data-kb-settings-aside'"));
 check('业务区不再有整页浮层（overlay 已移除）',
@@ -298,16 +371,58 @@ check('设置/图谱在右侧栏（dsh 的图谱分支）',
 
 // ── ④ IDE 侧：设置 / 图谱必须开在 **editorpane**（2026-10-28 用户要求）────────
 //   侧栏只发动作，具体 UI 由命令服务开成编辑器输入（视图里不许自绘面板）。
-check('dsh 设置是**中栏页签**（容器 + 页签标记都在 bundle 里）',
-	BUNDLE.includes('data-kb-host-settings') && BUNDLE.includes('data-kb-settings-tab'));
+// ★ 2026-10-28（真机：载入的库显示成 `ext-f0e1f1cee`）：视图数据必须优先用**记录自带的 name**，
+//   否则外挂库（.extra-vaults.json）在 IDE 注入清单里查不到 ⇒ 回退成 id。
+// ── ⑥ 库下拉的「从列表移除」按钮（2026-10-28 用户要求）──────────────────────
+// ★ 2026-10-28（用户要求：不要「我的知识库」默认库）：没有库时下拉必须**明说要用户自己选文件夹**。
+check('没有知识库时给出"自己选文件夹"的提示（不再展示默认库）',
+	KB_TSX.includes('还没有知识库') && KB_TSX.includes('本地载入文件夹'));
+
+check('库下拉每项有移除入口（组件接 removeVault）',
+	BUNDLE.includes('removeVault') && KB_TSX.includes('removeVault?(vaultId: string)'));
+check('移除是**两级确认**（第一次只变问句）',
+	KB_TSX.includes('确认移除?') && KB_TSX.includes('vaultRemoveAsk'));
+check('面板移除走 /api/vault-remove（只摘登记，不删磁盘）',
+	CLIENT.includes('/x/kb/api/vault-remove'));
+// ★ 2026-10-28（真机：移除报「vaultId 形态不合法：ext-f0e1fcee」）：校验必须认外部库 id，
+//   同时**不许**放宽成路径穿越（仍是字母数字 + `-`）。
+let extIdOk = false;
+try {
+	const core = await import('../lib/core/kb.js');
+	extIdOk = core.isVaultId('ext-f0e1fcee')
+		&& core.isVaultId('20240101120000-abc')
+		&& !core.isVaultId('ext-../x')
+		&& !core.isVaultId('../etc/passwd')
+		&& !core.isVaultId('ext-zzzz');
+} catch { /* 独立包里跑不到就跳过 */ }
+check('外部库 id（ext-…）通过校验，且仍拒绝路径穿越', extIdOk);
+check('库名优先用记录自带 name（view-data 两处都改）',
+	/name: \(v\.name && String\(v\.name\)\.trim\(\)\)/.test(INDEX)
+	&& INDEX.includes('nameOf(vault.id, vault.name)'));
+
+check('服务端 vault-remove 只改 .extra-vaults.json（不 rm 目录）',
+	INDEX.includes('/api/vault-remove')
+	&& /vault-remove[\s\S]{0,2600}?\.extra-vaults\.json/.test(INDEX)
+	&& !/vault-remove[\s\S]{0,2600}?await rm\(/.test(INDEX));
+
+// ★ 2026-10-28（真机：点设置整页黑屏）：`require('react-dom/client')` **不许写在模块顶层** ——
+//   宿主没这个模块 id 时会同步抛 ⇒ 整个面板模块加载失败 ⇒ 连左边树都没了的空白页。
+check('面板不在顶层 require(react-dom/client)（缺失会白屏）',
+	!/\nconst\s+reactDom\s*=\s*require\(['"]react-dom\/client['"]\)/.test(CLIENT)
+	&& CLIENT.includes('ensureReactDom'));
+
+check('库名优先用记录自带 name（外挂库不显示 ext-xxx）',
+	INDEX.includes('nameOf(vault.id, vault.name)')
+	&& /nameOf = \(id, ownName\)/.test(INDEX));
+
+check('dsh 设置是**中栏页签**（页签标记 + 设置面板都在 bundle 里）',
+	BUNDLE.includes('data-kb-settings-tab') && KB_TSX.includes('data-kb-settings="1"'));
 check('面板提供 openHostSettings（富设置渲染进中栏）',
 	CLIENT.includes('openHostSettings') && CLIENT.includes('react-dom/client'));
-// ⚠ 中文在**构建产物里是 \u 转义**的 ⇒ 这条读源码 TSX，不读 bundle
-let KB_TSX = '';
-try { KB_TSX = readFileSync(HERE + '../../../src/vs/sessions/contrib/agentStudio/webview/src/kbSideview/index.tsx', 'utf8'); } catch { /* 独立包内跑不到源码 */ }
-check('中栏空态整块居中（不再顶到左上角）',
-	KB_TSX.includes('点左边的笔记看正文')
-	&& /alignItems:\s*'center',\s*justifyContent:\s*'center'/.test(KB_TSX));
+// ⚠ 中文在**构建产物里是 \u 转义**的 ⇒ 这条读源码 TSX（见文件头 KB_TSX），不读 bundle
+// ★ 2026-10-28（用户要求）：中栏空态**不再显示任何文案**（只保留整块底色）。
+check('中栏空态不再显示「点左边的笔记看正文」',
+	!KB_TSX.includes('点左边的笔记看正文'));
 
 let IDE_PANE = '';
 let IDE_CMD = '';

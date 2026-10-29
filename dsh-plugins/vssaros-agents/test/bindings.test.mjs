@@ -9,10 +9,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
-	BINDING_MENTION_POLICIES, BINDING_PLATFORMS, createBinding, deleteBinding,
+	BINDING_MENTION_POLICIES, BINDING_PLATFORMS, allowDeadLetterSender, createBinding, deleteBinding,
 	findBindingForChat, findOutboundBindings, inboundKeyOf, listBindings, normalizeBinding,
 	readBindings, shouldAcceptInbound, splitOutbound, updateBinding,
 } from '../lib/bindings.js';
+import { listDeadLetters, recordDeadLetter } from '../lib/deadLetters.js';
 
 let pass = 0;
 const fails = [];
@@ -189,12 +190,57 @@ await checkAsync('按 id 删除 / 按 (platform, chatId) 删除', async () => {
 	await assert.rejects(() => deleteBinding(config, { platform: 'loopback', chatId: 'oc_a' }), (e) => e.httpStatus === 404);
 });
 
-/* ── 飞书传输层校验 + 密钥不外泄（P1）────────────────────────────────── */
-await checkAsync('★ 飞书绑定没配 webhookUrl ⇒ 400（不能"以为绑好了"却发不出去）', async () => {
-	await assert.rejects(
-		() => createBinding(config, { targetKind: 'agent', targetId: 'coder', chatId: 'oc_f1', platform: 'feishu', allowFrom: ['u1'] }, deps),
-		(e) => e.httpStatus === 400 && /webhookUrl/.test(e.message),
+/* ── 死信 → 一键加白名单（2026-10-29）────────────────────────────────── */
+await checkAsync('★ 死信里的发送者一键加进该绑定的白名单（并删掉这条死信）', async () => {
+	const b = await createBinding(config, { targetKind: 'agent', targetId: 'coder', chatId: 'oc_dlq1', allowFrom: [] }, deps);
+	await recordDeadLetter(config, {
+		reason: 'no-whitelist', platform: 'loopback', chatId: 'oc_dlq1', chatType: 'p2p',
+		userId: 'u_dlq', userName: '张三', messageId: 'm1', text: 'hi',
+	});
+	const entry = (await listDeadLetters(config)).items.find((x) => x.chatId === 'oc_dlq1');
+	assert.ok(entry, '死信应已记录');
+	const r = await allowDeadLetterSender(config, { id: entry.id, actor: { kind: 'human' } });
+	assert.equal(r.already, false);
+	assert.deepEqual(r.binding.allowFrom, ['u_dlq']);
+	const onDisk = (await readBindings(config)).find((x) => x.id === b.binding.id);
+	assert.deepEqual(onDisk.allowFrom, ['u_dlq'], '白名单必须落盘');
+	assert.equal(
+		(await listDeadLetters(config)).items.filter((x) => x.chatId === 'oc_dlq1').length,
+		0,
+		'处理过的那条死信要删掉（否则"最近失败"里一直挂着假问题）',
 	);
+	const r2 = await allowDeadLetterSender(config, { platform: 'loopback', chatId: 'oc_dlq1', userId: 'u_dlq', actor: { kind: 'human' } });
+	assert.equal(r2.already, true, '幂等：已在白名单不重复写');
+	assert.deepEqual(r2.binding.allowFrom, ['u_dlq']);
+});
+await checkAsync('★ 没对应绑定 ⇒ 404（不猜该绑给谁）；缺 userId ⇒ 400', async () => {
+	await assert.rejects(
+		() => allowDeadLetterSender(config, { platform: 'loopback', chatId: 'oc_none', userId: 'u1', actor: { kind: 'human' } }),
+		(e) => e.httpStatus === 404,
+	);
+	await assert.rejects(
+		() => allowDeadLetterSender(config, { platform: 'loopback', chatId: 'oc_dlq1', actor: { kind: 'human' } }),
+		(e) => e.httpStatus === 400,
+	);
+});
+
+/* ── 飞书传输层校验 + 密钥不外泄（P1）────────────────────────────────── */
+/* ★ 2026-10-28：webhookUrl 不再是必填 —— 有应用凭据时"填个 chat_id 就能用"是正路。
+   仍然 fail-closed：两条通道都没有 ⇒ 400（别让人等真跑一次对话才发现发不出去）。 */
+await checkAsync('★ 飞书没 webhookUrl 且应用凭据未配置 ⇒ 400（不能"以为绑好了"却发不出去）', async () => {
+	const depsNoApp = { ...deps, appConfigured: async () => false };
+	await assert.rejects(
+		() => createBinding(config, { targetKind: 'agent', targetId: 'coder', chatId: 'oc_f1', platform: 'feishu', allowFrom: ['u1'] }, depsNoApp),
+		(e) => e.httpStatus === 400 && /设置 → 渠道/.test(e.message),
+	);
+});
+await checkAsync('★ 飞书只填 chat_id（应用凭据已配）⇒ 允许创建（应用模式出站）', async () => {
+	const depsApp = { ...deps, appConfigured: async () => true };
+	const r = await createBinding(config, { targetKind: 'agent', targetId: 'coder', chatId: 'oc_app1', platform: 'feishu', allowFrom: ['u1'] }, depsApp);
+	assert.equal(r.binding.platform, 'feishu');
+	assert.equal(r.binding.chatId, 'oc_app1');
+	assert.equal(r.binding.webhookUrl, '', '应用模式不需要 webhookUrl');
+	await deleteBinding(config, { id: r.binding.id });
 });
 await checkAsync('webhookUrl 不是 http(s) ⇒ 400', async () => {
 	await assert.rejects(

@@ -26,9 +26,14 @@ const bad = (n, d = '') => { fail += 1; console.log('  ✗ ' + n + (d ? '\n     
 /**
  * 找到本仓自带的 dsh 运行时里的主题包。
  *
- * ⚠ 必须取**版本号最大**的那个：`dsh-runtime/` 下可能同时存在 `0.2.1-rc.1` 和 `0.2.1-rc.2`，
+ * ⚠ 必须取**版本号最大**的那个：`dsh-runtime/` 下可能同时存在 `0.1.7-rc.2` 和 `0.2.1-rc.2`，
  *   而实际运行的是新版。原来按"路径最短"排序，rc.1 恰好更短 ⇒ 会拿旧白名单去校验新代码，
  *   报出一堆"未定义 token"的假红（2026-10-27 踩过）。
+ *
+ * ★ 2026-10-28：判据再收紧一档 —— 优先取 **compat 清单的 `bundled`**（= 真正随包走的那一个），
+ *   清单读不到 / 那个版本没装时才退回"版本号最大"。理由与打包侧同源：打包只 pin `bundled`
+ *   （见 build/gulpfile.vscode.ts），"取最大"在有**残留目录**时会把没验证过的版本当权威
+ *   （2026-10-28 本机：残留 rc.4 时它去校验 rc.4 的主题包 ⇒ 假红）。
  */
 function themeFile() {
 	const base = path.join(ROOT, 'dsh-runtime');
@@ -45,11 +50,20 @@ function themeFile() {
 		}
 		return 0;
 	};
-	const versions = fs.readdirSync(base)
-		.filter((v) => fs.existsSync(path.join(base, v, 'node_modules/@deepseek-ai/dsh-client-ui-theme/lib/client.js')))
-		.sort(cmp);
-	if (!versions.length) { return ''; }
-	return path.join(base, versions[0], 'node_modules/@deepseek-ai/dsh-client-ui-theme/lib/client.js');
+	const hasTheme = (v) => fs.existsSync(path.join(base, v, 'node_modules/@deepseek-ai/dsh-client-ui-theme/lib/client.js'));
+	const versions = fs.readdirSync(base).filter(hasTheme);
+	let picked;
+	try {
+		const bundled = String(JSON.parse(fs.readFileSync(path.join(ROOT, 'dsh-plugins', 'dsh-compat.json'), 'utf8')).bundled ?? '').trim();
+		if (bundled && versions.includes(bundled)) {
+			picked = bundled;
+		}
+	} catch { /* 清单读不到 ⇒ 退回"取最大" */ }
+	if (!picked) {
+		picked = versions.sort(cmp)[0];
+	}
+	if (!picked) { return ''; }
+	return path.join(base, picked, 'node_modules/@deepseek-ai/dsh-client-ui-theme/lib/client.js');
 }
 
 const theme = themeFile();

@@ -30,6 +30,15 @@ export const MAX_SCAN = 20_000;
 
 /** vault 目录名形态：`yyyyMMddHHmmss-<随机>`（`_archive` / `favorites` / `notes` 等非 vault 目录会被排除）。 */
 const VAULT_ID_RE = /^\d{8,14}-[a-z0-9]+$/i;
+/**
+ * **外部载入**的库：`ext-<稳定短哈希>`（`/api/vault-add` 的 attach 分支生成，见 index.js）。
+ *
+ * ★ 2026-10-28（真机：下拉里点移除报「vaultId 形态不合法：ext-f0e1fcee」）：
+ *   这个校验原先只认数据根那种时间戳形态 ⇒ 外部库的 id 一路被判非法，
+ *   连"从列表移除"都做不了。
+ *   放宽时**必须同时保住路径安全**：仍只允许字母数字与 `-`（不含 `/ \ . :`）。
+ */
+const EXT_VAULT_ID_RE = /^ext-[0-9a-f]{4,16}$/i;
 
 /** HTML 转义（页面是服务端渲染；库里的标题/路径都可能带尖括号）。 */
 export function escapeHtml(value) {
@@ -37,7 +46,8 @@ export function escapeHtml(value) {
 }
 
 export function isVaultId(name) {
-	return VAULT_ID_RE.test(String(name ?? ''));
+	const s = String(name ?? '');
+	return VAULT_ID_RE.test(s) || EXT_VAULT_ID_RE.test(s);
 }
 
 /**

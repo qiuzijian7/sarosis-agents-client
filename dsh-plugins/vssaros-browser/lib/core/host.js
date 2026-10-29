@@ -13,7 +13,7 @@
  *    默认只放只读 op —— 与 unreal 那条"只放行只读子集"同一档纪律（不自造授权）。
  */
 
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import {
 	cdpEndpointCandidates, chromeExecutableCandidates, dedicatedPortFor, dedicatedProfileDir,
@@ -158,6 +158,16 @@ export class CdpHost {
 		this._product = undefined;
 		this._dedicatedPid = undefined;
 		this._connecting = undefined;
+		/**
+		 * ★ 当前专属实例的**模式**（true = 无头）。
+		 *
+		 * 2026-10-28（用户要求「每次启动都自动打开浏览器，能不能无感」）：
+		 *   · **平时**（读 cookie / 采集额度）⇒ **无头** ⇒ Host 启动不会弹出任何窗口 ✓
+		 *   · **需要人工登录时** ⇒ 由 `ensureHeaded()` 切成**有头**（同 profile 不能并存 ⇒ 先杀再拉）
+		 *   · 登录完 ⇒ `ensureHeadless()` 切回无头 ⇒ 用户无感 ✓
+		 */
+		this._modeHeadless = this._config.headless === true;
+		this._dedicatedHeadless = undefined;
 		/** 「上次探测失败」的缓存（**只缓存失败**，见 `ensureReachable`）。 */
 		this._failProbe = undefined;
 	}
@@ -281,7 +291,8 @@ export class CdpHost {
 					throw new Error(`找不到 Chrome 可执行文件（可用 ${CHROME_PATH_ENV} 指定）｜原因：${primary instanceof Error ? primary.message : String(primary)}`);
 				}
 				const profileDir = dedicatedProfileDir(this._config.homeDir, this._config.platform);
-				this._dedicatedPid = launchDedicatedChrome(exe, buildDedicatedChromeArgs(profileDir, port, this._config.headless));
+				this._dedicatedHeadless = this._modeHeadless;
+				this._dedicatedPid = launchDedicatedChrome(exe, buildDedicatedChromeArgs(profileDir, port, this._modeHeadless));
 				const url = `http://127.0.0.1:${port}`;
 				const deadline = Date.now() + LAUNCH_READY_TIMEOUT_MS;
 				let last;
@@ -315,6 +326,65 @@ export class CdpHost {
 		} finally {
 			this._connecting = undefined;
 		}
+	}
+
+	/**
+	 * 杀掉**我们自己拉起**的专属实例。
+	 *
+	 * ⚠ 切模式前必做：Chrome **不允许同一 profile 两个实例并存** ⇒ 必须先杀再拉。
+	 */
+	_killDedicated() {
+		const pid = this._dedicatedPid;
+		this._dedicatedPid = undefined;
+		this._dedicatedHeadless = undefined;
+		if (!pid) { return; }
+		try {
+			spawnSync('taskkill', ['/PID', String(pid), '/F'], { stdio: 'ignore', windowsHide: true });
+		} catch {
+			try { process.kill(pid); } catch { /* ignore */ }
+		}
+	}
+
+	/** 断开当前连接（切模式时用）。 */
+	_dropConnection() {
+		try { this._conn?.dispose?.(); } catch { /* ignore */ }
+		this._conn = undefined;
+		this._targets = undefined;
+		this._endpoint = undefined;
+		this._product = undefined;
+	}
+
+	/**
+	 * 确保专属实例是**有头**的（需要人交互登录时用）。
+	 *
+	 * 2026-10-28：平时是无头（用户无感），只有要让人登录时才切有头。
+	 */
+	async ensureHeaded() {
+		if (!this._config.launchDedicated) { return; }
+		// 连的是**用户自己的 Chrome**（不是我们拉的）⇒ 它本来就有头 ⇒ 不用切 ✓
+		if (this._dedicatedPid === undefined && this._conn) { return; }
+		if (this._dedicatedHeadless === false) { return; }
+		this._log?.info?.('[vssaros-browser] 切换专属实例：无头 → 有头（需要人交互登录）');
+		this._dropConnection();
+		this._killDedicated();
+		await new Promise((resolve) => setTimeout(resolve, 700));
+		this._modeHeadless = false;
+		await this._connection();
+	}
+
+	/**
+	 * 确保专属实例是**无头**的（交互结束 ⇒ 回到"用户无感"状态）。
+	 */
+	async ensureHeadless() {
+		if (!this._config.launchDedicated) { return; }
+		if (this._dedicatedPid === undefined && this._conn) { return; }
+		if (this._dedicatedHeadless === true) { return; }
+		this._log?.info?.('[vssaros-browser] 切换专属实例：有头 → 无头（交互结束，用户无感）');
+		this._dropConnection();
+		this._killDedicated();
+		await new Promise((resolve) => setTimeout(resolve, 700));
+		this._modeHeadless = true;
+		await this._connection();
 	}
 
 	/** 状态：端点 + 是否连上 + 浏览器版本（`status` op 的返回值）。 */

@@ -1,5 +1,5 @@
 ﻿# =============================================================================
-#  enable-process-audit.ps1 —— 开启「进程创建」审计，用于抓"谁杀了 Saroasis harness.exe"
+#  enable-process-audit.ps1 —— 开启「进程创建」审计，用于抓"谁杀了 VsSaros.exe"
 #
 #  为什么需要它：应用被外部以 TerminateProcess(code=1) 杀掉时**不写任何日志**
 #  （process.on('exit') 都不触发、无 dump、无 will-quit）。只有 Windows 的

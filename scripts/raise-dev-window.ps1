@@ -1,4 +1,5 @@
-param([string]$ProcessName = 'Saroasis harness')
+# 进程名：2026-10-29 起 exe 叫 `VsSaros`（原来 `Saroasis harness`）⇒ 两个都认（过渡期兼容）
+param([string[]]$ProcessName = @('VsSaros', 'Saroasis harness'))
 # ============================================================================
 # 把已经在跑的 dev 实例的窗口提到最前面。
 #

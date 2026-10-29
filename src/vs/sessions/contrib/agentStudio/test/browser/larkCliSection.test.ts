@@ -365,21 +365,24 @@ suite('飞书 CLI 区块 · 获取 chat_id（无凭证早退，零网络）', ()
 	});
 });
 
-suite('飞书 CLI 区块 · 宿主契约（外提后的接缝）', () => {
+suite('飞书 CLI 区块 · 宿主契约（2026-10-29 渠道能力迁到 dsh 侧后）', () => {
 
-	test('宿主只保留 2 个入口，8 个内部方法**不得**留在宿主（防第二套实现）', () => {
+	/* ★ 2026-10-29：IDE 侧的飞书渠道能力**整体下线**（渠道全部收敛到 dsh 侧插件）。
+	   原来这条契约是"宿主只留 2 个入口、逻辑在 larkCliSection.ts（防第二套实现）"；
+	   现在连宿主入口也不该有 —— 宿主既不转发，也没有二维码区块。 */
+	test('宿主**不再**承载飞书 CLI / Channel 绑定入口（渠道已迁到 dsh 侧）', () => {
 		const paneProto = AgentSettingsEditorPane.prototype as unknown as Record<string, unknown>;
-		for (const m of ['_buildLarkCliSection', '_refreshLarkCliStatus']) {
-			assert.strictEqual(typeof paneProto[m], 'function', `宿主缺入口 ${m}（调用点会断）`);
-		}
 		for (const m of [
-			'_renderLarkCliStatus', '_applyLarkCliBusy', '_installLarkCli', '_showLarkCliOutput',
-			'_createFeishuBotByQr', '_fetchChatIds', '_larkCliSleep',
+			'_buildLarkCliSection', '_refreshLarkCliStatus',
+			'_buildBindingTab', '_renderBindingTab',
+			'_addFeishuBinding', '_removeFeishuBinding',
 		]) {
 			assert.strictEqual(paneProto[m], undefined,
-				`宿主侧不应再有 ${m} —— 真源已搬到 larkCliSection.ts，宿主只准转发 ✗`);
+				`宿主不应再有 ${m} —— IDE 侧渠道已下线，能力在 dsh 侧 ✗`);
 		}
+	});
 
+	test('★ larkCliSection 里仍不得有第二套实现（真源只在一个文件里）', () => {
 		const sectionProto = LarkCliSection.prototype as unknown as Record<string, unknown>;
 		for (const m of [
 			'build', 'refresh',

@@ -56,9 +56,7 @@ import { localize } from '../../../../nls.js';
 import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { DisposableStore, isDisposable } from '../../../../base/common/lifecycle.js';
-import { IQuickInputService } from '../../../../platform/quickinput/common/quickInput.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
-import { IBridgeService } from '../../agentStudio/browser/bridge/bridgeService.js';
 import {
 	buildSessionGroups,
 	computeGroupWindow,
@@ -128,8 +126,6 @@ function _icon(path: string, size = 12): SVGSVGElement {
 const ICON_PENCIL = 'M11.488 1.65a1.5 1.5 0 0 1 2.122 0l.74.74a1.5 1.5 0 0 1 0 2.122l-1.69 1.69-2.862-2.862l1.69-1.69zM8.92 4.222l2.862 2.862-6.36 6.36-3.39.74a.5.5 0 0 1-.58-.58l.74-3.39 6.728-6.992z';
 const ICON_TRASH = 'M6.5 1a.5.5 0 0 0-.5.5V2H3.5a.5.5 0 0 0 0 1H4v10a1.5 1.5 0 0 0 1.5 1.5h5A1.5 1.5 0 0 0 12 13V3h.5a.5.5 0 0 0 0-1H10v-.5a.5.5 0 0 0-.5-.5h-3zM5 3h6v10a.5.5 0 0 1-.5.5h-5A.5.5 0 0 1 5 13V3zm2 2.5a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5z';
 const ICON_PIN = 'M9.5 1a.5.5 0 0 1 .5.5v1l2.4 1.6a.5.5 0 0 1 .22.42V7a.5.5 0 0 1-.5.5H9.6V12a.5.5 0 0 1-1 0V7.5H4.9a.5.5 0 0 1-.5-.5V4.52a.5.5 0 0 1 .22-.42L7 2.5v-1a.5.5 0 0 1 .5-.5h2z';
-/** 链接/绑定图标（feather "link"）：飞书绑定标识与绑定按钮共用。 */
-const ICON_LINK = 'M7.775 3.275a.75.75 0 001.06 1.06l1.25-1.25a2 2 0 112.83 2.83l-2.5 2.5a2 2 0 01-2.83 0 .75.75 0 00-1.06 1.06 3.5 3.5 0 004.95 0l2.5-2.5a3.5 3.5 0 00-4.95-4.95l-1.25 1.25zm-4.69 9.64a2 2 0 010-2.83l2.5-2.5a2 2 0 012.83 0 .75.75 0 001.06-1.06 3.5 3.5 0 00-4.95 0l-2.5 2.5a3.5 3.5 0 004.95 4.95l1.25-1.25a.75.75 0 00-1.06-1.06l-1.25 1.25a2 2 0 01-2.83 0z';
 
 interface SessionInfo {
 	agentId: string;
@@ -349,8 +345,6 @@ export class SessionHistoryViewPane extends ViewPane {
 		@IEditorGroupsService private readonly editorGroupsService: IEditorGroupsService,
 		@IStorageService private readonly storageService: IStorageService,
 		@IDialogService private readonly dialogService: IDialogService,
-		@IBridgeService private readonly bridgeService: IBridgeService,
-		@IQuickInputService private readonly quickInputService: IQuickInputService,
 		@INotificationService private readonly notificationService: INotificationService,
 		@ICommandService private readonly commandService: ICommandService,
 		@IDshHarnessService private readonly dshHarness: IDshHarnessService,
@@ -461,66 +455,10 @@ export class SessionHistoryViewPane extends ViewPane {
 			this._reloadForContextChange('active agent changed');
 		}));
 
-		// 飞书绑定状态：初始拉取 + 订阅绑定变更即时刷新（badge / 按钮态）
-		this._refreshFeishuBindings();
-		try {
-			this._register(this.bridgeService.getEngine().onDidChangeBindings(() => {
-				this._refreshFeishuBindings();
-				this._scheduleSilentReload();
-			}));
-		} catch { /* 引擎未就绪：绑定功能静默降级 */ }
 	}
 
-	/** sessionId → 绑定的飞书 chat_id（渲染 badge/按钮态用）。 */
-	private readonly _feishuBoundBySession = new Map<string, string>();
-	/** 渠道默认会话 id（非精确绑定，badge 显示默认态）。 */
-	private _feishuDefaultSessionId: string | null = null;
 
-	/** 从 bridge 引擎重建「会话→飞书 chat_id」反查表 + 默认会话。 */
-	private _refreshFeishuBindings(): void {
-		this._feishuBoundBySession.clear();
-		try {
-			const engine = this.bridgeService.getEngine();
-			for (const b of engine.listSessionBindings('feishu')) {
-				this._feishuBoundBySession.set(b.agentSessionId, b.conversationId);
-			}
-			this._feishuDefaultSessionId = engine.getChannelDefaultSession('feishu')?.agentSessionId ?? null;
-		} catch { /* 引擎未就绪：保持空表 */ }
-	}
 
-	/**
-	 * 会话 item 的飞书绑定交互：输入 chat_id 绑定/换绑；已有绑定时清空输入即解绑。
-	 * 完成后经 onDidChangeBindings 事件全量刷新（badge/按钮态/header 标识）。
-	 */
-	private async _promptFeishuBinding(sessionData: SessionData): Promise<void> {
-		const { info } = sessionData;
-		const current = this._feishuBoundBySession.get(info.sessionId);
-		const input = await this.quickInputService.input({
-			title: current ? '切换飞书绑定' : '绑定飞书会话',
-			prompt: current
-				? `当前绑定：${current}。输入新的 chat_id 换绑；清空并回车 = 解绑`
-				: '输入飞书群聊/私聊的 chat_id（群设置底部「会话 ID」字段），该会话将接收其消息',
-			value: current ?? '',
-			placeHolder: 'oc_xxxxxxxxxxxxxxxx',
-		});
-		if (input === undefined) { return; } // Esc 取消
-		const chatId = input.trim();
-		try {
-			const engine = this.bridgeService.getEngine();
-			if (!chatId) {
-				if (current) {
-					engine.unbindConversationSession('feishu', current);
-					this.notificationService.info(`已解除飞书会话 ${current} 的绑定`);
-				}
-				return;
-			}
-			engine.bindConversationToSession('feishu', chatId, info.agentId, info.sessionId);
-			this.notificationService.info(`已将飞书会话 ${chatId} 绑定到「${info.sessionName || info.sessionId}」`);
-		} catch (err) {
-			this.logService.warn('[SessionHistoryView] feishu bind failed:', err);
-			this.notificationService.error(`绑定操作失败: ${err instanceof Error ? err.message : String(err)}`);
-		}
-	}
 
 	/**
 	 * 防抖 + silent 刷新（保留滚动位置）。
@@ -1515,16 +1453,6 @@ export class SessionHistoryViewPane extends ViewPane {
 		const title = DOM.append(titleLine, $('.session-history-title'));
 		title.textContent = info.sessionName || 'Untitled Session';
 		title.title = `${info.sessionName || 'Untitled Session'} — Double-click to open chat, Ctrl/Cmd+click to multi-select, right-click for actions`;
-		// 飞书绑定标识：该会话被某 chat_id 绑定（或为渠道默认会话）时显示
-		const boundChatId = this._feishuBoundBySession.get(info.sessionId);
-		const isDefaultFeishu = !boundChatId && this._feishuDefaultSessionId === info.sessionId;
-		if (boundChatId || isDefaultFeishu) {
-			const feTag = DOM.append(titleLine, $('.session-history-feishu-tag'));
-			feTag.title = boundChatId
-				? `已绑定飞书会话：${boundChatId}（该群/私聊消息将进入此会话）`
-				: '飞书渠道默认会话（未精确绑定的消息将进入此会话）';
-			feTag.appendChild(_icon(ICON_LINK, 11));
-		}
 		// 人格 chip 的「标题右侧」落点：排在 `open` 之前（`open` 是本行最后一个标记）。
 		if (personaLabel && PERSONA_MARK === 'title') {
 			titleLine.appendChild(this._buildPersonaChip(info, personaLabel));
@@ -1564,17 +1492,6 @@ export class SessionHistoryViewPane extends ViewPane {
 		// 右侧操作组（常驻占位 ⇒ hover 时标题不位移）
 		const actions = DOM.append(header, $('.session-history-actions'));
 
-		// 飞书绑定按钮：未绑定 hover 才可见；已绑定常显蓝色（点击切换/解绑）
-		const bindBtn = DOM.append(actions, $<HTMLButtonElement>('.session-history-bind-btn'));
-		if (boundChatId) { bindBtn.classList.add('bound'); }
-		bindBtn.title = boundChatId
-			? `飞书绑定：${boundChatId}（点击切换或解绑）`
-			: '绑定飞书会话（chat_id）';
-		bindBtn.appendChild(_icon(ICON_LINK));
-		this._register(DOM.addDisposableListener(bindBtn, DOM.EventType.CLICK, (e) => {
-			e.stopPropagation();
-			void this._promptFeishuBinding(sessionData);
-		}));
 
 		// ★ 2026-10-19：**重命名**按钮 dsh 会话也给 —— 走 `renameDshSession`（页面 `ctx.sessions.rename`）
 		//   ⇒ 真的会落在 dsh 那边（`_startRenameSession` 里分流，不在就如实提示）。

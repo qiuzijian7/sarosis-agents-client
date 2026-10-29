@@ -53,15 +53,21 @@ export function agentsBuiltinRootOf(config) {
  */
 export async function scanAgentsFromConfig(config, signal) {
 	const builtinRoot = agentsBuiltinRootOf(config);
-	let builtin = { agents: [], errors: [], missing: undefined, fingerprint: undefined };
-	if (builtinRoot) {
-		try {
-			builtin = await scanAgents(builtinRoot, signal);
-		} catch (e) {
-			builtin = { agents: [], errors: [`内置 agent 目录读取失败（${builtinRoot}）：${String(e?.message ?? e)}`], missing: undefined, fingerprint: undefined };
-		}
-	}
-	const custom = await scanAgents(agentsRootOf(config), signal);
+	// ★ 2026-10-29：内置根与自定义根**并发**扫（两个根各 21/10 个 agent，
+	//   串行就是两倍等待）⇒ 结果与顺序不变。
+	const [builtinResult, customResult] = await Promise.all([
+		(async () => {
+			if (!builtinRoot) { return { agents: [], errors: [], missing: undefined, fingerprint: undefined }; }
+			try {
+				return await scanAgents(builtinRoot, signal);
+			} catch (e) {
+				return { agents: [], errors: [`内置 agent 目录读取失败（${builtinRoot}）：${String(e?.message ?? e)}`], missing: undefined, fingerprint: undefined };
+			}
+		})(),
+		(async () => scanAgents(agentsRootOf(config), signal))(),
+	]);
+	const builtin = builtinResult;
+	const custom = customResult;
 	const byId = new Map();
 	// `source` 决定"能不能给用户看"（内置的 code-architect/coder 那些只是内部子代理）。
 	// ★ 2026-10-20：判定改为 `isShownAgent`（core/agents.js）——内置必须 `.agent.md` 写了
@@ -105,32 +111,40 @@ export async function scanAgents(root, signal) {
 	const dirs = entries.filter(e => e.isDirectory()).map(e => e.name).sort();
 	const agents = [];
 	const errors = [];
-	for (const dir of dirs) {
+	// ★★ 2026-10-29（真机：加了 agents 覆盖层后 Host ready 从 **7s 变 21s**）：
+	//   原来 31 个 agent（21 内置 + 10 自定义）逐个**串行** `stat` + `readFile`。
+	//   Windows 上每次读文件都被杀软扫一遍（实测 ~450ms/文件）⇒ 合计 ~14 秒，
+	//   而 dsh 的 ready 在等这个插件的 apply ⇒ **首启慢 14 秒全是这里** ✗✗。
+	//   ⇒ 改成**并发**读：IO 等待重叠（杀软也能批量处理），结果与顺序完全不变。
+	const results = await Promise.all(dirs.map(async (dir) => {
 		if (signal?.aborted) {
-			break;
+			return null;
 		}
 		const file = join(root, dir, AGENT_FILE);
 		try {
 			const info = await stat(file);
 			if (!info.isFile()) {
-				continue;
+				return null;
 			}
 		} catch {
-			continue; // 没有 .agent.md 的目录：正常（如 agents/custom 只是容器）
+			return null; // 没有 .agent.md 的目录：正常（如 agents/custom 只是容器）
 		}
 		let text;
 		try {
 			text = await readFile(file, { encoding: 'utf8' });
 		} catch {
-			errors.push(`读取失败：${file}`);
-			continue;
+			return { error: `读取失败：${file}` };
 		}
 		const parsed = agentFromFile(text, { id: dir, file });
 		if (parsed.error) {
-			errors.push(parsed.error);
-			continue;
+			return { error: parsed.error };
 		}
-		agents.push(parsed.agent);
+		return { agent: parsed.agent };
+	}));
+	// 还原成"按目录名排序"的稳定顺序（并发完成顺序是乱的 ⇒ 不能直接 push）。
+	for (const r of results) {
+		if (!r) { continue; }
+		if (r.error) { errors.push(r.error); } else { agents.push(r.agent); }
 	}
 	return { agents, errors, root, fingerprint: await fingerprintOf(root) };
 }

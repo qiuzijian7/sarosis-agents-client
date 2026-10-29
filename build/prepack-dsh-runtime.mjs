@@ -83,9 +83,29 @@ async function safeBuildProfileSeed(runtimeDir, dshBin, dshVersion) {
 			.map(s => (typeof s === 'string' ? s : s ? String(s) : ''))
 			.filter(Boolean).join('\n').trim().slice(-2000);
 		console.log(`[prepack-dsh] ⚠ profile 种子构建失败：${first}`);
+		console.log(`[prepack-dsh]   错误码=${err?.code ?? '?'} status=${err?.status ?? '?'} stderr=${(err?.stderr ?? '').length}B stdout=${(err?.stdout ?? '').length}B`);
 		if (tail) {
 			console.log(`[prepack-dsh]   失败输出（末尾 2000 字符）：\n${tail}`);
+		} else {
+			console.log(`[prepack-dsh]   （没有 stderr/stdout；完整 message 末尾 1500 字符）\n${String(err?.message ?? '').slice(-1500)}`);
 		}
+		// ★ 2026-10-28：dsh 的**启动诊断**在 `<seed>/logs/startup-*.log` —— 那是唯一说清"为什么退出"
+		//   的地方；而下面要把半成品种子整个删掉 ⇒ 先读出来打出来、再把日志目录拷到 runtime 下留痕
+		//   （CI 上失败时这台机器上的日志会被清掉，没有留痕就永远查不了）。
+		try {
+			const logsDir = join(runtimeDir, 'profile-seed', 'logs');
+			if (existsSync(logsDir)) {
+				const logs = readdirSync(logsDir).filter(f => f.startsWith('startup-') && f.endsWith('.log')).sort();
+				if (logs.length) {
+					console.log(`[prepack-dsh]   启动诊断（${logs[logs.length - 1]} 末尾 4000 字符）：\n${readFileSync(join(logsDir, logs[logs.length - 1]), 'utf8').slice(-4000)}`);
+					const { cpSync, mkdirSync } = await import('node:fs');
+					const dst = join(runtimeDir, 'seed-build-fail-logs');
+					mkdirSync(dst, { recursive: true });
+					cpSync(logsDir, dst, { recursive: true, force: true });
+					console.log(`[prepack-dsh]   失败诊断已留痕：${dst}`);
+				}
+			}
+		} catch { /* 留痕失败也不拦出包 */ }
 		console.log('[prepack-dsh]   ⇒ 种子缺失：**本次出包会被 verify-staging 判失败**（2026-10-28 起种子是硬门）。'
 			+ '修好上面的原因后重跑本脚本即可（运行时本体已就绪 ✓，重跑只补种子）。');
 		// ★ 必须清掉半成品：宿主侧判"种子可用"只看 `profile-seed/profiles/<p>/package.json` 在不在
@@ -138,12 +158,22 @@ function ensurePnpm() {
 
 if (existsSync(bin) && !force) {
 	prune(target); // 已有安装也补跑裁剪（幂等），保证旧产物升级裁剪清单后不用重装
-	console.log(`[prepack-dsh] dsh ${version} 已在 ${target}，跳过安装（${Math.round(dirSize(target) / 1024 / 1024)} MB）`);
+	// ★ 2026-10-28：**目录在 ≠ 版本对**。2026-10-28 本机现场：`dsh-runtime/0.2.1-rc.2/` 里的引擎
+	//   自报 `0.2.1-alpha.3`（上游 rc.2 包里的引擎版本串没跟上）⇒ 它自带的官方插件声明 rc.2、
+	//   引擎却是 alpha.3 ⇒ 每次装插件都被「版本闸门」拦（"to accept the risk…"）⇒ 种子建不出来。
+	//   旧写法直接「跳过安装」⇒ 一份**名不副实**的运行时被静默复用 ⇒ 种子链路的锅没人找得到。
+	//   ⇒ 这里核对自报版本，对不上就重装（并把失败原因留在日志里）。
 	const actual0 = execFileSync(process.execPath, [bin, '--version'], { encoding: 'utf8' }).trim().split(/\r?\n/).pop();
-	await safeBuildProfileSeed(target, bin, actual0); // 种子缺失/过期时补建（失败不拦出包）
-	process.exit(0);
+	if (actual0 === version) {
+		console.log(`[prepack-dsh] dsh ${version} 已在 ${target}，跳过安装（${Math.round(dirSize(target) / 1024 / 1024)} MB）`);
+		await safeBuildProfileSeed(target, bin, version); // 种子缺失/过期时补建（失败不拦出包）
+		process.exit(0);
+	}
+	console.log(`[prepack-dsh] ⚠ 已存在的安装自报版本 ${actual0} ≠ 期望 ${version} ⇒ 视为不可用，重装`);
+	removeTreeOrThrow(target, '清掉版本不符的旧安装');
 }
 if (existsSync(target)) {
+	// bin 缺失但目录还在 ⇒ 上次装到一半 ⇒ 删干净重来（否则 npm 会把它当已装）
 	removeTreeOrThrow(target, '清掉不可用的旧安装');
 }
 
@@ -304,7 +334,48 @@ async function buildProfileSeed(runtimeDir, dshBin, dshVersion) {
 	removeTreeOrThrow(seed, 'dsh 要求 profile 目录不存在，由它自己创建'); // 种子里的 node_modules 很深 ⇒ 必须走扩展长度删除
 	// copy 导入模式：node_modules 是真文件而不是指向 pnpm store 的链接——否则搬不走。
 	const env = { ...process.env, DSH_HOME: seed, npm_config_package_import_method: 'copy' };
-	const dsh = args => execFileSync(process.execPath, [dshBin, ...args], { env, stdio: 'pipe', encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
+	/**
+	 * dsh 的插件管理器有「版本闸门」：插件声明的 dsh 版本与运行时不一致时，`dsh plugin add` 会拒绝，
+	 * 并在 stderr 里给出补救命令：
+	 *   `dsh: to accept the risk, run: dsh plugin --profile <p> allow-version <pkg>@<ver> --dsh-version <v> --accept-risk`
+	 * 2026-10-28 实测（本地与 CI 同一处）：我们自己的 `@vssaros/dsh-agents` 声明的
+	 * `@deepseek-ai/dsh-agent-preset` 版本与 web 模板装出来的不一致 ⇒ 种子建不出来 ⇒ 整包出不来。
+	 * ⇒ 自动接受并重试一次。**接受记录落在 profile 里**（DSH_HOME=seed）⇒ 随种子带到用户机器，
+	 *    用户首启不会再撞这道闸门。
+	 */
+	const acceptVersionGate = (text) => {
+		const m = /allow-version\s+(\S+)\s+--dsh-version\s+(\S+)/.exec(text ?? '');
+		return m ? { pkg: m[1], dshVersion: m[2] } : undefined;
+	};
+	const dshRun = args => execFileSync(process.execPath, [dshBin, ...args], { env, stdio: 'pipe', encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
+	/** 已接受的版本豁免（package@version → dsh 版本），用于日志与去重。 */
+	const acceptedVersionGates = new Map();
+	const dsh = args => {
+		// 一个种子里有 35 个插件，而官方 bundle（web-app）会带进**几十个** dsh-* 包，
+		// 它们各自声明的 dsh 版本（alpha.3）与运行时（rc.2）不一致 ⇒ 每装一个撞一道闸门。
+		// ⇒ 循环「接受 → 重试」直到不再有闸门（上限 400，够覆盖整棵官方包树）。
+		let lastErr;
+		for (let attempt = 0; attempt < 400; attempt++) {
+			try {
+				return dshRun(args);
+			} catch (e) {
+				lastErr = e;
+				const text = `${e?.stderr ?? ''}\n${e?.stdout ?? ''}\n${e?.message ?? ''}`;
+				const gate = acceptVersionGate(text);
+				if (!gate) {
+					throw e;
+				}
+				if (acceptedVersionGates.has(gate.pkg)) {
+					// 同一个包又撞了 ⇒ 再接受一次没有意义（多半是另一个原因），把原始错误抛出去
+					throw e;
+				}
+				acceptedVersionGates.set(gate.pkg, gate.dshVersion);
+				console.log(`[prepack-dsh] dsh 版本闸门：接受 ${gate.pkg}（--dsh-version ${gate.dshVersion}）后重试（第 ${acceptedVersionGates.size} 次）`);
+				dshRun(['plugin', '--profile', 'vssaros', 'allow-version', gate.pkg, '--dsh-version', gate.dshVersion, '--accept-risk']);
+			}
+		}
+		throw lastErr ?? new Error('dsh 调用失败（版本闸门重试次数用尽）');
+	};
 
 	dsh(['--profile', 'vssaros', '--from-default-profile', 'web', '--help']);
 	if (!existsSync(join(profileDir, 'package.json'))) {
@@ -384,6 +455,18 @@ async function buildProfileSeed(runtimeDir, dshBin, dshVersion) {
 		rmSync(seedCreds, { force: true });
 		console.log('[prepack-dsh] seed credentials scrubbed（首启自生成 ✓）');
 	}
+	// ★ 2026-10-28：种子里的 node_modules 是 pnpm **平铺**出来的依赖闭包 ⇒ 官方包的
+	//   **可选**依赖（libreoffice 内核 ≈182MB）会被一起装进来 —— 而运行时那边我们明明裁掉了
+	//   （PRUNE_LIST）。不裁的后果实测：种子 417MB ≈ 运行时 522MB ⇒ 体积翻倍。
+	//   ⇒ 种子用**同一份** PRUNE_LIST 裁一遍（口径一致：wrapper 留着，只删平台内核）。
+	prune(profileDir, 'profile seed');
+	for (const rel of PRUNE_LIST) {
+		const p = join(profileDir, ...rel);
+		if (existsSync(p)) {
+			console.log(`[prepack-dsh] ⚠ 种子里的 ${rel.join('/')} 没裁掉（还在包里 ⇒ 包会大 ${Math.round(dirSize(p) / 1024 / 1024)} MB；`
+				+ '发布守卫 check-dsh-release.mjs 会把它报成问题）');
+		}
+	}
 	// ★ 2026-10-28：**先对账再写 marker** —— 写早了等于给一个残缺种子盖章"已是最新"。
 	//   装不上的插件上面已经 throw；这里挡的是"装上了但数量/版本对不上清单"的那类（例如清单在
 	//   构建中途变化、或 pnpm 把某个 file: 依赖当成没变化而跳过替换）。
@@ -393,6 +476,10 @@ async function buildProfileSeed(runtimeDir, dshBin, dshVersion) {
 	}
 	writeFileSync(markerPath, JSON.stringify({ dsh: dshVersion, plugins: wantPlugins, createdAt: new Date().toISOString() }, undefined, 2));
 	console.log(`[prepack-dsh] profile seed ready (${Math.round(dirSize(seed) / 1024 / 1024)} MB)；覆盖全部 ${Object.keys(wantPlugins).length} 个随包插件 ✓`);
+	if (acceptedVersionGates.size) {
+		// 这些豁免**落在 profile 里**（DSH_HOME=seed）⇒ 随种子带到用户机器，用户首启不再撞版本闸门。
+		console.log(`[prepack-dsh] 版本豁免 ${acceptedVersionGates.size} 条（已写入 profile）：${[...acceptedVersionGates.keys()].slice(0, 8).join(', ')}${acceptedVersionGates.size > 8 ? ' …' : ''}`);
+	}
 }
 
 /**
@@ -402,8 +489,12 @@ async function buildProfileSeed(runtimeDir, dshBin, dshVersion) {
  * 未捕获抛出 ⇒ prepack 进程崩 ⇒ 打包链在 gulp 之前中止 ⇒ 上传出去的安装包仍是"上次残留的暂存目录"
  * 打出来的（不含 dsh 运行时）⇒ 用户装完还是「找不到 dsh」✗✗）。裁掉的只是 ~182MB 的可选内核：
  * 删不掉就让包大一点，**不许**因此不出包。
+ *
+ * ★ 2026-10-28：**运行时与 profile 种子要裁同一份清单**。种子里的 node_modules 是 pnpm
+ *   **平铺**出来的依赖闭包 ⇒ 官方包的 optionalDependencies（libreoffice 内核 ≈182MB）会被装进
+ *   种子 —— 而运行时那边我们明明裁掉了。不裁的后果实测：种子 417MB ≈ 运行时 522MB ⇒ 体积翻倍。
  */
-function prune(targetDir) {
+function prune(targetDir, label = 'runtime') {
 	let prunedMB = 0;
 	for (const rel of PRUNE_LIST) {
 		const p = join(targetDir, ...rel);
@@ -413,13 +504,13 @@ function prune(targetDir) {
 		const bytes = dirSize(p);
 		if (removeTree(p)) {
 			prunedMB += bytes / 1024 / 1024;
-			console.log(`[prepack-dsh] pruned ${rel.join('/')} (${Math.round(bytes / 1024 / 1024)} MB)`);
+			console.log(`[prepack-dsh] pruned ${label}: ${rel.join('/')} (${Math.round(bytes / 1024 / 1024)} MB)`);
 		} else {
-			console.log(`[prepack-dsh] ⚠ 裁剪失败（保留原样，包会大约 ${Math.round(bytes / 1024 / 1024)} MB）：${rel.join('/')}`);
+			console.log(`[prepack-dsh] ⚠ 裁剪失败（保留原样，包会大约 ${Math.round(bytes / 1024 / 1024)} MB）：${label} ${rel.join('/')}`);
 		}
 	}
 	if (prunedMB > 0) {
-		console.log(`[prepack-dsh] pruned total: ${Math.round(prunedMB)} MB`);
+		console.log(`[prepack-dsh] pruned total (${label}): ${Math.round(prunedMB)} MB`);
 	}
 }
 

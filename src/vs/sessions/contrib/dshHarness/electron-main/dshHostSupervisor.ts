@@ -34,9 +34,11 @@ import { probeLabelWriteOnce } from './dshSandboxProbe.js';
 import { DshBridgeClient } from './dshBridgeClient.js';
 import { IStartupDeadline, createStartupDeadline, startupExpiryMessage } from './dshStartupDeadline.js';
 import { normalizeExistingPath, repairStoreMetadataContent } from './dshStoreMetadata.js';
-import { DshHostLeaseStore } from './dshHostLeaseStore.js';
+import { DshHostLeaseStore, pidAlive } from './dshHostLeaseStore.js';
+import { orphanLeaseCandidates } from '../common/dshHostRunOwnership.js';
 import { rememberHostPort, resolveHostPort } from './dshHostPortManager.js';
 import { reapOrphanHosts } from './dshHostReaper.js';
+import { repairProfileDeps } from './dshProfileDepsRepair.js';
 import { DshRuntimeError, DshRuntimeManager, IResolvedDsh, IResolvedNode, sanitizedEnv } from './dshRuntimeManager.js';
 import { IDshHealthReport, IHostActivity, summarizeHealth } from '../common/dshUpgrade.js';
 // ★ 2026-10-19：内置 agent 的**代码真源**（`getBuiltinAgents`）与它到 md 的序列化（`buildAgentMd`）。
@@ -277,6 +279,17 @@ export class DshHostSupervisor extends Disposable {
 	private _status: IDshHostStatus = { state: 'stopped', bridge: 'none' };
 	private _child: ChildProcess | undefined;
 	private _bridge: DshBridgeClient | undefined;
+
+	/**
+	 * ★ 2026-10-29：Host 的 mux 升级路由**是否已注册**。
+	 *
+	 * Host 说 "ready"（bridge hello 通了）时，mux 路由往往**还没注册**（真机 +4.8s ~ +11.4s）⇒
+	 * 这段时间里任何 `session.start` 都会失败 ⇒ 桌面窗口要么弹"假失败"黄条，要么退避白等 8~16s。
+	 * ⇒ 这里把"路由已通"做成状态里的一等公民（`IDshHostStatus.muxReady`），渲染进程据此**先等再发起**。
+	 *
+	 * 复用既有 Host 时直接置 true：那个 Host 早就 ready 过了，路由必然已注册。
+	 */
+	private _muxReady = false;
 
 	/**
 	 * 把反向通道（Host → IDE）的处理器就地挂到**刚建好的**桥客户端上。
@@ -871,6 +884,8 @@ export class DshHostSupervisor extends Disposable {
 		const generation = ++this._generation;
 		const t0 = Date.now();
 		const { profile, dshHome } = this._resolveProfileAndHome(options);
+		// 新 Host ⇒ mux 路由要重新注册 ⇒ 先当"没就绪"（复用路径另有一处置 true）。
+		this._muxReady = false;
 		this._setStatus({ state: 'starting', bridge: 'none', profile, dshHome });
 
 		try {
@@ -1042,19 +1057,63 @@ export class DshHostSupervisor extends Disposable {
 				const installedDirOf = (name: string) => join(pluginProfileDir, 'node_modules', ...name.split('/'));
 				const missed = wants.filter(w => installedVersionOf(w.name) !== w.bundled || !this._installedEntryMatches(w.dir, installedDirOf(w.name)));
 				this._appendLog(`one-shot install of ${wants.length} plugin(s) took ${Date.now() - t0} ms: ${wants.length - missed.length} ok, ${missed.length} to retry`);
+				// ★★ 2026-10-29（真机：10:01 / 10:06 / 10:55 三次启动全是同一个错）：装插件会让 pnpm
+				//   **重物化整棵依赖树** ⇒ `compression/node_modules/negotiator` 这类嵌套副本会被装成
+				//   **缺文件**的残次品（缺 `lib/accept.js`）⇒ dsh 的四个插件 import 全挂在同一条 require 栈上
+				//   ⇒ `webStartup/connection` 起不来 ⇒ **Host 直接 exit code 1** ⇒ 桌面窗口只报"控制桥不可用"。
+				//   ⇒ 不是偶发，是"每次装插件后必坏" ⇒ 光手工补一次没用（下次装插件又被覆盖）⇒ 这里装完立刻自愈 ✓。
+				try {
+					const repair = await repairProfileDeps(join(pluginProfileDir, 'node_modules'), line => this._appendLog(line));
+					if (repair.repaired.length) {
+						this._appendLog(`deps-repair: 补齐 ${repair.repaired.length} 个缺失文件（扫了 ${repair.scanned} 个嵌套副本）`);
+					}
+				} catch (error) {
+					this._appendLog(`deps-repair 失败（忽略 ⇒ 让 Host 的错误自己显形）：${String((error as Error)?.message ?? error).slice(0, 160)}`);
+				}
 				// 版本已相同、内容仍不一致 ⇒ pnpm 把**同路径的 `file:` 依赖**当成"没变化"而跳过了替换 ——
 				// 这份副本是陈旧的（Host 会跑旧代码）。**必须说出来**：沉默时它表现为"每次启动都重装、
 				// 每次都说 ok、内容永远不变"（2026-10-14 真机现场），是最难查的一类静默失效。
 				const staleAfterInstall = missed.filter(w => installedVersionOf(w.name) === w.bundled);
 				if (staleAfterInstall.length) {
-					this._appendLog(`⚠ 同版本重装后入口内容仍与随包不一致（pnpm 跳过了同路径 file: 依赖的替换）⇒ 这些副本是陈旧的，Host 会跑旧代码：${staleAfterInstall.map(w => w.name).join(', ')}（随包目录应已换指纹命名，若仍如此请查暂存目录是否可写）`);
+					// ★★ 2026-10-29（真机：打包版**每次启动**都重装 kb、且每次都不生效 ⇒ 首启 35s、次启照旧）：
+					//   暂存目录名里的指纹取的是**随包入口**（`_entryFingerprint(dir)`）—— 同一个 exe 下它恒定
+					//   ⇒ spec 路径逐字不变 ⇒ pnpm 把这条 `file:` 依赖当 no-op（真机输出 `reused 0, added 0`）
+					//   ⇒ `node_modules` 里仍是**最初那份旧内容** ⇒ 下次启动判定再次"内容不一致" ⇒ **永久循环** ✗✗。
+					//   后果不止白花一次 pnpm：`wants.length > 0` 会把 `_pluginsStale` 置上 ⇒ **常驻 Host 复用被
+					//   永久关闭** ⇒ 每次启动都付全量冷启动（真机 `ready in 34954 ms`，其中 25s 是冷启动）✗。
+					//   ⇒ 用「随包指纹 + **已装副本指纹**」拼一个新的 spec 路径再装一次：内容真不同 ⇒ 路径必变
+					//   ⇒ pnpm 必须替换 ✓；装好之后两边一致，下次判定通过（不会每次都生成新目录）。
+					for (const w of staleAfterInstall) {
+						const installedDir = installedDirOf(w.name);
+						const installedFp = this._entryFingerprint(installedDir) ?? 'nofp';
+						const retryFp = `${w.fingerprint ?? 'nofp'}-fix${installedFp}`;
+						try {
+							const fixedDir = await this._stagePlugin(w.name, w.dir, w.bundled, pluginProfileDir, retryFp);
+							await this._runDsh(node, buildPluginAddArgs(dsh.bin, profile, toFileSpec(fixedDir)), env, 120_000);
+						} catch (e) {
+							this._appendLog(`换路径重装失败：${w.name}（${String((e as Error)?.message ?? e).slice(-200)}）`);
+							continue;
+						}
+						const healed = installedVersionOf(w.name) === w.bundled && this._installedEntryMatches(w.dir, installedDirOf(w.name));
+						this._appendLog(healed
+							? `✓ 换 spec 路径后重装成功（原 pnpm no-op）：${w.name}`
+							: `⚠ 换 spec 路径重装后入口仍不一致：${w.name}（查暂存目录可写性 / 防病毒占用）`);
+					}
+					// 仍然没修好的（上面 healed=false / 抛错）才留告警，避免"修好了还一直喊"的噪声。
+					const stillBroken = staleAfterInstall.filter(w => !this._installedEntryMatches(w.dir, installedDirOf(w.name)));
+					if (stillBroken.length) {
+						this._appendLog(`⚠ 同版本重装后入口内容仍与随包不一致 ⇒ 这些副本是陈旧的，Host 会跑旧代码：${stillBroken.map(w => w.name).join(', ')}`);
+					}
 				}
-				if (missed.length) {
+				// 逐项重试只处理**版本没到位**的：同版本内容不一致的已由上面"换 spec 路径"分支处理，
+				// 再走一次 `_ensurePlugin`（同指纹 ⇒ 同 spec ⇒ pnpm 仍 no-op）只是白花 2.5s ✗。
+				const versionMissed = missed.filter(w => !staleAfterInstall.includes(w));
+				if (versionMissed.length) {
 					// 保头+尾（400 曾把真正的错误行截掉只剩栈尾，语音 bundle 排查实测）。
 					const clean = redactSecrets(out.trim());
 					const kept = clean.length <= 1200 ? clean : `${clean.slice(0, 600)}\n…（中间省略）…\n${clean.slice(-600)}`;
-					this._appendLog(`批量安装输出（${missed.length} 项未到位）：${kept}`);
-					for (const w of missed) {
+					this._appendLog(`批量安装输出（${versionMissed.length} 项未到位）：${kept}`);
+					for (const w of versionMissed) {
 						await this._ensurePlugin(w.name, w.dir, node, dsh, profile, env, w.label, false);
 					}
 				}
@@ -1138,6 +1197,17 @@ export class DshHostSupervisor extends Disposable {
 					runDir: this._opts.runDir || tmpdir(),
 					selfAppPid: process.pid,
 					log: line => this._appendLog(line),
+					// ★ 2026-10-29（孤儿 Host 治理）：我们**明确不复用**租约里那个 Host 时，它就成了"没人用的旧 Host"；
+					//   它的宿主若已退出 ⇒ 一并回收（否则它永远占着端口 ⇒ 端口漂移 ⇒ system 提示里的端口每轮都变
+					//   ⇒ provider 的 prompt 前缀缓存整段失效 ✗✗）。
+					//   ⚠ "探活失败"**不算**明确不复用（进程可能还活着、只是令牌/端口对不上 ⇒ 误杀风险 ✗）。
+					extraCandidates: orphanLeaseCandidates(existing, {
+						notReusableReason: this._pluginsStale
+							? '插件已在磁盘上变更（它内存里跑的是旧插件代码）'
+							: (existing ? hostLeaseBlocker(existing, { dshVersion: dsh.version, profile }) : undefined),
+						selfAppPid: process.pid,
+						isAlive: pidAlive,
+					}),
 				});
 
 				const overlays: string[] = [];
@@ -1509,6 +1579,9 @@ export class DshHostSupervisor extends Disposable {
 		const authUrl = hello?.host.authUrl ?? lease.authUrl;
 		this._connection = { origin, authUrl };
 		this._reused = true;
+		// ★ 2026-10-29：复用的 Host **早就 ready 过了** ⇒ mux 路由必然已注册 ⇒ 直接当就绪，
+		//   否则渲染进程会对着一个早就通的路由白等 20s ✗。
+		this._muxReady = true;
 		this._setStatus({
 			state: 'running',
 			bridge: hello ? 'connected' : 'fallback',
@@ -1963,6 +2036,10 @@ export class DshHostSupervisor extends Disposable {
 			if (status !== undefined) {
 				const after = Date.now() - t0;
 				this._appendLog(`mux route available +${after} ms after Host ready（probe #${i}，HTTP ${status}）${i === 1 ? ' —— ready 时已可用：页面重连阶梯不是路由未注册导致' : ''}`);
+				// ★ 2026-10-29：把"路由已注册"写进状态 ⇒ 渲染进程能在 `session.start` 之前**等它**，
+				//   而不是照旧失败一次、退避 4s/12s、再弹一条假的"启动失败"黄条。
+				this._muxReady = true;
+				this._setStatus({ ...this._status });
 				this._onMuxReady.fire({ afterReadyMs: after, probes: i, status });
 				return;
 			}
@@ -2540,7 +2617,8 @@ export class DshHostSupervisor extends Disposable {
 	}
 
 	private _setStatus(status: IDshHostStatus): void {
-		this._status = status;
-		this._onDidChangeStatus.fire(status);
+		// `muxReady` 只在 running 时有意义（Host 没了 ⇒ 路由也不可用）。
+		this._status = { ...status, muxReady: status.state === 'running' ? this._muxReady : false };
+		this._onDidChangeStatus.fire(this._status);
 	}
 }

@@ -11,15 +11,13 @@ import { IThemeService } from '../../../../platform/theme/common/themeService.js
 import { EditorPane } from '../../../../workbench/browser/parts/editor/editorPane.js';
 import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
-import { IEditorGroup, IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
-import { IEditorService, SIDE_GROUP } from '../../../../workbench/services/editor/common/editorService.js';
+import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { IAgentStudioService } from '../common/agentStudio.js';
 import { SettingsEditorInput } from './settingsEditorInput.js';
-import { ChannelEditorInput } from './channelEditorInput.js';
 import * as DOM from '../../../../base/browser/dom.js';
 import { IWorkbenchThemeService, IWorkbenchColorTheme } from '../../../../workbench/services/themes/common/workbenchThemeService.js';
 import { ColorScheme } from '../../../../platform/theme/common/theme.js';
@@ -69,17 +67,9 @@ import {
 	AGENT_STUDIO_BROWSER_CDP_HEADLESS_SETTING,
 	AGENT_STUDIO_BROWSER_CDP_LAUNCH_DEDICATED_SETTING,
 	AGENT_STUDIO_BROWSER_CDP_PORT_SETTING,
-	CHANNEL_DEFINITIONS,
-	IChannelDefinition,
-	IChannelConfigField,
-	ChannelKey,
 } from '../common/constants.js';
 // 后端清单唯一真源（设置 UI 的 select 选项直接取自 provider 注册表，避免漂移）。
 import { WEB_SEARCH_PROVIDER_CHOICES } from './providers/tool/webSearchProviders.js';
-import { IBridgeService } from './bridge/bridgeService.js';
-import { ChannelStatusInputs, computeChannelStatus } from './bridge/channelStatus.js';
-import { FEISHU_CONFIG_KEYS } from './bridge/platforms/feishu.contribution.js';
-import { channelSectionLabel, createChannelIcon } from './channelIcons.js';
 
 const { $ } = DOM;
 
@@ -105,8 +95,6 @@ interface SettingSection {
 	description: string;
 	fields: SettingField[];
 	defaultCollapsed?: boolean;
-	/** 渠道章节标记（有值时在标题渲染状态徽章）。 */
-	channelKey?: ChannelKey;
 }
 
 // ─── Preference Sections ─────────────────────────────────────────────
@@ -327,33 +315,27 @@ const TOOL_SECTIONS: SettingSection[] = [
 // ─── Channel Sections (mapped from constants.CHANNEL_DEFINITIONS) ──────
 // 复用既有 _renderCollapsibleSections / _renderFieldRow，配置自动持久化到
 // IConfigurationService（键形如 sessions.channel.<ch>.<field>）。
-
-function toSettingField(f: IChannelConfigField): SettingField {
-	return {
-		key: f.key,
-		label: f.label,
-		description: f.description,
-		type: f.type,
-		default: f.default,
-		options: f.options,
-		placeholder: f.placeholder,
-		rows: f.type === 'textarea' ? 4 : undefined,
-	};
-}
+// ★ 2026-10-29：渠道配置项（`sessions.channel.*`）已整体下线 ⇒ `toSettingField` 一并删除。
 
 // ★ 2026-09-22 修复「每个 channel item 的 logo 重复显示」：
 //   此前 label 拼了 `def.icon`（emoji），而 icon 槽又渲染同一个 emoji ⇒ 一枚 logo 出现两遍。
 //   现在标题是纯文本，图标只由 icon 槽渲染 —— 有官方品牌 SVG 的渠道用品牌 logo，
 //   未收录品牌的渠道由 createChannelIcon 内部回退 emoji（不再出现第二个 emoji）。
-const CHANNEL_SECTIONS: SettingSection[] = CHANNEL_DEFINITIONS.map((def: IChannelDefinition) => ({
-	id: `channel-${def.key}`,
-	label: channelSectionLabel(def),
-	icon: def.icon,
-	channelKey: def.key,
-	description: def.description,
+/* ★ 2026-10-29：渠道配置**整体迁到 dsh 侧**（dsh 设置 → 渠道：凭据 / 入站长连接 /
+   bot 绑定 / 白名单 / 测试发送都在那里）。
+   这里保留一个**引导分区**而不是让分组凭空消失 —— 用户得知道去哪儿配。
+   ⚠ 绝不能改成"IDE 侧也留一套"：同一飞书应用的两条长连接会互相抢事件
+   （2026-10-29 真机：飞书里能收到回复，但那是 IDE 侧回的，dsh 的 Bots 里没有会话）。
+   ⚠ `CHANNEL_DEFINITIONS` 已整体清空（见 common/constants.ts 的说明）。 */
+const CHANNEL_SECTIONS: SettingSection[] = [{
+	id: 'channel-dsh',
+	label: '渠道（已迁到 dsh）',
+	icon: '📡',
+	description: '渠道的凭据 / 入站 / 绑定 / 出站现在都在 dsh 侧：打开 dsh 的「设置 → 渠道」。'
+		+ 'IDE 侧不再维护第二套实现 —— 同一飞书应用的两条长连接会互相抢事件（只会有一边收到消息）。',
 	defaultCollapsed: true,
-	fields: def.configFields.map(toSettingField),
-}));
+	fields: [],
+}];
 
 // ─── TOC Entries (VSCode-native style) ──────────────────────────────────────────
 
@@ -411,12 +393,6 @@ export class SettingsEditorPane extends EditorPane {
 	@IAgentStudioService readonly agentStudioService: IAgentStudioService,
 	@IWorkbenchThemeService private readonly workbenchThemeService: IWorkbenchThemeService,
 	@IMainProcessService readonly mainProcessService: IMainProcessService,
-	// ★ 2026-09-22（渠道状态）：读桥接运行时状态（平台实例的连接/失败信息）
-	@IBridgeService private readonly bridgeService: IBridgeService,
-	// ★ 2026-09-22：Channels 活动栏入口已移除，渠道配置编辑器（扫码绑定 / 测试连接）
-	//   改由本页渠道条目的状态徽章打开，需要这两个服务。
-	@IEditorService private readonly editorService: IEditorService,
-	@IEditorGroupsService private readonly editorGroupsService: IEditorGroupsService,
 ) {
 		super(SettingsEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -510,15 +486,6 @@ export class SettingsEditorPane extends EditorPane {
 		//   ① 配置变更（启用开关 / 凭证输入框失焦写值）→ 立即重算；
 		//   ② 运行时状态变化（长连接建立/断开/失败）不产生配置事件 → 轻量轮询兜底。
 		//   两者都只刷新徽章 DOM，不重渲染整个内容区（不动用户正在填写的输入框）。
-		this._disposables.add(
-			this.configurationService.onDidChangeConfiguration(e => {
-				if (e.affectsConfiguration('sessions.channel.')) {
-					this._refreshChannelStatusChips();
-				}
-			}),
-		);
-		const statusTimer = setInterval(() => this._refreshChannelStatusChips(), 5_000);
-		this._disposables.add({ dispose: () => clearInterval(statusTimer) });
 	}
 
 	// ─── TOC Sidebar ─────────────────────────────────────────────────
@@ -601,13 +568,7 @@ export class SettingsEditorPane extends EditorPane {
 			header.appendChild(chevron);
 
 			const sectionIcon = $('span.as-section-icon');
-			if (section.channelKey) {
-				// 渠道条目：渲染官方品牌 SVG（未收录品牌的渠道由 createChannelIcon 内部回退 emoji）
-				sectionIcon.classList.add('as-section-icon-brand');
-				sectionIcon.appendChild(createChannelIcon(section.channelKey, section.icon, 18));
-			} else {
-				sectionIcon.textContent = section.icon;
-			}
+			sectionIcon.textContent = section.icon;
 			header.appendChild(sectionIcon);
 
 			const headerInfo = $('div.as-section-header-info');
@@ -617,13 +578,6 @@ export class SettingsEditorPane extends EditorPane {
 			const sectionDesc = $('span.as-section-desc');
 			sectionDesc.textContent = section.description;
 			headerInfo.appendChild(sectionDesc);
-			if (section.channelKey) {
-				// 渠道条目状态徽章（未实现 / 未配置 / 已停用 / 已连接 / 连接中 / 异常）
-				const chip = $('span.as-channel-status');
-				chip.dataset.channelKey = section.channelKey;
-				this._applyChannelStatus(chip);
-				headerInfo.appendChild(chip);
-			}
 			header.appendChild(headerInfo);
 
 			// Toggle collapse
@@ -1134,81 +1088,6 @@ export class SettingsEditorPane extends EditorPane {
 	}
 
 	// ─── 渠道状态徽章（2026-09-22：每个 channel item 增加状态信息）────────────
-
-	/** 刷新某个徽章（类名 = tone；文本 = label；悬浮 = detail）。 */
-	private _applyChannelStatus(chip: HTMLElement): void {
-		const key = chip.dataset.channelKey;
-		if (!key) {
-			return;
-		}
-		const info = computeChannelStatus(this._gatherChannelInputs(key as ChannelKey));
-		chip.className = `as-channel-status as-channel-status-${info.tone}`;
-		chip.textContent = info.label;
-		chip.title = `${info.detail ?? info.label}\n点击打开该渠道的完整配置（📷 扫码绑定 / 🧪 测试连接）`;
-		// ★ 2026-09-22：Channels 活动栏入口移除后，「渠道配置编辑器」的唯一 opener 没了
-		//   （`ChannelEditorInput.getOrCreate()` 此前只由 views/channelView.ts 调用）。
-		//   这里把徽章变成入口，避免「📷 扫码绑定 / 🧪 测试连接」整块功能不可达（见报告 D-01）。
-		//   徽章嵌在可点击的 section header 里 ⇒ 必须 stopPropagation，否则会顺带折叠该分组。
-		chip.style.cursor = 'pointer';
-		chip.onclick = (ev: MouseEvent) => {
-			ev.stopPropagation();
-			this._openChannelEditor(key as ChannelKey);
-		};
-	}
-
-	/** 打开该渠道的配置编辑器（含「📷 扫码绑定」与「🧪 测试连接」）。 */
-	private _openChannelEditor(channelKey: ChannelKey): void {
-		const input = ChannelEditorInput.getOrCreate(channelKey);
-		// 与迁移前的 channelView 同策略：只有一组时开到侧组，否则复用最早创建的那组
-		const groups = this.editorGroupsService.getGroups(0 /* GroupsOrder.CREATION_TIME */);
-		if (groups.length <= 1) {
-			this.editorService.openEditor(input, { pinned: true }, SIDE_GROUP);
-		} else {
-			this.editorService.openEditor(input, { pinned: true }, groups[0]);
-		}
-	}
-
-	/** 刷新当前内容区所有渠道徽章（配置变更 / 定时 / TOC 切换后调用）。 */
-	private _refreshChannelStatusChips(): void {
-		if (!this._contentContainer) {
-			return;
-		}
-		for (const chip of this._contentContainer.querySelectorAll<HTMLElement>('.as-channel-status[data-channel-key]')) {
-			this._applyChannelStatus(chip);
-		}
-	}
-
-	/** 取渠道状态输入（配置 + 运行时）。适配器与凭证口径必须与运行时一致（见 D-02）。 */
-	private _gatherChannelInputs(channelKey: ChannelKey): ChannelStatusInputs {
-		if (channelKey === 'feishu') {
-			const env = ((globalThis as any).process?.env ?? {}) as Record<string, string | undefined>;
-			const envConfigured = !!(env.FEISHU_APP_ID && env.FEISHU_APP_SECRET);
-			const appId = String(this.configurationService.getValue(FEISHU_CONFIG_KEYS.appId) ?? '').trim();
-			const appSecret = String(this.configurationService.getValue(FEISHU_CONFIG_KEYS.appSecret) ?? '').trim();
-			const configured = envConfigured || (appId !== '' && appSecret !== '');
-			// 与 resolveFeishuConfig 同口径：env 凭证优先（忽略 enabled 开关），否则按配置 enabled
-			const enabled = envConfigured || this.configurationService.getValue<boolean>(FEISHU_CONFIG_KEYS.enabled) === true;
-			return {
-				hasAdapter: true,
-				configured,
-				enabled,
-				platform: this.bridgeService.getPlatform('feishu')?.getStatus?.(),
-			};
-		}
-		if (channelKey === 'telegram') {
-			const env = ((globalThis as any).process?.env ?? {}) as Record<string, string | undefined>;
-			const configured = typeof env.TELEGRAM_BOT_TOKEN === 'string' && env.TELEGRAM_BOT_TOKEN !== '';
-			return {
-				hasAdapter: true,
-				configured,
-				// 运行时只读 env（见 telegram.contribution.ts）：有 token 即启用
-				enabled: configured,
-				platform: this.bridgeService.getPlatform('telegram')?.getStatus?.(),
-			};
-		}
-		// 其余渠道（IRC / Teams / LINE / Matrix …）：当前没有平台适配器
-		return { hasAdapter: false, configured: false, enabled: false };
-	}
 
 	override dispose(): void {
 		this._disposables.dispose();

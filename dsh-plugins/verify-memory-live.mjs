@@ -47,7 +47,7 @@ const needle = (lines, re) => lines.filter(l => re.test(l));
 let ideStart = null;
 {
 	const r = spawnSync('powershell', ['-NoProfile', '-Command',
-		"Get-CimInstance Win32_Process -Filter \"Name='Saroasis harness.exe'\" | Select-Object -First 1 -ExpandProperty CreationDate"],
+		"Get-CimInstance Win32_Process -Filter \"Name='VsSaros.exe'\" | Select-Object -First 1 -ExpandProperty CreationDate"],
 	{ encoding: 'utf8', windowsHide: true });
 	const txt = (r.stdout || '').trim();
 	const parsed = txt ? new Date(txt) : null;

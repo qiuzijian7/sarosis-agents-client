@@ -183,7 +183,6 @@ import { ComfyLaunchChannel } from '../../sessions/contrib/agentStudio/electron-
 import { ConfigHtmlServerChannel } from '../../sessions/contrib/agentStudio/electron-main/configHtmlServerChannel.js';
 import { VoxLaunchChannel } from '../../sessions/contrib/agentStudio/electron-main/voxLaunchChannel.js';
 import { LarkCliChannel } from '../../sessions/contrib/agentStudio/electron-main/larkCliChannel.js';
-import { BridgeStoreChannel } from '../../sessions/contrib/agentStudio/electron-main/bridgeStoreChannel.js';
 import { RemoteControlChannel } from '../../sessions/contrib/agentStudio/electron-main/remoteControlChannel.js';
 import { GIT_VERSION_CHANNEL } from '../../sessions/contrib/agentStudio/common/gitVersionBackend.js';
 import { MediaStoreChannel } from '../../sessions/contrib/agentStudio/electron-main/mediaStoreChannel.js';
@@ -1020,11 +1019,6 @@ export class CodeApplication extends Disposable {
 
 	// browser_* 工具的 CDP 宿主（P1-2）：驱动用户本机真实 Chrome。
 	// 必须放主进程：renderer 的 CDP HTTP 发现会被 CORS 拦、WebSocket 握手会因 Origin 被拒
-
-	// 渠道绑定状态（chat_id ↔ Agent / 专属会话）的文件存储：
-	// 逻辑在 sessions/contrib/agentStudio/electron-main/bridgeStoreChannel.ts。
-	// 必须放主进程：渲染进程沙箱里拿不到 fs（否则绑定只存内存、重启即丢）。
-	this._register(new BridgeStoreChannel(this.logService));
 
 	// 远程控制（被控端）：屏幕采集 / WebRTC 宿主窗口 / nut-js 驱动级键鼠注入。
 	// 逻辑在 sessions/contrib/agentStudio/electron-main/remoteControlChannel.ts。

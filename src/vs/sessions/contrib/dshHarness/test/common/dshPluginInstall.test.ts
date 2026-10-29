@@ -93,6 +93,11 @@ const src = (() => {
  * 用它而不是 `src.slice(at, at + 1600)`：后者在"方法被改长"时会**静默切掉尾巴**，守卫于是看着还在、
  * 实际已经查不到末尾那几行了（本仓踩过：守卫滞后于代码 ✗）。
  */
+/** 剥掉注释（行注释 + 块注释）：断言只能命中**真实代码**，不能被注释里的同名标识符骗过。 */
+function stripComments(s: string): string {
+	return s.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').filter(l => !/^\s*\/\//.test(l)).join('\n');
+}
+
 function fnBody(signature: string, fallbackLen = 2000): string {
 	const at = src.indexOf(signature);
 	assert.ok(at > 0, `找不到 \`${signature}\`（改名/挪走就要同步改这条守卫 ✗）`);
@@ -147,7 +152,32 @@ suite('dshHarness / 已装副本的内容校验（版本相同也要复查）', 
 		assert.ok(body.indexOf('return undefined;', guard) > guard, '拦到降级必须 return undefined（不许继续安排安装 ✗）');
 	});
 
-	test('★ 校验器保守方向：读不到 = 不一致（宁可白装一遍，也不能带着坏插件起 Host）', () => {
+	// ★★ 2026-10-29（真机：打包版**每次启动**都重装 kb 且每次都不生效 ⇒ 首启 35s、次启照旧）：
+//   暂存目录名的指纹取**随包入口** ⇒ 同一 exe 下恒定 ⇒ spec 路径不变 ⇒ pnpm no-op
+//   ⇒ `node_modules` 永远是旧内容 ⇒ 永久循环；而 `wants>0` 又置 `_pluginsStale`
+//   ⇒ **常驻 Host 复用被永久关闭** ⇒ 每次全量冷启动。
+test('★ 同版本却装不上：必须换 spec 路径重试，才能打破永久循环', () => {
+	const body = stripComments(src);
+	const at = body.indexOf('const staleAfterInstall = missed.filter(');
+	assert.ok(at > 0, '找不到 `staleAfterInstall` 分支 ✗');
+	const end = body.indexOf('const versionMissed = missed.filter(', at);
+	assert.ok(end > at, '找不到"逐项重试排除已处理项"的 `versionMissed` ✗');
+	const seg = body.slice(at, end);
+
+	assert.match(seg, /_entryFingerprint\(installedDir\)/,
+		'必须取**已装副本**的入口指纹：只用随包指纹 ⇒ 暂存目录名恒定 ⇒ pnpm 把 file: 依赖当 no-op ✗');
+	assert.match(seg, /-fix\$\{/,
+		'必须把已装指纹拼进 spec 目录名（`-fix…`）⇒ 路径真的变了 pnpm 才会替换 ✗');
+	assert.match(seg, /await this\._runDsh\(node, buildPluginAddArgs/,
+		'换路径之后必须真的再装一次（只改目录名不装 = 白改 ✗）');
+	// ⚠ 必须钉住**真的去比**（版本 + 入口内容）：只查 `healed` 这个标识符会被 `const healed = true` 骗过（实测假绿 ✗）
+	assert.match(seg, /const healed = installedVersionOf\(w\.name\) === w\.bundled && this\._installedEntryMatches\(/,
+		'必须复核"换路径后是否真的修好"（写死 true = 下次仍循环且没人知道 ✗）');
+	assert.match(seg, /stillBroken/,
+		'只有**仍然坏**的才留告警（修好了还一直喊 ⇒ 告警疲劳 ✗）');
+});
+
+test('★ 校验器保守方向：读不到 = 不一致（宁可白装一遍，也不能带着坏插件起 Host）', () => {
 		// 2026-10-14 重构：入口读取抽成 `_readEntryFile`（同一份入口定义要同时服务"内容比对"与
 		// "暂存目录指纹"）。断言跟着落点走，**不变量一字不改**。
 		const readBody = fnBody('private _readEntryFile(');

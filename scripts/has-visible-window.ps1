@@ -1,4 +1,6 @@
-param([string]$ProcessName = 'Saroasis harness')
+# 进程名：2026-10-29 起 exe 叫 `VsSaros`（原来 `Saroasis harness`）⇒ 两个都认，
+# 否则改名过渡期会"看不见"旧名实例的窗口 ⇒ 被误判成僵尸态、白杀一次。
+param([string[]]$ProcessName = @('VsSaros', 'Saroasis harness'))
 # 打印该进程（含其子进程）有几个**可见**的顶层窗口（WS_VISIBLE 且非 0x0）。
 # 输出：一个整数。0 ⇒ 屏幕上没有它的窗口（= 僵尸态：进程活着但看不到 app）。
 # 为什么不用 CDP / MainWindowTitle（2026-10-24 实测）：

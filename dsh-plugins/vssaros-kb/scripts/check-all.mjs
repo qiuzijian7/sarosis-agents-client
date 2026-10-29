@@ -34,6 +34,8 @@ const STEPS = [
 	// ★ 2026-10-28（真机：`src: 笔, 记` ⇒ 0 篇命中）：`--src` 不许被拆成单字。
 	//   ① 行为层跑纯函数；② 调用点不许把字符串当数组（`src: NOTES_DIR`）。
 	{ file: 'check-kb-feishu-args.mjs', desc: '飞书同步 --src 参数口径（字符串不许拆字符）' },
+	// ★ 2026-10-29（真机：思维导图永远不重建 + 每次都报 131012）：导图维护必须能自愈。
+	{ file: 'check-kb-feishu-mindmap.mjs', desc: '飞书导图自愈（陈旧节点/遗留记录/孤儿清理）' },
 	// ★ 2026-10-25：**Markdown 渲染回归** —— 用真实渲染器 + react-dom/server 断言 27 类语法
 	//   （frontmatter / Callout / 双链 / 表格 / 嵌套列表 / mermaid / 数学 / 删除线 …）
 	// ★ 2026-10-25：**服务端渲染**（markdown-it + Obsidian 方言，vendor 随包）

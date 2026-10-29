@@ -2033,6 +2033,22 @@ suite('dshHarness / 打包链：内置 dsh 运行时（缺它 = 首启要用户�
 		}
 	});
 
+	test('★★ 种子也必须裁掉重型可选项（libreoffice 内核 182MB 别被装回种子）', () => {
+		const prepack = read(REL_PREPACK)!;
+		// 2026-10-28 实测：prepack 只裁运行时目录，而 profile 种子的 node_modules 是 pnpm
+		// **平铺**出来的依赖闭包 ⇒ 官方包的 optionalDependencies（libreoffice 内核 ≈182MB）
+		// 被装进种子 ⇒ 种子 417MB ≈ 运行时 522MB ⇒ 体积翻倍。
+		assert.match(prepack, /libreoffice-kit-win32-x64/, 'PRUNE_LIST 必须含 win32 的 libreoffice 内核');
+		assert.match(prepack, /prune\(profileDir/, '种子建完必须对 profile 的 node_modules 跑同一份 prune');
+		assert.match(prepack, /prune\(target\)/, '运行时也要照常裁（两条路径共用同一份 PRUNE_LIST）');
+		// 同一个 PRUNE_LIST（不是另抄一份）—— 运行时与种子的裁剪口径必须一致
+		assert.match(prepack, /function prune\(targetDir, label = 'runtime'\)/, 'prune 要能标出裁的是哪一份（运行时 / 种子）');
+		// 发布守卫要在**产物层面**再确认一次（只看源码不够：裁剪可能失败）
+		const release = read('build/saros/check-dsh-release.mjs')!;
+		assert.match(release, /libreoffice-kit-win32-x64/, '发布守卫必须扫 libreoffice 内核');
+		assert.match(release, /profile-seed[\s\S]{0,400}?profiles/, '发布守卫必须连**种子**一起扫（翻倍就出在这里）');
+	});
+
 	test('★★ prepack 自己不许抛（种子失败由 verify-staging 判死），但必须把原因打全 + 提示与硬门一致', () => {
 		const prepack = read(REL_PREPACK)!;
 		// ① 主流程与"已安装跳过"那条都必须走 safeBuildProfileSeed（裸 await buildProfileSeed 会把

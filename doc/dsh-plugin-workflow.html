@@ -1,0 +1,631 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dsh 插件：开发 · 打包 · 升级 全流程</title>
+<style>
+	:root {
+		--bg: #fbfbfc;
+		--panel: #ffffff;
+		--ink: #1c2024;
+		--ink2: #4a5460;
+		--ink3: #7b8794;
+		--line: #e3e7ec;
+		--line2: #eef1f5;
+		--accent: #2c6bed;
+		--accent-soft: #eef3ff;
+		--ok: #1a7f4b;
+		--ok-soft: #e9f7ef;
+		--warn: #a86200;
+		--warn-soft: #fff5e5;
+		--bad: #b42318;
+		--bad-soft: #fdecea;
+		--code: #f4f6f8;
+		--mono: ui-monospace, SFMono-Regular, "Cascadia Mono", Consolas, "Liberation Mono", monospace;
+	}
+	* { box-sizing: border-box; }
+	html { scroll-behavior: smooth; }
+	body {
+		margin: 0;
+		background: var(--bg);
+		color: var(--ink);
+		font: 15px/1.7 -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+		-webkit-font-smoothing: antialiased;
+	}
+	.layout { display: grid; grid-template-columns: 268px minmax(0, 1fr); max-width: 1320px; margin: 0 auto; }
+	nav.toc {
+		position: sticky; top: 0; align-self: start;
+		height: 100vh; overflow: auto;
+		padding: 30px 18px 40px 26px;
+		border-right: 1px solid var(--line);
+		background: var(--panel);
+		font-size: 13.5px;
+	}
+	nav.toc .brand { font-weight: 700; font-size: 14px; letter-spacing: .2px; }
+	nav.toc .brand small { display: block; font-weight: 400; color: var(--ink3); margin-top: 2px; }
+	nav.toc ol { list-style: none; margin: 18px 0 0; padding: 0; }
+	nav.toc li { margin: 1px 0; }
+	nav.toc a {
+		display: block; padding: 5px 8px; border-radius: 6px;
+		color: var(--ink2); text-decoration: none;
+	}
+	nav.toc a:hover { background: var(--line2); color: var(--ink); }
+	nav.toc a.sub { padding-left: 20px; font-size: 12.8px; color: var(--ink3); }
+	main { padding: 34px 44px 90px; min-width: 0; }
+	h1 { font-size: 30px; line-height: 1.25; margin: 0 0 6px; letter-spacing: -.4px; }
+	.lede { color: var(--ink2); font-size: 15.5px; margin: 0 0 26px; }
+	.meta { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 30px; }
+	.chip {
+		font-size: 12.5px; padding: 3px 10px; border-radius: 999px;
+		background: var(--line2); color: var(--ink2); border: 1px solid var(--line);
+	}
+	h2 {
+		font-size: 21px; margin: 52px 0 14px; padding-bottom: 9px;
+		border-bottom: 1px solid var(--line); letter-spacing: -.2px;
+	}
+	h3 { font-size: 16.5px; margin: 30px 0 10px; }
+	h4 { font-size: 14.5px; margin: 20px 0 8px; color: var(--ink2); }
+	p, li { color: var(--ink); }
+	code {
+		font-family: var(--mono); font-size: 12.8px;
+		background: var(--code); border: 1px solid var(--line2);
+		padding: 1px 5px; border-radius: 4px; white-space: nowrap;
+	}
+	pre {
+		background: var(--code); border: 1px solid var(--line);
+		border-radius: 8px; padding: 14px 16px; overflow: auto;
+		font-family: var(--mono); font-size: 12.6px; line-height: 1.62; margin: 12px 0 16px;
+	}
+	pre code { background: none; border: 0; padding: 0; white-space: pre; }
+	table { width: 100%; border-collapse: collapse; margin: 14px 0 18px; font-size: 13.8px; }
+	th, td { text-align: left; vertical-align: top; padding: 9px 11px; border-bottom: 1px solid var(--line2); }
+	th { background: #f7f9fb; font-weight: 600; color: var(--ink2); border-bottom: 1px solid var(--line); }
+	tr:hover td { background: #fcfdfe; }
+	.callout {
+		border: 1px solid var(--line); border-left: 3px solid var(--accent);
+		background: var(--accent-soft); border-radius: 8px;
+		padding: 12px 16px; margin: 16px 0; font-size: 14px;
+	}
+	.callout.warn { border-left-color: var(--warn); background: var(--warn-soft); }
+	.callout.bad { border-left-color: var(--bad); background: var(--bad-soft); }
+	.callout.ok { border-left-color: var(--ok); background: var(--ok-soft); }
+	.callout strong { color: var(--ink); }
+	.callout p:last-child { margin-bottom: 0; }
+	.tag {
+		display: inline-block; font-size: 11.5px; font-weight: 600; letter-spacing: .3px;
+		padding: 1px 7px; border-radius: 4px; margin-right: 6px; vertical-align: 1px;
+	}
+	.tag.hard { background: var(--bad-soft); color: var(--bad); }
+	.tag.soft { background: var(--warn-soft); color: var(--warn); }
+	.tag.fix  { background: var(--ok-soft); color: var(--ok); }
+	.tag.dev  { background: var(--accent-soft); color: var(--accent); }
+	.flow {
+		display: grid; gap: 10px; margin: 18px 0 22px;
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+	}
+	.flow .card {
+		background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+		padding: 14px 16px;
+	}
+	.flow .card h4 { margin: 0 0 6px; font-size: 14px; color: var(--ink); }
+	.flow .card p { margin: 0; font-size: 13.2px; color: var(--ink2); }
+	.flow .card .n {
+		display: inline-flex; align-items: center; justify-content: center;
+		width: 20px; height: 20px; border-radius: 50%;
+		background: var(--accent); color: #fff; font-size: 11.5px; font-weight: 700;
+		margin-right: 7px; vertical-align: 1px;
+	}
+	ol.steps { list-style: none; counter-reset: s; padding: 0; margin: 14px 0; }
+	ol.steps > li {
+		position: relative; padding: 0 0 16px 38px; counter-increment: s;
+		border-left: 2px solid var(--line); margin-left: 11px;
+	}
+	ol.steps > li:last-child { border-left-color: transparent; padding-bottom: 0; }
+	ol.steps > li::before {
+		content: counter(s);
+		position: absolute; left: -12px; top: 1px;
+		width: 22px; height: 22px; border-radius: 50%;
+		background: var(--panel); border: 2px solid var(--accent);
+		color: var(--accent); font-size: 11.5px; font-weight: 700;
+		display: flex; align-items: center; justify-content: center;
+	}
+	ol.steps > li b { display: block; font-size: 14.4px; margin-bottom: 2px; }
+	ol.steps > li span.d { color: var(--ink2); font-size: 13.4px; }
+	.grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+	.grid2 > div { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+	.grid2 h4 { margin: 0 0 8px; }
+	.grid2 ul { margin: 0; padding-left: 18px; font-size: 13.4px; color: var(--ink2); }
+	.grid2 li { margin: 4px 0; }
+	.kv { font-size: 13.4px; }
+	.kv dt { font-weight: 600; margin-top: 10px; }
+	.kv dd { margin: 2px 0 0; color: var(--ink2); }
+	footer { margin-top: 60px; padding-top: 18px; border-top: 1px solid var(--line); color: var(--ink3); font-size: 12.8px; }
+	@media (max-width: 1080px) {
+		.layout { grid-template-columns: 1fr; }
+		nav.toc { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+		main { padding: 24px 20px 60px; }
+		.flow { grid-template-columns: 1fr; }
+		.grid2 { grid-template-columns: 1fr; }
+	}
+	@media print {
+		nav.toc { display: none; }
+		.layout { grid-template-columns: 1fr; }
+		main { padding: 0; }
+		body { background: #fff; font-size: 11.5px; }
+		h2 { break-after: avoid; margin-top: 26px; }
+		table, .callout, pre { break-inside: avoid; }
+	}
+</style>
+</head>
+<body>
+<div class="layout">
+
+<nav class="toc">
+	<div class="brand">dsh 插件全流程<small>开发 · 打包 · 升级</small></div>
+	<ol>
+		<li><a href="#overview">0. 一页概览</a></li>
+		<li><a href="#assets">1. 三层资产与真源</a></li>
+		<li><a href="#dev">2. 开发流程</a></li>
+		<li><a href="#dev-scaffold" class="sub">2.1 目录与清单</a></li>
+		<li><a href="#dev-two-plane" class="sub">2.2 双平面与 patch</a></li>
+		<li><a href="#dev-client" class="sub">2.3 客户端 chunk 与缓存</a></li>
+		<li><a href="#dev-tools" class="sub">2.4 工具与服务声明</a></li>
+		<li><a href="#dev-loop" class="sub">2.5 开发闭环</a></li>
+		<li><a href="#dev-guards" class="sub">2.6 守卫链</a></li>
+		<li><a href="#pack">3. 打包流程</a></li>
+		<li><a href="#pack-pipeline" class="sub">3.1 十六步流水线</a></li>
+		<li><a href="#pack-gates" class="sub">3.2 四道闸门</a></li>
+		<li><a href="#pack-runtime" class="sub">3.3 运行时与 profile 种子</a></li>
+		<li><a href="#pack-fixes" class="sub">3.4 已修的三处断点</a></li>
+		<li><a href="#pack-size" class="sub">3.5 体积账</a></li>
+		<li><a href="#upgrade">4. 升级流程</a></li>
+		<li><a href="#up-runtime" class="sub">4.1 运行时升级</a></li>
+		<li><a href="#up-plugin" class="sub">4.2 插件升级</a></li>
+		<li><a href="#up-app" class="sub">4.3 应用升级</a></li>
+		<li><a href="#pitfalls">5. 事故清单</a></li>
+		<li><a href="#checklist">6. 交付检查清单</a></li>
+	</ol>
+</nav>
+
+<main>
+
+<h1>dsh 插件：开发 · 打包 · 升级 全流程</h1>
+<p class="lede">把「改一个插件」到「用户机器上真的跑着新代码」这条链拆成三段，每段给出真源、闸门与已踩过的坑。基于 2026-10-28 的仓库实测。</p>
+<div class="meta">
+	<span class="chip">仓库 sarosis-agents-client</span>
+	<span class="chip">随包插件 33 + 官方 bundle 2</span>
+	<span class="chip">dsh 0.2.1-rc.2</span>
+	<span class="chip">流水线 Build #241 现场</span>
+</div>
+
+<h2 id="overview">0. 一页概览</h2>
+
+<div class="flow">
+	<div class="card">
+		<h4><span class="n">1</span>开发</h4>
+		<p>在 <code>dsh-plugins/&lt;name&gt;/</code> 写主机侧 <code>lib/index.js</code> 与客户端 <code>lib/client.js</code>；清单、patch、files 三处必须一致。改完用 <code>dsh-plugin-deploy</code> 同步进 profile 再重启宿主。</p>
+	</div>
+	<div class="card">
+		<h4><span class="n">2</span>打包</h4>
+		<p>CI 16 步：编译 → 权限插件 → 扩展 → <code>prepack-dsh-runtime</code>（运行时 + profile 种子）→ gulp 拷贝 → 四道闸门 → Inno 出 EXE → 归档 / 上传 / Release。</p>
+	</div>
+	<div class="card">
+		<h4><span class="n">3</span>升级</h4>
+		<p>三条独立链：运行时（兼容清单 + 闸门 + 快照回退）、插件（版本 + 入口指纹，缺则 <code>dsh plugin add</code>）、应用本体（EXE）。</p>
+	</div>
+</div>
+
+<div class="callout">
+	<strong>一句话记住判据：</strong>宿主决定「要不要（重新）装某个插件」的口径是 <b>版本号 + 入口文件内容指纹</b>（<code>_planPluginInstall</code> / <code>_installedEntryMatches</code>）。所以「改了 <code>lib/**</code> 却没 bump 版本、也没动 <code>lib/index.js</code>」会导致<b>新包装上、旧代码在跑</b>——这是本项目最高频的「改了没生效」根因。
+</div>
+
+<h2 id="assets">1. 三层资产与真源</h2>
+
+<table>
+	<thead>
+		<tr><th style="width:150px">层</th><th style="width:280px">真源（仓库内）</th><th>装机后的位置 / 谁读</th></tr>
+	</thead>
+	<tbody>
+		<tr>
+			<td><b>dsh 运行时</b></td>
+			<td><code>dsh-plugins/dsh-compat.json</code> 的 <code>bundled</code>：构建期由 <code>build/prepack-dsh-runtime.mjs</code> 装到 <code>dsh-runtime/&lt;bundled&gt;/</code>（gitignore，不入库）</td>
+			<td><code>&lt;appPath&gt;/dsh-runtime/</code>；<code>DshRuntimeManager</code> 按 setting → managed → bundled → global 解析</td>
+		</tr>
+		<tr>
+			<td><b>随包插件</b></td>
+			<td><code>dsh-plugins/&lt;name&gt;/</code>（包名须为 <code>@vssaros/*</code> 或 vendored <code>@tt-a1i/*</code>）</td>
+			<td><code>&lt;appPath&gt;/dsh-plugins/</code>；宿主自动发现并暂存安装进 profile</td>
+		</tr>
+		<tr>
+			<td><b>profile</b></td>
+			<td>构建期种子 <code>dsh-runtime/&lt;ver&gt;/profile-seed/profiles/vssaros/</code></td>
+			<td>整目录复制到 <code>DSH_HOME/profiles/vssaros</code>，首启零下载；profile 名真源是 <code>DSH_DEFAULT_PROFILE = 'vssaros'</code></td>
+		</tr>
+		<tr>
+			<td><b>IDE 侧桥</b></td>
+			<td><code>src/vs/sessions/contrib/dshHarness/</code>（electron-main 通道 + supervisor）</td>
+			<td>控制桥、会话绑定、工作区上下文、升级闸门、插件中心</td>
+		</tr>
+	</tbody>
+</table>
+
+<div class="callout warn">
+	<strong>「三处声明必须一致」是插件的核心契约：</strong>① <code>dsh-plugins/&lt;x&gt;/package.json</code> 的 <code>vssaros</code> 清单；② IDE 侧聚合表 <code>common/dshModuleContainers.ts</code>；③ 插件自己注册的页面路由。任一漂移的表现都是「图标在但页面 404」或「容器 ID 撞车」，编译期完全看不出来。
+</div>
+
+<h2 id="dev">2. 开发流程</h2>
+
+<h3 id="dev-scaffold">2.1 目录与清单</h3>
+
+<pre><code>dsh-plugins/&lt;name&gt;/
+├─ package.json          # 清单：name/version/files/dsh/vssaros
+├─ cordis.patch.yml      # patch 型插件：往宿主 profile 插一行
+├─ lib/
+│  ├─ index.js           # 主机平面（Node 侧）：服务、工具、路由
+│  ├─ client.js          # 客户端平面（浏览器侧 ESM）：UI 槽位
+│  ├─ client.&lt;chunk&gt;.js  # 按需加载的换皮/页面 chunk
+│  └─ foundationRef.js   # 消费 foundation 共享服务的引用
+└─ skills/ · test/ · scripts/</code></pre>
+
+<p>最小清单（以 <code>vssaros-kanban</code> 为例，节选）：</p>
+
+<pre><code>{
+  "name": "@vssaros/dsh-kanban",
+  "version": "0.8.15",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": { ".": "./lib/index.js", "./client": "./lib/client.js" },
+  "files": ["lib/index.js", "lib/client.js", "lib/client.kanban.js", "cordis.patch.yml", "..."],
+  "peerDependencies": { "@deepseek-ai/dsh": ">=0.1.7-0 <0.3.0-0" },
+  "dsh": {
+    "bundle": { "patch": ["./cordis.patch.yml"] },
+    "client": { "platform": "web", "inject": ["@deepseek-ai/dsh-client-ui-slots"] }
+  },
+  "vssaros": {
+    "manifestVersion": 1,
+    "module": "kanban",
+    "activityBar": { "containerId": "agentStudio.tasks", "title": "Tasks", "icon": "codicon:tasklist", "order": 70 },
+    "view": { "kind": "page", "route": "/x/kanban/" },
+    "ideCapabilities": ["taskboard", "browser"],
+    "workbench": { "repository": "vssaros:kanban", "title": "Tasks", "customFrame": true }
+  }
+}</code></pre>
+
+<div class="grid2">
+	<div>
+		<h4>必守的四条</h4>
+		<ul>
+			<li><b>包名前缀</b>：<code>@vssaros/*</code>（vendored 用 <code>@tt-a1i/*</code>），否则种子发现会<b>跳过且点名</b>。</li>
+			<li><b>依赖面</b>：运行期依赖只能挂 <code>peerDependencies</code> 里的 <code>@deepseek-ai/dsh</code>；随 dsh 分发的包<b>不许</b>写成依赖。</li>
+			<li><b><code>files</code> 要覆盖全部产物</b>（含 <code>lib/*.js</code> chunk、<code>cordis.patch.yml</code>、<code>skills/**</code>）。漏了就是「本地能跑、装出来缺文件」。</li>
+			<li><b>patch 只插一行且 <code>name</code> 等于包名</b>；patch 声明与文件必须同时存在。</li>
+		</ul>
+	</div>
+	<div>
+		<h4>两类插件</h4>
+		<ul>
+			<li><b>模块插件</b>：有 <code>vssaros.module</code>，进插件中心「随包」段、进模块容器、进种子自发现。</li>
+			<li><b>伴生 / patch 型</b>：<b>没有</b> <code>vssaros.module</code>（如 foundation、bridge、chat-surface、workbenches、archify）。它们只能靠宿主清单显式安装——所以 <code>dshHostSupervisor</code> 里那份顺序表是「必须列出」的第二真源。</li>
+		</ul>
+	</div>
+</div>
+
+<h3 id="dev-two-plane">2.2 双平面挂载与 patch</h3>
+
+<table>
+	<thead><tr><th style="width:130px">平面</th><th style="width:220px">入口</th><th>跑在哪 / 能做什么</th></tr></thead>
+	<tbody>
+		<tr><td>主机平面</td><td><code>lib/index.js</code></td><td>dsh Host（Node）进程：注册服务、工具、路由、读写文件。<b>读不到 DOM</b>。</td></tr>
+		<tr><td>客户端平面</td><td><code>lib/client.js</code> + chunk</td><td>浏览器（dsh web）侧 ESM：往 <code>slots</code> 里注册 UI。<b>不能 require Node 模块</b>（<code>iii-sdk</code> 就是因此被踢出客户端）。</td></tr>
+	</tbody>
+</table>
+
+<pre><code># cordis.patch.yml —— 往宿主 profile 里插一行（patch 型插件唯一的挂载方式）
+- insert:
+    - id: vssaros-kanban
+      name: '@vssaros/dsh-kanban'
+      config: {}</code></pre>
+
+<div class="callout bad">
+	<strong>两个必然踩的坑：</strong>
+	<p>① <b><code>ctx.provide</code> 必须幂等</b>：插件可能被双平面各挂一次，不幂等会令 preset invalid，<b>会话全线起不来</b>。可选服务一律用 <code>ctx.inject([...])</code>，直接 <code>ctx.get</code> 未声明服务<b>一定抛</b>。</p>
+	<p>② <b>工具 schema 是受限子集</b>：写错字段插件会<b>静默不挂载</b>（白屏无报错）；<code>additionalProperties</code> 只能给布尔。守卫见 <code>check-tool-definitions.mjs</code>。</p>
+</div>
+
+<h3 id="dev-client">2.3 客户端 chunk 与「改了没生效」</h3>
+
+<p>宿主的 client-modules 契约：<code>require.async("./client.&lt;name&gt;.js")</code>，服务端按 <code>dirname(clientPath)</code> 取文件。URL 带 <code>?rev=&lt;sha1(mtime,ctime,size)[:12]&gt;</code>，且响应头 <code>max-age=31536000, immutable</code>——<b>同一 rev 永久缓存，不回源校验</b>。</p>
+
+<pre><code>repo dsh-plugins/&lt;x&gt;                       ← 你编辑的地方（页面不读这里）
+  │ node scripts/dsh-plugin-deploy.mjs --changed
+  ▼
+~/.vssaros-dev/dsh-home/profiles/&lt;p&gt;/node_modules/@vssaros/&lt;pkg&gt;   ← 宿主真正读、并据此算 rev
+  │ activation 时 stat 入口 exports["./client"]
+  ▼
+/plugins/@vssaros/&lt;pkg&gt;/&lt;chunk&gt;?rev=…    ← 一个插件的所有 chunk 共用「入口」的 rev</code></pre>
+
+<div class="callout warn">
+	<strong>「改完没生效」只有三种可能：</strong>① 只改了 repo、没进 profile ⇒ 服务端字节没变；② 只改了 chunk、入口元数据没变 ⇒ rev 不变 ⇒ 浏览器吃旧缓存（<b>重启也没用</b>）；③ 没重启宿主（rev 在 activation 时才抓）。
+	<p><code>--changed</code> 直接整包复制 + 刷新入口 mtime（毫秒级生效，但绕过 pnpm ⇒ 锁文件会漂移）；<code>--bump</code> 只改仓库版本号、把安装交回官方 <code>dsh plugin add</code>（<b>提交前跑一次</b>）。</p>
+</div>
+
+<h3 id="dev-tools">2.4 工具、技能与服务声明</h3>
+
+<dl class="kv">
+	<dt>工具注册</dt>
+	<dd>主机平面里注册；<b>同名工具注册会抛错</b>（画布类插件曾与上游重名 4 个）。工具名必须与 <code>agent</code> 的 <code>tools[]</code> 名单对得上，写 legacy 名不报错也不生效。守卫：<code>check-agent-tools.mjs</code>。</dd>
+	<dt>技能</dt>
+	<dd>技能是插件负载的一部分（<code>skills/&lt;name&gt;/SKILL.md</code>），必须出现在 <code>files</code> 与 gulp 的资源 glob 里，否则本地正常、装出来空壳。dsh 只认<b>顶层</b>技能目录。</dd>
+	<dt>共享服务</dt>
+	<dd><code>@vssaros/dsh-foundation</code> 是 <code>dataRoot / dshHome / pageShell / lock</code> 的唯一真源。消费者用 <code>lib/foundationRef.js</code>；<b>它缺席时消费者直接抛</b>「vssaros-foundation 服务未绑定」。所以 foundation 必须排在模块插件之前安装。</dd>
+	<dt>自定义 UI（页面 / 工作台）</dt>
+	<dd>自托管页要自带 UMD 依赖（宿主不传 CSS 变量，必须自备底色）；工作台要同时登记「主页卡片」与「route 白名单」，并 bump 版本 + 动入口 stamp。</dd>
+</dl>
+
+<h3 id="dev-loop">2.5 开发闭环（日常四步）</h3>
+
+<ol class="steps">
+	<li><b>改代码</b><span class="d">主机平面改 <code>lib/index.js</code>，客户端改 <code>lib/client*.js</code>；新增文件记得补 <code>files</code> 与 gulp glob。</span></li>
+	<li><b>同步进 profile</b><span class="d"><code>node scripts/dsh-plugin-deploy.mjs --changed</code>（快通道）；或 <code>--bump</code> 走官方安装通道。</span></li>
+	<li><b>重启宿主</b><span class="d">KeepAlive 的 Host <b>不会随 IDE 退出</b>：装/改插件后必须按 <code>host.json</code> 的 pid <code>taskkill</code> 再启动，否则跑的还是旧进程。</span></li>
+	<li><b>跑该插件的自检</b><span class="d"><code>node dsh-plugins/&lt;name&gt;/test/run-&lt;name&gt;-check.mjs</code>；再跑 <code>npm run check:dsh-plugins</code>（约 50 条链）。</span></li>
+</ol>
+
+<h3 id="dev-guards">2.6 守卫链（提交前必须全绿）</h3>
+
+<table>
+	<thead><tr><th style="width:230px">守卫</th><th>抓的是什么</th></tr></thead>
+	<tbody>
+		<tr><td><code>check-plugin-files.mjs</code></td><td><code>files</code> 是否覆盖真实产物（漏 chunk / 漏 patch / 漏 skills）</td></tr>
+		<tr><td><code>check-tool-definitions.mjs</code></td><td>工具 schema 是否落在 dsh 允许的子集内、是否留空壳</td></tr>
+		<tr><td><code>check-agent-tools.mjs</code></td><td>agent 的 <code>tools[]</code> / <code>skills[]</code> 是否为 dsh 真实名与可见技能</td></tr>
+		<tr><td><code>check-lib-imports.mjs</code></td><td>插件 import 面是否越界（客户端混进 Node 模块等）</td></tr>
+		<tr><td><code>check-workbench-catalog.mjs</code></td><td>工作台两份清单（主页卡片 + route 白名单）是否都登记</td></tr>
+		<tr><td><code>check-host-config.mjs</code></td><td>Host 配置 / 单例约束</td></tr>
+		<tr><td><code>check-spawn-hide.mjs</code></td><td>子进程是否带 <code>windowsHide</code>（否则弹一叠 console 窗口）</td></tr>
+		<tr><td><code>dshPluginPackages.test.ts</code></td><td>包结构三处一致、patch 一行、依赖面、打包链闸门</td></tr>
+		<tr><td><code>build/saros/check-dsh-release.mjs</code></td><td><b>发布前</b>：改了 <code>lib/**</code> 却没 bump；随包版本低于 profile（会触发降级重装）；<code>bundled</code> 不在 <code>versions</code> 里；产物与仓库版本不一致</td></tr>
+	</tbody>
+</table>
+
+<div class="callout ok">
+	<strong>bump 规则（最容易被漏）：</strong>只要 <b>插件内容</b>有变化（哪怕只改一个 chunk），就必须 bump 版本，判据是「版本 + 入口内容」；只改 chunk 不改入口 ⇒ 指纹不变 ⇒ 打新包也不重装。
+	<p>纯工具函数级改动也想免 bump，就必须让 <code>lib/index.js</code>（入口）字节发生变化。</p>
+</div>
+
+<h2 id="pack">3. 打包流程</h2>
+
+<h3 id="pack-pipeline">3.1 十六步流水线（Build #241 实测顺序）</h3>
+
+<ol class="steps">
+	<li><b>拉取源码</b><span class="d">Checkout <code>main</code>；<code>.gitignore</code> 里排除 <code>/dsh-runtime/</code> ⇒ 干净检出<b>没有</b>运行时。</span></li>
+	<li><b>设置版本号</b><span class="d">写 <code>package.json</code> 版本（本次 2.2.26207）。</span></li>
+	<li><b>安装依赖</b><span class="d"><code>npm ci</code> + tree-sitter 原生编译 + 各扩展 <code>npm install</code> + <b>装 pnpm</b>（种子需要）+ vendored <code>rg.exe</code> 兜底（GitHub 403 时用仓库里那份）。</span></li>
+	<li><b>KB 渲染 bundle</b><span class="d"><code>build-agent-studio-kbblocks</code>（esbuild）。</span></li>
+	<li><b>生产编译</b><span class="d"><code>compile-build-with-mangling</code>：tsgo 编译 → 符号混淆 → NLS 抽取。失败会自动回退 <code>npm run compile</code>（无混淆）。</span></li>
+	<li><b>复制 kbblocks 资源</b><span class="d">产物进 <code>out-build</code>。</span></li>
+	<li><b>构建能力插件</b><span class="d"><code>transpile-plugins</code> → <code>out/vs/extensions/capability-plugins.js</code>（运行时按路径加载，属高危漏拷项）。</span></li>
+	<li><b>编译扩展</b><span class="d"><code>compile-extensions-build</code>：内置扩展打包（<code>fromLocalNormal</code> 会带生产依赖）。</span></li>
+	<li><b>打包暂存目录</b><span class="d"><code>gulp vscode-win32-x64</code>：拷 <code>dsh-plugins/</code>、<code>dsh-runtime/&lt;bundled&gt;/</code>（含 seed）、源码与依赖 → <code>VSCode-win32-x64/resources/app</code>。</span></li>
+	<li><b>内置 ffmpeg</b><span class="d">可选依赖，失败只降级（抽帧 / 视频理解回退 PATH）。</span></li>
+	<li><b>内置 whisper</b><span class="d">可选依赖（本地 ASR），失败只降级。</span></li>
+	<li><b>校验关键构件</b><span class="d"><code>verify-staging.ps1</code>：硬性清单 + 自愈（agent-studio/out、typescript、tree-sitter wasm、dsh-plugins、运行时、种子）。</span></li>
+	<li><b>生成 EXE</b><span class="d"><code>generate-exe.ps1</code>：调 Inno 前先硬判运行时在包里。</span></li>
+	<li><b>归档构件</b><span class="d">抓 <code>.build/win32-x64/**/*.exe</code>；<b>抓不到就是 0 file ⇒ exit 100001 ⇒ Job 失败</b>。</span></li>
+	<li><b>上传升级服务器</b><span class="d">前一步失败则 skip。</span></li>
+	<li><b>创建 Release</b><span class="d">tag + changelog + woa.git / GitHub 双端；前一步失败则 skip。</span></li>
+</ol>
+
+<h3 id="pack-gates">3.2 四道闸门</h3>
+
+<table>
+	<thead><tr><th style="width:86px">级别</th><th style="width:230px">闸门</th><th>判据 / 缺失后果</th></tr></thead>
+	<tbody>
+		<tr>
+			<td><span class="tag hard">硬</span></td>
+			<td><code>strip-before-pack.mjs</code> 2.5d</td>
+			<td>暂存目录缺 <code>dsh-runtime/&lt;bundled&gt;/node_modules/@deepseek-ai/dsh/lib/bin.js</code> ⇒ 从仓库整目录自愈；仓库侧也没有 ⇒ <code>criticalMissing</code> ⇒ <b>exit 1 禁止出包</b>。</td>
+		</tr>
+		<tr>
+			<td><span class="tag hard">硬</span></td>
+			<td><code>verify-staging.ps1</code> <code>$required</code></td>
+			<td>约 40 项：<code>rg.exe</code>、三个自定义扩展产物、<code>out/vs/sessions/**</code>、<code>capability-plugins.js</code>、<code>resources/.agents/**</code>、<code>dsh-plugins/*</code>、运行时 <code>bin.js</code> + <code>sherpa-onnx.node</code>、<b>profile 种子三条</b>。<div style="margin-top:6px"><span class="tag fix">2026-10-28 收紧</span>种子从「只告警」升为硬性。</div></td>
+		</tr>
+		<tr>
+			<td><span class="tag hard">硬</span></td>
+			<td><code>generate-exe.ps1</code></td>
+			<td>调 Inno <b>之前</b>判 <code>&lt;appPath&gt;/dsh-runtime/&lt;bundled&gt;/…/bin.js</code>。因为流水线「失败也继续」，这里是最后能拦住坏包的点。</td>
+		</tr>
+		<tr>
+			<td><span class="tag soft">诊断</span></td>
+			<td><code>prepack-dsh-runtime.mjs</code></td>
+			<td>各种失败只记录不抛（除安装/版本不符）。<b>但种子缺失现在会在第 12 步被判死</b>，所以失败必须打全 <code>stderr</code>（2026-10-28 补）。</td>
+		</tr>
+	</tbody>
+</table>
+
+<h3 id="pack-runtime">3.3 运行时与 profile 种子（打包的难点）</h3>
+
+<ol class="steps">
+	<li><b>装运行时</b><span class="d"><code>npm install --prefix dsh-runtime/&lt;bundled&gt; @deepseek-ai/dsh@&lt;bundled&gt;</code>；版本核对 <code>--version</code> 必须相等；装完幂等 <code>prune</code>（裁掉 LibreOffice 内核 ~182MB，<b>不裁</b> sherpa 语音）。</span></li>
+	<li><b>确保 pnpm</b><span class="d">三级兜底：PATH → <code>corepack enable pnpm</code> → <code>npm i -g pnpm</code>。因为 <code>dsh plugin add</code> 直接 spawn pnpm。</span></li>
+	<li><b>建种子</b><span class="d"><code>DSH_HOME=&lt;seed&gt; npm_config_package_import_method=copy</code> ⇒ profile 用 web 模板初始化 ⇒ 逐个 <code>dsh plugin add file:&lt;staged&gt;</code>（repo 全部 <code>@vssaros/*</code> + 官方 web-app / voice / schedule bundle）⇒ 起一次 Host 让 web 模板依赖落盘。</span></li>
+	<li><b>去绝对路径</b><span class="d">把 profile 的 <code>package.json</code> / <code>pnpm-lock.yaml</code> 里 <code>file:&lt;构建机绝对路径&gt;</code> 改写成 <code>file:.vssaros/plugins/…</code>（相对 profile，可搬运）。</span></li>
+	<li><b>清凭证</b><span class="d">删掉试启动生成的 <code>.credentials.yaml</code>（否则全体用户共用构建机 grant）。</span></li>
+	<li><b>对账后写 marker</b><span class="d">按「期望插件表」逐个查 <code>node_modules/&lt;name&gt;/package.json</code> 的版本，缺/不符就 throw ⇒ <b>先对账再写 <code>seed.json</code></b>（写早了等于给残缺种子盖章）。</span></li>
+</ol>
+
+<div class="callout warn">
+	<strong>种子是「加速项」但现在是出包硬门。</strong>它的价值是「首启零下载、零 pnpm」：宿主 <code>_ensureProfile</code> 整目录复制种子 → <code>_repairSeededStoreMetadata</code> 修 <code>.modules.yaml</code> 的 <code>virtualStoreDir</code>/<code>storeDir</code>（跨盘 / 8.3 短名都会踩）→ <code>_planPluginInstall</code> 发现版本与指纹都对 ⇒ 一次 pnpm 都不跑。
+	<p>缺种子的包能装，但首启要用户自己跑 pnpm 装 profile（多数机器没有）⇒ 表现为「首启很慢 / 插件缺失 / 工作台空白」。</p>
+</div>
+
+<h3 id="pack-fixes">3.4 已修的三处断点（2026-10-28）</h3>
+
+<table>
+	<thead><tr><th style="width:150px">问题</th><th style="width:300px">现场</th><th>修法</th></tr></thead>
+	<tbody>
+		<tr>
+			<td><b>EMFILE</b><br><span class="tag fix">已修</span></td>
+			<td><code>extensions/agentmemory-memory/package.json</code> 的 <code>dependencies</code> 带 <code>vssaros: file:../..</code>（junction 指向仓库根）⇒ <code>npm ls</code> 把<b>整个仓库</b>当生产依赖（1907 项）⇒ 打包并发 open 耗尽句柄，两步双双失败 ⇒ 无 exe。</td>
+			<td><code>build/lib/extensions.ts</code> 只认物理位于<b>扩展自身 node_modules</b> 下的依赖；<code>dependencies.ts</code> 加 <code>omitOptional</code>；小文件改缓冲拷贝。<br>实测：1907 → 2 个依赖、13 文件 / 11.9MB，打包流 23s 通过。</td>
+		</tr>
+		<tr>
+			<td><b>打进多个运行时</b><br><span class="tag fix">已修</span></td>
+			<td>gulp glob 是 <code>dsh-runtime/*/…</code> ⇒ 本机残留 <code>rc.1</code>(1073MB) 与 <code>rc.2</code>(939MB) 会一起进包；宿主又取「目录里最高版本」，可能跑<b>未进兼容清单</b>的版本。</td>
+			<td>gulp 按 <code>dsh-compat.json.bundled</code> pin 成单版本；<code>DshRuntimeManager</code> 增加 pin 参数并优先按 pin 选（pin 不在包里则记日志退回最高）。<br>实测：pin 后 83,965 文件 vs 通配 167,006（省 83,041 个文件）。</td>
+		</tr>
+		<tr>
+			<td><b>NLS 断言炸 mangling</b><br><span class="tag fix">已修</span></td>
+			<td>一个 <b>0 字节</b>的 <code>.ts</code>（模块搬家后留的空壳）编译出 <code>sourcesContent:['']</code>，<code>build/lib/nls.ts</code> 把「空源文件」当「sourcemap 坏了」⇒ 混淆跑满 44 分钟后整步失败。</td>
+			<td>区分「空源文件」（透传）与「sourcesContent 整个缺失」（仍报错）；同批事故里 7 个被截成 0 字节的文件按守卫要求删除 / 待恢复。</td>
+		</tr>
+		<tr>
+			<td><b>种子把 182MB 装回来</b><br><span class="tag fix">已修</span></td>
+			<td><code>PRUNE_LIST</code> 只裁<b>运行时目录</b>；而种子的 node_modules 是 pnpm <b>平铺</b>出来的依赖闭包 ⇒ 官方包的 optionalDependencies（libreoffice 内核 ≈182MB）被装进种子 ⇒ 运行时 522MB + 种子 417MB ≈ 翻倍。</td>
+			<td>种子建完对 <code>profile/node_modules</code> 跑<b>同一份</b> PRUNE_LIST（口径一致：wrapper 留着、只删平台内核）。实测：种子 <b>417MB → 235MB</b>；发布守卫（<code>check-dsh-release.mjs</code>）在<b>产物层面</b>复查运行时 + 每个 profile 种子 + <code>--dist</code>。</td>
+		</tr>
+		<tr>
+			<td><b>名不副实的运行时</b><br><span class="tag fix">已修</span></td>
+			<td>工作区残留一份<b>引擎自报 alpha.3</b>、目录却叫 <code>0.2.1-rc.2</code> 的旧安装 ⇒ 它自带的官方插件声明 rc.2、引擎却是 alpha.3 ⇒ profile 里每装一个插件都被 dsh「版本闸门」拦（<code>to accept the risk…</code>）⇒ <b>种子建不出来</b>。旧写法「目录在就跳过安装」⇒ 一份坏安装被静默复用。</td>
+			<td>prepack 的「已安装就跳过」路径现在<b>核对引擎自报版本</b>，对不上就重装；种子里再出现版本闸门会自动 accept-and-retry（上限 400，带汇总日志）；失败时把 dsh 的<b>启动诊断</b>读出来并留痕到 <code>seed-build-fail-logs/</code>。</td>
+		</tr>
+		<tr>
+			<td><b>rc.4 是回归</b><br><span class="tag fix">已排除</span></td>
+			<td>同期试过 next 通道的 <code>0.2.1-rc.4</code>：版本串自洽、种子也能建，但 host 组 <code>p0-01 / p0-04 / p0-08</code> 在 rc.4 上<b>启动即崩</b>（<code>webServer</code>/<code>connection</code> 不起）；rc.2 基线同组全绿。</td>
+			<td>留在 rc.2。升级 bundled 必须做<b>基线对照</b>（同一组探针跑新旧两个运行时），不能只看「版本自洽」。</td>
+		</tr>
+	</tbody>
+</table>
+
+<h3 id="pack-size">3.5 体积账（决定了这条路走不走得通）</h3>
+
+<table>
+	<thead><tr><th>项</th><th style="width:130px">体积</th><th style="width:130px">文件数</th><th>说明</th></tr></thead>
+	<tbody>
+		<tr><td>运行时本体 <code>&lt;rt&gt;/node_modules</code></td><td>521.7 MB</td><td>63,029</td><td>已 prune LibreOffice</td></tr>
+		<tr><td>profile 种子合计</td><td><b>235.5 MB</b></td><td>13,110</td><td>「首启零下载」的代价（<b>裁掉 182MB 后</b>；裁之前是 416.7MB）</td></tr>
+		<tr><td>├ <code>profiles/vssaros/node_modules</code></td><td>~184 MB</td><td>~12,200</td><td>copy 模式（真文件，可搬运）</td></tr>
+		<tr><td>└ <code>.vssaros/plugins</code> 暂存副本</td><td>51.3 MB</td><td>887</td><td>profile 内 <code>file:</code> 依赖指向它（与 <code>node_modules/@vssaros</code> 重复 ⇒ 后续可再省 51MB）</td></tr>
+		<tr><td><b>单版本合计（pin 后）</b></td><td><b>757.7 MB</b></td><td><b>76,160</b></td><td>不含扩展与 node_modules.asar</td></tr>
+		</tbody>
+		</table>
+
+		<div class="callout">
+		<strong>结论：</strong>统一 profile 原本会把运行时「近乎翻倍」（522MB → 939MB）。两条修法落地后回到 <b>757.7MB</b>：① 种子也裁 libreoffice 内核（−182MB）；② 打包只带 compat pin 的那一个运行时版本（历史上残留的旧版本每个 ≈1GB）。
+		<p>剩余可压：官方包与第三方依赖在 profile 里与运行时<b>同名重复 133MB / 260 包</b>（改成首启 junction 可消除），暂存副本 51MB（去重可消除）。</p>
+		</div>
+
+<h2 id="upgrade">4. 升级流程</h2>
+
+<h3 id="up-runtime">4.1 运行时升级（兼容清单 + 闸门 + 回退）</h3>
+
+<pre><code>dsh-plugins/dsh-compat.json
+├─ bundled : "0.2.1-rc.2"          # 构建期预装进包的版本（必须在 versions 里）
+├─ versions: [{ version, verifiedAt, checks[], bridgePlugin, notes }]
+├─ canary  : [{ version, testedAt, checks[], notes }]
+└─ blocked : [{ version, reason }]  # 明确"有问题"，禁止作为升级目标</code></pre>
+
+<table>
+	<thead><tr><th style="width:180px">环节</th><th>口径</th></tr></thead>
+	<tbody>
+		<tr><td>解析顺序</td><td>setting（<code>runtimePath</code>）→ managed（用户显式装/升）→ bundled（pin）→ global（<code>npm i -g</code>）</td></tr>
+		<tr><td>更新发现</td><td><code>discoverUpdates</code>：stable 只看 <code>versions</code>；preview 额外看 <code>canary</code>；<code>locked</code> 不升。<b>blocked 的版本永不作候选</b>，当前版本被 blocked 时给明确 note。</td></tr>
+		<tr><td>闸门步骤</td><td>检查运行中任务（忙 ⇒ <code>blocked</code>）→ 停 Host → 快照（<code>profiles/&lt;p&gt;</code>、<code>sessions</code>、<code>storages</code>；<b>不含凭证</b>）→ 切指针 → 启动 → 健康检查 → 失败自动回退指针</td></tr>
+		<tr><td>快照时机</td><td><b>Host 停止之后</b>，避免复制到写了一半的会话文件</td></tr>
+	</tbody>
+</table>
+
+<h3 id="up-plugin">4.2 插件升级（三条来源，同一判据）</h3>
+
+<div class="grid2">
+	<div>
+		<h4>① 随包插件（exe 自带）</h4>
+		<ul>
+			<li>启动时 <code>_planPluginInstall</code> 比对 <b>版本 + 入口内容指纹</b>。</li>
+			<li>不一致 ⇒ 暂存到 <code>profile/.vssaros/plugins/</code> ⇒ <b>一条</b> <code>dsh plugin add spec1 spec2 …</code>（N 次进程收敛成 1 次）。</li>
+			<li>批量漏装会回退逐项 <code>_ensurePlugin</code>；有<b>不降级</b>保护（exe 版本低于 profile 时不降级重装）。</li>
+		</ul>
+	</div>
+	<div>
+		<h4>② 第三方插件（插件中心 / 商城）</h4>
+		<ul>
+			<li><code>listThirdPartyPlugins</code> 只读 profile 的 <code>package.json</code>（不碰 Host）⇒ 列出非随包依赖。</li>
+			<li><code>upgradeThirdPartyPlugin(name)</code> 走同一套 pnpm 安装通道。</li>
+			<li>商城安装：下载 → 校验 → 落 profile → 重启或热重组。</li>
+		</ul>
+	</div>
+</div>
+
+<div class="callout bad">
+	<strong>两个真机事故（务必记住）：</strong>
+	<p>① <b>降级重装风暴</b>：exe 里随包版本低于用户 profile ⇒ 每次启动都尝试降级（8 个包跑满 4 分钟超时、桌面窗口卡在「正在启动后台服务…」）。现在运行期有不降级保护，<b>发布前</b>由 <code>check-dsh-release.mjs</code> 拦。</p>
+	<p>② <b>同版本内容变了</b>：pnpm 认为 <code>file:</code> 依赖没变化 ⇒ 一个字节都不替换；宿主判定又只看版本 ⇒ 新旧代码混杂。判据因此改成「版本 + 入口内容」。</p>
+</div>
+
+<h3 id="up-app">4.3 应用本体升级</h3>
+
+<p>应用（EXE）与运行时、插件是<b>三条独立升级链</b>：应用走更新服务换安装包；应用内的 <code>dsh-runtime/&lt;bundled&gt;/</code> 随包而来（新版 exe 会带新的 bundled）；profile 在用户机器上独立演进（<code>managed</code> 指针优先于 bundled）。</p>
+
+<div class="callout">
+	<strong>升级后的自愈顺序（启动时）：</strong><code>_ensureProfile</code>（缺才复制种子）→ <code>_repairSeededStoreMetadata</code>（修 pnpm 虚拟店元数据）→ <code>_auditBundledVersions</code>（profile 已装 vs 随包，逐条点名）→ 计划安装 → 起 Host。
+</div>
+
+<h2 id="pitfalls">5. 事故清单（都是真事，按日期）</h2>
+
+<table>
+	<thead><tr><th style="width:96px">日期</th><th style="width:280px">现象</th><th>根因 / 现在由谁拦</th></tr></thead>
+	<tbody>
+		<tr><td>2026-09-06</td><td>CI 打包 RangeError / 双双失败</td><td><code>walkFiles</code> 用展开运算符 + junction 无限下钻 ⇒ 显式栈迭代 + realpath 包含性检查</td></tr>
+		<tr><td>2026-09-07</td><td><code>extensions/*/node_modules</code> 里出现脏依赖、打包 EMFILE</td><td><code>install-deps.ps1</code> 遍历深度算错，把 npm 包当扩展逐个 install ⇒ 排除 <code>node_modules</code> / <code>out|dist</code></td></tr>
+		<tr><td>2026-10-16</td><td>装完首启弹「需要准备 DeepSeek Harness 运行环境」</td><td><code>/dsh-runtime/</code> 被 gitignore + gulp <code>allowEmpty</code> ⇒ 静默出坏包；现由 strip 2.5d + verify + generate-exe 三道硬门拦</td></tr>
+		<tr><td>2026-10-19</td><td>种子装上后插件一激活就抛「foundation 服务未绑定」</td><td>种子只收 <code>vssaros.module</code> 的插件 ⇒ 改为「repo 里全部 <code>@vssaros/*</code> + <code>@tt-a1i/*</code>」</td></tr>
+		<tr><td>2026-10-24</td><td>「改了没生效」，重启也没用</td><td>只改 chunk 不改入口 ⇒ rev 不变 + 永久缓存；<code>dsh-plugin-deploy</code> + bump 规则</td></tr>
+		<tr><td>2026-10-28</td><td>mangling 44 分钟后整步失败，最终无 exe</td><td>0 字节 <code>.ts</code> ⇒ <code>sourcesContent:['']</code>；<b>两处修</b>：① <code>nls.ts</code> 区分「空源文件」与「map 缺失」（空文件透传、真缺失仍报错）；② 发布守卫新增<b>空源文件扫描</b>（src / extensions 下不许再有 0 字节 <code>.ts</code>，故意为空的 fixture 在白名单里）</td></tr>
+		<tr><td>2026-10-28</td><td>「丢了 5.6 万字节测试」的疑云</td><td>被清空的 4 个 <code>.test.ts</code> 守的是<b>已退役功能</b>：codebase / skills / memory / unreal 工具族分别于 2026-10-13 与 10-17 整体退役并迁到 dsh 侧（<code>builtinToolProvider.ts</code> 注释有完整记录）⇒ 恢复后必然编译失败（依赖的模块已不存在）⇒ 按退役处置（删除），不是丢了覆盖</td></tr>
+		<tr><td>2026-10-28</td><td>工作台一体条背景不跟主题</td><td><code>.vssWbActions</code> 写死深色渐变 ⇒ <code>check-dsw-tokens</code> 报红；改为 <code>background:var(--dsw-alias-bg-layer-1, #25252a) linear-gradient(...)</code>（保留渐变观感，底色跟随主题），并 bump 插件版本（否则入口指纹不变 ⇒ 装了也不更新）</td></tr>
+		<tr><td>2026-10-28</td><td>两次 EMFILE，staging 半成品</td><td><code>vssaros: file:../..</code> 把整仓当依赖 ⇒ 只认扩展自身 node_modules</td></tr>
+		<tr><td>2026-10-28</td><td>包体白胖 / 可能跑未验证运行时</td><td>gulp 打所有 <code>dsh-runtime/*</code> + 宿主取最高版本 ⇒ 双侧按 compat pin</td></tr>
+		<tr><td>2026-10-28</td><td>种子建不出来（CI 那次失败的真正原因）</td><td>工作区残留一份<b>引擎自报 alpha.3</b> 的坏安装 ⇒ 官方插件声明 rc.2、引擎是 alpha.3 ⇒ 每次装插件都被版本闸门拦。prepack 现在核对自报版本并重装；失败会打印 stderr 尾巴 + 保留 dsh 启动诊断</td></tr>
+		<tr><td>2026-10-28</td><td>种子把 182MB libreoffice 内核装回来 ⇒ 体积翻倍</td><td>PRUNE_LIST 只裁运行时；种子（pnpm 平铺的依赖闭包）没裁 ⇒ 种子也裁同一份清单，发布守卫复查产物</td></tr>
+		<tr><td>2026-10-28</td><td>试切 rc.4 ⇒ host 组三条探针启动即崩</td><td>rc.2 基线同组全绿 ⇒ rc.4 是回归 ⇒ <b>不切</b>；升级 bundled 必须做基线对照，不能只看版本自洽</td></tr>
+	</tbody>
+</table>
+
+<h2 id="checklist">6. 交付检查清单</h2>
+
+<div class="grid2">
+	<div>
+		<h4>提交前（插件开发）</h4>
+		<ul>
+			<li>改了插件内容 ⇒ <b>bump <code>version</code></b>（或至少让 <code>lib/index.js</code> 字节变化）</li>
+			<li><code>files</code> 覆盖新增的每个文件（含 chunk / patch / skills）</li>
+			<li><code>npm run check:dsh-plugins</code> 全绿</li>
+			<li>新工作台：主页卡片 + route 白名单都登记</li>
+			<li>不要提交 <code>node_modules</code> / 构建产物</li>
+		</ul>
+	</div>
+	<div>
+		<h4>打包前（改构建链时）</h4>
+		<ul>
+			<li>手动打包必须<b>先跑</b> <code>node build/prepack-dsh-runtime.mjs</code></li>
+			<li>运行前用 <code>node build/saros/check-dsh-release.mjs --require-runtime</code></li>
+			<li>改 <code>dsh-compat.json</code> 后：<code>bundled</code> 必须在 <code>versions</code> 里</li>
+			<li>本地把 <code>dsh-runtime/</code> 里旧版本目录清掉（pin 后虽不会打进去，但会误导排查）</li>
+		</ul>
+	</div>
+</div>
+
+<div class="callout ok">
+	<strong>发布前最后一道：</strong><code>node build/saros/check-dsh-release.mjs --dist="&lt;安装目录&gt;/resources/app"</code> —— 它同时核对「有没有忘 bump」「随包版本是否低于 profile」「产物里的插件版本是否与仓库一致」。
+</div>
+
+<footer>
+	生成于 2026-10-28 · 依据仓库当前代码与 Build #241 日志 · 文件：<code>doc/dsh-plugin-workflow.html</code>
+</footer>
+
+</main>
+</div>
+</body>
+</html>

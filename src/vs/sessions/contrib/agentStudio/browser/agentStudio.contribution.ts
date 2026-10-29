@@ -36,9 +36,6 @@ import { KeyMod, KeyCode } from '../../../../base/common/keyCodes.js';
 // Side-effect import: the module self-registers a workbench contribution.
 import './codebaseMemoryMcpBootstrap.js';
 
-// Platform Bridge Layer (cc-connect 复刻) — registers IBridgeService + auto-starts.
-import './bridge/bridge.contribution.js';
-
 // 单向同步适配器：llm_wiki 文章 → Sarosis WikiTag library（自包含注册）。
 import './services/llmWikiAdapter.contribution.js';
 
@@ -295,8 +292,6 @@ import { ISettingsTabRegistry, SettingsTabRegistry } from './views/settingsTabRe
 
 import { EvolutionDetailEditorPane } from './evolutionDetailEditorPane.js';
 import { EvolutionDetailEditorInput } from './evolutionDetailEditorInput.js';
-import { ChannelEditorPane } from './channelEditorPane.js';
-import { ChannelEditorInput } from './channelEditorInput.js';
 
 import { KnowledgeBaseViewPane } from './views/knowledgeBaseView.js';
 // ★ 2026-10-23：React 版知识库（实验容器 `agentStudio.knowledgeBaseReact`，可整段下线）
@@ -1447,19 +1442,6 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 	),
 	[
 		new SyncDescriptor(EvolutionDetailEditorInput)
-	]
-);
-
-// Register ChannelEditorPane so that channel configuration pages open in the editor area.
-// Clicking a channel in the Channel sidebar view opens its config in the editor area.
-Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
-	EditorPaneDescriptor.create(
-		ChannelEditorPane,
-		ChannelEditorPane.ID,
-		localize('channelEditor', "Channel Configuration"),
-	),
-	[
-		new SyncDescriptor(ChannelEditorInput)
 	]
 );
 

@@ -45,6 +45,25 @@ export interface IHostReapOptions {
 	readonly killTree?: (pid: number) => Promise<void>;
 	/** 无拥有者记录的覆盖层多久算遗留（缺省 7 天）。 */
 	readonly legacyMaxAgeMs?: number;
+	/**
+	 * ★ 2026-10-29：**没有拥有者记录**、但我们已判定"它的宿主已退出、可以回收"的 Host。
+	 *
+	 * 为什么需要它：租约（`host.json`）只留最后一份 ⇒ "keepAlive 留下的旧 Host"在下一次启动时
+	 * 可能既没有 owner 记录、也不在租约里 ⇒ 认不出来 ⇒ 永远回收不掉（真机：同一台机器上三个 Host 并存，
+	 * 端口被迫漂移 ⇒ system 提示里的端口每轮都变 ⇒ provider 的 prompt 前缀缓存整段失效 ✗✗）。
+	 *
+	 * ⚠ 调用方**必须**先确认"宿主已死"（`appPidOfInstanceId` + 存活判定）—— 宿主还活着 ⇒ 多实例 ⇒ 绝不能动 ✓。
+	 */
+	readonly extraCandidates?: readonly { readonly pid: number; readonly reason: string }[];
+	/**
+	 * 等进程真的退出（缺省：轮询 `isAlive`，100ms 一次，最多 3s ✓）。
+	 *
+	 * ★ 2026-10-29：为什么必须有它 —— 原来 `taskkill` 一返回就**无条件**删掉 owner 记录与覆盖层，
+	 * 哪怕进程**还活着**（taskkill 失败、或它正在优雅退出）⇒ 那份记录一丢，这个 Host 就**再也没人能认出来**
+	 * ⇒ 变成"占着端口、重复干活、永远回收不掉"的僵尸 ✗✗（真机：dev 上留了一个孤儿 Host，
+	 * 下次启动被迫 `--port 0` 换端口 ⇒ 前缀缓存全断）。
+	 */
+	readonly waitExit?: (pid: number, timeoutMs: number) => Promise<boolean>;
 }
 
 export interface IHostReapReport {
@@ -97,6 +116,23 @@ function defaultKillTree(pid: number): Promise<void> {
 	return Promise.resolve();
 }
 
+/** 杀掉进程后，等它真的退出最多这么久（3s 足够 Windows 上一个 node 进程收尾 ✓）。 */
+const KILL_EXIT_WAIT_MS = 3_000;
+
+/** 默认的"等进程退出"：轮询 `isAlive`，100ms 一次。 */
+async function defaultWaitExit(isAlive: (pid: number) => boolean, pid: number, timeoutMs: number): Promise<boolean> {
+	const deadline = Date.now() + timeoutMs;
+	for (;;) {
+		if (!isAlive(pid)) {
+			return true;
+		}
+		if (Date.now() >= deadline) {
+			return false;
+		}
+		await new Promise(resolve => setTimeout(resolve, 100));
+	}
+}
+
 /**
  * 回收孤儿 Host：结束进程树 + 删掉它的覆盖层与拥有者记录；顺带清理**够老的**遗留覆盖层。
  *
@@ -108,6 +144,7 @@ export async function reapOrphanHosts(options: IHostReapOptions): Promise<IHostR
 	const now = options.now ?? Date.now();
 	const isAlive = options.isAlive ?? pidAlive;
 	const killTree = options.killTree ?? defaultKillTree;
+	const waitExit = options.waitExit ?? ((pid: number, timeoutMs: number) => defaultWaitExit(isAlive, pid, timeoutMs));
 	const { records, unreadable } = await readHostRunOwnerships(options.runDir);
 	const plan = planOrphanHosts(records, { selfAppPid: options.selfAppPid, isAlive, now, graceMs: options.graceMs ?? OWNERSHIP_GRACE_MS });
 	const removed: string[] = [];
@@ -119,9 +156,18 @@ export async function reapOrphanHosts(options: IHostReapOptions): Promise<IHostR
 	for (const verdict of plan.reap) {
 		const { record, reason } = verdict;
 		options.log(`orphan-reap: reap run ${record.runId} (host pid ${record.hostPid}, profile ${record.profile}) — ${reason}`);
+		let gone = true;
 		if (isAlive(record.hostPid)) {
 			await killTree(record.hostPid);
-			options.log(`orphan-reap: killed process tree of pid ${record.hostPid}${isAlive(record.hostPid) ? '（仍在？下轮再来 ✓）' : ''}`);
+			// ★ 2026-10-29：**必须确认它真的退出了**才能删记录 —— 原来 taskkill 一返回就删，
+			//   哪怕进程还活着 ⇒ 记录一丢就再也没人能认出来 ⇒ 变成永远回收不掉的僵尸 ✗✗。
+			gone = await waitExit(record.hostPid, KILL_EXIT_WAIT_MS);
+			options.log(gone
+				? `orphan-reap: killed process tree of pid ${record.hostPid}（已退出 ✓）`
+				: `orphan-reap: pid ${record.hostPid} 仍未退出 ⇒ 保留它的拥有者记录与覆盖层，下轮再试（删了记录它就再也认不出来了 ✗）`);
+		}
+		if (!gone) {
+			continue;   // 保留记录与覆盖层 ⇒ 下一轮启动还能认出来并再试 ✓
 		}
 		// 覆盖层与拥有者记录一起清（**只认 basename** ⇒ 记录里塞路径也指不到目录外 ✗）。
 		for (const file of [...record.files, hostRunOwnershipFileName(record.runId)]) {
@@ -134,6 +180,19 @@ export async function reapOrphanHosts(options: IHostReapOptions): Promise<IHostR
 				removed.push(base);
 			} catch { /* best effort */ }
 		}
+	}
+
+	// ★ 2026-10-29：额外候选（租约里那个"宿主已死、我们不打算复用"的 Host）—— 没有 owner 记录 ⇒ 只结束进程。
+	for (const candidate of options.extraCandidates ?? []) {
+		if (!Number.isInteger(candidate.pid) || candidate.pid <= 0 || !isAlive(candidate.pid)) {
+			continue;
+		}
+		options.log(`orphan-reap: reap extra host pid ${candidate.pid} — ${candidate.reason}`);
+		await killTree(candidate.pid);
+		const gone = await waitExit(candidate.pid, KILL_EXIT_WAIT_MS);
+		options.log(gone
+			? `orphan-reap: killed extra host pid ${candidate.pid}（已退出 ✓）`
+			: `orphan-reap: extra host pid ${candidate.pid} 仍未退出 ⇒ 保留现状（下次启动再试 ✗）`);
 	}
 
 	// 遗留兜底：够老的覆盖层、且不属于任何"保留中"的 run（老 run 目录里积了几十份 ✗）。

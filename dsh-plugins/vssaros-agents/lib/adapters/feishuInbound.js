@@ -18,6 +18,22 @@
 import { sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+/**
+ * 从 SDK 事件里取出**事件类型**（只用于日志，不含正文）。
+ *
+ * 为什么单独要一个：排查"飞书到底推没推消息"时，最缺的就是**事件到没到**这一条证据。
+ * 之前只有"解析成 ignore"才留痕 ⇒ 事件没来时日志干干净净，看起来像"一切正常"。
+ * ⚠ 绝不打印正文/消息内容（那是用户的聊天内容）。
+ */
+function describeEventType(payload) {
+	const t = payload?.header?.event_type
+		|| payload?.event?.type
+		|| payload?.schema
+		|| payload?.type
+		|| '未知类型';
+	return String(t).slice(0, 60);
+}
+
 /** 去掉飞书 @ 占位符（`@_user_1`）并收拾多余空格。 */
 export function stripAtPlaceholders(text) {
 	return String(text ?? '')
@@ -211,8 +227,17 @@ export function createFeishuGateway({ transport, onMessage, log, baseDelayMs = 1
 		state.status = 'connecting';
 		try {
 			handle = await transport.start({
+				/* 把日志通道交给 transport：SDK 的生命周期（已建立 / 断开 / 重连）必须留痕 ——
+				   否则"连接活着但收不到事件"和"连接压根没起来"在日志里长得一模一样
+				   （2026-10-29 排查：只有一行"长连接已就绪"，看不出任何差别）。 */
+				note: (level, msg) => { note(level, msg); },
 				onEvent: (payload) => {
 					state.lastEventAt = Date.now();
+					/* ★ 2026-10-29：事件**到达**必须留痕。
+					   之前只有"解析成 ignore"才打日志 ⇒ **事件根本没来时日志一片干净**，
+					   于是分不清"飞书没推"和"推了但被忽略"（2026-10-29 排查时栽在这）。
+					   现在任何事件都先打一行：只打**事件类型**，不打正文（隐私）。 */
+					note('info', `收到飞书事件：${describeEventType(payload)}`);
 					const parsed = parseFeishuEvent(payload);
 					if (parsed.kind === 'message') {
 						state.status = 'ready';
@@ -280,7 +305,14 @@ export function createFeishuGateway({ transport, onMessage, log, baseDelayMs = 1
  */
 export function createSdkTransport({ appId, appSecret, resolve, importSdk } = {}) {
 	return {
-		async start({ onEvent, onError }) {
+		async start({ onEvent, onError, note }) {
+			/* transport 层也可能没有日志通道（单测里直接注入假 transport）⇒ 兜底用 console。 */
+			const say = (level, msg) => {
+				try {
+					if (typeof note === 'function') { note(level, msg); return; }
+				} catch { /* 忽略 */ }
+				try { console.info(`[vssaros-agents][im-in] ${msg}`); } catch { /* 忽略 */ }
+			};
 			/* ★ 2026-10-27：凭据改成**每次 start 现取**（`resolve`）。
 			   原来吃的是 apply 期的快照 ⇒ 用户在设置里填完必须重启 Host 才生效，
 			   与"设置里改了应该有反应"的直觉冲突。`resolve` 缺省时回落到静态 appId/appSecret。 */
@@ -333,13 +365,41 @@ export function createSdkTransport({ appId, appSecret, resolve, importSdk } = {}
 			if (typeof WSClient !== 'function') {
 				throw new Error('unavailable：SDK 里没有 WSClient（版本不匹配）');
 			}
-			const client = new WSClient({ appId: id, appSecret: secret });
+			/* ★ 2026-10-29 诊断：把 **SDK 自己的日志**接进来。
+			   SDK 默认不打任何连接日志 ⇒ "start() 返回了但握手其实没成" 与 "连上了但飞书不推事件"
+			   这两种情况在日志里长得一模一样（都只有我们那两行）。
+			   ⚠ 只保留含关键字的行（连接/就绪/事件/订阅/错误/心跳）—— debug 全量太吵。
+			   ⚠ logger/loggerLevel 若该 SDK 版本不认，参数会被忽略（无害）。 */
+			const sdkKeyword = /connect|ready|receive|event|subscribe|error|fail|clos|reconnect|ping|pong|endpoint|dispatch/i;
+			const sdkLog = {
+				error: (m) => say('warn', `[sdk] ${String(m).slice(0, 200)}`),
+				warn: (m) => say('warn', `[sdk] ${String(m).slice(0, 200)}`),
+				info: (m) => { if (sdkKeyword.test(String(m))) { say('info', `[sdk] ${String(m).slice(0, 200)}`); } },
+				debug: (m) => { if (sdkKeyword.test(String(m))) { say('info', `[sdk] ${String(m).slice(0, 200)}`); } },
+				trace: () => { },
+			};
+			const client = new WSClient({
+				appId: id, appSecret: secret,
+				...(sdk && sdk.LoggerLevel && typeof sdk.LoggerLevel.debug === 'number'
+					? { loggerLevel: sdk.LoggerLevel.debug } : {}),
+				logger: sdkLog,
+			});
 			/* SDK 的事件回调签名因版本而异：统一按 `{ header, event }` 透传给解析层，
-			   解析层对其它形状也是宽容的（见 `parseFeishuEvent`）。 */
+			   解析层对其它形状也是宽容的（见 `parseFeishuEvent`）。
+			   ★ 2026-10-29：把 SDK 的**连接生命周期**也接上（onReady / onReconnecting / onReconnected）。
+			   之前只接 onEvent/onError ⇒ "连接活着但飞书不推事件"这种故障在日志里毫无痕迹。 */
+			say('info', `正在建立飞书长连接（appId=${id.slice(0, 10)}…）`);
 			await client.start({
 				onEvent: (data) => { try { onEvent?.(data); } catch (e) { onError?.(e); } },
-				onError,
+				onError: (e) => {
+					say('warn', `SDK 长连接报错：${String((e && e.message) || e).slice(0, 160)}`);
+					onError?.(e);
+				},
+				onReady: () => say('info', 'SDK 长连接已建立（飞书侧已确认）'),
+				onReconnecting: () => say('warn', 'SDK 长连接断开，正在重连…'),
+				onReconnected: () => say('info', 'SDK 长连接已重连'),
 			});
+			say('info', '飞书长连接握手完成（等待事件）');
 			return { close: () => client.close?.() };
 		},
 	};

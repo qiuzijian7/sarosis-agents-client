@@ -590,8 +590,15 @@ function startQuotaTimer() {
 		void syncQuota().catch(() => { /* 定时任务不抛 */ });
 	}, QUOTA_REFRESH_MS);
 	state.quotaTimer.unref?.();
-	// 首次：宿主就绪后尽快试一次（不阻塞启动）
-	setTimeout(() => { void syncQuota().catch(() => { /* ignore */ }); }, 5000).unref?.();
+	// 首次：宿主就绪后**稍晚**试一次。
+	//
+	// ★★ 2026-10-29（真机：打包版 Host 首启慢 18 秒）：原来这个首次采集排在 **+5s**，
+	//   而它要经 CDP 驱动**专属 Chrome**（冷启动 ⇒ 实测 18 秒）⇒ 采集结束的刻度正好
+	//   撞上 Host ready（`host-52014a34.log`：quota 那行在 host uptime 24.8s，
+	//   `[vssaros-bridge] apply` 也在 24.8s）⇒ **Host 就绪被额度采集挡住了 18 秒** ✗✗。
+	//   ⇒ ① 推迟到 +20s（Host 早已就绪）；② `readWoaCookies` 本身加了 5s 硬超时
+	//   （`quotaBrowser.js`）⇒ 两者叠加 ⇒ 额度采集**再也不可能**拖住启动 ✓。
+	setTimeout(() => { void syncQuota().catch(() => { /* ignore */ }); }, 20_000).unref?.();
 }
 
 export function apply(ctx) {

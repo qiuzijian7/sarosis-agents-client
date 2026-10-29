@@ -191,6 +191,69 @@ export function planOrphanHosts(
 }
 
 /**
+ * 从 `instanceId` 解析出**宿主主进程** pid。
+ *
+ * 格式：`vssaros-<appPid>-<rand8>`（见 `dshHarnessChannel.ts` 里生成 instanceId 的那行）⇒
+ * 租约（`host.json`）里虽然没有独立的 appPid 字段，但**能从 instanceId 反解出来** ✓。
+ *
+ * 为什么需要它 ★ 2026-10-29（孤儿 Host 治理）：租约（host.json）只留**最后一份** ⇒
+ * "keepAlive 留下的旧 Host"在**下一次**启动时可能既没有 owner 记录（被误删）、
+ * 又不在租约里（被后一次覆盖）⇒ 认不出来 ⇒ 永远回收不掉。
+ * 但只要还留着租约（或 owner 记录），就能用这个函数判它的宿主是否已死 ⇒ 死了才可回收 ✓。
+ *
+ * @returns 宿主主进程 pid；格式不认识时返回 undefined（**保守**：调用方据此判"别动" ✓）。
+ */
+export function appPidOfInstanceId(instanceId: string): number | undefined {
+	const match = /^vssaros-(\d+)-/.exec(String(instanceId ?? ''));
+	if (!match) {
+		return undefined;
+	}
+	const pid = Number(match[1]);
+	return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+}
+
+/**
+ * 租约里那个 Host 能不能当"可回收的孤儿"（★ 2026-10-29，孤儿 Host 治理）。
+ *
+ * 背景：回收器只认 runDir 里的**拥有者记录** ⇒ 记录一丢（keepAlive 的 Host 常常没有；
+ * 旧版逻辑还会在"没杀掉"时误删），那个 Host 就再也没人能认出来 ⇒ 永远占着端口 ✗。
+ * 租约（`host.json`）里还有 pid + instanceId ⇒ 至少能判"它的宿主还在不在" ✓。
+ *
+ * 三条判据（缺一不可）：
+ *   ① **我们明确不复用它**（`notReusableReason` 为空 ⇒ 不动：可能只是"探活失败"，进程未必死 ✗）；
+ *   ② **认得出宿主**（instanceId 解析不出 appPid ⇒ 不动：保守 ✓）；
+ *   ③ **宿主已退出**（宿主还活着 ⇒ 多实例，另一个窗口正接在上面 ⇒ 绝不能动 ✗✗）。
+ *
+ * @returns 回收候选（空数组 = 不动）。
+ */
+export function orphanLeaseCandidates(
+	lease: { readonly pid: number; readonly instanceId: string } | undefined,
+	options: {
+		/** 本实例为什么**不复用**这个 Host；空 = 没有明确理由 ⇒ 不当候选 ✓。 */
+		readonly notReusableReason: string | undefined;
+		/** 本进程 pid（"就是自己上一轮留下的"也算可回收 ✓）。 */
+		readonly selfAppPid: number;
+		/** 进程存活判定（注入以便钉住 ✓）。 */
+		readonly isAlive: (pid: number) => boolean;
+	},
+): { pid: number; reason: string }[] {
+	if (!lease || !options.notReusableReason || !Number.isInteger(lease.pid) || lease.pid <= 0) {
+		return [];
+	}
+	const appPid = appPidOfInstanceId(lease.instanceId ?? '');
+	if (!appPid) {
+		return [];   // 认不出宿主 ⇒ 保守：不动 ✓
+	}
+	if (appPid !== options.selfAppPid && options.isAlive(appPid)) {
+		return [];   // 宿主还活着 ⇒ 多实例 ⇒ 绝不能动 ✓
+	}
+	return [{
+		pid: lease.pid,
+		reason: `租约里的 Host（pid ${lease.pid}）的宿主 VsSaros（pid ${appPid}）已退出，且本实例不复用它（${options.notReusableReason}）`,
+	}];
+}
+
+/**
  * 从覆盖层文件名（`<kind>-<runId>.yml`）取 runId；不是覆盖层返回 undefined。
  *
  * 用途：老 run 目录里积着**没有拥有者记录**的覆盖层（本机制上线前的遗留 ✗）⇒ 只能用"够老就删"兜 ✓

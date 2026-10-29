@@ -33,7 +33,7 @@ window.__ModuleLoader__.load({
 		const SLOT_FOOTER = "sidebar.footer.action";
 		/** 负值优先（见文件头）⇒ 顶掉官方的 OfficialBrandMark / OfficialBrandName ✓。 */
 		const PRIORITY = -10;
-		const TITLE = "Saroasis harness";
+		const TITLE = "VsSaros";
 
 		/** 官方那份是 `#FFFFFF` 底 + `#FF5A2E` 描边；值直接照抄 IDE 的 svg，不做主题推断。 */
 		const MARK_FILL = "#FFFFFF";
@@ -122,7 +122,7 @@ window.__ModuleLoader__.load({
 					type: "button",
 					// ⚠ 用**稳定锚点**（不随 hover 变），e2e/守卫都按它找：
 					"data-vssaros-ide-entry": "1",
-					title: "回到 Saroasis harness 窗口",
+					title: "回到 VsSaros 窗口",
 					onClick: openIde,
 					onMouseEnter: () => setHover(true),
 					onMouseLeave: () => setHover(false),
@@ -153,7 +153,7 @@ window.__ModuleLoader__.load({
 				type: "button",
 				"data-vssaros-ide-entry": "1",
 				"data-vssaros-ide-entry-collapsed": "1",
-				title: "回到 Saroasis harness 窗口",
+				title: "回到 VsSaros 窗口",
 				onClick: openIde,
 				style: {
 					display: "inline-flex", alignItems: "center", justifyContent: "center",

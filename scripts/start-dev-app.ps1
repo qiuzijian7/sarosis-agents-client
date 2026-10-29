@@ -21,7 +21,16 @@ param(
 )
 
 $repo = Split-Path -Parent $PSScriptRoot
-$exe = Join-Path $repo '.build\electron\Saroasis harness.exe'
+# exe 名：2026-10-29 起 `VsSaros.exe`（原来 `Saroasis harness.exe`）⇒ 两个都认，
+# 否则没重新编译时这个脚本会 ABORT（而 .mjs 启动器却还能跑，行为不一致）。
+$exeNames = @('VsSaros.exe', 'Saroasis harness.exe')
+$exe = $null
+foreach ($n in $exeNames) {
+	$candidate = Join-Path $repo ".build\electron\$n"
+	if (Test-Path $candidate) { $exe = $candidate; break }
+}
+if (-not $exe) { $exe = Join-Path $repo '.build\electron\VsSaros.exe' }
+$procNames = $exeNames | ForEach-Object { $_ -replace '\.exe$', '' }
 $logDir = Join-Path $env:USERPROFILE '.vssaros-dev\logs'
 $exitLog = Join-Path $logDir 'app-exit.log'
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
@@ -35,7 +44,7 @@ if (-not (Test-Path $exe)) {
 	Note 'ABORT exe not found (run: npm run transpile-client)'
 	exit 1
 }
-if (Get-Process -Name 'Saroasis harness' -ErrorAction SilentlyContinue) {
+if (Get-Process -Name $procNames -ErrorAction SilentlyContinue) {
 	Note 'SKIP a dev instance is already running, attach to it'
 	exit 0
 }

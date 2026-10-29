@@ -1,0 +1,6 @@
+{
+  "name": "vssaros-vendor-deps",
+  "private": true,
+  "//": "本包自身是 type:module（ESM），而 vendor 进来的依赖是 CJS。最近的 package.json 决定模块类型 ⇒ 这里必须显式声明 commonjs，否则 deps/*.js 里的 module.exports 会被当成 ESM 解析（ReferenceError: module is not defined in ES module scope，2026-10-29 真机踩过）。由 scripts/vendor-lark-sdk.mjs 复制为 lib/adapters/vendor/deps/package.json。",
+  "type": "commonjs"
+}

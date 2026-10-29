@@ -921,7 +921,40 @@ export class DshViewHost extends Disposable {
 	}
 
 	/**
-	 * **抓一帧 + 把视图藏起来**（一次主进程内的原子操作），返回那一帧（JPEG dataURL；抓不到 `undefined`）。
+	 * 等页面里出现某个选择器（2026-10-28；见 `DshHarnessChannelCommand.WaitViewSelector`）。
+	 *
+	 * 用途：桌面窗口第一次启动时，dsh 页面先 paint 官方默认样式，我们的换皮 chunk 后到 ⇒
+	 * 用户"闪一下默认样式"。视图在 `createView` 时就是 `setVisible(false)`，所以只要
+	 * **等到换皮锚点出现再 `setVisible(true)`**，中间那段谁也看不见 ✓。
+	 *
+	 * @param selector CSS 选择器（调用方给的常量，不拼用户输入）。
+	 * @returns `true` = 等到了；`false` = 超时 / 视图不存在 / 页面已销毁。
+	 */
+	async waitForSelector(viewId: string, selector: string, timeoutMs: number): Promise<boolean> {
+		const slot = this._views.get(viewId);
+		if (!slot || slot.view.webContents.isDestroyed()) {
+			return false;
+		}
+		// 选择器来自调用方的常量 ⇒ 只做一次 JSON 转义，不拼进模板做二次求值
+		const script = `!!document.querySelector(${JSON.stringify(selector)})`;
+		const deadline = Date.now() + Math.max(0, timeoutMs);
+		for (;;) {
+			try {
+				if (await slot.view.webContents.executeJavaScript(script, true)) {
+					return true;
+				}
+			} catch {
+				// 导航中 / 渲染进程刚重建：这一刻执行不了是正常的，继续轮询
+			}
+			if (Date.now() >= deadline) {
+				return false;
+			}
+			await new Promise<void>(resolve => setTimeout(resolve, 120));
+		}
+	}
+
+	/**
+	 * **抓一帧 + 把视图藏起来**（一次主进程内的原子操作），返回那一帧（JPEG data URL；抓不到 `undefined`）。
 	 *
 	 * 为什么需要（2026-10-15 用户报：鼠标 hover 活动栏的 workspace 图标，侧栏 sideview 内容消失）：
 	 * 原生视图永远盖在 DOM 之上 ⇒ 要让 tooltip / 菜单**看得见**就只能把视图藏起来

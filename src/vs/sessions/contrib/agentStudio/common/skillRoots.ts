@@ -183,6 +183,8 @@ export function officialUserSkillRootCandidates(homes: { readonly dshHome?: stri
 		candidates.push(joinFsPath(homes.dshHome.trim(), 'skills'));
 	}
 	if (homes.dataRoot?.trim()) {
+		// 2026-10-28：userData 按形态分开（`~/.vssaros` / `~/.vssaros-dev`）⇒ 两边结构一致，
+		// 这里只需要一条 `<数据根>/dsh-home`（不再有 `-dev` 后缀的特例）。
 		candidates.push(joinFsPath(joinFsPath(homes.dataRoot.trim(), 'dsh-home'), 'skills'));
 	}
 	if (homes.userHome?.trim()) {

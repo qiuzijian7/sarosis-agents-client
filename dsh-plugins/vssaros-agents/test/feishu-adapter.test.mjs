@@ -50,9 +50,78 @@ check('文本被原样保留（换行/中文/emoji 不转义坏）', () => {
 /* ── send 的各条分支 ─────────────────────────────────────────────────── */
 const fakeRes = (status, json) => ({ ok: status >= 200 && status < 300, status, json: async () => json });
 
-await checkAsync('★ 没配 webhookUrl ⇒ 直接抛（不静默成功）', async () => {
+await checkAsync('★ 既没 webhookUrl 也没应用凭据 ⇒ 抛 unavailable（不静默成功）', async () => {
 	const a = createFeishuAdapter({ fetchImpl: async () => fakeRes(200, { code: 0 }) });
-	await assert.rejects(() => a.send({}, 'x'), /没有配置飞书 webhook URL/);
+	await assert.rejects(() => a.send({ chatId: 'oc_x' }, 'x'), /没有 webhook URL，且「设置 → 渠道」里没有飞书应用凭据/);
+});
+await checkAsync('★ 应用模式：没 webhookUrl ⇒ 换 token 后发到 im/v1/messages（receive_id=chat_id）', async () => {
+	const calls = [];
+	const a = createFeishuAdapter({
+		resolveApp: async () => ({ appId: 'cli_1', appSecret: 'sec_1', configured: true }),
+		fetchImpl: async (url, init) => {
+			calls.push({ url, init });
+			if (url.includes('/auth/v3/tenant_access_token/internal')) {
+				return fakeRes(200, { code: 0, tenant_access_token: 't-1', expire: 7200 });
+			}
+			return fakeRes(200, { code: 0, data: { message_id: 'om_1' } });
+		},
+	});
+	const r = await a.send({ chatId: 'oc_1' }, '你好');
+	assert.deepEqual(r, { ok: true, via: 'app' });
+	assert.equal(calls.length, 2);
+	assert.match(calls[0].url, /tenant_access_token\/internal$/);
+	assert.equal(JSON.parse(calls[0].init.body).app_id, 'cli_1');
+	assert.match(calls[1].url, /\/im\/v1\/messages\?receive_id_type=chat_id$/);
+	assert.equal(calls[1].init.headers.authorization, 'Bearer t-1');
+	const body = JSON.parse(calls[1].init.body);
+	assert.equal(body.receive_id, 'oc_1');
+	assert.equal(body.msg_type, 'text');
+	assert.equal(JSON.parse(body.content).text, '你好');
+});
+await checkAsync('★ 应用模式：tenant_access_token 会被缓存（第二条不再换 token）', async () => {
+	let tokenCalls = 0; let msgCalls = 0;
+	const a = createFeishuAdapter({
+		now: () => 1700000000000,
+		resolveApp: async () => ({ appId: 'a', appSecret: 'b', configured: true }),
+		fetchImpl: async (url) => {
+			if (url.includes('tenant_access_token')) { tokenCalls += 1; return fakeRes(200, { code: 0, tenant_access_token: 't', expire: 7200 }); }
+			msgCalls += 1; return fakeRes(200, { code: 0 });
+		},
+	});
+	await a.send({ chatId: 'oc' }, '1');
+	await a.send({ chatId: 'oc' }, '2');
+	assert.equal(tokenCalls, 1, `token 只该换 1 次，实际 ${tokenCalls}`);
+	assert.equal(msgCalls, 2);
+});
+await checkAsync('★ 应用模式：飞书返回 code!=0 ⇒ 抛错且不重试', async () => {
+	let msgCalls = 0;
+	const a = createFeishuAdapter({
+		resolveApp: async () => ({ appId: 'a', appSecret: 'b', configured: true }),
+		fetchImpl: async (url) => {
+			if (url.includes('tenant_access_token')) { return fakeRes(200, { code: 0, tenant_access_token: 't', expire: 7200 }); }
+			msgCalls += 1;
+			return fakeRes(200, { code: 230002, msg: 'bot not in chat' });
+		},
+	});
+	await assert.rejects(() => a.send({ chatId: 'oc' }, 't'), /飞书拒绝（code=230002/);
+	assert.equal(msgCalls, 1);
+});
+await checkAsync('★ 应用模式：token 换取失败 ⇒ unavailable（不猜、不静默）', async () => {
+	const a = createFeishuAdapter({
+		resolveApp: async () => ({ appId: 'a', appSecret: 'b', configured: true }),
+		fetchImpl: async () => fakeRes(200, { code: 10003, msg: 'invalid param' }),
+	});
+	await assert.rejects(() => a.send({ chatId: 'oc' }, 't'), /换取 tenant_access_token 失败（HTTP 200，code=10003/);
+});
+await checkAsync('★ 填了 webhookUrl 就走 webhook（应用模式不插手）', async () => {
+	let tokenAsked = 0;
+	const a = createFeishuAdapter({
+		resolveApp: async () => { tokenAsked += 1; return { appId: 'a', appSecret: 'b', configured: true }; },
+		fetchImpl: async () => fakeRes(200, { code: 0 }),
+	});
+	const r = await a.send({ webhookUrl: 'https://open.feishu.cn/open-apis/bot/v2/hook/x', chatId: 'oc' }, 'hi');
+	assert.equal(r.via, 'webhook');
+	assert.equal(tokenAsked, 0);
 });
 await checkAsync('成功：POST 到那个 URL，body 带 msg_type/content/sign', async () => {
 	const calls = [];
@@ -64,7 +133,7 @@ await checkAsync('成功：POST 到那个 URL，body 带 msg_type/content/sign',
 		},
 	});
 	const r = await a.send({ webhookUrl: 'https://open.feishu.cn/open-apis/bot/v2/hook/abc', webhookSecret: 'sec' }, '你好');
-	assert.deepEqual(r, { ok: true });
+	assert.deepEqual(r, { ok: true, via: 'webhook' });
 	assert.equal(calls.length, 1);
 	assert.equal(calls[0].url, 'https://open.feishu.cn/open-apis/bot/v2/hook/abc');
 	assert.equal(calls[0].body.msg_type, 'text');

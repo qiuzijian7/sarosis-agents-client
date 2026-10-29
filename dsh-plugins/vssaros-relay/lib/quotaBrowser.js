@@ -39,17 +39,38 @@ function toCookieHeader(cookies) {
  * ⚠ token.woa.com 与 aitoken.woa.com 同属 `.woa.com` ⇒ passport 写的一份 cookie
  *   对两个站都有效 ⇒ 读一次即可（两个 URL 都会返回同一批 `.woa.com` cookie）✓
  *
+ * ★★ 2026-10-29（真机：打包版 Host 首启慢 18 秒）：`session.cookies()` 走 CDP 到**专属 Chrome 实例**，
+ *   那个实例是**冷启动**的 ⇒ 首次调用要等 18 秒（真机：`host-52014a34.log` 里
+ *   `[vssaros-relay] [quota] 浏览器里没有 woa 会话` 出现在 host uptime 24.8s，
+ *   而 `[vssaros-bridge] apply` 也在 24.8s ⇒ **Host ready 被这次采集拖住了 18 秒**）✗✗。
+ *   ⇒ 这里加**硬超时**（默认 5s）：读不到就当"没有会话"，让额度采集稍后再试，
+ *     绝不让它挡住 Host 就绪 ✗（额度是锦上添花，Host 起不来是致命的）。
+ *
  * @param {any} browserService `ctx.vssarosBrowser`（含 `loginSession`）
+ * @param {{timeoutMs?: number, log?: (line: string) => void}} [options]
  * @returns {Promise<{cookie: string, names: string[]}>}
  */
-export async function readWoaCookies(browserService) {
+export async function readWoaCookies(browserService, options = {}) {
 	const session = browserService?.loginSession;
+	const timeoutMs = Number(options.timeoutMs ?? 5 * 1000);
+	const log = options.log ?? (() => { });
 	if (!session || typeof session.cookies !== 'function') {
 		return { cookie: '', names: [] };
 	}
 	let cookies = [];
 	try {
-		cookies = await session.cookies(WOA_LOGIN_PROFILE, TOKEN_URL);
+		// ⚠ 超时兜底：Chrome 冷启动可能十几秒；这里**不无限等**。
+		cookies = await Promise.race([
+			session.cookies(WOA_LOGIN_PROFILE, TOKEN_URL),
+			new Promise((resolve) => {
+				const t = setTimeout(() => resolve(undefined), timeoutMs);
+				t.unref?.();
+			}),
+		]) ?? [];
+		if (!Array.isArray(cookies)) {
+			log(`[quota] 读浏览器 cookie 超时（${timeoutMs}ms，浏览器可能正在冷启动）⇒ 本次不采集`);
+			cookies = [];
+		}
 	} catch {
 		cookies = [];
 	}
@@ -93,6 +114,9 @@ export async function loginInBrowser(browserService, options = {}) {
 		throw new Error('登录超时（5 分钟内浏览器里没有出现新的 woa 会话）');
 	} finally {
 		try { await session.close(WOA_LOGIN_PROFILE); } catch { /* 用户已经关了 */ }
+		// ★ 2026-10-28（用户要求「无感」）：交互结束 ⇒ 把专属实例切回**无头**
+		//   ⇒ 那个可见的 Chrome 窗口随之消失；之后采集全部在后台无感进行 ✓
+		try { await session.ensureHeadless?.(); } catch { /* 切不回去也不影响已拿到的 cookie */ }
 	}
 }
 

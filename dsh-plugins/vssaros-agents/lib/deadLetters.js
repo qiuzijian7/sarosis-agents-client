@@ -118,3 +118,19 @@ export async function clearDeadLetters(config) {
 	await writeAll(config, []);
 	return { cleared: items.length };
 }
+
+/**
+ * 删掉一条（"'我已经处理了'的语义"）。
+ *
+ * 用在「把发送者加进白名单」之后：那条记录已经没用了，继续挂在「最近失败」里
+ * 只会让人以为问题还在（与 `clear` 的区别是它**只删指定的那条**）。
+ */
+export async function removeDeadLetter(config, id) {
+	const key = String(id ?? '').trim();
+	if (!key) { return { removed: 0 }; }
+	const items = await readAll(config);
+	const out = items.filter((x) => String(x.id) !== key);
+	if (out.length === items.length) { return { removed: 0 }; }
+	await writeAll(config, out);
+	return { removed: items.length - out.length };
+}

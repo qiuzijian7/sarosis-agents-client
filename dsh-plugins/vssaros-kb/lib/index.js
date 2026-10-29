@@ -3899,7 +3899,22 @@ function listAllVaults(rootValue, config, options = {}) {
 	// ★ 2026-10-19：「注入了外部清单 ⇒ 只认注入的」这条口径已经下沉到 **`store.listVaults` 底层**
 	//   （页面/工具/API 全经过它 ⇒ 只有一处判别 ✓）。这里保持"只负责拼 external"的单一职责，
 	//   不再重复过滤（否则两处口径迟早漂移 ✗）。
-	return listVaults(rootValue, { ...options, external: externalVaultRecords(config) });
+	const external = externalVaultRecords(config);
+	const result = listVaults(rootValue, { ...options, external });
+	/*
+	 * ★ 2026-10-28（用户要求：**移除默认「我的知识库」**）：
+	 *   旧版 IDE 会在首次使用时自动建一个空库（目录在数据根下、用户从没建过）。
+	 *   即使 IDE 侧已经不再注入它，**目录扫描**仍会把它列出来（名字退化成 id）。
+	 *   口径：**空目录 + 未登记 ⇒ 不算库**。
+	 *   （「新建知识库」建出来的空库一定在登记表 / 注入清单里 ⇒ 不受影响。）
+	 */
+	try {
+		const known = new Set((external ?? []).map(e => String(e?.id ?? '')).filter(Boolean));
+		if (Array.isArray(result?.vaults)) {
+			result.vaults = result.vaults.filter(v => (v?.totalDocs ?? 0) > 0 || known.has(String(v?.id ?? '')));
+		}
+	} catch { /* 过滤失败不影响主体（宁可多列，不可白屏） */ }
+	return result;
 }
 function toolDefinitions(ctx, state, config) {
 	const root = () => kbRootOf(config);
@@ -7040,6 +7055,51 @@ export function apply(ctx, config = {}) {
 				//   · `mode:'attach'`：把一个已有文件夹登记成库（**不移动、不复制**任何文件）
 				//   · `mode:'create'`：在数据根下建一个新库（只建 `笔记/` 与 `库/` 两个空目录）
 				//   落点是自己维护的 `<数据根>/.extra-vaults.json`（不碰 IDE 配置，见 externalVaultRecords 注释）
+				/*
+				 * ★ 2026-10-28（用户：库下拉列表每项要有删除按钮）：**从列表移除**（不删磁盘）。
+				 *
+				 * 与已有的 `/api/vault-delete` 的区别（别混用，语义差一个数量级）：
+				 *   · `vault-delete` = 永久删除 `<数据根>/<vaultId>` 整个目录（不可逆）；
+				 *   · `vault-remove` = 只把 id 从 `.extra-vaults.json` 里摘掉 —— 那本是你
+				 *     「本地载入文件夹」登记进来的外部库，磁盘上是用户的真实笔记目录，
+				 *     移除登记不该动它一个字节。
+				 *   · IDE 配置里的库（`kbVaults` 注入）不在登记表 ⇒ 这里**拒绝**并说明去哪儿删。
+				 */
+				if (url && url.pathname === `${ROUTE_PREFIX}/api/vault-remove` && req.method === 'POST') {
+					const send = (code, payload) => {
+						res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(payload));
+					};
+					try {
+						let raw = '';
+						for await (const chunk of req) {
+							raw += chunk;
+							if (raw.length > 8192) { send(413, { ok: false, error: '请求体太大' }); return; }
+						}
+						const payload = JSON.parse(raw || '{}');
+						const vaultId = String(payload?.vaultId ?? '');
+						if (!isVaultId(vaultId)) { send(400, { ok: false, error: `vaultId 形态不合法：${vaultId}` }); return; }
+						const root = kbRootOf(config);
+						await mkdir(root, { recursive: true });
+						const list = loadExtraVaults(root);
+						if (!list.some(v => String(v.id) === vaultId)) {
+							send(400, {
+								ok: false,
+								error: '这个库不在「本地载入」的登记表里（它是 IDE 配置里的库）⇒ 请到 IDE 的知识库设置里移除；'
+									+ '这里不会替你删磁盘文件。',
+							});
+							return;
+						}
+						const next = list.filter(v => String(v.id) !== vaultId);
+						await writeFile(join(root, '.extra-vaults.json'), JSON.stringify(next, null, 2), 'utf8');
+						EXTRA_VAULTS_ROOT = root;
+						EXTRA_VAULTS = next;
+						send(200, { ok: true, removed: vaultId, note: '只移除登记，磁盘文件未改动' });
+					} catch (e) {
+						send(500, { ok: false, error: String(e?.message ?? e) });
+					}
+					return;
+				}
 				if (url && url.pathname === `${ROUTE_PREFIX}/api/vault-add` && req.method === 'POST') {
 					const send = (code, payload) => {
 						res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
@@ -7128,7 +7188,37 @@ export function apply(ctx, config = {}) {
 					try {
 						const snapshot = await pageSnapshotOf(kbRootOf(config), { external: externalVaultRecords(config) });
 						LAST_VAULT_DIRS = (snapshot.vaults ?? []).map(v => v.dir).filter(Boolean);
-						const vaults = snapshot.vaults ?? [];
+						/*
+						 * ★ 2026-10-28（用户要求：移除默认「我的知识库」）：
+						 *   ① 旧版 IDE 首次使用会自动建一个**空的**默认库（目录在数据根下、用户从没建过）。
+						 *      它既不在「登记清单」里（没有 customPath ⇒ `externalVaultRecords` 不收它），
+						 *      也没有任何笔记 ⇒ 口径：**空库且未登记 ⇒ 不算库**。
+						 *   ② 更常见的形态：那条默认库后来被指到了**用户自己的目录**（customPath），
+						 *      于是它与「本地载入文件夹」登记的 `ext-…` **指向同一个文件夹** ⇒ 列表里出现两条，
+						 *      一条叫「我的知识库（0 篇）」、一条叫真名（169 篇）—— 用户看到的"多余默认库"。
+						 *      ⇒ 再加一条：**同一目录只保留一条**（保留笔记多的那条）。
+						 *   （用户自己「新建/载入」的空库在清单里 ⇒ 不受影响 ✓）
+						 */
+						const registeredIds = new Set((externalVaultRecords(config) ?? []).map(v => String(v?.id ?? '')).filter(Boolean));
+						const byDir = new Map();
+						for (const v of (snapshot.vaults ?? [])) {
+							const nm = String(v?.name ?? '').trim();
+							/*
+							 * ★ 2026-10-28（用户要求：移除默认「我的知识库」）：
+							 *   ① **按名字**剔除那条自动创建的默认库（用户从没主动建过）——
+							 *      它即使后来被指了 customPath，也仍指向数据根下那个**空目录**（0 篇）。
+							 *   ② 空库且未登记 ⇒ 不算库。
+							 *   ③ 同一目录只保留一条（保留笔记多的）—— 避免"同一文件夹登记两次"。
+							 *   ⚠ 规则放在**服务端**而不是只放 IDE 注入侧：注入用的 roots overlay 是
+							 *     **按内容哈希缓存复用**的（改清单不会立刻重写）⇒ 只改注入会"看起来没生效"。
+							 */
+							if (nm === '我的知识库' && !(v?.totalDocs ?? 0)) { continue; }
+							if (!((v?.totalDocs ?? 0) > 0 || registeredIds.has(String(v?.id ?? '')))) { continue; }
+							const key = String(v?.dir ?? '').toLowerCase();
+							const prev = byDir.get(key);
+							if (!prev || (v?.totalDocs ?? 0) > (prev?.totalDocs ?? 0)) { byDir.set(key, v); }
+						}
+						const vaults = [...byDir.values()];
 						// ★ 2026-10-24：支持 `?vault=<id>` —— 面板/插件页的「设置 → 切换库」用它，
 						//   否则只能改 IDE 注入的 `kbActiveVaultId`（那是启动时静态值，页面上切不了）。
 						const active = String(url.searchParams.get('vault') ?? config?.kbActiveVaultId ?? '').trim();
@@ -7209,11 +7299,21 @@ export function apply(ctx, config = {}) {
 								.sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag, 'zh'))
 								.slice(0, 300);
 							Object.assign(out, {
-								vaultName: vaultDisplayNameFrom(config, vault.id),
+								/*
+								 * ★ 2026-10-28（真机：下拉里显示 `ext-f0e1fcee` 而不是 `VsSarosVault`）：
+								 *   这里原来只查 IDE 注入清单（`vaultDisplayNameFrom`），
+								 *   外部载入的库不在那份清单里 ⇒ 回退成 id。
+								 *   口径：**记录自带 name > 注入清单 > 目录名 > id**。
+								 */
+								vaultName: (vault.name && String(vault.name).trim())
+									|| vaultDisplayNameFrom(config, vault.id)
+									|| basename(String(vault.dir || '')) || vault.id,
 								activeVaultId: vault.id,
 								vaults: vaults.map(v => ({
 									id: v.id,
-									name: vaultDisplayNameFrom(config, v.id),
+									name: (v.name && String(v.name).trim())
+										|| vaultDisplayNameFrom(config, v.id)
+										|| basename(String(v.dir || '')) || v.id,
 									// 口径：当前库给**笔记篇数**（与状态栏 `N 篇` 同源，避免出现 239 这种混合计数）；
 									// 其它库拿不到叶子计数 ⇒ 退回 totalDocs（仅用于下拉里的粗略提示）。
 									count: v.id === vault.id ? notesSection.files : (v.totalDocs ?? 0),
@@ -7273,7 +7373,16 @@ export function apply(ctx, config = {}) {
 			// ★ 2026-10-23：记下本次列出的库根（含外挂库）⇒ `/api/doc` 用它做围栏的允许根
 			LAST_VAULT_DIRS = (snapshot.vaults ?? []).map(v => v.dir).filter(Boolean);
 						const injected = parseInjectedVaults(config?.kbVaults);
-						const nameOf = id => (injected ?? []).find(item => item.id === id)?.name || id;
+						/*
+						 * ★ 2026-10-28（真机：载入的库显示成 `ext-f0e1f1cee`）：
+						 *   这里原先只查 **IDE 注入的** vault 清单（`injected`），
+						 *   而「本地载入文件夹」登记的库落在 `.extra-vaults.json`
+						 *   （记录里 name 是对的，如 `VsSarosVault`）⇒ 查不到 ⇒ 回退成 id。
+						 *   ⇒ 优先用**记录自带的 name**，再查注入清单，最后才回退 id。
+						 */
+						const nameOf = (id, ownName) => (ownName && String(ownName).trim())
+							|| (injected ?? []).find(item => item.id === id)?.name
+							|| id;
 						const toolsRegistered = TOOL_NAMES.filter(tool => !!state.tools?.get(tool)).join(',') || '(未注册)';
 						const vaults = [];
 						for (const vault of snapshot.vaults ?? []) {
@@ -7306,7 +7415,7 @@ export function apply(ctx, config = {}) {
 								.sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag, 'zh'));
 							vaults.push({
 								id: String(vault.id ?? ''),
-								name: nameOf(vault.id),
+								name: nameOf(vault.id, vault.name),
 								dir: String(vault.dir ?? ''),
 								totalDocs: vault.totalDocs ?? 0,
 								indexed: snapshot.docCounts?.get(vault.id) ?? 0,
@@ -7616,6 +7725,15 @@ export function apply(ctx, config = {}) {
 						const dry = url.searchParams.get('dry') === '1';
 						// 与定时器共用同一条实现（映射/冲突策略/间隔/prune/日志都在 performFeishuSync 里）
 						const r = await performFeishuSync(config, { dry });
+						/*
+						 * ★ 2026-10-29：把本轮结果记进 SYNC_STATE ⇒ 「设置 → 飞书同步」能直接看到
+						 *   "上次同步：成功/失败 + 有几条告警"，不必再去翻日志文件。
+						 */
+						SYNC_STATE.running = false;
+						SYNC_STATE.lastAt = Date.now();
+						SYNC_STATE.lastCode = r.code;
+						SYNC_STATE.lastError = r.ok ? '' : String(r.error || '同步结束但有失败项');
+						SYNC_STATE.lastWarnings = (String(r.output || '').match(/^\[mindmap\] ⚠/gm) || []).length;
 						if (r.error) { send(400, { ok: false, error: r.error }); return; }
 						send(200, r);
 					} catch (e) {
@@ -7646,6 +7764,7 @@ export function apply(ctx, config = {}) {
 							lastRunAt: SYNC_STATE.lastAt,
 							lastCode: SYNC_STATE.lastCode,
 							lastError: SYNC_STATE.lastError,
+											lastWarnings: SYNC_STATE.lastWarnings ?? 0,
 							nextRunAt,
 						});
 					} catch (e) {
