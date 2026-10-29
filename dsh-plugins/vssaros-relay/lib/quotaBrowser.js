@@ -171,13 +171,19 @@ function parseQuotaResponse(text) {
 	const remaining = body.remaining ?? body.personal_remaining ?? personal.remaining ?? null;
 	if (used == null && totalQuota == null) { return null; }
 	const now = new Date();
+	// ★ 剩余：接口没给就算出来（总额度 − 已用）⇒ 页面进度条才有分母 ✓
+	const totalValue = totalQuota == null ? null : Math.round(Number(totalQuota));
+	const usedValue = used == null ? null : Number(used);
+	const remainingValue = remaining == null
+		? (totalValue != null && usedValue != null ? totalValue - usedValue : null)
+		: Number(remaining);
 	return {
 		ok: true,
 		source: 'browser-page',
 		month: String(body.month || `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`),
-		total_quota: totalQuota == null ? null : Number(totalQuota),
-		used: used == null ? null : Number(used),
-		remaining: remaining == null ? null : Number(remaining),
+		total_quota: totalValue,
+		used: usedValue,
+		remaining: remainingValue == null ? null : Math.round(remainingValue * 100) / 100,
 		total_consumed: null,
 		staff: String(body.staff || body.login_name || '') || undefined,
 		updated_at: now.toISOString(),
