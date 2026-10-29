@@ -84,7 +84,7 @@
  * 2026-10-26：`19 → 20`，新增 `importCodeWorkspace` —— 请 IDE 侧导入一个 `.code-workspace` 文件
  *   （选文件 → 解析 folders → 落一条多根工作区记录 → 各根注册进 dsh）。**只导入，不切窗口** ✓。
  */
-export const DSH_PAGE_BRIDGE_VERSION = 21;   // 2026-10-27：`20 → 21`，新增 `openBot`（分栏：中栏会话 + 右栏设置）
+export const DSH_PAGE_BRIDGE_VERSION = 24;   // 2026-10-29：`23 → 24`，新增 `paneAction`（把某一栏移到极端位置 / 关掉它）
 
 /** preload → 主进程的 IPC 通道（经 webContents.ipc，作用域限于该视图）。 */
 export const DSH_PAGE_IPC_INVOKE = 'vssaros:dsh:page';
@@ -819,6 +819,46 @@ export type DshPageCommand =
  */
 | { readonly method: 'focusIde' }
 	/**
+	 * **新开一扇 dsh 桌面窗口**（2026-10-29，桌面窗口多开）。
+	 *
+	 * 触发点 = dsh 桌面窗口里的「＋ 新窗口」按钮（chat-surface 侧栏）。语义 = **另开一扇**
+	 * （不复用已开着的）⇒ 新窗口有自己的会话（会话 id 按窗口 id 派生）与自己的网络分区
+	 * ⇒ 多扇并行工作互不干扰 ✓。
+	 *
+	 * 为什么必须经宿主：页面是 WebContentsView 里的前端，**开不了窗口**（aux 窗口是 IDE 渲染
+	 * 进程的 `window.open` 通道，页面无权调用）⇒ 只能请宿主代劳 ✓。
+	 *
+	 * 无参（页面不能指定"开几扇 / 绑哪条会话" ⇒ 避免变成任意开窗能力）✓；
+	 * ⚠ 这条**不需要 IDE 界面**（它开的是 dsh 桌面窗口，不是 IDE 主窗口）⇒ 已登记在
+	 * `DSH_PAGE_COMMANDS_WITHOUT_IDE_UI` ⇒ 在桌面模式点它**不会**把 IDE 主窗口拉出来 ✓
+	 * （那正是用户 2026-10-21/22 明确否决的行为）。
+	 */
+| { readonly method: 'openDesktopWindow' }
+	/**
+	 * **在当前桌面窗口里分屏出一栏新聊天**（2026-10-29）。
+	 *
+	 * 用户原话："新窗口点击后，弹出了一个独立的 desktop 窗口，希望是在当前窗口下，分屏出一个聊天框"
+	 * ⇒ 与 `openDesktopWindow`（另开一扇**独立窗口**）是**两个不同的动作**：
+	 *   · `openDesktopWindow` = 另开一扇窗口（命令面板用；页面按钮不用它了）；
+	 *   · `splitChatPane`      = **同一个窗口内左右分屏**，右栏是一条新会话的纯聊天框。
+	 *
+	 * 无参（页面不能指定"开几栏 / 绑哪条会话"）✓；宿主按**发起请求的那个视图**定位是哪扇窗口 ✓。
+	 *
+	 * ⚠ 这条**不需要 IDE 界面**（它动的是 dsh 桌面窗口自己，不是 IDE 主窗口）⇒ 已登记在
+	 * `DSH_PAGE_COMMANDS_WITHOUT_IDE_UI` ⇒ 桌面模式点它**不会**把 IDE 主窗口拉出来 ✓。
+	 */
+| { readonly method: 'splitChatPane' }
+	/**
+	 * **分屏栏动作**（2026-10-29，桥 `23 → 24`）：把"发起请求的这一栏"移到极端位置 / 关掉它。
+	 *
+	 * ⚠ 为什么不是"拖拽"：aux（桌面）窗口的 **DOM 层收不到鼠标事件**（真机证据：DOM 抓手带能建、
+	 *   能看见，但 `mousedown` 从不触发 ⇒ 日志里零 `pane drag`）⇒ 拖拽在这条路上**做不到**；
+	 *   页面在**原生视图内部**、事件完全正常 ⇒ 交互放**页面菜单**里 ✓。
+	 *
+	 * `action` 是**封闭集**（校验器必须走白名单，不许页面自造）✓。
+	 */
+	| { readonly method: 'paneAction'; readonly action: 'moveLeft' | 'moveRight' | 'moveTop' | 'moveBottom' | 'close' }
+	/**
 	 * 打开 **Agent 花名册 / 管理**（输入框 Agents 面板的底部动作）。
 	 *
 	 * 说明：dsh 侧那份只读花名册页（`vssaros-agents` 的 `/x/agents`）在宿主里**没有承载容器**
@@ -988,6 +1028,15 @@ export type DshPageCommand =
 export const DSH_PAGE_COMMANDS_WITHOUT_IDE_UI: ReadonlySet<Exclude<DshPageCommand['method'], 'ping'>> = new Set([
 	'notify',                    // 只是 IDE 的通知条（在收起的窗口里弹也无所谓）
 	'focusIde',                  // 本身就是"回 IDE"，由下面自己的分支处理
+	// ★ 2026-10-29（桥 `21 → 22`）：新开一扇 **dsh 桌面窗口** —— 它开的是 dsh 的窗口，
+	//   **不该**把 IDE 主窗口拉出来（桌面模式点它却冒出 IDE 窗口 = 用户明确否决过的行为 ✗）。
+	'openDesktopWindow',
+	// ★ 2026-10-29（桥 `22 → 23`）：**同窗口内分屏一栏** —— 它动的是 dsh 桌面窗口自己，
+	//   不该把 IDE 主窗口拉出来（桌面模式点它却冒出 IDE 窗口 = 用户明确否决过的行为 ✗）。
+	'splitChatPane',
+	// ★ 2026-10-29（桥 `23 → 24`）：分屏栏动作（移动/关闭）—— 动的是 dsh 桌面窗口自己，
+	//   不该把 IDE 主窗口拉出来 ✓。
+	'paneAction',
 	'insertChatReference',       // 投给活动聊天框
 	'sessionTitle', 'sessionPersona',   // 页面 → 工作台的上报
 	'switchPreset', 'newSession',       // 聊天宿主自己换绑 / 本页新会话
@@ -1017,7 +1066,15 @@ export interface IDshPageKeyEvent {
 export type DshPageEvent =
 	| { readonly viewId: string; readonly kind: 'command'; readonly command: Exclude<DshPageCommand, { method: 'ping' }> }
 	| { readonly viewId: string; readonly kind: 'keydown'; readonly event: IDshPageKeyEvent }
-	| { readonly viewId: string; readonly kind: 'focus' }
+	/**
+	 * 视图获得**原生焦点**（主进程 `webContents.on('focus')` ⇒ 渲染侧）。
+	 *
+	 * ★ 2026-10-29 带上 `surface`：渲染侧据此判断"能不能占**活动聊天**位"——
+	 * 只有 `chat` 视图可以（插件页/工作台页获得焦点时**不许**占位，否则宿主命令
+	 * 会打到插件页上 ✗）；桌面窗口**左右分屏**时，这一栏就是用户正在看的那一栏 ⇒
+	 * "Add File to Chat / 插文件引用"能落到正确的会话 ✓。
+	 */
+	| { readonly viewId: string; readonly kind: 'focus'; readonly surface?: string }
 	/**
 	 * ★ 2026-10-19：改名**回执**（页面 → 工作台）。
 	 * `error` 有值 = 页面侧改名失败（含 `ctx.sessions.rename` 不可用、dsh 拒绝）；调用方必须看它，
@@ -1344,6 +1401,22 @@ export function validatePageCommand(raw: unknown): DshPageCommand | undefined {
 		//   由 dshPageBridge.test.ts 的全族扫描守卫钉住。
 		case 'focusIde':
 			return { method: 'focusIde' };
+		// 桥 `21 → 22`（2026-10-29）：**新开一扇 dsh 桌面窗口**（桌面窗口多开）。无参。
+		// ⚠ 协议声明了就必须有 case —— 漏了会落到 default 被**静默丢弃**（真机表现"点了没反应"✗），
+		//   由 dshPageBridge.test.ts 的全族扫描守卫钉住 ✓。
+		case 'openDesktopWindow':
+			return { method: 'openDesktopWindow' };
+		// 桥 `22 → 23`（2026-10-29）：**同窗口内分屏一栏**（不是弹独立窗口）。无参。
+		case 'splitChatPane':
+			return { method: 'splitChatPane' };
+		// 桥 `23 → 24`（2026-10-29）：分屏栏动作。`action` 是**封闭集**（白名单，不许页面自造）✓。
+		case 'paneAction': {
+			const action = r.action;
+			if (action !== 'moveLeft' && action !== 'moveRight' && action !== 'moveTop' && action !== 'moveBottom' && action !== 'close') {
+				return undefined;
+			}
+			return { method: 'paneAction', action };
+		}
 		// 桥 `16 → 17`（2026-10-21）：登录/登出**接管 IDE 的账号**（TOF/OA）。
 		// ⚠ 协议声明了就必须有 case —— 漏了会落到 default 被**静默丢弃**（真机表现"点了没反应"✗），
 		//   由 dshPageBridge.test.ts 的全族扫描守卫钉住 ✓。

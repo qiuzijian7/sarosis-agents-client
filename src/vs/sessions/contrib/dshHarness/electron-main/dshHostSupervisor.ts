@@ -31,7 +31,7 @@ import { homedir, tmpdir } from 'os';
 import { pathToFileURL } from 'url';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable, DisposableStore, toDisposable } from '../../../../base/common/lifecycle.js';
-import { basename, delimiter, join, resolve } from '../../../../base/common/path.js';
+import { basename, delimiter, dirname, join, resolve } from '../../../../base/common/path.js';
 import { DshBridgeMethod, IBridgeHello, IBridgePluginRow, IBridgeReverseRequest, IBridgeWorkspaceContextArgs, IBridgeWorkspaceContextResult } from '../common/dshBridgeProtocol.js';
 import { bridgePipePath, buildHostArgs, buildPluginAddArgs, buildPluginAddArgsMany, buildProfileInitArgs, DSH_SHARED_INSTANCE_PACKAGES, memoryGatewayUrlFromEnv, parseAuthUrl, resolveSiblingPackage, toFileSpec } from '../common/dshCli.js';
 import { isDshRowsBundleRegistered, parseMcpServers, renderMcpOverlay } from '../common/dshMcpConfig.js';
@@ -50,7 +50,7 @@ import { DshHostLeaseStore, pidAlive } from './dshHostLeaseStore.js';
 import { orphanLeaseCandidates } from '../common/dshHostRunOwnership.js';
 import { rememberHostPort, resolveHostPort } from './dshHostPortManager.js';
 import { reapOrphanHosts } from './dshHostReaper.js';
-import { repairProfileDeps } from './dshProfileDepsRepair.js';
+import { repairBundledPluginFiles, repairProfileDeps } from './dshProfileDepsRepair.js';
 import { DshRuntimeError, DshRuntimeManager, injectBundledPnpm, IResolvedDsh, IResolvedNode, sanitizedEnv } from './dshRuntimeManager.js';
 import { IDshHealthReport, IHostActivity, summarizeHealth } from '../common/dshUpgrade.js';
 // ★ 2026-10-19：内置 agent 的**代码真源**（`getBuiltinAgents`）与它到 md 的序列化（`buildAgentMd`）。
@@ -1461,6 +1461,28 @@ export class DshHostSupervisor extends Disposable {
 				// ⇒ 提到**每次启动前**都体检一次（纯读 + 补文件，代价毫秒级）⇒ 半装 profile 也能自愈 ✓。
 				//   ⚠ 补不了的（如插件自带 vendor 文件缺失）仍由 Host 自己报出来 —— 那是另一条路（重装该插件）。
 				try {
+					// ★★ 2026-10-29（真机：桌面窗口一片空白 ⇒ Host exit 1 ⇒ 页面根本没起来）：
+					//   profile 可能是**半装**的（升级安装失败 ⇒ `node_modules` 被删了却没装回）⇒
+					//   插件**自带文件**缺失（`dsh-kb/vendor/markdown-it.cjs`、`dsh-agents/cordis.presets.yml`）
+					//   ⇒ 该插件 import 失败 ⇒ `webServer`/`connection`/`sessionController` 起不来
+					//   ⇒ **3 个必需插件不激活 ⇒ Host exit code 1** ⇒ 没有页面可加载 ✗✗。
+					//   ⚠ 而"已装判定"只看**版本 + 入口文件** ⇒ 缺自带文件仍判「已装」⇒ **永不重装** ⇒ 死循环。
+					// ⇒ 拿**随包目录**（永远是完整的那份）当基准，把已装目录里缺的文件**补回来** ✓。
+					try {
+						const bundledRoot = this._bundledPluginsRoot();
+						if (bundledRoot) {
+							const repairedFiles = await repairBundledPluginFiles(
+								bundledRoot,
+								join(pluginProfileDir, 'node_modules'),
+								line => this._appendLog(line),
+							);
+							if (repairedFiles.length) {
+								this._appendLog(`deps-repair（启动前）: 补回 ${repairedFiles.length} 个随包插件自带文件`);
+							}
+						}
+					} catch (error) {
+						this._appendLog(`deps-repair（启动前·随包插件文件）失败（忽略 ⇒ 让 Host 的错误自己显形）：${String((error as Error)?.message ?? error)}`);
+					}
 					const preRepair = await repairProfileDeps(join(pluginProfileDir, 'node_modules'), line => this._appendLog(line));
 					if (preRepair.repaired.length) {
 						this._appendLog(`deps-repair（启动前）: 补齐 ${preRepair.repaired.length} 个缺失文件（扫了 ${preRepair.scanned} 个嵌套副本）`);
@@ -2223,6 +2245,17 @@ export class DshHostSupervisor extends Disposable {
 	 * ⚠ 不做 `_cleanupRunFiles()`：那会删掉 `dsh-run` 下的覆盖层与 `host-*.log`，
 	 *   而升级失败时那些日志正是排查依据 ⇒ 保留 ✓。
 	 */
+	/**
+	 * 随包插件目录的**根**（`dsh-plugins/`）—— 从 `modulePluginDirs` 的目录反推父目录。
+	 *
+	 * ⚠ 为什么不用 `listBundledPlugins`：它只列**模块插件**（判据 `vssaros.module` 非空），
+	 *   而**出问题的恰恰是伴生插件**（`dsh-kb` / `dsh-agents`）⇒ 用它会漏掉真正要修的那批 ✗。
+	 */
+	private _bundledPluginsRoot(): string | undefined {
+		const sample = this._opts.modulePluginDirs[0]?.[1] ?? this._opts.browserPluginDir;
+		return sample ? dirname(sample) : undefined;
+	}
+
 	public async releaseHost(): Promise<void> {
 		if (!this._child) {
 			return;

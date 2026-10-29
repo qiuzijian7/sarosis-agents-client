@@ -34,6 +34,10 @@ const BASE = {
 	desktopPartition: 'vssaros-dsh-desktop',
 	mainPartition: 'persist:vssaros-dsh',
 	poolPrefix: 'vssaros-dsh-chat-',
+	// ★ 2026-10-29（桌面窗口多开）：第 2..N 扇桌面窗口各占一个独立分区（见本文件末尾的新 suite）✓
+	desktopBusy: false,
+	desktopPoolSeq: 0,
+	desktopPoolPrefix: 'persist:vssaros-dsh-desktop-',
 };
 
 suite('并发聊天视图：中间栏能并排跑多个聊天', () => {
@@ -133,6 +137,86 @@ suite('并发聊天视图：中间栏能并排跑多个聊天', () => {
 		const svc = fs.readFileSync(SERVICE, 'utf8');
 		assert.ok(/boundChatSessionIds\(\): Set<string> \{[\s\S]{0,400}this\._reservedChatSessions/.test(svc),
 			'boundChatSessionIds 必须含预占的会话（否则并发开两个聊天会绑同一条）✗');
+	});
+});
+
+// ── 桌面窗口**多开**（2026-10-29）：多扇 dsh 桌面窗口并行，各自一条会话 + 各自网络分区 ──────
+// 需求（用户原话）："dsh 能否像 codex 一样，同时开启多个聊天窗口，并行工作"。
+// 落点：`common/dshChatPartition.ts` 新增一档 `desktop-pool` + `dshFullWindowContribution`
+//   的桌面窗口登记表由单例改成 Map（`_desktopWindows`）+ 命令 `dshHarness.newDesktopWindow`。
+//
+// ⚠ 为什么要分区：Chromium 对同一 `host:port` 的 HTTP/1.1 并发连接上限是 6，dsh 每个页面
+//   长期占住若干条 ⇒ 两扇桌面窗口共用一个分区会互相饿死（"第二扇一直转圈 / session.create
+//   永不返回"，与 2026-10-18 弹窗那次同源）⇒ 第 2..N 扇各占一个独立分区 ✓。
+suite('桌面窗口多开：多扇窗口并行，各自带一条会话与一个分区', () => {
+
+	const FULL_WINDOW = 'src/vs/sessions/contrib/dshHarness/electron-browser/dshFullWindowContribution.ts';
+	const CONTRIB = 'src/vs/sessions/contrib/dshHarness/electron-browser/dshHarness.contribution.ts';
+	/** 去掉注释再断言代码（注释里也写着这些关键词 ⇒ 不去掉会假绿 ✗）。 */
+	const stripComments = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+
+	test('第 1 扇桌面窗口用 persist 主桌面分区（页面 localStorage 要跨重启存活）', () => {
+		const d = decideChatPartition({ ...BASE, isolatedPool: true });
+		assert.strictEqual(d.kind, 'desktop');
+		assert.strictEqual(d.partition, 'vssaros-dsh-desktop');
+	});
+
+	test('★ 第 2..N 扇各占一个独立分区（否则两扇窗口互相饿死）', () => {
+		const a = decideChatPartition({ ...BASE, isolatedPool: true, desktopBusy: true, desktopPoolSeq: 0 });
+		const b = decideChatPartition({ ...BASE, isolatedPool: true, desktopBusy: true, desktopPoolSeq: 1 });
+		assert.strictEqual(a.kind, 'desktop-pool');
+		assert.strictEqual(b.kind, 'desktop-pool');
+		assert.strictEqual(a.partition, 'persist:vssaros-dsh-desktop-1');
+		assert.strictEqual(b.partition, 'persist:vssaros-dsh-desktop-2');
+		assert.notStrictEqual(a.partition, b.partition, '两扇窗口不能落同一个分区 ✗');
+	});
+
+	test('非聊天表面不受"桌面忙"影响（插件页仍走主分区）', () => {
+		const d = decideChatPartition({ ...BASE, surface: 'plugin-page', desktopBusy: true });
+		assert.strictEqual(d.kind, 'main');
+	});
+
+	test('主进程：必须把「桌面分区是否已占用」喂给判定，并处理 desktop-pool 分支', () => {
+		const src = stripComments(fs.readFileSync(VIEW_HOST, 'utf8'));
+		assert.ok(/desktopBusy:\s*this\._desktopPartitionBusy\(\)/.test(src),
+			'必须把 desktopBusy 喂进判定（否则第 2 扇窗口仍与第 1 扇共用分区 ⇒ 互相饿死）✗');
+		assert.ok(/desktopPoolPrefix:\s*DSH_VIEW_PARTITION_DESKTOP_POOL_PREFIX/.test(src),
+			'必须传桌面池分区名前缀 ✗');
+		assert.ok(/decision\.kind === 'desktop-pool'/.test(src),
+			'必须有 desktop-pool 分支（去取池分区）✗');
+		assert.ok(/_desktopPoolSessions\.set\(/.test(src),
+			'桌面池分区必须登记（否则不会被续期 ⇒ 几分钟后黑屏 ✗）');
+	});
+
+	test('★ 认证 cookie 必须给桌面池分区续期（否则第二扇窗口几分钟后黑屏）', () => {
+		const src = fs.readFileSync(VIEW_HOST, 'utf8');
+		const at = src.indexOf('private async _refreshAuth(');
+		assert.ok(at > 0, '要能定位 _refreshAuth');
+		const body = src.slice(at, at + 2600);
+		assert.ok(/for \(const ses of this\._desktopPoolSessions\.values\(\)\) \{[\s\S]{0,400}_refreshAuthIn\(ses/.test(body),
+			'_refreshAuth 必须遍历桌面池分区**并对每个分区续期**（漏了 ⇒ 那扇窗口变 authentication required ✗）');
+	});
+
+	test('桌面窗口必须是多窗口登记（Map），关一扇不能带走别的窗口', () => {
+		const src = stripComments(fs.readFileSync(FULL_WINDOW, 'utf8'));
+		assert.ok(/(?:this\.|readonly )_desktopWindows = new Map</.test(src),
+			'桌面窗口登记表必须是 Map（单例 ⇒ 永远只能开一扇）✗');
+		// ⚠ 这两处各出现在**两条**路径上（拼装式 + 整页式）⇒ 必须按**数量**断言，
+		//   只查"出现过"会被"删掉其中一处"骗过（2026-10-29 突变验证实测踩过 ✗）。
+		const deleteCount = (src.match(/this\._desktopWindows\.delete\(windowId\)/g) || []).length;
+		assert.ok(deleteCount >= 2,
+			'关窗必须从登记表里摘掉这一扇（拼装式与整页式两条路径都要有）✗');
+		const sizeCount = (src.match(/this\._desktopWindows\.size > 0/g) || []).length;
+		assert.ok(sizeCount >= 2,
+			'必须按「还有几扇在屏」判定要不要退出应用（两条收场路径都要有）✗');
+		assert.ok(/args\.newWindow/.test(src),
+			'必须有「另开一扇」的分支（默认行为仍是复用）✗');
+	});
+
+	test('命令入口必须走 newWindow（否则点了只是聚焦旧窗，等于没多开）', () => {
+		const src = stripComments(fs.readFileSync(CONTRIB, 'utf8'));
+		assert.ok(/openDshFullWindow\(\{\s*newWindow:\s*true\s*\}\)/.test(src),
+			'「新开桌面窗口」命令必须传 newWindow: true ✗');
 	});
 });
 

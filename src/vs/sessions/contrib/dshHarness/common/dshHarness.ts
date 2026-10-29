@@ -191,6 +191,22 @@ export const DSH_VIEW_PARTITION = 'persist:vssaros-dsh';
 export const DSH_VIEW_PARTITION_DESKTOP = 'persist:vssaros-dsh-desktop';
 
 /**
+ * **第 2..N 扇桌面窗口**的网络分区前缀（2026-10-29，桌面窗口多开）。
+ *
+ * 为什么要分区池：Chromium 对同一个 `host:port` 的 HTTP/1.1 并发连接上限是 **6**，而 dsh 的
+ * 每个页面长期占住若干条连接（状态同步流）⇒ 两扇桌面窗口共用一个分区会**互相饿死**
+ * （"第二扇一直转圈 / `session.create` 永不返回"，与 2026-10-18 弹窗那次同源）。
+ *
+ * ⇒ 第 1 扇用 `DSH_VIEW_PARTITION_DESKTOP`（persist：页面 localStorage 里的侧栏固定行清单
+ * 要跨重启存活 ✓），第 2..N 扇各用 `persist:vssaros-dsh-desktop-<n>`：**同样是 persist**
+ * （各扇的 localStorage 独立，但至少都跨重启存活），同时**独立 socket 池** ✓。
+ *
+ * ⚠ 已知取舍：各扇的 localStorage 互相独立 ⇒ 第 2 扇起侧栏「固定行」清单与第 1 扇**不共享**
+ * （要共享得把清单搬出 localStorage、落到 Host 侧存储 —— 属下一步改造，不在本次范围）。
+ */
+export const DSH_VIEW_PARTITION_DESKTOP_POOL_PREFIX = 'persist:vssaros-dsh-desktop-';
+
+/**
  * **并发聊天视图**专用网络分区的前缀（2026-10-21，中间栏并排多聊天）。
  *
  * 沿用与弹窗同源的取证（见 `DSH_VIEW_PARTITION_DESKTOP`）：Chromium 对同一 `host:port` 的
@@ -449,6 +465,15 @@ export interface IDshHostStatus {
 	 * 复用既有 Host 时直接为 true（那个 Host 的路由早就注册好了）。
 	 */
 	readonly muxReady?: boolean;
+	/**
+	 * 本次启动里**没装上 / 没起来**的插件（人话，形如 `名称（原因）`）。
+	 *
+	 * ★ 2026-10-29：主进程一直往 status 里塞这个字段（`dshHostSupervisor` 的 `_startupPluginProblems`），
+	 *   但**类型里没声明** ⇒ 渲染侧读不到 ⇒ Host 启动失败时"哪个插件没起来"这个**真正的根因**
+	 *   就传不到界面 ⇒ 用户只看到**纯黑屏**（webview 加载一个已经死掉的 Host）✗✗。
+	 *   ⇒ 补齐声明，让"失败原因"这条链真正贯通 ✓。
+	 */
+	readonly pluginProblems?: readonly string[];
 	readonly error?: string;
 	readonly errorCode?: DshErrorCode;
 }
@@ -782,6 +807,15 @@ export interface IDshViewInfo {
 	readonly visible: boolean;
 	/** Electron 视图的实际可见状态。 */
 	readonly nativeVisible: boolean;
+	/**
+	 * 该视图的**类型**（`chat` / `plugin-page` / `full` …）—— 与上面的 `surface`（"页面摆在 sideview 还是 editor"）**不是一回事** ⚠。
+	 *
+	 * ★ 2026-10-29：用来判断"这个视图是不是**聊天视图**" ⇒ 聚焦路由只让聊天视图占"活动聊天"位
+	 *   （插件页获得焦点时**不许**占位，否则宿主命令会打到插件页上 ✗）。
+	 */
+	readonly viewSurface?: string;
+	/** Electron 视图当前是否持有**原生焦点**（2026-10-29：用于校准"活动聊天"位）。 */
+	readonly focused?: boolean;
 	readonly bounds: { readonly x: number; readonly y: number; readonly width: number; readonly height: number };
 }
 

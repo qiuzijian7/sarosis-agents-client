@@ -26,17 +26,30 @@
  */
 
 import { getZoomFactor } from '../../../../base/browser/browser.js';
+// ★ 2026-10-29：aux（子）窗口的 JS 上下文**禁止** createElement（真机日志）：
+//   "Not allowed to create elements in child window JavaScript context. Always use the main window"
+//   ⇒ 凡是往 aux 窗口里插的 DOM 元素，**一律用主窗口的 document 建** ✓（与自绘标题条同一手法）。
+import { mainWindow } from '../../../../base/browser/window.js';
 import { $, append } from '../../../../base/browser/dom.js';
 import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+// ★ 2026-10-29（右栏自愈可见化）：自愈时弹一条通知 ⇒ 用户知道"右栏为什么没了"，而不是莫名消失。
+import { INotificationService } from '../../../../platform/notification/common/notification.js';
+// ★ 2026-10-29（分屏比例持久化）：比例存 **IDE storage** ⇒ 下次开窗沿用。
+//   ⚠ 不能放页面 localStorage：各栏是**不同分区**的页面（右栏独占 desktop-pool-* 分区）
+//   ⇒ localStorage 互不可见 ⇒ 放页面里右栏必然读不到 ✗。
+import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IProductService } from '../../../../platform/product/common/productService.js';
 import { FocusMode, INativeHostService } from '../../../../platform/native/common/native.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IAuxiliaryWindowService } from '../../../../workbench/services/auxiliaryWindow/browser/auxiliaryWindowService.js';
-import { setDshFullWindowOpener } from '../../../common/dshFullWindow.js';
+import { setDshFullWindowOpener, setDshPaneActionOpener, setDshSplitPaneOpener, type DshPaneAction } from '../../../common/dshFullWindow.js';
 import { dshChatNewSessionId } from '../common/dshChatSession.js';
 import { DshHarnessSettings } from '../common/dshHarness.js';
+// ★ 2026-10-29（拖拽堆叠）：布局用**树**（h/v split + 权重）⇒ 能表达左右/上下混合、2×2、L 形。
+//   几何与重排是**纯函数**（common/dshSplitLayout.ts，有单测）⇒ 这里只负责"把结果摆到原生视图上"。
+import { computeSplitLayout, moveSplitLeaf, pickDropZone, removeSplitLeaf, splitLeaves, type DshSplitNode } from '../common/dshSplitLayout.js';
 import { decideSessionStartRetry, SESSION_START_MAX_ATTEMPTS, sessionStartRetryDelayMs } from '../common/dshDesktopSessionStart.js';
 import { IDshHarnessService } from './dshHarnessService.js';
 
@@ -56,6 +69,43 @@ export const dshIdeWindowHidden = { value: false };
  */
 const DESKTOP_TITLEBAR_H = 29;
 
+/**
+ * **左右分屏**时两栏之间留的缝隙宽度（px）。
+ *
+ * 为什么要有缝：`WebContentsView` 是**原生层**，画在 DOM 之上 ⇒ 中间的分隔条（DOM）只有落在
+ * 缝隙里才看得见（与自绘标题条"留出 29px"同一手法，见 `_installTitleBar`）✓。
+ */
+const DESKTOP_SPLIT_GAP = 8;
+
+/**
+ * **抓手带**的高度（px）—— 每栏顶部留出的一条可拖动区域（2026-10-29，拖拽堆叠）。
+ *
+ * 为什么需要它：原生 `WebContentsView` 画在 **DOM 之上** ⇒ 页面里没有"栏的外壳"可放抓手
+ *   （社区 split-workspace 的 pane 是 DOM ⇒ 它们有外壳，我们没有 ✗）。
+ * ⇒ 只能让每栏顶部**空出**这一条（原生视图从 `y + GRAB_H` 开始）⇒ 缝隙里露出我们的抓手带 ⇒
+ *   鼠标能命中它 ⇒ 可以把这一栏拖到别处 ✓。
+ *
+ * ⚠ 只在**多栏**时留（单栏没有可拖的对象 ⇒ 平白少 8px 顶部不好）⇒ 见 `layout()` ✓。
+ */
+const DESKTOP_PANE_GRAB_H = 10;
+
+/**
+ * 桌面窗口**最多几栏**（2026-10-29）。
+ *
+ * 为什么定 3：社区的 pane 树不限数量，是因为它们每个 pane 只是**同页里的一段 DOM**；
+ * 我们每个 pane 是**一整个 dsh 客户端页面**（各拉一份 roster、各占一组连接与内存）⇒
+ * 栏数线性放大成本 ⇒ 封顶 **3**（主栏 + 2 个右栏），再多就把窗口挤得没法用了 ✗。
+ */
+const MAX_DESKTOP_PANES = 3;
+
+/**
+ * 分屏比例的**持久化键**（IDE storage，APPLICATION scope）。
+ *
+ * ⚠ 只存**比例**、不存栏数：栏绑的是**新会话**，跨重启恢复没有意义（社区能恢复是因为它们
+ *   恢复的是**同一批会话**；我们这里的会话每次开窗都是新的 ⇒ 只继承比例即可）✓。
+ */
+const SPLIT_RATIO_STORAGE_KEY = 'dsh.desktop.split.ratio.v1';
+
 export class DshFullWindowContribution extends Disposable {
 	static readonly ID = 'sessions.dshHarness.fullWindow';
 
@@ -70,8 +120,14 @@ export class DshFullWindowContribution extends Disposable {
 		@INativeHostService private readonly _nativeHostService: INativeHostService,
 		// ★ 2026-10-29（用户：desktop 窗口左上角 logo/品牌名**右侧**加版本号）⇒ 需要产品版本。
 		@IProductService private readonly _productService: IProductService,
+		// ★ 2026-10-29（右栏自愈可见化）：自愈/失败时弹通知（否则用户只看到"右栏莫名消失"✗）。
+		@INotificationService private readonly _notifications: INotificationService,
+		// ★ 2026-10-29（分屏比例持久化）：比例存 IDE storage（各栏跨分区，页面 localStorage 不共享 ✗）。
+		@IStorageService private readonly _storageService: IStorageService,
 	) {
 		super();
+		// 恢复上次的分屏比例（拖过分隔条就记住 ⇒ 下次开窗沿用）✓
+		this._splitRatio = this._readSplitRatio();
 		// 与聊天宿主同一门槛：总开关关闭或 engine=legacy 时不接管，popout 走旧实现。
 		const enabled = this._configurationService.getValue<boolean>(DshHarnessSettings.Enabled) !== false;
 		const engine = this._configurationService.getValue<string>(DshHarnessSettings.ChatEngine);
@@ -83,6 +139,15 @@ export class DshFullWindowContribution extends Disposable {
 		}
 		setDshFullWindowOpener(args => this._open(args));
 		this._register(toDisposable(() => setDshFullWindowOpener(undefined)));
+		// ★ 2026-10-29（分屏）：页面里那枚「新窗格」按钮 ⇒ 在**当前这扇窗口**内加一栏
+		//   （用户原话："希望是在当前窗口下，分屏出一个聊天框"，不要弹独立窗口）✓
+		setDshSplitPaneOpener(viewId => this._ensureSplitPane(viewId));
+		this._register(toDisposable(() => setDshSplitPaneOpener(undefined)));
+		// ★ 2026-10-29（栏动作）：页面菜单驱动（移到最左/最右/最上/最下、关闭这一栏）。
+		//   ⚠ 为什么不做拖拽：aux 窗口的 DOM 层**收不到鼠标事件**（真机证据：抓手带 mousedown 从不触发）
+		//   ⇒ 交互放页面里（页面在原生视图内，事件正常）✓
+		setDshPaneActionOpener((viewId, action) => this._paneActionByView(viewId, action));
+		this._register(toDisposable(() => setDshPaneActionOpener(undefined)));
 
 		// ★ 2026-10-21（用户第二轮："希望 F5 可以默认直接启动 dsh 窗口，**不要显示 IDE 窗口**"）：
 		//   启动时自动打开桌面窗口，成功后就**把 IDE 主窗口隐藏掉**（hide，不是 minimize：连任务栏也不要）。
@@ -230,6 +295,12 @@ export class DshFullWindowContribution extends Disposable {
 	 *   · 手动 popout（IDE 与桌面窗口并排）⇒ IDE 还开着、用户还在里面 ⇒ **不能退** ✓。
 	 */
 	private _quitAfterDesktopClosed(): void {
+		// ★ 2026-10-29（桌面窗口多开）：**还有别的桌面窗口开着** ⇒ 关掉这一扇不是"最后一个界面"
+		//   ⇒ 绝不退出应用（否则用户关掉第 2 扇就把第 1 扇一起带走 ✗）。
+		if (this._desktopWindows.size > 0) {
+			this._log.info(`[dshHarness] 桌面窗口已关闭；还有 ${this._desktopWindows.size} 扇桌面窗口在屏 ⇒ 只关它自己（应用保持）`);
+			return;
+		}
 		if (!this._ideHiddenByStartup) {
 			// ③ IDE 仍可见 ⇒ 只是关掉了另一个窗口，应用照常
 			this._log.info('[dshHarness] 桌面窗口已关闭；IDE 主窗口仍可见 ⇒ 只关它自己（应用保持）');
@@ -244,6 +315,482 @@ export class DshFullWindowContribution extends Disposable {
 	 * 退出应用（桌面模式下所有"不该露 IDE"的收场都走这里：开窗失败 / 启动期关窗 / 关窗）。
 	 * 打日志 + `quit()`；退出失败只记日志（用户已经关窗了，再抛错只会污染控制台）。
 	 */
+	/**
+	 * 装**分隔条**（每条缝一枚；最多 `MAX_DESKTOP_PANES - 1` 条）。
+	 *
+	 * ⚠ 它是 **DOM**，而原生视图盖在 DOM 之上 ⇒ 只有落在两栏之间的缝隙里才看得见
+	 *   （位置与显示与否由 `layout()` 写，宽度 = `DESKTOP_SPLIT_GAP`）✓。
+	 * ⚠ aux 窗口里 `createElement` 可能被禁 ⇒ 建不出来就**如实记日志**并放弃分隔条
+	 *   （分屏本身仍可用，只是不能拖）✓。
+	 * ⚠ **只有第 1 条缝可拖**（两栏时调 `_splitRatio`）；三栏时等分、缝不可拖
+	 *   （多缝自由拖动会把比例算成乱麻，先不做）✓。
+	 */
+	/**
+	 * 读回上次的分屏比例（IDE storage；键 `dsh.desktop.split.ratio.v1`）。
+	 *
+	 * ⚠ 读到非法值（手改过 storage / 旧版本遗留）⇒ 回退 0.5，不让窗口排版崩掉 ✓。
+	 */
+	private _readSplitRatio(): number {
+		try {
+			const raw = this._storageService.get(SPLIT_RATIO_STORAGE_KEY, StorageScope.APPLICATION);
+			const value = typeof raw === 'string' ? Number(raw) : NaN;
+			return Number.isFinite(value) && value >= 0.2 && value <= 0.8 ? value : 0.5;
+		} catch (err) {
+			this._log.warn('[dshHarness] split ratio: 读比例失败 ⇒ 用默认 0.5', err);
+			return 0.5;
+		}
+	}
+
+	/** 记住当前比例（拖分隔条时调用）✓。 */
+	private _persistSplitRatio(): void {
+		try {
+			this._storageService.store(SPLIT_RATIO_STORAGE_KEY, String(this._splitRatio), StorageScope.APPLICATION, StorageTarget.MACHINE);
+		} catch (err) {
+			this._log.warn('[dshHarness] split ratio: 写比例失败（不影响分屏本身）', err);
+		}
+	}
+
+	/**
+	 * 取（或现建）某栏的**抓手带**（DOM）。
+	 *
+	 * ⚠ 原生视图盖在 DOM 之上 ⇒ 抓手带必须落在"栏顶部那条 8px 空隙"里（见 `DESKTOP_PANE_GRAB_H`）
+	 *   ⇒ 才可见、可点 ✓（与自绘标题条同一手法）。
+	 * ⚠ 左键拖 = 把这一栏**拖到别处**；右键 = 兜底菜单（移到最左/最右/关闭）✓（用户选的 A+C）。
+	 */
+	/**
+	 * 用**主窗口**的 document 造一个元素（往 aux 窗口里插的 DOM 元素都走这里）。
+	 *
+	 * ⚠⚠ 为什么不能用 `container.ownerDocument`（2026-10-29 真机日志踩过）：
+	 *   aux 是**子窗口**，它的 JS 上下文**禁止 createElement** ⇒ 直接抛
+	 *   `Not allowed to create elements in child window JavaScript context` ⇒
+	 *   抓手带 / 分隔条 / 预览框**全都建不出来**（表现为"分屏能开、但拖不动"）✗✗。
+	 *   ⇒ 一律用主窗口 document 建（自绘标题条一直这么做，所以它一直能用）✓。
+	 */
+	private _createInMainWindow(tag: string): HTMLElement | undefined {
+		try {
+			const doc = mainWindow?.document ?? (typeof document !== 'undefined' ? document : undefined);
+			if (!doc) {
+				this._log.warn('[dshHarness] DOM: 拿不到 document ⇒ 建不了元素');
+				return undefined;
+			}
+			return doc.createElement(tag);
+		} catch (err) {
+			this._log.warn('[dshHarness] DOM: 主窗口 createElement 失败：' + String((err as Error)?.message ?? err));
+			return undefined;
+		}
+	}
+
+	private _ensureGrabBar(windowId: number, container: HTMLElement, win: Window, paneId: string): HTMLElement | undefined {
+		let bars = this._grabBars.get(windowId);
+		if (!bars) {
+			bars = new Map();
+			this._grabBars.set(windowId, bars);
+		}
+		const existing = bars.get(paneId);
+		if (existing) { return existing; }
+		// ⚠ 用**主窗口** document 建（aux 子窗口禁止 createElement ⇒ 见 `_createInMainWindow`）✓
+		const el = this._createInMainWindow('div');
+		if (!el) { return undefined; }
+		try {
+			container.appendChild(el);
+		} catch (err) {
+			this._log.warn('[dshHarness] pane grab: 挂到 aux 容器失败 ⇒ 这一栏不可拖动：' + String((err as Error)?.message ?? err));
+			return undefined;
+		}
+		el.setAttribute('data-vssaros-pane-grab', paneId);
+		// ⚠⚠ `pointer-events:auto` **必须显式写**（2026-10-29 真机：aux 容器的 DOM 层默认
+		//   `pointer-events:none`（工作台层不可交互）⇒ 不写这句 ⇒ 抓手带**建得出来、看得见，
+		//   却收不到 mousedown** ⇒ 表现为"分屏能开、但拖不动"✗✗ ⇒ 自绘标题条一直写着这一句 ✓）。
+		//   同时给它一个**常驻浅底**（透明的话用户根本不知道那儿能拖）✓。
+		el.style.cssText = 'position:absolute;display:none;height:10px;cursor:grab;z-index:4;pointer-events:auto;'
+			+ 'background:var(--vscode-editorWidget-background, rgba(128,128,128,.10));'
+			+ 'border-bottom:1px solid var(--vscode-editorWidget-border, rgba(128,128,128,.22));';
+		el.title = '拖动这一栏可重排（放到别的栏的左/右/上/下）；右键这一栏有更多操作';
+		el.addEventListener('mouseenter', () => { el.style.background = 'var(--vscode-editorHoverWidget-background, rgba(128,128,128,.2))'; });
+		el.addEventListener('mouseleave', () => { el.style.background = 'transparent'; });
+		el.addEventListener('mousedown', (ev) => { this._beginPaneDrag(windowId, container, win, paneId, ev); });
+		el.addEventListener('contextmenu', (ev) => { ev.preventDefault(); this._showPaneMenu(windowId, container, win, paneId, ev); });
+		bars.set(paneId, el);
+		return el;
+	}
+
+	/**
+	 * 开始拖动某一栏（鼠标按住抓手带 ⇒ 拖 ⇒ 落到别栏的某一边）。
+	 *
+	 * 落点判定：指针落在**哪一栏** ⇒ 按中线判方向（左/右/上/下）⇒ 拖动时画预览框 ✓。
+	 * 松手 ⇒ `moveSplitLeaf` 重排树 ⇒ 立刻重排原生视图 ✓（几何在 common 里，有单测）。
+	 */
+	private _beginPaneDrag(windowId: number, container: HTMLElement, win: Window, sourcePaneId: string, _ev: MouseEvent): void {
+		const entry = this._desktopWindows.get(windowId);
+		if (!entry?.tree) { return; }
+		let targetPaneId: string | undefined;
+		let zone: 'left' | 'right' | 'top' | 'bottom' | undefined;
+		const onMove = (e: MouseEvent) => {
+			const rects = this._lastRects.get(windowId);
+			if (!rects) { return; }
+			targetPaneId = undefined;
+			zone = undefined;
+			for (const [paneId, r] of rects) {
+				if (paneId === sourcePaneId) { continue; }
+				const z = pickDropZone(r, e.clientX, e.clientY);
+				if (z) { targetPaneId = paneId; zone = z; break; }
+			}
+			this._showDragPreview(container, rects, targetPaneId, zone);
+		};
+		const onUp = () => {
+			win.removeEventListener('mousemove', onMove);
+			win.removeEventListener('mouseup', onUp);
+			this._clearDragPreview();
+			if (!targetPaneId || !zone || !entry.tree) { return; }
+			const moved = moveSplitLeaf(entry.tree, sourcePaneId, targetPaneId, zone);
+			if (!moved) {
+				this._log.warn('[dshHarness] pane drag: 重排失败（保持原布局）');
+				return;
+			}
+			entry.tree = moved;
+			entry.layout?.();
+			this._log.info(`[dshHarness] pane drag: ${sourcePaneId} ⇒ ${targetPaneId} 的 ${zone}`);
+		};
+		win.addEventListener('mousemove', onMove);
+		win.addEventListener('mouseup', onUp);
+	}
+
+	/** 拖拽预览框（半透明 ⇒ 告诉用户"会落到这儿"）✓。 */
+	private _showDragPreview(container: HTMLElement, rects: Map<string, { x: number; y: number; width: number; height: number }>, targetPaneId: string | undefined, zone: 'left' | 'right' | 'top' | 'bottom' | undefined): void {
+		this._clearDragPreview();
+		if (!targetPaneId || !zone) { return; }
+		const r = rects.get(targetPaneId);
+		if (!r) { return; }
+		const el = this._ensurePreviewEl(container);
+		if (!el) { return; }
+		const horizontal = zone === 'left' || zone === 'right';
+		el.style.display = 'block';
+		el.style.left = (zone === 'left' ? r.x : zone === 'right' ? r.x + r.width / 2 : r.x) + 'px';
+		el.style.top = (zone === 'top' ? r.y : zone === 'bottom' ? r.y + r.height / 2 : r.y) + 'px';
+		el.style.width = (horizontal ? r.width / 2 : r.width) + 'px';
+		el.style.height = (horizontal ? r.height : r.height / 2) + 'px';
+	}
+
+	private _ensurePreviewEl(container: HTMLElement): HTMLElement | undefined {
+		if (this._previewEl) { return this._previewEl; }
+		// ⚠ 主窗口 document 建（aux 子窗口禁 createElement ⇒ 见 `_createInMainWindow`）✓
+		const el = this._createInMainWindow('div');
+		if (!el) { return undefined; }
+		// ⚠ `position: fixed` ⇒ 坐标就是窗口坐标（与 `_lastRects` 同一坐标系 ✓）
+		el.style.cssText = 'position:fixed;display:none;z-index:9;border:2px solid var(--vscode-focusBorder, #007fd4);background:rgba(0,127,212,.18);pointer-events:none;border-radius:3px;';
+		try {
+			container.appendChild(el);
+		} catch { /* 挂不上就不显示预览（不影响拖拽本身） */ }
+		this._previewEl = el;
+		return el;
+	}
+
+	private _clearDragPreview(): void {
+		if (this._previewEl) { this._previewEl.style.display = 'none'; }
+	}
+
+	/**
+	 * 抓手带**右键菜单**（兜底 C：不能靠拖也要能重排 / 关闭）。
+	 *
+	 * 三项：移到最左 / 移到最右 / 关闭这一栏；主栏**不可关闭**（关了这扇窗就空了）⇒ 置灰 ✓。
+	 */
+	private _showPaneMenu(windowId: number, container: HTMLElement, win: Window, paneId: string, ev: MouseEvent): void {
+		const entry = this._desktopWindows.get(windowId);
+		if (!entry?.tree) { return; }
+		const leaves = splitLeaves(entry.tree);
+		const first = leaves[0];
+		const last = leaves[leaves.length - 1];
+		const isMain = paneId === entry.viewId;
+		// ⚠ 主窗口 document 建（aux 子窗口禁 createElement ⇒ 见 `_createInMainWindow`）✓
+		const menu = this._createInMainWindow('div');
+		if (!menu) { return; }
+		try {
+			container.appendChild(menu);
+		} catch { return; }
+		menu.style.cssText = `position:fixed;left:${ev.clientX}px;top:${ev.clientY}px;z-index:20;min-width:132px;padding:4px;border-radius:6px;border:1px solid var(--vscode-dropdown-border, rgba(128,128,128,.4));background:var(--vscode-dropdown-background, #252526);color:var(--vscode-dropdown-foreground, #ccc);box-shadow:0 6px 18px rgba(0,0,0,.4);font-size:12px;pointer-events:auto;`;
+		const addItem = (label: string, disabled: boolean, action: () => void) => {
+			const item = this._createInMainWindow('button');
+			if (!item) { return; }
+			item.textContent = label;
+			item.style.cssText = `display:block;width:100%;text-align:left;padding:5px 8px;border:none;background:transparent;color:inherit;font:inherit;cursor:${disabled ? 'default' : 'pointer'};opacity:${disabled ? '.45' : '1'};`;
+			item.addEventListener('click', () => {
+				menu.remove();
+				if (!disabled) { action(); }
+			});
+			menu.appendChild(item);
+		};
+		addItem('移到最左', paneId === first, () => {
+			const moved = moveSplitLeaf(entry.tree!, paneId, first, 'left');
+			if (moved) { entry.tree = moved; entry.layout?.(); }
+		});
+		addItem('移到最右', paneId === last, () => {
+			const moved = moveSplitLeaf(entry.tree!, paneId, last, 'right');
+			if (moved) { entry.tree = moved; entry.layout?.(); }
+		});
+		addItem('关闭这一栏', isMain, () => { void this._closePane(windowId, paneId); });
+		const close = () => { menu.remove(); win.removeEventListener('mousedown', close, true); };
+		win.setTimeout(() => win.addEventListener('mousedown', close, true), 0);
+	}
+
+	/** 关掉某一栏（视图回收 + 从树里摘掉 + 停巡检 + 重排）✓。 */
+	private async _closePane(windowId: number, paneId: string): Promise<void> {
+		const entry = this._desktopWindows.get(windowId);
+		if (!entry?.tree) { return; }
+		if (paneId === entry.viewId) { return; }   // 主栏不关（关了这扇窗就空了）
+		const next = removeSplitLeaf(entry.tree, paneId);
+		if (!next) { return; }
+		entry.tree = next;
+		entry.paneViewIds = (entry.paneViewIds ?? []).filter(id => id !== paneId);
+		entry.splitViewId = entry.paneViewIds.length > 1 ? entry.paneViewIds[entry.paneViewIds.length - 1] : undefined;
+		void this._dsh.disposeView(paneId).catch(() => undefined);
+		const watchers = this._splitWatchers.get(windowId);
+		const watcher = watchers?.get(paneId);
+		if (watcher && watchers) { clearInterval(watcher.timer); watchers.delete(paneId); }
+		this._grabBars.get(windowId)?.delete(paneId);
+		entry.layout?.();
+		this._log.info(`[dshHarness] pane close: 已关闭 ${paneId}（剩 ${entry.paneViewIds.length} 栏）`);
+	}
+
+	private _installSplitBar(windowId: number, container: HTMLElement, win: Window): void {
+		const bars: HTMLElement[] = [];
+		for (let i = 0; i < MAX_DESKTOP_PANES - 1; i++) {
+			const bar = this._createSplitBar(windowId, container, win, i);
+			if (!bar) { break; }
+			bars.push(bar);
+		}
+		this._splitBars.set(windowId, bars);
+	}
+
+	/** 建一条缝（DOM）；失败返回 undefined（并**如实记日志**）✓。 */
+	private _createSplitBar(windowId: number, container: HTMLElement, win: Window, index: number): HTMLElement | undefined {
+		// ⚠ 用**主窗口** document 建（aux 子窗口禁止 createElement ⇒ 见 `_createInMainWindow`）✓
+		const bar = this._createInMainWindow('div');
+		if (!bar) {
+			this._log.warn('[dshHarness] split bar: 建不出来 ⇒ 不装分隔条（分屏仍可用，只是不能拖动）');
+			return undefined;
+		}
+		try {
+			container.appendChild(bar);
+		} catch (err) {
+			this._log.warn('[dshHarness] split bar: 挂到 aux 容器失败 ⇒ 不装分隔条（分屏仍可用，只是不能拖动）：' + String((err as Error)?.message ?? err));
+			return undefined;
+		}
+		bar.setAttribute('data-vssaros-splitbar', String(index + 1));
+		// ⚠ `pointer-events:auto` 同样**必须显式写**（aux 的 DOM 层默认 pointer-events:none ⇒
+		//   不写就收不到 mousedown ⇒ 分隔条拖不动）✓（与自绘标题条同一口径）。
+		bar.style.cssText = 'position:absolute;top:0;bottom:0;width:8px;display:none;cursor:col-resize;z-index:3;pointer-events:auto;background:var(--vscode-editorWidget-background, rgba(128,128,128,.10));';
+
+		let dragging = false;
+		const onMove = (ev: MouseEvent) => {
+			if (!dragging) { return; }
+			const entry = this._desktopWindows.get(windowId);
+			// ⚠ 只在**两栏**时允许调比例（三栏等分，见 `_splitRatio` 的注释）
+			if (index !== 0 || (entry?.paneViewIds?.length ?? 1) !== 2) { return; }
+			const rect = container.getBoundingClientRect();
+			const ratio = (ev.clientX - rect.left) / Math.max(1, rect.width);
+			this._splitRatio = Math.min(0.8, Math.max(0.2, ratio));
+			this._persistSplitRatio();
+			entry?.layout?.();
+		};
+		const onUp = () => { dragging = false; };
+		bar.addEventListener('mousedown', (ev) => {
+			dragging = true;
+			ev.preventDefault();
+		});
+		win.addEventListener('mousemove', onMove);
+		win.addEventListener('mouseup', onUp);
+		return bar;
+	}
+
+	/**
+	 * 在**当前这扇桌面窗口**里分屏出一栏新聊天（2026-10-29）。
+	 *
+	 * 用户原话："新窗口点击后，弹出了一个独立的 desktop 窗口，希望是在当前窗口下，分屏出一个聊天框" ⇒
+	 * 目标形态 = 同一个窗口里**左右两栏**：左栏 = 原来的会话，右栏 = 一条**新会话**的纯聊天框
+	 * （右栏是 chat-only ⇒ 官方侧栏/右栏被裁掉 ⇒ 不会与左栏重复一套侧栏 ✓）。
+	 *
+	 * 两栏各自独立：会话 id（`-R` 后缀）+ 网络分区（左栏 desktop / 右栏 desktop-pool-1）
+	 * ⇒ 同一 host:port 的 6 条 HTTP/1.1 连接上限不会互相饿死 ✓（判定见 `common/dshChatPartition.ts`）。
+	 *
+	 * @param viewId 发起请求的那个视图（宿主从页面命令事件里带）⇒ 据它定位是哪扇窗口 ✓
+	 * @returns 是否真的加上了这一栏
+	 */
+	/**
+	 * 对"某一栏"执行动作（2026-10-29）：移到极端位置 / 关掉它。**页面菜单**驱动 ✓。
+	 *
+	 * ⚠ 为什么不是拖拽：aux 窗口的 DOM 层**收不到鼠标事件**（真机：DOM 抓手带能建、能看见，
+	 *   但 `mousedown` 从不触发）⇒ 拖拽在这条路上做不到 ⇒ 交互只能放页面里（页面在原生视图内）✓。
+	 */
+	private async _paneActionByView(viewId: string, action: DshPaneAction): Promise<boolean> {
+		let entry: { windowId: number; viewId: string; splitViewId?: string; paneViewIds?: string[]; tree?: DshSplitNode; layout?: () => void } | undefined;
+		for (const e of this._desktopWindows.values()) {
+			if (e.viewId === viewId || (e.paneViewIds ?? []).includes(viewId)) { entry = e; break; }
+		}
+		if (!entry?.tree) {
+			this._log.warn('[dshHarness] pane action: 找不到该视图所属的桌面窗口');
+			return false;
+		}
+		if (action === 'close') {
+			if (viewId === entry.viewId) { return false; }   // 主栏不关（关了这扇窗就空了）
+			await this._closePane(entry.windowId, viewId);
+			return true;
+		}
+		const leaves = splitLeaves(entry.tree);
+		if (leaves.length < 2) { return false; }
+		// 目标 = 最左/最上 ⇒ 第一个叶子；最右/最下 ⇒ 最后一个叶子 ✓
+		const target = action === 'moveLeft' || action === 'moveTop' ? leaves[0] : leaves[leaves.length - 1];
+		const zone = action === 'moveLeft' ? 'left' : action === 'moveRight' ? 'right' : action === 'moveTop' ? 'top' : 'bottom';
+		const moved = moveSplitLeaf(entry.tree, viewId, target, zone);
+		if (!moved) { return false; }
+		entry.tree = moved;
+		entry.layout?.();
+		this._log.info(`[dshHarness] pane action: ${viewId} ⇒ ${action}（目标 ${target}）`);
+		return true;
+	}
+
+	private async _ensureSplitPane(viewId: string): Promise<boolean> {
+		let entry: { windowId: number; viewId: string; splitViewId?: string; paneViewIds?: string[]; tree?: DshSplitNode; layout?: () => void } | undefined;
+		for (const e of this._desktopWindows.values()) {
+			if (e.viewId === viewId || (e.paneViewIds ?? []).includes(viewId)) { entry = e; break; }
+		}
+		if (!entry) {
+			this._log.warn('[dshHarness] split pane: 找不到该视图所属的桌面窗口 ⇒ 放弃');
+			return false;
+		}
+		// ⚠ **并发重入守卫**（2026-10-29 真机：一次点击打出两条"已分屏"日志、右栏 id 还相同）：
+		//   两次调用都在 `await createView` 期间 ⇒ 都看到 panes.length === 1 ⇒ 都去新建 ✗
+		//   ⇒ 同一扇窗口 800ms 内只接受一次分屏请求（顺带防手抖双击）✓
+		const now = Date.now();
+		if (now - (this._splitStartedAt.get(entry.windowId) ?? 0) < 800) {
+			this._log.info('[dshHarness] split pane: 800ms 内的重复请求 ⇒ 忽略（防止并发建出两栏）');
+			return false;
+		}
+		this._splitStartedAt.set(entry.windowId, now);
+		const panes = entry.paneViewIds ?? [entry.viewId];
+		// ① 已有右栏 ⇒ 换绑**最后一栏**到一条新会话（用户连续点 = 连续开新对话，而不是叠一堆视图）✓
+		if (panes.length > 1) {
+			const last = panes[panes.length - 1];
+			if (panes.length >= MAX_DESKTOP_PANES) {
+				this._notifications.warn(`dsh 桌面窗口：最多 ${MAX_DESKTOP_PANES} 栏（每个窗格是一整个客户端页面，再多会互相拖慢）。这一栏已换成新会话。`);
+			}
+			const fresh = await this._ensurePopoutSessionId(entry.windowId, undefined, `R${Date.now().toString(36)}`);
+			if (!fresh) {
+				this._log.warn('[dshHarness] split pane: 新会话没起来 ⇒ 该栏保持原样');
+				return false;
+			}
+			await this._dsh.rebindSession(last, fresh)
+				.catch(err => this._log.warn('[dshHarness] split pane: 换绑新会话失败', err));
+			return true;
+		}
+		// ② 还没有右栏 ⇒ 建一个（chat-only：只要对话区）
+		const sessionId = await this._ensurePopoutSessionId(entry.windowId, undefined, 'R');
+		if (!sessionId) {
+			this._log.warn('[dshHarness] split pane: 新会话没起来 ⇒ 不加分栏');
+			return false;
+		}
+		const splitViewId = `dsh-desk-split-w${entry.windowId}-${Date.now().toString(36)}`;
+		// 第 7 参 `overrideChatOnlyUi = true` ⇒ 右栏**只要对话区**（官方侧栏/右栏被裁掉 ⇒ 不重复侧栏）；
+		// 末参 `isolatedPool = true` ⇒ 右栏独占一个网络分区（不与左栏抢那 6 条连接）✓
+		await this._dsh.createView(splitViewId, entry.windowId, 'chat', sessionId, undefined, undefined, true, true);
+		entry.splitViewId = splitViewId;
+		entry.paneViewIds = [...panes, splitViewId];
+		// ★ 2026-10-29（布局树）：把新栏追加为**最右**（之后可拖到任意方向 ⇒ 拖拽堆叠）✓
+		const newLeaf: DshSplitNode = { type: 'leaf', viewId: splitViewId };
+		const tree = entry.tree;
+		if (!tree) {
+			entry.tree = newLeaf;
+		} else if (tree.type === 'split') {
+			entry.tree = { ...tree, sizes: [...tree.sizes.map(() => 1), 1], children: [...tree.children, newLeaf] };
+		} else {
+			entry.tree = { type: 'split', dir: 'h', sizes: [1, 1], children: [tree, newLeaf] };
+		}
+		entry.layout?.();          // 重排成两栏（分隔条也在这时露出来）✓
+		await this._dsh.setViewVisible(splitViewId, true, true).catch(() => undefined);
+		// 启动存活巡检（20s 一次）⇒ 右栏崩了/被回收了 ⇒ 收掉它（见 `_checkSplitPane`）✓
+		this._startSplitWatcher(entry.windowId, splitViewId);
+		this._log.info(`[dshHarness] split pane: 窗口 ${entry.windowId} 已分屏（右栏 ${splitViewId} / 会话 ${sessionId}）`);
+		return true;
+	}
+
+	/** 给某个右栏起一个存活巡检（20s 一次；每栏一个）✓。 */
+	private _startSplitWatcher(windowId: number, viewId: string): void {
+		let watchers = this._splitWatchers.get(windowId);
+		if (!watchers) {
+			watchers = new Map();
+			this._splitWatchers.set(windowId, watchers);
+		}
+		const old = watchers.get(viewId);
+		if (old) { clearInterval(old.timer); }
+		watchers.set(viewId, {
+			timer: setInterval(() => { void this._checkSplitPane(windowId, viewId); }, 20_000),
+			sawComposer: false,
+			misses: 0,
+		});
+	}
+
+	/**
+	 * 右栏**存活巡检**（20s 一次）。
+	 *
+	 * 两种坏法：
+	 *  ① 视图槽**已被回收**（崩溃 / 被主进程 dispose）⇒ `listViews()` 里找不到 ⇒ 立刻回落单栏 ✓；
+	 *  ② 视图还在但**长期无响应**（白屏、页面卡死且看门狗已放弃）⇒ 连续 3 次探测不到 composer ⇒ 回落 ✓。
+	 *
+	 * ⚠ 探测必须给 **200ms** 而不是 0：主进程 `waitViewSelector` 的实现里 timeout=0 会**立即超时**
+	 *   返回 false（连"视图还在、只是还没 composer"都分不出来）⇒ 会误杀刚建好的右栏 ✗。
+	 * ⚠ 只在**曾经出现过** composer 之后才开始计 miss（`sawComposer`）⇒ 右栏还在加载时不算坏 ✓。
+	 */
+	private async _checkSplitPane(windowId: number, splitViewId: string): Promise<void> {
+		const watcher = this._splitWatchers.get(windowId)?.get(splitViewId);
+		if (!watcher) { return; }
+		const entry = this._desktopWindows.get(windowId);
+		if (!entry || !(entry.paneViewIds ?? []).includes(splitViewId)) { return; }   // 已被换掉 / 窗口关了
+		const views = await this._dsh.listViews().catch(() => undefined);
+		if (!views) { return; }                                        // 查不到就下轮再说
+		if (!views.some(v => v.viewId === splitViewId)) {
+			this._dropSplitPane(windowId, '右栏视图已被回收');
+			return;
+		}
+		const alive = await this._dsh.waitViewSelector(splitViewId, '[data-composer-card]', 200).catch(() => false);
+		if (alive) {
+			watcher.sawComposer = true;
+			watcher.misses = 0;
+			return;
+		}
+		if (!watcher.sawComposer) { return; }   // 还没出现过 composer ⇒ 可能仍在加载
+		watcher.misses++;
+		if (watcher.misses >= 3) {
+			this._dropSplitPane(windowId, `右栏连续 ${watcher.misses} 次无响应`);
+		}
+	}
+
+	/**
+	 * 收掉**最后一栏**（自愈用）：dispose 视图 + 清登记 + 清巡检 + 重排 ✓。
+	 *
+	 * ⚠ 用户视角 = 那一栏消失（还有别的栏就留在那儿，没有就回到单栏）⇒ **可见的**自愈。
+	 */
+	private _dropSplitPane(windowId: number, reason: string): void {
+		const entry = this._desktopWindows.get(windowId);
+		if (!entry) { return; }
+		const panes = entry.paneViewIds ?? [entry.viewId];
+		if (panes.length <= 1) { return; }          // 只有主栏 ⇒ 没有可收的
+		const dropId = panes[panes.length - 1];
+		// 清巡检（这一栏的定时器）
+		const watchers = this._splitWatchers.get(windowId);
+		const watcher = watchers?.get(dropId);
+		if (watcher && watchers) {
+			clearInterval(watcher.timer);
+			watchers.delete(dropId);
+		}
+		// 摘登记（`splitViewId` 始终指"最后一栏"）✓
+		entry.paneViewIds = panes.slice(0, -1);
+		entry.splitViewId = entry.paneViewIds.length > 1 ? entry.paneViewIds[entry.paneViewIds.length - 1] : undefined;
+		void this._dsh.disposeView(dropId).catch(() => undefined);
+		entry.layout?.();     // 重排（分隔条随之隐藏/补位）✓
+		this._log.warn(`[dshHarness] split pane: ${reason} ⇒ 已收掉那一栏（剩 ${entry.paneViewIds.length} 栏）`);
+		// ★ 2026-10-29：弹一条通知 ⇒ 用户知道右栏去哪了（否则只是"凭空消失"✗）。
+		this._notifications.warn(`dsh 桌面窗口：有一栏异常已收掉（${reason}）。若要再来一栏，点会话头右侧的「新窗格」。`);
+	}
+
 	private async _quit(reason: string): Promise<void> {
 		this._log.info(`[dshHarness] ${reason} ⇒ 退出应用（桌面模式下不再把 IDE 主窗口露出来）`);
 		try {
@@ -253,8 +800,73 @@ export class DshFullWindowContribution extends Disposable {
 		}
 	}
 
-	/** 已开着的全窗（单例复用；关闭时清掉）。`sideViewId` = 拼装式的左侧会话列表视图。 */
-	private _openWindow: { windowId: number; viewId: string; sideViewId?: string } | undefined;
+	/**
+	 * 已开着的**桌面窗口**（2026-10-29 起**可多开**；键 = vscodeWindowId）。
+	 *
+	 * 为什么从单例改成 Map：多窗口并行是明确的产品需求（"像 codex 一样同时开多个聊天窗口"）
+	 * ⇒ 一扇一扇地开，每扇有**自己的会话**（会话 id 按窗口 id 派生 ⇒ 天然不共享）与
+	 * **自己的网络分区**（第 2..N 扇各占一个 ⇒ 两扇窗口不会互相饿死）✓。
+	 *
+	 * ⚠ **复用语义保留**：默认（`newWindow` 缺省）仍是**聚焦已开着的窗口**、不新开
+	 *   （那是 2026-10-17 修「点 agent 条目弹出一叠透明窗口」的定稿）⇒ 只有显式 `newWindow` 才另开一扇 ✓。
+	 */
+	private readonly _desktopWindows = new Map<number, { windowId: number; viewId: string; sideViewId?: string; splitViewId?: string; paneViewIds?: string[]; tree?: DshSplitNode; layout?: () => void }>();
+
+	/**
+	 * **左右分屏**时右栏占的宽度比例（0.2 ~ 0.8，0.5 = 各半）。
+	 *
+	 * 用户拖动中间的分隔条时改它（`_installSplitBar`）⇒ 立即重排两个原生视图 ✓。
+	 */
+	/**
+	 * **左右分屏**时右栏占的宽度比例（0.2 ~ 0.8，0.5 = 各半）。
+	 *
+	 * 用户拖动中间的分隔条时改它（`_installSplitBar`）⇒ 立即重排两个原生视图 ✓。
+	 *
+	 * ★ 2026-10-29（3 栏 + 持久化）：**两栏**时用它；**三栏及以上一律等分**
+	 *   （多缝拖动会把比例算成一团乱麻 ⇒ 只在两栏时开放拖动）✓。
+	 *   比例**持久化在 IDE storage**（键 `dsh.desktop.split.ratio.v1`）⇒ 下次开窗沿用 ✓
+	 *   （⚠ 只存比例、不存栏数：栏绑的是**新会话**，跨重启恢复没有意义 —— 社区能恢复是因为它们
+	 *   恢复的是**同一批会话**，我们这里的会话每次开窗都是新的 ⇒ 只继承比例即可 ✓）。
+	 */
+	private _splitRatio = 0.5;
+
+	/**
+	 * 各扇桌面窗口的**分隔条**元素（键 = windowId）。
+	 *
+	 * ⚠ 分隔条是 **DOM**，而原生视图盖在 DOM 之上 ⇒ 只有落在两栏之间的缝隙里才看得见
+	 *   （位置由 `layout()` 写，宽度 = `DESKTOP_SPLIT_GAP`）✓。
+	 */
+	private readonly _splitBars = new Map<number, HTMLElement[]>();
+
+	/**
+	 * 右栏的**存活巡检**状态（键 = windowId）。
+	 *
+	 * 为什么要巡检：主进程的 page-alive 看门狗对 `surface='chat'` 视图会自动重载最多 2 次，
+	 * 但**超限后只打日志、不回收视图** ⇒ 右栏会留一块白屏，而渲染侧还记着它
+	 * ⇒ 表现为"右栏空着、也不报错"✗ ⇒ 这里兜底：右栏没了 / 长期无响应 ⇒ 收掉它、回到单栏 ✓。
+	 */
+	private readonly _splitWatchers = new Map<number, Map<string, { timer: ReturnType<typeof setInterval>; sawComposer: boolean; misses: number }>>();
+
+	/**
+	 * 每栏的**抓手带**（DOM；键 = windowId → paneId）。
+	 *
+	 * ⚠ 原生视图盖在 DOM 之上 ⇒ 抓手带必须落在"栏顶部那 8px 空隙"里才可见、可点 ✓。
+	 */
+	private readonly _grabBars = new Map<number, Map<string, HTMLElement>>();
+
+	/** 最近一次布局算出的每栏矩形（拖拽时判定"落在哪栏、哪个方向"用）✓。 */
+	private readonly _lastRects = new Map<number, Map<string, { x: number; y: number; width: number; height: number }>>();
+
+	/** 拖拽过程中的**预览框**（DOM；一次只有一个）✓。 */
+	private _previewEl: HTMLElement | undefined;
+
+	/**
+	 * 每扇窗口**上一次发起分屏**的时间（键 = windowId）。
+	 *
+	 * ⚠ 防并发重入（2026-10-29 真机：一次点击打出两条"已分屏"日志、右栏 id 还相同）：
+	 *   两次调用都在 `await createView` 期间 ⇒ 都看到"还没有右栏"⇒ 都去新建 ✗。
+	 */
+	private readonly _splitStartedAt = new Map<number, number>();
 
 	/**
 	 * 给桌面窗口铺一条**自绘标题条**，返回它的高度（2026-10-23，起因见 `_open` 里那段说明）。
@@ -406,11 +1018,11 @@ export class DshFullWindowContribution extends Disposable {
 	 *
 	 * 右侧工作台页签 = P2（先把"能进会话、能打字"这条主线立住）。
 	 */
-	private async _openComposed(auxWindow: Awaited<ReturnType<IAuxiliaryWindowService['open']>>, windowId: number, sessionId: string | undefined, booting?: HTMLElement, titleBarH = 0): Promise<boolean> {
+	private async _openComposed(auxWindow: Awaited<ReturnType<IAuxiliaryWindowService['open']>>, windowId: number, sessionId: string | undefined, booting?: HTMLElement, titleBarH = 0, windowTitle = 'VsSaros — Desktop'): Promise<boolean> {
 		const win = auxWindow.window;
 		const container = auxWindow.container;
 		container.style.background = 'var(--vscode-editor-background)';
-		win.document.title = 'VsSaros — Desktop';
+		win.document.title = windowTitle;
 
 		const stamp = Date.now().toString(36);
 		const chatViewId = `dsh-desk-chat-w${windowId}-${stamp}`;
@@ -446,16 +1058,71 @@ export class DshFullWindowContribution extends Disposable {
 			const rect = container.getBoundingClientRect();
 			if (rect.width < 1 || rect.height < 1) { return; }
 			const zoom = getZoomFactor(win);
-			const key = [Math.round(rect.left), Math.round(rect.top), Math.round(rect.width), Math.round(rect.height), zoom].join(',');
+			const entry = this._desktopWindows.get(windowId);
+			const tree: DshSplitNode = entry?.tree ?? { type: 'leaf', viewId: chatViewId };
+			const leaves = splitLeaves(tree);
+			const key = [Math.round(rect.left), Math.round(rect.top), Math.round(rect.width), Math.round(rect.height), zoom, leaves.join('|'), JSON.stringify(tree)].join(',');
 			if (key === lastLayoutKey) { return; }   // 矩形没变 ⇒ 不重发（防抖）
 			lastLayoutKey = key;
 			// 让出自绘标题条的高度（原生视图盖在 DOM 上，不留位就把它遮住 ✗）
+			const area = { x: rect.left, y: rect.top + titleBarH, width: rect.width, height: Math.max(1, rect.height - titleBarH) };
+			const bars = this._splitBars.get(windowId) ?? [];
+			const grabs = this._grabBars.get(windowId) ?? new Map<string, HTMLElement>();
+			if (leaves.length > 1) {
+				// ★ 2026-10-29（**树驱动**布局 + 抓手带）：左右/上下混合、2×2、L 形都由树表达
+				//   （几何与重排在 `common/dshSplitLayout.ts`，有单测 ✓）。
+				//   每栏顶部留 `DESKTOP_PANE_GRAB_H`（抓手带 ⇒ 这一栏可被拖动）+ 右侧留 gap（分隔条）✓。
+				const { rects, dividers } = computeSplitLayout(tree, area);
+				this._lastRects.set(windowId, new Map(rects));
+				leaves.forEach((paneId, i) => {
+					const r = rects.get(paneId);
+					if (!r) { return; }
+					const isLast = i === leaves.length - 1;
+					const width = Math.max(1, r.width - (isLast ? 0 : DESKTOP_SPLIT_GAP));
+					void this._dsh.layoutView(paneId, {
+						windowId, x: r.x, y: r.y + DESKTOP_PANE_GRAB_H,
+						width, height: Math.max(1, r.height - DESKTOP_PANE_GRAB_H), zoomFactor: zoom,
+					});
+					// 抓手带：没有就现建（栏数会变 ⇒ 按需创建）✓
+					const grab = this._ensureGrabBar(windowId, container, win, paneId) ?? grabs.get(paneId);
+					if (grab) {
+						grab.style.display = 'block';
+						grab.style.left = (r.x - rect.left) + 'px';
+						grab.style.top = (r.y - rect.top) + 'px';
+						grab.style.width = width + 'px';
+					}
+				});
+				// 分隔条：按树给的 dividers 摆（数量随树变 ⇒ 池子复用，多余的隐藏）✓
+				dividers.forEach((d, idx) => {
+					const bar = bars[idx];
+					if (!bar) { return; }
+					bar.style.display = 'block';
+					if (d.dir === 'h') {
+						bar.style.left = (d.pos - rect.left - DESKTOP_SPLIT_GAP / 2 - 4) + 'px';
+						bar.style.top = (area.y - rect.top) + 'px';
+						bar.style.width = '8px';
+						bar.style.height = area.height + 'px';
+					} else {
+						bar.style.left = (area.x - rect.left) + 'px';
+						bar.style.top = (d.pos - rect.top - DESKTOP_SPLIT_GAP / 2 - 4) + 'px';
+						bar.style.width = area.width + 'px';
+						bar.style.height = '8px';
+					}
+				});
+				for (let k = dividers.length; k < bars.length; k++) { bars[k].style.display = 'none'; }
+				return;
+			}
+			// 单栏：铺满（**不留抓手带** —— 没有可拖的对象）✓
+			this._lastRects.delete(windowId);
 			void this._dsh.layoutView(chatViewId, {
-				windowId, x: rect.left, y: rect.top + titleBarH,
-				width: rect.width, height: Math.max(1, rect.height - titleBarH), zoomFactor: zoom,
+				windowId, x: area.x, y: area.y, width: area.width, height: area.height, zoomFactor: zoom,
 			});
+			for (const bar of bars) { bar.style.display = 'none'; }
+			for (const grab of grabs.values()) { grab.style.display = 'none'; }
 		};
 		const layoutSoon = () => { layout(); win.setTimeout(layout, 120); win.setTimeout(layout, 420); };
+		// ★ 2026-10-29（分屏）：中间那条可拖动的分隔条（平时隐藏，有右栏才出现）✓
+		this._installSplitBar(windowId, container, win);
 		layout();
 		win.requestAnimationFrame(() => { layout(); win.requestAnimationFrame(layout); });
 		const resizeObserver = new win.ResizeObserver(layout);
@@ -489,8 +1156,21 @@ export class DshFullWindowContribution extends Disposable {
 			win.removeEventListener('resize', layout);
 			win.removeEventListener('fullscreenchange', layoutSoon);
 			win.clearInterval(layoutTimer);
-			if (this._openWindow?.viewId === chatViewId) { this._openWindow = undefined; }
-			void this._dsh.disposeView(chatViewId).catch(() => undefined);
+			// ★ 2026-10-29（多开 + 分屏）：关掉一扇 ⇒ 从登记表里摘掉（其余窗口不受影响）✓
+			//   ⚠ **先取所有栏 id 再摘**（摘了就取不到了）—— 每一栏都要回收，
+			//   否则成孤儿视图、它那条会话还在后台跑 ✗。
+			const panes = this._desktopWindows.get(windowId)?.paneViewIds ?? [chatViewId];
+			this._desktopWindows.delete(windowId);
+			for (const paneId of panes) {
+				void this._dsh.disposeView(paneId).catch(() => undefined);
+			}
+			this._splitBars.delete(windowId);
+			// ★ 右栏的存活巡检也要停（否则窗口关了还在跑定时器 ⇒ 泄漏 + 误报）✓
+			const watchers = this._splitWatchers.get(windowId);
+			if (watchers) {
+				for (const w of watchers.values()) { clearInterval(w.timer); }
+				this._splitWatchers.delete(windowId);
+			}
 			// ★★ 2026-10-24（修「F5 起来后 app 自己没了」）：
 			//   `onUnload` 是 **DOM 的 unload 事件**，页面**导航/重载同样会触发** —— 本机实测：
 			//   桌面窗口从 about:blank 跳到真实页面时就会触发一次，于是这条分支把刚启动的 app
@@ -500,8 +1180,8 @@ export class DshFullWindowContribution extends Disposable {
 			setTimeout(() => {
 				// ① 已经有（另一扇）桌面窗口在屏 ⇒ 这次 unload 只是"换窗"：启动壳被拼装好的
 				//    桌面窗口取代时，旧窗会走一次 unload（真机：window 2 → window 3）✗ 不能退。
-				if (this._openWindow) {
-					this._log.info(`[dshHarness] 桌面窗口 ${windowId} 的 unload 后已有窗口 ${this._openWindow.windowId} 在屏 ⇒ 只是换窗，不退出应用`);
+				if (this._desktopWindows.size > 0) {
+					this._log.info(`[dshHarness] 桌面窗口 ${windowId} 的 unload 后还有 ${this._desktopWindows.size} 扇桌面窗口在屏 ⇒ 只是关掉一扇，不退出应用`);
 					return;
 				}
 				// ② 窗口**真的还活着** ⇒ 只是页面导航/重载（unload 也会触发）⇒ 不退出。
@@ -530,7 +1210,7 @@ export class DshFullWindowContribution extends Disposable {
 			layoutSub.dispose();
 		}));
 
-		this._openWindow = { windowId, viewId: chatViewId };
+		this._desktopWindows.set(windowId, { windowId, viewId: chatViewId, paneViewIds: [chatViewId], tree: { type: 'leaf', viewId: chatViewId }, layout });
 		this._log.info(`[dshHarness] composed desktop opened (window ${windowId}, chat ${chatViewId}, session ${sessionId ?? '(无)'})`);
 		return true;
 	}
@@ -539,25 +1219,28 @@ export class DshFullWindowContribution extends Disposable {
 	 * @param onShellOpened 桌面窗口**壳**一出现就回调（此刻 Host 可能还在冷启动）——启动流程用它藏 IDE。
 	 *   复用已开窗口时不回调（调用方按返回值兜底）。
 	 */
-	private async _open(args: { chatId?: string }, onShellOpened?: () => void): Promise<boolean> {
+	private async _open(args: { chatId?: string; newWindow?: boolean }, onShellOpened?: () => void): Promise<boolean> {
 		// ★ 2026-10-17（用户报「点 agent 条目弹出一叠透明窗口」）：定位触发源 —— 记**调用栈**。
 		//   popoutChat 正常只在标题栏按钮被点时才走到这里；如果日志里出现而用户没点按钮，
 		//   栈里就是真凶（桥命令 / 其他贡献误调）。
 		this._log.info(`[dshHarness] full window open REQUEST (chatId=${args.chatId ?? '(无)'})\n${new Error('caller trace').stack ?? '(no stack)'}`);
 		// ★ 同日：单例复用 —— 已开着的全窗 ⇒ 聚焦 + 换绑到目标会话，**不再新开**（与 agents 窗口同病同治：
 		//   此前每触发一次新开一个，叠成一屏）。
-		if (this._openWindow) {
-			try {
-				const { viewId } = this._openWindow;
-				// ★ 2026-10-17（用户要求「desktop 与 IDE 里的 dsh 会话互不影响」）：**不再换绑**。
-				//   从前每次点弹出都会跟随当前聊天会话 ⇒ 两边显示同一条会话、输入互相可见（用户截图实证）。
-				//   现在弹窗有自己的会话（见 _ensurePopoutSessionId），复用只做聚焦 ✓。
-				// focus=true 同时把键盘焦点交给原生视图（见 _open 里 focusView 的说明）
-				await this._dsh.setViewVisible(viewId, true, true);
-				this._log.info(`[dshHarness] full window already open (view ${viewId}) ⇒ 聚焦复用，不再新开`);
-				return true;
-			} catch {
-				this._openWindow = undefined;   // 窗口已被关/视图已没 ⇒ 落回新建
+		// ★ 2026-10-29（桌面窗口多开）：默认仍**复用**；`args.newWindow` 为真才**另开一扇** ✓。
+		if (!args.newWindow) {
+			for (const [wid, entry] of [...this._desktopWindows]) {
+				try {
+					// ★ 2026-10-17（用户要求「desktop 与 IDE 里的 dsh 会话互不影响」）：**不再换绑**。
+					//   从前每次点弹出都会跟随当前聊天会话 ⇒ 两边显示同一条会话、输入互相可见（用户截图实证）。
+					//   现在弹窗有自己的会话（见 _ensurePopoutSessionId），复用只做聚焦 ✓。
+					// focus=true 同时把键盘焦点交给原生视图（见 _open 里 focusView 的说明）
+					await this._dsh.setViewVisible(entry.viewId, true, true);
+					this._log.info(`[dshHarness] desktop window already open (view ${entry.viewId}) ⇒ 聚焦复用，不再新开`);
+					return true;
+				} catch {
+					// 视图已没了（窗口被关 / 视图被回收）⇒ 这扇窗失效 ⇒ 记下并继续看下一扇 ✓
+					this._desktopWindows.delete(wid);
+				}
 			}
 		}
 		// ★ 2026-10-22（用户："启动 app 时，能否仅启动窗口版"）：**先建窗口壳，再等 Host**。
@@ -576,10 +1259,13 @@ export class DshFullWindowContribution extends Disposable {
 		});
 		const win = auxWindow.window;
 		const windowId = win.vscodeWindowId;
-		win.document.title = 'VsSaros — Desktop';
+		// ★ 2026-10-29（多开）：第 2 扇起标题带序号 ⇒ 用户分得清哪扇是哪扇 ✓
+		const windowNo = this._desktopWindows.size + 1;
+		const windowTitle = windowNo > 1 ? `VsSaros — Desktop ${windowNo}` : 'VsSaros — Desktop';
+		win.document.title = windowTitle;
 		auxWindow.container.style.background = 'var(--vscode-editor-background)';
 		// 自绘标题条（颜色取当前主题 ⇒ 与页面一致；拖拽也由它承担）
-		const titleBarH = this._installTitleBar(auxWindow, 'VsSaros — Desktop');
+		const titleBarH = this._installTitleBar(auxWindow, windowTitle);
 		// 占位（原生视图盖上来之前别让用户对着一块纯色猜）。⚠ 用**主窗口** document 建元素（aux 的 createElement 被禁）。
 		const booting = append(auxWindow.container, $('.dsh-desktop-booting'));
 		booting.style.cssText = `position:absolute;inset:${titleBarH}px 0 0 0;display:flex;align-items:center;justify-content:center;color:var(--vscode-descriptionForeground);font-size:13px;`;
@@ -656,7 +1342,7 @@ export class DshFullWindowContribution extends Disposable {
 			// 启动期的关窗处理一直留到拼装完成（它注册了自己的 onUnload）⇒ 中途关窗也能正确收场 ✓
 			//（两者都触发时 `_quitAfterDesktopClosed` / `_quit` 是幂等的：标记先同步清掉）
 			try {
-				return await this._openComposed(auxWindow, windowId, sessionId, booting, titleBarH);
+				return await this._openComposed(auxWindow, windowId, sessionId, booting, titleBarH, windowTitle);
 			} finally {
 				bootUnload.dispose();
 			}
@@ -744,7 +1430,7 @@ export class DshFullWindowContribution extends Disposable {
 		try { win.focus(); } catch { /* 某些平台不支持，忽略 */ }
 
 		this._wirePageCommands(viewId, args.chatId);
-		this._openWindow = { windowId, viewId };
+		this._desktopWindows.set(windowId, { windowId, viewId });
 
 		// 关窗收尾：释放视图（主进程对关闭窗口也有一次回收，这里主动 + 幂等）并断开布局订阅。
 		const unloadSub = auxWindow.onUnload(() => {
@@ -753,9 +1439,8 @@ export class DshFullWindowContribution extends Disposable {
 			win.removeEventListener('resize', layout);
 			win.removeEventListener('fullscreenchange', layoutSoon);
 			win.clearInterval(layoutTimer);
-			if (this._openWindow?.viewId === viewId) {
-				this._openWindow = undefined;
-			}
+			// ★ 2026-10-29（多开）：关掉一扇 ⇒ 从登记表里摘掉 ✓
+			this._desktopWindows.delete(windowId);
 			void this._dsh.disposeView(viewId).catch(() => undefined);
 		});
 		this._register(toDisposable(() => {
@@ -814,7 +1499,14 @@ export class DshFullWindowContribution extends Disposable {
 		 *
 		 * 第三个参数 `level`：`'waiting'` = **正在重试**（还没失败）；`'error'` = 真的失败 ✗。
 		 */
-		reporter?: (message: string, attempt: number, level?: 'error' | 'waiting') => void
+		reporter?: (message: string, attempt: number, level?: 'error' | 'waiting') => void,
+		/**
+		 * 会话 id 的**分栏后缀**（2026-10-29 分屏）：缺省 = 主栏；右栏传 `'R'` ⇒ 会话 id 带 `-R`。
+		 *
+		 * ⚠ 为什么必须不同：两栏若绑**同一条**会话 ⇒ 两边显示同一条对话、输入互相可见
+		 *   （这正是 2026-10-17 桌面窗口与 IDE 聊天"互不影响"那次踩过的坑）⇒ id 必须错开 ✓。
+		 */
+		suffix?: string
 	): Promise<string | undefined> {
 		// ★ 2026-10-28：启动开窗延时从 2.5s 缩到 800ms 之后，工作区可能**还没落定** ⇒
 		//   这里不能再"取不到就当没有"，而要**等一会儿**（最多 3s）。否则会把"还在加载"误判成
@@ -825,7 +1517,8 @@ export class DshFullWindowContribution extends Disposable {
 			reporter?.('没有打开工作区，无法创建会话 —— 请在 IDE 里打开一个工作区后再开桌面窗口', 1);
 			return undefined;
 		}
-		const target = dshChatNewSessionId('full-popout', String(windowId));
+		// ⚠ suffix：分屏右栏要一条**独立**的会话 ⇒ id 必须错开（否则两栏同一条对话 ✗）。
+		const target = dshChatNewSessionId('full-popout', suffix ? `${windowId}-${suffix}` : String(windowId));
 		// ★ 2026-10-27（用户报「弹窗停在 hero、输入框禁用」）：**失败要重试，也要让用户看见**。
 		//   真机：Host ready 后 0.8s 就发起了 `session.start`，报 `vssaros-agents (@vssaros/dsh-agents):
 		//   never started`；而 mux 路由要到 ready 之后 **11.4s** 才可用 ⇒ 那是"插件还没挂载完"，

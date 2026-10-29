@@ -45,6 +45,8 @@ import { ensureMarketAgent, MARKET_PRESET } from './marketAgent.js';
 import { ALL_OPS, LOCAL_WRITE_KINDS, WRITE_OPS, isKnownOp, resolveOp } from './dispatch.js';
 // ★ 服务端 pkg → 前端形状的**唯一映射**（list/detail/reviewList/installed 共用）
 import { toInstalledItem, toPackageDetail, toPackageSummary } from './shape.js';
+// ★ 2026-10-29：台账只增不减 ⇒ "算不算已安装"必须以**磁盘落地物**为准（见该文件头注释）
+import { installedKey, resolveEntryVersion, resolveInstalledVersions } from './installedState.js';
 
 /** 插件包名（与 package.json 一致；也是 ide.request 的 pluginId => 必须与清单里的 ideCapabilities 对上 ✓）。 */
 const PLUGIN_PACKAGE = '@vssaros/dsh-marketplace';
@@ -258,29 +260,44 @@ export async function apply(ctx, config) {
 					// 排序（recent|popular|name；非法值不传 ⇒ 用服务端默认，不报错 ✓）
 					...(params.sort === 'recent' || params.sort === 'popular' || params.sort === 'name' ? { sort: params.sort } : {}),
 				});
-			// 台账（同一份 installed-packages.json）⇒ 让页面标出"已安装 / 可升级"
-			const installed = state.dataRoot ? await readInstalled(state.dataRoot) : [];
-			const installedByKey = new Map(installed.map(e => [`${e.kind}:${e.storeId}`, e.version]));
+			// 台账 + **落地物核对**（★ 2026-10-29）⇒ 让页面把已装的商品标成"已安装"
+			//   ⚠ 以前直接把台账版本塞给前端 ⇒ 台账里 100+ 条"文件早被删了"的历史条目
+			//     全被渲染成"已安装"（用户看到的是假的已装状态）✗
+			const installedByKey = await resolveInstalledVersions(state.dataRoot);
 			return {
 				ok: true,
 				total: res.total,
 				items: res.items.map(pkg => toPackageSummary(pkg, {
-					installedVersion: installedByKey.get(`${pkg.kind}:${pkg.slug}`) ?? '',
+					installedVersion: installedByKey.get(installedKey(pkg.kind, pkg.slug)) ?? '',
 				})),
 			};
 		}
 		if (op === 'detail') {
 			const slug = String(params.slug ?? '');
 			const pkg = await market().detail(slug);
+			// ★ 详情抽屉与卡片必须显示同一个已装状态（同一份判据）✓
+			const installedByKey = await resolveInstalledVersions(state.dataRoot);
+			const installedVersion = installedByKey.get(installedKey(pkg.kind, pkg.slug)) ?? '';
 			// ★ 详情 = 列表的公共字段 + visibility/featured/versions（同一份 `baseOf`）
-			return { ok: true, ...toPackageDetail(pkg) };
+			return { ok: true, ...toPackageDetail(pkg, { installedVersion }) };
 		}
-		// installed：本地台账 + 升级检查（全是 dsh 侧自己的 HTTP ✓）
+		// installed：本地台账 + **落地物核对** + 升级检查（全是 dsh 侧自己的 HTTP ✓）
+		//
+		// ★ 2026-10-29：台账只增不减 ⇒ 落地物已消失的条目**不再列出**
+		//   （真机实测：台账 143 条、磁盘只剩 21 个 ⇒ 页签里一堆幽灵条目，
+		//     点「卸载」只会报"没有装过"，用户无从判断到底装了什么 ✗）
+		//   版本也换成磁盘上那份（与升级判断的口径对齐）。
 		const entries = state.dataRoot ? await readInstalled(state.dataRoot) : [];
 		if (entries.length === 0) { return { ok: true, total: 0, items: [] }; }
+		const alive = [];
+		for (const entry of entries) {
+			const version = await resolveEntryVersion(state.dataRoot, entry);
+			if (version) { alive.push({ ...entry, version }); }
+		}
+		if (alive.length === 0) { return { ok: true, total: 0, items: [] }; }
 		let updatable = new Map();
 		try {
-			const updates = await market().checkUpgrades(entries.map(e => ({ kind: e.kind, storeId: e.storeId, version: e.version })));
+			const updates = await market().checkUpgrades(alive.map(e => ({ kind: e.kind, storeId: e.storeId, version: e.version })));
 			updatable = new Map(updates.map(u => [`${u.kind}:${u.storeId}`, String(u.latest ?? '')]));
 		} catch (e) {
 			// 升级检查失败**不阻断**已安装列表（列表本身仍有用 ✓）
@@ -288,8 +305,8 @@ export async function apply(ctx, config) {
 		}
 		return {
 			ok: true,
-			total: entries.length,
-			items: entries.map(e => toInstalledItem(e, updatable.get(`${e.kind}:${e.storeId}`) ?? '')),
+			total: alive.length,
+			items: alive.map(e => toInstalledItem(e, updatable.get(installedKey(e.kind, e.storeId)) ?? '')),
 		};
 	}
 
@@ -1069,11 +1086,13 @@ export async function apply(ctx, config) {
 				}
 
 				// ── 客户端 chunk（页面自己加载）────────────────────
+				// ⚠ 必须 `no-store`：没有缓存头时浏览器会按启发式缓存 ⇒ 改了 client.js
+				//   页面却还是旧的（"我改的没生效"的头号伪故障，与 vendor 的 immutable 相反）✗
 				if (req.method === 'GET' && url.pathname === `${ROUTE_PREFIX}/client.js`) {
 					const { readFile } = await import('node:fs/promises');
 					const here = path.dirname(fileURLToPath(import.meta.url));
 					const body = await readFile(path.join(here, 'client.js'), 'utf8');
-					res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8' });
+					res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-store' });
 					res.end(body);
 					return;
 				}
@@ -1083,7 +1102,7 @@ export async function apply(ctx, config) {
 					const { readFile } = await import('node:fs/promises');
 					const here = path.dirname(fileURLToPath(import.meta.url));
 					const body = await readFile(path.join(here, 'page.css'), 'utf8');
-					res.writeHead(200, { 'content-type': 'text/css; charset=utf-8' });
+					res.writeHead(200, { 'content-type': 'text/css; charset=utf-8', 'cache-control': 'no-store' });
 					res.end(body);
 					return;
 				}

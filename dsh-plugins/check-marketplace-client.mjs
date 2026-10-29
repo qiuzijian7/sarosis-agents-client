@@ -106,6 +106,30 @@ for (const file of [clientFile, indexFile]) {
 	}
 }
 
+// ── 4. 「已安装」状态必须真的被页面消费（★ 2026-10-29）──────────
+//
+// 为什么守：Host 侧早就在 list/detail 里算了 `installedVersion`（2026-10-29 起还带
+//   **磁盘落地物核对**），但页面一直没读它 ⇒ 装完的商品卡片仍然显示「安装」。
+//   这种"算好了没人用"的静默失效，语法检查与数据单测都抓不到（数据是对的，只是没人取）✗
+//   ⇒ 至少两处消费（卡片 + 详情抽屉），且 Host 必须走 `installedState.js` 的判据。
+{
+	const client = fs.readFileSync(clientFile, 'utf8');
+	const index = fs.readFileSync(indexFile, 'utf8');
+	// 两个表面**各自**必须读（只数"取值"形态，注释里提字段名不算）
+	// ⚠ 必须带 `\b`：否则 `d.installedVersionMUT` 这种改名/打错也会被当成"读到了"（假绿）
+	const inCard = /pkg\.installedVersion\b/.test(client);
+	const inDetail = /d\.installedVersion\b/.test(client);
+	if (inCard) { ok('lib/client.js：卡片读 pkg.installedVersion（装完的卡片显示"已安装"）'); }
+	else { fail('lib/client.js：卡片没读 pkg.installedVersion ⇒ 装完仍显示「安装」'); }
+	if (inDetail) { ok('lib/client.js：详情抽屉读 d.installedVersion（与卡片同一状态）'); }
+	else { fail('lib/client.js：详情抽屉没读 d.installedVersion ⇒ 卡片说"已安装"、抽屉还说「安装」'); }
+	if (index.includes('resolveInstalledVersions') && index.includes('./installedState.js')) {
+		ok('lib/index.js：已安装状态取自 installedState.js（磁盘核对，不是裸台账）');
+	} else {
+		fail('lib/index.js：必须用 installedState.js 的 resolveInstalledVersions（裸台账会谎报已安装）');
+	}
+}
+
 console.log(problems === 0
 	? '\n[check-marketplace-client] ✓ 商城页面脚本守卫通过'
 	: `\n[check-marketplace-client] ✗ ${problems} 项问题`);

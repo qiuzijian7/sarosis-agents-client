@@ -1872,6 +1872,29 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 {
 	try {
 		const src = fs.readFileSync(path.join(path.resolve(import.meta.dirname, '..'), 'dsh-plugins', 'vssaros-chat-surface', 'lib', 'client.msgImport.js'), 'utf8');
+		// ★ 2026-10-29（用户要求：导入落盘在 库/raw）：落点 + 请求体都要钉住。
+		//   （真机踩过：按行替换时把 body 那行覆盖成了注释 ⇒ POST 变成无参 ⇒ 导入静默失败）
+		if (!/dir: ["']库\/raw["']/.test(src)) {
+			problems.push('client.msgImport.js: 导入落点不是 库/raw（应为 库/raw）');
+		}
+		// 只看真正的 `dir:` 参数（注释里提到「笔记/导入」不算 ⇒ 否则误伤）
+		if (/dir:\s*["']笔记\/导入/.test(src)) {
+			problems.push('client.msgImport.js: 还在落「笔记/导入」');
+		}
+		// ★ 2026-10-29（用户要求：统一命名 对话导入-<时间戳>.md）
+		if (!/const title = '对话导入-' \+ stamp/.test(src)) {
+			problems.push('client.msgImport.js: 导入文件名不是「对话导入-<时间戳>」');
+		}
+		if (!src.includes('function stampOf(')) {
+			problems.push('client.msgImport.js: 缺 stampOf（时间戳生成）');
+		}
+		// 取文必须用 textContent：innerText 在**隐藏视图**里恒为空 ⇒ 按钮不注入 / 导入为空
+		if (/innerText/.test(src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, ""))) {
+			problems.push('client.msgImport.js: 代码里还在用 innerText（隐藏视图里恒为空 ⇒ 取文会失败）');
+		}
+		if (!src.includes('body: JSON.stringify({ vaultId:')) {
+			problems.push('client.msgImport.js: 请求体那行不见了（body 行被改坏 ⇒ POST 无参）');
+		}
 		if (!src.includes('button[aria-label="复制"]')) {
 			problems.push('client.msgImport.js: 没有用真实底栏锚点（button[aria-label="复制"]）⇒ 按钮永远注入不到');
 		}

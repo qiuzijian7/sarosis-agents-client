@@ -27,6 +27,16 @@
 export type DshChatPartitionKind =
 	/** 弹窗专用分区（与主窗口彻底隔离）。 */
 	| 'desktop'
+	/**
+	 * **第 2..N 扇桌面窗口**的专用分区（2026-10-29，桌面窗口多开）。
+	 *
+	 * 为什么要有这一档：第 1 扇桌面窗口独占 persist 主分区（页面 localStorage 里的侧栏固定行
+	 * 清单要跨重启存活 ✓），但**两扇窗口共用一个分区就会互相饿死** —— Chromium 对同一
+	 * `host:port` 的 HTTP/1.1 并发连接上限是 6，而 dsh 的每个页面长期占住若干条连接
+	 * （与 `DSH_VIEW_PARTITION_DESKTOP` 的取证同源）⇒ 表现为"第二扇窗口一直转圈 /
+	 * `session.create` 永不返回"。⇒ 第 2..N 扇各占一个独立分区（独立 socket 池）✓。
+	 */
+	| 'desktop-pool'
 	/** 主分区（与插件页同源；单聊天场景用它）。 */
 	| 'main'
 	/** 池分区（并发聊天视图各自独占一个）。 */
@@ -53,6 +63,16 @@ export interface IDshChatPartitionInput {
 	readonly mainPartition: string;
 	/** 池分区名前缀。 */
 	readonly poolPrefix: string;
+	/**
+	 * 是否已有**另一扇**桌面窗口占着主桌面分区（2026-10-29，桌面窗口多开）。
+	 *
+	 * 判据 = "主桌面分区上是否已经有别的桌面视图"（socket 池是 session 级的 ⇒ 跨窗口也共享）。
+	 */
+	readonly desktopBusy: boolean;
+	/** 已经分配过几个桌面池分区（下一个桌面池分区的序号 = 该值 + 1 ⇒ 分区名不复用）。 */
+	readonly desktopPoolSeq: number;
+	/** 桌面池分区名前缀。 */
+	readonly desktopPoolPrefix: string;
 }
 
 /**
@@ -65,6 +85,13 @@ export interface IDshChatPartitionInput {
  */
 export function decideChatPartition(input: IDshChatPartitionInput): IDshChatPartitionDecision {
 	if (input.isolatedPool) {
+		// ★ 2026-10-29（桌面窗口多开）：第 2..N 扇**各占一个独立分区**（独立 socket 池）。
+		//   判错的后果与聊天池一样：两扇桌面窗口共用一个分区 ⇒ 互相饿死（界面像卡住，日志里几乎
+		//   看不出来）⇒ 这条判定必须有单测（见 `test/common/dshChatPartition.test.ts`）。
+		//   第 1 扇仍用 persist 主分区 ⇒ 页面 localStorage（侧栏固定行清单）跨重启存活 ✓。
+		if (input.desktopBusy) {
+			return { kind: 'desktop-pool', partition: `${input.desktopPoolPrefix}${input.desktopPoolSeq + 1}` };
+		}
 		return { kind: 'desktop', partition: input.desktopPartition };
 	}
 	if (input.surface !== 'chat') {

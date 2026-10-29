@@ -98,6 +98,52 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
+		 * 页面是不是还停在 **hero（空会话屏）**。
+		 *
+		 * 判据与主包 `client.js` 的 `looksBlankPage()` **逐字同款**（只认"会话真的在渲染"的三个标记）：
+		 * 官方 roster 里的**空会话**（`blank` 位）**也带** `[data-sidebar-right-session]` ⇒ 不会被误判成 hero ✓。
+		 */
+		const isBlankChatPage = () => {
+			try {
+				return !document.querySelector("[data-sidebar-right-session]")
+					&& !document.querySelector("[data-chat-flow]")
+					&& !document.querySelector("[data-chat-anchor-key]");
+			} catch { return false; }
+		};
+
+		/**
+		 * **hero（空会话屏）专用**的「新窗格」入口（2026-10-29）。
+		 *
+		 * 为什么需要它：会话动作组（`conversation.session.header.utilities`）在**空会话时整组不渲染**
+		 *   ⇒ hero 屏上根本没有那枚按钮 ⇒ 用户在"正要开新对话"的时刻**开不了分屏** ✗。
+		 *   而 `client.js` 的 `BLANK_SESSION_PARTS`（hero 态只装的那些 chunk）里**不含** `client.sessions.js`
+		 *   ⇒ 那一枚在 hero 时根本不存在 ⇒ 只能在 hero 也会装的本 chunk（品牌行）补一枚 ✓。
+		 *
+		 * ⚠ **只在 hero 时显示** ⇒ 与会话动作组那枚**天然互补、不重复**（有会话时那一排才出现）✓。
+		 * ⚠ 它走桥 `splitChatPane`（桥 23）⇒ 同窗口内分屏一栏；旧宿主（桥 < 23）**明说**不支持 ✓。
+		 */
+		function openSplitPane() {
+			const api = (typeof window !== "undefined" && window.vssarosDsh) || null;
+			if (api && typeof api.splitChatPane === "function") {
+				try {
+					const p = api.splitChatPane();
+					if (p && typeof p.catch === "function") { p.catch(() => undefined); }
+				} catch { /* IPC 失败只影响这一次点击 */ }
+				return;
+			}
+			const st = (typeof window !== "undefined" && window.__vssarosChatSurface) || null;
+			if (st) {
+				st.splitEntry = "unsupported";
+				st.splitEntryError = "splitChatPane unavailable (bridgeVersion=" + (api && api.bridgeVersion) + ")";
+			}
+			try {
+				if (api && typeof api.notify === "function") {
+					api.notify("warn", "当前宿主不支持「分屏窗格」（需要页面桥 23）");
+				}
+			} catch { /* 通知失败不阻塞 */ }
+		}
+
+		/**
 		 * 标题 + 右侧那枚「回到 IDE」按钮。
 		 *
 		 * ⚠ 官方那份**同时承载版本徽标**（本地构建时 `brand.localBuild` 那枚小方块）⇒ 顶掉它之后
@@ -107,6 +153,17 @@ window.__ModuleLoader__.load({
 		 */
 		function BrandName() {
 			const [hover, setHover] = react.useState(false);
+			// ★ 2026-10-29（hero 入口）：这枚「新窗格」**只在 hero（空会话屏）显示** ⇒
+			//   需要知道"页面是否已经渲染了会话" ⇒ 1s 轮询三个标记（与主包 `looksBlankPage()` 同款判据，
+			//   成本可忽略 ✓）。有会话时这一枚**不渲染** ⇒ 不会与会话动作组那枚重复 ✓。
+			const [blank, setBlank] = react.useState(() => isBlankChatPage());
+			react.useEffect(() => {
+				const timer = setInterval(() => {
+					const next = isBlankChatPage();
+					setBlank(prev => (prev === next ? prev : next));
+				}, 1000);
+				return () => clearInterval(timer);
+			}, []);
 			return react.createElement("span", {
 				style: { display: "inline-flex", alignItems: "center", gap: 8, minWidth: 0 },
 			},
@@ -118,6 +175,22 @@ window.__ModuleLoader__.load({
 						color: "var(--dsw-alias-label-primary, inherit)",
 					},
 				}, TITLE),
+				blank ? react.createElement("button", {
+					type: "button",
+					// ⚠ 稳定锚点（e2e / 守卫都按它找）：
+					"data-vssaros-split-entry": "1",
+					title: "在当前窗口里分屏出一栏新聊天",
+					"aria-label": "分屏出一栏新聊天",
+					onClick: openSplitPane,
+					style: {
+						display: "inline-flex", alignItems: "center", justifyContent: "center",
+						height: 18, padding: "0 6px", borderRadius: 4, fontSize: 10.5, lineHeight: "16px",
+						fontFamily: "inherit", whiteSpace: "nowrap", cursor: "pointer",
+						border: "1px solid var(--dsw-alias-border-l3, rgba(128,128,128,.4))",
+						background: "transparent",
+						color: "var(--dsw-alias-label-tertiary, #8a8a8a)",
+					},
+				}, "新窗格") : null,
 				react.createElement("button", {
 					type: "button",
 					// ⚠ 用**稳定锚点**（不随 hover 变），e2e/守卫都按它找：
@@ -195,7 +268,7 @@ window.__ModuleLoader__.load({
 
 		exports.install = install;
 		// 仅测试用：守卫直接在假 react 上断言"渲染出来的树里有 svg + 标题文案"（不猜源码写法 ✓）
-		exports.__test = { BrandMark, BrandName, CollapsedIdeEntry, openIde, SLOT_MARK, SLOT_NAME, SLOT_FOOTER, PRIORITY, TITLE };
+		exports.__test = { BrandMark, BrandName, CollapsedIdeEntry, openIde, isBlankChatPage, openSplitPane, SLOT_MARK, SLOT_NAME, SLOT_FOOTER, PRIORITY, TITLE };
 		return module.exports;
 	}
 });

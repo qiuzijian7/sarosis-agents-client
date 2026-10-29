@@ -24,6 +24,7 @@ const { packTarGzFromMap } = await import(pathToFileURL(path.join(LIB, 'tar.js')
 const { installBundle, uninstallBundle, injectSkillFrontmatter, sha256Of, targetRootOf, BUNDLE_KINDS } =
 	await import(pathToFileURL(path.join(LIB, 'installers.js')).href);
 const { readInstalled, upsertInstalled } = await import(pathToFileURL(path.join(LIB, 'installedLedger.js')).href);
+const { resolveInstalledVersions } = await import(pathToFileURL(path.join(LIB, 'installedState.js')).href);
 
 let pass = 0;
 const fails = [];
@@ -232,6 +233,59 @@ check('① 支持 skill / workflow / agent / mcp 四类，其它类（knowledge 
 	check('⑨ BUNDLE_KINDS 含 agent', BUNDLE_KINDS.includes('agent'), BUNDLE_KINDS.join(','));
 	await uninstallBundle({ dataRoot, kind: 'agent', storeId: 'demo-agent' });
 	check('⑨ agent 能卸载（目录删掉）', !fs.existsSync(path.join(dataRoot, 'agents', 'demo-agent')));
+}
+
+// ── ⑩ 「已安装」判据（★ 2026-10-29 用户：「已经安装的 item 状态要更新」）────
+//
+// 守什么：台账 `installed-packages.json` **只增不减**（删目录/换机器都不会清条目）
+//   ⇒ "算不算已安装"必须以**磁盘落地物**为准，否则商城里会有一大片谎报"已安装"。
+//   真机实测：台账 135 条 skill、磁盘只剩 21 个目录 ⇒ 若照台账渲染 = 100+ 条假绿 ✗
+{
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vssaros-mp-state-'));
+	const write = (rel, body) => {
+		const p = path.join(root, rel);
+		fs.mkdirSync(path.dirname(p), { recursive: true });
+		fs.writeFileSync(p, body);
+	};
+	// ① 落地物在，且磁盘版本 ≠ 台账版本 ⇒ 以磁盘为准（升级判断要跟真正装的那份对得上）
+	write('skills/disk-skill/SKILL.md', '---\nname: disk-skill\nversion: 1.2.0\n---\n\nx\n');
+	// ② 落地物不在（幽灵条目）
+	// ③ 老技能手写的 SKILL.md 没有 `version:` 字段 ⇒ 仍算已装，版本回退台账
+	write('skills/no-ver/SKILL.md', '---\nname: no-ver\ndescription: 老技能\n---\n\nx\n');
+	// ④ agent 要有 .agent.md；⑤ mcp 要目录 + mcp.json 注册项都在
+	write('agents/ok-agent/.agent.md', '---\nid: ok-agent\n---\n\n正文\n');
+	write('mcp/ok-mcp/config.json', JSON.stringify({ version: '3.1.0', command: 'node' }));
+	write('mcp/no-reg/config.json', JSON.stringify({ version: '1.0.0' }));
+	write('mcp.json', JSON.stringify({ servers: { 'ok-mcp': { command: 'node' } } }));
+
+	for (const e of [
+		{ kind: 'skill', storeId: 'disk-skill', version: '1.0.0' },
+		{ kind: 'skill', storeId: 'ghost-skill', version: '9.9.9' },
+		{ kind: 'skill', storeId: 'no-ver', version: '0.4.2' },
+		{ kind: 'agent', storeId: 'ok-agent', version: '1.0.0' },
+		{ kind: 'agent', storeId: 'ghost-agent', version: '1.0.0' },
+		{ kind: 'mcp', storeId: 'ok-mcp', version: '1.0.0' },
+		{ kind: 'mcp', storeId: 'no-reg', version: '1.0.0' },
+		{ kind: 'plugin', storeId: 'some-plugin', version: '0.7.0' },
+	]) { await upsertInstalled(root, e); }
+
+	const map = await resolveInstalledVersions(root);
+
+	check('⑩ skill 落地 ⇒ 已装，版本取**磁盘**那份（台账是旧的 1.0.0）',
+		map.get('skill:disk-skill') === '1.2.0', String(map.get('skill:disk-skill')));
+	check('⑩ 台账有、目录已被删 ⇒ **不算已装**（不谎报）',
+		!map.has('skill:ghost-skill'));
+	check('⑩ 老技能没有 version 字段 ⇒ 仍算已装（回退台账版本，不误判成未装）',
+		map.get('skill:no-ver') === '0.4.2', String(map.get('skill:no-ver')));
+	check('⑩ agent 看 .agent.md', map.get('agent:ok-agent') === '1.0.0' && !map.has('agent:ghost-agent'));
+	check('⑩ mcp 要「目录 + mcp.json 注册项」都在',
+		map.get('mcp:ok-mcp') === '3.1.0' && !map.has('mcp:no-reg'),
+		`ok-mcp=${String(map.get('mcp:ok-mcp'))} no-reg=${String(map.get('mcp:no-reg'))}`);
+	check('⑩ plugin 没有可查的落地物 ⇒ 信台账', map.get('plugin:some-plugin') === '0.7.0');
+	check('⑩ 空/缺 dataRoot ⇒ 空 Map（不抛）',
+		(await resolveInstalledVersions('')).size === 0 && (await resolveInstalledVersions(undefined)).size === 0);
+
+	fs.rmSync(root, { recursive: true, force: true });
 }
 
 fs.rmSync(dataRoot, { recursive: true, force: true });

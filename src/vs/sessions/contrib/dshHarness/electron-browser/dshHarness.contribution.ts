@@ -52,6 +52,9 @@ import { DshTofAuthService } from './dshTofAuthService.js';
 // Agents 视图 id（`openAgentRoster` 用它聚焦侧栏那个视图；见该分支的注释 —— 用视图 id 而不是
 // 曾经的 `agentStudio.presetAgent.focus` 假命令 id ✓）
 import { AGENT_STUDIO_PRESET_AGENT_VIEW_ID } from '../../../common/agentStudioConstants.js';
+// 桌面窗口**多开**（2026-10-29）：「新开一扇 dsh 桌面窗口」的跨层入口（common 层单例钩子；
+// 与 `agentStudio.popoutChat` 走的是同一套 opener，只是多了 `newWindow` 语义）✓
+import { openDshFullWindow, paneDshChatPane, splitDshChatPane } from '../../../common/dshFullWindow.js';
 // 单个 bot 的「Agent 设置」编辑器页输入（`openAgentSettings` 用它；页面自己开不了编辑器 ⇒ 宿主来开）。
 // 与上面几行同属**跨层 import（electron-browser → agentStudio/browser）**，先例见上一条注释 ✓。
 import { AgentSettingsEditorInput } from '../../agentStudio/browser/agentSettingsEditorInput.js';
@@ -260,6 +263,27 @@ registerAction2(class extends Action2 {
 		await editorService.openEditor(input, { pinned: true });
 	}
 });
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: 'dshHarness.newDesktopWindow',
+			title: localize2('dshHarness.newDesktopWindow', "新开 dsh 桌面窗口（并行开新会话）"),
+			category: CATEGORY,
+			f1: true,
+			precondition: ENABLED,
+		});
+	}
+	async run(accessor: ServicesAccessor): Promise<void> {
+		// ★ 2026-10-29（桌面窗口多开）：**另开一扇**（不复用已开着的）⇒
+		//   每扇窗口有自己的一条 dsh 会话（会话 id 按窗口 id 派生）与自己的网络分区
+		//   （第 2..N 扇各占一个 ⇒ 不会互相饿死）⇒ 多扇并行工作互不干扰 ✓。
+		const opened = await openDshFullWindow({ newWindow: true });
+		if (!opened) {
+			accessor.get(INotificationService).warn(localize('dshHarness.newDesktopWindow.failed', "没能新开 dsh 桌面窗口（dsh 未启用，或当前引擎不是 dsh）"));
+		}
+	}
+});
+
 registerAction2(class extends Action2 {
 	constructor() {
 		super({ id: DSH_COMMAND_RESTART_HOST, title: localize2('dshHarness.restartHost', "重启 Host"), category: CATEGORY, f1: true, precondition: ENABLED });
@@ -1617,6 +1641,57 @@ class DshPageCommandContribution extends Disposable implements IWorkbenchContrib
 				}
 				return;
 				}
+			case 'openDesktopWindow': {
+				// 「＋ 新窗口」（桥 `21 → 22`，2026-10-29；触发点 = 命令面板的「新开 dsh 桌面窗口」）。
+				//   语义 = **另开一扇**（不复用已开着的）⇒ 新窗口有自己的会话（按窗口 id 派生）
+				//   与自己的网络分区 ⇒ 多扇并行工作互不干扰 ✓。
+				// ⚠ 桌面模式下 IDE 主窗口是**藏着的** ⇒ 这条命令**不许**把 IDE 亮出来
+				//   （用户 2026-10-21/22 明确否决过"点一下冒出 IDE 窗口"）⇒ 它已登记在
+				//   `DSH_PAGE_COMMANDS_WITHOUT_IDE_UI`，本分支也不碰任何 IDE 窗口 ✓。
+				this._logService.info('[dshHarness] page openDesktopWindow ⇒ 新开一扇 dsh 桌面窗口');
+				try {
+					const opened = await openDshFullWindow({ newWindow: true });
+					if (!opened) {
+						this._notifications.warn(localize('dshHarness.page.openDesktopWindowFailed', "没能新开一扇 dsh 桌面窗口（dsh 未启用，或当前引擎不是 dsh）"));
+					}
+				} catch (err) {
+					this._logService.warn('[dshHarness] page openDesktopWindow failed', err);
+					this._notifications.warn(localize('dshHarness.page.openDesktopWindowFailed', "没能新开一扇 dsh 桌面窗口：{0}", String((err as Error)?.message ?? err)));
+				}
+				return;
+			}
+			case 'splitChatPane': {
+				// 「新窗格」（桥 `22 → 23`，2026-10-29；触发点 = 会话动作组里那枚「新窗格」按钮）。
+				//   语义 = **在当前这扇桌面窗口里分屏出一栏**（左=原会话，右=新会话的纯聊天框），
+				//   **不是**弹一扇独立窗口（用户原话："希望是在当前窗口下，分屏出一个聊天框"）✓。
+				//   定位靠 `viewId`（发起请求的那个视图）⇒ 宿主据此知道是哪扇窗口 ✓。
+				this._logService.info(`[dshHarness] page splitChatPane（视图 ${viewId}）⇒ 当前桌面窗口内分屏一栏`);
+				try {
+					const ok = await splitDshChatPane(viewId);
+					if (!ok) {
+						this._notifications.warn(localize('dshHarness.page.splitChatPaneFailed', "没能分屏出一栏新聊天（这台窗口不在 dsh 桌面窗口形态，或新会话没起来）"));
+					}
+				} catch (err) {
+					this._logService.warn('[dshHarness] page splitChatPane failed', err);
+					this._notifications.warn(localize('dshHarness.page.splitChatPaneFailed', "没能分屏出一栏新聊天：{0}", String((err as Error)?.message ?? err)));
+				}
+				return;
+			}
+			case 'paneAction': {
+				// 分屏栏动作（桥 `23 → 24`）：把这一栏移到极端位置 / 关掉它。
+				//   ⚠ 动的是 dsh 桌面窗口自己 ⇒ 不碰 IDE 主窗口（已登记在 `WITHOUT_IDE_UI`）✓
+				//   ⚠ 为什么走页面菜单而不是拖拽：aux 窗口的 DOM 层收不到鼠标事件（真机证据）⇒ 见协议注释。
+				this._logService.info(`[dshHarness] page paneAction ${command.action}（视图 ${viewId}）`);
+				try {
+					const ok = await paneDshChatPane(viewId, command.action);
+					if (!ok) {
+						this._notifications.warn(localize('dshHarness.page.paneActionFailed', "这一栏动不了：已经是那个位置，或者只剩这一栏。"));
+					}
+				} catch (err) {
+					this._logService.warn('[dshHarness] page paneAction failed', err);
+				}
+				return;
+			}
 			case 'openResourceSettings': {
 				// 「工具」页（`/x/skills/`，原「集成」页）里**技能行 / MCP 行**的齿轮（桥 `9 → 10`，2026-10-15；
 				// 用户要求"技能/mcp item 中增加设置按钮，点击后打开 editorpane 修改" ✓）。两类落点不同，

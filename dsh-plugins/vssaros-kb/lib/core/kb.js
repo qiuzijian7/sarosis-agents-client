@@ -133,6 +133,44 @@ export const LIBRARY_DIR = '库';
 /** 「笔记」区目录名（2026-10-13 补：构建缓存登记要扫它 ⇒ 与 LIBRARY_DIR 一样收进 core 常量 ✓）。 */
 export const NOTES_DIR = '笔记';
 
+/**
+ * 「库」区里**唯一可写**的落点：原始素材区（聊天消息「导入到知识库」等"先存起来"的内容）。
+ *
+ * ★ 2026-10-29（用户要求：导入要落盘在 `库/raw` 下）：
+ *   「库」区整体是**只读**的（资料库正文不许动 ✓ —— 见 `kbOrganize.resolveOrganizePath` 的围栏），
+ *   但聊天导入的原文属于"素材"而非"成稿" ⇒ 落在 `库/raw` 这一个**受控可写**的子区里。
+ *   围栏仍然很窄：只有 `<vault>/库/raw/**` 可写，`库/其它分类` 一律只读 ✓。
+ */
+export const RAW_SUBDIR = 'raw';
+/** 原始素材区相对 vault 根的路径（`库/raw`）。 */
+export const RAW_DIR = `${LIBRARY_DIR}/${RAW_SUBDIR}`;
+
+/** 归一化成分隔符 `/`（Windows 上是反斜杠 ⇒ 比对前必须归一 ✓）。 */
+const rawSlashes = (p) => String(p ?? '').replace(/\\/g, '/');
+/** 去掉结尾多余的 `/`（`C:/a/` ⇒ `C:/a` ✓），但保留根 `/` ✓。 */
+const rawTrimTrailing = (p) => (p.length > 1 ? p.replace(/\/+$/, '') : p);
+
+/**
+ * 把调用方给的路径解析成 **`<vault>/库/raw/**`** 内的绝对路径（**纯字符串运算** ✓，不碰 fs ✓）。
+ *
+ * 与 `resolveOrganizePath` 同口径（相对/绝对都收、`..` 段拒、`\\`→`/`），
+ * 但围栏换成了 raw 区 ⇒ 「库」的其它分类仍不可写 ✓。
+ *
+ * @returns `{ abs, rel, inside, why }`；非法路径 ⇒ `{ why: '路径无效' }`
+ */
+export function resolveRawPath(vaultRoot, p) {
+	const rel = rawSlashes(p).trim().replace(/^\.\//, '');
+	if (!rel) { return { why: '路径无效' }; }
+	if (rel.split('/').some((seg) => seg === '..')) { return { why: '路径无效' }; }
+	const root = rawTrimTrailing(rawSlashes(vaultRoot));
+	const isAbs = /^[a-zA-Z]:\//.test(rel) || rel.startsWith('/');
+	const abs = rawTrimTrailing(isAbs ? rel : `${root}/${rel}`);
+	const base = `${root}/${RAW_DIR}`.toLowerCase();
+	const lower = abs.toLowerCase();
+	const inside = lower === base || lower.startsWith(base + '/');
+	return { abs, rel, inside, why: inside ? '' : `越出「${RAW_DIR}」区` };
+}
+
 /** 随包内置的同步脚本在包内的相对路径（真源是 `resources/.agents/kb/feishu-sync.mjs`；有守卫钉住字节一致）。 */
 export const FEISHU_SYNC_SCRIPT = 'scripts/feishu-sync.mjs';
 

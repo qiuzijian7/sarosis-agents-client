@@ -23,7 +23,83 @@
  */
 
 import { promises as fsp } from 'fs';
-import { join } from '../../../../base/common/path.js';
+import { dirname, join } from '../../../../base/common/path.js';
+
+/**
+ * **补回随包插件缺失的"自带文件"**（★ 2026-10-29）。
+ *
+ * ★ 为什么需要（真机）：profile 是**半装**的（升级安装失败 ⇒ `node_modules` 被删了却没装回）
+ *   ⇒ `@vssaros/dsh-kb/vendor/markdown-it.cjs`、`@vssaros/dsh-agents/cordis.presets.yml`
+ *   等**插件自带文件**缺失 ⇒ 该插件 import 失败 ⇒ `webServer`/`connection`/`sessionController`
+ *   起不来 ⇒ **3 个必需插件不激活 ⇒ Host exit code 1** ⇒ dsh 的 web server 没起来
+ *   ⇒ **桌面窗口一片空白/黑屏**（没有页面可加载）✗✗。
+ *
+ * ★ 为什么"已装判定"救不了：它只看**版本 + 入口文件** ⇒ 缺自带文件时**仍然判「已装」**
+ *   ⇒ **永不重装** ⇒ 死循环（每次启动都一样）✗。
+ *
+ * ⇒ 这里在**启动前**体检：拿**随包目录**（永远是完整的那份）当基准，
+ *   凡是"随包里有、已装里没有"的文件，**直接补回** ⇒ 半装 profile 也能自愈 ✓。
+ *
+ * ⚠ 只处理**已装**的插件（没装的交给安装流程，不越权）。
+ * ⚠ 补不回来就跳过（不阻断启动）—— 让 Host 自己报出来更好。
+ */
+export async function repairBundledPluginFiles(
+	bundledRoot: string,
+	installedNmDir: string,
+	log: (line: string) => void,
+): Promise<string[]> {
+	const repaired: string[] = [];
+	let entries;
+	try {
+		entries = await fsp.readdir(bundledRoot, { withFileTypes: true });
+	} catch {
+		return repaired;   // 没有随包目录（老构建）⇒ 什么都不做
+	}
+	for (const entry of entries) {
+		if (!entry.isDirectory()) {
+			continue;
+		}
+		const srcDir = join(bundledRoot, entry.name);
+		let name: string | undefined;
+		try {
+			const pkg = JSON.parse(await fsp.readFile(join(srcDir, 'package.json'), 'utf8')) as { name?: string };
+			name = pkg.name;
+		} catch {
+			continue;   // 读不动 package.json 的条目不是插件（例：dsh-plugins/scripts/）
+		}
+		if (!name) {
+			continue;
+		}
+		const destDir = join(installedNmDir, ...name.split('/'));
+		try {
+			await fsp.stat(destDir);
+		} catch {
+			continue;   // 压根没装 ⇒ 由安装流程负责
+		}
+		const have = new Set(await listFiles(destDir));
+		for (const rel of await listFiles(srcDir)) {
+			if (have.has(rel)) {
+				continue;
+			}
+			// ⚠ 只补**运行时要用的**：`test/` 是构建时有意排除的（实测 71 个"缺失"里大部分是它）
+			//   ⇒ 补进去既没用、又涨产物体积 ✗。
+			if (rel === 'test' || rel.startsWith('test/')) {
+				continue;
+			}
+			const to = join(destDir, rel);
+			try {
+				await fsp.mkdir(dirname(to), { recursive: true });
+				await fsp.copyFile(join(srcDir, rel), to);
+				repaired.push(name + '/' + rel);
+			} catch { /* 单个文件补不回来就算了 */ }
+		}
+	}
+	if (repaired.length) {
+		log('补回随包插件缺失的自带文件 ' + repaired.length + ' 个：'
+			+ repaired.slice(0, 5).join('、') + (repaired.length > 5 ? ' …' : ''));
+	}
+	return repaired;
+}
 
 /** "嵌套副本相对顶层同名包少了哪些文件"的判定（纯逻辑 ⇒ 可单测 ✓）。 */
 export function missingFilesInNestedCopy(nestedFiles: readonly string[], topFiles: readonly string[]): string[] {

@@ -20,6 +20,7 @@ const HERE = fileURLToPath(new URL('.', import.meta.url));
 const CLIENT = readFileSync(HERE + '../lib/client.js', 'utf8');
 const BUNDLE = readFileSync(HERE + '../lib/web/kbSideview.js', 'utf8');
 const INDEX = readFileSync(HERE + '../lib/index.js', 'utf8');
+const KB_CORE = readFileSync(HERE + '../lib/core/kb.js', 'utf8');
 // 组件源码：**中文在构建产物里是 \u 转义**的 ⇒ 文案类断言只能读源码（读不到就跳过，不误报）
 let KB_TSX = '';
 try { KB_TSX = readFileSync(HERE + '../../../src/vs/sessions/contrib/agentStudio/webview/src/kbSideview/index.tsx', 'utf8'); } catch { /* 独立包里没有源码 */ }
@@ -357,6 +358,12 @@ check('导图不再用整页覆盖层（旧的 canvasOpen 状态已移除）',
 check('正文不用 content-visibility:auto（否则长文滚动位置会被顶乱）',
 	!/\.kb-md > \*[^\n{]*\{[^\n}]*content-visibility:\s*auto/.test(KB_TSX));
 
+// ★ 2026-10-29（用户要求：导入落盘在 库/raw）：服务端要放行 <vault>/库/raw/**，
+//   但「库」区其余分类仍必须只读（围栏没放宽，只多了一个受控可写子区）。
+check('库/raw 受控可写（服务端放行该落点）',
+	INDEX.includes('resolveRawPath') && INDEX.includes('RAW_DIR') && KB_CORE.includes('export function resolveRawPath'));
+check('围栏没被放宽（笔记区外的「库」其它分类仍拒）',
+	INDEX.includes('const inRaw = rawResolved.inside === true') && INDEX.includes('!inNotes && !inRaw'));
 check('完整设置（飞书）在 bundle 内实现并挂进设置页',
 	KB_TSX.includes('function KbFeishuSettings(') && KB_TSX.includes('<KbFeishuSettings />'));
 check('完整设置走插件端点（kb-settings / feishu-cli / feishu-sync / feishu-spaces）',

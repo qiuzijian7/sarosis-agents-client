@@ -381,6 +381,22 @@ async function buildProfileSeed(runtimeDir, dshBin, dshVersion) {
 	if (!existsSync(join(profileDir, 'package.json'))) {
 		throw new Error('profile 初始化失败（seed）');
 	}
+	// ★ 2026-10-29（CI 现场）：pnpm 10+ 默认**禁止依赖的 install 脚本**，并且把「有 build script
+	//   但没 approve」当成**错误**（ERR_PNPM_IGNORED_BUILDS）⇒ `dsh plugin add` 直接失败
+	//   ⇒ profile 种子建不出来（CI 实测卡在 koffi@3.1.1）⇒ 产物缺种子 ⇒ verify-staging 判死。
+	//   ⇒ 在 profile 的 package.json 里显式列出允许构建的依赖。
+	//   ★ 这个字段**随种子带到用户机器** ⇒ 用户在「插件中心/页面里装插件」时也不会再被这道闸门拦
+	//     （用户侧的同类失败此前无人注意过：pnpm 只在报错时才提示）。
+	const APPROVED_BUILD_DEPS = ['koffi', 'esbuild', 'better-sqlite3', 'sharp'];
+	try {
+		const pkgPath = join(profileDir, 'package.json');
+		const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+		pkg.pnpm = { ...(pkg.pnpm ?? {}), onlyBuiltDependencies: APPROVED_BUILD_DEPS };
+		writeFileSync(pkgPath, JSON.stringify(pkg, undefined, 2) + '\n');
+		console.log(`[prepack-dsh] profile 已放行 ${APPROVED_BUILD_DEPS.length} 个依赖的 install 脚本（pnpm.onlyBuiltDependencies）`);
+	} catch (e) {
+		console.log(`[prepack-dsh] ⚠ 写 pnpm.onlyBuiltDependencies 失败（pnpm 10+ 可能因此拦下种子构建）：${String(e?.message ?? e).split('\n')[0]}`);
+	}
 	for (const src of pluginSources) {
 		const pkg = JSON.parse(readFileSync(join(src, 'package.json'), 'utf8'));
 		// 与运行时 supervisor._stagePlugin 同构：暂存到 profile 内再装（避开跨盘符 file: 坑）。

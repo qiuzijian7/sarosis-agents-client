@@ -340,11 +340,19 @@
 		var pkg = props.pkg;
 		var perm = pkg.permissions || {};
 		var upgradable = pkg.upgradable === true;
+		// ★ 2026-10-29（用户：「已经安装的 item，状态要更新 安装→已安装」）：
+		//   Host 早就在 list/detail 里带了 `installedVersion`（按**磁盘落地物**核对过），
+		//   但这里一直没用 ⇒ 装完的卡片仍然显示「安装」按钮（点了会覆盖重装）✗
+		var installedVer = typeof pkg.installedVersion === 'string' ? pkg.installedVersion : '';
+		var installed = installedVer !== '';
 		var statusTag = pkg.status && pkg.status !== 'active'
 			? h('span', { className: 'vs-mp-tag warn' }, pkg.status === 'pending_review' ? '待审核' : String(pkg.status))
 			: null;
 		var distTag = pkg.distributionType && pkg.distributionType !== 'bundle'
 			? h('span', { className: 'vs-mp-tag' }, String(pkg.distributionType))
+			: null;
+		var instTag = installed
+			? h('span', { className: 'vs-mp-tag ok' }, '已安装' + (installedVer ? ' v' + installedVer : ''))
 			: null;
 		var upTag = upgradable
 			? h('span', { className: 'vs-mp-tag warn' }, '可升级 → v' + String(pkg.latestVersion || ''))
@@ -355,6 +363,14 @@
 		];
 		if (upgradable) {
 			actions.push(h('button', { key: 'u', className: 'vs-mp-btn primary', onClick: function () { props.onUpgrade(pkg); } }, '升级'));
+		} else if (installed) {
+			// 已装且没有新版本 ⇒ 按钮就地变成「已安装」（禁用：避免误点成覆盖重装）
+			actions.push(h('button', {
+				key: 'i',
+				className: 'vs-mp-btn',
+				disabled: true,
+				title: '已安装' + (installedVer ? ' v' + installedVer : '') + '；要重装请先在「已安装」页签卸载'
+			}, '已安装'));
 		} else if (perm.canPublish !== false) {
 			actions.push(h('button', { key: 'i', className: 'vs-mp-btn primary', onClick: function () { props.onInstall(pkg); } }, '安装'));
 		}
@@ -385,7 +401,7 @@
 				h('div', { className: 'vs-mp-card-topbody' },
 					h('div', { className: 'vs-mp-card-head' },
 						h('span', { className: 'vs-mp-kindtag' }, KIND_LABEL[pkg.kind] || String(pkg.kind)),
-						statusTag, distTag, upTag
+						statusTag, distTag, instTag, upTag
 					),
 					h('div', { className: 'vs-mp-card-title' }, textOf(pkg.name) || textOf(pkg.slug))
 				)
@@ -436,9 +452,19 @@
 		var d = props.detail;
 		var perm = d.permissions || {};
 		var versions = Array.isArray(d.versions) ? d.versions : [];
+		// ★ 2026-10-29：详情抽屉与卡片同一口径（都来自 Host 的磁盘核对结果）
+		var installedVer = typeof d.installedVersion === 'string' ? d.installedVersion : '';
+		var installed = installedVer !== '';
 
 		var actions = [];
-		if (perm.canPublish !== false) {
+		if (installed) {
+			actions.push(h('button', {
+				key: 'i',
+				className: 'vs-mp-btn',
+				disabled: true,
+				title: '已安装' + (installedVer ? ' v' + installedVer : '') + '；要重装请先在「已安装」页签卸载'
+			}, '已安装'));
+		} else if (perm.canPublish !== false) {
 			actions.push(h('button', { key: 'i', className: 'vs-mp-btn primary', onClick: props.onInstall }, '安装'));
 		}
 		if (perm.canEdit !== false) {
@@ -460,6 +486,7 @@
 			// 详情里放一张较大的缩略图（与 colorskill 的商品页一致）
 			h(PkgCover, { key: 'cover', pkg: d }),
 			h('div', { className: 'vs-mp-tagrow' },
+				installed ? h('span', { className: 'vs-mp-tag ok' }, '已安装' + (installedVer ? ' v' + installedVer : '')) : null,
 				d.visibility === 'private' ? h('span', { className: 'vs-mp-tag' }, '私有') : null,
 				d.featured ? h('span', { className: 'vs-mp-tag ok' }, '推荐') : null,
 				d.category ? h('span', { className: 'vs-mp-tag' }, textOf(d.category)) : null
@@ -760,6 +787,19 @@
 			setDetail(res);
 		}
 
+		/**
+		 * 从详情抽屉里安装：装完把抽屉自己也刷新一遍。
+		 *
+		 * ★ 2026-10-29：`run()` 只重拉列表 ⇒ 抽屉里那份 `detail` 还是旧的
+		 *   ⇒ 点完「安装」按钮原地不动（用户会以为没装上，再点一次）✗
+		 */
+		async function installFromDetail() {
+			if (!detail) { return; }
+			var slug = detail.slug;
+			var res = await onInstall(detail);
+			if (res) { await openDetail(slug); }
+		}
+
 		/** 打开发布表单（先拿本机可发布资源）。 */
 		async function openPublish() {
 			setPub({
@@ -893,9 +933,10 @@
 		}
 
 		// 卡片/抽屉上的动作（集中一处，避免每个组件各拼一遍参数）
-		var onInstall = function (pkg) { void run('install', { kind: pkg.kind, slug: pkg.slug }, '已安装（部分资源需要重启后才生效）'); };
-		var onUpgrade = function (pkg) { void run('upgrade', { kind: pkg.kind, slug: pkg.slug }, '已升级（部分资源需要重启后才生效）'); };
-		var onUninstall = function (pkg) { void run('uninstall', { kind: pkg.kind, slug: pkg.slug }, '已卸载'); };
+		// ⚠ 返回 promise：详情抽屉装完要据此刷新自己的状态（见 installFromDetail）
+		var onInstall = function (pkg) { return run('install', { kind: pkg.kind, slug: pkg.slug }, '已安装（部分资源需要重启后才生效）'); };
+		var onUpgrade = function (pkg) { return run('upgrade', { kind: pkg.kind, slug: pkg.slug }, '已升级（部分资源需要重启后才生效）'); };
+		var onUninstall = function (pkg) { return run('uninstall', { kind: pkg.kind, slug: pkg.slug }, '已卸载'); };
 		var onReview = function (pkg, status) {
 			void run('reviewStatus', { slug: pkg.slug, status: status }, status === 'active' ? '已通过审核' : '已拒绝并下架');
 		};
@@ -997,7 +1038,7 @@
 			detail ? h(DetailDrawer, {
 				detail: detail,
 				onClose: function () { setDetail(null); },
-				onInstall: function () { onInstall(detail); },
+				onInstall: function () { void installFromDetail(); },
 				onUninstall: function () { onUninstall(detail); },
 				onEdit: function () {
 					setEdit({

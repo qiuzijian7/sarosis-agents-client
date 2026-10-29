@@ -386,29 +386,53 @@ function fromLocalNormal(extensionPath: string, restoreProductionDependencies = 
 				// npm ls 会把**仓库根**当成一个生产依赖 ⇒ walkFiles 顺着 junction 遍历整个仓库
 				// （含根 node_modules，20 万+ 文件），打包阶段并发 open 触发 EMFILE ⇒
 				// compile-extensions-build 与 vscode-win32-x64 双双失败、最终无 exe 可归档。
-				// ① 只认物理位于本扩展 node_modules 下的依赖（distro 的 .build/distro/npm 另算）；
-				// ② 排除 optionalDependencies（按 npm 语义可缺失，使用者已有 try/catch 降级：
-				//    extensions/agentmemory-memory/src/{reranker,vectorIndex,serverConfig}.ts）。
-				//    ⚠ 不排除会白带 onnxruntime(157MB) + opentelemetry(42MB)。要恢复本地语义检索实体，
-				//    把 omitOptional 改回 false 即可。
+				// ★ 2026-10-29 修正判据（第三次改这处，前两次都只对了一半）：
+				//   `npm ls --all` 在**扩展目录**里返回的是**整个 hoist 后的根树**（实测 1805 项），
+				//   而不是"这个扩展自己的依赖"。而根 node_modules 的内容 = **根的生产依赖**
+				//   ⇒ 它们**本来就进 node_modules.asar**（gulp 的 deps 流）⇒ 扩展流**不需要再拷一遍**
+				//   （拷一遍 = asar 胖一倍 + 又是 EMFILE 的温床）。
+				//   ⇒ 扩展流只带**物理位于本扩展自己 node_modules 下**的那份（扩展专属依赖）。
+				//   ⚠ 但"根里有的"不等于"根的生产依赖里有的"：@vscode/fs-copyfile（git 扩展）与
+				//     @vscode/markdown-it-katex（markdown-math 扩展）原先**不在根 package.json**
+				//     ⇒ 不进 asar ⇒ 产物缺这两个包 ⇒ 运行期 ERR_MODULE_NOT_FOUND
+				//     （2026-10-29 CI 现场，strip-before-pack 的产物内容门禁判死）。
+				//     ⇒ 已把这两个包补进**根 package.json 的 dependencies**（asar 的唯一真源）。
+				// ① 允许：扩展自己的 node_modules、distro 的 .build/distro/npm；
+				// ② 排除：realpath 就是**仓库根**（`file:../..` 自引用 ⇒ 整个仓库会被当成一个依赖
+				//    去 walk ⇒ 20 万+ 文件 ⇒ EMFILE）、以及**逃出仓库**的 junction；
+				// ③ 排除 optionalDependencies 的闭包（按包名判定 ⇒ 不受 hoist 影响）：
+				//    extensions/agentmemory-memory 的 @xenova/transformers + iii-sdk
+				//    （onnxruntime 157MB + opentelemetry 42MB 的整条链）——代码里本来就有 try/catch 降级。
 				const allowedDepRoots: string[] = [normalizePath(path.join(root, '.build')) + path.sep];
 				try {
 					allowedDepRoots.push(normalizePath(fs.realpathSync(path.join(extensionPath, 'node_modules'))) + path.sep);
 				} catch { /* 没有 node_modules ⇒ 只剩 distro 侧 */ }
+				// 仓库根本身（realpath）：`file:../..` 自引用（extensions/agentmemory-memory 的 vssaros）
+				// —— 它的 realpath **就是**仓库根，必须显式排除（walkFiles 的"在仓库内"检查挡不住它）。
+				const repoRealNoSep = normalizePath(fs.realpathSync(root));
 				const allDeps = getProductionDependencies(extensionPath, { omitOptional: true });
 				const localDeps = allDeps.filter(dep => {
 					try {
-						const real = normalizePath(fs.realpathSync(dep)) + path.sep;
-						return allowedDepRoots.some(p => real.startsWith(p));
+						const real = normalizePath(fs.realpathSync(dep));
+						// ① 自引用（realpath === 仓库根）—— 排除：否则整个仓库会被当成一个依赖去 walk
+						//    （20 万+ 文件 ⇒ EMFILE ⇒ 打包崩 ⇒ 无 exe）。
+						if (real === repoRealNoSep) {
+							return false;
+						}
+						// ② 逃出仓库（junction 指向别处）—— 排除。
+						if (!real.startsWith(repoRealNoSep + path.sep)) {
+							return false;
+						}
+						// ③ 只认"物理在本扩展自己 node_modules 下"的依赖（根里那份进 asar，不用再拷）。
+						return allowedDepRoots.some(p => (real + path.sep).startsWith(p));
 					} catch {
 						return false;
 					}
 				});
 				if (localDeps.length !== allDeps.length) {
-					// 必须在日志里可见：某个依赖被跳过了，说明它不在本扩展 node_modules 下
-					// （自引用 / workspace 链接 / 被 npm 提升到仓库根）——提升到根的那种若真属
-					// 运行期必需，这个扩展装出来会 Cannot find module。
-					fancyLog(ansiColors.yellow(`[deps] ${path.basename(extensionPath)}: skipped ${allDeps.length - localDeps.length}/${allDeps.length} non-local dependencies (self-link/hoisted)`));
+					// 必须在日志里可见：被跳过的分两类 —— 自引用/逃出仓库（不可随包），
+					// 以及"根里的那份"（已在 asar 里，不必重复拷）。
+					fancyLog(ansiColors.yellow(`[deps] ${path.basename(extensionPath)}: shipped ${localDeps.length}/${allDeps.length} deps (rest: hoisted-to-root → already in asar, or self-link)`));
 				}
 				const productionDependencyFiles = localDeps.flatMap(dep => {
 					// dep is the absolute package dir (e.g. .../node_modules/@vscode/fs-copyfile).

@@ -38,7 +38,7 @@ import { fileURLToPath } from 'node:url';
 
 // ★ 复刻（§15.38）：分区改成「库」/「笔记」两节 ⇒ 两边的目录名都要（`NOTES_DIR` 是这轮补进 import 的 ✓，
 //   漏了它会在渲染期 `ReferenceError` ⇒ 页面直接 500 ✗）。
-import { escapeHtml, isVaultId, searchDocs, FEISHU_SYNC_SCRIPT, LIBRARY_DIR, NOTES_DIR, MAX_DOC_BYTES, TOPIC_OVERVIEW_FILE, buildFeishuSyncArgs } from './core/kb.js';
+import { escapeHtml, isVaultId, searchDocs, FEISHU_SYNC_SCRIPT, LIBRARY_DIR, NOTES_DIR, MAX_DOC_BYTES, TOPIC_OVERVIEW_FILE, RAW_DIR, RAW_SUBDIR, buildFeishuSyncArgs, resolveRawPath } from './core/kb.js';
 
 // ★ 2026-10-25：服务端 Markdown 渲染（markdown-it + Obsidian 方言；vendor 已随包）
 import { renderMarkdownHtml } from './md/render.js';
@@ -6697,13 +6697,23 @@ export function apply(ctx, config = {}) {
 						const vault = vaults.find(candidate => candidate.id === vaultId);
 						if (!vault) { send(404, { ok: false, error: `找不到 vault：${vaultId}` }); return; }
 						// 目标目录必须在「笔记」区内（空 = 笔记区根 ✓ —— resolveOrganizePath 认 `笔记` 本身 ✓）
+						/*
+						 * 目标目录必须在「笔记」区内（空 = 笔记区根 ✓ —— resolveOrganizePath 认 笔记 本身 ✓），
+						 * **或**「库/raw」原始素材区（★ 2026-10-29 用户要求：聊天消息「导入到知识库」落在 库/raw）。
+						 *   「库」区其余分类仍然只读 ✓（围栏没放宽，只是多了一个受控可写子区）。
+						 */
 						const dirPath = dirRel || NOTES_DIR;
 						const dirResolved = resolveOrganizePath(vault.dir, dirPath);
-						if (dirResolved.inside !== true && dirResolved.rel !== NOTES_DIR) {
-							send(400, { ok: false, error: `只能在可写的「笔记」区内新建：${dirResolved.why ?? dirPath}` });
+						const rawResolved = resolveRawPath(vault.dir, dirPath);
+						const inNotes = dirResolved.inside === true || dirResolved.rel === NOTES_DIR;
+						const inRaw = rawResolved.inside === true || rawResolved.rel === RAW_DIR;
+						if (!inNotes && !inRaw) {
+							send(400, { ok: false, error: `只能在可写的「笔记」区或「${RAW_DIR}」区内新建：${dirResolved.why ?? dirPath}` });
 							return;
 						}
-						const baseDir = dirResolved.rel === NOTES_DIR ? join(vault.dir, NOTES_DIR) : dirResolved.abs;
+						const baseDir = inRaw
+							? (rawResolved.rel === RAW_DIR ? join(vault.dir, LIBRARY_DIR, RAW_SUBDIR) : rawResolved.abs)
+							: (dirResolved.rel === NOTES_DIR ? join(vault.dir, NOTES_DIR) : dirResolved.abs);
 						const release = await acquireFileLock(lockFileFor(vault.dir), { label: '知识库页面新建' });
 						let created;
 						let nav;

@@ -129,26 +129,9 @@ window.__ModuleLoader__.load({
 				 * → rebind 回本视图（历史独立，preset/cwd 沿用）。
 				 * 宿主较旧（无该方法）时**回落**到原来的"新开页签"，并如实说明为什么不一致 ✓。
 				 */
-				const newSession = () => {
-					if (!bridge) { setNote("页面桥不可用"); return; }
-					const call = typeof bridge.newSession === "function"
-						? () => bridge.newSession()
-						: (typeof bridge.newChat === "function"
-							? () => bridge.newChat()          // 回落：旧宿主只有"新开页签"
-							: null);
-					if (!call) { setNote("页面桥过旧（newSession / newChat 都不可用）"); return; }
-					const fellBack = typeof bridge.newSession !== "function";
-					try {
-						Promise.resolve(call()).then(
-							() => {
-								state.newSessions = (state.newSessions || 0) + 1;
-								if (fellBack) { setNote("宿主较旧：这次是新开了页签（升级后会改为本页签内新建）"); }
-							},
-							(e) => { setNote(String((e && e.message) || e)); });
-					} catch (e) {
-						setNote(String((e && e.message) || e));
-					}
-				};
+				// ★ 2026-10-29（用户："移除 dsh 侧聊天框中的 新建会话按钮"）：
+				//   按钮移除后 `newSession` 的唯一调用点没了 ⇒ 一并删掉，不留死代码。
+				//   ⚠ 桥侧 `bridge.newSession` **保留**（宿主能力，将来别处可能用），这里只是不再有 UI 入口。
 				const openSession = (row) => {
 					setOpen(false);
 					if (!row || row.isCurrent) { return; }
@@ -165,14 +148,11 @@ window.__ModuleLoader__.load({
 						setNote(String((e && e.message) || e));
 					}
 				};
+				// ★ 2026-10-29（用户要求："移除 dsh 侧聊天框中的 新建会话按钮"）：
+				//   这个「＋」是**本页签内**再开一段新对话（不是新页签），与顶部「＋ 新建会话」
+				//   语义重叠、极容易点错 ⇒ 已移除。要开新对话请用**顶部**的「＋」（新页签）。
+				//   保留后面的「🕘 ▾」历史会话入口 ✓。
 				const children = [
-					react.createElement("button", {
-						// 两个标记并存：`new-chat` 是老标记（自动化/测试可能在用），`new-session` 是新语义 ✓
-						key: "new", type: "button",
-						"data-vssaros-new-chat": "1", "data-vssaros-new-session": "1",
-						title: "新建会话（本页签内，历史独立；新开页签请用顶部 ＋）",
-						onClick: newSession, style: BTN,
-					}, "＋"),
 					react.createElement("button", {
 						key: "hist", type: "button", "data-vssaros-history-chip": "1",
 						"aria-haspopup": "menu", "aria-expanded": open,
@@ -231,6 +211,164 @@ window.__ModuleLoader__.load({
 				}
 				return react.createElement("span", { ref: rootRef, style: { position: "relative", display: "inline-flex", gap: 6 } }, ...children);
 			}
+			/**
+			 * 「新窗格」入口（2026-10-29；用户："希望是在当前窗口下，分屏出一个聊天框"）。
+			 *
+			 * 点它 = **在当前这扇桌面窗口里左右分屏**，右栏是一条**新会话**的纯聊天框
+			 * （不是弹一扇独立窗口 —— 那是 `openDesktopWindow`，只给命令面板用）。
+			 * 两栏各自独立会话 + 独立网络分区 ⇒ 并行工作互不干扰 ✓。
+			 * 页面是 WebContentsView 里的前端，**开不了窗口、也画不了分屏** ⇒ 只能走页面桥
+			 * `splitChatPane`（桥 23；宿主按发起请求的视图定位是哪扇窗口，再排两栏）✓。
+			 *
+			 * ⚠ 旧宿主（桥 < 23）没有该命令：必须**明说**（notify warn），不许"点了没反应"✗。
+			 */
+			function splitPane() {
+				const api = (typeof window !== "undefined" && window.vssarosDsh) || null;
+				if (api && typeof api.splitChatPane === "function") {
+					try {
+						const p = api.splitChatPane();
+						if (p && typeof p.catch === "function") { p.catch(() => undefined); }
+					} catch { /* IPC 失败只影响这一次点击 */ }
+					return;
+				}
+				const st = (typeof window !== "undefined" && window.__vssarosChatSurface) || null;
+				if (st) {
+					st.newWindowEntry = "unsupported";
+					st.newWindowEntryError = "splitChatPane unavailable (bridgeVersion=" + (api && api.bridgeVersion) + ")";
+				}
+				try {
+					if (api && typeof api.notify === "function") {
+						api.notify("warn", "当前宿主不支持「分屏窗格」（需要页面桥 23）");
+					}
+				} catch { /* 通知失败不阻塞 */ }
+			}
+
+			/** 与 [＋][🕘][⚙] 同款的胶囊按钮（主题色一律走 --dsw-alias-*）。 */
+			function NewWindowChip() {
+				return react.createElement("button", {
+					type: "button",
+					// ⚠ 稳定锚点（e2e / 守卫都按它找）：
+					"data-vssaros-new-window": "1",
+					title: "在当前窗口里分屏出一栏新聊天（并行工作）",
+					"aria-label": "分屏出一栏新聊天",
+					onClick: splitPane,
+					style: {
+						display: "inline-flex", alignItems: "center", gap: 4,
+						padding: "1px 8px", borderRadius: 999, cursor: "pointer",
+						border: "1px solid var(--dsw-alias-border-l1, transparent)",
+						background: "var(--dsw-alias-bg-layer-1, transparent)",
+						color: "var(--dsw-alias-label-secondary, currentColor)",
+						fontSize: 11, lineHeight: "18px", whiteSpace: "nowrap",
+					},
+				}, "新窗格");
+			}
+
+			/** 「⋯」栏菜单动作（2026-10-29，桥 24）：移到极端位置 / 关闭这一栏。 */
+			function paneAction(action) {
+				const api = (typeof window !== "undefined" && window.vssarosDsh) || null;
+				if (api && typeof api.paneAction === "function") {
+					try {
+						const p = api.paneAction(action);
+						if (p && typeof p.catch === "function") { p.catch(() => undefined); }
+					} catch { /* IPC 失败只影响这一次点击 */ }
+					return;
+				}
+				try {
+					if (api && typeof api.notify === "function") {
+						api.notify("warn", "当前宿主不支持「栏操作」（需要页面桥 24）");
+					}
+				} catch { /* 通知失败不阻塞 */ }
+			}
+
+			/**
+			 * 「⋯」= **这一栏的操作菜单**（2026-10-29）。
+			 *
+			 * ⚠ 为什么菜单放在**页面里**而不是桌面窗口的 DOM 抓手带：aux（桌面）窗口的 DOM 层
+			 *   **收不到鼠标事件**（真机：DOM 抓手带能建、能看见，但 mousedown 从不触发 ⇒ 拖不动）
+			 *   ⇒ 交互只能待在页面里（页面在原生视图内部，事件完全正常）✓
+			 *   ⇒ 所以"拖拽重排"改成了"菜单移动"（等价能力，只是少了自由拖拽的手感）。
+			 */
+			function PaneMenuChip() {
+				const [open, setOpen] = react.useState(false);
+				const rootRef = react.useRef(null);
+				react.useEffect(() => {
+					if (!open) { return undefined; }
+					const onDown = (e) => {
+						if (rootRef.current && !rootRef.current.contains(e.target)) { setOpen(false); }
+					};
+					document.addEventListener("mousedown", onDown, true);
+					return () => document.removeEventListener("mousedown", onDown, true);
+				}, [open]);
+				const items = [
+					["移到最左", "moveLeft"],
+					["移到最右", "moveRight"],
+					["移到最上", "moveTop"],
+					["移到最下", "moveBottom"],
+					["关闭这一栏", "close"],
+				];
+				return react.createElement("span", { ref: rootRef, style: { position: "relative", display: "inline-flex" } },
+					react.createElement("button", {
+						type: "button",
+						"data-vssaros-pane-menu": "1",
+						title: "这一栏：移动 / 关闭",
+						"aria-label": "这一栏：移动 / 关闭",
+						onClick: () => setOpen(!open),
+						style: {
+							display: "inline-flex", alignItems: "center", justifyContent: "center",
+							height: 18, padding: "0 8px", borderRadius: 999, cursor: "pointer",
+							border: "1px solid var(--dsw-alias-border-l1, transparent)",
+							background: "var(--dsw-alias-bg-layer-1, transparent)",
+							color: "var(--dsw-alias-label-secondary, currentColor)",
+							fontSize: 11, lineHeight: "18px", whiteSpace: "nowrap", fontFamily: "inherit",
+						},
+					}, "⋯"),
+					open ? react.createElement("div", {
+						role: "menu",
+						style: {
+							position: "absolute", top: "100%", right: 0, marginTop: 4, zIndex: 1000, padding: 4,
+							borderRadius: 8, minWidth: 132,
+							border: "1px solid var(--dsw-alias-border-l1, transparent)",
+							background: "var(--dsw-alias-bg-layer-1, #252526)",
+							boxShadow: "0 8px 24px rgba(0,0,0,.35)",
+						},
+					}, ...items.map(([label, action]) => react.createElement("button", {
+						key: action, type: "button", role: "menuitem",
+						"data-vssaros-pane-action": action,
+						onClick: () => { setOpen(false); paneAction(action); },
+						style: {
+							display: "block", width: "100%", textAlign: "left", padding: "5px 8px",
+							border: "none", borderRadius: 6, background: "transparent",
+							color: "var(--dsw-alias-label-primary, inherit)", fontSize: 12, cursor: "pointer", fontFamily: "inherit",
+						},
+					}, label))) : null);
+			}
+
+			// ★ 2026-10-29（桌面窗口多开）：「新窗口」**单独占一个条目**，order **-4**
+			//   ⇒ 这一排读作「新窗口 | [＋ 新建会话][🕘 历史会话] | [⚙ 设置]」。
+			//   ⚠ 别撞：官方同槽 `schedule-catalog` = -5（未启用时不出现）、`session-log-download` = 0；
+			//     我们自己的 `vssaros-sessions` = -3、`vssaros-settings` = -2 ⇒ **-4 是空档** ✓。
+			//   ⚠ 只在带官方 chrome 的视图装（IDE 里的纯聊天框 chatOnly=true ⇒ 没有这一排动作组，
+			//     装上去也是空转；而且"在 IDE 里点它弹出一扇 dsh 桌面窗口"会让人困惑）✓。
+			const wantNewWindowChip = bridge.surface === "full"
+				|| (bridge.surface === "chat" && bridge.chatOnly === false);
+			if (wantNewWindowChip) {
+				try {
+					ctx.slots.inject(SLOT, () => ctx.slots.register(
+						{ name: SLOT, id: "vssaros-new-window", order: -4 }, NewWindowChip));
+					state.newWindowChip = true;
+				} catch (e) {
+					state.newWindowError = String((e && e.message) || e);
+				}
+				// 「⋯」栏菜单：order **-1**（排在 ⚙(-2) 右边、官方 ⋯(0) 左边）⇒ 不撞 ✓
+				try {
+					ctx.slots.inject(SLOT, () => ctx.slots.register(
+						{ name: SLOT, id: "vssaros-pane-menu", order: -1 }, PaneMenuChip));
+					state.paneMenuChip = true;
+				} catch (e) {
+					state.paneMenuError = String((e && e.message) || e);
+				}
+			}
+
 			try {
 				// order **-3**（与 ⚙ 的 -2 同组，目标 `[＋][🕘][⚙]`）：官方 `session-log-download`
 				// （会话日志导出，那枚 `…`）注册时**没传 order** ⇒ 默认 0 ⇒ 我们取负值才会排在它左边，

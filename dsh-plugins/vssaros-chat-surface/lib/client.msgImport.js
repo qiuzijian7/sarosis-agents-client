@@ -4,11 +4,15 @@
 //
 // ── 为什么是"注入按钮"而不是改官方组件 ─────────────────────────────────────────
 // 消息底部那一排（复制 / 赞 / 踩 / 分享 / 用量 / 时间）是**官方组件**，我们拿不到它的 React 树。
-// 好在官方那枚「复制」按钮打了稳定的 DOM 钩子：类名里含 copyButton
-// （CSS-module 哈希类名形如 _copyButton_8z71b_132 ⇒ 选择器 [class*=copyButton] 命中 ✓）。
+// 好在官方那枚「复制」按钮有**语义**钩子：消息底栏那枚是
+//   <button class="xzv4MW_action" aria-label="复制">      ← class 是 CSS-module 哈希，**没有** copyButton
+//   （copyButton 是**终端块**的类名 —— 拿它去找消息底栏会命中 0 个 ⇒ 按钮永远不出现，2026-10-29 真机踩过）
+//   所在行 <div class="xzv4MW_actions">，行尾有 <span class="xzv4MW_endInfo">用量 … tok</span>
+// ⇒ 定位用两条**语义**锚点：① 按钮 aria-label/title 含「复制 / Copy」；② 行内有 [class*="endInfo"]（消息底栏标志）。
 //
 // ⇒ 用 MutationObserver 盯 DOM，给每条**助手消息**的底部注入一枚按钮（幂等：注入过的打
-//   data-vssaros-kb-import），点击后把这条消息的正文写进当前知识库的「笔记/导入」目录。
+//   data-vssaros-kb-import），点击后把这条消息的正文写进当前知识库的「库/raw」原始素材区
+//   （★ 2026-10-29 用户要求；服务端只放开了 <vault>/库/raw/** 这一个受控可写子区，「库」区其余分类仍只读）。
 //   所有 DOM 访问都包 try/catch：官方结构变了就**不注入**，绝不影响聊天本身 ✓。
 window.__ModuleLoader__.load({
 	id: "@vssaros/dsh-chat-surface",
@@ -61,6 +65,17 @@ window.__ModuleLoader__.load({
 		}
 
 		/** 去掉文件名里的非法字符（服务端也会校验，这里先洗一遍）。 */
+		/**
+		 * 导入文件的**规整命名**：对话导入-<时间戳>.md（★ 2026-10-29 用户要求）。
+		 *   秒级 ⇒ 同一分钟内连导两次也不撞名（服务端同名会自动加 (1)/(2)，这里直接避免）。
+		 *   用**本地时间**（用户看着最直观）✓。
+		 */
+		function stampOf(d = new Date()) {
+			const p = (n) => String(n).padStart(2, '0');
+			return String(d.getFullYear()) + p(d.getMonth() + 1) + p(d.getDate())
+				+ '-' + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
+		}
+
 		function safeName(s) {
 			return String(s || "").replace(/[\\/:*?"<>|]/g, " ").trim().slice(0, 60) || "未命名";
 		}
@@ -73,12 +88,12 @@ window.__ModuleLoader__.load({
 				)];
 				let best = "";
 				for (const el of cands) {
-					const t = (el.innerText || "").trim();
+					const t = textOf(el);
 					if (t.length > best.length) { best = t; }
 				}
 				if (best.length > 30) { return best; }
-				let t = (container.innerText || "").trim();
-				const foot = (row && row.innerText ? row.innerText.trim() : "");
+				let t = textOf(container);
+				const foot = textOf(row);
 				if (foot && t.endsWith(foot)) { t = t.slice(0, t.length - foot.length).trim(); }
 				return t;
 			} catch { return ""; }
@@ -88,18 +103,36 @@ window.__ModuleLoader__.load({
 		 * 找到这条消息的「容器」：从复制按钮往上走，取**第一个**既有足够正文、
 		 * 又只含这一枚复制按钮的祖先（避免把整条会话都吞进来）。
 		 */
+		/**
+		 * 取元素的纯文本。
+		 *
+		 * ★ 2026-10-29（真机：按钮没注入 / 取文全空）：**不能用 innerText** ——
+		 *   innerText 只对**已渲染**的元素有值；隐藏的 WebContentsView（页签在后台）里
+		 *   它一律返回空串 ⇒ 判定"没正文"⇒ 按钮不注入 / 导入内容为空。
+		 *   ⇒ 统一用 textContent（不受可见性影响）+ 压空白。
+		 */
+		const textOf = (el) => String((el && el.textContent) || '').replace(/\s+/g, ' ').trim();
+
 		function containerOf(copyBtn) {
 			try {
 				let el = copyBtn.parentElement;
-				let fallback = null;
+				const rowText = ((copyBtn.parentElement && copyBtn.parentElement.textContent) || '').trim();
 				for (let i = 0; i < 8 && el; i++) {
-					const copies = el.querySelectorAll(COPY_BTN).length;
-					const text = (el.innerText || "").trim();
-					if (!fallback && text.length > 120) { fallback = el; }
-					if (copies === 1 && text.length > 120) { return el; }
+					const text = textOf(el);
+					// 去掉底栏那行的文字 ⇒ 剩下的才是"这条消息的正文"
+					const body = (rowText && text.endsWith(rowText)) ? text.slice(0, text.length - rowText).trim() : text;
+					/*
+					 * ★ 2026-10-29（真机：短消息时取文爬到了**页面级** ⇒ 导进去的是页面 hero 文本）：
+					 *   老判据是"正文 > 120 字" ⇒ 短消息不满足 ⇒ 一路爬到 <body>。
+					 *   ⇒ 改成：**最近的**有正文的祖先就是消息块（> 8 字即可）；
+					 *     太大（> 20000 字）说明爬到会话层了 ⇒ 放弃（宁可不导，也不导错）。
+					 */
+					if (body.length > 8) {
+						return body.length > 20000 ? null : el;
+					}
 					el = el.parentElement;
 				}
-				return fallback;
+				return null;
 			} catch { return null; }
 		}
 
@@ -114,15 +147,23 @@ window.__ModuleLoader__.load({
 			return { id: id, name: (d && d.vaultName) || (vaults.find((v) => v.id === id) || {}).name || "" };
 		}
 
-		/** 把消息正文写进知识库（笔记/导入/<标题>.md）。 */
+		/** 把消息正文写进知识库（库/raw/<标题>.md —— ★ 2026-10-29 用户要求）。 */
 		async function importToKb(text) {
 			const vault = await activeVault();
 			const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-			const title = safeName(lines[0] || "对话导入");
+			// ★ 2026-10-29（用户要求）：统一命名「对话导入-<时间戳>.md」，不再用消息首行当文件名。
+			const stamp = stampOf();
+			const title = '对话导入-' + stamp;
+			// 消息首行留作**正文里的 H1**（文件名已规整，标题仍是原来那行更有用 ✓）
+			const firstLine = String(lines[0] ?? '').trim();
+			const body = (firstLine && firstLine.length <= 80 && firstLine.charAt(0) !== '#')
+				? '# ' + firstLine + '\n\n' + text : text;
 			const r = await fetch("/x/kb/api/new", {
 				method: "POST", credentials: "same-origin",
 				headers: { "content-type": "application/json" },
-				body: JSON.stringify({ vaultId: vault.id, kind: "file", dir: "笔记/导入", name: title, text: text }),
+				// ★ 2026-10-29（用户要求）：导入落到**库/raw**（原始素材区），不是「笔记/导入」。
+				//   「库」区其余分类仍只读 ⇒ 服务端只放开了 <vault>/库/raw/** 这一个受控可写子区。
+				body: JSON.stringify({ vaultId: vault.id, kind: "file", dir: "库/raw", name: title, text: body }),
 			});
 			const b = await r.json();
 			if (!b || b.ok === false) { throw new Error((b && b.error) || "写入失败"); }
@@ -161,7 +202,7 @@ window.__ModuleLoader__.load({
 							importToKb(text).then((res) => {
 								btn.disabled = false;
 								btn.textContent = "导入到知识库";
-								toast("已导入到知识库：" + (res.vault ? res.vault + " · " : "") + res.rel);
+								toast("已导入到知识库（库/raw）：" + (res.vault ? res.vault + " · " : "") + res.rel);
 							}).catch((e) => {
 								btn.disabled = false;
 								btn.textContent = "导入到知识库";

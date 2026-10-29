@@ -27,7 +27,7 @@ import { isSameOrigin } from '../common/dshCli.js';
 // 主 frame 导航判据（纯函数；表驱动单测见 `test/common/dshViewNavigation.test.ts`）——
 // 2026-10-23 从本文件的 `will-navigate` 里抽出来："同源非根路径要拦"这条规则此前完全没法单测。
 import { decideMainFrameNavigation, isBlankPopupUrl } from '../common/dshViewNavigation.js';
-import { DSH_VIEW_PARTITION, DSH_VIEW_PARTITION_CHAT_POOL_PREFIX, DSH_VIEW_PARTITION_DESKTOP, DshColorScheme, DshViewSurface, IDshViewBounds, IDshViewInfo, surfaceTakesRoute } from '../common/dshHarness.js';
+import { DSH_VIEW_PARTITION, DSH_VIEW_PARTITION_CHAT_POOL_PREFIX, DSH_VIEW_PARTITION_DESKTOP, DSH_VIEW_PARTITION_DESKTOP_POOL_PREFIX, DshColorScheme, DshViewSurface, IDshViewBounds, IDshViewInfo, surfaceTakesRoute } from '../common/dshHarness.js';
 import { resolveViewUrl } from '../common/dshPluginPage.js';
 import { unavailablePageUrl } from '../common/dshViewHostUnavailable.js';
 import { IViewLoadRetryState, newViewLoadRetryState, onDocumentFinishedLoad, onMainFrameNavigated, planLoadRetry, resetViewLoadRetry, shouldResetRetryBudget, VIEW_LOAD_MAX_RETRIES, withAuthRetry } from '../common/dshViewLoadRetry.js';
@@ -357,6 +357,18 @@ interface IViewSlot {
 	readonly ownerWindowId: number;
 	readonly surface: DshViewSurface;
 	/**
+	 * 该视图是否被显式要求**独立分区**（桌面窗口走这条；`surface=chat` 的普通聊天框不走）。
+	 *
+	 * 为什么要在槽上记：判定"第 2..N 扇桌面窗口该用哪个分区"必须知道**当前已有几扇**占着主桌面
+	 * 分区 ⇒ 只能数视图（socket 池是 session 级的 ⇒ 跨窗口共享）✓。
+	 */
+	readonly isolated: boolean;
+	/**
+	 * 该视图实际用的**分区名**（判定结果；日志里也用它 ⇒ 现场可查）。
+	 * 判"主桌面分区是否已占用"就是比它与 `DSH_VIEW_PARTITION_DESKTOP` ✓。
+	 */
+	readonly partition: string;
+	/**
 	 * 视图创建时刻（2026-10-19）：**端到端"新建聊天框慢不慢"**的唯一客观起点 ——
 	 * 会话在屏的那一次上报与它相减就是用户实际等的时间（含建 WebContents / 导航 / 页面加载 /
 	 * 客户端连接阶梯 / 会话进 roster），不再靠"看着像"去猜 ✗。
@@ -589,6 +601,20 @@ export class DshViewHost extends Disposable {
 	private readonly _chatPoolSessions = new Map<string, Session>();
 	/** 聊天池分区的序号（单调递增 ⇒ 分区名不复用 ⇒ 不会撞上旧 cookie）。 */
 	private _chatPoolSeq = 0;
+	/**
+	 * **桌面窗口多开**的独立分区池（2026-10-29）。
+	 *
+	 * 键 = 分区名（`persist:vssaros-dsh-desktop-<n>`），值 = 该分区的 `Session`。
+	 * 第 1 扇桌面窗口用主桌面分区（`DSH_VIEW_PARTITION_DESKTOP`），第 2..N 扇各占一个池分区 ⇒
+	 * **独立 socket 池** ⇒ 两扇窗口不会互相饿死（6 条 HTTP/1.1 连接上限的取证见
+	 * `DSH_VIEW_PARTITION_DESKTOP` 的注释）✓。
+	 *
+	 * 为什么要登记在这里：认证 cookie **每 3 分钟过期**，而新分区的 cookie 是用 authUrl 现换的
+	 * ⇒ 不续期就会在几分钟后变成 "authentication required" 黑屏 ⇒ `_refreshAuth` 必须遍历它们 ✓。
+	 */
+	private readonly _desktopPoolSessions = new Map<string, Session>();
+	/** 桌面池分区的序号（单调递增 ⇒ 分区名不复用 ⇒ 不会撞上旧 cookie）。 */
+	private _desktopPoolSeq = 0;
 	private _connection: IDshHostConnection | undefined;
 
 	private readonly _onDidPageEvent = this._register(new Emitter<DshPageEvent>());
@@ -695,6 +721,42 @@ export class DshViewHost extends Disposable {
 			}
 		}
 		return { ses, name };
+	}
+
+	/**
+	 * 取一个**桌面池分区**（第 2..N 扇桌面窗口各一个 ⇒ 独立 socket 池）。
+	 *
+	 * 与聊天池同法：权限策略与导航守卫**必须**对新分区同样生效（否则麦克风/剪贴板被拒、
+	 * 跨源导航守卫失效）✓；分区名单调递增不复用 ⇒ 不会撞上旧 cookie ✓。
+	 */
+	private _acquireDesktopPoolSession(name: string): { ses: Session; name: string } {
+		let ses = this._desktopPoolSessions.get(name);
+		if (!ses) {
+			ses = this._configureViewSession(electronSession.fromPartition(name));
+			this._desktopPoolSessions.set(name, ses);
+			const seq = Number(name.slice(DSH_VIEW_PARTITION_DESKTOP_POOL_PREFIX.length));
+			if (Number.isFinite(seq) && seq > this._desktopPoolSeq) {
+				this._desktopPoolSeq = seq;
+			}
+		}
+		return { ses, name };
+	}
+
+	/**
+	 * 主桌面分区（`DSH_VIEW_PARTITION_DESKTOP`）上是否已经有**另一扇**桌面窗口（2026-10-29）。
+	 *
+	 * 判据 = 视图槽上的 `partition` 字段（不猜、不碰 session 对象 ⇒ 无副作用 ✓）。
+	 * 为什么必须数视图：socket 池是 **session 级**的 ⇒ 跨窗口共享 ⇒ "第 2 扇窗口"只能靠
+	 * "主桌面分区已被占用"来识别 ✓（否则两扇窗口共用一个分区 ⇒ 互相饿死）。
+	 */
+	private _desktopPartitionBusy(): boolean {
+		const main = process.env.DSH_TEST_DESKTOP_PARTITION || DSH_VIEW_PARTITION_DESKTOP;
+		for (const slot of this._views.values()) {
+			if (slot.isolated && slot.partition === main) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/** 给一个分区配上我们的权限策略（多个分区共用同一套；见 `session` getter 的注释）。 */
@@ -815,10 +877,19 @@ export class DshViewHost extends Disposable {
 			desktopPartition: process.env.DSH_TEST_DESKTOP_PARTITION || DSH_VIEW_PARTITION_DESKTOP,
 			mainPartition: process.env.DSH_TEST_VIEW_PARTITION || DSH_VIEW_PARTITION,
 			poolPrefix: DSH_VIEW_PARTITION_CHAT_POOL_PREFIX,
+			// ★ 2026-10-29（桌面窗口多开）：主桌面分区是否已被**另一扇**桌面窗口占用
+			//   ⇒ 是则第 2..N 扇各占一个独立分区（独立 socket 池）✓。
+			desktopBusy: this._desktopPartitionBusy(),
+			desktopPoolSeq: this._desktopPoolSeq,
+			desktopPoolPrefix: DSH_VIEW_PARTITION_DESKTOP_POOL_PREFIX,
 		});
 		let viewSession: Session;
 		if (decision.kind === 'desktop') {
 			viewSession = this.desktopSession;
+		} else if (decision.kind === 'desktop-pool') {
+			// 第 2..N 扇桌面窗口：独立分区（否则两扇窗口共用一个分区 ⇒ 互相饿死）✓
+			const pool = this._acquireDesktopPoolSession(decision.partition);
+			viewSession = pool.ses;
 		} else if (decision.kind === 'main') {
 			viewSession = this.session;
 		} else if (decision.kind === 'pool') {
@@ -847,7 +918,7 @@ export class DshViewHost extends Disposable {
 		view.setBounds(OFFSCREEN);
 		view.setVisible(false);
 		const takesRoute = surfaceTakesRoute(surface);
-		const slot: IViewSlot = { id: viewId, view, ownerWindowId, surface, createdAt: Date.now(), route: takesRoute ? route : undefined, pageSurface: takesRoute ? pageSurface : undefined, attachedTo: undefined, visible: false, retry: newViewLoadRetryState(), blankChecks: 0, blankReloads: 0, colorScheme, sessionId: sessionId || undefined, backgrounds, session: viewSession };
+		const slot: IViewSlot = { id: viewId, view, ownerWindowId, surface, createdAt: Date.now(), isolated: isolatedPool, partition: decision.partition, route: takesRoute ? route : undefined, pageSurface: takesRoute ? pageSurface : undefined, attachedTo: undefined, visible: false, retry: newViewLoadRetryState(), blankChecks: 0, blankReloads: 0, colorScheme, sessionId: sessionId || undefined, backgrounds, session: viewSession };
 		// ★ 染色必须在**任何一次 attach / setVisible(true) 之前**（否则中间那几毫秒照样露白 ✗）
 		this._applyViewBackground(slot);
 		this._wire(slot);
@@ -1064,6 +1135,17 @@ export class DshViewHost extends Disposable {
 		// 弹窗的独立分区也要续期（否则它自己的 cookie 过期后弹窗单独 401）✓
 		if (this._desktopSession) {
 			await this._refreshAuthIn(this._desktopSession, conn).catch(() => { /* warning 已在内部记 */ });
+		}
+		// ★ 第 2..N 扇桌面窗口的独立分区同样要续期（2026-10-29）：
+		//   与聊天池同因（这些分区的 cookie 是加载时用 authUrl 现换的，**每 3 分钟过期**）
+		//   ⇒ 不续期 ⇒ 第二扇窗口几分钟后变成 "authentication required" 黑屏，
+		//   而 dsh 客户端遇到 401 只显示那句提示、**既不重试也不导航** ⇒ 用户只能重开 IDE ✗✗。
+		//   只续**还有活跃视图**的分区（没人在看的分区续了也白续）✓。
+		for (const ses of this._desktopPoolSessions.values()) {
+			if (!this._hasViewOnSession(ses)) {
+				continue;
+			}
+			await this._refreshAuthIn(ses, conn).catch(() => { /* warning 已在内部记 */ });
 		}
 		// ★ 并发聊天视图的独立分区同样要续期（2026-10-21）：
 		//   这些分区的 cookie 是加载时用 authUrl 现换的，**每 3 分钟过期**；
@@ -1496,6 +1578,10 @@ export class DshViewHost extends Disposable {
 			...(s.sessionId ? { sessionId: s.sessionId } : {}),
 			visible: s.visible,
 			nativeVisible: s.view.getVisible(),
+			// ★ 2026-10-29：`viewSurface`（视图**类型**）+ `focused`（原生焦点快照）
+			//   ⇒ 渲染侧可校准"活动聊天视图"（focus 事件只在获得焦点时来，blur 不来 ⇒ 需要快照兜底）。
+			viewSurface: s.surface,
+			focused: s.view.webContents.isFocused(),
 			bounds: s.view.getBounds(),
 		}));
 	}
@@ -2204,7 +2290,9 @@ export class DshViewHost extends Disposable {
 			// ★ 2026-10-17（真机「输入框无法输入」）：全窗视图的**焦点进出**必须落日志 ——
 			//   页面侧 keys 恒 0 时，唯一能区分"焦点没到视图"与"到了但进不去输入框"的就是这一对 ✓。
 			if (slot.surface === 'full') { this._logService.info(`[dshHarness] view ${slot.id} webContents FOCUS`); }
-			this._onDidPageEvent.fire({ viewId: slot.id, kind: 'focus' });
+			// ⚠ 带上 surface（2026-10-29）：渲染侧据此决定"能不能占活动聊天位"
+			//   ⇒ 桌面窗口左右分屏时，"Add File to Chat"能落到用户正在看的那一栏 ✓。
+			this._onDidPageEvent.fire({ viewId: slot.id, kind: 'focus', surface: slot.surface });
 		});
 		wc.on('blur', () => {
 			if (slot.surface === 'full') { this._logService.info(`[dshHarness] view ${slot.id} webContents BLUR`); }

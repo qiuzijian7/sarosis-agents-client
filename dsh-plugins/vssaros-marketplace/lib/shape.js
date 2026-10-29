@@ -91,10 +91,14 @@ export function toPackageSummary(pkg, opts = {}) {
  *
  * ⚠ 刻意复用它 `baseOf`：详情与列表的公共字段**永远一致** ✓
  *   （以前各写一遍，加字段时漏了详情 ⇒ 编辑表单拿不到现值，可见性每次被重置 ✗）
+ *
+ * @param {object} pkg 服务端返回的包
+ * @param {{ installedVersion?: string }} [opts]
+ *   · `installedVersion`：给了就带上（详情抽屉的按钮也标"已安装"，与卡片一致 ✓）
  */
-export function toPackageDetail(pkg) {
+export function toPackageDetail(pkg, opts = {}) {
 	const p = pkg ?? {};
-	return {
+	const out = {
 		...baseOf(p),
 		// 编辑表单要回显 ⇒ 必须带
 		visibility: p.visibility ?? 'public',
@@ -109,6 +113,10 @@ export function toPackageDetail(pkg) {
 			manifest: v.manifest ?? null,
 		})),
 	};
+	if (typeof opts.installedVersion === 'string') {
+		out.installedVersion = opts.installedVersion;
+	}
+	return out;
 }
 
 /**
@@ -124,6 +132,9 @@ export function toInstalledItem(entry, latest = '') {
 		slug: entry.storeId,
 		name: entry.storeId,
 		version: entry.version,
+		// ★ 2026-10-29：已安装页签的卡片也必须带 `installedVersion`
+		//   —— 否则卡片按"没装"渲染，会出现「已安装列表里的商品显示『安装』按钮」✗
+		installedVersion: entry.version,
 		description: '',
 		latestVersion: latest,
 		upgradable: Boolean(latest),

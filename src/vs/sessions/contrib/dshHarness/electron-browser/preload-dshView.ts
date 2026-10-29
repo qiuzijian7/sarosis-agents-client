@@ -131,7 +131,7 @@
 		// ★ 2026-10-21：`17 → 18`（新增 `openSettings` / `openFeedback` —— 左下角账号菜单的两条菜单项）。
 		// ★ 2026-10-23：`18 → 19`（新增 `upgradeRefresh` / `upgradeBundled` / `upgradeApp` —— desktop 窗口的「更新」入口）。
 		// ★ 2026-10-26：`19 → 20`（新增 `importCodeWorkspace` —— 从 .code-workspace 导入多根工作区）。
-		bridgeVersion: 21,
+		bridgeVersion: 24,
 		surface,
 		// ★ 2026-10-18：`chatOnly` 也放进 bridge（**同步可知**）。
 		//   为什么不能只靠 `data-vssaros-chat-only`：那个 DOM 标记要等 DOMContentLoaded 才写，
@@ -256,6 +256,19 @@
 		// 就是它的入口（用户要求"窗口版中增加 IDE 入口可以进入 VsSaros 界面"）。
 		// 页面拿不到窗口级 API（`window.focus()` 只能激活自己所在的窗口 ✗）⇒ 只能交宿主 `focusWindow` ✓。
 		focusIde: () => invoke({ method: 'focusIde' }),
+		// **新开一扇 dsh 桌面窗口**（桥 `21 → 22`，2026-10-29）：桌面窗口里的「＋ 新窗口」按钮。
+		// 页面是 WebContentsView 里的前端，**开不了窗口**（aux 窗口是 IDE 渲染进程的 window.open 通道）
+		// ⇒ 只能交宿主代劳 ✓。无参（页面不能指定开几扇 / 绑哪条会话）✓。
+		openDesktopWindow: () => invoke({ method: 'openDesktopWindow' }),
+		// **在当前桌面窗口里分屏出一栏新聊天**（桥 `22 → 23`，2026-10-29）。
+		//   与上面的 `openDesktopWindow` 是两个动作：那条**另开一扇独立窗口**，这条是**同窗口内左右分屏**
+		//   （用户原话："希望是在当前窗口下，分屏出一个聊天框"）✓
+		//   无参（页面不能指定开几栏 / 绑哪条会话）✓；宿主按发起请求的视图定位是哪扇窗口 ✓。
+		splitChatPane: () => invoke({ method: 'splitChatPane' }),
+		// **分屏栏动作**（桥 `23 → 24`，2026-10-29）：把这一栏移到极端位置 / 关掉它。
+		//   ⚠ 为什么不是拖拽：aux 窗口的 DOM 层**收不到鼠标事件**（真机：抓手带 mousedown 从不触发）
+		//   ⇒ 拖拽做不到 ⇒ 菜单放**页面里**（页面在原生视图内，事件正常）✓
+		paneAction: (action: string) => invoke({ method: 'paneAction', action }),
 		// 打开**某个资源条目的设置**（桥 `9 → 10`，2026-10-15）：「工具」页（`/x/skills/`，原集成页）里
 		// **技能行 / MCP 行**的齿轮。`kind='skill'` ⇒ 资源管理详情页（改 SKILL.md / 启停 / 卸载）；
 		// `kind='mcp'` ⇒ 真源文件 `<数据根>/mcp.json`（⚠ 不用 IDE 的 MCP 管理页：那份读的是

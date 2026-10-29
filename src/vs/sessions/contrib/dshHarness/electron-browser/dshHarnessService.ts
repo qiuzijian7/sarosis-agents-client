@@ -6,7 +6,7 @@
 import { Color } from '../../../../base/common/color.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { FileAccess } from '../../../../base/common/network.js';
-import { Disposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { isCodeEditor, isDiffEditor } from '../../../../editor/browser/editorBrowser.js';
@@ -577,8 +577,20 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 		// 工作区信任变化 ⇒ 技能根集合可能变（项目级根只在受信任时进）⇒ 变了才重启 Host（见 `_lastSkillDirs`）
 		this._register(this._workspaceTrustService.onDidChangeTrust(() => void this._onTrustChanged()));
 		this._register(this._channel.listen<IDshHostStatus>(DshHarnessChannelEvent.OnDidChangeStatus)(s => this._update(s)));
+		// ★ 2026-10-29（聚焦路由校准）：focus 事件只在**获得**焦点时来（主进程 blur 只打日志）
+		//   ⇒ 每 3s 用 listViews 的 focused 快照校准"活动聊天视图"（否则焦点移走后位置停在旧视图 ✗）
+		this._focusCalibrationTimer = setInterval(() => { void this._calibrateActiveChatView(); }, 3_000);
+		this._register(toDisposable(() => clearInterval(this._focusCalibrationTimer)));
+
 		this._register(this._channel.listen<DshPageEvent>(DshHarnessChannelEvent.OnDidPageEvent)(e => {
 			if (this._ownViews.has(e.viewId)) {
+				// ★ 2026-10-29（聚焦 pane 路由）：视图拿到**原生焦点** ⇒ 若它是**聊天视图**就占
+				//   "活动聊天"位 ⇒ "Add File to Chat / 插文件引用"落到**用户正在看的那一栏**
+				//   （桌面窗口左右分屏时不再只落到最后一栏 ✗）。
+				//   ⚠ 插件页/工作台页获得焦点**不许**占位（否则宿主命令会打到插件页上 ✗）。
+				if (e.kind === 'focus' && e.surface === 'chat') {
+					this._activeChatViewId = e.viewId;
+				}
 				this._onDidPageEvent.fire(e);
 				// ★ 改名回执单独转发一份：侧栏只需要这一件事实，不必自己解析 `DshPageEvent` 的联合类型。
 				if (e.kind === 'renamed') {
@@ -1468,6 +1480,20 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 		if (s.state === 'running' && !this._startupLogged) {
 			this._startupLogged = true;
 			this._logService.info(`[dshHarness] Host ready in ${Date.now() - t0} ms（首次 ensureStarted → running；结合 install / spawned / bridge apply 三行可拆出各段成本）`);
+		}
+		// ★★ 2026-10-29（真机：桌面窗口**纯黑屏、零信息**）：
+		//   Host 启动失败（`exit code 1`）时，`Start` 会 **resolve** 一个带 `error` 的状态
+		//   （而不是 reject）⇒ `ensureStarted()` 原样返回 ⇒ 调用方以为"后台服务已启动"
+		//   ⇒ 继续建视图 ⇒ 视图去加载**一个已经死掉的 Host** ⇒
+		//   而视图是**原生 `WebContentsView`**（永远盖在 DOM 占位之上）⇒ **纯黑屏** ✗✗
+		//   （这次的真因：profile 是半装的 ⇒ `@vssaros/dsh-kb/vendor/markdown-it.cjs` 缺失
+		//     ⇒ 3 个必需插件不激活 ⇒ Host exit 1 ⇒ 页面永远加载不出来）
+		// ⇒ 这里**明确抛错**：让调用方走到"启动失败 ⇒ **在窗口里显示原因**"那条路径 ✓（不再黑屏）。
+		if (s.error) {
+			const problems = (s.pluginProblems ?? []).join('；');
+			throw new Error('后台服务启动失败'
+				+ (s.error ? '：' + s.error : '')
+				+ (problems ? '（' + problems + '）' : ''));
 		}
 		return s;
 	}
@@ -2530,8 +2556,35 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 	}
 
 	private _activeChatViewId: string | undefined;
+
+	/**
+	 * "活动聊天视图"的**定期校准**定时器（2026-10-29）。
+	 *
+	 * 为什么需要：主进程的 focus 事件只在**获得**焦点时发（`blur` 只打日志、不发事件）⇒
+	 * 用户把焦点移走后，"活动聊天位"会**停在旧视图** ⇒ "Add File to Chat"可能落错栏
+	 * ⇒ 每 3s 用 `listViews()` 的 `focused` 快照校准一次 ✓。
+	 */
+	private _focusCalibrationTimer: ReturnType<typeof setInterval> | undefined;
+
 	get activeChatViewId(): string | undefined {
 		return this._activeChatViewId;
+	}
+
+	/**
+	 * 校准"活动聊天视图"（2026-10-29）。
+	 *
+	 * ⚠ 只有**聊天视图**能占这个位（`viewSurface === 'chat'`）—— 插件页/工作台页获得焦点时
+	 *   **不许**占位（否则 "Add File to Chat / 插文件引用"会打到插件页上 ✗）。
+	 * ⚠ 没有聚焦的聊天视图时**保持原值**（不清空）：焦点可能在编辑器/终端上，
+	 *   这时"最近交互过的聊天"仍是合理的落点 ✓。
+	 */
+	private async _calibrateActiveChatView(): Promise<void> {
+		const views = await this.listViews().catch(() => undefined);
+		if (!views) { return; }
+		const focusedChat = views.find(v => v.focused && v.viewSurface === 'chat');
+		if (focusedChat) {
+			this._activeChatViewId = focusedChat.viewId;
+		}
 	}
 
 	dispatchPageCommand(viewId: string, command: Exclude<DshPageCommand, { method: 'ping' }>): boolean {
