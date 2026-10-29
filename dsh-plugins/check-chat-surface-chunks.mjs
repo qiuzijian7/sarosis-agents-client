@@ -1865,6 +1865,26 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 	}
 }
 
+// ── ⑳ 消息底部「导入知识库」按钮：用**真实 DOM 锚点**（2026-10-29 真机）────────────────
+// 起因：原先用 [class*="copyButton"] 找官方复制钮 —— 那是**终端块**的类名；
+//   消息底栏实测是 <button class="xzv4MW_action" aria-label="复制">，行内还有
+//   <span class="xzv4MW_endInfo">用量 … tok</span> ⇒ 老选择器命中 0 个 ⇒ 按钮**从未出现**。
+{
+	try {
+		const src = fs.readFileSync(path.join(path.resolve(import.meta.dirname, '..'), 'dsh-plugins', 'vssaros-chat-surface', 'lib', 'client.msgImport.js'), 'utf8');
+		if (!src.includes('button[aria-label="复制"]')) {
+			problems.push('client.msgImport.js: 没有用真实底栏锚点（button[aria-label="复制"]）⇒ 按钮永远注入不到');
+		}
+		if (!src.includes('endInfo')) {
+			problems.push('client.msgImport.js: 缺少 endInfo 判据（消息底栏标志）⇒ 会误注入到非底栏的行');
+		}
+		if (/querySelectorAll\('\[class\*=\"copyButton\"\]'\)/.test(src)) {
+			problems.push('client.msgImport.js: 还在用 copyButton 选择器（那是终端块的类名，消息底栏没有）');
+		}
+	} catch (e) {
+		problems.push('client.msgImport.js: 读不到源文件 — ' + String((e && e.message) || e));
+	}
+}
 // ── 结果 ────────────────────────────────────────────────────────────────
 console.log('[chat-surface chunks] 我们注册的条目：');
 for (const o of ourEntries) {

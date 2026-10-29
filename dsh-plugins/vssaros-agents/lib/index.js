@@ -424,6 +424,7 @@ function watchAllowlist(runtime, agent, label, wanted) {
 	let running = false;
 	let rerun = false;
 	let timer;
+	let mcpReported = false;   // ★ 2026-10-29：MCP 工具到位的计时只报一次
 	// ★ 2026-10-29：工具名快照（按实例隔离 + 按 `tools/change` 版本失效）。
 	const nameSnapshot = createToolNameSnapshot();
 	const shadowed = (name) => {
@@ -436,6 +437,17 @@ function watchAllowlist(runtime, agent, label, wanted) {
 		const globalNames = nameSnapshot.namesOf(tools);
 		if (!globalNames) {
 			return;   // 注册表还没就绪：等下一次 `tools/change`
+		}
+		// ★ 2026-10-29 计时探针：MCP 客户端连上时工具会**成簇**多出几十个（实测 +39，`mcp__comfy-mcp__*` 等）。
+		//   这一簇出现的时刻 ≈ MCP 服务器 spawn + 握手完成的时刻 ⇒ 记一行相对 Host 启动的耗时，
+		//   好判断那 8 秒静默期是不是 MCP。hostStartedAt 取进程启动时刻（`process.uptime()` 反推）。
+		if (!mcpReported) {
+			const mcpCount = globalNames.filter((name) => name.startsWith('mcp__')).length;
+			if (mcpCount > 0) {
+				mcpReported = true;
+				const hostStartedAt = Date.now() - Math.round(process.uptime() * 1000);
+				console.warn(`[vssaros-agents] MCP 工具到位：host 启动后 ${Date.now() - hostStartedAt}ms，共 ${mcpCount} 个`);
+			}
 		}
 		const next = new Set([...applied, ...allowlistDenyOf(wanted, globalNames, shadowed)]);
 		if (next.size === 0 || (dispose && next.size === applied.size)) { return; }
@@ -668,7 +680,12 @@ async function syncPresets(state, presets, config) {
 		.sort();
 	// 第二阶段：带动态清单（已一致的 preset 指纹相同 ⇒ 直接跳过，不会重复注册）
 	// ⚠ lazy 下必须传 `eagerKeys` 作为 only：否则这一轮会把刚省下的 preset 全部注册回去
-	await applyDesired(okPresetIds, true, eagerKeys);
+	// ★ 2026-10-29：lazy 下再进一步——**可委派的那几个不做第二阶段**（它们保持"无清单"的形态）：
+	//   每个 preset 挂载约 0.4s（挂 33 行基座 + dsh 重扫 30 个 agent.md）⇒ 5 个可委派各挂两遍就是 ~4s。
+	//   代价：这 5 个 agent 在补齐（15s）之前不能派生子代理；其余 agent 不受影响（它们的清单引用的是
+	//   这 5 个，引用已就位 ⇒ 仍可立即派生子代理）✓。
+	const phase2Only = lazyMode ? new Set([...eagerKeys].filter((key) => !isDelegatableKey(key))) : eagerKeys;
+	await applyDesired(okPresetIds, true, phase2Only);
 	state.subagentListSig = okPresetIds.join('|');
 	if (lazyMode) {
 		scheduleLazyFill(state, config, wantedKeys.length);
@@ -2596,7 +2613,10 @@ function applyToolsOnly(ctx, config) {
 				const grewFrom = applied.size;
 				applied = next;
 				previous?.(); // 先装新的再撤旧的 ⇒ 隐藏连续，不会出现"空窗"让工具露出
-				console.warn(`[vssaros-agents] 工具面收敛：本 preset 隐藏 ${next.size} 个工具（+${next.size - grewFrom}；${patterns.join(', ')}）`);
+				// ★ 2026-10-29 加计时：这一行是"preset 级工具面"的变化点。MCP 客户端连上时工具会成簇多出
+			//   （实测 61 → 100，+39）⇒ 本行的时刻 ≈ MCP 服务器 spawn + 握手完成的时刻 ⇒ 记相对 Host 启动的耗时。
+			const hostStartedAt = Date.now() - Math.round(process.uptime() * 1000);
+			console.warn(`[vssaros-agents] 工具面收敛：本 preset 隐藏 ${next.size} 个工具（+${next.size - grewFrom}；${patterns.join(', ')}）｜host 启动后 ${Date.now() - hostStartedAt}ms`);
 			} catch (error) {
 				// 只报一次：作用域不对是**稳态**失败（每次 tools/change 都会抛），逐次刷屏会把真日志淹掉 ✓
 				if (!warnedScope) {

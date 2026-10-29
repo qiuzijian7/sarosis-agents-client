@@ -171,6 +171,25 @@ export function supportsCompileCache(version: string | undefined): boolean {
 	const minor = Number(match[2]);
 	return major > 22 || (major === 22 && minor >= 1);
 }
+
+/**
+ * 归一化插件**入口文件**的内容：**CRLF → LF** + 去 UTF-8 BOM（★ 2026-10-29）。
+ *
+ * ## 为什么
+ * 指纹（暂存目录名）与"已装副本是否陈旧"的判据都按**字节**比。Windows 上工作区与打包产物是 CRLF、
+ * git 里是 LF ⇒ **逐行完全相同**的内容也会被判成"同版本但内容变了" ⇒ 每次启动都强制重装 ⇒
+ * `_pluginsStale` ⇒ 不复用常驻 Host ⇒ 每次都冷启。
+ * 真机现场：`@vssaros/dsh-kb@0.5.58` 每次启动都 `installing ... (was 0.5.58)`
+ * （随包 574605 字节 CRLF vs 仓库 565802 字节 LF，长度差 8803 = 行数 ⇒ 逐行完全相同）。
+ *
+ * ## 边界
+ * ⚠ 只归一化**换行与 BOM**，不碰其它字节（空白、缩进、编码）⇒ 真正的内容差异仍然会被判出来 ✓。
+ * ⚠ Node 读 JS 时本身忽略 BOM ⇒ 去 BOM 不改变语义 ✓。
+ * ⚠ 单独一个 CR（老 Mac 换行）不归一化 —— 极罕见，且归一化它会掩盖真实差异。
+ */
+export function normalizeEntryText(text: string): string {
+	return text.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n');
+}
 /** 另一个实例正在启动 Host 时，等它写出租约的最长时间。 */
 const START_LOCK_WAIT_MS = 30_000;
 /** 复用中桥断开后，等拥有者重启并写新租约的时间。 */
@@ -1431,6 +1450,24 @@ export class DshHostSupervisor extends Disposable {
 				// 复用上次端口（探测空闲才用），任何异常回落 0 —— 稳定性是优化，不是启动前置条件。
 				const hostPort = await resolveHostPort(this.effectiveDshHome(options.dshHome));
 				const args = buildHostArgs(dsh.bin, profile, overlays, hostPort);
+				// ★★ 2026-10-29（真机：装完最新版本起不来 ⇒ 桌面窗口报「控制桥不可用（Host 未运行）」）：
+				//   Host 侧日志给出了真因：
+				//     dsh: startup failed: 3 required plugins did not activate
+				//     Failed plugins (5): failed to import: Error: Cannot find module './accept'   ← ×4
+				//     （`negotiator` 的嵌套副本缺 `lib/accept.js`）
+				//   ⇒ profile 的依赖树是**半装**的（升级安装失败 ⇒ `node_modules` 被删了没装回）。
+				//   ⇒ 而 `repairProfileDeps` 原来只在「**装完插件之后**」跑（`if (wants.length)` 块内）
+				//      ⇒ 恰好在"版本对、入口内容对 ⇒ 判定不装"的那种启动里**永远不修** ✗✗。
+				// ⇒ 提到**每次启动前**都体检一次（纯读 + 补文件，代价毫秒级）⇒ 半装 profile 也能自愈 ✓。
+				//   ⚠ 补不了的（如插件自带 vendor 文件缺失）仍由 Host 自己报出来 —— 那是另一条路（重装该插件）。
+				try {
+					const preRepair = await repairProfileDeps(join(pluginProfileDir, 'node_modules'), line => this._appendLog(line));
+					if (preRepair.repaired.length) {
+						this._appendLog(`deps-repair（启动前）: 补齐 ${preRepair.repaired.length} 个缺失文件（扫了 ${preRepair.scanned} 个嵌套副本）`);
+					}
+				} catch (error) {
+					this._appendLog(`deps-repair（启动前）失败（忽略 ⇒ 让 Host 的错误自己显形）：${String((error as Error)?.message ?? error)}`);
+				}
 				// keepAlive 的关键细节：stdout/stderr 不能走管道——IDE 退出后管道破裂，Host 写日志
 				// EPIPE 直接崩（实测"keepAlive 存活日志打了、pid 却没了"）。常驻模式改为写日志文件，
 				// _awaitReady 轮询文件内容找 URL 行；非常驻维持管道（日志直达主进程，少一层延迟）。
@@ -1810,8 +1847,26 @@ export class DshHostSupervisor extends Disposable {
 			this._runDisposables.clear();
 			this._connection = undefined;
 			this._reused = false;
+			/*
+			 * ★★ 2026-10-29（真机：知识库「本地载入文件夹」载入失败 + 聊天页空白）：
+			 *   原逻辑到这里就 state:'stopped' **收工** ⇒ 本实例从此没有 Host。
+			 *
+			 *   现场（本机日志）：
+			 *     18:32:30  reusing the Host started by pid 77456 at http://127.0.0.1:1974
+			 *     18:33:02  bridge closed; watching the lease in case the owner restarts the Host
+			 *     18:33:22  the reused Host is gone          ← 20s 后放弃
+			 *   那个 Host 属于**上一个 IDE 实例**（已被关掉）⇒ 永远等不到它重启 ⇒
+			 *   dsh 侧整体不可用：知识库的 /x/kb/api/* 全部 fetch failed（于是"载入失败"），
+			 *   聊天视图停在 about:blank（于是"页面空白"）。
+			 *
+			 *   ⇒ 复用来的 Host 死掉后，**本实例自己起一个**（复用同一套启动选项）✓
+			 */
+			const restartOptions = this._requestedOptions ?? {};
 			this._requestedOptions = undefined;
 			this._setStatus({ state: 'stopped', bridge: 'none', profile: this._status.profile, dshHome: this._status.dshHome });
+			void this.start(restartOptions).catch((e) => {
+				this._appendLog('failed to start our own Host after the reused one died: ' + String((e as Error)?.message ?? e));
+			});
 		})();
 	}
 
@@ -2154,6 +2209,31 @@ export class DshHostSupervisor extends Disposable {
 		} catch (e) {
 			this._appendLog('⚠ 直装后写 profile/package.json 失败（下次启动可能重复直装）：' + String((e as Error)?.message ?? e));
 		}
+	}
+
+	/**
+	 * **结束 dsh Host，释放 native 模块的文件锁**（2026-10-29）。
+	 *
+	 * ★ 背景（真机）：用户升级安装时报
+	 *   `DeleteFile 失败；错误代码 5。拒绝访问`（`…\dsh-runtime\0.2.1-rc.2\…\koffi.node`）
+	 *   ⇒ 根因是**我们的 dsh Host 是 detached 常驻的**（IDE 关了它还活着）⇒ 它加载着那个 `.node`
+	 *   ⇒ 安装器删不掉 ⇒ **安装中断 ⇒ 半装状态**（`resources/app/node_modules` 被删了却没装回来）✗✗。
+	 * ⇒ 一键升级前先结束 Host ⇒ 锁释放 ✓。
+	 *
+	 * ⚠ 不做 `_cleanupRunFiles()`：那会删掉 `dsh-run` 下的覆盖层与 `host-*.log`，
+	 *   而升级失败时那些日志正是排查依据 ⇒ 保留 ✓。
+	 */
+	public async releaseHost(): Promise<void> {
+		if (!this._child) {
+			return;
+		}
+		this._appendLog('releaseHost: 结束 dsh Host（释放 native 模块的文件锁，供升级安装替换文件）');
+		await this._killChild();
+		this._child = undefined;
+		this._connection = undefined;
+		this._bridge?.dispose();
+		this._bridge = undefined;
+		this._setStatus({ ...this._status, state: 'stopped', bridge: 'none' });
 	}
 
 	private async _ensurePlugin(name: string, dir: string | undefined, node: IResolvedNode, dsh: IResolvedDsh, profile: string, env: NodeJS.ProcessEnv, label: string, skipUpgrade = false): Promise<string | undefined> {
@@ -2777,16 +2857,23 @@ export class DshHostSupervisor extends Disposable {
 	 * 读一个包目录的**入口文件**内容（入口名取 `package.json` 的 `main`，缺省 `lib/index.js`）；
 	 * 读不到返回 `undefined`。
 	 *
-	 * 为什么抽出来（2026-10-14）：同一个"入口定义"要服务两件事 —— ① {@link _installedEntryMatches} 的内容比对、
-	 * ② {@link _entryFingerprint} 的暂存目录名。两处各写一份就有**静默漂移**风险：入口名不一致时，
-	 * 指纹会因一个无关文件的变化而变（白重装）或该变时不变（退回"同路径 no-op"那个坑 ✗）。
+	 * ★ 2026-10-29：**读出来先归一化换行与 BOM**（CRLF→LF、去 UTF-8 BOM）。
+	 *
+	 * 为什么：指纹（{@link _entryFingerprint}）与"内容是否一致"（{@link _installedEntryMatches}）都按
+	 * **字节**比 ⇒ Windows 上工作区与打包产物是 CRLF、git 里是 LF ⇒ **内容其实逐行相同**却被判成
+	 * "同版本但内容变了" ⇒ 每次启动都强制重装 ⇒ `_pluginsStale` ⇒ 不复用常驻 Host ⇒ 每次都冷启。
+	 * 真机现场：`@vssaros/dsh-kb@0.5.58` 每次启动都 `installing ... (was 0.5.58)`
+	 * （随包 574605 字节 CRLF vs 仓库 565802 字节 LF，长度差 8803 = 行数 ⇒ 逐行完全相同）。
+	 *
+	 * ⚠ 归一化放在**这里**（而不是两个调用点各写一份）⇒ 指纹与内容判据天然同口径，
+	 *   不会出现"指纹说变了、判据说没变"这种自己跟自己打架的组合（这正是本函数被抽出来的原因 ✓）。
 	 */
 	private _readEntryFile(dir: string): string | undefined {
 		try {
 			const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
 			const main = typeof pkg?.main === 'string' && pkg.main ? pkg.main : join('lib', 'index.js');
 			const rel = main.replace(/^\.\//, '');
-			return readFileSync(join(dir, rel), 'utf8');
+			return normalizeEntryText(readFileSync(join(dir, rel), 'utf8'));
 		} catch {
 			return undefined;
 		}

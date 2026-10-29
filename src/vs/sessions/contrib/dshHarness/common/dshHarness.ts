@@ -800,6 +800,15 @@ export const enum DshHarnessChannelCommand {
 	Stop = 'stop',
 	Restart = 'restart',
 	/**
+	 * **结束 dsh Host，释放 native 模块的文件锁**（2026-10-29）。
+	 *
+	 * 为什么需要：升级安装时 Inno 要覆盖 `resources/app/dsh-runtime/…/koffi.node`，
+	 * 而我们的 dsh Host 是 **detached 常驻**的（IDE 关了它还活着）⇒ 它正加载着那个 `.node`
+	 * ⇒ 删不掉 ⇒ `DeleteFile 失败；错误代码 5。拒绝访问` ⇒ **安装中断、留下半装状态** ✗✗。
+	 * ⇒ 一键升级前先结束它 ⇒ 锁释放 ⇒ 安装顺畅 ✓（只在用户明确点升级时停一次后台服务）。
+	 */
+	ReleaseHost = 'releaseHost',
+	/**
 	 * **要一次用户确认**（渲染侧 → 主进程 → 桥 → Host 的审批服务）。用于**留在 IDE 侧**的动作类能力
 	 * （目前只有 canvas）：确认卡与 dsh 侧能力用的是**同一张**（`dsh-client-ui-approval`）⇒ 口径统一为
 	 * "聊天内 ask"（README 4.76 / 4.83）。

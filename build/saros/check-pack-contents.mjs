@@ -23,7 +23,7 @@
  *   默认目录：../VSCode-win32-x64（相对仓库根，与 strip-before-pack 一致）
  */
 
-import { existsSync, readFileSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -130,6 +130,114 @@ try {
 	process.exit(1);
 }
 
+/**
+ * 扫产物里对**裸模块**的引用（`require('@vscode/x')` / `from '@vscode/x'` / `import('@vscode/x')`）。
+ *
+ * ★ 为什么需要（2026-10-29 的真机事故）：
+ *   `build/win32/code.iss` 的 `[Files]` Excludes 里排除了 `@vscode/deviceid` 与
+ *   `@vscode/policy-watcher`（上游 VS Code 当遥测件剥掉）⇒ 而我们的 `out/main.js` **在 import 它们**
+ *   ⇒ 装完就是 `Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@vscode/deviceid'` ✗✗。
+ *   而这个缺件**在源目录里查不出来**（strip 的自愈日志显示 ✅ 存在）⇒ 只有对着**产物**查才能抓住。
+ *
+ * ⇒ 办法：**扫产物代码里真正 require 的 `@vscode/*`**，逐个确认 `node_modules/@vscode/*` 里在。
+ *   ⚠ 只扫**产物真正引用到的**（而不是仓库里有什么）⇒ 天然不需要白名单：
+ *   内联的（编译期已变成相对路径的）根本不会出现在产物里 ✓。
+ */
+function collectBareRequires(root, prefixes) {
+	const found = new Set();
+	const re = /(?:require\(|from\s+|import\s*\(\s*|require\.resolve\(\s*)['"]([^'"]+)['"]/g;
+	const walk = (dir) => {
+		let entries;
+		try {
+			entries = readdirSync(dir, { withFileTypes: true });
+		} catch {
+			return;
+		}
+		for (const e of entries) {
+			const p = join(dir, e.name);
+			if (e.isDirectory()) {
+				walk(p);
+			} else if (/\.(js|mjs|cjs)$/i.test(e.name)) {
+				let text;
+				try {
+					text = readFileSync(p, 'utf8');
+				} catch {
+					continue;
+				}
+				for (const m of text.matchAll(re)) {
+					const spec = m[1];
+					if (prefixes.some(pre => spec === pre || spec.startsWith(pre + '/'))) {
+						found.add(spec);
+					}
+				}
+			}
+		}
+	};
+	walk(root);
+	return found;
+}
+
+/**
+ * 裸模块名 → 包目录（`@vscode/x` → `@vscode/x`；`x/y` → `x/y`）。
+ */
+function packageDirOf(spec) {
+	return spec;
+}
+
+/**
+ * 产物里的包可能不在磁盘上 —— **纯 JS 包被打进 `node_modules.asar`**，native 模块在
+ * `node_modules.asar.unpacked` ⇒ 只查磁盘目录会**误判成缺件**（实测踩过 ✗）。
+ * ⇒ 这里解析 asar 的**头部目录表**（不解包）来判断"包在不在归档里"。
+ */
+function asarHasPackage(asarFile, pkgDir) {
+	let fd;
+	try {
+		fd = openSync(asarFile, 'r');
+		const head = Buffer.alloc(16);
+		if (readSync(fd, head, 0, 16, 0) < 16) {
+			return false;
+		}
+		const headerSize = head.readUInt32LE(12);
+		if (!headerSize || headerSize > 64 * 1024 * 1024) {
+			return false;
+		}
+		const hbuf = Buffer.alloc(headerSize);
+		if (readSync(fd, hbuf, 0, headerSize, 16) < headerSize) {
+			return false;
+		}
+		const header = JSON.parse(hbuf.toString('utf8'));
+		let node = header && header.files;
+		for (const seg of pkgDir.split('/')) {
+			if (!node) {
+				return false;
+			}
+			node = node[seg];
+			if (!node) {
+				return false;
+			}
+			node = node.files;
+		}
+		return true;
+	} catch {
+		return false;
+	} finally {
+		try { if (fd !== undefined) { closeSync(fd); } } catch { /* ignore */ }
+	}
+}
+
+/** 包在产物里吗？（磁盘目录 / asar 归档 / asar.unpacked 三处任一有就算在） */
+function packagePresent(appDir, spec) {
+	const parts = spec.split('/');
+	if (existsSync(join(appDir, 'node_modules', ...parts))) {
+		return true;
+	}
+	if (existsSync(join(appDir, 'node_modules.asar.unpacked', ...parts))) {
+		return true;
+	}
+	const asar = join(appDir, 'node_modules.asar');
+	return existsSync(asar) ? asarHasPackage(asar, spec) : false;
+}
+
 const fromEnsure = ensureCallsFrom(stripSource);
 
 // ⚠⚠ 清单抽不出来 ⇒ 门禁**失效**了 ⇒ 必须 fail-closed（不许"清单为空 = 一切正常"地放行 ✗✗）
@@ -174,6 +282,36 @@ for (const item of REQUIRED_EXTRA) {
 for (const item of OPTIONAL_EXTRA) {
 	if (!existsSync(join(buildDir, item.rel))) {
 		warnings.push(`${item.label}：${item.rel} 不在构建输出里（若由安装阶段另拷则正常）`);
+	}
+}
+
+// ④ 依赖闭包核对（2026-10-29）：产物代码里**真正 require 的** `@vscode/*`，
+//   逐个确认 `node_modules/@vscode/*` 里在 —— 缺一个就是运行时 `ERR_MODULE_NOT_FOUND`。
+//   ⚠ 这条能抓住"源目录里有、装出来没有"的那类缺件（`code.iss` 的 Excludes 排除 ⇒ 装包时丢）。
+const appDir = join(buildDir, 'resources/app');
+// ⚠ 这道门禁是给**构建输出目录**用的（`VSCode-win32-x64`）⇒ 目录不对就别硬报一堆误导的"缺失"
+//   （安装目录里 `out/` 已被 bundle 成 main.js、`out/vs/**` 结构也不同 ⇒ 全是假警报 ✗）。
+if (!existsSync(join(appDir, 'out/main.js'))) {
+	console.error(`❌ ${buildDir} 不像构建输出目录（缺 resources/app/out/main.js）`);
+	console.error('   ⇒ 这道门禁要指向**打包的输入目录**（VSCode-win32-x64），不是安装目录。');
+	console.error('   用法：node build/saros/check-pack-contents.mjs <构建输出目录>');
+	process.exit(1);
+}
+if (existsSync(appDir)) {
+	const scanRoots = [join(appDir, 'out'), join(appDir, 'extensions')].filter(p => existsSync(p));
+	if (scanRoots.length) {
+		const required = new Set();
+		for (const root of scanRoots) {
+			for (const spec of collectBareRequires(root, ['@vscode'])) {
+				required.add(spec);
+			}
+		}
+		for (const spec of required) {
+			if (!packagePresent(appDir, spec)) {
+				problems.push(`产物代码引用了 ${spec}，但产物里没有（磁盘/asar 都没有）⇒ 运行时 ERR_MODULE_NOT_FOUND`);
+			}
+		}
+		console.log(`  · 依赖闭包核对：扫到 ${required.size} 个 @vscode/* 引用`);
 	}
 }
 

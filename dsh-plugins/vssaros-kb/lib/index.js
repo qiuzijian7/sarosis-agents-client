@@ -6715,7 +6715,18 @@ export function apply(ctx, config = {}) {
 							} else {
 								// 扩展名：照真源 —— `未命名` ＋ `.md` ✓（内容 `# <文件名>\n` ✓ —— **带扩展名** ✓，那是真源原样 ✓）
 								const name = await uniqueChildName(baseDir, wanted || '未命名', '.md');
-								await writeFile(join(baseDir, name), `# ${name}\n`, 'utf8');
+								/*
+								 * ★ 2026-10-29（用户：聊天消息底部加「导入到知识库」）：新建时允许**带内容**。
+								 *   默认仍写 `# <文件名>\n`（与真源一致）；带 `text` 时按传入内容写，
+								 *   并补一个 `# <标题>` 首行（markdown 里没有标题会像散片）。
+								 */
+								const body = typeof payload?.text === 'string' && payload.text.trim()
+									? (/^#\s/m.test(payload.text) ? payload.text : `# ${name}\n\n${payload.text}`)
+									: `# ${name}\n`;
+								// ★ 2026-10-29：目标子目录可能还不存在（如「笔记/导入」）⇒ 先建出来，
+								//   否则 writeFile 直接 ENOENT（"导入到知识库"就会失败）。
+								await mkdir(baseDir, { recursive: true });
+								await writeFile(join(baseDir, name), body, 'utf8');
 								created = { name, rel: `${dirPath}/${name}` };
 							}
 							nav = await refreshDerived(vault.dir, config);
@@ -8723,7 +8734,12 @@ export function apply(ctx, config = {}) {
 						'#bar .t { font-size: 12.5px; opacity: .75; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }',
 						'#doc { max-width: 860px; margin: 0 auto; padding: 18px 22px 80px; }',
 						// 长文档性能（P1）：屏外块跳过布局/绘制，首屏更快；块高给个估算值防止滚动条乱跳
-						'#doc > *:not(:first-child) { content-visibility: auto; contain-intrinsic-size: auto 2.4em; }',
+						/*
+	 * ★ 2026-10-29（真机：长文滚到底后**无法向上滚**）：
+	 *   独立文档页（/x/kb/web/doc）也有同一条 content-visibility: auto ——
+	 *   屏外块按 2.4em 占位、滚进视口才真排版 ⇒ scrollHeight 持续变化（实测 3126⇄2460）
+	 *   ⇒ 滚动位置被反复顶走。**去掉这条优化**（视图侧同步已改）。
+	 */
 						'h1, h2, h3, h4 { line-height: 1.35; margin: 1.1em 0 .5em; }',
 						'h1 { font-size: 1.7em; } h2 { font-size: 1.35em; border-bottom: 1px solid rgba(127,127,127,.3); padding-bottom: .25em; }',
 						'h3 { font-size: 1.15em; } h4 { font-size: 1.02em; }',

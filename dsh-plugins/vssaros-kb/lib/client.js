@@ -10,6 +10,7 @@
 //
 // ⚠ 以后**不要再拆子块**：要加代码就往这个文件里加。
 // CLIENT_BUILD_STAMP 2026-10-28T00:45：入口晚于 client.kbview.js 的改动（同一批 kb 改动的守卫收尾）。
+// BUILD_STAMP 2026-10-29：入口晚于 client.kbview.js / index.js 的改动（聊天消息「导入到知识库」那批）。
 // ⚠ 入口里必须先 `var module = { exports: {} };`（否则真机报 `exports is not defined`）。
 window.__ModuleLoader__.load({
 	id: '@vssaros/dsh-kb',

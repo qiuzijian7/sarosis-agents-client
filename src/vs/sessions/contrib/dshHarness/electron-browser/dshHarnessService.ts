@@ -2041,6 +2041,16 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 			}
 			this._upgradeBusy = 'installing';
 			await this._pushUpgradeToAll();
+			// ★★ 2026-10-29（真机：升级安装报「DeleteFile 失败；错误代码 5。拒绝访问」）：
+			//   我们的 dsh Host 是 **detached 常驻**的（IDE 关了它还活着）⇒ 它正加载着
+			//   `resources/app/dsh-runtime/…/koffi.node` ⇒ **安装器删不掉** ⇒ 安装中断 ⇒ 半装状态 ✗✗。
+			// ⇒ 先结束它（释放锁）再退出安装 ⇒ 升级顺畅 ✓。
+			// ⚠ 失败**不阻断**升级（只记日志）：大不了让安装器走 `restartreplace` 兜底。
+			try {
+				await this._channel.call<void>(DshHarnessChannelCommand.ReleaseHost);
+			} catch (e) {
+				this._logService.warn('[dshHarness] upgradeApp: 释放 dsh Host 失败（安装时可能仍会撞文件锁）：' + String((e as Error)?.message ?? e));
+			}
 			// 应用会重启：正在跑的会话中断（面板上已写明，不再弹二次确认 —— 用户点的是"一键"）
 			svc.quitAndInstall();
 		} catch (e) {

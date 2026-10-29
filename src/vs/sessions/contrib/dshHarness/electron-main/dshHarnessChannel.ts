@@ -1222,6 +1222,10 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 			}
 			case DshHarnessChannelCommand.Stop:
 				return this._supervisor.stop();
+			// ★ 2026-10-29：升级安装前释放 native 模块的文件锁（dsh Host 是 detached 常驻的 ⇒ 锁着 koffi.node
+			//   ⇒ 安装器删不掉 ⇒「错误代码 5」⇒ 半装状态）。见 supervisor 的 `releaseHost` 注释。
+			case DshHarnessChannelCommand.ReleaseHost:
+				return this._supervisor.releaseHost();
 			case DshHarnessChannelCommand.Restart:
 				return this._supervisor.restart(arg as IDshHostStartOptions);
 			case DshHarnessChannelCommand.GetLog:

@@ -498,6 +498,19 @@ function writeMindmapTree(mindnoteId, nodes, tmpDir) {
  */
 function updateMindmaps(args, idx, plan, spaces, logLines) {
 	idx.mindmaps = idx.mindmaps ?? {};
+	/*
+	 * ★ 2026-10-29（真机：每次同步都重复报同一条 131012）：
+	 *   清理**已不在当前映射里**的导图记录（历史遗留，例如旧的 AI_Agent 空间）。
+	 *   这些记录对应的飞书节点多半已被删除 ⇒ 留着只会每次都撞一次"删除失败"。
+	 *   只删**索引里的记录**，不碰飞书上的任何内容。
+	 */
+	const liveSpaceIds = new Set(Object.values(spaces || {}).map(s => s?.spaceId).filter(Boolean));
+	for (const sid of Object.keys(idx.mindmaps)) {
+		if (!liveSpaceIds.has(sid)) {
+			delete idx.mindmaps[sid];
+			console.log(`[mindmap] ℹ 清理已不在当前映射内的导图记录：${sid}`);
+		}
+	}
 	const groups = new Map();
 	for (const p of plan) {
 		const spaceId = p.targetSpace ?? '';
@@ -533,10 +546,23 @@ function updateMindmaps(args, idx, plan, spaces, logLines) {
 				//   报 `--obj-type is required (one of: wiki, doc, docx, sheet, bitable, mindnote, slides, file)`）
 				const del = lark(['wiki', '+node-delete', '--node-token', rec.nodeToken,
 					'--obj-type', 'mindnote', '--yes', '--as', 'user'], tmpDir);
-				const dp = extractJson(del.stdout);
+				// ★ 2026-10-29（真机）：CLI 把**失败 JSON 打在 stderr** 上 ⇒ 只认 stdout 会漏判（于是"节点已删除"被当成普通失败 ⇒ 永远跳过）。⇒ 两个通道都解析。
+				const dp = extractJson(del.stdout) || extractJson(del.stderr);
 				if (!dp || dp.ok === false) {
-					console.warn(`[mindmap] ⚠ 旧导图节点删除失败 ⇒ 跳过本次更新（避免累积重复）：${dp?.error?.message ?? (del.stderr || del.stdout).slice(0, 160)}`);
-					continue;
+					const errCode = dp?.error?.code;
+					const errMsg = String(dp?.error?.message ?? '');
+					// 131012 / "node has been deleted" = 旧节点**已经不在了**（用户删过或之前删成功了）
+					//   ⇒ 这不是失败：清掉陈旧记录后**继续重建**（否则该空间从此永远不更新）。
+					const rawErr = `${del.stdout || ''}\n${del.stderr || ''}`;
+					const gone = errCode === 131012 || /not_found|has been deleted/i.test(errMsg)
+						|| /131012|node has been deleted/i.test(rawErr);   // ★ 兜底：错误 JSON 未必能被解析出来
+					if (gone) {
+						console.warn(`[mindmap] ℹ 旧导图节点已不存在（${errMsg || errCode}）⇒ 清理记录并重建`);
+						delete idx.mindmaps[spaceId];
+					} else {
+						console.warn(`[mindmap] ⚠ 旧导图节点删除失败 ⇒ 跳过本次更新（避免累积重复）：${dp?.error?.message ?? (del.stderr || del.stdout).slice(0, 160)}`);
+						continue;
+					}
 				}
 			}
 
@@ -556,6 +582,18 @@ function updateMindmaps(args, idx, plan, spaces, logLines) {
 			const written = writeMindmapTree(mindnoteId, nodes, tmpDir);
 			if (written < 0) {
 				console.warn(`[mindmap] ⚠ 节点写入失败（${rootText}）⇒ 本次跳过（下次同步会重建）`);
+				/*
+				 * ★ 2026-10-29：写节点失败时**刚建的那个空导图文档**会成为孤儿（索引里没记它，
+				 *   飞书上却还挂着一个空壳）⇒ 下次同步再失败一次就多留一个空文档。
+				 *   ⇒ 这里尽力把刚建的节点删掉（删不掉就留着，下一轮再清）。
+				 */
+				try {
+					if (ni.nodeToken) {
+						lark(['wiki', '+node-delete', '--node-token', ni.nodeToken,
+							'--obj-type', 'mindnote', '--yes', '--as', 'user'], tmpDir);
+					}
+				} catch { /* 尽力而为 */ }
+				continue;
 				continue;
 			}
 			idx.mindmaps[spaceId] = {

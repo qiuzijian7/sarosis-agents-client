@@ -27,6 +27,13 @@
  *    node scripts/dsh-plugin-deploy.mjs --verify        # 只打印每个插件当前应有的 rev，不写盘
  *    node scripts/dsh-plugin-deploy.mjs --all --dry     # 不写盘
  *
+ *  ★ 2026-10-29（连续 8 次"报成功但不同步"的四个根因，都已修）：
+ *    ① 目标只写 node_modules/@vssaros/<pkg> ⇒ 宿主真正读的
+ *       `.vssaros/plugins/<pkg>-<版本>-<哈希>/`（已安装副本）根本没被更新 ⇒ 现在两者都写；
+ *    ② `--changed` 遇到"repo 版本 ≠ 已装版本"就跳过复制 ⇒ 天天在改的插件正好命中 ⇒ 现在照拷；
+ *    ③ SKIP_DIRS 含 'scripts' ⇒ 插件的 scripts/（服务端 spawn 的那份）永远同步不过去 ⇒ 已移除；
+ *    ④ 复制后不校验 ⇒ 现在逐文件 sha256 比对 + rev 校验，不过 ⇒ **非零退出**。
+ *
  *  ★ `--bump` 与 `--changed` 的分工（2026-10-24）：
  *    · 官方机制是「版本不同 ⇒ 启动时 `_ensurePlugin` 暂存 + `dsh plugin add`（pnpm 同步 lock）」；
  *      内容改了但版本没变时 pnpm 认为 `file:` 依赖没变化 ⇒ **一个字节都不替换**。
@@ -68,8 +75,63 @@ const pickProfilesRoot = () => {
 };
 const HOME = pickProfilesRoot();
 
+/**
+ * 全部候选 profile 根（dev / 中间方案 / 打包版）—— 2026-10-29：
+ * 原先只取**第一个存在的**根（通常是 dev），于是"宿主其实跑的是 prod"时，
+ * 脚本把字节写进了没人读的目录 ⇒ 页面拿旧字节（"报成功但不同步"的第一层原因）。
+ * ⇒ 现在**所有存在的根都同步** ✓
+ */
+const PROFILE_ROOTS = [
+	path.join(os.homedir(), '.vssaros-dev', 'dsh-home', 'profiles'),
+	path.join(os.homedir(), '.vssaros', 'dsh-home-dev', 'profiles'),
+	path.join(os.homedir(), '.vssaros', 'dsh-home', 'profiles'),
+].filter((r) => fs.existsSync(r));
+
+/**
+ * 找出某个插件在 profile 下的**已安装副本**（官方 `_ensurePlugin` 暂存 + `dsh plugin add` 生成的那份）。
+ *
+ * ★ 2026-10-29（真机："报成功但不同步"的第一主因）：
+ *   宿主**实际读**的是 `.vssaros/plugins/<pkg>-<版本>-<哈希>/`，
+ *   而不是 `node_modules/@vssaros/<pkg>` —— 后者只是 pnpm 的安装位。
+ *   只写 node_modules ⇒ 页面永远拿旧字节（连续 8 次"部署成功却没生效"都栽在这）。
+ *
+ * 目录名形如 `vssaros-dsh-kb-0.5.58-14c87146` ⇒ 前缀 `vssaros-<包名>-`，
+ * 后面必须紧跟**版本号**（数字开头）⇒ 天然排除 `vssaros-dsh-kb-refs-*` 这类**别的插件** ✓。
+ */
+const installedCopiesOf = (profileDir, pkgName) => {
+	const base = String(pkgName || '').replace(/^@[^/]+\//, '');
+	const prefix = 'vssaros-' + base + '-';
+	const pluginsDir = path.join(profileDir, '.vssaros', 'plugins');
+	let ents = [];
+	try { ents = fs.readdirSync(pluginsDir, { withFileTypes: true }); } catch { return []; }
+	return ents
+		.filter((e) => e.isDirectory() && e.name.startsWith(prefix))
+		.map((e) => e.name)
+		.filter((n) => /^\d/.test(n.slice(prefix.length)))
+		.map((n) => ({ dir: path.join(pluginsDir, n), name: n }));
+};
+
+/** profile 根的短标签（dev / prod / legacy），便于区分"写到哪一份"。 */
+const rootTagOf = (root) => {
+	if (String(root).startsWith(path.join(os.homedir(), '.vssaros-dev'))) { return 'dev'; }
+	if (String(root).includes('dsh-home-dev')) { return 'legacy'; }
+	return 'prod';
+};
+
+/** 文件 sha256（校验"真的落地了"用）。 */
+const sha256File = (f) => {
+	try { return crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex'); } catch { return ''; }
+};
+
 /** 安装份本来就不含的目录（只在 repo 里）。 */
-const SKIP_DIRS = new Set(['node_modules', 'test', 'tests', 'scripts', 'vendor', '.git', 'e2e', 'dist.e2e']);
+/**
+ * 安装份本来就不含的目录（只在 repo 里）。
+ *
+ * ⚠ 2026-10-29：原先这里**含 'scripts'** ⇒ 插件的 scripts/ 目录永远同步不过去
+ *   （典型：vssaros-kb 的 scripts/feishu-sync.mjs —— **服务端 spawn 的就是它**）
+ *   ⇒ 表现为"改了同步脚本没生效"。已移除 ✓
+ */
+const SKIP_DIRS = new Set(['node_modules', 'test', 'tests', 'vendor', '.git', 'e2e', 'dist.e2e']);
 
 // 与 @deepseek-ai/dsh-client-modules 的 framedHash / artifactRevision 逐字一致
 const framedHash = (domain, parts) => {
@@ -115,7 +177,16 @@ if (pluginDirs.length === 0) {
 	process.exit(1);
 }
 
-const profiles = fs.existsSync(HOME) ? fs.readdirSync(HOME, { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name) : [];
+/** 所有 profile 目录（跨全部根）⇒ [{ root, prof, dir }]。 */
+const profiles = [];
+for (const root of PROFILE_ROOTS) {
+	let ents = [];
+	try { ents = fs.readdirSync(root, { withFileTypes: true }); } catch { continue; }
+	for (const d of ents) {
+		if (!d.isDirectory()) { continue; }
+		profiles.push({ root, prof: d.name, dir: path.join(root, d.name) });
+	}
+}
 
 /** 列出参与运行时的文件（跳过 test/scripts/vendor）。 */
 const runtimeFiles = (root, base = root, out = []) => {
@@ -168,6 +239,8 @@ const writeJsonPreservingFormat = (file, obj) => {
 };
 
 const summary = [];
+/** 落地失败清单（复制后校验不通过 / rev 没变）⇒ 最后非零退出。 */
+const failures = [];
 for (const dir of pluginDirs) {
 	const srcRoot = path.join(PLUGINS, dir);
 	let pkg;
@@ -176,9 +249,13 @@ for (const dir of pluginDirs) {
 
 	const entryRel = clientEntryOf(pkg);
 	const dests = [];
-	for (const prof of profiles) {
-		const nm = path.join(HOME, prof, 'node_modules', pkg.name);
-		if (fs.existsSync(nm)) { dests.push({ prof, dir: nm }); }
+	for (const p of profiles) {
+		const nm = path.join(p.dir, 'node_modules', pkg.name);
+		if (fs.existsSync(nm)) { dests.push({ prof: rootTagOf(p.root) + '/' + p.prof, root: p.root, dir: nm, kind: 'node_modules' }); }
+		// ★ 宿主真正读的是**已安装副本**（版本化目录）⇒ 必须一并同步（见 installedCopiesOf 注释）
+		for (const inst of installedCopiesOf(p.dir, pkg.name)) {
+			dests.push({ prof: rootTagOf(p.root) + '/' + p.prof, root: p.root, dir: inst.dir, kind: 'installed:' + inst.name });
+		}
 	}
 	if (!dests.length) { continue; }
 
@@ -222,18 +299,26 @@ for (const dir of pluginDirs) {
 		// 版本已经不一致 ⇒ 这是**官方通道**的活（F5 时 `_ensurePlugin` 会暂存 + `dsh plugin add`）。
 		// 若这里抢先复制，profile 版本就会等于仓库版本 ⇒ 官方判"已是最新"跳过 ⇒ 锁文件永久漂移 ✗
 		const instVer = versionOf(d.dir);
-		if (onlyChanged && repoVer && instVer && repoVer !== instVer) {
-			summary.push([dir, d.prof, changed.length, `repo ${repoVer} ≠ installed ${instVer}`, '', 'leave-to-official']);
-			continue;
-		}
+		/*
+		 * ★ 2026-10-29：原先这里在"版本不一致"时 `continue`（交给官方通道）⇒
+		 *   我们天天在改的插件恰好版本不一致 ⇒ **每次都跳过复制，却打印成"已部署"**。
+		 *   ⇒ 现在**照样复制**（开发期要立刻生效），只把版本漂移写进结果行提醒去跑 --bump。
+		 */
+		const versionDrift = (repoVer && instVer && repoVer !== instVer)
+			? `repo ${repoVer} ≠ installed ${instVer}` : '';
 		// --changed 也**不跳过**：内容一致时仍要刷新入口 mtime。
 		// 否则会出现"内容已经同步、但 rev 还是旧的"这种半生效状态（本机 11:47 实测撞到），
 		// 页面继续用旧 chunk。开发态每次重启换一次 rev 的代价只是重新下载插件 chunk，可以接受。
 		if (!dry) {
-			for (const rel of changed) {
-				const to = path.join(d.dir, rel);
-				fs.mkdirSync(path.dirname(to), { recursive: true });
-				fs.copyFileSync(path.join(srcRoot, rel), to);
+			// ★ 2026-10-29：复制失败（权限/占用/EISDIR…）必须**变成可读的失败**，而不是抛栈。
+			try {
+				for (const rel of changed) {
+					const to = path.join(d.dir, rel);
+					fs.mkdirSync(path.dirname(to), { recursive: true });
+					fs.copyFileSync(path.join(srcRoot, rel), to);
+				}
+			} catch (e) {
+				failures.push(`${dir} → ${d.dir}：复制失败（${String((e && e.message) || e)}）`);
 			}
 			// 入口必须让 rev 变：rev = sha1(mtimeMs, ctimeMs, size)。
 			// ⚠ Windows 的 CopyFile（= fs.copyFileSync）会**连时间戳一起复制** —— 实测 repo
@@ -249,9 +334,46 @@ for (const dir of pluginDirs) {
 		}
 		const revAfter = entryRel ? artifactRevision(entryDst) : '';
 		const hasEntry = !!entryRel && fs.existsSync(path.join(srcRoot, entryRel));
-		const state = !hasEntry ? 'no-client-entry' : (revBefore === revAfter ? 'REV-UNCHANGED(!)' : (changed.length ? 'deployed' : 'touch-only'));
-		summary.push([dir, d.prof, changed.length, revBefore || '(no client entry)', revAfter || '(no client entry)', state]);
+
+		/*
+		 * ★ 2026-10-29：复制完必须**证明**落地了 —— 逐文件 sha256 比对。
+		 *   以前"复制了就说成功"，于是漏文件/失败/写错目录全都看不出来（连续 8 次假成功）。
+		 *   现在：不一致 ⇒ 记进 failures ⇒ 进程以**非零码**退出（CI/启动器能立刻发现）。
+		 */
+		if (!dry && changed.length) {
+			const bad = [];
+			for (const rel of changed) {
+				const a = sha256File(path.join(srcRoot, rel));
+				const b = sha256File(path.join(d.dir, rel));
+				if (!a || a !== b) { bad.push(rel); }
+			}
+			if (bad.length) {
+				failures.push(`${dir} → ${d.dir}：${bad.length} 个文件校验不一致（${bad.slice(0, 3).join(', ')}${bad.length > 3 ? ' …' : ''}）`);
+			}
+		}
+		// 有文件变更却 rev 没变 ⇒ 浏览器会继续吃旧 chunk ⇒ 同样算失败
+		if (!dry && changed.length && hasEntry && revBefore && revBefore === revAfter) {
+			failures.push(`${dir} → ${d.dir}：内容已同步但入口 rev 未变（${revBefore}）⇒ 浏览器会吃旧缓存`);
+		}
+
+		const state = !hasEntry ? 'no-client-entry'
+			: (changed.length ? (versionDrift ? 'deployed(version-drift)' : 'deployed') : 'touch-only');
+		summary.push([dir, d.prof + (d.kind && d.kind !== 'node_modules' ? '/' + d.kind : ''), changed.length,
+			revBefore || '(no client entry)', revAfter || '(no client entry)', state, versionDrift]);
 	}
+}
+
+const drifts = summary.filter((r) => r[6]);
+if (drifts.length) {
+	console.log('\n⚠ 有 ' + drifts.length + ' 处**版本漂移**（repo ≠ installed）⇒ 官方锁文件未对齐；');
+	console.log('   提交前跑一次：node scripts/dsh-plugin-deploy.mjs --bump');
+}
+
+if (failures.length) {
+	console.log('\n✗ 部署校验未通过（下面这些**没有真正生效**）：');
+	for (const f of failures) { console.log('   - ' + f); }
+	// ★ 2026-10-29：假成功必须**让机器看见** ⇒ 非零退出（以前一律 0 ⇒ 调用方以为成功）
+	process.exitCode = 1;
 }
 
 const pad = (s, n) => String(s).padEnd(n);
@@ -276,20 +398,20 @@ if (bump) {
 } else if (verify) {
 	console.log(pad('plugin', W) + pad('profile', 10) + pad('pending', 9) + 'rev (served as ?rev=…)');
 	for (const [dir, prof, cnt, , after] of summary) {
-		console.log(pad(dir, W) + pad(prof, 10) + pad(cnt, 9) + after);
+		console.log(pad(dir, W) + pad(prof, 48) + pad(cnt, 9) + after);
 	}
 } else {
-	for (const [dir, prof, cnt, before, after, note] of summary) {
+	for (const [dir, prof, cnt, before, after, note, drift] of summary) {
 		if (note === 'leave-to-official') {
-			console.log('→ ' + pad(dir, W) + pad(prof, 10) + before + '  ⇒ 交给官方安装（F5 时暂存 + dsh plugin add）');
+			console.log('→ ' + pad(dir, W) + pad(prof, 48) + before + '  ⇒ 交给官方安装（F5 时暂存 + dsh plugin add）');
 			continue;
 		}
 		if (note === 'no-client-entry') {
-			console.log('· ' + pad(dir, W) + pad(prof, 10) + 'files=' + pad(cnt, 4) + '该包没有 exports["./client"] ⇒ 无 rev（改的是服务端文件，重启即读）');
+			console.log('· ' + pad(dir, W) + pad(prof, 48) + 'files=' + pad(cnt, 4) + '该包没有 exports["./client"] ⇒ 无 rev（改的是服务端文件，重启即读）');
 			continue;
 		}
 		const changedRev = before !== after;
-		console.log('✓ ' + pad(dir, W) + pad(prof, 10) + 'files=' + pad(cnt, 4) + 'rev ' + before + ' -> ' + after +
+		console.log('✓ ' + pad(dir, W) + pad(prof, 48) + 'files=' + pad(cnt, 4) + 'rev ' + before + ' -> ' + after +
 			(changedRev ? '' : '  ⚠ REV-UNCHANGED（缓存不会失效）') +
 			(note === 'touch-only' ? '  (内容未变，仅刷新缓存)' : ''));
 	}

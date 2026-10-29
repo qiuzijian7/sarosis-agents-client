@@ -300,7 +300,8 @@ console.log('── 工具 allowlist ──');
 
 		const idx = strip(read('lib/index.js'));
 		check('lazy：阶段 2 必须用同一批 key 门控（否则会把全部注册回去）',
-			/await applyDesired\(okPresetIds, true, eagerKeys\)/.test(idx));
+			/await applyDesired\(okPresetIds, true, phase2Only\)/.test(idx)
+			&& /const phase2Only = lazyMode \? new Set\(\[\.\.\.eagerKeys\]/.test(idx));
 		check('lazy：补齐整个 state 只排一个定时器',
 			/function scheduleLazyFill\(state, config, total\) \{\s*if \(state\.lazyFill\) \{\s*return;/.test(idx));
 		check('lazy：补齐 / 启动首轮 / rescan 都走 syncSerial（先等在飞的一轮，避免并发重复注册）',
@@ -313,6 +314,11 @@ console.log('── 工具 allowlist ──');
 			(idx.match(/state\.sessionController = withLazyPresetGuard\(child\.sessionController\)/g) || []).length === 2);
 		check('lazy：有回退开关（配置 presetMode: eager / 环境变量 =off）',
 			/config\?\.presetMode !== 'eager' && process\.env\.VSSAROS_DSH_PRESET_MODE !== 'off'/.test(idx));
+		check('lazy：第二阶段不做可委派 preset（每个 preset 挂载 ~0.4s ⇒ 5 个就是 ~2s）',
+			/const phase2Only = lazyMode \? new Set\(\[\.\.\.eagerKeys\]\.filter\(\(key\) => !isDelegatableKey\(key\)\)\) : eagerKeys;/.test(idx)
+			&& /await applyDesired\(okPresetIds, true, phase2Only\)/.test(idx));
+		check('MCP 计时探针：工具成簇出现时记一行（host 启动后多少 ms）',
+			/MCP 工具到位：host 启动后 \$\{Date\.now\(\) - hostStartedAt\}ms/.test(idx));
 	}
 
 	// 快路径：只用内部 view() 的 key，**不碰 schemas()**（深拷贝是那十几秒的大头）。

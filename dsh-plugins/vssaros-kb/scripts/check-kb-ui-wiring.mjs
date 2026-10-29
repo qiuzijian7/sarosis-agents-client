@@ -173,8 +173,11 @@ check('插件页提供 openUrl', PAGE_HTML.includes('openUrl:'));
 
 // ── 长文档渲染（2026-10-26，P1）──────────────────────────────
 // 屏外块跳过布局：视图（面板/页面）与独立文档页两处样式都要有，缺一处就有一端白慢。
-check('视图样式启用 content-visibility（长文档首屏优化）', BUNDLE.includes('content-visibility'));
-check('独立文档页样式同样启用 content-visibility', INDEX.includes('content-visibility'));
+// ★ 2026-10-29：content-visibility 已从正文移除（长文滚动位置会被顶乱，见下方断言）
+check('视图样式不再对正文启用 content-visibility',
+	!/\.kb-md > \*[^\n{]*\{[^\n}]*content-visibility:\s*auto/.test(BUNDLE));
+check('独立文档页也不对正文启用 content-visibility',
+	!/\#doc > \*[^\n{]*\{[^\n}]*content-visibility:\s*auto/.test(INDEX));
 
 // ── ETag / 304（2026-10-26，P2）──────────────────────────────
 // 服务端回 etag 只是第一步：两个宿主都必须**带着它再请求**并按 304 复用旧对象，
@@ -347,6 +350,12 @@ check('思维导图也是中栏页签（与设置/图谱同一套）',
 	&& KB_TSX.includes("setOpenViews(o => ({ ...o, canvas: true }))"));
 check('导图不再用整页覆盖层（旧的 canvasOpen 状态已移除）',
 	!KB_TSX.includes('data-kb-canvas-overlay') && !KB_TSX.includes('canvasOpen'));
+
+// ★ 2026-10-29（真机：长文滚到底后**无法向上滚**）：
+//   `.kb-md > *` 上的 `content-visibility: auto` 会让屏外块按 2.4em 占位、滚进视口才真排版
+//   ⇒ scrollHeight 持续变化（实测 3126⇄2460）⇒ 滚动位置被顶走。必须去掉。
+check('正文不用 content-visibility:auto（否则长文滚动位置会被顶乱）',
+	!/\.kb-md > \*[^\n{]*\{[^\n}]*content-visibility:\s*auto/.test(KB_TSX));
 
 check('完整设置（飞书）在 bundle 内实现并挂进设置页',
 	KB_TSX.includes('function KbFeishuSettings(') && KB_TSX.includes('<KbFeishuSettings />'));

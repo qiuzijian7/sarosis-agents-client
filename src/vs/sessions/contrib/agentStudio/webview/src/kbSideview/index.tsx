@@ -646,7 +646,17 @@ const KB_SCOPED_CSS = `
  *   以免滚动条乱跳。首块不加（避免首屏测量被推迟）。
  *   对 1 万字以上的笔记首屏更快；短笔记无感。
  */
-.kb-md > *:not(:first-child) { content-visibility: auto; contain-intrinsic-size: auto 2.4em; }
+/*
+ * ★★ 2026-10-29（真机：长文「AI重塑游戏UI管线…」滚到底后**无法向上滚**）：
+ *   原规则：「content-visibility: auto; contain-intrinsic-size: auto 2.4em;」（屏外块跳过布局）。
+ *   但 CDP 真实滚轮实测：
+ *     下滚：scrollTop 1741、scrollHeight **3126 → 2460**（内容塌了 660px）
+ *     上滚：scrollTop  765、scrollHeight **2460 → 3158**（又涨回去）
+ *   原因：屏外块按「2.4em」占位（≈31px），滚进视口才真正排版（真实高度可达 101px）
+ *   ⇒ **scrollHeight 持续变化** ⇒ 滚动位置被反复顶走/夹断 ⇒ 表现为"滚到底后回不去"。
+ *   实测改成「content-visibility: visible」后 scrollHeight 全程稳定（3127），上滚可回到 0。
+ *   ⇒ **正确性优先，去掉这条优化**（长文首屏变慢一点，但滚动可靠）。
+ */
 .kb-md h1 { font-size: 1.55em; margin: .7em 0 .4em; }
 .kb-md h2 { font-size: 1.3em; margin: .7em 0 .4em; }
 .kb-md h3 { font-size: 1.12em; margin: .6em 0 .3em; }

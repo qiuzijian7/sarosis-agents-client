@@ -72,8 +72,10 @@ suite('产物内容门禁', () => {
 		const strip = stripComments(read(STRIP));
 		assert.match(strip, /check-pack-contents\.mjs/,
 			'strip-before-pack 必须调用产物内容门禁');
-		assert.match(strip, /spawnSync\(/,
-			'必须用子进程跑门禁（门禁要能 exit(1) 阻断打包）');
+		// ⚠ 必须钉**门禁那一次调用**（`[gate, buildDir]`）：只查 `spawnSync(` 会命中 strip 里
+		//   另一处（ensure-pnpm-tool 的 spawnSync）⇒ "把门禁调用删掉"这种突变会**假绿**（实测踩过 ✗）。
+		assert.match(strip, /spawnSync\(process\.execPath, \[gate, buildDir\]/,
+			'必须用子进程跑门禁（门禁要能 exit(1) 阻断打包）；且必须真的执行它');
 		assert.match(strip, /if \(r\.status !== 0\)/,
 			'门禁不过必须显式处理非零退出码');
 		assert.match(strip, /process\.exit\(r\.status \|\| 1\)/,
