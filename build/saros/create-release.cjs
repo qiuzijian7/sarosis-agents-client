@@ -317,6 +317,34 @@ async function gitlabCreateRelease(tag, changelog, dryRun) {
 		else { warn(`GitLab create tag -> ${r.status}: ${brief(r.data)}`); }
 	}
 
+	// ★ 2026-10-29：发布前**产物内容门禁** —— 缺件不许发出去。
+	//   真机：产物里缺 `@vscode/deviceid` ⇒ 用户机器上每次启动一条
+	//   `Error [ERR_MODULE_NOT_FOUND] … imported from …/out/main.js`（设备标识链静默降级），
+	//   而这个缺陷就是这么一路溜到用户手上的 ✗✗（strip-before-pack 里的补回当时早就在，
+	//   但**那个脚本压根没跑** —— 它不在 gulp 任务链里，靠手工执行）。
+	//   ⇒ 清单从 build/saros/strip-before-pack.mjs 的 ensureDir 调用**自动推导**（单一真相源）。
+	//   ⚠ 只在"构建输出目录存在"时才拦：目录不存在说明这次打包走的是别的流程 ⇒ 警告但不拦
+	//   （否则会把"打包方式不同"误判成"缺件"，反而把发布堵死）。
+	{
+		const gate = path.join(REPO_ROOT, 'build', 'saros', 'check-pack-contents.mjs');
+		if (!fs.existsSync(gate)) {
+			// 门禁脚本本身没了 ⇒ 不能静默放过（否则"缺件"又没人管了）
+			throw new Error('找不到产物内容门禁脚本：' + gate + ' ⇒ 拒绝发布');
+		}
+		// 产物根：允许用环境变量显式指定（打包流程各异）；不指定就让门禁自己探测
+		// （../VSCode-win32-x64 → .build/win32-x64/* → .build/win32-x64，取第一个含 resources/app 的）。
+		// ⚠ 探测不到时门禁会 **exit(1)** ⇒ 发布中止 —— 这是刻意的 fail-closed：
+		//   "不知道产物在哪" 不等于 "产物没问题" ✗。要放行就显式给 SAROS_PACK_DIR。
+		const gateArgs = [gate];
+		if (process.env.SAROS_PACK_DIR) {
+			gateArgs.push(process.env.SAROS_PACK_DIR);
+			log('产物内容门禁：使用 SAROS_PACK_DIR=' + process.env.SAROS_PACK_DIR);
+		}
+		// ⚠ 故意**不** try/catch：门禁不过 ⇒ 抛错 ⇒ 发布中止（这就是它的意义）。
+		execFileSync(process.execPath, gateArgs, { stdio: 'inherit' });
+		log('产物内容门禁通过');
+	}
+
 	// 2. upload exes to project uploads
 	const downloads = [];
 	for (const exe of EXE_FILES) {

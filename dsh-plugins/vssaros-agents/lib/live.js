@@ -64,6 +64,47 @@ export async function readLiveSession(config, sessionId) {
 }
 
 /**
+ * 最近活跃的 N 个会话用的 preset id（★ 2026-10-29，lazy 注册用）。
+ *
+ * lazy 模式启动时只注册少量 preset；桌面窗口一启动就会**恢复上次的会话** ⇒ 那个会话的 preset
+ * 必须在第一批里，否则恢复失败。这里只 stat 全部缓存文件、按 mtime 取最新 `limit` 个再解析
+ * ⇒ 比 `readLiveSessions`（逐个解析最多 500 个）便宜得多，适合放在启动路径上。
+ * 任何错误都返回空数组（拿不到就退回"只按委派清单 + 扫描顺序"，不阻塞启动）。
+ */
+export async function recentSessionPresetIds(config, { limit = 8 } = {}) {
+	const dir = projCacheDirOf(config);
+	let names;
+	try {
+		names = (await readdir(dir, { withFileTypes: true }))
+			.filter(entry => entry.isFile() && entry.name.endsWith('.json'))
+			.map(entry => entry.name);
+	} catch {
+		return [];
+	}
+	const stamped = [];
+	for (const name of names) {
+		try {
+			const info = await stat(join(dir, name));
+			if (info.size <= MAX_FILE_BYTES) {
+				stamped.push({ name, mtimeMs: info.mtimeMs });
+			}
+		} catch { /* 并发删除等：跳过 */ }
+	}
+	stamped.sort((a, b) => b.mtimeMs - a.mtimeMs);
+	const out = [];
+	for (const { name, mtimeMs } of stamped.slice(0, Math.max(0, limit))) {
+		try {
+			const parsed = sessionRowOf(JSON.parse(await readFile(join(dir, name), 'utf8')), name.replace(/\.json$/, ''), mtimeMs);
+			const presetId = parsed?.row?.presetId;
+			if (presetId && !out.includes(presetId)) {
+				out.push(presetId);
+			}
+		} catch { /* 坏文件：跳过 */ }
+	}
+	return out;
+}
+
+/**
  * 读全部会话缓存的**瘦行**（只取 preset / title / persona / tokens / turns 五样，见 core/live.js）。
  * 返回 `{ rows, errors, dir, missing?, truncated }`：坏文件带原因进 errors，**不丢其它会话**。
  * `truncated` 按目录文件数算（与 dashboard 修法同源：被 limit 截过的数组不能用来判断"还有没有"）。

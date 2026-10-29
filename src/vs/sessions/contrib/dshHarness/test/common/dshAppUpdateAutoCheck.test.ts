@@ -66,11 +66,11 @@ suite('应用更新的启动时自动检查', () => {
 		// ⚠ 必须剥掉注释：注释里写着 `action === "upgrade"`（中文说明）⇒ 不剥会被注释骗过（实测假绿）。
 		const chunk = stripComments(read(UPGRADE_CHUNK));
 
-		assert.match(chunk, /const appUpgradable = s =>/, '必须有 appUpgradable 判定');
-		assert.match(chunk, /appUpgradable\(s\) \? 1 : 0/, 'totalPending 必须把应用可升级计成 1 项');
-		// ⚠ 必须**定位到 appUpgradable 那一行**：文件里 `actionText()` 也有 `app.action === "upgrade"`
-		//   ⇒ 全局匹配会被那处骗过（实测：把 appUpgradable 改成认 downgrade 仍然绿 ✗）。
-		const auAt = chunk.indexOf('const appUpgradable = s =>');
+		assert.match(chunk, /const appUp = /, '必须有 appUp 判定（应用自己是不是可升级）');
+		assert.match(chunk, /应用可升级/, '应用有新版时文案必须说「应用可升级」而不是「已最新」');
+		// ⚠ 必须**定位到 appUp 那一行**：文件里 `actionText()` 也有 `app.action === "upgrade"`
+		//   ⇒ 全局匹配会被那处骗过（实测：把判定改成认 downgrade 仍然绿 ✗）。
+		const auAt = chunk.indexOf('const appUp = ');
 		const auLine = chunk.slice(auAt, chunk.indexOf('\n', auAt));
 		assert.match(auLine, /action === "upgrade"/,
 			'appUpgradable 必须只认 action === "upgrade"（downgrade = 源比本地旧，算进去就是"一键降级" ✗）');
@@ -78,6 +78,6 @@ suite('应用更新的启动时自动检查', () => {
 		const nUpAt = chunk.indexOf('const nUp =');
 		assert.ok(nUpAt > 0, 'nUp not found');
 		const nUpLine = chunk.slice(nUpAt, chunk.indexOf('\n', nUpAt));
-		assert.ok(!/appUpgradable/.test(nUpLine), '「全部升级」不许把应用算进去（应用有独立的一键升级按钮）');
+		assert.ok(!/\bappUp\b/.test(nUpLine), '「全部升级」不许把应用算进去（应用有独立的一键升级按钮）');
 	});
 });

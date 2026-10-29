@@ -15,8 +15,24 @@
 //   · 没被任何 IDE 记录认领的 dsh 条目保持**平铺**（回落契约，与 client.workspace.js 的
 //     buildTree 同口径 ✓）；
 //   · 搜索框（条目多时）、＋添加工作区（官方同一条链：uiWorkspace.pickDirectory + workspaces.create ✓）。
-// ⚠ 代价（拍板过的范围）：官方区的会话行菜单（pin/rename/fork/archive）本版**不带**。
 // ⚠ chat-only 形态侧栏整列被 CSS 裁掉 ⇒ 本区只在全窗可见；chat 形态注册是无害空转 ✓。
+//
+// ── 会话行操作（2026-10-29 用户要求；此前"官方菜单本版不带"的代价在此补齐）─────────────
+// 需求：工作区里的**会话 item** 支持右键菜单（重命名 / 置顶，另加 复制会话 id / 归档）+ 拖拽移动位置。
+// 四条都**只走官方服务**，不自造状态：
+//   · 置顶 = `uiWorkspace.pinSession / unpinSession`（**Host 状态** ⇒ 跨窗口一致），
+//     回读 `workspaces.list.pinnedSessionIds`；渲染口径对齐官方 `reconcileManualOrder`：
+//     **pinned 恒在组首**，其余按 手动序 → 时间序（置顶不是"分区"，pinned 之间仍保持相对顺序 ✓）。
+//   · 重命名 = `sessions.using(sid, {source:'workspaceOperation'}).binding.session.rename(title)`
+//     （官方侧栏同一跳）。交互 = **就地输入**（Enter 保存 / Esc 取消 / 失焦取消；与 @vssaros/dsh-sessions 页同形态）。
+//   · 复制会话 id = 剪贴板（http 下 `navigator.clipboard` 可能不存在 ⇒ 一律带 execCommand 降级）。
+//   · 归档 = `uiWorkspace.archiveSession`。**不擅自 stopActivity**：正在跑的会话会被 Host 拒绝，
+//     官方是弹二次确认，我们**如实说明**（由用户先停）—— 替用户停掉跑着的会话是不可接受的副作用 ✗。
+// 拖拽 = **组内**排序（跨组 = 改会话 cwd，官方也不支持 ⇒ 显示禁止态）；置顶区与普通区**互不跨越**
+// （否则"置顶恒在组首"失真）。顺序落 localStorage `vssaros.chatSurface.sessionOrder.v1`：
+//   页面同 origin ⇒ 多窗口共享；**不用**官方 view store 存顺序 —— 它只暴露 write set（`setSessionOrder`），
+//   读不回来（刷新后自己写的顺序也读不到）⇒ 自存自读更可靠。
+// ⚠ 窗口模式（desktop）**没有宿主桥** ⇒ 每个操作的成败都必须**就地**渲染（`sessMsg`），不能只靠 notify ✗。
 //
 // ── 2026-10-26（用户报障：「窗口模式下工作区的 ＋ 点了没反应」+「工作区下有大量空会话」）──
 // ① ＋按钮原来**三重静默失败**（窗口模式尤其致命）：
@@ -190,18 +206,120 @@ window.__ModuleLoader__.load({
 			return official || local || bridged || null;
 		}
 
+		// ── 会话行操作（2026-10-29）：置顶 / 手动顺序 / 拖放判定（纯逻辑 ⇒ __test 直接断言）──
+
+		/** 手动顺序落盘键（localStorage；页面同 origin ⇒ 多窗口共享）。 */
+		const SESSION_ORDER_KEY = "vssaros.chatSurface.sessionOrder.v1";
+
+		/** 把 pinnedIds（数组 / Set / 空）收敛成 Set（只收非空字符串）。 */
+		function toIdSet(ids) {
+			const set = new Set();
+			if (Array.isArray(ids)) {
+				for (const v of ids) { if (typeof v === "string" && v) { set.add(v); } }
+			} else if (ids && typeof ids.forEach === "function" && typeof ids.has === "function") {
+				ids.forEach((v) => { if (typeof v === "string" && v) { set.add(v); } });
+			}
+			return set;
+		}
+
+		/**
+		 * 解析顺序表（JSON 字符串或已解析对象）—— **坏数据一律当空**，绝不把坏结构带进渲染。
+		 * 只认 `{ [groupKey]: string[] }`，逐项去空去重。
+		 */
+		function normalizeOrderMap(raw) {
+			let obj = raw;
+			if (typeof raw === "string") {
+				try { obj = JSON.parse(raw); } catch { return {}; }
+			}
+			if (!obj || typeof obj !== "object" || Array.isArray(obj)) { return {}; }
+			const out = {};
+			for (const key of Object.keys(obj)) {
+				const list = obj[key];
+				if (!Array.isArray(list)) { continue; }
+				const clean = [];
+				for (const v of list) {
+					if (typeof v === "string" && v && clean.indexOf(v) < 0) { clean.push(v); }
+				}
+				if (clean.length > 0) { out[key] = clean; }
+			}
+			return out;
+		}
+
+		/** 按保存顺序重排；保存表里没有的**保持原相对顺序**追加在后面（不重新按时间排 ✗）。 */
+		function sortBySavedOrder(list, saved) {
+			if (!Array.isArray(saved) || saved.length === 0) { return list.slice(); }
+			const rank = Object.create(null);
+			for (let i = 0; i < saved.length; i++) { rank[saved[i]] = i; }
+			const known = [];
+			const rest = [];
+			for (const s of list) {
+				if (Object.prototype.hasOwnProperty.call(rank, s.id)) { known.push(s); } else { rest.push(s); }
+			}
+			known.sort((a, b) => rank[a.id] - rank[b.id]);
+			return known.concat(rest);
+		}
+
+		/**
+		 * 组内最终顺序 = **置顶稳定前置** ⊕ 手动序（官方 `reconcileManualOrder` 同口径）。
+		 * ★ 置顶不是"分区"：pinned 之间、其余之间各自保持既有相对顺序 ✓。
+		 */
+		function orderGroupSessions(list, opts) {
+			const o = opts || {};
+			const pins = toIdSet(o.pinned);
+			const ordered = sortBySavedOrder(list, o.saved);
+			const pinRows = [];
+			const rest = [];
+			for (const s of ordered) {
+				(pins.has(s.id) ? pinRows : rest).push(s);
+			}
+			return pinRows.concat(rest);
+		}
+
+		/**
+		 * 把 `sid` 挪到 `targetSid` 之前/之后 —— 返回**新 id 顺序数组**（不动入参）。
+		 * 任一方不在表里 / 同一个 ⇒ null（调用方据此不写顺序，避免把顺序表写坏）。
+		 */
+		function moveWithin(list, sid, targetSid, after) {
+			const ids = list.map((s) => s.id);
+			if (ids.indexOf(sid) < 0 || ids.indexOf(targetSid) < 0 || sid === targetSid) { return null; }
+			const next = ids.slice();
+			next.splice(ids.indexOf(sid), 1);
+			const at = next.indexOf(targetSid);
+			if (at < 0) { return null; }
+			next.splice(after ? at + 1 : at, 0, sid);
+			return next;
+		}
+
+		/**
+		 * 拖放是否允许：**同组 + 同置顶区**。
+		 * 跨组 = 改会话 cwd（官方也不支持）；跨置顶区 = 会让"置顶恒在组首"失真 ⇒ 都拒绝并显示禁止态。
+		 */
+		function canDrop(src, dst) {
+			if (!src || !dst) { return false; }
+			if (src.sid === dst.sid) { return false; }
+			if (src.groupKey !== dst.groupKey) { return false; }
+			return !!src.pinned === !!dst.pinned;
+		}
+
 		function buildSidebar(options) {
 			const items = (options && options.workspaces) || [];
 			const records = (options && options.records) || [];
 			const byId = (options && options.sessionsById) || {};
 			const archived = (options && options.archivedIds) || [];
 			const currentId = (options && options.currentSessionId) || null;
+			// ★ 2026-10-29：置顶（Host 状态）与手动顺序（本地）
+			const pins = toIdSet(options && options.pinnedIds);
+			const orderMap = (options && options.orderMap) || {};
 			const claimed = {};
 			const rows = [];
-			const mkSess = (sid, rootName, isPrimaryRoot) => {
+			const mkSess = (sid, rootName, isPrimaryRoot, groupKey) => {
 				const s = byId[sid] || {};
 				return {
 					id: sid,
+					// 组键（"rec:<记录 id>" / "ws:<工作区 id>"）—— 手动顺序与拖放判定都按它分片
+					groupKey: groupKey || "",
+					// ★ 置顶（Host 状态的 pinnedSessionIds）：渲染口径 = 恒在组首（见 orderGroupSessions）
+					pinned: pins.has(sid),
 					// 标题：title → summary.displayTitle → 首条消息摘要 → id（见 titleOf 的注释）
 					title: titleOf(s, sid),
 					at: (typeof s.updatedAt === "number" && s.updatedAt) || (typeof s.createdAt === "number" && s.createdAt) || 0,
@@ -218,6 +336,8 @@ window.__ModuleLoader__.load({
 				? list.sort((s1, s2) => (s2.at - s1.at) || (s1.id < s2.id ? -1 : 1))
 				: list;
 			for (const rec of records) {
+				// ★ 2026-10-29：组键用**记录 id**（多根工作区可能摊平出多个 dsh 条目 ⇒ 不能用 workspaceId 当键）
+				const groupKey = "rec:" + rec.id;
 				const members = items.filter((it) => it && it.workspaceId && !claimed[it.workspaceId]
 					&& rec.roots.some((r) => samePath(r.path, it.path)));
 				for (const m of members) { claimed[m.workspaceId] = true; }
@@ -229,7 +349,7 @@ window.__ModuleLoader__.load({
 					for (const sid of (Array.isArray(m.sessionIds) ? m.sessionIds : [])) {
 						const root = rootOfSession(byId, rec.roots, sid, fallbackRoot);
 						// 稿 1 降噪：只有**非主根**会话才带根名标签（守卫 ⑤ 钉住 ✓）
-						const s = mkSess(sid, root && !root.isPrimary ? root.name : null, root ? root.isPrimary : true);
+						const s = mkSess(sid, root && !root.isPrimary ? root.name : null, root ? root.isPrimary : true, groupKey);
 						if (s.archived) { continue; }
 						// ★ 空会话不显示（2026-10-26 用户报「工作区下有大量空会话」）：
 						//   这些会话一条消息都没有、标题只能回落到 id ⇒ 在列表里是纯噪音
@@ -239,23 +359,33 @@ window.__ModuleLoader__.load({
 						sessions.push(s);
 					}
 				}
-				rows.push({ kind: "group", record: rec, sessions: sortSess(sessions), hiddenBlanks });
+				// ★ 2026-10-29：顺序 = 置顶前置 ⊕ 手动序（orderGroupSessions），基础序仍是时间倒序 ✓
+				rows.push({
+					kind: "group",
+					key: groupKey,
+					record: rec,
+					sessions: orderGroupSessions(sortSess(sessions), { saved: orderMap[groupKey], pinned: pins }),
+					hiddenBlanks,
+				});
 			}
 			for (const it of items) {
 				if (!it || !it.workspaceId || claimed[it.workspaceId]) { continue; }
+				const groupKey = "ws:" + it.workspaceId;
 				const sessions = [];
 				let hiddenBlanks = 0;
 				for (const sid of (Array.isArray(it.sessionIds) ? it.sessionIds : [])) {
-					const s = mkSess(sid, null, true);
+					const s = mkSess(sid, null, true, groupKey);
 					if (s.archived) { continue; }
 					if (s.blank && !s.isCurrent) { hiddenBlanks += 1; continue; }
 					sessions.push(s);
 				}
 				rows.push({
 					kind: "flat",
+					key: groupKey,
+					workspaceId: it.workspaceId,
 					label: (typeof it.name === "string" && it.name.trim()) ? it.name.trim() : (baseName(it.path) || it.workspaceId),
 					path: it.path || null,
-					sessions: sortSess(sessions),
+					sessions: orderGroupSessions(sortSess(sessions), { saved: orderMap[groupKey], pinned: pins }),
 					hiddenBlanks,
 				});
 			}
@@ -382,6 +512,128 @@ window.__ModuleLoader__.load({
 					notify("warn", "打开会话失败：" + msg);
 				}
 			};
+			// ── 会话行操作（2026-10-29 用户要求：右键菜单 置顶/重命名/复制 id/归档 + 组内拖拽）──
+			/**
+			 * 四条操作**只走官方服务**（不自造状态），成败都经 `say(text, kind)` **就地**渲染。
+			 *
+			 * ⚠ 窗口模式没有宿主桥 ⇒ `notify` 是空转 ⇒ 只写 state 就是静默失败（与 ＋ 按钮同款教训）✗。
+			 */
+			const errText = (e) => String((e && e.message) || e || "未知错误");
+			/**
+			 * 归档是否被 Host 以「会话还在跑」拒绝（官方 `WorkspaceArchiveError` + `workspace/session-active`）。
+			 * 官方遇到它弹二次确认（可顺带 stopActivity）；我们**不擅自停掉用户正在跑的会话** ⇒ 只如实说明。
+			 */
+			const isActiveRefusal = (e) => {
+				try {
+					if (e && e.name === "WorkspaceArchiveError") { return true; }
+					const code = e && e.rpcError && e.rpcError.code;
+					return typeof code === "string" && code.indexOf("session-active") >= 0;
+				} catch { return false; }
+			};
+			/** 置顶 / 取消置顶（Host 状态；成功后 workspaces 快照会变 ⇒ useData 的订阅自动重渲染）。 */
+			const setPinned = (sid, on, say) => {
+				try {
+					const uw = ctx.uiWorkspace;
+					const fn = on ? (uw && uw.pinSession) : (uw && uw.unpinSession);
+					if (typeof fn !== "function") {
+						say("当前宿主不支持置顶（uiWorkspace.pinSession 不可用）", "error");
+						return;
+					}
+					void Promise.resolve(fn.call(uw, sid)).then(
+						() => { say(on ? "已置顶（排在所属工作区最前）" : "已取消置顶", "note"); },
+						(e) => { say((on ? "置顶失败：" : "取消置顶失败：") + errText(e), "error"); },
+					);
+				} catch (e) { say("置顶失败：" + errText(e), "error"); }
+			};
+			/**
+			 * 重命名（官方侧栏同一跳：`sessions.using(...).binding.session.rename(title)`）。
+			 * @param done 成功回调（调用方据此收起就地输入框）
+			 */
+			const renameSession = (sid, title, say, done) => {
+				const next = String(title || "").trim();
+				if (!next) { say("标题不能为空", "error"); return; }
+				try {
+					const svc = typeof ctx.get === "function" ? ctx.get("sessions") : null;
+					if (!svc || typeof svc.using !== "function") {
+						say("当前宿主不支持重命名（sessions.using 不可用）", "error");
+						return;
+					}
+					void Promise.resolve(svc.using(sid, { source: "workspaceOperation" }, (ref) => {
+						const session = ref && ref.binding && ref.binding.session;
+						if (!session || typeof session.rename !== "function") {
+							throw new Error("会话引用没有 rename（宿主版本过旧）");
+						}
+						return session.rename(next);
+					})).then(
+						() => { say(null); if (typeof done === "function") { done(); } },
+						(e) => { say("重命名失败：" + errText(e), "error"); },
+					);
+				} catch (e) { say("重命名失败：" + errText(e), "error"); }
+			};
+			/** 剪贴板降级（http 下 navigator.clipboard 可能不存在；execCommand 仍可用）。 */
+			const legacyCopy = (text) => {
+				try {
+					const ta = document.createElement("textarea");
+					ta.value = text;
+					ta.setAttribute("readonly", "1");
+					ta.style.position = "fixed";
+					ta.style.left = "-9999px";
+					document.body.appendChild(ta);
+					ta.select();
+					const ok = document.execCommand("copy");
+					document.body.removeChild(ta);
+					return ok === true;
+				} catch { return false; }
+			};
+			const copySessionId = (sid, say) => {
+				const ok = () => say("已复制会话 id：" + sid, "note");
+				const fail = () => say("复制失败（宿主拒绝了剪贴板写入）", "error");
+				try {
+					const nav = typeof navigator !== "undefined" ? navigator : null;
+					if (nav && nav.clipboard && typeof nav.clipboard.writeText === "function") {
+						void Promise.resolve(nav.clipboard.writeText(sid)).then(ok, () => { legacyCopy(sid) ? ok() : fail(); });
+						return;
+					}
+				} catch { /* 落到降级 */ }
+				legacyCopy(sid) ? ok() : fail();
+			};
+			/** 归档（从列表消失；运行中的会话会被 Host 拒绝 ⇒ 如实说明，不替用户停）。 */
+			const archiveSession = (sid, say) => {
+				try {
+					const uw = ctx.uiWorkspace;
+					if (!uw || typeof uw.archiveSession !== "function") {
+						say("当前宿主不支持归档（uiWorkspace.archiveSession 不可用）", "error");
+						return;
+					}
+					void Promise.resolve(uw.archiveSession(sid)).then(
+						() => { say("已归档（列表里移除；官方「已归档」筛选可找回）", "note"); },
+						(e) => {
+							if (isActiveRefusal(e)) {
+								say("这条会话正在运行，先停止它再归档（不替你停）", "error");
+								return;
+							}
+							say("归档失败：" + errText(e), "error");
+						},
+					);
+				} catch (e) { say("归档失败：" + errText(e), "error"); }
+			};
+			/** 读手动顺序（localStorage）。坏数据 / 无 localStorage ⇒ 空表（侧栏照常工作）。 */
+			const readOrderMap = () => {
+				try {
+					if (typeof localStorage === "undefined") { return {}; }
+					return normalizeOrderMap(localStorage.getItem(SESSION_ORDER_KEY));
+				} catch { return {}; }
+			};
+			/** 写手动顺序：先更新 React state（立即重排），再落盘；落盘失败只影响下次启动。 */
+			const persistOrderMap = (next, setOrderMap) => {
+				try { if (typeof setOrderMap === "function") { setOrderMap(next); } } catch { /* 渲染层异常不影响落盘 */ }
+				try {
+					if (typeof localStorage !== "undefined") {
+						localStorage.setItem(SESSION_ORDER_KEY, JSON.stringify(next));
+					}
+				} catch { /* 落盘失败只影响下次启动 */ }
+			};
+
 			/**
 			 * ＋ 菜单的两个动作共用的"说清楚"通道（**就地渲染**，不只靠 notify）。
 			 *
@@ -544,6 +796,27 @@ window.__ModuleLoader__.load({
 					color: "inherit", cursor: "pointer", fontSize: 12, lineHeight: "1.4",
 					padding: "6px 8px", borderRadius: 6,
 				},
+				// ── 会话行（2026-10-29）：置顶图钉 / 就地重命名 / 操作反馈 ──
+				// 图钉占位恒在（未置顶时透明）：否则切置顶会让整行文字横跳 12px ✗
+				pin: {
+					width: 12, flex: "0 0 auto", fontSize: 10, lineHeight: "16px", textAlign: "center",
+					color: "var(--dsw-alias-brand-primary, #5b8cff)", opacity: .95,
+				},
+				rename: {
+					flex: "1 1 auto", minWidth: 0, font: "inherit", fontSize: 12.5, lineHeight: "17px",
+					color: "var(--dsw-alias-label-primary, #e6e6e6)",
+					background: "var(--dsw-alias-bg-layer-1, #1a1a1a)",
+					border: "1px solid var(--dsw-alias-brand-primary, #5b8cff)",
+					borderRadius: 4, padding: "0 4px", outline: "none",
+				},
+				sessMsg: { fontSize: 11, lineHeight: "1.5", padding: "2px 8px 4px", whiteSpace: "normal" },
+				sessMenu: {
+					position: "fixed", zIndex: 80, minWidth: 186, padding: 4, borderRadius: 8,
+					background: "var(--dsw-alias-bg-layer-2, #262626)",
+					border: "1px solid var(--dsw-alias-border-l2, #3e3e3e)",
+					boxShadow: "0 12px 32px rgba(0,0,0,.55)",
+					color: "var(--dsw-alias-label-primary, #e6e6e6)",
+				},
 			};
 
 			/** hover 详情卡（fixed 定位到条目右侧；夹进视口——WebContentsView 外会被裁 ✗）。 */
@@ -594,24 +867,40 @@ window.__ModuleLoader__.load({
 				const [localCurrent, setLocalCurrent] = react.useState(null);
 				const [officialTick, setOfficialTick] = react.useState(0);
 				const hoverTimer = react.useRef(null);
+				// ── 会话行操作（2026-10-29，用户要求：右键菜单 + 拖拽排序）──
+				/** 手动顺序（组键 → id 列表）；localStorage 一读，拖完即写。 */
+				const [orderMap, setOrderMap] = react.useState(readOrderMap);
+				/** 会话右键菜单：{sid, pinned, x, y}；null = 关闭。 */
+				const [sessMenu, setSessMenu] = react.useState(null);
+				/** 就地重命名：{sid, draft}；null = 不在重命名。 */
+				const [renaming, setRenaming] = react.useState(null);
+				/** 会话操作的**就地反馈**（窗口模式没有宿主桥 ⇒ 这是唯一可见通道）。 */
+				const [sessMsg, setSessMsg] = react.useState(null); // {kind, text}
+				/** 正在拖的会话：{sid, groupKey, pinned}。 */
+				const [drag, setDrag] = react.useState(null);
+				/** 当前落点：{sid, after, ok}（ok=false ⇒ 显示禁止态）。 */
+				const [dropAt, setDropAt] = react.useState(null);
+				const msgTimer = react.useRef(null);
 				// 点外面 ⇒ 关菜单（与官方菜单同口径；不关就会"菜单糊在侧栏上"✗）
+				// ★ 2026-10-29：工作区 ＋ 菜单与会话右键菜单**共用**这套关闭逻辑（两套并存会互相残留）。
 				react.useEffect(() => {
-					if (!menu) { return undefined; }
+					if (!menu && !sessMenu) { return undefined; }
 					const onDown = (ev) => {
 						try {
 							const t = ev.target;
-							if (t && t.closest && t.closest("[data-vssaros-ws-menu]")) { return; }
+							if (t && t.closest && (t.closest("[data-vssaros-ws-menu]") || t.closest("[data-vssaros-sess-menu]"))) { return; }
 							setMenu(null);
-						} catch { setMenu(null); }
+							setSessMenu(null);
+						} catch { setMenu(null); setSessMenu(null); }
 					};
-					const onKey = (ev) => { if (ev.key === "Escape") { setMenu(null); } };
+					const onKey = (ev) => { if (ev.key === "Escape") { setMenu(null); setSessMenu(null); } };
 					document.addEventListener("mousedown", onDown, true);
 					document.addEventListener("keydown", onKey, true);
 					return () => {
 						document.removeEventListener("mousedown", onDown, true);
 						document.removeEventListener("keydown", onKey, true);
 					};
-				}, [menu]);
+				}, [menu, sessMenu]);
 				// ★ 2026-10-28：订阅官方 selection（当前会话）—— 官方导航一变就重渲染 ⇒ 高亮跟着动 ✓。
 				//   官方那个字段是私有的 ⇒ 读不到就退化成"乐观高亮 + 宿主绑定"（不会崩 ✓）。
 				react.useEffect(() => {
@@ -650,7 +939,10 @@ window.__ModuleLoader__.load({
 					sessionsById: (sessSnap && sessSnap.byId) || {},
 					archivedIds: (sessSnap && sessSnap.archivedSessionIds) || [],
 					currentSessionId: currentId,
-				}), [wsSnap, records, sessSnap, currentId, officialTick]);
+					// ★ 2026-10-29：置顶（Host 快照）+ 手动顺序（本地）
+					pinnedIds: (wsSnap && wsSnap.pinnedSessionIds) || [],
+					orderMap,
+				}), [wsSnap, records, sessSnap, currentId, officialTick, orderMap]);
 
 				// 当前会话 cwd 所在根的路径（详情卡绿框 + 会话根标签用）。
 				// ★ 2026-10-28（用户报「hover 卡片的"当前会话"根 ≠ 输入框 chip 的工作区」）：
@@ -704,6 +996,152 @@ window.__ModuleLoader__.load({
 				const closeHover = () => {
 					if (hoverTimer.current) { clearTimeout(hoverTimer.current); hoverTimer.current = null; }
 					setHover(null);
+				};
+
+				// ── 会话行操作（2026-10-29）──────────────────────────────────────────
+				/** 就地反馈：6 秒后自动消失（常驻会让人以为状态还在）。 */
+				const say = (text, kind) => {
+					if (!text) { setSessMsg(null); return; }
+					setSessMsg({ kind: kind === "error" ? "error" : "note", text: String(text) });
+					if (msgTimer.current) { clearTimeout(msgTimer.current); }
+					msgTimer.current = setTimeout(() => setSessMsg(null), 6000);
+				};
+				/** 按 sid 找渲染模型（菜单标题 / 置顶态都要它）。 */
+				const findSession = (sid) => {
+					for (const r2 of rows) {
+						for (const s of r2.sessions) { if (s.id === sid) { return s; } }
+					}
+					return null;
+				};
+				/** 右键：fixed 定位并**夹进视口**（侧栏 overflow 会裁掉 absolute 弹层 ✗）。 */
+				const openSessMenu = (s, e) => {
+					try { e.preventDefault(); e.stopPropagation(); } catch { /* 合成事件 */ }
+					setRenaming(null);
+					const w = typeof window !== "undefined" ? window.innerWidth : 0;
+					const h = typeof window !== "undefined" ? window.innerHeight : 0;
+					let x = e.clientX || 0;
+					let y = e.clientY || 0;
+					if (w > 0) { x = Math.max(8, Math.min(x, w - 232)); }
+					if (h > 0) { y = Math.max(8, Math.min(y, h - 212)); }
+					setSessMenu({ sid: s.id, pinned: s.pinned === true, x, y });
+				};
+				const startRename = (s) => { setSessMenu(null); setRenaming({ sid: s.id, draft: s.title }); };
+				const commitRename = () => {
+					if (!renaming) { return; }
+					renameSession(renaming.sid, renaming.draft, say, () => setRenaming(null));
+				};
+				const menuAction = (act) => {
+					const cur = sessMenu;
+					const s = cur ? findSession(cur.sid) : null;
+					setSessMenu(null);
+					if (!cur) { return; }
+					if (act === "pin") { setPinned(cur.sid, !cur.pinned, say); return; }
+					if (act === "rename") { if (s) { startRename(s); } else { setRenaming({ sid: cur.sid, draft: cur.sid }); } return; }
+					if (act === "copy") { copySessionId(cur.sid, say); return; }
+					if (act === "archive") { archiveSession(cur.sid, say); }
+				};
+				// —— 拖拽（组内；置顶区与普通区互不跨越）——
+				const onDragStartOf = (s) => (e) => {
+					setSessMenu(null);
+					setDrag({ sid: s.id, groupKey: s.groupKey, pinned: s.pinned === true });
+					try { e.dataTransfer.setData("text/plain", s.id); e.dataTransfer.effectAllowed = "move"; } catch { /* 某些环境没有 dataTransfer */ }
+				};
+				const onDragOverOf = (s) => (e) => {
+					if (!drag) { return; }
+					e.preventDefault();
+					const ok = canDrop(drag, { sid: s.id, groupKey: s.groupKey, pinned: s.pinned === true });
+					if (!ok) {
+						try { e.dataTransfer.dropEffect = "none"; } catch { /* 忽略 */ }
+						if (!dropAt || dropAt.sid !== s.id || dropAt.ok !== false) { setDropAt({ sid: s.id, after: false, ok: false }); }
+						return;
+					}
+					let after = false;
+					try {
+						const box = e.currentTarget.getBoundingClientRect();
+						after = (e.clientY - box.top) > box.height / 2;
+					} catch { after = false; }
+					try { e.dataTransfer.dropEffect = "move"; } catch { /* 忽略 */ }
+					// ⚠ dragover 每秒几十次：值没变就不 setState（否则整列每帧重渲染 ⇒ 卡顿）
+					if (!dropAt || dropAt.sid !== s.id || dropAt.after !== after || dropAt.ok !== true) {
+						setDropAt({ sid: s.id, after, ok: true });
+					}
+				};
+				const onDropOf = (s) => (e) => {
+					e.preventDefault();
+					const src = drag;
+					const at = dropAt;
+					setDrag(null);
+					setDropAt(null);
+					if (!src || !at || !at.ok) { return; }
+					// dragover 里判过一次，这里再判（React 状态可能滞后一帧）
+					if (!canDrop(src, { sid: s.id, groupKey: s.groupKey, pinned: s.pinned === true })) { return; }
+					const row = rows.filter((r2) => r2.key === src.groupKey)[0];
+					if (!row) { return; }
+					const nextIds = moveWithin(row.sessions, src.sid, s.id, at.after);
+					if (!nextIds) { return; }
+					persistOrderMap(Object.assign({}, orderMap, { [src.groupKey]: nextIds }), setOrderMap);
+				};
+				/**
+				 * 一行会话（组内 / 平铺共用 —— 两处渲染必须同一个实现，否则口径会漂）。
+				 * 元素形态：图钉占位 → 标题（或就地输入框）→ 根标签（仅非主根）→ 时间。
+				 */
+				const renderSessionRow = (s, setMsg, setLocal) => {
+					const isRenaming = !!(renaming && renaming.sid === s.id);
+					const isDragging = !!(drag && drag.sid === s.id);
+					const mark = dropAt && dropAt.sid === s.id ? dropAt : null;
+					const style = Object.assign({},
+						S.row, { paddingLeft: 30, fontSize: 12.5 },
+						s.isCurrent ? { background: "var(--dsw-alias-interactive-bg-active, rgba(91,140,255,.15))", color: "var(--dsw-alias-label-primary, #e6e6e6)" } : null,
+						s.pinned ? { color: "var(--dsw-alias-label-primary, #e6e6e6)" } : null,
+						isDragging ? { opacity: .45 } : null,
+						mark && mark.ok ? { boxShadow: (mark.after ? "inset 0 -2px 0 " : "inset 0 2px 0 ") + "var(--dsw-alias-brand-primary, #5b8cff)" } : null,
+						mark && !mark.ok ? { outline: "1px dashed #f48771", outlineOffset: "-1px" } : null,
+					);
+					const kids = [
+						// 图钉占位恒在（未置顶时空字符串）：否则切置顶整行文字横跳 ✓
+						react.createElement("span", { key: "pin", style: S.pin, "data-pinned": s.pinned ? "1" : "0" }, s.pinned ? "📌" : ""),
+					];
+					if (isRenaming) {
+						kids.push(react.createElement("input", {
+							key: "ren",
+							style: S.rename,
+							value: renaming.draft,
+							autoFocus: true,
+							"aria-label": "会话标题",
+							onClick: (e) => e.stopPropagation(),
+							onFocus: (e) => { try { e.currentTarget.select(); } catch { /* 忽略 */ } },
+							onChange: (e) => setRenaming({ sid: s.id, draft: e.target.value }),
+							onKeyDown: (e) => {
+								if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); commitRename(); }
+								else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setRenaming(null); }
+							},
+							// 失焦 = 取消（与 vssaros-sessions 页同口径：不偷偷提交）
+							onBlur: () => setRenaming(null),
+						}));
+					} else {
+						kids.push(react.createElement("span", { key: "lbl", style: S.lbl }, s.title));
+						// 稿 1：只有**非主根**的会话才带根名标签 ✓
+						if (s.rootName && !s.isPrimaryRoot) {
+							kids.push(react.createElement("span", { key: "rt", style: S.rtag }, s.rootName));
+						}
+						kids.push(react.createElement("span", { key: "at", style: S.meta }, timeLabel(s.at)));
+					}
+					return react.createElement("div", {
+						key: s.id,
+						"data-session-item": s.id,
+						"data-pinned": s.pinned ? "1" : "0",
+						// 重命名时禁用拖拽：否则输入框里选字会变成拖行 ✗
+						draggable: isRenaming ? "false" : "true",
+						style,
+						title: s.rootName ? s.rootName + " · " + s.id : s.id,
+						onClick: () => { if (!isRenaming) { openSession(s.id, setMsg, setLocal); } },
+						onContextMenu: (e) => openSessMenu(s, e),
+						onDragStart: isRenaming ? undefined : onDragStartOf(s),
+						onDragOver: onDragOverOf(s),
+						onDragLeave: () => { if (dropAt && dropAt.sid === s.id) { setDropAt(null); } },
+						onDrop: onDropOf(s),
+						onDragEnd: () => { setDrag(null); setDropAt(null); },
+					}, ...kids);
 				};
 
 				return react.createElement("div", { style: { display: "flex", flexDirection: "column", minHeight: 0, flex: "1 1 auto" } },
@@ -764,6 +1202,12 @@ window.__ModuleLoader__.load({
 					hiddenBlanks > 0 ? react.createElement("div", {
 						style: { fontSize: 10.5, padding: "0 8px 3px", color: "var(--dsw-alias-label-tertiary, #737373)" },
 					}, "已隐藏 " + hiddenBlanks + " 条空会话") : null,
+					// ★ 2026-10-29：会话行操作的**就地反馈**（窗口模式没有宿主桥 ⇒ 唯一可见通道）
+					sessMsg ? react.createElement("div", {
+						style: Object.assign({}, S.sessMsg, {
+							color: sessMsg.kind === "error" ? "#f48771" : "var(--dsw-alias-label-tertiary, #737373)",
+						}),
+					}, sessMsg.text) : null,
 					searchOn && withSearch ? react.createElement("input", {
 						style: S.search, placeholder: "搜索工作区 / 会话…", value: query,
 						onChange: (e) => setQuery(e.target.value),
@@ -772,9 +1216,10 @@ window.__ModuleLoader__.load({
 						shown.length === 0 ? react.createElement("div", { style: { padding: "10px 8px", fontSize: 12, color: "var(--dsw-alias-label-tertiary, #737373)" } }, "暂无工作区") : null,
 						shown.map((row) => {
 							if (row.kind === "group") {
+								// ⚠ 折叠键仍是 **record.id**（历史持久化键，改了用户折叠态全丢 ✗）；React key 用 row.key
 								const key = row.record.id;
 								const isOpen = collapsed[key] !== true;
-								return react.createElement("div", { key },
+								return react.createElement("div", { key: row.key || ("rec:" + key) },
 									react.createElement("div", {
 										style: Object.assign({}, S.row, { color: "var(--dsw-alias-label-primary, #e6e6e6)" }),
 										onClick: () => setCollapsed(nextCollapsed(collapsed, key)),
@@ -785,23 +1230,13 @@ window.__ModuleLoader__.load({
 										react.createElement("span", { style: Object.assign({}, S.lbl, { fontWeight: 600 }) }, row.record.name),
 										react.createElement("span", { style: S.badge }, row.record.roots.length + " 个根"),
 									),
-									isOpen ? row.sessions.map((s) => react.createElement("div", {
-										key: s.id,
-										style: Object.assign({}, S.row, { paddingLeft: 30, fontSize: 12.5 }, s.isCurrent ? { background: "var(--dsw-alias-interactive-bg-active, rgba(91,140,255,.15))", color: "var(--dsw-alias-label-primary, #e6e6e6)" } : null),
-										title: s.rootName ? s.rootName + " · " + s.id : s.id,
-										onClick: () => openSession(s.id, setWsMsg, setLocalCurrent),
-									},
-										react.createElement("span", { style: S.lbl }, s.title),
-										// 稿 1：只有**非主根**的会话才带根名标签 ✓
-										s.rootName && !s.isPrimaryRoot ? react.createElement("span", { style: S.rtag }, s.rootName) : null,
-										react.createElement("span", { style: S.meta }, timeLabel(s.at)),
-									)) : null,
+									isOpen ? row.sessions.map((s) => renderSessionRow(s, setWsMsg, setLocalCurrent)) : null,
 								);
 							}
 							// 回落：未被 IDE 记录认领的 dsh 条目，平铺（与官方形态一致 ✓）
 							const key = "flat:" + row.label;
 							const isOpen = collapsed[key] !== true;
-							return react.createElement("div", { key },
+							return react.createElement("div", { key: row.key || key },
 								react.createElement("div", {
 									style: Object.assign({}, S.row, { color: "var(--dsw-alias-label-primary, #e6e6e6)" }),
 									onClick: () => setCollapsed(nextCollapsed(collapsed, key)),
@@ -809,18 +1244,36 @@ window.__ModuleLoader__.load({
 									react.createElement("span", { style: { width: 10, fontSize: 8, color: "var(--dsw-alias-label-tertiary, #737373)", flex: "0 0 auto" } }, isOpen ? "▼" : "▶"),
 									react.createElement("span", { style: Object.assign({}, S.lbl, { fontWeight: 600 }) }, row.label),
 								),
-								isOpen ? row.sessions.map((s) => react.createElement("div", {
-									key: s.id,
-									style: Object.assign({}, S.row, { paddingLeft: 30, fontSize: 12.5 }, s.isCurrent ? { background: "var(--dsw-alias-interactive-bg-active, rgba(91,140,255,.15))", color: "var(--dsw-alias-label-primary, #e6e6e6)" } : null),
-									title: s.id,
-									onClick: () => openSession(s.id, setWsMsg, setLocalCurrent),
-								},
-									react.createElement("span", { style: S.lbl }, s.title),
-									react.createElement("span", { style: S.meta }, timeLabel(s.at)),
-								)) : null,
+								isOpen ? row.sessions.map((s) => renderSessionRow(s, setWsMsg, setLocalCurrent)) : null,
 							);
 						}),
 					),
+					// ★ 2026-10-29：会话右键菜单（fixed + 已夹进视口；与 ＋ 菜单共用"点外面 / Esc 关闭"）
+					sessMenu ? react.createElement("div", {
+						"data-vssaros-sess-menu": "1",
+						style: Object.assign({}, S.sessMenu, { left: sessMenu.x, top: sessMenu.y }),
+					},
+						react.createElement("div", {
+							style: { padding: "3px 9px 5px", fontSize: 10.5, color: "var(--dsw-alias-label-tertiary, #737373)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 220 },
+						}, (findSession(sessMenu.sid) || {}).title || sessMenu.sid),
+						react.createElement("button", {
+							type: "button", role: "menuitem", "data-act": "pin", style: S.menuItem,
+							onClick: () => menuAction("pin"),
+						}, sessMenu.pinned ? "取消置顶" : "置顶"),
+						react.createElement("button", {
+							type: "button", role: "menuitem", "data-act": "rename", style: S.menuItem,
+							onClick: () => menuAction("rename"),
+						}, "重命名"),
+						react.createElement("div", { style: { height: 1, margin: "4px 6px", background: "var(--dsw-alias-border-l1, #3a3a3a)" } }),
+						react.createElement("button", {
+							type: "button", role: "menuitem", "data-act": "copy", style: S.menuItem,
+							onClick: () => menuAction("copy"),
+						}, "复制会话 id"),
+						react.createElement("button", {
+							type: "button", role: "menuitem", "data-act": "archive", style: S.menuItem,
+							onClick: () => menuAction("archive"),
+						}, "归档"),
+					) : null,
 					hover && (() => {
 						const row = rows.filter((r2) => r2.kind === "group" && r2.record.id === hover.key)[0];
 						return row ? react.createElement(HoverCard, { record: row.record, sessions: row.sessions, currentRootPath, x: hover.x, y: hover.y }) : null;
@@ -840,7 +1293,11 @@ window.__ModuleLoader__.load({
 
 		exports.install = install;
 		// 仅测试用：分组收敛 / 路径比较 / 时间文案的纯逻辑（插件装载只读 install）。
-		exports.__test = { samePath, baseName, parseRecords, timeLabel, buildSidebar, rootOfSession, nextCollapsed, pickCurrentSessionId };
+		exports.__test = {
+			samePath, baseName, parseRecords, timeLabel, buildSidebar, rootOfSession, nextCollapsed, pickCurrentSessionId,
+			// ★ 2026-10-29 会话行操作：置顶 / 手动顺序 / 拖放判定（守卫 check-chat-surface-chunks ⑤-f 直接断言）
+			SESSION_ORDER_KEY, toIdSet, normalizeOrderMap, sortBySavedOrder, orderGroupSessions, moveWithin, canDrop,
+		};
 		return module.exports;
 	}
 });

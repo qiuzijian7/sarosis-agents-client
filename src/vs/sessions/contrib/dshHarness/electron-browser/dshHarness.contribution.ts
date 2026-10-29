@@ -1250,7 +1250,15 @@ class DshPageCommandContribution extends Disposable implements IWorkbenchContrib
 			case 'openSession':
 				if (viewId.startsWith('dsh-plugin-')) {
 					await this._handlePluginChatCommand(command, viewId);
+					return;
 				}
+				// ⚠⚠ 2026-10-29（真机报障：聊天框顶部「专属 agent」胶囊菜单里「开新会话」点了**没反应**）：
+				//   聊天视图（`dsh-chat-w1-…` / `dsh-desk-chat-w2-…`）原来直接落到函数末尾的 `return`
+				//   ⇒ 命令被**静默丢弃**：不执行、**一行日志都不打**、不给页面任何回执
+				//   ⇒ 用户只看到"点了没反应"（而同文件下面 openFile 那条早就有"必须留痕"的教训 ⇒ 同一坑第二次复发 ✗✗）。
+				//   ⇒ 这里必须**留痕 + 给用户一句明确的话**（聊天窗口里请用输入框旁的「＋ 新会话」）。
+				this._logService.info(`[dshHarness] page ${command.method}: 视图 ${viewId} 不是插件页 ⇒ 聊天视图暂不支持这条命令（胶囊菜单「开新会话」请改用输入框旁的「＋ 新会话」）`);
+				this._notifications.warn(localize('dshHarness.page.chatViewNewChatUnsupported', "当前聊天窗口暂不支持从胶囊菜单新建会话：请点输入框旁的「＋ 新会话」。"));
 				return;
 			case 'renameSession':
 				// 插件页（会话历史）右键改名：只受理插件页发来的（聊天页自己有 ctx.sessions.rename，不走这条）。

@@ -254,6 +254,67 @@ console.log('── 工具 allowlist ──');
 {
 	const { createToolNameSnapshot, visibleToolNames } = await import('../lib/core/toolNames.js');
 
+	/* ★ 2026-10-29：preset 聚类（首启提速的**平方级**杠杆）—— 纯逻辑 + 不变量。
+	   机制：每个 agent 一个 preset ⇒ 注册 N 个 ⇒ dsh 的 discovery **每次注册都全量重扫 roots**
+	   （官方源码 `packages/preset/agent-presets/src/discovery.ts`："re-reads the roots on every call"）⇒ O(N²)
+	   ⇒ 实测 26 个 preset ≈ 13.4s（去掉 21 个内置 ⇒ `ready in` 22919 → 11784ms）。 */
+	{
+		const { clusterKeyOf, presetClusterIdOf, presetClusterOf } = await import('../lib/core/agents.js');
+		const agent = (id, tools) => ({ id, tools });
+
+		check('聚类键只看 tools 白名单（顺序无关；人设/模型不进键）',
+			clusterKeyOf(agent('a', ['x', 'y'])) === clusterKeyOf(agent('b', ['y', 'x'])),
+			clusterKeyOf(agent('a', ['x', 'y'])));
+		check('聚类：tools 不同的 agent 不合并',
+			presetClusterOf([agent('a', ['x']), agent('b', ['y'])]).length === 2);
+		const same = presetClusterOf([agent('b', ['x']), agent('a', ['x'])]);
+		check('聚类：tools 相同的 agent 合并成一类',
+			same.length === 1 && same[0].agents.join(',') === 'a,b', JSON.stringify(same));
+		const none = presetClusterOf([agent('a', []), agent('b', [])]);
+		check('聚类：没声明 tools 的 agent 归到同一类（白名单相同 ⇒ 可以共用）',
+			none.length === 1 && none[0].agents.join(',') === 'a,b', JSON.stringify(none));
+		const o1 = JSON.stringify(presetClusterOf([agent('a', ['x']), agent('b', ['x'])]));
+		const o2 = JSON.stringify(presetClusterOf([agent('b', ['x']), agent('a', ['x'])]));
+		check('聚类：结果与输入顺序无关', o1 === o2, o1);
+		check('cluster id 稳定且带前缀（同样 key ⇒ 同样 id）',
+			presetClusterIdOf('x|y') === presetClusterIdOf('x|y') && presetClusterIdOf('x|y').startsWith('vssaros-cluster-'),
+			presetClusterIdOf('x|y'));
+		const ids = ['x', 'y', 'x|y', ''].map(presetClusterIdOf);
+		check('cluster id 不撞（抽样几个不同的 key）', new Set(ids).size === ids.length, ids.join(' '));
+	}
+
+	/* ★ 2026-10-29：lazy 注册（首启提速，实测端到端 30.7–33.0s → 20.6–21.8s）。 */
+	{
+		const { pickLazyEagerKeys, presetIdOf, assignmentPresetIdOf } = await import('../lib/core/agents.js');
+		const keys = ['a', 'b', 'c', 'd', 'e', 'b::assign'];
+		const deleg = new Set([presetIdOf('d'), presetIdOf('e')]);
+		const r1 = pickLazyEagerKeys(keys, { delegatable: deleg, recent: [], max: 1 });
+		check('lazy 首批：委派清单引用的不受 max 限制（缺了 tool-subagent 整个 preset 起不来）',
+			r1.has('d') && r1.has('e'), [...r1].join(','));
+		const r2 = pickLazyEagerKeys(keys, { recent: [presetIdOf('c'), assignmentPresetIdOf('b')], max: 0 });
+		check('lazy 首批：最近会话用过的 preset 必须在（含委派派生版；桌面窗口启动即恢复上次会话）',
+			r2.has('c') && r2.has('b::assign') && r2.size === 2, [...r2].join(','));
+		const r3 = pickLazyEagerKeys(keys, { max: 3 });
+		check('lazy 首批：不够 max 时按扫描顺序补本体，不补委派派生版',
+			[...r3].join(',') === 'a,b,c', [...r3].join(','));
+
+		const idx = strip(read('lib/index.js'));
+		check('lazy：阶段 2 必须用同一批 key 门控（否则会把全部注册回去）',
+			/await applyDesired\(okPresetIds, true, eagerKeys\)/.test(idx));
+		check('lazy：补齐整个 state 只排一个定时器',
+			/function scheduleLazyFill\(state, config, total\) \{\s*if \(state\.lazyFill\) \{\s*return;/.test(idx));
+		check('lazy：补齐 / 启动首轮 / rescan 都走 syncSerial（先等在飞的一轮，避免并发重复注册）',
+			/async function syncSerial\(state, presets, config\) \{\s*try \{ await state\.syncing; \}[\s\S]{0,80}return syncOnce\(state, presets, config\);/.test(idx)
+			&& (idx.match(/await syncSerial\(state, state\.presets, config\)/g) || []).length >= 3,
+			(idx.match(/await syncSerial\(state, state\.presets, config\)/g) || []).length + ' 处');
+		check('两阶段注册：第一阶段只注册可委派的（否则每个 preset 注册两次）',
+			/await applyDesired\(null, false, new Set\(gate\(missingKeys\)\.filter\(isDelegatableKey\)\)\)/.test(idx));
+		check('lazy：两处 sessionController 都套了"建会话前先补齐"',
+			(idx.match(/state\.sessionController = withLazyPresetGuard\(child\.sessionController\)/g) || []).length === 2);
+		check('lazy：有回退开关（配置 presetMode: eager / 环境变量 =off）',
+			/config\?\.presetMode !== 'eager' && process\.env\.VSSAROS_DSH_PRESET_MODE !== 'off'/.test(idx));
+	}
+
 	// 快路径：只用内部 view() 的 key，**不碰 schemas()**（深拷贝是那十几秒的大头）。
 	let schemaCalls = 0;
 	const fast = {

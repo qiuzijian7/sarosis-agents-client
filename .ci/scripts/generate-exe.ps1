@@ -55,6 +55,16 @@ function Copy-ExtIfMissing($rel, $sentinel) {
 }
 Copy-ExtIfMissing "extensions\agent-studio\out" "extension.js"
 Copy-ExtIfMissing "node_modules\typescript" "package.json"
+# ★ 2026-10-29：`@vscode/deviceid` 缺失 —— 产物里没有它时，用户机器上每次启动都会打一条
+#   `Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@vscode/deviceid' imported from …/out/main.js`
+#   （设备标识链降级）。`strip-before-pack.mjs` 里本来有补回，但那条在 `package-vscode.ps1` 阶段，
+#   而这一步才是**紧挨着 iscc 的最后一道**⇒ 在这里再兜一次（幂等：存在就跳过）。
+Copy-ExtIfMissing "node_modules\@vscode\deviceid" "dist\index.js"
+if (-not (Test-Path (Join-Path $appStaging "node_modules\@vscode\deviceid\dist\index.js"))) {
+  Write-Error "FATAL: @vscode/deviceid 未进打包产物且无法自愈 - 设备标识链会降级，禁止出包"
+  exit 1
+}
+Write-Host "[OK] @vscode/deviceid 已确认进包 ($appStaging\node_modules\@vscode\deviceid)"
 if (-not (Test-Path (Join-Path $appStaging "extensions\agent-studio\out\extension.js"))) {
   Write-Error "FATAL: extensions\agent-studio\out\extension.js 未进打包产物且无法自愈 - 禁止出包"
   exit 1
@@ -98,6 +108,20 @@ function Invoke-InnoTask {
   }
   return $false
 }
+
+# ★★ 2026-10-29：**产物内容门禁 —— 放在 iscc 之前的最后一道**。
+#   为什么必须有（真机）：CI 打出来的包在别人机器上缺 `@vscode/deviceid`
+#   （`Error [ERR_MODULE_NOT_FOUND] … imported from …/out/main.js`）。
+#   清单从 `build/saros/strip-before-pack.mjs` 的 ensureDir/ensureFile 调用**自动推导**（单一真相源），
+#   缺一件就 exit 1 ⇒ **带病的包出不去**（这是"缺件溜到用户手上"的最后一道闸）。
+#   ⚠ 用 `$vsOutRoot`（就是 iscc 的源）：目录明确、不靠猜。
+Write-Host "=== 产物内容门禁（iscc 之前）==="
+node build/saros/check-pack-contents.mjs $vsOutRoot
+if ($LASTEXITCODE -ne 0) {
+  Write-Error "FATAL: 产物内容门禁未通过 —— 禁止出包（见上面的缺失清单）"
+  exit 1
+}
+Write-Host "[OK] 产物内容门禁通过"
 
 if (-not (Invoke-InnoTask 'vscode-win32-x64-inno-updater'))  { Write-Error "Inno updater setup failed"; exit 1 }
 if (-not (Invoke-InnoTask 'vscode-win32-x64-user-setup'))    { Write-Error "User setup failed"; exit 1 }

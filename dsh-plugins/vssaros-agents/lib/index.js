@@ -25,7 +25,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { askAssignment, cancelAssignment, createAssignment, installAssignmentTracker, listAssignments } from './assignments.js';
-import { allowlistDenyOf, assignmentPresetIdOf, avatarColorOf, isDelegatableAgent, isShownAgent, presetIdOf, summarizeAgents, toPresetDefinition } from './core/agents.js';
+import { allowlistDenyOf, assignmentPresetIdOf, pickLazyEagerKeys, avatarColorOf, isDelegatableAgent, isShownAgent, presetIdOf, summarizeAgents, toPresetDefinition } from './core/agents.js';
 import { createAgentFromDraft, deleteAgent, previewAgentDraft, readAgentDraft, resetAgentModel, setAgentMemoryLimits, setAgentSubagent, updateAgentFromDraft } from './create.js';
 import { draftFromAgentMd, modelCandidatesOf } from './core/create.js';
 import { lineDiff } from './core/diff.js';
@@ -41,7 +41,7 @@ import { renderMemoryEvoPage } from './memoryEvoPage.js';
    ⚠ MAX_FILE_BYTES 同时用于 readRawBody 的上限 —— 两边必须是同一个常量，别各写一份。 */
 import { MAX_FILE_BYTES, readGroupFile, saveGroupFile } from './groupFiles.js';
 import { addGroupMembers, bindGroupSession, createGroup, decideGroupJoin, deleteGroup, effectiveModeFor, ensureMemberSession, installGroupTracker, listGroups, markGroupRead, newGroupSessions, normalizeGroupMode, postGroupMessage, removeGroupMember, setGroupAvatar, setGroupMemberPolicy, updateGroup, wakeOf } from './groups.js';
-import { readLiveSessions } from './live.js';
+import { readLiveSessions, recentSessionPresetIds } from './live.js';
 import { markSeen, unreadSnapshot } from './seen.js';
 import { backupMemory, ensureMemoryRepo, clampMemoryChars, enableGit, gitLogOf, gitShowMemoryFile, gitStatusOf, installMemoryBackupWatcher, listBranches, listMemoryBackups, listMemoryFiles, listVersions, MEMORY_CHARS_MAX, readMemoryFile, readMemorySnapshot, restoreMemoryBackup, restoreMemoryFile, setVersion, snapshotGit, switchBranch, writeCoreMemory, memoryDirOf } from './memory.js';
 // 从 AgentMemory 网关库拉一份 MEMORY.md **草稿**（只读；不落盘 —— 落盘仍走 write-memory 由人确认）
@@ -120,6 +120,83 @@ import { registerAgentTools } from './tools.js';
  */
 const TOOL_SURFACE_DEBOUNCE_MS = 800;
 
+/**
+ * lazy 注册（★ 2026-10-29，首启提速）：启动只注册少量 preset，其余 `LAZY_FILL_DELAY_MS` 后一次性补齐
+ * （规则见 `syncPresets` 里那段注释）。默认开；回到全量：cordis 配置 `presetMode: eager` 或 `VSSAROS_DSH_PRESET_MODE=off`。
+ */
+const LAZY_FILL_DELAY_MS = 15_000;
+/** 启动时按扫描顺序补足到这个数（委派清单引用的、最近会话用过的不受此限，必须先就位）。 */
+const LAZY_EAGER_MAX = 3;
+/** 当前还在 lazy 窗口里的那个 state（只有它需要"建会话前先补齐"）。 */
+const lazyPresetHooks = { state: null };
+
+/**
+ * lazy 补齐：整个 state 只排一个定时器；到点（或有人要用还没注册的 preset 时）等在飞的那一轮跑完，再跑一次全量。
+ * 走 `syncOnce` 而不是直接 `applyDesired`：全量那一轮还负责第一阶段、委派清单和撤掉已删除 agent 的 preset。
+ */
+function scheduleLazyFill(state, config, total) {
+	if (state.lazyFill) {
+		return;
+	}
+	let timer;
+	let running;
+	const fillNow = () => {
+		if (running) {
+			return running;
+		}
+		clearTimeout(timer);
+		state.lazyFilled = true;
+		running = (async () => {
+			await syncSerial(state, state.presets, config);
+			console.warn(`[vssaros-agents] lazy 补齐完成：preset 共 ${state.registered.size} 个`);
+		})().catch((e) => {
+			console.error(`[vssaros-agents] lazy 补齐 preset 失败：${String(e?.message ?? e)}`);
+		}).finally(() => {
+			if (lazyPresetHooks.state === state) {
+				lazyPresetHooks.state = null;
+			}
+		});
+		return running;
+	};
+	state.lazyFill = { fillNow };
+	lazyPresetHooks.state = state;
+	timer = setTimeout(() => { void fillNow(); }, LAZY_FILL_DELAY_MS);
+	console.warn(`[vssaros-agents] lazy 注册：启动注册 ${state.registered.size} 个 preset，其余 ${Math.max(0, total - state.registered.size)} 个 ${Math.round(LAZY_FILL_DELAY_MS / 1000)}s 后补齐`);
+}
+
+/** lazy 窗口内要用一个还没注册的 preset 建会话 ⇒ 先补齐（否则 session.create 会报未知 preset）。 */
+async function ensureLazyPreset(presetId) {
+	const state = lazyPresetHooks.state;
+	if (!state?.lazyFill || typeof presetId !== 'string' || !presetId) {
+		return;
+	}
+	for (const entry of state.registered.values()) {
+		if (entry.presetId === presetId) {
+			return;
+		}
+	}
+	await state.lazyFill.fillNow();
+}
+
+/** 给 sessionController 套一层：`create({ agentPreset })` 之前先确保那个 preset 已注册。 */
+function withLazyPresetGuard(sc) {
+	if (!sc || typeof sc.create !== 'function') {
+		return sc;
+	}
+	return new Proxy(sc, {
+		get(target, prop) {
+			if (prop === 'create') {
+				return async (options, ...rest) => {
+					await ensureLazyPreset(options?.agentPreset);
+					return target.create(options, ...rest);
+				};
+			}
+			const value = Reflect.get(target, prop, target);
+			return typeof value === 'function' ? value.bind(target) : value;
+		},
+	});
+}
+
 /** 与 cordis.patch.yml 的行 id 一致。 */
 export const name = 'vssaros-agents';
 
@@ -174,6 +251,12 @@ function applyPersona(ctx, config) {
 	ctx.inject(['sessionProjections'], child => child.effect(() => {
 		projections = child.sessionProjections;
 		child.sessionProjections.register(personaProjection());
+		// ★★ 2026-10-29 探针（③ 的可行性）：**effect 真正执行的时刻**（harness 会给这行打时间戳）。
+		//   背景：apply() 本身只要 0~1ms，但两行 persona 之间恒定隔 ~400ms ⇒ 要分清
+		//   「我们的注册本身慢」还是「dsh 在两行 composition 之间等」。
+		//   若本行时间戳与 apply 入口同刻 ⇒ 我们的注册立即生效 ⇒ 那 400ms 全在 dsh 侧
+		//   ⇒ ③（把 persona 注入延后）帮不上，只有 ②（减少行数）有效 ✓。
+		console.warn(`[vssaros-agents] persona effect 执行（${config.agentId ?? config.presetId ?? '?'}）`);
 		return () => {
 			projections = undefined;
 		};
@@ -554,17 +637,42 @@ async function syncPresets(state, presets, config) {
 	//   · 委派是"把活派给谁"⇒ 只给显式标了 `subagent: true` 的 agent（opt-in）。
 	const shownIds = new Set((scan.agents || []).filter((agent) => isDelegatableAgent(agent)).map((agent) => agent.id));
 	const delegatablePresetIds = new Set([...shownIds].map((id) => presetIdOf(id)));
-	const needFirstPass = missingKeys.some((key) => !key.endsWith('::assign') && delegatablePresetIds.has(presetIdOf(key)));
+	// ★★ 2026-10-29 lazy 注册（默认开；回到全量：cordis 配置 `presetMode: eager`，或环境变量 `VSSAROS_DSH_PRESET_MODE=off`）。
+	//   为什么有效：dsh 的 preset discovery 每次注册都全量重扫 roots（官方源码
+	//   `packages/preset/agent-presets/src/discovery.ts`："re-reads the roots on every call"）⇒ 耗时随 preset 数平方增长；
+	//   实测 30 个 preset ≈ 13s；lazy 下端到端（start → mux 可用）从 30.7–33.0s 降到 20.6–21.8s。
+	//   语义不变：每个 agent 仍有自己的 presetId，只把注册时机推后。三条规则：
+	//     ① 委派清单引用的、最近会话用过的必须先注册（见 `pickLazyEagerKeys`）；
+	//     ② 阶段 2 也用同一批 key 门控（否则会把全部注册回去）；
+	//     ③ 补齐走 `syncOnce`（等在飞的一轮结束后再跑一次全量），整个 state 只排一个定时器（见 `scheduleLazyFill`）。
+	//   ⚠ 曾误判"补齐从不执行"：keepAlive 下 harness 在 ready 后不再读 Host 日志，补齐日志只在 `dsh-run/host-*.log`
+	//     （supervisor 已改为 ready 后继续读）。
+	const lazyRequested = config?.presetMode !== 'eager' && process.env.VSSAROS_DSH_PRESET_MODE !== 'off';
+	const lazyMode = lazyRequested && !state.lazyFilled;
+	const recentPresets = lazyMode ? await recentSessionPresetIds(config, { limit: 8 }) : [];
+	const eagerKeys = lazyMode
+		? pickLazyEagerKeys(wantedKeys, { delegatable: delegatablePresetIds, recent: recentPresets, max: LAZY_EAGER_MAX })
+		: undefined;
+	const gate = (keys) => (eagerKeys ? keys.filter((key) => eagerKeys.has(key)) : keys);
+	const isDelegatableKey = (key) => !key.endsWith('::assign') && delegatablePresetIds.has(presetIdOf(key));
+	const needFirstPass = missingKeys.some(isDelegatableKey);
 	if (needFirstPass) {
-		await applyDesired(null, false, new Set(missingKeys));
+		// ★ 2026-10-29：第一阶段**只注册会被清单引用的**（可委派的）。原来把全部缺失 key 都先注册一遍，
+		//   第二阶段带清单时指纹变了又全部撤掉重注册 ⇒ 每个 preset 注册两次（eager 实测 59 次 ≈ 30×2）。
+		//   不可委派的 preset 不在任何清单里，第二阶段注册一次就够。
+		await applyDesired(null, false, new Set(gate(missingKeys).filter(isDelegatableKey)));
 	}
 	const okPresetIds = [...state.registered.entries()]
 		.filter(([key]) => !key.endsWith('::assign') && shownIds.has(key))
 		.map(([, entry]) => entry.presetId)
 		.sort();
 	// 第二阶段：带动态清单（已一致的 preset 指纹相同 ⇒ 直接跳过，不会重复注册）
-	await applyDesired(okPresetIds, true);
+	// ⚠ lazy 下必须传 `eagerKeys` 作为 only：否则这一轮会把刚省下的 preset 全部注册回去
+	await applyDesired(okPresetIds, true, eagerKeys);
 	state.subagentListSig = okPresetIds.join('|');
+	if (lazyMode) {
+		scheduleLazyFill(state, config, wantedKeys.length);
+	}
 	const seenKeys = new Set(wantedKeys);
 	// 源文件消失（或委派模型被删掉）的 preset：撤掉（只增不删会让花名册里留幽灵）
 	for (const [key, entry] of [...state.registered]) {
@@ -608,6 +716,18 @@ function syncOnce(state, presets, config) {
 		state.syncing = null;
 	});
 	return state.syncing;
+}
+
+/**
+ * 排队同步（★ 2026-10-29）：先等在飞的那一轮跑完，再跑**新的一轮**（不会像 `syncOnce` 那样直接复用旧结果）。
+ *
+ * 给"刚改了东西、必须看到改动"的调用者用（启动首轮、`rescan`、lazy 补齐）。
+ * 为什么首轮也要走这里：首轮原来直接调 `syncPresets`、不登记 `state.syncing` ⇒ 页面请求经 `syncOnce`
+ * 看不到它在飞 ⇒ 并发再起一轮 ⇒ 实测 lazy 下首批 7 个 preset 被注册了 4 遍（多花 ~5s）。
+ */
+async function syncSerial(state, presets, config) {
+	try { await state.syncing; } catch { /* 上一轮失败不影响这一轮 */ }
+	return syncOnce(state, presets, config);
 }
 
 /** 读请求体并解析 JSON（空体 → `{}`）。 */
@@ -961,7 +1081,7 @@ function applyTopLevel(ctx, config) {
 	// `dsh-api-session-controller` 的 `SessionCreateRequest`）；`agent_read_chat` 的历史检索入口
 	// （`sessionQuery.filterEvents` 的字面子句，`dsh-session-query` ✓）。
 	ctx.inject(['sessionController'], child => child.effect(() => {
-		state.sessionController = child.sessionController;
+		state.sessionController = withLazyPresetGuard(child.sessionController);
 		return () => {
 			state.sessionController = undefined;
 		};
@@ -1006,7 +1126,7 @@ function applyTopLevel(ctx, config) {
 		// 否则会出现"卸载后又注册回来"的泄漏。
 		const inflight = (async () => {
 			try {
-				await syncPresets(state, state.presets, config);
+				await syncSerial(state, state.presets, config);
 			} catch (e) {
 				state.errors = [...state.errors, `扫描 agent 目录失败：${String(e?.message ?? e)}`];
 			}
@@ -1045,7 +1165,7 @@ function applyTopLevel(ctx, config) {
 			if (!state.presets) {
 				throw new Error('agentPresets 服务还没就绪（Host 还在启动）');
 			}
-			await syncPresets(state, state.presets, config);
+			await syncSerial(state, state.presets, config);
 			return {
 				ok: true,
 				agentsRoot: agentsRootOf(config),
@@ -2398,7 +2518,7 @@ function applyToolsOnly(ctx, config) {
 		};
 	}));
 	ctx.inject(['sessionController'], child => child.effect(() => {
-		state.sessionController = child.sessionController;
+		state.sessionController = withLazyPresetGuard(child.sessionController);
 		return () => {
 			state.sessionController = undefined;
 		};
@@ -2510,6 +2630,14 @@ function applyToolsOnly(ctx, config) {
 }
 
 export function apply(ctx, config = {}) {
+	// ★★ 2026-10-29（首启慢定位）：**每个 preset 一行 ⇒ 这里被调 N 次**（实测 N≈30）。
+	//   对照实验（只切换"是否注入 21 个内置 agent 根"）：注入 ⇒ `ready in 22919 ms`，
+	//   不注入 ⇒ `ready in 11784 ms` ⇒ **21 个 preset 多花 13.4s ⇒ 每个 ≈0.6s**。
+	//   这里打一行计时，把"**apply 本身**"与"dsh 侧实例化 preset"分开：
+	//   若 apply 很快 ⇒ 瓶颈在 dsh 侧（我们只能少注册 / 延后注册）；否则是我们自己的代码 ✗。
+	const __applyT0 = Date.now();
+	const __who = config?.presetId || config?.agentId || '(top)';
+	try {
 	// 角色判定：**带 `persona` 键** = 本包被某个 preset 再挂了一次（只做人设注入 + 工具 allowlist）。
 	//
 	// ⚠ 2026-10-20 修：判据从「persona 非空」改成「有这个键」。
@@ -2529,6 +2657,9 @@ export function apply(ctx, config = {}) {
 		return;
 	}
 	applyTopLevel(ctx, config);
+	} finally {
+		console.warn(`[vssaros-agents] preset apply 用时 ${Date.now() - __applyT0}ms（${__who}${config?.toolsOnly ? ' / toolsOnly' : ''}${typeof config?.persona === 'string' ? ' / persona' : ''}）`);
+	}
 }
 
 /**

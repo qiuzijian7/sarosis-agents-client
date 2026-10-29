@@ -115,8 +115,12 @@ window.__ModuleLoader__.load({
 			const say = (text) => { try { if (bridge && bridge.notify) { bridge.notify("attention", text); } } catch { /* 通知失败不阻塞 */ } };
 			const handoffHome = (agentId) => {
 				try { if (typeof localStorage !== "undefined") { localStorage.setItem(FOCUS_KEY, "home:" + agentId + "|" + Date.now()); } } catch { /* 存不了也照样打开 */ }
+				// ⚠ 2026-10-29（真机报障「点 Agent 主页 ⇒ 弹出黑框」）：**先留痕**。
+				//   页面 console 会被转发成 IDE 日志的 `[dshHarness] page console(warn) …`（实测）⇒
+				//   这里每一步都写一条，否则"点了没反应 / 黑框"在日志里**一条痕迹都没有** ✗（同款坑第三次）。
+				try { console.warn("[vssaros-capsule] Agent 主页：bridge=" + (bridge ? "有" : "无") + " openModulePage=" + (bridge && typeof bridge.openModulePage === "function" ? "有" : "无")); } catch { /* 忽略 */ }
 				if (!bridge || typeof bridge.openModulePage !== "function") { say("当前宿主不支持从聊天框打开 Agents 页（需要桥版本 3+）"); return; }
-				Promise.resolve(bridge.openModulePage("/x/agents/")).catch((e) => say("打开 Agents 页失败：" + String((e && e.message) || e)));
+				Promise.resolve(bridge.openModulePage("/x/agents/")).catch((e) => { try { console.warn("[vssaros-capsule] Agent 主页打开失败：" + String((e && e.message) || e)); } catch { /* 忽略 */ } say("打开 Agents 页失败：" + String((e && e.message) || e)); });
 			};
 
 			function BotCapsule(props) {
@@ -257,13 +261,19 @@ window.__ModuleLoader__.load({
 						menuItem("settings", "⚙ Agent 设置", "改模型、人格、工具", () => {
 							setOpen(false);
 							if (!agent) { say("agents 插件不可用，拿不到这个 Agent 的 id"); return; }
+							// ⚠ 2026-10-29（真机报障「Agent 设置 ⇒ 弹出黑框」）：先留痕（页面 console 进 IDE 日志 ✓）。
+							try { console.warn("[vssaros-capsule] Agent 设置：bridge=" + (bridge ? "有" : "无") + " openAgentSettings=" + (bridge && typeof bridge.openAgentSettings === "function" ? "有" : "无")); } catch { /* 忽略 */ }
 							if (!bridge || typeof bridge.openAgentSettings !== "function") { say("当前宿主不支持从这里打开 Agent 设置（需要桥版本 6+）"); return; }
-							Promise.resolve(bridge.openAgentSettings(agent.id, agent.name)).catch((err) => say("打开 Agent 设置失败：" + String((err && err.message) || err)));
+							Promise.resolve(bridge.openAgentSettings(agent.id, agent.name)).catch((err) => { try { console.warn("[vssaros-capsule] Agent 设置打开失败：" + String((err && err.message) || err)); } catch { /* 忽略 */ } say("打开 Agent 设置失败：" + String((err && err.message) || err)); });
 						}, false),
 						menuItem("newchat", "↻ 开新会话", "回看欢迎卡；这条会话的历史保留", () => {
 							setOpen(false);
+							// ⚠ 2026-10-29（真机报障「开新会话 ⇒ 没反应」）：宿主侧原来对**聊天视图**的
+							//   `newChat` 是**静默丢弃**的（只处理 `dsh-plugin-` 前缀的视图）⇒ 命令到了也不执行 ✗。
+							//   宿主侧已改成"留痕 + 明确提示"；这里也留一条，便于对账。
+							try { console.warn("[vssaros-capsule] 开新会话：bridge=" + (bridge ? "有" : "无") + " newChat=" + (bridge && typeof bridge.newChat === "function" ? "有" : "无") + " preset=" + String(presetId)); } catch { /* 忽略 */ }
 							if (!bridge || typeof bridge.newChat !== "function") { say("当前宿主不支持新开会话（需要桥版本 5+）"); return; }
-							Promise.resolve(bridge.newChat(presetId)).catch((err) => say("新开会话失败：" + String((err && err.message) || err)));
+							Promise.resolve(bridge.newChat(presetId)).catch((err) => { try { console.warn("[vssaros-capsule] 开新会话失败：" + String((err && err.message) || err)); } catch { /* 忽略 */ } say("新开会话失败：" + String((err && err.message) || err)); });
 						}, false)));
 				}
 				return e("span", { ref: rootRef, style: { position: "relative", display: "inline-flex", alignItems: "center" } }, ...children);

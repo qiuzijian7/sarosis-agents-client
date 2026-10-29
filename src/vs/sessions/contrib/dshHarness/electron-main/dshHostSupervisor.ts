@@ -14,11 +14,23 @@
 import { ChildProcess, execFile, execFileSync, spawn } from 'child_process';
 import { createHash, randomBytes } from 'crypto';
 import { existsSync, promises as fsp, readFileSync, rmSync, utimesSync } from 'fs';
+
+/**
+ * pnpm 是否可用（**机器级**事实 ⇒ 模块级缓存即可）。
+ *
+ * ★★ 2026-10-29（真机：别人机器上装我们的 exe ⇒ 界面只剩 dsh 官方页）：
+ *   那台机器**没有 pnpm** ⇒ `one-shot install of 35 plugin(s) took 858 ms: 0 ok, 35 to retry`，
+ *   错误原文「'pnpm' 不是内部或外部命令」⇒ **35 个随包插件一个都没装上**
+ *   ⇒ 换皮插件（`dsh-chat-surface`）缺席 ⇒ 页面就是 dsh 官方外壳（`title: "DeepSeek Harness"`）。
+ *   ⇒ 打包产物**不能**把"装插件"这件事依赖在用户机器上（普通用户既没有 pnpm、很可能也没有 node）。
+ *   ⇒ 探测一次即可（一次启动只问一次，缓存在这里）。
+ */
+let pnpmAvailableCache: boolean | undefined;
 import { ClientRequest, request as httpRequest } from 'http';
 import { homedir, tmpdir } from 'os';
 import { pathToFileURL } from 'url';
 import { Emitter, Event } from '../../../../base/common/event.js';
-import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableStore, toDisposable } from '../../../../base/common/lifecycle.js';
 import { basename, delimiter, join, resolve } from '../../../../base/common/path.js';
 import { DshBridgeMethod, IBridgeHello, IBridgePluginRow, IBridgeReverseRequest, IBridgeWorkspaceContextArgs, IBridgeWorkspaceContextResult } from '../common/dshBridgeProtocol.js';
 import { bridgePipePath, buildHostArgs, buildPluginAddArgs, buildPluginAddArgsMany, buildProfileInitArgs, DSH_SHARED_INSTANCE_PACKAGES, memoryGatewayUrlFromEnv, parseAuthUrl, resolveSiblingPackage, toFileSpec } from '../common/dshCli.js';
@@ -39,7 +51,7 @@ import { orphanLeaseCandidates } from '../common/dshHostRunOwnership.js';
 import { rememberHostPort, resolveHostPort } from './dshHostPortManager.js';
 import { reapOrphanHosts } from './dshHostReaper.js';
 import { repairProfileDeps } from './dshProfileDepsRepair.js';
-import { DshRuntimeError, DshRuntimeManager, IResolvedDsh, IResolvedNode, sanitizedEnv } from './dshRuntimeManager.js';
+import { DshRuntimeError, DshRuntimeManager, injectBundledPnpm, IResolvedDsh, IResolvedNode, sanitizedEnv } from './dshRuntimeManager.js';
 import { IDshHealthReport, IHostActivity, summarizeHealth } from '../common/dshUpgrade.js';
 // ★ 2026-10-19：内置 agent 的**代码真源**（`getBuiltinAgents`）与它到 md 的序列化（`buildAgentMd`）。
 //   dsh 侧的 agents 模块（`vssaros-agents`）此前**只扫用户目录** ⇒ 内置 agent 一个都列不出来 ✗；
@@ -146,6 +158,19 @@ const STARTUP_TIMEOUT_MS = 60_000;
 const STARTUP_MAX_MS = 300_000;
 /** URL 行出现后，再给控制桥多少时间完成握手（伴生插件在 Host 内与 webServer 同时激活）。 */
 const BRIDGE_GRACE_MS = 8_000;
+/** keepAlive 模式 ready 之后读 Host 日志的间隔（ready 前是 400ms；之后只为不丢日志，降频即可）。 */
+const POST_READY_LOG_POLL_MS = 2_000;
+
+/** `NODE_COMPILE_CACHE` 从 Node 22.1 起可用（版本串形如 `v22.22.1` / `22.22.1`；认不出就不开）。 */
+export function supportsCompileCache(version: string | undefined): boolean {
+	const match = /^v?(\d+)\.(\d+)/.exec(String(version ?? '').trim());
+	if (!match) {
+		return false;
+	}
+	const major = Number(match[1]);
+	const minor = Number(match[2]);
+	return major > 22 || (major === 22 && minor >= 1);
+}
 /** 另一个实例正在启动 Host 时，等它写出租约的最长时间。 */
 const START_LOCK_WAIT_MS = 30_000;
 /** 复用中桥断开后，等拥有者重启并写新租约的时间。 */
@@ -912,6 +937,19 @@ export class DshHostSupervisor extends Disposable {
 				//   （与 Host 启动时跳过不兼容插件**同一个判据、同一个版本**；没有它就只能用 app-boot 自报的版本）。
 				...(dsh.version ? { VSSAROS_DSH_RUNTIME_VERSION: dsh.version } : {}),
 			});
+			// ★ 2026-10-29：Node 22.1+ 的模块编译缓存（`NODE_COMPILE_CACHE`）⇒ 第二次起 Host 不用重新编译
+			//   dsh 核心与 36 个 bundle 的 JS（针对"spawn → 首行输出"那 ~3s）。用户自己设了就不覆盖；
+			//   缓存目录放在 runDir 下（回收器只删 `.yml` 覆盖层与 owner 记录，不碰目录）。
+			if (!env.NODE_COMPILE_CACHE && supportsCompileCache(node.version) && this._opts.runDir) {
+				env.NODE_COMPILE_CACHE = join(this._opts.runDir, 'node-compile-cache');
+			}
+			// ★ 2026-10-29（真机：别人机器上 `'pnpm' 不是内部或外部命令` ⇒ 35 个随包插件全没装上）：
+			//   系统没有 pnpm 时，把**产物自带**的那份（`resources/app/tools/pnpm/pnpm.cjs`）注入 PATH。
+			//   · 启动时装随包插件**不依赖**它（走直装兜底，实测 35/35、4.3 秒）；
+			//   · 但它支撑**运行时**能力：在页面里装第三方插件/技能、`dsh plugin add` 等。
+			//   ⚠ shim 用 `node.path`（Host 自己的解释器）跑，不用 Electron 顶替 ——
+			//     实测 Electron 跑 `pnpm install` 会在并发安装阶段崩（见 `injectBundledPnpm` 的注释）。
+			injectBundledPnpm(env, node.path);
 			// ★ 2026-10-15：把**随包媒体二进制目录**（ffmpeg / ffprobe / yt-dlp / whisper…，打包管线
 			//   `build/saros/strip-before-pack.mjs` 的 ensureOptionalBin 段）注入 Host 的 PATH ⇒
 			//   dsh 会话里的 shell 工具（execute_code / bash / pwsh）能直接用**裸命令名**解析它们。
@@ -1049,8 +1087,17 @@ export class DshHostSupervisor extends Disposable {
 					this._appendLog(`installing ${w.name}@${w.bundled} (was ${w.installed ?? 'absent'})`);
 				}
 				const t0 = Date.now();
-				const specs = await Promise.all(wants.map(w => this._stagePlugin(w.name, w.dir, w.bundled, pluginProfileDir, w.fingerprint).then(toFileSpec)));
-				const out = await this._runDsh(node, buildPluginAddArgsMany(dsh.bin, profile, specs), env, 120_000 + wants.length * 15_000);
+				const stagedDirs = await Promise.all(wants.map(w => this._stagePlugin(w.name, w.dir, w.bundled, pluginProfileDir, w.fingerprint)));
+				const specs = stagedDirs.map(toFileSpec);
+				let out = '';
+				if (this._pnpmAvailable()) {
+					out = await this._runDsh(node, buildPluginAddArgsMany(dsh.bin, profile, specs), env, 120_000 + wants.length * 15_000);
+				} else {
+					// ★★ 2026-10-29（真机：别人机器上没 pnpm ⇒ 35 个插件全没装上 ⇒ 界面只剩官方页）：
+					//   随包插件**零外部依赖**（`dependencies` 全为空 ⇒ 全是本地 file: 链接）⇒
+					//   本来就不需要包管理器 ⇒ 直接把暂存副本落进 profile 即可（秒级、不会失败）。
+					out = await this._installPluginsDirect(wants, stagedDirs, pluginProfileDir);
+				}
 				// 复核口径 = **版本 + 入口内容**（2026-10-14）：只看版本时，"同版本内容变了"的假成功会被报成
 				// `N ok`（现场：`4 ok, 0 to retry`，而其中一个副本是两天前的旧代码 ✗✗），谁也不知道那 8 秒
 				// 是白花的、跑的还是旧代码。内容判据与 `_installedEntryMatches` 共用同一份定义 ✓。
@@ -1265,7 +1312,14 @@ export class DshHostSupervisor extends Disposable {
 				}
 				// ★ 2026-10-19：内置 agent 目录（由 `common/builtinAgents.ts` 这份**代码真源**生成 md 副本）。
 				//   生成失败**不致命**：只是列表里少一档内置 agent，不能因此起不来 Host（方法内自己吞错）。
-				const agentsBuiltinRoot = await this._writeBuiltinAgentsDir(options.agentsBuiltinSrc?.trim() || undefined);
+				// ★★ 2026-10-29（**诊断实验开关**，默认关）：`VSSAROS_DSH_EMPTY_BUILTIN_AGENTS=1`
+				//   ⇒ 不注入内置 agent 根 ⇒ Host 侧少 21 个 preset ⇒ 用来对照
+				//   "首启那 18 秒是不是花在 preset 注册/激活上"（实测：工具面收敛只占 1.6s，剩下的 18s 是静默等待 ✗）。
+				//   ⚠ 只用于本地对照实验，**不是**产品开关（长期方案见 preset 注册的懒加载/延后讨论）。
+				const forceEmptyBuiltinAgents = process.env.VSSAROS_DSH_EMPTY_BUILTIN_AGENTS === '1';
+				const agentsBuiltinRoot = forceEmptyBuiltinAgents
+					? undefined
+					: await this._writeBuiltinAgentsDir(options.agentsBuiltinSrc?.trim() || undefined);
 				const hostConfig: IDshHostConfig = {
 					...(pipe && token ? {
 						bridge: {
@@ -1441,6 +1495,7 @@ export class DshHostSupervisor extends Disposable {
 				? `（spawn→首行输出=${connection.timing.spawnToFirstOutputMs}ms，首行→ready=${connection.timing.firstOutputToReadyMs}ms）`
 				: '';
 			this._appendLog(`ready in ${Date.now() - t0} ms at ${connection.origin} (bridge: ${connection.hello ? 'connected' : 'fallback'})${bootSplit}`);
+
 				// ★ 2026-10-20：量「ready → mux 路由可用」这段（不阻塞 start 返回）。
 				void this._probeMuxAfterReady(connection.origin, generation);
 				// 新起的 Host 读的就是磁盘当前代码 ⇒ 标记使命完成 ✓。
@@ -1448,6 +1503,23 @@ export class DshHostSupervisor extends Disposable {
 				// 并发的第二次 start 会把标记读成 false ⇒ 又去接管旧进程 ✗（日志：`reusing the Host started by pid 80344`）。
 				this._pluginsStale = false;
 				void this._auditPluginGraph('新起 Host');
+				// ★★ 2026-10-29（真机：别人机器上 `bridge: fallback` 而 Host 日志**只有 1 行**）：
+				//   正常情况下 Host 会打几十行（插件 apply / 各模块 loaded）。只剩 1 行（那条 `dsh web:`）
+				//   意味着**插件装配阶段一片静默** ⇒ 桥插件没起来 ⇒ 握手必然超时。
+				//   这时只报一个 `bridge: fallback` 毫无指向性 ⇒ 把"输出异常少 + 日志路径"明确说出来。
+				// ⚠ 必须放在 `_pluginsStale = false` **之后**：那对（ready in → 清标记）的顺序有守卫钉着
+				//   （`dshPluginPackages` ⑥），插在中间会把它打红（我第一版就这么干的 ✗）。
+				if (hostLogFile) {
+					try {
+						const hostLines = readFileSync(hostLogFile, 'utf8').split(/\r?\n/).filter(l => l.trim().length > 0).length;
+						if (hostLines <= 1) {
+							this._appendLog(
+								`⚠ Host 输出异常少（${hostLines} 行，日志：${hostLogFile}）⇒ 插件装配阶段静默，`
+								+ `桥握手因此判 fallback。请把该文件与 ${this._opts.runDir} 下的 patch 一起提供给开发者。`,
+							);
+						}
+					} catch { /* 读不到日志就算了，不影响启动 */ }
+				}
 				return this._status;
 			} finally {
 				await leases.releaseStartLock();
@@ -1962,6 +2034,128 @@ export class DshHostSupervisor extends Disposable {
 	}
 
 	/** 把一个随产品分发的插件装进 profile（版本相同则跳过）；装不上时返回已装版本并记日志。 */
+	/**
+	 * pnpm 在这台机器上能不能用（**只探测一次**）。
+	 *
+	 * ★ 2026-10-29：用户机器上通常**没有** pnpm（那是开发工具）⇒ 随包插件的安装必须有
+	 *   「不依赖包管理器」的退路，否则界面就只剩 dsh 官方外壳（见 `pnpmAvailableCache` 的注释）。
+	 */
+	private _pnpmAvailable(): boolean {
+		if (pnpmAvailableCache !== undefined) {
+			return pnpmAvailableCache;
+		}
+		// ★ 2026-10-29：测试钩子 / 用户逃生门 —— `DSH_DISABLE_PNPM=1` 强制走直装
+		//   （也用于验证"没有 pnpm 的机器"那条路径，而不必真的把 pnpm 从 PATH 里拿走）。
+		if (process.env['DSH_DISABLE_PNPM'] === '1') {
+			pnpmAvailableCache = false;
+			this._appendLog('DSH_DISABLE_PNPM=1 ⇒ 强制走「直装」（不调用 pnpm）');
+			return false;
+		}
+		try {
+			// ⚠ Windows 下 pnpm 是 `pnpm.cmd` ⇒ 必须走 shell 才能解析到。
+			execFileSync('pnpm', ['--version'], { encoding: 'utf8', shell: true, windowsHide: true, timeout: 10_000 });
+			pnpmAvailableCache = true;
+		} catch {
+			pnpmAvailableCache = false;
+			this._appendLog('⚠ 找不到 pnpm ⇒ 随包插件改用「直装」安装（随包插件零外部依赖，不需要包管理器）');
+		}
+		return pnpmAvailableCache;
+	}
+
+	/**
+	 * **直装**：把暂存副本直接落到 profile 的 node_modules（不经 pnpm）。
+	 *
+	 * ★★ 2026-10-29（真机：别人机器上没有 pnpm ⇒ 35 个随包插件一个都没装上 ⇒
+	 *   换皮插件缺席 ⇒ 界面只剩 dsh 官方页）。随包插件的 `dependencies` 全为空 ⇒
+	 *   pnpm 在这里只干「拷贝」这一件事 ⇒ 我们自己干更快、更稳（不要求用户机器装任何东西）。
+	 *
+	 * 还要同步 `profile/package.json` 的 dependencies ⇒ 否则下次启动仍判「未装」、反复重装。
+	 */
+	private async _installPluginsDirect(
+		wants: { name: string; dir: string; label: string; bundled: string; installed?: string; fingerprint?: string }[],
+		stagedDirs: string[],
+		pluginProfileDir: string,
+	): Promise<string> {
+		let ok = 0;
+		const failures: string[] = [];
+		const verified: string[] = [];
+		for (let i = 0; i < wants.length; i++) {
+			const w = wants[i];
+			const parts = w.name.split('/');
+			const dest = join(pluginProfileDir, 'node_modules', ...parts);
+			const parent = join(pluginProfileDir, 'node_modules', ...parts.slice(0, -1));
+			try {
+				await fsp.rm(dest, { recursive: true, force: true });
+				await fsp.mkdir(parent, { recursive: true });
+				await fsp.cp(stagedDirs[i], dest, { recursive: true });
+				// ★★ 2026-10-29（真机：别人机器上 35 个插件全没装上 ⇒ 界面只剩官方页）：
+				//   直装**成功**必须校验（版本 + 入口内容，与 `_installedEntryMatches` 同一口径）——
+				//   否则会留下「spec 写了、文件却没装好」的**半装状态** ⇒ 下次启动判"已装"
+				//   （版本对、入口内容对）⇒ **永远不重装** ⇒ 插件 import 失败（那台机器的 bridge 起不来、
+				//   日志是 `ready in 12000 ms … (bridge: fallback)`）✗✗。
+				const ver = this._readPkgVersion(join(dest, 'package.json'));
+				if (ver !== w.bundled || !this._installedEntryMatches(w.dir, dest)) {
+					failures.push(w.name + '（装完校验不通过：版本 ' + ver + '）');
+					continue;
+				}
+				verified.push(w.name);
+				ok++;
+			} catch (e) {
+				failures.push(w.name + '（' + String((e as Error)?.message ?? e).slice(0, 80) + '）');
+			}
+		}
+		await this._writeProfileDeps(pluginProfileDir, wants, stagedDirs, verified);
+		// ★ 2026-10-29：失败必须**进启动失败文案**（`_startupPluginProblems` ⇒ status.pluginProblems）
+		//   ⇒ 渲染侧能看到（真机：35 个插件全没装上 ⇒ 界面只剩 dsh 官方页、且一句提示都没有
+		//   ⇒ 用户以为产品坏了 ✗✗）。⚠ 复用既有通道，不另开一套（两套并行只会各说各话）。
+		const failedText = failures.join('、');
+		if (failures.length) {
+			this._startupPluginProblems.push(
+				'直装没装上 ' + failures.length + ' 个随包插件：' + failedText.slice(0, 300),
+			);
+		}
+		this._progress(failures.length
+			? '⚠ 直装有 ' + failures.length + ' 个插件失败：' + failedText.slice(0, 300)
+			: '✓ 直装完成：' + ok + '/' + wants.length);
+		const msg = '直装完成：' + ok + '/' + wants.length + (failures.length ? '；失败：' + failedText : '');
+		this._appendLog(msg);
+		return msg;
+	}
+
+	/** 直装后同步 profile/package.json 的 dependencies（与 pnpm 装出来的形态一致）。 */
+	private async _writeProfileDeps(
+		pluginProfileDir: string,
+		wants: { name: string }[],
+		stagedDirs: string[],
+		verified: string[],
+	): Promise<void> {
+		const pkgFile = join(pluginProfileDir, 'package.json');
+		try {
+			const raw = await fsp.readFile(pkgFile, 'utf8');
+			const json = JSON.parse(raw) as { dependencies?: Record<string, string> };
+			json.dependencies = json.dependencies ?? {};
+			const okSet = new Set(verified);
+			for (let i = 0; i < wants.length; i++) {
+				const name = wants[i].name;
+				if (okSet.has(name)) {
+					json.dependencies[name] = toFileSpec(stagedDirs[i]);
+					continue;
+				}
+				// ★★ 装失败的包**必须把 spec 删掉** —— 留着它，下次启动就会判"已装"
+				//   （版本对、入口内容对）⇒ 永远不重装 ⇒ 插件 import 失败
+				//   （真机：那台机器 bridge 起不来 ⇒ `ready in 12000 ms … (bridge: fallback)`）✗✗
+				//   ⇒ "spec 在、文件不在"这种半装状态必须**当场清掉**。
+				delete json.dependencies[name];
+			}
+			// 原子写：与 dsh 同时写会互相覆盖（写一半被读到 ⇒ profile 解析失败）⇒ 先写临时文件再改名。
+			const tmp = pkgFile + '.tmp-' + process.pid;
+			await fsp.writeFile(tmp, JSON.stringify(json, null, 2), 'utf8');
+			await fsp.rename(tmp, pkgFile);
+		} catch (e) {
+			this._appendLog('⚠ 直装后写 profile/package.json 失败（下次启动可能重复直装）：' + String((e as Error)?.message ?? e));
+		}
+	}
+
 	private async _ensurePlugin(name: string, dir: string | undefined, node: IResolvedNode, dsh: IResolvedDsh, profile: string, env: NodeJS.ProcessEnv, label: string, skipUpgrade = false): Promise<string | undefined> {
 		const installed = this._readPkgVersion(join(this._profileDir(profile, env), 'node_modules', ...name.split('/'), 'package.json'));
 		const bundled = dir ? this._readPkgVersion(join(dir, 'package.json')) : undefined;
@@ -2061,7 +2255,32 @@ export class DshHostSupervisor extends Disposable {
 			let settled = false;
 			let graceTimer: ReturnType<typeof setTimeout> | undefined;
 			let filePoll: ReturnType<typeof setInterval> | undefined;
-			const finish = (fn: () => void) => {
+			let readLogTail: (() => Promise<void>) | undefined;
+			/**
+			 * ★ 2026-10-29：keepAlive 模式下 ready 之后**继续**读 Host 日志（降频到 2s）。
+			 *
+			 * 原来 ready 时 `clearInterval(filePoll)` 就再也不读了 ⇒ ready 之后的 Host 输出
+			 * 既不进 harness 日志、也不进 IDE main.log（管道模式没有这个问题：data 监听一直挂着）。
+			 * 真实代价：lazy 注册的补齐发生在 ready 之后，日志里看不到 ⇒ 我据此误判"补齐从不执行"，
+			 * 白修了三轮（直接读 `dsh-run/host-*.log` 才发现它一直正常）。
+			 * 停止条件：Host 退出、或这次 run 被清理（stop / 意外退出都会 `_runDisposables.clear()`）。
+			 */
+			const startPostReadyTail = () => {
+				const tail = readLogTail;
+				if (!tail) {
+					return;
+				}
+				const timer = setInterval(() => {
+					if (generation !== this._generation || child.exitCode !== null) {
+						clearInterval(timer);
+						return;
+					}
+					void tail();
+				}, POST_READY_LOG_POLL_MS);
+				child.once('exit', () => { clearInterval(timer); void tail(); });
+				this._runDisposables.add(toDisposable(() => clearInterval(timer)));
+			};
+			const finish = (fn: () => void, ok = false) => {
 				if (!settled) {
 					settled = true;
 					deadline.dispose();
@@ -2069,6 +2288,9 @@ export class DshHostSupervisor extends Disposable {
 					clearTimeout(graceTimer);
 					if (filePoll) {
 						clearInterval(filePoll);
+					}
+					if (ok) {
+						startPostReadyTail();
 					}
 					fn();
 				}
@@ -2112,7 +2334,7 @@ export class DshHostSupervisor extends Disposable {
 						this._opts.log(`[dsh-host] ${safe}`);
 					}
 				}
-				if (urlFromLog) {
+				if (urlFromLog || settled) {
 					return;
 				}
 				output = (output + text).slice(-64 * 1024);
@@ -2120,38 +2342,45 @@ export class DshHostSupervisor extends Disposable {
 				if (parsed) {
 					urlFromLog = parsed;
 					if (!pipe) {
-						finish(() => resolve(withTiming(parsed)));
+						finish(() => resolve(withTiming(parsed)), true);
 					} else {
 						graceTimer = setTimeout(() => finish(() => {
 							this._appendLog('bridge handshake did not complete; using URL-line fallback');
 							resolve(withTiming(parsed));
-						}), BRIDGE_GRACE_MS);
+						}, true), BRIDGE_GRACE_MS);
 					}
 				}
 			};
 			if (hostLogFile) {
 				// keepAlive 模式：宿主输出在日志文件里（管道会随 IDE 退出破裂、EPIPE 杀 Host——实测）。
-				// 轮询增量读文件，走与管道同一套解析。
+				// 轮询增量读文件，走与管道同一套解析。ready 前 400ms 一次；ready 后降到 2s（见 startPostReadyTail）。
 				let offset = 0;
-				filePoll = setInterval(() => {
-					void (async () => {
-						try {
-							const stat = await fsp.stat(hostLogFile);
-							if (stat.size > offset) {
-								const fh = await fsp.open(hostLogFile, 'r');
-								try {
-									const len = Math.min(stat.size - offset, 256 * 1024);
-									const buf = Buffer.alloc(len);
-									await fh.read(buf, 0, len, offset);
-									offset += len;
-									onData(buf);
-								} finally {
-									await fh.close();
-								}
+				let reading = false;   // 防重入：上一轮还没读完就不开新一轮（否则同一段会读两遍）
+				readLogTail = async () => {
+					if (reading) {
+						return;
+					}
+					reading = true;
+					try {
+						const stat = await fsp.stat(hostLogFile);
+						if (stat.size > offset) {
+							const fh = await fsp.open(hostLogFile, 'r');
+							try {
+								const len = Math.min(stat.size - offset, 256 * 1024);
+								const buf = Buffer.alloc(len);
+								await fh.read(buf, 0, len, offset);
+								offset += len;
+								onData(buf);
+							} finally {
+								await fh.close();
 							}
-						} catch { /* 文件暂不可读，下一轮再来 */ }
-					})();
-				}, 400);
+						}
+					} catch { /* 文件暂不可读，下一轮再来 */ } finally {
+						reading = false;
+					}
+				};
+				const tail = readLogTail;
+				filePoll = setInterval(() => { void tail(); }, 400);
 			} else {
 				child.stdout?.on('data', onData);
 				child.stderr?.on('data', onData);
@@ -2175,7 +2404,7 @@ export class DshHostSupervisor extends Disposable {
 								this._setStatus({ ...this._status, bridge: 'fallback' });
 							}
 						}));
-						finish(() => resolve(withTiming({ origin: hello.host.origin, authUrl: hello.host.authUrl, hello })));
+						finish(() => resolve(withTiming({ origin: hello.host.origin, authUrl: hello.host.authUrl, hello })), true);
 					} catch (e) {
 						bridge.dispose();
 						this._appendLog(`bridge register failed: ${String((e as Error)?.message ?? e)}`);

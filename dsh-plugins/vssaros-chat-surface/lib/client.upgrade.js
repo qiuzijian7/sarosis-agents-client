@@ -102,18 +102,12 @@ window.__ModuleLoader__.load({
 			.filter(r => r && r.state === "upgradable");
 		/** 商城资产（技能 / MCP / 智能体 / 工作流 / 工作台）：宿主已经筛成"只含可升级的" ✓ */
 		const assetRows = s => (s && Array.isArray(s.assets) ? s.assets : []);
-		/**
-		 * 应用（IDE）自身是否可升级（2026-10-29）。
-		 *
-		 * 为什么要单列：之前 `totalPending` 只数"随包插件 + 商城资产"，**应用更新被漏掉了**
-		 * ⇒ 左下角那行在"只有应用有新版"时显示"已最新"，用户完全看不到信号 ✗
-		 * （真机：本地 2.2.26207 / 源上 2.2.26208，就是这么被吞掉的）。
-		 * ⚠ 只认 `action === "upgrade"`：`downgrade`（源比本地旧）**不算**可升级，
-		 *   否则点「一键升级」就变成"一键降级"（那正是 `decideAppUpdate` 要拦的情况）。
-		 */
-		const appUpgradable = s => !!(s && s.app && s.app.action === "upgrade");
-		// 「待升级」= 可升级的随包插件 + 可升级的商城资产 + **应用自身可升级**
-		const totalPending = s => upgradableRows(s).length + assetRows(s).length + (appUpgradable(s) ? 1 : 0);
+		// 「待升级」= 可升级的随包插件 + 可升级的商城资产（**不含未安装**，见 upgradableRows 的注释）
+		//
+		// ⚠ 2026-10-29：**应用（IDE）自身可升级不进这个数**（团队口径，见同文件 `appNew` 的用法）——
+		//   但那也不能让这一行写「已最新」（真机：源上已有 2.2.26208，本地 2.2.26207，
+		//   那行却显示"已最新"⇒ 用户完全看不到信号 ✗）⇒ 由 `Row` 里的 `appUp` 改**文案**解决。
+		const totalPending = s => upgradableRows(s).length + assetRows(s).length;
 		const KIND_LABEL = { skill: "技能", mcp: "MCP", agent: "智能体", workflow: "工作流", workbench: "工作台" };
 		const KIND_ORDER = ["skill", "mcp", "agent", "workflow", "workbench"];
 		const busyOf = s => (s && s.app && s.app.busy) || "";
@@ -135,17 +129,25 @@ window.__ModuleLoader__.load({
 			const s = props.state;
 			// 徽标数 = 随包插件 + 商城资产（用户要的是"总共几项该升"，不是只算插件）
 			const n = totalPending(s);
+			// ★ 2026-10-29（真机：打包版 2.2.26207，源上已有 2.2.26208 ⇒ 左下角那行不提示更新）：
+			//   徽标数按团队口径只数"插件 + 资产"（`totalPending`）⇒ 数字仍是 0，
+			//   但**文案不能写「已最新」**（源上明明有新版 ⇒ 误导）⇒ 有应用更新时改说「应用可升级」。
+			//   ⚠ 只认 `action === "upgrade"`：`downgrade`（源比本地旧）不算（否则像"一键降级"）✗。
+			const appUp = !!(s && s.app && s.app.action === "upgrade");
+			const appRemote = (s && s.app && s.app.remote) || "新版本";
+			const badge = n > 0 ? `${n} 项可用` : (appUp ? "应用可升级" : "已最新");
+			const tip = n > 0 ? `更新：${n} 项可用` : (appUp ? `更新：应用可升级到 ${appRemote}` : "更新：已是最新");
 			return react.createElement("button", {
 				[MARK + "-row"]: "1",
-				"data-hot": n > 0 ? "1" : "0",
-				title: n > 0 ? `更新：${n} 项可用` : "更新：已是最新",
+				"data-hot": (n > 0 || appUp) ? "1" : "0",
+				title: tip,
 				style: props.pos,
 				onClick: () => props.onToggle(),
 			},
 				react.createElement("span", { className: "vu-ico" }, "↑"),
 				react.createElement("span", null, "更新"),
 				n > 0 ? react.createElement("span", { className: "vu-n" }, `${n} 项可用`)
-					: react.createElement("span", { className: "vu-muted" }, "已最新"),
+					: react.createElement("span", { className: "vu-muted" }, badge),
 			);
 		}
 

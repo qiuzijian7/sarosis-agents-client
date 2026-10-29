@@ -13,8 +13,9 @@
  */
 
 import { execFile } from 'child_process';
-import { existsSync, promises as fsp, readdirSync, readFileSync, realpathSync, statSync } from 'fs';
-import { join } from '../../../../base/common/path.js';
+import { existsSync, mkdirSync, promises as fsp, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { delimiter, join } from '../../../../base/common/path.js';
 import { compareSemver, isRuntimeVersionDir, isSupportedNodeVersion, IRuntimeState, parseRuntimeState, selectRuntimeVersion, withCurrent } from '../common/dshCli.js';
 import { DshErrorCode, IDshRuntimeInfo } from '../common/dshHarness.js';
 import { npmCliCandidates } from '../common/dshNodeDist.js';
@@ -96,6 +97,88 @@ export function ensureLoopbackNoProxy(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv
 	return env;
 }
 
+/** 产物自带的 pnpm 单文件 bundle（打包版才有；dev 侧返回 undefined）。 */
+function bundledPnpmCjs(): string | undefined {
+	const res = (process as unknown as { resourcesPath?: string }).resourcesPath;
+	if (!res) {
+		return undefined;
+	}
+	// 打包版：<安装根>/resources/app/tools/pnpm/pnpm.cjs（由 build/saros/ensure-pnpm-tool.mjs 落位）
+	const p = join(res, 'app', 'tools', 'pnpm', 'pnpm.cjs');
+	return existsSync(p) ? p : undefined;
+}
+
+/** PATH 里是否已经有 pnpm（有就尊重用户环境，不注入自带的）。 */
+function hasPnpmOnPath(pathValue: string): boolean {
+	const names = isWindows ? ['pnpm.cmd', 'pnpm.exe', 'pnpm.bat'] : ['pnpm'];
+	for (const dir of pathValue.split(delimiter)) {
+		if (!dir) {
+			continue;
+		}
+		for (const name of names) {
+			if (existsSync(join(dir, name))) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+/**
+ * 把**产物自带**的 pnpm 前置到子进程 PATH（仅当系统没有 pnpm 时才做）。
+ *
+ * ★★ 2026-10-29（真机：别人机器上 `'pnpm' 不是内部或外部命令` ⇒ 35 个随包插件全没装上 ⇒
+ *   界面只剩 dsh 官方页）：
+ *   · 「启动时装插件」已有**直装兜底**（不依赖 pnpm，实测 35/35、4.3 秒）；
+ *   · 但**运行时**仍要用 pnpm（页面里装第三方插件/技能、`dsh plugin add`）⇒ 产物必须自带一份。
+ *
+ * 实现要点：只带**单文件 bundle**（`pnpm.cjs`，7.4MB），shim 里用
+ * **Electron 自己当 node**（`ELECTRON_RUN_AS_NODE=1`）⇒ 用户机器**不需要装 node**
+ * （实测 `ELECTRON_RUN_AS_NODE=1 "<exe>" pnpm.cjs --version` ⇒ 10.18.0，1.1 秒）。
+ *
+ * ⚠ 与本文件顶部"不能用 Electron 跑 dsh"那条结论**不矛盾**：那条限制是 dsh 需要
+ *   `node-addon-require-builtin`（Electron 39 不支持）；pnpm 是**纯 JS**，不碰那个能力 ✓。
+ */
+export function injectBundledPnpm(env: NodeJS.ProcessEnv, nodeExe: string | undefined): void {
+	const cjs = bundledPnpmCjs();
+	if (!cjs || !nodeExe) {
+		return;
+	}
+	const key = Object.keys(env).find(k => k.toLowerCase() === 'path') ?? 'PATH';
+	const current = env[key] ?? '';
+	if (hasPnpmOnPath(current)) {
+		return; // 系统已有 pnpm ⇒ 尊重用户环境
+	}
+	try {
+		const dir = join(tmpdir(), 'vssaros-pnpm-shim');
+		mkdirSync(dir, { recursive: true });
+		// 每次启动都重写（tmp 可能被清理；幂等且只有几百字节）
+		//
+		// ⚠ **必须用真正在用的那个 node**（`node.path`），不能用 Electron 顶替：
+		//   实测 `ELECTRON_RUN_AS_NODE=1 <exe> pnpm.cjs --version` 能出 10.18.0，
+		//   但 `pnpm install` 装到 `added 513` 时**直接崩掉**（exit 异常）——
+		//   Electron 39 的 node 对 pnpm 的并发安装阶段不够用 ✗✗。
+		//   而"别人机器没有 node"这件事由 `dshNodeInstaller` 兜着：没 node 就跑不了 dsh，
+		//   所以 Host 起来时 `node.path` **一定**是可用解释器（托管安装的或系统的）✓。
+		if (isWindows) {
+			writeFileSync(
+				join(dir, 'pnpm.cmd'),
+				'@echo off\r\n"' + nodeExe + '" "' + cjs + '" %*\r\n',
+				'utf8',
+			);
+		} else {
+			writeFileSync(
+				join(dir, 'pnpm'),
+				'#!/bin/sh\n"' + nodeExe + '" "' + cjs + '" "$@"\n',
+				{ mode: 0o755 },
+			);
+		}
+		env[key] = dir + delimiter + current;
+	} catch {
+		// shim 建不起来 ⇒ 不影响启动（启动装插件走直装兜底；只是运行时用不了 pnpm）
+	}
+}
+
 /** 进程环境：去掉会改变子 Node 行为的变量（Electron 主进程里可能带着它们）。 */
 export function sanitizedEnv(extra: Record<string, string | undefined> = {}): NodeJS.ProcessEnv {
 	const env: NodeJS.ProcessEnv = { ...process.env };
@@ -111,6 +194,8 @@ export function sanitizedEnv(extra: Record<string, string | undefined> = {}): No
 	}
 	// 环回绕代理放在 `extra` 合并**之后**：即便调用方显式传了 `NO_PROXY`，也保证环回不被代理劫持 ✓。
 	ensureLoopbackNoProxy(env);
+	// ⚠ 产物自带的 pnpm 由调用方显式注入（`injectBundledPnpm(env, node.path)`）——
+	//   这里拿不到"真正在用的 node"，而 shim 必须用那个 node（用 Electron 顶替会崩，见那边注释）。
 	return env;
 }
 

@@ -444,6 +444,102 @@ export function rowIdsOf(rows) {
 	return out;
 }
 
+/**
+ * preset 聚类键（★ 2026-10-29，首启提速）：**只看 tools 白名单**。
+ *
+ * · 工具白名单必须一致 —— 否则共用 preset 会让某个 agent 多看到别人的工具 ✗；
+ * · **人设不进键**（人设由运行时投影切换，见 `personaProjection` / `personaSwitchMessage`）；
+ * · **模型不进键**（preset 里的 `default-model` 只是默认值，实际路由可按 session 覆盖）。
+ *
+ * ⚠ 空 tools（没声明白名单）⇒ key 为空串 ⇒ 这些 agent 天然同白名单 ⇒ 归到同一类 ✓（省得最多）。
+ */
+export function clusterKeyOf(agent) {
+	const tools = toDshTools(agent?.tools ?? []).slice().sort();
+	return tools.length ? tools.join('|') : '';
+}
+
+/**
+ * 把多个 agent 按 tools 白名单聚成若干 **preset cluster**。
+ *
+ * 为什么值得做（实测）：每个 agent 一个 preset ⇒ 注册 N 个 preset ⇒ dsh 的 discovery
+ * **每次注册都全量重扫 roots**（官方源码 `packages/preset/agent-presets/src/discovery.ts`：
+ * "re-reads the roots on every call"）⇒ **O(N²)** ⇒ 实测 26 个 preset ≈ 13.4s
+ * （对照实验：去掉 21 个内置 ⇒ `ready in` 22919 → 11784ms）⇒ 聚类是唯一的平方级杠杆 ✓。
+ *
+ * 本函数是**纯逻辑**（不碰 dsh、不改注册路径）⇒ 可表驱动单测 ✓。
+ *
+ * @returns `[{ key, agents: string[] }]`，`agents` 已排序 ⇒ 与输入顺序无关 ✓。
+ */
+export function presetClusterOf(agents) {
+	const groups = new Map();
+	for (const agent of Array.isArray(agents) ? agents : []) {
+		const id = String(agent?.id ?? '');
+		if (!id) { continue; }
+		const key = clusterKeyOf(agent);
+		const list = groups.get(key);
+		if (list) { list.push(id); } else { groups.set(key, [id]); }
+	}
+	return [...groups.entries()]
+		.map(([key, ids]) => ({ key, agents: ids.slice().sort() }))
+		.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+}
+
+/**
+ * cluster 的 preset id（**稳定**：只取决于 key ⇒ 与 agent 顺序、agent 数量无关 ✓）。
+ *
+ * 用 key 的长度 + FNV-1a 32 位哈希 ⇒ 读起来短、碰撞概率 ~1e-7（26 个 key 量级）✓。
+ */
+export function presetClusterIdOf(key) {
+	const text = String(key ?? '');
+	let h = 0x811c9dc5;
+	for (let i = 0; i < text.length; i += 1) {
+		h ^= text.charCodeAt(i);
+		h = Math.imul(h, 0x01000193) >>> 0;
+	}
+	return `vssaros-cluster-${text.length.toString(36)}-${h.toString(16).padStart(8, '0')}`;
+}
+
+/**
+ * lazy 注册时，**启动就要注册**的那批 key（★ 2026-10-29）。
+ *
+ * key 形态：`<agentId>`（本体）/ `<agentId>::assign`（委派派生版）。三类必须先就位：
+ *   ① 委派清单引用的 preset（`tool-subagent` 激活时会 readDocument 清单里每个 id，缺一个整个 preset 起不来）；
+ *   ② 最近会话用过的 preset（桌面窗口启动即恢复上次会话 ⇒ 它的 preset 不在 ⇒ 恢复失败）；
+ *   ③ 不够 `max` 个时按扫描顺序补本体（让列表里至少有几个可选）。
+ * ①② 不受 `max` 限制（它们是正确性要求，不是体验优化）。
+ *
+ * @param wantedKeys 本轮想注册的全部 key（扫描顺序）
+ * @param options.delegatable 委派清单里的 preset id 集合
+ * @param options.recent 最近会话用过的 preset id（新→旧）
+ * @param options.max ③ 的目标总数
+ * @returns 启动就注册的 key 集合
+ */
+export function pickLazyEagerKeys(wantedKeys, { delegatable = new Set(), recent = [], max = 3 } = {}) {
+	const keys = Array.isArray(wantedKeys) ? wantedKeys : [];
+	const presetOfKey = (key) => (key.endsWith('::assign') ? assignmentPresetIdOf(key.slice(0, -'::assign'.length)) : presetIdOf(key));
+	const recentSet = new Set(recent);
+	const out = new Set();
+	for (const key of keys) {
+		if (!key.endsWith('::assign') && delegatable.has(presetOfKey(key))) {
+			out.add(key);
+		}
+	}
+	for (const key of keys) {
+		if (recentSet.has(presetOfKey(key))) {
+			out.add(key);
+		}
+	}
+	for (const key of keys) {
+		if (out.size >= max) {
+			break;
+		}
+		if (!key.endsWith('::assign')) {
+			out.add(key);
+		}
+	}
+	return out;
+}
+
 export function toPresetDefinition(agent, options = {}) {
 	const notes = [];
 	// 先算一次（下面 length 判断与传值都要用，别调两遍）

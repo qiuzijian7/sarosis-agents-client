@@ -43,7 +43,7 @@
 import { rmSync, existsSync, readFileSync, readdirSync, statSync, mkdirSync, cpSync } from 'node:fs';
 import path from 'node:path';
 import { join, resolve, dirname } from 'node:path';
-import { execSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -69,6 +69,96 @@ function toPosix(p) {
 	return p.replace(/\\/g, '/');
 }
 
+// ★★ 2026-10-29（CI 实测：`E:\data\landun\…` 的打包日志里刷了几十条
+//   `##[error] The system cannot find the path specified.`）：
+//   这个脚本原来用 **bash 的 `du -sb` 与 `find … 2>/dev/null`** 来算体积、找 *.map、清空目录 ——
+//   但**打包跑在 Windows CI 上**（cmd/PowerShell），`du`/`find`/`2>/dev/null` **一个都不存在**
+//   ⇒ 那三步从来就没成功过（只是被 catch 吞掉了，所以没人发现）⇒ 清理没做、体积统计也不准 ✗✗。
+//   ⇒ 全部改成 **Node 自身实现**（跨平台、无外部依赖）✓。
+
+/** 递归累加目录字节数（替代 `du -sb`）。 */
+function dirSizeBytes(dir) {
+	let total = 0;
+	let entries;
+	try {
+		entries = readdirSync(dir, { withFileTypes: true });
+	} catch {
+		return 0;
+	}
+	for (const e of entries) {
+		const p = join(dir, e.name);
+		try {
+			if (e.isDirectory()) {
+				total += dirSizeBytes(p);
+			} else if (e.isFile()) {
+				total += statSync(p).size;
+			}
+		} catch { /* 单个条目读不到就跳过 */ }
+	}
+	return total;
+}
+
+/** 按文件名通配（只支持 `*` 与 `?`）递归找文件（替代 `find -name … -type f`）。 */
+function findFilesByName(root, pattern) {
+	const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.');
+	const re = new RegExp('^' + escaped + '$');
+	const out = [];
+	const walk = (dir) => {
+		let entries;
+		try {
+			entries = readdirSync(dir, { withFileTypes: true });
+		} catch {
+			return;
+		}
+		for (const e of entries) {
+			const p = join(dir, e.name);
+			if (e.isDirectory()) {
+				walk(p);
+			} else if (e.isFile() && re.test(e.name)) {
+				out.push(p);
+			}
+		}
+	};
+	walk(root);
+	return out;
+}
+
+/** 后序删除空目录（替代 `find -type d -empty -delete`），返回删掉的个数。 */
+function removeEmptyDirs(root) {
+	let removed = 0;
+	const walk = (dir) => {
+		let entries;
+		try {
+			entries = readdirSync(dir, { withFileTypes: true });
+		} catch {
+			return false;
+		}
+		let remaining = 0;
+		for (const e of entries) {
+			const p = join(dir, e.name);
+			if (e.isDirectory()) {
+				if (!walk(p)) {
+					remaining++;
+				}
+			} else {
+				remaining++;
+			}
+		}
+		if (remaining === 0 && dir !== root) {
+			try {
+				rmSync(dir, { recursive: true, force: true });
+				removed++;
+				return true;
+			} catch {
+				return false;
+			}
+		}
+		return false;
+	};
+	walk(root);
+	return removed;
+}
+
 function removeDir(label, relPath) {
 	const absPath = join(buildDir, relPath);
 	if (!existsSync(absPath)) {
@@ -77,8 +167,7 @@ function removeDir(label, relPath) {
 	}
 	let size = 0;
 	try {
-		const out = execSync(`du -sb "${toPosix(absPath)}" 2>/dev/null`, { encoding: 'utf8' }).trim();
-		size = parseInt(out.split('\t')[0]) || 0;
+		size = dirSizeBytes(absPath);
 	} catch { /* ignore */ }
 	try {
 		rmSync(absPath, { recursive: true, force: true });
@@ -109,12 +198,11 @@ function removeFile(label, relPath) {
 
 function removeGlob(label, pattern) {
 	try {
-		const out = execSync(`find "${toPosix(buildDir)}" -name "${pattern}" -type f 2>/dev/null`, { encoding: 'utf8' }).trim();
-		if (!out) {
+		const files = findFilesByName(buildDir, pattern);
+		if (files.length === 0) {
 			console.log(`  ⏭  ${label} — 无匹配，跳过`);
 			return;
 		}
-		const files = out.split('\n').filter(Boolean);
 		let size = 0;
 		for (const f of files) {
 			try { size += statSync(f).size; } catch { /* skip */ }
@@ -194,8 +282,8 @@ removeDir('@vscode/sandbox-runtime', 'resources/app/node_modules/@vscode/sandbox
 // === 4. 清理空目录 ===
 console.log('\n🧹 清理空目录...');
 try {
-	execSync(`find "${toPosix(buildDir)}/resources/app/node_modules" -type d -empty -delete 2>/dev/null`);
-	console.log('  ✅ 已清理空目录');
+	const removed = removeEmptyDirs(join(buildDir, 'resources/app/node_modules'));
+	console.log(`  ✅ 已清理空目录（${removed} 个）`);
 } catch { /* ignore */ }
 
 // === 5. 关键构件校验与自愈（2026-08-05，生产事故 1785894964584） ===
@@ -553,6 +641,48 @@ if (criticalMissing > 0) {
 	console.error(`\n💥 ${criticalMissing} 项关键构件缺失且无法自愈——禁止带病出包！`);
 	console.error('   请先执行：node build/next/index.ts transpile-plugins && npm run transpile-client，重建打包目录后重试。');
 	process.exit(1);
+}
+
+// === 产物自带 pnpm（2026-10-29）================================================
+//   为什么：用户机器上通常**没有 pnpm**（那是开发工具）⇒ 启动时装插件已由「直装」兜底，
+//   但运行时（在页面里装第三方插件 / 技能、`dsh plugin add`）仍要用 pnpm ⇒ 产物必须自带一份。
+//   ⚠ 只带**单文件 bundle**（`dist/pnpm.cjs`，7.4MB，自带全部依赖）；
+//     它需要 node 解释器 ⇒ 由 IDE 侧用 **Electron 自己的 `ELECTRON_RUN_AS_NODE=1`** 来跑
+//     （实测 `ELECTRON_RUN_AS_NODE=1 "<exe>" pnpm.cjs --version` ⇒ 10.18.0，1.1 秒）
+//     ⇒ **不要求用户机器装 node** ✓。
+//   ⚠ 失败**不阻断**打包（启动路径已被直装覆盖，这只影响"运行时能不能用 pnpm"）。
+{
+	const tool = join(__dirname, 'ensure-pnpm-tool.mjs');
+	if (!existsSync(tool)) {
+		console.log('  ⚠️  缺少 build/saros/ensure-pnpm-tool.mjs ⇒ 产物不会自带 pnpm');
+	} else {
+		const r = spawnSync(process.execPath, [tool, buildDir], { stdio: 'inherit' });
+		if (r.status !== 0) {
+			console.log('  ⚠️  pnpm 工具落位脚本异常（不阻断打包：启动已由直装兜底覆盖）');
+		}
+	}
+}
+
+// === 产物内容门禁（2026-10-29）=================================================
+//   为什么不能只信上面的 `criticalMissing`：它只统计"仓库源也没有、自愈不了"的那些；
+//   而"自愈成功"也可能**没落到最终产物里**（复制后被清、路径不对、被别的步骤覆盖）。
+//   真机（别人机器上装我们的 exe）：产物里**缺 `@vscode/deviceid`**
+//   （`Error [ERR_MODULE_NOT_FOUND] … imported from …/out/main.js`），
+//   而补回它的 `ensureDir` 调用当时**早就在这个文件里**（00:36 写好、13:40 打的包）
+//   ⇒ 说明**这个脚本压根没跑**（它不在 gulp 任务链里，靠手工执行）⇒ 缺件一路溜到用户手上 ✗✗。
+//   ⇒ 这里**独立复核**一遍产物内容（清单从本文件的 ensureDir 调用自动推导 ⇒ 单一真相源），
+//     缺一即 exit(1) ⇒ **打包中止**。
+{
+	const gate = join(__dirname, 'check-pack-contents.mjs');
+	if (!existsSync(gate)) {
+		console.error(`\n💥 找不到产物内容门禁脚本：${gate}（禁止带病出包）`);
+		process.exit(1);
+	}
+	const r = spawnSync(process.execPath, [gate, buildDir], { stdio: 'inherit' });
+	if (r.status !== 0) {
+		console.error('\n💥 产物内容门禁未通过——禁止带病出包！');
+		process.exit(r.status || 1);
+	}
 }
 
 // === 汇总 ===

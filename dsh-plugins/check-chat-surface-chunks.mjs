@@ -764,6 +764,82 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 			if (twice.k !== false) { problems.push('nextCollapsed: 折叠态再点应回到 false（展开）✗'); }
 			if (explicitOpen.k !== true) { problems.push('nextCollapsed: 显式展开（false）点击应得到 true（折叠）✗'); }
 		}
+		// ── ⑤-h 会话行操作：右键菜单（置顶/重命名/复制 id/归档）+ 组内拖拽排序（2026-10-29 用户要求）──
+		// 用户原话：「工作区中的会话 item 支持右键弹出 menu，包含 重命名、置顶；会话 item 可拖拽移动位置」。
+		// 四条操作都**只走官方服务**（自造状态 ⇒ 跨窗口不一致 / 与官方 UI 打架 ✗）。两个最容易回归的点各一条：
+		//   ① 置顶必须**恒在组首**（官方 reconcileManualOrder 同口径）—— 否则"置顶"看起来没生效 ✗；
+		//   ② 拖拽必须**只组内 + 不跨置顶区** —— 跨组=改会话 cwd（官方也不支持），跨区会让①失真 ✗。
+		{
+			const need = ['toIdSet', 'normalizeOrderMap', 'sortBySavedOrder', 'orderGroupSessions', 'moveWithin', 'canDrop'];
+			for (const fn of need) {
+				if (typeof t[fn] !== 'function') { problems.push(`client.workspaces.js: 缺 __test.${fn}（会话行操作必须可单测 ✗）`); }
+			}
+			if (need.every((fn) => typeof t[fn] === 'function')) {
+				const mk = (id, at) => ({ id, at: at || 0 });
+				// ① 置顶恒在组首（pinned 之间保持既有相对顺序）
+				const ordered = t.orderGroupSessions(
+					[mk('n1', 300), mk('p1', 200), mk('n2', 100), mk('p2', 50)],
+					{ pinned: ['p2', 'p1'] },
+				).map((s) => s.id);
+				if (ordered.join(',') !== 'p1,p2,n1,n2') {
+					problems.push(`orderGroupSessions: 置顶必须恒在组首且保持相对顺序，期望 p1,p2,n1,n2，实际 ${ordered.join(',')} ✗`);
+				}
+				// ② 手动序生效；保存表里没有的按**原相对顺序**追加（不重新按时间排）
+				const bySaved = t.sortBySavedOrder([mk('a'), mk('b'), mk('c')], ['c', 'a']).map((s) => s.id);
+				if (bySaved.join(',') !== 'c,a,b') { problems.push(`sortBySavedOrder: 期望 c,a,b，实际 ${bySaved.join(',')} ✗`); }
+				// ③ 拖到目标之后 / 之前；源不在表里 ⇒ null（不许写坏顺序）
+				const after = t.moveWithin([mk('a'), mk('b'), mk('c')], 'a', 'c', true);
+				if (!after || after.join(',') !== 'b,c,a') { problems.push(`moveWithin(a→c 之后): 期望 b,c,a，实际 ${after && after.join(',')} ✗`); }
+				const before = t.moveWithin([mk('a'), mk('b'), mk('c')], 'c', 'a', false);
+				if (!before || before.join(',') !== 'c,a,b') { problems.push(`moveWithin(c→a 之前): 期望 c,a,b，实际 ${before && before.join(',')} ✗`); }
+				if (t.moveWithin([mk('a')], 'zz', 'a', true) !== null) { problems.push('moveWithin: 源不在表里必须返回 null（否则顺序表会被写坏）✗'); }
+				// ④ 拖放判定：同组同区才允许
+				const gk = 'rec:1';
+				if (t.canDrop({ sid: 'a', groupKey: gk, pinned: false }, { sid: 'b', groupKey: gk, pinned: false }) !== true) {
+					problems.push('canDrop: 同组普通项之间必须允许 ✗');
+				}
+				if (t.canDrop({ sid: 'a', groupKey: gk, pinned: false }, { sid: 'b', groupKey: 'rec:2', pinned: false }) !== false) {
+					problems.push('canDrop: 跨组必须禁止（跨组 = 改会话 cwd，官方也不支持）✗');
+				}
+				if (t.canDrop({ sid: 'a', groupKey: gk, pinned: true }, { sid: 'b', groupKey: gk, pinned: false }) !== false) {
+					problems.push('canDrop: 置顶项与普通项之间必须禁止（否则"置顶恒在组首"失真）✗');
+				}
+				if (t.canDrop({ sid: 'a', groupKey: gk, pinned: false }, { sid: 'a', groupKey: gk, pinned: false }) !== false) {
+					problems.push('canDrop: 拖到自己身上必须禁止 ✗');
+				}
+				// ⑤ buildSidebar 必须把 pinned 位与手动顺序带进渲染模型（两处渲染共用同一个模型）
+				const rowsP = t.buildSidebar({
+					workspaces: [{ workspaceId: 'w1', path: 'G:/WS/client', sessionIds: ['s1', 's2', 's3'] }],
+					records: [],
+					sessionsById: {
+						s1: { title: 'A', updatedAt: 300 }, s2: { title: 'B', updatedAt: 200 }, s3: { title: 'C', updatedAt: 100 },
+					},
+					archivedIds: [],
+					currentSessionId: null,
+					pinnedIds: ['s3'],
+					orderMap: { 'ws:w1': ['s3', 's2', 's1'] },
+				});
+				const flatRow = rowsP.filter((r) => r.kind === 'flat')[0];
+				const got = flatRow ? flatRow.sessions.map((s) => s.id + (s.pinned ? '*' : '')) : [];
+				if (got.join(',') !== 's3*,s2,s1') {
+					problems.push(`buildSidebar: 置顶 + 手动序未生效，期望 s3*,s2,s1，实际 ${got.join(',')} ✗`);
+				}
+				notes.push('client.workspaces.js: 会话行操作（置顶恒在组首 / 手动序 / 组内拖放）断言通过');
+			}
+			// 静态面：四条操作必须调用**官方服务**（自造状态 ⇒ 跨窗口不一致 / 与官方 UI 打架 ✗）
+			const code3 = String(src).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+			for (const [needle, why] of [
+				['uw.pinSession', '置顶必须走官方 uiWorkspace.pinSession（Host 状态 ⇒ 跨窗口一致）'],
+				['uw.unpinSession', '取消置顶必须走官方 uiWorkspace.unpinSession'],
+				['session.rename(', '重命名必须走官方 binding.session.rename（与官方侧栏同一跳）'],
+				['uw.archiveSession', '归档必须走官方 uiWorkspace.archiveSession'],
+				['"data-vssaros-sess-menu"', '会话右键菜单必须有稳定 DOM 锚点（"点外面/Esc 关闭"也靠它）'],
+				['draggable:', '会话行必须可拖拽'],
+				['SESSION_ORDER_KEY', '手动顺序必须落盘（刷新后要能读回来）'],
+			]) {
+				if (code3.indexOf(needle) < 0) { problems.push(`client.workspaces.js: 缺「${needle}」—— ${why} ✗`); }
+			}
+		}
 	}
 }
 
@@ -1716,12 +1792,21 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 		}
 	}
 
-	// 两个渲染分支（分组 / 平铺）的会话行都必须把就地提示通道传进去
-	const clicks = ws.match(/onClick: \(\) => openSession\(s\.id[^)]*\)/g) || [];
-	if (clicks.length < 2) {
-		problems.push(`client.workspaces.js: 两个渲染分支的会话行都要传就地提示通道（实际 ${clicks.length} 处）✗`);
-	} else if (clicks.some((c) => !/setWsMsg/.test(c))) {
-		problems.push('client.workspaces.js: 会话行 onClick 必须传 `setWsMsg`（不传就还是静默 ✗）');
+	// 两个渲染分支（分组 / 平铺）的会话行都必须把就地提示通道传进去。
+	// ★ 2026-10-29：两处渲染已收敛成同一个 `renderSessionRow(s, setMsg, setLocal)`（同一个实现 ⇒ 口径不会漂）⇒
+	//   钉两件事：① 两处调用都传 `setWsMsg`；② 该函数内部 onClick 用的就是传进来的通道。
+	const rowCalls = ws.match(/renderSessionRow\(s, setWsMsg, setLocalCurrent\)/g) || [];
+	if (rowCalls.length < 2) {
+		problems.push(`client.workspaces.js: 两个渲染分支的会话行都要传就地提示通道（实际 ${rowCalls.length} 处）✗`);
+	}
+	{
+		const at = ws.indexOf('const renderSessionRow = ');
+		const rowBody = at < 0 ? '' : ws.slice(at, at + 4000);
+		if (at < 0) {
+			problems.push('client.workspaces.js: 缺 `renderSessionRow`（两处会话行必须共用同一个渲染实现 ✗）');
+		} else if (!/openSession\(s\.id, setMsg, setLocal\)/.test(rowBody)) {
+			problems.push('client.workspaces.js: 会话行 onClick 必须传就地提示通道（`openSession(s.id, setMsg, setLocal)`；不传就还是静默 ✗）');
+		}
 	}
 
 	if (!problems.some((p) => /openSession|打开会话|session\.retain/.test(p))) {

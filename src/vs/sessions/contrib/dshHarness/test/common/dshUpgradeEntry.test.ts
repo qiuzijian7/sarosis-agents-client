@@ -164,8 +164,20 @@ suite('dshHarness / desktop 窗口的「更新」入口', () => {
 			order![1].split(',').map(s => s.trim().replace(/["']/g, '')),
 			['skill', 'mcp', 'agent', 'workflow', 'workbench'],
 			'KIND_ORDER 必须与协议的 DSH_UPGRADE_ASSET_KINDS 同序（否则汇总行与宿主顺序不一致）✗');
+		// ⚠ 2026-10-29（真机：打包版 2.2.26207，源上已有 2.2.26208 ⇒ 应用有新版）：
+		//   徽标数按团队口径只数"可升级的随包插件 + 可升级资产"（**不含应用**），
+		//   但那也不能让这一行写「已最新」⇒ 必须由**文案**说出真相（"应用可升级"）。
 		assert.ok(/const totalPending = s => upgradableRows\(s\)\.length \+ assetRows\(s\)\.length;/.test(page),
 			'徽标数必须是"可升级的随包插件 + 可升级资产"合计（漏了资产会让用户以为资产不用升 ✗）');
+		assert.ok(/const appUp = /.test(page) && /应用可升级/.test(page),
+			'应用自身有新版时，这一行的文案必须说「应用可升级」而不是「已最新」'
+			+ '（真机：源上 2.2.26208、本地 2.2.26207，那行却写"已最新" ⇒ 用户看不到任何信号 ✗✗）');
+		// ⚠ 只认 `action === "upgrade"`：`downgrade`（更新源比本地旧）**不算**，
+		//   否则点「一键升级」就变成"一键降级"（那正是 `decideAppUpdate` 要拦的情况）✗。
+		const auAt = page.indexOf('const appUp = ');
+		const auLine = page.slice(auAt, page.indexOf('\n', auAt));
+		assert.ok(/action === "upgrade"/.test(auLine),
+			'appUp 必须只认 action === "upgrade"（downgrade = 源比本地旧，算进去就是"一键降级" ✗）');
 	});
 
 	// ★ 2026-10-26（用户："改成只算升级"）：**未安装不算一项** —— 否则本机永远显示「2 项可用」，
