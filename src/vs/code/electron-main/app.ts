@@ -2353,7 +2353,15 @@ export class CodeApplication extends Disposable {
 	}
 
 	private async installMutex(): Promise<void> {
-		const win32MutexName = this.productService.win32MutexName;
+		// ★★ 2026-10-30（真机：**开着打包版 exe 时 F5 起不来开发版**）：
+		//   `win32MutexName` 是**全局命名对象**，**不随 userData 走** ⇒ dev 与安装版同名 `vssaros`
+		//   ⇒ 两边互相锁死。而且安装器（Inno 的 `AppMutex`）查的也是这个名字
+		//   ⇒ dev 在跑时安装包会提示"请先关闭 VsSaros"（哪怕用户只想关掉安装版）。
+		//   ⇒ **dev（`!isBuilt`）用 `-dev` 后缀**；安装版保持原名（与 Inno 的 `AppMutex` 一致 ✓）。
+		//   ⚠ 判据用 `isBuilt`，**不能用 `app.isPackaged`** —— 本仓库既有结论
+		//     （见下方 agentmemory 端口 3111/3112 那段注释的依据）。
+		const rawMutexName = this.productService.win32MutexName;
+		const win32MutexName = rawMutexName && !this.environmentMainService.isBuilt ? `${rawMutexName}-dev` : rawMutexName;
 		if (isWindows && win32MutexName) {
 			try {
 				const WindowsMutex = await import('@vscode/windows-mutex');

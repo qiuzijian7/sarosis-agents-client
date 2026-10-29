@@ -152,6 +152,22 @@ export class BrowserCdpClient {
 		return res?.result?.value;
 	}
 
+	/**
+	 * 页内**异步**求值（`awaitPromise: true`）—— 供"页面里自己 fetch"用。
+	 *
+	 * ★ 2026-10-30：Chrome 153+ 对 cookie 全面启用 App-Bound Encryption ⇒
+	 *   自动化客户端 `Storage.getCookies` **读不到 cookie**（实测 Chrome 156：有头/无头都返回 0）✗
+	 *   ⇒ 唯一可行的取数方式是**让浏览器自己发请求**（页面里同源 fetch）⇒ 需要能 await Promise ✓
+	 */
+	async evaluateAsync(expression, timeoutMs = CDP_COMMAND_TIMEOUT_MS) {
+		const res = await this._send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }, timeoutMs);
+		if (res?.exceptionDetails) {
+			const desc = res.exceptionDetails.exception?.description ?? res.exceptionDetails.text ?? 'unknown page error';
+			throw new Error(`page evaluation failed: ${desc.split('\n')[0]}`);
+		}
+		return res?.result?.value;
+	}
+
 	/** 等 `document.readyState === 'complete'`（超时不抛 —— 由调用方决定是否照常继续）。 */
 	async _waitReady(timeoutMs = READY_STATE_TIMEOUT_MS) {
 		const deadline = Date.now() + timeoutMs;

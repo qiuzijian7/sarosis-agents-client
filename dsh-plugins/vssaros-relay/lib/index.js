@@ -852,6 +852,9 @@ export function apply(ctx) {
 			if (url.pathname === ROUTE_PREFIX + '/api/quota/login') {
 				let outcome;
 				try {
+					// ★ 2026-10-30（用户要求）：手动点「浏览器登录」⇒ **必须弹出有头浏览器**
+					//   （显式先切有头，再由 loginInBrowser 打开登录页；登录完自动切回无头 ⇒ 只打扰这一次）✓
+					await browserService?.loginSession?.ensureHeaded?.();
 					await loginInBrowser(browserService, {
 						log: line => console.log(`[vssaros-relay] ${line}`),
 					});

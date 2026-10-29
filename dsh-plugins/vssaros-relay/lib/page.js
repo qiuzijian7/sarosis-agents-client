@@ -141,7 +141,7 @@ export function renderPage(input) {
 			<div id="pool-body"><div class="empty">读取中…</div></div>
 		</div>
 		<div class="card">
-			<h2>Tokens 用量 <span id="quota-month"></span><button class="btn" id="quota-refresh" title="立即刷新用量">↻ 刷新</button><button class="btn primary" id="quota-login" title="在<b>真实浏览器</b>里打开 token.woa.com 登录页（登录一次即可，之后全自动）">🌐 浏览器登录</button></h2>
+			<h2>Tokens 用量 <span id="quota-month"></span><button class="btn" id="quota-refresh" title="立即刷新用量">↻ 刷新</button><button class="btn primary" id="quota-login" title="手动登录：会弹出**可见的浏览器窗口**（token.woa.com），登录完成后窗口自动关闭、之后全程静默">🌐 浏览器登录</button></h2>
 			<div id="quota-body"><div class="empty">读取中…</div></div>
 			<div class="hint" id="quota-hint">CodeBuddy 账号的额度 / 积分（单位 credits）。<b>全自动、零手工</b>：直接复用你<b>浏览器</b>里的 token.woa.com 登录态（插件从浏览器进程里读 httpOnly cookie，不落盘、不上报，只上报额度数字）；没有登录态时会自动在浏览器里打开登录页，手机确认一次即可，之后每 30 分钟自动刷新。</div>
 		</div>

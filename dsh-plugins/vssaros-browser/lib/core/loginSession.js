@@ -96,6 +96,24 @@ export function createLoginSessions({ baseClient, browserCommand, headless, ensu
 		return v;
 	};
 
+	/**
+	 * 确保当前浏览器是**有头**的（手动登录入口专用）。
+	 *
+	 * ★ 2026-10-30（用户要求）：手动点「浏览器登录」时**必须弹出可见窗口**。
+	 *   平时是**无头**（用户无感）⇒ 这里把它切回有头；Chrome 不允许同 profile
+	 *   两个实例并存 ⇒ 切换由 host 负责（先杀无头实例 → 用同一 profile 拉有头实例）✓
+	 *   切换失败 ⇒ 抛**明确**错误（页面能显示人话），绝不静默失败 ✗
+	 */
+	const ensureHeadedOrThrow = async () => {
+		if (typeof ensureHeaded === 'function') {
+			await ensureHeaded();
+			return;
+		}
+		if (headless) {
+			throw new Error('浏览器插件当前是无头模式（headless），没有可见窗口可以登录 —— 关掉无头模式后再试');
+		}
+	};
+
 	return {
 		/** 诊断用：无头时 `open` 必然失败。 */
 		headless: !!headless,
@@ -111,18 +129,61 @@ export function createLoginSessions({ baseClient, browserCommand, headless, ensu
 			}
 		},
 
+		/**
+		 * 确保当前浏览器是**有头**的（手动登录入口专用）。
+		 *
+		 * ★ 2026-10-30（用户要求）：手动点「浏览器登录」时**必须弹出可见窗口**。
+		 *   平时是**无头**（用户无感）⇒ 这里把它切回有头；Chrome 不允许同 profile
+		 *   两个实例并存 ⇒ 切换由 host 负责（先杀无头实例 → 用同一 profile 拉有头实例）✓
+		 *   切换失败 ⇒ 抛**明确**错误（页面能显示人话），绝不静默失败 ✗
+		 */
+		async ensureHeaded() {
+			await ensureHeadedOrThrow();
+		},
+
+		/**
+		 * 在登记站点的页面里**同源 fetch**（2026-10-30 新增）。
+		 *
+		 * ★ 为什么必须走这里：Chrome 153+ 对 cookie 全面启用 **App-Bound Encryption**
+		 *   ⇒ 自动化客户端 `Storage.getCookies` **读不到 cookie**（实测 Chrome 156：
+		 *   有头/无头都是 0 个）✗ ⇒ 「读 cookie 再自己 fetch」这条路已经废了。
+		 *   ⇒ 只能**让浏览器自己发请求**：在目标域的页面里 `fetch(同源路径)` ⇒
+		 *      cookie 由浏览器带上、**不出浏览器**；我们只拿到响应里的数字 ✓
+		 *
+		 * @param {string} name  登记站点名（`LOGIN_PROFILES` 的 key）
+		 * @param {string} url   目标页（必须是**同源**的那一页 ⇒ fetch 才是同源、不被 CORS 拦）
+		 * @param {string} path  同源相对路径（如 `/api/query-quota?platform=all`）
+		 * @returns {Promise<{status:number, ok:boolean, text:string}>}
+		 */
+		async fetchInSite(name, url, path) {
+			const view = viewOf(name);
+			// 确保这个会话的 tab 停在目标域（同源 ⇒ 下面的 fetch 不会被 CORS 拦）
+			await view.openForLogin(String(url));
+			const expression = `(async () => {
+				const pt = (document.querySelector('meta[name="pt"]') || {}).content || '';
+				const headers = { 'Accept': 'application/json, text/plain, */*' };
+				if (pt) { headers['x-page-token'] = pt; }
+				try {
+					const res = await fetch(${JSON.stringify(String(path))}, { method: 'GET', credentials: 'include', headers });
+					const text = await res.text();
+					return { status: res.status, ok: res.ok, text: text.slice(0, 200000) };
+				} catch (error) {
+					return { status: 0, ok: false, text: String((error && error.message) || error) };
+				}
+			})()`;
+			const result = await view.evaluateAsync(expression, 30_000);
+			if (!result || typeof result !== 'object') {
+				throw new Error('页面内 fetch 没有返回结果');
+			}
+			return result;
+		},
+
 		/** 在可见浏览器里打开登录页并切到前台。 */
 		async open(name, url) {
 			const profile = profileOf(name);
 			siteFor(profile, url);
-			// ★ 2026-10-28：平时是**无头**（Host 启动不弹窗、用户无感），
-			//   但登录要人交互 ⇒ 先把专属实例切成**有头**（Chrome 不允许同 profile 并存，
-			//   切换由 host 负责：先杀再拉）✓
-			if (headless && typeof ensureHeaded === 'function') {
-				await ensureHeaded();
-			} else if (headless) {
-				throw new Error('浏览器插件当前是无头模式（headless），没有可见窗口可以登录 —— 关掉无头模式后再试');
-			}
+			// ★ 手动登录 ⇒ 先确保是**有头**（有头时是幂等的，直接返回）
+			await ensureHeadedOrThrow();
 			const page = await viewOf(name).openForLogin(String(url));
 			// 新建的 tab 不会自己跑到前台（尤其接管的是用户自己的 Chrome 时）⇒ 显式激活一次；失败不致命
 			try { await browserCommand('Target.activateTarget', { targetId: page.targetId }); } catch { /* 老浏览器 / 已关 */ }

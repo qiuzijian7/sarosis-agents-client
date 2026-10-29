@@ -149,6 +149,16 @@ export class CdpHost {
 			launchDedicated: options.launchDedicated === true,
 			headless: options.headless === true,
 			homeDir: options.homeDir,
+			/**
+			 * 专属 Chrome 的 **profile 目录**（可选）。
+			 *
+			 * ★ 2026-10-30（用户要求）：开发版与正式版**彻底隔离**——
+			 *   · 开发版 → `~/.vssaros-dev/browser-profile`（端口 9223 ⇒ 专属实例 9224）
+			 *   · 正式版 → `~/.vssaros/browser-profile`（端口 9222 ⇒ 专属实例 9223）
+			 *   ⚠ Chrome **不允许同一 profile 两个实例并存** ⇒ 不隔离就会互抢 ✗
+			 *   ⚠ 不传时回退 `dedicatedProfileDir(homeDir)`（与 IDE 侧逐字一致的旧行为）✓
+			 */
+			profileDir: typeof options.profileDir === 'string' && options.profileDir.trim() ? options.profileDir.trim() : undefined,
 			platform: options.platform ?? process.platform,
 			env: options.env ?? process.env,
 		};
@@ -174,6 +184,15 @@ export class CdpHost {
 
 	/** 当前配置下的专属端口（= 配置端口 + 1）。给状态文案用。 */
 	get dedicatedPort() { return dedicatedPortFor(this._config.port); }
+
+	/** 专属 Chrome 的 profile 目录（诊断用：两套环境必须不同，否则会互抢 profile）。 */
+	get dedicatedProfilePath() {
+		return this._config.profileDir
+			|| dedicatedProfileDir(this._config.homeDir, this._config.platform);
+	}
+
+	/** 专属实例的端点 URL（我们拉起的那台 ⇒ 与"用户自己的 Chrome"区分）。 */
+	get dedicatedEndpointUrl() { return `http://127.0.0.1:${this.dedicatedPort}`; }
 
 	/**
 	 * 我们自己拉起的那个 Chrome 的 pid（没有则 `undefined`）。
@@ -290,7 +309,8 @@ export class CdpHost {
 				if (!exe) {
 					throw new Error(`找不到 Chrome 可执行文件（可用 ${CHROME_PATH_ENV} 指定）｜原因：${primary instanceof Error ? primary.message : String(primary)}`);
 				}
-				const profileDir = dedicatedProfileDir(this._config.homeDir, this._config.platform);
+				const profileDir = this._config.profileDir
+					|| dedicatedProfileDir(this._config.homeDir, this._config.platform);
 				this._dedicatedHeadless = this._modeHeadless;
 				this._dedicatedPid = launchDedicatedChrome(exe, buildDedicatedChromeArgs(profileDir, port, this._modeHeadless));
 				const url = `http://127.0.0.1:${port}`;
@@ -355,6 +375,31 @@ export class CdpHost {
 	}
 
 	/**
+	 * 重启专属实例（切有头 / 切无头共用）。
+	 *
+	 * ★ 关键：**必须先把占着这个 profile 的 Chrome 关掉**——
+	 *   ① Chrome 不允许同一 profile 两个实例并存；
+	 *   ② 那个实例**可能是上一个 Host 进程留下的**（Host 是 keepAlive 的 ⇒ 换进程后
+	 *      `_dedicatedPid` 记不准）⇒ 只杀自己的 pid 会漏掉它 ⇒ 新实例起不来（还是无头）✗
+	 *   ⇒ 先用 CDP `Browser.close` 让它**自己退出**（跨平台、不依赖 ps）✓ 再兜底杀自己的 pid。
+	 */
+	async _restartDedicated(headless) {
+		const onDedicated = String(this._endpoint || '').startsWith(this.dedicatedEndpointUrl);
+		if (onDedicated) {
+			try {
+				await this._conn?.send('Browser.close');
+			} catch {
+				/* 关不掉就靠下面的 taskkill 兜底 */
+			}
+		}
+		this._dropConnection();
+		this._killDedicated();
+		await new Promise((resolve) => setTimeout(resolve, 1200));
+		this._modeHeadless = headless === true;
+		await this._connection();
+	}
+
+	/**
 	 * 确保专属实例是**有头**的（需要人交互登录时用）。
 	 *
 	 * 2026-10-28：平时是无头（用户无感），只有要让人登录时才切有头。
@@ -362,14 +407,19 @@ export class CdpHost {
 	async ensureHeaded() {
 		if (!this._config.launchDedicated) { return; }
 		// 连的是**用户自己的 Chrome**（不是我们拉的）⇒ 它本来就有头 ⇒ 不用切 ✓
-		if (this._dedicatedPid === undefined && this._conn) { return; }
+		if (!String(this._endpoint || '').startsWith(this.dedicatedEndpointUrl)) {
+			this._log?.info?.('[vssaros-browser] 用的是用户自己的 Chrome（本来就有可见窗口）');
+			return;
+		}
 		if (this._dedicatedHeadless === false) { return; }
-		this._log?.info?.('[vssaros-browser] 切换专属实例：无头 → 有头（需要人交互登录）');
-		this._dropConnection();
-		this._killDedicated();
-		await new Promise((resolve) => setTimeout(resolve, 700));
-		this._modeHeadless = false;
-		await this._connection();
+		this._log?.info?.('[vssaros-browser] 切换专属实例：无头 → 有头（手动登录，需要可见窗口）');
+		await this._restartDedicated(false);
+		// ★ 校验：必须真的"有头且连上了" ⇒ 否则抛**明确**错误（页面能显示人话），不静默失败 ✗
+		if (this._dedicatedHeadless === false) {
+			this._log?.info?.('[vssaros-browser] 专属实例已切到有头 ✓');
+			return;
+		}
+		throw new Error('切换到有头浏览器失败（专属实例没能以可见模式起来）');
 	}
 
 	/**
@@ -377,14 +427,11 @@ export class CdpHost {
 	 */
 	async ensureHeadless() {
 		if (!this._config.launchDedicated) { return; }
-		if (this._dedicatedPid === undefined && this._conn) { return; }
+		if (!String(this._endpoint || '').startsWith(this.dedicatedEndpointUrl)) { return; }
 		if (this._dedicatedHeadless === true) { return; }
 		this._log?.info?.('[vssaros-browser] 切换专属实例：有头 → 无头（交互结束，用户无感）');
-		this._dropConnection();
-		this._killDedicated();
-		await new Promise((resolve) => setTimeout(resolve, 700));
-		this._modeHeadless = true;
-		await this._connection();
+		await this._restartDedicated(true);
+		this._log?.info?.('[vssaros-browser] 专属实例已切回无头 ✓');
 	}
 
 	/** 状态：端点 + 是否连上 + 浏览器版本（`status` op 的返回值）。 */

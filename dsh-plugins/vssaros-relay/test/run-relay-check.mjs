@@ -306,6 +306,90 @@ for (const label of ['注册本机到号池', '已注册 · 通道已连接', '�
 		fail('quotaBrowser 未在登录后切回无头');
 	}
 }
+// ★★ 手动点「浏览器登录」⇒ **必须弹有头窗口**（2026-10-30 用户要求）
+//   平时专属实例是无头（用户无感）⇒ 手动登录路径要显式切回有头，失败要抛明确错误。
+{
+	const browserSession = fs.readFileSync(path.join(REPO, 'dsh-plugins', 'vssaros-browser', 'lib', 'core', 'loginSession.js'), 'utf8');
+	const browserHost = fs.readFileSync(path.join(REPO, 'dsh-plugins', 'vssaros-browser', 'lib', 'core', 'host.js'), 'utf8');
+	const relayIndex = fs.readFileSync(path.join(PKG, 'lib', 'index.js'), 'utf8');
+	const quotaBrowser = fs.readFileSync(path.join(PKG, 'lib', 'quotaBrowser.js'), 'utf8');
+	if (/async ensureHeaded\(\)/.test(browserSession) && /ensureHeadedOrThrow\(\)/.test(browserSession)) {
+		ok('登录会话提供 ensureHeaded（手动登录前显式切有头）');
+	} else {
+		fail('loginSession 缺 ensureHeaded ⇒ 手动登录无法保证弹出可见窗口');
+	}
+	if (/切换到有头浏览器失败/.test(browserHost)) {
+		ok('切有头失败会抛明确错误（页面能显示人话，不静默失败）');
+	} else {
+		fail('ensureHeaded 没有失败校验 ⇒ 弹不出窗口时用户只看到"没反应"');
+	}
+	if (/ensureHeaded/.test(relayIndex) && /ensureHeaded/.test(quotaBrowser)) {
+		ok('relay 的手动登录路径（/api/quota/login 与 quotaBrowser）都显式切有头');
+	} else {
+		fail('relay 的手动登录路径没有显式切有头');
+	}
+}
+// ★★ 两套环境的浏览器隔离（2026-10-30 用户要求）
+//   开发版：port 9223（专属实例 9224）+ profile `~/.vssaros-dev/browser-profile`
+//   正式版：port 9222（专属实例 9223）+ profile `~/.vssaros/browser-profile`
+//   ⚠ Chrome 不允许同一 profile 两个实例并存 ⇒ 不隔离就会互抢。
+{
+	const browserIndex = fs.readFileSync(path.join(REPO, 'dsh-plugins', 'vssaros-browser', 'lib', 'index.js'), 'utf8');
+	const browserHost = fs.readFileSync(path.join(REPO, 'dsh-plugins', 'vssaros-browser', 'lib', 'core', 'host.js'), 'utf8');
+	if (/isDevEnv \? 9223 : DEFAULT_CDP_PORT/.test(browserIndex)) {
+		ok('开发版浏览器端口为 9223（专属实例 9224），正式版仍 9222');
+	} else {
+		fail('开发版浏览器端口未与正式版隔离（会互抢专属实例）');
+	}
+	if (/join\(dataRoot, 'browser-profile'\)/.test(browserIndex)) {
+		ok('专属 Chrome profile 与数据根同级（dev=~/.vssaros-dev/browser-profile）');
+	} else {
+		fail('专属 Chrome profile 没有按数据根隔离');
+	}
+	if (/options\.profileDir/.test(browserHost) && /this\._config\.profileDir/.test(browserHost)) {
+		ok('CdpHost 支持自定义 profile 目录（隔离用）');
+	} else {
+		fail('CdpHost 不支持 profileDir ⇒ 无法隔离两套环境的 Chrome profile');
+	}
+}
+// ★★ 手动登录必须能切到有头（2026-10-30 实测事故）
+//   `quotaBrowser` 里曾有「无头就直接抛错」的前置拦截，它排在 `ensureHeaded()` **之前**
+//   ⇒ 每次登录都直接失败、永远切不到有头（页面只显示"无头模式…"）✗✗
+{
+	const quotaBrowser = fs.readFileSync(path.join(PKG, 'lib', 'quotaBrowser.js'), 'utf8');
+	// ⚠ 只看**代码行**（注释里也提到 session.headless，别被误判）
+	const codeOnly = quotaBrowser.split(/\r?\n/)
+		.filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line))
+		.join('\n');
+	const ensureAt = codeOnly.indexOf('session.ensureHeaded');
+	const headlessAt = codeOnly.indexOf('session.headless');
+	if (ensureAt >= 0 && (headlessAt < 0 || ensureAt < headlessAt)) {
+		ok('quotaBrowser 里 ensureHeaded 排在 headless 判断之前（能切有头）');
+	} else {
+		fail('quotaBrowser 的 "无头直接抛错" 挡在 ensureHeaded 之前 ⇒ 手动登录永远切不到有头');
+	}
+}
+// ★★★ 页内同源 fetch 采集（2026-10-30：Chrome 153+ 读不到 cookie ⇒ 唯一可行路径）
+{
+	const browserSession = fs.readFileSync(path.join(REPO, 'dsh-plugins', 'vssaros-browser', 'lib', 'core', 'loginSession.js'), 'utf8');
+	const browserClient = fs.readFileSync(path.join(REPO, 'dsh-plugins', 'vssaros-browser', 'lib', 'core', 'client.js'), 'utf8');
+	const quotaBrowser = fs.readFileSync(path.join(PKG, 'lib', 'quotaBrowser.js'), 'utf8');
+	if (/async fetchInSite\(/.test(browserSession)) {
+		ok('登录会话提供 fetchInSite（在页面里同源 fetch）');
+	} else {
+		fail('loginSession 缺 fetchInSite ⇒ 新版 Chrome 读不到 cookie 时无法采集');
+	}
+	if (/async evaluateAsync\(/.test(browserClient)) {
+		ok('页面视图支持异步求值（awaitPromise）');
+	} else {
+		fail('client.js 缺 evaluateAsync ⇒ 页面内 fetch 的 Promise 拿不到结果');
+	}
+	if (/export async function collectQuotaInPage\(/.test(quotaBrowser) && /collectQuotaInPage\(session/.test(quotaBrowser)) {
+		ok('额度采集优先走页内 fetch（cookie 不出浏览器）');
+	} else {
+		fail('quotaBrowser 没走 collectQuotaInPage ⇒ 只会读 cookie（新版 Chrome 恒为空）');
+	}
+}
 // ★ 额度进度条（2026-10-28 用户要求：更直观）
 for (const [needle, label] of [
 	['qbar-track', '额度进度条的槽'],

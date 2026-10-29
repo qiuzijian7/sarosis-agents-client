@@ -192,9 +192,38 @@ const asInt = value => (Number.isInteger(value) ? value : undefined);
 
 export function apply(ctx, config = {}) {
 	const env = process.env;
+	/**
+	 * **数据根**（`config.dataRoot` → `VSSAROS_DATA_ROOT` → `~/.vssaros`）。
+	 *
+	 * ★ 开发版是 `~/.vssaros-dev`、正式版是 `~/.vssaros` ⇒ 用它区分两套环境 ✓
+	 *   （也是 allowRules / 专属 profile 的统一锚点，与 kanban 等插件同口径）
+	 */
+	const dataRoot = (() => {
+		const fromConfig = typeof config.dataRoot === 'string' && config.dataRoot.trim() ? config.dataRoot.trim() : '';
+		return fromConfig || ((env.VSSAROS_DATA_ROOT ?? '').trim() || join(homedir(), '.vssaros'));
+	})();
+	/**
+	 * ★ 是否**开发版**环境（2026-10-30 用户要求：两套环境的浏览器彻底隔离）。
+	 */
+	const isDevEnv = /vssaros-dev/i.test(dataRoot);
+	/**
+	 * 浏览器 CDP 端口。
+	 *
+	 * ★ **开发版用 9223**（专属实例落在 **9224**），正式版仍用 9222（专属 9223）。
+	 *   为什么要分开：两套 Host 会**各自**拉起专属 Chrome ⇒ 同端口会互抢
+	 *   （后一个起不来、或连到对方那个 profile 的实例）⇒ 现象是"开发版额度读不到 / 弹错窗口"✗
+	 * ⚠ 显式配置（`config.port` / `VSSAROS_BROWSER_CDP_PORT`）仍然优先。
+	 */
 	const port = Number.isInteger(config.port)
 		? config.port
-		: (Number.parseInt(env.VSSAROS_BROWSER_CDP_PORT ?? '', 10) || DEFAULT_CDP_PORT);
+		: (Number.parseInt(env.VSSAROS_BROWSER_CDP_PORT ?? '', 10) || (isDevEnv ? 9223 : DEFAULT_CDP_PORT));
+	/**
+	 * 专属 Chrome 的 **profile 目录**：与**数据根同级** ⇒ 两套环境彻底隔离 ✓
+	 *   · 开发版 → `~/.vssaros-dev/browser-profile`
+	 *   · 正式版 → `~/.vssaros/browser-profile`
+	 * ⚠ Chrome **不允许同一 profile 两个实例并存** ⇒ 不隔离就会互抢 ✗
+	 */
+	const dedicatedProfile = join(dataRoot, 'browser-profile');
 	/**
 	 * 端点不可达时，是否由我们**拉起一个专属实例**。
 	 *
@@ -289,9 +318,6 @@ export function apply(ctx, config = {}) {
 			? config.allowRulesPath.trim() : undefined;
 		const fromEnv = (env.VSSAROS_TOOL_ALLOW_FILE ?? '').trim() || undefined;
 		if (fromConfig ?? fromEnv) { return fromConfig ?? fromEnv; }
-		const dataRoot = typeof config.dataRoot === 'string' && config.dataRoot.trim()
-			? config.dataRoot.trim()
-			: ((env.VSSAROS_DATA_ROOT ?? '').trim() || join(homeDir, '.vssaros'));
 		return join(dataRoot, 'tool-allow.json');
 	})();
 	const allowRules = createRuleReader(allowRulesPath);
@@ -308,7 +334,7 @@ export function apply(ctx, config = {}) {
 		log(line);
 	};
 	const logger = { info: log, warn: log };
-	const host = new CdpHost({ port, launchDedicated, headless, homeDir, logger });
+	const host = new CdpHost({ port, launchDedicated, headless, homeDir, profileDir: dedicatedProfile, logger });
 	const invoke = createHostInvoker(host);
 	/**
 	 * **无会话绑定**的客户端：真正的调用一律经 `baseClient.forSession(sessionKey)` 取绑定视图
@@ -429,7 +455,7 @@ export function apply(ctx, config = {}) {
 			throw new Error(`browser.${op} 未获准（${String(outcome)}）⇒ 已拒绝执行（不会碰浏览器）。`);
 		}
 	};
-	log(`[vssaros-browser] apply（port=${port} dedicated=${launchDedicated ? 'on' : 'off'} headless=${headless ? 'on' : 'off'} actions=${allowActions ? 'allowed' : 'ask'} reading=${askReading ? 'ask' : `${READING_OPS.join('/')}免问`} rules=${allowRulesPath}${allowRules.loaded() ? '（有规则）' : '（空/不存在）'} cookieIO=${allowCookieIO ? 'on' : 'off'} evaluate=${allowEvaluate ? 'on' : 'off'}）`);
+	log(`[vssaros-browser] apply（port=${port} 专属=${host.dedicatedPort} profile=${dedicatedProfile} ${isDevEnv ? 'dev' : 'prod'} dedicated=${launchDedicated ? 'on' : 'off'} headless=${headless ? 'on' : 'off'} actions=${allowActions ? 'allowed' : 'ask'} reading=${askReading ? 'ask' : `${READING_OPS.join('/')}免问`} rules=${allowRulesPath}${allowRules.loaded() ? '（有规则）' : '（空/不存在）'} cookieIO=${allowCookieIO ? 'on' : 'off'} evaluate=${allowEvaluate ? 'on' : 'off'}）`);
 
 	/**
 	 * `cookies` op 的前置校验 —— **必须在审批之前跑**（用户不该为一个必然被拒的调用点确认）。

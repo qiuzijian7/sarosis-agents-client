@@ -1,6 +1,6 @@
 {
   "name": "@vssaros/dsh-browser",
-  "version": "0.4.12",
+  "version": "0.4.16",
   "description": "VsSaros browser (CDP) module for DeepSeek Harness: drives a real local Chrome over the DevTools protocol FROM THE HOST PROCESS, so the tool family keeps working when the Host runs without VsSaros. Ported from src/vs/sessions/contrib/agentStudio/{common/browserCdp.ts,common/chromeDebugSetup.ts,electron-main/browserCdpChannel.ts}. Deliberately declares no vssaros.module: it is standalone-only until the IDE-side path is retired (a second `browser` tool would collide).",
   "private": true,
   "type": "module",

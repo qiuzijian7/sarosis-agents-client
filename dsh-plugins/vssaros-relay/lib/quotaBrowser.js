@@ -24,6 +24,13 @@ export const WOA_LOGIN_PROFILE = 'woa';
 export const TOKEN_URL = 'https://token.woa.com/';
 /** 真实额度（人员额度分配明细）。 */
 export const AITOKEN_URL = 'https://aitoken.woa.com/';
+/**
+ * 采集用的**独立会话**（独立 tab）—— 2026-10-30。
+ *
+ * 为什么单独一个：登录 tab（`woa`）给用户操作，采集 tab（`woa-api`）用来在页面里 fetch。
+ * 分开 ⇒ 采集不会把用户正在登录的页面导航走 ✓
+ */
+export const QUOTA_API_PROFILE = 'woa-api';
 
 /** cookie 列表 ⇒ `Cookie:` 头字符串（空值丢掉）。 */
 function toCookieHeader(cookies) {
@@ -95,16 +102,33 @@ export async function loginInBrowser(browserService, options = {}) {
 	if (!session || typeof session.open !== 'function' || typeof session.cookies !== 'function') {
 		throw new Error('额度采集需要浏览器插件（@vssaros/dsh-browser）—— 请在「内置插件」里启用它');
 	}
-	if (session.headless) {
+	// ★ 2026-10-30（用户要求：手动点「浏览器登录」必须弹**有头**浏览器）：
+	//   原来这里有句「无头就直接抛错」，而它在 `ensureHeaded()` **之前** ⇒
+	//   永远走不到切有头那一步 ⇒ 每次登录都失败（页面显示"无头模式…"）✗✗
+	//   ⇒ 改成：**能切就先切有头**（切不动才报错）；
+	//      `session.headless` 只是构造时的快照，不代表当前模式，不能拿它当拦截条件 ✓
+	if (typeof session.ensureHeaded === 'function') {
+		await session.ensureHeaded();
+	} else if (session.headless) {
 		throw new Error('浏览器插件当前是无头模式，没有可见窗口可以登录 —— 关掉无头模式后再试');
 	}
+	// 登录前的 cookie 快照（切有头之后再取：切模式会重启 Chrome，取早了就对不上）✓
 	const before = (await readWoaCookies(browserService)).cookie;
-	log(`[quota] 浏览器里还没有 woa 会话 ⇒ 打开登录页（${TOKEN_URL}）`);
+	log(`[quota] 浏览器里还没有 woa 会话 ⇒ 打开登录页（${TOKEN_URL}，可见窗口）`);
 	await session.open(WOA_LOGIN_PROFILE, TOKEN_URL);
 	const deadline = Date.now() + timeoutMs;
 	try {
 		while (Date.now() < deadline) {
 			await new Promise((resolve) => setTimeout(resolve, pollMs));
+			// ★ 2026-10-30：**首选「能不能在页面里取到额度」**作为登录成功信号 ——
+			//   新版 Chrome（153+）自动化读不到 cookie ⇒ "cookie 变化"这个信号已经失效 ✗
+			//   ⇒ 直接看数据出不出来（最可靠，也不需要我们碰 cookie）✓
+			const inPage = await collectQuotaInPage(session, { log, quiet: true });
+			if (inPage) {
+				log('[quota] 已能在浏览器页面内取到额度 ⇒ 登录完成');
+				return true;
+			}
+			// 回退信号（老浏览器插件能读 cookie 时有效）
 			const now = (await readWoaCookies(browserService)).cookie;
 			if (now && now !== before) {
 				log('[quota] 浏览器会话 cookie 已更新 ⇒ 登录完成');
@@ -128,12 +152,86 @@ export async function loginInBrowser(browserService, options = {}) {
  * @param {(line: string) => void} [options.log]
  * @returns {Promise<{ok: boolean, quota?: any, error?: string, needsLogin?: boolean}>}
  */
+/**
+ * 解析 `/api/query-quota` 的响应（页内 fetch 回来的**文本**）。
+ *
+ * ★ 口径（与 `lib/quota.js` 一致）：额度/剩余就在这个响应里 ——
+ *   `total_quota`（总额度）/ `total_used`（本月已用）/ `remaining`（剩余）✓
+ *
+ * @param {string} text
+ * @returns {null | {ok: true, source: string, month: string, total_quota: number|null, used: number|null, remaining: number|null, total_consumed: null, updated_at: string}}
+ */
+function parseQuotaResponse(text) {
+	let body = null;
+	try { body = JSON.parse(String(text ?? '')); } catch { return null; }
+	if (!body || typeof body !== 'object') { return null; }
+	const personal = (body.personal && typeof body.personal === 'object') ? body.personal : {};
+	const used = body.total_used ?? body.personal_used ?? null;
+	const totalQuota = body.total_quota ?? body.quota ?? personal.quota ?? null;
+	const remaining = body.remaining ?? body.personal_remaining ?? personal.remaining ?? null;
+	if (used == null && totalQuota == null) { return null; }
+	const now = new Date();
+	return {
+		ok: true,
+		source: 'browser-page',
+		month: String(body.month || `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`),
+		total_quota: totalQuota == null ? null : Number(totalQuota),
+		used: used == null ? null : Number(used),
+		remaining: remaining == null ? null : Number(remaining),
+		total_consumed: null,
+		staff: String(body.staff || body.login_name || '') || undefined,
+		updated_at: now.toISOString(),
+	};
+}
+
+/**
+ * 在浏览器**页面里**同源 fetch 额度接口 ⇒ 拿到额度数字（cookie 全程不出浏览器）。
+ *
+ * ★ 为什么必须这样（2026-10-30 实测）：Chrome 153+ 对 cookie 全面启用 **App-Bound
+ *   Encryption** ⇒ 自动化客户端 `Storage.getCookies` **读不到 cookie**
+ *   （实测 Chrome 156：有头 0 个、无头 0 个）✗ ⇒ 「读 cookie 再自己 fetch」这条路已废。
+ *   ⇒ 只能让**浏览器自己发请求**（页面同源 fetch）⇒ 我们只拿响应里的数字 ✓
+ *
+ * @param {any} session `browserService.loginSession`
+ * @param {{log?: (line: string) => void, quiet?: boolean}} [options]
+ * @returns {Promise<null | object>} 取到额度返回 quota 对象，取不到返回 null
+ */
+export async function collectQuotaInPage(session, options = {}) {
+	const log = options.log ?? (() => { });
+	if (!session || typeof session.fetchInSite !== 'function') { return null; }
+	try {
+		const res = await session.fetchInSite(QUOTA_API_PROFILE, TOKEN_URL, '/api/query-quota?platform=all');
+		const quota = parseQuotaResponse(res?.text);
+		if (quota && !options.quiet) {
+			log('[quota] 已在浏览器页面内取到额度（cookie 未离开浏览器）');
+		}
+		return quota;
+	} catch (error) {
+		if (!options.quiet) {
+			log(`[quota] 页面内取额度失败：${String((error && error.message) || error)}`);
+		}
+		return null;
+	}
+}
+
+/**
+ * @param {any} browserService `ctx.vssarosBrowser`（含 `loginSession`）
+ * @param {{log?: (line: string) => void}} [options]
+ * @returns {Promise<{ok: boolean, quota?: any, error?: string, needsLogin?: boolean}>}
+ */
 export async function collectQuotaViaBrowser(browserService, options = {}) {
 	const log = options.log ?? (() => { });
 	const session = browserService?.loginSession;
 	if (!session) {
 		return { ok: false, error: '需要浏览器插件（@vssaros/dsh-browser）才能采集额度' };
 	}
+
+	// ★ 首选「页内同源 fetch」（Chrome 153+ 的唯一可行路径，见 collectQuotaInPage 的说明）
+	const inPage = await collectQuotaInPage(session, { log });
+	if (inPage) {
+		return { ok: true, quota: inPage, error: '' };
+	}
+	// 回退：老浏览器插件（Chrome 能读 cookie 的那些）⇒ 用 cookie 直接 fetch
 	const cookies = await readWoaCookies(browserService);
 	if (!cookies.cookie) {
 		log('[quota] 浏览器里没有 woa 会话 ⇒ 需要登录一次');
