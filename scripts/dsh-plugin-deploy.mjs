@@ -127,11 +127,16 @@ const sha256File = (f) => {
 /**
  * 安装份本来就不含的目录（只在 repo 里）。
  *
- * ⚠ 2026-10-29：原先这里**含 'scripts'** ⇒ 插件的 scripts/ 目录永远同步不过去
- *   （典型：vssaros-kb 的 scripts/feishu-sync.mjs —— **服务端 spawn 的就是它**）
- *   ⇒ 表现为"改了同步脚本没生效"。已移除 ✓
+ * ⚠ 2026-10-29（两次真机事故，都因为这里多排了一个目录）：
+ *   ① 原先含 'scripts' ⇒ 插件的 scripts/ 永远同步不过去
+ *      （典型：vssaros-kb 的 scripts/feishu-sync.mjs —— **服务端 spawn 的就是它**）⇒ 已移除 ✓
+ *   ② 原先含 'vendor' ⇒ **运行时依赖**没同步过去 ⇒ 插件 import 直接失败：
+ *      `vssaros-kb (@vssaros/dsh-kb): failed to import: Error [ERR_MODULE_NOT_FOUND]:
+ *       Cannot find module '…/node_modules/@vssaros/dsh-kb/vendor/markdown-it.cjs'`
+ *      （lib/md/render.js 要 import 它）⇒ 插件整个没激活 ⇒ /x/kb/ 404 ⇒ **知识库白屏**。
+ *      ⇒ vendor 是**源码**（git 跟踪 67 个文件）⇒ 必须同步 ✓ 已移除。
  */
-const SKIP_DIRS = new Set(['node_modules', 'test', 'tests', 'vendor', '.git', 'e2e', 'dist.e2e']);
+const SKIP_DIRS = new Set(['node_modules', 'test', 'tests', '.git', 'e2e', 'dist.e2e']);
 
 // 与 @deepseek-ai/dsh-client-modules 的 framedHash / artifactRevision 逐字一致
 const framedHash = (domain, parts) => {

@@ -270,6 +270,10 @@ check('★ 拖拽堆叠：布局必须走**树**，且必须有抓手带 + 四�
 	// ⚠ 断言别钉"紧邻形态"（中间隔了多少个属性不该管）⇒ 用 `[^'"]*` 而不是 `[^;]*`（后者跨不过分号）
 	assert.ok(/cursor:grab[^'"]*pointer-events:auto/.test(src), '抓手带必须显式 pointer-events:auto（否则收不到 mousedown ⇒ 拖不动）✗');
 	assert.ok(/cursor:col-resize[^'"]*pointer-events:auto/.test(src), '分隔条必须显式 pointer-events:auto（否则拖比例也不动）✗');
+	// ⚠ 主栏最小宽（2026-10-29 真机：dsh 客户端被压到极窄 ⇒ 侧栏折叠成图标条 + 中栏整块黑 ✗）
+	assert.ok(/DESKTOP_MAIN_MIN_W = 720/.test(src),
+		'主栏最小宽必须是 720（420 实测不够：dsh 三栏布局在 520 就把中栏挤成黑屏 ✗）');
+	assert.ok(/Math\.max\(DESKTOP_MAIN_MIN_W, Math\.min\(/.test(src), '主栏布局必须用 DESKTOP_MAIN_MIN_W 夹下限 ✗');
 	// ⚠ 树的纯函数必须在 common 里（可单测）⇒ 不能把几何写回渲染侧
 	const layoutSrc = stripComments(read(path.join(ROOT, 'src/vs/sessions/contrib/dshHarness/common/dshSplitLayout.ts')));
 	assert.ok(/export function computeSplitLayout/.test(layoutSrc), 'common/dshSplitLayout.ts 必须导出 computeSplitLayout ✗');
@@ -280,9 +284,12 @@ check('★ 栏操作菜单（C 方案）：页面「⋯」菜单 + 桥 paneActio
 	const sessions = stripComments(read(SESSIONS));
 	assert.ok(/data-vssaros-pane-menu/.test(sessions), '页面必须有「⋯」栏菜单入口 ✗');
 	assert.ok(/api\.paneAction\(/.test(sessions), '菜单项必须调 bridge.paneAction ✗');
-	for (const action of ['moveLeft', 'moveRight', 'moveTop', 'moveBottom', 'close']) {
-		assert.ok(sessions.includes('"' + action + '"'), `菜单必须提供 ${action} ✗`);
+	for (const action of ['moveLeft', 'moveRight', 'moveTop', 'moveBottom', 'close', 'ratio33', 'ratio50', 'ratio67']) {
+		assert.ok(sessions.includes('"' + action + '"'), `菜单/动作必须提供 ${action} ✗`);
 	}
+	// 「⇔」页内拖动把手：aux DOM 层收不到鼠标事件 ⇒ 拖动只能在页面里做 ✓
+	assert.ok(/data-vssaros-pane-grip/.test(sessions), '必须有页内「⇔」拖动把手（DOM 抓手带收不到事件 ⇒ 拖不动）✗');
+	assert.ok(/onMouseDown:\s*startDrag/.test(sessions), '把手必须接 mousedown 开始拖动 ✗');
 	const protocol = stripComments(read(PROTOCOL));
 	assert.ok(/readonly method: 'paneAction'/.test(protocol), '协议必须声明 paneAction ✗');
 	assert.ok(/case 'paneAction':/.test(protocol), '校验器必须有 case（漏了会被静默丢弃 ✗）');

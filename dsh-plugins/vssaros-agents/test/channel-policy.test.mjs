@@ -31,16 +31,22 @@ check('策略枚举与 OpenClaw 一致（四态私聊 / 三态群）', () => {
 	assert.deepEqual(DM_POLICIES, ['pairing', 'allowlist', 'open', 'disabled']);
 	assert.deepEqual(GROUP_POLICIES, ['allowlist', 'open', 'disabled']);
 });
-check('★ 空配置默认即安全：私聊 pairing、群 allowlist、必须 @', () => {
+check('★ 空配置默认：私聊 pairing、群 open（2026-10-29 起，靠必须 @ 兜底）', () => {
 	const p = normalizePolicy({ enabled: true });
 	assert.equal(p.dmPolicy, 'pairing');
-	assert.equal(p.groupPolicy, 'allowlist');
+	// ⚠ 2026-10-29（用户要求）：群默认从 `allowlist` 改成 `open` —— 原默认 + 空 `rooms`
+	//   等于「群聊一律 no-whitelist」，真机表现是「配好飞书、发消息没反应」✗。
+	//   放开的是「群能不能进来」，真正的闸是下面的 requireMention=true（群里必须 @ 机器人才响应）。
+	assert.equal(p.groupPolicy, 'open');
 	assert.equal(p.requireMention, true);
 });
-check('非法值回落到安全默认（不是崩溃，也不是放开）', () => {
+check('非法值回落到默认（不崩溃；群的闸仍是必须 @）', () => {
 	const p = normalizePolicy({ dmPolicy: 'whatever', groupPolicy: 'nope', enabled: true });
 	assert.equal(p.dmPolicy, 'pairing');
-	assert.equal(p.groupPolicy, 'allowlist');
+	assert.equal(p.groupPolicy, 'open');
+	assert.equal(p.requireMention, true);
+	// 想收紧的调用方必须显式声明（顺带钉住 allowlist 仍然可用）
+	assert.equal(normalizePolicy({ groupPolicy: 'allowlist' }).groupPolicy, 'allowlist');
 });
 check('旧字段兼容：mentionPolicy=all ⇒ requireMention false', () => {
 	assert.equal(normalizePolicy({ mentionPolicy: 'all' }).requireMention, false);

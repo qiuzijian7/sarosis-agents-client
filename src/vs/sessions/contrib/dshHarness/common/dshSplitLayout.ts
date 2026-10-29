@@ -181,12 +181,63 @@ export function pickDropZone(target: IDshSplitRect, pointerX: number, pointerY: 
 		|| pointerY < target.y || pointerY > target.y + target.height) {
 		return undefined;   // 不在目标矩形内 ⇒ 没有落点
 	}
-	const dx = pointerX - (target.x + target.width / 2);
-	const dy = pointerY - (target.y + target.height / 2);
-	if (Math.abs(dx) >= Math.abs(dy)) {
-		return dx < 0 ? 'left' : 'right';
-	}
-	return dy < 0 ? 'top' : 'bottom';
+	// ★ 复刻 split-workspace 的 `zoneFor`（client.js:8197-8212）：边缘带 `edge = max(48, min(w,h)*0.28)`
+	//   （中线法在窄栏里边缘带会溢出到邻居 ⇒ 这个公式每栏独立、可预期 ✓）；角落先到先得、对边互斥。
+	//   中心（不在任何边缘带）⇒ 与社区一致：内部拖放退化为"插到目标右侧" ✓。
+	const e = edge > 0 ? edge : Math.max(48, Math.min(target.width, target.height) * 0.28);
+	const dx = pointerX - target.x;
+	const dy = pointerY - target.y;
+	const atLeft = dx < e;
+	const atRight = dx > target.width - e;
+	const atTop = dy < e;
+	const atBottom = dy > target.height - e;
+	if (atLeft && !atRight) { return 'left'; }
+	if (atRight && !atLeft) { return 'right'; }
+	if (atTop && !atBottom) { return 'top'; }
+	if (atBottom && !atTop) { return 'bottom'; }
+	return 'right';
 }
 
-//__APPEND__ 
+/**
+ * **自动分格**（复刻 split-workspace 的 `autoLayoutMode` + `settleAuto`，client.js:2307-2345/2488）：
+ * 按现有叶子的**顺序**重建一棵等分树。
+ *
+ * · 1 栏 = 叶；2 栏：`aspect ≥ 1.05`（宽 ≥ 高×1.05）⇒ 左右，否则上下；
+ * · 3 栏 = **L 形**（根 v[0.5,0.5]，上孩子 = h(a,b)，下 = c）；
+ * · 4 栏 = 2×2；≥5 栏：`cols = max(2, ceil(√n))`、`rows = ceil(n/cols)`，行优先（末行可能单叶）。
+ *
+ * ⚠ 触发纪律（社区踩坑注释 client.js:2509-2514）：**只在加栏/关栏后调用**；
+ *   手动移动（moveSplitLeaf）之后**绝不**重排 —— 用户指了方向就保留手工布局 ✓。
+ */
+export function buildArrangedTree(leafIds: readonly string[], aspect = 1.2): DshSplitNode {
+	const leaf = (id: string): DshSplitNode => ({ type: 'leaf', viewId: id });
+	const n = leafIds.length;
+	if (n === 0) { throw new Error('buildArrangedTree: 空叶子列表'); }
+	if (n === 1) { return leaf(leafIds[0]); }
+	if (n === 2) {
+		const kids: DshSplitNode[] = [leaf(leafIds[0]), leaf(leafIds[1])];
+		return aspect >= 1.05
+			? { type: 'split', dir: 'h', sizes: [1, 1], children: kids }
+			: { type: 'split', dir: 'v', sizes: [1, 1], children: kids };
+	}
+	if (n === 3) {
+		// L 形：上二下一（社区 client.js:2320-2328 同款）
+		return {
+			type: 'split', dir: 'v', sizes: [1, 1],
+			children: [
+				{ type: 'split', dir: 'h', sizes: [1, 1], children: [leaf(leafIds[0]), leaf(leafIds[1])] },
+				leaf(leafIds[2]),
+			],
+		};
+	}
+	const cols = n === 4 ? 2 : Math.max(2, Math.ceil(Math.sqrt(n)));
+	const rows = Math.ceil(n / cols);
+	const rowNodes: DshSplitNode[] = [];
+	for (let r = 0; r < rows; r++) {
+		const row = leafIds.slice(r * cols, (r + 1) * cols);
+		rowNodes.push(row.length === 1
+			? leaf(row[0])
+			: { type: 'split', dir: 'h', sizes: row.map(() => 1), children: row.map(leaf) });
+	}
+	return { type: 'split', dir: 'v', sizes: rowNodes.map(() => 1), children: rowNodes };
+} 

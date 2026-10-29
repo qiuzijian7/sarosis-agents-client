@@ -51,7 +51,11 @@ export function normalizePolicy(binding) {
 
 	return {
 		dmPolicy: DM_POLICIES.includes(String(b.dmPolicy)) ? String(b.dmPolicy) : 'pairing',
-		groupPolicy: GROUP_POLICIES.includes(String(b.groupPolicy)) ? String(b.groupPolicy) : 'allowlist',
+		// ★ 2026-10-29（用户要求：飞书 channel 增加 groupPolicy 配置项、**默认 open**）：
+		//   原默认 `allowlist` + `rooms` 空 ⇒ 群聊一律 `no-whitelist` ⇒ 真机上"配好飞书、发消息没反应"✗。
+		//   ⇒ 群聊默认 **open**，靠 `requireMention`（本文件默认 true）兜底：群里**必须 @ 机器人**才响应 ✓。
+		//   要收紧就显式写 `groupPolicy: 'allowlist'` + `rooms`（群 id 白名单）。
+		groupPolicy: GROUP_POLICIES.includes(String(b.groupPolicy)) ? String(b.groupPolicy) : 'open',
 		allowFrom: arr(b.allowFrom),
 		groupAllowFrom: arr(b.groupAllowFrom),
 		/** 房间白名单：`null`/空 = 未配置（此时按 `groupPolicy` 判）。 */

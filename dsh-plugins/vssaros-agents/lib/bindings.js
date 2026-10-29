@@ -371,14 +371,19 @@ export function shouldAcceptInbound(binding, msg, opts = {}) {
 		return { ok: false, reason: 'direction' };
 	}
 	const allow = Array.isArray(binding.allowFrom) ? binding.allowFrom : [];
-	if (!allow.length) {
+	const sender = String(msg?.userId ?? '').trim();
+	const isGroup = String(msg?.chatType ?? binding.chatType) === 'group';
+	// ★ 2026-10-29（真机：配好飞书后群里发消息一条都收不到，死信 reason=`no-whitelist`）：
+	//   旧路径原来"白名单为空 ⇒ 一律 no-whitelist"，但**群聊在界面里根本没有配白的入口**
+	//   ⇒ 等于默认永远收不到 ✗。按用户要求：**群聊默认放行**（靠下面的 mention 判定兜住，
+	//   `requireMention` 默认 true ⇒ 群里必须 @ 机器人才响应）。
+	//   ⚠ 私聊仍 fail-closed：陌生人消息不该因为"没配置"就被 agent 处理。
+	if (!allow.length && !isGroup) {
 		return { ok: false, reason: 'no-whitelist' };
 	}
-	const sender = String(msg?.userId ?? '').trim();
-	if (!allow.includes(sender)) {
+	if (allow.length && !allow.includes(sender)) {
 		return { ok: false, reason: 'sender' };
 	}
-	const isGroup = String(msg?.chatType ?? binding.chatType) === 'group';
 	if (isGroup && binding.mentionPolicy === 'at' && msg?.mentionsBot !== true) {
 		return { ok: false, reason: 'no-mention' };
 	}

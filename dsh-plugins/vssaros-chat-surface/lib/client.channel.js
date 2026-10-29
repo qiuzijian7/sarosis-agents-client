@@ -305,14 +305,27 @@ window.__ModuleLoader__.load({
 					el("div", { style: S.fld },
 						(def.fields || []).map((f) => [
 							el("label", { key: "l" + f.key, style: S.lbl }, String(f.label || f.key)),
-							el("input", {
-								key: "i" + f.key, style: S.input,
-								type: f.type === "password" ? "password" : "text",
-								placeholder: (f.secret && ch.hasSecret) ? "已配置 · 留空 = 不改" : String(f.placeholder || ""),
-								"data-vssaros-channel-field": key + "." + f.key,
-								value: String(form[f.key] || ""),
-								onChange: (ev) => setField(f.key, ev.target.value),
-							}),
+							// ★ 2026-10-29（用户要求：飞书 channel 增加 groupPolicy 配置项）：
+							//   原来是 `type === "password" ? password : text` ⇒ **只有文本/密码两种**，
+							//   策略这种枚举字段只能手打（打错等于没配，且没有任何提示）✗
+							//   ⇒ 支持 `type: "select"`（带 `options` + `default`）✓
+							f.type === "select"
+								? el("select", {
+									key: "i" + f.key, style: S.input,
+									"data-vssaros-channel-field": key + "." + f.key,
+									value: String(form[f.key] ?? f.default ?? ""),
+									onChange: (ev) => setField(f.key, ev.target.value),
+								}, ...(f.options || []).map((o) => el("option", {
+									key: "o" + o.value, value: String(o.value),
+								}, String(o.label || o.value))))
+								: el("input", {
+									key: "i" + f.key, style: S.input,
+									type: f.type === "password" ? "password" : "text",
+									placeholder: (f.secret && ch.hasSecret) ? "已配置 · 留空 = 不改" : String(f.placeholder || ""),
+									"data-vssaros-channel-field": key + "." + f.key,
+									value: String(form[f.key] || ""),
+									onChange: (ev) => setField(f.key, ev.target.value),
+								}),
 						])),
 					el("p", { style: { ...S.p, ...S.small, padding: "0 8px 7px" } },
 						ch.configured

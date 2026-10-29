@@ -93,7 +93,9 @@ export async function splitDshChatPane(viewId: string): Promise<boolean> {
 }
 
 /** 分屏栏的**动作**（页面菜单 ⇒ 宿主）：移到极端位置 / 关掉这一栏（2026-10-29）。 */
-export type DshPaneAction = 'moveLeft' | 'moveRight' | 'moveTop' | 'moveBottom' | 'close';
+export type DshPaneAction = 'moveLeft' | 'moveRight' | 'moveTop' | 'moveBottom' | 'close'
+	/** 改两栏比例（33/50/67 = 左栏占 1/3、1/2、2/3）—— 分隔条拖不动（DOM 层收不到事件）⇒ 走菜单 ✓ */
+	| 'ratio33' | 'ratio50' | 'ratio67';
 
 export type DshPaneActionOpener = (viewId: string, action: DshPaneAction) => Promise<boolean>;
 

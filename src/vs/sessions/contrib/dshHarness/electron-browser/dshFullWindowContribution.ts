@@ -49,7 +49,7 @@ import { dshChatNewSessionId } from '../common/dshChatSession.js';
 import { DshHarnessSettings } from '../common/dshHarness.js';
 // ★ 2026-10-29（拖拽堆叠）：布局用**树**（h/v split + 权重）⇒ 能表达左右/上下混合、2×2、L 形。
 //   几何与重排是**纯函数**（common/dshSplitLayout.ts，有单测）⇒ 这里只负责"把结果摆到原生视图上"。
-import { computeSplitLayout, moveSplitLeaf, pickDropZone, removeSplitLeaf, splitLeaves, type DshSplitNode } from '../common/dshSplitLayout.js';
+import { buildArrangedTree, computeSplitLayout, moveSplitLeaf, pickDropZone, removeSplitLeaf, splitLeaves, type DshSplitNode } from '../common/dshSplitLayout.js';
 import { decideSessionStartRetry, SESSION_START_MAX_ATTEMPTS, sessionStartRetryDelayMs } from '../common/dshDesktopSessionStart.js';
 import { IDshHarnessService } from './dshHarnessService.js';
 
@@ -88,6 +88,16 @@ const DESKTOP_SPLIT_GAP = 8;
  * ⚠ 只在**多栏**时留（单栏没有可拖的对象 ⇒ 平白少 8px 顶部不好）⇒ 见 `layout()` ✓。
  */
 const DESKTOP_PANE_GRAB_H = 10;
+
+/**
+ * **主栏最小宽度**（2026-10-29 真机两次）：主栏是带官方**三栏**布局的完整客户端
+ * （左侧栏 ≈236 + 中栏 + 官方右栏）⇒ 低于这个宽度时 dsh 会把侧栏折成图标条、中栏挤成 0（黑屏）。
+ * 420 实测不够（截图里 520 就是黑的）⇒ 取 **720**（侧栏 + 约 480 的中栏）。
+ */
+const DESKTOP_MAIN_MIN_W = 720;
+
+/** 右栏最少要有多少宽度（低于它就没什么可看的了 ⇒ 分屏前提示用户）✓。 */
+const DESKTOP_PANE_MIN_W = 320;
 
 /**
  * 桌面窗口**最多几栏**（2026-10-29）。
@@ -447,6 +457,19 @@ export class DshFullWindowContribution extends Disposable {
 				this._log.warn('[dshHarness] pane drag: 重排失败（保持原布局）');
 				return;
 			}
+			// ★ "往它已经在的那一侧拖"⇒ 树顺序不变 ⇒ 视觉上"没动"（2026-10-29 用户反馈：
+			//   "松手无法移动位置"—— 其实是把右栏往右拖，它本来就在右边）。
+			//   ⇒ 这时改成**交换**两栏（把目标往反方向插到被拖栏旁边）⇒ 用户感知"换了位置" ✓
+			if (splitLeaves(moved).join('|') === splitLeaves(entry.tree).join('|')) {
+				const reverse = zone === 'left' ? 'right' : zone === 'right' ? 'left' : zone === 'top' ? 'bottom' : 'top';
+				const swapped = moveSplitLeaf(entry.tree, targetPaneId, sourcePaneId, reverse);
+				if (swapped) {
+					entry.tree = swapped;
+					entry.layout?.();
+					this._log.info(`[dshHarness] pane drag: ${sourcePaneId} ⇄ ${targetPaneId}（同侧拖动 ⇒ 交换）`);
+					return;
+				}
+			}
 			entry.tree = moved;
 			entry.layout?.();
 			this._log.info(`[dshHarness] pane drag: ${sourcePaneId} ⇒ ${targetPaneId} 的 ${zone}`);
@@ -538,7 +561,8 @@ export class DshFullWindowContribution extends Disposable {
 		if (!entry?.tree) { return; }
 		if (paneId === entry.viewId) { return; }   // 主栏不关（关了这扇窗就空了）
 		const next = removeSplitLeaf(entry.tree, paneId);
-		if (!next) { return; }
+		// ⚠ 关掉**最后一个**右栏 ⇒ 树塌缩成 undefined ⇒ 也要 dispose + 重排（主栏铺满），
+		//   不许提前 return（否则那一栏视图还在、关不掉 ✗）
 		entry.tree = next;
 		entry.paneViewIds = (entry.paneViewIds ?? []).filter(id => id !== paneId);
 		entry.splitViewId = entry.paneViewIds.length > 1 ? entry.paneViewIds[entry.paneViewIds.length - 1] : undefined;
@@ -583,14 +607,12 @@ export class DshFullWindowContribution extends Disposable {
 		let dragging = false;
 		const onMove = (ev: MouseEvent) => {
 			if (!dragging) { return; }
-			const entry = this._desktopWindows.get(windowId);
-			// ⚠ 只在**两栏**时允许调比例（三栏等分，见 `_splitRatio` 的注释）
-			if (index !== 0 || (entry?.paneViewIds?.length ?? 1) !== 2) { return; }
-			const rect = container.getBoundingClientRect();
-			const ratio = (ev.clientX - rect.left) / Math.max(1, rect.width);
-			this._splitRatio = Math.min(0.8, Math.max(0.2, ratio));
-			this._persistSplitRatio();
-			entry?.layout?.();
+			// ⚠⚠ 分隔条拖动**暂禁**（2026-10-29）：两段式布局落地后它的旧语义（改 `_splitRatio`）
+			//   会把主栏拖没（真机截图：主栏塌成一条折叠侧栏 + 黑底）✗。
+			//   正确语义 = 按 divider 的 path 改**树里相邻两栏的 sizes**（社区 min 夹取公式），下轮接。
+			//   ⇒ 比例先走「⋯」菜单（ratio33/50/67，已持久化 ✓）。
+			void index;
+			void ev;
 		};
 		const onUp = () => { dragging = false; };
 		bar.addEventListener('mousedown', (ev) => {
@@ -633,6 +655,14 @@ export class DshFullWindowContribution extends Disposable {
 		if (action === 'close') {
 			if (viewId === entry.viewId) { return false; }   // 主栏不关（关了这扇窗就空了）
 			await this._closePane(entry.windowId, viewId);
+			return true;
+		}
+		// 比例（分隔条拖不动 ⇒ 走菜单）：两段式布局 ⇒ 比例 = **主栏（左列）占宽**
+		//   （菜单文案「左栏 1/3 / 左右各半 / 左栏 2/3」与之一致 ✓）；有右栏在就能调 ✓
+		if (action === 'ratio33' || action === 'ratio50' || action === 'ratio67') {
+			this._splitRatio = action === 'ratio33' ? 1 / 3 : action === 'ratio50' ? 1 / 2 : 2 / 3;
+			this._persistSplitRatio();
+			entry.layout?.();
 			return true;
 		}
 		const leaves = splitLeaves(entry.tree);
@@ -694,7 +724,8 @@ export class DshFullWindowContribution extends Disposable {
 		await this._dsh.createView(splitViewId, entry.windowId, 'chat', sessionId, undefined, undefined, true, true);
 		entry.splitViewId = splitViewId;
 		entry.paneViewIds = [...panes, splitViewId];
-		// ★ 2026-10-29（布局树）：把新栏追加为**最右**（之后可拖到任意方向 ⇒ 拖拽堆叠）✓
+		// ★ 2026-10-29（布局树 + 自动分格）：先追到最右，再按 **settleAuto** 重排成网格
+		//   （复刻 split-workspace：2=左右、3=L 形、4=2×2、≥5 网格；**主栏恒在第一位** ✓）
 		const newLeaf: DshSplitNode = { type: 'leaf', viewId: splitViewId };
 		const tree = entry.tree;
 		if (!tree) {
@@ -704,6 +735,7 @@ export class DshFullWindowContribution extends Disposable {
 		} else {
 			entry.tree = { type: 'split', dir: 'h', sizes: [1, 1], children: [tree, newLeaf] };
 		}
+		entry.tree = buildArrangedTree(splitLeaves(entry.tree));
 		entry.layout?.();          // 重排成两栏（分隔条也在这时露出来）✓
 		await this._dsh.setViewVisible(splitViewId, true, true).catch(() => undefined);
 		// 启动存活巡检（20s 一次）⇒ 右栏崩了/被回收了 ⇒ 收掉它（见 `_checkSplitPane`）✓
@@ -785,6 +817,8 @@ export class DshFullWindowContribution extends Disposable {
 		entry.paneViewIds = panes.slice(0, -1);
 		entry.splitViewId = entry.paneViewIds.length > 1 ? entry.paneViewIds[entry.paneViewIds.length - 1] : undefined;
 		void this._dsh.disposeView(dropId).catch(() => undefined);
+		// ★ settleAuto：关栏后自动回网格（split-workspace 同纪律：只在 add/close 时重排）✓
+		if (entry.tree) { entry.tree = buildArrangedTree(splitLeaves(entry.tree)); }
 		entry.layout?.();     // 重排（分隔条随之隐藏/补位）✓
 		this._log.warn(`[dshHarness] split pane: ${reason} ⇒ 已收掉那一栏（剩 ${entry.paneViewIds.length} 栏）`);
 		// ★ 2026-10-29：弹一条通知 ⇒ 用户知道右栏去哪了（否则只是"凭空消失"✗）。
@@ -1059,25 +1093,57 @@ export class DshFullWindowContribution extends Disposable {
 			if (rect.width < 1 || rect.height < 1) { return; }
 			const zoom = getZoomFactor(win);
 			const entry = this._desktopWindows.get(windowId);
-			const tree: DshSplitNode = entry?.tree ?? { type: 'leaf', viewId: chatViewId };
-			const leaves = splitLeaves(tree);
-			const key = [Math.round(rect.left), Math.round(rect.top), Math.round(rect.width), Math.round(rect.height), zoom, leaves.join('|'), JSON.stringify(tree)].join(',');
+			// ★ 2026-10-29（两段式布局，修"侧栏被隔断"）：**主栏 = 全高左列**（它的官方侧栏/页签条
+			//   是它页面的一部分 ⇒ 上下分屏时若主栏只占上半，侧栏就被切到上方 ✗ —— 用户截图实证）。
+			//   ⇒ 改成 VS Code 式：主栏固定全高左列（宽 = `_splitRatio`），**右栏们的树只占右侧内容区**，
+			//   在内容区内自由左右/上下分格 ✓（树里从此只有右栏 ⇒ 主栏天然不可被移动/关闭 ✓）。
+			const content: DshSplitNode | undefined = entry?.tree;
+			const contentLeaves = content ? splitLeaves(content) : [];
+			const key = [Math.round(rect.left), Math.round(rect.top), Math.round(rect.width), Math.round(rect.height), zoom, contentLeaves.join('|'), JSON.stringify(content ?? null), this._splitRatio].join(',');
 			if (key === lastLayoutKey) { return; }   // 矩形没变 ⇒ 不重发（防抖）
 			lastLayoutKey = key;
 			// 让出自绘标题条的高度（原生视图盖在 DOM 上，不留位就把它遮住 ✗）
 			const area = { x: rect.left, y: rect.top + titleBarH, width: rect.width, height: Math.max(1, rect.height - titleBarH) };
 			const bars = this._splitBars.get(windowId) ?? [];
 			const grabs = this._grabBars.get(windowId) ?? new Map<string, HTMLElement>();
-			if (leaves.length > 1) {
-				// ★ 2026-10-29（**树驱动**布局 + 抓手带）：左右/上下混合、2×2、L 形都由树表达
-				//   （几何与重排在 `common/dshSplitLayout.ts`，有单测 ✓）。
-				//   每栏顶部留 `DESKTOP_PANE_GRAB_H`（抓手带 ⇒ 这一栏可被拖动）+ 右侧留 gap（分隔条）✓。
-				const { rects, dividers } = computeSplitLayout(tree, area);
+			// 主栏：全高左列
+			// ⚠ **最小宽度 720px**（2026-10-29 两张真机截图实证，420 不够）：主栏是**带官方三栏布局**
+			//   的完整客户端（左侧栏 236 + 中栏 + 官方右栏）⇒ 压到 520 时侧栏折叠成图标条、中栏被挤成 0
+			//   （整块黑）✗ ⇒ 下限按"侧栏 + 可用的中栏"给到 **720**；上限 75% ⇒ 右栏至少有 1/4 ✓。
+			const mainW = contentLeaves.length > 0
+				? Math.max(DESKTOP_MAIN_MIN_W, Math.min(Math.round(area.width * 0.75), Math.round(area.width * this._splitRatio)))
+				: Math.round(area.width);
+			// ⚠ 窗口本身不够宽时**不要硬分**：主栏 720 + 右栏最少 320 ⇒ 需要 ≥1048 才排得开。
+			//   排不开就**明确告诉用户**（而不是让 dsh 挤成黑屏 ✗）。
+			if (contentLeaves.length > 0 && area.width < DESKTOP_MAIN_MIN_W + DESKTOP_PANE_MIN_W) {
+				this._log.warn(`[dshHarness] split pane: 窗口只有 ${Math.round(area.width)}px 宽 < ${DESKTOP_MAIN_MIN_W + DESKTOP_PANE_MIN_W}px ⇒ 主栏会被挤坏（请拉宽窗口，或用「⋯」把左栏调到 2/3）`);
+			}
+			void this._dsh.layoutView(chatViewId, {
+				windowId, x: area.x, y: area.y, width: mainW, height: area.height, zoomFactor: zoom,
+			});
+			// ★ 自检（2026-10-29，真机"主栏只剩左侧一条 + 其余黑"）：把**每一栏的 bounds 与 zoom 落日志**。
+			//   现场需要区分三种可能：① 视图宽度被算小；② zoom 被放大（页面内容 > 视图 ⇒ 只看到左上角）；
+			//   ③ 页面自己渲染异常。只看截图分不出，日志能 ✓（每次布局变化打一次，不刷屏）。
+			this._log.info(`[dshHarness] layout: win=${Math.round(area.width)}x${Math.round(area.height)} zoom=${zoom} panes=${1 + contentLeaves.length} main=x${Math.round(area.x)} w${mainW} h${Math.round(area.height)} content=${contentLeaves.length ? `x${Math.round(area.x + mainW + DESKTOP_SPLIT_GAP)} w${Math.max(1, Math.round(area.width - mainW - DESKTOP_SPLIT_GAP))}` : '(none)'}`);
+			const hideAll = () => {
+				for (const bar of bars) { bar.style.display = 'none'; }
+				for (const grab of grabs.values()) { grab.style.display = 'none'; }
+			};
+			if (contentLeaves.length === 0) {
+				// 只有主栏 ⇒ 铺满，隐藏分隔条/抓手
+				this._lastRects.delete(windowId);
+				hideAll();
+				return;
+			}
+			{
+				// 右栏们的树（右侧内容区内自由分格；每栏顶部留抓手带 + 右侧留 gap）
+				const contentArea = { x: area.x + mainW + DESKTOP_SPLIT_GAP, y: area.y, width: Math.max(1, area.width - mainW - DESKTOP_SPLIT_GAP), height: area.height };
+				const { rects, dividers } = computeSplitLayout(content!, contentArea);
 				this._lastRects.set(windowId, new Map(rects));
-				leaves.forEach((paneId, i) => {
+				contentLeaves.forEach((paneId, i) => {
 					const r = rects.get(paneId);
 					if (!r) { return; }
-					const isLast = i === leaves.length - 1;
+					const isLast = i === contentLeaves.length - 1;
 					const width = Math.max(1, r.width - (isLast ? 0 : DESKTOP_SPLIT_GAP));
 					void this._dsh.layoutView(paneId, {
 						windowId, x: r.x, y: r.y + DESKTOP_PANE_GRAB_H,
@@ -1092,33 +1158,25 @@ export class DshFullWindowContribution extends Disposable {
 						grab.style.width = width + 'px';
 					}
 				});
-				// 分隔条：按树给的 dividers 摆（数量随树变 ⇒ 池子复用，多余的隐藏）✓
 				dividers.forEach((d, idx) => {
 					const bar = bars[idx];
 					if (!bar) { return; }
 					bar.style.display = 'block';
 					if (d.dir === 'h') {
 						bar.style.left = (d.pos - rect.left - DESKTOP_SPLIT_GAP / 2 - 4) + 'px';
-						bar.style.top = (area.y - rect.top) + 'px';
+						bar.style.top = (contentArea.y - rect.top) + 'px';
 						bar.style.width = '8px';
-						bar.style.height = area.height + 'px';
+						bar.style.height = contentArea.height + 'px';
 					} else {
-						bar.style.left = (area.x - rect.left) + 'px';
+						bar.style.left = (contentArea.x - rect.left) + 'px';
 						bar.style.top = (d.pos - rect.top - DESKTOP_SPLIT_GAP / 2 - 4) + 'px';
-						bar.style.width = area.width + 'px';
+						bar.style.width = contentArea.width + 'px';
 						bar.style.height = '8px';
 					}
 				});
 				for (let k = dividers.length; k < bars.length; k++) { bars[k].style.display = 'none'; }
 				return;
 			}
-			// 单栏：铺满（**不留抓手带** —— 没有可拖的对象）✓
-			this._lastRects.delete(windowId);
-			void this._dsh.layoutView(chatViewId, {
-				windowId, x: area.x, y: area.y, width: area.width, height: area.height, zoomFactor: zoom,
-			});
-			for (const bar of bars) { bar.style.display = 'none'; }
-			for (const grab of grabs.values()) { grab.style.display = 'none'; }
 		};
 		const layoutSoon = () => { layout(); win.setTimeout(layout, 120); win.setTimeout(layout, 420); };
 		// ★ 2026-10-29（分屏）：中间那条可拖动的分隔条（平时隐藏，有右栏才出现）✓
@@ -1210,7 +1268,10 @@ export class DshFullWindowContribution extends Disposable {
 			layoutSub.dispose();
 		}));
 
-		this._desktopWindows.set(windowId, { windowId, viewId: chatViewId, paneViewIds: [chatViewId], tree: { type: 'leaf', viewId: chatViewId }, layout });
+		// ⚠⚠ `tree` **必须为空**（2026-10-30 真机 debug 定位）：两段式布局里 `tree` 是"**右栏**的树"，
+		//   主栏不在树里。这里曾写成 `tree: leaf(chatViewId)` ⇒ 布局把**主栏自己**当成内容区的叶子
+		//   搬到 x=728/w552 ⇒ 左侧 0~728 全黑、主栏被挤到右半（用户截图"左侧空白 + 布局错乱"）✗✗。
+		this._desktopWindows.set(windowId, { windowId, viewId: chatViewId, paneViewIds: [chatViewId], layout });
 		this._log.info(`[dshHarness] composed desktop opened (window ${windowId}, chat ${chatViewId}, session ${sessionId ?? '(无)'})`);
 		return true;
 	}

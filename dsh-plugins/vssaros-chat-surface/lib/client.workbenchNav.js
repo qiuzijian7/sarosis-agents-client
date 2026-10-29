@@ -244,6 +244,14 @@ window.__ModuleLoader__.load({
 			//     （用户要的是"侧栏别出现这一项"，不是把能力删掉 ✗）。
 			//   判据用 `aria-label`（官方行是 `<button aria-label="插件">`，中英两种都认）；
 			//   侧栏每次切面板都会重渲染 ⇒ 必须 **MutationObserver + 节流**重贴，否则一次 hide 就被覆盖。
+			// ★★ 2026-10-29（真机 v2.2.26212：桌面窗口侧栏**又丢了「🏠 主页」**）：
+			//   ⚠ 这段 IIFE 跑在「主页」行注册**之前**，而幂等标记在上面已经置了 true
+			//   ⇒ 它一旦抛错（DOM 没就绪 / MutationObserver 被拒 / apply 里出错）⇒ install 中断
+			//   ⇒ 标记已是 true ⇒ 重试与兜底全被那行 `return` 掉 ⇒ **主页行永久补不回来** ✗✗
+			//   （下面描述"注册不许外抛"的那段注释讲过同一个坑，但"标记前置"这一点一直没兜住）
+			//   ⇒ 整段兜住：失败只记一笔 + **把标记摘掉** ⇒ 下一次装载还能自愈 ✓
+			//   ⚠ `noteFail` 是后面的 `function` 声明 ⇒ 提升可用（不会 TDZ）。
+			try {
 			(() => {
 				// ★ 2026-10-24（用户：「移除自动化任务 item」）：官方 `dsh-client-ui-schedule` 拿
 				//   `sidebar.panellist`（id=schedules / order=10）注册了「自动化任务」那一行，同样**没有配置开关**
@@ -288,6 +296,11 @@ window.__ModuleLoader__.load({
 				setTimeout(apply, 400);
 				setTimeout(apply, 1500);
 			})();
+			} catch (e) {
+				// 隐藏官方行失败**绝不能带走「主页」行**：摘掉幂等标记 ⇒ 允许下一次装载重试 ✓
+				delete window.__vssarosWorkbenchNavInstalled;
+				noteFail("nav:隐藏官方行(IIFE)", e);
+			}
 
 			let items = loadOrder();
 			/** 最后打开过的工作台（只写不读：侧栏那行「当前名」已删，留着供以后用；读不到也没影响 ✓）。 */

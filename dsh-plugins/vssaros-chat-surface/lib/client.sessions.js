@@ -263,7 +263,61 @@ window.__ModuleLoader__.load({
 				}, "新窗格");
 			}
 
-			/** 「⋯」栏菜单动作（2026-10-29，桥 24）：移到极端位置 / 关闭这一栏。 */
+			/**
+			 * 「⇔」把手：**按住往某个方向拖** ⇒ 松手把这一栏移过去（2026-10-29）。
+			 *
+			 * ⚠ 为什么把手做在**页面里**、而不是窗口顶部那条 DOM 抓手带：aux 窗口的 DOM 层
+			 *   **收不到鼠标事件**（真机：抓手带能建、能看见，但 mousedown 从不触发 ⇒ 日志零 pane drag）
+			 *   ⇒ 拖动只能在**页面内**完成 ✓。落点 = 那个方向的极端位置（两栏时等价于左右互换，够用）。
+			 */
+			function PaneGripChip() {
+				const startDrag = (e) => {
+					const startX = e.clientX;
+					const startY = e.clientY;
+					let done = false;
+					const cleanup = () => {
+						document.removeEventListener("mousemove", onMove, true);
+						document.removeEventListener("mouseup", onUp, true);
+					};
+					const finish = (action) => {
+						if (done) { return; }
+						done = true;
+						cleanup();
+						paneAction(action);
+					};
+					const onMove = (ev) => {
+						const dx = ev.clientX - startX;
+						const dy = ev.clientY - startY;
+						if (Math.abs(dx) < 24 && Math.abs(dy) < 24) { return; }   // 阈值：手抖不算
+						finish(Math.abs(dx) >= Math.abs(dy)
+							? (dx < 0 ? "moveLeft" : "moveRight")
+							: (dy < 0 ? "moveTop" : "moveBottom"));
+					};
+					const onUp = () => {
+						cleanup();
+					};
+					document.addEventListener("mousemove", onMove, true);
+					document.addEventListener("mouseup", onUp, true);
+					e.preventDefault();
+				};
+				return react.createElement("button", {
+					type: "button",
+					"data-vssaros-pane-grip": "1",
+					title: "按住往某个方向拖 ⇒ 把这一栏移过去",
+					"aria-label": "拖动移动这一栏",
+					onMouseDown: startDrag,
+					style: {
+						display: "inline-flex", alignItems: "center", justifyContent: "center",
+						height: 18, padding: "0 8px", borderRadius: 999, cursor: "grab",
+						border: "1px solid var(--dsw-alias-border-l1, transparent)",
+						background: "var(--dsw-alias-bg-layer-1, transparent)",
+						color: "var(--dsw-alias-label-secondary, currentColor)",
+						fontSize: 11, lineHeight: "18px", whiteSpace: "nowrap", fontFamily: "inherit",
+					},
+				}, "⇔");
+			}
+
+			/** 「⋯」栏菜单动作（2026-10-29，桥 24）：移到极端位置 / 改比例 / 关闭这一栏。 */
 			function paneAction(action) {
 				const api = (typeof window !== "undefined" && window.vssarosDsh) || null;
 				if (api && typeof api.paneAction === "function") {
@@ -304,6 +358,9 @@ window.__ModuleLoader__.load({
 					["移到最右", "moveRight"],
 					["移到最上", "moveTop"],
 					["移到最下", "moveBottom"],
+					["左栏 1/3", "ratio33"],
+					["左右各半", "ratio50"],
+					["左栏 2/3", "ratio67"],
 					["关闭这一栏", "close"],
 				];
 				return react.createElement("span", { ref: rootRef, style: { position: "relative", display: "inline-flex" } },
@@ -351,13 +408,21 @@ window.__ModuleLoader__.load({
 			//     装上去也是空转；而且"在 IDE 里点它弹出一扇 dsh 桌面窗口"会让人困惑）✓。
 			const wantNewWindowChip = bridge.surface === "full"
 				|| (bridge.surface === "chat" && bridge.chatOnly === false);
-			if (wantNewWindowChip) {
-				try {
-					ctx.slots.inject(SLOT, () => ctx.slots.register(
-						{ name: SLOT, id: "vssaros-new-window", order: -4 }, NewWindowChip));
-					state.newWindowChip = true;
-				} catch (e) {
-					state.newWindowError = String((e && e.message) || e);
+			// ★ 2026-10-29：分屏的**右栏**是 chat-only ⇒ 上面的判据把它排除了 ⇒ 那一栏没有任何
+			//   移动/关闭入口（用户："没有关闭格子的入口"）✗。
+			//   ⇒ 识别：桌面分屏右栏的 viewId 固定以 `dsh-desk-split-` 开头（preload 暴露 bridge.viewId ✓）
+			//   ⇒ 右栏页面里也装 ⇔/⋯（但**不装**「新窗格」—— 在右栏点它语义是"换绑右栏"，怪）✓
+			const isSplitPane = String((bridge && bridge.viewId) || "").indexOf("dsh-desk-split-") === 0;
+			const wantPaneChips = wantNewWindowChip || isSplitPane;
+			if (wantPaneChips) {
+				if (wantNewWindowChip) {
+					try {
+						ctx.slots.inject(SLOT, () => ctx.slots.register(
+							{ name: SLOT, id: "vssaros-new-window", order: -4 }, NewWindowChip));
+						state.newWindowChip = true;
+					} catch (e) {
+						state.newWindowError = String((e && e.message) || e);
+					}
 				}
 				// 「⋯」栏菜单：order **-1**（排在 ⚙(-2) 右边、官方 ⋯(0) 左边）⇒ 不撞 ✓
 				try {
@@ -366,6 +431,14 @@ window.__ModuleLoader__.load({
 					state.paneMenuChip = true;
 				} catch (e) {
 					state.paneMenuError = String((e && e.message) || e);
+				}
+				// 「⇔」拖动把手：order **-1.5**（在 ⚙(-2) 与「⋯」(-1) 之间）⇒ 不撞 ✓
+				try {
+					ctx.slots.inject(SLOT, () => ctx.slots.register(
+						{ name: SLOT, id: "vssaros-pane-grip", order: -1.5 }, PaneGripChip));
+					state.paneGripChip = true;
+				} catch (e) {
+					state.paneGripError = String((e && e.message) || e);
 				}
 			}
 

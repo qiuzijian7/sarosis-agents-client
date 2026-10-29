@@ -20,6 +20,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 const ROOT = path.dirname(HERE);
@@ -37,6 +38,46 @@ function check(name, fn) {
 }
 
 const readJson = (p) => { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return null; } };
+
+/**
+ * 递归列出目录下的文件（相对路径）。
+ *
+ * ⚠ 只用于**安装副本**一侧：副本可能比仓库多出**生成产物**
+ *   （例：vssaros-agents 的 lib/adapters/vendor/ —— .gitignore 明说"不进仓库，用 npm run vendor 生成"）
+ *   ⇒ 多出来是正常的，不算缺失 ✓
+ */
+const SKIP_DIRS_FOR_LIST = new Set(['node_modules', '.git', 'test', 'tests', 'e2e', 'dist.e2e']);
+const listFiles = (root, base = root, out = []) => {
+	let ents = [];
+	try { ents = fs.readdirSync(root, { withFileTypes: true }); } catch { return out; }
+	for (const e of ents) {
+		const p = path.join(root, e.name);
+		if (e.isDirectory()) {
+			if (SKIP_DIRS_FOR_LIST.has(e.name)) { continue; }
+			listFiles(p, base, out);
+		} else {
+			out.push(path.relative(base, p).split(path.sep).join('/'));
+		}
+	}
+	return out;
+};
+
+/**
+ * 仓库侧该插件**入库**的文件清单（git 跟踪为准）。
+ * 权威口径：只有入库的文件才必须出现在安装副本里（生成物不算）✓
+ * （git 不可用时退回目录遍历）。
+ */
+const trackedFilesOf = (repoRoot, pluginDir) => {
+	try {
+		const out = execFileSync('git', ['ls-files', '--', pluginDir], { cwd: repoRoot, encoding: 'utf8' });
+		const prefix = pluginDir.replace(/\\/g, '/') + '/';
+		return out.split('\n').filter(Boolean).map((l) => l.replace(/\\/g, '/')).filter((l) => l.startsWith(prefix)).map((l) => l.slice(prefix.length))
+			// 测试文件**不该**进安装包（安装副本天然没有）⇒ 不算缺失
+			.filter((l) => !/^(test|tests)\//.test(l));
+	} catch {
+		return listFiles(path.join(repoRoot, pluginDir));
+	}
+};
 const same = (a, b) => { try { return fs.readFileSync(a).equals(fs.readFileSync(b)); } catch { return false; } };
 
 const plugins = fs.readdirSync(PLUGINS, { withFileTypes: true })
@@ -82,6 +123,22 @@ for (const dir of plugins) {
 					if (!pj) { throw new Error('读不到 package.json'); }
 					if (String(pj.version ?? '') !== repoVer) {
 						throw new Error(`版本 ${pj.version} ≠ 仓库 ${repoVer} ⇒ boot graph 会对不上（chunk 会被判“不是 boot graph 条目”）`);
+					}
+				});
+				/*
+				 * ★ 2026-10-29（真机：打包版知识库**白屏**）：
+				 *   prod 宿主报 `vssaros-kb (@vssaros/dsh-kb): failed to import: Error [ERR_MODULE_NOT_FOUND]:
+				 *   Cannot find module '…/node_modules/@vssaros/dsh-kb/vendor/markdown-it.cjs'`
+				 *   ⇒ 插件整个没激活 ⇒ /x/kb/ 404 ⇒ 白屏。
+				 *   根因：**vendor/ 是运行时依赖**（lib/md/render.js 要 import 它），但部署脚本把 vendor 排除了。
+				 *   ⇒ 这里比对**整份文件清单**（不只是入口）：缺一个文件就报出来。
+				 */
+				const repoFiles = trackedFilesOf(ROOT, 'dsh-plugins/' + dir);
+				const copyFiles = listFiles(dirPath);
+				check(`${tag}/${prof} ${kind}：文件清单与仓库一致（缺文件 ⇒ 插件可能 import 失败 ⇒ 白屏）`, () => {
+					const missing = repoFiles.filter((f) => !copyFiles.includes(f));
+					if (missing.length) {
+						throw new Error(`缺 ${missing.length} 个文件（例：${missing.slice(0, 3).join(', ')}）`);
 					}
 				});
 				// 有些插件**没有客户端入口**（纯服务端）⇒ 仓库里没有该文件就跳过这项（版本检查仍然有效 ✓）

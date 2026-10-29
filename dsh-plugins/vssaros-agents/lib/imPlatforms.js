@@ -37,6 +37,21 @@ export const IM_PLATFORM_DEFS = [
 		fields: [
 			{ key: 'appId', label: 'App ID', type: 'text', required: true, placeholder: 'cli_xxxxxxxxxxxxxxxx', desc: '开放平台 → 企业自建应用 → 凭证与基础信息' },
 			{ key: 'appSecret', label: 'App Secret', type: 'password', required: true, secret: true, desc: '与 App ID 配套；明文只存本机' },
+			/* ★ 2026-10-29（用户要求：飞书 channel 增加 `groupPolicy` 配置项、**默认 open**）：
+			   为什么必须有这个入口：真机上用户配好 appId/appSecret 后，在群里发消息**一条都收不到**
+			   （死信 reason=`no-whitelist`）—— 因为群聊原默认 `allowlist` 且 `rooms` 空 = fail-closed，
+			   而界面上**没有任何地方能配群白名单** ⇒ 用户无从下手 ✗。
+			   ⇒ 默认 `open`；群里仍受 `requireMention`（默认 true）约束 ⇒ **必须 @ 机器人才响应** ✓。
+			   要收紧：`allowlist` + 该群会话 id（形如 `oc_xxx`）写进 `rooms`。 */
+			{
+				key: 'groupPolicy', label: '群策略（groupPolicy）', type: 'select', required: false, default: 'open',
+				options: [
+					{ value: 'open', label: 'open：群里可用（需 @ 机器人）' },
+					{ value: 'allowlist', label: 'allowlist：只在指定群（需配群白名单 rooms）' },
+					{ value: 'disabled', label: 'disabled：群里不响应' },
+				],
+				desc: '群里能不能用这个机器人。默认 open；改成 allowlist 后还需要配置群白名单（rooms）',
+			},
 		],
 	},
 	{

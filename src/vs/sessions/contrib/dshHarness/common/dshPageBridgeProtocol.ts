@@ -857,7 +857,17 @@ export type DshPageCommand =
 	 *
 	 * `action` 是**封闭集**（校验器必须走白名单，不许页面自造）✓。
 	 */
-	| { readonly method: 'paneAction'; readonly action: 'moveLeft' | 'moveRight' | 'moveTop' | 'moveBottom' | 'close' }
+	| {
+		readonly method: 'paneAction';
+		/**
+		 * `move*`/`close` = 移动 / 关闭这一栏；
+		 * `ratio*` = **改两栏的比例**（33/50/67 = 左栏占 1/3、1/2、2/3）。
+		 *
+		 * ⚠ 为什么比例也走菜单：分隔条和抓手带都在 **aux 窗口的 DOM 层**，而那层**收不到鼠标事件**
+		 *   （真机：分隔条/抓手带能建、能看见，但 mousedown 从不触发）⇒ 拖不动 ⇒ 比例只能走菜单 ✓。
+		 */
+		readonly action: 'moveLeft' | 'moveRight' | 'moveTop' | 'moveBottom' | 'close' | 'ratio33' | 'ratio50' | 'ratio67';
+	}
 	/**
 	 * 打开 **Agent 花名册 / 管理**（输入框 Agents 面板的底部动作）。
 	 *
@@ -1412,7 +1422,8 @@ export function validatePageCommand(raw: unknown): DshPageCommand | undefined {
 		// 桥 `23 → 24`（2026-10-29）：分屏栏动作。`action` 是**封闭集**（白名单，不许页面自造）✓。
 		case 'paneAction': {
 			const action = r.action;
-			if (action !== 'moveLeft' && action !== 'moveRight' && action !== 'moveTop' && action !== 'moveBottom' && action !== 'close') {
+			if (action !== 'moveLeft' && action !== 'moveRight' && action !== 'moveTop' && action !== 'moveBottom' && action !== 'close'
+				&& action !== 'ratio33' && action !== 'ratio50' && action !== 'ratio67') {
 				return undefined;
 			}
 			return { method: 'paneAction', action };
