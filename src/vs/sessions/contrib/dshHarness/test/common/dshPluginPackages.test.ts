@@ -1113,6 +1113,16 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 			}
 			const view = asRecord(asRecord(plugin.json['vssaros'])['view']);
 			assert.strictEqual(page.kind, view['kind'], `${plugin.dirName} 的 view.kind 与 DSH_MODULE_PAGES 不一致`);
+			// ★ 2026-10-30：`native`（VsSaros 自绘的侧栏视图）**没有页面路由** —— 清单给的是
+			//   `view.data.route`（数据接口，如 agents 的 /x/agents/api/agents），由 dshNativeTreeViewPane 消费。
+			//   ⇒ 表里不记 route，但清单必须真有 data.route（否则原生视图拿不到数据，等于空树）。
+			if (page.kind === 'native') {
+				assert.strictEqual(page.route, undefined, `${page.module} 是 native 视图，不该记页面路由`);
+				const dataRoute = asRecord(view['data'])['route'];
+				assert.ok(typeof dataRoute === 'string' && dataRoute.length > 0,
+					`${plugin.dirName} 是 native 视图，必须在 view.data.route 给出数据接口（否则原生视图没有数据源）`);
+				continue;
+			}
 			if (page.kind === 'none') {
 				assert.strictEqual(page.route, undefined, `${page.module} 是 none，不该记路由`);
 				continue;
@@ -1810,9 +1820,14 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 			'③ 让开之后必须真的停掉旧进程再起新的（否则会起出第二个 Host）');
 		assert.ok(/if \(existing && this\._pluginsStale\) \{/.test(supervisor),
 			'④ `host.json` 的既有 Host 在插件换版后**不许接管**（2026-10-12 白屏就是接管了老进程）');
+		// ⚠ 2026-10-30：判据放宽成「`leaseFromLock &&` 之后 200 字符内必须出现 `!pluginsWereStale`」——
+		//   实际代码在两个条件之间又加了 `leaseFromLock.pid !== this._bridgelessLeasePid`、
+		//   `!hostLeaseBlocker(...)`、`!(await leases.probe(...))` 三个前置条件（都是"这个 lease 值不值得接管"的
+		//   判定）⇒ 原来的字面相邻匹配会把**语义没变**的实现判红。要钉的语义只有一条：
+		//   **插件换过版就不许接管这个 lease**（接管了就跑旧代码）。
 		assert.ok(/const pluginsWereStale = this\._pluginsStale;/.test(supervisor)
 			&& /this\._pluginsStale = false;/.test(supervisor)
-			&& /if \(leaseFromLock && !pluginsWereStale &&/.test(supervisor),
+			&& /if \(leaseFromLock &&[\s\S]{0,200}?!pluginsWereStale &&/.test(supervisor),
 			'⑤ 锁竞争里那个 Host 也不接管');
 		// ⑥ 清标记的位置**必须在真正 spawn 成功之后**：2026-10-12 实测把它清在"进 lock 之前"，
 		//    并发的第二次 start 把标记读成 false ⇒ 又接管了坏 Host（日志 `reusing the Host started by pid 80344`）✗。

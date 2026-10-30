@@ -99,17 +99,27 @@ suite('dshModuleContainers（容器聚合与注册计划）', () => {
 		assert.strictEqual(withWorkbenchClient(state, []), state, '没有可标记的 ⇒ 原样返回');
 	});
 
-	test('页面表的不变量：覆盖所有容器模块、page/section 有路由、none 没有路由', () => {
+	test('页面表的不变量：覆盖所有容器模块、page/section 有路由、native/none 没有路由', () => {
 		const modules = new Set(DSH_MODULE_PAGES.map(p => p.module));
+		const pageOf = (module: string) => DSH_MODULE_PAGES.find(p => p.module === module);
 		for (const container of DSH_MODULE_CONTAINERS) {
 			for (const module of container.modules) {
 				assert.ok(modules.has(module), `${container.containerId} 的模块 ${module} 不在 DSH_MODULE_PAGES 里（页面解析会拿不到它）`);
 			}
-			// 每个容器至少要有**一个**能出页面的模块：否则"图标可见但点开永远空"
-			assert.ok(container.modules.some(m => DSH_MODULE_PAGES.find(p => p.module === m)?.route),
-				`${container.containerId} 的模块里没有任何一个提供页面`);
+			// 每个容器至少要有**一个**能出内容的模块（有页面路由的 page/section，或 native 原生视图）：
+			// 否则"图标可见但点开永远空"。⚠ 2026-10-30：agents 转成 native 后
+			// `agentStudio.presetAgent` 这个容器只有一个 native 模块 ⇒ 判据必须把 native 算进来。
+			assert.ok(container.modules.some(m => {
+				const p = pageOf(m);
+				return !!p?.route || p?.kind === 'native';
+			}), `${container.containerId} 的模块里没有任何一个提供页面/原生视图`);
 		}
 		for (const page of DSH_MODULE_PAGES) {
+			if (page.kind === 'native') {
+				// 原生视图由 VsSaros 自绘 ⇒ 没有页面路由；数据来源在清单 view.data.route。
+				assert.strictEqual(page.route, undefined, `${page.module} 是 native 视图，不该记页面路由`);
+				continue;
+			}
 			if (page.kind === 'none') {
 				assert.strictEqual(page.route, undefined, `${page.module} 是无页面模块，不该有 route`);
 				continue;
@@ -250,7 +260,9 @@ suite('dshModuleContainers（容器聚合与注册计划）', () => {
 				// `vssaros.dsh.parallel`：并行 TUI 工作台（2026-10-22，page-only —— 格位后端只在 dsh 侧）。
 				// `vssaros.dsh.studio`：萨罗斯管理平台（2026-10-23，page-only —— 站点 iframe 只在 dsh 侧）。
 				// `vssaros.dsh.relay`：萨罗斯中转站（2026-10-27，page-only —— 承载 AnyDev 上的中转站 Web）。
-				'vssaros.dsh.codebase', 'vssaros.dsh.imagegen', 'vssaros.dsh.marketplace', 'vssaros.dsh.parallel', 'vssaros.dsh.relay', 'vssaros.dsh.scheduler', 'vssaros.dsh.sessions', 'vssaros.dsh.studio']);
+				'vssaros.dsh.codebase', 'vssaros.dsh.imagegen', 'vssaros.dsh.marketplace', 'vssaros.dsh.parallel', 'vssaros.dsh.relay', 'vssaros.dsh.scheduler', 'vssaros.dsh.sessions', 'vssaros.dsh.studio',
+				// 2026-10-28 登记（page-only）：小红书笔记工作台（/x/xhs-note/）。
+				'vssaros.dsh.xhs-note']);
 		assert.deepStrictEqual(plan.pending, [], '没有 planned 容器了（语义保留给"规划了图标但还没有页面"的下一个模块）');
 	});
 
@@ -269,6 +281,19 @@ suite('dshModuleContainers（容器聚合与注册计划）', () => {
 			};
 		}
 
+		/** 原生侧栏视图（`kind: 'native'`）的夹具：没有页面路由，数据来自 `view.data.route`。 */
+		function fixtureNativePlugin(name: string, module: string, containerId: string, order: number, dataRoute: string): IPluginWithManifest {
+			return {
+				name,
+				manifest: {
+					manifestVersion: 1,
+					module,
+					activityBar: { containerId, title: { zh: module, en: module }, icon: 'codicon:symbol-misc', order },
+					view: { kind: 'native', viewType: `vssaros.${module}.roster`, data: { route: dataRoute } } as never,
+				},
+			};
+		}
+
 		test('★ 从清单派生容器与页面：内置插件集合派生出的表与硬编码表逐项一致（双轨对账）', () => {
 			// 这条是整个 1.1 的**对账锚点**：派生 ≠ 表 ⇒ 说明有人改了清单忘了同步（或反之）。
 			// channels 是 planned 预留位（没有插件目录）⇒ 夹具里不带它。
@@ -281,7 +306,8 @@ suite('dshModuleContainers（容器聚合与注册计划）', () => {
 				fixturePlugin('@vssaros/dsh-codebase', 'codebase', 'vssaros.dsh.codebase', 113, '/x/codebase/'),
 				fixturePlugin('@vssaros/dsh-kanban', 'kanban', 'agentStudio.tasks', 70, '/x/kanban/'),
 				fixturePlugin('@vssaros/dsh-workflow', 'workflow', 'agentStudio.workflow', 80, '/x/workflow/'),
-				fixturePlugin('@vssaros/dsh-agents', 'agents', 'agentStudio.presetAgent', 60, '/x/agents/'),
+				// 2026-10-30：agents 转成**原生侧栏视图**（`vssaros.agents.roster` 树）⇒ 夹具也用 native。
+				fixtureNativePlugin('@vssaros/dsh-agents', 'agents', 'agentStudio.presetAgent', 60, '/x/agents/api/agents'),
 				fixturePlugin('@vssaros/dsh-dashboard', 'dashboard', 'agentStudio.dashboard', 5, '/x/dashboard/'),
 				fixturePlugin('@vssaros/dsh-sessions', 'sessions', 'vssaros.dsh.sessions', 120, '/x/sessions/'),
 				// 重构 2.1：定时任务（官方 dsh-schedule 的薄壳；page-only，legacy 侧无对应物）。
@@ -296,6 +322,8 @@ suite('dshModuleContainers（容器聚合与注册计划）', () => {
 				fixturePlugin('@vssaros/dsh-studio', 'studio', 'vssaros.dsh.studio', 88, '/x/studio/'),
 				// 2026-10-27：萨罗斯中转站（page-only；页面 iframe 承载 AnyDev 上的中转站 Web）。
 				fixturePlugin('@vssaros/dsh-relay', 'relay', 'vssaros.dsh.relay', 89, '/x/relay/'),
+				// 2026-10-28：小红书笔记工作台（page-only；订单 42）。
+				fixturePlugin('@vssaros/dsh-xhs-note', 'xhs-note', 'vssaros.dsh.xhs-note', 42, '/x/xhs-note/'),
 			];
 			const containers = containersFromPlugins(plugins);
 			// 容器集合与硬编码表一致（containerId + 成员模块）

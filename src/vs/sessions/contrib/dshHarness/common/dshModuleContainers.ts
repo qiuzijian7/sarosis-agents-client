@@ -351,15 +351,25 @@ export const DSH_MODULE_CONTAINERS: readonly IDshModuleContainer[] = [
  */
 export interface IDshModulePage {
 	readonly module: string;
-	readonly kind: 'page' | 'section' | 'none';
-	/** `page` / `section` 的清单路由；`none` 没有。 */
+	/**
+	 * - `page`：插件 Host 自托管的整页（有 `route`）；
+	 * - `section`：寄居同容器宿主的片段（有 `route` + `host`）；
+	 * - `native`：**VsSaros 自绘**的原生侧栏视图（原生树 + 标题栏/工具栏）—— 它**没有页面路由**，
+	 *   给的是数据接口（清单 `view.data.route`，如 `/x/agents/api/agents`），由
+	 *   `dshNativeTreeViewPane` 消费（2026-10-30 起）；
+	 * - `none`：纯工具、无界面。
+	 */
+	readonly kind: 'page' | 'section' | 'native' | 'none';
+	/** `page` / `section` 的清单路由；`native` / `none` 没有。 */
 	readonly route?: string;
 	/** `section` 的宿主模块（清单 `view.host`）。 */
 	readonly host?: string;
 }
 
 export const DSH_MODULE_PAGES: readonly IDshModulePage[] = [
-	{ module: 'agents', kind: 'page', route: '/x/agents/' },
+	// 2026-10-30：agents 改成**原生侧栏视图**（`vssaros.agents.roster` 树 + 刷新/开完整页两个动作）⇒
+	//   kind=native、不再有页面路由；地址在清单 `view.data.route`（数据接口），由 dshNativeTreeViewPane 消费。
+	{ module: 'agents', kind: 'native' },
 	{ module: 'codebase', kind: 'page', route: '/x/codebase/' },
 	{ module: 'dashboard', kind: 'page', route: '/x/dashboard/' },
 	{ module: 'kanban', kind: 'page', route: '/x/kanban/' },
@@ -447,7 +457,9 @@ export function pageRouteForActiveModules(
 	const candidates = container.modules
 		.filter(module => active.has(module))
 		.map(module => pages.find(page => page.module === module))
-		.filter((page): page is IDshModulePage & { route: string; kind: 'page' | 'section' } => !!page?.route && page.kind !== 'none');
+		// native **不参与页面解析**：它没有页面路由（走 dshNativeTreeViewPane 的宿主编排），
+		// 所以这里只收 page / section（native 的 route 本来就是 undefined，双保险）。
+		.filter((page): page is IDshModulePage & { route: string; kind: 'page' | 'section' } => !!page?.route && (page.kind === 'page' || page.kind === 'section'));
 	const picked = candidates.find(page => page.kind === 'page') ?? candidates[0];
 	// 现构一个对象（而不是直接把表里的行交出去）：返回值就是声明的那三个字段，
 	// 不会顺带泄漏 `host` 之类的表内部信息（测试里用 deepStrictEqual 也才写得准）。
@@ -583,10 +595,13 @@ export function pagesFromPlugins(plugins: readonly IPluginWithManifest[]): reado
 			pages.push({ module: manifest.module, kind: 'page', route: view.route });
 		} else if (view.kind === 'section') {
 			pages.push({ module: manifest.module, kind: 'section', route: view.route, host: view.host });
+		} else if (view.kind === 'native') {
+			// 2026-10-30：native **进表**（`kind: 'native'`，没有页面路由）—— 与硬编码表双轨对账时
+			//   必须能派生出来，否则 agents 这类「原生视图」模块在派生侧整行缺失、对账静默漏掉一格。
+			pages.push({ module: manifest.module, kind: 'native' });
 		} else if (view.kind === 'none') {
 			pages.push({ module: manifest.module, kind: 'none' });
 		}
-		// native：壳侧原生视图，不在插件页体系内，不进表
 	}
 	return pages;
 }

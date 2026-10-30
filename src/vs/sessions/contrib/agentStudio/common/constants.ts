@@ -396,6 +396,16 @@ export const AGENT_STUDIO_DSH_MARKETPLACE_VIEW_ID = 'vssaros.dsh.marketplaceView
  */
 export const AGENT_STUDIO_DSH_RELAY_VIEW_ID = 'vssaros.dsh.relayView';
 
+/*
+ * 2026-10-30：三个容器此前**没有显式视图 id**，一直走 `moduleViewHostOf` 的派生兜底
+ * （`vssaros.dsh.pv.<containerId>`）。源码守卫「每个可注册容器都备了 page 宿主」要求显式登记，
+ * 且必须从 constants 里取字面值 ⇒ 这里把**兜底值原样**固化成常量：语义零变化
+ * （同一串 id ⇒ 已持久化的布局/视图状态不丢），但 id 从此是写下来的，派生规则改字也带不走它们。
+ */
+export const AGENT_STUDIO_DSH_PARALLEL_VIEW_ID = 'vssaros.dsh.pv.vssaros.dsh.parallel';
+export const AGENT_STUDIO_DSH_STUDIO_VIEW_ID = 'vssaros.dsh.pv.vssaros.dsh.studio';
+export const AGENT_STUDIO_DSH_XHSNOTE_VIEW_ID = 'vssaros.dsh.pv.vssaros.dsh.xhs-note';
+
 // --- TOF (Taihu OA Framework) 登录配置 ---
 // 对接 OAuthSystem 网关 (太湖 MCP 鉴权网关)
 export const TOF_PAASID_SETTING = 'sessions.agentStudio.tof.paasid';
