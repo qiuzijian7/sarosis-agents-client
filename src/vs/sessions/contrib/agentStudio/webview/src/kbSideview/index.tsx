@@ -11,7 +11,10 @@
  *   - **不碰数据源**：数据由宿主注入 `window.__KB_SIDEVIEW_DATA__`（见下面 KbSideviewData），
  *     UI 不做任何 IO。这样它可以被单测，也能在 `visual` 页面里用假数据跑起来。
  *
- * 视觉约定：颜色一律走 `--vscode-*` 变量（webview / 原生 DOM 两侧都有），
+ * 视觉约定：颜色一律写 `var(--dsw-alias-*, var(--vscode-*, 回退色))` —— 这份 UI 同时跑在
+ * dsh 原生界面（那里面**没有** `--vscode-*`）与 IDE webview（有）两侧，只写 `--vscode-*` 会让
+ * dsh 侧整体落进写死的回退色（2026-10-30 由守卫点出，共 58 处）；字体类没有 dsw 对应物，
+ * 用插件自有变量 `--vssaros-font-{mono,ui}` 兜第一层。
  * 回退值用 VS Code Dark+ 的等价色 ⇒ 单独打开也不会难看。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -259,21 +262,21 @@ declare global {
 // ─── 主题 ──────────────────────────────────────────────────────────────────
 
 const c = {
-	bg: 'var(--vscode-sideBar-background, #252526)',
-	fg: 'var(--vscode-sideBar-foreground, #cccccc)',
-	fgDim: 'var(--vscode-descriptionForeground, #9d9d9d)',
-	fgFaint: 'var(--vscode-disabledForeground, #6e7681)',
-	line: 'var(--vscode-panel-border, #3c3c3c)',
-	hover: 'var(--vscode-list-hoverBackground, #2a2d2e)',
-	sel: 'var(--vscode-list-activeSelectionBackground, #094771)',
-	selFg: 'var(--vscode-list-activeSelectionForeground, #ffffff)',
-	accent: 'var(--vscode-focusBorder, #007acc)',
-	link: 'var(--vscode-textLink-foreground, #3794ff)',
-	inputBg: 'var(--vscode-input-background, #3c3c3c)',
-	inputFg: 'var(--vscode-input-foreground, #cccccc)',
-	badge: 'var(--vscode-badge-background, #4d4d4d)',
-	badgeFg: 'var(--vscode-badge-foreground, #ffffff)',
-	ok: 'var(--vscode-testing-iconPassed, #4ec9b0)',
+	bg: 'var(--dsw-alias-bg-layer-1, var(--vscode-sideBar-background, #252526))',
+	fg: 'var(--dsw-alias-label-primary, var(--vscode-sideBar-foreground, #cccccc))',
+	fgDim: 'var(--dsw-alias-label-secondary, var(--vscode-descriptionForeground, #9d9d9d))',
+	fgFaint: 'var(--dsw-alias-label-dimmed, var(--vscode-disabledForeground, #6e7681))',
+	line: 'var(--dsw-alias-border-l2, var(--vscode-panel-border, #3c3c3c))',
+	hover: 'var(--dsw-alias-interactive-bg-hover, var(--vscode-list-hoverBackground, #2a2d2e))',
+	sel: 'var(--dsw-alias-interactive-bg-active, var(--vscode-list-activeSelectionBackground, #094771))',
+	selFg: 'var(--dsw-alias-label-primary-inverted, var(--vscode-list-activeSelectionForeground, #ffffff))',
+	accent: 'var(--dsw-alias-brand-primary, var(--vscode-focusBorder, #007acc))',
+	link: 'var(--dsw-alias-link, var(--vscode-textLink-foreground, #3794ff))',
+	inputBg: 'var(--dsw-alias-bg-layer-2, var(--vscode-input-background, #3c3c3c))',
+	inputFg: 'var(--dsw-alias-label-primary, var(--vscode-input-foreground, #cccccc))',
+	badge: 'var(--dsw-alias-state-business-primary, var(--vscode-badge-background, #4d4d4d))',
+	badgeFg: 'var(--dsw-alias-label-primary-inverted, var(--vscode-badge-foreground, #ffffff))',
+	ok: 'var(--dsw-alias-state-success-primary, var(--vscode-testing-iconPassed, #4ec9b0))',
 } as const;
 
 // ─── 小部件 ────────────────────────────────────────────────────────────────
@@ -664,7 +667,7 @@ const KB_SCOPED_CSS = `
 .kb-md p { margin: .5em 0; }
 .kb-md ul, .kb-md ol { margin: .4em 0; padding-left: 1.7em; }
 .kb-md li { margin: .15em 0; }
-.kb-md blockquote { border-left: 3px solid rgba(127,127,127,.45); margin: .6em 0; padding: .1em 0 .1em 10px; color: var(--vscode-descriptionForeground, #9d9d9d); }
+.kb-md blockquote { border-left: 3px solid rgba(127,127,127,.45); margin: .6em 0; padding: .1em 0 .1em 10px; color: var(--dsw-alias-label-secondary, var(--vscode-descriptionForeground, #9d9d9d)); }
 .kb-md .kb-callout { border-left: 3px solid #3794ff; background: rgba(127,127,127,.07); border-radius: 4px; padding: 6px 10px; margin: .7em 0; }
 .kb-md .kb-callout > p:first-of-type { margin-top: 0; }
 .kb-md .kb-callout::before {
@@ -675,7 +678,7 @@ const KB_SCOPED_CSS = `
 .kb-md .kb-callout[data-callout="warning"]::before, .kb-md .kb-callout[data-callout="caution"]::before { color: #d29922; }
 .kb-md .kb-callout[data-callout="danger"]::before, .kb-md .kb-callout[data-callout="error"]::before, .kb-md .kb-callout[data-callout="bug"]::before { color: #f85149; }
 .kb-md .kb-callout[data-callout="quote"]::before { color: #9d9d9d; }
-.kb-md .kb-wiki { color: var(--vscode-textLink-foreground, #3794ff); cursor: pointer; text-decoration: none; }
+.kb-md .kb-wiki { color: var(--dsw-alias-link, var(--vscode-textLink-foreground, #3794ff)); cursor: pointer; text-decoration: none; }
 .kb-md .kb-wiki:hover { text-decoration: underline; }
 .kb-md .kb-wiki-missing { border-bottom: 1px dashed rgba(127,127,127,.6); opacity: .72; }
 .kb-md .kb-task { margin-right: 6px; vertical-align: middle; cursor: pointer; }
@@ -683,7 +686,7 @@ const KB_SCOPED_CSS = `
 .kb-md .kb-table th, .kb-md .kb-table td { border: 1px solid rgba(127,127,127,.3); padding: 4px 10px; }
 .kb-md .kb-table th { background: rgba(127,127,127,.12); font-weight: 600; }
 .kb-md pre.kb-code { margin: .7em 0; padding: 8px 10px; background: rgba(127,127,127,.12); border-radius: 4px; overflow: auto; font-size: 12px; line-height: 1.6; }
-.kb-md code { font-family: var(--vscode-editor-font-family, monospace); background: rgba(127,127,127,.14); padding: 1px 4px; border-radius: 3px; }
+.kb-md code { font-family: var(--vssaros-font-mono, monospace); background: rgba(127,127,127,.14); padding: 1px 4px; border-radius: 3px; }
 .kb-md pre.kb-code code { background: none; padding: 0; }
 /*
  * mermaid 由**服务端**用 pele 渲染成内联 SVG（2026-10-26）⇒ 客户端零脚本。
@@ -698,7 +701,7 @@ const KB_SCOPED_CSS = `
 .kb-md .kb-tok-com { color: #6a9955; }
 .kb-md img { max-width: 100%; border-radius: 4px; }
 .kb-md hr { border: 0; border-top: 1px solid rgba(127,127,127,.3); margin: 1em 0; }
-.kb-md a { color: var(--vscode-textLink-foreground, #3794ff); }
+.kb-md a { color: var(--dsw-alias-link, var(--vscode-textLink-foreground, #3794ff)); }
 `;
 
 /** 非 Markdown 文件的预览类型（点树上的 pdf/图片/音视频时用，不再走 `/api/doc` 读文本） */
@@ -965,20 +968,20 @@ function KbGraphTab({ vaultId, onOpenNote }: { vaultId?: string; onOpenNote?: (p
 	);
 
 	if (phase === 'loading') {
-		return <div style={{ flex: '1 1 auto', minHeight: 0, display: 'flex', flexDirection: 'column', background: 'var(--vscode-editor-background, #1e1e1e)' }}>{header}
+		return <div style={{ flex: '1 1 auto', minHeight: 0, display: 'flex', flexDirection: 'column', background: 'var(--dsw-alias-bg-base, var(--vscode-editor-background, #1e1e1e))' }}>{header}
 			<div style={{ flex: '1 1 auto', display: 'flex', alignItems: 'center', justifyContent: 'center', color: c.fgFaint, fontSize: 12 }}>正在读取图谱…</div></div>;
 	}
 	if (phase === 'error') {
-		return <div style={{ flex: '1 1 auto', minHeight: 0, display: 'flex', flexDirection: 'column', background: 'var(--vscode-editor-background, #1e1e1e)' }}>{header}
+		return <div style={{ flex: '1 1 auto', minHeight: 0, display: 'flex', flexDirection: 'column', background: 'var(--dsw-alias-bg-base, var(--vscode-editor-background, #1e1e1e))' }}>{header}
 			<div style={{ flex: '1 1 auto', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#e06c75', fontSize: 12 }}>{error}</div></div>;
 	}
 	if (!nodes.length) {
-		return <div style={{ flex: '1 1 auto', minHeight: 0, display: 'flex', flexDirection: 'column', background: 'var(--vscode-editor-background, #1e1e1e)' }}>{header}
+		return <div style={{ flex: '1 1 auto', minHeight: 0, display: 'flex', flexDirection: 'column', background: 'var(--dsw-alias-bg-base, var(--vscode-editor-background, #1e1e1e))' }}>{header}
 			<div style={{ flex: '1 1 auto', display: 'flex', alignItems: 'center', justifyContent: 'center', color: c.fgFaint, fontSize: 12 }}>这个库里还没有可画的节点</div></div>;
 	}
 
 	return (
-		<div style={{ flex: '1 1 auto', minHeight: 0, display: 'flex', flexDirection: 'column', background: 'var(--vscode-editor-background, #1e1e1e)' }}>
+		<div style={{ flex: '1 1 auto', minHeight: 0, display: 'flex', flexDirection: 'column', background: 'var(--dsw-alias-bg-base, var(--vscode-editor-background, #1e1e1e))' }}>
 			{header}
 			<div style={{ flex: '1 1 auto', minHeight: 0, overflow: 'auto' }}>
 				<svg width="100%" height="100%" viewBox="-220 -220 440 440" preserveAspectRatio="xMidYMid meet" style={{ display: 'block', minHeight: 320 }}>
@@ -1908,7 +1911,7 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 			width: '100%', minWidth: 0, flex: '1 1 0%',
 			// 容器太窄（IDE 窄编辑器组）时**横向滚动**，而不是把正文压成 0 宽
 			overflowX: 'auto', overflowY: 'hidden',
-			background: c.bg, color: c.fg, fontFamily: 'var(--vscode-font-family, "Segoe UI", sans-serif)',
+			background: c.bg, color: c.fg, fontFamily: 'var(--vssaros-font-ui, system-ui, sans-serif)',
 			fontSize: 13, overflow: 'hidden',
 		}}>
 			<style>{KB_SCOPED_CSS}</style>
@@ -1991,7 +1994,7 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 					<div
 						style={{
 							position: 'absolute', left: 6, top: 30, zIndex: 50, minWidth: 240, maxWidth: 320,
-							background: 'var(--vscode-menu-background, #252526)', border: `1px solid ${c.line}`,
+							background: 'var(--dsw-alias-bg-layer-2, var(--vscode-menu-background, #252526))', border: `1px solid ${c.line}`,
 							borderRadius: 4, boxShadow: '0 8px 24px rgba(0,0,0,.45)', padding: 4,
 						}}
 					>
@@ -2148,7 +2151,7 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 						/>
 						<div style={{
 							position: 'fixed', left: menu.x, top: menu.y, zIndex: 41, minWidth: 132,
-							background: 'var(--vscode-menu-background, #252526)',
+							background: 'var(--dsw-alias-bg-layer-2, var(--vscode-menu-background, #252526))',
 							border: `1px solid ${c.line}`, borderRadius: 4, padding: 4,
 							boxShadow: '0 4px 16px rgba(0,0,0,.5)', fontSize: 12.5,
 						}}>
@@ -2304,7 +2307,7 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 								data-kb-notes-menu="1"
 								style={{
 									position: "fixed", left: notesMenu.x, top: notesMenu.y, zIndex: 41, minWidth: 208,
-									background: "var(--vscode-menu-background, #252526)", border: `1px solid ${c.line}`,
+									background: "var(--dsw-alias-bg-layer-2, var(--vscode-menu-background, #252526))", border: `1px solid ${c.line}`,
 									borderRadius: 4, padding: 4, boxShadow: "0 4px 16px rgba(0,0,0,.5)", fontSize: 12.5,
 								}}
 							>
@@ -2418,10 +2421,10 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 														title={tagFilter === t.tag ? '再点一次取消筛选' : ('筛选出带 #' + t.tag + ' 的笔记')}
 														style={{
 															display: 'flex', alignItems: 'center', gap: 4, height: 21, padding: '0 7px',
-															background: tagFilter === t.tag ? 'var(--vscode-button-background, #0e639c)' : '#2a2d2e',
+															background: tagFilter === t.tag ? 'var(--dsw-alias-button-primary-fill, var(--vscode-button-background, #0e639c))' : '#2a2d2e',
 															border: '1px solid ' + (tagFilter === t.tag ? 'transparent' : '#383838'),
 															borderRadius: 11, fontSize: 11,
-															color: tagFilter === t.tag ? 'var(--vscode-button-foreground, #fff)' : '#c8c8c8',
+															color: tagFilter === t.tag ? 'var(--dsw-alias-label-primary-inverted, var(--vscode-button-foreground, #fff))' : '#c8c8c8',
 															cursor: 'pointer',
 														}}
 													>#{t.tag}<span style={{ fontSize: 9.5, color: c.fgFaint }}>{t.count}</span></button>
@@ -2499,7 +2502,7 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 					// ★ 2026-10-28（真机：窄容器里文档列被压成 0 宽）⇒ 保底宽度，放不下就横向滚
 					minWidth: 260,
 					// 与空态/正文同一个底色：否则空态、正文、容器三段会拼出竖缝（2026-10-28 用户截图）
-					background: 'var(--vscode-editor-background, #1e1e1e)',
+					background: 'var(--dsw-alias-bg-base, var(--vscode-editor-background, #1e1e1e))',
 				}}>
 					{(doc || activeView !== 'doc') ? (
 						<>
@@ -2532,9 +2535,9 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 												display: "flex", alignItems: "center", gap: 6, flex: "0 0 auto", maxWidth: 190,
 												padding: "0 8px 0 10px", fontSize: 11.5, cursor: "pointer",
 												color: on ? c.fg : c.fgDim,
-												background: on ? "var(--vscode-editor-background, #1e1e1e)" : "transparent",
+												background: on ? "var(--dsw-alias-bg-base, var(--vscode-editor-background, #1e1e1e))" : "transparent",
 												borderRight: `1px solid ${c.line}`,
-												boxShadow: on ? "inset 0 2px 0 var(--vscode-focusBorder, #3794ff)" : "none",
+												boxShadow: on ? "inset 0 2px 0 var(--dsw-alias-brand-primary, var(--vscode-focusBorder, #3794ff))" : "none",
 											}}
 										>
 											{dirty ? <span title="有未保存修改" style={{ width: 6, height: 6, borderRadius: "50%", background: "#d29922", flex: "0 0 auto" }} /> : null}
@@ -2563,7 +2566,7 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 										if (activeView === 'settings') { setTab('doc'); setOpenViews(o => ({ ...o, settings: false })); return; }
 										setTab('settings');
 									}}
-									style={{ display: 'flex', alignItems: 'center', gap: 6, flex: '0 0 auto', padding: '0 10px', fontSize: 11.5, cursor: 'pointer', color: activeView === 'settings' ? c.fg : c.fgDim, background: activeView === 'settings' ? 'var(--vscode-editor-background, #1e1e1e)' : 'transparent', borderRight: `1px solid ${c.line}`, boxShadow: activeView === 'settings' ? 'inset 0 2px 0 var(--vscode-focusBorder, #3794ff)' : 'none' }}
+									style={{ display: 'flex', alignItems: 'center', gap: 6, flex: '0 0 auto', padding: '0 10px', fontSize: 11.5, cursor: 'pointer', color: activeView === 'settings' ? c.fg : c.fgDim, background: activeView === 'settings' ? 'var(--dsw-alias-bg-base, var(--vscode-editor-background, #1e1e1e))' : 'transparent', borderRight: `1px solid ${c.line}`, boxShadow: activeView === 'settings' ? 'inset 0 2px 0 var(--dsw-alias-brand-primary, var(--vscode-focusBorder, #3794ff))' : 'none' }}
 								>⚙ 设置</div>
 									) : null}
 									{openViews.graph ? (
@@ -2576,7 +2579,7 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 										if (activeView === 'graph') { setTab('doc'); setOpenViews(o => ({ ...o, graph: false })); return; }
 										setTab('graph');
 									}}
-									style={{ display: 'flex', alignItems: 'center', gap: 6, flex: '0 0 auto', padding: '0 10px', fontSize: 11.5, cursor: 'pointer', color: activeView === 'graph' ? c.fg : c.fgDim, background: activeView === 'graph' ? 'var(--vscode-editor-background, #1e1e1e)' : 'transparent', borderRight: `1px solid ${c.line}`, boxShadow: activeView === 'graph' ? 'inset 0 2px 0 var(--vscode-focusBorder, #3794ff)' : 'none' }}
+									style={{ display: 'flex', alignItems: 'center', gap: 6, flex: '0 0 auto', padding: '0 10px', fontSize: 11.5, cursor: 'pointer', color: activeView === 'graph' ? c.fg : c.fgDim, background: activeView === 'graph' ? 'var(--dsw-alias-bg-base, var(--vscode-editor-background, #1e1e1e))' : 'transparent', borderRight: `1px solid ${c.line}`, boxShadow: activeView === 'graph' ? 'inset 0 2px 0 var(--dsw-alias-brand-primary, var(--vscode-focusBorder, #3794ff))' : 'none' }}
 								>🕸 关系图谱</div>
 									) : null}
 										{openViews.canvas ? (
@@ -2589,7 +2592,7 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 													if (activeView === 'canvas') { setTab('doc'); setOpenViews(o => ({ ...o, canvas: false })); return; }
 													setTab('canvas');
 												}}
-												style={{ display: 'flex', alignItems: 'center', gap: 6, flex: '0 0 auto', padding: '0 10px', fontSize: 11.5, cursor: 'pointer', color: activeView === 'canvas' ? c.fg : c.fgDim, background: activeView === 'canvas' ? 'var(--vscode-editor-background, #1e1e1e)' : 'transparent', borderRight: `1px solid ${c.line}`, boxShadow: activeView === 'canvas' ? 'inset 0 2px 0 var(--vscode-focusBorder, #3794ff)' : 'none' }}
+												style={{ display: 'flex', alignItems: 'center', gap: 6, flex: '0 0 auto', padding: '0 10px', fontSize: 11.5, cursor: 'pointer', color: activeView === 'canvas' ? c.fg : c.fgDim, background: activeView === 'canvas' ? 'var(--dsw-alias-bg-base, var(--vscode-editor-background, #1e1e1e))' : 'transparent', borderRight: `1px solid ${c.line}`, boxShadow: activeView === 'canvas' ? 'inset 0 2px 0 var(--dsw-alias-brand-primary, var(--vscode-focusBorder, #3794ff))' : 'none' }}
 											>🗺 思维导图</div>
 										) : null}
 							</div>
@@ -2617,19 +2620,19 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 								{!doc?.asset && actions?.saveDoc && doc?.path ? (
 									<span data-kb-mode="1" style={{ display: "flex", border: `1px solid ${c.line}`, borderRadius: 3, overflow: "hidden", flex: "0 0 auto" }}>
 										<button type="button" title="预览" onClick={() => { if (draft !== null) { setDraft(null); } }}
-											style={{ height: 18, padding: "0 7px", fontSize: 10.5, border: 0, cursor: "pointer", background: draft === null ? "var(--vscode-button-background, #0e639c)" : "transparent", color: draft === null ? "var(--vscode-button-foreground, #fff)" : c.fgDim }}>预览</button>
+											style={{ height: 18, padding: "0 7px", fontSize: 10.5, border: 0, cursor: "pointer", background: draft === null ? "var(--dsw-alias-button-primary-fill, var(--vscode-button-background, #0e639c))" : "transparent", color: draft === null ? "var(--dsw-alias-label-primary-inverted, var(--vscode-button-foreground, #fff))" : c.fgDim }}>预览</button>
 										<button type="button" title="编辑 Markdown 源码" onClick={() => { if (draft === null) { setDraft(doc?.text); } }}
-											style={{ height: 18, padding: "0 7px", fontSize: 10.5, border: 0, cursor: "pointer", background: draft !== null ? "var(--vscode-button-background, #0e639c)" : "transparent", color: draft !== null ? "var(--vscode-button-foreground, #fff)" : c.fgDim }}>编辑</button>
+											style={{ height: 18, padding: "0 7px", fontSize: 10.5, border: 0, cursor: "pointer", background: draft !== null ? "var(--dsw-alias-button-primary-fill, var(--vscode-button-background, #0e639c))" : "transparent", color: draft !== null ? "var(--dsw-alias-label-primary-inverted, var(--vscode-button-foreground, #fff))" : c.fgDim }}>编辑</button>
 									</span>
 								) : null}
 								<button type="button" title="更多（完整路径 / 历史 / 资源管理器）" onClick={() => setDocMenu(v => !v)}
 									style={{ width: 22, height: 20, flex: "0 0 auto", border: 0, borderRadius: 3, background: "transparent", color: c.fgDim, cursor: "pointer" }}>⋯</button>
 								{/* 阅读进度：贴细条底边，越长越满 */}
-								<div style={{ position: "absolute", left: 0, bottom: -1, height: 2, width: Math.round(docProgress * 100) + "%", background: "var(--vscode-focusBorder, #3794ff)", opacity: .75, pointerEvents: "none" }} />
+								<div style={{ position: "absolute", left: 0, bottom: -1, height: 2, width: Math.round(docProgress * 100) + "%", background: "var(--dsw-alias-brand-primary, var(--vscode-focusBorder, #3794ff))", opacity: .75, pointerEvents: "none" }} />
 								{docMenu ? (
 									<>
 										<div onClick={() => setDocMenu(false)} onContextMenu={e => { e.preventDefault(); setDocMenu(false); }} style={{ position: "fixed", inset: 0, zIndex: 40 }} />
-										<div style={{ position: "absolute", right: 4, top: 26, zIndex: 41, minWidth: 240, background: "var(--vscode-menu-background, #252526)", border: `1px solid ${c.line}`, borderRadius: 4, padding: 4, boxShadow: "0 4px 16px rgba(0,0,0,.5)", fontSize: 11.5 }}>
+										<div style={{ position: "absolute", right: 4, top: 26, zIndex: 41, minWidth: 240, background: "var(--dsw-alias-bg-layer-2, var(--vscode-menu-background, #252526))", border: `1px solid ${c.line}`, borderRadius: 4, padding: 4, boxShadow: "0 4px 16px rgba(0,0,0,.5)", fontSize: 11.5 }}>
 											<div style={{ padding: "4px 8px", color: c.fgFaint, wordBreak: "break-all", lineHeight: 1.5 }}>{doc?.path || "(无路径)"}</div>
 											<div style={{ height: 1, background: c.line, margin: "4px 6px" }} />
 											{actions?.listBackups && doc?.path && !doc?.asset ? (
@@ -2666,7 +2669,7 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 									{draft !== null && !doc?.asset ? (
 										<>
 											<button type="button" onClick={() => { void commitDraft(); }}
-												style={{ height: 22, padding: '0 10px', fontSize: 11, cursor: 'pointer', borderRadius: 3, background: 'var(--vscode-button-background, #0e639c)', color: 'var(--vscode-button-foreground, #fff)', border: '1px solid transparent' }}>保存</button>
+												style={{ height: 22, padding: '0 10px', fontSize: 11, cursor: 'pointer', borderRadius: 3, background: 'var(--dsw-alias-button-primary-fill, var(--vscode-button-background, #0e639c))', color: 'var(--dsw-alias-label-primary-inverted, var(--vscode-button-foreground, #fff))', border: '1px solid transparent' }}>保存</button>
 											<button type="button" onClick={() => { if (draft !== doc?.text && !window.confirm('放弃未保存的修改？')) { return; } setDraft(null); }}
 												style={{ height: 22, padding: '0 10px', fontSize: 11, cursor: 'pointer', borderRadius: 3, background: 'transparent', color: 'inherit', border: `1px solid ${c.line}` }}>取消</button>
 										</>
@@ -2767,7 +2770,7 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 										width: '100%', minHeight: 420, boxSizing: 'border-box', resize: 'vertical',
 										padding: '8px 10px', background: c.inputBg, color: c.inputFg, border: `1px solid ${c.line}`,
 										borderRadius: 4, fontSize: 12.5, lineHeight: 1.7,
-										fontFamily: 'var(--vscode-editor-font-family, monospace)',
+										fontFamily: 'var(--vssaros-font-mono, monospace)',
 									}}
 								/>
 									)}
@@ -2874,7 +2877,7 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 											<div style={{ fontSize: 11, opacity: .6, marginBottom: 6 }}>
 												当前宿主未提供服务端渲染结果，以下按纯文本显示。
 											</div>
-											<pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12.5, lineHeight: 1.7, fontFamily: 'var(--vscode-editor-font-family, monospace)' }}>
+											<pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12.5, lineHeight: 1.7, fontFamily: 'var(--vssaros-font-mono, monospace)' }}>
 												{doc?.text}
 											</pre>
 										</div>
@@ -2887,12 +2890,12 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 							{docScrollTop > 300 ? (
 								<button type="button" title="回到顶部" aria-label="回到顶部"
 									onClick={() => { const el = docScrollRef.current; if (el) { el.scrollTo({ top: 0, behavior: "smooth" }); } }}
-									style={{ position: 'absolute', right: 16, bottom: 14, width: 28, height: 28, borderRadius: '50%', border: `1px solid ${c.line}`, background: 'var(--vscode-editorWidget-background, #2a2d2e)', color: c.fgDim, cursor: 'pointer', zIndex: 5 }}>↑</button>
+									style={{ position: 'absolute', right: 16, bottom: 14, width: 28, height: 28, borderRadius: '50%', border: `1px solid ${c.line}`, background: 'var(--dsw-alias-bg-layer-2, var(--vscode-editorWidget-background, #2a2d2e))', color: c.fgDim, cursor: 'pointer', zIndex: 5 }}>↑</button>
 							) : null}
 						</>
 					) : (
 						/* 2026-10-28（用户要求）：空态不再显示任何文案，只保留整块底色 */
-						<div style={{ flex: '1 1 auto', minHeight: 0, background: 'var(--vscode-editor-background, #1e1e1e)' }} />
+						<div style={{ flex: '1 1 auto', minHeight: 0, background: 'var(--dsw-alias-bg-base, var(--vscode-editor-background, #1e1e1e))' }} />
 					)}
 							</>) : null}
 			{activeView === 'graph' ? (
@@ -2900,7 +2903,7 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 			) : null}
 
 				{activeView === 'canvas' ? (
-					<div style={{ flex: '1 1 auto', minHeight: 0, minWidth: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: 'var(--vscode-editor-background, #1e1e1e)' }}>
+					<div style={{ flex: '1 1 auto', minHeight: 0, minWidth: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: 'var(--dsw-alias-bg-base, var(--vscode-editor-background, #1e1e1e))' }}>
 						<KbCanvasPane
 							onClose={() => { setTab('doc'); setOpenViews(o => ({ ...o, canvas: false })); }}
 							onOpenNote={(abs) => {
@@ -2916,7 +2919,7 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 				<div
 					data-kb-settings="1"
 					role="tabpanel"
-					style={{ flex: '1 1 auto', minHeight: 0, minWidth: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: 'var(--vscode-editor-background, #1e1e1e)' }}
+					style={{ flex: '1 1 auto', minHeight: 0, minWidth: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: 'var(--dsw-alias-bg-base, var(--vscode-editor-background, #1e1e1e))' }}
 				>
 					<div
 						onClick={e => e.stopPropagation()}
@@ -3012,8 +3015,8 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 									onClick={() => setSortKey(k)}
 									style={{
 										height: 22, padding: '0 9px', fontSize: 11, cursor: 'pointer', borderRadius: 4,
-										background: sortKey === k ? 'var(--vscode-button-background, #0e639c)' : 'transparent',
-										color: sortKey === k ? 'var(--vscode-button-foreground, #fff)' : 'inherit',
+										background: sortKey === k ? 'var(--dsw-alias-button-primary-fill, var(--vscode-button-background, #0e639c))' : 'transparent',
+										color: sortKey === k ? 'var(--dsw-alias-label-primary-inverted, var(--vscode-button-foreground, #fff))' : 'inherit',
 										border: `1px solid ${sortKey === k ? 'transparent' : c.line}`,
 									}}
 								>{label}</button>
@@ -3041,7 +3044,7 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 
 						{/* ④ 诊断 */}
 						<div style={{ fontSize: 11, color: c.fgFaint, marginBottom: 4 }}>诊断</div>
-						<div style={{ fontSize: 10.5, fontFamily: 'var(--vscode-editor-font-family, monospace)', opacity: .75, wordBreak: 'break-all' }}>
+						<div style={{ fontSize: 10.5, fontFamily: 'var(--vssaros-font-mono, monospace)', opacity: .75, wordBreak: 'break-all' }}>
 							{debug ?? '(无)'} · 数据字段 {Object.keys(data).length} · 动作 {actions ? Object.keys(actions).length : 0}
 						</div>
 					</div>
@@ -3078,7 +3081,7 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 				>
 					<div
 						onClick={e => e.stopPropagation()}
-						style={{ minWidth: 320, maxWidth: 460, background: 'var(--vscode-menu-background, #252526)', border: `1px solid ${c.line}`, borderRadius: 6, padding: 14, boxShadow: '0 10px 30px rgba(0,0,0,.5)' }}
+						style={{ minWidth: 320, maxWidth: 460, background: 'var(--dsw-alias-bg-layer-2, var(--vscode-menu-background, #252526))', border: `1px solid ${c.line}`, borderRadius: 6, padding: 14, boxShadow: '0 10px 30px rgba(0,0,0,.5)' }}
 					>
 						<div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>
 							{dialog.kind === 'rename' ? '重命名'
@@ -3126,7 +3129,7 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 									else if (d.kind === 'vaultAttach') { actions?.addVault?.('attach', d.value.trim()); }
 									else { actions?.newFolder?.('', d.value.trim()); }
 								}}
-								style={{ height: 24, padding: '0 12px', fontSize: 12, background: 'var(--vscode-button-background, #0e639c)', color: 'var(--vscode-button-foreground, #fff)', border: '1px solid transparent', borderRadius: 4, cursor: 'pointer' }}
+								style={{ height: 24, padding: '0 12px', fontSize: 12, background: 'var(--dsw-alias-button-primary-fill, var(--vscode-button-background, #0e639c))', color: 'var(--dsw-alias-label-primary-inverted, var(--vscode-button-foreground, #fff))', border: '1px solid transparent', borderRadius: 4, cursor: 'pointer' }}
 							>确定</button>
 						</div>
 					</div>

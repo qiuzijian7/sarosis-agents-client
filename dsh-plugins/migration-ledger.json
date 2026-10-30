@@ -222,6 +222,16 @@
       "killSwitch": "chatEngine=legacy",
       "deleteWhen": "Phase 5 完成",
       "notes": "聊天已迁，其余留壳逐步收缩。★ 2026-10-19 后台入口调研结论（决定『能不能删 AgentChatPanel』）：**后台入口 8 条（IM 入站飞书/Telegram/loopback、Pocket、workflow/画布执行、子代理委派、自进化、后台命令通知、Lark CLI；定时任务已废）全部走 IAgentChatService + piLoop，无一处 new 面板** ⇒ 后台**不构成**删除阻碍；checkpointManager / workflowTraceController / chatEditorIntegration 只是 import type { IChatPanel } 的可选消费者（panel?.），无面板时静默跳过。真正阻碍只剩：① nativeChatEditorPane.ts:6300-6311 的 legacy 前台分支（唯一构造点 985-1004）；② iChatPanel.ts / agentChatTypes.ts 被若干文件 type-only 依赖（接口留、类删）；③ dev 画布沙箱 chatSandbox.tsx:143 动态 new。已解耦：detectDiagramTheme → sessions/browser/diagramTheme.ts、terminalLiveOutput → sessions/browser/terminalLiveOutput.ts。对外耦合面由 `npm run check:legacy-chat-coupling` 冻结。⚠ 另注：本族的 killSwitch 与 agent-loop / core-tools / llm-providers 三族同为 chatEngine=legacy ⇒ 去掉它会让四个族同时失去回退路径，是产品决定。★ 2026-10-19 **已拍板：保留回退开关原样，AgentChatPanel 不删**；已确认的死代码 CliChatEditorPanel（0 构造 0 import，被 XtermCliPanel 取代）也留着，随 agentChat/ 整体删除时一起处理。本轮只落地：detectDiagramTheme/terminalLiveOutput 两项解耦 + `npm run check:legacy-chat-coupling` 耦合守卫。⚠ 后续若再推进删除，入口仍是「去掉 chatEngine=legacy」这一步，别跳过"
+    },
+    {
+      "id": "marketplace",
+      "title": "商城工作台（自营商城：浏览 / 检查来源 / 安装 / 发布）",
+      "owner": "dual",
+      "dshTarget": "@vssaros/dsh-marketplace（S1 只读面 + 安装链已搬回 dsh 侧；IDE 侧只保留商城页面与凭据服务）",
+      "parityProbe": "run-marketplace-selfhosted-check / run-marketplace-installer-check / check-marketplace-client",
+      "killSwitch": "—",
+      "deleteWhen": "商城在 IDE 侧的承载退役后（认证与安装链已在 dsh 侧）",
+      "notes": "2026-10-30 立族：market_* 四工具（search / inspect_github / install / publish）进了 tools-snapshot ⇒ 守卫要求台账有归属；其中 install（落盘 skills/workflows + installed-packages.json 台账）与 publish（上传发布，不可撤销）挂 tools/pre-execute 审批闸，search / inspect_github 纯只读放行（口径见 dshPluginPackages 的审批闸台账）"
     }
   ]
 }

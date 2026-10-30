@@ -313,9 +313,29 @@ function ensureFile(label, stagingRel, repoRelCandidates) {
 
 // 与 ensureFile 类似，但自愈“整个目录”（如扩展编译产物 out/、node_modules 依赖）。
 // sentinel 用于判定目标目录是否已健全（默认 extension.js；node_modules 包用 package.json）。
-function ensureDir(label, stagingRel, repoRel, sentinel = 'extension.js') {
+function ensureDir(label, stagingRel, repoRel, sentinel = 'extension.js', opts = {}) {
 	const stagingAbs = path.join(buildDir, stagingRel);
 	const sentinelAbs = path.join(stagingAbs, sentinel);
+	// ★★ 2026-10-30（真机 P0：全新机器装上后**主页白屏**，日志
+	//   `vssaros-kb: failed to import … vendor/markdown-it.cjs ENOENT`、
+	//   `vssaros-agents: failed to read overlay … cordis.presets.yml ENOENT`）：
+	//   原来是"哨兵在就整个跳过"⇒ 暂存目录里**某次旧构建**留下的 `dsh-plugins/` 永远不会刷新
+	//   ⇒ 之后新增的插件文件（vendor/、cordis.presets.yml、lib/app/…）**永远进不了包** ✗✗。
+	//   本机从不复现：本机 profile 早就装过这些文件，不经过"随包 + 直装"这条路。
+	//   ⇒ `refresh: true` 的调用点**每次都从仓库重新整目录覆盖**（旧内容先删，防残留删不掉的文件）。
+	if (opts.refresh) {
+		const repoAbsForced = path.join(repoRoot, repoRel);
+		if (!existsSync(repoAbsForced)) {
+			console.log(`  ❌ ${label} 缺失且无法自愈（${repoRel}）`);
+			criticalMissing++;
+			return;
+		}
+		rmSync(stagingAbs, { recursive: true, force: true });
+		mkdirSync(stagingAbs, { recursive: true });
+		cpSync(repoAbsForced, stagingAbs, { recursive: true });
+		console.log(`  ♻️  ${label} —— 已按仓库当前内容**刷新**（refresh=true，防旧副本残留）`);
+		return;
+	}
 	if (existsSync(sentinelAbs)) { console.log(`  ✅ ${label}`); return; }
 	const repoAbs = path.join(repoRoot, repoRel);
 	if (existsSync(repoAbs)) {
@@ -369,7 +389,52 @@ ensureDir(
 	'resources/app/dsh-plugins',
 	'dsh-plugins',
 	'vssaros-bridge/package.json',
+	// ⚠ 必须 refresh：这个目录里放的是**我们的插件源码**（每次发版都在改），
+	//   用"哨兵在就跳过"会让暂存目录停在**某次旧构建**（真机 P0：`kb/vendor/markdown-it.cjs`、
+	//   `agents/cordis.presets.yml` 永远进不了包 ⇒ 全新机器主页白屏）。
+	{ refresh: true },
 );
+
+// 2.5b-2) ★★ 2026-10-30 完整性门禁：**逐文件**比对「暂存 vs 仓库」的 `dsh-plugins/`。
+//
+// 为什么光有 refresh 还不够：refresh 只保证"这次拷了"，但只要有人把这条调用改回默认、
+// 或拷贝中途失败，缺文件依然会静默进包（真机就是"包缺 vendor/markdown-it.cjs ⇒ 用户主页白屏"，
+// 而整个构建过程**一句报错都没有** ✗✗）。
+// ⇒ 这里直接算两边相对路径集合的差集：仓库有、暂存没有 ⇒ criticalMissing（构建收尾会红）。
+// ⚠ 排除 `node_modules`（源里可能有，但不该进包）与 `test/`（构建有意排除，运行时不需要）。
+{
+	const repoPlugins = path.join(repoRoot, 'dsh-plugins');
+	const stagingPlugins = path.join(buildDir, 'resources/app/dsh-plugins');
+	const walk = (root, dir = '', out = []) => {
+		let entries;
+		try { entries = readdirSync(path.join(root, dir), { withFileTypes: true }); } catch { return out; }
+		for (const e of entries) {
+			const rel = dir ? `${dir}/${e.name}` : e.name;
+			if (e.isDirectory()) {
+				if (e.name === 'node_modules' || rel === 'test' || rel.endsWith('/test')) { continue; }
+				walk(root, rel, out);
+			} else {
+				out.push(rel);
+			}
+		}
+		return out;
+	};
+	if (existsSync(repoPlugins) && existsSync(stagingPlugins)) {
+		const have = new Set(walk(stagingPlugins));
+		const want = walk(repoPlugins);
+		const missing = want.filter(rel => !have.has(rel));
+		if (missing.length) {
+			console.log(`  ❌ 随包 dsh-plugins 与仓库不一致：缺 ${missing.length}/${want.length} 个文件`
+				+ `（例：${missing.slice(0, 5).join('、')}）⇒ 用户侧会 import 失败 / 白屏`);
+			criticalMissing++;
+		} else {
+			console.log(`  ✅ 随包 dsh-plugins 完整性：${want.length} 个文件与仓库逐一对齐`);
+		}
+	} else {
+		console.log('  ❌ 无法校验 dsh-plugins 完整性（仓库或暂存目录不存在）');
+		criticalMissing++;
+	}
+}
 
 // 2.5d) ★ 2026-10-16（用户报「打包出的 VsSaros.exe 找不到 dsh」，首启弹「需要准备 DeepSeek Harness
 //    运行环境」）：**构建期预装的 dsh 运行时**也是"关键构件"，必须与 dsh-plugins 同一待遇。
@@ -407,7 +472,31 @@ if (versionKnown) {
 		`resources/app/dsh-runtime/${bundledVersion}`,
 		`dsh-runtime/${bundledVersion}`,
 		'node_modules/@deepseek-ai/dsh/lib/bin.js',
+		// ★★ 2026-10-30（真机 P0：全新机器日志 `正在初始化专属 profile（web 模板）…`）：
+		//   同一版本**重建**时（换了插件、加了 profile-seed），暂存里那份旧副本因为有 bin.js
+		//   ⇒ 永远跳过拷贝 ⇒ **`profile-seed/` 根本没进包** ⇒ 首启只能走 `dsh profile init`
+		//   的 web 模板（bundles 只有 base/web-app）⇒ 插件不加载 ⇒ 主页白屏 ✗✗。
+		//   ⇒ refresh：每次按仓库当前内容整目录重拷（约 200MB，几秒到十几秒，可接受）。
+		{ refresh: true },
 	);
+	// ★ 同一条链上的**门禁**：种子必须真的在暂存里（`_ensureProfile` 靠它做"零下载首启"，
+	//   缺了就会退化成 web 模板 ⇒ 上面那条 P0 的现场）。任一 profile 有 package.json 即算通过。
+	{
+		const seedRoot = path.join(buildDir, 'resources/app/dsh-runtime', bundledVersion, 'profile-seed', 'profiles');
+		let seedOk = false;
+		try {
+			for (const d of readdirSync(seedRoot, { withFileTypes: true })) {
+				if (d.isDirectory() && existsSync(path.join(seedRoot, d.name, 'package.json'))) { seedOk = true; break; }
+			}
+		} catch { seedOk = false; }
+		if (seedOk) {
+			console.log('  ✅ profile-seed 已随包（首启零下载）');
+		} else {
+			console.log('  ❌ 随包 dsh-runtime 缺 profile-seed/profiles/<p>/package.json'
+				+ ' ⇒ 全新机器会退化成 web 模板（bundles 只有 base/web-app，我们的插件不加载）✗');
+			criticalMissing++;
+		}
+	}
 	// 仓库侧也没有它时（上面已计 criticalMissing）：再给一句**可执行**的补救 ——
 	// 否则现场只知道"缺"，不知道缺的那一步是"跑 prepack"（昨天那次就是这么过去的 ✗）
 	if (!existsSync(path.join(repoRoot, 'dsh-runtime', bundledVersion))) {

@@ -205,7 +205,9 @@ window.__ModuleLoader__.load({
 		/* @MENTIONS-END */
 
 		const DESCRIPTOR = {
-			title: 'Bots',
+			// 2026-10-30：与清单（vssaros.activityBar.title / vssaros.workbench.title = "Agents"）统一。
+		// 守卫会逐字比对描述符与清单；此前这里写 'Bots' ⇒ 工作台页签标题与侧栏图标名不一致。
+		title: 'Agents',
 			description: 'Agent 名册：创建、配置人设与群聊。',
 			repository: 'vssaros:agents',
 			icon: 'codicon:organization',

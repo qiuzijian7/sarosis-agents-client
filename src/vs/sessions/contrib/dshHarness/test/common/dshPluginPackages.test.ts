@@ -1255,8 +1255,45 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 			}
 			migrated++;
 			const src = registerFile.text;
-			const repo = /repository:\s*'([^']+)'/.exec(src)?.[1];
-			const title = /title:\s*'([^']+)'/.exec(src)?.[1];
+			// ★ 2026-10-30：描述符有两种写法 —— ① 内联对象 `register({ … })`；
+			//   ② 先定义常量再传进来 `register(WB_DESCRIPTOR, NativeView)`（scheduler 的原生视图就是这种，
+			//   而且它是 TSX 编译产物 ⇒ 字段用**双引号**）。
+			//   旧实现只认 `const DESCRIPTOR` + 全文取「第一个 title:」+ 单引号 ⇒ scheduler 的四个字段
+			//   全被读成「未写」（而全文第一个 `title:` 其实是某处 tooltip）✗。这里统一解析成
+			//   `descriptorSrc`（真·描述符对象字面量），后面所有字段都从它里面读、单双引号都认。
+			const descriptorSrc = ((): string => {
+				const at = /desktopWorkbenches\.register\(/.exec(src)?.index ?? -1;
+				if (at < 0) { return ''; }
+				const after = src.slice(at + 'desktopWorkbenches.register('.length);
+				const ident = /^\s*([A-Za-z_$][\w$]*)\s*[,)]/.exec(after)?.[1];
+				const openAt = ident
+					? ((): number => {
+						const declAt = new RegExp(`(?:const|let|var)\\s+${ident}\\s*=\\s*\\{`).exec(src)?.index;
+						return declAt === undefined ? -1 : src.indexOf('{', declAt);
+					})()
+					: after.indexOf('{');
+				if (openAt < 0) { return ''; }
+				const text = ident ? src : after;
+				const start = ident ? openAt : openAt;
+				let depth = 0;
+				for (let i = start; i < text.length && i - start < 6000; i++) {
+					if (text[i] === '{') { depth++; } else if (text[i] === '}') { depth--; if (depth === 0) { return text.slice(start, i + 1); } }
+				}
+				return '';
+			})();
+			/**
+			 * 从描述符字面量里取字段：单/双引号都认；值若是**常量标识符**（scheduler 的 `title: WB_TITLE`）
+			 * 再回全文件里把那个字面值找出来（一层足够，别做成 mini 解释器）。
+			 */
+			const fieldOf = (name: string): string | undefined => {
+				const raw = new RegExp(`${name}:\\s*(?:([\'"])((?:\\\\.|(?!\\1)[^\\\\])*)\\1|([A-Za-z_$][\\w$]*))`).exec(descriptorSrc);
+				if (!raw) { return undefined; }
+				if (raw[2] !== undefined) { return raw[2]; }
+				const id = raw[3];
+				return new RegExp(`(?:const|let|var)\\s+${id}\\s*=\\s*(['"])((?:\\\\.|(?!\\1)[^\\\\])*)\\1`).exec(src)?.[2];
+			};
+			const repo = fieldOf('repository');
+			const title = fieldOf('title');
 			if (repo !== manifest.workbench.repository) {
 				workbenchProblems.push(`${plugin.dirName} 客户端注册的 repository(${repo ?? '未写'}) 与清单(${manifest.workbench.repository}) 不一致`);
 			}
@@ -1269,16 +1306,17 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 			//   `description || ''` / `icon || ''`，**没有回落到清单** ⇒ 描述符漏写 = 注册表里那一项
 			//   说明空 / 图标空（商城还会落到 🧩）✗ —— 当天就实测到 kb 漏 description、memory 漏 icon。
 			//   ⚠ 图标口径按规范：`workbench.icon` 缺省回落 `activityBar.icon` ⇒ 期望值取这两者先有的那个。
-			const descriptorBlock = /const DESCRIPTOR\s*=\s*\{([\s\S]*?)\}\s*;/.exec(src)?.[1] ?? src;
+			// 2026-10-30：统一用上面解析出来的 `descriptorSrc`（不再硬编码常量名 `DESCRIPTOR`）。
+			const descriptorBlock = descriptorSrc || src;
 			if (typeof manifest.workbench.description === 'string') {
-				const description = /description:\s*'([^']*)'/.exec(descriptorBlock)?.[1];
+				const description = fieldOf('description');
 				if (description !== manifest.workbench.description) {
 					workbenchProblems.push(`${plugin.dirName} 客户端注册的 description(${description ?? '未写'}) 与清单(${manifest.workbench.description}) 不一致 —— 宿主不回落到清单 ⇒ 漏写就是空说明`);
 				}
 			}
 			const manifestIcon = manifest.workbench.icon ?? manifest.activityBar?.icon;
 			if (manifestIcon !== undefined) {
-				const icon = /icon:\s*'([^']+)'/.exec(descriptorBlock)?.[1];
+				const icon = fieldOf('icon');
 				if (icon !== manifestIcon) {
 					workbenchProblems.push(`${plugin.dirName} 客户端注册的 icon(${icon ?? '未写'}) 与清单(${manifestIcon}) 不一致 —— 宿主不回落 ⇒ 漏写就是空图标`);
 				}

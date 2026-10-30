@@ -209,7 +209,7 @@ export const DSH_MODULE_CONTAINERS: readonly IDshModuleContainer[] = [
 	},
 	{
 		containerId: 'agentStudio.presetAgent', modules: ['agents'], status: 'existing',
-		activityBar: { containerId: 'agentStudio.presetAgent', title: 'Bots', icon: 'codicon:robot', order: 60 },
+		activityBar: { containerId: 'agentStudio.presetAgent', title: 'Agents', icon: 'codicon:robot', order: 60 },
 	},
 	{
 		containerId: 'agentStudio.tasks', modules: ['kanban'], status: 'existing',
