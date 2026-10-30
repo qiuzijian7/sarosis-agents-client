@@ -16,7 +16,7 @@
  * 输出是一份可执行的注册/注销计划；注册表操作留给渲染进程贡献（`dshActivityBarContribution.ts`）。
  */
 
-import type { IVssarosActivityBar, IVssarosPluginManifest } from './vssarosPluginManifest.js';
+import type { IVssarosActivityBar, IVssarosPluginManifest, IVssarosView } from './vssarosPluginManifest.js';
 
 /** 参与计划计算的插件信息（渲染端拿到的就是 `IDshPluginInfo`；这里只取需要的字段，便于单测夹具）。 */
 export interface IPluginWithManifest {
@@ -176,6 +176,17 @@ export interface IDshModuleContainer {
 	readonly modules: readonly string[];
 	readonly status: DshModuleContainerStatus;
 	readonly activityBar: IVssarosActivityBar;
+	/**
+	 * 该容器**代表模块**的视图形态（清单 `vssaros.view`）。
+	 *
+	 * ★ 2026-10-30（用户要求「activitybar 中插件的 sideview 改用 vscode 原生的 UI 和功能」）：
+	 *   宿主选择必须看这个字段 —— `kind: 'native'` 的容器要挂 IDE 自己画的原生视图，
+	 *   而不是 `DshPluginViewPane` 里那张插件网页。此前 `IDshModuleContainer` 没有它，
+	 *   于是"清单能声明 native"这件事在宿主层**读都读不到**（`parseView` 收了，却没人消费）。
+	 *
+	 * 缺省（`containersFromPlugins` 之外的硬编码表 / 老数据）没有该字段 ⇒ 调用方按 `page` 处理。
+	 */
+	readonly view?: IVssarosView;
 	/** 计划采纳与否的说明（诊断 / 插件中心展示）。 */
 	readonly note?: string;
 }
@@ -535,14 +546,28 @@ export function containersFromPlugins(plugins: readonly IPluginWithManifest[]): 
 	}
 	// 与硬编码表同序：按 order 排序（order 相同按 containerId 字典序，保证稳定）。
 	return [...byContainer.entries()]
-		.map(([containerId, { modules, activityBar }]) => ({
-			containerId,
-			modules,
-			// 清单驱动的容器没有「legacy 侧已有静态宿主」的概念（那是静态注册的事）⇒ 一律按 existing 注册。
-			status: 'existing' as const,
-			activityBar,
-		}))
+		.map(([containerId, { modules, activityBar }]) => {
+			// 视图形态：取**该容器首个模块**清单里的 `view`（共容器时成员都写同一个容器 id，
+			// 且承载页由容器声明的那一个模块负责 ⇒ 取首个即可；跨形态共容器是清单守卫会挡的事）。
+			const view = viewOfContainer(plugins, modules[0]);
+			return {
+				containerId,
+				modules,
+				// 清单驱动的容器没有「legacy 侧已有静态宿主」的概念（那是静态注册的事）⇒ 一律按 existing 注册。
+				status: 'existing' as const,
+				activityBar,
+				...(view ? { view } : {}),
+			};
+		})
 		.sort((a, b) => a.activityBar.order - b.activityBar.order || a.containerId.localeCompare(b.containerId));
+}
+
+/** 取某模块在其插件清单里声明的 `vssaros.view`（找不到 ⇒ undefined，调用方按 page 处理）。 */
+function viewOfContainer(plugins: readonly IPluginWithManifest[], moduleId: string | undefined): IVssarosView | undefined {
+	if (!moduleId) {
+		return undefined;
+	}
+	return plugins.find(p => p.manifest?.module === moduleId)?.manifest?.view;
 }
 
 /** 从已装插件清单派生页面表。 */

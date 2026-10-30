@@ -79,8 +79,7 @@ interface IExtensionProviderConfig {
 	/** 网关要求的额外身份头（如 codebuddy 的 X-IDE-*）。 */
 	headers?: Record<string, string>;
 	/** 扩展导出的模型清单：`reasoning` 能力位 + 平台推荐档位 `effort`（缺省 = 只用注册表那份）。 */
-	models?: IDshModelRef[];
-}
+	models?: IDshModelRef[];}
 
 export class DshProviderSync extends Disposable {
 	private _timer: ReturnType<typeof setTimeout> | undefined;
@@ -436,6 +435,20 @@ export class DshProviderSync extends Disposable {
 				id: m.id,
 				name: m.name !== m.id ? m.name : undefined,
 				...(m.supportsReasoning === true ? { reasoning: true } : {}),
+				// ★ 2026-10-30：**图像能力必须一起同步**。此前只带 `reasoning`，`supportsImages`
+				// 在这里被整个丢弃 ⇒ dsh 侧把所有模型当纯文本 ⇒ 工具产出的图被剥离并报
+				// 「model does not declare image input support」，而 codebuddy 列表里明明是
+				// `images: true`。两边说法相反，用户只能猜。
+				...(m.supportsImages === true ? { supportsImages: true } : {}),
+				// ★ 2026-10-30：**上下文长度也必须同步**。此前只带 reasoning，dsh 侧拿到的
+				// 是 pi-ai 缺省窗口，与实际模型不符 ⇒ 压缩阈值（0.7）按错窗口算：
+				// 要么过早压缩白扔上下文，要么超窗才报错。
+				// 输入窗口取 `maxInputTokens`（= 平台目录的 maxInput），缺失时回落 `contextWindow`；
+				// 输出窗口取 `maxOutputTokens`。只写正有限数（0/NaN 不写，免得覆盖 pi-ai 默认）。
+				...((typeof m.maxInputTokens === 'number' && m.maxInputTokens > 0)
+					? { contextWindow: m.maxInputTokens }
+					: ((typeof m.contextWindow === 'number' && m.contextWindow > 0) ? { contextWindow: m.contextWindow } : {})),
+				...((typeof m.maxOutputTokens === 'number' && m.maxOutputTokens > 0) ? { maxTokens: m.maxOutputTokens } : {}),
 			}));
 		} catch {
 			return [];

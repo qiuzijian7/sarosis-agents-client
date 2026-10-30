@@ -633,6 +633,30 @@ export interface IBridgeProviderModel {
 	/** 具备推理/思考流（reasoning_content 分片上浮为 thinking 卡）；缺省 false。 */
 	readonly reasoning?: boolean;
 	/**
+	 * **是否接受图片输入**（= `IModelInfo.supportsImages`）。
+	 *
+	 * ★ 2026-10-30：此前协议里**根本没有这个字段**，于是 IDE 侧明明知道
+	 * （`metadata.capabilities.vision` → `supportsImages`）却在同步时被整个丢弃，
+	 * dsh 侧一律按「纯文本模型」处理 ⇒ 工具产出的图被剥离，报「does not declare
+	 * image input support」。用户看到 codebuddy 列表里 `images: true` 与提示互相矛盾。
+	 *
+	 * 桥侧据此在 profile 的模型行写 `input: ['text','image']`（pi-ai 的模态字段，
+	 * 设置页把它暴露为 `inputModalities`）。缺省/`false` ⇒ 不写（等价纯文本）。
+	 */
+	readonly supportsImages?: boolean;
+	/**
+	 * **上下文窗口**（= `IModelInfo.maxInputTokens` / `contextWindow`；pi-ai 的 `contextWindow`）。
+	 *
+	 * ★ 2026-10-30：此前协议里没有这个字段，`providerProfile.buildRouteProfile` 也**从来没写过**
+	 * `contextWindow`（只在注释里提过它的存在）⇒ dsh 侧拿到的是 pi-ai 的缺省值，与实际模型
+	 * 能力不符：压缩阈值（0.7）按错误的窗口算 ⇒ 要么过早压缩白白浪费上下文，要么超窗才报错。
+	 *
+	 * 缺省不写 ⇒ 交给 pi-ai 默认；只有拿到**正有限数**才写（0/NaN 一律不写，免得把默认覆盖成 0）。
+	 */
+	readonly contextWindow?: number;
+	/** **最大输出 token**（= `IModelInfo.maxOutputTokens`；pi-ai 的 `maxTokens`）。缺省不写。 */
+	readonly maxTokens?: number;
+	/**
 	 * **平台目录给的推荐档位**（`/v3/config` 的 `model.reasoning.effort`，如 hy3=high / m2.7=medium）。
 	 *
 	 * 用途只有一个：桥侧据此算出该路由的**路由级默认档位**（`profile.reasoning`）。

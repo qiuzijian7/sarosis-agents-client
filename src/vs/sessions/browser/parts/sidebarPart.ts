@@ -421,6 +421,13 @@ export class SidebarPart extends AbstractPaneCompositePart {
 		} catch { /* product service not available yet */ }
 		versionLabel.textContent = version ? `v${version}` : '';
 		versionLabel.title = `${nameLong} v${version}`;
+		// Version lives in the toolbar for hover access only: it must not take
+		// any horizontal slot. In the toolbar's 1-D flex row, an actually
+		// `display: none` label leaves an 8px `gap` behind ⇒ the workspace
+		// selector (and everything right-aligned after it) stays 8px off the
+		// right edge. `absolute` keeps it out of the flex flow entirely; 0px
+		// opacity (instead of `visibility: hidden`) keeps it in the a11y tree.
+		versionLabel.setAttribute('aria-hidden', 'true');
 
 		// ── 3. Custom workspace selector (right-aligned) ──
 		this._createWorkspaceSelector(toolbar);

@@ -39,7 +39,7 @@ const DEV = path.join(os.homedir(), '.vssaros-dev');
 const PROD_DEV_DSH = path.join(PROD, 'dsh-home-dev');   // 中间方案留下的"dev DSH_HOME"
 const DEV_DSH = path.join(DEV, 'dsh-home');
 /** exe 名：2026-10-29 起叫 `VsSaros.exe`（原来 `Saroasis harness.exe`）⇒ 两个都查。 */
-const APP_IMAGES = ['VsSaros.exe', 'Saroasis harness.exe'];
+const APP_IMAGES = ['VsSaros Dev.exe', 'VsSaros.exe', 'Saroasis harness.exe'];
 
 /** 不参与同步的东西：缓存/日志/运行期文件，以及两套 dsh-home（各自单独处理）。 */
 const EXCLUDE_DIRS = [

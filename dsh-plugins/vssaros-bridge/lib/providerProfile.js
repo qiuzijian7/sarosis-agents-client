@@ -58,11 +58,31 @@ export function routeReasoningDefault(modelEntries) {
  * 收集侧条目（`providers.sync` 负载里的一条）⇒ pi-ai 画像。
  *
  * @param {{api:string, baseURL:string, displayName:string, credentialRef?:string, headers?:Record<string,string>,
- *          models?:Array<{id:string,name?:string,reasoning?:boolean,effort?:string}>}} p
+ *          models?:Array<{id:string,name?:string,reasoning?:boolean,supportsImages?:boolean,effort?:string}>}} p
  * @returns {object} 写进 `providers.<route>` 的值
  */
 export function buildRouteProfile(p) {
-	const models = (p.models ?? []).map(m => ({ id: m.id, name: m.name ?? m.id, ...(m.reasoning ? { reasoningEfforts: REASONING_EFFORTS } : {}) }));
+	// ★ 2026-10-30：`supportsImages` → pi-ai 的**模型级 `input` 模态**。
+	//
+	// 为什么是 `input`：pi-ai 的模型级字段就那几个（name/contextWindow/maxTokens/
+	// input/reasoningEfforts/compat），dsh 设置页把它暴露成 `inputModalities`
+	// （`dsh-client-ui-settings-models` 的 ModelInputTypes：勾选 `['text','image']`）。
+	// 直接写 `supportsImages` 是**未知键** ⇒ 被忽略（同 reasoning 的坑，见 index.js 注释）。
+	//
+	// 只在**声明了图片输入**时才写 `input`：缺省不写 ⇒ 交给 pi-ai 的默认（纯文本）。
+	// 反过来（写 `input: ['text']`）会把上游路由级的默认覆盖掉，收益为零风险更大。
+	const models = (p.models ?? []).map(m => ({
+		id: m.id,
+		name: m.name ?? m.id,
+		...(m.reasoning ? { reasoningEfforts: REASONING_EFFORTS } : {}),
+		...(m.supportsImages === true ? { input: ['text', 'image'] } : {}),
+		// ★ 2026-10-30：**容量位**（pi-ai 模型级 `contextWindow` / `maxTokens`）。
+		// 此前本函数从不写它们（只在注释里提过）⇒ dsh 一直用 pi-ai 缺省窗口，
+		// 与平台目录声明的真实窗口不符 ⇒ 压缩阈值按错窗口算。
+		// 只写正有限数：0/NaN 会把默认覆盖成「零上下文」，比不写更糟。
+		...(isCapacity(m.contextWindow) ? { contextWindow: m.contextWindow } : {}),
+		...(isCapacity(m.maxTokens) ? { maxTokens: m.maxTokens } : {}),
+	}));
 	const routeReasoning = routeReasoningDefault(p.models ?? []);
 	return {
 		api: p.api,
@@ -74,6 +94,14 @@ export function buildRouteProfile(p) {
 		...(p.headers && typeof p.headers === 'object' && Object.keys(p.headers).length ? { headers: p.headers } : {}),
 	};
 }
+
+/**
+ * 容量值是否合法（正有限数）。
+ *
+ * ★ 2026-10-30：`0` / `NaN` / `Infinity` 都不是合法窗口；写进 profile 会把 pi-ai 的默认
+ * 覆盖成「零上下文」⇒ 比不写更糟。所以统一挡掉，只让真实容量过关。
+ */
+const isCapacity = v => typeof v === 'number' && Number.isFinite(v) && v > 0;
 
 const sameHeaders = (a, b) => {
 	const ae = Object.entries(a ?? {});
@@ -92,6 +120,23 @@ const sameReasoning = (want, got) => {
 	if (!a || !b || typeof b !== 'object') { return false; }
 	const keys = Object.keys(a);
 	return keys.length === Object.keys(b).length && keys.every(k => b[k] === a[k]);
+};
+
+/**
+ * 比较**输入模态**是否等价（`input` 数组，顺序无关）。
+ *
+ * ★ 2026-10-30：不比较它的话，`input` 一旦由本函数写入就再也不会被修正 ——
+ * `sameProfile` 会判"没变" ⇒ 改错了（比如把 image 写丢）也永远漂不回来。
+ * 同理，升级后新增这个字段时，旧的 profile 缺 `input` ⇒ 这里判不等 ⇒ 重写一次写进去。
+ */
+const sameInputModalities = (want, got) => {
+	const norm = v => (Array.isArray(v) ? [...new Set(v)].sort() : undefined);
+	const a = norm(want.input);
+	const b = norm(got && typeof got === 'object' ? got.input : undefined);
+	// 两侧都没有 ⇒ 等价（缺省即 pi-ai 默认）；只有一侧有 ⇒ 不等（需要写/修正）。
+	if (a === undefined && b === undefined) { return true; }
+	if (a === undefined || b === undefined) { return false; }
+	return a.length === b.length && a.every((v, i) => v === b[i]);
 };
 
 /** baseURL 漂移时把**值**带出来（代理 secret 段打码）。 */
@@ -122,6 +167,11 @@ export function sameProfile(want, got, why) {
 		if (!gm || gm.id !== wm.id) { return no(`models[${i}].id`); }
 		if ((gm.name ?? gm.id) !== (wm.name ?? wm.id)) { return no(`models[${i}].name`); }
 		if (!sameReasoning(wm, gm)) { return no(`models[${i}].reasoningEfforts`); }
+		if (!sameInputModalities(wm, gm)) { return no(`models[${i}].input`); }
+		// ★ 2026-10-30：容量位也要比 —— 不比就永不重写：写错了漂不回来，
+		// 升级后旧 profile 缺这两个键也补不进去（dsh 会一直用缺省窗口）。
+		if ((wm.contextWindow ?? undefined) !== (gm.contextWindow ?? undefined)) { return no(`models[${i}].contextWindow`); }
+		if ((wm.maxTokens ?? undefined) !== (gm.maxTokens ?? undefined)) { return no(`models[${i}].maxTokens`); }
 	}
 	return true;
 }

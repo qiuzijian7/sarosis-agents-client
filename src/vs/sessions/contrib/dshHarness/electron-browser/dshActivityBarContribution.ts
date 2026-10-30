@@ -41,6 +41,7 @@ import { IDshHarnessService } from './dshHarnessService.js';
 import { AGENT_STUDIO_CODEBASE_VIEW_ID, AGENT_STUDIO_DASHBOARD_VIEW_ID, AGENT_STUDIO_DSH_IMAGEGEN_VIEW_ID, AGENT_STUDIO_DSH_MARKETPLACE_VIEW_ID, AGENT_STUDIO_DSH_RELAY_VIEW_ID, AGENT_STUDIO_DSH_SESSIONS_VIEW_ID, AGENT_STUDIO_INTEGRATION_VIEW_ID, AGENT_STUDIO_KB_VIEW_ID, AGENT_STUDIO_MEDIA_VIEW_ID, AGENT_STUDIO_MEMORY_VIEW_ID, AGENT_STUDIO_PRESET_AGENT_VIEW_ID, AGENT_STUDIO_SCHEDULER_VIEW_ID, AGENT_STUDIO_TASKS_VIEW_ID, AGENT_STUDIO_WORKFLOW_VIEW_ID } from '../../../common/agentStudioConstants.js';
 import { DynamicActivityBarContainers } from '../../agentStudio/browser/dynamicActivityBarContainers.js';
 import { DshPluginViewPane } from './dshPluginViewPane.js';
+import { DshNativeTreeViewPane } from './dshNativeTreeViewPane.js';
 
 /**
  * 容器 → 视图宿主（UI 层适配）。
@@ -94,12 +95,49 @@ const MODULE_VIEW_HOSTS: Readonly<Record<string, IModuleViewHost>> = {
 };
 
 /**
+ * **原生宿主注册表**：清单的 `view.viewType` → 该形态在 IDE 侧用的视图 id。
+ *
+ * 这是"清单能声明什么"与"IDE 实际画什么"之间的**唯一接缝**（新增一种原生形态 = 这里加一行）。
+ * 视图 id 必须**沿用**该容器的既有 id（R1：活动栏布局按 id 持久化，换 id = 用户布局丢失）——
+ * 所以下面的取值都走 `AGENT_STUDIO_*_VIEW_ID` 常量，而不是现拼一个。
+ *
+ * ⚠ 只登记**真的实现了原生宿主**的形态。登记了却没有对应树数据源，表现是"图标在、点开空白"，
+ *   比降级成插件页更难查 ⇒ 没实现就别往这里写（`nativeViewHostOf` 会如实 warn）。
+ */
+const NATIVE_VIEW_IDS: Readonly<Record<string, string>> = {
+	// Agent 名册（2026-10-30 首个样板）：原生树取代 `?surface=sideview` 的插件网页。
+	'vssaros.agents.roster': AGENT_STUDIO_PRESET_AGENT_VIEW_ID,
+};
+
+/**
  * 容器 → 视图宿主（清单驱动）。已知容器走 `MODULE_VIEW_HOSTS`（id 稳定 ✓）；
  * **未知容器**（新模块）派生一个确定性的视图 id（`vssaros.dsh.pv.<containerId>`），宿主同样是
  * `DshPluginViewPane`——宿主对任何容器都同形，只是路由不同（由 Pane 向服务现算）。
  */
 function moduleViewHostOf(containerId: string): IModuleViewHost {
 	return MODULE_VIEW_HOSTS[containerId] ?? pageHost(`vssaros.dsh.pv.${containerId}`, containerId);
+}
+
+/**
+ * 清单声明 `view.kind=native` 时，这个容器该挂哪个**原生**宿主。
+ *
+ * ★ 2026-10-30（用户要求「activitybar 中插件的 sideview 改用 vscode 原生的 UI 和功能」）：
+ *   此前这里只有 page 一条路 —— 清单写 `native` 也照样被塞进 `DshPluginViewPane`，
+ *   于是那个形态从实现上并不存在。现在按 `viewType` 查**原生宿主注册表**：
+ *   - 注册表命中 ⇒ 用原生树宿主（不用 WebContentsView）；
+ *   - 注册表没命中 ⇒ **如实降级**到插件页并**记日志**（不静默：否则"改完清单没变化"最难查）。
+ *
+ * 为什么必须保留降级而不是直接不注册：容器消失会连用户已存的活动栏布局一起丢，
+ * 而"降级成插件页"至少还能用 —— 但**一定要说出来**，所以下面 warn 里写清该去加哪一条。
+ */
+function nativeViewHostOf(containerId: string, viewType: string, log: ILogService): IModuleViewHost | undefined {
+	const viewId = NATIVE_VIEW_IDS[viewType];
+	if (!viewId) {
+		log.warn(`[DshActivityBar] 容器 ${containerId} 声明了原生视图 ${viewType}，但 IDE 侧没有对应的原生宿主`
+			+ `（需要在该模块的 nativeViewIds 表里登记；可用的有：${Object.keys(NATIVE_VIEW_IDS).join(', ') || '(无)'}）⇒ 降级为插件页`);
+		return undefined;
+	}
+	return { viewId, ctorDescriptor: new SyncDescriptor(DshNativeTreeViewPane, [containerId, viewType]) };
 }
 
 /** `title` 支持 `string | { zh, en }`；ActivityBar 只认一个显示名（中文优先）。 */
@@ -218,7 +256,13 @@ export class DshActivityBarContribution extends Disposable implements IWorkbench
 
 	private _registerContainer(container: IDshModuleContainer): void {
 		// 清单驱动（1.1）：未知容器也有派生宿主（moduleViewHostOf）——不再是"没有就跳过"。
-		const host = moduleViewHostOf(container.containerId);
+		//
+		// ★ 2026-10-30：原生形态优先。容器清单声明了 `view.kind=native` 就**不走**插件页宿主
+		//   （那是 WebContentsView 里的一张网页），改挂 IDE 自己画的原生视图；注册表里没有对应形态时
+		//   `nativeViewHostOf` 返回 undefined 并 warn ⇒ 落到下面的 page 分支（降级但不静默）。
+		const view = container.view;
+		const host = (view?.kind === 'native' ? nativeViewHostOf(container.containerId, view.viewType, this._log) : undefined)
+			?? moduleViewHostOf(container.containerId);
 		const { containerId, title, icon, order } = container.activityBar;
 		// 幂等守卫（双注册会抛 "A view with id ... is already registered" 并中断工作台加载）已在封装内。
 		this._containers.register({

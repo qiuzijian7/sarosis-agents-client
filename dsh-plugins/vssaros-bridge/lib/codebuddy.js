@@ -163,6 +163,23 @@ function toRouteModel(raw) {
 		id,
 		...(name ? { name } : {}),
 		...(raw.supportsReasoning === true ? { reasoning: true } : {}),
+		// ★ 2026-10-30：**图像能力位必须带出去**。平台目录逐模型给了 `supportsImages`
+		// （登录后 console.table 里那列 `images` 全是 true），此前这里只导 reasoning ⇒
+		// 本文件是 dsh 侧**自持** CodeBuddy 的唯一模型来源（`providers.sync` 会跳过
+		// `DSH_OWNED_ROUTES`）⇒ 少这一位，dsh 就把所有模型当纯文本，
+		// 工具产出的图被剥离并报「model does not declare image input support」。
+		// 翻译成 pi-ai 的 `input: ['text','image']` 由 providerProfile.buildRouteProfile 负责。
+		...(raw.supportsImages === true ? { supportsImages: true } : {}),
+		// ★ 2026-10-30：**上下文长度**。平台目录逐模型给了 `maxInputTokens` /
+		// `maxOutputTokens`（console.table 的 maxInput / maxOutput），此前这里只导
+		// reasoning ⇒ dsh 侧一直用 pi-ai 缺省窗口 ⇒ 压缩阈值按错窗口算：
+		// 要么过早压缩白扔上下文，要么超窗才报错。
+		// 翻译成 pi-ai 的模型级 `contextWindow` / `maxTokens` 由
+		// providerProfile.buildRouteProfile 负责。只导正有限数。
+		...(typeof raw.maxInputTokens === 'number' && Number.isFinite(raw.maxInputTokens) && raw.maxInputTokens > 0
+			? { contextWindow: raw.maxInputTokens } : {}),
+		...(typeof raw.maxOutputTokens === 'number' && Number.isFinite(raw.maxOutputTokens) && raw.maxOutputTokens > 0
+			? { maxTokens: raw.maxOutputTokens } : {}),
 		...(effort === 'low' || effort === 'medium' || effort === 'high' ? { effort } : {}),
 	};
 }

@@ -840,6 +840,157 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 				if (code3.indexOf(needle) < 0) { problems.push(`client.workspaces.js: 缺「${needle}」—— ${why} ✗`); }
 			}
 		}
+		// ── ⑤-i 归档必须真生效 + 新增「删除会话」（2026-10-30 用户报障「归档点了没反应」）──────
+		// ① 归档的**集合来源**：官方 `archiveSession` 只写 `workspaces.list.archivedSessionIds`，
+		//    而 `sessions.list` 快照里**根本没有这个字段**（官方 session-controller 里 0 命中）
+		//    ⇒ 从前读 sessions 快照 ⇒ 恒空 ⇒ 归档后行仍在列表 ⇒ 用户看到"点了没反应" ✗。
+		// ② 「删除」≠「归档」：dsh 官方**没有删除 API**（只有 archive）⇒ 真删只能由宿主删磁盘，
+		//    所以这条是**写操作**：二次确认 + id 白名单 + 落点校验，三样缺一不可。
+		{
+			const idxWs = src.indexOf('(wsSnap && wsSnap.archivedSessionIds)');
+			const idxSs = src.indexOf('(sessSnap && sessSnap.archivedSessionIds)');
+			if (idxWs < 0) {
+				problems.push('client.workspaces.js: 归档集合必须读 `workspaces.list.archivedSessionIds` —— sessions 快照里没有这个字段（读了恒空 ⇒ 归档后行不消失）✗');
+			} else if (idxSs >= 0 && idxSs < idxWs) {
+				problems.push('client.workspaces.js: 归档集合必须**以 workspaces 快照为主**、sessions 快照兜底（顺序反了 = 仍读那个不存在的字段）✗');
+			}
+			for (const [needle, why] of [
+				['"data-act": "delete"', '右键菜单必须有「删除会话」项（2026-10-30 用户要求）'],
+				['"data-vssaros-sess-confirm"', '删除必须二次确认（真删不可恢复；确认层要有稳定锚点）'],
+				['/x/chat-surface/api/delete-session', '删除必须走宿主通路（页面是浏览器上下文，碰不到磁盘）'],
+				['svc.refresh', '删完必须刷新 roster —— 否则"删了还在列表里"= 又一个点了没反应 ✗'],
+				// ★★ 2026-10-30（用户报「点了删除，item 没消失」）：只删磁盘**不会**让行消失 ——
+				//   会话行来自 `workspaces.list` 的 `items[].sessionIds`，删文件不改那条记录 ✗
+				//   ⇒ 必须先归档（Host 持久化状态 ⇒ 归档集合一变，渲染就跳过它），再删磁盘。
+				['.then(wipe', '删除必须**先归档再删盘**（`.then(wipe`）—— 只删磁盘的话 UI 不会消失 ✗'],
+			]) {
+				if (String(src).indexOf(needle) < 0) { problems.push(`client.workspaces.js: 缺「${needle}」—— ${why} ✗`); }
+			}
+			// host 半边：必须**真删**，且边界钉死
+			let hostSrc = '';
+			try { hostSrc = fs.readFileSync(path.join(LIB, 'index.js'), 'utf8'); } catch { hostSrc = ''; }
+			if (!hostSrc) {
+				problems.push('lib/index.js（host 半边）: 读不到 —— 删除通路必须落在宿主侧 ✗');
+			} else {
+				for (const [needle, why] of [
+					['/x/chat-surface', 'host 半边必须注册删除路由'],
+					// ⚠ 钉**使用点**而不是常量名：只钉 `SESSION_ID_RE` 的话，删掉校验、留下定义 = 假绿（实测踩过）
+					['if (!SESSION_ID_RE.test(sessionId))', '会话 id 必须真的走白名单正则校验（防 `..` / 绝对路径穿越）'],
+					['if (!insideOf(sessionsRoot, target))', '每条待删路径都要校验落点（`insideOf` 必须真的被用于判断，不是只定义）'],
+					['await rm(target, { recursive: true, force: true })', '必须真删目录（归档只是从列表移除，数据还在）'],
+					['requestRejection', '写路由必须过 connection 的鉴权围栏'],
+					["inject(['webServer', 'connection']", 'webServer/connection 只能**可选**注入（静态 inject 会让 headless profile 永久 pending）'],
+				]) {
+					if (hostSrc.indexOf(needle) < 0) { problems.push(`lib/index.js（host 半边）: 缺「${needle}」—— ${why} ✗`); }
+				}
+			}
+			notes.push('client.workspaces.js / lib/index.js: 归档取 workspaces 快照 + 删除（二次确认 + 宿主白名单删盘）断言通过');
+		}
+		// ── ⑤-j 会话太多时只加载一部分（2026-10-30 用户要求「要求能够加载一部分」）──────────────
+		// 单个工作区能挂**上百条**会话（`items[].sessionIds` 是 Host 记的全量成员）⇒ 全渲染一屏几百个 DOM 节点。
+		// 口径：默认 `SESSION_PAGE_SIZE` 条 + 「展开其余 N 条」（每次 +20，全展开后「收起」）；
+		//   搜索命中**不截断**；**当前会话永远可见**（否则点开一条老会话，列表里却看不到它高亮在哪 ✗）。
+		{
+			if (typeof t.visibleSessions !== 'function') {
+				problems.push('client.workspaces.js: 缺 __test.visibleSessions（分页配额必须可单测 ✗）');
+			} else if (typeof t.SESSION_PAGE_SIZE !== 'number' || t.SESSION_PAGE_SIZE < 5) {
+				problems.push(`client.workspaces.js: SESSION_PAGE_SIZE 不合理（实际 ${t.SESSION_PAGE_SIZE}）✗`);
+			} else {
+				const mk = (id, cur) => ({ id, isCurrent: cur === true });
+				const all = [mk('a'), mk('b'), mk('c'), mk('d')];
+				if (t.visibleSessions(all, 2).map((s) => s.id).join(',') !== 'a,b') {
+					problems.push('visibleSessions: 配额应取前 N 条（a,b）✗');
+				}
+				const withCur = t.visibleSessions([mk('a'), mk('b'), mk('c', true)], 2).map((s) => s.id).join(',');
+				if (withCur !== 'a,b,c') {
+					problems.push(`visibleSessions: **当前会话**必须强制可见（期望 a,b,c，实际 ${withCur}）✗ —— 否则点开老会话后看不到它`);
+				}
+				if (t.visibleSessions(all, 99).length !== 4) {
+					problems.push('visibleSessions: 配额 >= 总数时应全给 ✗');
+				}
+				if (t.visibleSessions(all, 0).map((s) => s.id).join(',') !== 'a,b,c,d') {
+					problems.push('visibleSessions: 配额 <= 0 当「不限制」（别把列表清空）✗');
+				}
+				if (t.visibleSessions(null, 3).length !== 0) {
+					problems.push('visibleSessions: 空输入应返回空数组 ✗');
+				}
+			}
+			const code4 = String(src).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+			for (const [needle, why] of [
+				['"data-vssaros-more-sessions"', '「展开其余」按钮要有稳定锚点（自动化/守卫都靠它）'],
+				['展开其余 ', '分组底部必须写出"还有多少条没展开"（不许静默截断 ✗）'],
+				['const searching = !!q;', '搜索命中必须**不截断**（搜到就该看见）'],
+			]) {
+				if (code4.indexOf(needle) < 0) { problems.push(`client.workspaces.js: 缺「${needle}」—— ${why} ✗`); }
+			}
+			notes.push('client.workspaces.js: 会话分页（默认条数 + 展开其余 + 当前会话必可见 + 搜索不截断）断言通过');
+		}
+
+		// ── ⑤-i 会话行**状态灯**（2026-10-30 用户报障：「工作区内的会话 item 缺少状态灯 UI」）──
+		// 用户可见行为：一眼看出哪条会话在跑 / 哪条在等你回答。钉三件事：
+		//   ① 四态判据与 @vssaros/dsh-sessions 的 `statusOf` **同口径**（不自造第二套）；
+		//   ② `awaiting` **优先于** `running`（否则"该你回答了"会被收尾 delta 盖掉 ✗）；
+		//   ③ 三个信号都读不到 ⇒ `unknown`，**不画成空闲**（未知 ≠ 已知不忙 ✗）。
+		if (t && typeof t.sessionStatusOf === 'function') {
+			const cases = [
+				[{ turnRunning: true }, 'running', 'turn 在跑 ⇒ running'],
+				[{ turnRunning: true, retrying: true }, 'running', '重试也算 running'],
+				[{ llmRetry: { retry: 2 } }, 'running', 'llmRetry.retry>0 也算 running'],
+				[{ turnRunning: false, pendingQuestions: 1 }, 'awaiting', '有待回答 ⇒ awaiting'],
+				[{ turnRunning: true, pendingQuestions: 2 }, 'awaiting', 'awaiting 必须**优先于** running'],
+				[{ userQuestions: { count: 3 } }, 'awaiting', '官方单元名 userQuestions 也要认'],
+				[{ turnRunning: false }, 'idle', 'turn 明确停了 ⇒ idle'],
+				[{ pendingQuestions: 0, turnRunning: false }, 'idle', '已知 0 待回答 + 没跑 ⇒ idle'],
+				[{}, 'unknown', '三个信号都读不到 ⇒ unknown（不许假装空闲 ✗）'],
+				[{ title: 'x' }, 'unknown', '缺状态字段的 roster 行 ⇒ unknown'],
+			];
+			for (const [input, want, why] of cases) {
+				const got = t.sessionStatusOf(input);
+				if (got !== want) { problems.push(`sessionStatusOf(${JSON.stringify(input)}): 期望 ${want}，实际 ${got} —— ${why} ✗`); }
+			}
+			if (!t.RING_LABEL || !t.RING_LABEL.running || !t.RING_LABEL.awaiting || !t.RING_LABEL.idle) {
+				problems.push('client.workspaces.js: RING_LABEL 必须给 running/awaiting/idle 三态的 hover 文案 ✗');
+			}
+			// 兜底单元名：pendingQuestions 缺席时回落到官方的 userQuestions
+			if (t.pendingQuestionsOf({ userQuestions: { count: 4 } }) !== 4) {
+				problems.push('pendingQuestionsOf: 必须认 {count} 形状（与 @vssaros/dsh-sessions 同口径）✗');
+			}
+			if (t.pendingQuestionsOf({}) !== undefined) {
+				problems.push('pendingQuestionsOf: 单元缺席必须返回 undefined（未知），不许编 0 ✗');
+			}
+			// buildSidebar 必须把 status 带进渲染模型（两处渲染共用同一个模型）
+			const rowsS = t.buildSidebar({
+				workspaces: [{ workspaceId: 'w1', path: 'G:/WS/client', sessionIds: ['r1', 'a1', 'i1', 'u1'] }],
+				records: [],
+				sessionsById: {
+					r1: { title: 'R', updatedAt: 400, turnRunning: true },
+					a1: { title: 'A', updatedAt: 300, pendingQuestions: 1 },
+					i1: { title: 'I', updatedAt: 200, turnRunning: false },
+					u1: { title: 'U', updatedAt: 100 },
+				},
+				archivedIds: [], currentSessionId: null,
+			});
+			const flatS = rowsS.filter((r) => r.kind === 'flat')[0];
+			const gotS = flatS ? flatS.sessions.map((s) => s.id + ':' + s.status) : [];
+			if (gotS.join(',') !== 'r1:running,a1:awaiting,i1:idle,u1:unknown') {
+				problems.push(`buildSidebar: 状态灯未带进渲染模型，期望 r1:running,a1:awaiting,i1:idle,u1:unknown，实际 ${gotS.join(',')} ✗`);
+			}
+			notes.push('client.workspaces.js: 会话行状态灯（四态 / awaiting 优先 / 未知不画成空闲）断言通过');
+		} else {
+			problems.push('client.workspaces.js: 缺 __test.sessionStatusOf（状态灯口径必须可单测 ✗）');
+		}
+		// 静态面：行里必须真的画出那盏灯，且脉动样式表必须注入
+		const ringSrc = String(src).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+		for (const [needle, why] of [
+			['"data-ws-ring"', '会话行必须有状态灯的稳定 DOM 锚点（真机探针也靠它）'],
+			['S.ringRunning', '运行态必须着绿'],
+			['S.ringAwaiting', '等待态必须着黄'],
+			['vssaros-ws-ring-pulse', '运行态脉动动效必须存在（样式表注入）'],
+			['prefers-reduced-motion', '脉动必须尊重 reduced-motion（关动效但保留绿色）'],
+			['ensureRingStyle()', 'install 里必须注入一次样式表（否则 @keyframes 不存在 ⇒ 不脉动）'],
+		]) {
+			if (ringSrc.indexOf(needle) < 0) { problems.push(`client.workspaces.js: 缺「${needle}」—— ${why} ✗`); }
+		}
 	}
 }
 
@@ -1792,12 +1943,16 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 		}
 	}
 
-	// 两个渲染分支（分组 / 平铺）的会话行都必须把就地提示通道传进去。
-	// ★ 2026-10-29：两处渲染已收敛成同一个 `renderSessionRow(s, setMsg, setLocal)`（同一个实现 ⇒ 口径不会漂）⇒
-	//   钉两件事：① 两处调用都传 `setWsMsg`；② 该函数内部 onClick 用的就是传进来的通道。
+	// 两个渲染分支（分组 / 平铺）都必须经**同一个** `renderSessions(row)`（分页也收口在那里）。
+	// ★ 2026-10-30：分页统一后 `renderSessionRow` 只该有**一处**调用（在 `renderSessions` 里）——
+	//   两处各写一份必然漂（一侧有分页、另一侧没有）。
+	const listCalls = ws.match(/isOpen \? renderSessions\(row\) : null/g) || [];
 	const rowCalls = ws.match(/renderSessionRow\(s, setWsMsg, setLocalCurrent\)/g) || [];
-	if (rowCalls.length < 2) {
-		problems.push(`client.workspaces.js: 两个渲染分支的会话行都要传就地提示通道（实际 ${rowCalls.length} 处）✗`);
+	if (listCalls.length < 2) {
+		problems.push(`client.workspaces.js: 两个渲染分支都要经 \`renderSessions(row)\`（实际 ${listCalls.length} 处）✗`);
+	}
+	if (rowCalls.length !== 1) {
+		problems.push(`client.workspaces.js: \`renderSessionRow\` 只允许在 \`renderSessions\` 里调一次（实际 ${rowCalls.length} 处）—— 两处各写一份会漂 ✗`);
 	}
 	{
 		const at = ws.indexOf('const renderSessionRow = ');

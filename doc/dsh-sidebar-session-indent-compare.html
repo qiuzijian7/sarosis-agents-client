@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>会话行缩进对照（0.2.285 vs 0.2.286）</title>
+<!--
+  2026-10-30 用户第三次报「还嫌靠右」⇒ 根因不是 paddingLeft（16 已到底），而是**行首图钉占位**
+  （12px + gap 7 = 19px）。本页按真实 DOM 结构 + 真实像素把两版并排放出来，便于一眼对齐。
+  ⚠ 纯示意，不是实现代码（实现见 dsh-plugins/vssaros-chat-surface/lib/client.workspaces.js）。
+-->
+<style>
+  :root {
+    --side: #1f1f1f; --fg: #e6e6e6; --fg2: #a3a3a3; --fg3: #737373;
+    --line2: #383838; --accent: #5b8cff; --amber: #ffd28a; --green: #3fb950;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 760px; height: 430px; overflow: hidden; }
+  body { background: #0d0e10; color: var(--fg); font: 13px/1.45 "Segoe UI", "Microsoft YaHei UI", sans-serif; padding: 16px 22px; }
+  .cap { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+  .cap b { font-size: 13px; }
+  .cap span { font-size: 11.5px; color: var(--fg3); }
+  .wrap { display: flex; gap: 26px; }
+  .col { width: 268px; flex: none; background: var(--side); border: 1px solid #333; border-radius: 8px; padding: 8px 10px 12px; position: relative; }
+  .col h4 { font-size: 11.5px; font-weight: 700; margin: 2px 0 8px; display: flex; align-items: baseline; gap: 6px; }
+  .col h4 .v { font-size: 10.5px; font-weight: 400; color: var(--fg3); }
+  .old h4 { color: #f48771; }
+  .new h4 { color: var(--green); }
+  .row { display: flex; align-items: center; gap: 7px; height: 29px; padding: 3px 8px; border-radius: 6px; white-space: nowrap; }
+  .row.ws { color: var(--fg); font-weight: 600; font-size: 12.5px; }
+  .row.sess { font-size: 12.5px; color: var(--fg2); }
+  .row.sess.cur { background: rgba(91,140,255,.15); color: var(--fg); }
+  .lbl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .meta { font-size: 10px; color: var(--fg3); flex: none; }
+  .chev { width: 10px; flex: 0 0 auto; font-size: 8px; color: var(--fg3); text-align: center; }
+  .roots { font-size: 10px; line-height: 15px; border: 1px solid var(--line2); border-radius: 8px; padding: 0 5px; color: var(--fg3); flex: none; }
+  .ring { width: 2px; height: 15px; border-radius: 1px; background: var(--green); flex: 0 0 2px; margin: 0 1px 0 0; }
+  .pinpad { width: 12px; flex: 0 0 12px; }
+  .pin { font-size: 10px; line-height: 16px; color: var(--accent); flex: none; }
+  .guide { position: absolute; top: 26px; bottom: 10px; width: 0; border-left: 1px dashed var(--amber); opacity: .75; }
+  .guide span { position: absolute; bottom: -16px; left: 3px; font-size: 10px; color: var(--amber); white-space: nowrap; }
+  .note { margin-top: 12px; font-size: 11.5px; line-height: 1.7; color: var(--fg3); }
+  .note b { color: var(--fg2); }
+  .note code { font: 11px Consolas, monospace; background: #222; padding: 0 4px; border-radius: 3px; color: #c9c9c9; }
+</style>
+</head>
+<body>
+<div class="cap"><b>会话行左缩进对照</b><span>同一组数据、同一套样式，只差「行首有没有那个图钉占位」</span></div>
+
+<div class="wrap">
+  <div class="col old">
+    <h4>现在 <span class="v">0.2.285 · 标题 x=57</span></h4>
+    <div class="row ws"><span class="chev">▼</span><span class="lbl">sarosis-agents-client</span><span class="roots">5 个根</span></div>
+    <div class="row sess cur"><span class="pinpad"></span><span class="ring"></span><span class="lbl">优化会话 item 左移布局</span><span class="meta">12 分钟</span></div>
+    <div class="row sess"><span class="pinpad"></span><span class="ring"></span><span class="lbl">Testing and Validation (3)</span><span class="meta">47 分钟</span></div>
+    <div class="row sess"><span class="pinpad"></span><span class="ring"></span><span class="lbl">飞书 · VsSaros 知识库</span><span class="meta">1 天</span></div>
+    <div class="row sess"><span class="pinpad"></span><span></span><span class="lbl">我名下有哪些缺陷</span><span class="meta">1 天</span></div>
+    <div class="guide" style="left: 47px"><span>标题 57</span></div>
+  </div>
+
+  <div class="col new">
+    <h4>新版 <span class="v">0.2.286 · 标题 x=38</span></h4>
+    <div class="row ws"><span class="chev">▼</span><span class="lbl">sarosis-agents-client</span><span class="roots">5 个根</span></div>
+    <div class="row sess cur"><span class="ring"></span><span class="lbl">优化会话 item 左移布局</span><span class="meta">12 分钟</span></div>
+    <div class="row sess"><span class="ring"></span><span class="lbl">Testing and Validation (3)</span><span class="meta">47 分钟</span></div>
+    <div class="row sess"><span class="ring"></span><span class="lbl">飞书 · VsSaros 知识库</span><span class="meta">1 天</span></div>
+    <div class="row sess"><span class="ring" style="background: rgba(128,128,128,.5)"></span><span class="lbl">我名下有哪些缺陷</span><span class="meta">1 天</span></div>
+    <div class="guide" style="left: 28px"><span>标题 38 ↔ 分组名 37</span></div>
+  </div>
+</div>
+
+<div class="note">
+  左：<code>paddingLeft 16</code> + 图钉占位 <code>12</code> + <code>gap 7</code> + 状态灯 <code>3</code> + 容器左缘 <code>12</code> ⇒ 标题 57，比分组名（37）右 20px，看着像多缩进了一级。<br>
+  右：图钉挪到<b>行尾</b>（只在置顶时渲染）⇒ 标题 38，与分组名 <b>逐像素齐平</b>；状态灯仍是"哪条在跑"的唯一标识。
+</div>
+</body>
+</html>

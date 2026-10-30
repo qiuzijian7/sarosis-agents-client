@@ -1827,6 +1827,18 @@ export function activate(context: vscode.ExtensionContext): void {
 						id: m.id,
 						name: m.name !== m.id ? m.name : undefined,
 						reasoning: m.supportsReasoning === true || undefined,
+						// ★ 2026-10-30：**图像能力位**。平台目录（/v3/config）逐模型给了
+						// `supportsImages`，此前这一步只导 `reasoning` ⇒ dsh 侧全部当纯文本
+						// ⇒ 工具产出的图被剥离、报「does not declare image input support」，
+						// 而这里明明写着 `images: true`。翻译成 pi-ai 的 `input: ['text','image']`
+						// 由桥插件负责（同 reasoning → reasoningEfforts 的分工）。
+						supportsImages: m.supportsImages === true || undefined,
+						// ★ 2026-10-30：**上下文长度**。平台目录逐模型给了 `maxInputTokens`/
+						// `maxOutputTokens`（console.table 的 maxInput / maxOutput 两列），此前
+						// 一步没导 ⇒ dsh 侧用 pi-ai 缺省窗口 ⇒ 压缩阈值按错窗口算。
+						// 桥插件把它翻译成 pi-ai 的模型级 `contextWindow` / `maxTokens`。
+						contextWindow: (m.maxInputTokens ?? 0) > 0 ? m.maxInputTokens : undefined,
+						maxTokens: (m.maxOutputTokens ?? 0) > 0 ? m.maxOutputTokens : undefined,
 						// 只导网关认的三个值（= `reasoning_effort` 的取值域），其余一律不导（免得下游当真）。
 						...(effort === 'low' || effort === 'medium' || effort === 'high' ? { effort } : {}),
 					};

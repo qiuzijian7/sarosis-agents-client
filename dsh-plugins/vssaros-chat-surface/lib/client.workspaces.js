@@ -173,6 +173,76 @@ window.__ModuleLoader__.load({
 			return flat.length > 48 ? flat.slice(0, 48) + "…" : flat;
 		}
 
+		// ── 会话行状态灯（2026-10-30 用户报障：「工作区内的会话 item 缺少状态灯 UI」）──────────
+		//
+		// 为什么要有：侧栏里**同时在跑**的会话可以有五六个，而这一列只有标题 + 时间 ——
+		// 哪个在跑、哪个在等你审批，**一眼看不出来**（官方侧栏与 @vssaros/dsh-sessions 页都有这盏灯 ✓）。
+		//
+		// 口径**逐字沿用** `@vssaros/dsh-sessions` 的 `statusOf`（`lib/core/sessionList.js:336-363`），
+		// 那是本仓已经真机跑通的那一份，不自造第二套：
+		//   · awaiting（黄）**优先于** running（绿）—— 否则"该你回答了"会被紧接着的收尾 delta 盖掉；
+		//   · running = 回合在跑 **或** 正在重试（LLM）；
+		//   · 其余 idle（灰）。
+		// ⚠ 三个信号都可能**读不到**（老服务 / 会话不在 roster）⇒ 那一律**不画灯**，
+		//   不把"未知"画成"空闲"（`idle` 是**已知不忙**，与"不知道"是两件事 ✗）。
+		//
+		// 数据从哪来（两条路，都不依赖槽作用域 props —— 本 chunk 注册在 `sidebar.workspaces`，
+		// 拿不到 conversation 槽那套 `useSessionStatus`）：
+		//   ① roster 行的投影字段（`turnRunning` / `retrying` / `pendingQuestions`
+		//     = `turnBoundary` / `llmRetry` / `userQuestions` 三个单元的归一化结果）；
+		//   ② 兜底：等价单元名（`s.running` / `s.turn.running`），读不到不算数。
+		const QUESTIONS_KEYS = ["pendingQuestions", "userQuestions"];
+
+		/** 待回答/待审批条数；**返回 undefined = 未知**（与"已知是 0"严格分开）。 */
+		function pendingQuestionsOf(s) {
+			if (!s || typeof s !== "object") { return undefined; }
+			const shaped = (v) => {
+				if (typeof v === "number" && isFinite(v)) { return Math.max(0, Math.trunc(v)); }
+				if (Array.isArray(v)) { return v.length; }
+				if (v && typeof v === "object") {
+					for (const k of ["count", "pending", "items", "questions"]) {
+						const inner = v[k];
+						if (typeof inner === "number" && isFinite(inner)) { return Math.max(0, Math.trunc(inner)); }
+						if (Array.isArray(inner)) { return inner.length; }
+					}
+				}
+				return undefined;
+			};
+			for (const key of QUESTIONS_KEYS) {
+				const got = shaped(s[key]);
+				if (got !== undefined) { return got; }
+			}
+			return undefined;
+		}
+
+		/**
+		 * 会话行的状态：`'awaiting' | 'running' | 'idle' | 'unknown'`（纯函数 ⇒ __test 直接断言）。
+		 * `unknown` 由**调用方**决定怎么画（我们不画灯）；这里只负责"读不到就是读不到"。
+		 */
+		function sessionStatusOf(s) {
+			if (!s || typeof s !== "object") { return "unknown"; }
+			const awaiting = pendingQuestionsOf(s);
+			if (typeof awaiting === "number" && awaiting > 0) { return "awaiting"; }
+			const turn = s.turnBoundary && typeof s.turnBoundary === "object" ? s.turnBoundary : null;
+			const retry = s.llmRetry && typeof s.llmRetry === "object" ? s.llmRetry : null;
+			let running;
+			if (typeof s.turnRunning === "boolean") { running = s.turnRunning; }
+			else if (turn && typeof turn.running === "boolean") { running = turn.running; }
+			else if (typeof s.running === "boolean") { running = s.running; }
+			let retrying;
+			if (typeof s.retrying === "boolean") { retrying = s.retrying; }
+			else if (retry && typeof retry.retry === "number") { retrying = retry.retry > 0; }
+			if (running === undefined && retrying === undefined) {
+				// 三个运行信号一个都读不到，但**确实**问到了待回答条数（= 0）⇒ 那是"已知空闲"✓
+				return awaiting === 0 ? "idle" : "unknown";
+			}
+			if (running === true || retrying === true) { return "running"; }
+			return "idle";
+		}
+
+		/** 状态灯的 hover 文案（与 @vssaros/dsh-sessions 的 `RING_LABEL` 同一套话术）。 */
+		const RING_LABEL = { running: "Agent 正在执行", awaiting: "等待你回答 / 审批", idle: "空闲" };
+
 		/**
 		 * 选"当前会话"（高亮用）—— 纯函数（可单测 ✓）。
 		 *
@@ -276,6 +346,34 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
+		 * 每组默认渲染多少条会话（2026-10-30 用户要求「会话太多时要能只加载一部分」）。
+		 *
+		 * 为什么要有：本机实测单个工作区能挂 **上百条**会话（`items[].sessionIds` 是 Host 记的全量成员），
+		 * 全渲染 ⇒ 一屏几百个 DOM 节点 + 每次快照变化全量重排（侧栏滚动明显发涩）。
+		 * 20 条 ≈ 一屏半，够用；「展开其余 N 条」每次再放 20。
+		 */
+		const SESSION_PAGE_SIZE = 20;
+
+		/**
+		 * 按配额取要渲染的会话 —— **当前会话永远可见**（哪怕它排在配额之外）。
+		 *
+		 * 口径来源：@vssaros/dsh-sessions 页的「5 条配额 + 展开其余」（`computeGroupWindow`），
+		 * 那边还要求"运行中/等待中不占配额且始终显示"；侧栏没有四态过滤，这里只保证**当前会话**不被折叠隐藏
+		 * （否则用户点开一条老会话，列表里却看不到它高亮在哪 ✗）。
+		 */
+		function visibleSessions(list, quota) {
+			const all = Array.isArray(list) ? list : [];
+			const q = Number.isFinite(quota) && quota > 0 ? Math.floor(quota) : 0;
+			// 配额缺失 / <= 0 ⇒ 当"不限制"（宁可多渲染，也不能把列表清空 ✗）
+			if (q === 0 || q >= all.length) { return all.slice(); }
+			const out = all.slice(0, q);
+			for (const s of all) {
+				if (s && s.isCurrent && out.indexOf(s) < 0) { out.push(s); }
+			}
+			return out;
+		}
+
+		/**
 		 * 把 `sid` 挪到 `targetSid` 之前/之后 —— 返回**新 id 顺序数组**（不动入参）。
 		 * 任一方不在表里 / 同一个 ⇒ null（调用方据此不写顺序，避免把顺序表写坏）。
 		 */
@@ -326,6 +424,9 @@ window.__ModuleLoader__.load({
 					rootName: rootName || null,
 					isPrimaryRoot: isPrimaryRoot !== false,
 					isCurrent: sid === currentId,
+					// ★ 状态灯（2026-10-30）：「跑着 / 等你回答 / 空闲 / 读不到」四态
+					//   （`unknown` ⇒ 渲染侧不画灯，见 sessionStatusOf 的注释）
+					status: sessionStatusOf(s),
 					archived: archived.indexOf(sid) >= 0,
 					// ★ 空会话（官方 roster 的 `blank` 位：这条会话没有任何对话内容）。
 					//   官方侧栏同样按它过滤（`!row.archived && !row.blank`）⇒ 我们同口径 ✓。
@@ -525,9 +626,13 @@ window.__ModuleLoader__.load({
 			 */
 			const isActiveRefusal = (e) => {
 				try {
-					if (e && e.name === "WorkspaceArchiveError") { return true; }
 					const code = e && e.rpcError && e.rpcError.code;
-					return typeof code === "string" && code.indexOf("session-active") >= 0;
+					// 只有 RPC 明确说"会话还活着"才算数（官方 `workspace/session-active`）
+					if (typeof code === "string" && code) { return code.indexOf("session-active") >= 0; }
+					// 没有 rpcError.code（老宿主 / 打包后类身份丢失）⇒ 用**文案**兜底。
+					// ⚠ 别按 `name === "WorkspaceArchiveError"` 一刀切：官方对**所有**归档失败都用这个类，
+					//   那样会把"权限/网络/未知"也谎报成"正在运行"（用户看到的提示是假的 ✗）。
+					return /session-active|still running|正在运行/i.test(String((e && e.message) || ""));
 				} catch { return false; }
 			};
 			/** 置顶 / 取消置顶（Host 状态；成功后 workspaces 快照会变 ⇒ useData 的订阅自动重渲染）。 */
@@ -616,6 +721,78 @@ window.__ModuleLoader__.load({
 						},
 					);
 				} catch (e) { say("归档失败：" + errText(e), "error"); }
+			};
+			/** 删除接口路径（host 半边 `lib/index.js` 提供；同源 POST）。 */
+			const DELETE_API = "/x/chat-surface/api/delete-session";
+			/**
+			 * **删除**一条会话：**先归档（Host 状态）、再删磁盘**。
+			 *
+			 * ★★ 2026-10-30（用户报「点了删除会话，对应的 item 没消失」）—— 只删磁盘是**没用**的：
+			 *   侧栏的会话行来自 **`workspaces.list` 快照的 `items[].sessionIds`**（Host 记的
+			 *   "这个工作区有哪些会话"），删掉 `sessions/<cwd>/<sid>/` 与 projcache **不会**改那条记录
+			 *   ⇒ 行照旧在，只是标题回落成 id ✗（这正是用户看到的现象）。
+			 *   ⇒ 顺序必须是：
+			 *       ① `uiWorkspace.archiveSession(sid)` —— 归档集合是 Host **持久化**状态 ⇒ 一落，列表立刻消失、跨窗口/重启一致；
+			 *       ② 再删磁盘（真删，不可恢复）。
+			 *   ⚠ 归档那步失败就**中止**（尤其 `session-active`：跑着的会话既不删也不停，交给用户）。
+			 *   ⚠ 归档成功但删盘失败 ⇒ 如实说"已从列表移除，磁盘数据仍在"，**不许假装删干净** ✗。
+			 */
+			const deleteSessionForever = (sid, say, done) => {
+				const finish = (ok, text, kind) => {
+					say(text, kind || (ok ? "note" : "error"));
+					if (typeof done === "function") { done(ok); }
+				};
+				/** ② 删磁盘（只在归档那步成功之后才走）。 */
+				const wipe = () => {
+					let fetchFn = null;
+					try {
+						fetchFn = typeof fetch === "function" ? fetch : null;
+					} catch { fetchFn = null; }
+					if (!fetchFn) { finish(true, "已从列表移除；但当前环境没有 fetch，磁盘数据没删", "error"); return; }
+					void Promise.resolve(fetchFn(DELETE_API, {
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({ sessionId: sid }),
+					})).then((res) => {
+						return Promise.resolve(res.json().catch(() => null)).then((body) => ({ res, body }));
+					}).then(({ res, body }) => {
+						if (!res || !res.ok || !body || body.ok !== true) {
+							const why = body && body.error ? body.error : ("HTTP " + (res ? res.status : "?"));
+							// 列表已经移除了（归档生效）⇒ 说清"磁盘没删"，别让用户以为删干净了
+							finish(true, res && res.status === 404
+								? "已从列表移除；宿主没有删除通路（插件版本过旧 / Host 未重启），磁盘数据仍在"
+								: ("已从列表移除；但磁盘删除失败：" + why), "error");
+							return;
+						}
+						if (body.found === false) {
+							finish(true, "已从列表移除（磁盘上没找到这条的数据；DSH_HOME=" + String(body.home || "?") + "）", "note");
+						} else {
+							finish(true, "已删除（" + (body.removed || []).length + " 项，不可恢复）", "note");
+						}
+						// 刷 roster：删完让客户端重新拉一次列表（归档已让列表消失，这里是让 roster 也对上）
+						try {
+							const svc = typeof ctx.get === "function" ? ctx.get("sessions") : null;
+							if (svc && typeof svc.refresh === "function") { void Promise.resolve(svc.refresh()).catch(() => undefined); }
+						} catch { /* 刷不动也不影响已删的事实 */ }
+					}).catch((e) => {
+						finish(true, "已从列表移除；但磁盘删除失败：" + errText(e), "error");
+					});
+				};
+				// ① 归档（Host 状态）：列表立即消失，且跨窗口 / 重启一致
+				try {
+					const uw = ctx.uiWorkspace;
+					if (!uw || typeof uw.archiveSession !== "function") {
+						finish(false, "删除失败：宿主不支持归档（uiWorkspace.archiveSession 不可用）⇒ 无法从列表移除");
+						return;
+					}
+					void Promise.resolve(uw.archiveSession(sid)).then(wipe, (e) => {
+						if (isActiveRefusal(e)) {
+							finish(false, "这条会话正在运行，先停止它再删除（不替你停）");
+							return;
+						}
+						finish(false, "删除失败（先从列表移除这一步没过）：" + errText(e));
+					});
+				} catch (e) { finish(false, "删除失败：" + errText(e)); }
 			};
 			/** 读手动顺序（localStorage）。坏数据 / 无 localStorage ⇒ 空表（侧栏照常工作）。 */
 			const readOrderMap = () => {
@@ -797,9 +974,10 @@ window.__ModuleLoader__.load({
 					padding: "6px 8px", borderRadius: 6,
 				},
 				// ── 会话行（2026-10-29）：置顶图钉 / 就地重命名 / 操作反馈 ──
-				// 图钉占位恒在（未置顶时透明）：否则切置顶会让整行文字横跳 12px ✗
+				// ★ 2026-10-30：图钉已挪到**行尾**（时间左边）且**只在意置顶时渲染** ——
+				//   不再需要固定 12px 占位（那个占位正是把标题推右 19px 的元凶）。
 				pin: {
-					width: 12, flex: "0 0 auto", fontSize: 10, lineHeight: "16px", textAlign: "center",
+					flex: "0 0 auto", fontSize: 10, lineHeight: "16px",
 					color: "var(--dsw-alias-brand-primary, #5b8cff)", opacity: .95,
 				},
 				rename: {
@@ -810,13 +988,54 @@ window.__ModuleLoader__.load({
 					borderRadius: 4, padding: "0 4px", outline: "none",
 				},
 				sessMsg: { fontSize: 11, lineHeight: "1.5", padding: "2px 8px 4px", whiteSpace: "normal" },
-				sessMenu: {
+				// 删除确认层的按钮（危险操作 ⇒ 红色主按钮；与 dsh 官方 Modal 的按钮尺寸对齐）
+				confirmBtn: {
+					height: 28, padding: "0 14px", borderRadius: 6, fontSize: 12, cursor: "pointer",
+					border: "1px solid var(--dsw-alias-border-l2, #3e3e3e)",
+					background: "var(--dsw-alias-bg-layer-1, #2a2a2a)",
+					color: "var(--dsw-alias-label-primary, #e6e6e6)",
+				},
+				confirmDanger: { background: "#b3302c", borderColor: "#c9403a", color: "#fff", fontWeight: 600 },
+				// 「展开其余 N 条」/「收起」：与会话行同一套字号，缩进略浅（它是**操作**，不是会话）
+				moreRow: {
+					display: "block", width: "100%", textAlign: "left", padding: "2px 8px 3px 26px",
+					background: "none", border: "none", borderRadius: 6, cursor: "pointer",
+					color: "var(--dsw-alias-label-tertiary, #737373)", fontSize: 11.5,
+				},
+				// ── 状态灯（2026-10-30）──────────────────────────────────────────
+				// 载体与 @vssaros/dsh-sessions 稿 A 一致：**2px 竖条**（圆点在高 29px 的行里太碎、
+				// 又与「N 个根」徽标抢视线）。颜色口径也照抄：运行中绿 / 等你回答黄 / 空闲灰。
+				// ⚠ 宽度**恒定**（三态同宽）：否则灯一亮整行文字横跳 2px ✗（与图钉占位同一条教训）。
+				ring: {
+					width: 2, height: 15, borderRadius: 1, flex: "0 0 2px",
+					margin: "0 1px 0 0", background: "transparent",
+				},
+				ringRunning: { background: "#3fb950", animation: "vssaros-ws-ring-pulse 1.6s ease-in-out infinite" },
+				ringAwaiting: { background: "#d7a521" },
+				ringIdle: { background: "rgba(128,128,128,.5)" },				sessMenu: {
 					position: "fixed", zIndex: 80, minWidth: 186, padding: 4, borderRadius: 8,
 					background: "var(--dsw-alias-bg-layer-2, #262626)",
 					border: "1px solid var(--dsw-alias-border-l2, #3e3e3e)",
 					boxShadow: "0 12px 32px rgba(0,0,0,.55)",
 					color: "var(--dsw-alias-label-primary, #e6e6e6)",
 				},
+			};
+
+			/**
+			 * 状态灯的**脉动**动效只能靠样式表给（React 内联 style 没有 @keyframes）。
+			 * 一次性注入 + 幂等（`data-*` 标记）：重复 install / 多窗口热更都不会叠出 N 份 ✗。
+			 * ⚠ 尊重 `prefers-reduced-motion`：关掉动效但**保留绿色** —— 颜色本身就是"在跑"的静态事实 ✓。
+			 */
+			const ensureRingStyle = () => {
+				try {
+					if (typeof document === "undefined" || !document.head) { return; }
+					if (document.head.querySelector("[data-vssaros-ws-ring-style]")) { return; }
+					const st = document.createElement("style");
+					st.setAttribute("data-vssaros-ws-ring-style", "1");
+					st.textContent = "@keyframes vssaros-ws-ring-pulse{0%,100%{opacity:1}50%{opacity:.35}}"
+						+ "@media (prefers-reduced-motion: reduce){[data-ws-ring='running']{animation:none !important;opacity:1 !important}}";
+					document.head.appendChild(st);
+				} catch { /* 没有 head（非 DOM 环境 / __test）⇒ 静默跳过，灯照样有颜色 ✓ */ }
 			};
 
 			/** hover 详情卡（fixed 定位到条目右侧；夹进视口——WebContentsView 外会被裁 ✗）。 */
@@ -876,6 +1095,10 @@ window.__ModuleLoader__.load({
 				const [renaming, setRenaming] = react.useState(null);
 				/** 会话操作的**就地反馈**（窗口模式没有宿主桥 ⇒ 这是唯一可见通道）。 */
 				const [sessMsg, setSessMsg] = react.useState(null); // {kind, text}
+				/** 删除确认层：{sid, title}；null = 不在确认。**真删不可恢复** ⇒ 必须二次确认。 */
+				const [confirmDel, setConfirmDel] = react.useState(null);
+				/** 每组「展开其余」的额外条数：`{ [groupKey]: n }`（默认 0 = 只渲染 SESSION_PAGE_SIZE 条）。 */
+				const [extraShown, setExtraShown] = react.useState({});
 				/** 正在拖的会话：{sid, groupKey, pinned}。 */
 				const [drag, setDrag] = react.useState(null);
 				/** 当前落点：{sid, after, ok}（ok=false ⇒ 显示禁止态）。 */
@@ -884,23 +1107,32 @@ window.__ModuleLoader__.load({
 				// 点外面 ⇒ 关菜单（与官方菜单同口径；不关就会"菜单糊在侧栏上"✗）
 				// ★ 2026-10-29：工作区 ＋ 菜单与会话右键菜单**共用**这套关闭逻辑（两套并存会互相残留）。
 				react.useEffect(() => {
-					if (!menu && !sessMenu) { return undefined; }
+					if (!menu && !sessMenu && !confirmDel) { return undefined; }
 					const onDown = (ev) => {
 						try {
 							const t = ev.target;
-							if (t && t.closest && (t.closest("[data-vssaros-ws-menu]") || t.closest("[data-vssaros-sess-menu]"))) { return; }
+							if (t && t.closest && (
+								t.closest("[data-vssaros-ws-menu]")
+								|| t.closest("[data-vssaros-sess-menu]")
+								// 确认层是**模态**：点它的按钮不该被这里关掉（否则"取消"还没跑就被卸载）
+								|| t.closest("[data-vssaros-sess-confirm]")
+							)) { return; }
 							setMenu(null);
 							setSessMenu(null);
-						} catch { setMenu(null); setSessMenu(null); }
+							// 点外面 = 取消（危险操作绝不因为点偏了而执行 ✗）
+							setConfirmDel(null);
+						} catch { setMenu(null); setSessMenu(null); setConfirmDel(null); }
 					};
-					const onKey = (ev) => { if (ev.key === "Escape") { setMenu(null); setSessMenu(null); } };
+					const onKey = (ev) => {
+						if (ev.key === "Escape") { setMenu(null); setSessMenu(null); setConfirmDel(null); }
+					};
 					document.addEventListener("mousedown", onDown, true);
 					document.addEventListener("keydown", onKey, true);
 					return () => {
 						document.removeEventListener("mousedown", onDown, true);
 						document.removeEventListener("keydown", onKey, true);
 					};
-				}, [menu, sessMenu]);
+				}, [menu, sessMenu, confirmDel]);
 				// ★ 2026-10-28：订阅官方 selection（当前会话）—— 官方导航一变就重渲染 ⇒ 高亮跟着动 ✓。
 				//   官方那个字段是私有的 ⇒ 读不到就退化成"乐观高亮 + 宿主绑定"（不会崩 ✓）。
 				react.useEffect(() => {
@@ -937,7 +1169,12 @@ window.__ModuleLoader__.load({
 					workspaces: (wsSnap && wsSnap.items) || [],
 					records,
 					sessionsById: (sessSnap && sessSnap.byId) || {},
-					archivedIds: (sessSnap && sessSnap.archivedSessionIds) || [],
+					// ★★ 2026-10-30（用户报「右键菜单里归档不起作用，点了没反应」）：
+					//   归档集合的**权威来源是 workspaces 快照**（`workspaces.list.archivedSessionIds`）——
+					//   官方 `archiveSession` 只往那里加，而 `sessions.list` 快照**根本没有这个字段**
+					//   （官方 `dsh-api-session-controller/lib/client.js` 里 `archivedSessionIds` 0 命中）。
+					//   从前只读 sessions 快照 ⇒ 恒空 ⇒ 归档后行仍在列表 ⇒ 看起来"点了没反应" ✗。
+					archivedIds: (wsSnap && wsSnap.archivedSessionIds) || (sessSnap && sessSnap.archivedSessionIds) || [],
 					currentSessionId: currentId,
 					// ★ 2026-10-29：置顶（Host 快照）+ 手动顺序（本地）
 					pinnedIds: (wsSnap && wsSnap.pinnedSessionIds) || [],
@@ -1038,7 +1275,15 @@ window.__ModuleLoader__.load({
 					if (act === "pin") { setPinned(cur.sid, !cur.pinned, say); return; }
 					if (act === "rename") { if (s) { startRename(s); } else { setRenaming({ sid: cur.sid, draft: cur.sid }); } return; }
 					if (act === "copy") { copySessionId(cur.sid, say); return; }
-					if (act === "archive") { archiveSession(cur.sid, say); }
+					if (act === "archive") { archiveSession(cur.sid, say); return; }
+					if (act === "delete") {
+						// ⚠ 当前会话不许删：删掉之后页面会指着一条不存在的会话（要删先切走）
+						if (cur.sid === currentId) {
+							say("这是当前打开的会话，先切到别的会话再删除", "error");
+							return;
+						}
+						setConfirmDel({ sid: cur.sid, title: (s && s.title) || cur.sid });
+					}
 				};
 				// —— 拖拽（组内；置顶区与普通区互不跨越）——
 				const onDragStartOf = (s) => (e) => {
@@ -1083,24 +1328,46 @@ window.__ModuleLoader__.load({
 				};
 				/**
 				 * 一行会话（组内 / 平铺共用 —— 两处渲染必须同一个实现，否则口径会漂）。
-				 * 元素形态：图钉占位 → 标题（或就地输入框）→ 根标签（仅非主根）→ 时间。
+				 * 元素形态：状态灯 → 标题（或就地输入框）→ 根标签（仅非主根）→ 图钉（仅置顶）→ 时间。
+				 * ⚠ 图钉在**行尾**（2026-10-30）：行首放它会白占 12px + gap 7，标题被推右 19px。
 				 */
 				const renderSessionRow = (s, setMsg, setLocal) => {
 					const isRenaming = !!(renaming && renaming.sid === s.id);
 					const isDragging = !!(drag && drag.sid === s.id);
 					const mark = dropAt && dropAt.sid === s.id ? dropAt : null;
 					const style = Object.assign({},
-						S.row, { paddingLeft: 30, fontSize: 12.5 },
+						// ★ 会话行的左缩进（2026-10-30，用户连报三次「太靠右 / 还嫌靠右」）：
+						//   标题的 x 由**三段**相加，改一段没用 ⇒ 三段都在这段注释里记清楚：
+						//     ① 行容器左缘 12px（侧栏 padding）
+						//     ② `paddingLeft` 16px（原 30）
+						//     ③ 状态灯 2px + 它的 marginRight 1px + flex gap 7px = 10px
+						//   ⇒ 标题 = 12 + 16 + 10 = **38px**；工作区分组标题 = 12 + padding 8 + 箭头 10 + gap 7 = **37px**
+						//   ⇒ 两者**逐像素齐平**（层级由"分组有 ▼ 箭头、会话有状态灯竖条"表达）。
+						//   ★ 第三报的根因不是 paddingLeft：是**行首那个 12px 图钉占位 + 7px gap = 19px**
+						//     （当日为"切置顶不横跳"付的代价，却全压在标题起点上，把标题推到 57px ✗）；
+						//     现图钉已挪到**行尾**（见下面 kids 的注释）⇒ 这两笔开销没了。
+						//   ⚠ 再要更左只能动 ②（< 15 会让状态灯压到分组标题与「N 个根」徽标之间，视觉打架 ✗），
+						//     或者把状态灯也挪走 —— 但那样就看不出哪条会话在跑。
+						S.row, { paddingLeft: 16, fontSize: 12.5 },
 						s.isCurrent ? { background: "var(--dsw-alias-interactive-bg-active, rgba(91,140,255,.15))", color: "var(--dsw-alias-label-primary, #e6e6e6)" } : null,
 						s.pinned ? { color: "var(--dsw-alias-label-primary, #e6e6e6)" } : null,
 						isDragging ? { opacity: .45 } : null,
 						mark && mark.ok ? { boxShadow: (mark.after ? "inset 0 -2px 0 " : "inset 0 2px 0 ") + "var(--dsw-alias-brand-primary, #5b8cff)" } : null,
 						mark && !mark.ok ? { outline: "1px dashed #f48771", outlineOffset: "-1px" } : null,
 					);
-					const kids = [
-						// 图钉占位恒在（未置顶时空字符串）：否则切置顶整行文字横跳 ✓
-						react.createElement("span", { key: "pin", style: S.pin, "data-pinned": s.pinned ? "1" : "0" }, s.pinned ? "📌" : ""),
-					];
+					const kids = [];
+					// ★ 状态灯（2026-10-30）：位置在标题**之前**（贴行首缩进处，与 @vssaros/dsh-sessions
+					//   的 `.sv-dot` 同位）—— 眼睛扫左边缘就能看出哪条在跑。
+					//   `unknown`（读不到任何运行信号）⇒ 占位但**不着色**：不把未知画成空闲 ✗。
+					kids.push(react.createElement("span", {
+						key: "ring",
+						style: s.status === "running" ? Object.assign({}, S.ring, S.ringRunning)
+							: s.status === "awaiting" ? Object.assign({}, S.ring, S.ringAwaiting)
+								: s.status === "idle" ? Object.assign({}, S.ring, S.ringIdle) : S.ring,
+						"data-ws-ring": s.status,
+						"aria-hidden": s.status === "unknown" ? "true" : "false",
+						title: RING_LABEL[s.status] || "",
+					}));
 					if (isRenaming) {
 						kids.push(react.createElement("input", {
 							key: "ren",
@@ -1124,6 +1391,14 @@ window.__ModuleLoader__.load({
 						if (s.rootName && !s.isPrimaryRoot) {
 							kids.push(react.createElement("span", { key: "rt", style: S.rtag }, s.rootName));
 						}
+						// ★★ 2026-10-30（用户第三次报「还嫌靠右」）：图钉从**行首**挪到**行尾**（时间左边）。
+						//   根因是行首那个「图钉占位 12px + gap 7 = 19px」——它当年是为了"切置顶不横跳"，
+						//   代价却全压在标题起点上（把标题从 37 推到 56，看起来像多缩进了一级 ✗）。
+						//   挪到行尾后：① 标题回到 **37**（与工作区分组标题**逐像素齐平**）；
+						//   ② 置顶只改行尾，标题起点不随置顶变化 ⇒ "不横跳"的原目标照样成立 ✓。
+						if (s.pinned) {
+							kids.push(react.createElement("span", { key: "pin", style: S.pin, "data-pinned": "1", title: "已置顶" }, "📌"));
+						}
 						kids.push(react.createElement("span", { key: "at", style: S.meta }, timeLabel(s.at)));
 					}
 					return react.createElement("div", {
@@ -1142,6 +1417,39 @@ window.__ModuleLoader__.load({
 						onDrop: onDropOf(s),
 						onDragEnd: () => { setDrag(null); setDropAt(null); },
 					}, ...kids);
+				};
+
+				/**
+				 * 一组的会话列表（**含分页**）—— 组内 / 平铺共用（口径不漂）。
+				 *
+				 * 2026-10-30 用户要求「会话太多时只加载一部分」：默认 `SESSION_PAGE_SIZE` 条，
+				 * 底部一行「展开其余 N 条」（每次再放 20；全展开后变「收起」）。
+				 * ⚠ 搜索命中**不截断**（"搜到就该看见"；这时候条数已被筛选收敛，不存在刷屏问题）。
+				 * ⚠ 当前会话永远在可见集合里（见 `visibleSessions`），否则用户点开老会话后看不到它高亮在哪 ✗。
+				 */
+				const renderSessions = (row) => {
+					const all = Array.isArray(row.sessions) ? row.sessions : [];
+					const key = row.key || (row.record ? row.record.id : row.label);
+					const extra = extraShown[key] || 0;
+					const searching = !!q;
+					const list = searching ? all : visibleSessions(all, SESSION_PAGE_SIZE + extra);
+					const rest = all.length - list.length;
+					const nodes = list.map((s) => renderSessionRow(s, setWsMsg, setLocalCurrent));
+					if (searching) { return nodes; }
+					if (rest > 0) {
+						nodes.push(react.createElement("button", {
+							key: "more", type: "button", "data-vssaros-more-sessions": key, style: S.moreRow,
+							title: "只加载了一部分，展开后继续渲染",
+							onClick: () => setExtraShown(Object.assign({}, extraShown, { [key]: extra + SESSION_PAGE_SIZE })),
+						}, "展开其余 " + rest + " 条"));
+					} else if (extra > 0) {
+						nodes.push(react.createElement("button", {
+							key: "less", type: "button", "data-vssaros-more-sessions": key, style: S.moreRow,
+							title: "收回到默认条数（不改变顺序）",
+							onClick: () => setExtraShown(Object.assign({}, extraShown, { [key]: 0 })),
+						}, "收起"));
+					}
+					return nodes;
 				};
 
 				return react.createElement("div", { style: { display: "flex", flexDirection: "column", minHeight: 0, flex: "1 1 auto" } },
@@ -1230,7 +1538,7 @@ window.__ModuleLoader__.load({
 										react.createElement("span", { style: Object.assign({}, S.lbl, { fontWeight: 600 }) }, row.record.name),
 										react.createElement("span", { style: S.badge }, row.record.roots.length + " 个根"),
 									),
-									isOpen ? row.sessions.map((s) => renderSessionRow(s, setWsMsg, setLocalCurrent)) : null,
+									isOpen ? renderSessions(row) : null,
 								);
 							}
 							// 回落：未被 IDE 记录认领的 dsh 条目，平铺（与官方形态一致 ✓）
@@ -1244,7 +1552,7 @@ window.__ModuleLoader__.load({
 									react.createElement("span", { style: { width: 10, fontSize: 8, color: "var(--dsw-alias-label-tertiary, #737373)", flex: "0 0 auto" } }, isOpen ? "▼" : "▶"),
 									react.createElement("span", { style: Object.assign({}, S.lbl, { fontWeight: 600 }) }, row.label),
 								),
-								isOpen ? row.sessions.map((s) => renderSessionRow(s, setWsMsg, setLocalCurrent)) : null,
+								isOpen ? renderSessions(row) : null,
 							);
 						}),
 					),
@@ -1273,6 +1581,51 @@ window.__ModuleLoader__.load({
 							type: "button", role: "menuitem", "data-act": "archive", style: S.menuItem,
 							onClick: () => menuAction("archive"),
 						}, "归档"),
+						// ★ 2026-10-30（用户要求「menu 中增加删除按钮」）：归档 ≠ 删除 ——
+						//   归档只是从列表移除（数据仍在、可找回），删除是真删磁盘（不可恢复）⇒ 两者并列。
+						react.createElement("div", { style: { height: 1, margin: "4px 6px", background: "var(--dsw-alias-border-l1, #3a3a3a)" } }),
+						react.createElement("button", {
+							type: "button", role: "menuitem", "data-act": "delete", style: Object.assign({}, S.menuItem, { color: "#f48771" }),
+							onClick: () => menuAction("delete"),
+						}, "删除会话…"),
+					) : null,
+					// ★ 2026-10-30：删除的**二次确认**层（真删不可恢复；归档那条不弹）
+					confirmDel ? react.createElement("div", {
+						"data-vssaros-sess-confirm": "1",
+						style: {
+							position: "fixed", left: "50%", top: "38%", transform: "translate(-50%, -50%)",
+							zIndex: 90, width: 344, padding: "14px 14px 12px", borderRadius: 12,
+							background: "var(--dsw-alias-bg-layer-2, #262626)",
+							border: "1px solid var(--dsw-alias-border-l2, #3e3e3e)",
+							boxShadow: "0 24px 60px rgba(0,0,0,.65)",
+							color: "var(--dsw-alias-label-primary, #e6e6e6)",
+						},
+					},
+						react.createElement("div", { style: { fontSize: 13, fontWeight: 600, marginBottom: 8 } }, "删除这条会话？"),
+						react.createElement("div", {
+							style: { fontSize: 12, color: "var(--dsw-alias-label-secondary, #a3a3a3)", marginBottom: 8, wordBreak: "break-all" },
+						}, confirmDel.title),
+						react.createElement("div", {
+							style: { fontSize: 11.5, lineHeight: "1.65", color: "var(--dsw-alias-label-tertiary, #737373)", marginBottom: 12 },
+						},
+							"会永久删除这条会话的本地数据（对话记录 + 列表缓存），不可恢复。",
+							react.createElement("br"),
+							"只想让它从列表消失、数据留着 ⇒ 用「归档」。",
+						),
+						react.createElement("div", { style: { display: "flex", gap: 8, justifyContent: "flex-end" } },
+							react.createElement("button", {
+								type: "button", "data-act": "cancel", style: S.confirmBtn,
+								onClick: () => setConfirmDel(null),
+							}, "取消"),
+							react.createElement("button", {
+								type: "button", "data-act": "confirm", style: Object.assign({}, S.confirmBtn, S.confirmDanger),
+								onClick: () => {
+									const cur = confirmDel;
+									setConfirmDel(null);
+									deleteSessionForever(cur.sid, say);
+								},
+							}, "删除"),
+						),
 					) : null,
 					hover && (() => {
 						const row = rows.filter((r2) => r2.kind === "group" && r2.record.id === hover.key)[0];
@@ -1283,6 +1636,10 @@ window.__ModuleLoader__.load({
 
 			// 遮蔽官方 WorkspaceBrowser（升序取最低 priority 渲染；同 hero.workspace 的 -10 先例 ✓）。
 			try {
+				// ★ 状态灯的脉动动效（一次性、幂等；见 ensureRingStyle 的注释）。
+				//   ⚠ 必须放在这里而不是 install 顶部：`ensureRingStyle` 是与 `S` 一起声明的
+				//   `const`，在本作用域**下方** ⇒ 提前调用会吃掉 TDZ（Cannot access before initialization）。
+				ensureRingStyle();
 				ctx.slots.inject(SLOT, () => ctx.slots.register(
 					{ name: SLOT, id: "vssaros-workspaces", priority: -10 }, Browser));
 				state.workspacesReplaced = true;
@@ -1295,8 +1652,12 @@ window.__ModuleLoader__.load({
 		// 仅测试用：分组收敛 / 路径比较 / 时间文案的纯逻辑（插件装载只读 install）。
 		exports.__test = {
 			samePath, baseName, parseRecords, timeLabel, buildSidebar, rootOfSession, nextCollapsed, pickCurrentSessionId,
+			// ★ 2026-10-30 会话行状态灯：四态判据 / 待回答条数（守卫真机断言，两处口径不许漂）
+			sessionStatusOf, pendingQuestionsOf, RING_LABEL,
 			// ★ 2026-10-29 会话行操作：置顶 / 手动顺序 / 拖放判定（守卫 check-chat-surface-chunks ⑤-f 直接断言）
 			SESSION_ORDER_KEY, toIdSet, normalizeOrderMap, sortBySavedOrder, orderGroupSessions, moveWithin, canDrop,
+			// ★ 2026-10-30 分页：默认条数 + 配额取条（守卫 ⑤-j 直接断言）
+			SESSION_PAGE_SIZE, visibleSessions,
 		};
 		return module.exports;
 	}

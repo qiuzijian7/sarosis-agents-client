@@ -72,6 +72,7 @@ const GEMINI_STATIC_MODELS: IModelInfo[] = [
 		maxInputTokens: 1048576,
 		maxOutputTokens: 65536,
 		capabilities: [ModelCapability.Chat, ModelCapability.Code, ModelCapability.Vision, ModelCapability.FunctionCalling],
+		supportsImages: true,
 		supportsToolCall: true,
 		supportsReasoning: true,
 		capabilityConfig: {
@@ -90,6 +91,7 @@ const GEMINI_STATIC_MODELS: IModelInfo[] = [
 		maxInputTokens: 1048576,
 		maxOutputTokens: 65536,
 		capabilities: [ModelCapability.Chat, ModelCapability.Code, ModelCapability.Vision, ModelCapability.FunctionCalling],
+		supportsImages: true,
 		supportsToolCall: true,
 		supportsReasoning: true,
 		capabilityConfig: {
@@ -108,6 +110,7 @@ const GEMINI_STATIC_MODELS: IModelInfo[] = [
 		maxInputTokens: 1048576,
 		maxOutputTokens: 8192,
 		capabilities: [ModelCapability.Chat, ModelCapability.Code, ModelCapability.Vision, ModelCapability.FunctionCalling],
+		supportsImages: true,
 		supportsToolCall: true,
 		capabilityConfig: {
 			supportsSystemMessage: 'separated',

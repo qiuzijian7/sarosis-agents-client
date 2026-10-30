@@ -27,20 +27,57 @@ import { fileURLToPath } from 'node:url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.dirname(HERE);
 /**
- * exe 名（`product.json` 的 `nameShort` 决定，2026-10-29 由 `Saroasis harness` 改为 `VsSaros`）。
+ * ★★ 2026-10-30（用户要求："开发版的 exe 改名叫 **VsSaros Dev.exe** 与打包版区分开"）。
  *
- * ⚠ **两个名字都要认**：改名只影响新产物，`.build/electron/` 里可能还躺着旧名的 exe
- * （没重新编译 / 刚从旧分支切回来）。只认新名时，F5 会直接 `ABORT exe not found`，
- * 而且 `running()` 恒 0 ⇒ 以为没实例在跑 ⇒ 重复启动抢锁 ✗。旧名在几周内保留兼容，之后再删。
+ * 为什么必须区分（今天一整天都栽在这上面）：
+ *   · dev 与安装版的 exe **同名** `VsSaros.exe` ⇒ 启动器按进程名数会把**安装版那十几个进程**
+ *     当成"dev 实例" ⇒ SKIP ⇒ F5 卡住（真机日志：`SKIP a dev instance is already running
+ *     (visible window present)` + `RAISE NOTFOUND`，而那一刻 dev 进程是 **0** 个）；
+ *   · 反过来，任何"按名字找窗口 / 杀进程 / 装安装包检测"的脚本都会误伤另一边。
+ *
+ * ⇒ dev 用**独立的 exe 名**：`.build/electron/VsSaros Dev.exe`。
+ *   Electron 是按 **exe 同级目录**找 `resources/` 的 ⇒ 复制一份改名即可运行
+ *   （实测 `VsSaros Dev.exe --version` 输出 `v39.8.8` ✓，201MB 复制 49ms ✓）。
+ *   这样进程名、窗口、`Get-Process` 判定天然分开，不用再靠路径猜。
+ *
+ * ⚠ 旧名保留兼容：`.build/electron/` 里可能还躺着 `VsSaros.exe`（没重新编译 / 从旧分支切回来），
+ *   它是**复制源**，不是启动目标。
  */
-const EXE_NAMES = ['VsSaros.exe', 'Saroasis harness.exe'];
-const EXE = EXE_NAMES
-	.map(name => path.join(REPO, '.build', 'electron', name))
-	.find(p => fs.existsSync(p)) ?? path.join(REPO, '.build', 'electron', EXE_NAMES[0]);
+const DEV_EXE_NAME = 'VsSaros Dev.exe';
+/** 源 exe 候选（按新→旧）：只用来**复制出** dev 专用 exe。 */
+const SOURCE_EXE_NAMES = ['VsSaros.exe', 'Saroasis harness.exe'];
+/** dev 实例的进程名（`Get-Process` / `has-visible-window.ps1` 用它）。 */
+const PROC_NAMES = [DEV_EXE_NAME.replace(/\.exe$/i, '')];
+
+/**
+ * 确保 `.build/electron/VsSaros Dev.exe` 存在且**不比源 exe 旧**（源 exe 每次编译都会更新）。
+ *
+ * ⚠ 刻意**不改 `product.json` 的 `nameShort`**：那份是 dev 与打包版共用的，改了会连带安装版
+ *   （安装器 `[Files]`、快捷方式、`AppMutex` 全都按它来）⇒ 只在这里复制一份最安全 ✓。
+ * ⚠ 复制失败时**回落源 exe**（宁可名字不区分，也要让 F5 能起）✓。
+ */
+const ensureDevExe = () => {
+	const dir = path.join(REPO, '.build', 'electron');
+	const dst = path.join(dir, DEV_EXE_NAME);
+	const src = SOURCE_EXE_NAMES.map(n => path.join(dir, n)).find(p => fs.existsSync(p));
+	if (!src) {
+		return dst;   // 源都没有 ⇒ 交给下面的 `ABORT exe not found` 报（信息更准确）
+	}
+	try {
+		const upToDate = fs.existsSync(dst) && fs.statSync(dst).mtimeMs >= fs.statSync(src).mtimeMs;
+		if (!upToDate) {
+			fs.copyFileSync(src, dst);
+		}
+		return dst;
+	} catch (e) {
+		console.warn(`[start-dev-app] 复制 ${DEV_EXE_NAME} 失败（改用 ${path.basename(src)} 启动）：${String((e && e.message) || e)}`);
+		return src;
+	}
+};
+const EXE = ensureDevExe();
 /** 当前真正在用的 exe 文件名（taskkill / 提示文案用它）。 */
 const EXE_NAME = path.basename(EXE);
-/** 进程名（不带 `.exe`）：`Get-Process` / `has-visible-window.ps1` 用它。 */
-const PROC_NAMES = EXE_NAMES.map(name => name.replace(/\.exe$/i, ''));
+/** 进程名（不带 `.exe`）：`Get-Process` / `has-visible-window.ps1` 用它（见文件上方的 PROC_NAMES）。 */
 /**
  * user-data-dir（`DevToolsActivePort` 也在这里，用来查真实调试端口）。
  *
@@ -101,11 +138,34 @@ const portFree = (port) => new Promise((resolve) => {
 });
 
 const running = () => {
-	// 新旧两个 exe 名都数：改名过渡期可能还跑着旧名的实例（否则会以为"没在跑"而重复启动 ✗）
+	// ★★ 2026-10-30（真机：**开着打包版 exe 时 F5 起不来 app**，日志是
+	//   `SKIP a dev instance is already running (visible window present)` +
+	//   `RAISE NOTFOUND`，而那时 **dev 进程是 0 个**）：
+	//   原来只按**进程名**数（`tasklist /fi "IMAGENAME eq VsSaros.exe"`）
+	//   ⇒ 而 **dev 的 exe 与安装版同名**（`.build\electron\VsSaros.exe` vs
+	//     `D:\Program Files\VsSaros\VsSaros.exe`）
+	//   ⇒ **打包版那十几个进程被当成"dev 实例"** ⇒ 下面 `if (running() > 0)` 全命中
+	//   ⇒ SKIP ⇒ `raiseExistingWindow()` 又找不到 dev 窗口（RAISE NOTFOUND）
+	//   ⇒ 用户看到的就是"F5 卡住/没有 app" ✗✗
+	//   ⇒ 改成按**可执行文件路径**过滤：只数本仓库 `.build/electron/` 下的进程 ✓
+	//   ⚠ 路径读不到时**当 0**（宁可重复起一个，也不要永远 SKIP 把 F5 锁死）。
 	let n = 0;
-	for (const name of EXE_NAMES) {
-		const r = spawnSync('tasklist', ['/fi', `IMAGENAME eq ${name}`, '/fo', 'csv'], { encoding: 'utf8', windowsHide: true });
-		n += String(r.stdout || '').split(/\r?\n/).filter((l) => l.toLowerCase().includes(name.toLowerCase())).length;
+	try {
+		const r = spawnSync(
+			'wmic',
+			// ★ 2026-10-30：dev 现在有**独立 exe 名**（`VsSaros Dev.exe`）⇒ 先按它查（更快更准）；
+			//   旧名仍列出 + 下面还有 `.build/electron` 路径过滤兜底 ⇒ 从旧分支切回来也不会误判 ✓
+			['process', 'where', 'name=\'VsSaros Dev.exe\' or name=\'VsSaros.exe\' or name=\'Saroasis harness.exe\'', 'get', 'ExecutablePath', '/format:csv'],
+			{ encoding: 'utf8', windowsHide: true, timeout: 15000 },
+		);
+		const devDir = path.join(REPO, '.build', 'electron').toLowerCase();
+		for (const line of String(r.stdout || '').split(/\r?\n/)) {
+			const p = line.trim().toLowerCase().replace(/^"|"$/g, '');
+			if (!p.endsWith('.exe')) { continue; }
+			if (p.startsWith(devDir)) { n += 1; }
+		}
+	} catch {
+		return 0; // 探测失败 ⇒ 当作"没在跑"（绝不因此把 F5 挡住）
 	}
 	return n;
 };
@@ -173,7 +233,8 @@ if (running() > 0) {
 	}
 	note('        AUTO-RESTART 结束僵尸实例后重开（DSH_DEV_KEEP_ZOMBIE=1 可关）');
 	// 新旧名都杀：过渡期可能残留旧名实例（只杀新名 ⇒ 旧实例继续占着 userData 锁 ✗）
-	for (const name of EXE_NAMES) {
+	// 只杀 **dev 专用名**：绝不 taskkill `VsSaros.exe`（那是安装版的名字，会把用户正在用的打包版杀掉 ✗）
+	for (const name of [DEV_EXE_NAME]) {
 		spawnSync('taskkill', ['/F', '/IM', name], { windowsHide: true });
 	}
 	await new Promise((r) => setTimeout(r, 4000));

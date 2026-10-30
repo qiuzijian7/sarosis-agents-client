@@ -261,7 +261,10 @@ suite('护栏接线不变量（源码级）', () => {
 		// 必须同款处置 —— 只改一条就是本项目反复出现的「路径不对称」。
 		for (const f of ['browser/agentTurnExecutor.ts', 'browser/providers/execution/executionProvider.ts']) {
 			assertWired(f, 'splitToolResultImages(', `${f}: 图像剥离`);
-			assertWired(f, 'resolveSupportsImages(', `${f}: 主模型图片能力门控（否则 400）`);
+			// 2026-10-30：门控入口改为 `explainSupportsImages`（带判定依据的诊断版），
+			// 能力口径同时认 `supportsImages` 与 `capabilities` 里的 `Vision`。
+			// 这里断言的是**门控入口存在**，不是某个具体函数名 —— 换名但没接线同样会失败。
+			assertWired(f, 'explainSupportsImages(', `${f}: 主模型图片能力门控（否则 400）`);
 			assertWired(f, 'buildToolImageMessage(', `${f}: 用 user 消息承载图像`);
 		}
 		assertWired('common/toolResultImages.ts', 'export function buildToolImageMessage(', '判定/组装真源');

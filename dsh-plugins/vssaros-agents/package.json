@@ -95,8 +95,23 @@
       "order": 60
     },
     "view": {
-      "kind": "page",
-      "route": "/x/agents/"
+      "kind": "native",
+      "viewType": "vssaros.agents.roster",
+      "data": {
+        "route": "/x/agents/api/agents"
+      },
+      "actions": [
+        {
+          "id": "refresh",
+          "title": "刷新",
+          "icon": "codicon:refresh"
+        },
+        {
+          "id": "open-full-page",
+          "title": "在编辑区打开完整页",
+          "icon": "codicon:open-preview"
+        }
+      ]
     },
     "legacyCounterpart": "agentStudio.presetAgent",
     "workbench": {

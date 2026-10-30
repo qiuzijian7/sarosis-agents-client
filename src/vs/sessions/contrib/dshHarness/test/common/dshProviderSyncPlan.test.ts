@@ -143,4 +143,92 @@ suite('mergeExtensionModels（扩展源模型清单合并）', () => {
 		assert.strictEqual(out.providers[0].models[199].id, 'm199');
 		assert.ok(validateProvidersSyncArgs(out));
 	});
+
+	// ── 2026-10-30 回归：图像能力位必须穿过同步链路 ─────────────────────
+
+	test('★★ 回归：`supportsImages` 必须一路传到 sync 负载（此前被整个丢弃）', () => {
+		// 现场：codebuddy 列表里 `images: true`，dsh 侧却报「does not declare image input support」。
+		// 根因就是 `_modelsOf` / buildProvidersSyncArgs 只透传 reasoning，图像位在中途消失。
+		const args = buildProvidersSyncArgs([{
+			id: 'codebuddy', displayName: 'CodeBuddy', baseURL: 'https://copilot.tencent.com/v2', credential: 'tok',
+			models: [{ id: 'vision-model', supportsImages: true }, { id: 'text-model' }],
+		}]);
+		assert.strictEqual(args.providers[0].models[0].supportsImages, true,
+			'声明了图像能力就必须带出去（否则 dsh 一律当纯文本）');
+		assert.strictEqual('supportsImages' in args.providers[0].models[1], false,
+			'未声明时不得写空键（缺省即纯文本）');
+		// 跨进程校验仍然接受这个负载
+		assert.ok(validateProvidersSyncArgs(args));
+	});
+
+	test('★★ 图像能力合并取并集（任一侧声明即为真，不因另一侧缺失而抹掉）', () => {
+		// 注册表侧有（LM 元数据可信）、命令侧没有 ⇒ 必须保留
+		assert.deepStrictEqual(
+			mergeExtensionModels([{ id: 'a', supportsImages: true }], [{ id: 'a' }]),
+			[{ id: 'a', supportsImages: true }],
+		);
+		// 反之亦然
+		assert.deepStrictEqual(
+			mergeExtensionModels([{ id: 'a' }], [{ id: 'a', supportsImages: true }]),
+			[{ id: 'a', supportsImages: true }],
+		);
+		// 两侧都没有 ⇒ 不产生该键
+		assert.deepStrictEqual(mergeExtensionModels([{ id: 'a' }], [{ id: 'a' }]), [{ id: 'a' }]);
+	});
+
+	test('★ 图像位与 reasoning / effort 互不干扰（同时透传）', () => {
+		const merged = mergeExtensionModels(
+			[{ id: 'a', reasoning: true, supportsImages: true }],
+			[{ id: 'a', effort: 'high' }],
+		);
+		assert.deepStrictEqual(merged, [{ id: 'a', reasoning: true, supportsImages: true, effort: 'high' }]);
+	});
+
+	// ── 2026-10-30 回归：上下文长度必须穿过同步链路 ─────────────────────
+
+	test('★★ 回归：`contextWindow` / `maxTokens` 必须一路传到 sync 负载（此前整个丢失）', () => {
+		// 现场：dsh 侧一直用 pi-ai 缺省窗口，压缩阈值按错窗口算。
+		const args = buildProvidersSyncArgs([{
+			id: 'codebuddy', displayName: 'CodeBuddy', baseURL: 'https://copilot.tencent.com/v2', credential: 'tok',
+			models: [{ id: 'big', contextWindow: 192_000, maxTokens: 32_000 }, { id: 'plain' }],
+		}]);
+		assert.strictEqual(args.providers[0].models[0].contextWindow, 192_000);
+		assert.strictEqual(args.providers[0].models[0].maxTokens, 32_000);
+		assert.strictEqual('contextWindow' in args.providers[0].models[1], false, '未声明时不得写空键');
+		assert.ok(validateProvidersSyncArgs(args));
+	});
+
+	test('★★ 容量位只收正有限数（0/NaN/Infinity 不得覆盖 pi-ai 默认）', () => {
+		// 写 0 比不写更糟：会把「零上下文」当头。这里统一挡掉。
+		const bad = mergeExtensionModels(
+			[{ id: 'a', contextWindow: 0, maxTokens: Number.NaN }],
+			[{ id: 'a' }],
+		);
+		assert.deepStrictEqual(bad, [{ id: 'a' }]);
+
+		const args = buildProvidersSyncArgs([{
+			id: 'p', displayName: 'P', baseURL: 'https://x.co', credential: 'tok',
+			models: [{ id: 'm', contextWindow: Number.POSITIVE_INFINITY, maxTokens: -1 }],
+		}]);
+		assert.strictEqual('contextWindow' in args.providers[0].models[0], false);
+		assert.strictEqual('maxTokens' in args.providers[0].models[0], false);
+	});
+
+	test('★ 容量位合并：命令侧（平台目录）优先，缺了才回落注册表', () => {
+		// 平台目录是权威（逐模型给 maxInput/maxOutput）；注册表经 LM API 未必带。
+		assert.deepStrictEqual(
+			mergeExtensionModels([{ id: 'a', contextWindow: 128_000 }], [{ id: 'a', contextWindow: 192_000 }]),
+			[{ id: 'a', contextWindow: 192_000 }],
+		);
+		// 命令侧没有 ⇒ 保住注册表那份
+		assert.deepStrictEqual(
+			mergeExtensionModels([{ id: 'a', contextWindow: 128_000 }], [{ id: 'a' }]),
+			[{ id: 'a', contextWindow: 128_000 }],
+		);
+		// 命令侧是脏值（0）⇒ 回落注册表
+		assert.deepStrictEqual(
+			mergeExtensionModels([{ id: 'a', contextWindow: 128_000 }], [{ id: 'a', contextWindow: 0 }]),
+			[{ id: 'a', contextWindow: 128_000 }],
+		);
+	});
 });

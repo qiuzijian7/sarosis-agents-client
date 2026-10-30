@@ -113,7 +113,7 @@ import {
 } from '../common/agentGraph.js';
 // 工具结果里的图像项：剥离出来改走 role:'user'（tool 消息的 contentParts 三家 provider 都不读）
 import {
-	splitToolResultImages, buildToolImageMessage, toolImageOmittedNote, resolveSupportsImages,
+	splitToolResultImages, buildToolImageMessage, toolImageOmittedNote, explainSupportsImages,
 } from '../common/toolResultImages.js';
 import { deriveAskRoutingContext } from '../common/askRouting.js';
 import { isBridgeTool } from '../common/toolsetConfig.js';
@@ -3279,9 +3279,18 @@ interface ITurnContext {
 			// `_processToolResult` 是**同步** generator（不能用 `await`），能力值由闭包捕获。
 			// 用途：工具结果里的图像项改走 `role:'user'` 消息前**必须**门控它 ——
 			// 对不支持图片的模型发图会让 provider 直接 400（Claude Code 的 `Read` 踩过）。
-			// 解析结果按 provider::model 缓存（见 `toolResultImages.resolveSupportsImages`），
+			// 解析结果按 provider::model 缓存（见 `toolResultImages.explainSupportsImages`），
 			// 故每轮一次的成本可忽略；失败一律 false（fail-closed：不发图）。
-			const _turnSupportsImages = await resolveSupportsImages(modelProvider, selection?.modelId);
+			const _turnImages = await explainSupportsImages(modelProvider, selection?.modelId, info => {
+				// ★ 2026-10-30：把「结论 + 依据」记下来。此前「模型不支持」「能力字段没查到」
+				// 「listModels 失败」三种情况在日志里都是同一个 false，用户报「明明支持却说
+				// 不支持」时无法定位。现在每种原因各自可见。
+				const log = info.verdict.value ? host._logService.info : host._logService.warn;
+				log.call(host._logService,
+					`[AgentOS][ImageCap] ${info.key} → supportsImages=${info.verdict.value} `
+					+ `(reason=${info.verdict.reason})`);
+			});
+			const _turnSupportsImages = _turnImages.value;
 
 			// ─── 沙箱确认 → 收尾（三条路径共用，2026-09-17 收口到 turnToolExecution）──
 			// 原先 headSerial（`:4593`）与 serial（`:4660`）各内联约 25 行逐字重复的
@@ -3504,9 +3513,10 @@ interface ITurnContext {
 					);
 				}
 				const rawStr = _payloadStripped
-					// 不支持图片时，**必须让模型知道「有图但没附上」**（静默削弱是本项目一贯要避免的）
+					// 不支持图片时，**必须让模型知道「有图但没附上」**（静默削弱是本项目一贯要避免的），
+					// 并带上判定依据 —— 让「模型确实不支持」与「能力没查到」不再共用一句话。
 					+ (_imgSplit.images.length > 0 && !_imgSupported
-						? toolImageOmittedNote(toolName, _imgSplit.images.length)
+						? toolImageOmittedNote(toolName, _imgSplit.images.length, _turnImages.reason)
 						: '');
 
 				// Hermes 护栏 after_call：用本轮结果推进计数并取回决策（warn / halt）。

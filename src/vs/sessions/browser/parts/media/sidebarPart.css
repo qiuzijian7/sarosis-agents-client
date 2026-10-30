@@ -107,13 +107,35 @@
 }
 
 /* ── Version label ── */
+/* Hidden, hover-only affordance: `.sidebar-toolbar` is a one-dimensional flex
+ * row, so anything that is merely `display: none` still costs one `gap`
+ * (8px) and pushes the right-aligned workspace selector — and, below it, the
+ * whole content column — off the right edge. Keep it out of the flow with
+ * `position: absolute` and fade it in on toolbar hover instead. */
+.agent-sessions-workbench .part.sidebar > .sidebar-toolbar {
+	position: relative;
+}
+
 .agent-sessions-workbench .part.sidebar > .sidebar-toolbar > .sidebar-toolbar-version {
+	position: absolute;
+	left: 40px;
+	top: 50%;
+	transform: translateY(-50%);
+	pointer-events: none;
 	font-size: 11px;
 	font-weight: 400;
 	color: var(--vscode-descriptionForeground);
-	opacity: 0.7;
+	opacity: 0;
+	transition: opacity 120ms ease-out;
 	white-space: nowrap;
-	flex-shrink: 0;
+}
+
+.agent-sessions-workbench .part.sidebar > .sidebar-toolbar:hover > .sidebar-toolbar-version {
+	opacity: 0.7;
+}
+
+.agent-sessions-workbench .part.sidebar.sidebar-content-collapsed > .sidebar-toolbar > .sidebar-toolbar-version {
+	display: none;
 }
 
 /* ── Workspace selector (right-aligned) ── */
@@ -194,12 +216,12 @@
 
 /* Collapsed state: hide version and workspace, center toggle */
 .agent-sessions-workbench .part.sidebar.sidebar-content-collapsed > .sidebar-toolbar {
+	position: static;
 	padding: 0;
 	justify-content: center;
 	border-bottom: none;
 }
 
-.agent-sessions-workbench .part.sidebar.sidebar-content-collapsed > .sidebar-toolbar > .sidebar-toolbar-version,
 .agent-sessions-workbench .part.sidebar.sidebar-content-collapsed > .sidebar-toolbar > .sidebar-toolbar-workspace {
 	display: none;
 }

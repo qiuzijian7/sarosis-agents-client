@@ -35,10 +35,53 @@ export interface IVssarosPageView {
 	readonly route: string;
 }
 
+/**
+ * 原生视图（`kind: 'native'`）：**VsSaros 自己画**的侧栏视图 —— 原生树、原生标题栏 / 工具栏、
+ * 原生右键菜单与展开状态持久化，**不是** `WebContentsView` 里的一张插件网页。
+ *
+ * ★ 2026-10-30（用户要求「activitybar 中插件的 sideview 改用 vscode 原生的 UI 和功能」）：
+ *   此前 `native` 只是**能被解析**（`parseView` 收下 `viewType`），但宿主编排
+ *   （`dshActivityBarContribution.moduleViewHostOf`）**只有 page 一条路** ⇒ 声明了 native 的插件
+ *   照样被塞进 `DshPluginViewPane`，等于这个形态从实现上不存在。本次把契约的另一半接上：
+ *   `data` 说清"原生视图从哪里取数"，`actions` 说清"原生标题栏上放哪几个动作"。
+ *
+ * 为什么取数仍要一个 `route`、而不是让插件直接给 IDE 传数据：
+ * 控制桥（`ide.request`）是**反向**通道（插件问 IDE），而侧栏是 IDE 问插件。原生视图要的是
+ * "跟插件页同一份数据"，那就必须走**同一份** HTTP 接口（同一套 cookie 认证与权限口径）——
+ * 否则侧栏与编辑区页会各算一份，迟早对不上（本仓已经为"两个 dashboard 不是同一份数据"付过代价）。
+ */
 export interface IVssarosNativeView {
 	readonly kind: 'native';
 	/** VsSaros 侧注册的视图类型，经控制桥 `module.<id>.*` 取数。 */
 	readonly viewType: string;
+	/**
+	 * 原生视图的**数据来源**：插件 Host 上的一个 JSON 接口（如 `/x/agents/api/agents`）。
+	 *
+	 * 缺省 = 该视图自带数据（不需要 HTTP 取数）。给了就必须是站内绝对路径，
+	 * 且**禁止**查询串 / 片段 / `..` —— 原生视图会原样拼到模块页基址后面取数，
+	 * 放开查询串会让"取数"变成"任意请求"。
+	 */
+	readonly data?: IVssarosNativeData;
+	/**
+	 * 原生标题栏上的动作。**只有 id / 标题 / 图标是清单的东西**；"按下去做什么"由 IDE 侧的
+	 * 视图实现决定（清单不能注入命令 —— 那是第三方插件拿到任意命令执行权的入口）。
+	 */
+	readonly actions?: readonly IVssarosNativeAction[];
+}
+
+/** 原生视图的数据来源（见 {@link IVssarosNativeView.data}）。 */
+export interface IVssarosNativeData {
+	/** 站内绝对路径，如 `/x/agents/api/agents`。 */
+	readonly route: string;
+}
+
+/** 原生标题栏动作（见 {@link IVssarosNativeView.actions}）。 */
+export interface IVssarosNativeAction {
+	/** 动作 id：IDE 侧视图实现按它分派（未知 id 会被忽略并记日志）。 */
+	readonly id: string;
+	readonly title: string | { readonly zh: string; readonly en: string };
+	/** `codicon:xxx`；缺省由 IDE 侧按动作 id 兜一个。 */
+	readonly icon?: string;
 }
 
 /**
@@ -309,6 +352,72 @@ function parseActivityBar(raw: unknown, options: IParseManifestOptions): IVssaro
 	return { containerId, title: parseTitle(raw.title, 'vssaros.activityBar.title'), icon, order };
 }
 
+/** 原生视图的取数路由：站内绝对路径，**不许**带查询串 / 片段（见 `IVssarosNativeView.data`）。 */
+function parseNativeData(raw: unknown): IVssarosNativeData | undefined {
+	if (raw === undefined) {
+		return undefined;
+	}
+	if (!isPlainObject(raw)) {
+		throw new VssarosManifestError('vssaros.view.data 必须是对象');
+	}
+	for (const key of Object.keys(raw)) {
+		if (key !== 'route') {
+			throw new VssarosManifestError(`vssaros.view.data 不认识的字段：${key}`);
+		}
+	}
+	const route = typeof raw.route === 'string' ? raw.route.trim() : '';
+	// `ROUTE_RE` 本身就不含 `?` / `#`，但那是字符集层面的"恰好"——这里把意图写明，
+	// 将来谁放宽了字符集也不会顺手把查询串放进来。
+	if (!route || !ROUTE_RE.test(route) || route.includes('..') || route.includes('?') || route.includes('#')) {
+		throw new VssarosManifestError('vssaros.view.data.route 缺失或不合法（站内绝对路径，不含 .. / ? / #）');
+	}
+	return { route };
+}
+
+const NATIVE_ACTION_ID_RE = /^[a-z][a-z0-9-]{0,31}$/;
+
+/** 原生标题栏动作：最多 8 个（侧栏标题栏放不下更多，且多到那个数量就该进"..."菜单）。 */
+function parseNativeActions(raw: unknown): readonly IVssarosNativeAction[] | undefined {
+	if (raw === undefined) {
+		return undefined;
+	}
+	if (!Array.isArray(raw)) {
+		throw new VssarosManifestError('vssaros.view.actions 必须是数组');
+	}
+	if (raw.length > 8) {
+		throw new VssarosManifestError('vssaros.view.actions 最多 8 项');
+	}
+	const seen = new Set<string>();
+	return raw.map((item, i) => {
+		if (!isPlainObject(item)) {
+			throw new VssarosManifestError(`vssaros.view.actions[${i}] 必须是对象`);
+		}
+		for (const key of Object.keys(item)) {
+			if (key !== 'id' && key !== 'title' && key !== 'icon') {
+				throw new VssarosManifestError(`vssaros.view.actions[${i}] 不认识的字段：${key}`);
+			}
+		}
+		const id = typeof item.id === 'string' ? item.id.trim() : '';
+		if (!id || !NATIVE_ACTION_ID_RE.test(id)) {
+			throw new VssarosManifestError(`vssaros.view.actions[${i}].id 缺失或格式不合法（小写字母开头，可含数字与 -）`);
+		}
+		if (seen.has(id)) {
+			// 重复 id ⇒ IDE 侧按 id 分派会二义（点一个动作触发两次），必须挡在清单层。
+			throw new VssarosManifestError(`vssaros.view.actions 里 id 重复：${id}`);
+		}
+		seen.add(id);
+		const icon = item.icon === undefined ? undefined : (typeof item.icon === 'string' ? item.icon.trim() : '');
+		if (item.icon !== undefined && !icon) {
+			throw new VssarosManifestError(`vssaros.view.actions[${i}].icon 必须是非空字符串`);
+		}
+		return {
+			id,
+			title: parseTitle(item.title, `vssaros.view.actions[${i}].title`),
+			...(icon ? { icon } : {}),
+		};
+	});
+}
+
 function parseView(raw: unknown, module: string | undefined): IVssarosView {
 	if (raw === undefined) {
 		// 决议③：默认 page；route 按 module 推导，缺 module 无法推导 → 报错（不猜）。
@@ -333,7 +442,21 @@ function parseView(raw: unknown, module: string | undefined): IVssarosView {
 		if (!viewType || !CONTAINER_ID_RE.test(viewType)) {
 			throw new VssarosManifestError('vssaros.view.viewType 缺失或格式不合法');
 		}
-		return { kind: 'native', viewType };
+		// ⚠ 未知字段一律报错（与 `workbench` 同口径）：`data` 写成 `dataRoute` 这种笔误，
+		//   如果被静默吞掉，表现就是"原生视图起来了但一片空白"——比直接报错难查得多。
+		for (const key of Object.keys(raw)) {
+			if (key !== 'kind' && key !== 'viewType' && key !== 'data' && key !== 'actions') {
+				throw new VssarosManifestError(`vssaros.view（kind=native）不认识的字段：${key}`);
+			}
+		}
+		const data = parseNativeData(raw.data);
+		const actions = parseNativeActions(raw.actions);
+		return {
+			kind: 'native',
+			viewType,
+			...(data ? { data } : {}),
+			...(actions ? { actions } : {}),
+		};
 	}
 	if (kind === 'section') {
 		const host = typeof raw.host === 'string' ? raw.host.trim() : '';
@@ -351,7 +474,7 @@ function parseView(raw: unknown, module: string | undefined): IVssarosView {
 	}
 	if (kind === 'none') {
 		// 显式声明"没有界面"：不允许再带界面字段（写混了就是自相矛盾，早点报）
-		for (const field of ['route', 'host', 'viewType'] as const) {
+		for (const field of ['route', 'host', 'viewType', 'data', 'actions'] as const) {
 			if (raw[field] !== undefined) {
 				throw new VssarosManifestError(`vssaros.view.kind=none 表示不提供界面，不能再带 ${field}`);
 			}

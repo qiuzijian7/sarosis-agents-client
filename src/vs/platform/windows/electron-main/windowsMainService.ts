@@ -537,6 +537,14 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 			contextWindowId: openConfig.contextWindowId,
 			initialStartup: openConfig.initialStartup,
 			forceNewWindow: true,
+			// ★★ 2026-10-30（外部机器 P0：装完**第一次能用，之后每次启动都没有窗口**）：
+			//   不带 `forceEmpty` ⇒ `getPathsToOpen` 走「上次会话」⇒ 上次是**空窗口**时返回的是
+			//   `{ backupPath }` 而不是 `EMPTY_WINDOW` ⇒ `maybeOpenEmptyWindow` 恒 false，
+			//   而那条 backup 又被 `open()` 里 `initialStartup && !isAgentsApp` 的 else 分支**清空**
+			//   ⇒ 无窗可开 ⇒ `open()` 返回 `[]`（日志：`returned 0 window(s)`，且没有 `wantsHiddenStart=`）。
+			//   本机永远有记住的工作区（case ③）⇒ 从不走到这里 ⇒ 只在新机器上复现。
+			//   ⇒ 本分支的语义就是「开一个空 agents 窗口」⇒ 必须显式声明 ✓
+			forceEmpty: true,
 		};
 	}
 
@@ -831,6 +839,19 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 			emptyWindowsWithBackupsToRestore.push(...this.backupMainService.getEmptyWindowBackups());
 		} else {
 			emptyWindowsWithBackupsToRestore.length = 0;
+		}
+
+		// ★★ 2026-10-30 兜底（外部机器 P0：启动后**没有任何窗口**，进程常驻、只剩心跳）：
+		//   agents 应用会丢掉「上次会话的空窗 backup」（上面 else 分支），而它若是 pathsToOpen 里
+		//   **唯一**的一项，就什么都不剩 ⇒ `doOpen` 一个窗口都不建 ⇒ 用户看到的是"装了打不开"。
+		//   ⇒ agents 应用在"无任何可开对象"时**必须**开一个空窗口（与原生 VS Code
+		//      "没有可恢复的就开空窗"语义一致）✓
+		if (isAgentsApp && !maybeOpenEmptyWindow && !filesToOpen
+			&& workspacesToOpen.length === 0 && foldersToOpen.length === 0
+			&& emptyWindowsWithBackupsToRestore.length === 0
+			&& foldersToAdd.length === 0 && foldersToRemove.length === 0) {
+			this.logService.warn('[windowsManager] agents app: nothing to open after filtering (last-session empty-window backup dropped) → opening an EMPTY window');
+			maybeOpenEmptyWindow = true;
 		}
 
 		// Open based on config

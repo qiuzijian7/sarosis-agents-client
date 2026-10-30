@@ -11,7 +11,7 @@ import { IterationBudget } from '../../../common/iterationBudget.js';
 import { ContextManager } from '../../../common/contextManager.js';
 // 工具结果里的图像项：剥离出来改走 role:'user'（tool 消息的 contentParts 三家 provider 都不读）
 import {
-	splitToolResultImages, buildToolImageMessage, toolImageOmittedNote, resolveSupportsImages,
+	splitToolResultImages, buildToolImageMessage, toolImageOmittedNote, explainSupportsImages,
 } from '../../../common/toolResultImages.js';
 import { ToolArgumentRepairer } from '../../../common/toolRepair.js';
 import { ParallelToolExecutor } from '../../../common/parallelToolExecutor.js';
@@ -429,12 +429,19 @@ export class ExecutionProvider implements IExecutionProvider {
 					// 与 `agentTurnExecutor` 同款处置，详见 `common/toolResultImages` 头注释。
 					const _toolName = assistantToolCalls.find(c => c.id === toolResult.toolCallId)?.name ?? 'tool';
 					const _imgSplit = splitToolResultImages(toolResult.content);
-					const _imgSupported = _imgSplit.images.length > 0
-						? await resolveSupportsImages(modelProvider, modelId)
-						: false;
+					const _imgVerdict = _imgSplit.images.length > 0
+						? await explainSupportsImages(modelProvider, modelId, info => {
+							// 与 agentTurnExecutor 同款诊断：把「结论 + 依据」记下来。
+							const log = info.verdict.value ? this._logService.info : this._logService.warn;
+							log.call(this._logService,
+								`[ExecutionProvider][ImageCap] ${info.key} → supportsImages=${info.verdict.value} `
+								+ `(reason=${info.verdict.reason})`);
+						})
+						: { value: false, reason: 'no-provider' as const };
+					const _imgSupported = _imgVerdict.value;
 					const rawContent = JSON.stringify(_imgSplit.text)
 						+ (_imgSplit.images.length > 0 && !_imgSupported
-							? toolImageOmittedNote(_toolName, _imgSplit.images.length)
+							? toolImageOmittedNote(_toolName, _imgSplit.images.length, _imgVerdict.reason)
 							: '');
 					const toolResultMessage: IChatMessage = {
 						role: 'tool',

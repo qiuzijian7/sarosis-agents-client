@@ -141,6 +141,11 @@ export function customProviderDataToDefinition(cp: CustomProviderData): IBYOKPro
 				name: mid,
 				capabilities: [ModelCapability.Chat, ModelCapability.Code, ModelCapability.FunctionCalling],
 				supportsToolCall: true,
+				// ★ 2026-10-30：自定义 provider 的模型清单来自用户手填的 id（`cp.models`），
+				// 这里没有能力元数据可依。显式写 `undefined`（= 未声明）而不是留空，
+				// 让发图门控走 fail-closed，同时**不伪造**支持视觉的声明。
+				// 用户要开视觉，走插件详情里的「支持图片」开关（写 `supportsImages`）或动态发现。
+				supportsImages: undefined,
 				supportsImageGen: inferImageGen({ id: mid } as IModelInfo),
 				capabilityConfig: {
 					supportsSystemMessage: 'separated',
@@ -489,6 +494,12 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 					capabilities: this._inferCapabilities(m),
 					supportsToolCall: m.supportsToolCall ?? (m.capabilityConfig?.specialToolFormat !== undefined),
 					supportsReasoning: m.supportsReasoning ?? (m.capabilityConfig?.reasoningType ? true : undefined),
+					// ★ 2026-10-30：此前**整个字段都没有** ⇒ 动态发现的模型一律被判
+					// 「不支持图片」（发图门控只认这个布尔，见 `common/toolResultImages`），
+					// 而 UI 那边看到的是 `capabilities` 里的 Vision，两边说法相反。
+					// 现在：网关显式给了就用；给了 `false` 也照样尊重（可显式关闭）；
+					// 都没给则由 `capabilities`（含 ID/描述推断出的 Vision）反推。
+					supportsImages: this._resolveSupportsImagesFlag(m),
 					supportsImageGen: m.supportsImageGen ?? inferImageGen(m),
 					capabilityConfig: m.capabilityConfig || undefined,
 					pricing: m.pricing ? {
@@ -508,6 +519,24 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 
 		this._modelsFetched = true;
 		this._onDidChangeModels.fire();
+	}
+
+	/**
+	 * 解析一条**动态发现**的模型的图片输入能力（`supportsImages`）。
+	 *
+	 * 与 `_inferCapabilities` 的 `Vision` 判断**共用同一口径**：先看网关/声明式配置怎么说，
+	 * 没说的话再用 `_inferCapabilities` 的结果反推。这样 UI（读 `capabilities`）与
+	 * 发图门控（读 `supportsImages`）不会再给出相反答案 —— 那正是 2026-10-30 误报的根因。
+	 *
+	 * 优先级：
+	 *   ① 模型自带 `supportsImages`（含显式 `false` —— 允许网关关掉视觉）；
+	 *   ② `capabilities` 里有 `Vision`（API 响应 / capabilityConfig / ID·描述推断）。
+	 */
+	private _resolveSupportsImagesFlag(m: any): boolean | undefined {
+		if (typeof m.supportsImages === 'boolean') {
+			return m.supportsImages;
+		}
+		return this._inferCapabilities(m).includes(ModelCapability.Vision) ? true : undefined;
 	}
 
 	private _inferCapabilities(m: any): ModelCapability[] {
@@ -835,9 +864,9 @@ export const BUILTIN_BYOK_PROVIDERS: IBYOKProviderDefinition[] = [
 		modelsEndpointPath: 'models',
 		openAICompatible: true,
 		staticModels: [
-			{ id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', capabilities: [ModelCapability.Chat, ModelCapability.Code, ModelCapability.Vision, ModelCapability.FunctionCalling], supportsToolCall: true, supportsReasoning: true, capabilityConfig: { supportsSystemMessage: 'separated', specialToolFormat: 'gemini-style', reasoningType: 'budget-slider', supportsCaching: false, supportsFIM: false, reservedOutputTokenSpace: null } },
-			{ id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', capabilities: [ModelCapability.Chat, ModelCapability.Code, ModelCapability.Vision, ModelCapability.FunctionCalling], supportsToolCall: true, supportsReasoning: true, capabilityConfig: { supportsSystemMessage: 'separated', specialToolFormat: 'gemini-style', reasoningType: 'budget-slider', supportsCaching: false, supportsFIM: false, reservedOutputTokenSpace: null } },
-			{ id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash', capabilities: [ModelCapability.Chat, ModelCapability.Code, ModelCapability.Vision, ModelCapability.FunctionCalling], supportsToolCall: true, capabilityConfig: { supportsSystemMessage: 'separated', specialToolFormat: 'gemini-style', supportsCaching: false, supportsFIM: false, reservedOutputTokenSpace: null } },
+			{ id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', capabilities: [ModelCapability.Chat, ModelCapability.Code, ModelCapability.Vision, ModelCapability.FunctionCalling], supportsImages: true, supportsToolCall: true, supportsReasoning: true, capabilityConfig: { supportsSystemMessage: 'separated', specialToolFormat: 'gemini-style', reasoningType: 'budget-slider', supportsCaching: false, supportsFIM: false, reservedOutputTokenSpace: null } },
+			{ id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', capabilities: [ModelCapability.Chat, ModelCapability.Code, ModelCapability.Vision, ModelCapability.FunctionCalling], supportsImages: true, supportsToolCall: true, supportsReasoning: true, capabilityConfig: { supportsSystemMessage: 'separated', specialToolFormat: 'gemini-style', reasoningType: 'budget-slider', supportsCaching: false, supportsFIM: false, reservedOutputTokenSpace: null } },
+			{ id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash', capabilities: [ModelCapability.Chat, ModelCapability.Code, ModelCapability.Vision, ModelCapability.FunctionCalling], supportsImages: true, supportsToolCall: true, capabilityConfig: { supportsSystemMessage: 'separated', specialToolFormat: 'gemini-style', supportsCaching: false, supportsFIM: false, reservedOutputTokenSpace: null } },
 		],
 	},
 	{
@@ -850,8 +879,8 @@ export const BUILTIN_BYOK_PROVIDERS: IBYOKProviderDefinition[] = [
 		openAICompatible: false,
 		isAnthropic: true,
 		staticModels: [
-			{ id: 'claude-sonnet-4-20250514', name: 'Claude Sonnet 4', capabilities: [ModelCapability.Chat, ModelCapability.Code, ModelCapability.Vision, ModelCapability.FunctionCalling], supportsToolCall: true, supportsReasoning: true, capabilityConfig: { supportsSystemMessage: 'separated', specialToolFormat: 'anthropic-style', reasoningType: 'budget-slider', supportsCaching: 'anthropic', supportsFIM: false, reservedOutputTokenSpace: null } },
-			{ id: 'claude-3-7-sonnet-20250219', name: 'Claude 3.7 Sonnet', capabilities: [ModelCapability.Chat, ModelCapability.Code, ModelCapability.Vision, ModelCapability.FunctionCalling], supportsToolCall: true, supportsReasoning: true, capabilityConfig: { supportsSystemMessage: 'separated', specialToolFormat: 'anthropic-style', reasoningType: 'budget-slider', supportsCaching: 'anthropic', supportsFIM: false, reservedOutputTokenSpace: null } },
+			{ id: 'claude-sonnet-4-20250514', name: 'Claude Sonnet 4', capabilities: [ModelCapability.Chat, ModelCapability.Code, ModelCapability.Vision, ModelCapability.FunctionCalling], supportsImages: true, supportsToolCall: true, supportsReasoning: true, capabilityConfig: { supportsSystemMessage: 'separated', specialToolFormat: 'anthropic-style', reasoningType: 'budget-slider', supportsCaching: 'anthropic', supportsFIM: false, reservedOutputTokenSpace: null } },
+			{ id: 'claude-3-7-sonnet-20250219', name: 'Claude 3.7 Sonnet', capabilities: [ModelCapability.Chat, ModelCapability.Code, ModelCapability.Vision, ModelCapability.FunctionCalling], supportsImages: true, supportsToolCall: true, supportsReasoning: true, capabilityConfig: { supportsSystemMessage: 'separated', specialToolFormat: 'anthropic-style', reasoningType: 'budget-slider', supportsCaching: 'anthropic', supportsFIM: false, reservedOutputTokenSpace: null } },
 			{ id: 'claude-3-5-haiku-20241022', name: 'Claude 3.5 Haiku', capabilities: [ModelCapability.Chat, ModelCapability.Code, ModelCapability.FunctionCalling], supportsToolCall: true, capabilityConfig: { supportsSystemMessage: 'separated', specialToolFormat: 'anthropic-style', supportsCaching: 'anthropic', supportsFIM: false, reservedOutputTokenSpace: null } },
 		],
 	},

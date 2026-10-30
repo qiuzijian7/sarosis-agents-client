@@ -31,6 +31,7 @@
  * 否则不支持图片的模型会直接 400（Claude Code 的 `Read` 工具踩过这个坑）。
  */
 
+import { ModelCapability } from './providers.js';
 import type { IChatContentPart, IChatImagePart, IChatMessage } from './providers.js';
 
 /** 从工具结果里分离出的图像载荷。 */
@@ -124,7 +125,7 @@ export function buildToolImageMessage(
 }
 
 /**
- * 主模型是否支持**图片输入**（`IModelInfo.supportsImages`）—— 发图前的**硬门控**。
+ * 主模型是否支持**图片输入** —— 发图前的**硬门控**。
  *
  * ## 为什么必须问
  *
@@ -133,47 +134,153 @@ export function buildToolImageMessage(
  *
  * ## 判定与缓存
  *   · `listModels()` 抛错 / 模型查不到 / 字段缺失 → **false**（fail-closed：不发图）；
+ *   · 能力口径（含 `capabilities` 里的 `Vision`）与依据枚举见 {@link explainSupportsImages}；
  *   · 结果按 `provider.id::modelId` 缓存 —— **键含模型**，故用户切换模型时自动失效，
  *     不存在「拿旧模型的结论判新模型」的错配；TTL 兜住「同一模型能力被更正」的情况。
  */
 const SUPPORTS_IMAGES_TTL_MS = 60_000;
-const _supportsImagesCache = new Map<string, { at: number; value: boolean }>();
+
+/**
+ * 图片能力判定的**结论 + 依据**。
+ *
+ * 为什么要把「依据」带出来：2026-10-30 的线上反馈「模型明明支持图像，调用时却说
+ * 不支持」——当时 `supportsImages` 缺失、`listModels()` 抛错、以及「模型确实不支持」
+ * 三种情况**全部塌缩成同一句文案**，无法区分。现在把口径摊开：
+ *   · `declared`      —— 模型显式声明了 `supportsImages`（最权威）；
+ *   · `capabilities`  —— 没写布尔字段，但 `capabilities` 里有 `Vision`（内置静态表
+ *                        历来只写这个枚举，见 `builtInBYOKModelProvider.BUILTIN_BYOK_PROVIDERS`）；
+ *   · `model-missing` —— 清单里查不到该 id（多半是 id 编码不一致）；
+ *   · `list-models-failed` —— `listModels()` 抛错；
+ *   · `no-provider`   —— 拿不到 provider 或 modelId 为空。
+ */
+export type SupportsImagesReason =
+	| 'declared'
+	| 'capabilities'
+	| 'undeclared'
+	| 'model-missing'
+	| 'list-models-failed'
+	| 'no-provider';
+
+export interface ISupportsImagesVerdict {
+	readonly value: boolean;
+	readonly reason: SupportsImagesReason;
+}
+
+const _supportsImagesCache = new Map<string, { at: number; reason: SupportsImagesReason; value: boolean }>();
 
 /** 清空能力缓存（测试用 —— 模块级缓存必须可重置，否则用例之间互相污染）。 */
 export function resetSupportsImagesCacheForTests(): void {
 	_supportsImagesCache.clear();
 }
 
-export async function resolveSupportsImages(
-	provider: { id?: string; listModels?: () => Promise<ReadonlyArray<{ id: string; supportsImages?: boolean }>> } | undefined,
-	modelId: string | undefined,
-): Promise<boolean> {
-	if (!provider?.listModels || !modelId) { return false; }
-	const key = `${provider.id ?? '?'}::${modelId}`;
-	const hit = _supportsImagesCache.get(key);
-	if (hit && Date.now() - hit.at < SUPPORTS_IMAGES_TTL_MS) { return hit.value; }
-	let value = false;
-	try {
-		const models = await provider.listModels();
-		value = models.find(m => m.id === modelId)?.supportsImages === true;
-	} catch {
-		value = false; // 查不到 → 不发图（fail-closed）
-	}
-	_supportsImagesCache.set(key, { at: Date.now(), value });
-	return value;
+/** 单条模型信息里，图像输入能力的最小结构（`IModelInfo` 的结构子集）。 */
+interface IImageCapableModel {
+	readonly id: string;
+	readonly supportsImages?: boolean;
+	readonly capabilities?: readonly ModelCapability[];
 }
 
 /**
- * 主模型**不支持图片输入**时的文本替代说明。
+ * 从一条模型信息判定图片输入能力，并说明依据。
+ *
+ * 口径优先级：显式布尔 > `capabilities` 含 `Vision`。
+ *
+ * ⚠ **为什么不只认布尔字段**：内置 provider 的静态模型（Gemini / Anthropic 等）
+ * 一律只写 `capabilities: [..., ModelCapability.Vision]`，从来不写 `supportsImages`。
+ * 此前门控只认 `supportsImages === true` ⇒ 这些**界面明说支持视觉**的模型全被判成
+ * 不支持，于是工具产出的图被剥离、换成「model does not declare image input support」。
+ * 界面与门控读的是两份数据，这就是那次误报的根因。
+ */
+function _verdictForModel(model: IImageCapableModel): ISupportsImagesVerdict {
+	if (model.supportsImages === true) {
+		return { value: true, reason: 'declared' };
+	}
+	// 显式 `false` 优先于 capabilities —— 声明式关闭必须能覆盖枚举（否则无法关掉视觉）。
+	if (model.supportsImages === false) {
+		return { value: false, reason: 'undeclared' };
+	}
+	if (model.capabilities?.includes(ModelCapability.Vision)) {
+		return { value: true, reason: 'capabilities' };
+	}
+	return { value: false, reason: 'undeclared' };
+}
+
+/**
+ * 主模型是否支持**图片输入**，并给出判定依据（`resolveSupportsImages` 的诊断版）。
+ *
+ * 门控语义与 {@link resolveSupportsImages} 完全一致 —— 后者是它的薄封装，
+ * 保证「能不能发图」只有一个真源，不会出现两个入口给出不同答案。
+ *
+ * @param onDiagnose 可选：每次**真实解析**（缓存未命中）后回调一次，供调用方打日志。
+ */
+export async function explainSupportsImages(
+	provider: { id?: string; listModels?: () => Promise<ReadonlyArray<IImageCapableModel>> } | undefined,
+	modelId: string | undefined,
+	onDiagnose?: (info: { key: string; modelId: string; verdict: ISupportsImagesVerdict }) => void,
+): Promise<ISupportsImagesVerdict> {
+	if (!provider?.listModels || !modelId) {
+		return { value: false, reason: 'no-provider' };
+	}
+	const key = `${provider.id ?? '?'}::${modelId}`;
+	const hit = _supportsImagesCache.get(key);
+	if (hit && Date.now() - hit.at < SUPPORTS_IMAGES_TTL_MS) {
+		return { value: hit.value, reason: hit.reason };
+	}
+
+	let verdict: ISupportsImagesVerdict;
+	try {
+		const models = await provider.listModels();
+		const model = models.find(m => m.id === modelId);
+		verdict = model
+			? _verdictForModel(model)
+			: { value: false, reason: 'model-missing' };
+	} catch {
+		// 查不到 → 不发图（fail-closed）。但**原因要与「模型不支持」分开**。
+		verdict = { value: false, reason: 'list-models-failed' };
+	}
+	_supportsImagesCache.set(key, { at: Date.now(), reason: verdict.reason, value: verdict.value });
+	onDiagnose?.({ key, modelId, verdict });
+	return verdict;
+}
+
+export async function resolveSupportsImages(
+	provider: { id?: string; listModels?: () => Promise<ReadonlyArray<IImageCapableModel>> } | undefined,
+	modelId: string | undefined,
+	onDiagnose?: (info: { key: string; modelId: string; verdict: ISupportsImagesVerdict }) => void,
+): Promise<boolean> {
+	return (await explainSupportsImages(provider, modelId, onDiagnose)).value;
+}
+
+/**
+ * 主模型**取不到图片**时的文本替代说明。
  *
  * 图像已被剥离（避免把截断损坏的 base64 塞进上下文），但**必须让模型知道这件事** ——
  * 否则它会以为工具没产出图，或以为自己看到了（静默削弱）。文案同时指出两条出路：
  * 换支持图片的模型，或用 `vision_analyze`（它返回文本答案）。
+ *
+ * @param reason 判定依据（来自 {@link explainSupportsImages}）。缺省按「未声明」措辞 ——
+ *   这是最常见的真实情况。**把原因写清楚**是这次修复的重点：此前「模型确实不支持」与
+ *   「能力字段根本没查到」用同一句话，用户看到就以为自己的视觉模型白买了。
  */
-export function toolImageOmittedNote(toolName: string, count: number): string {
+export function toolImageOmittedNote(toolName: string, count: number, reason?: SupportsImagesReason): string {
 	const them = count > 1 ? 'them' : 'it';
+	const why = ((): string => {
+		switch (reason) {
+			case 'model-missing':
+				return 'the model list did not contain the selected model, so its image support could not be verified. ';
+			case 'list-models-failed':
+				return 'the model list could not be read, so image support could not be verified. ';
+			case 'no-provider':
+				return 'no model was selected, so image support could not be verified. ';
+			case 'declared':
+			case 'capabilities':
+			case 'undeclared':
+			default:
+				return 'the current model does not declare image input support. ';
+		}
+	})();
 	return `\n\n[${toolName}] returned ${count} image${count > 1 ? 's' : ''}, but ${them === 'them' ? 'they are' : 'it is'} NOT attached: `
-		+ 'the current model does not declare image input support. '
+		+ why
 		+ `If you need to inspect ${them}, switch to a vision-capable model, or use the \`vision_analyze\` tool `
 		+ '(it accepts a local file path and returns a text answer).';
 }

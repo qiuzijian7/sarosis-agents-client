@@ -389,6 +389,11 @@ export class DshHostSupervisor extends Disposable {
 	 */
 	private _pluginsStale = false;
 	/**
+	 * 本轮 start 里已判定"控制桥连不上"而拒绝接管的 Host pid（2026-10-30）。
+	 * 拿到启动锁后的第二次接管尝试据此跳过它（否则白等一次 10s 桥超时，结论不变）。
+	 */
+	private _bridgelessLeasePid: number | undefined;
+	/**
 	 * 插件自检是否已经自动重启过一次（防抖动）。插件图**健康**时复位 ⇒ 将来"另一批插件又坏掉"时
 	 * 还能再自愈一次 ✓（见 `_auditPluginGraph`）。
 	 */
@@ -1247,7 +1252,8 @@ export class DshHostSupervisor extends Disposable {
 			try {
 				this._throwIfStale(generation);
 				// 锁竞争里那个 Host 同样可能是旧代码（别的实例拉起它时还没装上新插件）⇒ 同样不接管 ✓。
-				if (leaseFromLock && !pluginsWereStale && !hostLeaseBlocker(leaseFromLock, want) && !(await leases.probe(leaseFromLock))) {
+				// ⚠ 刚判过"桥连不上"的同一个 Host 不再试第二次（否则白等 10s 桥超时，结果一样）。
+				if (leaseFromLock && leaseFromLock.pid !== this._bridgelessLeasePid && !pluginsWereStale && !hostLeaseBlocker(leaseFromLock, want) && !(await leases.probe(leaseFromLock))) {
 					if (await this._adoptLease(leaseFromLock, generation, profile, dshHome, t0)) {
 						return this._status;
 					}
@@ -1703,7 +1709,18 @@ export class DshHostSupervisor extends Disposable {
 				this._registerReverseHandler(bridge);
 				this._runDisposables.add(bridge.onDidClose(() => this._onReusedBridgeClosed(bridge, generation)));
 			} catch (e) {
-				this._appendLog(`reused Host: bridge unavailable, URL-line fallback (${String((e as Error)?.message ?? e).slice(0, 160)})`);
+				// ★★ 2026-10-30（外部机器：窗口开出来了，但横幅「会话启动失败（第 3/3 次）：
+				//   startSession: 控制桥不可用」、界面一直停在"后台服务已就绪，正在加载界面…"）：
+				//   日志 `reused Host: bridge unavailable … connect ENOENT \\.\pipe\vssaros-dsh-…`
+				//   + `reusing the Host started by pid 56968 (bridge: fallback)` ——
+				//   租约**登记了控制桥**，但管道已不存在（旧包留下的 Host / 桥插件已崩）。
+				//   原来照样接管（降级 fallback）⇒ 桌面窗口建会话**必须**走桥 ⇒ 每次都失败，且永远不会换 Host ✗✗。
+				//   ⇒ 不接管：撤回刚写的拥有者记录（否则回收器会以为这个 Host "有人在用"而放过它），
+				//     返回 false ⇒ 调用方照常 `removeIfStale` → 回收孤儿 → **新起一个带桥的 Host** ✓。
+				this._appendLog(`not reusing the running Host (pid ${lease.pid}): its control bridge is unreachable (${String((e as Error)?.message ?? e).slice(0, 160)}) — sessions need the bridge; starting a fresh Host instead`);
+				this._dropOwnershipRecord();
+				this._bridgelessLeasePid = lease.pid;
+				return false;
 			}
 		}
 		const origin = hello?.host.origin ?? lease.origin;

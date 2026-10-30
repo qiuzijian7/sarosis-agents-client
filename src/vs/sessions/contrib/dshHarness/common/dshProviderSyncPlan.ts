@@ -20,6 +20,12 @@ export interface IDshModelRef {
 	readonly name?: string;
 	/** 支持推理/思考模式（dsh 侧据此决定是否走 reasoning 通道）。 */
 	readonly reasoning?: boolean;
+	/** 支持图片输入（dsh 侧据此给模型声明 `input: ['text','image']`）。 */
+	readonly supportsImages?: boolean;
+	/** 上下文窗口（dsh 侧写成模型级 `contextWindow`；缺省交给 pi-ai 默认）。 */
+	readonly contextWindow?: number;
+	/** 最大输出 token（dsh 侧写成模型级 `maxTokens`；缺省交给 pi-ai 默认）。 */
+	readonly maxTokens?: number;
 	/** 平台目录给的推荐档位（决定路由级默认档位；见 `IBridgeProviderModel.effort`）。 */
 	readonly effort?: DshReasoningEffort;
 }
@@ -80,16 +86,30 @@ export function mergeExtensionModels(
 	const out: IDshModelRef[] = [];
 	const index = new Map<string, number>();
 	// 不产出 `name: undefined` 这类"显式空键"：合并结果要与"缺省即不展示"语义一致（也便于 deepStrictEqual 断言）。
-	const entry = (id: string, name: string | undefined, reasoning: boolean, effort: DshReasoningEffort | undefined): IDshModelRef => ({
+	const entry = (
+		id: string,
+		name: string | undefined,
+		reasoning: boolean,
+		effort: DshReasoningEffort | undefined,
+		supportsImages: boolean,
+		contextWindow: number | undefined,
+		maxTokens: number | undefined,
+	): IDshModelRef => ({
 		id,
 		...(name ? { name } : {}),
 		...(reasoning ? { reasoning: true } : {}),
+		// ★ 2026-10-30：图像能力与 reasoning 同款口径 —— **任一来源声明即为真**。
+		// 只保留「真」（`false` 与缺省等价）⇒ 不会因为某一侧没这个字段就把能力抹掉。
+		...(supportsImages ? { supportsImages: true } : {}),
+		// 容量位只在拿到正有限数时写（0/NaN 一律不写 ⇒ 不把 pi-ai 默认覆盖成 0）。
+		...(_positiveCapacity(contextWindow) ? { contextWindow } : {}),
+		...(_positiveCapacity(maxTokens) ? { maxTokens } : {}),
 		...(effort ? { effort } : {}),
 	});
 	for (const m of registryModels) {
 		if (m?.id && !index.has(m.id)) {
 			index.set(m.id, out.length);
-			out.push(entry(m.id, m.name, m.reasoning === true, m.effort));
+			out.push(entry(m.id, m.name, m.reasoning === true, m.effort, m.supportsImages === true, m.contextWindow, m.maxTokens));
 		}
 	}
 	for (const m of commandModels ?? []) {
@@ -99,14 +119,36 @@ export function mergeExtensionModels(
 		const at = index.get(m.id);
 		if (at === undefined) {
 			index.set(m.id, out.length);
-			out.push(entry(m.id, m.name, m.reasoning === true, m.effort));
+			out.push(entry(m.id, m.name, m.reasoning === true, m.effort, m.supportsImages === true, m.contextWindow, m.maxTokens));
 			continue;
 		}
 		const prev = out[at];
 		// effort 只有命令侧有（注册表经 LM API 丢能力/参数位）⇒ 合并时保留已有的那份。
-		out[at] = entry(prev.id, prev.name ?? m.name, prev.reasoning === true || m.reasoning === true, prev.effort ?? m.effort);
+		// supportsImages 取并集：注册表那份来自 LM 元数据（可信），命令侧来自平台目录 ——
+		// 任一侧说支持就不该被判成纯文本（判错的代价是「图被静默剥离」）。
+		// 容量位同样「有则取」：平台目录是权威（逐模型给了 maxInputTokens/maxOutputTokens），
+		// 注册表那份经 LM API 未必带 ⇒ 先取命令侧，缺了才回落注册表。
+		out[at] = entry(
+			prev.id,
+			prev.name ?? m.name,
+			prev.reasoning === true || m.reasoning === true,
+			prev.effort ?? m.effort,
+			prev.supportsImages === true || m.supportsImages === true,
+			_positiveCapacity(m.contextWindow) ? m.contextWindow : prev.contextWindow,
+			_positiveCapacity(m.maxTokens) ? m.maxTokens : prev.maxTokens,
+		);
 	}
 	return out;
+}
+
+/**
+ * 容量值是否可用（正有限数）。
+ *
+ * ★ 2026-10-30：`0` / `NaN` / `Infinity` 都不是合法窗口。把它们写进 profile 会把 pi-ai 的
+ * 默认值覆盖成「零上下文」⇒ 比不写更糟。所以这里统一挡掉，只让真实容量过关。
+ */
+function _positiveCapacity(v: unknown): v is number {
+	return typeof v === "number" && Number.isFinite(v) && v > 0;
 }
 
 /**
@@ -141,7 +183,16 @@ export function buildProvidersSyncArgs(sources: readonly IDshProviderSource[]): 
 		const baseURL = src.baseURL.trim().replace(/\/+$/, '');
 		const models: IBridgeProviderModel[] = src.models.slice(0, MAX_MODELS_PER_PROVIDER)
 			.filter(m => m.id && typeof m.id === 'string')
-			.map(m => ({ id: m.id, name: m.name && m.name !== m.id ? m.name : undefined, ...(m.reasoning === true ? { reasoning: true } : {}), ...(m.effort ? { effort: m.effort } : {}) }));
+			.map(m => ({
+				id: m.id,
+				name: m.name && m.name !== m.id ? m.name : undefined,
+				...(m.reasoning === true ? { reasoning: true } : {}),
+				...(m.supportsImages === true ? { supportsImages: true } : {}),
+				// ★ 2026-10-30：容量位（正有限数才写；缺省不写 ⇒ 交给 pi-ai 默认）。
+				...(_positiveCapacity(m.contextWindow) ? { contextWindow: m.contextWindow } : {}),
+				...(_positiveCapacity(m.maxTokens) ? { maxTokens: m.maxTokens } : {}),
+				...(m.effort ? { effort: m.effort } : {}),
+			}));
 		if (!baseURL || models.length === 0) {
 			skipped.push(src.id);
 			continue;

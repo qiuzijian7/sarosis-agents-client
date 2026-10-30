@@ -17,8 +17,10 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { ModelCapability } from '../../common/providers.js';
 import {
 	splitToolResultImages, buildToolImageMessage, toolImageOmittedNote,
+	explainSupportsImages, resolveSupportsImages, resetSupportsImagesCacheForTests,
 } from '../../common/toolResultImages.js';
 
 /** 短 base64（真实图片会很长，这里只要形态正确）。 */
@@ -151,5 +153,71 @@ suite('toolResultImages — 工具结果里的图像项', () => {
 		// 复数形态不出现语法错误
 		assert.ok(toolImageOmittedNote('t', 2).includes('they are NOT attached'));
 		assert.ok(toolImageOmittedNote('t', 1).includes('it is NOT attached'));
+	});
+
+	// ── 2026-10-30 回归：能力声明与门控口径必须一致 ─────────────────────
+
+	test('★★ 回归：只声明 `capabilities: [Vision]`、没有 `supportsImages` 的模型**必须判为支持**', async () => {
+		// 这正是误报的现场：内置 provider 的静态模型（Gemini / Claude）历来只写
+		// `capabilities` 里的 `Vision` 枚举，从不写 `supportsImages` 布尔。
+		// 旧门控只认布尔 ⇒ 界面说支持、门控说支持不了，工具产出的图被静默剥离。
+		resetSupportsImagesCacheForTests();
+		const provider = {
+			id: 'regression-vision-enum',
+			listModels: async () => [{
+				id: 'm-vision',
+				capabilities: [ModelCapability.Chat, ModelCapability.Vision],
+			}],
+		};
+		assert.strictEqual(await resolveSupportsImages(provider, 'm-vision'), true,
+			'有 Vision 枚举就必须能发图（否则又退回那次误报）');
+		const verdict = await explainSupportsImages(provider, 'm-vision');
+		assert.strictEqual(verdict.reason, 'capabilities', '依据要如实标成 capabilities');
+	});
+
+	test('★★ 显式 `supportsImages: false` 必须能压过 `Vision` 枚举（可关闭）', async () => {
+		resetSupportsImagesCacheForTests();
+		const provider = {
+			id: 'regression-explicit-off',
+			listModels: async () => [{
+				id: 'm-off',
+				supportsImages: false,
+				capabilities: [ModelCapability.Chat, ModelCapability.Vision],
+			}],
+		};
+		assert.strictEqual(await resolveSupportsImages(provider, 'm-off'), false,
+			'显式关闭是更强信号，不能被枚举推翻');
+	});
+
+	test('★★ 三种失败原因必须**可区分**（不再塌缩成一个 false）', async () => {
+		resetSupportsImagesCacheForTests();
+		const throwing = { id: 'r-throw', listModels: async (): Promise<Array<{ id: string }>> => { throw new Error('boom'); } };
+		const empty = { id: 'r-missing', listModels: async () => [{ id: 'other' }] };
+
+		assert.strictEqual((await explainSupportsImages(throwing, 'm')).reason, 'list-models-failed');
+		assert.strictEqual((await explainSupportsImages(empty, 'm')).reason, 'model-missing');
+		assert.strictEqual((await explainSupportsImages(undefined, 'm')).reason, 'no-provider');
+		assert.strictEqual((await explainSupportsImages(empty, undefined)).reason, 'no-provider');
+	});
+
+	test('★★ 说明文案按原因区分措辞（用户不再被一句"不支持"误导）', () => {
+		const failed = toolImageOmittedNote('t', 1, 'list-models-failed');
+		assert.ok(/could not be read/.test(failed), '读取失败要说"读不到"，不能说"模型不支持"');
+		assert.ok(!/does not declare image input support/.test(failed), '不得把失败说成模型不支持');
+
+		const missing = toolImageOmittedNote('t', 1, 'model-missing');
+		assert.ok(/did not contain the selected model/.test(missing));
+	});
+
+	test('★ 诊断回调在**真实解析**时触发，缓存命中不重复触发', async () => {
+		resetSupportsImagesCacheForTests();
+		const provider = {
+			id: 'r-diagnose',
+			listModels: async () => [{ id: 'm', supportsImages: true }],
+		};
+		const seen: string[] = [];
+		await explainSupportsImages(provider, 'm', info => seen.push(`${info.key}:${info.verdict.reason}`));
+		await explainSupportsImages(provider, 'm', info => seen.push(`${info.key}:${info.verdict.reason}`));
+		assert.deepStrictEqual(seen, ['r-diagnose::m:declared'], '缓存命中不应重复回调');
 	});
 });
