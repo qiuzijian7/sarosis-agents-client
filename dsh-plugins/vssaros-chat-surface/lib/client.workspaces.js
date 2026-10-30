@@ -257,8 +257,31 @@ window.__ModuleLoader__.load({
 		 *   ⚠ 只有**在册**的候选才配当"当前"：官方那条 selection 是**按 origin 持久化**的 ⇒
 		 *     可能是**别的窗口**留下的会话 ⇒ 拿它高亮本窗口的列表就是假高亮 ✗ ⇒ 用 known 过滤 ✓。
 		 */
+		/**
+		 * 官方口径的"当前会话"：**被主视图 retain 的那条**（`retainedBy.mainView > 0`）。
+		 *
+		 * 抄的是官方 `dsh-client-ui-workspace/lib/client.js` 的 `mainSessionId(list)`：
+		 *   `Object.values(list.byId).find((s) => (s.retainedBy.mainView ?? 0) > 0)?.id`
+		 * ★ 与"按 origin 持久化的 selection"不是一回事：selection 可能是**上一次运行 / 别的窗口**留下的，
+		 *   而 mainView 是**本页面此刻真的渲染着**哪条 ⇒ 判"当前"必须用它（官方空会话例外也用它）。
+		 */
+		function mainViewSessionId(byId) {
+			const map = byId || {};
+			for (const id of Object.keys(map)) {
+				const row = map[id];
+				const n = row && row.retainedBy ? row.retainedBy.mainView : 0;
+				if (typeof n === "number" && n > 0) { return id; }
+			}
+			return null;
+		}
+
 		function pickCurrentSessionId(opts) {
 			const o = opts || {};
+			// ★ 2026-10-30（对齐官方空会话口径）：新增 mainView 来源，且**优先级最高**。
+			//   理由：官方 `sessionVisible` 的例外条件是 `session.id !== current`，而它的 current 就是
+			//   mainView retain 的那条 ⇒ 我们也用同一判据，否则会出现"官方认为当前的那条空会话被我们藏掉"
+			//   或"我们以为当前的那条其实只是别的窗口的 selection 残留"（两处口径打架 ✗）。
+			const mainView = o.mainView || null;
 			const official = o.official || null;
 			const local = o.local || null;
 			const bridged = o.bridged || null;
@@ -269,11 +292,14 @@ window.__ModuleLoader__.load({
 				if (typeof known.has === "function") { return known.has(id); }
 				return !!known[id];
 			};
+			if (has(mainView)) { return mainView; }
 			if (has(official)) { return official; }
+			// 乐观高亮排在这里（不是第一）：它只覆盖"mainView/official 都还没有"的启动瞬间；
+			// 排太高会在用户从页签/官方 UI 切会话后**一直亮着旧的那条**（local 没有别的清除点 ✗）。
 			if (has(local)) { return local; }
 			if (has(bridged)) { return bridged; }
 			// 都不在册 ⇒ 仍交出第一个有值的（上层据此"不高亮"而不是"高亮错的那条" ✓）
-			return official || local || bridged || null;
+			return mainView || official || local || bridged || null;
 		}
 
 		// ── 会话行操作（2026-10-29）：置顶 / 手动顺序 / 拖放判定（纯逻辑 ⇒ __test 直接断言）──
@@ -428,9 +454,14 @@ window.__ModuleLoader__.load({
 					//   （`unknown` ⇒ 渲染侧不画灯，见 sessionStatusOf 的注释）
 					status: sessionStatusOf(s),
 					archived: archived.indexOf(sid) >= 0,
-					// ★ 空会话（官方 roster 的 `blank` 位：这条会话没有任何对话内容）。
-					//   官方侧栏同样按它过滤（`!row.archived && !row.blank`）⇒ 我们同口径 ✓。
+					// ★ 空会话（官方 roster 的 `blank` 位）。
+					//   官方 `sessionVisible`（dsh-client-ui-workspace/client.js:958）：
+					//     `if (session.blank && session.id !== current) return false;` ⇒ 只留"当前"那条 ✓ 我们同口径。
 					blank: s.blank === true,
+					// ★ 子代理会话（2026-10-30 对齐官方）：`sessionVisible` 第一条就是
+					//   `if (session.origin === "subagent") return false;` —— **永不列出**，
+					//   也不计入"已隐藏空会话"（它不是空会话，是另一种东西）。
+					isSubagent: s.origin === "subagent",
 				};
 			};
 			const sortSess = (list) => list.some((s) => s.at > 0)
@@ -451,6 +482,8 @@ window.__ModuleLoader__.load({
 						const root = rootOfSession(byId, rec.roots, sid, fallbackRoot);
 						// 稿 1 降噪：只有**非主根**会话才带根名标签（守卫 ⑤ 钉住 ✓）
 						const s = mkSess(sid, root && !root.isPrimary ? root.name : null, root ? root.isPrimary : true, groupKey);
+						// ★ 子代理会话永不列出（官方 `sessionVisible` 第一条）；**不算**进"已隐藏空会话"
+						if (s.isSubagent) { continue; }
 						if (s.archived) { continue; }
 						// ★ 空会话不显示（2026-10-26 用户报「工作区下有大量空会话」）：
 						//   这些会话一条消息都没有、标题只能回落到 id ⇒ 在列表里是纯噪音
@@ -476,6 +509,7 @@ window.__ModuleLoader__.load({
 				let hiddenBlanks = 0;
 				for (const sid of (Array.isArray(it.sessionIds) ? it.sessionIds : [])) {
 					const s = mkSess(sid, null, true, groupKey);
+					if (s.isSubagent) { continue; }
 					if (s.archived) { continue; }
 					if (s.blank && !s.isCurrent) { hiddenBlanks += 1; continue; }
 					sessions.push(s);
@@ -1159,7 +1193,10 @@ window.__ModuleLoader__.load({
 					}
 				}
 				for (const sid of Object.keys((sessSnap && sessSnap.byId) || {})) { knownIds[sid] = true; }
+				// ★ 2026-10-30：加上官方口径的 current（`retainedBy.mainView > 0`）—— 空会话的例外条件要用它
+				const mainViewId = mainViewSessionId(sessSnap && sessSnap.byId);
 				const currentId = pickCurrentSessionId({
+					mainView: mainViewId,
 					official: readOfficialCurrent(),
 					local: localCurrent,
 					bridged: bridgedCurrent,
@@ -1652,6 +1689,8 @@ window.__ModuleLoader__.load({
 		// 仅测试用：分组收敛 / 路径比较 / 时间文案的纯逻辑（插件装载只读 install）。
 		exports.__test = {
 			samePath, baseName, parseRecords, timeLabel, buildSidebar, rootOfSession, nextCollapsed, pickCurrentSessionId,
+			// ★ 2026-10-30 对齐官方空会话口径：当前会话 = mainView retain 的那条（守卫 ⑤-k 直接断言）
+			mainViewSessionId,
 			// ★ 2026-10-30 会话行状态灯：四态判据 / 待回答条数（守卫真机断言，两处口径不许漂）
 			sessionStatusOf, pendingQuestionsOf, RING_LABEL,
 			// ★ 2026-10-29 会话行操作：置顶 / 手动顺序 / 拖放判定（守卫 check-chat-surface-chunks ⑤-f 直接断言）

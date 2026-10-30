@@ -219,11 +219,11 @@ check('★ 聚焦路由：focus 事件必须带 surface，且只有聊天视图�
 		'必须把活动聊天位指向获得焦点的那个视图（分屏时 Add File to Chat 才落对栏 ✗）');
 });
 
-check('★ 3 栏上限 + 比例持久化（别无限开栏、也别每次都重置比例）', () => {
+check('★ 格子上限 + 比例持久化（别无限开格、也别每次都重置比例）', () => {
 	const src = stripComments(read(FULL_WINDOW));
-	assert.ok(/MAX_DESKTOP_PANES = 3/.test(src), '必须有 3 栏上限（每栏是一整个客户端页面 ⇒ 成本线性增长）✗');
+	assert.ok(/MAX_DESKTOP_SPLIT_PANES = 6/.test(src), '右侧必须封顶 6 格（与效果图一致；每格是一整个客户端页面 ⇒ 成本线性增长）✗');
 	assert.ok(/SPLIT_RATIO_STORAGE_KEY/.test(src) && /_persistSplitRatio\(\)/.test(src),
-		'分屏比例必须持久化（下次开窗沿用用户拖出来的比例）✗');
+		'主栏比例必须持久化（下次开窗沿用用户拖出来的比例）✗');
 	// ⚠ 比例必须存 IDE storage：各栏是**不同分区**的页面 ⇒ localStorage 互不可见 ⇒ 放页面里右栏读不到 ✗
 	assert.ok(/IStorageService/.test(src), '比例必须走 IDE storage（跨分区共享）✗');
 });
@@ -237,68 +237,109 @@ check('★ 聚焦校准：必须定期用 focused 快照校准"活动聊天位"�
 	assert.ok(/v\.focused && v\.viewSurface === 'chat'/.test(svc), '校准只认"聚焦的聊天视图"（插件页不许占位）✗');
 });
 
-check('★ hero（空会话屏）必须也有「新窗格」入口（会话动作组在 blank 时整组不渲染）', () => {
-	const src = stripComments(read(BRAND));
-	assert.ok(/data-vssaros-split-entry/.test(src), 'hero 入口必须有稳定锚点 ✗');
-	assert.ok(/api\.splitChatPane\(\)/.test(src), 'hero 入口必须调 bridge.splitChatPane ✗');
-	assert.ok(/isBlankChatPage/.test(src), '必须按"页面是否仍停在 hero"决定显示 ✗');
-	assert.ok(/data-sidebar-right-session/.test(src), 'blank 判据必须认"会话真的在渲染"的标记（认错 ⇒ 有会话时也显示 ⇒ 与会话动作组那枚重复 ✗）');
+check('★ hero（空会话屏）右上角必须有「新增窗口」入口，且只在主栏、只在 hero 显示', () => {
+	const nav = stripComments(read(path.join(PLUGIN, 'lib', 'client.workbenchNav.js')));
+	assert.ok(/data-vssaros-hero-split/.test(nav), 'hero 入口必须有稳定锚点 ✗');
+	assert.ok(/api\.splitChatPane\(\)/.test(nav), 'hero 入口必须调 bridge.splitChatPane ✗');
+	// ⚠ 判据必须是官方的 **phase**：`data-content-phase="hero"`。
+	//   为什么不能用"有没有 data-conversation-session"：桌面窗口开局就绑一条**空会话** ⇒
+	//   属性存在、但界面仍是 hero（官方 `hero = sessionId===void 0 || (blank && …)`）✗
+	assert.ok(/data-content-phase/.test(nav) && /=== "hero"/.test(nav),
+		'hero 判据必须是 [data-conversation-content] 的 data-content-phase === "hero" ✗');
+	assert.ok(!/hasAttribute\("data-conversation-session"\)/.test(nav),
+		'不许再用"没有 data-conversation-session"判 hero（空会话首屏会判错 ⇒ 入口永不显示 ✗）');
+	// ⚠ 不许压住官方「打开侧边栏」（2026-10-30 用户截图：右上角按钮被挡）
+	assert.ok(/data-sidebar-right-expand/.test(nav) && /data-sidebar-right-toggle/.test(nav),
+		'入口必须贴到官方「打开侧边栏」按钮左边（否则会盖住它 ✗）');
+	// ⚠ 只在 HeroSplitChip 函数体（到下一个 function 定义为止）内做负对照（本文件别处合法地用了那些标记）
+	const heroAt = nav.indexOf('function HeroSplitChip(');
+	const nextFn = nav.indexOf('function TabStrip(', heroAt);
+	assert.ok(heroAt > 0 && nextFn > heroAt, '找不到 HeroSplitChip 的函数体 ✗');
+	const heroFn = nav.slice(heroAt, nextFn);
+	assert.ok(!/data-sidebar-right-session/.test(heroFn), '不许再用旧的三个标记判 hero（在 hero 上也不成立 ✗）');
+	// 只在主栏注册：右侧独立格子不该出现「新增窗口」
+	assert.ok(/if \(!isDeskSplitPane\)[\s\S]{0,900}overlay:hero新窗格/.test(nav), 'hero 入口只许装在主栏（右侧格子不装）✗');
+	// 品牌行不许再有第二枚（两处入口 = 重复）
+	assert.ok(!/data-vssaros-split-entry/.test(stripComments(read(BRAND))), '品牌行不许再有 hero 分屏入口（已搬到右上角）✗');
 	// ⚠ hero 态只装 BLANK_SESSION_PARTS ⇒ 入口必须落在**那些** chunk 里，否则 hero 时根本没有它
 	const clientSrc = stripComments(read(path.join(PLUGIN, 'lib', 'client.js')));
 	const blankParts = /const BLANK_SESSION_PARTS = \[([\s\S]*?)\];/.exec(clientSrc);
-	assert.ok(blankParts && blankParts[1].includes('./client.brand.js'),
-		'client.brand.js 必须在 BLANK_SESSION_PARTS 里（hero 态才装得到入口）✗');
+	assert.ok(blankParts && blankParts[1].includes('./client.workbenchNav.js'),
+		'client.workbenchNav.js 必须在 BLANK_SESSION_PARTS 里（hero 态才装得到入口）✗');
 });
 
-check('★ 拖拽堆叠：布局必须走**树**，且必须有抓手带 + 四向落点 + 兜底菜单（A+C）', () => {
-	const src = stripComments(read(FULL_WINDOW));
-	assert.ok(/computeSplitLayout\(/.test(src), '布局必须走树的纯函数（几何在 common 里，有单测）✗');
-	assert.ok(/moveSplitLeaf\(/.test(src), '拖拽落点必须调 moveSplitLeaf 重排树 ✗');
-	assert.ok(/pickDropZone\(/.test(src), '必须按几何判四向落点 ✗');
-	assert.ok(/DESKTOP_PANE_GRAB_H/.test(src), '必须有抓手带高度（原生视图盖住 DOM ⇒ 抓手只能落在栏顶空隙）✗');
-	assert.ok(/data-vssaros-pane-grab/.test(src), '抓手带必须有稳定锚点 ✗');
-	assert.ok(/_showPaneMenu/.test(src), '必须有右键兜底菜单（不能只靠拖拽）✗');
-	assert.ok(/_closePane/.test(src), '菜单里要能关掉某一栏 ✗');
-	// ⚠⚠ 负对照（2026-10-29 真机日志踩过）：aux（子）窗口的 JS 上下文**禁止** createElement
-	//   ⇒ 抓手带 / 分隔条 / 预览框 / 菜单**全都建不出来**（表现为"分屏能开、但拖不动"）✗✗
-	//   ⇒ 往 aux 里插的 DOM 元素**一律用主窗口 document 建** ⇒ 这条不许回退。
-	assert.ok(!/ownerDocument\.createElement/.test(src), '不许用 container.ownerDocument.createElement（aux 子窗口禁 createElement ⇒ 抓手建不出来 ⇒ 拖不动）✗');
-	assert.ok(/_createInMainWindow/.test(src), '必须统一走 _createInMainWindow（主窗口 document）✗');
-	// ⚠ 负对照二（2026-10-29 真机）：aux 容器的 DOM 层默认 **pointer-events:none**（工作台层不可交互）
-	//   ⇒ 抓手带/分隔条**必须显式**写 pointer-events:auto，否则"建得出来、看得见，却收不到 mousedown"
-	//   ⇒ 表现为"分屏能开、但拖不动"✗✗（自绘标题条一直写着这一句 ⇒ 照抄它）。
-	// ⚠ 断言别钉"紧邻形态"（中间隔了多少个属性不该管）⇒ 用 `[^'"]*` 而不是 `[^;]*`（后者跨不过分号）
-	assert.ok(/cursor:grab[^'"]*pointer-events:auto/.test(src), '抓手带必须显式 pointer-events:auto（否则收不到 mousedown ⇒ 拖不动）✗');
-	assert.ok(/cursor:col-resize[^'"]*pointer-events:auto/.test(src), '分隔条必须显式 pointer-events:auto（否则拖比例也不动）✗');
-	// ⚠ 主栏最小宽（2026-10-29 真机：dsh 客户端被压到极窄 ⇒ 侧栏折叠成图标条 + 中栏整块黑 ✗）
-	assert.ok(/DESKTOP_MAIN_MIN_W = 720/.test(src),
-		'主栏最小宽必须是 720（420 实测不够：dsh 三栏布局在 520 就把中栏挤成黑屏 ✗）');
-	assert.ok(/Math\.max\(DESKTOP_MAIN_MIN_W, Math\.min\(/.test(src), '主栏布局必须用 DESKTOP_MAIN_MIN_W 夹下限 ✗');
-	// ⚠ 树的纯函数必须在 common 里（可单测）⇒ 不能把几何写回渲染侧
-	const layoutSrc = stripComments(read(path.join(ROOT, 'src/vs/sessions/contrib/dshHarness/common/dshSplitLayout.ts')));
-	assert.ok(/export function computeSplitLayout/.test(layoutSrc), 'common/dshSplitLayout.ts 必须导出 computeSplitLayout ✗');
-	assert.ok(/export function moveSplitLeaf/.test(layoutSrc), 'common/dshSplitLayout.ts 必须导出 moveSplitLeaf ✗');
-});
+const CHROME = path.join(ROOT, 'src/vs/sessions/contrib/dshHarness/electron-browser/dshDesktopSplitChrome.ts');
 
-check('★ 栏操作菜单（C 方案）：页面「⋯」菜单 + 桥 paneAction（拖拽在 aux DOM 层做不到）', () => {
-	const sessions = stripComments(read(SESSIONS));
-	assert.ok(/data-vssaros-pane-menu/.test(sessions), '页面必须有「⋯」栏菜单入口 ✗');
-	assert.ok(/api\.paneAction\(/.test(sessions), '菜单项必须调 bridge.paneAction ✗');
-	for (const action of ['moveLeft', 'moveRight', 'moveTop', 'moveBottom', 'close', 'ratio33', 'ratio50', 'ratio67']) {
-		assert.ok(sessions.includes('"' + action + '"'), `菜单/动作必须提供 ${action} ✗`);
+check('★ 多格外壳（按效果图）：每格标题栏 + 拖动 + 拆分/最大化/✕ + 分隔条 + 主栏分隔条 + 撤销 + 原生菜单', () => {
+	const src = stripComments(read(CHROME));
+	for (const act of ['split-right', 'split-down', 'max', 'close']) {
+		assert.ok(src.includes(`btn('${act}'`), `标题栏必须有「${act}」按钮 ✗`);
 	}
-	// 「⇔」页内拖动把手：aux DOM 层收不到鼠标事件 ⇒ 拖动只能在页面里做 ✓
-	assert.ok(/data-vssaros-pane-grip/.test(sessions), '必须有页内「⇔」拖动把手（DOM 抓手带收不到事件 ⇒ 拖不动）✗');
-	assert.ok(/onMouseDown:\s*startDrag/.test(sessions), '把手必须接 mousedown 开始拖动 ✗');
+	assert.ok(/data-vssaros-pane-head/.test(src), '标题栏必须有稳定锚点 ✗');
+	assert.ok(/_startDrag\(/.test(src) && /pickDropTarget\(/.test(src), '拖标题栏必须按边缘带/中央判落点 ✗');
+	assert.ok(/actions\.hole\(/.test(src), '落点提示必须"挖洞"（DOM 提示框被原生视图盖着就看不见）✗');
+	assert.ok(/key === 'Escape'|e\.key === 'Escape'/.test(src), '拖动中必须能 Esc 取消 ✗');
+	assert.ok(/主栏固定在左侧，不能放这里/.test(src), '拖到主栏必须拒绝并说明 ✗');
+	assert.ok(/resizeDivider\(/.test(src) && /resizeMain\(/.test(src), '格间分隔条与主栏分隔条都必须可拖 ✗');
+	assert.ok(/data-vssaros-undo/.test(src), '关闭后必须能撤销 ✗');
+	assert.ok(/popup\(this\._actions\.menuItems/.test(src), '右键菜单必须用原生菜单（DOM 菜单会被原生视图盖住）✗');
+	// ⚠⚠ 两条硬规矩（2026-10-29 真机连踩两次 ⇒ 不许回退）：
+	//   ① aux（子）窗口的 JS 上下文**禁止** createElement ⇒ 一律用主窗口 document 建；
+	//   ② aux 的 DOM 层默认 **pointer-events:none** ⇒ 可交互元素必须显式 pointer-events:auto。
+	assert.ok(!/ownerDocument\.createElement/.test(src) && !/ownerDocument\.createElement/.test(stripComments(read(FULL_WINDOW))),
+		'不许用 ownerDocument.createElement（aux 子窗口禁 createElement ⇒ 元素建不出来）✗');
+	assert.ok(/mainWindow\.document\.createElement/.test(src), '必须用主窗口 document 建元素 ✗');
+	assert.ok(/cursor:grab[^'"]*pointer-events:auto/.test(src), '标题栏必须显式 pointer-events:auto（否则收不到 mousedown ⇒ 拖不动）✗');
+	assert.ok(/cursor:col-resize[^'"]*pointer-events:auto|pointer-events:auto[^'"]*cursor:col-resize/.test(src), '分隔条必须显式 pointer-events:auto ✗');
+	assert.ok(/cursor:pointer;pointer-events:auto/.test(src), '标题栏按钮必须显式 pointer-events:auto ✗');
+});
+
+check('★ 宿主：两段式布局 + 格子几何 + 软关闭可撤销 + 不自动重排 + 自测走 DOM 输入路径', () => {
+	const src = stripComments(read(FULL_WINDOW));
+	assert.ok(/computePaneGeometry\(/.test(src), '格子几何必须走纯函数（缝隙/标题栏/分隔条位置有单测）✗');
+	assert.ok(/DESKTOP_MAIN_MIN_W = 720/.test(src), '主栏最小宽必须是 720（dsh 三栏布局在 520 就把中栏挤成黑屏 ✗）');
+	assert.ok(/computeMainColumnWidth\([^)]*DESKTOP_MAIN_MIN_W/.test(src), '主栏布局必须走 computeMainColumnWidth 并传下限 ✗');
+	assert.ok(/holeViewRect\(/.test(src), '拖动时必须挖洞（目标格让出落点那一半）✗');
+	assert.ok(/DESKTOP_CLOSE_GRACE_MS/.test(src) && /_undo\(/.test(src), '关闭必须是软关闭 + 可撤销（会话不删）✗');
+	assert.ok(/pickSplitTarget\(/.test(src), '「新窗格」必须切开最大的一格（放不下就明说）✗');
+	assert.ok(!/buildArrangedTree\(splitLeaves\(entry\.tree\), this\._contentAspect\(entry\.windowId\)\)/.test(src),
+		'加格子后不许自动重排（手动布局不能被覆盖；「自动排列」只能手动触发）✗');
+	assert.ok(/_dropSplitPane\(windowId, splitViewId,/.test(src), '自愈必须收掉**出问题的那一格**（旧实现收最后一格 ⇒ 误杀）✗');
+	assert.ok(/elementFromPoint\(/.test(src) && /reachable\(/.test(src), '自测必须验证"点得到"（命中测试 + 不被原生视图盖住）✗');
+	assert.ok(/fire\(dom\.win, 'mousemove'/.test(src), '自测必须走真实 DOM 输入路径（不许只调内部函数）✗');
+	const layoutSrc = stripComments(read(path.join(ROOT, 'src/vs/sessions/contrib/dshHarness/common/dshSplitLayout.ts')));
+	for (const fn of ['computeSplitLayout', 'moveSplitLeaf', 'insertSplitLeafBeside', 'resizeSplitDivider', 'pickDropTarget', 'computePaneGeometry']) {
+		assert.ok(new RegExp(`export function ${fn}`).test(layoutSrc), `common/dshSplitLayout.ts 必须导出 ${fn} ✗`);
+	}
+});
+
+check('★ 页面：会话动作组里**不许有**「布局 ▾」（用户要求移除）；右侧格子页面也不装格子按钮', () => {
+	const sessions = stripComments(read(SESSIONS));
+	// ⚠ 2026-10-30（用户："dsh 聊天框中，移除顶部的布局按钮"）：
+	//   分屏/比例/排列/关闭全部这些**已经在宿主标题栏与右键菜单里** ⇒ 顶部那枚是多余的、还挤占动作组 ✗
+	assert.ok(!/data-vssaros-pane-menu/.test(sessions), '会话动作组里不许再有「布局 ▾」（已按用户要求移除）✗');
+	assert.ok(!/vssaros-pane-menu/.test(sessions), '不许再注册 vssaros-pane-menu ✗');
+	assert.ok(!/api\.paneAction\(/.test(sessions), '页面不许再调 bridge.paneAction（菜单已移除）✗');
+	assert.ok(!/data-vssaros-pane-grip/.test(sessions), '页面里的「⇔」把手必须去掉（拖动在宿主标题栏）✗');
+	assert.ok(!/dsh-desk-split-/.test(sessions), '右侧格子页面里不许再装格子按钮（两套入口会打架）✗');
+	// 「新窗格」那枚仍在（用户没让删，且它是主栏唯一的加栏入口）
+	assert.ok(/data-vssaros-new-window/.test(sessions), '「新窗格」入口必须保留 ✗');
+	// ★ 2026-10-30（用户）：独立格子不显示会话页签条（主栏照旧显示）
+	const nav = stripComments(read(path.join(PLUGIN, 'lib', 'client.workbenchNav.js')));
+	assert.ok(/indexOf\("dsh-desk-split-"\) === 0/.test(nav) && /if \(!isDeskSplitPane\)[\s\S]{0,200}vssaros-wb-tabstrip/.test(nav),
+		'桌面独立格子不许注册页签条（只有主栏才有）✗');
 	const protocol = stripComments(read(PROTOCOL));
 	assert.ok(/readonly method: 'paneAction'/.test(protocol), '协议必须声明 paneAction ✗');
 	assert.ok(/case 'paneAction':/.test(protocol), '校验器必须有 case（漏了会被静默丢弃 ✗）');
+	for (const action of ['arrange', 'equalize', 'closeAll']) {
+		assert.ok(protocol.includes(`action !== '${action}'`), `校验器白名单必须放行 ${action}（否则页面点了被静默丢弃 ✗）`);
+	}
 	const preload = read(PRELOAD);
 	assert.ok(/paneAction:\s*\(action[^)]*\)\s*=>\s*invoke\(\{\s*method:\s*'paneAction'/.test(preload),
 		'preload 必须暴露 paneAction ✗');
 	const host = stripComments(read(HOST));
 	assert.ok(/case 'paneAction':/.test(host), '宿主必须有 case（漏了 = 点了没反应 ✗）');
-	assert.ok(/paneDshChatPane\(viewId, command\.action\)/.test(host), '宿主必须按 viewId 交给"栏动作"✗');
+	assert.ok(/paneDshChatPane\(viewId, command\.action\)/.test(host), '宿主必须按 viewId 交给"格子动作"✗');
 });
 
 let failed = 0;

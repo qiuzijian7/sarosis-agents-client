@@ -388,13 +388,9 @@ export const AGENT_STUDIO_DSH_IMAGEGEN_VIEW_ID = 'vssaros.dsh.imagegenView';
 export const AGENT_STUDIO_DSH_MARKETPLACE_VIEW_ID = 'vssaros.dsh.marketplaceView';
 
 /**
- * 中转站工作台（2026-10-27）的侧栏视图 id。
- *
- * `page-only`：`engine=dsh` 时挂 `DshPluginViewPane`（插件自托管 `/x/relay/`，
- * 页面里 iframe 承载 AnyDev 上部署的中转站 Web）；
- * `engine=legacy` 时**故意不注册** —— 中转站 Web 与节点注册都在 dsh/IDE 侧，legacy 侧没有可承载的页 ✗。
+ * ★ 2026-10-30（用户要求「移除萨罗斯中转站工作台」）：
+ *   中转站工作台的侧栏视图 id 已随之删除（`@vssaros/dsh-relay` 插件已卸载）。
  */
-export const AGENT_STUDIO_DSH_RELAY_VIEW_ID = 'vssaros.dsh.relayView';
 
 /*
  * 2026-10-30：三个容器此前**没有显式视图 id**，一直走 `moduleViewHostOf` 的派生兜底
@@ -404,7 +400,8 @@ export const AGENT_STUDIO_DSH_RELAY_VIEW_ID = 'vssaros.dsh.relayView';
  */
 export const AGENT_STUDIO_DSH_PARALLEL_VIEW_ID = 'vssaros.dsh.pv.vssaros.dsh.parallel';
 export const AGENT_STUDIO_DSH_STUDIO_VIEW_ID = 'vssaros.dsh.pv.vssaros.dsh.studio';
-export const AGENT_STUDIO_DSH_XHSNOTE_VIEW_ID = 'vssaros.dsh.pv.vssaros.dsh.xhs-note';
+// ★ 2026-10-30（用户要求「删除小红书工作台」）：`@vssaros/dsh-xhs-note` 已卸载 ⇒
+//   `AGENT_STUDIO_DSH_XHSNOTE_VIEW_ID`（`vssaros.dsh.pv.vssaros.dsh.xhs-note`）随之删除。
 
 // --- TOF (Taihu OA Framework) 登录配置 ---
 // 对接 OAuthSystem 网关 (太湖 MCP 鉴权网关)

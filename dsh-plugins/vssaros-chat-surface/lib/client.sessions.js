@@ -263,182 +263,20 @@ window.__ModuleLoader__.load({
 				}, "新窗格");
 			}
 
-			/**
-			 * 「⇔」把手：**按住往某个方向拖** ⇒ 松手把这一栏移过去（2026-10-29）。
-			 *
-			 * ⚠ 为什么把手做在**页面里**、而不是窗口顶部那条 DOM 抓手带：aux 窗口的 DOM 层
-			 *   **收不到鼠标事件**（真机：抓手带能建、能看见，但 mousedown 从不触发 ⇒ 日志零 pane drag）
-			 *   ⇒ 拖动只能在**页面内**完成 ✓。落点 = 那个方向的极端位置（两栏时等价于左右互换，够用）。
-			 */
-			function PaneGripChip() {
-				const startDrag = (e) => {
-					const startX = e.clientX;
-					const startY = e.clientY;
-					let done = false;
-					const cleanup = () => {
-						document.removeEventListener("mousemove", onMove, true);
-						document.removeEventListener("mouseup", onUp, true);
-					};
-					const finish = (action) => {
-						if (done) { return; }
-						done = true;
-						cleanup();
-						paneAction(action);
-					};
-					const onMove = (ev) => {
-						const dx = ev.clientX - startX;
-						const dy = ev.clientY - startY;
-						if (Math.abs(dx) < 24 && Math.abs(dy) < 24) { return; }   // 阈值：手抖不算
-						finish(Math.abs(dx) >= Math.abs(dy)
-							? (dx < 0 ? "moveLeft" : "moveRight")
-							: (dy < 0 ? "moveTop" : "moveBottom"));
-					};
-					const onUp = () => {
-						cleanup();
-					};
-					document.addEventListener("mousemove", onMove, true);
-					document.addEventListener("mouseup", onUp, true);
-					e.preventDefault();
-				};
-				return react.createElement("button", {
-					type: "button",
-					"data-vssaros-pane-grip": "1",
-					title: "按住往某个方向拖 ⇒ 把这一栏移过去",
-					"aria-label": "拖动移动这一栏",
-					onMouseDown: startDrag,
-					style: {
-						display: "inline-flex", alignItems: "center", justifyContent: "center",
-						height: 18, padding: "0 8px", borderRadius: 999, cursor: "grab",
-						border: "1px solid var(--dsw-alias-border-l1, transparent)",
-						background: "var(--dsw-alias-bg-layer-1, transparent)",
-						color: "var(--dsw-alias-label-secondary, currentColor)",
-						fontSize: 11, lineHeight: "18px", whiteSpace: "nowrap", fontFamily: "inherit",
-					},
-				}, "⇔");
-			}
-
-			/** 「⋯」栏菜单动作（2026-10-29，桥 24）：移到极端位置 / 改比例 / 关闭这一栏。 */
-			function paneAction(action) {
-				const api = (typeof window !== "undefined" && window.vssarosDsh) || null;
-				if (api && typeof api.paneAction === "function") {
-					try {
-						const p = api.paneAction(action);
-						if (p && typeof p.catch === "function") { p.catch(() => undefined); }
-					} catch { /* IPC 失败只影响这一次点击 */ }
-					return;
-				}
-				try {
-					if (api && typeof api.notify === "function") {
-						api.notify("warn", "当前宿主不支持「栏操作」（需要页面桥 24）");
-					}
-				} catch { /* 通知失败不阻塞 */ }
-			}
-
-			/**
-			 * 「⋯」= **这一栏的操作菜单**（2026-10-29）。
-			 *
-			 * ⚠ 为什么菜单放在**页面里**而不是桌面窗口的 DOM 抓手带：aux（桌面）窗口的 DOM 层
-			 *   **收不到鼠标事件**（真机：DOM 抓手带能建、能看见，但 mousedown 从不触发 ⇒ 拖不动）
-			 *   ⇒ 交互只能待在页面里（页面在原生视图内部，事件完全正常）✓
-			 *   ⇒ 所以"拖拽重排"改成了"菜单移动"（等价能力，只是少了自由拖拽的手感）。
-			 */
-			function PaneMenuChip() {
-				const [open, setOpen] = react.useState(false);
-				const rootRef = react.useRef(null);
-				react.useEffect(() => {
-					if (!open) { return undefined; }
-					const onDown = (e) => {
-						if (rootRef.current && !rootRef.current.contains(e.target)) { setOpen(false); }
-					};
-					document.addEventListener("mousedown", onDown, true);
-					return () => document.removeEventListener("mousedown", onDown, true);
-				}, [open]);
-				const items = [
-					["移到最左", "moveLeft"],
-					["移到最右", "moveRight"],
-					["移到最上", "moveTop"],
-					["移到最下", "moveBottom"],
-					["左栏 1/3", "ratio33"],
-					["左右各半", "ratio50"],
-					["左栏 2/3", "ratio67"],
-					["关闭这一栏", "close"],
-				];
-				return react.createElement("span", { ref: rootRef, style: { position: "relative", display: "inline-flex" } },
-					react.createElement("button", {
-						type: "button",
-						"data-vssaros-pane-menu": "1",
-						title: "这一栏：移动 / 关闭",
-						"aria-label": "这一栏：移动 / 关闭",
-						onClick: () => setOpen(!open),
-						style: {
-							display: "inline-flex", alignItems: "center", justifyContent: "center",
-							height: 18, padding: "0 8px", borderRadius: 999, cursor: "pointer",
-							border: "1px solid var(--dsw-alias-border-l1, transparent)",
-							background: "var(--dsw-alias-bg-layer-1, transparent)",
-							color: "var(--dsw-alias-label-secondary, currentColor)",
-							fontSize: 11, lineHeight: "18px", whiteSpace: "nowrap", fontFamily: "inherit",
-						},
-					}, "⋯"),
-					open ? react.createElement("div", {
-						role: "menu",
-						style: {
-							position: "absolute", top: "100%", right: 0, marginTop: 4, zIndex: 1000, padding: 4,
-							borderRadius: 8, minWidth: 132,
-							border: "1px solid var(--dsw-alias-border-l1, transparent)",
-							background: "var(--dsw-alias-bg-layer-1, #252526)",
-							boxShadow: "0 8px 24px rgba(0,0,0,.35)",
-						},
-					}, ...items.map(([label, action]) => react.createElement("button", {
-						key: action, type: "button", role: "menuitem",
-						"data-vssaros-pane-action": action,
-						onClick: () => { setOpen(false); paneAction(action); },
-						style: {
-							display: "block", width: "100%", textAlign: "left", padding: "5px 8px",
-							border: "none", borderRadius: 6, background: "transparent",
-							color: "var(--dsw-alias-label-primary, inherit)", fontSize: 12, cursor: "pointer", fontFamily: "inherit",
-						},
-					}, label))) : null);
-			}
-
-			// ★ 2026-10-29（桌面窗口多开）：「新窗口」**单独占一个条目**，order **-4**
-			//   ⇒ 这一排读作「新窗口 | [＋ 新建会话][🕘 历史会话] | [⚙ 设置]」。
+			// ★ 2026-10-29（桌面窗口多开）：「新窗格」**单独占一个条目**，order **-4**
 			//   ⚠ 别撞：官方同槽 `schedule-catalog` = -5（未启用时不出现）、`session-log-download` = 0；
 			//     我们自己的 `vssaros-sessions` = -3、`vssaros-settings` = -2 ⇒ **-4 是空档** ✓。
-			//   ⚠ 只在带官方 chrome 的视图装（IDE 里的纯聊天框 chatOnly=true ⇒ 没有这一排动作组，
-			//     装上去也是空转；而且"在 IDE 里点它弹出一扇 dsh 桌面窗口"会让人困惑）✓。
+			//   ⚠ 只在带官方 chrome 的视图（= 桌面窗口主栏）装：IDE 里的纯聊天框没有这一排；
+			//     右侧格子（chat-only）的操作在宿主标题栏里 ⇒ 也不装 ✓。
 			const wantNewWindowChip = bridge.surface === "full"
 				|| (bridge.surface === "chat" && bridge.chatOnly === false);
-			// ★ 2026-10-29：分屏的**右栏**是 chat-only ⇒ 上面的判据把它排除了 ⇒ 那一栏没有任何
-			//   移动/关闭入口（用户："没有关闭格子的入口"）✗。
-			//   ⇒ 识别：桌面分屏右栏的 viewId 固定以 `dsh-desk-split-` 开头（preload 暴露 bridge.viewId ✓）
-			//   ⇒ 右栏页面里也装 ⇔/⋯（但**不装**「新窗格」—— 在右栏点它语义是"换绑右栏"，怪）✓
-			const isSplitPane = String((bridge && bridge.viewId) || "").indexOf("dsh-desk-split-") === 0;
-			const wantPaneChips = wantNewWindowChip || isSplitPane;
-			if (wantPaneChips) {
-				if (wantNewWindowChip) {
-					try {
-						ctx.slots.inject(SLOT, () => ctx.slots.register(
-							{ name: SLOT, id: "vssaros-new-window", order: -4 }, NewWindowChip));
-						state.newWindowChip = true;
-					} catch (e) {
-						state.newWindowError = String((e && e.message) || e);
-					}
-				}
-				// 「⋯」栏菜单：order **-1**（排在 ⚙(-2) 右边、官方 ⋯(0) 左边）⇒ 不撞 ✓
+			if (wantNewWindowChip) {
 				try {
 					ctx.slots.inject(SLOT, () => ctx.slots.register(
-						{ name: SLOT, id: "vssaros-pane-menu", order: -1 }, PaneMenuChip));
-					state.paneMenuChip = true;
+						{ name: SLOT, id: "vssaros-new-window", order: -4 }, NewWindowChip));
+					state.newWindowChip = true;
 				} catch (e) {
-					state.paneMenuError = String((e && e.message) || e);
-				}
-				// 「⇔」拖动把手：order **-1.5**（在 ⚙(-2) 与「⋯」(-1) 之间）⇒ 不撞 ✓
-				try {
-					ctx.slots.inject(SLOT, () => ctx.slots.register(
-						{ name: SLOT, id: "vssaros-pane-grip", order: -1.5 }, PaneGripChip));
-					state.paneGripChip = true;
-				} catch (e) {
-					state.paneGripError = String((e && e.message) || e);
+					state.newWindowError = String((e && e.message) || e);
 				}
 			}
 

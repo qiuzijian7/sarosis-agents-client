@@ -1,0 +1,1244 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>VsSaros Desktop · 多格聊天交互效果图</title>
+<style>
+:root {
+	--win: #0b0c0e;
+	--bg: #16171a; --bg-2: #1b1c20; --bg-3: #202127; --bg-4: #2a2b33;
+	--line: #2a2c33; --line-2: #383b45;
+	--fg: #e7e8ea; --fg-2: #b0b2ba; --fg-3: #7c7f88; --fg-4: #575a63;
+	--accent: #5b8cff; --accent-2: #86a9ff; --accent-weak: rgba(91,140,255,.14); --accent-line: rgba(91,140,255,.6);
+	--danger: #ef5d6a; --danger-weak: rgba(239,93,106,.14);
+	--ok: #3fb68b;
+	--title-h: 32px; --head-h: 32px; --radius: 10px;
+	--shadow: 0 12px 32px rgba(0,0,0,.5);
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+	background: var(--win); color: var(--fg);
+	font: 13px/1.55 "Segoe UI Variable", "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+	display: flex; flex-direction: column; overflow: hidden; -webkit-font-smoothing: antialiased;
+}
+button { font: inherit; color: inherit; }
+body.dragging, body.dragging * { cursor: grabbing !important; user-select: none !important; }
+body.resizing-h, body.resizing-h * { cursor: col-resize !important; user-select: none !important; }
+body.resizing-v, body.resizing-v * { cursor: row-resize !important; user-select: none !important; }
+
+/* ── 标题栏 ── */
+.titlebar { height: var(--title-h); flex: none; display: flex; align-items: center; gap: 10px; padding-left: 12px; background: var(--bg-2); border-bottom: 1px solid var(--line); font-size: 12px; color: var(--fg-2); user-select: none; }
+.logo { width: 14px; height: 14px; border-radius: 4px; background: linear-gradient(135deg, #6d8cff, #a67bff); flex: none; }
+.titlebar .ttl { color: var(--fg); font-weight: 600; }
+.titlebar .sub { color: var(--fg-3); }
+.titlebar .grow { flex: 1; }
+.tb-btn { height: 22px; padding: 0 9px; border-radius: 6px; border: 1px solid var(--line-2); background: transparent; color: var(--fg-2); font-size: 12px; cursor: pointer; }
+.tb-btn:hover { background: var(--bg-4); color: var(--fg); }
+.tb-btn.on { border-color: var(--accent-line); color: var(--accent-2); background: var(--accent-weak); }
+.count { color: var(--fg-3); } .count b { color: var(--fg); font-weight: 600; }
+.winctl { display: flex; height: 100%; }
+.winctl span { width: 44px; display: grid; place-items: center; color: var(--fg-3); }
+.winctl span:hover { background: var(--bg-4); }
+.winctl span.x:hover { background: #c42b1c; color: #fff; }
+
+/* ── 舞台 ── */
+#stage { position: relative; flex: 1; min-height: 0; overflow: hidden; }
+#main { position: absolute; top: 0; left: 0; bottom: 0; display: flex; background: var(--bg); z-index: 1; border-right: 1px solid var(--line); }
+#main.alone { border-right: 0; }
+#paneLayer { position: absolute; inset: 0; pointer-events: none; z-index: 2; }
+#paneLayer > * { pointer-events: auto; }
+
+/* 主栏：官方侧栏 + 主会话 */
+.sidebar { width: 236px; flex: none; display: flex; flex-direction: column; gap: 2px; background: var(--bg-2); border-right: 1px solid var(--line); padding: 10px 8px; user-select: none; min-height: 0; }
+.brand { display: flex; align-items: center; gap: 8px; padding: 2px 6px 10px; font-weight: 700; letter-spacing: .2px; }
+.brand .ver { margin-left: auto; font-weight: 400; font-size: 11px; color: var(--fg-3); }
+.side-btn { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 8px; border: 0; border-radius: 7px; background: transparent; color: var(--fg-2); cursor: pointer; text-align: left; font-size: 12.5px; }
+.side-btn:hover { background: var(--bg-4); color: var(--fg); }
+.side-sec { margin: 12px 8px 4px; font-size: 11px; color: var(--fg-3); letter-spacing: .4px; }
+.ws-name { padding: 4px 8px; font-size: 12px; color: var(--fg-2); font-weight: 600; }
+.sess { display: flex; align-items: center; gap: 8px; padding: 5px 8px 5px 18px; border-radius: 7px; color: var(--fg-2); cursor: grab; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sess:hover { background: var(--bg-4); color: var(--fg); }
+.sess.cur { background: var(--accent-weak); color: var(--fg); }
+.sess .s-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--fg-4); flex: none; }
+.sess.cur .s-dot { background: var(--accent); }
+.side-tip { margin: auto 6px 6px; padding: 8px 10px; border: 1px dashed var(--line-2); border-radius: 8px; color: var(--fg-3); font-size: 11.5px; line-height: 1.5; }
+.side-foot { padding: 6px 8px; color: var(--fg-3); font-size: 12px; border-top: 1px solid var(--line); }
+
+.mainchat { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.tabs { height: 34px; flex: none; display: flex; align-items: flex-end; gap: 2px; padding: 0 10px; border-bottom: 1px solid var(--line); overflow: hidden; }
+.tab { padding: 6px 12px; font-size: 12px; color: var(--fg-3); border-bottom: 2px solid transparent; white-space: nowrap; }
+.tab.on { color: var(--fg); border-color: var(--accent); }
+.mc-head { height: 44px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 10px 0 16px; border-bottom: 1px solid var(--line); }
+.mc-title { flex: 1; min-width: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.badge { margin-left: 6px; padding: 1px 7px; border-radius: 999px; background: var(--bg-4); color: var(--fg-3); font-size: 11px; font-weight: 400; }
+.chips { display: flex; gap: 6px; flex: none; }
+.chip { height: 24px; padding: 0 10px; border-radius: 999px; border: 1px solid var(--line-2); background: var(--bg-3); color: var(--fg-2); font-size: 12px; cursor: pointer; display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.chip:hover { color: var(--fg); border-color: var(--fg-4); }
+.chip.primary { border-color: var(--accent-line); color: var(--accent-2); background: var(--accent-weak); }
+.mc-body { flex: 1; min-height: 0; overflow: auto; padding: 20px 28px; display: flex; flex-direction: column; gap: 12px; }
+.mc-body > * { max-width: 760px; }
+code, .code { font: 12px/1.5 ui-monospace, "Cascadia Code", Consolas, monospace; }
+.code { display: block; padding: 10px 12px; border-radius: 8px; background: #0f1013; border: 1px solid var(--line); color: #c9d1d9; white-space: pre; overflow: auto; }
+
+/* 消息 & 输入框（主栏与窗格共用） */
+.msg { max-width: 88%; padding: 8px 11px; border-radius: 10px; font-size: 12.5px; white-space: pre-wrap; word-break: break-word; }
+.msg.u { align-self: flex-end; background: var(--bg-4); }
+.msg.a { align-self: flex-start; border: 1px solid var(--line); color: var(--fg-2); }
+.composer { flex: none; margin: 8px 10px 10px; display: flex; align-items: flex-end; gap: 6px; padding: 8px 8px 8px 12px; background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 12px; }
+.composer:focus-within { border-color: var(--accent-line); }
+.composer .input { flex: 1; min-height: 20px; max-height: 120px; overflow: auto; outline: none; font-size: 12.5px; user-select: text; }
+.composer .input:empty::before { content: attr(data-ph); color: var(--fg-4); }
+.send { width: 26px; height: 26px; flex: none; display: grid; place-items: center; border-radius: 8px; border: 0; background: var(--accent); color: #fff; cursor: pointer; }
+.mainchat .composer { margin: 10px 24px 16px; }
+
+/* ── 窗格 ── */
+.pane { position: absolute; display: flex; flex-direction: column; min-width: 0; background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; container-type: inline-size; }
+.pane.active { border-color: var(--accent-line); box-shadow: 0 0 0 1px var(--accent-line); }
+.pane.drag-src { opacity: .35; filter: saturate(.4); }
+.pane.flash { animation: flash .7s ease-out; }
+@keyframes flash { from { box-shadow: 0 0 0 3px var(--accent); } to { box-shadow: 0 0 0 1px var(--accent-line); } }
+.pane-head { flex: none; height: var(--head-h); display: flex; align-items: center; gap: 7px; padding: 0 4px 0 8px; background: var(--bg-2); border-bottom: 1px solid var(--line); cursor: grab; user-select: none; }
+.grip { color: var(--fg-4); display: grid; place-items: center; flex: none; }
+.pane-head:hover .grip { color: var(--fg-2); }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--fg-4); flex: none; }
+.dot.run { background: var(--ok); animation: pulse 1s infinite; }
+@keyframes pulse { 50% { box-shadow: 0 0 0 4px rgba(63,182,139,.18); } }
+.pane-title { font-weight: 600; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.pane-meta { color: var(--fg-4); font: 11px ui-monospace, Consolas, monospace; white-space: nowrap; }
+.grow { flex: 1; }
+.pbtn { width: 24px; height: 24px; display: grid; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--fg-3); cursor: pointer; flex: none; }
+.pbtn:hover { background: var(--bg-4); color: var(--fg); }
+.pbtn.close:hover { background: var(--danger-weak); color: var(--danger); }
+@container (max-width: 300px) { .pane-meta, .pbtn[data-act="max"] { display: none; } }
+.pane-body { flex: 1; min-height: 0; overflow: auto; padding: 14px 14px 6px; display: flex; flex-direction: column; gap: 10px; }
+.empty { margin: auto; text-align: center; color: var(--fg-3); font-size: 12px; max-width: 260px; }
+.empty b { display: block; color: var(--fg-2); font-size: 13px; margin-bottom: 4px; }
+
+/* ── 分隔条 ── */
+.divider, #mainDivider { position: absolute; z-index: 12; }
+.divider.h, #mainDivider { cursor: col-resize; }
+.divider.v { cursor: row-resize; }
+.divider::after, #mainDivider::after { content: ""; position: absolute; border-radius: 2px; background: transparent; transition: background .12s; }
+.divider.h::after, #mainDivider::after { left: 4px; width: 2px; top: 8%; bottom: 8%; }
+.divider.v::after { top: 4px; height: 2px; left: 8%; right: 8%; }
+.divider:hover::after, .divider.active::after, #mainDivider:hover::after, #mainDivider.active::after { background: var(--accent); }
+#mainDivider { top: 0; bottom: 0; width: 10px; margin-left: -5px; z-index: 15; }
+
+/* ── 拖拽反馈 ── */
+#dropHint { position: absolute; z-index: 25; display: none; align-items: center; justify-content: center; pointer-events: none; border: 2px dashed var(--accent); background: var(--accent-weak); border-radius: 10px; transition: left .08s, top .08s, width .08s, height .08s; }
+#dropHint span { padding: 5px 11px; border-radius: 999px; background: rgba(12,14,20,.88); color: var(--accent-2); font-size: 12px; font-weight: 600; white-space: nowrap; }
+#dropHint.reject { border-color: var(--danger); background: var(--danger-weak); }
+#dropHint.reject span { color: var(--danger); }
+#dragGhost { position: fixed; z-index: 60; display: none; align-items: center; gap: 7px; padding: 6px 11px; background: var(--bg-3); border: 1px solid var(--accent-line); border-radius: 8px; box-shadow: var(--shadow); font-size: 12px; font-weight: 600; pointer-events: none; transform: rotate(-1.5deg); white-space: nowrap; }
+
+/* ── 浮层 ── */
+#toast { position: fixed; left: 50%; bottom: 22px; transform: translate(-50%, 16px); opacity: 0; pointer-events: none; display: flex; align-items: center; gap: 12px; padding: 8px 8px 8px 14px; background: #24262d; border: 1px solid var(--line-2); border-radius: 10px; box-shadow: var(--shadow); font-size: 12.5px; z-index: 80; transition: opacity .16s, transform .16s; }
+#toast.show { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
+#toast button { border: 0; background: var(--accent-weak); color: var(--accent-2); padding: 3px 10px; border-radius: 6px; cursor: pointer; font-weight: 600; }
+.menu { position: fixed; z-index: 90; min-width: 220px; padding: 5px; background: #202228; border: 1px solid var(--line-2); border-radius: 10px; box-shadow: var(--shadow); user-select: none; }
+.mi { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 6px 10px; border: 0; background: transparent; border-radius: 6px; color: var(--fg); font-size: 12.5px; cursor: pointer; text-align: left; }
+.mi:hover:not(:disabled) { background: var(--accent-weak); }
+.mi:disabled { color: var(--fg-4); cursor: default; }
+.mi.danger { color: var(--danger); }
+.mi.danger:hover:not(:disabled) { background: var(--danger-weak); }
+.mi kbd { font: 11px ui-monospace, Consolas, monospace; color: var(--fg-3); }
+.sep { height: 1px; background: var(--line); margin: 4px 2px; }
+#help { position: fixed; top: calc(var(--title-h) + 8px); right: 12px; width: 400px; z-index: 85; display: none; padding: 14px 16px; background: #1f2127; border: 1px solid var(--line-2); border-radius: 12px; box-shadow: var(--shadow); font-size: 12.5px; color: var(--fg-2); }
+#help.open { display: block; }
+#help h3 { margin: 0 0 8px; font-size: 13px; color: var(--fg); }
+#help h4 { margin: 12px 0 4px; font-size: 12px; color: var(--fg); }
+#help ul { margin: 0; padding-left: 18px; }
+#help li { margin: 3px 0; }
+#help kbd { font: 11px ui-monospace, Consolas, monospace; padding: 0 5px; border: 1px solid var(--line-2); border-radius: 4px; color: var(--fg); }
+#insp { position: fixed; top: var(--title-h); right: 0; bottom: 0; width: 390px; z-index: 70; display: flex; flex-direction: column; background: rgba(16,17,21,.96); border-left: 1px solid var(--line-2); transform: translateX(100%); transition: transform .18s; }
+#insp.open { transform: none; }
+#insp header { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); font-weight: 600; }
+#insp section { padding: 10px 12px; border-bottom: 1px solid var(--line); overflow: auto; }
+#insp h5 { margin: 0 0 6px; font-size: 11px; color: var(--fg-3); font-weight: 600; letter-spacing: .4px; }
+#insp pre { margin: 0; font: 11.5px/1.55 ui-monospace, Consolas, monospace; color: var(--fg-2); white-space: pre-wrap; }
+#inspTest { margin: 0; padding-left: 18px; font-size: 12px; }
+#inspTest li.pass { color: var(--ok); }
+#inspTest li.fail { color: var(--danger); }
+#inspTest li small { color: var(--fg-3); display: block; }
+</style>
+</head>
+<body>
+
+<div class="titlebar">
+	<span class="logo"></span>
+	<span class="ttl">VsSaros — Desktop</span>
+	<span class="sub">多格聊天 · 交互效果图</span>
+	<span class="grow"></span>
+	<span id="narrowTip" style="display:none;color:#e3a33b"></span>
+	<span class="count">窗格 <b id="paneCount">0 / 6</b></span>
+	<button class="tb-btn" id="btnHelp">操作说明</button>
+	<button class="tb-btn" id="btnInsp">检查器</button>
+	<button class="tb-btn" id="btnTest">运行自测</button>
+	<div class="winctl"><span>—</span><span>▢</span><span class="x">✕</span></div>
+</div>
+
+<div id="stage">
+	<div id="main">
+		<aside class="sidebar">
+			<div class="brand"><span class="logo"></span>VsSaros<span class="ver">desktop</span></div>
+			<button class="side-btn">+ 新会话</button>
+			<button class="side-btn">搜索会话…</button>
+			<div class="side-sec">工作区</div>
+			<div class="ws-name">sarosis-agents-client</div>
+			<div class="sess cur" data-title="重构分屏布局"><span class="s-dot"></span>重构分屏布局</div>
+			<div class="sess" data-title="dshSplitLayout 单测"><span class="s-dot"></span>dshSplitLayout 单测</div>
+			<div class="sess" data-title="会话列表拖拽排序"><span class="s-dot"></span>会话列表拖拽排序</div>
+			<div class="sess" data-title="zoneFor 边缘带"><span class="s-dot"></span>zoneFor 边缘带</div>
+			<div class="sess" data-title="桌面窗口 e2e"><span class="s-dot"></span>桌面窗口 e2e</div>
+			<div class="ws-name">vssaros-docs</div>
+			<div class="sess" data-title="发布说明 v2.2"><span class="s-dot"></span>发布说明 v2.2</div>
+			<div class="sess" data-title="主题色对齐"><span class="s-dot"></span>主题色对齐</div>
+			<div class="side-tip">把会话<b>拖到右侧</b>，就在新窗格里打开；拖到某一格中央，就在那一格打开。</div>
+			<div class="side-foot">设置 · 账号</div>
+		</aside>
+		<section class="mainchat">
+			<div class="tabs"><span class="tab on">会话</span><span class="tab">主页</span><span class="tab">Bots</span><span class="tab">知识库</span><span class="tab">中转站</span><span class="tab">商城</span></div>
+			<header class="mc-head">
+				<div class="mc-title" id="mainTitle">重构分屏布局<span class="badge">主会话</span></div>
+				<div class="chips">
+					<button class="chip primary" id="btnNewPane" title="新开一格（切开最大的那一格）· Ctrl+\">新窗格</button>
+					<button class="chip">+ 新建</button>
+					<button class="chip">历史</button>
+					<button class="chip" id="btnLayout">布局 ▾</button>
+				</div>
+			</header>
+			<div class="mc-body" id="mainBody">
+				<div class="msg u">右侧多格要能自由拖动、拆分、关闭，左侧主栏保持全高。</div>
+				<div class="msg a">好的。约定如下：
+· 主栏（含官方侧栏）固定全高，最窄 720px；
+· 右侧是一棵左右 / 上下嵌套的分格树，每格是一条独立会话；
+· 拖标题栏到另一格的边缘 = 拆到那一侧，拖到中央 = 交换；
+· 关闭只收起窗格，会话仍留在左侧工作区，可撤销。</div>
+				<span class="code">zoneFor(rect, x, y):
+  edge = max(48, min(w, h) * 0.28)
+  左 / 右 / 上 / 下 边缘带 ⇒ 拆分；中央 ⇒ 交换</span>
+				<div class="msg a">试试：拖动右侧任意一格的标题栏，或者点「运行自测」看完整流程。</div>
+			</div>
+			<form class="composer" id="mainComposer"><div class="input" contenteditable="true" spellcheck="false" data-ph="向主会话提问，Enter 发送"></div><button class="send" type="submit" title="发送">↑</button></form>
+		</section>
+	</div>
+	<div id="mainDivider" title="拖动调整主栏宽度 · 双击复位"></div>
+	<div id="paneLayer"></div>
+	<div id="dropHint"><span></span></div>
+</div>
+
+<div id="dragGhost"></div>
+<div id="toast"></div>
+
+<div id="help">
+	<h3>操作说明</h3>
+	<h4>移动 / 拆分</h4>
+	<ul>
+		<li>按住某一格的<b>标题栏</b>拖动：拖到另一格的 <b>左 / 右 / 上 / 下边缘</b> ⇒ 拆到那一侧；拖到 <b>中央</b> ⇒ 两格交换位置</li>
+		<li>拖到主栏 ⇒ 不允许（红色提示）；拖动中按 <kbd>Esc</kbd> 取消</li>
+		<li>从左侧工作区把会话拖到右边 ⇒ 在新窗格打开</li>
+		<li>标题栏按钮：向右拆分 · 向下拆分 · 最大化 · <b>✕ 关闭</b>；右键标题栏有更多（移到整列 / 整行、平均分配、自动排列、关闭其他）</li>
+	</ul>
+	<h4>调整大小</h4>
+	<ul>
+		<li>拖格子之间的分隔条（双击 = 均分）；拖主栏右侧的分隔条调主栏宽度（双击 = 复位）</li>
+		<li>每格至少 200px，主栏至少 720px</li>
+	</ul>
+	<h4>快捷键</h4>
+	<ul>
+		<li><kbd>Ctrl+\</kbd> 向右拆分当前格 · <kbd>Ctrl+Shift+\</kbd> 向下拆分 · <kbd>Alt+W</kbd> 关闭当前格 · <kbd>Ctrl+Z</kbd> 撤销</li>
+	</ul>
+	<h4>设计约定</h4>
+	<ul>
+		<li>「新窗格」切开当前最大的那一格（宽就左右切，高就上下切），不打乱已有布局</li>
+		<li>关闭后相邻格补位，<b>不</b>自动重排；手动布局永远不会被自动覆盖（「自动排列」需手动触发）</li>
+		<li>关闭 ≠ 删除会话：会话仍在左侧工作区，误关可「撤销」</li>
+	</ul>
+</div>
+
+<aside id="insp">
+	<header>检查器<span class="grow"></span><button class="tb-btn" id="btnReset">重置布局</button><button class="tb-btn" id="btnInspClose">关闭</button></header>
+	<section><h5>布局树</h5><pre id="inspTree"></pre></section>
+	<section><h5>实际矩形（相对舞台）</h5><pre id="inspRects"></pre></section>
+	<section style="flex:none;max-height:32%"><h5>自测结果</h5><ol id="inspTest"><li>尚未运行</li></ol></section>
+	<section style="flex:1"><h5>事件日志</h5><pre id="inspLog"></pre></section>
+</aside>
+
+<script>
+(() => {
+'use strict';
+
+/* ───────────────────────── 配置 ───────────────────────── */
+const CFG = { MAIN_MIN: 720, PANE_MIN: 320, GAP: 6, SPLIT_MIN: 200, SPLIT_MIN_H: 160, MAX_PANES: 6, DRAG_TH: 8 };
+const KEY = 'vssaros.mock.split.v1';
+const ZONE_CN = { left: '左侧', right: '右侧', top: '上方', bottom: '下方' };
+
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+
+const stage = $('#stage'), mainEl = $('#main'), mainDivider = $('#mainDivider'), layer = $('#paneLayer');
+const hintEl = $('#dropHint'), ghostEl = $('#dragGhost'), toastEl = $('#toast'), inspEl = $('#insp'), helpEl = $('#help');
+
+const ICON = {
+	grip: '<svg viewBox="0 0 10 16" width="8" height="14"><g fill="currentColor"><circle cx="2" cy="3" r="1.3"/><circle cx="8" cy="3" r="1.3"/><circle cx="2" cy="8" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="2" cy="13" r="1.3"/><circle cx="8" cy="13" r="1.3"/></g></svg>',
+	right: '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="3" width="12" height="10" rx="2"/><path d="M9 3v10"/></svg>',
+	down: '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="3" width="12" height="10" rx="2"/><path d="M2 8.5h12"/></svg>',
+	max: '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 6.5V3h3.5M9.5 3H13v3.5M13 9.5V13H9.5M6.5 13H3V9.5"/></svg>',
+	restore: '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4" y="4" width="8" height="8" rx="1.5"/></svg>',
+	close: '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 4l8 8M12 4l-8 8"/></svg>',
+	send: '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 13V3M3.5 7.5L8 3l4.5 4.5"/></svg>',
+};
+
+const SAMPLES = [
+	{ title: 'dshSplitLayout 单测', q: '给 dshSplitLayout 补单测', a: '已补 4 条：三档比例可区分、bounds 重叠检测、窄窗口下限、自动分格。13 / 13 通过。' },
+	{ title: '会话列表拖拽排序', q: '会话列表支持拖拽排序吗？', a: '组内拖放已完成：置顶区与普通区互不跨越，顺序存在 localStorage。' },
+	{ title: 'zoneFor 边缘带', q: '解释一下 zoneFor 的边缘带', a: '边缘带宽 = max(48, min(w,h) × 0.28)。落在哪条边就拆到哪一侧，落在中央 = 交换。' },
+	{ title: '桌面窗口 e2e', q: '跑一遍桌面窗口 e2e', a: '自测 11 / 11 通过：1 栏铺满 → 2 栏 → 3 栏 → 移动 → 三档比例 → 逐个关闭。' },
+	{ title: '发布说明 v2.2', q: '整理 v2.2 的发布说明', a: '新增：多格聊天、拖拽重排、窗格撤销关闭。修复：分屏后左侧黑屏。' },
+	{ title: '主题色对齐', q: '分格的边框色跟主题对齐', a: '已改用 --dsw-alias-border-l1；激活格用 accent 描边。' },
+];
+const sampleFor = (title) => SAMPLES.find(s => s.title === title);
+
+/* ───────────────────────── 状态 ───────────────────────── */
+const blank = () => ({ tree: null, mainT: 0.5, seq: 0, panes: {}, active: null, max: null });
+let S = load();
+const firstVisit = !S;
+if (!S) { S = blank(); }
+const els = new Map();       // paneId → <section>
+let lastRects = {};          // paneId → 格子外框（舞台坐标）
+let lastDividers = [];
+let undoStack = [];
+const logLines = [];
+
+function load() {
+	try {
+		const v = JSON.parse(localStorage.getItem(KEY) || 'null');
+		if (!v || typeof v !== 'object') { return null; }
+		const st = { ...blank(), ...v, active: null, max: null };
+		if (st.tree) {
+			const seen = new Set();
+			for (const id of leaves(st.tree)) {
+				if (!st.panes[id] || seen.has(id)) { st.tree = removeLeaf(st.tree, id); }
+				seen.add(id);
+			}
+		}
+		return st;
+	} catch { return null; }
+}
+function save() { try { localStorage.setItem(KEY, JSON.stringify({ tree: S.tree, mainT: S.mainT, seq: S.seq, panes: S.panes })); } catch { /* 隐私模式 */ } }
+function snapshot() { return JSON.parse(JSON.stringify({ tree: S.tree, mainT: S.mainT, seq: S.seq, panes: S.panes })); }
+function pushHistory() { undoStack.push(snapshot()); if (undoStack.length > 40) { undoStack.shift(); } }
+function undo() {
+	const h = undoStack.pop();
+	if (!h) { toast('没有可撤销的操作'); return false; }
+	Object.assign(S, h); S.max = null;
+	for (const [id, el] of els) { if (!S.panes[id]) { el.remove(); els.delete(id); } }
+	render(); save(); log('undo'); toast('已撤销');
+	return true;
+}
+function log(msg) {
+	const t = new Date();
+	logLines.push(String(t.getMinutes()).padStart(2, '0') + ':' + String(t.getSeconds()).padStart(2, '0') + '  ' + msg);
+	if (logLines.length > 200) { logLines.shift(); }
+	if (inspEl.classList.contains('open')) { $('#inspLog').textContent = logLines.slice(-60).join('\n'); }
+}
+
+/* ───────────────────────── 分格树（纯函数） ───────────────────────── */
+const leaf = (id) => ({ type: 'leaf', id });
+function leaves(n) { return !n ? [] : n.type === 'leaf' ? [n.id] : n.children.flatMap(leaves); }
+function removeLeaf(n, id) {
+	if (!n) { return null; }
+	if (n.type === 'leaf') { return n.id === id ? null : n; }
+	const kids = [], sizes = [];
+	n.children.forEach((c, i) => { const r = removeLeaf(c, id); if (r) { kids.push(r); sizes.push(n.sizes[i]); } });
+	if (kids.length === 0) { return null; }
+	if (kids.length === 1) { return kids[0]; }           // 相邻格补位
+	return { ...n, children: kids, sizes };
+}
+function insertBeside(n, targetId, node, zone) {
+	const dir = (zone === 'left' || zone === 'right') ? 'h' : 'v';
+	const before = zone === 'left' || zone === 'top';
+	if (n.type === 'leaf') {
+		if (n.id !== targetId) { return null; }
+		return { type: 'split', dir, sizes: [1, 1], children: before ? [node, n] : [n, node] };
+	}
+	for (let i = 0; i < n.children.length; i++) {
+		const c = n.children[i];
+		if (c.type === 'leaf' && c.id === targetId && n.dir === dir) {   // 同向 ⇒ 并为兄弟，平分目标格
+			const kids = [...n.children], sizes = [...n.sizes], half = sizes[i] / 2;
+			sizes[i] = half;
+			const at = before ? i : i + 1;
+			kids.splice(at, 0, node); sizes.splice(at, 0, half);
+			return { ...n, children: kids, sizes };
+		}
+		const r = insertBeside(c, targetId, node, zone);
+		if (r) { const kids = [...n.children]; kids[i] = r; return { ...n, children: kids }; }
+	}
+	return null;
+}
+function moveLeaf(tree, src, target, zone) {
+	if (src === target) { return null; }
+	const without = removeLeaf(tree, src);
+	if (!without || !leaves(without).includes(target)) { return null; }
+	return insertBeside(without, target, leaf(src), zone);
+}
+function swapLeaves(n, a, b) {
+	if (!n) { return n; }
+	if (n.type === 'leaf') { return n.id === a ? leaf(b) : n.id === b ? leaf(a) : n; }
+	return { ...n, children: n.children.map(c => swapLeaves(c, a, b)) };
+}
+function equalize(n) { return !n || n.type === 'leaf' ? n : { ...n, sizes: n.children.map(() => 1), children: n.children.map(equalize) }; }
+function nodeAt(n, path) { let cur = n; for (const i of path) { cur = cur && cur.type === 'split' ? cur.children[i] : null; } return cur; }
+function arrange(ids, W, H) {
+	const n = ids.length;
+	if (!n) { return null; }
+	if (n === 1) { return leaf(ids[0]); }
+	let best = 1, bestScore = Infinity;
+	for (let cols = 1; cols <= n; cols++) {
+		const rows = Math.ceil(n / cols), cw = W / cols, ch = H / rows;
+		let score = Math.abs(Math.log((cw / ch) / 0.85)) + (rows * cols - n) * 0.15;
+		if (cw < CFG.SPLIT_MIN) { score += 10; }
+		if (ch < 180) { score += 10; }
+		if (score < bestScore) { bestScore = score; best = cols; }
+	}
+	const rows = Math.ceil(n / best), rowNodes = [];
+	for (let r = 0; r < rows; r++) {
+		const seg = ids.slice(r * best, (r + 1) * best);
+		rowNodes.push(seg.length === 1 ? leaf(seg[0]) : { type: 'split', dir: 'h', sizes: seg.map(() => 1), children: seg.map(leaf) });
+	}
+	return rows === 1 ? rowNodes[0] : { type: 'split', dir: 'v', sizes: rowNodes.map(() => 1), children: rowNodes };
+}
+function layoutTree(n, r, path, out) {
+	if (n.type === 'leaf') { out.rects[n.id] = r; return; }
+	const tot = n.sizes.reduce((a, b) => a + b, 0) || 1;
+	const L = n.dir === 'h' ? r.w : r.h;
+	let off = 0;
+	n.children.forEach((c, i) => {
+		const sz = L * n.sizes[i] / tot;
+		const cr = n.dir === 'h' ? { x: r.x + off, y: r.y, w: sz, h: r.h } : { x: r.x, y: r.y + off, w: r.w, h: sz };
+		layoutTree(c, cr, [...path, i], out);
+		off += sz;
+		if (i < n.children.length - 1) { out.dividers.push({ dir: n.dir, pos: (n.dir === 'h' ? r.x : r.y) + off, path: [...path], index: i, node: r }); }
+	});
+}
+function zoneFor(r, x, y) {
+	const e = Math.max(48, Math.min(r.w, r.h) * 0.28);
+	const dx = x - r.x, dy = y - r.y;
+	const L = dx < e, R = dx > r.w - e, T = dy < e, B = dy > r.h - e;
+	if (L && !R) { return 'left'; }
+	if (R && !L) { return 'right'; }
+	if (T && !B) { return 'top'; }
+	if (B && !T) { return 'bottom'; }
+	return 'center';
+}
+
+/* ───────────────────────── 几何 & 渲染 ───────────────────────── */
+function stageSize() { const b = stage.getBoundingClientRect(); return { W: Math.round(b.width), H: Math.round(b.height), L: b.left, T: b.top }; }
+function mainRange(W) { const lo = Math.min(CFG.MAIN_MIN, Math.round(W * 0.75)); return { lo, hi: Math.max(lo, W - CFG.PANE_MIN) }; }
+function mainWidth(W) { if (!S.tree) { return W; } const { lo, hi } = mainRange(W); return Math.round(lo + (hi - lo) * clamp(S.mainT, 0, 1)); }
+
+function render() {
+	const { W, H } = stageSize();
+	const ids = leaves(S.tree);
+	const mw = mainWidth(W);
+	const g = CFG.GAP;
+	mainEl.style.width = mw + 'px';
+	mainEl.classList.toggle('alone', ids.length === 0);
+	for (const [id, el] of els) { if (!ids.includes(id)) { el.remove(); els.delete(id); } }
+	lastRects = {}; lastDividers = [];
+	if (ids.length) {
+		const area = { x: mw + g / 2, y: g / 2, w: W - mw - g, h: H - g };
+		if (S.max && ids.includes(S.max)) {
+			lastRects[S.max] = area;
+		} else {
+			S.max = null;
+			const out = { rects: {}, dividers: [] };
+			layoutTree(S.tree, area, [], out);
+			lastRects = out.rects; lastDividers = out.dividers;
+		}
+		for (const id of ids) {
+			const el = paneEl(id), r = lastRects[id];
+			if (!r) { el.style.display = 'none'; continue; }
+			el.style.display = 'flex';
+			el.style.left = Math.round(r.x + g / 2) + 'px';
+			el.style.top = Math.round(r.y + g / 2) + 'px';
+			el.style.width = Math.max(0, Math.round(r.w - g)) + 'px';
+			el.style.height = Math.max(0, Math.round(r.h - g)) + 'px';
+			el.classList.toggle('active', S.active === id);
+			el.classList.toggle('maxed', S.max === id);
+			const mb = el.querySelector('[data-act="max"]');
+			mb.innerHTML = S.max === id ? ICON.restore : ICON.max;
+			mb.title = S.max === id ? '还原（双击标题栏）' : '最大化（双击标题栏）';
+		}
+	}
+	mainDivider.style.display = ids.length ? 'block' : 'none';
+	mainDivider.style.left = (mw + g / 2) + 'px';
+	renderDividers();
+	$('#paneCount').textContent = ids.length + ' / ' + CFG.MAX_PANES;
+	const narrow = W < CFG.MAIN_MIN + CFG.PANE_MIN;
+	const nt = $('#narrowTip');
+	nt.style.display = narrow ? 'inline' : 'none';
+	nt.textContent = '窗口偏窄（' + W + 'px < ' + (CFG.MAIN_MIN + CFG.PANE_MIN) + 'px），右侧放不下多格';
+	updateInspector();
+}
+
+function renderDividers() {
+	const pool = $$('.divider', layer);
+	lastDividers.forEach((d, i) => {
+		let el = pool[i];
+		if (!el) {
+			el = document.createElement('div');
+			el.className = 'divider';
+			el.title = '拖动调整大小 · 双击均分';
+			el.addEventListener('pointerdown', onDividerDown);
+			el.addEventListener('dblclick', onDividerDbl);
+			layer.appendChild(el);
+		}
+		el.dataset.idx = String(i);
+		el.classList.toggle('h', d.dir === 'h');
+		el.classList.toggle('v', d.dir === 'v');
+		if (d.dir === 'h') { Object.assign(el.style, { left: (d.pos - 5) + 'px', top: d.node.y + 'px', width: '10px', height: d.node.h + 'px' }); }
+		else { Object.assign(el.style, { top: (d.pos - 5) + 'px', left: d.node.x + 'px', height: '10px', width: d.node.w + 'px' }); }
+	});
+	pool.slice(lastDividers.length).forEach(el => el.remove());
+}
+
+function paneEl(id) {
+	let el = els.get(id);
+	if (el) { return el; }
+	el = document.createElement('section');
+	el.className = 'pane';
+	el.dataset.pane = id;
+	el.innerHTML =
+		'<header class="pane-head" title="拖动标题栏移动这一格 · 双击最大化 · 右键更多">' +
+			'<span class="grip">' + ICON.grip + '</span><span class="dot"></span>' +
+			'<span class="pane-title"></span><span class="pane-meta"></span><span class="grow"></span>' +
+			'<button class="pbtn" data-act="split-right" title="向右拆分（Ctrl+\\）">' + ICON.right + '</button>' +
+			'<button class="pbtn" data-act="split-down" title="向下拆分（Ctrl+Shift+\\）">' + ICON.down + '</button>' +
+			'<button class="pbtn" data-act="max" title="最大化">' + ICON.max + '</button>' +
+			'<button class="pbtn close" data-act="close" title="关闭这一格（Alt+W）">' + ICON.close + '</button>' +
+		'</header>' +
+		'<div class="pane-body"></div>' +
+		'<form class="composer"><div class="input" contenteditable="true" spellcheck="false"></div><button class="send" type="submit" title="发送（Enter）">' + ICON.send + '</button></form>';
+	const head = el.querySelector('.pane-head');
+	head.addEventListener('pointerdown', e => {
+		if (e.button !== 0 || e.target.closest('button')) { return; }
+		e.preventDefault();
+		startDrag(e, { kind: 'pane', id, title: (S.panes[id] && S.panes[id].title) || id });
+	});
+	head.addEventListener('dblclick', e => { if (!e.target.closest('button')) { toggleMax(id); } });
+	head.addEventListener('contextmenu', e => { e.preventDefault(); openMenu(e.clientX, e.clientY, paneMenu(id)); });
+	el.addEventListener('click', e => {
+		const b = e.target.closest('[data-act]');
+		if (!b) { return; }
+		const act = b.dataset.act;
+		if (act === 'close') { closePane(id); }
+		else if (act === 'split-right') { split(id, 'right'); }
+		else if (act === 'split-down') { split(id, 'down'); }
+		else if (act === 'max') { toggleMax(id); }
+	});
+	el.addEventListener('pointerdown', () => setActive(id), true);
+	const input = el.querySelector('.input');
+	input.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(id, input); } });
+	el.querySelector('.composer').addEventListener('submit', e => { e.preventDefault(); send(id, input); });
+	layer.appendChild(el);
+	els.set(id, el);
+	fillPane(id);
+	return el;
+}
+function fillPane(id) {
+	const el = els.get(id), p = S.panes[id];
+	if (!el || !p) { return; }
+	el.querySelector('.pane-title').textContent = p.title;
+	el.querySelector('.pane-meta').textContent = '#' + p.sid.slice(-4);
+	el.querySelector('.input').dataset.ph = '向「' + p.title + '」提问，Enter 发送';
+	el.querySelector('.dot').classList.toggle('run', !!p.running);
+	renderBody(id);
+}
+function renderBody(id) {
+	const el = els.get(id), p = S.panes[id];
+	if (!el || !p) { return; }
+	const body = el.querySelector('.pane-body');
+	body.innerHTML = '';
+	if (!p.msgs.length) {
+		body.innerHTML = '<div class="empty"><b>新会话</b>这一格是一条独立会话（独立上下文）。拖动标题栏可以移动它，✕ 关闭不会删除会话。</div>';
+		return;
+	}
+	for (const m of p.msgs) { const d = document.createElement('div'); d.className = 'msg ' + m.r; d.textContent = m.t; body.appendChild(d); }
+	body.scrollTop = body.scrollHeight;
+}
+function setActive(id) {
+	if (S.active === id) { return; }
+	S.active = id;
+	for (const [k, el] of els) { el.classList.toggle('active', k === id); }
+}
+
+/* ───────────────────────── 操作 ───────────────────────── */
+const newSid = () => 'session-' + Math.random().toString(16).slice(2, 10);
+/** 把格子 r 沿某方向切成两半后，每半是否还够用（不够 ⇒ 拒绝并说明，不切出 91px 的窄条）。 */
+function fits(r, zoneOrDir) {
+	if (!r) { return true; }
+	const horizontal = zoneOrDir === 'left' || zoneOrDir === 'right';
+	return horizontal ? r.w / 2 >= CFG.SPLIT_MIN : r.h / 2 >= CFG.SPLIT_MIN_H;
+}
+const NO_ROOM = { h: '这一格太窄，放不下左右两格', v: '这一格太矮，放不下上下两格' };
+function createPane(title) {
+	S.seq++;
+	const id = 'p' + S.seq;
+	const s = title ? sampleFor(title) : null;
+	S.panes[id] = { title: title || ('新会话 ' + S.seq), sid: newSid(), msgs: s ? [{ r: 'u', t: s.q }, { r: 'a', t: s.a }] : [], running: false };
+	return id;
+}
+function flash(id) { const el = els.get(id); if (el) { el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); } }
+function full() { return leaves(S.tree).length >= CFG.MAX_PANES; }
+function tooMany() { toast('最多 ' + CFG.MAX_PANES + ' 格（每格都是一个完整的聊天客户端）'); }
+
+function addPane(title) {
+	if (full()) { tooMany(); return null; }
+	pushHistory();
+	if (S.max) { S.max = null; render(); }
+	const ids = leaves(S.tree);
+	let at = null, zone = null;
+	if (S.tree) {
+		let area = -1;
+		for (const k of ids) { const r = lastRects[k]; if (r && r.w * r.h > area) { area = r.w * r.h; at = k; } }
+		const r = lastRects[at];
+		const pref = r && r.w >= r.h * 1.1 ? 'right' : 'bottom';
+		const alt = pref === 'right' ? 'bottom' : 'right';
+		zone = fits(r, pref) ? pref : fits(r, alt) ? alt : null;
+		if (!zone) { undoStack.pop(); toast('右侧空间不够再切一格了：先把主栏调窄，或关掉一格'); return null; }
+	}
+	const id = createPane(title);
+	S.tree = S.tree ? insertBeside(S.tree, at, leaf(id), zone) : leaf(id);
+	S.active = id;
+	render(); save(); flash(id);
+	log('add ' + id + '（切开最大的一格）');
+	return id;
+}
+function split(id, dir) {
+	if (full()) { tooMany(); return; }
+	const zone = dir === 'right' ? 'right' : 'bottom';
+	if (!S.max && !fits(lastRects[id], zone)) { toast(NO_ROOM[zone === 'right' ? 'h' : 'v']); log('split refused：' + NO_ROOM[zone === 'right' ? 'h' : 'v']); return; }
+	pushHistory();
+	S.max = null;
+	const nid = createPane();
+	S.tree = insertBeside(S.tree, id, leaf(nid), zone);
+	S.active = nid;
+	render(); save(); flash(nid);
+	log('split ' + id + ' ' + dir + ' → ' + nid);
+}
+function closePane(id) {
+	const p = S.panes[id];
+	if (!p) { return; }
+	pushHistory();
+	S.tree = removeLeaf(S.tree, id);
+	delete S.panes[id];
+	if (S.max === id) { S.max = null; }
+	if (S.active === id) { S.active = leaves(S.tree)[0] || null; }
+	render(); save();
+	log('close ' + id);
+	toast('已关闭「' + p.title + '」· 会话仍在左侧工作区', true);
+}
+function closeOthers(id) {
+	pushHistory();
+	for (const k of leaves(S.tree)) { if (k !== id) { delete S.panes[k]; } }
+	S.tree = leaf(id); S.max = null; S.active = id;
+	render(); save(); log('close others except ' + id);
+	toast('已关闭其他格', true);
+}
+function closeAll() {
+	if (!S.tree) { return; }
+	pushHistory();
+	S.tree = null; S.panes = {}; S.max = null; S.active = null;
+	render(); save(); log('close all');
+	toast('已关闭全部窗格', true);
+}
+function toggleMax(id) { S.max = S.max === id ? null : id; S.active = id; render(); log((S.max ? 'maximize ' : 'restore ') + id); }
+function dock(id, edge) {
+	const rest = removeLeaf(S.tree, id);
+	if (!rest) { return; }
+	pushHistory();
+	const n = leaves(rest).length, me = leaf(id), first = edge === 'left' || edge === 'top';
+	S.tree = { type: 'split', dir: (edge === 'left' || edge === 'right') ? 'h' : 'v', sizes: first ? [1, n] : [n, 1], children: first ? [me, rest] : [rest, me] };
+	S.max = null;
+	render(); save(); log('dock ' + id + ' ' + edge);
+	toast('已移到' + ZONE_CN[edge] + '（整' + ((edge === 'left' || edge === 'right') ? '列' : '行') + '）', true);
+}
+function equalizeAll() { if (!S.tree) { return; } pushHistory(); S.tree = equalize(S.tree); render(); save(); log('equalize'); }
+function autoArrange() {
+	if (!S.tree) { return; }
+	pushHistory();
+	const { W, H } = stageSize(), mw = mainWidth(W);
+	S.tree = arrange(leaves(S.tree), W - mw - CFG.GAP, H - CFG.GAP);
+	S.max = null;
+	render(); save(); log('auto arrange'); toast('已自动排列', true);
+}
+function setMain(t) { pushHistory(); S.mainT = t; render(); save(); log('main width ' + mainWidth(stageSize().W) + 'px'); }
+function resetAll() {
+	try { localStorage.removeItem(KEY); } catch { /* ignore */ }
+	for (const [, el] of els) { el.remove(); }
+	els.clear();
+	S = blank(); undoStack = [];
+	seed();
+	log('reset'); toast('已重置为默认布局');
+}
+function send(id, input) {
+	const text = input.textContent.trim();
+	const p = S.panes[id];
+	if (!text || !p) { return; }
+	input.textContent = '';
+	p.msgs.push({ r: 'u', t: text });
+	p.running = true; fillPane(id);
+	setTimeout(() => {
+		if (!S.panes[id]) { return; }
+		p.msgs.push({ r: 'a', t: '收到：「' + text.slice(0, 40) + '」\n（效果图里的模拟回复；实机里这一格是独立会话，互不影响。）' });
+		p.running = false; fillPane(id); save();
+	}, 900);
+}
+
+/* ───────────────────────── 拖拽（窗格 & 侧栏会话） ───────────────────────── */
+function startDrag(e, src) {
+	const sx = e.clientX, sy = e.clientY;
+	let active = false, target = null, done = false;
+	const move = ev => {
+		if (!active) {
+			if (Math.hypot(ev.clientX - sx, ev.clientY - sy) < CFG.DRAG_TH) { return; }
+			active = true;
+			document.body.classList.add('dragging');
+			closeMenu();
+			if (src.kind === 'pane' && els.get(src.id)) { els.get(src.id).classList.add('drag-src'); }
+			ghostEl.innerHTML = ICON.grip + '<span></span>';
+			ghostEl.lastChild.textContent = src.title;
+			ghostEl.style.display = 'flex';
+			log('drag start ' + (src.kind === 'pane' ? src.id : '会话「' + src.title + '」'));
+		}
+		ghostEl.style.left = (ev.clientX + 14) + 'px';
+		ghostEl.style.top = (ev.clientY + 12) + 'px';
+		target = hitTest(ev.clientX, ev.clientY, src);
+		showHint(target);
+	};
+	const finish = (commit, why) => {
+		if (done) { return; }
+		done = true;
+		window.removeEventListener('pointermove', move, true);
+		window.removeEventListener('pointerup', up, true);
+		window.removeEventListener('pointercancel', cancel, true);
+		window.removeEventListener('keydown', key, true);
+		document.body.classList.remove('dragging');
+		ghostEl.style.display = 'none';
+		hideHint();
+		if (src.kind === 'pane' && els.get(src.id)) { els.get(src.id).classList.remove('drag-src'); }
+		if (!active) { return; }
+		if (!commit) { log('drag cancelled（' + why + '）'); return; }
+		if (!target) { log('drag dropped on nothing ⇒ 回到原位'); return; }
+		if (target.reject) { log('drag rejected：' + target.label); toast(target.label); return; }
+		applyDrop(src, target);
+	};
+	const up = () => finish(true);
+	const cancel = () => finish(false, 'pointercancel');
+	const key = ev => { if (ev.key === 'Escape') { ev.preventDefault(); finish(false, 'Esc'); } };
+	window.addEventListener('pointermove', move, true);
+	window.addEventListener('pointerup', up, true);
+	window.addEventListener('pointercancel', cancel, true);
+	window.addEventListener('keydown', key, true);
+}
+function hitTest(cx, cy, src) {
+	const { L, T, W, H } = stageSize();
+	const x = cx - L, y = cy - T;
+	if (x < 0 || y < 0 || x > W || y > H) { return null; }
+	const ids = leaves(S.tree);
+	const mw = mainWidth(W);
+	if (x < mw) {
+		if (src.kind === 'session' && ids.length === 0 && x > mw * 0.7) {
+			return { kind: 'new-right', rect: { x: mw * 0.5, y: 0, w: mw * 0.5, h: H }, label: '松手：在右侧新窗格打开' };
+		}
+		return { reject: true, rect: { x: 0, y: 0, w: mw, h: H }, label: '主栏固定在左侧，不能放这里' };
+	}
+	for (const id of ids) {
+		if (src.kind === 'pane' && id === src.id) { continue; }
+		const r = lastRects[id];
+		if (!r || x < r.x || x > r.x + r.w || y < r.y || y > r.y + r.h) { continue; }
+		const zone = zoneFor(r, x, y);
+		const name = S.panes[id].title;
+		if (zone !== 'center' && !fits(r, zone)) {
+			return { reject: true, rect: zoneRect(r, zone), label: NO_ROOM[zone === 'left' || zone === 'right' ? 'h' : 'v'] };
+		}
+		let label;
+		if (zone === 'center') { label = src.kind === 'pane' ? '与「' + name + '」交换位置' : '在这一格打开（替换「' + name + '」）'; }
+		else { label = '放到「' + name + '」' + ZONE_CN[zone] + (src.kind === 'session' ? '（新窗格）' : ''); }
+		return { kind: 'pane', id, zone, rect: zoneRect(r, zone), label };
+	}
+	return null;
+}
+function zoneRect(r, z) {
+	const g = CFG.GAP / 2, c = { x: r.x + g, y: r.y + g, w: r.w - 2 * g, h: r.h - 2 * g };
+	if (z === 'left') { return { ...c, w: c.w / 2 }; }
+	if (z === 'right') { return { ...c, x: c.x + c.w / 2, w: c.w / 2 }; }
+	if (z === 'top') { return { ...c, h: c.h / 2 }; }
+	if (z === 'bottom') { return { ...c, y: c.y + c.h / 2, h: c.h / 2 }; }
+	return c;
+}
+function showHint(t) {
+	if (!t) { hideHint(); return; }
+	Object.assign(hintEl.style, { display: 'flex', left: t.rect.x + 'px', top: t.rect.y + 'px', width: t.rect.w + 'px', height: t.rect.h + 'px' });
+	hintEl.classList.toggle('reject', !!t.reject);
+	hintEl.firstChild.textContent = t.label;
+}
+function hideHint() { hintEl.style.display = 'none'; }
+function applyDrop(src, t) {
+	if (src.kind === 'pane') {
+		if (!S.panes[src.id] || !S.panes[t.id]) { return; }
+		pushHistory();
+		if (t.zone === 'center') {
+			S.tree = swapLeaves(S.tree, src.id, t.id);
+			log('swap ' + src.id + ' ⇄ ' + t.id);
+			toast('已与「' + S.panes[t.id].title + '」交换位置', true);
+		} else {
+			const m = moveLeaf(S.tree, src.id, t.id, t.zone);
+			if (!m) { undoStack.pop(); return; }
+			S.tree = m;
+			log('move ' + src.id + ' → ' + t.id + '.' + t.zone);
+			toast('已移到「' + S.panes[t.id].title + '」的' + ZONE_CN[t.zone], true);
+		}
+		S.active = src.id;
+	} else {
+		if (t.kind === 'new-right') {
+			pushHistory();
+			const id = createPane(src.title);
+			S.tree = leaf(id); S.active = id;
+		} else if (t.zone === 'center') {
+			pushHistory();
+			const p = S.panes[t.id], s = sampleFor(src.title);
+			p.title = src.title; p.sid = newSid(); p.msgs = s ? [{ r: 'u', t: s.q }, { r: 'a', t: s.a }] : [];
+			fillPane(t.id); S.active = t.id;
+		} else {
+			if (full()) { tooMany(); return; }
+			pushHistory();
+			const id = createPane(src.title);
+			S.tree = insertBeside(S.tree, t.id, leaf(id), t.zone); S.active = id;
+		}
+		log('open 会话「' + src.title + '」');
+		toast('已在窗格中打开「' + src.title + '」', true);
+	}
+	render(); save();
+}
+
+/* ───────────────────────── 分隔条 ───────────────────────── */
+function onDividerDown(e) {
+	if (e.button !== 0) { return; }
+	const d = lastDividers[Number(e.currentTarget.dataset.idx)];
+	const node = d && nodeAt(S.tree, d.path);
+	if (!node || node.type !== 'split') { return; }
+	e.preventDefault();
+	const before = snapshot(), tgt = e.currentTarget, st = stageSize();
+	const L = d.dir === 'h' ? d.node.w : d.node.h;
+	const start0 = d.dir === 'h' ? d.node.x : d.node.y;
+	const tot = node.sizes.reduce((a, b) => a + b, 0) || 1;
+	const f = node.sizes.map(s => s / tot);
+	const offA = f.slice(0, d.index).reduce((a, b) => a + b, 0);
+	const pair = f[d.index] + f[d.index + 1];
+	const minF = Math.min(pair / 2, Math.max(0.04, (d.dir === 'h' ? CFG.SPLIT_MIN : CFG.SPLIT_MIN_H) / L));
+	document.body.classList.add(d.dir === 'h' ? 'resizing-h' : 'resizing-v');
+	tgt.classList.add('active');
+	const move = ev => {
+		const p = d.dir === 'h' ? ev.clientX - st.L : ev.clientY - st.T;
+		const a = clamp((p - start0) / L - offA, minF, pair - minF);
+		const nf = f.slice(); nf[d.index] = a; nf[d.index + 1] = pair - a;
+		node.sizes = nf;
+		render();
+	};
+	const up = () => {
+		window.removeEventListener('pointermove', move, true);
+		window.removeEventListener('pointerup', up, true);
+		window.removeEventListener('pointercancel', up, true);
+		document.body.classList.remove('resizing-h', 'resizing-v');
+		tgt.classList.remove('active');
+		undoStack.push(before); save();
+		log('resize ' + (d.dir === 'h' ? '左右' : '上下') + ' [' + node.sizes.map(s => Math.round(s * 100) + '%').join(' · ') + ']');
+	};
+	window.addEventListener('pointermove', move, true);
+	window.addEventListener('pointerup', up, true);
+	window.addEventListener('pointercancel', up, true);
+}
+function onDividerDbl(e) {
+	const d = lastDividers[Number(e.currentTarget.dataset.idx)];
+	const node = d && nodeAt(S.tree, d.path);
+	if (!node || node.type !== 'split') { return; }
+	pushHistory(); node.sizes = node.sizes.map(() => 1); render(); save(); log('equalize one split');
+}
+mainDivider.addEventListener('pointerdown', e => {
+	if (e.button !== 0) { return; }
+	e.preventDefault();
+	const before = snapshot(), st = stageSize(), { lo, hi } = mainRange(st.W);
+	document.body.classList.add('resizing-h');
+	mainDivider.classList.add('active');
+	const move = ev => { const x = ev.clientX - st.L - CFG.GAP / 2; S.mainT = hi > lo ? clamp((x - lo) / (hi - lo), 0, 1) : 0.5; render(); };
+	const up = () => {
+		window.removeEventListener('pointermove', move, true);
+		window.removeEventListener('pointerup', up, true);
+		window.removeEventListener('pointercancel', up, true);
+		document.body.classList.remove('resizing-h');
+		mainDivider.classList.remove('active');
+		if (before.mainT !== S.mainT) { undoStack.push(before); save(); log('main width ' + mainWidth(st.W) + 'px'); }
+	};
+	window.addEventListener('pointermove', move, true);
+	window.addEventListener('pointerup', up, true);
+	window.addEventListener('pointercancel', up, true);
+});
+mainDivider.addEventListener('dblclick', () => setMain(0.5));
+
+/* ───────────────────────── 菜单 / 提示 ───────────────────────── */
+let menuEl = null;
+function openMenu(x, y, items) {
+	closeMenu();
+	const m = document.createElement('div');
+	m.className = 'menu';
+	for (const it of items) {
+		if (it === '-') { const s = document.createElement('div'); s.className = 'sep'; m.appendChild(s); continue; }
+		const b = document.createElement('button');
+		b.className = 'mi' + (it.danger ? ' danger' : '');
+		b.disabled = !!it.disabled;
+		b.innerHTML = '<span></span><kbd></kbd>';
+		b.firstChild.textContent = it.label;
+		b.lastChild.textContent = it.kbd || '';
+		b.addEventListener('click', () => { closeMenu(); it.run(); });
+		m.appendChild(b);
+	}
+	m.style.left = x + 'px'; m.style.top = y + 'px';
+	document.body.appendChild(m);
+	const r = m.getBoundingClientRect();
+	m.style.left = Math.max(8, Math.min(x, innerWidth - r.width - 8)) + 'px';
+	m.style.top = Math.max(8, Math.min(y, innerHeight - r.height - 8)) + 'px';
+	menuEl = m;
+	setTimeout(() => window.addEventListener('pointerdown', outsideMenu, true), 0);
+}
+function outsideMenu(e) { if (menuEl && !menuEl.contains(e.target)) { closeMenu(); } }
+function closeMenu() { if (menuEl) { menuEl.remove(); menuEl = null; window.removeEventListener('pointerdown', outsideMenu, true); } }
+function paneMenu(id) {
+	const n = leaves(S.tree).length;
+	return [
+		{ label: '向右拆分', kbd: 'Ctrl+\\', disabled: full(), run: () => split(id, 'right') },
+		{ label: '向下拆分', kbd: 'Ctrl+Shift+\\', disabled: full(), run: () => split(id, 'down') },
+		{ label: S.max === id ? '还原' : '最大化', kbd: '双击标题', run: () => toggleMax(id) },
+		'-',
+		{ label: '移到最左（整列）', disabled: n < 2, run: () => dock(id, 'left') },
+		{ label: '移到最右（整列）', disabled: n < 2, run: () => dock(id, 'right') },
+		{ label: '移到最上（整行）', disabled: n < 2, run: () => dock(id, 'top') },
+		{ label: '移到最下（整行）', disabled: n < 2, run: () => dock(id, 'bottom') },
+		'-',
+		{ label: '平均分配所有格', disabled: n < 2, run: equalizeAll },
+		{ label: '自动排列', disabled: n < 2, run: autoArrange },
+		'-',
+		{ label: '关闭其他格', disabled: n < 2, run: () => closeOthers(id) },
+		{ label: '关闭这一格', kbd: 'Alt+W', danger: true, run: () => closePane(id) },
+	];
+}
+function layoutMenu() {
+	const has = !!S.tree;
+	return [
+		{ label: '新窗格', kbd: 'Ctrl+\\', disabled: full(), run: () => addPane() },
+		'-',
+		{ label: '主栏：窄（720px）', disabled: !has, run: () => setMain(0) },
+		{ label: '主栏：适中', disabled: !has, run: () => setMain(0.5) },
+		{ label: '主栏：宽', disabled: !has, run: () => setMain(1) },
+		'-',
+		{ label: '自动排列', disabled: !has, run: autoArrange },
+		{ label: '平均分配', disabled: !has, run: equalizeAll },
+		'-',
+		{ label: '关闭全部窗格', danger: true, disabled: !has, run: closeAll },
+		{ label: '重置为默认布局', run: resetAll },
+	];
+}
+let toastTimer = 0;
+function toast(msg, undoable) {
+	toastEl.innerHTML = '';
+	const s = document.createElement('span'); s.textContent = msg; toastEl.appendChild(s);
+	if (undoable) {
+		const b = document.createElement('button');
+		b.textContent = '撤销'; b.dataset.undo = '1';
+		b.addEventListener('click', () => { hideToast(); undo(); });
+		toastEl.appendChild(b);
+	}
+	toastEl.classList.add('show');
+	clearTimeout(toastTimer);
+	toastTimer = setTimeout(hideToast, 4500);
+}
+function hideToast() { toastEl.classList.remove('show'); }
+
+/* ───────────────────────── 检查器 ───────────────────────── */
+function treeText(n, d) {
+	const pad = '  '.repeat(d);
+	if (n.type === 'leaf') { return pad + '▸ ' + ((S.panes[n.id] && S.panes[n.id].title) || n.id) + '  (' + n.id + ')'; }
+	const tot = n.sizes.reduce((a, b) => a + b, 0) || 1;
+	return pad + (n.dir === 'h' ? '⇆ 左右' : '⇅ 上下') + '  [' + n.sizes.map(s => Math.round(s / tot * 100) + '%').join(' · ') + ']\n' + n.children.map(c => treeText(c, d + 1)).join('\n');
+}
+function updateInspector() {
+	if (!inspEl.classList.contains('open')) { return; }
+	$('#inspTree').textContent = S.tree ? treeText(S.tree, 0) + (S.max ? '\n\n（最大化中：' + S.max + '）' : '') : '（没有右侧窗格 · 主栏铺满）';
+	const st = stage.getBoundingClientRect();
+	const fmt = (name, b) => name + '  x' + Math.round(b.left - st.left) + ' y' + Math.round(b.top - st.top) + '  ' + Math.round(b.width) + '×' + Math.round(b.height);
+	const rows = [fmt('主栏', mainEl.getBoundingClientRect())];
+	for (const id of leaves(S.tree)) { const el = els.get(id); rows.push(el && el.style.display !== 'none' ? fmt(S.panes[id].title, el.getBoundingClientRect()) : S.panes[id].title + '  （隐藏）'); }
+	$('#inspRects').textContent = rows.join('\n');
+	$('#inspLog').textContent = logLines.slice(-60).join('\n');
+}
+function renderTestResults(res) {
+	const ol = $('#inspTest');
+	ol.innerHTML = '';
+	for (const r of res.results) {
+		const li = document.createElement('li');
+		li.className = r.ok ? 'pass' : 'fail';
+		li.textContent = (r.ok ? '✓ ' : '✗ ') + r.name;
+		if (r.detail) { const sm = document.createElement('small'); sm.textContent = r.detail; li.appendChild(sm); }
+		ol.appendChild(li);
+	}
+	const li = document.createElement('li');
+	li.className = res.pass === res.total ? 'pass' : 'fail';
+	li.textContent = '合计 ' + res.pass + ' / ' + res.total;
+	ol.appendChild(li);
+}
+
+/* ───────────────────────── 自测（走真实的指针事件路径） ───────────────────────── */
+async function selfTest() {
+	const saved = snapshot();
+	const results = [];
+	let pass = 0;
+	const ok = (name, cond, detail) => { results.push({ name, ok: !!cond, detail: detail || '' }); if (cond) { pass++; } log('selftest ' + (cond ? 'PASS' : 'FAIL') + ' ' + name + (detail ? ' :: ' + detail : '')); };
+	const wait = ms => new Promise(r => setTimeout(r, ms));
+	const R = id => els.get(id).getBoundingClientRect();
+	const head = id => els.get(id).querySelector('.pane-head');
+	const fire = (tgt, type, x, y) => tgt.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y, pointerId: 7, pointerType: 'mouse', isPrimary: true, button: 0, buttons: type === 'pointerup' ? 0 : 1 }));
+	const dragTo = async (handle, x, y, beforeUp) => {
+		const b = handle.getBoundingClientRect();
+		const sx = b.left + Math.min(60, b.width / 3), sy = b.top + b.height / 2;
+		fire(handle, 'pointerdown', sx, sy);
+		for (let i = 1; i <= 8; i++) { fire(window, 'pointermove', sx + (x - sx) * i / 8, sy + (y - sy) * i / 8); await wait(8); }
+		if (beforeUp) { await beforeUp(); }
+		fire(window, 'pointerup', x, y);
+		await wait(30);
+	};
+	const dragDivider = async (el, dx, dy) => {
+		const b = el.getBoundingClientRect(), cx = b.left + b.width / 2, cy = b.top + b.height / 2;
+		fire(el, 'pointerdown', cx, cy);
+		fire(window, 'pointermove', cx + dx, cy + dy);
+		fire(window, 'pointerup', cx + dx, cy + dy);
+		await wait(30);
+	};
+	const noOverlap = () => {
+		const all = [mainEl.getBoundingClientRect(), ...leaves(S.tree).map(R)];
+		for (let i = 0; i < all.length; i++) {
+			for (let j = i + 1; j < all.length; j++) {
+				const a = all[i], b = all[j];
+				if (Math.min(a.right, b.right) - Math.max(a.left, b.left) > 1 && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 1) { return false; }
+			}
+		}
+		return true;
+	};
+	const insideStage = () => { const s = stage.getBoundingClientRect(); return leaves(S.tree).every(id => { const r = R(id); return r.left >= s.left - 1 && r.top >= s.top - 1 && r.right <= s.right + 1 && r.bottom <= s.bottom + 1; }); };
+	const contentW = () => { const { W } = stageSize(); return W - mainWidth(W) - 2 * CFG.GAP; };
+	const order = () => leaves(S.tree).join(',');
+
+	try {
+		closeMenu(); hideToast();
+		for (const [, el] of els) { el.remove(); }
+		els.clear();
+		Object.assign(S, blank());
+		undoStack = [];
+		render();
+		await wait(20);
+
+		$('#btnNewPane').click(); await wait(20);
+		$('#btnNewPane').click(); await wait(20);
+		const [A, B] = leaves(S.tree);
+		ok('点「新窗格」两次 ⇒ 右侧 2 格', leaves(S.tree).length === 2, 'leaves=' + leaves(S.tree).length);
+		ok('2 格与主栏互不重叠、都在窗口内', noOverlap() && insideStage());
+
+		let ra = R(A);
+		if (fits(lastRects[A], 'left')) {
+			await dragTo(head(B), ra.left + 16, ra.top + ra.height / 2);
+			ok('拖 B 的标题栏到 A 的左边缘 ⇒ B 在 A 左侧', R(B).right <= R(A).left + 1 && Math.abs(R(B).top - R(A).top) < 2, 'B.right=' + Math.round(R(B).right) + ' A.left=' + Math.round(R(A).left));
+		} else {
+			const o = order();
+			await dragTo(head(B), ra.left + 16, ra.top + ra.height / 2);
+			const floor = Math.min(CFG.SPLIT_MIN, contentW()) - CFG.GAP - 1;
+			ok('A 太窄时拖到它左边缘 ⇒ 拒绝（不切出窄条）', order() === o && leaves(S.tree).every(id => R(id).width >= floor), '视口 ' + innerWidth + '×' + innerHeight + '，右侧 ' + contentW() + 'px');
+		}
+
+		const o1 = order();
+		const rb0 = R(B);
+		await dragTo(head(A), rb0.left + rb0.width / 2, rb0.top + rb0.height / 2);
+		ok('拖 A 到 B 中央 ⇒ 交换位置', order() === o1.split(',').reverse().join(','), o1 + ' → ' + order());
+
+		const div = $('.divider', layer);
+		if (div) {
+			const horiz = div.classList.contains('h');
+			const first = leaves(S.tree)[0];
+			const dim = () => horiz ? R(first).width : R(first).height;
+			const min = horiz ? CFG.SPLIT_MIN : CFG.SPLIT_MIN_H;
+			const s0 = dim();
+			const delta = Math.max(10, Math.min(120, Math.floor((s0 + CFG.GAP - min) / 2)));
+			await dragDivider(div, horiz ? -delta : 0, horiz ? 0 : -delta);
+			const s1 = dim();
+			ok('拖' + (horiz ? '左右' : '上下') + '分隔条 −' + delta + 'px ⇒ 前一格缩小 ' + delta + 'px', Math.abs((s0 - s1) - delta) <= 2, Math.round(s0) + ' → ' + Math.round(s1));
+			await dragDivider($('.divider', layer), horiz ? -3000 : 0, horiz ? 0 : -3000);
+			ok('分隔条拖到极限 ⇒ 格子不小于 ' + min + 'px', dim() >= min - CFG.GAP - 1, Math.round(dim()) + 'px');
+		} else {
+			ok('2 格之间有分隔条', false, '没有 .divider');
+		}
+
+		await dragDivider(mainDivider, -3000, 0);
+		ok('主栏分隔条拖到最左 ⇒ 主栏不窄于下限', Math.abs(mainEl.getBoundingClientRect().width - mainRange(stageSize().W).lo) <= 1, '主栏 ' + Math.round(mainEl.getBoundingClientRect().width) + 'px');
+		mainDivider.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+		await wait(20);
+
+		const o0 = order();
+		const shape0 = JSON.stringify(S.tree);
+		const rb = R(B);
+		await dragTo(head(A), rb.left + 10, rb.top + rb.height / 2, async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await wait(5); });
+		ok('拖动中按 Esc ⇒ 取消，布局不变', order() === o0 && JSON.stringify(S.tree) === shape0);
+
+		const mb = mainEl.getBoundingClientRect();
+		await dragTo(head(A), mb.left + mb.width / 2, mb.top + mb.height / 2);
+		ok('拖到主栏上 ⇒ 拒绝，布局不变', order() === o0);
+
+		els.get(A).querySelector('[data-act="close"]').click();
+		await wait(20);
+		ok('点 A 的 ✕ ⇒ 剩 B 一格并铺满右侧', leaves(S.tree).length === 1 && leaves(S.tree)[0] === B && Math.abs(R(B).width - contentW()) <= 2, 'B 宽 ' + Math.round(R(B).width) + ' / 期望 ' + contentW());
+
+		const undoBtn = $('#toast [data-undo]');
+		if (undoBtn) { undoBtn.click(); } else { undo(); }
+		await wait(20);
+		ok('点提示条「撤销」⇒ A 回来', leaves(S.tree).length === 2 && leaves(S.tree).includes(A) && noOverlap());
+
+		const tallest = leaves(S.tree).reduce((m, id) => (R(id).height > R(m).height ? id : m));
+		const canDown = fits(lastRects[tallest], 'bottom');
+		const n0 = leaves(S.tree).length;
+		els.get(tallest).querySelector('[data-act="split-down"]').click();
+		await wait(20);
+		const C = leaves(S.tree).find(x => x !== A && x !== B);
+		if (canDown) {
+			ok('点最高那一格的「向下拆分」⇒ 新格出现在它正下方', !!C && Math.abs(R(C).left - R(tallest).left) < 2 && R(C).top >= R(tallest).bottom - 1);
+		} else {
+			ok('空间不够时点「向下拆分」⇒ 拒绝并提示', !C && leaves(S.tree).length === n0 && toastEl.classList.contains('show'), toastEl.textContent);
+		}
+		ok((C ? 3 : 2) + ' 格互不重叠、都在窗口内', noOverlap() && insideStage());
+
+		if (C) {
+			head(C).dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+			await wait(20);
+			ok('双击 C 的标题栏 ⇒ 最大化铺满右侧', S.max === C && Math.abs(R(C).width - contentW()) <= 2);
+			head(C).dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+			await wait(20);
+			ok('再双击 ⇒ 还原为 3 格', S.max === null && leaves(S.tree).length === 3 && noOverlap());
+		}
+
+		for (let i = 0; i < 6; i++) {
+			const widest = leaves(S.tree).reduce((m, id) => (R(id).width > R(m).width ? id : m));
+			els.get(widest).querySelector('[data-act="split-right"]').click();
+			await wait(10);
+		}
+		const floorW = Math.min(CFG.SPLIT_MIN, contentW()) - CFG.GAP - 1;
+		const tooSmall = leaves(S.tree).filter(id => R(id).width < floorW || R(id).height < CFG.SPLIT_MIN_H - CFG.GAP - 1);
+		ok('连点 6 次「向右拆分」⇒ 不超上限、不切出窄条', leaves(S.tree).length <= CFG.MAX_PANES && tooSmall.length === 0 && noOverlap(), leaves(S.tree).length + ' 格' + (tooSmall.length ? '，过小：' + tooSmall.join(',') : ''));
+
+		for (const id of leaves(S.tree)) { els.get(id).querySelector('[data-act="close"]').click(); await wait(15); }
+		ok('逐个点 ✕ 关闭 ⇒ 主栏回到全宽', !S.tree && Math.abs(mainEl.getBoundingClientRect().width - stageSize().W) <= 1);
+
+		const sess = $('.sess[data-title="zoneFor 边缘带"]');
+		const sb = stage.getBoundingClientRect();
+		await dragTo(sess, sb.left + sb.width * 0.9, sb.top + sb.height / 2);
+		ok('把侧栏会话拖到右侧 ⇒ 在新窗格打开', leaves(S.tree).length === 1 && S.panes[leaves(S.tree)[0]].title === 'zoneFor 边缘带');
+	} catch (err) {
+		ok('自测异常', false, String((err && err.message) || err));
+	}
+
+	hideToast();
+	for (const [, el] of els) { el.remove(); }
+	els.clear();
+	Object.assign(S, saved);
+	S.max = null;
+	undoStack = [];
+	render(); save();
+	const res = { pass, total: results.length, results };
+	window.__selftest = res;
+	document.title = 'SELFTEST ' + pass + '/' + results.length;
+	renderTestResults(res);
+	log('selftest DONE ' + pass + '/' + results.length);
+	return res;
+}
+window.__selftestRun = selfTest;
+
+/* ───────────────────────── 接线 ───────────────────────── */
+$('#btnNewPane').addEventListener('click', () => addPane());
+$('#btnLayout').addEventListener('click', e => { const b = e.currentTarget.getBoundingClientRect(); openMenu(b.left, b.bottom + 4, layoutMenu()); });
+$('#btnHelp').addEventListener('click', e => { helpEl.classList.toggle('open'); e.currentTarget.classList.toggle('on', helpEl.classList.contains('open')); });
+$('#btnInsp').addEventListener('click', () => toggleInspector());
+$('#btnInspClose').addEventListener('click', () => toggleInspector(false));
+$('#btnReset').addEventListener('click', resetAll);
+$('#btnTest').addEventListener('click', async () => { toggleInspector(true); await selfTest(); });
+function toggleInspector(force) {
+	const open = force === undefined ? !inspEl.classList.contains('open') : force;
+	inspEl.classList.toggle('open', open);
+	$('#btnInsp').classList.toggle('on', open);
+	updateInspector();
+}
+mainEl.addEventListener('pointerdown', () => setActive(null), true);
+for (const s of $$('.sess')) {
+	s.addEventListener('pointerdown', e => { if (e.button !== 0) { return; } e.preventDefault(); startDrag(e, { kind: 'session', title: s.dataset.title }); });
+	s.addEventListener('click', () => {
+		for (const x of $$('.sess')) { x.classList.toggle('cur', x === s); }
+		$('#mainTitle').firstChild.textContent = s.dataset.title;
+	});
+}
+const mainInput = $('#mainComposer .input');
+const sendMain = () => {
+	const t = mainInput.textContent.trim();
+	if (!t) { return; }
+	mainInput.textContent = '';
+	const d = document.createElement('div'); d.className = 'msg u'; d.textContent = t;
+	$('#mainBody').appendChild(d);
+	$('#mainBody').scrollTop = $('#mainBody').scrollHeight;
+};
+mainInput.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendMain(); } });
+$('#mainComposer').addEventListener('submit', e => { e.preventDefault(); sendMain(); });
+window.addEventListener('keydown', e => {
+	const mod = e.ctrlKey || e.metaKey;
+	if (mod && e.code === 'Backslash') {
+		e.preventDefault();
+		if (S.active && S.panes[S.active]) { split(S.active, e.shiftKey ? 'down' : 'right'); } else { addPane(); }
+	} else if (e.altKey && (e.key === 'w' || e.key === 'W')) {
+		if (S.active && S.panes[S.active]) { e.preventDefault(); closePane(S.active); }
+	} else if (mod && (e.key === 'z' || e.key === 'Z') && !(e.target.closest && e.target.closest('[contenteditable]'))) {
+		e.preventDefault(); undo();
+	} else if (e.key === 'Escape') {
+		closeMenu(); helpEl.classList.remove('open'); $('#btnHelp').classList.remove('on');
+	}
+});
+window.addEventListener('pointerdown', e => {
+	if (helpEl.classList.contains('open') && !helpEl.contains(e.target) && e.target.id !== 'btnHelp') { helpEl.classList.remove('open'); $('#btnHelp').classList.remove('on'); }
+}, true);
+window.addEventListener('resize', () => { closeMenu(); render(); });
+
+function seed() {
+	render();
+	addPane('dshSplitLayout 单测');
+	addPane('会话列表拖拽排序');
+	undoStack = [];
+	S.active = null;
+	render(); save();
+}
+
+if (firstVisit || !S.tree) { seed(); } else { render(); }
+if (new URLSearchParams(location.search).get('selftest') === '1') {
+	setTimeout(() => { toggleInspector(true); selfTest(); }, 200);
+} else if (firstVisit) {
+	helpEl.classList.add('open'); $('#btnHelp').classList.add('on');
+}
+log('ready（' + leaves(S.tree).length + ' 格）');
+})();
+</script>
+</body>
+</html>

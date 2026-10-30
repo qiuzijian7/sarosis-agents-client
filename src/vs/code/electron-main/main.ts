@@ -230,9 +230,11 @@ class CodeMain {
 			logPath: resolve(environmentMainService.logsHome.with({ scheme: Schemas.file }).fsPath, 'main-hang.log'),
 		}));
 
-		// ★ 2026-10-28：中转站 Node Agent（反向通道客户端）**已移除主进程侧实现**。
-		//   现在只保留 **dsh Host 侧插件**里的那一份（`dsh-plugins/vssaros-relay`）——
-		//   两份实现并存会让它们各自注册、互相轮换节点令牌 ⇒ 通道反复掉线 ✗。
+		// ★ 2026-10-30（用户要求「移除萨罗斯中转站工作台」）：中转站相关能力**整体下线** ——
+		//   · `dsh-plugins/vssaros-relay` 插件（工作台整页 `/x/relay/`、号池注册、额度采集、
+		//     Node Agent 反向通道）已删除并从两套 profile 卸载；
+		//   · IDE 侧的工作台容器/活动栏/页面表/主页卡片条目同步删除；
+		//   · 下面这段 Node Agent 与额度采集的说明随之作废（主进程侧本来就没有实现了）。
 
 		// ★ 2026-10-28：**TOF（IOA）自动登录桥** —— 监听 127.0.0.1:<port> 接住
 		//   网关 302 过来的票据 ⇒ 本地验票（★ 本机够得到 IDC 网关）⇒ 换一次性 code
@@ -243,12 +245,9 @@ class CodeMain {
 		});
 		disposables.add(tofLoginBridge);
 
-		// ★ CodeBuddy 额度/积分的采集**已搬到 dsh Host 侧插件**（`dsh-plugins/vssaros-relay`）：
-		//   主进程那份（`quotaSync.ts`，用 Electron session + 登录窗）已删除 ——
-		//   实测企业 SSO 的 iOA 推送在 **Electron 窗口**里**收不到回执**（页面永远停在
-		//   「Verification successful…」⇒ 换不到票），而**真实浏览器**里一切正常 ⇒
-		//   现在由 Host 通过**浏览器插件**（`vssaros-browser` 的 `loginSession`）读真实浏览器里的
-		//   woa 会话 cookie ⇒ 全自动、零手工、不需要 Electron 登录窗 ✓
+		// ★ 2026-10-30：CodeBuddy 额度/积分采集随**中转站工作台**一起下线
+		//   （采集曾放在 `dsh-plugins/vssaros-relay` 里；主进程侧那份 `quotaSync.ts`
+		//   早在 2026-10-28 就删了 ⇒ 现在两侧都没有额度采集实现）。
 
 		// Files
 		const fileService = new FileService(logService);

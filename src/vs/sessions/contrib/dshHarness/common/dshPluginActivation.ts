@@ -54,6 +54,38 @@ export function isBundleEnabled(profilePackageJson: unknown, pluginName: string)
 }
 
 /**
+ * 把 `desired` 里**还没登记**的包追加到 `dsh.profile.bundles`（2026-10-30，外部机器 P0）。
+ *
+ * ★ 为什么需要：dsh **只组合 `bundles` 里列出的包** —— 不在列表里的，即使 `node_modules` 装着、
+ *   `dependencies` 也登记了，**一个都不会加载** ⇒ 界面退回 dsh 原生形态（没有 chat-surface / brand，
+ *   `vssaros-bridge` 也不起来 ⇒ `bridge handshake did not complete`）。而真正会追加 bundles 的只有
+ *   `dsh plugin add`（pnpm 那条路）：直装只写 `dependencies`，且插件"已装"时连装都不跑 ⇒
+ *   bundles 永远停在模板那几项 ✗✗。
+ *
+ * 语义：
+ *   · **只追加、不删除、不重排** ⇒ 幂等；用户手工停用（= 从 bundles 移出）不会被动回来，
+ *     除非它本来就在 `desired`（随包必装清单）里 —— 那种情况本来就应该加载；
+ *   · `desired` 里的空串 / 重复项自动忽略。
+ */
+export function mergeMissingBundles(
+	profilePackageJson: unknown,
+	desired: readonly string[],
+): { readonly added: readonly string[]; readonly next: readonly string[]; readonly changed: boolean } {
+	const current = parseProfileBundles(profilePackageJson);
+	const have = new Set(current);
+	const added: string[] = [];
+	for (const raw of desired) {
+		const name = typeof raw === 'string' ? raw.trim() : '';
+		if (!name || have.has(name)) {
+			continue;
+		}
+		have.add(name);
+		added.push(name);
+	}
+	return { added, next: [...current, ...added], changed: added.length > 0 };
+}
+
+/**
  * **写入归属**（README 5.64）：把清单的 `owns` 声明与**当前启用状态**合起来，回答"这条数据路径现在谁在写"。
  *
  * 为什么放这里：本模块本来回答的就是"谁参与了 profile 组合" ✓ —— 写入归属是**同一个问题的另一半** ✓

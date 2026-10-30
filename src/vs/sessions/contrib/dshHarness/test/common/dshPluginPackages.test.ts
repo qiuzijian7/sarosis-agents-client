@@ -415,9 +415,7 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 			// ★ 2026-10-22：商城工作台 —— 它**写** `<数据根>/skills|workflows`（落盘）与
 			// `installed-packages.json`（台账）⇒ 必须被注入数据根，否则 dev 实例写生产 ✗
 			['vssaros-marketplace', ['dataRoot']],
-			// ★ 2026-10-28：小红书笔记 —— 草稿落 `<数据根>/xhs-note/` ⇒ 必须被注入数据根，
-			//   否则 dev 实例把草稿写进**生产**数据根（与 marketplace 同病）。
-			['vssaros-xhs-note', ['dataRoot']],
+			// ★ 2026-10-30：小红书笔记工作台已移除 ⇒ 它原本需要的 `dataRoot` 注入项也一并删掉。
 			['vssaros-kb', ['dataRoot', 'kbRoot', 'kbVaults', 'kbActiveVaultId']],
 			['vssaros-web-content-import', ['dataRoot', 'kbRoot']],
 			['vssaros-dsh-mcp', ['path']],
@@ -1833,8 +1831,17 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 		//    并发的第二次 start 把标记读成 false ⇒ 又接管了坏 Host（日志 `reusing the Host started by pid 80344`）✗。
 		assert.ok(!/const pluginsWereStale = this\._pluginsStale;\s*\n\s*this\._pluginsStale = false;/.test(supervisor),
 			'⑥ 不许在进 lock 之前就清标记（并发 start 会因此接管旧 Host）');
-		assert.ok(/ready in \$\{Date\.now\(\) - t0\} ms[\s\S]{0,600}?this\._pluginsStale = false;/.test(supervisor),
-			'⑥ spawn 成功（打出 ready in …）之后才清标记');
+		// ⚠ 2026-10-30：判据从「600 字符窗口」改成**位置比较** —— ready 与清标记之间新插了一段
+		//   「bridge fallback 归因」（用户要求把 fallback 的两个原因当场分流并打日志），距离从几百字符
+		//   涨到 2 万字符 ⇒ 旧窗口会把**语义没变**的实现判红。要钉的只有顺序一件事：
+		//   清标记必须在 ready 之后（清在之前 = 并发 start 会把标记读成 false 又去接管旧 Host，2026-10-12 事故）。
+		{
+			const readyAnchor = 'ready in ${Date.now() - t0} ms';
+			const iReady = supervisor.indexOf(readyAnchor);
+			const iClearAfterReady = supervisor.indexOf('this._pluginsStale = false;', iReady);
+			assert.ok(iReady > 0 && iClearAfterReady > iReady,
+				'⑥ spawn 成功（打出 ready in …）之后才清标记');
+		}
 		// ⑦ 插件图自检：**接管**与**新起**两条路都要体检（白屏根因就是接管了一个"插件 import 失败"的进程），
 		//    不通过时换进程重载（只自动一次）。
 		// ⑧ ★ 标记必须挂在**真正执行安装的那一行**上（2026-10-13 实测）：`_installFromDir` 是另一条路

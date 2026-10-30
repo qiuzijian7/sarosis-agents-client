@@ -129,7 +129,9 @@ const CONTAINER_SUMMARY: Readonly<Record<string, string>> = {
 	// ★ 2026-10-12（「资料库」拆分）：原来这里只有 kb 一条，另三格拆出来时漏了副标题 ⇒ 卡片上留白。
 	'agentStudio.memory': '长期记忆与 4-Tier 分层（只读快照）',
 	'agentStudio.media': '媒体资产库：最近图片 / 视频 / 音频',
-	'agentStudio.plugins': '插件中心',
+	// ★ 2026-10-30：这一格由上游原生扩展容器接管（自研 `agentStudio.plugins` 不再注册）。
+	//   副标题保留「插件中心」的说法，用户仍按原来的名字找得到。
+	'workbench.view.extensions': '插件中心（VS Code 原生扩展面板）',
 	'agentStudio.dashboard': '会话遥测 / 用量汇总',
 };
 

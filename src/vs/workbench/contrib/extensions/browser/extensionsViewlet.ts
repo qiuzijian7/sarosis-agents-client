@@ -28,7 +28,7 @@ import Severity from '../../../../base/common/severity.js';
 import { IActivityService, IBadge, NumberBadge, WarningBadge } from '../../../services/activity/common/activity.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { IViewsRegistry, IViewDescriptor, Extensions, ViewContainer, IViewDescriptorService, IAddedViewDescriptorRef, ViewContainerLocation, IViewContainersRegistry } from '../../../common/views.js';
+import { IViewsRegistry, IViewDescriptor, Extensions, ViewContainer, IViewDescriptorService, IAddedViewDescriptorRef, ViewContainerLocation, IViewContainersRegistry, WindowEnablement } from '../../../common/views.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IContextKeyService, ContextKeyExpr, RawContextKey, IContextKey } from '../../../../platform/contextkey/common/contextkey.js';
@@ -149,7 +149,11 @@ export class ExtensionsViewletViewsContribution extends Disposable implements IW
 		});
 
 		const viewRegistry = Registry.as<IViewsRegistry>(Extensions.ViewsRegistry);
-		viewRegistry.registerViews(viewDescriptors, this.container);
+		// ★ 2026-10-30：sessions 窗口（IDE 侧）里 `isEnabled()` 只认 `Sessions | Both`
+		//   （`viewDescriptorService.ts:348-353`），而上游这批视图描述符都没写 `windowEnablement`
+		//   ⇒ 容器即便可见，里面每个视图也被判为不可见。这里**统一**补一次而不是逐个改
+		//   （本方法后续新增的视图自动继承同一口径，不会再漏）。
+		viewRegistry.registerViews(viewDescriptors.map(descriptor => ({ ...descriptor, windowEnablement: WindowEnablement.Both })), this.container);
 
 		viewRegistry.registerViewWelcomeContent('workbench.views.extensions.marketplaceAccess', {
 			content: localize('sign in', "[Sign in to access Extensions Marketplace]({0})", `command:${DEFAULT_ACCOUNT_SIGN_IN_COMMAND}`),

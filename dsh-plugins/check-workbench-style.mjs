@@ -29,7 +29,7 @@ const PLUGINS = 'g:/SarosWorkspace/sarosis-agents-client/dsh-plugins';
 // ⚠ 2026-10-23：**vssaros-dashboard 暂时移出白名单** —— 另一条会话正在重写它
 //   （`exports['./client']` 指向的 `lib/client.js` 曾一度不存在）⇒ 入列会让本守卫对别人的半成品报红。
 //   等它重写落地、重新有工作台组件后**再加回来**。
-const UNIFIED = ['vssaros-workflow', 'vssaros-kanban', 'vssaros-memory', 'vssaros-codebase', 'vssaros-kb', 'vssaros-agents', 'vssaros-scheduler', 'vssaros-xhs-note'];
+const UNIFIED = ['vssaros-workflow', 'vssaros-kanban', 'vssaros-memory', 'vssaros-codebase', 'vssaros-kb', 'vssaros-agents', 'vssaros-scheduler'];
 
 /**
  * 欠账清单：**按条款**登记（不是整包放水 —— 只有列出的条款失败才不计入退出码）。

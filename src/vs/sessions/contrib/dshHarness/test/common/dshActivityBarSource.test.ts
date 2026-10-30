@@ -67,12 +67,20 @@ suite('dshActivityBar 源码守卫（表 / 静态注册 / 动态宿主 三处一
 	});
 
 	test('常驻容器不受模块引擎影响（仍是静态注册）', () => {
-		// 侧栏常驻项里，Workspace 走手工注册块，Search / Plugins 走 _registerToolIcon。
+		// 侧栏常驻项里，Workspace 走手工注册块，Search 走 _registerToolIcon。
 		assert.match(contribution!, /id: 'agentStudio\.workspace',/, 'Workspace 容器应静态注册');
-		for (const id of ['agentStudio.search', 'agentStudio.plugins']) {
-			const viaStatic = new RegExp(`_registerToolIcon\\(viewContainerRegistry, viewsRegistry, \\{\\s*id: '${escapeRegExp(id)}',`);
-			assert.match(contribution!, viaStatic, `${id} 应保持静态注册`);
-		}
+		const viaSearch = new RegExp(`_registerToolIcon\\(viewContainerRegistry, viewsRegistry, \\{\\s*id: 'agentStudio\\.search',`);
+		assert.match(contribution!, viaSearch, 'agentStudio.search 应保持静态注册');
+
+		// ★ 2026-10-30（用户要求：「IDE 侧 activitybar 中的插件 sideview 改用 vscode 原生的组件和功能」）：
+		//   「插件」那一格改由**上游原生扩展容器**渲染（`workbench.view.extensions`，
+		//   `ExtensionsViewPaneContainer`），自研 `agentStudio.plugins` 必须处于关闭态。
+		//   这三条是**反向**断言：谁把自研插件中心又打开 / 把迁移目标改坏 / 把迁移调用删掉，都会红。
+		assert.match(contribution!, /const NATIVE_PLUGIN_CENTER: boolean = true;/,
+			'自研插件中心应保持关闭（由原生扩展面板接管）；要回退请连同本守卫一起改');
+		assert.match(contribution!, /purgePinnedViewlets\(/,
+			'必须真的清掉自研容器在活动栏 pin 存储里的死条目（否则旧 id 会长期留在用户数据里）');
+
 		// 常驻集合与模块容器表不得重叠（重叠即"两套机制争同一个容器"）
 		for (const container of DSH_MODULE_CONTAINERS) {
 			assert.ok(!DSH_ALWAYS_REGISTERED_CONTAINERS.includes(container.containerId),

@@ -377,9 +377,19 @@ import '../workbench/contrib/customEditor/browser/customEditor.contribution.js';
 import '../workbench/contrib/externalUriOpener/common/externalUriOpener.contribution.js';
 
 // Extensions Management
-import { IExtensionsWorkbenchService } from '../workbench/contrib/extensions/common/extensions.js';
-import { ExtensionsWorkbenchService } from '../workbench/contrib/extensions/browser/extensionsWorkbenchService.js';
-registerSingleton(IExtensionsWorkbenchService, ExtensionsWorkbenchService, InstantiationType.Eager /* Auto updates extensions */);
+// ★ 2026-10-30（用户要求：「IDE 侧 activitybar 中的插件 sideview 改用 vscode 原生的组件和功能」）：
+//   这里从「只注册服务」升级为「装载上游整套扩展管理贡献」——
+//   容器 `workbench.view.extensions`（ctor = 原生 `ExtensionsViewPaneContainer`）+ 原生视图集
+//   （Installed / Marketplace / Recommended / Built-in / Agent Plugins …）+ 原生编辑器详情页
+//   （`ExtensionEditor`）+ 原生 `workbench.extensions.*` 命令与右键菜单。
+//   落地后果：`agentStudio.plugins`（自研三页签 `PluginsViewPane`）不再注册，见
+//   `contrib/agentStudio/browser/agentStudio.contribution.ts` 的 `NATIVE_PLUGIN_CENTER` 开关。
+//
+//   ⚠ 这两行**自己**会 `registerSingleton(IExtensionsWorkbenchService, …Eager)`（见
+//   `extensions.contribution.ts:92`）⇒ 原来这里手写的那一次已删除，保留会因
+//   "Duplicate registration" 让窗口直接起不来。
+import '../workbench/contrib/extensions/browser/extensions.contribution.js';
+import '../workbench/contrib/extensions/browser/extensionsViewlet.js';
 
 // Output View
 import '../workbench/contrib/output/browser/output.contribution.js';

@@ -40,6 +40,7 @@ import { describeManualUpgrade, IThirdPartyPlugin, pickThirdPartyPlugins, upgrad
 import { DSH_HOST_IDLE_TTL_MS, DshHostOverlayKind, hostOverlayFileName, IDshHostConfig, renderHostOverlays } from '../common/dshHostConfig.js';
 import { HOST_RUN_OWNERSHIP_HEARTBEAT_MS, hostRunOwnershipFileName } from '../common/dshHostRunOwnership.js';
 import { DSH_ARCHIFY_PLUGIN_NAME, DSH_BRIDGE_PLUGIN_NAME, DSH_EGO_PLUGIN_NAME, DSH_BROWSER_PLUGIN_NAME, DSH_CHAT_SURFACE_PLUGIN_NAME, DSH_DEFAULT_PROFILE, DSH_FOUNDATION_PLUGIN_NAME, DSH_KB_REFS_PLUGIN_NAME, DSH_SCHEDULE_BUNDLE_PLUGIN_NAME, DSH_UNREAL_PLUGIN_NAME, DSH_VOICE_BUNDLE_PLUGIN_NAME, DSH_WEB_APP_BUNDLE_NAME, DSH_WORKBENCHES_PLUGIN_NAME, IDshBundledInstallResult, IDshHostStartOptions, IDshHostStatus, IDshPluginInfo, sameStartOptions } from '../common/dshHarness.js';
+import { mergeMissingBundles, parseProfileBundles } from '../common/dshPluginActivation.js';
 import { hostLeaseBlocker, IDshHostLease } from '../common/dshHostLease.js';
 import { SANDBOX_FALLBACK_MODE, SANDBOX_FALLBACK_ROOT } from '../common/dshSandboxCompat.js';
 import { probeLabelWriteOnce } from './dshSandboxProbe.js';
@@ -393,6 +394,11 @@ export class DshHostSupervisor extends Disposable {
 	 * 拿到启动锁后的第二次接管尝试据此跳过它（否则白等一次 10s 桥超时，结论不变）。
 	 */
 	private _bridgelessLeasePid: number | undefined;
+	/**
+	 * 最近一次 `_ensureProfileBundles` 的统计（诊断用，2026-10-30）。
+	 * 握手退化成 fallback 时拿它直接说出"是不是 bundles 没登记"这件事 —— 否则要人翻好几行日志去猜。
+	 */
+	private _profileBundlesStats: { existing: number; desired: number; added: number; source: string; bridgeListed: boolean } | undefined;
 	/**
 	 * 插件自检是否已经自动重启过一次（防抖动）。插件图**健康**时复位 ⇒ 将来"另一批插件又坏掉"时
 	 * 还能再自愈一次 ✓（见 `_auditPluginGraph`）。
@@ -1210,6 +1216,19 @@ export class DshHostSupervisor extends Disposable {
 			const bridgeVersion: string | undefined = installedVersionOf(DSH_BRIDGE_PLUGIN_NAME);
 			// 收敛"必须与运行时同一模块实例"的 dsh 包——不同实例会让**实时启停永远失败**（见该方法注释）。
 			await this._dedupeSharedPackages(dsh, profile, env);
+			// ★★ 2026-10-30（外部机器 P0：**窗口开了，但界面是 dsh 原生的**，没有侧栏「主页」/没有我们的页面）：
+			//   现场 `profile/package.json` 里 `dependencies` 全在、profile 的 node_modules 里
+			//   那批 `@vssaros` 插件文件也全在，
+			//   但 **`dsh.profile.bundles` 只有 3 项**（`dsh-base` / `dsh-web-app` / voice-input）——
+			//   dsh **只加载 `bundles` 里列的包**，不在列表里的一律不组合 ⇒ 我们的插件一个都没加载
+			//   ⇒ 没有 `vssaros-bridge` ⇒ `bridge handshake did not complete; using URL-line fallback`
+			//   ⇒ 没有 chat-surface/brand ⇒ 界面就是 dsh 原生的英文「Into the Unknown」✗✗。
+			//   为什么会这样：**只有 `dsh plugin add`（pnpm 那条路）会追加 bundles**，而
+			//     · 「直装」只写 `dependencies`（见 `_writeProfileDeps`）；
+			//     · 插件早已装好时 `wants` 为空 ⇒ **连装都不装** ⇒ bundles 永远停在模板那 3 项。
+			//   ⇒ 这里**无条件**补登记：以随包种子（构建期校验过的权威清单）为准，
+			//     保留已有顺序、只追加缺的 ⇒ 幂等，不碰用户手工启停（停用=移出 bundles，我们只补**随包**那些）。
+			await this._ensureProfileBundles(profile, dsh, env, plugins, pluginProfileDir);
 			this._progress('正在启动 Host…');
 			this._throwIfStale(generation);
 
@@ -1560,6 +1579,29 @@ export class DshHostSupervisor extends Disposable {
 				? `（spawn→首行输出=${connection.timing.spawnToFirstOutputMs}ms，首行→ready=${connection.timing.firstOutputToReadyMs}ms）`
 				: '';
 			this._appendLog(`ready in ${Date.now() - t0} ms at ${connection.origin} (bridge: ${connection.hello ? 'connected' : 'fallback'})${bootSplit}`);
+			// ★ 2026-10-30（用户要求「增加日志」）：**握手成 fallback 时直接给出定性结论**。
+			//   以前只打一行 `bridge: fallback`，而它有两个完全不同的原因：
+			//     ① profile 的 `dsh.profile.bundles` 没登记我们的插件（dsh 压根没加载 `vssaros-bridge`）
+			//        ⇒ 界面会是 dsh 原生形态（没有侧栏「主页」/没有我们的页面）；
+			//     ② bundles 正常、桥插件也装了，但 Host 里插件装配失败（看 host-*.log）。
+			//   ⇒ 这里按 `_profileBundlesStats` 与已装版本当场分流，省掉"翻十几行日志 + 手工比对"。
+			if (!connection.hello) {
+				const stats = this._profileBundlesStats;
+				const bridgeInstalled = this._status.bridgePluginVersion ?? (bridgeVersion ? '已装' : '未装');
+				if (!stats) {
+					this._appendLog('⚠ bridge fallback 归因：本次没跑 profile bundles 体检（skipPluginInstall？）⇒ 无法判断是否缺登记；请看 host 日志');
+				} else if (!stats.bridgeListed) {
+					this._appendLog(`⚠ bridge fallback 归因：**profile 的 dsh.profile.bundles 里没有 ${DSH_BRIDGE_PLUGIN_NAME}**`
+						+ `（现有 ${stats.existing} 项 / 随包 ${stats.desired} 项）⇒ dsh 不会加载桥插件，界面会退回原生形态。`
+						+ '修法：重启一次让「补登记」生效，或手工把随包插件补进该列表');
+				} else if (stats.added > 0) {
+					this._appendLog(`⚠ bridge fallback 归因：本次刚补登记了 ${stats.added} 个插件（本次 Host 启动时可能还没生效）`
+						+ '⇒ 再启动一次；若仍 fallback 则看 host 日志里的插件装配错误');
+				} else {
+					this._appendLog(`⚠ bridge fallback 归因：bundles 正常（${stats.existing} 项，已含 ${DSH_BRIDGE_PLUGIN_NAME}，桥插件${bridgeInstalled}）`
+						+ '⇒ 问题在 Host 内部（插件装配 / 握手），请看同目录 host-*.log');
+				}
+			}
 
 				// ★ 2026-10-20：量「ready → mux 路由可用」这段（不阻塞 start 返回）。
 				void this._probeMuxAfterReady(connection.origin, generation);
@@ -2032,6 +2074,86 @@ export class DshHostSupervisor extends Disposable {
 				await fsp.rm(temp, { recursive: true, force: true }).catch(() => undefined);
 				this._appendLog(`${pkg}: 收敛失败（不影响启动，实时启停会退回文件级）：${String((e as Error)?.message ?? e)}`);
 			}
+		}
+	}
+
+	/**
+	 * **把随包插件补登记进 profile 的 `dsh.profile.bundles`**（2026-10-30，外部机器 P0）。
+	 *
+	 * ★ 为什么必须有这一步：dsh **只组合 `dsh.profile.bundles` 里列出的包**，不在列表里的即使
+	 *   `node_modules` 有、`dependencies` 有，也**一个都不会加载**。而真正会追加 bundles 的只有
+	 *   `dsh plugin add`（pnpm 那条路）：
+	 *     · 「直装」只写 `dependencies`（`_writeProfileDeps`）；
+	 *     · 插件早已装好时 `wants` 为空 ⇒ 连装都不装 ⇒ **bundles 永远停在模板那 3 项**。
+	 *   现场后果（`flixzhang` 那台）：没有 `vssaros-bridge` ⇒ `bridge handshake did not complete;
+	 *   using URL-line fallback`；没有 chat-surface / brand ⇒ 窗口里是 dsh 原生的英文界面 ✗✗。
+	 *
+	 * 口径：
+	 *   · **以随包种子为准**（构建期校验过的权威清单，顺序也对）；种子不可用时退回"已装的随包插件"；
+	 *   · **只追加、不删除**，保留已有顺序 ⇒ 用户手工停用（= 从 bundles 移出）不会被我们强行加回来，
+	 *     除非它本来就是随包必装项（那种情况本来就该加载 ✓）；
+	 *   · 幂等：全都在就一行日志都不打（每次启动都要跑）。
+	 */
+	private async _ensureProfileBundles(
+		profile: string,
+		dsh: IResolvedDsh,
+		env: NodeJS.ProcessEnv,
+		plugins: readonly (readonly [string, string | undefined, string])[],
+		pluginProfileDir: string,
+	): Promise<void> {
+		const pkgFile = this._profileManifest(profile, env);
+		try {
+			const json = JSON.parse(await fsp.readFile(pkgFile, 'utf8')) as { dsh?: { profile?: { bundles?: unknown } } };
+			// 期望清单：优先随包种子（权威、且顺序是构建期校验过的）
+			let desired: string[] = [];
+			let source = 'seed';
+			const seedDir = this._profileSeedDir(profile, dsh);
+			if (seedDir) {
+				try {
+					const seedPkg = JSON.parse(await fsp.readFile(join(seedDir, 'package.json'), 'utf8')) as { dsh?: { profile?: { bundles?: unknown } } };
+					const seedBundles = seedPkg.dsh?.profile?.bundles;
+					if (Array.isArray(seedBundles)) {
+						desired = seedBundles.filter((b): b is string => typeof b === 'string' && !!b.trim()).map(b => b.trim());
+					}
+				} catch { /* 种子读不动 ⇒ 走下面的"已装插件"口径 */ }
+			}
+			if (!desired.length) {
+				// 种子不可用：只用**确实装着**的随包插件（`dsh-schedule-bundle` 这类没随包分发的不会被加进来 ✗）
+				source = 'installed';
+				desired = plugins
+					.map(([name]) => name)
+					.filter(name => existsSync(join(pluginProfileDir, 'node_modules', ...name.split('/'), 'package.json')));
+			}
+			const current = parseProfileBundles(json);
+			const merged = mergeMissingBundles(json, desired);
+			// ★ 2026-10-30（用户要求「增加日志」）：**每次启动都打一行**（不只补登记时）——
+			//   现场诊断"界面是 dsh 原生形态"时，第一个要看的就是这三个数：现有 / 随包 / 缺几个。
+			//   以前只在"真的补了"时打一行，于是"bundles 已经是全的、问题在别处"这种情况完全看不出来 ✗。
+			this._profileBundlesStats = {
+				existing: current.length,
+				desired: desired.length,
+				added: merged.added.length,
+				source,
+				bridgeListed: merged.next.includes(DSH_BRIDGE_PLUGIN_NAME),
+			};
+			this._appendLog(`profile bundles: 现有 ${current.length} 项 / 随包 ${desired.length} 项（清单来源：${source}）`
+				+ ` / 本次补 ${merged.added.length} 项；bridge ${this._profileBundlesStats.bridgeListed ? '已登记' : '**未登记**'}`
+				+ `（profile: ${pluginProfileDir}）`);
+			if (!merged.changed) {
+				return;
+			}
+			json.dsh = json.dsh ?? {};
+			json.dsh.profile = json.dsh.profile ?? {};
+			json.dsh.profile.bundles = [...merged.next];
+			// 原子写：dsh 可能同时读这份 package.json（写一半被读到 ⇒ profile 解析失败）
+			const tmp = pkgFile + '.tmp-' + process.pid;
+			await fsp.writeFile(tmp, JSON.stringify(json, null, 2), 'utf8');
+			await fsp.rename(tmp, pkgFile);
+			this._appendLog(`profile bundles: 补登记 ${merged.added.length} 个插件（${merged.added.slice(0, 6).join(', ')}${merged.added.length > 6 ? ' …' : ''}）`
+				+ ' —— 它们原来"装了但没启用"，dsh 不会加载 ⇒ 界面会退回原生形态');
+		} catch (e) {
+			// 不阻断启动：真出问题时 Host 日志里仍有 `bridge: fallback` 等痕迹
+			this._appendLog('⚠ 补登记 profile bundles 失败（继续启动）：' + String((e as Error)?.message ?? e).slice(0, 200));
 		}
 	}
 

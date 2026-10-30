@@ -50,7 +50,7 @@ import { Extensions as ConfigurationMigrationExtensions, IConfigurationMigration
 import { IsSessionsWindowContext, ResourceContextKey, WorkbenchStateContext } from '../../../common/contextkeys.js';
 import { IWorkbenchContribution, IWorkbenchContributionsRegistry, registerWorkbenchContribution2, Extensions as WorkbenchExtensions, WorkbenchPhase } from '../../../common/contributions.js';
 import { EditorExtensions } from '../../../common/editor.js';
-import { IViewContainersRegistry, Extensions as ViewContainerExtensions, ViewContainerLocation } from '../../../common/views.js';
+import { IViewContainersRegistry, Extensions as ViewContainerExtensions, ViewContainerLocation, WindowEnablement } from '../../../common/views.js';
 import { DEFAULT_ACCOUNT_SIGN_IN_COMMAND } from '../../../services/accounts/browser/defaultAccount.js';
 import { IEditorService } from '../../../services/editor/common/editorService.js';
 import { EnablementState, IExtensionManagementServerService, IPublisherInfo, IWorkbenchExtensionEnablementService, IWorkbenchExtensionManagementService } from '../../../services/extensionManagement/common/extensionManagement.js';
@@ -127,6 +127,12 @@ export const VIEW_CONTAINER = Registry.as<IViewContainersRegistry>(ViewContainer
 		order: 4,
 		rejectAddedViews: true,
 		alwaysUseContainerInfo: true,
+		// ★ 2026-10-30（用户要求：「IDE 侧 activitybar 中的插件 sideview 改用 vscode 原生的组件和功能」）：
+		//   sessions 窗口（`environmentService.isSessionsWindow`）里 `isEnabled()` **只认 `Sessions | Both`**
+		//   （`viewDescriptorService.ts:348-353`），而本容器注册时没写 `windowEnablement` ⇒ 恒不可见。
+		//   要让原生扩展面板在 IDE 窗口出现，这一处必须先显式写成 `Both`；容器内的视图同样要写
+		//   （见 `extensionsViewlet.ts::ExtensionsViewletViewsContribution.registerViews` 的统一补写）。
+		windowEnablement: WindowEnablement.Both,
 	}, ViewContainerLocation.Sidebar);
 
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration)

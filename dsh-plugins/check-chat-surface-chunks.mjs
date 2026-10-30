@@ -925,6 +925,76 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 			}
 			notes.push('client.workspaces.js: 会话分页（默认条数 + 展开其余 + 当前会话必可见 + 搜索不截断）断言通过');
 		}
+		// ── ⑤-k 对齐官方「空会话怎么隐藏」（2026-10-30 分析官方 dsh 后补）──────────────────────
+		// 官方 `sessionVisible`（dsh-client-ui-workspace/lib/client.js:958-974）三条硬规则：
+		//   ① `origin === "subagent"` ⇒ 永不列出；② `blank && id !== current` ⇒ 隐藏；③ 归档三态。
+		//   而它的 `current` = `mainSessionId()` = **`retainedBy.mainView > 0` 的那条**（不是 selection store）。
+		// 我们从前：没有 ①、current 用 selection（可能是别的窗口/上次运行的残留）⇒ 两处口径会打架。
+		{
+			if (typeof t.mainViewSessionId !== 'function') {
+				problems.push('client.workspaces.js: 缺 __test.mainViewSessionId（"当前会话"必须用官方 retention 判据 ✗）');
+			} else {
+				const mvid = t.mainViewSessionId({
+					a: { retainedBy: {} },
+					b: { retainedBy: { mainView: 1, sidebarView: 2 } },
+					c: { retainedBy: { sidebarView: 1 } },
+				});
+				if (mvid !== 'b') { problems.push(`mainViewSessionId: 应取 retainedBy.mainView>0 的那条（期望 b，实际 ${mvid}）✗`); }
+				if (t.mainViewSessionId({ a: { retainedBy: {} } }) !== null) {
+					problems.push('mainViewSessionId: 没有 mainView retain 时必须返回 null（别瞎猜）✗');
+				}
+				// 优先级：mainView > official（selection 可能是别的窗口的残留）
+				const won = t.pickCurrentSessionId({ mainView: 'b', official: 'a', local: 'a', known: { a: true, b: true } });
+				if (won !== 'b') { problems.push(`pickCurrentSessionId: mainView 必须压过 official（期望 b，实际 ${won}）✗`); }
+				const fallback = t.pickCurrentSessionId({ mainView: 'zz', official: 'a', known: { a: true, b: true } });
+				if (fallback !== 'a') { problems.push(`pickCurrentSessionId: mainView 不在册时应回落 official（期望 a，实际 ${fallback}）✗`); }
+			}
+			// 子代理会话：不列出、也**不**算进"已隐藏空会话"
+			const rowsSub = t.buildSidebar({
+				workspaces: [{ workspaceId: 'w1', path: 'G:/WS/client', sessionIds: ['s1', 'sub', 'b1'] }],
+				records: [],
+				sessionsById: {
+					s1: { title: 'A', updatedAt: 300 },
+					sub: { title: '子代理', origin: 'subagent', updatedAt: 200 },
+					b1: { title: '', blank: true, updatedAt: 100 },
+				},
+				archivedIds: [],
+				currentSessionId: null,
+			});
+			const flatSub = rowsSub.filter((r) => r.kind === 'flat')[0];
+			const ids = flatSub ? flatSub.sessions.map((s) => s.id) : [];
+			if (ids.indexOf('sub') >= 0) {
+				problems.push('buildSidebar: 子代理会话（origin=subagent）必须永不列出（官方 sessionVisible 第一条）✗');
+			}
+			if (flatSub && flatSub.hiddenBlanks !== 1) {
+				problems.push(`buildSidebar: 子代理不该算进「已隐藏空会话」（期望 1 = 只有 b1，实际 ${flatSub && flatSub.hiddenBlanks}）✗`);
+			}
+			// 空会话例外：current 是空会话时必须留下（官方 `blank && id !== current` 的反映）
+			const rowsCur = t.buildSidebar({
+				workspaces: [{ workspaceId: 'w1', path: 'G:/WS/client', sessionIds: ['b1', 'b2'] }],
+				records: [],
+				sessionsById: { b1: { title: '', blank: true }, b2: { title: '', blank: true } },
+				archivedIds: [],
+				currentSessionId: 'b2',
+			});
+			const flatCur = rowsCur.filter((r) => r.kind === 'flat')[0];
+			const curIds = flatCur ? flatCur.sessions.map((s) => s.id) : [];
+			if (curIds.join(',') !== 'b2' || (flatCur && flatCur.hiddenBlanks !== 1)) {
+				problems.push(`buildSidebar: 空会话只保留 current 那条（期望列表 b2 / 隐藏 1，实际 ${curIds.join(',')} / ${flatCur && flatCur.hiddenBlanks}）✗`);
+			}
+			const code5 = String(src).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+			for (const [needle, why] of [
+				['s.origin === "subagent"', '子代理标记必须来自官方 `origin` 字段（别自己猜父会话）'],
+				['if (s.isSubagent) { continue; }', '子代理过滤必须**真的**出现在两个渲染分支里'],
+				['retainedBy.mainView', '"当前会话"必须读官方 retention（`retainedBy.mainView`）'],
+			]) {
+				if (code5.indexOf(needle) < 0) { problems.push(`client.workspaces.js: 缺「${needle}」—— ${why} ✗`); }
+			}
+			if ((code5.match(/if \(s\.isSubagent\) \{ continue; \}/g) || []).length < 2) {
+				problems.push('client.workspaces.js: `isSubagent` 过滤必须在**两个**渲染分支（分组 + 平铺）都有 ✗');
+			}
+			notes.push('client.workspaces.js: 对齐官方空会话口径（subagent 永不列 / current=mainView retain / blank 只留 current）断言通过');
+		}
 
 		// ── ⑤-i 会话行**状态灯**（2026-10-30 用户报障：「工作区内的会话 item 缺少状态灯 UI」）──
 		// 用户可见行为：一眼看出哪条会话在跑 / 哪条在等你回答。钉三件事：

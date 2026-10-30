@@ -38,7 +38,7 @@ import { ViewPaneContainer } from '../../../../workbench/browser/parts/views/vie
 import { DshHarnessSettings, IDshPluginInfo } from '../common/dshHarness.js';
 import { containersFromPlugins, DSH_MODULE_CONTAINERS, IDshModuleContainer, planModuleContainers } from '../common/dshModuleContainers.js';
 import { IDshHarnessService } from './dshHarnessService.js';
-import { AGENT_STUDIO_CODEBASE_VIEW_ID, AGENT_STUDIO_DASHBOARD_VIEW_ID, AGENT_STUDIO_DSH_IMAGEGEN_VIEW_ID, AGENT_STUDIO_DSH_MARKETPLACE_VIEW_ID, AGENT_STUDIO_DSH_PARALLEL_VIEW_ID, AGENT_STUDIO_DSH_RELAY_VIEW_ID, AGENT_STUDIO_DSH_SESSIONS_VIEW_ID, AGENT_STUDIO_DSH_STUDIO_VIEW_ID, AGENT_STUDIO_DSH_XHSNOTE_VIEW_ID, AGENT_STUDIO_INTEGRATION_VIEW_ID, AGENT_STUDIO_KB_VIEW_ID, AGENT_STUDIO_MEDIA_VIEW_ID, AGENT_STUDIO_MEMORY_VIEW_ID, AGENT_STUDIO_PRESET_AGENT_VIEW_ID, AGENT_STUDIO_SCHEDULER_VIEW_ID, AGENT_STUDIO_TASKS_VIEW_ID, AGENT_STUDIO_WORKFLOW_VIEW_ID } from '../../../common/agentStudioConstants.js';
+import { AGENT_STUDIO_CODEBASE_VIEW_ID, AGENT_STUDIO_DASHBOARD_VIEW_ID, AGENT_STUDIO_DSH_IMAGEGEN_VIEW_ID, AGENT_STUDIO_DSH_MARKETPLACE_VIEW_ID, AGENT_STUDIO_DSH_PARALLEL_VIEW_ID, AGENT_STUDIO_DSH_SESSIONS_VIEW_ID, AGENT_STUDIO_DSH_STUDIO_VIEW_ID, AGENT_STUDIO_INTEGRATION_VIEW_ID, AGENT_STUDIO_KB_VIEW_ID, AGENT_STUDIO_MEDIA_VIEW_ID, AGENT_STUDIO_MEMORY_VIEW_ID, AGENT_STUDIO_PRESET_AGENT_VIEW_ID, AGENT_STUDIO_SCHEDULER_VIEW_ID, AGENT_STUDIO_TASKS_VIEW_ID, AGENT_STUDIO_WORKFLOW_VIEW_ID } from '../../../common/agentStudioConstants.js';
 import { DynamicActivityBarContainers } from '../../agentStudio/browser/dynamicActivityBarContainers.js';
 import { DshPluginViewPane } from './dshPluginViewPane.js';
 import { DshNativeTreeViewPane } from './dshNativeTreeViewPane.js';
@@ -90,16 +90,16 @@ const MODULE_VIEW_HOSTS: Readonly<Record<string, IModuleViewHost>> = {
 	// 商城工作台（2026-10-22）：`@vssaros/dsh-marketplace` 的 `/x/marketplace/` 整页。
 	// 已知容器显式登记 ⇒ 视图 id 稳定（R1：改 id 会丢用户已存的活动栏布局）✓。
 	'vssaros.dsh.marketplace': pageHost(AGENT_STUDIO_DSH_MARKETPLACE_VIEW_ID, 'vssaros.dsh.marketplace'),
-	// 中转站工作台（2026-10-27）：`@vssaros/dsh-relay` 的 `/x/relay/` 整页（页面里 iframe 承载中转站 Web）。
-	'vssaros.dsh.relay': pageHost(AGENT_STUDIO_DSH_RELAY_VIEW_ID, 'vssaros.dsh.relay'),
+	// ★ 2026-10-30：萨罗斯中转站工作台已移除（`@vssaros/dsh-relay` 已卸载）
+	//   ⇒ 活动栏里原先的「中转站」条目（`vssaros.dsh.relay`）一并删除。
 	// ★ 2026-10-30（守卫「每个可注册容器都备了 page 宿主」抓出来的三个缺口）：parallel / studio / xhs-note
 	//   此前一直走 `moduleViewHostOf` 的**派生兜底**（`vssaros.dsh.pv.<containerId>`）—— 能用，但 id 没被显式钉住，
 	//   守卫也就看不见。这里把兜底值**原样**登记成显式条目：语义零变化（同一串 id ⇒ 已持久化的布局状态不丢），
 	//   但 id 从此是"写下来的"，派生规则将来改字也不会把它们带走。
 	'vssaros.dsh.parallel': pageHost(AGENT_STUDIO_DSH_PARALLEL_VIEW_ID, 'vssaros.dsh.parallel'),
 	'vssaros.dsh.studio': pageHost(AGENT_STUDIO_DSH_STUDIO_VIEW_ID, 'vssaros.dsh.studio'),
-	'vssaros.dsh.xhs-note': pageHost(AGENT_STUDIO_DSH_XHSNOTE_VIEW_ID, 'vssaros.dsh.xhs-note'),
-};
+	// ★ 2026-10-30（用户要求「删除小红书工作台」）：`vssaros.dsh.xhs-note` 活动栏条目已删除。
+	};
 
 /**
  * **原生宿主注册表**：清单的 `view.viewType` → 该形态在 IDE 侧用的视图 id。

@@ -123,16 +123,14 @@ window.__ModuleLoader__.load({
 			// ★ 2026-10-24：小红书笔记（创作型工作台样板，`@vssaros/dsh-xhs-note`）。
 			//   这份表同时是 **route 白名单** ⇒ 不登记 ⇒ 从主页/侧栏点「打开」会被静默拒掉（"点了没反应"）。
 			//   ⚠ 与 `vssaros-dashboard/lib/catalog.js` 的 `WORKBENCH_MODULES` 必须两处同时登记。
-			{ id: "vssaros-wb-xhs-note", name: "小红书笔记", ico: "💬", route: "/x/xhs-note/" },
+			// ★ 2026-10-30（用户要求「删除小红书工作台」）：`@vssaros/dsh-xhs-note` 已卸载 ⇒ 它的条目一并删除。
 			// ★ 2026-10-22（用户：「多 TUI 应该设计为一个工作台，在主页中显示 item」）：
 			//   并行 TUI 工作台（`@vssaros/dsh-parallel`，页面 `/x/parallel/` 是稿 A 网格）。
 			//   ⚠ 与 `vssaros-dashboard/lib/catalog.js` 的 `WORKBENCH_MODULES` **必须两处同时登记**
 			//   （这份同时是 route 白名单 ⇒ 漏了 = 主页卡片在、点「打开」被静默拒掉）✗
 			{ id: "vssaros-wb-parallel", name: "并行工作台", ico: "🖥️", route: "/x/parallel/" },
-			// ★ 2026-10-27：萨罗斯中转站工作台（`@vssaros/dsh-relay`，页面 `/x/relay/`）。
-			//   这份表同时是 **route 白名单** ⇒ 不登记 ⇒ 从主页/侧栏点「打开」被静默拒掉（"点了没反应"）。
-			//   ⚠ 与 `vssaros-dashboard/lib/catalog.js` 的 `WORKBENCH_MODULES` 必须两处同时登记。
-			{ id: "vssaros-wb-relay", name: "萨罗斯中转站", ico: "📡", route: "/x/relay/" },
+			// ★ 2026-10-30（用户要求「移除萨罗斯中转站工作台」）：`@vssaros/dsh-relay` 已卸载 ⇒
+			//   这里同步删掉它的条目（否则主页/侧栏还会出现一个点不开的「萨罗斯中转站」）。
 		];
 		// ★ 暴露给同插件的其它 chunk（`client.market.js` 的「已安装」要用它）：
 		//   本机内置的工作台**不是市场条目**（市场的目录里只有别人上架的工作台），
@@ -947,6 +945,147 @@ window.__ModuleLoader__.load({
 			 * 并给中栏加 `padding-top: STRIP_H` 让出高度 ⇒ 对话 / 工作台怎么切它都在 ✓。
 			 * ⚠ 面板里**不再**画第二条（同屏两条页签条 ✗）—— 守卫按"锚点只出现一次"钉住 ✓。
 			 */
+			/**
+			 * **hero（"探索未至之境"空会话屏）右上角的「新增窗口」入口**（2026-10-30，用户要求）。
+			 *
+			 * 为什么需要它：hero 屏里官方**没有会话动作组**（`conversation.session.header.utilities`
+			 *   整组不渲染）⇒ 那排的「新窗格」不存在 ⇒ 用户正想开一个新对话时开不了分屏 ✗。
+			 *
+			 * ⚠ **"是不是 hero"必须用官方会话绑定事实判断**：`[data-conversation-content]` 上的
+			 *   `data-conversation-session` 由 React 按 `sessionId` 渲染 ⇒ **hero 时该属性不存在**
+			 *   （React 不渲染 undefined 属性）✓。旧判据（三个"会话正在渲染"标记都不存在 ⇒ hero）
+			 *   在 hero 上**也成立不了**（hero 里那些标记照样有）⇒ 入口永远不显示 ✗✗（真机踩过）。
+			 * ⚠ 位置：overlay 层铺满整帧 ⇒ 用**相对坐标**贴到**中栏右上角**（侧栏折叠 / 窗口缩放都重算）✓。
+			 * ⚠ 只装在主栏（右侧独立格子由宿主标题栏负责，那里也不该出现"新增窗口"）；
+			 *   点击走桥 `splitChatPane`（桥 23）⇒ 同窗口内分屏一栏。
+			 */
+			function HeroSplitChip() {
+				const [show, setShow] = react.useState(false);
+				const [pos, setPos] = react.useState(null);
+				const hostRef = react.useRef(null);
+
+				// ① hero 判定（800ms 轮询；只在真正变化时 setState ⇒ 不刷渲染）
+				// ⚠⚠ 必须用官方自己的 **phase**：`ConversationRoot` 里有
+				//     `phase = settling ? "settling" : hero ? "hero" : "active"`
+				//   并渲染成根容器上的 `data-content-phase`；而
+				//     `hero = sessionId === void 0 || (shellPhase === "blank" && (openState === "open" || summaryBlank))`
+				//   ⇒ **新开的空会话**（桌面窗口开局就绑了一条空 session）也算 hero ✗ ——
+				//   所以"没有 data-conversation-session 属性"这个判据在**真机首屏**是不成立的
+				//   （会话 id 存在 ⇒ 属性存在 ⇒ 判成"有会话" ⇒ 入口永不显示，用户两次报"没显示"）✗✗。
+				react.useEffect(() => {
+					const read = () => {
+						let hero = false;
+						try {
+							const el = document.querySelector("[data-conversation-content]");
+							hero = !!el && el.getAttribute("data-content-phase") === "hero";
+						} catch { hero = false; }
+						setShow((prev) => (prev === hero ? prev : hero));
+					};
+					read();
+					const t = window.setInterval(read, 800);
+					return () => window.clearInterval(t);
+				}, []);
+
+				// ② 量中栏右上角（overlay 层铺满整帧 ⇒ 相对坐标）
+				react.useEffect(() => {
+					if (!show) { return undefined; }
+					let raf = 0;
+					const measure = () => {
+						const el = hostRef.current;
+						if (!el) { return; }
+						const host = (typeof el.closest === "function" ? el.closest("[data-shell-overlay]") : null)
+							|| document.querySelector("[data-shell-overlay]");
+						if (!host) { setPos(null); return; }
+						const hb = host.getBoundingClientRect();
+						const rightbar = document.querySelector("[data-rightbar-col]");
+						const center = rightbar ? rightbar.previousElementSibling : null;
+						const cb = center ? center.getBoundingClientRect() : null;
+						// ⚠ 让开页签条（它也是 overlay，压在聊天区顶部 32px）⇒ 落在它下面，免得盖住页签 ✓
+						const strip = document.querySelector("[data-vssaros-wb-tabstrip]");
+						const stripH = strip ? Math.round(strip.getBoundingClientRect().height) : 0;
+						// ⚠⚠ **不能压住官方的「打开侧边栏」**（2026-10-30 用户截图：右上角那个按钮被挡了）：
+						//   官方那枚带 `data-sidebar-right-expand`（收起时才有）/ `data-sidebar-right-toggle`（常驻）
+						//   ⇒ 我们的按钮贴到它**左边**，并在垂直方向与它居中对齐 ✓；
+						//   找不到官方按钮时退回"内容区右上角 + 让开页签条"。
+						const official = document.querySelector("[data-sidebar-right-expand]")
+							|| document.querySelector("[data-sidebar-right-toggle]");
+						const ob = official ? official.getBoundingClientRect() : null;
+						let next;
+						if (ob && ob.width > 0 && ob.height > 0) {
+							next = {
+								right: Math.max(8, Math.round(hb.right - ob.left) + 8),
+								top: Math.max(0, Math.round(ob.top - hb.top) + Math.round((ob.height - 28) / 2)),
+							};
+						} else if (cb && cb.width > 0) {
+							next = { right: Math.max(8, Math.round(hb.right - cb.right) + 12), top: Math.round(cb.top - hb.top) + stripH + 8 };
+						} else {
+							next = { right: 16, top: stripH + 8 };
+						}
+						setPos((prev) => (prev && prev.right === next.right && prev.top === next.top ? prev : next));
+						// ⚠ **几何自证**：把"有没有压住官方按钮"算出来写进属性 ⇒ 宿主探针可判定
+						//   （否则"没遮挡"只能靠肉眼，而我读不了截图 ✗）。
+						const chip = el.querySelector ? el.querySelector("[data-vssaros-hero-split]") : null;
+						if (chip && official) {
+							const cr = chip.getBoundingClientRect();
+							const or2 = official.getBoundingClientRect();
+							const clear = cr.width > 0 && (cr.right <= or2.left - 1 || cr.bottom <= or2.top - 1 || cr.top >= or2.bottom - 1);
+							chip.setAttribute("data-vssaros-hero-split-clear", clear ? "1" : "0");
+						}
+					};
+					measure();
+					const onResize = () => { window.cancelAnimationFrame(raf); raf = window.requestAnimationFrame(measure); };
+					window.addEventListener("resize", onResize);
+					const t = window.setInterval(measure, 1000);
+					return () => {
+						window.removeEventListener("resize", onResize);
+						window.clearInterval(t);
+						window.cancelAnimationFrame(raf);
+					};
+				}, [show]);
+
+				// ⚠ 外层容器**始终渲染**（`data-vssaros-hero-split-host`）⇒ 宿主/自测可以据此区分
+				//   "组件根本没挂载（注册/缓存问题）" 与 "挂载了但判据不成立（hero 判断错）" 两种坏法 ✓
+				return react.createElement("div", {
+					ref: hostRef,
+					"data-vssaros-hero-split-host": show ? "shown" : "hidden",
+					style: { position: "absolute", inset: 0, pointerEvents: "none", zIndex: 6 },
+				}, show ? react.createElement("button", {
+					type: "button",
+					// ⚠ 稳定锚点（e2e / 守卫按它找）：
+					"data-vssaros-hero-split": "1",
+					title: "新增一个聊天窗口（在当前窗口里分屏，不影响这个会话）",
+					"aria-label": "新增窗口",
+					onClick: () => {
+						const api = (typeof window !== "undefined" && window.vssarosDsh) || null;
+						if (api && typeof api.splitChatPane === "function") {
+							try {
+								const p = api.splitChatPane();
+								if (p && typeof p.catch === "function") { p.catch(() => undefined); }
+							} catch { /* IPC 失败只影响这一次点击 */ }
+							return;
+						}
+						try {
+							if (api && typeof api.notify === "function") {
+								api.notify("warn", "当前宿主不支持「分屏窗格」（需要页面桥 23）");
+							}
+						} catch { /* 通知失败不阻塞 */ }
+					},
+					style: {
+						position: "absolute",
+						right: (pos ? pos.right : 16) + "px",
+						top: (pos ? pos.top : 8) + "px",
+						pointerEvents: "auto",
+						display: "inline-flex", alignItems: "center", gap: 6,
+						height: 28, padding: "0 12px", borderRadius: 8,
+						cursor: "pointer", font: "inherit", fontSize: 12, lineHeight: "1",
+						whiteSpace: "nowrap",
+						color: "var(--dsw-alias-label-primary, #e7e8ea)",
+						background: "var(--dsw-alias-bg-layer-1, rgba(38,38,38,.9))",
+						border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.35))",
+					},
+				}, "＋ 新增窗口") : null);
+			}
+
 			function TabStrip() {
 				const [ver, setVer] = react.useState(0);
 				const hostRef = react.useRef(null);
@@ -1347,8 +1486,20 @@ window.__ModuleLoader__.load({
 			// 页签条 → **根级常驻槽**（不在任何 main 面板里 ⇒ 切到对话也不消失 ✓）
 			// `order` 是 list 槽的硬要求（不写 ⇒ 顺序无保证，守卫会报红）；它是覆盖层里唯一一条，
 			// 取值只要稳定即可 ✓
-			safeInject("overlay:页签条", SLOT_OVERLAY, () => safeRegister(
-				"overlay:页签条", { name: SLOT_OVERLAY, id: "vssaros-wb-tabstrip", order: 100 }, TabStrip));
+			// ★ 2026-10-30（用户截图："独立的格子不要显示会话页签"）：桌面窗口右侧的**独立格子**
+			//   （宿主 viewId 固定以 `dsh-desk-split-` 开头）只是一个聊天框 ⇒ 不画页签条 ✓；
+			//   主栏照旧有页签条。
+			const isDeskSplitPane = String((bridge && bridge.viewId) || "").indexOf("dsh-desk-split-") === 0;
+			state.wbTabStripSkipped = isDeskSplitPane;
+			if (!isDeskSplitPane) {
+				safeInject("overlay:页签条", SLOT_OVERLAY, () => safeRegister(
+					"overlay:页签条", { name: SLOT_OVERLAY, id: "vssaros-wb-tabstrip", order: 100 }, TabStrip));
+				// ★ 2026-10-30（用户："dsh 侧的聊天框初始页面中，右上角增加新增窗口按钮"）
+				//   hero（"探索未至之境"那一屏）**没有会话动作组** ⇒ 那排没有分屏入口 ⇒ 在聊天区
+				//   **右上角**补一枚；一旦进入会话就自动消失（与会话动作组那枚天然互补，不会重复）✓
+				safeInject("overlay:hero新窗格", SLOT_OVERLAY, () => safeRegister(
+					"overlay:hero新窗格", { name: SLOT_OVERLAY, id: "vssaros-hero-split", order: 101 }, HeroSplitChip));
+			}
 
 
 			// 侧栏「主页」那一行 ⇒ 页签面板（挂载即激活「主页」页签 ✓）

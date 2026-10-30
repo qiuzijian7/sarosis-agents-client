@@ -333,7 +333,7 @@ export const WORKBENCH_MODULES = [
 	{ route: '/x/studio/', name: '萨罗斯管理平台', desc: '承载 Saroasis Studio System 前端；右上角「AI 助手」开右侧 chat-surface', icon: '◱' },
 	// ★ 2026-10-24：小红书笔记（创作型工作台样板 `@vssaros/dsh-xhs-note`）。
 	//   ⚠ 与 `client.workbenchNav.js` 的 `DEFAULT_ITEMS` 必须两处同时登记（那边同时是 route 白名单）。
-	{ route: '/x/xhs-note/', name: '小红书笔记', desc: '主题与素材整理成笔记；草稿落数据目录，AI 协助可带上下文', icon: '💬' },
+	// ★ 2026-10-30（用户要求「删除小红书工作台」）：`@vssaros/dsh-xhs-note` 已卸载 ⇒ 它的卡片一并删除。
 
 	{ route: '/x/sessions/', name: '历史会话', desc: '会话分组 / 人格标记 / 指示灯', icon: '🕘' },
 	// ★ 2026-10-22（用户：「多 TUI 应该设计为一个工作台，在主页中显示 item」）：
@@ -341,11 +341,8 @@ export const WORKBENCH_MODULES = [
 	//   **必须两处同时登记**（漏一处 ⇒ 卡片在、点「打开」被 route 白名单静默拒掉 = 点了没反应 ✗，
 	//   守卫 `check-workbench-catalog.mjs` 盯着）；⚠ route 还必须与宿主 `DSH_MODULE_PAGES` 一致。
 	{ route: '/x/parallel/', name: '并行 TUI 工作台', desc: '并排编排多个并行 LLM 会话：每格一个 TUI，可观察 / 收割 / 接管', icon: '🖥' },
-	// ★ 2026-10-27：萨罗斯中转站工作台（`@vssaros/dsh-relay`，页面 `/x/relay/` =
-	//   承载 AnyDev 环境上的中转站 Web + 状态栏；本机登录 CodeBuddy provider 后自动注册成中转站节点）。
-	//   ⚠ 与 `client.workbenchNav.js` 的 `DEFAULT_ITEMS` **必须两处同时登记**（那边同时是 route 白名单
-	//   ⇒ 漏登记 = 卡片在、点「打开」被静默拒掉 = "点了没反应"✗）；route 还必须与宿主 `DSH_MODULE_PAGES` 一致。
-	{ route: '/x/relay/', name: '萨罗斯中转站', desc: '承载 AnyDev 上的中转站 Web；登录 CodeBuddy provider 后本机自动注册为节点', icon: '📡' },
+	// ★ 2026-10-30（用户要求「移除萨罗斯中转站工作台」）：`@vssaros/dsh-relay` 已卸载 ⇒
+	//   这里同步删掉它的卡片（与 `client.workbenchNav.js` 的条目必须同时改）。
 	// ★ 2026-10-28（用户：「dsh 侧增加定时任务工作台，复用原生的定时任务 UI」）：
 	//   scheduler 0.3.0 起工作台内容 = 官方原生任务管理页（`@deepseek-ai/dsh-client-ui-schedule` 的
 	//   `TaskManagerPage`），它已经是**正经工作台**（页签 + 满页渲染）⇒ 主页必须给入口。

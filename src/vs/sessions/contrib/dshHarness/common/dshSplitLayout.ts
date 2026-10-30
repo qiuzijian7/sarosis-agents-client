@@ -39,6 +39,8 @@ export interface IDshSplitDivider {
 	/** 该分隔线属于树里哪个 split 节点的第几条（拖动它就改那个节点的 sizes[index]）。 */
 	readonly path: readonly number[];
 	readonly index: number;
+	/** 该 split 节点自身的矩形（分隔条的长度 = 它在正交方向上的跨度；拖动换算比例也要用）。 */
+	readonly node: IDshSplitRect;
 }
 
 export interface IDshSplitLayout {
@@ -103,6 +105,7 @@ export function computeSplitLayout(node: DshSplitNode, rect: IDshSplitRect): IDs
 					pos: n.dir === 'h' ? r.x + offset : r.y + offset,
 					path,
 					index: i,
+					node: r,
 				});
 			}
 		});
@@ -125,22 +128,33 @@ export function removeSplitLeaf(node: DshSplitNode, viewId: string): DshSplitNod
 		return node.viewId === viewId ? undefined : node;
 	}
 	const kept: DshSplitNode[] = [];
-	for (const child of node.children) {
+	const keptSizes: number[] = [];
+	let changed = false;
+	node.children.forEach((child, i) => {
 		const next = removeSplitLeaf(child, viewId);
-		if (next) { kept.push(next); }
-	}
-	if (kept.length === node.children.length) { return node; }   // 没摘到 ⇒ 原样返回
+		if (next !== child) { changed = true; }
+		if (next) { kept.push(next); keptSizes.push(node.sizes[i] ?? 1); }
+	});
+	// ⚠ 2026-10-30 单测抓到：旧实现按"子节点个数没变"判没摘到 ⇒ 嵌套子树塌缩（个数不变）时
+	//   原样返回 ⇒ **嵌套格子里的那一格关不掉** ✗ ⇒ 改按引用判 ✓。
+	if (!changed) { return node; }
 	if (kept.length === 0) { return undefined; }
 	if (kept.length === 1) { return kept[0]; }                     // 塌缩（只剩一个 ⇒ 不需要 split）
-	return { ...node, children: kept, sizes: kept.map(() => 1) };
+	// 相邻格补位：保留其余格子的比例（不自动均分 ⇒ 用户拖出来的比例不丢）✓
+	return { ...node, children: kept, sizes: keptSizes };
 }
 
-/** 在目标叶子的某个方向旁边插入一个新叶子（社区的 before/after 语义）。 */
+/**
+ * 在目标叶子的某个方向旁边插入一个新叶子（与效果图 `insertBeside` 同款）。
+ *
+ * ⚠ **同向合并**：目标所在的 split 与插入方向相同（例如左右排里再往右插）⇒ 新叶并为**兄弟**、
+ *   **平分目标那一格**（其余格子不动）；不同向才包一层新 split ⇒ "切开一格"不会打乱别的格子 ✓。
+ */
 function insertSplitLeaf(node: DshSplitNode, targetViewId: string, newLeaf: DshSplitNode, zone: DshDropZone): DshSplitNode | undefined {
+	const dir: 'h' | 'v' = zone === 'left' || zone === 'right' ? 'h' : 'v';
+	const before = zone === 'left' || zone === 'top';
 	if (node.type === 'leaf') {
 		if (node.viewId !== targetViewId) { return undefined; }
-		const dir: 'h' | 'v' = zone === 'left' || zone === 'right' ? 'h' : 'v';
-		const before = zone === 'left' || zone === 'top';
 		return {
 			type: 'split',
 			dir,
@@ -148,13 +162,236 @@ function insertSplitLeaf(node: DshSplitNode, targetViewId: string, newLeaf: DshS
 			children: before ? [newLeaf, node] : [node, newLeaf],
 		};
 	}
-	let changed = false;
-	const children = node.children.map(child => {
+	for (let i = 0; i < node.children.length; i++) {
+		const child = node.children[i];
+		if (child.type === 'leaf' && child.viewId === targetViewId && node.dir === dir) {
+			const children = [...node.children];
+			const sizes = [...node.sizes];
+			const half = (sizes[i] ?? 1) / 2;
+			sizes[i] = half;
+			const at = before ? i : i + 1;
+			children.splice(at, 0, newLeaf);
+			sizes.splice(at, 0, half);
+			return { ...node, children, sizes };
+		}
 		const next = insertSplitLeaf(child, targetViewId, newLeaf, zone);
-		if (next) { changed = true; return next; }
-		return child;
-	});
-	return changed ? { ...node, children } : undefined;
+		if (next) {
+			const children = [...node.children];
+			children[i] = next;
+			return { ...node, children };
+		}
+	}
+	return undefined;
+}
+
+/** 在目标叶子旁边插入一个**新**叶子（新开一格；目标不存在 ⇒ undefined）。 */
+export function insertSplitLeafBeside(tree: DshSplitNode, targetViewId: string, newViewId: string, zone: DshDropZone): DshSplitNode | undefined {
+	return insertSplitLeaf(tree, targetViewId, { type: 'leaf', viewId: newViewId }, zone);
+}
+
+/** 交换两个叶子的位置（树形与比例都不变）。 */
+export function swapSplitLeaves(node: DshSplitNode, a: string, b: string): DshSplitNode {
+	if (node.type === 'leaf') {
+		return node.viewId === a ? { type: 'leaf', viewId: b } : node.viewId === b ? { type: 'leaf', viewId: a } : node;
+	}
+	return { ...node, children: node.children.map(c => swapSplitLeaves(c, a, b)) };
+}
+
+/**
+ * 把某一格停靠到**整列/整行**（菜单「移到最左（整列）」等）：摘掉它，再与其余部分组成新的根。
+ * ⚠ 宽度按"1 : 其余格数"分（停靠出来的那一格不会一下子占半边）✓。
+ */
+export function dockSplitLeaf(tree: DshSplitNode, viewId: string, edge: DshDropZone): DshSplitNode | undefined {
+	const rest = removeSplitLeaf(tree, viewId);
+	if (!rest || rest === tree) { return undefined; }
+	const n = splitLeaves(rest).length;
+	const me: DshSplitNode = { type: 'leaf', viewId };
+	const first = edge === 'left' || edge === 'top';
+	return {
+		type: 'split',
+		dir: edge === 'left' || edge === 'right' ? 'h' : 'v',
+		sizes: first ? [1, n] : [n, 1],
+		children: first ? [me, rest] : [rest, me],
+	};
+}
+
+/** 取树里某条路径上的节点（路径无效 ⇒ undefined）。 */
+export function splitNodeAt(tree: DshSplitNode, path: readonly number[]): DshSplitNode | undefined {
+	let cur: DshSplitNode | undefined = tree;
+	for (const i of path) {
+		cur = cur && cur.type === 'split' ? cur.children[i] : undefined;
+	}
+	return cur;
+}
+
+function replaceSplitNodeAt(tree: DshSplitNode, path: readonly number[], next: DshSplitNode): DshSplitNode {
+	if (path.length === 0) { return next; }
+	if (tree.type !== 'split') { return tree; }
+	const [head, ...tail] = path;
+	const children = [...tree.children];
+	children[head] = replaceSplitNodeAt(children[head], tail, next);
+	return { ...tree, children };
+}
+
+/**
+ * **拖分隔条**：按指针位置改那个 split 节点里**相邻两格**的比例（与效果图 / 社区同款夹取）。
+ *
+ * · 只改 `index` 与 `index+1` 两格（其余格子不动）；
+ * · 最小占比 `minF = max(0.04, minPx / 节点长度)`（且不超过两格合计的一半）⇒ 拖到头也不会把某格拖没 ✓。
+ * @param pointer  指针沿分隔方向的坐标（与 `nodeRect` 同一坐标系）
+ * @param nodeRect 该 split 节点的矩形（`IDshSplitDivider.node`）
+ */
+export function resizeSplitDivider(tree: DshSplitNode, path: readonly number[], index: number, pointer: number, nodeRect: IDshSplitRect, minPx = 200): DshSplitNode | undefined {
+	const node = splitNodeAt(tree, path);
+	if (!node || node.type !== 'split' || index < 0 || index >= node.children.length - 1) { return undefined; }
+	const len = node.dir === 'h' ? nodeRect.width : nodeRect.height;
+	const start = node.dir === 'h' ? nodeRect.x : nodeRect.y;
+	if (len <= 0) { return undefined; }
+	const total = node.sizes.reduce((a, b) => a + b, 0) || node.children.length;
+	const f = node.children.map((_, i) => (node.sizes[i] ?? 1) / total);
+	const offA = f.slice(0, index).reduce((a, b) => a + b, 0);
+	const pair = f[index] + f[index + 1];
+	const minF = Math.min(pair / 2, Math.max(0.04, minPx / len));
+	const a = Math.min(pair - minF, Math.max(minF, (pointer - start) / len - offA));
+	const sizes = [...f];
+	sizes[index] = a;
+	sizes[index + 1] = pair - a;
+	return replaceSplitNodeAt(tree, path, { ...node, sizes });
+}
+
+/** 把某个 split 节点的直接子格均分（双击分隔条）。 */
+export function equalizeSplitNodeAt(tree: DshSplitNode, path: readonly number[]): DshSplitNode | undefined {
+	const node = splitNodeAt(tree, path);
+	if (!node || node.type !== 'split') { return undefined; }
+	return replaceSplitNodeAt(tree, path, { ...node, sizes: node.children.map(() => 1) });
+}
+
+/** 这一格沿某方向切成两半后，每半是否还够用（不够 ⇒ 拒绝并说明，不切出窄条）。 */
+export function canSplitRect(rect: IDshSplitRect, zone: DshDropZone, minWidth = 200, minHeight = 160): boolean {
+	return zone === 'left' || zone === 'right' ? rect.width / 2 >= minWidth : rect.height / 2 >= minHeight;
+}
+
+/**
+ * 「新窗格」切哪一格（与效果图同款）：**最大**的那一格；宽就左右切、高就上下切；
+ * 首选方向放不下就换另一个方向；两个方向都放不下 ⇒ undefined（调用方明确告诉用户）✓。
+ */
+export function pickSplitTarget(rects: ReadonlyMap<string, IDshSplitRect>, minWidth = 200, minHeight = 160): { viewId: string; zone: DshDropZone } | undefined {
+	let best: string | undefined;
+	let area = -1;
+	for (const [id, r] of rects) {
+		if (r.width * r.height > area) { area = r.width * r.height; best = id; }
+	}
+	if (!best) { return undefined; }
+	const r = rects.get(best)!;
+	const pref: DshDropZone = r.width >= r.height * 1.1 ? 'right' : 'bottom';
+	const alt: DshDropZone = pref === 'right' ? 'bottom' : 'right';
+	if (canSplitRect(r, pref, minWidth, minHeight)) { return { viewId: best, zone: pref }; }
+	if (canSplitRect(r, alt, minWidth, minHeight)) { return { viewId: best, zone: alt }; }
+	return undefined;
+}
+
+/** 拖拽落点（含中央 = 交换）。 */
+export type DshDropTarget = DshDropZone | 'center';
+
+/**
+ * 与效果图同款的落点判定：边缘带 `max(48, min(w,h)*0.28)` 内 ⇒ 那一侧；**中央 ⇒ 交换**；
+ * 不在矩形内 ⇒ undefined。
+ */
+export function pickDropTarget(target: IDshSplitRect, pointerX: number, pointerY: number): DshDropTarget | undefined {
+	if (pointerX < target.x || pointerX > target.x + target.width
+		|| pointerY < target.y || pointerY > target.y + target.height) {
+		return undefined;
+	}
+	const e = Math.max(48, Math.min(target.width, target.height) * 0.28);
+	const dx = pointerX - target.x;
+	const dy = pointerY - target.y;
+	const atLeft = dx < e;
+	const atRight = dx > target.width - e;
+	const atTop = dy < e;
+	const atBottom = dy > target.height - e;
+	if (atLeft && !atRight) { return 'left'; }
+	if (atRight && !atLeft) { return 'right'; }
+	if (atTop && !atBottom) { return 'top'; }
+	if (atBottom && !atTop) { return 'bottom'; }
+	return 'center';
+}
+
+/** 落点提示框的矩形（边缘 = 半格；中央 = 整格）。 */
+export function dropHintRect(r: IDshSplitRect, zone: DshDropTarget): IDshSplitRect {
+	switch (zone) {
+		case 'left': return { x: r.x, y: r.y, width: r.width / 2, height: r.height };
+		case 'right': return { x: r.x + r.width / 2, y: r.y, width: r.width / 2, height: r.height };
+		case 'top': return { x: r.x, y: r.y, width: r.width, height: r.height / 2 };
+		case 'bottom': return { x: r.x, y: r.y + r.height / 2, width: r.width, height: r.height / 2 };
+		default: return r;
+	}
+}
+
+/** 一格的几何：外框（含标题栏）、标题栏、原生视图区。 */
+export interface IDshPaneBox {
+	readonly box: IDshSplitRect;
+	readonly head: IDshSplitRect;
+	readonly view: IDshSplitRect;
+}
+
+/** 一条分隔条的几何（落在两格之间的缝里 ⇒ DOM 才看得见、点得到）。 */
+export interface IDshDividerBar extends IDshSplitDivider {
+	readonly bar: IDshSplitRect;
+}
+
+/**
+ * 把树铺进右侧内容区：每格扣掉右/下缝隙（贴内容区边缘的那一侧不扣），顶部留标题栏；
+ * 分隔条正好落在缝里（原生视图盖在 DOM 之上 ⇒ DOM 只有落在缝里/标题栏里才可见可点）✓。
+ */
+export function computePaneGeometry(tree: DshSplitNode, content: IDshSplitRect, gap: number, headH: number): { panes: Map<string, IDshPaneBox>; dividers: IDshDividerBar[] } {
+	const { rects, dividers } = computeSplitLayout(tree, content);
+	const panes = new Map<string, IDshPaneBox>();
+	const right = content.x + content.width;
+	const bottom = content.y + content.height;
+	for (const [id, r] of rects) {
+		const w = Math.max(1, r.width - (r.x + r.width < right - 1 ? gap : 0));
+		const h = Math.max(1, r.height - (r.y + r.height < bottom - 1 ? gap : 0));
+		const box = { x: r.x, y: r.y, width: w, height: h };
+		const head = { x: r.x, y: r.y, width: w, height: Math.min(headH, h) };
+		const view = { x: r.x, y: r.y + head.height, width: w, height: Math.max(1, h - head.height) };
+		panes.set(id, { box, head, view });
+	}
+	const bars = dividers.map(d => ({
+		...d,
+		bar: d.dir === 'h'
+			? { x: d.pos - gap, y: d.node.y, width: gap, height: d.node.height }
+			: { x: d.node.x, y: d.pos - gap, width: d.node.width, height: gap },
+	}));
+	return { panes, dividers: bars };
+}
+
+/**
+ * **挖洞**：拖动时目标格的原生视图让出落点那一半（落点提示是 DOM，被原生视图盖着就看不见）。
+ * 返回视图该缩到的矩形；`center`（交换）⇒ undefined = 整格让出（视图暂时隐藏）。
+ */
+export function holeViewRect(g: IDshPaneBox, zone: DshDropTarget): IDshSplitRect | undefined {
+	const v = g.view;
+	const mid = g.box.y + g.box.height / 2;
+	switch (zone) {
+		case 'left': return { x: v.x + v.width / 2, y: v.y, width: v.width / 2, height: v.height };
+		case 'right': return { x: v.x, y: v.y, width: v.width / 2, height: v.height };
+		case 'top': return { x: v.x, y: Math.max(v.y, mid), width: v.width, height: Math.max(1, v.y + v.height - Math.max(v.y, mid)) };
+		case 'bottom': return { x: v.x, y: v.y, width: v.width, height: Math.max(1, mid - v.y) };
+		default: return undefined;
+	}
+}
+
+/**
+ * 主栏宽度 ⇒ 比例（拖主栏分隔条用；`computeMainColumnWidth` 的反函数）。
+ * 结果落在 [1/3, 2/3]（与菜单三档同一刻度）✓。
+ */
+export function ratioForMainWidth(areaWidth: number, mainWidth: number, minMain = 720, minPane = 320): number {
+	const w = Math.max(1, Math.round(areaWidth));
+	const lo = Math.min(minMain, Math.round(w * 0.75));
+	const hi = Math.max(lo, w - minPane);
+	if (hi <= lo) { return 0.5; }
+	const t = Math.min(1, Math.max(0, (mainWidth - lo) / (hi - lo)));
+	return 1 / 3 + t / 3;
 }
 
 /**
@@ -240,4 +477,64 @@ export function buildArrangedTree(leafIds: readonly string[], aspect = 1.2): Dsh
 			: { type: 'split', dir: 'h', sizes: row.map(() => 1), children: row.map(leaf) });
 	}
 	return { type: 'split', dir: 'v', sizes: rowNodes.map(() => 1), children: rowNodes };
+}
+
+/**
+ * **主栏（全高左列）宽度**（两段式布局；2026-10-30 抽成纯函数 ⇒ 可单测）。
+ *
+ * 约束：主栏是带官方三栏布局的完整客户端 ⇒ 至少 `minMain`（太窄会侧栏折叠 + 中栏黑屏）；
+ *   右侧内容区至少 `minPane`。可用区间 `[lo, hi]`：`lo = min(minMain, 0.75w)`，`hi = max(lo, w - minPane)`。
+ *
+ * ⚠ 比例不再"直接乘宽度"（旧实现 `ratio × w` 被下限夹住 ⇒ 1280 宽时 1/3 与 1/2 **都是 720**，
+ *   菜单两项效果一样 ✗）⇒ 改为把 `ratio` 映射到**可用区间**里：1/3 ⇒ lo、1/2 ⇒ 中点、2/3 ⇒ hi
+ *   ⇒ 三档永远可区分（只要区间宽度 > 0）✓。区间外的历史值（如拖出来的 0.42）按线性夹取。
+ */
+export function computeMainColumnWidth(areaWidth: number, ratio: number, hasContent: boolean, minMain = 720, minPane = 320): number {
+	const w = Math.max(1, Math.round(areaWidth));
+	if (!hasContent) { return w; }
+	const lo = Math.min(minMain, Math.round(w * 0.75));
+	const hi = Math.max(lo, w - minPane);
+	const t = Math.min(1, Math.max(0, (ratio - 1 / 3) / (2 / 3 - 1 / 3)));
+	return Math.round(lo + (hi - lo) * t);
+}
+
+/** 一个视图在窗口里的实际矩形（来自主进程 `getBounds()`）。 */
+export interface IDshPaneBounds {
+	readonly viewId: string;
+	readonly x: number;
+	readonly y: number;
+	readonly width: number;
+	readonly height: number;
+}
+
+/**
+ * **原生 bounds 健全性判定**（自测 / 守卫共用；纯函数）：返回问题列表，空 = 健康。
+ *
+ * 判的正是真机出过的三类坏布局：① 视图**互相重叠**（主栏被当成内容叶子搬到右边那次）；
+ * ② 视图**跑出窗口**；③ 视图**宽/高塌成很小**（被挤成黑条）。
+ */
+export function checkPaneBounds(panes: readonly IDshPaneBounds[], area: IDshSplitRect, minSize = 120): string[] {
+	const problems: string[] = [];
+	const tol = 2;
+	for (const p of panes) {
+		if (p.width < minSize || p.height < minSize) {
+			problems.push(`${p.viewId} 太小（${Math.round(p.width)}x${Math.round(p.height)}）`);
+		}
+		if (p.x < area.x - tol || p.y < area.y - tol
+			|| p.x + p.width > area.x + area.width + tol || p.y + p.height > area.y + area.height + tol) {
+			problems.push(`${p.viewId} 跑出窗口（x${Math.round(p.x)} y${Math.round(p.y)} w${Math.round(p.width)} h${Math.round(p.height)}）`);
+		}
+	}
+	for (let i = 0; i < panes.length; i++) {
+		for (let j = i + 1; j < panes.length; j++) {
+			const a = panes[i];
+			const b = panes[j];
+			const ox = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
+			const oy = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
+			if (ox > tol && oy > tol) {
+				problems.push(`${a.viewId} 与 ${b.viewId} 重叠（${Math.round(ox)}x${Math.round(oy)}）`);
+			}
+		}
+	}
+	return problems;
 } 

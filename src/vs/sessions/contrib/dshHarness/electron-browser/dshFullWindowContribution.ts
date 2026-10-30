@@ -26,10 +26,6 @@
  */
 
 import { getZoomFactor } from '../../../../base/browser/browser.js';
-// ★ 2026-10-29：aux（子）窗口的 JS 上下文**禁止** createElement（真机日志）：
-//   "Not allowed to create elements in child window JavaScript context. Always use the main window"
-//   ⇒ 凡是往 aux 窗口里插的 DOM 元素，**一律用主窗口的 document 建** ✓（与自绘标题条同一手法）。
-import { mainWindow } from '../../../../base/browser/window.js';
 import { $, append } from '../../../../base/browser/dom.js';
 import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
@@ -49,7 +45,12 @@ import { dshChatNewSessionId } from '../common/dshChatSession.js';
 import { DshHarnessSettings } from '../common/dshHarness.js';
 // ★ 2026-10-29（拖拽堆叠）：布局用**树**（h/v split + 权重）⇒ 能表达左右/上下混合、2×2、L 形。
 //   几何与重排是**纯函数**（common/dshSplitLayout.ts，有单测）⇒ 这里只负责"把结果摆到原生视图上"。
-import { buildArrangedTree, computeSplitLayout, moveSplitLeaf, pickDropZone, removeSplitLeaf, splitLeaves, type DshSplitNode } from '../common/dshSplitLayout.js';
+import { buildArrangedTree, canSplitRect, checkPaneBounds, computeMainColumnWidth, computePaneGeometry, dockSplitLeaf, equalizeSplitNodeAt, equalizeSplitSizes, holeViewRect, insertSplitLeafBeside, moveSplitLeaf, pickSplitTarget, ratioForMainWidth, removeSplitLeaf, resizeSplitDivider, splitLeaves, swapSplitLeaves, type DshDropTarget, type DshDropZone, type DshSplitNode, type IDshPaneBox, type IDshSplitRect } from '../common/dshSplitLayout.js';
+// ★ 2026-10-30（按已确认的效果图实现多格外壳：标题栏 / 分隔条 / 挖洞式落点 / 原生菜单 / 撤销）
+import { DESKTOP_PANE_HEAD_H, DshDesktopSplitChrome, type IDshChromePane, type IDshSplitChromeActions } from './dshDesktopSplitChrome.js';
+import type { IContextMenuItem } from '../../../../base/parts/contextmenu/common/contextmenu.js';
+// ★ 2026-10-30（运行时自测）：读环境变量 `VSSAROS_DSH_SPLIT_SELFTEST` ⇒ 开窗后自动跑一遍多格场景。
+import { process as sandboxProcess } from '../../../../base/parts/sandbox/electron-browser/globals.js';
 import { decideSessionStartRetry, SESSION_START_MAX_ATTEMPTS, sessionStartRetryDelayMs } from '../common/dshDesktopSessionStart.js';
 import { IDshHarnessService } from './dshHarnessService.js';
 
@@ -78,18 +79,6 @@ const DESKTOP_TITLEBAR_H = 29;
 const DESKTOP_SPLIT_GAP = 8;
 
 /**
- * **抓手带**的高度（px）—— 每栏顶部留出的一条可拖动区域（2026-10-29，拖拽堆叠）。
- *
- * 为什么需要它：原生 `WebContentsView` 画在 **DOM 之上** ⇒ 页面里没有"栏的外壳"可放抓手
- *   （社区 split-workspace 的 pane 是 DOM ⇒ 它们有外壳，我们没有 ✗）。
- * ⇒ 只能让每栏顶部**空出**这一条（原生视图从 `y + GRAB_H` 开始）⇒ 缝隙里露出我们的抓手带 ⇒
- *   鼠标能命中它 ⇒ 可以把这一栏拖到别处 ✓。
- *
- * ⚠ 只在**多栏**时留（单栏没有可拖的对象 ⇒ 平白少 8px 顶部不好）⇒ 见 `layout()` ✓。
- */
-const DESKTOP_PANE_GRAB_H = 10;
-
-/**
  * **主栏最小宽度**（2026-10-29 真机两次）：主栏是带官方**三栏**布局的完整客户端
  * （左侧栏 ≈236 + 中栏 + 官方右栏）⇒ 低于这个宽度时 dsh 会把侧栏折成图标条、中栏挤成 0（黑屏）。
  * 420 实测不够（截图里 520 就是黑的）⇒ 取 **720**（侧栏 + 约 480 的中栏）。
@@ -99,14 +88,18 @@ const DESKTOP_MAIN_MIN_W = 720;
 /** 右栏最少要有多少宽度（低于它就没什么可看的了 ⇒ 分屏前提示用户）✓。 */
 const DESKTOP_PANE_MIN_W = 320;
 
+/** 每格最小宽 / 高（拆分、拖分隔条都按它夹取；与效果图一致）。 */
+const DESKTOP_CELL_MIN_W = 200;
+const DESKTOP_CELL_MIN_H = 160;
+
 /**
- * 桌面窗口**最多几栏**（2026-10-29）。
- *
- * 为什么定 3：社区的 pane 树不限数量，是因为它们每个 pane 只是**同页里的一段 DOM**；
- * 我们每个 pane 是**一整个 dsh 客户端页面**（各拉一份 roster、各占一组连接与内存）⇒
- * 栏数线性放大成本 ⇒ 封顶 **3**（主栏 + 2 个右栏），再多就把窗口挤得没法用了 ✗。
+ * 右侧**最多几格**（不含主栏；2026-10-30 按已确认的效果图定为 **6**）。
+ * ⚠ 每格是一整个 dsh 客户端页面（各一份 roster / 连接 / 内存）⇒ 成本随格数线性涨 ⇒ 必须封顶。
  */
-const MAX_DESKTOP_PANES = 3;
+const MAX_DESKTOP_SPLIT_PANES = 6;
+
+/** 关闭后多久真正回收那一格的视图（这段时间内「撤销」是瞬时的；之后撤销 = 用原会话重建）。 */
+const DESKTOP_CLOSE_GRACE_MS = 30_000;
 
 /**
  * 分屏比例的**持久化键**（IDE storage，APPLICATION scope）。
@@ -115,6 +108,44 @@ const MAX_DESKTOP_PANES = 3;
  *   恢复的是**同一批会话**；我们这里的会话每次开窗都是新的 ⇒ 只继承比例即可）✓。
  */
 const SPLIT_RATIO_STORAGE_KEY = 'dsh.desktop.split.ratio.v1';
+
+/** 右侧一格的元信息（标题栏显示 + 撤销关闭时用原会话重建）。 */
+interface IDeskPaneMeta {
+	readonly title: string;
+	readonly sessionId: string;
+}
+
+/** 撤销快照：树 + 主栏比例 + 当时的右侧格子。 */
+interface IDeskSnapshot {
+	readonly tree: DshSplitNode | undefined;
+	readonly ratio: number;
+	readonly panes: readonly string[];
+}
+
+/** 一扇桌面窗口的登记（`paneViewIds[0]` 恒为主栏）。 */
+interface IDeskEntry {
+	windowId: number;
+	viewId: string;
+	sideViewId?: string;
+	splitViewId?: string;
+	paneViewIds?: string[];
+	/** 右侧格子的树（**不含主栏**：主栏是全高左列）。 */
+	tree?: DshSplitNode;
+	layout?: () => void;
+	chrome?: DshDesktopSplitChrome;
+	dom?: { readonly win: Window; readonly container: HTMLElement };
+	meta?: Map<string, IDeskPaneMeta>;
+	seq?: number;
+	maxId?: string;
+	hole?: { id: string; zone: DshDropTarget };
+	/** 当前被我们隐藏的视图（最大化 / 挖洞 / 软关闭）。 */
+	hidden?: Set<string>;
+	undo?: IDeskSnapshot[];
+	/** 软关闭中（等待回收）的格子 ⇒ 回收定时器。 */
+	closing?: Map<string, ReturnType<typeof setTimeout>>;
+	/** 一次拖动（分隔条 / 主栏宽）开始前的快照（松手时入撤销栈）。 */
+	resizeBase?: IDeskSnapshot;
+}
 
 export class DshFullWindowContribution extends Disposable {
 	static readonly ID = 'sessions.dshHarness.fullWindow';
@@ -360,270 +391,269 @@ export class DshFullWindowContribution extends Disposable {
 		}
 	}
 
-	/**
-	 * 取（或现建）某栏的**抓手带**（DOM）。
-	 *
-	 * ⚠ 原生视图盖在 DOM 之上 ⇒ 抓手带必须落在"栏顶部那条 8px 空隙"里（见 `DESKTOP_PANE_GRAB_H`）
-	 *   ⇒ 才可见、可点 ✓（与自绘标题条同一手法）。
-	 * ⚠ 左键拖 = 把这一栏**拖到别处**；右键 = 兜底菜单（移到最左/最右/关闭）✓（用户选的 A+C）。
-	 */
-	/**
-	 * 用**主窗口**的 document 造一个元素（往 aux 窗口里插的 DOM 元素都走这里）。
-	 *
-	 * ⚠⚠ 为什么不能用 `container.ownerDocument`（2026-10-29 真机日志踩过）：
-	 *   aux 是**子窗口**，它的 JS 上下文**禁止 createElement** ⇒ 直接抛
-	 *   `Not allowed to create elements in child window JavaScript context` ⇒
-	 *   抓手带 / 分隔条 / 预览框**全都建不出来**（表现为"分屏能开、但拖不动"）✗✗。
-	 *   ⇒ 一律用主窗口 document 建（自绘标题条一直这么做，所以它一直能用）✓。
-	 */
-	private _createInMainWindow(tag: string): HTMLElement | undefined {
-		try {
-			const doc = mainWindow?.document ?? (typeof document !== 'undefined' ? document : undefined);
-			if (!doc) {
-				this._log.warn('[dshHarness] DOM: 拿不到 document ⇒ 建不了元素');
-				return undefined;
-			}
-			return doc.createElement(tag);
-		} catch (err) {
-			this._log.warn('[dshHarness] DOM: 主窗口 createElement 失败：' + String((err as Error)?.message ?? err));
-			return undefined;
+	// ==== 多格（按已确认的效果图 doc/mockups/dsh-split-panes.html）==========================
+
+	private _findEntry(viewId: string): IDeskEntry | undefined {
+		for (const e of this._desktopWindows.values()) {
+			if (e.viewId === viewId || (e.paneViewIds ?? []).includes(viewId)) { return e; }
+		}
+		return undefined;
+	}
+
+	private _rightPanes(entry: IDeskEntry): string[] {
+		return (entry.paneViewIds ?? [entry.viewId]).filter(id => id !== entry.viewId);
+	}
+
+	private _snapshot(entry: IDeskEntry): IDeskSnapshot {
+		return { tree: entry.tree, ratio: this._splitRatio, panes: this._rightPanes(entry) };
+	}
+
+	private _pushUndo(entry: IDeskEntry, snap: IDeskSnapshot = this._snapshot(entry)): void {
+		const stack = entry.undo ?? (entry.undo = []);
+		stack.push(snap);
+		if (stack.length > 30) { stack.shift(); }
+	}
+
+	/** 隐藏 / 显示某一格的原生视图（带缓存 ⇒ 不重复发 IPC）。 */
+	private _setPaneVisible(entry: IDeskEntry, id: string, visible: boolean): void {
+		const hidden = entry.hidden ?? (entry.hidden = new Set());
+		if (visible && hidden.has(id)) {
+			hidden.delete(id);
+			void this._dsh.setViewVisible(id, true, false).catch(() => undefined);
+		} else if (!visible && !hidden.has(id)) {
+			hidden.add(id);
+			void this._dsh.setViewVisible(id, false).catch(() => undefined);
 		}
 	}
 
-	private _ensureGrabBar(windowId: number, container: HTMLElement, win: Window, paneId: string): HTMLElement | undefined {
-		let bars = this._grabBars.get(windowId);
-		if (!bars) {
-			bars = new Map();
-			this._grabBars.set(windowId, bars);
-		}
-		const existing = bars.get(paneId);
-		if (existing) { return existing; }
-		// ⚠ 用**主窗口** document 建（aux 子窗口禁止 createElement ⇒ 见 `_createInMainWindow`）✓
-		const el = this._createInMainWindow('div');
-		if (!el) { return undefined; }
-		try {
-			container.appendChild(el);
-		} catch (err) {
-			this._log.warn('[dshHarness] pane grab: 挂到 aux 容器失败 ⇒ 这一栏不可拖动：' + String((err as Error)?.message ?? err));
-			return undefined;
-		}
-		el.setAttribute('data-vssaros-pane-grab', paneId);
-		// ⚠⚠ `pointer-events:auto` **必须显式写**（2026-10-29 真机：aux 容器的 DOM 层默认
-		//   `pointer-events:none`（工作台层不可交互）⇒ 不写这句 ⇒ 抓手带**建得出来、看得见，
-		//   却收不到 mousedown** ⇒ 表现为"分屏能开、但拖不动"✗✗ ⇒ 自绘标题条一直写着这一句 ✓）。
-		//   同时给它一个**常驻浅底**（透明的话用户根本不知道那儿能拖）✓。
-		el.style.cssText = 'position:absolute;display:none;height:10px;cursor:grab;z-index:4;pointer-events:auto;'
-			+ 'background:var(--vscode-editorWidget-background, rgba(128,128,128,.10));'
-			+ 'border-bottom:1px solid var(--vscode-editorWidget-border, rgba(128,128,128,.22));';
-		el.title = '拖动这一栏可重排（放到别的栏的左/右/上/下）；右键这一栏有更多操作';
-		el.addEventListener('mouseenter', () => { el.style.background = 'var(--vscode-editorHoverWidget-background, rgba(128,128,128,.2))'; });
-		el.addEventListener('mouseleave', () => { el.style.background = 'transparent'; });
-		el.addEventListener('mousedown', (ev) => { this._beginPaneDrag(windowId, container, win, paneId, ev); });
-		el.addEventListener('contextmenu', (ev) => { ev.preventDefault(); this._showPaneMenu(windowId, container, win, paneId, ev); });
-		bars.set(paneId, el);
-		return el;
+	private _title(entry: IDeskEntry, id: string): string {
+		return entry.meta?.get(id)?.title ?? '会话';
 	}
 
 	/**
-	 * 开始拖动某一栏（鼠标按住抓手带 ⇒ 拖 ⇒ 落到别栏的某一边）。
-	 *
-	 * 落点判定：指针落在**哪一栏** ⇒ 按中线判方向（左/右/上/下）⇒ 拖动时画预览框 ✓。
-	 * 松手 ⇒ `moveSplitLeaf` 重排树 ⇒ 立刻重排原生视图 ✓（几何在 common 里，有单测）。
+	 * 关闭一格（**软关闭**：先藏起来、`DESKTOP_CLOSE_GRACE_MS` 后才真正回收视图）⇒ 「撤销」是瞬时的；
+	 * 会话本身**不删**（它在 Host 侧，过了宽限期撤销也能用原会话重建这一格）✓。
+	 * 相邻格补位、**不**自动重排（效果图约定：手动布局不被覆盖）✓。
 	 */
-	private _beginPaneDrag(windowId: number, container: HTMLElement, win: Window, sourcePaneId: string, _ev: MouseEvent): void {
+	private _closePane(windowId: number, paneId: string, recordUndo = true): boolean {
 		const entry = this._desktopWindows.get(windowId);
-		if (!entry?.tree) { return; }
-		let targetPaneId: string | undefined;
-		let zone: 'left' | 'right' | 'top' | 'bottom' | undefined;
-		const onMove = (e: MouseEvent) => {
-			const rects = this._lastRects.get(windowId);
-			if (!rects) { return; }
-			targetPaneId = undefined;
-			zone = undefined;
-			for (const [paneId, r] of rects) {
-				if (paneId === sourcePaneId) { continue; }
-				const z = pickDropZone(r, e.clientX, e.clientY);
-				if (z) { targetPaneId = paneId; zone = z; break; }
-			}
-			this._showDragPreview(container, rects, targetPaneId, zone);
-		};
-		const onUp = () => {
-			win.removeEventListener('mousemove', onMove);
-			win.removeEventListener('mouseup', onUp);
-			this._clearDragPreview();
-			if (!targetPaneId || !zone || !entry.tree) { return; }
-			const moved = moveSplitLeaf(entry.tree, sourcePaneId, targetPaneId, zone);
-			if (!moved) {
-				this._log.warn('[dshHarness] pane drag: 重排失败（保持原布局）');
-				return;
-			}
-			// ★ "往它已经在的那一侧拖"⇒ 树顺序不变 ⇒ 视觉上"没动"（2026-10-29 用户反馈：
-			//   "松手无法移动位置"—— 其实是把右栏往右拖，它本来就在右边）。
-			//   ⇒ 这时改成**交换**两栏（把目标往反方向插到被拖栏旁边）⇒ 用户感知"换了位置" ✓
-			if (splitLeaves(moved).join('|') === splitLeaves(entry.tree).join('|')) {
-				const reverse = zone === 'left' ? 'right' : zone === 'right' ? 'left' : zone === 'top' ? 'bottom' : 'top';
-				const swapped = moveSplitLeaf(entry.tree, targetPaneId, sourcePaneId, reverse);
-				if (swapped) {
-					entry.tree = swapped;
-					entry.layout?.();
-					this._log.info(`[dshHarness] pane drag: ${sourcePaneId} ⇄ ${targetPaneId}（同侧拖动 ⇒ 交换）`);
-					return;
-				}
-			}
-			entry.tree = moved;
-			entry.layout?.();
-			this._log.info(`[dshHarness] pane drag: ${sourcePaneId} ⇒ ${targetPaneId} 的 ${zone}`);
-		};
-		win.addEventListener('mousemove', onMove);
-		win.addEventListener('mouseup', onUp);
-	}
-
-	/** 拖拽预览框（半透明 ⇒ 告诉用户"会落到这儿"）✓。 */
-	private _showDragPreview(container: HTMLElement, rects: Map<string, { x: number; y: number; width: number; height: number }>, targetPaneId: string | undefined, zone: 'left' | 'right' | 'top' | 'bottom' | undefined): void {
-		this._clearDragPreview();
-		if (!targetPaneId || !zone) { return; }
-		const r = rects.get(targetPaneId);
-		if (!r) { return; }
-		const el = this._ensurePreviewEl(container);
-		if (!el) { return; }
-		const horizontal = zone === 'left' || zone === 'right';
-		el.style.display = 'block';
-		el.style.left = (zone === 'left' ? r.x : zone === 'right' ? r.x + r.width / 2 : r.x) + 'px';
-		el.style.top = (zone === 'top' ? r.y : zone === 'bottom' ? r.y + r.height / 2 : r.y) + 'px';
-		el.style.width = (horizontal ? r.width / 2 : r.width) + 'px';
-		el.style.height = (horizontal ? r.height : r.height / 2) + 'px';
-	}
-
-	private _ensurePreviewEl(container: HTMLElement): HTMLElement | undefined {
-		if (this._previewEl) { return this._previewEl; }
-		// ⚠ 主窗口 document 建（aux 子窗口禁 createElement ⇒ 见 `_createInMainWindow`）✓
-		const el = this._createInMainWindow('div');
-		if (!el) { return undefined; }
-		// ⚠ `position: fixed` ⇒ 坐标就是窗口坐标（与 `_lastRects` 同一坐标系 ✓）
-		el.style.cssText = 'position:fixed;display:none;z-index:9;border:2px solid var(--vscode-focusBorder, #007fd4);background:rgba(0,127,212,.18);pointer-events:none;border-radius:3px;';
-		try {
-			container.appendChild(el);
-		} catch { /* 挂不上就不显示预览（不影响拖拽本身） */ }
-		this._previewEl = el;
-		return el;
-	}
-
-	private _clearDragPreview(): void {
-		if (this._previewEl) { this._previewEl.style.display = 'none'; }
-	}
-
-	/**
-	 * 抓手带**右键菜单**（兜底 C：不能靠拖也要能重排 / 关闭）。
-	 *
-	 * 三项：移到最左 / 移到最右 / 关闭这一栏；主栏**不可关闭**（关了这扇窗就空了）⇒ 置灰 ✓。
-	 */
-	private _showPaneMenu(windowId: number, container: HTMLElement, win: Window, paneId: string, ev: MouseEvent): void {
-		const entry = this._desktopWindows.get(windowId);
-		if (!entry?.tree) { return; }
-		const leaves = splitLeaves(entry.tree);
-		const first = leaves[0];
-		const last = leaves[leaves.length - 1];
-		const isMain = paneId === entry.viewId;
-		// ⚠ 主窗口 document 建（aux 子窗口禁 createElement ⇒ 见 `_createInMainWindow`）✓
-		const menu = this._createInMainWindow('div');
-		if (!menu) { return; }
-		try {
-			container.appendChild(menu);
-		} catch { return; }
-		menu.style.cssText = `position:fixed;left:${ev.clientX}px;top:${ev.clientY}px;z-index:20;min-width:132px;padding:4px;border-radius:6px;border:1px solid var(--vscode-dropdown-border, rgba(128,128,128,.4));background:var(--vscode-dropdown-background, #252526);color:var(--vscode-dropdown-foreground, #ccc);box-shadow:0 6px 18px rgba(0,0,0,.4);font-size:12px;pointer-events:auto;`;
-		const addItem = (label: string, disabled: boolean, action: () => void) => {
-			const item = this._createInMainWindow('button');
-			if (!item) { return; }
-			item.textContent = label;
-			item.style.cssText = `display:block;width:100%;text-align:left;padding:5px 8px;border:none;background:transparent;color:inherit;font:inherit;cursor:${disabled ? 'default' : 'pointer'};opacity:${disabled ? '.45' : '1'};`;
-			item.addEventListener('click', () => {
-				menu.remove();
-				if (!disabled) { action(); }
-			});
-			menu.appendChild(item);
-		};
-		addItem('移到最左', paneId === first, () => {
-			const moved = moveSplitLeaf(entry.tree!, paneId, first, 'left');
-			if (moved) { entry.tree = moved; entry.layout?.(); }
-		});
-		addItem('移到最右', paneId === last, () => {
-			const moved = moveSplitLeaf(entry.tree!, paneId, last, 'right');
-			if (moved) { entry.tree = moved; entry.layout?.(); }
-		});
-		addItem('关闭这一栏', isMain, () => { void this._closePane(windowId, paneId); });
-		const close = () => { menu.remove(); win.removeEventListener('mousedown', close, true); };
-		win.setTimeout(() => win.addEventListener('mousedown', close, true), 0);
-	}
-
-	/** 关掉某一栏（视图回收 + 从树里摘掉 + 停巡检 + 重排）✓。 */
-	private async _closePane(windowId: number, paneId: string): Promise<void> {
-		const entry = this._desktopWindows.get(windowId);
-		if (!entry?.tree) { return; }
-		if (paneId === entry.viewId) { return; }   // 主栏不关（关了这扇窗就空了）
-		const next = removeSplitLeaf(entry.tree, paneId);
-		// ⚠ 关掉**最后一个**右栏 ⇒ 树塌缩成 undefined ⇒ 也要 dispose + 重排（主栏铺满），
-		//   不许提前 return（否则那一栏视图还在、关不掉 ✗）
-		entry.tree = next;
+		if (!entry?.tree || paneId === entry.viewId || !splitLeaves(entry.tree).includes(paneId)) { return false; }
+		if (recordUndo) { this._pushUndo(entry); }
+		entry.tree = removeSplitLeaf(entry.tree, paneId);
 		entry.paneViewIds = (entry.paneViewIds ?? []).filter(id => id !== paneId);
-		entry.splitViewId = entry.paneViewIds.length > 1 ? entry.paneViewIds[entry.paneViewIds.length - 1] : undefined;
-		void this._dsh.disposeView(paneId).catch(() => undefined);
-		const watchers = this._splitWatchers.get(windowId);
-		const watcher = watchers?.get(paneId);
-		if (watcher && watchers) { clearInterval(watcher.timer); watchers.delete(paneId); }
-		this._grabBars.get(windowId)?.delete(paneId);
+		entry.splitViewId = this._rightPanes(entry).at(-1);
+		if (entry.maxId === paneId) { entry.maxId = undefined; }
+		this._setPaneVisible(entry, paneId, false);
+		this._stopSplitWatcher(windowId, paneId);
+		const closing = entry.closing ?? (entry.closing = new Map());
+		clearTimeout(closing.get(paneId));
+		closing.set(paneId, setTimeout(() => this._disposePane(windowId, paneId), DESKTOP_CLOSE_GRACE_MS));
 		entry.layout?.();
-		this._log.info(`[dshHarness] pane close: 已关闭 ${paneId}（剩 ${entry.paneViewIds.length} 栏）`);
+		this._log.info(`[dshHarness] pane close: 已关闭 ${paneId}（剩 ${this._rightPanes(entry).length} 格；${DESKTOP_CLOSE_GRACE_MS / 1000}s 内可撤销）`);
+		if (recordUndo) { entry.chrome?.toast(`已关闭「${this._title(entry, paneId)}」· 会话仍保留`, true); }
+		return true;
 	}
 
-	private _installSplitBar(windowId: number, container: HTMLElement, win: Window): void {
-		const bars: HTMLElement[] = [];
-		for (let i = 0; i < MAX_DESKTOP_PANES - 1; i++) {
-			const bar = this._createSplitBar(windowId, container, win, i);
-			if (!bar) { break; }
-			bars.push(bar);
+	/** 真正回收一格的视图（软关闭到期 / 窗口关闭 / 自愈）。 */
+	private _disposePane(windowId: number, paneId: string): void {
+		const entry = this._desktopWindows.get(windowId);
+		if (entry) {
+			clearTimeout(entry.closing?.get(paneId));
+			entry.closing?.delete(paneId);
+			entry.hidden?.delete(paneId);
+			if (entry.tree && splitLeaves(entry.tree).includes(paneId)) { entry.tree = removeSplitLeaf(entry.tree, paneId); }
+			entry.paneViewIds = (entry.paneViewIds ?? []).filter(id => id !== paneId);
+			if (entry.maxId === paneId) { entry.maxId = undefined; }
 		}
-		this._splitBars.set(windowId, bars);
+		this._stopSplitWatcher(windowId, paneId);
+		void this._dsh.disposeView(paneId).catch(() => undefined);
 	}
 
-	/** 建一条缝（DOM）；失败返回 undefined（并**如实记日志**）✓。 */
-	private _createSplitBar(windowId: number, container: HTMLElement, win: Window, index: number): HTMLElement | undefined {
-		// ⚠ 用**主窗口** document 建（aux 子窗口禁止 createElement ⇒ 见 `_createInMainWindow`）✓
-		const bar = this._createInMainWindow('div');
-		if (!bar) {
-			this._log.warn('[dshHarness] split bar: 建不出来 ⇒ 不装分隔条（分屏仍可用，只是不能拖动）');
-			return undefined;
+	/** 撤销：回到上一个快照（软关闭中的格子瞬时恢复；已回收的用原会话重建）。 */
+	private async _undo(windowId: number): Promise<void> {
+		const entry = this._desktopWindows.get(windowId);
+		const snap = entry?.undo?.pop();
+		if (!entry || !snap) { entry?.chrome?.toast('没有可撤销的操作', false); return; }
+		const now = new Set(this._rightPanes(entry));
+		const want = new Set(snap.panes);
+		for (const id of now) {
+			if (!want.has(id)) { this._disposePane(windowId, id); }
 		}
-		try {
-			container.appendChild(bar);
-		} catch (err) {
-			this._log.warn('[dshHarness] split bar: 挂到 aux 容器失败 ⇒ 不装分隔条（分屏仍可用，只是不能拖动）：' + String((err as Error)?.message ?? err));
-			return undefined;
+		for (const id of want) {
+			if (now.has(id)) { continue; }
+			const pending = entry.closing?.get(id);
+			if (pending !== undefined) {
+				clearTimeout(pending);
+				entry.closing!.delete(id);
+			} else {
+				const meta = entry.meta?.get(id);
+				if (!meta) { continue; }
+				await this._dsh.createView(id, windowId, 'chat', meta.sessionId, undefined, undefined, true, true);
+				(entry.hidden ?? (entry.hidden = new Set())).add(id);
+			}
+			entry.paneViewIds = [...(entry.paneViewIds ?? [entry.viewId]), id];
+			this._startSplitWatcher(windowId, id);
 		}
-		bar.setAttribute('data-vssaros-splitbar', String(index + 1));
-		// ⚠ `pointer-events:auto` 同样**必须显式写**（aux 的 DOM 层默认 pointer-events:none ⇒
-		//   不写就收不到 mousedown ⇒ 分隔条拖不动）✓（与自绘标题条同一口径）。
-		bar.style.cssText = 'position:absolute;top:0;bottom:0;width:8px;display:none;cursor:col-resize;z-index:3;pointer-events:auto;background:var(--vscode-editorWidget-background, rgba(128,128,128,.10));';
+		entry.tree = snap.tree;
+		entry.splitViewId = this._rightPanes(entry).at(-1);
+		entry.maxId = undefined;
+		if (this._splitRatio !== snap.ratio) { this._splitRatio = snap.ratio; this._persistSplitRatio(); }
+		entry.layout?.();
+		this._log.info('[dshHarness] pane undo: 已撤销上一步');
+		entry.chrome?.toast('已撤销', false);
+	}
 
-		let dragging = false;
-		const onMove = (ev: MouseEvent) => {
-			if (!dragging) { return; }
-			// ⚠⚠ 分隔条拖动**暂禁**（2026-10-29）：两段式布局落地后它的旧语义（改 `_splitRatio`）
-			//   会把主栏拖没（真机截图：主栏塌成一条折叠侧栏 + 黑底）✗。
-			//   正确语义 = 按 divider 的 path 改**树里相邻两栏的 sizes**（社区 min 夹取公式），下轮接。
-			//   ⇒ 比例先走「⋯」菜单（ratio33/50/67，已持久化 ✓）。
-			void index;
-			void ev;
+	private _movePane(windowId: number, sourceId: string, targetId: string, zone: DshDropTarget): void {
+		const entry = this._desktopWindows.get(windowId);
+		if (!entry?.tree) { return; }
+		const next = zone === 'center' ? swapSplitLeaves(entry.tree, sourceId, targetId) : moveSplitLeaf(entry.tree, sourceId, targetId, zone);
+		if (!next) { this._log.warn('[dshHarness] pane drag: 重排失败（保持原布局）'); return; }
+		this._pushUndo(entry);
+		entry.tree = next;
+		entry.maxId = undefined;
+		entry.layout?.();
+		const where = zone === 'center' ? '交换位置' : `的${({ left: '左侧', right: '右侧', top: '上方', bottom: '下方' } as const)[zone]}`;
+		this._log.info(`[dshHarness] pane drag: ${sourceId} ⇒ ${targetId} ${zone}`);
+		entry.chrome?.toast(zone === 'center' ? `已与「${this._title(entry, targetId)}」交换位置` : `已移到「${this._title(entry, targetId)}」${where}`, true);
+	}
+
+	private _toggleMax(windowId: number, id: string): void {
+		const entry = this._desktopWindows.get(windowId);
+		if (!entry) { return; }
+		entry.maxId = entry.maxId === id ? undefined : id;
+		entry.layout?.();
+		this._log.info(`[dshHarness] pane ${entry.maxId ? 'maximize' : 'restore'}: ${id}`);
+	}
+
+	private _dockPane(windowId: number, id: string, edge: DshDropZone): void {
+		const entry = this._desktopWindows.get(windowId);
+		const next = entry?.tree ? dockSplitLeaf(entry.tree, id, edge) : undefined;
+		if (!entry || !next) { return; }
+		this._pushUndo(entry);
+		entry.tree = next;
+		entry.maxId = undefined;
+		entry.layout?.();
+		entry.chrome?.toast(`已移到${({ left: '最左（整列）', right: '最右（整列）', top: '最上（整行）', bottom: '最下（整行）' } as const)[edge]}`, true);
+	}
+
+	private _arrange(windowId: number): void {
+		const entry = this._desktopWindows.get(windowId);
+		if (!entry?.tree) { return; }
+		this._pushUndo(entry);
+		entry.tree = buildArrangedTree(splitLeaves(entry.tree), this._contentAspect(windowId));
+		entry.maxId = undefined;
+		entry.layout?.();
+		entry.chrome?.toast('已自动排列', true);
+	}
+
+	private _equalizeAll(windowId: number): void {
+		const entry = this._desktopWindows.get(windowId);
+		if (!entry?.tree) { return; }
+		this._pushUndo(entry);
+		entry.tree = equalizeSplitSizes(entry.tree);
+		entry.layout?.();
+	}
+
+	private _closeMany(windowId: number, keep: string | undefined): void {
+		const entry = this._desktopWindows.get(windowId);
+		if (!entry?.tree) { return; }
+		const ids = splitLeaves(entry.tree).filter(id => id !== keep);
+		if (ids.length === 0) { return; }
+		this._pushUndo(entry);
+		for (const id of ids) { this._closePane(windowId, id, false); }
+		entry.chrome?.toast(keep ? '已关闭其他格 · 会话仍保留' : '已关闭全部窗格 · 会话仍保留', true);
+	}
+
+	/** 某一格的右键菜单（Electron 原生菜单 ⇒ 画在所有原生视图之上）。 */
+	private _paneMenuItems(windowId: number, id: string): IContextMenuItem[] {
+		const entry = this._desktopWindows.get(windowId);
+		const n = entry?.tree ? splitLeaves(entry.tree).length : 0;
+		const full = n >= MAX_DESKTOP_SPLIT_PANES;
+		const sep: IContextMenuItem = { type: 'separator' };
+		return [
+			{ label: '向右拆分', enabled: !full, click: () => { void this._splitFrom(windowId, id, 'right'); } },
+			{ label: '向下拆分', enabled: !full, click: () => { void this._splitFrom(windowId, id, 'bottom'); } },
+			{ label: entry?.maxId === id ? '还原' : '最大化', click: () => this._toggleMax(windowId, id) },
+			sep,
+			{ label: '移到最左（整列）', enabled: n >= 2, click: () => this._dockPane(windowId, id, 'left') },
+			{ label: '移到最右（整列）', enabled: n >= 2, click: () => this._dockPane(windowId, id, 'right') },
+			{ label: '移到最上（整行）', enabled: n >= 2, click: () => this._dockPane(windowId, id, 'top') },
+			{ label: '移到最下（整行）', enabled: n >= 2, click: () => this._dockPane(windowId, id, 'bottom') },
+			sep,
+			{ label: '平均分配所有格', enabled: n >= 2, click: () => this._equalizeAll(windowId) },
+			{ label: '自动排列', enabled: n >= 2, click: () => this._arrange(windowId) },
+			sep,
+			{ label: '关闭其他格', enabled: n >= 2, click: () => this._closeMany(windowId, id) },
+			{ label: '关闭这一格', click: () => { this._closePane(windowId, id); } },
+		];
+	}
+
+	private _splitFrom(windowId: number, id: string, zone: DshDropZone): Promise<boolean> {
+		const entry = this._desktopWindows.get(windowId);
+		return entry ? this._ensureSplitPane(entry.viewId, { target: id, zone }) : Promise.resolve(false);
+	}
+
+	/** 外壳（DOM 标题栏 / 分隔条）的回调 ⇒ 落到树与视图上。 */
+	private _chromeActions(windowId: number): IDshSplitChromeActions {
+		const entryOf = () => this._desktopWindows.get(windowId);
+		return {
+			move: (s, t, z) => this._movePane(windowId, s, t, z),
+			close: id => { this._closePane(windowId, id); },
+			split: (id, z) => { void this._splitFrom(windowId, id, z); },
+			toggleMax: id => this._toggleMax(windowId, id),
+			resizeDivider: (d, pointer, commit) => {
+				const entry = entryOf();
+				if (!entry?.tree) { return; }
+				entry.resizeBase ??= this._snapshot(entry);
+				const next = resizeSplitDivider(entry.tree, d.path, d.index, pointer, d.node, d.dir === 'h' ? DESKTOP_CELL_MIN_W : DESKTOP_CELL_MIN_H);
+				if (next) { entry.tree = next; entry.layout?.(); }
+				if (commit) {
+					this._pushUndo(entry, entry.resizeBase);
+					entry.resizeBase = undefined;
+					this._log.info(`[dshHarness] pane resize: ${d.dir === 'h' ? '左右' : '上下'}分隔条 ⇒ ${pointer}`);
+				}
+			},
+			equalizeDivider: d => {
+				const entry = entryOf();
+				const next = entry?.tree ? equalizeSplitNodeAt(entry.tree, d.path) : undefined;
+				if (!entry || !next) { return; }
+				this._pushUndo(entry);
+				entry.tree = next;
+				entry.layout?.();
+			},
+			resizeMain: (mainWidth, commit) => {
+				const entry = entryOf();
+				const area = this._lastAreas.get(windowId);
+				if (!entry || !area) { return; }
+				entry.resizeBase ??= this._snapshot(entry);
+				this._splitRatio = ratioForMainWidth(area.width, mainWidth, DESKTOP_MAIN_MIN_W, DESKTOP_PANE_MIN_W);
+				entry.layout?.();
+				if (commit) {
+					this._persistSplitRatio();
+					this._pushUndo(entry, entry.resizeBase);
+					entry.resizeBase = undefined;
+					this._log.info(`[dshHarness] main resize: 比例 ${this._splitRatio.toFixed(3)}`);
+				}
+			},
+			resetMain: () => {
+				const entry = entryOf();
+				if (!entry) { return; }
+				this._pushUndo(entry);
+				this._splitRatio = 0.5;
+				this._persistSplitRatio();
+				entry.layout?.();
+			},
+			hole: h => {
+				const entry = entryOf();
+				if (!entry) { return; }
+				entry.hole = h;
+				entry.layout?.();
+			},
+			menuItems: id => this._paneMenuItems(windowId, id),
+			undo: () => { void this._undo(windowId); },
+			log: m => this._log.info(m),
 		};
-		const onUp = () => { dragging = false; };
-		bar.addEventListener('mousedown', (ev) => {
-			dragging = true;
-			ev.preventDefault();
-		});
-		win.addEventListener('mousemove', onMove);
-		win.addEventListener('mouseup', onUp);
-		return bar;
 	}
-
 	/**
 	 * 在**当前这扇桌面窗口**里分屏出一栏新聊天（2026-10-29）。
 	 *
@@ -643,52 +673,54 @@ export class DshFullWindowContribution extends Disposable {
 	 * ⚠ 为什么不是拖拽：aux 窗口的 DOM 层**收不到鼠标事件**（真机：DOM 抓手带能建、能看见，
 	 *   但 `mousedown` 从不触发）⇒ 拖拽在这条路上做不到 ⇒ 交互只能放页面里（页面在原生视图内）✓。
 	 */
+	/**
+	 * 页面菜单（主栏「布局 ▾」等，经桥 `paneAction`）⇒ 落到某扇窗口的格子上。
+	 * ⚠ 右侧每格自己的操作在宿主画的**标题栏**里（不经桥）；这里只处理页面发来的那几项 ✓。
+	 */
 	private async _paneActionByView(viewId: string, action: DshPaneAction): Promise<boolean> {
-		let entry: { windowId: number; viewId: string; splitViewId?: string; paneViewIds?: string[]; tree?: DshSplitNode; layout?: () => void } | undefined;
-		for (const e of this._desktopWindows.values()) {
-			if (e.viewId === viewId || (e.paneViewIds ?? []).includes(viewId)) { entry = e; break; }
-		}
-		if (!entry?.tree) {
+		const entry = this._findEntry(viewId);
+		if (!entry) {
 			this._log.warn('[dshHarness] pane action: 找不到该视图所属的桌面窗口');
 			return false;
 		}
-		if (action === 'close') {
-			if (viewId === entry.viewId) { return false; }   // 主栏不关（关了这扇窗就空了）
-			await this._closePane(entry.windowId, viewId);
-			return true;
+		const w = entry.windowId;
+		this._log.info(`[dshHarness] pane action: ${viewId} ⇒ ${action}`);
+		switch (action) {
+			case 'ratio33': case 'ratio50': case 'ratio67':
+				this._pushUndo(entry);
+				this._splitRatio = action === 'ratio33' ? 1 / 3 : action === 'ratio50' ? 1 / 2 : 2 / 3;
+				this._persistSplitRatio();
+				entry.layout?.();
+				return true;
+			case 'arrange': this._arrange(w); return !!entry.tree;
+			case 'equalize': this._equalizeAll(w); return !!entry.tree;
+			case 'closeAll': this._closeMany(w, undefined); return true;
+			case 'close': return viewId !== entry.viewId && this._closePane(w, viewId);
+			case 'moveLeft': case 'moveRight': case 'moveTop': case 'moveBottom': {
+				if (viewId === entry.viewId) { return false; }
+				const edge = action === 'moveLeft' ? 'left' : action === 'moveRight' ? 'right' : action === 'moveTop' ? 'top' : 'bottom';
+				this._dockPane(w, viewId, edge);
+				return true;
+			}
 		}
-		// 比例（分隔条拖不动 ⇒ 走菜单）：两段式布局 ⇒ 比例 = **主栏（左列）占宽**
-		//   （菜单文案「左栏 1/3 / 左右各半 / 左栏 2/3」与之一致 ✓）；有右栏在就能调 ✓
-		if (action === 'ratio33' || action === 'ratio50' || action === 'ratio67') {
-			this._splitRatio = action === 'ratio33' ? 1 / 3 : action === 'ratio50' ? 1 / 2 : 2 / 3;
-			this._persistSplitRatio();
-			entry.layout?.();
-			return true;
-		}
-		const leaves = splitLeaves(entry.tree);
-		if (leaves.length < 2) { return false; }
-		// 目标 = 最左/最上 ⇒ 第一个叶子；最右/最下 ⇒ 最后一个叶子 ✓
-		const target = action === 'moveLeft' || action === 'moveTop' ? leaves[0] : leaves[leaves.length - 1];
-		const zone = action === 'moveLeft' ? 'left' : action === 'moveRight' ? 'right' : action === 'moveTop' ? 'top' : 'bottom';
-		const moved = moveSplitLeaf(entry.tree, viewId, target, zone);
-		if (!moved) { return false; }
-		entry.tree = moved;
-		entry.layout?.();
-		this._log.info(`[dshHarness] pane action: ${viewId} ⇒ ${action}（目标 ${target}）`);
-		return true;
 	}
 
-	private async _ensureSplitPane(viewId: string): Promise<boolean> {
-		let entry: { windowId: number; viewId: string; splitViewId?: string; paneViewIds?: string[]; tree?: DshSplitNode; layout?: () => void } | undefined;
-		for (const e of this._desktopWindows.values()) {
-			if (e.viewId === viewId || (e.paneViewIds ?? []).includes(viewId)) { entry = e; break; }
-		}
+	/**
+	 * 在这扇桌面窗口的右侧**新开一格**（新会话、chat-only、独立分区）。
+	 *
+	 * · 不指定位置（主栏「新窗格」）⇒ 切开**最大**的那一格（宽就左右切、高就上下切，放不下就换方向）；
+	 * · 指定位置（某格标题栏「向右/向下拆分」）⇒ 切开那一格；
+	 * · 放不下 / 已满 6 格 ⇒ **明确告诉用户**，不切出窄条、也不偷偷换绑别的格子 ✓（与效果图一致）。
+	 * · **不**自动重排已有格子（手动布局不被覆盖）✓。
+	 */
+	private async _ensureSplitPane(viewId: string, at?: { target: string; zone: DshDropZone }): Promise<boolean> {
+		const entry = this._findEntry(viewId);
 		if (!entry) {
 			this._log.warn('[dshHarness] split pane: 找不到该视图所属的桌面窗口 ⇒ 放弃');
 			return false;
 		}
 		// ⚠ **并发重入守卫**（2026-10-29 真机：一次点击打出两条"已分屏"日志、右栏 id 还相同）：
-		//   两次调用都在 `await createView` 期间 ⇒ 都看到 panes.length === 1 ⇒ 都去新建 ✗
+		//   两次调用都在 `await createView` 期间 ⇒ 都看到同一份旧状态 ⇒ 都去新建 ✗
 		//   ⇒ 同一扇窗口 800ms 内只接受一次分屏请求（顺带防手抖双击）✓
 		const now = Date.now();
 		if (now - (this._splitStartedAt.get(entry.windowId) ?? 0) < 800) {
@@ -696,52 +728,70 @@ export class DshFullWindowContribution extends Disposable {
 			return false;
 		}
 		this._splitStartedAt.set(entry.windowId, now);
-		const panes = entry.paneViewIds ?? [entry.viewId];
-		// ① 已有右栏 ⇒ 换绑**最后一栏**到一条新会话（用户连续点 = 连续开新对话，而不是叠一堆视图）✓
-		if (panes.length > 1) {
-			const last = panes[panes.length - 1];
-			if (panes.length >= MAX_DESKTOP_PANES) {
-				this._notifications.warn(`dsh 桌面窗口：最多 ${MAX_DESKTOP_PANES} 栏（每个窗格是一整个客户端页面，再多会互相拖慢）。这一栏已换成新会话。`);
-			}
-			const fresh = await this._ensurePopoutSessionId(entry.windowId, undefined, `R${Date.now().toString(36)}`);
-			if (!fresh) {
-				this._log.warn('[dshHarness] split pane: 新会话没起来 ⇒ 该栏保持原样');
-				return false;
-			}
-			await this._dsh.rebindSession(last, fresh)
-				.catch(err => this._log.warn('[dshHarness] split pane: 换绑新会话失败', err));
-			return true;
+		const say = (msg: string) => {
+			this._log.info('[dshHarness] split pane: ' + msg);
+			if (entry.chrome) { entry.chrome.toast(msg, false); } else { this._notifications.info(msg); }
+		};
+		if (this._rightPanes(entry).length >= MAX_DESKTOP_SPLIT_PANES) {
+			say(`最多 ${MAX_DESKTOP_SPLIT_PANES} 格（每格都是一个完整的聊天客户端）`);
+			return false;
 		}
-		// ② 还没有右栏 ⇒ 建一个（chat-only：只要对话区）
-		const sessionId = await this._ensurePopoutSessionId(entry.windowId, undefined, 'R');
+		// 落点：先算好再建视图（放不下就别白建一个会话）
+		let place: { target: string; zone: DshDropZone } | undefined;
+		if (entry.tree) {
+			const rects = this._lastRects.get(entry.windowId) ?? new Map();
+			if (at) {
+				const r = rects.get(at.target);
+				if (r && !entry.maxId && !canSplitRect(r, at.zone, DESKTOP_CELL_MIN_W, DESKTOP_CELL_MIN_H)) {
+					say(at.zone === 'right' ? '这一格太窄，放不下左右两格' : '这一格太矮，放不下上下两格');
+					return false;
+				}
+				place = at;
+			} else {
+				const pick = pickSplitTarget(rects, DESKTOP_CELL_MIN_W, DESKTOP_CELL_MIN_H);
+				if (!pick) {
+					say('右侧空间不够再切一格了：先把主栏调窄，或关掉一格');
+					return false;
+				}
+				place = { target: pick.viewId, zone: pick.zone };
+			}
+		}
+		const before = this._snapshot(entry);
+		const seq = (entry.seq ?? 0) + 1;
+		entry.seq = seq;
+		// 会话后缀按**序号**错开（R / R2 / R3…，单调递增）⇒ 关掉再开也不会与现存格子撞同一会话 ✓
+		const suffix = seq === 1 ? 'R' : `R${seq}`;
+		const sessionId = await this._ensurePopoutSessionId(entry.windowId, undefined, suffix);
 		if (!sessionId) {
-			this._log.warn('[dshHarness] split pane: 新会话没起来 ⇒ 不加分栏');
+			say('新会话没起来，没有加格子');
 			return false;
 		}
 		const splitViewId = `dsh-desk-split-w${entry.windowId}-${Date.now().toString(36)}`;
 		// 第 7 参 `overrideChatOnlyUi = true` ⇒ 右栏**只要对话区**（官方侧栏/右栏被裁掉 ⇒ 不重复侧栏）；
 		// 末参 `isolatedPool = true` ⇒ 右栏独占一个网络分区（不与左栏抢那 6 条连接）✓
 		await this._dsh.createView(splitViewId, entry.windowId, 'chat', sessionId, undefined, undefined, true, true);
+		(entry.meta ?? (entry.meta = new Map())).set(splitViewId, { title: `新会话 ${seq}`, sessionId });
+		entry.paneViewIds = [...(entry.paneViewIds ?? [entry.viewId]), splitViewId];
 		entry.splitViewId = splitViewId;
-		entry.paneViewIds = [...panes, splitViewId];
-		// ★ 2026-10-29（布局树 + 自动分格）：先追到最右，再按 **settleAuto** 重排成网格
-		//   （复刻 split-workspace：2=左右、3=L 形、4=2×2、≥5 网格；**主栏恒在第一位** ✓）
-		const newLeaf: DshSplitNode = { type: 'leaf', viewId: splitViewId };
-		const tree = entry.tree;
-		if (!tree) {
-			entry.tree = newLeaf;
-		} else if (tree.type === 'split') {
-			entry.tree = { ...tree, sizes: [...tree.sizes.map(() => 1), 1], children: [...tree.children, newLeaf] };
-		} else {
-			entry.tree = { type: 'split', dir: 'h', sizes: [1, 1], children: [tree, newLeaf] };
-		}
-		entry.tree = buildArrangedTree(splitLeaves(entry.tree));
-		entry.layout?.();          // 重排成两栏（分隔条也在这时露出来）✓
+		entry.tree = !entry.tree || !place
+			? { type: 'leaf', viewId: splitViewId }
+			: insertSplitLeafBeside(entry.tree, place.target, splitViewId, place.zone) ?? insertSplitLeafBeside(entry.tree, splitLeaves(entry.tree).at(-1)!, splitViewId, 'right')!;
+		entry.maxId = undefined;
+		this._pushUndo(entry, before);
+		(entry.hidden ?? (entry.hidden = new Set())).add(splitViewId);   // 新视图建出来是隐藏的 ⇒ 交给 layout 显示
+		entry.layout?.();
 		await this._dsh.setViewVisible(splitViewId, true, true).catch(() => undefined);
-		// 启动存活巡检（20s 一次）⇒ 右栏崩了/被回收了 ⇒ 收掉它（见 `_checkSplitPane`）✓
+		entry.hidden?.delete(splitViewId);
+		// 启动存活巡检（20s 一次）⇒ 那一格崩了/被回收了 ⇒ 收掉它（见 `_checkSplitPane`）✓
 		this._startSplitWatcher(entry.windowId, splitViewId);
-		this._log.info(`[dshHarness] split pane: 窗口 ${entry.windowId} 已分屏（右栏 ${splitViewId} / 会话 ${sessionId}）`);
+		this._log.info(`[dshHarness] split pane: 窗口 ${entry.windowId} 已分屏（右栏 ${splitViewId} / 会话 ${sessionId}${place ? ` / 切开 ${place.target} ${place.zone}` : ''}）`);
 		return true;
+	}
+
+	private _stopSplitWatcher(windowId: number, viewId: string): void {
+		const watchers = this._splitWatchers.get(windowId);
+		const w = watchers?.get(viewId);
+		if (w && watchers) { clearInterval(w.timer); watchers.delete(viewId); }
 	}
 
 	/** 给某个右栏起一个存活巡检（20s 一次；每栏一个）✓。 */
@@ -779,7 +829,7 @@ export class DshFullWindowContribution extends Disposable {
 		const views = await this._dsh.listViews().catch(() => undefined);
 		if (!views) { return; }                                        // 查不到就下轮再说
 		if (!views.some(v => v.viewId === splitViewId)) {
-			this._dropSplitPane(windowId, '右栏视图已被回收');
+			this._dropSplitPane(windowId, splitViewId, '那一格的视图已被回收');
 			return;
 		}
 		const alive = await this._dsh.waitViewSelector(splitViewId, '[data-composer-card]', 200).catch(() => false);
@@ -789,40 +839,28 @@ export class DshFullWindowContribution extends Disposable {
 			return;
 		}
 		if (!watcher.sawComposer) { return; }   // 还没出现过 composer ⇒ 可能仍在加载
+		if (entry.hidden?.has(splitViewId)) { return; }   // 被我们藏着（最大化其它格 / 挖洞）⇒ 不算坏
 		watcher.misses++;
 		if (watcher.misses >= 3) {
-			this._dropSplitPane(windowId, `右栏连续 ${watcher.misses} 次无响应`);
+			this._dropSplitPane(windowId, splitViewId, `那一格连续 ${watcher.misses} 次无响应`);
 		}
 	}
 
 	/**
-	 * 收掉**最后一栏**（自愈用）：dispose 视图 + 清登记 + 清巡检 + 重排 ✓。
+	 * 收掉**出问题的那一格**（自愈用）：dispose 视图 + 清登记 + 清巡检 + 重排 ✓。
 	 *
-	 * ⚠ 用户视角 = 那一栏消失（还有别的栏就留在那儿，没有就回到单栏）⇒ **可见的**自愈。
+	 * ⚠ 2026-10-30 修：旧实现收的是"最后一栏"而不是出问题的那一格（多格时会误杀好格子）✗。
+	 * ⚠ 用户视角 = 那一格消失（其余格子补位、不重排）⇒ **可见的**自愈 + 通知。
 	 */
-	private _dropSplitPane(windowId: number, reason: string): void {
+	private _dropSplitPane(windowId: number, paneId: string, reason: string): void {
 		const entry = this._desktopWindows.get(windowId);
-		if (!entry) { return; }
-		const panes = entry.paneViewIds ?? [entry.viewId];
-		if (panes.length <= 1) { return; }          // 只有主栏 ⇒ 没有可收的
-		const dropId = panes[panes.length - 1];
-		// 清巡检（这一栏的定时器）
-		const watchers = this._splitWatchers.get(windowId);
-		const watcher = watchers?.get(dropId);
-		if (watcher && watchers) {
-			clearInterval(watcher.timer);
-			watchers.delete(dropId);
-		}
-		// 摘登记（`splitViewId` 始终指"最后一栏"）✓
-		entry.paneViewIds = panes.slice(0, -1);
-		entry.splitViewId = entry.paneViewIds.length > 1 ? entry.paneViewIds[entry.paneViewIds.length - 1] : undefined;
-		void this._dsh.disposeView(dropId).catch(() => undefined);
-		// ★ settleAuto：关栏后自动回网格（split-workspace 同纪律：只在 add/close 时重排）✓
-		if (entry.tree) { entry.tree = buildArrangedTree(splitLeaves(entry.tree)); }
-		entry.layout?.();     // 重排（分隔条随之隐藏/补位）✓
-		this._log.warn(`[dshHarness] split pane: ${reason} ⇒ 已收掉那一栏（剩 ${entry.paneViewIds.length} 栏）`);
-		// ★ 2026-10-29：弹一条通知 ⇒ 用户知道右栏去哪了（否则只是"凭空消失"✗）。
-		this._notifications.warn(`dsh 桌面窗口：有一栏异常已收掉（${reason}）。若要再来一栏，点会话头右侧的「新窗格」。`);
+		if (!entry || !this._rightPanes(entry).includes(paneId)) { return; }
+		this._disposePane(windowId, paneId);
+		entry.splitViewId = this._rightPanes(entry).at(-1);
+		entry.layout?.();
+		this._log.warn(`[dshHarness] split pane: ${reason} ⇒ 已收掉那一格（剩 ${this._rightPanes(entry).length} 格）`);
+		// ★ 2026-10-29：弹一条通知 ⇒ 用户知道那一格去哪了（否则只是"凭空消失"✗）。
+		this._notifications.warn(`dsh 桌面窗口：有一格异常已收掉（${reason}）。若要再来一格，点会话头右侧的「新窗格」。`);
 	}
 
 	private async _quit(reason: string): Promise<void> {
@@ -844,33 +882,16 @@ export class DshFullWindowContribution extends Disposable {
 	 * ⚠ **复用语义保留**：默认（`newWindow` 缺省）仍是**聚焦已开着的窗口**、不新开
 	 *   （那是 2026-10-17 修「点 agent 条目弹出一叠透明窗口」的定稿）⇒ 只有显式 `newWindow` 才另开一扇 ✓。
 	 */
-	private readonly _desktopWindows = new Map<number, { windowId: number; viewId: string; sideViewId?: string; splitViewId?: string; paneViewIds?: string[]; tree?: DshSplitNode; layout?: () => void }>();
+	private readonly _desktopWindows = new Map<number, IDeskEntry>();
 
 	/**
-	 * **左右分屏**时右栏占的宽度比例（0.2 ~ 0.8，0.5 = 各半）。
+	 * **主栏宽度比例**（1/3 ~ 2/3 映射到主栏可用区间，见 `computeMainColumnWidth`）。
 	 *
-	 * 用户拖动中间的分隔条时改它（`_installSplitBar`）⇒ 立即重排两个原生视图 ✓。
-	 */
-	/**
-	 * **左右分屏**时右栏占的宽度比例（0.2 ~ 0.8，0.5 = 各半）。
-	 *
-	 * 用户拖动中间的分隔条时改它（`_installSplitBar`）⇒ 立即重排两个原生视图 ✓。
-	 *
-	 * ★ 2026-10-29（3 栏 + 持久化）：**两栏**时用它；**三栏及以上一律等分**
-	 *   （多缝拖动会把比例算成一团乱麻 ⇒ 只在两栏时开放拖动）✓。
-	 *   比例**持久化在 IDE storage**（键 `dsh.desktop.split.ratio.v1`）⇒ 下次开窗沿用 ✓
-	 *   （⚠ 只存比例、不存栏数：栏绑的是**新会话**，跨重启恢复没有意义 —— 社区能恢复是因为它们
-	 *   恢复的是**同一批会话**，我们这里的会话每次开窗都是新的 ⇒ 只继承比例即可 ✓）。
+	 * 拖主栏右侧的分隔条 / 主栏「布局 ▾」菜单改它 ⇒ 立即重排 ✓。
+	 * 比例**持久化在 IDE storage**（键 `dsh.desktop.split.ratio.v1`）⇒ 下次开窗沿用 ✓
+	 * （⚠ 只存比例、不存格子：格子绑的是**新会话**，跨重启恢复没有意义）。
 	 */
 	private _splitRatio = 0.5;
-
-	/**
-	 * 各扇桌面窗口的**分隔条**元素（键 = windowId）。
-	 *
-	 * ⚠ 分隔条是 **DOM**，而原生视图盖在 DOM 之上 ⇒ 只有落在两栏之间的缝隙里才看得见
-	 *   （位置由 `layout()` 写，宽度 = `DESKTOP_SPLIT_GAP`）✓。
-	 */
-	private readonly _splitBars = new Map<number, HTMLElement[]>();
 
 	/**
 	 * 右栏的**存活巡检**状态（键 = windowId）。
@@ -881,18 +902,8 @@ export class DshFullWindowContribution extends Disposable {
 	 */
 	private readonly _splitWatchers = new Map<number, Map<string, { timer: ReturnType<typeof setInterval>; sawComposer: boolean; misses: number }>>();
 
-	/**
-	 * 每栏的**抓手带**（DOM；键 = windowId → paneId）。
-	 *
-	 * ⚠ 原生视图盖在 DOM 之上 ⇒ 抓手带必须落在"栏顶部那 8px 空隙"里才可见、可点 ✓。
-	 */
-	private readonly _grabBars = new Map<number, Map<string, HTMLElement>>();
-
-	/** 最近一次布局算出的每栏矩形（拖拽时判定"落在哪栏、哪个方向"用）✓。 */
-	private readonly _lastRects = new Map<number, Map<string, { x: number; y: number; width: number; height: number }>>();
-
-	/** 拖拽过程中的**预览框**（DOM；一次只有一个）✓。 */
-	private _previewEl: HTMLElement | undefined;
+	/** 最近一次布局算出的每格外框（「新窗格」挑哪一格切、拆分前判放不放得下）✓。 */
+	private readonly _lastRects = new Map<number, Map<string, IDshSplitRect>>();
 
 	/**
 	 * 每扇窗口**上一次发起分屏**的时间（键 = windowId）。
@@ -901,6 +912,213 @@ export class DshFullWindowContribution extends Disposable {
 	 *   两次调用都在 `await createView` 期间 ⇒ 都看到"还没有右栏"⇒ 都去新建 ✗。
 	 */
 	private readonly _splitStartedAt = new Map<number, number>();
+
+	/** 每扇窗口最近一次布局的可用区域（视图坐标系；自测判越界用）✓。 */
+	private readonly _lastAreas = new Map<number, { x: number; y: number; width: number; height: number }>();
+
+	/**
+	 * 右侧内容区的**宽高比**（自动分格用；2026-10-30 自测抓到）。
+	 *
+	 * ⚠ 两段式布局下内容区通常**又窄又高**（1280 宽窗口：463×801）⇒ 用默认 1.2 会把 2 个右栏排成
+	 *   左右各 ~230px（太窄没法用）✗ ⇒ 必须按真实内容区算 ⇒ 2 栏变上下 ✓。
+	 */
+	private _contentAspect(windowId: number): number {
+		const a = this._lastAreas.get(windowId);
+		if (!a || a.height < 1) { return 1.2; }
+		const mainW = computeMainColumnWidth(a.width, this._splitRatio, true, DESKTOP_MAIN_MIN_W, DESKTOP_PANE_MIN_W);
+		return Math.max(0.1, (a.width - mainW - DESKTOP_SPLIT_GAP) / a.height);
+	}
+
+	/**
+	 * **多格运行时自测**（2026-10-30；环境变量 `VSSAROS_DSH_SPLIT_SELFTEST=1` 时开窗后自动跑）。
+	 *
+	 * 为什么在宿主里跑而不是外部 CDP 脚本：本机启动路径下 `--remote-debugging-port` 不生效，
+	 * 而且 agent 读不了截图 ⇒ 只能让**宿主自己**驱动场景、用**原生 `getBounds()`** 判定、写日志 ✓。
+	 * 每步一行 `[dshHarness] selftest: PASS|FAIL <步骤> …`，末行 `selftest: DONE <通过>/<总数>`。
+	 */
+	private async _runSplitSelfTest(windowId: number): Promise<void> {
+		const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+		const entry = this._desktopWindows.get(windowId);
+		const chrome = entry?.chrome;
+		const dom = entry?.dom;
+		if (!entry || !chrome || !dom) { return; }
+		const mainId = entry.viewId;
+		const doc = dom.container.ownerDocument;
+		let pass = 0;
+		let total = 0;
+		const ok = (name: string, cond: boolean, detail = '') => {
+			total++;
+			if (cond) { pass++; }
+			this._log.info(`[dshHarness] selftest: ${cond ? 'PASS' : 'FAIL'} ${name}${detail ? ' :: ' + detail : ''}`);
+		};
+		const zoomOf = () => getZoomFactor(dom.win);
+		/** 当前**可见**的原生视图矩形（CSS 像素；主进程给的是设备像素 ⇒ 除以 zoom）。 */
+		const views = async () => {
+			await sleep(700);   // layoutView / setViewVisible 是异步 IPC ⇒ 等它落地再读
+			const z = zoomOf();
+			const all = await this._dsh.listViews().catch(() => []);
+			const ids = new Set(entry.paneViewIds ?? [mainId]);
+			return all.filter(v => ids.has(v.viewId) && v.nativeVisible)
+				.map(v => ({ viewId: v.viewId, x: v.bounds.x / z, y: v.bounds.y / z, width: v.bounds.width / z, height: v.bounds.height / z }));
+		};
+		const right = () => (entry.tree ? splitLeaves(entry.tree) : []);
+		const box = (id: string) => this._lastRects.get(windowId)?.get(id);
+		const center = (el: HTMLElement) => { const r = el.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; };
+		const fire = (target: EventTarget, type: string, x: number, y: number) => target.dispatchEvent(new MouseEvent(type, {
+			bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0, buttons: type === 'mouseup' || type === 'click' || type === 'dblclick' ? 0 : 1,
+		}));
+		const click = (el: HTMLElement | undefined) => { if (el) { const c = center(el); fire(el, 'mousedown', c.x, c.y); fire(el, 'mouseup', c.x, c.y); fire(el, 'click', c.x, c.y); } };
+		/** 走真实的 DOM 输入路径：在 el 上按下 ⇒ 窗口上分步移动 ⇒ 松开。 */
+		const drag = async (el: HTMLElement, x: number, y: number, beforeUp?: () => void) => {
+			const r = el.getBoundingClientRect();
+			const sx = r.left + Math.min(40, r.width / 3);
+			const sy = r.top + r.height / 2;
+			fire(el, 'mousedown', sx, sy);
+			for (let i = 1; i <= 8; i++) { fire(dom.win, 'mousemove', sx + (x - sx) * i / 8, sy + (y - sy) * i / 8); await sleep(15); }
+			beforeUp?.();
+			fire(dom.win, 'mouseup', x, y);
+			await sleep(60);
+		};
+		/**
+		 * **点得到吗**：元素中心的命中测试必须落在它自己身上（pointer-events / 层级对），
+		 * 且该点上方**没有任何可见原生视图**（原生视图盖在 DOM 之上 ⇒ 盖住了就点不到）✓。
+		 */
+		const reachable = (el: HTMLElement | undefined, vs: { viewId: string; x: number; y: number; width: number; height: number }[]) => {
+			if (!el) { return 'missing'; }
+			const c = center(el);
+			const hit = doc.elementFromPoint(c.x, c.y);
+			if (!hit || (hit !== el && !el.contains(hit))) { return `命中的是 ${hit?.tagName ?? 'null'}`; }
+			const cover = vs.find(v => c.x > v.x && c.x < v.x + v.width && c.y > v.y && c.y < v.y + v.height);
+			return cover ? `被原生视图 ${cover.viewId.slice(-6)} 盖住` : '';
+		};
+		const savedRatio = this._splitRatio;
+		try {
+			this._log.info('[dshHarness] selftest: START（走 DOM 输入路径）');
+			await sleep(2500);
+			let vs = await views();
+			ok('1 格：主栏铺满', vs.length === 1 && Math.abs(vs[0].width - (this._lastAreas.get(windowId)?.width ?? 0)) <= 2);
+
+			// 「新窗格」⇒ 与页面按钮同一个宿主入口（页面桥 splitChatPane ⇒ _ensureSplitPane）
+			await this._ensureSplitPane(mainId); await sleep(900);
+			await this._ensureSplitPane(mainId); await sleep(900);
+			const [A, B] = right();
+			vs = await views();
+			ok('新窗格 ×2 ⇒ 右侧 2 格', right().length === 2 && vs.length === 3, right().join(','));
+			const area = this._lastAreas.get(windowId)!;
+			ok('原生视图互不重叠、都在窗口内', checkPaneBounds(vs, area, 100).length === 0, checkPaneBounds(vs, area, 100).join('; '));
+			ok('主栏 ≥ 720（带官方三栏布局，不会黑屏）', (vs.find(v => v.viewId === mainId)?.width ?? 0) >= 719);
+
+			const reach: string[] = [];
+			for (const id of right()) {
+				for (const act of ['close', 'split-right', 'split-down']) {
+					const why = reachable(chrome.buttonOf(id, act), vs);
+					if (why) { reach.push(`${id.slice(-6)}.${act}: ${why}`); }
+				}
+				const head = chrome.headOf(id);
+				const why = head ? reachable(head.firstElementChild as HTMLElement, vs) : 'missing';
+				if (why) { reach.push(`${id.slice(-6)}.head: ${why}`); }
+			}
+			for (const d of chrome.dividerEls) { const why = reachable(d, vs); if (why) { reach.push(`divider: ${why}`); } }
+			{ const why = reachable(chrome.mainDividerEl, vs); if (why) { reach.push(`mainDivider: ${why}`); } }
+			ok('标题栏 / ✕ / 拆分按钮 / 分隔条 都点得到（命中测试 + 不被原生视图盖住）', reach.length === 0, reach.join('; '));
+
+			// 拖动标题栏：B ⇒ A 的左边缘（放不下就应拒绝）
+			const ra = box(A)!;
+			const order0 = right().join(',');
+			await drag(chrome.headOf(B)!, ra.x + 12, ra.y + ra.height / 2);
+			if (canSplitRect(ra, 'left', DESKTOP_CELL_MIN_W, DESKTOP_CELL_MIN_H)) {
+				ok('拖 B 标题栏到 A 左边缘 ⇒ B 在 A 左侧', (box(B)?.x ?? 0) < (box(A)?.x ?? 0), right().join(','));
+			} else {
+				ok('A 太窄 ⇒ 拖到它左边缘被拒绝（不切出窄条）', right().join(',') === order0);
+			}
+			const o1 = right().join(',');
+			const rb = box(B)!;
+			await drag(chrome.headOf(A)!, rb.x + rb.width / 2, rb.y + rb.height / 2);
+			ok('拖 A 到 B 中央 ⇒ 交换位置', right().join(',') === o1.split(',').reverse().join(','), `${o1} → ${right().join(',')}`);
+
+			// 分隔条
+			const div = chrome.dividerEls[0];
+			const dm = div ? chrome.dividerOf(div) : undefined;
+			if (div && dm) {
+				const horiz = dm.dir === 'h';
+				const first = right()[0];
+				const dim = () => { const r = box(first)!; return horiz ? r.width : r.height; };
+				const s0 = dim();
+				const c = center(div);
+				await drag(div, horiz ? c.x - 40 : c.x, horiz ? c.y : c.y - 40);
+				const s1 = dim();
+				ok(`拖${horiz ? '左右' : '上下'}分隔条 −40 ⇒ 前一格缩小约 40`, Math.abs((s0 - s1) - 40) <= 12,
+					`${Math.round(s0)} → ${Math.round(s1)}（cursor=${div.style.cursor} bar=${Math.round(dm.bar.x)},${Math.round(dm.bar.y)} ${Math.round(dm.bar.width)}x${Math.round(dm.bar.height)}）`);
+			} else {
+				ok('2 格之间有分隔条', false);
+			}
+
+			// 主栏分隔条：拖到最左 ⇒ 下限；双击 ⇒ 复位
+			const md = chrome.mainDividerEl!;
+			await drag(md, 0, center(md).y);
+			vs = await views();
+			ok('主栏分隔条拖到最左 ⇒ 主栏 = 下限 720', Math.abs((vs.find(v => v.viewId === mainId)?.width ?? 0) - Math.min(DESKTOP_MAIN_MIN_W, Math.round(area.width * 0.75))) <= 2);
+			fire(md, 'dblclick', center(md).x, center(md).y);
+			await sleep(200);
+
+			// Esc 取消 / 拖到主栏拒绝
+			const o2 = JSON.stringify(entry.tree);
+			const rb2 = box(right()[1])!;
+			await drag(chrome.headOf(right()[0])!, rb2.x + 10, rb2.y + rb2.height / 2, () => dom.win.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+			ok('拖动中按 Esc ⇒ 取消、布局不变', JSON.stringify(entry.tree) === o2 && !entry.hole);
+			await drag(chrome.headOf(right()[0])!, area.x + 200, area.y + 200);
+			ok('拖到主栏上 ⇒ 拒绝、布局不变', JSON.stringify(entry.tree) === o2);
+
+			// 关闭 + 撤销
+			const victim = right()[0];
+			click(chrome.buttonOf(victim, 'close'));
+			vs = await views();
+			const only = right()[0];
+			ok('点 ✕ ⇒ 剩 1 格并铺满右侧、被关的那格不可见', right().length === 1 && !vs.some(v => v.viewId === victim)
+				&& Math.abs((box(only)?.width ?? 0) - (area.width - (vs.find(v => v.viewId === mainId)?.width ?? 0) - DESKTOP_SPLIT_GAP)) <= 3);
+			click(chrome.undoButton);
+			vs = await views();
+			ok('点标题条「撤销」⇒ 那一格回来且可见', right().includes(victim) && vs.some(v => v.viewId === victim), right().join(','));
+
+			// 向下拆分（最高那一格）
+			const tallest = right().reduce((m, id) => ((box(id)?.height ?? 0) > (box(m)?.height ?? 0) ? id : m));
+			const canDown = canSplitRect(box(tallest)!, 'bottom', DESKTOP_CELL_MIN_W, DESKTOP_CELL_MIN_H);
+			const n0 = right().length;
+			click(chrome.buttonOf(tallest, 'split-down'));
+			// 新开一格要先起会话再建视图（真机 1~4s）⇒ 轮询等它就绪，别用固定延时 ✓
+			for (let i = 0; i < 40 && right().length === n0; i++) { await sleep(250); }
+			await sleep(400);
+			const C = right().find(id => id !== A && id !== B);
+			if (canDown) {
+				ok('点「向下拆分」⇒ 新格在它正下方', !!C && Math.abs((box(C)?.x ?? -1) - (box(tallest)?.x ?? -2)) < 2 && (box(C)?.y ?? 0) > (box(tallest)?.y ?? 0));
+			} else {
+				ok('空间不够 ⇒「向下拆分」被拒绝', !C);
+			}
+			vs = await views();
+			ok(`${right().length} 格互不重叠`, checkPaneBounds(vs, area, 100).length === 0, checkPaneBounds(vs, area, 100).join('; '));
+
+			// 最大化 / 还原（双击标题栏）
+			const m = right()[0];
+			fire(chrome.headOf(m)!, 'dblclick', center(chrome.headOf(m)!).x, center(chrome.headOf(m)!).y);
+			vs = await views();
+			ok('双击标题栏 ⇒ 最大化（其余格隐藏）', entry.maxId === m && vs.filter(v => v.viewId !== mainId).length === 1);
+			fire(chrome.headOf(m)!, 'dblclick', center(chrome.headOf(m)!).x, center(chrome.headOf(m)!).y);
+			vs = await views();
+			ok('再双击 ⇒ 还原', !entry.maxId && vs.length === 1 + right().length);
+
+			// 全部关掉
+			for (const id of [...right()]) { click(chrome.buttonOf(id, 'close')); await sleep(80); }
+			vs = await views();
+			ok('逐个点 ✕ ⇒ 主栏回到铺满', right().length === 0 && vs.length === 1 && Math.abs(vs[0].width - area.width) <= 2);
+		} catch (err) {
+			ok('自测异常', false, String((err as Error)?.message ?? err));
+		}
+		this._splitRatio = savedRatio;
+		this._persistSplitRatio();
+		entry.undo = [];
+		entry.layout?.();
+		this._log.info(`[dshHarness] selftest: DONE ${pass}/${total}`);
+	}
 
 	/**
 	 * 给桌面窗口铺一条**自绘标题条**，返回它的高度（2026-10-23，起因见 `_open` 里那段说明）。
@@ -1088,99 +1306,76 @@ export class DshFullWindowContribution extends Disposable {
 		 *   ⚠ 每次都做"矩形没变就不发"的防抖 ⇒ 自愈不会刷 IPC ✓
 		 */
 		let lastLayoutKey = '';
+		// ★ 2026-10-30：多格外壳（DOM 标题栏 / 分隔条 / 挖洞式落点 / 原生菜单 / 标题条撤销），按效果图实现
+		const chrome = new DshDesktopSplitChrome(win, container, this._chromeActions(windowId));
 		const layout = () => {
 			const rect = container.getBoundingClientRect();
 			if (rect.width < 1 || rect.height < 1) { return; }
 			const zoom = getZoomFactor(win);
 			const entry = this._desktopWindows.get(windowId);
-			// ★ 2026-10-29（两段式布局，修"侧栏被隔断"）：**主栏 = 全高左列**（它的官方侧栏/页签条
-			//   是它页面的一部分 ⇒ 上下分屏时若主栏只占上半，侧栏就被切到上方 ✗ —— 用户截图实证）。
-			//   ⇒ 改成 VS Code 式：主栏固定全高左列（宽 = `_splitRatio`），**右栏们的树只占右侧内容区**，
-			//   在内容区内自由左右/上下分格 ✓（树里从此只有右栏 ⇒ 主栏天然不可被移动/关闭 ✓）。
+			// ★ 两段式布局：**主栏 = 全高左列**（官方侧栏/页签条是它页面的一部分 ⇒ 不许被上下切开）；
+			//   右侧格子们的树只占右侧内容区，在区内自由左右/上下分格（主栏不在树里 ⇒ 不可移动/关闭）✓。
 			const content: DshSplitNode | undefined = entry?.tree;
-			const contentLeaves = content ? splitLeaves(content) : [];
-			const key = [Math.round(rect.left), Math.round(rect.top), Math.round(rect.width), Math.round(rect.height), zoom, contentLeaves.join('|'), JSON.stringify(content ?? null), this._splitRatio].join(',');
-			if (key === lastLayoutKey) { return; }   // 矩形没变 ⇒ 不重发（防抖）
+			const leaves = content ? splitLeaves(content) : [];
+			const maxId = entry?.maxId && leaves.includes(entry.maxId) ? entry.maxId : undefined;
+			const hole = entry?.hole && leaves.includes(entry.hole.id) ? entry.hole : undefined;
+			const key = [Math.round(rect.left), Math.round(rect.top), Math.round(rect.width), Math.round(rect.height), zoom,
+				JSON.stringify(content ?? null), this._splitRatio, maxId ?? '', hole ? `${hole.id}:${hole.zone}` : ''].join(',');
+			if (key === lastLayoutKey) { return; }   // 什么都没变 ⇒ 不重发（防抖）
 			lastLayoutKey = key;
 			// 让出自绘标题条的高度（原生视图盖在 DOM 上，不留位就把它遮住 ✗）
 			const area = { x: rect.left, y: rect.top + titleBarH, width: rect.width, height: Math.max(1, rect.height - titleBarH) };
-			const bars = this._splitBars.get(windowId) ?? [];
-			const grabs = this._grabBars.get(windowId) ?? new Map<string, HTMLElement>();
-			// 主栏：全高左列
-			// ⚠ **最小宽度 720px**（2026-10-29 两张真机截图实证，420 不够）：主栏是**带官方三栏布局**
-			//   的完整客户端（左侧栏 236 + 中栏 + 官方右栏）⇒ 压到 520 时侧栏折叠成图标条、中栏被挤成 0
-			//   （整块黑）✗ ⇒ 下限按"侧栏 + 可用的中栏"给到 **720**；上限 75% ⇒ 右栏至少有 1/4 ✓。
-			const mainW = contentLeaves.length > 0
-				? Math.max(DESKTOP_MAIN_MIN_W, Math.min(Math.round(area.width * 0.75), Math.round(area.width * this._splitRatio)))
-				: Math.round(area.width);
-			// ⚠ 窗口本身不够宽时**不要硬分**：主栏 720 + 右栏最少 320 ⇒ 需要 ≥1048 才排得开。
-			//   排不开就**明确告诉用户**（而不是让 dsh 挤成黑屏 ✗）。
-			if (contentLeaves.length > 0 && area.width < DESKTOP_MAIN_MIN_W + DESKTOP_PANE_MIN_W) {
-				this._log.warn(`[dshHarness] split pane: 窗口只有 ${Math.round(area.width)}px 宽 < ${DESKTOP_MAIN_MIN_W + DESKTOP_PANE_MIN_W}px ⇒ 主栏会被挤坏（请拉宽窗口，或用「⋯」把左栏调到 2/3）`);
-			}
+			this._lastAreas.set(windowId, area);
+			// ⚠ 主栏最小 720（带官方三栏布局，压窄会侧栏折叠 + 中栏黑屏）；比例映射到可用区间（纯函数，有单测）
+			const mainW = computeMainColumnWidth(area.width, this._splitRatio, leaves.length > 0, DESKTOP_MAIN_MIN_W, DESKTOP_PANE_MIN_W);
 			void this._dsh.layoutView(chatViewId, {
 				windowId, x: area.x, y: area.y, width: mainW, height: area.height, zoomFactor: zoom,
 			});
-			// ★ 自检（2026-10-29，真机"主栏只剩左侧一条 + 其余黑"）：把**每一栏的 bounds 与 zoom 落日志**。
-			//   现场需要区分三种可能：① 视图宽度被算小；② zoom 被放大（页面内容 > 视图 ⇒ 只看到左上角）；
-			//   ③ 页面自己渲染异常。只看截图分不出，日志能 ✓（每次布局变化打一次，不刷屏）。
-			this._log.info(`[dshHarness] layout: win=${Math.round(area.width)}x${Math.round(area.height)} zoom=${zoom} panes=${1 + contentLeaves.length} main=x${Math.round(area.x)} w${mainW} h${Math.round(area.height)} content=${contentLeaves.length ? `x${Math.round(area.x + mainW + DESKTOP_SPLIT_GAP)} w${Math.max(1, Math.round(area.width - mainW - DESKTOP_SPLIT_GAP))}` : '(none)'}`);
-			const hideAll = () => {
-				for (const bar of bars) { bar.style.display = 'none'; }
-				for (const grab of grabs.values()) { grab.style.display = 'none'; }
-			};
-			if (contentLeaves.length === 0) {
-				// 只有主栏 ⇒ 铺满，隐藏分隔条/抓手
+			const main = { x: area.x, y: area.y, width: mainW, height: area.height };
+			const origin = { x: rect.left, y: rect.top };
+			if (!entry || !content || leaves.length === 0) {
 				this._lastRects.delete(windowId);
-				hideAll();
+				chrome.update({ origin, zoom, main, mainDivider: undefined, panes: [], dividers: [], maxId: undefined, count: 0, maxCount: MAX_DESKTOP_SPLIT_PANES, narrowTip: undefined });
 				return;
 			}
-			{
-				// 右栏们的树（右侧内容区内自由分格；每栏顶部留抓手带 + 右侧留 gap）
-				const contentArea = { x: area.x + mainW + DESKTOP_SPLIT_GAP, y: area.y, width: Math.max(1, area.width - mainW - DESKTOP_SPLIT_GAP), height: area.height };
-				const { rects, dividers } = computeSplitLayout(content!, contentArea);
-				this._lastRects.set(windowId, new Map(rects));
-				contentLeaves.forEach((paneId, i) => {
-					const r = rects.get(paneId);
-					if (!r) { return; }
-					const isLast = i === contentLeaves.length - 1;
-					const width = Math.max(1, r.width - (isLast ? 0 : DESKTOP_SPLIT_GAP));
-					void this._dsh.layoutView(paneId, {
-						windowId, x: r.x, y: r.y + DESKTOP_PANE_GRAB_H,
-						width, height: Math.max(1, r.height - DESKTOP_PANE_GRAB_H), zoomFactor: zoom,
-					});
-					// 抓手带：没有就现建（栏数会变 ⇒ 按需创建）✓
-					const grab = this._ensureGrabBar(windowId, container, win, paneId) ?? grabs.get(paneId);
-					if (grab) {
-						grab.style.display = 'block';
-						grab.style.left = (r.x - rect.left) + 'px';
-						grab.style.top = (r.y - rect.top) + 'px';
-						grab.style.width = width + 'px';
-					}
-				});
-				dividers.forEach((d, idx) => {
-					const bar = bars[idx];
-					if (!bar) { return; }
-					bar.style.display = 'block';
-					if (d.dir === 'h') {
-						bar.style.left = (d.pos - rect.left - DESKTOP_SPLIT_GAP / 2 - 4) + 'px';
-						bar.style.top = (contentArea.y - rect.top) + 'px';
-						bar.style.width = '8px';
-						bar.style.height = contentArea.height + 'px';
-					} else {
-						bar.style.left = (contentArea.x - rect.left) + 'px';
-						bar.style.top = (d.pos - rect.top - DESKTOP_SPLIT_GAP / 2 - 4) + 'px';
-						bar.style.width = contentArea.width + 'px';
-						bar.style.height = '8px';
-					}
-				});
-				for (let k = dividers.length; k < bars.length; k++) { bars[k].style.display = 'none'; }
-				return;
+			const contentArea = { x: area.x + mainW + DESKTOP_SPLIT_GAP, y: area.y, width: Math.max(1, area.width - mainW - DESKTOP_SPLIT_GAP), height: area.height };
+			const geo = computePaneGeometry(content, contentArea, DESKTOP_SPLIT_GAP, DESKTOP_PANE_HEAD_H);
+			this._lastRects.set(windowId, new Map([...geo.panes].map(([id, g]) => [id, g.box] as const)));
+			const fullGeo: IDshPaneBox = {
+				box: contentArea,
+				head: { x: contentArea.x, y: contentArea.y, width: contentArea.width, height: DESKTOP_PANE_HEAD_H },
+				view: { x: contentArea.x, y: contentArea.y + DESKTOP_PANE_HEAD_H, width: contentArea.width, height: Math.max(1, contentArea.height - DESKTOP_PANE_HEAD_H) },
+			};
+			const shown: IDshChromePane[] = [];
+			for (const id of leaves) {
+				if (maxId && id !== maxId) { this._setPaneVisible(entry, id, false); continue; }
+				const g = maxId ? fullGeo : geo.panes.get(id);
+				if (!g) { continue; }
+				// 挖洞：拖动时目标格让出落点那一半 ⇒ DOM 落点提示露出来（中央 = 整格让出）
+				const view: IDshSplitRect | undefined = hole && hole.id === id ? holeViewRect(g, hole.zone) : g.view;
+				if (view) {
+					void this._dsh.layoutView(id, { windowId, x: view.x, y: view.y, width: view.width, height: view.height, zoomFactor: zoom });
+					this._setPaneVisible(entry, id, true);
+				} else {
+					this._setPaneVisible(entry, id, false);
+				}
+				const meta = entry.meta?.get(id);
+				shown.push({ id, title: meta?.title ?? '会话', meta: meta ? '#' + meta.sessionId.slice(-4) : '', geo: g });
 			}
+			if (!hole && !chrome.dragging) {
+				this._log.info(`[dshHarness] layout: win=${Math.round(area.width)}x${Math.round(area.height)} zoom=${zoom} panes=${1 + leaves.length} main=w${mainW} content=x${Math.round(contentArea.x)} w${Math.round(contentArea.width)}${maxId ? ` max=${maxId}` : ''}`);
+			}
+			const narrow = area.width < DESKTOP_MAIN_MIN_W + DESKTOP_PANE_MIN_W
+				? `窗口偏窄（${Math.round(area.width)}px < ${DESKTOP_MAIN_MIN_W + DESKTOP_PANE_MIN_W}px），右侧放不下多格` : undefined;
+			chrome.update({
+				origin, zoom, main,
+				mainDivider: { x: area.x + mainW, y: area.y, width: DESKTOP_SPLIT_GAP, height: area.height },
+				panes: shown,
+				dividers: maxId ? [] : geo.dividers,
+				maxId, count: leaves.length, maxCount: MAX_DESKTOP_SPLIT_PANES, narrowTip: narrow,
+			});
 		};
 		const layoutSoon = () => { layout(); win.setTimeout(layout, 120); win.setTimeout(layout, 420); };
-		// ★ 2026-10-29（分屏）：中间那条可拖动的分隔条（平时隐藏，有右栏才出现）✓
-		this._installSplitBar(windowId, container, win);
 		layout();
 		win.requestAnimationFrame(() => { layout(); win.requestAnimationFrame(layout); });
 		const resizeObserver = new win.ResizeObserver(layout);
@@ -1215,14 +1410,17 @@ export class DshFullWindowContribution extends Disposable {
 			win.removeEventListener('fullscreenchange', layoutSoon);
 			win.clearInterval(layoutTimer);
 			// ★ 2026-10-29（多开 + 分屏）：关掉一扇 ⇒ 从登记表里摘掉（其余窗口不受影响）✓
-			//   ⚠ **先取所有栏 id 再摘**（摘了就取不到了）—— 每一栏都要回收，
+			//   ⚠ **先取所有格 id 再摘**（摘了就取不到了）—— 每一格都要回收（含**软关闭中**等待回收的），
 			//   否则成孤儿视图、它那条会话还在后台跑 ✗。
-			const panes = this._desktopWindows.get(windowId)?.paneViewIds ?? [chatViewId];
+			const closingEntry = this._desktopWindows.get(windowId);
+			const panes = [...(closingEntry?.paneViewIds ?? [chatViewId]), ...(closingEntry?.closing?.keys() ?? [])];
+			for (const t of closingEntry?.closing?.values() ?? []) { clearTimeout(t); }
 			this._desktopWindows.delete(windowId);
 			for (const paneId of panes) {
 				void this._dsh.disposeView(paneId).catch(() => undefined);
 			}
-			this._splitBars.delete(windowId);
+			chrome.dispose();
+			this._lastRects.delete(windowId);
 			// ★ 右栏的存活巡检也要停（否则窗口关了还在跑定时器 ⇒ 泄漏 + 误报）✓
 			const watchers = this._splitWatchers.get(windowId);
 			if (watchers) {
@@ -1271,9 +1469,67 @@ export class DshFullWindowContribution extends Disposable {
 		// ⚠⚠ `tree` **必须为空**（2026-10-30 真机 debug 定位）：两段式布局里 `tree` 是"**右栏**的树"，
 		//   主栏不在树里。这里曾写成 `tree: leaf(chatViewId)` ⇒ 布局把**主栏自己**当成内容区的叶子
 		//   搬到 x=728/w552 ⇒ 左侧 0~728 全黑、主栏被挤到右半（用户截图"左侧空白 + 布局错乱"）✗✗。
-		this._desktopWindows.set(windowId, { windowId, viewId: chatViewId, paneViewIds: [chatViewId], layout });
+		this._desktopWindows.set(windowId, { windowId, viewId: chatViewId, paneViewIds: [chatViewId], layout, chrome, dom: { win, container } });
 		this._log.info(`[dshHarness] composed desktop opened (window ${windowId}, chat ${chatViewId}, session ${sessionId ?? '(无)'})`);
+		// ★ 运行时自测（只在显式设了环境变量时跑；正常用户永远不会触发）✓
+		let selfTest: string | undefined;
+		// ⚠ trim：cmd 里 `set X=1 && …` 会把值设成 "1 "（带尾随空格）⇒ 严格比较永远不成立（2026-10-30 踩过）
+		try { selfTest = sandboxProcess?.env?.['VSSAROS_DSH_SPLIT_SELFTEST']?.trim(); } catch { selfTest = undefined; }
+		if (selfTest === '1' && !this._selfTestStarted) {
+			this._selfTestStarted = true;
+			void this._runSplitSelfTest(windowId);
+		}
+		// ★ DOM 探针（`VSSAROS_DSH_PROBE=1`）：把"入口该不该显示"的**现场事实**打进日志。
+		//   为什么需要：页面里的判据（hero / 挂载）我只能靠猜 ⇒ 连续几轮"改了看不到"都是猜错 ✗
+		//   ⇒ 用 `waitViewSelector` 逐个查选择器，把真相落日志 ✓（正常用户永不触发）
+		let probe: string | undefined;
+		try { probe = sandboxProcess?.env?.['VSSAROS_DSH_PROBE']?.trim(); } catch { probe = undefined; }
+		if (probe === '1') {
+			void this._probeHeroEntry(chatViewId);
+		}
 		return true;
+	}
+
+	/** 自测只跑一次（多扇窗口时只在第一扇上跑）✓。 */
+	private _selfTestStarted = false;
+
+	/**
+	 * **hero 入口的 DOM 探针**（2026-10-30；`VSSAROS_DSH_PROBE=1` 时开窗后跑一次）。
+	 *
+	 * 只做一件事：把"入口该不该显示"的现场事实逐条打进日志 ——
+	 *   ① `[data-conversation-content]` 在不在（判据的前提）；
+	 *   ② 它上面有没有 `data-conversation-session`（有 = 已进会话 ⇒ 入口本就该藏）；
+	 *   ③ 外壳 `[data-vssaros-hero-split-host]` 在不在（不在 = 组件没挂载 ⇒ 注册/缓存问题 ✗）；
+	 *   ④ 按钮 `[data-vssaros-hero-split]` 在不在（在 = 显示成功）；
+	 *   ⑤ 对照组：`[data-vssaros-wb-tabstrip]`（页签条）与 `[data-composer-card]`（输入框）在不在。
+	 * ⇒ 看日志就能区分"没挂载 / 判据错 / 显示了但被盖住"三种坏法，不用再猜 ✓。
+	 */
+	private async _probeHeroEntry(viewId: string): Promise<void> {
+		const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+		await sleep(3_000);   // 让页面把换皮 chunk 装完
+		const has = async (label: string, selector: string) => {
+			const ok = await this._dsh.waitViewSelector(viewId, selector, 500).catch(() => false);
+			this._log.info(`[dshHarness] probe: ${ok ? 'YES' : 'no '} ${label}  ⇐ ${selector}`);
+			return ok;
+		};
+		this._log.info('[dshHarness] probe: ==== hero 入口现场 ====');
+		const content = await has('会话根容器', '[data-conversation-content]');
+		// ⚠ "有没有 data-conversation-session" **不能**用来判 hero（空会话首屏也有它）⇒ 只作参考
+		await has('根容器已绑定会话（仅供参考，不能当判据）', '[data-conversation-content][data-conversation-session]');
+		const heroPhase = await has('★ 官方 phase = hero', '[data-conversation-content][data-content-phase="hero"]');
+		await has('入口外壳（组件已挂载）', '[data-vssaros-hero-split-host]');
+		await has('入口外壳=shown', '[data-vssaros-hero-split-host="shown"]');
+		await has('入口按钮', '[data-vssaros-hero-split]');
+		await has('★ 入口没有压住官方按钮（几何自证）', '[data-vssaros-hero-split-clear="1"]');
+		await has('对照·官方「打开侧边栏」', '[data-sidebar-right-expand], [data-sidebar-right-toggle]');
+		await has('对照·页签条', '[data-vssaros-wb-tabstrip]');
+		await has('对照·输入框', '[data-composer-card]');
+		// ★ 「布局 ▾」已按用户要求移除 ⇒ 这两行用来正反确认：
+		//   动作组那枚「新窗格」在（说明动作组真的渲染了，反证后面那条"没有"不是因整组不渲染）✓
+		await has('动作组·新窗格', '[data-vssaros-new-window]');
+		//   ⚠ 期望 **no**（选择器等不到 ⇒ 已移除；若 YES 说明旧 chunk 还在缓存里）
+		await has('顶部「布局 ▾」（期望 no）', '[data-vssaros-pane-menu]');
+		this._log.info(`[dshHarness] probe: 结论 = 容器${content ? '在' : '缺'}、phase=${heroPhase ? 'hero（入口该显）' : '非 hero（入口该藏）'}`);
 	}
 
 	/**

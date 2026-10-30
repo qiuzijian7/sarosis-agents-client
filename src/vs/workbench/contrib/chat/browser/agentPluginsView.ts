@@ -35,7 +35,7 @@ import { IThemeService } from '../../../../platform/theme/common/themeService.js
 import { getLocationBasedViewColors } from '../../../browser/parts/views/viewPane.js';
 import { IViewletViewOptions } from '../../../browser/parts/views/viewsViewlet.js';
 import { IWorkbenchContribution } from '../../../common/contributions.js';
-import { IViewDescriptorService, IViewsRegistry, Extensions as ViewExtensions } from '../../../common/views.js';
+import { IViewDescriptorService, IViewsRegistry, Extensions as ViewExtensions, WindowEnablement } from '../../../common/views.js';
 import { IEditorService } from '../../../services/editor/common/editorService.js';
 import { VIEW_CONTAINER } from '../../extensions/browser/extensions.contribution.js';
 import { manageExtensionIcon } from '../../extensions/browser/extensionsIcons.js';
@@ -645,6 +645,9 @@ export class AgentPluginsViewsContribution extends Disposable implements IWorkbe
 				weight: 30,
 				order: 5,
 				canToggleVisibility: true,
+				// ★ 2026-10-30：sessions 窗口（IDE 侧）里 `isEnabled()` 只认 `Sessions | Both`
+				//   ⇒ 原生扩展容器里的这三个视图必须显式声明，否则「Agent 插件」段恒不可见。
+				windowEnablement: WindowEnablement.Both,
 			},
 			{
 				id: 'workbench.views.agentPlugins.default.marketplace',
@@ -655,12 +658,14 @@ export class AgentPluginsViewsContribution extends Disposable implements IWorkbe
 				order: 5,
 				canToggleVisibility: true,
 				hideByDefault: true,
+				windowEnablement: WindowEnablement.Both,
 			},
 			{
 				id: 'workbench.views.agentPlugins.marketplace',
 				name: localize2('agent-plugins', "Agent Plugins"),
 				ctorDescriptor: new SyncDescriptor(AgentPluginsListView, [{}]),
 				when: ContextKeyExpr.and(SearchAgentPluginsContext, ChatContextKeys.Setup.hidden.negate()),
+				windowEnablement: WindowEnablement.Both,
 			},
 		], VIEW_CONTAINER);
 	}

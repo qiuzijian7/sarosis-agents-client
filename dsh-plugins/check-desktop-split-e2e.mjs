@@ -106,27 +106,29 @@ async function main() {
 		}
 	});
 
-	check('会话动作组必须有「⇔」把手与「⋯」菜单（关闭/移动的入口）', async () => {
+	check('主栏动作组：有「新窗格」、**没有**「布局 ▾」、「⇔」把手也不在页面里', async () => {
 		const found = await evaluate(cdp, `JSON.stringify({
 			grip: !!document.querySelector('[data-vssaros-pane-grip]'),
 			menu: !!document.querySelector('[data-vssaros-pane-menu]'),
-			newwin: !!document.querySelector('[data-vssaros-new-window]') || !!document.querySelector('[data-vssaros-split-entry]')
+			newwin: !!document.querySelector('[data-vssaros-new-window]')
 		})`);
 		const f = JSON.parse(found);
-		if (!f.grip) { throw new Error('缺「⇔」把手（拖拽入口）✗'); }
-		if (!f.menu) { throw new Error('缺「⋯」菜单（移动/比例/关闭入口）✗'); }
-		if (!f.newwin) { throw new Error('缺「新窗格」入口（hero 用 data-vssaros-split-entry，有会话用 data-vssaros-new-window）✗'); }
+		if (f.grip) { throw new Error('页面里不该有「⇔」把手（拖动在宿主标题栏）✗'); }
+		if (f.menu) { throw new Error('顶部「布局 ▾」已被用户要求移除，不该还出现 ✗'); }
+		if (!f.newwin) { throw new Error('缺「新窗格」入口 ✗'); }
 	});
 
-	check('点开「⋯」⇒ 菜单项齐全（移动/比例/关闭）', async () => {
-		await evaluate(cdp, `(() => { const b = document.querySelector('[data-vssaros-pane-menu]'); if (b) { b.click(); } return 1; })()`);
-		await sleep(150);
-		const items = await evaluate(cdp, `JSON.stringify(Array.from(document.querySelectorAll('[data-vssaros-pane-action]')).map(e => e.getAttribute('data-vssaros-pane-action')))`);
-		const list = JSON.parse(items);
-		for (const need of ['moveLeft', 'moveRight', 'moveTop', 'moveBottom', 'ratio33', 'ratio50', 'ratio67', 'close']) {
-			if (!list.includes(need)) { throw new Error(`菜单缺 ${need} ✗`); }
-		}
-		await shot('menu');
+	check('hero 右上角有「新增窗口」，且不压住官方「打开侧边栏」', async () => {
+		const found = await evaluate(cdp, `JSON.stringify({
+			host: !!document.querySelector('[data-vssaros-hero-split-host]'),
+			btn: !!document.querySelector('[data-vssaros-hero-split]'),
+			clear: document.querySelector('[data-vssaros-hero-split]')?.getAttribute('data-vssaros-hero-split-clear')
+		})`);
+		const f = JSON.parse(found);
+		if (!f.host) { throw new Error('hero 入口组件没挂载（chunk 没更新 / 注册被跳过）✗'); }
+		if (!f.btn) { throw new Error('当前不是 hero 屏（phase≠hero），或入口没显示 —— 这条需在空会话屏上跑'); }
+		if (f.clear !== '1') { throw new Error('入口压住了官方「打开侧边栏」✗'); }
+		await shot('hero-entry');
 	});
 
 	check('栏数：当前至少 1 栏（target 数），且加栏后 +1', async () => {

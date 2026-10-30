@@ -420,6 +420,36 @@ const kbIcon = registerIcon('agent-studio-knowledge-base', Codicon.book, localiz
 const workflowIcon = registerIcon('agent-studio-workflow', Codicon.listTree, localize('workflowIcon', "Workflow"));
 // （2026-09-22：原 `agent-studio-channel` 图标随 Channels 活动栏入口一并移除）
 
+/**
+ * 「插件」这一格由谁渲染。
+ *
+ * `true`（当前） = VS Code **原生**扩展面板（`workbench.view.extensions`，装载于
+ *   `sessions/sessions.common.main.ts` 的 "Extensions Management" 段）。
+ * `false` = 自研 `PluginsViewPane`（三页签：已装插件 / VS Code 扩展 / dsh 组合包），**回退开关**。
+ *
+ * ★ 2026-10-30（用户要求：「IDE 侧 activitybar 中的插件 sideview 改用 vscode 原生的组件和功能」）。
+ * 显式标成 `boolean` 而不是 `true` 字面量：`if (!X)` 里的 `X` 若被收窄成字面量，
+ * 后续维护者（以及部分 lint 规则）会把它当成恒真判断而删掉，回退开关就静默失效。
+ *
+ * ⚠ 图标位置会变：原生容器的 `order` 是 4（`extensions.contribution.ts:127`，与标准 VS Code 一致）
+ *   ⇒ 打开开关后它会出现在活动栏**最前面**，不再待在原来自研「插件」的第 4 位。
+ *   这是"改用原生"的一部分（位置/顺序/右键菜单都归原生容器管），不是缺陷；
+ *   用户仍可拖拽并持久化到 `workbench.*.pinnedViewlets2`。
+ */
+const NATIVE_PLUGIN_CENTER: boolean = true;
+
+/**
+ * 活动栏 pinned 存储键（与 `dynamicActivityBarContainers.ts` 的 `PINNED_VIEWLET_STORAGE_KEYS` 同口径）。
+ *
+ * 两个键对应两种布局：标准活动栏（`activitybarPart.ts:55`）与 sessions 布局
+ * （`sessions/browser/parts/sidebarPart.ts:108`，图标条折进侧栏、另有一套前缀）。
+ * 只动 pinned：placeholder / workspaceState 里的残留不会让图标复活。
+ */
+const PLUGIN_CENTER_PIN_KEYS: readonly string[] = [
+	'workbench.activity.pinnedViewlets2',
+	'workbench.agentsession.pinnedViewlets2',
+];
+
 // --- Configuration ---------------------------------------------------------------
 //qiuzijian debug
 /** 由 CHANNEL_DEFINITIONS 动态生成配置注册表（避免手写约 200 项）。 */
@@ -3663,7 +3693,9 @@ import { McpToolProvider } from './providers/tool/mcpToolProvider.js';
 import { WEB_SEARCH_PROVIDER_CHOICES } from './providers/tool/webSearchProviders.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IEnvironmentService, INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
-import { IStorageService, StorageScope } from '../../../../platform/storage/common/storage.js';
+import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
+// ★ 2026-10-30：「插件」那一格换成原生扩展容器后，要清掉自研容器在活动栏里的死条目（见 NATIVE_PLUGIN_CENTER）。
+import { purgePinnedViewlets } from './pinnedViewletsStorage.js';
 import { IMcpService } from '../../../../workbench/contrib/mcp/common/mcpTypes.js';
 import { ICheckpointService } from '../common/checkpointService.js';
 import { CheckpointService } from './checkpointService.js';
@@ -4888,10 +4920,47 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 
 	constructor(
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
+		@IStorageService private readonly _storageService: IStorageService,
+		@ILogService private readonly _logService: ILogService,
 	) {
 		super();
 		this._staticModuleContainers = !isDshModuleEngine(this._configurationService);
+		if (NATIVE_PLUGIN_CENTER) {
+			this._purgePluginCenterPin();
+		}
 		this._registerToolbarIcons();
+	}
+
+	/**
+	 * 清掉 pinned 存储里自研「插件」容器的死条目。
+	 *
+	 * 为什么需要：容器 `agentStudio.plugins` 已不再注册，但活动栏把图标顺序/固定/可见状态
+	 * 存在 `workbench.*.pinnedViewlets2` 里（**按容器 id 记**）。`PaneCompositeBar` 保存时会把
+	 * 查不到的 id 以 `visible:false` **写回**（`paneCompositeBar.ts` 的 `saveCachedViewContainers`），
+	 * 于是这条死记录会长期留在用户数据里；将来万一又注册同名容器，它会在旧 `order` 位置
+	 * **复活且不会重新 pin**（这是 `purgePinnedViewlets` 头注释里记着的既有坑）。
+	 *
+	 * ⚠ 只清死条目，**不搬位置**：原生容器按自己的 `order: 4` 排在最前面（与标准 VS Code 一致）。
+	 *   实测过"搬 order"的方案：首次启动时 `PaneCompositeBar` 已把原生条目补进 storage，
+	 *   旧条目与目标条目并存 ⇒ 无法判断谁才是"用户原来那一格"，搬出来的顺序反而不可预期。
+	 *
+	 * 时机：本贡献是 `WorkbenchPhase.BlockStartup`（文件末尾注册），早于活动栏部件创建；
+	 * 已清过的存储再跑一次是 no-op（`purgePinnedViewlets` 返回 `undefined`）。
+	 */
+	private _purgePluginCenterPin(): void {
+		for (const key of PLUGIN_CENTER_PIN_KEYS) {
+			try {
+				const purge = purgePinnedViewlets(this._storageService.get(key, StorageScope.PROFILE), 'agentStudio.plugins');
+				if (!purge) {
+					continue;
+				}
+				this._storageService.store(key, purge.value, StorageScope.PROFILE, StorageTarget.USER);
+				this._logService.info(`[agentStudio] 已清掉活动栏里自研「插件」容器的死条目（${key}: ${purge.before}→${purge.after}）`);
+			} catch (error) {
+				// 清理是体验优化，不能连累活动栏注册：失败只记日志。
+				this._logService.warn(`[agentStudio] 清理「插件」pin 死条目失败（${key}）`, error);
+			}
+		}
 	}
 
 	private _registerToolbarIcons(): void {
@@ -5022,14 +5091,28 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 		// Note: Knowledge Base (order: 110) — registered below
 
 		// 7. Plugins (order: 120)
-		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
-			id: 'agentStudio.plugins',
-			title: localize2('agentStudio.plugins.title', "Plugins"),
-			icon: pluginsIcon,
-			viewId: AGENT_STUDIO_PLUGINS_VIEW_ID,
-			order: 120,
-			viewCtor: PluginsViewPane,
-		});
+		// ★ 2026-10-30（用户要求：「IDE 侧 activitybar 中的插件 sideview 改用 vscode 原生的组件和功能」）：
+		//   这一格**不再注册自研 `PluginsViewPane`**，改由上游原生扩展面板接管：
+		//   `workbench.view.extensions`（ctor = 原生 `ExtensionsViewPaneContainer`）——
+		//   原生搜索框与 `@` 过滤、原生分组列表、原生右键菜单、原生 `ExtensionEditor` 详情页、
+		//   原生安装/启用/禁用/卸载，全部由上游提供。装载点见
+		//   `sessions/sessions.common.main.ts` 的 "Extensions Management" 段。
+		//
+		//   ⚠ 为什么保留这段调用形态而不是删掉：容器 id / 视图 id 仍留在源码里，
+		//     回退只改 `NATIVE_PLUGIN_CENTER` 一个字符；也避免 `PluginsViewPane` 的 import 立刻变孤儿。
+		//   ⚠ 关掉自研容器后，活动栏上原来的「插件」位置由**原生**容器接管（`order: 4`）。
+		//     老用户已存布局（`workbench.agentsession.pinnedViewlets2` / `workbench.activity.pinnedViewlets2`）
+		//     里记的是 `agentStudio.plugins` ⇒ 首次启动原生图标会被补在最前面（一次性，之后按用户拖动结果持久化）。
+		if (!NATIVE_PLUGIN_CENTER) {
+			this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
+				id: 'agentStudio.plugins',
+				title: localize2('agentStudio.plugins.title', "Plugins"),
+				icon: pluginsIcon,
+				viewId: AGENT_STUDIO_PLUGINS_VIEW_ID,
+				order: 120,
+				viewCtor: PluginsViewPane,
+			});
+		}
 
 
 		// --- Remaining icons (after Plugins) ---
