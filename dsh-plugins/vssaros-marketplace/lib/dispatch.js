@@ -42,7 +42,10 @@ export const LOCAL_WRITE_OPS = new Set(['install', 'upgrade', 'uninstall', 'tras
  */
 // ★ 2026-10-23（用户「都转移到 dsh 侧实现」）：加 `mcp`
 //   （装完会顺带把服务器注册进 `<数据根>/mcp.json`，见 `mcpInstall.js`）
-export const LOCAL_WRITE_KINDS = new Set(['skill', 'workflow', 'agent', 'mcp']);
+// ★ 2026-10-31：加 knowledge。
+//   此前注释写「mcp / knowledge 没有可落盘的本体 ⇒ 不进这条路径」—— 那是**打包器还没支持**时的结论；
+//   现在 publisher 会打、installers 会落到 <数据根>/knowledge/<id>/ ⇒ 本体就是那个目录 ✓
+export const LOCAL_WRITE_KINDS = new Set(['skill', 'workflow', 'agent', 'mcp', 'knowledge']);
 
 /**
  * ★ 2026-10-24（用户：「插件管理能否在 dsh 侧实现，不走 ide」）：能。

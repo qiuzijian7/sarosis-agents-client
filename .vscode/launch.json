@@ -5,8 +5,8 @@
 			"type": "chrome",
 			"request": "attach",
 
-			"name": "Launch & Attach Dev (9333)",
-			"port": 9333,
+			"name": "Launch & Attach Dev (9799)",
+			"port": 9799,
 			// 先由 preLaunchTask（scripts/start-dev-app.cmd，detached）把应用起起来，再 attach。
 			// attach 断开**不会**杀 app（launch + cleanUp:wholeBrowser 会，见 killBehavior）。
 			"preLaunchTask": "Start Dev App (attach-ready)",
@@ -91,8 +91,8 @@
 		{
 			"type": "chrome",
 			"request": "attach",
-			"name": "Attach to VS Code Renderer (9333)",
-			"port": 9333,
+			"name": "Attach to VS Code Renderer (9799)",
+			"port": 9799,
 			// ★ 2026-10-25：F5 **会重复上一次选中的配置**。若当前选的是这条"纯 attach"，
 			//   它没有 preLaunchTask ⇒ 应用不会被启动，只会去连那个（可能已是幽灵的）端口，
 			//   表现就是「F5 无法启动、且 app-exit.log 里一点记录都没有」✗。
@@ -105,7 +105,7 @@
 			"request": "attach",
 			"name": "Attach to Main Process",
 			"timeout": 30000,
-			"port": 6001,
+			"port": 5888,
 			// 同上：attach 型配置也要先把应用拉起来（否则 F5 只是干等端口）
 			"preLaunchTask": "Start Dev App (attach-ready)",
 			"continueOnAttach": true,
@@ -291,7 +291,7 @@
 			// 原因：F5 会**重复上一次选的配置**，而 9334 上留着一个残留监听
 			// （`netstat` LISTENING 但 `wmic` 查该 PID 已 `No Instance(s) Available`）。
 			// 两条都改到 9799 ⇒ 无论 F5 跑哪条，报错端口都能指出它跑的是哪条配置。
-			"port": 9333,
+			"port": 9799,
 			"timeout": 0,
 			"env": {
 				"NODE_ENV": "development",
@@ -351,7 +351,7 @@
 			// 会让 F5 报 `Could not connect to debug target at http://localhost:9334:
 			// Could not find any debuggable target`。
 			// ⚠ 注意另一条配置 `Launch VS Code Internal` 仍在用 9334，两者**不要共用**。
-			"port": 9333,
+			"port": 9799,
 			"timeout": 0,
 			"env": {
 				"NODE_ENV": "development",

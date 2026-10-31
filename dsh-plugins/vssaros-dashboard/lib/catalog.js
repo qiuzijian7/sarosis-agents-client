@@ -336,11 +336,10 @@ export const WORKBENCH_MODULES = [
 	// ★ 2026-10-30（用户要求「删除小红书工作台」）：`@vssaros/dsh-xhs-note` 已卸载 ⇒ 它的卡片一并删除。
 
 	{ route: '/x/sessions/', name: '历史会话', desc: '会话分组 / 人格标记 / 指示灯', icon: '🕘' },
-	// ★ 2026-10-22（用户：「多 TUI 应该设计为一个工作台，在主页中显示 item」）：
-	//   并行 TUI 工作台（`@vssaros/dsh-parallel`）。⚠ 与 `client.workbenchNav.js` 的 `DEFAULT_ITEMS`
-	//   **必须两处同时登记**（漏一处 ⇒ 卡片在、点「打开」被 route 白名单静默拒掉 = 点了没反应 ✗，
-	//   守卫 `check-workbench-catalog.mjs` 盯着）；⚠ route 还必须与宿主 `DSH_MODULE_PAGES` 一致。
-	{ route: '/x/parallel/', name: '并行 TUI 工作台', desc: '并排编排多个并行 LLM 会话：每格一个 TUI，可观察 / 收割 / 接管', icon: '🖥' },
+	// ★ 2026-10-31（用户要求「移除并行工作台」）：`@vssaros/dsh-parallel` 的卡片删除（原本
+	//   `/x/parallel/`「并行 TUI 工作台」，2026-10-22 加的）。
+	//   ⚠ 与 `client.workbenchNav.js` 的 `DEFAULT_ITEMS` **必须同时删**（漏删条目 ⇒ 卡片在、
+	//   点「打开」被 route 白名单静默拒掉 = 点了没反应 ✗），守卫 `check-workbench-catalog.mjs` 盯着。
 	// ★ 2026-10-30（用户要求「移除萨罗斯中转站工作台」）：`@vssaros/dsh-relay` 已卸载 ⇒
 	//   这里同步删掉它的卡片（与 `client.workbenchNav.js` 的条目必须同时改）。
 	// ★ 2026-10-28（用户：「dsh 侧增加定时任务工作台，复用原生的定时任务 UI」）：

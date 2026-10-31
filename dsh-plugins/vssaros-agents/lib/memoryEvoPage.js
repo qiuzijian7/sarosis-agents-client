@@ -14,7 +14,12 @@
  * 2026-10-21 陆续补齐：版本（tag，可给**指定提交**起名）、备份与恢复、分支（新建 / 切换 /
  * 从某次提交继续）、术语切换（记忆 ⇄ Git）、提交级操作（⋯：起名 / 从这里建分支 / 恢复到这次）。
  *
- * 仍刻意没做：Git 分道图（我们每个 agent 单线性历史，画图没有信息量）、分支合并与冲突解决。
+ * 2026-10-31 补上 **Git 分道图**：当初"单线性历史 ⇒ 画图没信息量"的前提已经不成立
+ *   （2026-10-21 起支持分支，图上要能看出岔路与版本落在哪个提交）。
+ *   轨道布局在 `lib/core/gitLanes.js`（服务端算好 path，页面只拼 SVG ⇒ 单一真源）。
+ *   后端新增 `gitGraphOf`（`GET /api/memory?graph=1`），带父提交、分支、版本与轨道。
+ *
+ * 仍刻意没做：分支合并与冲突解决（DSB 那边也是"切换/新建"，不提供合并）。
  */
 
 const CSS = `
@@ -47,6 +52,15 @@ input:focus,select:focus{border-color:var(--mp-accent)}
 .mp-acts[hidden]{display:none}
 .mp-item .tagline{color:#e2c08d}
 .mp-sec{padding:8px 7px 3px;font-size:10px;color:var(--mp-fg3)}
+/* Git 分道图（2026-10-31）：轨道由服务端算好（lib/core/gitLanes.js），页面只拼 path。
+   ⚠ 行高必须等于 gitLanes.js 的 ROW_H(46)，否则上下两行的轨道接不上；改一个就要改另一个。 */
+.mp-row{display:flex;align-items:stretch;height:46px;padding:0 7px 0 5px;gap:5px}
+.mp-lane{flex:none;display:block}
+.mp-txt{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center;overflow:hidden}
+.mp-row .mp-txt .s,.mp-row .mp-txt .h{margin:0}
+.mp-badge{font-size:9px;padding:0 4px;border-radius:3px;border:1px solid var(--mp-line2);color:var(--mp-fg2);white-space:nowrap}
+.mp-badge.branch{color:#9cdcfe;border-color:#2b5c7a}
+.mp-badge.version{color:#e2c08d;border-color:#6b5426}
 .mp-main{display:flex;flex-direction:column;min-width:0}
 .mp-bar{height:38px;display:flex;align-items:center;gap:8px;padding:0 11px;border-bottom:1px solid var(--mp-line);flex:none;font-size:11.5px}
 .mp-bar .st{color:var(--mp-fg3);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -75,7 +89,7 @@ function clientJs(agentId) {
 	const add = (...p) => L.push(p.join(''));
 	add('(function(){');
 	add('var AGENT=', JSON.stringify(agentId), ';');
-	add('var S={files:[],log:[],versions:[],backups:[],branches:[],branch:"",git:null,tab:"evo",sel:null,diff:null,coarse:false,term:"memory"};');
+	add('var S={files:[],log:[],versions:[],backups:[],branches:[],branch:"",git:null,graph:null,auto:null,tab:"evo",sel:null,diff:null,coarse:false,term:"memory"};');
 	add('function $(id){return document.getElementById(id);}');
 	add('function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;"}[c];});}');
 	add('function api(q){return fetch("/x/agents/api/memory?"+q+"&agent="+encodeURIComponent(AGENT),{headers:{"cache-control":"no-cache"}}).then(function(r){return r.json().then(function(j){if(!r.ok)throw new Error(j.error||("HTTP "+r.status));return j;});});}');
@@ -84,11 +98,12 @@ function clientJs(agentId) {
 
 	/* 载入：文件 + log + 版本 */
 	add('function load(){');
-	add(' api("limit=50&versions=1&backups=1&branches=1").then(function(d){');
+	add(' api("limit=50&versions=1&backups=1&branches=1&graph=1").then(function(d){');
 	add('  S.files=d.files||[];S.log=d.log||[];S.versions=d.versions||[];S.backups=d.backups||[];S.git=d.git||null;');
+	add('  S.graph=d.graph||null;S.auto=d.autoCommit||null;');
 	add('  S.branches=d.branches||[];S.branch=d.branch||"";renderBranch();');
 	add('  $("mpMeta").innerHTML=(S.git&&S.git.enabled)');
-	add('   ?("分支 <code>"+esc(S.git.branch||"main")+"</code> · "+S.git.total+" 个提交"+(S.git.dirty?(" · <b style=\\"color:var(--mp-warn)\\">"+S.git.dirty+" 个未提交</b>"):"")+"")');
+	add('   ?("分支 <code>"+esc(S.git.branch||"main")+"</code> · "+S.git.total+" 个提交"+(S.git.dirty?(" · <b style=\\"color:var(--mp-warn)\\">"+S.git.dirty+" 个未提交</b>"):"")+(S.auto&&S.auto.on?" · 回合结束自动快照":"")+"")');
 	add('   :"<b>还没启用 Git 版本化</b><br>去「Agents → 记忆」页签点「启用」后，这里才有历史。";');
 	add('  $("mpFile").innerHTML=(S.files||[]).map(function(f){return "<option value=\\""+esc(f.name)+"\\">"+esc(f.name)+"</option>";}).join("")||"<option>MEMORY.md</option>";');
 	add('  renderList();');
@@ -98,6 +113,27 @@ function clientJs(agentId) {
 	add('');
 
 	/* 左列表：演化（未提交 + 提交）/ 版本 */
+
+	/* Git 分道图（2026-10-31）：轨道与 path 都由服务端算好（`lib/core/gitLanes.js`），
+	   这里只负责拼成 SVG —— 布局绝不在前端重算，否则两份实现必然分叉。
+	   ⚠ 高度 46 必须等于 `gitLanes.js` 的 ROW_H，否则上下两行的轨道接不上。 */
+	add('function laneSvg(c){');
+	add(' if(!c||!c.svg){return "";}');
+	add(' var w=(c.svg.width||1)*12,h=46;');
+	add(' var p=(c.svg.paths||[]).map(function(d){return "<path d=\\""+esc(d)+"\\" fill=\\"none\\" stroke=\\"#4a4a4a\\" stroke-width=\\"1.5\\"/>";}).join("");');
+	add(' var dot=c.svg.dot||{x:6,y:12};');
+	add(' var head=!(!(S.graph&&S.graph.head)||!c.hash||S.graph.head.indexOf(c.hash)!==0);');
+	add(' var fill=head?"#0e639c":"#6f6f6f";');
+	add(' return "<svg class=\\"mp-lane\\" width=\\""+w+"\\" height=\\""+h+"\\" viewBox=\\"0 0 "+w+" "+h+"\\">"+p');
+	add('  +"<circle cx=\\""+dot.x+"\\" cy=\\""+dot.y+"\\" r=\\"3.2\\" fill=\\""+fill+"\\"/></svg>";');
+	add('}');
+	add('function badges(c){');
+	add(' if(!c){return "";}');
+	add(' var b=(c.branches||[]).map(function(n){return "<span class=\\"mp-badge branch\\">"+esc(n)+"</span>";}).join("");');
+	add(' var v=(c.versions||[]).map(function(n){return "<span class=\\"mp-badge version\\">"+esc(n)+"</span>";}).join("");');
+	add(' return b+v;');
+	add('}');
+
 	add('function renderList(){');
 	add(' $("mpTabEvo").className="mp-tab"+(S.tab==="evo"?" on":"");');
 	add(' $("mpTabVer").className="mp-tab"+(S.tab==="ver"?" on":"");');
@@ -128,18 +164,20 @@ function clientJs(agentId) {
 	add(' }');
 	add(' var html="";');
 	add(' if(S.git&&S.git.enabled&&S.git.dirty){html+="<div class=\\"mp-item"+(S.sel&&S.sel.kind==="working"?" on":"")+"\\" data-working=\\"1\\"><div class=\\"s\\">未提交改动</div><div class=\\"h\\"><span>"+S.git.dirty+" 个文件</span><span>对比 HEAD</span></div></div>";}');
-	add(' html+="<div class=\\"mp-sec\\">提交历史（"+S.log.length+"）</div>";');
-	add(' html+=(S.log.length?S.log.map(function(c){');
+	add(' // 有图数据 ⇒ 画分道图（含分支/版本徽标）；没有 ⇒ 退回线性 log（未启用 Git 时也能看历史）');
+	add(' var rows=(S.graph&&S.graph.enabled&&S.graph.commits&&S.graph.commits.length)?S.graph.commits:S.log;');
+	add(' html+="<div class=\\"mp-sec\\">提交历史（"+rows.length+"）</div>";');
+	add(' html+=(rows.length?rows.map(function(c){');
 	add('  var on=(S.sel&&S.sel.rev===c.hash)?" on":"";');
-	add('  return "<div class=\\"mp-item"+on+"\\" data-rev=\\""+esc(c.hash)+"\\"><div class=\\"s\\">"+esc(c.subject)+"</div>"');
-	add('   +"<div class=\\"h\\"><code>"+esc(c.hash)+"</code><span>"+esc(c.date)+"</span>"');
+	add('  return "<div class=\\"mp-item mp-row"+on+"\\" data-rev=\\""+esc(c.hash)+"\\">"+laneSvg(c)+"<div class=\\"mp-txt\\"><div class=\\"s\\">"+esc(c.subject)+"</div>"');
+	add('   +"<div class=\\"h\\"><code>"+esc(c.hash)+"</code><span>"+esc(c.date)+"</span>"+badges(c)');
 	// 提交级操作（DSB 的「提交右键菜单」）：起名 / 从这里新建并切换分支 / 恢复到这次提交
-	add('   +"<button class=\\"mp-more\\" data-more=\\""+esc(c.hash)+"\\" title=\\"这次提交的操作\\">⋯</button></div></div>"');
+	add('   +"<button class=\\"mp-more\\" data-more=\\""+esc(c.hash)+"\\" title=\\"这次提交的操作\\">⋯</button></div></div></div>"');
 	add('   +"<div class=\\"mp-acts\\" id=\\"acts-"+esc(c.hash)+"\\" hidden>"');
 	add('     +"<button class=\\"btn\\" data-tag=\\""+esc(c.hash)+"\\">给这次起名</button>"');
 	add('     +"<button class=\\"btn\\" data-branch=\\""+esc(c.hash)+"\\">从这里建分支</button>"');
 	add('     +"<button class=\\"btn danger\\" data-restore=\\""+esc(c.hash)+"\\">恢复到这次</button></div>";');
-	add(' }).join(""):"<div class=\\"mp-empty\\">还没有提交。<br>记忆文件改动后，在详情页点「提交快照」。</div>");');
+	add(' }).join(""):"<div class=\\"mp-empty\\">还没有提交。<br>记忆文件改动后，回合结束会自动提交一条快照；也可以去详情页点「提交快照」。</div>");');
 	add(' $("mpList").innerHTML=html;');
 	add(' var w=$("mpList").querySelector("[data-working]");if(w)w.onclick=function(){pick("working");};');
 	add(' Array.prototype.forEach.call($("mpList").querySelectorAll("[data-rev]"),function(el){el.onclick=function(){pick(el.getAttribute("data-rev"));};});');

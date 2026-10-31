@@ -252,8 +252,16 @@ export async function memoryFingerprintOf(config, agentId) {
  * 为什么值得做：agent 改自己的记忆是**工具驱动**的（没有提炼流水线，ADR 0003），
  * 改完你可能根本不知道、更不会记得点「提交快照」。自动备份至少保证"改坏了能回到上一版"。
  *
- * 刻意不做：不判断"改得好不好"、不做内容级 diff、也不自动提交 —— 备份只负责**留档**，
- * 提交仍然是人按按钮（模型没有提交口，这是刻意的权限边界）。
+ * 2026-10-31 补齐**自动提交**（对齐 DeepSeekBot 的 `reconcileTurn`）：
+ *   备份之后，若该 agent 的记忆仓库**已启用 Git**，就把这一轮改动落成一条提交
+ *   —— 否则「演化」页上永远只有人手动按的那么几次提交，演化链是断的（agent 改了 10 次，
+ *   图上只有 1 个点）。
+ *   ⚠ 权限边界没变：**提交口仍然不对模型开放**，这里是 Host 在回合结束时代劳；
+ *   人随时可以在页面上继续按「提交快照」（`snapshotGit` 幂等：无变更不造空提交）。
+ *   ⚠ 没启用 Git / 机器没装 git ⇒ 只备份不提交（与既有降级同口径）。
+ *   ⚠ 关闭口：`config.memoryAutoCommit === false`。
+ *
+ * 刻意不做：不判断"改得好不好"、不做内容级 diff。
  */
 export function installMemoryBackupWatcher(ctx, config) {
 	// 每个 agent 上次见过的指纹（内存态，进程重启后重新建立 ⇒ 第一次会自动备一次）
@@ -284,10 +292,55 @@ export function installMemoryBackupWatcher(ctx, config) {
 			if (seen.get(agentId) === fp) { return; }  // 这一轮没动过记忆
 			seen.set(agentId, fp);
 			await backupMemory(config, agentId, 'auto-after-turn').catch(() => null);
+			// 2026-10-31：备份完再把改动落成一条提交（演化链靠它连起来；失败只记不抛）
+			await autoCommitAfterTurn(config, agentId);
 		} catch {
 			/* 备份失败不该影响回合结束 ✓ */
 		}
 	});
+}
+
+/**
+ * 「回合结束自动提交」开关（2026-10-31）。缺省**开**；只有显式 `memoryAutoCommit: false` 才关。
+ *
+ * 为什么默认开：不自动提交的话，「演化」页上能看到的历史 = 人手动按按钮的次数，
+ * 而 agent 写记忆是有工具口的 ⇒ 图与实际改动次数严重不符，"演化"名存实亡。
+ */
+export function memoryAutoCommitOnTurn(config) {
+	return config?.memoryAutoCommit !== false;
+}
+
+/**
+ * 回合末提交记账（2026-10-31）。只记"最近一次自动提交的时间与累计条数"，
+ * 用于页面/守卫自证（与 `index.js` 的 `__promptMem` 同一定位：进程内诊断表，不落盘）。
+ */
+export const __memoryTurn = { byAgent: new Map() };
+
+/**
+ * 回合结束后把记忆改动落成一条提交（2026-10-31，对齐 DSB 的 `reconcileTurn`）。
+ *
+ * ⚠ 全路径**不抛**：没启用 Git、没装 git、工作树干净都只是"这一轮没有提交"，
+ *   回合结束这件事本身不该被记忆失败拖住（与上面备份同一纪律）。
+ */
+export async function autoCommitAfterTurn(config, agentId) {
+	if (!memoryAutoCommitOnTurn(config)) {
+		return { committed: false, note: '自动提交已关闭' };
+	}
+	let snapshot;
+	try {
+		snapshot = await snapshotGit(config, agentId, '回合结束自动快照');
+	} catch (e) {
+		// 没启用 Git / 没装 git / 提交失败 —— 都只留一句说明，备份已经在手上了
+		return { committed: false, note: String(e?.message ?? e) };
+	}
+	if (snapshot?.committed === true) {
+		const prev = __memoryTurn.byAgent.get(agentId);
+		__memoryTurn.byAgent.set(agentId, {
+			at: Date.now(),
+			commits: (prev?.commits ?? 0) + 1,
+		});
+	}
+	return snapshot;
 }
 
 /** 备份列表（新 → 旧）。 */
@@ -512,14 +565,26 @@ export async function gitStatusOf(config, agentId) {
 	const branch = (await git(dir, ['branch', '--show-current'])).out || 'main';
 	const countText = (await git(dir, ['rev-list', '--count', 'HEAD'])).out;
 	const porcelain = await git(dir, ['status', '--porcelain']);
-	const dirtyFiles = porcelain.ok && porcelain.out ? porcelain.out.split('\n').filter(Boolean) : [];
+	const lines = porcelain.ok && porcelain.out ? porcelain.out.split('\n').filter(Boolean) : [];
+	// `changes`（2026-10-31）：比 `dirtyFiles` 多一个 `kind`，页面要按 DeepSeekBot 的
+	//   「新记忆 / 已有记忆的更新」分组（只有文件名分不出来 —— porcelain 的前两列状态被 slice(3) 丢了）。
+	//   XY：'??' = 未跟踪；首列 A = 已暂存新增；含 D = 删除；其余 = 改动已有文件。
+	const kindOf = (xy) => {
+		const s = String(xy ?? '');
+		if (s === '??') { return 'new'; }
+		if (s.startsWith('A') || s.startsWith('?')) { return 'new'; }
+		if (s.includes('D')) { return 'deleted'; }
+		return 'updated';
+	};
+	const changes = lines.slice(0, 50).map(l => ({ path: l.slice(3), kind: kindOf(l.slice(0, 2)) }));
 	return {
 		enabled: true,
 		dir,
 		branch,
 		commits: Number.isFinite(Number(countText)) ? Number(countText) : 0,
-		dirty: dirtyFiles.length,
-		dirtyFiles: dirtyFiles.map(l => l.slice(3)).slice(0, 50),
+		dirty: changes.length,
+		dirtyFiles: changes.map(c => c.path),
+		changes,
 	};
 }
 
@@ -531,9 +596,17 @@ export async function enableGit(config, agentId) {
 	if (status.enabled) {
 		return status; // 幂等 ✓
 	}
-	const init = await git(dir, ['init']);
+	// ⚠ 显式 `-b main`（2026-10-31）：不带的话分支名跟随**机器上的全局配置**（实测本机得到
+	//   `master`）⇒ 同一份代码在不同机器上分支名不同，页面/测试里写死的 `main` 会静默对不上
+	//   （DSB 也是 `git init -b main`）。老 git（<2.28）没有 `-b` ⇒ 退回到 `symbolic-ref`，
+	//   在首次提交之前改分支名只有这条路（`branch -M` 在无提交时会失败）。
+	let init = await git(dir, ['init', '-b', 'main']);
 	if (!init.ok) {
-		throw Object.assign(new Error(`git init 失败：${init.out}`), { httpStatus: 500 });
+		init = await git(dir, ['init']);
+		if (!init.ok) {
+			throw Object.assign(new Error(`git init 失败：${init.out}`), { httpStatus: 500 });
+		}
+		await git(dir, ['symbolic-ref', 'HEAD', 'refs/heads/main']);
 	}
 	// 初始提交：把现有记忆文件全收进来；一个文件都没有就放一条 README（否则 log 无 HEAD 可读）
 	const readme = (await listMemoryFiles(config, agentId)).files.length === 0;
@@ -741,6 +814,18 @@ export async function restoreMemoryFile(config, agentId, rev, name, message) {
 	const shown = await gitShowMemoryFile(config, agentId, rev, name);
 	const dir = memoryDirOf(config, agentId);
 	await mkdir(dir, { recursive: true });
+	/* ★ 2026-10-31（对齐 DSB 的 `restoreCommitHuman`：**恢复只往前追加**）：
+	   先把**未提交的改动**落成一条提交，再写回旧内容。
+	   ⚠ 少了这一步会**静默丢数据**：回滚是"覆盖文件 → 再提交"，而提交时工作区里
+	     已经是旧内容 ⇒ 那些没提交的改动在 Git 里彻底消失（连"回滚前长什么样"都查不到）。
+	   DSB 的口径：所有能回去的点都在同一张图里，永不 `reset --hard <旧的>` 改写历史。
+	   ⚠ 备份失败**不中断**回滚（回滚本身是用户明确要的动作），但把原因如实回传。 */
+	let backup;
+	try {
+		backup = await snapshotGit(config, agentId, `回滚前备份：${shown.name} 的未提交改动`);
+	} catch (e) {
+		backup = { error: String(e?.message ?? e) };
+	}
 	const target = join(dir, shown.name);
 	const tmp = `${target}.tmp-${Date.now()}`;
 	await writeFile(tmp, shown.text, 'utf8');
@@ -751,8 +836,104 @@ export async function restoreMemoryFile(config, agentId, rev, name, message) {
 	} catch (e) {
 		snapshot = { error: String(e?.message ?? e) };
 	}
-	return { name: shown.name, rev: shown.rev, chars: shown.text.length, snapshot };
+	return { name: shown.name, rev: shown.rev, chars: shown.text.length, backup, snapshot };
 }
+
+/**
+ * 导出记忆仓库的 Git **历史**（2026-10-31，对齐 DSB 的 `.botharness/git-history.bundle`）。
+ *
+ * `git bundle create --all` 把**全部提交、分支与 tag** 打成一个文件 ⇒ 换台机器装回来
+ * 就能继续看演化 / 回滚 / 查版本名。
+ * ⚠ 没启用 Git ⇒ 返回 `null`（没有历史可带，**不是**错误）。
+ * ⚠ 它也会带上**删掉过的内容**（git 历史里都还在）—— 这是它的价值也是它的代价，
+ *   所以导出时它是**可选**项（`includeHistory`，默认不带，与 DSB 的勾选同口径）。
+ */
+export async function memoryBundleOf(config, agentId) {
+	const status = await gitStatusOf(config, agentId);
+	if (!status.enabled) { return null; }
+	const { readFile, rm } = await import('node:fs/promises');
+	const tmpRoot = join(dataRootOf(config), 'tmp');
+	await mkdir(tmpRoot, { recursive: true });
+	const tmp = join(tmpRoot, `bundle-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`);
+	const out = await git(status.dir, ['bundle', 'create', tmp, '--all']);
+	if (!out.ok) {
+		await rm(tmp, { force: true }).catch(() => undefined);
+		return null;
+	}
+	let data;
+	try {
+		data = await readFile(tmp);
+	} finally {
+		await rm(tmp, { force: true }).catch(() => undefined);
+	}
+	return { data, bytes: data.length, commits: status.commits };
+}
+
+/**
+ * 把 bundle 里的历史**拉回**记忆仓库（2026-10-31，对齐 DSB 的 `restoreBotHistory`）。
+ *
+ * ⚠ **不动工作区**：只把对象与 refs 拉回来（历史可见、可回滚），导入进来的记忆文件原样保留。
+ *   刻意**不做** `reset --hard` —— 否则包里的文件内容会被历史 tip 覆盖（导入的文件等于白给），
+ *   还可能删掉历史里没有的文件。差异留给人：看得见、能提交、也能再回滚。
+ * ⚠ 机器上没有 git ⇒ 如实返回 `restored:false`（只装回文件，历史带不回来）—— 不伪装成功。
+ */
+export async function restoreMemoryHistory(config, agentId, data) {
+	const dir = memoryDirOf(config, agentId);
+	await mkdir(dir, { recursive: true });
+	const probe = await git(dir, ['--version']);
+	if (!probe.ok) {
+		return { restored: false, reason: `机器上没有 git（${String(probe.out || '无法执行').slice(0, 80)}）⇒ 只装回记忆文件，历史没带回来` };
+	}
+	const { writeFile, rm } = await import('node:fs/promises');
+	const tmpRoot = join(dataRootOf(config), 'tmp');
+	await mkdir(tmpRoot, { recursive: true });
+	const tmp = join(tmpRoot, `history-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`);
+	await writeFile(tmp, data);
+	try {
+		const st = await gitStatusOf(config, agentId);
+		if (!st.enabled) {
+			let init = await git(dir, ['init', '-b', 'main']);
+			if (!init.ok) {
+				init = await git(dir, ['init']);
+				if (!init.ok) { return { restored: false, reason: `git init 失败：${init.out}` }; }
+				await git(dir, ['symbolic-ref', 'HEAD', 'refs/heads/main']);
+			}
+		}
+		const ls = await git(dir, ['ls-remote', tmp]);
+		if (!ls.ok) {
+			return { restored: false, reason: `读不出这个历史文件（不是 git bundle？）：${String(ls.out).slice(0, 80)}` };
+		}
+		const refs = String(ls.out || '').split('\n').filter(Boolean).map((l) => String(l.split('\t')[1] || ''));
+		const heads = [...new Set(refs.filter((r) => r.startsWith('refs/heads/')).map((r) => r.slice('refs/heads/'.length)).filter(Boolean))];
+		const tags = [...new Set(refs.filter((r) => r.startsWith('refs/tags/')).map((r) => r.slice('refs/tags/'.length)).filter(Boolean))];
+		/* ⚠ 不能直接 `fetch +refs/heads/*:refs/heads/*`：git **拒绝拉进当前检出的分支**
+		   （`fatal: refusing to fetch into branch 'refs/heads/main'`）—— 实测就是这么挂的。
+		   ⇒ 先拉到 remote-tracking（refs/remotes/origin/*），再 `update-ref` 落成同名本地分支。 */
+		const f1 = await git(dir, ['fetch', tmp, '+refs/heads/*:refs/remotes/origin/*']);
+		const f2 = await git(dir, ['fetch', tmp, '+refs/tags/*:refs/tags/*']);
+		if (!f1.ok && !f2.ok) {
+			return { restored: false, reason: `拉不进这个历史：${String(f1.out || f2.out).slice(0, 120)}` };
+		}
+		const landed = [];
+		for (const name of heads) {
+			const rev = (await git(dir, ['rev-parse', '--verify', `refs/remotes/origin/${name}`])).out || '';
+			if (!rev) { continue; }
+			await git(dir, ['update-ref', `refs/heads/${name}`, rev]);
+			landed.push(name);
+		}
+		return { restored: landed.length > 0 || tags.length > 0, heads: landed, tags, bytes: data.length };
+	} finally {
+		await rm(tmp, { force: true }).catch(() => undefined);
+	}
+}
+
+/**
+ * 「初始提交」**不算演化**（2026-10-31）：它是 `enableGit` 建库时自动写的
+ * （「初始提交（启用版本化）」/「初始提交（收纳现有记忆）」），不是记忆的真实演化。
+ * ⇒ 服务端打标记，页面把它降级显示；否则"只有 1 个提交"的演化图全是噪音，
+ *   用户会以为这套东西没干活。
+ */
+const isInitCommit = (subject) => /^初始提交/.test(String(subject ?? '').trim());
 
 export async function gitLogOf(config, agentId, status, limit) {
 	// `status` 可由调用方传入复用（页面 GET 已经在同一个请求里算过一次；不传就自己算，向后兼容）。
@@ -763,10 +944,94 @@ export async function gitLogOf(config, agentId, status, limit) {
 	}
 	const out = await git(st.dir, ['log', `--max-count=${clampLogLimit(limit)}`, '--pretty=format:%h%x09%ci%x09%s']);
 	const log = out.ok && out.out
-		? out.out.split('\n').filter(Boolean).map(line => {
-			const [hash, date, ...rest] = line.split('\t');
-			return { hash, date: (date ?? '').slice(0, 16), subject: rest.join('\t') };
-		})
-		: [];
+	? out.out.split('\n').filter(Boolean).map(line => {
+		const [hash, date, ...rest] = line.split('\t');
+		const subject = rest.join('\t');
+		return { hash, date: (date ?? '').slice(0, 16), subject, isInit: isInitCommit(subject) };
+	})
+	: [];
 	return { enabled: true, log };
+}
+
+/**
+ * Git **图**（2026-10-31，对齐 DeepSeekBot 的 `MemoryGitGraph` + `memory-git-lanes.ts`）。
+ *
+ * 与 `gitLogOf` 的区别：`gitLogOf` 只看 HEAD 的线性历史（页面"提交历史"用，语义不变 ✗ 别改它）；
+ * 这里要画**分道图** ⇒ 取 `--branches HEAD --topo-order`，多分支才看得出岔路，
+ * 并给每个提交带上：父提交（`parents`）、所在分支（`branches`）、版本名（`versions`）、
+ * 轨道号与**现成的 SVG path**（`svg`）。
+ *
+ * ⚠ 为什么连 SVG path 都在后端算：这样布局只有 `core/gitLanes.js` 一份实现，
+ *   页面只做 `paths.map(d => '<path d="' + d + '">')` —— 前端再抄一遍 layout 必然分叉
+ *   （本项目已多次踩到"两份实现"的坑）。
+ * ⚠ sha 一律用**全长**做匹配键（`%H` / `%(objectname)`）：`%h` 与 `%(objectname:short)`
+ *   的缩写长度都随仓库对象数浮动（`core.abbrev=auto`）⇒ 两边拼不上是静默的 ✗。
+ */
+export async function gitGraphOf(config, agentId, status, limit) {
+	const st = status && typeof status.enabled === 'boolean' ? status : await gitStatusOf(config, agentId);
+	if (!st.enabled) {
+		return { enabled: false, head: '', currentBranch: '', branches: [], commits: [], hasMore: false };
+	}
+	const n = clampLogLimit(limit);
+	// 多取一条只为判 `hasMore`（DSB 同口径：取 61 显示 60）
+	const out = await git(st.dir, [
+		'log', '--branches', 'HEAD', '--topo-order', `--max-count=${n + 1}`,
+		'--pretty=format:%H%x09%h%x09%P%x09%ci%x09%s',
+	]);
+	const lines = out.ok && out.out ? out.out.split('\n').filter(Boolean) : [];
+	const raw = lines.slice(0, n).map(line => {
+		const [full, short, parents, date, ...rest] = line.split('\t');
+		return {
+			full: String(full ?? ''),
+			hash: String(short ?? full ?? ''),
+			parents: String(parents ?? '').split(' ').filter(Boolean),
+			date: (date ?? '').slice(0, 16),
+			subject: rest.join('\t'),
+		};
+	});
+	// 分支指针：`refs/heads` 的 (commit, 分支名)
+	const branchMap = new Map();
+	const branchOut = await git(st.dir, ['for-each-ref', '--format=%(objectname)%09%(refname:short)', 'refs/heads']);
+	for (const line of (branchOut.ok && branchOut.out ? branchOut.out.split('\n').filter(Boolean) : [])) {
+		const [sha, name] = line.split('\t');
+		if (!sha || !name) { continue; }
+		branchMap.set(sha, [...(branchMap.get(sha) ?? []), name]);
+	}
+	// 版本（tag）：附注 tag 要解引用（`*objectname`），轻量 tag 只有 `objectname`
+	const tagMap = new Map();
+	const TAG_FORMAT = '%(if)%(*objectname)%(then)%(*objectname)%(else)%(objectname)%(end)%09%(refname:short)';
+	const tagOut = await git(st.dir, ['for-each-ref', `--format=${TAG_FORMAT}`, 'refs/tags']);
+	for (const line of (tagOut.ok && tagOut.out ? tagOut.out.split('\n').filter(Boolean) : [])) {
+		const [sha, tag] = line.split('\t');
+		if (!sha || !tag) { continue; }
+		tagMap.set(sha, [...(tagMap.get(sha) ?? []), tag]);
+	}
+	const { layoutGitLanes, laneRowPaths } = await import('./core/gitLanes.js');
+	const rows = layoutGitLanes(raw);
+	const commits = raw.map((commit, index) => {
+		const row = rows[index] ?? { lane: 0, fromAbove: false, through: [], joins: [], toParents: [], width: 1 };
+		return {
+			hash: commit.hash,
+			parents: commit.parents,
+			date: commit.date,
+			subject: commit.subject,
+			branches: branchMap.get(commit.full) ?? [],
+			versions: tagMap.get(commit.full) ?? [],
+			/* ★ 2026-10-31：初始提交要能被页面识别（降级显示，不算演化） */
+			isInit: isInitCommit(commit.subject),
+			lane: row.lane,
+			svg: laneRowPaths(row),
+		};
+	});
+	const head = (await git(st.dir, ['rev-parse', 'HEAD'])).out || '';
+	const currentBranch = (await git(st.dir, ['rev-parse', '--abbrev-ref', 'HEAD'])).out || '';
+	return {
+		enabled: true,
+		head,
+		currentBranch,
+		branches: [...branchMap.values()].flat().sort(),
+		dirty: st.dirty ?? 0,
+		commits,
+		hasMore: lines.length > n,
+	};
 }

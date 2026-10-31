@@ -29,11 +29,23 @@
  *   yt-dlp（单文件 exe，~17MB，官方独立构建，自带 Python 运行时）：
  *     https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe
  *
- * 解压依赖 PowerShell Expand-Archive（Windows 自带）。
+ * 下载源（macOS，2026-10-31 调研补）：
+ *   ffmpeg/ffprobe：**两个独立 zip**（osxexperts.net 分开提供，URL 带版本会随发布改名
+ *     ⇒ 用 --url / --ffprobe-url 或 SAROS_FFPROBE_URL 覆盖）：
+ *     · Apple Silicon: https://www.osxexperts.net/ffmpeg9arm.zip  / ffprobe9arm.zip
+ *     · Intel:         https://www.osxexperts.net/ffmpeg80intel.zip / ffprobe80intel.zip
+ *     ⚠ 该站页面明确要求：macOS 10.15+ 需 `xattr -dr com.apple.quarantine`，
+ *       且 **Apple Silicon 只跑已签名的文件** ⇒ 本脚本落盘后 chmod + 清 quarantine，
+ *       签名由打包流水线的 codesign 步骤统一做（见 cli/package-mac-dmg.yml）。
+ *     （evermeet.cx 只有 Intel x64；BtbN/gyan.dev 无 macOS 构建；Homebrew 版非静态，不能随包。）
+ *   yt-dlp（**Universal** 单文件，x64+arm64 一体，~22MB）：
+ *     https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos
+ *
+ * 解压：Windows 用 PowerShell Expand-Archive，其它平台用 unzip。
  */
 
 import { execSync } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync, cpSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, cpSync, statSync, readdirSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createWriteStream } from 'node:fs';
@@ -52,17 +64,42 @@ const CUSTOM_YTDLP_URL = ytdlpUrlArg >= 0 ? args[ytdlpUrlArg + 1] : undefined;
 const CHECK_ONLY = args.includes('--check-only');
 const SKIP_YTDLP = args.includes('--skip-ytdlp');
 
-const DEFAULT_URL = 'https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip';
-const DEFAULT_YTDLP_URL = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe';
+// ── 平台（2026-10-31：macOS 支持）──────────────────────────────────────────
+const IS_WIN = process.platform === 'win32';
+const ARCH = process.arch === 'arm64' ? 'arm64' : 'x64';
+/** Windows 要 .exe 后缀；macOS/Linux 没有。 */
+const EXE = IS_WIN ? '.exe' : '';
+
+function optValue(name) {
+	const i = args.indexOf(name);
+	return i >= 0 ? args[i + 1] : undefined;
+}
+
+const DEFAULT_URL = IS_WIN
+	? 'https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip'
+	: (ARCH === 'arm64'
+		? 'https://www.osxexperts.net/ffmpeg9arm.zip'
+		: 'https://www.osxexperts.net/ffmpeg80intel.zip');
+// macOS：osxexperts 的 ffmpeg 与 ffprobe 是**两个** zip（Windows 是一个 zip 含两个 exe）
+const DEFAULT_FFPROBE_URL = IS_WIN
+	? ''
+	: (ARCH === 'arm64'
+		? 'https://www.osxexperts.net/ffprobe9arm.zip'
+		: 'https://www.osxexperts.net/ffprobe80intel.zip');
+const DEFAULT_YTDLP_URL = IS_WIN
+	? 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe'
+	// Universal MacOS (10.15+) standalone executable —— x64 + arm64 一体
+	: 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos';
 // 切勿命名为 URL：模块级 const URL 会遮蔽全局 URL 构造器，
 // 令下方重定向处理里的 `new URL(loc, url)` 抛 "TypeError: URL is not a constructor"
 // （2026-09-06 CI 事故，ffmpeg 下载静默失败）。
 const FFMPEG_ZIP_URL = CUSTOM_URL || DEFAULT_URL;
+const FFPROBE_ZIP_URL = optValue('--ffprobe-url') || process.env.SAROS_FFPROBE_URL || DEFAULT_FFPROBE_URL;
 const YTDLP_EXE_URL = CUSTOM_YTDLP_URL || DEFAULT_YTDLP_URL;
 
-const FFMPEG = join(BIN_DIR, 'ffmpeg.exe');
-const FFPROBE = join(BIN_DIR, 'ffprobe.exe');
-const YTDLP = join(BIN_DIR, 'yt-dlp.exe');
+const FFMPEG = join(BIN_DIR, `ffmpeg${EXE}`);
+const FFPROBE = join(BIN_DIR, `ffprobe${EXE}`);
+const YTDLP = join(BIN_DIR, `yt-dlp${EXE}`);
 
 const FETCH_HINT = '获取: node build/saros/fetch-ffmpeg.mjs';
 
@@ -144,20 +181,65 @@ function download(url, dest) {
 	});
 }
 
+/**
+ * 递归找 ffmpeg / ffprobe（BtbN 解压后是 ffmpeg-master-<ver> 下的 bin/ 目录；
+ * osxexperts 解压后是平铺的 ffmpeg / ffprobe，无扩展名）。
+ * 用 Node 递归而非 PowerShell：Windows 那条路在 macOS 上根本不存在。
+ */
 function findBinaries(dir) {
-	// 递归找 ffmpeg.exe / ffprobe.exe（BtbN 解压后是 ffmpeg-master-*/bin/*.exe）
-	const out = execSync(
-		`powershell -NoProfile -Command "Get-ChildItem -Path '${dir.replace(/'/g, "''")}' -Recurse -Filter '*.exe' | Where-Object { $_.Name -in @('ffmpeg.exe','ffprobe.exe') } | ForEach-Object { $_.FullName }"`,
-		{ encoding: 'utf8' },
-	).trim();
-	return out.split('\n').filter(Boolean).map(s => s.trim());
+	const want = IS_WIN ? ['ffmpeg.exe', 'ffprobe.exe'] : ['ffmpeg', 'ffprobe'];
+	const out = [];
+	const walk = (d) => {
+		let entries;
+		try { entries = readdirSync(d, { withFileTypes: true }); } catch { return; }
+		for (const e of entries) {
+			const p = join(d, e.name);
+			if (e.isDirectory()) { walk(p); }
+			else if (want.includes(e.name.toLowerCase())) { out.push(p); }
+		}
+	};
+	walk(dir);
+	return out;
+}
+
+/** 解压：Windows 用 Expand-Archive，其它平台用 unzip。 */
+function extractZip(zipPath, extractDir) {
+	if (IS_WIN) {
+		// -ErrorAction Stop：Expand-Archive 的错误默认非终止，powershell 仍退出 0，
+		// 会让解压失败伪装成「解压后未找到 ffmpeg.exe」，掩盖真实原因。
+		execSync(
+			`powershell -NoProfile -Command "$ErrorActionPreference='Stop'; Expand-Archive -Path '${zipPath}' -DestinationPath '${extractDir}' -Force"`,
+			{ stdio: 'inherit' },
+		);
+	} else {
+		execSync(`unzip -o -q "${zipPath}" -d "${extractDir}"`, { stdio: 'inherit' });
+	}
+}
+
+/**
+ * macOS 落盘后处理（2026-10-31）：
+ *   ① chmod 755 —— 解压出来的可执行文件可能丢了可执行位；
+ *   ② xattr -dr com.apple.quarantine —— 下载物自带隔离属性，不请掉会被 Gatekeeper 拦；
+ *   ⚠ Apple Silicon **只执行已签名的二进制** ⇒ 真正的签名由打包流水线（codesign）统一做，
+ *     本脚本只保证"可签名、可启动"的前置状态。
+ */
+function darwinPrepare(p) {
+	if (process.platform !== 'darwin') { return; }
+	try {
+		execSync(`chmod 755 "${p}"`);
+	} catch (e) {
+		log(`   ⚠️ chmod 755 失败（${p}）: ${e.message.split('\n')[0]}`);
+	}
+	try {
+		execSync(`xattr -dr com.apple.quarantine "${p}"`);
+	} catch { /* 没有该属性也属正常（本地构建产物） */ }
 }
 
 /** 取 ffmpeg + ffprobe（zip 分发，一次下载两个 exe）。返回是否成功。 */
 async function fetchFfmpeg() {
 	if (isFfmpegReady() && verifyBinary(FFMPEG) && verifyBinary(FFPROBE)) {
 		log(`✅ ffmpeg 已存在且可用，跳过下载（${FFMPEG}）`);
-		log('   如需强制重新下载：先删除 build/saros/bin/ffmpeg.exe 与 ffprobe.exe');
+		log(`   如需强制重新下载：先删除 ${FFMPEG} 与 ${FFPROBE}`);
 		return true;
 	}
 
@@ -175,32 +257,34 @@ async function fetchFfmpeg() {
 	log(`   目标: ${BIN_DIR}`);
 
 	try {
-		await download(FFMPEG_ZIP_URL, zipPath);
-		const zipSize = statSync(zipPath).size;
-		if (zipSize < 10 * 1024 * 1024) {
-			throw new Error(`下载的 zip 过小（${(zipSize / 1024 / 1024).toFixed(1)}MB），疑似被拦截或截断`);
-		}
-		log(`✅ 下载完成（${(zipSize / 1024 / 1024).toFixed(1)}MB），解压中...`);
-
+		// Windows：一个 zip 含两个 exe；macOS：osxexperts 把 ffmpeg / ffprobe 分成两个 zip
+		const zips = IS_WIN ? [FFMPEG_ZIP_URL] : [FFMPEG_ZIP_URL, FFPROBE_ZIP_URL];
 		rmSync(extractDir, { recursive: true, force: true });
 		mkdirSync(extractDir, { recursive: true });
-		// -ErrorAction Stop：Expand-Archive 的错误默认非终止，powershell 仍退出 0，
-		// 会让解压失败伪装成「解压后未找到 ffmpeg.exe」，掩盖真实原因。
-		execSync(
-			`powershell -NoProfile -Command "$ErrorActionPreference='Stop'; Expand-Archive -Path '${zipPath}' -DestinationPath '${extractDir}' -Force"`,
-			{ stdio: 'inherit' },
-		);
+
+		for (const url of zips) {
+			await download(url, zipPath);
+			const zipSize = statSync(zipPath).size;
+			if (zipSize < (IS_WIN ? 10 : 5) * 1024 * 1024) {
+				throw new Error(`下载的 zip 过小（${(zipSize / 1024 / 1024).toFixed(1)}MB），疑似被拦截或截断：${url}`);
+			}
+			log(`✅ 下载完成（${(zipSize / 1024 / 1024).toFixed(1)}MB），解压中...`);
+			extractZip(zipPath, extractDir);
+			rmSync(zipPath, { force: true });
+		}
 
 		const bins = findBinaries(extractDir);
 		const ffmpegSrc = bins.find(p => p.toLowerCase().endsWith('ffmpeg.exe'));
 		const ffprobeSrc = bins.find(p => p.toLowerCase().endsWith('ffprobe.exe'));
 
 		if (!ffmpegSrc || !ffprobeSrc) {
-			throw new Error(`解压后未找到 ffmpeg.exe/ffprobe.exe。找到的二进制: ${bins.join(', ') || '(无)'}`);
+			throw new Error(`解压后未找到 ffmpeg${EXE}/ffprobe${EXE}。找到的二进制: ${bins.join(', ') || '(无)'}`);
 		}
 
 		cpSync(ffmpegSrc, FFMPEG);
 		cpSync(ffprobeSrc, FFPROBE);
+		darwinPrepare(FFMPEG);
+		darwinPrepare(FFPROBE);
 
 		// 清理临时文件
 		rmSync(zipPath, { force: true });
@@ -242,7 +326,7 @@ async function fetchYtDlp() {
 	}
 
 	mkdirSync(BIN_DIR, { recursive: true });
-	const tmpPath = join(BIN_DIR, `_ytdlp_tmp_${process.pid}_${Date.now()}.exe`);
+	const tmpPath = join(BIN_DIR, `_ytdlp_tmp_${process.pid}_${Date.now()}${EXE}`);
 	log(`⬇️  下载 yt-dlp: ${YTDLP_EXE_URL}`);
 
 	try {
@@ -254,6 +338,7 @@ async function fetchYtDlp() {
 		}
 		cpSync(tmpPath, YTDLP);
 		rmSync(tmpPath, { force: true });
+		darwinPrepare(YTDLP);
 		if (verifyBinary(YTDLP, '--version')) {
 			log(`✅ yt-dlp 已安装到 ${YTDLP} (${(size / 1024 / 1024).toFixed(1)}MB)`);
 			return true;
@@ -267,7 +352,7 @@ async function fetchYtDlp() {
 		log(`❌ yt-dlp 下载失败: ${err.message}`);
 		log('');
 		log('手动方案：');
-		log('  1. 从 https://github.com/yt-dlp/yt-dlp/releases/latest 下载 yt-dlp.exe');
+		log(`  1. 从 https://github.com/yt-dlp/yt-dlp/releases/latest 下载 yt-dlp${EXE}（macOS 选 yt-dlp_macos，Universal）`);
 		log(`  2. 放到: ${BIN_DIR}`);
 		log('  3. 或指定镜像: node build/saros/fetch-ffmpeg.mjs --ytdlp-url <exe 直链>');
 		log('  4. 只想跳过它（不再需要远端视频下载）: node build/saros/fetch-ffmpeg.mjs --skip-ytdlp');
@@ -316,6 +401,6 @@ if (!ytOk) {
 }
 
 log('');
-log('下一步：重新打包（strip-before-pack.mjs 会把三个 exe 落到 resources/saros/bin/，');
+log(`下一步：重新打包（strip-before-pack.mjs 会把 ffmpeg/ffprobe/yt-dlp 落到 ${IS_WIN ? 'resources' : 'Contents/Resources'}/saros/bin/，`);
 log('        运行时由 mediaBinaries.ts 优先解析内置路径，无需用户装任何东西）。');
 process.exit(0);

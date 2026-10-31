@@ -165,10 +165,37 @@ const running = () => {
 			if (p.startsWith(devDir)) { n += 1; }
 		}
 	} catch {
-		return 0; // 探测失败 ⇒ 当作"没在跑"（绝不因此把 F5 挡住）
+		// ⚠ wmic 有时会慢到超时（真机 2026-10-31："F5 没有启动 app 窗口"就是它超时被吞成 0
+		//   ⇒ 走到 spawn → 单实例 handoff → 秒退，屏幕上毫无变化 ✗）。
+		//   ⇒ 兜底：`code.lock` 里那个 pid 还活着 ⇒ 就是"已有 dev 实例在跑" ✓
+		return runningFromLock();
+		}
+		// wmic 没查到（也可能只是它慢）：同样用锁兜底
+		return n > 0 ? n : runningFromLock();
+		}
+
+	/**
+	 * `wmic` 不可用时的兜底：`~/.vssaros-dev/code.lock` 里的 pid 还活着 ⇒ 有 dev 实例在跑。
+	 *
+	 * 判据取自 VS Code 自己的单实例锁（`mainLockfile`）—— 它就是 dev 实例的"在场证明"；
+	 * 只认 pid 存活，不看进程名 ⇒ 改名 / 换路径都不影响 ✓。
+	 */
+	function runningFromLock() {
+		try {
+		const f = join(USER_DATA_DIR, 'code.lock');
+		if (!fs.existsSync(f)) {
+			return 0;
+		}
+		const pid = Number((fs.readFileSync(f, 'utf8').match(/\d+/) || [0])[0]);
+		if (!pid) {
+			return 0;
+		}
+		const r = spawnSync('tasklist', ['/FI', `PID eq ${pid}`], { encoding: 'utf8', windowsHide: true, timeout: 8000 });
+		return new RegExp(`\\b${pid}\\b`).test(String(r.stdout || '')) ? 1 : 0;
+	} catch {
+		return 0; // 还是判不出来 ⇒ 当作"没在跑"（宁可多起一个，也不许把 F5 挡死）
 	}
-	return n;
-};
+	};
 
 if (!fs.existsSync(EXE)) {
 	note('ABORT exe not found (run: npm run transpile-client)');
@@ -677,7 +704,8 @@ const readyTimer = setInterval(async () => {
 	}
 }, 2000);
 
-child.on('exit', (code, signal) => {
+// ⚠ async：下面判"是否真的没有可见窗口"要 await（连测两次，见 HANDOFF 那段注释）
+child.on('exit', async (code, signal) => {
 	clearInterval(readyTimer);
 	const hex = typeof code === 'number' && code !== 0 ? '0x' + (code >>> 0).toString(16).toUpperCase().padStart(8, '0') : '-';
 	note(`EXIT   pid=${child.pid} code=${code} signal=${signal ?? '-'} hex=${hex}`);
@@ -685,6 +713,44 @@ child.on('exit', (code, signal) => {
 	// 免得又变成"F5 完全没反应，也不知道为什么"。
 	if (code === 0 && Date.now() - readyStart < 15000) {
 		note('HANDOFF 本次 spawn 秒退(0) ⇒ 已有实例持有 profile 锁，无需再启动（attach 到已在跑的那个）');
+		// ★★ 2026-10-31（真机："F5 没有启动 app 窗口"）：
+		//   HANDOFF **只说明**"请求转交给已有实例了"，但那个实例可能**根本没有可见窗口** ——
+		//   真机现场：IDE 窗口按设计隐藏（`wantsHiddenStart=true`），桌面窗口又被关掉了
+		//   ⇒ 进程活着、屏幕上什么都没有 ⇒ F5 之后毫无变化，用户只能以为 F5 失效 ✗✗。
+		//   ⇒ 两步：能把它的窗口提上来就提上来；提不上来（真的没有窗口 = 僵尸态）
+		//     就**结束它并重开一次**（只想保留现场时设 `DSH_DEV_KEEP_ZOMBIE=1`）。
+		//   ⚠ 重开只做一次（`DSH_DEV_HANDOFF_RESPAWNED`），避免来回重启。
+		try {
+			// ⚠ 判"没有可见窗口"要**连测两次**（间隔 1.2s）：真机见过一次可疑的瞬间 0
+			//   （`has-visible-window.ps1` 报 0，而独立的 `MainWindowTitle` 复核却看得到
+			//   `VsSaros — Desktop`）。误判的代价是**杀掉一个健康的 dev 实例** ✗✗
+			//   ⇒ 两次都为 0 才当僵尸（窗口正在创建/切桌面时也能被这 1.2s 兜住）✓
+			const reallyNoWindow = () => new Promise(resolve => {
+				if (hasVisibleAppWindow()) { resolve(false); return; }
+				setTimeout(() => resolve(!hasVisibleAppWindow()), 1200);
+			});
+			if (!(await reallyNoWindow())) {
+				note(`HANDOFF-RAISE ${raiseExistingWindow()}`);
+			} else if (process.env.DSH_DEV_KEEP_ZOMBIE === '1') {
+				note('HANDOFF-ZOMBIE 已有实例**没有可见窗口**（僵尸态）；已设 DSH_DEV_KEEP_ZOMBIE=1 ⇒ 不处理（手动结束 ' + DEV_EXE_NAME + ' 后 F5）');
+			} else if (process.env.DSH_DEV_HANDOFF_RESPAWNED === '1') {
+				note('HANDOFF-ZOMBIE 重开后仍然没有窗口 ⇒ 不再重复（请手动结束 ' + DEV_EXE_NAME + ' 后 F5）');
+			} else {
+				note('HANDOFF-ZOMBIE 已有实例没有可见窗口 ⇒ 结束它并重开一次（DSH_DEV_KEEP_ZOMBIE=1 可关）');
+				// 只杀 **dev 专用名**：绝不 taskkill 安装版的 `VsSaros.exe` ✗
+				for (const name of [DEV_EXE_NAME]) {
+					spawnSync('taskkill', ['/F', '/IM', name], { windowsHide: true });
+				}
+				spawn(process.execPath, [fileURLToPath(import.meta.url)], {
+					detached: true,
+					stdio: 'ignore',
+					windowsHide: true,
+					env: { ...process.env, DSH_DEV_HANDOFF_RESPAWNED: '1', DSH_LAUNCH_SRC: 'launcher-handoff-respawn' },
+				}).unref();
+			}
+		} catch (e) {
+			note('HANDOFF 僵尸处理失败（不影响本次结论）：' + String((e && e.message) || e));
+		}
 	}
 	// 秒退且非 0：最常见是端口被别人抢了（连按 F5 / 另一会话刚起）⇒ 直接点名，别让日志像"崩溃"
 	if (typeof code === 'number' && code !== 0 && Date.now() - readyStart < 15000) {

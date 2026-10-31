@@ -12,6 +12,7 @@
   },
   "files": [
     "cordis.patch.yml",
+    "lib/kbAgent.js",
     "lib/client.js",
     "lib/client.kb.js",
     "lib/client.kbview.js",
@@ -30,6 +31,8 @@
     "lib/core/kbFrontmatter.js",
     "lib/core/kbFulltext.js",
     "lib/core/kbGating.js",
+    "lib/core/kbGit.js",
+    "lib/core/kbGitRemote.js",
     "lib/core/kbGraphData.js",
     "lib/core/kbIngest.js",
     "lib/core/kbInsights.js",

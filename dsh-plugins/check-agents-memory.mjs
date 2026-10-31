@@ -123,6 +123,110 @@ truthy('页面写清与 AgentMemory 检索库无关',
 truthy('新模块已进 package.json files',
 	(pkg.files ?? []).includes('lib/core/memoryLimits.js'));
 
+// ── 5c. 记忆演化链（2026-10-31，对齐 DeepSeekBot）────────────────────────
+//   两件事：① 回合末自动提交（补上"演化链断掉"那一环）；② Git 分道图。
+//   ⚠ 反向突变均已验证：删掉 autoCommitAfterTurn 调用 / 把 ROW_H 改成 44 /
+//     在页面里自己算 lane / 去掉 init -b main ⇒ 对应断言必须变红。
+const { layoutGitLanes, laneRowPaths, ROW_H } = await load('lib/core/gitLanes.js');
+const memorySrc = fs.readFileSync(path.join(PLUGIN, 'lib/memory.js'), 'utf8');
+const evoSrc = fs.readFileSync(path.join(PLUGIN, 'lib/memoryEvoPage.js'), 'utf8');
+const runSrc = fs.readFileSync(path.join(PLUGIN, 'test/run-agents-check.mjs'), 'utf8');
+
+truthy('gitLanes：导出布局与 path 两个入口',
+	typeof layoutGitLanes === 'function' && typeof laneRowPaths === 'function');
+eq('线性历史全在第 0 轨（不画无意义的岔路）',
+	layoutGitLanes([
+		{ full: 'c', hash: 'c', parents: ['b'] },
+		{ full: 'b', hash: 'b', parents: ['a'] },
+		{ full: 'a', hash: 'a', parents: [] },
+	]).map(r => r.lane), [0, 0, 0]);
+eq('★★ 父提交不在显示列表 ⇒ 不开轨道（否则图右侧凭空多一列）',
+	layoutGitLanes([{ full: 'b', hash: 'b', parents: ['missing'] }])[0].toParents, []);
+truthy('分叉能看出来：两条线的共同父那一行 width ≥ 2',
+	layoutGitLanes([
+		{ full: 'd', hash: 'd', parents: ['c'] },
+		{ full: 'e', hash: 'e', parents: ['c'] },
+		{ full: 'c', hash: 'c', parents: ['b'] },
+		{ full: 'b', hash: 'b', parents: ['a'] },
+		{ full: 'a', hash: 'a', parents: [] },
+	])[2].width >= 2);
+truthy('gitLanes 已进 package.json files（漏了 ⇒ 打包裁掉 ⇒ 插件加载失败白屏）',
+	(pkg.files ?? []).includes('lib/core/gitLanes.js'));
+eq('ROW_H 是 46（页面 CSS 行高与它必须同值）', ROW_H, 46);
+truthy('页面行高与 ROW_H 一致（改一个必须改另一个）',
+	/\.mp-row\{[^}]*height:46px/.test(evoSrc));
+
+truthy('★ 回合结束：备份之后要自动提交（否则演化页上永远只有人手动按的那几次）',
+	/await backupMemory\(config, agentId, 'auto-after-turn'\)[\s\S]{0,200}autoCommitAfterTurn\(config, agentId\)/.test(memorySrc));
+truthy('★ 自动提交受开关控制（config.memoryAutoCommit === false 可退回"人按按钮"）',
+	/if \(!memoryAutoCommitOnTurn\(config\)\)/.test(memorySrc));
+truthy('自动提交全路径不抛（没 git / 没启用 ⇒ 只留说明，不拖住回合结束）',
+	/autoCommitAfterTurn[\s\S]{0,600}try \{\s*\n\s*snapshot = await snapshotGit/.test(memorySrc));
+truthy('★ git init 显式 -b main（否则分支名随机器全局配置漂移到 master）',
+	/git\(dir, \['init', '-b', 'main'\]\)/.test(memorySrc));
+/* ★★ 回滚的数据安全性（2026-10-31，对齐 DSB 的「恢复只往前追加」）：
+   回滚是"覆盖文件 → 提交" ⇒ 不先把未提交改动存成一条提交，那些改动就在 Git 里**彻底消失**
+   （提交时工作区已是旧内容，连"回滚前长什么样"都查不到）。真回归测试在
+   `test/memory-restore.test.mjs`（已验证：去掉备份那步 ⇒ 测试退出码 1）。 */
+truthy('★★ 回滚前先把未提交改动存成一条提交（回滚 ≠ 静默丢数据）',
+	/回滚前备份/.test(memorySrc) && /backup = await snapshotGit\(config, agentId,/.test(memorySrc));
+truthy('回滚失败时不中断（备份失败也如实回传，不假装成功）',
+	/backup = \{ error: String\(e\?\.message \?\? e\) \};/.test(memorySrc));
+truthy('Git 图用**全长** sha 匹配（%h 与 %(objectname:short) 缩写长度会漂 ⇒ 拼不上是静默的）',
+	/'--pretty=format:%H/.test(memorySrc) && /%\(objectname\)/.test(memorySrc));
+truthy('Git 图走 --branches（只看 HEAD 就永远画不出岔路）',
+	/'log', '--branches', 'HEAD', '--topo-order'/.test(memorySrc));
+
+truthy('★ 页面用服务端算好的 path（不在前端重算布局 ⇒ 禁止出现 layoutGitLanes）',
+	/c\.svg\.paths/.test(evoSrc) && !/layoutGitLanes/.test(evoSrc));
+truthy('页面请求带 graph=1（按需算，普通页面请求不多跑 git）',
+	/graph=1/.test(evoSrc));
+truthy('★ 自动提交开关回传给页面（用户要看得见"自动快照"是否开着）',
+	/autoCommit: \{/.test(indexSrc) && /memoryAutoCommitOnTurn\(config\)/.test(indexSrc));
+truthy('git-lanes 单测进了包内自检列表（否则新测试是孤儿，没人跑）',
+	runSrc.includes("'git-lanes.test.mjs'"));
+
+// ★ 2026-10-31 抓到的一段**死代码**：`await ensureMemoryRepo(config, agentId)` 曾被写在
+//   `if (!agentId) { throw … }` 的大括号里、throw 之后 ⇒ 永远执行不到 ⇒ "首次读取即初始化"
+//   从未发生过 ⇒ 从没被读过的 agent（内置尤其）记忆目录永不 git 化 ⇒ 演化/版本/分支恒空。
+//   判据用**缩进层级**（与 agentId 同层）而不是正则：正则写不出"在哪个块里"。
+{
+	const lines = indexSrc.split(/\r?\n/);
+	const iAgent = lines.findIndex((l) => l.includes("const agentId = String(url.searchParams.get('agent')"));
+	// ⚠ 这句 throw 在文件里不止一处（别的路由也有同文案）⇒ 必须取 **agentId 之后** 的那一个，
+	//   否则 findIndex 命中前面那处 ⇒ 条件恒假（我第一版就是这么写错的）。
+	const iThrow = lines.findIndex((l, i) => i > iAgent && l.includes("throw Object.assign(new Error('需要 agent 参数')"));
+	const iEnsure = lines.findIndex((l) => l.includes('await ensureMemoryRepo(config, agentId)'));
+	const indent = (l) => (l.match(/^\t*/) || [''])[0].length;
+	truthy('★ 首次读取即初始化不是死代码（与 agentId 同层，且在 throw 之后）',
+		iAgent >= 0 && iThrow > iAgent && iEnsure > iThrow && indent(lines[iEnsure]) === indent(lines[iAgent]),
+		`agent@${iAgent}:${indent(lines[iAgent] ?? '')} ensure@${iEnsure}:${indent(lines[iEnsure] ?? '')}`);
+}
+
+// ── 5d. 右栏记忆四页签（2026-10-31，按 DSB 演化面板重做）──────────────────
+const agentsSrc = fs.readFileSync(path.join(PLUGIN, 'lib/client.agents.js'), 'utf8');
+truthy('右栏请求带上 versions / branches / graph（不带 ⇒ 版本与分支页签拿不到数据）',
+	agentsSrc.includes("'&limit=50&versions=1&branches=1&graph=1'"));
+truthy('★ 演化用服务端算好的 svg.paths（前端重算布局必然分叉 ⇒ 禁止出现 layoutGitLanes）',
+	/c\.svg/.test(agentsSrc) && /ag3-lane/.test(agentsSrc) && !/layoutGitLanes/.test(agentsSrc));
+truthy('★ 分道图行高与 ROW_H 同值（CSS 46px + svg height 46；改一处必须改另一处）',
+	/\.ag3-crow \{[^}]*height:46px/.test(agentsSrc) && /height: 46/.test(agentsSrc));
+truthy('未提交改动按 kind 分组（新记忆 / 已有记忆的更新 ⇒ 后端必须给 changes）',
+	/git\.changes/.test(agentsSrc) && /kindOf\(l\.slice\(0, 2\)\)/.test(memorySrc) && /dirtyFiles: changes\.map/.test(memorySrc));
+truthy('版本 / 分支的写动作仍在完整页（不在 320 右栏再写一套）',
+	/openModuleRoute\('\/x\/agents\/memory\//.test(agentsSrc));
+/* ★ 群聊下四个记忆页签（2026-10-31 用户报「没生效」）：
+   根因是数据主体用了 `curAgent`（群选中时为 null ⇒ 永远不拉数据），且群分支直接 return
+   只列一遍成员。现在主体换成 `memAgent`（群 = 挑中的成员），群分支对记忆类页签不再 return。 */
+truthy('★ 群聊下记忆类页签也拉数据（主体是 memAgent，不是 curAgent）',
+	/const memAgent = sel\.kind === 'group'/.test(agentsSrc)
+	&& /const agentId = memAgent \? memAgent\.id : ''/.test(agentsSrc)
+	&& /\}, \[tab, rtab, memAgent && memAgent\.id\]\);/.test(agentsSrc));
+truthy('群聊下不再只列成员（禁止回到「选一个成员查看」的死胡同文案）',
+	!/群没有自己的' \+ rlabel/.test(agentsSrc));
+truthy('群聊下有成员选择条（写明看的是谁 + 群没有自己的记忆库）',
+	/'data-ag-gsel'/.test(agentsSrc) && /setGroupMemId/.test(agentsSrc) && /群没有自己的记忆库/.test(agentsSrc));
+
 // ── 5b. 从记忆库导入草稿（2026-10-20，P1-1）────────────────────────────────
 const {
 	agentMemoryGatewayUrl, clampImportLimit, importMemoryDraft,
@@ -149,7 +253,17 @@ truthy('网关未配置时明确报错（不返回空草稿冒充成功）', /�
 
 const importSrc = fs.readFileSync(path.join(PLUGIN, 'lib/agentmemoryImport.js'), 'utf8');
 truthy('记忆 API 暴露 import-draft', /action === 'import-draft' \? await importMemoryDraft/.test(indexSrc));
-truthy('导入模块只读（不写盘）', !/writeFile|writeCoreMemory/.test(importSrc));
+// ⚠ 2026-10-31 收窄口径：旧断言是 `!/writeFile/`（"导入模块只读，不写盘"），
+//   后来模块加了**自己的同步游标**要落盘（`writeSyncState` → `<dataRoot>/<SYNC_FILE>`，
+//   与记忆无关）⇒ 旧断言恒红，且它一旦红着就没人再看这一组 ⇒ 等于整组守卫失效。
+//   真语义是「不得写**记忆**」：草稿只填进编辑框，落盘必须经人的 write-memory。
+truthy('导入模块不写记忆（不得出现任何记忆写口）',
+	!/writeCoreMemory|writeMemoryFile|snapshotGit\(/.test(importSrc));
+truthy('导入模块对记忆目录只读（从 memory.js 只 import 读口）',
+	/import \{ readMemoryFile \} from '\.\/memory\.js';/.test(importSrc));
+truthy('唯一允许的写盘是它自己的同步游标，且走原子写（tmp + rename）',
+	/writeFile\(state\.file \+ '\.tmp'/.test(importSrc)
+	&& /renameWithRetry\(state\.file \+ '\.tmp'/.test(importSrc));
 truthy('页面有「从记忆库导入草稿」入口', /memoryImportDraft/.test(detailSrc));
 truthy('导入模块已进 package.json files', (pkg.files ?? []).includes('lib/agentmemoryImport.js'));
 

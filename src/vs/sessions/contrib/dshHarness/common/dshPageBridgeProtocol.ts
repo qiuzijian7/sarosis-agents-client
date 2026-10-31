@@ -1061,6 +1061,11 @@ export const DSH_PAGE_COMMANDS_WITHOUT_IDE_UI: ReadonlySet<Exclude<DshPageComman
 	// ★ 2026-10-23（桥 `18 → 19`）：升级动作用的是**图标 + 面板**，全都长在 desktop 窗口里
 	//   ⇒ 不许因为"点了检查更新"就把 IDE 主窗口拉到前台（那正是用户要避免的形态 ✗）。
 	'upgradeRefresh', 'upgradeBundled', 'upgradeApp', 'upgradeAsset',
+	// ★★ 2026-10-31：意见反馈开的是**产品自己的独立窗口**（`IFeedbackWindowService`），
+	//   根本不需要 IDE 主窗口露面。漏登记 ⇒ `_handle` 会先把 IDE 主窗口 show + Force 聚焦
+	//   ⇒ 我们刚弹出的反馈窗口被 IDE 窗口盖住，用户看到的就是"点了没反应"（真机已复现）；
+	//   而且 desktop 模式下把 IDE 主窗口拉出来本身就是用户明确否决过的行为 ✗。
+	'openFeedback',
 ]);
 
 export interface IDshPageKeyEvent {

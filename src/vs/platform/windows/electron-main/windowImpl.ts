@@ -763,6 +763,12 @@ export class CodeWindow extends BaseWindow implements ICodeWindow {
 			this._startHidden = config.startHidden === true;
 			if (this._startHidden) {
 				options.show = false;   // 创建即隐藏（否则 Electron 在构造时就把窗口画出来了）
+				// ★★ 2026-10-31（真机：F5 后 **IDE 窗口一闪再消失**，然后才出 desktop）：
+				//   `show:false` 只保证"构造时不画"，**拦不住 Chromium 把它激活** —— 它是首个窗口，
+				//   日志里 `window 1 BLUR` 说明它拿到过 OS 焦点 ⇒ 激活会让它短暂画出来/在任务栏闪一下，
+				//   约 1s 后才被 `DshFullWindowContribution` 藏回去 ✗。
+				//   ⇒ 隐藏期也**不进任务栏**（显示时再放开，见下面 `onShown`）。
+				options.skipTaskbar = true;
 			}
 
 			// Create the browser window
@@ -807,10 +813,27 @@ export class CodeWindow extends BaseWindow implements ICodeWindow {
 				this._register(failsafe);
 				failsafe.schedule();
 				if (this._win) {
+					// ★★ 2026-10-31（同上：IDE 一闪）：`show:false` 挡不住激活 ⇒
+					//   隐藏启动期间一旦被激活，立刻收回（hide + blur）⇒ 屏幕上不会闪出 IDE 窗口。
+					//   ⚠ 只在 `_startHidden` 仍为真时生效：真正显示后（onShown）必须让焦点正常工作 ✓。
+					const onFocusWhileHidden = () => {
+						if (!this._startHidden || !this._win || this._win.isDestroyed()) {
+							return;
+						}
+						if (this._win.isVisible()) {
+							this.logService.info('window#hiddenStart: 窗口在隐藏启动期间被激活 ⇒ 立刻收回（防止 IDE 窗口闪一下）');
+							this._win.hide();
+						}
+						try { this._win.blur(); } catch { /* 已销毁 */ }
+					};
+					this._win.on('focus', onFocusWhileHidden);
+					this._register(toDisposable(() => { try { this._win?.removeListener('focus', onFocusWhileHidden); } catch { /* 已销毁 */ } }));
 					const onShown = () => {
 						// 渲染进程（或用户）已经把它显示出来过 ⇒ 显示权移交完成，兜底作废，别再抢
 						this._startHidden = false;
 						failsafe.cancel();
+						// 隐藏期的"不进任务栏/收回焦点"到此为止 ⇒ 恢复成普通窗口 ✓
+						try { this._win?.setSkipTaskbar(false); } catch { /* 已销毁 */ }
 					};
 					this._win.on('show', onShown);
 					this._register(toDisposable(() => { try { this._win?.removeListener('show', onShown); } catch { /* 已销毁 */ } }));

@@ -13,6 +13,15 @@ window.__ModuleLoader__.load({
 		 */
 		function install(ctx, shell) {
 			const state = shell.state;
+				// ★★ 2026-10-30（用户要求「desktop 用 dsh 原生交互、IDE 用 IDE 交互」）：
+				//   官方 open-in-app 是"在外部 app / 文件管理器打开会话目录"，**只有 IDE 聊天框**才不需要
+				//   （那里已有 IDE 自己的资源管理器）。desktop 窗口**必须保留**——它就是 dsh 原生的那一行。
+				//   判据由入口算好放 `shell.ide`（单一真相，见 client.js 的 isIdeChatView）。
+				if (!shell.ide) {
+					state.hideOpenInApp = false;
+					state.hideOpenInAppSkipped = "desktop 窗口（chatOnly=0）：保留官方「在其他 app 中打开」";
+					return;
+				}
 				// ── 隐藏官方「在其他 app 中打开」下拉（open-in-app 徽标）────────────────
 				// 官方 dsh-client-ui-open-in-app 把会话目录徽标 + 应用下拉注册在
 				// conversation.session.header.utilities（list 槽，id="open-in-app"，默认 priority 0）。

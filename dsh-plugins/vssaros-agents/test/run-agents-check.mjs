@@ -395,12 +395,201 @@ console.log('── 工具 allowlist ──');
    也不会被别人顺手跑到 ⇒ 等于没有 CI 覆盖。这里用子进程跑一遍，按退出码判定。 */
 {
 	const { spawnSync } = await import('node:child_process');
-	for (const t of ['mentions.test.mjs', 'dispatch-budget.test.mjs', 'member-policy.test.mjs', 'owner-policy.test.mjs', 'relay-policy.test.mjs', 'group-session.test.mjs', 'bindings.test.mjs', 'feishu-adapter.test.mjs', 'feishu-inbound.test.mjs', 'channel-policy.test.mjs', 'pairing.test.mjs', 'dead-letters.test.mjs', 'telegram-adapter.test.mjs', 'discord-adapter.test.mjs', 'wecom-adapter.test.mjs', 'binding-media.test.mjs', 'outbound-media.test.mjs', 'feishu-gateway.test.mjs', 'memory-dir.test.mjs', 'memory-init.test.mjs', 'agentmemory-candidates.test.mjs', 'agentmemory-sync.test.mjs', 'atomic-write.test.mjs', 'im-credentials.test.mjs', 'inbound-state.test.mjs', 'im-session-map.test.mjs', 'feishu-raw-ws.test.mjs', 'im-inbound-lock.test.mjs', 'host-self-watch.test.mjs']) {
+	for (const t of ['mentions.test.mjs', 'dispatch-budget.test.mjs', 'member-policy.test.mjs', 'owner-policy.test.mjs', 'relay-policy.test.mjs', 'group-session.test.mjs', 'bindings.test.mjs', 'feishu-adapter.test.mjs', 'feishu-inbound.test.mjs', 'channel-policy.test.mjs', 'pairing.test.mjs', 'dead-letters.test.mjs', 'telegram-adapter.test.mjs', 'discord-adapter.test.mjs', 'wecom-adapter.test.mjs', 'binding-media.test.mjs', 'outbound-media.test.mjs', 'feishu-gateway.test.mjs', 'memory-dir.test.mjs', 'memory-init.test.mjs', 'git-lanes.test.mjs', 'memory-restore.test.mjs', 'memory-bundle.test.mjs', 'group-ops.test.mjs', 'agentmemory-candidates.test.mjs', 'agentmemory-sync.test.mjs', 'atomic-write.test.mjs', 'im-credentials.test.mjs', 'inbound-state.test.mjs', 'im-session-map.test.mjs', 'feishu-raw-ws.test.mjs', 'im-inbound-lock.test.mjs', 'host-self-watch.test.mjs']) {
 		const r = spawnSync(process.execPath, [path.join(HERE, t)], { encoding: 'utf8' });
 		const last = String(r.stdout || '').trim().split('\n').filter(Boolean).pop()
 			|| String(r.stderr || '').slice(0, 120);
 		check(`包内单测 ${t} 通过`, r.status === 0, last);
 	}
+}
+
+/* ── 群聊三件套（2026-10-31，对齐 DeepSeekBot 的 group_create / group_invite_bot / group_leave）──
+   参照 `dsh-bot-agent-adapter.ts:2787+`，但比它更严：DSB 的 `ownerBotSlug` 由建群 bot 自己拿到，
+   我们刻意不给（群主只能由人指定 ⇒ 防 bot 互相提权），所以这三个工具给的是"拉起协作"而不是"控制群"。 */
+{
+	const toolsSrc = read('lib/tools.js');
+	const code = strip(toolsSrc);
+	const { TOOL_NAMES, WRITE_TOOLS } = await import('../lib/tools.js');
+	for (const n of ['agent_group_create', 'agent_group_invite', 'agent_group_leave']) {
+		check(`群工具 ${n} 已登记（并在工具快照里）`, TOOL_NAMES.includes(n));
+	}
+	check('★ 建群过审批闸；拉人 / 退群不过闸（拉人有群级「加入需确认」兜底，退群只影响调用者自己）',
+		WRITE_TOOLS.includes('agent_group_create')
+		&& !WRITE_TOOLS.includes('agent_group_invite')
+		&& !WRITE_TOOLS.includes('agent_group_leave'),
+		JSON.stringify(WRITE_TOOLS));
+	check('★ 建群不得给自己塞群主（ownerAgentId 只能由人指定 ⇒ 防 bot 互相提权）',
+		!/ownerAgentId/.test(code));
+	check('★ 三个群工具都要先取当前会话身份，拿不到就拒绝（否则"谁在建群"无从追溯）',
+		(code.match(/exec\?\.agent\?\.id/g) || []).length >= 3
+		&& (code.match(/拿不到当前会话身份/g) || []).length >= 3);
+	check('群工具只复用 groups.js 的服务函数（权限 / 上限 / 去重 / 待确认都在服务层）',
+		/from '\.\/groups\.js'/.test(code) && /createGroup\(config/.test(code)
+		&& /addGroupMembers\(config/.test(code) && /removeGroupMember\(config/.test(code));
+	check('退群只能退自己（member 恒为 selfId，不接受外部传入）',
+		/member: selfId/.test(code));
+	/* 幂等只对**建群 / 拉人**这两个会重试的写口；两个工具都要能把 operationKey 透传下去 */
+	check('★ 群工具透传 operationKey（重试/补发才防得住重复）',
+		(code.match(/operationKey: String\(args\.operationKey\)/g) || []).length === 2);
+}
+
+/* ── 群聊写口的幂等 + 陈旧防护（2026-10-31，P2；对齐 DSB 的 channel_management_operations）──
+   没有这一层时：Bot 重试 / 双击 / 页面重发会把"建群、拉人"真的执行两次
+   （拉人靠"已在成员里"能兜住一半，但**待确认区**和"半路失败重试"兜不住）。 */
+{
+	const groupsSrc = strip(read('lib/groups.js'));
+	check('★ 建群接幂等（同 key 同参不重复建）',
+		/withIdempotency\(config, \{[\s\S]{0,200}operationKey: input\?\.operationKey[\s\S]{0,200}payload: \{ name, members, mode \}/.test(groupsSrc));
+	check('★ 拉人接幂等（payload 带群 id + 成员）',
+		/operationKey: input\?\.operationKey,[\s\S]{0,160}payload: \{ id: group\.id, members: wanted \}/.test(groupsSrc));
+	check('★ 拉人有陈旧防护（拿旧 updatedAt 覆盖 ⇒ 409，不静默覆盖）',
+		/staleDenial\(group, input\?\.expectedUpdatedAt\)/.test(groupsSrc));
+	check('幂等回放时如实标记 replayed（调用方能看出"这次没真跑"）',
+		/idem\.replayed \? \{ \.\.\.idem\.result, replayed: true \} : idem\.result/.test(groupsSrc));
+	check('幂等/陈旧的判定放在纯函数模块（可单测，不依赖文件系统）',
+		read('lib/core/groupOps.js').includes('export function planIdempotent')
+		&& read('lib/core/groupOps.js').includes('export function staleDenial'));
+	/* ★★ 顺序断言（2026-10-31 真机抓到的坑）：幂等一开始被放在"写入前"，于是第二次同 key 重放
+	   先被「已有同名群」拦成 409 ⇒ **幂等形同虚设**。它必须在所有校验**之前**。
+	   ⚠ 必须同时判 `>= 0`：indexOf 找不到返回 -1，而 `-1 < 任意位置` ⇒ 不加就是假绿 ✗。 */
+	const iIdem1 = groupsSrc.indexOf('withIdempotency');
+	const iSameName = groupsSrc.indexOf('已有同名群');
+	check('★ 建群的幂等必须在「已有同名群」校验之前（否则重放被拦 ⇒ 幂等没用）',
+		iIdem1 >= 0 && iSameName >= 0 && iIdem1 < iSameName, `idem@${iIdem1} 同名@${iSameName}`);
+	const iIdem2 = groupsSrc.lastIndexOf('withIdempotency');
+	const iStale = groupsSrc.indexOf('staleDenial(group');
+	check('★ 拉人的幂等必须在陈旧判断之前（重放不该被 stale 挡住）',
+		iIdem2 >= 0 && iStale >= 0 && iIdem2 < iStale, `idem@${iIdem2} stale@${iStale}`);
+}
+
+/* ── 群成员上限（2026-10-31，P3；对齐 DSB 的「建群初始成员 ≤100」）────────
+   原来 20 太紧（拉几个人一起讨论就到顶），而且超限只报一句"成员最多 20 个"
+   —— 不告诉用户**现在几个** ⇒ 用户不知道为什么被拒，只能一个个试。 */
+{
+	const groupsSrc = strip(read('lib/groups.js'));
+	const agentsSrc = strip(read('lib/client.agents.js'));
+	check('★ 成员上限 = 100（对齐 DSB；原 20 太紧）', /export const MAX_MEMBERS = 100;/.test(groupsSrc));
+	check('★ 群数上限**仍是 50**（DSB 没有这条，我们刻意保留 —— 群多了左栏没法看）',
+		/const MAX_GROUPS = 50;/.test(groupsSrc));
+	check('★ 上限回传给前端（listGroups 带 maxMembers ⇒ 前端不写死数字）',
+		/maxMembers: MAX_MEMBERS/.test(groupsSrc));
+	check('★ 前端用后端给的上限（不得出现写死的"上限 100"）',
+		/groupsView\.data\.maxMembers/.test(agentsSrc) && !/上限 100/.test(agentsSrc));
+	check('★ 超限回执带"现在几个 / 上限几个"（否则用户不知道为什么被拒）',
+		/成员最多 \$\{MAX_MEMBERS\} 个（这次勾了 \$\{members\.length\} 个）/.test(groupsSrc)
+		&& /成员最多 \$\{MAX_MEMBERS\} 个（现在 \$\{before\.size\} 个，还要加 \$\{added\.length\} 个）/.test(groupsSrc)
+		&& /成员最多 \$\{MAX_MEMBERS\} 个（现在 \$\{group\.members\?\.length \?\? 0\} 个）/.test(groupsSrc));
+	check('建群 / 群设置**两处**都显示上限（定义 1 + 使用 2）',
+		(agentsSrc.match(/memberCapTxt/g) || []).length >= 3);
+}
+
+/* ── invitation-first（2026-10-31，P1；对齐 DSB 的 invitation-first + auto-accept）──
+   补的是"被邀的 Bot 自己能看见、能决定"这一层：
+   以前 Bot 是被静默塞进 members 的（谁拉的我、什么时候，都没记录，它自己也不知道）。 */
+{
+	const groupsSrc = strip(read('lib/groups.js'));
+	const toolsSrc = strip(read('lib/tools.js'));
+	const indexSrc2 = read('lib/index.js');
+	const pageSrc = read('lib/groupPage.js');
+	// ⚠ `TOOL_NAMES` 只在上面那个块里 import 过 ⇒ 这里要自己取一份（块作用域，不共享）
+	const { TOOL_NAMES } = await import('../lib/tools.js');
+	check('★ 待确认条目记下"谁邀请的 / 什么性质"（kind + by）⇒ 邀请可见',
+		/kind: 'invite', by: inviteBy/.test(groupsSrc));
+	check('★ Bot 能自己回应邀请（respondGroupInvite + 查邀请 / 回应两个工具）',
+		/export async function respondGroupInvite/.test(groupsSrc)
+		&& /name: 'agent_group_invites'/.test(toolsSrc)
+		&& /name: 'agent_group_invite_respond'/.test(toolsSrc));
+	check('★★ 开了「加入需确认」的群，Bot **不得**自己放行（否则该开关对 Bot 邀请路径形同虚设）',
+		/if \(group\.requireApproval === true\) \{[\s\S]{0,120}throw httpError\(403/.test(groupsSrc));
+	check('★ 默认仍是自动接受（两个闸都不开 ⇒ 与以前一致，不强迫多一步）',
+		/group\.botAutoAccept === false/.test(groupsSrc));
+	check('自动接受时**不唤醒** Bot（加人 ≠ 现在就得说话）',
+		/不唤醒/.test(read('lib/groups.js')));
+	check('接口与页面接上新开关（botAutoAccept 可读可写 ⇒ 不是死配置）',
+		/action === 'invite-respond'/.test(indexSrc2) && /gpBotAutoAccept/.test(pageSrc));
+	check('待确认区显示邀请人', /p\.by&&p\.by!=="human"/.test(pageSrc));
+	/* ★ 待确认区**工作台也要有一块**（2026-10-31）：以前只在 SSR 群聊页有 ⇒
+	   在工作台里群设置半天，却看不见"还有几个人等着进群"（邀请发出去像石沉大海）。 */
+	const agentsSrc2 = strip(read('lib/client.agents.js'));
+	/* ⚠ 断言要写**完整字面量**（带 `: ''`）：只写 `data-ag-gset-pending` 的话，
+	   把它改成 `…pendingx` 仍然匹配 ⇒ 突变验不出红（假绿，刚踩到）。 */
+	check('★ 工作台群设置也有待确认区（✓ / ✕ 两个口都要有）',
+		/'data-ag-gset-pending': ''/.test(agentsSrc2) && /data-ag-pend-ok/.test(agentsSrc2) && /data-ag-pend-no/.test(agentsSrc2));
+	check('★ 待确认区显示"谁邀请的" + "等谁点头"（否则用户不知道该自己点还是等它）',
+		/p\.by === 'human'/.test(agentsSrc2) && /等你批准/.test(agentsSrc2) && /等它自己回应/.test(agentsSrc2));
+	check('工作台与 SSR 页走**同一个** join-decide 口（两边不各写一份决定逻辑）',
+		/join-decide/.test(agentsSrc2));
+	/* ★ 光有待确认区不够：**开关也得能在工作台翻** —— 否则只在工作台里操作时，
+	   待确认区永远是空的（要产生待确认项得先去 SSR 群聊页翻开关）。 */
+	check('★ 工作台群设置能翻两个加入开关（requireApproval / botAutoAccept）',
+		/'data-ag-gset-approval': ''/.test(agentsSrc2) && /'data-ag-gset-autoaccept': ''/.test(agentsSrc2));
+	check('★ botAutoAccept **默认开**（`!== false` ⇒ undefined 也算开，与以前一致，不强迫多一步）',
+		/t\.botAutoAccept !== false/.test(agentsSrc2));
+	check('两个开关即时生效（各发一条 approval 请求，不跟着「保存」走）',
+		/action: 'approval'[\s\S]{0,90}requireApproval: on/.test(agentsSrc2)
+		&& /action: 'approval'[\s\S]{0,90}botAutoAccept: on/.test(agentsSrc2));
+}
+
+/* ── 导出 / 导入**带历史**（2026-10-31，P1；对齐 DSB 的 `.botharness/git-history.bundle`）──
+   以前包里只有"最后一次的记忆内容" ⇒ 换台机器装回来，演化 / 回滚 / 版本名全没了。 */
+{
+	const packSrc = strip(read('lib/pack.js'));
+	/* ⚠ memory.js **不能用 strip()**：里面有字符串 `'+refs/heads/*:refs/remotes/origin/*'`，
+	   `/*` 会被当成块注释开头 ⇒ 把代码整段删掉（刚踩到，断言莫名其妙地红）。
+	   下面这些断言都是**代码字面量**，本来也不需要去注释 ⇒ 直接读原文。 */
+	const memorySrc2 = read('lib/memory.js');
+	check('历史用 git bundle 且带 `--all`（全部分支与 tag 都在）',
+		/'bundle', 'create'/.test(memorySrc2) && /'--all'/.test(memorySrc2));
+	check('★ 历史**默认不带**（里面还留着删掉过的内容 ⇒ 必须显式勾选）',
+		/options\.includeHistory === true/.test(packSrc));
+	check('★ 导入**不动工作区**（不做 reset --hard ⇒ 不会覆盖包里的文件）',
+		!/'reset', '--hard'/.test(memorySrc2));
+	/* ⚠ 必须钉到 **fetch 的 refspec** 上：只查 `refs/remotes/origin` 的话，下面那行
+	   `rev-parse refs/remotes/origin/<name>` 也含它 ⇒ 把 fetch 改坏也验不出红（假绿，刚踩到）。 */
+	check('⚠ 不能直接 fetch 进当前检出分支（git 会拒）⇒ fetch 的 refspec 必须是 remote-tracking',
+		/'fetch', tmp, '\+refs\/heads\/\*:refs\/remotes\/origin\/\*'/.test(memorySrc2) && /'update-ref'/.test(memorySrc2));
+	check('bundle 有单独的大小上限（挡"塞个大家伙进来"）', /MAX_HISTORY_BYTES/.test(packSrc));
+	/* ★ 光在库里支持不够 —— **接口也要够得着**，否则就是死配置（没人能勾） */
+	const indexSrc3 = read('lib/index.js');
+	check('★ 导出接口接上了 history 开关（GET `&history=1` + POST `history:true`）',
+		/includeHistory: url\.searchParams\.get\('history'\) === '1'/.test(indexSrc3)
+		&& /includeHistory: body\?\.history === true/.test(indexSrc3));
+	check('落盘导出的回执带 history（带没带、多大、为什么没带）',
+		/history: pack\.history/.test(packSrc));
+	/* ⚠ 这个块里没有 TOOL_NAMES ⇒ 直接用会 ReferenceError（块作用域不共享，刚踩到：
+	   整个自检脚本在最后一行崩掉 ⇒ 后面新增的断言**一条都没跑**，看着像"全绿"其实没验）。 */
+	const { TOOL_NAMES: TOOL_NAMES3 } = await import('../lib/tools.js');
+	check('新工具进了 TOOL_NAMES（否则快照与工具面对不上）',
+		TOOL_NAMES3.includes('agent_group_invites') && TOOL_NAMES3.includes('agent_group_invite_respond'));
+}
+
+/* ── 右栏记忆页签的**布局与内容**重做（2026-10-31，照截图问题 + mockup 落地）── */
+{
+	const src = read('lib/client.agents.js');
+	const mem = read('lib/memory.js');
+	check('★ 页签不换行（5 个页签 ⇒ nowrap + 短标签；否则「分支」掉到第二行贴在成员条旁边）',
+		/\.ag3-rtabs \{[^}]*flex-wrap:nowrap/.test(src) && /short: '最近'/.test(src) && /t\.short \|\| t\.label/.test(src));
+	check('★ 成员选择条在**内容区内部**（不再夹在页签行与内容区之间）',
+		/'ag3-gsel in-body'/.test(src) && /className: 'ag3-rbody'[\s\S]{0,260}'ag3-gsel in-body'/.test(src));
+	/* ⚠ 必须钉到 **gitGraphOf 那一处**（`isInitCommit(commit.subject)`）：只写 `isInit: isInitCommit`
+	   的话，gitLogOf 里还有一份 ⇒ 把分道图那条改坏也验不出红（假绿，刚踩到）。 */
+	check('★ init 提交：服务端打标 + 前端降级（只有 1 个提交时演化图不能全是噪音）',
+		/const isInitCommit = /.test(mem) && /isInit: isInitCommit\(commit\.subject\)/.test(mem)
+		&& /ag3-crow\.is-init/.test(src) && /rows\.every\(\(c\) => c\.isInit\)/.test(src));
+	check('★ AgentMemory 折叠成一行（网关没内容时别占半屏，把演化时间线挤没）',
+		/'ag3-am-fold'/.test(src) && /setAmOpenEvo/.test(src) && /hasContent \? amOpenEvo !== false/.test(src));
+	check('meta 瘦身（分支/版本徽标各最多 1 个 + 当天只显时刻）',
+		/brs2\.slice\(0, 1\)/.test(src) && /vers2\.slice\(0, 1\)/.test(src) && /shortWhen\(c\.date\)/.test(src));
+	check('长文案改短（「拿不到候选 —— 网关起来后再点「刷新」。」在窄栏会被截断）',
+		!/网关起来后再点/.test(src) && /网关未启动，点「刷新」重试/.test(src));
+	/* ★ 2026-10-31 用户报「来自 AgentMemory · 在线 · http://… 太挤」⇒ 标题行只放
+	   名称 + 状态徽标 + 刷新；**网关地址单独一行**截断（title 看全文）。 */
+	check('★ AgentMemory 头部两行布局（状态不再和网关 URL 挤一行）',
+		/'ag3-am-hd'/.test(src) && /'ag3-am-url'/.test(src) && /title: String\(d0\.gateway\)/.test(src));
+	/* ★ 2026-10-31 用户要求：Bots 工作台不要宿主外壳的浮动工具栏（vssWbActions，
+	   出处 = @vssaros/dsh-workbenches；本 chunk 只在本工作台页面加载 ⇒ 作用域天然限定）。 */
+	check('★ 隐藏宿主浮动工具栏（.vssWbActions，用户要求；恢复 = 删这条 CSS）',
+		/\.vssWbActions \{ display:none !important; \}/.test(src));
 }
 
 console.log(`\n[agents] ${pass} passing / ${fail} failing`);

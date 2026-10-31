@@ -1,7 +1,7 @@
 {
   "name": "@vssaros/dsh-scheduler",
-  "version": "0.3.0",
-  "description": "VsSaros Scheduler module for DeepSeek Harness: thin wrapper over the official @deepseek-ai/dsh-schedule service. 0.3.0 rewires the workbench to the NATIVE task-manager page (a verbatim MIT copy of @deepseek-ai/dsh-client-ui-schedule's client chunk in lib/client.native.js, whose apply() is replaced by a single desktopWorkbenches.register call). SSR page at /x/scheduler/ + legacy migration stay as before.",
+  "version": "0.5.6",
+  "description": "VsSaros Scheduler module for DeepSeek Harness. Host side: self-built schedule engine (occupies the `schedule` service key; tasks live in <dataRoot>/scheduler/tasks.json, not in Sessions) served over /x/scheduler/api/*. Client side: a **self-built** workbench (17KB, shared `wb-*` primitives) that reads those same-origin routes — no official `@deepseek-ai/dsh-client-ui-schedule` chunk (the self-built engine has no `@Remote`, so the official page's `remote.schedule` data source could never work without an adapter layer; it also had to be re-copied on every upstream bump). SSR page at /x/scheduler/ + legacy migration stay as before.",
   "private": true,
   "type": "module",
   "main": "lib/index.js",
@@ -13,10 +13,14 @@
   "files": [
     "lib/index.js",
     "lib/client.js",
-    "lib/client.native.js",
+    "lib/core/cron.js",
+    "lib/core/task.js",
+    "lib/engine.js",
     "lib/pageShell.js",
     "lib/foundationRef.js",
     "lib/migrate.js",
+    "lib/store.js",
+    "lib/tools.js",
     "cordis.patch.yml"
   ],
   "peerDependencies": {
@@ -54,15 +58,16 @@
     "legacyCounterpart": "vssaros.dsh.scheduler",
     "workbench": {
       "title": "自动化任务",
-      "description": "自动化任务（原生界面）：搜索、状态筛选、查看详情与投递历史、改时间、删除。",
+      "description": "自动化任务（自建调度）：定时/周期/一次性任务，支持触发循环（loop）与投递历史。",
       "icon": "codicon:clock",
       "repository": "vssaros:scheduler",
       "customFrame": false,
-      "headerLayout": "default"
+      "headerLayout": "default",
+      "floatingActions": false
     }
   },
   "license": "MIT",
   "scripts": {
-    "check": "node ./test/run-scheduler-check.mjs"
+    "check": "node ./test/run-scheduler-check.mjs && node ./test/run-scheduler-host-check.mjs && node ./test/run-cron-check.mjs && node ./test/run-engine-check.mjs"
   }
 }

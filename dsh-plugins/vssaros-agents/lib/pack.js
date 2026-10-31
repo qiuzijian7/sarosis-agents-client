@@ -25,7 +25,7 @@ import { join } from 'node:path';
 
 import { agentFromFile, slugify } from './core/agents.js';
 import { zipRead, zipWrite } from './core/zip.js';
-import { memoryDirOf, safeMemoryFileName } from './memory.js';
+import { memoryBundleOf, memoryDirOf, restoreMemoryHistory, safeMemoryFileName } from './memory.js';
 import { agentsRootOf, dataRootOf } from './store.js';
 
 export const PACK_SCHEMA = 'vssaros-agent/1';
@@ -34,6 +34,10 @@ export const AGENT_MD_NAME = '.agent.md';
 export const MEMORY_PREFIX = 'memory/';
 const MAX_ENTRY_BYTES = 2 * 1024 * 1024;
 const MAX_ENTRIES = 200;
+/** 记忆仓库历史的 bundle 名（对齐 DSB 的 `.botharness/git-history.bundle`，我们包是扁平的 ⇒ 直接放根）。 */
+export const MEMORY_HISTORY_NAME = 'memory-history.bundle';
+/** bundle 单独一个上限（比 2MB 大：历史里是全部分支与 tag；但也要挡"塞个大家伙进来"）。 */
+const MAX_HISTORY_BYTES = 8 * 1024 * 1024;
 
 const httpError = (status, message) => Object.assign(new Error(message), { httpStatus: status });
 
@@ -100,6 +104,25 @@ export async function exportAgent(config, agentId, options = {}) {
 	entries.push({ name: MANIFEST_NAME, data: Buffer.from(JSON.stringify(manifest, null, 2) + '\n', 'utf8') });
 	entries.push({ name: AGENT_MD_NAME, data: Buffer.from(mdText, 'utf8') });
 
+	/* ★ 记忆仓库的 **Git 历史**（2026-10-31，对齐 DSB 的 git-history.bundle）：
+	   勾了才带 —— 因为历史里还留着**删掉过的内容**，属于"比当前记忆更敏感"的数据；
+	   且 `includeMemory === false` 时强制不带（没带记忆就没道理带它的历史）。 */
+	const includeHistory = options.includeHistory === true && includeMemory;
+	let history = null;
+	if (includeHistory) {
+		const bundle = await memoryBundleOf(config, agent.id).catch(() => null);
+		if (bundle && bundle.data) {
+			if (bundle.data.length <= MAX_HISTORY_BYTES) {
+				entries.push({ name: MEMORY_HISTORY_NAME, data: bundle.data });
+				history = { included: true, bytes: bundle.bytes, commits: bundle.commits };
+			} else {
+				history = { included: false, bytes: bundle.bytes, tooBig: true };
+			}
+		} else {
+			history = { included: false, note: '这个 agent 还没启用 Git 版本化 ⇒ 没有历史可带' };
+		}
+	}
+
 	const memoryFiles = [];
 	if (includeMemory) {
 		const memDir = memoryDirOf(config, agent.id);
@@ -131,6 +154,7 @@ export async function exportAgent(config, agentId, options = {}) {
 		buffer,
 		bytes: buffer.length,
 		memoryFiles,
+		history,
 		manifest,
 	};
 }
@@ -154,7 +178,11 @@ export async function saveExport(config, agentId, options = {}) {
 		}
 	}
 	await writeFile(file, pack.buffer);
-	return { id: pack.id, name: pack.name, fileName: pack.fileName, bytes: pack.bytes, memoryFiles: pack.memoryFiles, path: file };
+	// `history` 一并返回：调用方要能看出"历史到底带没带出去"（带了多大 / 没带是因为没启用 Git）
+	return {
+		id: pack.id, name: pack.name, fileName: pack.fileName, bytes: pack.bytes,
+		memoryFiles: pack.memoryFiles, history: pack.history, path: file,
+	};
 }
 
 /** 包内路径白名单校验（见文件头"安全口径"）。返回规范化后的条目类型。 */
@@ -184,7 +212,10 @@ function classifyEntry(name) {
 		}
 		return { kind: 'memory', path: norm, fileName: safe };
 	}
-	throw httpError(400, `包里有多余的文件（只认 ${MANIFEST_NAME} / ${AGENT_MD_NAME} / ${MEMORY_PREFIX}*）：${norm}`);
+	if (norm === MEMORY_HISTORY_NAME) {
+		return { kind: 'history', path: norm };
+	}
+	throw httpError(400, `包里有多余的文件（只认 ${MANIFEST_NAME} / ${AGENT_MD_NAME} / ${MEMORY_PREFIX}* / ${MEMORY_HISTORY_NAME}）：${norm}`);
 }
 
 /**
@@ -208,9 +239,12 @@ export async function importAgent(config, buffer, options = {}) {
 	let mdText = null;
 	const memories = [];
 	let manifest = null;
+	let historyData = null;
 	for (const entry of entries) {
-		if (entry.data.length > MAX_ENTRY_BYTES) {
-			throw httpError(400, `包里有超大文件（>2MB）：${entry.name}`);
+		// 历史 bundle 单独一个上限（比普通条目大，但也要挡"塞个大家伙进来"）
+		const cap = entry.name === MEMORY_HISTORY_NAME ? MAX_HISTORY_BYTES : MAX_ENTRY_BYTES;
+		if (entry.data.length > cap) {
+			throw httpError(400, `包里有超大文件（>${Math.round(cap / 1024 / 1024)}MB）：${entry.name}`);
 		}
 		const info = classifyEntry(entry.name);
 		if (info.kind === 'agentMd') {
@@ -220,6 +254,11 @@ export async function importAgent(config, buffer, options = {}) {
 			mdText = entry.data.toString('utf8');
 		} else if (info.kind === 'memory') {
 			memories.push({ name: info.fileName, data: entry.data });
+		} else if (info.kind === 'history') {
+			if (historyData !== null) {
+				throw httpError(400, `包里有不止一个 ${MEMORY_HISTORY_NAME}`);
+			}
+			historyData = entry.data;
 		} else if (info.kind === 'manifest') {
 			try {
 				manifest = JSON.parse(entry.data.toString('utf8'));
@@ -258,11 +297,18 @@ export async function importAgent(config, buffer, options = {}) {
 			memoryFiles.push(mem.name);
 		}
 	}
+	/* ★ 装回历史 —— 放在记忆文件**之后**：只拉对象与 refs，不动工作区 ⇒ 不会覆盖刚导入的文件。 */
+	let history = null;
+	if (historyData) {
+		history = await restoreMemoryHistory(config, id, historyData)
+			.catch((e) => ({ restored: false, reason: String(e?.message ?? e) }));
+	}
 	return {
 		id,
 		name: agent.name,
 		mode: already ? 'overwritten' : 'created',
 		memoryFiles,
+		history,
 		wrote,
 	};
 }

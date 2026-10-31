@@ -39,7 +39,7 @@ import { auditBundledPluginVersions, isVersionNewer, renderBundledVersionAudit }
 import { describeManualUpgrade, IThirdPartyPlugin, pickThirdPartyPlugins, upgradableSpecOf } from '../common/dshPluginUpgrade.js';
 import { DSH_HOST_IDLE_TTL_MS, DshHostOverlayKind, hostOverlayFileName, IDshHostConfig, renderHostOverlays } from '../common/dshHostConfig.js';
 import { HOST_RUN_OWNERSHIP_HEARTBEAT_MS, hostRunOwnershipFileName } from '../common/dshHostRunOwnership.js';
-import { DSH_ARCHIFY_PLUGIN_NAME, DSH_BRIDGE_PLUGIN_NAME, DSH_EGO_PLUGIN_NAME, DSH_BROWSER_PLUGIN_NAME, DSH_CHAT_SURFACE_PLUGIN_NAME, DSH_DEFAULT_PROFILE, DSH_FOUNDATION_PLUGIN_NAME, DSH_KB_REFS_PLUGIN_NAME, DSH_SCHEDULE_BUNDLE_PLUGIN_NAME, DSH_UNREAL_PLUGIN_NAME, DSH_VOICE_BUNDLE_PLUGIN_NAME, DSH_WEB_APP_BUNDLE_NAME, DSH_WORKBENCHES_PLUGIN_NAME, IDshBundledInstallResult, IDshHostStartOptions, IDshHostStatus, IDshPluginInfo, sameStartOptions } from '../common/dshHarness.js';
+import { DSH_ARCHIFY_PLUGIN_NAME, DSH_BRIDGE_PLUGIN_NAME, DSH_EGO_PLUGIN_NAME, DSH_BROWSER_PLUGIN_NAME, DSH_CHAT_SURFACE_PLUGIN_NAME, DSH_DEFAULT_PROFILE, DSH_FOUNDATION_PLUGIN_NAME, DSH_KB_REFS_PLUGIN_NAME, DSH_LOOP_PLUGIN_NAME, DSH_UNREAL_PLUGIN_NAME, DSH_VOICE_BUNDLE_PLUGIN_NAME, DSH_WEB_APP_BUNDLE_NAME, DSH_WORKBENCHES_PLUGIN_NAME, DSH_WORKITEM_PLUGIN_NAME, IDshBundledInstallResult, IDshHostStartOptions, IDshHostStatus, IDshPluginInfo, sameStartOptions } from '../common/dshHarness.js';
 import { mergeMissingBundles, parseProfileBundles } from '../common/dshPluginActivation.js';
 import { hostLeaseBlocker, IDshHostLease } from '../common/dshHostLease.js';
 import { SANDBOX_FALLBACK_MODE, SANDBOX_FALLBACK_ROOT } from '../common/dshSandboxCompat.js';
@@ -235,6 +235,20 @@ export interface IDshHostSupervisorOptions {
 	 * 装不上不影响启动 —— 用户没装 ego lite 应用时那 4 个工具本来就用不了，`ego_status` 会说明原因。
 	 */
 	readonly egoPluginDir?: string;
+	/**
+	 * **work item 内核**目录（`dsh-plugins/vssaros-workitem/`，2026-10-31）。
+	 *
+	 * 与 archify / ego 同一条"存在才装"的伴生路径（同样没有 `vssaros.module`）。
+	 * ⚠ 装不上**不是**"少一个可选能力"：`vssaros-loop` 与群聊的派发/记账都经它的服务
+	 *   —— 缺了会在调用时报"组合里缺 @vssaros/dsh-workitem"（fail-fast，不静默降级）。
+	 * ⚠ 顺序要求：排在 `loopPluginDir` 与模块插件**之前**（见伴生安装清单的先后）。
+	 */
+	readonly workItemPluginDir?: string;
+	/**
+	 * **无人值守循环**目录（`dsh-plugins/vssaros-loop/`，2026-10-30）。
+	 * 与 workitem 同一条伴生路径；必须在 workitem **之后**装（它 `ctx.inject(['vssarosWorkItems'])` 等内核）。
+	 */
+	readonly loopPluginDir?: string;
 	/**
 	 * 随产品分发的**模块插件**（`[包名, 目录]`；由 channel 用 `listBundledPlugins` 自发现）。
 	 * 2026-10-11 起**全部随包自动安装**（用户要求）：agents / skills / mcp / kb / memory / codebase /
@@ -1055,6 +1069,11 @@ export class DshHostSupervisor extends Disposable {
 				// 与 archify / browser 同一条"存在才装、装不上不影响启动"的路（本地暂存目录 ⇒ 零网络）。
 				// 它不提供浏览器本体（第三方 app 单独安装）⇒ 缺席只是少一个可选浏览器，不是能力回归。
 				[DSH_EGO_PLUGIN_NAME, this._opts.egoPluginDir, 'ego lite plugin'],
+				// work item 内核（2026-10-31）：loop 与群聊共用的判据层 ⇒ 必须**先于**它们装
+				// （consume 方用 `ctx.inject(['vssarosWorkItems'], …)` 等服务就绪）。
+				[DSH_WORKITEM_PLUGIN_NAME, this._opts.workItemPluginDir, 'work item kernel'],
+				// 无人值守循环（2026-10-30）：同上一条伴生路径，排在工作项内核之后。
+				[DSH_LOOP_PLUGIN_NAME, this._opts.loopPluginDir, 'unattended loop module'],
 				// 模块插件（agents / skills / mcp / kb / memory / codebase / kanban / workflow / dashboard / ide）：
 				// **全部随包自动安装**（2026-10-11 用户要求）。清单由 channel 用 `listBundledPlugins` 自发现
 				// （判据 `vssaros.module`，与插件中心「随包」段、容器聚合表同一真源）⇒ 新增模块不必改这里。
@@ -1065,7 +1084,11 @@ export class DshHostSupervisor extends Disposable {
 				[DSH_VOICE_BUNDLE_PLUGIN_NAME, resolveSiblingPackage(dsh.bin, DSH_VOICE_BUNDLE_PLUGIN_NAME), 'voice-input bundle'],
 				// 调度（官方实验 bundle，重构 2.1；S3 已验证）：time-context / schedule 服务 / ui-schedule。
 				// 装不上不影响启动，只是没有定时任务能力（legacy 调度器本来就不执行 ⇒ 无回归）。
-				[DSH_SCHEDULE_BUNDLE_PLUGIN_NAME, resolveSiblingPackage(dsh.bin, DSH_SCHEDULE_BUNDLE_PLUGIN_NAME), 'schedule bundle'],
+				// ⚠ 2026-10-31：**不再安装** `@deepseek-ai/dsh-experimental-schedule-bundle`。
+				//   自建调度引擎（`vssaros-scheduler` 0.4.0 起）提供 `schedule` 服务；
+				//   若把官方 bundle 也装上 ⇒ 两个 provider 抢同一个服务键。
+				//   实测它本来就没装成功过（详见 `DSH_SCHEDULE_BUNDLE_PLUGIN_NAME` 的注释），
+				//   这里只是把"以后也别装"钉死 —— 能力不回退：调度此前一直是缺失的。
 			];
 			// ★ 2026-10-12：本次启动要装的伴生插件若**没装上**，就记一笔 —— `_ensurePlugin` 失败时
 			//   只写日志并继续，于是缺包的 profile 最终表现为"60 秒没有任何进展"✗（真因埋在 Host 日志里）。

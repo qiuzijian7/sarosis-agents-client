@@ -322,9 +322,11 @@ window.__ModuleLoader__.load({
 			{ k: 'assign', label: '委派', icon: '⇄' },
 			{ k: 'auth', label: '授权', icon: '⚿' },
 		];
-		/* 右栏 5 个子 tab（顺序与 mockup 一致） */
+		/* 右栏 5 个子 tab（顺序与 mockup 一致）
+		   ⚠ `short`（2026-10-31）：窄栏里 5 个全名页签会**换行**（「分支」掉到第二行，
+		   正好贴在成员选择条旁边，看着像 UI 坏了）⇒ 按钮只显示短标签，全名进 `title`。 */
 		const RTABS = [
-			{ k: 'recent', label: '最近会话', icon: '💬' },
+			{ k: 'recent', label: '最近会话', short: '最近', icon: '💬' },
 			{ k: 'mem', label: '记忆', icon: '❐' },
 			{ k: 'evo', label: '演化', icon: '⎇' },
 			{ k: 'ver', label: '版本', icon: '🏷' },
@@ -413,8 +415,16 @@ window.__ModuleLoader__.load({
 			const [sel, setSel] = useState({ kind: 'agent', id: '' });
 			// 右栏子 tab
 			const [rtab, setRtab] = useState('recent');
+			/* 群聊下右栏记忆类页签「看的是哪个成员」（2026-10-31）。
+			   群没有自己的记忆库 ⇒ 必须落到某个成员身上；空串 = 未选 ⇒ 取第一个成员。 */
+			const [groupMemId, setGroupMemId] = useState('');
 			// 群聊数据（名册签时拉一次；只读）
 			const [groupsView, setGroupsView] = useState({ status: 'idle', data: null, error: '' });
+			/* ★ 成员上限来自**后端**（`/groups` 响应的 `maxMembers`，2026-10-31）⇒ 前端不写死数字；
+			   否则"页面写着 20、后端其实 100"这种漂移迟早发生（本项目已多次踩两份实现的坑）。
+			   还没拉到（0）⇒ 只显示数量、不显示上限（不编一个假数）✓ */
+			const memberCap = Number(groupsView && groupsView.data ? groupsView.data.maxMembers : 0);
+			const memberCapTxt = memberCap > 0 ? (' / 上限 ' + memberCap) : '';
 			/* ⚠ 群聊重拉的**唯一**开关（2026-10-25 修"群聊永远 0"）：
 			   原来 effect 依赖里有 `groupsView.status`，而 effect 内部又 `setGroupsView({status:'loading'})`
 			   ⇒ 自己触发自己重跑 ⇒ cleanup 把 `alive` 置 false ⇒ 响应回来被丢弃
@@ -455,6 +465,8 @@ window.__ModuleLoader__.load({
 			const [amBusy, setAmBusy] = useState(false);
 			/* 演化页签的 AgentMemory 附加数据（结晶 / 治理审计） */
 			const [amExtra, setAmExtra] = useState({ state: 'idle', data: null });
+			/* 那一块的开合（2026-10-31）：null = 按有没有内容自动，true/false = 人手动。 */
+			const [amOpenEvo, setAmOpenEvo] = useState(null);
 			const [evoDiff, setEvoDiff] = useState(null);   // { title, rows, added, removed, coarse, loading, error }
 			// 「Agent 设置」= 二级页面（**React 实现**，数据源只有 /x/agents/api/*，不开编辑器 ⇒ 桌面窗口不黑屏）
 			const [settingFor, setSettingFor] = useState('');
@@ -798,6 +810,17 @@ window.__ModuleLoader__.load({
 			const groups = (groupsView.data && Array.isArray(groupsView.data.groups)) ? groupsView.data.groups : [];
 			const curAgent = sel.kind === 'agent' ? (agents.find(a => a.id === sel.id) || visible[0] || null) : null;
 			const curGroup = sel.kind === 'group' ? (groups.find(g => g.id === sel.id) || groups[0] || null) : null;
+			/* 群成员（只在群选中时算，给右栏用） */
+			const groupMembers = (sel.kind === 'group' && curGroup)
+				? agents.filter((a) => (Array.isArray(curGroup.members) ? curGroup.members : []).map(String).includes(String(a.id)))
+				: [];
+			/* ★ 右栏**记忆类页签**的数据主体（2026-10-31）：
+			   群选中时 = 群里挑中的那个成员；否则 = 当前 agent。
+			   ⚠ 不能去改 `curAgent` —— 它还决定中间栏渲染 midGroup 还是 midAgent
+			   （把群当成 agent 会把中间栏的群聊 iframe 换成单个 bot 的档案页）。 */
+			const memAgent = sel.kind === 'group'
+				? (groupMembers.find((a) => String(a.id) === String(groupMemId)) || groupMembers[0] || null)
+				: curAgent;
 
 			/* ══ 真聊天（第 2 步）：中间栏接宿主的会话事件流 ══════════════════════════════
 			   数据来自 GET /x/agents/api/live?session=<id>，三种帧（字段为 p3-174 抓帧实测）：
@@ -992,15 +1015,20 @@ window.__ModuleLoader__.load({
 			// 右栏记忆类数据：只在需要时拉（mem/evo/ver/br），且跟着选中的 agent 走
 			useEffect(() => {
 				if (tab !== 'roster' || rtab === 'recent') { return undefined; }
-				const agentId = curAgent ? curAgent.id : '';
+				/* ★ 群聊下也要拉 —— 数据主体是 `memAgent`（群里挑中的成员），不是 curAgent。
+				   原先用 curAgent ⇒ 群选中时它为 null ⇒ 记忆/演化/版本/分支四个页签**永远空**（2026-10-31 用户报）。 */
+				const agentId = memAgent ? memAgent.id : '';
 				if (!agentId) { setMemView({ status: 'idle', data: null, error: '' }); return undefined; }
 				let alive = true;
 				setMemView({ status: 'loading', data: null, error: '' });
-				getJson('/memory?agent=' + encodeURIComponent(agentId))
+				/* 2026-10-31：右栏四个记忆页签要靠这些数据 ——
+				     versions=1 版本（tag） · branches=1 分支 · graph=1 分道图（服务端算好轨道与 path）
+				   三者都是**按需**的（不带就不多起 git 子进程），所以这里必须显式带上。 */
+				getJson('/memory?agent=' + encodeURIComponent(agentId) + '&limit=50&versions=1&branches=1&graph=1')
 					.then(body => { if (alive) { setMemView({ status: 'ready', data: body, error: '' }); } })
 					.catch(e => { if (alive) { setMemView({ status: 'error', data: null, error: String(e && e.message || e) }); } });
 				return () => { alive = false; };
-			}, [tab, rtab, curAgent && curAgent.id]);
+			}, [tab, rtab, memAgent && memAgent.id]);
 
 			/** 拉 AgentMemory 候选（只读）。网关离线/未配置都不算错 —— 只是这一块显示状态。 */
 			const loadAgentMemory = async () => {
@@ -1087,16 +1115,24 @@ window.__ModuleLoader__.load({
 				const items = Array.isArray(d0.items) ? d0.items : [];
 				const pickedCount = items.filter((x) => amPick[String(x.id)]).length;
 				const st = String(amView.state || 'idle');
-				const label = st === 'online' ? ('在线 · ' + String(d0.gateway || ''))
-					: st === 'offline' ? '离线（拉不到候选）'
-						: st === 'unconfigured' ? '未配置（找不到网关地址）'
-							: st === 'loading' ? '读取中…' : '未读取';
-				return h('div', { className: 'ag3-sechd', 'data-ag-am': st, style: { marginTop: '8px' } },
-					h('span', null, '来自 AgentMemory', h('small', null, ' · ' + label)),
-					h('button', {
-						type: 'button', className: 'wb-btn is-ghost ag3-mini', 'data-ag-am-reload': '',
-						disabled: st === 'loading', onClick: () => { void loadAgentMemory(); },
-					}, '刷新'),
+				/* ★ 2026-10-31 重新布局（用户报「太挤」）：原来标题、状态（含**网关 URL**）、刷新
+				   挤在 .ag3-sechd 一行里 ⇒ 长地址把整行撑爆、换行错乱。
+				   现在：标题行 = 名称 + 状态徽标 + 刷新（靠右）；网关地址**单独一行**截断（title 看全文）。 */
+				const stateLabel = st === 'online' ? '在线'
+					: st === 'offline' ? '离线' : st === 'unconfigured' ? '未配置'
+						: st === 'loading' ? '读取中…' : '未读取';
+				return h('div', { 'data-ag-am': st, style: { marginTop: '10px' } },
+					h('div', { className: 'ag3-am-hd' },
+						h('span', { className: 'ag3-am-title' }, '来自 AgentMemory'),
+						h('span', { className: 'ag3-chip ' + (st === 'online' ? 'is-branch' : 'is-warn') }, stateLabel),
+						h('span', { className: 'wb-spacer' }),
+						h('button', {
+							type: 'button', className: 'wb-btn is-ghost ag3-mini', 'data-ag-am-reload': '',
+							disabled: st === 'loading', onClick: () => { void loadAgentMemory(); },
+						}, '刷新')),
+					(st === 'online' && d0.gateway)
+						? h('div', { className: 'ag3-am-url', title: String(d0.gateway) }, String(d0.gateway))
+						: null,
 					items.length
 						? h('div', null,
 							items.slice(0, 20).map((x) => h('label', {
@@ -1127,7 +1163,8 @@ window.__ModuleLoader__.load({
 								}, '→ 同步 MEMORY.md 到库'),
 								h('small', null, '导入 = 追加到 MEMORY.md（不覆盖）；同步 = 把文件条目写进库（只增不改，库不回改文件）')))
 						: h('p', { className: 'wb-empty' },
-							st === 'online' ? '条目库是空的。' : '拿不到候选 —— 网关起来后再点「刷新」。'));
+							/* ⚠ 文案要短：窄栏里长句会被截断（曾截成读不懂的半句） */
+							st === 'online' ? '条目库是空的。' : '网关未启动，点「刷新」重试'));
 			};
 
 			/** 拉结晶 + 治理审计（演化页签用；只读，三态不抛）。 */
@@ -1159,31 +1196,46 @@ window.__ModuleLoader__.load({
 				const audit = Array.isArray(d0.audit) ? d0.audit : [];
 				const st = String(amExtra.state || 'idle');
 				const label = st === 'online' ? '在线' : st === 'offline' ? '离线' : st === 'unconfigured' ? '未配置' : st === 'loading' ? '读取中…' : '未读取';
-				const hint = st === 'online' ? null : '拿不到 —— 网关起来后再点「刷新」。';
+				// ⚠ 文案要短：窄栏里长句会被截断（曾截成读不懂的半句）
+				const hint = st === 'online' ? null : '网关未启动，点「刷新」重试';
+				/* ★ 2026-10-31：网关没内容时这两块就是两坨「拿不到」，占掉半屏 ⇒ 演化时间线被挤成一条。
+				   ⇒ 折叠成一行；**在线且有内容时默认展开**，其余默认折叠（人可手动开合）。 */
+				const hasContent = crystals.length > 0 || audit.length > 0;
+				const open = hasContent ? amOpenEvo !== false : amOpenEvo === true;
 				return h('div', { 'data-ag-am-evo': st },
-					h('div', { className: 'ag3-sechd', style: { marginTop: '8px' } },
-						'记忆结晶', h('small', null, ' · AgentMemory · ' + label + ' · ' + crystals.length),
-						h('button', {
-							type: 'button', className: 'wb-btn is-ghost ag3-mini', 'data-ag-am-evo-reload': '',
-							disabled: st === 'loading', onClick: () => { void loadAmExtra(); },
-						}, '刷新')),
-					crystals.length
-						? crystals.slice(0, 10).map((x, i) => h('div', {
-							key: 'c' + i, className: 'ag3-item', 'data-ag-am-crystal': String(x.id),
-						}, h('span', null, '💎 '), h('small', null, String(x.title || '').slice(0, 70)),
-							h('span', { className: 'wb-spacer' }),
-							h('small', null, String(x.at || '').slice(0, 16))))
-						: h('p', { className: 'wb-empty' }, hint || '还没有结晶（记忆强度够时 AgentMemory 会自动结晶）。'),
-					h('div', { className: 'ag3-sechd', style: { marginTop: '8px' } },
-						'治理审计', h('small', null, ' · AgentMemory · ' + audit.length)),
-					audit.length
-						? audit.slice(0, 8).map((x, i) => h('div', {
-							key: 'a' + i, className: 'ag3-item', 'data-ag-am-audit': String(x.id),
-						}, h('span', { className: 'wb-badge' }, String(x.action || '')), ' ',
-							h('small', null, (String(x.target || '') + ' ' + String(x.at || '')).trim().slice(0, 60))))
-						: h('p', { className: 'wb-empty' }, hint || '没有治理记录。'),
-					(d0.warn && d0.warn.length) ? h('p', { className: 'ag-hint', 'data-ag-am-warn': '' }, String(d0.warn.join('；'))) : null);
-			};
+					h('div', {
+						className: 'ag3-am-fold', role: 'button', tabIndex: 0, 'data-ag-am-evo-fold': '',
+						onClick: () => setAmOpenEvo(!open),
+					},
+						h('span', { className: 'ag3-am-caret' }, open ? '▾' : '▸'),
+						' AgentMemory · ' + label
+						+ (hasContent ? ' · ' + crystals.length + ' 结晶 / ' + audit.length + ' 审计' : '')),
+					open
+						? h('div', { className: 'ag3-am-body' },
+							h('div', { className: 'ag3-sechd', style: { marginTop: '6px' } },
+								'记忆结晶', h('small', null, ' · AgentMemory · ' + label + ' · ' + crystals.length),
+								h('button', {
+									type: 'button', className: 'wb-btn is-ghost ag3-mini', 'data-ag-am-evo-reload': '',
+									disabled: st === 'loading', onClick: () => { void loadAmExtra(); },
+								}, '刷新')),
+							crystals.length
+								? crystals.slice(0, 10).map((x, i) => h('div', {
+									key: 'c' + i, className: 'ag3-item', 'data-ag-am-crystal': String(x.id),
+								}, h('span', null, '💎 '), h('small', null, String(x.title || '').slice(0, 70)),
+									h('span', { className: 'wb-spacer' }),
+									h('small', null, String(x.at || '').slice(0, 16))))
+								: h('p', { className: 'wb-empty' }, hint || '还没有结晶（记忆强度够时 AgentMemory 会自动结晶）。'),
+							h('div', { className: 'ag3-sechd', style: { marginTop: '8px' } },
+								'治理审计', h('small', null, ' · AgentMemory · ' + audit.length)),
+							audit.length
+								? audit.slice(0, 8).map((x, i) => h('div', {
+									key: 'a' + i, className: 'ag3-item', 'data-ag-am-audit': String(x.id),
+								}, h('span', { className: 'wb-badge' }, String(x.action || '')), ' ',
+									h('small', null, (String(x.target || '') + ' ' + String(x.at || '')).trim().slice(0, 60))))
+								: h('p', { className: 'wb-empty' }, hint || '没有治理记录。'),
+							(d0.warn && d0.warn.length) ? h('p', { className: 'ag-hint', 'data-ag-am-warn': '' }, String(d0.warn.join('；'))) : null)
+						: null);
+				};
 
 			/* 记忆页签激活时拉一次候选；网关离线只影响这一块的状态行，不影响主数据 */
 			useEffect(() => {
@@ -2168,9 +2220,10 @@ window.__ModuleLoader__.load({
 							members.length ? members.map(row) : h('p', { className: 'wb-empty' }, '这个群还没有成员。'),
 							h('p', { className: 'ag-hint' }, '群没有单一会话 —— 派发走每个成员各自的会话；点一行看它的最近会话。'));
 					}
-					return h('div', { 'data-ag-rtab-body': rtab, 'data-ag-rgroup': String(curGroup.id) },
-						h('p', { className: 'wb-empty' }, '群没有自己的' + rlabel + '仓库 —— 那是每个 agent 各自的。选一个成员查看：'),
-						members.length ? members.map(row) : h('p', { className: 'wb-empty' }, '这个群还没有成员。'));
+					/* 记忆类页签（mem/evo/ver/br）：**不在这里 return** —— 落到下面的通用渲染，
+					   数据主体是 `memAgent`（群里挑中的成员），成员选择条在右栏页签下方（`.ag3-gsel`）。
+					   ⚠ 2026-10-31：原来这里只列一遍成员、不显示任何数据 ⇒ 用户看到的就是"页签没生效"。
+					   诚实性没丢 —— 选择条上写明「群没有自己的记忆库」，看的是某个成员。 */
 				}
 				if (rtab === 'recent') {
 					const rows = curAgent ? (Array.isArray((home[curAgent.id] || {}).sessions) ? home[curAgent.id].sessions : []) : [];
@@ -2194,26 +2247,57 @@ window.__ModuleLoader__.load({
 						: h('p', { className: 'wb-empty', 'data-ag-rtab-body': 'recent' }, '这个 agent 还没有会话。');
 				}
 				if (rtab === 'ver' || rtab === 'br') {
-					// ⚠ 版本 / 分支：插件没暴露 tag/分支接口 ⇒ 如实说明，不编数据。
-					const log = (memView.data && Array.isArray(memView.data.log)) ? memView.data.log : [];
+					/* ★ 2026-10-31：版本 / 分支改成**只读展示真实数据**（之前是占位 + 跳完整页）。
+					   数据后端早就返回了（`versions=1` / `branches=1`），只是这里没读。
+					   ⚠ 写动作（打 tag / 删 tag / 切分支 / 从提交开分支）**仍在完整页** ——
+					     ① 右栏 320 塞不下确认与提示；② 「设置」弹层里已有一套版本/分支写 UI，
+					        这里再写一套就是两套并存（本项目已多次因此返工）。 */
+					if (memView.status === 'loading') { return h('p', { className: 'wb-empty', 'data-ag-rtab-body': rtab }, '正在读取…'); }
+					if (memView.status === 'error') { return h('p', { className: 'wb-empty', 'data-ag-rtab-body': rtab }, '读不到：' + memView.error); }
+					const d0 = memView.data || {};
+					const gitOn = !!(d0.git && d0.git.enabled);
+					const vers = Array.isArray(d0.versions) ? d0.versions : [];
+					const brs = Array.isArray(d0.branches) ? d0.branches : [];
+					const head = String((d0.graph && d0.graph.head) || '');
+					/* init 提交上的 tag（v0 之类）是建库时自动打的 ⇒ 标出来，别当用户起的版本 */
+					const initHashes = (Array.isArray(d0.graph && d0.graph.commits) ? d0.graph.commits : [])
+						.filter((c) => c && c.isInit).map((c) => String(c.hash || ''));
+					const goFull = () => openModuleRoute('/x/agents/memory/' + encodeURIComponent(String((memAgent && memAgent.id) || '')), '完整页');
 					if (rtab === 'ver') {
 						return h('div', { 'data-ag-rtab-body': 'ver' },
-							log.length
-								? h('div', null,
-									h('div', { className: 'ag3-sechd' }, '版本 = 记忆提交', h('small', null, String(log.length))),
-									log.slice(0, 12).map((c, i) => h('div', { key: 'v' + i, className: 'ag3-item' },
-										h('code', null, String(c.hash || c.rev || '').slice(0, 8)), ' ',
-										h('small', null, String(c.message || c.subject || '').slice(0, 40)))))
-								: h('p', { className: 'wb-empty' }, '还没有记忆提交（也就没有版本）。'),
-							h('p', { className: 'ag-hint' }, '打 tag / 删除 tag 是写动作 —— 在',
-								h('button', { type: 'button', className: 'wb-btn is-ghost', onClick: () => openModuleRoute('/x/agents/', '完整页') }, '完整页'),
-								'做。'));
+							h('div', { className: 'ag3-sechd' }, '版本 = 你起过名字的提交', h('small', null, String(vers.length))),
+							vers.length
+								? vers.slice(0, 12).map((v, i) => {
+									const vh = String(v.hash || '');
+									const isCur = !!(head && vh && head.indexOf(vh) === 0);
+									const isAuto = initHashes.some((h) => !!(h && vh && h.indexOf(vh) === 0));
+									return h('div', { key: 'v' + i, className: 'ag3-item ag3-vrow' },
+										h('div', { className: 'ag3-vname' },
+											h('b', null, String(v.tag || '').slice(0, 24)),
+											isCur ? h('span', { className: 'wb-badge' }, '当前') : null,
+											isAuto ? h('span', { className: 'ag3-chip' }, '初始化自动') : null),
+										h('small', null, h('code', null, vh.slice(0, 8)), ' · ' + String(v.date || '')));
+								})
+								: h('p', { className: 'wb-empty' }, gitOn ? '还没有版本 —— 给某次提交起个名，它就出现在这里（最新的在最上面）。' : '还没有启用 Git 版本化，也就没有版本。'),
+							h('p', { className: 'ag-hint' }, gitOn ? '起名 / 移除 / 恢复都是写动作 —— 在' : '先到',
+								h('button', { type: 'button', className: 'wb-btn is-ghost', onClick: goFull }, '完整页'),
+								gitOn ? '做。' : '启用 Git 版本化。'));
 					}
 					return h('div', { 'data-ag-rtab-body': 'br' },
-						h('p', { className: 'wb-empty' }, '分支：插件没暴露读取接口（list/switch 都是写动作）。'),
-						h('p', { className: 'ag-hint' }, '在',
-							h('button', { type: 'button', className: 'wb-btn is-ghost', onClick: () => openModuleRoute('/x/agents/', '完整页') }, '完整页'),
-							'看/切分支。'));
+						h('div', { className: 'ag3-sechd' }, '分支', h('small', null, String(brs.length))),
+						brs.length
+							? brs.slice(0, 12).map((b, i) => h('div', { key: 'b' + i, className: 'ag3-item ag3-vrow' },
+								h('div', { className: 'ag3-vname' },
+									h('b', null, String(b.name || '')),
+									b.current ? h('span', { className: 'wb-badge' }, '当前') : null),
+								h('small', null, h('code', null, String(b.hash || '').slice(0, 8)), ' · ' + String(b.date || ''))))
+							: h('p', { className: 'wb-empty' }, '分支是记忆的另一条发展路线，平时用不到。'),
+						(d0.git && d0.git.dirty)
+							? h('p', { className: 'ag3-warn' }, '还有 ' + String(d0.git.dirty) + ' 个文件没提交 —— 切分支前先提交快照，否则改动会被带到另一条分支上。')
+							: null,
+						h('p', { className: 'ag-hint' }, '切分支 / 从某次提交开新分支都是写动作 —— 在',
+							h('button', { type: 'button', className: 'wb-btn is-ghost', onClick: goFull }, '完整页'),
+							'做。'));
 				}
 				// mem / evo —— 共用同一次 /memory 拉取
 				if (memView.status === 'loading') { return h('p', { className: 'wb-empty', 'data-ag-rtab-body': rtab }, '正在读取…'); }
@@ -2222,11 +2306,50 @@ window.__ModuleLoader__.load({
 				const files = Array.isArray(d.files) ? d.files : (Array.isArray(d.listing) ? d.listing : []);
 				const log = Array.isArray(d.log) ? d.log : [];
 				const primary = String((files[0] && (files[0].name || files[0].file)) || 'MEMORY.md');
-				if (!curAgent) {
-					return h('p', { className: 'wb-empty', 'data-ag-rtab-body': rtab }, '群聊没有自己的记忆仓库 —— 记忆/演化是每个 agent 各自的 Git。选中左边某个 agent 再看。');
+				/* ★ 数据主体是 memAgent（群选中时 = 群里挑中的成员）⇒ 群里有人就照样显示数据。 */
+				if (!memAgent) {
+					return h('p', { className: 'wb-empty', 'data-ag-rtab-body': rtab },
+						sel.kind === 'group'
+							? '这个群还没有成员 —— 记忆/演化/版本/分支都是每个成员各自的（群没有自己的记忆库）。'
+							: '选中左边某个 agent 再看它的记忆。');
 				}
 				if (rtab === 'mem') {
+					/* ★ 2026-10-31：补上 DSB 的「当前记忆」头部 —— 状态条 + 未提交改动分组。
+					   未提交按「已有记忆的更新 / 新记忆 / 已删除」分组（后端 `git.changes` 带 kind）。 */
+					const git = d.git || null;
+					const changes = Array.isArray(git && git.changes) ? git.changes : [];
+					const pick = (k) => changes.filter((c) => c && c.kind === k);
+					const upd = pick('updated');
+					const nw = pick('new');
+					const gone = pick('deleted');
+					const auto = d.autoCommit || null;
+					const chgRow = (c, i) => h('div', {
+						key: 'ch' + i, className: 'ag3-item ag3-click', role: 'button', tabIndex: 0,
+						'data-ag-mem-chg': String(c.path || ''),
+						onClick: () => { void openMemFile(String(c.path || '')); },
+					},
+						h('span', { className: 'ag3-chip is-' + String(c.kind || 'updated') },
+							c.kind === 'new' ? '新增' : c.kind === 'deleted' ? '删除' : '更新'),
+						' ', String(c.path || ''));
 					return h('div', { 'data-ag-rtab-body': 'mem' },
+						h('div', { className: 'ag3-membar' },
+							git && git.enabled
+								? h('span', { className: 'ag3-chip is-branch' }, String(git.branch || 'main'))
+								: h('span', { className: 'ag3-chip' }, '未启用 Git'),
+							h('span', { className: 'ag3-chip' }, String((git && git.commits) || 0) + ' 提交'),
+							changes.length ? h('span', { className: 'ag3-chip is-warn' }, String(changes.length) + ' 未提交') : null,
+							auto && auto.on
+								? h('small', { className: 'ag3-auto' }, '· 回合结束自动快照' + (auto.turns ? ' · 已 ' + auto.turns + ' 次' : ''))
+								: null),
+						changes.length
+							? h('div', null,
+								upd.length ? h('div', { className: 'ag3-sechd' }, '已有记忆的更新', h('small', null, String(upd.length))) : null,
+								upd.map(chgRow),
+								nw.length ? h('div', { className: 'ag3-sechd' }, '新记忆', h('small', null, String(nw.length))) : null,
+								nw.map(chgRow),
+								gone.length ? h('div', { className: 'ag3-sechd' }, '已删除', h('small', null, String(gone.length))) : null,
+								gone.map(chgRow))
+							: null,
 						h('div', { className: 'ag3-sechd' }, '记忆文件', h('small', null, String(files.length))),
 						files.length
 							? files.map((f, i) => {
@@ -2280,19 +2403,72 @@ window.__ModuleLoader__.load({
 							: null);
 				}
 				// evo
+				/* ★ 2026-10-31：画**分道图**（对齐 DeepSeekBot 的演化面板）。
+				   ⚠ 轨道号与 SVG path 全由服务端 `gitGraphOf` 算好（`lib/core/gitLanes.js` 是唯一真源），
+				     这里只负责渲染 —— 前端重算布局必然与后端分叉（本项目已多次踩到）。
+				   ⚠ 行高必须等于 gitLanes.js 的 ROW_H(46)：CSS `.ag3-crow{height:46px}` 与这里 `height:46` 同值。
+				   没有 graph（`git` 没启用 / 老后端）⇒ 退回线性 log，图上只画圆点，不崩。 */
+				/* meta 瘦身（2026-10-31）：当天只显时刻，徽标各最多 1 个 —— 窄栏里
+				   `hash · 全日期 · main · v0` 会互相挤到看不清。 */
+				const shortWhen = (s) => {
+					const t = String(s || '');
+					const today = new Date().toISOString().slice(0, 10);
+					return t.indexOf(today) === 0 ? (t.slice(11, 16) || t) : t;
+				};
+				const g0 = d.graph || null;
+				const gcommits = (g0 && Array.isArray(g0.commits)) ? g0.commits : [];
+				const rows = gcommits.length ? gcommits : log.map((c) => ({
+					hash: String(c.hash || c.rev || ''),
+					subject: String(c.message || c.subject || ''),
+					date: String(c.date || ''),
+					branches: [], versions: [], svg: null,
+				}));
+				const laneSvg = (c, i) => {
+					const svg = c && c.svg;
+					if (!svg) { return null; }
+					const width = Math.max(1, Number(svg.width) || 1) * 12;
+					const isHead = !!(g0 && g0.head && c.hash && String(g0.head).indexOf(String(c.hash)) === 0);
+					return h('svg', {
+						key: 's' + i, className: 'ag3-lane', width, height: 46,
+						viewBox: '0 0 ' + width + ' 46', 'aria-hidden': 'true',
+					},
+						(Array.isArray(svg.paths) ? svg.paths : []).map((pd, k) => h('path', {
+							key: 'p' + k, d: String(pd || ''), fill: 'none',
+							stroke: 'var(--dsw-alias-border-l1, rgba(127,127,127,.6))', strokeWidth: 1.5,
+						})),
+						h('circle', {
+							cx: Number((svg.dot && svg.dot.x) || 6), cy: Number((svg.dot && svg.dot.y) || 12), r: 3.2,
+							fill: isHead ? 'var(--dsw-alias-accent, #0e639c)' : 'var(--dsw-alias-label-tertiary, rgba(200,200,200,.55))',
+						}));
+				};
 				return h('div', { 'data-ag-rtab-body': 'evo' },
-					h('div', { className: 'ag3-sechd' }, '提交时间线', h('small', null, String(log.length))),
-					log.length
-						? log.slice(0, 12).map((c, i) => {
-							const rev = String(c.hash || c.rev || '');
+					h('div', { className: 'ag3-sechd' }, '提交时间线', h('small', null, String(rows.length))),
+					rows.length
+						? rows.slice(0, 12).map((c, i) => {
+							const rev = String(c.hash || '');
+							const brs2 = Array.isArray(c.branches) ? c.branches : [];
+							const vers2 = Array.isArray(c.versions) ? c.versions : [];
 							return h('div', {
-								key: 'e' + i, className: 'ag3-item ag3-click', role: 'button', tabIndex: 0,
+								key: 'e' + i,
+								/* ★ 初始提交降级（2026-10-31）：它是建库时自动写的，不算演化 ⇒ 灰掉一行 */
+								className: 'ag3-crow ag3-click' + (c.isInit ? ' is-init' : ''),
+								role: 'button', tabIndex: 0,
+								title: c.isInit ? '仓库初始化（不算演化）' : '',
 								'data-ag-evo-diff': rev, onClick: () => { void openEvoDiff(rev, primary); },
-							}, h('code', null, rev.slice(0, 8)), ' ',
-								h('small', null, String(c.message || c.subject || '').slice(0, 40)),
-								h('span', { className: 'wb-spacer' }), h('span', { className: 'ag-st' }, '看 diff'));
+							},
+								laneSvg(c, i),
+								h('span', { className: 'ag3-ctxt' },
+									h('span', { className: 'ag3-ct' }, String(c.subject || '').slice(0, 40)),
+									h('span', { className: 'ag3-ch' },
+										h('code', null, rev.slice(0, 8)), ' · ' + shortWhen(c.date),
+										brs2.slice(0, 1).map((b, k) => h('span', { key: 'bb' + k, className: 'ag3-chip is-branch' }, String(b))),
+										vers2.slice(0, 1).map((v, k) => h('span', { key: 'vv' + k, className: 'ag3-chip is-ver' }, String(v))))));
 						})
 						: h('p', { className: 'wb-empty' }, '没有历史版本（记忆目录可能还没启用 Git）。'),
+					/* 只有初始化提交 ⇒ 明说"这还不算演化"（否则用户看到 1 个提交以为它干了活） */
+					(rows.length && rows.every((c) => c.isInit))
+						? h('p', { className: 'ag-hint' }, '下面这条是仓库初始化，还不算演化 —— bot 写过记忆、或一轮对话结束后，这里会长出来。')
+						: null,
 					evoDiff
 						? h('div', { className: 'ag3-memview', 'data-ag-evo-diffview': '' },
 							h('div', { className: 'ag3-sechd' }, String(evoDiff.title || ''),
@@ -2349,8 +2525,29 @@ window.__ModuleLoader__.load({
 						key: t.k, type: 'button', 'data-ag-rtab': t.k,
 						className: 'ag3-rtab' + (rtab === t.k ? ' is-on' : ''),
 						onClick: () => { setRtab(t.k); setMemFile(null); setEvoDiff(null); },
-					}, t.icon + ' ' + t.label))),
-				h('div', { className: 'ag3-rbody', 'data-ag-rbody': '' }, rbody()));
+						/* 图标不再占用按钮宽度（语义不丢 ⇒ 进 title）*/
+						title: (t.icon ? t.icon + ' ' : '') + t.label,
+					}, t.short || t.label))),
+				/* ★ 群聊 + 记忆类页签：成员选择条（2026-10-31）。
+				   群没有自己的记忆库 ⇒ 必须让人知道"现在看的是谁"，并且能换人；
+				   否则右栏四个页签要么空白、要么只有一句"选一个成员"（用户报的"没生效"）。 */
+				/* ★ 成员选择条放进**内容区顶部**（2026-10-31）：原来夹在页签行与内容区之间，
+				   页签一换行它就贴着掉下来的「分支」，两件事黏成一团 ⇒ 现在是 rbody 的第一行。
+				   存在理由不变：群没有自己的记忆库 ⇒ 必须让人知道"现在看的是谁"并能换人。 */
+				h('div', { className: 'ag3-rbody', 'data-ag-rbody': '' },
+					(sel.kind === 'group' && rtab !== 'recent')
+						? h('div', { className: 'ag3-gsel in-body', 'data-ag-gsel': '' },
+							h('small', null, '看的是'),
+							groupMembers.length
+								? h('select', {
+									className: 'ag3-sel', value: String((memAgent && memAgent.id) || ''),
+									'aria-label': '选择查看哪个成员的记忆',
+									onChange: (ev) => { setGroupMemId(String((ev && ev.target && ev.target.value) || '')); },
+								}, groupMembers.map((a) => h('option', { key: 'gm' + a.id, value: String(a.id) }, String(a.name || a.id))))
+								: h('small', null, '（这个群还没有成员）'),
+							h('small', null, '· 群没有自己的记忆库'))
+						: null,
+					rbody()));
 
 			/* ══════ 顶部其它三个页签 ══════ */
 			const usagePanel = () => {
@@ -3005,7 +3202,7 @@ window.__ModuleLoader__.load({
 									})),
 							creating === 'group'
 								? h('div', { className: 'ag3-field' },
-									h('span', null, '成员（已选 ' + form.members.length + '）'),
+									h('span', null, '成员（已选 ' + form.members.length + memberCapTxt + '）'),
 									h('div', { className: 'ag3-members', 'data-ag-create-members': '' },
 										// 名册为空时给提示 —— 否则用户看到一块空白，提交时只被告知"至少要选一个成员"，
 										// 却不知道该选谁（这是最容易被当成"没反应"的场景）。
@@ -3242,8 +3439,95 @@ window.__ModuleLoader__.load({
 									}
 								},
 							}, gsBusy ? '保存中…' : '保存名称与策略')),
+						/* ★ 2026-10-31 加入方式（**两个**开关）：此前这两个开关只在 SSR 群聊页有 ⇒
+						   只在工作台里操作时，下面的待确认区**永远是空的**（要产生待确认项得先去群聊页翻开关）。
+						   为什么是**两个**不是一个：两个闸的**主体不同**（人 / Bot 自己），后果也不同 ——
+						   Bot 自决时它可能一直不回应，人就干等着；合成一个分不清该怪谁。
+						   ⚠ `requireApproval` 优先：它开着时 Bot 不得自己放行（服务层 403，见 respondGroupInvite）。
+						   ⚠ 默认 `botAutoAccept` 开（邀请即进群，与以前一致，不强迫多一步）；关掉要慎重 ——
+						     本地单用户场景下等于"拉了人进不来"。
+						   两个开关都**即时生效**（各发一条请求），不跟着「保存」走。 */
 						h('div', { className: 'ag3-field' },
-							h('span', null, '成员（' + members.length + '）'),
+							h('span', null, '加入方式'),
+							h('label', { className: 'ag3-field-row' },
+								h('input', {
+									type: 'checkbox', 'data-ag-gset-approval': '',
+									checked: t.requireApproval === true,
+									disabled: gsBusy,
+									onChange: (ev) => {
+										const on = ev.target.checked === true;
+										void runGroupAction(
+											{ action: 'approval', id: String(t.id), requireApproval: on },
+											on ? '已开启「加入需确认」：被邀请的先进待确认区' : '已关闭「加入需确认」：邀请直接进群',
+										);
+									},
+								}),
+								h('span', null, '加入需确认')),
+							h('span', { className: 'ag-hint' },
+								'打开后：被邀请的先进「待确认」，你在下面点 ✓ 才真正进群（防手滑拉一堆人）。'),
+							h('label', { className: 'ag3-field-row', style: { marginTop: '4px' } },
+								h('input', {
+									type: 'checkbox', 'data-ag-gset-autoaccept': '',
+									checked: t.botAutoAccept !== false,
+									disabled: gsBusy,
+									onChange: (ev) => {
+										const on = ev.target.checked === true;
+										void runGroupAction(
+											{ action: 'approval', id: String(t.id), botAutoAccept: on },
+											on ? 'Bot 自动接受邀请：邀请即进群' : '已改为等 Bot 自己回应邀请（它不回应就一直不进群）',
+										);
+									},
+								}),
+								h('span', null, 'Bot 自动接受邀请')),
+							h('span', { className: 'ag-hint' },
+								'默认开（邀请即进群，和以前一样）。关掉后：被邀请的 Bot 要自己用 '
+								+ 'agent_group_invite_respond 回应才进群 —— 在那之前它不进群、也不收群消息。')),
+						/* ★ 2026-10-31 待确认区（**工作台版**）—— 以前只在 SSR 群聊页有，
+						   工作台里群设置了半天却看不见"还有几个人等着进群"（邀请发出去像石沉大海）。
+						   ⚠ 与 SSR 页共用同一个 pending 结构与同一个 join-decide 口 ⇒ 两边不会分叉。
+						   ⚠ 「谁邀请的」和「等谁点头」必须显示出来，否则用户不知道该自己点还是等它：
+						     · 开了「加入需确认」        ⇒ 等你点 ✓
+						     · 只关了 botAutoAccept      ⇒ 等它自己回应（人也能在这里代它决定） */
+						(() => {
+							const pend = Array.isArray(t.pending) ? t.pending : [];
+							const nameOf = (aid) => String((agents.find((a2) => String(a2.id) === String(aid)) || {}).name || aid);
+							return h('div', { className: 'ag3-field' },
+								h('span', null, '待确认（' + pend.length + '）'),
+								pend.length
+									? h('div', { className: 'ag3-members', 'data-ag-gset-pending': '' },
+										pend.map((p) => {
+											const aid = String(p.agentId || '');
+											const byTxt = !p.by || p.by === 'human' ? '人邀请' : ('被 ' + nameOf(p.by) + ' 邀请');
+											const gate = t.requireApproval === true ? '等你批准' : '等它自己回应';
+											return h('div', { key: 'pd' + aid, className: 'ag3-pendrow', 'data-ag-gset-pend': aid },
+												h('span', { className: 'ag3-pname' }, nameOf(aid)),
+												h('span', { className: 'ag-hint' }, byTxt + ' · ' + gate),
+												h('button', {
+													type: 'button', className: 'wb-btn is-primary ag3-mini', 'data-ag-pend-ok': aid,
+													disabled: gsBusy, title: '确认加入',
+													onClick: () => {
+														void runGroupAction(
+															{ action: 'join-decide', id: String(t.id), agentId: aid, accept: true },
+															'已确认加入 ' + nameOf(aid),
+														);
+													},
+												}, '✓'),
+												h('button', {
+													type: 'button', className: 'wb-btn is-ghost ag3-mini', 'data-ag-pend-no': aid,
+													disabled: gsBusy, title: '拒绝',
+													onClick: () => {
+														void runGroupAction(
+															{ action: 'join-decide', id: String(t.id), agentId: aid, accept: false },
+															'已拒绝 ' + nameOf(aid),
+														);
+													},
+												}, '✕'));
+										}))
+									: h('p', { className: 'ag-hint', 'data-ag-gset-nopend': '' },
+										'没有待确认的成员。开了「加入需确认」或关了「Bot 自动接受邀请」后，被邀请的会先到这里。'));
+						})(),
+						h('div', { className: 'ag3-field' },
+							h('span', null, '成员（' + members.length + memberCapTxt + '）'),
 							h('div', { className: 'ag3-members', 'data-ag-gset-members': '' },
 								(() => {
 									/* 同名冲突时给成员行补 ` · id`（只改显示，不删数据）—— 否则两行一模一样 */
@@ -3983,13 +4267,77 @@ window.__ModuleLoader__.load({
 /* 右栏 */
 .ag3-rhd { display:flex; align-items:center; gap:var(--wb-s1); padding:var(--wb-s2) var(--wb-s3); flex:none;
   border-bottom:1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.25)); font-size:var(--wb-f-xs); }
-.ag3-rtabs { display:flex; gap:2px; padding:var(--wb-s1) var(--wb-s2); flex:none; flex-wrap:wrap;
+/* ★ 2026-10-31：5 个页签在窄栏会换行（「分支」掉到第二行，贴在成员选择条旁边）⇒ 一律不换行，
+   靠短标签 + 10px 字号 + 更窄的 padding 塞进一行（图标移到 title，语义不丢）。 */
+.ag3-rtabs { display:flex; gap:2px; padding:var(--wb-s1) var(--wb-s2); flex:none; flex-wrap:nowrap;
   border-bottom:1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.25)); }
-.ag3-rtab { height:22px; padding:0 7px; border-radius:var(--wb-r-sm); font:inherit; font-size:10.5px; cursor:pointer;
-  border:0; background:transparent; color:var(--dsw-alias-label-secondary, rgba(230,230,230,.8)); display:inline-flex; align-items:center; gap:4px; }
+.ag3-rtab { height:22px; padding:0 6px; border-radius:var(--wb-r-sm); font:inherit; font-size:10px; cursor:pointer;
+  border:0; background:transparent; color:var(--dsw-alias-label-secondary, rgba(230,230,230,.8));
+  display:inline-flex; align-items:center; gap:3px; white-space:nowrap; }
 .ag3-rtab:hover { background:var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,.08)); color:var(--dsw-alias-label-primary, currentColor); }
 .ag3-rtab.is-on { background:var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,.16)); color:var(--dsw-alias-label-primary, currentColor); font-weight:600; }
 .ag3-rbody { flex:1 1 auto; min-height:0; overflow:auto; padding:var(--wb-s2); }
+/* ── 2026-10-31 记忆四页签（对齐 DeepSeekBot 记忆演化）────────────────────
+   ⚠ 这些是 CSS-in-JS 模板串的一部分：注释里**不许出现反引号**（会提前闭合模板串，
+   曾因此让 7 个工作台布局全崩）。 */
+.ag3-membar { display:flex; align-items:center; gap:var(--wb-s1); flex-wrap:wrap; margin-bottom:var(--wb-s2);
+  font-size:var(--wb-f-xs); color:var(--dsw-alias-label-secondary, rgba(230,230,230,.8)); }
+.ag3-chip { display:inline-flex; align-items:center; height:16px; padding:0 5px; border-radius:3px;
+  border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.4)); font-size:9.5px; line-height:1;
+  color:var(--dsw-alias-label-secondary, rgba(230,230,230,.75)); white-space:nowrap; margin-right:3px; }
+/* ⚠ 色值必须写成 var(--alias, 兜底)：直接写 #hex 会被包内自检的「无裸色值」拦下
+   （判据 = 该行不含 var(--）。兜底值本身可以是 hex/rgba，因为有 var(-- 就不算裸）。 */
+.ag3-chip.is-branch { color:var(--dsw-alias-branch, #9cdcfe); border-color:var(--dsw-alias-branch-bd, #2b5c7a); }
+.ag3-chip.is-ver { color:var(--dsw-alias-version, #e2c08d); border-color:var(--dsw-alias-version-bd, #6b5426); }
+.ag3-chip.is-warn { color:var(--dsw-alias-warning, #e6d27a); border-color:var(--dsw-alias-warning-bd, #6b5c26); }
+.ag3-chip.is-new { color:var(--dsw-alias-success, #7ee2a0); border-color:var(--dsw-alias-success-bd, #2c5f3d); }
+.ag3-chip.is-deleted { color:var(--dsw-alias-error, #ff9d97); border-color:var(--dsw-alias-error-bd, #6e2b28); }
+.ag3-auto { color:var(--dsw-alias-label-tertiary, rgba(230,230,230,.55)); }
+/* 演化：分道图行。★ 行高 46 必须等于 lib/core/gitLanes.js 的 ROW_H —— 改一处必须改另一处。 */
+.ag3-crow { display:flex; align-items:stretch; height:46px; padding:0 var(--wb-s1) 0 2px; gap:4px;
+  border-radius:var(--wb-r-sm); cursor:pointer; overflow:hidden; }
+.ag3-crow:hover { background:var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,.1)); }
+.ag3-lane { flex:none; display:block; }
+.ag3-ctxt { flex:1 1 auto; min-width:0; display:flex; flex-direction:column; justify-content:center; overflow:hidden; }
+.ag3-ct { font-size:11.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.ag3-ch { font-size:9.5px; color:var(--dsw-alias-label-tertiary, rgba(230,230,230,.55)); display:flex;
+  align-items:center; gap:3px; flex-wrap:wrap; margin-top:1px; }
+/* 版本 / 分支行 */
+.ag3-vrow { display:flex; flex-direction:column; gap:1px; padding:5px var(--wb-s2); }
+.ag3-vname { display:flex; align-items:center; gap:5px; font-size:12px; }
+.ag3-warn { margin:var(--wb-s1) 0; padding:5px 7px; border-radius:var(--wb-r-sm); font-size:10.5px;
+  color:var(--dsw-alias-warning, #e6d27a); background:var(--dsw-alias-warning-bg, rgba(204,167,0,.12));
+  border:1px solid var(--dsw-alias-warning-bd, rgba(204,167,0,.35)); }
+/* 群聊下「看的是哪个成员」（记忆类页签）—— 群没有自己的记忆库，必须写明主体 */
+.ag3-gsel { display:flex; align-items:center; gap:var(--wb-s1); padding:3px var(--wb-s3); flex:none;
+  border-bottom:1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.25)); font-size:var(--wb-f-xs);
+  color:var(--dsw-alias-label-secondary, rgba(230,230,230,.75)); }
+/* 放进内容区顶部时：不再是一条分割线，而是一个可辨识的块（与页签行视觉分离） */
+.ag3-gsel.in-body { border-bottom:0; margin-bottom:var(--wb-s2); padding:4px 6px; border-radius:var(--wb-r-sm);
+  background:var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,.1)); }
+/* 初始提交：建库时自动写的，不算演化 ⇒ 灰掉（可追溯性没丢，仍然能点开看） */
+.ag3-crow.is-init { opacity:.55; }
+/* AgentMemory 折叠行：没内容时只占一行，别把演化时间线挤没 */
+.ag3-am-fold { display:flex; align-items:center; gap:4px; margin-top:var(--wb-s2); padding-top:6px; cursor:pointer;
+  font-size:10.5px; color:var(--dsw-alias-label-tertiary, rgba(230,230,230,.55));
+  border-top:1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.25)); }
+.ag3-am-fold:hover { color:var(--dsw-alias-label-secondary, rgba(230,230,230,.8)); }
+.ag3-am-caret { font-size:9px; }
+/* AgentMemory 头部（2026-10-31 重新布局）：标题 + 状态徽标 + 刷新（靠右），网关地址单独一行 */
+.ag3-am-hd { display:flex; align-items:center; gap:5px; }
+.ag3-am-title { font-size:10px; color:var(--dsw-alias-label-secondary, rgba(230,230,230,.75)); }
+.ag3-am-url { margin:2px 0 4px; font-size:9.5px; color:var(--dsw-alias-label-tertiary, rgba(230,230,230,.5));
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* ★ 2026-10-31（用户要求）：Bots 工作台里不要宿主外壳的**浮动工具栏**。
+   出处排查过：类名 vssWbActions（「展开 AI 助手 / 在浏览器打开」）由宿主插件
+   @vssaros/dsh-workbenches 注入，不在本插件 ⇒ 在本工作台页面内隐藏。
+   本 chunk 只在 Bots 工作台页面加载 ⇒ 作用域天然限定，不影响别的页面；
+   想恢复删掉这条即可。⚠ 本文件是模板串：注释里不许出现反引号（会提前闭合）。 */
+.vssWbActions { display:none !important; }
+.ag3-sel { min-width:0; max-width:140px; height:20px; font:inherit; font-size:11px;
+  color:var(--dsw-alias-label-primary, currentColor);
+  background:var(--dsw-alias-input-bg, rgba(127,127,127,.12));
+  border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.4)); border-radius:var(--wb-r-sm); }
 .ag3-memview { margin-top:var(--wb-s2); border-top:1px dashed var(--dsw-alias-border-l1, rgba(127,127,127,.25)); padding-top:var(--wb-s1); }
 .ag3-statgrid { display:grid; grid-template-columns:repeat(auto-fit, minmax(80px, 1fr)); gap:var(--wb-s1); margin-bottom:var(--wb-s2); }
 .ag3-stat { border:1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.22)); border-radius:var(--wb-r-sm); padding:6px 8px; display:flex; flex-direction:column; gap:1px; }
@@ -4104,6 +4452,12 @@ window.__ModuleLoader__.load({
   border-radius:var(--wb-r-sm); cursor:pointer; color:var(--dsw-alias-label-secondary, inherit); }
 .ag3-member.is-on { background:var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,.16));
   color:var(--dsw-alias-label-primary, inherit); }
+/* 待确认（工作台群设置，2026-10-31）：一行一条 —— 谁 + 谁邀请的 + 等谁点头 + ✓/✕ */
+.ag3-pendrow { display:flex; align-items:center; gap:var(--wb-s1); padding:3px var(--wb-s1);
+  border-radius:var(--wb-r-sm); }
+.ag3-pendrow:hover { background:var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,.08)); }
+.ag3-pname { flex:1 1 auto; min-width:0; font-size:var(--wb-f-xs); overflow:hidden; text-overflow:ellipsis;
+  white-space:nowrap; }
 /* 成员级接收策略下拉（2026-10-26）：成员是 <label>，下拉要能单独点而不误触邀请/移出 */
 .ag3-member .ag3-mname2 { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 /* 顶栏「孤儿 preset」提示（不对应任何 bot 的 preset；hover 看清单） */

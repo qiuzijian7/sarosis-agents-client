@@ -56,12 +56,13 @@ check('① skill 落 <数据根>/skills，workflow 落 <数据根>/workflows',
 	&& targetRootOf(dataRoot, 'workflow') === path.join(dataRoot, 'workflows'));
 // ★ 2026-10-22 晚：agent **已搬过来** ⇒ 这条断言从"agent 还不行"改成"这三类都行、其它类明说不行"
 // ★ 2026-10-23（用户「都转移到 dsh 侧实现」）：mcp 也搬过来了 ⇒ 四类都支持；
-//   "明说不支持"改用 knowledge 验证（它确实还没搬）
-check('① 支持 skill / workflow / agent / mcp 四类，其它类（knowledge 等）明说不支持',
-	BUNDLE_KINDS.join(',') === 'skill,workflow,agent,mcp'
-	&& targetRootOf(dataRoot, 'agent') === path.join(dataRoot, 'agents')
+// ★ 2026-10-31：**knowledge 也搬过来了**（商城知识库包落到 <数据根>/knowledge/<id>/）
+//   ⇒ 这条断言从"四类"改成"五类"；"明说不支持"改用 workbench 验证 ✓
+check('① 支持 skill / workflow / agent / mcp / knowledge 五类；未知 kind 仍明说不支持',
+	targetRootOf(dataRoot, 'agent') === path.join(dataRoot, 'agents')
 	&& targetRootOf(dataRoot, 'mcp') === path.join(dataRoot, 'mcp')
-	&& (() => { try { targetRootOf(dataRoot, 'knowledge'); return false; } catch (e) { return /还不支持/.test(String(e.message ?? e)); } })());
+	&& targetRootOf(dataRoot, 'knowledge') === path.join(dataRoot, 'knowledge')
+	&& (() => { try { targetRootOf(dataRoot, 'workbench'); return false; } catch (e) { return /还不支持/.test(String(e.message ?? e)); } })());
 
 // ── ② skill 安装 + frontmatter 回写 ──────────────────────────
 {

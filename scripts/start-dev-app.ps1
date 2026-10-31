@@ -21,8 +21,10 @@ param(
 )
 
 $repo = Split-Path -Parent $PSScriptRoot
-# exe 名：2026-10-29 起 `VsSaros.exe`（原来 `Saroasis harness.exe`）⇒ 两个都认，
-# 否则没重新编译时这个脚本会 ABORT（而 .mjs 启动器却还能跑，行为不一致）。
+# exe names: 2026-10-29 renamed to `VsSaros.exe` (was `Saroasis harness.exe`).
+# 2026-10-31: dev got its OWN exe name `VsSaros Dev.exe` (installed app keeps
+# `VsSaros.exe`) so the two can never be confused. Keep all three here:
+# an old build dir may still hold an old-named exe.
 $exeNames = @('VsSaros Dev.exe', 'VsSaros.exe', 'Saroasis harness.exe')
 $exe = $null
 foreach ($n in $exeNames) {

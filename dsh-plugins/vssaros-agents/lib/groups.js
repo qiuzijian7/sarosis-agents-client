@@ -46,6 +46,11 @@ const groupAgentsOf = async (config) => {
 	return { ...scan, agents: (scan.agents ?? []).filter(a => isShownAgent(a)) };
 };
 import { outboxNote, outboxPendingFor, outboxResolve } from './outbox.js';
+// 群里的「活（work item）」（2026-10-31）：派发闸门 + 记账，判据真源在 `@vssaros/dsh-workitem`。
+import { DEFAULT_POLICY, holdInflight, inflightOf, noteDispatch, planGroupDispatch, readTasks, releaseInflight, settleGroupReply, settleIntoLedger, writeTasks } from './groupTasks.js';
+/* 幂等 + 陈旧防护（2026-10-31，P2；对齐 DSB 的 channel_management_operations）：
+   只有 createGroup / addGroupMembers 接（这两个最可能被重试），判定是纯函数 ⇒ 可单测。 */
+import { staleDenial, withIdempotency } from './core/groupOps.js';
 
 /** 群定义/ transcript 文件名（数据根下）。 */
 const FILE_NAME = 'agent-groups.json';
@@ -53,7 +58,14 @@ const FILE_NAME = 'agent-groups.json';
 export const TRANSSCRIPT_KEEP = 200;
 /** 群名/成员数上限（写口自卫）。 */
 const MAX_GROUPS = 50;
-const MAX_MEMBERS = 20;
+/**
+ * ★ 成员上限 = 100（2026-10-31，对齐 DeepSeekBot：它建群时初始成员 ≤100）。
+ *   原来是 20 —— 拉几个人一起讨论就到顶了，太紧（而且超限只报一句"成员最多 20 个"，
+ *   不告诉用户现在几个 ⇒ 用户不知道为什么被拒）。
+ *   ⚠ **群数上限 50 保持不动**：DSB 没有这条，我们保留（群多了左栏没法看）。
+ *   ⚠ 导出给 `listGroups` ⇒ 前端显示"n / 上限"用它，前端**不要**再写死一份数字。
+ */
+export const MAX_MEMBERS = 100;
 /** 群名长度上限（与 DeepSeekBot 的 `GROUP_NAME_MAX = 120` 一致）。 */
 const GROUP_NAME_MAX = 120;
 
@@ -126,6 +138,9 @@ export async function listGroups(config) {
 			),
 		})),
 		keep: TRANSSCRIPT_KEEP,
+		/* ★ 2026-10-31：把成员上限**回传**给前端（建群/拉人时显示"n / 上限"）。
+		   ⚠ 前端不许再写死一份数字 —— 两处各写一个数必然漂移（本项目已多次踩）。 */
+		maxMembers: MAX_MEMBERS,
 	};
 }
 
@@ -220,11 +235,18 @@ export async function createGroup(config, input) {
 	// digest 的两个阈值：非法/缺省 ⇒ 官方默认（5 条 / 30 秒）
 	const wake = wakeOf({ wake: input?.wake });
 	const members = Array.isArray(input?.members) ? [...new Set(input.members.map(m => String(m ?? '').trim()).filter(Boolean))] : [];
+	/* ★ 幂等必须**在所有校验之前**（2026-10-31 真机抓到：原先放在写入前 ⇒ 第二次同 key 重放
+	   先被下面的"已有同名群"拦成 409 ⇒ 幂等形同虚设）。DSB 也是 `lookupCreate` 在最前。
+	   payload 用**归一化后**的 name/members/mode ⇒ 键顺序与手写顺序都不影响指纹。 */
+	const idem = await withIdempotency(config, {
+		operationKey: input?.operationKey,
+		payload: { name, members, mode },
+	}, async () => {
 	if (members.length === 0) {
 		throw httpError(400, '至少要勾一个成员。');
 	}
 	if (members.length > MAX_MEMBERS) {
-		throw httpError(400, `成员最多 ${MAX_MEMBERS} 个。`);
+		throw httpError(400, `成员最多 ${MAX_MEMBERS} 个（这次勾了 ${members.length} 个）。`);
 	}
 	const scan = await groupAgentsOf(config);
 	const known = new Set(scan.agents.map(a => a.id));
@@ -254,14 +276,17 @@ export async function createGroup(config, input) {
 			ownerAgentId = owner;
 		}
 	}
-	const group = {
-		id: randomUUID(), name, mode, wake, members,
-		...(ownerAgentId ? { ownerAgentId } : {}),
-		createdAt: Date.now(), updatedAt: Date.now(), transcript: [],
-	};
-	await writeGroups(config, [...groups, group]);
-	return group;
+		const group = {
+			id: randomUUID(), name, mode, wake, members,
+			...(ownerAgentId ? { ownerAgentId } : {}),
+			createdAt: Date.now(), updatedAt: Date.now(), transcript: [],
+		};
+		await writeGroups(config, [...groups, group]);
+		return group;
+	});
+	return idem.replayed ? { ...idem.result, replayed: true } : idem.result;
 }
+
 
 /** 删群（幂等）。 */
 export async function deleteGroup(config, input) {
@@ -346,6 +371,12 @@ export async function updateGroup(config, input) {
 	// 加入需确认（2026-10-21）：开关本身不碰待确认队列 —— 队列里的条目仍由人逐条决定
 	if (input?.requireApproval !== undefined) {
 		group.requireApproval = input.requireApproval === true;
+	}
+	/* Bot 自动接受邀请（2026-10-31，P1）：默认**开**（邀请即加入，与以前完全一样）；
+	   关掉 ⇒ 邀请先进待确认，由它自己用 `agent_group_invite_respond` 决定。
+	   ⚠ 与 `requireApproval` 是**两个不同的闸**：那个是**人**把关，这个是**Bot**自己点头。 */
+	if (input?.botAutoAccept !== undefined) {
+		group.botAutoAccept = input.botAutoAccept === true;
 	}
 	// 换策略 / 换阈值都要把攒着的那几条清掉：否则 digest ⇒ all 会莫名其妙"补发"一批；
 	// 反过来 all ⇒ digest 时若留着旧的 `since`，第一次超时会立刻触发 ✗
@@ -687,41 +718,69 @@ export async function addGroupMembers(config, input) {
 		throw httpError(404, `没有这个群：${id || '(没给 id)'}`);
 	}
 	assertMutable(group, input?.actor);   // 群主权限（2026-10-26）
+	/* ★ 幂等在**陈旧判断与后续校验之前**（与 createGroup 同一条理由）：
+	   重放的语义是"这个请求已经执行过了"，不该被"期间群被改过"（stale）挡住。 */
+	const idem = await withIdempotency(config, {
+		operationKey: input?.operationKey,
+		payload: { id: group.id, members: wanted },
+	}, async () => {
 	const scan = await groupAgentsOf(config);
 	const known = new Set(scan.agents.map(a => a.id));
 	const unknown = wanted.filter(m => !known.has(m));
 	if (unknown.length) {
 		throw httpError(404, `这些 agent 不存在：${unknown.join('、')}`);
 	}
+	/* ★ 陈旧防护（2026-10-31）：调用方把它读到的 `updatedAt` 传回来 ⇒ 期间被别人改过就 409，
+	   不要拿一份旧快照去覆盖。（不传 ⇒ 不校验，老调用方行为不变） */
+	const stale = staleDenial(group, input?.expectedUpdatedAt);
+	if (stale) { throw httpError(409, stale); }
+
 	const before = new Set(group.members ?? []);
 	const pendSet = new Set(pendingOf(group).map(p => p.agentId));
 	const fresh = wanted.filter(m => !before.has(m) && !pendSet.has(m));
 
-	if (group.requireApproval === true) {
-		if (!fresh.length) {
-			return { group, pending: [], added: [] };
+		/* ★ invitation-first（2026-10-31，P1；对齐 DSB 的 invitation-first + auto-accept）：
+		   邀请**一律先记成一条待确认**（谁邀请的 / 什么时候 / 什么性质），
+		   只是"要不要再有人点头"分两种：
+		     · `requireApproval`      —— 人点 ✓（既有）
+		     · `botAutoAccept === false` —— 让它**自己**用 agent_group_invite_respond 决定（新增）
+		   两者都不开 ⇒ 直接加入（行为与以前一致，不强迫任何人多点一次）。
+		   ⚠ 自动接受时**不唤醒** Bot（DSB 同款：`settleInvitation` 不启动 turn）——
+		     加人只是"以后会收到消息"，不是"现在就得说话"。 */
+		const actor = normalizeActor(input?.actor);
+		const inviteBy = actor.kind === 'human' ? 'human' : String(actor.agentId || '');
+		if (group.requireApproval === true || group.botAutoAccept === false) {
+			if (!fresh.length) {
+				return { group, pending: [], added: [] };
+			}
+			const rows = fresh.map(m => ({
+				id: randomUUID(), agentId: m, kind: 'invite', by: inviteBy, requestedAt: Date.now(),
+			}));
+			group.pending = [...pendingOf(group), ...rows];
+			group.updatedAt = Date.now();
+			const names = rows.map(r => scan.agents.find(a => a.id === r.agentId)?.name ?? r.agentId);
+			const why = group.requireApproval === true
+				? '本群设了「加入需确认」⇒ 等你点 ✓'
+				: '本群要求它自己回应邀请';
+			appendTranscript(group, { role: 'system', text: `待确认加入：${names.join('、')}（${why}）` });
+			await writeGroups(config, groups);
+			return { group, pending: rows, added: [] };
 		}
-		const rows = fresh.map(m => ({ id: randomUUID(), agentId: m, requestedAt: Date.now() }));
-		group.pending = [...pendingOf(group), ...rows];
-		group.updatedAt = Date.now();
-		const names = rows.map(r => scan.agents.find(a => a.id === r.agentId)?.name ?? r.agentId);
-		appendTranscript(group, { role: 'system', text: `待确认加入：${names.join('、')}（本群设了「加入需确认」）` });
-		await writeGroups(config, groups);
-		return { group, pending: rows, added: [] };
-	}
 
-	const added = fresh;
-	if (before.size + added.length > MAX_MEMBERS) {
-		throw httpError(400, `成员最多 ${MAX_MEMBERS} 个（现在 ${before.size} 个）。`);
-	}
-	if (added.length) {
-		group.members = [...before, ...added];
-		group.updatedAt = Date.now();
-		const names = added.map(m => scan.agents.find(a => a.id === m)?.name ?? m);
-		appendTranscript(group, { role: 'system', text: `已加入：${names.join('、')}` });
-		await writeGroups(config, groups);
-	}
-	return { group, added };
+		const added = fresh;
+		if (before.size + added.length > MAX_MEMBERS) {
+			throw httpError(400, `成员最多 ${MAX_MEMBERS} 个（现在 ${before.size} 个，还要加 ${added.length} 个）。`);
+		}
+		if (added.length) {
+			group.members = [...before, ...added];
+			group.updatedAt = Date.now();
+			const names = added.map(m => scan.agents.find(a => a.id === m)?.name ?? m);
+			appendTranscript(group, { role: 'system', text: `已加入：${names.join('、')}` });
+			await writeGroups(config, groups);
+		}
+		return { group, added };
+	});
+	return idem.replayed ? { ...idem.result, replayed: true } : idem.result;
 }
 
 /**
@@ -752,7 +811,7 @@ export async function decideGroupJoin(config, input) {
 		if (accept) {
 			if (!(group.members ?? []).includes(agentId)) {
 				if ((group.members?.length ?? 0) >= MAX_MEMBERS) {
-					throw httpError(400, `成员最多 ${MAX_MEMBERS} 个，先移出一些再确认。`);
+					throw httpError(400, `成员最多 ${MAX_MEMBERS} 个（现在 ${group.members?.length ?? 0} 个），先移出一些再确认。`);
 				}
 				group.members = [...(group.members ?? []), agentId];
 			}
@@ -762,6 +821,61 @@ export async function decideGroupJoin(config, input) {
 		}
 		await writeGroups(config, groups);
 		return { group, decided: agentId, accept };
+	});
+}
+
+/**
+ * ★ Bot **自己**回应一条邀请（2026-10-31，P1；对齐 DSB 的 `group_invite_respond`）。
+ *
+ * 与人批准（`decideGroupJoin`）的分工：
+ *   · 这边只处理 `kind:'invite'`、且**没开「加入需确认」**的条目 —— 人把关的群，
+ *     Bot 不得自己放行（否则 `requireApproval` 形同虚设）；
+ *   · 人批准那条路径不动（它能处理任意待确认项，向后兼容）。
+ * ⚠ 幂等口径与 DSB 不同（它是"已是期望状态 ⇒ 返回既有记录"）：
+ *   这儿**没有对应待确认项 ⇒ 404** —— 因为我们的"已经加入了"和"没有邀请过"
+ *   是两个不同的事实，混成一个 200 会让人以为刚处理完一条邀请。
+ */
+export async function respondGroupInvite(config, input) {
+	const id = String(input?.id ?? '').trim();
+	const agentId = String(input?.agentId ?? '').trim();
+	const accept = input?.accept === true;
+	if (!agentId) {
+		throw httpError(400, 'invite-respond 需要 agentId');
+	}
+	return locked(async () => {
+		const groups = await readGroups(config);
+		const group = groups.find(g => g.id === id);
+		if (!group) {
+			throw httpError(404, `没有这个群：${id || '(没给 id)'}`);
+		}
+		const pending = pendingOf(group);
+		const row = pending.find(p => String(p.agentId) === agentId);
+		if (!row) {
+			throw httpError(404, `没有待处理的邀请：${agentId}`);
+		}
+		if (group.requireApproval === true) {
+			throw httpError(403, '本群设了「加入需确认」⇒ 邀请只能由人批准，Bot 不能自己放行。');
+		}
+		if (row.kind && row.kind !== 'invite') {
+			throw httpError(400, `这条待确认不是邀请（${row.kind}）⇒ 走对应的处理口。`);
+		}
+		group.pending = pending.filter(p => p !== row);
+		group.updatedAt = Date.now();
+		const scan = await groupAgentsOf(config).catch(() => ({ agents: [] }));
+		const name = scan.agents.find(a => a.id === agentId)?.name ?? agentId;
+		if (accept) {
+			if (!(group.members ?? []).includes(agentId)) {
+				if ((group.members?.length ?? 0) >= MAX_MEMBERS) {
+					throw httpError(400, `成员最多 ${MAX_MEMBERS} 个（现在 ${group.members?.length ?? 0} 个），先移出一些再接受。`);
+				}
+				group.members = [...(group.members ?? []), agentId];
+			}
+			appendTranscript(group, { role: 'system', text: `已加入：${name}（它自己接受了邀请）` });
+		} else {
+			appendTranscript(group, { role: 'system', text: `已拒绝邀请：${name}` });
+		}
+		await writeGroups(config, groups);
+		return { group, responded: agentId, accept };
 	});
 }
 
@@ -1350,7 +1464,28 @@ export async function postGroupMessage(config, state, input) {
 			}
 		}
 
+		/* ★★ 2026-10-31 活（work item）闸门 —— **增量接线**：只有带 `#task:` 标签的消息才走进来，
+		   没有标签 ⇒ `dispatch=true` ⇒ 行为与从前逐字一致（现有群聊不受影响）。
+		   顺序要求：系统消息（loop 通知）在这里就被挡掉，**不会**走到上面的 @ 解析 ⇒ 断掉回环。 */
 		targets = nowTargets;
+		const taskState = await readTasks(config);
+		const taskGate = planGroupDispatch({
+			text: dispatchBody,
+			message: input,
+			tasks: taskState.tasks,
+			policy: DEFAULT_POLICY,
+			nowMs: Date.now(),
+		});
+		if (!taskGate.dispatch) {
+			appendTranscript(group, {
+				role: 'system',
+				kind: 'system',
+				source: 'system',
+				text: `未派发：${taskGate.reason}`,
+			});
+			await writeGroups(config, groups);
+			return { group, dispatched: [], deliveries: [], taskReason: taskGate.reason };
+		}
 		if (targets.length === 0) {
 			// 没人该被立刻唤醒：不静默 —— 说清"为什么这条没派发"
 			appendTranscript(group, {
@@ -1367,6 +1502,16 @@ export async function postGroupMessage(config, state, input) {
 			{ hop: 1, rootId: userEntry.id });
 		/* 逐成员投递状态挂在**这条**用户消息上（成员级策略后，"立刻收"的那批就是针对这条消息） */
 		if (deliveries.length) { userEntry.deliveries = deliveries; }
+		/* ★ 记账（2026-10-31）：带活的消息派发后，这些活进入 `running`，并记下"哪条会话在跑哪些活"
+		   ⇒ 回合结束时（tracker）能按 sessionId 结算。没有活 ⇒ 一个字节都不写 ✓。 */
+		if (taskGate.keys.length) {
+			for (const row of dispatched ?? []) {
+				if (row?.sessionId) {
+					holdInflight(taskState.tasks, row.sessionId, taskGate.keys);
+				}
+			}
+			await writeTasks(config, noteDispatch(taskState.tasks, { keys: taskGate.keys, nowMs: Date.now() }));
+		}
 		await writeGroups(config, groups);
 		return { group, dispatched, deliveries };
 	});
@@ -1520,6 +1665,38 @@ export function installGroupTracker(ctx, config, state) {
 						: plan.reason === 'root-cap'
 							? `这个根消息已经触发 ${relayOf(group).maxPerRoot} 次接力，不再往下传（防刷屏）。`
 							: '被 @ 的成员这一轮已经收到过了（同一根消息不重复唤醒）。',
+				});
+				dirty = true;
+			}
+		}
+		/* ★★ 活（work item）结算（2026-10-31）：这条会话若正在跑活，按成员最终回复的
+		   `[item:done|failed|blocked]` 标记写账本 —— **缺标记 ⇒ failed**（与 loop 同一条：
+		   没签字不算成功）。写进 transcript 的那条也是系统消息 ⇒ 不会再被派发（回环闭合 ✓）。 */
+		{
+			const tState = await readTasks(config);
+			const keys = inflightOf(tState.tasks, session.id);
+			if (keys.length) {
+				const settled = settleGroupReply({
+					keys,
+					finalText: String(final?.text ?? ''),
+					stopReason: String(payload?.agent?.stopReason ?? ''),
+				});
+				settleIntoLedger(tState.tasks, {
+					keys,
+					status: settled.status,
+					reason: settled.reason,
+					marker: settled.marker,
+					sessionId: session.id,
+					nowMs: Date.now(),
+				});
+				releaseInflight(tState.tasks, session.id);
+				await writeTasks(config, tState.tasks);
+				appendTranscript(group, {
+					role: 'system',
+					kind: 'system',
+					source: 'system',
+					text: `活 ${keys.join('、')} 记为 ${settled.status}${settled.reason ? `（${settled.reason}）` : ''}`
+						+ `${settled.status === 'blocked' ? ' —— 需要人在群里回答后才会再派。' : ''}`,
 				});
 				dirty = true;
 			}

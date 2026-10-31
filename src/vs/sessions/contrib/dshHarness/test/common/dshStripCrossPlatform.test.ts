@@ -65,7 +65,18 @@ suite('打包脚本必须跨平台（不许依赖 bash）', () => {
 		// 具体落点：体积 / *.map / 空目录
 		assert.match(code, /size = dirSizeBytes\(absPath\)/, 'removeDir 必须用 dirSizeBytes 统计体积');
 		assert.match(code, /const files = findFilesByName\(buildDir, pattern\)/, '*.map 清理必须用 findFilesByName');
-		assert.match(code, /removeEmptyDirs\(join\(buildDir, 'resources\/app\/node_modules'\)\)/,
-			'空目录清理必须用 removeEmptyDirs');
+		// macOS 支持（2026-10-31）：路径可能经 toStagingRel() 映射 ⇒ 两种形态都接受
+		assert.match(code, /removeEmptyDirs\(join\(buildDir, (?:toStagingRel\()?'resources\/app\/node_modules'\)?\)\)/,
+			'空目录清理必须用 removeEmptyDirs（macOS 下可经 toStagingRel 映射）');
+	});
+
+	test('3) macOS 的 .app 布局必须被识别并做路径映射', () => {
+		const code = stripComments(read(STRIP));
+
+		// 没有这两样 ⇒ macOS 产物里 `resources/app/…` 会全部落到不存在的路径
+		// ⇒ 自愈/清理/门禁全静默失效（包能打出来，但内容缺件）。
+		assert.match(code, /function detectBuildDir\(/, '缺少 detectBuildDir：识别 VSCode-darwin-<arch>/<Name>.app');
+		assert.match(code, /function toStagingRel\(/, '缺少 toStagingRel：把 resources/app/… 映射到 Contents/Resources/app/…');
+		assert.match(code, /Contents\/Resources\/app/, 'MAC_APP_SUB 必须是 Contents/Resources/app');
 	});
 });

@@ -1,8 +1,63 @@
 {
   "note": "由 dsh-plugins/tools-snapshot.mjs 生成；被 dshHarness/test/common/dshToolSnapshot.test.ts 钉住。不要手改，跑 --write。",
-  "total": 155,
+  "total": 165,
   "plugins": {
     "vssaros-agents": [
+      {
+        "name": "agent_group_create",
+        "required": [
+          "members",
+          "name"
+        ],
+        "params": [
+          "members",
+          "mode",
+          "name",
+          "operationKey"
+        ],
+        "descriptionHash": "4311fdb9fc5c"
+      },
+      {
+        "name": "agent_group_invite",
+        "required": [
+          "group",
+          "members"
+        ],
+        "params": [
+          "group",
+          "members",
+          "operationKey"
+        ],
+        "descriptionHash": "603456c7c9db"
+      },
+      {
+        "name": "agent_group_invite_respond",
+        "required": [
+          "accept",
+          "group"
+        ],
+        "params": [
+          "accept",
+          "group"
+        ],
+        "descriptionHash": "f92dca64af8f"
+      },
+      {
+        "name": "agent_group_invites",
+        "required": [],
+        "params": [],
+        "descriptionHash": "96096d28aabc"
+      },
+      {
+        "name": "agent_group_leave",
+        "required": [
+          "group"
+        ],
+        "params": [
+          "group"
+        ],
+        "descriptionHash": "b5593ca3a1a5"
+      },
       {
         "name": "agent_list",
         "required": [],
@@ -1059,6 +1114,59 @@
           "vaultId"
         ],
         "descriptionHash": "377a4154e670"
+      }
+    ],
+    "vssaros-loop": [
+      {
+        "name": "loop_answer",
+        "required": [
+          "name"
+        ],
+        "params": [
+          "answer",
+          "key",
+          "name"
+        ],
+        "descriptionHash": "e6f5efbb34fd"
+      },
+      {
+        "name": "loop_dry_run",
+        "required": [
+          "name"
+        ],
+        "params": [
+          "name"
+        ],
+        "descriptionHash": "1fc6f8fb51ba"
+      },
+      {
+        "name": "loop_list",
+        "required": [],
+        "params": [
+          "verbose"
+        ],
+        "descriptionHash": "5d2e2ca31a87"
+      },
+      {
+        "name": "loop_run",
+        "required": [
+          "name"
+        ],
+        "params": [
+          "name"
+        ],
+        "descriptionHash": "b022254042e2"
+      },
+      {
+        "name": "loop_show",
+        "required": [
+          "name"
+        ],
+        "params": [
+          "limit",
+          "name"
+        ],
+        "descriptionHash": "7bd28ebbf16f"
       }
     ],
     "vssaros-marketplace": [

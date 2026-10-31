@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vssaros-loop 使用说明与 Demo</title>
+<style>
+	/* ★ 自带底色：本页不依赖宿主的 --vscode-* 变量（独立打开也要能用）。 */
+	:root {
+		--bg: #1b1d23; --bg2: #22252c; --bg3: #2a2e37;
+		--fg: #e6e8ee; --fg-dim: #a2a8b8; --line: #363b47;
+		--accent: #6aa9ff; --ok: #5ddb9a; --warn: #f0c674; --err: #ff8080;
+		--mono: ui-monospace, "Cascadia Code", Consolas, "Courier New", monospace;
+	}
+	html[data-theme="light"] {
+		--bg: #f6f7f9; --bg2: #ffffff; --bg3: #eef1f5;
+		--fg: #1f232b; --fg-dim: #5b6270; --line: #d7dce4;
+		--accent: #1a6fd4; --ok: #1a8f5a; --warn: #a8710a; --err: #c43b3b;
+	}
+	* { box-sizing: border-box; }
+	body {
+		margin: 0; background: var(--bg); color: var(--fg);
+		font: 14px/1.7 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+	}
+	a { color: var(--accent); text-decoration: none; }
+	a:hover { text-decoration: underline; }
+	code, pre, .mono { font-family: var(--mono); }
+	code { background: var(--bg3); padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+	pre {
+		background: var(--bg2); border: 1px solid var(--line); border-radius: 8px;
+		padding: 12px 14px; overflow: auto; font-size: 12.5px; line-height: 1.6;
+	}
+	.wrap { max-width: 1080px; margin: 0 auto; padding: 0 20px 64px; }
+
+	header.hero {
+		background: linear-gradient(160deg, var(--bg2), var(--bg));
+		border-bottom: 1px solid var(--line); padding: 28px 0 22px; margin-bottom: 24px;
+	}
+	header.hero .wrap { padding-bottom: 0; }
+	h1 { margin: 0 0 6px; font-size: 26px; letter-spacing: .3px; }
+	.sub { color: var(--fg-dim); margin: 0 0 14px; }
+	.badges { display: flex; flex-wrap: wrap; gap: 8px; }
+	.badge {
+		background: var(--bg3); border: 1px solid var(--line); color: var(--fg-dim);
+		border-radius: 999px; padding: 3px 11px; font-size: 12px;
+	}
+	.badge b { color: var(--fg); }
+	.theme-btn {
+		float: right; background: var(--bg3); color: var(--fg); border: 1px solid var(--line);
+		border-radius: 6px; padding: 5px 12px; cursor: pointer; font-size: 12px;
+	}
+
+	nav.toc {
+		background: var(--bg2); border: 1px solid var(--line); border-radius: 10px;
+		padding: 12px 16px; margin-bottom: 26px;
+	}
+	nav.toc ol { margin: 0; padding-left: 20px; columns: 2; column-gap: 28px; }
+
+	section { margin-bottom: 34px; scroll-margin-top: 16px; }
+	h2 { font-size: 19px; margin: 0 0 12px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+	h3 { font-size: 15px; margin: 18px 0 8px; }
+	p { margin: 8px 0; }
+	ul, ol { margin: 8px 0; padding-left: 22px; }
+
+	table { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 13px; }
+	th, td { border: 1px solid var(--line); padding: 7px 10px; text-align: left; vertical-align: top; }
+	th { background: var(--bg3); font-weight: 600; }
+	td.mono { font-family: var(--mono); font-size: 12px; white-space: nowrap; }
+
+	.note {
+		border-left: 3px solid var(--accent); background: var(--bg2);
+		padding: 10px 14px; margin: 12px 0; border-radius: 0 8px 8px 0;
+	}
+	.note.warn { border-left-color: var(--warn); }
+	.note.ok { border-left-color: var(--ok); }
+	.note.err { border-left-color: var(--err); }
+
+	.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; }
+	.card {
+		background: var(--bg2); border: 1px solid var(--line);
+		border-radius: 10px; padding: 14px 16px;
+	}
+	.card h4 { margin: 0 0 10px; font-size: 14px; }
+	label { display: block; font-size: 12px; color: var(--fg-dim); margin: 8px 0 4px; }
+	input[type=text], textarea, select {
+		width: 100%; background: var(--bg3); color: var(--fg);
+		border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px;
+		font-family: var(--mono); font-size: 12.5px;
+	}
+	textarea { min-height: 76px; resize: vertical; }
+	button.act {
+		background: var(--accent); color: #fff; border: 0; border-radius: 6px;
+		padding: 6px 14px; cursor: pointer; font-size: 13px; margin-top: 10px;
+	}
+	button.act:hover { filter: brightness(1.08); }
+	.out {
+		margin-top: 10px; background: var(--bg); border: 1px dashed var(--line);
+		border-radius: 6px; padding: 9px 11px; font-family: var(--mono);
+		font-size: 12.5px; white-space: pre-wrap; min-height: 42px; color: var(--fg);
+	}
+	.out .k { color: var(--accent); }
+	.out .good { color: var(--ok); }
+	.out .bad { color: var(--err); }
+	.out .dim { color: var(--fg-dim); }
+
+	.steps { counter-reset: s; list-style: none; padding-left: 0; }
+	.steps li {
+		counter-increment: s; position: relative; padding-left: 34px;
+		margin-bottom: 12px;
+	}
+	.steps li::before {
+		content: counter(s); position: absolute; left: 0; top: 2px;
+		width: 22px; height: 22px; border-radius: 50%; background: var(--accent);
+		color: #fff; font-size: 12px; display: grid; place-items: center;
+	}
+	footer { color: var(--fg-dim); font-size: 12px; border-top: 1px solid var(--line); padding-top: 14px; }
+	.tag { display: inline-block; background: var(--bg3); border: 1px solid var(--line);
+		border-radius: 4px; padding: 0 6px; font-size: 11.5px; color: var(--fg-dim); margin-right: 6px; }
+</style>
+</head>
+<body>
+
+<header class="hero">
+	<div class="wrap">
+		<button class="theme-btn" id="themeBtn">切换亮/暗</button>
+		<h1>vssaros-loop · 无人值守循环</h1>
+		<p class="sub">到点采集一批活 → 按账本挑出该做的 → 每条开一条独立会话跑 → 记账 → 下一轮。人不在场也不会把同一件事做两遍。</p>
+		<div class="badges">
+			<span class="badge">包 <b>@vssaros/dsh-loop 0.1.0</b></span>
+			<span class="badge">内核 <b>@vssaros/dsh-workitem 0.1.0</b></span>
+			<span class="badge">单测 <b>80 + 57 + 21</b></span>
+			<span class="badge">真机 <b>已验证</b></span>
+			<span class="badge">默认 <b>不执行任何命令</b></span>
+		</div>
+	</div>
+</header>
+
+<div class="wrap">
+	<nav class="toc">
+		<ol>
+			<li><a href="#what">它解决什么</a></li>
+			<li><a href="#quick">三步跑起来</a></li>
+			<li><a href="#spec">loop.json 字段</a></li>
+			<li><a href="#schedule">调度三型</a></li>
+			<li><a href="#contract">完成契约</a></li>
+			<li><a href="#guard">护栏与去重</a></li>
+			<li><a href="#tools">五个工具</a></li>
+			<li><a href="#groupchat">群聊 #task（对齐）</a></li>
+			<li><a href="#demo">交互 Demo</a></li>
+			<li><a href="#ops">装机与排错</a></li>
+			<li><a href="#faq">坑与边界</a></li>
+		</ol>
+	</nav>
+
+	<section id="what">
+		<h2>它解决什么</h2>
+		<p>把「同一类活反复来」变成无人值守：定时抓一批待办、筛掉不该做的、逐个处理、跑完睡下，明天继续。</p>
+		<ul>
+			<li><b>不是 cron 替代品</b>：它比 cron 多的是「按条挑活 + 去重 + 失败退避 + 熔断 + 审计」。</li>
+			<li><b>不寄生官方 schedule</b>：官方 schedule 只负责「到点往会话投一句话」；loop 自己有 30 秒 ticker。</li>
+			<li><b>每条 item 是独立会话</b>：上下文由轮数与墙钟决定，不是「这个进程活了多久」。</li>
+		</ul>
+		<div class="note">触发权在 loop、任务列表在官方 schedule —— 两者互链不合并，避免「两套任务 UI」。</div>
+	</section>
+
+	<section id="quick">
+		<h2>三步跑起来</h2>
+		<ol class="steps">
+			<li>
+				建目录与定义：<code>&lt;数据根&gt;/loops/&lt;名字&gt;/loop.json</code>
+				（目录名 = loop 的身份，不用在 json 里重复写）。
+			</li>
+			<li>
+				<b>先干跑</b>：<code>loop_dry_run</code> —— 真采集、列出「会做哪些 / 其余为什么排除」，
+				<b>不建会话、不花 token</b>。
+			</li>
+			<li>
+				确认后让它跑：<code>schedule</code> 写 <code>every 4h</code> 就会自动轮；或随时 <code>loop_run</code> 手动跑一轮。
+			</li>
+		</ol>
+		<pre>{
+  "title": "TAPD Bug 自动修复",
+  "schedule": "every 4h",
+  "maxItemsPerRound": 1,
+  "itemTimeout": "45m",
+  "harvest": { "command": "node bug-report.mjs --json" },
+  "identityFields": ["id"],
+  "work": {
+    "taskHeader": "单号 {id}（优先级 {priority}）",
+    "prompt": "按模板处理这张单……"
+  },
+  "notify": ["web"]
+}</pre>
+		<div class="note warn">
+			<b>harvest.command 默认不执行</b>：插件 <code>config.allowCommands</code> 默认 <code>false</code>
+			（命令 = 本机代码执行）。干跑会明白告诉你「未执行」，要真跑得由部署方显式打开。
+		</div>
+	</section>
+
+	<section id="spec">
+		<h2>loop.json 字段</h2>
+		<table>
+			<thead><tr><th style="width:22%">字段</th><th style="width:16%">默认</th><th style="width:16%">硬上限</th><th>说明</th></tr></thead>
+			<tbody>
+				<tr><td class="mono">schedule</td><td class="mono">manual</td><td>—</td><td><code>every &lt;dur&gt;</code> / <code>daily HH:MM</code> / <code>manual</code>；最小轮间隔 <b>120s</b></td></tr>
+				<tr><td class="mono">quietHours</td><td class="mono">off</td><td>—</td><td><code>23:00-07:00</code>，本地时间，支持跨午夜</td></tr>
+				<tr><td class="mono">maxItemsPerRound</td><td class="mono">3</td><td class="mono">20</td><td>每轮最多几条（超出如实标 <code>round-cap</code>）</td></tr>
+				<tr><td class="mono">itemTurnCap</td><td class="mono">60</td><td class="mono">500</td><td>⚠ 当前<b>只解析不生效</b>，实际靠墙钟兜底</td></tr>
+				<tr><td class="mono">itemTimeout</td><td class="mono">45m</td><td class="mono">6h</td><td>单条墙钟超时（abort）</td></tr>
+				<tr><td class="mono">harvestTimeout</td><td class="mono">2m</td><td>—</td><td>采集命令超时（超时不算本轮失败）</td></tr>
+				<tr><td class="mono">maxAttempts</td><td class="mono">2</td><td class="mono">5</td><td>同一条活最多试几次</td></tr>
+				<tr><td class="mono">retryBackoff</td><td class="mono">30m</td><td class="mono">24h</td><td>失败后的退避</td></tr>
+				<tr><td class="mono">consecutiveFailureLimit</td><td class="mono">3</td><td class="mono">10</td><td>连续失败<b>粘性熔断</b>：只能人工恢复</td></tr>
+				<tr><td class="mono">roundCostCeiling</td><td class="mono">0（关）</td><td>—</td><td>⚠ 当前<b>只记录不生效</b>；建议生产环境填正数</td></tr>
+				<tr><td class="mono">onAsk</td><td class="mono">block</td><td>—</td><td><code>block</code>=存起来等人答；<code>assume</code>=让模型自己声明假设</td></tr>
+				<tr><td class="mono">identityFields</td><td class="mono">["id"]</td><td>—</td><td>账本 key 由这些字段拼成（必须稳定）</td></tr>
+				<tr><td class="mono">harvest.command</td><td class="mono">空</td><td>—</td><td>stdout 必须是 JSON 数组或 <code>{rows:[...]}</code></td></tr>
+				<tr><td class="mono">work.prompt / template</td><td class="mono">空</td><td>—</td><td>支持 <code>{字段}</code> 替换（taskHeader 同理）</td></tr>
+				<tr><td class="mono">work.allowedTools</td><td class="mono">[]</td><td>—</td><td>声明用；实际放行看 <code>config.allowTools</code>（全局白名单）</td></tr>
+				<tr><td class="mono">completion.onMissingMarker</td><td class="mono">failed</td><td>—</td><td>没签字算失败（防假绿）</td></tr>
+				<tr><td class="mono">notify</td><td class="mono">["web"]</td><td>—</td><td>⚠ 目前<b>只记录</b>，通道未接</td></tr>
+			</tbody>
+		</table>
+		<div class="note err">越过硬上限一律<b>报错</b>而不是夹紧 —— 夹紧会让「我写了 500 轮」静默变成 60 轮。</div>
+	</section>
+
+	<section id="schedule">
+		<h2>调度三型</h2>
+		<table>
+			<thead><tr><th style="width:26%">写法</th><th>语义</th></tr></thead>
+			<tbody>
+				<tr><td class="mono">every 30m</td><td>每 30 分钟一轮。<b>从本轮开始时间起算</b>（不是结束时间），否则跑 40 分钟的活会把 <code>every 30m</code> 变成 70 分钟一轮</td></tr>
+				<tr><td class="mono">daily 02:20</td><td>每天本地 02:20。当天该时刻已过 ⇒ 明天；睡过头⇒<b>不补跑</b></td></tr>
+				<tr><td class="mono">manual</td><td>不自动跑，只能 <code>loop_run</code></td></tr>
+			</tbody>
+		</table>
+		<p class="dim">刻意不做 cron 表达式：它需要时区故事，而 <code>every</code> 已覆盖真实需求。</p>
+	</section>
+
+	<section id="contract">
+		<h2>完成契约</h2>
+		<p>每条 item 的最后一行必须是：</p>
+		<pre>[item:done]
+[item:failed:编译不过]
+[item:blocked:缺服务器日志]</pre>
+		<ul>
+			<li><b>没签字默认算失败</b>（<code>onMissingMarker=failed</code>）—— 把「没签字」当成功是无人值守最常见的假绿。</li>
+			<li><code>blocked</code> = 需要人介入：不再自动重试，用 <code>loop_answer</code> 放回队列。</li>
+			<li>与 <code>[plan:ready]</code> 是不同命名空间，两个解析器永不互读。</li>
+		</ul>
+	</section>
+
+	<section id="guard">
+		<h2>护栏与去重</h2>
+		<h3>账本怎么判</h3>
+		<table>
+			<thead><tr><th style="width:28%">状态</th><th>下一轮</th></tr></thead>
+			<tbody>
+				<tr><td class="mono">done</td><td><b>永久不再做</b>（dedupe = forever）</td></tr>
+				<tr><td class="mono">blocked</td><td>等 <code>loop_answer</code> 放回</td></tr>
+				<tr><td class="mono">failed</td><td>attempts 没用完 + 退避到点 ⇒ 可重试</td></tr>
+				<tr><td class="mono">running</td><td>启动时一律归正为 <code>failed</code>（保留 attempts）</td></tr>
+			</tbody>
+		</table>
+		<div class="note ok">
+			<b>崩溃安全</b>：每次状态变化都原子落盘；进程被杀时没有机会写「我死了」，靠启动时这条规则把账算清。
+			<b>错过的轮次不补跑</b> —— 补跑会在「睡了一夜」后一次性放出 N 轮。
+		</div>
+		<h3>并发与互斥</h3>
+		<ul>
+			<li>一轮互斥：ticker 与手动 <code>loop_run</code> 不会同时跑（忙时明确回报 <code>busy</code>，不排队）。</li>
+			<li>串行执行：<code>maxConcurrent</code> 恒为 1，一轮没跑完不开下一轮。</li>
+		</ul>
+	</section>
+
+	<section id="tools">
+		<h2>五个工具</h2>
+		<table>
+			<thead><tr><th style="width:22%">工具</th><th>用途</th></tr></thead>
+			<tbody>
+				<tr><td class="mono">loop_list</td><td>列表 + 调度 + 账本计数 + 下次到期 + 是否熔断 + 配置错误</td></tr>
+				<tr><td class="mono">loop_show</td><td>单个 loop 的护栏 + 账本明细（含每条为什么被跳过）</td></tr>
+				<tr><td class="mono">loop_dry_run</td><td><b>不花 token</b> 的预演：会做哪些 / 其余为何排除</td></tr>
+				<tr><td class="mono">loop_run</td><td>立刻跑一轮（runs 服务不可用会<b>明确报错</b>，不假装跑了）</td></tr>
+				<tr><td class="mono">loop_answer</td><td>把 <code>blocked</code> 的条目放回队列（可带一句回答）</td></tr>
+			</tbody>
+		</table>
+	</section>
+
+	<section id="groupchat">
+		<h2>群聊 #task（与 loop 对齐）</h2>
+		<p>群聊与 loop 共用 <code>@vssaros/dsh-workitem</code> 内核：同一套去重、退避、完成契约。</p>
+		<ul>
+			<li>群里的活靠<b>显式 <code>#task:&lt;key&gt;</code></b> 标记（不用隐式文本指纹 —— 改两个字就会重复派）。</li>
+			<li>key 归一化小写，<code>#task:Bug-1</code> 与 <code>#task:bug-1</code> 是同一件事。</li>
+			<li><b>没有标签的消息行为完全不变</b>（增量接线，不伤现有群聊）。</li>
+			<li>回环闸门：loop 通知进群后那条系统消息<b>不参与 @ 解析</b>（判来源在 @ 之前）。</li>
+			<li>风暴预算：20 事件 / 60 秒 / 冷却 60 秒（loop 没有、群聊必须有）。</li>
+		</ul>
+		<p>账本单独存 <code>&lt;数据根&gt;/agent-group-tasks.json</code> —— 群 transcript 封顶 200 条会裁最旧，拿来当账本会把「做过了」裁掉。</p>
+	</section>
+
+	<section id="demo">
+		<h2>交互 Demo</h2>
+		<div class="note">下面三个卡片按<b>内核同一套规则</b>实时计算（演示用复刻；真源见 <code>dsh-plugins/vssaros-workitem/lib/core/</code> 与 <code>vssaros-loop/lib/core/spec.js</code>）。</div>
+
+		<div class="grid">
+			<div class="card">
+				<h4>① 调度解析</h4>
+				<label>schedule</label>
+				<input type="text" id="d1" value="every 4h">
+				<button class="act" onclick="runSchedule()">解析</button>
+				<div class="out" id="o1"></div>
+			</div>
+
+			<div class="card">
+				<h4>② 完成标记解析</h4>
+				<label>成员/item 的最终回复</label>
+				<textarea id="d2">问题定位在 VSM 采样偏移，已改完并回归通过。
+[item:done]</textarea>
+				<button class="act" onclick="runMarker()">判定终态</button>
+				<div class="out" id="o2"></div>
+			</div>
+
+			<div class="card">
+				<h4>③ 挑单模拟（去重 / 退避 / 上限）</h4>
+				<label>候选（每行一条，格式 <code>key,状态,attempts</code>；状态留空=新活）</label>
+				<textarea id="d3">bug/1,done,1
+bug/2,,0
+bug/3,failed,2
+bug/4,,0
+bug/5,,0</textarea>
+				<label>本轮上限 maxItemsPerRound</label>
+				<input type="text" id="d3b" value="2">
+				<button class="act" onclick="runPick()">挑这一轮</button>
+				<div class="out" id="o3"></div>
+			</div>
+		</div>
+
+		<h3>Demo：一个最小可跑的 loop.json</h3>
+		<pre>{
+  "title": "每日检索摘要",
+  "schedule": "every 6h",
+  "maxItemsPerRound": 2,
+  "itemTimeout": "15m",
+  "harvest": { "command": "node harvest.mjs" },
+  "work": { "prompt": "把「{topic}」的最近进展总结成 5 条要点。" },
+  "notify": ["web"]
+}</pre>
+		<p>配套 <code>harvest.mjs</code>（stdout 必须是 JSON）：</p>
+		<pre>console.log(JSON.stringify([
+  { id: 'ai-agents', topic: 'AI Agent 最新进展' },
+  { id: 'ue5-render', topic: 'UE5 渲染优化' },
+], null, 2));</pre>
+		<div class="note warn">开跑前记得：① 给 <code>vssaros-loop</code> 打开 <code>config.allowCommands: true</code>；
+		② 先 <code>loop_dry_run</code> 看一遍挑单结果；③ 真跑一次后看 <code>ledger.json</code> 是否按预期记了 <code>done</code>。</div>
+	</section>
+
+	<section id="ops">
+		<h2>装机与排错</h2>
+		<h3>装机（两个插件都没 <code>vssaros.module</code>）</h3>
+		<p>它们走 archify / ego 同款<b>伴生路径</b>：<code>common/dshHarness.ts</code> 包名常量 →
+			<code>dshHostSupervisor.ts</code> 的 <code>workItemPluginDir</code> / <code>loopPluginDir</code> →
+			<code>dshHarnessChannel.ts</code> 解析目录。<b>workitem 必须排在 loop 之前</b>（loop 用 <code>ctx.inject</code> 等它）。</p>
+		<h3>排错清单</h3>
+		<ul>
+			<li><b>loop_list 抛「组合里缺 @vssaros/dsh-workitem」</b>：内核没装/没激活。看 profile 的
+				<code>node_modules/@vssaros/</code> 里有没有 dsh-workitem。</li>
+			<li><b>干跑说「harvest 未执行」</b>：正常 —— <code>allowCommands</code> 默认关。</li>
+			<li><b>loop_run 说「runs 服务不可用」</b>：bridge 没装或版本过旧，loop 的 ticker 不会启动（list/show/dry_run 仍可用）。</li>
+			<li><b>改了 loop.json 不生效</b>：spec 是每轮读的，但 <code>state.json</code> 的 <code>lastRoundStartedAt</code> 决定下一轮时间；想立刻跑就 <code>loop_run</code>。</li>
+			<li><b>日志里看不到 loop</b>：正常 —— 它只在 warn 时打日志。<b>验证看落盘</b>（<code>loops/&lt;name&gt;/state.json</code> 与 profile 目录），不看日志。</li>
+		</ul>
+	</section>
+
+	<section id="faq">
+		<h2>坑与边界</h2>
+		<ul>
+			<li><code>itemTurnCap</code> 与 <code>roundCostCeiling</code> <b>当前是死字段</b>（解析/展示但不生效）—— 别以为有护栏。</li>
+			<li><code>approval.allow</code> 是<b>全局白名单</b>：给一个 loop 放开写权限 = 对所有 loop 放开。</li>
+			<li><code>harvest.command</code> = 本机命令执行，等同代码执行：只给信任的 loop 开。</li>
+			<li><code>notify</code> 目前不真发通知（只记录）。</li>
+			<li>一条 item 的会话 id = <code>loop:&lt;名字&gt;:&lt;key 的 sha1 前 12 位&gt;</code>，重跑复用同一条历史。</li>
+			<li><code>loop.mjs</code>（脚本回调形态）<b>未实现</b>：当前只支持 <code>harvest.command</code> 声明式采集。</li>
+		</ul>
+	</section>
+
+	<footer>
+		真源：<code>dsh-plugins/vssaros-loop/</code>（引擎）· <code>dsh-plugins/vssaros-workitem/</code>（共享内核）·
+		<code>doc/dsh-loop-plan.md</code>（方案与落地记录）。单测：
+		<code>node dsh-plugins/vssaros-loop/test/run-loop-check.mjs</code>、
+		<code>node dsh-plugins/vssaros-workitem/test/run-workitem-check.mjs</code>、
+		<code>node dsh-plugins/vssaros-agents/test/run-group-tasks-check.mjs</code>。
+	</footer>
+</div>
+
+<script>
+	/* ── 主题 ─────────────────────────────────────────────── */
+	document.getElementById('themeBtn').addEventListener('click', () => {
+		const cur = document.documentElement.getAttribute('data-theme');
+		document.documentElement.setAttribute('data-theme', cur === 'light' ? 'dark' : 'light');
+	});
+
+	/* ── 复刻内核判据（演示用；真源在 dsh-plugins/vssaros-workitem） ── */
+	const MIN_ROUND_INTERVAL_S = 120;
+	const UNITS = { '': 1, s: 1, m: 60, h: 3600, d: 86400 };
+
+	function parseDuration(raw) {
+		const m = /^(\d+(?:\.\d+)?)\s*([smhd]?)$/i.exec(String(raw).trim());
+		if (!m) { throw new Error('expected a duration like 30s / 15m / 4h / 30d'); }
+		return Math.trunc(Number(m[1]) * UNITS[m[2].toLowerCase()]);
+	}
+	function parseClock(raw) {
+		const m = /^(\d{1,2}):(\d{2})$/.exec(String(raw).trim());
+		if (!m) { throw new Error('expected HH:MM'); }
+		const hh = Number(m[1]), mm = Number(m[2]);
+		if (hh > 23 || mm > 59) { throw new Error('不是合法时刻'); }
+		return hh * 60 + mm;
+	}
+	function parseSchedule(raw) {
+		const input = String(raw).trim().split(/\s+/).filter(Boolean).join(' ');
+		if (!input || input.toLowerCase() === 'manual') { return { kind: 'manual', text: 'manual' }; }
+		const parts = input.split(' ');
+		const kind = parts[0].toLowerCase();
+		const tail = parts.slice(1).join(' ');
+		if (kind === 'every') {
+			const intervalS = parseDuration(tail);
+			if (intervalS < MIN_ROUND_INTERVAL_S) {
+				throw new Error(`'every ${tail}' 低于 ${MIN_ROUND_INTERVAL_S}s 最小轮间隔`);
+			}
+			return { kind: 'every', intervalS, text: `every ${intervalS}s` };
+		}
+		if (kind === 'daily') {
+			const atMinute = parseClock(tail);
+			const hh = String(Math.trunc(atMinute / 60)).padStart(2, '0');
+			const mm = String(atMinute % 60).padStart(2, '0');
+			return { kind: 'daily', atMinute, text: `daily ${hh}:${mm}` };
+		}
+		throw new Error("expected 'every <duration>', 'daily HH:MM' or 'manual'");
+	}
+
+	function parseItemMarker(raw) {
+		const m = /\[item:(done|failed|blocked)(?::([^\]]*))?\]/i.exec(String(raw));
+		if (!m) { return { found: false, status: '', reason: '' }; }
+		return { found: true, status: m[1].toLowerCase(), reason: (m[2] || '').trim(), marker: m[0] };
+	}
+	function outcomeOf(finalText, stopReason) {
+		const marker = parseItemMarker(finalText);
+		if (marker.found) { return { status: marker.status, reason: marker.reason, marker: marker.marker }; }
+		if (stopReason && stopReason !== 'completed') { return { status: 'failed', reason: 'stopReason=' + stopReason }; }
+		return { status: 'failed', reason: 'missing [item:...] marker' };
+	}
+
+	function skipReason(entry, maxAttempts, retryBackoffS, nowMs) {
+		if (!entry) { return null; }
+		if (entry.status === 'done') { return 'ledger:done'; }
+		if (entry.status === 'blocked') { return 'ledger:blocked（等待人工回答）'; }
+		if (entry.attempts >= maxAttempts) { return `attempts-exhausted（${entry.attempts}/${maxAttempts}）`; }
+		if (entry.status === 'failed') {
+			// 演示：把 updatedAt 视为 10 分钟前 ⇒ 用于展示退避判定
+			const dueAt = (entry.updatedAt || 0) + retryBackoffS * 1000;
+			if (nowMs < dueAt) { return `backoff（${Math.ceil((dueAt - nowMs) / 1000)}s 后重试）`; }
+		}
+		return null;
+	}
+
+	/* ── Demo 1：调度 ─────────────────────────────────────── */
+	function runSchedule() {
+		const out = document.getElementById('o1');
+		const raw = document.getElementById('d1').value;
+		try {
+			const s = parseSchedule(raw);
+			if (s.kind === 'manual') {
+				out.innerHTML = '<span class="k">kind</span> = manual\n<span class="dim">不会自动跑，只能 loop_run</span>';
+				return;
+			}
+			const extra = s.kind === 'every'
+				? `下一轮 = 本轮开始时间 + ${s.intervalS}s`
+				: `每天 ${String(Math.trunc(s.atMinute / 60)).padStart(2, '0')}:${String(s.atMinute % 60).padStart(2, '0')}（本地时间）`;
+			out.innerHTML = '<span class="good">✓ 合法</span>\n<span class="k">规范化</span> = ' + s.text
+				+ (s.kind === 'every' ? `\n<span class="k">intervalS</span> = ${s.intervalS}` : `\n<span class="k">atMinute</span> = ${s.atMinute}`)
+				+ '\n<span class="dim">' + extra + '</span>';
+		} catch (e) {
+			out.innerHTML = '<span class="bad">✗ ' + String(e.message) + '</span>\n<span class="dim">越过硬上限一律报错，不夹紧</span>';
+		}
+	}
+
+	/* ── Demo 2：完成标记 ─────────────────────────────────── */
+	function runMarker() {
+		const out = document.getElementById('o2');
+		const text = document.getElementById('d2').value;
+		const r = outcomeOf(text, 'completed');
+		const cls = r.status === 'done' ? 'good' : (r.status === 'blocked' ? 'k' : 'bad');
+		const tips = {
+			done: '写进账本：done ⇒ 这条活以后不再做',
+			failed: 'attempts +1，退避后可重试；连续失败会熔断',
+			blocked: '停在 blocked，等 loop_answer 放回队列',
+		};
+		out.innerHTML = '<span class="' + cls + '">status = ' + r.status + '</span>'
+			+ (r.reason ? '\n<span class="k">reason</span> = ' + r.reason : '')
+			+ '\n<span class="dim">' + tips[r.status] + '</span>';
+	}
+
+	/* ── Demo 3：挑单 ─────────────────────────────────────── */
+	function runPick() {
+		const out = document.getElementById('o3');
+		const raw = document.getElementById('d3').value.trim().split('\n');
+		const maxItems = Math.max(1, Number(document.getElementById('d3b').value) || 1);
+		const maxAttempts = 2, retryBackoffS = 600;
+		const nowMs = Date.now();
+		const picked = [], excluded = [];
+		for (const line of raw) {
+			const [key, status, attempts] = line.split(',').map(x => (x || '').trim());
+			if (!key) { continue; }
+			const entry = status ? {
+				status,
+				attempts: Number(attempts || 0),
+				// 演示：把 failed 的 updatedAt 设为 60 秒前（退避 10 分钟 ⇒ 还在冷却）
+				updatedAt: status === 'failed' ? nowMs - 60_000 : nowMs,
+			} : null;
+			const skip = skipReason(entry, maxAttempts, retryBackoffS, nowMs);
+			if (skip) { excluded.push([key, skip]); continue; }
+			if (picked.length >= maxItems) { excluded.push([key, `round-cap（本轮上限 ${maxItems}）`]); continue; }
+			picked.push(key);
+		}
+		let html = '<span class="good">会做 ' + picked.length + ' 条</span>'
+			+ (picked.length ? '\n' + picked.map(k => '  ✓ ' + k).join('\n') : '')
+			+ '\n<span class="k">排除 ' + excluded.length + ' 条</span>';
+		html += excluded.length ? '\n' + excluded.map(e => '  ✗ ' + e[0] + '　' + e[1]).join('\n') : '';
+		html += '\n<span class="dim">（演示把 failed 的 updatedAt 设为 60 秒前 ⇒ 10 分钟退避仍在冷却）</span>';
+		out.innerHTML = html;
+	}
+
+	/* 首屏先算一遍 */
+	runSchedule(); runMarker(); runPick();
+</script>
+</body>
+</html>

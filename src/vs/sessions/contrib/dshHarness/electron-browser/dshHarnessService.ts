@@ -25,9 +25,7 @@ import { DSH_UPGRADE_ASSET_KINDS, IDshUpgradeAppState, IDshUpgradeAssetRow, IDsh
 import { buildUpdateEndpoint, decideAppUpdate, parseAppUpdateResponse } from '../common/dshAppUpdate.js';
 import { getDshPluginCenterHost } from '../../agentStudio/browser/dshPluginCenterHost.js';
 import { IProductService } from '../../../../platform/product/common/productService.js';
-import { IRequestService } from '../../../../platform/request/common/request.js';
 import { IUpdateService, StateType } from '../../../../platform/update/common/update.js';
-import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { arch as platformArch } from '../../../../base/common/process.js';
 import { DSH_MODULE_CONTAINERS, DshModuleId, IDshModulePageState, activeModulesFromPlugins, activeModulesOf, containersFromPlugins, pagesFromPlugins, resolveContainerPageState, withWorkbenchClient } from '../common/dshModuleContainers.js';
 // `taskboard` 能力（看板"定位卡片"）：与原 `TasksViewPane` 点条目**同一套实现**（同一个 EditorInput
@@ -75,9 +73,6 @@ import { IStorageService, StorageScope } from '../../../../platform/storage/comm
 // 第一个"读 IDE 内存聚合"的适配（其余读的都是编辑器/工作区状态 ✓）。
 import { IAgentStudioDashboardService } from '../../agentStudio/browser/agentStudioDashboardService.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
-// 读更新源响应体：`IRequestService` 只给 `ctx.stream`（这个 fork 没有 `readAsText` 辅助）
-// ⇒ 用 `streamToBuffer` 收完再 `toString()`（UTF-8 解码由 VSBuffer 负责 ✓）
-import { streamToBuffer } from '../../../../base/common/buffer.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { DSH_HARNESS_CHANNEL, DshColorScheme, DshHarnessChannelCommand, DshHarnessChannelEvent, DshHarnessSettings, DshPageSurface, DshViewSurface, IDshBootstrapArgs, IDshBundledInstallResult, IDshBundledPluginRow, IDshHostStartOptions, IDshHostStatus, IDshIdeClaimReply, IDshIdeRequest, IDshPluginActivationSnapshot, IDshPluginInfo, IDshPluginRowSetResult, IDshPluginSetResult, IDshRuntimeInfo, IDshUpdateDiscoveryResult, IDshUpdatePolicy, IDshUpgradeArgs, IDshViewBounds, IDshViewInfo, IDshWorkspaceSyncState, IDshWorkspaceSyncSummary, shouldRestartForWorkspaceChange, surfaceTakesRoute } from '../common/dshHarness.js';
@@ -175,6 +170,16 @@ export interface IDshHarnessService {
 	 * 页面拿不到返回值（页面桥单向）⇒ 全靠这次推送。
 	 */
 	refreshUpgrade(): Promise<void>;
+	/**
+	 * 取一份**升级状态快照**（2026-10-30：IDE 侧「系统与更新」面板用）。
+	 *
+	 * 与 {@link refreshUpgrade} 的分工：那条是给 dsh 页面用的 —— 页面桥单向（`invoke` 只回 true）
+	 * ⇒ 状态只能**推**；这条**有返回值**，供 IDE 自己的编辑器面板直接渲染（不必绕一圈推送）。
+	 *
+	 * @param check `true` = 先联网问一次更新源（等价于点「检查更新」）；`false`/缺省 = 用缓存的
+	 *   `_appUpdate`（面板刚打开时先用它出首屏，**不联网** —— 用户要的是"手动点才检查"）。
+	 */
+	getUpgradeState(check?: boolean): Promise<IDshUpgradeState>;
 	/**
 	 * 升级（或安装）一个**随包插件**（2026-10-23）。真正的安装归 IDE 插件中心
 	 * （`installBundledPlugin`：主进程暂存 → `dsh plugin add`，与启动时装插件同一条路）。
@@ -543,7 +548,6 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 		//   `IUpdateService` 在 workbench 里是 eager 注册的（`workbench/services/update`）⇒ 直接注入；
 		//   万一哪天真缺它，`upgradeApp` 里会退回"请手动下载安装包"，不会静默失败 ✓。
 		@IProductService private readonly _productService: IProductService,
-		@IRequestService private readonly _requestService: IRequestService,
 		@IUpdateService private readonly _updateService: IUpdateService,
 		@ILogService private readonly _logService: ILogService,
 		// ★ 2026-10-21：`media`（生图）能力要用的：模型 provider 注册表
@@ -2020,6 +2024,23 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 		}
 	}
 
+	/**
+	 * IDE 侧「系统与更新」面板的数据入口（2026-10-30）。
+	 *
+	 * 与 `refreshUpgrade` 共用同一份 `_buildUpgradeState()` ⇒ 面板与 desktop 左下角那行
+	 * **永远看到同一组数据**（不许各算一份，否则"面板说有 3 项、行上写 2 项"必然出现 ✗）。
+	 *
+	 * ⚠ `check=true` 只更新 `_appUpdate`（应用自身的结论）；随包插件 / 资产本来每次都会现算。
+	 */
+	public async getUpgradeState(check?: boolean): Promise<IDshUpgradeState> {
+		if (check) {
+			this._appUpdate = await this._checkAppUpdate();
+			// 顺手推一份给 dsh 页面：desktop 那行也要跟着变成"已是最新 / 可升级到 X" ✓
+			void this._pushUpgradeToAll();
+		}
+		return await this._buildUpgradeState();
+	}
+
 	public async upgradeBundled(name: string): Promise<{ ok: boolean; error?: string }> {
 		const host = getDshPluginCenterHost();
 		if (!host) {
@@ -2190,12 +2211,23 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 		const platform = `${isWindows ? 'win32' : isMacintosh ? 'darwin' : 'linux'}-${platformArch}`;
 		const url = buildUpdateEndpoint(base, platform, this._productService.quality ?? 'stable', this._productService.commit ?? '');
 		try {
-			const ctx = await this._requestService.request({ url, callSite: 'dshHarness.appUpdate' }, CancellationToken.None);
-			if (ctx.res.statusCode !== 200) {
-				return { current, action: 'unknown', error: `更新源返回 HTTP ${ctx.res.statusCode}` };
+			// ★★ 2026-10-30（真机 P0：打包 exe 的更新面板红字 `Failed to fetch`）：
+			//   原来在**渲染进程**用 IRequestService（浏览器 XHR）直连更新源 —— 更新源是内网静态
+			//   托管，**不发 CORS 头** ⇒ 浏览器拦掉响应，JS 只能看到 `Failed to fetch` ✗✗
+			//   （saros-pocket 的 app.js L2271 早有同一坑的记录与解法：走原生 fetch）。
+			//   ⇒ 请求挪到**主进程**（`CheckAppUpdate` 通道命令，无跨域概念）；
+			//     这里只负责拼 URL、解析响应体。
+			const res = await this._channel.call<{ ok: boolean; status?: number; body?: string; error?: string }>(
+				DshHarnessChannelCommand.CheckAppUpdate,
+				{ url },
+			);
+			if (!res || !res.ok) {
+				return { current, action: 'unknown', error: res?.error ?? '更新源请求失败' };
 			}
-			const body = await streamToBuffer(ctx.stream);
-			const parsed = parseAppUpdateResponse(JSON.parse(body.toString()));
+			if (!res.body) {
+				return { current, action: 'unknown', error: `更新源返回 HTTP ${res.status ?? 204}（空响应）` };
+			}
+			const parsed = parseAppUpdateResponse(JSON.parse(res.body));
 			const remote = parsed?.productVersion;
 			const action = decideAppUpdate(current, remote);
 			this._logService.info(`[dshHarness] app update: local=${current} remote=${remote ?? '-'} ⇒ ${action}`);

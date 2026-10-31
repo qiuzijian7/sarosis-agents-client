@@ -248,9 +248,24 @@ check('★ hero（空会话屏）右上角必须有「新增窗口」入口，�
 		'hero 判据必须是 [data-conversation-content] 的 data-content-phase === "hero" ✗');
 	assert.ok(!/hasAttribute\("data-conversation-session"\)/.test(nav),
 		'不许再用"没有 data-conversation-session"判 hero（空会话首屏会判错 ⇒ 入口永不显示 ✗）');
+	// ★ 2026-10-31（真机：打开**知识库**面板时，这颗按钮浮到了知识库右上角）：
+	//   工作台面板接管中栏后，会话容器**还在文档里、但已塌成 0×0** ⇒ 只看 phase 会误判 hero。
+	//   现场实测：工作台页 = phase:hero / rect 0×0 / 中栏有工作台 iframe；
+	//             真空会话屏 = phase:hero / rect 1280×1250 / 中栏无 iframe。
+	assert.ok(/const visible = el\.getClientRects\(\)\.length > 0 && b\.width > 0 && b\.height > 0/.test(nav),
+		'hero 判据必须要求会话容器**真的可见**（否则工作台页会塌成 0×0 ⇒ 按钮浮到知识库右上角 ✗）');
+	assert.ok(/hero = visible && !covered/.test(nav),
+		'hero 判据必须是 visible && !covered（可见 且 中栏没有可见工作台 iframe）✗');
+	assert.ok(/center\.querySelectorAll\("iframe"\)/.test(nav),
+		'必须有"中栏里有可见工作台 iframe ⇒ 不算 hero"的双保险 ✗');
 	// ⚠ 不许压住官方「打开侧边栏」（2026-10-30 用户截图：右上角按钮被挡）
 	assert.ok(/data-sidebar-right-expand/.test(nav) && /data-sidebar-right-toggle/.test(nav),
 		'入口必须贴到官方「打开侧边栏」按钮左边（否则会盖住它 ✗）');
+	// ★ 2026-10-31（用户截图）：右侧独立格子（`dsh-desk-split-`）**不许装更新入口**
+	//   （更新是全应用状态 ⇒ 主栏一份就够；格子里再出一份就是"多出一个更新 UI"✗）
+	const upgrade = stripComments(read(path.join(PLUGIN, 'lib', 'client.upgrade.js')));
+	assert.ok(/indexOf\("dsh-desk-split-"\) === 0[\s\S]{0,120}return;/.test(upgrade),
+		'client.upgrade.js 必须在 dsh-desk-split- 格子里直接退出（不注册更新入口）✗');
 	// ⚠ 只在 HeroSplitChip 函数体（到下一个 function 定义为止）内做负对照（本文件别处合法地用了那些标记）
 	const heroAt = nav.indexOf('function HeroSplitChip(');
 	const nextFn = nav.indexOf('function TabStrip(', heroAt);

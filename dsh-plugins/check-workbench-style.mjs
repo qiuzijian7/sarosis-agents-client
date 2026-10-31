@@ -13,14 +13,12 @@
 //   S12 零 iframe（宿主渲染的 React，不是嵌页面）
 //   S15 包内有自检（`test/*.mjs`）—— 家族探针 `poc/dsh-p0/scripts/p3-*` 不算：装出去就没了
 //
-// ★ 2026-10-28 新增「**原生承载型**」分支（scheduler 0.3.0 起）：
-//   有些工作台不画 UI，而是把**官方现成页面**搬进来（scheduler = 官方 `dsh-client-ui-schedule`
-//   的 chunk 副本，只把 apply() 换成 desktopWorkbenches.register）。UI 不是我们写的 ⇒
-//   S6（wb-* 用量）/ TOOLBAR（工具条锚点）/ S9（@container）三条**不适用**（官方页自带 h1、
-//   自带 CSS）。改用三条专用断言，防止"搬运"变成绕开统一约定的口子：
-//   N1 出处 + 许可必须写明（`@deepseek-ai/dsh-client-ui-schedule` + MIT）
-//   N3 子块必须真的被入口 `require.async` 装载并调 `install(`（否则装了等于没装）
-//   N4 `customFrame: false` 时 `headerLayout` 必须是 `default`（否则宿主 warn 一次并回退）
+// ★ 2026-10-31：「**原生承载型**」分支**已删除**（2026-10-28 加的）。
+//   它只为 scheduler 0.3.x「把官方 `dsh-client-ui-schedule` 页面整份搬进来」而设：那种工作台
+//   UI 不是我们画的 ⇒ 豁免 S6/TOOLBAR/S9，改查 N1（出处+MIT）/ N3（子块真被装载）/ N4（外壳契约）。
+//   scheduler 0.4.0 起改为**自绘**（用共享层 `wb-*` 原语 + 工具条锚点 + @container）⇒ 全仓已无任何文件带
+//   `//#region vssaros: native workbench adapter` ⇒ 那套分支**永远走不到**。留着就是"看着在守卫、实际不生效"
+//   的僵尸分支。将来若真有人再搬官方页面，按 git 历史把它找回即可。
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -100,42 +98,13 @@ for (const dirName of UNIFIED) {
 	else {
 		const src = component.text;
 		const name = component.p.slice(PLUGINS.length + 1);
-		/**
-		 * 原生承载型：UI 是官方页面副本（不是我们画的）。判据 = 文件里有搬运 region 标记
-		 * （`//#region vssaros: native workbench adapter`）—— 自绘组件不会写这行。
-		 * ⚠ 必须用**原文**判：`src` 是 stripComments 之后的，region 标记与 MIT 说明都是 `//` 注释 ⇒ 被删掉了。
-		 */
-		const raw = readFileSync(component.p, 'utf8');
-		const nativeHost = /#region\s+vssaros:\s*native workbench adapter/.test(raw);
-
-		if (nativeHost) {
-			// N1 出处 + 许可（否则"搬运"无法核实来源，也无法判断升级时该跟哪份）
-			if (!/@deepseek-ai\/dsh-client-ui-schedule/.test(raw) || !/\bMIT\b/.test(raw)) {
-				fail('N1', `${name}: 原生承载型缺出处/许可说明（要写 @deepseek-ai/dsh-client-ui-schedule + MIT）`);
-			} else { ok(`${name}: 原生承载型，出处与许可已写明 ✓`); }
-			// N3 子块真被入口装载（否则插件装了、工作台永远不出现，且宿主不报错）
-			const chunkName = component.p.split(/[\\/]/).pop();
-			const wired = loadedChunks.includes(chunkName) && /\.install\(/.test(entryText);
-			if (!wired) { fail('N3', `${dirName}: 原生承载子块 ${chunkName} 没有被入口 require.async 装载并调 install() ⇒ 装了等于没装`); }
-			else { ok(`${dirName}: 入口装载原生子块并调 install() ✓`); }
-			// N4 外壳契约：customFrame=false 却声明 compact ⇒ 宿主 warn 一次并回退默认布局
-			try {
-				const wb = JSON.parse(readFileSync(join(PLUGINS, dirName, 'package.json'), 'utf8')).vssaros?.workbench || {};
-				const layout = wb.headerLayout || 'default';
-				if (wb.customFrame !== true && layout === 'compact') { fail('N4', `${dirName}: customFrame=false 但 headerLayout=compact ⇒ 宿主会 warn 并回退`); }
-				else { ok(`${dirName}: customFrame/headerLayout 契约一致 ✓`); }
-			} catch (error) { fail('N4', `${dirName}: 读不到 package.json 的 vssaros.workbench（${String(error && error.message || error)}）`); }
-			// 原生承载型不做 S6/S9/TOOLBAR（官方页自带标题与 CSS）；S7/S8/S11/S12 照旧在下面跑。
-			ok(`${name}: 原生承载型 ⇒ S6/S9/TOOLBAR 不适用（官方页自带标题与样式）`);
-		} else {
-			// S6 共享原语用量
-			// ⚠ 统计口径：**扫 token**，不是扫「独立成串」的类名。
-			//   2026-10-24 踩过：scheduler 改用 `className: 'vss wb wb-toolbar'`（多类名串）后，
-			//   旧正则 `'wb-xxx'` 只数得到 8 个 ⇒ 误判「没在用共享层」✗（真实是 11 个）。
-			const wbClasses = new Set(src.match(/\bwb(?:-[a-z0-9]+)*\b/g) ?? []);
-			if (wbClasses.size < MIN_WB_CLASSES) { fail('S6', `${name}: 只用到 ${wbClasses.size} 个 wb-* 类（<${MIN_WB_CLASSES}）⇒ 没在用共享层`); }
-			else { ok(`${name}: 用了 ${wbClasses.size} 个 wb-* 原语 ✓`); }
-		}
+		// S6 共享原语用量
+		// ⚠ 统计口径：**扫 token**，不是扫「独立成串」的类名。
+		//   2026-10-24 踩过：scheduler 改用 `className: 'vss wb wb-toolbar'`（多类名串）后，
+		//   旧正则 `'wb-xxx'` 只数得到 8 个 ⇒ 误判「没在用共享层」✗（真实是 11 个）。
+		const wbClasses = new Set(src.match(/\bwb(?:-[a-z0-9]+)*\b/g) ?? []);
+		if (wbClasses.size < MIN_WB_CLASSES) { fail('S6', `${name}: 只用到 ${wbClasses.size} 个 wb-* 类（<${MIN_WB_CLASSES}）⇒ 没在用共享层`); }
+		else { ok(`${name}: 用了 ${wbClasses.size} 个 wb-* 原语 ✓`); }
 
 		// S7 裸色值：允许 `var(--x, #hex)` 兜底 —— 判据 = 该行有 `var(--` 就不算裸
 		const bare = [];
@@ -150,16 +119,14 @@ for (const dirName of UNIFIED) {
 		if (!/data-vssaros-surface['"]?\s*:\s*['"]workbench/.test(src)) { fail('S8', `${name}: 缺 data-vssaros-surface="workbench"`); }
 		else { ok(`${name}: 有 data-vssaros-surface="workbench" ✓`); }
 
-		// 工具条锚点恰好 1 个（原生承载型由官方页自带 <h1>，外壳走 default 布局 ⇒ 不要求）
-		if (!nativeHost) {
-			const toolbar = (src.match(/data-dsh-workbench-toolbar/g) ?? []).length;
-			if (toolbar !== 1) { fail('TOOLBAR', `${name}: data-dsh-workbench-toolbar 应恰好 1 个，实际 ${toolbar}`); }
-			else { ok(`${name}: 工具条锚点唯一 ✓`); }
+		// 工具条锚点恰好 1 个
+		const toolbar = (src.match(/data-dsh-workbench-toolbar/g) ?? []).length;
+		if (toolbar !== 1) { fail('TOOLBAR', `${name}: data-dsh-workbench-toolbar 应恰好 1 个，实际 ${toolbar}`); }
+		else { ok(`${name}: 工具条锚点唯一 ✓`); }
 
-			// S9 容器查询：工作台不只跑在全窗里，还会被塞进 IDE 侧栏 / dsh 右栏（320–420px）
-			if (!/@container/.test(src)) { fail('S9', `${name}: 没有 @container（窄栏里不会重排 ⇒ 横向溢出 / 字竖排）`); }
-			else { ok(`${name}: 有容器查询 @container ✓`); }
-		}
+		// S9 容器查询：工作台不只跑在全窗里，还会被塞进 IDE 侧栏 / dsh 右栏（320–420px）
+		if (!/@container/.test(src)) { fail('S9', `${name}: 没有 @container（窄栏里不会重排 ⇒ 横向溢出 / 字竖排）`); }
+		else { ok(`${name}: 有容器查询 @container ✓`); }
 
 		// S11 机器锚点
 		const anchors = new Set(src.match(/data-[a-z0-9-]{3,30}/g) ?? []);

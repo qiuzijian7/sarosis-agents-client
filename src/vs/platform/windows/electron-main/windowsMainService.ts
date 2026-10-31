@@ -41,6 +41,7 @@ import { IAddRemoveFoldersRequest, INativeOpenFileRequest, INativeWindowConfigur
 import { CodeWindow } from './windowImpl.js';
 import { IOpenConfiguration, IOpenEmptyConfiguration, IWindowsCountChangedEvent, IWindowsMainService, OpenContext, getLastFocused } from './windows.js';
 import { findWindowOnExtensionDevelopmentPath, findWindowOnFile, findWindowOnWorkspaceOrFolder } from './windowsFinder.js';
+import { collectRequestedFileCandidates } from './requestedFileCandidates.js';
 import { IWindowState, WindowsStateHandler } from './windowsStateHandler.js';
 import { IRecent } from '../../workspaces/common/workspaces.js';
 import { hasWorkspaceFileExtension, IAnyWorkspaceIdentifier, ISingleFolderWorkspaceIdentifier, isSingleFolderWorkspaceIdentifier, isWorkspaceIdentifier, IWorkspaceIdentifier, toWorkspaceIdentifier } from '../../workspace/common/workspace.js';
@@ -219,6 +220,8 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 	 * 旧窗口不关就累积。有了这份名册，`openAgentsWindow` 就能先找到**存活的**那个并聚焦它。
 	 */
 	private readonly _agentsWindowIds = new Set<number>();
+	/** 本进程（应用）的启动时刻：用于"启动宽限期内新建的窗口也建窗即隐藏"（见 `startHidden`）。 */
+	private readonly _appStartedAt = Date.now();
 
 	private readonly windowsStateHandler: WindowsStateHandler;
 
@@ -320,6 +323,15 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 		if (args['agents'] === true || process.env['VSSAROS_START_HIDDEN'] === '1') {
 			return true;
 		}
+		// ★★ 2026-10-31（用户："打开 app 后默认仅启动 desktop，不要 IDE 闪一下又关掉"）：
+		//   原来**只要带了目标参数**（文件 / 文件夹 / diff / merge）就不隐藏 ⇒ IDE 先可见地建出来，
+		//   几秒后桌面窗口出来再把它藏回去 ⇒ 用户看到 IDE 闪一下 ✗✗（真机 10:31 09:50:23
+		//   `wantsHiddenStart=false（… hasTarget=true）` 正是这一条）。
+		//   而本 app 的主界面就是桌面窗口 ⇒ 只要"启动即开桌面窗口"没被用户关掉，
+		//   **带目标也不露 IDE**（目标照样会被打开，只是发生在桌面窗口那边）。
+		//   ⚠ 只有用户在设置里关掉"启动即打开桌面窗口"时，才回到"带目标就露 IDE"的老语义 ✓。
+		//   ⚠ 读不到配置时按"开着"处理 ⇒ 默认不露 IDE（与用户口径一致 ✓）。
+		const openDesktopOnStartup = this.configurationService.getValue<boolean>('sessions.dshHarness.openDesktopOnStartup') !== false;
 		const hasTarget = (Array.isArray(args._) && args._.length > 0)
 			|| !!args['folder-uri'] || !!args['file-uri'] || !!args['diff'] || !!args['merge'];
 		// ★★ 2026-10-28（用户：「打包出的 exe 打开后会**闪一下 IDE 窗口**，然后才打开 dsh 窗口」）：
@@ -330,9 +342,9 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 		//   仍然要求"没有目标参数"：带文件夹/文件/diff 的启动，用户的意图就是开 IDE，藏起来才是 bug。
 		const isBuilt = this.environmentMainService.isBuilt;
 		const isEmbedded = !!(process as INodeProcess).isEmbeddedApp;
-		const hidden = !hasTarget && (isBuilt || isEmbedded);
-		// 留一条可诊断的日志：打包版再出现"闪 IDE"时，这行就能直接判定是哪个判据没成立。
-		this.logService.info(`[windowsManager] wantsHiddenStart=${hidden}（isBuilt=${isBuilt}, isEmbeddedApp=${isEmbedded}, hasTarget=${hasTarget}）`);
+		const hidden = (isBuilt || isEmbedded) && (openDesktopOnStartup || !hasTarget);
+		// 留一条可诊断的日志：再出现"闪 IDE"时，这行就能直接判定是哪个判据没成立。
+		this.logService.info(`[windowsManager] wantsHiddenStart=${hidden}（isBuilt=${isBuilt}, isEmbeddedApp=${isEmbedded}, hasTarget=${hasTarget}, openDesktopOnStartup=${openDesktopOnStartup}）`);
 		return hidden;
 	}
 
@@ -475,6 +487,41 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 			return openConfig;
 		}
 
+		// ②b ★★ 2026-10-31（用户要求「用外部工具打开时，选 VsSaros = 当前这个 IDE 窗口」）：
+		//   第二个实例转发过来（"打开方式" / 文件关联 / 拖到 exe 上）的目标常常是**单个文件**。
+		//   它此前**无处可落**：`urisToOpen` 为空（`launchMainService` 只把位置参数留在 `cli._`）、
+		//   `hasExplicitFolderRequest` 又只认文件夹 ⇒ 直接掉进 case ③「复用记住的工作区」
+		//   ⇒ 文件被**丢弃**（真机日志：`cli._=["…\\poc\\card-demo\\alpha.js"]` 而 `urisToOpen=[]`，
+		//   随后只有 `reopening remembered workspace` ⇒ 用户点了"打开"却什么都没开 ✗）。
+		//
+		//   这里把请求里**真实存在的普通文件**挑出来，与记住的工作区**一起**交给 `open()`：
+		//   先回到那个工作区，再把这些文件作为编辑器打开 ✓。
+		//   ⚠ 只认 `isFile`（见 `_findRequestedFiles`）⇒ dev 链的 app 路径是文件夹、不会被误当
+		//     工作区打开（2026-09-14 实测踩过）；
+		//   ⚠ 没有文件时本分支不生效 ⇒ F5 / 任务栏 / 双击 exe 的启动路径完全不受影响 ✓。
+		const requestedFiles = await this._findRequestedFiles(openConfig);
+		if (requestedFiles.length) {
+			const rememberedForFiles = await this._readRememberedWorkspaceFile();
+			const urisToOpen: IWindowOpenable[] = [];
+			if (rememberedForFiles && await this.fileService.exists(rememberedForFiles)) {
+				urisToOpen.push(hasWorkspaceFileExtension(rememberedForFiles.fsPath) ? { workspaceUri: rememberedForFiles } : { folderUri: rememberedForFiles });
+			}
+			for (const fileUri of requestedFiles) {
+				urisToOpen.push({ fileUri });
+			}
+			this.logService.info(`[windowsManager] agents window opening requested file(s) on top of the remembered workspace: ${requestedFiles.map(uri => uri.fsPath).join(', ')}`);
+			return {
+				urisToOpen,
+				userEnv: openConfig.userEnv,
+				cli: openConfig.cli,
+				noRecentEntry: true,
+				context: openConfig.context,
+				contextWindowId: openConfig.contextWindowId,
+				initialStartup: openConfig.initialStartup,
+				forceNewWindow: true,
+			};
+		}
+
 		// ③ 没有显式请求时，复用「用户上次指定的工作区/文件夹」，
 		//    而不是硬编码的内置兜底文件 `agent-sessions.code-workspace`。
 		//
@@ -592,6 +639,54 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 				return;
 			}
 		}
+	}
+
+	/**
+	 * 请求里**真实存在的普通文件**（不是文件夹、不是 `.code-workspace`）。
+	 *
+	 * 来源（按显式程度）：已经解析好的 `urisToOpen`、`--file-uri`、位置参数 `cli._`。
+	 *
+	 * ⚠ 位置参数**必须逐个 `stat`**：
+	 *   · dev 链的第一个位置参数是 Electron 的 app 路径（**文件夹**）⇒ 只认 `isFile` 就能天然排除
+	 *     （把它当工作区打开会让 F5 每次都开仓库根 —— 2026-09-14 实测踩过）；
+	 *   · 不存在 / 不可读的路径一律不认领，交给其它分支或原生报错，不在这里编造。
+	 * ⚠ 用 `_safeParseUri` 而不是裸 `URI.parse`：Windows 盘符路径会被 `URI.parse` 当成 scheme
+	 *   而丢掉盘符（2026-09-19 事故，见该方法的注释）。
+	 */
+	private async _findRequestedFiles(openConfig: IOpenConfiguration): Promise<URI[]> {
+		const out: URI[] = [];
+		const seen = new ResourceSet();
+
+		// ① 已经解析好的 openable 里的 `fileUri`（API / OS "打开方式"）⇒ 直接收
+		for (const openable of openConfig.urisToOpen ?? []) {
+			if (isFileToOpen(openable) && !hasWorkspaceFileExtension(openable.fileUri.fsPath) && !seen.has(openable.fileUri)) {
+				seen.add(openable.fileUri);
+				out.push(openable.fileUri);
+			}
+		}
+
+		// ② 原始串（`--file-uri` / 位置参数）⇒ 先用**纯函数**筛一遍（空串 / 开关 /
+		//    `.code-workspace` / 重复都在那里被剔除，且可被守卫直接跑断言 ✓），
+		//    再逐个 `stat` 只认真正的文件（dev 链的 app 路径是文件夹 ⇒ 在这里被排除）。
+		for (const raw of collectRequestedFileCandidates({
+			fileUriFlags: openConfig.cli?.['file-uri'] ?? [],
+			positional: openConfig.cli?._ ?? [],
+		})) {
+			const uri = this._safeParseUri(raw);
+			if (!uri || seen.has(uri)) {
+				continue;
+			}
+			try {
+				if ((await this.fileService.stat(uri)).isFile) {
+					seen.add(uri);
+					out.push(uri);
+				}
+			} catch {
+				// 不存在 / 不可读 ⇒ 不认领（不伪装成"要打开的文件"）
+			}
+		}
+
+		return out;
 	}
 
 	/**
@@ -2078,7 +2173,14 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 				// ★ 2026-10-21 第三轮（用户："打包出的版本，双击 exe。要求默认打开 desktop，不要开 ide"）：
 				//   打包版既没有 `--agents`、也没有 launch.json 的 env ⇒ 上面那版只在 dev 生效。
 				//   判据抽到 `_wantsHiddenStart()`（含"双击裸启动"这一条）✓
-				startHidden: configuration.isInitialStartup === true && this._wantsHiddenStart()
+				// ★★ 2026-10-31（真机："IDE 窗口闪一下又关掉"）：原来只有**第一个**窗口
+				//   （`isInitialStartup === true`）才建窗即隐藏 ⇒ 启动期间因第二次启动请求
+				//   （单实例 handoff ⇒ `startOpenWindow`）多开的那个 IDE 窗口是**可见**地建出来的，
+				//   随后才被桌面流程藏回去 ⇒ 用户看到 IDE 闪一下 ✗✗
+				//   （`main(8).log`：id=1 隐藏 ✓，id=2 可见 ✗，随后 id=3/4 两扇桌面窗口）。
+				//   ⇒ 启动**宽限期**内（30s）新建的窗口同样建窗即隐藏；用户之后主动开的
+				//     「新建窗口」不受影响（那时早已过了宽限期）✓。
+				startHidden: this._wantsHiddenStart() && (configuration.isInitialStartup === true || Date.now() - this._appStartedAt < 30_000)
 			});
 			mark('code/didCreateCodeWindow');
 

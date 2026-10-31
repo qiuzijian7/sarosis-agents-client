@@ -231,6 +231,12 @@ export interface IVssarosWorkbench {
 	readonly layout?: { readonly businessSide?: 'left' | 'right'; readonly businessWidth?: number };
 	/** 我们独有：Pane 声明（缺省 `['catalog','core']`）。 */
 	readonly panes: readonly VssarosWorkbenchPane[];
+	/**
+	 * 我们独有：是否显示**浮动动作按钮**（FAB，收起后右上角浮一个「« …」按钮、点击展开）。
+	 * 2026-10-31 由 scheduler 首次声明（`floatingActions: false`）—— 它自带完整工具栏，
+	 * 再叠一个 FAB 就是重复入口且会挡住右上角。缺省（undefined）= 沿用宿主默认（显示）。
+	 */
+	readonly floatingActions?: boolean;
 }
 
 export type VssarosWorkbenchPane = 'catalog' | 'core';
@@ -510,7 +516,8 @@ export interface IParseManifestOptions {
 }
 
 const WORKBENCH_PANES: readonly VssarosWorkbenchPane[] = ['catalog', 'core'];
-const WORKBENCH_KEYS = new Set(['title', 'description', 'icon', 'repository', 'customFrame', 'headerLayout', 'layout', 'panes']);
+// 2026-10-31：新增 `floatingActions`（scheduler 用它关掉重复的浮动动作按钮）。
+const WORKBENCH_KEYS = new Set(['title', 'description', 'icon', 'repository', 'customFrame', 'headerLayout', 'layout', 'panes', 'floatingActions']);
 
 /** 标题长度按"字"算（码点数）；中英文同一上限，避免英文长名把窄入口撑爆。 */
 function lengthOf(s: string): number {
@@ -635,6 +642,7 @@ function parseWorkbench(raw: unknown, module: string | undefined, activityBar: I
 		...(raw.headerLayout !== undefined ? { headerLayout: raw.headerLayout as 'default' | 'compact' } : {}),
 		...(layout ? { layout } : {}),
 		panes,
+		...(raw.floatingActions !== undefined ? { floatingActions: raw.floatingActions === true } : {}),
 	};
 }
 

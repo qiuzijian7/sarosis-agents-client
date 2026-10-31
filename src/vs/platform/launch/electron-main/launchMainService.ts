@@ -143,13 +143,20 @@ export class LaunchMainService implements ILaunchMainService {
 		// 现在**只按事实判断**：只有在 `--new-window` 且位置参数恰好等于 app 路径时才丢弃，
 		// 不再依赖 dev/built 判据 —— 语义更精确，且打包版不会误伤
 		//（打包版的 app 路径是 `resources/app`，用户不可能把它当文件夹传进来）。
-		if (args['new-window'] && args._.length === 1) {
+		// ⚠⚠ 2026-10-31 再修（用户要求「用外部工具打开时，选 VsSaros = 当前这个 IDE 窗口」）：
+		//   原判据要求 `--new-window` **且**位置参数恰好 1 个 ⇒ 像"打开方式 / 文件关联"这种
+		//   `[appPath, 文件]` 的转发**整段漏掉**：app 路径被当成"已打开的文件夹"、真实的文件
+		//   永远进不了 `urisToOpen`（真机日志：`cli._=[<repo>, <file>]` 但 `urisToOpen=[]`，
+		//   随后只执行"重开记住的工作区" ⇒ 用户看到文件没被打开 ✗）。
+		//   ⇒ 改成**任何场景**都按事实剥离位置参数里的第一个 app 路径（其余照旧保留）。
+		//   打包版不会误伤：它的 app 路径是 `resources/app`，用户不可能把它当文件夹传进来。
+		if (args._.length > 0) {
 			// Resolve both sides to absolute paths: `app.getAppPath()` can be
 			// relative (e.g. `electron .` in dev), while the forwarded jump-list
 			// arg is the resolved absolute path we registered.
 			const normPath = (p: string) => resolve(p).replace(/[\\/]+$/, '').replace(/\\/g, '/').toLowerCase();
 			if (normPath(args._[0]) === normPath(app.getAppPath())) {
-				args._ = [];
+				args._ = args._.slice(1);
 			}
 		}
 

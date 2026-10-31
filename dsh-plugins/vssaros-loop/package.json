@@ -1,0 +1,38 @@
+{
+  "name": "@vssaros/dsh-loop",
+  "version": "0.1.1",
+  "description": "VsSaros loop module for DeepSeek Harness: unattended loops (harvest -> select -> work) with a durable ledger, per-item isolated sessions and the same safety rails as bunnyseek's loop engine. Data root follows the shared chain (config.dataRoot -> VSSAROS_DATA_ROOT -> ~/.vssaros).",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/runner.js",
+    "lib/store.js",
+    "lib/foundationRef.js",
+    "lib/workItemRef.js",
+    "lib/core/ledger.js",
+    "lib/core/plan.js",
+    "lib/core/spec.js",
+    "lib/core/handoff.js",
+    "cordis.patch.yml"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/dsh": ">=0.1.7-0 <0.3.0-0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": [
+        "./cordis.patch.yml"
+      ]
+    }
+  },
+  "license": "MIT",
+  "scripts": {
+    "check": "node ./test/run-loop-check.mjs"
+  }
+}

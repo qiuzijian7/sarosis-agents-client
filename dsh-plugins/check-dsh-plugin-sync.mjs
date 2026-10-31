@@ -73,7 +73,14 @@ const trackedFilesOf = (repoRoot, pluginDir) => {
 		const prefix = pluginDir.replace(/\\/g, '/') + '/';
 		return out.split('\n').filter(Boolean).map((l) => l.replace(/\\/g, '/')).filter((l) => l.startsWith(prefix)).map((l) => l.slice(prefix.length))
 			// 测试文件**不该**进安装包（安装副本天然没有）⇒ 不算缺失
-			.filter((l) => !/^(test|tests)\//.test(l));
+			.filter((l) => !/^(test|tests)\//.test(l))
+			/*
+			 * ★ 2026-10-31：**必须再滤掉"索引里有、工作区没有"的文件**。
+			 *   真机：`vssaros-scheduler/lib/client.native.js` 在工作区被删了但没提交（`git status` 里是 ` D`），
+			 *   索引仍列着它 ⇒ 所有安装副本都被判"缺 1 个文件"，红得莫名其妙 ✗
+			 *   口径：**只有真的在工作区里的文件**才要求副本也有（否则是在替别人未提交的删除背锅）。
+			 */
+			.filter((l) => fs.existsSync(path.join(repoRoot, pluginDir, l)));
 	} catch {
 		return listFiles(path.join(repoRoot, pluginDir));
 	}

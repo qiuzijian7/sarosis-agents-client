@@ -1883,7 +1883,6 @@ const TOOLS_WORKBENCHES = [
 	{ name: 'Agent', desc: '.agent.md → dsh preset', route: '/x/agents/', provider: 'vssaros-agents' },
 	{ name: '商城', desc: '技能 / 工作台 / 工作流的安装与发布', route: '/x/marketplace/', provider: 'vssaros-marketplace' },
 	{ name: '记忆库', desc: '记忆条目与检索', route: '/x/memory/', provider: 'vssaros-memory' },
-	{ name: '并行 TUI 工作台', desc: '并排编排多个并行 LLM 会话', route: '/x/parallel/', provider: 'vssaros-parallel' },
 ];
 
 /** 路径显示：家目录缩成 `~`，否则整行会被截断。 */

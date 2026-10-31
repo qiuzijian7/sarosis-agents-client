@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<!--
+	自动化任务工作台 —— 布局备选 mockup ×4（2026-10-31，第二轮）
+
+	上一轮结论：两栏（列表+详情）在任务少时好看，任务一多（几十条起）左栏被压扁、
+	行内操作与元信息挤在一行、且没有搜索/排序/分页能力。
+
+	本文件给 4 个可选方向（顶部按钮切换），每张都用 18 条假数据渲染：
+	  A 双栏紧凑   —— 官方两栏的密度修正版。行只留 2 行文字，操作 hover 才出现。适合 ≤50 条。
+	  B 表格+抽屉  —— 全宽数据表格（状态/名称/规则/下次/上次/操作），列头排序，分页；
+	               详情改成右侧抽屉，不再挤占列表宽度。适合 50–500 条。
+	  C 分组看板   —— 按「已开启 / 已结束 / 需要注意」三列分组，一眼看分布。适合概览型使用者。
+	  D 官方紧凑复刻 —— 完全照 dsh 官方 TaskManagerPage 的布局语言，只加：底部统计条、
+	               状态色点、批量选择。适合"就要官方样子"的取舍。
+
+	约定不变：类名 mk2- 前缀；色值 var(--dsw-alias-*, 兜底)；浮层锚在根容器内；
+	@container 做窄栏降级。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>自动化任务 · 布局备选 ×4</title>
+<style>
+:root{
+	--wb-s1:4px; --wb-s2:8px; --wb-s3:12px; --wb-s4:16px;
+	--wb-r-sm:6px; --wb-r-md:10px; --wb-r-pill:999px;
+	--wb-f-xs:11px; --wb-f-sm:12px; --wb-f-md:13px; --wb-f-title:14px;
+}
+*{box-sizing:border-box}
+body{
+	margin:0; padding:var(--wb-s4);
+	background:var(--dsw-alias-bg-layer-0,#17171a);
+	color:var(--dsw-alias-label-primary,#e6e6ea);
+	font:var(--wb-f-sm)/1.5 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
+}
+h3{margin:var(--wb-s4) 0 var(--wb-s2); font-size:var(--wb-f-sm)}
+.mk2-note{
+	margin:0 0 var(--wb-s3); padding:var(--wb-s2) var(--wb-s3);
+	border-left:2px solid var(--dsw-alias-brand-primary,#007fd4);
+	background:var(--dsw-alias-bg-layer-1,rgba(128,128,128,.08));
+	color:var(--dsw-alias-label-secondary,rgba(230,230,230,.8)); font-size:var(--wb-f-xs);
+}
+.mk2-tabs{display:flex; gap:var(--wb-s2); flex-wrap:wrap; margin-bottom:var(--wb-s3)}
+.mk2-tabs button{
+	padding:4px 13px; border-radius:var(--wb-r-pill); cursor:pointer; font:inherit; font-size:var(--wb-f-xs);
+	border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.3)); background:transparent; color:inherit;
+}
+.mk2-tabs button.is-active{border-color:var(--dsw-alias-brand-primary,#007fd4); font-weight:600}
+.mk2-fit{font-size:var(--wb-f-xs); color:var(--dsw-alias-label-tertiary,rgba(230,230,230,.6)); margin-left:var(--wb-s2)}
+
+/* ── 共享：工作台根 / 工具条 / 通用件 ─────────────────────────────── */
+.mk2-root{
+	container-type:inline-size; position:relative;
+	display:flex; flex-direction:column; height:560px;
+	border:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.22));
+	border-radius:var(--wb-r-md); overflow:hidden;
+	background:var(--dsw-alias-bg-layer-1,rgba(128,128,128,.05));
+	margin-bottom:var(--wb-s4);
+}
+.mk2-toolbar{
+	display:flex; align-items:center; gap:var(--wb-s2); flex-wrap:wrap;
+	padding:var(--wb-s2) var(--wb-s3); min-height:32px;
+	border-bottom:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.18));
+}
+.mk2-title{margin:0; font-size:var(--wb-f-title); font-weight:600; white-space:nowrap}
+.mk2-count{font-size:var(--wb-f-xs); color:var(--dsw-alias-label-tertiary,rgba(230,230,230,.6)); white-space:nowrap}
+.mk2-spacer{flex:1 1 auto}
+.mk2-input,.mk2-select{
+	padding:2px 8px; border-radius:var(--wb-r-sm); font:inherit; font-size:var(--wb-f-xs); min-width:0;
+	border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.3));
+	background:var(--dsw-alias-bg-layer-1,transparent); color:inherit;
+}
+.mk2-input:focus,.mk2-select:focus{outline:1px solid var(--dsw-alias-brand-primary,#007fd4)}
+.mk2-search{display:flex; align-items:center; min-width:160px}
+.mk2-search .mk2-input{flex:1 1 auto}
+.mk2-chips{display:flex; gap:var(--wb-s1); flex-wrap:wrap}
+.mk2-chip{
+	padding:1px 9px; border-radius:var(--wb-r-pill); cursor:pointer; font:inherit; font-size:var(--wb-f-xs);
+	border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.3)); background:transparent; color:inherit;
+}
+.mk2-chip.is-active{border-color:var(--dsw-alias-brand-primary,#007fd4); color:var(--dsw-alias-brand-text,#4c9aff)}
+.mk2-btn{
+	padding:2px 10px; border-radius:var(--wb-r-pill); cursor:pointer; font:inherit; font-size:var(--wb-f-xs);
+	border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.3)); background:transparent; color:inherit;
+}
+.mk2-btn.is-primary{background:var(--dsw-alias-button-primary-fill,#007fd4); border-color:transparent; color:var(--dsw-alias-label-primary-inverted,#fff)}
+.mk2-btn.is-danger{color:var(--dsw-alias-state-error-primary,#f48771); border-color:currentColor}
+.mk2-mini{
+	padding:1px 7px; border-radius:var(--wb-r-pill); cursor:pointer; font:inherit; font-size:var(--wb-f-xs);
+	border:1px solid transparent; background:transparent; color:var(--dsw-alias-label-secondary,rgba(230,230,230,.8));
+}
+.mk2-mini:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(128,128,128,.16))}
+.mk2-mini.is-danger{color:var(--dsw-alias-state-error-primary,#f48771)}
+/* 状态点（替代大徽标：密度） */
+.mk2-dot{width:8px; height:8px; border-radius:50%; display:inline-block; flex:0 0 auto}
+.mk2-dot.is-active{background:var(--dsw-alias-state-success-primary,#3fb950)}
+.mk2-dot.is-ended{background:var(--dsw-alias-label-tertiary,rgba(230,230,230,.4))}
+.mk2-dot.is-failed{background:var(--dsw-alias-state-warn-primary,#e0a43a)}
+.mk2-rel{color:var(--dsw-alias-brand-text,#4c9aff); white-space:nowrap}
+.mk2-abs{color:var(--dsw-alias-label-tertiary,rgba(230,230,230,.55)); white-space:nowrap}
+
+/* ── A 双栏紧凑 ───────────────────────────────────────────────────── */
+.la-split{flex:1 1 auto; min-height:0; display:flex; gap:var(--wb-s3); padding:var(--wb-s2) var(--wb-s3)}
+.la-left{flex:0 0 300px; min-width:0; display:flex; flex-direction:column; gap:var(--wb-s2)}
+.la-list{list-style:none; margin:0; padding:0; overflow:auto; display:flex; flex-direction:column; gap:var(--wb-s1); flex:1 1 auto}
+.la-row{
+	display:flex; flex-direction:column; gap:2px; cursor:pointer; padding:var(--wb-s1) var(--wb-s2);
+	border-radius:var(--wb-r-sm); border:1px solid transparent;
+}
+.la-row:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(128,128,128,.12))}
+.la-row.is-selected{border-color:var(--dsw-alias-brand-primary,#007fd4); background:var(--dsw-alias-interactive-bg-active,rgba(0,127,212,.10))}
+.la-row-l1{display:flex; align-items:center; gap:var(--wb-s1); min-width:0}
+.la-name{font-size:var(--wb-f-sm); overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.la-row-l2{display:flex; align-items:center; gap:var(--wb-s2); font-size:var(--wb-f-xs); color:var(--dsw-alias-label-tertiary,rgba(230,230,230,.6)); min-width:0}
+.la-right{flex:1 1 auto; min-width:0; overflow:auto; border-left:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.18)); padding-left:var(--wb-s3)}
+.la-row-acts{display:flex; gap:var(--wb-s1); opacity:0; transition:opacity .12s; margin-left:auto}
+.la-row:hover .la-row-acts,.la-row.is-selected .la-row-acts{opacity:1}
+
+/* ── B 表格 + 抽屉 ────────────────────────────────────────────────── */
+.lb-body{flex:1 1 auto; min-height:0; display:flex; flex-direction:column}
+.lb-stats{display:flex; gap:var(--wb-s3); padding:var(--wb-s1) var(--wb-s3); font-size:var(--wb-f-xs);
+	color:var(--dsw-alias-label-tertiary,rgba(230,230,230,.6)); border-bottom:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.14))}
+.lb-scroll{flex:1 1 auto; overflow:auto}
+.lb-table{border-collapse:collapse; width:100%; font-size:var(--wb-f-xs)}
+.lb-table th,.lb-table td{text-align:left; padding:4px var(--wb-s2); border-bottom:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.14)); white-space:nowrap}
+.lb-table th{position:sticky; top:0; background:var(--dsw-alias-bg-layer-2,#202024); color:var(--dsw-alias-label-tertiary,rgba(230,230,230,.6)); cursor:pointer; user-select:none}
+.lb-table th .arrow{color:var(--dsw-alias-brand-text,#4c9aff)}
+.lb-table tr:hover td{background:var(--dsw-alias-interactive-bg-hover,rgba(128,128,128,.10))}
+.lb-table tr.is-selected td{background:var(--dsw-alias-interactive-bg-active,rgba(0,127,212,.10))}
+.lb-name{max-width:260px; overflow:hidden; text-overflow:ellipsis}
+.lb-foot{display:flex; align-items:center; gap:var(--wb-s2); padding:var(--wb-s1) var(--wb-s3);
+	border-top:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.14)); font-size:var(--wb-f-xs);
+	color:var(--dsw-alias-label-tertiary,rgba(230,230,230,.6))}
+.lb-drawer{
+	position:absolute; top:0; right:0; bottom:0; width:min(380px,86%); z-index:30;
+	display:flex; flex-direction:column; gap:var(--wb-s2); padding:var(--wb-s3);
+	border-left:1px solid var(--dsw-alias-brand-primary,#007fd4);
+	background:var(--dsw-alias-bg-layer-2,#232327); box-shadow:-12px 0 28px rgba(0,0,0,.45); overflow:auto;
+}
+
+/* ── C 分组看板 ───────────────────────────────────────────────────── */
+.lc-board{flex:1 1 auto; min-height:0; display:flex; gap:var(--wb-s2); padding:var(--wb-s2) var(--wb-s3); overflow:hidden}
+.lc-col{flex:1 1 0; min-width:0; display:flex; flex-direction:column; gap:var(--wb-s1)}
+.lc-col-hd{display:flex; align-items:center; gap:var(--wb-s1); font-size:var(--wb-f-xs); font-weight:600;
+	padding:var(--wb-s1) var(--wb-s2); border-radius:var(--wb-r-sm);
+	background:var(--dsw-alias-bg-layer-2,#202024); cursor:pointer}
+.lc-col-hd .n{margin-left:auto; color:var(--dsw-alias-label-tertiary,rgba(230,230,230,.6))}
+.lc-cards{overflow:auto; display:flex; flex-direction:column; gap:var(--wb-s1); padding:2px}
+.lc-card{border:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.2)); border-radius:var(--wb-r-sm);
+	padding:var(--wb-s1) var(--wb-s2); display:flex; flex-direction:column; gap:2px; cursor:pointer}
+.lc-card:hover{border-color:var(--dsw-alias-brand-primary,#007fd4)}
+.lc-card .t{font-size:var(--wb-f-xs); font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.lc-card .m{font-size:var(--wb-f-xs); color:var(--dsw-alias-label-tertiary,rgba(230,230,230,.6)); display:flex; gap:var(--wb-s2)}
+
+/* ── D 官方紧凑复刻 ───────────────────────────────────────────────── */
+.ld-split{flex:1 1 auto; min-height:0; display:flex; gap:var(--wb-s3); padding:var(--wb-s2) var(--wb-s3)}
+.ld-left{flex:0 0 320px; min-width:0; display:flex; flex-direction:column; gap:var(--wb-s2)}
+.ld-list{list-style:none; margin:0; padding:0; overflow:auto; display:flex; flex-direction:column; flex:1 1 auto}
+.ld-row{display:flex; flex-direction:column; gap:2px; cursor:pointer; padding:var(--wb-s1) var(--wb-s2); border-radius:var(--wb-r-sm); border-left:2px solid transparent}
+.ld-row:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(128,128,128,.12))}
+.ld-row.is-selected{border-left-color:var(--dsw-alias-brand-primary,#007fd4); background:var(--dsw-alias-interactive-bg-active,rgba(0,127,212,.10))}
+.ld-right{flex:1 1 auto; min-width:0; overflow:auto; border-left:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.18)); padding-left:var(--wb-s3)}
+.ld-foot{display:flex; gap:var(--wb-s3); padding:var(--wb-s1) var(--wb-s2); font-size:var(--wb-f-xs);
+	color:var(--dsw-alias-label-tertiary,rgba(230,230,230,.6)); border-top:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.14))}
+.ld-check{flex:0 0 auto; margin-top:2px}
+
+/* 窄容器：所有方案降单列 / 收抽屉 */
+@container (max-width:760px){
+	.la-split,.ld-split{flex-direction:column}
+	.la-left,.ld-left{flex:0 0 auto}
+	.la-right,.ld-right{border-left:0; padding-left:0; border-top:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.18)); padding-top:var(--wb-s2)}
+	.lc-board{flex-direction:column; overflow:auto}
+	.lb-drawer{width:100%}
+}
+[hidden]{display:none !important}
+</style>
+</head>
+<body>
+
+<p class="mk2-note">
+	<b>第二轮 mockup（非线上代码）</b>：针对「任务一多两栏就不合理」。4 个方向各有适用规模；
+	假数据 18 条（含已结束 / 失败）。顶部按钮切换方案；方案内搜索 / 筛选 / 排序 / 抽屉均可点。
+</p>
+
+<div class="mk2-tabs">
+	<button data-s="la" class="is-active">A 双栏紧凑 <span class="mk2-fit">≤50 条</span></button>
+	<button data-s="lb">B 表格 + 抽屉 <span class="mk2-fit">50–500 条</span></button>
+	<button data-s="lc">C 分组看板 <span class="mk2-fit">概览</span></button>
+	<button data-s="ld">D 官方紧凑复刻 <span class="mk2-fit">≤80 条</span></button>
+</div>
+
+<div id="la" class="mk2-root">
+	<div class="mk2-toolbar">
+		<h1 class="mk2-title">自动化任务</h1><span class="mk2-count" data-count></span>
+		<span class="mk2-spacer"></span>
+		<div class="mk2-search"><input class="mk2-input" type="search" placeholder="搜索任务 / 规则" data-search></div>
+		<div class="mk2-chips" data-filters></div>
+		<button class="mk2-btn is-primary" type="button">新建</button>
+	</div>
+	<div class="la-split">
+		<div class="la-left">
+			<ul class="la-list" data-list="la"></ul>
+		</div>
+		<div class="la-right">
+			<h3>详情（选中任务的规则 / 运行记录 / 关联会话）</h3>
+			<p class="mk2-note" style="margin:0">
+				与现实现的差别：<b>行的操作按钮只在 hover / 选中时出现</b>（列表密度 ↑）；
+				<b>规则编辑固定在右栏</b>（不随选中行内联展开）；行高从 57px 压到约 40px。
+			</p>
+		</div>
+	</div>
+</div>
+
+<div id="lb" class="mk2-root" hidden>
+	<div class="mk2-toolbar">
+		<h1 class="mk2-title">自动化任务</h1><span class="mk2-count" data-count></span>
+		<span class="mk2-spacer"></span>
+		<div class="mk2-search"><input class="mk2-input" type="search" placeholder="搜索任务 / 规则" data-search></div>
+		<div class="mk2-chips" data-filters></div>
+		<button class="mk2-btn" type="button">紧凑 / 舒适</button>
+		<button class="mk2-btn is-primary" type="button">新建</button>
+	</div>
+	<div class="lb-body">
+		<div class="lb-stats" data-stats></div>
+		<div class="lb-scroll">
+			<table class="lb-table">
+				<thead><tr>
+					<th data-sort="status">状态 <span class="arrow">↓</span></th>
+					<th data-sort="name">名称 <span class="arrow">↓</span></th>
+					<th data-sort="rule">规则</th>
+					<th data-sort="next">下次运行</th>
+					<th data-sort="last">上次</th>
+					<th>操作</th>
+				</tr></thead>
+				<tbody data-list="lb"></tbody>
+			</table>
+		</div>
+		<div class="lb-foot">
+			<span>第 1 / 2 页 · 每页 20 条</span><span class="mk2-spacer"></span>
+			<button class="mk2-mini" type="button">‹ 上一页</button>
+			<button class="mk2-mini" type="button">下一页 ›</button>
+		</div>
+	</div>
+	<div class="lb-drawer" hidden>
+		<div style="display:flex; align-items:center; gap:var(--wb-s2)">
+			<b data-drawer-name>—</b><span class="mk2-spacer"></span>
+			<button class="mk2-mini" type="button" data-drawer-close>✕</button>
+		</div>
+		<div class="mk2-chips">
+			<button class="mk2-chip is-active" type="button">规则</button>
+			<button class="mk2-chip" type="button">运行记录</button>
+		</div>
+		<div class="mk2-note" style="margin:0">
+			抽屉（点击表格行滑出）：<b>不占列表宽度</b>，任务再多列表仍是全宽表格。
+			里面是规则编辑（重复/时间/时区）+ 运行记录 + 删除（二次确认）。
+		</div>
+		<div class="mk2-field" style="display:flex; flex-direction:column; gap:4px">
+			<label style="font-size:var(--wb-f-xs); color:var(--dsw-alias-label-tertiary,rgba(230,230,230,.6))">重复 / 时间</label>
+			<div style="display:flex; gap:var(--wb-s1)"><select class="mk2-select"><option>每天</option><option>每周</option><option>固定间隔</option><option>仅一次</option><option>Cron</option></select>
+			<input class="mk2-input" type="time" value="09:00" style="flex:0 0 auto"></div>
+			<span style="font-size:var(--wb-f-xs); color:var(--dsw-alias-label-tertiary,rgba(230,230,230,.6))">时区：UTC+08:00 · 中国标准时间（系统）</span>
+		</div>
+		<div style="display:flex; gap:var(--wb-s2)">
+			<button class="mk2-btn is-primary" type="button">保存修改</button>
+			<button class="mk2-btn is-danger" type="button">删除任务</button>
+		</div>
+	</div>
+</div>
+
+<div id="lc" class="mk2-root" hidden>
+	<div class="mk2-toolbar">
+		<h1 class="mk2-title">自动化任务</h1><span class="mk2-count" data-count></span>
+		<span class="mk2-spacer"></span>
+		<div class="mk2-search"><input class="mk2-input" type="search" placeholder="搜索" data-search></div>
+		<button class="mk2-btn is-primary" type="button">新建</button>
+	</div>
+	<div class="lc-board" data-board></div>
+</div>
+
+<div id="ld" class="mk2-root" hidden>
+	<div class="mk2-toolbar">
+		<h1 class="mk2-title">自动化任务</h1><span class="mk2-count" data-count></span>
+		<span class="mk2-spacer"></span>
+		<button class="mk2-btn" type="button">刷新</button>
+		<button class="mk2-btn is-primary" type="button">新建</button>
+	</div>
+	<div class="ld-split">
+		<div class="ld-left">
+			<div class="mk2-search"><input class="mk2-input" type="search" placeholder="搜索自动化任务" data-search></div>
+			<div class="mk2-chips" data-filters></div>
+			<ul class="ld-list" data-list="ld"></ul>
+			<div class="ld-foot">
+				<span>开启 <b data-f-active>0</b></span><span>已结束 <b data-f-ended>0</b></span>
+				<span>需注意 <b data-f-warn>0</b></span><span class="mk2-spacer"></span>
+				<span>批量选择已勾选 <b data-f-picked>0</b></span>
+			</div>
+		</div>
+		<div class="ld-right">
+			<h3>详情 = 官方 TaskManagerPage 的布局语言</h3>
+			<p class="mk2-note" style="margin:0">
+				与官方的差异只有三处（都做了标注）：① 状态徽标换成<b>色点</b>（密度）；
+				② 底部加<b>统计条 + 批量选择</b>；③ 列表支持<b>虚拟滚动</b>（80+ 条不卡）。
+				其余逐字官方：搜索、筛选、行结构、右侧详情页签（规则 / 任务运行记录）、改规则、删除确认。
+			</p>
+		</div>
+	</div>
+</div>
+
+<script>
+/* ── 假数据：18 条（含已结束 / 失败），体现"大量任务" ─────────────────── */
+const TASKS = [
+	['每天整理当日待办','active','每天 09:00','18 小时后','昨天 09:00'],
+	['每周一同步缺陷','active','每周一 09:30','3 天后','10月27日 09:30'],
+	['发布后回归（一次性）','ended','10月28日 20:00','—','10月28日 20:00'],
+	['清理构建产物','active','每 60 分钟','40 分钟后','16 分钟前'],
+	['监控磁盘水位','failed','每 30 分钟','12 分钟后','12 分钟前'],
+	['同步 TAPD 缺陷到看板','active','每 2 小时','1 小时后','1 小时前'],
+	['每周五出周报草稿','active','每周五 17:00','5 天后','10月24日 17:00'],
+	['检查证书有效期','active','每天 08:00','19 小时后','今天 08:00'],
+	['废弃接口清理（第 2 批）','failed','每天 22:00','7 小时后','昨天 22:00'],
+	['备份知识库索引','active','每 6 小时','2 小时后','4 小时前'],
+	['汇总机器人运行指标','active','每天 07:30','20 小时后','今天 07:30'],
+	['临时：验证卡片交互','ended','10月29日 15:00','—','10月29日 15:00'],
+	['同步飞书群通知','active','每 15 分钟','9 分钟后','9 分钟前'],
+	['季度依赖审计','ended','10月20日 10:00','—','10月20日 10:00'],
+	['检查 UE 构建机队列','failed','每 4 小时','3 小时后','昨天 23:00'],
+	['刷新代码图谱','active','每 12 小时','8 小时后','4 小时前'],
+	['每晚压测冒烟','active','每天 23:30','8 小时后','昨天 23:30'],
+	['归档已完成会话','active','每周日 03:00','2 天后','上周日 03:00'],
+].map((t, i) => ({
+	id: 't-' + (i + 1),
+	name: t[0],
+	status: t[1] === 'failed' ? 'failed' : t[1],
+	rule: t[2],
+	rel: t[3],
+	last: t[4],
+}));
+
+const STATUSES = [
+	{ key: 'all', label: '全部' },
+	{ key: 'active', label: '已开启' },
+	{ key: 'ended', label: '已结束' },
+	{ key: 'failed', label: '需注意' },
+];
+const dot = s => `<span class="mk2-dot is-${s}"></span>`;
+const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+
+function filtered(rootEl, tasks) {
+	const q = (rootEl.querySelector('[data-search]')?.value || '').trim().toLowerCase();
+	const chips = [...rootEl.querySelectorAll('[data-filters] .mk2-chip')];
+	const activeChip = chips.find(c => c.classList.contains('is-active'));
+	const key = activeChip ? activeChip.dataset.key : 'all';
+	return tasks.filter(t => {
+		if (key !== 'all' && t.status !== key) { return false; }
+		if (key === 'ended' && t.status === 'active') { return false; }
+		if (q && !(t.name.toLowerCase().includes(q) || t.rule.toLowerCase().includes(q))) { return false; }
+		return true;
+	});
+}
+function buildFilters(rootEl) {
+	rootEl.querySelectorAll('[data-filters]').forEach(box => {
+		box.innerHTML = STATUSES.map(s => `<button class="mk2-chip${s.key === 'all' ? ' is-active' : ''}" type="button" data-key="${s.key}">${s.label}</button>`).join('');
+		box.addEventListener('click', (ev) => {
+			const b = ev.target.closest('.mk2-chip');
+			if (!b) { return; }
+			box.querySelectorAll('.mk2-chip').forEach(c => c.classList.remove('is-active'));
+			b.classList.add('is-active');
+			rerender(box.closest('.mk2-root').id);
+		});
+	});
+}
+document.querySelectorAll('.mk2-root').forEach(r => {
+	r.querySelector('[data-search]')?.addEventListener('input', () => rerender(r.id));
+});
+
+/* ── A 双栏紧凑 ── */
+function renderLA() {
+	const root = document.getElementById('la');
+	const rows = filtered(root, TASKS);
+	root.querySelector('[data-list="la"]').innerHTML = rows.map(t => `
+		<li class="la-row${t.id === 't-1' ? ' is-selected' : ''}">
+			<div class="la-row-l1">${dot(t.status)}<span class="la-name">${esc(t.name)}</span></div>
+			<div class="la-row-l2"><span>${esc(t.rule)}</span><span class="mk2-rel">${t.rel}</span>
+				<div class="la-row-acts">
+					<button class="mk2-mini" type="button">${t.status === 'active' ? '暂停' : '恢复'}</button>
+					<button class="mk2-mini" type="button">历史</button>
+					<button class="mk2-mini is-danger" type="button">删除</button>
+				</div></div>
+		</li>`).join('');
+}
+/* ── B 表格 ── */
+function renderLB() {
+	const root = document.getElementById('lb');
+	const rows = filtered(root, TASKS);
+	root.querySelector('[data-stats]').innerHTML =
+		`共 ${TASKS.length} 条 · 开启 ${TASKS.filter(t=>t.status==='active').length} · 已结束 ${TASKS.filter(t=>t.status==='ended').length} · 需注意 ${TASKS.filter(t=>t.status==='failed').length} · 每轮预算上限 3 条`;
+	root.querySelector('[data-list="lb"]').innerHTML = rows.map(t => `
+		<tr${t.id === 't-4' ? ' class="is-selected"' : ''}>
+			<td>${dot(t.status)}</td>
+			<td class="lb-name">${esc(t.name)}</td>
+			<td>${esc(t.rule)}</td>
+			<td><span class="mk2-rel">${t.rel}</span></td>
+			<td><span class="mk2-abs">${esc(t.last)}</span></td>
+			<td><button class="mk2-mini" type="button">暂停</button>
+				<button class="mk2-mini" type="button">历史</button>
+				<button class="mk2-mini is-danger" type="button" data-drawer-open>详情</button></td>
+		</tr>`).join('');
+	root.querySelectorAll('[data-drawer-open]').forEach(b => b.addEventListener('click', () => {
+		root.querySelector('.lb-drawer').hidden = false;
+	}));
+	root.querySelector('[data-drawer-close]').addEventListener('click', () => {
+		root.querySelector('.lb-drawer').hidden = true;
+	});
+}
+/* ── C 分组看板 ── */
+function renderLC() {
+	const root = document.getElementById('lc');
+	const rows = filtered(root, TASKS);
+	const groups = [
+		{ key: 'active', label: '已开启', items: rows.filter(t => t.status === 'active') },
+		{ key: 'ended', label: '已结束', items: rows.filter(t => t.status === 'ended') },
+		{ key: 'failed', label: '需注意（失败）', items: rows.filter(t => t.status === 'failed') },
+	];
+	root.querySelector('[data-board]').innerHTML = groups.map(g => `
+		<div class="lc-col">
+			<div class="lc-col-hd">${dot(g.key)} ${g.label}<span class="n">${g.items.length}</span></div>
+			<div class="lc-cards">${g.items.map(t => `
+				<div class="lc-card">
+					<span class="t">${esc(t.name)}</span>
+					<span class="m"><span>${esc(t.rule)}</span><span class="mk2-rel">${t.rel}</span></span>
+				</div>`).join('') || '<div class="lc-card"><span class="m">（空）</span></div>'}
+			</div>
+		</div>`).join('');
+}
+/* ── D 官方紧凑复刻 ── */
+function renderLD() {
+	const root = document.getElementById('ld');
+	const rows = filtered(root, TASKS);
+	root.querySelector('[data-list="ld"]').innerHTML = rows.map(t => `
+		<li class="ld-row${t.id === 't-1' ? ' is-selected' : ''}">
+			<div class="la-row-l1"><input type="checkbox" class="ld-check" data-pick>
+				${dot(t.status)}<span class="la-name">${esc(t.name)}</span>
+				<div class="la-row-acts"><button class="mk2-mini" type="button">暂停</button>
+				<button class="mk2-mini" type="button">历史</button>
+				<button class="mk2-mini is-danger" type="button">删除</button></div></div>
+			<div class="la-row-l2"><span>${esc(t.rule)}</span><span class="mk2-rel">${t.rel}</span><span class="mk2-abs">${esc(t.last)}</span></div>
+		</li>`).join('');
+	root.querySelectorAll('[data-pick]').forEach(c => c.addEventListener('change', () => {
+		root.querySelector('[data-f-picked]').textContent = String(root.querySelectorAll('[data-pick]:checked').length);
+	}));
+	const active = TASKS.filter(t => t.status === 'active').length;
+	root.querySelector('[data-f-active]').textContent = String(active);
+	root.querySelector('[data-f-ended]').textContent = String(TASKS.filter(t => t.status === 'ended').length);
+	root.querySelector('[data-f-warn]').textContent = String(TASKS.filter(t => t.status === 'failed').length);
+}
+
+function rerender(which) {
+	if (which === 'la') { renderLA(); }
+	if (which === 'lb') { renderLB(); }
+	if (which === 'lc') { renderLC(); }
+	if (which === 'ld') { renderLD(); }
+}
+['la','lb','lc','ld'].forEach(id => {
+	buildFilters(document.getElementById(id));
+	renderLa0(id);
+	function renderLa0(w) { rerender(w); }
+});
+document.querySelectorAll('.mk2-tabs button').forEach(b => b.addEventListener('click', () => {
+	document.querySelectorAll('.mk2-tabs button').forEach(x => x.classList.remove('is-active'));
+	b.classList.add('is-active');
+	['la','lb','lc','ld'].forEach(id => { document.getElementById(id).hidden = b.dataset.s !== id; });
+}));
+</script>
+</body>
+</html>

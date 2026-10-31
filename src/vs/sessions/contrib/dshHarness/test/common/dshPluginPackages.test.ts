@@ -415,6 +415,8 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 			// ★ 2026-10-22：商城工作台 —— 它**写** `<数据根>/skills|workflows`（落盘）与
 			// `installed-packages.json`（台账）⇒ 必须被注入数据根，否则 dev 实例写生产 ✗
 			['vssaros-marketplace', ['dataRoot']],
+			// ★ 2026-10-31：loop —— ledger / store 落 `<数据根>/loop/` ⇒ 必须注入数据根。
+			['vssaros-loop', ['dataRoot']],
 			// ★ 2026-10-30：小红书笔记工作台已移除 ⇒ 它原本需要的 `dataRoot` 注入项也一并删掉。
 			['vssaros-kb', ['dataRoot', 'kbRoot', 'kbVaults', 'kbActiveVaultId']],
 			['vssaros-web-content-import', ['dataRoot', 'kbRoot']],
@@ -821,6 +823,9 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 			// installed-packages.json 台账）与 `market_publish`（上传发布，不可撤销）；
 			// `market_search` / `market_inspect_github` 纯只读 ⇒ 闸里明确放行（`dryRun` 也放行）。
 			{ dir: 'vssaros-marketplace', gate: 'hook' },
+			// loop（2026-10-31，新插件）：过闸的是 `loop_run`（真的跑起来 + 写账本）与 `loop_answer`
+			// （把作答写进账本）；`loop_list` / `loop_show` / `loop_dry_run` 纯只读 ⇒ 放行。
+			{ dir: 'vssaros-loop', gate: 'hook' },
 			// agents（2026-10-13，P2 生命周期工具）：过闸的是 `agent_switch_persona`（改运行中会话的提示词）
 			// 与 `agent_stop`（停别人的回合）✓；`agent_list` 只读 ✓。
 			{
@@ -1306,8 +1311,8 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 			//   `description || ''` / `icon || ''`，**没有回落到清单** ⇒ 描述符漏写 = 注册表里那一项
 			//   说明空 / 图标空（商城还会落到 🧩）✗ —— 当天就实测到 kb 漏 description、memory 漏 icon。
 			//   ⚠ 图标口径按规范：`workbench.icon` 缺省回落 `activityBar.icon` ⇒ 期望值取这两者先有的那个。
-			// 2026-10-30：统一用上面解析出来的 `descriptorSrc`（不再硬编码常量名 `DESCRIPTOR`）。
-			const descriptorBlock = descriptorSrc || src;
+			// 2026-10-30：统一用上面解析出来的 `descriptorSrc`（不再硬编码常量名 `DESCRIPTOR`）
+			// ⇒ `fieldOf` 内部已经用 `descriptorSrc`，这里不需要再取一份（`descriptorBlock` 会变未使用变量）。
 			if (typeof manifest.workbench.description === 'string') {
 				const description = fieldOf('description');
 				if (description !== manifest.workbench.description) {

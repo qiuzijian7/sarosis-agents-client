@@ -419,6 +419,81 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 	}
 }
 
+// ── ④-b desktop / IDE 交互分流（2026-10-30 用户要求：「desktop 用 dsh 原生交互、IDE 用 IDE 交互」）──
+//   背景：desktop 窗口**也有** window.vssarosDsh（同一份 preload，只是 chatOnly=0），而它自带官方右栏
+//   ⇒ 「有桥 ⇒ 接管」是错判据；正确判据只有入口算出的 `shell.ide`（chatOnly===1）。
+//   漏接管的后果：desktop 里点工具卡路径会跳到 IDE 编辑器、点交付卡被改成"打开第一个文件"、
+//   子代理目录多一条非原生入口 —— 全都不是 dsh 原生交互 ✗。
+{
+	const entry = fs.readFileSync(path.join(PLUGIN_DIR, 'lib', 'client.js'), 'utf8');
+	if (!entry.includes('const isIdeChatView') || !entry.includes('ide: isIdeChatView')) {
+		problems.push('client.js 缺 desktop/IDE 分流判据（`isIdeChatView` + `shell.ide`）⇒ 各接管部件无从判断，desktop 窗口里又会把交互改道 IDE ✗（2026-10-30）');
+	}
+	// 每个部件都必须：① 在 install 开头 `if (!shell.ide)` 早退；② 早退时留一枚可见诊断字段（不静默 ✗）
+	const NEED_DESKTOP_EARLY_EXIT = [
+		['client.tools.js', 'openFileRouteSkipped', '文件链接（工具卡路径 / @引用 / markdown 链接）'],
+		['client.fileCards.js', 'fileCardsSkipped', '交付卡 + 计划预览 + 子代理侧栏'],
+		['client.cardActions.js', 'cardActionsSkipped', '「定位 / 看改动」/「在终端打开」注入按钮'],
+		['client.openInApp.js', 'hideOpenInAppSkipped', '官方 open-in-app 的遮蔽'],
+		['client.subagents.js', 'vssarosSubagentsEntrySkipped', '子智能体 header 入口'],
+	];
+	for (const [file, marker, what] of NEED_DESKTOP_EARLY_EXIT) {
+		const src = fs.readFileSync(path.join(LIB, file), 'utf8');
+		if (!src.includes('if (!shell.ide)') || !src.includes(marker)) {
+			problems.push(`${file} 缺 desktop 早退（\`if (!shell.ide)\` + 诊断字段 ${marker}）⇒ desktop 窗口里「${what}」仍走 IDE 通道 ✗（2026-10-30）`);
+		}
+	}
+	// `changes-review`（官方右栏「本轮改动」）必须放行给官方 —— 右栏在 IDE / desktop 两种形态下都保留
+	const fcDesktop = fs.readFileSync(path.join(PLUGIN_DIR, 'lib', 'client.fileCards.js'), 'utf8');
+	if (!fcDesktop.includes('dsh-resource://changes-review/') || !fcDesktop.includes('return orig(address, options)')) {
+		problems.push('client.fileCards.js 没有放行 `dsh-resource://changes-review/**` ⇒ 交付卡「本轮改动」只能弹提示，右栏永远打不开 ✗（2026-10-30）');
+	}
+	// 交付卡的**卡头**必须放行给官方 `openReview`（右栏本轮改动）：
+	//   旧写法 `firstRowPathOf(...)` + `stopPropagation` 会把 onClick 吃掉 ⇒ 服务层放行分支永远走不到 ✗。
+	if (!fcDesktop.includes('state.fileCardHeadersPassed')) {
+		problems.push('client.fileCards.js 的交付卡卡头没有放行（缺 `fileCardHeadersPassed` 计数）⇒ 点卡头还是"打开第一个文件"，右栏「本轮改动」打不开 ✗（2026-10-30）');
+	}
+	if (fcDesktop.includes('firstRowPathOf(target.closest(CARD_SELECTOR))')) {
+		problems.push('client.fileCards.js 又把交付卡卡头改回"打开第一个文件"了（`firstRowPathOf(...)`）⇒ 官方 openReview 被 stopPropagation 吃掉 ✗（2026-10-30）');
+	}
+}
+
+// ── ④-c hero「新增窗口」入口必须**事件驱动**（2026-10-31 用户报「切到知识库后过一会才消失」）──
+//   这颗按钮画在根帧 overlay（`inset: 0`）上 ⇒ 面板怎么切它都**不会被卸载**，可见性只能自己判断。
+//   若只用「量几何」（会话容器 rect / 中栏 iframe 尺寸）+ 800ms 轮询 ⇒ 切页后最长 800ms 的残影，
+//   且 iframe 首次加载时尺寸量不出来会更久 ✗（官方那枚「打开右侧边栏」能同帧消失，是因为它挂在
+//   会被切走的树里、由 store 状态驱动）。
+//   ⇒ 必须：① 先用 `workbenchPanelActive()`（面板根标记，**存在即算**，不等布局）做快速否；
+//          ② 订阅 `TAB_CHANGE_EVENT`（与 TabStrip 同一范式）⇒ 切页**同帧**重判；
+//          ③ 轮询只作兜底且不低于 400ms 的密度。
+{
+	const nav = fs.readFileSync(path.join(LIB, 'client.workbenchNav.js'), 'utf8');
+	const at = nav.indexOf('function HeroSplitChip(');
+	const nextFn = nav.indexOf('function TabStrip(', at);
+	if (at < 0 || nextFn < at) {
+		problems.push('client.workbenchNav.js 找不到 HeroSplitChip 的函数体 ✗（2026-10-31）');
+	} else {
+		const fn = nav.slice(at, nextFn);
+		// ⚠ 必须匹配**代码形态**（`if (workbenchPanelActive())`）而不是裸函数名：
+		//   注释里也会提到它 ⇒ `fn.includes('workbenchPanelActive()')` 在逻辑被删掉后
+		//   仍然成立 ⇒ 断言形同虚设（第一版就这么失效过：突变后守卫照样绿 ✗）。
+		if (!/if\s*\(\s*workbenchPanelActive\(\)\s*\)/.test(fn)) {
+			problems.push('hero「新增窗口」没有用 `workbenchPanelActive()` 做快速否 ⇒ 切到工作台页只能靠"量几何"推断，会残影 800ms+ ✗（2026-10-31）');
+		}
+		if (!/addEventListener\(\s*TAB_CHANGE_EVENT/.test(fn)) {
+			problems.push('hero「新增窗口」没有订阅 `TAB_CHANGE_EVENT` ⇒ 切页只能等下一次轮询才隐藏 ✗（2026-10-31）');
+		}
+		// ⚠ 反向：`activeTabId` 只在 closeTab 清空，点「💬 会话」走 selectPanel(null) 不清它
+		//   ⇒ 拿它判"在工作台页"会**永久隐藏**这颗按钮 ✗✗（比残影更糟）。
+		if (fn.includes('activeTabId')) {
+			problems.push('hero「新增窗口」不许用 `activeTabId` 判工作台页（切回会话不清空它 ⇒ 入口永不显示 ✗）（2026-10-31）');
+		}
+		if (/setInterval\(\s*read,\s*(?:[5-9]\d\d|[1-9]\d{3,})/.test(fn)) {
+			problems.push('hero「新增窗口」的兜底轮询超过 400ms ⇒ 官方绕过页签直接 selectPanel 时仍会有明显残影 ✗（2026-10-31）');
+		}
+	}
+}
+
 // ── ⑤ 多根工作区侧栏的分组收敛（client.workspaces.js 的 buildSidebar；2026-10-17）──────
 // 钉的是**回落契约**与「非主根才标根名」这两条用户可见行为；改坏了守卫必须红。
 {

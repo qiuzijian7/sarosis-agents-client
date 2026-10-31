@@ -1,4 +1,4 @@
-# 进程名：2026-10-29 起 exe 叫 `VsSaros`（原来 `Saroasis harness`）⇒ 两个都认（过渡期兼容）
+﻿# 进程名：2026-10-29 起 exe 叫 `VsSaros`（原来 `Saroasis harness`）⇒ 两个都认（过渡期兼容）
 # ★ 2026-10-30：dev 的 exe 改用独立名 `VsSaros Dev.exe`（与安装版 `VsSaros.exe` 区分开）
 param([string[]]$ProcessName = @('VsSaros Dev', 'VsSaros', 'Saroasis harness'))
 # ============================================================================

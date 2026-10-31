@@ -39,10 +39,29 @@ const GITHUB_API = 'https://api.github.com';
 const GITHUB_UPLOADS = 'https://uploads.github.com';
 const GITHUB_REPO = 'qiuzijian7/sarosis-agents-client';
 
-const EXE_FILES = [
-	{ kind: '用户级安装', rel: '.build/win32-x64/user-setup/VsSarosUserSetup.exe' },
-	{ kind: '系统级安装', rel: '.build/win32-x64/system-setup/VsSarosSetup.exe' },
-];
+// ── 平台（2026-10-31：macOS 支持）──────────────────────────────────────────
+const IS_WIN = process.platform === 'win32';
+/** macOS 架构：优先 SAROS_MAC_ARCH（流水线显式给），否则按当前进程推断。 */
+const MAC_ARCH = process.env.SAROS_MAC_ARCH || (process.arch === 'arm64' ? 'arm64' : 'x64');
+/**
+ * curl 可执行名：Windows 是 `curl.exe`，macOS/Linux 是 `curl`。
+ * ⚠ 原来写死 `curl.exe` ⇒ macOS 上直接 ENOENT ⇒ 整个发布步骤起不来。
+ */
+const CURL_BIN = IS_WIN ? 'curl.exe' : 'curl';
+
+/**
+ * 发布资产：Windows 出两个 Inno 安装包；macOS 出 dmg（对外分发）+ zip（**自动更新用**）。
+ * ⚠ zip 必须发布：DarwinUpdateService 走 electron.autoUpdater（Squirrel.Mac），只认 zip。
+ */
+const RELEASE_ASSETS = IS_WIN
+	? [
+		{ kind: '用户级安装', rel: '.build/win32-x64/user-setup/VsSarosUserSetup.exe' },
+		{ kind: '系统级安装', rel: '.build/win32-x64/system-setup/VsSarosSetup.exe' },
+	]
+	: [
+		{ kind: 'macOS 安装包（dmg）', rel: `.build/darwin-${MAC_ARCH}/VsSaros.dmg` },
+		{ kind: 'macOS 自动更新包（zip）', rel: `.build/darwin-${MAC_ARCH}/VsSaros-darwin-${MAC_ARCH}.zip` },
+	];
 
 function log(msg) { console.log(`[release] ${msg}`); }
 function warn(msg) { console.warn(`[release][WARN] ${msg}`); }
@@ -104,7 +123,7 @@ function curl(method, url, { headers = {}, json, formFile, uploadFile, timeoutSe
 	}
 
 	const run = (args) => {
-		const out = execFileSync('curl.exe', args, {
+		const out = execFileSync(CURL_BIN, args, {
 			encoding: 'utf8', timeout: (timeoutSec + 60) * 1000, maxBuffer: 32 * 1024 * 1024,
 		});
 		const idx = out.lastIndexOf('\n');
@@ -347,7 +366,7 @@ async function gitlabCreateRelease(tag, changelog, dryRun) {
 
 	// 2. upload exes to project uploads
 	const downloads = [];
-	for (const exe of EXE_FILES) {
+	for (const exe of RELEASE_ASSETS) {
 		const abs = path.join(REPO_ROOT, exe.rel);
 		if (!fs.existsSync(abs)) { warn(`exe missing, skipped: ${exe.rel}`); continue; }
 		const sizeMB = (fs.statSync(abs).size / 1048576).toFixed(2);
@@ -365,7 +384,7 @@ async function gitlabCreateRelease(tag, changelog, dryRun) {
 	}
 
 	// 3. description
-	const userExe = path.join(REPO_ROOT, EXE_FILES[0].rel);
+	const userExe = path.join(REPO_ROOT, RELEASE_ASSETS[0].rel);
 	const sha = fs.existsSync(userExe) ? `SHA256 (${path.basename(userExe)}): ${sha256Of(userExe)}` : '';
 	const dlRows = downloads.map((d) => `| Windows x64 | ${d.kind} | [${d.name}](${d.url}) (${d.sizeMB} MiB) |`).join('\n');
 	const desc = [
@@ -524,7 +543,7 @@ async function githubCreateRelease(tag, changelog, dryRun) {
 	}
 
 	// upload assets (idempotent: delete same-name asset first)
-	for (const exe of EXE_FILES) {
+	for (const exe of RELEASE_ASSETS) {
 		const abs = path.join(REPO_ROOT, exe.rel);
 		if (!fs.existsSync(abs)) { continue; }
 		const name = path.basename(exe.rel);

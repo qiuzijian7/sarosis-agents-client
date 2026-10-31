@@ -130,6 +130,43 @@ for (const file of [clientFile, indexFile]) {
 	}
 }
 
+// ── 5. `/api/action` 的**参数形状契约**（★ 2026-10-31）────────────
+//
+// 为什么守：这条接口的入参是 `{ op, params:{...} }`——**params 是嵌套的**。
+//   只要有一端写成平铺（`{ op, kind }`），`params` 就会是 `{}` ⇒
+//   **筛选条件被静默丢弃**（表现为"点了页签却还是全部商品"，且没有任何报错）。
+//   这次就是我在验证脚本里写平了，白查了一轮 ✗ ⇒ 把形状钉死。
+{
+	const client = fs.readFileSync(clientFile, 'utf8');
+	const index = fs.readFileSync(indexFile, 'utf8');
+	const mkt = fs.readFileSync(path.join(root, 'vssaros-marketplace', 'lib', 'marketClient.js'), 'utf8');
+
+	// ① 前端：必须发 { op, params }
+	if (/JSON\.stringify\(\{\s*op:\s*op,\s*params:\s*params/.test(client)) {
+		ok('lib/client.js：动作请求发 { op, params }（params 嵌套，不是平铺）');
+	} else {
+		fail('lib/client.js：动作请求必须是 { op, params }（平铺会让筛选条件被静默丢弃）');
+	}
+	// ② 宿主：必须读 parsed.params
+	if (/const params = parsed\.params \?\? \{\}/.test(index)) {
+		ok('lib/index.js：宿主读 parsed.params（与前端形状对齐）');
+	} else {
+		fail('lib/index.js：宿主必须读 parsed.params ?? {}（读错形状 ⇒ 筛选全丢）');
+	}
+	// ③ list 必须把 kind 传下去（页签筛选靠它）
+	if (/\.\.\.\(params\.kind \? \{ kind: String\(params\.kind\) \} : \{\}\)/.test(index)) {
+		ok('lib/index.js：list 把 kind 传给服务端（页签筛选生效）');
+	} else {
+		fail('lib/index.js：list 必须把 params.kind 传下去 ⇒ 否则点页签仍返回全部');
+	}
+	// ④ marketClient 必须把 kind 拼进查询串
+	if (/if \(opts\.kind\) \{ qs\.set\('kind', opts\.kind\)/.test(mkt)) {
+		ok('lib/marketClient.js：kind 拼进查询串');
+	} else {
+		fail('lib/marketClient.js：kind 必须拼进查询串（否则服务端收不到筛选）');
+	}
+}
+
 console.log(problems === 0
 	? '\n[check-marketplace-client] ✓ 商城页面脚本守卫通过'
 	: `\n[check-marketplace-client] ✗ ${problems} 项问题`);

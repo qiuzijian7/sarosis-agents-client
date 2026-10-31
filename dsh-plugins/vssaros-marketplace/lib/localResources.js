@@ -9,8 +9,9 @@
 //   · workflow 读 `workflow.json` 的 `version` 字段
 
 import { readdir, readFile, stat } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, basename } from 'node:path';
 import { PUBLISHABLE_KINDS } from './publisher.js';
+import { kbDataRootOf } from './installers.js';
 
 /**
  * 各 kind 的本地根目录名（与 IDE 侧 `SarosPath` 同口径）。
@@ -19,7 +20,9 @@ import { PUBLISHABLE_KINDS } from './publisher.js';
  *   与 skill/workflow 一样是目录镜像 ⇒ 可发布、可安装 ✓
  */
 // ★ 2026-10-23：加 mcp（`<数据根>/mcp/<id>/`，入口是 config.json）
-const KIND_DIR = { skill: 'skills', workflow: 'workflows', agent: 'agents', mcp: 'mcp' };
+// ★ 2026-10-31：加 knowledge（与 publisher.js 的 KIND_DIR 同口径；这里必须同步，否则
+//   `join(dataRoot, KIND_DIR['knowledge'])` 会因为 undefined 直接抛 ERR_INVALID_ARG_TYPE ✗）
+const KIND_DIR = { skill: 'skills', workflow: 'workflows', agent: 'agents', mcp: 'mcp', knowledge: 'knowledge' };
 
 /**
  * 各 kind 的**关键文件**（没有它就不是一个可发布的资源）。
@@ -120,6 +123,59 @@ async function versionOf(dir, kind) {
  * @param {string} dataRoot
  * @returns {Promise<{ kind: string, localId: string, version: string }[]>}
  */
+/**
+ * ★ 2026-10-31：列出**真实的知识库**（用户挂载的那些，不是装回来的包）。
+ *
+ * 为什么必须另列：知识库的本体在**知识库插件的数据根**里（`<dshHome>/knowledge-base/`），
+ *   而本文件默认只扫 `<数据根>/<kind根>/` ⇒ 那样只能看到"装回来的包"，用户自己的库一个都没有 ✗。
+ *   两个来源：
+ *     ① `.extra-vaults.json`（用户「本地载入文件夹」登记的）
+ *     ② 数据根下含 `笔记` 或 `库` 的目录（新建/内置的库）
+ * ⚠ 只读：这里不写任何东西。
+ */
+export async function listKnowledgeVaults(dataRoot) {
+	const kbRoot = kbDataRootOf(dataRoot);
+	if (!kbRoot) { return []; }
+	const found = new Map();
+	// ① 登记表
+	try {
+		const list = JSON.parse(await readFile(join(kbRoot, '.extra-vaults.json'), 'utf8'));
+		for (const v of Array.isArray(list) ? list : []) {
+			if (!v || typeof v?.path !== 'string' || !v.path.trim()) { continue; }
+			const p = v.path.trim();
+			try { if (!(await stat(p)).isDirectory()) { continue; } } catch { continue; }
+			found.set(p, { localId: String(v.id || basename(p)), name: String(v.name || v.id || basename(p)) });
+		}
+	} catch { /* 登记表不存在 ⇒ 只走扫描 */ }
+	// ② 扫描
+	let names = [];
+	try { names = await readdir(kbRoot); } catch { names = []; }
+	for (const name of names) {
+		if (name.startsWith('.')) { continue; }
+		const dir = join(kbRoot, name);
+		try { if (!(await stat(dir)).isDirectory()) { continue; } } catch { continue; }
+		let has = false;
+		for (const sub of ['笔记', '库']) {
+			try { if ((await stat(join(dir, sub))).isDirectory()) { has = true; break; } } catch { /* 没有这个子目录 */ }
+		}
+		if (!has || found.has(dir)) { continue; }
+		found.set(dir, { localId: name, name });
+	}
+	const items = [];
+	for (const [dir, meta] of found) {
+		let version = '';
+		try { version = await deriveVersion(dir); } catch { version = ''; }
+		items.push({
+			kind: 'knowledge',
+			localId: meta.localId,
+			name: meta.name,
+			version: version || '1.0.0',
+			sourceDir: dir,
+		});
+	}
+	return items;
+}
+
 export async function listPublishables(dataRoot) {
 	const items = [];
 	for (const kind of PUBLISHABLE_KINDS) {
@@ -131,13 +187,23 @@ export async function listPublishables(dataRoot) {
 			const dir = join(root, name);
 			try { if (!(await stat(dir)).isDirectory()) { continue; } } catch { continue; }
 			// 关键文件不在 ⇒ 不是一个可发布的资源（发布时必失败）
-			try {
-				await stat(join(dir, ENTRY_OF[kind]));
-			} catch {
-				continue;
+			// ⚠ knowledge **没有单一入口文件**（它是"一个库目录"）⇒ 跳过这条检查 ✓
+			if (ENTRY_OF[kind]) {
+				try {
+					await stat(join(dir, ENTRY_OF[kind]));
+				} catch {
+					continue;
+				}
 			}
 			items.push({ kind, localId: name, version: await versionOf(dir, kind) });
 		}
 	}
+	// ★ knowledge 另加**真实的知识库**（本体在知识库插件的数据根下，不在这里）
+	try {
+		for (const v of await listKnowledgeVaults(dataRoot)) {
+			const dup = items.some((x) => x.kind === v.kind && x.localId === v.localId);
+			if (!dup) { items.push(v); }
+		}
+	} catch { /* 知识库侧不可用 ⇒ 不影响其它 kind */ }
 	return items;
 }

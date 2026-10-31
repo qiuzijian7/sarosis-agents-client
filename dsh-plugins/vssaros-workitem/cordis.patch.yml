@@ -1,0 +1,13 @@
+# @vssaros/dsh-workitem bundle patch: insert the work-item kernel row.
+#
+# 这是**纯服务插件**：没有 `vssaros.module`（不是工作台/UI 模块）、不注册工具、不碰磁盘。
+# 因此它不进 `modulePluginDirs`（那条路的判据是 `vssaros.module`），
+# 必须像 archify / ego 那样走**伴生插件**路径才会被随包安装 —— 见 supervisor 的
+# `workItemPluginDir`（装机登记是下一步，未接时不装、消费插件降级为不可用并报错）。
+#
+# 激活顺序：它必须在消费方（vssaros-loop / vssaros-agents）之前进组合，
+# 消费方用 `ctx.inject(['vssarosWorkItems'], …)` 等它就绪。
+- insert:
+    - id: vssaros-workitem
+      name: '@vssaros/dsh-workitem'
+      config: {}

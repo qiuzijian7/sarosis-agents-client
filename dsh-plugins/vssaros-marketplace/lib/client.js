@@ -260,13 +260,18 @@
 		try { localStorage.setItem(SIZE_KEY, id); } catch { /* 存不了也不影响本次 */ }
 	}
 
-	/** 分类页签（mcp / knowledge 不进页签，但接口支持）。 */
+	/**
+	 * 分类页签。
+	 * ★ 2026-10-31：加「知识库」—— 服务端早已支持 knowledge，客户端现在也能打能装
+	 *   ⇒ 再藏起来就是"上架了却找不到"（mcp 仍不进页签：它是配置项，不是浏览型商品）。
+	 */
 	var KIND_TABS = [
 		{ id: '', label: '全部' },
 		{ id: 'agent', label: 'Agent' },
 		{ id: 'skill', label: 'Skill' },
 		{ id: 'workbench', label: '工作台' },
-		{ id: 'workflow', label: '工作流' }
+		{ id: 'workflow', label: '工作流' },
+		{ id: 'knowledge', label: '知识库' }
 	];
 
 	/** 顶层页签。 */
@@ -520,7 +525,7 @@
 		var st = props.state;
 		var github = st.mode === 'github';
 		var pickOptions = st.items.length === 0
-			? [h('option', { key: 'none', value: '' }, '（本机没有可发布的 skill / workflow）')]
+			? [h('option', { key: 'none', value: '' }, '（本机没有可发布的资源）')]
 			: st.items.map(function (it) {
 				var value = it.kind + '|' + it.localId;
 				var label = (KIND_LABEL[it.kind] || it.kind) + ' · ' + it.localId + (it.version ? ' (v' + it.version + ')' : '');
@@ -817,7 +822,7 @@
 				changelog: '',
 				busy: false,
 				error: (res && res.ok === false) ? String(res.error || '列不出本机资源')
-					: (list.length ? '' : '本机没有可发布的 skill / workflow —— 可以把「来源」切到 GitHub 地址'),
+					: (list.length ? '' : '本机没有可发布的资源（skill / workflow / 知识库）—— 可以把「来源」切到 GitHub 地址'),
 				kind: 'skill', slug: '', source: '', name: '', description: '',
 			});
 		}
@@ -887,6 +892,13 @@
 			}
 			setPub(Object.assign({}, pub, { busy: true, error: '' }));
 			var params = { kind: k, localId: localId, slug: localId, version: version, changelog: pub.changelog || '' };
+			// ★ 2026-10-31：知识库的本体在**用户选的那个库目录**里（不在数据根下）⇒ 必须带上
+			if (!github) {
+				var picked = (pub.items || []).filter(function (it) { return it.kind === k && it.localId === localId; })[0];
+				if (picked && picked.sourceDir) { params.sourceDir = picked.sourceDir; }
+			}
+			// ★ 隐私体检被拦 ⇒ 用户确认后重发
+			if (pub.ackPrivacy) { params.acknowledgePrivacy = true; }
 			if (github) {
 				// 本体就是一个 GitHub 地址 ⇒ 只登记来源，不打包上传
 				params.source = String(pub.source || '').trim();
@@ -895,7 +907,13 @@
 			}
 			var res = await action('publish', params);
 			if (!res || res.ok === false) {
-				setPub(Object.assign({}, pub, { busy: false, error: String((res && res.error) || '发布失败') }));
+				var errText = String((res && res.error) || '发布失败');
+				// ★ 2026-10-31：隐私体检拦下 ⇒ 明确告知 + 给"确认公开并发布"的出口（否则用户无从继续）
+				if (/隐私体检/.test(errText)) {
+					setPub(Object.assign({}, pub, { busy: false, error: errText, privacyBlock: true }));
+					return;
+				}
+				setPub(Object.assign({}, pub, { busy: false, error: errText }));
 				return;
 			}
 			setPub(null);

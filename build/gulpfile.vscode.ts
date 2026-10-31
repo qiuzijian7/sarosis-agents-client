@@ -523,7 +523,8 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
 			// default .exe association icon (a blank page) in the taskbar.
 			// TODO: replace with a dedicated `resources/win32/sessions.ico`
 			// once the brand icon is committed to the repo.
-			icon: 'resources/win32/code.ico',
+			// ★ macOS：darwin 包要的是 .icns（把 .ico 喂给 darwin 目标会得到没图标的 .app）。
+			icon: platform === 'darwin' ? 'resources/darwin/code.icns' : 'resources/win32/code.ico',
 			...(embedded ? {
 				darwinMiniAppName: embedded.nameShort,
 				darwinMiniAppDisplayName: embedded.nameLong,

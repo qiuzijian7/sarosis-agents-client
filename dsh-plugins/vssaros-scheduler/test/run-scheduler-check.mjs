@@ -2,7 +2,12 @@
 //   跑法：node dsh-plugins/vssaros-scheduler/test/run-scheduler-check.mjs
 //   两类断言：
 //     ① 静态契约（清单 / patch / 入口 / 组件 / 共享层 / 容器查询 / 锚点 / 零 iframe）—— 与 check-workbench-style.mjs 同口径
-//     ② 纯逻辑（migrate.toOfficialRequest：cron / one-shot / interval 的规范化与拒绝理由）
+//     ② 纯逻辑（migrate.toOfficialRequest：cron / one-shot / interval 的规范化与拒绝理由；
+//        Host 侧 buildCreateRule：表单 → 官方 request 的转换与拒绝）
+//
+// ★ 2026-10-31：工作台由「官方 chunk 副本」改为**自建引擎 + 自绘界面** ⇒ 针对官方副本的那批断言
+//   （出处 / MIT / 子块装载 / 渲染 TaskManagerPage / 数据走 remote.schedule）全部作废，
+//   换成「入口即组件 + 数据走同源 API + 假 loader 真跑一遍」。
 import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
@@ -12,13 +17,6 @@ import { toOfficialRequest } from '../lib/migrate.js';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
-const listLib = (dir = path.join(ROOT, 'lib'), out = []) => {
-	for (const name of fs.readdirSync(dir)) {
-		const p = path.join(dir, name);
-		if (fs.statSync(p).isDirectory()) { listLib(p, out); } else if (name.endsWith('.js')) { out.push(p); }
-	}
-	return out;
-};
 const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 
 let pass = 0;
@@ -41,61 +39,37 @@ const patch = read('cordis.patch.yml');
 check('cordis.patch.yml 有 insert 段', /-\s*insert:/.test(patch));
 check('patch 的 name 与包名一致', patch.includes(`'@vssaros/dsh-scheduler'`), patch.split('\n').find((l) => l.includes('name:'))?.trim());
 
-console.log('── 入口与组件 ──');
-const entry = strip(read('lib/client.js'));
+console.log('── 自建工作台（入口 lib/client.js 即组件，不再搬官方 chunk）──');
+const entryRaw = read('lib/client.js');
+const entry = strip(entryRaw);
 check('入口不写 chunk: 字段', !/^\s*chunk\s*:/m.test(entry));
-// 组件选法（2026-10-28 起，与 check-workbench-style.mjs 同口径）：
-//   ① 入口自己就 register ⇒ 组件=入口；② 否则入口 `require.async('./client.X.js')` 装载的子块；
-//   ③ 都没有才退回「候选里 wb-* 最多」。
-// 为什么改：0.3.0 起 UI 搬进了子块 `client.native.js`（官方 chunk 副本，wb-* 只有 3 个），
-// 旧启发式会选到**别的**文件 ⇒ 对着不是工作台的东西下结论。
-const chunks = [...entry.matchAll(/require\.async\(\s*['"]\.\/(client\.[\w-]+\.js)['"]\s*\)/g)].map((m) => m[1]);
-const relOf = (p) => p.replace(ROOT + path.sep, '').split(path.sep).join('/');
-const candidates = listLib().map((p) => ({ rel: relOf(p), text: strip(fs.readFileSync(p, 'utf8')) }))
-	.filter((x) => /desktopWorkbenches\.register\(/.test(x.text));
-const componentFile = (entry && /desktopWorkbenches\.register\(/.test(entry) ? { rel: 'lib/client.js', text: entry } : null)
-	|| candidates.find((x) => chunks.includes(x.rel.split('/').pop()))
-	|| candidates.sort((a, b) => (b.text.match(/\bwb-[a-z-]+/g) || []).length - (a.text.match(/\bwb-[a-z-]+/g) || []).length)[0];
-check('找到工作台组件（含 register）', !!componentFile, componentFile?.rel);
-const src = componentFile?.text || '';
-/** 未 strip 的原文：region 标记是 `//` 行注释，strip 之后判不出来。 */
-const compRaw = componentFile ? read(componentFile.rel) : '';
-/**
- * 原生承载型（0.3.0）：工作台内容 = 官方 `@deepseek-ai/dsh-client-ui-schedule` 的页面副本。
- * 对它不能再要求 wb-* 用量 / 工具条锚点 / @container（官方页自带 h1 与 CSS），
- * 改用「出处 + 真装载 + 真接官方组件」三条 —— 否则"搬运"会变成绕开约定的口子。
- */
-const nativeHost = /#region\s+vssaros:\s*native workbench adapter/.test(compRaw);
-check('描述符带 repository（vssaros:scheduler）', /repository:\s*['"]vssaros:scheduler['"]/.test(src));
-check('根节点有 data-vssaros-surface="workbench"', /data-vssaros-surface['"]?\s*:\s*['"]workbench/.test(src));
-check('≥3 个 data-* 锚点', new Set(src.match(/data-[a-z0-9-]{3,30}/g) || []).size >= 3);
-check('零 iframe', !/<iframe|createElement\(['"]iframe/.test(src));
-check('原生承载型（官方页副本）', nativeHost, nativeHost ? '是' : '否（自绘）');
-if (nativeHost) {
-	check('写明官方出处', src.includes('@deepseek-ai/dsh-client-ui-schedule'));
-	check('写明 MIT 许可', /\bMIT\b/.test(compRaw));
-	check('入口装载该子块', chunks.includes(componentFile.rel.split('/').pop()), chunks.join(','));
-	check('入口调 install(ctx)', /\.install\(ctx\)/.test(entry));
-	check('真的渲染官方 TaskManagerPage', /\bh\(TaskManagerPage,/.test(src));
-	check('数据走官方 remote（ctx.remote.schedule）', /ctx\.remote\.schedule/.test(compRaw));
-	check('文案用官方命名空间 schedule.manager', /locale\.bind\(\s*["']schedule\.manager["']\s*\)/.test(compRaw));
-	// 描述符 ↔ 清单逐字一致（宿主 register 校验 + IDE 侧守卫 dshPluginPackages.test.ts 同口径）
-	const desc = src.slice(src.indexOf('WB_DESCRIPTOR'), src.indexOf('const h = react.createElement'));
-	for (const field of ['title', 'description', 'repository']) {
-		const literal = new RegExp(field + ':\\s*' + (field === 'title' ? 'WB_TITLE' : '"([^"]+)"')).exec(desc);
-		const expected = field === 'title' ? pkg.vssaros.workbench.title : pkg.vssaros.workbench[field];
-		check(`描述符 ${field} 与清单同值`, !!literal && (field === 'title' ? expected === pkg.vssaros.workbench.title : literal[1] === expected), literal ? literal[1] : '未匹配');
-	}
-	check('描述符 customFrame 与清单同值', new RegExp('customFrame:\\s*' + String(pkg.vssaros.workbench.customFrame)).test(desc));
-	check('描述符 headerLayout 与清单同值', desc.includes('headerLayout: "' + pkg.vssaros.workbench.headerLayout + '"'));
-	check('files 里含子块 client.native.js', (pkg.files || []).includes('lib/' + componentFile.rel.split('/').pop()));
-} else {
-	check('工具条锚点恰好 1 个', (src.match(/data-dsh-workbench-toolbar/g) ?? []).length === 1);
-	const wbClasses = new Set((src.match(/'wb(?:-[a-z0-9]+)*/g) || []).map((s) => s.slice(1)));
-	check('用到 ≥10 个 wb-* 原语', wbClasses.size >= 10, wbClasses.size + ' 个');
-	check('有 @container（窄栏重排）', /@container/.test(src));
+check('入口自己注册（不再 require.async 装载子块）',
+	/desktopWorkbenches\.register\(/.test(entry) && !/require\.async\(/.test(entry));
+// ⚠ 只看 **strip 掉注释后的代码**：文件头注释里仍然提到官方包（说明为什么要替换掉它），
+//   那是有意保留的历史，不该被判成"还在依赖它"。
+check('代码里不再引用官方 chunk 出处', !entry.includes('@deepseek-ai/dsh-client-ui-schedule'));
+// ★ 为什么这条必须钉住：自建的 `schedule` 服务**没有 @Remote** ⇒ 浏览器 `remote.schedule.*`
+//   不存在 ⇒ UI 只能通过同源 Host 路由取数。谁改回 remote.schedule，真机就是"面板空白"。
+check('不依赖 remote.schedule（数据走同源 API）', !/remote\.schedule/.test(entry));
+for (const api of ['/x/scheduler/api/list', '/x/scheduler/api/create', '/x/scheduler/api/update', '/x/scheduler/api/delete', '/x/scheduler/api/history']) {
+	check('数据走 ' + api, entry.includes(api));
 }
-const bare = src.split('\n').filter((l) => !l.includes('var(--') && (/(?<![&\w])#[0-9a-fA-F]{3,8}\b/.test(l) || /\b(rgba?|hsla?)\(/.test(l)));
+check('根节点有 data-vssaros-surface="workbench"', /data-vssaros-surface['"]?\s*:\s*['"]workbench/.test(entry));
+check('≥3 个 data-* 锚点', new Set(entry.match(/data-[a-z0-9-]{3,30}/g) || []).size >= 3);
+check('零 iframe', !/<iframe|createElement\(['"]iframe/.test(entry));
+check('有真机锚点 data-vssaros-scheduler-create', /data-vssaros-scheduler-create/.test(entry));
+// 宿主据此吸顶 ⇒ 必须恰好 1 个。
+// ⚠ `(?!-)`：不带它的话 `data-dsh-workbench-toolbar-x` 也会命中 ⇒ 改个名也测不出来（突变验证抓到的）。
+const toolbarHits = (entry.match(/data-dsh-workbench-toolbar(?!-)/g) ?? []).length;
+check('工具条锚点恰好 1 个', toolbarHits === 1, String(toolbarHits));
+check('有容器查询 @container（会被塞进 320–420px 侧栏）', /@container/.test(entry));
+check('静态 inject 留空（服务走可选注入）', /module\.exports\.inject\s*=\s*\[\]/.test(entry));
+// ★ 2026-10-31 真机事故：`ctx.tools` 是 cordis 服务，Host 侧**没写进 inject 就直读**会抛
+//   `cannot get property "tools" without inject` ⇒ apply 失败 ⇒ 插件激活不了（页面路由也没注册）。
+//   自建引擎要注册 5 个工具 ⇒ 必须静态声明 `tools`（与 vssaros-loop 同款）。
+check('Host 侧静态 inject 声明 tools', /export const inject = \['tools'\]/.test(strip(read('lib/index.js'))));
+check('工具注册不再直读 ctx.tools（走 registerScheduleTools）', /registerScheduleTools\(/.test(strip(read('lib/index.js'))));
+const bare = entry.split('\n').filter((l) => !l.includes('var(--') && (/(?<![&\w])#[0-9a-fA-F]{3,8}\b/.test(l) || /\b(rgba?|hsla?)\(/.test(l)));
 check('无裸色值', bare.length === 0, bare.slice(0, 2).join(' | '));
 
 console.log('── 迁移逻辑：toOfficialRequest ──');
@@ -118,25 +92,87 @@ check('interval <60s ⇒ 拒绝（官方下限）', /下限 60s/.test(toOfficial
 check('interval 90.7s ⇒ 取整 90', toOfficialRequest({ type: 'interval', prompt: 'x', intervalSeconds: 90.7 }, TZ).request?.every_seconds === 90);
 check('未知 type ⇒ 拒绝并列出支持的三种', /只收 cron \/ one-shot \/ interval/.test(toOfficialRequest({ type: 'weekly', prompt: 'x' }, TZ).unsupported || ''));
 
-console.log('── 装载契约：原生子块在 loader 契约下真跑一遍 ──');
+console.log('── 新建自动化任务（Host 侧 /api/create 与规则转换）──');
 {
-	// 为什么要有这一段（2026-10-28）：工作台内容现在是搬运来的官方 chunk，
-	// 出问题的形态全是"装得上但静默不生效"：子块 id 写错、factory 里的 require 名字拼错、
-	// install 在注册期就去读还没就绪的服务 ⇒ 页面空白/整块不出现，而宿主**不报错**。
+	const hostSrc = strip(read('lib/index.js'));   // 同上：注释里提到官方签名不算依赖
+	check('Host 侧走自建引擎 engine.create（不再是官方签名）', /engine\.create\(/.test(hostSrc) && !/schedule\.create\(\s*sessionId\s*,/.test(hostSrc));
+	check('Host 侧有 /api/create 路由', /\/api\/create/.test(hostSrc));
+	// ★ 2026-10-31（自建引擎接管后）：删除**不再需要 sessionId** —— 任务存在
+	//   `<数据根>/scheduler/tasks.json`，不寄生会话（这是与官方最大的差别之一）。
+	//   旧断言（官方签名 `{ sessionId, id }`）已随官方路径一起作废。
+	check('Host 侧 delete 不依赖 sessionId（自建引擎）',
+		!/需要 id 与 sessionId/.test(hostSrc) && /engine\.remove\(id\)/.test(hostSrc));
+	check('Host 侧有 /api/update 与 /api/history 路由', /\/api\/update/.test(hostSrc) && /\/api\/history/.test(hostSrc));
+	check('弹窗自带 data 锚点（真机探针可断言）', /data-vssaros-scheduler-create/.test(entryRaw));
+
+	const { buildCreateRule } = await import('../lib/index.js');
+	check('daily ⇒ { daily:{ time, time_zone } }', JSON.stringify(buildCreateRule({ kind: 'daily', time: '09:00', timeZone: 'Asia/Shanghai' }).request)
+		=== JSON.stringify({ daily: { time: '09:00:00', time_zone: 'Asia/Shanghai' } }),
+		JSON.stringify(buildCreateRule({ kind: 'daily', time: '09:00', timeZone: 'Asia/Shanghai' }).request));
+	check('time 补秒（HH:mm ⇒ HH:mm:ss）', buildCreateRule({ kind: 'daily', time: '9:00', timeZone: 'UTC' }).error !== undefined
+		|| buildCreateRule({ kind: 'daily', time: '09:00', timeZone: 'UTC' }).request.daily.time === '09:00:00');
+	check('weekly 未选星期 ⇒ 拒绝', /星期/.test(buildCreateRule({ kind: 'weekly', time: '09:00', weekdays: [] }).error || ''));
+	check('weekly 去重排序（[3,1,1] ⇒ [1,3]）', JSON.stringify(buildCreateRule({ kind: 'weekly', time: '09:00', weekdays: [3, 1, 1] }).request.weekly.weekdays) === '[1,3]');
+	check('every <60s ⇒ 拒绝（官方下限）', /60 秒/.test(buildCreateRule({ kind: 'every', everySeconds: 30 }).error || ''));
+	check('every 90s ⇒ every_seconds=90', buildCreateRule({ kind: 'every', everySeconds: 90 }).request.every_seconds === 90);
+	check('once 缺日期 ⇒ 拒绝', /日期/.test(buildCreateRule({ kind: 'once', time: '09:00' }).error || ''));
+	check('once ⇒ { at:{ date, time, time_zone } }', JSON.stringify(buildCreateRule({ kind: 'once', date: '2026-11-01', time: '09:30', timeZone: 'UTC' }).request)
+		=== JSON.stringify({ at: { date: '2026-11-01', time: '09:30:00', time_zone: 'UTC' } }));
+	check('cron ⇒ { cron:{ expression, time_zone } }', buildCreateRule({ kind: 'cron', expression: '0 9 * * 1-5', timeZone: 'UTC' }).request.cron.expression === '0 9 * * 1-5');
+	check('未知 kind ⇒ 拒绝', /不支持/.test(buildCreateRule({ kind: 'weeklyx' }).error || ''));
+	check('缺时区 ⇒ 退回 UTC', buildCreateRule({ kind: 'daily', time: '09:00' }).request.daily.time_zone === 'UTC');
+
+	// 官方 request → 自建 rule（过渡层，UI 换完可连 buildCreateRule 一起删）
+	const { officialToSelfRule } = await import('../lib/core/task.js');
+	check('daily ⇒ 自建 rule（atMinute）', JSON.stringify(officialToSelfRule({ daily: { time: '09:30:00', time_zone: TZ } }))
+		=== JSON.stringify({ kind: 'daily', atMinute: 570, timeZone: TZ }));
+	check('weekly 的 ISO 星期 ⇒ JS 约定（7 → 0）', JSON.stringify(officialToSelfRule({ weekly: { time: '09:00:00', time_zone: TZ, weekdays: [1, 7] } }).weekdays) === '[0,1]');
+	check('every_seconds ⇒ every', officialToSelfRule({ every_seconds: 120 }).everySeconds === 120);
+	check('cron ⇒ 自建 rule', officialToSelfRule({ cron: { expression: '0 9 * * *', time_zone: TZ } }).expression === '0 9 * * *');
+	check('无法识别 ⇒ undefined', officialToSelfRule({}) === undefined);
+
+	// ★ 2026-10-31：`/api/list` 的行**同时**给出官方扁平字段与自绘兼容字段。
+	//   官方字段是给（将来随时可切回的）官方 `TaskManagerPage` 的：它按
+	//   `kind/time/timeZone/weekdays/everySeconds/expression/scheduledAt` 取数，
+	//   写成自建形状 `rule:{kind,atMinute}` 会**静默显示空白** ⇒ 这里钉死。
+	const { rowOf } = await import('../lib/index.js');
+	const daily = rowOf({
+		id: 't-1', title: '每天任务', prompt: 'p', status: 'active', kind: 'prompt', sessionId: 's-1',
+		rule: { kind: 'daily', atMinute: 570, timeZone: 'Asia/Shanghai' },
+		next: { target: Date.parse('2026-11-01T01:30:00Z') },
+	});
+	check('行带官方扁平字段（kind/time/timeZone/scheduledAt）',
+		daily.kind === 'daily' && daily.time === '09:30:00' && daily.timeZone === 'Asia/Shanghai'
+		&& daily.scheduledAt === '2026-11-01T01:30:00.000Z', JSON.stringify(daily));
+	check('行保留自绘兼容字段（ruleText/next/lastDelivered）',
+		typeof daily.ruleText === 'string' && daily.ruleText.length > 0 && typeof daily.next === 'string' && 'lastDelivered' in daily);
+	const weekly = rowOf({ id: 't-2', title: 'w', rule: { kind: 'weekly', atMinute: 0, weekdays: [0, 1], timeZone: 'UTC' } });
+	check('weekly 星期 0（周日）⇒ 官方 ISO 7', JSON.stringify(weekly.weekdays) === '[7,1]', JSON.stringify(weekly.weekdays));
+	const every = rowOf({ id: 't-3', title: 'e', rule: { kind: 'every', everySeconds: 3600, timeZone: 'UTC' } });
+	check('every ⇒ everySeconds 原样给出', every.everySeconds === 3600 && every.kind === 'every');
+}
+
+console.log('── 装载契约：入口在假 loader + 假 React 下真跑一遍 ──');
+{
+	// 为什么要有这一段：工作台出问题的形态全是"装得上但静默不生效" —— id 写错、factory 里的
+	// require 名字拼错、注册期就去读没就绪的服务 ⇒ 页面空白，而宿主**不报错**。
 	// 这里用 vm 造一个假 loader + 假 React，把 factory 真跑一遍（不渲染）。
-	const BLOCK = 'lib/client.native.js';
-	const code = read(BLOCK);
+	const code = read('lib/client.js');
 	let def = null;
+	let loadError = '';
 	const sandbox = {
-		window: { __ModuleLoader__: { load(value) { def = value; } } },
-		console: { log() {}, warn() {}, error() {} },
+		console,
+		window: { __ModuleLoader__: { load: (d) => { def = d; } } },
+		document: {
+			getElementById: () => null,
+			createElement: () => ({ style: {}, dataset: {}, remove() {} }),
+			head: { appendChild: () => undefined },
+		},
 	};
 	vm.createContext(sandbox);
-	let loadError = '';
-	try { vm.runInContext(code, sandbox, { filename: BLOCK }); } catch (error) { loadError = String(error && error.message || error); }
-	check('子块能被装载（顶层不抛）', !loadError, loadError);
-	check('子块声明了自己的 chunk 名', !!def && def.chunk === 'client.native.js', def && def.chunk);
-	check('子块挂在入口同 id 下', !!def && def.id === pkg.name, def && def.id);
+	try { vm.runInContext(code, sandbox, { filename: 'lib/client.js' }); } catch (error) { loadError = String(error?.message ?? error); }
+	check('入口能被装载（顶层不抛）', !loadError, loadError);
+	check('loader id 与包名一致', !!def && def.id === pkg.name, def && def.id);
 
 	const FakeReact = {
 		createElement: () => null, useCallback: (fn) => fn, useState: (v) => [v, () => {}],
@@ -146,60 +182,40 @@ console.log('── 装载契约：原生子块在 loader 契约下真跑一遍 
 	};
 	const requireStub = (id) => {
 		if (id === 'react') { return FakeReact; }
-		if (id === 'react-dom') { return { createPortal: () => null }; }
-		if (id === 'react/jsx-runtime') { return { jsx: () => null, jsxs: () => null, Fragment: 'Fragment' }; }
-		if (id === '@deepseek-ai/dsh-client-ui-primitives') { return new Proxy({}, { get: () => () => null }); }
 		throw new Error('未预期的 require：' + id);
 	};
 	let part = null;
 	let factoryError = '';
-	try { part = def.factory(requireStub); } catch (error) { factoryError = String(error && error.message || error); }
+	try { part = def.factory(requireStub); } catch (error) { factoryError = String(error?.message ?? error); }
 	check('factory 能执行（require 名都对）', !factoryError, factoryError);
-	check('导出 install()', !!part && typeof part.install === 'function');
-	check('静态 inject 留空（服务走可选注入）', !!part && Array.isArray(part.inject) && part.inject.length === 0, part && JSON.stringify(part.inject));
+	check('导出 apply()', !!part && typeof part.apply === 'function');
+	check('静态 inject 留空', !!part && Array.isArray(part.inject) && part.inject.length === 0, part && JSON.stringify(part.inject));
 
 	const registrations = [];
 	const injected = [];
 	const child = {
-		effect: (fn) => { const dispose = fn(); return dispose; },
+		effect: (fn) => fn(),
 		desktopWorkbenches: { register: (descriptor, Component) => { registrations.push({ descriptor, Component }); return () => {}; } },
-		locale: { bind: () => (key) => String(key) },
-		// ★ 关键：注册期**不该**碰 remote.schedule（懒创建）—— 这里放一个会抛的 getter，
-		//   谁提前读就立刻红，而不是等到真机上"面板一片空白"。
-		remote: Object.defineProperty({}, 'schedule', {
-			get() { throw new Error('注册期读取 remote.schedule（应懒创建）'); },
-		}),
-		sessions: { list: { getSnapshot: () => ({}), subscribe: () => () => {} } },
-		workspaces: { list: { getSnapshot: () => ({}), subscribe: () => () => {} } },
-		uiWorkspace: { startSession() {}, openSession() {} },
-		on: () => () => {},
 	};
-	const ctx = { inject: (deps, cb) => { injected.push(deps); cb(child); } };
-	let installError = '';
-	try { part.install(ctx); } catch (error) { installError = String(error && error.message || error); }
-	check('install() 不抛（注册期不读未就绪服务）', !installError, installError);
-	const sets = injected.map((deps) => [...deps]);
-	const all = sets.flat();
-	// ★★ 2026-10-28 真机事故：`remote.schedule` 是**独立服务键**，只注入 `remote` 时读它会抛
-	//   `cannot get property "remote.schedule" without inject` ⇒ 工作台渲染成「加载失败」。
-	//   所以这两条分开断言（只查 `remote` 会漏掉它）。
-	check('注入集包含 remote', all.includes('remote'));
-	check('注入集包含 remote.schedule（独立服务键）', all.includes('remote.schedule'), all.join(','));
-	for (const needed of ['locale', 'uiWorkspace', 'sessions', 'workspaces']) {
-		check('注入集包含 ' + needed, all.includes(needed));
-	}
-	// 两级结构：注册必须挂在「只依赖 desktopWorkbenches」的那一层 ⇒ 调度服务缺席时工作台仍然存在（显示不可用）。
-	const wbSet = sets.find((deps) => deps.includes('desktopWorkbenches'));
-	check('有只依赖 desktopWorkbenches 的注册层', !!wbSet && wbSet.length === 1, wbSet ? wbSet.join(',') : '无');
-	check('服务层与注册层分开', !!wbSet && sets.some((deps) => !deps.includes('desktopWorkbenches') && deps.includes('remote.schedule')));
+	const ctx = { effect: (fn) => fn(), inject: (deps, cb) => { injected.push([...deps]); cb(child); } };
+	let applyError = '';
+	try { part.apply(ctx); } catch (error) { applyError = String(error?.message ?? error); }
+	check('apply() 不抛', !applyError, applyError);
+	// ★ 自建后只依赖 desktopWorkbenches ⇒ 不存在"调度服务缺席 ⇒ 工作台消失"的失败模式。
+	check('注入集只有 desktopWorkbenches', injected.length === 1 && injected[0].join(',') === 'desktopWorkbenches', injected.map(d => d.join('+')).join(' '));
 	check('真的注册了一个工作台', registrations.length === 1, registrations.length + ' 个');
 	const reg = registrations[0];
 	check('注册的组件是函数', !!reg && typeof reg.Component === 'function');
 	const d = reg ? reg.descriptor : {};
 	check('注册描述符 title 与清单同值', d.title === pkg.vssaros.workbench.title, d.title);
+	check('注册描述符 description 与清单同值', d.description === pkg.vssaros.workbench.description, d.description);
 	check('注册描述符 repository 与清单同值', d.repository === pkg.vssaros.workbench.repository, d.repository);
+	check('注册描述符 icon 与清单同值', d.icon === pkg.vssaros.workbench.icon, d.icon);
 	check('注册描述符 customFrame 与清单同值', d.customFrame === pkg.vssaros.workbench.customFrame, String(d.customFrame));
 	check('注册描述符 headerLayout 与清单同值', d.headerLayout === pkg.vssaros.workbench.headerLayout, d.headerLayout);
+	// ★ 2026-10-31（用户：「自动化任务 工作台中，不要有 浮动工具栏」）：
+	//   描述符与清单都要声明 `floatingActions: false`（宿主据它隐藏 S2 浮动胶囊）⇒ 两处必须同值。
+	check('注册描述符 floatingActions 与清单同值', d.floatingActions === pkg.vssaros.workbench.floatingActions, String(d.floatingActions));
 }
 
 console.log(`\n[scheduler] ${pass} passing / ${fail} failing`);

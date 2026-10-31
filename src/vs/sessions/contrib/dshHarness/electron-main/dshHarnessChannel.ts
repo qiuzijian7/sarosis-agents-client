@@ -28,6 +28,8 @@ import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IAuxiliaryWindowsMainService } from '../../../../platform/auxiliaryWindow/electron-main/auxiliaryWindows.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IWindowsMainService } from '../../../../platform/windows/electron-main/windows.js';
+// ★ 2026-10-31：platform 层的「安装更新之前」注册点（platform 不认识 dsh ⇒ 由这里注入"释放 dsh Host"）
+import { registerBeforeUpdateInstallHook } from '../../../../platform/update/electron-main/updateInstallHooks.js';
 import { DshBridgeMethod, DshBridgeReverseMethod, IBridgeBundleInfo, IBridgeBundleToggleArgs, IBridgeCodeBuddyImportResult, IBridgeCodeBuddyStatus, IBridgeCreditRecordArgs, IBridgeCreditRecordResult, IBridgeCreditRouteResult, IBridgeInspectResult, IBridgeInstallArgs, IBridgeInstallCancelArgs, IBridgeInstallCancelResult, IBridgeInstallResult, IBridgeLightAIImportResult, IBridgeLightAIStatus, IBridgePluginChangeResult, IBridgePluginInventory, IBridgePluginRegistries, IBridgePluginRow, IBridgePluginRowToggleArgs, IBridgeProvidersSyncArgs, IBridgeProvidersSyncResult, IBridgeRemoveArgs, IBridgeReverseRequest, IBridgeSessionCancelArgs, IBridgeSessionCancelResult, IBridgeSessionRunArgs, IBridgeSessionRunResult, IBridgeSessionStartArgs, IBridgeSessionStartResult, IBridgeTofStatus, IBridgeTofSyncResult, IBridgeTofTicketResult, IBridgeWorkspace, IBridgeWorkspaceContextArgs, validateBundleInspectArgs, validateBundleInstallArgs, validateBundleRemoveArgs, validateBundleToggleArgs, validateCodeBuddyImportArgs, validateCreditRouteArgs, validateInstallCancelArgs, validateLightAIImportArgs, validatePluginRowToggleArgs, validateProvidersSyncArgs, validateTofSyncArgs, validateWorkspaceContextArgs } from '../common/dshBridgeProtocol.js';
 import { DshCreditProxy, IDshCreditSample } from './dshCreditProxy.js';
 import { localPluginDir, selectRuntimeVersion, toFileSpec } from '../common/dshCli.js';
@@ -188,6 +190,16 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 	 * 进程级 ⇒ **渲染进程重载不会清零** ⇒ 重载后不会再开第二扇（见 `ClaimDesktopAutoOpen`）。
 	 */
 	private readonly _desktopAutoOpened = new Set<number>();
+	/**
+	 * 「启动自动开桌面窗口」**应用级**只认领一次（2026-10-31）。
+	 *
+	 * 为什么不能按 windowId 记：真机一次启动被开了**两个 IDE 窗口**（第二次启动请求经单实例
+	 * handoff ⇒ `startOpenWindow` 又开一个空窗）⇒ 两个窗口里的 `DshFullWindowContribution`
+	 * **各自 claim 成功** ⇒ 各开一扇桌面窗口 ⇒ 用户面前两扇 `VsSaros — Desktop` ✗✗
+	 * （`main(8).log`：id=1/2 是 IDE，id=3/4 都是 Desktop）。
+	 * ⇒ 谁先来谁赢；`_desktopAutoOpened` 只留作诊断（谁认领过）。
+	 */
+	private _desktopAutoOpenClaimed = false;
 
 	constructor(
 		options: IDshHarnessChannelOptions,
@@ -240,6 +252,11 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 		// ego lite（`ego-browser`）接入插件（2026-10-21）：与上面几个同一条"存在才装"路径。
 		// 它**不含浏览器本体**（第三方独立 app）⇒ 用户没装 app 时装上也无害：`ego_status` 会说清原因。
 		const bundledEgo = join(this._bundledPluginsRoot, 'vssaros-ego');
+		// work item 内核（2026-10-31）+ 无人值守循环（2026-10-30）：与上面几个同一条"存在才装"路径
+		// （都没有 `vssaros.module` ⇒ 不进模块自发现，必须显式登记伴生）。
+		// 顺序由 supervisor 的伴生清单决定（workitem 先于 loop）；这里只负责把目录找出来。
+		const bundledWorkItem = join(this._bundledPluginsRoot, 'vssaros-workitem');
+		const bundledLoop = join(this._bundledPluginsRoot, 'vssaros-loop');
 		// 共享运行时服务插件（重构 1.3）：所有模块插件的底座（dataRoot/dshHome/pageShell/lock 的唯一真源），
 		// 同一条"存在才装"路径；安装顺序上它排在模块插件之前（见 supervisor 的插件清单）。
 		const bundledFoundation = join(this._bundledPluginsRoot, 'vssaros-foundation');
@@ -268,6 +285,8 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 			unrealPluginDir: existsSync(join(bundledUnreal, 'package.json')) ? bundledUnreal : undefined,
 			archifyPluginDir: existsSync(join(bundledArchify, 'package.json')) ? bundledArchify : undefined,
 			egoPluginDir: existsSync(join(bundledEgo, 'package.json')) ? bundledEgo : undefined,
+			workItemPluginDir: existsSync(join(bundledWorkItem, 'package.json')) ? bundledWorkItem : undefined,
+			loopPluginDir: existsSync(join(bundledLoop, 'package.json')) ? bundledLoop : undefined,
 			modulePluginDirs,
 			// 静态真源对账（2026-10-28）：扫目录丢掉的模块要让 supervisor **点名报错**，
 			// 而不是静静地从安装清单里消失（`planned` 的预留位不算缺失）。
@@ -338,6 +357,14 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 			...(s.status === undefined ? {} : { status: s.status }),
 			at: s.at,
 		})));
+		// ★ 2026-10-31（用户报障：「更新安装完毕后弹『要完成 VsSaros 的安装，安装程序必须重新启动您的电脑』」）：
+		//   自动安装走 `doApplyUpdate()`，它给安装包带的是 **`/nocloseapplications`** ⇒ 安装器不会去
+		//   关闭占用文件的进程 ⇒ 只要还有东西锁着 `resources/app/dsh-runtime/*/koffi.node`，Inno 就只能
+		//   排到"重启时替换"（`restartreplace`）⇒ 收尾弹那条提示。
+		//   ⇒ 这里注册一条"安装前释放"：spawn 安装包之前先结束 dsh Host
+		//     （`releaseHost()` → `taskkill /T /F` 连带 node / 终端 / MCP 子进程）。
+		//   ⚠ 注册点在主进程（platform 层只提供注册/运行，不认识 dsh）⇒ 这里是唯一持有 supervisor 的地方。
+		this._register(registerBeforeUpdateInstallHook(() => this._supervisor.releaseHost()));
 		// 抢先启动：与窗口/工作台启动并行（渲染进程那份预热抢不过"聊天框随布局挂载即启动"）。
 		void this._eagerPrewarm();
 	}
@@ -1201,6 +1228,27 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 		switch (command) {
 			case DshHarnessChannelCommand.GetStatus:
 				return this._supervisor.status;
+			// ★★ 2026-10-30（真机 P0：打包 exe 的更新面板红字 `Failed to fetch`）：
+			//   渲染进程检查更新走的是浏览器 fetch/XHR ⇒ 更新源（内网静态托管）**不发 CORS 头**
+			//   ⇒ 响应被浏览器拦掉 ⇒ JS 只能看到 "Failed to fetch"（saros-pocket 同坑有据可查）。
+			//   ⇒ 渲染进程把拼好的 URL 传过来，这里用**主进程**的 fetch 代为请求（无跨域概念）✓。
+			//   返回 `{ ok:false, error }` 而不是抛错 ⇒ 面板能显示精确原因，而不是笼统的失败。
+			case DshHarnessChannelCommand.CheckAppUpdate: {
+				const url = String(arg?.url ?? '');
+				if (!/^https?:\/\//i.test(url)) {
+					return { ok: false, error: `非法的更新源地址：${url.slice(0, 120)}` };
+				}
+				try {
+					const res = await this._fetch(url);
+					const body = await res.text();
+					if (!res.ok && res.status !== 204) {
+						return { ok: false, status: res.status, error: `更新源返回 HTTP ${res.status}` };
+					}
+					return { ok: true, status: res.status, body };
+				} catch (e) {
+					return { ok: false, error: String((e as Error)?.message ?? e).slice(0, 200) };
+				}
+			}
 			case DshHarnessChannelCommand.Start: {
 				const opts = (arg ?? {}) as IDshHostStartOptions;
 				// 主进程抢先启动过（`_eagerPrewarm`）：选项与抢先那次相同 → 直接复用（这正是"零等待"）；
@@ -1996,9 +2044,12 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 				if (!windowId) {
 					return false;
 				}
-				if (this._desktopAutoOpened.has(windowId)) {
+				// ⚠ 应用级闸门在前：多个 IDE 窗口同时启动时，只有第一个能开桌面窗口 ✓
+				if (this._desktopAutoOpenClaimed) {
+					this._logService.info(`[dshHarness] startup: 启动自动开窗已被窗口 ${[...this._desktopAutoOpened][0] ?? '?'} 认领 ⇒ 窗口 ${windowId} 不再开第二扇`);
 					return false;
 				}
+				this._desktopAutoOpenClaimed = true;
 				this._desktopAutoOpened.add(windowId);
 				return true;
 			}

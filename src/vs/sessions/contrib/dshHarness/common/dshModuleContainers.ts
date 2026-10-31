@@ -62,10 +62,9 @@ export type DshModuleId =
 	//   `marketplace` = 我们的自营商城（独立页面 `/x/marketplace/`）⇒ 两条数据源、两条能力，互不覆盖 ✓。
 	// 无 ActivityBar 图标：入口走工作台中间栏 / 命令（页面自带 route）。
 	| 'marketplace'
-	// 2026-10-22：并行 TUI 工作台（`@vssaros/dsh-parallel`）—— 一个工作台编排 N 个并行 LLM 会话，
-	//   每格一个真 TUI（Host 侧 node-pty 起社区 `@tomowang/dsh-tui`，原始 ANSI 流 + xterm.js 渲染）。
-	//   入口：主页「工作台」组件里的一行 item（`/x/parallel/`）。
-	| 'parallel'
+	// 2026-10-31（用户要求「移除并行工作台」）：`'parallel'` 联合体成员已删除（原本
+	//   `@vssaros/dsh-parallel` 的并行 TUI 工作台，2026-10-22 加的）；下面四张表里的登记同步删掉
+	//   （联合体 / 内置模块表 / 容器表 / 页面表）—— 漏一处就是"入口还在但点不开"✗。
 	// 2026-10-23：萨罗斯管理平台工作台（`@vssaros/dsh-studio`）—— 页面 `/x/studio/` 里 iframe 承载
 	//   Saroasis Studio System 前端；平台右上角「AI 助手」在右侧栏打开 chat-surface。
 	//   无 ActivityBar 图标：入口走主页卡片 / 侧栏启动器（页面自带 route）。
@@ -134,10 +133,7 @@ export const DSH_BUILTIN_MODULES: readonly IDshBuiltinModule[] = [
 	// `marketplace` = 我们自己的商城（独立页面 `/x/marketplace/`）⇒ 两条数据源、两条能力，互不覆盖 ✓。
 	// 无 ActivityBar 图标：入口走工作台中间栏 / 命令（页面自带 route ⇒ 不必占活动栏一格）。
 	{ module: 'marketplace', pluginName: '@vssaros/dsh-marketplace', summary: '自营商城工作台：agent/skill/工作台/工作流 的浏览、安装、升级、发布与管理（页面 /x/marketplace/）' },
-	// 2026-10-22：并行 TUI 工作台（`/x/parallel/`）。一个工作台编排 N 个并行 LLM 会话，每格一个真 TUI。
-	// 实测进程模型：N 格 = N 个**独立 dsh 进程**（社区 TUI 自带 core，不连 Host）；同 profile 可并行，
-	// 写锁是**会话级**；每格 ≈ 71.6MB（带我们全套模块的空闲态）⇒ 12 格 ≈ 0.86GB。
-	{ module: 'parallel', pluginName: '@vssaros/dsh-parallel', summary: '并行 TUI 工作台：并排编排多个并行 LLM 会话，每格一个 TUI（页面 /x/parallel/）' },
+	// 2026-10-31：并行工作台已移除 ⇒ 模块描述项一并删除（见上面联合体的注释）。
 	// 2026-10-24：萨罗斯管理平台工作台（站点 iframe + 站点栏 + 右栏 AI 助手页签）。
 	// 登记在三张表里必须同批完成（模块联合 / 内置模块表 / 页面表），漏一处就是「未登记的内置模块」✗。
 	{ module: 'studio', pluginName: '@vssaros/dsh-studio', summary: '萨罗斯管理平台：承载平台前端页面，右上角 AI 助手在右栏打开助手会话（页面 /x/studio/）' },
@@ -274,15 +270,7 @@ export const DSH_MODULE_CONTAINERS: readonly IDshModuleContainer[] = [
 		activityBar: { containerId: 'vssaros.dsh.marketplace', title: { zh: '商城', en: 'Marketplace' }, icon: 'codicon:extensions', order: 86 },
 		note: '2026-10-22：自营商城工作台（agent / skill / 工作台 / 工作流 四类商品）。与「工作台商城」（market 模块 = dsh 公开市场的第三方工作台，界面在设置面板）**并存且分工明确** ✓。页面自带 route ⇒ IDE 直接开 `/x/marketplace/`；所有有副作用的动作经 `ide.request{capability:"marketplace"}` 落到 IDE 侧（认证/下载/注册表刷新只有一份真源）✓。',
 	},
-	{
-		// 并行 TUI 工作台（2026-10-22）：`@vssaros/dsh-parallel` 的 `/x/parallel/` 整页（稿 A 网格）。
-		// **page-only** —— legacy 引擎侧没有这一页（格位是 Host 侧 PTY + 浏览器 xterm.js，只存在于 dsh 侧）✓
-		// order 87 = 紧跟商城(86) 之后（同为「扩展/创作」类入口，排在「看资料」110+ 之前 ✓）。
-		// ⚠ 活动栏 title/icon/order 必须与插件清单 `vssaros.activityBar` **同值**（双轨对账守卫盯着）。
-		containerId: 'vssaros.dsh.parallel', modules: ['parallel'], status: 'page-only',
-		activityBar: { containerId: 'vssaros.dsh.parallel', title: { zh: '并行工作台', en: 'Parallel' }, icon: 'codicon:split-horizontal', order: 87 },
-		note: '2026-10-22：并行 TUI 工作台（一屏 N 格，每格一个真 TUI）。实测：N 格 = N 个独立 dsh 进程（社区 TUI 自带 core，不连 Host），同 profile 可并行、写锁是会话级，每格 ≈ 71.6MB。0.1.0 只交付静态网格壳，格位后端（PTY 起停/推流/收割）下一步接。',
-	},
+	// 2026-10-31：并行工作台已移除 ⇒ 容器定义（`vssaros.dsh.parallel`）一并删除。
 	{
 		// 萨罗斯管理平台工作台（2026-10-23）：`@vssaros/dsh-studio` 的 `/x/studio/` 整页。
 		// **page-only** —— IDE 侧没有对应 legacy 页（页面 = 站点 iframe + 站点栏，只存在于 dsh 侧）✓
@@ -376,10 +364,7 @@ export const DSH_MODULE_PAGES: readonly IDshModulePage[] = [
 	{ module: 'imagegen', kind: 'page', route: '/x/imagegen/' },
 	// 2026-10-22：自营商城工作台（整页 `/x/marketplace/`）—— 与「工作台商城」（market 模块）**并存** ✓。
 	{ module: 'marketplace', kind: 'page', route: '/x/marketplace/' },
-	// 2026-10-22：并行 TUI 工作台（整页 `/x/parallel/`，稿 A 网格）。
-	// ⚠ 这条是主页「工作台」组件点「打开」的**白名单**（`openModulePage` 精确匹配 → 前缀归属）⇒
-	//   漏登记的表现是"点了没反应"（宿主 warn「不在模块页表里」）✗。
-	{ module: 'parallel', kind: 'page', route: '/x/parallel/' },
+	// 2026-10-31：并行工作台已移除 ⇒ 页面表项（`/x/parallel/`）一并删除（留着就是"入口还在但点不开"✗）。
 	// 2026-10-23：萨罗斯管理平台工作台（整页 `/x/studio/`）。
 	// ⚠ 这条同时是主页/侧栏点「打开」的**白名单**（`openModulePage` 精确匹配）⇒ 漏登记 = 点了没反应。
 	{ module: 'studio', kind: 'page', route: '/x/studio/' },

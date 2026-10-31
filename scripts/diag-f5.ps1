@@ -1,4 +1,4 @@
-# diag-f5.ps1 - Diagnose "F5 hangs / no window" for the agents dev build.
+﻿# diag-f5.ps1 - Diagnose "F5 hangs / no window" for the agents dev build.
 # Run this in a REAL PowerShell (not inside any Electron-hosted terminal),
 # from the repo root:  powershell -ExecutionPolicy Bypass -File scripts\diag-f5.ps1
 #

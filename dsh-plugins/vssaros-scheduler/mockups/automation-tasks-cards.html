@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<!--
+	自动化任务 —— 第三轮 mockup（2026-10-31）：按用户截图的布局语言重做。
+	  · 列表 = 页签（定时任务 | 运行记录）+ 右上工具（筛选/搜索/批量新建/＋新建）+ 筛选行 + 卡片网格
+	  · 编辑 = 大弹窗（名称 + 会话式 prompt 编辑器 + 重复/时间/有效期三下拉 + 通知开关 + 取消/确定）
+	  · 浅色主题（还原截图）
+	交互全覆盖：页签、筛选、搜索、批量新建下拉、新建、卡片开关、卡片点击进编辑、
+	弹窗内重复规则联动字段、有效期、通知开关、确定保存（真实改数据）、取消/✕、运行记录视图。
+	类名 mk3- 前缀；浮层 fixed；@container 降级。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>定时任务 · 卡片网格布局 mockup</title>
+<style>
+:root{
+	--mk3-bg:#f5f5f7; --mk3-card:#ffffff; --mk3-line:#e8e8ec; --mk3-txt:#1a1a1e;
+	--mk3-sub:#8a8a93; --mk3-line2:#d9d9e0; --mk3-accent:#4c6ef5; --mk3-ok:#3fb950; --mk3-warn:#e0a43a;
+	--wb-s1:4px; --wb-s2:8px; --wb-s3:12px; --wb-s4:16px;
+	--wb-r-sm:8px; --wb-r-md:12px; --wb-r-lg:16px; --wb-r-pill:999px;
+	--wb-f-xs:11px; --wb-f-sm:12px; --wb-f-md:13px; --wb-f-title:15px;
+}
+*{box-sizing:border-box}
+body{margin:0; padding:var(--wb-s4); background:#e9e9ee; color:var(--mk3-txt);
+	font:var(--wb-f-sm)/1.5 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+.mk3-note{margin:0 0 var(--wb-s3); padding:var(--wb-s2) var(--wb-s3); font-size:var(--wb-f-xs);
+	border-left:2px solid var(--mk3-accent); background:#fff; color:#55555e; border-radius:0 var(--wb-r-sm) var(--wb-r-sm) 0}
+.mk3-root{container-type:inline-size; position:relative; max-width:1280px; margin:0 auto;
+	background:var(--mk3-bg); border-radius:var(--wb-r-lg); border:1px solid var(--mk3-line);
+	box-shadow:0 1px 4px rgba(0,0,0,.06); min-height:600px; padding:0 var(--wb-s4) var(--wb-s4)}
+/* ── 页签行 ── */
+.mk3-tabs{display:flex; align-items:center; gap:var(--wb-s4); border-bottom:1px solid var(--mk3-line); padding:var(--wb-s3) 0 0}
+.mk3-tab{padding:8px 2px 10px; cursor:pointer; font-size:var(--wb-f-md); color:var(--mk3-sub); border-bottom:2px solid transparent}
+.mk3-tab.is-active{color:var(--mk3-txt); font-weight:600; border-bottom-color:var(--mk3-txt)}
+.mk3-tabs .sp{flex:1}
+.mk3-tool{display:flex; align-items:center; gap:var(--wb-s2); padding-bottom:var(--wb-s2)}
+.mk3-ic{width:28px; height:28px; border-radius:var(--wb-r-sm); border:none; background:transparent;
+	cursor:pointer; color:#55555e; font-size:14px; line-height:28px; text-align:center}
+.mk3-ic:hover{background:#ececf1}
+.mk3-search{display:none; align-items:center}
+.mk3-search.is-open{display:flex}
+.mk3-search input{padding:4px 10px; border:1px solid var(--mk3-line2); border-radius:var(--wb-r-sm); font:inherit; font-size:var(--wb-f-xs); width:180px; outline:none}
+.mk3-search input:focus{border-color:var(--mk3-accent)}
+.mk3-btn{padding:5px 12px; border-radius:var(--wb-r-sm); border:1px solid var(--mk3-line2);
+	background:#fff; cursor:pointer; font:inherit; font-size:var(--wb-f-xs); color:var(--mk3-txt)}
+.mk3-btn:hover{border-color:#b9b9c4}
+.mk3-btn.is-primary{background:var(--mk3-txt); color:#fff; border-color:var(--mk3-txt)}
+.mk3-btn.is-primary:hover{opacity:.88}
+.mk3-btn .caret{opacity:.6; margin-left:3px}
+/* ── 筛选行 ── */
+.mk3-filters{display:flex; gap:var(--wb-s3); padding:var(--wb-s3) 0 var(--wb-s2); font-size:var(--wb-f-sm); color:var(--mk3-sub)}
+.mk3-filter{cursor:pointer; padding:2px 4px; border-radius:var(--wb-r-sm)}
+.mk3-filter:hover{color:var(--mk3-txt)}
+.mk3-filter.is-active{color:var(--mk3-txt); font-weight:600}
+/* ── 卡片网格 ── */
+.mk3-grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(250px,1fr)); gap:var(--wb-s3)}
+.mk3-card{position:relative; background:var(--mk3-card); border:1px solid var(--mk3-line);
+	border-radius:var(--wb-r-md); padding:var(--wb-s3); cursor:pointer; display:flex; flex-direction:column; gap:var(--wb-s2); min-height:118px}
+.mk3-card:hover{border-color:#c5c5d2; box-shadow:0 2px 10px rgba(0,0,0,.07)}
+.mk3-card-hd{display:flex; align-items:flex-start; gap:var(--wb-s2)}
+.mk3-card-name{font-weight:600; font-size:var(--wb-f-sm); flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.mk3-card-desc{font-size:var(--wb-f-xs); color:var(--mk3-sub); display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; flex:1}
+.mk3-card-ft{display:flex; align-items:center; font-size:var(--wb-f-xs); color:var(--mk3-sub)}
+.mk3-card-ft .st{margin-left:auto}
+.mk3-card-ft .st.is-on{color:var(--mk3-ok)}
+/* 开关（截图同款：胶囊 toggle） */
+.mk3-toggle{position:relative; width:34px; height:19px; flex:0 0 auto; border-radius:var(--wb-r-pill);
+	background:#d3d3dc; border:none; cursor:pointer; transition:background .15s}
+.mk3-toggle::after{content:""; position:absolute; top:2px; left:2px; width:15px; height:15px; border-radius:50%;
+	background:#fff; transition:left .15s; box-shadow:0 1px 2px rgba(0,0,0,.2)}
+.mk3-toggle.is-on{background:var(--mk3-txt)}
+.mk3-toggle.is-on::after{left:17px}
+/* ── 运行记录 ── */
+.mk3-runs{background:var(--mk3-card); border:1px solid var(--mk3-line); border-radius:var(--wb-r-md); overflow:hidden}
+.mk3-runs table{border-collapse:collapse; width:100%; font-size:var(--wb-f-xs)}
+.mk3-runs th,.mk3-runs td{text-align:left; padding:7px var(--wb-s3); border-bottom:1px solid var(--mk3-line)}
+.mk3-runs th{color:var(--mk3-sub); font-weight:500; background:#fafafb}
+.mk3-runs td .ok{color:var(--mk3-ok)} .mk3-runs td .fail{color:#d9534f} .mk3-runs td .block{color:var(--mk3-warn)}
+/* ── 弹窗 ── */
+.mk3-overlay{position:fixed; inset:0; z-index:50; display:flex; align-items:center; justify-content:center;
+	background:rgba(20,20,26,.45)}
+.mk3-modal{background:#fff; border-radius:var(--wb-r-lg); width:min(820px,94vw); max-height:92vh; overflow:auto;
+	padding:var(--wb-s4); box-shadow:0 12px 48px rgba(0,0,0,.22)}
+.mk3-modal-hd{display:flex; align-items:center; margin-bottom:var(--wb-s3)}
+.mk3-modal-hd b{font-size:var(--wb-f-title)}
+.mk3-modal-hd .x{margin-left:auto; border:none; background:none; font-size:16px; cursor:pointer; color:var(--mk3-sub); padding:4px 8px; border-radius:var(--wb-r-sm)}
+.mk3-modal-hd .x:hover{background:#f0f0f4}
+.mk3-name{width:100%; padding:9px var(--wb-s3); border:1px solid var(--mk3-line2); border-radius:var(--wb-r-md);
+	font:inherit; font-size:var(--wb-f-md); outline:none; margin-bottom:var(--wb-s3)}
+.mk3-name:focus{border-color:var(--mk3-accent)}
+/* 会话式 prompt 编辑器（还原截图） */
+.mk3-editor{border:1px solid var(--mk3-line2); border-radius:var(--wb-r-lg); overflow:hidden; margin-bottom:var(--wb-s3)}
+.mk3-editor textarea{display:block; width:100%; min-height:170px; border:none; outline:none; resize:vertical;
+	padding:var(--wb-s3); font:var(--wb-f-sm)/1.6 inherit; color:var(--mk3-txt)}
+.mk3-editor-bar{display:flex; align-items:center; gap:var(--wb-s2); padding:var(--wb-s1) var(--wb-s2); border-top:1px solid var(--mk3-line)}
+.mk3-editor-bar .plus{border:none; background:none; font-size:16px; cursor:pointer; color:var(--mk3-sub); padding:2px 8px; border-radius:var(--wb-r-sm)}
+.mk3-editor-bar .plus:hover{background:#f0f0f4}
+.mk3-editor-bar .sp{flex:1}
+.mk3-send{border:none; background:var(--mk3-txt); color:#fff; width:28px; height:28px; border-radius:var(--wb-r-sm); cursor:pointer; font-size:13px}
+.mk3-model{border:none; background:none; font:inherit; font-size:var(--wb-f-xs); color:var(--mk3-sub); cursor:pointer; padding:2px 6px; border-radius:var(--wb-r-sm)}
+.mk3-model:hover{background:#f0f0f4}
+.mk3-editor-sub{display:flex; align-items:center; gap:var(--wb-s3); padding:var(--wb-s1) var(--wb-s3) var(--wb-s2); font-size:var(--wb-f-xs); color:#55555e}
+.mk3-ws{cursor:pointer; padding:3px 8px; border-radius:var(--wb-r-sm)}
+.mk3-ws:hover{background:#f0f0f4}
+.mk3-allow{color:#d9534f; cursor:pointer; padding:3px 8px; border-radius:var(--wb-r-sm)}
+.mk3-allow:hover{background:#fdf0f0}
+/* 三个下拉 + 开关行 */
+.mk3-selects{display:grid; grid-template-columns:repeat(3,1fr); gap:var(--wb-s3); margin:var(--wb-s3) 0}
+.mk3-sel{position:relative; display:flex; align-items:center; border:1px solid var(--mk3-line2); border-radius:var(--wb-r-md); padding:0 var(--wb-s2); background:#fff}
+.mk3-sel > label{font-size:var(--wb-f-xs); color:var(--mk3-sub); white-space:nowrap; padding-right:6px}
+.mk3-sel select{flex:1; border:none; outline:none; background:transparent; font:inherit; font-size:var(--wb-f-sm); padding:9px 0; cursor:pointer; appearance:none; color:var(--mk3-txt)}
+.mk3-sel::after{content:"▾"; position:absolute; right:10px; color:var(--mk3-sub); pointer-events:none; font-size:10px}
+.mk3-sel.wide select{color:var(--mk3-txt)}
+.mk3-weekdays{display:none; gap:var(--wb-s1); margin:-var(--wb-s2) 0 var(--wb-s3); flex-wrap:wrap}
+.mk3-weekdays.is-open{display:flex}
+.mk3-weekdays button{padding:3px 12px; border-radius:var(--wb-r-pill); border:1px solid var(--mk3-line2); background:#fff; cursor:pointer; font:inherit; font-size:var(--wb-f-xs)}
+.mk3-weekdays button.is-on{background:var(--mk3-txt); color:#fff; border-color:var(--mk3-txt)}
+.mk3-switchrow{display:flex; align-items:center; gap:var(--wb-s2); font-size:var(--wb-f-sm); color:#55555e; margin-bottom:var(--wb-s3)}
+.mk3-modal-ft{display:flex; justify-content:flex-end; gap:var(--wb-s2)}
+.mk3-modal-ft .mk3-btn{padding:7px 18px; font-size:var(--wb-f-sm)}
+.mk3-modal-ft .is-primary{font-weight:600}
+/* 批量新建下拉 */
+.mk3-pop{position:absolute; background:#fff; border:1px solid var(--mk3-line2); border-radius:var(--wb-r-md);
+	box-shadow:0 8px 28px rgba(0,0,0,.14); padding:var(--wb-s1); z-index:60; min-width:160px}
+.mk3-pop button{display:block; width:100%; text-align:left; border:none; background:none; padding:7px 10px;
+	font:inherit; font-size:var(--wb-f-xs); cursor:pointer; border-radius:var(--wb-r-sm); color:var(--mk3-txt)}
+.mk3-pop button:hover{background:#f0f0f4}
+.mk3-toast{position:fixed; left:50%; bottom:32px; transform:translateX(-50%); background:var(--mk3-txt); color:#fff;
+	padding:8px 18px; border-radius:var(--wb-r-pill); font-size:var(--wb-f-xs); z-index:99; opacity:0; transition:opacity .2s; pointer-events:none}
+.mk3-toast.is-show{opacity:.94}
+.mk3-field{display:flex; flex-direction:column; gap:var(--wb-s1); min-width:0; margin-bottom:var(--wb-s3)}
+.mk3-field label{font-size:var(--wb-f-xs); color:var(--mk3-sub)}
+.mk3-field input,.mk3-field textarea{padding:7px 10px; border:1px solid var(--mk3-line2); border-radius:var(--wb-r-md); font:inherit; font-size:var(--wb-f-xs); outline:none; width:100%}
+.mk3-field input:focus,.mk3-field textarea:focus{border-color:var(--mk3-accent)}
+.mk3-field .err{color:#d9534f; font-size:var(--wb-f-xs)}
+.mk3-every{display:none; gap:var(--wb-s1)}
+.mk3-every.is-open{display:flex}
+.mk3-every input{width:90px}
+@container (max-width:720px){
+	.mk3-selects{grid-template-columns:1fr}
+	.mk3-grid{grid-template-columns:1fr}
+}
+/* ── 卡片 hover 按钮组（▶ 运行 / ✎ 编辑 / ⋯ 更多）+ 更多菜单 ── */
+.mk3-card-acts{display:none; align-items:center; gap:2px; margin-left:auto}
+.mk3-card:hover .mk3-card-acts{display:flex}
+.mk3-icb{width:24px; height:24px; border:none; background:transparent; border-radius:var(--wb-r-sm);
+	cursor:pointer; color:#55555e; font-size:12px; line-height:24px; text-align:center; padding:0}
+.mk3-icb:hover{background:#f0f0f4; color:var(--mk3-txt)}
+.mk3-menu{position:fixed; background:#fff; border:1px solid var(--mk3-line2); border-radius:var(--wb-r-md);
+	box-shadow:0 8px 28px rgba(0,0,0,.16); padding:4px; z-index:70; min-width:158px}
+.mk3-menu button{display:flex; align-items:center; gap:8px; width:100%; text-align:left; border:none;
+	background:none; padding:7px 10px; font:inherit; font-size:var(--wb-f-xs); cursor:pointer;
+	border-radius:var(--wb-r-sm); color:var(--mk3-txt)}
+.mk3-menu button:hover{background:#f0f0f4}
+.mk3-menu button.is-danger{color:#d9534f}
+/* ── 删除确认 ── */
+.mk3-confirm-p{font-size:var(--wb-f-xs); color:var(--mk3-sub); margin:0 0 var(--wb-s3)}
+[hidden]{display:none !important}
+</style>
+</head>
+<body>
+
+<p class="mk3-note">
+	<b>第三轮 mockup（按你截图的布局重做，非线上代码）</b>：页签（定时任务/运行记录）、右上工具（筛选/搜索/批量新建▾/＋新建）、
+	筛选行计数、卡片网格（右上开关直接启停）；「＋新建」与点卡片 → 编辑大弹窗（名称 + 会话式 prompt 编辑器 +
+	重复/时间/有效期三下拉【联动字段】+ 消息推送开关 + 取消/确定）。<b>所有按钮都可点、确定会真实改数据。</b>
+</p>
+
+<div class="mk3-root" id="root">
+	<div class="mk3-tabs">
+		<div class="mk3-tab is-active" data-tab="tasks">定时任务</div>
+		<div class="mk3-tab" data-tab="runs">运行记录</div>
+		<div class="sp"></div>
+		<div class="mk3-tool">
+			<button class="mk3-ic" title="筛选" data-act="funnel">▽</button>
+			<button class="mk3-ic" title="搜索" data-act="search">⌕</button>
+			<div class="mk3-search" data-searchbox><input type="search" placeholder="搜索任务 / 规则" data-search></div>
+			<button class="mk3-btn" data-act="batch">批量新建<span class="caret">▾</span></button>
+			<button class="mk3-btn is-primary" data-act="new">＋ 新建</button>
+		</div>
+	</div>
+
+	<div id="view-tasks">
+		<div class="mk3-filters" data-filters></div>
+		<div class="mk3-grid" data-grid></div>
+	</div>
+
+	<div id="view-runs" hidden>
+		<div class="mk3-runs">
+			<table>
+				<thead><tr><th>时间</th><th>任务</th><th>轮次</th><th>结果</th><th>说明</th></tr></thead>
+				<tbody data-runs></tbody>
+			</table>
+		</div>
+	</div>
+</div>
+
+<!-- 编辑 / 新建 弹窗 -->
+<div class="mk3-overlay" id="modal" hidden>
+	<div class="mk3-modal">
+		<div class="mk3-modal-hd"><b data-modal-title>编辑定时任务</b><button class="x" data-close>✕</button></div>
+		<input class="mk3-name" data-name placeholder="任务名称，例如：AI 游戏开发每日资讯" maxlength="120">
+		<div class="mk3-field"><span class="err" data-err></span></div>
+		<div class="mk3-editor">
+			<textarea data-prompt placeholder="到点要 agent 做什么 —— 像写会话一样描述：步骤、输出格式、保存位置…"></textarea>
+			<div class="mk3-editor-bar">
+				<button class="plus" title="附件（占位）">＋</button>
+				<span class="sp"></span>
+				<button class="mk3-model" data-act="model">✨ Auto ▾</button>
+				<button class="mk3-send" title="试运行一次（占位）">➤</button>
+			</div>
+			<div class="mk3-editor-sub">
+				<span class="mk3-ws" data-act="workspace">📁 AI_Game ▾</span>
+				<span class="mk3-allow" data-act="allow">⚠ 允许完全访问 ▾</span>
+			</div>
+		</div>
+		<div class="mk3-selects">
+			<div class="mk3-sel wide"><label>重复：</label>
+				<select data-repeat>
+					<option value="daily">每天</option><option value="weekly">每周</option>
+					<option value="every">固定间隔</option><option value="once">仅一次</option>
+					<option value="cron">Cron 表达式</option>
+				</select>
+			</div>
+			<div class="mk3-sel wide"><label>时间：</label>
+				<select data-time>
+					<option>08:00</option><option>09:00</option><option>12:00</option><option>14:00</option>
+					<option>18:00</option><option>20:00</option><option>22:00</option><option>23:30</option>
+				</select>
+			</div>
+			<div class="mk3-sel wide"><label>有效期：</label>
+				<select data-expiry>
+					<option>长期有效</option><option>30 天</option><option>90 天</option><option>到指定日期</option>
+				</select>
+			</div>
+		</div>
+		<div class="mk3-weekdays" data-weekdays>
+			<button data-d="1">周一</button><button data-d="2">周二</button><button data-d="3">周三</button>
+			<button data-d="4">周四</button><button data-d="5">周五</button><button data-d="6">周六</button><button data-d="7">周日</button>
+		</div>
+		<div class="mk3-every" data-everyrow>
+			<div class="mk3-sel" style="max-width:220px"><label>间隔：</label>
+				<input data-every value="60" style="border:none; outline:none; flex:1; font:inherit; font-size:var(--wb-f-sm); padding:9px 0" min="1">
+				<select data-unit style="border:none; background:transparent; font:inherit; font-size:var(--wb-f-xs); color:var(--mk3-sub)">
+					<option value="60">分钟</option><option value="3600">小时</option>
+				</select>
+			</div>
+		</div>
+		<div class="mk3-field" data-oncedate hidden><label>日期</label><input type="date" data-date></div>
+		<div class="mk3-field" data-cronrow hidden><label>Cron 表达式</label><input data-cron value="0 9 * * 1-5" placeholder="分 时 日 月 周"></div>
+		<div class="mk3-switchrow">消息推送到企业微信 <button class="mk3-toggle" data-notify aria-label="消息推送到企业微信"></button></div>
+		<div class="mk3-modal-ft">
+			<button class="mk3-btn" data-close>取消</button>
+			<button class="mk3-btn is-primary" data-save>确定</button>
+		</div>
+	</div>
+</div>
+
+<div class="mk3-pop" id="batchpop" hidden style="position:fixed">
+	<button data-act="batch-text">从文本批量导入（一行一条）</button>
+	<button data-act="batch-clip">从剪贴板导入</button>
+	<button data-act="batch-dup">复制现有任务…</button>
+</div>
+<div class="mk3-menu" id="moremenu" hidden>
+	<button data-m="records">◉ 查看运行记录</button>
+	<button data-m="open">💬 打开任务</button>
+	<button data-m="del" class="is-danger">🗑 删除</button>
+</div>
+<div class="mk3-overlay" id="confirm" hidden>
+	<div class="mk3-modal" style="width:min(420px,94vw)">
+		<div class="mk3-modal-hd"><b>删除此任务？</b><button class="x" data-delcancel>✕</button></div>
+		<p class="mk3-confirm-p">「<b data-delname></b>」将停止触发，并连同它的运行记录一起删除。此操作不可撤销。</p>
+		<div class="mk3-modal-ft">
+			<button class="mk3-btn" data-delcancel>取消</button>
+			<button class="mk3-btn is-danger" data-delok>删除</button>
+		</div>
+	</div>
+</div>
+<div class="mk3-toast" id="toast"></div>
+
+<script>
+/* ── 数据 ─────────────────────────────────────────────────────────── */
+let TASKS = [
+	{ id:'t1', name:'Obitidian 一书与日报同步', on:true, kind:'daily', time:'22:00', rule:'每天 22:00',
+	  desc:'使用 Obsidian 的新书同步进度：1. 运行 sync_knowledge 同步 AI Workspace 每日飞书 & Agent 知识库；2. 运行 sync_managed_jeu 同步 Finance、Workspace 情况。' },
+	{ id:'t2', name:'虚拟引擎技术日报', on:true, kind:'daily', time:'07:00', rule:'每天 07:00',
+	  desc:'使用 AI 引擎（Unreal Engine）技术讯息收集助手，帮我汇总从多个平台采集的技术访谈与文本案例，特效、再精度搜索，**重点**评测复盘。' },
+	{ id:'t3', name:'AI游戏开发每日资讯', on:true, kind:'daily', time:'08:00', rule:'每天 08:00',
+	  desc:'使用 Agent Reach 从多个平台讲与AI游戏相关："AI游戏社区"、"AI game development"、"AI游戏研发与实现型"。围绕以下几点：1. Twitter/X 热门…' },
+	{ id:'t4', name:'每日 AI 新闻推送', on:true, kind:'daily', time:'08:00', rule:'每天 08:00',
+	  desc:'关注今天 AI 领域的最新消息，侧重 AI coding 相关通能力方面，筛选 3-5 条有价值的消息，消息要提供内容介绍与链接到的原文。' },
+	{ id:'t5', name:'每周一同步缺陷', on:false, kind:'weekly', time:'09:30', rule:'每周一 09:30', weekdays:[1],
+	  desc:'同步 TAPD 缺陷到看板，按严重程度分组，标出阻塞项。' },
+	{ id:'t6', name:'清理构建产物', on:false, kind:'every', time:'', rule:'每 60 分钟', everySeconds:3600,
+	  desc:'删除 7 天前的构建产物，输出释放空间大小。' },
+];
+let EDIT_ID = '';
+const RUNS = [
+	['今天 08:00','AI游戏开发每日资讯','第 41 轮','<span class="ok">成功</span>','报告已保存 AI_Game_2026-10-31.md'],
+	['今天 07:00','虚拟引擎技术日报','第 88 轮','<span class="ok">成功</span>','—'],
+	['昨天 22:00','Obitidian 一书与日报同步','第 120 轮','<span class="block">阻塞</span>','等待确认：是否覆盖昨日笔记'],
+	['昨天 22:00','废弃接口清理（第 2 批）','第 12 轮','<span class="fail">失败</span>','handoff 不合格：done 缺 evidence'],
+];
+const $ = (sel, el) => (el || document).querySelector(sel);
+const $$ = (sel, el) => [...(el || document).querySelectorAll(sel)];
+const esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;');
+
+/* ── toast ── */
+let toastTimer = 0;
+function toast(msg) {
+	const t = $('#toast');
+	t.textContent = msg;
+	t.classList.add('is-show');
+	clearTimeout(toastTimer);
+	toastTimer = setTimeout(() => t.classList.remove('is-show'), 1800);
+}
+
+/* ── 筛选 / 渲染 ──────────────────────────────────────────────────── */
+let FILTER = 'all';
+function counts() {
+	return { all: TASKS.length, on: TASKS.filter(t => t.on).length, off: TASKS.filter(t => !t.on).length };
+}
+function renderFilters() {
+	const c = counts();
+	$('[data-filters]').innerHTML = [
+		['all', `全部 (${c.all})`], ['on', `已启用 (${c.on})`], ['off', `已停用 (${c.off})`],
+	].map(([k, label]) => `<span class="mk3-filter${FILTER === k ? ' is-active' : ''}" data-f="${k}">${label}</span>`).join('');
+}
+function visibleTasks() {
+	const q = ($('[data-search]').value || '').trim().toLowerCase();
+	return TASKS.filter(t => {
+		if (FILTER === 'on' && !t.on) { return false; }
+		if (FILTER === 'off' && t.on) { return false; }
+		if (q && !(t.name.toLowerCase().includes(q) || t.desc.toLowerCase().includes(q))) { return false; }
+		return true;
+	});
+}
+function renderGrid() {
+	const rows = visibleTasks();
+	$('[data-grid]').innerHTML = rows.length === 0
+		? '<div style="grid-column:1/-1; text-align:center; color:var(--mk3-sub); padding:32px 0">没有匹配的任务。</div>'
+		: rows.map(t => `
+		<div class="mk3-card" data-open="${t.id}">
+			<div class="mk3-card-hd">
+				<span class="mk3-card-name">${esc(t.name)}</span>
+				<div class="mk3-card-acts">
+					<button class="mk3-icb" data-run="${t.id}" title="立即运行一次">▶</button>
+					<button class="mk3-icb" data-edit="${t.id}" title="编辑">✎</button>
+					<button class="mk3-icb" data-more="${t.id}" title="更多">⋯</button>
+				</div>
+				<button class="mk3-toggle${t.on ? ' is-on' : ''}" data-toggle="${t.id}" aria-label="启用/停用"></button>
+			</div>
+			<div class="mk3-card-desc">${esc(t.desc)}</div>
+			<div class="mk3-card-ft"><span>${esc(t.rule)}</span>
+				<span class="st${t.on ? ' is-on' : ''}">${t.on ? '已启用' : '已停用'}</span></div>
+		</div>`).join('');
+}
+function renderRuns() {
+	$('[data-runs]').innerHTML = RUNS.map(r => `<tr><td>${r[0]}</td><td>${r[1]}</td><td>${r[2]}</td><td>${r[3]}</td><td>${r[4]}</td></tr>`).join('');
+}
+function renderAll() { renderFilters(); renderGrid(); }
+
+/* ── 弹窗 ─────────────────────────────────────────────────────────── */
+function openModal(id) {
+	EDIT_ID = id;
+	const t = id ? TASKS.find(x => x.id === id) : null;
+	$('[data-modal-title]').textContent = t ? '编辑定时任务' : '新建定时任务';
+	$('[data-name]').value = t ? t.name : '';
+	$('[data-prompt]').value = t ? t.desc : '';
+	$('[data-repeat]').value = t ? (t.kind || 'daily') : 'daily';
+	$('[data-time]').value = t && t.time ? t.time : '08:00';
+	$('[data-notify]').classList.toggle('is-on', t ? !!t.notify : false);
+	$('[data-every]').value = t && t.everySeconds ? String(Math.round(t.everySeconds / 60)) : '60';
+	$('[data-cron]').value = t && t.cron ? t.cron : '0 9 * * 1-5';
+	$('[data-date]').value = t && t.date ? t.date : '';
+	$$('[data-weekdays] button').forEach(b => b.classList.remove('is-on'));
+	(t?.weekdays ?? [1]).forEach(d => $(`[data-weekdays] [data-d="${d}"]`)?.classList.add('is-on'));
+	syncRepeatFields();
+	$('[data-err]').textContent = '';
+	$('#modal').hidden = false;
+	$('[data-name]').focus();
+}
+function closeModal() { $('#modal').hidden = true; }
+/** 重复规则联动（每周→星期 chips；固定间隔→间隔行；仅一次→日期；Cron→表达式）。 */
+function syncRepeatFields() {
+	const kind = $('[data-repeat]').value;
+	$('[data-weekdays]').classList.toggle('is-open', kind === 'weekly');
+	$('[data-everyrow]').classList.toggle('is-open', kind === 'every');
+	$('[data-oncedate]').hidden = kind !== 'once';
+	$('[data-cronrow]').hidden = kind !== 'cron';
+	$('[data-time]').closest('.mk3-sel').style.display = (kind === 'daily' || kind === 'weekly' || kind === 'once') ? '' : 'none';
+}
+function collectRule() {
+	const kind = $('[data-repeat]').value;
+	const time = $('[data-time]').value;
+	if (kind === 'daily') { return { kind, time, rule: `每天 ${time}` }; }
+	if (kind === 'weekly') {
+		const days = $$('[data-weekdays] button.is-on').map(b => Number(b.dataset.d));
+		if (!days.length) { return { error: '每周任务至少选一个星期' }; }
+		const names = ['','周一','周二','周三','周四','周五','周六','周日'];
+		return { kind, time, weekdays: days, rule: `${days.map(d => names[d]).join('、')} ${time}` };
+	}
+	if (kind === 'every') {
+		const v = Number($('[data-every]').value), unit = Number($('[data-unit]').value);
+		if (!Number.isFinite(v) || v <= 0) { return { error: '间隔要大于 0' }; }
+		const s = Math.round(v * unit);
+		return { kind, everySeconds: s, rule: `每 ${s >= 3600 && s % 3600 === 0 ? s / 3600 + ' 小时' : s / 60 + ' 分钟'}` };
+	}
+	if (kind === 'once') {
+		const date = $('[data-date]').value;
+		if (!date) { return { error: '仅一次的任务要选日期' }; }
+		return { kind, time, date, rule: `${date} ${time}` };
+	}
+	const expr = $('[data-cron]').value.trim();
+	if (!expr) { return { error: 'Cron 表达式不能为空' }; }
+	return { kind, cron: expr, rule: `Cron：${expr}` };
+}
+function save() {
+	const name = $('[data-name]').value.trim();
+	const prompt = $('[data-prompt]').value.trim();
+	if (!name) { $('[data-err]').textContent = '请填写任务名称'; return; }
+	if (!prompt) { $('[data-err]').textContent = '请填写任务内容（到点要做什么）'; return; }
+	const rule = collectRule();
+	if (rule.error) { $('[data-err]').textContent = rule.error; return; }
+	if (EDIT_ID) {
+		const t = TASKS.find(x => x.id === EDIT_ID);
+		Object.assign(t, { name, desc: prompt, on: t.on, notify: $('[data-notify]').classList.contains('is-on') },
+			{ kind: rule.kind, time: rule.time ?? '', everySeconds: rule.everySeconds, weekdays: rule.weekdays, date: rule.date, cron: rule.cron, rule: rule.rule });
+		toast('已保存修改');
+	} else {
+		TASKS.unshift({ id: 't' + Date.now(), name, desc: prompt, on: true, notify: $('[data-notify]').classList.contains('is-on'),
+			kind: rule.kind, time: rule.time ?? '', everySeconds: rule.everySeconds, weekdays: rule.weekdays, date: rule.date, cron: rule.cron, rule: rule.rule });
+		FILTER = 'all';
+		toast('已创建任务');
+	}
+	closeModal();
+	renderAll();
+}
+
+/* ── 事件接线（每个按钮都有交互） ─────────────────────────────────── */
+$$('.mk3-tab').forEach(el => el.addEventListener('click', () => {
+	$$('.mk3-tab').forEach(x => x.classList.remove('is-active'));
+	el.classList.add('is-active');
+	const tasks = el.dataset.tab === 'tasks';
+	$('#view-tasks').hidden = !tasks;
+	$('#view-runs').hidden = tasks;
+}));
+document.addEventListener('click', (ev) => {
+	const hit = (sel) => ev.target.closest(sel);
+	const act = hit('[data-act]');
+	if (hit('[data-f]')) {
+		FILTER = hit('[data-f]').dataset.f;
+		renderFilters(); renderGrid(); return;
+	}
+	if (hit('[data-toggle]')) {
+		const t = TASKS.find(x => x.id === hit('[data-toggle]').dataset.toggle);
+		t.on = !t.on;
+		renderAll();
+		toast(`${t.name}：${t.on ? '已启用' : '已停用'}`);
+		return;
+	}
+	if (hit('[data-open]')) { openModal(hit('[data-open]').dataset.open); return; }
+	if (act) {
+		const a = act.dataset.act;
+		if (a === 'new') { openModal(''); }
+		if (a === 'search') {
+			const box = $('[data-searchbox]');
+			box.classList.toggle('is-open');
+			if (box.classList.contains('is-open')) { $('[data-search]').focus(); }
+			else { $('[data-search]').value = ''; renderGrid(); }
+		}
+		if (a === 'funnel') { toast('筛选：用上面的「全部 / 已启用 / 已停用」'); }
+		if (a === 'batch') {
+			const pop = $('#batchpop');
+			const r = act.getBoundingClientRect();
+			pop.style.left = Math.min(r.left, window.innerWidth - 240) + 'px';
+			pop.style.top = (r.bottom + 6) + 'px';
+			pop.hidden = !pop.hidden;
+		}
+		if (a === 'batch-text' || a === 'batch-clip' || a === 'batch-dup') { $('#batchpop').hidden = true; toast('批量导入：占位（接真实实现时补）'); }
+		if (a === 'model') { toast('模型选择：占位'); }
+		if (a === 'workspace') { toast('工作区选择：占位'); }
+		if (a === 'allow') { toast('访问权限：占位（当前为「允许完全访问」）'); }
+		return;
+	}
+	if (hit('[data-weekdays] button')) {
+		hit('[data-weekdays] button').classList.toggle('is-on');
+		return;
+	}
+	if (hit('[data-close]')) { closeModal(); $('#batchpop').hidden = true; return; }
+	if (hit('[data-save]')) { save(); return; }
+	if (!hit('#batchpop')) { $('#batchpop').hidden = true; }
+	if (ev.target === $('#modal')) { closeModal(); }
+});
+$('[data-repeat]').addEventListener('change', syncRepeatFields);
+$('[data-search]').addEventListener('input', () => renderGrid());
+$('[data-notify]').addEventListener('click', (ev) => ev.currentTarget.classList.toggle('is-on'));
+document.addEventListener('keydown', (ev) => {
+	if (ev.key === 'Escape') { closeModal(); $('#batchpop').hidden = true; }
+});
+
+renderAll();
+renderRuns();
+</script>
+</body>
+</html>

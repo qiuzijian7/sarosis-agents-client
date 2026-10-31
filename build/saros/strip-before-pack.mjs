@@ -10,6 +10,11 @@
  *
  * 默认目录: ../VSCode-win32-x64 (相对于项目根目录)
  *
+ * ★ 平台适配（2026-10-31）：macOS 产物是 `<…>/VsSaros.app/Contents/Resources/app`，
+ *   本脚本把入参目录里第一个含 `Contents/Resources/app` 的 `*.app` 当作产物根
+ *   （⇒ 传 `../VSCode-darwin-arm64` 或 `../VSCode-darwin-arm64/VsSaros.app` 都行），
+ *   并把所有 Windows 口吻的 `resources/app/…` 路径自动翻译过去。Windows 行为不变。
+ *
  * 清理项清单 (按安全级别分组):
  *
  * 【无损 - 生产环境不需要】
@@ -51,17 +56,64 @@ const __dirname = dirname(__filename);
 // __dirname = .../saros-agents-client/build/saros
 // ROOT = .../saros-agents-client
 const ROOT = resolve(__dirname, '../..');
-// 构建输出在项目同级的 VSCode-win32-x64
+// 构建输出在项目同级的 VSCode-win32-x64（macOS: VSCode-darwin-<arch>，其内是 <Name>.app）
 const DEFAULT_BUILD_DIR = join(ROOT, '../VSCode-win32-x64');
 
-const buildDir = resolve(process.argv[2] || DEFAULT_BUILD_DIR);
+// ── 平台布局（2026-10-31：macOS 打包支持）──────────────────────────────────────
+// Windows/Linux：产物根 == 构建输出目录，app 内容在 `<root>/resources/app`；
+// macOS：app 内容在 `<…>/VsSaros.app/Contents/Resources/app`。
+// 本脚本里**所有** staging 相对路径都按 Windows 口吻写成 `resources/app/…`，
+// 这里统一翻译成当前平台的真实路径 ⇒ 命令行既可传 `VSCode-darwin-arm64`
+// （自动下钻到里面的 `*.app`），也可直接传 `…/VsSaros.app`；Windows 行为完全不变 ✓。
+const WIN_APP_SUB = 'resources/app';
+const MAC_APP_SUB = 'Contents/Resources/app';
+
+/** 探测产物根：返回 { dir, sub, isDarwin }。dir 可能被下钻到 `*.app`。 */
+function detectBuildDir(dir) {
+	if (existsSync(join(dir, MAC_APP_SUB))) {
+		return { dir, sub: MAC_APP_SUB, isDarwin: true };
+	}
+	try {
+		for (const e of readdirSync(dir, { withFileTypes: true })) {
+			if (!e.isDirectory() || !e.name.endsWith('.app')) { continue; }
+			const candidate = join(dir, e.name);
+			if (existsSync(join(candidate, MAC_APP_SUB))) {
+				return { dir: candidate, sub: MAC_APP_SUB, isDarwin: true };
+			}
+		}
+	} catch { /* 目录不可读 ⇒ 按非 darwin 处理 */ }
+	return { dir, sub: WIN_APP_SUB, isDarwin: false };
+}
+
+let buildDir = resolve(process.argv[2] || DEFAULT_BUILD_DIR);
 
 if (!existsSync(buildDir)) {
 	console.error(`❌ 构建输出目录不存在: ${buildDir}`);
 	process.exit(1);
 }
 
-console.log(`🧹 清理构建输出: ${buildDir}\n`);
+const layout = detectBuildDir(buildDir);
+const IS_DARWIN = layout.isDarwin;
+const APP_SUB = layout.sub;
+buildDir = layout.dir;
+
+/** macOS 架构：优先从产物目录名（VSCode-darwin-arm64）推断，其次 process.arch。 */
+const MAC_ARCH = (() => {
+	const m = /VSCode-darwin-(x64|arm64|universal)/.exec(buildDir);
+	return m ? m[1] : (process.arch === 'arm64' ? 'arm64' : 'x64');
+})();
+
+/** 把「Windows 口吻」的 staging 相对路径翻译成当前平台的真实相对路径。 */
+function toStagingRel(rel) {
+	if (!IS_DARWIN) { return rel; }
+	if (rel === WIN_APP_SUB) { return MAC_APP_SUB; }
+	if (rel.startsWith(WIN_APP_SUB + '/')) { return MAC_APP_SUB + rel.slice(WIN_APP_SUB.length); }
+	// `resources/saros/…`（asar 外的可选二进制）⇒ mac 上 resourcesPath 指向 Contents/Resources
+	if (rel.startsWith('resources/')) { return 'Contents/Resources/' + rel.slice('resources/'.length); }
+	return rel;
+}
+
+console.log(`🧹 清理构建输出: ${buildDir}${IS_DARWIN ? `（macOS .app ⇒ app 根 = ${APP_SUB}，arch = ${MAC_ARCH}）` : ''}\n`);
 
 let totalFreed = 0;
 
@@ -160,7 +212,7 @@ function removeEmptyDirs(root) {
 }
 
 function removeDir(label, relPath) {
-	const absPath = join(buildDir, relPath);
+	const absPath = join(buildDir, toStagingRel(relPath));
 	if (!existsSync(absPath)) {
 		console.log(`  ⏭  ${label} — 不存在，跳过`);
 		return;
@@ -180,7 +232,7 @@ function removeDir(label, relPath) {
 }
 
 function removeFile(label, relPath) {
-	const absPath = join(buildDir, relPath);
+	const absPath = join(buildDir, toStagingRel(relPath));
 	if (!existsSync(absPath)) {
 		console.log(`  ⏭  ${label} — 不存在，跳过`);
 		return;
@@ -237,10 +289,10 @@ if (existsSync(localesDir)) {
 	console.log(`  ✅ 精简 locales (${paks.length} 文件) — ${(size / 1024 / 1024).toFixed(1)}MB`);
 }
 
-// node-pty: 仅保留 win32-x64 prebuilds
-const ptyPrebuilds = join(buildDir, 'resources/app/node_modules/node-pty/prebuilds');
+// node-pty: 仅保留当前平台的 prebuilds（win: win32-x64 / mac: darwin-<arch>）
+const ptyPrebuilds = join(buildDir, toStagingRel('resources/app/node_modules/node-pty/prebuilds'));
 if (existsSync(ptyPrebuilds)) {
-	const keptPrefix = 'win32-x64';
+	const keptPrefix = IS_DARWIN ? `darwin-${MAC_ARCH}` : 'win32-x64';
 	const entries = readdirSync(ptyPrebuilds).filter(e => !e.startsWith(keptPrefix));
 	for (const e of entries) {
 		removeDir(`node-pty prebuilds/${e}`, `resources/app/node_modules/node-pty/prebuilds/${e}`);
@@ -282,7 +334,7 @@ removeDir('@vscode/sandbox-runtime', 'resources/app/node_modules/@vscode/sandbox
 // === 4. 清理空目录 ===
 console.log('\n🧹 清理空目录...');
 try {
-	const removed = removeEmptyDirs(join(buildDir, 'resources/app/node_modules'));
+	const removed = removeEmptyDirs(join(buildDir, toStagingRel('resources/app/node_modules')));
 	console.log(`  ✅ 已清理空目录（${removed} 个）`);
 } catch { /* ignore */ }
 
@@ -296,7 +348,7 @@ const repoRoot = path.resolve(__dirname, '../..');
 let criticalMissing = 0;
 
 function ensureFile(label, stagingRel, repoRelCandidates) {
-	const stagingAbs = path.join(buildDir, stagingRel);
+	const stagingAbs = path.join(buildDir, toStagingRel(stagingRel));
 	if (existsSync(stagingAbs)) { console.log(`  ✅ ${label}`); return; }
 	for (const repoRel of repoRelCandidates) {
 		const repoAbs = path.join(repoRoot, repoRel);
@@ -314,7 +366,7 @@ function ensureFile(label, stagingRel, repoRelCandidates) {
 // 与 ensureFile 类似，但自愈“整个目录”（如扩展编译产物 out/、node_modules 依赖）。
 // sentinel 用于判定目标目录是否已健全（默认 extension.js；node_modules 包用 package.json）。
 function ensureDir(label, stagingRel, repoRel, sentinel = 'extension.js', opts = {}) {
-	const stagingAbs = path.join(buildDir, stagingRel);
+	const stagingAbs = path.join(buildDir, toStagingRel(stagingRel));
 	const sentinelAbs = path.join(stagingAbs, sentinel);
 	// ★★ 2026-10-30（真机 P0：全新机器装上后**主页白屏**，日志
 	//   `vssaros-kb: failed to import … vendor/markdown-it.cjs ENOENT`、
@@ -402,9 +454,17 @@ ensureDir(
 // 而整个构建过程**一句报错都没有** ✗✗）。
 // ⇒ 这里直接算两边相对路径集合的差集：仓库有、暂存没有 ⇒ criticalMissing（构建收尾会红）。
 // ⚠ 排除 `node_modules`（源里可能有，但不该进包）与 `test/`（构建有意排除，运行时不需要）。
-{
+/**
+ * 随包 `dsh-plugins` 的完整性门禁。
+ *
+ * ⚠ **必须在"生成产物"之后调用**（2026-10-31）：它比的是「仓库 vs 暂存」，
+ *   而 `dist/` / `vendor/` 这类产物是**生成**出来的（且被 gitignore ⇒ 干净检出没有）。
+ *   在生成之前跑 ⇒ 两边都没有 ⇒ 判"一致" ⇒ 静默漏掉（真机 10-31 就是这样：CI 上 840、
+ *   本机 874，差的 34 个全是产物）。
+ */
+function verifyDshPluginsComplete() {
 	const repoPlugins = path.join(repoRoot, 'dsh-plugins');
-	const stagingPlugins = path.join(buildDir, 'resources/app/dsh-plugins');
+	const stagingPlugins = path.join(buildDir, toStagingRel('resources/app/dsh-plugins'));
 	const walk = (root, dir = '', out = []) => {
 		let entries;
 		try { entries = readdirSync(path.join(root, dir), { withFileTypes: true }); } catch { return out; }
@@ -435,6 +495,100 @@ ensureDir(
 		criticalMissing++;
 	}
 }
+
+// 2.5c-2) ★★ 2026-10-31（真机 P0：**主页空白**，日志
+//   `vssaros-dashboard (@vssaros/dsh-dashboard): failed to import: ENOENT … lib/app/dist/dashboard-app.js`
+//   ⇒ `SessionCreateError: session create failed: agent-preset/invalid: vssaros-dashboard … never started`
+//   ⇒ 会话建不起来 ⇒ 桌面窗口/主页永远空白 ✗✗）：
+//   `dsh-plugins/vssaros-dashboard/lib/app/dist/` 里的两个文件是 **`vendor/build.mjs` 的构建产物**，
+//   而 `.gitignore` 第 6 行有 `dist/` ⇒ **0 个文件入库** ⇒ 干净检出 / CI / 别人打包时根本没有
+//   ⇒ 直装进 profile ⇒ 插件 import 失败 ⇒ 主页空白。本机不复现：本机 10-27 手工跑过构建 ✓。
+//   ⇒ 这里**先构建再落位**：仓库里没有就现跑 `vendor/build.mjs`；构建也失败 ⇒ criticalMissing（收尾报红）。
+{
+	const rel = 'dsh-plugins/vssaros-dashboard/lib/app/dist';
+	const artifacts = [
+		{ file: 'dashboard-app.js', label: 'vssaros-dashboard/lib/app/dist/dashboard-app.js（主页前端，缺它 ⇒ 主页空白）' },
+		{ file: 'dashboard-app.css', label: 'vssaros-dashboard/lib/app/dist/dashboard-app.css（主页样式）' },
+	];
+	const missing = artifacts.filter(a => !existsSync(path.join(repoRoot, rel, a.file)));
+	if (missing.length) {
+		console.log(`  ⚠ 主页前端产物缺失（${missing.map(a => a.file).join('、')}）⇒ 现跑构建：node ${rel.replace('lib/app/dist', 'vendor/build.mjs')}`);
+		const r = spawnSync(process.execPath, [path.join(repoRoot, 'dsh-plugins/vssaros-dashboard/vendor/build.mjs')], {
+			cwd: repoRoot, encoding: 'utf8', windowsHide: true, timeout: 180000,
+		});
+		if (r.status !== 0) {
+			console.log(`  ❌ 主页前端构建失败（exit=${r.status}）：${String(r.stderr || r.stdout || '').trim().slice(0, 300)}`);
+			criticalMissing += missing.length;
+		}
+	}
+	for (const a of artifacts) {
+		ensureFile(
+			a.label,
+			`resources/app/dsh-plugins/vssaros-dashboard/lib/app/dist/${a.file}`,
+			[`${rel}/${a.file}`],
+		);
+	}
+}
+
+// 2.5c-3) ★★ 2026-10-31（真机：CI 打出的包里**没有飞书入站的 SDK**）：
+//   `vssaros-agents/lib/adapters/feishuRawWs.js:134` 运行时 `await import('./vendor/deps/ws/index.js')`
+//   ⇒ 而 `lib/adapters/vendor/` 在 `.gitignore` 里，由 `npm run vendor`
+//     （= `node scripts/vendor-lark-sdk.mjs`）生成；该脚本头部注释自己写着
+//     **「发布脚本必须先跑它，否则包里没有 SDK」** —— CI 里确实没跑 ✗。
+//   ⇒ 缺它的后果：飞书入站起不来（"unavailable：未安装 @larksuiteoapi/node-sdk" 的老问题回来）。
+{
+	const rel = 'dsh-plugins/vssaros-agents/lib/adapters/vendor';
+	const sentinel = 'deps/ws/index.js';
+	if (!existsSync(path.join(repoRoot, rel, sentinel))) {
+		console.log('  ⚠ 飞书入站 SDK 未 vendor ⇒ 现跑：node scripts/vendor-lark-sdk.mjs（在 dsh-plugins/vssaros-agents 下；需能访问 npm 源）');
+		const r = spawnSync(process.execPath, ['scripts/vendor-lark-sdk.mjs'], {
+			cwd: path.join(repoRoot, 'dsh-plugins/vssaros-agents'), encoding: 'utf8', windowsHide: true, timeout: 300000,
+		});
+		if (r.status !== 0) {
+			console.log(`  ❌ vendor 失败（exit=${r.status}）：${String(r.stderr || r.stdout || '').trim().slice(0, 300)}`);
+			criticalMissing++;
+		}
+	}
+	ensureDir(
+		'vssaros-agents/lib/adapters/vendor（飞书入站 SDK，缺它 ⇒ 飞书入站起不来）',
+		'resources/app/dsh-plugins/vssaros-agents/lib/adapters/vendor',
+		rel,
+		sentinel,
+	);
+}
+
+// 2.5c-4) 交付/合规类文本（**运行时不读**，但缺了不对）：能落位就落位，缺了只警告（不计 criticalMissing，避免假红）。
+for (const [label, repoRel, stagingRel, how] of [
+	['codebase/vendor/LANGUAGES.txt（bin/vendor-assets.mjs --check 的清单源）',
+		'dsh-plugins/vssaros-codebase/vendor/LANGUAGES.txt',
+		'resources/app/dsh-plugins/vssaros-codebase/vendor/LANGUAGES.txt',
+		'node dsh-plugins/vssaros-codebase/bin/vendor-assets.mjs --all'],
+	['pele/assets/VERSION.txt（交付白名单）',
+		'dsh-plugins/vssaros-pele/assets/VERSION.txt',
+		'resources/app/dsh-plugins/vssaros-pele/assets/VERSION.txt',
+		'node dsh-plugins/vssaros-pele/tools/build-pele.mjs'],
+	['archify: JetBrainsMono-OFL.txt（第三方字体许可证，合规）',
+		'dsh-plugins/vssaros-archify/skills/archify/assets/JetBrainsMono-OFL.txt',
+		'resources/app/dsh-plugins/vssaros-archify/skills/archify/assets/JetBrainsMono-OFL.txt',
+		'静态文件 ⇒ 入库（git add -f）'],
+	['imagegen: LICENSE-excalidraw.txt（第三方许可证，合规）',
+		'dsh-plugins/vssaros-imagegen/vendor/excalidraw/LICENSE-excalidraw.txt',
+		'resources/app/dsh-plugins/vssaros-imagegen/vendor/excalidraw/LICENSE-excalidraw.txt',
+		'静态文件 ⇒ 入库（git add -f）'],
+	['marketplace: lib/vendor/README.txt',
+		'dsh-plugins/vssaros-marketplace/lib/vendor/README.txt',
+		'resources/app/dsh-plugins/vssaros-marketplace/lib/vendor/README.txt',
+		'静态文件 ⇒ 入库（git add -f）'],
+]) {
+	if (existsSync(path.join(repoRoot, repoRel))) {
+		ensureFile(label, stagingRel, [repoRel]);
+	} else {
+		console.log(`  ⚠️ ${label} 缺失（不影响运行，仅影响交付/合规）⇒ 补法：${how}`);
+	}
+}
+
+// ★ 门禁放在**所有生成之后**（理由见 verifyDshPluginsComplete 的注释）
+verifyDshPluginsComplete();
 
 // 2.5d) ★ 2026-10-16（用户报「打包出的 VsSaros.exe 找不到 dsh」，首启弹「需要准备 DeepSeek Harness
 //    运行环境」）：**构建期预装的 dsh 运行时**也是"关键构件"，必须与 dsh-plugins 同一待遇。
@@ -482,7 +636,7 @@ if (versionKnown) {
 	// ★ 同一条链上的**门禁**：种子必须真的在暂存里（`_ensureProfile` 靠它做"零下载首启"，
 	//   缺了就会退化成 web 模板 ⇒ 上面那条 P0 的现场）。任一 profile 有 package.json 即算通过。
 	{
-		const seedRoot = path.join(buildDir, 'resources/app/dsh-runtime', bundledVersion, 'profile-seed', 'profiles');
+		const seedRoot = path.join(buildDir, toStagingRel('resources/app/dsh-runtime'), bundledVersion, 'profile-seed', 'profiles');
 		let seedOk = false;
 		try {
 			for (const d of readdirSync(seedRoot, { withFileTypes: true })) {
@@ -533,7 +687,7 @@ ensureDir(
 	if (existsSync(repoWasmDir)) {
 		let added = 0;
 		for (const f of readdirSync(repoWasmDir).filter(x => x.endsWith('.wasm'))) {
-			const stagingAbs = path.join(buildDir, `resources/app/node_modules/@vscode/tree-sitter-wasm/wasm/${f}`);
+			const stagingAbs = path.join(buildDir, toStagingRel(`resources/app/node_modules/@vscode/tree-sitter-wasm/wasm/${f}`));
 			if (!existsSync(stagingAbs)) { added++; }
 			ensureFile(
 				`tree-sitter-wasm/wasm/${f}`,
@@ -571,7 +725,7 @@ ensureDir(
 //    ⇒ 以**仓库侧 vendor 目录为准**逐文件补齐（**不硬编码语言清单**，防漂移 ✓ —— 将来换档/加语言自动跟随 ✓）。
 {
 	const repoVendorDir = path.join(repoRoot, 'dsh-plugins/vssaros-codebase/vendor');
-	const stagingVendorRel = 'resources/app/dsh-plugins/vssaros-codebase/vendor';
+	const stagingVendorRel = toStagingRel('resources/app/dsh-plugins/vssaros-codebase/vendor');
 	if (existsSync(repoVendorDir)) {
 		const entries = readdirSync(repoVendorDir).filter(name => name !== 'LANGUAGES.txt');
 		// 清单文件也一起带上（它记录"这批资产是哪几档语言"，人查/守卫查都用得上 ✓；不是运行时依赖 ✓）
@@ -697,28 +851,32 @@ function ensureOptionalBin(label, stagingRel, repoRel) {
 		console.log(`  ⚠️  ${label} 缺失（vox 口播视频不可用）。获取: node build/saros/fetch-ffmpeg.mjs`);
 	}
 }
-ensureOptionalBin('ffmpeg.exe', 'resources/saros/bin/ffmpeg.exe', 'build/saros/bin/ffmpeg.exe');
-ensureOptionalBin('ffprobe.exe', 'resources/saros/bin/ffprobe.exe', 'build/saros/bin/ffprobe.exe');
-ensureOptionalBin('yt-dlp.exe', 'resources/saros/bin/yt-dlp.exe', 'build/saros/bin/yt-dlp.exe');
+// macOS 二进制没有 .exe 后缀（且 build/saros/bin 里目前只有 win 版 ⇒ 缺失仅警告，不阻断出包）
+const BIN_EXT = IS_DARWIN ? '' : '.exe';
+ensureOptionalBin(`ffmpeg${BIN_EXT}`, `resources/saros/bin/ffmpeg${BIN_EXT}`, `build/saros/bin/ffmpeg${BIN_EXT}`);
+ensureOptionalBin(`ffprobe${BIN_EXT}`, `resources/saros/bin/ffprobe${BIN_EXT}`, `build/saros/bin/ffprobe${BIN_EXT}`);
+ensureOptionalBin(`yt-dlp${BIN_EXT}`, `resources/saros/bin/yt-dlp${BIN_EXT}`, `build/saros/bin/yt-dlp${BIN_EXT}`);
 
 // === 5.6 whisper.cpp（本地 ASR：video_analyze 对无字幕轨视频的口播转写）===
 // 2026-09-25 用户拍板随包。exe+DLL ≈8MB；模型 ggml-base ≈141MB 显著抬包体积 ——
 // 若将来要瘦身，优先把模型改为「首用按需下载」（fetch-whisper.mjs 的下载逻辑可复用）。
 // 缺失仅警告不阻断出包（与 ffmpeg 同级：功能是降级为「口播内容不可知」，不是崩）。
 console.log('\n🗣️ [可选依赖] whisper.cpp（本地 ASR 口播转写）:');
-ensureOptionalBin('whisper-cli.exe', 'resources/saros/bin/whisper-cli.exe', 'build/saros/bin/whisper-cli.exe');
+ensureOptionalBin(`whisper-cli${BIN_EXT}`, `resources/saros/bin/whisper-cli${BIN_EXT}`, `build/saros/bin/whisper-cli${BIN_EXT}`);
 // DLL 是运行时依赖（whisper.dll/ggml*.dll/parakeet.dll/SDL2.dll），缺一个 exe 就起不来。
 // 按名字前缀 glob 拷贝而不逐个点名：whisper.cpp 版本间 DLL 清单会变（如 v1.9 新增
 // parakeet.dll），点名会漏。build/saros/bin/ 下没有其他来源的 .dll（ffmpeg/yt-dlp 是
 // 静态 exe，rg/sqlite 是 .exe/.node）⇒ 这个 glob 不会误拷。
 {
 	const repoBin = path.join(repoRoot, 'build/saros/bin');
-	const stagingBin = path.join(buildDir, 'resources/saros/bin');
+	const stagingBin = path.join(buildDir, toStagingRel('resources/saros/bin'));
+	// win: *.dll（whisper/ggml/parakeet/SDL2）；mac: 同一批库的 *.dylib
+	const libRe = IS_DARWIN ? /^(whisper|ggml|parakeet|SDL2).*\.(dylib|so)$/i : /^(whisper|ggml|parakeet|SDL2).*\.dll$/i;
 	const dlls = existsSync(repoBin)
-		? readdirSync(repoBin).filter(f => /^(whisper|ggml|parakeet|SDL2).*\.dll$/i.test(f))
+		? readdirSync(repoBin).filter(f => libRe.test(f))
 		: [];
 	if (dlls.length === 0) {
-		console.log('  ⚠️  whisper DLL 缺失（whisper-cli 将起不来）。获取: node build/saros/fetch-whisper.mjs');
+		console.log(`  ⚠️  whisper 运行时库缺失（whisper-cli 将起不来；${IS_DARWIN ? 'macOS 需要 .dylib' : 'Windows 需要 .dll'}）。获取: node build/saros/fetch-whisper.mjs`);
 	}
 	for (const d of dlls) {
 		ensureOptionalBin(d, `resources/saros/bin/${d}`, `build/saros/bin/${d}`);
@@ -776,4 +934,4 @@ if (criticalMissing > 0) {
 
 // === 汇总 ===
 console.log(`\n📊 总计释放: ${(totalFreed / 1024 / 1024).toFixed(1)}MB`);
-console.log('✅ 清理完成，可以执行 Inno Setup 打包');
+console.log(`✅ 清理完成，可以执行 ${IS_DARWIN ? 'dmg / zip' : 'Inno Setup'} 打包`);

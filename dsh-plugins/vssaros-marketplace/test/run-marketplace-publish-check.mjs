@@ -99,8 +99,9 @@ function makeSkill(localId, version, extra = {}) {
 		ag.manifest.kind === 'agent'
 		&& (await listTarGzEntries(ag.gzBuffer)).files.some(f => f.path === '.agent.md'));
 	// ★ 2026-10-23：mcp 也能由 dsh 侧打包（目录镜像，入口 config.json）
-	check('② PUBLISHABLE_KINDS = skill / workflow / agent / mcp',
-		PUBLISHABLE_KINDS.join(',') === 'skill,workflow,agent,mcp', PUBLISHABLE_KINDS.join(','));
+	// ★ 2026-10-31：加 knowledge（服务端 kinds.ts 早已支持，且线上已有 2 个知识库包）
+	check('② PUBLISHABLE_KINDS = skill / workflow / agent / mcp / knowledge',
+		PUBLISHABLE_KINDS.join(',') === 'skill,workflow,agent,mcp,knowledge', PUBLISHABLE_KINDS.join(','));
 }
 
 // ── ③ 本地没有 / 空目录 / slug 非法 ⇒ 如实报错 ─────────────────

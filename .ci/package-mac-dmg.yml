@@ -1,0 +1,501 @@
+version: v3.0
+name: VsSaros-Mac-DMG-Package
+#
+# macOS 打包流水线（arm64 / x64 / universal）
+# 对标 Windows 侧 .ci/package-win-exe.yml（同样的 1~7 阶段，产物从 exe 换成 .app / .dmg / zip）。
+#
+# ★★ 现状（2026-10-31 逐项核对 + 本次补齐）：
+#   ✅ `vscode-darwin-{x64,arm64}` 打包任务**已经内置**：build/gulpfile.vscode.ts 的 BUILD_TARGETS 里就有
+#      darwin 两条，packageTask 也有 darwin 分支（resources/darwin/bin/code.sh → bin/code、policies 等）。
+#      （本次顺手修了 electronConfig.icon：darwin 不再喂 .ico，改用 resources/darwin/code.icns。）
+#   ✅ entitlements 已存在：build/azure-pipelines/darwin/{app,helper,helper-gpu,helper-renderer,
+#      helper-plugin}-entitlements.plist（注意：**不在** build/darwin/ 下）。
+#   ✅ 瘦身/门禁脚本已支持 macOS：build/saros/strip-before-pack.mjs 与 check-pack-contents.mjs 会
+#      自动下钻 `VSCode-darwin-<arch>/<Name>.app`，并把 `resources/app/…` 映射到
+#      `Contents/Resources/app/…`（传父目录或直接传 .app 都行）。
+#   ✅ 媒体二进制已 darwin 化：ffmpeg/ffprobe（osxexperts，arm64/x64 分源）、yt-dlp（Universal）、
+#      whisper（OpenWhispr 锁定 tag + 可选 sha256）；落盘 chmod + 清 quarantine，签名并入 7.0 步骤。
+#      （该步默认关闭：ENABLE_MEDIA_BINARIES=false，开了要多下 ~200MB。）
+#   ✅ 升级服务器已支持 darwin：server.mjs 的 ASSET_NAME_BY_PLATFORM 加了
+#      `darwin` / `darwin-arm64`（客户端就是按这两个键请求的，不是 darwin-x64）、归档用 zip，
+#      且响应额外带上 Squirrel.Mac 需要的 name/pub_date（否则 electron.autoUpdater 取不到 url）。
+#   ✅ Release 直接复用 build/saros/create-release.cjs（Windows 侧 ps1 只是它的薄包装）。
+#
+#   ⚠ 剩下的是**真机验证**（本机是 Windows，跑不了）：
+#   1. macOS 上 native 模块（node-pty / @parcel/watcher / @vscode/spdlog）能否编译通过；
+#   2. dsh 运行时（@deepseek-ai/dsh）在 macOS 能否起来；
+#   3. osxexperts 的 zip 名 / OpenWhispr 的包内结构（脚本里都留了覆盖参数与报错指引）。
+#
+# ★ 硬约束：macOS 包**不能**在 Windows 上交叉编译（Electron 不支持；codesign/notarytool 只能在 macOS 跑）
+#   ⇒ 本流水线必须跑在 macOS 构建机上。
+#
+on:
+  push:
+    name: Git事件触发
+    branches:
+    - '*'
+    action:
+    - push-file
+    - new-branch
+  manual: enabled
+variables:
+  NODE_OPTIONS:
+    value: --max-old-space-size=8192
+  ARCH:
+    value: arm64
+    props:
+      type: vuex-input
+      description: 目标架构（arm64 / x64；universal 需先出两个单架构包再合并）
+      required: true
+  SAROS_UPDATE_SERVER:
+    value: http://zijianqiu-any1.devcloud.woa.com:3030
+    readonly: true
+    props:
+      type: vuex-input
+      description: 升级服务器地址
+      required: true
+  MACOS_SIGN_IDENTITY:
+    value: "Developer ID Application: Saros (TEAMID)"
+    props:
+      type: vuex-input
+      description: 签名身份（security find-identity -v -p codesigning 可查）；留空则仅做 ad-hoc 签名
+  MACOS_CERT_P12:
+    value: "${{ settings.MACOS_CERT_P12.password }}"
+    readonly: true
+    allow-modify-at-startup: false
+    props:
+      type: vuex-input
+      description: Developer ID Application 证书（p12 的 base64），导入临时 keychain 用
+      required: false
+  MACOS_CERT_PASSWORD:
+    value: "${{ settings.MACOS_CERT_PASSWORD.password }}"
+    readonly: true
+    allow-modify-at-startup: false
+    props:
+      type: vuex-input
+      description: p12 导出密码
+      required: false
+  MACOS_KEYCHAIN_PASSWORD:
+    value: ""
+    props:
+      type: vuex-input
+      description: 构建期临时 keychain 的密码（可随意，仅当次构建有效）
+  APPLE_ID:
+    value: ""
+    props:
+      type: vuex-input
+      description: 公证用的 Apple ID（notarytool）
+  APPLE_APP_PASSWORD:
+    value: "${{ settings.APPLE_APP_PASSWORD.password }}"
+    readonly: true
+    allow-modify-at-startup: false
+    props:
+      type: vuex-input
+      description: Apple ID 应用专用密码
+      required: false
+  APPLE_TEAM_ID:
+    value: ""
+    props:
+      type: vuex-input
+      description: 开发者团队 ID（notarytool --team-id）
+  SKIP_NOTARIZE:
+    value: "false"
+    props:
+      type: vuex-input
+      description: true = 跳过公证（内网/自测包；分发到外部机器会被 Gatekeeper 拦成「已损坏，无法打开」）
+  ENABLE_MEDIA_BINARIES:
+    value: "false"
+    props:
+      type: vuex-input
+      description: true = 内置 darwin 版 ffmpeg/ffprobe/yt-dlp/whisper（脚本现只支持 win64，需先改造）
+  WOA_GITLAB_TOKEN:
+    value: "${{ settings.WOA_GITLAB_TOKEN.password }}"
+    readonly: true
+    allow-modify-at-startup: false
+    props:
+      type: vuex-input
+      description: 工蜂 PAT（PRIVATE-TOKEN 头），create-release 步骤创建 GitLab Release 用
+      required: true
+stages:
+- name: 编译与打包
+  label:
+  - Build
+  jobs:
+    build-mac-dmg:
+      name: Build & Package macOS DMG
+      runs-on:
+        pool-name: macos
+      steps:
+      - checkout:
+          repo-id: yWNpX
+        name: 拉取源码
+        with:
+          refName: main
+      -
+        # ---------- 1.5 环境自检：Xcode CLT / Node / 架构 ----------
+        # 原生模块（node-pty / @parcel/watcher / @vscode/spdlog / @vscode/sqlite3）必须在本机编译，
+        # 没有 Xcode Command Line Tools 会在 npm rebuild 阶段才炸（晚 20 分钟）⇒ 提前失败。
+        name: 环境自检 (Xcode CLT / Node / arch)
+        run: |
+          set -e
+          sw_vers
+          uname -m
+          xcode-select -p || { echo "[FATAL] Xcode Command Line Tools 未安装（xcode-select --install）"; exit 1; }
+          node --version
+          npm --version
+          echo "ARCH=${ARCH}"
+        shell: bash
+      -
+        # ---------- 2. 设置版本号 ----------
+        # Windows 侧是 deploy-package/scripts/bk-set-version.ps1；它内部就是调这个 node 脚本
+        # ⇒ macOS 上直接调 set-all-versions.cjs（跨平台，无需 ps1）。
+        name: 设置版本号
+        with:
+          charsetType: UTF_8
+        run: |
+          set -e
+          node build/saros/set-all-versions.cjs
+          node -e 'const p=require("./product.json"),k=require("./package.json");
+            if(p.version!==k.version){console.error("[FATAL] version mismatch",p.version,k.version);process.exit(1)}
+            console.log("[OK] version =",p.version)'
+        shell: bash
+      -
+        # ---------- 3. 安装依赖 ----------
+        # 与 .ci/scripts/install-deps.ps1 同构，去掉 Windows 专属部分（Spectre/VS/@vscode/windows-*），
+        # 补上 darwin 专属项（Xcode CLT、rg 二进制名不带 .exe、sqlite3 没有 win 的 vendored .node 兜底）。
+        name: 安装依赖 (npm install + native rebuild)
+        with:
+          charsetType: UTF_8
+        run: |
+          set -e
+          rm -rf node_modules build/node_modules
+          # 清 extensions/*/node_modules：macOS 构建机工作区同样跨次复用，残骸会导致遍历爆炸
+          find extensions -maxdepth 3 -type d -name node_modules -prune -exec rm -rf {} + || true
+
+          export npm_config_target=39.8.8
+          export npm_config_runtime=electron
+          export npm_config_disturl=https://electronjs.org/headers
+          export npm_config_arch="${ARCH}"
+          export npm_config_target_arch="${ARCH}"
+          export npm_config_build_from_source=true
+          export npm_config_registry=https://registry.npmmirror.com/
+
+          npm install --ignore-scripts
+          # 只列 darwin 上真实存在的原生模块（@vscode/windows-* 是 Windows-only，别带上）
+          npm rebuild @parcel/watcher @vscode/native-watchdog @vscode/spdlog \
+            @vscode/deviceid @vscode/sqlite3 kerberos native-keymap node-pty --foreground-scripts
+
+          # ripgrep：darwin 二进制名是 rg（无 .exe），且没有 win 的 vendored 兜底 ⇒ 只能靠 postinstall
+          if [ ! -f "node_modules/@vscode/ripgrep/bin/rg" ]; then
+            node node_modules/@vscode/ripgrep/lib/postinstall.js --force
+          fi
+          if [ ! -f "node_modules/@vscode/ripgrep/bin/rg" ]; then
+            echo "[FATAL] @vscode/ripgrep 二进制缺失"; exit 1
+          fi
+
+          # tree-sitter-wasm（语法高亮 wasm 打包必需，CI 偶发漏装）
+          if [ ! -f "node_modules/@vscode/tree-sitter-wasm/wasm/tree-sitter.js" ]; then
+            npm install @vscode/tree-sitter-wasm@0.3.1 --ignore-scripts --no-save --no-fund --no-audit
+          fi
+          test -f "node_modules/@vscode/tree-sitter-wasm/wasm/tree-sitter.js"
+
+          # build/ 依赖（vsce 等）
+          (cd build && npm install --ignore-scripts && npm rebuild tree-sitter --foreground-scripts)
+
+          # 扩展依赖 + webview 依赖（kbblocks 用）
+          for d in extensions/*/; do
+            [ -f "$d/package.json" ] || continue
+            (cd "$d" && npm install --ignore-scripts) || echo "[WARN] $d npm install failed (non-critical)"
+          done
+          if [ -f "src/vs/sessions/contrib/agentStudio/webview/package.json" ]; then
+            (cd src/vs/sessions/contrib/agentStudio/webview && npm install --ignore-scripts) || true
+          fi
+
+          # pnpm：prepack 建 dsh profile 种子要用（缺它种子建不出来，首启变慢）
+          pnpm --version >/dev/null 2>&1 || npm install -g pnpm --registry=https://registry.npmmirror.com/ || true
+          pnpm --version || echo "[WARN] pnpm 不可用 ⇒ prepack 跳过 profile 种子"
+        shell: bash
+      -
+        # ---------- 3.5 构建 KB markdown webview bundle (kbblocks.js) ----------
+        name: 构建 KB 渲染 bundle (kbblocks)
+        run: |
+          set -e
+          cd src/vs/sessions/contrib/agentStudio/webview
+          npm install --ignore-scripts --no-audit --no-fund || true
+          node esbuild.kbblocks.config.mjs || echo "[WARN] kbblocks esbuild failed (may use stale bundle)"
+        shell: bash
+      -
+        # ---------- 4. 生产编译 compile-build-with-mangling ----------
+        # 先清 out/ 与 tsbuildinfo：构建机复用工作区时陈旧产物会让增量编译误判已最新
+        # （win 侧 .ci/scripts/compile-build.ps1 注释里的血泪教训同样适用于 mac）。
+        name: 生产编译 compile-build-with-mangling
+        with:
+          charsetType: UTF_8
+        run: |
+          set -e
+          rm -rf out
+          find . -maxdepth 3 -name tsconfig.tsbuildinfo -not -path "*/node_modules/*" -delete || true
+          ./node_modules/.bin/gulp compile-build-with-mangling --verbose \
+            || { echo "[WARN] mangling compile failed, fallback to npm run compile"; npm run compile; }
+        shell: bash
+      -
+        # ---------- 4.5 复制 kbblocks webview 资源到 out-build ----------
+        name: 复制 kbblocks webview 资源到 out-build
+        run: |
+          set -e
+          SRC=src/vs/sessions/contrib/agentStudio/webview/media/kbblocks.js
+          if [ -f "$SRC" ]; then
+            mkdir -p out-build/vs/sessions/contrib/agentStudio/webview/media
+            cp -f "$SRC" out-build/vs/sessions/contrib/agentStudio/webview/media/kbblocks.js
+            echo "[OK] kbblocks.js copied"
+          else
+            echo "[WARN] $SRC not found - KB 渲染将回退"
+          fi
+        shell: bash
+      -
+        # ---------- 5.0 构建能力插件（dist/extension.js） ----------
+        name: 构建能力插件 transpile-plugins
+        run: |
+          set -e
+          node build/next/index.ts transpile-plugins
+          test -f extensions/agentmemory-memory/dist/extension.js
+        shell: bash
+      -
+        # ---------- 6.0 编译扩展 compile-extensions-build ----------
+        # 与 .ci/scripts/compile-extensions.ps1 同构：删 vssaros 自链接（mac 上是 symlink，同样会把
+        # 全仓拖进遍历）、删示例扩展、逐个编译纯 tsc 扩展（gulp 对它们只做 vsce 打包不编译）。
+        name: 编译扩展 compile-extensions-build
+        with:
+          charsetType: UTF_8
+        run: |
+          set -e
+          if [ ! -d "build/node_modules/@vscode/vsce" ]; then
+            (cd build && npm install --ignore-scripts)
+          fi
+          # 删自引用 symlink（等价于 win 的 junction 清理）
+          find extensions -maxdepth 2 -type l -name vssaros -delete || true
+          rm -rf extensions/hermes-agent extensions/execution-example extensions/kanban-example \
+                 extensions/memory-example extensions/planning-example extensions/retrieval-example \
+                 extensions/tool-example
+          # 扩展编译：优先用各自 npm run compile；agent-studio 没有 compile 脚本，用根 tsc 显式编
+          for d in extensions/*/; do
+            [ -f "$d/package.json" ] || continue
+            node -e "const p=require('./$d/package.json');process.exit(p.scripts&&p.scripts.compile?0:1)" || continue
+            ls "$d"/esbuild* "$d"/.esbuild* >/dev/null 2>&1 && continue
+            (cd "$d" && npm run compile) || { echo "[FATAL] $d compile failed"; exit 1; }
+          done
+          if [ -f extensions/agent-studio/tsconfig.json ]; then
+            node node_modules/typescript/bin/tsc -p extensions/agent-studio
+            echo '{"type":"commonjs"}' > extensions/agent-studio/out/package.json
+            test -f extensions/agent-studio/out/extension.js
+          fi
+          find extensions -maxdepth 2 -type l -name vssaros -delete || true
+          ./node_modules/.bin/gulp compile-extensions-build --verbose
+        shell: bash
+      -
+        # ---------- 6.2 预装 dsh 运行时（首启零下载的**唯一**来源） ----------
+        # 必须在 gulp 打包之前跑：gulp 的 dshRuntime 资源流是 allowEmpty（有意允许 dev 跳过），
+        # 不预装就会静默出一个首启弹「需要准备 DeepSeek Harness 运行环境」的坏包。
+        name: 预装 dsh 运行时 (prepack-dsh-runtime)
+        run: |
+          set -e
+          node build/prepack-dsh-runtime.mjs
+        shell: bash
+      -
+        # ---------- 6.3 打包 vscode-darwin-<arch> ----------
+        # 任务由 build/gulpfile.vscode.ts 的 BUILD_TARGETS 提供（darwin x64/arm64 两条已内置）。
+        # 产物目录：../VSCode-darwin-<arch>/VsSaros.app
+        name: 打包 vscode-darwin-${ARCH}
+        with:
+          charsetType: UTF_8
+        run: |
+          set -e
+          ./node_modules/.bin/gulp "vscode-darwin-${ARCH}" --verbose
+          APP="../VSCode-darwin-${ARCH}/VsSaros.app"
+          if [ ! -d "$APP/Contents/Resources/app" ]; then
+            echo "[FATAL] $APP 未生成（gulpfile.vscode.darwin.ts 是否就绪？）"; exit 1
+          fi
+          echo "[OK] bundled: $APP"
+        shell: bash
+      -
+        # ---------- 6.4 可选媒体二进制（darwin） ----------
+        # 两个脚本已 darwin 化（2026-10-31）：
+        #   · ffmpeg/ffprobe：osxexperts.net，arm64 与 x64 **各一个 zip**（URL 带版本、会随发布改名
+        #     ⇒ 失效时用 --url / --ffprobe-url 或 SAROS_FFPROBE_URL 覆盖）；
+        #   · yt-dlp：官方 Universal 版（x64+arm64 一体）；
+        #   · whisper：OpenWhispr 预编译包，tag 由 SAROS_WHISPER_TAG 锁定（默认 0.0.11），
+        #     完整性用 SAROS_WHISPER_SHA256 校验（不设 ⇒ 只告警）。
+        # 落盘后脚本会 chmod 755 + 清 quarantine；**签名在 7.0 步骤做**（Apple Silicon 不跑未签名二进制）。
+        # 默认关闭（媒体能力非核心，且要下 ~200MB）⇒ 需要时置 ENABLE_MEDIA_BINARIES=true。
+        name: 下载并内置 ffmpeg / whisper (darwin)
+        run: |
+          set -e
+          if [ "${ENABLE_MEDIA_BINARIES}" != "true" ]; then
+            echo "[SKIP] ENABLE_MEDIA_BINARIES != true"; exit 0
+          fi
+          node build/saros/fetch-ffmpeg.mjs || echo "[WARN] ffmpeg fetch failed (non-fatal)"
+          node build/saros/fetch-whisper.mjs || echo "[WARN] whisper fetch failed (non-fatal)"
+        shell: bash
+      -
+        # ---------- 6.5 打包后自愈与瘦身 ----------
+        # 已支持 darwin：传父目录会自动下钻到里面的 <Name>.app 并做路径映射（2026-10-31）。
+        name: 瘦身与构件自愈 (strip-before-pack)
+        run: |
+          set -e
+          node build/saros/strip-before-pack.mjs "../VSCode-darwin-${ARCH}"
+        shell: bash
+      -
+        # ---------- 6.6 产物内容门禁 ----------
+        name: 验证打包关键构件
+        run: |
+          set -e
+          node build/saros/check-pack-contents.mjs "../VSCode-darwin-${ARCH}"
+        shell: bash
+      -
+        # ---------- 7.0 代码签名 ----------
+        # 顺序不可颠倒：内部（.node/.dylib/Helper/Framework）→ 主 app。
+        # entitlements 在 build/azure-pipelines/darwin/ 下（与 build/darwin/sign.ts 同口径：
+        # Helper (GPU)/(Renderer)/(Plugin)/Helper 各有各的 plist，其余用 app-entitlements.plist）。
+        # 备选：若沿用官方链路，本段可换成
+        #   AGENT_TEMPDIRECTORY=<tmp> VSCODE_ARCH=${ARCH} CODESIGN_IDENTITY="$ID" node build/darwin/sign.ts ..
+        # （它按 <父目录>/VSCode-darwin-<arch> 定位，并依赖 $AGENT_TEMPDIRECTORY/buildagent.keychain）
+        name: 代码签名 (codesign)
+        run: |
+          set -e
+          APP="../VSCode-darwin-${ARCH}/VsSaros.app"
+          ENT_DIR=build/azure-pipelines/darwin
+          ID="${MACOS_SIGN_IDENTITY}"
+          # 与 build/darwin/sign.ts 的 getEntitlementsForFile 同口径
+          ent_for() {
+            case "$1" in
+              *" Helper (GPU).app"*)      echo "$ENT_DIR/helper-gpu-entitlements.plist" ;;
+              *" Helper (Renderer).app"*) echo "$ENT_DIR/helper-renderer-entitlements.plist" ;;
+              *" Helper (Plugin).app"*)   echo "$ENT_DIR/helper-plugin-entitlements.plist" ;;
+              *" Helper.app"*)            echo "$ENT_DIR/helper-entitlements.plist" ;;
+              *)                          echo "$ENT_DIR/app-entitlements.plist" ;;
+            esac
+          }
+          sign_one() { codesign --force --timestamp --options runtime --entitlements "$(ent_for "$1")" --sign "$ID" "$1"; }
+
+          if [ -n "${MACOS_CERT_P12}" ]; then
+            KC=build-vssaros.keychain-db
+            security create-keychain -p "${MACOS_KEYCHAIN_PASSWORD}" "$KC"
+            security default-keychain -s "$KC"
+            security unlock-keychain -p "${MACOS_KEYCHAIN_PASSWORD}" "$KC"
+            echo "${MACOS_CERT_P12}" | base64 --decode > /tmp/vssaros-devid.p12
+            security import /tmp/vssaros-devid.p12 -k "$KC" -P "${MACOS_CERT_PASSWORD}" -T /usr/bin/codesign
+            security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "${MACOS_KEYCHAIN_PASSWORD}" "$KC"
+            security list-keychains -d user -s "$KC"
+          fi
+
+          # ── 随包媒体二进制（ffmpeg/ffprobe/yt-dlp/whisper-cli + *.dylib）─────────────
+          # 它们在 asar **之外**（Contents/Resources/saros/bin/），两件事必须做：
+          #   ① 清 quarantine：下载物自带 com.apple.quarantine，不请掉会被 Gatekeeper 拦在门外；
+          #   ② 逐个签名：Apple Silicon **不执行未签名二进制**（osxexperts 页面明文要求）。
+          SAROS_BIN="$APP/Contents/Resources/saros/bin"
+          xattr -cr "$APP" || true
+          if [ -d "$SAROS_BIN" ]; then
+            find "$SAROS_BIN" -type f -exec chmod 755 {} +
+            echo "[OK] 媒体二进制就位: $(find "$SAROS_BIN" -type f | wc -l | tr -d ' ') 个"
+          else
+            echo "[INFO] 无随包媒体二进制（ENABLE_MEDIA_BINARIES=false 时属正常）"
+          fi
+
+          if [ -z "$ID" ]; then
+            echo "[WARN] MACOS_SIGN_IDENTITY 为空 ⇒ 仅 ad-hoc 签名（本机可跑，外部机器会被 Gatekeeper 拦）"
+            codesign --force --deep --sign - "$APP"
+          else
+            # 1) 内部原生模块与动态库
+            find "$APP" -type f \( -name "*.node" -o -name "*.dylib" \) -print0 \
+              | while IFS= read -r -d '' f; do sign_one "$f"; done
+            # 2) Electron Framework（Versions/A）与 Helper apps
+            find "$APP/Contents/Frameworks" -depth -type d -name "Versions" -print0 \
+              | while IFS= read -r -d '' d; do sign_one "$d/A"; done
+            find "$APP/Contents/Frameworks" -maxdepth 1 -name "*.app" -print0 \
+              | while IFS= read -r -d '' h; do sign_one "$h"; done
+            # 3) 随包媒体二进制（asar 外，逐个签：公证会检查 app 内每个可执行文件）
+            if [ -d "$SAROS_BIN" ]; then
+              find "$SAROS_BIN" -type f -print0 | while IFS= read -r -d '' b; do sign_one "$b"; done
+            fi
+            # 4) 主 app
+            sign_one "$APP"
+          fi
+
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          echo "[OK] signed: $APP"
+        shell: bash
+      -
+        # ---------- 7.2 打 dmg（分发用）+ zip（自动更新用） ----------
+        # dmg 用 hdiutil（无需 python/dmgbuild）；如要带背景图的官方样式，
+        # 可换成 node build/darwin/create-dmg.ts <dmgName> <artifactPath>（该脚本会自建 venv 装 dmgbuild）。
+        name: 生成 dmg 与 zip
+        run: |
+          set -e
+          APP="../VSCode-darwin-${ARCH}/VsSaros.app"
+          mkdir -p ".build/darwin-${ARCH}"
+          hdiutil create -volname "VsSaros" -srcfolder "$APP" -ov -format UDZO ".build/darwin-${ARCH}/VsSaros.dmg"
+          ditto -c -k --keepParent "$APP" ".build/darwin-${ARCH}/VsSaros-darwin-${ARCH}.zip"
+          ls -lh ".build/darwin-${ARCH}"
+        shell: bash
+      -
+        # ---------- 7.3 公证 + staple ----------
+        # 未公证的包在别人机器上会被 Gatekeeper 报"已损坏，无法打开" ⇒ 对外分发必须过这一步。
+        name: 公证 (notarytool) 与 staple
+        run: |
+          set -e
+          if [ "${SKIP_NOTARIZE}" = "true" ]; then
+            echo "[SKIP] SKIP_NOTARIZE=true ⇒ 跳过公证（仅内网/自测可用）"; exit 0
+          fi
+          if [ -z "${APPLE_ID}" ] || [ -z "${APPLE_APP_PASSWORD}" ] || [ -z "${APPLE_TEAM_ID}" ]; then
+            echo "[FATAL] 公证需要 APPLE_ID / APPLE_APP_PASSWORD / APPLE_TEAM_ID"; exit 1
+          fi
+          xcrun notarytool submit ".build/darwin-${ARCH}/VsSaros.dmg" \
+            --apple-id "${APPLE_ID}" --password "${APPLE_APP_PASSWORD}" --team-id "${APPLE_TEAM_ID}" --wait
+          xcrun stapler staple ".build/darwin-${ARCH}/VsSaros.dmg"
+          xcrun stapler staple "../VSCode-darwin-${ARCH}/VsSaros.app"
+          spctl -a -vv -t install ".build/darwin-${ARCH}/VsSaros.dmg"
+        shell: bash
+      - name: 归档构件
+        uses: UploadArtifactory@8.*
+        with:
+          filePath: .build/darwin-${ARCH}/*.dmg
+          downloadFiles: "[{\"path\":\"\",\"param\":\"\"}]"
+      -
+        # ---------- 8.0 上传升级服务器（darwin 条目） ----------
+        # PRE-REQ: 升级服务器/worker 需认识 darwin-<arch> 平台键；
+        # 自动更新侧 src/vs/platform/update/electron-main/updateService.darwin.ts 已在（基座支持），
+        # 但 build/saros/update-server/gen-manifest.mjs 目前只喂过 win32-x64-user。
+        name: 上传 zip 到升级服务器
+        with:
+          charsetType: UTF_8
+        run: |
+          set -e
+          VERSION=$(node -e 'process.stdout.write(require("./package.json").version)')
+          # ⚠ 平台键必须**与客户端一致**：DarwinUpdateService 发的是 `darwin-arm64`（Apple Silicon）
+          #   或 `darwin`（Intel）⇒ **不是** darwin-x64（服务端不认 ⇒ 客户端永远 204 无更新）。
+          PLATFORM_KEY="darwin-${ARCH}"
+          if [ "${ARCH}" = "x64" ]; then PLATFORM_KEY="darwin"; fi
+          ASSET="VsSaros-darwin-${ARCH}.zip"
+          node build/saros/update-server/gen-manifest.mjs \
+            --platform "${PLATFORM_KEY}" \
+            --exe ".build/darwin-${ARCH}/${ASSET}" \
+            --version "$VERSION" \
+            --url "${SAROS_UPDATE_SERVER}/downloads/${ASSET}"
+        shell: bash
+      -
+        # ---------- 9.0 创建 Release：changelog + git tag + woa.git/GitHub 双端 ----------
+        # 与 Windows 侧**同源**：.ci/scripts/create-release.ps1 只是
+        # `node build/saros/create-release.cjs` 的薄包装 ⇒ macOS 上直接调同一个 node 脚本
+        # （它已按平台挑资产：dmg + zip；curl 可执行名也按平台）。
+        # SAROS_PACK_DIR 指向打包产物根 ⇒ 发布前的内容门禁会自己下钻 <Name>.app 校验关键构件。
+        name: 创建 Release (tag + changelog + woa.git/GitHub)
+        with:
+          charsetType: UTF_8
+        run: |
+          set -e
+          export SAROS_MAC_ARCH="${ARCH}"
+          export SAROS_PACK_DIR="../VSCode-darwin-${ARCH}"
+          node build/saros/create-release.cjs
+        shell: bash
+concurrency: {}
+syntax-dialect: INHERIT

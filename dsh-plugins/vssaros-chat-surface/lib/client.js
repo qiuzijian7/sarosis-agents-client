@@ -12,6 +12,8 @@
 // 2026-10-29 touch②: 工作区会话 item 加右键菜单（置顶/重命名/复制 id/归档）+ 组内拖拽排序
 //   （client.workspaces.js）⇒ 动入口刷新 chunk rev。
 // 2026-10-29 touch: 品牌名统一为 VsSaros（client.brand.js 的 TITLE 与两处「回到 … 窗口」）⇒ 动入口刷新 chunk rev。
+// 2026-10-30 touch: 左下角更新行改为两行 —— 第一行摘要，第二行直接列"更新内容"（具体项 + 版本），
+//   ROW_H 30→52（client.upgrade.js 的 upcomingItems / .vu-sub）⇒ 动入口刷新 chunk rev。
 // CLIENT_BUILD_STAMP 缺依赖不重试 @ 2026-10-27T11:11 + 2026-10-27T22:55 工作台导航登记萨罗斯中转站(relay) + 2026-10-28T00:30 渠道页按 inboundMode 决定启停按钮与状态文案/02 + 2026-10-29 死信一键加入白名单/02
 // CHUNK_BUILD_STAMP 2026-10-27T18:22：渠道页可编辑凭据（写 dsh 侧 agent-im-accounts.json）
 // @vssaros/dsh-chat-surface — client half (hand-written dsh client module).
@@ -20,7 +22,7 @@
 // --vssaros-dsh-session= 启动参数）；会话绑定只对 surface=chat 的页面生效。
 //
 // dsh web 没有会话深链（无 /session/<id> 路由）：切会话只能调 ctx.uiWorkspace.openSession(target)。
-// "已打开"用 DOM 事实判定：会话打开后右栏会话面板带 [data-sidebar-right-session="<id>"]
+// "已打开+2026-10-31/独立格子(dsh-desk-split-)不装更新入口(用户截图)+2026-10-31/移除并行工作台条目+2026-10-30/移除顶部「布局▾」菜单"用 DOM 事实判定：会话打开后右栏会话面板带 [data-sidebar-right-session="<id>"]
 // （该元素被 VsSaros 的裁剪样式隐藏，但仍在 DOM 里）。
 window.__ModuleLoader__.load({
 	id: "@vssaros/dsh-chat-surface",
@@ -36,7 +38,7 @@ window.__ModuleLoader__.load({
 		//   （今天就因此丢了侧栏「主页」那一行：18:15 改了 client.workbenchNav.js，没动入口 ⇒
 		//    rev 没变 ⇒ 用户窗口里侧栏仍是旧版；22:17 补改入口后才恢复。）
 		// ⇒ 规矩：**改任何 `client.*.js` 之后，把下面这个 stamp 改掉**（守卫会查 ⇒ 漏了必红）✓
-		const CLIENT_BUILD_STAMP = "2026-10-22/模式chip当前名称不冒充(P0-1)/03+第三方工作台固定到侧栏+空白会话预选Bot(P0-2)/04+固定行启动兜底也同步(重启后固定图标不丢)+2026-10-22/工作流页改左右两档(左列表右画布)+2026-10-22/工作台导航登记商城(主页不显示商城的修复)+2026-10-22/DEFAULT_ITEMS登记并行工作台+2026-10-22/模型下拉框加创作模型三行(S2)/07+2026-10-22/品牌改名Saroasis-harness(品牌位+页面title)+2026-10-23/中栏工作台面板不被救援抢回会话+2026-10-23/desktop窗口加更新入口(随包插件+一键升级应用)/02+2026-10-23/更新面板加五类资产升级检查(skill/mcp/agent/工作流/工作台)+2026-10-23/工作台导航登记萨罗斯平台(studio)+2026-10-23/页签支持拖拽排序/02+2026-10-23/更新行不透明且不压状态行+2026-10-23/LLM模型下拉移除创作模型三行(SHOW_IN_LLM_MENU=false)+2026-10-23/模型chip按方案B恢复创作模型分组(文字vs图片视频音频+二级面板搜索+首开聚焦)+2026-10-23/创作模型行直接绑click(文档级委托没命中的兜底)+2026-10-23/模型菜单选择器加结构匹配兜底(window.__vssarosCreative.probe)+2026-10-23/scan走findMenu(不再只认中文aria-label)+2026-10-23/更新行不透明不压状态行+无可升级内容时不显示更新UI+2026-10-24/账号行在所有surface接管(插件页不再露官方DeepSeek登录)+2026-10-24/侧栏隐藏官方插件行+2026-10-24/自动化任务收进工作台(侧栏那行隐藏)/02+2026-10-26/更新入口只算升级(未安装不计)+2026-10-26/侧栏工作区+按钮改走uiWorkspace.pickDirectory(修窗口模式点了没反应:旧读未声明的ctx.remote.directoryPicker+读res.value.path)+侧栏隐藏空会话(官方blank位)+页脚口径跟着剔空会话/03+2026-10-26/侧栏+变菜单:加单目录+从.code-workspace导入多根(走宿主桥importCodeWorkspace)+2026-10-28/侧栏会话item高亮跟随当前会话(官方selection优先+乐观高亮+失败撤回)/02+2026-10-28/启动不再自动展开右栏(删掉自动点expand:官方右栏默认收起,「开始」页是空栏被展开时播种的,且展开态会被持久化⇒每次启动都自动展开)+2026-10-28/「当前工作区」统一按会话cwd判(侧栏hover卡片根标记/chip名称/chip下拉三者同口径;dsh快照sessionIds只是分组记录,会话换过目录后可能挂在旧条目上)/02+2026-10-28/弹层夹视口(capsule菜单原right:0越左缘被裁+preset菜单原left:0越右缘⇒统一fitMenuBox)/02+2026-10-28/弹层改position:fixed(absolute的zIndex只在祖先层叠上下文内比较⇒被页签条压住=层级错误)/03+2026-10-29/升级面板与工作区选择器微调/04+2026-10-29/消息底部加导入到知识库按钮(client.msgImport)+endInfo)+2026-10-29/会话动作组加「新窗格」按钮(桥23 splitChatPane/同窗口左右分屏)+2026-10-29/hero空会话屏补「新窗格」入口(品牌行/只在blank时显示)+2026-10-29/会话动作组加「⋯」栏菜单(桥24 paneAction/移到最左最右最上最下+关闭这一栏)+2026-10-29/再加「⇔」拖动把手(页内拖拽移到方向)+菜单加比例项(左1/3|各半|左2/3)+2026-10-29/分屏右栏(chat-only)也装⇔与⋯(viewId前缀dsh-desk-split-识别/否则右栏无法移动关闭)+2026-10-30/按效果图:右侧格子操作移到宿主标题栏;页面去掉⇔与右栏⋯;主栏⋯改为「布局▾」(新窗格/主栏宽度/自动排列/平均分配/关闭全部)+2026-10-30/桌面独立格子(dsh-desk-split-)不显示会话页签条+2026-10-30/hero右上角新增窗口入口(判据data-content-phase=hero/贴官方打开侧边栏左侧不遮挡/几何自证)+移除顶部「布局▾」菜单(用户要求)+2026-10-29/导入落点改为库/raw+2026-10-29/导入落点库raw+修复body行+2026-10-29/导入落点库raw+修复body行+2026-10-30/侧栏工作区会话item加状态灯(运行中绿脉动/等你回答黄/空闲灰/读不到不画)+";
+		const CLIENT_BUILD_STAMP = "2026-10-22/模式chip当前名称不冒充(P0-1)/03+第三方工作台固定到侧栏+空白会话预选Bot(P0-2)/04+固定行启动兜底也同步(重启后固定图标不丢)+2026-10-22/工作流页改左右两档(左列表右画布)+2026-10-22/工作台导航登记商城(主页不显示商城的修复)+2026-10-22/DEFAULT_ITEMS登记并行工作台+2026-10-22/模型下拉框加创作模型三行(S2)/07+2026-10-22/品牌改名Saroasis-harness(品牌位+页面title)+2026-10-23/中栏工作台面板不被救援抢回会话+2026-10-23/desktop窗口加更新入口(随包插件+一键升级应用)/02+2026-10-23/更新面板加五类资产升级检查(skill/mcp/agent/工作流/工作台)+2026-10-23/工作台导航登记萨罗斯平台(studio)+2026-10-23/页签支持拖拽排序/02+2026-10-23/更新行不透明且不压状态行+2026-10-23/LLM模型下拉移除创作模型三行(SHOW_IN_LLM_MENU=false)+2026-10-23/模型chip按方案B恢复创作模型分组(文字vs图片视频音频+二级面板搜索+首开聚焦)+2026-10-23/创作模型行直接绑click(文档级委托没命中的兜底)+2026-10-23/模型菜单选择器加结构匹配兜底(window.__vssarosCreative.probe)+2026-10-23/scan走findMenu(不再只认中文aria-label)+2026-10-23/更新行不透明不压状态行+无可升级内容时不显示更新UI+2026-10-24/账号行在所有surface接管(插件页不再露官方DeepSeek登录)+2026-10-24/侧栏隐藏官方插件行+2026-10-24/自动化任务收进工作台(侧栏那行隐藏)/02+2026-10-26/更新入口只算升级(未安装不计)+2026-10-26/侧栏工作区+按钮改走uiWorkspace.pickDirectory(修窗口模式点了没反应:旧读未声明的ctx.remote.directoryPicker+读res.value.path)+侧栏隐藏空会话(官方blank位)+页脚口径跟着剔空会话/03+2026-10-26/侧栏+变菜单:加单目录+从.code-workspace导入多根(走宿主桥importCodeWorkspace)+2026-10-28/侧栏会话item高亮跟随当前会话(官方selection优先+乐观高亮+失败撤回)/02+2026-10-28/启动不再自动展开右栏(删掉自动点expand:官方右栏默认收起,「开始」页是空栏被展开时播种的,且展开态会被持久化⇒每次启动都自动展开)+2026-10-28/「当前工作区」统一按会话cwd判(侧栏hover卡片根标记/chip名称/chip下拉三者同口径;dsh快照sessionIds只是分组记录,会话换过目录后可能挂在旧条目上)/02+2026-10-28/弹层夹视口(capsule菜单原right:0越左缘被裁+preset菜单原left:0越右缘⇒统一fitMenuBox)/02+2026-10-28/弹层改position:fixed(absolute的zIndex只在祖先层叠上下文内比较⇒被页签条压住=层级错误)/03+2026-10-29/升级面板与工作区选择器微调/04+2026-10-29/消息底部加导入到知识库按钮(client.msgImport)+endInfo)+2026-10-29/会话动作组加「新窗格」按钮(桥23 splitChatPane/同窗口左右分屏)+2026-10-29/hero空会话屏补「新窗格」入口(品牌行/只在blank时显示)+2026-10-29/会话动作组加「⋯」栏菜单(桥24 paneAction/移到最左最右最上最下+关闭这一栏)+2026-10-29/再加「⇔」拖动把手(页内拖拽移到方向)+菜单加比例项(左1/3|各半|左2/3)+2026-10-29/分屏右栏(chat-only)也装⇔与⋯(viewId前缀dsh-desk-split-识别/否则右栏无法移动关闭)+2026-10-30/按效果图:右侧格子操作移到宿主标题栏;页面去掉⇔与右栏⋯;主栏⋯改为「布局▾」(新窗格/主栏宽度/自动排列/平均分配/关闭全部)+2026-10-30/桌面独立格子(dsh-desk-split-)不显示会话页签条+2026-10-30/hero右上角新增窗口入口(判据data-content-phase=hero/贴官方打开侧边栏左侧不遮挡/几何自证)+移除顶部「布局▾」菜单(用户要求)+2026-10-29/导入落点改为库/raw+2026-10-29/导入落点库raw+修复body行+2026-10-29/导入落点库raw+修复body行+2026-10-30/侧栏工作区会话item加状态灯(运行中绿脉动/等你回答黄/空闲灰/读不到不画)+2026-10-30/desktop走dsh原生·IDE走IDE分流(shell.ide 唯一判据:tools/fileCards/cardActions/openInApp/subagents 五处早退+changes-review放行官方右栏)+2026-10-31/hero「新增窗口」改事件驱动(切工作台页同帧隐藏:workbenchPanelActive快速否+TAB_CHANGE_EVENT订阅,轮询400ms兜底)+";
 		// 挂到 window 上 ⇒ 真机取证能一眼看出"这个窗口跑的是哪一版"（`window.__vssarosChatSurfaceBuild`）✓
 		try { window.__vssarosChatSurfaceBuild = CLIENT_BUILD_STAMP; } catch { /* 极端环境 */ }
 		// 注意：**不**把 `workspaces` 加进 inject —— 本仓库实测结论是 Cordis 4 的 inject 数组是
@@ -72,20 +74,20 @@ window.__ModuleLoader__.load({
 		//   ⚠ 第五轮：它**不在** PART_CHUNKS 里（那儿有"无桥就整批不装"的早退 ⇒ desktop 里不生效 ✗）
 		//   ⇒ 走上面那条**独立装载路径**（ALWAYS 部件）✓ ⇒ 这里不再列它。
 		const PART_CHUNKS = ["./client.hero.js", "./client.skin.js", "./client.usage.js", "./client.tools.js", "./client.approval.js", "./client.openInApp.js", "./client.hideBridgePing.js", "./client.settings.js", "./client.sessionLabel.js", "./client.workspace.js", "./client.sessions.js", "./client.agents.js", "./client.persona.js", "./client.fileCards.js", "./client.cardActions.js", "./client.todos.js", "./client.subagents.js", "./client.delegate.js", "./client.welcome.js", "./client.capsule.js", "./client.workbenchNav.js", "./client.workspaces.js", "./client.market.js",
-		// 侧栏页脚（品牌 + 工作区/会话规模，2026-10-18 差异清单第 ③ 项）：
-		// ⚠ 本块注释里**禁止出现 ASCII 双引号**（连正则字面量也不行）：`PART_CHUNKS` 的提取正则
-		//   是「引号 + 至少一个非引号字符 + 引号」，chunk 守卫与 dshPluginPackages 测试都用它 ⇒
-		//   注释里的一对引号会被当成一条 chunk 条目，报「PART_CHUNKS 里的 必须接线 不存在」
-		//   （2026-10-19：我连续两版栽在这，第二次是注释里又写了正则原文 ✗✗）。引用术语一律用中文引号 ✓。
-		// 放进 PART_CHUNKS 是为了满足 chunk 守卫的“必须接线”检查；chunk 自身在 install()
-		// 里按 `bridge.chatOnly === false`（带官方 chrome）自门控 ⇒ chat-only 视图里空转 ✓。
-		"./client.footer.js",
-		// 侧栏品牌区换成 VsSaros 的 logo + 标题（2026-10-21 用户要求）。
-		// 槽：sidebar.brand.mark / sidebar.brand.name（都是 single，priority -10 顶掉官方那份）。
-		"./client.brand.js",
-		// 工作流执行进度条（dock，2026-10-20）：消费 Host 的 `/x/workflow/api/run/status`。
-		// 没有 running 时组件自己 return null ⇒ dock 不占位 ✓。
-		"./client.workflowRun.js", "./client.msgImport.js"];
+			// 侧栏页脚（品牌 + 工作区/会话规模，2026-10-18 差异清单第 ③ 项）：
+			// ⚠ 本块注释里**禁止出现 ASCII 双引号**（连正则字面量也不行）：`PART_CHUNKS` 的提取正则
+			//   是「引号 + 至少一个非引号字符 + 引号」，chunk 守卫与 dshPluginPackages 测试都用它 ⇒
+			//   注释里的一对引号会被当成一条 chunk 条目，报「PART_CHUNKS 里的 必须接线 不存在」
+			//   （2026-10-19：我连续两版栽在这，第二次是注释里又写了正则原文 ✗✗）。引用术语一律用中文引号 ✓。
+			// 放进 PART_CHUNKS 是为了满足 chunk 守卫的“必须接线”检查；chunk 自身在 install()
+			// 里按 `bridge.chatOnly === false`（带官方 chrome）自门控 ⇒ chat-only 视图里空转 ✓。
+			"./client.footer.js",
+			// 侧栏品牌区换成 VsSaros 的 logo + 标题（2026-10-21 用户要求）。
+			// 槽：sidebar.brand.mark / sidebar.brand.name（都是 single，priority -10 顶掉官方那份）。
+			"./client.brand.js",
+			// 工作流执行进度条（dock，2026-10-20）：消费 Host 的 `/x/workflow/api/run/status`。
+			// 没有 running 时组件自己 return null ⇒ dock 不占位 ✓。
+			"./client.workflowRun.js", "./client.msgImport.js"];
 
 		/** 菜单最小宽度（px）——见 fitMenuSize 里 minWidth 的说明。 */
 		const MENU_MIN_WIDTH = 220;
@@ -425,67 +427,119 @@ window.__ModuleLoader__.load({
 				}
 			});
 
+			/*
+			 * ★ 2026-10-31（真机：知识库右键「添加到聊天框中」只能加**一篇**）：
+			 *   上面两条通道都有"空输入框"的前提 —— `vssaros-dsh-insert` 在已有引用 chip 时 captureInsertion 失效，
+			 *   `vssaros-composer-prefill` 则直接以 `occurrences.length > 0` 判 `busy` 拒绝 ✗
+			 *   ⇒ 补一条**追加**通道：只要求「有输入器」，把文本追加到末尾（忽略 occurrences）。
+			 *   用途：连续把多篇笔记加进同一个聊天框。
+			 *   ⚠ 仍**不发送**；phase 明确不可输入（如审批/工具确认中）时如实回 `phase`。
+			 */
+			const APPEND_EVENT = "vssaros-composer-append";
+			document.addEventListener(APPEND_EVENT, (e) => {
+				const detail = e && e.detail;
+				if (!detail || typeof detail.text !== "string") { return; }
+				const result = detail.result && typeof detail.result === "object" ? detail.result : (detail.result = {});
+				try {
+					const binding = ctx.uiSession && ctx.uiSession.adapter && ctx.uiSession.adapter.current
+						? ctx.uiSession.adapter.current.getSnapshot() : null;
+					const actions = binding && binding.props ? binding.props.inputActions : null;
+					if (!actions || typeof actions.insertText !== "function") { result.applied = false; result.reason = "no-input"; return; }
+					const inputHook = binding && binding.hooks ? binding.hooks.input : null;
+					const snap = inputHook && typeof inputHook.getSnapshot === "function" ? (inputHook.getSnapshot() || {}) : {};
+					// 只挡"确实不能输入"的 phase（审批 / 确认），不挡"已有引用"
+					if (snap.phase === "approval" || snap.phase === "confirm") { result.applied = false; result.reason = "phase"; return; }
+					const draft = String(snap.draft || "");
+					const text = (draft && !/\s$/.test(draft) ? " " : "") + detail.text;
+					const ok = actions.insertText(text, { start: draft.length, end: draft.length });
+					result.applied = ok !== false;
+					if (!result.applied) { result.reason = "rejected"; return; }
+					state.appended = (state.appended || 0) + 1;
+					state.lastAppend = { from: String(detail.from || ""), chars: detail.text.length };
+				} catch (err) {
+					result.applied = false;
+					result.reason = String((err && err.message) || err);
+				}
+			});
+
 			// 工作台导航（sidebar.panellist 图标 + main 中栏面板）：chat 形态由下方 PART_CHUNKS
 			// 统一装载；**full 形态（弹出窗口）走不到那里** ⇒ 这里单独装。两个分支按 surface
 			// 互斥（同一视图 surface 固定），不会双重注册 ✓。chat-only 形态侧栏被 CSS 裁掉，
 			// 注册了也不可见（无害空转）；full 形态才是它的舞台（2026-10-17 用户要求）。
 			// ★ 2026-10-18：弹窗改成「`surface=chat` + 保留官方 chrome」（chatOnly=0，复刻官方 desktop 布局）
-		//   ⇒ 这套「工作台 + 多根工作区侧栏」也要在**带 chrome 的 chat 视图**里装，不能只认 full ✗。
-		//   判据用 preload 写的 DOM 事实（`data-vssaros-chat-only`），不猜 CSS ✓。
-		const hasOfficialChrome = (() => {
-			try {
-				if (bridge && bridge.surface === "full") { return true; }
-				if (!bridge || bridge.surface !== "chat") { return false; }
-				// ★ 首选 **bridge.chatOnly**（preload 在 document-start 就给了，同步可知）；
-				//   DOM 标记 `data-vssaros-chat-only` 要等 DOMContentLoaded，而 apply() 往往更早 ⇒
-				//   只用 DOM 标记会在真机上偶发判成 chat-only（截图实证：工作区摊平、无「工作台」行 ✗）。
-				if (typeof bridge.chatOnly === "boolean") { return bridge.chatOnly === false; }
-				return document.documentElement.dataset.vssarosChatOnly === "0";
-			} catch { return false; }
-		})();
-		// ★ 2026-10-18（复刻官方 desktop）：官方侧栏/顶栏的文案由 dsh 自己的 locale 决定，
-		//   而 dsh 按 `navigator.languages` 选语言 —— 在 Electron 的 dsh 视图里实测是英文
-		//   （`New Session / Plugins / Automation tasks / Workspaces`），与 VsSaros 的中文 UI 不一致。
-		//   弹窗（带官方 chrome）里主动切到中文（设置项由 dsh 自己持久化；主窗口聊天框
-		//   本来就是 chat-only，看不到这些文案，不会产生割裂）✓。
-		if (hasOfficialChrome) {
-			try {
-				// 惰性取服务（不放进静态 inject，见 inject 处的说明）
-				const loc = typeof ctx.get === "function" ? ctx.get("locale") : ctx.locale;
-				if (loc && typeof loc.setLocale === 'function') {
-					const cur = typeof loc.getLocale === 'function' ? String(loc.getLocale() || '') : '';
-					if (!/^zh/i.test(cur)) { loc.setLocale('zh'); }
-				}
-			} catch { /* locale 服务缺席不影响功能 */ }
-			// ⚠ 2026-10-28（用户报障「启动 app 后，聊天框右侧栏的『开始』页被自动打开」）：
-			//   原来这里有一段**启动时自动点 official 的 expand 按钮**的逻辑（2026-10-18 加的，
-			//   目的是"复刻官方 desktop：一进来右栏就是「开始」面板"）⇒ **删掉了** ✓。
-			//
-			//   为什么删：官方右栏的默认形态本来就是**收起**（`createSurface()`：collapsed / one pane /
-			//   no tabs），「开始」页是官方 **settle rule** 在"**空栏被展开**"那一刻才播种的
-			//   （`the settle rule seeds it when the column first expands still empty`）⇒
-			//   我们一自动展开，就等于替用户"点开了右栏" ⇒ 右栏里凭空多出一个「开始」页 ✗，
-			//   而且这个展开态会被官方按 session 持久化 ⇒ **每次启动都自动展开** ✗✗。
-			//
-			//   ⇒ 需求（用户原话）：**启动时默认不展开** ⇒ 这里什么都不做（右栏保持官方默认的收起态）✓。
-			//   ⇒ 用户自己点右栏的 expand 按钮仍然照常工作（官方行为）✓；
-			//     我们在「主页/工作台」入口里撑开右栏的那处（client.workbenchNav.js）**保留**
-			//     —— 那是**用户点了某个入口**之后的动作，不是启动时自动做的 ✓。
-		}
-		// ★ 2026-10-21 真机取证（窗口模式：中间栏没有页签 + 打开的工作台没有页签）：
-		//   这里的 require 列表与**下面的 `PART_CHUNKS` 有重叠**（workbenchNav / workspaces /
-		//   workspace / footer / brand / market / account 七个都两边有）⇒ 2026-10-18 把弹窗改成
-		//   「surface=chat + 保留官方 chrome」后，**两个分支同时命中**（不再是"按 surface 互斥"）
-		//   ⇒ 同一 chunk 装载两遍 ⇒ keyed 槽重复注册报错 ⇒ **后续 main 槽的中栏面板注册全被跳过**
-		//   ⇒ 工作台页签根本注册不出来 ✗。
-		// ⇒ 改法：这个分支**只服务真正的 full 形态**（`surface === "full"`）；chat 形态（窗口模式 /
-		//   IDE 聊天框）一律由 `PART_CHUNKS` 装（那七个 chunk 全在 PART_CHUNKS 里 ⇒ 功能不减 ✓）。
-		const isFullSurface = !!(bridge && bridge.surface === "full");
-		if (isFullSurface) {
-			void Promise.resolve()
-				.then(() => Promise.all([
-					require.async("./client.workbenchNav.js"),
-					require.async("./client.workspaces.js"),
+			//   ⇒ 这套「工作台 + 多根工作区侧栏」也要在**带 chrome 的 chat 视图**里装，不能只认 full ✗。
+			//   判据用 preload 写的 DOM 事实（`data-vssaros-chat-only`），不猜 CSS ✓。
+			const hasOfficialChrome = (() => {
+				try {
+					if (bridge && bridge.surface === "full") { return true; }
+					if (!bridge || bridge.surface !== "chat") { return false; }
+					// ★ 首选 **bridge.chatOnly**（preload 在 document-start 就给了，同步可知）；
+					//   DOM 标记 `data-vssaros-chat-only` 要等 DOMContentLoaded，而 apply() 往往更早 ⇒
+					//   只用 DOM 标记会在真机上偶发判成 chat-only（截图实证：工作区摊平、无「工作台」行 ✗）。
+					if (typeof bridge.chatOnly === "boolean") { return bridge.chatOnly === false; }
+					return document.documentElement.dataset.vssarosChatOnly === "0";
+				} catch { return false; }
+			})();
+			// ★★ 2026-10-30（用户要求「desktop 窗口用 dsh 原生交互，IDE 窗口用 IDE 交互」）：
+			//   这里是**唯一**分流向：各换皮 chunk 一律读 `shell.ide`，不许各自猜（猜法一多就会漂）。
+			//   · **IDE 聊天框** = `surface=chat` + `chatOnly=1`：右栏被 CHAT_ONLY_CSS 裁掉
+			//     ⇒ 文件链接 / 交付卡 / 计划预览 / 子代理侧栏**必须改道 IDE**（否则是死按钮）；
+			//   · **desktop 窗口主栏** = `surface=chat` + `chatOnly=0`（`dshFullWindowContribution` 的
+			//     composed 形态）：官方右栏**还在** ⇒ 一律让官方自己开右栏（原生交互）；
+			//   · `surface=full`（旧整页弹窗）同理按原生处理。
+			//   ⚠ 判据**不是**"有没有 window.vssarosDsh"：desktop 视图也注入同一份 preload（只是 chatOnly=0）。
+			//   ⚠ 与 `hasOfficialChrome` 是同一枚硬币的两面，但**不要合并**：那个问"有没有官方 chrome"，
+			//     这个问"要不要把交互改道到 IDE"，将来加第三种承载形态时两者的答案可以不同。
+			const isIdeChatView = (() => {
+				try {
+					if (!bridge || bridge.surface !== "chat") { return false; }
+					if (typeof bridge.chatOnly === "boolean") { return bridge.chatOnly === true; }
+					return document.documentElement.dataset.vssarosChatOnly === "1";
+				} catch { return false; }
+			})();
+			// ★ 2026-10-18（复刻官方 desktop）：官方侧栏/顶栏的文案由 dsh 自己的 locale 决定，
+			//   而 dsh 按 `navigator.languages` 选语言 —— 在 Electron 的 dsh 视图里实测是英文
+			//   （`New Session / Plugins / Automation tasks / Workspaces`），与 VsSaros 的中文 UI 不一致。
+			//   弹窗（带官方 chrome）里主动切到中文（设置项由 dsh 自己持久化；主窗口聊天框
+			//   本来就是 chat-only，看不到这些文案，不会产生割裂）✓。
+			if (hasOfficialChrome) {
+				try {
+					// 惰性取服务（不放进静态 inject，见 inject 处的说明）
+					const loc = typeof ctx.get === "function" ? ctx.get("locale") : ctx.locale;
+					if (loc && typeof loc.setLocale === 'function') {
+						const cur = typeof loc.getLocale === 'function' ? String(loc.getLocale() || '') : '';
+						if (!/^zh/i.test(cur)) { loc.setLocale('zh'); }
+					}
+				} catch { /* locale 服务缺席不影响功能 */ }
+				// ⚠ 2026-10-28（用户报障「启动 app 后，聊天框右侧栏的『开始』页被自动打开」）：
+				//   原来这里有一段**启动时自动点 official 的 expand 按钮**的逻辑（2026-10-18 加的，
+				//   目的是"复刻官方 desktop：一进来右栏就是「开始」面板"）⇒ **删掉了** ✓。
+				//
+				//   为什么删：官方右栏的默认形态本来就是**收起**（`createSurface()`：collapsed / one pane /
+				//   no tabs），「开始」页是官方 **settle rule** 在"**空栏被展开**"那一刻才播种的
+				//   （`the settle rule seeds it when the column first expands still empty`）⇒
+				//   我们一自动展开，就等于替用户"点开了右栏" ⇒ 右栏里凭空多出一个「开始」页 ✗，
+				//   而且这个展开态会被官方按 session 持久化 ⇒ **每次启动都自动展开** ✗✗。
+				//
+				//   ⇒ 需求（用户原话）：**启动时默认不展开** ⇒ 这里什么都不做（右栏保持官方默认的收起态）✓。
+				//   ⇒ 用户自己点右栏的 expand 按钮仍然照常工作（官方行为）✓；
+				//     我们在「主页/工作台」入口里撑开右栏的那处（client.workbenchNav.js）**保留**
+				//     —— 那是**用户点了某个入口**之后的动作，不是启动时自动做的 ✓。
+			}
+			// ★ 2026-10-21 真机取证（窗口模式：中间栏没有页签 + 打开的工作台没有页签）：
+			//   这里的 require 列表与**下面的 `PART_CHUNKS` 有重叠**（workbenchNav / workspaces /
+			//   workspace / footer / brand / market / account 七个都两边有）⇒ 2026-10-18 把弹窗改成
+			//   「surface=chat + 保留官方 chrome」后，**两个分支同时命中**（不再是"按 surface 互斥"）
+			//   ⇒ 同一 chunk 装载两遍 ⇒ keyed 槽重复注册报错 ⇒ **后续 main 槽的中栏面板注册全被跳过**
+			//   ⇒ 工作台页签根本注册不出来 ✗。
+			// ⇒ 改法：这个分支**只服务真正的 full 形态**（`surface === "full"`）；chat 形态（窗口模式 /
+			//   IDE 聊天框）一律由 `PART_CHUNKS` 装（那七个 chunk 全在 PART_CHUNKS 里 ⇒ 功能不减 ✓）。
+			const isFullSurface = !!(bridge && bridge.surface === "full");
+			if (isFullSurface) {
+				void Promise.resolve()
+					.then(() => Promise.all([
+						require.async("./client.workbenchNav.js"),
+						require.async("./client.workspaces.js"),
 						// hero（空白会话屏）的「工作区」下拉在**全窗**里也必须与聊天框同一套 UI
 						// （分组 + 多根 + 添加工作区）：2026-10-17 用户截图——“工作区下拉框要求和
 						// vssaros dsh 聊天框 UI 中的工作区 UI 一致”。该部件对 shell 的依赖全是
@@ -1189,41 +1243,41 @@ window.__ModuleLoader__.load({
 					// 打开成功 ⇒ 清掉"当前错误"（历史留 `lastError`）：从前成功后不清，
 					// 白屏诊断里就会报陈旧的 "inactive context"，把已恢复读成还坏着 ✗。
 					if (state.error) { state.lastError = state.error; state.error = null; }
-				idleTicks = 0;
-				state.degraded = false;
-				removeStatus();
-				return;
-			}
-			state.opened = false;
-			// ★ 2026-10-22：**不许抢用户的导航** —— 切到工作台页 / 已经在看别的会话 ⇒ 本轮什么都别做。
-			//   （这一条就是"操作工作台时突然被切回会话页"的修复；详细口径见 `looksBlankPage` 的注释。）
-			if (onOtherRoute() || workbenchPanelActive() || !looksBlankPage()) {
-				// 任一成立就**不抢**：别的路由（工作台/插件页）/ 中栏是我们的工作台面板 / 页面上已经有会话在渲染
-				state.leftForOtherView = onOtherRoute() ? "route" : (workbenchPanelActive() ? "workbench-panel" : "other-view");
-				removeStatus();   // 别把待打开状态条留在别人的页面上
-				return;
-			}
-			state.leftForOtherView = null;
-			renderStatus();
-			idleTicks += 1;
-			// 降频线（默认 240 tick = 120s；e2e 可经 `__vssarosConnectTuning.degradeAfterTicks` 缩短，生产不设）
-			const degradeAt = typeof tune().degradeAfterTicks === "number" ? tune().degradeAfterTicks : 240;
-			// ★ 2026-10-18 **不再放弃**。此处曾是"连续 120 秒开不出来就 `clearInterval` 永久停止"，
-			//   真机日志（`giveUps:1`，Host 冷启动期间页面链路不稳）证明这是错的：冷启动窗口一过，
-			//   链路早就恢复了，可轮询已经死了 ⇒ 页面从此永远停在 hero，6 分钟后仍如此。
-			//   ⇒ 超过 `degradeAt`（默认 240 tick = 120s）改为**降频**（每 60 tick = 30s 做一轮），一直试到成功；
-			//   `openGiveUps` 改记"进入降频的次数"（名字沿用以免动自证口径）。
-			//   用户点状态条上的「重试」或换绑会把 `idleTicks` 清零回到全速。
-			if (idleTicks === degradeAt + 1) {
-				state.openGiveUps = (state.openGiveUps || 0) + 1;
-				state.degraded = true;
-				state.attempts = 0;
-			}
-			if (idleTicks > degradeAt && idleTicks % 60 !== 0) {
-				return;
-			}
-			state.attempts++;
-			try {
+					idleTicks = 0;
+					state.degraded = false;
+					removeStatus();
+					return;
+				}
+				state.opened = false;
+				// ★ 2026-10-22：**不许抢用户的导航** —— 切到工作台页 / 已经在看别的会话 ⇒ 本轮什么都别做。
+				//   （这一条就是"操作工作台时突然被切回会话页"的修复；详细口径见 `looksBlankPage` 的注释。）
+				if (onOtherRoute() || workbenchPanelActive() || !looksBlankPage()) {
+					// 任一成立就**不抢**：别的路由（工作台/插件页）/ 中栏是我们的工作台面板 / 页面上已经有会话在渲染
+					state.leftForOtherView = onOtherRoute() ? "route" : (workbenchPanelActive() ? "workbench-panel" : "other-view");
+					removeStatus();   // 别把待打开状态条留在别人的页面上
+					return;
+				}
+				state.leftForOtherView = null;
+				renderStatus();
+				idleTicks += 1;
+				// 降频线（默认 240 tick = 120s；e2e 可经 `__vssarosConnectTuning.degradeAfterTicks` 缩短，生产不设）
+				const degradeAt = typeof tune().degradeAfterTicks === "number" ? tune().degradeAfterTicks : 240;
+				// ★ 2026-10-18 **不再放弃**。此处曾是"连续 120 秒开不出来就 `clearInterval` 永久停止"，
+				//   真机日志（`giveUps:1`，Host 冷启动期间页面链路不稳）证明这是错的：冷启动窗口一过，
+				//   链路早就恢复了，可轮询已经死了 ⇒ 页面从此永远停在 hero，6 分钟后仍如此。
+				//   ⇒ 超过 `degradeAt`（默认 240 tick = 120s）改为**降频**（每 60 tick = 30s 做一轮），一直试到成功；
+				//   `openGiveUps` 改记"进入降频的次数"（名字沿用以免动自证口径）。
+				//   用户点状态条上的「重试」或换绑会把 `idleTicks` 清零回到全速。
+				if (idleTicks === degradeAt + 1) {
+					state.openGiveUps = (state.openGiveUps || 0) + 1;
+					state.degraded = true;
+					state.attempts = 0;
+				}
+				if (idleTicks > degradeAt && idleTicks % 60 !== 0) {
+					return;
+				}
+				state.attempts++;
+				try {
 					// ★★ 2026-10-17 真机定位（弹窗停在 hero、输入框禁用；自证读数 `openRetries:68 roster:0`）：
 					//   官方 `openWorkspace` 是"**后来的导航取代前一个**"语义（navigation 服务
 					//   `beginNavigation` 会 abort 上一次）⇒ 本循环每 500ms 调一次，
@@ -1417,7 +1471,7 @@ window.__ModuleLoader__.load({
 						} catch { return false; }
 					})();
 					if (!rosterHas(sid) && rpcReady && !rosterRefreshPending && !longCallsBroken() && !longCallPending
-					&& Date.now() - lastRosterRefreshAt > effectiveBackoff()) {
+						&& Date.now() - lastRosterRefreshAt > effectiveBackoff()) {
 						lastRosterRefreshAt = Date.now();
 						try {
 							// ⚠ 服务面上的方法名是 **refresh()**（内部才调 manager.refreshList()）——
@@ -1698,17 +1752,22 @@ window.__ModuleLoader__.load({
 
 
 			// ── 以下全部只在聊天框 surface 生效：full（官方整页）只借用上面的会话绑定 ──
-		// （工作台导航 / 多根工作区侧栏等在 full 形态由**顶部那个 full-only 分支**装载；
-		//   两个分支现在**互斥**（chat 走这里、full 走那边）⇒ 同一个 chunk 不会被装两遍 ✓
-		//   —— 2026-10-21 真机：重叠过一次 ⇒ keyed 槽重复注册 ⇒ 中栏工作台面板全没注册 ✗）。
-		if (bridge.surface !== "chat") {
-			return;
-		}
+			// （工作台导航 / 多根工作区侧栏等在 full 形态由**顶部那个 full-only 分支**装载；
+			//   两个分支现在**互斥**（chat 走这里、full 走那边）⇒ 同一个 chunk 不会被装两遍 ✓
+			//   —— 2026-10-21 真机：重叠过一次 ⇒ keyed 槽重复注册 ⇒ 中栏工作台面板全没注册 ✗）。
+			if (bridge.surface !== "chat") {
+				return;
+			}
 
-		// 皮肤部件：并行取回各自 chunk，再逐个安装。
+			// 皮肤部件：并行取回各自 chunk，再逐个安装。
 			// shell.sessionId 是初始绑定（启动参数）；运行期的当前会话读 state.sessionId。
 			const shell = {
 				bridge, state, sessionId: bridge.sessionId, mark, rebind,
+				// ★ 2026-10-30：**唯一**分流开关 —— true = IDE 聊天框（把交互改道 IDE）；
+				//   false = desktop 窗口 / full 整页（一切交回 dsh 官方，我们不接管）。
+				//   消费方：client.tools.js / client.fileCards.js / client.cardActions.js /
+				//   client.openInApp.js / client.subagents.js（各自在 install 开头早退）。
+				ide: isIdeChatView,
 				// 菜单尺寸夹到页面视口（= WebContentsView 矩形）；见 fitMenuSize。
 				// ⚠ 传 `anchor`（触发器 rect 的投影）才能按"菜单从哪儿开始"算 —— 只按整页高算的菜单
 				//   底部会落到视口外且滚不到 ✗（2026-10-16 用户报障）。拿不到 rect 就不传（退回旧口径 ✓）。
@@ -1758,4 +1817,7 @@ window.__ModuleLoader__.load({
 // ⚠ 编辑顺序：**先改 chunk，最后再动入口**（入口 mtime 必须最新，守卫会红）。
 // 2026-10-28 touch#2: 侧栏点会话失败要重试 + 就地可见（client.workspaces.js）⇒ 同步刷新入口 mtime。
 // ⚠ 跑过反向突变脚本之后必须**再动一次这里**：脚本重写 chunk 会刷新它的 mtime，入口就又"变旧"了。
+// 2026-10-30 touch: desktop/IDE 交互分流（新增 `isIdeChatView` + `shell.ide`；tools / fileCards / cardActions /
+//   openInApp / subagents 五处按它早退；fileCards 同时放行 `changes-review` 给官方右栏）
+//   ⇒ 同步刷新入口 mtime，否则浏览器继续吃旧 chunk（这些 chunk 全靠入口 rev 变更才会重新拉取）。
 

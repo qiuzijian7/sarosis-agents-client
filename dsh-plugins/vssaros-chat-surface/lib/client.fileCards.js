@@ -140,6 +140,17 @@ window.__ModuleLoader__.load({
 							try { if (bridge && bridge.notify) { bridge.notify("info", "这个文件链接本来开在 dsh 侧栏（壳里没有），且路径解析不出绝对形式——已拦下。"); } } catch { /* */ }
 							return Promise.resolve();
 						}
+						// ★★ 2026-10-30（用户要求「在右侧栏显示本轮改动」）：**放行给官方**。
+						//   `changes-review` 是 deliverables 注册的右栏 tab kind（`dsh-client-ui-deliverables`
+						//   的 `sidebarRightTabs.register({kind:"changes-review"})` + `sidebar.right.pane.tab`），
+						//   而**右栏在 IDE 与 desktop 两种形态下都保留**（CHAT_ONLY_CSS 只藏左栏）⇒
+						//   从前那句「壳里没有侧栏 ⇒ 只弹提示」是**过期前提**（2026-10-19 恢复右栏后没跟着改）✗。
+						//   现在原样交给官方：地址合法 ⇒ 官方自己开右栏 tab（desktop = 原生；IDE = 用户明确要的
+						//   "在右侧栏看改动"）。任何异常仍由外层 catch 回落 `orig` ✓。
+						if (typeof address === "string" && address.indexOf("dsh-resource://changes-review/") === 0) {
+							state.changesReviewOpened = (state.changesReviewOpened || 0) + 1;
+							return orig(address, options);
+						}
 						// ★ 2026-10-15 第二刀：两类"非文件但可落地"的资源 ✓
 						//   · 计划**审阅预览**：markdown 直接随 params 带（dsh-client-ui-plan:683-686 ✓）→ IDE 编辑器 ✓
 						//   · 子代理"侧栏打开子会话"：地址里带 childSessionId（dsh-client-ui-subagent:698-703 ✓）→
@@ -264,6 +275,18 @@ window.__ModuleLoader__.load({
 		function install(ctx, shell) {
 			const state = shell.state;
 			const bridge = shell.bridge;
+			// ★★ 2026-10-30（用户要求「desktop 用 dsh 原生交互、IDE 用 IDE 交互」）：
+			//   desktop 窗口（`chatOnly=0`）**整段不装**：
+			//     ① 服务层 `openResource` 不再包（官方右栏自己开文件预览 / 本轮改动 / 计划 / 子会话）；
+			//     ② document 级 capture 不注册（交付卡卡头点击回到官方 `openReview`）。
+			//   从前这两处都只判"有没有桥"，而 desktop 视图**也有桥**（同一份 preload，chatOnly=0）
+			//   ⇒ 桌面窗口里点卡头会被改道成"在 IDE 打开第一个文件" ✗（正是要修的）。
+			//   判据由入口算好放 `shell.ide`（单一真相，见 client.js 的 isIdeChatView）。
+			if (!shell.ide) {
+				state.fileCards = false;
+				state.fileCardsSkipped = "desktop 窗口（chatOnly=0）：交付卡/文件链接保留 dsh 原生右栏行为";
+				return;
+			}
 			wrapSidebarRight(ctx, state, bridge);
 			// capture 阶段：必须**先于** React 的合成事件拿到点击，才能拦住官方那个"开右侧栏审阅"的动作 ✓
 			document.addEventListener("click", (e) => {
@@ -281,41 +304,16 @@ window.__ModuleLoader__.load({
 					//   stopPropagation 遮蔽 ⇒ "行点击开 diff"从未生效 ✗）。本处理器只管**卡头**
 					//   （不在 li 里的按钮：单文件卡头 / 多文件"看本轮改动"头 ✓）。
 					if (button.closest("li")) { return; }
-					let path = absolutePathOf(button);
-					if (!path) {
-						// ★ 消死点：多文件卡**头部**按钮没有 `aria-describedby`（它表达的是"看本轮改动"）⇒
-						// 官方会去开被裁掉的右栏 ⇒ 界面毫无反应 ✗。退一步：打开第一行那个文件，并如实说明 ✓。
-						path = firstRowPathOf(target.closest(CARD_SELECTOR));
-						if (!path) {
-							state.fileCardsSkipped = (state.fileCardsSkipped || 0) + 1;
-							return;   // 连第一行都没有 ⇒ 不接管（保留官方行为），只记一笔供诊断 ✓
-						}
-						state.fileCardFallbacks = (state.fileCardFallbacks || 0) + 1;
-						try {
-							if (bridge && bridge.notify) { bridge.notify("info", "聊天框里没有右栏「本轮改动」：已改为在编辑器打开第一个文件"); }
-						} catch { /* 通知失败不影响打开 */ }
-					}
-					// 到这儿说明我们有确定的绝对路径 ⇒ 拦下官方动作（它开的是被我们裁掉的右侧栏 ⇒ 等于没反应 ✗）
-					e.preventDefault();
-					e.stopPropagation();
-					if (!bridge || typeof bridge.openFile !== "function") {
-						state.lastFileCardError = "页面桥过旧（openFile 不可用）";
-						return;
-					}
-					try {
-						Promise.resolve(bridge.openFile(path)).then(
-							() => {
-								state.fileCardsOpened = (state.fileCardsOpened || 0) + 1;
-								state.lastFileCardOpened = path;
-							},
-							(err) => {
-								// 失败要**说出来**：静默失败会让"点了没反应"再次变成谜 ✗（notify 走宿主）
-								state.lastFileCardError = String((err && err.message) || err);
-								if (bridge.notify) { bridge.notify("attention", "打开文件失败：" + state.lastFileCardError); }
-							});
-					} catch (err) {
-						state.lastFileCardError = String((err && err.message) || err);
-					}
+					// ★★ 2026-10-30（用户要求「希望打开右侧栏，在右侧栏中显示本轮改动」）：**卡头放行**。
+					//   官方 `ChangedFiles` 的卡头 / 单文件卡头 onClick = `openReview(0)` →
+					//   `sidebarRight.openResource("dsh-resource://changes-review/…")` ⇒ 右栏「本轮改动」审阅；
+					//   而右栏在 IDE 与 desktop **两种形态下都保留**（CHAT_ONLY_CSS 只藏左栏）⇒
+					//   从前"改成打开第一个文件"依据的是"壳里没有右栏"的过期前提 ✗，而且它
+					//   `stopPropagation` 掉官方 onClick ⇒ 服务层那条 changes-review 放行分支**永远走不到** ✗✗。
+					//   现在卡头原样交给官方（多文件 = 本轮全部改动；单文件 = 该文件的本轮 diff）；
+					//   本处理器只保留「行放行」（`button.closest("li")`）与诊断计数。
+					state.fileCardHeadersPassed = (state.fileCardHeadersPassed || 0) + 1;
+					return;
 				} catch { /* 收卡片点击绝不影响聊天本身 */ }
 			}, true);
 			state.fileCards = true;

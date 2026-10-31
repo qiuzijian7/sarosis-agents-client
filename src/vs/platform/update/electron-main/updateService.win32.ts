@@ -35,6 +35,8 @@ import { IApplicationStorageMainService } from '../../storage/electron-main/stor
 import { ITelemetryService } from '../../telemetry/common/telemetry.js';
 import { AvailableForDownload, DisablementReason, IUpdate, State, StateType, UpdateType } from '../common/update.js';
 import { AbstractUpdateService, createUpdateURL, getUpdateRequestHeaders, IUpdateURLOptions, UpdateErrorClassification } from './abstractUpdateService.js';
+// ★ 2026-10-31：spawn 安装包之前先跑一次"释放占用者"（见 updateInstallHooks.ts 的头注释）
+import { runBeforeUpdateInstallHooks } from './updateInstallHooks.js';
 
 interface IAvailableUpdate {
 	packagePath: string;
@@ -418,6 +420,15 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 		this.availableUpdate.cancelFilePath = cancelFilePath;
 
 		await pfs.Promises.writeFile(this.availableUpdate.updateFilePath, 'flag');
+
+		// ★ 2026-10-31：下面这次 spawn 带 **`/nocloseapplications`** ⇒ 安装器**不会**去关闭占用文件的
+		//   进程 ⇒ 任何还被锁着的文件只能排到"重启时替换" ⇒ 用户就会看到
+		//   「要完成 VsSaros 的安装，安装程序必须重新启动您的电脑」（真机：2026-10-31 自动更新后必现）。
+		//   ⇒ 唯一能做的是**我们自己先把占用者收掉**（dsh Host 锁着
+		//   `resources/app/dsh-runtime/*/koffi.node`，由 sessions 侧注册进来）。
+		//   ⚠ 必须在 spawn **之前**；钩子自带超时 + 失败只记日志（装不上比弹一次重启提示更糟）。
+		await runBeforeUpdateInstallHooks(this.logService);
+
 		const child = spawn(this.availableUpdate.packagePath,
 			[
 				'/verysilent',

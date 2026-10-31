@@ -1,0 +1,14 @@
+# @vssaros/dsh-loop bundle patch: insert the loop runner row.
+#
+# `config.dataRoot` stays empty on purpose: without it the plugin reads the
+# default `~/.vssaros/`, and VsSaros injects the real data root through a
+# `--patch` overlay targeting this id (same mechanism as the kanban row).
+#
+# `config.allowCommands` defaults to false: a loop's `harvest.command` runs a
+# child process, i.e. code execution on the operator's machine. Deployment has
+# to opt in explicitly — pulling someone else's loop must never start running
+# shell commands.
+- insert:
+    - id: vssaros-loop
+      name: '@vssaros/dsh-loop'
+      config: {}

@@ -67,10 +67,12 @@ import { resolveSarosPath, SarosPath, userDataRootFromRoamingHome } from '../../
 import { DshPluginPageEditorInput } from './dshPluginPageEditorInput.js';
 // side-effect import：注册「dsh 插件页的编辑区承载」（editor pane），见该文件头注释 ✓
 import './dshPluginPageEditor.contribution.js';
+import { DshUpgradeEditorInput } from './dshUpgradeEditorInput.js';
+// side-effect import：注册「系统与更新」面板（2026-10-30，VsSaros 菜单「检查更新…」打开它）
+import './dshUpgradeEditor.contribution.js';
 import { IDialogService, IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 // ★ 2026-10-26：`.code-workspace` 的解析口径只有这一份（sidebarPart 也用它）⇒ 不能各写一份 ✗。
 import { parseCodeWorkspaceFolders } from '../../agentStudio/common/codeWorkspaceFolders.js';
-import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IAgentStudioService } from '../../../common/agentStudioService.js';
@@ -84,6 +86,13 @@ import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/l
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 
 const DSH_COMMAND_CHECK_UPDATES = 'dshHarness.checkUpdates';
+/**
+ * 「系统与更新」面板（2026-10-30）。
+ *
+ * ⚠ 这是**应用 + 随包插件 + 商城资产**的统一入口；`DSH_COMMAND_CHECK_UPDATES` 只管
+ * **dsh 运行时**的版本切换（那条要过快照/健康检查/回退闸门，语义不同，别混）。
+ */
+const DSH_COMMAND_CHECK_APP_UPDATES = 'dshHarness.checkAppUpdates';
 
 /**
  * 「意见反馈」的去处（2026-10-26 用户指定）：飞书问卷。
@@ -91,7 +100,9 @@ const DSH_COMMAND_CHECK_UPDATES = 'dshHarness.checkUpdates';
  * 以前这条菜单项交给 IDE 的 issue reporter（`workbench.action.openIssueReporter`），
  * 那个面板是 VS Code 的、提交去 GitHub —— 我们这边根本没人看 ⇒ 改成打开产品自己的问卷。
  */
-const DSH_FEEDBACK_URL = 'https://sarosgame.feishu.cn/share/base/form/shrcnLSwbX5eJtTW9DxVmVMxiag';
+// ★ 真源在 `contrib/feedback/common/feedbackLink.ts`：IDE 侧（帮助 → 意见反馈）与 dsh 侧
+//   都从这里取 ⇒ 改一处即可，不会漂。仅作为"兜底走系统浏览器"时的地址使用。
+const DSH_FEEDBACK_URL = FEEDBACK_FORM_URL;
 import { DshHarnessSettings, DSH_DEFAULT_PROFILE, IDshHostStatus, IDshViewInfo } from '../common/dshHarness.js';
 import { DshHarnessService, IDshHarnessService } from './dshHarnessService.js';
 import { DshChatHostContribution } from './dshChatInstanceHost.js';
@@ -99,6 +110,7 @@ import { DshFullWindowContribution, dshIdeWindowHidden } from './dshFullWindowCo
 import { DshPluginCenterHostContribution } from './dshPluginCenterHost.js';
 import { DshActivityBarContribution } from './dshActivityBarContribution.js';
 import { DSH_COMMAND_OPEN_SETTINGS, DSH_COMMAND_RESTART_HOST, DSH_COMMAND_SHOW_LOG } from './dshCommands.js';
+import { FEEDBACK_FORM_URL } from '../../feedback/common/feedbackLink.js';
 import { DshProviderSync } from './dshProviderSync.js';
 
 const ENABLED = ContextKeyExpr.equals(`config.${DshHarnessSettings.Enabled}`, true);
@@ -645,6 +657,27 @@ registerAction2(class extends Action2 {
 	}
 });
 
+/**
+ * 「检查更新…」（2026-10-30）：**打开面板**，检查动作留给用户点。
+ *
+ * 为什么不是"点菜单就直接查"：用户要的是"点开面板，手动点击检查升级"⇒ 打开不联网，
+ * 面板里那颗「检查更新」才是唯一触发点（否则菜单一点就开始联网，等于自动检查 ✗）。
+ */
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: DSH_COMMAND_CHECK_APP_UPDATES,
+			title: localize2('dshHarness.checkAppUpdates', "检查更新..."),
+			category: CATEGORY,
+			f1: true,
+		});
+	}
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const editorService = accessor.get(IEditorService);
+		await editorService.openEditor(DshUpgradeEditorInput.getOrCreate(), { pinned: true });
+	}
+});
+
 /** 经升级闸门切换；有运行中的任务时先征得用户同意再强制切换。 */
 async function runUpgrade(dsh: IDshHarnessService, notification: INotificationService, dialogs: IDialogService, version: string): Promise<void> {
 	const progress = notification.notify({ severity: Severity.Info, message: localize('dshHarness.upgrading', "正在切换到 dsh {0}：快照、重启并检查…", version), progress: { infinite: true } });
@@ -879,58 +912,18 @@ class DshPrewarmContribution extends Disposable implements IWorkbenchContributio
 registerWorkbenchContribution2(DshPrewarmContribution.ID, DshPrewarmContribution, WorkbenchPhase.BlockStartup);
 
 /**
- * 每天至多一次的升级提示。只在用户已启动 Host 之后检查（不在启动期主动联网），锁定通道不检查，
- * 同一版本只提示一次。
+ * ⚠ 2026-10-30：这里原本有一个 `DshUpdateCheckContribution` —— Host 变 `running` 后
+ * **每天至多一次** `discoverUpdates()`，发现有新版本就 `notification.prompt("dsh X 可用（当前 Y）。")`
+ * 弹一条带「查看并升级」按钮的提示。
+ *
+ * 用户明确要求（"启动时，会自动检查版本，弹出一个对话框提示升级，我不希望在此处弹出"）⇒ **整段下线**：
+ *   · 启动期**不再自动检查**、**不再弹**任何升级提示；
+ *   · 检查/升级统一走两处**手动**入口：desktop 窗口左下角那行 + VsSaros 菜单「检查更新…」（`DSH_COMMAND_CHECK_APP_UPDATES` 面板）；
+ *   · dsh 运行时的版本切换仍在 `DSH_COMMAND_CHECK_UPDATES`（"检查运行时更新"），只是不再自动查。
+ *
+ * 守卫：`test/common/dshUpgradePanel.test.ts` ①（启动链路不得再出现升级 prompt）+
+ * 反向突变（把 prompt 加回来必须变红）。
  */
-class DshUpdateCheckContribution extends Disposable implements IWorkbenchContribution {
-	static readonly ID = 'sessions.dshHarness.updateCheck';
-	private static readonly LAST_CHECK = 'dshHarness.update.lastCheck';
-	private static readonly LAST_NOTIFIED = 'dshHarness.update.lastNotified';
-	private _checking = false;
-
-	constructor(
-		@IDshHarnessService private readonly _dsh: IDshHarnessService,
-		@IStorageService private readonly _storage: IStorageService,
-		@INotificationService private readonly _notification: INotificationService,
-		@ICommandService private readonly _commands: ICommandService,
-		@IConfigurationService private readonly _config: IConfigurationService,
-	) {
-		super();
-		this._register(this._dsh.onDidChangeStatus(s => {
-			if (s.state === 'running') {
-				void this._maybeCheck();
-			}
-		}));
-	}
-
-	private async _maybeCheck(): Promise<void> {
-		if (this._checking || !this._config.getValue<boolean>(DshHarnessSettings.Enabled) || this._dsh.policy().channel === 'locked') {
-			return;
-		}
-		const last = this._storage.getNumber(DshUpdateCheckContribution.LAST_CHECK, StorageScope.APPLICATION, 0);
-		if (Date.now() - last < 24 * 60 * 60 * 1000) {
-			return;
-		}
-		this._checking = true;
-		try {
-			const d = await this._dsh.discoverUpdates();
-			this._storage.store(DshUpdateCheckContribution.LAST_CHECK, Date.now(), StorageScope.APPLICATION, StorageTarget.MACHINE);
-			if (!d.recommended || this._storage.get(DshUpdateCheckContribution.LAST_NOTIFIED, StorageScope.APPLICATION) === d.recommended) {
-				return;
-			}
-			this._storage.store(DshUpdateCheckContribution.LAST_NOTIFIED, d.recommended, StorageScope.APPLICATION, StorageTarget.MACHINE);
-			this._notification.prompt(Severity.Info,
-				localize('dshHarness.update.available', "dsh {0} 可用（当前 {1}）。", d.recommended, d.current ?? '-'),
-				[{ label: localize('dshHarness.update.view', "查看并升级"), run: () => this._commands.executeCommand(DSH_COMMAND_CHECK_UPDATES) }]);
-		} catch {
-			// 离线等情况：静默，下次启动 Host 时再试
-		} finally {
-			this._checking = false;
-		}
-	}
-}
-
-registerWorkbenchContribution2(DshUpdateCheckContribution.ID, DshUpdateCheckContribution, WorkbenchPhase.Eventually);
 
 // ─── 页面桥命令处理（低风险界面命令；方案第 4.4 节）──────────────────────────
 
@@ -1569,12 +1562,17 @@ class DshPageCommandContribution extends Disposable implements IWorkbenchContrib
 				void Promise.resolve(this._commands.executeCommand('workbench.action.openSettings')).catch(() => undefined);
 				return;
 			case 'openFeedback':
-				// ★ 2026-10-26（用户：「意见反馈跳转到 <飞书问卷>」）：
-				//   不再开 IDE 的 issue reporter（那是 VS Code 的面板、提交去 GitHub，没人看 ✗），
-				//   直接交给系统浏览器打开产品自己的问卷 —— 与窗口里其它「外链」同一套行为 ✓。无参。
-				this._logService.info(`[dshHarness] page openFeedback ⇒ 系统浏览器打开反馈问卷 ${DSH_FEEDBACK_URL}`);
-				void Promise.resolve(this._nativeHostService.openExternal(DSH_FEEDBACK_URL)).catch(err => {
-					this._logService.warn('[dshHarness] 打开反馈问卷失败（URL 已记在上一条日志里，可手动打开）', err);
+				// ★ 2026-10-31（用户：dsh 窗口的用户也要看到**内置浏览器窗口**、日志自动带上）：
+				//   交给 IDE 那条「意见反馈」命令（`workbench.action.openFeedbackForm`）—— 它会开**产品内置
+				//   窗口**、prefill 版本/平台/环境、并用 CDP 把诊断文件挂到「日志文件」题。
+				//   · 两个入口一个去处（与上面 `openSettings` 同套路，dsh 侧不再抄一份采集逻辑）；
+				//   · ⚠ 不再走系统浏览器：那边我们**没有注入能力** ⇒ 日志只能靠用户手动传；
+				//   · ⚠ 也不走 BrowserView：它绑的是 IDE 主窗口，而"只显示 desktop"时主窗口是隐藏的
+				//     ⇒ 用户在 dsh 里点反馈会"点了没反应"。独立窗口才保证看得见。
+				this._logService.info('[dshHarness] page openFeedback ⇒ 交给 IDE 命令 workbench.action.openFeedbackForm（内置反馈窗口）');
+				void Promise.resolve(this._commands.executeCommand('workbench.action.openFeedbackForm')).catch(err => {
+					this._logService.warn('[dshHarness] 打开内置反馈窗口失败 ⇒ 退回系统浏览器', err);
+					void Promise.resolve(this._nativeHostService.openExternal(DSH_FEEDBACK_URL)).catch(() => undefined);
 				});
 				return;
 			// ★ 2026-10-23（桥 `18 → 19`）：desktop 窗口侧栏底部那行「更新」。

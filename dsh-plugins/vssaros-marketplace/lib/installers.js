@@ -20,7 +20,8 @@
 
 import { createHash } from 'node:crypto';
 import { cp, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { statSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { listTarGzEntries } from './tar.js';
 
 /**
@@ -75,6 +76,8 @@ export function targetRootOf(dataRoot, kind) {
 	if (kind === 'workflow') { return join(dataRoot, 'workflows'); }
 	if (kind === 'agent') { return join(dataRoot, 'agents'); }
 	if (kind === 'mcp') { return join(dataRoot, 'mcp'); }
+	// ★ 2026-10-31：知识库落到 <数据根>/knowledge/<id>/（与 publisher 的 KIND_DIR 同口径 ✓）
+	if (kind === 'knowledge') { return join(dataRoot, 'knowledge'); }
 	throw new Error(`dsh 侧还不支持安装这一类：${kind}（当前支持 ${BUNDLE_KINDS.join(' / ')}）`);
 }
 
@@ -291,7 +294,82 @@ export async function installBundle({ dataRoot, kind, storeId, version, gzBuffer
 	//   资源目录里多出一个服务端格式的文件（污染，且下次发布还会把它当资源内容打进去 ✗）
 	const runtimeFiles = files.filter(f => f.path !== 'manifest.json');
 	await writeFiles(targetDir, runtimeFiles, { overwrite: Boolean(existing) });
-	return { targetDir, fileCount: files.length, skipped, ...(backup ? { backup } : {}) };
+	// ★ 2026-10-31：知识库装完**登记成库**（否则在知识库里看不见 ⇒ 等于没装）
+	let vault = undefined;
+	if (kind === 'knowledge') {
+		try {
+			// ⚠ 这里**没有** manifest 变量（此前误引用它 ⇒ ReferenceError 被吞 ⇒ 登记静默失败）
+			//   ⇒ 从包内的 manifest.json 里取名字；取不到就用 storeId ✓
+			let kbName = storeId;
+			try {
+				const mf = files.find(f => f.path === 'manifest.json');
+				if (mf) {
+					const j = JSON.parse(mf.data.toString('utf8'));
+					if (j && typeof j.name === 'string' && j.name.trim()) { kbName = j.name.trim(); }
+				}
+			} catch { kbName = storeId; }
+			vault = await registerKnowledgeVault({ dataRoot, id: storeId, name: kbName, dir: targetDir });
+		} catch { /* best effort：登记失败不该让安装失败 */ }
+	}
+	return { targetDir, fileCount: files.length, skipped, ...(vault ? { vault } : {}), ...(backup ? { backup } : {}) };
+}
+
+/**
+ * ★ 2026-10-31：知识库**装完必须让知识库侧看得见**。
+ *
+ * 为什么需要这一步：装完只是"文件落在 <数据根>/knowledge/<id>/"，而知识库的库清单
+ *   在**另一个插件**（vssaros-kb）的数据根下（`<dshHome>/knowledge-base/.extra-vaults.json`）
+ *   ⇒ 两边数据根不同、又没有跨插件服务 ⇒ 用**注册表文件**做契约：
+ *     本侧写 `<kb数据根>/.market-vaults.json`，KB 侧读它并合并进库清单 ✓。
+ *
+ * ⚠ best effort：找不到 KB 数据根就只写"包内标记"（.kb-vault.json），绝不因此让安装失败。
+ */
+export const MARKET_VAULTS_FILE = '.market-vaults.json';
+
+/** 推测知识库插件的数据根（含 `knowledge-base` 目录的那一层）。 */
+export function kbDataRootOf(dataRoot) {
+	let cur = resolve(String(dataRoot ?? ''));
+	for (let i = 0; i < 5; i++) {
+		const cand = join(cur, 'knowledge-base');
+		try { if (statSync(cand).isDirectory()) { return cand; } } catch { /* 继续往上 */ }
+		const up = dirname(cur);
+		if (!up || up === cur) { break; }
+		cur = up;
+	}
+	return '';
+}
+
+/**
+ * 把一个装好的知识库登记进知识库插件的清单。
+ * @returns {Promise<{ ok: boolean, path?: string, why?: string }>}
+ */
+export async function registerKnowledgeVault({ dataRoot, id, name, dir }) {
+	const entry = {
+		id: String(id ?? ''),
+		name: String(name ?? id ?? ''),
+		path: resolve(String(dir ?? '')),
+		from: 'marketplace',
+		attachedAt: new Date().toISOString(),
+	};
+	// ① 包内标记（无论找不找得到 KB 数据根都写 ⇒ KB 侧可据此识别）
+	try {
+		await writeFile(join(entry.path, '.kb-vault.json'), JSON.stringify(entry, null, 2), 'utf8');
+	} catch { /* best effort */ }
+	// ② 写 KB 侧注册表
+	const kbRoot = kbDataRootOf(dataRoot);
+	if (!kbRoot) { return { ok: false, why: 'kb-data-root-not-found' }; }
+	const file = join(kbRoot, MARKET_VAULTS_FILE);
+	try {
+		let list = [];
+		try { list = JSON.parse(await readFile(file, 'utf8')) ?? []; } catch { list = []; }
+		if (!Array.isArray(list)) { list = []; }
+		const idx = list.findIndex((v) => v && v.id === entry.id);
+		if (idx >= 0) { list[idx] = entry; } else { list.push(entry); }
+		await writeFile(file, JSON.stringify(list, null, 2), 'utf8');
+		return { ok: true, path: file };
+	} catch (e) {
+		return { ok: false, why: String((e && e.message) || e) };
+	}
 }
 
 /**

@@ -257,10 +257,10 @@ suite('dshModuleContainers（容器聚合与注册计划）', () => {
 				// `vssaros.dsh.scheduler`：定时任务（重构 2.1，page-only —— legacy 调度器从不执行，无静态对应物）。
 				// `vssaros.dsh.imagegen`：生图 / 画布工作台（2026-10-21，page-only —— legacy 侧没有画布引擎）。
 				// `vssaros.dsh.marketplace`：自营商城工作台（2026-10-22，page-only —— 商城认证与安装链在 IDE/dsh 侧）。
-				// `vssaros.dsh.parallel`：并行 TUI 工作台（2026-10-22，page-only —— 格位后端只在 dsh 侧）。
 				// `vssaros.dsh.studio`：萨罗斯管理平台（2026-10-23，page-only —— 站点 iframe 只在 dsh 侧）。
 				// ★ 2026-10-30：`vssaros.dsh.relay`（萨罗斯中转站）已移除 ⇒ 从期望集合里删掉。
-				'vssaros.dsh.codebase', 'vssaros.dsh.imagegen', 'vssaros.dsh.marketplace', 'vssaros.dsh.parallel', 'vssaros.dsh.scheduler', 'vssaros.dsh.sessions', 'vssaros.dsh.studio']);
+				// ★ 2026-10-31：`vssaros.dsh.parallel`（并行工作台）已移除 ⇒ 从期望集合里删掉。
+				'vssaros.dsh.codebase', 'vssaros.dsh.imagegen', 'vssaros.dsh.marketplace', 'vssaros.dsh.scheduler', 'vssaros.dsh.sessions', 'vssaros.dsh.studio']);
 		assert.deepStrictEqual(plan.pending, [], '没有 planned 容器了（语义保留给"规划了图标但还没有页面"的下一个模块）');
 	});
 
@@ -314,8 +314,7 @@ suite('dshModuleContainers（容器聚合与注册计划）', () => {
 				fixturePlugin('@vssaros/dsh-imagegen', 'imagegen', 'vssaros.dsh.imagegen', 85, '/x/imagegen/'),
 				// 2026-10-22：自营商城工作台（page-only；与「工作台商城」market 模块并存 ✓）。
 				fixturePlugin('@vssaros/dsh-marketplace', 'marketplace', 'vssaros.dsh.marketplace', 86, '/x/marketplace/'),
-				// 2026-10-22：并行 TUI 工作台（page-only）。
-				fixturePlugin('@vssaros/dsh-parallel', 'parallel', 'vssaros.dsh.parallel', 87, '/x/parallel/'),
+				// ★ 2026-10-31：并行工作台已移除 ⇒ 它的 fixture 也删掉（与容器表/页面表同步）。
 				// 2026-10-23：萨罗斯管理平台（page-only；页面 iframe 承载站点前端）。
 				fixturePlugin('@vssaros/dsh-studio', 'studio', 'vssaros.dsh.studio', 88, '/x/studio/'),
 				// ★ 2026-10-30：萨罗斯中转站工作台已移除 ⇒ 它的 fixture 也删掉。

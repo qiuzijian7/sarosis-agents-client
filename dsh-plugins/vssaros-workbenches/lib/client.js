@@ -68,6 +68,10 @@ window.__ModuleLoader__.load({
 				panel: PANEL_PREFIX + id,
 				customFrame: descriptor.customFrame === true,
 				headerLayout: descriptor.headerLayout || 'default',
+				// ★ 2026-10-31（用户：「自动化任务 工作台中，不要有 浮动工具栏」）：
+				//   工作台可声明 `floatingActions: false` 关掉那条 S2 浮动胶囊（AI 助手 + 外开）。
+				//   默认 true —— 现有工作台一个都不变。
+				floatingActions: descriptor.floatingActions !== false,
 				layout: { businessSide: layout.businessSide || 'right', businessWidth: layout.businessWidth !== undefined ? layout.businessWidth : 0.36 },
 			});
 		}
@@ -817,10 +821,9 @@ window.__ModuleLoader__.load({
 			if (entry.customFrame) { props.active = service.active === entry.id; props.conversation = h(ConversationMount, { service, entry }); }
 			// ★ 外开链接**不再挂载时预取**：token 属于当前进程，宿主一重启旧链接就 401。
 			//   改为每次点击现取（`openWorkbenchInBrowser` 里同步开窗 + 异步导航）。
-			return h(HeaderHost, { entry },
-				// ★ S2 一体条：AI 助手展开 + 外开 合成一条竖直胶囊，整组可拖。
-				//   外壳只渲染一次 ⇒ 所有工作台自动都有；「«」的显隐跟随工作台的助手收起态。
-				h('div', {
+			// ★ 2026-10-31（用户：「自动化任务 工作台中，不要有 浮动工具栏」）：
+			//   工作台可用 `floatingActions: false` 退出 S2 浮动胶囊（scheduler 已声明）。
+			const actions = entry.floatingActions === false ? [] : [h('div', {
 					className: 'vssWbActions',
 					'data-vssaros-wb-actions': entry.id,
 					'data-assist': 'none',
@@ -915,7 +918,8 @@ window.__ModuleLoader__.load({
 						}, '↗'),
 						h('span', { className: 'wbLabel' }, '在浏览器打开'),
 					),
-				),
+				)];
+			return h(HeaderHost, { entry }, ...actions,
 				h(PanelBoundary, { entry }, h(entry.Component, props)));
 		}
 

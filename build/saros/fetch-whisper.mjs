@@ -26,16 +26,28 @@
  *
  * 下载源（Windows x64）：
  *   二进制（zip 内含 whisper-cli.exe + whisper.dll/ggml*.dll，DLL 必须与 exe 同目录）：
- *     https://github.com/ggerganov/whisper.cpp/releases/latest/download/whisper-bin-x64.zip
+ *     https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.2/whisper-bin-x64.zip
  *   模型（ggml；HuggingFace，国内自动回落 hf-mirror.com）：
  *     https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-<model>.bin
  *
- * 仅支持 Windows x64 预编译包；macOS/Linux 请用 brew install whisper-cpp 或源码构建，
- * 然后把可执行文件放进 build/saros/bin/（解析侧按同名查找）。
+ * 下载源（macOS，2026-10-31 走**方案 B：锁定的第三方预编译包**）：
+ *   上游 ggml-org/whisper.cpp **不发布任何预编译二进制**（release 只有源码包），
+ *   故锁定 OpenWhispr/whisper.cpp 的自动构建（tag 由 SAROS_WHISPER_TAG 覆盖，默认 0.0.11）：
+ *     arm64: https://github.com/OpenWhispr/whisper.cpp/releases/download/0.0.11/whisper-cpp-darwin-arm64.zip
+ *            （Apple Silicon + **Metal GPU 加速**）
+ *     x64:   https://github.com/OpenWhispr/whisper.cpp/releases/download/0.0.11/whisper-cpp-darwin-x64.zip
+ *            （Intel，纯 CPU，需 macOS 13.3+）
+ *   包内是 whisper-cli + 若干 **.dylib**（libwhisper / libggml*；mac 的动态库，等同 win 的 DLL）。
+ *   完整性：--sha256 或 SAROS_WHISPER_SHA256 指定期望摘要（不指定 ⇒ 只告警、不阻断）。
+ *   ⚠ 与 ffmpeg 同款约束：落盘后必须 chmod + 清 quarantine，并由打包流水线统一 codesign
+ *     （Apple Silicon 拒绝执行未签名二进制）。
+ *
+ * Linux 仍不支持（请用 brew/源码构建后手动放进 build/saros/bin/，解析侧按同名查找）。
  */
 
 import { execSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync, cpSync, statSync, createWriteStream, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, cpSync, statSync, createWriteStream, createReadStream, readFileSync, readdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { request as httpsRequest } from 'node:https';
@@ -58,11 +70,26 @@ const CHECK_ONLY = args.includes('--check-only');
 const SKIP_MODEL = args.includes('--skip-model');
 const SKIP_SELFTEST = args.includes('--skip-selftest');
 
+// ── 平台（2026-10-31：macOS 走方案 B = 锁定的第三方预编译包）──────────────
+const IS_WIN = process.platform === 'win32';
+const ARCH = process.arch === 'arm64' ? 'arm64' : 'x64';
+const EXE = IS_WIN ? '.exe' : '';
+
+/**
+ * macOS 镜像 tag：上游不发包，锁 OpenWhispr 的自动构建 ⇒ **固定 tag**（不追 latest），
+ * 升级必须显式改这个默认值或用 SAROS_WHISPER_TAG 覆盖，避免"某天 CI 静默换了二进制"。
+ */
+const WHISPER_MIRROR_TAG = process.env.SAROS_WHISPER_TAG || '0.0.11';
+/** 期望 sha256（可选）：--sha256 或 SAROS_WHISPER_SHA256；不指定 ⇒ 只告警不阻断。 */
+const EXPECTED_SHA256 = (optValue('--sha256') || process.env.SAROS_WHISPER_SHA256 || '').trim().toLowerCase();
+
 // ⚠ 不能用 releases/latest/download：whisper.cpp 从 v1.9.3 起 release **不再挂任何资产**
 // （实测 2026-09-25：latest=v1.9.4 assets=0 ⇒ 404）。钉在最后一个带 Windows 预编译包的
 // 稳定版 v1.9.2（b51xx 是 CI 预发布，不追）。升级时改这里并重跑本脚本验证。
 // 另：仓库已从 ggerganov/whisper.cpp 迁至 ggml-org/whisper.cpp（旧地址会 301，写新地址省去一跳）。
-const DEFAULT_WHISPER_URL = 'https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.2/whisper-bin-x64.zip';
+const DEFAULT_WHISPER_URL = IS_WIN
+	? 'https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.2/whisper-bin-x64.zip'
+	: `https://github.com/OpenWhispr/whisper.cpp/releases/download/${WHISPER_MIRROR_TAG}/whisper-cpp-darwin-${ARCH}.zip`;
 const WHISPER_ZIP_URL = CUSTOM_WHISPER_URL || DEFAULT_WHISPER_URL;
 // HuggingFace 在国内常被墙/极慢 ⇒ 主源失败后自动回落 hf-mirror.com（同一文件，社区镜像）。
 const MODEL_URLS = CUSTOM_MODEL_URL
@@ -72,7 +99,7 @@ const MODEL_URLS = CUSTOM_MODEL_URL
 		`https://hf-mirror.com/ggerganov/whisper.cpp/resolve/main/ggml-${MODEL_NAME}.bin`,
 	];
 
-const WHISPER = join(BIN_DIR, 'whisper-cli.exe');
+const WHISPER = join(BIN_DIR, `whisper-cli${EXE}`);
 const MODEL = join(MODEL_DIR, `ggml-${MODEL_NAME}.bin`);
 
 /** 各模型档位的大小下限（用于"下载被拦截/截断"判定）。tiny ≈75MB，base ≈142MB，small ≈466MB。 */
@@ -175,20 +202,60 @@ function listFilesRecursive(dir) {
 	return out;
 }
 
+/** 流式 sha256（模型 142MB，不能整个读进内存；zip 走同一路径）。 */
+function sha256Of(p) {
+	return new Promise((resolve, reject) => {
+		const h = createHash('sha256');
+		createReadStream(p)
+			.on('data', c => h.update(c))
+			.on('end', () => resolve(h.digest('hex')))
+			.on('error', reject);
+	});
+}
+
+/** 解压：Windows 用 Expand-Archive，其它平台用 unzip（与 fetch-ffmpeg.mjs 同口径）。 */
+function extractZip(zipPath, extractDir) {
+	if (IS_WIN) {
+		// -ErrorAction Stop：Expand-Archive 的错误默认非终止（fetch-ffmpeg 同款教训）。
+		execSync(
+			`powershell -NoProfile -Command "$ErrorActionPreference='Stop'; Expand-Archive -Path '${zipPath}' -DestinationPath '${extractDir}' -Force"`,
+			{ stdio: 'inherit' },
+		);
+	} else {
+		execSync(`unzip -o -q "${zipPath}" -d "${extractDir}"`, { stdio: 'inherit' });
+	}
+}
+
 /**
- * 取 whisper-cli.exe + 全部 DLL（zip 分发）。
- * DLL 必须与 exe 同目录（whisper.dll / ggml*.dll 是运行时依赖，只拷 exe 会起不来）。
+ * macOS 落盘后处理：① chmod 755（解压可能丢可执行位）② 清 com.apple.quarantine。
+ * ⚠ 签名由打包流水线的 codesign 统一做（Apple Silicon 不执行未签名二进制）。
+ */
+function darwinPrepare(p) {
+	if (process.platform !== 'darwin') { return; }
+	try {
+		execSync(`chmod 755 "${p}"`);
+	} catch (e) {
+		log(`   ⚠️ chmod 755 失败（${p}）: ${e.message.split('\n')[0]}`);
+	}
+	try {
+		execSync(`xattr -dr com.apple.quarantine "${p}"`);
+	} catch { /* 没有该属性也属正常 */ }
+}
+
+/**
+ * 取 whisper-cli + 全部动态库（zip 分发）。
+ * 动态库必须与 CLI 同目录（win: whisper.dll/ggml*.dll；mac: libwhisper*.dylib/libggml*.dylib，
+ * 只拷 CLI 会起不来）。
  */
 async function fetchWhisperBinary() {
 	if (verifyWhisper()) {
 		log(`✅ whisper-cli 已存在且可用，跳过下载（${WHISPER}）`);
-		log('   如需强制重新下载：先删除 build/saros/bin/whisper-cli.exe 及同目录 whisper/ggml DLL');
+		log(`   如需强制重新下载：先删除 ${WHISPER} 及同目录${IS_WIN ? ' whisper/ggml DLL' : ' libwhisper*/libggml* dylib'}`);
 		return true;
 	}
-	if (process.platform !== 'win32') {
-		log(`❌ 本脚本只支持 Windows x64 预编译包（当前 ${process.platform}/${process.arch}）。`);
-		log('   macOS: brew install whisper-cpp；或从 https://github.com/ggerganov/whisper.cpp 源码构建，');
-		log(`   把可执行文件放到 ${BIN_DIR}（解析侧按同名查找）。`);
+	if (!IS_WIN && process.platform !== 'darwin') {
+		log(`❌ 本脚本支持 Windows x64 与 macOS（${ARCH}）；当前 ${process.platform}/${process.arch} 没有可用预编译包。`);
+		log('   Linux: 源码构建或 brew，再把可执行文件放进 build/saros/bin/（解析侧按同名查找）。');
 		return false;
 	}
 
@@ -206,35 +273,50 @@ async function fetchWhisperBinary() {
 		if (zipSize < 1024 * 1024) {
 			throw new Error(`下载的 zip 过小（${(zipSize / 1024 / 1024).toFixed(1)}MB），疑似被拦截或截断`);
 		}
+		// ★ 方案 B 的"锁"：第三方包必须能校验完整性，否则某天 CI 静默换了二进制没人知道。
+		if (EXPECTED_SHA256) {
+			const actual = await sha256Of(zipPath);
+			if (actual !== EXPECTED_SHA256) {
+				throw new Error(`sha256 不匹配 ⇒ 拒绝使用。期望 ${EXPECTED_SHA256}，实际 ${actual}。`
+					+ '（若确实要换版，请同步更新 --sha256 / SAROS_WHISPER_SHA256）');
+			}
+			log(`   ✅ sha256 校验通过（${actual.slice(0, 16)}…）`);
+		} else {
+			log(`   ⚠️ 未指定 sha256 ⇒ 跳过完整性校验（建议用 --sha256 / SAROS_WHISPER_SHA256 锁定：${WHISPER_ZIP_URL}）`);
+		}
 		log(`✅ 下载完成（${(zipSize / 1024 / 1024).toFixed(1)}MB），解压中...`);
 
 		rmSync(extractDir, { recursive: true, force: true });
 		mkdirSync(extractDir, { recursive: true });
-		// -ErrorAction Stop：Expand-Archive 的错误默认非终止（fetch-ffmpeg 同款教训）。
-		execSync(
-			`powershell -NoProfile -Command "$ErrorActionPreference='Stop'; Expand-Archive -Path '${zipPath}' -DestinationPath '${extractDir}' -Force"`,
-			{ stdio: 'inherit' },
-		);
+		extractZip(zipPath, extractDir);
 
 		const files = listFilesRecursive(extractDir);
-		// 旧版 zip 里的 CLI 叫 main.exe，v1.5+ 改名 whisper-cli.exe —— 统一落盘为 whisper-cli.exe。
-		const cliSrc = files.find(p => /whisper-cli\.exe$/i.test(p)) ?? files.find(p => /(^|[\\/])main\.exe$/i.test(p));
-		const dlls = files.filter(p => /\.dll$/i.test(p));
+		// 旧版 zip 里的 CLI 叫 main(.exe)，v1.5+ 改名 whisper-cli(.exe) —— 统一落盘为 whisper-cli(.exe)。
+		const cliRe = IS_WIN ? /whisper-cli\.exe$/i : /(^|[\\/])whisper-cli$/i;
+		const mainRe = new RegExp(`(^|[\\\\/])main${EXE}$`, 'i');
+		const cliSrc = files.find(p => cliRe.test(p)) ?? files.find(p => mainRe.test(p));
+		// win: *.dll；mac: *.dylib（libwhisper / libggml*）
+		const libs = files.filter(p => (IS_WIN ? /\.dll$/i.test(p) : /\.(dylib|so)$/i.test(p)));
 		if (!cliSrc) {
-			throw new Error(`解压后未找到 whisper-cli.exe/main.exe。内容: ${files.map(f => f.slice(extractDir.length)).join(', ') || '(无)'}`);
+			throw new Error(`解压后未找到 whisper-cli${EXE}/main${EXE}。内容: ${files.map(f => f.slice(extractDir.length)).join(', ') || '(无)'}`);
 		}
-		if (dlls.length === 0) {
-			throw new Error('解压后未找到任何 DLL（whisper.dll/ggml*.dll 是运行时依赖，缺了 exe 起不来）');
+		if (libs.length === 0) {
+			throw new Error(`解压后未找到任何动态库（${IS_WIN ? 'whisper.dll/ggml*.dll' : 'libwhisper*.dylib/libggml*.dylib'} 是运行时依赖，缺了 CLI 起不来）`);
 		}
 
 		cpSync(cliSrc, WHISPER);
-		for (const d of dlls) { cpSync(d, join(BIN_DIR, d.slice(d.lastIndexOf('\\') + 1).replace(/^.*\//, ''))); }
+		darwinPrepare(WHISPER);
+		for (const d of libs) {
+			const dest = join(BIN_DIR, d.slice(Math.max(d.lastIndexOf('\\'), d.lastIndexOf('/')) + 1));
+			cpSync(d, dest);
+			darwinPrepare(dest);
+		}
 
 		rmSync(zipPath, { force: true });
 		rmSync(extractDir, { recursive: true, force: true });
 
 		if (verifyWhisper()) {
-			log(`✅ whisper-cli 已安装到 ${WHISPER}（含 ${dlls.length} 个 DLL）`);
+			log(`✅ whisper-cli 已安装到 ${WHISPER}（含 ${libs.length} 个${IS_WIN ? ' DLL' : ' dylib'}）`);
 			return true;
 		}
 		rmSync(WHISPER, { force: true });
@@ -245,8 +327,10 @@ async function fetchWhisperBinary() {
 		log(`❌ whisper.cpp 下载/解压失败: ${err.message}`);
 		log('');
 		log('手动方案：');
-		log('  1. 从 https://github.com/ggerganov/whisper.cpp/releases/latest 下载 whisper-bin-x64.zip');
-		log('  2. 解压，把 whisper-cli.exe 与全部 .dll 放到:');
+		log(IS_WIN
+			? '  1. 从 https://github.com/ggml-org/whisper.cpp/releases/tag/v1.9.2 下载 whisper-bin-x64.zip'
+			: `  1. 从 https://github.com/OpenWhispr/whisper.cpp/releases/tag/${WHISPER_MIRROR_TAG} 下载 whisper-cpp-darwin-${ARCH}.zip`);
+		log(`  2. 解压，把 whisper-cli${EXE} 与全部${IS_WIN ? ' .dll' : ' .dylib'} 放到:`);
 		log(`     ${BIN_DIR}`);
 		log('  3. 或用 --whisper-url 指定镜像: node build/saros/fetch-whisper.mjs --whisper-url <你的zip>');
 		return false;
@@ -304,19 +388,24 @@ async function fetchModel() {
  * 外网素材的全链路判据。失败只警告不阻断（SAPI 语音包可能缺失，属环境因素）。
  */
 function selfTest() {
-	const FFMPEG = join(BIN_DIR, 'ffmpeg.exe');
+	const FFMPEG = join(BIN_DIR, `ffmpeg${EXE}`);
 	if (!existsSync(FFMPEG)) {
 		log('⚠️ 自检跳过：内置 ffmpeg 不在（先跑 node build/saros/fetch-ffmpeg.mjs）');
 		return;
 	}
 	const tmpTag = `${process.pid}_${Date.now()}`;
-	const rawWav = join(MODEL_DIR, `_selftest_raw_${tmpTag}.wav`);
+	// Windows 用 SAPI 直接出 wav；macOS 用 say 出 aiff（再交给 ffmpeg 转 16kHz mono）
+	const rawWav = join(MODEL_DIR, `_selftest_raw_${tmpTag}${IS_WIN ? '.wav' : '.aiff'}`);
 	const wav = join(MODEL_DIR, `_selftest_${tmpTag}.wav`);
 	try {
-		execSync(
-			`powershell -NoProfile -Command "Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.SetOutputToWaveFile('${rawWav}'); $s.Speak('Hello world. This is a whisper transcription test.'); $s.Dispose()"`,
-			{ stdio: 'ignore', timeout: 30000 },
-		);
+		if (IS_WIN) {
+			execSync(
+				`powershell -NoProfile -Command "Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.SetOutputToWaveFile('${rawWav}'); $s.Speak('Hello world. This is a whisper transcription test.'); $s.Dispose()"`,
+				{ stdio: 'ignore', timeout: 30000 },
+			);
+		} else {
+			execSync(`say -o "${rawWav}" "Hello world. This is a whisper transcription test."`, { stdio: 'ignore', timeout: 30000 });
+		}
 		// whisper.cpp 的 WAV 读取器只认 16kHz mono 16bit —— SAPI 默认输出不是 ⇒ 必经 ffmpeg 转。
 		execSync(`"${FFMPEG}" -y -i "${rawWav}" -ar 16000 -ac 1 -c:a pcm_s16le "${wav}"`, { stdio: 'ignore', timeout: 30000 });
 		const r = spawnSync(`"${WHISPER}"`, ['-m', `"${MODEL}"`, '-f', `"${wav}"`, '-l', 'en', '--no-timestamps'], { shell: true, encoding: 'utf8', timeout: 120000 });
@@ -376,8 +465,8 @@ if (!modelOk) {
 if (!SKIP_SELFTEST) { selfTest(); }
 
 log('');
-log('打包接线已完成（2026-09-25）：strip-before-pack.mjs 会把 exe+DLL 落到 resources/saros/bin/、');
-log('模型落到 resources/saros/models/（缺失仅警告不阻断出包，与 ffmpeg 同级）。');
+log(`打包接线已完成（2026-09-25）：strip-before-pack.mjs 会把 CLI+${IS_WIN ? 'DLL' : 'dylib'} 落到 ${IS_WIN ? 'resources' : 'Contents/Resources'}/saros/bin/、`);
+log(`模型落到 ${IS_WIN ? 'resources' : 'Contents/Resources'}/saros/models/（缺失仅警告不阻断出包，与 ffmpeg 同级）。`);
 log('下一步（ASR 管线落地时做）：');
 log('  1. mediaBinaries.ts 解析 whisper-cli + 模型（沿用 build/saros 逐级向上 + resources/saros 规则）；');
 log('  2. videoMediaPipeline 增加「无字幕轨 ⇒ ffmpeg 提音轨 ⇒ whisper 转写」一步。');

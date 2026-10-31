@@ -1,4 +1,4 @@
-# 进程名：2026-10-29 起 exe 叫 `VsSaros`（原来 `Saroasis harness`）⇒ 两个都认，
+﻿# 进程名：2026-10-29 起 exe 叫 `VsSaros`（原来 `Saroasis harness`）⇒ 两个都认，
 # 否则改名过渡期会"看不见"旧名实例的窗口 ⇒ 被误判成僵尸态、白杀一次。
 # ★ 2026-10-30：dev 的 exe 改用独立名 `VsSaros Dev.exe`（与安装版 `VsSaros.exe` 区分开）
 #   ⇒ 默认只认 dev 名（安装版的窗口不该被当成"dev 实例的窗口"，那会让 F5 走 SKIP）。
@@ -40,6 +40,34 @@ public static class VisWin {
   }
 }
 '@
-$pids = @(Get-Process -Name $ProcessName -ErrorAction SilentlyContinue | ForEach-Object { [uint32]$_.Id })
+# ★★ 2026-10-31（真机：**本脚本恒返回 0** ⇒ 每次 F5 都把正在用的 dev 实例误判成僵尸并杀掉 ✗✗）：
+#   原来用 `Get-Process -Name <名>` 取 pid —— 而实测在这个会话里
+#     `Get-Process -Name 'VsSaros'` ⇒ **0**（`Where -eq` 也是 0），
+#     同时 `Feishu`=13、`CodeBuddy CN`=21 正常 ⇒ **它根本看不到我们的进程**
+#     （`wmic` 看得到 14 个，`Get-Process -Id <pid>` 也能取到名字）。
+#   ⇒ 换成两个可靠来源取并集：
+#       ① CIM `Win32_Process`（与 wmic 同源，实测能看到）；
+#       ② 从**可见窗口反查** pid，再取进程名（实测这路能拿到 `VsSaros`）。
+$want = @($ProcessName | ForEach-Object { $_.ToLowerInvariant() })
+$pids = New-Object 'System.Collections.Generic.HashSet[uint32]'
+
+# ① CIM：按进程名（带不带 .exe 都认）
+foreach ($n in $want) {
+	$exe = if ($n.EndsWith('.exe')) { $n } else { $n + '.exe' }
+	$filter = "Name = '" + $exe.Replace("'", "''") + "'"
+	$rows = @(Get-CimInstance Win32_Process -Filter $filter -ErrorAction SilentlyContinue)
+	foreach ($r in $rows) { [void]$pids.Add([uint32]$r.ProcessId) }
+}
+
+# ② 窗口反查：先拿到"所有可见有标题窗口"的 pid，再看它的进程名/路径命中不命中
+foreach ($p in @(Get-Process -ErrorAction SilentlyContinue)) {
+	$name = ''
+	try { $name = $p.ProcessName.ToLowerInvariant() } catch { $name = '' }
+	if (-not $name) { continue }
+	foreach ($n in $want) {
+		if ($name -eq $n -or $name -eq ($n + '.exe')) { [void]$pids.Add([uint32]$p.Id); break }
+	}
+}
+
 if ($pids.Count -eq 0) { Write-Output 0; exit 0 }
-Write-Output ([VisWin]::Count($pids))
+Write-Output ([VisWin]::Count(@($pids)))

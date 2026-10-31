@@ -239,6 +239,16 @@ window.__ModuleLoader__.load({
 		function install(ctx, shell) {
 			const state = shell.state;
 			const bridge = shell.bridge;
+			// ★★ 2026-10-30（用户要求「desktop 用 dsh 原生交互、IDE 用 IDE 交互」）：
+			//   这枚入口存在的全部理由是"右栏被 chat-only 裁掉 ⇒ 官方行内『在右侧栏打开』是死按钮"。
+			//   desktop 窗口**右栏在** ⇒ 官方那枚下拉（`subagent-catalog`，行点击切会话 + 行内动作开右栏）
+			//   本来就是完整的原生交互，不需要我们再补一枚（补了反而多一条非原生入口 ✗）。
+			//   判据由入口算好放 `shell.ide`（单一真相，见 client.js 的 isIdeChatView）。
+			if (!shell.ide) {
+				state.vssarosSubagentsEntry = false;
+				state.vssarosSubagentsEntrySkipped = "desktop 窗口（chatOnly=0）：保留官方子代理目录的原生交互";
+				return;
+			}
 			const Wrapped = (props) => react.createElement(SubagentsEntry, Object.assign({}, props, {
 				__vssarosState: state,
 				__vssarosBridge: bridge,

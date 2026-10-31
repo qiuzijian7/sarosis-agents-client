@@ -40,6 +40,15 @@ import { fileURLToPath } from 'node:url';
 //   漏了它会在渲染期 `ReferenceError` ⇒ 页面直接 500 ✗）。
 import { escapeHtml, isVaultId, searchDocs, FEISHU_SYNC_SCRIPT, LIBRARY_DIR, NOTES_DIR, MAX_DOC_BYTES, TOPIC_OVERVIEW_FILE, RAW_DIR, RAW_SUBDIR, buildFeishuSyncArgs, resolveRawPath } from './core/kb.js';
 
+// ★ 2026-10-31：知识库专用 agent（让 AI 助手默认显示「知识库专家」）。
+//   落 `.agent.md` 到数据根（vssaros-agents 启动时扫描注册）⇒ preset = `vssaros-kb-expert`。
+import { ensureKbAgent, KB_PRESET, KB_PRESET_CANDIDATES } from './kbAgent.js';
+
+// ★ 2026-10-31：知识库的**本地 Git 版本管理**（不依赖任何服务器，全部在这个库目录里跑 git）。
+import { initRepo, isRepo, gitStatus, gitCommit, gitLog, gitShowFile, gitRestoreFile, readGitConfig, writeGitConfig, maybeAutoCommit } from './core/kbGit.js';
+// ★ 2026-10-31（P1）：版本管理的**远端抽象层**（local / path / github / gitlab / forgejo）。
+import { REMOTE_TYPES, readRemote, writeRemote, gitRemoteSet, gitRemoteRemove, gitRemoteTest, gitPull, gitPush } from './core/kbGitRemote.js';
+
 // ★ 2026-10-25：服务端 Markdown 渲染（markdown-it + Obsidian 方言；vendor 已随包）
 import { renderMarkdownHtml } from './md/render.js';
 // 2026-10-26：mermaid 改用仓库已有的 **pele** 引擎（同步、零 DOM ⇒ 服务端可渲染）。
@@ -3831,6 +3840,23 @@ function ensureExtraVaults(root) {
 	return EXTRA_VAULTS;
 }
 
+/**
+ * ★ 2026-10-31：**商城装来的知识库**（`<kb数据根>/.market-vaults.json`）。
+ *
+ * 契约的另一端在 `vssaros-marketplace/lib/installers.js` 的 `registerKnowledgeVault`：
+ *   商城侧把装好的库写进这个注册表 ⇒ **这里读它并并入库清单** ⇒ 装完就能在知识库里看见 ✓。
+ *   ⚠ 与 `.extra-vaults.json` 同目录（都是 `kbRootOf(config)`）⇒ 商城侧能找到、我们也能找到 ✓
+ *   ⚠ 只读（不写不改）；删库仍走知识库自己的「从列表移除」⇒ 只摘登记，不动磁盘 ✓
+ */
+const MARKET_VAULTS_FILE = '.market-vaults.json';
+function loadMarketVaults(root) {
+	try {
+		const raw = readFileSync(join(root, MARKET_VAULTS_FILE), 'utf8');
+		const list = JSON.parse(raw);
+		return Array.isArray(list) ? list : [];
+	} catch { return []; }
+}
+
 function externalVaultRecords(config) {
 	const list = parseInjectedVaults(injectedRawOf(config)) ?? [];
 	const injected = list
@@ -3843,7 +3869,16 @@ function externalVaultRecords(config) {
 		extras = ensureExtraVaults(root).map(v => ({ id: String(v.id), dir: String(v.path).trim(), name: v.name, icon: 'codicon:library' }));
 	} catch { /* 数据根不可用 ⇒ 只用注入清单 */ }
 	const seen = new Set(injected.map(v => v.id));
-	return injected.concat(extras.filter(v => v.dir && !seen.has(v.id)));
+	// 合并商城装来的库（按 id 去重，注入 > 自持登记 > 商城）
+	let market = [];
+	try {
+		const root = kbRootOf(config);
+		market = loadMarketVaults(root)
+			.filter(v => v && typeof v?.path === 'string' && v.path.trim())
+			.map(v => ({ id: `mkt-${String(v.id)}`, dir: String(v.path).trim(), name: v.name, fromMarket: true }));
+	} catch { /* 注册表不存在/坏了 ⇒ 忽略 */ }
+	const seen2 = new Set([...seen, ...extras.map(v => v.id)]);
+	return injected.concat(extras.filter(v => v.dir && !seen.has(v.id))).concat(market.filter(v => !seen2.has(v.id)));
 }
 
 /**
@@ -6347,6 +6382,14 @@ function startFeishuScheduler(config) {
 	return () => { try { clearInterval(timer); } catch { /* 已清 */ } };
 }
 
+/**
+ * ★ 2026-10-31：宿主的**凭据服务**(`ctx.credentials`) —— 与商城 JWT 同一套落点
+ *   （`dsh-credentials-local` ⇒ `<dshHome>/.credentials.yaml`）。
+ *   知识库的 Git 访问令牌存在这里 ⇒ **明文不落数据根、不落库目录、不进版本**。
+ *   ⚠ 拿不到（比如纯探针环境）时保持 null ⇒ 远端功能降级为"无凭据"，其它照常 ✓。
+ */
+let KB_CREDENTIALS = null;
+
 export function apply(ctx, config = {}) {
 	// 重构 1.3：绑定 foundation 共享服务（dataRoot/dshHome/pageShell/lock 的真源）。
 	{
@@ -6373,6 +6416,24 @@ export function apply(ctx, config = {}) {
 		if (svc) { bindFoundation(svc); }
 	});
 	}
+	/*
+	 * ★ 2026-10-31（用户：知识库的 AI 助手应显示「知识库 agent」）：
+	 *   落 `<数据根>/agents/kb-expert/.agent.md` ⇒ `vssaros-agents` 扫描注册
+	 *   ⇒ preset `vssaros-kb-expert` 才真的存在（此前客户端选的是不存在的 id ⇒ 静默失败）。
+	 *   ⚠ 首次创建后要**重启 Host** 才会被扫到；已存在则一个字节都不动（用户可能改过）。
+	 */
+	try {
+		let kbAgentRoot = '';
+		try { kbAgentRoot = typeof config?.dataRoot === 'string' ? config.dataRoot.trim() : ''; } catch { kbAgentRoot = ''; }
+		if (!kbAgentRoot) { try { kbAgentRoot = dataRootOf(config) || ''; } catch { kbAgentRoot = ''; } }
+		void ensureKbAgent({ dataRoot: kbAgentRoot || undefined }).then((r) => {
+			try {
+				if (r && r.created && r.created.length) {
+					console.log('[kb] 已创建知识库 agent（重启 Host 后生效）：' + r.created.join(', ') + ' ⇒ preset ' + KB_PRESET);
+				}
+			} catch { /* 日志失败无所谓 */ }
+		}).catch(() => { /* 建 agent 失败不该影响插件加载 */ });
+	} catch { /* ignore */ }
 	// ★ `state.grant` = **本批一次性授权**（2026-10-12 P0，见 core/kbBatchGrant.js 文件头）：
 	//   由 `kb_build mode="build"` 在**被用户批准之后**打开（执行期 ⇒ 批准已成立 ✓），
 	//   有界（篇数）/ 有时限（TTL）/ 有归属（vault + 会话 owner）✓ ⇒ 子代理写入不再逐篇弹窗 ✓。
@@ -6384,6 +6445,12 @@ export function apply(ctx, config = {}) {
 	// 可选注入：vssarosBridge 不在 ⇒ semantic 模式如实报错（与"没建索引"同口径 ✓），其余照常 ✓。
 	// 防御：探针的假 ctx 不忠实模拟"依赖不齐不调回调"（直接调，scope 上没有 ⇒ 抛）⇒ 服务不齐时
 	// 不启动不抛错（抛错会让整个插件 apply 失败 ✗，kb 工具陪葬 ✗——kanban 的 runner 踩过同型坑 ✓）。
+	// ★ 2026-10-31：取宿主凭据服务（写法照 `vssaros-marketplace`，见其 state.credentials）。
+	ctx.inject(['credentials'], scope => {
+		try { KB_CREDENTIALS = scope.credentials ?? null; } catch { KB_CREDENTIALS = null; }
+		return () => { KB_CREDENTIALS = null; };
+	});
+
 	ctx.inject(['vssarosBridge'], scope => {
 		let svc = null;
 		try { svc = scope.vssarosBridge ?? null; } catch { /* 探针的 Proxy 假 ctx 对未知属性抛错 ⇒ 当不存在 */ }
@@ -7550,6 +7617,21 @@ export function apply(ctx, config = {}) {
 							} catch { backup = ''; }   // 备份失败不阻断保存（如实返回 backup 为空）
 						}
 						await writeFile(p, text, 'utf8');
+						/*
+						 * ★ 2026-10-31：本地 Git 自动提交（**不联网、不上传**）。
+						 *   只有用户显式开启过版本管理（有 .git 且 autoCommit=true）才真的提交；
+						 *   失败一律吞掉 ⇒ 保存已经成功了，不该因为提交失败报错。
+						 *   `vroot` = 该文件所属的**库根**（取最长匹配 ⇒ 外挂库也能认对）。
+						 */
+						{
+							// ⚠ Windows：`resolve()` 出来是**反斜杠**，而库根已归一成正斜杠 ⇒ 两边都归一了再比，
+							//   否则 vroot 恒为 undefined ⇒ 自动提交永远不触发（2026-10-31 端到端实测抓到）。
+							const pNorm = String(p).replace(/\\/g, '/');
+							const vroot = [kbRootOf(config), ...externalVaultRecords(config).map(it => it.dir || it.path || ''), ...LAST_VAULT_DIRS]
+								.filter(Boolean).map(s => String(s).replace(/\\/g, '/').replace(/\/+$/, ''))
+								.filter(r => pNorm === r || pNorm.startsWith(r + '/')).sort((a, b) => b.length - a.length)[0];
+							if (vroot) { void maybeAutoCommit(vroot, `保存 ${basename(p) || '笔记'}`); }
+						}
 						const after = await stat(p).catch(() => null);
 						send(200, {
 							ok: true, path: p,
@@ -8597,6 +8679,132 @@ export function apply(ctx, config = {}) {
 					}
 					return;
 				}
+				/*
+				 * ★ 2026-10-31：知识库的**本地版本管理**（Git）—— 全部操作都在本机这个库目录里跑 git，
+				 *   **不依赖任何服务器、不联网、不上传**（见 lib/core/kbGit.js 头部的四条底线）。
+				 *
+				 *   协议：`POST /x/kb/api/kb-git`  body = { op, vaultId?, file?, message?, limit?, rev?, config? }
+				 *   op:
+				 *     init      → git init + .gitignore + 首次提交（幂等）
+				 *     status    → { repo, branch, dirty, lastCommit } + 库级配置（autoCommit）
+				 *     commit    → add -A + commit（message 可选）
+				 *     log       → 整个库的提交（limit，默认 30）
+				 *     logFile   → **某个文件**的提交（file 必填，limit 同上）
+				 *     show      → 某个提交里该文件的内容（rev + file）
+				 *     restore   → 把文件恢复到某个提交（rev + file）⇒ 生成一条新提交，历史不丢
+				 *     config    → 读写库级配置（{ config: { autoCommit: true } }）
+				 *   ⚠ 一切 file 都会被 `relInside` 围栏 ⇒ 库外路径一律 403。
+				 */
+				if (url && url.pathname === `${ROUTE_PREFIX}/api/kb-git` && req.method === 'POST') {
+					const send = (code, payload) => {
+						res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(payload));
+					};
+					try {
+						let raw = '';
+						for await (const chunk of req) {
+							raw += chunk;
+							if (raw.length > 65536) { send(413, { ok: false, error: '请求体太大' }); return; }
+						}
+						const payload = JSON.parse(raw || '{}');
+						const op = String(payload?.op ?? 'status').trim();
+						const { vaults } = await listAllVaults(kbRootOf(config), config, { withDocs: false });
+						const wantId = String(payload?.vaultId ?? '').trim();
+						const vault = wantId ? vaults.find(v => v.id === wantId) : vaults[0];
+						if (!vault) { send(404, { ok: false, error: '找不到库：' + (wantId || '(未指定)') }); return; }
+						const dir = String(vault.dir ?? vault.path ?? '');
+						if (!dir) { send(400, { ok: false, error: '该库没有目录' }); return; }
+						const fileArg = String(payload?.file ?? '').trim();
+						switch (op) {
+							case 'init': { send(200, await initRepo(dir)); return; }
+							case 'status': {
+								/*
+								 * ★ 2026-10-31（用户：文章**默认开启**本地 Git 版本管理）：
+								 *   面板一问 status，若还没仓库且 autoInit 没被关掉 ⇒ **就地建库**（含一次初始提交）。
+								 *   这样"默认开启"是**看得见的**（打开版本面板就有 master · 一条历史），
+								 *   而不是"要等用户先保存一次"。
+								 *   ⚠ 仍然**只在本机这个库目录里**跑 git ⇒ 不联网、不上传 ✓。
+								 */
+								try {
+									const cfg0 = readGitConfig(dir);
+									if (cfg0.autoInit !== false && !isRepo(dir)) {
+										await initRepo(dir, { message: 'chore(kb): 初始化版本管理（默认开启）' });
+									}
+								} catch { /* 建库失败不该让 status 失败（UI 照常显示"未开启"） */ }
+								send(200, { ...(await gitStatus(dir)), config: readGitConfig(dir), vaultId: vault.id });
+								return;
+							}
+							case 'commit': { send(200, await gitCommit(dir, String(payload?.message ?? '').trim() || 'chore(kb): 手动提交')); return; }
+							case 'log': { send(200, await gitLog(dir, '', Number(payload?.limit) || 30)); return; }
+							case 'logFile': {
+								if (!fileArg) { send(400, { ok: false, error: '需要 file' }); return; }
+								send(200, await gitLog(dir, fileArg, Number(payload?.limit) || 30)); return;
+							}
+							case 'show': {
+								if (!fileArg) { send(400, { ok: false, error: '需要 file' }); return; }
+								send(200, await gitShowFile(dir, String(payload?.rev ?? '').trim(), fileArg)); return;
+							}
+							case 'restore': {
+								if (!fileArg) { send(400, { ok: false, error: '需要 file' }); return; }
+								send(200, await gitRestoreFile(dir, String(payload?.rev ?? '').trim(), fileArg)); return;
+							}
+							case 'config': { send(200, { ok: true, config: writeGitConfig(dir, payload?.config ?? {}) }); return; }
+							/*
+							 * ★ 2026-10-31（P1 远端抽象层）：
+							 *   remote     → 读当前库的远端配置（**不回 token 明文**，只回 hasToken）
+							 *   remoteSet  → 设置/更换远端（type=local ⇒ 断开并清除凭据）
+							 *   remoteTest → 只做 ls-remote（不改动任何东西）
+							 *   push/pull  → 用**库里存的那份**配置（凭据只在数据根，不进库、不进 .git/config）
+							 */
+							case 'remote': {
+								const c = await readRemote(kbRootOf(config), vault.id, KB_CREDENTIALS);
+								send(200, { ok: true, types: REMOTE_TYPES, remote: {
+									type: c.type,
+									...(c.url ? { url: c.url } : {}),
+									...(c.branch ? { branch: c.branch } : {}),
+									hasToken: Boolean(c.token),
+								} });
+								return;
+							}
+							case 'remoteSet': {
+								const type = String(payload?.type ?? 'local').trim();
+								if (!REMOTE_TYPES.includes(type)) { send(400, { ok: false, error: '不支持的远端类型：' + type }); return; }
+								const w = await writeRemote(kbRootOf(config), vault.id, {
+									type,
+									url: String(payload?.url ?? '').trim(),
+									branch: String(payload?.branch ?? '').trim(),
+									token: String(payload?.token ?? '').trim(),
+								}, KB_CREDENTIALS);
+								if (!w.ok) { send(400, { ok: false, error: w.error }); return; }
+								// 同步到 git 的 remote（断开 ⇒ 摘掉 origin）
+								if (w.remote.type === 'local') { await gitRemoteRemove(dir); }
+								else {
+									const rs = await gitRemoteSet(dir, w.remote.url);
+									if (!rs.ok) { send(400, { ok: false, error: rs.error }); return; }
+								}
+								send(200, { ok: true, remote: { type: w.remote.type, url: w.remote.url, branch: w.remote.branch, hasToken: Boolean(w.remote.token) } });
+								return;
+							}
+							case 'remoteTest': {
+								send(200, await gitRemoteTest(String(payload?.url ?? '').trim(), String(payload?.type ?? 'github').trim(), String(payload?.token ?? '').trim()));
+								return;
+							}
+							case 'push': {
+								send(200, await gitPush(dir, await readRemote(kbRootOf(config), vault.id, KB_CREDENTIALS)));
+								return;
+							}
+							case 'pull': {
+								send(200, await gitPull(dir, await readRemote(kbRootOf(config), vault.id, KB_CREDENTIALS)));
+								return;
+							}
+							default: { send(400, { ok: false, error: '未知 op：' + op }); return; }
+						}
+					} catch (e) {
+						send(500, { ok: false, error: String(e?.message ?? e) });
+					}
+					return;
+				}
+
 				if (url && url.pathname === `${ROUTE_PREFIX}/api/doc`) {
 					// ★ 2026-10-23：把"页面列过的库根"一并交给围栏 —— 否则外挂库的文件列得出、读不到
 					const result = await readDoc(kbRootOf(config), url.searchParams.get('uri') ?? '', LAST_VAULT_DIRS);

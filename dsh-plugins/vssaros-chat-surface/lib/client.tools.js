@@ -136,6 +136,15 @@ window.__ModuleLoader__.load({
 		function install(ctx, shell) {
 			const state = shell.state;
 			const bridge = shell.bridge;
+				// ★★ 2026-10-30（用户要求「desktop 用 dsh 原生交互、IDE 用 IDE 交互」）：
+				//   **desktop 窗口（`chatOnly=0`）整段不装** —— 它自带官方右栏（`[data-slot="rightbar"]`），
+				//   文件链接就该开在 dsh 右栏预览里；从前这里无条件 patch `openResource` ⇒ 桌面窗口点
+				//   工具卡路径会**跳到 IDE 编辑器**，把原生交互换掉了 ✗。判据由入口算好放 `shell.ide`。
+				if (!shell.ide) {
+					state.openFileRoute = false;
+					state.openFileRouteSkipped = "desktop 窗口（chatOnly=0）：保留官方右栏预览，不改道 IDE";
+					return;
+				}
 				// ── 「打开文件」改接 VsSaros（方案 5.14 批次 3 的替代实现）──────────────
 				// 服务名与 dsh 官方一致（`ctx.sidebarRight.openResource`）；取不到/只读时如实记 false，
 				// 不做任何兜底伪造（宁可点了走官方隐藏右栏，也不要静默吞掉点击）。

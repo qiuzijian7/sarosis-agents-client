@@ -6,7 +6,8 @@
  *
  *   GET /api/update/{platform}/{quality}/{commit}
  *
- *   - platform 例：win32-x64-user / win32-x64 / win32-arm64-user ...
+ *   - platform 例：win32-x64-user / win32-x64 / win32-arm64-user / darwin / darwin-arm64
+ *     （macOS 的键名**不是** darwin-x64：客户端按 process.arch 发 `darwin` 或 `darwin-arm64`）
  *   - quality  例：saros（与 product.json 的 quality 一致）
  *   - commit   客户端当前的 commit（用于比较是否需要更新）
  *
@@ -72,8 +73,19 @@ const ASSET_NAME_BY_PLATFORM = {
 	'win32-x64-user': 'VsSarosUserSetup',
 	'win32-arm64-user': 'VsSarosUserSetup',
 	'win32-x64': 'VsSarosSetup',
-	'win32-arm64': 'VsSarosSetup'
+	'win32-arm64': 'VsSarosSetup',
+	// macOS：客户端的 assetID 取自 DarwinUpdateService（updateService.darwin.ts:95）
+	//   `darwinUniversalAssetId ?? (process.arch === 'x64' ? 'darwin' : 'darwin-arm64')`
+	// ⇒ 键名必须是 `darwin`（Intel）与 `darwin-arm64`（Apple Silicon），不是 darwin-x64 ✗
+	'darwin': 'VsSaros-darwin-x64',
+	'darwin-arm64': 'VsSaros-darwin-arm64',
+	'darwin-universal': 'VsSaros-darwin-universal'
 };
+
+/** macOS 走 zip（.app 打包后分发 / Squirrel.Mac 只认 zip），Windows 走 exe。 */
+function archiveExt(platform) {
+	return platform.startsWith('darwin') ? '.zip' : '.exe';
+}
 
 /**
  * 从本地 manifest.json 读取某 platform 的最新版本信息（带内存缓存，按 mtime 失效）
@@ -224,7 +236,7 @@ function handleUpload(req, res, url) {
 		return;
 	}
 
-	const fileName = `${baseName}.exe`;
+	const fileName = `${baseName}${archiveExt(platform)}`;
 	fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
 	const filePath = path.join(DOWNLOADS_DIR, fileName);
 
@@ -328,7 +340,8 @@ async function readFromGitHub(platform) {
 	const release = await res.json();
 	// release.body 约定写入一行 "commit: <full-commit-sha>"；productVersion 取 tag_name
 	const commitMatch = /commit:\s*([0-9a-f]{40})/i.exec(release.body || '');
-	const asset = (release.assets || []).find(a => a.name.includes(wantName) && a.name.endsWith('.exe'));
+	const ext = archiveExt(platform);
+	const asset = (release.assets || []).find(a => a.name.includes(wantName) && a.name.endsWith(ext));
 	if (!asset || !commitMatch) {
 		return null;
 	}
@@ -397,6 +410,14 @@ const server = http.createServer(async (req, res) => {
 	if (latest.sha256hash) {
 		payload.sha256hash = latest.sha256hash;
 	}
+	// ★ macOS：DarwinUpdateService 把 feed 交给 electron.autoUpdater（Squirrel.Mac），
+	//   它按 **Squirrel 字段**读响应（`url` 必需，`name` 展示用，`pub_date` 可选）——
+	//   只给 version/productVersion/url 这套 win32 字段的话，Squirrel 取不到 url ⇒ 静默无更新。
+	if (platform.startsWith('darwin')) {
+		payload.name = latest.productVersion || latest.version;
+		payload.pub_date = new Date(payload.timestamp).toISOString();
+		payload.notes = '';
+	}
 
 	res.writeHead(200, { 'Content-Type': 'application/json' });
 	res.end(JSON.stringify(payload));
@@ -408,6 +429,7 @@ server.listen(PORT, () => {
 	console.log(`下载目录: ${DOWNLOADS_DIR}`);
 	console.log(`上传端点: POST /admin/upload（鉴权: ${UPLOAD_TOKEN ? '已启用 X-Upload-Token' : '未启用（UPLOAD_TOKEN 未设置）'}）`);
 	console.log(`测试: curl http://localhost:${PORT}/api/update/win32-x64-user/saros/0000000000000000000000000000000000000000`);
+	console.log(`      curl http://localhost:${PORT}/api/update/darwin-arm64/saros/0000000000000000000000000000000000000000`);
 });
 
 server.on('error', (err) => {

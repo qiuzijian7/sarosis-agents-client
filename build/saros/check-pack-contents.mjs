@@ -38,40 +38,77 @@ const ROOT = resolve(__dirname, '../..');
  *   "目录不存在 ⇒ 跳过"那条路 ⇒ **形同虚设** ✗✗。
  *   ⇒ 按候选列表探测，第一个"真的有 resources/app"的目录才是产物根 ✓。
  */
+// ── 平台布局（2026-10-31：macOS 打包支持）──────────────────────────────────────
+// Windows/Linux ⇒ 产物根里是 `resources/app`；macOS ⇒ `.app` 里是 `Contents/Resources/app`。
+const WIN_APP_SUB = 'resources/app';
+const MAC_APP_SUB = 'Contents/Resources/app';
+
+/** 该目录是否为产物根：返回其 app 子路径，不是产物根则返回 null。 */
+function appSubOf(dir) {
+	if (existsSync(join(dir, WIN_APP_SUB))) { return WIN_APP_SUB; }
+	if (existsSync(join(dir, MAC_APP_SUB))) { return MAC_APP_SUB; }
+	return null;
+}
+
+/** 候选展开：目录本身 + 一层子目录（macOS 的 `*.app` 就在构建输出目录里）。 */
+function expandCandidates(dir) {
+	const out = [dir];
+	try {
+		for (const e of readdirSync(dir, { withFileTypes: true })) {
+			if (e.isDirectory()) { out.push(join(dir, e.name)); }
+		}
+	} catch { /* 目录不存在就跳过 */ }
+	return out;
+}
+
 function resolveBuildDir() {
 	const explicit = process.argv[2];
 	if (explicit) {
-		return resolve(explicit);
-	}
-	const candidates = [join(ROOT, '../VSCode-win32-x64')];
-	// `.build/win32-x64/*`：有的流程把应用目录放在子目录里（如 `app/`）
-	try {
-		for (const e of readdirSync(join(ROOT, '.build/win32-x64'), { withFileTypes: true })) {
-			if (e.isDirectory()) {
-				candidates.push(join(ROOT, '.build/win32-x64', e.name));
-			}
+		// 与 strip-before-pack.mjs 同口径：允许传 `VSCode-darwin-<arch>`（其内是 `<Name>.app`）
+		const dir = resolve(explicit);
+		if (appSubOf(dir)) { return dir; }
+		for (const c of expandCandidates(dir)) {
+			if (appSubOf(c)) { return resolve(c); }
 		}
-	} catch { /* 目录不存在就跳过 */ }
-	candidates.push(join(ROOT, '.build/win32-x64'));
+		return dir;
+	}
+	const candidates = [
+		join(ROOT, '../VSCode-win32-x64'),
+		// macOS：`../VSCode-darwin-<arch>/<Name>.app`（父目录与其子目录都探测 ⇒ 两种传法都命中）
+		...expandCandidates(join(ROOT, '../VSCode-darwin-arm64')),
+		...expandCandidates(join(ROOT, '../VSCode-darwin-x64')),
+		// `.build/win32-x64/*`：有的流程把应用目录放在子目录里（如 `app/`）
+		...expandCandidates(join(ROOT, '.build/win32-x64')),
+	];
 
 	for (const c of candidates) {
-		if (existsSync(join(c, 'resources/app'))) {
+		if (appSubOf(c)) {
 			return resolve(c);
 		}
 	}
 	return resolve(candidates[0]);
 }
 
-const buildDir = resolveBuildDir();
+let buildDir = resolveBuildDir();
+const APP_SUB = appSubOf(buildDir) || WIN_APP_SUB;
+
+/** 把「Windows 口吻」的相对路径翻译成当前平台的真实相对路径。 */
+function toStagingRel(rel) {
+	if (APP_SUB === WIN_APP_SUB) { return rel; }
+	if (rel === WIN_APP_SUB) { return APP_SUB; }
+	if (rel.startsWith(WIN_APP_SUB + '/')) { return APP_SUB + rel.slice(WIN_APP_SUB.length); }
+	if (rel.startsWith('resources/')) { return 'Contents/Resources/' + rel.slice('resources/'.length); }
+	return rel;
+}
 
 if (!existsSync(buildDir)) {
 	console.error(`❌ 构建输出目录不存在: ${buildDir}`);
-	console.error('   候选探测：../VSCode-win32-x64、.build/win32-x64/*、.build/win32-x64');
+	console.error('   候选探测：../VSCode-win32-x64、../VSCode-darwin-<arch>[/<Name>.app]、.build/win32-x64/*、.build/win32-x64');
 	console.error('   ⇒ 打包时请显式传目录：node build/saros/check-pack-contents.mjs <产物根>');
 	process.exit(1);
 }
-if (!existsSync(join(buildDir, 'resources/app'))) {
-	console.error(`❌ ${buildDir} 下没有 resources/app ⇒ 这不是构建输出目录`);
+if (!existsSync(join(buildDir, APP_SUB))) {
+	console.error(`❌ ${buildDir} 下没有 ${APP_SUB} ⇒ 这不是构建输出目录`);
 	process.exit(1);
 }
 
@@ -263,9 +300,10 @@ const warnings = [];
 
 // ① ensureDir / ensureFile 清单（单一真相源）
 for (const item of fromEnsure) {
+	const stagingRel = toStagingRel(item.stagingRel);
 	const abs = item.sentinel
-		? join(buildDir, item.stagingRel, item.sentinel)
-		: join(buildDir, item.stagingRel);
+		? join(buildDir, stagingRel, item.sentinel)
+		: join(buildDir, stagingRel);
 	if (!existsSync(abs)) {
 		problems.push(`${item.label}：${item.stagingRel}${item.sentinel ? '/' + item.sentinel : ''} 缺失`);
 	}
@@ -273,14 +311,14 @@ for (const item of fromEnsure) {
 
 // ② 额外必需项
 for (const item of REQUIRED_EXTRA) {
-	if (!existsSync(join(buildDir, item.rel))) {
+	if (!existsSync(join(buildDir, toStagingRel(item.rel)))) {
 		problems.push(`${item.label}：${item.rel} 缺失`);
 	}
 }
 
 // ③ 可选项（只警告）
 for (const item of OPTIONAL_EXTRA) {
-	if (!existsSync(join(buildDir, item.rel))) {
+	if (!existsSync(join(buildDir, toStagingRel(item.rel)))) {
 		warnings.push(`${item.label}：${item.rel} 不在构建输出里（若由安装阶段另拷则正常）`);
 	}
 }
@@ -288,11 +326,11 @@ for (const item of OPTIONAL_EXTRA) {
 // ④ 依赖闭包核对（2026-10-29）：产物代码里**真正 require 的** `@vscode/*`，
 //   逐个确认 `node_modules/@vscode/*` 里在 —— 缺一个就是运行时 `ERR_MODULE_NOT_FOUND`。
 //   ⚠ 这条能抓住"源目录里有、装出来没有"的那类缺件（`code.iss` 的 Excludes 排除 ⇒ 装包时丢）。
-const appDir = join(buildDir, 'resources/app');
-// ⚠ 这道门禁是给**构建输出目录**用的（`VSCode-win32-x64`）⇒ 目录不对就别硬报一堆误导的"缺失"
+const appDir = join(buildDir, APP_SUB);
+// ⚠ 这道门禁是给**构建输出目录**用的（`VSCode-win32-x64` / `VSCode-darwin-<arch>`）⇒ 目录不对就别硬报一堆误导的"缺失"
 //   （安装目录里 `out/` 已被 bundle 成 main.js、`out/vs/**` 结构也不同 ⇒ 全是假警报 ✗）。
 if (!existsSync(join(appDir, 'out/main.js'))) {
-	console.error(`❌ ${buildDir} 不像构建输出目录（缺 resources/app/out/main.js）`);
+	console.error(`❌ ${buildDir} 不像构建输出目录（缺 ${APP_SUB}/out/main.js）`);
 	console.error('   ⇒ 这道门禁要指向**打包的输入目录**（VSCode-win32-x64），不是安装目录。');
 	console.error('   用法：node build/saros/check-pack-contents.mjs <构建输出目录>');
 	process.exit(1);

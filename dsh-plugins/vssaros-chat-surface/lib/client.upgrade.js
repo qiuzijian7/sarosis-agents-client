@@ -24,16 +24,24 @@ window.__ModuleLoader__.load({
 		const MARK = "data-vssaros-upgrade";
 		/** 官方账号 chip（client.account.js 写的锚点）—— 我们这行贴在它上面。 */
 		const ANCHOR = "[data-vssaros-account-chip]";
-		const ROW_H = 30;
+		// ★ 2026-10-30：30 → 52（行内多一行"更新内容"）。measure()/面板定位都用它，改一处即可。
+		const ROW_H = 52;
 		const GAP = 6;
 
 		const CSS = `
 /* ⚠ 这行是 overlay 覆盖在官方侧栏上 ⇒ **必须不透明**：透明时背后的状态文字会透上来糊成一片
-   （2026-10-23 用户报障"更新按钮为透明背景，导致和后面的文字有重叠"）。 */
-[${MARK}-row]{position:fixed;z-index:2147482000;display:flex;align-items:center;gap:8px;height:${ROW_H}px;
+   （2026-10-23 用户报障"更新按钮为透明背景，导致和后面的文字有重叠"）。
+   ★ 2026-10-30（用户："在左下角的更新UI中，显示更新内容"）：行内改成**两行** ——
+   第一行「↑ 更新 · N 项可用」，第二行直接列**具体要升的东西**（名字 旧→新 · 名字 … · +N），
+   不必点开面板才知道升什么。ROW_H 随之 30 → 52。 */
+[${MARK}-row]{position:fixed;z-index:2147482000;display:flex;flex-direction:column;justify-content:center;gap:1px;
+  height:${ROW_H}px;
   padding:0 9px;border-radius:8px;border:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.22));
   background:var(--dsw-alias-bg-layer-1,#262626);cursor:pointer;
   font:inherit;font-size:12.5px;color:var(--dsw-alias-label-primary,#e8e9ec);white-space:nowrap;overflow:hidden}
+[${MARK}-row] .vu-top{display:flex;align-items:center;gap:8px;min-width:0}
+[${MARK}-row] .vu-sub{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  font-size:10.5px;line-height:1.2;color:var(--dsw-alias-label-tertiary,#81858c)}
 [${MARK}-row]:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.16))}
 [${MARK}-row][data-hot="1"]{border-color:var(--dsw-alias-brand-primary,#4a8cff);
   background:color-mix(in srgb,var(--dsw-alias-brand-primary,#4a8cff) 16%,var(--dsw-alias-bg-layer-1,#262626))}
@@ -108,6 +116,22 @@ window.__ModuleLoader__.load({
 		//   但那也不能让这一行写「已最新」（真机：源上已有 2.2.26208，本地 2.2.26207，
 		//   那行却显示"已最新"⇒ 用户完全看不到信号 ✗）⇒ 由 `Row` 里的 `appUp` 改**文案**解决。
 		const totalPending = s => upgradableRows(s).length + assetRows(s).length;
+		/** 包名短名（`@vssaros/dsh-chat-surface` → `dsh-chat-surface`）：行上空间只够放短名 ✓ */
+		const shortPkg = name => {
+			const str = String(name || "");
+			const i = str.lastIndexOf("/");
+			return i >= 0 ? str.slice(i + 1) : str;
+		};
+		/**
+		 * 「更新内容」清单（2026-10-30 用户："在左下角的更新UI中，显示更新内容"）。
+		 *
+		 * 顺序与面板保持一致：可升级的随包插件 → 商城资产；每项写成 `名字 旧→新`。
+		 * ⚠ 只放**可升级**的（`missing` 是"未安装"，不属于"更新内容"，见 upgradableRows 的注释）。
+		 */
+		const upcomingItems = s => [
+			...upgradableRows(s).map(r => `${shortPkg(r.name)} ${r.installedVersion ? `${r.installedVersion}→` : ""}${r.version}`),
+			...assetRows(s).map(a => `${a.name} ${a.current ? `${a.current}→` : ""}${a.latest}`),
+		];
 		const KIND_LABEL = { skill: "技能", mcp: "MCP", agent: "智能体", workflow: "工作流", workbench: "工作台" };
 		const KIND_ORDER = ["skill", "mcp", "agent", "workflow", "workbench"];
 		const busyOf = s => (s && s.app && s.app.busy) || "";
@@ -124,7 +148,13 @@ window.__ModuleLoader__.load({
 			return "还没检查";
 		};
 
-		/** 侧栏那一行（贴在账号 chip 上方）。 */
+		/**
+		 * 侧栏那一行（贴在账号 chip 上方）：**两行** —— 摘要 + 具体更新内容。
+		 *
+		 * 第一行：`↑ 更新`（强调色的徽标数在右）。
+		 * 第二行：`dsh-dashboard 0.4.71 · chat-surface 0.2.299 · +1`（列前两项，放不下靠 hover 的 title）。
+		 * 只有"应用可升级"时第二行写 `应用可升级到 <版本>`。
+		 */
 		function Row(props) {
 			const s = props.state;
 			// 徽标数 = 随包插件 + 商城资产（用户要的是"总共几项该升"，不是只算插件）
@@ -136,7 +166,12 @@ window.__ModuleLoader__.load({
 			const appUp = !!(s && s.app && s.app.action === "upgrade");
 			const appRemote = (s && s.app && s.app.remote) || "新版本";
 			const badge = n > 0 ? `${n} 项可用` : (appUp ? "应用可升级" : "已最新");
-			const tip = n > 0 ? `更新：${n} 项可用` : (appUp ? `更新：应用可升级到 ${appRemote}` : "更新：已是最新");
+			// 第二行：**更新内容**（不是只给个数字 —— 用户 2026-10-30："显示更新内容"）
+			const items = upcomingItems(s);
+			const sub = n > 0
+				? (items.slice(0, 2).join(" · ") + (items.length > 2 ? ` · +${items.length - 2}` : ""))
+				: (appUp ? `应用可升级到 ${appRemote}` : "已是最新");
+			const tip = (n > 0 ? [`更新：${n} 项可用`, ...items] : [appUp ? `更新：应用可升级到 ${appRemote}` : "更新：已是最新"]).join("\n");
 			return react.createElement("button", {
 				[MARK + "-row"]: "1",
 				"data-hot": (n > 0 || appUp) ? "1" : "0",
@@ -144,10 +179,13 @@ window.__ModuleLoader__.load({
 				style: props.pos,
 				onClick: () => props.onToggle(),
 			},
-				react.createElement("span", { className: "vu-ico" }, "↑"),
-				react.createElement("span", null, "更新"),
-				n > 0 ? react.createElement("span", { className: "vu-n" }, `${n} 项可用`)
-					: react.createElement("span", { className: "vu-muted" }, badge),
+				react.createElement("span", { className: "vu-top" },
+					react.createElement("span", { className: "vu-ico" }, "↑"),
+					react.createElement("span", null, "更新"),
+					n > 0 ? react.createElement("span", { className: "vu-n" }, `${n} 项可用`)
+						: react.createElement("span", { className: "vu-muted" }, badge),
+				),
+				react.createElement("span", { className: "vu-sub" }, sub),
 			);
 		}
 
@@ -406,6 +444,11 @@ window.__ModuleLoader__.load({
 				// ⚠ 每一项都兜底：这个 chunk 会被各种环境装载（真页面 / 全窗 / 守卫的极简假 DOM），
 				//   任何一处抛错都不能连累聊天本体 ✓
 				try {
+					// ★ 2026-10-31（用户截图：分窗口时右下角**多出一个更新 UI**）：桌面窗口的右侧
+					//   **独立格子**（宿主 viewId 固定以 `dsh-desk-split-` 开头）只是聊天框 ⇒ 不装更新入口；
+					//   更新状态是**全应用**的，主栏（或以后做在窗口层）显示一份就够了 ✓
+					const vid = String((window.vssarosDsh && window.vssarosDsh.viewId) || "");
+					if (vid.indexOf("dsh-desk-split-") === 0) { return; }
 					ensureCss();
 					const slots = ctx && ctx.slots;
 					if (!slots || typeof slots.inject !== "function") { return; }
@@ -416,7 +459,7 @@ window.__ModuleLoader__.load({
 					));
 				} catch { /* 装不上就不出现入口（聊天本体不受影响） */ }
 			},
-			__test: { readState, pendingRows, upgradableRows, totalPending, actionText, MARK, ROW_H },
+			__test: { readState, pendingRows, upgradableRows, upcomingItems, totalPending, actionText, MARK, ROW_H },
 		};
 	},
 });

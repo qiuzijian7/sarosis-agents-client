@@ -19,7 +19,7 @@
 //   ② `POST /packages/:slug/versions/raw`（raw tar.gz + `X-Changelog`）✓
 
 import { readFile, readdir, stat } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { packTarGz } from './tar.js';
 // ★ 2026-10-22：`localId` 也要挡越界（`../` 会让 `join(root, ...)` 读到数据根外）
 import { assertSafeStoreId } from './installers.js';
@@ -34,18 +34,44 @@ import { parseGitHubSource, resolveCommitSha } from './githubSource.js';
 //   而自己从 `.agent.md` 的 frontmatter 反解出 `agent.json` 又必然与 IDE 的组装逻辑漂移
 //   （嵌套 `configHtml` 之类）✗ ⇒ **agent 的发布留在 IDE**（`preparePack` 是唯一正确组装器）✓
 // ★ 2026-10-23：mcp 也能由 dsh 侧打包（目录镜像，入口 config.json）
-export const PUBLISHABLE_KINDS = ['skill', 'workflow', 'agent', 'mcp'];
+// ★ 2026-10-31：加 `knowledge`（知识库）。
+//   服务端 `src/packages/kinds.ts` 的 PACKAGE_KINDS **早已含 knowledge**，且 isBundleKind=true
+//   ⇒ 走的正是"包本体随版本上传（tar.gz）"这条通道；线上已有 vscode-dev-guide / sarosis-handbook 两个包 ✓。
+//   ⚠ 与 skill/workflow/mcp 不同：知识库的**源目录在用户选的库里**（不在 <数据根>/<kind根>/ 下）
+//     ⇒ 打包入口必须支持 `sourceDir`（见 preparePublishBundle）。
+export const PUBLISHABLE_KINDS = ['skill', 'workflow', 'agent', 'mcp', 'knowledge'];
 
 /** 各 kind 的本地根目录名（与 IDE 侧 `SarosPath` 同口径）。 */
 // ★ 2026-10-23：加 mcp（`<数据根>/mcp/<id>/`，入口 config.json）
-const KIND_DIR = { agent: 'agents', skill: 'skills', workflow: 'workflows', mcp: 'mcp' };
+const KIND_DIR = { agent: 'agents', skill: 'skills', workflow: 'workflows', mcp: 'mcp', knowledge: 'knowledge' };
 
 /** 打包时**排除**的目录/文件（备份、依赖、版本库 —— 它们不属于"这个资源"）。 */
 const EXCLUDE_DIRS = new Set(['node_modules', '.git', '.upgrade-backup', '.saros']);
 const EXCLUDE_FILES = new Set(['.DS_Store', 'Thumbs.db']);
 
+/**
+ * ★ 2026-10-31：知识库打包的**额外排除项**（与 KB 的 `.gitignore` 同口径）。
+ *   这些是**可再生**的缓存/索引/日志，或**不该外传**的东西：
+ *   · .git（历史留在作者本机，包里不需要，且可能含内网远端地址）
+ *   · .tmp-media（实测一个库 138MB 视频就在这里）· .obsidian（应用态 1.7MB）
+ *   · .kb-* 索引/缓存 · .op-log.jsonl · 飞书同步状态
+ */
+const EXCLUDE_DIRS_KNOWLEDGE = new Set(['.git', '.tmp-media', '.obsidian', '.kb-html-cache', '.canvas-text-migration-backup', '.kb-backup', 'node_modules']);
+const EXCLUDE_FILES_KNOWLEDGE = new Set([
+	'.kbkernel.json', '.kb-build-cache.json', '.kb-insights-cache.json', '.kb-topic-overview-cache.json',
+	'.kb-ingest-cache.json', '.kb-git.json', '.op-log.jsonl',
+	'.feishu-sync.json', '.feishu-space-map.json', '.feishu-sync.log', '.kb-feishu-sync.log',
+]);
+
 /** 服务端上传体积上限（与 config.ts 的 `uploadLimits` 同口径；超了服务端会 413）。 */
-const SIZE_LIMIT = { agent: 5 * 1024 * 1024, skill: 2 * 1024 * 1024, workflow: 2 * 1024 * 1024, mcp: 2 * 1024 * 1024 };
+// ★ knowledge 放行到 50MB（素材多；服务端 `/versions/raw` 上限 200mb，有余量）
+const SIZE_LIMIT = {
+	agent: 5 * 1024 * 1024,
+	skill: 2 * 1024 * 1024,
+	workflow: 2 * 1024 * 1024,
+	mcp: 2 * 1024 * 1024,
+	knowledge: 50 * 1024 * 1024,
+};
 
 /** 本地资源根：`<数据根>/<kind根>`。 */
 export function localRootOf(dataRoot, kind) {
@@ -68,11 +94,15 @@ export async function collectDir(dir, opts = {}) {
 		for (const entry of entries) {
 			if (entry.isDirectory()) {
 				if (EXCLUDE_DIRS.has(entry.name)) { continue; }
+				// ★ 知识库专属排除（缓存/临时媒体/应用态）
+				if (opts.knowledge && EXCLUDE_DIRS_KNOWLEDGE.has(entry.name)) { continue; }
 				await walk(join(current, entry.name), prefix ? `${prefix}/${entry.name}` : entry.name);
 				continue;
 			}
 			if (!entry.isFile()) { continue; }
 			if (EXCLUDE_FILES.has(entry.name)) { continue; }
+			// ★ 知识库专属排除（索引/日志/同步状态）+ 备份产物
+			if (opts.knowledge && (EXCLUDE_FILES_KNOWLEDGE.has(entry.name) || /\.bak($|-)/.test(entry.name))) { continue; }
 			const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
 			if (opts.skipManifest && rel === 'manifest.json') { continue; }
 			const data = await readFile(join(current, entry.name));
@@ -93,7 +123,72 @@ export async function collectDir(dir, opts = {}) {
  * @param {string} args.version 版本号
  * @param {{ name?: string, description?: string, category?: string, tags?: string[] }} [args.meta]
  */
-export async function preparePublishBundle({ dataRoot, kind, localId, version, meta = {} }) {
+/**
+ * ★ 2026-10-31：**知识库发布前的隐私体检**。
+ *
+ * 为什么必须有：知识库是私人笔记，误发布比代码误发布严重得多，而"用户自己注意"不可靠。
+ * ⇒ 打包时扫一遍，命中即**默认拦下**；调用方确认可公开后显式传 acknowledgePrivacy:true 才放行 ✓。
+ */
+export async function scanVaultPrivacy(dir, opts = {}) {
+	const maxFiles = Number(opts.maxFiles ?? 400);
+	const maxBytes = Number(opts.maxBytesPerFile ?? 200 * 1024);
+	const RULES = [
+		{ id: 'home-dir', title: '本机用户目录绝对路径（暴露机器/账号名）', level: 'blocker', re: /(?:[A-Za-z]:)?[\\/]{1,2}Users[\\/][^\\/\s"'<>]+/g },
+		{ id: 'email', title: '邮箱地址', level: 'blocker', re: /[\w.+-]+@[\w-]+\.[\w.]{2,}/g },
+		{ id: 'phone', title: '手机号', level: 'blocker', re: /(?:^|\D)1[3-9]\d{9}(?:\D|$)/g },
+		{ id: 'intranet', title: '内网域名或私有 IP', level: 'blocker', re: /(?:\b[\w-]+\.(?:corp|internal|local|lan|intra)\b)|(?:\b10\.\d{1,3}\.\d{1,3}\.\d{1,3})|(?:\b192\.168\.\d{1,3}\.\d{1,3})|(?:\b172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})/gi, },
+		{ id: 'marked-private', title: '正文里标了「内部 / 保密 / 机密」', level: 'warn', re: /(内部资料|保密|机密|请勿外传)/g, },
+	];
+	const hits = new Map();
+	function bump(rule, sample) {
+		const cur = hits.get(rule.id) ?? { id: rule.id, title: rule.title, level: rule.level, count: 0, sample: '' };
+		cur.count += 1;
+		if (!cur.sample && sample) { cur.sample = String(sample).slice(0, 60); }
+		hits.set(rule.id, cur);
+	}
+	let scanned = 0;
+	async function walk(current) {
+		if (scanned >= maxFiles) { return; }
+		let entries = [];
+		try { entries = await readdir(current, { withFileTypes: true }); } catch { return; }
+		for (const e of entries) {
+			if (scanned >= maxFiles) { return; }
+			const p = join(current, e.name);
+			if (e.isDirectory()) {
+				if (EXCLUDE_DIRS_KNOWLEDGE.has(e.name) || EXCLUDE_DIRS.has(e.name)) { continue; }
+				await walk(p);
+				continue;
+			}
+			if (!e.isFile()) { continue; }
+			if (!/\.(md|markdown|txt|json)$/i.test(e.name)) { continue; }
+			let text = '';
+			try {
+				text = (await readFile(p, 'utf8')).slice(0, maxBytes);
+			} catch { continue; }
+			scanned += 1;
+			for (const rule of RULES) {
+				rule.re.lastIndex = 0;
+				const m = rule.re.exec(text);
+				if (m) { bump(rule, m[0]); }
+			}
+		}
+	}
+	await walk(dir);
+	try {
+		const cfg = await readFile(join(dir, '.git', 'config'), 'utf8');
+		const m = /url\s*=\s*(\S+)/.exec(cfg);
+		if (m) {
+			bump({ id: 'git-remote', title: '.git 远端地址（可能含内网仓库或凭据）', level: 'blocker' }, m[1]);
+		}
+	} catch { /* 没有 .git（打包时本就会排除） */ }
+	const all = [...hits.values()];
+	return {
+		scanned,
+		blockers: all.filter((x) => x.level === 'blocker'),
+		warnings: all.filter((x) => x.level === 'warn'),
+	};
+}
+export async function preparePublishBundle({ dataRoot, kind, localId, version, meta = {}, sourceDir, acknowledgePrivacy = false } ) {
 	// ★ 入口先卡 kind（`localRootOf` 认得 agents 目录，但 agent **不该**由 dsh 侧打包 ⇒
 	//   只在 kind 层面拦是拦不住的，必须在打包入口拦 ✓）
 	if (!PUBLISHABLE_KINDS.includes(kind)) {
@@ -109,8 +204,22 @@ export async function preparePublishBundle({ dataRoot, kind, localId, version, m
 	if (!safeVersion) { throw new Error('发布需要版本号（不能为空或纯空白）'); }
 	// 同一类问题：`localId` 直接拼进 `join(root, ...)` ⇒ 必须挡越界（`../` 会读到数据根外）
 	assertSafeStoreId(localId, 'localId');
-	const root = localRootOf(dataRoot, kind);
-	const dir = join(root, localId);
+	/*
+	 * ★ 2026-10-31：知识库的源目录**不在数据根下**（它是用户选的一个库，可能在 D: 盘、共享盘……）
+	 *   ⇒ 走 `sourceDir` 分支；其余 kind 仍按 `<数据根>/<kind根>/<id>`。
+	 *   ⚠ sourceDir 必须是**绝对路径且是目录**（挡住相对路径与越界）。
+	 */
+	let dir;
+	if (typeof sourceDir === 'string' && sourceDir.trim()) {
+		const abs = resolve(sourceDir.trim());
+		let stSrc;
+		try { stSrc = await stat(abs); } catch { stSrc = null; }
+		if (!stSrc || !stSrc.isDirectory()) { throw new Error(`知识库目录不存在或不是目录：${abs}`); }
+		dir = abs;
+	} else {
+		const root = localRootOf(dataRoot, kind);
+		dir = join(root, localId);
+	}
 	let st;
 	try {
 		st = await stat(dir);
@@ -126,15 +235,31 @@ export async function preparePublishBundle({ dataRoot, kind, localId, version, m
 	} catch { base = {}; }
 
 	// 打包时排除旧 manifest（我们用新的那份，避免包内出现两份口径）✓
-	const files = await collectDir(dir, { skipManifest: true });
+	/*
+	 * ★ 2026-10-31：知识库发布前的隐私体检（默认拦下）。
+	 *   命中"本机用户目录 / 邮箱 / 手机号 / 内网地址 / .git 远端" ⇒ 拒绝发布；
+	 *   确认可公开后显式传 acknowledgePrivacy: true 才放行 ✓。
+	 */
+	if (kind === 'knowledge') {
+		const scan = await scanVaultPrivacy(dir);
+		if (scan.blockers.length && acknowledgePrivacy !== true) {
+			const lines = scan.blockers.map((b) => '· ' + b.title + '（' + b.count + ' 处，例：' + b.sample + '）').join('\n');
+			throw new Error(
+				'发布被隐私体检拦下：这个库里可能有不该外传的内容：\n' + lines
+				+ '\n请清理后再发布；确认这些内容可以公开时，请显式传 acknowledgePrivacy: true。',
+			);
+		}
+	}
+	const files = await collectDir(dir, { skipManifest: true, knowledge: kind === 'knowledge' });
 	if (files.length === 0) {
 		throw new Error(`「${localId}」目录里没有文件（拒绝发布一个空包）`);
 	}
+	const manifestName = typeof base.name === 'string' && base.name.trim() ? base.name : (meta.name?.trim() || localId);
 	const manifest = {
 		...base,
 		kind,
 		id: localId,
-		name: typeof base.name === 'string' && base.name.trim() ? base.name : (meta.name?.trim() || localId),
+		name: manifestName,
 		// 用校验过的（trim 后）版本，别把空白原样写进 manifest
 		version: safeVersion,
 		...(typeof base.description === 'string' || typeof meta.description === 'string'
@@ -144,6 +269,15 @@ export async function preparePublishBundle({ dataRoot, kind, localId, version, m
 			? { category: base.category ?? meta.category }
 			: {}),
 		files: files.map(f => f.path),
+		// ★ 2026-10-31：服务端契约里的 knowledge 块（线上已有包就是这么写的）⇒ 必须带上
+		...(kind === 'knowledge' ? {
+			knowledge: {
+				id: localId,
+				name: manifestName,
+				description: (typeof base.description === 'string' && base.description) || meta.description || '',
+				embedding: { provider: 'none' },
+			},
+		} : {}),
 	};
 	const totalBytes = files.reduce((sum, f) => sum + f.data.length, 0);
 	const limit = SIZE_LIMIT[kind];

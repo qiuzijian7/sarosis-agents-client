@@ -1,3 +1,10 @@
+// ★ 2026-10-31g 隐藏宿主浮动工具栏（vssWbActions）+ AgentMemory 头部重新布局 —— 触碰入口使产物 revision 更新
+// ★ 2026-10-31f 右栏记忆页签布局与内容重做（页签不换行 / 成员条进内容区 / init 降级 / AgentMemory 折叠）—— 触碰入口使产物 revision 更新
+// ★ 2026-10-31e 工作台群设置补「加入方式」两个开关（加入需确认 / Bot 自动接受邀请）—— 触碰入口使产物 revision 更新
+// ★ 2026-10-31d 工作台群设置补「待确认区」（谁邀请的 + 等谁点头 + ✓/✕）—— 触碰入口使产物 revision 更新
+// ★ 2026-10-31c 群成员上限 20→100（对齐 DSB）+ 建群/群设置显示"n / 上限"—— 触碰入口使产物 revision 更新
+// ★ 2026-10-31b 群聊下 记忆/演化/版本/分支 也能看（数据主体 memAgent + 成员选择条）—— 触碰入口使产物 revision 更新
+// ★ 2026-10-31 右栏记忆四页签重做（状态条 / 未提交分组 / 分道图 / 版本 / 分支）—— 触碰入口使产物 revision 更新
 // ★ 2026-10-27 工作台标题统一（Bots 标题走 .wb-title）—— 触碰入口使产物 revision 更新
 // 2026-10-26 touch：client.agents.js 今日多次变更（群聊附件 / 分组折叠 / 左栏「新建 bot」/ 右栏图标 / 创建二级页）
 //   ⇒ **必须动这个入口**，否则 chunk 的 ?rev 不变，浏览器一直吃旧缓存 —— 这就是"改了一天都没生效"的真正原因。
@@ -29,6 +36,9 @@
 //   顺带修掉**不存在的令牌名**（`--dsw-alias-border-l2` / `-label-link` / `-font-family-monospace` /
 //   `-state-focus-primary`）与写死的药丸色（`#e0a43a` / `#4C9AFF`）⇒ 之前从没跟随过主题 ✗。
 // ⚠ 探针锚点：名册行 `data-ag-row`、名字 `data-ag-name`（类名属视觉层 ⇒ 不当锚点）。
+// ★ 2026-10-31 touch（知识库商城条目 P0 收尾） 2026-10-31 08:17:11：chunk（client.agents.js）改过之后必须动入口 ⇒ ?rev 才会变，浏览器不吃旧缓存。
+// ★ 2026-10-31 touch#2 2026-10-31 11:48:40：chunk 改过之后必须动入口 ⇒ ?rev 才会变（守卫查 mtime）。
+// ★ touch 2026-10-31 11:55:15：chunk 改过之后必须动入口 ⇒ ?rev 才会变（守卫查 mtime）。
 window.__ModuleLoader__.load({
 	id: '@vssaros/dsh-agents',
 	factory: (require) => {

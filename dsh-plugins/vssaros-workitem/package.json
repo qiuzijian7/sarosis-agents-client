@@ -1,0 +1,36 @@
+{
+  "name": "@vssaros/dsh-workitem",
+  "version": "0.1.0",
+  "description": "VsSaros work-item kernel for DeepSeek Harness: the shared, stateless judgement layer behind unattended loops and agent group chat — ledger state machine (dedupe / backoff / attempts / crash recovery), per-round picking with exclusion reasons, completion contract [item:...], #task tag parsing, ring-storm budget, and the system-message gate. Consumers bind it via the cordis service `vssarosWorkItems`; it owns no storage and registers no tools.",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/workItemRef.js",
+    "lib/core/ledger.js",
+    "lib/core/pick.js",
+    "lib/core/taskTag.js",
+    "lib/core/budget.js",
+    "lib/core/systemMessage.js",
+    "cordis.patch.yml"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/dsh": ">=0.1.7-0 <0.3.0-0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": [
+        "./cordis.patch.yml"
+      ]
+    }
+  },
+  "license": "MIT",
+  "scripts": {
+    "check": "node ./test/run-workitem-check.mjs"
+  }
+}

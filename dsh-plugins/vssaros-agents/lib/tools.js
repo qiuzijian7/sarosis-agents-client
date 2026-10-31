@@ -15,6 +15,12 @@
 //   agent_read_chat       只读：读/搜**本会话**的完整历史（P4——压缩只动模型表面、不动日志 ✓，
 //                         所以被压缩掉的早期内容能找回来；ds-bot read_own_chat 同构，真源换成
 //                         dsh 原生 `ctx.sessionQuery.filterEvents`，不自建索引 ✓）。
+//   agent_group_create    过闸：建群并把成员一次拉齐（**建群者不是群主**，群主只能由人指定 ⇒ 防 bot 互相提权）
+//   agent_group_invite    不过闸：往已有群拉人（受群的「加入需确认」开关约束；有群主时只有群主能拉）
+//   agent_group_leave     不过闸：把自己移出某个群（**不能移别人**）
+//   三者都只复用 `groups.js` 的服务函数 —— 权限/上限/去重/待确认由服务层把关，工具层不另写一份群逻辑。
+//   参照 DeepSeekBot 的 group_create / group_invite_bot / group_leave（`dsh-bot-agent-adapter.ts:2787+`），
+//   但比它更严：它的 `ownerBotSlug` 由建群 bot 自己拿到，我们刻意不给。
 //
 // 挂载角色（与 index.js 的三角色对应）：顶层角色注册（带 hostHalf 闸）+ toolsOnly 角色注册（preset 内）。
 // persona 角色（每个 agent preset 里的那次挂载）**不注册**——v1 有意收紧：agent 自己的会话不给管理工具。
@@ -28,12 +34,20 @@ import { AGENT_MESSAGE_KIND } from './core/relay.js';
 import { readLiveSession, readLiveSessions } from './live.js';
 import { notePendingReply } from './relay.js';
 import { agentsRootOf, scanAgents } from './store.js';
+/* 群聊工具（2026-10-31，对齐 DeepSeekBot 的 group_create / group_invite_bot / group_leave）：
+   只**复用** `groups.js` 已有的服务函数（建群/拉人/移人），不在工具层另写一份群逻辑 ——
+   权限（群主闸）、上限、去重、待确认全部由服务层把关，工具只做"当前身份 + 参数解析 + 回执"。 */
+import { addGroupMembers, createGroup, listGroups, removeGroupMember, respondGroupInvite } from './groups.js';
 
 /** 过闸工具（`tools/pre-execute` ⇒ ask）。名单由 `dshPluginPackages.test.ts` 逐名核对。 */
-export const WRITE_TOOLS = ['agent_switch_persona', 'agent_stop'];
+export const WRITE_TOOLS = ['agent_switch_persona', 'agent_stop', 'agent_group_create'];
 
 /** 全部工具名（探针/快照对账用；顺序 = 注册顺序）。 */
-export const TOOL_NAMES = ['agent_list', 'agent_open_session', 'agent_switch_persona', 'agent_stop', 'agent_message', 'agent_read_chat'];
+export const TOOL_NAMES = ['agent_list', 'agent_open_session', 'agent_switch_persona', 'agent_stop', 'agent_message', 'agent_read_chat',
+	'agent_group_create', 'agent_group_invite', 'agent_group_leave', 'agent_group_invites', 'agent_group_invite_respond'];
+
+/** 建群要不要过闸？要 —— 它占群配额（上限 50）且是**不可逆的可见结构**；
+    拉人 / 退群不过闸：拉人有群级的「加入需确认」开关兜底，退群只影响调用者自己。 */
 
 /** 消息接力跳数上限（ds-bot MAX_HOPS=6 同构）：模型传 hop 超过它就拒发——防 A→B→A 无限接力。 */
 export const MAX_HOPS = 6;
@@ -69,6 +83,14 @@ function gateReason(name, args) {
 		const session = String(args.session ?? '').trim() || '(没给 session)';
 		const why = String(args.reason ?? '').trim();
 		return `agent_stop 停止会话 ${session} 的当前回合${why ? `（原因：${why}）` : ''}；排队中的消息会随回合一起丢弃`;
+	}
+	/* 建群要过闸 ⇒ 理由必须把**完整参数**摆出来（批准即所见，顺带当审计） */
+	if (name === 'agent_group_create') {
+		const gname = String(args.name ?? '').trim() || '(没给 name)';
+		const mem = Array.isArray(args.members) && args.members.length
+			? args.members.map((m) => String(m ?? '')).join('、')
+			: '(没给 members)';
+		return `agent_group_create 建群「${gname}」，成员：${mem}；会占用群配额（上限 50），且建完你不是群主（群主只能由人指定）`;
 	}
 	if (args.clear === true) {
 		return 'agent_switch_persona 恢复本会话的 preset 自带人设（下一回合生效）';
@@ -392,6 +414,193 @@ export function registerAgentTools(ctx, config, state) {
 				}
 				const more = total > shown.length ? `\n（另有 ${total - shown.length} 条没列出——加 query 缩小范围，或提高 limit）` : '';
 				return `${query ? `含「${query}」的 ${total} 条` : `最近 ${shown.length} 条`}（按时间正序）：\n${lines.join('\n')}${more}`;
+			},
+		},
+		/* ── 群聊三件套（2026-10-31，对齐 DeepSeekBot 的 group_create / group_invite_bot / group_leave）──
+		   设计取舍（与 DSB 的两点不同，都是刻意的）：
+		     ① 建群**必须带成员**（DSB 是"建空群"或"只有自己"）—— 我们服务层本来就这么要求；
+		     ② 建群者**不是群主**（DSB 是 ownerBotSlug）—— 群主只能由人指定，防 bot 互相提权
+		        （groups.js:`createGroup` 里对非人指定 ownerAgentId 直接 403）。
+		   所以这三个工具给的是"拉起协作"的能力，不是"控制一个群"的权力。 */
+		{
+			name: 'agent_group_create',
+			description: '建一个群聊并把成员一次拉齐（你自己会自动算作成员，不必写进 members）。建群会占用群配额，所以要人批准一次。⚠ 建完后你**不是群主**——群主只能由人指定，这个群任何成员都能改；要固定群主请让人在页面上设。',
+			parameters: {
+				type: 'object',
+				properties: {
+					name: { type: 'string', description: '群名（不能与已有群同名）' },
+					members: { type: 'array', items: { type: 'string' }, description: '成员 agent 的 id 或名字（agent_list 能列出来）；不含你自己时自动补在前面' },
+					mode: { type: 'string', description: '唤醒档位：all（每条都派给全体）/ mentions（只派给被 @ 的）/ digest（攒够再汇总，默认）/ silent（不自动派发）' },
+					operationKey: { type: 'string', description: '幂等键（可选）：同一个 key 重复调用只会建一次群；同一个 key 换了参数会被拒绝（409）。重试/补发时用它防重复建群。' },
+				},
+				required: ['name', 'members'],
+			},
+			output: textOutput,
+			async execute(args, exec) {
+				const selfId = exec?.agent?.id;
+				if (!selfId) { return '拿不到当前会话身份，建不了群（这个工具只能在会话里跑）。'; }
+				const name = String(args?.name ?? '').trim();
+				if (!name) { return '要给 name（群名）。'; }
+				const wanted = Array.isArray(args?.members) ? args.members.map((m) => String(m ?? '').trim()).filter(Boolean) : [];
+				if (!wanted.length) { return 'members 至少要有一个（只建自己一个人的群就传你自己的 id）。'; }
+				const scan = await scanAgents(agentsRootOf(config));
+				const ids = [];
+				for (const m of wanted) {
+					const found = findAgent(scan.agents, m);
+					if (found.error) { return found.error; }
+					ids.push(found.agent.id);
+				}
+				if (!ids.includes(selfId)) { ids.unshift(selfId); }
+				try {
+					const g = await createGroup(config, {
+						name,
+						members: [...new Set(ids)],
+						...(args?.mode ? { mode: String(args.mode) } : {}),
+						...(args?.operationKey ? { operationKey: String(args.operationKey) } : {}),
+						actor: { kind: 'bot', agentId: selfId },
+					});
+					return `已建群「${g.name}」（id ${g.id}），成员：${(g.members || []).join('、')}，唤醒档位 ${g.mode}。`
+						+ '要拉人用 agent_group_invite；群主需要人去页面设。';
+				} catch (e) {
+					return `建群失败：${String((e && e.message) || e)}`;
+				}
+			},
+		},
+		{
+			name: 'agent_group_invite',
+			description: '往一个已有群里拉人（群 id 或群名）。群设了「加入需确认」时进待确认区，由人在页面批准；否则直接加入。⚠ 群有群主时，只有群主本人或人能拉人。',
+			parameters: {
+				type: 'object',
+				properties: {
+					group: { type: 'string', description: '群 id，或群名（同名时改用 id）' },
+					members: { type: 'array', items: { type: 'string' }, description: '要拉进来的 agent 的 id 或名字' },
+					operationKey: { type: 'string', description: '幂等键（可选）：同一个 key 重复调用只会拉一次；同 key 换参数会被拒绝（409）。' },
+				},
+				required: ['group', 'members'],
+			},
+			output: textOutput,
+			async execute(args, exec) {
+				const selfId = exec?.agent?.id;
+				if (!selfId) { return '拿不到当前会话身份，拉不了人（这个工具只能在会话里跑）。'; }
+				const key = String(args?.group ?? '').trim();
+				const wanted = Array.isArray(args?.members) ? args.members.map((m) => String(m ?? '').trim()).filter(Boolean) : [];
+				if (!key) { return '要给 group（群 id 或群名）。'; }
+				if (!wanted.length) { return 'members 不能为空。'; }
+				const { groups } = await listGroups(config);
+				const g = groups.find((x) => String(x.id) === key) || groups.find((x) => String(x.name) === key);
+				if (!g) { return `没有这个群：${key}`; }
+				const scan = await scanAgents(agentsRootOf(config));
+				const ids = [];
+				for (const m of wanted) {
+					const found = findAgent(scan.agents, m);
+					if (found.error) { return found.error; }
+					ids.push(found.agent.id);
+				}
+				try {
+					const r = await addGroupMembers(config, {
+						id: g.id, members: [...new Set(ids)],
+						...(args?.operationKey ? { operationKey: String(args.operationKey) } : {}),
+						actor: { kind: 'bot', agentId: selfId },
+					});
+					const added = r?.added ?? [];
+					const pending = r?.pending ?? [];
+					if (!added.length && !pending.length) { return `这些 agent 已经在群里或已在待确认区：${ids.join('、')}`; }
+					return (added.length ? `已加入：${added.join('、')}。` : '')
+						+ (pending.length ? `待确认（群设了「加入需确认」）：${pending.map((p) => p.agentId).join('、')}。` : '')
+						+ `当前成员：${(r?.group?.members ?? []).join('、')}`;
+				} catch (e) {
+					return `拉人失败：${String((e && e.message) || e)}`;
+				}
+			},
+		},
+		{
+			name: 'agent_group_leave',
+			description: '把自己从一个群里移出（**不能移别人**——移人只能由人或群主在页面做）。移出后你不再收到这个群的消息。',
+			parameters: {
+				type: 'object',
+				properties: {
+					group: { type: 'string', description: '群 id，或群名' },
+				},
+				required: ['group'],
+			},
+			output: textOutput,
+			async execute(args, exec) {
+				const selfId = exec?.agent?.id;
+				if (!selfId) { return '拿不到当前会话身份，退不了群（这个工具只能在会话里跑）。'; }
+				const key = String(args?.group ?? '').trim();
+				if (!key) { return '要给 group（群 id 或群名）。'; }
+				const { groups } = await listGroups(config);
+				const g = groups.find((x) => String(x.id) === key) || groups.find((x) => String(x.name) === key);
+				if (!g) { return `没有这个群：${key}`; }
+				if (!(g.members ?? []).includes(selfId)) { return `你不在这个群里：${g.name}（成员：${(g.members || []).join('、')}）`; }
+				try {
+					await removeGroupMember(config, { id: g.id, member: selfId, actor: { kind: 'bot', agentId: selfId } });
+					return `已退出群「${g.name}」（id ${g.id}）。`;
+				} catch (e) {
+					return `退群失败：${String((e && e.message) || e)}`;
+				}
+			},
+		},
+		/* ── invitation-first 的另外半边（2026-10-31，P1；对齐 DSB 的 group_invite_respond）──
+		   有邀请 ⇒ **被邀的 Bot 自己能看见、能决定**，而不是被人静默塞进群。
+		   ⚠ `requireApproval`（人把关）优先：那种群 Bot 不能自己放行，服务层直接 403
+		   （否则"加入需确认"这个开关对 Bot 邀请路径形同虚设）。 */
+		{
+			name: 'agent_group_invites',
+			description: '列出**发给我的**入群邀请（还没进的那些）：哪个群、谁邀请的、什么时候。要回应就用 agent_group_invite_respond。',
+			parameters: { type: 'object', properties: {} },
+			output: textOutput,
+			isConcurrencySafe: true,
+			async execute(args, exec) {
+				const selfId = exec?.agent?.id;
+				if (!selfId) { return '拿不到当前会话身份，查不了邀请（这个工具只能在会话里跑）。'; }
+				const { groups } = await listGroups(config);
+				const mine = [];
+				for (const g of groups) {
+					for (const p of (g.pending ?? [])) {
+						if (String(p.agentId) === selfId) { mine.push({ g, p }); }
+					}
+				}
+				if (!mine.length) { return '目前没有发给你的入群邀请。'; }
+				return mine.map(({ g, p }) => {
+					const byTxt = !p.by || p.by === 'human' ? '人' : p.by;
+					const when = p.requestedAt ? new Date(p.requestedAt).toISOString().slice(0, 16).replace('T', ' ') : '—';
+					const gate = g.requireApproval === true ? ' · 这个群要**人**批准，你不能自己放行' : '';
+					return `- ${g.name}（id ${g.id}）· 被 ${byTxt} 邀请 · ${when}${gate}`;
+				}).join('\n');
+			},
+		},
+		{
+			name: 'agent_group_invite_respond',
+			description: '回应**发给我的**入群邀请：accept=true 加入，false 拒绝。⚠ 群设了「加入需确认」时不能自己放行（那只能由人批准），工具会直接拒绝并说明。',
+			parameters: {
+				type: 'object',
+				properties: {
+					group: { type: 'string', description: '群 id，或群名' },
+					accept: { type: 'boolean', description: 'true = 接受加入；false = 拒绝' },
+				},
+				required: ['group', 'accept'],
+			},
+			output: textOutput,
+			async execute(args, exec) {
+				const selfId = exec?.agent?.id;
+				if (!selfId) { return '拿不到当前会话身份，回应不了邀请（这个工具只能在会话里跑）。'; }
+				const key = String(args?.group ?? '').trim();
+				if (!key) { return '要给 group（群 id 或群名）。'; }
+				const { groups } = await listGroups(config);
+				const g = groups.find((x) => String(x.id) === key) || groups.find((x) => String(x.name) === key);
+				if (!g) { return `没有这个群：${key}`; }
+				try {
+					const r = await respondGroupInvite(config, {
+						id: g.id, agentId: selfId, accept: args?.accept === true,
+						actor: { kind: 'bot', agentId: selfId },
+					});
+					return r?.accept
+						? `已接受邀请，加入群「${g.name}」。`
+						: `已拒绝群「${g.name}」的邀请（想进的时候让人再邀请一次）。`;
+				} catch (e) {
+					return `回应失败：${String((e && e.message) || e)}`;
+				}
 			},
 		},
 	];

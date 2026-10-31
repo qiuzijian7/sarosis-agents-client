@@ -17,8 +17,11 @@
 // 每个任务配一条专属会话（方案 2.1）：sessionId = `sched-<agent>-<task>`，幂等 ⇒
 // 重跑迁移不会重复建（官方 create 前我们先按 catalog 查重：同 sessionId 的任务已存在就跳过）。
 
+import { randomUUID } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
+
+import { officialToSelfRule } from './core/task.js';
 
 /** 简易 YAML 抽取：只认 `schedules:` 顶格键下的 `- name/type/...` 块（legacy agentYamlParser 同款手写解析的口径）。 */
 function parseYamlSchedules(text) {
@@ -126,20 +129,35 @@ export async function migrateYamlText(ctx, agentId, yamlText, { timeZone } = {})
 		}
 		try {
 			const sessionId = `sched-${agentId}-${name}`.replace(/[^\w-]+/g, '-').slice(0, 80);
-			// 查重：同一会话下已有同名任务就跳过（迁移幂等 ✓ 重跑不重复建）。
-			const existing = await schedule.list({ sessionId }).catch(() => []);
-			if (existing.some(r => r?.title === mapped.request.title)) {
+			// 查重：同会话下已有同名任务就跳过（迁移幂等 ✓ 重跑不重复建）。
+			// ⚠ 自建引擎的 `list()` 返回**全部**任务（任务不寄生会话）⇒ 这里自己按 sessionId+title 过滤。
+			const existing = await schedule.list().catch(() => []);
+			if (existing.some(r => r?.title === mapped.request.title && r?.sessionId === sessionId)) {
 				result.skipped++;
 				result.entries.push({ name, outcome: 'skipped（已存在）' });
 				continue;
 			}
-			// 专属会话要先存在（schedule.create 绑定原会话）。cwd 用 agent 的工作区根（数据根兜底）。
+			// 专属会话要先存在（prompt 型任务绑定会话）。cwd 用 agent 的工作区根（cwd 兜底）。
 			if (sessionController && workspaceRegistry) {
 				const cwd = workspaceRegistry.list?.()[0]?.path ?? process.cwd();
 				await workspaceRegistry.create(cwd);
 				await sessionController.create({ cwd, sessionId });
 			}
-			await schedule.create(sessionId, mapped.request);
+			// ★ 自建引擎签名：`create(task)`（不是官方的 `create(sessionId, request)`）。
+			const rule = officialToSelfRule(mapped.request);
+			if (!rule) {
+				result.failed.push(`${name}: 规则无法转换`);
+				result.entries.push({ name, outcome: 'failed: 规则无法转换' });
+				continue;
+			}
+			await schedule.create({
+				id: `t-${randomUUID().slice(0, 8)}`,
+				title: mapped.request.title,
+				kind: 'prompt',
+				prompt: mapped.request.prompt,
+				sessionId,
+				rule,
+			});
 			result.created++;
 			result.entries.push({ name, outcome: 'created' });
 		} catch (e) {

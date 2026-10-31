@@ -12,6 +12,7 @@
 // CLIENT_BUILD_STAMP 2026-10-28T00:45：入口晚于 client.kbview.js 的改动（同一批 kb 改动的守卫收尾）。
 // BUILD_STAMP 2026-10-29：入口晚于 client.kbview.js / index.js 的改动（聊天消息「导入到知识库」那批）。
 // ⚠ 入口里必须先 `var module = { exports: {} };`（否则真机报 `exports is not defined`）。
+// ★ 2026-10-31 touch 2026-10-31 12:37:11：改动 chunk（远端抽象层 UI）之后动入口 ⇒ ?rev 跟着变，浏览器不吃旧缓存。
 window.__ModuleLoader__.load({
 	id: '@vssaros/dsh-kb',
 	factory: (require) => {
@@ -1419,6 +1420,18 @@ function KbSettingsPage({ onClose, onSwitchVault, onAddVault, vaultRef, auto }) 
 					}).catch((e) => window.alert('操作失败：' + String((e && e.message) || e)));
 				},
 				/*
+				 * ★ 2026-10-31：**本地版本管理（Git）** —— 全部操作都在本机这个库目录里跑 git，
+				 *   不联网、不上传。op: init / status / commit / log / logFile / show / restore / config。
+				 *   ⚠ 这里**不弹 alert**（旧的「同步飞书」就是被 alert 阻塞成"点了像失败"的）⇒ 只回数据。
+				 */
+				kbGit: (op, extra) => {
+					return fetch('/x/kb/api/kb-git', {
+						method: 'POST', credentials: 'same-origin',
+						headers: { 'content-type': 'application/json' },
+						body: JSON.stringify({ op: op, ...(extra || {}) }),
+					}).then((r) => r.json()).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+				},
+				/*
 				 * ★ 2026-10-28（用户：库下拉每项要有删除按钮）：**只摘登记，不删磁盘**。
 				 *   「本地载入文件夹」登记的库指向用户的真实笔记目录 ⇒ 删一行的后果
 				 *   绝不能是"笔记没了"（那是 `/api/vault-delete` 的语义，只用于数据根内的库）。
@@ -1860,32 +1873,191 @@ function install(ctx) {
 			ctx.inject(['desktopWorkbenches'], (c) => {
 				c.effect(() => c.desktopWorkbenches.register(DESCRIPTOR, KbSafeWorkbenchPanel), 'vssaros-kb: workbench');
 
-				// ★ 2026-10-28（方案 A 的配套）：新会话默认用「知识库专家」。
-				//   链式包 `newSession`（不判断"是否已被别人包过"，否则后装者永远包不上）；
-				//   只在本工作台**前台**时改 preset，避免把别的工作台的会话带跑。
-				try {
-					const dw = c.desktopWorkbenches;
-					const presets = (c.get && c.get('remote.agentPresets')) || null;
-					if (dw && typeof dw.newSession === 'function' && !dw.newSession.__vssarosKbPreset) {
-						const orig = dw.newSession;
-						const patched = function (...args) {
-							const out = orig.apply(dw, args);
-							try {
-								Promise.resolve(out).then((sid) => {
-									if (!sid || !globalThis.__vssarosKbActive) { return; }
-									if (!presets || typeof presets.select !== 'function') { return; }
-									try { presets.select(sid, 'vssaros-knowledge-base-expert'); } catch (e) { /* ignore */ }
-								}).catch(() => { /* ignore */ });
-							} catch (e) { /* ignore */ }
-							return out;
-						};
-						patched.__vssarosKbPreset = true;
-						c.effect(() => {
-							dw.newSession = patched;
-							return () => { if (dw.newSession === patched) { dw.newSession = orig; } };
-						}, 'vssaros-kb: newSession preset');
+				/*
+				 * ★ 2026-10-31（用户：知识库里的 AI 助手应显示「知识库 agent」）—— 重写这一段。
+				 *
+				 * 旧实现两处致命问题（真机定位）：
+				 *   ① 用 `c.get('remote.agentPresets')` 取服务 ⇒ **未声明 inject 的插件里 ctx.get 返回 undefined**
+				 *      ⇒ `presets` 恒为 null ⇒ 后面所有 select 都是空跑（**静默失败**）；
+				 *   ② 选的 id `vssaros-knowledge-base-expert` **并不存在**（数据根里没有对应的 .agent.md）
+				 *      ⇒ 即使拿到服务也会 `agent-preset/not-found`。
+				 *
+				 * 现实现：① `inject` 拿服务；② id 候选 + 花名册兜底；③ **轮询**等会话建出来（hero 空态时 dsh 还没建会话）。
+				 * 诊断挂在 `globalThis.__vssarosKbPreset`（F12 可看：api / sessionId / chosen / calls / ok）。
+				 */
+				/*
+				 * ★ 2026-10-31 第四次修（日志定位到真因）：
+				 *   上一版 diag = { api:"select(sid,id)", chosen:"knowledge-base-expert", ok:true, reasserts:8 }，
+				 *   但徽标一直是「Bot · 商城助手」——**调用没报错，但没生效**。
+				 *   原因：`knowledge-base-expert` 是 **agent id**，而 `agentPresets.select` 要的是 **preset id**
+				 *   （宿主日志里有 `preset apply …（vssaros-knowledge-base-expert / persona）` ⇒ 真 id 带 vssaros- 前缀）。
+				 *   而且花名册（/x/agents/api/agents）给的是 **agent id** ⇒ 旧逻辑把带前缀那个盖掉了 ✗
+				 *
+				 * 现实现：**只用 preset id**（vssaros- 前缀），并**以徽标是否真的变了**为成功判据；
+				 *   徽标没变就换下一个候选（不再对着同一个错 id 空转）。
+				 */
+				const KB_PRESET_IDS = ['vssaros-knowledge-base-expert', 'vssaros-kb-expert'];
+				const kbPresetDiag = { api: 'init', sessionId: null, chosen: '', tried: [], calls: [], ok: false, exhausted: false };
+				globalThis.__vssarosKbPreset = kbPresetDiag;
+				let KB_PRESET_API = null;
+// ★ 2026-10-31：记住上次生效的 preset（命中过就放最前），避免每次进页面先白试一次（会闪一下商城助手）
+				const KB_PRESET_PREF_KEY = 'vssaros.kb.presetId';
+				let kbCandIdx = (function () {
+					try {
+						const saved = localStorage.getItem(KB_PRESET_PREF_KEY) || '';
+						const at = KB_PRESET_IDS.indexOf(saved);
+						if (at > 0) { KB_PRESET_IDS.unshift(KB_PRESET_IDS.splice(at, 1)[0]); }
+					} catch (e) { /* 无 localStorage */ }
+					return 0;
+				})();
+				let kbLastTryAt = 0;
+
+				const kbSessionId = () => {
+					try {
+						const ui = (c.get && c.get('uiSession')) || globalThis.__vssarosKbUiSession;
+						const snap = ui && ui.adapter && ui.adapter.current ? ui.adapter.current.getSnapshot() : null;
+						const sid = snap && (snap.sessionId || snap.id);
+						if (sid) { return sid; }
+					} catch (e) { /* 下一条路 */ }
+					try {
+						const el = document.querySelector('[data-vssaros-wb-docked-session]');
+						const v = el && el.getAttribute('data-vssaros-wb-docked-session');
+						if (v) { return v; }
+					} catch (e) { /* 下一条路 */ }
+					return null;
+				};
+
+				const kbPresetApi = () => {
+					if (KB_PRESET_API) { return KB_PRESET_API; }
+					try {
+						const svc = (c.get && (c.get('agentPresets') || c.get('remote.agentPresets'))) || null;
+						if (svc) { return svc; }
+						const dw = c.desktopWorkbenches;
+						return (dw && dw.agentPresets) ? dw.agentPresets : null;
+					} catch (e) { return null; }
+				};
+
+				/** 徽标是否已经是「知识库专家」（**以 UI 为真**，不信 select 的返回值）。 */
+				const kbChipSaysExpert = () => {
+					try {
+						const seat = document.querySelector('[data-vssaros-mode-seat]');
+						const txt = seat ? String(seat.textContent || '') : '';
+						if (/知识库/.test(txt)) { return true; }
+						return /知识库专家/.test(document.body.innerText || '');
+					} catch (e) { return false; }
+				};
+
+				const kbApplyPreset = () => {
+					// 节流：select 之后要等 900ms 回读徽标，期间不要重复调（否则日志/调用都是噪音）
+					if (Date.now() - kbLastTryAt < 1200) { return false; }
+					kbLastTryAt = Date.now();
+					// 只在本工作台前台时改（agentPresets 是全局当前会话选择）
+					const kbPanelHere = (function () { try { return Boolean(document.querySelector('[data-vssaros-kb-panel]')); } catch (e) { return false; } })();
+					if (!kbPanelHere && !globalThis.__vssarosKbActive) { kbPresetDiag.api = 'gated'; return false; }
+					// 徽标已经对了 ⇒ 不再折腾（避免每次 tick 都重设）
+					if (kbChipSaysExpert()) { kbPresetDiag.ok = true; kbPresetDiag.api = kbPresetDiag.api === 'init' ? 'already' : kbPresetDiag.api; return true; }
+					if (kbCandIdx >= KB_PRESET_IDS.length) { kbPresetDiag.exhausted = true; return false; }
+					const sid = kbSessionId();
+					kbPresetDiag.sessionId = sid;
+					const svc = kbPresetApi();
+					if (!svc) { kbPresetDiag.api = 'no-service'; globalThis.__vssarosKbPreset = kbPresetDiag; return false; }
+					const id = KB_PRESET_IDS[kbCandIdx];
+					kbPresetDiag.chosen = id;
+					if (kbPresetDiag.tried.indexOf(id) < 0) { kbPresetDiag.tried.push(id); }
+					const names = ['select', 'selectPreset', 'setPreset', 'choose', 'apply'];
+					for (let i = 0; i < names.length; i += 1) {
+						const name = names[i];
+						if (typeof svc[name] !== 'function') { continue; }
+						let called = false;
+						if (sid) {
+							try { svc[name](sid, id); called = true; kbPresetDiag.api = name + '(sid,id)'; } catch (e) { kbPresetDiag.calls.push(name + '(sid,id): ' + String((e && e.message) || e).slice(0, 50)); }
+						}
+						if (!called) {
+							try { svc[name](id); called = true; kbPresetDiag.api = name + '(id)'; } catch (e) { kbPresetDiag.calls.push(name + '(id): ' + String((e && e.message) || e).slice(0, 50)); }
+						}
+						if (!called) {
+							try { const arg = { agentPreset: id }; if (sid) { arg.sessionId = sid; } svc[name](arg); called = true; kbPresetDiag.api = name + '(obj)'; } catch (e) { kbPresetDiag.calls.push(name + '(obj): ' + String((e && e.message) || e).slice(0, 50)); }
+						}
+						if (called) { break; }
 					}
-				} catch (e) { /* 拿不到服务就只做面板 */ }
+					globalThis.__vssarosKbPreset = kbPresetDiag;
+					/*
+					 * ★ 关键：`select` 不抛错 ≠ 生效（上一版就在这里空转 8 次）。
+					 *   ⇒ 900ms 后回读徽标：变了才算成功；没变就换下一个候选 ✓
+					 */
+					setTimeout(() => {
+						try {
+							if (kbChipSaysExpert()) {
+								kbPresetDiag.ok = true;
+							try { localStorage.setItem(KB_PRESET_PREF_KEY, id); } catch (e) { /* ignore */ }
+							} else {
+								kbPresetDiag.calls.push('no-effect: ' + id);
+								kbCandIdx += 1;
+								kbPresetDiag.chosen = '';
+							}
+							globalThis.__vssarosKbPreset = kbPresetDiag;
+						} catch (e) { /* ignore */ }
+					}, 900);
+					return false;
+				};
+
+				// 拿服务（**必须 inject**：ctx.get 在未声明 inject 的插件里返回 undefined）
+				const kbInjectTarget = (c && typeof c.inject === 'function') ? c : ctx;
+				const KB_PRESET_DEPS = ['agentPresets', 'remote.agentPresets'];
+				for (let i = 0; i < KB_PRESET_DEPS.length; i += 1) {
+					try {
+						kbInjectTarget.inject([KB_PRESET_DEPS[i]], (scope) => {
+							const svc = (scope && (scope.agentPresets || scope['remote.agentPresets'])) || null;
+							if (svc && !KB_PRESET_API) {
+								KB_PRESET_API = svc;
+								try { kbApplyPreset(); } catch (e) { /* 服务可能还没就绪，交给轮询 */ }
+							}
+							return undefined;
+						});
+					} catch (e) { /* 服务名不存在 ⇒ 试下一个 */ }
+				}
+
+				/*
+				 * ★ 2026-10-31 第三次修（真机 diag 一直是 api:'init'）：
+				 *   前两版栽在同一处 —— **窗口有限，且超时后把 MutationObserver 也断了**，
+				 *   而 KB 面板是用户**后来才点开**的 ⇒ 等它出现时已经没人在监听了 ✗
+				 *
+				 * 现实现（**没有"超时"这个概念**）：
+				 *   · 面板在 ⇒ 每 700ms 复核；成功前一直试（服务/懒注册/会话都是后来才就绪的）
+				 *   · 成功后降为低频复核：**徽标被别的工作台抢走就再设回来**（商城工作台挂载时会设 preset）
+				 *   · MutationObserver 全程在线（面板一出现立即试一次）
+				 */
+				c.effect(() => {
+					let stopped = false;
+					let tickCount = 0;
+					let reasserts = 0;
+					const chipSaysExpert = () => {
+						try { return /知识库专家/.test(document.body.innerText || ''); } catch (e) { return false; }
+					};
+					const tick = () => {
+						if (stopped) { return; }
+						tickCount += 1;
+						try {
+							if (!kbPresetDiag.ok) {
+								kbApplyPreset();
+							} else if (tickCount % 10 === 0 && reasserts < 20 && !kbChipSaysExpert()) {
+								reasserts += 1;
+								kbPresetDiag.reasserts = reasserts;
+								kbApplyPreset();
+							}
+						} catch (e) { /* ignore */ }
+					};
+					const timer = setInterval(tick, 700);
+					let mo = null;
+					try {
+						mo = new MutationObserver(() => {
+							try { if (document.querySelector('[data-vssaros-kb-panel]')) { kbApplyPreset(); } } catch (e) { /* ignore */ }
+						});
+						mo.observe(document.body, { childList: true, subtree: true });
+					} catch (e) { mo = null; }
+					try { tick(); } catch (e) { /* ignore */ }
+					return () => { stopped = true; clearInterval(timer); try { if (mo) { mo.disconnect(); } } catch (e) { /* ignore */ } };
+				}, 'vssaros-kb: agent preset');
 			});
 			return undefined;
 		}

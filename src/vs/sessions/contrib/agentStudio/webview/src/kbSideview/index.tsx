@@ -160,6 +160,11 @@ export interface KbSideviewActions {
 	 */
 	addVault?(mode: 'create' | 'attach', path?: string, name?: string): void;
 	/**
+	 * ★ 2026-10-31：本地版本管理（Git）。**纯本地**（不联网、不上传），只有用户点过「开启」才有行为。
+	 * op: init / status / commit / log / logFile / show / restore / config
+	 */
+	kbGit?(op: string, extra?: Record<string, unknown>): Promise<any>;
+	/**
 	 * 把一个库**从列表移除**（2026-10-28 用户要求：下拉每项要有删除按钮）。
 	 *
 	 * 语义约定：只摘登记，**不动磁盘**（外部库是用户的真实笔记目录）；
@@ -1457,6 +1462,136 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 
 	/** 细条右侧 ⋯ 菜单（完整路径 / 历史 / 资源管理器） */
 	const [docMenu, setDocMenu] = useState(false);
+
+	/* ── ★ 2026-10-31：文档版本（本地 Git）────────────────────────────── */
+	const [gitOpen, setGitOpen] = useState(false);
+	const [gitInfo, setGitInfo] = useState<any>(null);
+	const [versions, setVersions] = useState<any[]>([]);
+	const [verText, setVerText] = useState<string | null>(null);
+	const [verBusy, setVerBusy] = useState(false);
+	const [remCfg, setRemCfg] = useState<any>(null);
+	const [remOpen, setRemOpen] = useState(false);
+	const [remForm, setRemForm] = useState<any>({ type: "local", url: "", branch: "master", token: "" });
+	const [remMsg, setRemMsg] = useState<string>("");
+
+	/** 读一次「库级状态 + 当前文档的历史」。没有 kbGit 能力就什么都不做。 */
+	const refreshGit = useCallback(async () => {
+		if (!actions?.kbGit) { return; }
+		try {
+			const st = await actions.kbGit("status", {});
+			setGitInfo(st && st.ok ? st : null);
+			const p = String((docRef4Git.current || ""));
+			if (st?.ok && st.repo && p) {
+				const lg = await actions.kbGit("logFile", { file: p, limit: 50 });
+				setVersions(Array.isArray(lg?.items) ? lg.items : []);
+			} else {
+				setVersions([]);
+			}
+		} catch { setGitInfo(null); setVersions([]); }
+	}, [actions]);
+
+	/** 当前打开文档的路径（给 refreshGit 用：避免闭包里读到旧的 doc） */
+	const docRef4Git = useRef<string>("");
+	docRef4Git.current = String((doc as any)?.path ?? "");
+
+	/** 打开版本面板时才拉一次（避免每篇文档都去问 git） */
+	const openGitPanel = useCallback(async () => {
+		setGitOpen(v => !v);
+		if (!gitOpen) { setVerText(null); await refreshGit(); await loadRemote(); }
+	}, [gitOpen, refreshGit]);
+
+	const gitInit = useCallback(async () => {
+		if (!actions?.kbGit || verBusy) { return; }
+		setVerBusy(true);
+		try { const r = await actions.kbGit("init", {}); if (r && r.ok === false) { showToast?.("开启失败：" + (r.error || "")); } } finally { setVerBusy(false); }
+		await refreshGit();
+	}, [actions, verBusy, refreshGit, showToast]);
+
+	const gitCommitNow = useCallback(async () => {
+		if (!actions?.kbGit || verBusy) { return; }
+		setVerBusy(true);
+		try { await actions.kbGit("commit", { message: "chore(kb): 手动提交" }); } finally { setVerBusy(false); }
+		await refreshGit();
+	}, [actions, verBusy, refreshGit]);
+
+	/**
+	 * ★ 2026-10-31（用户：文章**默认开启**版本管理）：这里只负责"关掉"。
+	 *   关掉 = autoInit + autoCommit 一起 false ⇒ 之后连 `git init` 都不会做（绝不擅自建库）。
+	 */
+	const setVersioning = useCallback(async (on: boolean) => {
+		if (!actions?.kbGit) { return; }
+		await actions.kbGit("config", { config: { autoInit: on, autoCommit: on } });
+		setRemMsg(on ? "版本管理已开启（默认：保存即留版本）" : "已关闭版本管理 ⇒ 之后不会再自动建库/提交");
+		await refreshGit();
+	}, [actions, refreshGit]);
+
+	const gitSetAuto = useCallback(async (on: boolean) => {
+		if (!actions?.kbGit) { return; }
+		await actions.kbGit("config", { config: { autoCommit: on } });
+		await refreshGit();
+	}, [actions, refreshGit]);
+
+	/** 读远端配置（服务端**不回 token 明文** ⇒ 只拿 hasToken） */
+	const loadRemote = useCallback(async () => {
+		if (!actions?.kbGit) { return; }
+		const r = await actions.kbGit("remote", {});
+		if (r?.ok) {
+			setRemCfg(r.remote || null);
+			setRemForm((f: any) => ({ ...f, type: r.remote?.type || "local", url: r.remote?.url || "", branch: r.remote?.branch || "master" }));
+		}
+	}, [actions]);
+
+	const saveRemote = useCallback(async () => {
+		if (!actions?.kbGit || verBusy) { return; }
+		setVerBusy(true);
+		try {
+			const r = await actions.kbGit("remoteSet", { type: remForm.type, url: remForm.url, branch: remForm.branch, token: remForm.token });
+			setRemMsg(r?.ok ? "已保存" + (r.remote?.type === "local" ? "（已断开远端，回到纯本地）" : "（远端：" + r.remote?.type + "）") : ("失败：" + String(r?.error ?? "")));
+			if (r?.ok) { await loadRemote(); await refreshGit(); }
+		} finally { setVerBusy(false); }
+	}, [actions, verBusy, remForm, loadRemote, refreshGit]);
+
+	const testRemote = useCallback(async () => {
+		if (!actions?.kbGit || verBusy) { return; }
+		setVerBusy(true);
+		try {
+			const r = await actions.kbGit("remoteTest", { type: remForm.type, url: remForm.url, token: remForm.token });
+			setRemMsg(r?.ok ? "连接正常（远端有 " + (r.refs ?? 0) + " 个引用）" : ("连不上：" + String(r?.error ?? "")));
+		} finally { setVerBusy(false); }
+	}, [actions, verBusy, remForm]);
+
+	const doSync = useCallback(async (op: "push" | "pull") => {
+		if (!actions?.kbGit || verBusy) { return; }
+		setVerBusy(true);
+		try {
+			const r = await actions.kbGit(op, {});
+			setRemMsg(r?.ok ? (op === "push" ? "已推送" : "已拉取") + "（" + String(r.branch ?? "") + "）" : ("失败：" + String(r?.error ?? "")));
+			if (r?.ok) { await refreshGit(); }
+		} finally { setVerBusy(false); }
+	}, [actions, verBusy, refreshGit]);
+
+	const viewVersion = useCallback(async (rev: string) => {
+		if (!actions?.kbGit) { return; }
+		const p = docRef4Git.current;
+		if (!p) { return; }
+		const r = await actions.kbGit("show", { rev, file: p });
+		setVerText(r?.ok ? String(r.content ?? "") : "读取失败：" + String(r?.error ?? ""));
+	}, [actions]);
+
+	const restoreVersion = useCallback(async (rev: string) => {
+		if (!actions?.kbGit) { return; }
+		const p = docRef4Git.current;
+		if (!p) { return; }
+		setVerBusy(true);
+		try {
+			const r = await actions.kbGit("restore", { rev, file: p });
+			if (r && r.ok === false) { showToast?.("恢复失败：" + String(r.error ?? "")); return; }
+			showToast?.("已恢复到该版本（历史没有丢）");
+			// 重新加载这篇，让界面显示恢复后的内容
+			(loadIntoViewRef as any)?.current?.(p, fileNameOf(p));
+			await refreshGit();
+		} finally { setVerBusy(false); }
+	}, [actions, refreshGit, showToast]);
 	/** 空转的 rAF 标记：滚动时只按帧更新一次状态，避免每像素一次 render */
 	const scrollRafRef = useRef(0);
 
@@ -2168,6 +2303,73 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 										actions?.renameNode?.(menu.path);
 									},
 								}]),
+							/*
+							 * ★ 2026-10-31（用户）：右键菜单加「添加到聊天框中」⇒ 把这篇作为 @文件引用 落进右侧对话输入框（**不自动发送**）。
+							 *   通道用 chat-surface 官方的两条（KB 面板与壳**同文档**，事件直接可达）：
+							 *     ① `vssaros-dsh-insert`：结构化文件引用 chip（首选；发送后 agent 能直接读到这篇）
+							 *     ② `vssaros-composer-prefill`：纯文本兜底，带 `detail.result.applied` 回执
+							 *   ⚠ IDE 侧栏（webview）里没有监听者 ⇒ 回执为 false，如实提示"暂时不可用"，不假装成功。
+							 */
+							{
+								label: '添加到聊天框中',
+								run: () => {
+									const target = (menu.paths && menu.paths[0]) || menu.path || '';
+									if (!target) { return; }
+									const norm = String(target).replace(/\\/g, '/');
+									const baseName = norm.slice(norm.lastIndexOf('/') + 1);
+									/*
+									 * 判据用「**整个 composer 卡片**的 textContent」：@引用 chip 不在 textarea/contenteditable 里，
+									 * 只读输入框会永远看不到它 ⇒ 误判失败（2026-10-31 真机：chip 插进去了却提示"不可用"）。
+									 */
+									const cardText = () => { const c = document.querySelector('[data-composer-card]'); return c ? String(c.textContent || '') : ''; };
+									if (cardText().indexOf(baseName) >= 0) { showToast('这篇已经在聊天框里了'); return; }
+									const before = cardText();
+									// ① 首选：结构化 @文件引用 chip（发送后 agent 能直接读到内容）
+									document.dispatchEvent(new CustomEvent('vssaros-dsh-insert', { detail: { path: norm } }));
+									setTimeout(() => {
+										const after = cardText();
+										if (after !== before && after.indexOf(baseName) >= 0) { showToast('已添加到右侧聊天框'); return; }
+										// ② 兜底：追加纯文本 @路径（**已有一个引用时 insert/prefill 都会拒**，见 chat-surface 的 append 通道）
+										const detail: any = { text: '@' + norm + ' ', from: 'kb', result: {} };
+										document.dispatchEvent(new CustomEvent('vssaros-composer-append', { detail }));
+										if (detail.result && detail.result.applied) { showToast('已添加到右侧聊天框'); return; }
+								/*
+								 * ③ 最后兜底：**绕过宿主输入机**，直接往可编辑区打字。
+								 *   真机实测：composer 里已有一个 @引用 chip 时，官方两条通道都会被拒
+								 *   （insert 静默无效 / append 返回 rejected），但 `execCommand('insertText')` 仍可写入 ✓
+								 *   ⚠ 走 DOM 层意味着**不再有结构化 chip**，只有纯文本 `@路径`（发送语义一致）。
+								 */
+								const domInsert = (txt: string) => {
+									const card = document.querySelector('[data-composer-card]') as any;
+									const ed = card ? (card.querySelector('[contenteditable="true"], textarea') as any) : null;
+									if (!ed) { return false; }
+									try {
+										ed.focus();
+										if (ed.tagName === 'TEXTAREA') {
+											const s = typeof ed.selectionStart === 'number' ? ed.selectionStart : String(ed.value || '').length;
+											ed.value = String(ed.value || '').slice(0, s) + txt + String(ed.value || '').slice(s);
+											ed.dispatchEvent(new Event('input', { bubbles: true }));
+											return true;
+										}
+										const r = document.createRange();
+										r.selectNodeContents(ed);
+										r.collapse(false);
+										const sel = window.getSelection();
+										if (!sel) { return false; }
+										sel.removeAllRanges();
+										sel.addRange(r);
+										return document.execCommand('insertText', false, txt);
+									} catch (e) { return false; }
+								};
+								if (domInsert(' @' + norm + ' ')) { showToast('已添加到右侧聊天框'); return; }
+										const reason = String((detail.result && detail.result.reason) || '');
+										showToast(reason === 'no-input'
+											? '还没有打开的对话 —— 先在右侧发起一个会话'
+											: '聊天框暂时不能写入（' + (reason || '未知原因') + '）——可先在右侧点一下输入框再试');
+									}, 180);
+								},
+							},
+
 							// 2026-10-26：右键菜单补齐「复制绝对路径 / 在资源管理器中打开」
 							{
 								label: '复制绝对路径',
@@ -2625,6 +2827,19 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 											style={{ height: 18, padding: "0 7px", fontSize: 10.5, border: 0, cursor: "pointer", background: draft !== null ? "var(--dsw-alias-button-primary-fill, var(--vscode-button-background, #0e639c))" : "transparent", color: draft !== null ? "var(--dsw-alias-label-primary-inverted, var(--vscode-button-foreground, #fff))" : c.fgDim }}>编辑</button>
 									</span>
 								) : null}
+								{actions?.kbGit && doc?.path && !doc?.asset ? (
+									<button
+										type="button"
+										data-kb-git-btn="1"
+										title="版本（本地 Git 历史 / 恢复）"
+										onClick={() => { void openGitPanel(); }}
+										style={{ flex: "0 0 auto", height: 20, padding: "0 8px", fontSize: 10.5, cursor: "pointer", borderRadius: 3,
+											border: `1px solid ${c.line}`, background: gitOpen ? "var(--dsw-alias-bg-active, rgba(255,255,255,.08))" : "transparent",
+											color: gitInfo?.repo ? c.fg : c.fgFaint }}
+									>
+										版本{gitInfo?.repo && versions.length ? ` ${versions.length}` : ""}
+									</button>
+								) : null}
 								<button type="button" title="更多（完整路径 / 历史 / 资源管理器）" onClick={() => setDocMenu(v => !v)}
 									style={{ width: 22, height: 20, flex: "0 0 auto", border: 0, borderRadius: 3, background: "transparent", color: c.fgDim, cursor: "pointer" }}>⋯</button>
 								{/* 阅读进度：贴细条底边，越长越满 */}
@@ -2648,8 +2863,101 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 								) : null}
 							</div>
 
+							{/* ★ 2026-10-31：版本面板（本地 Git）—— 纯本地，不联网、不上传 */}
+							{gitOpen && actions?.kbGit && doc?.path && !doc?.asset ? (
+								<div data-kb-git-panel="1" style={{ flex: "0 0 auto", marginBottom: 8, border: `1px solid ${c.line}`, borderRadius: 4, overflow: "hidden" }}>
+									<div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", borderBottom: `1px solid ${c.line}` }}>
+										<b style={{ fontSize: 11.5 }}>版本（本地 Git）</b>
+										<span style={{ fontSize: 10.5, color: c.fgFaint }}>
+											{gitInfo?.repo ? `${gitInfo.branch} · ${gitInfo.dirty} 个未提交` : "默认开启（保存一次即自动建库）"}
+										</span>
+										<span style={{ flex: 1 }} />
+										{!gitInfo?.repo ? (
+											<>
+												<button type="button" disabled={verBusy} onClick={() => { void gitInit(); }}
+													style={{ height: 20, padding: "0 8px", fontSize: 10.5, cursor: "pointer", borderRadius: 3, border: `1px solid ${c.line}`, background: "transparent", color: c.fg }}>
+													立即建库
+												</button>
+												<button type="button" disabled={verBusy} onClick={() => { void setVersioning(false); }}
+													style={{ height: 20, padding: "0 8px", fontSize: 10.5, cursor: "pointer", borderRadius: 3, border: `1px solid ${c.line}`, background: "transparent", color: c.fgFaint }}>
+													关闭版本管理
+												</button>
+											</>
+										) : (
+											<>
+												<label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10.5, color: c.fgFaint, cursor: "pointer" }}>
+													<input type="checkbox" checked={gitInfo?.config?.autoCommit !== false} onChange={(e) => { void gitSetAuto(e.target.checked); }} />
+													自动提交
+												</label>
+												<button type="button" disabled={verBusy} onClick={() => { void gitCommitNow(); }}
+													style={{ height: 20, padding: "0 8px", fontSize: 10.5, cursor: "pointer", borderRadius: 3, border: `1px solid ${c.line}`, background: "transparent", color: c.fg }}>
+													立即提交
+												</button>
+												<button type="button" disabled={verBusy} onClick={() => { void setVersioning(false); }}
+													style={{ height: 20, padding: "0 8px", fontSize: 10.5, cursor: "pointer", borderRadius: 3, border: `1px solid ${c.line}`, background: "transparent", color: c.fgFaint }}>
+													关闭版本管理
+												</button>
+											</>
+										)}
+										<button type="button" onClick={() => setGitOpen(false)}
+											style={{ height: 20, padding: "0 8px", fontSize: 10.5, cursor: "pointer", borderRadius: 3, border: `1px solid ${c.line}`, background: "transparent", color: c.fgFaint }}>
+											收起
+										</button>
+									</div>
+									<div style={{ maxHeight: 240, overflow: "auto" }}>
+										{!gitInfo?.repo ? (
+											<div style={{ padding: "8px 10px", fontSize: 11.5, opacity: .6 }}>
+												这个库还没有版本管理。开启后会在库目录里建一个 .git（**只在本机**，不上传）。
+											</div>
+										) : versions.length === 0 ? (
+											<div style={{ padding: "8px 10px", fontSize: 11.5, opacity: .6 }}>这篇文档还没有历史（保存一次就有了）</div>
+										) : versions.map(v => (
+											<div key={v.hash} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 10px", borderTop: `1px solid ${c.line}` }}>
+												<span style={{ flex: "0 0 auto", fontFamily: "monospace", fontSize: 10.5, opacity: .7 }}>{String(v.hash).slice(0, 7)}</span>
+												<span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11 }}>{v.message}</span>
+												<span style={{ flex: "0 0 auto", fontSize: 10.5, opacity: .55 }}>{new Date(v.time).toLocaleString()}</span>
+												<button type="button" onClick={() => { void viewVersion(v.hash); }}
+													style={{ flex: "0 0 auto", height: 20, padding: "0 8px", fontSize: 10.5, cursor: "pointer", borderRadius: 3, border: `1px solid ${c.line}`, background: "transparent", color: c.fg }}>
+													查看
+												</button>
+												<button type="button" disabled={verBusy}
+													onClick={() => { if (window.confirm("把这篇恢复到该版本？当前内容会被覆盖（历史不会丢）。")) { void restoreVersion(v.hash); } }}
+													style={{ flex: "0 0 auto", height: 20, padding: "0 8px", fontSize: 10.5, cursor: "pointer", borderRadius: 3, border: `1px solid ${c.line}`, background: "transparent", color: c.fg }}>
+													恢复
+												</button>
+											</div>
+										))}
+									</div>
+									{verText !== null ? (
+										<div style={{ borderTop: `1px solid ${c.line}`, padding: "8px 10px" }}>
+											<div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+												<b style={{ fontSize: 11 }}>该版本内容</b>
+												<span style={{ flex: 1 }} />
+												<button type="button" onClick={() => setVerText(null)}
+													style={{ height: 20, padding: "0 8px", fontSize: 10.5, cursor: "pointer", borderRadius: 3, border: `1px solid ${c.line}`, background: "transparent", color: c.fgFaint }}>
+													收起
+												</button>
+											</div>
+											<pre style={{ margin: 0, maxHeight: 240, overflow: "auto", fontSize: 11, whiteSpace: "pre-wrap" }}>{verText}</pre>
+										</div>
+									) : null}
+								</div>
+							) : null}
+
 							{/* ── 正文滚动区（只有它滚；Tab/细条固定）──────────────── */}
-							<div ref={docScrollRef} onScroll={onDocScroll} style={{ flex: '1 1 auto', minHeight: 0, overflow: 'auto', padding: '12px 18px 72px', position: 'relative' }}>
+							<div ref={docScrollRef} onScroll={onDocScroll} style={{
+								flex: '1 1 auto', minHeight: 0, position: 'relative',
+								/*
+								 * ★ 2026-10-31（用户：点「编辑」时编辑窗口要**占满**）：
+								 *   编辑态不再让整块滚动（textarea / CodeMirror 自己滚），
+								 *   容器改成 flex 纵向 ⇒ 编辑器用 flex:1 吃掉剩余高度 ✓
+								 *   ⚠ 这四条必须写在 **style 对象里**（上一版误写成 JSX 子文本 ⇒ 一个都没生效）。
+								 */
+								overflow: draft !== null ? 'hidden' : 'auto',
+								display: draft !== null ? 'flex' : 'block',
+								flexDirection: draft !== null ? 'column' : undefined,
+								padding: draft !== null ? '10px 14px 8px' : '12px 18px 72px',
+							}}>
 							{/* 标题行：右端「编辑 / 保存·取消」——只有宿主提供 saveDoc 时才出现 */}
 							{/*
 							 * 文档头（C+D 之后）：模式切换与「历史」已经移到顶部细条（预览/编辑 + ⋯），
@@ -2657,9 +2965,12 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 							 * 重复的按钮会让"该点哪个"变成新的问题。
 							 */}
 							<div style={{ marginBottom: 10 }}>
-								<div style={{ fontSize: 17, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-									{doc?.title}
-								</div>
+								{/* ★ 2026-10-31（用户：编辑窗口要占满）：编辑态把大标题收起来 ⇒ 编辑器多出 ~34px */}
+								{draft === null ? (
+																	<div style={{ fontSize: 17, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+																		{doc?.title}
+																	</div>
+								) : null}
 								<div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 3, fontSize: 10.5, color: c.fgFaint }}>
 									{!doc?.asset && doc?.path ? <span>{(doc?.path.split('/').pop() || '')}</span> : null}
 									{draft !== null
@@ -2673,6 +2984,50 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 											<button type="button" onClick={() => { if (draft !== doc?.text && !window.confirm('放弃未保存的修改？')) { return; } setDraft(null); }}
 												style={{ height: 22, padding: '0 10px', fontSize: 11, cursor: 'pointer', borderRadius: 3, background: 'transparent', color: 'inherit', border: `1px solid ${c.line}` }}>取消</button>
 										</>
+									) : null}
+								</div>
+								{/* ★ 2026-10-31（P1）：远端 —— 默认「本地」，只有显式配置后才会有上传 */}
+								<div data-kb-git-remote="1" style={{ borderTop: `1px solid ${c.line}`, padding: "6px 10px" }}>
+									<div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+										<b style={{ fontSize: 11 }}>远端</b>
+										<span style={{ fontSize: 10.5, color: c.fgFaint }}>
+											{!remCfg || remCfg.type === "local" ? "本地（默认，不上传）" : `${remCfg.type} · ${remCfg.branch}${remCfg.hasToken ? " · 已填凭据" : ""}`}
+										</span>
+										<span style={{ flex: 1 }} />
+										{remCfg && remCfg.type !== "local" ? (
+											<>
+												<button type="button" disabled={verBusy} onClick={() => { void doSync("push"); }} style={{ height: 20, padding: "0 8px", fontSize: 10.5, cursor: "pointer", borderRadius: 3, border: `1px solid ${c.line}`, background: "transparent", color: c.fg }}>推送</button>
+												<button type="button" disabled={verBusy} onClick={() => { void doSync("pull"); }} style={{ height: 20, padding: "0 8px", fontSize: 10.5, cursor: "pointer", borderRadius: 3, border: `1px solid ${c.line}`, background: "transparent", color: c.fg }}>拉取</button>
+											</>
+										) : null}
+										<button type="button" onClick={() => setRemOpen(v => !v)} style={{ height: 20, padding: "0 8px", fontSize: 10.5, cursor: "pointer", borderRadius: 3, border: `1px solid ${c.line}`, background: "transparent", color: c.fg }}>{remOpen ? "收起" : "配置"}</button>
+									</div>
+									{remOpen ? (
+										<div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 6 }}>
+											<div style={{ fontSize: 10.5, color: c.fgFaint, lineHeight: 1.5 }}>
+												默认是「本地」⇒ 什么都传不出去。选了远端并推送后，这个库的笔记会<b>离开本机</b>到该地址 —— 请先确认你有权限、且清楚这一点。
+											</div>
+											<div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+												<select value={remForm.type} onChange={(e) => setRemForm((f: any) => ({ ...f, type: e.target.value }))} style={{ height: 22, padding: "0 6px", fontSize: 11, borderRadius: 3, border: `1px solid ${c.line}`, background: "transparent", color: c.fg }}>
+													<option value="local">本地（不上传）</option>
+													<option value="path">本地目录 / 共享盘</option>
+													<option value="github">GitHub</option>
+													<option value="gitlab">GitLab</option>
+													<option value="forgejo">Forgejo / Gitea</option>
+												</select>
+												<input placeholder={remForm.type === "path" ? "例：D:/备份/kb.git 或 //nas/share/kb.git" : "例：github.com/你/知识库 或 https://…"} value={remForm.url} onChange={(e) => setRemForm((f: any) => ({ ...f, url: e.target.value }))} style={{ flex: 1, height: 22, padding: "0 6px", fontSize: 11, borderRadius: 3, border: `1px solid ${c.line}`, background: "transparent", color: c.fg }} />
+											</div>
+											<div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+												<input placeholder="分支（默认 master）" value={remForm.branch} onChange={(e) => setRemForm((f: any) => ({ ...f, branch: e.target.value }))} style={{ width: 140, height: 22, padding: "0 6px", fontSize: 11, borderRadius: 3, border: `1px solid ${c.line}`, background: "transparent", color: c.fg }} />
+												<input type="password" placeholder={remForm.type === "path" || remForm.type === "local" ? "（目录型远端不需要凭据）" : "访问令牌 token（存在数据根，不进库）"} disabled={remForm.type === "path" || remForm.type === "local"} value={remForm.token} onChange={(e) => setRemForm((f: any) => ({ ...f, token: e.target.value }))} style={{ flex: 1, height: 22, padding: "0 6px", fontSize: 11, borderRadius: 3, border: `1px solid ${c.line}`, background: "transparent", color: c.fg }} />
+											</div>
+											<div style={{ display: "flex", gap: 6 }}>
+												<button type="button" disabled={verBusy} onClick={() => { void testRemote(); }} style={{ height: 20, padding: "0 8px", fontSize: 10.5, cursor: "pointer", borderRadius: 3, border: `1px solid ${c.line}`, background: "transparent", color: c.fg }}>测试连接</button>
+												<button type="button" disabled={verBusy} onClick={() => { void saveRemote(); }} style={{ height: 20, padding: "0 8px", fontSize: 10.5, cursor: "pointer", borderRadius: 3, border: `1px solid ${c.line}`, background: "transparent", color: c.fg }}>保存</button>
+												<button type="button" disabled={verBusy} onClick={() => { setRemForm((f: any) => ({ ...f, type: "local", url: "", token: "" })); void saveRemote(); }} style={{ height: 20, padding: "0 8px", fontSize: 10.5, cursor: "pointer", borderRadius: 3, border: `1px solid ${c.line}`, background: "transparent", color: c.fg }}>断开远端</button>
+											</div>
+											{remMsg ? <div style={{ fontSize: 10.5, color: c.fgFaint, wordBreak: "break-all" }}>{remMsg}</div> : null}
+										</div>
 									) : null}
 								</div>
 							</div>
@@ -2704,12 +3059,14 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 									<div style={{ marginTop: 6, fontSize: 11, opacity: .55 }}>{doc?.asset.url}</div>
 								</div>
 							) : draft !== null ? (
+								/* ★ 2026-10-31（用户：编辑窗口要占满）：包一层 flex 容器 ⇒ 编辑器吃掉剩余高度 */
 								<>
+								<div data-kb-editor-host="1" style={{ flex: "1 1 auto", minHeight: 0, display: "flex", flexDirection: "column" }}>
 									{/* 编辑器挂载点：拉到 kbEditor.js 后由它接管；失败时这块保持隐藏 */}
 									<div
 										ref={editorDivRef}
 										data-kb-editor="cm"
-										style={{ display: cmState === 'ok' ? 'block' : 'none', minHeight: 420, border: `1px solid ${c.line}`, borderRadius: 4, overflow: 'hidden' }}
+										style={{ display: cmState === 'ok' ? 'block' : 'none', flex: '1 1 auto', height: '100%', minHeight: 240, overflow: 'hidden', border: `1px solid ${c.line}`, borderRadius: 4, overflow: 'hidden' }}
 									/>
 									{cmState === 'ok' ? null : (
 								<textarea
@@ -2767,13 +3124,14 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 										}
 									}}
 									style={{
-										width: '100%', minHeight: 420, boxSizing: 'border-box', resize: 'vertical',
+										width: '100%', flex: '1 1 auto', height: '100%', minHeight: 240, boxSizing: 'border-box', resize: 'none',
 										padding: '8px 10px', background: c.inputBg, color: c.inputFg, border: `1px solid ${c.line}`,
 										borderRadius: 4, fontSize: 12.5, lineHeight: 1.7,
 										fontFamily: 'var(--vssaros-font-mono, monospace)',
 									}}
 								/>
 									)}
+								</div>
 								</>
 							) : (
 								<div style={{ opacity: .95 }}>

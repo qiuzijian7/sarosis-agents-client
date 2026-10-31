@@ -824,12 +824,15 @@ export async function apply(ctx, config) {
 				+ '；如果本体在 GitHub 上，请在「来源」里填 GitHub 地址（这样任何类型都能登记）',
 			);
 		}
+		// ★ 2026-10-31：知识库的本体**不在数据根下**（sourceDir 指向那个库）⇒ 透传下去
+		const sourceDir = String(params.sourceDir ?? '').trim() || undefined;
 		return publishVersion({
 			market: m,
 			dataRoot,
 			kind,
 			localId,
 			version,
+			sourceDir,
 			changelog: String(params.changelog ?? ''),
 			meta: {},
 		});

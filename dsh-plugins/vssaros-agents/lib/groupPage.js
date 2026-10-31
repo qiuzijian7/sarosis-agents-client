@@ -517,7 +517,7 @@ function clientJs(keep) {
 	add('  var h="";');
 	add('  if(pend.length){');
 	add('   h+="<div class=\\"gp-rgrp\\">待确认<span class=\\"sp\\"></span><span>"+pend.length+"</span></div>";');
-	add('   h+=pend.map(function(p){var a=agentOf(p.agentId);return "<div class=\\"gp-mrow\\"><span class=\\"av\\" style=\\"background:"+colorOf(p.agentId)+"\\">"+esc(String(a.name||"?").slice(0,1))+"</span><span class=\\"n\\">"+esc(a.name||p.agentId)+"</span><button class=\\"a\\" data-ok=\\""+esc(p.agentId)+"\\" title=\\"确认加入\\">✓</button><button class=\\"a\\" data-no=\\""+esc(p.agentId)+"\\" title=\\"拒绝\\">✕</button></div>";}).join("");');
+	add('   h+=pend.map(function(p){var a=agentOf(p.agentId);return "<div class=\\"gp-mrow\\"><span class=\\"av\\" style=\\"background:"+colorOf(p.agentId)+"\\">"+esc(String(a.name||"?").slice(0,1))+"</span><span class=\\"n\\">"+esc(a.name||p.agentId)+(p.by&&p.by!=="human"?("（被"+esc(agentOf(p.by).name||p.by)+"邀请）"):"")+"</span><button class=\\"a\\" data-ok=\\""+esc(p.agentId)+"\\" title=\\"确认加入\\">✓</button><button class=\\"a\\" data-no=\\""+esc(p.agentId)+"\\" title=\\"拒绝\\">✕</button></div>";}).join("");');
 	add('  }');
 	add('  h+="<div class=\\"gp-rgrp\\">成员<span class=\\"sp\\"></span><span>"+((g&&g.members)||[]).length+"</span></div>";');
 	add('  h+=((g&&g.members)||[]).map(function(id){var a=agentOf(id);return "<div class=\\"gp-mrow\\"><span class=\\"av\\" style=\\"background:"+colorOf(id)+"\\">"+esc(String(a.name||"?").slice(0,1))+"</span><span class=\\"n\\">"+esc(a.name||id)+"</span><button class=\\"a\\" data-at=\\""+esc(id)+"\\" title=\\"@ 它\\">@</button><button class=\\"a\\" data-rm=\\""+esc(id)+"\\" title=\\"移出群聊\\">✕</button></div>";}).join("");');
@@ -579,7 +579,7 @@ function clientJs(keep) {
 	add(' $("gpSetName").value=g.name;');
 	add(' pickMode(normMode(g.mode));');
 	add(' $("gpWakeCount").value=(g.wake&&g.wake.count)||5;$("gpWakeInt").value=(g.wake&&g.wake.intervalSeconds)||30;');
-	add(' var ap=$("gpApproval");if(ap)ap.checked=(g.requireApproval===true);');
+	add(' var ap=$("gpApproval");if(ap)ap.checked=(g.requireApproval===true); var ba=$("gpBotAutoAccept");if(ba)ba.checked=(g.botAutoAccept!==false);');
 	add(' var sav=$("gpSetAv");');
 	add(' var pend=window.__avatar;');
 	add(' if(sav){');
@@ -598,7 +598,7 @@ function clientJs(keep) {
 	add('function saveSettings(){');
 	add(' var g=activeGroup();if(!g)return;');
 	add(' var body={action:"mode",id:g.id,mode:window.__mode||g.mode};');
-	add(' var ap=$("gpApproval");if(ap)body.requireApproval=ap.checked;');
+	add(' var ap=$("gpApproval");if(ap)body.requireApproval=ap.checked; var ba=$("gpBotAutoAccept");if(ba)body.botAutoAccept=ba.checked;');
 	add(' if((window.__mode||"")==="digest"){body.wake={count:Math.min(100,Math.max(1,Number($("gpWakeCount").value)||5)),intervalSeconds:Math.min(3600,Math.max(1,Number($("gpWakeInt").value)||30))};}');
 	add(' var name=$("gpSetName").value.trim();if(name&&name!==g.name)body.name=name;');
 	add(' var av=window.__avatar;');
@@ -1108,6 +1108,10 @@ export function renderGroupPage({ groups, agents, activeId, openNew, keep } = {}
 		+ '<div class="gp-fld"><label style="display:flex;align-items:center;gap:7px;cursor:pointer">'
 		+ '<input type="checkbox" id="gpApproval" style="width:auto;margin:0"><span>加入需确认</span></label>'
 		+ '<div class="gp-diag">打开后：被邀请的成员先进「待确认」区，你点 ✓ 才真正进群。</div></div>'
+		+ '<div class="gp-fld"><label style="display:flex;align-items:center;gap:7px;cursor:pointer">'
+		+ '<input type="checkbox" id="gpBotAutoAccept" style="width:auto;margin:0"><span>Bot 自动接受邀请</span></label>'
+		+ '<div class="gp-diag">默认开（邀请即进群）。关掉后：被邀请的 Bot 要<b>自己</b>回应才进群'
+		+ '（agent_group_invite_respond）；在那之前它不进群、也不收群消息。</div></div>'
 		+ '<div class="gp-fld"><label>群头像（方形 · ≤96KB）</label>'
 		+ '<div style="display:flex;gap:8px;align-items:center">'
 		+ '<span class="gp-av-big" id="gpSetAv"></span>'

@@ -1,0 +1,703 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dsh 桌面窗口 · 升级触发流水线（2026-10-30）</title>
+<style>
+	/* ══ 文档外壳（不是产品 UI）══════════════════════════════════════════ */
+	:root {
+		color-scheme: dark;
+		--doc-bg: #141414; --doc-card: #1b1b1b; --doc-card2: #202020; --doc-fg: #c9c9c9; --doc-dim: #8d8d8d;
+		--doc-border: #333; --doc-border2: #4a4a4a;
+		--ok: #7bc96f; --warn: #e0a23c; --danger: #f14c4c; --accent: #4d9fff; --link: #8ab4f8;
+		--mono: ui-monospace, Consolas, "Courier New", monospace;
+		/* 角色色：一条流水线横跨 4 个执行域 */
+		--c-main: #b58ad4;      /* Electron 主进程（dshViewHost / dshHarnessChannel） */
+		--c-renderer: #4d9fff;  /* IDE 渲染进程（sessions workbench / DshHarnessService） */
+		--c-ipc: #e0a23c;       /* 通道 / preload 桥 */
+		--c-page: #7bc96f;      /* dsh 页面插件（chat-surface） */
+		--c-ext: #8d8d8d;       /* 外部：dsh Host / 更新源 / 商城 / 插件中心 */
+	}
+	* { box-sizing: border-box; }
+	body { margin: 0; padding: 0 0 90px; background: var(--doc-bg); color: var(--doc-fg);
+		font: 13px/1.65 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; }
+	.doc { max-width: 1320px; margin: 0 auto; padding: 26px 24px; }
+	h1 { font-size: 21px; margin: 0 0 6px; }
+	h2 { font-size: 15px; margin: 34px 0 10px; padding-bottom: 6px; border-bottom: 1px solid var(--doc-border); }
+	h3 { font-size: 13px; margin: 20px 0 8px; color: #dcdcdc; }
+	.sub { color: var(--doc-dim); font-size: 12px; margin: 0 0 6px; }
+	code { font-family: var(--mono); font-size: 11.5px; background: rgba(255,255,255,.06);
+		padding: 1px 5px; border-radius: 3px; }
+	.muted { color: var(--doc-dim); }
+	.ok { color: var(--ok); } .warn { color: var(--warn); } .danger { color: var(--danger); }
+	ul.tight { margin: 6px 0; padding-left: 20px; }
+	ul.tight li { margin: 4px 0; }
+
+	/* ══ 图例 ══ */
+	.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 14px 0 4px; font-size: 11.5px; color: var(--doc-dim); }
+	.legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: 0; }
+
+	/* ══ 时间标尺 ══ */
+	.scale { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 12px 0 2px;
+		background: var(--doc-card); border: 1px solid var(--doc-border); border-radius: 8px; padding: 9px 12px; }
+	.scale .tick { display: flex; align-items: center; gap: 6px; font-size: 11.5px; }
+	.scale .tick b { font-family: var(--mono); color: var(--link); font-weight: 600; }
+	.scale .sep { color: #5a5a5a; }
+
+	/* ══ 阶段块 ══ */
+	.stage { display: grid; grid-template-columns: 78px minmax(0, 1fr); gap: 0 12px; margin-top: 10px; }
+	.stage > .idx { text-align: right; padding-top: 11px; }
+	.stage > .idx .n { display: block; font-family: var(--mono); font-size: 15px; font-weight: 700; color: var(--link); }
+	.stage > .idx .t { display: block; font-size: 10.5px; color: var(--doc-dim); line-height: 1.4; }
+	.stage > .body { border-left: 2px solid var(--doc-border2); padding: 2px 0 2px 14px; }
+	.stage > .body > .st { font-size: 12.5px; font-weight: 600; margin-bottom: 7px; }
+	.stage > .body > .st .tag { font-weight: 400; font-size: 11px; color: var(--doc-dim); margin-left: 6px; }
+
+	/* ══ 一跳（hop）卡片 ══ */
+	.hops { display: flex; flex-wrap: wrap; align-items: stretch; gap: 6px; }
+	.hop { flex: 1 1 236px; min-width: 0; background: var(--doc-card); border: 1px solid var(--doc-border);
+		border-left: 3px solid var(--doc-border2); border-radius: 7px; padding: 8px 10px; }
+	.hop.main { border-left-color: var(--c-main); }
+	.hop.renderer { border-left-color: var(--c-renderer); }
+	.hop.ipc { border-left-color: var(--c-ipc); }
+	.hop.page { border-left-color: var(--c-page); }
+	.hop.ext { border-left-color: var(--c-ext); background: #191919; }
+	.hop .who { display: block; font-size: 10px; letter-spacing: .04em; text-transform: uppercase;
+		color: var(--doc-dim); margin-bottom: 3px; }
+	.hop .what { display: block; font-size: 12px; }
+	.hop .loc { display: block; margin-top: 4px; font-family: var(--mono); font-size: 10.5px; color: #7f8a96; word-break: break-all; }
+	.hop.key { border-color: #2f4560; background: #1a2028; }
+	.hop.gate { border-left-color: var(--warn); background: #221d14; }
+	.arrow { align-self: center; color: #6a6a6a; font-size: 15px; flex: 0 0 auto; }
+	.arrow.down { width: 100%; text-align: center; }
+	.arrow.warn { color: var(--warn); }
+
+	/* ══ 徽标 ══ */
+	.badge { display: inline-block; font-size: 10px; padding: 0 5px; border-radius: 8px; margin-left: 4px;
+		background: rgba(123,201,111,.16); color: var(--ok); border: 1px solid rgba(123,201,111,.35); vertical-align: 1px; }
+	.badge.warn { background: rgba(224,162,60,.15); color: var(--warn); border-color: rgba(224,162,60,.4); }
+	.badge.danger { background: rgba(241,76,76,.14); color: var(--danger); border-color: rgba(241,76,76,.38); }
+	.badge.blue { background: rgba(77,159,255,.14); color: var(--link); border-color: rgba(77,159,255,.35); }
+
+	/* ══ 分支（图 B：四条动作） ══ */
+	.branches { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 10px; margin-top: 12px; align-items: start; }
+	.branch { background: var(--doc-card); border: 1px solid var(--doc-border); border-radius: 8px; padding: 10px 12px; }
+	.branch h4 { margin: 0 0 8px; font-size: 12.5px; }
+	.branch h4 code { font-size: 11px; }
+	.branch ol { margin: 0; padding-left: 18px; font-size: 11.5px; }
+	.branch li { margin: 5px 0; }
+	.branch .why { display: block; margin-top: 8px; padding-top: 7px; border-top: 1px dashed var(--doc-border);
+		font-size: 11px; color: var(--doc-dim); }
+	.branch.app { border-top: 3px solid var(--accent); }
+	.branch.plugin { border-top: 3px solid var(--ok); }
+	.branch.asset { border-top: 3px solid var(--warn); }
+	.branch.all { border-top: 3px solid var(--c-main); }
+
+	/* ══ 闸门状态机（图 C） ⚠ 类名不能叫 .gate：会跟阶段卡片 `.hop.gate` 撞（曾把卡片压成 30px 宽）══ */
+	.verdicts { display: grid; grid-template-columns: minmax(0,1fr) 30px minmax(0,1.05fr) 30px minmax(0,1fr);
+		gap: 8px 4px; align-items: stretch; margin-top: 12px; }
+	.verdicts .cell { background: var(--doc-card); border: 1px solid var(--doc-border); border-radius: 7px; padding: 9px 11px; min-width: 0; }
+	.verdicts .cell .t { font-weight: 600; font-size: 12px; display: block; }
+	.verdicts .cell .d { color: var(--doc-dim); font-size: 11.5px; display: block; }
+	.verdicts .cell.verdict-up { border-left: 3px solid var(--ok); }
+	.verdicts .cell.verdict-flat { border-left: 3px solid #5f6b7a; }
+	.verdicts .cell.verdict-down { border-left: 3px solid var(--danger); }
+	.verdicts .arrc { display: flex; align-items: center; justify-content: center; color: #6a6a6a; }
+
+	/* ══ 表 ══ */
+	table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 11.5px; }
+	th, td { text-align: left; padding: 6px 9px; border-bottom: 1px solid var(--doc-border); vertical-align: top;
+		overflow-wrap: anywhere; }
+	th { color: var(--doc-dim); font-weight: 600; font-size: 11px; letter-spacing: .03em; text-transform: uppercase; }
+	tbody tr:hover { background: rgba(255,255,255,.03); }
+	td .path { font-family: var(--mono); font-size: 10.5px; color: #7f8a96; }
+
+	/* ══ 折叠的代码位置 ══ */
+	details { margin-top: 8px; border: 1px solid var(--doc-border); border-radius: 7px; background: var(--doc-card2); }
+	details > summary { cursor: pointer; padding: 7px 11px; font-size: 11.5px; color: var(--doc-dim); }
+	details[open] > summary { border-bottom: 1px solid var(--doc-border); }
+	details .inner { padding: 8px 11px; font-size: 11.5px; }
+
+	.note { border-left: 3px solid var(--warn); background: #1f1b14; border-radius: 0 7px 7px 0;
+		padding: 8px 12px; margin-top: 12px; font-size: 11.5px; }
+	.note.danger { border-left-color: var(--danger); background: #211615; }
+	.note.ok { border-left-color: var(--ok); background: #151d15; }
+	.note b { color: #e8e8e8; }
+
+	@media (max-width: 1080px) {
+		.branches { grid-template-columns: repeat(2, minmax(0,1fr)); }
+		.verdicts { grid-template-columns: minmax(0,1fr); }
+		.verdicts .arrc { display: none; }
+	}
+	@media (max-width: 640px) {
+		.branches { grid-template-columns: minmax(0,1fr); }
+		.stage { grid-template-columns: 52px minmax(0,1fr); }
+	}
+</style>
+</head>
+<body>
+<div class="doc">
+
+	<h1>dsh 桌面窗口 · 升级触发流水线</h1>
+	<p class="sub">
+		从「启动 desktop」到「一次升级真正执行」的完整链路梳理（2026-10-30）。
+		代码是唯一真源：关键一跳都标了 <code>文件:行</code>，行号以本次梳理时代码为准（改动后可能漂移）。
+	</p>
+	<p class="sub">
+		一句话结论：<b>启动后没有任何"自动升级"</b>。启动只做两件事 ——
+		① 建桌面窗口时<b>顺手推一份缓存快照</b>（不联网）；
+		② 起动后 <b>8 秒静默查一次更新源</b>，把结论缓存进 <code>_appUpdate</code>。
+		真正的升级动作，永远由用户在左下角那行「↑ 更新」里点出来（4 条命令）。
+	</p>
+
+	<div class="legend">
+		<span><i style="background:var(--c-renderer)"></i>IDE 渲染进程（sessions workbench）</span>
+		<span><i style="background:var(--c-main)"></i>Electron 主进程（dshViewHost）</span>
+		<span><i style="background:var(--c-ipc)"></i>通道 / preload 桥</span>
+		<span><i style="background:var(--c-page)"></i>dsh 页面插件（chat-surface）</span>
+		<span><i style="background:var(--c-ext)"></i>外部（Host / 更新源 / 商城 / 插件中心）</span>
+	</div>
+
+	<!-- ════════════════════ 时间标尺 ════════════════════ -->
+	<div class="scale">
+		<span class="tick"><b>0</b> 应用启动 / 贡献构造</span><span class="sep">→</span>
+		<span class="tick"><b>+0.8s</b> 开桌面窗口壳</span><span class="sep">→</span>
+		<span class="tick"><b>~3s</b> 壳可见、IDE 被隐藏</span><span class="sep">→</span>
+		<span class="tick"><b>Host ready</b> 建视图</span><span class="sep">→</span>
+		<span class="tick"><b>页面首帧</b> 落快照</span><span class="sep">→</span>
+		<span class="tick"><b>+8s</b> <span class="warn">静默查更新源</span></span><span class="sep">→</span>
+		<span class="tick"><b>用户点行</b> 强制重查</span><span class="sep">→</span>
+		<span class="tick"><b>点击动作</b> 执行升级</span>
+	</div>
+
+	<h2>一、主流水线（启动 → 出现「↑ 更新」这一行）</h2>
+
+	<!-- S1 -->
+	<div class="stage">
+		<div class="idx"><span class="n">S1</span><span class="t">0s<br>renderer</span></div>
+		<div class="body">
+			<div class="st">启动判定：要不要开 desktop 窗口<span class="tag">两道闸门，任一不过就露 IDE 并 return</span></div>
+			<div class="hops">
+				<div class="hop renderer">
+					<span class="who">IDE renderer</span>
+					<span class="what"><code>DshFullWindowContribution</code> 构造（<code>WorkbenchPhase.BlockRestore</code>）</span>
+					<span class="loc">dshFullWindowContribution.ts:168</span>
+				</div>
+				<div class="arrow">→</div>
+				<div class="hop gate">
+					<span class="who">gate ①</span>
+					<span class="what"><code>sessions.dshHarness.enabled !== false</code> 且 <code>chatEngine === 'dsh'</code>，否则 <code>_showIdeWindow()</code> 后 return</span>
+					<span class="loc">:173-180</span>
+				</div>
+				<div class="arrow">→</div>
+				<div class="hop gate">
+					<span class="who">gate ②</span>
+					<span class="what"><code>sessions.dshHarness.openDesktopOnStartup === false</code> ⇒ 显示 IDE 并 return（用户自己关掉了自动开窗）</span>
+					<span class="loc">:200-204</span>
+				</div>
+			</div>
+			<div class="note" style="margin-top:8px">
+				<b>升级链路的真正起点不在这里</b>，而是同一时刻构造的 <code>DshHarnessService</code>：
+				构造函数末尾挂上 <code>_scheduleSilentAppUpdateCheck()</code>
+				（<span class="path">dshHarnessService.ts:624</span>）⇒ <b>8s 后静默查一次应用更新</b>。
+				这一步与开窗并行，互不依赖。
+			</div>
+		</div>
+	</div>
+
+	<!-- S2 -->
+	<div class="stage">
+		<div class="idx"><span class="n">S2</span><span class="t">+0.8s</span></div>
+		<div class="body">
+			<div class="st">开窗：先出壳、再等 Host<span class="tag">壳一出来就藏 IDE ⇒ Host 冷启动多久都不露 IDE</span></div>
+			<div class="hops">
+				<div class="hop renderer">
+					<span class="who">IDE renderer</span>
+					<span class="what"><code>claimDesktopAutoOpen(windowId)</code> —— 记账在主进程，防渲染进程重载后开出第二扇空壳</span>
+					<span class="loc">dshFullWindowContribution.ts:210</span>
+				</div>
+				<div class="arrow">→</div>
+				<div class="hop renderer">
+					<span class="who">IDE renderer</span>
+					<span class="what"><code>_open({}, settle)</code>：aux 窗壳 + 「正在启动」占位 ⇒ <code>onShellOpened()</code> ⇒ 藏 IDE（hide，任务栏也不留）</span>
+					<span class="loc">:1539 / :1613</span>
+				</div>
+				<div class="arrow">→</div>
+				<div class="hop ext">
+					<span class="who">外部 · dsh Host</span>
+					<span class="what"><code>await ensureStarted()</code> —— 冷启动常 17s+；壳已出，所以不必再露 IDE</span>
+					<span class="loc">:1615</span>
+				</div>
+			</div>
+			<div class="note" style="margin-top:8px">
+				兜底：20s 内连壳都没出来 ⇒ <b>退出应用</b>（<code>_quit</code>），不亮 IDE —— 桌面模式就是全部界面。
+				<span class="path">:251-256</span>
+			</div>
+		</div>
+	</div>
+
+	<!-- S3 -->
+	<div class="stage">
+		<div class="idx"><span class="n">S3</span><span class="t">Host ready</span></div>
+		<div class="body">
+			<div class="st">建视图：这才是「升级状态」能到页面的前提<span class="tag">没有视图 ⇒ 推送无人接收</span></div>
+			<div class="hops">
+				<div class="hop renderer">
+					<span class="who">IDE renderer</span>
+					<span class="what"><code>_openComposed()</code> ⇒ <code>createView(chatViewId, windowId, 'chat', sessionId, …, overrideChatOnlyUi=false, isolatedPool=true)</code></span>
+					<span class="loc">:1289</span>
+				</div>
+				<div class="arrow">→</div>
+				<div class="hop ipc">
+					<span class="who">通道</span>
+					<span class="what"><code>DshHarnessChannelCommand.CreateView</code> → 主进程建 <code>WebContentsView</code>，加载 <code>http://&lt;host&gt;:&lt;port&gt;/…?surface=chat</code></span>
+					<span class="loc">dshHarnessService.ts:1871</span>
+				</div>
+				<div class="arrow">→</div>
+				<div class="hop ipc">
+					<span class="who">preload</span>
+					<span class="what">注入 <code>window.vssarosDsh</code>（<code>bridgeVersion: 24</code>），并注册 <code>ipcRenderer.on('vssaros:dsh:upgrade')</code></span>
+					<span class="loc">preload-dshView.ts:134 / :396</span>
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<!-- S4 -->
+	<div class="stage">
+		<div class="idx"><span class="n">S4</span><span class="t">视图建好<br>立即</span></div>
+		<div class="body">
+			<div class="st">首份快照：不依赖联网结论，先让页面"有数据"<span class="tag">app.action 此时通常还是 unknown</span></div>
+			<div class="hops">
+				<div class="hop renderer key">
+					<span class="who">IDE renderer</span>
+					<span class="what"><code>createView().then()</code> 里：<code>_pushTheme</code> / <code>_pushWorktrees</code> / <code>_pushWorkspaces</code> / <code>_pushAuth</code> + <b><code>_pushUpgradeState(viewId)</code></b></span>
+					<span class="loc">dshHarnessService.ts:1885-1888</span>
+				</div>
+				<div class="arrow">→</div>
+				<div class="hop renderer">
+					<span class="who">IDE renderer</span>
+					<span class="what"><code>_buildUpgradeState()</code>：bundled ← 插件中心 <code>listBundledPlugins()</code>；runtime ← <code>updateChannel</code> 设置；app ← <code>_appUpdate ?? { action:'unknown' }</code>；assets ← <code>_collectAssets()</code></span>
+					<span class="loc">:2225</span>
+				</div>
+				<div class="arrow">→</div>
+				<div class="hop ext">
+					<span class="who">外部 · 商城</span>
+					<span class="what"><code>_collectAssets()</code>：<code>marketplace.getInstalled()</code> + <code>checkUpgrades()</code>，只留五类（skill/mcp/agent/workflow/workbench），skill/workflow 标 <code>via:'dsh'</code></span>
+					<span class="loc">:2124</span>
+				</div>
+			</div>
+			<div class="note" style="margin-top:8px">
+				⚠ 注释写「不联网」，但 <b>assets 这一段实际会打商城服务</b>（<code>checkUpgrades</code>）；
+				没登录 / 不可达 ⇒ 空数组 + <code>assetsNote</code>（绝不假装"都最新"）。
+				<span class="path">:2148-2152</span>
+			</div>
+		</div>
+	</div>
+
+	<!-- S5 -->
+	<div class="stage">
+		<div class="idx"><span class="n">S5</span><span class="t">页面首帧</span></div>
+		<div class="body">
+			<div class="st">落地：主进程发 → preload 写 dataset + 派事件 → 页面插件读到<span class="tag">三重保险，早推也不会丢</span></div>
+			<div class="hops">
+				<div class="hop ipc">
+					<span class="who">通道</span>
+					<span class="what"><code>channel.call(PushUpgrade, {viewId, state})</code> → 主进程 <code>validateUpgradeState()</code>（信任边界）→ <code>_views.pushUpgrade()</code></span>
+					<span class="loc">dshHarnessChannel.ts:1941</span>
+				</div>
+				<div class="arrow">→</div>
+				<div class="hop main">
+					<span class="who">Electron main</span>
+					<span class="what"><code>webContents.send(DSH_PAGE_IPC_UPGRADE, state)</code>，并记 <code>slot.lastUpgrade</code> 供重载后补发</span>
+					<span class="loc">dshViewHost.ts:1225</span>
+				</div>
+				<div class="arrow">→</div>
+				<div class="hop ipc">
+					<span class="who">preload</span>
+					<span class="what"><code>documentElement.dataset.vssarosUpgrade = JSON</code> + <code>dispatchEvent('vssaros-dsh-upgrade')</code></span>
+					<span class="loc">preload-dshView.ts:398-408</span>
+				</div>
+				<div class="arrow">→</div>
+				<div class="hop page">
+					<span class="who">dsh 页面插件</span>
+					<span class="what"><code>client.upgrade.js</code>（<code>ALWAYS_CHUNKS</code> 无条件装载）→ <code>slots.inject('shell.overlay', …, UpgradeHost)</code></span>
+					<span class="loc">client.js:547 / client.upgrade.js:405</span>
+				</div>
+			</div>
+			<div class="hops" style="margin-top:6px">
+				<div class="hop ipc">
+					<span class="who">保险 ①</span>
+					<span class="what">推送早于 preload 注册 ⇒ 被静默丢弃 ⇒ <code>did-finish-load</code> 时 <code>_replayPushedSnapshots(slot)</code> 补发 <code>lastUpgrade</code></span>
+					<span class="loc">dshViewHost.ts:1741 / :2257</span>
+				</div>
+				<div class="hop ipc">
+					<span class="who">保险 ②</span>
+					<span class="what">页面重载 / 白屏自愈后同样走 <code>did-finish-load</code> ⇒ 同一份快照再补一次（幂等）</span>
+					<span class="loc">:2249</span>
+				</div>
+				<div class="hop page">
+					<span class="who">保险 ③</span>
+					<span class="what"><code>dataset</code> 是"最近一份"，<code>readState()</code> 每次渲染都重读 ⇒ 不需要增量协议</span>
+					<span class="loc">client.upgrade.js:75</span>
+				</div>
+			</div>
+			<div class="note danger" style="margin-top:8px">
+				<b>此时用户多半看不到任何东西</b>（这是设计，不是 bug）：<code>UpgradeHost</code> 在
+				<code>!open &amp;&amp; totalPending === 0 &amp;&amp; app.action !== 'upgrade' &amp;&amp; !busy</code> 时整块 <code>return null</code>
+				<span class="path">client.upgrade.js:350</span>。
+				另外老宿主（桥 &lt; 19，没有 <code>upgradeRefresh</code>）也整块不渲染，避免"点了没反应"的假入口。
+				<span class="path">:338</span>
+			</div>
+		</div>
+	</div>
+
+	<!-- S6 -->
+	<div class="stage">
+		<div class="idx"><span class="n">S6</span><span class="t">+8s<br><span class="warn">关键</span></span></div>
+		<div class="body">
+			<div class="st">静默联网检查：这一跳决定了「左下角那行会不会亮」<span class="tag">2026-10-29 补的，之前启动压根没人查</span></div>
+			<div class="hops">
+				<div class="hop renderer key">
+					<span class="who">IDE renderer</span>
+					<span class="what"><code>_scheduleSilentAppUpdateCheck()</code>：<code>setTimeout(8s)</code> → <code>_appUpdate = await _checkAppUpdate()</code> → <code>_pushUpgradeToAll()</code>；<b>不设 <code>_upgradeBusy</code></b>（页面不该显示"正在检查更新源…"），失败只记日志</span>
+					<span class="loc">dshHarnessService.ts:2169</span>
+				</div>
+				<div class="arrow">→</div>
+				<div class="hop ext">
+					<span class="who">外部 · 更新源</span>
+					<span class="what"><code>buildUpdateEndpoint(updateUrl, 'win32-x64', 'saros', commit)</code> ⇒ <code>GET {updateUrl}/api/update/…?channel=latest&amp;noversioncheck=true</code></span>
+					<span class="loc">dshAppUpdate.ts:83</span>
+				</div>
+				<div class="arrow">→</div>
+				<div class="hop gate">
+					<span class="who">硬闸门</span>
+					<span class="what"><code>decideAppUpdate(current, remote)</code>：只比 <code>productVersion</code>，<b>源不比本地新就不许升</b>（VS Code 的 win32 服务只比 commit 不等 = 会把旧版当"有更新"）</span>
+					<span class="loc">dshAppUpdate.ts:64</span>
+				</div>
+				<div class="arrow">→</div>
+				<div class="hop renderer">
+					<span class="who">IDE renderer</span>
+					<span class="what"><code>_pushUpgradeToAll()</code>：遍历 <code>_ownViews</code> 逐个 <code>PushUpgrade</code></span>
+					<span class="loc">:2261</span>
+				</div>
+			</div>
+			<div class="note ok" style="margin-top:8px">
+				<b>竞态已闭合（两个方向都覆盖）</b>：8s 时桌面视图可能还没建（Host 冷启动 17s+）⇒ 推给 0 个视图，
+				但结论已存进 <code>_appUpdate</code>，之后视图建好时的 <code>_pushUpgradeState(viewId)</code> 会带上它；
+				反之若视图先建、8s 后查，则由 <code>_pushUpgradeToAll</code> 补推。<b>顺序无关</b>。
+			</div>
+			<div class="note" style="margin-top:8px">
+				VS Code 自己的更新检查已被关掉：<code>product.json</code> 的 <code>"update": { "mode": "manual" }</code>
+				（<span class="path">product.json:12-14</span>）⇒ 不会再有官方弹窗跟我们抢。
+			</div>
+		</div>
+	</div>
+
+	<!-- S7 -->
+	<div class="stage">
+		<div class="idx"><span class="n">S7</span><span class="t">用户点行</span></div>
+		<div class="body">
+			<div class="st">出现「↑ 更新」→ 点开面板（打开即强制重查）<span class="tag">这一行是 overlay，锚在账号 chip 上方</span></div>
+			<div class="hops">
+				<div class="hop page">
+					<span class="who">dsh 页面插件</span>
+					<span class="what">行文案三态：<code>totalPending &gt; 0</code> ⇒「N 项可用」；否则 <code>app.action === 'upgrade'</code> ⇒「应用可升级」；否则「已最新」</span>
+					<span class="loc">client.upgrade.js:136-138</span>
+				</div>
+				<div class="arrow">→</div>
+				<div class="hop page">
+					<span class="who">dsh 页面插件</span>
+					<span class="what"><code>totalPending = upgradableRows + assetRows</code> —— <b>只算"可升级"</b>，不含"未安装"，也不含应用自身</span>
+					<span class="loc">:110</span>
+				</div>
+				<div class="arrow">→</div>
+				<div class="hop ipc">
+					<span class="who">点击</span>
+					<span class="what"><code>onToggle</code> ⇒ <code>setOpen(true)</code> + <code>b.upgradeRefresh()</code>（别让用户看上次开机的旧快照）</span>
+					<span class="loc">:367-372</span>
+				</div>
+				<div class="arrow">→</div>
+				<div class="hop renderer">
+					<span class="who">IDE renderer</span>
+					<span class="what"><code>refreshUpgrade()</code>：<code>busy='checking'</code> 先推 → <code>_checkAppUpdate()</code> → <code>finally</code> 清 busy 再推</span>
+					<span class="loc">:2011</span>
+				</div>
+			</div>
+			<div class="note" style="margin-top:8px">
+				<b>定位规则</b>：先找 <code>[data-vssaros-account-chip]</code>，然后 <code>footerStatusTop()</code> 把锚点抬到
+				"最近一行含『个工作区 / 条会话』的叶子元素"顶部（避免压住官方那行灰色状态）；行底色<b>必须不透明</b>。
+				<span class="path">client.upgrade.js:278-314</span>
+			</div>
+		</div>
+	</div>
+
+	<h2>二、点击之后：四条命令、四条流水线</h2>
+
+	<p class="sub">
+		四条命令都登记在 <code>DSH_PAGE_COMMANDS_WITHOUT_IDE_UI</code>（<span class="path">dshPageBridgeProtocol.ts:1063</span>）——
+		否则点一下就会把 IDE 主窗口拉到前台，正好违反"只显示 desktop"。
+		页面桥是<b>单向</b>（<code>invoke</code> 只回 <code>true</code>）⇒ 所有结果都靠<b>再推一次快照</b>回来。
+	</p>
+
+	<div class="branches">
+		<div class="branch app">
+			<h4><code>upgradeApp()</code> · 一键升级应用 <span class="badge blue">最复杂</span></h4>
+			<ol>
+				<li>防重入：<code>_upgradeBusy</code> 有值直接 return</li>
+				<li><code>busy='checking'</code> → 推</li>
+				<li><code>_checkAppUpdate()</code> → <b class="warn">闸门</b>：<code>action !== 'upgrade'</code> ⇒ 记日志 + <b>直接 return，不下载</b></li>
+				<li>没有 <code>_updateService</code> ⇒ 抛「这个构建没有可用的更新服务」</li>
+				<li><code>busy='downloading'</code> → 推 → <code>svc.checkForUpdates(true)</code>（VS Code 真下载）</li>
+				<li><code>_waitUpdateReady(180s)</code>：轮询 <code>Ready/Downloaded</code>；<code>Idle/Disabled/Uninitialized</code> ⇒ 判失败</li>
+				<li><code>busy='installing'</code> → 推 → <b><code>ReleaseHost</code></b>（释放常驻 Host 对 <code>koffi.node</code> 的锁；失败只记日志）</li>
+				<li><code>svc.quitAndInstall()</code> ⇒ 应用重启、会话中断</li>
+			</ol>
+			<span class="why">
+				行号：<code>dshHarnessService.ts:2042-2089</code>。<br>
+				为什么必须有第 3 步：更新源可能<b>比本地旧</b>（真机 2.2.26080 &lt; 2.2.26125），
+				VS Code 只比 commit ⇒ 不做闸门就是"一键降级"。<br>
+				为什么要有第 7 步：真机曾报「DeleteFile 失败；错误代码 5」，根因就是 detached Host 持锁。
+			</span>
+		</div>
+
+		<div class="branch plugin">
+			<h4><code>upgradeBundled(name)</code> · 随包插件</h4>
+			<ol>
+				<li>页面侧形状校验：npm 包名正则；宿主再核对"是否在随包清单里"（不许借它装任意包）</li>
+				<li><code>getDshPluginCenterHost()</code>（全局函数取，不是 DI）</li>
+				<li><code>installBundledPlugin(name)</code> ⇒ 主进程 <code>dshHostSupervisor</code>：先把插件目录<b>暂存</b>到 <code>&lt;profile&gt;/.vssaros/plugins/&lt;name&gt;-&lt;ver&gt;/</code>，再 <code>dsh plugin add</code>（<b>跨盘符安全</b>：仓库 G: / userData C: 时 <code>file:</code> 直装必失败）</li>
+				<li><code>ok</code> 的判据是<b>实装版本 === 随包版本</b>（"报了个错然后继续"不许显示成成功）</li>
+				<li>装完 Host 可能<b>自动重启</b>（日志「a bundled plugin changed while the Host was running — restarting」）</li>
+				<li><code>finally</code> → <code>_pushUpgradeToAll()</code>：成功显示"已装 ✓"，失败带原因</li>
+			</ol>
+			<span class="why">
+				行号：<code>dshHarnessService.ts:2023-2040</code>；协议：<code>dshPageBridgeProtocol.ts:1462</code>。
+			</span>
+		</div>
+
+		<div class="branch asset">
+			<h4><code>upgradeAsset(kind, slug)</code> · 商城资产</h4>
+			<ol>
+				<li><b class="warn">短路</b>：<code>kind</code> 是 <code>skill</code> / <code>workflow</code> ⇒ 直接返回"由 dsh 侧负责"（页面本来就不画按钮）</li>
+				<li><code>runMarketplaceAction({ op:'upgrade', kind, slug })</code> —— agent / mcp / workbench 走 IDE 台账</li>
+				<li><code>finally</code> → 再推一次状态</li>
+			</ol>
+			<span class="why">
+				行号：<code>dshHarnessService.ts:2091-2115</code>。<br>
+				为什么 skill/workflow 不能走这里：2026-10-22 起它们由 dsh 侧插件自持，
+				IDE 的 install/upgrade/uninstall 会被下线闸直接抛。
+			</span>
+		</div>
+
+		<div class="branch all">
+			<h4>「全部升级」<span class="badge">页面聚合</span></h4>
+			<ol>
+				<li>只遍历 <code>state === 'upgradable'</code> 的随包插件（<code>missing</code> 不算"升级"）</li>
+				<li>再遍历 <code>assets</code> 里 <code>via === 'ide'</code> 的那几件</li>
+				<li>逐个 <code>call()</code> 发出 —— 宿主侧各自防重入/串行</li>
+			</ol>
+			<span class="why">
+				行号：<code>client.upgrade.js:381-387</code>。<br>
+				未安装的插件仍<b>列在面板里</b>（各有「安装」按钮），只是不参与计数、也不进"全部升级"。
+			</span>
+		</div>
+	</div>
+
+	<h2>三、版本闸门 <code>decideAppUpdate</code> 的四种判定</h2>
+
+	<p class="sub">
+		输入：<code>current = productService.version</code>、<code>remote = 更新源 JSON 的 productVersion</code>。
+		缺 <code>remote</code>（没查到 / 源没给）按<b>已最新</b>处理 —— 宁可不升，也不要因残缺响应把用户装回旧版。
+	</p>
+
+	<div class="verdicts">
+		<div class="cell"><span class="t">remote 缺失 / 空</span><span class="d"><code>''</code> ⇒ 提前返回</span></div>
+		<div class="arrc">→</div>
+		<div class="cell verdict-flat"><span class="t">uptodate</span><span class="d">「已是最新」；按钮 disabled</span></div>
+		<div class="arrc">≡</div>
+		<div class="cell"><span class="d">日志 <code>[dshHarness] app update: local=… remote=- ⇒ uptodate</code></span></div>
+
+		<div class="cell"><span class="t">remote &gt; current</span><span class="d">数字段逐个比，缺段按 0</span></div>
+		<div class="arrc">→</div>
+		<div class="cell verdict-up"><span class="t">upgrade</span><span class="d">行亮起 / 文案「应用可升级到 X」/ 面板「一键升级」可点</span></div>
+		<div class="arrc">≡</div>
+		<div class="cell"><span class="d">唯一允许下载的分支</span></div>
+
+		<div class="cell"><span class="t">remote === current</span><span class="d">含 <code>-rc.1</code> 这类后缀（切段后相同）</span></div>
+		<div class="arrc">→</div>
+		<div class="cell verdict-flat"><span class="t">uptodate</span><span class="d">同上</span></div>
+		<div class="arrc">≡</div>
+		<div class="cell"><span class="d">"—"</span></div>
+
+		<div class="cell"><span class="t">remote &lt; current</span><span class="d">更新源比本地旧（真机常态）</span></div>
+		<div class="arrc">→</div>
+		<div class="cell verdict-down"><span class="t">downgrade</span><span class="d">拒绝升级；页面文案仍是「已是最新」（不诱导点击），样式 <code>data-hot=0</code></span></div>
+		<div class="arrc">≡</div>
+		<div class="cell"><span class="d">日志 <code>upgradeApp: 不升级（action=downgrade …）</code></span></div>
+	</div>
+
+	<h2>四、三层保险与「为什么看起来没反应」</h2>
+
+	<table>
+		<thead><tr><th style="width:190px">现象</th><th style="width:290px">机制</th><th>去这里看</th></tr></thead>
+		<tbody>
+			<tr>
+				<td>左下角那一行不出现</td>
+				<td>没有可升级项（插件 / 资产 / 应用都非 upgrade）时按设计整块 <code>null</code></td>
+				<td><code>dataset.vssarosUpgrade</code> 看一眼 <code>app.action</code> 与 <code>bundled[].state</code>；<br>日志搜 <code>[dshHarness] app update:</code></td>
+			</tr>
+			<tr>
+				<td>源上明明有新版，却显示「已最新」</td>
+				<td>启动静默检查没跑 / 更新源 endpoint 参数不对 / 闸门判成 downgrade</td>
+				<td>日志 <code>[dshHarness] app update: local=… remote=… ⇒ …</code>；<br>以及 <code>静默检查应用更新失败：…</code></td>
+			</tr>
+			<tr>
+				<td>点「一键升级」毫无反应</td>
+				<td>① <code>_upgradeBusy</code> 非空（防重入，直接 return）<br>② <code>action !== 'upgrade'</code> ⇒ 静默 return（只有 <code>info</code> 日志）</td>
+				<td><code>[dshHarness] upgradeApp: 不升级（action=…）</code></td>
+			</tr>
+			<tr>
+				<td>安装到一半失败「DeleteFile 错误 5」</td>
+				<td>detached 常驻 dsh Host 持着 <code>koffi.node</code>，安装器删不掉</td>
+				<td><code>释放 dsh Host 失败（安装时可能仍会撞文件锁）</code></td>
+			</tr>
+			<tr>
+				<td>页面重载 / 白屏自愈后那行消失</td>
+				<td>主进程 <code>lastUpgrade</code> 在 <code>did-finish-load</code> 补发；若仍空 ⇒ 宿主从没推过</td>
+				<td><code>view … replayed … </code> 系列日志；<code>pushUpgrade ignored: 载荷形状不合法</code></td>
+			</tr>
+			<tr>
+				<td>升级完插件版本没变</td>
+				<td>插件入口 chunk 指纹 / 版本 bump / Host 未重启（keepAlive）</td>
+				<td>插件中心日志 + <code>dsh plugin add</code> 输出</td>
+			</tr>
+		</tbody>
+	</table>
+
+	<div class="note ok" style="margin-top:16px">
+		<b>2026-10-30 纠了这条副作用</b>：desktop 那行在"没有可升级项"时仍然整块隐藏（设计不变），
+		但 IDE 侧补了**手动入口** —— VsSaros 菜单「检查更新…」→「系统与更新」面板
+		（`dshHarness.checkAppUpdates`，打开**不联网**，面板里点「检查更新」才查更新源）。
+		⇒ 运行期间新发布的版本不必等下次启动。
+	</div>
+
+	<div class="note" style="margin-top:12px">
+		<b>2026-10-30 同时下线了启动弹窗</b>：原来 `DshUpdateCheckContribution` 会在 Host 变 running 后
+		每 24h `discoverUpdates()` 并向用户 `notification.prompt`（"dsh X 可用（当前 Y）。"）——
+		用户要求"启动时不要弹出" ⇒ 整段下线。现在**没有任何启动期自动检查 + 弹窗**，
+		检查只发生在：desktop 那行点开后（S7）、IDE 面板点「检查更新」、或手动命令。
+	</div>
+
+	<h2>五、关键文件与符号索引</h2>
+
+	<table>
+		<thead><tr><th style="width:300px">文件</th><th>职责</th><th style="width:300px">关键符号</th></tr></thead>
+		<tbody>
+			<tr>
+				<td><span class="path">sessions/contrib/dshHarness/electron-browser/dshFullWindowContribution.ts</span></td>
+				<td>启动判定 + 开窗壳 + 建视图（desktop 的唯一入口）</td>
+				<td><code>DshFullWindowContribution.ctor</code> / <code>_open</code> / <code>_openComposed</code> / <code>claimDesktopAutoOpen</code></td>
+			</tr>
+			<tr>
+				<td><span class="path">…/electron-browser/dshHarnessService.ts</span></td>
+				<td>升级状态的唯一计算者与推送者（renderer 侧）</td>
+				<td><code>_scheduleSilentAppUpdateCheck</code> / <code>_checkAppUpdate</code> / <code>_buildUpgradeState</code> / <code>_pushUpgradeToAll</code> / <code>refreshUpgrade</code> / <code>upgradeApp</code> / <code>upgradeBundled</code> / <code>upgradeAsset</code></td>
+			</tr>
+			<tr>
+				<td><span class="path">…/common/dshAppUpdate.ts</span></td>
+				<td>纯逻辑：版本比较、降级闸门、endpoint、响应解析</td>
+				<td><code>compareVersions</code> / <code>decideAppUpdate</code> / <code>buildUpdateEndpoint</code> / <code>parseAppUpdateResponse</code></td>
+			</tr>
+			<tr>
+				<td><span class="path">…/common/dshPageBridgeProtocol.ts</span></td>
+				<td>桥协议：事件名、快照形状与校验、命令白名单</td>
+				<td><code>DSH_PAGE_IPC_UPGRADE</code> / <code>DSH_PAGE_UPGRADE_EVENT</code> / <code>IDshUpgradeState</code> / <code>validateUpgradeState</code> / <code>DSH_UPGRADE_ASSET_KINDS</code></td>
+			</tr>
+			<tr>
+				<td><span class="path">…/electron-main/dshViewHost.ts</span></td>
+				<td>主进程侧投递 + 重载补发</td>
+				<td><code>pushUpgrade</code> / <code>lastUpgrade</code> / <code>_replayPushedSnapshots</code></td>
+			</tr>
+			<tr>
+				<td><span class="path">…/electron-main/dshHarnessChannel.ts</span></td>
+				<td>通道校验（信任边界）</td>
+				<td><code>case PushUpgrade</code></td>
+			</tr>
+			<tr>
+				<td><span class="path">…/electron-browser/preload-dshView.ts</span></td>
+				<td>写 dataset + 派 DOM 事件；暴露 <code>upgrade*</code> 四个方法</td>
+				<td><code>bridgeVersion</code> / <code>UPGRADE_CH</code> / <code>upgradeRefresh</code></td>
+			</tr>
+			<tr>
+				<td><span class="path">…/electron-browser/dshHarness.contribution.ts</span></td>
+				<td>页面命令派发（4 个 case）</td>
+				<td><code>case 'upgradeRefresh' | 'upgradeBundled' | 'upgradeAsset' | 'upgradeApp'</code></td>
+			</tr>
+			<tr>
+				<td><span class="path">dsh-plugins/vssaros-chat-surface/lib/client.upgrade.js</span></td>
+				<td>UI：左下角一行（两行布局：摘要 + 更新内容）+ 四段面板（0.2.298）</td>
+				<td><code>UpgradeHost</code> / <code>Row</code> / <code>Panel</code> / <code>totalPending</code> / <code>upgradableRows</code> / <code>upcomingItems</code> / <code>footerStatusTop</code></td>
+			</tr>
+			<tr>
+				<td><span class="path">…/electron-browser/dshUpgradeEditorPane.ts</span>（2026-10-30 新增）</td>
+				<td><b>IDE 侧</b>「系统与更新」面板：打开不联网、点「检查更新」才查；四段与应用一键升级</td>
+				<td><code>DshUpgradeEditorPane</code> / <code>_refresh(check)</code> / <code>_run</code> / <code>_runAll</code>；命令 <code>dshHarness.checkAppUpdates</code></td>
+			</tr>
+			<tr>
+				<td><span class="path">product.json</span></td>
+				<td>更新源与"关掉 VS Code 自己的更新"</td>
+				<td><code>updateUrl</code> / <code>"update": { "mode": "manual" }</code> / <code>quality: "saros"</code></td>
+			</tr>
+		</tbody>
+	</table>
+
+	<details>
+		<summary>补充：为什么状态必须"推"而不是"查"（协议层的硬约束）</summary>
+		<div class="inner">
+			<p style="margin:4px 0">
+				页面桥 <code>DSH_PAGE_IPC_INVOKE</code> 是<b>单向</b>的 —— 主进程只回 <code>true</code> / <code>'pong'</code>，
+				没有返回值通道。<span class="path">dshPageBridgeProtocol.ts:205-211</span>
+			</p>
+			<p style="margin:4px 0">
+				所以四件事只能靠推：主题、worktree / 工作区列表、登录态、<b>升级状态</b>。
+				好处是页面打开前数据就在 <code>dataset</code> 里了（不会先看到"加载中"）；
+				代价是必须处理"推的时候监听还没注册" —— 于是有了 <code>lastUpgrade</code> + <code>did-finish-load</code> 补发。
+			</p>
+			<p style="margin:4px 0">
+				校验也在主进程做（<code>validateUpgradeState</code>）：页面会把 <code>dataset</code> 当可信数据解析，
+				所以"值域越界一律丢弃"（宁可少一行，也不要拿到脏数据）。
+			</p>
+		</div>
+	</details>
+
+	<details>
+		<summary>补充：为什么 8s 这个数字、以及为什么静默不置 busy</summary>
+		<div class="inner">
+			<p style="margin:4px 0">
+				8s 是"避开首启高峰"的折中：Host 冷启动要十几秒、页面首帧也在抢资源，
+				这一跳既要尽早拿到结论（用户开面板前就该有信号），又不能和首帧抢 IO。
+				<span class="path">dshHarnessService.ts:2165-2168</span>
+			</p>
+			<p style="margin:4px 0">
+				不设 <code>_upgradeBusy</code> 的原因：<code>busy</code> 会让页面显示「正在检查更新源…」并禁用按钮 ——
+				启动时的后台检查不该让用户以为"有人在操作"。失败也只在 <code>info</code> 级别记一行，不影响启动。
+			</p>
+			<p style="margin:4px 0">
+				定时器 <code>timer.unref?.()</code> 且注册进 <code>_register</code>：不阻止进程退出、随服务一起释放。
+			</p>
+		</div>
+	</details>
+
+	<p class="sub" style="margin-top:26px">
+		本文只描述<b>现状</b>（代码即真源）。若要改行为，先读第五节的守卫：
+		<span class="path">test/common/dshAppUpdate.test.ts</span> ·
+		<span class="path">test/common/dshAppUpdateAutoCheck.test.ts</span> ·
+		<span class="path">test/common/dshUpdateViaDshOnly.test.ts</span> ·
+		<span class="path">test/common/dshUpgradeEntry.test.ts</span>
+	</p>
+
+</div>
+</body>
+</html>

@@ -32,6 +32,8 @@ import { lineDiff } from './core/diff.js';
 import { aggregateByPreset, liveForAgents, usageByAgent } from './core/live.js';
 import { PERSONA_PROJECTION_KEY, personaProjection, personaSwitchMessage, switchedPersonaText } from './core/persona.js';
 import { createToolNameSnapshot } from './core/toolNames.js';
+// 群聊的派发/记账与 `@vssaros/dsh-loop` 共用同一份 work-item 判据（真源在 `@vssaros/dsh-workitem`）。
+import { bindWorkItems } from './workItemRef.js';
 import { renderDetailPage } from './detail.js';
 // ★ 2026-10-22（工作台重构）：名册 JSON 接口复用**同一份**面板数据构建（页面与工作台不会各算一遍 ✓）
 import { buildHomeData } from './home.js';
@@ -40,10 +42,10 @@ import { renderMemoryEvoPage } from './memoryEvoPage.js';
 /* 群聊附件（2026-10-26）：上传/读取独立成模块（见 groupFiles.js 头注释的安全边界）。
    ⚠ MAX_FILE_BYTES 同时用于 readRawBody 的上限 —— 两边必须是同一个常量，别各写一份。 */
 import { MAX_FILE_BYTES, readGroupFile, saveGroupFile } from './groupFiles.js';
-import { addGroupMembers, bindGroupSession, createGroup, decideGroupJoin, deleteGroup, effectiveModeFor, ensureMemberSession, installGroupTracker, listGroups, markGroupRead, newGroupSessions, normalizeGroupMode, postGroupMessage, removeGroupMember, setGroupAvatar, setGroupMemberPolicy, updateGroup, wakeOf } from './groups.js';
+import { addGroupMembers, bindGroupSession, createGroup, decideGroupJoin, deleteGroup, effectiveModeFor, ensureMemberSession, installGroupTracker, listGroups, markGroupRead, newGroupSessions, normalizeGroupMode, postGroupMessage, removeGroupMember, respondGroupInvite, setGroupAvatar, setGroupMemberPolicy, updateGroup, wakeOf } from './groups.js';
 import { readLiveSessions, recentSessionPresetIds } from './live.js';
 import { markSeen, unreadSnapshot } from './seen.js';
-import { backupMemory, ensureMemoryRepo, clampMemoryChars, enableGit, gitLogOf, gitShowMemoryFile, gitStatusOf, installMemoryBackupWatcher, listBranches, listMemoryBackups, listMemoryFiles, listVersions, MEMORY_CHARS_MAX, readMemoryFile, readMemorySnapshot, restoreMemoryBackup, restoreMemoryFile, setVersion, snapshotGit, switchBranch, writeCoreMemory, memoryDirOf } from './memory.js';
+import { backupMemory, ensureMemoryRepo, clampMemoryChars, enableGit, gitGraphOf, gitLogOf, gitShowMemoryFile, gitStatusOf, installMemoryBackupWatcher, listBranches, listMemoryBackups, listMemoryFiles, listVersions, MEMORY_CHARS_MAX, readMemoryFile, readMemorySnapshot, restoreMemoryBackup, restoreMemoryFile, setVersion, snapshotGit, switchBranch, writeCoreMemory, memoryDirOf, memoryAutoCommitOnTurn, __memoryTurn } from './memory.js';
 // 从 AgentMemory 网关库拉一份 MEMORY.md **草稿**（只读；不落盘 —— 落盘仍走 write-memory 由人确认）
 import { importMemoryDraft, listAgentMemoryCandidates, listAgentMemoryExtras, syncMemoryToAgentMemory } from './agentmemoryImport.js';
 import { ensureOutboxLoaded, outboxList, outboxRetry } from './outbox.js';
@@ -1692,11 +1694,13 @@ function applyTopLevel(ctx, config) {
 													// 加入需确认（2026-10-21）：群级开关 + 待确认队列
 													: action === 'approval' ? await updateGroup(config, body)
 														: action === 'join-decide' ? await decideGroupJoin(config, body)
+															// Bot **自己**回应邀请（2026-10-31，P1）：人批准走 join-decide，这条是 Bot 自决
+															: action === 'invite-respond' ? await respondGroupInvite(config, body)
 															// 已读游标（2026-10-21）：页面把"当前群看完了"上传，unread 从这里重新算
 															: action === 'read' ? await markGroupRead(config, body)
 														// 群头像（2026-10-21）：页面先裁成 256×256、压到 96KB 以内再传
 														: action === 'avatar' ? await setGroupAvatar(config, body)
-													: (() => { throw Object.assign(new Error(`未知 action：${action || '(空)'}（支持 create/message/delete/rename/mode/invite/remove/read）`), { httpStatus: 400 }); })();
+													: (() => { throw Object.assign(new Error(`未知 action：${action || '(空)'}（支持 create/message/delete/rename/mode/invite/remove/join-decide/invite-respond/read）`), { httpStatus: 400 }); })();
 						res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
 						res.end(JSON.stringify(result));
 					} else {
@@ -1794,10 +1798,14 @@ function applyTopLevel(ctx, config) {
 						const agentId = String(url.searchParams.get('agent') ?? '').trim();
 						if (!agentId) {
 							throw Object.assign(new Error('需要 agent 参数'), { httpStatus: 400 });
-						/* ★ 2026-10-27：首次读取即初始化（幂等）—— 老 bot 不用重建也能有内容。
-						   ⚠ 只读接口不该因为 git 不可用而 500 ⇒ ensureMemoryRepo 内部软失败。 */
-						await ensureMemoryRepo(config, agentId).catch(() => undefined);
 						}
+						/* ★ 2026-10-27：首次读取即初始化（幂等）—— 老 bot 不用重建也能有内容。
+						   ⚠ 只读接口不该因为 git 不可用而 500 ⇒ ensureMemoryRepo 内部软失败。
+						   ⚠⚠ 2026-10-31 修**死代码**：这一句原先被写在上面 `if (!agentId) { throw … }`
+						   的**大括号里面、throw 之后** ⇒ 永远执行不到 ⇒ "首次读取即初始化"从未发生过
+						   ⇒ 从没被读过的 agent（内置 agent 尤其）记忆目录永远不会被 git 初始化
+						   ⇒ 演化 / 版本 / 分支三个页签恒空（这正是"记忆没内容"的最后一环）。 */
+						await ensureMemoryRepo(config, agentId).catch(() => undefined);
 						const file = url.searchParams.get('file');
 						// `gitLogOf` 复用刚算出的 status（旧实现三项并行 ⇒ `gitStatusOf` 在一个请求里跑两遍，
 						// 一次页面加载就是 8~10 个 git 子进程）。历史条数支持 `?limit=`（缺省 20、上限 100）。
@@ -1842,6 +1850,11 @@ function applyTopLevel(ctx, config) {
 						const branches = url.searchParams.get('branches') === '1'
 							? await listBranches(config, agentId).catch(() => ({ enabled: false, current: '', branches: [], dirty: 0 }))
 							: undefined;
+						// `&graph=1`：Git 分道图（2026-10-31，演化面板的「演化」标签）。
+						//   只有这一个面板要 ⇒ 按需算（一次多起 3 条 git 子进程），普通页面请求不受影响。
+						const graph = url.searchParams.get('graph') === '1'
+							? await gitGraphOf(config, agentId, git, url.searchParams.get('limit')).catch(() => ({ enabled: false, commits: [] }))
+							: undefined;
 						res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
 						res.end(JSON.stringify({
 							agent: agentId,
@@ -1851,6 +1864,12 @@ function applyTopLevel(ctx, config) {
 							...(versions ? { versions: versions.versions } : {}),
 			...(backups ? { backups: backups.backups, backupKeep: backups.keep } : {}),
 			...(branches ? { branches: branches.branches, branch: branches.current, branchDirty: branches.dirty } : {}),
+							...(graph ? { graph } : {}),
+							// 回合末自动提交（2026-10-31）：页面据此显示"自动快照：开/关 · 已提交 N 次"
+							autoCommit: {
+								on: memoryAutoCommitOnTurn(config),
+								turns: __memoryTurn.byAgent.get(agentId)?.commits ?? 0,
+							},
 							content,
 							diff,
 							limits: {
@@ -2063,7 +2082,12 @@ function applyTopLevel(ctx, config) {
 				if (req.method === 'GET') {
 					try {
 						const id = url.searchParams.get('id') ?? '';
-						const pack = await exportAgent(config, id, { includeMemory: url.searchParams.get('memory') !== '0' });
+						/* ★ 2026-10-31：`&history=1` ⇒ 把记忆仓库的 Git 历史（bundle）一起打包。
+						   默认不带 —— 历史里还留着删掉过的内容，属于比当前记忆更敏感的数据。 */
+						const pack = await exportAgent(config, id, {
+							includeMemory: url.searchParams.get('memory') !== '0',
+							includeHistory: url.searchParams.get('history') === '1',
+						});
 						res.writeHead(200, {
 							'content-type': 'application/zip',
 							'content-disposition': `attachment; filename="${pack.fileName}"`,
@@ -2084,7 +2108,10 @@ function applyTopLevel(ctx, config) {
 						if (body?.action !== 'save') {
 							throw Object.assign(new Error(`未知 action：${body?.action ?? '(空)'}（只支持 save；要拿字节请用 GET）`), { httpStatus: 400 });
 						}
-						const saved = await saveExport(config, body?.id, { includeMemory: body?.memory !== false });
+						const saved = await saveExport(config, body?.id, {
+						includeMemory: body?.memory !== false,
+						includeHistory: body?.history === true,
+					});
 						res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
 						res.end(JSON.stringify(saved));
 					} catch (e) {
@@ -2655,6 +2682,33 @@ export function apply(ctx, config = {}) {
 	//   不注入 ⇒ `ready in 11784 ms` ⇒ **21 个 preset 多花 13.4s ⇒ 每个 ≈0.6s**。
 	//   这里打一行计时，把"**apply 本身**"与"dsh 侧实例化 preset"分开：
 	//   若 apply 很快 ⇒ 瓶颈在 dsh 侧（我们只能少注册 / 延后注册）；否则是我们自己的代码 ✗。
+	// 绑定 work item 内核（2026-10-31）：群聊的派发/记账与 `vssaros-loop` 共用同一份判据
+	// （去重 / 退避 / 完成契约 / #task / 风暴预算 / 回环闸门），真源在 `@vssaros/dsh-workitem`。
+	// 与 foundation 同款两条路：同步直读 + 可选注入；**没绑上不降级**（调用时抛带指引的错 ——
+	// 静默回退本地实现正是"两份判定"复活的入口）。
+	// ⚠ 放在 persona / toolsOnly 分支**之前**：记账是群聊运行期的共用能力，与角色无关。
+	{
+		let ready = null;
+		try {
+			ready = ctx.get?.('vssarosWorkItems') ?? ctx.vssarosWorkItems ?? null;
+		} catch {
+			// 探针的假 ctx 对未知属性抛错 ⇒ 当不存在
+		}
+		if (ready) {
+			bindWorkItems(ready);
+		}
+		ctx.inject(['vssarosWorkItems'], child => {
+			let svc = null;
+			try {
+				svc = child.vssarosWorkItems ?? null;
+			} catch {
+				// 同上
+			}
+			if (svc) {
+				bindWorkItems(svc);
+			}
+		});
+	}
 	const __applyT0 = Date.now();
 	const __who = config?.presetId || config?.agentId || '(top)';
 	try {

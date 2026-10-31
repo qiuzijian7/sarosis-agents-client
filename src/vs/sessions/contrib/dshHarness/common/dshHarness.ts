@@ -92,10 +92,42 @@ export const DSH_ARCHIFY_PLUGIN_NAME = '@tt-a1i/archify-dsh';
  */
 export const DSH_EGO_PLUGIN_NAME = '@vssaros/dsh-ego';
 
+/**
+ * **work item 内核**包名（`dsh-plugins/vssaros-workitem/`，2026-10-31）。
+ *
+ * 「活（work item）」的唯一判据层：账本去重 / 退避 / 完成契约 / `#task` 标签 / 风暴预算 / 回环闸门。
+ * loop（`@vssaros/dsh-loop`）与群聊（`vssaros-agents`）**共用**它 —— 插件之间不能互相 import，
+ * 复制一份就会分叉成"loop 说做过了、群聊说没做过"。
+ *
+ * ⚠ 与 archify / ego 同款：没有 `vssaros.module`（纯服务插件，不注册工具、不碰磁盘、无 UI）
+ *   ⇒ 不进 `modulePluginDirs` 的自发现，必须显式登记伴生路径才会随包安装。
+ * ⚠ 顺序：必须在 `vssaros-loop` 与 `vssaros-agents` **之前**激活（它们 `ctx.inject(['vssarosWorkItems'], …)` 等它）。
+ */
+export const DSH_WORKITEM_PLUGIN_NAME = '@vssaros/dsh-workitem';
+
+/**
+ * **无人值守循环**包名（`dsh-plugins/vssaros-loop/`，2026-10-30）。
+ * 同上：无 `vssaros.module` ⇒ 走伴生路径；必须在 workitem 之后激活。
+ */
+export const DSH_LOOP_PLUGIN_NAME = '@vssaros/dsh-loop';
+
 /** 官方实验语音输入 bundle（随 dsh 运行时分发在其 node_modules 里；本地 SenseVoice 识别）。 */
 export const DSH_VOICE_BUNDLE_PLUGIN_NAME = '@deepseek-ai/dsh-experimental-voice-input-bundle';
 
 /** 官方调度 bundle（重构 2.1）：time-context / schedule 服务 / ui-schedule 三行。S3 已验证可装可用。 */
+/**
+ * 官方实验调度 bundle（随 dsh 运行时分发在 `dsh-runtime/<版本>/node_modules` 里）。
+ *
+ * ⚠ 注释里不要写块注释的闭合序列（星号紧跟斜杠）—— 它会提前终止本注释，本次连踩两次。
+ *
+ * ⚠ **2026-10-31 起不再安装**（`@vssaros/dsh-scheduler` 自建调度引擎接管 `schedule` 服务）：
+ *   · 实测它**从未装进 profile**（`node_modules/@deepseek-ai/` 里没有这个包）；
+ *   · 而 `dsh-schedule` / `dsh-client-ui-schedule` / `dsh-tool-schedule` / `dsh-time-context`
+ *     虽在 profile 里，但 `dsh-schedule` 的 `package.json` 的 `dsh` 键是**空的**（无自带
+ *     cordis patch）⇒ 不被 bundle 带进来就永远不会 activate ⇒ `schedule` 服务本来就不存在。
+ *   ⇒ 不装它就不会有人占用 `schedule` 服务键（否则两个 provider 撞键）。
+ * 常量保留：供守卫/自检检测 profile 里是否残留该包（残留即报警）。
+ */
 export const DSH_SCHEDULE_BUNDLE_PLUGIN_NAME = '@deepseek-ai/dsh-experimental-schedule-bundle';
 
 /**
@@ -830,6 +862,15 @@ export interface IDshRuntimeInfo {
 
 export const enum DshHarnessChannelCommand {
 	GetStatus = 'getStatus',
+	/**
+	 * **在主进程里请求更新源**（2026-10-30，真机 P0：打包 exe 的更新面板红字 `Failed to fetch`）。
+	 *
+	 * 为什么必须在主进程：检查更新原来在**渲染进程**用 `IRequestService`（浏览器 XHR/fetch）直连
+	 * 更新源 —— 而更新源是内网静态托管（蓝盾构件 / 内网 nginx），**不发 CORS 头** ⇒ 浏览器把响应
+	 * 拦掉，JS 只能看到 `Failed to fetch`（saros-pocket 早踩过同一坑，其注释与解法可佐证）。
+	 * 主进程的 fetch 没有跨域概念 ⇒ 渲染进程把拼好的 URL 传过来、这边代为请求 ✓。
+	 */
+	CheckAppUpdate = 'checkAppUpdate',
 	Start = 'start',
 	Stop = 'stop',
 	Restart = 'restart',

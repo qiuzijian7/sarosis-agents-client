@@ -36,6 +36,10 @@ const STEPS = [
 	{ file: 'check-kb-feishu-args.mjs', desc: '飞书同步 --src 参数口径（字符串不许拆字符）' },
 	// ★ 2026-10-29（真机：思维导图永远不重建 + 每次都报 131012）：导图维护必须能自愈。
 	{ file: 'check-kb-feishu-mindmap.mjs', desc: '飞书导图自愈（陈旧节点/遗留记录/孤儿清理）' },
+	// ★ 2026-10-31（用户：先做不依赖服务器的本地 Git + 文档版本 UI）
+	{ file: 'check-kb-git.mjs', desc: '本地版本管理（Git）：只在本地跑 / 无 init 就无行为 / 围栏 / 按文件历史' },
+	// ★ 2026-10-31（P1 远端抽象层）：默认 local、凭据不进库、目录也能当远端、不自动合并
+	{ file: 'check-kb-git-remote.mjs', desc: '远端抽象层：默认零上传 / 凭据隔离 / 目录型远端 / 不自动合并' },
 	// ★ 2026-10-25：**Markdown 渲染回归** —— 用真实渲染器 + react-dom/server 断言 27 类语法
 	//   （frontmatter / Callout / 双链 / 表格 / 嵌套列表 / mermaid / 数学 / 删除线 …）
 	// ★ 2026-10-25：**服务端渲染**（markdown-it + Obsidian 方言，vendor 随包）

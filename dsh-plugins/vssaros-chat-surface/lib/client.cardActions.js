@@ -100,6 +100,18 @@ window.__ModuleLoader__.load({
 			const state = shell.state;
 			const bridge = shell.bridge;
 			if (typeof document === "undefined") { return; }
+			// ★★ 2026-10-30（用户要求「desktop 用 dsh 原生交互、IDE 用 IDE 交互」）：
+			//   desktop 窗口（`chatOnly=0`）**不注入任何按钮、不接管行点击**：
+			//     · 「定位」「看改动」是 IDE 语义（资源管理器定位 / git HEAD↔工作区 diff），
+			//       desktop 下既没有那个资源管理器同屏、也不该把"本轮改动"换成 git 未提交改动；
+			//     · 终端卡的「在终端打开」同理（那是 IDE 集成终端）；
+			//     · 交付卡行点击交回官方（→ 右栏 changes-review 的本轮 diff，语义比我们的更准 ✓）。
+			//   判据由入口算好放 `shell.ide`（单一真相，见 client.js 的 isIdeChatView）。
+			if (!shell.ide) {
+				state.cardActions = false;
+				state.cardActionsSkipped = "desktop 窗口（chatOnly=0）：不注入 IDE 专用按钮";
+				return;
+			}
 
 			const fail = (what, err) => {
 				const msg = String((err && err.message) || err);

@@ -18,6 +18,14 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 const CLIENT = readFileSync(HERE + '../lib/client.js', 'utf8');
+
+// ★ 2026-10-31：右键菜单「添加到聊天框中」——产物 bundle 的断言（中文会被转义，按转义也认）
+const BUNDLE_SRC = readFileSync(new URL('../lib/web/kbSideview.js', import.meta.url), 'utf8');
+const CHAT = readFileSync(new URL('../../vssaros-chat-surface/lib/client.js', import.meta.url), 'utf8');
+
+// ★ 2026-10-31：知识库 agent 的两份源码（宿主侧落盘 + 被 apply 调用）
+const KB_AGENT_SRC = readFileSync(new URL('../lib/kbAgent.js', import.meta.url), 'utf8');
+const INDEX_SRC = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8');
 const BUNDLE = readFileSync(HERE + '../lib/web/kbSideview.js', 'utf8');
 const INDEX = readFileSync(HERE + '../lib/index.js', 'utf8');
 const KB_CORE = readFileSync(HERE + '../lib/core/kb.js', 'utf8');
@@ -37,6 +45,21 @@ function check(name, cond, detail = '') {
 }
 
 // ── 面板：图谱 ─────────────────────────────────────────────
+/*
+ * ★ 2026-10-31（用户）：右键菜单「添加到聊天框中」——把这篇作为 @文件引用 落进右侧对话输入框。
+ *   钉三条：① 菜单项真的在产物里；② 走 chat-surface 的两条官方通道；③ 有「落笔后回读」的兜底判据。
+ *   ⚠ 只落笔、**不自动发送**（用户还得自己按发送）。
+ */
+check('右键菜单有「添加到聊天框中」（产物 bundle 里，中文可能被转义）',
+	/添加到聊天框/.test(BUNDLE_SRC) || /\\u6dfb\\u52a0\\u5230\\u804a\\u5929\\u6846/i.test(BUNDLE_SRC));
+check('走 chat-surface 通道：vssaros-dsh-insert（chip）+ vssaros-composer-append（已有引用时追加）',
+	BUNDLE_SRC.includes('vssaros-dsh-insert') && BUNDLE_SRC.includes('vssaros-composer-append'));
+check('★ chat-surface 真的提供 append 监听（且有反向断言：prefill 遇 occurrences 会 busy）',
+	CHAT.includes('vssaros-composer-append') && /occurrences && snap\.occurrences\.length/.test(CHAT));
+check('★ 已有引用时官方通道会被拒 ⇒ 最后兜底走 execCommand（绕过输入机）',
+	BUNDLE_SRC.includes('execCommand'));
+check('以 composer 卡片为准回读（chip 不在 textarea 里，只看输入框会误判）',
+	BUNDLE_SRC.includes('data-composer-card'));
 check('面板定义了 openGraph 且切换到 graph pane',
 	/openGraph:\s*\(\)\s*=>\s*\{\s*setPane\('graph'\);\s*\}/.test(CLIENT));
 // ⚠ 不许再用 `position: fixed`：宿主视图容器带 transform ⇒ fixed 的包含块变成那个容器，
@@ -266,15 +289,26 @@ check('阅读进度条 + 回到顶部',
 // ══════════════════════════════════════════════════════════════════════════
 
 // ── ① 知识库助手必须绑「知识库专家」（当前实现的真实形态：包 newSession）──
-//   ⚠ 2026-10-28 记录：这份 client.js 曾被回退到更早的版本（1745 行），
-//     当时那套 `applyKbPresetAsync + 回读校验 + MutationObserver` **已不在此文件中**；
-//     现行实现是"包 `desktopWorkbenches.newSession`，新会话建好后 select 预设"。
-//     ⇒ 断言按**现存的实现**写，不按"我记得加过什么"写（否则守卫永远红）。
-check('新会话默认用知识库专家（newSession 补丁 + preset id）',
-	CLIENT.includes('__vssarosKbPreset') && CLIENT.includes("'vssaros-knowledge-base-expert'")
-		&& /presets\.select\(sid, 'vssaros-knowledge-base-expert'\)/.test(CLIENT));
+//   ⚠ 2026-10-31 重写（用户：「知识库里 AI 助手应显示 知识库 agent」）：
+//     旧实现两处致命：① `c.get('remote.agentPresets')` 拿不到服务（必须 inject）
+//                    ② 选的 id `vssaros-knowledge-base-expert` 没被注册（数据根无 .agent.md）
+//     ⇒ 断言按**现在这份实现**写（inject + 轮询 + 候选 id），并在最后一刻核对两端契约。
+check('新会话默认用知识库专家：inject 拿服务 + 候选 id + 轮询',
+	CLIENT.includes('__vssarosKbPreset')
+		&& CLIENT.includes("'vssaros-kb-expert'")
+		&& /inject\(\[KB_PRESET_DEPS\[i\]\]/.test(CLIENT)
+		&& /chipSaysExpert/.test(CLIENT)
+		&& /reasserts/.test(CLIENT));
+check('面板在就算（不只看 __vssarosKbActive：挂载那一刻它是 false，会把所有尝试挡掉）',
+	/const kbPanelHere = /.test(CLIENT));
 check('只有本工作台在前台时才改 preset（不带走别的工作台会话）',
 	CLIENT.includes('__vssarosKbActive'));
+check('★ 契约一致：宿主的 KB_PRESET === 客户端候选里的 id',
+	/export const KB_PRESET = 'vssaros-kb-expert';/.test(KB_AGENT_SRC)
+		&& /KB_PRESET_CANDIDATES = \['knowledge-base-expert'/.test(KB_AGENT_SRC)
+		&& CLIENT.includes("'vssaros-kb-expert'"));
+check('宿主会把 agent 落到数据根（ensureKbAgent 被 apply 调用）',
+/ensureKbAgent\(/.test(KB_AGENT_SRC) && /void ensureKbAgent\(/.test(INDEX_SRC));
 
 // ── ② 聊天框与文档**不许重叠**（按商城工作台的分栏口径）─────────────────
 check('业务区基准 0%（助手栏出现时必定收缩）',
@@ -364,6 +398,16 @@ check('库/raw 受控可写（服务端放行该落点）',
 	INDEX.includes('resolveRawPath') && INDEX.includes('RAW_DIR') && KB_CORE.includes('export function resolveRawPath'));
 check('围栏没被放宽（笔记区外的「库」其它分类仍拒）',
 	INDEX.includes('const inRaw = rawResolved.inside === true') && INDEX.includes('!inNotes && !inRaw'));
+// ★ 2026-10-31（用户：点「编辑」时编辑窗口要**占满**）：
+//   实测前：编辑器固定 minHeight 420（实际 240px，占 32% 高）；
+//   实测后：容器 flex 纵向 + 编辑器 flex:1 ⇒ 665/751 ≈ 89% 高、97% 宽。
+check('编辑态占满：容器是 flex 纵向 + 编辑器 flex:1',
+	/overflow: draft !== null \? 'hidden' : 'auto'/.test(KB_TSX)
+		&& /display: draft !== null \? 'flex' : 'block'/.test(KB_TSX)
+		&& /padding: draft !== null \?/.test(KB_TSX)
+		&& /data-kb-editor-host/.test(KB_TSX));
+check('编辑态收起大标题（把高度让给编辑器）',
+	/\{draft === null \? \(/.test(KB_TSX));
 check('完整设置（飞书）在 bundle 内实现并挂进设置页',
 	KB_TSX.includes('function KbFeishuSettings(') && KB_TSX.includes('<KbFeishuSettings />'));
 check('完整设置走插件端点（kb-settings / feishu-cli / feishu-sync / feishu-spaces）',

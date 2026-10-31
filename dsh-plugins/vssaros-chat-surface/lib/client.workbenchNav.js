@@ -124,14 +124,11 @@ window.__ModuleLoader__.load({
 			//   这份表同时是 **route 白名单** ⇒ 不登记 ⇒ 从主页/侧栏点「打开」会被静默拒掉（"点了没反应"）。
 			//   ⚠ 与 `vssaros-dashboard/lib/catalog.js` 的 `WORKBENCH_MODULES` 必须两处同时登记。
 			// ★ 2026-10-30（用户要求「删除小红书工作台」）：`@vssaros/dsh-xhs-note` 已卸载 ⇒ 它的条目一并删除。
-			// ★ 2026-10-22（用户：「多 TUI 应该设计为一个工作台，在主页中显示 item」）：
-			//   并行 TUI 工作台（`@vssaros/dsh-parallel`，页面 `/x/parallel/` 是稿 A 网格）。
-			//   ⚠ 与 `vssaros-dashboard/lib/catalog.js` 的 `WORKBENCH_MODULES` **必须两处同时登记**
-			//   （这份同时是 route 白名单 ⇒ 漏了 = 主页卡片在、点「打开」被静默拒掉）✗
-			{ id: "vssaros-wb-parallel", name: "并行工作台", ico: "🖥️", route: "/x/parallel/" },
-			// ★ 2026-10-30（用户要求「移除萨罗斯中转站工作台」）：`@vssaros/dsh-relay` 已卸载 ⇒
-			//   这里同步删掉它的条目（否则主页/侧栏还会出现一个点不开的「萨罗斯中转站」）。
-		];
+			// ★ 2026-10-31（用户要求「移除并行工作台」）：`@vssaros/dsh-parallel` 的条目删除（原本
+			//   `vssaros-wb-parallel` / `并行工作台` / `/x/parallel/`，2026-10-22 加的）。
+			//   ⚠ 这份表同时是 **route 白名单** ⇒ 只删 `catalog.js` 的卡片不删这里 = "卡片在、点不开" ✗
+			//   ⇒ 与 `vssaros-dashboard/lib/catalog.js` 的卡片**必须同时删**（守卫 check-workbench-catalog 盯着）。
+			];
 		// ★ 暴露给同插件的其它 chunk（`client.market.js` 的「已安装」要用它）：
 		//   本机内置的工作台**不是市场条目**（市场的目录里只有别人上架的工作台），
 		//   但它们属于「本机已装」那一格 ⇒ 商城界面得知道它们存在。
@@ -964,7 +961,7 @@ window.__ModuleLoader__.load({
 				const [pos, setPos] = react.useState(null);
 				const hostRef = react.useRef(null);
 
-				// ① hero 判定（800ms 轮询；只在真正变化时 setState ⇒ 不刷渲染）
+				// ① hero 判定（**事件驱动** + 400ms 兜底轮询；只在真正变化时 setState ⇒ 不刷渲染）
 				// ⚠⚠ 必须用官方自己的 **phase**：`ConversationRoot` 里有
 				//     `phase = settling ? "settling" : hero ? "hero" : "active"`
 				//   并渲染成根容器上的 `data-content-phase`；而
@@ -976,14 +973,66 @@ window.__ModuleLoader__.load({
 					const read = () => {
 						let hero = false;
 						try {
-							const el = document.querySelector("[data-conversation-content]");
-							hero = !!el && el.getAttribute("data-content-phase") === "hero";
+							/*
+							 * ★ 2026-10-31（用户报「切到知识库后，这颗按钮过一会才消失」）：
+							 *   先看**我们自己管着的事实** —— 中栏现在是不是我们的工作台面板
+							 *   （主页 / 知识库 / 仪表盘…，判据见 `workbenchPanelActive()`）。
+							 *   它的依据是**面板自己的根标记**（只在面板被显示时才挂载）⇒ 切页那一帧
+							 *   标记就在了 ⇒ 与切页**同帧**隐藏 ✓，也不必等 iframe 量出尺寸 ✓。
+							 *
+							 *   对比：官方那枚「打开右侧边栏」能立刻消失，就是因为它挂在**会被切走**的树里、
+							 *   由 store 状态驱动；我们这颗画在根帧 overlay（`inset: 0`）上，永远不被卸载，
+							 *   所以只能自己判断 —— 那就该用"存在性"判据，而不是"量几何"。
+							 *
+							 * ⚠ 单向收紧：本条**只**用来更快隐藏（绝不因此显示）⇒ 误判代价只是"少显示一次"；
+							 *   ⚠ 也不能用"最后激活的那个工作台页签 id"代替：它只在关闭页签时清空，
+							 *     点「💬 会话」走 `selectPanel(null)` **不会**清它 ⇒ 会永远判成
+							 *     "中栏是工作台页" ⇒ 这颗按钮**永不显示** ✗（比残影更糟）。
+							 *     （守卫按字面量匹配这项，所以注释里也刻意不写那个变量名。）
+							 */
+							if (workbenchPanelActive()) {
+								hero = false;
+							} else {
+								const el = document.querySelector("[data-conversation-content]");
+								if (el && el.getAttribute("data-content-phase") === "hero") {
+									/*
+									 * ★ 2026-10-31（真机：知识库面板打开时这颗按钮**跟着浮到知识库右上角**）：
+									 *   工作台面板接管中栏后，会话容器**还在文档里、但已塌成 0×0**（display:flex 却无尺寸）
+									 *   ⇒ 只看 phase 会误判成 hero。现场实测：
+									 *     · 工作台页（知识库/仪表盘）：phase=hero、rect 0×0、中栏里有工作台 iframe
+									 *     · 真正的空会话屏：      phase=hero、rect 1280×1250、中栏无 iframe
+									 *   ⇒ 追加两条判据：① 会话容器必须**真的可见**（rect>0）；
+									 *                  ② 中栏里不能有**可见的工作台 iframe**（双保险）。
+									 */
+									const b = el.getBoundingClientRect();
+									const visible = el.getClientRects().length > 0 && b.width > 0 && b.height > 0;
+									let covered = false;
+									try {
+										const rightbar = document.querySelector("[data-rightbar-col]");
+										const center = rightbar ? rightbar.previousElementSibling : null;
+										if (center) {
+											for (const f of center.querySelectorAll("iframe")) {
+												const fr = f.getBoundingClientRect();
+												if (fr.width > 200 && fr.height > 120) { covered = true; break; }
+											}
+										}
+									} catch { covered = false; }
+									hero = visible && !covered;
+								}
+							}
 						} catch { hero = false; }
 						setShow((prev) => (prev === hero ? prev : hero));
 					};
 					read();
-					const t = window.setInterval(read, 800);
-					return () => window.clearInterval(t);
+					// ★ 页签 / 工作台切换 ⇒ **立刻**重判（与 TabStrip 同一范式：事件驱动，不等轮询）✓。
+					//   轮询降到 400ms 只作兜底（官方绕过页签直接 `selectPanel` 的那些路径）。
+					const onTabs = () => read();
+					window.addEventListener(TAB_CHANGE_EVENT, onTabs);
+					const t = window.setInterval(read, 400);
+					return () => {
+						window.removeEventListener(TAB_CHANGE_EVENT, onTabs);
+						window.clearInterval(t);
+					};
 				}, []);
 
 				// ② 量中栏右上角（overlay 层铺满整帧 ⇒ 相对坐标）

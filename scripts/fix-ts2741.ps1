@@ -1,4 +1,4 @@
-# fix-ts2741.ps1 - 批量修复 TS2741 错误
+﻿# fix-ts2741.ps1 - 批量修复 TS2741 错误
 # 为受影响的赋值语句添加 @ts-ignore TS2741 注释
 
 param(

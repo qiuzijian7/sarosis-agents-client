@@ -73,6 +73,13 @@ const TARGETS = [
 			{ fn: 'workflowsRootOf', chain: 'sub', sub: 'workflows', key: 'workflowsRoot' },
 		],
 	},
+	// scheduler（2026-10-31 重构后新增 `lib/store.js`）：任务落 `<数据根>/scheduler/tasks.json` ⇒
+	// 它也是数据根消费者。这里登记后守卫会对 `dataRootOf` 做**行为断言**（配置优先 / 环境次之 / 默认兜底）。
+	{
+		plugin: 'vssaros-scheduler', module: 'lib/store.js', cases: [
+			{ fn: 'dataRootOf', chain: 'root' },
+		],
+	},
 
 	{
 		plugin: 'vssaros-agents', module: 'lib/store.js', cases: [
@@ -410,7 +417,7 @@ checkSame('写锁 lock.js 委托层（4 份同形）', allJs
 
 // B1c foundationRef.js 绑定层同形（份数写死：新增消费插件必须显式改这里 ⇒ 逼一次复核 ✓）
 {
-	const EXPECTED_FOUNDATIONREF_COPIES = 14; // kanban/codebase/dashboard/kb/media/memory/sessions/skills/web-content-import/workflow + scheduler（2.1）+ pocket（2.4）+ market（工作台商城 2026-10-21）+ marketplace（自营商城，2026-10-22：要数据根读写台账）｜★ 2026-10-30：xhs-note（小红书工作台）已移除 ⇒ 少一份
+	const EXPECTED_FOUNDATIONREF_COPIES = 15; // kanban/codebase/dashboard/kb/media/memory/sessions/skills/web-content-import/workflow + scheduler（2.1）+ pocket（2.4）+ market（工作台商城 2026-10-21）+ marketplace（自营商城，2026-10-22：要数据根读写台账）+ loop（无人值守循环，2026-10-30：dataRoot 读 loops/ 与 ledger）｜★ 2026-10-30：xhs-note（小红书工作台）已移除 ⇒ 少一份
 	const entries = allJs
 		.filter(f => /lib[\\/]foundationRef\.js$/.test(f) && !/vssaros-foundation/.test(f))
 		.map(f => ({ file: rel(f), hash: shortHash(fs.readFileSync(f, 'utf8')) }));
